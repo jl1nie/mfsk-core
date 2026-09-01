@@ -3081,3 +3081,83 @@ ones this line has not measured at all — the esp-dsp binding for
 `FirStage::push_block` (`dsps_fird_f32_aes3`), the 560-file paired
 sweep for the shared front end, and running the FT4 boot mode against
 a radio rather than a replayed slot.
+
+## 43. The budget was anchored to the wrong end of the slot (2026-09-01)
+
+§34 gave the candidate loop a deadline of `TX_TURNAROUND_BUDGET_MS =
+1 960 ms` measured from `CapturedSlot::closed_us`, and §42 reported
+the receiver comfortably inside it. Both are right about the number
+and wrong about where it starts.
+
+FT4 exists for fast QSOs, so the deadline is not the end of the slot —
+it is the moment this station has to key up. Within a slot beginning
+at 0:
+
+```text
+  0.50 s  the other station's transmission starts
+  5.54 s  its frame ends (105 symbols x 48 ms)
+  6.04 s  ...plus the +0.5 s of DT the search window allows: every
+          sample the decoder can read has now arrived
+  7.50 s  slot boundary          <- the old code closed here
+  8.00 s  THIS station must be transmitting
+```
+
+The decode window is **6.04 → 8.00 s**. The old anchoring gave the
+decoder 1 960 ms starting at 7.50 s, i.e. an answer at 9.46 s — 1.46 s
+after it needed to be on the air. **A QSO-capable build had 500 ms,
+not 1 960.** The width was right because both derivations subtract the
+same 0.5 s; the window sat half a second late.
+
+The 1.25 s the old code spent waiting was audio no candidate reads:
+`ft4_sync_search_window`'s window tops out at `i0 = 667` and a frame is
+105 x 32 = 3 360 downsampled samples, so 4 027 of a slot's 5 000.
+
+### 43.1 Closing early costs nothing measurable
+
+`tests/ft4_early_close.rs` runs the receiver's own pipeline over the
+WSJT-X golden with the window closed at a range of points, in two
+arms — the periodogram averaged over the shorter span (what a real
+early close does), and the tail zero-filled:
+
+| close at | candidates | decodes |
+|---|---:|---:|
+| 6.041 s (what the search reaches) | 12 | 11 |
+| 6.100 s | 12 | 11 |
+| **6.250 s (shipped)** | **12** | **11** |
+| 6.500 s | 12 | 11 |
+| 7.500 s (whole slot) | 12 | 11 |
+
+Identical sets, no missing and no extra decodes, in both arms. Two
+things this does *not* establish: the 560-file sweep has not been run
+(no corpus on this machine), and the golden's DTs span −0.44…+0.30 s,
+so nothing here exercises the top of the ±0.5 s window.
+
+**The shipped close is 6.25 s, not 6.04.** The extra 0.21 s is the DDC
+chain's group delay: to compute baseband sample `n` from real history
+rather than from the flush's zeros, the chain needs input up to
+`n·18 + gd`, and `gd` is ~2 540 input samples across the three stages.
+Without it the last symbols of a signal at the top of the DT window
+would be filtered against zeros. It costs 210 ms of budget, which is
+about one candidate.
+
+`ft4_rx::CAPTURE_CLOSE_SAMPLES = 75 000` and
+`TX_TURNAROUND_BUDGET_MS = 1 750` (`8.0 − 6.25`). `SlotAccum` discards
+the remaining 1.25 s so the slot grid stays a 7.5 s grid — without
+that, each window would open 1.25 s earlier than the last and walk off
+the transmissions.
+
+### 43.2 On the board
+
+`ft4-demo`, the same golden, immediately after the re-anchoring and
+before the two cores:
+
+```
+slot — 11 of 12 candidates tried, 10 decodes in 1777 ms of 1750 ms — cut 1 at 1.55
+slot close spacing 7499-7501 ms, no drift over 17 slots
+key-up margin: -27 ms
+```
+
+So the honest picture at this point was **worse** than §42's, because
+§42 was measuring against a deadline that a transmitting station does
+not have. 12 candidates cost ~2 000 ms; the real budget is 1 750.
+

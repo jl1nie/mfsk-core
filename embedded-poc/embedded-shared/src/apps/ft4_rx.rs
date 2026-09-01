@@ -52,6 +52,40 @@ use num_complex::Complex;
 /// One FT4 slot at 12 kHz: 7.5 s.
 pub const SLOT_SAMPLES: usize = 90_000;
 
+/// Where the capture window closes — **not** the end of the slot.
+///
+/// FT4 exists for fast QSOs, so the deadline this receiver is designed
+/// against is the moment it has to key up, and everything is derived
+/// backwards from there. Within a slot beginning at 0:
+///
+/// ```text
+///   0.50 s  the other station's transmission starts
+///   5.54 s  its frame ends (105 symbols x 48 ms)
+///   6.04 s  ...plus the +0.5 s of DT `NARROW_WINDOW` allows: every
+///           sample `ft4_sync_search_window` can read has arrived
+///   6.25 s  ...plus the DDC chain's group delay, so those samples are
+///           filtered against real history and not against the zero
+///           tail  <- CLOSE HERE
+///   7.50 s  slot boundary
+///   8.00 s  THIS station's transmission must start
+/// ```
+///
+/// Closing at the slot boundary instead — which this receiver did
+/// until 2026-09-01 — leaves 0.5 s to decode in before key-up, not the
+/// 1.96 s the budget claimed, because the 1.96 s was anchored to the
+/// slot end rather than to the transmission that follows it. The last
+/// 1.25 s of the slot is audio no candidate can reach: the search tops
+/// out at `i0 = 667` and a frame is 105 x 32 = 3 360 downsampled
+/// samples, so 4 027 of a slot's 5 000.
+///
+/// Measured lossless on the WSJT-X golden — same 12 candidates and the
+/// same 11 decodes as the whole slot, both with the periodogram
+/// averaged over the shorter span and with the tail zero-filled
+/// (`tests/ft4_early_close.rs`). One recording is not a sensitivity
+/// statement; the 560-file sweep is the arm that would be, and it has
+/// not been run.
+pub const CAPTURE_CLOSE_SAMPLES: usize = 75_000;
+
 /// `ft4::decode`'s own private `SYNC_Q_MIN` — 16 sync symbols
 /// (4 × Costas-4), at least half correct. Mirrored the same way
 /// `ft4_bench` mirrors it, and with the same caveat: if the crate-side
@@ -116,6 +150,13 @@ pub struct SlotAccum {
     savg: Ft4SavgBuilder,
     decim: SlotDecimator,
     half: Vec<f32>,
+    /// Samples still to be discarded before the next slot's window
+    /// opens: the slot grid is 7.5 s and the window is 6.25 s, so the
+    /// tail no candidate can reach is dropped rather than accumulated.
+    /// This is what keeps the grid a *slot* grid after the early
+    /// close — without it each window would start 1.25 s earlier than
+    /// the last and walk off the transmissions entirely.
+    skip: usize,
 }
 
 impl Default for SlotAccum {
@@ -127,21 +168,27 @@ impl Default for SlotAccum {
 impl SlotAccum {
     pub fn new() -> Self {
         Self {
-            audio: Vec::with_capacity(SLOT_SAMPLES),
-            savg: Ft4SavgBuilder::new(SLOT_SAMPLES),
+            audio: Vec::with_capacity(CAPTURE_CLOSE_SAMPLES),
+            savg: Ft4SavgBuilder::new(CAPTURE_CLOSE_SAMPLES),
             decim: SlotDecimator::new(),
-            // 44 959 for a full slot; the stage's group delay is what
-            // makes it short of 45 000.
-            half: Vec::with_capacity(SLOT_SAMPLES / 2),
+            // Half the window; the stage's group delay is what makes
+            // it a little short of exactly half.
+            half: Vec::with_capacity(CAPTURE_CLOSE_SAMPLES / 2),
+            skip: 0,
         }
     }
 
     /// Feed the next block. Returns the finished slot on the block that
-    /// completes it, and resets for the next.
+    /// closes its window, and resets for the next.
     ///
     /// A block straddling the boundary is split, so the caller's block
     /// size never shifts the slot grid — which matters because a UAC
-    /// read is not a divisor of 90 000.
+    /// read is not a divisor of 75 000 either.
+    ///
+    /// The window closes at [`CAPTURE_CLOSE_SAMPLES`] — 6.25 s of a
+    /// 7.5 s slot — and the remaining 1.25 s is discarded, because a
+    /// QSO-capable receiver has to have answered by 8.0 s and no
+    /// candidate can read that audio anyway.
     pub fn push(&mut self, samples: &[i16]) -> Option<CapturedSlot> {
         self.push_with_rows(samples, &mut |_| {})
     }
@@ -158,14 +205,21 @@ impl SlotAccum {
         let mut rest = samples;
         let mut done = None;
         while !rest.is_empty() {
-            let room = SLOT_SAMPLES - self.audio.len();
+            if self.skip > 0 {
+                let take = self.skip.min(rest.len());
+                self.skip -= take;
+                rest = &rest[take..];
+                continue;
+            }
+            let room = CAPTURE_CLOSE_SAMPLES - self.audio.len();
             let take = room.min(rest.len());
             self.audio.extend_from_slice(&rest[..take]);
             self.savg.push_with_rows(&rest[..take], on_row);
             self.decim.push_i16(&rest[..take], &mut self.half);
             rest = &rest[take..];
-            if self.audio.len() == SLOT_SAMPLES {
+            if self.audio.len() == CAPTURE_CLOSE_SAMPLES {
                 let prev = core::mem::replace(self, Self::new());
+                self.skip = SLOT_SAMPLES - CAPTURE_CLOSE_SAMPLES;
                 done = Some(CapturedSlot {
                     audio: prev.audio,
                     savg: prev.savg.finish(),
@@ -189,13 +243,19 @@ pub struct Ft4Decode {
     pub hard_errors: u32,
 }
 
-/// Milliseconds between the end of an FT4 frame and the end of its
-/// slot: `7.5 s − (0.5 s TX offset + 105 × 48 ms)`.
+/// Milliseconds from [`CAPTURE_CLOSE_SAMPLES`] to the moment this
+/// station must be transmitting: `8.0 s − 6.25 s`.
 ///
-/// The budget a **transceiver** has, and the one `ft4-bench` reports
-/// against. A receiver that never transmits has until the next slot
-/// closes instead — see [`decode_slot`]'s `budget_ms`.
-pub const TX_TURNAROUND_BUDGET_MS: i64 = 1_960;
+/// The budget a **transceiver** has. Derived from key-up, not from the
+/// slot boundary — see [`CAPTURE_CLOSE_SAMPLES`] for the timeline and
+/// for what the old 1 960 ms was actually measuring. A receiver that
+/// never transmits has until the next slot instead — see
+/// [`decode_slot`]'s `budget_ms` and [`RX_ONLY_BUDGET_MS`].
+///
+/// It is 210 ms narrower than the old number and it is the real one:
+/// a QSO-capable build had 500 ms under the previous anchoring, not
+/// 1 960.
+pub const TX_TURNAROUND_BUDGET_MS: i64 = 1_750;
 
 /// A whole FT4 slot, so a receive-only monitor can spend one.
 ///
@@ -203,6 +263,13 @@ pub const TX_TURNAROUND_BUDGET_MS: i64 = 1_960;
 /// the radio has to key up: slot `N + 1`'s audio is accumulating on
 /// the capture side while slot `N` decodes, and only running past
 /// *this* costs a slot.
+///
+/// Conservative by 1.25 s since the early close: the next window
+/// actually opens at `7.5 + 6.25` after this one did. Left at a slot
+/// because the staging buffer a board holds is sized in seconds of
+/// audio and 7.5 s is already more than it has (`apps/ft4.rs`'s
+/// `STAGING_CAP` is 4 s — a receive-only build that really spent this
+/// budget would drop audio, and says so when it does).
 pub const RX_ONLY_BUDGET_MS: i64 = 7_500;
 
 /// What one slot's decode produced, and what it cost.
