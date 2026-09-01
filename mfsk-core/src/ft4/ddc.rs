@@ -88,6 +88,7 @@
 //! step, and this module deliberately keeps the split as two named
 //! stages so it can be re-cut without touching the callers.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use num_complex::Complex;
