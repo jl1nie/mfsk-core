@@ -16,6 +16,28 @@ streaming coarse stage below.)
 
 ### Added
 
+- **The streaming spectrogram measured too: `fixed-point` is
+  0.63× f32 there (issue #349 step 2).** §36 timed the *batch*
+  `compute_spectrogram` and said plainly that it settled nothing about
+  `stage1_inc`, the incremental u16 builder a receiver actually runs
+  during capture — where halving the bytes written per pair could
+  still pay. It does not. `stage1_inc::compute_pair_into`'s body is
+  now `pair_kernel_i16`, with `pair_kernel_f32` the same computation
+  in the other scalar and `stage1_inc::scalar_ab` timing both over one
+  slot on the same audio: **1 342 ms u16 against 852 ms f32**, 345 KB
+  against 690 KB.
+
+  Per row that is 7.29 ms u16 / 4.63 ms f32, against the batch
+  builder's 7.86 / 8.49 — the inversion is the pair trick, which packs
+  two rows into one transform. The f32 arm collects the whole of that
+  saving and the u16 arm almost none, because the `sc16` 3840-point
+  mixed-radix transform costs 14.6 ms against `fc32`'s 9.3 on this
+  core. `stage1_inc` is **not** switched to f32: the cell type is not
+  local to it (`coarse_sync`, `pass2` and the waterfall all take
+  `&[u16]`) and the slot buffer would double. What changes is the
+  reason to keep it — the 345 KB, not speed.
+  `docs/notes/FT4_BENCHMARK.md` §41.
+
 - **`fixed-point` no longer implies the Q11i16 LLR/BP hot loop
   (issue #349).** The scalar is its own feature, `fixed-point-llr`,
   **off by default** — a `fixed-point` build keeps the u16 spectrogram

@@ -2870,3 +2870,75 @@ a different NSTEP it simulates a different one — 4 vs 7 decodes on
 between *a simulation and the thing it simulates*, not between a
 numeric format and a search parameter. What was wrong was tying the
 BP scalar to the spectrogram's, and that is what this changes.
+
+## 41. The streaming spectrogram, measured — u16 is 0.63× f32 (2026-09-01)
+
+§36 timed the **batch** `compute_spectrogram` and said, in as many
+words, that it settled nothing about `stage1_inc`: that builder's
+whole design is an incremental u16 spectrogram fed during capture, and
+the bandwidth argument might still hold there. Issue #349's step 2 is
+to measure it. Measured, it does not hold — it fails harder than in
+the batch builder.
+
+`stage1_inc::compute_pair_into`'s body is now `pair_kernel_i16`, and
+`pair_kernel_f32` is the same computation in the other scalar: same
+packing of two audio rows into one complex transform, same demux into
+two spectrogram rows, the esp-dsp `fc32` transform instead of the
+`sc16` one. `scalar_ab` runs both over one slot's 92 pairs, best of
+three passes each.
+
+```
+stage1_inc A/B:  1 342 166 us u16   vs   852 059 us f32   (345 KB vs 690 KB spec)
+```
+
+**u16 is 0.63× f32** — 490 ms per slot slower, for half the memory.
+Normalised per spectrogram row against §36's batch numbers:
+
+| builder | u16 | f32 | |
+|---|---:|---:|---|
+| batch `compute_spectrogram` | 7.86 ms/row | 8.49 ms/row | u16 1.08× |
+| **`stage1_inc`** | **7.29 ms/row** | **4.63 ms/row** | **u16 0.63×** |
+
+The inversion is the pair trick. `stage1_inc` packs two real rows into
+one complex transform, so it pays 92 transforms where the batch
+builder pays 184 — and the f32 arm collects the whole of that saving
+(8.49 → 4.63) while the u16 arm collects almost none (7.86 → 7.29).
+The `sc16` 3840-point mixed-radix transform costs 14.6 ms against
+`fc32`'s 9.3 on this core, and that difference eats the halving.
+
+So `fixed-point` defends memory in the streaming builder too, and
+there it charges ~490 ms a slot for it. With §40 (BP) and §36 (batch
+spectrogram), all three of its claimed speed benefits are now measured
+and none of them is one.
+
+### 41.1 What this does *not* do
+
+**`stage1_inc` is not switched to f32 here.** The spectrogram's cell
+type is not local to this builder: `coarse_sync`, `pass2` and the
+waterfall row builder all take `&[u16]`, and the slot buffer would go
+345 → 690 KB. That is a change with its own recall question and its
+own memory budget, not a follow-on to a timing measurement. What this
+section establishes is that the reason to keep u16 is the 345 KB,
+which is a real constraint on a board that also holds two audio
+buffers and a PSRAM cache — not speed, which was the claim.
+
+### 41.2 The metric was wrong twice before it was right
+
+A timing A/B is worthless if one arm is not computing the same thing,
+so `scalar_ab` cross-checks the two spectra. The first two attempts
+measured the checker, not the transforms:
+
+- **Peak bin per row**: 171/184 agreed. Then giving the i16 arm the
+  shift the worker actually locks took it to **144/184** — a *worse*
+  score from a *more* faithful arm. On a band with twenty signals the
+  argmax swaps between two near-equal peaks, and on a noise row it is
+  a coin flip.
+- **Peak bin, rows with a peak 8× above their mean**: 136/174. Same
+  problem, smaller sample.
+- **Pearson r over the band, per row**: mean **0.9882**, worst
+  **0.9137** over 180 rows (4 rows the u16 arm quantises flat, counted
+  and skipped rather than scored 0). That is the question the check
+  was for: same spectrum, up to quantisation.
+
+Same lesson as §33's row-counting diagnostic — a check that quietly
+measures itself is worse than none.

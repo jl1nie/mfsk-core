@@ -524,23 +524,27 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     ctx.cur.spec_sent = true;
 }
 
-fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
-    // Defensive check (Gemini PR #123 round-10): the `wf_q.is_none()`
-    // branch in `emit_spec_bundle` swaps empty Vecs into `ctx.cur`
-    // because the `pair_limit` gate in `advance_pairs` is supposed
-    // to prevent any further `compute_pair_into` calls for that
-    // slot. If that invariant ever breaks (refactor lands a
-    // `pair_limit = N_PAIRS` path that forgets to widen
-    // emit_spec_bundle's tuple), the indexed writes below would
-    // hit empty Vecs and panic anyway — surface it explicitly here.
-    debug_assert!(
-        !ctx.cur.spec.is_empty(),
-        "compute_pair_into invoked after wf_q=None emit replaced ctx.cur.spec with empty Vec"
-    );
-    let shift = ctx.cur.shift;
-    let ia_a = j_a * NSTEP;
-    let ia_b = j_b * NSTEP;
-    let n_freq = ctx.n_freq;
+/// The per-pair body: pack two audio rows into one complex transform,
+/// run it, demux the result into two spectrogram rows.
+///
+/// Lifted out of [`compute_pair_into`] unchanged so `pair_kernel_f32`
+/// can be the same computation in the other scalar and the A/B in
+/// [`scalar_ab`] times *this* code rather than a copy of it
+/// (issue #349 step 2 — the batch spectrogram had been measured, the
+/// streaming one this receiver actually runs had not).
+#[allow(clippy::too_many_arguments)]
+fn pair_kernel_i16(
+    fft: &dyn Fft16,
+    buf: &mut [Complex<i16>],
+    audio: &[i16],
+    ia_a: usize,
+    ia_b: usize,
+    shift: u32,
+    n_freq: usize,
+    spec: &mut [u16],
+    row_a: usize,
+    row_b: usize,
+) {
     // Modular wrap (NFFT_SPEC=3840 isn't a power of two so bitmask
     // would alias the high bins). `kn = (NFFT - k) mod NFFT` collapses
     // k=0 to 0 (DC bin is real), as the demux formula expects.
@@ -554,22 +558,16 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
     // costs ~3 dB SNR and spreads each tone's mainlobe across 2 bins,
     // negating the integer-bin advantage. See decode_block.rs:107.
     {
-        // SAFETY: `audio_ptr` is the fill-side buffer (this is the
-        // only writer in this task); reading from indices < NMAX is
-        // bounds-safe (`AudioBuf` has fixed NMAX size). Each index
-        // is checked against NMAX (= NMAX here is the audio buffer
-        // length, matched to `cur.audio_fill`'s bound check).
-        let audio_ptr: *const i16 = ctx.fill_ptr();
-        let buf = &mut ctx.fft_buf;
+        let buf = &mut *buf;
         for k in 0..NFFT_SPEC {
             let re = if k < NSPS && ia_a + k < NMAX {
-                let raw = unsafe { *audio_ptr.add(ia_a + k) } as i32;
+                let raw = audio[ia_a + k] as i32;
                 (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
             } else {
                 0
             };
             let im = if k < NSPS && ia_b + k < NMAX {
-                let raw = unsafe { *audio_ptr.add(ia_b + k) } as i32;
+                let raw = audio[ia_b + k] as i32;
                 (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
             } else {
                 0
@@ -577,17 +575,15 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
             buf[k] = Complex::new(re, im);
         }
     }
-    ctx.fft.process(&mut ctx.fft_buf);
+    fft.process(buf);
 
     // Demux pair → spec rows.
     // D4: DC bin hoisted (kn=0 special case removed from inner loop);
     // 4× unrolled main loop; per-square u32 cast avoids i32 addition
     // overflow at ±32768 edges (each square ≤ 2^30, sum ≤ 2^31 < u32::MAX).
-    let row_a = j_a * n_freq;
-    let row_b = j_b * n_freq;
     {
-        let buf = &ctx.fft_buf;
-        let spec = &mut ctx.cur.spec;
+        let buf = &*buf;
+        let spec = &mut *spec;
 
         // k=0: DC bin — kn=0 so yn=yk; b = imaginary half-band (zero-phase)
         if n_freq > 0 {
@@ -681,7 +677,257 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
             k += 1;
         }
     }
+}
 
+/// [`pair_kernel_i16`] in `f32` — the same packing, the same
+/// two-rows-per-transform demux, the same rows written, with the
+/// esp-dsp `f32` transform instead of the `sc16` one and no shift to
+/// pick (an `f32` mantissa does not run out of range on a 16-bit
+/// input, which is half of what the fixed-point path's `shift` scan
+/// exists for).
+///
+/// Only [`scalar_ab`] calls this. It is not a second production path
+/// and nothing downstream reads an `f32` spectrogram — `coarse_sync`,
+/// `pass2` and the waterfall all take `&[u16]`.
+#[allow(clippy::too_many_arguments)]
+fn pair_kernel_f32(
+    fft: &dyn mfsk_core::engine::fft::Fft,
+    buf: &mut [Complex<f32>],
+    audio: &[i16],
+    ia_a: usize,
+    ia_b: usize,
+    n_freq: usize,
+    spec: &mut [f32],
+    row_a: usize,
+    row_b: usize,
+) {
+    for k in 0..NFFT_SPEC {
+        let re = if k < NSPS && ia_a + k < NMAX {
+            audio[ia_a + k] as f32
+        } else {
+            0.0
+        };
+        let im = if k < NSPS && ia_b + k < NMAX {
+            audio[ia_b + k] as f32
+        } else {
+            0.0
+        };
+        buf[k] = Complex::new(re, im);
+    }
+    fft.process(buf);
+
+    if n_freq > 0 {
+        spec[row_a] = buf[0].re * buf[0].re;
+        spec[row_b] = buf[0].im * buf[0].im;
+    }
+    for k in 1..n_freq {
+        let yk = buf[k];
+        let yn = buf[NFFT_SPEC - k];
+        let (ar, ai) = ((yk.re + yn.re) * 0.5, (yk.im - yn.im) * 0.5);
+        let (br, bi) = ((yk.im + yn.im) * 0.5, (yn.re - yk.re) * 0.5);
+        spec[row_a + k] = ar * ar + ai * ai;
+        spec[row_b + k] = br * br + bi * bi;
+    }
+}
+
+/// Time one slot's worth of pairs through both scalars, on the same
+/// audio, in the same binary — issue #349 step 2.
+///
+/// §36 (`docs/notes/FT4_BENCHMARK.md`) measured the **batch**
+/// `compute_spectrogram` at 1.11-1.15x for `fixed-point` and said
+/// plainly that it said nothing about `stage1_inc`, whose whole
+/// design is an incremental `u16` spectrogram fed during capture and
+/// where the bandwidth argument might still hold. This measures that.
+///
+/// Returns `(us_i16, us_f32, bytes_i16, bytes_f32)` over `pairs`
+/// pairs — the spec bytes are for a whole slot either way, since that
+/// is the buffer a receiver has to hold, not just the part a bench
+/// filled.
+pub fn scalar_ab(audio: &[i16], pairs: usize) -> (i64, i64, usize, usize) {
+    let n_freq = ((3_000.0 / (SAMPLE_RATE_HZ / NFFT_SPEC as f32)) as usize + 1).min(NFFT_SPEC / 2);
+    let pairs = pairs.min(N_PAIRS);
+
+    // The shift the worker would have locked for this audio — see
+    // `advance_pairs`. Timing does not depend on it (the packing loop
+    // shifts either way), but the spectra the cross-check compares do:
+    // at shift 0 the `>> FP_SPEC_SHIFT` throws away most of a quiet
+    // row and its peak bin becomes noise.
+    let peak_abs = audio
+        .iter()
+        .take(NMAX)
+        .map(|&v| (v as i32).abs())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let mut shift = 0u32;
+    while peak_abs << shift < TARGET_PEAK && shift < 8 {
+        shift += 1;
+    }
+
+    let mut planner16 = crate::esp_dsp_fft::EspDspPlanner16::default();
+    let fft16 = planner16.plan_forward(NFFT_SPEC);
+    let mut buf16: Vec<Complex<i16>> = vec![Complex::new(0i16, 0i16); NFFT_SPEC];
+    let mut spec16: Vec<u16> = vec![0u16; n_freq * N_TIME];
+
+    let mut planner: Box<dyn mfsk_core::engine::fft::FftPlanner> =
+        Box::new(crate::esp_dsp_fft::EspDspPlanner::default());
+    let fft32 = planner.plan_forward(NFFT_SPEC);
+    let mut buf32: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); NFFT_SPEC];
+    let mut spec32: Vec<f32> = vec![0f32; n_freq * N_TIME];
+
+    assert_eq!(fft16.len(), NFFT_SPEC, "sc16 planner returned another length");
+    assert_eq!(fft32.len(), NFFT_SPEC, "f32 planner returned another length");
+
+    // Three passes each, best kept. §32.1 of `docs/notes/FT4_BENCHMARK.md`
+    // is this repo's own example of a device number that was really a
+    // heap-alignment accident, and the f32 arm here moved 700 -> 853 ms
+    // between two builds that did not touch it.
+    let mut us16 = i64::MAX;
+    for _ in 0..3 {
+        let t0 = unsafe { esp_timer_get_time() };
+        for k in 0..pairs {
+            let (j_a, j_b) = (2 * k, 2 * k + 1);
+            pair_kernel_i16(
+                &*fft16,
+                &mut buf16,
+                audio,
+                j_a * NSTEP,
+                j_b * NSTEP,
+                shift,
+                n_freq,
+                &mut spec16,
+                j_a * n_freq,
+                j_b * n_freq,
+            );
+        }
+        us16 = us16.min(unsafe { esp_timer_get_time() } - t0);
+    }
+
+    let mut us32 = i64::MAX;
+    for _ in 0..3 {
+        let t1 = unsafe { esp_timer_get_time() };
+        for k in 0..pairs {
+            let (j_a, j_b) = (2 * k, 2 * k + 1);
+            pair_kernel_f32(
+                &*fft32,
+                &mut buf32,
+                audio,
+                j_a * NSTEP,
+                j_b * NSTEP,
+                n_freq,
+                &mut spec32,
+                j_a * n_freq,
+                j_b * n_freq,
+            );
+        }
+        us32 = us32.min(unsafe { esp_timer_get_time() } - t1);
+    }
+
+    // A timing A/B is worthless if one arm is not computing the same
+    // thing — a planner that handed back a different transform, or a
+    // stub, would look like a win. So check the two spectra agree on
+    // where the energy is, row by row.
+    //
+    // In the signal band, not over the whole row: bin 0 is DC and a
+    // check that lands there says nothing. FT8 starts at 200 Hz, which
+    // at 12 000 / 3 840 = 3.125 Hz per bin is bin 64.
+    let lo = (200.0 / (SAMPLE_RATE_HZ / NFFT_SPEC as f32)) as usize;
+    // Correlation, not argmax. The first version of this check
+    // compared each row's strongest bin and read 171/184, then 144/184
+    // purely from giving the i16 arm the shift the worker really locks
+    // — on a band with twenty signals the argmax swaps between two
+    // near-equal peaks, and on a noise row it is a coin flip. That is
+    // a property of the metric. Pearson r over the whole band answers
+    // the question actually being asked: are these two the same
+    // spectrum, up to quantisation?
+    let mut r_min = f32::MAX;
+    let mut r_sum = 0.0f64;
+    let mut rows = 0usize;
+    let mut flat = 0usize;
+    for j in 0..pairs * 2 {
+        let row = j * n_freq;
+        let a = &spec32[row..row + n_freq];
+        let b = &spec16[row..row + n_freq];
+        let (mut sa, mut sb) = (0.0f64, 0.0f64);
+        for k in lo..n_freq {
+            sa += a[k] as f64;
+            sb += b[k] as f64;
+        }
+        let n = (n_freq - lo) as f64;
+        let (ma, mb) = (sa / n, sb / n);
+        let (mut caa, mut cbb, mut cab) = (0.0f64, 0.0f64, 0.0f64);
+        for k in lo..n_freq {
+            let (da, db) = (a[k] as f64 - ma, b[k] as f64 - mb);
+            caa += da * da;
+            cbb += db * db;
+            cab += da * db;
+        }
+        // A row with no variance in either arm has no correlation to
+        // report — that is the u16 arm quantising a silent row to all
+        // zeros, not a disagreement. Counted, not scored.
+        if !(caa > 0.0 && cbb > 0.0) {
+            flat += 1;
+            continue;
+        }
+        let r = (cab / (caa.sqrt() * cbb.sqrt())) as f32;
+        r_min = r_min.min(r);
+        r_sum += r as f64;
+        rows += 1;
+    }
+    let r_mean = r_sum / rows.max(1) as f64;
+    log::info!(
+        "  stage1_inc A/B: row correlation u16 vs f32 — mean {:.4}, worst {:.4} \
+         over {rows} rows ({flat} flat, band from bin {lo}){}",
+        r_mean,
+        r_min,
+        if r_min > 0.9 { "" } else { "  <- DISAGREE" },
+    );
+
+    (
+        us16,
+        us32,
+        spec16.len() * core::mem::size_of::<u16>(),
+        spec32.len() * core::mem::size_of::<f32>(),
+    )
+}
+
+fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
+    // Defensive check (Gemini PR #123 round-10): the `wf_q.is_none()`
+    // branch in `emit_spec_bundle` swaps empty Vecs into `ctx.cur`
+    // because the `pair_limit` gate in `advance_pairs` is supposed
+    // to prevent any further `compute_pair_into` calls for that
+    // slot. If that invariant ever breaks (refactor lands a
+    // `pair_limit = N_PAIRS` path that forgets to widen
+    // emit_spec_bundle's tuple), the indexed writes below would
+    // hit empty Vecs and panic anyway — surface it explicitly here.
+    debug_assert!(
+        !ctx.cur.spec.is_empty(),
+        "compute_pair_into invoked after wf_q=None emit replaced ctx.cur.spec with empty Vec"
+    );
+    let shift = ctx.cur.shift;
+    let ia_a = j_a * NSTEP;
+    let ia_b = j_b * NSTEP;
+    let n_freq = ctx.n_freq;
+    let row_a = j_a * n_freq;
+    let row_b = j_b * n_freq;
+    {
+        // SAFETY: `audio_ptr` is the fill-side buffer and this task is
+        // its only writer; `AudioBuf` is NMAX samples long, which is
+        // the bound every index below is already checked against.
+        let audio: &[i16] = unsafe { core::slice::from_raw_parts(ctx.fill_ptr(), NMAX) };
+        pair_kernel_i16(
+            &*ctx.fft,
+            &mut ctx.fft_buf,
+            audio,
+            ia_a,
+            ia_b,
+            shift,
+            n_freq,
+            &mut ctx.cur.spec,
+            row_a,
+            row_b,
+        );
+    }
     update_allsum_columns_for_m(ctx, j_a);
     update_allsum_columns_for_m(ctx, j_b);
 

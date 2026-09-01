@@ -297,6 +297,28 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
     );
     drop(data);
 
+    // And the same contrast for the builder a *receiver* actually
+    // runs. The batch A/B above is `compute_spectrogram`; issue #349
+    // said in as many words that it settles nothing about
+    // `stage1_inc`, whose design is an incremental u16 spectrogram
+    // fed during capture — where halving the bytes written per pair
+    // could still pay even though the batch builder proved
+    // transform-bound. `stage1_inc::scalar_ab` times the real
+    // `pair_kernel_i16` against the same computation in f32.
+    {
+        let (us16, us32, by16, by32) = crate::stage1_inc::scalar_ab(slot, usize::MAX);
+        log::info!(
+            "  stage1_inc A/B:       {:>8} us u16 vs {:>8} us f32  ({} KB vs {} KB spec)  \
+             → u16 is {}.{:02}x",
+            us16,
+            us32,
+            by16 / 1024,
+            by32 / 1024,
+            us32 / us16.max(1),
+            (us32 * 100 / us16.max(1)) % 100,
+        );
+    }
+
     let t2 = now_us();
     let pass1 = dual_core::coarse_sync_split(&spec, 100.0, 3_000.0, 1.0, PASS1_LIMIT);
     let t3 = now_us();
