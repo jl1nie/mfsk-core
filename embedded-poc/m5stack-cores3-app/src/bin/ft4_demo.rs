@@ -77,6 +77,15 @@ fn main() -> ! {
 
     log::info!("=== mfsk-core-m5stack-cores3-app ft4-demo ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
+    // Which front end this image carries, printed at boot because a
+    // flash that lands but never boots leaves no other way to tell
+    // two images apart on the wire (2026-09-01: three "Flashing has
+    // completed" writes with the board parked in DOWNLOAD mode and no
+    // boot log to say which one was running).
+    log::info!(
+        "ft4-demo: front end = shared /2 streamed during capture \
+         (SlotDecimator -> CandidateDdc::new_half_rate)"
+    );
 
     // The candidate loop is compute-bound for hundreds of milliseconds
     // with no yield point; IDLE starves and the watchdog fires. Same

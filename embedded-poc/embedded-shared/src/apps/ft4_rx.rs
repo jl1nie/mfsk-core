@@ -43,7 +43,7 @@ use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::ft4_coarse::{ft4_coarse_sync_from_savg, Ft4SavgBuilder};
 use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
-use mfsk_core::ft4::ddc::candidate_baseband;
+use mfsk_core::ft4::ddc::{SlotDecimator, candidate_baseband_half};
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -81,6 +81,14 @@ pub struct CapturedSlot {
     pub audio: Vec<i16>,
     /// Already averaged — [`Ft4SavgBuilder::finish`] has run.
     pub savg: Vec<f32>,
+    /// The slot at 6 kHz, decimated *while it arrived* — the shared
+    /// half of `ft4::ddc`'s front end, which every candidate then
+    /// mixes and filters down from. Bit-identical to
+    /// `ft4::ddc::decimate_slot` over the whole buffer whatever block
+    /// sizes it was fed in (`slot_decimator_is_block_independent`),
+    /// the same property `Ft4SavgBuilder` has and for the same reason:
+    /// a `FirStage` carries its own history.
+    pub half: Vec<f32>,
     /// `esp_timer` microseconds at the moment the slot closed, so the
     /// decoder can report post-slot latency the way the benches do.
     pub closed_us: i64,
@@ -92,13 +100,22 @@ fn now_us() -> i64 {
 
 /// Accumulates one slot of audio and its periodogram together.
 ///
-/// Both halves have to advance in step: the DDC needs the slot's raw
-/// samples (it re-filters them per candidate) and the coarse stage
-/// needs the rows, so the builder cannot simply be run over the buffer
-/// afterwards — that is the 758 ms this receiver exists to avoid.
+/// Three things advance in step: the raw samples, the coarse stage's
+/// periodogram, and the shared ÷2 the per-candidate DDC reads. None of
+/// them can simply be run over the buffer afterwards — that is the
+/// 758 ms (coarse) and ~109 ms (decimation) this receiver exists to
+/// spend *during* the slot rather than after it, and on FT4 the
+/// post-slot budget is candidates and therefore decodes
+/// (`docs/notes/FT4_BENCHMARK.md` §32, §37, §42).
+///
+/// The audio is still kept whole: `snr_db` aside, a caller that wants
+/// to re-run anything at 12 kHz needs it, and the waterfall and the
+/// replay path both read it.
 pub struct SlotAccum {
     audio: Vec<i16>,
     savg: Ft4SavgBuilder,
+    decim: SlotDecimator,
+    half: Vec<f32>,
 }
 
 impl Default for SlotAccum {
@@ -112,6 +129,10 @@ impl SlotAccum {
         Self {
             audio: Vec::with_capacity(SLOT_SAMPLES),
             savg: Ft4SavgBuilder::new(SLOT_SAMPLES),
+            decim: SlotDecimator::new(),
+            // 44 959 for a full slot; the stage's group delay is what
+            // makes it short of 45 000.
+            half: Vec::with_capacity(SLOT_SAMPLES / 2),
         }
     }
 
@@ -141,12 +162,14 @@ impl SlotAccum {
             let take = room.min(rest.len());
             self.audio.extend_from_slice(&rest[..take]);
             self.savg.push_with_rows(&rest[..take], on_row);
+            self.decim.push_i16(&rest[..take], &mut self.half);
             rest = &rest[take..];
             if self.audio.len() == SLOT_SAMPLES {
                 let prev = core::mem::replace(self, Self::new());
                 done = Some(CapturedSlot {
                     audio: prev.audio,
                     savg: prev.savg.finish(),
+                    half: prev.half,
                     closed_us: now_us(),
                 });
             }
@@ -242,6 +265,16 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
         None,
         MAX_CAND,
     );
+    // The shared half of the front end costs nothing here: `SlotAccum`
+    // decimated the slot while it was arriving. `ft4::ddc`'s stage A
+    // used to filter all 90 000 samples per candidate at 12 kHz
+    // (61.0 ms) and now sees 45 000 at 6 kHz with half the taps
+    // (30.8 ms), with the ÷2 that makes that possible (108.7 ms) off
+    // the post-slot budget entirely — the same move §32 made for the
+    // coarse stage, and for the same reason: on this receiver the
+    // budget is candidates, and candidates are decodes
+    // (`docs/notes/FT4_BENCHMARK.md` §37, §42).
+    let half = &slot.half;
     let mut out: Vec<Ft4Decode> = Vec::new();
     let mut tried = 0usize;
     let mut cut_at_score = None;
@@ -251,7 +284,7 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
             break;
         }
         tried += 1;
-        let mut cd0 = candidate_baseband(&slot.audio, cand.freq_hz);
+        let mut cd0 = candidate_baseband_half(half, cand.freq_hz);
         rms_normalise(&mut cd0);
         let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
         let Some(r) = process_candidate_precomputed::<Ft4>(

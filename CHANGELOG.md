@@ -16,6 +16,43 @@ streaming coarse stage below.)
 
 ### Added
 
+- **`ft4::ddc` gained a shared front end, and FT4 stopped cutting
+  candidates on the board.** The per-candidate chain filtered all
+  90 000 samples of the slot at 12 kHz — 61 ms of a candidate's ~96 —
+  where the FFT path it replaced computed its wideband transform once
+  and let every candidate read it. `NDOWN = 18` factors as `2 · 9`, so
+  the first factor moves in front of the candidate loop: new
+  `SlotDecimator` / `decimate_slot` (165 taps, ÷2, real input through
+  `FirStage::push_block_real`) run once per slot, and new
+  `CandidateDdc::new_half_rate` / `candidate_baseband_half` run the
+  same chain in Hz at 6 kHz with 101 taps and ÷9.
+
+  `SlotAccum` drives the decimator from the capture path alongside
+  `Ft4SavgBuilder`, so the ÷2 is off the post-slot budget entirely —
+  safe because the stage is **bit-identical whatever block sizes it is
+  fed** (`slot_decimator_is_block_independent`, streamed through
+  251/1/1 024/37/4 096-sample blocks).
+
+  On a CoreS3 (`ft4-demo`, replayed golden, 1 960 ms transceiver
+  budget): **2 067-2 118 ms → 1 998-2 000**, and the slot deadline
+  stops firing — **12 of 12 candidates and 11 decodes, against 11 of
+  12 and 10**. The decode it buys is `W7BOB KJ7G RR73` at −17 dB, the
+  one §34 recorded the cut giving up. §37 argued that on this receiver
+  milliseconds are decodes rather than headroom; this is that argument
+  measured.
+
+  Sensitivity re-established rather than assumed, since a third stage
+  makes nothing bit-identical: equivalent noise bandwidth against the
+  reference band is **+0.021 dB with the shared stage and +0.021 dB
+  without**; `ft4_ddc_equivalence`'s new third arm decodes the same
+  eleven golden messages at both depths with identical `i0`; and
+  `shared_rejects_content_that_folds_into_the_band` pins the one new
+  failure mode — content above the 3 kHz Nyquist folding into a
+  candidate's band — at more than 50 dB down, which is why the corner
+  is 2 800 Hz and the stage 165 taps. **Still owed**: the 560-file
+  paired sweep, whose arm is written but whose corpus was not on the
+  machine this was built on. `docs/notes/FT4_BENCHMARK.md` §42.
+
 - **The streaming spectrogram measured too: `fixed-point` is
   0.63× f32 there (issue #349 step 2).** §36 timed the *batch*
   `compute_spectrogram` and said plainly that it settled nothing about

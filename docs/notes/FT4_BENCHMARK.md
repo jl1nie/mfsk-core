@@ -2942,3 +2942,142 @@ measured the checker, not the transforms:
 
 Same lesson as §33's row-counting diagnostic — a check that quietly
 measures itself is worse than none.
+
+## 42. The shared decimation, built and on the board (2026-09-01)
+
+§37.1 and §37.2 measured the three legs of a proposal — one shared
+decimate-by-2 over the slot's real audio, then a per-candidate chain
+at 6 kHz with half the taps — and left it there, a probe rather than a
+patch. This section is the patch, and what the board did with it.
+
+### What was built
+
+`ft4::ddc` grew the shared half:
+
+- **`SlotDecimator`** — 165 taps, ÷2, `fc` 2 800 Hz, driven through
+  `FirStage::push_block_real` so the stage costs one dot per output
+  rather than two against a history of zeros. `decimate_slot()` is the
+  one-shot form; the struct exists because the work is per-block and a
+  receiver has the audio as it arrives.
+- **`CandidateDdc::new_half_rate`** — the same chain in Hz (320 Hz
+  stage A, 56 Hz stage B, same band centre and derotation) fed the
+  half-rate stream: 101 taps and ÷9 instead of 199 and ÷18.
+- **`candidate_baseband_half`**, and `push_f32` beside `push_i16`.
+
+`ft4_rx::decode_slot` calls `decimate_slot` once before the candidate
+loop and `candidate_baseband_half` inside it. Inside the deadline,
+deliberately: it is decode work, and `elapsed_us` runs from slot close
+either way.
+
+### On the board
+
+`ft4-demo`, CoreS3, replayed golden slot, `TX_TURNAROUND_BUDGET_MS`
+(1 960 ms). Logs `logs/ft4_demo_baseline_2026-09-01.log` and
+`logs/ft4_demo_shared_decim_wired_2026-09-01.log`, nine slots each.
+
+| | candidates | decodes | slot | per candidate |
+|---|---:|---:|---:|---:|
+| baseline | 11 of 12 (cut 1 at 1.55) | **10** | 2 067-2 118 ms | ~188 ms |
+| shared | **12 of 12**, nothing cut | **11** | 2 019-2 101 ms | **~168 ms** |
+
+**The deadline stops firing, and that is the whole point.** §37 argued
+that on this receiver milliseconds are decodes rather than headroom,
+because the budget bounds how far down the candidate list the loop
+gets. The measurement is that argument closing: 20 ms per candidate
+buys the twelfth candidate, and the twelfth candidate is
+`W7BOB KJ7G RR73` at −17 dB — the weakest of the eleven, the one §34
+recorded the cut giving up.
+
+**The prediction was right this time.** §37.2 projected 30.5 ms saved
+per candidate against 108.7 ms paid once, i.e. ~21 ms per candidate at
+twelve; measured 20. Worth stating plainly after §26.1, §27 and §31,
+where arithmetic of the same shape was wrong three times: this one was
+not arithmetic about cost but a *measurement* of all three legs, and
+that is the difference.
+
+The slot still overruns by 60-140 ms. That is §34.1's structural
+overshoot — the candidate already running when the deadline passes —
+and it is smaller than before only because a candidate is cheaper.
+
+### What it cost in sensitivity: nothing measurable
+
+The split makes the chain three stages, so nothing is bit-identical
+and §20's "the passband is a decode parameter" applies to a filter
+cascade that did not exist when that was written. Re-established
+rather than assumed:
+
+- **Equivalent noise bandwidth against the reference band**:
+  two-stage **+0.021 dB**, shared + two-stage **+0.021 dB**
+  (`ft4::ddc::tests::noise_bandwidth_matches_the_reference_band`).
+  The extra stage moves it by less than a millidecibel, which is what
+  a 2 800 Hz corner 45× above the band edge buys.
+- **The golden recording**, both depths, in
+  `ft4_ddc_equivalence`'s new third arm: 11 distinct decodes, the same
+  eleven messages as the FFT front end, refined `i0` identical and one
+  candidate of eleven one 1 Hz grid step off — the same signature the
+  two-stage arm has.
+- **Aliasing**, the one failure mode the shared stage introduces that
+  the full-rate path cannot have: a tone at `6 000 − f` folds onto `f`,
+  so for a candidate at the top of the search band the dangerous
+  inputs start at 3 206 Hz. `shared_rejects_content_that_folds_into_the_band`
+  pins 3 250-5 000 Hz at more than 50 dB down. This is why the corner
+  is 2 800 Hz and the stage is 165 taps rather than the 111 first
+  assumed (§37.1).
+
+**Not yet run: the 560-file paired sweep.** `ft4_ddc_equivalence`'s
+tier-C test now carries a shared arm beside the FFT and DDC ones, with
+the same 2 % floor, but the `ft4_sweep` corpus is not present on the
+machine this was built on. That is the one piece of §37.1's
+re-verification still owed — the golden and the ENBW cover the band and
+the decodes on one recording; only the sweep says the crossing did not
+move.
+
+### 42.1 Streaming it, the same move §32 made for the coarse stage
+
+The shared stage was, on the first cut, the same shape the coarse
+stage had before §32: per-block work being done *after* the slot
+closed that could be done while the audio was still arriving. So
+`SlotAccum` now drives `SlotDecimator` alongside `Ft4SavgBuilder`, and
+`CapturedSlot` carries the 6 kHz slot beside the audio and the
+periodogram; `decode_slot` reads it.
+
+That is only safe because the output does not depend on how the audio
+was cut into blocks — a UAC read is ~256 samples and divides nothing.
+`slot_decimator_is_block_independent` pins it the strong way: streamed
+through blocks of 251, 1, 1 024, 37 and 4 096 samples, the result is
+**bit-identical** to `decimate_slot` over the whole buffer, which a
+`FirStage` gives for free by carrying its own history.
+
+Measured, same demo, same golden slot, eight slots:
+
+| front end | candidates | decodes | slot |
+|---|---:|---:|---:|
+| baseline (÷18 per candidate) | 11 of 12 | 10 | 2 067-2 118 ms |
+| shared ÷2, inside the decode | 12 of 12 | 11 | 2 019-2 101 ms |
+| **shared ÷2, during capture** | **12 of 12** | **11** | **1 998-2 000 ms** |
+
+Same eleven messages in all three, and the same eleven the host
+decodes.
+
+**Two things to note, one of them unexplained.** The spread collapses
+— 2 019-2 101 ms becomes 1 998-2 000, a 2 ms band across eight slots —
+which is what moving a fixed 100 ms lump off the post-slot path should
+look like. But the *saving* is ~60 ms, not the ~109 the probe measured
+for the stage in isolation (§37.2). The stage cannot cost less because
+it moved, so the difference is in what it now overlaps with or how it
+is measured, and this section does not know which. It is recorded
+rather than smoothed over: §26.1, §27 and §31 are all cases where the
+gap between a probe and the pipeline was the interesting part.
+
+The overshoot against the 1 960 ms deadline is now ~40 ms, from
+60-140.
+
+### What is next, on this evidence
+
+Nothing on the decode path is obviously left: §38.1 measured every
+lever on the LLR/BP tail shut, §31.1 closed dual-core, and the two
+front-end stages are now shared or streamed. The open items are the
+ones this line has not measured at all — the esp-dsp binding for
+`FirStage::push_block` (`dsps_fird_f32_aes3`), the 560-file paired
+sweep for the shared front end, and running the FT4 boot mode against
+a radio rather than a replayed slot.
