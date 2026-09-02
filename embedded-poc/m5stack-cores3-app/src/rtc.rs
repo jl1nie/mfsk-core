@@ -76,7 +76,15 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// do not decode, or when the date is implausible. A wrong clock is
 /// worse than no clock here: the slot grid would anchor confidently to
 /// the wrong phase and the failure would look like a decoder bug.
-pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
+/// Read the BM8563 and return the epoch seconds it holds, **without**
+/// touching the system clock.
+///
+/// Split out of [`read_into_system_clock`] for the drift measurement
+/// (#354): comparing the RTC against an NTP-disciplined clock means
+/// reading one without disturbing the other. Everything about decoding
+/// and validation is that function's; this is the half before the
+/// commit.
+pub fn read_epoch(i2c: &mut I2cDriver<'_>) -> Option<i64> {
     let mut buf = [0u8; 7];
     if let Err(e) = i2c.write_read(RTC_I2C_ADDR, &[REG_SECONDS], &mut buf, I2C_TIMEOUT_TICKS) {
         log::warn!("rtc: BM8563 read failed: {e} — clock stays unset");
@@ -123,6 +131,12 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
         return None;
     }
 
+    Some(unix)
+}
+
+/// [`read_epoch`], then commit it to the system clock.
+pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
+    let unix = read_epoch(i2c)?;
     let tv = esp_idf_svc::sys::timeval {
         tv_sec: unix as esp_idf_svc::sys::time_t,
         tv_usec: 0,
@@ -134,17 +148,11 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
         log::warn!("rtc: settimeofday failed (rc={rc})");
         return None;
     }
-    log::info!(
-        "rtc: system clock set from BM8563 — {year:04}-{month:02}-{day:02} \
-         {hour:02}:{min:02}:{sec:02} UTC"
-    );
+    log::info!("rtc: system clock set from BM8563 — epoch {unix}");
     {
         let mut msg: heapless::String<64> = heapless::String::new();
         use core::fmt::Write as _;
-        let _ = write!(
-            &mut msg,
-            "clock from BM8563 {year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}Z"
-        );
+        let _ = write!(&mut msg, "clock from BM8563 (epoch {unix})");
         RTC_RESULT.store(msg.as_str());
     }
     Some(unix)
