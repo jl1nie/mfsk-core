@@ -58,6 +58,10 @@ pub fn wait_synced(sntp: &EspSntp<'_>, timeout_ms: u32) -> bool {
     loop {
         if sntp.get_sync_status() == SyncStatus::Completed {
             log::info!("NTP: synced after {waited_ms} ms");
+            // The one place that can say the clock is disciplined
+            // rather than merely plausible. `rtc::write_from_system_clock`
+            // is gated on this; see `time_sync::ClockSource`.
+            crate::time_sync::note_clock_from_ntp();
             return true;
         }
         if waited_ms >= timeout_ms {

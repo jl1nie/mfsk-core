@@ -39,3 +39,14 @@ pub mod wspr_row;
 /// history-rolling rules can be tested where tests actually run.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/ui/spot_state.rs"]
 pub mod spot_state;
+
+/// Slot parity — pure arithmetic; `time_sync` needs it.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/parity.rs"]
+pub mod parity;
+
+/// Slot-boundary time sync. Pulled in for `ClockSource`: the rule that
+/// only an NTP-disciplined clock may be written back to the RTC is the
+/// kind of thing that was wrong for months without anything failing
+/// (#354), so it gets a test where tests run.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/time_sync.rs"]
+pub mod time_sync;

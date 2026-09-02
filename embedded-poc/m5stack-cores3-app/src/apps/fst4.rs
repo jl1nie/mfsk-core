@@ -1106,10 +1106,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // recently.
             if let Some(i2c) = touch_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
-                // Store the clock once it becomes real, so the next
-                // boot has one before WiFi does. NTP is what makes it
-                // real; this is what makes it survive a power cycle.
-                if !rtc_stored && mfsk_app_shared::time_sync::utc_now_ms().is_some() {
+                // Store the clock once NTP has made it real, so the
+                // next boot has one before WiFi does.
+                //
+                // The predicate is provenance, not plausibility:
+                // `utc_now_ms().is_some()` was true a second after
+                // boot because `pmic::init` had just seeded the clock
+                // from this very chip, so this wrote the RTC's own
+                // value back to it and NTP — arriving 30 s later —
+                // never reached the register. #354.
+                if !rtc_stored && mfsk_app_shared::time_sync::clock_is_disciplined() {
                     rtc_stored = true;
                     if let Err(e) = crate::rtc::write_from_system_clock(i2c) {
                         log::warn!("rtc: could not store the clock: {e:#}");
