@@ -43,6 +43,29 @@
 //! rtc ppm     = (rtc_elapsed   − true_elapsed) / true_elapsed × 1e6
 //! ```
 //!
+//! ## What the next version should do differently
+//!
+//! This one brackets the whole run with NTP: truth at the start, truth
+//! at the end, and nothing in between. That yields an **average** ppm
+//! for each clock and hides everything about the shape — which matters
+//! here, because the BM8563's 32.768 kHz crystal has no temperature
+//! compensation and an overnight run spans the room's whole
+//! temperature swing. A drift that is +30 ppm warm and +80 ppm cold
+//! averages to a number that describes neither.
+//!
+//! The fix is not "sync hourly" on its own: an SNTP sync inside the
+//! window steps the system clock and erases exactly the crystal error
+//! being measured. It is to **record `sys_us` immediately before and
+//! immediately after each sync** — the jump between them *is* the
+//! crystal's accumulated error for that interval — and then re-anchor
+//! `mono`/`rtc` references to the post-sync instant. Each hour then
+//! yields its own `(crystal ppm, RTC ppm)` pair, and the series shows
+//! the direction and the curvature rather than one number across
+//! eight hours.
+//!
+//! Raised by the operator while the first run was already in flight,
+//! so it is written down rather than applied.
+//!
 //! ## Running it
 //!
 //! Needs `cfg.toml` with WiFi credentials, and no radio attached (this
