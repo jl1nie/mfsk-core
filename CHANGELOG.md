@@ -278,6 +278,14 @@ streaming coarse stage below.)
   align it deliberately instead of paying a `vec![…; N]` per call. The
   existing entry points are unchanged and now delegate.
 
+- **`mfsk_app_shared::time_sync::samples_to_next_slot_12k_ms`** — the
+  UTC slot-phase source in milliseconds. `samples_to_next_slot_12k`
+  takes whole seconds and so cannot express FT4's 7.5 s slot; it now
+  delegates. The modular arithmetic is factored into a private helper
+  that the `mfsk-app-shared` host harness tests directly, since
+  `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
+  the FT4 receiver's slot-grid alignment (#354).
+
 - **`.githooks/pre-push`**, and the FT4 embedded measurement harness:
   PIE-path counters in the esp-dsp dot-product and FFT backends, a
   layer split (kernel / staging / combine) for the mixed-radix

@@ -269,6 +269,33 @@ pub fn utc_now_ms() -> Option<u64> {
     (d.as_secs() >= PLAUSIBLE_UNIX_SECS).then_some(d.as_millis() as u64)
 }
 
+/// The modular arithmetic behind [`samples_to_next_slot_12k`] and
+/// [`samples_to_next_slot_12k_ms`], with the clock read passed in.
+///
+/// Split out so the phase maths can be tested without a settable
+/// system clock — `utc_now_ms` reads `SystemTime::now()` and there is
+/// no seam. Exactly on a boundary (`now_ms % period_ms == 0`) this
+/// returns a whole slot, not zero: the *next* boundary is a full
+/// period away.
+fn samples_to_next_slot_12k_from(now_ms: u64, period_ms: u64) -> usize {
+    let into_slot = now_ms % period_ms;
+    let remain_ms = period_ms - into_slot;
+    (remain_ms * 12) as usize
+}
+
+/// 12 kHz samples from now until the next UTC boundary of a
+/// `period_ms`-millisecond slot grid.
+///
+/// FT4's slot is 7.5 s, which [`samples_to_next_slot_12k`]'s whole-second
+/// argument cannot express — this is the same phase source in
+/// milliseconds. See that function for why UTC is the bootstrap the
+/// DT-median correction cannot be.
+///
+/// `None` while the clock is unset ([`utc_now_ms`]).
+pub fn samples_to_next_slot_12k_ms(period_ms: u64) -> Option<usize> {
+    Some(samples_to_next_slot_12k_from(utc_now_ms()?, period_ms))
+}
+
 /// 12 kHz samples from now until the next UTC boundary of a
 /// `slot_len_s`-second slot grid, and how far the current stream
 /// position is from that grid.
@@ -283,11 +310,7 @@ pub fn utc_now_ms() -> Option<u64> {
 ///
 /// `None` while the clock is unset ([`utc_now_ms`]).
 pub fn samples_to_next_slot_12k(slot_len_s: u64) -> Option<usize> {
-    let now = utc_now_ms()?;
-    let period_ms = slot_len_s * 1_000;
-    let into_slot = now % period_ms;
-    let remain_ms = period_ms - into_slot;
-    Some((remain_ms * 12) as usize)
+    samples_to_next_slot_12k_ms(slot_len_s * 1_000)
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -381,5 +404,38 @@ mod clock_source_tests {
         // pull the state back down.
         note_clock_from_rtc();
         assert!(clock_is_disciplined());
+    }
+}
+
+#[cfg(test)]
+mod slot_phase_tests {
+    use super::samples_to_next_slot_12k_from;
+
+    #[test]
+    fn ft4_seven_point_five_second_grid() {
+        // 2.0 s into a 7.5 s slot → 5.5 s left → 66 000 samples @ 12 kHz.
+        assert_eq!(samples_to_next_slot_12k_from(2_000, 7_500), 66_000);
+    }
+
+    #[test]
+    fn ft8_fifteen_second_grid_still_matches_the_seconds_form() {
+        // 10 s into 15 s → 5 s → 60 000. `samples_to_next_slot_12k(15)`
+        // now routes through here; this pins that it did not change.
+        assert_eq!(samples_to_next_slot_12k_from(10_000, 15_000), 60_000);
+    }
+
+    #[test]
+    fn on_the_boundary_is_a_whole_slot_not_zero() {
+        assert_eq!(samples_to_next_slot_12k_from(0, 7_500), 90_000);
+        assert_eq!(samples_to_next_slot_12k_from(45_000, 7_500), 90_000);
+    }
+
+    #[test]
+    fn millisecond_offsets_the_seconds_form_could_not_reach() {
+        // 3 750 ms into a 7.5 s slot — the half-slot FT4 sequencing
+        // boundary — → 3.75 s → 45 000.
+        assert_eq!(samples_to_next_slot_12k_from(3_750, 7_500), 45_000);
+        // 7 499 ms in → 1 ms → 12 samples.
+        assert_eq!(samples_to_next_slot_12k_from(7_499, 7_500), 12);
     }
 }
