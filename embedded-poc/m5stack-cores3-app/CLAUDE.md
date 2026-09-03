@@ -155,13 +155,22 @@ host driver takes the console with it.
 4. Decodes. Against the replay's 11-on-a-14-signal-scene, a real 40 m
    band will give fewer and they will change every slot.
 
-### What it will *not* settle
+### Slot-grid alignment (#354, landed — verify on hardware)
 
-The slot grid is still counted from stream start (#354): FT4's capture
-window closes at 6.775 s of the slot, so a grid that is off by more
-than a second cuts the frame rather than shifting it. A live decode is
-therefore partly luck until the RTC + DT-median alignment lands, and a
-*failure* to decode is not evidence about the decoder until it does.
+FT4's capture window closes at 6.775 s of the slot, so a grid off by
+more than a second cuts the frame rather than shifting it. The grid is
+now anchored: `slot_loop` calls `SlotAccum::anchor_or_reanchor` with
+`time_sync::samples_to_next_slot_12k_ms(7_500)` on the first live
+block, re-anchors when the phase drifts past 100 ms (the NTP step), and
+trims the residual with the DT median of each slot's decodes. Watch the
+log for `slot grid anchored to UTC` then `DT median … grid …` lines
+settling toward zero over the first few decoded slots.
+
+**Not covered**: a cold start with no clock *and* no decodes — FT4's
+coarse stage returns `dt = 0`, so there is no `bootstrap_dt_median`
+cold-start path the way FT8 has. That is #356 (phase off the air). A
+*failure* to decode on a hilltop with no NTP is still not evidence
+about the decoder.
 
 ## Status (2026-08-23)
 

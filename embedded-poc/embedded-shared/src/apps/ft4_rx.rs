@@ -143,6 +143,18 @@ const MAX_CAND: usize = 100;
 /// not a curve, and every station past the edge is lost outright.
 const WSJTX_WINDOW: (i32, i32) = (-344, 1012);
 
+/// The slot grid's period — one FT4 slot. [`SlotAccum::anchor_or_reanchor`]
+/// works modulo this.
+const GRID_PERIOD: i32 = SLOT_SAMPLES as i32;
+
+/// Phase error past which [`SlotAccum::anchor_or_reanchor`] moves the
+/// grid rather than leaving the wobble to the DT-median trim. 100 ms — a
+/// tenth of the ±1.0 s [`WSJTX_WINDOW`], the same ratio `uac.rs`'s
+/// `SLOT_DRIFT_REANCHOR_MS` uses against FT8's ±2.5 s. It also has to be
+/// larger than the DT search can pull back, so a clock step this side of
+/// it is corrected here and anything smaller is left to converge.
+const REANCHOR_THRESH_SAMPLES: i32 = 1_200;
+
 /// A finished slot: its audio, and the periodogram accumulated while
 /// that audio was arriving.
 pub struct CapturedSlot {
@@ -191,6 +203,19 @@ pub struct SlotAccum {
     /// close — without it each window would start 1.25 s earlier than
     /// the last and walk off the transmissions entirely.
     skip: usize,
+    /// Signed sample correction folded into `skip` the next time a
+    /// window closes. Both the UTC drift check
+    /// ([`anchor_or_reanchor`](Self::anchor_or_reanchor)) and the
+    /// DT-median trim ([`shift_next_window`](Self::shift_next_window))
+    /// land here. The board crate owns the clock and the DT tracker
+    /// (`mfsk-app-shared`'s `time_sync`); this crate only moves the grid
+    /// when told, the same shared/board split the module doc describes.
+    pending_shift: i32,
+    /// Whether an external clock has set the grid phase at least once.
+    /// Until it has, the grid free-runs from the first sample the
+    /// accumulator ever saw — which is what a receiver replaying a
+    /// recording, or one with no clock at all, is left with.
+    aligned: bool,
 }
 
 impl Default for SlotAccum {
@@ -209,7 +234,78 @@ impl SlotAccum {
             // it a little short of exactly half.
             half: Vec::with_capacity(CAPTURE_CLOSE_SAMPLES / 2),
             skip: 0,
+            pending_shift: 0,
+            aligned: false,
         }
+    }
+
+    /// Whether the grid has been anchored to an external clock.
+    pub fn is_aligned(&self) -> bool {
+        self.aligned
+    }
+
+    /// Samples from now until the next capture window opens, given where
+    /// the accumulator currently sits in its skip / fill / skip cycle.
+    /// The phase reference [`anchor_or_reanchor`](Self::anchor_or_reanchor)
+    /// compares against UTC.
+    fn samples_to_next_window_open(&self) -> i32 {
+        if self.skip > 0 {
+            self.skip as i32
+        } else {
+            // Mid-window (or opening now): finish filling it, then the
+            // inter-window skip.
+            (CAPTURE_CLOSE_SAMPLES - self.audio.len()) as i32
+                + (SLOT_SAMPLES - CAPTURE_CLOSE_SAMPLES) as i32
+        }
+    }
+
+    /// Set — or, once set, trim — the slot grid's phase from an external
+    /// clock.
+    ///
+    /// `samples_to_boundary` is what the board crate got from
+    /// `time_sync::samples_to_next_slot_12k_ms(7_500)`: 12 kHz samples
+    /// from now until the next UTC 7.5 s boundary.
+    ///
+    /// The first call anchors the grid outright — the next window opens
+    /// on that boundary. Call it before feeding any live audio; a
+    /// partial window already in progress is not discarded. Later calls
+    /// move the grid only when the phase has drifted past
+    /// [`REANCHOR_THRESH_SAMPLES`], which is what absorbs the clock
+    /// stepping when NTP first disciplines an RTC-seeded clock — that
+    /// step can be seconds, well past what the DT search could pull
+    /// back. Jitter below the threshold is left for
+    /// [`shift_next_window`](Self::shift_next_window).
+    pub fn anchor_or_reanchor(&mut self, samples_to_boundary: usize) {
+        if !self.aligned {
+            // Exactly on a boundary reads as a whole period; that means
+            // "open now", not "skip a slot".
+            self.skip = samples_to_boundary % GRID_PERIOD as usize;
+            self.aligned = true;
+            return;
+        }
+        // Phase error, normalised to (−½ slot, +½ slot]: the sign says
+        // which way the grid is off, not how many slots.
+        let want = samples_to_boundary as i32;
+        let have = self.samples_to_next_window_open();
+        let mut delta = (want - have) % GRID_PERIOD;
+        if delta > GRID_PERIOD / 2 {
+            delta -= GRID_PERIOD;
+        } else if delta <= -GRID_PERIOD / 2 {
+            delta += GRID_PERIOD;
+        }
+        if delta.abs() > REANCHOR_THRESH_SAMPLES {
+            self.pending_shift += delta;
+        }
+    }
+
+    /// Fold a signed correction into the next inter-window skip — the
+    /// DT-median trim from `time_sync::slot_dt_offset`. Positive delays
+    /// the next window: the slot opened early, so the decoded signals
+    /// sat late in it (WSJT-X's DT sign). Small by construction —
+    /// [`anchor_or_reanchor`](Self::anchor_or_reanchor) has the grid
+    /// within ~100 ms of UTC before this ever runs.
+    pub fn shift_next_window(&mut self, delta_samples: i32) {
+        self.pending_shift += delta_samples;
     }
 
     /// Feed the next block. Returns the finished slot on the block that
@@ -252,8 +348,17 @@ impl SlotAccum {
             self.decim.push_i16(&rest[..take], &mut self.half);
             rest = &rest[take..];
             if self.audio.len() == CAPTURE_CLOSE_SAMPLES {
+                let carry_shift = core::mem::take(&mut self.pending_shift);
+                let carry_aligned = self.aligned;
                 let prev = core::mem::replace(self, Self::new());
-                self.skip = SLOT_SAMPLES - CAPTURE_CLOSE_SAMPLES;
+                // The inter-window skip, plus whatever correction the
+                // clock check and the DT trim asked for. A correction
+                // too big for one gap to hold is clamped and the
+                // remainder carried into the next.
+                let want_skip = (SLOT_SAMPLES - CAPTURE_CLOSE_SAMPLES) as i32 + carry_shift;
+                self.skip = want_skip.clamp(0, GRID_PERIOD) as usize;
+                self.pending_shift = want_skip - self.skip as i32;
+                self.aligned = carry_aligned;
                 done = Some(CapturedSlot {
                     audio: prev.audio,
                     savg: prev.savg.finish(),

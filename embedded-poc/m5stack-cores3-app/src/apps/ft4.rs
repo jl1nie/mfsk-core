@@ -86,6 +86,20 @@ const GOLDEN_AUDIO: &[u8] = &[];
 /// friendlier one.
 const REPLAY_BLOCK: usize = 256;
 
+/// The FT4 slot, in milliseconds.
+///
+/// `time_sync::samples_to_next_slot_12k_ms` wants the grid period, and
+/// 7.5 s is not a whole number of them — which is why the FT8 path's
+/// whole-second `samples_to_next_slot_12k` could not be reused here.
+const FT4_SLOT_MS: u64 = 7_500;
+
+/// Smallest DT-median correction worth applying to the grid.
+///
+/// ~24 ms — half an FT4 symbol. Below this it is jitter, and the UTC
+/// anchor has the grid within ~100 ms already; chasing it every slot
+/// would only add noise.
+const FT4_DT_TRIM_MIN_SAMPLES: u32 = 288;
+
 /// Spectrogram rows per waterfall row.
 ///
 /// The coarse stage produces one row per 48 ms — 152 a slot — and the
@@ -298,6 +312,11 @@ fn slot_loop() -> ! {
     }
     let mut gpos = 0usize;
     let mut row_seq: usize = 0;
+    // Slot-grid alignment (#354). `false` until the first block of real
+    // UAC audio; the replay source is not real-time, so anchoring it to
+    // UTC would be meaningless.
+    let mut live_prev = false;
+    let mut last_finalised = mfsk_app_shared::time_sync::slots_finalised();
     // Paces the replay to 12 kHz. Absolute, not per-block, so a slow
     // decode does not make the replay drift slower than real time.
     let t_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
@@ -325,6 +344,34 @@ fn slot_loop() -> ! {
                 unsafe {
                     esp_idf_svc::sys::vTaskDelay((((due_us - now) / 1_000).max(1) as u32) / port_tick_ms())
                 };
+            }
+        }
+
+        // Slot-grid alignment (#354). The FT8 path anchors its 15 s grid
+        // to UTC in `Ft8ChunkSink`; FT4's boundary logic lives in
+        // `SlotAccum`, so the anchor is driven from here — the board
+        // half owns the clock (`time_sync`), the shared half only moves
+        // the grid when told.
+        let live = AUDIO_LIVE.load(Ordering::Acquire);
+        if live && !live_prev {
+            // Any golden partial in the accumulator is not this slot —
+            // start the live grid from a clean window.
+            accum = rx::SlotAccum::new();
+            log::info!("ft4_app: live audio — slot accumulator reset for UTC alignment");
+        }
+        live_prev = live;
+        if live {
+            if let Some(remain) =
+                mfsk_app_shared::time_sync::samples_to_next_slot_12k_ms(FT4_SLOT_MS)
+            {
+                let was_aligned = accum.is_aligned();
+                accum.anchor_or_reanchor(remain);
+                if !was_aligned && accum.is_aligned() {
+                    log::info!(
+                        "ft4_app: slot grid anchored to UTC — {} ms to the next boundary",
+                        remain / 12,
+                    );
+                }
             }
         }
 
@@ -383,6 +430,39 @@ fn slot_loop() -> ! {
                     d.snr_db,
                     d.msg,
                 );
+            }
+        }
+
+        // DT-median grid trim (#354). The UTC anchor gets the grid
+        // within ~100 ms; the median DT of the slot's decodes closes the
+        // rest — the STAGING latency, and the residual after an
+        // RTC-only anchor. Only acted on when a new median actually
+        // landed (`finalize_slot` is a no-op on a slot with no decodes),
+        // and after correction the next slot's DTs sit near zero, so the
+        // trim settles itself. FT4's coarse stage returns `dt = 0`, so
+        // there is no cold-start path here for a slot that decodes
+        // nothing with no clock — that is #356.
+        //
+        // Live audio only: the replay source is a whole recorded slot
+        // the decoder finds its own `dt` in, so its DTs say nothing
+        // about a grid.
+        if live {
+            for d in &o.decodes {
+                mfsk_app_shared::time_sync::record_decode_dt(d.dt_sec);
+            }
+            mfsk_app_shared::time_sync::finalize_slot();
+            let finalised = mfsk_app_shared::time_sync::slots_finalised();
+            if finalised != last_finalised {
+                last_finalised = finalised;
+                if let Some(off_sec) = mfsk_app_shared::time_sync::slot_dt_offset() {
+                    let delta = (off_sec * 12_000.0).round() as i32;
+                    if delta.unsigned_abs() >= FT4_DT_TRIM_MIN_SAMPLES {
+                        accum.shift_next_window(delta);
+                        log::info!(
+                            "ft4_app: DT median {off_sec:+.3} s ({finalised} slots) — grid {delta:+} samples"
+                        );
+                    }
+                }
             }
         }
     }

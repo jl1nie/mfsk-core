@@ -1852,13 +1852,28 @@ rather than 111 because a 2 700 → 3 300 transition does not protect the
 top of the search band. Equivalent noise bandwidth against the
 reference is +0.021 dB with the extra stage and +0.021 dB without.
 
+**Slot-grid alignment (#354).** The FT4 boot mode now anchors its
+grid to UTC. `SlotAccum` — which owns the boundary, unlike the FT8
+path where `Ft8ChunkSink` does — gained `anchor_or_reanchor`, driven
+from `apps/ft4.rs` (the board half owns the clock,
+`time_sync::samples_to_next_slot_12k_ms(7_500)`; the shared half only
+moves the grid when told). The first block of live audio anchors the
+next window to the next 7.5 s boundary; a phase error past 100 ms
+re-anchors, which is what catches NTP stepping an RTC-seeded clock by
+seconds. The median DT of each slot's decodes then trims the residual
+— the STAGING latency, and whatever an RTC-only anchor left — and
+settles to zero once aligned. **What this does not cover**: a
+cold start with no clock *and* no decodes. FT4's coarse stage returns
+`dt = 0`, so unlike FT8 there is no `bootstrap_dt_median` to pull the
+grid up from an arbitrary phase — that is #356 (lock phase off the
+air).
+
 **What is still missing**: no esp-dsp binding for
 `FirStage::push_block` (`dsps_fird_f32_aes3`); the 560-file paired
-sweep for the shared front end is written but not yet run; the FT4
+sweep for the shared front end is written but not yet run; and the FT4
 boot mode has not been run against a radio (it replays a baked golden
-slot by default, `MFSK_FT4_REPLAY=0` turns that off); and the
-real-audio path still has no wall-clock slot alignment, the open item
-`uac.rs` shares with #313.
+slot by default, `MFSK_FT4_REPLAY=0` turns that off), so the grid
+alignment above is host-reasoned and not yet confirmed on hardware.
 
 ## Live UAC bring-up — what to check, in what order (issue #163)
 

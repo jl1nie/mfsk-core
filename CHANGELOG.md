@@ -286,6 +286,25 @@ streaming coarse stage below.)
   `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
   the FT4 receiver's slot-grid alignment (#354).
 
+- **The CoreS3 FT4 boot mode anchors its slot grid to UTC (#354).**
+  Until now the grid was counted from whenever the USB audio stream
+  started, so which 7.5 s window it captured was an accident — hidden
+  entirely by the baked replay, which is a whole slot the decoder finds
+  its own `dt` in. `embedded_shared::apps::ft4_rx::SlotAccum` (which
+  owns the boundary, unlike the FT8 path where `Ft8ChunkSink` does)
+  gains `anchor_or_reanchor` / `shift_next_window` / `is_aligned`;
+  `apps/ft4.rs` drives them — the board half owns the clock
+  (`time_sync`), the shared half only moves the grid when told. The
+  first block of live audio anchors the next window to the next UTC
+  boundary; a phase error past 100 ms re-anchors (the NTP step on an
+  RTC-seeded clock can be seconds, past what the ±1.0 s DT search could
+  pull back); the median DT of each slot's decodes then trims the
+  residual and settles to zero. Not covered: a cold start with no clock
+  and no decodes — FT4's coarse stage returns `dt = 0`, so there is no
+  `bootstrap_dt_median` to pull the grid up from an arbitrary phase.
+  That is #356. Host-reasoned; not yet confirmed against a radio.
+  `docs/reference/EMBEDDED.md` "FT4 on embedded".
+
 - **`.githooks/pre-push`**, and the FT4 embedded measurement harness:
   PIE-path counters in the esp-dsp dot-product and FFT backends, a
   layer split (kernel / staging / combine) for the mixed-radix
