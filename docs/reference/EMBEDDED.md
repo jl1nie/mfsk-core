@@ -1958,15 +1958,18 @@ per-second telemetry above is what tells you which.
 
 ### Checkpoint 2 — live antenna
 
-The slot grid is anchored now. `Ft8ChunkSink` locks it to UTC once the
-clock is plausible (`time_sync::samples_to_next_slot_12k`, RTC then
-NTP), and re-anchors on drift past 250 ms. With no network at all, #356
-pulls the grid onto the air instead: `decode_pipeline` posts coarse
-sync's DT median through `set_bootstrap_slot_shift_12k` — the top-5
-candidate median before any decode, the confirmed-decode median after —
-and `Ft8ChunkSink` applies it while it has no UTC anchor. Watch the log
-for `slot grid anchored to UTC` or a run of `air-sync: … → ± samples`
-lines converging toward zero.
+The slot grid is anchored now. `Ft8ChunkSink` takes a rough one-time
+anchor from a plausible clock (`time_sync::samples_to_next_slot_12k`,
+RTC then NTP), and once NTP has disciplined the clock its UTC drift
+check owns the phase and re-anchors on error past 250 ms. Until then —
+or forever, off-grid — #356 rides the air: `decode_pipeline` posts
+coarse sync's DT median through `set_bootstrap_slot_shift_12k` (the
+top-5 candidate median before any decode, the confirmed-decode median
+after) and `Ft8ChunkSink` applies it. The moment
+`clock_is_disciplined()` turns true the air-sync path is skipped
+entirely. Watch the log for `NTP-disciplined — UTC owns the slot
+phase`, or a run of `air-sync: … → ± samples` lines converging toward
+zero.
 
 Checkpoint 1 does not care either way — the golden recording is a whole
 slot and the decoder finds its own `dt` — which is why it is worth

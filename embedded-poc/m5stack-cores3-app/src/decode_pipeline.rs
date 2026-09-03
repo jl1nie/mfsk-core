@@ -188,18 +188,23 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
         }
 
         // Self-align the slot grid from the air (#356), for the live
-        // source with no UTC clock. `Ft8ChunkSink` anchors the grid to
-        // UTC once NTP has run; on a hilltop with no network it never
-        // does, and the grid free-runs at a phase uniform over 15 s
-        // against a mode that tolerates ±2.5 s. Coarse sync's own DT —
-        // the confirmed-decode median once decodes exist, the top-5
-        // candidate median (`bootstrap_dt_med`) before then — is a time
-        // reference present wherever the receiver is. Posted through
-        // `set_bootstrap_slot_shift_12k`; `Ft8ChunkSink` applies it only
-        // while it has no UTC anchor and drains it otherwise, so the two
-        // never fight. The `wav` source defines its own slot boundaries
-        // and is left alone.
-        if source == "uac" {
+        // source before NTP has disciplined the clock. `Ft8ChunkSink`
+        // hands the phase to the UTC drift check the moment
+        // `clock_is_disciplined()` turns true; on a hilltop with no
+        // network it never does, and the grid would otherwise free-run
+        // at a phase uniform over 15 s against a mode that tolerates
+        // ±2.5 s. Coarse sync's own DT — the confirmed-decode median
+        // once decodes exist, the top-5 candidate median
+        // (`bootstrap_dt_med`) before then — is a time reference present
+        // wherever the receiver is, posted through
+        // `set_bootstrap_slot_shift_12k`.
+        //
+        // Gated on `!clock_is_disciplined()` so that once NTP is up this
+        // whole block — the median read, the shift maths, the log — does
+        // not run at all, rather than computing a correction
+        // `Ft8ChunkSink` would only drain. The `wav` source defines its
+        // own boundaries and is never touched.
+        if source == "uac" && !mfsk_app_shared::time_sync::clock_is_disciplined() {
             /// Already inside FT8's tolerance — post 0 rather than chase
             /// jitter into the shorten direction stage1_inc dislikes.
             const ALIGN_OK_SEC: f32 = 0.05;
@@ -237,7 +242,11 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             if let Some(m) = slot_median.filter(|_| n_dec > best_n) {
                 let shift = to_samples(m);
                 mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift);
-                log::info!("  air-sync: lock DT={m:+.3}s (N={n_dec}) → {shift:+} samples");
+                // Once converged, `n_dec` keeps setting new highs on a
+                // busy band with `shift` at 0 — say nothing then.
+                if shift != 0 {
+                    log::info!("  air-sync: lock DT={m:+.3}s (N={n_dec}) → {shift:+} samples");
+                }
                 best_n = n_dec;
             } else if let Some(m) = cold_bootstrap {
                 let shift = to_samples(m);

@@ -40,13 +40,16 @@ system clock is plausible. The clock comes from the BM8563 (`rtc.rs`,
 read in `pmic::init`) and is refined by NTP; unanchored, the grid used
 to free-run at a phase uniform over 15 s against a mode that tolerates
 ±2.5 s, which produced a full evening of "the decoder is broken" on
-2026-08-23. Since #356, when there is no UTC the grid instead pulls
-itself onto the air: `decode_pipeline` posts coarse sync's DT median
-(`bootstrap_dt_median` before any decode, the confirmed-decode median
-after) through `set_bootstrap_slot_shift_12k`, and `Ft8ChunkSink`
-applies it — but *only* while `!self.aligned`, so once UTC is present
-the drift check owns the phase and the two never fight. The `wav`
-source is left alone.
+2026-08-23. Since #356, until NTP disciplines the clock the grid pulls
+itself onto the air instead: `decode_pipeline` posts coarse sync's DT
+median (`bootstrap_dt_median` before any decode, the confirmed-decode
+median after) through `set_bootstrap_slot_shift_12k`, and
+`Ft8ChunkSink` applies it. `Ft8ChunkSink` still takes a rough one-time
+anchor from a plausible RTC (to get inside the ±1 s coarse search),
+but only `clock_is_disciplined()` (NTP) hands the phase to its UTC
+drift check — and the whole air-sync path in `decode_pipeline` is
+gated off the moment that turns true, so it costs the steady-state
+slot nothing. The `wav` source is left alone.
 
 **The boot-critical logs do not reach the only console that works.**
 WiFi associates seconds after the power and USB decisions are made, and

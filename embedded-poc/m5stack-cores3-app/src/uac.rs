@@ -473,14 +473,20 @@ struct Ft8ChunkSink {
     chunk: Vec<i16>,
     slot_samples: usize,
     /// Samples this slot runs before `SlotEnd` fires. Normally
-    /// [`SLOT_SAMPLES_12K`]; the air-sync shift (#356) lengthens or
-    /// shortens it by one slot's worth when the grid has no UTC anchor.
+    /// [`SLOT_SAMPLES_12K`]; the air-sync shift (#356) moves it by up to
+    /// one slot's worth while the clock is not NTP-disciplined.
     slot_target: usize,
     wav_idx: usize,
-    /// Whether the slot grid has been anchored to UTC yet. Until it
-    /// has, boundaries are stream-relative and every decoded `dt` is
-    /// an offset from an arbitrary phase.
-    aligned: bool,
+    /// The one-time rough anchor from the system clock (RTC *or* NTP)
+    /// has run. It gets the grid inside FT8's ±2.5 s and, more to the
+    /// point, inside the ±1 s coarse search — so the air-sync
+    /// refinement below has candidates to measure a DT from. Distinct
+    /// from "the clock is trusted": a plausible RTC value anchors here,
+    /// only NTP hands the phase over to the UTC drift check.
+    coarse_anchored: bool,
+    /// One line has been logged saying NTP disciplined the clock and
+    /// air-sync stood down — not one per slot.
+    utc_owns_phase_logged: bool,
 }
 // SAFETY: `QueueHandle_t` is a raw pointer into IDF-owned state; the
 // IDF queue API is thread-safe by design (that's the whole point of a
@@ -497,7 +503,8 @@ impl Ft8ChunkSink {
             chunk: Vec::with_capacity(CHUNK_LEN),
             slot_samples: 0,
             slot_target: SLOT_SAMPLES_12K,
-            aligned: false,
+            coarse_anchored: false,
+            utc_owns_phase_logged: false,
             wav_idx: 0,
         }
     }
@@ -505,26 +512,26 @@ impl Ft8ChunkSink {
 
 impl AudioSink for Ft8ChunkSink {
     fn push_samples(&mut self, samples: &[i16]) {
-        // Anchor the slot grid to UTC as soon as the clock is real.
+        // One-time rough anchor from the system clock, RTC or NTP.
         //
-        // Without this the boundary is whatever 15 s window the reader
-        // happened to start in, and FT8's coarse sync only searches
-        // ±2.5 s of it — so a real signal is outside the window about
-        // 2/3 of the time and the receiver looks broken for a reason
-        // that has nothing to do with the audio. `uac.rs`'s own note
-        // warned that this failure is "easy to misread as a capture
-        // fault the first time real audio flows" (#313/#163).
+        // Without any anchor the boundary is whatever 15 s window the
+        // reader started in, and FT8's coarse sync only searches ±2.5 s
+        // of it — so a real signal is outside the window about 2/3 of
+        // the time and the receiver looks broken for a reason that has
+        // nothing to do with the audio (#313/#163). Costs no samples:
+        // the *current* partial slot is simply given the right length,
+        // so the next boundary lands on the grid.
         //
-        // Anchoring costs no samples: the *current* partial slot is
-        // simply given the right length, so the next boundary lands on
-        // the grid. Re-checked at every boundary below, which also
-        // absorbs the clock jumping when NTP first syncs.
-        if !self.aligned {
+        // A merely-plausible RTC value is enough here — the point is to
+        // get inside the ±1 s coarse search so the air-sync refinement
+        // (#356) has a DT to work with. Only NTP hands the phase to the
+        // UTC drift check below.
+        if !self.coarse_anchored {
             if let Some(remain) = mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS) {
                 self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
-                self.aligned = true;
+                self.coarse_anchored = true;
                 log::info!(
-                    "uac: slot grid anchored to UTC — {} ms to the next boundary",
+                    "uac: slot grid coarse-anchored to the system clock — {} ms to the next boundary",
                     remain / 12,
                 );
             }
@@ -557,49 +564,57 @@ impl AudioSink for Ft8ChunkSink {
                     let now_us = unsafe { sys::esp_timer_get_time() };
                     mfsk_app_shared::time_sync::publish_capture_slot(self.wav_idx as u32, now_us);
 
-                    // Drift check against UTC. The sample stream is the
-                    // authority on slot *length* — it is the thing the
-                    // decoder consumes — so this does not re-anchor on
-                    // every wobble; it reports, and only re-anchors
-                    // when the phase error is a fraction of the window
-                    // FT8 can search.
-                    if let Some(remain) =
-                        mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS)
-                    {
-                        let err_ms = if remain > SLOT_SAMPLES_12K / 2 {
-                            -(((SLOT_SAMPLES_12K - remain) / 12) as i32)
-                        } else {
-                            (remain / 12) as i32
-                        };
-                        if err_ms.unsigned_abs() > SLOT_DRIFT_REANCHOR_MS {
-                            log::warn!("uac: slot phase {err_ms:+} ms off UTC — re-anchoring");
-                            self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
-                        } else if !self.aligned {
-                            self.aligned = true;
-                            log::info!("uac: slot grid anchored to UTC ({err_ms:+} ms)");
+                    // One phase authority per boundary, never both.
+                    // Once NTP has disciplined the clock it is trusted
+                    // absolutely; before then — or forever, off-grid —
+                    // the grid rides coarse sync's own DT through
+                    // `decode_pipeline`'s air-sync (#356).
+                    if mfsk_app_shared::time_sync::clock_is_disciplined() {
+                        if !self.utc_owns_phase_logged {
+                            self.utc_owns_phase_logged = true;
+                            log::info!(
+                                "uac: NTP-disciplined — UTC owns the slot phase, air-sync stood down"
+                            );
                         }
-                    }
-
-                    // Air-sync shift from `decode_pipeline` (#356):
-                    // coarse-sync's DT median, for the hilltop case where
-                    // no clock ever makes `samples_to_next_slot_12k`
-                    // answer. Applied only while there is no UTC anchor —
-                    // when there is, the drift check above owns the phase
-                    // and this would fight it. Drained either way, so a
-                    // later loss of NTP starts from a clean hint.
-                    //
-                    // Sign is WSJT-X's: DT > 0 means the slot opened
-                    // early, so lengthen the next one. Capped ±2400 by
-                    // the producer, so the slot stays in
-                    // [177_600, 182_400] and stage1_inc still completes.
-                    let air_shift = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
-                    if !self.aligned && air_shift != 0 {
-                        self.slot_target = (SLOT_SAMPLES_12K as i32 + air_shift)
-                            .clamp(60_000, 200_000) as usize;
-                        log::info!(
-                            "uac: air-sync slot shift {air_shift:+} — next slot {} samples",
-                            self.slot_target,
-                        );
+                        // Drain the air-sync hint so a later loss of NTP
+                        // does not re-apply something stale.
+                        let _ = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                        // Re-anchor only when the phase error is a
+                        // fraction of what FT8 can search — corrects the
+                        // NTP step and long-term drift, not jitter.
+                        if let Some(remain) =
+                            mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS)
+                        {
+                            let err_ms = if remain > SLOT_SAMPLES_12K / 2 {
+                                -(((SLOT_SAMPLES_12K - remain) / 12) as i32)
+                            } else {
+                                (remain / 12) as i32
+                            };
+                            if err_ms.unsigned_abs() > SLOT_DRIFT_REANCHOR_MS {
+                                log::warn!("uac: slot phase {err_ms:+} ms off UTC — re-anchoring");
+                                self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
+                            }
+                        }
+                    } else {
+                        // Air-sync shift from `decode_pipeline` (#356):
+                        // the DT of coarse sync's own candidates, a
+                        // phase reference present wherever the receiver
+                        // is. Sign is WSJT-X's — DT > 0 means the slot
+                        // opened early, lengthen the next. Capped ±2400
+                        // by the producer, so the slot stays in
+                        // [177_600, 182_400] and stage1_inc still
+                        // completes.
+                        let air_shift =
+                            mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                        if air_shift != 0 {
+                            self.slot_target = (SLOT_SAMPLES_12K as i32 + air_shift)
+                                .clamp(60_000, 200_000)
+                                as usize;
+                            log::info!(
+                                "uac: air-sync slot shift {air_shift:+} — next slot {} samples",
+                                self.slot_target,
+                            );
+                        }
                     }
                 }
             }

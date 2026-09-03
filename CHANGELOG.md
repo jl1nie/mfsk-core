@@ -293,13 +293,19 @@ streaming coarse stage below.)
   keeps `run_speculative_slot`'s `bootstrap_dt_med` (the top-5
   coarse-candidate DT median, valid before any decode) instead of
   discarding it, tracks a confirmed-decode lock afterwards with a
-  Tier-1 drift reset, and posts the correction through
-  `set_bootstrap_slot_shift_12k`. `Ft8ChunkSink` gained a
-  `slot_target` and applies the shift — but only while it has no UTC
-  anchor, so once NTP lands the drift check owns the phase and the two
-  never fight; the `wav` source is left alone. Still not covered: a
-  grid more than ~1 s out at the first slot, since coarse sync searches
-  only ±1 s. Host-reasoned; not yet run against a radio.
+  Tier-1 drift reset, and — while `!clock_is_disciplined()` — posts the
+  correction through `set_bootstrap_slot_shift_12k`. `Ft8ChunkSink`
+  gained a `slot_target`; it still takes a rough one-time anchor from a
+  plausible RTC, but hands the phase to its UTC drift check only once
+  NTP has disciplined the clock, and rides the air-sync shift until
+  then. Once NTP is up the whole air-sync path — the median read, the
+  shift maths, the log — is skipped rather than computing a correction
+  that would only be drained, so it adds nothing to the steady-state
+  slot. The `wav` source is never touched. Behaviour change for a
+  board that never gets NTP: its FT8 grid now rides the air rather than
+  a possibly-wrong free-running RTC. Still not covered: a grid more
+  than ~1 s out at the first slot, since coarse sync searches only
+  ±1 s. Host-reasoned; not yet run against a radio.
 
 - **The CoreS3 FT4 boot mode anchors its slot grid to UTC (#354).**
   Until now the grid was counted from whenever the USB audio stream
