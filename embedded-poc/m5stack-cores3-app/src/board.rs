@@ -270,4 +270,18 @@ pub fn log_task_stacks() {
             tight.as_str()
         }
     );
+
+    // And the other end of the same list. The summary above answers
+    // "is anything about to overflow"; this answers "what is being
+    // wasted", which is the question when internal DRAM is the
+    // constraint — every KiB of task stack is a KiB the decoder's own
+    // allocations do not get, and on this board that is the difference
+    // between a 2 304-point workspace in internal DRAM and the same
+    // workspace in PSRAM (41 % slower, `FT4_BENCHMARK.md` §26.3).
+    //
+    // One task per line rather than a joined string: this is diagnostic
+    // output on a 30 s cadence, and the names are what get read.
+    for t in tasks.iter().take(n) {
+        log::info!("[stacks]   {:<16} free {}", name_of(t).as_str(), t.usStackHighWaterMark);
+    }
 }

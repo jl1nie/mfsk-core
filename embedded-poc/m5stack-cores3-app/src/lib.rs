@@ -19,6 +19,7 @@ pub mod decode_pipeline;
 pub mod display;
 pub mod esp_log_bridge;
 pub mod log_slot;
+pub mod net;
 pub mod pmic;
 pub mod rtc;
 pub mod touch;

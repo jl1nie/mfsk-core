@@ -93,7 +93,6 @@ use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::settings;
 use mfsk_app_shared::ui::slot_list::{self, SlotSpotRow, SlotUiState};
 use mfsk_app_shared::ui::{link_bar, mode_picker};
-use mfsk_app_shared::{http_config, ntp, udp_log};
 
 /// The same baked golden slot `fst4-ddc-bench` runs — raw `i16` little
 /// endian at 12 kHz, byte-wise rather than transmuted (1-byte
@@ -145,14 +144,12 @@ const SCAN_STACK: u32 = 24 * 1024;
 /// `fst4_dual_core::WORKER_STACK_BYTES` for the measurement).
 const CAPTURE_STACK: u32 = 16 * 1024;
 const DISPLAY_STACK: u32 = 24 * 1024;
-const NETWORK_STACK: u32 = 24 * 1024;
 
 /// See this file's task-layout table: display and capture sit *above*
 /// the decode, not below it.
 const DISPLAY_PRIORITY: u32 = 7;
 const CAPTURE_PRIORITY: u32 = 6;
 const SCAN_PRIORITY: u32 = 5;
-const NETWORK_PRIORITY: u32 = 2;
 
 /// `MFSK_FST4_APP_CAPTURE_SLOTS=<n>` — stop capturing after `n` slots
 /// (`0`, the default, never stops).
@@ -434,7 +431,23 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
             }
             core::mem::forget(wifi_driver);
         } else {
-            spawn_network_task(NetworkCtx { wifi_driver, nvs });
+            crate::net::spawn(
+                wifi_driver,
+                nvs,
+                crate::net::Config {
+                    name: "fst4_app::net",
+                    // Bounded campaigns and modem power save, both for
+                    // the same measured reason: an associating or
+                    // fully-awake radio preempts this decoder at
+                    // FreeRTOS priority 23. `crate::net` carries the
+                    // numbers.
+                    policy: crate::net::DECODE_FIRST,
+                    power_save: true,
+                    on_ntp: |synced| {
+                        FST4_UI.lock().expect("FST4_UI poisoned").ntp_synced = synced;
+                    },
+                },
+            );
         }
     }
     log_heap("post-network-spawn");
@@ -1093,10 +1106,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // recently.
             if let Some(i2c) = touch_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
-                // Store the clock once it becomes real, so the next
-                // boot has one before WiFi does. NTP is what makes it
-                // real; this is what makes it survive a power cycle.
-                if !rtc_stored && mfsk_app_shared::time_sync::utc_now_ms().is_some() {
+                // Store the clock once NTP has made it real, so the
+                // next boot has one before WiFi does.
+                //
+                // The predicate is provenance, not plausibility:
+                // `utc_now_ms().is_some()` was true a second after
+                // boot because `pmic::init` had just seeded the clock
+                // from this very chip, so this wrote the RTC's own
+                // value back to it and NTP — arriving 30 s later —
+                // never reached the register. #354.
+                if !rtc_stored && mfsk_app_shared::time_sync::clock_is_disciplined() {
                     rtc_stored = true;
                     if let Err(e) = crate::rtc::write_from_system_clock(i2c) {
                         log::warn!("rtc: could not store the clock: {e:#}");
@@ -1205,178 +1224,5 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
             FreeRtos::delay_ms(50);
         }
-    }
-}
-
-// ── Network task ─────────────────────────────────────────────────────
-
-struct NetworkCtx {
-    wifi_driver: esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
-    nvs: Arc<Mutex<EspNvs<NvsDefault>>>,
-}
-
-extern "C" fn network_task_entry(arg: *mut core::ffi::c_void) {
-    // SAFETY: `spawn_network_task` leaked exactly this pointer.
-    let ctx = unsafe { Box::from_raw(arg as *mut NetworkCtx) };
-    network_loop(*ctx);
-}
-
-/// Stack in PSRAM, not internal DRAM: `wspr_app` measured WiFi driver
-/// bring-up taking internal DRAM to 10 KB free / 7 KB largest block,
-/// nowhere near a 24 KiB stack, regardless of spawn ordering.
-fn spawn_network_task(ctx: NetworkCtx) {
-    let ptr = Box::into_raw(Box::new(ctx)) as *mut core::ffi::c_void;
-    let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
-            Some(network_task_entry),
-            c"fst4_net".as_ptr(),
-            NETWORK_STACK,
-            ptr,
-            NETWORK_PRIORITY,
-            core::ptr::null_mut(),
-            1,
-            MALLOC_CAP_SPIRAM,
-        )
-    };
-    if created != 1 {
-        log::error!("fst4_app: failed to create fst4_net task");
-    }
-}
-
-/// How long the radio is left alone between association campaigns.
-///
-/// **Bounded attempts, then quiet — not `wspr_app`'s unbounded retry.**
-/// Measured on this hardware (2026-08-22): while the driver is trying
-/// to associate with an AP it cannot reach, the decoder loses ~40% of
-/// its throughput — `fst4_sync_search` goes 711 -> 1395 ms per
-/// candidate and the candidate loop 33 -> 53 s, covering 48 of 50
-/// candidates instead of all 50. The WiFi task runs at FreeRTOS
-/// priority 23, above anything an application creates, so it preempts
-/// at will, and this is *not* something the caller's own retry cadence
-/// controls: a single `connect()` keeps the radio busy for the whole
-/// `ESP_ERR_TIMEOUT` window, which is minutes.
-///
-/// A monitor receiver's job is to decode. WiFi buys it NTP, a config
-/// page and remote logging — all of which can wait three minutes.
-const RECONNECT_IDLE_MS: u32 = 180_000;
-/// Attempts per campaign. Four is what `wifi.rs`'s own bisection
-/// established as the number that beats the AP comeback-time
-/// coin-flip; more than that is what costs decode throughput.
-const CONNECT_ATTEMPTS_PER_CAMPAIGN: u32 = 4;
-
-fn network_loop(mut ctx: NetworkCtx) -> ! {
-    let info = loop {
-        match mfsk_app_shared::wifi::connect_with_retry(
-            &mut ctx.wifi_driver,
-            crate::WIFI_SSID,
-            crate::WIFI_PSK,
-            Some(CONNECT_ATTEMPTS_PER_CAMPAIGN),
-        ) {
-            Ok(i) => break i,
-            Err(e) => {
-                log::warn!(
-                    "fst4_app::net: no association after {CONNECT_ATTEMPTS_PER_CAMPAIGN} \
-                     attempts ({e:#}) — leaving the radio alone for {} s so it stops \
-                     preempting the decode",
-                    RECONNECT_IDLE_MS / 1000,
-                );
-                FreeRtos::delay_ms(RECONNECT_IDLE_MS);
-            }
-        }
-    };
-    log::info!("fst4_app::net: WiFi up, ip {}", info.ip);
-
-    // Modem power save. The default is `WIFI_PS_NONE`, which keeps the
-    // receiver on continuously and hands every frame on the network —
-    // including all the broadcast and multicast traffic a home LAN
-    // carries — to a driver task running at FreeRTOS priority 23, above
-    // anything this application creates. Measured: an *associated,
-    // otherwise idle* STA cost the candidate loop 33 -> 53 s and
-    // `fst4_sync_search` 711 -> 1500 ms per candidate.
-    //
-    // `MIN_MODEM` lets the radio sleep between DTIM beacons, which is
-    // all a receiver that only needs NTP, a config page and a log sink
-    // ever wanted from the association.
-    let r = unsafe {
-        esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_MIN_MODEM)
-    };
-    log::info!("fst4_app::net: esp_wifi_set_ps(MIN_MODEM) -> {r}");
-
-    // UDP log sink — the serial console goes away the moment the USB
-    // host driver installs, so this is the only log this app has once
-    // it is running for real.
-    let target_ip: std::net::IpAddr =
-        if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
-            std::net::IpAddr::V4(info.subnet_broadcast)
-        } else {
-            match crate::UDP_LOG_TARGET.parse() {
-                Ok(ip) => ip,
-                Err(e) => {
-                    log::warn!(
-                        "fst4_app::net: UDP_LOG_TARGET '{}' parse failed ({e}); \
-                     using subnet broadcast",
-                        crate::UDP_LOG_TARGET
-                    );
-                    std::net::IpAddr::V4(info.subnet_broadcast)
-                }
-            }
-        };
-    let addr = std::net::SocketAddr::new(target_ip, crate::UDP_LOG_PORT.parse().unwrap_or(9999));
-    match udp_log::UdpLogSink::new(addr) {
-        Ok(sink) => {
-            if let Ok(mut slot) = crate::FANOUT.udp.try_lock() {
-                *slot = Some(sink);
-            }
-            crate::FANOUT.drain_staging_to_udp();
-            log::info!("fst4_app::net: UDP log sink up -> {addr}");
-        }
-        Err(e) => log::warn!("fst4_app::net: UDP socket bind failed: {e}"),
-    }
-
-    let initial_settings = {
-        let g = ctx.nvs.lock().expect("settings NVS mutex poisoned");
-        settings::load(&g)
-    };
-    let (ntp_synced, _sntp_keepalive) = if initial_settings.ntp_enabled {
-        match ntp::start(&initial_settings.ntp_server) {
-            Ok(sntp) => {
-                let synced = ntp::wait_synced(&sntp, NTP_SYNC_TIMEOUT_MS);
-                (synced, Some(sntp))
-            }
-            Err(e) => {
-                log::warn!("fst4_app::net: NTP start failed: {e:#}");
-                (false, None)
-            }
-        }
-    } else {
-        log::info!("fst4_app::net: NTP sync disabled in settings");
-        (false, None)
-    };
-    if !ntp_synced {
-        // Slot timestamps on screen stay relative to boot until this
-        // succeeds. The decode itself does not depend on it — slot
-        // boundaries are counted in samples, not wall clock (see this
-        // file's alignment caveat).
-        log::warn!("fst4_app::net: NTP never synced — UTC column is not absolute");
-    }
-    FST4_UI.lock().expect("FST4_UI poisoned").ntp_synced = ntp_synced;
-
-    let _http_server = match http_config::start(ctx.nvs.clone()) {
-        Ok(s) => {
-            log::info!("fst4_app::net: HTTP config server up");
-            Some(s)
-        }
-        Err(e) => {
-            log::warn!("fst4_app::net: HTTP config server failed: {e:#}");
-            None
-        }
-    };
-
-    // `ctx.wifi_driver`/`_sntp_keepalive`/`_http_server` are never read
-    // again but their `Drop`s tear down the association / stop syncing
-    // / stop listening, so this task keeps them alive by never
-    // returning.
-    loop {
-        FreeRtos::delay_ms(60_000);
     }
 }

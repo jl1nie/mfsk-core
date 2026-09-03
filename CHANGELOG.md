@@ -16,6 +16,222 @@ streaming coarse stage below.)
 
 ### Added
 
+- **The FST4 and WSPR screens stopped being two copies of one screen
+  (issue #353).** `slot_list` (FST4) and `wspr_list`/`wspr_state`
+  (WSPR) held the same container twice — latest-slot `Vec`, history
+  `Deque`, `last_slot_hhmm`, the pre-truncation count that makes a
+  truncated slot read as `16/23` rather than as a quiet band, and the
+  `AtomicU32` the render loop polls — and the same three drawing
+  helpers, with identical layout constants written out twice. Now
+  `ui::spot_state::SpotState<Row, SLOT_CAP, HIST_CAP>` and
+  `ui::spot_render` (`FormatRow`, `text_style`, `fill`, `render_rows`,
+  the panel geometry). What stays per screen is what differs: region
+  offsets, the header line, and the columns of a row.
+
+  413 + 289 + 179 lines become 332 + 233 + 130, plus 282 shared — and
+  the container is now `heapless` and one atomic with no draw stack, so
+  `hosttest/mfsk-app-shared` compiles it and its truncation,
+  history-rolling and dirty-seq rules have tests **that run**. They had
+  none before, in either copy.
+
+  Verified on the board: FT4 unaffected (11-12 candidates, 10-11
+  decodes, 1 276-1 444 ms), FST4 and WSPR screens checked by eye
+  through the mode picker.
+
+  Not done here, deliberately: FT8/FT4's `run_log_panel` is a
+  waterfall-and-decode-ring panel, not a spot list, and stays where it
+  is (#353 has the reasoning).
+
+- **The Δt search's carrier phasors are computed once per slot, and
+  the 1-2 candidates §46 gave up are back.** `ft4_sync_search_window`
+  spent 30 % of itself in `FlatRef::fill` — 18 calls per candidate,
+  each with a `cos`/`sin` per sample — for references that depend only
+  on `df`, `ds_spb` and `ds_rate`, so twelve candidates built the same
+  nine references twelve times. New `Ft4CoarsePhasors` (~9 KB) holds
+  the phasor tables; `ft4_sync_search_window_cached` takes them and is
+  **bit-identical** to the uncached path, pinned by test on `i0`,
+  `freq_hz` and `score` bit patterns. On the board: 10-11 candidates
+  and 9-10 decodes become **11-12 and 10-11**.
+
+  **Caching the references themselves (~144 KB) instead was a 2.6×
+  regression**, and the reason is worth more than the fix: the
+  *uncached* path in the same binary slowed from 87 to 223 ms, because
+  144 KB displaced the per-call `FlatRef`s (~1 KB, and so
+  internal-DRAM-resident under `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`)
+  into PSRAM. The dots never left the PIE path. Before caching
+  anything on this board, ask what it evicts.
+  `docs/notes/FT4_BENCHMARK.md` §47.
+
+- **FT4 searches WSJT-X's own ±1.0 s Δt window again, and the mixer
+  stopped pushing one sample at a time.** The embedded receiver had
+  narrowed the search to ±0.5 s (measured lossless on the golden, worth
+  1.5-1.9× on the stage). The golden could not have said otherwise —
+  its DTs span −0.44…+0.30 s, inside the narrow window by construction
+  — and what the narrowing gives up is every station whose clock is off
+  by more than half a second, which on a real band outnumbers the
+  marginal-SNR stations the saved time buys. The errors add, too: this
+  receiver's own slot alignment is still open (#313).
+
+  Restoring it moves `CAPTURE_CLOSE_SAMPLES` to 6.775 s and the budget
+  to 1 225 ms, and costs one to two of the weakest candidates on the
+  14-signal golden (11 decodes → 9-10). The doubled search stage itself
+  barely shows — it is a smaller share of a candidate than it was
+  before the shared decimation and the second core, so §19's pricing no
+  longer holds.
+
+  Separately, `CandidateDdc`'s mixer wrote its output with `Vec::push`
+  per input sample — 45 000 capacity-and-length tests per candidate for
+  5 000 outputs. Writing through pre-sized slices instead is
+  bit-identical and measured **63.1 → 57.4 ms per candidate in situ**,
+  1 290-1 401 → 1 259-1 360 ms end to end. `docs/notes/FT4_BENCHMARK.md`
+  §46, issue #352.
+
+- **FT4's decode budget is now derived from key-up, and the receiver
+  fits inside it with two cores and honestly-sized stacks.** Three
+  changes that only make sense together, all measured on a CoreS3:
+
+  **The budget was anchored to the wrong end of the slot.** The
+  deadline had been 1 960 ms from the *slot boundary*; for a station
+  that has to transmit, the deadline is key-up at 0.5 s into the next
+  slot. That left a QSO-capable build **500 ms**, not 1 960. The
+  capture window now closes at `ft4_rx::CAPTURE_CLOSE_SAMPLES`
+  (6.25 s — everything `ft4_sync_search_window` can reach, plus the DDC
+  chain's group delay) and the budget is `8.0 − 6.25 = 1 750 ms`. The
+  1.25 s that used to be waited out is audio no candidate reads;
+  `SlotAccum` discards it so the slot grid stays a 7.5 s grid. Measured
+  lossless on the WSJT-X golden at every close point from 6.041 s up,
+  with the periodogram averaged over the shorter span
+  (`tests/ft4_early_close.rs`, new).
+
+  **Dual-core is worth 1.40×, not the 1.17× that closed it.** §31.1's
+  conclusion was correct on its evidence; the shared decimation changed
+  the evidence by taking most of the per-candidate PSRAM streaming out
+  of the loop. `decode_slot` now runs a worker pinned to core 1, with
+  both cores taking candidates from a shared cursor rather than
+  splitting the list (candidates are not equal cost, and a cursor makes
+  the deadline per-core with no coordination). A stage pipeline was
+  measured beside it and **lost** — 1.32× against a 1.70× ceiling —
+  which disproves the premise it was built on, that the global FFT
+  guard was the binding constraint.
+
+  **The stacks were the memory problem.** With WiFi associated the slot
+  went 1 387-1 585 → 1 789-1 969 ms, and stopping the radio after NTP
+  changed nothing (`esp_wifi_stop` frees no buffers), because the cost
+  was internal DRAM, not CPU: the largest free block fell to 31 744 B
+  and the decoder's allocations went to PSRAM. `board::log_task_stacks`
+  now reports every task's headroom rather than only the tight ones,
+  and the decode tasks turned out to use **2 584 B and 4 536 B of their
+  32 KB**. At 8 KB each the slot runs **1 290-1 401 ms with WiFi up**,
+  faster than it ever ran without it, and all 12 candidates fit inside
+  the 1 750 ms budget: **12 of 12 tried, 11 decodes**, against 11 of 12
+  and 10 at the start of the day. `docs/notes/FT4_BENCHMARK.md`
+  §43-§45.
+
+- **One network bring-up for every receiver on the CoreS3
+  (`crate::net`).** `wspr_app` and `fst4_app` each carried their own
+  copy of associate → UDP log → NTP → HTTP config, and the copies had
+  drifted in ways that were real: unbounded retry versus bounded
+  campaigns, and `WIFI_PS_MIN_MODEM` on one but not the other. Those
+  are now `Policy` and `power_save` parameters, each app keeping the
+  behaviour it had. **FT4 gains the network it never had** — it is the
+  reason this was consolidated rather than copied a third time, since
+  a QSO needs absolute time and NTP is where it comes from. 324 lines
+  net removed from the two apps.
+
+- **`embedded-poc/scripts/capture.sh`** wraps `flash-monitor.sh` with
+  the five things that went wrong repeatedly in one session: waiting
+  for another capture to release the serial port, re-attaching a board
+  that `usbipd` reports as attached while `lsusb` cannot see it, never
+  overwriting an existing log, failing loudly when a capture produced
+  no marker line, and naming the physical step (a short RST press, or
+  a 2 s hold for an image that installs the USB host driver) instead of
+  retrying into the same wall.
+
+- **`ft4::ddc` gained a shared front end, and FT4 stopped cutting
+  candidates on the board.** The per-candidate chain filtered all
+  90 000 samples of the slot at 12 kHz — 61 ms of a candidate's ~96 —
+  where the FFT path it replaced computed its wideband transform once
+  and let every candidate read it. `NDOWN = 18` factors as `2 · 9`, so
+  the first factor moves in front of the candidate loop: new
+  `SlotDecimator` / `decimate_slot` (165 taps, ÷2, real input through
+  `FirStage::push_block_real`) run once per slot, and new
+  `CandidateDdc::new_half_rate` / `candidate_baseband_half` run the
+  same chain in Hz at 6 kHz with 101 taps and ÷9.
+
+  `SlotAccum` drives the decimator from the capture path alongside
+  `Ft4SavgBuilder`, so the ÷2 is off the post-slot budget entirely —
+  safe because the stage is **bit-identical whatever block sizes it is
+  fed** (`slot_decimator_is_block_independent`, streamed through
+  251/1/1 024/37/4 096-sample blocks).
+
+  On a CoreS3 (`ft4-demo`, replayed golden, 1 960 ms transceiver
+  budget): **2 067-2 118 ms → 1 998-2 000**, and the slot deadline
+  stops firing — **12 of 12 candidates and 11 decodes, against 11 of
+  12 and 10**. The decode it buys is `W7BOB KJ7G RR73` at −17 dB, the
+  one §34 recorded the cut giving up. §37 argued that on this receiver
+  milliseconds are decodes rather than headroom; this is that argument
+  measured.
+
+  Sensitivity re-established rather than assumed, since a third stage
+  makes nothing bit-identical: equivalent noise bandwidth against the
+  reference band is **+0.021 dB with the shared stage and +0.021 dB
+  without**; `ft4_ddc_equivalence`'s new third arm decodes the same
+  eleven golden messages at both depths with identical `i0`; and
+  `shared_rejects_content_that_folds_into_the_band` pins the one new
+  failure mode — content above the 3 kHz Nyquist folding into a
+  candidate's band — at more than 50 dB down, which is why the corner
+  is 2 800 Hz and the stage 165 taps. **Still owed**: the 560-file
+  paired sweep, whose arm is written but whose corpus was not on the
+  machine this was built on. `docs/notes/FT4_BENCHMARK.md` §42.
+
+- **The streaming spectrogram measured too: `fixed-point` is
+  0.63× f32 there (issue #349 step 2).** §36 timed the *batch*
+  `compute_spectrogram` and said plainly that it settled nothing about
+  `stage1_inc`, the incremental u16 builder a receiver actually runs
+  during capture — where halving the bytes written per pair could
+  still pay. It does not. `stage1_inc::compute_pair_into`'s body is
+  now `pair_kernel_i16`, with `pair_kernel_f32` the same computation
+  in the other scalar and `stage1_inc::scalar_ab` timing both over one
+  slot on the same audio: **1 342 ms u16 against 852 ms f32**, 345 KB
+  against 690 KB.
+
+  Per row that is 7.29 ms u16 / 4.63 ms f32, against the batch
+  builder's 7.86 / 8.49 — the inversion is the pair trick, which packs
+  two rows into one transform. The f32 arm collects the whole of that
+  saving and the u16 arm almost none, because the `sc16` 3840-point
+  mixed-radix transform costs 14.6 ms against `fc32`'s 9.3 on this
+  core. `stage1_inc` is **not** switched to f32: the cell type is not
+  local to it (`coarse_sync`, `pass2` and the waterfall all take
+  `&[u16]`) and the slot buffer would double. What changes is the
+  reason to keep it — the 345 KB, not speed.
+  `docs/notes/FT4_BENCHMARK.md` §41.
+
+- **`fixed-point` no longer implies the Q11i16 LLR/BP hot loop
+  (issue #349).** The scalar is its own feature, `fixed-point-llr`,
+  **off by default** — a `fixed-point` build keeps the u16 spectrogram
+  (702 → 351 KB, which is what the feature actually defends) and runs
+  LLR/BP in `f32`. The coupling had never been measured; when it was,
+  on the LX7 this exists for, the integer BP came out **0.85× f32**
+  (22 813 vs 19 456 µs, same LLRs and `max_iter`) because the core has
+  an f32 FPU and the saturating i16 helpers cost more than the narrower
+  loads save.
+
+  End-to-end on a CoreS3 (`ft8-bench`, `qso3_busy.wav`), stage 3
+  (refine + LLR + BP + OSD) drops **3.2-3.9 %** across three re-rank
+  widths and the whole slot **0.7 %** — 4.355 → 4.325 s at the ship
+  width. That is well short of #349's own "18 % of a stage that is
+  34 % of a slot": the 18 % is a kernel that in the pipeline exits
+  early on a CRC hit rather than running to `max_iter`, inside a stage
+  that is more than BP. Decodes unchanged — 7 on the board in every
+  arm, and the same 12 golden messages on host across both features
+  (`ft8_qso3_decode_set`, which now reports the LLR type separately
+  from the spectrogram's).
+
+  `m5stack-core2-app` pins `fixed-point-llr` on: it is an LX6, the
+  measurement is an LX7, and its logs were all taken with the integer
+  loop. Consumers on a target without an FPU should do the same.
+  `docs/notes/FT4_BENCHMARK.md` §40.
+
 - **FT4's embedded decode fits its slot at realistic band occupancy.**
   A day of hardware measurement on a CoreS3 took the FT4 ship
   configuration from **2.33× over its 1 960 ms post-slot budget to

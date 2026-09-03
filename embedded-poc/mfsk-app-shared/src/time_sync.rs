@@ -266,7 +266,7 @@ pub fn utc_now_ms() -> Option<u64> {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?;
-    (d.as_secs() >= PLAUSIBLE_UNIX_SECS).then(|| d.as_millis() as u64)
+    (d.as_secs() >= PLAUSIBLE_UNIX_SECS).then_some(d.as_millis() as u64)
 }
 
 /// 12 kHz samples from now until the next UTC boundary of a
@@ -288,4 +288,98 @@ pub fn samples_to_next_slot_12k(slot_len_s: u64) -> Option<usize> {
     let into_slot = now % period_ms;
     let remain_ms = period_ms - into_slot;
     Some((remain_ms * 12) as usize)
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Where the system clock came from
+
+/// What last set the system clock.
+///
+/// A `SystemTime` carries a value and nothing else, and that is the
+/// whole of the bug this exists to prevent: on the CoreS3 the boot
+/// order is `pmic::init` → `rtc::read_into_system_clock` → (30 s
+/// later) WiFi → NTP, so by the time anything asks "is the clock
+/// set?" the answer is yes and the honest answer is "yes, from the
+/// chip we were about to correct".
+///
+/// Measured consequence, 2026-09-02: every CoreS3 log from 08-31
+/// onwards shows `rtc: BM8563 set to X` about one second after
+/// `rtc: system clock set from BM8563 — X`, with the same X, and
+/// *before* `NTP: starting sync`. The chip had been writing its own
+/// value back to itself on every boot for the whole history of those
+/// logs, so NTP never reached it. Worse, the round trip is lossy in
+/// one direction — `read_epoch` returns whole seconds and
+/// `read_into_system_clock` commits them with `tv_usec: 0`, then the
+/// write happens ~1 s later and truncates again — so each boot set
+/// the RTC back by between 0.98 and 1.98 s. The 8 h drift run found
+/// the chip **186 s** behind NTP at t0, which 62.75 ppm cannot
+/// explain over any plausible interval; ~120 boots of that ratchet
+/// can (#354).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ClockSource {
+    /// Never set: still counting from whatever the ESP-IDF boot left.
+    Unset,
+    /// Read out of the battery-backed RTC. Plausible, not disciplined.
+    Rtc,
+    /// Disciplined by NTP. The only source worth writing back to the
+    /// RTC.
+    Ntp,
+}
+
+static CLOCK_SOURCE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// The system clock now holds a value read out of the RTC.
+pub fn note_clock_from_rtc() {
+    // Never demote a disciplined clock: NTP may already have run.
+    let _ = CLOCK_SOURCE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
+}
+
+/// The system clock has been disciplined by NTP.
+pub fn note_clock_from_ntp() {
+    CLOCK_SOURCE.store(2, Ordering::Release);
+}
+
+/// What last set the system clock.
+pub fn clock_source() -> ClockSource {
+    match CLOCK_SOURCE.load(Ordering::Acquire) {
+        1 => ClockSource::Rtc,
+        2 => ClockSource::Ntp,
+        _ => ClockSource::Unset,
+    }
+}
+
+/// Whether the system clock is good enough to write back into the RTC.
+///
+/// This is the predicate the three RTC-write sites want.
+/// [`utc_now_ms`] is not: it answers "is this value plausible", which
+/// an RTC-seeded clock satisfies by construction.
+pub fn clock_is_disciplined() -> bool {
+    clock_source() == ClockSource::Ntp
+}
+
+#[cfg(test)]
+mod clock_source_tests {
+    use super::*;
+
+    /// The ordering the CoreS3 boot actually performs, and the one
+    /// that used to launder an RTC error back into the chip.
+    #[test]
+    fn rtc_then_ntp_ends_disciplined_and_rtc_cannot_demote() {
+        CLOCK_SOURCE.store(0, Ordering::Release);
+        assert_eq!(clock_source(), ClockSource::Unset);
+        assert!(!clock_is_disciplined());
+
+        note_clock_from_rtc();
+        assert_eq!(clock_source(), ClockSource::Rtc);
+        // The whole point: a plausible clock is not a disciplined one.
+        assert!(!clock_is_disciplined());
+
+        note_clock_from_ntp();
+        assert!(clock_is_disciplined());
+
+        // A later RTC read (a second receiver starting, say) must not
+        // pull the state back down.
+        note_clock_from_rtc();
+        assert!(clock_is_disciplined());
+    }
 }

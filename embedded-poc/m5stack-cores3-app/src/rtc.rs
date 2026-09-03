@@ -76,7 +76,15 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// do not decode, or when the date is implausible. A wrong clock is
 /// worse than no clock here: the slot grid would anchor confidently to
 /// the wrong phase and the failure would look like a decoder bug.
-pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
+/// Read the BM8563 and return the epoch seconds it holds, **without**
+/// touching the system clock.
+///
+/// Split out of [`read_into_system_clock`] for the drift measurement
+/// (#354): comparing the RTC against an NTP-disciplined clock means
+/// reading one without disturbing the other. Everything about decoding
+/// and validation is that function's; this is the half before the
+/// commit.
+pub fn read_epoch(i2c: &mut I2cDriver<'_>) -> Option<i64> {
     let mut buf = [0u8; 7];
     if let Err(e) = i2c.write_read(RTC_I2C_ADDR, &[REG_SECONDS], &mut buf, I2C_TIMEOUT_TICKS) {
         log::warn!("rtc: BM8563 read failed: {e} — clock stays unset");
@@ -123,6 +131,16 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
         return None;
     }
 
+    Some(unix)
+}
+
+/// [`read_epoch`], then commit it to the system clock.
+pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
+    let unix = read_epoch(i2c)?;
+    // Say where the clock came from, so `write_from_system_clock`
+    // can refuse to write it back. See `time_sync::ClockSource` for
+    // the 186 s this cost (#354).
+    mfsk_app_shared::time_sync::note_clock_from_rtc();
     let tv = esp_idf_svc::sys::timeval {
         tv_sec: unix as esp_idf_svc::sys::time_t,
         tv_usec: 0,
@@ -134,17 +152,11 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
         log::warn!("rtc: settimeofday failed (rc={rc})");
         return None;
     }
-    log::info!(
-        "rtc: system clock set from BM8563 — {year:04}-{month:02}-{day:02} \
-         {hour:02}:{min:02}:{sec:02} UTC"
-    );
+    log::info!("rtc: system clock set from BM8563 — epoch {unix}");
     {
         let mut msg: heapless::String<64> = heapless::String::new();
         use core::fmt::Write as _;
-        let _ = write!(
-            &mut msg,
-            "clock from BM8563 {year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}Z"
-        );
+        let _ = write!(&mut msg, "clock from BM8563 (epoch {unix})");
         RTC_RESULT.store(msg.as_str());
     }
     Some(unix)
@@ -156,10 +168,74 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
 /// is that the *next* boot has a clock before WiFi exists, or without
 /// WiFi at all.
 pub fn write_from_system_clock(i2c: &mut I2cDriver<'_>) -> Result<()> {
+    // **Only ever write a disciplined clock.** Plausibility is not
+    // provenance: `pmic::init` seeds the system clock *from this
+    // chip* 30 s before WiFi exists, so a value check passes for a
+    // clock that came out of the register being written. Every CoreS3
+    // log from 2026-08-31 onward shows that round trip happening, one
+    // second after boot and before NTP, which is why the chip was
+    // found 186 s out (`time_sync::ClockSource`, #354).
+    if !mfsk_app_shared::time_sync::clock_is_disciplined() {
+        return Err(anyhow!(
+            "system clock is {:?}, not NTP-disciplined — writing it back would \
+             launder the chip's own error",
+            mfsk_app_shared::time_sync::clock_source()
+        ));
+    }
+
+    // Land the write on a second boundary.
+    //
+    // The chip stores whole seconds and `as_secs()` truncates, so a
+    // write issued mid-second stores the second that has already
+    // partly elapsed — up to 1 s late, and the old boot-order bug
+    // repeated that every boot until it had accumulated three
+    // minutes. Waiting for the boundary makes the stored value
+    // correct to within the I2C latency instead.
+    //
+    // `WRITE_LEAD_US` starts the transfer early so the register
+    // update lands *on* the boundary rather than after it: 8 bytes at
+    // 100 kHz is ~0.8 ms including the address phase.
+    //
+    // What this does **not** do is align the chip's own tick phase:
+    // the PCF8563's prescaler is not reset by a seconds write (only
+    // the STOP bit in control register 0x00 does that, which is a
+    // register this code does not touch today), so the next tick
+    // still falls at an arbitrary point inside the new second. The
+    // residual is bounded by 1 s and no longer accumulates, which is
+    // what the drift measurement needed. Driving STOP for sub-ms
+    // alignment is a further step, and wants a bench to verify.
+    const WRITE_LEAD_US: u64 = 800;
+    let sub = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("system clock is before the epoch: {e}"))?
+        .subsec_micros() as u64;
+    let wait_us = 1_000_000u64
+        .saturating_sub(sub)
+        .saturating_sub(WRITE_LEAD_US);
+    if wait_us > 3_000 {
+        esp_idf_svc::hal::delay::FreeRtos::delay_ms(((wait_us - 3_000) / 1_000) as u32);
+    }
+    loop {
+        let sub = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| anyhow!("system clock is before the epoch: {e}"))?
+            .subsec_micros() as u64;
+        if sub + WRITE_LEAD_US >= 1_000_000 {
+            break;
+        }
+        // SAFETY: a ROM busy-wait with no preconditions. A tick sleep
+        // is useless here — `CONFIG_FREERTOS_HZ` is unset in this
+        // crate, so the ESP-IDF default of 100 Hz applies and the
+        // shortest sleep available is 10 ms.
+        unsafe { esp_idf_svc::sys::esp_rom_delay_us(100) };
+    }
+    // The second that is about to start, which is what the boundary
+    // this loop just reached belongs to.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow!("system clock is before the epoch: {e}"))?
-        .as_secs() as i64;
+        .as_secs() as i64
+        + 1;
     if now < 1_600_000_000 {
         return Err(anyhow!(
             "system clock is not set ({now}) — nothing worth storing"

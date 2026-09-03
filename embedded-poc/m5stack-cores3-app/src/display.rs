@@ -131,7 +131,13 @@ pub fn run_log_panel(
 ) -> ! {
     // Set false when the board finds itself on external power — see
     // the VBUS check below.
-    let mut host_mode = mode == BootMode::Uac;
+    // Which receivers take audio from a radio over USB host. FT4 was
+    // missing here until 2026-09-02, which is why `apps::ft4`'s
+    // `Ft4Sink` had never been fed: it registered a sink in a mode
+    // where the host driver was never installed, so the receiver
+    // silently ran on its baked replay slot and every number measured
+    // for it came from a recording.
+    let mut host_mode = matches!(mode, BootMode::Uac | BootMode::Ft4);
 
     // Boot-time reading only.
     //
@@ -166,7 +172,14 @@ pub fn run_log_panel(
             // was lost, along with the ability to re-flash, since the
             // host firmware never charges and `cfg.toml` writes
             // `boot_mode` to NVS on every boot (#163).
-            if mode == BootMode::Uac {
+            //
+            // **A board fed from the DIN Base does not have that
+            // problem**: the M5Bus supplies it, so the USB-C port is
+            // free to source VBUS to the radio. If the AXP2101 reports
+            // that supply as VBUS-present and this check therefore
+            // refuses host mode, `MFSK_CORES3_FORCE_UAC=1` is the
+            // documented way past it — see `FORCE_UAC`.
+            if host_mode {
                 let external = match crate::pmic::vbus_present(&mut i2c) {
                     Ok((present, raw)) => {
                         log::info!(
@@ -465,10 +478,16 @@ pub fn run_log_panel(
         if tick % 12 == 0 {
             if let Some(i2c) = pmic_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
-                // Store the clock once it becomes real, so the next
-                // boot has one before WiFi does. NTP is what makes it
-                // real; this is what makes it survive a power cycle.
-                if !rtc_stored && mfsk_app_shared::time_sync::utc_now_ms().is_some() {
+                // Store the clock once NTP has made it real, so the
+                // next boot has one before WiFi does.
+                //
+                // The predicate is provenance, not plausibility:
+                // `utc_now_ms().is_some()` was true a second after
+                // boot because `pmic::init` had just seeded the clock
+                // from this very chip, so this wrote the RTC's own
+                // value back to it and NTP — arriving 30 s later —
+                // never reached the register. #354.
+                if !rtc_stored && mfsk_app_shared::time_sync::clock_is_disciplined() {
                     rtc_stored = true;
                     if let Err(e) = crate::rtc::write_from_system_clock(i2c) {
                         log::warn!("rtc: could not store the clock: {e:#}");

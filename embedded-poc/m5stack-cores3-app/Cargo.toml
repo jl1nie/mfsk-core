@@ -73,6 +73,16 @@ required-features = ["ft8-bench"]
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
 [[bin]]
+name = "rtc-drift"
+path = "src/bin/rtc_drift.rs"
+
+# Validates the five-minute drift estimator (per-second edges + a
+# least-squares fit) against the 8 h two-point run. Touches no NVS.
+[[bin]]
+name = "rtc-burst"
+path = "src/bin/rtc_burst.rs"
+
+[[bin]]
 name = "ft4-demo"
 path = "src/bin/ft4_demo.rs"
 harness = false

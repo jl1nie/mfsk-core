@@ -58,8 +58,8 @@ and optimisations land once and apply everywhere.
 
 | Component | Generic over | Fixed-point switch wired? |
 |---|---|---|
-| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ via `fixed-point` |
-| LLR computation (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ via `fixed-point` |
+| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ via **`fixed-point-llr`** — a separate, opt-in feature since #349; on an LX7 the i16 loop measures 0.85× f32 |
+| LLR computation (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ via `fixed-point` (spectra) × `fixed-point-llr` (LLR type) |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — works for FT8 LDPC(174,91) and FST4/uvpacket LDPC(240,101) |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ via `fixed-point` |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — runs plain host f32 on embedded too, via `fft-extern`; never needed the integer path. See [WSPR on embedded](#wspr-on-embedded) below. |
@@ -132,7 +132,8 @@ mfsk-core = { version = "0.8", default-features = false, features = [
     "alloc",            # Vec / Box / String — required for decode
     "ft8",              # FT8 protocol glue
     "fft-extern",       # caller supplies the FFT backend
-    "fixed-point",      # u16 spec + i16 DFT + Q11i16 LLR + integer NMS BP
+    "fixed-point",      # u16 spec + i16 DFT (LLR/BP are f32 since #349;
+                        # add "fixed-point-llr" for the i16 hot loop)
     # Optional:
     # "profile-coarse", # always-on stage-2 sub-stage timing
 ] }
@@ -161,7 +162,7 @@ Feature reference:
 | `alloc` | `extern crate alloc` + Vec / Box. | All decode paths. |
 | `fft-extern` | FFT backend via `mfsk_core_make_default_fft_planner` extern fn (and the i16 variant `_planner16`). | Any embedded target. |
 | `fft-rustfft` | rustfft as the FFT backend. | Host only. |
-| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q11i16 LLR + integer NMS BP. Implies `nstep-half`. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `engine::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
+| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT. Implies `nstep-half`. **No longer implies the Q11i16 LLR/BP hot loop** — that is `fixed-point-llr`, opt-in since #349, because on an LX7 the i16 BP measures 0.85× f32 (22 813 vs 19 456 µs) and what `fixed-point` actually defends is the spectrogram's 702 → 351 KB. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `engine::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
 | `nstep-half` | NSTEP = NSPS/2 (vs WSJT-X-faithful NSPS/4) for the spectrogram column rate. | Auto-enabled by `fixed-point`. Don't enable independently on a host build unless you're explicitly simulating the embedded path. |
 | `parallel` | Rayon-parallel candidate processing. | Host only. Always off on embedded (no `std::thread`). |
 | `profile-coarse` | Always emits coarse_sync sub-stage timings to stderr. | Diagnosis only. |
@@ -259,7 +260,7 @@ never need to think about scratch placement here at all.
 |---|---|---|---|
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`, saturated since 0.6.4 | `ft8::decode_block::spectrogram::Spectrogram` |
 | Symbol cs | `Cmplx<f32>` (default) or `Cmplx<Q14i16>` (`fixed-point`) | f32 unbounded; Q14 ±2 | `engine::scalar::Cmplx` (type alias for `num_complex::Complex`) |
-| LLR | f32 (host) or **Q11i16** (`fixed-point`, since 0.6.2 — was `Q3i8` in 0.5.x; widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `engine::scalar` for the comparison path) | `engine::scalar::LlrScalar` |
+| LLR | f32 (host **and embedded by default since #349**) or **Q11i16** (`fixed-point-llr`, opt-in; the type has been Q11i16 since 0.6.2 — was `Q3i8` in 0.5.x, widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `engine::scalar` for the comparison path) | `engine::scalar::LlrScalar` |
 | BP messages | T (same as LLR) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## Using from C / C++ / non-Rust ESP-IDF projects (`mfsk-ffi-ft8`)
@@ -1591,7 +1592,9 @@ afford it.
 
 ## FT4 on embedded
 
-**Status (2026-08-30): builds, decodes correctly on hardware, and is
+**Status (2026-08-30, superseded — see [Where this stands
+(2026-09-01)](#where-this-stands-2026-09-01--a-receiver-inside-its-budget)
+at the end of this section): builds, decodes correctly on hardware, and is
 3.4× over its slot budget** after the 2026-08-29 optimisations (8.8×
 before them). The remaining excess is spread across three stages, one
 of which — `downsample_cached` — a host-verified DDC front end now
@@ -1793,17 +1796,69 @@ and false on weak data (237 vs 179 of 560 at the crossing), so the ship
 depth does give up about a quarter of its recall to skip OSD. See
 `docs/notes/FT4_BENCHMARK.md` §21.
 
-**What is still missing before a board can run it**: no hardware
-measurement (the ~2.3 M complex MACs per candidate is arithmetic, and
-this section's own PSRAM hypothesis is what arithmetic about cost is
-worth); no esp-dsp binding for `FirStage::push_block`
-(`dsps_fird_f32_aes3`); and although `ft4_coarse_sync`'s
-`NFFT1 = 2304` now has a kernel of its own
-(`engine::dsp::fft_mixed_2304`, 256 × 9, wired into `EspDspPlanner`),
-the bench still reads its baked candidate list, so no device run has
-exercised it.
 Like `fst4::ddc`, this is a building block callers reach for, not a
 feature flag that swaps the host's front end.
+
+### Where this stands (2026-09-01) — a receiver, inside its budget
+
+**The 3.4× at the top of this section is superseded**, and so is the
+"no hardware measurement" that used to close it. Everything projected
+above has since been built and run on a CoreS3; the account is
+`docs/notes/FT4_BENCHMARK.md` §32-§34, §37-§38 and §42, and the
+summary is:
+
+| change | what it did |
+|---|---|
+| `Ft4SavgBuilder` — the coarse stage runs *during* capture (§32) | 761 ms → 6 ms after the slot closes |
+| a candidate loop held to a slot deadline (§34) | the overrun became an operating choice instead of a fact |
+| the shared decimation (§42) | ~188 → ~168 ms per candidate |
+| streaming that decimation from the capture path (§42.1) | slot 2 067-2 118 ms → **1 998-2 000** |
+| re-deriving the budget from key-up, not the slot end (§43) | the QSO-capable budget was **500 ms**, not 1 960 |
+| two cores, candidates from a shared cursor (§44) | 1.40× on the candidate loop |
+| task stacks sized from measurement (§45) | 1 290-1 401 ms with WiFi associated |
+| WSJT-X's own ±1.0 s Δt window restored (§46) | budget 1 750 → **1 225 ms**; 11 decodes → 9-10 |
+
+**The budget is key-up, not the slot boundary.** FT4 is a fast-QSO
+mode, so the deadline is the moment the station must transmit — 0.5 s
+into the next slot — and the capture window closes as soon as the
+audio the search can reach has arrived (6.775 s of 7.5 s with WSJT-X's
+full ±1.0 s Δt window, including the DDC chain's group delay).
+Anchored to the slot end instead, a transmitting build had 500 ms to
+decode in. See §43 for the timeline and §46 for why the window is
+WSJT-X's and what that costs.
+
+**Stacks are internal DRAM, and internal DRAM is what WiFi takes.**
+The decode tasks asked for 32 KB each and used 2.6-4.5 KB; with WiFi
+associated that waste pushed the largest free internal block to
+31 744 B and the decoder's own allocations into PSRAM, costing
+400-580 ms a slot. Stopping the radio does *not* fix it
+(`esp_wifi_stop` frees nothing); sizing the stacks does. §45.
+
+`ft4-demo` on the replayed golden slot — the 14-signal, FT8-density
+pessimum — now runs **12 of 12 candidates and decodes 11**, against 11
+of 12 and 10 before the shared front end, at the 1 960 ms transceiver
+budget. At the 5-10 signal occupancy FT4 actually sees (§23) the loop
+finishes with nothing cut.
+
+**The shared decimation is the front end's second half.**
+`ft4::ddc`'s per-candidate chain used to filter all 90 000 samples of
+the slot at 12 kHz for every candidate. `NDOWN = 18` factors as
+`2 · 9`, so `SlotDecimator` (165 taps, ÷2, real input through
+`FirStage::push_block_real`) runs once per slot and
+`CandidateDdc::new_half_rate` runs the same chain in Hz at 6 kHz with
+101 taps. The corner is 2 800 Hz rather than 3 000 because content
+above the new Nyquist folds *into* a candidate's band, and 165 taps
+rather than 111 because a 2 700 → 3 300 transition does not protect the
+top of the search band. Equivalent noise bandwidth against the
+reference is +0.021 dB with the extra stage and +0.021 dB without.
+
+**What is still missing**: no esp-dsp binding for
+`FirStage::push_block` (`dsps_fird_f32_aes3`); the 560-file paired
+sweep for the shared front end is written but not yet run; the FT4
+boot mode has not been run against a radio (it replays a baked golden
+slot by default, `MFSK_FT4_REPLAY=0` turns that off); and the
+real-audio path still has no wall-clock slot alignment, the open item
+`uac.rs` shares with #313.
 
 ## Live UAC bring-up — what to check, in what order (issue #163)
 

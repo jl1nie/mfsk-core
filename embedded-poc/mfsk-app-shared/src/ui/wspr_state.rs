@@ -19,8 +19,9 @@
 //!   trade-off `ui::state::UiState`'s 16-row decode ring already
 //!   makes for FT8).
 
-use core::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
+
+use super::spot_state::SpotState;
 
 use super::wspr_row::WsprSpotRow;
 
@@ -39,122 +40,72 @@ pub const HISTORY_CAP: usize = 64;
 
 /// Everything the WSPR app's display loop needs to paint a frame.
 pub struct WsprUiState {
-    /// Latest slot's decodes, in decode order (not sorted). Wholesale
-    /// replaced each slot by [`Self::set_slot`].
-    stations: heapless::Vec<WsprSpotRow, STATIONS_CAP>,
-    /// Every decode since boot, oldest first, oldest dropped when
-    /// full.
-    history: heapless::Deque<WsprSpotRow, HISTORY_CAP>,
-    /// `HHMM` of the most recently completed slot — `None` before the
-    /// first scan finishes, so the header can show "no scan yet"
-    /// rather than a stale/blank time.
-    last_slot_hhmm: Option<heapless::String<4>>,
-    /// How many decodes the last slot produced, *before* the
-    /// [`STATIONS_CAP`] truncation — the "discovered" header shows
-    /// this alongside `stations.len()` so a truncated slot is visible
-    /// to the operator instead of looking like a quiet band.
-    last_slot_decoded_count: usize,
+    /// The latest slot's spots and the rolling history — the half
+    /// this screen shares with FST4's, in [`super::spot_state`] so a
+    /// host test can reach it.
+    spots: SpotState<WsprSpotRow, STATIONS_CAP, HISTORY_CAP>,
     /// Selected band's display label (e.g. `"20m"`), mirrored from
     /// `Settings::band_idx` + `wspr_bands::WSPR_BANDS` by the caller
     /// so the status bar doesn't need its own NVS read.
     pub band_label: heapless::String<8>,
     pub dial_mhz: f64,
-    /// `"HH:MM:SS"`, updated once per display tick from the system
-    /// clock (meaningful only once NTP has synced — see
-    /// `ntp_synced` below).
     pub utc_hhmmss: heapless::String<8>,
     pub ntp_synced: bool,
-    /// Mirrors `Settings::wsprnet_spot_config != "off"` — the status
-    /// bar shows a plain on/off indicator, not the raw config string
-    /// (which may be a URL not worth rendering at this width).
     pub wsprnet_enabled: bool,
     pub free_heap_kb: u32,
-    dirty_seq: AtomicU32,
 }
 
 impl WsprUiState {
     pub const fn new() -> Self {
         Self {
-            stations: heapless::Vec::new(),
-            history: heapless::Deque::new(),
-            last_slot_hhmm: None,
-            last_slot_decoded_count: 0,
+            spots: SpotState::new(),
             band_label: heapless::String::new(),
             dial_mhz: 0.0,
             utc_hhmmss: heapless::String::new(),
             ntp_synced: false,
             wsprnet_enabled: false,
             free_heap_kb: 0,
-            dirty_seq: AtomicU32::new(0),
         }
     }
 
-    /// Replace the "discovered stations" pane with one slot's worth
-    /// of decodes, and append every one of them to the cumulative
-    /// history ring.
-    ///
-    /// `decoded` may exceed [`STATIONS_CAP`] on a busy band; this
-    /// stores only the first `STATIONS_CAP` for the discovered pane
-    /// (order is whatever the caller's scan produced — typically
-    /// frequency- or SNR-sorted already) but still logs every one of
-    /// them to `history`, and records the pre-truncation count so the
-    /// header can show `"DISCOVERED 16/23"` rather than silently
-    /// looking like only 16 were heard.
+    /// Replace the discovered-stations pane with this slot's decodes,
+    /// append them to `history`, and record the pre-truncation count
+    /// so the header can show `"DISCOVERED 16/23"` rather than
+    /// silently looking like only 16 were heard.
     pub fn set_slot(&mut self, hhmm: heapless::String<4>, decoded: &[WsprSpotRow]) {
-        self.last_slot_hhmm = Some(hhmm);
-        self.last_slot_decoded_count = decoded.len();
-
-        self.stations.clear();
-        for row in decoded.iter().take(STATIONS_CAP) {
-            // `push` only fails on capacity, which `.take(STATIONS_CAP)`
-            // already guarantees can't happen here.
-            let _ = self.stations.push(row.clone());
-        }
-
-        for row in decoded {
-            if self.history.is_full() {
-                let _ = self.history.pop_front();
-            }
-            let _ = self.history.push_back(row.clone());
-        }
-
-        self.bump();
+        self.spots.set_slot(&hhmm, decoded);
     }
 
     pub fn stations(&self) -> &[WsprSpotRow] {
-        self.stations.as_slice()
+        self.spots.rows()
     }
 
     /// `(shown, decoded_before_truncation)` — the header renders
     /// `"DISCOVERED {shown}/{decoded}"` when they differ, plain
     /// `"DISCOVERED {shown}"` otherwise.
     pub fn stations_counts(&self) -> (usize, usize) {
-        (self.stations.len(), self.last_slot_decoded_count)
+        self.spots.counts()
     }
 
     pub fn last_slot_hhmm(&self) -> Option<&str> {
-        self.last_slot_hhmm.as_deref()
+        self.spots.last_slot_hhmm()
     }
 
     /// History, oldest first — matches `Deque`'s natural iteration
     /// order. Renderer decides how to slice/reverse for display.
     pub fn history_iter(&self) -> impl Iterator<Item = &WsprSpotRow> {
-        self.history.iter()
+        self.spots.history_iter()
     }
 
     pub fn history_len(&self) -> usize {
-        self.history.len()
+        self.spots.history_len()
     }
 
     /// Render-side dirty check, same contract as
     /// `ui::state::UiState::dirty_seq`: readers compare against their
     /// last-seen value and skip the LCD push when unchanged.
     pub fn dirty_seq(&self) -> u32 {
-        self.dirty_seq.load(Ordering::Acquire)
-    }
-
-    fn bump(&self) {
-        self.dirty_seq.fetch_add(1, Ordering::AcqRel);
+        self.spots.dirty_seq()
     }
 
     /// Update the status-bar-shaped fields (band, clock, sync flags).
@@ -163,7 +114,7 @@ impl WsprUiState {
     /// often than `set_slot`.
     pub fn update_status(&mut self, f: impl FnOnce(&mut Self)) {
         f(self);
-        self.bump();
+        self.spots.bump();
     }
 }
 

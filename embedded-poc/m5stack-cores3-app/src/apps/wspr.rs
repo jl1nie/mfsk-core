@@ -135,7 +135,6 @@ use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
 use mfsk_app_shared::ui::wspr_state::WSPR_UI;
 use mfsk_app_shared::ui::{link_bar, mode_picker};
 use mfsk_app_shared::wspr_bands::{WsprBand, WSPR_BANDS};
-use mfsk_app_shared::{http_config, ntp, udp_log};
 
 /// Linked in only for the synthetic/bench build. 360 KB of flash that a
 /// receiver taking audio from a radio never reads.
@@ -491,7 +490,26 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     // once spawned, same as scan/DDC/display always have, just with
     // its stack safely claimed first.
     if let Some(wifi_driver) = wifi_driver {
-        spawn_network_task(NetworkCtx { wifi_driver, nvs });
+        crate::net::spawn(
+            wifi_driver,
+            nvs,
+            crate::net::Config {
+                name: "wspr_app",
+                // Unbounded retry and no modem power save — this app's
+                // own AP needed the former, and whether it would pay
+                // for the latter the way `fst4_app` did has never been
+                // measured here, so the shared path keeps WSPR's
+                // existing behaviour rather than changing a shipped
+                // receiver on an assumption.
+                policy: crate::net::Policy::Unbounded,
+                power_save: false,
+                on_ntp: |synced| {
+                    let mut ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
+                    ui.update_status(|u| u.ntp_synced = synced);
+                },
+                // WSPR reports spots to wsprnet — the association is
+            },
+        );
     }
     log_heap("post-network-spawn");
 
@@ -813,10 +831,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // recently.
             if let Some(i2c) = touch_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
-                // Store the clock once it becomes real, so the next
-                // boot has one before WiFi does. NTP is what makes it
-                // real; this is what makes it survive a power cycle.
-                if !rtc_stored && mfsk_app_shared::time_sync::utc_now_ms().is_some() {
+                // Store the clock once NTP has made it real, so the
+                // next boot has one before WiFi does.
+                //
+                // The predicate is provenance, not plausibility:
+                // `utc_now_ms().is_some()` was true a second after
+                // boot because `pmic::init` had just seeded the clock
+                // from this very chip, so this wrote the RTC's own
+                // value back to it and NTP — arriving 30 s later —
+                // never reached the register. #354.
+                if !rtc_stored && mfsk_app_shared::time_sync::clock_is_disciplined() {
                     rtc_stored = true;
                     if let Err(e) = crate::rtc::write_from_system_clock(i2c) {
                         log::warn!("rtc: could not store the clock: {e:#}");
@@ -929,192 +953,6 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
             FreeRtos::delay_ms(50);
         }
-    }
-}
-
-// ── Network task (WiFi + UDP log + NTP + HTTP config server) ────────────
-
-/// Stack for the network task. Its own peak is unmeasured (no
-/// decode-sized frames — WiFi scan/connect, one `EspSntp`, one
-/// `EspHttpServer::new` call, all against small stack-local structs),
-/// picked to comfortably exceed the display task's own 24 KiB for a
-/// similarly "no huge frames, but not tiny either" workload.
-///
-/// **Lives in PSRAM, not internal DRAM — real-hardware finding,
-/// 2026-08-15.** `wifi_driver_init` alone (rx/tx buffer pools, its own
-/// ~6.5 KiB driver task) was measured taking internal DRAM from 57 KB
-/// free down to **10 KB free / 7 KB largest contiguous block** — nowhere
-/// near enough left for a 24 KiB stack via a plain internal-DRAM
-/// `xTaskCreatePinnedToCore`, regardless of spawn ordering (moving the
-/// spawn earlier, before `scan_loop`'s own churn, was tried first and
-/// didn't help — this is a genuine budget shortfall, not a race).
-/// [`spawn_network_task`] uses `xTaskCreatePinnedToCoreWithCaps`
-/// (`MALLOC_CAP_SPIRAM`, same mechanism `http_config`'s httpd task
-/// stack already uses, gated by the same
-/// `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y`) instead, sidestepping
-/// the internal-DRAM budget entirely.
-const NETWORK_STACK: u32 = 24 * 1024;
-/// Below the DDC/display tasks — this task's own work (WiFi bring-up,
-/// one NTP sync, one HTTP server start) is a one-time cost, not
-/// something that should ever contend for CPU against the DDC
-/// producer or display render loop once it's done.
-const NETWORK_PRIORITY: u32 = 2;
-
-struct NetworkCtx {
-    /// Already constructed + started in `main`, before `SCAN_GO` — see
-    /// the comment at that call site for why driver construction
-    /// itself can't be backgrounded the way the rest of this can.
-    wifi_driver: esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>,
-    nvs: Arc<Mutex<EspNvs<NvsDefault>>>,
-}
-
-extern "C" fn network_task_entry(arg: *mut core::ffi::c_void) {
-    // SAFETY: `spawn_network_task` leaked exactly this pointer via
-    // `Box::into_raw`, and this is the only place that reclaims it.
-    let ctx = unsafe { Box::from_raw(arg as *mut NetworkCtx) };
-    network_loop(*ctx);
-}
-
-fn spawn_network_task(ctx: NetworkCtx) {
-    let ptr = Box::into_raw(Box::new(ctx)) as *mut core::ffi::c_void;
-    // See NETWORK_STACK's own doc comment — PSRAM-backed stack, same
-    // mechanism (and same enabling Kconfig) `http_config`'s httpd task
-    // already uses, for the same reason (internal DRAM too tight once
-    // WiFi's own driver buffers are live).
-    let caps = esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_8BIT;
-    let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
-            Some(network_task_entry),
-            c"wspr_net".as_ptr(),
-            NETWORK_STACK,
-            ptr,
-            NETWORK_PRIORITY,
-            core::ptr::null_mut(),
-            1, // core 1, alongside display/DDC — never core 0 (scan).
-            caps,
-        )
-    };
-    if created != 1 {
-        log::error!("wspr_app: failed to create wspr_net task");
-    }
-}
-
-/// Association/DHCP (persistent retry — see `wifi::connect_with_retry`'s
-/// own doc comment for why this AP needs it) → UDP log sink → NTP →
-/// HTTP config server, entirely in the background, against the driver
-/// `main` already constructed. `main`'s own boot doesn't wait on any
-/// of this — `SCAN_GO` fires right after `main` spawns this task, not
-/// after it finishes.
-///
-/// **Retroactive, not just prospective**: `run_one_slot` reads
-/// `WSPR_UI.ntp_synced` fresh every slot, so wsprnet reporting turns
-/// on for the *next* slot decoded after this task eventually finishes
-/// — including slots whose decode started before WiFi came up. A slot
-/// already in progress when this task finishes doesn't retroactively
-/// get reported (the check happens once, at that slot's own report
-/// time, not continuously), but nothing is permanently lost the way
-/// it was when WiFi failing once meant "no wsprnet reporting for the
-/// rest of this boot."
-fn network_loop(mut ctx: NetworkCtx) -> ! {
-    // Blocks until connected — see `connect_with_retry`'s own doc
-    // comment. Only returns `Err` for a malformed SSID/PSK (checked
-    // once, not worth retrying), not for a transient connect failure.
-    let info = match mfsk_app_shared::wifi::connect_with_retry(
-        &mut ctx.wifi_driver,
-        crate::WIFI_SSID,
-        crate::WIFI_PSK,
-        None,
-    ) {
-        Ok(i) => i,
-        Err(e) => {
-            log::error!("wspr_app: WiFi setup failed permanently: {e:#}");
-            loop {
-                FreeRtos::delay_ms(60_000);
-            }
-        }
-    };
-    log::info!("wspr_app: WiFi up, ip {}", info.ip);
-
-    // UDP log sink — see this file's top doc comment for why (USB
-    // host mode later takes the serial console with it). Same
-    // target-resolution + staging-drain sequence `main.rs` uses.
-    let target_ip: std::net::IpAddr =
-        if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
-            std::net::IpAddr::V4(info.subnet_broadcast)
-        } else {
-            match crate::UDP_LOG_TARGET.parse() {
-                Ok(ip) => ip,
-                Err(e) => {
-                    log::warn!(
-                        "wspr_app: UDP_LOG_TARGET '{}' parse failed ({e}); using subnet bcast",
-                        crate::UDP_LOG_TARGET
-                    );
-                    std::net::IpAddr::V4(info.subnet_broadcast)
-                }
-            }
-        };
-    let port: u16 = crate::UDP_LOG_PORT.parse().unwrap_or(9999);
-    let addr = std::net::SocketAddr::new(target_ip, port);
-    match udp_log::UdpLogSink::new(addr) {
-        Ok(sink) => {
-            if let Ok(mut slot) = crate::FANOUT.udp.try_lock() {
-                *slot = Some(sink);
-            }
-            crate::FANOUT.drain_staging_to_udp();
-            log::info!("wspr_app: UDP log sink up → {addr}");
-        }
-        Err(e) => log::warn!("wspr_app: UDP socket bind failed: {e}"),
-    }
-
-    // ── NTP: one attempt, now that WiFi is confirmed up. Not
-    // per-slot — see `ntp.rs`'s own doc comment for why absolute time
-    // can't come from anywhere else on a cold start. ────────────────
-    let initial_settings = {
-        let g = ctx.nvs.lock().expect("settings NVS mutex poisoned");
-        settings::load(&g)
-    };
-    let (ntp_synced, _sntp_keepalive) = if initial_settings.ntp_enabled {
-        match ntp::start(&initial_settings.ntp_server) {
-            Ok(sntp) => {
-                let synced = ntp::wait_synced(&sntp, NTP_SYNC_TIMEOUT_MS);
-                (synced, Some(sntp))
-            }
-            Err(e) => {
-                log::warn!("wspr_app: NTP start failed: {e:#}");
-                (false, None)
-            }
-        }
-    } else {
-        log::info!("wspr_app: NTP sync disabled in settings");
-        (false, None)
-    };
-    if !ntp_synced {
-        log::warn!("wspr_app: NTP never synced — wsprnet reporting stays off until it does");
-    }
-    {
-        let mut ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-        ui.update_status(|u| u.ntp_synced = ntp_synced);
-    }
-
-    // ── HTTP config server. ──────────────────────────────────────────
-    let _http_server = match http_config::start(ctx.nvs.clone()) {
-        Ok(s) => {
-            log::info!("wspr_app: HTTP config server up");
-            Some(s)
-        }
-        Err(e) => {
-            log::warn!("wspr_app: HTTP config server failed: {e:#}");
-            None
-        }
-    };
-
-    // `ctx.wifi_driver`/`_sntp_keepalive`/`_http_server` are never read
-    // again but must outlive this task (their `Drop`s tear down the
-    // association / stop syncing / stop listening) — this task never
-    // returns, so keeping them in scope (`ctx` itself, plus the two
-    // locals) through the tail loop below already covers that.
-    loop {
-        FreeRtos::delay_ms(60_000);
     }
 }
 

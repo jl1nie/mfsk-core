@@ -2811,3 +2811,621 @@ the streamed coarse into the receiver.
 `push_block_real` and its equivalence test are the only new code so
 far — `ft4::ddc`'s `CandidateDdc` itself is unchanged, so this is a
 measurement, not yet a shipped optimization.
+
+## 40. FT8's LLR/BP in f32 — the projection was 6 %, the slot moved 0.7 % (2026-09-01)
+
+§36 measured FT8's BP at **0.85× in Q11i16** on this board and issue
+#349's first suggested step read: "18 % of a stage that is 34 % of an
+FT8 slot". That is a projection, and this is what it is worth.
+
+`fixed-point` stopped implying the i16 LLR/BP hot loop. The scalar is
+now its own feature, `fixed-point-llr`, off by default — so a build
+gets the u16 spectrogram (which is where the 702 → 351 KB comes from)
+without the integer BP, and a target that wants the narrower scratch
+asks for it. Two type aliases move; nothing else in the pipeline
+changes.
+
+A/B on a CoreS3, `ft8-bench`, `qso3_busy.wav`, three re-rank widths:
+
+| pass-2 width | stage 3, Q11i16 | stage 3, f32 | Δ | slot total |
+|---|---:|---:|---:|---:|
+| top 15 | 909 904 µs | 874 858 µs | **−3.9 %** | 4.333 → 4.298 s |
+| top 20 | 932 529 µs | 897 881 µs | **−3.7 %** | 4.355 → 4.325 s |
+| top 30 | 1 135 751 µs | 1 099 570 µs | **−3.2 %** | 4.560 → 4.530 s |
+
+Seven decodes in every arm of both builds, and on host the golden set
+is identical — twelve messages, `ft8_qso3_decode_set` diffed across
+the two features.
+
+**Stage 3 moves 3.5 %, not 18 %, and the slot moves 0.7 %.** The
+18 % is real and is not the whole stage: `bp_decode_nms` in the A/B
+harness runs to `max_iter = 30` on LLRs that never converge (the
+bench prints `0 converged`), while in the pipeline most BP calls exit
+on a CRC hit long before that, and stage 3 also carries the refine
+pass, the DFT, the LLR computation and OSD. A per-kernel ratio
+applied to a stage that only partly runs that kernel overstates it by
+5×.
+
+So the change is worth taking — 35 ms a slot, no recall cost, and it
+removes a coupling that was never measured — but "18 % of 34 %" was
+not what it bought, and #349 should be read with this correction
+attached.
+
+The 12 KB the i16 scratch saves is heap (`BpScratch`'s buffers are
+`Vec`s), so nothing moves on the stack. `m5stack-core2-app` keeps
+`fixed-point-llr` pinned on: that board is an LX6, the A/B above is an
+LX7, and its own history was measured with the integer loop.
+
+### 40.1 What #349 still asks for, and one thing it asks for that is wrong
+
+Untouched here: step 2 (measure `stage1_inc`, the streaming u16
+spectrogram, the same way — §36 timed the *batch* builder and said so).
+
+Step 3's "`fixed-point` should stop implying `nstep-half`" is not
+done, and should not be. `nstep-half` is coupled deliberately
+(Phase 1.7.7b, and `mfsk-core/Cargo.toml` carries the reason): a host
+`fixed-point` build exists to simulate the embedded pipeline, and with
+a different NSTEP it simulates a different one — 4 vs 7 decodes on
+`qso3_busy` single-pass when they were independent. The coupling is
+between *a simulation and the thing it simulates*, not between a
+numeric format and a search parameter. What was wrong was tying the
+BP scalar to the spectrogram's, and that is what this changes.
+
+## 41. The streaming spectrogram, measured — u16 is 0.63× f32 (2026-09-01)
+
+§36 timed the **batch** `compute_spectrogram` and said, in as many
+words, that it settled nothing about `stage1_inc`: that builder's
+whole design is an incremental u16 spectrogram fed during capture, and
+the bandwidth argument might still hold there. Issue #349's step 2 is
+to measure it. Measured, it does not hold — it fails harder than in
+the batch builder.
+
+`stage1_inc::compute_pair_into`'s body is now `pair_kernel_i16`, and
+`pair_kernel_f32` is the same computation in the other scalar: same
+packing of two audio rows into one complex transform, same demux into
+two spectrogram rows, the esp-dsp `fc32` transform instead of the
+`sc16` one. `scalar_ab` runs both over one slot's 92 pairs, best of
+three passes each.
+
+```
+stage1_inc A/B:  1 342 166 us u16   vs   852 059 us f32   (345 KB vs 690 KB spec)
+```
+
+**u16 is 0.63× f32** — 490 ms per slot slower, for half the memory.
+Normalised per spectrogram row against §36's batch numbers:
+
+| builder | u16 | f32 | |
+|---|---:|---:|---|
+| batch `compute_spectrogram` | 7.86 ms/row | 8.49 ms/row | u16 1.08× |
+| **`stage1_inc`** | **7.29 ms/row** | **4.63 ms/row** | **u16 0.63×** |
+
+The inversion is the pair trick. `stage1_inc` packs two real rows into
+one complex transform, so it pays 92 transforms where the batch
+builder pays 184 — and the f32 arm collects the whole of that saving
+(8.49 → 4.63) while the u16 arm collects almost none (7.86 → 7.29).
+The `sc16` 3840-point mixed-radix transform costs 14.6 ms against
+`fc32`'s 9.3 on this core, and that difference eats the halving.
+
+So `fixed-point` defends memory in the streaming builder too, and
+there it charges ~490 ms a slot for it. With §40 (BP) and §36 (batch
+spectrogram), all three of its claimed speed benefits are now measured
+and none of them is one.
+
+### 41.1 What this does *not* do
+
+**`stage1_inc` is not switched to f32 here.** The spectrogram's cell
+type is not local to this builder: `coarse_sync`, `pass2` and the
+waterfall row builder all take `&[u16]`, and the slot buffer would go
+345 → 690 KB. That is a change with its own recall question and its
+own memory budget, not a follow-on to a timing measurement. What this
+section establishes is that the reason to keep u16 is the 345 KB,
+which is a real constraint on a board that also holds two audio
+buffers and a PSRAM cache — not speed, which was the claim.
+
+### 41.2 The metric was wrong twice before it was right
+
+A timing A/B is worthless if one arm is not computing the same thing,
+so `scalar_ab` cross-checks the two spectra. The first two attempts
+measured the checker, not the transforms:
+
+- **Peak bin per row**: 171/184 agreed. Then giving the i16 arm the
+  shift the worker actually locks took it to **144/184** — a *worse*
+  score from a *more* faithful arm. On a band with twenty signals the
+  argmax swaps between two near-equal peaks, and on a noise row it is
+  a coin flip.
+- **Peak bin, rows with a peak 8× above their mean**: 136/174. Same
+  problem, smaller sample.
+- **Pearson r over the band, per row**: mean **0.9882**, worst
+  **0.9137** over 180 rows (4 rows the u16 arm quantises flat, counted
+  and skipped rather than scored 0). That is the question the check
+  was for: same spectrum, up to quantisation.
+
+Same lesson as §33's row-counting diagnostic — a check that quietly
+measures itself is worse than none.
+
+## 42. The shared decimation, built and on the board (2026-09-01)
+
+§37.1 and §37.2 measured the three legs of a proposal — one shared
+decimate-by-2 over the slot's real audio, then a per-candidate chain
+at 6 kHz with half the taps — and left it there, a probe rather than a
+patch. This section is the patch, and what the board did with it.
+
+### What was built
+
+`ft4::ddc` grew the shared half:
+
+- **`SlotDecimator`** — 165 taps, ÷2, `fc` 2 800 Hz, driven through
+  `FirStage::push_block_real` so the stage costs one dot per output
+  rather than two against a history of zeros. `decimate_slot()` is the
+  one-shot form; the struct exists because the work is per-block and a
+  receiver has the audio as it arrives.
+- **`CandidateDdc::new_half_rate`** — the same chain in Hz (320 Hz
+  stage A, 56 Hz stage B, same band centre and derotation) fed the
+  half-rate stream: 101 taps and ÷9 instead of 199 and ÷18.
+- **`candidate_baseband_half`**, and `push_f32` beside `push_i16`.
+
+`ft4_rx::decode_slot` calls `decimate_slot` once before the candidate
+loop and `candidate_baseband_half` inside it. Inside the deadline,
+deliberately: it is decode work, and `elapsed_us` runs from slot close
+either way.
+
+### On the board
+
+`ft4-demo`, CoreS3, replayed golden slot, `TX_TURNAROUND_BUDGET_MS`
+(1 960 ms). Logs `logs/ft4_demo_baseline_2026-09-01.log` and
+`logs/ft4_demo_shared_decim_wired_2026-09-01.log`, nine slots each.
+
+| | candidates | decodes | slot | per candidate |
+|---|---:|---:|---:|---:|
+| baseline | 11 of 12 (cut 1 at 1.55) | **10** | 2 067-2 118 ms | ~188 ms |
+| shared | **12 of 12**, nothing cut | **11** | 2 019-2 101 ms | **~168 ms** |
+
+**The deadline stops firing, and that is the whole point.** §37 argued
+that on this receiver milliseconds are decodes rather than headroom,
+because the budget bounds how far down the candidate list the loop
+gets. The measurement is that argument closing: 20 ms per candidate
+buys the twelfth candidate, and the twelfth candidate is
+`W7BOB KJ7G RR73` at −17 dB — the weakest of the eleven, the one §34
+recorded the cut giving up.
+
+**The prediction was right this time.** §37.2 projected 30.5 ms saved
+per candidate against 108.7 ms paid once, i.e. ~21 ms per candidate at
+twelve; measured 20. Worth stating plainly after §26.1, §27 and §31,
+where arithmetic of the same shape was wrong three times: this one was
+not arithmetic about cost but a *measurement* of all three legs, and
+that is the difference.
+
+The slot still overruns by 60-140 ms. That is §34.1's structural
+overshoot — the candidate already running when the deadline passes —
+and it is smaller than before only because a candidate is cheaper.
+
+### What it cost in sensitivity: nothing measurable
+
+The split makes the chain three stages, so nothing is bit-identical
+and §20's "the passband is a decode parameter" applies to a filter
+cascade that did not exist when that was written. Re-established
+rather than assumed:
+
+- **Equivalent noise bandwidth against the reference band**:
+  two-stage **+0.021 dB**, shared + two-stage **+0.021 dB**
+  (`ft4::ddc::tests::noise_bandwidth_matches_the_reference_band`).
+  The extra stage moves it by less than a millidecibel, which is what
+  a 2 800 Hz corner 45× above the band edge buys.
+- **The golden recording**, both depths, in
+  `ft4_ddc_equivalence`'s new third arm: 11 distinct decodes, the same
+  eleven messages as the FFT front end, refined `i0` identical and one
+  candidate of eleven one 1 Hz grid step off — the same signature the
+  two-stage arm has.
+- **Aliasing**, the one failure mode the shared stage introduces that
+  the full-rate path cannot have: a tone at `6 000 − f` folds onto `f`,
+  so for a candidate at the top of the search band the dangerous
+  inputs start at 3 206 Hz. `shared_rejects_content_that_folds_into_the_band`
+  pins 3 250-5 000 Hz at more than 50 dB down. This is why the corner
+  is 2 800 Hz and the stage is 165 taps rather than the 111 first
+  assumed (§37.1).
+
+**Not yet run: the 560-file paired sweep.** `ft4_ddc_equivalence`'s
+tier-C test now carries a shared arm beside the FFT and DDC ones, with
+the same 2 % floor, but the `ft4_sweep` corpus is not present on the
+machine this was built on. That is the one piece of §37.1's
+re-verification still owed — the golden and the ENBW cover the band and
+the decodes on one recording; only the sweep says the crossing did not
+move.
+
+### 42.1 Streaming it, the same move §32 made for the coarse stage
+
+The shared stage was, on the first cut, the same shape the coarse
+stage had before §32: per-block work being done *after* the slot
+closed that could be done while the audio was still arriving. So
+`SlotAccum` now drives `SlotDecimator` alongside `Ft4SavgBuilder`, and
+`CapturedSlot` carries the 6 kHz slot beside the audio and the
+periodogram; `decode_slot` reads it.
+
+That is only safe because the output does not depend on how the audio
+was cut into blocks — a UAC read is ~256 samples and divides nothing.
+`slot_decimator_is_block_independent` pins it the strong way: streamed
+through blocks of 251, 1, 1 024, 37 and 4 096 samples, the result is
+**bit-identical** to `decimate_slot` over the whole buffer, which a
+`FirStage` gives for free by carrying its own history.
+
+Measured, same demo, same golden slot, eight slots:
+
+| front end | candidates | decodes | slot |
+|---|---:|---:|---:|
+| baseline (÷18 per candidate) | 11 of 12 | 10 | 2 067-2 118 ms |
+| shared ÷2, inside the decode | 12 of 12 | 11 | 2 019-2 101 ms |
+| **shared ÷2, during capture** | **12 of 12** | **11** | **1 998-2 000 ms** |
+
+Same eleven messages in all three, and the same eleven the host
+decodes.
+
+**Two things to note, one of them unexplained.** The spread collapses
+— 2 019-2 101 ms becomes 1 998-2 000, a 2 ms band across eight slots —
+which is what moving a fixed 100 ms lump off the post-slot path should
+look like. But the *saving* is ~60 ms, not the ~109 the probe measured
+for the stage in isolation (§37.2). The stage cannot cost less because
+it moved, so the difference is in what it now overlaps with or how it
+is measured, and this section does not know which. It is recorded
+rather than smoothed over: §26.1, §27 and §31 are all cases where the
+gap between a probe and the pipeline was the interesting part.
+
+The overshoot against the 1 960 ms deadline is now ~40 ms, from
+60-140.
+
+### What is next, on this evidence
+
+Nothing on the decode path is obviously left: §38.1 measured every
+lever on the LLR/BP tail shut, §31.1 closed dual-core, and the two
+front-end stages are now shared or streamed. The open items are the
+ones this line has not measured at all — the esp-dsp binding for
+`FirStage::push_block` (`dsps_fird_f32_aes3`), the 560-file paired
+sweep for the shared front end, and running the FT4 boot mode against
+a radio rather than a replayed slot.
+
+## 43. The budget was anchored to the wrong end of the slot (2026-09-01)
+
+§34 gave the candidate loop a deadline of `TX_TURNAROUND_BUDGET_MS =
+1 960 ms` measured from `CapturedSlot::closed_us`, and §42 reported
+the receiver comfortably inside it. Both are right about the number
+and wrong about where it starts.
+
+FT4 exists for fast QSOs, so the deadline is not the end of the slot —
+it is the moment this station has to key up. Within a slot beginning
+at 0:
+
+```text
+  0.50 s  the other station's transmission starts
+  5.54 s  its frame ends (105 symbols x 48 ms)
+  6.04 s  ...plus the +0.5 s of DT the search window allows: every
+          sample the decoder can read has now arrived
+  7.50 s  slot boundary          <- the old code closed here
+  8.00 s  THIS station must be transmitting
+```
+
+The decode window is **6.04 → 8.00 s**. The old anchoring gave the
+decoder 1 960 ms starting at 7.50 s, i.e. an answer at 9.46 s — 1.46 s
+after it needed to be on the air. **A QSO-capable build had 500 ms,
+not 1 960.** The width was right because both derivations subtract the
+same 0.5 s; the window sat half a second late.
+
+The 1.25 s the old code spent waiting was audio no candidate reads:
+`ft4_sync_search_window`'s window tops out at `i0 = 667` and a frame is
+105 x 32 = 3 360 downsampled samples, so 4 027 of a slot's 5 000.
+
+### 43.1 Closing early costs nothing measurable
+
+`tests/ft4_early_close.rs` runs the receiver's own pipeline over the
+WSJT-X golden with the window closed at a range of points, in two
+arms — the periodogram averaged over the shorter span (what a real
+early close does), and the tail zero-filled:
+
+| close at | candidates | decodes |
+|---|---:|---:|
+| 6.041 s (what the search reaches) | 12 | 11 |
+| 6.100 s | 12 | 11 |
+| **6.250 s (shipped)** | **12** | **11** |
+| 6.500 s | 12 | 11 |
+| 7.500 s (whole slot) | 12 | 11 |
+
+Identical sets, no missing and no extra decodes, in both arms. Two
+things this does *not* establish: the 560-file sweep has not been run
+(no corpus on this machine), and the golden's DTs span −0.44…+0.30 s,
+so nothing here exercises the top of the ±0.5 s window.
+
+**The shipped close is 6.25 s, not 6.04.** The extra 0.21 s is the DDC
+chain's group delay: to compute baseband sample `n` from real history
+rather than from the flush's zeros, the chain needs input up to
+`n·18 + gd`, and `gd` is ~2 540 input samples across the three stages.
+Without it the last symbols of a signal at the top of the DT window
+would be filtered against zeros. It costs 210 ms of budget, which is
+about one candidate.
+
+`ft4_rx::CAPTURE_CLOSE_SAMPLES = 75 000` and
+`TX_TURNAROUND_BUDGET_MS = 1 750` (`8.0 − 6.25`). `SlotAccum` discards
+the remaining 1.25 s so the slot grid stays a 7.5 s grid — without
+that, each window would open 1.25 s earlier than the last and walk off
+the transmissions.
+
+### 43.2 On the board
+
+`ft4-demo`, the same golden, immediately after the re-anchoring and
+before the two cores:
+
+```
+slot — 11 of 12 candidates tried, 10 decodes in 1777 ms of 1750 ms — cut 1 at 1.55
+slot close spacing 7499-7501 ms, no drift over 17 slots
+key-up margin: -27 ms
+```
+
+So the honest picture at this point was **worse** than §42's, because
+§42 was measuring against a deadline that a transmitting station does
+not have. 12 candidates cost ~2 000 ms; the real budget is 1 750.
+
+## 44. Dual-core, re-measured — and a pipeline that lost (2026-09-01)
+
+§30 measured a candidate split at 1.33x, §31.1 re-measured it at 1.17x
+after the FIR work and concluded "treat dual-core as closed". That
+conclusion was correct on its evidence and is no longer correct: §42's
+shared decimation took most of the per-candidate PSRAM streaming out
+of the loop, which was one of the three reasons the split fell short.
+
+Re-run on the same 12 candidates, plus a second design measured
+alongside it:
+
+| arrangement | 12 candidates | vs 1 core |
+|---|---:|---:|
+| single core | 1 923 ms | 1.00x |
+| **candidate split, two cores** | **1 367 ms** | **1.40x** |
+| stage pipeline (DDC ‖ search+BP) | 1 456 ms | 1.32x |
+
+**The pipeline's premise was wrong.** It was built because
+`Fc32Guard` is a process-global spinlock held across every transform,
+so putting the transform-free half (the DDC) on its own core should
+have left nothing to contend for. Its stages measured DDC 792 ms
+against tail 1 130 ms — a 1.70x ceiling — and it reached 1.32x, below
+the candidate split it was supposed to beat. The guard was not the
+binding constraint.
+
+### 44.1 What the production path does
+
+`ft4_rx::decode_slot` spawns one worker pinned to core 1 and both
+cores take candidates from a shared cursor rather than splitting the
+list in half — candidates are not equal cost (§30's third reason), and
+a cursor also makes the deadline work per-core with no coordination.
+Results land in per-index slots with no lock (the cursor hands out
+each index once), and are re-sorted into candidate order before dedup
+so that which core finished first cannot change what the screen shows.
+Worker creation failing is not fatal: the loop runs single-core and
+says so.
+
+## 45. The stacks were the memory problem, and WiFi exposed it
+
+Adding a second decode task made the internal-DRAM question urgent:
+FreeRTOS stacks come out of internal DRAM, and §30 had recorded the
+largest free internal block with WiFi up as 31 744 B — against a 32 KB
+ask.
+
+**The first attempt blamed the wrong thing.** With WiFi associated,
+`ft4-demo`'s slot went from 1 387-1 585 ms to 1 789-1 969, and the
+obvious suspect was the WiFi driver task at FreeRTOS priority 23 —
+which is what `fst4_app` had measured for its own decoder. So the
+network path grew a mode that stopped the radio once NTP had set the
+clock. Measured: **1 786-1 919 ms with the radio stopped**, i.e. no
+change. `esp_wifi_stop` silences the receiver and frees nothing, and
+the degradation had in any case started before association, at driver
+*init*.
+
+It was memory. The largest free internal block tracked the whole
+story: 69 632 B idle, 47 104 B after the driver initialised, 31 744 B
+with the association up — and the decoder's own allocations fall to
+PSRAM at that point, which §26.3 already priced at 41 % on the
+2 304-point workspace.
+
+**So the fix was to stop wasting internal DRAM on stacks.**
+`board::log_task_stacks` was reporting only the tasks in danger of
+overflowing; made to report every task's headroom, it said:
+
+| task | asked for | actually used |
+|---|---:|---:|
+| `ft4feed` (the demo's whole decode) | 32 KB | **2 584 B** |
+| `ft4_slot` (the app's decode) | 32 KB | same code |
+| `ft4_cand` (the core-1 worker) | 32 KB | **4 536 B** |
+| `net` (PSRAM-backed) | 24 KB | 1 480 B |
+
+Every one of those numbers was inherited from `decode_pipeline`'s FT8
+path and never checked against this workload. The buffers that matter
+are heap — `cd0` alone is 40 KB per candidate — and the stacks hold
+small locals.
+
+At 8 KB each, with WiFi associated and the radio never stopped:
+
+```
+slot 1 — 12 of 12 candidates tried, 11 decodes in 1298 ms of 1750 ms
+slot 2 — 12 of 12 ...                11 decodes in 1290 ms
+slot 3 — 12 of 12 ...                11 decodes in 1315 ms
+slot 4 — 12 of 12 ...                11 decodes in 1401 ms
+slot 5 — 12 of 12 ...                11 decodes in 1375 ms
+core-1 worker stack 3 644-3 656 B free of 8 192
+```
+
+**Faster with the network up than it had ever been without it**, and
+the stop/resync machinery was deleted rather than kept: it had been
+built on a diagnosis the measurement disproved.
+
+(The high-water logging had its own unit bug on the way through —
+ESP-IDF's `uxTaskGetStackHighWaterMark` returns bytes where vanilla
+FreeRTOS returns words, and the first version multiplied by four and
+printed "14624 B free of 8192". A number that large against that
+denominator is its own error message.)
+
+### 45.1 Where FT4 stands
+
+| | candidates | decodes | slot | budget |
+|---|---:|---:|---:|---|
+| start of 2026-09-01 | 11 of 12 | 10 | 2 067-2 118 ms | 1 960 ms, anchored to the slot end |
+| **now** | **12 of 12** | **11** | **1 290-1 401 ms** | **1 750 ms, anchored to key-up** |
+
+With WiFi associated throughout, which the earlier figure never was.
+
+## 46. The Δt window goes back to WSJT-X's (2026-09-02)
+
+§18-19 narrowed this receiver's Δt search from WSJT-X's `[-344, 1012]`
+(±1.0 s) to `(0, 667)` (±0.5 s), measured it lossless on the golden and
+on an `ft4sim` DT sweep, and priced it at 1.5-1.9x on the search stage.
+The measurements were right. The conclusion drawn from them was not.
+
+**What the narrow window actually gives up is stations whose clock is
+off**, and on a real band those outnumber the marginal-SNR stations
+the extra budget buys. The two clock errors add, too: this receiver's
+own wall-clock slot alignment is still open (#313), so a station well
+inside ±0.5 s of UTC can be outside ±0.5 s of *us*.
+
+**The fixture could never have shown this.** The golden's DTs span
+−0.44…+0.30 s — inside the narrow window by construction. "Lossless on
+the golden" was a statement about that file. The instrument that does
+speak is §18's own DT sweep, where recall is 100 % inside the window
+and 0 % outside: reach is a cliff, and everything past the edge is
+lost outright rather than degraded.
+
+### What it costs, measured
+
+`ft4-demo`, same golden, same build except the window:
+
+| window | candidates | decodes | slot | budget |
+|---|---:|---:|---:|---:|
+| ±0.5 s | 12 of 12 | 11 | 1 259-1 360 ms | 1 750 ms |
+| **±1.0 s (WSJT-X)** | **10-11 of 12** | **9-10** | 1 245-1 435 ms | **1 225 ms** |
+
+**The cost is not where §19 put it.** The search stage doubling barely
+moves the slot — it is a smaller share of a candidate than it was
+before §42's shared decimation and §44's second core. What costs is
+the *budget*: covering `i0 = 1012` pushes `CAPTURE_CLOSE_SAMPLES` from
+6.25 s to 6.775 s, and 525 ms is one to two candidates at ~115 ms
+each.
+
+So the deadline cuts one or two of the weakest candidates, which is
+the trade taken deliberately: weak-SNR stations lost, off-DT stations
+regained.
+
+### Where the 525 ms comes back from
+
+§45's accounting says 419 ms a slot is not dot product, and issue #352
+has the decomposition: ~21 ms per candidate is `FirStage` copying
+every input sample into its history before dotting out of it, which a
+zero-copy path over the caller's buffer would remove. That is 254 ms
+of the 525 — about half of what the window cost, from a change that
+does not touch the search at all.
+
+(The other half of #352's floor, `CandidateDdc`'s per-sample
+`Vec::push`, is already taken: 63.1 → 57.4 ms per candidate in situ,
+1 290-1 401 → 1 259-1 360 ms end to end, bit-identical.)
+
+## 47. Inside the Δt search, and a cache that made everything slower (2026-09-02)
+
+§46 put WSJT-X's ±1.0 s window back and paid 525 ms of budget for it.
+This section is where some of that came from, and the route is worth
+the space because two of the three steps were wrong.
+
+### The decomposition, measured
+
+`ft4-bench`, CoreS3, the golden's strongest candidate. The search's
+cost is `fixed + cells × per_cell`, and a degenerate window
+(`ib_min == ib_max`) measures `fixed` without any new API:
+
+| window | time | cells |
+|---|---:|---:|
+| ±1.0 s (WSJT-X) | 86.7 ms | 3 159 |
+| ±0.5 s | 57.7 ms | 1 602 |
+| degenerate | 28.2 ms | 108 |
+
+→ **18.6 µs per cell, 26.2 ms fixed.**
+
+A cell is four Costas blocks of 128 complex samples, i.e. 2 048 real
+MACs, so 18.6 µs is **2.18 cycles/MAC** — what this chip's aligned
+`dsps_dotprod_f32_aes3` does. The grid scan has nothing left in it.
+
+The fixed 26.2 ms is `FlatRef::fill`, and only that:
+
+    18 FlatRef fills   25 718 us
+    AlignedCd0 copy         3 us
+
+`fill` evaluates `cos` and `sin` **per sample** — 4 blocks × 128
+samples × 18 calls (nine coarse `df`, nine fine). The `cd0` alignment
+copy, the other suspect, is three microseconds: it copies only when
+`cd0` is misaligned, and it usually is not.
+
+### The obvious fix, which was a 2.6× regression
+
+The nine coarse references depend on `df`, `ds_spb` and `ds_rate` —
+not on `cd0`, not on the candidate. Twelve candidates rebuilt the same
+nine references twelve times. So: build them once per slot, ~144 KB of
+`FlatRef`, hand both cores a `&Ft4CoarseRefs`.
+
+Measured on the board: **4-6 candidates instead of 10-11**, slot
+1 275-1 855 ms. Staging the cached references into the local scratch
+first — on the theory that a freshly-written buffer is cache-warm and
+a precomputed one is not — was worse still: 3-4 candidates,
+1 569-2 295 ms.
+
+Neither theory survived contact with the diagnosis:
+
+```text
+coarse refs at 0x3fcea190 (INTERNAL) .. 0x3c273760 (PSRAM)
+uncached 223 024 us (dots fast 23724 align 0 len 0)
+cached   216 941 us (dots fast 23724 align 0 len 0)
+```
+
+**The uncached path in the same binary had slowed from 87 ms to
+223 ms.** The cache's own code was innocent; allocating 144 KB was
+not. The per-call `FlatRef`s are ~1 KB each, small enough that
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` keeps them in internal DRAM;
+144 KB of cache displaced them into PSRAM, and the search runs at its
+measured speed only while its working set is internal. §29 recorded
+the same mechanism from the other direction ("leaking one more 18 KB
+internal buffer shifted the heap, and the next run measured 0 % [fast
+dots]") — this is that lesson arriving as a 2.6× regression rather
+than as a lucky escape.
+
+Note what the counters rule out: the dots stayed on the PIE path
+throughout (23 724 fast, zero slow), so this was not an alignment
+failure.
+
+### What worked: cache the phasors, not the references
+
+The expensive part of `fill` is the transcendentals, and the thing
+worth holding is therefore the phasor `e^{j·2π·df·n/ds_rate}` — not
+the reference it builds. All four Costas blocks are the same length,
+so one table per `df` serves all of them: **128 complex × 9 df ≈ 9 KB**
+against 144 KB.
+
+```text
+coarse refs at 0x3fcedaac (INTERNAL) .. 0x3fceb184 (INTERNAL)
+uncached 86 485 us | cached 79 293 us | same result true
+```
+
+The uncached path is back at 86.5 ms — the displacement is gone — and
+the cached path saves **7.2 ms per candidate**. The fills still run and
+still write into the caller's scratch; only `cos`/`sin` are replaced by
+a table lookup and a complex multiply, with the table built from the
+same expression, so the result is bit-identical
+(`cached_coarse_refs_are_bit_identical` pins `i0`, `freq_hz` and
+`score` by bit pattern).
+
+On the board:
+
+| | candidates | decodes | slot |
+|---|---:|---:|---:|
+| ±1.0 s window, no cache | 10-11 of 12 | 9-10 | 1 355-1 435 ms |
+| **+ phasor table** | **11-12 of 12** | **10-11** | 1 286-1 458 ms |
+
+The one to two candidates §46 gave up to search WSJT-X's full window
+are back, and nothing about what the decoder computes has changed.
+
+### The transferable part
+
+"Precompute the expensive thing" is the reasoning that produced both
+the 144 KB regression and the 9 KB win. What separated them was not
+the idea but the **size**: on this board a table large enough to
+displace the internal-DRAM working set makes unrelated code slower,
+and the code it slowed was in the same function, two call sites away.
+Before caching anything here, ask what it evicts.

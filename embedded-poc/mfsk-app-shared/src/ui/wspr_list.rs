@@ -32,27 +32,29 @@
 use core::fmt::Write as _;
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
     text::{Baseline, Text},
 };
 use heapless::String;
 
+use super::spot_render::{
+    fill, render_rows, text_style, FormatRow, BG, COL_HEADER_FG, COL_HEADER_H, DIVIDER_H, FG,
+    HEADER_H, ROW_PX,
+};
+/// Panel geometry lives in [`super::spot_render`] now; re-exported so
+/// the app's own layout maths keeps referring to this screen's module.
+pub use super::spot_render::{PANEL_HEIGHT, PANEL_WIDTH, STATUS_HEIGHT, STATUS_ORIGIN_Y};
 use super::wspr_row::{WsprSpotRow, HEADER as ROW_HEADER};
 use super::wspr_state::WsprUiState;
 
-pub const PANEL_WIDTH: u32 = 240;
-pub const PANEL_HEIGHT: u32 = 320;
-
-pub const STATUS_ORIGIN_Y: i32 = 0;
-pub const STATUS_HEIGHT: u32 = 16;
+impl FormatRow for WsprSpotRow {
+    fn format_row(&self, out: &mut String<56>) {
+        WsprSpotRow::format_row(self, out);
+    }
+}
 
 const DISCOVERED_HEADER_Y: i32 = STATUS_HEIGHT as i32;
-const HEADER_H: u32 = 11;
-const COL_HEADER_H: u32 = 10;
-const ROW_PX: u32 = 12;
 
 const DISCOVERED_COL_HEADER_Y: i32 = DISCOVERED_HEADER_Y + HEADER_H as i32;
 pub const DISCOVERED_ROWS_Y: i32 = DISCOVERED_COL_HEADER_Y + COL_HEADER_H as i32;
@@ -67,7 +69,6 @@ pub const DISCOVERED_ROWS: usize = 9;
 const DISCOVERED_REGION_H: u32 = DISCOVERED_ROWS as u32 * ROW_PX;
 
 const DIVIDER_Y: i32 = DISCOVERED_ROWS_Y + DISCOVERED_REGION_H as i32;
-const DIVIDER_H: u32 = 2;
 
 const HISTORY_HEADER_Y: i32 = DIVIDER_Y + DIVIDER_H as i32;
 const HISTORY_COL_HEADER_Y: i32 = HISTORY_HEADER_Y + HEADER_H as i32;
@@ -78,27 +79,7 @@ pub const HISTORY_ROWS_Y: i32 = HISTORY_COL_HEADER_Y + COL_HEADER_H as i32;
 /// in any mode, whether there is a radio on the USB port.
 pub const HISTORY_ROWS: usize = 11;
 
-const BG: Rgb565 = Rgb565::BLACK;
-const FG: Rgb565 = Rgb565::WHITE;
 const HEADER_BG: Rgb565 = Rgb565::new(0, 8, 0); // dark green, matches status_bar's bar colour
-const COL_HEADER_FG: Rgb565 = Rgb565::CSS_GRAY;
-
-fn text_style(
-    fg: Rgb565,
-    bg: Rgb565,
-) -> embedded_graphics::mono_font::MonoTextStyle<'static, Rgb565> {
-    MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(fg)
-        .background_color(bg)
-        .build()
-}
-
-fn fill(display: &mut impl DrawTarget<Color = Rgb565>, y: i32, h: u32, color: Rgb565) {
-    let _ = Rectangle::new(Point::new(0, y), Size::new(PANEL_WIDTH, h))
-        .into_styled(PrimitiveStyle::with_fill(color))
-        .draw(display);
-}
 
 /// Status bar: band, dial frequency, UTC clock, NTP/wsprnet
 /// indicators, free heap. All-in-one line. Compact single-letter
@@ -177,7 +158,7 @@ where
         ui.stations().iter(),
         DISCOVERED_ROWS_Y,
         DISCOVERED_ROWS,
-        false,
+        Some((DIVIDER_Y, COL_HEADER_FG)),
     )
 }
 
@@ -216,44 +197,7 @@ where
     let start = all.len() - take;
     let visible = all[start..].iter().rev().copied();
 
-    render_rows(display, visible, HISTORY_ROWS_Y, HISTORY_ROWS, true)
-}
-
-/// Shared row-painting loop for both regions: draw up to `max_rows`
-/// entries from `rows` starting at `origin_y`, then blank whatever's
-/// left of the region when `rows` doesn't fill it. `divider_after`
-/// draws the 2 px separator below the discovered region (the history
-/// region has no trailing divider).
-fn render_rows<'a, D>(
-    display: &mut D,
-    rows: impl Iterator<Item = &'a WsprSpotRow>,
-    origin_y: i32,
-    max_rows: usize,
-    divider_after: bool,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let style = text_style(FG, BG);
-    let mut buf: heapless::String<56> = heapless::String::new();
-    let mut drawn = 0usize;
-    for row in rows.take(max_rows) {
-        let y = origin_y + (drawn as i32) * ROW_PX as i32;
-        fill(display, y, ROW_PX, BG);
-        row.format_row(&mut buf);
-        Text::with_baseline(buf.as_str(), Point::new(2, y + 1), style, Baseline::Top)
-            .draw(display)?;
-        drawn += 1;
-    }
-    if drawn < max_rows {
-        let blank_y = origin_y + (drawn as i32) * ROW_PX as i32;
-        let blank_h = ((max_rows - drawn) as u32) * ROW_PX;
-        fill(display, blank_y, blank_h, BG);
-    }
-    if divider_after {
-        fill(display, DIVIDER_Y, DIVIDER_H, COL_HEADER_FG);
-    }
-    Ok(())
+    render_rows(display, visible, HISTORY_ROWS_Y, HISTORY_ROWS, None)
 }
 
 /// Paint every region unconditionally — used once at boot to draw the

@@ -53,8 +53,8 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 
 | Component | Generic over | Fixed-point switch 配線済み? |
 |---|---|---|
-| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ `fixed-point` 経由 |
-| LLR 計算 (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ `fixed-point` 経由 |
+| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ **`fixed-point-llr`** 経由 — #349 以降は独立した opt-in feature。LX7 では i16 ループは f32 の 0.85 倍（＝遅い） |
+| LLR 計算 (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ `fixed-point`（スペクトル）× `fixed-point-llr`（LLR 型） |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — FT8 LDPC(174,91) と FST4/uvpacket LDPC(240,101) で機能 |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ `fixed-point` 経由 |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — 組込でも host と同じ plain f32 を `fft-extern` 経由で実行。整数パスを一度も必要としていない。下記 [WSPR on embedded](#wspr-on-embedded) 参照 |
@@ -123,7 +123,8 @@ mfsk-core = { version = "0.8", default-features = false, features = [
     "alloc",            # Vec / Box / String — decode 必須
     "ft8",              # FT8 protocol glue
     "fft-extern",       # 呼び出し側が FFT バックエンドを供給
-    "fixed-point",      # u16 spec + i16 DFT + Q11i16 LLR + 整数 NMS BP
+    "fixed-point",      # u16 spec + i16 DFT（LLR/BP は #349 以降 f32。
+                        # i16 の LLR/BP が要るなら "fixed-point-llr" を追加）
     # オプション:
     # "profile-coarse", # stage-2 sub-stage timing 常時出力
 ] }
@@ -780,7 +781,8 @@ Device (M5Stack CoreS3、WiFi associate 継続、dual-core): 4 スロット
 
 ## FT4 on embedded
 
-**状態 (2026-08-30): ビルドが通り、実機で正しくデコードし、スロット
+**状態 (2026-08-30、更新済み — 本節末尾の「現在地 (2026-09-01)」を
+参照): ビルドが通り、実機で正しくデコードし、スロット
 予算を 3.4 倍超過している**（2026-08-29 の最適化前は 8.8 倍）。残りの
 超過は 3 段に分散しており、そのうち `downsample_cached` はホスト側で
 検証済みの DDC フロントエンドが丸ごと消す。
@@ -975,14 +977,65 @@ DDC と合わせた投影は `(2 492 + 1 943) × 12/31 ≈ 1 717 ms` で
 560 中 237 対 179）、出荷 depth は OSD を省くことで recall の約 1/4 を
 手放している。詳細は `docs/notes/FT4_BENCHMARK.md` §21。
 
-**実機で動かす前に足りないもの**: 実機計測がまだ無い（候補あたり
-約 2.3 M 複素 MAC はあくまで算術で、本節の PSRAM 仮説こそが「コストの
-算術」の値打ちを示す前例）。`FirStage::push_block` に対する esp-dsp
-バインディング（`dsps_fird_f32_aes3`）も未着手。`ft4_coarse_sync` の
-`NFFT1 = 2304` にはカーネルが用意された（`engine::dsp::fft_mixed_2304`、
-256 × 9、`EspDspPlanner` に両方向を配線済み）が、ベンチは依然として
-焼いた候補リストを読んでおり実機では一度も動かしていない。`fst4::ddc` と同様、呼び出し側が使う部品で
-あって、ホストのフロントエンドを差し替える feature flag ではない。
+`fst4::ddc` と同様、呼び出し側が使う部品であって、ホストの
+フロントエンドを差し替える feature flag ではない。
+
+### 現在地 (2026-09-01) — 予算内で動く受信機になった
+
+**本節冒頭の「3.4 倍超過」も、末尾にあった「実機計測がまだ無い」も
+すでに古い**。上で投影されていたものは全て実装され、CoreS3 で動いて
+いる。記録は `docs/notes/FT4_BENCHMARK.md` §32-§34, §37-§38, §42。
+要約:
+
+| 変更 | 効果 |
+|---|---|
+| `Ft4SavgBuilder` — coarse 段を**キャプチャ中**に走らせる (§32) | スロット終了後 761 ms → 6 ms |
+| 候補ループにスロット期限を持たせる (§34) | 超過が「事実」から「運用上の選択」になった |
+| shared decimation (§42) | 候補あたり約 188 ms → 約 168 ms |
+| その ÷2 をキャプチャ中に流す (§42.1) | スロット 2 067-2 118 ms → **1 998-2 000** |
+| 予算をスロット終端でなくキーアップから導出 (§43) | QSO 可能な実効予算は 1 960 でなく **500 ms** だった |
+| 2コア、共有カーソルから候補を取る (§44) | 候補ループが 1.40× |
+| タスクスタックを実測値で確保 (§45) | WiFi 接続中で 1 290-1 401 ms |
+| WSJT-X 本来の ±1.0 s Δt 窓に戻す (§46) | 予算 1 750 → **1 225 ms**、11 decodes → 9-10 |
+
+**予算はスロット境界ではなくキーアップから導く。** FT4 は高速 QSO の
+ためのモードなので、締切は「送信を開始しなければならない時刻」＝次
+スロットの +0.5 s。キャプチャ窓は探索が到達しうる音声が揃った時点
+(WSJT-X 本来の ±1.0 s Δt 窓では 7.5 s のうち 6.775 s、DDC の群遅延を
+含む) で閉じる。スロット終端に
+アンカーしていた旧実装では、送信する構成の実効予算は 500 ms しか
+なかった。時系列は §43。
+
+**スタックは内部 DRAM であり、内部 DRAM は WiFi が奪う。** デコード
+タスクは 32 KB ずつ確保して実際には 2.6-4.5 KB しか使っておらず、
+WiFi 接続時にはその無駄が最大空きブロックを 31 744 B まで押し下げ、
+デコーダ自身の確保が PSRAM に落ちてスロットあたり 400-580 ms を
+失っていた。電波を止めても直らない (`esp_wifi_stop` は解放しない)。
+スタックを実測で削ることが解。§45。
+
+`ft4-demo` をゴールデンスロット（14 信号、FT8 密度の最悪ケース）で
+再生した実測で、1 960 ms のトランシーバ予算に対し **12 候補すべてを
+試して 11 デコード** — shared front end 導入前は 11/12 候補で 10
+デコードだった。FT4 本来の 5-10 信号の占有率（§23）ならループは何も
+切らずに終わる。
+
+**shared decimation はフロントエンドの後半分**。`ft4::ddc` の
+候補ごとのチェインは、候補1つにつきスロット 90 000 サンプル全部を
+12 kHz でフィルタしていた。`NDOWN = 18` は `2 · 9` に分解できるので、
+`SlotDecimator`（165 taps, ÷2, `FirStage::push_block_real` による実数
+入力）をスロットに1回走らせ、`CandidateDdc::new_half_rate` が同じ
+チェインを 6 kHz・101 taps で回す。カットオフが 3 000 Hz でなく
+2 800 Hz なのは、新しいナイキストより上の成分が候補の帯域**内**に
+折り返すため。111 taps でなく 165 taps なのは、2 700 → 3 300 の遷移
+では探索帯域の上端を守れないため。参照帯域に対する等価雑音帯域は
+この段を足しても +0.021 dB、足さなくても +0.021 dB。
+
+**まだ足りないもの**: `FirStage::push_block` の esp-dsp バインディング
+（`dsps_fird_f32_aes3`）は未着手。shared front end に対する 560 ファイル
+の paired sweep はテストは書いたが未実行。FT4 boot mode は無線機を
+繋いだ状態でまだ走らせていない（既定では焼いたゴールデンスロットを
+再生する。`MFSK_FT4_REPLAY=0` で無効）。実音声経路には壁時計の
+スロット同期がなく、これは `uac.rs` が #313 と共有する未解決項目。
 
 ## 次に読むべきもの
 

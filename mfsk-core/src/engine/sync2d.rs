@@ -242,6 +242,34 @@ impl FlatRef {
     fn len(&self) -> usize {
         self.n
     }
+
+    /// [`fill`](Self::fill) with the carrier phasor read from a table
+    /// instead of evaluated per sample.
+    ///
+    /// `phasor[n]` must be `Complex::new((omega·n).cos(),
+    /// (omega·n).sin())` for the same `omega` — then this writes the
+    /// same bytes `fill` would, and the search finds the same argmax
+    /// bit for bit.
+    ///
+    /// The `df == 0` case keeps `fill`'s own branch rather than
+    /// multiplying by `1 + 0j`, so that path is untouched.
+    fn fill_with(&mut self, flat_ref: &[Complex<f32>], df_hz: f32, phasor: &[Complex<f32>]) {
+        let shift = df_hz.abs() >= f32::EPSILON;
+        for (n, &r) in flat_ref.iter().enumerate() {
+            let r = if shift { r * phasor[n] } else { r };
+            self.plain.as_mut_slice()[2 * n] = r.re;
+            self.plain.as_mut_slice()[2 * n + 1] = r.im;
+            self.swapped.as_mut_slice()[2 * n] = -r.im;
+            self.swapped.as_mut_slice()[2 * n + 1] = r.re;
+            #[cfg(feature = "dotprod-extern")]
+            {
+                self.plain_odd.as_mut_slice()[2 * n + 2] = r.re;
+                self.plain_odd.as_mut_slice()[2 * n + 3] = r.im;
+                self.swapped_odd.as_mut_slice()[2 * n + 2] = -r.im;
+                self.swapped_odd.as_mut_slice()[2 * n + 3] = r.re;
+            }
+        }
+    }
 }
 
 /// `cd0` with its base guaranteed 16-byte aligned, copying only if it
@@ -534,6 +562,137 @@ pub fn ft4_sync_search<P: Protocol>(
     ft4_sync_search_window::<P>(cd0, candidate, -344, 1012)
 }
 
+/// The Δt search's coarse-pass carrier phasors, built once and read by
+/// every candidate in a slot.
+///
+/// ## What this is, and what it is not
+///
+/// [`ft4_sync_search_window`] spends 30 % of itself in `FlatRef::fill`
+/// — 18 calls per candidate, each over four Costas blocks with a
+/// `cos`/`sin` **per sample**. Measured on a CoreS3 (2026-09-02):
+/// 25.7 ms of the call's 86.7 (`docs/notes/FT4_BENCHMARK.md` §47).
+///
+/// The first attempt at removing it cached the *filled references* —
+/// nine `df` x four blocks of `FlatRef`, ~144 KB. That made the whole
+/// search **2.6x slower**, and the diagnosis is the interesting part:
+/// the dots stayed on the PIE path (23 724 fast, 0 slow) and the
+/// buffers straddled internal DRAM and PSRAM, but the *uncached* path
+/// in the same binary slowed down identically — 223 ms against 87 —
+/// because 144 KB of cache displaced the per-call `FlatRef`s
+/// (~1 KB each, small enough that `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`
+/// keeps them in internal DRAM) into PSRAM. Same lesson §29 and §32
+/// record from the other direction: this search runs at its measured
+/// speed only while its working set is internal.
+///
+/// So what is cached here is the part that is expensive to compute and
+/// cheap to hold: the phasor `e^{j·2π·df·n/ds_rate}`, `n` over one
+/// Costas block. All four blocks are the same length, so one table per
+/// `df` serves all of them — **128 complex samples x 9 `df` ≈ 9 KB**,
+/// against 144 KB for the references they build.
+///
+/// The fills still happen, still write into the caller's own scratch,
+/// and still produce the same bytes; only the transcendentals are
+/// gone.
+pub struct Ft4CoarsePhasors {
+    /// One table per coarse `df`, in sweep order.
+    tables: Vec<(f32, Vec<Complex<f32>>)>,
+}
+
+impl Ft4CoarsePhasors {
+    /// Build the nine coarse-sweep phasor tables for `P`.
+    pub fn new<P: Protocol>() -> Self {
+        let d = SyncDims::of::<P>(12_000.0);
+        // Every Costas block is `nsym · ds_spb` samples and they are
+        // all the same length, so one table covers all four.
+        let n = P::SYNC_MODE
+            .blocks()
+            .first()
+            .map(|b| b.pattern.len() * d.ds_spb)
+            .unwrap_or(0);
+        let mut tables = Vec::new();
+        let mut idf = COARSE_DF_MIN;
+        while idf <= COARSE_DF_MAX {
+            let df = idf as f32;
+            let omega = 2.0 * PI * df / d.ds_rate;
+            // Exactly `fill`'s own expression, so the products match.
+            let t = (0..n)
+                .map(|k| {
+                    let p = omega * k as f32;
+                    Complex::new(p.cos(), p.sin())
+                })
+                .collect();
+            tables.push((df, t));
+            idf += COARSE_DF_STEP;
+        }
+        Self { tables }
+    }
+
+    /// Where the tables live (`internal-testing`) — the question the
+    /// 144 KB version got wrong. S3 internal DRAM is
+    /// `0x3FC8_0000..0x3FD0_0000`, PSRAM `0x3C00_0000..0x3E00_0000`.
+    #[cfg(feature = "internal-testing")]
+    pub fn buffer_addrs(&self) -> (usize, usize) {
+        (
+            self.tables[0].1.as_ptr() as usize,
+            self.tables[self.tables.len() - 1].1.as_ptr() as usize,
+        )
+    }
+}
+
+/// The coarse `df` sweep, as `ft4_decode.f90` runs it: -12..=12 Hz in
+/// steps of 3. Named because [`Ft4CoarsePhasors`] has to visit exactly
+/// the same values in the same order.
+const COARSE_DF_MIN: i32 = -12;
+const COARSE_DF_MAX: i32 = 12;
+const COARSE_DF_STEP: i32 = 3;
+
+/// Time the Δt search's window-independent half, in two pieces
+/// (`internal-testing`).
+///
+/// `ft4_sync_search_window` costs `fixed + cells x per_cell`, and a
+/// degenerate window measures `fixed` without saying what is in it
+/// (`docs/notes/FT4_BENCHMARK.md` §47). These two entry points run
+/// exactly the pieces that function runs, so a bench can time them
+/// without this module exposing `FlatRef` or `AlignedCd0` themselves.
+///
+/// Returns a value derived from the result so the work cannot be
+/// optimised away.
+#[cfg(feature = "internal-testing")]
+pub fn ft4_sync_ref_prep_bench<P: Protocol>(fills: usize) -> f32 {
+    let d = SyncDims::of::<P>(12_000.0);
+    let flat_blocks: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
+        .blocks()
+        .iter()
+        .map(|b| {
+            let off = b.start_symbol as i32 * d.ds_spb as i32;
+            (off, cached_costas_ref_continuous(b.pattern, d.ds_spb))
+        })
+        .collect();
+    let mut twiddled: Vec<(i32, FlatRef)> = flat_blocks
+        .iter()
+        .map(|(off, flat)| (*off, FlatRef::with_len(flat.len())))
+        .collect();
+    let mut sink = 0.0f32;
+    for k in 0..fills {
+        // The same df values the coarse pass sweeps: -12..=12 step 3.
+        let df = (-12 + 3 * (k % 9) as i32) as f32;
+        for ((_, dst), (_, src)) in twiddled.iter_mut().zip(flat_blocks.iter()) {
+            dst.fill(src, df, d.ds_rate);
+        }
+        sink += twiddled[0].1.len() as f32;
+    }
+    sink
+}
+
+/// The other piece: `cd0`'s alignment copy, once per candidate
+/// (`internal-testing`). See [`ft4_sync_ref_prep_bench`].
+#[cfg(feature = "internal-testing")]
+pub fn ft4_aligned_cd0_bench(cd0: &[Complex<f32>]) -> f32 {
+    let aligned = AlignedCd0::new(cd0);
+    let s = aligned.get(cd0);
+    s[0].re + s[s.len() - 1].im
+}
+
 /// Same coherent full-slot Δt search as [`ft4_sync_search`], but over an
 /// explicit `[ib_min, ib_max]` downsampled-sample window instead of the
 /// hardcoded full-union range. Lets callers (tests, diagnostics) replicate
@@ -547,6 +706,24 @@ pub fn ft4_sync_search_window<P: Protocol>(
     candidate: &SyncCandidate,
     ib_min: i32,
     ib_max: i32,
+) -> Sync2dResult {
+    ft4_sync_search_window_cached::<P>(cd0, candidate, ib_min, ib_max, None)
+}
+
+/// [`ft4_sync_search_window`], reading the coarse pass's references
+/// from `refs` instead of rebuilding them.
+///
+/// `None` is the original behaviour. `Some` is bit-identical to it —
+/// the same `df` values in the same order, so the same references and
+/// the same coarse argmax — and skips the nine fills that make up
+/// half of this function's 30 % reference-building overhead. See
+/// [`Ft4CoarsePhasors`] for the measurement.
+pub fn ft4_sync_search_window_cached<P: Protocol>(
+    cd0: &[Complex<f32>],
+    candidate: &SyncCandidate,
+    ib_min: i32,
+    ib_max: i32,
+    refs: Option<&Ft4CoarsePhasors>,
 ) -> Sync2dResult {
     // See [`AlignedCd0`]; same reasoning as `fst4_sync_search`.
     let aligned = AlignedCd0::new(cd0);
@@ -623,21 +800,47 @@ pub fn ft4_sync_search_window<P: Protocol>(
     let mut best_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * ds_rate).round() as i32;
     let mut best_score = f32::NEG_INFINITY;
 
-    let mut idf = -12i32;
-    while idf <= 12 {
-        let df = idf as f32;
-        retwiddle(&mut twiddled, df);
+    // The coarse sweep, from the cache when there is one. The two
+    // arms visit the same `df` values in the same order and score with
+    // the same references, so they agree bit for bit; only the fills
+    // are skipped.
+    let scan_coarse = |twiddled: &Vec<(i32, FlatRef)>,
+                       df: f32,
+                       best_score: &mut f32,
+                       best_df: &mut f32,
+                       best_i0: &mut i32| {
         let mut i0 = ib_min;
         while i0 <= ib_max {
-            let s = score_flat(&twiddled, i0);
-            if s > best_score {
-                best_score = s;
-                best_df = df;
-                best_i0 = i0;
+            let s = twiddled
+                .iter()
+                .map(|(off, flat)| score_flat_coherent(cd0, flat, i0 + off))
+                .sum::<f32>();
+            if s > *best_score {
+                *best_score = s;
+                *best_df = df;
+                *best_i0 = i0;
             }
             i0 += COARSE_DT_STEP;
         }
-        idf += 3;
+    };
+    match refs {
+        Some(cache) => {
+            for (df, table) in &cache.tables {
+                for ((_, dst), (_, src)) in twiddled.iter_mut().zip(flat_blocks.iter()) {
+                    dst.fill_with(src, *df, table);
+                }
+                scan_coarse(&twiddled, *df, &mut best_score, &mut best_df, &mut best_i0);
+            }
+        }
+        None => {
+            let mut idf = COARSE_DF_MIN;
+            while idf <= COARSE_DF_MAX {
+                let df = idf as f32;
+                retwiddle(&mut twiddled, df);
+                scan_coarse(&twiddled, df, &mut best_score, &mut best_df, &mut best_i0);
+                idf += COARSE_DF_STEP;
+            }
+        }
     }
 
     // Fine pass around the coarse winner.
@@ -682,4 +885,62 @@ pub fn freq_shift_cd0(cd0: &[Complex<f32>], df_hz: f32, ds_rate: f32) -> Vec<Com
             c * Complex::new(p.cos(), p.sin())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod ft4_coarse_ref_cache_tests {
+    use super::*;
+    use crate::ft4::Ft4;
+
+    /// A candidate-shaped `cd0`: a Costas-flavoured tone at the
+    /// baseband rate with a little structure, enough that the search
+    /// has a peak to find and enough noise that the argmax is not
+    /// trivially degenerate.
+    fn synthetic_cd0(n: usize) -> Vec<Complex<f32>> {
+        let mut state = 0x1234_5678u32;
+        (0..n)
+            .map(|k| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = (state >> 16) as i16 as f32 / 32_768.0;
+                let p = 0.031 * k as f32;
+                Complex::new(p.cos() + 0.3 * noise, p.sin() - 0.3 * noise)
+            })
+            .collect()
+    }
+
+    /// The cached coarse pass must not merely agree — it must be the
+    /// same number. It visits the same `df` values in the same order
+    /// and scores against references built by the same `fill`, so
+    /// anything less than exact equality means the cache changed what
+    /// the search sees.
+    #[test]
+    fn cached_coarse_refs_are_bit_identical() {
+        let cd0 = synthetic_cd0(5_120);
+        let refs = Ft4CoarsePhasors::new::<Ft4>();
+        for freq in [700.0f32, 1_500.0, 2_310.5] {
+            let cand = SyncCandidate {
+                freq_hz: freq,
+                dt_sec: 0.0,
+                score: 1.0,
+            };
+            for (lo, hi) in [(-344, 1012), (0, 667), (0, 0)] {
+                let plain = ft4_sync_search_window::<Ft4>(&cd0, &cand, lo, hi);
+                let cached = ft4_sync_search_window_cached::<Ft4>(&cd0, &cand, lo, hi, Some(&refs));
+                assert_eq!(
+                    plain.i0, cached.i0,
+                    "i0 differs at {freq} Hz, window ({lo}, {hi})"
+                );
+                assert_eq!(
+                    plain.freq_hz.to_bits(),
+                    cached.freq_hz.to_bits(),
+                    "freq differs at {freq} Hz, window ({lo}, {hi})"
+                );
+                assert_eq!(
+                    plain.score.to_bits(),
+                    cached.score.to_bits(),
+                    "score differs at {freq} Hz, window ({lo}, {hi})"
+                );
+            }
+        }
+    }
 }

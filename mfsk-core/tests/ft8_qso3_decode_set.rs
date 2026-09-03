@@ -43,11 +43,20 @@ fn ft8_qso3_decode_set() {
         .collect();
     msgs.sort();
     msgs.dedup();
+    // `fixed_point` is the spectrogram's cell type and `llr` is the
+    // BP hot loop's — separate features since #349, and the whole
+    // point of this dump is diffing one against the other, so it
+    // cannot report them as one flag.
     eprintln!(
-        "SETDUMP n={} nstep_half={} fixed_point={}",
+        "SETDUMP n={} nstep_half={} fixed_point={} llr={}",
         msgs.len(),
         cfg!(feature = "nstep-half"),
         cfg!(feature = "fixed-point"),
+        if cfg!(feature = "fixed-point-llr") {
+            "Q11i16"
+        } else {
+            "f32"
+        },
     );
     for m in &msgs {
         eprintln!("SETDUMP| {m}");
