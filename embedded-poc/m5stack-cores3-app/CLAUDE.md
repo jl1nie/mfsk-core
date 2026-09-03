@@ -33,13 +33,20 @@ and will not talk to a radio. Unplugging afterwards changes nothing;
 the decision was made. Every "the radio does not enumerate" report
 starts by checking `host_mode` in `[boot-summary]`.
 
-**A receiver with no clock decodes nothing.** `Ft8ChunkSink` anchors
-its 15 s grid with `time_sync::samples_to_next_slot_12k`, which returns
-`None` until the system clock is plausible. Unanchored, the grid
-free-runs at a phase uniform over 15 s against a mode that tolerates
-±2.5 s. The clock comes from the BM8563 (`rtc.rs`, read in
-`pmic::init`) and is refined by NTP. This produced a full evening of
-"the decoder is broken" on 2026-08-23.
+**A receiver with no clock decodes nothing — until it hears one.**
+`Ft8ChunkSink` anchors its 15 s grid with
+`time_sync::samples_to_next_slot_12k`, which returns `None` until the
+system clock is plausible. The clock comes from the BM8563 (`rtc.rs`,
+read in `pmic::init`) and is refined by NTP; unanchored, the grid used
+to free-run at a phase uniform over 15 s against a mode that tolerates
+±2.5 s, which produced a full evening of "the decoder is broken" on
+2026-08-23. Since #356, when there is no UTC the grid instead pulls
+itself onto the air: `decode_pipeline` posts coarse sync's DT median
+(`bootstrap_dt_median` before any decode, the confirmed-decode median
+after) through `set_bootstrap_slot_shift_12k`, and `Ft8ChunkSink`
+applies it — but *only* while `!self.aligned`, so once UTC is present
+the drift check owns the phase and the two never fight. The `wav`
+source is left alone.
 
 **The boot-critical logs do not reach the only console that works.**
 WiFi associates seconds after the power and USB decisions are made, and

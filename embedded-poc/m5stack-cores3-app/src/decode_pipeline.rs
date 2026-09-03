@@ -80,6 +80,11 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     push_tx_line(&qso, Some(&initial));
 
     let mut slot_seq: u32 = 0;
+    // Air-sync lock strength (#356): the decode count of the slot the
+    // current slot-shift estimate came from. A later slot only overrides
+    // it with strictly more decodes, so one noisy decode cannot pull a
+    // good lock off. Only used for the live (`uac`) source.
+    let mut best_n: usize = 0;
     loop {
         let cfg = dual_core::DecodeConfig {
             freq_min: 100.0,
@@ -99,7 +104,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             n_pass1,
             n_ready,
             n_deferred,
-            bootstrap_dt_med: _,
+            bootstrap_dt_med,
             t_post_recv,
             t_coarse_done,
             t_early_done,
@@ -165,12 +170,86 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             mfsk_app_shared::time_sync::record_decode_dt(r.dt_sec);
         }
         mfsk_app_shared::time_sync::finalize_slot();
+        let n_dec = results.len();
+        // This slot's median, or `None` if it produced no decodes — in
+        // which case `finalize_slot` kept the previous estimate and
+        // `slot_dt_offset` would report *that*, which is not this slot.
+        let slot_median = if n_dec > 0 {
+            mfsk_app_shared::time_sync::slot_dt_offset()
+        } else {
+            None
+        };
         if let Some(off) = mfsk_app_shared::time_sync::slot_dt_offset() {
             log::info!(
                 "  median DT = {:+.3} s ({} slots)",
                 off,
                 mfsk_app_shared::time_sync::slots_finalised()
             );
+        }
+
+        // Self-align the slot grid from the air (#356), for the live
+        // source with no UTC clock. `Ft8ChunkSink` anchors the grid to
+        // UTC once NTP has run; on a hilltop with no network it never
+        // does, and the grid free-runs at a phase uniform over 15 s
+        // against a mode that tolerates ±2.5 s. Coarse sync's own DT —
+        // the confirmed-decode median once decodes exist, the top-5
+        // candidate median (`bootstrap_dt_med`) before then — is a time
+        // reference present wherever the receiver is. Posted through
+        // `set_bootstrap_slot_shift_12k`; `Ft8ChunkSink` applies it only
+        // while it has no UTC anchor and drains it otherwise, so the two
+        // never fight. The `wav` source defines its own slot boundaries
+        // and is left alone.
+        if source == "uac" {
+            /// Already inside FT8's tolerance — post 0 rather than chase
+            /// jitter into the shorten direction stage1_inc dislikes.
+            const ALIGN_OK_SEC: f32 = 0.05;
+            /// Per-slot shift cap. ±0.2 s keeps the slot in
+            /// [177_600, 182_400] so stage1_inc still completes pair 91;
+            /// a larger offset converges over several slots.
+            const MAX_SHIFT_SAMPLES: i32 = 2_400;
+            /// A slot this far out, with more decodes than the lock,
+            /// drops the lock — the StickS3 auto-sync's Tier 1, without
+            /// the quiet-band persistence net.
+            const DRIFT_RESET_SEC: f32 = 0.5;
+            const DRIFT_RESET_MIN_N: usize = 3;
+
+            let to_samples = |dt: f32| -> i32 {
+                let s = if dt.abs() < ALIGN_OK_SEC {
+                    0
+                } else {
+                    (dt * 12_000.0).round() as i32
+                };
+                s.clamp(-MAX_SHIFT_SAMPLES, MAX_SHIFT_SAMPLES)
+            };
+
+            if let Some(m) = slot_median {
+                if best_n > 0
+                    && n_dec > best_n
+                    && n_dec >= DRIFT_RESET_MIN_N
+                    && m.abs() > DRIFT_RESET_SEC
+                {
+                    log::info!("  air-sync: drift (DT={m:+.3}s, N={n_dec}>{best_n}) — lock reset");
+                    best_n = 0;
+                }
+            }
+
+            let cold_bootstrap = bootstrap_dt_med.filter(|_| n_dec == 0 && best_n == 0);
+            if let Some(m) = slot_median.filter(|_| n_dec > best_n) {
+                let shift = to_samples(m);
+                mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift);
+                log::info!("  air-sync: lock DT={m:+.3}s (N={n_dec}) → {shift:+} samples");
+                best_n = n_dec;
+            } else if let Some(m) = cold_bootstrap {
+                let shift = to_samples(m);
+                mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift);
+                log::info!(
+                    "  air-sync: cold bootstrap DT={m:+.3}s (p1={n_pass1}, top-5 coarse) → {shift:+} samples"
+                );
+            } else {
+                // Locked and this slot did not beat it, or nothing to go
+                // on — post 0 so a previous slot's hint is not re-applied.
+                mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
+            }
         }
 
         let mut had_response_this_slot = false;

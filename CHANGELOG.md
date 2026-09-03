@@ -286,6 +286,21 @@ streaming coarse stage below.)
   `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
   the FT4 receiver's slot-grid alignment (#354).
 
+- **The CoreS3 FT8 receiver self-aligns its slot grid from the air
+  when there is no clock (#356).** `Ft8ChunkSink` anchors the grid to
+  UTC once NTP has run; on a hilltop with no network it never does, and
+  the grid free-ran at a phase uniform over 15 s. `decode_pipeline` now
+  keeps `run_speculative_slot`'s `bootstrap_dt_med` (the top-5
+  coarse-candidate DT median, valid before any decode) instead of
+  discarding it, tracks a confirmed-decode lock afterwards with a
+  Tier-1 drift reset, and posts the correction through
+  `set_bootstrap_slot_shift_12k`. `Ft8ChunkSink` gained a
+  `slot_target` and applies the shift — but only while it has no UTC
+  anchor, so once NTP lands the drift check owns the phase and the two
+  never fight; the `wav` source is left alone. Still not covered: a
+  grid more than ~1 s out at the first slot, since coarse sync searches
+  only ±1 s. Host-reasoned; not yet run against a radio.
+
 - **The CoreS3 FT4 boot mode anchors its slot grid to UTC (#354).**
   Until now the grid was counted from whenever the USB audio stream
   started, so which 7.5 s window it captured was an accident — hidden

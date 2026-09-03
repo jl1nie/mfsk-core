@@ -472,6 +472,10 @@ struct Ft8ChunkSink {
     chunk_q: sys::QueueHandle_t,
     chunk: Vec<i16>,
     slot_samples: usize,
+    /// Samples this slot runs before `SlotEnd` fires. Normally
+    /// [`SLOT_SAMPLES_12K`]; the air-sync shift (#356) lengthens or
+    /// shortens it by one slot's worth when the grid has no UTC anchor.
+    slot_target: usize,
     wav_idx: usize,
     /// Whether the slot grid has been anchored to UTC yet. Until it
     /// has, boundaries are stream-relative and every decoded `dt` is
@@ -492,6 +496,7 @@ impl Ft8ChunkSink {
             chunk_q,
             chunk: Vec::with_capacity(CHUNK_LEN),
             slot_samples: 0,
+            slot_target: SLOT_SAMPLES_12K,
             aligned: false,
             wav_idx: 0,
         }
@@ -530,7 +535,7 @@ impl AudioSink for Ft8ChunkSink {
                 let to_send = core::mem::replace(&mut self.chunk, Vec::with_capacity(CHUNK_LEN));
                 send_box(self.chunk_q, Box::new(ChunkMsg::Samples(to_send)));
                 self.slot_samples += CHUNK_LEN;
-                if self.slot_samples >= SLOT_SAMPLES_12K {
+                if self.slot_samples >= self.slot_target {
                     send_box(
                         self.chunk_q,
                         Box::new(ChunkMsg::SlotEnd {
@@ -540,6 +545,9 @@ impl AudioSink for Ft8ChunkSink {
                     );
                     self.wav_idx = self.wav_idx.wrapping_add(1);
                     self.slot_samples = 0;
+                    // Next slot is the nominal length unless the air-sync
+                    // shift below moves it.
+                    self.slot_target = SLOT_SAMPLES_12K;
                     // Issue #110: publish capture-slot boundary for
                     // any TX scheduler running in this BootMode.
                     // BootMode::Uac is currently RX-only on the S3
@@ -570,6 +578,28 @@ impl AudioSink for Ft8ChunkSink {
                             self.aligned = true;
                             log::info!("uac: slot grid anchored to UTC ({err_ms:+} ms)");
                         }
+                    }
+
+                    // Air-sync shift from `decode_pipeline` (#356):
+                    // coarse-sync's DT median, for the hilltop case where
+                    // no clock ever makes `samples_to_next_slot_12k`
+                    // answer. Applied only while there is no UTC anchor —
+                    // when there is, the drift check above owns the phase
+                    // and this would fight it. Drained either way, so a
+                    // later loss of NTP starts from a clean hint.
+                    //
+                    // Sign is WSJT-X's: DT > 0 means the slot opened
+                    // early, so lengthen the next one. Capped ±2400 by
+                    // the producer, so the slot stays in
+                    // [177_600, 182_400] and stage1_inc still completes.
+                    let air_shift = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                    if !self.aligned && air_shift != 0 {
+                        self.slot_target = (SLOT_SAMPLES_12K as i32 + air_shift)
+                            .clamp(60_000, 200_000) as usize;
+                        log::info!(
+                            "uac: air-sync slot shift {air_shift:+} — next slot {} samples",
+                            self.slot_target,
+                        );
                     }
                 }
             }

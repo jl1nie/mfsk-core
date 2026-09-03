@@ -1958,14 +1958,21 @@ per-second telemetry above is what tells you which.
 
 ### Checkpoint 2 — live antenna
 
-Needs the open item this procedure does *not* cover: **the real-audio
-path has no wall-clock slot alignment**. Slot boundaries are counted in
-samples from whenever the stream started, so a live band decode
-requires the transmission to happen to line up, or the NTP-fed
-alignment hook (`uac.rs`'s own open item, tracked in #313) to land
-first. Checkpoint 1 does not care — the golden recording is a whole
-slot and the decoder finds its own `dt` — which is exactly why it is
-worth doing first.
+The slot grid is anchored now. `Ft8ChunkSink` locks it to UTC once the
+clock is plausible (`time_sync::samples_to_next_slot_12k`, RTC then
+NTP), and re-anchors on drift past 250 ms. With no network at all, #356
+pulls the grid onto the air instead: `decode_pipeline` posts coarse
+sync's DT median through `set_bootstrap_slot_shift_12k` — the top-5
+candidate median before any decode, the confirmed-decode median after —
+and `Ft8ChunkSink` applies it while it has no UTC anchor. Watch the log
+for `slot grid anchored to UTC` or a run of `air-sync: … → ± samples`
+lines converging toward zero.
+
+Checkpoint 1 does not care either way — the golden recording is a whole
+slot and the decoder finds its own `dt` — which is why it is worth
+doing first. What is still not covered: a grid more than ~1 s out at
+the very first slot, since coarse sync only searches ±1 s and cannot
+report a DT it cannot see (#356's air-phase-lock follow-up).
 
 ## Where to go next
 
