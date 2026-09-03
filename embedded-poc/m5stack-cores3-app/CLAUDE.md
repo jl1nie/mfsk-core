@@ -200,10 +200,14 @@ sequence around it was not shared, so `esp_log_bridge` never reached
 this mode and `EXT_HUB: ESP_ERR_NO_MEM` was invisible; and the display
 task held 32 KiB of internal DRAM in a stack FST4 keeps in PSRAM.
 
-Open: FT8 `coarse` alternates cleanly between ~100 ms and ~180 ms with
-slot parity and the slow side exhausts its budget. Cause not
-established — occupancy differing between FT8's two transmit periods
-explains most of it but not all, and settling it needs a measurement
-(reduce the work until both periods fit, see whether the slow side's
-decode count rises), not another hypothesis. See memory
-`project_cores3_ft8_live_rx_verified`.
+Open (**#357**): FT8's per-slot decode cost alternates ~2× by TX
+period — one period `coarse` ~100 ms / decodes 4–8, the other `coarse`
+~180 ms / overruns the boundary 0.6–0.9 s / defers 8–11 candidates it
+drops / decodes 0–2. Note `run_speculative_slot` has **no wall-clock
+deadline** (unlike FT4's `decode_slot`): the only throttle is
+`MAX_CAND = 15` plus the deferred-candidate split, and `OVER BUDGET` in
+`decode_pipeline.rs` is diagnostic only. Cause not established —
+per-period station density explains the shape but the busy slots show
+`ready=19–22, dec=0–2`, as consistent with more phantom candidates as
+with more real ones. #357 has the data and the experiment (lower
+`MAX_CAND`/`PASS1_LIMIT` live, watch the slow side's decode count).
