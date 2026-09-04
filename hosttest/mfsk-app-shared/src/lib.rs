@@ -50,3 +50,9 @@ pub mod parity;
 /// (#354), so it gets a test where tests run.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/time_sync.rs"]
 pub mod time_sync;
+
+/// Persisted grid-phase fix — the NVS I/O is `#[cfg(espidf)]`, but the
+/// `GridFix::correction_for` re-wrap and staleness logic is pure and
+/// the thing most worth a test (a wrong sign here mis-aligns FT4).
+#[path = "../../../embedded-poc/mfsk-app-shared/src/grid_fix.rs"]
+pub mod grid_fix;

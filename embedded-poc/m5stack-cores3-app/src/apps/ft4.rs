@@ -36,7 +36,7 @@
 //! transform of its own.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -146,6 +146,20 @@ const STAGING_CAP: usize = 48_000;
 static AUDIO_LIVE: AtomicBool = AtomicBool::new(false);
 static SLOT_SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// Grid-phase correction (µs) recovered from a prior FT8 cold
+/// acquisition and persisted across the reboot (#356b), or `i32::MIN`
+/// if there is none / it was stale. `run` loads it, `slot_loop` folds
+/// it into its first UTC anchor.
+static ACQUIRED_GRID_FIX_US: AtomicI32 = AtomicI32::new(i32::MIN);
+
+/// A fix older than this is not trusted — the ESP crystal holds phase
+/// for hours at −3.3 ppm but a day's drift is a whole FT4 symbol many
+/// times over, and a stale fix pointing at the wrong phase is worse
+/// than starting from the RTC alone.
+const GRID_FIX_MAX_AGE_S: i64 = 2 * 3600;
+/// Minimum acquisition confidence to seed FT4's grid from.
+const GRID_FIX_MIN_R: f32 = 0.55;
+
 pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     log::info!("=== mfsk-core-m5stack-cores3-app ft4-app boot ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
@@ -167,6 +181,33 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     );
 
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
+
+    // A grid-phase fix a prior FT8 acquisition left behind (#356b) — the
+    // "lock on FT8, QSY to FT4" model. Only usable once the system clock
+    // is plausible (`pmic::init` seeds it from the RTC before this), and
+    // only if fresh and confident.
+    if let Some(fix) = mfsk_app_shared::grid_fix::load(&nvs) {
+        let now_epoch = mfsk_app_shared::time_sync::utc_now_ms()
+            .map(|ms| (ms / 1000) as i64)
+            .unwrap_or(0);
+        match fix.correction_for(now_epoch, 7.5, GRID_FIX_MAX_AGE_S, GRID_FIX_MIN_R) {
+            Some(p) => {
+                ACQUIRED_GRID_FIX_US.store((p * 1_000_000.0) as i32, Ordering::Release);
+                log::info!(
+                    "ft4_app: seeding grid from a persisted FT8 fix — {p:+.3} s (R {:.2})",
+                    fix.confidence
+                );
+            }
+            None => log::info!(
+                "ft4_app: persisted grid fix present but stale/weak (R {:.2}, {} s old) — ignoring",
+                fix.confidence,
+                now_epoch - fix.epoch_at_fix
+            ),
+        }
+        // Not cleared: the staleness check ages it out on its own, and
+        // leaving it lets a reboot mid-session re-seed from the same
+        // fix rather than falling back to the bare RTC.
+    }
 
     // WiFi, through the same path `fst4_app` and `wspr_app` use
     // (`crate::net`). FT4 did not bring the network up at all until
@@ -317,6 +358,10 @@ fn slot_loop() -> ! {
     // UTC would be meaningless.
     let mut live_prev = false;
     let mut last_finalised = mfsk_app_shared::time_sync::slots_finalised();
+    // A usable persisted FT8 acquisition fix (#356b) was loaded in
+    // `run` — seed the first anchor from it, and hold `GridLock::Air`
+    // until NTP takes over.
+    let mut seeded_from_air = ACQUIRED_GRID_FIX_US.load(Ordering::Acquire) != i32::MIN;
     // Paces the replay to 12 kHz. Absolute, not per-block, so a slow
     // decode does not make the replay drift slower than real time.
     let t_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
@@ -361,27 +406,43 @@ fn slot_loop() -> ! {
         }
         live_prev = live;
         if live {
-            if let Some(remain) =
+            if let Some(mut remain) =
                 mfsk_app_shared::time_sync::samples_to_next_slot_12k_ms(FT4_SLOT_MS)
             {
                 let was_aligned = accum.is_aligned();
+                // Fold in the persisted FT8 acquisition fix (#356b) on
+                // the first anchor only — after that the DT-median trim
+                // owns the fine correction.
+                if !was_aligned && seeded_from_air {
+                    let fix_us = ACQUIRED_GRID_FIX_US.load(Ordering::Acquire);
+                    let period = (FT4_SLOT_MS * 12) as i64;
+                    let shifted = remain as i64 + (fix_us as i64 * 12 / 1000);
+                    remain = shifted.rem_euclid(period) as usize;
+                }
                 accum.anchor_or_reanchor(remain);
                 if !was_aligned && accum.is_aligned() {
                     log::info!(
-                        "ft4_app: slot grid anchored to UTC — {} ms to the next boundary",
+                        "ft4_app: slot grid anchored to {} — {} ms to the next boundary",
+                        if seeded_from_air { "the FT8 air fix" } else { "UTC" },
                         remain / 12,
                     );
                 }
                 // Grid lock state (#356b). FT4's coarse stage has no DT
-                // dimension, so there is no air-lock here — the grid is
-                // the RTC's, or NTP's once that lands.
-                mfsk_app_shared::time_sync::note_grid_lock(
-                    if mfsk_app_shared::time_sync::clock_is_disciplined() {
-                        mfsk_app_shared::time_sync::GridLock::Ntp
+                // dimension of its own, so the grid is the RTC's, or the
+                // persisted FT8 air fix, or NTP's once that lands — NTP
+                // upgrades either of the first two.
+                if mfsk_app_shared::time_sync::clock_is_disciplined() {
+                    mfsk_app_shared::time_sync::note_grid_lock(
+                        mfsk_app_shared::time_sync::GridLock::Ntp,
+                    );
+                    seeded_from_air = false;
+                } else {
+                    mfsk_app_shared::time_sync::note_grid_lock(if seeded_from_air {
+                        mfsk_app_shared::time_sync::GridLock::Air
                     } else {
                         mfsk_app_shared::time_sync::GridLock::Rtc
-                    },
-                );
+                    });
+                }
             }
         }
 

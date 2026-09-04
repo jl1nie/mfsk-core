@@ -494,6 +494,79 @@ pub fn take_acquisition_audio(min_samples: usize) -> Option<Vec<i16>> {
     Some(core::mem::take(&mut r))
 }
 
+/// NVS partition handle for persisting the cold-acquisition grid fix
+/// across the reboot into FT4 mode (#356b). Set from `main` before the
+/// decode pipeline spawns.
+static GRID_FIX_NVS: Mutex<Option<esp_idf_svc::nvs::EspDefaultNvsPartition>> = Mutex::new(None);
+
+/// Hand the decode pipeline a way to persist the acquired grid phase.
+pub fn set_grid_fix_nvs(part: esp_idf_svc::nvs::EspDefaultNvsPartition) {
+    if let Ok(mut slot) = GRID_FIX_NVS.lock() {
+        *slot = Some(part);
+    }
+}
+
+/// Persist a cold-acquisition grid fix, from a short-lived
+/// internal-stack task — an NVS write disables the flash cache, which
+/// a PSRAM stack (or the decode task mid-flight) must not be holding.
+/// One-shot, fire and forget.
+pub fn persist_grid_fix(fix: mfsk_app_shared::grid_fix::GridFix) {
+    let Some(part) = GRID_FIX_NVS.lock().ok().and_then(|g| g.clone()) else {
+        log::warn!("uac: grid-fix NVS not wired — acquired phase will not survive a reboot");
+        return;
+    };
+
+    extern "C" fn entry(arg: *mut core::ffi::c_void) {
+        // SAFETY: `persist_grid_fix` leaked exactly this box.
+        let boxed = unsafe {
+            Box::from_raw(
+                arg as *mut (
+                    esp_idf_svc::nvs::EspDefaultNvsPartition,
+                    mfsk_app_shared::grid_fix::GridFix,
+                ),
+            )
+        };
+        let (part, fix) = *boxed;
+        match mfsk_app_shared::boot_mode::open_nvs(part) {
+            Ok(mut nvs) => match mfsk_app_shared::grid_fix::save(&mut nvs, &fix) {
+                Ok(()) => log::warn!(
+                    "grid-fix persisted: {:+} us (R {:.2}) — will seed FT4's grid on next boot",
+                    fix.offset_us,
+                    fix.confidence
+                ),
+                Err(e) => log::error!("grid-fix save failed: {e}"),
+            },
+            Err(e) => log::error!("grid-fix NVS open failed: {e}"),
+        }
+        unsafe { sys::vTaskDelete(core::ptr::null_mut()) };
+    }
+
+    let ptr = Box::into_raw(Box::new((part, fix))) as *mut core::ffi::c_void;
+    let created = unsafe {
+        sys::xTaskCreatePinnedToCore(
+            Some(entry),
+            c"grid_fix_save".as_ptr(),
+            4096,
+            ptr,
+            5,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    if created != 1 {
+        log::error!("uac: could not spawn grid-fix save task");
+        // Reclaim the leaked box so it does not just leak.
+        drop(unsafe {
+            Box::from_raw(
+                ptr as *mut (
+                    esp_idf_svc::nvs::EspDefaultNvsPartition,
+                    mfsk_app_shared::grid_fix::GridFix,
+                ),
+            )
+        });
+    }
+}
+
 /// Register the audio sink. Call before [`start_host`] so the sink is
 /// live before the class driver can enumerate a device and spawn
 /// `reader_thread` — same ordering `main.rs` already relies on for

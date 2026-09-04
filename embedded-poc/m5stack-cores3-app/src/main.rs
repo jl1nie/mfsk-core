@@ -352,6 +352,9 @@ fn main() -> ! {
             // Note: uac::start_host() itself is called in display::run_log_panel
             // after pmic::init() drives BUS_OUT_EN HIGH.
             log_free_internal("pre-thread-spawn");
+            // So the pipeline can persist a cold-acquisition grid fix
+            // across the reboot into FT4 mode (#356b).
+            uac::set_grid_fix_nvs(nvs_part.clone());
             let pipeline_spawn = crate::board::spawn_named(c"decode", 32 * 1024, || {
                 decode_pipeline::run_with_source("uac", |q| uac::set_chunk_q(q))
             });

@@ -377,6 +377,16 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                                 mfsk_app_shared::time_sync::GridLock::Air,
                             );
                             mfsk_app_shared::time_sync::observe_slot_phase(dt, 15.0);
+                            // Persist it so the reboot into FT4 mode
+                            // ("QSY to FT4", #356) keeps the lock.
+                            if let Some(now_ms) = mfsk_app_shared::time_sync::utc_now_ms() {
+                                crate::uac::persist_grid_fix(mfsk_app_shared::grid_fix::GridFix {
+                                    offset_us: (dt * 1_000_000.0).round() as i32,
+                                    period_s: 15.0,
+                                    epoch_at_fix: (now_ms / 1000) as i64,
+                                    confidence: r,
+                                });
+                            }
                             log::warn!(
                                 "  cold-acquisition: grid phase {dt:+.2} s (R {r:.2}) → shift {shift:+} samples"
                             );

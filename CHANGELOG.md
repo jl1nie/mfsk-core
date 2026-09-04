@@ -286,19 +286,30 @@ streaming coarse stage below.)
   `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
   the FT4 receiver's slot-grid alignment (#354).
 
-- **The CoreS3 FT8 receiver cold-acquires its slot grid from the air
-  (#356b).** When there is no NTP and the grid is off far enough that
-  coarse sync sees nothing — no decode and no `bootstrap_dt_med` for
-  three slots running — `decode_pipeline` arms a 25 s capture ring in
-  `uac.rs`, runs `ft8::acquire::acquire_slot_phase` on it, and if the
-  result is confident (mean resultant ≥ 0.55) posts a one-shot uncapped
-  slot shift through `time_sync::set_acquisition_shift_12k`.
-  `Ft8ChunkSink` applies it by lengthening a single slot by up to a
-  whole period, sets `GridLock::Air`, and hands straight back to the
-  ±1 s tracking. Host-reasoned; the acquisition primitive is tested but
-  the on-device path is not yet run against a radio, and it does not
-  yet survive the reboot into FT4 mode that #356's operating model
-  ("lock on FT8, QSY to FT4") implies.
+- **The CoreS3 FT8 receiver cold-acquires its slot grid from the air,
+  and the lock survives the QSY to FT4 (#356b).** When there is no NTP
+  and the grid is off far enough that coarse sync sees nothing — no
+  decode and no `bootstrap_dt_med` for three slots running —
+  `decode_pipeline` arms a 25 s capture ring in `uac.rs`, runs
+  `ft8::acquire::acquire_slot_phase` on it, and if the result is
+  confident (mean resultant ≥ 0.55) posts a one-shot uncapped slot
+  shift through `time_sync::set_acquisition_shift_12k`. `Ft8ChunkSink`
+  applies it by lengthening a single slot by up to a whole period, sets
+  `GridLock::Air`, and hands back to the ±1 s tracking.
+
+  The recovered phase is persisted through the new
+  `mfsk_app_shared::grid_fix` — an NVS record in the `"mfsk"` namespace,
+  deliberately not the RTC (whose seconds-only write granularity would
+  discard the sub-second phase, and whose "only NTP writes it back"
+  invariant, #354, is worth keeping absolute). `apps/ft4.rs` reads it
+  at boot, `GridFix::correction_for` re-wraps the 15 s FT8 phase to
+  FT4's 7.5 s grid and refuses a fix older than 2 h or below the
+  confidence bar, and the first anchor folds it in — so "lock on FT8,
+  QSY to FT4" works across the reboot the mode switch is.
+
+  Host-reasoned; the acquisition primitive and the `grid_fix` re-wrap
+  are unit-tested but the on-device path has not been run against a
+  radio.
 
 - **`mfsk_core::ft8::acquire::acquire_slot_phase`** — cold slot-phase
   acquisition from ~25 s of off-air FT8 (#356b). Three ±2.5 s
