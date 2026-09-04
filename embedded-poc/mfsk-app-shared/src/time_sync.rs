@@ -340,6 +340,18 @@ pub fn reset_capture_slot_for_test() {
 /// counting from the epoch the ESP-IDF boot left it at. 2020-09-13.
 const PLAUSIBLE_UNIX_SECS: u64 = 1_600_000_000;
 
+/// When set, [`utc_now_ms`] reports no clock regardless of the real
+/// one — the on-device `MFSK_CORES3_SIM` harness uses it to reproduce
+/// the clockless hilltop the grid-alignment code is for, without
+/// having to stop `pmic::init` seeding the system clock from the RTC.
+static SIM_SUPPRESS_CLOCK: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Force [`utc_now_ms`] to report no clock. Test/sim only.
+pub fn sim_suppress_clock(on: bool) {
+    SIM_SUPPRESS_CLOCK.store(on, Ordering::Release);
+}
+
 /// Wall-clock UTC in milliseconds, or `None` while the clock is still
 /// unset.
 ///
@@ -348,6 +360,9 @@ const PLAUSIBLE_UNIX_SECS: u64 = 1_600_000_000;
 /// to an arbitrary phase *and cannot tell*. Callers are expected to
 /// say which of the two they are doing.
 pub fn utc_now_ms() -> Option<u64> {
+    if SIM_SUPPRESS_CLOCK.load(Ordering::Acquire) {
+        return None;
+    }
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?;

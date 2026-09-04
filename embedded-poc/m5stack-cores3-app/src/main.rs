@@ -355,6 +355,25 @@ fn main() -> ! {
             // So the pipeline can persist a cold-acquisition grid fix
             // across the reboot into FT4 mode (#356b).
             uac::set_grid_fix_nvs(nvs_part.clone());
+
+            // `MFSK_CORES3_SIM` — feed a baked slot through the real
+            // `Ft8ChunkSink` instead of a radio, to exercise the grid
+            // alignment without an IC-705. The board (flashed over USB)
+            // stays a peripheral so `start_host` no-ops and the console
+            // survives. `MFSK_SIM_OFFSET_MS` mis-aligns the feed;
+            // `MFSK_SIM_NO_CLOCK` reproduces the clockless hilltop.
+            let sim = option_env!("MFSK_CORES3_SIM").is_some();
+            if sim {
+                if option_env!("MFSK_SIM_NO_CLOCK").is_some() {
+                    mfsk_app_shared::time_sync::sim_suppress_clock(true);
+                    log::warn!("SIM: clock suppressed — grid must recover from the air");
+                }
+                let offset_ms: usize = option_env!("MFSK_SIM_OFFSET_MS")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                uac::spawn_sim_feed(decode_pipeline::QSO_WAVS[0], offset_ms * 12);
+            }
+
             let pipeline_spawn = crate::board::spawn_named(c"decode", 32 * 1024, || {
                 decode_pipeline::run_with_source("uac", |q| uac::set_chunk_q(q))
             });

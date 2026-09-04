@@ -494,6 +494,100 @@ pub fn take_acquisition_audio(min_samples: usize) -> Option<Vec<i16>> {
     Some(core::mem::take(&mut r))
 }
 
+// ── `MFSK_CORES3_SIM` — a radio, faked ─────────────────────────────
+//
+// Feeds a baked FT8 slot through the *real* `Ft8ChunkSink` at
+// real-time pace, so every alignment state machine (UTC anchor,
+// air-sync, cold acquisition, the capture ring, the NVS grid fix)
+// runs exactly as it would with an IC-705 — but on a board that,
+// flashed over USB, stays a peripheral and keeps its console. The
+// only things this cannot show are real band density and a real
+// off-air clock spread.
+
+/// Feed `wav` (a 44-byte-header 12 kHz mono PCM slot) into the
+/// registered [`AudioSink`] forever, preceded by `lead_silence`
+/// samples so the sink's slot grid starts `lead_silence / 12` ms
+/// mis-aligned from the signal — the condition the grid code exists
+/// to recover from.
+pub fn spawn_sim_feed(wav: &'static [u8], lead_silence: usize) {
+    struct Cfg {
+        wav: &'static [u8],
+        lead: usize,
+    }
+    let cfg = Box::into_raw(Box::new(Cfg { wav, lead: lead_silence })) as *mut core::ffi::c_void;
+
+    extern "C" fn entry(arg: *mut core::ffi::c_void) {
+        // SAFETY: `spawn_sim_feed` leaked exactly this box. Drop it once
+        // its two fields are copied into locals — the task never
+        // returns, so nothing else needs it.
+        let (wav, lead) = {
+            let cfg = unsafe { Box::from_raw(arg as *mut Cfg) };
+            (cfg.wav, cfg.lead)
+        };
+        let pcm: Vec<i16> = wav[44..]
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        log::warn!(
+            "uac SIM: feeding {} baked samples on loop, {} ms lead silence — no radio",
+            pcm.len(),
+            lead / 12
+        );
+        const BLK: usize = 256;
+        let t0 = unsafe { sys::esp_timer_get_time() };
+        let mut fed: u64 = 0;
+        let mut src = 0usize; // index into pcm, after the lead is done
+        let mut lead_left = lead;
+        let silence = [0i16; BLK];
+        loop {
+            let block: &[i16] = if lead_left >= BLK {
+                lead_left -= BLK;
+                &silence
+            } else if lead_left > 0 {
+                let n = lead_left;
+                lead_left = 0;
+                &silence[..n]
+            } else {
+                let end = (src + BLK).min(pcm.len());
+                let s = &pcm[src..end];
+                src = if end == pcm.len() { 0 } else { end };
+                s
+            };
+            if let Ok(mut g) = AUDIO_SINK.lock() {
+                if let Some(sink) = g.as_mut() {
+                    sink.push_samples(block);
+                }
+            }
+            fed += block.len() as u64;
+            let due = (fed * 1_000_000 / 12_000) as i64;
+            let now = unsafe { sys::esp_timer_get_time() } - t0;
+            if due > now {
+                unsafe {
+                    sys::vTaskDelay(
+                        (((due - now) / 1_000).max(1) as u32)
+                            / (1_000 / sys::configTICK_RATE_HZ).max(1),
+                    )
+                };
+            }
+        }
+    }
+
+    let r = unsafe {
+        sys::xTaskCreatePinnedToCore(
+            Some(entry),
+            c"uac_sim".as_ptr(),
+            4096,
+            cfg,
+            5,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    if r != 1 {
+        log::error!("uac SIM: feed task spawn failed");
+    }
+}
+
 /// NVS partition handle for persisting the cold-acquisition grid fix
 /// across the reboot into FT4 mode (#356b). Set from `main` before the
 /// decode pipeline spawns.

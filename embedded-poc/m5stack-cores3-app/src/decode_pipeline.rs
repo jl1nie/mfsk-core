@@ -30,7 +30,10 @@ use mfsk_app_shared::ui::state::{DecodedRow, UI};
 const MY_CALL: &str = env!("MY_CALL");
 const MY_GRID: &str = env!("MY_GRID");
 
-static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
+/// The baked FT8 slot. `pub` so the `MFSK_CORES3_SIM` harness can feed
+/// it through `Ft8ChunkSink` (the real UAC sink) instead of the direct
+/// `wav_sim` path.
+pub static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 
 /// Pass-1 candidate cap and refined-candidate cap.
 ///
