@@ -86,6 +86,150 @@ pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32>
     })
 }
 
+/// Score-weighted circular DT estimate for a grid whose phase error can
+/// span a whole slot, plus how concentrated the candidates are.
+///
+/// [`bootstrap_dt_median`] sorts `dt_sec` as plain `f32` and takes the
+/// middle — the right estimator while every candidate sits inside one
+/// ±2.5 s search window, the wrong one the moment the search covers a
+/// whole period and `dt` becomes an angle. On FT8's 15 s period `+7.4 s`
+/// and `−0.1 s` are the same phase, and a linear median of the two lands
+/// at `+3.65 s` (issue #356, cold acquisition).
+///
+/// This maps each of the top-`top_k` candidates' `dt_sec` to a unit
+/// vector at angle `2π · dt / period_s`, sums them weighted by sync
+/// score (a strong signal's phase should count for more than a noise
+/// peak's), and returns:
+///
+/// - the resultant's angle back in seconds, normalised to
+///   `(−period_s/2, period_s/2]`;
+/// - the mean resultant length `R ∈ [0, 1]` — 1 when every candidate
+///   agrees on the phase, near 0 when they are spread around the circle.
+///   This is the number a caller checks before locking a grid to the
+///   estimate: a real lock has `R` close to 1, a quiet band does not.
+///
+/// It is a circular *mean*, not a median — the weighting already makes
+/// "median" ill-defined, and the top-`top_k` selection has dropped the
+/// worst outliers by score before this runs.
+///
+/// `None` if `cands` is empty, `top_k == 0`, `period_s` is not a
+/// positive finite number, or every surviving candidate had a
+/// non-positive / non-finite weight.
+pub fn circular_dt_estimate(
+    cands: &[SyncCandidate],
+    top_k: usize,
+    period_s: f32,
+) -> Option<(f32, f32)> {
+    if cands.is_empty() || top_k == 0 || !period_s.is_finite() || period_s <= 0.0 {
+        return None;
+    }
+    let mut refs: Vec<&SyncCandidate> = cands.iter().collect();
+    let k = top_k.min(refs.len());
+    if k < refs.len() {
+        refs.select_nth_unstable_by(k - 1, |a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+    }
+    let w = 2.0 * PI / period_s;
+    let (mut sum_c, mut sum_s, mut sum_w) = (0.0f32, 0.0f32, 0.0f32);
+    for c in &refs[..k] {
+        let weight = c.score.max(0.0);
+        if !weight.is_finite() || !c.dt_sec.is_finite() || weight == 0.0 {
+            continue;
+        }
+        let theta = w * c.dt_sec;
+        sum_c += weight * theta.cos();
+        sum_s += weight * theta.sin();
+        sum_w += weight;
+    }
+    if sum_w <= 0.0 {
+        return None;
+    }
+    let r_bar = ((sum_c * sum_c + sum_s * sum_s).sqrt() / sum_w).min(1.0);
+    let half = 0.5 * period_s;
+    let mut dt = sum_s.atan2(sum_c) / w;
+    while dt > half {
+        dt -= period_s;
+    }
+    while dt <= -half {
+        dt += period_s;
+    }
+    Some((dt, r_bar))
+}
+
+#[cfg(test)]
+mod circular_dt_tests {
+    use super::{SyncCandidate, circular_dt_estimate};
+    use alloc::vec;
+
+    fn c(dt: f32, score: f32) -> SyncCandidate {
+        SyncCandidate {
+            freq_hz: 1000.0,
+            dt_sec: dt,
+            score,
+        }
+    }
+
+    #[test]
+    fn agreeing_candidates_give_their_phase_and_r_near_one() {
+        let cands = vec![c(0.12, 3.0), c(0.10, 2.0), c(0.14, 2.5), c(0.11, 1.0)];
+        let (dt, r) = circular_dt_estimate(&cands, 5, 15.0).unwrap();
+        assert!((dt - 0.118).abs() < 0.02, "dt = {dt}");
+        assert!(r > 0.99, "r = {r}");
+    }
+
+    #[test]
+    fn wrap_is_handled_where_a_linear_median_would_not_be() {
+        // A frame half a period out shows up at either edge of a
+        // full-period search: +7.4 s and −7.4 s are ~0.2 s apart as
+        // phases (both near π on a 15 s grid), but a linear median of
+        // them lands at 0.
+        let cands = vec![c(7.4, 2.0), c(-7.4, 2.0), c(7.3, 1.0), c(-7.45, 1.0)];
+        let (dt, r) = circular_dt_estimate(&cands, 5, 15.0).unwrap();
+        assert!(dt.abs() > 7.0, "dt = {dt} — looks like a linear median");
+        assert!(r > 0.95, "r = {r}");
+    }
+
+    #[test]
+    fn a_scattered_band_reports_low_r() {
+        let cands = vec![c(-6.0, 1.0), c(-1.0, 1.0), c(3.0, 1.0), c(6.5, 1.0)];
+        let (_dt, r) = circular_dt_estimate(&cands, 5, 15.0).unwrap();
+        assert!(
+            r < 0.5,
+            "r = {r} — scattered candidates should not read as locked"
+        );
+    }
+
+    #[test]
+    fn score_weights_the_estimate() {
+        // One strong candidate at +0.2, three weak at −3.0: the estimate
+        // should sit much closer to the strong one.
+        let cands = vec![c(0.2, 10.0), c(-3.0, 1.0), c(-3.1, 1.0), c(-2.9, 1.0)];
+        let (dt, _r) = circular_dt_estimate(&cands, 5, 15.0).unwrap();
+        assert!(dt > -1.0, "dt = {dt} — strong candidate should dominate");
+    }
+
+    #[test]
+    fn seven_point_five_second_ft4_period() {
+        let cands = vec![c(3.7, 2.0), c(-3.7, 2.0)]; // same phase mod 7.5
+        let (dt, r) = circular_dt_estimate(&cands, 5, 7.5).unwrap();
+        assert!(dt.abs() > 3.5, "dt = {dt}");
+        assert!(r > 0.9, "r = {r}");
+    }
+
+    #[test]
+    fn rejects_bad_input() {
+        assert!(circular_dt_estimate(&[], 5, 15.0).is_none());
+        assert!(circular_dt_estimate(&[c(0.1, 1.0)], 0, 15.0).is_none());
+        assert!(circular_dt_estimate(&[c(0.1, 1.0)], 5, 0.0).is_none());
+        assert!(circular_dt_estimate(&[c(0.1, 1.0)], 5, f32::NAN).is_none());
+        // All-zero-score candidates leave nothing to weight.
+        assert!(circular_dt_estimate(&[c(0.1, 0.0), c(0.2, 0.0)], 5, 15.0).is_none());
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Per-protocol DSP parameter bundle (all derived from P at compile time)
 // ──────────────────────────────────────────────────────────────────────────

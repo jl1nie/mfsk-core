@@ -380,6 +380,77 @@ pub fn clock_is_disciplined() -> bool {
     clock_source() == ClockSource::Ntp
 }
 
+// ────────────────────────────────────────────────────────────────
+// What the slot grid's phase is anchored to
+
+/// What the slot grid's *phase* is currently anchored to — a separate
+/// question from [`ClockSource`], which is what last set the system
+/// *clock*.
+///
+/// The two come apart in the field (#356): with no network, the grid
+/// can be locked to off-air FT8 Costas phase (`Air`) while the system
+/// clock is only ever a plausible `Rtc` value. The issue's rule — "an
+/// operator must never have to guess what the grid is anchored to" — is
+/// why this is a first-class value, meant for the panel, every log line,
+/// and the ADIF record.
+///
+/// Ordered worst-to-best so `>=` comparisons read naturally. `Air` and
+/// `Ntp` are both "good": `Ntp` additionally carries a UTC epoch,
+/// `Air` carries only phase-mod-slot-length, but for the capture window
+/// that is all either one is used for.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum GridLock {
+    /// Never anchored — free-running from the first captured sample.
+    #[default]
+    FreeRun,
+    /// A plausible RTC value set the phase. Good to seconds, drifting
+    /// at tens of ppm.
+    Rtc,
+    /// Locked to off-air FT8 Costas phase (#356). No UTC epoch; the
+    /// phase, mod the slot length, tracks the band's median clock.
+    Air,
+    /// NTP disciplined the system clock and the grid follows it.
+    Ntp,
+}
+
+impl GridLock {
+    /// Short tag for the link bar / log line / ADIF `APP_*` field.
+    pub fn label(self) -> &'static str {
+        match self {
+            GridLock::FreeRun => "free-run",
+            GridLock::Rtc => "rtc",
+            GridLock::Air => "air",
+            GridLock::Ntp => "ntp",
+        }
+    }
+}
+
+static GRID_LOCK: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Record what anchored the grid phase. Idempotent; the caller owns the
+/// precedence policy (e.g. whether a fresh `Air` lock should override a
+/// stale `Ntp` one) — this only stores.
+pub fn note_grid_lock(state: GridLock) {
+    GRID_LOCK.store(state as u8, Ordering::Release);
+}
+
+/// What the grid phase is anchored to right now.
+pub fn grid_lock() -> GridLock {
+    match GRID_LOCK.load(Ordering::Acquire) {
+        1 => GridLock::Rtc,
+        2 => GridLock::Air,
+        3 => GridLock::Ntp,
+        _ => GridLock::FreeRun,
+    }
+}
+
+/// Whether the grid is anchored well enough to demodulate against —
+/// `Air` or `Ntp`. `Rtc` is deliberately *not* enough: it can be
+/// seconds out, past what the ±1 s coarse search can recover (#356).
+pub fn grid_is_locked() -> bool {
+    grid_lock() >= GridLock::Air
+}
+
 #[cfg(test)]
 mod clock_source_tests {
     use super::*;
@@ -404,6 +475,46 @@ mod clock_source_tests {
         // pull the state back down.
         note_clock_from_rtc();
         assert!(clock_is_disciplined());
+    }
+}
+
+#[cfg(test)]
+mod grid_lock_tests {
+    use super::*;
+
+    #[test]
+    fn ordering_and_locked_predicate() {
+        assert!(GridLock::FreeRun < GridLock::Rtc);
+        assert!(GridLock::Rtc < GridLock::Air);
+        assert!(GridLock::Air < GridLock::Ntp);
+
+        GRID_LOCK.store(0, Ordering::Release);
+        assert_eq!(grid_lock(), GridLock::FreeRun);
+        assert!(!grid_is_locked());
+
+        note_grid_lock(GridLock::Rtc);
+        assert_eq!(grid_lock(), GridLock::Rtc);
+        // An RTC value alone can be seconds out — not "locked".
+        assert!(!grid_is_locked());
+
+        note_grid_lock(GridLock::Air);
+        assert_eq!(grid_lock(), GridLock::Air);
+        assert!(grid_is_locked());
+
+        note_grid_lock(GridLock::Ntp);
+        assert!(grid_is_locked());
+
+        // `note_grid_lock` only stores — precedence is the caller's.
+        note_grid_lock(GridLock::FreeRun);
+        assert_eq!(grid_lock(), GridLock::FreeRun);
+    }
+
+    #[test]
+    fn labels_are_stable() {
+        assert_eq!(GridLock::FreeRun.label(), "free-run");
+        assert_eq!(GridLock::Rtc.label(), "rtc");
+        assert_eq!(GridLock::Air.label(), "air");
+        assert_eq!(GridLock::Ntp.label(), "ntp");
     }
 }
 

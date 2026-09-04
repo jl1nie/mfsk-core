@@ -286,6 +286,24 @@ streaming coarse stage below.)
   `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
   the FT4 receiver's slot-grid alignment (#354).
 
+- **`mfsk_core::engine::sync::circular_dt_estimate`** — a score-weighted
+  circular DT estimate for a grid whose phase error can span a whole
+  slot, with a mean-resultant-length confidence. `bootstrap_dt_median`
+  sorts `dt_sec` linearly and is right only inside one ±2.5 s window;
+  once a cold-acquisition search covers a full period, `dt` is an angle
+  and `+7.4 s`/`−7.4 s` must not average to zero. First piece of #356's
+  air-phase lock (the tracking half — `bootstrap_dt_median` — already
+  shipped).
+
+- **`mfsk_app_shared::time_sync::GridLock`** (`FreeRun` / `Rtc` / `Air`
+  / `Ntp`) — what the slot grid's *phase* is anchored to, a distinct
+  question from `ClockSource` (what set the system *clock*): with no
+  network the grid can be `Air`-locked while the clock is only `Rtc`.
+  `note_grid_lock` / `grid_lock` / `grid_is_locked` (the last is `Air`
+  or `Ntp` — `Rtc` alone can be seconds out, past the ±1 s coarse
+  search). Meant for the panel and every log line so an operator never
+  guesses what the grid follows.
+
 - **`dual_core::run_speculative_slot` takes an optional stage-3
   wall-clock deadline (#357).** It had none: a slow slot ran every
   committed BP/OSD candidate to completion however long that took, and
