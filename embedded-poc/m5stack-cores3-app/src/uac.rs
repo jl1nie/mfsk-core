@@ -528,9 +528,29 @@ pub fn spawn_sim_feed(wav: &'static [u8], lead_silence: usize) {
             .chunks_exact(2)
             .map(|b| i16::from_le_bytes([b[0], b[1]]))
             .collect();
+        // Loop a *whole number of slots*, not the raw file length.
+        // `qso3_busy.wav` is 180 101 samples — 101 past one 15 s slot —
+        // so wrapping at `pcm.len()` slid the content 101 samples
+        // (8.4 ms) under the slot grid every loop, and spliced a
+        // discontinuity into whichever frame straddled the seam. That
+        // is a harness artifact, and it is not a small one: with the
+        // grid held perfectly still (zero shifts applied) the measured
+        // median DT still crept +8.2 ms/slot, against 8.42 ms/slot
+        // predicted from the 101 samples — the receiver was being
+        // blamed for the test rig's own drift, and `dec` wobbled 4-7 as
+        // the window crossed the seam. Truncating to whole slots makes
+        // the loop phase-continuous, so identical audio really does
+        // reach the decoder identically every slot.
+        let loop_len = if pcm.len() >= SLOT_SAMPLES_12K {
+            pcm.len() / SLOT_SAMPLES_12K * SLOT_SAMPLES_12K
+        } else {
+            pcm.len()
+        };
         log::warn!(
-            "uac SIM: feeding {} baked samples on loop, {} ms lead silence — no radio",
+            "uac SIM: feeding {loop_len} of {} baked samples on loop ({} slot(s), {} trimmed for phase continuity), {} ms lead silence — no radio",
             pcm.len(),
+            loop_len / SLOT_SAMPLES_12K.max(1),
+            pcm.len() - loop_len,
             lead / 12
         );
         const BLK: usize = 256;
@@ -548,9 +568,9 @@ pub fn spawn_sim_feed(wav: &'static [u8], lead_silence: usize) {
                 lead_left = 0;
                 &silence[..n]
             } else {
-                let end = (src + BLK).min(pcm.len());
+                let end = (src + BLK).min(loop_len);
                 let s = &pcm[src..end];
-                src = if end == pcm.len() { 0 } else { end };
+                src = if end == loop_len { 0 } else { end };
                 s
             };
             if let Ok(mut g) = AUDIO_SINK.lock() {
