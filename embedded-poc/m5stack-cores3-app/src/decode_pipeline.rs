@@ -154,10 +154,29 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     // `ft8::acquire::acquire_slot_phase` on the 25 s it collects.
     let mut lost_slots: u32 = 0;
     let mut acquiring = false;
-    /// Consecutive fully-lost slots before a cold acquisition.
+    /// Consecutive decode-less slots before a cold acquisition, from a
+    /// standing start (nothing has ever locked).
     const ACQUIRE_TRIGGER_SLOTS: u32 = 3;
+    /// The same count once a lock has produced decodes. Higher, because
+    /// after a lock a run of empty slots is usually a quiet band rather
+    /// than a lost grid, and re-acquiring costs 25 s of capture plus
+    /// whatever decodes the wrong-until-then grid would have made. Six
+    /// slots is 90 s of genuinely nothing heard.
+    const REACQUIRE_TRIGGER_SLOTS: u32 = 6;
     /// Minimum mean-resultant confidence to act on an acquisition.
     const ACQUIRE_R_MIN: f32 = 0.55;
+    /// Coarse-candidate cap for *each* of `acquire_slot_phase`'s three
+    /// tiled windows. Deliberately **not** `MAX_CAND` (15, the decode
+    /// candidate cap) — `MFSK_CORES3_SIM` caught reusing it here: with
+    /// only 15 pass1 candidates per ±2.5 s window, `qso3_busy`'s real
+    /// signals get crowded out of the top-15 as often as not, and the
+    /// circular estimate came back at `R 0.39` (below `ACQUIRE_R_MIN`)
+    /// on a 4 s offset the phase was otherwise recovered correctly for
+    /// (`dt -3.6 s`). 200 matches `tests/ft8_cold_acquisition.rs`,
+    /// where the measurement that chose the tiled search over the wide
+    /// one used it. One-time cost — this only runs during acquisition,
+    /// never in the per-slot decode loop.
+    const ACQUIRE_MAX_CAND: usize = 200;
     loop {
         let cfg = dual_core::DecodeConfig {
             freq_min: 100.0,
@@ -179,7 +198,10 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             n_cut,
             n_ready,
             n_deferred,
-            bootstrap_dt_med,
+            // Not read any more: the ±0.2 s/slot nudge it fed was a
+            // random walk, not an acquisition (see the lock-and-hold
+            // comment below). Acquisition is cold acquisition's job.
+            bootstrap_dt_med: _,
             t_post_recv,
             t_coarse_done,
             t_early_done,
@@ -265,9 +287,15 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
         }
         // Cross-slot phase filter (#356b) — tracks under NTP too, so the
         // panel's estimate is meaningful whatever the grid follows.
+        // Fed from the *pooled* multi-slot median, not the raw
+        // single-slot one — see `pooled_dt_median`'s doc comment for
+        // why a single slot's median is too small a sample on a real,
+        // multi-station band to smooth into a servo signal by itself.
         if source == "uac" {
-            if let Some(m) = slot_median {
-                mfsk_app_shared::time_sync::observe_slot_phase(m, 15.0);
+            if slot_median.is_some() {
+                if let Some(pooled) = mfsk_app_shared::time_sync::pooled_dt_median() {
+                    mfsk_app_shared::time_sync::observe_slot_phase(pooled, 15.0);
+                }
             }
         }
 
@@ -289,79 +317,113 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
         // `Ft8ChunkSink` would only drain. The `wav` source defines its
         // own boundaries and is never touched.
         if source == "uac" && !mfsk_app_shared::time_sync::clock_is_disciplined() {
-            /// Already inside FT8's tolerance — post 0 rather than chase
-            /// jitter into the shorten direction stage1_inc dislikes.
-            const ALIGN_OK_SEC: f32 = 0.05;
-            /// Per-slot shift cap. ±0.2 s keeps the slot in
-            /// [177_600, 182_400] so stage1_inc still completes pair 91;
-            /// a larger offset converges over several slots.
-            const MAX_SHIFT_SAMPLES: i32 = 2_400;
-            /// A slot this far out, with more decodes than the lock,
-            /// drops the lock — the StickS3 auto-sync's Tier 1, without
-            /// the quiet-band persistence net.
-            const DRIFT_RESET_SEC: f32 = 0.5;
-            const DRIFT_RESET_MIN_N: usize = 3;
-
-            let to_samples = |dt: f32| -> i32 {
-                let s = if dt.abs() < ALIGN_OK_SEC {
-                    0
-                } else {
-                    (dt * 12_000.0).round() as i32
-                };
-                s.clamp(-MAX_SHIFT_SAMPLES, MAX_SHIFT_SAMPLES)
-            };
-
-            if let Some(m) = slot_median {
-                if best_n > 0
-                    && n_dec > best_n
-                    && n_dec >= DRIFT_RESET_MIN_N
-                    && m.abs() > DRIFT_RESET_SEC
-                {
-                    log::info!("  air-sync: drift (DT={m:+.3}s, N={n_dec}>{best_n}) — lock reset");
-                    best_n = 0;
+            // **Lock and hold.** The grid is established once — by cold
+            // acquisition below, or by NTP/RTC — and then left alone.
+            // Nothing steers it per-slot any more, and that is the point.
+            //
+            // The board's own oscillator is ~3 ppm: 45 µs of drift per
+            // 15 s slot, 11 ms per hour, 0.26 s per *day*, against a
+            // search window measured in seconds. There is no physical
+            // process fast enough to need a per-slot servo.
+            //
+            // What the old servo was actually tracking was noise. A
+            // decode's DT is *that station's* clock error, not ours —
+            // WSJT-X reports it and never feeds it back into its own
+            // capture window. Which stations decode changes slot to
+            // slot, so the median moves with the station mix; and since
+            // fading correlates over tens of seconds, the same biased
+            // subset can persist for several slots running, which no
+            // amount of pooling or EMA smoothing can separate from a
+            // real error. Measured on hardware via `MFSK_CORES3_SIM`:
+            // the raw per-slot median jumped 0.205 s between adjacent
+            // slots with *zero* shift applied in between; feeding it
+            // back oscillated the grid to ±0.6 s; pooling the raw
+            // per-decode DTs across slots and EMA-filtering the result
+            // still wandered to -0.74 s over six consecutive slots,
+            // with `dec` falling 8 → 4 while it did.
+            //
+            // So: no `set_bootstrap_slot_shift_12k` from decode DTs at
+            // all, in any branch. `bootstrap_dt_med`'s ±0.2 s/slot
+            // nudge goes too — its own doc admits it is "essentially
+            // always `Some`, just a small near-random value when the
+            // true signal is outside ±1 s", which is a random walk, not
+            // an acquisition. Acquisition is cold acquisition's job
+            // (25 s capture, ±2.5 s tiled search, circular statistics,
+            // R ≥ 0.55 gate), and the same trigger doubles as the
+            // recovery path if the grid ever is genuinely lost.
+            //
+            // `observe_slot_phase` above still runs: the filtered phase
+            // is a panel readout, which is what #356b built it for.
+            if slot_median.is_some() {
+                // First confirmed decode: the grid demonstrably follows
+                // the band. Record that and stop — `Ft8ChunkSink` will
+                // raise this to `Ntp` if NTP ever lands.
+                if best_n == 0 {
+                    log::info!("  air-sync: grid locked on first confirmed decode (N={n_dec}) — holding");
                 }
-            }
-
-            let cold_bootstrap = bootstrap_dt_med.filter(|_| n_dec == 0 && best_n == 0);
-            if let Some(m) = slot_median.filter(|_| n_dec > best_n) {
-                let shift = to_samples(m);
-                mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift);
-                // A confirmed-decode lock: the grid now follows the band
-                // (#356b). `Ft8ChunkSink` will raise this to `Ntp` if
-                // NTP ever lands.
                 mfsk_app_shared::time_sync::note_grid_lock(
                     mfsk_app_shared::time_sync::GridLock::Air,
                 );
-                // Once converged, `n_dec` keeps setting new highs on a
-                // busy band with `shift` at 0 — say nothing then.
-                if shift != 0 {
-                    log::info!("  air-sync: lock DT={m:+.3}s (N={n_dec}) → {shift:+} samples");
-                }
-                best_n = n_dec;
-            } else if let Some(m) = cold_bootstrap {
-                let shift = to_samples(m);
-                mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift);
-                log::info!(
-                    "  air-sync: cold bootstrap DT={m:+.3}s (p1={n_pass1}, top-5 coarse) → {shift:+} samples"
-                );
-            } else {
-                // Locked and this slot did not beat it, or nothing to go
-                // on — post 0 so a previous slot's hint is not re-applied.
-                mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
+                best_n = best_n.max(n_dec);
             }
+            // Keep the channel drained at 0 so nothing stale can reach
+            // `Ft8ChunkSink` — the only writer left is cold acquisition,
+            // through its own uncapped one-shot channel.
+            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
 
-            // Cold acquisition (#356b): the grid is off past ±1 s, so
-            // coarse sees nothing and `bootstrap_dt_med` is `None`.
-            // After a run of such slots, capture 25 s and recover the
-            // phase with the tiled search.
-            let fully_lost = n_dec == 0 && best_n == 0 && bootstrap_dt_med.is_none();
-            lost_slots = if fully_lost { lost_slots + 1 } else { 0 };
+            // Cold acquisition (#356b): the *only* thing that moves the
+            // grid, and — under lock-and-hold — also the only way back
+            // from a bad one. `bootstrap_dt_med.is_none()` was tried as
+            // the trigger and does not work: `pass1` almost never comes
+            // back empty on a real spectrum (`sync_min = 1.0` alone
+            // clears noise peaks up to `PASS1_LIMIT`), so it is
+            // essentially always `Some`, just a small near-random value
+            // when the true signal is outside ±1 s — `MFSK_CORES3_SIM`
+            // showed a deliberate 4 s offset never tripping it. A run
+            // of slots decoding nothing is the real signal.
+            //
+            // The trigger deliberately does *not* look at `best_n`. It
+            // did once, as `n_dec == 0 && best_n == 0`, and that made a
+            // lock permanent: `best_n` only ever rises, so after the
+            // first decode the condition could never be true again and
+            // the receiver could never re-acquire — a mis-locked or
+            // later-drifted grid would have stayed wrong until a
+            // reboot. `ACQUIRE_R_MIN` is not a guarantee of a *correct*
+            // phase, only a confident one (a 0.61 acceptance landed
+            // 2.5 s out on 2026-09-05), so the way back matters as much
+            // as the way in.
+            //
+            // Held longer than the cold-start count, because after a
+            // lock the same run of empty slots is more often a quiet
+            // band than a lost grid, and a needless re-acquire throws
+            // away a grid that was working.
+            let relock = best_n > 0;
+            let trigger_slots = if relock {
+                REACQUIRE_TRIGGER_SLOTS
+            } else {
+                ACQUIRE_TRIGGER_SLOTS
+            };
+            lost_slots = if n_dec == 0 { lost_slots + 1 } else { 0 };
 
-            if lost_slots == ACQUIRE_TRIGGER_SLOTS && !acquiring {
+            if lost_slots == trigger_slots && !acquiring {
+                if relock {
+                    // Drop the lock so the state matches reality while
+                    // the capture runs, and so the panel stops claiming
+                    // a grid the decoder can no longer demonstrate.
+                    best_n = 0;
+                    mfsk_app_shared::time_sync::note_grid_lock(
+                        mfsk_app_shared::time_sync::GridLock::FreeRun,
+                    );
+                }
                 acquiring = true;
                 crate::uac::arm_acquisition();
                 log::warn!(
-                    "  cold-acquisition: grid lost {lost_slots} slots — capturing 25 s of FT8"
+                    "  cold-acquisition: {} {lost_slots} slots — capturing 25 s of FT8",
+                    if relock {
+                        "no decode since the lock for"
+                    } else {
+                        "grid lost"
+                    }
                 );
             }
             if acquiring {
@@ -371,7 +433,12 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                     acquiring = false;
                     lost_slots = 0;
                     match mfsk_core::ft8::acquire::acquire_slot_phase(
-                        &audio, 100.0, 3_000.0, 1.0, MAX_CAND, 5,
+                        &audio,
+                        100.0,
+                        3_000.0,
+                        1.0,
+                        ACQUIRE_MAX_CAND,
+                        5,
                     ) {
                         Some((dt, r)) if r >= ACQUIRE_R_MIN => {
                             let shift = (dt * 12_000.0).round() as i32;
@@ -379,7 +446,28 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                             mfsk_app_shared::time_sync::note_grid_lock(
                                 mfsk_app_shared::time_sync::GridLock::Air,
                             );
-                            mfsk_app_shared::time_sync::observe_slot_phase(dt, 15.0);
+                            // Not `observe_slot_phase(dt, ...)` — `dt` is
+                            // the *pre*-correction residual, and the
+                            // one-shot `shift` above is about to erase
+                            // it from the grid. Feeding it to the EMA
+                            // seeded the cross-slot filter with a value
+                            // that no longer applied once the shift
+                            // landed, so the filtered estimate spent
+                            // several slots decaying off a stale number
+                            // instead of tracking the (near-zero)
+                            // post-correction residual — caught via
+                            // MFSK_CORES3_SIM (filtered=+1.524s against
+                            // a same-slot raw median of +0.601s, right
+                            // after a cold-acquisition lock).  Clear the
+                            // filter instead so it starts fresh from the
+                            // next slot's post-correction observation.
+                            mfsk_app_shared::time_sync::reset_slot_phase();
+                            // Same reasoning — the pooled multi-slot
+                            // ring is entirely pre-correction evidence
+                            // at this point, so clear it too rather than
+                            // let it drag a stale median into the first
+                            // several post-correction slots.
+                            mfsk_app_shared::time_sync::reset_dt_pool();
                             // Persist it so the reboot into FT4 mode
                             // ("QSY to FT4", #356) keeps the lock.
                             if let Some(now_ms) = mfsk_app_shared::time_sync::utc_now_ms() {

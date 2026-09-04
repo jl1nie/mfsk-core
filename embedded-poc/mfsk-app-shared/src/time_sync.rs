@@ -55,6 +55,63 @@ pub fn record_decode_dt(dt_sec: f32) {
     if let Ok(mut buf) = CURRENT_SLOT_DT.lock() {
         let _ = buf.push(dt_sec);
     }
+    if let Ok(mut pool) = DT_POOL.lock() {
+        if pool.len() == DT_POOL_CAP {
+            pool.remove(0);
+        }
+        let _ = pool.push(dt_sec);
+    }
+}
+
+/// Ring buffer of the most recent individual decode DTs, spanning
+/// however many recent slots that takes — unlike `CURRENT_SLOT_DT`,
+/// never cleared per-slot (only by [`reset_dt_pool`]).
+///
+/// A single slot's own median is a *small*-N statistic on a real,
+/// multi-station band: which stations happen to decode varies slot to
+/// slot, and each carries its own TX-clock offset (independent of our
+/// grid, routinely hundreds of ms on real air — this is not a
+/// synthetic-corpus artifact, `qso3_busy.wav` is a genuine off-air
+/// WSJT-X reference recording of a real, multi-operator band, so the
+/// same variance applies live). `MFSK_CORES3_SIM` measured this
+/// directly: the raw per-slot median swung by >0.5 s between adjacent
+/// slots with *zero* correction applied in between. Smoothing the
+/// resulting noisy series after the fact (the cross-slot EMA below)
+/// only trades oscillation amplitude for oscillation persistence — the
+/// filtered value kept wandering across a ±0.2-0.4 s band indefinitely
+/// rather than settling (2026-09-04 trim-fix run 2).
+///
+/// Pooling the *raw per-decode* observations across several slots
+/// before taking a median, instead, directly grows the effective
+/// sample size the median is computed over — attacking the actual
+/// root cause (small per-slot N) rather than smoothing its symptom.
+const DT_POOL_CAP: usize = 32;
+static DT_POOL: Mutex<heapless::Vec<f32, DT_POOL_CAP>> = Mutex::new(heapless::Vec::new());
+
+/// Median over the pooled multi-slot DT observations, or `None` if
+/// the pool is empty (cold boot, or since the last [`reset_dt_pool`]).
+pub fn pooled_dt_median() -> Option<f32> {
+    let pool = DT_POOL.lock().ok()?;
+    if pool.is_empty() {
+        return None;
+    }
+    let mut v: heapless::Vec<f32, DT_POOL_CAP> = pool.clone();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    Some(v[v.len() / 2])
+}
+
+/// How many observations the pool currently holds.
+pub fn dt_pool_len() -> usize {
+    DT_POOL.lock().map(|p| p.len()).unwrap_or(0)
+}
+
+/// Clear the pool — call whenever a one-shot correction (cold
+/// acquisition) is about to invalidate every observation gathered
+/// before it, same reasoning as [`reset_slot_phase`].
+pub fn reset_dt_pool() {
+    if let Ok(mut pool) = DT_POOL.lock() {
+        pool.clear();
+    }
 }
 
 /// Compute the median over the current slot's collected DTs, store
