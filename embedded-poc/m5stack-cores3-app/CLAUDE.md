@@ -73,6 +73,11 @@ answering. Do not surface a cached value as a live one.
 | `MFSK_CORES3_USB_PANEL=1` | draw the ten-line USB diagnostic panel. Off by default — it covers the decodes, and the link bar carries what an operator needs |
 | `MFSK_WSPR_SYNTH=1` | fabricate a WSPR slot when no radio is attached. Off by default: it puts `DDC_TEST_CALL` on the spot list every two minutes, indistinguishable from a real decode |
 | `MFSK_FST4_REPLAY=1` | replay a baked FST4 slot when no radio is attached. Same reasoning |
+| `MFSK_CORES3_SIM=1` | in `BootMode::Uac`, feed `qso3_busy.wav` through the **real** `Ft8ChunkSink` on loop — unlike `Decode`/wav_sim it exercises the UTC anchor, air-sync, cold acquisition and the NVS grid fix. Flashed over USB the board stays a peripheral (console alive). Compile-time — a sim build is a deliberate rebuild |
+| `MFSK_SIM_OFFSET_MS=N` | with `MFSK_CORES3_SIM`, prepend `N` ms of silence so the sink's slot grid starts `N` ms mis-aligned from the signal |
+| `MFSK_SIM_NO_CLOCK=1` | with `MFSK_CORES3_SIM`, make `time_sync::utc_now_ms` report nothing (`sim_suppress_clock`) — the clockless hilltop, without stopping `pmic::init` seeding the clock from the RTC |
+| `MFSK_CORES3_FORCE_MODE=<mode>` | compile-time boot-mode override — pick a mode for a measurement run without erasing NVS |
+| `MFSK_FT8_BUDGET_MS=N` / `MFSK_FT8_MAX_CAND` / `MFSK_FT8_PASS1_LIMIT` | `decode_pipeline` knobs for the #357 investigation. Budget defaults to 2000 |
 
 Cargo features `wspr-golden` and `fst4-replay` link the fixtures those
 two read. Off by default, which is 1.8 MB of image: a receiver taking
