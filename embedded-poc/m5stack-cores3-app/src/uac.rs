@@ -530,6 +530,16 @@ impl AudioSink for Ft8ChunkSink {
             if let Some(remain) = mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS) {
                 self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
                 self.coarse_anchored = true;
+                // Grid lock state (#356b): a plausible clock, disciplined
+                // or not. `decode_pipeline`'s air-sync raises this to
+                // `Air` once it locks; only NTP raises it to `Ntp`.
+                mfsk_app_shared::time_sync::note_grid_lock(
+                    if mfsk_app_shared::time_sync::clock_is_disciplined() {
+                        mfsk_app_shared::time_sync::GridLock::Ntp
+                    } else {
+                        mfsk_app_shared::time_sync::GridLock::Rtc
+                    },
+                );
                 log::info!(
                     "uac: slot grid coarse-anchored to the system clock — {} ms to the next boundary",
                     remain / 12,
@@ -570,6 +580,9 @@ impl AudioSink for Ft8ChunkSink {
                     // the grid rides coarse sync's own DT through
                     // `decode_pipeline`'s air-sync (#356).
                     if mfsk_app_shared::time_sync::clock_is_disciplined() {
+                        mfsk_app_shared::time_sync::note_grid_lock(
+                            mfsk_app_shared::time_sync::GridLock::Ntp,
+                        );
                         if !self.utc_owns_phase_logged {
                             self.utc_owns_phase_logged = true;
                             log::info!(
@@ -1420,6 +1433,7 @@ pub fn link_info() -> mfsk_app_shared::ui::link_bar::LinkInfo {
         battery_mv: crate::pmic::battery_mv_cached(),
         vbus_mv: crate::pmic::vbus_mv_cached(),
         clock_set: mfsk_app_shared::time_sync::utc_now_ms().is_some(),
+        grid: mfsk_app_shared::time_sync::grid_lock(),
         vbus: tried.then(|| {
             (
                 p1 & crate::board::AW9523_P1_BOOST_EN != 0,

@@ -213,10 +213,11 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             );
         }
         log::info!(
-            "SLOT[{wav_idx}] src={source} p1={n_pass1} ready={n_ready} defer={n_deferred} \
+            "SLOT[{wav_idx}] src={source} grid={} p1={n_pass1} ready={n_ready} defer={n_deferred} \
              cut={n_cut} dec={} budget={FT8_BUDGET_MS}ms \
              tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
              slot_wait={}us late={}us",
+            mfsk_app_shared::time_sync::grid_lock().label(),
             results.len(),
             tail_window,
             coarse_us,
@@ -247,6 +248,13 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                 off,
                 mfsk_app_shared::time_sync::slots_finalised()
             );
+        }
+        // Cross-slot phase filter (#356b) — tracks under NTP too, so the
+        // panel's estimate is meaningful whatever the grid follows.
+        if source == "uac" {
+            if let Some(m) = slot_median {
+                mfsk_app_shared::time_sync::observe_slot_phase(m, 15.0);
+            }
         }
 
         // Self-align the slot grid from the air (#356), for the live
@@ -304,6 +312,12 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             if let Some(m) = slot_median.filter(|_| n_dec > best_n) {
                 let shift = to_samples(m);
                 mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift);
+                // A confirmed-decode lock: the grid now follows the band
+                // (#356b). `Ft8ChunkSink` will raise this to `Ntp` if
+                // NTP ever lands.
+                mfsk_app_shared::time_sync::note_grid_lock(
+                    mfsk_app_shared::time_sync::GridLock::Air,
+                );
                 // Once converged, `n_dec` keeps setting new highs on a
                 // busy band with `shift` at 0 — say nothing then.
                 if shift != 0 {

@@ -536,6 +536,15 @@ fn capture_loop() -> ! {
         // when a radio is attached.
         let mut fed = match mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS) {
             Some(remain) if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) => {
+                // Grid lock state (#356b) — FST4 anchors to the system
+                // clock only, so `Rtc` or `Ntp`.
+                mfsk_app_shared::time_sync::note_grid_lock(
+                    if mfsk_app_shared::time_sync::clock_is_disciplined() {
+                        mfsk_app_shared::time_sync::GridLock::Ntp
+                    } else {
+                        mfsk_app_shared::time_sync::GridLock::Rtc
+                    },
+                );
                 log::info!(
                     "fst4_app::capture: slot anchored to UTC — {} ms to the next boundary",
                     remain / 12,

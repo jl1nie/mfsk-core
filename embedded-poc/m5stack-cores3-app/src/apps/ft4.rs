@@ -372,6 +372,16 @@ fn slot_loop() -> ! {
                         remain / 12,
                     );
                 }
+                // Grid lock state (#356b). FT4's coarse stage has no DT
+                // dimension, so there is no air-lock here — the grid is
+                // the RTC's, or NTP's once that lands.
+                mfsk_app_shared::time_sync::note_grid_lock(
+                    if mfsk_app_shared::time_sync::clock_is_disciplined() {
+                        mfsk_app_shared::time_sync::GridLock::Ntp
+                    } else {
+                        mfsk_app_shared::time_sync::GridLock::Rtc
+                    },
+                );
             }
         }
 
@@ -395,8 +405,9 @@ fn slot_loop() -> ! {
         let seq = SLOT_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
         let o = rx::decode_slot(&slot, BUDGET_MS);
         log::info!(
-            "ft4_app: slot {seq} — {} of {} candidates tried, {} decodes in {} ms of \
+            "ft4_app: slot {seq} grid={} — {} of {} candidates tried, {} decodes in {} ms of \
              {BUDGET_MS} ms{}",
+            mfsk_app_shared::time_sync::grid_lock().label(),
             o.tried,
             o.cands,
             o.decodes.len(),
@@ -455,6 +466,8 @@ fn slot_loop() -> ! {
             if finalised != last_finalised {
                 last_finalised = finalised;
                 if let Some(off_sec) = mfsk_app_shared::time_sync::slot_dt_offset() {
+                    // Cross-slot phase filter (#356b) — 7.5 s period.
+                    mfsk_app_shared::time_sync::observe_slot_phase(off_sec, 7.5);
                     let delta = (off_sec * 12_000.0).round() as i32;
                     if delta.unsigned_abs() >= FT4_DT_TRIM_MIN_SAMPLES {
                         accum.shift_next_window(delta);

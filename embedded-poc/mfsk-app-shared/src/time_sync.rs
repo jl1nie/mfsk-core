@@ -166,6 +166,71 @@ pub fn take_bootstrap_slot_shift_12k() -> i32 {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Cross-slot phase filter — the "tracking" half of #356
+
+/// Filtered slot-phase estimate, microseconds, wrapped to
+/// (−½ period, ½ period]. `i32::MIN` = no observation yet.
+static GRID_PHASE_US: AtomicI32 = AtomicI32::new(i32::MIN);
+
+/// Observations folded into [`GRID_PHASE_US`]. The "still settling" /
+/// "locked after a few" counter #356 wants — a single-slot median is
+/// too noisy to lock a grid to, four is enough.
+static GRID_PHASE_OBS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// EMA weight for a new per-slot observation. `0.4` reaches a step
+/// within ~4 slots (≈1 min on FT8) and then holds against a single
+/// deep-fade slot's outlier — the issue's "four slots is enough" made
+/// a filter constant.
+const GRID_PHASE_ALPHA: f32 = 0.4;
+
+/// Fold one slot's phase observation into the cross-slot filter.
+///
+/// `dt_sec` is that slot's own phase estimate — the decode-DT median
+/// while tracking, the `ft8::acquire` circular estimate during cold
+/// start — and `period_s` is the slot length, so the EMA update
+/// wraps correctly at ±½ period (`+7.4 s` and `−7.4 s` are one small
+/// step apart, not a period). A single-slot median stays the *input*;
+/// this is the layer across slots that `MEDIAN_DT_US` never had.
+pub fn observe_slot_phase(dt_sec: f32, period_s: f32) {
+    if !dt_sec.is_finite() || !period_s.is_finite() || period_s <= 0.0 {
+        return;
+    }
+    let period = (period_s * 1e6) as i32;
+    let half = period / 2;
+    let wrap = |x: i32| -> i32 {
+        let m = x.rem_euclid(period);
+        if m > half { m - period } else { m }
+    };
+    let obs = wrap((dt_sec * 1e6) as i32);
+    let prev = GRID_PHASE_US.load(Ordering::Acquire);
+    let next = if prev == i32::MIN {
+        obs
+    } else {
+        wrap(prev + (GRID_PHASE_ALPHA * wrap(obs - prev) as f32) as i32)
+    };
+    GRID_PHASE_US.store(next, Ordering::Release);
+    GRID_PHASE_OBS.fetch_add(1, Ordering::AcqRel);
+}
+
+/// The cross-slot-filtered grid phase, seconds, or `None` before the
+/// first [`observe_slot_phase`].
+pub fn filtered_slot_phase() -> Option<f32> {
+    let v = GRID_PHASE_US.load(Ordering::Acquire);
+    (v != i32::MIN).then_some(v as f32 / 1e6)
+}
+
+/// How many slot observations the filter has folded in.
+pub fn slot_phase_observations() -> u32 {
+    GRID_PHASE_OBS.load(Ordering::Acquire)
+}
+
+/// Clear the filter — on QSY, or a deliberate re-acquire.
+pub fn reset_slot_phase() {
+    GRID_PHASE_US.store(i32::MIN, Ordering::Release);
+    GRID_PHASE_OBS.store(0, Ordering::Release);
+}
+
+// ────────────────────────────────────────────────────────────────
 // Capture-slot index + parity (issue #110).
 //
 // Published by the audio source (capture_thread / wav_sim driver /
@@ -475,6 +540,56 @@ mod clock_source_tests {
         // pull the state back down.
         note_clock_from_rtc();
         assert!(clock_is_disciplined());
+    }
+}
+
+#[cfg(test)]
+mod slot_phase_filter_tests {
+    use super::*;
+
+    #[test]
+    fn ema_converges_then_holds_against_an_outlier() {
+        reset_slot_phase();
+        assert!(filtered_slot_phase().is_none());
+
+        for _ in 0..6 {
+            observe_slot_phase(0.30, 15.0);
+        }
+        let after = filtered_slot_phase().unwrap();
+        assert!((after - 0.30).abs() < 0.02, "converged to {after}");
+        assert!(slot_phase_observations() >= 6);
+
+        // One deep-fade slot throws a wild median; the filter barely moves.
+        observe_slot_phase(-5.0, 15.0);
+        let jerked = filtered_slot_phase().unwrap();
+        assert!((jerked - 0.30).abs() < 2.4, "outlier moved it to {jerked}");
+    }
+
+    #[test]
+    fn ema_wraps_at_the_half_period() {
+        reset_slot_phase();
+        // Estimates jittering around +7.4 / −7.4 (the same phase on a
+        // 15 s grid) must not average toward zero.
+        for dt in [7.4_f32, -7.4, 7.3, -7.45, 7.35] {
+            observe_slot_phase(dt, 15.0);
+        }
+        let p = filtered_slot_phase().unwrap();
+        assert!(p.abs() > 7.0, "wrapped estimate landed at {p}");
+    }
+
+    #[test]
+    fn rejects_bad_input_and_resets() {
+        reset_slot_phase();
+        observe_slot_phase(f32::NAN, 15.0);
+        observe_slot_phase(0.1, 0.0);
+        observe_slot_phase(0.1, f32::INFINITY);
+        assert!(filtered_slot_phase().is_none());
+
+        observe_slot_phase(0.1, 15.0);
+        assert!(filtered_slot_phase().is_some());
+        reset_slot_phase();
+        assert!(filtered_slot_phase().is_none());
+        assert_eq!(slot_phase_observations(), 0);
     }
 }
 

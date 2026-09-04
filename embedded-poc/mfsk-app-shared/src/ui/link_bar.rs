@@ -153,6 +153,11 @@ pub struct LinkInfo {
     /// looks exactly like a broken decoder from every other indicator
     /// on the screen, which is how it cost an evening.
     pub clock_set: bool,
+    /// What the slot grid's *phase* is anchored to (`FreeRun` / `Rtc` /
+    /// `Air` / `Ntp`) — the issue-#356 rule that an operator must never
+    /// have to guess. Shown as one char in the same slot `clock_set`
+    /// used, since the grid lock subsumes it.
+    pub grid: crate::time_sync::GridLock,
 }
 
 /// Draw the bar at `origin_y`, spanning `width`.
@@ -257,10 +262,18 @@ where
             let _ = rest.push_str("down");
         }
     }
-    // One character, because there is room for one: `T` when the clock
-    // is set, `-` when it is not. The receivers' own headers carry the
-    // time itself; this says whether that time means anything.
-    let _ = rest.push_str(if info.clock_set { " T" } else { " -" });
+    // One character, because there is room for one: what the slot grid
+    // is anchored to. `T` = NTP, `a` = off-air FT8 lock (#356), `r` =
+    // an RTC value (plausible, not disciplined), `-` = free-running.
+    // The receivers' headers carry the time itself; this says what that
+    // time — and the decode — can be trusted against.
+    use crate::time_sync::GridLock;
+    let _ = rest.push_str(match info.grid {
+        GridLock::Ntp => " T",
+        GridLock::Air => " a",
+        GridLock::Rtc => " r",
+        GridLock::FreeRun => " -",
+    });
     let wifi_fg = if info.wifi_rssi.is_some() {
         Rgb565::WHITE
     } else {

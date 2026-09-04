@@ -313,8 +313,17 @@ streaming coarse stage below.)
   network the grid can be `Air`-locked while the clock is only `Rtc`.
   `note_grid_lock` / `grid_lock` / `grid_is_locked` (the last is `Air`
   or `Ntp` — `Rtc` alone can be seconds out, past the ±1 s coarse
-  search). Meant for the panel and every log line so an operator never
-  guesses what the grid follows.
+  search). The CoreS3 app now sets it at every anchor point (`uac.rs`,
+  `apps/ft4.rs`, `apps/fst4.rs`), shows it as one char on the link bar
+  (`T` / `a` / `r` / `-`), and puts `grid=` on every per-slot log line
+  — the issue-#356 rule that an operator never guesses what the grid
+  follows.
+
+- **`time_sync::observe_slot_phase` / `filtered_slot_phase`** — a
+  circular EMA (α 0.4, ~4 slots to a step then holds) across per-slot
+  DT medians, wrapping at ±½ period. The "tracking across slots" half
+  of #356 that `MEDIAN_DT_US` never had; the CoreS3 FT8 and FT4 paths
+  feed it their slot medians.
 
 - **`dual_core::run_speculative_slot` takes an optional stage-3
   wall-clock deadline (#357).** It had none: a slow slot ran every
