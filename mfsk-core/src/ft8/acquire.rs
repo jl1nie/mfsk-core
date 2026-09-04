@@ -94,11 +94,37 @@ pub fn acquire_slot_phase(
     if audio.len() < REQUIRED_SAMPLES {
         return None;
     }
+    // Estimate per tile and take the most coherent one — never pool the
+    // three candidate lists into one top-`top_k`.
+    //
+    // Only one tile can contain the signal: its own ±2.5 s search is the
+    // only one the phase falls inside. The other two still return their
+    // best `max_cand` peaks — noise, and the true signal's ghosts at the
+    // far edge of their windows — at scores that compete with the real
+    // ones. Pooling first let those into the top-`top_k`, and the
+    // circular mean of a correct 7.5 s and a spurious 2.5 s lands
+    // between the two. The signature was unmistakable once the sweep
+    // was fine enough to see it: the error repeated *exactly* every 5 s,
+    // the tile spacing (roll 2.25/2.50/2.75 s and 7.25/7.50/7.75 s gave
+    // -359/-273/-486 ms apiece). The old whole-second sweep sampled
+    // only phases where the pooling happened to be harmless.
+    //
+    // Selected on *score mass*, not on `r`. `r` was tried first and is
+    // the wrong discriminator: a tile with no signal still returns its
+    // best peaks, and those cluster at its window edge just as tightly
+    // as real ones do, so it reports `r` up to 1.00 while being ~7 s
+    // wrong. Agreement says the candidates are consistent, not that
+    // they are a signal. The summed score of the top-`top_k` does say
+    // that — coarse sync's score is a signal-to-noise ratio, and the
+    // tile actually holding the frames wins it outright.
+    let mut best: Option<(f32, f32)> = None;
+    let mut best_mass = f32::NEG_INFINITY;
     let mut cands = Vec::new();
     for (off_s, off_samples) in WINDOW_OFFSETS_S
         .iter()
         .map(|&s| (s, (s * 12_000.0) as usize))
     {
+        cands.clear();
         tile(
             audio,
             off_samples,
@@ -109,8 +135,18 @@ pub fn acquire_slot_phase(
             max_cand,
             &mut cands,
         );
+        if let Some((dt, r)) = circular_dt_estimate(&cands, top_k, 15.0) {
+            // Same top-`top_k` the estimate averaged over.
+            let mut scores: Vec<f32> = cands.iter().map(|c| c.score).collect();
+            scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(core::cmp::Ordering::Equal));
+            let mass: f32 = scores.iter().take(top_k).sum();
+            if mass > best_mass {
+                best_mass = mass;
+                best = Some((dt, r));
+            }
+        }
     }
-    circular_dt_estimate(&cands, top_k, 15.0)
+    best
 }
 
 #[cfg(test)]
