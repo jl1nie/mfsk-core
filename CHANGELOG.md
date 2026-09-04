@@ -286,6 +286,20 @@ streaming coarse stage below.)
   `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
   the FT4 receiver's slot-grid alignment (#354).
 
+- **The CoreS3 FT8 receiver cold-acquires its slot grid from the air
+  (#356b).** When there is no NTP and the grid is off far enough that
+  coarse sync sees nothing — no decode and no `bootstrap_dt_med` for
+  three slots running — `decode_pipeline` arms a 25 s capture ring in
+  `uac.rs`, runs `ft8::acquire::acquire_slot_phase` on it, and if the
+  result is confident (mean resultant ≥ 0.55) posts a one-shot uncapped
+  slot shift through `time_sync::set_acquisition_shift_12k`.
+  `Ft8ChunkSink` applies it by lengthening a single slot by up to a
+  whole period, sets `GridLock::Air`, and hands straight back to the
+  ±1 s tracking. Host-reasoned; the acquisition primitive is tested but
+  the on-device path is not yet run against a radio, and it does not
+  yet survive the reboot into FT4 mode that #356's operating model
+  ("lock on FT8, QSY to FT4") implies.
+
 - **`mfsk_core::ft8::acquire::acquire_slot_phase`** — cold slot-phase
   acquisition from ~25 s of off-air FT8 (#356b). Three ±2.5 s
   `coarse_sync_with_lag` searches at 0 / 5 / 10 s, each window's offset

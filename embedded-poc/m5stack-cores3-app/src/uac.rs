@@ -448,6 +448,52 @@ pub trait AudioSink: Send + 'static {
 /// drop until ready" contract the old `CHUNK_Q_ADDR` had.
 static AUDIO_SINK: Mutex<Option<Box<dyn AudioSink>>> = Mutex::new(None);
 
+// ── Cold-acquisition capture ring (#356b) ────────────────────────────
+//
+// `decode_pipeline` arms this when the FT8 grid is lost past what the
+// ±1 s coarse search can recover (no clock, no decodes, no
+// `bootstrap_dt_med` for a run of slots). While armed, `Ft8ChunkSink`
+// appends raw 12 kHz audio here; once it holds
+// `ft8::acquire::REQUIRED_SAMPLES`, `decode_pipeline` runs the tiled
+// acquisition on it and disarms.
+
+/// `ft8::acquire::REQUIRED_SAMPLES` (25 s) plus one chunk of slack, so
+/// the last `extend_from_slice` never undershoots. ~600 KB on PSRAM
+/// while armed, freed the moment `decode_pipeline` takes it.
+const ACQUIRE_RING_CAP: usize = mfsk_core::ft8::acquire::REQUIRED_SAMPLES + CHUNK_LEN;
+
+static ACQUIRE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ACQUIRE_RING: Mutex<Vec<i16>> = Mutex::new(Vec::new());
+
+/// Start filling the acquisition ring from scratch.
+pub fn arm_acquisition() {
+    if let Ok(mut r) = ACQUIRE_RING.lock() {
+        r.clear();
+        r.reserve(ACQUIRE_RING_CAP);
+    }
+    ACQUIRE_ARMED.store(true, Ordering::Release);
+}
+
+/// Stop filling and drop the buffer.
+pub fn disarm_acquisition() {
+    ACQUIRE_ARMED.store(false, Ordering::Release);
+    if let Ok(mut r) = ACQUIRE_RING.lock() {
+        *r = Vec::new();
+    }
+}
+
+/// Take the captured audio once the ring holds at least `min_samples`,
+/// leaving the ring empty; `None` while it is still filling. Also
+/// disarms — one acquisition per arm.
+pub fn take_acquisition_audio(min_samples: usize) -> Option<Vec<i16>> {
+    let mut r = ACQUIRE_RING.lock().ok()?;
+    if r.len() < min_samples {
+        return None;
+    }
+    ACQUIRE_ARMED.store(false, Ordering::Release);
+    Some(core::mem::take(&mut r))
+}
+
 /// Register the audio sink. Call before [`start_host`] so the sink is
 /// live before the class driver can enumerate a device and spawn
 /// `reader_thread` — same ordering `main.rs` already relies on for
@@ -512,6 +558,18 @@ impl Ft8ChunkSink {
 
 impl AudioSink for Ft8ChunkSink {
     fn push_samples(&mut self, samples: &[i16]) {
+        // Feed the cold-acquisition ring while `decode_pipeline` has it
+        // armed (#356b). Bounded — stop appending once it is full and
+        // let the pipeline pick it up.
+        if ACQUIRE_ARMED.load(Ordering::Acquire) {
+            if let Ok(mut r) = ACQUIRE_RING.lock() {
+                if r.len() < ACQUIRE_RING_CAP {
+                    let room = ACQUIRE_RING_CAP - r.len();
+                    r.extend_from_slice(&samples[..samples.len().min(room)]);
+                }
+            }
+        }
+
         // One-time rough anchor from the system clock, RTC or NTP.
         //
         // Without any anchor the boundary is whatever 15 s window the
@@ -609,24 +667,43 @@ impl AudioSink for Ft8ChunkSink {
                             }
                         }
                     } else {
-                        // Air-sync shift from `decode_pipeline` (#356):
-                        // the DT of coarse sync's own candidates, a
-                        // phase reference present wherever the receiver
-                        // is. Sign is WSJT-X's — DT > 0 means the slot
-                        // opened early, lengthen the next. Capped ±2400
-                        // by the producer, so the slot stays in
-                        // [177_600, 182_400] and stage1_inc still
-                        // completes.
-                        let air_shift =
-                            mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
-                        if air_shift != 0 {
-                            self.slot_target = (SLOT_SAMPLES_12K as i32 + air_shift)
-                                .clamp(60_000, 200_000)
-                                as usize;
+                        let acq = mfsk_app_shared::time_sync::take_acquisition_shift_12k();
+                        if acq != 0 {
+                            // Cold-acquisition one-shot (#356b): the grid
+                            // was lost past ±1 s and `decode_pipeline`
+                            // recovered the phase from a 25 s FT8
+                            // capture. Uncapped — lengthen this one slot
+                            // by up to a whole period, then straight back
+                            // to nominal and hand to the narrow tracking.
+                            self.slot_target =
+                                (SLOT_SAMPLES_12K as i32 + acq).clamp(30_000, 300_000) as usize;
+                            self.coarse_anchored = true;
+                            mfsk_app_shared::time_sync::note_grid_lock(
+                                mfsk_app_shared::time_sync::GridLock::Air,
+                            );
                             log::info!(
-                                "uac: air-sync slot shift {air_shift:+} — next slot {} samples",
+                                "uac: cold-acquisition slot shift {acq:+} — next slot {} samples",
                                 self.slot_target,
                             );
+                        } else {
+                            // Air-sync shift from `decode_pipeline`
+                            // (#356): the DT of coarse sync's own
+                            // candidates. Sign is WSJT-X's — DT > 0 means
+                            // the slot opened early, lengthen the next.
+                            // Capped ±2400 by the producer, so the slot
+                            // stays in [177_600, 182_400] and stage1_inc
+                            // still completes.
+                            let air_shift =
+                                mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                            if air_shift != 0 {
+                                self.slot_target = (SLOT_SAMPLES_12K as i32 + air_shift)
+                                    .clamp(60_000, 200_000)
+                                    as usize;
+                                log::info!(
+                                    "uac: air-sync slot shift {air_shift:+} — next slot {} samples",
+                                    self.slot_target,
+                                );
+                            }
                         }
                     }
                 }

@@ -165,6 +165,26 @@ pub fn take_bootstrap_slot_shift_12k() -> i32 {
     BOOTSTRAP_SLOT_SHIFT_12K.swap(0, Ordering::AcqRel)
 }
 
+/// One-shot cold-acquisition grid shift, 12 kHz samples (#356b).
+/// Separate channel from `BOOTSTRAP_SLOT_SHIFT_12K` because this one is
+/// **uncapped** — the whole point is a phase error the ±0.2 s bootstrap
+/// shift cannot express — and the consumer applies it by lengthening a
+/// single slot rather than by nudging. `0` = nothing pending.
+static ACQUISITION_SHIFT_12K: AtomicI32 = AtomicI32::new(0);
+
+/// Post the cold-acquisition shift (`ft8::acquire::acquire_slot_phase`'s
+/// phase × 12 000). The consumer takes it once and lengthens/shortens
+/// the next slot by that much, then reverts to nominal and lets the
+/// narrow tracking take over.
+pub fn set_acquisition_shift_12k(samples: i32) {
+    ACQUISITION_SHIFT_12K.store(samples, Ordering::Release);
+}
+
+/// Consumer side — read once at SlotEnd, clears atomically.
+pub fn take_acquisition_shift_12k() -> i32 {
+    ACQUISITION_SHIFT_12K.swap(0, Ordering::AcqRel)
+}
+
 // ────────────────────────────────────────────────────────────────
 // Cross-slot phase filter — the "tracking" half of #356
 

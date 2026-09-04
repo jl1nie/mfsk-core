@@ -144,6 +144,17 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     // it with strictly more decodes, so one noisy decode cannot pull a
     // good lock off. Only used for the live (`uac`) source.
     let mut best_n: usize = 0;
+    // Cold-acquisition state (#356b). `lost_slots` counts consecutive
+    // slots with no clock, no decode and no coarse DT — i.e. the grid is
+    // off past what the ±1 s search can even see. After
+    // `ACQUIRE_TRIGGER_SLOTS` of that, arm `uac`'s capture ring and run
+    // `ft8::acquire::acquire_slot_phase` on the 25 s it collects.
+    let mut lost_slots: u32 = 0;
+    let mut acquiring = false;
+    /// Consecutive fully-lost slots before a cold acquisition.
+    const ACQUIRE_TRIGGER_SLOTS: u32 = 3;
+    /// Minimum mean-resultant confidence to act on an acquisition.
+    const ACQUIRE_R_MIN: f32 = 0.55;
     loop {
         let cfg = dual_core::DecodeConfig {
             freq_min: 100.0,
@@ -334,6 +345,50 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                 // Locked and this slot did not beat it, or nothing to go
                 // on — post 0 so a previous slot's hint is not re-applied.
                 mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
+            }
+
+            // Cold acquisition (#356b): the grid is off past ±1 s, so
+            // coarse sees nothing and `bootstrap_dt_med` is `None`.
+            // After a run of such slots, capture 25 s and recover the
+            // phase with the tiled search.
+            let fully_lost = n_dec == 0 && best_n == 0 && bootstrap_dt_med.is_none();
+            lost_slots = if fully_lost { lost_slots + 1 } else { 0 };
+
+            if lost_slots == ACQUIRE_TRIGGER_SLOTS && !acquiring {
+                acquiring = true;
+                crate::uac::arm_acquisition();
+                log::warn!(
+                    "  cold-acquisition: grid lost {lost_slots} slots — capturing 25 s of FT8"
+                );
+            }
+            if acquiring {
+                if let Some(audio) = crate::uac::take_acquisition_audio(
+                    mfsk_core::ft8::acquire::REQUIRED_SAMPLES,
+                ) {
+                    acquiring = false;
+                    lost_slots = 0;
+                    match mfsk_core::ft8::acquire::acquire_slot_phase(
+                        &audio, 100.0, 3_000.0, 1.0, MAX_CAND, 5,
+                    ) {
+                        Some((dt, r)) if r >= ACQUIRE_R_MIN => {
+                            let shift = (dt * 12_000.0).round() as i32;
+                            mfsk_app_shared::time_sync::set_acquisition_shift_12k(shift);
+                            mfsk_app_shared::time_sync::note_grid_lock(
+                                mfsk_app_shared::time_sync::GridLock::Air,
+                            );
+                            mfsk_app_shared::time_sync::observe_slot_phase(dt, 15.0);
+                            log::warn!(
+                                "  cold-acquisition: grid phase {dt:+.2} s (R {r:.2}) → shift {shift:+} samples"
+                            );
+                        }
+                        Some((dt, r)) => log::warn!(
+                            "  cold-acquisition: inconclusive (dt {dt:+.2} s, R {r:.2} < {ACQUIRE_R_MIN}) — will retry"
+                        ),
+                        None => {
+                            log::warn!("  cold-acquisition: no candidates — will retry")
+                        }
+                    }
+                }
             }
         }
 
