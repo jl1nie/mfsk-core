@@ -55,6 +55,8 @@
 // `message`, `ldpc`, `params`, `hash_table` stay available for TX-only
 // / FEC-only use cases without any FFT backend.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod acquire;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod baseline;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;

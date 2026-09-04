@@ -286,17 +286,17 @@ streaming coarse stage below.)
   `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
   the FT4 receiver's slot-grid alignment (#354).
 
-- **FT8 cold slot-phase acquisition — measured, tiled search chosen
-  (#356b).** `tests/ft8_cold_acquisition.rs` compares recovering an
-  arbitrary grid phase two ways: one wide `coarse_sync_with_lag(…, 7.5)`
-  (which `bounded_sync_lag_steps` clamps to ±6.28 s anyway) versus three
-  ±2.5 s searches on the audio rolled to −5 / 0 / +5 s with each
-  window's offset folded back, both fed to `circular_dt_estimate`. On
-  `qso3_busy.wav` rolled across the full ±7.5 s: **tiled recovers every
-  offset to within ~115 ms** (an FT8 symbol is 160 ms); the wide search
-  is off by up to 720 ms and its `R` stays misleadingly high while it
-  is — the far-lag ghosts of issue #280, spread across the whole window,
-  poison a single search. Slice 3 wires the tiled path.
+- **`mfsk_core::ft8::acquire::acquire_slot_phase`** — cold slot-phase
+  acquisition from ~25 s of off-air FT8 (#356b). Three ±2.5 s
+  `coarse_sync_with_lag` searches at 0 / 5 / 10 s, each window's offset
+  folded into the candidate `dt_sec`, then `circular_dt_estimate` over
+  the union; returns `(dt_sec ∈ (−7.5, 7.5], r)`. `tests/ft8_cold_
+  acquisition.rs` is the measurement that chose it over a single wide
+  search: on `qso3_busy.wav` swept across the full period tiled recovers
+  every offset to within ~115 ms (an FT8 symbol is 160 ms), the wide
+  search is off by up to 720 ms with a misleadingly high `R` — the
+  far-lag ghosts of issue #280, spread across a ±6.28 s window (all a
+  single 15 s spectrogram can reach), poison the estimate.
 
 - **`mfsk_core::engine::sync::circular_dt_estimate`** — a score-weighted
   circular DT estimate for a grid whose phase error can span a whole

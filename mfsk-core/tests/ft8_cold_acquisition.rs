@@ -14,11 +14,10 @@
 //!
 //! - **wide** — one `coarse_sync_with_lag(spec, …, 7.5)` (clamped to
 //!   ±6.28 s), one spectrogram;
-//! - **tiled** — three `±2.5 s` searches on the audio rolled to centre
-//!   windows at −5 / 0 / +5 s, each candidate's own window offset added
-//!   back, union covers the full 15 s. Three spectrograms, three
-//!   searches, the tested kernel unchanged (jl1nie's suggestion on the
-//!   issue).
+//! - **tiled** — `ft8::acquire::acquire_slot_phase`: three ±2.5 s
+//!   searches at 0 / 5 / 10 s of a 25 s capture, each window's offset
+//!   folded back, union covers the full 15 s. The tested kernel
+//!   unchanged (jl1nie's suggestion on the issue).
 //!
 //! Fixture: `qso3_busy.wav` (one real 15 s FT8 slot, ~15 signals),
 //! circularly rolled by a known offset. The estimate should recover
@@ -40,6 +39,7 @@
 use std::time::Instant;
 
 use mfsk_core::engine::sync::{SyncCandidate, circular_dt_estimate};
+use mfsk_core::ft8::acquire::{REQUIRED_SAMPLES, acquire_slot_phase};
 use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
 
 #[allow(dead_code)]
@@ -75,21 +75,16 @@ fn acquire_wide(audio: &[i16]) -> Vec<SyncCandidate> {
     coarse(audio, 7.5)
 }
 
-/// **tiled**: ±2.5 s searches centred at −5 / 0 / +5 s, window offset
-/// folded back into each candidate's `dt_sec`.
-fn acquire_tiled(audio: &[i16]) -> Vec<SyncCandidate> {
-    let mut all = Vec::new();
-    for w in [-5.0_f32, 0.0, 5.0] {
-        let rolled = roll(audio, (w * SR as f32) as i64);
-        for c in coarse(&rolled, 2.5) {
-            all.push(SyncCandidate {
-                freq_hz: c.freq_hz,
-                dt_sec: c.dt_sec + w,
-                score: c.score,
-            });
-        }
+/// **tiled** — the shipped `ft8::acquire::acquire_slot_phase`. It wants
+/// ≥ 25 s of contiguous audio and windows it at 0 / 5 / 10 s; feeding
+/// it the 15 s slot repeated makes each later window a circular roll of
+/// the slot, which is exactly the phase sweep this test wants.
+fn acquire_tiled(slot: &[i16]) -> Option<(f32, f32)> {
+    let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+    while long.len() < REQUIRED_SAMPLES {
+        long.extend_from_slice(slot);
     }
-    all
+    acquire_slot_phase(&long, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 5)
 }
 
 /// Signed phase error, wrapped to (−½ period, ½ period].
@@ -115,7 +110,7 @@ fn ft8_cold_acquisition_tiled_vs_wide() {
 
     // The undisplaced estimate — the phase all rolled cases are measured
     // against (the recording's own signals are not exactly at dt = 0).
-    let (base_dt, base_r) = circular_dt_estimate(&acquire_tiled(&audio), 5, PERIOD_S).unwrap();
+    let (base_dt, base_r) = acquire_tiled(&audio).unwrap();
     println!("\nqso3_busy own phase (tiled, k=5): dt = {base_dt:+.3} s  R = {base_r:.3}\n");
 
     println!(
@@ -124,8 +119,8 @@ fn ft8_cold_acquisition_tiled_vs_wide() {
     );
     println!("{:-<7}-+-{:-<28}-+-{:-<28}", "", "", "");
 
-    let row = |name: &str, cands: &[SyncCandidate], want: f32, t_ms: f64| -> f32 {
-        match circular_dt_estimate(cands, 5, PERIOD_S) {
+    let report = |name: &str, est: Option<(f32, f32)>, want: f32, t_ms: f64| -> f32 {
+        match est {
             Some((dt, r)) => {
                 let e = phase_err(dt, want);
                 print!(
@@ -151,12 +146,12 @@ fn ft8_cold_acquisition_tiled_vs_wide() {
 
         print!("{off_s:>7.0} |");
         let t0 = Instant::now();
-        let w = acquire_wide(&rolled);
-        row("W", &w, want, t0.elapsed().as_secs_f64() * 1e3);
+        let w = circular_dt_estimate(&acquire_wide(&rolled), 5, PERIOD_S);
+        report("W", w, want, t0.elapsed().as_secs_f64() * 1e3);
         print!(" |");
         let t0 = Instant::now();
         let t = acquire_tiled(&rolled);
-        let te = row("T", &t, want, t0.elapsed().as_secs_f64() * 1e3);
+        let te = report("T", t, want, t0.elapsed().as_secs_f64() * 1e3);
         println!();
 
         worst_tiled = worst_tiled.max(te);
