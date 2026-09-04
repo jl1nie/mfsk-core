@@ -296,10 +296,16 @@ streaming coarse stage below.)
   SpecBundle-arrival time; `stage3_split`'s work-stealing loop stops
   claiming candidates once it passes, and `SpeculativeOut::n_cut`
   reports how many were left. `coarse_sync` and `pass2` are not
-  bounded — stage 3 is where the variance is. The CoreS3
-  `BootMode::Decode` path exposes it as a compile-time
-  `MFSK_FT8_BUDGET_MS` for the qso3_busy degradation sweep; the other
-  boards pass 0.
+  bounded — stage 3 is where the variance is. The CoreS3 FT8 decode
+  now defaults to **2000 ms**, from the qso3_busy sweep: stage 3
+  measures ~985 ms there and the recall-vs-budget curve is flat at
+  `dec=7` down to 800 ms — the deadline sheds only the doomed tail
+  (candidates run in descending coarse score, the all-LLR-variant BP
+  failures last) — so 2000 ms is ~2× margin at zero measured recall
+  cost. `MFSK_FT8_BUDGET_MS=` overrides; the S3 / Core2 / wav-sim
+  callers pass 0. The embedded FT8 decode is single-pass with no OSD,
+  no SIC and no AP already, so this is the only per-slot cost bound
+  it was missing.
 
 - **The CoreS3 FT8 receiver self-aligns its slot grid from the air
   when there is no clock (#356).** `Ft8ChunkSink` anchors the grid to

@@ -200,18 +200,25 @@ sequence around it was not shared, so `esp_log_bridge` never reached
 this mode and `EXT_HUB: ESP_ERR_NO_MEM` was invisible; and the display
 task held 32 KiB of internal DRAM in a stack FST4 keeps in PSRAM.
 
-Open (**#357**): FT8's per-slot decode cost alternates ~2× by TX
-period — one period `coarse` ~100 ms / decodes 4–8, the other `coarse`
-~180 ms / overruns the boundary 0.6–0.9 s / defers 8–11 candidates it
-drops / decodes 0–2. Cause not established — per-period station density
-explains the shape but the busy slots show `ready=19–22, dec=0–2`, as
-consistent with more phantom candidates as with more real ones.
+**#357** — FT8's per-slot decode cost alternates ~2× by TX period: one
+period `coarse` ~100 ms / decodes 4–8, the other `coarse` ~180 ms /
+overruns the boundary 0.6–0.9 s / defers 8–11 candidates it drops /
+decodes 0–2. `run_speculative_slot` had no time bound at all — a slow
+slot ran every committed candidate and the overrun cascaded (a late
+decode delays the next SpecBundle → blocks stage1_inc on a full
+`spec_q` → stalls the UAC reader).
 
-`run_speculative_slot` now has an optional stage-3 wall-clock deadline
-(`DecodeConfig::budget_ms`, 0 = off) — `BootMode::Decode` exposes it as
-compile-time `MFSK_FT8_BUDGET_MS` and the per-slot log gains `cut=` /
-`budget=`. **The measurement**: rebuild at a few budgets
-(`MFSK_FT8_BUDGET_MS=3000 / 2000 / 1500 / 1000 cargo build --release`),
-flash `BootMode::Decode` (qso3_busy replay, no radio needed), read
-`dec=` vs `cut=` vs `post_slotend` / `slot_wait` off the `SLOT[…]`
-line. The knee in `dec` vs `budget` is the safe budget to ship.
+**The embedded FT8 decode is already the lean one**: `stage3_split` →
+`process_candidates_with_ap` is single-pass, `DecodeDepth::EMBEDDED`
+(OSD off), no SIC (never touches raw audio), no AP. The 7-on-qso3_busy
+vs host's ~18 is the cost of that, and the right trade for the field —
+the phantom bugs this suite shipped were all in the subtraction paths
+this config does not use. Not a recall problem to solve.
+
+**The fix is the deadline** (`DecodeConfig::budget_ms`, `3425da3`).
+Default **2000 ms**, from the qso3_busy sweep (`logs/ft8_357_bud*`,
+2026-09-04): stage 3 measures ~985 ms, `dec` is flat at 7 down to
+800 ms (the deadline sheds only the doomed tail), 5 at 600 ms, 2–3 at
+400 ms. `MFSK_FT8_BUDGET_MS=` overrides; `MFSK_CORES3_FORCE_MODE=decode`
+runs the sweep without erasing NVS. Still needs the live-radio
+confirmation that it stops the slow period stealing the next slot.

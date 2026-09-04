@@ -32,33 +32,63 @@ const MY_GRID: &str = env!("MY_GRID");
 
 static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 
-const PASS1_LIMIT: usize = 30;
-const MAX_CAND: usize = 15;
-
-/// Wall-clock budget for stage 3 (BP/OSD), milliseconds from the
-/// SpecBundle arriving. `0` = no deadline, the historical behaviour
-/// (#357).
+/// Pass-1 candidate cap and refined-candidate cap.
 ///
-/// Compile-time knob for the qso3_busy degradation sweep: rebuild with
-/// `MFSK_FT8_BUDGET_MS=2500 cargo build ...` and read `cut=` / `dec=` /
-/// `post_slotend` / `slot_wait` off the per-slot log. Default `0` so a
-/// plain build is a clean baseline.
-const FT8_BUDGET_MS: i64 = match option_env!("MFSK_FT8_BUDGET_MS") {
-    Some(s) => parse_i64(s),
-    None => 0,
+/// The embedded FT8 decode is deliberately lean — single-pass BP,
+/// `LlrEffort::Minimal`, **no OSD, no SIC, no AP** (`stage3_split` →
+/// `process_candidates_with_ap` runs one pass and never touches the raw
+/// audio a subtract would need). It decodes 7 on qso3_busy where host
+/// JTDX gets ~18; that gap is the cost of the leanness, and it is the
+/// right trade for battery-budgeted field operation where a bounded,
+/// phantom-free slot matters more than the last few dB (the phantom
+/// bugs this suite has shipped were all in the subtraction paths this
+/// config does not use). Not a bug to chase.
+///
+/// Compile-time knobs, kept for #357 investigation only —
+/// `MFSK_FT8_MAX_CAND` / `MFSK_FT8_PASS1_LIMIT`. Defaults are what
+/// ships.
+const PASS1_LIMIT: usize = match option_env!("MFSK_FT8_PASS1_LIMIT") {
+    Some(s) => parse_u32(s) as usize,
+    None => 30,
+};
+const MAX_CAND: usize = match option_env!("MFSK_FT8_MAX_CAND") {
+    Some(s) => parse_u32(s) as usize,
+    None => 15,
 };
 
-/// `const`-context `i64` parse — `str::parse` is not `const`. Digits
+/// Wall-clock budget for stage 3, milliseconds from the SpecBundle
+/// arriving (#357). Bounds the worst-case slot so a dense period cannot
+/// overrun and steal the next slot's headroom — the failure the live
+/// radio showed (transmit-heavy period ~0.7 s past slot end, 8–11
+/// candidates deferred and dropped, 0–2 decoded against the other
+/// period's 4–8).
+///
+/// **2000 ms, from the qso3_busy sweep** (`logs/ft8_357_bud*`,
+/// 2026-09-04). Stage 3 there measures ~985 ms; the recall-vs-budget
+/// curve is flat at `dec=7` down to 1000 ms, still 7 at 800 ms (the
+/// deadline sheds only the doomed tail — candidates run in descending
+/// coarse score and the all-LLR-variant BP failures are last), then
+/// 5 at 600 ms and 2–3 at 400 ms. 2000 ms is ~2× the measured work,
+/// margin for a denser real band and the ~180 ms slow-period coarse,
+/// while still bounding a pathological slot. `0` disables it;
+/// `MFSK_FT8_BUDGET_MS=` overrides. Pending confirmation on a live
+/// radio.
+const FT8_BUDGET_MS: i64 = match option_env!("MFSK_FT8_BUDGET_MS") {
+    Some(s) => parse_u32(s) as i64,
+    None => 2_000,
+};
+
+/// `const`-context unsigned parse — `str::parse` is not `const`. Digits
 /// only; anything else is a build-time panic, which is what you want
-/// for a typo in an env var that would otherwise silently disable the
-/// budget.
-const fn parse_i64(s: &str) -> i64 {
+/// for a typo in a sweep env var that would otherwise silently fall
+/// back to the default.
+const fn parse_u32(s: &str) -> u32 {
     let b = s.as_bytes();
     let mut i = 0;
-    let mut v: i64 = 0;
+    let mut v: u32 = 0;
     while i < b.len() {
-        assert!(b[i] >= b'0' && b[i] <= b'9', "MFSK_FT8_BUDGET_MS: digits only");
-        v = v * 10 + (b[i] - b'0') as i64;
+        assert!(b[i] >= b'0' && b[i] <= b'9', "MFSK_FT8_* knob: digits only");
+        v = v * 10 + (b[i] - b'0') as u32;
         i += 1;
     }
     v

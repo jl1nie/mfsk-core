@@ -71,7 +71,15 @@ fn main() -> ! {
         );
         let _ = boot_mode::write(&nvs, target);
     }
-    let mode = boot_mode::determine_no_override(&nvs);
+    // `MFSK_CORES3_FORCE_MODE` (compile-time) overrides the NVS mode —
+    // for a measurement run that needs a specific mode without erasing
+    // NVS (which also holds WiFi creds and the HTTP-config settings).
+    // Same "knob for the bench, not for the operator" role as
+    // `MFSK_CORES3_FORCE_UAC`; unset in every shipped build.
+    let mode = match option_env!("MFSK_CORES3_FORCE_MODE") {
+        Some(s) => boot_mode::BootMode::from_cfg_str(s),
+        None => boot_mode::determine_no_override(&nvs),
+    };
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
 
     // WSPR and FST4 are whole receivers, not modes of the FT8
