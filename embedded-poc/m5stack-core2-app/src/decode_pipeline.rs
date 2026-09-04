@@ -88,6 +88,10 @@ pub fn run() -> ! {
             q_thresh: DEFAULT_Q_THRESH,
             bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
             depth: DecodeDepth::EMBEDDED,
+            // No wall-clock deadline here — Core2 is wav_sim-fed, not a
+            // radio, so it never backlogs. The knob is #357's, on the
+            // CoreS3.
+            budget_ms: 0,
         };
         let out = dual_core::run_speculative_slot(spec_q, slot_q, &cfg);
         let dual_core::SpeculativeOut {
@@ -95,6 +99,7 @@ pub fn run() -> ! {
             slot,
             results,
             n_pass1,
+            n_cut: _,
             n_ready,
             n_deferred,
             bootstrap_dt_med: _,

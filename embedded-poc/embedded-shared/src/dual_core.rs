@@ -80,6 +80,10 @@ pub struct SpeculativeOut {
     pub n_pass1: usize,
     pub n_ready: usize,
     pub n_deferred: usize,
+    /// Stage-3 candidates the [`DecodeConfig::budget_ms`] deadline
+    /// stopped from being tried (speculative + deferred). `0` when the
+    /// budget is disabled or the slot finished inside it.
+    pub n_cut: usize,
     /// DT median over the top-5 highest-score pass1 candidates.
     /// `None` if pass1 was empty. Used by the controller's auto-sync
     /// path as a cold-start fallback when zero confirmed decodes
@@ -123,6 +127,26 @@ pub struct DecodeConfig {
     /// LLR-variant staircase depth (embedded ship uses
     /// [`DecodeDepth::EMBEDDED`]).
     pub depth: DecodeDepth,
+    /// Wall-clock budget for stage 3 (BP/OSD), in milliseconds from the
+    /// moment this slot's SpecBundle arrived (`t_post_recv`). `0`
+    /// disables it — the historical behaviour, where a slow slot runs
+    /// every committed candidate to completion however long that takes
+    /// and the overrun steals the next slot's headroom (#357).
+    ///
+    /// When set, [`run_speculative_slot`] passes the derived absolute
+    /// deadline to both the speculative and the deferred
+    /// [`stage3_split`], whose work-stealing loop stops claiming
+    /// candidates once it is reached. `coarse_sync` and `pass2` (refine)
+    /// are *not* bounded — stage 3 is where the wall-clock variance is
+    /// (`project_phasewise_hotspot_survey_246`).
+    pub budget_ms: i64,
+}
+
+/// `esp_timer_get_time()`, monotonic microseconds. The stage-3 deadline
+/// is compared against this.
+#[inline]
+fn now_us() -> i64 {
+    unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
 
 /// Phase-C audio-tail speculation runner. Receives a SpecBundle and
@@ -155,6 +179,19 @@ pub fn run_speculative_slot(
 
     let n_pass1 = pass1.len();
     let bootstrap_dt_med = bootstrap_dt_median(&pass1, 5);
+    // Absolute stage-3 deadline. From `t_post_recv`, not from slot end —
+    // slot end is not known until `recv_box::<Slot>` below, and the
+    // early speculative path is where a slow slot overruns. When the
+    // pipeline is backlogged `t_post_recv` is itself already past slot
+    // end (the SpecBundle send blocked on a full `spec_q`), so the
+    // effective budget shrinks exactly when the pipeline is behind —
+    // which is what breaks the compounding-backlog loop (#357).
+    let deadline_us: i64 = if cfg.budget_ms > 0 {
+        t_post_recv + cfg.budget_ms * 1_000
+    } else {
+        i64::MAX
+    };
+    let mut n_cut = 0usize;
     let snap_fill = spec.audio_len();
     // Partition by audio-window fit only.
     //
@@ -182,7 +219,10 @@ pub fn run_speculative_slot(
         let partial_audio: &[i16] = spec.audio_prefix();
         let p2 = pass2_split(partial_audio, ready, cfg.max_cand);
         n_early_refined = p2.len();
-        stage3_split(partial_audio, p2, cfg.depth, cfg.q_thresh, cfg.bp_max_iter)
+        let (r, cut) =
+            stage3_split(partial_audio, p2, cfg.depth, cfg.q_thresh, cfg.bp_max_iter, deadline_us);
+        n_cut += cut;
+        r
     } else {
         Vec::new()
     };
@@ -205,11 +245,18 @@ pub fn run_speculative_slot(
         // tightly under NTP sync; `time_sync`'s slot phase
         // auto-anchor keeps dt within ±0.5 s in steady state.
         let max_cand_late = cfg.max_cand.saturating_sub(n_early_refined);
-        if max_cand_late > 0 {
+        if max_cand_late > 0 && now_us() < deadline_us {
             let slot_audio: &[i16] = slot.audio();
             let p2 = pass2_split(slot_audio, deferred, max_cand_late);
-            let late = stage3_split(slot_audio, p2, cfg.depth, cfg.q_thresh, cfg.bp_max_iter);
+            let (late, cut) =
+                stage3_split(slot_audio, p2, cfg.depth, cfg.q_thresh, cfg.bp_max_iter, deadline_us);
+            n_cut += cut;
             results.extend(late);
+        } else if max_cand_late > 0 {
+            // Out of budget before the deferred path even started — the
+            // speculative half used all of it. Every candidate that
+            // would have been refined here is a cut.
+            n_cut += n_deferred.min(max_cand_late);
         }
     }
     let t_done = unsafe { esp_timer_get_time() };
@@ -221,6 +268,7 @@ pub fn run_speculative_slot(
         n_pass1,
         n_ready,
         n_deferred,
+        n_cut,
         bootstrap_dt_med,
         t_post_recv,
         t_coarse_done,
@@ -257,6 +305,9 @@ enum Job {
         slots_ptr: *mut Option<RefinedCandidate>,
         slots_len: usize,
         next_idx: *const AtomicUsize,
+        /// Absolute `now_us()` deadline; the loop stops claiming
+        /// candidates once it passes. `i64::MAX` when disabled.
+        deadline_us: i64,
     },
     CoarseSyncWithAllsum {
         spec: *const Spectrogram,
@@ -365,6 +416,7 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                 slots_ptr,
                 slots_len,
                 next_idx,
+                deadline_us,
             } => {
                 let audio_slice = unsafe { core::slice::from_raw_parts(audio, audio_len) };
                 #[allow(static_mut_refs)]
@@ -377,6 +429,7 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                         depth,
                         q_thresh,
                         bp_max_iter,
+                        deadline_us,
                         cs_scratch_worker(),
                     )
                 };
@@ -560,7 +613,8 @@ pub fn stage3_split(
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
-) -> Vec<DecodeResult> {
+    deadline_us: i64,
+) -> (Vec<DecodeResult>, usize) {
     let mut slots: Vec<Option<RefinedCandidate>> = pass2.into_iter().map(Some).collect();
     let next_idx = AtomicUsize::new(0);
 
@@ -578,6 +632,7 @@ pub fn stage3_split(
         slots_ptr,
         slots_len,
         next_idx: next_idx_ptr,
+        deadline_us,
     });
     unsafe { queue_send_ptr(JOB_Q.get(), Box::into_raw(job)) };
 
@@ -592,6 +647,7 @@ pub fn stage3_split(
             depth,
             q_thresh,
             bp_max_iter,
+            deadline_us,
             cs_scratch_main(),
         )
     };
@@ -599,11 +655,17 @@ pub fn stage3_split(
     let worker_ptr = unsafe { queue_recv_ptr::<Vec<DecodeResult>>(STAGE3_RESULT_Q.get()) };
     let worker = unsafe { *Box::from_raw(worker_ptr) };
 
+    // Both cores have joined; `next_idx` is final. Each claim past
+    // `slots_len` is a core's last `fetch_add` before it saw the end,
+    // so clamp. Whatever was never claimed is what the deadline cut.
+    let claimed = next_idx.load(Ordering::Acquire).min(slots_len);
+    let cut = slots_len - claimed;
+
     // `slots` is now drained (all Options taken); drop is fine.
     drop(slots);
 
     local.extend(worker);
-    local
+    (local, cut)
 }
 
 /// Pop candidates from a shared atomic-indexed slot array and process
@@ -612,6 +674,7 @@ pub fn stage3_split(
 /// SAFETY: `slots_ptr` must point to `slots_len` valid
 /// `Option<RefinedCandidate>` cells, and `next_idx` claims an exclusive
 /// index per `fetch_add` so the same slot is never read by two callers.
+#[allow(clippy::too_many_arguments)]
 unsafe fn drain_stage3_queue(
     audio: &[i16],
     slots_ptr: *mut Option<RefinedCandidate>,
@@ -620,10 +683,18 @@ unsafe fn drain_stage3_queue(
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
+    deadline_us: i64,
     cs_scratch: &mut [[mfsk_core::engine::scalar::Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
     let mut out: Vec<DecodeResult> = Vec::new();
     loop {
+        // Checked before the claim so `next_idx` reflects exactly what
+        // was processed — `stage3_split` derives the cut count from it.
+        // The check is once per candidate (BP/OSD is 10-100 ms each), so
+        // an `esp_timer_get_time()` here is free.
+        if now_us() >= deadline_us {
+            break;
+        }
         let i = next_idx.fetch_add(1, Ordering::AcqRel);
         if i >= slots_len {
             break;

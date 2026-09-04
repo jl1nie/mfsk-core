@@ -35,6 +35,35 @@ static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
+/// Wall-clock budget for stage 3 (BP/OSD), milliseconds from the
+/// SpecBundle arriving. `0` = no deadline, the historical behaviour
+/// (#357).
+///
+/// Compile-time knob for the qso3_busy degradation sweep: rebuild with
+/// `MFSK_FT8_BUDGET_MS=2500 cargo build ...` and read `cut=` / `dec=` /
+/// `post_slotend` / `slot_wait` off the per-slot log. Default `0` so a
+/// plain build is a clean baseline.
+const FT8_BUDGET_MS: i64 = match option_env!("MFSK_FT8_BUDGET_MS") {
+    Some(s) => parse_i64(s),
+    None => 0,
+};
+
+/// `const`-context `i64` parse — `str::parse` is not `const`. Digits
+/// only; anything else is a build-time panic, which is what you want
+/// for a typo in an env var that would otherwise silently disable the
+/// budget.
+const fn parse_i64(s: &str) -> i64 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut v: i64 = 0;
+    while i < b.len() {
+        assert!(b[i] >= b'0' && b[i] <= b'9', "MFSK_FT8_BUDGET_MS: digits only");
+        v = v * 10 + (b[i] - b'0') as i64;
+        i += 1;
+    }
+    v
+}
+
 /// `BootMode::Decode` entry — runs the decode pipeline with the baked
 /// `QSO_WAVS` playlist as the audio source. Thin wrapper around
 /// [`run_with_source`].
@@ -95,6 +124,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             q_thresh: DEFAULT_Q_THRESH,
             bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
             depth: DecodeDepth::EMBEDDED,
+            budget_ms: FT8_BUDGET_MS,
         };
         let out = dual_core::run_speculative_slot(spec_q, slot_q, &cfg);
         let dual_core::SpeculativeOut {
@@ -102,6 +132,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             slot,
             results,
             n_pass1,
+            n_cut,
             n_ready,
             n_deferred,
             bootstrap_dt_med,
@@ -152,7 +183,8 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             );
         }
         log::info!(
-            "SLOT[{wav_idx}] src={source} p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
+            "SLOT[{wav_idx}] src={source} p1={n_pass1} ready={n_ready} defer={n_deferred} \
+             cut={n_cut} dec={} budget={FT8_BUDGET_MS}ms \
              tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
              slot_wait={}us late={}us",
             results.len(),

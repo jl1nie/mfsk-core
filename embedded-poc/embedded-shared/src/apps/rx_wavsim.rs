@@ -102,6 +102,7 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
             q_thresh: rx_cfg.q_thresh,
             bp_max_iter: rx_cfg.bp_max_iter,
             depth: DecodeDepth::EMBEDDED,
+            budget_ms: 0,
         };
         let out = dual_core::run_speculative_slot(spec_q, slot_q, &dc);
         let dual_core::SpeculativeOut {
@@ -111,6 +112,7 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
             n_pass1,
             n_ready,
             n_deferred,
+            n_cut: _,
             bootstrap_dt_med: _,
             t_post_recv,
             t_coarse_done,

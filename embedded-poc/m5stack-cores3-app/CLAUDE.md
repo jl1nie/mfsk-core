@@ -203,11 +203,15 @@ task held 32 KiB of internal DRAM in a stack FST4 keeps in PSRAM.
 Open (**#357**): FT8's per-slot decode cost alternates ~2× by TX
 period — one period `coarse` ~100 ms / decodes 4–8, the other `coarse`
 ~180 ms / overruns the boundary 0.6–0.9 s / defers 8–11 candidates it
-drops / decodes 0–2. Note `run_speculative_slot` has **no wall-clock
-deadline** (unlike FT4's `decode_slot`): the only throttle is
-`MAX_CAND = 15` plus the deferred-candidate split, and `OVER BUDGET` in
-`decode_pipeline.rs` is diagnostic only. Cause not established —
-per-period station density explains the shape but the busy slots show
-`ready=19–22, dec=0–2`, as consistent with more phantom candidates as
-with more real ones. #357 has the data and the experiment (lower
-`MAX_CAND`/`PASS1_LIMIT` live, watch the slow side's decode count).
+drops / decodes 0–2. Cause not established — per-period station density
+explains the shape but the busy slots show `ready=19–22, dec=0–2`, as
+consistent with more phantom candidates as with more real ones.
+
+`run_speculative_slot` now has an optional stage-3 wall-clock deadline
+(`DecodeConfig::budget_ms`, 0 = off) — `BootMode::Decode` exposes it as
+compile-time `MFSK_FT8_BUDGET_MS` and the per-slot log gains `cut=` /
+`budget=`. **The measurement**: rebuild at a few budgets
+(`MFSK_FT8_BUDGET_MS=3000 / 2000 / 1500 / 1000 cargo build --release`),
+flash `BootMode::Decode` (qso3_busy replay, no radio needed), read
+`dec=` vs `cut=` vs `post_slotend` / `slot_wait` off the `SLOT[…]`
+line. The knee in `dec` vs `budget` is the safe budget to ship.

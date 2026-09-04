@@ -286,6 +286,21 @@ streaming coarse stage below.)
   `utc_now_ms` reads `SystemTime::now()` with no seam. Groundwork for
   the FT4 receiver's slot-grid alignment (#354).
 
+- **`dual_core::run_speculative_slot` takes an optional stage-3
+  wall-clock deadline (#357).** It had none: a slow slot ran every
+  committed BP/OSD candidate to completion however long that took, and
+  the overrun stole the next slot's headroom (on a busy 40 m band the
+  transmit-heavy period overran ~0.7 s, deferred 8–11 candidates it
+  dropped, and decoded 0–2). `DecodeConfig::budget_ms` (0 = off,
+  unchanged behaviour) derives an absolute deadline from the
+  SpecBundle-arrival time; `stage3_split`'s work-stealing loop stops
+  claiming candidates once it passes, and `SpeculativeOut::n_cut`
+  reports how many were left. `coarse_sync` and `pass2` are not
+  bounded — stage 3 is where the variance is. The CoreS3
+  `BootMode::Decode` path exposes it as a compile-time
+  `MFSK_FT8_BUDGET_MS` for the qso3_busy degradation sweep; the other
+  boards pass 0.
+
 - **The CoreS3 FT8 receiver self-aligns its slot grid from the air
   when there is no clock (#356).** `Ft8ChunkSink` anchors the grid to
   UTC once NTP has run; on a hilltop with no network it never does, and

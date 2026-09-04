@@ -201,6 +201,9 @@ where
             q_thresh: DEFAULT_Q_THRESH,
             bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
             depth: DecodeDepth::EMBEDDED,
+            // No wall-clock deadline — the acoustic/wav_sim source does
+            // not backlog. #357's knob lives on the CoreS3.
+            budget_ms: 0,
         };
         let out = dual_core::run_speculative_slot(spec_q, slot_q, &cfg);
         let dual_core::SpeculativeOut {
@@ -210,6 +213,7 @@ where
             n_pass1,
             n_ready,
             n_deferred,
+            n_cut: _,
             bootstrap_dt_med,
             t_post_recv,
             t_coarse_done,
