@@ -419,6 +419,51 @@ streaming coarse stage below.)
 
 ### Changed
 
+- **The CoreS3 FT8 receiver locks its slot grid once and holds it,
+  instead of steering it every slot (#356).** The grid is set by cold
+  acquisition, or by NTP/RTC, and then left alone. The per-slot
+  air-sync servo that used to trim it from the decode-DT median is
+  gone, and so is `bootstrap_dt_median`'s ±0.2 s/slot nudge.
+
+  A decode's DT is *that station's* clock error — WSJT-X reports it and
+  never feeds it back into its own capture window. Which stations
+  decode changes from slot to slot, so the median moves with the
+  station mix, and because fading correlates over tens of seconds the
+  same biased subset persists for several slots at a time, which is
+  indistinguishable from a real error on the same timescale. Meanwhile
+  there is nothing to track: the board's oscillator is ~3 ppm, i.e.
+  45 µs per slot and 0.26 s per *day*, against a search window measured
+  in seconds.
+
+  Measured on hardware through `MFSK_CORES3_SIM`, where each attempt at
+  a better servo was worse than not having one: the raw per-slot median
+  oscillated the grid to ±0.6 s; pooling raw per-decode DTs across
+  slots and EMA-filtering them still wandered to −0.74 s over six
+  consecutive slots with `dec` falling 8 → 4; holding sat at −0.12 to
+  −0.20 s all run, a spread of 0.08 s, with zero shifts applied. Most
+  of the swing the servo was correcting had been its own motion. The
+  leftover residual is cold acquisition's own accuracy, and the search
+  window absorbs it — that is what the tolerance is for.
+
+  Holding also repaired acquisition, which the nudging had been
+  corrupting by moving the grid *during* the 25 s capture: `R` went
+  0.63–0.84 before and 0.99 after, and the first locked slot decoded 7,
+  the `qso3_busy` reference, where every earlier attempt started at 8
+  and decayed.
+
+  Re-acquisition no longer keys off `best_n`. It was gated on
+  `n_dec == 0 && best_n == 0`, and `best_n` only rises, so a lock was
+  permanent — a mis-locked grid stayed wrong until a reboot.
+
+- **`ft8::acquire::acquire_slot_phase` estimates per tile rather than
+  pooling all three windows into one top-`k`** — only one tile can hold
+  the signal, and pooling let the other two's edge peaks into the
+  circular average. Selection is by score mass; `r` is not a usable
+  discriminator here, since a tile with no signal reaches `r = 1.00`
+  with its peaks clustered at its window edge. Worst error across the
+  period 7151 → 1578 ms. **Still wrong, and now measured**: see #358 and
+  the note under Fixed.
+
 - **`mfsk-core/ft4` now has a complete embedded path.** `ft4-bench`
   runs a whole FT4 slot on a CoreS3 from nothing but 12 kHz audio: the
   coarse stage computes its own candidates through
@@ -450,6 +495,32 @@ streaming coarse stage below.)
   rather than appearing to ignore it.
 
 ### Fixed
+
+- **`tests/ft8_cold_acquisition.rs` swept whole seconds, and whole
+  seconds are where cold acquisition happens to work (#358).** Stepping
+  0.25 s instead of 1 s shows 51 of 60 offsets out by 0.2–1.6 s, with
+  `r` at 0.79–0.98 while they are wrong — so `ACQUIRE_R_MIN`, the gate
+  callers rely on, accepts them. On hardware at the worst case
+  (`MFSK_SIM_OFFSET_MS=7500`, half a period out, the largest error a
+  free-running grid can have) acquisition returned −6.02 s at R 0.62,
+  then −6.84 s at R 0.72, both applied, never decoding; at 4000 ms the
+  same code locks at R 0.99 and decodes 7/slot. The errors repeat
+  exactly every 5 s, the tile spacing. The assertion is now a ratchet on
+  the measured worst case rather than the 0.16 s target, so #358's fix
+  can be seen to move it. **Whole-second phases are a measure-zero slice
+  of the RTC-less case this path exists for**, which is why a sweep that
+  only sampled them reported a clean bill of health for years.
+
+- **The CoreS3 sim feed looped on the raw file length, sliding the audio
+  under a stationary grid.** `qso3_busy.wav` is 180 101 samples — 101
+  past one 15 s slot — so every loop moved the content 8.4 ms and
+  spliced a discontinuity into whichever frame straddled the seam. With
+  the grid held perfectly still the measured median DT still crept
+  +8.2 ms/slot against 8.42 predicted, and `dec` wobbled 4–7 as the
+  window crossed the splice: a harness artifact that reads as receiver
+  drift, and was nearly diagnosed as one. `ready`/`defer` had been
+  27/3, 26/4, 29/1, 28/2 on consecutive slots of supposedly identical
+  audio; truncating the loop to whole slots makes it 25/5 on every one.
 
 - **The mixed-radix FFT wrappers leaked their scratch, once per plan.**
   `MixedRadix2304Fft`/`MixedRadix3840Fft` each allocated an
