@@ -455,35 +455,57 @@ streaming coarse stage below.)
   `n_dec == 0 && best_n == 0`, and `best_n` only rises, so a lock was
   permanent — a mis-locked grid stayed wrong until a reboot.
 
-- **`ft8::acquire::acquire_slot_phase` reduces its candidates with a
-  circular *medoid*, over two of them rather than five (#358).**
-  `circular_dt_estimate` is a score-weighted circular mean, and a real
-  band supplies the outlier that defeats one: on `qso3_busy` fifteen
-  stations cluster at a median DT of +0.260 s while F5RXL sits at
-  −0.770 s, loud enough to take the answer. `circular_dt_medoid` picks
-  the candidate whose total circular distance to the others is least,
-  so a lone far-off station is outvoted however strong it is; `r` keeps
-  its definition, about the chosen centre.
+- **Cold acquisition proposes candidate phases and the decoder chooses
+  one (#358).** `ft8::acquire::acquire_slot_phases` returns a ranked
+  shortlist from the new `engine::sync::circular_dt_clusters` — greedy
+  over the score-ordered candidates, the heaviest remaining one seeding
+  a cluster and everything within 0.5 s joining it — and the caller
+  decodes at each in turn, keeping the first that yields anything. No
+  `r` gate, no `top_k`, no single reduced phase.
 
-  Measured on the numeric path the receiver ships (40 offsets across
-  the period, scored by whether the acquired phase decodes), **and with
-  the search window the receiver uses** — `MFSK_SYNC_LAG_S=1.0`, not
-  the 2.5 s crate default, which forgives a phase two seconds out and
-  so cannot see this at all: **307 → 345 decodes**, against ~600 for a
-  perfect grid. More candidates is monotonically worse — 358 at
-  `top_k=1`, 240 at 12 — because the leaders behind the first are
-  artefacts rather than more stations. `1` scores best and is not
-  taken: with one candidate `r` is identically 1.00, which would leave
-  `ACQUIRE_R_MIN` accepting everything while looking like a gate.
+  Reducing to one phase never worked, at any setting. A score-weighted
+  circular mean is defeated by the outlier a real band supplies — on
+  `qso3_busy` fifteen stations sit at a median DT of +0.260 s while
+  F5RXL sits at −0.770 s, loud enough to take the answer — and the
+  medoid that replaced it is provably `argmax score` at the two
+  candidates the receiver used, so it did no reducing at all. Nothing
+  computed from score and dt separated a grid from an artefact: mass,
+  cross-tile agreement, top-K circular mean, full-list mode, absolute
+  score, `top1/median`, block-0 sync quality and coverage maximisation
+  were each measured and each failed. `r` read 1.00 on phases that
+  decode nothing. A decode tells them apart by definition, and a
+  phantom counts — its message is nonsense, its sync is real, and only
+  its dt is being asked for.
 
-  **What this does not fix**: the number of offsets acquiring a phase
-  that decodes *nothing* is 16 of 40 at `top_k=2` against 17 at 5. The
-  decode count improves by 12 %; the outright-failure rate does not
-  move. (An earlier revision of this entry quoted 392 → 458 decodes and
-  14 → 7 failures. Those were scored at the 2.5 s default and overstate
-  what the board sees on both counts.)
+  **The applied phase is the cluster centre corrected by the median DT
+  of what the trial decoded**, not the centre itself. That is what lets
+  the trial search the crate's full ±2.5 s while the per-slot path runs
+  a narrower window: without the correction a 2.5 s trial accepts four
+  phases in forty that the per-slot path cannot then use; with it, none,
+  and the outcome is identical at 1.0, 1.7 and 2.5 s trial windows.
 
-  On f32 it is a wash (303 → 297 decodes, 0 → 0 failures).
+  Measured on the numeric path the receiver ships, 40 offsets across the
+  period, scored by whether the acquired phase decodes:
+
+  | | usable phase | accepted but unusable | trials |
+  |---|---|---|---|
+  | cluster + decode + DT median | **40/40** | **0** | 1: 23, ≤3: 37, ≤5: 40 |
+  | previous (medoid, `r ≥ 0.90`) | 24/40 | 16 | — |
+
+  On the board at a 1.2 s offset, where three acquisitions in a row were
+  previously applied at `r ≥ 0.98` and took the receiver from one decode
+  to none: acquired +1.41 s on the third of five trials and went 1 → 7.
+  `post_slotend` is unchanged at 73-74 ms, since trials run only when
+  acquisition does — which is when nothing is decoding anyway — and the
+  aligned case is unchanged at 8 decodes a slot, locking on slot 0 with
+  no acquisition at all.
+
+  (Earlier revisions of this entry described the mean, then the medoid,
+  with decode-count deltas at each step. Both are superseded within this
+  same unreleased section; the measurements that outlived them are the
+  outlier finding above and the fact that the failures were binary —
+  a phase either decodes or it does not, and a usable one was present
+  in all 16 failures.)
 
 - **One decode is not a lock (#356).** The first cut of lock-and-hold
   set `best_n` on the first confirmed decode, and the re-acquisition
