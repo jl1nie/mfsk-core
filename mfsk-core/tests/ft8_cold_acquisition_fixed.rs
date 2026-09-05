@@ -212,3 +212,82 @@ fn top1_score_as_confidence() {
         bad.len()
     );
 }
+
+/// Is an absolute score gate safe on a weak band? (#358)
+///
+/// The worry was that a threshold tuned on this fixture would close
+/// permanently where signals are weaker. But a band whose best signal
+/// cannot be decoded has no grid to acquire, so the gate closing there
+/// is correct rather than harmful — *if* score and decodability fall
+/// together. This adds noise to the real recording (rather than
+/// attenuating it, which leaves SNR untouched, or synthesising a clean
+/// one, which is not a trustworthy instrument) and watches both.
+#[test]
+#[ignore = "diagnostic, decodes at every noise level — slow"]
+fn score_tracks_decodability_as_snr_falls() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let clean = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+
+    // Deterministic white noise, amplitude `amp` in i16 counts.
+    let noisy = |amp: i32| -> Vec<i16> {
+        let mut x: u32 = 0x2545_F491;
+        clean
+            .iter()
+            .map(|&s| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                // Two draws summed: closer to Gaussian than one.
+                let n = ((x >> 16) as i32 & 0xff) + ((x >> 8) as i32 & 0xff) - 255;
+                (s as i32 + n * amp / 255).clamp(-32768, 32767) as i16
+            })
+            .collect()
+    };
+
+    // Top-1 score, and the same relative to the median candidate in
+    // its own tile — a scale-free version that should not care how
+    // loud the band is, only how far the winner stands above it.
+    let top1_score = |slot: &[i16]| -> (f32, f32) {
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(slot);
+        }
+        let mut best: Option<SyncCandidate> = None;
+        let mut best_ratio = 0.0f32;
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+            let cs = coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5);
+            if cs.is_empty() {
+                continue;
+            }
+            let mut sc: Vec<f32> = cs.iter().map(|c| c.score).collect();
+            sc.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let med = sc[sc.len() / 2].max(1e-6);
+            for c in cs {
+                if best.as_ref().is_none_or(|b| c.score > b.score) {
+                    best_ratio = c.score / med;
+                    best = Some(c);
+                }
+            }
+        }
+        (best.map(|c| c.score).unwrap_or(0.0), best_ratio)
+    };
+
+    println!("\n noise amp | top-1 score | top1/median | decodes at the true grid");
+    println!("{:-<66}", "");
+    for &amp in &[0i32, 200, 400, 800, 1600, 3200, 6400] {
+        let a = noisy(amp);
+        let (sc, ratio) = top1_score(&a);
+        println!(
+            "{amp:10} | {sc:11.1} | {ratio:11.2} | {:3}",
+            decodes_at(&a, 0.0)
+        );
+    }
+    println!(
+        "\nIf the two columns fall together, a band too weak to gate through\n\
+         is also a band with nothing to acquire, and an absolute gate is safe."
+    );
+}
