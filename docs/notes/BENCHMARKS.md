@@ -62,7 +62,7 @@ Figures are asserted, not just observed — see each protocol's
 | WSPR     | 9/9 | **0 phantoms**, and 0 across 5 chained slots with a carried callsign table | AWGN 50% ≈ −31.5 dB, matches live `wsprd` cell for cell | at parity |
 | JT9      | 7/7 | **0** (budget 0) | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
 | JT65     | none available | **0** (budget 0) | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — a real, un-closed gap; the initial "free CQ-AP hypothesis" explanation was checked and ruled out (JT65's AP path gates on `mycall` length exactly like FT4/FST4's), root cause not yet isolated — see JT65 section, task #26 | gap closed (own corpus); real gap vs. live binary open |
-| Q65      | 2 real EME recordings | no aggregate figure; guarded per sub-mode on clean synth | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
+| Q65      | 7 real EME/scatter recordings (7 of 10 sub-modes) | no aggregate figure; guarded per sub-mode on clean synth | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
 | MSK144   | 3/3 (incl. exact SNR match) | **0** (budget 0) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
 
 All AWGN 50%-crossing figures below are linear-interpolated between the

@@ -17,7 +17,7 @@
 
 `mfsk-core` is a pure-Rust library for **WSJT-family digital amateur-radio
 modes** — a single crate that implements FT8, FT4, FST4, WSPR, JT9, JT65
-and Q65-30A decode / encode / synthesis on top of a small set of shared
+and Q65 (all ten sub-modes) decode / encode / synthesis on top of a small set of shared
 primitives (DSP, sync correlation, LLR, LDPC / convolutional /
 Reed-Solomon / QRA FEC, message codecs). It runs anywhere Rust runs:
 desktop, WASM in the browser, Android/iOS, and `no_std` embedded MCUs.
@@ -78,14 +78,16 @@ collaborators), which remains the reference implementation — see
 | WSPR       | 120 s  | Convolutional r=½ K=32 + Fano     | 50 bit  | Per-symbol LSB (npr3)  | `wspr`  |
 | JT9        | 60 s   | Convolutional r=½ K=32 + Fano     | 72 bit  | 16 distributed slots   | `jt9`   |
 | JT65       | 60 s   | Reed-Solomon(63, 12) GF(2⁶)       | 72 bit  | 63 distributed slots   | `jt65`  |
-| Q65-30A    | 30 s   | QRA(15, 65) GF(2⁶) + CRC-12       | 77 bit  | 22 distributed slots   | `q65`   |
+| Q65-15A / -30A | 15-30 s | QRA(15, 65) GF(2⁶) + CRC-12   | 77 bit  | 22 distributed slots   | `q65`   |
 | Q65-60A‥E  | 60 s   | (same QRA codec)                  | 77 bit  | (same sync layout)     | `q65`   |
+| Q65-120D / -120E / -300A | 120-300 s | (same QRA codec)       | 77 bit  | (same sync layout)     | `q65`   |
 | MSK144     | 15 s   | LDPC(128, 90) + CRC-13            | 77 bit  | Meteor-ping burst-scan (matched filter) | `msk144` |
 
-Eight protocol families, sixteen wired `Protocol`-trait ZSTs in the
+Eight protocol families, **twenty** wired `Protocol`-trait ZSTs in the
 registry: FST4 contributes five T/R-period sub-modes (FST4-15, -30,
--60A, -120, -300) and Q65 contributes one 30-s sub-mode (Q65-30A) plus
-five 60-s EME sub-modes (Q65-60A‥E) — both families share FEC, message
+-60A, -120, -300) and Q65 contributes ten — two terrestrial (Q65-15A,
+-30A), five 60-s EME (Q65-60A‥E), and three long-period (Q65-120D,
+-120E, -300A) — both families share FEC, message
 codec and sync layout across their sub-modes, differing only in NSPS /
 tone spacing (and, for FST4-15 alone, the T/R start offset). **MSK144
 is the exception**: its continuous-phase binary-MSK modulation and
@@ -107,7 +109,7 @@ runtime `register_protocol()`.
 ```toml
 # Cargo.toml
 [dependencies]
-mfsk-core = { version = "0.8", features = ["ft8", "ft4"] }
+mfsk-core = { version = "0.10", features = ["ft8", "ft4"] }
 ```
 
 New features and fixes land on `main` immediately as PRs merge, but
@@ -201,9 +203,9 @@ points and carries its own Quick example:
 | `wspr`        |         | WSPR decode / synth                          |
 | `jt9`         |         | JT9 decode / synth                           |
 | `jt65`        |         | JT65 decode / synth (+ erasure-aware RS)     |
-| `q65`         |         | Q65-30A decode / synth (QRA soft-decision)   |
+| `q65`         |         | Q65 decode / synth (QRA soft-decision, all ten sub-modes) |
 | `uvpacket`    |         | Applied example *(experimental)*: NFM voice-channel packet protocol (QPSK + LDPC), reuses `Ldpc240_101` |
-| `full`        |         | Aggregate of all seven WSJT protocols + uvpacket + packet-bytes |
+| `full`        |         | Aggregate of all eight WSJT protocols + uvpacket + packet-bytes |
 | `parallel`    | ✓       | Rayon-parallel candidate processing          |
 | `fft-rustfft` | ✓       | Default host FFT backend (`rustfft`, requires `std`) |
 | `fft-extern`  |         | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl (esp-dsp on ESP32-S3, CMSIS-DSP on RP2350, …) |
@@ -425,10 +427,10 @@ sweep was generated and reproduced, in
 | FT8      | 8/8 host full-parity (WSJT-X), 18/18 (JTDX) | CCIR fading gap closed |
 | FT4      | 6/6 | ~0.3 dB |
 | FST4     | 1/1 (FST4-60A) | 0.10-0.60 dB across 5 sub-modes |
-| WSPR     | 8/8 | matches published sensitivity floor |
+| WSPR     | 9/9 | matches published sensitivity floor |
 | JT9      | 7/7 | no measurable gap |
 | JT65     | none available | ~0 dB (2026-08-08, #169: faithful `ftrsdap` port + FFT bin-alignment fix — see BENCHMARKS.md for comparison caveats) |
-| Q65      | 2 real EME recordings | matches WSJT-X with AP hint; 2 sub-modes measurably beat WSJT-X's own plain decode |
+| Q65      | 7 real EME/scatter recordings (7 of 10 sub-modes) | matches WSJT-X with AP hint; 2 sub-modes measurably beat WSJT-X's own plain decode |
 | MSK144   | 3/3 (incl. exact SNR match) | 25/28 cells exact match vs. a real `jt9` build |
 
 Embedded wall-clock: M5StickS3 (Xtensa LX7, fixed-point) decodes a
