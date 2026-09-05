@@ -61,7 +61,7 @@ embassy-time = { version = "0.5", features = ["generic-queue-8"] }
 # (see `src/esp_dsp_fft.rs`); the `embedded-rx` preset bundles the
 # alloc/no-rustfft/no-rayon flags. `ft8` only — FT4/WSPR/Q65 deferred
 # until decode timing is confirmed.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half", "internal-testing"] }
 # C ABI surface — exercised by the FFI smoke call in `decode_one`
 # (see `MFSK_FFI_FT8_SMOKE` env-style toggle in `main.rs`). Same
 # `mfsk_core_*` extern symbols (FFT planner, dot_q15) supplied by

@@ -49,7 +49,7 @@ num-complex = { version = "0.4", default-features = false }
 # board is an LX6. Its FPU is a different unit, nobody has run the A/B
 # on it, and the numbers in this crate's own logs were all taken with
 # the i16 hot loop. Drop it when someone measures the LX6.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "fixed-point-llr", "profile-coarse", "nstep-half"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "fixed-point-llr", "profile-coarse", "nstep-half", "internal-testing"] }
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 
 embedded-shared = { path = "../embedded-shared" }

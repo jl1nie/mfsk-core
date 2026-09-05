@@ -402,7 +402,7 @@ pub fn run_log_panel(
         // the CoreS3 app selects its receiver at boot; this board has
         // neither the USB host nor those decoders built in, so there is
         // no audio path to set up. KEY2 walks back to a usable mode.
-        BootMode::Wspr | BootMode::Fst4 => {
+        BootMode::Wspr | BootMode::Fst4 | BootMode::Ft4 => {
             log::warn!("audio path skipped ({} is CoreS3-only)", mode.label());
         }
     }

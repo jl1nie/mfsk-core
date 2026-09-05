@@ -41,7 +41,7 @@ heapless = "0.8"
 num-complex = { version = "0.4", default-features = false }
 
 # mfsk-core / FFI: 兄弟クレートと同じ feature 構成。
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half", "internal-testing"] }
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 
 # 共有 embedded glue (streaming buffer / esp_dsp_fft / dual_core / Q3i8 LLR)

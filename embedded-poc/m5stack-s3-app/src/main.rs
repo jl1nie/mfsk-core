@@ -320,7 +320,7 @@ fn main() -> ! {
         // host (hardware, not software — see `BootMode::Uac`'s own note)
         // and does not build the WSPR/FST4 decoders, so there is nothing
         // to start. KEY2 long-press walks back to a usable mode.
-        boot_mode::BootMode::Wspr | boot_mode::BootMode::Fst4 => {
+        boot_mode::BootMode::Wspr | boot_mode::BootMode::Fst4 | boot_mode::BootMode::Ft4 => {
             log::warn!(
                 "{} selected but this is a CoreS3-only mode — nothing to run on M5StickS3",
                 mode.label()
