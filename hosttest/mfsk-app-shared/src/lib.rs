@@ -56,3 +56,6 @@ pub mod time_sync;
 /// the thing most worth a test (a wrong sign here mis-aligns FT4).
 #[path = "../../../embedded-poc/mfsk-app-shared/src/grid_fix.rs"]
 pub mod grid_fix;
+
+#[path = "../../../embedded-poc/mfsk-app-shared/src/grid_state.rs"]
+pub mod grid_state;

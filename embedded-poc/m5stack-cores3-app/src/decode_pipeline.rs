@@ -142,27 +142,10 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     push_tx_line(&qso, Some(&initial));
 
     let mut slot_seq: u32 = 0;
-    // Air-sync lock strength (#356): the decode count of the slot the
-    // current slot-shift estimate came from. A later slot only overrides
-    // it with strictly more decodes, so one noisy decode cannot pull a
-    // good lock off. Only used for the live (`uac`) source.
-    let mut best_n: usize = 0;
-    // Cold-acquisition state (#356b). `lost_slots` counts consecutive
-    // slots with no clock, no decode and no coarse DT — i.e. the grid is
-    // off past what the ±1 s search can even see. After
-    // `ACQUIRE_TRIGGER_SLOTS` of that, arm `uac`'s capture ring and run
-    // `ft8::acquire::acquire_slot_phase` on the 25 s it collects.
-    let mut lost_slots: u32 = 0;
-    let mut acquiring = false;
-    /// Consecutive decode-less slots before a cold acquisition, from a
-    /// standing start (nothing has ever locked).
-    const ACQUIRE_TRIGGER_SLOTS: u32 = 3;
-    /// The same count once a lock has produced decodes. Higher, because
-    /// after a lock a run of empty slots is usually a quiet band rather
-    /// than a lost grid, and re-acquiring costs 25 s of capture plus
-    /// whatever decodes the wrong-until-then grid would have made. Six
-    /// slots is 90 s of genuinely nothing heard.
-    const REACQUIRE_TRIGGER_SLOTS: u32 = 6;
+    // Lock state and the under-par run that sends the receiver back
+    // for a new grid (#356). The policy — and its host tests — live in
+    // `mfsk_app_shared::grid_state`.
+    let mut grid = mfsk_app_shared::grid_state::GridState::new();
     /// Minimum mean-resultant confidence to act on an acquisition.
     const ACQUIRE_R_MIN: f32 = 0.55;
     /// Coarse-candidate cap for *each* of `acquire_slot_phase`'s three
@@ -354,92 +337,74 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
             //
             // `observe_slot_phase` above still runs: the filtered phase
             // is a panel readout, which is what #356b built it for.
-            if slot_median.is_some() {
-                // First confirmed decode: the grid demonstrably follows
-                // the band. Record that and stop — `Ft8ChunkSink` will
-                // raise this to `Ntp` if NTP ever lands.
-                if best_n == 0 {
-                    log::info!("  air-sync: grid locked on first confirmed decode (N={n_dec}) — holding");
+            // Lock / re-acquire policy lives in
+            // `mfsk_app_shared::grid_state`, which is host-tested —
+            // both bugs it guards against (one decode counting as a
+            // lock, and an under-par run that never reaches
+            // acquisition) are reachable from a short sequence of
+            // decode counts, and finding them by reflashing the board
+            // cost several cycles apiece.
+            match grid.observe(n_dec) {
+                mfsk_app_shared::grid_state::GridAction::Lock { n_dec } => {
+                    log::info!(
+                        "  air-sync: grid locked (N={n_dec} ≥ {}) — holding",
+                        mfsk_app_shared::grid_state::LOCK_MIN_DECODES
+                    );
+                    mfsk_app_shared::time_sync::note_grid_lock(
+                        mfsk_app_shared::time_sync::GridLock::Air,
+                    );
                 }
+                mfsk_app_shared::grid_state::GridAction::Acquire { slots, relock } => {
+                    if relock {
+                        // The panel stops claiming a grid the decoder
+                        // can no longer demonstrate.
+                        mfsk_app_shared::time_sync::note_grid_lock(
+                            mfsk_app_shared::time_sync::GridLock::FreeRun,
+                        );
+                    }
+                    crate::uac::arm_acquisition();
+                    log::warn!(
+                        "  cold-acquisition: {} {slots} slots — capturing 25 s of FT8",
+                        if relock {
+                            "no decode since the lock for"
+                        } else {
+                            "grid under par for"
+                        }
+                    );
+                }
+                mfsk_app_shared::grid_state::GridAction::Hold => {}
+            }
+            if grid.is_locked() {
                 mfsk_app_shared::time_sync::note_grid_lock(
                     mfsk_app_shared::time_sync::GridLock::Air,
                 );
-                best_n = best_n.max(n_dec);
             }
+
             // Keep the channel drained at 0 so nothing stale can reach
             // `Ft8ChunkSink` — the only writer left is cold acquisition,
             // through its own uncapped one-shot channel.
             mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
 
-            // Cold acquisition (#356b): the *only* thing that moves the
-            // grid, and — under lock-and-hold — also the only way back
-            // from a bad one. `bootstrap_dt_med.is_none()` was tried as
-            // the trigger and does not work: `pass1` almost never comes
-            // back empty on a real spectrum (`sync_min = 1.0` alone
-            // clears noise peaks up to `PASS1_LIMIT`), so it is
-            // essentially always `Some`, just a small near-random value
-            // when the true signal is outside ±1 s — `MFSK_CORES3_SIM`
-            // showed a deliberate 4 s offset never tripping it. A run
-            // of slots decoding nothing is the real signal.
-            //
-            // The trigger deliberately does *not* look at `best_n`. It
-            // did once, as `n_dec == 0 && best_n == 0`, and that made a
-            // lock permanent: `best_n` only ever rises, so after the
-            // first decode the condition could never be true again and
-            // the receiver could never re-acquire — a mis-locked or
-            // later-drifted grid would have stayed wrong until a
-            // reboot. `ACQUIRE_R_MIN` is not a guarantee of a *correct*
-            // phase, only a confident one (a 0.61 acceptance landed
-            // 2.5 s out on 2026-09-05), so the way back matters as much
-            // as the way in.
-            //
-            // Held longer than the cold-start count, because after a
-            // lock the same run of empty slots is more often a quiet
-            // band than a lost grid, and a needless re-acquire throws
-            // away a grid that was working.
-            let relock = best_n > 0;
-            let trigger_slots = if relock {
-                REACQUIRE_TRIGGER_SLOTS
-            } else {
-                ACQUIRE_TRIGGER_SLOTS
-            };
-            lost_slots = if n_dec == 0 { lost_slots + 1 } else { 0 };
-
-            if lost_slots == trigger_slots && !acquiring {
-                if relock {
-                    // Drop the lock so the state matches reality while
-                    // the capture runs, and so the panel stops claiming
-                    // a grid the decoder can no longer demonstrate.
-                    best_n = 0;
-                    mfsk_app_shared::time_sync::note_grid_lock(
-                        mfsk_app_shared::time_sync::GridLock::FreeRun,
-                    );
-                }
-                acquiring = true;
-                crate::uac::arm_acquisition();
-                log::warn!(
-                    "  cold-acquisition: {} {lost_slots} slots — capturing 25 s of FT8",
-                    if relock {
-                        "no decode since the lock for"
-                    } else {
-                        "grid lost"
-                    }
-                );
-            }
-            if acquiring {
+            if grid.is_acquiring() {
                 if let Some(audio) = crate::uac::take_acquisition_audio(
                     mfsk_core::ft8::acquire::REQUIRED_SAMPLES,
                 ) {
-                    acquiring = false;
-                    lost_slots = 0;
-                    match mfsk_core::ft8::acquire::acquire_slot_phase(
+                    let outcome = mfsk_core::ft8::acquire::acquire_slot_phase(
                         &audio,
                         100.0,
                         3_000.0,
                         1.0,
                         ACQUIRE_MAX_CAND,
                         5,
-                    ) {
+                    );
+                    // Applied phases restart the under-par run — the
+                    // grid just moved, so the slots that led here say
+                    // nothing about the new one. An inconclusive attempt
+                    // leaves the run standing so the retry is immediate.
+                    grid.acquisition_done(
+                        matches!(outcome, Some((_, r)) if r >= ACQUIRE_R_MIN),
+                    );
+                    match outcome {
                         Some((dt, r)) if r >= ACQUIRE_R_MIN => {
                             let shift = (dt * 12_000.0).round() as i32;
                             mfsk_app_shared::time_sync::set_acquisition_shift_12k(shift);
