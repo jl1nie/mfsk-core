@@ -63,7 +63,16 @@ streaming coarse stage below.)
   `docs/notes/FT4_BENCHMARK.md` §47.
 
 - **FT4 searches WSJT-X's own ±1.0 s Δt window again, and the mixer
-  stopped pushing one sample at a time.** The embedded receiver had
+  stopped pushing one sample at a time.** The window itself is not new
+  and not an approximation of WSJT-X's — re-verified directly against
+  `ft4_decode.f90:238-264` while writing this entry: three DT segments
+  (`iseg=1..3`, `ibmin`/`ibmax` `108..560`/`560..1012`/`-344..108`,
+  `ibstp=4`) whose union is exactly `[-344, 1012]` downsampled samples,
+  collapsed into one pass in `engine::sync2d::ft4_sync_search` (see its
+  own doc comment for the line-by-line mapping) and mirrored in
+  `embedded-poc/embedded-shared/src/apps/ft4_rx.rs`'s `WSJTX_WINDOW`.
+  What changed here is only whether the embedded receiver's own capture
+  window is wide enough to *reach* that range. The embedded receiver had
   narrowed the search to ±0.5 s (measured lossless on the golden, worth
   1.5-1.9× on the stage). The golden could not have said otherwise —
   its DTs span −0.44…+0.30 s, inside the narrow window by construction
