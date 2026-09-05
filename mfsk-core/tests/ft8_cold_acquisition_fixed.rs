@@ -791,3 +791,64 @@ fn medoid_then_coverage() {
         println!("{half:5.1} | {reach:5.1} | {tot:7} | {zero:15}");
     }
 }
+
+/// What is actually happening at the offsets that decode nothing?
+/// (#358)
+///
+/// Seven statistics have been tried as discriminators without once
+/// looking at the failures themselves. First question, and it decides
+/// whether there is anything subtle here at all: is the acquired phase
+/// simply outside the window the decoder searches, or is it inside and
+/// something further down rejects?
+///
+/// `residual` is how far the acquired phase is from one that undoes
+/// the roll. The embedded coarse search covers ±1.0 s, so a residual
+/// past that puts every station out of reach and there is nothing to
+/// reject; a residual inside it means the loss happens later.
+#[test]
+#[ignore = "diagnostic, decodes at every phase — slow"]
+fn where_do_the_failures_lose_it() {
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    let wrap = |mut d: f32| {
+        while d > 7.5 {
+            d -= 15.0;
+        }
+        while d <= -7.5 {
+            d += 15.0;
+        }
+        d
+    };
+
+    println!("\n roll | acquired | residual | decodes | inside ±1.0 s?");
+    println!("{:-<58}", "");
+    let (mut in_win_dead, mut out_win_dead, mut in_win_live) = (0, 0, 0);
+    for i in 0..40 {
+        let off_s = i as f32 * 0.375;
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        let Some((p, _)) = acquire_tiled_k(&rolled, 2) else {
+            continue;
+        };
+        // Undoing the roll is a correct phase; the fixture's own offset
+        // is common to both sides and cancels.
+        let residual = wrap(p + off_s);
+        let d = decodes_at(&rolled, p);
+        let inside = residual.abs() <= 1.0;
+        println!(
+            "{off_s:5.2} | {p:+8.2} | {residual:+8.2} | {d:7} | {}",
+            if inside { "yes" } else { "no" }
+        );
+        match (inside, d) {
+            (true, 0) => in_win_dead += 1,
+            (false, 0) => out_win_dead += 1,
+            (true, _) => in_win_live += 1,
+            (false, _) => {}
+        }
+    }
+    println!(
+        "\ndecoded nothing, residual outside ±1.0 s: {out_win_dead}\n\
+         decoded nothing, residual *inside*  ±1.0 s: {in_win_dead}\n\
+         decoded, residual inside:                   {in_win_live}\n\n\
+         If the failures are all in the first row the loss is acquisition\n\
+         landing out of reach, and nothing downstream is involved."
+    );
+}
