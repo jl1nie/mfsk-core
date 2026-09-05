@@ -251,16 +251,27 @@ fn load_wav_i16(path: impl AsRef<Path>) -> Vec<i16> {
         .collect()
 }
 
-/// Not a hard assertion — reports the recall/phantom counts against
-/// the fixed golden rather than gating on them, since the point here
-/// is to learn the number, not pin it before it's known. `assert_golden`
-/// itself isn't reused because it panics (recall floor, phantom
-/// budget, per-entry SNR tolerance all at once); this needs to survive
-/// a bad run and print. Once measured, fold a floor into
-/// `ft8_qso3_apoff_recall.rs` proper (or a `not(fft-rustfft)` sibling)
-/// with a committed value.
+/// Hard-assertion floor for the driver every embedded build actually
+/// ships (`decode_block_multipass`'s `not(fft-rustfft)` body) against
+/// the fixed, feature-independent golden. Measured 2026-09-06:
+///
+/// | numeric | recall | phantoms |
+/// |---|---:|---:|
+/// | f32 | 4/20 | 0 |
+/// | fixed-point (what the board runs) | 7/20 | 0 |
+///
+/// `assert_golden` isn't reused — it also checks per-entry SNR, and no
+/// independent SNR reference exists for this driver/golden pairing yet
+/// (unlike `ft8_qso3_apoff_recall.rs`'s tolerance-checked SNRs). This
+/// stays a plain recall/phantom check until one does.
+#[cfg(not(feature = "fixed-point"))]
+const MIN_HITS: usize = 4;
+#[cfg(feature = "fixed-point")]
+const MIN_HITS: usize = 7;
+const MAX_EXTRA: usize = 0;
+
 #[test]
-fn true_ship_driver_against_fixed_golden() {
+fn true_ship_driver_meets_fixed_golden_floor() {
     let slot = load_wav_i16(Path::new(QSO3_PATH));
     let decoded = decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15);
     let msgs: Vec<String> = decoded
@@ -294,7 +305,7 @@ fn true_ship_driver_against_fixed_golden() {
         .collect();
 
     println!(
-        "recall {}/{}  phantoms {}",
+        "recall {}/{} (floor {MIN_HITS})  phantoms {} (ceiling {MAX_EXTRA})",
         hits.len(),
         QSO3_KNOWN_REAL_SIGNALS.len(),
         phantoms.len()
@@ -302,6 +313,18 @@ fn true_ship_driver_against_fixed_golden() {
     println!("hit:      {hits:?}");
     println!("missing:  {missing:?}");
     println!("phantoms: {phantoms:?}");
-    // Reserved for when this graduates to `assert_golden` proper.
+
+    assert!(
+        hits.len() >= MIN_HITS,
+        "recall regressed: {}/{} decoded, floor is {MIN_HITS}. Missing: {missing:?}",
+        hits.len(),
+        QSO3_KNOWN_REAL_SIGNALS.len()
+    );
+    assert!(
+        phantoms.len() <= MAX_EXTRA,
+        "emitted {} decode(s) outside the golden set, budget is {MAX_EXTRA}. Phantoms: {phantoms:?}",
+        phantoms.len()
+    );
+    // Reserved for when this test also checks per-entry SNR.
     let _ = (DF_TOL_HZ, SNR_TOL_DB);
 }
