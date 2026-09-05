@@ -951,3 +951,73 @@ fn did_a_usable_candidate_exist() {
          failed with none present:                {fail_none}"
     );
 }
+
+/// `circular_dt_medoid` at `top_k = 2` should always return the
+/// stronger of the two candidates: with weights `wa >= wb` and
+/// separation `d`, `cost(a) = wb*d <= wa*d = cost(b)`. Confirmed: the
+/// twelve apparent disagreements are all the same phase wrapped into
+/// (-7.5, +7.5] — `+8.36` against `-6.64`, and so on — so the earlier
+/// "usable candidate at rank 1 still lost" was this comparison missing
+/// a wrap, not a fault in the reduction.
+///
+/// Which makes the shipped behaviour worth stating plainly: at
+/// `top_k = 2`, **the medoid is `argmax score`**. The gain measured
+/// from narrowing 5 -> 2 was the gain from not averaging.
+#[test]
+#[ignore = "diagnostic, prints a table"]
+fn medoid_at_k2_returns_the_stronger() {
+    use mfsk_core::engine::sync::{SyncCandidate, circular_dt_medoid};
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    println!("\n roll | top1 dt/score      | top2 dt/score      | medoid | matches top1?");
+    println!("{:-<78}", "");
+    let mut mismatches = 0;
+    for i in 0..40 {
+        let off_s = i as f32 * 0.375;
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(&rolled);
+        }
+        let mut all: Vec<SyncCandidate> = Vec::new();
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+            for c in coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5) {
+                all.push(SyncCandidate {
+                    freq_hz: c.freq_hz,
+                    dt_sec: c.dt_sec + w,
+                    score: c.score,
+                });
+            }
+        }
+        let mut sorted = all.clone();
+        sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        let Some((m, _)) = circular_dt_medoid(&all, 2, 15.0) else {
+            continue;
+        };
+        let mut d = m - sorted[0].dt_sec;
+        while d > 7.5 {
+            d -= 15.0;
+        }
+        while d <= -7.5 {
+            d += 15.0;
+        }
+        let same = d.abs() < 1e-3;
+        if !same {
+            mismatches += 1;
+        }
+        if i < 8 || !same {
+            println!(
+                "{off_s:5.2} | {:+7.2} / {:7.1} | {:+7.2} / {:7.1} | {m:+6.2} | {}",
+                sorted[0].dt_sec,
+                sorted[0].score,
+                sorted[1].dt_sec,
+                sorted[1].score,
+                if same { "yes" } else { "NO" }
+            );
+        }
+    }
+    println!("\nmedoid disagreed with the stronger candidate in {mismatches} of 40");
+}

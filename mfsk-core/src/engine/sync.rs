@@ -130,6 +130,14 @@ pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32>
 /// others is least, so a lone far-off station is outvoted however loud
 /// it is. `r` keeps its meaning — the mean resultant length about the
 /// chosen centre — so callers gating on it need no changes.
+///
+/// **At `top_k = 2` this degenerates to "return the stronger of the
+/// two".** With weights `wa >= wb` and separation `d`, `cost(a) =
+/// wb * d <= wa * d = cost(b)`, always. The embedded caller runs at 2,
+/// so what it actually ships is `argmax score` — the medoid machinery
+/// only starts doing work at 3 or more, and the measured gain from
+/// narrowing `top_k` 5 -> 2 was really the gain from not averaging at
+/// all (#358).
 pub fn circular_dt_medoid(
     cands: &[SyncCandidate],
     top_k: usize,
