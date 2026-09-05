@@ -133,7 +133,7 @@ is wall time on a many-core host, not a single-thread figure).
 | FT8 *(host)* | qso3_busy.wav (16-signal busy band) | 15 s | 0.18 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.07 s (was 0.12 s — see 2026-08-08 note below) |
 | FST4-60A | 210115_0058.wav | 60 s | 0.08 s (unchanged — see 2026-08-08 note below) |
-| FT4 | 000000_000002.wav | 7.5 s | 0.10 s (unchanged — see 2026-08-08 note below) |
+| FT4 | 000000_000002.wav | 7.5 s | 0.08 s (was 0.10 s — see 2026-09-06 note below) |
 | Q65-120E | 6 m ionoscatter ×2 files (fading metric) | 120 s | 0.14 s (was 0.26 s — see 2026-08-08 note below) |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.19 s (was 0.34 s — see 2026-08-08 note below) |
 | WSPR | 150426_0918.wav | 120 s | 0.76 s (was 0.37 s — **deliberate**, see the WSPR section: `wsprd`'s DT peak-up loop, ~1 dB of sensitivity) |
@@ -681,6 +681,30 @@ Notes:
   this doc (e.g. FT8's ~0.7-1.2 s post-SlotEnd) — those run a
   different no_std/fixed-point pipeline on a much slower MCU core;
   this table is host x86_64 only.
+
+**2026-09-06 re-measurement, FT4 only** (median of 5 runs, same box,
+`cargo test --release --features full,internal-testing --test
+ft4_sweep ft4_diag_candidate_cost_split -- --ignored --nocapture`,
+same harness/WAV as every prior FT4 row above). Prompted by a stale
+count: the "unchanged" note on this row was current as of 2026-08-08,
+and `FT4_BENCHMARK.md` §§16-29 all landed after that (`refine_freq`
+radius fix, the DDC front-end replacement, the ±1.0 s Δt-window
+narrowing, the coarse-phasor cache, band-occupancy tuning) — none of
+those PRs re-ran this specific table.
+
+```
+82.2, 79.1, 80.0, 76.7, 77.6 ms  (median 79.1 ms)
+```
+
+**104 ms → 79 ms, ~24% faster**, 14 decodes every run (matches the
+8/8/2026-08-08 note's "FT4 6/6 golden / 14 total" — recall unmoved).
+None of the FT4_BENCHMARK.md work in that window was framed as a host
+win — most of it is CoreS3-side (band occupancy, the phasor cache
+itself is `dotprod-extern`-only and never called from any host-reachable
+code, checked directly against `mfsk-core/src`) — but the Δt-window
+narrowing and DDC replacement touch the same `sync2d`/`ft4_coarse`
+code the host `DecodeRequest::<Ft4>` path calls, and that shared code
+got faster along the way.
 
 ### Cross-platform: Apple Silicon (M5) vs. Ryzen 9 9900X — FST4
 
