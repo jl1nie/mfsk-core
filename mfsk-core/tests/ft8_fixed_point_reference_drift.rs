@@ -73,7 +73,19 @@ fn reference_and_ship_sets_by_name() {
     println!("\nmatrix: {}\n", matrix());
 
     for (label, path) in WAVS {
-        let slot = load_wav_i16(Path::new(path));
+        let mut slot = load_wav_i16(Path::new(path));
+
+        // Model the streaming emit: `stage1_inc` hands the SpecBundle
+        // to stage 2 once pairs 0..86 are filled, i.e. rows m=0..173 of
+        // 184. Zeroing the audio past that row count is a host stand-in
+        // for what the board's coarse sync and LLRs actually see.
+        if let Ok(rows) = std::env::var("MFSK_SHIP_SPEC_ROWS")
+            && let Ok(rows) = rows.parse::<usize>()
+        {
+            const NSTEP_HALF: usize = 960; // NSPS/2 at 12 kHz
+            let keep = (rows * NSTEP_HALF).min(slot.len());
+            slot[keep..].fill(0);
+        }
 
         // Same two configurations `ft8_decode_block_real_qso.rs` uses.
         let truth: BTreeSet<String> = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.0, 200)
@@ -86,11 +98,20 @@ fn reference_and_ship_sets_by_name() {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(15);
-        let ship: BTreeSet<String> =
-            decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BP_ONLY, max_cand)
-                .iter()
-                .filter_map(|x| unpack77(x.message77()))
-                .collect();
+        let sync_min: f32 = std::env::var("MFSK_SHIP_SYNC_MIN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.3);
+        // `BP_ONLY` is `LlrEffort::Full`; the board runs `EMBEDDED`,
+        // which is `Minimal`. They are not the same configuration.
+        let depth = match std::env::var("MFSK_SHIP_DEPTH").as_deref() {
+            Ok("embedded") => DecodeDepth::EMBEDDED,
+            _ => DecodeDepth::BP_ONLY,
+        };
+        let ship: BTreeSet<String> = decode_block(&slot, 100.0, 3000.0, sync_min, depth, max_cand)
+            .iter()
+            .filter_map(|x| unpack77(x.message77()))
+            .collect();
 
         println!(
             "== {label}: truth={} ship={} hit={} extra={}",
