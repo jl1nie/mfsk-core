@@ -264,9 +264,24 @@ the phantom bugs this suite shipped were all in the subtraction paths
 this config does not use. Not a recall problem to solve.
 
 **The fix is the deadline** (`DecodeConfig::budget_ms`, `3425da3`).
-Default **2000 ms**, from the qso3_busy sweep (`logs/ft8_357_bud*`,
-2026-09-04): stage 3 measures ~985 ms, `dec` is flat at 7 down to
-800 ms (the deadline sheds only the doomed tail), 5 at 600 ms, 2–3 at
-400 ms. `MFSK_FT8_BUDGET_MS=` overrides; `MFSK_CORES3_FORCE_MODE=decode`
-runs the sweep without erasing NVS. Still needs the live-radio
-confirmation that it stops the slow period stealing the next slot.
+From the qso3_busy sweep (`logs/ft8_357_bud*`, 2026-09-04): stage 3
+measures ~985 ms, `dec` is flat at 7 down to 800 ms (the deadline
+sheds only the doomed tail), 5 at 600 ms, 2–3 at 400 ms.
+`MFSK_FT8_BUDGET_MS=` overrides; `MFSK_CORES3_FORCE_MODE=decode` runs
+the sweep without erasing NVS. Still needs the live-radio confirmation
+that it stops the slow period stealing the next slot.
+
+**Default is now 1836 ms, derived from key-up rather than the sweep**
+(`d72acc73`, 2026-09-06) — the same move FT4's `TX_TURNAROUND_BUDGET_MS`
+made this cycle. `FT8_BUDGET_MS`'s own doc comment has the full
+derivation: `t_post_recv` (this deadline's real anchor) measures
+1336-1350 ms before slot end on every aligned steady-state slot
+checked, so `500 (TX_START_OFFSET_S) + 1336 = 1836` ms is the actual
+key-up constraint, tighter than the old 2000 ms safety factor and
+still clear of the 800 ms floor above. Verified on hardware
+(`MFSK_CORES3_SIM`, aligned case): `dec=8` unchanged, `cut=0`. FT4's
+other half of that redesign — `CAPTURE_CLOSE_SAMPLES`, stopping the
+wait for slot audio no candidate reaches — has no FT8 equivalent yet;
+`Ft8ChunkSink` still captures the full 15.0 s, and shortening it
+touches the same slot-boundary state machine grid-lock (#356) and cold
+acquisition (#358) depend on. Left alone on purpose, not forgotten.

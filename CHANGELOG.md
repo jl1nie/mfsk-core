@@ -369,16 +369,32 @@ streaming coarse stage below.)
   SpecBundle-arrival time; `stage3_split`'s work-stealing loop stops
   claiming candidates once it passes, and `SpeculativeOut::n_cut`
   reports how many were left. `coarse_sync` and `pass2` are not
-  bounded — stage 3 is where the variance is. The CoreS3 FT8 decode
-  now defaults to **2000 ms**, from the qso3_busy sweep: stage 3
-  measures ~985 ms there and the recall-vs-budget curve is flat at
-  `dec=7` down to 800 ms — the deadline sheds only the doomed tail
-  (candidates run in descending coarse score, the all-LLR-variant BP
-  failures last) — so 2000 ms is ~2× margin at zero measured recall
-  cost. `MFSK_FT8_BUDGET_MS=` overrides; the S3 / Core2 / wav-sim
-  callers pass 0. The embedded FT8 decode is single-pass with no OSD,
-  no SIC and no AP already, so this is the only per-slot cost bound
-  it was missing.
+  bounded — stage 3 is where the variance is. `MFSK_FT8_BUDGET_MS=`
+  overrides; the S3 / Core2 / wav-sim callers pass 0. The embedded FT8
+  decode is single-pass with no OSD, no SIC and no AP already, so this
+  is the only per-slot cost bound it was missing.
+
+  The default moved twice within this section, both measured, not
+  guessed. First, from the qso3_busy sweep: stage 3 measures ~985 ms
+  and the recall-vs-budget curve is flat at `dec=7` down to 800 ms —
+  the deadline sheds only the doomed tail (candidates run in
+  descending coarse score, the all-LLR-variant BP failures last) — so
+  **2000 ms** landed as ~2x that margin. Then, the same move FT4's
+  `TX_TURNAROUND_BUDGET_MS` makes below: derive it from key-up instead
+  of a safety factor, since this deadline's real anchor is
+  `t_post_recv` (the SpecBundle's arrival, which `stage1_inc`'s
+  streaming fires 1336-1350 ms before slot end on every aligned slot
+  checked, not slot end itself) and a QSO-capable build must key up
+  500 ms into the next slot — **1836 ms**, tighter than 2000 but still
+  clear of the 800 ms floor above, so the recall cost is the same:
+  none, measured, not assumed. Verified on hardware
+  (`MFSK_CORES3_SIM`, aligned case): `dec=8` unchanged. `FT8_BUDGET_MS`
+  has the full derivation. FT4's other half of this same redesign —
+  stop waiting for slot audio no candidate can reach — has no FT8
+  counterpart yet; `Ft8ChunkSink` still captures the full 15.0 s slot,
+  and that boundary is load-bearing for grid-lock (#356) and cold
+  acquisition (#358), so shortening it is deferred rather than rushed
+  alongside this.
 
 - **The CoreS3 FT8 receiver self-aligns its slot grid from the air
   when there is no clock (#356).** `Ft8ChunkSink` anchors the grid to
