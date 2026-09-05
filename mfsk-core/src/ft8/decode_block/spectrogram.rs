@@ -479,18 +479,6 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
                 .min(u16::MAX as u32) as u16;
             k += 1;
         }
-        #[cfg(feature = "std")]
-        if jj == 0 {
-            for ki in [64usize, 823usize] {
-                if ki < n_freq {
-                    eprintln!(
-                        "[host spec] pair0 k={ki}: mag2_a={} mag2_b={}",
-                        data[row_a + ki],
-                        data[row_b + ki]
-                    );
-                }
-            }
-        }
     }
 
     // Odd-frame fallback: single-frame FFT for the trailing slice when

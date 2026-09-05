@@ -735,19 +735,30 @@ fn valid_trailing_symbol_count(base_step: i32, lag: i32, n_time: usize) -> usize
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::params::{COSTAS, COSTAS_POS};
     use super::{
-        Spectrogram, bounded_sync_lag_steps, coarse_sync_inner, valid_trailing_symbol_count,
+        NSSY, Spectrogram, bounded_sync_lag_steps, coarse_sync_inner, valid_trailing_symbol_count,
     };
+
+    /// Time rows in a standard 15 s FT8 spectrogram, on whichever grid
+    /// is built: 372 quarter-symbol rows by default, 184 half-symbol
+    /// ones under `nstep-half` (which `fixed-point` implies, and which
+    /// is therefore what every embedded build runs).
+    ///
+    /// These two tests used to hardcode the quarter-grid numbers, so
+    /// they failed for the whole `full,fixed-point` matrix and — worse
+    /// — left the arithmetic they cover with **no** coverage on the
+    /// grid that ships on hardware. Derive the expectations instead.
+    const N_TIME: usize = 372;
 
     #[test]
     fn coarse_sync_accepts_wsjtx_lag_window_without_out_of_bounds_access() {
-        // A standard 15 s FT8 spectrogram has 372 quarter-symbol rows.
-        // Before the trailing-block guard was restored, requesting WSJT-X's
-        // +/-2.5 s window made coarse_sync index beyond the final row.
+        // Before the trailing-block guard was restored, requesting
+        // WSJT-X's +/-2.5 s window made coarse_sync index beyond the
+        // final row.
         let n_freq = 128;
-        let n_time = 372;
         let spec =
-            Spectrogram::from_parts(n_freq, n_time, vec![Default::default(); n_freq * n_time]);
+            Spectrogram::from_parts(n_freq, N_TIME, vec![Default::default(); n_freq * N_TIME]);
 
         let candidates = coarse_sync_inner(&spec, 200.0, 300.0, 1.5, 10, None, Some(2.5));
 
@@ -756,16 +767,47 @@ mod tests {
 
     #[test]
     fn sync_lag_preserves_wsjtx_window_when_middle_block_fits() {
-        assert_eq!(bounded_sync_lag_steps(372, 13, 63), Some(63));
-        assert_eq!(bounded_sync_lag_steps(372, 13, 500), Some(157));
-        assert_eq!(bounded_sync_lag_steps(181, 13, 25), None);
-        assert_eq!(bounded_sync_lag_steps(372, 13, -10), Some(0));
+        // The bound is how far the middle Costas block can slide before
+        // it runs off either end of the spectrogram.
+        let base = 13 + NSSY * COSTAS_POS[1] as i32;
+        let end = base + NSSY * (COSTAS.len() as i32 - 1);
+        let safe = base.min((N_TIME as i32 - 1) - end);
+
+        // A request inside the bound is honoured as asked.
+        assert_eq!(bounded_sync_lag_steps(N_TIME, 13, safe - 1), Some(safe - 1));
+        // One past it is clamped to the bound, not refused.
+        assert_eq!(bounded_sync_lag_steps(N_TIME, 13, safe + 1_000), Some(safe));
+        // A negative request is floored at zero, not treated as huge.
+        assert_eq!(bounded_sync_lag_steps(N_TIME, 13, -10), Some(0));
+        // A spectrogram too short for the middle block at all: no
+        // window exists, so the search must be refused outright.
+        let too_short = (end as usize).min(N_TIME);
+        assert_eq!(bounded_sync_lag_steps(too_short, 13, 25), None);
     }
 
     #[test]
     fn trailing_block_skips_symbols_beyond_spectrogram() {
-        assert_eq!(valid_trailing_symbol_count(301, 0, 372), 7);
-        assert_eq!(valid_trailing_symbol_count(301, 63, 372), 2);
-        assert_eq!(valid_trailing_symbol_count(301, 80, 372), 0);
+        let last = N_TIME as i32 - 1;
+        let base = 301;
+        // Room for the whole block — saturates at the Costas length on
+        // either grid.
+        assert_eq!(
+            valid_trailing_symbol_count(base, 0, N_TIME),
+            COSTAS.len(),
+            "a block with room to spare keeps all its symbols"
+        );
+        // Room for part of it: one symbol per `NSSY` rows that remain,
+        // plus the one at the base row itself.
+        let lag = last - base - NSSY;
+        assert_eq!(
+            valid_trailing_symbol_count(base, lag, N_TIME),
+            (NSSY / NSSY + 1) as usize,
+            "a partly-truncated block keeps what fits"
+        );
+        // Starting past the end: nothing is readable.
+        assert_eq!(
+            valid_trailing_symbol_count(base, last - base + 1, N_TIME),
+            0
+        );
     }
 }
