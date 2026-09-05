@@ -43,6 +43,15 @@ fn roll(audio: &[i16], n: i64) -> Vec<i16> {
         .collect()
 }
 
+fn acquire_tiled_k(slot: &[i16], top_k: usize) -> Option<(f32, f32)> {
+    let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+    while long.len() < REQUIRED_SAMPLES {
+        long.extend_from_slice(slot);
+    }
+    acquire_slot_phase(&long, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, top_k)
+}
+
+#[allow(dead_code)]
 fn acquire_tiled(slot: &[i16]) -> Option<(f32, f32)> {
     let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
     while long.len() < REQUIRED_SAMPLES {
@@ -90,5 +99,116 @@ fn phase_quality_by_decodes_fixed_point() {
     println!(
         "\nacquired: {tot} decodes total, {zero}/20 rolls decoded nothing\n\
          best:     {best_tot} decodes total"
+    );
+}
+
+/// Does narrowing the estimate to the *strongest* candidates help?
+///
+/// The ghosts that poison the top-5 are weaker than the signal they
+/// come from — on `qso3_busy` the real peak scored 229.5 against
+/// ghosts at 112/78/64/57 — so a smaller `top_k` should stop averaging
+/// them in. This costs nothing: `top_k` is already a parameter, and no
+/// BP runs either way.
+#[test]
+#[ignore = "diagnostic, decodes at every phase — slow"]
+fn top_k_sweep_fixed_point() {
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    println!("\ntop_k | decodes | rolls with none | R(ok) min..max | R(bad) min..max");
+    println!("{:-<74}", "");
+    for &k in &[1usize, 2, 3, 5, 8, 12, 20] {
+        let (mut tot, mut zero) = (0usize, 0usize);
+        let (mut okmin, mut okmax) = (2.0f32, -1.0f32);
+        let (mut bmin, mut bmax) = (2.0f32, -1.0f32);
+        for i in 0..40 {
+            let off_s = i as f32 * 0.375;
+            let rolled = roll(&audio, (off_s * SR as f32) as i64);
+            match acquire_tiled_k(&rolled, k) {
+                Some((p, r)) => {
+                    let d = decodes_at(&rolled, p);
+                    tot += d;
+                    if d == 0 {
+                        zero += 1;
+                        bmin = bmin.min(r);
+                        bmax = bmax.max(r);
+                    } else {
+                        okmin = okmin.min(r);
+                        okmax = okmax.max(r);
+                    }
+                }
+                None => zero += 1,
+            }
+        }
+        println!(
+            "{k:5} | {tot:7} | {zero:15} | {okmin:.2}..{okmax:.2}      | {bmin:.2}..{bmax:.2}"
+        );
+    }
+    println!("\n(40 offsets at 0.375 s; best achievable is ~600 decodes, 0 rolls with none)");
+}
+
+/// With one candidate per tile the mean-resultant `R` is degenerate
+/// (a lone angle always agrees with itself), so this asks whether the
+/// candidate's own coarse **score** works as the confidence instead.
+///
+/// It measures a different thing: `R` asks whether candidates agree,
+/// the score asks whether this one is a signal — which is the question
+/// the gate actually needs answered, and the one every agreement-based
+/// statistic tried so far has failed (#358).
+#[test]
+#[ignore = "diagnostic, decodes at every phase — slow"]
+fn top1_score_as_confidence() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+
+    // Strongest candidate across the tiles, with its score.
+    let top1 = |slot: &[i16]| -> Option<(f32, f32)> {
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(slot);
+        }
+        let mut best: Option<SyncCandidate> = None;
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+            for c in coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5) {
+                if best.as_ref().is_none_or(|b| c.score > b.score) {
+                    best = Some(SyncCandidate {
+                        freq_hz: c.freq_hz,
+                        dt_sec: c.dt_sec + w,
+                        score: c.score,
+                    });
+                }
+            }
+        }
+        best.map(|c| (c.dt_sec, c.score))
+    };
+
+    println!("\n roll |     dt |  score | decodes");
+    println!("{:-<40}", "");
+    let (mut ok, mut bad): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+    for i in 0..40 {
+        let off_s = i as f32 * 0.375;
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        if let Some((dt, sc)) = top1(&rolled) {
+            let d = decodes_at(&rolled, dt);
+            println!("{off_s:5.2} | {dt:+6.2} | {sc:6.1} | {d:3}");
+            if d == 0 { bad.push(sc) } else { ok.push(sc) }
+        }
+    }
+    let stat = |v: &mut Vec<f32>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        (
+            v.first().copied().unwrap_or(0.0),
+            v.last().copied().unwrap_or(0.0),
+        )
+    };
+    let (okmin, okmax) = stat(&mut ok);
+    let (bmin, bmax) = stat(&mut bad);
+    println!(
+        "\ndecoding rolls   (n={}): score {okmin:.1}..{okmax:.1}\n\
+         non-decoding     (n={}): score {bmin:.1}..{bmax:.1}",
+        ok.len(),
+        bad.len()
     );
 }

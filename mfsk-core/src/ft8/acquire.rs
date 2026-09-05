@@ -8,8 +8,14 @@
 //! [`acquire_slot_phase`] instead runs the tested ±2.5 s search over
 //! three windows of a longer capture, spaced 5 s apart so their union
 //! covers the whole 15 s period, folds each window's offset back into
-//! the candidate `dt_sec`, and takes a circular estimate
-//! ([`circular_dt_estimate`]) over the lot.
+//! the candidate `dt_sec`, and reduces the lot with
+//! [`circular_dt_medoid`].
+//!
+//! The medoid rather than a mean, and over few candidates rather than
+//! many, because a real band supplies a loud outlier: on `qso3_busy`
+//! fifteen stations cluster at a median DT of +0.260 s while F5RXL
+//! sits at -0.770 s, strong enough to capture a score-weighted mean
+//! outright (#358).
 //! `tests/ft8_cold_acquisition.rs` is the measurement
 //! that chose this over the wide search — tiled recovers every offset
 //! across the full period to inside one FT8 symbol; wide is off by up
@@ -21,7 +27,7 @@
 
 use alloc::vec::Vec;
 
-use crate::engine::sync::{SyncCandidate, circular_dt_estimate};
+use crate::engine::sync::{SyncCandidate, circular_dt_medoid};
 use crate::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
 use crate::ft8::params::NMAX;
 
@@ -135,7 +141,7 @@ pub fn acquire_slot_phase(
             max_cand,
             &mut cands,
         );
-        if let Some((dt, r)) = circular_dt_estimate(&cands, top_k, 15.0) {
+        if let Some((dt, r)) = circular_dt_medoid(&cands, top_k, 15.0) {
             // Same top-`top_k` the estimate averaged over.
             let mut scores: Vec<f32> = cands.iter().map(|c| c.score).collect();
             scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(core::cmp::Ordering::Equal));

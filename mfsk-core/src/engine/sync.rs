@@ -115,6 +115,87 @@ pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32>
 /// `None` if `cands` is empty, `top_k == 0`, `period_s` is not a
 /// positive finite number, or every surviving candidate had a
 /// non-positive / non-finite weight.
+/// Circular **medoid** of the top-`top_k` candidates' `dt_sec`, with
+/// the same `(dt, r)` contract as [`circular_dt_estimate`].
+///
+/// The mean version is score-weighted, which is exactly what an
+/// outlier defeats — and a real band supplies one. On `qso3_busy`
+/// F5RXL decodes at `dt = -0.770` against the other fourteen stations'
+/// median of `+0.260`, and it is strong, so weighting by score hands
+/// the estimate to the one station that is a second away from the
+/// crowd. Narrowing `top_k` makes that worse, not better, because the
+/// outlier survives the narrowing.
+///
+/// The medoid picks the candidate whose total circular distance to the
+/// others is least, so a lone far-off station is outvoted however loud
+/// it is. `r` keeps its meaning — the mean resultant length about the
+/// chosen centre — so callers gating on it need no changes.
+pub fn circular_dt_medoid(
+    cands: &[SyncCandidate],
+    top_k: usize,
+    period_s: f32,
+) -> Option<(f32, f32)> {
+    if cands.is_empty() || top_k == 0 || !period_s.is_finite() || period_s <= 0.0 {
+        return None;
+    }
+    let mut refs: Vec<&SyncCandidate> = cands
+        .iter()
+        .filter(|c| c.dt_sec.is_finite() && c.score.is_finite() && c.score > 0.0)
+        .collect();
+    if refs.is_empty() {
+        return None;
+    }
+    let k = top_k.min(refs.len());
+    if k < refs.len() {
+        refs.select_nth_unstable_by(k - 1, |a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+    }
+    let picked = &refs[..k];
+    let half = 0.5 * period_s;
+    let wrap = |mut d: f32| -> f32 {
+        while d > half {
+            d -= period_s;
+        }
+        while d <= -half {
+            d += period_s;
+        }
+        d
+    };
+
+    // Weighted medoid: least total circular distance to the others.
+    let mut best_dt = picked[0].dt_sec;
+    let mut best_cost = f32::INFINITY;
+    for a in picked {
+        let cost: f32 = picked
+            .iter()
+            .map(|b| b.score.max(0.0) * wrap(b.dt_sec - a.dt_sec).abs())
+            .sum();
+        if cost < best_cost {
+            best_cost = cost;
+            best_dt = a.dt_sec;
+        }
+    }
+
+    // `r` about the chosen centre, so the scale matches the mean form.
+    let w = 2.0 * PI / period_s;
+    let (mut sum_c, mut sum_s, mut sum_w) = (0.0f32, 0.0f32, 0.0f32);
+    for c in picked {
+        let weight = c.score.max(0.0);
+        let theta = w * wrap(c.dt_sec - best_dt);
+        sum_c += weight * theta.cos();
+        sum_s += weight * theta.sin();
+        sum_w += weight;
+    }
+    if sum_w <= 0.0 {
+        return None;
+    }
+    let r_bar = ((sum_c * sum_c + sum_s * sum_s).sqrt() / sum_w).min(1.0);
+    Some((wrap(best_dt), r_bar))
+}
+
 pub fn circular_dt_estimate(
     cands: &[SyncCandidate],
     top_k: usize,

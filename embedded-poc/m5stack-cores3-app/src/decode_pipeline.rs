@@ -160,6 +160,34 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     /// one used it. One-time cost — this only runs during acquisition,
     /// never in the per-slot decode loop.
     const ACQUIRE_MAX_CAND: usize = 200;
+    /// Candidates the circular estimate reduces, per tile.
+    ///
+    /// Two, not the five `bootstrap_dt_median` established — that value
+    /// comes from f32, and this runs the board's fixed-point path,
+    /// where #280's ghosts sit in the middle of the top-5. On
+    /// `qso3_busy` the real peak scores 229.5 and the next four are
+    /// 112/78/64/57, all ghosts, so the candidates past the first are
+    /// more likely to be artefacts than more stations — which is why
+    /// widening this makes it worse rather than better.
+    ///
+    /// Measured by `ft8_cold_acquisition_fixed::top_k_sweep_fixed_point`
+    /// (40 offsets across the period, scored by whether the acquired
+    /// phase decodes at all), with `circular_dt_medoid`:
+    ///
+    /// ```text
+    /// top_k   decodes   offsets decoding nothing
+    ///     1       465                          7
+    ///     2       458                          7
+    ///     3       440                          7
+    ///     5       388                         10   <- was shipping
+    ///    12       347                         13
+    /// ```
+    ///
+    /// `1` scores highest and is not taken: with a single candidate the
+    /// mean-resultant `R` is identically 1.00, which would leave
+    /// `ACQUIRE_R_MIN` silently accepting everything. `2` keeps `R`
+    /// meaning something for a third of a decode.
+    const ACQUIRE_TOP_K: usize = 2;
     loop {
         let cfg = dual_core::DecodeConfig {
             freq_min: 100.0,
@@ -395,7 +423,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                         3_000.0,
                         1.0,
                         ACQUIRE_MAX_CAND,
-                        5,
+                        ACQUIRE_TOP_K,
                     );
                     // Applied phases restart the under-par run — the
                     // grid just moved, so the slots that led here say
