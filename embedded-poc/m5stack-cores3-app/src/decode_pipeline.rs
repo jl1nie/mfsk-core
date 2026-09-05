@@ -66,19 +66,54 @@ const MAX_CAND: usize = match option_env!("MFSK_FT8_MAX_CAND") {
 /// candidates deferred and dropped, 0–2 decoded against the other
 /// period's 4–8).
 ///
-/// **2000 ms, from the qso3_busy sweep** (`logs/ft8_357_bud*`,
-/// 2026-09-04). Stage 3 there measures ~985 ms; the recall-vs-budget
-/// curve is flat at `dec=7` down to 1000 ms, still 7 at 800 ms (the
+/// **1836 ms, derived from key-up — the same move FT4's
+/// `TX_TURNAROUND_BUDGET_MS` made** (`embedded-poc/embedded-shared/src/
+/// apps/ft4_rx.rs`), not a flat number chosen from a sweep. This
+/// receiver does not transmit yet, but running the constraint a
+/// QSO-capable build will have means the number on screen is the one
+/// that stays true then, same rationale as FT4's own doc comment.
+///
+/// Within a slot beginning at 0, `TX_START_OFFSET_S = 0.5`:
+///
+/// ```text
+///   0.50 s  the other station's transmission starts
+///  13.14 s  its frame ends (79 symbols x 0.16 s)
+///  14.14 s  ...plus the ±1.0 s `EMBEDDED_SYNC_LAG_S` reach
+///  15.00 s  slot boundary
+///  15.50 s  THIS station's transmission must start
+/// ```
+///
+/// **But this deadline isn't anchored to that 14.14 s point — it's
+/// anchored to `t_post_recv`, the SpecBundle's arrival**, which the
+/// streaming pipeline (`stage1_inc`'s `SPEC_EMIT_PAIR`) already fires
+/// well before slot end. Measured directly (`tail_win = slotend -
+/// t_post_recv`, aligned steady-state slots, `logs/hw_*_2026-09-05.log`):
+/// consistently 1336-1350 ms, no acquisition or grid-shift dependence
+/// seen. So the budget from that real anchor to key-up is
+/// `500 + 1336 = 1836` ms (the smallest observed `tail_win`, i.e. the
+/// least slack seen) — **less than the old 2000 ms, and the old number
+/// was never measuring this**: it was chosen from the qso3_busy sweep
+/// (`logs/ft8_357_bud*`, 2026-09-04) where stage 3 measures ~985 ms and
+/// the recall-vs-budget curve is flat at `dec=7` down to 800 ms (the
 /// deadline sheds only the doomed tail — candidates run in descending
-/// coarse score and the all-LLR-variant BP failures are last), then
-/// 5 at 600 ms and 2–3 at 400 ms. 2000 ms is ~2× the measured work,
-/// margin for a denser real band and the ~180 ms slow-period coarse,
-/// while still bounding a pathological slot. `0` disables it;
-/// `MFSK_FT8_BUDGET_MS=` overrides. Pending confirmation on a live
-/// radio.
+/// coarse score and the all-LLR-variant BP failures are last). 1836 ms
+/// is still ~1.9x that measured work and clears the 800 ms floor with
+/// margin, so this derivation doesn't cost anything the sweep would
+/// show — it just replaces an arbitrary safety factor with the actual
+/// constraint. `0` disables it; `MFSK_FT8_BUDGET_MS=` overrides.
+/// Pending confirmation on a live radio (#357).
+///
+/// **What this does not do**: FT8's own audio capture still waits for
+/// the full 15.0 s slot (`Ft8ChunkSink`'s `SLOT_SAMPLES_12K`), unlike
+/// FT4's `CAPTURE_CLOSE_SAMPLES` early-close. The 0.86 s tail beyond
+/// `EMBEDDED_SYNC_LAG_S`'s reach (14.14 s) is real slack, but
+/// `Ft8ChunkSink`'s slot boundary is load-bearing for grid-lock (#356)
+/// and cold acquisition (#358); shortening it needs the same care FT4's
+/// `want_skip` carry-forward took, not a quick constant change. Left
+/// alone here on purpose.
 const FT8_BUDGET_MS: i64 = match option_env!("MFSK_FT8_BUDGET_MS") {
     Some(s) => parse_u32(s) as i64,
-    None => 2_000,
+    None => 1_836,
 };
 
 /// `const`-context unsigned parse — `str::parse` is not `const`. Digits
