@@ -459,3 +459,95 @@ fn refine_selected_acquisition() {
     }
     println!("\n(coarse-only medoid at top_k=2 is 458 decodes, 7 with none; best is ~600)");
 }
+
+/// Are the candidates that spoil the median phantoms, or sidelobes?
+/// (#358)
+///
+/// The distinction decides whether including them should help. For
+/// acquisition only the *macro* grid DT matters, and a phantom carries
+/// the right one — its message is nonsense but its frame is real. A
+/// correlation sidelobe of a strong signal does not: it is the same
+/// frame seen at a displaced lag, so its DT is wrong by construction.
+///
+/// Test: compare every coarse candidate's DT against the DTs of the
+/// messages the decoder actually recovers. A candidate that lines up
+/// with one is a frame (decodable or phantom, either is fine). One
+/// that does not is an artefact.
+#[test]
+#[ignore = "diagnostic, prints a table"]
+fn are_the_top_candidates_frames_or_sidelobes() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::Ft8;
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+    use mfsk_core::msg::decode_request::DecodeRequest;
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+
+    // Where the real frames are, from the decoder.
+    let res = DecodeRequest::<Ft8>::new(&audio, FREQ_MIN, FREQ_MAX, SYNC_MIN, 200).decode();
+    let frames: Vec<(f32, f32)> = res.results.iter().map(|r| (r.freq_hz, r.dt_sec)).collect();
+    println!("\n{} decoded frames", frames.len());
+
+    let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+    while long.len() < REQUIRED_SAMPLES {
+        long.extend_from_slice(&audio);
+    }
+    let spec = compute_spectrogram(&long[..SLOT], FREQ_MAX);
+    let mut cs: Vec<SyncCandidate> =
+        coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5);
+    cs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    println!("\nrank |    freq |     dt |  score | nearest decoded frame");
+    println!("{:-<74}", "");
+    for (i, c) in cs.iter().take(12).enumerate() {
+        // Closest decoded frame in frequency, and how far its dt is.
+        let near = frames
+            .iter()
+            .min_by(|a, b| {
+                (a.0 - c.freq_hz)
+                    .abs()
+                    .partial_cmp(&(b.0 - c.freq_hz).abs())
+                    .unwrap()
+            })
+            .copied();
+        match near {
+            Some((f, dt)) => {
+                let same_dt = (dt - c.dt_sec).abs() <= 0.2;
+                println!(
+                    "{:4} | {:7.1} | {:+6.2} | {:6.1} | {:7.1} Hz {:+.2} s  (df {:+5.1} Hz, ddt {:+.2} s){}",
+                    i + 1,
+                    c.freq_hz,
+                    c.dt_sec,
+                    c.score,
+                    f,
+                    dt,
+                    f - c.freq_hz,
+                    dt - c.dt_sec,
+                    if same_dt { "  <- frame" } else { "" }
+                );
+            }
+            None => println!(
+                "{:4} | {:7.1} | {:+6.2} | {:6.1} | none",
+                i + 1,
+                c.freq_hz,
+                c.dt_sec,
+                c.score
+            ),
+        }
+    }
+
+    let matched = cs
+        .iter()
+        .take(12)
+        .filter(|c| {
+            frames
+                .iter()
+                .any(|(f, dt)| (f - c.freq_hz).abs() <= 10.0 && (dt - c.dt_sec).abs() <= 0.2)
+        })
+        .count();
+    println!(
+        "\n{matched} of the top 12 coincide with a decoded frame in both \
+         frequency and dt.\nThe rest carry a dt no real frame has — so they are not \
+         phantoms, and\nincluding them cannot help the median."
+    );
+}
