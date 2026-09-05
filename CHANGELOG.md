@@ -578,7 +578,7 @@ streaming coarse stage below.)
   `NSSY` is 2 — so the arithmetic they cover had *no* coverage at all on
   the grid every embedded build ships. Expectations now derive from
   `NSSY`/`COSTAS_POS` and hold on both. (A third failure in that matrix
-  is a real recall gap and is #359.)
+  is a real recall gap, tracked and closed below as #359.)
 
 - **`tests/ft8_cold_acquisition.rs` swept whole seconds, and whole
   seconds are where cold acquisition happens to work (#358).** Stepping
@@ -635,6 +635,51 @@ streaming coarse stage below.)
 - **Four more places calling the FT4 golden a real off-air recording.**
   `000000_000002.wav` is `ft4sim_mult` output; the previous pass caught
   three files and missed these.
+
+- **`ft8::decode_block`'s two recall-floor tests were comparing the
+  board against a driver it cannot run, and neither reference used to
+  measure that gap was stable (#359).** `decode_block_multipass` has
+  two `#[cfg]`-gated bodies — three passes with subtraction under
+  `fft-rustfft`, one pass with none without it — and every host
+  recall-floor test in the crate requires `fft-rustfft`, so all of them
+  describe the 3-pass driver, never the one any embedded build ships.
+  The investigation's own first two passes used `DecodeRequest`'s
+  output as a same-build "truth", on the theory that it has no
+  `fft-rustfft` branch of its own; it doesn't, but it calls code that
+  does (`apply_wsjtx_xsnr2`'s gate, `fill_symbol_spectra.rs`,
+  `osd_strategy.rs`), so that reference also moved — `qso3_busy.wav`
+  measured 15 messages under `full`, 8 under `alloc,ft8,fft-extern`.
+
+  Bisected the root cause first: the immediate complaint (two of three
+  golden fixtures under floor with `fixed-point`) traced to issue
+  #280's ±2.5 s coarse-sync lag window colliding with the ship
+  config's 15-candidate budget under u16-quantised ghost ranking — a
+  wash on f32, −2 messages under `fixed-point`. The embedded receiver
+  is unaffected (`EMBEDDED_SYNC_LAG_S = 1.0`, never `SYNC_LAG_S_DEFAULT`).
+
+  Then measured the real driver correctly: `ft8_embedded_driver_recall.rs`
+  (new) runs `decode_block` under `not(feature = "fft-rustfft")` against
+  the fixed, external `QSO3_KNOWN_REAL_SIGNALS` golden instead of a
+  same-build reference (needs its own `fixed-point` i16 FFT shim,
+  routed through `Plan3840Sc16` for the same reason
+  `engine::fft::RustFftPlanner16`'s own doc comment requires it — a
+  naive stand-in previously cost 3 decodes on this exact FFT size).
+  Result: **4/20 on f32, 7/20 on `fixed-point`**, both 0 phantoms — and
+  the board's own hardware measurement earlier in the same
+  investigation was `dec=8`. The "four to six messages missing"
+  reported mid-investigation compared the board against a number that
+  described a driver it never runs; the real gap is one message and is
+  not a defect.
+
+  `ft8_decode_block_real_qso.rs`'s floors are also no longer a live
+  `decode_frame` call recomputed every run — they drifted silently
+  against a `truth` that kept growing (4→6, 12→15) while the floors
+  stayed put the previous entry set them at, and now freeze the
+  message texts as measured on 2026-09-06. `ft8_embedded_driver_recall.rs`'s
+  4/20 and 7/20 are now committed floors, and `pre-push-check.sh` runs
+  both files' `fixed-point` matrix so this can't rot unnoticed again —
+  the original problem was never that the assertions didn't exist, it
+  was that nothing routine ran them.
 
 ### Added
 
