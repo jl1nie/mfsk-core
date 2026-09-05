@@ -2,7 +2,7 @@
 
 ## 0.10.1 — ハムフェア2026 booth material, the 12 kHz literal classification (#323), release tooling that runs on macOS, FT4 embedded fits its slot
 
-**Why a patch bump.** Additive public API (four new functions, no
+**Why a patch bump.** Additive public API (five new functions, no
 signature changed and nothing removed), embedded-only performance work,
 documentation and tooling. **No host decoder behaviour change**: every
 numeric change below is behind `dotprod-extern`, and the paths that are
@@ -455,14 +455,41 @@ streaming coarse stage below.)
   `n_dec == 0 && best_n == 0`, and `best_n` only rises, so a lock was
   permanent — a mis-locked grid stayed wrong until a reboot.
 
-- **`ft8::acquire::acquire_slot_phase` estimates per tile rather than
-  pooling all three windows into one top-`k`** — only one tile can hold
-  the signal, and pooling let the other two's edge peaks into the
-  circular average. Selection is by score mass; `r` is not a usable
-  discriminator here, since a tile with no signal reaches `r = 1.00`
-  with its peaks clustered at its window edge. Worst error across the
-  period 7151 → 1578 ms. **Still wrong, and now measured**: see #358 and
-  the note under Fixed.
+- **`ft8::acquire::acquire_slot_phase` reduces its candidates with a
+  circular *medoid*, over two of them rather than five (#358).**
+  `circular_dt_estimate` is a score-weighted circular mean, and a real
+  band supplies the outlier that defeats one: on `qso3_busy` fifteen
+  stations cluster at a median DT of +0.260 s while F5RXL sits at
+  −0.770 s, loud enough to take the answer. `circular_dt_medoid` picks
+  the candidate whose total circular distance to the others is least,
+  so a lone far-off station is outvoted however strong it is; `r` keeps
+  its definition, about the chosen centre.
+
+  Measured on the numeric path the receiver ships (40 offsets across
+  the period, scored by whether the acquired phase decodes at all):
+  **392 → 458 decodes and 14 → 7 offsets that decode nothing**, against
+  600 for a perfect grid. More candidates is monotonically worse —
+  465 at `top_k=1`, 347 at 12 — because the leaders behind the first
+  are artefacts rather than more stations. `1` scores best and is not
+  taken: with one candidate `r` is identically 1.00, which would leave
+  `ACQUIRE_R_MIN` accepting everything while looking like a gate.
+
+  On f32 it is a wash (303 → 297 decodes, 0 → 0 failures).
+
+- **One decode is not a lock (#356).** The first cut of lock-and-hold
+  set `best_n` on the first confirmed decode, and the re-acquisition
+  trigger was `n_dec == 0`; since `best_n` only rises, the trigger could
+  then never fire again. A grid a full second out still decodes the odd
+  station — measured: `F5RXL` and only `F5RXL`, 13 slots running, at a
+  1.2 s offset where the same audio aligned gives 8 — so the receiver
+  sat at 1-of-8 indefinitely with nothing able to correct it. The grid
+  now locks only once a slot clears `LOCK_MIN_DECODES` (3), and below
+  that the slot counts toward acquisition instead. The same 1.2 s
+  offset now recovers 1 → 5.
+
+  The policy moved to `mfsk_app_shared::grid_state`, host-tested: it is
+  a pure function of the per-slot decode count, and both bugs it guards
+  against are reachable from a handful of counts.
 
 - **`mfsk-core/ft4` now has a complete embedded path.** `ft4-bench`
   runs a whole FT4 slot on a CoreS3 from nothing but 12 kHz audio: the
@@ -495,6 +522,32 @@ streaming coarse stage below.)
   rather than appearing to ignore it.
 
 ### Fixed
+
+- **Every #358 measurement was taken in f32; the receiver is a
+  `fixed-point` build.** `ft8_cold_acquisition.rs` is gated
+  `not(feature = "fixed-point")`, so the sweep could not have seen the
+  difference — and #280 had already recorded that the two numeric paths
+  diverge for exactly this ghost mechanism. Same fixture, same offsets,
+  scored by whether the acquired phase decodes: **f32 303 decodes and
+  0/20 total failures, `fixed-point` 194 and 7/20**. `r` marks none of
+  them (0.73–0.97 against successes at 0.79–0.98), which is the
+  hardware behaviour exactly — the board answered −5.75 s at R 0.93 for
+  a grid 1.2 s out. New `tests/ft8_cold_acquisition_fixed.rs` runs the
+  measurement where the receiver lives.
+
+- **A stray `eprintln!` in `compute_spectrogram`'s fixed-point path**,
+  unconditional under `std`, once per spectrogram. Compiled out on
+  `no_std` so hardware never saw it, but it spammed every host
+  `fixed-point` run — the mode `CLAUDE.md` asks for when touching the
+  decode pipeline, so the debris discouraged the practice it belongs to.
+
+- **Two `coarse_sync` unit tests failed for the whole `full,fixed-point`
+  matrix**, on `main`, by hardcoding the quarter-symbol grid's 372 time
+  rows. `fixed-point` implies `nstep-half`, where a slot is 184 rows and
+  `NSSY` is 2 — so the arithmetic they cover had *no* coverage at all on
+  the grid every embedded build ships. Expectations now derive from
+  `NSSY`/`COSTAS_POS` and hold on both. (A third failure in that matrix
+  is a real recall gap and is #359.)
 
 - **`tests/ft8_cold_acquisition.rs` swept whole seconds, and whole
   seconds are where cold acquisition happens to work (#358).** Stepping
