@@ -918,6 +918,46 @@ just under an explicit `ap_hint`). Issue
 
 Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 
+**`fixed-point` vs. f32 on this same grid — measured 2026-09-06, first
+time.** This table, `sweep-baseline.json`, and every prior CHANGELOG
+entry comparing the two numeric paths (issues #358, #359, #280) are
+all **golden-WAV recall counts on a fixed real recording**, not a
+swept crossing SNR — `scripts/run-sensitivity-sweeps.sh` defaults
+`MFSK_SWEEP_FEATURES` to `full,internal-testing` (f32), and nobody had
+ever overridden it to `...,fixed-point` for FT8 and recorded the
+result, despite `nstep-half`'s coarser time grid being exactly the
+kind of change this sweep exists to catch. Prompted by a report that
+fixed-point sensitivity might be worse than f32, against a memory note
+saying the opposite:
+
+```sh
+MFSK_SWEEP_FEATURES=full,internal-testing,fixed-point \
+    scripts/run-sensitivity-sweeps.sh ft8
+```
+
+| Channel | f32 (this table) | fixed-point | Delta |
+|---|---:|---:|---:|
+| AWGN | −21.60 dB | −21.60 dB | **0.00 dB** |
+| CCIR good | −21.11 dB | −21.11 dB | **0.00 dB** |
+| CCIR moderate | −20.00 dB | −20.00 dB | **0.00 dB** |
+| CCIR poor | −19.67 dB | −19.75 dB | −0.08 dB |
+
+20 trials/point, 1 dB grid, same seeds/corpus as the f32 row. Three of
+four channels land on the exact same interpolated crossing; the fourth
+is within run-to-run noise at this trial count. **On this metric,
+fixed-point and f32 are indistinguishable** — the memory note was
+right, and the "worse" report is not reproduced here.
+
+This does not contradict #358/#359's real-signal findings, which are a
+different effect at a different scale: `nstep-half`'s coarser time
+grid costs exactly two specific messages on `qso3_busy.wav`
+(`K1JT EA3AGB -15`, `W0RSJ EA3BMU RR73`) because their true timing
+happens to fall badly on the halved grid — a quantisation effect on
+fixed phases in one fixed recording, not a shift in the AWGN curve
+that a sweep over many random noise draws would average out to
+detect. Both are true at once: the curve is unmoved, and specific real
+signals at specific timings can still be quantisation-unlucky.
+
 - **`DecodeDepth` redesigned from a flat, ad-hoc 4-variant enum into
   an orthogonal `{ llr_effort: LlrEffort, osd: bool }` struct; the
   automatic auto-AP rescue it used to gate was removed entirely**
