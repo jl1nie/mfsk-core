@@ -291,3 +291,171 @@ fn score_tracks_decodability_as_snr_falls() {
          is also a band with nothing to acquire, and an absolute gate is safe."
     );
 }
+
+/// Sync quality as the acquisition gate — phantom-tolerant, no BP (#358).
+///
+/// The discriminator acquisition needs is "is a real FT8 frame here",
+/// not "does a valid message come out". A phantom decodes to nonsense
+/// but its *sync* is genuine, so its DT is the grid's DT — which is
+/// the only thing being acquired. That removes the reason to reach for
+/// a decode: `refine_candidates_into` demodulates Costas block 0 and
+/// scores it (56 DFT per candidate, ~13 ms on Core2), and never runs
+/// belief propagation or an LDPC check.
+///
+/// Measured per roll: the acquired phase, and how many of that phase's
+/// own coarse candidates clear a block-0 sync quality of 4 out of 7.
+#[test]
+#[ignore = "diagnostic, refines at every phase — slow"]
+fn sync_quality_as_acquisition_gate() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode_block::{
+        coarse_sync_with_lag, compute_spectrogram, refine_candidates_into,
+    };
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+
+    // Candidates whose dt sits at the acquired phase, refined; how many
+    // look like an FT8 frame.
+    let evidence = |slot: &[i16], phase: f32| -> (usize, u32) {
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(slot);
+        }
+        // Refine each tile's candidates against *that tile's* window —
+        // the audio the frame would actually be demodulated from.
+        let mut ngood = 0usize;
+        let mut qmax = 0u32;
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let win = &long[start..start + SLOT];
+            let spec = compute_spectrogram(win, FREQ_MAX);
+            let mut at_phase: Vec<SyncCandidate> = Vec::new();
+            for c in coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5) {
+                let mut d = (c.dt_sec + w) - phase;
+                while d > 7.5 {
+                    d -= 15.0;
+                }
+                while d <= -7.5 {
+                    d += 15.0;
+                }
+                if d.abs() <= 0.25 {
+                    at_phase.push(c);
+                }
+            }
+            if at_phase.is_empty() {
+                continue;
+            }
+            let n = at_phase.len().min(20);
+            for r in refine_candidates_into(win, at_phase, n) {
+                if r.2 >= 4 {
+                    ngood += 1;
+                }
+                qmax = qmax.max(r.2);
+            }
+        }
+        (ngood, qmax)
+    };
+
+    println!("\n roll |   phase | good q | max q | decodes");
+    println!("{:-<50}", "");
+    let (mut ok, mut bad): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+    for i in 0..40 {
+        let off_s = i as f32 * 0.375;
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        if let Some((p, _)) = acquire_tiled_k(&rolled, 2) {
+            let d = decodes_at(&rolled, p);
+            let (ngood, qmax) = evidence(&rolled, p);
+            println!("{off_s:5.2} | {p:+7.2} | {ngood:6} | {qmax:5} | {d:3}");
+            if d == 0 {
+                bad.push(ngood)
+            } else {
+                ok.push(ngood)
+            }
+        }
+    }
+    let rng = |v: &mut Vec<usize>| {
+        v.sort();
+        (
+            v.first().copied().unwrap_or(0),
+            v.last().copied().unwrap_or(0),
+        )
+    };
+    let (okmin, okmax) = rng(&mut ok);
+    let (bmin, bmax) = rng(&mut bad);
+    println!(
+        "\ndecoding     (n={}): good-q candidates {okmin}..{okmax}\n\
+         non-decoding (n={}): good-q candidates {bmin}..{bmax}",
+        ok.len(),
+        bad.len()
+    );
+}
+
+/// Use sync quality to *select* the candidates, not to grade a phase
+/// afterwards (#358).
+///
+/// A ghost is a coincidence in the coarse correlation; it does not
+/// demodulate as a Costas array. `refine_candidates_into` demodulates
+/// block 0 and scores it, without BP or an LDPC check — and phantoms
+/// are welcome here, since a phantom's sync is real and its DT is the
+/// grid's. So: refine each tile's strongest candidates, keep the ones
+/// that look like frames, and take the medoid of *those* DTs.
+#[test]
+#[ignore = "diagnostic, refines at every phase — slow"]
+fn refine_selected_acquisition() {
+    use mfsk_core::engine::sync::{SyncCandidate, circular_dt_medoid};
+    use mfsk_core::ft8::decode_block::{
+        coarse_sync_with_lag, compute_spectrogram, refine_candidates_into,
+    };
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+
+    let acquire_refined = |slot: &[i16], q_min: u32, per_tile: usize| -> Option<(f32, f32)> {
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(slot);
+        }
+        let mut kept: Vec<SyncCandidate> = Vec::new();
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let win = &long[start..start + SLOT];
+            let spec = compute_spectrogram(win, FREQ_MAX);
+            let cs = coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5);
+            if cs.is_empty() {
+                continue;
+            }
+            for r in refine_candidates_into(win, cs, per_tile) {
+                if r.2 >= q_min {
+                    kept.push(SyncCandidate {
+                        freq_hz: r.0.freq_hz,
+                        dt_sec: r.0.dt_sec + w,
+                        // Weight by how much it looks like a frame.
+                        score: r.2 as f32,
+                    });
+                }
+            }
+        }
+        circular_dt_medoid(&kept, kept.len().max(1), 15.0)
+    };
+
+    println!("\n q_min | per_tile | decodes | rolls with none");
+    println!("{:-<48}", "");
+    for &(q_min, per_tile) in &[(4u32, 10usize), (5, 10), (6, 10), (6, 20), (7, 20)] {
+        let (mut tot, mut zero) = (0usize, 0usize);
+        for i in 0..40 {
+            let off_s = i as f32 * 0.375;
+            let rolled = roll(&audio, (off_s * SR as f32) as i64);
+            match acquire_refined(&rolled, q_min, per_tile) {
+                Some((p, _)) => {
+                    let d = decodes_at(&rolled, p);
+                    tot += d;
+                    if d == 0 {
+                        zero += 1;
+                    }
+                }
+                None => zero += 1,
+            }
+        }
+        println!("{q_min:6} | {per_tile:8} | {tot:7} | {zero:15}");
+    }
+    println!("\n(coarse-only medoid at top_k=2 is 458 decodes, 7 with none; best is ~600)");
+}
