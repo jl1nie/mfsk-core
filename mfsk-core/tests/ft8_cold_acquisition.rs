@@ -200,3 +200,109 @@ fn ft8_cold_acquisition_tiled_vs_wide() {
         worst_tiled * 1000.0
     );
 }
+
+/// Per-tile diagnostic for #358 — prints what each of the three
+/// windows reports, so the failure can be attributed to the estimate
+/// inside a tile or to the choice between tiles. Not an assertion;
+/// `cargo test --test ft8_cold_acquisition tile_breakdown -- --ignored --nocapture`.
+#[test]
+#[ignore = "diagnostic, prints a table"]
+fn tile_breakdown() {
+    use mfsk_core::engine::sync::{SyncCandidate, circular_dt_estimate};
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    let (base_dt, _) = acquire_tiled(&audio).unwrap();
+
+    println!("\n roll |  want | per-tile: dt/err_ms/R/mass | picked");
+    println!("{:-<70}", "");
+    for &off_s in &[0.0_f32, 0.25, 1.0, 2.5, 3.25, 5.0, 7.5, 8.25] {
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(&rolled);
+        }
+        let want = phase_err(base_dt - off_s, 0.0);
+        print!("{off_s:5.2} | {want:+5.2} |");
+
+        let mut best_mass = f32::NEG_INFINITY;
+        let mut picked = f32::NAN;
+        let mut lines = Vec::new();
+        for (i, &w) in [0.0_f32, 5.0, 10.0].iter().enumerate() {
+            let start = (w * 12_000.0) as usize;
+            let window = &long[start..start + SLOT];
+            let spec = compute_spectrogram(window, FREQ_MAX);
+            let cands: Vec<SyncCandidate> =
+                coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5)
+                    .into_iter()
+                    .map(|c| SyncCandidate {
+                        freq_hz: c.freq_hz,
+                        dt_sec: c.dt_sec + w,
+                        score: c.score,
+                    })
+                    .collect();
+            let mut scores: Vec<f32> = cands.iter().map(|c| c.score).collect();
+            scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
+            let mass: f32 = scores.iter().take(5).sum();
+            match circular_dt_estimate(&cands, 5, PERIOD_S) {
+                Some((dt, r)) => {
+                    lines.push(format!(
+                        "t{i}: {dt:+6.2} / {:+6.0} / {r:.2} / {mass:6.0}",
+                        phase_err(dt, want) * 1000.0
+                    ));
+                    if mass > best_mass {
+                        best_mass = mass;
+                        picked = dt;
+                    }
+                }
+                None => lines.push(format!("t{i}: none")),
+            }
+        }
+        println!(
+            " {} | {:+.2} ({:+.0} ms)",
+            lines.join("  "),
+            picked,
+            phase_err(picked, want) * 1000.0
+        );
+    }
+}
+
+/// Ground truth for the fixture's own phase, from the decoder rather
+/// than from the estimator under test (#358). `base_dt` in the sweep
+/// above is `acquire_slot_phase`'s own reading of the un-rolled slot,
+/// so if the estimator is biased at zero offset the whole sweep is
+/// calibrated against that bias and cannot see it.
+#[test]
+#[ignore = "diagnostic, prints ground truth"]
+fn fixture_true_phase() {
+    use mfsk_core::ft8::Ft8;
+    use mfsk_core::msg::decode_request::DecodeRequest;
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    let res = DecodeRequest::<Ft8>::new(&audio, FREQ_MIN, FREQ_MAX, SYNC_MIN, 200).decode();
+    let mut dts: Vec<f32> = res.results.iter().map(|r| r.dt_sec).collect();
+    dts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("\ndecoded {} messages", dts.len());
+    println!("dt values: {dts:?}");
+    if !dts.is_empty() {
+        println!("median decoded dt = {:+.3} s", dts[dts.len() / 2]);
+    }
+    let est = acquire_tiled(&audio);
+    println!("acquire_slot_phase says {est:?}");
+
+    // Same slot, coarse candidates — does coarse `dt_sec` mean what the
+    // decoder's `dt_sec` means?
+    let mut c = coarse(&audio, 2.5);
+    c.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    println!("\ntop coarse candidates (freq / dt / score):");
+    for k in c.iter().take(8) {
+        println!(
+            "  {:7.1} Hz  {:+.3} s  {:6.1}",
+            k.freq_hz, k.dt_sec, k.score
+        );
+    }
+    println!("\ndecoded (freq / dt):");
+    for r in res.results.iter().take(8) {
+        println!("  {:7.1} Hz  {:+.3} s", r.freq_hz, r.dt_sec);
+    }
+}
