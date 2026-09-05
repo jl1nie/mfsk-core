@@ -1021,3 +1021,306 @@ fn medoid_at_k2_returns_the_stronger() {
     }
     println!("\nmedoid disagreed with the stronger candidate in {mismatches} of 40");
 }
+
+/// How many circular clusters must be tried before one decodes? (#358)
+///
+/// The circular statistics are not the problem — the tiles propose a
+/// usable phase every time, and the candidates fall into a few clear
+/// groups. Collapsing them to a single point is the problem. So keep
+/// the clustering, rank the clusters, and let the decoder choose among
+/// the top few; the number of trials that needs is the cost of the
+/// design, and this measures it.
+#[test]
+#[ignore = "diagnostic, prints a table"]
+fn how_many_clusters_before_a_usable_one() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    let wrap = |mut d: f32| {
+        while d > 7.5 {
+            d -= 15.0;
+        }
+        while d <= -7.5 {
+            d += 15.0;
+        }
+        d
+    };
+
+    // Circular clusters of the pooled candidates, heaviest first. A
+    // cluster is a candidate plus everything within `KERNEL` of it;
+    // greedy, so once a candidate is spent it cannot seed another.
+    const KERNEL: f32 = 0.5;
+    let clusters = |slot: &[i16]| -> Vec<(f32, f32)> {
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(slot);
+        }
+        let mut all: Vec<SyncCandidate> = Vec::new();
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+            for c in coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5) {
+                all.push(SyncCandidate {
+                    freq_hz: c.freq_hz,
+                    dt_sec: c.dt_sec + w,
+                    score: c.score,
+                });
+            }
+        }
+        let mut out: Vec<(f32, f32)> = Vec::new();
+        let mut used = vec![false; all.len()];
+        loop {
+            // Heaviest remaining seed.
+            let mut best = (usize::MAX, -1.0f32);
+            for (i, a) in all.iter().enumerate() {
+                if used[i] {
+                    continue;
+                }
+                let m: f32 = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, b)| !used[*j] && wrap(b.dt_sec - a.dt_sec).abs() <= KERNEL)
+                    .map(|(_, b)| b.score)
+                    .sum();
+                if m > best.1 {
+                    best = (i, m);
+                }
+            }
+            if best.0 == usize::MAX {
+                break;
+            }
+            // Score-weighted centre of the cluster, then consume it.
+            let seed = all[best.0].dt_sec;
+            let (mut num, mut den) = (0.0f32, 0.0f32);
+            for (j, b) in all.iter().enumerate() {
+                if !used[j] && wrap(b.dt_sec - seed).abs() <= KERNEL {
+                    num += b.score * wrap(b.dt_sec - seed);
+                    den += b.score;
+                    used[j] = true;
+                }
+            }
+            out.push((wrap(seed + num / den.max(1e-6)), best.1));
+            if out.len() >= 12 {
+                break;
+            }
+        }
+        out
+    };
+
+    println!("\n roll | clusters | rank of first usable | its weight / top weight");
+    println!("{:-<66}", "");
+    let mut ranks: Vec<usize> = Vec::new();
+    let mut missing = 0;
+    for i in 0..40 {
+        let off_s = i as f32 * 0.375;
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        let cs = clusters(&rolled);
+        let hit = cs.iter().position(|(dt, _)| wrap(dt + off_s).abs() <= 1.0);
+        match hit {
+            Some(r) => {
+                ranks.push(r + 1);
+                println!(
+                    "{off_s:5.2} | {:8} | {:20} | {:6.0} / {:6.0}",
+                    cs.len(),
+                    r + 1,
+                    cs[r].1,
+                    cs[0].1
+                );
+            }
+            None => {
+                missing += 1;
+                println!("{off_s:5.2} | {:8} | {:>20} |", cs.len(), "none in 12");
+            }
+        }
+    }
+    ranks.sort();
+    let cum = |n: usize| ranks.iter().filter(|&&r| r <= n).count();
+    println!(
+        "\nfirst usable cluster is rank {:?}\n\
+         within 1 trial: {}/40   2: {}/40   3: {}/40   4: {}/40   6: {}/40\n\
+         not in the top 12: {missing}",
+        ranks,
+        cum(1),
+        cum(2),
+        cum(3),
+        cum(4),
+        cum(6)
+    );
+}
+
+/// The proposed acquisition end to end: cluster, then let the decoder
+/// choose among the top few (#358).
+///
+/// The circular statistics stay — they are what proposes the
+/// candidates, and they always propose a usable one. What goes is
+/// collapsing them to a point. The clusters are ranked and tried in
+/// order with a decode; the first that yields anything is the answer.
+/// A phantom counts, so no LDPC and no AP.
+///
+/// **Scored by residual, not by decodes.** The fixture loops, so the
+/// audio a trial decodes and the audio a score would decode are the
+/// same samples — "the phase we accepted because it decoded does
+/// decode" is a tautology. What is not tautological is whether the
+/// accepted phase is the *right* one, and whether any phase decodes
+/// the capture while being wrong.
+#[test]
+#[ignore = "diagnostic, decodes at every trial — slow"]
+fn cluster_then_decode_acquisition() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode::DecodeDepth;
+    use mfsk_core::ft8::decode_block::{
+        coarse_sync_with_lag, compute_spectrogram, decode_block_tuned,
+    };
+
+    const KERNEL: f32 = 0.5;
+    const MAX_TRIALS: usize = 5;
+    /// The receiver's own caps, so the trial costs what it would there.
+    const TRIAL_MAX_CAND: usize = 15;
+    /// Apply the cluster centre corrected by the median DT of what the
+    /// trial decoded, rather than the centre itself.
+    const CORRECT_BY_DECODED_DT: bool = true;
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    let wrap = |mut d: f32| {
+        while d > 7.5 {
+            d -= 15.0;
+        }
+        while d <= -7.5 {
+            d += 15.0;
+        }
+        d
+    };
+
+    println!("\n roll | trials | accepted | residual | verdict");
+    println!("{:-<56}", "");
+    let (mut used, mut wrong, mut nothing) = (Vec::new(), 0usize, 0usize);
+    for i in 0..40 {
+        let off_s = i as f32 * 0.375;
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(&rolled);
+        }
+
+        // Candidates, pooled across the tiles, as today.
+        let mut all: Vec<SyncCandidate> = Vec::new();
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+            for c in coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5) {
+                all.push(SyncCandidate {
+                    freq_hz: c.freq_hz,
+                    dt_sec: c.dt_sec + w,
+                    score: c.score,
+                });
+            }
+        }
+
+        // Greedy circular clusters, heaviest first.
+        let mut ranked: Vec<f32> = Vec::new();
+        let mut spent = vec![false; all.len()];
+        while ranked.len() < MAX_TRIALS {
+            let mut best = (usize::MAX, -1.0f32);
+            for (j, a) in all.iter().enumerate() {
+                if spent[j] {
+                    continue;
+                }
+                let m: f32 = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, b)| !spent[*k] && wrap(b.dt_sec - a.dt_sec).abs() <= KERNEL)
+                    .map(|(_, b)| b.score)
+                    .sum();
+                if m > best.1 {
+                    best = (j, m);
+                }
+            }
+            if best.0 == usize::MAX {
+                break;
+            }
+            let seed = all[best.0].dt_sec;
+            let (mut num, mut den) = (0.0f32, 0.0f32);
+            for (k, b) in all.iter().enumerate() {
+                if !spent[k] && wrap(b.dt_sec - seed).abs() <= KERNEL {
+                    num += b.score * wrap(b.dt_sec - seed);
+                    den += b.score;
+                    spent[k] = true;
+                }
+            }
+            ranked.push(wrap(seed + num / den.max(1e-6)));
+        }
+
+        // Try them in order; the first that decodes wins.
+        let mut accepted = None;
+        let mut trials = 0usize;
+        for &p in &ranked {
+            trials += 1;
+            let off = ((p * 12_000.0).round() as i64).rem_euclid(SLOT as i64) as usize;
+            if long.len() < off + SLOT {
+                continue;
+            }
+            let got = decode_block_tuned(
+                &long[off..off + SLOT],
+                FREQ_MIN,
+                FREQ_MAX,
+                SYNC_MIN,
+                DecodeDepth::EMBEDDED,
+                TRIAL_MAX_CAND,
+                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            );
+            if !got.is_empty() {
+                // The trial's own decodes say where the grid is, far
+                // better than the cluster centre does. Correcting by
+                // their median decouples the trial's window from the
+                // per-slot one: the trial may search wide, and what
+                // gets applied still lands centred for a narrower
+                // per-slot path.
+                let mut dts: Vec<f32> = got.iter().map(|r| r.dt_sec).collect();
+                dts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let med = dts[dts.len() / 2];
+                accepted = Some(if CORRECT_BY_DECODED_DT {
+                    wrap(p + med)
+                } else {
+                    p
+                });
+                break;
+            }
+        }
+
+        match accepted {
+            Some(p) => {
+                let resid = wrap(p + off_s);
+                let ok = resid.abs() <= 1.0;
+                if !ok {
+                    wrong += 1;
+                }
+                used.push(trials);
+                println!(
+                    "{off_s:5.2} | {trials:6} | {p:+8.2} | {resid:+8.2} | {}",
+                    if ok {
+                        "in window"
+                    } else {
+                        "ACCEPTED BUT WRONG"
+                    }
+                );
+            }
+            None => {
+                nothing += 1;
+                println!("{off_s:5.2} | {trials:6} |     none |          | gave up");
+            }
+        }
+    }
+    used.sort();
+    let cum = |n: usize| used.iter().filter(|&&t| t <= n).count();
+    println!(
+        "\naccepted a phase: {}/40   gave up: {nothing}\n\
+         accepted but outside ±1.0 s: {wrong}\n\
+         trials used — 1: {}  ≤2: {}  ≤3: {}  ≤5: {}",
+        used.len(),
+        cum(1),
+        cum(2),
+        cum(3),
+        cum(5)
+    );
+}

@@ -115,6 +115,83 @@ pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32>
 /// `None` if `cands` is empty, `top_k == 0`, `period_s` is not a
 /// positive finite number, or every surviving candidate had a
 /// non-positive / non-finite weight.
+/// Circular clusters of the candidates' `dt_sec`, heaviest first.
+///
+/// The reduction to a *single* phase is what breaks cold acquisition
+/// (#358): the candidate list holds the grid, a second cluster around
+/// a loud outlier station, and one or two families of correlation
+/// artefacts, and no statistic over score and dt tells them apart —
+/// mass, cross-tile agreement, top-K circular mean, full-list mode,
+/// score threshold and medoid have all been measured and all fail. So
+/// do not reduce. Return the clusters and let the caller decide with
+/// something that *can* tell them apart, which in practice means
+/// trying to decode at each.
+///
+/// Greedy: the heaviest remaining candidate seeds a cluster, everything
+/// within `kernel_s` of it joins and is consumed, repeat. Each entry is
+/// `(centre, weight)` — the score-weighted centre of its members, and
+/// their summed score. Wrapped to `(−½ period, ½ period]`.
+///
+/// On `qso3_busy` across the period this puts a usable phase in the
+/// first cluster 23 times in 40, and within the first five every time.
+pub fn circular_dt_clusters(
+    cands: &[SyncCandidate],
+    kernel_s: f32,
+    period_s: f32,
+    max_out: usize,
+) -> Vec<(f32, f32)> {
+    let mut out = Vec::new();
+    if cands.is_empty() || max_out == 0 || !period_s.is_finite() || period_s <= 0.0 {
+        return out;
+    }
+    let half = 0.5 * period_s;
+    let wrap = |mut d: f32| -> f32 {
+        while d > half {
+            d -= period_s;
+        }
+        while d <= -half {
+            d += period_s;
+        }
+        d
+    };
+    let usable: Vec<&SyncCandidate> = cands
+        .iter()
+        .filter(|c| c.dt_sec.is_finite() && c.score.is_finite() && c.score > 0.0)
+        .collect();
+    let mut spent = alloc::vec![false; usable.len()];
+    while out.len() < max_out {
+        let mut seed = (usize::MAX, f32::NEG_INFINITY);
+        for (i, a) in usable.iter().enumerate() {
+            if spent[i] {
+                continue;
+            }
+            let mass: f32 = usable
+                .iter()
+                .enumerate()
+                .filter(|(j, b)| !spent[*j] && wrap(b.dt_sec - a.dt_sec).abs() <= kernel_s)
+                .map(|(_, b)| b.score)
+                .sum();
+            if mass > seed.1 {
+                seed = (i, mass);
+            }
+        }
+        if seed.0 == usize::MAX {
+            break;
+        }
+        let at = usable[seed.0].dt_sec;
+        let (mut num, mut den) = (0.0f32, 0.0f32);
+        for (j, b) in usable.iter().enumerate() {
+            if !spent[j] && wrap(b.dt_sec - at).abs() <= kernel_s {
+                num += b.score * wrap(b.dt_sec - at);
+                den += b.score;
+                spent[j] = true;
+            }
+        }
+        out.push((wrap(at + num / den.max(1e-6)), seed.1));
+    }
+    out
+}
+
 /// Circular **medoid** of the top-`top_k` candidates' `dt_sec`, with
 /// the same `(dt, r)` contract as [`circular_dt_estimate`].
 ///

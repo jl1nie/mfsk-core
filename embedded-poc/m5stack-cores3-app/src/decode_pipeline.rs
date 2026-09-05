@@ -146,48 +146,31 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
     // for a new grid (#356). The policy — and its host tests — live in
     // `mfsk_app_shared::grid_state`.
     let mut grid = mfsk_app_shared::grid_state::GridState::new();
-    /// Minimum mean-resultant confidence to act on an acquisition.
-    const ACQUIRE_R_MIN: f32 = 0.55;
     /// Coarse-candidate cap for *each* of `acquire_slot_phase`'s three
     /// tiled windows. Deliberately **not** `MAX_CAND` (15, the decode
     /// candidate cap) — `MFSK_CORES3_SIM` caught reusing it here: with
     /// only 15 pass1 candidates per ±2.5 s window, `qso3_busy`'s real
     /// signals get crowded out of the top-15 as often as not, and the
-    /// circular estimate came back at `R 0.39` (below `ACQUIRE_R_MIN`)
-    /// on a 4 s offset the phase was otherwise recovered correctly for
-    /// (`dt -3.6 s`). 200 matches `tests/ft8_cold_acquisition.rs`,
+    /// circular estimate came back at `R 0.39` on a 4 s offset the
+    /// phase was otherwise recovered correctly for (`dt -3.6 s`). 200 matches `tests/ft8_cold_acquisition.rs`,
     /// where the measurement that chose the tiled search over the wide
     /// one used it. One-time cost — this only runs during acquisition,
     /// never in the per-slot decode loop.
     const ACQUIRE_MAX_CAND: usize = 200;
-    /// Candidates the circular estimate reduces, per tile.
+    /// Candidate phases the acquisition tries before giving up and
+    /// waiting for the next capture.
     ///
-    /// Two, not the five `bootstrap_dt_median` established — that value
-    /// comes from f32, and this runs the board's fixed-point path,
-    /// where #280's ghosts sit in the middle of the top-5. On
-    /// `qso3_busy` the real peak scores 229.5 and the next four are
-    /// 112/78/64/57, all ghosts, so the candidates past the first are
-    /// more likely to be artefacts than more stations — which is why
-    /// widening this makes it worse rather than better.
-    ///
-    /// Measured by `ft8_cold_acquisition_fixed::top_k_sweep_fixed_point`
-    /// (40 offsets across the period, scored by whether the acquired
-    /// phase decodes at all), with `circular_dt_medoid`:
-    ///
-    /// ```text
-    /// top_k   decodes   offsets decoding nothing
-    ///     1       465                          7
-    ///     2       458                          7
-    ///     3       440                          7
-    ///     5       388                         10   <- was shipping
-    ///    12       347                         13
-    /// ```
-    ///
-    /// `1` scores highest and is not taken: with a single candidate the
-    /// mean-resultant `R` is identically 1.00, which would leave
-    /// `ACQUIRE_R_MIN` silently accepting everything. `2` keeps `R`
-    /// meaning something for a third of a decode.
-    const ACQUIRE_TOP_K: usize = 2;
+    /// Five. `ft8_cold_acquisition_fixed::cluster_then_decode_acquisition`,
+    /// 40 offsets across the period on the receiver's own numeric path,
+    /// finds a usable phase in the first cluster 23 times, within three
+    /// 37 times, and within five every time — nothing needed a sixth.
+    /// Each trial is one `decode_block_tuned` over the captured slot,
+    /// so the cost is bounded by five of those, and only when
+    /// acquisition runs, which is when the receiver is decoding nothing
+    /// anyway.
+    const ACQUIRE_MAX_TRIALS: usize = 5;
+    /// One slot at 12 kHz — the window the acceptance trial decodes.
+    const SLOT_TRIAL_SAMPLES: usize = 180_000;
     loop {
         let cfg = dual_core::DecodeConfig {
             freq_min: 100.0,
@@ -417,23 +400,88 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                 if let Some(audio) = crate::uac::take_acquisition_audio(
                     mfsk_core::ft8::acquire::REQUIRED_SAMPLES,
                 ) {
-                    let outcome = mfsk_core::ft8::acquire::acquire_slot_phase(
+                    // **Try the clusters; the decoder decides.**
+                    //
+                    // Acquisition used to reduce the candidates to one
+                    // phase and gate it on `r`. Neither part worked:
+                    // the reduction returned a phase decoding nothing
+                    // on 16 of 40 offsets, and `r` read up to 1.00 on
+                    // exactly those — on hardware three acquisitions in
+                    // a row were accepted at `r >= 0.98` while taking
+                    // the receiver from one decode to none.
+                    //
+                    // What no statistic over the candidates can say is
+                    // which cluster is the grid rather than a loud
+                    // outlier station or a correlation artefact. What
+                    // can is a decode, and the 25 s capture needed for
+                    // one is already in hand. A phantom counts — its
+                    // message is nonsense, its sync is real, and only
+                    // its dt matters here.
+                    //
+                    // The trial searches the crate default ±2.5 s, not
+                    // the narrower window the per-slot path runs, and
+                    // it may: the phase applied is not the cluster
+                    // centre but that centre corrected by the median DT
+                    // of what the trial decoded. The correction is what
+                    // decouples the two windows — measured, a 2.5 s
+                    // trial with it accepts nothing outside ±1.0 s,
+                    // where without it four of forty were.
+                    let phases = mfsk_core::ft8::acquire::acquire_slot_phases(
                         &audio,
                         100.0,
                         3_000.0,
                         1.0,
                         ACQUIRE_MAX_CAND,
-                        ACQUIRE_TOP_K,
+                        ACQUIRE_MAX_TRIALS,
                     );
-                    // Applied phases restart the under-par run — the
+                    let mut applied: Option<(f32, usize, usize)> = None;
+                    for (trial, &(centre, _)) in phases.iter().enumerate() {
+                        let off = ((centre * 12_000.0).round() as i64)
+                            .rem_euclid(SLOT_TRIAL_SAMPLES as i64)
+                            as usize;
+                        if audio.len() < off + SLOT_TRIAL_SAMPLES {
+                            continue;
+                        }
+                        let got = mfsk_core::ft8::decode_block::decode_block_tuned(
+                            &audio[off..off + SLOT_TRIAL_SAMPLES],
+                            100.0,
+                            3_000.0,
+                            1.0,
+                            DecodeDepth::EMBEDDED,
+                            MAX_CAND,
+                            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+                        );
+                        if got.is_empty() {
+                            continue;
+                        }
+                        // The trial's own decodes place the grid far
+                        // better than the cluster centre does.
+                        let mut dts: heapless::Vec<f32, 32> = heapless::Vec::new();
+                        for r in got.iter() {
+                            let _ = dts.push(r.dt_sec);
+                        }
+                        dts.sort_by(|a, b| {
+                            a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
+                        });
+                        let med = dts[dts.len() / 2];
+                        let mut dt = centre + med;
+                        while dt > 7.5 {
+                            dt -= 15.0;
+                        }
+                        while dt <= -7.5 {
+                            dt += 15.0;
+                        }
+                        applied = Some((dt, trial + 1, got.len()));
+                        break;
+                    }
+                    // An applied phase restarts the under-par run — the
                     // grid just moved, so the slots that led here say
-                    // nothing about the new one. An inconclusive attempt
-                    // leaves the run standing so the retry is immediate.
-                    grid.acquisition_done(
-                        matches!(outcome, Some((_, r)) if r >= ACQUIRE_R_MIN),
-                    );
-                    match outcome {
-                        Some((dt, r)) if r >= ACQUIRE_R_MIN => {
+                    // nothing about the new one. A run where nothing
+                    // decoded leaves it standing, so the retry is
+                    // immediate.
+                    grid.acquisition_done(applied.is_some());
+                    match applied {
+                        Some((dt, trial, n)) => {
                             let shift = (dt * 12_000.0).round() as i32;
                             mfsk_app_shared::time_sync::set_acquisition_shift_12k(shift);
                             mfsk_app_shared::time_sync::note_grid_lock(
@@ -468,19 +516,29 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
                                     offset_us: (dt * 1_000_000.0).round() as i32,
                                     period_s: 15.0,
                                     epoch_at_fix: (now_ms / 1000) as i64,
-                                    confidence: r,
+                                    // The trial decoded `n` messages
+                                    // at this phase, which is a far
+                                    // better statement of confidence
+                                    // than the `r` this used to carry.
+                                    // Saturates at 1.0 by
+                                    // `LOCK_MIN_DECODES`, so a phase
+                                    // good enough to lock persists as
+                                    // fully trusted.
+                                    confidence: (n as f32
+                                        / mfsk_app_shared::grid_state::LOCK_MIN_DECODES as f32)
+                                        .min(1.0),
                                 });
                             }
                             log::warn!(
-                                "  cold-acquisition: grid phase {dt:+.2} s (R {r:.2}) → shift {shift:+} samples"
+                                "  cold-acquisition: grid phase {dt:+.2} s → shift {shift:+} samples \
+                                 (trial {trial}/{}, {n} decoded)",
+                                phases.len()
                             );
                         }
-                        Some((dt, r)) => log::warn!(
-                            "  cold-acquisition: inconclusive (dt {dt:+.2} s, R {r:.2} < {ACQUIRE_R_MIN}) — will retry"
+                        None => log::warn!(
+                            "  cold-acquisition: none of {} candidate phases decoded — will retry",
+                            phases.len()
                         ),
-                        None => {
-                            log::warn!("  cold-acquisition: no candidates — will retry")
-                        }
                     }
                 }
             }

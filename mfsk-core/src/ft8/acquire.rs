@@ -27,7 +27,7 @@
 
 use alloc::vec::Vec;
 
-use crate::engine::sync::{SyncCandidate, circular_dt_medoid};
+use crate::engine::sync::{SyncCandidate, circular_dt_clusters, circular_dt_medoid};
 use crate::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
 use crate::ft8::params::NMAX;
 
@@ -69,8 +69,66 @@ fn tile(
     }
 }
 
+/// Candidate slot phases from `audio`, heaviest first — the shortlist
+/// [`acquire_slot_phase`] used to collapse into one answer (#358).
+///
+/// The collapse is the broken part. The tiles propose a usable phase
+/// every time; what no statistic over the candidates can do is say
+/// *which* of the clusters is the grid rather than a loud outlier
+/// station or a correlation artefact. So this hands back the clusters
+/// and leaves the choice to the caller, whose one reliable test is to
+/// try decoding at each — a phantom counts, since its sync is real and
+/// its dt is the grid's.
+///
+/// Measured on `qso3_busy` across the whole period, fixed-point: the
+/// first entry is usable 23 times in 40, and one of the first five
+/// every time. Empty if `audio` is too short or nothing was found.
+///
+/// Each entry is `(dt_sec, weight)`, `dt_sec` in `(−7.5, 7.5]`.
+pub fn acquire_slot_phases(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    max_cand: usize,
+    max_out: usize,
+) -> Vec<(f32, f32)> {
+    if audio.len() < REQUIRED_SAMPLES {
+        return Vec::new();
+    }
+    let mut cands = Vec::new();
+    for (off_s, off_samples) in WINDOW_OFFSETS_S
+        .iter()
+        .map(|&s| (s, (s * 12_000.0) as usize))
+    {
+        tile(
+            audio,
+            off_samples,
+            off_s,
+            freq_min,
+            freq_max,
+            sync_min,
+            max_cand,
+            &mut cands,
+        );
+    }
+    circular_dt_clusters(&cands, CLUSTER_KERNEL_S, 15.0, max_out)
+}
+
+/// Two candidate phases this close are the same cluster. Half a second
+/// is comfortably inside the coarse window and comfortably outside the
+/// spread of one band's stations, which on `qso3_busy` is 1.07 s
+/// end to end.
+const CLUSTER_KERNEL_S: f32 = 0.5;
+
 /// Recover the slot grid's phase from `audio`, or `None` if nothing
 /// coherent was found.
+///
+/// **Superseded by [`acquire_slot_phases`] for acquisition** — this
+/// reduces to a single answer, and #358 measured that reduction
+/// returning a phase which decodes nothing on 16 of 40 offsets, at
+/// `r` up to 1.00. Kept for callers that want a point estimate and
+/// can tolerate that.
 ///
 /// `audio` must hold at least [`REQUIRED_SAMPLES`] (25 s at 12 kHz);
 /// only the first [`REQUIRED_SAMPLES`] are read. `top_k` is the number
