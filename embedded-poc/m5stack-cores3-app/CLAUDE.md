@@ -78,6 +78,7 @@ answering. Do not surface a cached value as a live one.
 | `MFSK_SIM_NO_CLOCK=1` | with `MFSK_CORES3_SIM`, make `time_sync::utc_now_ms` report nothing (`sim_suppress_clock`) — the clockless hilltop, without stopping `pmic::init` seeding the clock from the RTC |
 | `MFSK_CORES3_FORCE_MODE=<mode>` | compile-time boot-mode override — pick a mode for a measurement run without erasing NVS |
 | `MFSK_FT8_BUDGET_MS=N` / `MFSK_FT8_MAX_CAND` / `MFSK_FT8_PASS1_LIMIT` | `decode_pipeline` knobs for the #357 investigation. Budget defaults to 2000 |
+| `MFSK_CORES3_TX_PROBE=1` | **TX/QSO feasibility Phase T0.** Opens the IC-705's USB audio OUT interface on `TxConnected` and writes 20 chunks of digital silence, then closes it. Never sends a nonzero sample — a real tone risks keying TX by itself if the radio's `PTT SOURCE` is `VOX`, which this file cannot see. Off by default (`TxConnected` stays logged-and-ignored). See `uac.rs`'s `handle_tx_connected` doc comment |
 
 Cargo features `wspr-golden` and `fst4-replay` link the fixtures those
 two read. Off by default, which is 1.8 MB of image: a receiver taking
@@ -186,6 +187,48 @@ coarse stage returns `dt = 0`, so there is no `bootstrap_dt_median`
 cold-start path the way FT8 has. That is #356 (phase off the air). A
 *failure* to decode on a hilltop with no NTP is still not evidence
 about the decoder.
+
+## TX/QSO feasibility (2026-09-06, Phase T0 — not yet run on hardware)
+
+CoreS3 is receive-only today; `m5stack-s3-app` has the QSO FSM/PTT/CI-V
+plumbing but never got FT4 and can't do USB host at all (StickS3
+hardware, not this board). The plan is to build TX on CoreS3 instead,
+since every recent receive-side investment (FT4, lock-and-hold, cold
+acquisition) is here, not there.
+
+Two things had to be checked before committing to that: whether the
+IC-705's USB audio OUT interface can actually be written to from this
+driver, and whether wired CI-V (PTT, frequency) is reachable over the
+same USB cable instead of `m5stack-s3-app`'s BLE workaround.
+
+**Both look real, from the vendored headers, unverified on hardware:**
+
+- `uac.rs`'s own `DriverEvent::TxConnected` has enumerated the IC-705's
+  OUT interface since #163 and been logged-and-ignored the whole time.
+  `usb_host_uac`'s vendored header (`uac_host.h`) has
+  `uac_host_device_write` with the same open/start/write/stop/close
+  shape as the RX side already uses.
+- The device enumerates as hub + CDC + audio (documented in
+  `spawn_device_count_probe`'s doc comment) — the CDC interface is
+  wired CI-V, reachable via `espressif/usb_host_cdc_acm` (not yet a
+  dependency; ESP-IDF's own `cdc_acm_host` example pins `"2.*"`). Needs
+  the IC-705's VID/PID, which nothing here has queried yet — enabling
+  `ENUM` at `DEBUG` for one capture should print it without new code.
+
+**Phase T0** (`handle_tx_connected`, `MFSK_CORES3_TX_PROBE=1`) is the
+first hardware check: open the OUT interface, write only digital
+silence, close it. Silence rather than a tone on purpose — a nonzero
+signal into the IC-705's USB MOD input could key TX by itself if the
+radio's `PTT SOURCE` is `VOX`, and nothing here can read that setting.
+**Confirm `PTT SOURCE` is not `VOX` before running this against a real
+radio.** Not yet run against hardware.
+
+Phases after T0, in order: T1 wires the same OUT interface to real FT8
+tone synthesis and CI-V PTT (first point this can transmit — flag it
+before starting); T2 connects `mfsk-app-shared`'s existing board-
+agnostic QSO FSM/TX picker (already used by `m5stack-s3-app` and
+`m5stack-core2-app`) to CoreS3's decode results and new TX path; T3 is
+a real over-the-air QSO.
 
 ## Status (2026-08-23)
 

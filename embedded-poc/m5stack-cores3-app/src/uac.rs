@@ -28,6 +28,15 @@
 //! interface. What is left is telling "same device returned" from
 //! "new device" in [`app_task`] — no issue filed for it.
 //!
+//! `TxConnected` (the IC-705's USB audio OUT interface) enumerates
+//! today and is otherwise ignored — FT8 RX never needed it. Phase T0
+//! of the TX/QSO feasibility work adds an opt-in probe,
+//! `handle_tx_connected`, gated on `TX_PROBE_ENABLED`
+//! (`MFSK_CORES3_TX_PROBE` at build time): open the interface, write
+//! digital silence a fixed number of times, close it again. Silence
+//! only — see that function's doc comment for why a nonzero test tone
+//! is not safe to send without knowing the radio's PTT-source setting.
+//!
 //! ## 接続方式 (確定済)
 //!
 //! - Component: `espressif/usb_host_uac@^1.4` を `Cargo.toml` の
@@ -1127,6 +1136,118 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     Ok(())
 }
 
+/// Phase T0 (TX/QSO feasibility, not yet wired to anything that keys
+/// PTT): compile-time opt-in probe that the IC-705's USB audio OUT
+/// interface — `DriverEvent::TxConnected`, enumerated and logged since
+/// #163 but never opened — actually accepts `uac_host_device_open` /
+/// `_start` / `_write` the same way `handle_rx_connected` does for the
+/// IN side. Off by default; every other `TxConnected` build keeps
+/// today's behaviour (log and ignore).
+///
+/// **Writes digital silence only, never a tone.** The goal here is
+/// proving the write path, not proving the radio can be driven — a
+/// nonzero signal into the IC-705's USB MOD input could key TX by
+/// itself if the radio's PTT source is set to VOX, and this file has
+/// no way to know that setting from software. True zero samples carry
+/// no audio level to VOX-detect, so they're the safe way to exercise
+/// `uac_host_device_write` before anything here can assert PTT on
+/// purpose.
+///
+/// Before running this against a real radio: confirm the IC-705's
+/// `PTT SOURCE` menu is anything but `VOX`.
+const TX_PROBE_ENABLED: bool = option_env!("MFSK_CORES3_TX_PROBE").is_some();
+
+/// One silent write attempt, this many times, before closing again.
+/// Enough to see whether the ring buffer keeps accepting writes past
+/// the first one (an OUT endpoint that stalls after N packets would
+/// look identical to success on a single write).
+const TX_PROBE_WRITES: u32 = 20;
+/// One video frame's worth at 48 kHz stereo 16-bit — matches
+/// `STREAM_BUFFER_THRESHOLD`'s sizing logic, scaled down since this
+/// only needs to exercise the path, not sustain real-time throughput.
+const TX_PROBE_CHUNK_BYTES: usize = 1920; // 10 ms @ 48k stereo 16b
+const TX_PROBE_WRITE_TIMEOUT_MS: u32 = 100;
+
+fn handle_tx_connected(addr: u8, iface_num: u8) {
+    log::info!("uac: TX_CONNECTED addr={addr} iface={iface_num} — probe start (silence only)");
+    let dev_config = sys::uac::uac_host_device_config_t {
+        addr,
+        iface_num,
+        buffer_size: STREAM_BUFFER_BYTES,
+        buffer_threshold: STREAM_BUFFER_THRESHOLD,
+        callback: Some(device_event_cb),
+        callback_arg: core::ptr::null_mut(),
+    };
+    let mut handle: sys::uac::uac_host_device_handle_t = core::ptr::null_mut();
+    let err = unsafe {
+        sys::uac::uac_host_device_open(
+            &dev_config as *const _,
+            &mut handle as *mut sys::uac::uac_host_device_handle_t,
+        )
+    };
+    if err != sys::ESP_OK as sys::esp_err_t {
+        log::error!("uac: tx probe device_open failed err={err:#x}");
+        return;
+    }
+
+    // Same fixed config the IN side uses. Unverified for the OUT
+    // interface specifically — the IC-705's TX descriptor has never
+    // been queried, so a `device_start` failure here is expected
+    // information, not a bug: check the device descriptor dump in the
+    // UDP log (same as the RX open-failure comment above) and correct
+    // this constant from what the radio actually reports.
+    let stream_config = sys::uac::uac_host_stream_config_t {
+        channels: STREAM_CHANNELS,
+        bit_resolution: STREAM_BIT_RESOLUTION,
+        sample_freq: STREAM_SAMPLE_FREQ_HZ,
+        flags: 0,
+    };
+    let err = unsafe { sys::uac::uac_host_device_start(handle, &stream_config as *const _) };
+    if err != sys::ESP_OK as sys::esp_err_t {
+        log::error!(
+            "uac: tx probe device_start failed err={err:#x} (tried {STREAM_CHANNELS}ch / \
+             {STREAM_BIT_RESOLUTION}b / {STREAM_SAMPLE_FREQ_HZ}Hz — this is a guess, not read \
+             from the OUT interface's own descriptor)"
+        );
+        let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
+        if close_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: tx probe device_close after start failure failed err={close_err:#x}");
+        }
+        return;
+    }
+
+    let silence = [0u8; TX_PROBE_CHUNK_BYTES];
+    let mut wrote_ok = 0u32;
+    for i in 0..TX_PROBE_WRITES {
+        let mut buf = silence;
+        let err = unsafe {
+            sys::uac::uac_host_device_write(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                TX_PROBE_WRITE_TIMEOUT_MS,
+            )
+        };
+        if err == sys::ESP_OK as sys::esp_err_t {
+            wrote_ok += 1;
+        } else {
+            log::warn!("uac: tx probe write {i}/{TX_PROBE_WRITES} failed err={err:#x}");
+        }
+        esp_idf_svc::hal::delay::FreeRtos::delay_ms(10);
+    }
+    log::info!("uac: tx probe wrote {wrote_ok}/{TX_PROBE_WRITES} silent chunks OK");
+
+    let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
+    let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
+    if stop_err != sys::ESP_OK as sys::esp_err_t {
+        log::error!("uac: tx probe device_stop failed err={stop_err:#x}");
+    }
+    if close_err != sys::ESP_OK as sys::esp_err_t {
+        log::error!("uac: tx probe device_close failed err={close_err:#x}");
+    }
+    log::info!("uac: tx probe done, interface closed");
+}
+
 /// Reader thread body. Polls `uac_host_device_read` for raw
 /// 48 kHz/stereo/16-bit iso IN packets, extracts the left channel,
 /// resamples to 12 kHz mono via `LinearResamplerI16To12k`, and pushes
@@ -1462,9 +1583,13 @@ fn app_task(rx: std::sync::mpsc::Receiver<DriverEvent>) {
                 }
             }
             DriverEvent::TxConnected { addr, iface_num } => {
-                log::info!(
-                    "uac: TX_CONNECTED addr={addr} iface={iface_num} — ignored (RX only for FT8)"
-                );
+                if TX_PROBE_ENABLED {
+                    handle_tx_connected(addr, iface_num);
+                } else {
+                    log::info!(
+                        "uac: TX_CONNECTED addr={addr} iface={iface_num} — ignored (RX only for FT8)"
+                    );
+                }
             }
         }
     }
