@@ -852,3 +852,102 @@ fn where_do_the_failures_lose_it() {
          landing out of reach, and nothing downstream is involved."
     );
 }
+
+/// In the offsets that fail, did a usable candidate exist at all?
+/// (#358)
+///
+/// The failures are all "acquisition landed outside the ±1.0 s coarse
+/// window". That has two very different causes and they need different
+/// fixes: either the tiles never proposed a phase near the truth — in
+/// which case the tiling is what is wrong — or one was there and the
+/// selection passed over it, in which case the reduction rule is.
+///
+/// Prints, for every offset, the best rank (by score) among candidates
+/// whose folded dt is within ±1.0 s of a phase that undoes the roll.
+#[test]
+#[ignore = "diagnostic, prints a table"]
+fn did_a_usable_candidate_exist() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    let wrap = |mut d: f32| {
+        while d > 7.5 {
+            d -= 15.0;
+        }
+        while d <= -7.5 {
+            d += 15.0;
+        }
+        d
+    };
+
+    println!("\n roll | acquired | resid | usable rank / of | best usable score vs top");
+    println!("{:-<74}", "");
+    let (mut fail_none, mut fail_had) = (0, 0);
+    let mut ranks: Vec<usize> = Vec::new();
+    for i in 0..40 {
+        let off_s = i as f32 * 0.375;
+        let rolled = roll(&audio, (off_s * SR as f32) as i64);
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(&rolled);
+        }
+        let mut all: Vec<SyncCandidate> = Vec::new();
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+            for c in coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5) {
+                all.push(SyncCandidate {
+                    freq_hz: c.freq_hz,
+                    dt_sec: c.dt_sec + w,
+                    score: c.score,
+                });
+            }
+        }
+        all.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        let Some((p, _)) = acquire_tiled_k(&rolled, 2) else {
+            continue;
+        };
+        let resid = wrap(p + off_s);
+        let failed = resid.abs() > 1.0;
+
+        // A candidate is usable if a grid at its dt would put the
+        // stations inside the window — i.e. its own residual is small.
+        let usable = all.iter().position(|c| wrap(c.dt_sec + off_s).abs() <= 1.0);
+        let top = all.first().map(|c| c.score).unwrap_or(0.0);
+        match usable {
+            Some(r) => {
+                if failed {
+                    fail_had += 1;
+                    ranks.push(r + 1);
+                }
+                println!(
+                    "{off_s:5.2} | {p:+8.2} | {resid:+5.2} | {:8} / {:3} | {:6.1} vs {top:6.1}{}",
+                    r + 1,
+                    all.len(),
+                    all[r].score,
+                    if failed { "   <- FAILED" } else { "" }
+                );
+            }
+            None => {
+                if failed {
+                    fail_none += 1;
+                }
+                println!(
+                    "{off_s:5.2} | {p:+8.2} | {resid:+5.2} |     none / {:3} |{}",
+                    all.len(),
+                    if failed {
+                        "   <- FAILED, nothing usable"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+    }
+    ranks.sort();
+    println!(
+        "\nfailed with a usable candidate present: {fail_had}  (its ranks: {ranks:?})\n\
+         failed with none present:                {fail_none}"
+    );
+}
