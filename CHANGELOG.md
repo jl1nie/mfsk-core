@@ -466,13 +466,22 @@ streaming coarse stage below.)
   its definition, about the chosen centre.
 
   Measured on the numeric path the receiver ships (40 offsets across
-  the period, scored by whether the acquired phase decodes at all):
-  **392 → 458 decodes and 14 → 7 offsets that decode nothing**, against
-  600 for a perfect grid. More candidates is monotonically worse —
-  465 at `top_k=1`, 347 at 12 — because the leaders behind the first
-  are artefacts rather than more stations. `1` scores best and is not
+  the period, scored by whether the acquired phase decodes), **and with
+  the search window the receiver uses** — `MFSK_SYNC_LAG_S=1.0`, not
+  the 2.5 s crate default, which forgives a phase two seconds out and
+  so cannot see this at all: **307 → 345 decodes**, against ~600 for a
+  perfect grid. More candidates is monotonically worse — 358 at
+  `top_k=1`, 240 at 12 — because the leaders behind the first are
+  artefacts rather than more stations. `1` scores best and is not
   taken: with one candidate `r` is identically 1.00, which would leave
   `ACQUIRE_R_MIN` accepting everything while looking like a gate.
+
+  **What this does not fix**: the number of offsets acquiring a phase
+  that decodes *nothing* is 16 of 40 at `top_k=2` against 17 at 5. The
+  decode count improves by 12 %; the outright-failure rate does not
+  move. (An earlier revision of this entry quoted 392 → 458 decodes and
+  14 → 7 failures. Those were scored at the 2.5 s default and overstate
+  what the board sees on both counts.)
 
   On f32 it is a wash (303 → 297 decodes, 0 → 0 failures).
 

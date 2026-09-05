@@ -551,3 +551,243 @@ fn are_the_top_candidates_frames_or_sidelobes() {
          phantoms, and\nincluding them cannot help the median."
     );
 }
+
+/// Choose the phase that puts the most stations *inside the search
+/// window*, rather than the one that estimates the middle (#358).
+///
+/// Acquisition exists to make the receiver decode, and what decides
+/// that is coverage: a station is decodable if its dt falls within the
+/// coarse window of wherever the grid ends up. That is a
+/// maximum-coverage question, not a central-tendency one, and the two
+/// differ exactly when the population is skewed — `qso3_busy` has
+/// fourteen stations near +0.26 s and F5RXL at -0.77 s, so the medoid
+/// sits at +0.26 and its ±1.0 s window ends at -0.74, missing F5RXL by
+/// 30 ms. A centre near +0.1 would hold all fifteen.
+///
+/// Sweeps the kernel half-width, since the right one is the search
+/// window the decoder will actually use.
+#[test]
+#[ignore = "diagnostic, decodes at every phase — slow"]
+fn coverage_maximising_acquisition() {
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+
+    let acquire_coverage =
+        |slot: &[i16], half: f32, weighted: bool, per_tile: usize| -> Option<f32> {
+            let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+            while long.len() < REQUIRED_SAMPLES {
+                long.extend_from_slice(slot);
+            }
+            let mut all: Vec<SyncCandidate> = Vec::new();
+            for &w in &[0.0_f32, 5.0, 10.0] {
+                let start = (w * 12_000.0) as usize;
+                let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+                let mut cs =
+                    coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5);
+                cs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+                for c in cs.into_iter().take(per_tile) {
+                    all.push(SyncCandidate {
+                        freq_hz: c.freq_hz,
+                        dt_sec: c.dt_sec + w,
+                        score: c.score,
+                    });
+                }
+            }
+            if all.is_empty() {
+                return None;
+            }
+            let wrap = |mut d: f32| {
+                while d > 7.5 {
+                    d -= 15.0;
+                }
+                while d <= -7.5 {
+                    d += 15.0;
+                }
+                d
+            };
+            // Centre the window on each candidate, take the one that covers
+            // the most. Ties break toward the centroid of what it covers.
+            let mut best: Option<(f32, f32)> = None;
+            for a in &all {
+                let covered: Vec<&SyncCandidate> = all
+                    .iter()
+                    .filter(|b| wrap(b.dt_sec - a.dt_sec).abs() <= half)
+                    .collect();
+                let mass: f32 = if weighted {
+                    covered.iter().map(|b| b.score).sum()
+                } else {
+                    covered.len() as f32
+                };
+                if best.as_ref().is_none_or(|&(_, m)| mass > m) {
+                    let off: f32 = covered
+                        .iter()
+                        .map(|b| wrap(b.dt_sec - a.dt_sec))
+                        .sum::<f32>()
+                        / covered.len().max(1) as f32;
+                    best = Some((wrap(a.dt_sec + off), mass));
+                }
+            }
+            best.map(|(dt, _)| dt)
+        };
+
+    println!("\n half | weighted | per_tile | decodes | rolls with none");
+    println!("{:-<60}", "");
+    for &(half, weighted, per_tile) in &[
+        (1.0f32, false, 2usize),
+        (1.0, true, 2),
+        (1.0, false, 3),
+        (1.0, true, 3),
+        (1.0, true, 5),
+        (0.75, true, 3),
+        (1.25, true, 3),
+    ] {
+        let (mut tot, mut zero) = (0usize, 0usize);
+        for i in 0..40 {
+            let off_s = i as f32 * 0.375;
+            let rolled = roll(&audio, (off_s * SR as f32) as i64);
+            match acquire_coverage(&rolled, half, weighted, per_tile) {
+                Some(p) => {
+                    let d = decodes_at(&rolled, p);
+                    tot += d;
+                    if d == 0 {
+                        zero += 1;
+                    }
+                }
+                None => zero += 1,
+            }
+        }
+        println!(
+            "{half:5.2} | {:8} | {per_tile:8} | {tot:7} | {zero:15}",
+            weighted
+        );
+    }
+    println!("\n(medoid at top_k=2 is 458 decodes, 7 with none; best is ~600)");
+}
+
+/// Two stages: medoid to find the grid, coverage to centre it (#358).
+///
+/// The medoid answers the question it is good at — *which* of the 15 s
+/// positions the grid sits at — and nothing measured so far beats it
+/// there. What it is not built for is the last second: it returns the
+/// middle of the station population, and the middle is not where the
+/// window covers the most stations when that population is skewed.
+/// `qso3_busy` has fourteen stations near +0.26 s and F5RXL at
+/// -0.77 s, a spread of 1.07 s against a ±1.0 s window — so the centre
+/// matters and the medoid does not choose it.
+///
+/// So localise with the medoid, then slide the window within a second
+/// of it to cover the most. Same shape as the decoder's own
+/// coarse-then-fine.
+///
+/// Scored with `MFSK_SYNC_LAG_S=1.0` — the embedded window. At the
+/// 2.5 s default a phase two seconds out still decodes, so the metric
+/// cannot see a centring change at all.
+#[test]
+#[ignore = "diagnostic, decodes at every phase — slow"]
+fn medoid_then_coverage() {
+    use mfsk_core::engine::sync::{SyncCandidate, circular_dt_medoid};
+    use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
+
+    let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
+    let wrap = |mut d: f32| {
+        while d > 7.5 {
+            d -= 15.0;
+        }
+        while d <= -7.5 {
+            d += 15.0;
+        }
+        d
+    };
+
+    // All tiles' candidates, folded, plus the medoid over the top-2.
+    let gather = |slot: &[i16]| -> (Vec<SyncCandidate>, Option<f32>) {
+        let mut long: Vec<i16> = Vec::with_capacity(REQUIRED_SAMPLES);
+        while long.len() < REQUIRED_SAMPLES {
+            long.extend_from_slice(slot);
+        }
+        let mut all: Vec<SyncCandidate> = Vec::new();
+        for &w in &[0.0_f32, 5.0, 10.0] {
+            let start = (w * 12_000.0) as usize;
+            let spec = compute_spectrogram(&long[start..start + SLOT], FREQ_MAX);
+            for c in coarse_sync_with_lag(&spec, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND, 2.5) {
+                all.push(SyncCandidate {
+                    freq_hz: c.freq_hz,
+                    dt_sec: c.dt_sec + w,
+                    score: c.score,
+                });
+            }
+        }
+        let medoid = circular_dt_medoid(&all, 2, 15.0).map(|(dt, _)| dt);
+        (all, medoid)
+    };
+
+    // Slide a ±`half` window within `reach` of the medoid; keep the
+    // offset covering the most candidate mass.
+    let centre = |all: &[SyncCandidate], m: f32, half: f32, reach: f32| -> f32 {
+        let local: Vec<&SyncCandidate> = all
+            .iter()
+            .filter(|c| wrap(c.dt_sec - m).abs() <= reach)
+            .collect();
+        if local.is_empty() {
+            return m;
+        }
+        let mut best = (m, -1.0f32);
+        // Candidate centres: every local candidate, and the medoid.
+        for cand in local.iter().map(|c| c.dt_sec).chain(core::iter::once(m)) {
+            let mass: f32 = local
+                .iter()
+                .filter(|c| wrap(c.dt_sec - cand).abs() <= half)
+                .map(|c| c.score)
+                .sum();
+            if mass > best.1 {
+                best = (wrap(cand), mass);
+            }
+        }
+        best.0
+    };
+
+    println!("\n half | reach | decodes | rolls with none");
+    println!("{:-<46}", "");
+    // Baseline first: the medoid alone.
+    {
+        let (mut tot, mut zero) = (0usize, 0usize);
+        for i in 0..40 {
+            let off_s = i as f32 * 0.375;
+            let rolled = roll(&audio, (off_s * SR as f32) as i64);
+            let (_, m) = gather(&rolled);
+            match m {
+                Some(p) => {
+                    let d = decodes_at(&rolled, p);
+                    tot += d;
+                    if d == 0 {
+                        zero += 1;
+                    }
+                }
+                None => zero += 1,
+            }
+        }
+        println!("  --  |   --  | {tot:7} | {zero:15}   (medoid alone)");
+    }
+    for &(half, reach) in &[(1.0f32, 1.0f32), (1.0, 1.5), (0.8, 1.0), (1.0, 0.6)] {
+        let (mut tot, mut zero) = (0usize, 0usize);
+        for i in 0..40 {
+            let off_s = i as f32 * 0.375;
+            let rolled = roll(&audio, (off_s * SR as f32) as i64);
+            let (all, m) = gather(&rolled);
+            match m {
+                Some(m) => {
+                    let p = centre(&all, m, half, reach);
+                    let d = decodes_at(&rolled, p);
+                    tot += d;
+                    if d == 0 {
+                        zero += 1;
+                    }
+                }
+                None => zero += 1,
+            }
+        }
+        println!("{half:5.1} | {reach:5.1} | {tot:7} | {zero:15}");
+    }
+}
