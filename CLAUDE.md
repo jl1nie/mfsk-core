@@ -597,12 +597,22 @@ GitHub Releases in four days is more update-notification noise than
 downstream consumers want, even when every individual change was
 sound.
 
-**Default cadence: every 2 weeks** (max wait 13 days, average 7) from
-the last tag, bundling everything merged to `main` since then into
-one release PR + tag. Don't tag opportunistically just because a
-feature or fix finished — let it sit in the unreleased CHANGELOG
-section until the next scheduled cut, *unless* the escape hatch below
-applies.
+**Default cadence: every 2 weeks** (13-14 days is the normal target,
+not an overrun to apologize for) from the last regularly-scheduled tag,
+bundling everything merged to `main` since then into one release PR +
+tag. Don't tag opportunistically just because a feature or fix
+finished — let it sit in the unreleased CHANGELOG section until the
+next scheduled cut, *unless* the escape hatch below applies.
+
+(This used to say "max wait 13 days, average 7", which mixed two
+escape-hatch same-week follow-up patches — v0.8.0→v0.8.1 and
+v0.9.0→v0.9.1, 1-2 days each — into the same average as the regular
+cuts, dragging it down and making a 13-day gap read as "past maximum"
+instead of as hitting the target. The regular cuts alone —
+v0.7.4→v0.8.0, v0.8.1→v0.9.0, v0.9.1→v0.10.0, v0.10.0→v0.10.1 — run
+12, 8, 13, 13 days: trending toward two weeks, which is what "every 2
+weeks" already said. Corrected 2026-09-06 after v0.10.1 landed at 13
+days and was read as overdue.)
 
 **Escape hatch**: an out-of-cadence tag is fine for a security fix, a
 data-loss/correctness bug serious enough to want off the broken

@@ -84,11 +84,18 @@ if [[ -n "$last_tag" ]]; then
     days=$(( ( $(date +%s) - tag_epoch ) / 86400 ))
     n=$(git rev-list --count "$last_tag..HEAD" 2>/dev/null || echo '?')
     echo "  $last_tag was $days days ago ($tag_date), $n commits since"
-    # Biweekly by convention; see CLAUDE.md "Release cadence".
-    if (( days >= 13 )); then
-        warn "past the 13-day maximum of the biweekly cadence"
+    # Biweekly by convention; see CLAUDE.md "Release cadence". 13-14
+    # days is the *target*, not an overrun — the old >=13 "past
+    # maximum" wording flagged an on-time release as late, from
+    # averaging in two escape-hatch same-week patches that dragged the
+    # historical mean down to ~7 (corrected 2026-09-06, see CLAUDE.md's
+    # own note on this).
+    if (( days > 14 )); then
+        warn "past the 2-week target — overdue"
+    elif (( days >= 13 )); then
+        ok "at the 2-week target — good time to cut"
     elif (( days >= 7 )); then
-        ok "inside the window (average is ~7 days)"
+        ok "inside the window, before the 2-week target"
     else
         ok "recent — cutting now would be early unless the escape hatch applies"
     fi
