@@ -1072,16 +1072,41 @@ boot-mode work) — removed below rather than left misleading.
   shared. Deferred until Phase 1-Verify passes (no premature
   abstraction) — unchanged blocking logic, just correctly blocked on
   a real open issue now instead of a placeholder task number.
-- **Phase 2-Core** — BLE CI-V to IC-705. Same `civ.rs` work that
-  was queued on s3-app; CoreS3 also has BLE.
+- **Phase 2-Core** — CI-V to IC-705. **Revised 2026-09-06: wired, not
+  BLE.** This entry originally assumed CoreS3 would need s3-app's BLE
+  `civ.rs` transport, on the (unstated) premise that CoreS3 is BLE-
+  capable too. It doesn't need to be: CoreS3 already has a working
+  USB-OTG link to the radio for audio, and `uac.rs`'s own
+  `spawn_device_count_probe` comment already documents the IC-705
+  enumerating as hub + CDC + audio on that same cable — the CDC
+  interface *is* wired CI-V, reachable via `espressif/usb_host_cdc_acm`
+  with no second radio link required. See
+  `embedded-poc/m5stack-cores3-app/CLAUDE.md`'s "TX/QSO feasibility"
+  section for what's confirmed (from vendored headers) and what still
+  needs the IC-705's VID/PID from a real enumeration. Not started.
 - **Phase 5-Core** — ADIF (`flash_log.rs` + `adif.rs`). Crate-agnostic;
-  could be hoisted to `mfsk-app-shared` from day 1.
-- **Phase 6-Core** — FT6336U capacitive touch driver (CoreS3 base
-  has no physical buttons beyond Power). Replaces the Stick
-  `buttons.rs` paradigm with touch zones (menu / decoded-list
-  tap-to-select / TX-strip tap-to-send).
-- **Phase 7-Core** — TX keying (paired with Phase 2-Core
-  `civ::set_ptt` + Phase 1-Core TX audio synth to UAC OUT endpoint).
+  could be hoisted to `mfsk-app-shared` from day 1. Still accurate as
+  "not started" — `mfsk-app-shared::adif` exists but no app (s3-app,
+  core2-app, or cores3-app) calls into it yet, checked directly.
+- **Phase 6-Core** — **DONE, undated in this file until now.**
+  FT6336U capacitive touch is wired (`touch.rs`, referenced from
+  `board.rs`/`main.rs`/`display.rs`/every `apps/*.rs`) and drives the
+  mode picker (`embedded-poc/m5stack-cores3-app/CLAUDE.md`'s knobs
+  table: "the touch picker writes NVS at runtime"). This section had
+  called it "planned" with no corresponding fix, which is the same
+  kind of staleness the 2026-07-19 correction at the top of this
+  Phase B-Core block found and fixed once already.
+- **Phase 7-Core** — TX keying (paired with Phase 2-Core's CI-V PTT +
+  TX audio synth to the UAC OUT endpoint). **Phase T0 landed
+  2026-09-06** (`4a0e4acb`): confirmed from the vendored
+  `usb_host_uac` header that `uac_host_device_write` exists with the
+  same open/start/write/stop/close shape the RX side already uses, and
+  added an opt-in probe (`MFSK_CORES3_TX_PROBE=1`) that opens the
+  IC-705's long-enumerated-but-never-opened `TxConnected` interface and
+  writes digital silence only — not a tone, since a nonzero signal
+  could key TX by itself if the radio's `PTT SOURCE` is `VOX`. Not yet
+  run against real hardware. `embedded-poc/m5stack-cores3-app/CLAUDE.md`
+  has the full phase breakdown (T0-T3) this rolls up into.
 
 `mfsk-ffi-ft8/src/stream.rs::mfsk_ft8_stream_*` and `embedded-shared`
 resampler API are the seams shared between B-Stick and B-Core.

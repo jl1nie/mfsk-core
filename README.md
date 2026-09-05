@@ -708,7 +708,11 @@ CoreS3 has the PMIC/IO-expander wiring the StickS3 lacks) — one image
 carrying four receivers, chosen from the touch panel, taking audio
 from a radio over USB Audio. Live IC-705 verification cleared
 2026-08-23 (issue #163); FT8 and WSPR have both decoded off the air.
-See `docs/reference/MANUAL_M5STACK_CORES3.md` to operate it, and
+It is receive-only today; TX/QSO feasibility work started 2026-09-06
+(Phase T0 — the IC-705's USB audio OUT interface and wired CI-V over
+the same cable both look reachable from the vendored driver headers,
+unverified on hardware yet). See
+`docs/reference/MANUAL_M5STACK_CORES3.md` to operate it, and
 `docs/notes/ROADMAP.md`'s Phase B-Core section for what it unblocks. `embedded-poc/m5stack-s3/` is a
 decoder-only compute-bench crate for S3 timing-regression tracking.
 See

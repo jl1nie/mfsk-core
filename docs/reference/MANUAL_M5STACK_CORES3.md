@@ -158,9 +158,16 @@ call = "JA1ABC"
 grid = "PM95"
 ```
 
-Used by the FT8 QSO state machine when composing messages. **Leave both
-empty for a receive-only station** — the FSM then stays idle, which is
-correct, and better than identifying as somebody else.
+Used by the FT8 QSO state machine when composing messages. **This board
+cannot transmit** — CoreS3 has no PTT or TX audio path today (that work
+is starting; see `embedded-poc/m5stack-cores3-app/CLAUDE.md`'s "TX/QSO
+feasibility" section), so the FSM's output is display-only: it logs
+what it would send next (`[QSO] …`), and nothing goes to the radio.
+Setting `call`/`grid` is therefore for watching the FSM track a QSO
+against real decodes, not for participating in one. **Leave both empty
+for a receive-only station** — the FSM then stays idle, which is
+correct, and better than identifying as somebody else even in a log
+line nobody transmits.
 
 WSPR takes its callsign from the HTTP settings page instead, not from
 here, because it is changed more often than a rebuild is convenient.
