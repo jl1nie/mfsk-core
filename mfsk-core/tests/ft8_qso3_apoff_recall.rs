@@ -43,6 +43,17 @@ const QSO3_PATH: &str = asset_path!("qso3_busy.wav");
 /// structurally out of reach; see `ft8_qso3_full_parity_recall.rs` for
 /// the OSD-enabled host config that reaches all 20.
 ///
+/// **This is `decode_block`'s 3-pass-with-subtraction driver, not the
+/// one any embedded build ships** (issue #359, 2026-09-05) —
+/// `decode_block_multipass` has two `#[cfg]`-gated bodies, split on
+/// this file's own required `fft-rustfft`, and only the host-only one
+/// subtracts between passes. `ft8_embedded_driver_recall.rs` runs the
+/// other body (`not(fft-rustfft)`) against this same golden: 7/20 on
+/// `fixed-point`, against this file's 12. The board itself measures
+/// close to that 7, not to this file's floor — treat *this* file as
+/// "how good could the ship config be with subtraction", not as a
+/// board-fidelity check.
+///
 /// **The floor keys off `nstep-half`, not `fixed-point`** (corrected
 /// 2026-08-30). This said "host f32 14/20, host fixed-point 12/20" and
 /// gated on `fixed-point`, which measured the two together: that
