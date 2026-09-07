@@ -12,8 +12,21 @@ name       = "mfsk"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-mfsk-core = { path = "../mfsk-core", version = "0.10", features = ["full"] }
-mfsk-ffi-abi = { path = "../mfsk-ffi-abi", version = "0.10.0" }
+# Internal path dependencies carry **no** `version` requirement, and
+# that is deliberate. This crate is `publish = false`, so cargo never
+# needs one — while a hand-written `version = "0.10"` here silently
+# tracks nothing: `[workspace.package] version` is the single source of
+# truth, a caret requirement keeps matching across patch bumps, and the
+# mismatch only surfaces on a **minor** bump as a resolve failure
+# (`failed to select a version for the requirement mfsk-core = "^0.9"`)
+# on the day of a release. That happened cutting 0.10.0 on 2026-08-17,
+# with pins that had sat at `0.9` since the 0.9.0 release.
+#
+# If this crate is ever published, cargo will demand a version on each
+# path dep and say so immediately — an error at the right moment,
+# rather than a stale literal nobody reads.
+mfsk-core = { path = "../mfsk-core", features = ["full"] }
+mfsk-ffi-abi = { path = "../mfsk-ffi-abi" }
 
 [build-dependencies]
 cbindgen = "0.29"

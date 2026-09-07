@@ -7,6 +7,25 @@ change, no decoder behaviour change, no measured sensitivity movement.
 This section accumulates until the next tag — see `CLAUDE.md`'s
 "Release cadence".
 
+### Fixed
+
+- **The FFI crates' hand-written version pins can no longer go stale.**
+  `mfsk-ffi` and `mfsk-ffi-ft8` each required `mfsk-core` and
+  `mfsk-ffi-abi` by `version` as well as by path, and those literals
+  tracked nothing: `[workspace.package] version` is the single source of
+  truth, and a caret requirement keeps matching across every patch bump.
+  The mismatch surfaces only on a **minor** bump, as a resolve failure
+  on release day — which is exactly when it happened cutting 0.10.0,
+  with pins that had sat at `0.9` since 0.9.0 and survived 0.9.1
+  untouched.
+
+  All three FFI crates are `publish = false`, so cargo never needed the
+  requirement. Removed, with the reasoning recorded where the pins were.
+  Simulating a `0.11.0` bump now resolves cleanly where it previously
+  failed. If one of these crates is ever published, cargo demands a
+  version on each path dep and says so at that moment, rather than
+  leaving a literal nobody re-reads.
+
 ### Changed
 
 - **FST4's npre-vs-timing ablation re-measured at n=100, and two of its

@@ -54,8 +54,9 @@ embedded-fixed-point = [
 embedded-runtime = []
 
 [dependencies]
-mfsk-core = { path = "../mfsk-core", version = "0.10.0", default-features = false }
-mfsk-ffi-abi = { path = "../mfsk-ffi-abi", version = "0.10.0" }
+# No `version` on either path dep — see `mfsk-ffi/Cargo.toml`'s note.
+mfsk-core = { path = "../mfsk-core", default-features = false }
+mfsk-ffi-abi = { path = "../mfsk-ffi-abi" }
 
 [build-dependencies]
 cbindgen = "0.29"
