@@ -110,8 +110,8 @@
 //! WiFi is up, so `embedded-poc/scripts/udp-log-listen.sh` on the host
 //! PC keeps showing logs even with no serial port to attach to. The
 //! LCD-scroll-panel half of `LogFanout` is left unused here (nobody
-//! calls `display::run_log_panel` — this bin's own `display_loop`
-//! draws the WSPR UI instead), which is harmless: `FanoutLogger` still
+//! calls `display::run_log_panel` — this receiver draws its spot list
+//! through `crate::spot_panel` instead), which is harmless: `FanoutLogger` still
 //! pushes into it, just nothing ever reads it back out.
 //!
 //! One consequence worth being explicit about regardless: the band
@@ -126,21 +126,11 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use esp_idf_hal::delay::{Ets, FreeRtos};
-use esp_idf_hal::gpio::{AnyIOPin, PinDriver};
+use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::peripherals::Peripherals;
-use esp_idf_hal::spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig};
-use esp_idf_hal::units::FromValueType;
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
-
-use display_interface_spi::SPIInterface;
-use mipidsi::{
-    models::ILI9342CRgb565,
-    options::{ColorInversion, Orientation},
-    Builder,
-};
 
 use mfsk_core::wspr::ddc::{StreamingDdcCascade, AUDIO_RATE_HZ};
 use mfsk_core::wspr::decode::WsprResult;
@@ -148,15 +138,13 @@ use mfsk_core::wspr::decode::WsprResult;
 use embedded_shared::apps::wspr_scan::{now_us, run_scan, NBB, SLOT_US};
 use embedded_shared::wspr_dual_core;
 
-use esp_idf_svc::sys::MALLOC_CAP_SPIRAM;
-use mfsk_app_shared::boot_mode::{self, BootMode};
+use mfsk_app_shared::boot_mode::BootMode;
 use mfsk_app_shared::capture_window::{CaptureWindow, Step};
 use mfsk_app_shared::civil_time::civil_from_unix;
 use mfsk_app_shared::settings::{self, Settings};
 use mfsk_app_shared::ui::wspr_list;
 use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
 use mfsk_app_shared::ui::wspr_state::WSPR_UI;
-use mfsk_app_shared::ui::{link_bar, mode_picker};
 use mfsk_app_shared::wspr_bands::{WsprBand, WSPR_BANDS};
 
 /// Linked in only for the synthetic/bench build. 360 KB of flash that a
@@ -466,9 +454,10 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     spawn_ddc_task();
     log_heap("post-ddc-spawn");
 
-    // Register the real-audio sink **before** `spawn_display_task`
-    // below, whose task body eventually calls `crate::uac::start_host()`
-    // (after PMIC/VBUS bring-up — see `display_loop`'s own comment).
+    // Register the real-audio sink **before** the display task is
+    // spawned below, whose body eventually calls
+    // `crate::uac::start_host()` (after PMIC/VBUS bring-up — see
+    // `crate::spot_panel::run`'s own comment).
     // Same "wire the consumer before installing the driver" ordering
     // `main.rs` relies on for its own `set_chunk_q` call: by the time
     // the display task's thread actually reaches `start_host()` (real
@@ -480,7 +469,7 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     // Display task: its own LCD bring-up + render loop, pinned to
     // core 1 — see this file's top doc comment for why inline-in-
     // `main` starved it against the scan task on real hardware.
-    spawn_display_task(DisplayCtx {
+    crate::spot_panel::spawn::<WsprPanel>(crate::spot_panel::DisplayCtx {
         i2c0: peripherals.i2c0,
         spi2: peripherals.spi2,
         pins: peripherals.pins,
@@ -584,423 +573,60 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
 
 // ── Display task ──────────────────────────────────────────────────────
 
-struct DisplayCtx {
-    i2c0: esp_idf_hal::i2c::I2C0<'static>,
-    spi2: esp_idf_hal::spi::SPI2<'static>,
-    pins: esp_idf_hal::gpio::Pins,
-    /// For `boot_mode::commit_and_restart` when the mode picker
-    /// commits — this task cannot write flash itself, its stack is in
-    /// PSRAM. Same `"mfsk"` namespace `settings` uses, so one handle
-    /// serves both.
-    nvs: Arc<Mutex<EspNvs<NvsDefault>>>,
-}
+/// The WSPR screen's half of [`crate::spot_panel`]: which renderers to
+/// call, which state to lock, and the task's own name and priority.
+struct WsprPanel;
 
-extern "C" fn display_task_entry(arg: *mut core::ffi::c_void) {
-    // SAFETY: `spawn_display_task` leaked exactly this pointer via
-    // `Box::into_raw`, and this is the only place that reclaims it.
-    let ctx = unsafe { Box::from_raw(arg as *mut DisplayCtx) };
-    display_loop(*ctx);
-}
+impl crate::spot_panel::SpotPanel for WsprPanel {
+    type Ui = mfsk_app_shared::ui::wspr_state::WsprUiState;
 
-fn spawn_display_task(ctx: DisplayCtx) {
-    let ptr = Box::into_raw(Box::new(ctx)) as *mut core::ffi::c_void;
-    // PSRAM, as FST4's display task already does.
-    //
-    // Drawing is shallow and not on any deadline, and the 32 KiB this
-    // frees is internal DRAM the USB host needs later: the hub's
-    // interrupt endpoint allocation failed with `ESP_ERR_NO_MEM` in
-    // this mode, so the IC-705's hub enumerated and its downstream CDC
-    // and audio interfaces never did — `num_devices` stuck at 1 where
-    // FT8 reaches 3. Endpoint buffers have to be DMA-capable internal
-    // memory; a display stack does not.
-    //
-    // Safe because nothing on this task writes flash. The two mode
-    // commits go through `boot_mode::commit_and_restart`, which exists
-    // precisely because a flash write aborts from a PSRAM stack.
-    let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
-            Some(display_task_entry),
-            c"wspr_display".as_ptr(),
-            DISPLAY_STACK,
-            ptr,
-            DISPLAY_PRIORITY,
-            core::ptr::null_mut(),
-            1, // core 1 — deliberately NOT the scan task's core 0, see
-            // this file's top doc comment.
-            MALLOC_CAP_SPIRAM,
-        )
-    };
-    if created != 1 {
-        log::error!("wspr_app: failed to create wspr_display task");
+    const MODE: BootMode = BootMode::Wspr;
+    const TAG: &'static str = "wspr_app::display";
+    const TASK_NAME: &'static core::ffi::CStr = c"wspr_display";
+    const STACK: u32 = DISPLAY_STACK;
+    const PRIORITY: u32 = DISPLAY_PRIORITY;
+
+    fn with_ui<R, F: FnOnce(&mut Self::Ui) -> R>(f: F) -> R {
+        f(&mut WSPR_UI.lock().expect("WSPR_UI mutex poisoned"))
     }
-}
 
-/// LCD bring-up (AXP2101 + AW9523B → SPI2 → mipidsi, mirrors
-/// `display.rs`'s FT8-controller sequence minus the BootMode/UAC
-/// branches this app has no use for) followed by the render loop.
-/// Never returns.
-fn display_loop(ctx: DisplayCtx) -> ! {
-    // Kept across the whole loop: the touch controller shares this bus
-    // and the mode picker is this receiver's only way back out.
-    let mut touch_i2c: Option<esp_idf_hal::i2c::I2cDriver<'static>> = None;
-    let mut display = match crate::pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
-        Ok(mut i2c) => {
-            // Enable USB VBUS boost **before** `crate::uac::start_host()` —
-            // AW9523B P0_1 (BUS_OUT_EN) HIGH drives the VBUS switch;
-            // omission leaves VBUS floating and the host stack sees no
-            // device. Same call/ordering `display.rs`'s FT8-controller
-            // sequence makes for `BootMode::Uac`, just unconditional
-            // here since this app has no other boot mode to gate on.
-            // Stay a peripheral while something else is powering the
-            // port.
-            //
-            // One USB-C connector cannot both take power in and hand it
-            // out, so "host or peripheral" is a question about the
-            // cable, not the build. The FT8 controller has checked this
-            // since #163; this receiver did not, and the moment its USB
-            // host stopped being opt-in that gap became the board
-            // refusing to enumerate on a PC at all — the app takes the
-            // PHY before a flasher can reach it, and the only way back
-            // is holding the button into DOWNLOAD mode. On WSL every
-            // one of those costs a `usbipd attach` as well.
-            //
-            // Charging is also the useful thing to do while plugged in.
-            let external = match crate::pmic::vbus_present(&mut i2c) {
-                Ok((present, raw)) => {
-                    log::info!(
-                        "AXP2101 status1=0x{raw:02x} — VBUS {} (bit5)",
-                        if present {
-                            "PRESENT (external power)"
-                        } else {
-                            "absent (battery)"
-                        },
-                    );
-                    present
-                }
-                Err(e) => {
-                    log::warn!("AXP2101 VBUS read failed: {e:#} — assuming battery");
-                    false
-                }
-            };
-            let host_mode = !external;
-            if external {
-                log::warn!(
-                    "external USB power detected — staying a peripheral so the battery charges \
-                     and the port stays flashable. Unplug from the PC and reset to take audio \
-                     from a radio."
-                );
-            } else if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
-                log::error!("BUS_OUT_EN failed: {e:#}");
-            }
-            // The bus is kept, not dropped: the FT5x06 is on it, and
-            // the mode picker is the only way out of this receiver.
-            touch_i2c = Some(i2c);
+    fn set_status(ui: &mut Self::Ui, heap_kb: u32, utc_hhmmss: &str) {
+        ui.free_heap_kb = heap_kb;
+        ui.utc_hhmmss = heapless::String::try_from(utc_hhmmss).unwrap_or_default();
+    }
 
-            // Install USB host + UAC class driver. Detaches
-            // USB-Serial-JTAG (the serial console) the moment this
-            // returns — this is exactly why UDP log fanout was wired
-            // ahead of this call landing (see this file's own
-            // `LOGGER`/`FanoutLogger` doc comment). Unverified on real
-            // hardware as of this writing (issue #163) — if no device
-            // ever enumerates, `ddc_loop`'s synthetic generator just
-            // keeps running (see [`UAC_AUDIO_ACTIVE`]'s own doc
-            // comment), so this is safe to always attempt.
-            if host_mode {
-                crate::uac::start_host_when_ready();
-            } else {
-                log::info!(
-                    "wspr_app: USB host not installed (peripheral mode) — the serial console \
-                     stays up and audio falls back to the synthetic generator"
-                );
-            }
+    fn dirty_seq(ui: &Self::Ui) -> u32 {
+        ui.dirty_seq()
+    }
 
-            let driver = SpiDriver::new(
-                ctx.spi2,
-                ctx.pins.gpio36, // SCK  (crate::board::LCD_PIN_SCK)
-                ctx.pins.gpio37, // MOSI (crate::board::LCD_PIN_MOSI)
-                Option::<AnyIOPin>::None,
-                &SpiDriverConfig::new(),
-            )
-            .expect("SPI2 driver");
-            let spi_cfg = SpiConfig::new().baudrate(20_u32.MHz().into());
-            let spi_dev = SpiDeviceDriver::new(driver, Some(ctx.pins.gpio3), &spi_cfg) // CS (crate::board::LCD_PIN_CS)
-                .expect("SPI device (CS=3)");
-            let dc = PinDriver::output(ctx.pins.gpio35).expect("DC gpio35"); // crate::board::LCD_PIN_DC
-            let di = SPIInterface::new(spi_dev, dc);
-
-            // **2026-08-15 real-hardware fix**: this board's chip is
-            // ILI9342C (see `board.rs`'s own doc comment), whose
-            // native `FRAMEBUFFER_SIZE` in mipidsi is already
-            // `(320, 240)` — landscape. The previous code used the
-            // *ILI9341* model instead (`FRAMEBUFFER_SIZE = (240,
-            // 320)`, portrait-native) plus a manual
-            // `.orientation(Deg90)` to compensate — a Builder-time
-            // rotation that, empirically, never correctly swapped
-            // mipidsi's own internal width/height bookkeeping (every
-            // symptom chased today — partial coverage, stripes, the
-            // panel reporting 240×320 instead of 320×240 — traces
-            // back to this).
-            //
-            // **Then, per a follow-up layout request, rotated back to
-            // portrait on purpose**: `.orientation(Deg90)` on top of
-            // this now-correct 320×240 landscape base gives a clean
-            // 240×320 canvas — confirmed via `lcd_minimal.rs`'s
-            // orientation-cycling diagnostic (`R90 NORMAL`, unmirrored)
-            // on real hardware. Different from the old bug: this
-            // rotation is layered on the *correct* native-landscape
-            // model, not used to fake landscape out of a
-            // portrait-native one, so it doesn't hit the same
-            // bookkeeping issue.
-            let mut delay = Ets;
-            match Builder::new(ILI9342CRgb565, di)
-                .display_size(crate::board::NATIVE_W, crate::board::NATIVE_H)
-                .orientation(Orientation::new().rotate(crate::board::ROTATION))
-                .invert_colors(ColorInversion::Inverted)
-                .init(&mut delay)
-            {
-                Ok(d) => d,
-                Err(e) => {
-                    log::error!("display init failed: {e:?}");
-                    loop {
-                        log::info!("alive (no LCD)");
-                        FreeRtos::delay_ms(2000);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("PMIC init failed: {e:#}");
-            loop {
-                log::info!("alive (no PMIC/LCD)");
-                FreeRtos::delay_ms(2000);
-            }
-        }
-    };
-    log::info!(
-        "LCD init OK ({}x{})",
-        crate::board::CANVAS_W,
-        crate::board::CANVAS_H
-    );
-
-    // The 2026-08-15 real-hardware investigation that led here (three
-    // real bugs: AXP2101 DLDO1/backlight never enabled, board.rs's
-    // LCD_RST/TP_RST bits swapped, and `DrawTarget::clear()` itself
-    // giving partial coverage on this mipidsi/SPI setup — see
-    // `pmic.rs`'s and `wspr_list::render_all`'s doc comments) used a
-    // standalone `lcd-minimal` bin for the raw-driver / orientation
-    // diagnostics rather than growing throwaway test code in this
-    // file. `render_all` below is the real first paint.
+    fn render_all<D>(display: &mut D, ui: &Self::Ui) -> Result<(), D::Error>
+    where
+        D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
     {
-        let ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-        if let Err(e) = wspr_list::render_all(&mut display, &ui) {
-            log::error!("wspr_app::display: render_all FAILED: {e:?}");
-        }
+        wspr_list::render_all(display, ui)
     }
 
-    // Status bar repaints every tick (cheap, one line); discovered/
-    // history panes only repaint when `WsprUiState::dirty_seq`
-    // actually changed, same gating `decoded_list`/`waterfall` use
-    // for the FT8 UI. The lock is held across the SPI draw calls
-    // rather than snapshotted out first (as the FT8 display loops
-    // do) — contention is the scan task's once-per-slot `set_slot`/
-    // `update_status` against this loop's 500 ms tick, which is rare
-    // and brief enough that the simpler form was chosen over
-    // threading a full `WsprUiState` snapshot type through for this
-    // first pass.
-    // Mode picker: held open, so it costs no layout. Centred on this
-    // 320x240 panel.
-    let touch_int = PinDriver::input(ctx.pins.gpio21, esp_idf_hal::gpio::Pull::Up).ok();
-    let mut boot_summary_sent = false;
-    let mut rtc_stored = false;
-    let mut last_contact = crate::touch::Contact::default();
-    let mut picker = mode_picker::ModePicker::new(embedded_graphics::prelude::Point::new(
-        (crate::board::CANVAS_W as i32 - mode_picker::WIDTH as i32) / 2,
-        (crate::board::CANVAS_H as i32 - mode_picker::height() as i32) / 2,
-    ));
+    fn render_status<D>(display: &mut D, ui: &Self::Ui) -> Result<(), D::Error>
+    where
+        D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
+    {
+        wspr_list::render_status(display, ui)
+    }
 
-    let mut last_dirty = u32::MAX;
-    let mut tick: u32 = 0;
-    loop {
-        // Freeze the tables while the overlay is up — it only
-        // redraws on change, so a repaint underneath erases it and it
-        // never comes back.
-        if picker.is_open() {
-            picker.render(&mut display, BootMode::Wspr).ok();
-            FreeRtos::delay_ms(50);
-            if let (Some(int), Some(i2c)) = (touch_int.as_ref(), touch_i2c.as_mut()) {
-                let c = if int.is_low() {
-                    crate::touch::read(i2c).unwrap_or_default()
-                } else {
-                    crate::touch::Contact::default()
-                };
-                // One line per change of contact state, so an
-                // otherwise silent capture separates "nothing was
-                // touched" from "touched, but the hold never reached
-                // OPEN_MS". The picker's own log only speaks while the
-                // overlay is up, which is exactly the case that cannot
-                // be reached when the hold is the thing failing.
-                if c != last_contact {
-                    if c.points > 0 {
-                        log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
-                    } else {
-                        log::info!("touch: released");
-                    }
-                    last_contact = c;
-                }
-                if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
-                    log::warn!("boot_mode -> {} (touch), restarting", target.label());
-                    // Not written here: this task's stack is in
-                    // PSRAM, and a flash write aborts from one. See
-                    // `boot_mode::commit_and_restart`.
-                    boot_mode::commit_and_restart(ctx.nvs.clone(), target);
-                }
-            }
-            if picker.take_just_closed() {
-                last_dirty = u32::MAX;
-            }
-            continue;
-        }
+    /// The latest slot's stations. Named `render_discovered` here
+    /// because a WSPR slot is a discovery pass, not a QSO exchange.
+    fn render_rows<D>(display: &mut D, ui: &Self::Ui) -> Result<(), D::Error>
+    where
+        D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
+    {
+        wspr_list::render_discovered(display, ui)
+    }
 
-        let heap_kb = (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as u32;
-        let hhmmss = current_hhmmss();
-        let dirty = {
-            let mut ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-            ui.free_heap_kb = heap_kb;
-            ui.utc_hhmmss = hhmmss.clone();
-            ui.dirty_seq()
-        };
-        {
-            let ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-            // Same bar, same place, in every mode — see
-            // `link_bar`'s own doc comment for why it is not a field in
-            // this receiver's header.
-            // Same 1 Hz re-read the FT8 controller does: the enable
-            // bits are only worth showing if something has looked
-            // recently.
-            if let Some(i2c) = touch_i2c.as_mut() {
-                crate::pmic::refresh_power_state(i2c);
-                // Store the clock once NTP has made it real, so the
-                // next boot has one before WiFi does.
-                //
-                // The predicate is provenance, not plausibility:
-                // `utc_now_ms().is_some()` was true a second after
-                // boot because `pmic::init` had just seeded the clock
-                // from this very chip, so this wrote the RTC's own
-                // value back to it and NTP — arriving 30 s later —
-                // never reached the register. #354.
-                if !rtc_stored && mfsk_app_shared::time_sync::clock_is_disciplined() {
-                    rtc_stored = true;
-                    if let Err(e) = crate::rtc::write_from_system_clock(i2c) {
-                        log::warn!("rtc: could not store the clock: {e:#}");
-                    }
-                }
-                // Once, the first frame after a log sink exists. In
-                // host mode there is no serial console, and everything
-                // this reports is printed seconds before WiFi
-                // associates — the staging ring has been overwritten by
-                // then. Same one-shot the FT8 controller does.
-                if !boot_summary_sent
-                    && crate::FANOUT
-                        .udp
-                        .try_lock()
-                        .map(|g| g.is_some())
-                        .unwrap_or(false)
-                {
-                    boot_summary_sent = true;
-                    let (host_attempted, ..) = crate::pmic::power_state();
-                    let r = crate::uac::HOST_RESULT.read();
-                    log::warn!(
-                        "[boot-summary] mode=WSPR host_mode={host_attempted} start_host: {}",
-                        if r.is_empty() {
-                            "never called"
-                        } else {
-                            r.as_str()
-                        }
-                    );
-                    let rt = crate::rtc::RTC_RESULT.read();
-                    log::warn!(
-                        "[boot-summary] rtc: {}",
-                        if rt.is_empty() {
-                            "no result recorded"
-                        } else {
-                            rt.as_str()
-                        }
-                    );
-                    crate::pmic::log_boot_summary(i2c);
-                }
-            }
-            link_bar::render(
-                &mut display,
-                &crate::uac::link_info(),
-                wspr_list::PANEL_WIDTH,
-                wspr_list::PANEL_HEIGHT as i32 - link_bar::HEIGHT as i32,
-            )
-            .ok();
-            if let Err(e) = wspr_list::render_status(&mut display, &ui) {
-                log::warn!("wspr_app::display: render_status failed: {e:?}");
-            }
-            if dirty != last_dirty {
-                if let Err(e) = wspr_list::render_discovered(&mut display, &ui) {
-                    log::warn!("wspr_app::display: render_discovered failed: {e:?}");
-                }
-                if let Err(e) = wspr_list::render_history(&mut display, &ui) {
-                    log::warn!("wspr_app::display: render_history failed: {e:?}");
-                }
-                last_dirty = dirty;
-            }
-        }
-        // ~10 s cadence. Proves this task keeps running (and the UTC
-        // clock keeps advancing) through the scan task's 90-110 s
-        // compute-bound stretch on the other core, same purpose as
-        // the FT8 controller `display.rs`'s own periodic "alive"
-        // line — direct evidence over a plausible architecture, after
-        // a first cut of this fix turned out to have its own bug
-        // (see `main`'s doc comment on spawn ordering).
-        if tick % 20 == 0 {
-            log::info!(
-                "wspr_app::display: alive tick={tick} dirty={dirty} utc={hhmmss} heap={heap_kb}k"
-            );
-        }
-        tick = tick.wrapping_add(1);
-        // Touch at 50 ms while the render cadence stays at 500.
-        //
-        // The picker is only as responsive as whatever calls it, and
-        // this loop redraws spot tables — it has no business running
-        // ten times faster. So the wait polls instead of sleeping
-        // through: a tap or an 800 ms hold lands either way. Checking
-        // costs one GPIO read while no finger is down.
-        for _ in 0..10 {
-            if let (Some(int), Some(i2c)) = (touch_int.as_ref(), touch_i2c.as_mut()) {
-                let c = if int.is_low() {
-                    crate::touch::read(i2c).unwrap_or_default()
-                } else {
-                    crate::touch::Contact::default()
-                };
-                // One line per change of contact state, so an
-                // otherwise silent capture separates "nothing was
-                // touched" from "touched, but the hold never reached
-                // OPEN_MS". The picker's own log only speaks while the
-                // overlay is up, which is exactly the case that cannot
-                // be reached when the hold is the thing failing.
-                if c != last_contact {
-                    if c.points > 0 {
-                        log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
-                    } else {
-                        log::info!("touch: released");
-                    }
-                    last_contact = c;
-                }
-                if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
-                    log::warn!("boot_mode -> {} (touch), restarting", target.label());
-                    boot_mode::commit_and_restart(ctx.nvs.clone(), target);
-                }
-                picker.render(&mut display, BootMode::Wspr).ok();
-                if picker.take_just_closed() {
-                    last_dirty = u32::MAX;
-                }
-            }
-            FreeRtos::delay_ms(50);
-        }
+    fn render_history<D>(display: &mut D, ui: &Self::Ui) -> Result<(), D::Error>
+    where
+        D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
+    {
+        wspr_list::render_history(display, ui)
     }
 }
 
@@ -1754,17 +1380,6 @@ fn report_to_wsprnet(
 }
 
 // ── Clock formatting ─────────────────────────────────────────────────
-
-fn current_hhmmss() -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    if let Ok(dur) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        let (_, _, _, h, m, sec) = civil_from_unix(dur.as_secs() as i64);
-        let _ = write!(&mut s, "{h:02}:{m:02}:{sec:02}");
-    } else {
-        let _ = s.push_str("--:--:--");
-    }
-    s
-}
 
 /// `(yyMMdd, HHmm)` — wsprnet's `date`/`time` fields, and the second
 /// also doubles as [`WsprSpotRow::utc_hhmm`]. Meaningless (reads

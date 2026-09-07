@@ -7,6 +7,38 @@ change, no decoder behaviour change, no measured sensitivity movement.
 This section accumulates until the next tag — see `CLAUDE.md`'s
 "Release cadence".
 
+### Changed
+
+- **FST4 and WSPR ran the same display task twice (#353 item 2).** The
+  two receivers' `display_loop`s were 330 lines each and differed in
+  three places: the `BootMode` the picker highlights, which `ui::`
+  render functions get called, and the log prefix. Everything around
+  those — the AXP2101/AW9523B bring-up, the VBUS check that keeps the
+  port flashable when the board is plugged into a PC, the SPI/mipidsi
+  init with its 2026-08-15 orientation history, the boot summary, the
+  RTC store, the dirty-seq redraw gating and the touch polling — was
+  the same code written out twice, so a fix to one had to be
+  remembered in the other. Each also carried its own `DisplayCtx`,
+  task entry, spawn helper and `current_hhmmss`, and the ~25-line
+  touch-poll block appeared four times across the two files.
+
+  Now `crate::spot_panel`: a `SpotPanel` trait carrying exactly what
+  differs (mode, tag, task name/stack/priority, the four render calls
+  and the state lock) and one `run<P>` holding the loop — the same
+  shape `crate::net` uses for network bring-up. `apps/fst4.rs` goes
+  1 237 → 902 lines and `apps/wspr.rs` 1 798 → 1 413, against 543
+  shared, and the touch block exists once.
+
+  FT8 and FT4 stay on `ui::state::UI` + `display::run_log_panel`,
+  which is a waterfall + decode ring + TX panel rather than a spot
+  list; #353 is explicit that moving them onto this would be the wrong
+  direction.
+
+  Behaviour is meant to be identical, and the parts a compiler cannot
+  check — that both screens still paint, and that the mode picker
+  still gets a board out of a receiver — **have not been checked on
+  hardware**. The issue asks for a flash and a look at each.
+
 ### Fixed
 
 - **The CoreS3 WSPR receiver captured on its own grid, not UTC's, and

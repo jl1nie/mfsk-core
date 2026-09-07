@@ -22,6 +22,7 @@ pub mod log_slot;
 pub mod net;
 pub mod pmic;
 pub mod rtc;
+pub mod spot_panel;
 pub mod touch;
 pub mod uac;
 
