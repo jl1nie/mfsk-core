@@ -9,6 +9,35 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
 
 ### Changed
 
+- **FST4's npre-vs-timing ablation re-measured at n=100, and two of its
+  conclusions did not survive (#311).** The grid that decides whether
+  the embedded escalation ladder (#310) needs both the `i0±1` timing
+  retry and an unpruned-OSD fallback was measured on 20 trials per
+  cell, where a rescue of 3-8 trials per 100 is frequently invisible —
+  two cells reported "neither mechanism rescues anything alone", which
+  was sample size rather than mechanism.
+
+  At n=100: both mechanisms rescue on their own in every cell, 3 of 4
+  cells are synergistic rather than 2, timing is the stronger single
+  rung everywhere (+8/+4/+6/+13 trials against the fallback's
+  +7/+3/+4/+5), and neither rescue set contains the other in any cell —
+  so the escalation order the small sample suggested does not exist.
+  `npre→unpruned` turns out to be exactly `unpruned` in all four cells
+  at both timing settings, and `npre` never rescues a trial `unpruned`
+  misses: on this corpus the pruned search is a strict recall subset,
+  making npre1/npre2 a speed trade rather than the recall-neutral
+  change it was recorded as. Tables in `docs/notes/FST4_BENCHMARK.md`.
+
+  The corpora were extended 20 → 100 trials in place, which the same
+  document said was impossible: it held that regenerating renames the
+  signals behind existing trial indices. Measured otherwise — `fst4sim`
+  is deterministic and its realisations do not depend on the requested
+  trial count (four cells, 80 of 80 files byte-identical after
+  regenerating at `TRIALS=100`). Corrected there and in
+  `scripts/gen_fst4_sweep_wavs.sh`'s header.
+
+### Changed
+
 - **The crate declares a minimum supported Rust version, and the one
   the embedded crates already declared was wrong.** `mfsk-core` and
   the rest of the host workspace had no `rust-version` at all — a
