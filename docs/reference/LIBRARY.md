@@ -1459,6 +1459,28 @@ MfskStatus        mfsk_decode_f32(MfskDecoder*, const float*,  size_t,
                                   uint32_t, const MfskDecodeOptions*,
                                   MfskResultList* out);
 
+// Single-frequency-target decode (SniperRequest, §4 — issue #249).
+// FT8 / FT4 / FST4-60A only; anything else returns
+// MFSK_STATUS_UNKNOWN_PROTOCOL. `options` may be NULL.
+//
+// The reason to reach for this on FT4/FST4 is the AP hint:
+// mfsk_decode_options_set_ap_hint reaches the *wide-band* decoder for
+// FT8 only (SupportsWideBandAp is not implemented for the other two),
+// while the sniper path takes a hint for all three. sync_min,
+// max_cand, depth, strictness, eq_mode and ap_hint apply;
+// freq_min_hz/freq_max_hz, freq_hint and sic_rounds/sic_early do not
+// (the target frequency is the hint, and there is no SIC strategy) and
+// are ignored rather than rejected.
+MfskStatus        mfsk_decode_i16_sniper(MfskDecoder*, const int16_t* samples,
+                                  size_t n, uint32_t sample_rate,
+                                  float target_freq_hz,
+                                  const MfskDecodeOptions* options,
+                                  MfskResultList* out);
+MfskStatus        mfsk_decode_f32_sniper(MfskDecoder*, const float*, size_t,
+                                  uint32_t, float target_freq_hz,
+                                  const MfskDecodeOptions*,
+                                  MfskResultList* out);
+
 MfskStatus        mfsk_encode_ft8(const char* call1, const char* call2,
                                   const char* report, float freq_hz,
                                   MfskSamples* out);

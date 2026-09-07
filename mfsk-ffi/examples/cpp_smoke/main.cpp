@@ -199,6 +199,64 @@ void test_builder_options() {
     mfsk_samples_free(&pcm);
 }
 
+// ── Sniper mode (issue #249) ─────────────────────────────────────────
+// The single-frequency entry point, driven the way a C caller actually
+// would: aim at a frequency a sked/spot already named, on FT4, with an
+// AP hint. That combination is the reason the entry point exists —
+// mfsk_decode_options_set_ap_hint reaches the wide-band decoder for FT8
+// only, so before this a C caller could not hint FT4 or FST4 at all.
+void test_sniper() {
+    std::printf("— FFI sniper: mfsk_decode_i16_sniper on FT4 at 1200 Hz, with an AP hint\n");
+    MfskSamples pcm{};
+    if (mfsk_encode_ft4("CQ", "JA1ABC", "PM95", 1200.0f, &pcm) != MFSK_STATUS_OK) {
+        fail("sniper", mfsk_last_error());
+        return;
+    }
+    std::vector<int16_t> audio(pcm.len);
+    for (size_t i = 0; i < pcm.len; ++i) {
+        audio[i] = static_cast<int16_t>(pcm.samples[i] * 32767.0f);
+    }
+    mfsk_samples_free(&pcm);
+
+    MfskDecodeOptions* opts = mfsk_decode_options_new(
+        200.0f, 3000.0f, 1.2f, 8, MFSK_DECODE_DEPTH_BP_ALL_OSD);
+    if (opts == nullptr) {
+        fail("sniper", "mfsk_decode_options_new returned null");
+        return;
+    }
+    if (mfsk_decode_options_set_ap_hint(opts, "JA1ABC", "CQ", nullptr, nullptr) != MFSK_STATUS_OK) {
+        fail("sniper", "set_ap_hint failed");
+    }
+
+    MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT4);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_i16_sniper(
+        dec, audio.data(), audio.size(), 12000, 1200.0f, opts, &list);
+    if (st != MFSK_STATUS_OK) {
+        fail("sniper", mfsk_last_error() ? mfsk_last_error() : "sniper decode failed");
+    } else {
+        print_decodes("sniper", list);
+        if (!any_contains(list, "JA1ABC")) {
+            fail("sniper", "sniper at the signal's own frequency did not decode it");
+        }
+    }
+    mfsk_result_list_free(&list);
+
+    // A protocol with no single-frequency mode must say so rather than
+    // decode something else.
+    MfskDecoder* wspr = mfsk_decoder_new(MFSK_PROTOCOL_WSPR);
+    MfskResultList unused{};
+    const MfskStatus bad = mfsk_decode_i16_sniper(
+        wspr, audio.data(), audio.size(), 12000, 1200.0f, nullptr, &unused);
+    if (bad != MFSK_STATUS_UNKNOWN_PROTOCOL) {
+        fail("sniper", "WSPR sniper should return MFSK_STATUS_UNKNOWN_PROTOCOL");
+    }
+    mfsk_decoder_free(wspr);
+
+    mfsk_decoder_free(dec);
+    mfsk_decode_options_free(opts);
+}
+
 // ── FT4 ──────────────────────────────────────────────────────────────
 void test_ft4() {
     std::printf("— FT4 roundtrip: encode 'CQ JA1ABC PM95' at 1500 Hz → decode\n");
@@ -483,6 +541,7 @@ int main() {
     test_ft8();
     test_ft8_streaming();
     test_builder_options();
+    test_sniper();
     test_ft4();
     test_fst4();
     test_wspr();

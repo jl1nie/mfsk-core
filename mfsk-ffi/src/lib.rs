@@ -1091,6 +1091,218 @@ fn decode_i16_wsjt77(
     MfskStatus::Ok
 }
 
+/// Shared body for [`mfsk_decode_i16_sniper`] /
+/// [`mfsk_decode_f32_sniper`] — `SniperRequest` instead of
+/// `DecodeRequest`, one target frequency instead of a search range.
+///
+/// Which `MfskDecodeOptions` fields apply differs from the wide-band
+/// path, and the difference is the point of the entry point rather than
+/// an oversight:
+///
+/// - **used**: `sync_min`, `max_cand`, `depth`, `strictness`,
+///   `eq_mode`, and `ap_hint` — the last of which is why this exists at
+///   all for FT4/FST4 (see the public functions' docs).
+/// - **ignored**: `freq_min_hz`/`freq_max_hz` and `freq_hint` (the
+///   target frequency *is* the hint, and `SniperRequest` derives its
+///   own ±250 Hz window from it), `sic_rounds`/`sic_early`
+///   (`SniperRequest` has no SIC strategy at all).
+///
+/// Silently ignoring an inapplicable field is this crate's established
+/// convention — the same one `sic_early` already follows on FT4 — not a
+/// silent failure: a caller reusing one options handle across both
+/// entry points gets the wide-band knobs honoured there and the sniper
+/// knobs honoured here.
+fn decode_i16_sniper(
+    protocol: MfskProtocol,
+    audio: &[i16],
+    target_freq_hz: f32,
+    options: *const MfskDecodeOptions,
+    out: &mut MfskResultList,
+) -> MfskStatus {
+    use mfsk_core::msg::decode_request::SniperRequest;
+
+    let mut vec: Vec<MfskResult> = Vec::new();
+    let o = options_inner(options);
+    // `SniperRequest::new`'s own defaults, not the wide-band ones: its
+    // sync_min is 0.8 for every protocol, and `max_cand` counts
+    // candidates within one ±250 Hz window rather than across the band.
+    let smin = o.map(|o| o.sync_min).unwrap_or(0.8);
+    let mc = o.map(|o| o.max_cand as usize).unwrap_or(8);
+    let strictness = map_strictness(o.map(|o| o.strictness).unwrap_or_default());
+    let eq_mode = map_eq_mode(o.map(|o| o.eq_mode).unwrap_or_default());
+    let ap = o.and_then(|o| o.ap_hint.as_ref()).filter(|h| h.has_info());
+
+    match protocol {
+        MfskProtocol::Ft8 => {
+            let ht = mfsk_core::msg::CallsignHashTable::new();
+            let mut req = SniperRequest::<mfsk_core::ft8::Ft8>::new(audio, target_freq_hz, mc)
+                .sync_min(smin)
+                .osd(map_osd(
+                    o.map(|o| o.depth).unwrap_or(MfskDecodeDepth::BpAllOsd),
+                ))
+                .strictness(strictness)
+                .eq_mode(eq_mode);
+            if let Some(hint) = ap {
+                req = req.ap_hint(hint);
+            }
+            for r in req.decode().results {
+                push_wsjt77(&r, &ht, &mut vec);
+            }
+        }
+        MfskProtocol::Ft4 => {
+            let mut req = SniperRequest::<mfsk_core::ft4::Ft4>::new(audio, target_freq_hz, mc)
+                .sync_min(smin)
+                .strictness(strictness)
+                .eq_mode(eq_mode);
+            if let Some(hint) = ap {
+                req = req.ap_hint(hint);
+            }
+            for r in req.decode().results {
+                push_ft4(&r, &mut vec);
+            }
+        }
+        MfskProtocol::Fst4s60 => {
+            use mfsk_core::MessageCodec;
+            let codec = mfsk_core::msg::Wsjt77Message;
+            let ctx = mfsk_core::DecodeContext::default();
+            let mut req = SniperRequest::<mfsk_core::fst4::Fst4s60>::new(audio, target_freq_hz, mc)
+                .sync_min(smin)
+                .strictness(strictness)
+                .eq_mode(eq_mode);
+            if let Some(hint) = ap {
+                req = req.ap_hint(hint);
+            }
+            for r in req.decode().results {
+                let text = codec.unpack(r.message77(), &ctx).unwrap_or_default();
+                let mut rec = empty_result(r.freq_hz, r.dt_sec, r.snr_db, r.hard_errors, r.pass);
+                write_text(&mut rec.text, &text);
+                vec.push(rec);
+            }
+        }
+        _ => {
+            set_error(
+                "sniper decode: only FT8, FT4 and FST4-60A have a single-frequency-target mode",
+            );
+            return MfskStatus::UnknownProtocol;
+        }
+    }
+    finalise(vec, out);
+    MfskStatus::Ok
+}
+
+/// Decode one slot of 16-bit PCM aimed at a **single target
+/// frequency** (issue #249).
+///
+/// Where [`mfsk_decode_i16`] searches a band and reports whatever it
+/// finds, this points the decoder at one carrier — the shape a caller
+/// already knows where the station is: a scheduled sked, a spot from
+/// another receiver, or the frequency the operator is transmitting on.
+/// `SniperRequest` derives a ±250 Hz window around `target_freq_hz` and
+/// spends its whole candidate budget inside it.
+///
+/// **The reason to reach for this on FT4 and FST4 is the a-priori
+/// hint.** `mfsk_decode_options_set_ap_hint` reaches the wide-band
+/// decoder for FT8 only — `SupportsWideBandAp` is not implemented for
+/// the other two — while the sniper path takes an AP hint for all
+/// three, because they share the 77-bit WSJT message. Until this
+/// function existed, FT4 and FST4 AP hinting was unreachable from C
+/// at all. A hint that matches a station actually on air is worth
+/// 1-3 dB.
+///
+/// # Parameters
+///
+/// - `dec` — decoder handle from [`mfsk_decoder_new`]. Must be FT8,
+///   FT4 or FST4-60A; any other protocol returns
+///   [`MfskStatus::UnknownProtocol`], since no other protocol in this
+///   crate has a single-frequency mode.
+/// - `samples`, `n_samples`, `sample_rate` — as [`mfsk_decode_i16`].
+/// - `target_freq_hz` — the carrier to aim at, in Hz.
+/// - `options` — handle from [`mfsk_decode_options_new`], or null for
+///   `SniperRequest`'s own defaults (`sync_min` 0.8, 8 candidates, OSD
+///   on). `sync_min`, `max_cand`, `depth`, `strictness`, `eq_mode` and
+///   the AP hint apply; `freq_min_hz`/`freq_max_hz`, `freq_hint` and
+///   `sic_rounds`/`sic_early` do not — see [`decode_i16_sniper`] for
+///   why each is in the list it is in.
+/// - `out` — caller-allocated [`MfskResultList`], freed with
+///   [`mfsk_result_list_free`].
+///
+/// # Returns
+///
+/// [`MfskStatus::Ok`] on success, including zero decodes.
+///
+/// # Safety
+///
+/// See [`mfsk_decode_i16`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_i16_sniper(
+    dec: *const MfskDecoder,
+    samples: *const i16,
+    n_samples: usize,
+    sample_rate: u32,
+    target_freq_hz: f32,
+    options: *const MfskDecodeOptions,
+    out: *mut MfskResultList,
+) -> MfskStatus {
+    let Some(inner_ref) = inner(dec) else {
+        set_error("mfsk_decode_i16_sniper: null decoder handle");
+        return MfskStatus::InvalidArg;
+    };
+    if samples.is_null() || out.is_null() {
+        set_error("mfsk_decode_i16_sniper: null buffer pointer");
+        return MfskStatus::InvalidArg;
+    }
+    let raw = unsafe { slice::from_raw_parts(samples, n_samples) };
+    let out = unsafe { &mut *out };
+    let audio: Vec<i16>;
+    let audio = if sample_rate == 12_000 {
+        raw
+    } else {
+        audio = mfsk_core::engine::dsp::resample::resample_to_12k(raw, sample_rate);
+        &audio
+    };
+    decode_i16_sniper(inner_ref.protocol, audio, target_freq_hz, options, out)
+}
+
+/// Decode one slot of f32 PCM aimed at a single target frequency.
+///
+/// Identical to [`mfsk_decode_i16_sniper`] but takes `f32` samples
+/// scaled to roughly ±1.0, the same input convention
+/// [`mfsk_decode_f32`] uses.
+///
+/// # Safety
+///
+/// See [`mfsk_decode_f32`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_f32_sniper(
+    dec: *const MfskDecoder,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    target_freq_hz: f32,
+    options: *const MfskDecodeOptions,
+    out: *mut MfskResultList,
+) -> MfskStatus {
+    let Some(inner_ref) = inner(dec) else {
+        set_error("mfsk_decode_f32_sniper: null decoder handle");
+        return MfskStatus::InvalidArg;
+    };
+    if samples.is_null() || out.is_null() {
+        set_error("mfsk_decode_f32_sniper: null buffer pointer");
+        return MfskStatus::InvalidArg;
+    }
+    let slice_f32 = unsafe { slice::from_raw_parts(samples, n_samples) };
+    let out = unsafe { &mut *out };
+    let audio: Vec<i16> = if sample_rate == 12_000 {
+        slice_f32
+            .iter()
+            .map(|&s| (s * 32767.0).clamp(-32_768.0, 32_767.0) as i16)
+            .collect()
+    } else {
+        mfsk_core::engine::dsp::resample::resample_f32_to_12k(slice_f32, sample_rate)
+    };
+    decode_i16_sniper(inner_ref.protocol, &audio, target_freq_hz, options, out)
+}
+
 fn decode_wspr(audio: &[f32], out: &mut MfskResultList) -> MfskStatus {
     let mut vec: Vec<MfskResult> = Vec::new();
     for d in mfsk_core::wspr::decode::decode_scan_default(audio, 12_000) {

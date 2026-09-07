@@ -684,6 +684,78 @@ enum MfskStatus mfsk_decode_i16_streaming(const struct MfskDecoder *dec,
                                           struct MfskResultList *out);
 
 /**
+ * Decode one slot of 16-bit PCM aimed at a **single target
+ * frequency** (issue #249).
+ *
+ * Where [`mfsk_decode_i16`] searches a band and reports whatever it
+ * finds, this points the decoder at one carrier — the shape a caller
+ * already knows where the station is: a scheduled sked, a spot from
+ * another receiver, or the frequency the operator is transmitting on.
+ * `SniperRequest` derives a ±250 Hz window around `target_freq_hz` and
+ * spends its whole candidate budget inside it.
+ *
+ * **The reason to reach for this on FT4 and FST4 is the a-priori
+ * hint.** `mfsk_decode_options_set_ap_hint` reaches the wide-band
+ * decoder for FT8 only — `SupportsWideBandAp` is not implemented for
+ * the other two — while the sniper path takes an AP hint for all
+ * three, because they share the 77-bit WSJT message. Until this
+ * function existed, FT4 and FST4 AP hinting was unreachable from C
+ * at all. A hint that matches a station actually on air is worth
+ * 1-3 dB.
+ *
+ * # Parameters
+ *
+ * - `dec` — decoder handle from [`mfsk_decoder_new`]. Must be FT8,
+ *   FT4 or FST4-60A; any other protocol returns
+ *   [`MfskStatus::UnknownProtocol`], since no other protocol in this
+ *   crate has a single-frequency mode.
+ * - `samples`, `n_samples`, `sample_rate` — as [`mfsk_decode_i16`].
+ * - `target_freq_hz` — the carrier to aim at, in Hz.
+ * - `options` — handle from [`mfsk_decode_options_new`], or null for
+ *   `SniperRequest`'s own defaults (`sync_min` 0.8, 8 candidates, OSD
+ *   on). `sync_min`, `max_cand`, `depth`, `strictness`, `eq_mode` and
+ *   the AP hint apply; `freq_min_hz`/`freq_max_hz`, `freq_hint` and
+ *   `sic_rounds`/`sic_early` do not — see [`decode_i16_sniper`] for
+ *   why each is in the list it is in.
+ * - `out` — caller-allocated [`MfskResultList`], freed with
+ *   [`mfsk_result_list_free`].
+ *
+ * # Returns
+ *
+ * [`MfskStatus::Ok`] on success, including zero decodes.
+ *
+ * # Safety
+ *
+ * See [`mfsk_decode_i16`].
+ */
+enum MfskStatus mfsk_decode_i16_sniper(const struct MfskDecoder *dec,
+                                       const int16_t *samples,
+                                       uintptr_t n_samples,
+                                       uint32_t sample_rate,
+                                       float target_freq_hz,
+                                       const struct MfskDecodeOptions *options,
+                                       struct MfskResultList *out);
+
+/**
+ * Decode one slot of f32 PCM aimed at a single target frequency.
+ *
+ * Identical to [`mfsk_decode_i16_sniper`] but takes `f32` samples
+ * scaled to roughly ±1.0, the same input convention
+ * [`mfsk_decode_f32`] uses.
+ *
+ * # Safety
+ *
+ * See [`mfsk_decode_f32`].
+ */
+enum MfskStatus mfsk_decode_f32_sniper(const struct MfskDecoder *dec,
+                                       const float *samples,
+                                       uintptr_t n_samples,
+                                       uint32_t sample_rate,
+                                       float target_freq_hz,
+                                       const struct MfskDecodeOptions *options,
+                                       struct MfskResultList *out);
+
+/**
  * Construct an empty callsign hash table. Free with
  * [`mfsk_callsign_hash_table_free`].
  */

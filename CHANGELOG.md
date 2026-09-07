@@ -7,6 +7,37 @@ change, no decoder behaviour change, no measured sensitivity movement.
 This section accumulates until the next tag — see `CLAUDE.md`'s
 "Release cadence".
 
+### Added
+
+- **`mfsk_decode_i16_sniper` / `mfsk_decode_f32_sniper` — single-target
+  decode over the C ABI (#249).** Where `mfsk_decode_i16` searches a
+  band, these aim at one `target_freq_hz`: the shape for a caller who
+  already knows where the station is, from a sked, a spot, or the
+  frequency being worked. `SniperRequest` derives a ±250 Hz window
+  around the target and spends its candidate budget inside it.
+
+  **The reason this matters beyond convenience is the AP hint.**
+  `mfsk_decode_options_set_ap_hint` reaches the wide-band decoder for
+  FT8 only — `SupportsWideBandAp` is not implemented for FT4 or FST4 —
+  while `SniperRequest::ap_hint` is available to all three, since they
+  share the 77-bit WSJT message. Until now, FT4 and FST4 a-priori
+  hinting was **unreachable from C entirely**, and a hint that names a
+  station actually on air is worth 1-3 dB.
+
+  The existing `MfskDecodeOptions` handle is reused rather than a
+  parallel sniper-specific one: `sync_min`, `max_cand`, `depth`,
+  `strictness`, `eq_mode` and `ap_hint` apply; `freq_min_hz`/
+  `freq_max_hz`, `freq_hint` and `sic_rounds`/`sic_early` do not (the
+  target frequency is the hint, and a sniper request has no SIC
+  strategy) and are ignored rather than rejected — the convention this
+  crate already follows for `sic_early` on FT4. Protocols with no
+  single-frequency mode return `MFSK_STATUS_UNKNOWN_PROTOCOL` instead
+  of decoding something else.
+
+  Covered by `mfsk-ffi/tests/sniper_ffi.rs` and a `test_sniper` case in
+  the CI-run C++ driver, which decodes an FT4 signal at 1200 Hz through
+  an AP hint from compiled C++ — the combination that was unreachable.
+
 ### Fixed
 
 - **The FFI crates' hand-written version pins can no longer go stale.**

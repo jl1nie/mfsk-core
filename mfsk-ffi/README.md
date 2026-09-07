@@ -136,6 +136,8 @@ bash examples/cpp_smoke/build.sh
 | `mfsk_decode_options_free` | Destroy a decode-tuning handle.                                    |
 | `mfsk_decode_f32`          | Decode one slot of `f32` PCM. `options` may be NULL.               |
 | `mfsk_decode_i16`          | Decode one slot of `i16` PCM (same semantics as `_f32`).          |
+| `mfsk_decode_i16_sniper`   | Decode aimed at one **target frequency** instead of a search range. FT8/FT4/FST4-60A only; takes an AP hint on all three. |
+| `mfsk_decode_f32_sniper`   | As `_i16_sniper`, with `f32` input.                               |
 | `mfsk_result_list_free`    | Release the list returned by a decode.                            |
 | `mfsk_encode_ft8`          | Synthesise a standard FT8 message (`call1 call2 report`).         |
 | `mfsk_encode_ft4`          | Synthesise a standard FT4 message.                                |
@@ -168,9 +170,34 @@ handle wins); `ap_hint` is FT8-only, the rest apply to
 FT8/FT4/FST4-60A and are silently ignored elsewhere. See the doc
 comments in `mfsk-ffi/include/mfsk.h` for full per-function semantics,
 and `mfsk-ffi/tests/builder_options_ffi.rs` / `examples/cpp_smoke/main.cpp`
-for worked examples. Not yet mirrored: `.known()`, `.fft_cache()`,
-`SniperRequest` exposure (tracked as issues
-[#247](https://github.com/jl1nie/mfsk-core/issues/247)/[#249](https://github.com/jl1nie/mfsk-core/issues/249)).
+for worked examples. Not yet mirrored: `.known()` and `.fft_cache()`
+(tracked as issue
+[#247](https://github.com/jl1nie/mfsk-core/issues/247)).
+
+### Single-frequency decode (`_sniper`)
+
+`mfsk_decode_i16_sniper`/`_f32_sniper` take a `target_freq_hz` where
+the wide-band pair take a search range — the shape for a caller who
+already knows where the station is (a sked, a spot, the frequency being
+worked). `mfsk_core`'s `SniperRequest` derives a ±250 Hz window from
+the target and spends its candidate budget inside it.
+
+**On FT4 and FST4 the reason to use it is the AP hint.**
+`mfsk_decode_options_set_ap_hint` reaches the wide-band decoder for FT8
+only — `SupportsWideBandAp` is not implemented for the other two —
+while the sniper path takes a hint for all three, since they share the
+77-bit WSJT message. A hint matching a station actually on air is worth
+1–3 dB.
+
+The same `MfskDecodeOptions` handle serves both entry points.
+`sync_min`, `max_cand`, `depth`, `strictness`, `eq_mode` and `ap_hint`
+apply here; `freq_min_hz`/`freq_max_hz`, `freq_hint` and
+`sic_rounds`/`sic_early` do not — the target frequency *is* the hint,
+and a sniper request has no SIC strategy — and are ignored rather than
+rejected, the same convention the rest of this table follows. Worked
+examples: `mfsk-ffi/tests/sniper_ffi.rs`,
+`examples/cpp_smoke/main.cpp`'s `test_sniper` (issue
+[#249](https://github.com/jl1nie/mfsk-core/issues/249)).
 Q65's `.hash_table()` shipped separately — see
 `mfsk_callsign_hash_table_new`/`_insert`/`_free` above (issue #250).
 

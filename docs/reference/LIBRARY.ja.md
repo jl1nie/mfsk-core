@@ -1303,6 +1303,27 @@ MfskStatus        mfsk_decode_f32(MfskDecoder*, const float*,  size_t,
                                   uint32_t, const MfskDecodeOptions*,
                                   MfskResultList* out);
 
+// 単一周波数狙い撃ちデコード (SniperRequest、§4 — issue #249)。
+// FT8 / FT4 / FST4-60A のみ。それ以外は
+// MFSK_STATUS_UNKNOWN_PROTOCOL を返す。`options` は NULL 可。
+//
+// FT4/FST4 でこちらを使う理由は AP ヒント。
+// mfsk_decode_options_set_ap_hint が届く広帯域デコードは FT8 だけ
+// (SupportsWideBandAp が他の 2 つに実装されていない) だが、sniper
+// 経路は 3 つとも AP ヒントを取る。sync_min・max_cand・depth・
+// strictness・eq_mode・ap_hint が有効。freq_min_hz/freq_max_hz、
+// freq_hint、sic_rounds/sic_early は無効 (狙う周波数自体がヒントで
+// あり、SIC 戦略も持たない) で、エラーにはせず無視する。
+MfskStatus        mfsk_decode_i16_sniper(MfskDecoder*, const int16_t* samples,
+                                  size_t n, uint32_t sample_rate,
+                                  float target_freq_hz,
+                                  const MfskDecodeOptions* options,
+                                  MfskResultList* out);
+MfskStatus        mfsk_decode_f32_sniper(MfskDecoder*, const float*, size_t,
+                                  uint32_t, float target_freq_hz,
+                                  const MfskDecodeOptions*,
+                                  MfskResultList* out);
+
 MfskStatus        mfsk_encode_ft8(const char* call1, const char* call2,
                                   const char* report, float freq_hz,
                                   MfskSamples* out);
