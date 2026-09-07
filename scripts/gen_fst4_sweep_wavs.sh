@@ -12,13 +12,21 @@
 # Run build_fst4sim.sh first if the binary doesn't exist.
 # Existing files are skipped (safe to re-run after adding modes/conditions).
 # Jobs run in parallel (JOBS env var, default: nproc).
-# Trials per cell: TRIALS env var, default 20. Raising it does not
-# extend an existing corpus: a cell is skipped only when every trial is
-# already there, so an incomplete one is regenerated whole (the
-# simulator is invoked once for all TRIALS) and the files already
-# present are overwritten with a fresh set of realisations. A trial
-# index therefore names a different signal afterwards. Generate into a
-# separate out-dir (2nd positional arg) rather than in place.
+# Trials per cell: TRIALS env var, default 20. Raising it regenerates
+# any cell that is not already complete — the simulator is invoked once
+# for all TRIALS and the files already present are overwritten.
+#
+# That overwrite is safe: fst4sim is deterministic and its realisations
+# do not depend on the requested trial count, so trials 1..N come back
+# byte-identical and every existing index still names the same signal.
+# Verified 2026-09-08 by regenerating four cells at TRIALS=100 and
+# md5-comparing the first 20 against the stored corpus (80/80 identical)
+# — see docs/notes/FST4_BENCHMARK.md, "Trap 1". Raising TRIALS is
+# therefore how you extend a corpus; the header used to say the
+# opposite.
+#
+# Across *machines* the guarantee is only as good as the fst4sim build
+# being the same one, which nothing here checks.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

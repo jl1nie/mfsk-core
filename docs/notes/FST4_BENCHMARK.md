@@ -386,22 +386,41 @@ summary is actively misleading.
 - **Timing offsets**: not exposed on the production entry point. See
   trap 2.
 
-### Trap 1 — hardcoded trial indices are not portable
+### Trap 1 — hardcoded trial indices name signals a run may not have
 
 The original finding named trials `[2, 15, 33, 45, 67]` from a
-**100-trial-per-cell** corpus. A 20-trial-per-cell generation of the
-same corpus has no trials 33/45/67 at all, and its trial 2 is a
-*different waveform* — `gen_fst4_sweep_wavs.sh` regenerates from
-`fst4sim`, it does not extend an existing set. So those indices
-silently select the wrong signals, or none, in any other environment.
-
-This is the same class of mistake as hardcoding `/home/ubuntu/...`
-asset paths (see `CLAUDE.md`, "Test fixture paths"): an index into a
-generated corpus is environment state, not a fixture identity.
+**100-trial-per-cell** corpus. A 20-trial-per-cell corpus has no trials
+33/45/67 at all, so those indices silently select nothing, and a run
+that skipped 3 of 5 target trials reads as a real 0/5 result.
 
 **Derive the trial set from whatever corpus is present, and print both
-the count found and the set used.** A run that silently skipped 3 of 5
-target trials otherwise reads as a real 0/5 result.
+the count found and the set used.**
+
+**What is *not* true (corrected 2026-09-08):** this section used to say
+that a 20-trial generation's trial 2 is "a *different waveform*" from
+the 100-trial one, and `gen_fst4_sweep_wavs.sh`'s header still says a
+regenerated cell's "trial index therefore names a different signal
+afterwards". Measured, both are wrong for `fst4sim`: its output is
+deterministic and its realisations do not depend on the requested trial
+count. Regenerating `fst4_60_ccir_moderate_m26` at `TRIALS=2` and at
+`TRIALS=100` each reproduced the stored 20-trial files **byte for
+byte** (md5, trials 1-20), and the same check across four cells
+(`ccir_moderate` m24/m25, `awgn` m27/m28) came back 80/80 identical.
+
+So a corpus **can** be extended by regenerating it at a higher
+`TRIALS`, keeping every existing index meaning the same signal — which
+is how the m26 cell here went from 20 to 100 trials without
+invalidating anything measured on the first 20.
+
+What stays true is the weaker claim, and it is the one to design
+against: **an index is only meaningful together with the corpus that
+produced it.** Nothing checks that the `fst4sim` binary on this machine
+is the one that generated a result quoted from another (the sweep
+baseline records the machine — `_meta.protocols.fst4` — for exactly
+this reason), and a cell present at 20 trials cannot answer a question
+about trial 67. Same class as hardcoding `/home/ubuntu/...` asset paths
+(see `CLAUDE.md`, "Test fixture paths"): corpus state, not fixture
+identity.
 
 ### Trap 2 — the selection baseline must not already contain the mechanism
 
