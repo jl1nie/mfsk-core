@@ -4519,12 +4519,36 @@ fn fst4_60_diag_npre_timing_substitutability_ablation() {
     // it. Production reaches deeper (timing retry + a wider candidate set
     // + no ±FREQ_TOL_HZ pre-filter), which is why the original finding
     // could live in a cell this one cannot use.
-    for (channel, snr_tag) in [
+    //
+    // The full grid is ~15 min per 100-trial cell, so a re-run of one
+    // cell should not cost an hour: `MFSK_FST4_ABLATION_CELLS`
+    // overrides the list, comma-separated as `channel:snr_tag` (e.g.
+    // `ccir_moderate:m24`). Unset runs all four.
+    const DEFAULT_CELLS: &[(&str, &str)] = &[
         ("ccir_moderate", "m24"),
         ("ccir_moderate", "m25"),
         ("awgn", "m27"),
         ("awgn", "m28"),
-    ] {
+    ];
+
+    let spec = std::env::var("MFSK_FST4_ABLATION_CELLS").unwrap_or_default();
+    let cells: Vec<(String, String)> = if spec.trim().is_empty() {
+        DEFAULT_CELLS
+            .iter()
+            .map(|(c, s)| (c.to_string(), s.to_string()))
+            .collect()
+    } else {
+        spec.split(',')
+            .filter_map(|c| c.split_once(':'))
+            .map(|(c, s)| (c.trim().to_string(), s.trim().to_string()))
+            .collect()
+    };
+    assert!(
+        !cells.is_empty(),
+        "MFSK_FST4_ABLATION_CELLS parsed to nothing — expected `channel:snr_tag[,…]`"
+    );
+
+    for (channel, snr_tag) in &cells {
         npre_timing_grid_for_cell(channel, snr_tag);
     }
 }

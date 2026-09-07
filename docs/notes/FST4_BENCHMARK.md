@@ -529,9 +529,91 @@ outcome that changes the answer for #310. If you write this kind of
 column that matters most; it is also the only one the naive comparison
 cannot see.
 
-### Result, 2026-08-17 — the usable band (20-trial corpus, 4 cells)
+### Result, 2026-09-08 — the usable band at n=100 (4 cells)
 
-Relative to the `npre @{0}` baseline in each cell:
+The 20-trial reading below it came first and is kept for the traps it
+found, but **it should not be cited for magnitudes**: at n=20 both
+single mechanisms looked like they rescued nothing at all in two cells,
+which is a sample-size artifact. The corpus was extended to 100 trials
+per cell by regenerating at `TRIALS=100` (see Trap 1 — the existing
+trials come back byte-identical, so nothing measured before was
+invalidated). Apple M5, ~15 min per cell.
+
+Absolute recall, all six configurations:
+
+| cell | `npre @{0}` | `npre @{0,±1}` | `unpruned @{0}` | `unpruned @{0,±1}` | `npre→unpruned @{0}` | `npre→unpruned @{0,±1}` |
+|---|---:|---:|---:|---:|---:|---:|
+| CCIR-mod m24 | 61/100 | 69/100 | 68/100 | **77/100** | 68/100 | 77/100 |
+| CCIR-mod m25 | 23/100 | 27/100 | 26/100 | **34/100** | 26/100 | 34/100 |
+| AWGN m27 | 78/100 | 84/100 | 82/100 | **87/100** | 82/100 | 87/100 |
+| AWGN m28 | 29/100 | 42/100 | 34/100 | **43/100** | 34/100 | 43/100 |
+
+Rescues relative to the `npre @{0}` baseline, as counts:
+
+| cell | baseline | timing alone | fallback alone | overlap | both | only-with-both | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| CCIR-mod m24 | 61/100 | 8 | 7 | 5 | 16 | **6** | **synergistic** |
+| CCIR-mod m25 | 23/100 | 4 | 3 | 0 | 11 | **4** | **synergistic** |
+| AWGN m27 | 78/100 | 6 | 4 | 3 | 9 | **2** | **synergistic** |
+| AWGN m28 | 29/100 | 13 | 5 | 4 | 14 | 0 | partial overlap |
+
+**In 3 of 4 cells the combination rescues trials that neither mechanism
+rescues alone**, and the two verdicts that changed from the 20-trial
+reading (m24 partial → synergistic, m25's magnitude) changed because
+n=20 could not see rescues of 3-8 trials per 100 at all.
+
+Three things the larger sample settles that the small one could not:
+
+- **Both mechanisms work on their own.** At n=20, m25 read "neither
+  mechanism rescues anything alone". At n=100 timing rescues 4 and the
+  unpruned fallback 3, with *zero* overlap between them. The earlier
+  "neither works alone, only the combination" framing was small-sample
+  noise, not a mechanism.
+- **Timing is the stronger single lever in every cell** (+8, +4, +6,
+  +13 trials against +7, +3, +4, +5 for the fallback). For #310, if the
+  ladder can only afford one rung, that is the one — and on AWGN m28 it
+  is worth 2.6× the fallback.
+- **The `npre→unpruned` fallback is exactly `unpruned` alone**, in all
+  four cells and at both timing settings — 8 of 8 identical sets, not
+  just identical counts. Running `npre` first and falling back buys
+  nothing over always running unpruned; it only costs the `npre` pass.
+  The 20-trial reading saw this in one cell and called it "behaviourally
+  the same thing"; it holds everywhere measured.
+
+And one that is not about the ladder at all: **`npre` never rescues a
+trial `unpruned` misses** — the "npre wins unpruned misses" set is
+empty in all four cells, both timing settings. Recall-wise the pruned
+search is a strict subset of the unpruned one on this corpus, so
+npre1/npre2's value is entirely speed (1.25-1.5× on the CoreS3
+candidate loop, issue #198). That is a defensible trade, but it should
+be stated as a trade rather than as "AWGN recall was unchanged".
+
+Mechanistically the synergy is coherent: the unpruned search explores
+more patterns but only helps if the LLRs it is handed are good enough,
+and an alternate `i0` is what produces better LLRs. Both conditions
+have to hold at once — which is why the synergy set is non-empty in the
+three cells where the baseline leaves room for it, and empty in AWGN
+m28 where timing alone already carries 13 of the 14.
+
+**Neither mechanism's rescue set contains the other's**, in any cell at
+n=100 — every cell has trials only timing rescues *and* trials only the
+fallback rescues (m24 3 and 2, m25 4 and 3, m27 3 and 1, m28 9 and 1).
+The 20-trial reading saw containment in two cells and inferred an
+escalation order from it; at n=100 there is no order to derive.
+
+**For #310**: the ladder cannot be reduced to one mechanism without
+losing trials — but now with a magnitude to price. Dropping the
+unpruned fallback and keeping timing costs 8, 7, 3 and 1 trials per 100
+in the four cells; dropping timing and keeping the fallback costs 9, 8,
+5 and 9. Against a measured 2.5–3× cost for full timing diversity on
+real hardware, that is a trade to make deliberately, and the cheaper
+rung to keep is timing.
+
+### Superseded — the same grid on a 20-trial corpus (2026-08-17)
+
+Kept for the traps it found, not for its numbers: at n=20 a rescue of
+3–8 trials per 100 is frequently invisible, which is how two of these
+cells read as "neither mechanism rescues anything alone".
 
 | cell | baseline | timing alone | fallback alone | both | only-with-both | verdict |
 |---|---:|---|---|---|---|---|
@@ -539,31 +621,6 @@ Relative to the `npre @{0}` baseline in each cell:
 | CCIR-mod m25 | 7/20 | 1 | — | 1, **9, 14** | **9, 14** | **synergistic** |
 | AWGN m27 | 12/20 | 15 | 15 | **3**, 15, **20** | **3, 20** | **synergistic** |
 | AWGN m28 | 3/20 | 5, 12, 18 | 5 | 5, 12, 18 | — | partial overlap |
-
-**In 2 of 4 cells the combination rescues trials that neither mechanism
-rescues alone.** Mechanistically that is coherent: the unpruned search
-explores more patterns but only helps if the LLRs it is handed are good
-enough, and an alternate `i0` is what produces better LLRs. Both
-conditions have to hold at once.
-
-**Which mechanism dominates flips between cells** — at CCIR-moderate m24
-the fallback's set contains timing's; at AWGN m28 timing's strictly
-contains the fallback's. There is no universal escalation order to
-derive from this.
-
-**`npre` never decodes a trial the unpruned search misses** — the
-`npre wins unpruned misses` column is empty in all four cells, at both
-timing settings, and `npre→unpruned` is byte-identical to plain
-`unpruned` throughout. So on this corpus `npre` is a pure recall loss
-bought for speed, and a "selective fallback to unpruned" is
-behaviourally the same thing as always running unpruned. Worth knowing
-before designing an escalation order around the distinction.
-
-**For #310**: the ladder cannot be reduced to one mechanism without
-losing the synergy trials — but the magnitude is 2–3 trials per 20 in
-the crossing band, against a measured 2.5–3× cost for full timing
-diversity on real hardware. That is a trade to make deliberately, not
-an argument that both are mandatory.
 
 ### Superseded first reading (`fst4_60_ccir_moderate_m26`, 20 trials)
 
