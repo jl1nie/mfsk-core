@@ -4,7 +4,14 @@ version = "0.1.0"
 authors = ["Minoru Tomobe <minoru.tomobe@gmail.com>"]
 edition = "2021"
 resolver = "2"
-rust-version = "1.82"
+# Inherited from the `mfsk-core` path dependency, which needs 1.93 for
+# `const` items holding references to mutable statics (see the root
+# `Cargo.toml`'s own note). These crates build on the `esp` channel
+# pinned in `rust-toolchain.toml`, currently a 1.95-based fork, so this
+# number is documentation rather than a gate. It said 1.82 until
+# 2026-09-07, which had been unbuildable since mfsk-core moved to
+# edition 2024.
+rust-version = "1.93"
 
 # Board-agnostic library for the M5Stack FT8 controller apps. Consumed
 # by `m5stack-s3-app` (and later `m5stack-core2-app`, per issue #61).

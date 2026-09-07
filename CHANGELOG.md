@@ -9,6 +9,31 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
 
 ### Changed
 
+- **The crate declares a minimum supported Rust version, and the one
+  the embedded crates already declared was wrong.** `mfsk-core` and
+  the rest of the host workspace had no `rust-version` at all — a
+  published crate with no floor, so cargo could not tell a downstream
+  user why a build failed. The six `embedded-poc` manifests did have
+  one, `1.82`, which had been unbuildable since `mfsk-core` moved to
+  edition 2024 (that alone needs 1.85).
+
+  The declared value is `1.93`, measured rather than inferred:
+  `cargo +1.85 check -p mfsk-core --features full` fails on the
+  let-chains in `engine/pipeline.rs` and `fec/ldpc/osd.rs` (stabilised
+  for edition 2024 in 1.88), and `+1.88` then fails on
+  `wspr::instrument`'s `const ALL: &[&AtomicU32]` with E0080 —
+  `const` items could not hold references to mutable statics until
+  1.93 ("Allow `const` items that contain mutable references to
+  `static`", 1.93.0, 2026-01-22). `cargo +1.93 check --workspace
+  --all-targets --features full,internal-testing` is clean.
+
+  `[workspace.package] rust-version` is the single source, the way
+  `version` already is. CI runs `@stable` and does not check the
+  number, so it is a claim to re-measure when someone reaches for a
+  newer feature — not a gate.
+
+### Changed
+
 - **FST4 and WSPR ran the same display task twice (#353 item 2).** The
   two receivers' `display_loop`s were 330 lines each and differed in
   three places: the `BootMode` the picker highlights, which `ui::`

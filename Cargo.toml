@@ -22,3 +22,17 @@ resolver = "2"
 # field directly.
 [workspace.package]
 version = "0.10.2"
+
+# Minimum supported Rust version, and it is a measurement rather than a
+# guess: `cargo +1.85 check -p mfsk-core --features full` fails on the
+# let-chains in `engine/pipeline.rs` and `fec/ldpc/osd.rs` (stabilised
+# for edition 2024 in 1.88), and `+1.88` then fails on
+# `wspr::instrument`'s `const ALL: &[&AtomicU32]` with E0080 — `const`
+# items were not allowed to hold references to mutable statics until
+# **1.93** ("Allow `const` items that contain mutable references to
+# `static`", 1.93.0, 2026-01-22). 1.93 builds the workspace clean.
+#
+# CI runs `dtolnay/rust-toolchain@stable`, so nothing here checks this
+# number on an ongoing basis; it is a claim about what the source needs
+# today, re-measured when someone reaches for a newer feature.
+rust-version = "1.93"
