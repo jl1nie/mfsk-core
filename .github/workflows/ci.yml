@@ -622,6 +622,42 @@ jobs:
         run: cargo doc -p mfsk-core --features full --no-deps
 
   # ───────────────────────────────────────────────────────────────
+  # MSRV gate. `[workspace.package] rust-version` is a claim about
+  # what the source needs, and without this job it is only ever
+  # exercised by whatever `@stable` happens to be — i.e. never
+  # falsified until a downstream user on an older toolchain hits it.
+  #
+  # The number moved from unset (host) / a stale 1.82 (embedded) to a
+  # measured 1.93 on 2026-09-07: 1.85 fails on let-chains, 1.88 on
+  # `wspr::instrument`'s `const ALL: &[&AtomicU32]` (const items could
+  # not reference mutable statics until 1.93). Raising it is a
+  # decision, so this job exists to make it a *deliberate* one rather
+  # than something that drifts in unnoticed.
+  #
+  # `check`, not `test`: this asks whether the crate compiles on the
+  # declared floor. Its behaviour is the tier A+B job's business, and
+  # running the suite twice buys nothing.
+  # ───────────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV (1.93)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned to the declared MSRV)
+        uses: dtolnay/rust-toolchain@1.93.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # `--all-targets` so tests/benches count too — they are part of
+      # what a contributor on the floor version has to be able to
+      # build, and `internal-testing` is what keeps `--all-targets`
+      # from failing on `pub(crate)` diagnostics (see the lint job).
+      - name: cargo check (workspace, features = full)
+        run: cargo check --workspace --all-targets --features full,internal-testing
+
+  # ───────────────────────────────────────────────────────────────
   # cargo publish dry-run: catches crates.io-specific issues
   # (missing metadata, path deps without version, oversized
   # tarball) before the real publish workflow tries to upload.

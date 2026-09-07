@@ -28,9 +28,12 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
   --all-targets --features full,internal-testing` is clean.
 
   `[workspace.package] rust-version` is the single source, the way
-  `version` already is. CI runs `@stable` and does not check the
-  number, so it is a claim to re-measure when someone reaches for a
-  newer feature — not a gate.
+  `version` already is, and `ci.yml` gains an `msrv` job pinned to
+  1.93 (`cargo check --workspace --all-targets --features
+  full,internal-testing`) so the number is falsifiable instead of
+  resting on whatever `@stable` happens to be. Raising it stays a
+  decision someone makes on purpose rather than something that drifts
+  in with a new language feature.
 
 ### Changed
 
