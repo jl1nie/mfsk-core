@@ -345,6 +345,12 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     }
     fst4_dual_core::init();
 
+    // Both lints fire on the *default* value of a build-time knob:
+    // with `MFSK_FST4_APP_HOG_KB` unset `HOG_KB` is 0, so the guard is
+    // trivially false and the range trivially empty — which is the
+    // intended shape of an off-by-default diagnostic, not a mistake.
+    // The code exists for the builds that pass the env var.
+    #[allow(clippy::absurd_extreme_comparisons, clippy::reversed_empty_ranges)]
     if HOG_KB > 0 {
         const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
         // 4 KiB blocks, matching what `SPIRAM_MALLOC_ALWAYSINTERNAL`
@@ -635,6 +641,11 @@ fn capture_loop() -> ! {
         );
         post_slot(cap);
         slots_done += 1;
+        // Same as `HOG_KB` above: `CAPTURE_SLOTS` is 0 unless the
+        // build passes `MFSK_FST4_APP_CAPTURE_SLOTS`, and 0 means
+        // "never stop", so at the default both halves of this are
+        // constant. Off-by-default diagnostic, not dead code.
+        #[allow(clippy::absurd_extreme_comparisons)]
         if CAPTURE_SLOTS > 0 && slots_done >= CAPTURE_SLOTS {
             log::info!(
                 "fst4_app::capture: MFSK_FST4_APP_CAPTURE_SLOTS={CAPTURE_SLOTS} reached — idling; \
