@@ -46,10 +46,20 @@ entry) update that file, not this one.
 ## Status (2026-05-21 — demo / acoustic-fallback, frozen after Phase 1.7)
 
 Phase 0 / 0.5 / 3 / 4 / 0.6 / 0.7 shipped on `main`. Phase 1 UAC
-hardware verification confirmed **M5StickS3 cannot do USB host**
-(board lacks VBUS source circuit, ID pin wiring, host power switch
-IC; see memory `project_m5stick_s3_no_usb_host`). This crate is
-repositioned as the **demo / acoustic-fallback** path:
+hardware verification confirmed **M5StickS3 cannot source VBUS for
+USB host** — the ESP32-S3 silicon does host mode, this board does not
+wire the power path for it (no boost / host power-switch IC, no ID pin
+wiring), so a bus-powered device attached to it gets nothing. See
+memory `project_m5stick_s3_no_usb_host`.
+
+Issue #360 reports the other half of the same fact from outside the
+project: with VBUS fed from an external supply a StickS3 does enumerate
+a USB keyboard as host, and `M5.Power.setUsbOutput(true)` returns
+without doing anything. That is consistent with the diagnosis and does
+not reopen the pivot — a controller carried to a hilltop with an IC-705
+cannot bring a second 5 V supply along.
+
+This crate is repositioned as the **demo / acoustic-fallback** path:
 
 - **Phase 1.5 (Acoustic) — ✅ done**: ES8311 ADC mic-mode → I2S RX →
   `LinearResamplerI16To12k` → `decode_pipeline::run_with_source`.

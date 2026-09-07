@@ -955,9 +955,14 @@ hints; the live worklist is the **Open follow-ups** section above.
 ## Phase B — embedded controller line
 
 **2026-05-17 pivot**: Phase 1 UAC hardware verification confirmed
-**M5StickS3 cannot do USB host** (board lacks VBUS source circuit, ID
-pin wiring, host power switch IC — silicon supports it, board doesn't
-wire for it). Phase B splits in two:
+**M5StickS3 cannot source VBUS for USB host** (board lacks VBUS source
+circuit, ID pin wiring, host power switch IC — silicon supports it,
+board doesn't wire for it). Issue #360 reports the complement from
+outside the project: with VBUS fed from an external supply the same
+board does enumerate a USB keyboard as host, and
+`M5.Power.setUsbOutput(true)` is a no-op there. A controller taken to
+a hilltop with an IC-705 cannot carry a second 5 V supply, so the
+pivot stands. Phase B splits in two:
 
 - **Phase B-Stick** — `m5stack-s3-app`, demoted to **demo / acoustic
   fallback** path. Frozen after Phase 1.7.9 (2026-05-27 — see the

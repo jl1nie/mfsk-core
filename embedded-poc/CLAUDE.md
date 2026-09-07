@@ -414,9 +414,13 @@ there is no serial device to find.
 - **`m5stack-s3-app/`** — M5StickS3 FT8 controller (LCD UI + QSO
   FSM + WiFi UDP log streaming + ES8311 audio). **Repositioned
   2026-05-17 as demo / acoustic-fallback path** after Phase 1 UAC
-  hardware verification confirmed M5StickS3 board cannot do USB
-  host (see memory `project_m5stick_s3_no_usb_host`). UAC code
-  (`uac.rs` ~445 lines) is board-agnostic and stays as canonical
+  hardware verification confirmed the M5StickS3 board cannot source
+  VBUS for USB host — the S3 silicon does host mode, the board has no
+  boost / host power-switch and no ID-pin wiring, so a bus-powered
+  device attached to it gets no power (see memory
+  `project_m5stick_s3_no_usb_host`, and issue #360 for a reader's
+  report that host mode does work there off an external 5 V supply).
+  UAC code (`uac.rs` ~445 lines) is board-agnostic and stays as canonical
   reference for the CoreS3 lift in Phase 0-Core. Phase 1.5 (planned)
   adds internal MEMS-mic acoustic capture as the Stick demo path.
 - **`m5stack-cores3-app/`** — M5Stack CoreS3 FT8 controller (LX7,

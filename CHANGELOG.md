@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.10.2 — the M5StickS3 USB-host claim said more than the measurement did
+
+**Why a patch bump.** Documentation and release tooling. No public API
+change, no decoder behaviour change, no measured sensitivity movement.
+This section accumulates until the next tag — see `CLAUDE.md`'s
+"Release cadence".
+
+### Changed
+
+- **"M5StickS3 can't do USB host" was a claim about the silicon; the
+  measurement was about the board (issue #360).** A reader searching
+  for "M5StickS3 USB host vbus" found the sentence here and pointed out
+  that ESP32-S3 can be a USB host in general — they run a USB keyboard
+  off a StickS3 with VBUS supplied externally, `M5.Power
+  .setUsbOutput(true)` returning without doing anything on that board.
+
+  They are right, and the repository already knew it in the one place
+  where the finding was written up in full: `ROADMAP.md`'s 2026-05-17
+  pivot says "silicon supports it, board doesn't wire for it". What
+  every shorter restatement of it dropped was that second clause —
+  `README.md`, the root `CLAUDE.md`, `embedded-poc/CLAUDE.md`,
+  `m5stack-s3-app/CLAUDE.md`, `m5stack-cores3-app/CLAUDE.md`,
+  `EMBEDDED.md` / `.ja.md` and both StickS3 operator manuals each said
+  some form of "cannot do USB host" flat. They now say what was
+  actually verified: the board cannot **source VBUS**, so a bus-powered
+  device attached to it gets no power.
+
+  Nothing about the 2026-05-17 pivot changes — a controller carried to
+  a hilltop with an IC-705 cannot bring a second 5 V supply, so the UAC
+  line stays on CoreS3. `EMBEDDED.md`'s StickS3 row also still called
+  the crate the "production controller", which the pivot demoted to
+  demo / acoustic-fallback sixteen weeks ago and the `.ja.md` twin had
+  already corrected.
+
+- **A 13-day release gap is the cadence, not an overrun.**
+  `release-status.sh` warned "past the 13-day maximum" at exactly
+  `days >= 13` and `CLAUDE.md`'s "(max wait 13 days, average 7)" backed
+  that reading — but the policy is "every 2 weeks", and the "average 7"
+  came from averaging two escape-hatch same-week patches
+  (v0.8.0→v0.8.1, v0.9.0→v0.9.1) in with the regular cuts. The regular
+  cuts alone run 12, 8, 13, 13 days. The cadence check now has a
+  separate "at the 2-week target" tier for days 13-14 and calls a
+  release overdue only past 14.
+
 ## 0.10.1 — ハムフェア2026 booth material, the 12 kHz literal classification (#323), release tooling that runs on macOS, FT4 embedded fits its slot
 
 **Why a patch bump.** Additive public API (five new functions, no

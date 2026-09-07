@@ -701,8 +701,8 @@ full coverage; the default features (`ft8`, `ft4`) only exercise the
 two default protocols.
 
 `embedded-poc/m5stack-s3-app/` (demo / acoustic-fallback, since the
-StickS3 board can't do USB host) and `embedded-poc/m5stack-core2-app/`
-(wav_sim-only LX6 sibling) are production FT8 controller crates (LCD
+StickS3 board can't source VBUS for USB host) and
+`embedded-poc/m5stack-core2-app/` (wav_sim-only LX6 sibling) are production FT8 controller crates (LCD
 UI + QSO FSM + WiFi-UDP log streaming), both consuming the
 board-agnostic `embedded-poc/mfsk-app-shared/`.
 `embedded-poc/m5stack-cores3-app/` is the **main target** (M5Stack

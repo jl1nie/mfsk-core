@@ -342,7 +342,7 @@ just relocates the bug.
 
 The active production crates are `embedded-poc/m5stack-s3-app/` (S3
 LX7, repositioned as **demo / acoustic-fallback** in the 2026-05-17
-pivot — the StickS3 board can't do USB host),
+pivot — the StickS3 board can't source VBUS for USB host),
 `embedded-poc/m5stack-core2-app/` (Core2 LX6, wav_sim only — no USB
 peripheral on classic ESP32), and `embedded-poc/m5stack-cores3-app/`
 (S3 LX7, **main UAC controller target** — CoreS3 has AXP2101 +

@@ -35,9 +35,12 @@ IC-705 (または互換 BLE CI-V / 音声ケーブル対応無線機) と連携�
   PTT toggle、mode 読み出し)。ペアリング診断用。
 - **TxTest** — I2S TX から 1500 Hz FT8 トーンを合成、スピーカー / 音声
   ケーブル経路をリアル信号なしで検証。
-- **Uac** — USB-Host Audio Class。**M5StickS3 ハードウェアでは動作不可**
-  (基板に VBUS source 回路と ID pin 配線がない)。後継 CoreS3 への移行
-  予定は `docs/reference/EMBEDDED.ja.md` 参照。共有検証作業のため code は残置。
+- **Uac** — USB-Host Audio Class。**この基板のままでは動作不可** — USB
+  デバイスに流す 5 V を出す回路も ID pin 配線も基板に無い。S3 のチップ
+  自体は USB host になれるので、外部から 5 V を与えれば host として
+  デバイスを認識する (issue #360) が、運用先にもう一つ電源を持ち込む
+  わけにはいかない。後継 CoreS3 への移行予定は
+  `docs/reference/EMBEDDED.ja.md` 参照。共有検証作業のため code は残置。
 
 ---
 

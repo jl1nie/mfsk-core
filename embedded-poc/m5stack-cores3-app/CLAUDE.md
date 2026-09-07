@@ -191,9 +191,9 @@ about the decoder.
 ## TX/QSO feasibility (2026-09-06, Phase T0 — not yet run on hardware)
 
 CoreS3 is receive-only today; `m5stack-s3-app` has the QSO FSM/PTT/CI-V
-plumbing but never got FT4 and can't do USB host at all (StickS3
-hardware, not this board). The plan is to build TX on CoreS3 instead,
-since every recent receive-side investment (FT4, lock-and-hold, cold
+plumbing but never got FT4 and can't source VBUS for USB host (StickS3
+hardware, not this board — issue #360). The plan is to build TX on
+CoreS3 instead, since every recent receive-side investment (FT4, lock-and-hold, cold
 acquisition) is here, not there.
 
 Two things had to be checked before committing to that: whether the
