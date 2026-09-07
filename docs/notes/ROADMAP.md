@@ -424,8 +424,9 @@ version if you're picking up work.
   with no plausible clock it idles the fixed 6 s tail instead and says
   so. The batch-splitting and gap arithmetic moved to
   `mfsk_app_shared::capture_window`, which `hosttest/mfsk-app-shared`
-  compiles and tests — the FT8 path in `uac.rs` still has its own
-  equivalent, and FT4 (#354) has none yet.
+  compiles and tests. FT8 (`uac.rs`) and FT4 (`ft4_rx::SlotAccum`,
+  #354) keep their own bookkeeping: both capture a contiguous grid, so
+  neither needs the inter-slot gap this type manages.
 
   What is left needs things a host cannot supply: the wsprnet sink is
   blocked on a live third-party endpoint (and carries a cost the

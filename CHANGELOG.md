@@ -67,9 +67,11 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
   The batch splitting and gap arithmetic are
   `mfsk_app_shared::capture_window::CaptureWindow`, compiled and tested
   by `hosttest/mfsk-app-shared` rather than trusted: the app crate
-  builds only for Xtensa, and this is the third slot grid in it. FT8's
-  copy in `uac.rs` is hardware-verified and deliberately untouched;
-  FT4 (#354) has none yet and is the next caller. `civil_time
+  builds only for Xtensa, and this is the third slot grid in it. The
+  other two — FT8's `Ft8ChunkSink` in `uac.rs`, FT4's
+  `ft4_rx::SlotAccum` (#354, shipped in 0.10.1) — capture a contiguous
+  grid where every sample belongs to some slot, so neither needed the
+  gap this type manages, and neither is changed here. `civil_time
   ::slot_start_unix` rounds a clock read to the nearest slot boundary
   rather than flooring, since the read that opens a window lands a few
   milliseconds either side of the boundary it aimed at and flooring

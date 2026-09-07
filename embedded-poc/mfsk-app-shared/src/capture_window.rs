@@ -11,12 +11,15 @@
 //! decoder still decodes, the spots are just filed against the wrong
 //! two minutes.
 //!
-//! Written for `wspr_app`'s DDC sink (#313 item 1). The FT8 reader in
-//! `m5stack-cores3-app`'s `uac.rs` still carries its own equivalent,
-//! and FT4 (#354) has none yet; this is deliberately the shape both
-//! could move onto rather than a third private copy, but neither is
-//! changed here — `uac.rs`'s version is hardware-verified and a
-//! refactor of it belongs in its own change.
+//! Written for `wspr_app`'s DDC sink (#313 item 1). All three
+//! receivers anchor to UTC now, each with its own bookkeeping: FT8's
+//! is in `m5stack-cores3-app`'s `uac.rs` (`Ft8ChunkSink`), FT4's in
+//! `embedded_shared::apps::ft4_rx::SlotAccum` (`anchor_or_reanchor`,
+//! #354). Both of those capture a *contiguous* grid — every sample
+//! belongs to some slot — which is why neither needed the gap this
+//! type exists to manage. Folding them onto it would be a
+//! consolidation, not a fix, and `uac.rs`'s version is
+//! hardware-verified, so neither is changed here.
 //!
 //! The phase itself comes from [`crate::time_sync`]; this type only
 //! decides what to do with a batch given a phase reading, which is
