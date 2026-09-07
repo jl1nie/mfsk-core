@@ -803,7 +803,12 @@ hardware verification both lines depend on, **closed 2026-08-23** —
 ten unbroken minutes of capture at 192,512 B/s and zero errors, with
 WiFi associated, on the FT8 controller. `wspr_app` shares that same
 `uac.rs`, so the path is proven; what has not happened is running
-*this* binary against a radio. `mfsk_app_shared::wsprnet` (wsprnet.org spot
+*this* binary against a radio. Its capture window does now open on the
+UTC even-minute grid rather than wherever the USB stream came up, and
+each spot carries the start time of the window it was heard in rather
+than a clock read taken after the decode (#313 item 1, 2026-09-07) —
+software-only, and still unverified against a radio like everything
+else in this paragraph. `mfsk_app_shared::wsprnet` (wsprnet.org spot
 upload, ported from WSJT-X's own `Network/wsprnet.cpp`) exists and is
 off by default; its `SpotSink::Http` path is implemented but untested
 against a real endpoint.

@@ -7,6 +7,46 @@ change, no decoder behaviour change, no measured sensitivity movement.
 This section accumulates until the next tag — see `CLAUDE.md`'s
 "Release cadence".
 
+### Fixed
+
+- **The CoreS3 WSPR receiver captured on its own grid, not UTC's, and
+  stamped its spots from the wrong clock read (#313 item 1).** Three
+  things, in one path, none of which shows up as a bad log line —
+  the decoder still decodes, and the spots are simply filed against
+  the wrong two minutes.
+
+  `WsprDdcSink` opened its capture window wherever the USB stream
+  happened to come up. A WSPR transmission starts 1 s into an even
+  minute and runs 110.6 s, so an arbitrary phase cuts it. It then ran
+  114 s captures back to back with no gap — a 114 s cadence against a
+  120 s grid, sliding 6 s per slot even from an aligned start. (The
+  synthetic producer never had that one: `ddc_loop` sleeps out the
+  remainder of `SLOT_US`.) And the spot's timestamp was read from the
+  clock at decode time, which is ~200 s after the window it describes
+  opened — one or two boundaries later, on every spot.
+
+  The window now opens on a UTC boundary and re-measures the gap from
+  UTC at every boundary, so an NTP step or the RTC's drift is absorbed
+  by one gap instead of accumulating; each slot carries its own start
+  time to the reporting side. With no plausible clock it waits the
+  fixed 6 s tail instead — cadence right, phase arbitrary — and the
+  log says which of the two is in force.
+
+  The batch splitting and gap arithmetic are
+  `mfsk_app_shared::capture_window::CaptureWindow`, compiled and tested
+  by `hosttest/mfsk-app-shared` rather than trusted: the app crate
+  builds only for Xtensa, and this is the third slot grid in it. FT8's
+  copy in `uac.rs` is hardware-verified and deliberately untouched;
+  FT4 (#354) has none yet and is the next caller. `civil_time
+  ::slot_start_unix` rounds a clock read to the nearest slot boundary
+  rather than flooring, since the read that opens a window lands a few
+  milliseconds either side of the boundary it aimed at and flooring
+  turns "1 ms early" into the previous slot.
+
+  **Not verified against a radio.** `wspr_app` has never been run
+  against one (#313 item 3); this is a host build plus tests, and the
+  numbers that would confirm it are a log capture away.
+
 ### Changed
 
 - **"M5StickS3 can't do USB host" was a claim about the silicon; the

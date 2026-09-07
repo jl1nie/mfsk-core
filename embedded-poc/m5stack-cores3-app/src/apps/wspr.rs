@@ -55,12 +55,34 @@
 //! the app fully functional (and host-independently testable) with no
 //! USB device attached, exactly as it was before this session.
 //!
-//! **No wall-clock slot alignment yet** for the real-audio path — same
-//! open item `uac.rs`'s FT8 `reader_thread` already carries for its
-//! own `SLOT_SAMPLES_12K`: the WSPR slot boundary is bound by raw
-//! sample count from whenever the UAC stream started, not UTC
-//! :00/:02/:04 marks. Needs the NTP-fed `time_sync` hook, same as the
-//! FT8 side's own open item.
+//! **Wall-clock slot alignment** (#313 item 1, 2026-09-07): the
+//! capture window opens on a UTC even-minute boundary, not wherever
+//! the UAC stream happened to start. [`WsprDdcSink`] idles until
+//! `time_sync::samples_to_next_slot_12k(SLOT_SECS)` says the next
+//! boundary has arrived, captures [`DDC_SLOT_AUDIO_SAMPLES`] (114 s of
+//! the 120 s slot), then re-reads the clock and idles again — every
+//! gap is measured from UTC rather than counted forward from the last
+//! boundary, so an NTP step or the RTC's drift is absorbed by one gap
+//! instead of accumulating. (`uac.rs`'s FT8 reader gets the same
+//! property a different way: it keeps its own count and re-anchors
+//! when the error passes `SLOT_DRIFT_REANCHOR_MS`.) With no plausible
+//! clock the gap is the fixed 6 s tail instead — the cadence is then a
+//! whole slot and the phase is arbitrary, and the log says which of
+//! the two is in force rather than leaving it to be inferred.
+//!
+//! Two things were wrong before it, not one. The phase was an accident
+//! of stream start — a WSPR transmission begins 1 s into an even
+//! minute and runs 110.6 s, so a window opened at a random offset cuts
+//! it — **and** the sink ran back-to-back 114 s captures with no gap,
+//! a 114 s cadence against a 120 s grid, sliding 6 s per slot even if
+//! the first one had been aligned. The synthetic `ddc_loop` never had
+//! that second bug: it sleeps out the remainder of [`SLOT_US`].
+//!
+//! The slot's own start time rides with its audio (`SlotBuf
+//! ::start_unix_s`) rather than being read back at decode time. Decode
+//! finishes ~80-100 s after a 114 s capture, so `SystemTime::now()`
+//! there names a slot one or two boundaries later — which is the
+//! timestamp wsprnet would have been given for every spot.
 //!
 //! **The one slot this doesn't apply to**: the very first, which
 //! still decodes the baked WAV-derived golden baseband
@@ -128,6 +150,7 @@ use embedded_shared::wspr_dual_core;
 
 use esp_idf_svc::sys::MALLOC_CAP_SPIRAM;
 use mfsk_app_shared::boot_mode::{self, BootMode};
+use mfsk_app_shared::capture_window::{CaptureWindow, Step};
 use mfsk_app_shared::civil_time::civil_from_unix;
 use mfsk_app_shared::settings::{self, Settings};
 use mfsk_app_shared::ui::wspr_list;
@@ -224,6 +247,12 @@ static SCAN_GO: AtomicBool = AtomicBool::new(false);
 struct SlotBuf {
     idat: Vec<f32>,
     qdat: Vec<f32>,
+    /// UTC second this slot's capture window opened, rounded to the
+    /// slot grid — the time a spot from it is reported against.
+    /// `None` when the clock was unset (or for a synthetic slot, which
+    /// is never reported), and the caller falls back to reading the
+    /// clock itself.
+    start_unix_s: Option<i64>,
 }
 
 impl SlotBuf {
@@ -231,6 +260,7 @@ impl SlotBuf {
         Self {
             idat: Vec::new(),
             qdat: Vec::new(),
+            start_unix_s: None,
         }
     }
 }
@@ -348,6 +378,24 @@ const DDC_CHUNK_LEN: usize = 4096;
 /// (if synthetic) `dt` rather than the burst landing exactly on
 /// sample 0. 1 s at `AUDIO_RATE_HZ`.
 const DDC_LEAD_PAD_SAMPLES: usize = 12_000;
+/// WSPR's UTC slot grid: transmissions start on even minutes. The same
+/// 120 s [`SLOT_US`] paces the synthetic producer to, in the whole
+/// seconds `time_sync`'s phase helper takes.
+const SLOT_SECS: u64 = (SLOT_US / 1_000_000) as u64;
+
+/// One whole slot in 12 kHz samples — the capture window
+/// ([`DDC_SLOT_AUDIO_SAMPLES`]) plus the idle tail below.
+const SLOT_SAMPLES_12K: usize = SLOT_SECS as usize * 12_000;
+
+/// The 6 s of every slot the capture deliberately does not cover.
+///
+/// [`DDC_SLOT_AUDIO_SAMPLES`] is 114 s of a 120 s slot, so a sink that
+/// re-opens the moment it closes runs a 114 s cadence against a 120 s
+/// grid. This is what it waits out when there is no clock to align to;
+/// with one, the wait is measured from UTC instead and this value is
+/// what that measurement comes to.
+const SLOT_IDLE_SAMPLES: usize = SLOT_SAMPLES_12K - DDC_SLOT_AUDIO_SAMPLES;
+
 /// One WSPR slot's worth of audio at `AUDIO_RATE_HZ`, matching
 /// `wspr-bench`'s own `NPOINTS_MAX`-equivalent constant (114 s is the
 /// capture portion of a 120 s slot).
@@ -1042,6 +1090,11 @@ fn scan_loop(ctx: ScanCtx) -> ! {
         let mut buf = BASEBAND_BUFS[idx].lock().expect("ddc buf mutex poisoned");
         let mut idat = core::mem::take(&mut buf.idat);
         let mut qdat = core::mem::take(&mut buf.qdat);
+        // The slot's own start, stamped when its capture window opened.
+        // `run_scan` below takes ~80-100 s on top of a 114 s capture,
+        // so a clock read after it names a later slot than the one
+        // being decoded (#313).
+        let slot_start_unix_s = buf.start_unix_s.take();
         // Drop the buffer lock before `run_scan` — the data itself
         // moved out via `mem::take`, so holding the lock for the
         // ~80-100 s decode would only block `ddc_loop` from claiming
@@ -1068,6 +1121,7 @@ fn scan_loop(ctx: ScanCtx) -> ! {
             &slot_num.to_string(),
             synthetic,
             if synthetic { "synthetic" } else { "uac" },
+            slot_start_unix_s,
         );
         slot_num = slot_num.wrapping_add(1);
     }
@@ -1102,6 +1156,10 @@ fn run_one_slot(
     // `is_synthetic_source` printed the golden slot as `src=uac`,
     // which is the exact confusion the field was added to remove.
     source: &str,
+    // UTC second this slot's capture window opened, or `None` if the
+    // audio came from a producer that does not stamp one (the
+    // synthetic loop) or the clock was unset when it did.
+    slot_start_unix_s: Option<i64>,
 ) {
     let settings = {
         let g = ctx.nvs.lock().expect("settings NVS mutex poisoned");
@@ -1124,7 +1182,15 @@ fn run_one_slot(
         results.len()
     );
 
-    let (date, time) = current_date_time();
+    // The slot's own start where the capture stamped one, and only a
+    // clock read as the fallback. A spot is a claim that a station was
+    // heard *in a named two-minute slot*; this decode began 114 s ago
+    // and took ~80-100 s more, so reading the clock here names the slot
+    // after next and reports every spot against it.
+    let (date, time) = match slot_start_unix_s {
+        Some(secs) => date_time_from_unix(secs),
+        None => current_date_time(),
+    };
     let rows: Vec<WsprSpotRow> = results.iter().map(|r| to_row(r, &time)).collect();
 
     {
@@ -1278,6 +1344,10 @@ fn ddc_loop() -> ! {
                 .expect("ddc buf mutex poisoned");
             buf.idat = oi;
             buf.qdat = oq;
+            // A fabricated slot has no UTC start to report against, and
+            // is never reported anyway — `run_one_slot` falls back to
+            // reading the clock for the UI's four digits.
+            buf.start_unix_s = None;
         }
         {
             let mut ready = DDC_READY_IDX.lock().expect("ddc ready mutex poisoned");
@@ -1330,8 +1400,18 @@ struct WsprDdcSink {
     ddc: StreamingDdcCascade,
     out_i: Vec<f32>,
     out_q: Vec<f32>,
-    /// Raw 12 kHz input samples fed into `ddc` so far this slot.
-    fed: usize,
+    /// Which part of the incoming stream belongs to the slot being
+    /// captured and which is the gap before the next one — the
+    /// host-tested half of the alignment, in
+    /// [`mfsk_app_shared::capture_window`].
+    window: CaptureWindow,
+    /// Whether the gap currently being waited out was measured against
+    /// UTC. Only used to log the transition each way; the capture
+    /// itself runs identically.
+    anchored: bool,
+    /// Start of the window now being captured, stamped when it opened
+    /// and handed to [`SlotBuf`] when it closes.
+    slot_start_unix_s: Option<i64>,
     write_idx: usize,
     /// Reused f32-conversion scratch buffer — one incoming batch's
     /// worth at a time, never a full slot.
@@ -1344,7 +1424,9 @@ impl WsprDdcSink {
             ddc: StreamingDdcCascade::new(),
             out_i: Vec::with_capacity(NBB + 64),
             out_q: Vec::with_capacity(NBB + 64),
-            fed: 0,
+            window: CaptureWindow::new(DDC_SLOT_AUDIO_SAMPLES),
+            anchored: false,
+            slot_start_unix_s: None,
             write_idx: 0,
             scratch: Vec::new(),
         }
@@ -1368,6 +1450,7 @@ impl WsprDdcSink {
                 .expect("ddc buf mutex poisoned");
             buf.idat = idat;
             buf.qdat = qdat;
+            buf.start_unix_s = self.slot_start_unix_s.take();
         }
         {
             let mut ready = DDC_READY_IDX.lock().expect("ddc ready mutex poisoned");
@@ -1384,7 +1467,47 @@ impl WsprDdcSink {
         // filter across slot boundaries (see this struct's own doc
         // comment for why that shape was reused rather than redesigned).
         self.ddc = StreamingDdcCascade::new();
-        self.fed = 0;
+    }
+
+    /// Idle the sink until the next capture window should open.
+    ///
+    /// With a plausible clock that is the next UTC slot boundary, read
+    /// fresh every time rather than counted forward from the last one —
+    /// an NTP step or the RTC's drift is then absorbed in one gap
+    /// instead of accumulating, which is the property `uac.rs`'s FT8
+    /// reader gets from re-anchoring at every SlotEnd.
+    ///
+    /// Without one, `fallback`: `SLOT_IDLE_SAMPLES` between slots so
+    /// the *cadence* is a slot even though the phase is arbitrary, and
+    /// zero for the very first window, where waiting 6 s to start
+    /// capturing an unaligned grid buys nothing.
+    ///
+    /// The clock is read when a batch of samples arrives, so the gap is
+    /// short by however long those samples sat in the USB reader —
+    /// sub-slot-symbol at 12 kHz and not corrected for, same as FT8.
+    fn arm_gap(&mut self, fallback: usize) {
+        let phase = mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS);
+        match (phase, self.anchored) {
+            (Some(remain), false) => log::info!(
+                "wspr_app::ddc: slot grid anchored to UTC — {} s to the next boundary",
+                remain / 12_000,
+            ),
+            (None, true) => log::warn!(
+                "wspr_app::ddc: no plausible clock — slot cadence free-running, phase arbitrary"
+            ),
+            _ => {}
+        }
+        self.anchored = phase.is_some();
+        self.window.arm(phase, fallback);
+    }
+
+    /// Stamp the window now opening with the slot it belongs to, so the
+    /// spot is reported against its own start rather than against
+    /// whatever the clock says once the decode finishes ~200 s later.
+    fn open_window(&mut self) {
+        self.slot_start_unix_s = mfsk_app_shared::time_sync::utc_now_ms().map(|ms| {
+            mfsk_app_shared::civil_time::slot_start_unix((ms / 1_000) as i64, SLOT_SECS as i64)
+        });
     }
 }
 
@@ -1392,21 +1515,32 @@ impl crate::uac::AudioSink for WsprDdcSink {
     fn push_samples(&mut self, samples_12k_mono: &[i16]) {
         if !UAC_AUDIO_ACTIVE.swap(true, Ordering::AcqRel) {
             log::info!("wspr_app::ddc: real UAC audio arriving — synthetic generator handing off");
+            // Wait for the first boundary rather than capturing from
+            // wherever the stream came up. `0` when there is no clock:
+            // an arbitrary phase is what it is, and delaying the first
+            // decode by 6 s does not improve it.
+            self.arm_gap(0);
         }
 
         let mut remaining = samples_12k_mono;
         while !remaining.is_empty() {
-            let room = DDC_SLOT_AUDIO_SAMPLES - self.fed;
-            let take = remaining.len().min(room);
-            self.scratch.clear();
-            self.scratch
-                .extend(remaining[..take].iter().map(|&s| s as f32 / 32768.0));
-            self.ddc
-                .push(&self.scratch, &mut self.out_i, &mut self.out_q);
-            self.fed += take;
-            remaining = &remaining[take..];
-            if self.fed >= DDC_SLOT_AUDIO_SAMPLES {
-                self.finish_slot();
+            match self.window.step(remaining.len()) {
+                Step::Skip(n) => remaining = &remaining[n..],
+                Step::Capture { n, opens, closes } => {
+                    if opens {
+                        self.open_window();
+                    }
+                    self.scratch.clear();
+                    self.scratch
+                        .extend(remaining[..n].iter().map(|&s| s as f32 / 32768.0));
+                    self.ddc
+                        .push(&self.scratch, &mut self.out_i, &mut self.out_q);
+                    remaining = &remaining[n..];
+                    if closes {
+                        self.finish_slot();
+                        self.arm_gap(SLOT_IDLE_SAMPLES);
+                    }
+                }
             }
         }
     }
@@ -1639,15 +1773,26 @@ fn current_hhmmss() -> heapless::String<8> {
 /// function returning an `Option`, since the WSPR UI still wants
 /// *some* 4 digits to show even before/without a sync.
 fn current_date_time() -> (heapless::String<6>, heapless::String<4>) {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(dur) => date_time_from_unix(dur.as_secs() as i64),
+        Err(_) => {
+            let mut date = heapless::String::new();
+            let mut time = heapless::String::new();
+            let _ = date.push_str("000000");
+            let _ = time.push_str("0000");
+            (date, time)
+        }
+    }
+}
+
+/// [`current_date_time`]'s formatting half, against a caller-supplied
+/// UTC second — how a slot reports the time *its own capture window
+/// opened* rather than the time its decode happened to finish.
+fn date_time_from_unix(epoch_secs: i64) -> (heapless::String<6>, heapless::String<4>) {
     let mut date = heapless::String::new();
     let mut time = heapless::String::new();
-    if let Ok(dur) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        let (y, mo, d, h, mi, _s) = civil_from_unix(dur.as_secs() as i64);
-        let _ = write!(&mut date, "{:02}{mo:02}{d:02}", y.rem_euclid(100));
-        let _ = write!(&mut time, "{h:02}{mi:02}");
-    } else {
-        let _ = date.push_str("000000");
-        let _ = time.push_str("0000");
-    }
+    let (y, mo, d, h, mi, _s) = civil_from_unix(epoch_secs);
+    let _ = write!(&mut date, "{:02}{mo:02}{d:02}", y.rem_euclid(100));
+    let _ = write!(&mut time, "{h:02}{mi:02}");
     (date, time)
 }

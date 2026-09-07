@@ -406,23 +406,31 @@ version if you're picking up work.
   at all.
 
 - **#313** — CoreS3 WSPR standalone app, open items left after #260
-  closed: no wall-clock slot alignment on the real-audio path (needs
-  the NTP-fed `time_sync` hook; `uac.rs` still cites the stale `#32`/
-  `#34` numbers for it), `SpotSink::Http` never run against a real
-  wsprnet endpoint, and the two-stage DDC decimation that was deferred
-  rather than rejected.
+  closed. **Wall-clock slot alignment landed 2026-09-07**;
+  `SpotSink::Http` has still never been run against a real wsprnet
+  endpoint, `wspr_app` has still never been run against a radio, and
+  the two-stage DDC decimation was deferred rather than rejected.
 
-  Of those four, the third needed #163, which has now cleared for the
-  shared `uac.rs` — though `wspr_app` itself still has to be run
-  against a radio. Slot alignment is software-only and is a
-  correctness bug, not a nicety: the slot boundary is bound to raw
-  sample count from UAC stream start rather than UTC :00/:02, so DT
-  reads against the wrong slot and every spot inherits that. It is
-  worth fixing *before* #163 clears rather than after, because it is
-  otherwise indistinguishable from a hardware problem the first time
-  real audio flows. The wsprnet sink is blocked on a live third-party
-  endpoint rather than on hardware, and carries a cost the others
-  don't — a malformed spot is publicly visible on wsprnet.
+  The alignment item turned out to be two bugs and one of them was not
+  in the capture at all. `WsprDdcSink` bound the slot boundary to raw
+  sample count from UAC stream start rather than UTC :00/:02 — and
+  captured 114 s back-to-back with no gap, a 114 s cadence against a
+  120 s grid, so even an aligned first slot slid 6 s per slot
+  afterwards. The second was the spot's *timestamp*: it was read from
+  the clock at decode time, ~200 s after the window it describes
+  opened, which names the slot after next. The capture window now
+  opens on a UTC boundary, re-measures the gap from UTC at every
+  boundary, and carries its own start time to the reporting side;
+  with no plausible clock it idles the fixed 6 s tail instead and says
+  so. The batch-splitting and gap arithmetic moved to
+  `mfsk_app_shared::capture_window`, which `hosttest/mfsk-app-shared`
+  compiles and tests — the FT8 path in `uac.rs` still has its own
+  equivalent, and FT4 (#354) has none yet.
+
+  What is left needs things a host cannot supply: the wsprnet sink is
+  blocked on a live third-party endpoint (and carries a cost the
+  others don't — a malformed spot is publicly visible), and the rest
+  needs `wspr_app` in front of a radio.
 
 - **#306** — FST4 on ESP32-S3: embedded feasibility. The umbrella, and
   the most active thread in the repo (VK3NV). Status as of 2026-08-17:

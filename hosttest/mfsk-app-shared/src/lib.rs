@@ -23,6 +23,12 @@ pub mod wsprnet;
 #[path = "../../../embedded-poc/mfsk-app-shared/src/civil_time.rs"]
 pub mod civil_time;
 
+/// The capture window a receiver opens on a UTC slot boundary — pure
+/// sample arithmetic over a phase reading passed in, so the batch
+/// splitting and the gap between windows are testable without a radio.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/capture_window.rs"]
+pub mod capture_window;
+
 /// WSPR band/dial-frequency table — pure data, no I/O.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/wspr_bands.rs"]
 pub mod wspr_bands;
