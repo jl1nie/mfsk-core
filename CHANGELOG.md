@@ -2,10 +2,49 @@
 
 ## 0.10.2 — the M5StickS3 USB-host claim said more than the measurement did
 
-**Why a patch bump.** Documentation and release tooling. No public API
-change, no decoder behaviour change, no measured sensitivity movement.
+**Why a patch bump.** Additive public API, an embedded-only fix,
+documentation and release tooling. No host decoder behaviour change and
+no measured sensitivity movement.
 This section accumulates until the next tag — see `CLAUDE.md`'s
 "Release cadence".
+
+### Fixed
+
+- **FT4's slot grid was steered from the wrong reference frame, and now
+  has tests (#354).** `apps/ft4.rs` read "samples to the next UTC
+  boundary" from the clock and handed it straight to
+  `SlotAccum::anchor_or_reanchor`, which counts from where the
+  *accumulator* sits in the sample stream. The two are the staged-but-
+  not-yet-fed backlog apart. During capture that is one UAC read
+  (~21 ms) and would not matter; once a slot it is the decode — the
+  ~1.4 s that piles up while `decode_slot` runs — which is past
+  `REANCHOR_THRESH_SAMPLES` and comparable to the whole ±1.0 s Δt
+  search. A grid that was not drifting therefore read as off by exactly
+  the backlog, in the same direction, every slot. The caller now
+  converts before it asks.
+
+  Found by reading, not by running: this path is inside `if live`, so
+  the baked-golden replay never reaches it and nothing had exercised it
+  yet.
+
+- **`embedded_shared::apps::ft4_grid::SlotGrid`** — the slot grid's
+  arithmetic, split out of `SlotAccum` with no DSP and no ESP-IDF in
+  it, so `hosttest/mfsk-app-shared` compiles it and its cases run in
+  CI. `ft4_rx` pulls in `esp_idf_svc` and spawns a second core, so it
+  only builds for Xtensa, and `embedded-poc` sits outside the host
+  workspace with neither CI lint nor CI test reaching it — what was
+  left checking this was a live run against a radio, which is the most
+  expensive instrument available and the last one to be pointed at an
+  off-by-one.
+
+  Behaviour is unchanged: the same skip/fill/carry the accumulator
+  already ran, moved where it can be tested. Seven cases, including the
+  reference-frame bug above, the trim landing at the next window close
+  rather than on a gap already set, the wrap that keeps a boundary just
+  behind the grid reading as a small negative error, and a correction
+  too large for one 0.725 s gap being carried rather than truncated.
+  `SlotAccum::phase_error` exposes the same number for the receiver to
+  log.
 
 ### Added
 

@@ -409,6 +409,20 @@ fn slot_loop() -> ! {
             if let Some(mut remain) =
                 mfsk_app_shared::time_sync::samples_to_next_slot_12k_ms(FT4_SLOT_MS)
             {
+                // Into the accumulator's frame before anything else.
+                //
+                // The clock answers "how far to the boundary from
+                // *now*"; `SlotAccum` needs "from where the
+                // accumulator is", and the two are `block` apart —
+                // audio that has arrived and not yet been fed. During
+                // capture that is one UAC read (~21 ms) and would not
+                // matter. Once a slot, it is the decode: `block` holds
+                // the ~1.4 s that piled up while `decode_slot` ran, and
+                // 1.4 s is past `REANCHOR_THRESH_SAMPLES` and
+                // comparable to the whole Δt search. Unconverted, a
+                // grid that is not drifting reads as off by exactly the
+                // backlog, in the same direction, every slot.
+                remain += block.len();
                 let was_aligned = accum.is_aligned();
                 // Fold in the persisted FT8 acquisition fix (#356b) on
                 // the first anchor only — after that the DT-median trim
@@ -419,12 +433,22 @@ fn slot_loop() -> ! {
                     let shifted = remain as i64 + (fix_us as i64 * 12 / 1000);
                     remain = shifted.rem_euclid(period) as usize;
                 }
+                let err = accum.phase_error(remain);
                 accum.anchor_or_reanchor(remain);
                 if !was_aligned && accum.is_aligned() {
                     log::info!(
                         "ft4_app: slot grid anchored to {} — {} ms to the next boundary",
                         if seeded_from_air { "the FT8 air fix" } else { "UTC" },
                         remain / 12,
+                    );
+                } else if let Some(delta) = err {
+                    // Past the threshold, so the grid just moved. Worth
+                    // a line: with a disciplined clock this is the
+                    // band's own offset, and with an RTC-seeded one it
+                    // is that chip's drift, accumulating in view.
+                    log::info!(
+                        "ft4_app: slot grid {:+} ms off the clock — trimmed",
+                        delta / 12
                     );
                 }
                 // Grid lock state (#356b). FT4's coarse stage has no DT

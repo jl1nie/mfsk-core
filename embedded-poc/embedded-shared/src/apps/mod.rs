@@ -12,6 +12,10 @@ pub mod fst4_bench;
 pub mod fst4_ddc_bench;
 #[cfg(feature = "ft4-bench")]
 pub mod ft4_bench;
+/// The FT4 slot grid's arithmetic, with no DSP and no ESP-IDF in it —
+/// gated on nothing, so `hosttest/mfsk-app-shared` can compile it and
+/// its cases run in CI. See its module doc for why that mattered.
+pub mod ft4_grid;
 #[cfg(feature = "ft4")]
 pub mod ft4_rx;
 pub mod rx_wavsim;
