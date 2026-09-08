@@ -424,9 +424,15 @@ version if you're picking up work.
   with no plausible clock it idles the fixed 6 s tail instead and says
   so. The batch-splitting and gap arithmetic moved to
   `mfsk_app_shared::capture_window`, which `hosttest/mfsk-app-shared`
-  compiles and tests. FT8 (`uac.rs`) and FT4 (`ft4_rx::SlotAccum`,
-  #354) keep their own bookkeeping: both capture a contiguous grid, so
-  neither needs the inter-slot gap this type manages.
+  compiles and tests. FT8 (`uac.rs`) and FT4 (`ft4_grid::SlotGrid`,
+  #354) keep their own bookkeeping. **Only FT8 captures a contiguous
+  grid** and so genuinely has no gap to manage; this paragraph said
+  the same of FT4 until 2026-09-09 and was wrong — FT4 closes at
+  6.775 s of a 7.5 s slot and discards the 8 700 samples between. What
+  is different about FT4 is that its grid also carries a phase
+  correction across window closes, which `CaptureWindow` has no state
+  for. Both are consolidation candidates, not cases this type already
+  covers.
 
   What is left needs things a host cannot supply: the wsprnet sink is
   blocked on a live third-party endpoint (and carries a cost the

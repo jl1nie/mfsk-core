@@ -37,6 +37,17 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
   expensive instrument available and the last one to be pointed at an
   off-by-one.
 
+  It also corrects a claim in three places — `capture_window.rs`'s
+  module doc, `ROADMAP.md`, and this file's own #313 entry below — that
+  FT8 and FT4 both capture a *contiguous* grid and so have no
+  inter-slot gap to manage. That is true of FT8 only. FT4 closes its
+  capture at 6.775 s of a 7.5 s slot and discards the 8 700 samples
+  between, which is the same skip `CaptureWindow` exists for; what is
+  actually different is that FT4's grid carries a phase correction
+  across window closes and `CaptureWindow` has no state of that kind.
+  Both remain consolidation candidates rather than one covering the
+  other, and neither is changed.
+
   Behaviour is unchanged: the same skip/fill/carry the accumulator
   already ran, moved where it can be tested. Seven cases, including the
   reference-frame bug above, the trim landing at the next window close
@@ -215,9 +226,10 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
   by `hosttest/mfsk-app-shared` rather than trusted: the app crate
   builds only for Xtensa, and this is the third slot grid in it. The
   other two — FT8's `Ft8ChunkSink` in `uac.rs`, FT4's
-  `ft4_rx::SlotAccum` (#354, shipped in 0.10.1) — capture a contiguous
-  grid where every sample belongs to some slot, so neither needed the
-  gap this type manages, and neither is changed here. `civil_time
+  `ft4_rx::SlotAccum` (#354, shipped in 0.10.1) — keep their own, and
+  neither is changed here. (This entry said both capture a contiguous
+  grid and so had no gap to manage. That is true of FT8 only; see the
+  correction in this section's own FT4 entry above.) `civil_time
   ::slot_start_unix` rounds a clock read to the nearest slot boundary
   rather than flooring, since the read that opens a window lands a few
   milliseconds either side of the boundary it aimed at and flooring
