@@ -14,12 +14,23 @@
 //! Written for `wspr_app`'s DDC sink (#313 item 1). All three
 //! receivers anchor to UTC now, each with its own bookkeeping: FT8's
 //! is in `m5stack-cores3-app`'s `uac.rs` (`Ft8ChunkSink`), FT4's in
-//! `embedded_shared::apps::ft4_rx::SlotAccum` (`anchor_or_reanchor`,
-//! #354). Both of those capture a *contiguous* grid — every sample
-//! belongs to some slot — which is why neither needed the gap this
-//! type exists to manage. Folding them onto it would be a
-//! consolidation, not a fix, and `uac.rs`'s version is
-//! hardware-verified, so neither is changed here.
+//! `embedded_shared::apps::ft4_grid::SlotGrid` (#354).
+//!
+//! **Only FT8 captures a contiguous grid**, where every sample belongs
+//! to some slot, and it is the one that genuinely has no gap to
+//! manage. This doc said the same of FT4 until 2026-09-09 and was
+//! wrong: FT4's capture closes at 6.775 s of a 7.5 s slot and it
+//! discards the 8 700 samples between, which is the same skip this
+//! type exists for. What is actually different about FT4 is that its
+//! grid also carries a phase correction across window closes — the
+//! DT-median trim, with a threshold below which the clock is ignored —
+//! and `CaptureWindow` has no state of that kind: it is re-armed by
+//! its caller each window.
+//!
+//! So the two are consolidation candidates rather than one covering
+//! the other, and `SlotGrid` is now the same shape of tested
+//! arithmetic. Neither is changed here, and `uac.rs`'s version is
+//! hardware-verified.
 //!
 //! The phase itself comes from [`crate::time_sync`]; this type only
 //! decides what to do with a batch given a phase reading, which is

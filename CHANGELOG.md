@@ -2,10 +2,60 @@
 
 ## 0.10.2 — the M5StickS3 USB-host claim said more than the measurement did
 
-**Why a patch bump.** Documentation and release tooling. No public API
-change, no decoder behaviour change, no measured sensitivity movement.
+**Why a patch bump.** Additive public API, an embedded-only fix,
+documentation and release tooling. No host decoder behaviour change and
+no measured sensitivity movement.
 This section accumulates until the next tag — see `CLAUDE.md`'s
 "Release cadence".
+
+### Fixed
+
+- **FT4's slot grid was steered from the wrong reference frame, and now
+  has tests (#354).** `apps/ft4.rs` read "samples to the next UTC
+  boundary" from the clock and handed it straight to
+  `SlotAccum::anchor_or_reanchor`, which counts from where the
+  *accumulator* sits in the sample stream. The two are the staged-but-
+  not-yet-fed backlog apart. During capture that is one UAC read
+  (~21 ms) and would not matter; once a slot it is the decode — the
+  ~1.4 s that piles up while `decode_slot` runs — which is past
+  `REANCHOR_THRESH_SAMPLES` and comparable to the whole ±1.0 s Δt
+  search. A grid that was not drifting therefore read as off by exactly
+  the backlog, in the same direction, every slot. The caller now
+  converts before it asks.
+
+  Found by reading, not by running: this path is inside `if live`, so
+  the baked-golden replay never reaches it and nothing had exercised it
+  yet.
+
+- **`embedded_shared::apps::ft4_grid::SlotGrid`** — the slot grid's
+  arithmetic, split out of `SlotAccum` with no DSP and no ESP-IDF in
+  it, so `hosttest/mfsk-app-shared` compiles it and its cases run in
+  CI. `ft4_rx` pulls in `esp_idf_svc` and spawns a second core, so it
+  only builds for Xtensa, and `embedded-poc` sits outside the host
+  workspace with neither CI lint nor CI test reaching it — what was
+  left checking this was a live run against a radio, which is the most
+  expensive instrument available and the last one to be pointed at an
+  off-by-one.
+
+  It also corrects a claim in three places — `capture_window.rs`'s
+  module doc, `ROADMAP.md`, and this file's own #313 entry below — that
+  FT8 and FT4 both capture a *contiguous* grid and so have no
+  inter-slot gap to manage. That is true of FT8 only. FT4 closes its
+  capture at 6.775 s of a 7.5 s slot and discards the 8 700 samples
+  between, which is the same skip `CaptureWindow` exists for; what is
+  actually different is that FT4's grid carries a phase correction
+  across window closes and `CaptureWindow` has no state of that kind.
+  Both remain consolidation candidates rather than one covering the
+  other, and neither is changed.
+
+  Behaviour is unchanged: the same skip/fill/carry the accumulator
+  already ran, moved where it can be tested. Seven cases, including the
+  reference-frame bug above, the trim landing at the next window close
+  rather than on a gap already set, the wrap that keeps a boundary just
+  behind the grid reading as a small negative error, and a correction
+  too large for one 0.725 s gap being carried rather than truncated.
+  `SlotAccum::phase_error` exposes the same number for the receiver to
+  log.
 
 ### Added
 
@@ -176,9 +226,10 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
   by `hosttest/mfsk-app-shared` rather than trusted: the app crate
   builds only for Xtensa, and this is the third slot grid in it. The
   other two — FT8's `Ft8ChunkSink` in `uac.rs`, FT4's
-  `ft4_rx::SlotAccum` (#354, shipped in 0.10.1) — capture a contiguous
-  grid where every sample belongs to some slot, so neither needed the
-  gap this type manages, and neither is changed here. `civil_time
+  `ft4_rx::SlotAccum` (#354, shipped in 0.10.1) — keep their own, and
+  neither is changed here. (This entry said both capture a contiguous
+  grid and so had no gap to manage. That is true of FT8 only; see the
+  correction in this section's own FT4 entry above.) `civil_time
   ::slot_start_unix` rounds a clock read to the nearest slot boundary
   rather than flooring, since the read that opens a window lands a few
   milliseconds either side of the boundary it aimed at and flooring

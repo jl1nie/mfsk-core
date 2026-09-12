@@ -50,6 +50,16 @@ pub mod spot_state;
 #[path = "../../../embedded-poc/mfsk-app-shared/src/parity.rs"]
 pub mod parity;
 
+/// The FT4 capture window's place on the slot grid — from
+/// `embedded-shared`, not `mfsk-app-shared`, and here rather than in a
+/// hosttest crate of its own because this one is what CI runs. It is
+/// integer arithmetic over sample counts with no dependency at all;
+/// the module it was split out of pulls in `esp_idf_svc` and so cannot
+/// be compiled off-target, which left a live run against a radio as
+/// the only thing checking it.
+#[path = "../../../embedded-poc/embedded-shared/src/apps/ft4_grid.rs"]
+pub mod ft4_grid;
+
 /// Slot-boundary time sync. Pulled in for `ClockSource`: the rule that
 /// only an NTP-disciplined clock may be written back to the RTC is the
 /// kind of thing that was wrong for months without anything failing
