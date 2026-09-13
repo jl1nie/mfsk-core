@@ -193,7 +193,7 @@ jobs:
   #
   # One crate ships binaries here: `mfsk-ffi`, the all-mode C ABI —
   # host only for now; Android arm64 deferred, see
-  # `mfsk-ffi/examples/kotlin_jni/` for the manual cargo-ndk build in
+  # `bindings/kotlin/` for the Kotlin binding and the cargo-ndk build in
   # the meantime. See `docs/reference/LIBRARY.md` §8-9.
   #
   # The esp32/esp32s3 tarballs that used to be built here came from
@@ -287,5 +287,5 @@ jobs:
             linux-x86_64) are attached below — see
             [`mfsk-ffi/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/mfsk-ffi/README.md)
             and the Kotlin/JNI scaffold in
-            [`mfsk-ffi/examples/kotlin_jni/`](https://github.com/jl1nie/mfsk-core/blob/main/mfsk-ffi/examples/kotlin_jni/)
+            [`bindings/kotlin/`](https://github.com/jl1nie/mfsk-core/blob/main/bindings/kotlin/)
             for the integration guide.

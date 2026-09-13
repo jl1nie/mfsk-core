@@ -1,0 +1,293 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// JNI shim between the Kotlin binding and the mfsk-ffi C ABI.
+//
+// The shim holds no decoder logic. It converts JNI types to the plain
+// handle/pointer pairs `libmfsk.so` expects and nothing else — which is
+// the point: everything interesting stays in one place, and a Kotlin
+// consumer gets the same behaviour a C consumer gets.
+//
+// It is written in C rather than Rust-with-`jni` on purpose. The shim
+// `#include`s the generated `mfsk.h`, so building it is another
+// compiler reading that header as a real translation unit — the check
+// that caught a macro-generated function missing from the header and an
+// out-of-range enum argument that segfaulted. A Rust shim would link
+// against the crate and see none of that.
+//
+// Build: `bindings/kotlin/build.sh`.
+
+#include <jni.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mfsk.h"
+
+#define CLS "io/github/mfskcore/"
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+static void throw_ise(JNIEnv* env, const char* msg) {
+    jclass c = (*env)->FindClass(env, "java/lang/IllegalStateException");
+    if (c != NULL) (*env)->ThrowNew(env, c, msg);
+}
+
+/// Report the ABI's own error text, which is more specific than a
+/// status code — the session carries its own slot precisely so a
+/// coroutine that hopped threads still sees it.
+static void throw_from_session(JNIEnv* env, MfskDecodeSession* s, const char* fallback) {
+    const char* detail = (s != NULL) ? mfsk_session_last_error(s) : NULL;
+    if (detail == NULL) detail = mfsk_last_error();
+    throw_ise(env, detail != NULL ? detail : fallback);
+}
+
+// ── Introspection ───────────────────────────────────────────────────
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_Mfsk_nativeAbiVersion(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)mfsk_abi_version();
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_Mfsk_nativeModeCount(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)mfsk_mode_count();
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_Mfsk_nativeModeAt(JNIEnv* env, jclass cls, jint index) {
+    (void)cls;
+    MfskMode m;
+    if (mfsk_mode_at((uint32_t)index, &m) != MFSK_STATUS_OK) {
+        throw_ise(env, "mfsk_mode_at: index out of range");
+        return -1;
+    }
+    return (jint)m;
+}
+
+JNIEXPORT jstring JNICALL
+Java_io_github_mfskcore_Mfsk_nativeModeName(JNIEnv* env, jclass cls, jint mode) {
+    (void)cls;
+    const char* name = mfsk_mode_name((uint32_t)mode);
+    return (name != NULL) ? (*env)->NewStringUTF(env, name) : NULL;
+}
+
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_Mfsk_nativeModeCaps(JNIEnv* env, jclass cls, jint mode) {
+    (void)env; (void)cls;
+    return (jlong)mfsk_mode_caps((uint32_t)mode);
+}
+
+/// Mode geometry as a flat `int[]`, so the binding needs no per-field
+/// JNI field lookups. Order matches `Mfsk.ModeInfo`'s constructor.
+JNIEXPORT jintArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativeModeInfo(JNIEnv* env, jclass cls, jint mode) {
+    (void)cls;
+    MfskModeInfo info;
+    memset(&info, 0, sizeof info);
+    info.size = sizeof info;
+    if (mfsk_mode_info((uint32_t)mode, &info) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+        return NULL;
+    }
+    jint vals[6] = {
+        (jint)info.ntones,
+        (jint)info.slot_samples_12k,
+        (jint)info.fec_k,
+        (jint)info.n_symbols,
+        (jint)info.decode_fft1_size,
+        (jint)(info.tx_start_offset_s * 1000.0f),  /* ms, to stay integral */
+    };
+    jintArray out = (*env)->NewIntArray(env, 6);
+    if (out == NULL) return NULL;
+    (*env)->SetIntArrayRegion(env, out, 0, 6, vals);
+    return out;
+}
+
+// ── Runtime ─────────────────────────────────────────────────────────
+
+/// Worker-thread hooks, which are the reason this exists.
+///
+/// A rayon worker is a plain pthread; JNI forbids touching a JNIEnv
+/// from a thread the VM has not attached. Without these the decode
+/// callback could not reach Kotlin at all from a worker thread.
+static JavaVM* g_vm = NULL;
+
+static void on_thread_start(uint32_t index, void* user) {
+    (void)index; (void)user;
+    if (g_vm == NULL) return;
+    JNIEnv* env = NULL;
+    (*g_vm)->AttachCurrentThread(g_vm, (void**)&env, NULL);
+}
+
+static void on_thread_stop(uint32_t index, void* user) {
+    (void)index; (void)user;
+    if (g_vm != NULL) (*g_vm)->DetachCurrentThread(g_vm);
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_Mfsk_nativeConfigureRuntime(
+        JNIEnv* env, jclass cls, jint threads, jint stackBytes) {
+    (void)cls;
+    (*env)->GetJavaVM(env, &g_vm);
+    MfskRuntimeConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.size = sizeof cfg;
+    cfg.num_threads = (uint32_t)(threads > 0 ? threads : 0);
+    cfg.thread_stack_bytes = (uint32_t)(stackBytes > 0 ? stackBytes : 0);
+    cfg.on_thread_start = on_thread_start;
+    cfg.on_thread_stop = on_thread_stop;
+    return (jint)mfsk_runtime_configure(&cfg);
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_Mfsk_nativeThreadCount(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)mfsk_runtime_thread_count();
+}
+
+// ── Session ─────────────────────────────────────────────────────────
+
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_MfskSession_nativeOpen(JNIEnv* env, jclass cls, jint mode) {
+    (void)cls;
+    MfskStatus st = MFSK_STATUS_INTERNAL;
+    MfskDecodeSession* s = mfsk_session_open((uint32_t)mode, NULL, &st);
+    if (s == NULL) {
+        throw_ise(env, mfsk_last_error());
+        return 0;
+    }
+    return (jlong)(intptr_t)s;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskSession_nativeClose(JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    mfsk_session_close((MfskDecodeSession*)(intptr_t)handle);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskSession_nativeAddCallsign(
+        JNIEnv* env, jclass cls, jlong handle, jstring call) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    const char* c = (*env)->GetStringUTFChars(env, call, NULL);
+    if (c == NULL) return;
+    const MfskStatus st = mfsk_session_add_callsign(s, c);
+    (*env)->ReleaseStringUTFChars(env, call, c);
+    if (st != MFSK_STATUS_OK) throw_from_session(env, s, "add_callsign failed");
+}
+
+/// Decode one slot, returning an `Object[]` of `MfskDecode`.
+///
+/// Rows come back in memory this shim owns for the length of the call —
+/// the ABI writes into a caller array, so there is nothing to free and
+/// no way to leak one if a Java exception unwinds past this frame.
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_MfskSession_nativeDecode(
+        JNIEnv* env, jclass cls, jlong handle,
+        jshortArray samples, jint sampleRate) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    if (s == NULL) { throw_ise(env, "session is closed"); return NULL; }
+
+    const jsize n = (*env)->GetArrayLength(env, samples);
+    jshort* pcm = (*env)->GetShortArrayElements(env, samples, NULL);
+    if (pcm == NULL) return NULL;
+
+    enum { kCap = 64 };
+    MfskDecode rows[kCap];
+    memset(rows, 0, sizeof rows);
+    for (int i = 0; i < kCap; ++i) rows[i].size = sizeof rows[i];
+    size_t len = 0;
+    const MfskStatus st = mfsk_session_decode_i16(
+        s, (const int16_t*)pcm, (size_t)n, (uint32_t)sampleRate,
+        NULL, rows, kCap, &len);
+    (*env)->ReleaseShortArrayElements(env, samples, pcm, JNI_ABORT);
+
+    if (st != MFSK_STATUS_OK) {
+        // A short buffer reports the count it needed, so say that
+        // rather than "decode failed" — it is a different problem.
+        if (len > kCap) {
+            throw_ise(env, "more decodes than this shim's row buffer holds");
+        } else {
+            throw_from_session(env, s, "decode failed");
+        }
+        return NULL;
+    }
+
+    jclass rowCls = (*env)->FindClass(env, CLS "MfskDecode");
+    if (rowCls == NULL) return NULL;
+    jmethodID ctor = (*env)->GetMethodID(
+        env, rowCls, "<init>", "(ILjava/lang/String;FFFFFIIIZ)V");
+    if (ctor == NULL) return NULL;
+
+    jobjectArray out = (*env)->NewObjectArray(env, (jsize)len, rowCls, NULL);
+    if (out == NULL) return NULL;
+    for (size_t i = 0; i < len; ++i) {
+        const MfskDecode* r = &rows[i];
+        jstring text = (*env)->NewStringUTF(env, r->text);
+        jobject obj = (*env)->NewObject(
+            env, rowCls, ctor,
+            (jint)r->mode, text,
+            (jfloat)r->freq_hz, (jfloat)r->dt_sec, (jfloat)r->snr_db,
+            (jfloat)r->sync_score, (jfloat)r->sync_cv,
+            (jint)r->hard_errors, (jint)r->info_bits, (jint)r->pass,
+            (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0));
+        if (obj == NULL) return NULL;
+        (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
+        (*env)->DeleteLocalRef(env, obj);
+        (*env)->DeleteLocalRef(env, text);
+    }
+    return out;
+}
+
+// ── Transmit ────────────────────────────────────────────────────────
+
+/// Pack → tones → PCM in one call, returning `short[]`.
+///
+/// The three stages are separate in C because a caller may want the
+/// tone sequence; a Kotlin consumer almost never does, so the binding
+/// offers the composition and keeps the stages out of the API surface
+/// until someone asks.
+JNIEXPORT jshortArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativeSynthesize(
+        JNIEnv* env, jclass cls, jint mode,
+        jstring a, jstring b, jstring c, jfloat freqHz) {
+    (void)cls;
+    const char* sa = (*env)->GetStringUTFChars(env, a, NULL);
+    const char* sb = (*env)->GetStringUTFChars(env, b, NULL);
+    const char* sc = (*env)->GetStringUTFChars(env, c, NULL);
+    uint8_t msg[77];
+    const MfskStatus pst = (sa && sb && sc) ? mfsk_pack77(sa, sb, sc, msg)
+                                            : MFSK_STATUS_INVALID_ARG;
+    if (sa) (*env)->ReleaseStringUTFChars(env, a, sa);
+    if (sb) (*env)->ReleaseStringUTFChars(env, b, sb);
+    if (sc) (*env)->ReleaseStringUTFChars(env, c, sc);
+    if (pst != MFSK_STATUS_OK) { throw_ise(env, mfsk_last_error()); return NULL; }
+
+    const size_t nTones = mfsk_symbol_count((uint32_t)mode);
+    if (nTones == 0) { throw_ise(env, "this mode has no tone stage"); return NULL; }
+    uint8_t* tones = (uint8_t*)malloc(nTones);
+    if (tones == NULL) { throw_ise(env, "out of memory"); return NULL; }
+    size_t got = 0;
+    if (mfsk_message_to_tones((uint32_t)mode, msg, tones, nTones, &got) != MFSK_STATUS_OK) {
+        free(tones);
+        throw_ise(env, mfsk_last_error());
+        return NULL;
+    }
+
+    const size_t nPcm = mfsk_synth_output_len((uint32_t)mode);
+    jshortArray out = (*env)->NewShortArray(env, (jsize)nPcm);
+    if (out == NULL) { free(tones); return NULL; }
+    jshort* dst = (*env)->GetShortArrayElements(env, out, NULL);
+    if (dst == NULL) { free(tones); return NULL; }
+    size_t wrote = 0;
+    const MfskStatus sst = mfsk_tones_to_i16(
+        (uint32_t)mode, tones, got, freqHz, 8000,
+        (int16_t*)dst, nPcm, &wrote);
+    free(tones);
+    (*env)->ReleaseShortArrayElements(env, out, dst, 0);
+    if (sst != MFSK_STATUS_OK) { throw_ise(env, mfsk_last_error()); return NULL; }
+    return out;
+}

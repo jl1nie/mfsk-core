@@ -83,9 +83,9 @@ use std::slice;
 use mfsk_core::ft8::decode as ft8;
 
 pub use mfsk_ffi_abi::{
-    MFSK_DECODE_FLAG_HASH_RESOLVED, MfskDecode, MfskDecodeDefaults, MfskDecodeDepth,
-    MfskDecodeOptions, MfskDecodeParams, MfskDecodeSession, MfskEqMode, MfskMode, MfskModeInfo,
-    MfskStatus, MfskStrictness, MfskSyncScale,
+    MfskDecode, MfskDecodeDefaults, MfskDecodeDepth, MfskDecodeOptions, MfskDecodeParams,
+    MfskDecodeSession, MfskEqMode, MfskMode, MfskModeInfo, MfskStatus, MfskStrictness,
+    MfskSyncScale,
 };
 /// Inline capacity of each `MfskDecodeParams` a-priori field.
 ///
@@ -101,6 +101,16 @@ pub const MFSK_AP_FIELD_LEN: usize = 16;
 /// Capacity of `MfskDecode::text`, including the NUL. See
 /// [`MFSK_AP_FIELD_LEN`] for why it is a literal.
 pub const MFSK_DECODE_TEXT_LEN: usize = 64;
+
+/// `MfskDecode::flags` bit 0: the text needed the session's callsign
+/// hash table to resolve a `<...>` reference.
+///
+/// A literal here for the same cbindgen reason as the capability bits —
+/// left in the dependency it reaches C as an undeclared identifier, so
+/// a consumer reading `flags` cannot name the bit. Found by the Kotlin
+/// JNI shim failing to compile, which is the first thing in this repo
+/// to read that field from C.
+pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Capability bits

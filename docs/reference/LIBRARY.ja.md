@@ -1723,26 +1723,57 @@ FST4-300 は **4 194 304** — 45 倍の開きがあり、他のどのフィー�
 
 ## 9. Kotlin / Android
 
-`mfsk-ffi/examples/kotlin_jni/` にそのまま使える雛形:
+`bindings/kotlin/` が保守対象のバインディングで、CI がソース変更のたび
+にデスクトップ JVM でビルドして実行する。旧 `mfsk-ffi/examples/kotlin_jni/`
+は v2 以前の ABI 向けで、結果をパイプ区切り文字列で渡しており、何にも
+ビルドされていなかった。置き換え済み。
 
 ```kotlin
-package io.github.mfskcore
+import io.github.mfskcore.*
 
-Mfsk.open(Mfsk.Protocol.FT4).use { dec ->
-    val pcm: ShortArray = /* 取得した音声 */
-    for (m in dec.decode(pcm, sampleRate = 12_000)) {
-        Log.i("ft4", "${m.freqHz} Hz  ${m.snrDb} dB  ${m.text}")
+// リストをハードコードせず、ビルドに何があるか聞く。
+val ft8 = Mfsk.modes().first { Mfsk.modeName(it) == "FT8" }
+
+// Android では最初のデコード前に一度呼ぶ（下記）。
+Mfsk.configureRuntime(threads = 2)
+
+MfskSession.open(ft8).use { s ->
+    for (r in s.decode(pcm, sampleRate = 12_000)) {
+        Log.i("ft8", "${r.freqHz} Hz  ${r.snrDb} dB  ${r.text}")
     }
 }
 ```
 
-* `libmfsk.so` は `cargo build --target aarch64-linux-android -p mfsk-ffi` で生成
-* `libmfsk_jni.so` は約 115 行の C shim、`ShortArray` ↔
-  `MfskResultList` を変換
-* `Mfsk.kt` は `AutoCloseable` な Kotlin クラス。`.use { }` で確実
-  に解放
+**形。** `Mfsk` が introspection と送信、`MfskSession` がデコードハンドル
+で `AutoCloseable`（`.use { }` で解放）。`MfskDecode` は `data class` ＝
+ハンドルではなく値で、ABI が呼び出し側のメモリに行を書くため。free する
+ものは無く、セッションより長生きしうるものも無い。
 
-詳細は `mfsk-ffi/examples/kotlin_jni/README.md` 参照。
+**`Mfsk.configureRuntime` が Android 固有の要点。** これを呼ばないと
+デコードは rayon のグローバルプールで走り、そのスレッドは VM がアタッチ
+していない素の pthread なので **JNIEnv に触れない** — ワーカースレッド
+からのコールバックは非推奨ではなく不正。シムのスレッドフックが
+`AttachCurrentThread`/`DetachCurrentThread` を呼ぶことでそれが可能になる。
+`num_cpus` × 2 MiB スタックで join されないプールから外す効果もある。
+
+**セッションはシングルスレッド。** 毎デコードで書き換えるハッシュ表を
+持つため、スレッドごとに1つ。別セッション同士の並行デコードは可。
+
+**シムは Rust の `jni` ではなく C で書いてある。** 生成された `mfsk.h`
+を `#include` するので、ビルド自体が「もう一つのコンパイラがヘッダを
+実翻訳単位として読む」検査になる。実際これで
+`MFSK_DECODE_FLAG_HASH_RESOLVED` がヘッダに無いことが判明した（定数が
+cbindgen の出力できない依存クレート側にあった）。Rust のシムはクレートに
+直接リンクするので、これを見つけられない。
+
+ビルドと実行: `bindings/kotlin/build.sh`（`JAVA_HOME` と `kotlinc` が要る）。
+Android 向けは `cargo ndk -t arm64-v8a build -p mfsk-ffi --release
+--no-default-features --features mobile` で `libmfsk.so` を作り、同じ
+ヘッダに対して NDK の clang でシムをビルドする。Android 15 端末が要求する
+16 KB ページのリンクフラグは `.cargo/config.toml` に入っている。
+
+**Swift はまだ無い。** macOS ランナーが要り、このリポジトリではタグ時に
+しか使えないので、いま書くと未検証のコードが `main` に乗る。
 
 ## 10. プロトコル対応状況
 

@@ -708,6 +708,51 @@ jobs:
             && { echo "::error::the mobile feature still pulls rayon"; exit 1; }
           echo "no rayon in the mobile dependency tree"
 
+  # ───────────────────────────────────────────────────────────────
+  # The Kotlin binding, built and run on a desktop JVM.
+  #
+  # The binding is thin, so the risk is not decoder behaviour — that is
+  # covered in Rust and by the C++ driver. The risk is **marshalling**:
+  # a JNI signature that disagrees with the Kotlin declaration fails at
+  # run time with `UnsatisfiedLinkError` rather than at compile time,
+  # and a field read in the wrong order produces plausible garbage. So
+  # the test round-trips real audio and checks the values.
+  #
+  # The shim is C and `#include`s the generated header, which makes this
+  # another compiler reading `mfsk.h` as a real translation unit. That
+  # has already earned its keep: writing it found `MFSK_DECODE_FLAG_-
+  # HASH_RESOLVED` missing from the header, because it lived in a
+  # dependency cbindgen cannot emit constants from.
+  #
+  # Android is built by the `cross` job; this one is the behavioural
+  # half, and a desktop JVM is the only place it can run per-PR.
+  # ───────────────────────────────────────────────────────────────
+  kotlin:
+    name: Kotlin binding (JVM)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install kotlinc
+        run: |
+          set -euo pipefail
+          VER=2.0.21
+          curl -fsSL -o /tmp/kotlin.zip \
+            "https://github.com/JetBrains/kotlin/releases/download/v$VER/kotlin-compiler-$VER.zip"
+          unzip -q /tmp/kotlin.zip -d /opt
+          echo "/opt/kotlinc/bin" >> "$GITHUB_PATH"
+
+      - name: Build the binding and run the JVM test
+        run: bash bindings/kotlin/build.sh
+
   docs:
     name: rustdoc
     runs-on: ubuntu-latest

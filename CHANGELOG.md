@@ -32,6 +32,19 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
 
 ### Fixed
 
+- **`MFSK_DECODE_FLAG_HASH_RESOLVED` was missing from the header.** The
+  constant lived in `mfsk-ffi-abi`, and cbindgen cannot emit a
+  dependency's constants — the same limitation that had already sent the
+  capability bits and the array lengths into `mfsk-ffi` proper. A C
+  consumer reading `MfskDecode::flags` could not name the bit.
+
+  Found by the Kotlin JNI shim failing to compile, which is the first
+  thing in this repo to read that field from C. The C++ driver did not
+  catch it because it never touches `flags` — which is the argument for
+  having more than one consumer compile against the header, and for the
+  shim being C rather than Rust-with-`jni`: a Rust shim links against
+  the crate and reads no header at all.
+
 - **The local pre-push gate built the `mfsk-ffi` feature combinations
   without testing them**, and that cost a red CI run. `mfsk_runtime_-
   configure` correctly reports `UNSUPPORTED` on a build with no thread
@@ -305,6 +318,36 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
   could merge green.
 
 ### Added
+
+- **`bindings/kotlin/` — a maintained Kotlin binding, built and run on a
+  desktop JVM by CI on every source change.** It replaces
+  `mfsk-ffi/examples/kotlin_jni/`, which was written against the pre-v2
+  ABI, marshalled results as pipe-separated strings, and was never built
+  by anything — `LIBRARY.md` §9 described its own Android text as
+  "aspirationally" written.
+
+  `Mfsk` carries introspection and transmit; `MfskSession` is the decode
+  handle and is `AutoCloseable`. `MfskDecode` is a `data class` — a
+  value, not a handle, because the ABI writes rows into caller memory,
+  so nothing has to be freed and nothing can outlive a session.
+
+  **`Mfsk.configureRuntime` is the Android-specific part**, and the
+  reason `mfsk_runtime_configure` exists. Rayon's global pool is plain
+  pthreads the VM has never attached, so nothing running on one can
+  touch a JNIEnv — a decode callback from a worker thread is not merely
+  discouraged there, it is illegal. The shim's thread hooks call
+  `AttachCurrentThread`/`DetachCurrentThread`, which is what makes it
+  legal.
+
+  The JVM test round-trips real audio and checks field values, because
+  the risk in a thin binding is marshalling rather than decoding: a JNI
+  signature that disagrees with the Kotlin declaration fails at run time
+  with `UnsatisfiedLinkError`, not at compile time, and a field read in
+  the wrong order produces plausible garbage.
+
+  Swift is deliberately absent: it needs a macOS runner, which this repo
+  only has at tag time, so writing it now would put unverified code on
+  `main`.
 
 - **`MFSK_API`, and a header that says how to link it.** Every
   declaration now carries an export/visibility macro: `__declspec`

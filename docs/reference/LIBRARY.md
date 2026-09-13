@@ -1873,26 +1873,62 @@ the boundary.
 
 ## 9. Kotlin / Android consumers
 
-`mfsk-ffi/examples/kotlin_jni/` ships a drop-in scaffold:
+`bindings/kotlin/` is a maintained binding, built and run on a desktop
+JVM by CI on every source change. It replaces the old
+`mfsk-ffi/examples/kotlin_jni/` scaffold, which was written against the
+pre-v2 ABI, marshalled results as pipe-separated strings, and was never
+built by anything.
 
 ```kotlin
-package io.github.mfskcore
+import io.github.mfskcore.*
 
-Mfsk.open(Mfsk.Protocol.FT4).use { dec ->
-    val pcm: ShortArray = /* captured audio */
-    for (m in dec.decode(pcm, sampleRate = 12_000)) {
-        Log.i("ft4", "${m.freqHz} Hz  ${m.snrDb} dB  ${m.text}")
+// Ask the build what it has rather than hardcoding a list.
+val ft8 = Mfsk.modes().first { Mfsk.modeName(it) == "FT8" }
+
+// On Android, call this once before the first decode — see below.
+Mfsk.configureRuntime(threads = 2)
+
+MfskSession.open(ft8).use { s ->
+    for (r in s.decode(pcm, sampleRate = 12_000)) {
+        Log.i("ft8", "${r.freqHz} Hz  ${r.snrDb} dB  ${r.text}")
     }
 }
 ```
 
-* `libmfsk.so` built via `cargo build --target aarch64-linux-android -p mfsk-ffi`.
-* `libmfsk_jni.so` built from the ~115-line C shim, marshals
-  `ShortArray` ↔ `MfskResultList`.
-* `Mfsk.kt` exposes an `AutoCloseable` Kotlin class; use with
-  `.use { }` to guarantee release.
+**Shape.** `Mfsk` holds introspection and transmit; `MfskSession` is the
+decode handle and is `AutoCloseable`, so `.use { }` releases it.
+`MfskDecode` is a `data class` — a value, not a handle, because the ABI
+writes rows into memory the caller owns. There is nothing to free and
+nothing that can outlive a session.
 
-Full build instructions in `mfsk-ffi/examples/kotlin_jni/README.md`.
+**`Mfsk.configureRuntime` is the Android-specific part.** Without it the
+decode runs on rayon's global pool, whose threads are plain pthreads the
+VM has never attached — so nothing running on one can touch a JNIEnv,
+and a decode callback from a worker thread is not merely discouraged but
+illegal. The shim's thread hooks call `AttachCurrentThread` and
+`DetachCurrentThread`, which is what makes that legal. It also takes the
+pool off `num_cpus` × 2 MiB stacks that never join.
+
+**A session is single-threaded.** It owns a callsign hash table it
+mutates on every decode. One per thread; concurrent decodes on separate
+sessions are supported.
+
+**The shim is C, not Rust-with-`jni`, on purpose.** It `#include`s the
+generated `mfsk.h`, so building it is another compiler reading that
+header as a real translation unit. That has already earned its keep:
+writing it found `MFSK_DECODE_FLAG_HASH_RESOLVED` absent from the
+header, because the constant lived in a dependency cbindgen cannot emit
+from. A Rust shim would link against the crate and see none of that.
+
+Build and test: `bindings/kotlin/build.sh` (needs `JAVA_HOME` and
+`kotlinc`). For Android, build `libmfsk.so` with
+`cargo ndk -t arm64-v8a build -p mfsk-ffi --release --no-default-features
+--features mobile` and compile the shim with the NDK's clang against the
+same header; `.cargo/config.toml` already carries the 16 KB page-size
+link flag every Android 15 device needs.
+
+**Swift is not here yet.** It needs a macOS runner, which this repo only
+has at tag time, so writing it now would put unverified code on `main`.
 
 ## 10. Protocol notes
 

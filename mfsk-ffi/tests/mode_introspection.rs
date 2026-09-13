@@ -54,6 +54,10 @@ fn abi_caps_match_the_registry() {
 fn abi_lengths_match_the_shared_definitions() {
     assert_eq!(MFSK_AP_FIELD_LEN, mfsk_ffi_abi::MFSK_AP_FIELD_LEN);
     assert_eq!(MFSK_DECODE_TEXT_LEN, mfsk_ffi_abi::MFSK_DECODE_TEXT_LEN);
+    assert_eq!(
+        MFSK_DECODE_FLAG_HASH_RESOLVED,
+        mfsk_ffi_abi::MFSK_DECODE_FLAG_HASH_RESOLVED
+    );
     // And they are the sizes the structs actually carry.
     let p = std::mem::MaybeUninit::<MfskDecodeParams>::zeroed();
     let p = unsafe { p.assume_init() };

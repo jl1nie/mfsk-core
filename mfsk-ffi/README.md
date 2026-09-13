@@ -66,7 +66,7 @@ cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
     build -p mfsk-ffi --release
 ```
 
-See `examples/kotlin_jni/` for a JNI skeleton (Kotlin wrapper + JNI
+See `../bindings/kotlin/` for the maintained binding (Kotlin wrapper + JNI
 C shim + build instructions for both desktop-JVM testing and Android).
 
 ## Quick start (C++)

@@ -46,6 +46,18 @@
 #define MFSK_DECODE_TEXT_LEN 64
 
 /**
+ * `MfskDecode::flags` bit 0: the text needed the session's callsign
+ * hash table to resolve a `<...>` reference.
+ *
+ * A literal here for the same cbindgen reason as the capability bits —
+ * left in the dependency it reaches C as an undeclared identifier, so
+ * a consumer reading `flags` cannot name the bit. Found by the Kotlin
+ * JNI shim failing to compile, which is the first thing in this repo
+ * to read that field from C.
+ */
+#define MFSK_DECODE_FLAG_HASH_RESOLVED (1 << 0)
+
+/**
  * Drives the `DecodeRequest` builder, i.e. `mfsk_decode_i16` and
  * friends apply. Modes without this bit decode through their own
  * entry point (Q65 takes a nominal start sample and a tolerance;
