@@ -1753,8 +1753,16 @@ MfskSession.open(ft8).use { s ->
 デコードは rayon のグローバルプールで走り、そのスレッドは VM がアタッチ
 していない素の pthread なので **JNIEnv に触れない** — ワーカースレッド
 からのコールバックは非推奨ではなく不正。シムのスレッドフックが
-`AttachCurrentThread`/`DetachCurrentThread` を呼ぶことでそれが可能になる。
-`num_cpus` × 2 MiB スタックで join されないプールから外す効果もある。
+`AttachCurrentThreadAsDaemon`/`DetachCurrentThread` を呼ぶことでそれが
+可能になる。`num_cpus` × 2 MiB スタックで join されないプールから外す
+効果もある。
+
+**通常の attach ではなく `AsDaemon` であることが要。** 自前でシムを書く
+コンシューマが最も間違えやすい点でもある。非デーモンの attach 済みスレッドは
+JVM を生かし続け、rayon のワーカーは join されないので、通常の
+`AttachCurrentThread` だと**すべて成功した後でプロセスが終了できなくなる**。
+このバインディングの CI 初回実行は1分で `ALL OK` を出した後、72分間停止
+したまま手動キャンセルされた。
 
 **セッションはシングルスレッド。** 毎デコードで書き換えるハッシュ表を
 持つため、スレッドごとに1つ。別セッション同士の並行デコードは可。

@@ -1905,9 +1905,17 @@ nothing that can outlive a session.
 decode runs on rayon's global pool, whose threads are plain pthreads the
 VM has never attached — so nothing running on one can touch a JNIEnv,
 and a decode callback from a worker thread is not merely discouraged but
-illegal. The shim's thread hooks call `AttachCurrentThread` and
+illegal. The shim's thread hooks call `AttachCurrentThreadAsDaemon` and
 `DetachCurrentThread`, which is what makes that legal. It also takes the
 pool off `num_cpus` × 2 MiB stacks that never join.
+
+**`AsDaemon` rather than the plain attach is load-bearing**, and it is
+the one thing a consumer writing their own shim is most likely to get
+wrong. A non-daemon attached thread keeps the JVM alive, and rayon's
+workers are never joined — so the ordinary `AttachCurrentThread` means
+the process hangs on exit after everything has otherwise succeeded. The
+first CI run of this binding printed `ALL OK` a minute in and then sat
+for seventy-two minutes until it was cancelled.
 
 **A session is single-threaded.** It owns a callsign hash table it
 mutates on every decode. One per thread; concurrent decodes on separate

@@ -111,13 +111,25 @@ Java_io_github_mfskcore_Mfsk_nativeModeInfo(JNIEnv* env, jclass cls, jint mode) 
 /// A rayon worker is a plain pthread; JNI forbids touching a JNIEnv
 /// from a thread the VM has not attached. Without these the decode
 /// callback could not reach Kotlin at all from a worker thread.
+///
+/// **`AsDaemon` is load-bearing.** `AttachCurrentThread` makes the
+/// thread a *non-daemon* JVM thread, and the JVM will not exit while
+/// one is alive. Rayon's pool threads are never joined — they live for
+/// the process — so attaching them the ordinary way means the JVM hangs
+/// on exit, forever, after everything has otherwise succeeded.
+///
+/// That is not hypothetical: the first CI run of this binding printed
+/// `ALL OK` sixty seconds in and then sat for seventy-two minutes until
+/// it was cancelled. `AttachCurrentThreadAsDaemon` is the fix, and
+/// `build.sh`'s `timeout` on the JVM stage is what turns a regression
+/// here into a failure instead of a stall.
 static JavaVM* g_vm = NULL;
 
 static void on_thread_start(uint32_t index, void* user) {
     (void)index; (void)user;
     if (g_vm == NULL) return;
     JNIEnv* env = NULL;
-    (*g_vm)->AttachCurrentThread(g_vm, (void**)&env, NULL);
+    (*g_vm)->AttachCurrentThreadAsDaemon(g_vm, (void**)&env, NULL);
 }
 
 static void on_thread_stop(uint32_t index, void* user) {

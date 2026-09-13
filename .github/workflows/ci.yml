@@ -711,21 +711,29 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   # The Kotlin binding, built and run on a desktop JVM.
   #
-  # The binding is thin, so the risk is not decoder behaviour — that is
-  # covered in Rust and by the C++ driver. The risk is **marshalling**:
-  # a JNI signature that disagrees with the Kotlin declaration fails at
-  # run time with `UnsatisfiedLinkError` rather than at compile time,
-  # and a field read in the wrong order produces plausible garbage. So
-  # the test round-trips real audio and checks the values.
+  # Per-PR, and it costs no wall clock: measured at ~70 s against the
+  # ~5 min `Test (tier A+B)` job that gates every run anyway. This was
+  # briefly moved to release time on the belief that it was slow; the
+  # 72-minute first run turned out to be a hang, not a cost (see
+  # `bindings/kotlin/native/mfsk_jni.c` on `AttachCurrentThreadAsDaemon`),
+  # and the measurement put it back.
+  #
+  # What it catches that no Rust test can: the binding is thin, so the
+  # risk is **marshalling**, not decoding. A JNI signature that
+  # disagrees with the Kotlin declaration fails at run time with
+  # `UnsatisfiedLinkError` rather than at compile time, and a field read
+  # in the wrong order produces plausible garbage. So the test
+  # round-trips real audio and checks the values.
   #
   # The shim is C and `#include`s the generated header, which makes this
   # another compiler reading `mfsk.h` as a real translation unit. That
-  # has already earned its keep: writing it found `MFSK_DECODE_FLAG_-
-  # HASH_RESOLVED` missing from the header, because it lived in a
-  # dependency cbindgen cannot emit constants from.
+  # has already earned its keep: writing it found
+  # `MFSK_DECODE_FLAG_HASH_RESOLVED` missing from the header, because it
+  # lived in a dependency cbindgen cannot emit constants from — and the
+  # C++ driver had missed it, never reading `flags`.
   #
-  # Android is built by the `cross` job; this one is the behavioural
-  # half, and a desktop JVM is the only place it can run per-PR.
+  # Android is built by the `cross` job; this is the behavioural half,
+  # and a desktop JVM is the only place it can run per-PR.
   # ───────────────────────────────────────────────────────────────
   kotlin:
     name: Kotlin binding (JVM)
@@ -750,6 +758,9 @@ jobs:
           unzip -q /tmp/kotlin.zip -d /opt
           echo "/opt/kotlinc/bin" >> "$GITHUB_PATH"
 
+      # Every stage inside is wrapped in `timeout` and announces itself,
+      # so a hang fails with a message naming the stage instead of
+      # stalling with nothing to diagnose from.
       - name: Build the binding and run the JVM test
         run: bash bindings/kotlin/build.sh
 

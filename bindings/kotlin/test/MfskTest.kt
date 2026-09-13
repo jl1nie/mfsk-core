@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // JVM test for the Kotlin binding. Run by `bindings/kotlin/build.sh`,
-// which CI runs on every source change.
+// which CI runs on every source change — about 70 seconds, against the
+// ~5 minute test job that gates the run anyway, so it costs no wall
+// clock.
 //
 // What this is for: the binding is thin, so the risk is not decoder
 // behaviour — that is tested in Rust and in the C++ driver. The risk is

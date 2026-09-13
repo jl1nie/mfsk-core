@@ -239,9 +239,24 @@ up.)
 
 CI (`ci.yml`) then runs: `changes` (a path filter that decides which sweep
 suites are relevant), `lint`, `test` (the tier matrix — see below),
-`feature-matrix`, `ffi` (`mfsk-ffi` Rust tests, the C++
-driver including its multi-thread stress, and `mfsk-app-shared-hosttest`),
+`feature-matrix`, `ffi` (`mfsk-ffi` Rust tests under both its feature
+sets, the C++ driver including its multi-thread stress, and
+`mfsk-app-shared-hosttest`), `cross` (windows-gnu + android arm64,
+asserting the DLL exports its symbols and the `.so` is 16 KB aligned),
 `docs`, and `publish-dry-run`. `RUSTFLAGS: -D warnings` is set globally.
+
+`kotlin` (the JNI shim + a JVM test over `bindings/kotlin/`) runs
+per-PR too. **None of these three cost wall clock**: measured at 120 s,
+90-140 s and ~70 s against the `Test (tier A+B)` job's ~300 s, which
+gates every run anyway. The Kotlin one was briefly moved to release time
+on the belief that it was slow — the 72-minute first run turned out to
+be a hang in the shim, not a cost, and the measurement put it back.
+
+**Swift/iOS is the one that is not here**, because it needs a macOS
+runner this repo only has at tag time.
+
+To run the Kotlin one yourself: `bindings/kotlin/build.sh`, which needs
+`JAVA_HOME` and `kotlinc` on PATH.
 
 ## Running tests — pick the tier, never blanket `--ignored`
 

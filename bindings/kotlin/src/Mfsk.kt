@@ -7,8 +7,8 @@
 // stays in `mfsk-ffi`, so a Kotlin consumer gets exactly what a C
 // consumer gets — including the refusals.
 //
-// Works on a desktop JVM and on Android with the NDK; the CI job builds
-// the shim and runs the test below on Linux every PR.
+// Works on a desktop JVM and on Android with the NDK; CI builds the
+// shim and runs the test below on Linux every PR.
 
 package io.github.mfskcore
 
@@ -110,6 +110,13 @@ object Mfsk {
     /// Returns false if a pool was already configured; it can only be
     /// built once, because rayon cannot rebuild one its threads may be
     /// parked in.
+    ///
+    /// The shim attaches workers with `AttachCurrentThreadAsDaemon`,
+    /// not `AttachCurrentThread`. The difference is whether the JVM can
+    /// ever exit: rayon's threads are never joined, and a non-daemon
+    /// attached thread keeps the VM alive forever. It matters on a
+    /// desktop JVM immediately and on Android whenever a process is
+    /// expected to end.
     fun configureRuntime(threads: Int = 0, stackBytes: Int = 0): Boolean =
         nativeConfigureRuntime(threads, stackBytes) == 0
 

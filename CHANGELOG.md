@@ -345,6 +345,24 @@ This section accumulates until the next tag — see `CLAUDE.md`'s
   with `UnsatisfiedLinkError`, not at compile time, and a field read in
   the wrong order produces plausible garbage.
 
+  **A real bug the JVM test found on its first run**: the shim attached
+  rayon's workers with `AttachCurrentThread`, which makes them
+  *non-daemon* JVM threads — and the JVM will not exit while one is
+  alive. Rayon's pool threads are never joined, so the process printed
+  `ALL OK` a minute in and then hung until the run was cancelled
+  seventy-two minutes later. `AttachCurrentThreadAsDaemon` is the fix.
+  `build.sh` now wraps every stage in `timeout` and announces each one,
+  so a regression here fails with a message naming the stage instead of
+  stalling with no output to diagnose from.
+
+  **It costs no wall clock**, which is worth stating because it was
+  briefly moved to release time on the belief that it was slow. Measured
+  on the runner: `kotlinc` install 1 s, and build + compile + test 55 s,
+  against the ~300 s `Test (tier A+B)` job that gates every run anyway.
+  The 72-minute first run was the hang below, not a cost. The same
+  measurement applies to the two jobs beside it — `ffi` at ~120 s and
+  `cross` at 90-140 s are both inside the same ceiling.
+
   Swift is deliberately absent: it needs a macOS runner, which this repo
   only has at tag time, so writing it now would put unverified code on
   `main`.
