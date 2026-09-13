@@ -1871,7 +1871,9 @@ must not be repeatable.
 reason: the crate version moves for reasons that have nothing to do with
 the boundary.
 
-## 9. Kotlin / Android consumers
+## 9. Kotlin / Android and Swift / Apple consumers
+
+### Kotlin / Android
 
 `bindings/kotlin/` is a maintained binding, built and run on a desktop
 JVM by CI on every source change. It replaces the old
@@ -1935,8 +1937,48 @@ Build and test: `bindings/kotlin/build.sh` (needs `JAVA_HOME` and
 same header; `.cargo/config.toml` already carries the 16 KB page-size
 link flag every Android 15 device needs.
 
-**Swift is not here yet.** It needs a macOS runner, which this repo only
-has at tag time, so writing it now would put unverified code on `main`.
+### Swift / Apple
+
+`bindings/swift/` is a SwiftPM package over the same ABI — not a
+scaffold to copy, a package to depend on:
+
+```swift
+import MfskCore
+
+let slot = try Mode.ft8.synthesiseSlot(call1: "CQ", call2: "JL1NIE", report: "PM95",
+                                       frequencyHz: 1500)
+let session = try DecodeSession(mode: .ft8)
+for row in try session.decode(slot) {
+    print(row.frequencyHz, row.snrDB, row.text)
+}
+```
+
+* `Mode` / `ModeInfo` / `Capabilities` wrap the introspection family, so
+  a picker is populated from the build rather than a hardcoded list.
+* `DecodeSession` covers every mode with `MFSK_CAP_DECODE_HANDLE`;
+  `WSPR`, `JT9` and `JT65` have their own entry points, as they do in C.
+* `CaptureStream` is the one-slot capture ring, and
+  `session.decode(stream)` is the fused decode that avoids copying a
+  slot out and back in.
+* Failures throw `MfskError`, which carries both the status code and the
+  reason string — reading the handle's own error slot first and the
+  thread-local global second, because `mfsk_session_copy_info` takes the
+  handle as `const*` and can only write the latter.
+* Q65's family is not wrapped: its sub-mode discriminants
+  (`MfskQ65SubMode`) never reach `mfsk.h`, since every `mfsk_q65_*`
+  function takes them as `uint32_t`, so a wrapper would have to hardcode
+  the numbering.
+
+`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 43
+tests; `bindings/swift/README.md` covers linking from a real app,
+including why the `mobile` feature set is the one an iOS build wants.
+
+**Unlike the Kotlin binding, no CI job covers this one** — the runners
+here are Linux, and the suite has so far been run on a Mac by hand
+(43 tests, ~0.4 s). It needs XCTest, which ships with Xcode rather than
+with the Command Line Tools; the script points `DEVELOPER_DIR` at Xcode
+when it has to. Until a runner covers it, "the Swift binding works"
+means someone ran that script.
 
 ## 10. Protocol notes
 

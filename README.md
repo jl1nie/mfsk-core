@@ -538,7 +538,7 @@ and per-mode performance characterisation.
   `DecodeRequest<P>`/`SniperRequest<P>` builders that pick the right
   NSPS and tone spacing from the type parameter.
 
-## C / C++ / Kotlin
+## C / C++ / Kotlin / Swift
 
 The `mfsk-ffi` sibling crate in this repository builds a
 `libmfsk.{so,a,dylib}` + `mfsk.h` (via `cbindgen`) that exposes the
@@ -553,7 +553,10 @@ cargo build -p mfsk-ffi --release
 
 See `mfsk-ffi/examples/cpp_smoke/` for an end-to-end driver test
 (including multi-threaded usage) and `bindings/kotlin/` for the
-maintained Kotlin/JNI binding, built and run by CI on every change. Embedded targets (ESP32-S3, RP2350,
+maintained Kotlin/JNI binding, built and run by CI on every change.
+`bindings/swift/` is a SwiftPM package over the same ABI for iOS/macOS —
+`import MfskCore`, then `DecodeSession(mode: .ft8)`; its README covers
+linking and what is not wrapped yet. Embedded targets (ESP32-S3, RP2350,
 Cortex-M) build `mfsk-core` directly with `alloc,ft8,fft-extern`; an
 ESP-IDF project needs a Rust staticlib shim for the FFT-planner symbol
 either way, so a C ABI in between adds nothing.

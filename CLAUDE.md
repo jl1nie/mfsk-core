@@ -55,6 +55,24 @@ build` would try to compile them with the stable toolchain and fail:
 host CI at all. That is intentional, and it is also why "CI is green" says
 nothing about an embedded change.
 
+`bindings/` is not Rust and so is in neither list — no `Cargo.toml`,
+so the workspace never sees either of them:
+
+- `bindings/kotlin/` — the maintained Kotlin/JNI binding (C shim +
+  `Mfsk.kt`), built and run on a desktop JVM by the `kotlin` CI job.
+  `bindings/kotlin/build.sh` is the local equivalent; it needs
+  `JAVA_HOME` and `kotlinc`.
+- `bindings/swift/` — a SwiftPM package over the same ABI
+  (`import MfskCore`). Its module map includes `mfsk-ffi/include/mfsk.h`
+  **in place**, so it follows the header rather than carrying a copy,
+  and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
+  XCTest suite (43 tests, ~0.4 s — XCTest needs Xcode, not just the
+  Command Line Tools, and the script points `DEVELOPER_DIR` at it when
+  it has to). **No CI job**: the runners are Linux. `ci.yml`'s `src`
+  path filter does not list `bindings/swift/**` either, so a
+  Swift-only change skips the build/test matrix the way a docs-only
+  change does — run the script, and say so.
+
 Everything else:
 
 - `docs/reference/` — the long-form manuals: `LIBRARY.md` (host API,
@@ -252,8 +270,13 @@ gates every run anyway. The Kotlin one was briefly moved to release time
 on the belief that it was slow — the 72-minute first run turned out to
 be a hang in the shim, not a cost, and the measurement put it back.
 
-**Swift/iOS is the one that is not here**, because it needs a macOS
-runner this repo only has at tag time.
+**The Swift binding is the one with no job.** `bindings/swift/` exists
+and passes its own 43 tests, but only where someone runs them: a macOS
+runner is what this repo has at tag time, and a Linux runner with
+swift-corelibs-xctest would cover everything except the Apple-platform
+link. Until one of those lands, a Swift-only change is verified by
+running `bindings/swift/scripts/test.sh` — CI staying green says
+nothing about it.
 
 To run the Kotlin one yourself: `bindings/kotlin/build.sh`, which needs
 `JAVA_HOME` and `kotlinc` on PATH.

@@ -1,0 +1,14 @@
+// The C ABI, imported straight from the header cbindgen generates into
+// `mfsk-ffi/include/`. Referenced in place rather than copied: CI's
+// "Committed headers are current" step already guarantees that file
+// matches the library, and a second copy here would be a second thing
+// to keep in step.
+//
+// `link "mfsk"` is `[lib] name = "mfsk"` in `mfsk-ffi/Cargo.toml`, i.e.
+// `libmfsk.dylib` / `libmfsk.a`. Where it is found is the caller's
+// `-L`; see `scripts/test.sh`.
+module CMfsk [system] {
+    header "../../../../mfsk-ffi/include/mfsk.h"
+    link "mfsk"
+    export *
+}

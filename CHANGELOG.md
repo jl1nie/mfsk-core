@@ -40,9 +40,10 @@ recorded in `FST4_BENCHMARK.md` §16 and `FT4_BENCHMARK.md` §48-49.
 **What is new rather than changed**, in one line each: a C ABI where
 FT8, FT4 and all five FST4 sub-modes are addressed, configured and
 reported identically, with capabilities published rather than guessed;
-a caller-supplied wall-clock budget for FT8/FT4/FST4; a maintained
-Kotlin binding; and Windows/Android cross-compilation checked on every
-PR. Swift is not here yet — it needs a macOS runner.
+a caller-supplied wall-clock budget for FT8/FT4/FST4; maintained
+Kotlin **and Swift** bindings; and Windows/Android cross-compilation
+checked on every PR. The Swift package is verified by running its own
+suite on a Mac rather than by CI, which still has Linux runners only.
 
 ### Fixed
 
@@ -58,6 +59,22 @@ PR. Swift is not here yet — it needs a macOS runner.
   having more than one consumer compile against the header, and for the
   shim being C rather than Rust-with-`jni`: a Rust shim links against
   the crate and reads no header at all.
+
+- **MSK144's `slot_samples_12k` was one sample short.** The row reported
+  863 where the frame is 864 samples (144 symbols x 6 at 12 kHz):
+  MSK144 has no registry entry, so its geometry is assembled by hand,
+  and that one field was computed as `(0.072_f32 * 12_000.0) as u32` —
+  0.072 is not exact in binary32 and `as u32` truncates rather than
+  rounds. Every other mode copies a precomputed integer, so this was the
+  only row that could be wrong, and it was. It is `NSPS * N_SYMBOLS`
+  now, which also makes the invariant visible at the site.
+
+  A caller sizing a buffer from that field got one sample less than a
+  frame, and `mfsk_stream_open` sizes its capture ring from it.
+  `mode_introspection.rs` now checks `slot_samples_12k == t_slot_s x
+  12 kHz` for **every** mode in the build rather than the four spelled
+  out by name, which is the assertion that would have caught it.
+  Found by the new Swift binding's geometry test.
 
 - **The local pre-push gate built the `mfsk-ffi` feature combinations
   without testing them**, and that cost a red CI run. `mfsk_runtime_-
@@ -400,9 +417,54 @@ PR. Swift is not here yet — it needs a macOS runner.
   measurement applies to the two jobs beside it — `ffi` at ~120 s and
   `cross` at 90-140 s are both inside the same ceiling.
 
-  Swift is deliberately absent: it needs a macOS runner, which this repo
-  only has at tag time, so writing it now would put unverified code on
-  `main`.
+  Swift follows in the next entry, on the same argument minus the CI
+  half: it was written where it could actually be run, so the objection
+  that stood here — unverified code on `main` — no longer applies. What
+  a macOS runner would buy is keeping it that way.
+
+- **Swift bindings — `bindings/swift`, a SwiftPM package over the C
+  ABI.** `Mode` / `ModeInfo` / `Capabilities` for introspection,
+  `DecodeParams` and `DecodeSession` for decoding (`[Int16]` and
+  `[Float]`), `CaptureStream` plus the fused `session.decode(stream)`
+  for live audio, `Message` and `Mode.synthesiseSlot` for the three
+  transmit stages, `WSPR` / `JT9` / `JT65` for the modes with no decode
+  handle, `Runtime` for the thread pool and the two version numbers.
+  Errors throw as `MfskError`, carrying the status code and the reason
+  string the call recorded.
+
+  `Package.swift` carries no `unsafeFlags` — a package that has them
+  cannot be used as a dependency, which for a binding is fatal — so the
+  library search path comes from the caller;
+  `bindings/swift/scripts/test.sh` supplies it, and on macOS also
+  points `DEVELOPER_DIR` at Xcode, since XCTest ships with Xcode and not
+  with the Command Line Tools. The module map includes
+  `mfsk-ffi/include/mfsk.h` in place rather than copying it: CI already
+  fails when that committed header drifts from the library, so there is
+  nothing further to keep in step.
+
+  43 tests, ~0.4 s, end-to-end in the same shape as the C++ driver —
+  synthesise a known message, decode the PCM back, check the text
+  survives — for FT8, FT4, WSPR, JT9, JT65 and the capture ring. Two of
+  them exist because they are the only ABI numbers the binding restates:
+  every `MfskMode` discriminant and every `MFSK_CAP_*` bit is checked
+  against the header's own constant. Q65 is deliberately absent and
+  `bindings/swift/README.md` says why: its sub-mode discriminants never
+  reach `mfsk.h`, so a wrapper would have to hardcode them.
+
+  **Not wired into CI**, which is the one way it is weaker than the
+  Kotlin binding above. That suite runs per-PR on a desktop JVM on a
+  Linux runner; this one was run on a Mac, by hand, and nothing stops
+  it rotting. A macOS runner is the obvious answer and is a cost
+  decision this entry does not make; a Linux runner with
+  swift-corelibs-xctest is the cheaper one, and would cover everything
+  here except the Apple-platform link.
+
+  Two library defects turned up while writing it, both fixed in this
+  section: MSK144's `slot_samples_12k` (above), and
+  `mfsk_session_copy_info` recording its failure only in the
+  thread-local slot because it takes the handle as `const*` — so the
+  binding reads the handle first and falls back to the global rather
+  than reporting "(no detail)" for that one call.
 
 - **`MFSK_API`, and a header that says how to link it.** Every
   declaration now carries an export/visibility macro: `__declspec`

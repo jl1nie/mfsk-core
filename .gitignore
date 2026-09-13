@@ -25,3 +25,8 @@ __pycache__
 # a text fix silently left a stale printable artifact behind unless the
 # same machine could also re-bake it.
 docs/presentations/*/*.pdf
+
+# SwiftPM build products for `bindings/swift` (255 MB of them: the
+# package builds a debug binary plus a module cache). `Package.resolved`
+# is absent deliberately — the package has no external dependencies.
+bindings/swift/.build/

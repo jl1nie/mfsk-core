@@ -1482,7 +1482,14 @@ pub unsafe extern "C" fn mfsk_mode_info(mode: u32, out: *mut MfskModeInfo) -> Mf
             info.n_sync = Msk144Geometry::N_SYNC;
             info.n_symbols = Msk144Geometry::N_SYMBOLS;
             info.t_slot_s = Msk144Geometry::T_FRAME_S;
-            info.slot_samples_12k = (Msk144Geometry::T_FRAME_S * 12_000.0) as u32;
+            // `NSPS * N_SYMBOLS`, not `T_FRAME_S * 12_000`: the latter
+            // is 863 rather than 864, because 0.072 is not exact in
+            // binary32 and `as u32` truncates. Every other mode copies a
+            // precomputed integer from the registry, so MSK144 was the
+            // only row that could be off by a sample — and it was. Found
+            // by the Swift binding's geometry test, which checks
+            // `slot_samples_12k == t_slot_s * 12 kHz` for every mode.
+            info.slot_samples_12k = Msk144Geometry::NSPS * Msk144Geometry::N_SYMBOLS;
             info.fec_k = Msk144Geometry::FEC_K;
             info.fec_n = Msk144Geometry::FEC_N;
             info.payload_bits = Msk144Geometry::PAYLOAD_BITS;

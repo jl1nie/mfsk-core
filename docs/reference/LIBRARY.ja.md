@@ -1721,7 +1721,9 @@ FST4-300 は **4 194 304** — 45 倍の開きがあり、他のどのフィー�
 `mfsk_abi_version()` が `mfsk_version()` と別なのも同じ理由で、
 クレートのバージョンは境界と無関係な理由で動く。
 
-## 9. Kotlin / Android
+## 9. Kotlin / Android と Swift / Apple
+
+### Kotlin / Android
 
 `bindings/kotlin/` が保守対象のバインディングで、CI がソース変更のたび
 にデスクトップ JVM でビルドして実行する。旧 `mfsk-ffi/examples/kotlin_jni/`
@@ -1780,8 +1782,47 @@ Android 向けは `cargo ndk -t arm64-v8a build -p mfsk-ffi --release
 ヘッダに対して NDK の clang でシムをビルドする。Android 15 端末が要求する
 16 KB ページのリンクフラグは `.cargo/config.toml` に入っている。
 
-**Swift はまだ無い。** macOS ランナーが要り、このリポジトリではタグ時に
-しか使えないので、いま書くと未検証のコードが `main` に乗る。
+### Swift / Apple
+
+`bindings/swift/` は同じ ABI 上の SwiftPM パッケージ。雛形をコピーする
+のではなく、そのまま依存に加える形:
+
+```swift
+import MfskCore
+
+let slot = try Mode.ft8.synthesiseSlot(call1: "CQ", call2: "JL1NIE", report: "PM95",
+                                       frequencyHz: 1500)
+let session = try DecodeSession(mode: .ft8)
+for row in try session.decode(slot) {
+    print(row.frequencyHz, row.snrDB, row.text)
+}
+```
+
+* `Mode` / `ModeInfo` / `Capabilities` が introspection 系のラッパ。
+  モード一覧をハードコードせず、ビルドが持つモードから UI を組める。
+* `DecodeSession` は `MFSK_CAP_DECODE_HANDLE` を持つ全モードを担当。
+  `WSPR` / `JT9` / `JT65` は C と同じく専用の入口を持つ。
+* `CaptureStream` が 1 スロット分のキャプチャリングで、
+  `session.decode(stream)` はスロットを取り出して渡し直す往復を省く
+  融合デコード。
+* 失敗は `MfskError` を throw し、ステータスコードと理由文字列の両方を
+  持つ。まずハンドル側のエラー欄を読み、無ければスレッドローカルの
+  グローバルへ落とす — `mfsk_session_copy_info` はハンドルを `const*`
+  で受けるため後者しか書けない。
+* Q65 系は未対応。`mfsk_q65_*` はサブモードを `uint32_t` で受けるため
+  `MfskQ65SubMode` が `mfsk.h` に出力されず、ラッパ側で番号を
+  ハードコードするしかないので、先に C 側を直すのが筋。
+
+`bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 43 個のテスト
+実行をまとめて行う。実アプリからのリンク方法（iOS ビルドで `mobile`
+フィーチャを選ぶ理由を含む）は `bindings/swift/README.md` 参照。
+
+**Kotlin 側と違い、CI ジョブは無い。** ランナーが Linux のみで、この
+スイートは今のところ Mac 上で手動実行している（43 テスト、約 0.4 秒）。
+XCTest は Command Line Tools ではなく Xcode に入っているため、必要なら
+スクリプトが `DEVELOPER_DIR` を Xcode に向ける。ランナーが付くまでは
+「Swift バインディングが動く」とはあのスクリプトを誰かが走らせたという
+意味になる。
 
 ## 10. プロトコル対応状況
 

@@ -197,6 +197,26 @@ fn mode_info_reports_real_geometry() {
     ] {
         assert_eq!(info(m).mode, m);
     }
+
+    // `slot_samples_12k` is documented as "`t_slot_s` made exact", and
+    // a caller sizes a capture ring from it, so the two must agree for
+    // every mode this build has — not just the ones spelled out above.
+    // MSK144 reported 863 against 864 until the row stopped computing
+    // it as `(0.072_f32 * 12_000.0) as u32`.
+    for index in 0..mfsk_mode_count() {
+        let mut m = MfskMode::Ft8;
+        assert_eq!(
+            unsafe { mfsk_mode_at(index, &mut m) },
+            MfskStatus::Ok,
+            "mode_at failed inside 0..count"
+        );
+        let i = info(m);
+        assert_eq!(
+            i.slot_samples_12k,
+            (i.t_slot_s * 12_000.0).round() as u32,
+            "{m:?}: slot_samples_12k disagrees with t_slot_s"
+        );
+    }
 }
 
 /// MSK144 is addressable and honest about being differently shaped.
@@ -209,6 +229,11 @@ fn msk144_is_addressable_and_says_what_it_is_not() {
     );
     let i = unsafe { i.assume_init() };
     assert_eq!(i.fec_k, 90, "LDPC(128,90)");
+    assert_eq!(
+        i.slot_samples_12k,
+        i.nsps * i.n_symbols,
+        "MSK144's frame is 144 symbols x 6 samples = 864 at 12 kHz"
+    );
     assert_eq!(
         i.caps & MFSK_CAP_DECODE_HANDLE,
         0,
