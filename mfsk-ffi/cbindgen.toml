@@ -43,6 +43,22 @@ after_includes = """
 [export]
 prefix = ""
 
+# cbindgen emits a type only where an exported signature mentions it, and
+# **every** entry point takes its mode as `uint32_t` on purpose: a
+# `#[repr(C)]` fieldless enum is an `int` to C, so reading an
+# out-of-range discriminant back as a Rust enum is undefined behaviour
+# (see `mode_of`'s comment, and the `mfsk_mode_name((MfskMode)9999)`
+# segfault that taught it). `MfskMode` still reaches C because
+# `MfskDecode`/`MfskModeInfo` carry it as a field; the two Q65 enums are
+# mentioned by nothing, so they were absent from the header and a C
+# consumer had to hardcode `MfskQ65SubMode`'s 0..=9 — the exact failure
+# this ABI's own introspection surface exists to end.
+#
+# Listing them here emits the declarations without changing a single
+# signature, which keeps both properties: named in C, `uint32_t` on the
+# wire.
+include = ["MfskQ65SubMode", "MfskQ65FadingModel"]
+
 [export.rename]
 # Public items already use the Mfsk* / mfsk_ prefix.
 

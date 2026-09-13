@@ -32,7 +32,10 @@ if let slot = try session.decode(stream) {
 bindings/swift/scripts/test.sh          # builds libmfsk, then swift test
 ```
 
-43 tests, ~0.4 s. The script builds `mfsk-ffi` with cargo and passes the
+43 tests, ~0.4 s. CI runs exactly this script on `macos-latest` (the
+`Swift binding (macOS) + iOS build` job), which is also where
+`aarch64-apple-ios` is built — both need Xcode, one for XCTest and one
+for the iOS SDK. The script builds `mfsk-ffi` with cargo and passes the
 `-L`/`-rpath` for `target/release`, because `Package.swift` deliberately
 carries no `unsafeFlags`: a package that has them cannot be used as a
 dependency at all, which for a binding is fatal. On macOS it also points
@@ -71,11 +74,15 @@ Two things the binding does rather than mirror:
 
 ## Not wrapped yet, and why
 
-* **Q65.** Its four decode entry points take a sub-mode discriminant
-  (`MfskQ65SubMode`, 0…9) that **cbindgen does not emit into
-  `mfsk.h`** — every `mfsk_q65_*` function takes it as `uint32_t`, so
-  the enum is unreachable from the header and a Swift wrapper would
-  have to hardcode the numbering. The fix belongs on the C side first.
+* **Q65 — the next slice, and no longer blocked.** Its four decode
+  entry points take a sub-mode discriminant that used to be unreachable
+  from the header: `MfskQ65SubMode` is mentioned by no signature, since
+  every `mfsk_q65_*` function takes it as `uint32_t` on purpose, so
+  cbindgen never emitted it and a wrapper would have had to hardcode
+  0…9. `cbindgen.toml` asks for it by name now, so the enum and
+  `MfskQ65FadingModel` are both declared in `mfsk.h` — wrapping the
+  family here is ordinary work rather than a decision about numbering.
+  It also wants `MfskCallsignHashTable`, which only Q65 takes.
 * **`mfsk_session_set_on_decode`.** Rows delivered as they are found,
   which only changes anything for a UI wanting partial results during a
   long slot. It needs a retained box and a trampoline; worth doing when
@@ -83,8 +90,6 @@ Two things the binding does rather than mirror:
 * **The two thread hooks** on `MfskRuntimeConfig`. They exist so an
   Android JNI consumer can `AttachCurrentThread` on each rayon worker;
   there is no Apple-platform equivalent to call.
-* **`MfskCallsignHashTable`.** Only Q65's family takes one; the session
-  owns its own table, which is what `addCallsign(_:)` reaches.
 
 ## Using it from an app
 

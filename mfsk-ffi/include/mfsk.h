@@ -414,6 +414,84 @@ typedef enum MfskEqMode {
 } MfskEqMode;
 
 /**
+ * Q65 sub-mode selector for the dedicated `mfsk_q65_*` function
+ * family. All sub-modes share the same FEC, sync layout and
+ * message format — only the T/R period and tone spacing change.
+ *
+ * Picked from the type-level `Q65a30 / Q65a60 / Q65b60 / Q65c60 /
+ * Q65d60 / Q65e60` ZSTs in `mfsk_core::q65`.
+ */
+typedef enum MfskQ65SubMode {
+    /**
+     * Q65-30A — 30 s slot, ×1 spacing. Terrestrial weak-signal
+     * HF/VHF and ionoscatter; the most common Q65 sub-mode.
+     */
+    MFSK_Q65_SUB_MODE_A30 = 0,
+    /**
+     * Q65-60A — 60 s slot, ×1 spacing. 6 m EME.
+     */
+    MFSK_Q65_SUB_MODE_A60 = 1,
+    /**
+     * Q65-60B — 60 s slot, ×2 spacing. 70 cm / 23 cm EME.
+     */
+    MFSK_Q65_SUB_MODE_B60 = 2,
+    /**
+     * Q65-60C — 60 s slot, ×4 spacing. ~3 GHz microwave EME.
+     */
+    MFSK_Q65_SUB_MODE_C60 = 3,
+    /**
+     * Q65-60D — 60 s slot, ×8 spacing. 5.7 / 10 GHz EME (libration
+     * spread requires the fast-fading metric).
+     */
+    MFSK_Q65_SUB_MODE_D60 = 4,
+    /**
+     * Q65-60E — 60 s slot, ×16 spacing. 24 GHz+ / extreme spread.
+     */
+    MFSK_Q65_SUB_MODE_E60 = 5,
+    /**
+     * Q65-15A — 15 s slot, ×1 spacing. Fastest wired Q65 sub-mode;
+     * stable terrestrial HF/VHF paths that prefer a shorter T/R
+     * period over Q65-30A's extra sensitivity margin. Appended
+     * after `E60` (rather than inserted before `A30`) to keep the
+     * existing discriminant values stable for this `#[repr(C)]` ABI.
+     */
+    MFSK_Q65_SUB_MODE_A15 = 6,
+    /**
+     * Q65-120D — 120 s slot, ×8 spacing. 10 GHz rainscatter/
+     * troposcatter.
+     */
+    MFSK_Q65_SUB_MODE_D120 = 7,
+    /**
+     * Q65-120E — 120 s slot, ×16 spacing. 6 m ionoscatter with
+     * wider Doppler than Q65-30A/60A comfortably tolerate.
+     */
+    MFSK_Q65_SUB_MODE_E120 = 8,
+    /**
+     * Q65-300A — 300 s slot, ×1 spacing. The deepest wired Q65
+     * sub-mode (~-34 dB AWGN threshold); optical (laser) scatter.
+     */
+    MFSK_Q65_SUB_MODE_A300 = 9,
+} MfskQ65SubMode;
+
+/**
+ * Channel-spread fading model used by `mfsk_q65_decode_fading`.
+ * Matches the Gaussian / Lorentzian calibration tables shipped
+ * with WSJT-X.
+ */
+typedef enum MfskQ65FadingModel {
+    /**
+     * Gaussian-spread channel — fits libration-limited EME and
+     * most AWGN-with-jitter scenarios.
+     */
+    MFSK_Q65_FADING_MODEL_GAUSSIAN = 0,
+    /**
+     * Lorentzian-spread channel — heavier tails; fits some
+     * ionoscatter / meteor-burst signatures.
+     */
+    MFSK_Q65_FADING_MODEL_LORENTZIAN = 1,
+} MfskQ65FadingModel;
+
+/**
  * Opaque callsign hash-table handle. Resolves `<...>` Type-4
  * hashed-callsign placeholders (WSJT-X's compact encoding for a
  * non-standard call paired with a standard one) in Q65 decode output.

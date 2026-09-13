@@ -68,10 +68,14 @@ so the workspace never sees either of them:
   and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
   XCTest suite (43 tests, ~0.4 s — XCTest needs Xcode, not just the
   Command Line Tools, and the script points `DEVELOPER_DIR` at it when
-  it has to). **No CI job**: the runners are Linux. `ci.yml`'s `src`
-  path filter does not list `bindings/swift/**` either, so a
-  Swift-only change skips the build/test matrix the way a docs-only
-  change does — run the script, and say so.
+  it has to). The `swift` CI job runs that same script on
+  `macos-latest`, and is also where `aarch64-apple-ios` is built: both
+  halves need Xcode, one for XCTest and one for the iOS SDK.
+
+A change confined to `bindings/**` runs the two binding jobs and
+nothing else — `ci.yml`'s path filter has a `bindings` output beside
+`src` for exactly that. Before it existed, `src` did not list
+`bindings/**`, so a Kotlin-only PR skipped the Kotlin job.
 
 Everything else:
 
@@ -270,16 +274,16 @@ gates every run anyway. The Kotlin one was briefly moved to release time
 on the belief that it was slow — the 72-minute first run turned out to
 be a hang in the shim, not a cost, and the measurement put it back.
 
-**The Swift binding is the one with no job.** `bindings/swift/` exists
-and passes its own 43 tests, but only where someone runs them: a macOS
-runner is what this repo has at tag time, and a Linux runner with
-swift-corelibs-xctest would cover everything except the Apple-platform
-link. Until one of those lands, a Swift-only change is verified by
-running `bindings/swift/scripts/test.sh` — CI staying green says
-nothing about it.
+`swift` (the XCTest suite over `bindings/swift/`, plus the
+`aarch64-apple-ios` cross-compile) runs per-PR too, and is **the one
+macOS runner in this repo**. It earns the slot twice: XCTest ships with
+Xcode rather than with the Command Line Tools, and the iOS SDK is
+Xcode's as well — which is why the `cross` job stops at Windows and
+Android rather than iOS being missing.
 
-To run the Kotlin one yourself: `bindings/kotlin/build.sh`, which needs
-`JAVA_HOME` and `kotlinc` on PATH.
+To run them yourself: `bindings/kotlin/build.sh` (needs `JAVA_HOME` and
+`kotlinc` on PATH) and `bindings/swift/scripts/test.sh` (needs Xcode;
+it will point `DEVELOPER_DIR` at it if `xcode-select` is on the CLT).
 
 ## Running tests — pick the tier, never blanket `--ignored`
 

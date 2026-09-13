@@ -68,6 +68,7 @@ jobs:
       q65: ${{ steps.filter.outputs.q65 }}
       uvpacket: ${{ steps.filter.outputs.uvpacket }}
       catchall: ${{ steps.filter.outputs.catchall }}
+      bindings: ${{ steps.filter.outputs.bindings }}
     steps:
       - uses: actions/checkout@v4
 
@@ -91,6 +92,19 @@ jobs:
               - 'mfsk-core/tests/**'
               - 'mfsk-core/examples/**'
               - 'mfsk-core/benches/**'
+              - 'mfsk-ffi/**'
+            # The two bindings live outside `src` on purpose: a change
+            # confined to `bindings/**` is not a reason to run the
+            # protocol tiers, the feature matrix or the cross-compiles.
+            # But it *is* a reason to run the binding jobs, and before
+            # this filter existed nothing did — `src` does not list
+            # `bindings/**`, so a Kotlin-only PR skipped the Kotlin job
+            # that exists to cover it. `mfsk-ffi/**` is in here as well
+            # because both bindings compile against the header it
+            # generates.
+            bindings:
+              - '.github/workflows/**'
+              - 'bindings/**'
               - 'mfsk-ffi/**'
             ft8:
               - '.github/workflows/**'
@@ -631,10 +645,11 @@ jobs:
   # are build checks, not a port, and they are cheap enough to run on
   # every PR that touches source.
   #
-  # iOS is deliberately absent: it needs a macOS runner, and the plan
-  # puts it at tag time. The risk that buys is a break landing on main
-  # and being found at release; it is mitigated by iOS being a pure
-  # cross-compile of code Linux and Android already exercise here.
+  # iOS is **not** here, and is not missing either: it needs a macOS
+  # runner, so it is built by the `swift` job below, which needs one
+  # anyway to run the Swift binding's tests. Keeping it there rather
+  # than adding a second macOS job is the only reason this list stops
+  # at Windows and Android.
   # ───────────────────────────────────────────────────────────────
   cross:
     name: Cross-compile (windows-gnu, android)
@@ -738,7 +753,10 @@ jobs:
   kotlin:
     name: Kotlin binding (JVM)
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
+    if: >-
+      github.event_name == 'push'
+      || needs.changes.outputs.src == 'true'
+      || needs.changes.outputs.bindings == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -763,6 +781,65 @@ jobs:
       # stalling with nothing to diagnose from.
       - name: Build the binding and run the JVM test
         run: bash bindings/kotlin/build.sh
+
+  # ───────────────────────────────────────────────────────────────
+  # The Swift binding, plus the iOS cross-compile that has nowhere
+  # else to live.
+  #
+  # This is the repo's only macOS runner, and it earns the slot twice:
+  # XCTest ships with Xcode rather than with the Command Line Tools, so
+  # the 43-test suite needs one; and `aarch64-apple-ios` needs the iOS
+  # SDK, which only Xcode has. Before this job, `bindings/swift` was
+  # checked by whoever remembered to run its script, and the iOS target
+  # the C ABI claims to support was built by nothing at all.
+  #
+  # Same argument as the Kotlin job for what it covers: the binding is
+  # thin, so the risk is marshalling rather than decoding. The suite
+  # round-trips real audio per mode and pins the ABI numbers the Swift
+  # side restates — the `MfskMode` discriminants, the `MFSK_CAP_*` bits
+  # and `MFSK_DECODE_FLAG_HASH_RESOLVED` — against the header's own
+  # constants.
+  # ───────────────────────────────────────────────────────────────
+  swift:
+    name: Swift binding (macOS) + iOS build
+    needs: changes
+    if: >-
+      github.event_name == 'push'
+      || needs.changes.outputs.src == 'true'
+      || needs.changes.outputs.bindings == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, with the iOS target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+          echo "developer dir: $(xcode-select -p)"
+
+      # Builds `libmfsk` with cargo and runs `swift test` against it,
+      # passing the `-L`/`-rpath` that `Package.swift` deliberately does
+      # not hardcode — `unsafeFlags` there would bar the package from
+      # being used as a dependency at all.
+      - name: Build libmfsk and run the Swift tests
+        run: bash bindings/swift/scripts/test.sh
+
+      # The iOS build the `cross` job cannot do. `mobile` is the feature
+      # set an iOS app wants — no rayon, so no unattached pool of
+      # `num_cpus` threads with 2 MiB stacks sitting outside GCD's QoS
+      # and still running when the app is backgrounded.
+      - name: Cross-compile for iOS (device, mobile feature set)
+        run: |
+          cargo build -p mfsk-ffi --release --target aarch64-apple-ios \
+            --no-default-features --features mobile
+          ls -l target/aarch64-apple-ios/release/libmfsk.a
 
   docs:
     name: rustdoc

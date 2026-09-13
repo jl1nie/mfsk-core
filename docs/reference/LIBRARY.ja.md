@@ -1809,20 +1809,21 @@ for row in try session.decode(slot) {
   持つ。まずハンドル側のエラー欄を読み、無ければスレッドローカルの
   グローバルへ落とす — `mfsk_session_copy_info` はハンドルを `const*`
   で受けるため後者しか書けない。
-* Q65 系は未対応。`mfsk_q65_*` はサブモードを `uint32_t` で受けるため
-  `MfskQ65SubMode` が `mfsk.h` に出力されず、ラッパ側で番号を
-  ハードコードするしかないので、先に C 側を直すのが筋。
+* Q65 系はまだ未対応。ただし ABI 側の理由は解消済みで、
+  `MfskQ65SubMode` と `MfskQ65FadingModel` は `mfsk.h` に出力される
+  ようになった（`cbindgen.toml` の `[export] include`）。0…9 を直書き
+  せず名前で指定できる。
 
 `bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 43 個のテスト
 実行をまとめて行う。実アプリからのリンク方法（iOS ビルドで `mobile`
 フィーチャを選ぶ理由を含む）は `bindings/swift/README.md` 参照。
 
-**Kotlin 側と違い、CI ジョブは無い。** ランナーが Linux のみで、この
-スイートは今のところ Mac 上で手動実行している（43 テスト、約 0.4 秒）。
-XCTest は Command Line Tools ではなく Xcode に入っているため、必要なら
-スクリプトが `DEVELOPER_DIR` を Xcode に向ける。ランナーが付くまでは
-「Swift バインディングが動く」とはあのスクリプトを誰かが走らせたという
-意味になる。
+CI はこのスクリプトを `macos-latest` で実行する（`Swift binding
+(macOS) + iOS build` ジョブ）。同じジョブで `aarch64-apple-ios` の
+クロスビルドも行う — XCTest は Command Line Tools ではなく Xcode に
+入っており、iOS SDK も Xcode にしか無いので、1 つのランナーで両方を
+賄える。ローカルでは `xcode-select` が CLT を指していればスクリプトが
+`DEVELOPER_DIR` を Xcode に向ける。
 
 ## 10. プロトコル対応状況
 

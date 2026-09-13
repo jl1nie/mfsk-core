@@ -47,6 +47,37 @@ suite on a Mac rather than by CI, which still has Linux runners only.
 
 ### Fixed
 
+- **The two Q65 enums never reached the header, so C callers wrote
+  `0`.** Every `mfsk_q65_*` function takes its sub-mode as `uint32_t`,
+  and deliberately so: a `#[repr(C)]` fieldless enum is an `int` to C,
+  so reading an out-of-range discriminant back as a Rust enum is
+  undefined behaviour — the lesson `mfsk_mode_name((MfskMode)9999)`
+  taught by segfaulting. But cbindgen emits a type only where a
+  signature mentions it, so `MfskQ65SubMode` (0..=9, and *not* in
+  slot-length order — `A15` is 6) and `MfskQ65FadingModel` were
+  declared nowhere, and a C consumer had to hardcode the numbering. In
+  a release whose headline is that the ABI can be asked what it
+  supports, that is the wrong way round.
+
+  `cbindgen.toml` lists both under `[export] include` now: the
+  declarations appear, with their doc comments, and **no signature
+  changes** — named in C, `uint32_t` on the wire. The C++ driver gained
+  a Q65-30A round trip written by name (`MFSK_Q65_SUB_MODE_A30`,
+  `MFSK_Q65_FADING_MODEL_GAUSSIAN`), which both proves the emission
+  from a real translation unit and is the first time the driver
+  exercised Q65 at all — it previously touched the family only to check
+  that a bogus sub-mode is rejected.
+
+- **A binding-only PR ran neither binding job.** `ci.yml`'s `changes`
+  filter had no path list covering `bindings/**`, and both jobs were
+  gated on `src`, which does not mention it — so a PR that changed only
+  the Kotlin binding skipped the Kotlin job that exists to cover it.
+  There is a `bindings` output beside `src` now (`bindings/**` plus
+  `mfsk-ffi/**`, since both bindings compile against the generated
+  header), and the two jobs are gated on either. A `bindings/**`-only
+  change still skips the protocol tiers, the feature matrix and the
+  cross-compiles, which is the point.
+
 - **`MFSK_DECODE_FLAG_HASH_RESOLVED` was missing from the header.** The
   constant lived in `mfsk-ffi-abi`, and cbindgen cannot emit a
   dependency's constants — the same limitation that had already sent the
@@ -422,6 +453,20 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   that stood here — unverified code on `main` — no longer applies. What
   a macOS runner would buy is keeping it that way.
 
+- **A `swift` CI job, and with it the iOS build the `cross` job could
+  not do.** `macos-latest`, running `bindings/swift/scripts/test.sh`
+  (43 XCTest cases) and then `cargo build -p mfsk-ffi --release --target
+  aarch64-apple-ios --no-default-features --features mobile`. One
+  runner covers both because both halves need Xcode — XCTest ships with
+  it rather than with the Command Line Tools, and the iOS SDK is its
+  too.
+
+  This is the repo's first macOS runner. `ci.yml` used to say iOS was
+  "deliberately absent … the plan puts it at tag time", accepting that
+  a break would land on `main` and be found at release; the platform
+  the C ABI claims to support was built by nothing. Both halves are now
+  covered per-PR by one job.
+
 - **Swift bindings — `bindings/swift`, a SwiftPM package over the C
   ABI.** `Mode` / `ModeInfo` / `Capabilities` for introspection,
   `DecodeParams` and `DecodeSession` for decoding (`[Int16]` and
@@ -451,13 +496,9 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   `bindings/swift/README.md` says why: its sub-mode discriminants never
   reach `mfsk.h`, so a wrapper would have to hardcode them.
 
-  **Not wired into CI**, which is the one way it is weaker than the
-  Kotlin binding above. That suite runs per-PR on a desktop JVM on a
-  Linux runner; this one was run on a Mac, by hand, and nothing stops
-  it rotting. A macOS runner is the obvious answer and is a cost
-  decision this entry does not make; a Linux runner with
-  swift-corelibs-xctest is the cheaper one, and would cover everything
-  here except the Apple-platform link.
+  Covered by CI on the same terms as the Kotlin binding — see the
+  `swift` job below, which runs this suite on `macos-latest` and builds
+  `aarch64-apple-ios` while it is there.
 
   Two library defects turned up while writing it, both fixed in this
   section: MSK144's `slot_samples_12k` (above), and

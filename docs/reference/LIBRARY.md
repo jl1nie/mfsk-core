@@ -1964,21 +1964,20 @@ for row in try session.decode(slot) {
   reason string — reading the handle's own error slot first and the
   thread-local global second, because `mfsk_session_copy_info` takes the
   handle as `const*` and can only write the latter.
-* Q65's family is not wrapped: its sub-mode discriminants
-  (`MfskQ65SubMode`) never reach `mfsk.h`, since every `mfsk_q65_*`
-  function takes them as `uint32_t`, so a wrapper would have to hardcode
-  the numbering.
+* Q65's family is not wrapped yet, but no longer for a reason in the
+  ABI: `MfskQ65SubMode` and `MfskQ65FadingModel` are declared in
+  `mfsk.h` now (`cbindgen.toml`'s `[export] include`), so the sub-modes
+  can be named from C and Swift alike rather than written as 0…9.
 
 `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 43
 tests; `bindings/swift/README.md` covers linking from a real app,
 including why the `mobile` feature set is the one an iOS build wants.
 
-**Unlike the Kotlin binding, no CI job covers this one** — the runners
-here are Linux, and the suite has so far been run on a Mac by hand
-(43 tests, ~0.4 s). It needs XCTest, which ships with Xcode rather than
-with the Command Line Tools; the script points `DEVELOPER_DIR` at Xcode
-when it has to. Until a runner covers it, "the Swift binding works"
-means someone ran that script.
+CI runs that same script on `macos-latest` (`Swift binding (macOS) +
+iOS build`), which is also where `aarch64-apple-ios` is cross-compiled:
+XCTest ships with Xcode rather than with the Command Line Tools, and the
+iOS SDK only Xcode has, so one runner covers both. Locally the script
+points `DEVELOPER_DIR` at Xcode when `xcode-select` is on the CLT.
 
 ## 10. Protocol notes
 

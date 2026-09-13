@@ -563,6 +563,60 @@ void test_jt65() {
     if (!rows.contains("K1ABC")) fail("JT65", "expected K1ABC");
 }
 
+// Q65, and the two enums that reach C only because `cbindgen.toml`
+// asks for them. Every `mfsk_q65_*` function takes its sub-mode as
+// `uint32_t` — deliberately, so an out-of-range value from a config
+// file is a C int rather than an invalid Rust discriminant — which left
+// `MfskQ65SubMode` mentioned by no signature and therefore absent from
+// the header. A consumer had to write `0` and remember what it meant.
+// This test is written the way it should now be possible to write it:
+// by name.
+void test_q65() {
+    std::printf("\n— Q65-30A: encode by name, plain and fading decode\n");
+
+    size_t need = 0;
+    mfsk_encode_q65(MFSK_Q65_SUB_MODE_A30, "CQ", "K1ABC", "FN42", 1000.0f,
+                    nullptr, 0, &need);
+    if (need == 0) {
+        fail("Q65", mfsk_last_error());
+        return;
+    }
+    std::vector<float> pcm(need);
+    size_t got = 0;
+    if (mfsk_encode_q65(MFSK_Q65_SUB_MODE_A30, "CQ", "K1ABC", "FN42", 1000.0f,
+                        pcm.data(), pcm.size(), &got) != MFSK_STATUS_OK) {
+        fail("Q65", mfsk_last_error());
+        return;
+    }
+
+    Rows rows;
+    if (mfsk_q65_decode(MFSK_Q65_SUB_MODE_A30, pcm.data(), got, 12000, nullptr,
+                        rows.items, 16, &rows.len) != MFSK_STATUS_OK) {
+        fail("Q65", mfsk_last_error());
+        return;
+    }
+    print_rows("Q65-30A", rows);
+    if (!rows.contains("K1ABC")) fail("Q65", "expected K1ABC");
+    for (size_t i = 0; i < rows.len; ++i) {
+        if (rows.items[i].mode != MFSK_MODE_Q65A30) {
+            fail("Q65", "a Q65-30A row should report MFSK_MODE_Q65A30");
+        }
+    }
+
+    // The fading decoder takes its channel model by name too. 0.1 s is
+    // the b90_ts a clean signal tolerates; the point here is the
+    // argument, not the sensitivity.
+    Rows fading;
+    if (mfsk_q65_decode_fading(MFSK_Q65_SUB_MODE_A30, pcm.data(), got, 12000,
+                               0.1f, MFSK_Q65_FADING_MODEL_GAUSSIAN, nullptr,
+                               fading.items, 16, &fading.len) != MFSK_STATUS_OK) {
+        fail("Q65 fading", mfsk_last_error());
+        return;
+    }
+    print_rows("Q65-30A fading", fading);
+    if (!fading.contains("K1ABC")) fail("Q65 fading", "expected K1ABC");
+}
+
 // ── Streaming delivery ──────────────────────────────────────────────
 //
 // A real C callback invoked from actual C++-compiled code, through the
@@ -978,6 +1032,7 @@ int main() {
     test_wspr();
     test_jt9();
     test_jt65();
+    test_q65();
     test_threads_one_session_per_thread();
     test_threads_mixed_modes();
     test_null_handling();
