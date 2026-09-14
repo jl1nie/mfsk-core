@@ -1766,6 +1766,16 @@ JVM を生かし続け、rayon のワーカーは join されないので、通�
 このバインディングの CI 初回実行は1分で `ALL OK` を出した後、72分間停止
 したまま手動キャンセルされた。
 
+**`session.onDecode { row -> … }`** はデコードが見つかるたびに行を渡す
+（`decode` の戻り値はそのまま権威）。長いスロットの途中で画面に出したい
+UI 向け。呼び出しは rayon のワーカースレッドから来るので listener は並行
+安全である必要があり、Android で View を触るならメインルーパーへ post
+すること。`configureRuntime` を先に呼ぶ必要は**ない** — VM が知らない
+スレッドならシムが daemon として attach し、メソッド ID はラムダの合成
+クラスではなく**インタフェース**から取る。listener が例外を投げても
+rayon ワーカーには伝播先が無いので、出力して clear し、デコードは続行
+する。
+
 **セッションはシングルスレッド。** 毎デコードで書き換えるハッシュ表を
 持つため、スレッドごとに1つ。別セッション同士の並行デコードは可。
 
@@ -1805,6 +1815,10 @@ for row in try session.decode(slot) {
 * `CaptureStream` が 1 スロット分のキャプチャリングで、
   `session.decode(stream)` はスロットを取り出して渡し直す往復を省く
   融合デコード。
+* `session.onDecode { row in … }` は見つかった順に行を流す（戻り値の
+  配列と併存）。`desktop` ビルドでは rayon ワーカーから並行に呼ばれ、
+  `mobile` では単一スレッド・候補順。クロージャは差し替えかセッション
+  解放まで retain され、ハンドルを閉じる前にクリアされる。
 * 失敗は `MfskError` を throw し、ステータスコードと理由文字列の両方を
   持つ。まずハンドル側のエラー欄を読み、無ければスレッドローカルの
   グローバルへ落とす — `mfsk_session_copy_info` はハンドルを `const*`
@@ -1822,7 +1836,7 @@ for row in try session.decode(slot) {
   少し落ちるのではなく**デコードが消える**。`Q65Tests` が両方向を固定
   している。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 54 個のテスト
+`bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 61 個のテスト
 実行をまとめて行う。実アプリからのリンク方法（iOS ビルドで `mobile`
 フィーチャを選ぶ理由を含む）は `bindings/swift/README.md` 参照。
 

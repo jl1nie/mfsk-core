@@ -42,6 +42,15 @@ data class MfskDecode(
     val modeName: String get() = Mfsk.modeName(mode)
 }
 
+/// Rows delivered as they are found, for a host that wants to show
+/// them before the call returns.
+///
+/// A `fun interface`, so a lambda is enough:
+/// `session.onDecode { row -> ... }`.
+fun interface MfskDecodeListener {
+    fun onDecode(row: MfskDecode)
+}
+
 /// Geometry a host needs to size a buffer or place a transmission.
 data class MfskModeInfo(
     val ntones: Int,
@@ -166,8 +175,11 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
         fun open(mode: Int): MfskSession = MfskSession(nativeOpen(mode))
 
         @JvmStatic private external fun nativeOpen(mode: Int): Long
-        @JvmStatic private external fun nativeClose(handle: Long)
+        @JvmStatic private external fun nativeClose(handle: Long, callbackCtx: Long)
         @JvmStatic private external fun nativeAddCallsign(handle: Long, call: String)
+        @JvmStatic private external fun nativeSetOnDecode(
+            handle: Long, listener: MfskDecodeListener?, oldCtx: Long,
+        ): Long
         @JvmStatic private external fun nativeDecode(
             handle: Long, samples: ShortArray, sampleRate: Int,
         ): Array<MfskDecode>
@@ -177,6 +189,33 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
     fun decode(samples: ShortArray, sampleRate: Int = 12_000): List<MfskDecode> {
         check(handle != 0L) { "session is closed" }
         return nativeDecode(handle, samples, sampleRate).toList()
+    }
+
+    /// Deliver decodes to `listener` as they are found, **in addition
+    /// to** the list [decode] returns. Pass null to stop.
+    ///
+    /// The returned list stays authoritative: this exists for a UI that
+    /// wants rows during a long slot — FST4-300's is five minutes —
+    /// rather than as a second way to read the result.
+    ///
+    /// **Threading.** With rayon (the `desktop` feature) the listener
+    /// is called from worker threads, possibly several at once, in
+    /// completion order. Without it (`mobile`) there is one thread and
+    /// candidate order. So the listener must be safe to call
+    /// concurrently, and an Android one that touches the UI has to post
+    /// to the main looper rather than assume it is on it.
+    ///
+    /// Unlike a callback on a plain pthread, this one does not require
+    /// [Mfsk.configureRuntime] first: the shim attaches the worker
+    /// thread itself if the VM has never seen it, as a daemon so the
+    /// JVM can still exit.
+    ///
+    /// An exception thrown by the listener cannot propagate into a
+    /// rayon worker: it is printed and swallowed, and the decode
+    /// continues.
+    fun onDecode(listener: MfskDecodeListener?) {
+        check(handle != 0L) { "session is closed" }
+        callbackCtx = nativeSetOnDecode(handle, listener, callbackCtx)
     }
 
     /// Teach the session a callsign, so a later slot's `<...>`
@@ -189,8 +228,17 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
 
     override fun close() {
         if (handle != 0L) {
-            nativeClose(handle)
+            // The native side clears the callback before closing and
+            // then frees the context: the session holds a raw pointer
+            // to it, so the order is not decorative.
+            nativeClose(handle, callbackCtx)
+            callbackCtx = 0L
             handle = 0L
         }
     }
+
+    /// Opaque pointer to the shim's per-session callback state — the
+    /// listener's global ref and the cached IDs. Owned here so there is
+    /// exactly one, and freed by [close].
+    private var callbackCtx: Long = 0L
 }

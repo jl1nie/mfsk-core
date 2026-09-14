@@ -112,6 +112,38 @@ fun main() {
         }
     }
 
+    // ── Callback delivery ───────────────────────────────────────────
+    //
+    // The listener can be called from a rayon worker, so the sink is
+    // synchronized. What is checked is that the rows arriving early are
+    // the rows the call returns — the array stays authoritative.
+    MfskSession.open(ft8).use { s ->
+        val streamed = java.util.Collections.synchronizedList(mutableListOf<MfskDecode>())
+        s.onDecode { row -> streamed.add(row) }
+
+        val rows = s.decode(slot)
+        checkEq("the listener saw every row", streamed.size, rows.size)
+        check("the listener's rows are the returned rows",
+              streamed.map { it.text }.toSet() == rows.map { it.text }.toSet())
+        check("a streamed row carries its fields",
+              streamed.all { it.mode == ft8 && Math.abs(it.freqHz - 1500.0f) < 10.0f })
+
+        val afterFirst = streamed.size
+        s.onDecode(null)
+        val second = s.decode(slot)
+        checkEq("null stops delivery", streamed.size, afterFirst)
+        check("and does not stop decoding", second.isNotEmpty())
+
+        // A listener that throws cannot propagate into a worker thread,
+        // so the shim reports and clears it. The stack trace below is
+        // expected output, not a failure.
+        println("  --   the next stack trace is deliberate (throwing listener)")
+        s.onDecode { throw RuntimeException("listener blew up") }
+        val third = s.decode(slot)
+        check("a throwing listener does not break the decode", third.isNotEmpty())
+        s.onDecode(null)
+    }
+
     // ── Refusals reach Kotlin as exceptions ─────────────────────────
     if (wspr != null) {
         var threw = false

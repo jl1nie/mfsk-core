@@ -1923,6 +1923,17 @@ for seventy-two minutes until it was cancelled.
 mutates on every decode. One per thread; concurrent decodes on separate
 sessions are supported.
 
+**`session.onDecode { row -> … }`** delivers rows as they are found, on
+top of the list `decode` returns — for a UI that wants something on
+screen before a long slot finishes. The listener is called from rayon
+workers, so it must be safe concurrently, and an Android one that
+touches views has to post to the main looper. It does **not** require
+`configureRuntime` first: the shim attaches the worker itself (as a
+daemon) if the VM has never seen it, and takes the listener's method ID
+from the *interface* rather than from a lambda's spun class. An
+exception it throws is printed and cleared — a rayon worker has nowhere
+to propagate one — and the decode continues.
+
 **The shim is C, not Rust-with-`jni`, on purpose.** It `#include`s the
 generated `mfsk.h`, so building it is another compiler reading that
 header as a real translation unit. That has already earned its keep:
@@ -1960,6 +1971,12 @@ for row in try session.decode(slot) {
 * `CaptureStream` is the one-slot capture ring, and
   `session.decode(stream)` is the fused decode that avoids copying a
   slot out and back in.
+* `session.onDecode { row in … }` streams rows as they are found,
+  alongside the array the call returns. On a `desktop` build the
+  closure runs on rayon workers, possibly concurrently; on `mobile`
+  it is one thread in candidate order. The closure is retained until
+  replaced or the session is released, and cleared before the handle
+  closes.
 * Failures throw `MfskError`, which carries both the status code and the
   reason string — reading the handle's own error slot first and the
   thread-local global second, because `mfsk_session_copy_info` takes the
@@ -1976,7 +1993,7 @@ for row in try session.decode(slot) {
   removes the decode instead of costing a fraction of a dB. Both
   directions are pinned in `Q65Tests`.
 
-`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 54
+`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 61
 tests; `bindings/swift/README.md` covers linking from a real app,
 including why the `mobile` feature set is the one an iOS build wants.
 

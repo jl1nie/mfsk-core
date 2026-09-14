@@ -32,7 +32,7 @@ if let slot = try session.decode(stream) {
 bindings/swift/scripts/test.sh          # builds libmfsk, then swift test
 ```
 
-54 tests, ~8 s — most of it Q65, which decodes a 30 s slot five ways.
+61 tests, ~9 s — most of it Q65, which decodes a 30 s slot five ways.
 CI runs exactly this script on `macos-latest` (the
 `Swift binding (macOS) + iOS build` job), which is also where
 `aarch64-apple-ios` is built — both need Xcode, one for XCTest and one
@@ -58,6 +58,7 @@ referencing it means there is nothing here to keep in step.
 | Live capture | `CaptureStream`, `DecodeSession.decode(_ stream:)` | `mfsk_stream_*`, `mfsk_session_decode_stream` |
 | Hashed callsigns | `DecodeSession.addCallsign(_:)` | `mfsk_session_add_callsign` |
 | Raw FEC bits | `DecodeSession.informationBits(at:)` | `mfsk_session_copy_info` |
+| Rows as they are found | `DecodeSession.onDecode { row in … }` | `mfsk_session_set_on_decode` |
 | Transmit | `Message` (`standard` / `type1` / `freeText` / `type4`), `Mode.synthesiseFrame`, `Mode.synthesiseSlot` | `mfsk_pack77*`, `mfsk_unpack77`, `mfsk_message_to_tones`, `mfsk_tones_to_i16` / `_f32` |
 | Handle-less modes | `WSPR`, `JT9`, `JT65` | `mfsk_encode_wspr` / `_jt9` / `_jt65`, `mfsk_wspr_decode`, `mfsk_jt9_decode_at`, `mfsk_jt65_decode_at` |
 | Q65 | `Q65` (four strategies), `Q65SubMode`, `Q65FadingModel`, `CallsignHashTable` | `mfsk_encode_q65`, `mfsk_q65_decode` / `_with_ap` / `_fading` / `_with_ap_list`, `mfsk_callsign_hash_table_*` |
@@ -92,10 +93,6 @@ both directions so the doc cannot drift from the behaviour.
 
 ## Not wrapped yet, and why
 
-* **`mfsk_session_set_on_decode`.** Rows delivered as they are found,
-  which only changes anything for a UI wanting partial results during a
-  long slot. It needs a retained box and a trampoline; worth doing when
-  something asks for it.
 * **The two thread hooks** on `MfskRuntimeConfig`. They exist so an
   Android JNI consumer can `AttachCurrentThread` on each rayon worker;
   there is no Apple-platform equivalent to call.

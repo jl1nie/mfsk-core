@@ -35,7 +35,54 @@ public final class DecodeSession {
         self.mode = mode
     }
 
-    deinit { mfsk_session_close(handle) }
+    deinit {
+        // Clear the callback before closing: the C side holds a raw
+        // pointer to `callbackBox`, and this object's own deinit is the
+        // last moment at which that pointer is still valid.
+        if callbackBox != nil { mfsk_session_set_on_decode(handle, nil, nil) }
+        mfsk_session_close(handle)
+    }
+
+    /// Deliver decodes through `handler` as they are found, **in
+    /// addition to** the array `decode(_:)` returns at the end of the
+    /// call. Pass nil to stop.
+    ///
+    /// The returned array stays authoritative: a UI that wants to show
+    /// rows during a 300 s FST4 slot uses this, and anything that wants
+    /// the definitive set uses the return value.
+    ///
+    /// **Threading.** On a `desktop` build (rayon) the handler fires
+    /// from worker threads, possibly several concurrently, in
+    /// completion order. On a `mobile` build there is one thread and
+    /// candidate order — a *stronger* contract, and the honest answer
+    /// to what dropping rayon costs. Write the handler to be safe under
+    /// the weaker one: this binding does not serialise it for you,
+    /// because a lock here would be invisible overhead for the single
+    /// threaded build and the wrong lock for most callers on the other.
+    ///
+    /// The handler is retained until it is replaced or the session is
+    /// released, and it is cleared before the handle is closed — so it
+    /// cannot fire into a deallocated closure.
+    public func onDecode(_ handler: ((Decode) -> Void)?) throws {
+        guard let handler else {
+            try check(mfsk_session_set_on_decode(handle, nil, nil), detail: failureDetail())
+            callbackBox = nil
+            return
+        }
+        let box = CallbackBox(handler)
+        // Unretained on purpose: the box is owned by `callbackBox`
+        // below for exactly as long as the C side can call it, so
+        // passing a retained pointer would leak it on every replacement.
+        let context = Unmanaged.passUnretained(box).toOpaque()
+        let status = mfsk_session_set_on_decode(handle, decodeTrampoline, context)
+        guard status == MFSK_STATUS_OK else {
+            throw MfskError(status: status, detail: failureDetail())
+        }
+        callbackBox = box
+    }
+
+    /// Keeps the handler alive while the C side holds a pointer to it.
+    private var callbackBox: CallbackBox?
 
     /// The last error recorded **on this handle**.
     ///
@@ -151,4 +198,23 @@ public final class DecodeSession {
         guard let params else { return body(nil) }
         return params.withC { body($0) }
     }
+}
+
+
+/// The Swift closure a `MfskDecodeCallback` reaches, boxed so it has a
+/// stable address to hand across the boundary.
+final class CallbackBox {
+    let handler: (Decode) -> Void
+    init(_ handler: @escaping (Decode) -> Void) { self.handler = handler }
+}
+
+/// The C function pointer itself. A top-level function, not a closure:
+/// only a capture-free closure converts to `@convention(c)`, and the
+/// state travels through `user_data` instead.
+private let decodeTrampoline: MfskDecodeCallback = { row, context in
+    guard let row, let context else { return }
+    // The row pointer is valid only for the duration of this call, so
+    // `Decode.init` copying every field — including the text out of the
+    // fixed-size C array — is what makes the value safe to keep.
+    Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue().handler(Decode(row.pointee))
 }

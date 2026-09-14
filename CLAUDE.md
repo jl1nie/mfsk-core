@@ -66,7 +66,7 @@ so the workspace never sees either of them:
   (`import MfskCore`). Its module map includes `mfsk-ffi/include/mfsk.h`
   **in place**, so it follows the header rather than carrying a copy,
   and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
-  XCTest suite (54 tests, ~8 s — XCTest needs Xcode, not just the
+  XCTest suite (61 tests, ~9 s — XCTest needs Xcode, not just the
   Command Line Tools, and the script points `DEVELOPER_DIR` at it when
   it has to). The `swift` CI job runs that same script on
   `macos-latest`, and is also where `aarch64-apple-ios` is built: both

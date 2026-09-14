@@ -125,6 +125,20 @@ Java_io_github_mfskcore_Mfsk_nativeModeInfo(JNIEnv* env, jclass cls, jint mode) 
 /// here into a failure instead of a stall.
 static JavaVM* g_vm = NULL;
 
+/// The VM, captured the moment the library loads.
+///
+/// `nativeConfigureRuntime` used to be the only thing that set this,
+/// which was enough while the hooks were the only users. The decode
+/// callback is not: it can fire on a thread of rayon's **global** pool,
+/// which nothing attaches, in a process that never called
+/// `configureRuntime` at all. Taking the VM here removes that ordering
+/// requirement entirely.
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    (void)reserved;
+    g_vm = vm;
+    return JNI_VERSION_1_6;
+}
+
 static void on_thread_start(uint32_t index, void* user) {
     (void)index; (void)user;
     if (g_vm == NULL) return;
@@ -141,7 +155,7 @@ JNIEXPORT jint JNICALL
 Java_io_github_mfskcore_Mfsk_nativeConfigureRuntime(
         JNIEnv* env, jclass cls, jint threads, jint stackBytes) {
     (void)cls;
-    (*env)->GetJavaVM(env, &g_vm);
+    (void)env;  /* the VM comes from JNI_OnLoad */
     MfskRuntimeConfig cfg;
     memset(&cfg, 0, sizeof cfg);
     cfg.size = sizeof cfg;
@@ -158,6 +172,95 @@ Java_io_github_mfskcore_Mfsk_nativeThreadCount(JNIEnv* env, jclass cls) {
     return (jint)mfsk_runtime_thread_count();
 }
 
+// ── Rows ────────────────────────────────────────────────────────────
+
+/// `MfskDecode`'s constructor signature, in one place: it is the thing
+/// that fails at run time rather than compile time when a field is
+/// added on the Kotlin side and forgotten here.
+static jmethodID row_ctor(JNIEnv* env, jclass rowCls) {
+    return (*env)->GetMethodID(env, rowCls, "<init>", "(ILjava/lang/String;FFFFFIIIZ)V");
+}
+
+/// One C row as one Kotlin `MfskDecode`. Every field is copied — the
+/// row pointer a callback receives is valid only for that call.
+static jobject make_row(JNIEnv* env, jclass rowCls, jmethodID ctor, const MfskDecode* r) {
+    jstring text = (*env)->NewStringUTF(env, r->text);
+    if (text == NULL) return NULL;
+    jobject obj = (*env)->NewObject(
+        env, rowCls, ctor,
+        (jint)r->mode, text,
+        (jfloat)r->freq_hz, (jfloat)r->dt_sec, (jfloat)r->snr_db,
+        (jfloat)r->sync_score, (jfloat)r->sync_cv,
+        (jint)r->hard_errors, (jint)r->info_bits, (jint)r->pass,
+        (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0));
+    (*env)->DeleteLocalRef(env, text);
+    return obj;
+}
+
+// ── Decode callback ─────────────────────────────────────────────────
+//
+// `mfsk_session_set_on_decode` delivers rows as they are found, on top
+// of the array written at the end of the call. Two JNI hazards, both
+// load-bearing:
+//
+// 1. **The thread may not be attached.** With rayon the callback fires
+//    from a worker; only a *private* pool built by `configureRuntime`
+//    gets the attach hooks, so a process that never called it has
+//    workers the VM has never seen. The callback attaches on demand,
+//    `AsDaemon` for the same reason the hooks use it — a non-daemon
+//    attach on a thread that is never joined keeps the JVM alive
+//    forever.
+// 2. **`FindClass` on such a thread looks in the wrong place.** It
+//    resolves through the *system* class loader when there is no Java
+//    frame on the stack, which cannot see application classes. So the
+//    class and both method IDs are looked up on the thread that
+//    installs the listener, where a Java frame exists, and kept as
+//    global references.
+
+typedef struct {
+    jobject listener;   /* global ref to MfskDecodeListener */
+    jclass rowCls;      /* global ref to MfskDecode */
+    jmethodID onDecode;
+    jmethodID rowCtor;
+} CallbackCtx;
+
+static void callback_ctx_free(JNIEnv* env, CallbackCtx* ctx) {
+    if (ctx == NULL) return;
+    if (ctx->listener != NULL) (*env)->DeleteGlobalRef(env, ctx->listener);
+    if (ctx->rowCls != NULL) (*env)->DeleteGlobalRef(env, ctx->rowCls);
+    free(ctx);
+}
+
+static void on_decode(const struct MfskDecode* row, void* user) {
+    CallbackCtx* ctx = (CallbackCtx*)user;
+    if (ctx == NULL || row == NULL || g_vm == NULL) return;
+
+    JNIEnv* env = NULL;
+    const jint attached = (*g_vm)->GetEnv(g_vm, (void**)&env, JNI_VERSION_1_6);
+    if (attached == JNI_EDETACHED) {
+        if ((*g_vm)->AttachCurrentThreadAsDaemon(g_vm, (void**)&env, NULL) != JNI_OK) return;
+    } else if (attached != JNI_OK) {
+        return;
+    }
+
+    /* The worker has no Java frame, so nothing pops local refs for us. */
+    if ((*env)->PushLocalFrame(env, 4) != 0) return;
+    jobject obj = make_row(env, ctx->rowCls, ctx->rowCtor, row);
+    if (obj != NULL) {
+        (*env)->CallVoidMethod(env, ctx->listener, ctx->onDecode, obj);
+        /* A throwing listener cannot propagate into a rayon worker, and
+           leaving an exception pending makes every later JNI call in
+           this callback illegal. Report it and clear it — the decode
+           itself is unaffected, and the authoritative rows still come
+           back from the call that set this. */
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
+    }
+    (*env)->PopLocalFrame(env, NULL);
+}
+
 // ── Session ─────────────────────────────────────────────────────────
 
 JNIEXPORT jlong JNICALL
@@ -172,10 +275,73 @@ Java_io_github_mfskcore_MfskSession_nativeOpen(JNIEnv* env, jclass cls, jint mod
     return (jlong)(intptr_t)s;
 }
 
+/// Install (or clear, with a null `listener`) the decode callback.
+///
+/// Takes the previous context back and frees it, returning the new one,
+/// so the Kotlin side owns exactly one `long` per session and cannot
+/// leak a global ref by replacing a listener.
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_MfskSession_nativeSetOnDecode(
+        JNIEnv* env, jclass cls, jlong handle, jobject listener, jlong oldCtx) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    if (s == NULL) { throw_ise(env, "session is closed"); return oldCtx; }
+
+    if (listener == NULL) {
+        mfsk_session_set_on_decode(s, NULL, NULL);
+        callback_ctx_free(env, (CallbackCtx*)(intptr_t)oldCtx);
+        return 0;
+    }
+
+    CallbackCtx* ctx = (CallbackCtx*)calloc(1, sizeof *ctx);
+    if (ctx == NULL) { throw_ise(env, "out of memory"); return oldCtx; }
+
+    /* The *interface*, not `GetObjectClass(listener)`. A Kotlin `fun
+       interface` is satisfied by a lambda, which on a modern compiler
+       is an invokedynamic-spun hidden class; taking the method ID from
+       the interface sidesteps the question entirely and dispatches
+       virtually just the same. */
+    jclass listenerCls = (*env)->FindClass(env, CLS "MfskDecodeListener");
+    jclass rowCls = (*env)->FindClass(env, CLS "MfskDecode");
+    if (listenerCls == NULL || rowCls == NULL) { free(ctx); return oldCtx; }
+    ctx->onDecode = (*env)->GetMethodID(
+        env, listenerCls, "onDecode", "(L" CLS "MfskDecode;)V");
+    ctx->rowCtor = row_ctor(env, rowCls);
+    if (ctx->onDecode == NULL || ctx->rowCtor == NULL) { free(ctx); return oldCtx; }
+    ctx->listener = (*env)->NewGlobalRef(env, listener);
+    ctx->rowCls = (jclass)(*env)->NewGlobalRef(env, rowCls);
+    if (ctx->listener == NULL || ctx->rowCls == NULL) {
+        callback_ctx_free(env, ctx);
+        throw_ise(env, "could not retain the listener");
+        return oldCtx;
+    }
+
+    const MfskStatus st = mfsk_session_set_on_decode(s, on_decode, ctx);
+    if (st != MFSK_STATUS_OK) {
+        callback_ctx_free(env, ctx);
+        throw_from_session(env, s, "set_on_decode failed");
+        return oldCtx;
+    }
+    /* Only now is the old one unreachable from the decode side. */
+    callback_ctx_free(env, (CallbackCtx*)(intptr_t)oldCtx);
+    return (jlong)(intptr_t)ctx;
+}
+
+/// Close the session and release any listener it carried.
+///
+/// Order matters: the session holds the raw `CallbackCtx*`, so it has
+/// to stop being able to call it before the context is freed. Nothing
+/// can be decoding here — `close()` and `decode()` are not safe to
+/// call concurrently on one session in any case, which is what
+/// "single-threaded by design" means.
 JNIEXPORT void JNICALL
-Java_io_github_mfskcore_MfskSession_nativeClose(JNIEnv* env, jclass cls, jlong handle) {
-    (void)env; (void)cls;
-    mfsk_session_close((MfskDecodeSession*)(intptr_t)handle);
+Java_io_github_mfskcore_MfskSession_nativeClose(
+        JNIEnv* env, jclass cls, jlong handle, jlong ctx) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    if (s != NULL) mfsk_session_set_on_decode(s, NULL, NULL);
+    mfsk_session_close(s);
+    callback_ctx_free(env, (CallbackCtx*)(intptr_t)ctx);
 }
 
 JNIEXPORT void JNICALL
@@ -230,26 +396,16 @@ Java_io_github_mfskcore_MfskSession_nativeDecode(
 
     jclass rowCls = (*env)->FindClass(env, CLS "MfskDecode");
     if (rowCls == NULL) return NULL;
-    jmethodID ctor = (*env)->GetMethodID(
-        env, rowCls, "<init>", "(ILjava/lang/String;FFFFFIIIZ)V");
+    jmethodID ctor = row_ctor(env, rowCls);
     if (ctor == NULL) return NULL;
 
     jobjectArray out = (*env)->NewObjectArray(env, (jsize)len, rowCls, NULL);
     if (out == NULL) return NULL;
     for (size_t i = 0; i < len; ++i) {
-        const MfskDecode* r = &rows[i];
-        jstring text = (*env)->NewStringUTF(env, r->text);
-        jobject obj = (*env)->NewObject(
-            env, rowCls, ctor,
-            (jint)r->mode, text,
-            (jfloat)r->freq_hz, (jfloat)r->dt_sec, (jfloat)r->snr_db,
-            (jfloat)r->sync_score, (jfloat)r->sync_cv,
-            (jint)r->hard_errors, (jint)r->info_bits, (jint)r->pass,
-            (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0));
+        jobject obj = make_row(env, rowCls, ctor, &rows[i]);
         if (obj == NULL) return NULL;
         (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
         (*env)->DeleteLocalRef(env, obj);
-        (*env)->DeleteLocalRef(env, text);
     }
     return out;
 }

@@ -467,6 +467,35 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   the C ABI claims to support was built by nothing. Both halves are now
   covered per-PR by one job.
 
+- **`mfsk_session_set_on_decode` in both bindings** — rows delivered as
+  they are found, on top of the list the call returns, which stays
+  authoritative. It exists for a UI with a long slot to fill:
+  FST4-300's is five minutes.
+
+  Swift: `session.onDecode { row in … }`, the closure boxed so it has a
+  stable address, retained by the session for exactly as long as the C
+  side holds a pointer to it, and cleared in `deinit` **before** the
+  handle closes.
+
+  Kotlin: `session.onDecode { row -> … }` over a `fun interface`, with
+  two JNI hazards handled in the shim rather than left to the consumer.
+  The callback can arrive on a thread the VM has never seen — only a
+  *private* pool from `configureRuntime` gets the attach hooks, so a
+  process that never called it has unattached rayon workers — and it
+  attaches on demand, `AsDaemon` for the same reason the hooks use it.
+  And the listener's method ID is taken from the **interface**, not
+  from `GetObjectClass` on a lambda: a Kotlin `fun interface` is
+  satisfied by an invokedynamic-spun class, and `FindClass` from an
+  unattached worker would resolve through the system class loader,
+  which cannot see application classes at all. The shim also captures
+  the `JavaVM` in `JNI_OnLoad` now instead of only in
+  `configureRuntime`, which removes the ordering requirement that
+  created.
+
+  An exception from a listener is printed and cleared: a rayon worker
+  has nowhere to propagate one, and leaving it pending would make every
+  later JNI call in that callback illegal. The decode is unaffected.
+
 - **Q65 in the Swift binding**, now that its sub-mode numbering reaches
   the header: `Q65` carries all four strategies (plain, a-priori,
   fast-fading, AP-list), `Q65SubMode` and `Q65FadingModel` mirror the
