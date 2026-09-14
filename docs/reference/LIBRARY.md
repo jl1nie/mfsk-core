@@ -1964,12 +1964,19 @@ for row in try session.decode(slot) {
   reason string — reading the handle's own error slot first and the
   thread-local global second, because `mfsk_session_copy_info` takes the
   handle as `const*` and can only write the latter.
-* Q65's family is not wrapped yet, but no longer for a reason in the
-  ABI: `MfskQ65SubMode` and `MfskQ65FadingModel` are declared in
-  `mfsk.h` now (`cbindgen.toml`'s `[export] include`), so the sub-modes
-  can be named from C and Swift alike rather than written as 0…9.
+* `Q65` carries the whole family — all four decode strategies (plain,
+  a-priori, fast-fading, AP-list), `Q65SubMode` (**its own numbering**,
+  where `a15` is 6, bridged to `Mode` by `.mode`), `Q65FadingModel`, and
+  `CallsignHashTable`, the one handle the caller owns rather than the
+  session. The enums reach Swift because `cbindgen.toml` now emits them
+  into `mfsk.h`; before that a wrapper would have had to hardcode 0…9.
+* An AP hint's fields are the **message's fields in order** — `call1`
+  is `"CQ"` for a CQ, not the transmitting station — and they lock
+  message bits rather than steering a search, so the wrong order
+  removes the decode instead of costing a fraction of a dB. Both
+  directions are pinned in `Q65Tests`.
 
-`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 43
+`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 54
 tests; `bindings/swift/README.md` covers linking from a real app,
 including why the `mobile` feature set is the one an iOS build wants.
 

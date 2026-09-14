@@ -32,7 +32,8 @@ if let slot = try session.decode(stream) {
 bindings/swift/scripts/test.sh          # builds libmfsk, then swift test
 ```
 
-43 tests, ~0.4 s. CI runs exactly this script on `macos-latest` (the
+54 tests, ~8 s — most of it Q65, which decodes a 30 s slot five ways.
+CI runs exactly this script on `macos-latest` (the
 `Swift binding (macOS) + iOS build` job), which is also where
 `aarch64-apple-ios` is built — both need Xcode, one for XCTest and one
 for the iOS SDK. The script builds `mfsk-ffi` with cargo and passes the
@@ -59,10 +60,11 @@ referencing it means there is nothing here to keep in step.
 | Raw FEC bits | `DecodeSession.informationBits(at:)` | `mfsk_session_copy_info` |
 | Transmit | `Message` (`standard` / `type1` / `freeText` / `type4`), `Mode.synthesiseFrame`, `Mode.synthesiseSlot` | `mfsk_pack77*`, `mfsk_unpack77`, `mfsk_message_to_tones`, `mfsk_tones_to_i16` / `_f32` |
 | Handle-less modes | `WSPR`, `JT9`, `JT65` | `mfsk_encode_wspr` / `_jt9` / `_jt65`, `mfsk_wspr_decode`, `mfsk_jt9_decode_at`, `mfsk_jt65_decode_at` |
+| Q65 | `Q65` (four strategies), `Q65SubMode`, `Q65FadingModel`, `CallsignHashTable` | `mfsk_encode_q65`, `mfsk_q65_decode` / `_with_ap` / `_fading` / `_with_ap_list`, `mfsk_callsign_hash_table_*` |
 | Thread pool, versions | `Runtime` | `mfsk_runtime_configure`, `mfsk_runtime_thread_count`, `mfsk_version`, `mfsk_abi_version` |
 | Errors | `MfskError` (`code` + `detail`) | `MfskStatus`, `mfsk_last_error`, `mfsk_session_last_error` |
 
-Two things the binding does rather than mirror:
+Three things the binding does rather than mirror:
 
 * **Errors are thrown, and always carry a reason.** `DecodeSession`
   reads its own handle's error slot first and falls back to the
@@ -71,18 +73,25 @@ Two things the binding does rather than mirror:
   the handle alone would report "(no detail)" for it.
 * **`frequencyHintHz` is an `Optional`.** The ABI spells "unset" as NaN
   because 0 Hz is a frequency; `nil` is the Swift word for that.
+* **`Q65SubMode` is a separate type from `Mode`**, because Q65's
+  discriminants are its own and are not in slot-length order (`a15` is
+  6, appended rather than inserted so the earlier numbers stayed put).
+  `.mode` bridges to the `Mode` a decode row reports, and
+  `Q65SubMode(someMode)` bridges back.
+
+## The one thing worth reading before using an AP hint
+
+`DecodeParams.APHint` and `Q65.APHint` take the **message's fields in
+order**, not roles: `call1` is the first callsign field, which is `"CQ"`
+for a CQ message and not the name of the transmitting station. A hint
+locks message bits (0-28, 29-57, 58-73 — see `mfsk_core::msg::ap`)
+rather than steering a search, so hinting the right callsigns in the
+wrong fields is not a weaker hint but a wrong one: on Q65 a clean signal
+that decodes four other ways then decodes not at all. `Q65Tests` asserts
+both directions so the doc cannot drift from the behaviour.
 
 ## Not wrapped yet, and why
 
-* **Q65 — the next slice, and no longer blocked.** Its four decode
-  entry points take a sub-mode discriminant that used to be unreachable
-  from the header: `MfskQ65SubMode` is mentioned by no signature, since
-  every `mfsk_q65_*` function takes it as `uint32_t` on purpose, so
-  cbindgen never emitted it and a wrapper would have had to hardcode
-  0…9. `cbindgen.toml` asks for it by name now, so the enum and
-  `MfskQ65FadingModel` are both declared in `mfsk.h` — wrapping the
-  family here is ordinary work rather than a decision about numbering.
-  It also wants `MfskCallsignHashTable`, which only Q65 takes.
 * **`mfsk_session_set_on_decode`.** Rows delivered as they are found,
   which only changes anything for a UI wanting partial results during a
   long slot. It needs a retained box and a trampoline; worth doing when

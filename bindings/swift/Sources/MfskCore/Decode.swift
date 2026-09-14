@@ -94,7 +94,14 @@ public struct DecodeParams: Sendable {
         case local = 1
     }
 
-    /// An a-priori hypothesis: who is transmitting, to whom, from where.
+    /// An a-priori hypothesis, as the message's own fields in order:
+    /// `call1` is the first callsign field — `"CQ"` for a CQ, not the
+    /// transmitting station — and locks message bits 0-28, `call2` the
+    /// second and locks 29-57, `grid` locks 58-73
+    /// (`mfsk_core::msg::ap`). A hint locks bits rather than steering a
+    /// search, so the wrong order removes decodes rather than costing a
+    /// little sensitivity.
+    ///
     /// Each field is truncated to the ABI's 16-byte inline capacity.
     public struct APHint: Sendable, Equatable {
         public var call1: String

@@ -51,6 +51,28 @@ final class ABIContractTests: XCTestCase {
         }
     }
 
+    func testQ65DiscriminantsMatchTheHeader() {
+        // Q65's own numbering, which is not MfskMode's and not in
+        // slot-length order. It reaches C only because `cbindgen.toml`
+        // asks for the enum by name — every `mfsk_q65_*` function takes
+        // it as `uint32_t`, so no signature mentions it.
+        let pairs: [(Q65SubMode, MfskQ65SubMode)] = [
+            (.a30, MFSK_Q65_SUB_MODE_A30), (.a60, MFSK_Q65_SUB_MODE_A60),
+            (.b60, MFSK_Q65_SUB_MODE_B60), (.c60, MFSK_Q65_SUB_MODE_C60),
+            (.d60, MFSK_Q65_SUB_MODE_D60), (.e60, MFSK_Q65_SUB_MODE_E60),
+            (.a15, MFSK_Q65_SUB_MODE_A15), (.d120, MFSK_Q65_SUB_MODE_D120),
+            (.e120, MFSK_Q65_SUB_MODE_E120), (.a300, MFSK_Q65_SUB_MODE_A300),
+        ]
+        XCTAssertEqual(pairs.count, Q65SubMode.allCases.count)
+        for (swift, c) in pairs {
+            XCTAssertEqual(swift.rawValue, UInt32(c.rawValue), "\(swift)")
+        }
+        XCTAssertEqual(Q65FadingModel.gaussian.rawValue,
+                       UInt32(MFSK_Q65_FADING_MODEL_GAUSSIAN.rawValue))
+        XCTAssertEqual(Q65FadingModel.lorentzian.rawValue,
+                       UInt32(MFSK_Q65_FADING_MODEL_LORENTZIAN.rawValue))
+    }
+
     func testStatusCodesMatchTheHeader() {
         XCTAssertEqual(MfskError.Code.nullPointer.rawValue, MFSK_STATUS_NULL_POINTER.rawValue)
         XCTAssertEqual(MfskError.Code.invalidArgument.rawValue, MFSK_STATUS_INVALID_ARG.rawValue)

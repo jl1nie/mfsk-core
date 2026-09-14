@@ -1809,12 +1809,20 @@ for row in try session.decode(slot) {
   持つ。まずハンドル側のエラー欄を読み、無ければスレッドローカルの
   グローバルへ落とす — `mfsk_session_copy_info` はハンドルを `const*`
   で受けるため後者しか書けない。
-* Q65 系はまだ未対応。ただし ABI 側の理由は解消済みで、
-  `MfskQ65SubMode` と `MfskQ65FadingModel` は `mfsk.h` に出力される
-  ようになった（`cbindgen.toml` の `[export] include`）。0…9 を直書き
-  せず名前で指定できる。
+* `Q65` が同ファミリ一式を持つ — 4 つのデコード戦略（plain / a-priori
+  / fast-fading / AP-list）、`Q65SubMode`（**Q65 独自の番号体系**。
+  `a15` が 6。`.mode` で `Mode` に橋渡し）、`Q65FadingModel`、そして
+  セッションではなく呼び出し側が持つ唯一のハンドル
+  `CallsignHashTable`。これらの enum が Swift から見えるのは
+  `cbindgen.toml` が `mfsk.h` に出力するようにしたため。以前は 0…9 を
+  直書きするしかなかった。
+* AP ヒントの各フィールドは**メッセージのフィールド順**であって役割で
+  はない（CQ なら `call1` は `"CQ"`、送信局名ではない）。探索を誘導す
+  るのではなくメッセージビットを固定するので、順序を間違えると感度が
+  少し落ちるのではなく**デコードが消える**。`Q65Tests` が両方向を固定
+  している。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 43 個のテスト
+`bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 54 個のテスト
 実行をまとめて行う。実アプリからのリンク方法（iOS ビルドで `mobile`
 フィーチャを選ぶ理由を含む）は `bindings/swift/README.md` 参照。
 

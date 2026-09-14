@@ -69,7 +69,11 @@ final class RoundTripTests: XCTestCase {
         let slot = try Mode.ft8.synthesiseSlot(call1: call1, call2: call2, report: grid,
                                                frequencyHz: 1500)
         var params = try DecodeParams(mode: .ft8)
-        params.apHint = DecodeParams.APHint(call1: call2, call2: "CQ", grid: grid)
+        // Message-field order — `CQ JA1ABC PM95` means call1 is "CQ".
+        // FT8's AP is one rung of a ladder, so this decodes either way
+        // on a clean signal; Q65's does not, which is where the order
+        // is pinned.
+        params.apHint = DecodeParams.APHint(call1: call1, call2: call2, grid: grid)
         params.frequencyHintHz = 1500
         let session = try DecodeSession(mode: .ft8)
         XCTAssertTrue(try session.decode(slot, params: params).contains { $0.text.contains(call2) })

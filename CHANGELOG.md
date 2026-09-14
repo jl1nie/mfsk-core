@@ -455,7 +455,7 @@ suite on a Mac rather than by CI, which still has Linux runners only.
 
 - **A `swift` CI job, and with it the iOS build the `cross` job could
   not do.** `macos-latest`, running `bindings/swift/scripts/test.sh`
-  (43 XCTest cases) and then `cargo build -p mfsk-ffi --release --target
+  (the XCTest suite) and then `cargo build -p mfsk-ffi --release --target
   aarch64-apple-ios --no-default-features --features mobile`. One
   runner covers both because both halves need Xcode — XCTest ships with
   it rather than with the Command Line Tools, and the iOS SDK is its
@@ -466,6 +466,30 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   a break would land on `main` and be found at release; the platform
   the C ABI claims to support was built by nothing. Both halves are now
   covered per-PR by one job.
+
+- **Q65 in the Swift binding**, now that its sub-mode numbering reaches
+  the header: `Q65` carries all four strategies (plain, a-priori,
+  fast-fading, AP-list), `Q65SubMode` and `Q65FadingModel` mirror the
+  newly-emitted C enums, and `CallsignHashTable` is the one handle a
+  caller owns rather than the session.
+
+  `Q65SubMode` is a separate Swift type from `Mode` on purpose — Q65's
+  discriminants are its own and not in slot-length order (`a15` is 6,
+  appended so the earlier numbers stayed put) — with `.mode` bridging
+  to the identity a decode row reports and `Q65SubMode(_:)` bridging
+  back. `ABIContractTests` pins all ten against the header's constants.
+
+  Writing the tests turned up a trap worth the documentation it now
+  has: **an AP hint's fields are the message's fields in order, not
+  roles.** `call1` is the first callsign field — `"CQ"` for a CQ, not
+  the transmitting station — and a hint locks message bits rather than
+  steering a search, so hinting the right callsigns in the wrong fields
+  is not a weaker hint but a wrong one. On Q65 the clean signal that
+  decodes four other ways then does not decode at all; on FT8 the AP
+  rung is one of several, so the same mistake passes unnoticed, which
+  is how it got written that way here first. Both directions are
+  asserted in `Q65Tests`, and `DecodeParams.APHint`'s own doc comment
+  was corrected with it.
 
 - **Swift bindings — `bindings/swift`, a SwiftPM package over the C
   ABI.** `Mode` / `ModeInfo` / `Capabilities` for introspection,

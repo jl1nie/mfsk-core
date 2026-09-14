@@ -94,9 +94,10 @@ public enum JT65 {
 
 /// The `mfsk_encode_*` family's shared shape: call once with a null
 /// buffer to learn the length, then once more to fill it. Two calls
-/// rather than a guess because a slot runs from 15 s to 120 s of audio
-/// depending on the mode.
-private func encodeAudio(
+/// rather than a guess because a transmission runs from 15 s to 300 s
+/// of audio depending on the mode — Q65's family shares this, which is
+/// why it is `internal` rather than `private`.
+func encodeAudio(
     _ call: (UnsafeMutablePointer<Float>?, UInt, UnsafeMutablePointer<UInt>) -> MfskStatus
 ) throws -> [Float] {
     var needed: UInt = 0
