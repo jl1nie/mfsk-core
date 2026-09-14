@@ -261,6 +261,53 @@ static void on_decode(const struct MfskDecode* row, void* user) {
     (*env)->PopLocalFrame(env, NULL);
 }
 
+// ── Budget predicate ────────────────────────────────────────────────
+//
+// Same two hazards as the decode callback — the worker may be
+// unattached, and its `FindClass` looks in the wrong place — handled
+// the same way. One difference worth knowing: this is polled *per
+// candidate*, so it is the one upcall in this shim that runs often
+// enough for its own cost to matter. A predicate that compares
+// `System.nanoTime()` against a captured deadline is what it is for;
+// anything heavier belongs on the Kotlin side of a boolean.
+
+typedef struct {
+    jobject check;      /* global ref to MfskBudgetCheck */
+    jmethodID shouldContinue;
+} BudgetCtx;
+
+static void budget_ctx_free(JNIEnv* env, BudgetCtx* ctx) {
+    if (ctx == NULL) return;
+    if (ctx->check != NULL) (*env)->DeleteGlobalRef(env, ctx->check);
+    free(ctx);
+}
+
+static bool on_budget(void* user) {
+    BudgetCtx* ctx = (BudgetCtx*)user;
+    if (ctx == NULL || g_vm == NULL) return true;
+
+    JNIEnv* env = NULL;
+    const jint attached = (*g_vm)->GetEnv(g_vm, (void**)&env, JNI_VERSION_1_6);
+    if (attached == JNI_EDETACHED) {
+        if ((*g_vm)->AttachCurrentThreadAsDaemon(g_vm, (void**)&env, NULL) != JNI_OK) {
+            return true;  /* cannot ask — carry on rather than cut blindly */
+        }
+    } else if (attached != JNI_OK) {
+        return true;
+    }
+
+    const jboolean go = (*env)->CallBooleanMethod(env, ctx->check, ctx->shouldContinue);
+    if ((*env)->ExceptionCheck(env)) {
+        /* A throwing predicate is not an answer. Report it, clear it,
+           and keep decoding: stopping would turn a bug in the caller's
+           clock into silently missing decodes. */
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+        return true;
+    }
+    return go == JNI_TRUE;
+}
+
 // ── Session ─────────────────────────────────────────────────────────
 
 JNIEXPORT jlong JNICALL
@@ -327,6 +374,99 @@ Java_io_github_mfskcore_MfskSession_nativeSetOnDecode(
     return (jlong)(intptr_t)ctx;
 }
 
+/// Install (or clear) the budget predicate, taking the previous context
+/// back and freeing it — the same ownership shape as the listener.
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_MfskSession_nativeSetBudget(
+        JNIEnv* env, jclass cls, jlong handle, jobject check, jlong oldCtx) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    if (s == NULL) { throw_ise(env, "session is closed"); return oldCtx; }
+
+    if (check == NULL) {
+        mfsk_session_set_budget(s, NULL, NULL);
+        budget_ctx_free(env, (BudgetCtx*)(intptr_t)oldCtx);
+        return 0;
+    }
+
+    BudgetCtx* ctx = (BudgetCtx*)calloc(1, sizeof *ctx);
+    if (ctx == NULL) { throw_ise(env, "out of memory"); return oldCtx; }
+    jclass checkCls = (*env)->FindClass(env, CLS "MfskBudgetCheck");
+    if (checkCls == NULL) { free(ctx); return oldCtx; }
+    ctx->shouldContinue = (*env)->GetMethodID(env, checkCls, "shouldContinue", "()Z");
+    if (ctx->shouldContinue == NULL) { free(ctx); return oldCtx; }
+    ctx->check = (*env)->NewGlobalRef(env, check);
+    if (ctx->check == NULL) { free(ctx); throw_ise(env, "could not retain the predicate"); return oldCtx; }
+
+    const MfskStatus st = mfsk_session_set_budget(s, on_budget, ctx);
+    if (st != MFSK_STATUS_OK) {
+        budget_ctx_free(env, ctx);
+        throw_from_session(env, s, "set_budget failed");
+        return oldCtx;
+    }
+    budget_ctx_free(env, (BudgetCtx*)(intptr_t)oldCtx);
+    return (jlong)(intptr_t)ctx;
+}
+
+/// The last decode's budget report as a flat `int[]`, in the order
+/// `MfskBudgetReport`'s Kotlin constructor takes: exhausted (0/1),
+/// skipped, ran, cut_at_sync (-1 for absent), cut_at_score in
+/// millionths (INT_MIN for absent, since an int array cannot carry a
+/// NaN).
+JNIEXPORT jintArray JNICALL
+Java_io_github_mfskcore_MfskSession_nativeLastBudget(
+        JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    MfskBudgetReport rep;
+    memset(&rep, 0, sizeof rep);
+    rep.size = sizeof rep;
+    if (mfsk_session_last_budget(s, &rep) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+        return NULL;
+    }
+    jint vals[5] = {
+        (jint)(rep.exhausted ? 1 : 0),
+        (jint)rep.candidates_skipped,
+        (jint)rep.stages_run,
+        (jint)rep.cut_at_sync,
+        rep.cut_at_score == rep.cut_at_score /* not NaN */
+            ? (jint)(rep.cut_at_score * 1000000.0f)
+            : (jint)0x80000000,
+    };
+    jintArray out = (*env)->NewIntArray(env, 5);
+    if (out == NULL) return NULL;
+    (*env)->SetIntArrayRegion(env, out, 0, 5, vals);
+    return out;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskSession_nativeKeepKnown(
+        JNIEnv* env, jclass cls, jlong handle, jboolean keep) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    if (mfsk_session_keep_known(s, keep == JNI_TRUE) != MFSK_STATUS_OK) {
+        throw_from_session(env, s, "keep_known failed");
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_MfskSession_nativeKnownCount(
+        JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    return (jint)mfsk_session_known_count((const MfskDecodeSession*)(intptr_t)handle);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskSession_nativeKeepFftCache(
+        JNIEnv* env, jclass cls, jlong handle, jboolean keep) {
+    (void)cls;
+    MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
+    if (mfsk_session_keep_fft_cache(s, keep == JNI_TRUE) != MFSK_STATUS_OK) {
+        throw_from_session(env, s, "keep_fft_cache failed");
+    }
+}
+
 /// Close the session and release any listener it carried.
 ///
 /// Order matters: the session holds the raw `CallbackCtx*`, so it has
@@ -336,12 +476,16 @@ Java_io_github_mfskcore_MfskSession_nativeSetOnDecode(
 /// "single-threaded by design" means.
 JNIEXPORT void JNICALL
 Java_io_github_mfskcore_MfskSession_nativeClose(
-        JNIEnv* env, jclass cls, jlong handle, jlong ctx) {
+        JNIEnv* env, jclass cls, jlong handle, jlong ctx, jlong budgetCtx) {
     (void)cls;
     MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
-    if (s != NULL) mfsk_session_set_on_decode(s, NULL, NULL);
+    if (s != NULL) {
+        mfsk_session_set_on_decode(s, NULL, NULL);
+        mfsk_session_set_budget(s, NULL, NULL);
+    }
     mfsk_session_close(s);
     callback_ctx_free(env, (CallbackCtx*)(intptr_t)ctx);
+    budget_ctx_free(env, (BudgetCtx*)(intptr_t)budgetCtx);
 }
 
 JNIEXPORT void JNICALL

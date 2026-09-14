@@ -40,6 +40,7 @@ public final class DecodeSession {
         // pointer to `callbackBox`, and this object's own deinit is the
         // last moment at which that pointer is still valid.
         if callbackBox != nil { mfsk_session_set_on_decode(handle, nil, nil) }
+        if budgetBox != nil { mfsk_session_set_budget(handle, nil, nil) }
         mfsk_session_close(handle)
     }
 
@@ -84,6 +85,9 @@ public final class DecodeSession {
     /// Keeps the handler alive while the C side holds a pointer to it.
     private var callbackBox: CallbackBox?
 
+    /// Same, for the budget predicate.
+    fileprivate var budgetBox: BudgetBox?
+
     /// The last error recorded **on this handle**.
     ///
     /// Prefer this over the thread-local global whenever a session is in
@@ -100,7 +104,7 @@ public final class DecodeSession {
     }
 
     /// Whichever of the two error slots the failing call actually wrote.
-    private func failureDetail() -> String? { lastError ?? globalLastError() }
+    func failureDetail() -> String? { lastError ?? globalLastError() }
 
     /// Decode one slot of 16-bit PCM.
     ///
@@ -217,4 +221,125 @@ private let decodeTrampoline: MfskDecodeCallback = { row, context in
     // `Decode.init` copying every field — including the text out of the
     // fixed-size C array — is what makes the value safe to keep.
     Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue().handler(Decode(row.pointee))
+}
+
+/// A budget predicate, boxed for the same reason the decode callback is.
+final class BudgetBox {
+    let check: () -> Bool
+    init(_ check: @escaping () -> Bool) { self.check = check }
+}
+
+private let budgetTrampoline: MfskBudgetCheck = { context in
+    guard let context else { return true }
+    return Unmanaged<BudgetBox>.fromOpaque(context).takeUnretainedValue().check()
+}
+
+/// What a budgeted decode left undone.
+///
+/// All-zero — `exhausted == false` — when no budget was set or it was
+/// never reached, so it can be read unconditionally.
+public struct BudgetReport: Sendable, Equatable {
+    /// The predicate refused at least once: rows are missing that an
+    /// unbudgeted call would have found.
+    public let exhausted: Bool
+    /// Units of work declined: a candidate on the single-pass engines
+    /// and every sniper, a whole SIC round on `sicRounds`.
+    public let candidatesSkipped: UInt32
+    /// Units of work actually run, counted the same way.
+    public let stagesRun: UInt32
+    /// Costas sync quality of the best skipped candidate — **FT8
+    /// only**, because that is the number FT8's scheduler orders by, so
+    /// it says whether the cut took noise or a station. nil on FT4 and
+    /// FST4, which rank by score.
+    public let cutAtSync: UInt32?
+    /// Sync score of the best skipped candidate, on that protocol's own
+    /// scale. nil when there was no such candidate.
+    public let cutAtScore: Float?
+
+    init(_ raw: MfskBudgetReport) {
+        self.exhausted = raw.exhausted
+        self.candidatesSkipped = raw.candidates_skipped
+        self.stagesRun = raw.stages_run
+        self.cutAtSync = raw.cut_at_sync >= 0 ? UInt32(raw.cut_at_sync) : nil
+        self.cutAtScore = raw.cut_at_score.isNaN ? nil : raw.cut_at_score
+    }
+}
+
+extension DecodeSession {
+    /// Poll `check` during every subsequent decode; returning `false`
+    /// stops the search and returns what was found. Pass nil to remove
+    /// the budget.
+    ///
+    /// **The library reads no clock** — `Instant::now` does not exist on
+    /// every target it builds for — so the deadline is yours:
+    /// ```swift
+    /// let deadline = DispatchTime.now().uptimeNanoseconds + 200_000_000
+    /// try session.setBudget { DispatchTime.now().uptimeNanoseconds < deadline }
+    /// ```
+    ///
+    /// **The triage sweep is a floor**: it is never gated, so a budget
+    /// shorter than it returns nothing *and still spends that time*.
+    /// `maxCandidates` is the knob that moves the floor.
+    ///
+    /// The predicate is polled from rayon workers on a `desktop` build,
+    /// so it must be safe to call concurrently — a captured deadline
+    /// compared against a clock is, which is the shape this is for.
+    ///
+    /// Throws ``MfskError/Code/unsupported`` for a mode without
+    /// ``Capabilities/budget``.
+    public func setBudget(_ check: (() -> Bool)?) throws {
+        guard let check else {
+            try self.check(mfsk_session_set_budget(handle, nil, nil))
+            budgetBox = nil
+            return
+        }
+        let box = BudgetBox(check)
+        let status = mfsk_session_set_budget(handle, budgetTrampoline,
+                                             Unmanaged.passUnretained(box).toOpaque())
+        guard status == MFSK_STATUS_OK else {
+            throw MfskError(status: status, detail: failureDetail())
+        }
+        budgetBox = box
+    }
+
+    /// What the budget cut short on the **last** decode.
+    public var lastBudget: BudgetReport {
+        var raw = MfskBudgetReport()
+        raw.size = UInt32(MemoryLayout<MfskBudgetReport>.size)
+        _ = mfsk_session_last_budget(handle, &raw)
+        return BudgetReport(raw)
+    }
+
+    /// Carry each decode's results into the next as **known** signals:
+    /// skipped rather than re-reported, and subtracted from the audio
+    /// where the mode publishes ``Capabilities/knownSubtract``, so what
+    /// they were masking can surface.
+    ///
+    /// `false` both stops carrying and drops what is held, which is how
+    /// a new slot starts. Throws ``MfskError/Code/unsupported`` for a
+    /// mode without ``Capabilities/knownFilter``.
+    public func keepKnown(_ keep: Bool) throws {
+        try check(mfsk_session_keep_known(handle, keep), detail: failureDetail())
+    }
+
+    /// How many known signals the session is carrying into the next
+    /// decode.
+    public var knownCount: Int { Int(mfsk_session_known_count(handle)) }
+
+    /// Keep the slot FFT and reuse it for the next decode **of the same
+    /// audio** — FST4-300's transform is 4 194 304 points, so a second
+    /// pass over one slot is where this pays.
+    ///
+    /// Reuse is checked rather than trusted: the cache is stored with a
+    /// fingerprint of the audio it came from, and a decode of anything
+    /// else transforms afresh instead of returning a confident wrong
+    /// answer.
+    public func keepFFTCache(_ keep: Bool) throws {
+        try check(mfsk_session_keep_fft_cache(handle, keep), detail: failureDetail())
+    }
+
+    private func check(_ status: MfskStatus, detail: @autoclosure () -> String? = nil) throws {
+        guard status != MFSK_STATUS_OK else { return }
+        throw MfskError(status: status, detail: detail() ?? failureDetail())
+    }
 }

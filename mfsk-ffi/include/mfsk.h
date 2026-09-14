@@ -869,6 +869,63 @@ typedef void (*MfskDecodeCallback)(const struct MfskDecode *row,
                                    void *user_data);
 
 /**
+ * Polled during a decode to ask whether to keep going. Returning
+ * `false` stops the search and returns what has been found so far.
+ *
+ * **The library reads no clock.** `std::time::Instant::now` is
+ * unimplemented on `wasm32-unknown-unknown` and absent on `no_std`, so
+ * the deadline is the caller's: host `Instant`, browser
+ * `performance.now()`, embedded `esp_timer_get_time`. The same choice
+ * the streaming ring makes for slot boundaries.
+ */
+typedef bool (*MfskBudgetCheck)(void *user_data);
+
+/**
+ * What a budgeted decode left undone.
+ *
+ * Size-versioned like every other growable struct here. All-zero means
+ * no budget was set, or it was never reached — `exhausted` is the flag
+ * that tells those apart from a decode that simply found nothing.
+ */
+typedef struct MfskBudgetReport {
+    /**
+     * `sizeof(MfskBudgetReport)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * The predicate returned `false` at least once: work was left
+     * undone, and the row list is shorter than it would have been.
+     */
+    bool exhausted;
+    /**
+     * Units of work declined. A candidate on FT8's and FT4's
+     * single-pass engines and on every sniper; a whole SIC *round* on
+     * FT4's `sic_rounds`, which subtracts a round's decodes as one
+     * batch and so cannot be cut inside one.
+     */
+    uint32_t candidates_skipped;
+    /**
+     * Units of work actually run, counted the same way.
+     */
+    uint32_t stages_run;
+    /**
+     * Costas sync quality (0..=`n_sync`) of the best skipped
+     * candidate, or **-1 when not applicable**. FT8 only: that triage
+     * number is what FT8's scheduler orders by, so it says directly
+     * whether the cut took noise or a station. FT4 and FST4 rank by
+     * score and report -1 here.
+     */
+    int32_t cut_at_sync;
+    /**
+     * Sync score of the best skipped candidate, on the scale that
+     * protocol's own search works in, or **NaN when there was no such
+     * candidate**. NaN rather than 0 for the same reason
+     * `MfskDecodeParams::freq_hint_hz` uses it: 0 is a real score.
+     */
+    float cut_at_score;
+} MfskBudgetReport;
+
+/**
  * Called on each worker thread as it starts and as it exits.
  *
  * On Android these are where a JNI consumer calls
@@ -1382,6 +1439,105 @@ MFSK_API
 enum MfskStatus mfsk_session_set_on_decode(struct MfskDecodeSession *dec,
                                            MfskDecodeCallback callback,
                                            void *user_data);
+
+/**
+ * Poll `check` during every subsequent decode on this session;
+ * returning `false` stops the search and returns what was found.
+ *
+ * Pass a null `check` to remove the budget. Returns
+ * `MFSK_STATUS_UNSUPPORTED` for a mode without `MFSK_CAP_BUDGET`,
+ * rather than accepting a predicate nothing would ever call.
+ *
+ * **The triage sweep is a floor, and it is not small.** It is never
+ * gated, so a budget shorter than it buys nothing: the sweep runs
+ * anyway, no candidate ladder starts, and the call returns empty
+ * having spent that time. Measured on `qso3_busy.wav` under Node, the
+ * floor is ~13 ms against ~28 ms for the whole decode — budgets of 5
+ * and 10 ms return nothing in ~13 ms while 20 ms returns every
+ * station. `max_cand` is the knob that moves the floor; this one
+ * spends only what is above it.
+ *
+ * [`mfsk_session_last_budget`] says what the last decode left undone.
+ *
+ * # Safety
+ * `check`, if non-null, must be safely callable from any thread, any
+ * number of times, for as long as it is set — with `rayon` it is
+ * polled from worker threads. `user_data` must stay valid for that
+ * time.
+ */
+MFSK_API
+enum MfskStatus mfsk_session_set_budget(struct MfskDecodeSession *dec,
+                                        MfskBudgetCheck check,
+                                        void *user_data);
+
+/**
+ * What the budget cut short on the **last** decode on this session.
+ *
+ * Zeroed — including `exhausted` — when no budget was set or it was
+ * never reached, so a caller can read it unconditionally.
+ *
+ * # Safety
+ * `out` must point to at least `out->size` writable bytes.
+ */
+MFSK_API
+enum MfskStatus mfsk_session_last_budget(const struct MfskDecodeSession *dec,
+                                         struct MfskBudgetReport *out);
+
+/**
+ * Carry each decode's results into the next decode on this session as
+ * **known** signals: skipped rather than re-reported, and on a
+ * strategy that subtracts (`MFSK_CAP_KNOWN_SUBTRACT`) removed from the
+ * audio so what they were masking can be found.
+ *
+ * This is the two-pass shape the Rust `DecodeRequest::known` exists
+ * for, in the form a C caller can actually use: the results of a
+ * decode are the engine's own values, and reconstructing them from the
+ * rows this ABI hands back would lose what the subtraction needs. The
+ * session already holds them.
+ *
+ * `keep = false` both stops carrying and drops what is held, so it is
+ * also how a caller starts a fresh slot. Returns
+ * `MFSK_STATUS_UNSUPPORTED` for a mode without `MFSK_CAP_KNOWN_FILTER`.
+ *
+ * # Safety
+ * `dec` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_session_keep_known(struct MfskDecodeSession *dec,
+                                        bool keep);
+
+/**
+ * How many known signals the session is currently carrying.
+ *
+ * The number [`mfsk_session_keep_known`] will hand to the next decode.
+ * 0 with `keep` on means the last decode found nothing.
+ */
+MFSK_API
+uintptr_t mfsk_session_known_count(const struct MfskDecodeSession *dec);
+
+/**
+ * Keep the slot FFT each decode builds and reuse it for the next
+ * decode **of the same audio**, instead of transforming it again.
+ *
+ * FT4 takes 92 160 points and FST4-300 takes 4 194 304, so a second
+ * pass over one slot — deeper parameters, a different AP hypothesis —
+ * is where this pays.
+ *
+ * **Reuse is checked, not trusted.** The cache is stored with a
+ * fingerprint of the audio it was built from, and a decode whose audio
+ * does not match it transforms afresh rather than returning a
+ * confident wrong answer. That check is cheap next to the transform it
+ * guards.
+ *
+ * `keep = false` drops the cache. Returns `MFSK_STATUS_UNSUPPORTED`
+ * for a mode without `MFSK_CAP_FFT_CACHE`.
+ *
+ * # Safety
+ * `dec` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_session_keep_fft_cache(struct MfskDecodeSession *dec,
+                                            bool keep);
 
 /**
  * Decode one slot of 16-bit PCM.

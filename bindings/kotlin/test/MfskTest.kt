@@ -144,6 +144,65 @@ fun main() {
         s.onDecode(null)
     }
 
+    // ── Budget, known, FFT cache ────────────────────────────────────
+    //
+    // Three capability bits that used to be advertised with nothing to
+    // call. Two stations in one slot, so a budget has something to cut
+    // and a known list something to remove.
+    val second = Mfsk.synthesize(ft8, "CQ", "VK3NV", "QF22", 1800.0f)
+    val busy = slot.copyOf()
+    for (i in second.indices) {
+        val at = start + i
+        if (at < busy.size) {
+            busy[at] = (busy[at] + second[i]).coerceIn(-32768, 32767).toShort()
+        }
+    }
+
+    MfskSession.open(ft8).use { s ->
+        val full = s.decode(busy)
+        check("the busy slot decodes both stations", full.size >= 2)
+
+        val empty = s.lastBudget
+        check("no budget means an empty report",
+              !empty.exhausted && empty.candidatesSkipped == 0 &&
+              empty.cutAtSync == null && empty.cutAtScore == null)
+
+        var polls = 0
+        s.setBudget { polls++; false }
+        val cut = s.decode(busy)
+        check("the predicate was polled", polls > 0)
+        check("a refusing budget finds less (got ${cut.size} of ${full.size})",
+              cut.size < full.size)
+        val report = s.lastBudget
+        println("  budget report: exhausted=${report.exhausted} " +
+                "skipped=${report.candidatesSkipped} ran=${report.stagesRun} " +
+                "cutAtSync=${report.cutAtSync} cutAtScore=${report.cutAtScore}")
+        check("the report says work was cut", report.exhausted)
+        check("and counts what it skipped", report.candidatesSkipped > 0)
+        check("FT8 reports where the cut fell", report.cutAtSync != null)
+
+        s.setBudget(null)
+        checkEq("removing the budget restores the search", s.decode(busy).size, full.size)
+
+        // Known: the second pass over the same slot has nothing new.
+        s.keepKnown(true)
+        checkEq("nothing is known yet", s.knownCount, 0)
+        val firstPass = s.decode(busy)
+        checkEq("the first pass becomes known", s.knownCount, firstPass.size)
+        checkEq("a known signal is not reported twice", s.decode(busy).size, 0)
+        s.keepKnown(false)
+        checkEq("keepKnown(false) drops the list", s.knownCount, 0)
+
+        // FFT cache: same answer twice, and a stale one is not reused.
+        s.keepFftCache(true)
+        checkEq("the cached pass decodes the same", s.decode(busy).size, full.size)
+        checkEq("and so does the one that reuses it", s.decode(busy).size, full.size)
+        val other = ShortArray(info.slotSamples12k)
+        for (i in second.indices) if (start + i < other.size) other[start + i] = second[i]
+        check("a cache from other audio is not reused",
+              s.decode(other).any { it.text.contains("VK3NV") })
+    }
+
     // ── Refusals reach Kotlin as exceptions ─────────────────────────
     if (wspr != null) {
         var threw = false

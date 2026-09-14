@@ -304,6 +304,7 @@ fn map_eq_mode(e: MfskEqMode) -> mfsk_core::engine::equalize::EqMode {
 /// the pointer itself — it passes straight through to the caller's C
 /// callback, whose thread-safety is the caller's own responsibility
 /// (documented on [`MfskResultCallback`]).
+#[derive(Clone, Copy)]
 struct SyncUserData(*mut c_void);
 unsafe impl Sync for SyncUserData {}
 unsafe impl Send for SyncUserData {}
@@ -1633,6 +1634,25 @@ struct V2Decoder {
     /// Streaming delivery, set by `mfsk_session_set_on_decode`.
     on_decode: MfskDecodeCallback,
     on_decode_user: SyncUserData,
+    /// Deadline predicate, set by `mfsk_session_set_budget`.
+    budget: MfskBudgetCheck,
+    budget_user: SyncUserData,
+    /// What the last decode's budget cut short. All-zero when no budget
+    /// was set or it was never reached.
+    last_budget: MfskBudgetReport,
+    /// Carry each decode's results into the next as known signals.
+    keep_known: bool,
+    /// Those results, in the engine's own type — rebuildable from
+    /// `last`, but kept as they come back so nothing has to be
+    /// reconstructed from a lossy C row.
+    known: Vec<mfsk_core::engine::pipeline::DecodeResult>,
+    /// Keep the slot FFT for the next decode, paired with a fingerprint
+    /// of the audio it was built from. The fingerprint is the whole
+    /// safety story: a cache reused against *different* audio is a
+    /// wrong answer with nothing to signal it, and a caller cannot be
+    /// asked to promise the two buffers matched.
+    keep_fft_cache: bool,
+    fft_cache: Option<(u64, mfsk_core::engine::pipeline::FftCache)>,
     /// Per-handle error slot. The process-global `thread_local!` is
     /// wrong for a coroutine or `async` caller, which legitimately hops
     /// threads between checking a status and reading the message and
@@ -1640,7 +1660,25 @@ struct V2Decoder {
     error: Option<CString>,
 }
 
+/// Whether `mode` publishes `cap`, asked of the same registry
+/// `mfsk_mode_caps` answers from — so a refusal here and the bit a
+/// caller reads cannot disagree.
+fn mode_has_cap(mode: MfskMode, cap: u64) -> bool {
+    mfsk_mode_caps(mode as u32) & cap != 0
+}
+
 impl V2Decoder {
+    /// Refuse a strategy this mode does not publish, naming the bit to
+    /// check. `Unsupported` rather than `InvalidArg`: the mode is here,
+    /// it just does not offer this.
+    fn unsupported(&mut self, func: &str, cap: &str) -> MfskStatus {
+        let name = mode_index(self.mode).map(mode_name_str).unwrap_or("?");
+        let msg = format!("{func}: {name} does not publish {cap}");
+        set_error(msg.clone());
+        self.error = CString::new(msg).ok();
+        MfskStatus::Unsupported
+    }
+
     fn fail(&mut self, msg: impl Into<String>) -> MfskStatus {
         let m = msg.into();
         set_error(m.clone());
@@ -1875,6 +1913,13 @@ pub unsafe extern "C" fn mfsk_session_open(
         last: Vec::new(),
         on_decode: None,
         on_decode_user: SyncUserData(ptr::null_mut()),
+        budget: None,
+        budget_user: SyncUserData(ptr::null_mut()),
+        last_budget: MfskBudgetReport::default(),
+        keep_known: false,
+        known: Vec::new(),
+        keep_fft_cache: false,
+        fft_cache: None,
         error: None,
     })) as *mut MfskDecodeSession
 }
@@ -2041,10 +2086,65 @@ fn row(mode: MfskMode, r: &ft8::DecodeResult, text: &str, resolved: bool) -> Mfs
 
 /// Decode one slot of `audio` (12 kHz, i16) for whichever mode the
 /// handle carries, storing the rows on the handle.
+/// A cheap identity for one slot of audio, so a kept FFT cache is only
+/// reused against the buffer it was built from.
+///
+/// FNV-1a over the samples. O(n) against an O(n log n) transform of the
+/// same buffer — ~180 000 samples for FT8 — so the check costs a small
+/// fraction of what it guards, and it is a fingerprint rather than a
+/// promise the caller has to keep.
+fn audio_fingerprint(audio: &[i16]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    h ^= audio.len() as u64;
+    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    for s in audio {
+        h ^= *s as u16 as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// The engine's budget report as the C one. `-1` and NaN are the
+/// "absent" spellings, for the same reason the rest of this ABI uses
+/// them: 0 is a real sync count and 0.0 a real score.
+fn budget_report(r: &mfsk_core::engine::pipeline::BudgetReport) -> MfskBudgetReport {
+    MfskBudgetReport {
+        size: core::mem::size_of::<MfskBudgetReport>() as u32,
+        exhausted: r.exhausted,
+        candidates_skipped: r.candidates_skipped,
+        stages_run: r.stages_run,
+        cut_at_sync: r.cut_at_sync.map(|v| v as i32).unwrap_or(-1),
+        cut_at_score: r.cut_at_score.unwrap_or(f32::NAN),
+    }
+}
+
 fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<(), String> {
     use mfsk_core::msg::decode_request::DecodeRequest;
 
     d.last.clear();
+    d.last_budget = MfskBudgetReport::default();
+
+    // Everything the request needs from the session is taken out of it
+    // *before* the borrow, because `collect!` needs `&mut d` while the
+    // request is still alive. The budget's two fields are `Copy`, and
+    // the known list and the cache are moved out and put back.
+    let (budget_fn, budget_user) = (d.budget, d.budget_user);
+    let budget_holder = budget_fn.map(|check| move || unsafe { check(budget_user.ptr()) });
+    let budget: Option<&(dyn Fn() -> bool + Sync)> = budget_holder
+        .as_ref()
+        .map(|c| c as &(dyn Fn() -> bool + Sync));
+    let known = core::mem::take(&mut d.known);
+    let fingerprint = audio_fingerprint(audio);
+    // A cache built from other audio is dropped rather than used: the
+    // slot transform is of *this* buffer, and reusing the wrong one is
+    // a wrong answer with nothing to signal it.
+    let mut cache = d
+        .fft_cache
+        .take()
+        .filter(|(fp, _)| *fp == fingerprint)
+        .map(|(_, c)| c);
+    let keep_known = d.keep_known;
+    let keep_cache = d.keep_fft_cache;
 
     /// Collect one protocol's rows onto the handle.
     ///
@@ -2055,8 +2155,16 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
     /// trait doing its job — the sniper is the receive half of an
     /// analogue roofing filter, not something every mode should have.
     macro_rules! collect {
-        ($proto:ty, $results:expr) => {{
-            let results = $results;
+        ($proto:ty, $outcome:expr) => {{
+            let outcome = $outcome;
+            d.last_budget = budget_report(&outcome.budget);
+            if keep_cache {
+                d.fft_cache = Some((fingerprint, outcome.fft_cache));
+            }
+            let results = outcome.results;
+            if keep_known {
+                d.known = results.clone();
+            }
             for r in &results {
                 // The handle's table is what lets a `<...>` reference
                 // resolve at all, and it is fed from each decode so a
@@ -2097,14 +2205,21 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             )
             .osd(map_osd(p.depth))
             .strictness(map_strictness(p.strictness))
-            .eq_mode(map_eq_mode(p.eq_mode));
+            .eq_mode(map_eq_mode(p.eq_mode))
+            .known(&known);
+            if let Some(b) = budget {
+                req = req.budget(b);
+            }
+            if let Some(c) = cache.take() {
+                req = req.fft_cache(c);
+            }
             if p.freq_hint_hz.is_finite() {
                 req = req.freq_hint(p.freq_hint_hz);
             }
             if let Some(h) = hint.as_ref() {
                 req = req.ap_hint(h);
             }
-            collect!($proto, req.decode().results)
+            collect!($proto, req.decode())
         }};
     }
 
@@ -2130,7 +2245,14 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             )
             .osd(map_osd(p.depth))
             .strictness(map_strictness(p.strictness))
-            .eq_mode(map_eq_mode(p.eq_mode));
+            .eq_mode(map_eq_mode(p.eq_mode))
+            .known(&known);
+            if let Some(b) = budget {
+                req = req.budget(b);
+            }
+            if let Some(c) = cache.take() {
+                req = req.fft_cache(c);
+            }
             if p.freq_hint_hz.is_finite() {
                 req = req.freq_hint(p.freq_hint_hz);
             }
@@ -2141,7 +2263,7 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
                 req = req.sic_rounds(p.sic_rounds as usize);
             }
             let _ = $early;
-            collect!($proto, req.decode().results)
+            collect!($proto, req.decode())
         }};
     }
 
@@ -2159,10 +2281,17 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             .strictness(map_strictness(p.strictness))
             .eq_mode(map_eq_mode(p.eq_mode))
             .search_hz(p.search_hz);
+            // `SniperRequest` takes a budget and nothing else of the
+            // three: a narrow search is a handful of candidates in one
+            // ±250 Hz window, so there is neither a known list to
+            // subtract against nor a whole-slot transform to reuse.
+            if let Some(b) = budget {
+                req = req.budget(b);
+            }
             if let Some(h) = hint.as_ref() {
                 req = req.ap_hint(h);
             }
-            collect!(mfsk_core::ft8::Ft8, req.decode().results)
+            collect!(mfsk_core::ft8::Ft8, req.decode())
         }
         // FT8 additionally has `.sic_early()`; FT4 has `.sic_rounds()`
         // only. `validate_params` rejects anything else up front.
@@ -2178,14 +2307,21 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             .osd(map_osd(p.depth))
             .strictness(map_strictness(p.strictness))
             .eq_mode(map_eq_mode(p.eq_mode))
-            .sic_early();
+            .sic_early()
+            .known(&known);
+            if let Some(b) = budget {
+                req = req.budget(b);
+            }
+            if let Some(c) = cache.take() {
+                req = req.fft_cache(c);
+            }
             if p.freq_hint_hz.is_finite() {
                 req = req.freq_hint(p.freq_hint_hz);
             }
             if let Some(h) = hint.as_ref() {
                 req = req.ap_hint(h);
             }
-            collect!(mfsk_core::ft8::Ft8, req.decode().results)
+            collect!(mfsk_core::ft8::Ft8, req.decode())
         }
         MfskMode::Ft8 => wide_sic!(mfsk_core::ft8::Ft8, false),
         MfskMode::Ft4 => wide_sic!(mfsk_core::ft4::Ft4, false),
@@ -2227,6 +2363,49 @@ unsafe fn emit(
     MfskStatus::Ok
 }
 
+/// Polled during a decode to ask whether to keep going. Returning
+/// `false` stops the search and returns what has been found so far.
+///
+/// **The library reads no clock.** `std::time::Instant::now` is
+/// unimplemented on `wasm32-unknown-unknown` and absent on `no_std`, so
+/// the deadline is the caller's: host `Instant`, browser
+/// `performance.now()`, embedded `esp_timer_get_time`. The same choice
+/// the streaming ring makes for slot boundaries.
+pub type MfskBudgetCheck = Option<unsafe extern "C" fn(user_data: *mut c_void) -> bool>;
+
+/// What a budgeted decode left undone.
+///
+/// Size-versioned like every other growable struct here. All-zero means
+/// no budget was set, or it was never reached — `exhausted` is the flag
+/// that tells those apart from a decode that simply found nothing.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct MfskBudgetReport {
+    /// `sizeof(MfskBudgetReport)` as the caller understands it.
+    pub size: u32,
+    /// The predicate returned `false` at least once: work was left
+    /// undone, and the row list is shorter than it would have been.
+    pub exhausted: bool,
+    /// Units of work declined. A candidate on FT8's and FT4's
+    /// single-pass engines and on every sniper; a whole SIC *round* on
+    /// FT4's `sic_rounds`, which subtracts a round's decodes as one
+    /// batch and so cannot be cut inside one.
+    pub candidates_skipped: u32,
+    /// Units of work actually run, counted the same way.
+    pub stages_run: u32,
+    /// Costas sync quality (0..=`n_sync`) of the best skipped
+    /// candidate, or **-1 when not applicable**. FT8 only: that triage
+    /// number is what FT8's scheduler orders by, so it says directly
+    /// whether the cut took noise or a station. FT4 and FST4 rank by
+    /// score and report -1 here.
+    pub cut_at_sync: i32,
+    /// Sync score of the best skipped candidate, on the scale that
+    /// protocol's own search works in, or **NaN when there was no such
+    /// candidate**. NaN rather than 0 for the same reason
+    /// `MfskDecodeParams::freq_hint_hz` uses it: 0 is a real score.
+    pub cut_at_score: f32,
+}
+
 /// Called once per decode, as it is found, if the session has one set.
 ///
 /// The row pointer is valid **only for the duration of the call** —
@@ -2266,6 +2445,153 @@ pub unsafe extern "C" fn mfsk_session_set_on_decode(
     };
     d.on_decode = callback;
     d.on_decode_user = SyncUserData(user_data);
+    MfskStatus::Ok
+}
+
+/// Poll `check` during every subsequent decode on this session;
+/// returning `false` stops the search and returns what was found.
+///
+/// Pass a null `check` to remove the budget. Returns
+/// `MFSK_STATUS_UNSUPPORTED` for a mode without `MFSK_CAP_BUDGET`,
+/// rather than accepting a predicate nothing would ever call.
+///
+/// **The triage sweep is a floor, and it is not small.** It is never
+/// gated, so a budget shorter than it buys nothing: the sweep runs
+/// anyway, no candidate ladder starts, and the call returns empty
+/// having spent that time. Measured on `qso3_busy.wav` under Node, the
+/// floor is ~13 ms against ~28 ms for the whole decode — budgets of 5
+/// and 10 ms return nothing in ~13 ms while 20 ms returns every
+/// station. `max_cand` is the knob that moves the floor; this one
+/// spends only what is above it.
+///
+/// [`mfsk_session_last_budget`] says what the last decode left undone.
+///
+/// # Safety
+/// `check`, if non-null, must be safely callable from any thread, any
+/// number of times, for as long as it is set — with `rayon` it is
+/// polled from worker threads. `user_data` must stay valid for that
+/// time.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_session_set_budget(
+    dec: *mut MfskDecodeSession,
+    check: MfskBudgetCheck,
+    user_data: *mut c_void,
+) -> MfskStatus {
+    let Some(d) = v2(dec) else {
+        set_error("mfsk_session_set_budget: null session handle");
+        return MfskStatus::InvalidArg;
+    };
+    if check.is_some() && !mode_has_cap(d.mode, MFSK_CAP_BUDGET) {
+        return d.unsupported("mfsk_session_set_budget", "MFSK_CAP_BUDGET");
+    }
+    d.budget = check;
+    d.budget_user = SyncUserData(user_data);
+    MfskStatus::Ok
+}
+
+/// What the budget cut short on the **last** decode on this session.
+///
+/// Zeroed — including `exhausted` — when no budget was set or it was
+/// never reached, so a caller can read it unconditionally.
+///
+/// # Safety
+/// `out` must point to at least `out->size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_session_last_budget(
+    dec: *const MfskDecodeSession,
+    out: *mut MfskBudgetReport,
+) -> MfskStatus {
+    let Some(d) = v2_ref(dec) else {
+        set_error("mfsk_session_last_budget: null session handle");
+        return MfskStatus::InvalidArg;
+    };
+    if out.is_null() {
+        set_error("mfsk_session_last_budget: null out pointer");
+        return MfskStatus::InvalidArg;
+    }
+    unsafe { write_size_versioned(out, &d.last_budget) };
+    MfskStatus::Ok
+}
+
+/// Carry each decode's results into the next decode on this session as
+/// **known** signals: skipped rather than re-reported, and on a
+/// strategy that subtracts (`MFSK_CAP_KNOWN_SUBTRACT`) removed from the
+/// audio so what they were masking can be found.
+///
+/// This is the two-pass shape the Rust `DecodeRequest::known` exists
+/// for, in the form a C caller can actually use: the results of a
+/// decode are the engine's own values, and reconstructing them from the
+/// rows this ABI hands back would lose what the subtraction needs. The
+/// session already holds them.
+///
+/// `keep = false` both stops carrying and drops what is held, so it is
+/// also how a caller starts a fresh slot. Returns
+/// `MFSK_STATUS_UNSUPPORTED` for a mode without `MFSK_CAP_KNOWN_FILTER`.
+///
+/// # Safety
+/// `dec` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_session_keep_known(
+    dec: *mut MfskDecodeSession,
+    keep: bool,
+) -> MfskStatus {
+    let Some(d) = v2(dec) else {
+        set_error("mfsk_session_keep_known: null session handle");
+        return MfskStatus::InvalidArg;
+    };
+    if keep && !mode_has_cap(d.mode, MFSK_CAP_KNOWN_FILTER) {
+        return d.unsupported("mfsk_session_keep_known", "MFSK_CAP_KNOWN_FILTER");
+    }
+    d.keep_known = keep;
+    if !keep {
+        d.known.clear();
+    }
+    MfskStatus::Ok
+}
+
+/// How many known signals the session is currently carrying.
+///
+/// The number [`mfsk_session_keep_known`] will hand to the next decode.
+/// 0 with `keep` on means the last decode found nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_session_known_count(dec: *const MfskDecodeSession) -> usize {
+    v2_ref(dec).map(|d| d.known.len()).unwrap_or(0)
+}
+
+/// Keep the slot FFT each decode builds and reuse it for the next
+/// decode **of the same audio**, instead of transforming it again.
+///
+/// FT4 takes 92 160 points and FST4-300 takes 4 194 304, so a second
+/// pass over one slot — deeper parameters, a different AP hypothesis —
+/// is where this pays.
+///
+/// **Reuse is checked, not trusted.** The cache is stored with a
+/// fingerprint of the audio it was built from, and a decode whose audio
+/// does not match it transforms afresh rather than returning a
+/// confident wrong answer. That check is cheap next to the transform it
+/// guards.
+///
+/// `keep = false` drops the cache. Returns `MFSK_STATUS_UNSUPPORTED`
+/// for a mode without `MFSK_CAP_FFT_CACHE`.
+///
+/// # Safety
+/// `dec` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_session_keep_fft_cache(
+    dec: *mut MfskDecodeSession,
+    keep: bool,
+) -> MfskStatus {
+    let Some(d) = v2(dec) else {
+        set_error("mfsk_session_keep_fft_cache: null session handle");
+        return MfskStatus::InvalidArg;
+    };
+    if keep && !mode_has_cap(d.mode, MFSK_CAP_FFT_CACHE) {
+        return d.unsupported("mfsk_session_keep_fft_cache", "MFSK_CAP_FFT_CACHE");
+    }
+    d.keep_fft_cache = keep;
+    if !keep {
+        d.fft_cache = None;
+    }
     MfskStatus::Ok
 }
 

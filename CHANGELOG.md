@@ -467,6 +467,56 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   the C ABI claims to support was built by nothing. Both halves are now
   covered per-PR by one job.
 
+- **The four capability bits that no C entry point could reach.**
+  `MFSK_CAP_BUDGET`, `MFSK_CAP_KNOWN_FILTER`, `MFSK_CAP_KNOWN_SUBTRACT`
+  and `MFSK_CAP_FFT_CACHE` were published per mode by `mfsk_mode_caps`
+  while `.budget()`, `.known()` and `.fft_cache()` existed only on the
+  Rust `DecodeRequest`. A consumer read the bit, believed the mode did
+  it, and found nothing to call — worse than an absent capability,
+  because the ABI's whole introspection story is that the bits can be
+  trusted. Three session-scoped entry points close it:
+
+  - `mfsk_session_set_budget(dec, check, user)` polls a caller-supplied
+    predicate during the search; returning `false` stops it and returns
+    what was found. **The library still reads no clock** — the deadline
+    is the caller's, as with the capture ring's slot grid.
+    `mfsk_session_last_budget` reports what was left undone, including
+    the sync quality of the best *skipped* candidate, which on FT8 is
+    the scheduler's own ranking key and so says whether the cut took
+    noise or a station. Absent is `-1` and NaN, not 0, for the same
+    reason `freq_hint_hz` uses NaN.
+  - `mfsk_session_keep_known(dec, keep)` carries a decode's results
+    into the next one on that session as known signals — skipped, or
+    subtracted where the mode publishes `_KNOWN_SUBTRACT`. The engine's
+    results, not the C rows: reconstructing them from what this ABI
+    hands back would lose what the subtraction needs, and the session
+    already holds them. `mfsk_session_known_count` says how many.
+  - `mfsk_session_keep_fft_cache(dec, keep)` reuses the slot transform
+    for a second pass over the same audio — FST4-300's is 4 194 304
+    points. **Reuse is checked, not trusted**: the cache is stored with
+    an FNV fingerprint of the audio it was built from, and a decode of
+    anything else transforms afresh. A cache reused against different
+    audio is a confident wrong answer with nothing to signal it, and
+    "the caller promised the buffers matched" is not a check.
+
+  Both bindings expose all three (`setBudget` / `keepKnown` /
+  `keepFFTCache` in Swift, the same in Kotlin with a `MfskBudgetCheck`
+  `fun interface`), and the C++ driver exercises them against a
+  two-station slot. With this, **every function in `mfsk.h` is reachable
+  from both bindings, and every capability bit has an entry point.**
+
+- **`mfsk-ffi/README.md` documented an ABI that no longer exists.** Its
+  surface table, quick-start and ownership sections were all pre-v2:
+  `mfsk_decoder_new`, `MfskResultList`, `mfsk_result_list_free`,
+  `mfsk_samples_free`, `MFSK_PROTOCOL_*`. Every one of those was deleted
+  in this same release, so the file's only runnable example could not
+  compile and its memory rules described allocations that no longer
+  cross the boundary. Rewritten against the current header: the table is
+  grouped the way the header is, the quick start is the three-stage
+  transmit plus a session decode with nothing to free, and "Mode
+  selection" now shows the introspection loop rather than a hardcoded
+  list of seven tags.
+
 - **`mfsk_session_set_on_decode` in both bindings** — rows delivered as
   they are found, on top of the list the call returns, which stays
   authoritative. It exists for a UI with a long slot to fill:

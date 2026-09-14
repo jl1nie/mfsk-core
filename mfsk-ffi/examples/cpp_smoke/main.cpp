@@ -617,6 +617,127 @@ void test_q65() {
     if (!fading.contains("K1ABC")) fail("Q65 fading", "expected K1ABC");
 }
 
+// The three strategies the capability word used to advertise with no
+// way to reach them from C. Written the way a consumer has to write
+// them — set the option on the session, then look at what the decode
+// did differently.
+int g_budget_polls = 0;
+extern "C" bool budget_refuse_everything(void*) {
+    ++g_budget_polls;
+    return false;
+}
+extern "C" bool budget_allow_everything(void*) {
+    ++g_budget_polls;
+    return true;
+}
+
+std::vector<int16_t> two_stations() {
+    std::vector<int16_t> a = synth_slot(MFSK_MODE_FT8, "CQ", "JA1ABC", "PM95", 1200.0f);
+    const std::vector<int16_t> b = synth_slot(MFSK_MODE_FT8, "CQ", "VK3NV", "QF22", 1800.0f);
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+        a[i] = static_cast<int16_t>(a[i] + b[i]);
+    }
+    return a;
+}
+
+size_t decode_count(MfskDecodeSession* s, const std::vector<int16_t>& audio, Rows& rows) {
+    if (mfsk_session_decode_i16(s, audio.data(), audio.size(), 12000, nullptr,
+                                rows.items, 16, &rows.len) != MFSK_STATUS_OK) {
+        fail("strategies", mfsk_session_last_error(s));
+        return 0;
+    }
+    return rows.len;
+}
+
+void test_budget_known_cache() {
+    std::printf("\n— budget / known / fft cache: the bits are reachable now\n");
+    const std::vector<int16_t> audio = two_stations();
+
+    MfskStatus st = MFSK_STATUS_INTERNAL;
+    MfskDecodeSession* s = mfsk_session_open(MFSK_MODE_FT8, nullptr, &st);
+    if (s == nullptr) { fail("strategies", mfsk_last_error()); return; }
+
+    Rows base;
+    const size_t full = decode_count(s, audio, base);
+    std::printf("  unbudgeted: %zu decode(s)\n", full);
+
+    MfskBudgetReport rep;
+    std::memset(&rep, 0, sizeof rep);
+    rep.size = sizeof rep;
+    if (mfsk_session_last_budget(s, &rep) != MFSK_STATUS_OK) {
+        fail("budget", "last_budget failed");
+    } else if (rep.exhausted || rep.candidates_skipped != 0) {
+        fail("budget", "no budget was set, so nothing should report as cut");
+    } else if (rep.cut_at_sync != -1) {
+        fail("budget", "absent cut_at_sync must be -1");
+    }
+
+    // A predicate that refuses everything has to cut the search, be
+    // polled, and say so afterwards.
+    g_budget_polls = 0;
+    if (mfsk_session_set_budget(s, budget_refuse_everything, nullptr) != MFSK_STATUS_OK) {
+        fail("budget", mfsk_session_last_error(s));
+    }
+    Rows cut;
+    const size_t cutN = decode_count(s, audio, cut);
+    std::printf("  budgeted to nothing: %zu decode(s), %d poll(s)\n", cutN, g_budget_polls);
+    if (g_budget_polls == 0) fail("budget", "the predicate was never polled");
+    if (cutN >= full) fail("budget", "a refusing budget found as much as no budget");
+
+    std::memset(&rep, 0, sizeof rep);
+    rep.size = sizeof rep;
+    mfsk_session_last_budget(s, &rep);
+    std::printf("  report: exhausted=%d skipped=%u ran=%u cut_at_sync=%d\n",
+                (int)rep.exhausted, rep.candidates_skipped, rep.stages_run, rep.cut_at_sync);
+    if (!rep.exhausted) fail("budget", "work was cut and the report does not say so");
+
+    g_budget_polls = 0;
+    mfsk_session_set_budget(s, budget_allow_everything, nullptr);
+    Rows allowed;
+    if (decode_count(s, audio, allowed) != full) {
+        fail("budget", "a budget that allows everything changed the result");
+    }
+    mfsk_session_set_budget(s, nullptr, nullptr);
+
+    // Known: the second pass over the same slot has nothing new in it.
+    if (mfsk_session_keep_known(s, true) != MFSK_STATUS_OK) {
+        fail("known", mfsk_session_last_error(s));
+    }
+    Rows firstPass;
+    const size_t firstN = decode_count(s, audio, firstPass);
+    if (mfsk_session_known_count(s) != firstN) {
+        fail("known", "the session should be carrying the first pass's rows");
+    }
+    Rows secondPass;
+    const size_t secondN = decode_count(s, audio, secondPass);
+    std::printf("  known: %zu then %zu\n", firstN, secondN);
+    if (secondN != 0) fail("known", "a known signal was reported twice");
+    mfsk_session_keep_known(s, false);
+    if (mfsk_session_known_count(s) != 0) fail("known", "keep(false) should drop the list");
+
+    // FFT cache: same answer, and a stale one is not reused.
+    if (mfsk_session_keep_fft_cache(s, true) != MFSK_STATUS_OK) {
+        fail("cache", mfsk_session_last_error(s));
+    }
+    Rows cached1, cached2;
+    decode_count(s, audio, cached1);
+    decode_count(s, audio, cached2);
+    if (cached1.len != full || cached2.len != full) {
+        fail("cache", "reusing the slot transform changed the decode");
+    }
+    const std::vector<int16_t> other =
+        synth_slot(MFSK_MODE_FT8, "CQ", "VK3NV", "QF22", 1800.0f);
+    Rows elsewhere;
+    decode_count(s, other, elsewhere);
+    if (!elsewhere.contains("VK3NV")) {
+        fail("cache", "a cache from other audio was reused");
+    }
+    std::printf("  cache: %zu, %zu, then %zu on different audio\n",
+                cached1.len, cached2.len, elsewhere.len);
+
+    mfsk_session_close(s);
+}
+
 // ── Streaming delivery ──────────────────────────────────────────────
 //
 // A real C callback invoked from actual C++-compiled code, through the
@@ -1033,6 +1154,7 @@ int main() {
     test_jt9();
     test_jt65();
     test_q65();
+    test_budget_known_cache();
     test_threads_one_session_per_thread();
     test_threads_mixed_modes();
     test_null_handling();

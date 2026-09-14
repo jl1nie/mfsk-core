@@ -1766,6 +1766,10 @@ JVM を生かし続け、rayon のワーカーは join されないので、通�
 このバインディングの CI 初回実行は1分で `ALL OK` を出した後、72分間停止
 したまま手動キャンセルされた。
 
+**`session.setBudget { … }` / `keepKnown` / `keepFftCache`** も同様に
+セッション単位。予算述語は候補ごとに JNI を跨いで呼ばれるので、
+`System.nanoTime()` と捕捉した期限の比較程度に留めること。
+
 **`session.onDecode { row -> … }`** はデコードが見つかるたびに行を渡す
 （`decode` の戻り値はそのまま権威）。長いスロットの途中で画面に出したい
 UI 向け。呼び出しは rayon のワーカースレッドから来るので listener は並行
@@ -1815,6 +1819,12 @@ for row in try session.decode(slot) {
 * `CaptureStream` が 1 スロット分のキャプチャリングで、
   `session.decode(stream)` はスロットを取り出して渡し直す往復を省く
   融合デコード。
+* `session.setBudget { … }` は探索に期限を付ける（時計は呼び出し側が
+  持つ。ライブラリは時計を読まない）。`session.lastBudget` が切り捨て
+  た内容を返し、捨てた候補のうち最良のものがどれだけ良かったかまで
+  分かる。`keepKnown(_:)` はあるデコードの結果を次のデコードへ既知
+  信号として持ち越し、`keepFFTCache(_:)` は同じ音声を 2 度目に通すとき
+  スロット FFT を再利用する。
 * `session.onDecode { row in … }` は見つかった順に行を流す（戻り値の
   配列と併存）。`desktop` ビルドでは rayon ワーカーから並行に呼ばれ、
   `mobile` では単一スレッド・候補順。クロージャは差し替えかセッション
@@ -1836,7 +1846,7 @@ for row in try session.decode(slot) {
   少し落ちるのではなく**デコードが消える**。`Q65Tests` が両方向を固定
   している。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 61 個のテスト
+`bindings/swift/scripts/test.sh` が `libmfsk` のビルドと 68 個のテスト
 実行をまとめて行う。実アプリからのリンク方法（iOS ビルドで `mobile`
 フィーチャを選ぶ理由を含む）は `bindings/swift/README.md` 参照。
 

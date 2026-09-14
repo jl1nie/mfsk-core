@@ -51,6 +51,41 @@ fun interface MfskDecodeListener {
     fun onDecode(row: MfskDecode)
 }
 
+/// Polled during a decode to ask whether to keep going. Returning false
+/// stops the search and returns what has been found.
+///
+/// **The library reads no clock**, so the deadline is yours:
+/// ```kotlin
+/// val deadline = System.nanoTime() + 200_000_000
+/// session.setBudget { System.nanoTime() < deadline }
+/// ```
+/// This is polled per candidate and crosses JNI each time, so keep it
+/// to a comparison — anything heavier belongs behind a boolean the JVM
+/// side has already computed.
+fun interface MfskBudgetCheck {
+    fun shouldContinue(): Boolean
+}
+
+/// What a budgeted decode left undone. All-zero when no budget was set
+/// or it was never reached.
+data class MfskBudgetReport(
+    /// The predicate refused at least once: rows are missing that an
+    /// unbudgeted call would have found.
+    val exhausted: Boolean,
+    /// Units of work declined — a candidate on the single-pass engines,
+    /// a whole SIC round on `sicRounds`.
+    val candidatesSkipped: Int,
+    /// Units of work actually run, counted the same way.
+    val stagesRun: Int,
+    /// Costas sync quality of the best skipped candidate, or null.
+    /// **FT8 only** — it is the key FT8's scheduler orders by, so it
+    /// says whether the cut took noise or a station.
+    val cutAtSync: Int?,
+    /// Sync score of the best skipped candidate on that protocol's own
+    /// scale, or null when there was none.
+    val cutAtScore: Float?,
+)
+
 /// Geometry a host needs to size a buffer or place a transmission.
 data class MfskModeInfo(
     val ntones: Int,
@@ -175,7 +210,16 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
         fun open(mode: Int): MfskSession = MfskSession(nativeOpen(mode))
 
         @JvmStatic private external fun nativeOpen(mode: Int): Long
-        @JvmStatic private external fun nativeClose(handle: Long, callbackCtx: Long)
+        @JvmStatic private external fun nativeClose(
+            handle: Long, callbackCtx: Long, budgetCtx: Long,
+        )
+        @JvmStatic private external fun nativeSetBudget(
+            handle: Long, check: MfskBudgetCheck?, oldCtx: Long,
+        ): Long
+        @JvmStatic private external fun nativeLastBudget(handle: Long): IntArray
+        @JvmStatic private external fun nativeKeepKnown(handle: Long, keep: Boolean)
+        @JvmStatic private external fun nativeKnownCount(handle: Long): Int
+        @JvmStatic private external fun nativeKeepFftCache(handle: Long, keep: Boolean)
         @JvmStatic private external fun nativeAddCallsign(handle: Long, call: String)
         @JvmStatic private external fun nativeSetOnDecode(
             handle: Long, listener: MfskDecodeListener?, oldCtx: Long,
@@ -218,6 +262,62 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
         callbackCtx = nativeSetOnDecode(handle, listener, callbackCtx)
     }
 
+    /// Poll `check` during every subsequent decode; returning false
+    /// stops the search and returns what was found. Pass null to remove
+    /// the budget.
+    ///
+    /// **The triage sweep is a floor**: it is never gated, so a budget
+    /// shorter than it returns nothing *and still spends that time*.
+    /// Measured at ~13 ms of a ~28 ms FT8 decode. `maxCand` is the knob
+    /// that moves the floor.
+    ///
+    /// Throws if the mode does not publish [Mfsk.CAP_BUDGET].
+    fun setBudget(check: MfskBudgetCheck?) {
+        check(handle != 0L) { "session is closed" }
+        budgetCtx = nativeSetBudget(handle, check, budgetCtx)
+    }
+
+    /// What the budget cut short on the **last** decode.
+    val lastBudget: MfskBudgetReport
+        get() {
+            check(handle != 0L) { "session is closed" }
+            val v = nativeLastBudget(handle)
+            return MfskBudgetReport(
+                exhausted = v[0] != 0,
+                candidatesSkipped = v[1],
+                stagesRun = v[2],
+                cutAtSync = if (v[3] >= 0) v[3] else null,
+                // Int.MIN_VALUE is the "absent" spelling: an int array
+                // cannot carry the NaN the C struct uses.
+                cutAtScore = if (v[4] != Int.MIN_VALUE) v[4] / 1_000_000.0f else null,
+            )
+        }
+
+    /// Carry each decode's results into the next as **known** signals:
+    /// skipped rather than re-reported, and subtracted from the audio
+    /// where the mode publishes [Mfsk.CAP_KNOWN_SUBTRACT].
+    ///
+    /// `false` both stops carrying and drops what is held, which is how
+    /// a new slot starts.
+    fun keepKnown(keep: Boolean) {
+        check(handle != 0L) { "session is closed" }
+        nativeKeepKnown(handle, keep)
+    }
+
+    /// How many known signals the session carries into the next decode.
+    val knownCount: Int
+        get() = if (handle != 0L) nativeKnownCount(handle) else 0
+
+    /// Keep the slot FFT and reuse it for the next decode **of the same
+    /// audio**. Reuse is checked rather than trusted: the cache is
+    /// stored with a fingerprint of the audio it came from, so a decode
+    /// of anything else transforms afresh instead of returning a
+    /// confident wrong answer.
+    fun keepFftCache(keep: Boolean) {
+        check(handle != 0L) { "session is closed" }
+        nativeKeepFftCache(handle, keep)
+    }
+
     /// Teach the session a callsign, so a later slot's `<...>`
     /// reference to it resolves. Decoded messages populate the table
     /// automatically; this is for calls known from a band map or a log.
@@ -231,8 +331,9 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
             // The native side clears the callback before closing and
             // then frees the context: the session holds a raw pointer
             // to it, so the order is not decorative.
-            nativeClose(handle, callbackCtx)
+            nativeClose(handle, callbackCtx, budgetCtx)
             callbackCtx = 0L
+            budgetCtx = 0L
             handle = 0L
         }
     }
@@ -241,4 +342,7 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
     /// listener's global ref and the cached IDs. Owned here so there is
     /// exactly one, and freed by [close].
     private var callbackCtx: Long = 0L
+
+    /// Same, for the budget predicate.
+    private var budgetCtx: Long = 0L
 }

@@ -1923,6 +1923,12 @@ for seventy-two minutes until it was cancelled.
 mutates on every decode. One per thread; concurrent decodes on separate
 sessions are supported.
 
+**`session.setBudget { … }`, `keepKnown`, `keepFftCache`** are the same
+three strategies, per session. The budget predicate crosses JNI once per
+candidate, so keep it to a `System.nanoTime()` comparison against a
+captured deadline — anything heavier belongs behind a boolean the JVM
+side already computed.
+
 **`session.onDecode { row -> … }`** delivers rows as they are found, on
 top of the list `decode` returns — for a UI that wants something on
 screen before a long slot finishes. The listener is called from rayon
@@ -1971,6 +1977,12 @@ for row in try session.decode(slot) {
 * `CaptureStream` is the one-slot capture ring, and
   `session.decode(stream)` is the fused decode that avoids copying a
   slot out and back in.
+* `session.setBudget { … }` bounds the search with a predicate the
+  caller polls a clock in — the library reads none — and
+  `session.lastBudget` says what the cut left undone, including how good
+  the best skipped candidate was. `keepKnown(_:)` carries a decode's
+  results into the next as known signals; `keepFFTCache(_:)` reuses the
+  slot transform for a second pass over the same audio.
 * `session.onDecode { row in … }` streams rows as they are found,
   alongside the array the call returns. On a `desktop` build the
   closure runs on rayon workers, possibly concurrently; on `mobile`
@@ -1993,7 +2005,7 @@ for row in try session.decode(slot) {
   removes the decode instead of costing a fraction of a dB. Both
   directions are pinned in `Q65Tests`.
 
-`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 61
+`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 68
 tests; `bindings/swift/README.md` covers linking from a real app,
 including why the `mobile` feature set is the one an iOS build wants.
 

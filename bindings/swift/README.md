@@ -32,7 +32,7 @@ if let slot = try session.decode(stream) {
 bindings/swift/scripts/test.sh          # builds libmfsk, then swift test
 ```
 
-61 tests, ~9 s — most of it Q65, which decodes a 30 s slot five ways.
+68 tests, ~10 s — most of it Q65, which decodes a 30 s slot five ways.
 CI runs exactly this script on `macos-latest` (the
 `Swift binding (macOS) + iOS build` job), which is also where
 `aarch64-apple-ios` is built — both need Xcode, one for XCTest and one
@@ -59,6 +59,9 @@ referencing it means there is nothing here to keep in step.
 | Hashed callsigns | `DecodeSession.addCallsign(_:)` | `mfsk_session_add_callsign` |
 | Raw FEC bits | `DecodeSession.informationBits(at:)` | `mfsk_session_copy_info` |
 | Rows as they are found | `DecodeSession.onDecode { row in … }` | `mfsk_session_set_on_decode` |
+| Decode budget | `DecodeSession.setBudget { … }`, `.lastBudget` | `mfsk_session_set_budget`, `mfsk_session_last_budget` |
+| Known signals | `DecodeSession.keepKnown(_:)`, `.knownCount` | `mfsk_session_keep_known`, `mfsk_session_known_count` |
+| Slot-FFT reuse | `DecodeSession.keepFFTCache(_:)` | `mfsk_session_keep_fft_cache` |
 | Transmit | `Message` (`standard` / `type1` / `freeText` / `type4`), `Mode.synthesiseFrame`, `Mode.synthesiseSlot` | `mfsk_pack77*`, `mfsk_unpack77`, `mfsk_message_to_tones`, `mfsk_tones_to_i16` / `_f32` |
 | Handle-less modes | `WSPR`, `JT9`, `JT65` | `mfsk_encode_wspr` / `_jt9` / `_jt65`, `mfsk_wspr_decode`, `mfsk_jt9_decode_at`, `mfsk_jt65_decode_at` |
 | Q65 | `Q65` (four strategies), `Q65SubMode`, `Q65FadingModel`, `CallsignHashTable` | `mfsk_encode_q65`, `mfsk_q65_decode` / `_with_ap` / `_fading` / `_with_ap_list`, `mfsk_callsign_hash_table_*` |
@@ -92,6 +95,9 @@ that decodes four other ways then decodes not at all. `Q65Tests` asserts
 both directions so the doc cannot drift from the behaviour.
 
 ## Not wrapped yet, and why
+
+Every function in `mfsk.h` is reachable from this package. What is left
+is one struct field:
 
 * **The two thread hooks** on `MfskRuntimeConfig`. They exist so an
   Android JNI consumer can `AttachCurrentThread` on each rayon worker;
