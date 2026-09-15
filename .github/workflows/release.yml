@@ -37,6 +37,11 @@ jobs:
             const workflowName = 'CI';
             const intervalMs = 20_000;
             const timeoutMs = 30 * 60 * 1000;  // 30 min cap
+            // How long "no run at all yet" is allowed to mean "the
+            // scheduler has not caught up". Past this it means the
+            // commit has no CI, which is a different thing and wants
+            // a different message — see the branch below.
+            const noRunGraceMs = 3 * 60 * 1000;
             const start = Date.now();
             let lastReport = '';
 
@@ -51,10 +56,34 @@ jobs:
               const ciRuns = data.workflow_runs.filter(r => r.name === workflowName);
 
               if (ciRuns.length === 0) {
-                // No CI run yet for this SHA. Most likely the tag was
-                // pushed before the main-push CI scheduler picked up
-                // the commit (rare, but possible on a fast tag-after-
-                // merge sequence). Keep waiting up to the timeout.
+                // Two very different situations look identical here.
+                //
+                // For the first few minutes, the likely one is that the
+                // tag was pushed before the main-push CI scheduler got
+                // to the commit — rare, but possible on a fast
+                // tag-after-merge sequence — so waiting is right.
+                //
+                // After that, the likely one is that this commit has no
+                // CI and never will: `ci.yml` `paths-ignore`s
+                // `embedded-poc/**` and `bench/wasm/**`, so a push that
+                // touches only those trees starts no run whatsoever.
+                // Such a commit is not taggable, and waiting 30 minutes
+                // to say so reported it as `Timed out waiting for CI`,
+                // which reads like a scheduler flake and sent the
+                // reader looking in the wrong place (2026-09-15: main
+                // sat at exactly such a commit while 0.11.0 was
+                // waiting to be tagged).
+                if (Date.now() - start > noRunGraceMs) {
+                  core.setFailed(
+                    `No '${workflowName}' run exists for ${ref} (push event), ` +
+                    `${Math.round(noRunGraceMs / 60_000)} min after the tag. ` +
+                    `A commit whose changes are all under a path ci.yml ignores ` +
+                    `(embedded-poc/**, bench/wasm/**) starts no CI run, so there ` +
+                    `is nothing to gate the publish on. Check with ` +
+                    `\`gh run list --commit ${ref}\`, then tag a commit that has ` +
+                    `one — the release does not need to be the newest commit on main.`);
+                  return;
+                }
                 if (lastReport !== 'none') {
                   core.info(`No '${workflowName}' run yet for ${ref}; waiting...`);
                   lastReport = 'none';
@@ -87,18 +116,18 @@ jobs:
       # deliberately treats `skipped` as acceptable — a docs-only push
       # legitimately skips the build matrix. That tolerance is too wide
       # for the one job that carries the golden (tier-B) assertions:
-      # a `Test (default)` that never ran would sail through, and this
+      # a `Test (tier A+B …)` that never ran would sail through, and this
       # crate has already shipped with those tests passing vacuously
       # (before the recordings were vendored they resolved from a
       # sibling WSJT-X checkout CI does not have, so five protocols'
       # golden tests skipped and reported success).
       #
-      # So require, at job granularity, that `Test (default)` actually
+      # So require, at job granularity, that `Test (tier A+B …)`
       # ran and succeeded. Combined with `MFSK_REQUIRE_CORPUS=1` in
       # ci.yml — which turns a missing corpus into a failure rather
-      # than a skip — a green `Test (default)` is a positive statement
+      # than a skip — a green `Test (tier A+B …)` is a positive statement
       # that the tier-B assertions executed against real recordings.
-      - name: Require Test (default) to have actually run
+      - name: Require Test (tier A+B) to have actually run
         uses: actions/github-script@v7
         with:
           script: |

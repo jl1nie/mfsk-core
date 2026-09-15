@@ -547,9 +547,9 @@ tarball.
 `wait-for-ci` checks two things, not one. The workflow-run poll
 tolerates `skipped` (a docs-only push legitimately skips the build
 matrix), which is too wide for the job carrying the golden tier-B
-assertions — so a second step requires `Test (default)` to have
+assertions — so a second step requires `Test (tier A+B …)` to have
 concluded `success` at *job* granularity. Together with
-`MFSK_REQUIRE_CORPUS=1` in `ci.yml`, a green `Test (default)` is a
+`MFSK_REQUIRE_CORPUS=1` in `ci.yml`, a green `Test (tier A+B …)` is a
 positive statement that the golden tests ran against real recordings
 rather than skipping. Before the recordings were vendored they did
 skip, silently, for five protocols.

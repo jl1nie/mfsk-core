@@ -493,6 +493,29 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   next window opens 0.725 s after this one closes, and a decode past
   that spends staging rather than the grid.
 
+- **`wait-for-ci` spent 30 minutes to misdiagnose a commit that has no
+  CI.** `ci.yml` `paths-ignore`s `embedded-poc/**` and `bench/wasm/**`,
+  so a push touching only those trees starts no workflow run at all —
+  and `release.yml`'s poll read "no run yet" as "the scheduler has not
+  caught up", waited out its whole 30-minute cap, and failed with
+  `Timed out waiting for CI`. That reads like a GitHub flake, and sends
+  the reader to the Actions tab rather than to the tag. It is now a
+  three-minute grace period, after which the failure says what is
+  actually wrong: this commit starts no CI, nothing can gate the
+  publish on it, and the tag belongs on a commit that has a run — which
+  need not be the newest commit on `main`. Found by walking up to it:
+  `main` sat at exactly such a commit (an `embedded-poc/CLAUDE.md` fix)
+  while this release waited to be tagged.
+
+  Refusing to publish was always the right outcome, and still is. Only
+  the diagnosis changed.
+
+  Also corrected here: the second gate's own comments, and `CLAUDE.md`'s
+  description of it, still called the job it requires `Test (default)`.
+  It has been `Test (tier A+B — invariants + golden)` since the tier
+  rework, which is what the code matches on — the comment was the stale
+  half, so the gate works and its documentation did not describe it.
+
 ### Added
 
 - **The tier-C sweeps every decode-path change in this section asked
