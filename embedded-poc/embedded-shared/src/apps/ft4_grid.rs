@@ -267,11 +267,27 @@ impl SlotGrid {
             (self.period - self.window) as i32 + core::mem::take(&mut self.pending_shift);
         self.skip = want_skip.clamp(0, self.period as i32) as usize;
         self.pending_shift = want_skip - self.skip as i32;
-        // The clock's contribution has been spent on this gap; the next
-        // window measures the disagreement afresh, which is how drift
-        // keeps being corrected without one reading being applied
-        // twice.
-        self.clock_trim = 0;
+        // What the gap could not hold stays owed, and the next window
+        // will measure it again — the grid really is still that far off.
+        // So carry it as `clock_trim` rather than clearing: the clock's
+        // contribution has been spent only to the extent it was
+        // applied. Zeroing here let the next window queue the carried
+        // part a second time, on top of the carry, and the grid then
+        // overshot by exactly that amount before settling (#376).
+        //
+        // With nothing clamped this is 0, which is the ordinary case:
+        // the gap absorbed the whole correction, the next window
+        // measures the disagreement afresh, and drift keeps being
+        // corrected without one reading being applied twice.
+        //
+        // Approximate only in that `pending_shift` may also hold a
+        // DT-median trim, which is not a clock error. That trim is
+        // small by construction — well inside `reanchor_thresh`, which
+        // is why `phase_error` deliberately does not subtract it — and
+        // so never causes the clamp; what it can do is leave the
+        // residual off by its own size, which stays under the
+        // threshold and queues nothing.
+        self.clock_trim = self.pending_shift;
         true
     }
 }
@@ -524,5 +540,68 @@ mod tests {
         }
         assert_eq!(whole.room(), pieces.room());
         assert_eq!(whole.take_skip(PERIOD), pieces.take_skip(PERIOD));
+    }
+
+    /// Fill one whole window the way the reader does — in blocks, with
+    /// the clock asked before each — which is what makes a correction
+    /// queued per block rather than per window visible at all.
+    ///
+    /// `clock_off` is where the clock's boundary sits relative to the
+    /// grid's own: negative means the grid is running late.
+    fn fill_window_asking_clock(g: &mut SlotGrid, clock_off: i32) {
+        loop {
+            let n = 8.min(g.room());
+            let have = g.samples_to_next_window_open();
+            let want = (have + clock_off).rem_euclid(PERIOD as i32) as usize;
+            // Already aligned, so every call here is a trim: only the
+            // first anchor may discard a window, and asserting it says
+            // this helper never silently threw audio away.
+            assert_eq!(g.anchor_or_reanchor(want), Anchor::Kept);
+            if g.fill(n) {
+                return;
+            }
+        }
+    }
+
+    /// A correction bigger than the gap is carried to the next close —
+    /// and the next window measures the same error again, because the
+    /// grid really is still that far off. Issue #376: `clock_trim` was
+    /// cleared at the close regardless, so that second measurement
+    /// queued the carried part a *second* time and the grid overshot by
+    /// exactly it before settling two windows later.
+    ///
+    /// Reachable from the case the re-anchor branch exists for — NTP
+    /// stepping an RTC-seeded clock by seconds. On FT4's own constants
+    /// a −1 s step overshoots by 3 300 samples (0.275 s).
+    #[test]
+    fn a_carried_correction_is_not_queued_twice() {
+        const GAP: i32 = (PERIOD - WINDOW) as i32;
+        let mut g = aligned_grid();
+
+        // Further than one gap can move (200), leaving 100 owed, which
+        // is past the threshold (20) and so measurable again.
+        let mut clock_off: i32 = -300;
+
+        fill_window_asking_clock(&mut g, clock_off);
+        let gap1 = g.take_skip(PERIOD) as i32;
+        assert_eq!(gap1, 0, "the gap clamps at 0: it cannot move -300");
+        clock_off -= gap1 - GAP;
+        assert_eq!(clock_off, -100, "-100 still owed after the clamp");
+
+        // The whole point: the grid is genuinely -100 off now, the
+        // carry already holds -100, and applying it once lands exactly.
+        fill_window_asking_clock(&mut g, clock_off);
+        let gap2 = g.take_skip(PERIOD) as i32;
+        assert_eq!(
+            gap2 - GAP,
+            -100,
+            "the carried correction must be applied once, not twice"
+        );
+        clock_off -= gap2 - GAP;
+        assert_eq!(clock_off, 0, "and the grid is on the clock");
+
+        // Settled: no further correction, no oscillation.
+        fill_window_asking_clock(&mut g, clock_off);
+        assert_eq!(g.take_skip(PERIOD) as i32, GAP, "nothing left to correct");
     }
 }

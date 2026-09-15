@@ -47,6 +47,30 @@ suite on a Mac rather than by CI, which still has Linux runners only.
 
 ### Fixed
 
+- **A grid correction the gap could not hold was applied twice** (#376,
+  follow-up to #369). `SlotGrid::fill` cleared `clock_trim` at every
+  window close, including the close that clamped `want_skip` and
+  carried the remainder. The next window then measured the same
+  uncorrected error — the grid really was still that far off — and
+  `phase_error`, netting against a `clock_trim` of 0, queued it a
+  second time on top of the carry. The grid overshot by exactly the
+  carried amount and settled two windows later.
+
+  Reachable from the case the re-anchor branch exists for: NTP stepping
+  an RTC-seeded clock by seconds. On FT4's constants (`gap = 8 700`,
+  `reanchor_thresh = 1 200`) any negative step past −0.825 s does it,
+  and a −1 s step overshoots by **3 300 samples, 0.275 s**. Bounded and
+  self-correcting, and inside both the 6.775 s capture window and the
+  ±2.5 s coarse search, so the affected slot still decodes — which is
+  why it was invisible from outside: one slightly-off slot, nothing
+  naming why.
+
+  The close now carries the unspent part as `clock_trim` instead of
+  discarding it, so the next window nets to ~0 and queues nothing; with
+  nothing clamped it is 0, exactly as before. The new test drives the
+  grid in reader-sized blocks and fails on the old code with −200 where
+  −100 was owed.
+
 - **The two Q65 enums never reached the header, so C callers wrote
   `0`.** Every `mfsk_q65_*` function takes its sub-mode as `uint32_t`,
   and deliberately so: a `#[repr(C)]` fieldless enum is an `int` to C,
