@@ -542,6 +542,24 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   same tree (`Run suite: skipped`, job green in 5 s) is refused — and
   the pre-fix gate allowed that second one, which is the bug.
 
+- **`docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md` was cited from nine
+  places and had never been committed.** The whole WSPR-on-embedded
+  track points at it — `WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s opening
+  line links to it relatively (so, broken on GitHub), both
+  `wspr_bench` binaries and `embedded-shared`'s copy name it in their
+  module docs, `wspr::instrument`'s doc says it was written for its
+  Phase 1, `wspr_wsjtx_samples.rs` marks the host side of that phase,
+  and three `Cargo.toml`s justify a feature by it. The file itself
+  only ever existed on the branch it was written on, which was never
+  merged: the plan was written, the measurement was run from it, the
+  results were committed, and the plan was left behind.
+
+  Committed now as it was written, with one addition — a pointer
+  forward to the results, since a reader arriving from any of those
+  nine citations wants the answer and the plan predates it. Found while
+  clearing out stale branches, which is the only reason the last copy
+  was still reachable.
+
 ### Added
 
 - **The tier-C sweeps every decode-path change in this section asked
