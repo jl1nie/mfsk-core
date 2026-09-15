@@ -439,7 +439,14 @@ fn slot_loop() -> ! {
                     log::info!(
                         "ft4_app: slot grid anchored to {} — {} ms to the next boundary",
                         if seeded_from_air { "the FT8 air fix" } else { "UTC" },
-                        remain / 12,
+                        // `remain` carries the staged backlog added
+                        // above, so it can exceed a slot — `block` holds
+                        // up to `STAGING_CAP`. The grid takes it modulo
+                        // the period itself; this line is what an
+                        // operator reads to confirm the anchor, so it
+                        // reduces too rather than printing 11 s of a
+                        // 7.5 s grid.
+                        remain as u64 % (FT4_SLOT_MS * 12) / 12,
                     );
                 } else if let Some(delta) = err {
                     // Past the threshold, so the grid just moved. Worth

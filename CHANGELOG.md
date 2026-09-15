@@ -170,8 +170,10 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   Both remain consolidation candidates rather than one covering the
   other, and neither is changed.
 
-  Behaviour is unchanged: the same skip/fill/carry the accumulator
-  already ran, moved where it can be tested. Seven cases, including the
+  The move was *nearly* behaviour-preserving, and the exception is the
+  entry below: the extracted first-anchor branch zeroed a fill counter
+  the old in-place version did not have, which desynchronised the grid
+  from the audio the caller holds. Ten cases now, including the
   reference-frame bug above, the trim landing at the next window close
   rather than on a gap already set, the wrap that keeps a boundary just
   behind the grid reading as a small negative error, and a correction
@@ -430,6 +432,66 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   `usb_serial_jtag_is_connected`, and `usb_host_install()` detaches the
   console, which a bridge could not do). Everything above is verified
   on macOS without a board; nothing that needs the CoreS3 plugged in is.
+
+- **Three defects in FT4's slot grid, all found by reviewing the
+  extraction above rather than by running it.** None had reached a tag;
+  all three were live on `main`.
+
+  **The first anchor desynchronised the grid from the audio.**
+  `SlotGrid` counts the window's fill while `SlotAccum` holds the
+  samples, and `push` advances both by the same `take` — so they are
+  one number kept in two places. The first anchor reset the grid's
+  half and not the buffer, which the in-place version it replaced had
+  no need to do (it measured the fill as `audio.len()` directly). The
+  path that reaches it is ordinary: `time_sync` reports no phase until
+  the RTC or NTP lands, while UAC audio arrives regardless, so a
+  CoreS3 accumulates a part-filled window and *then* gets a clock. The
+  window would close holding that pre-anchor audio plus a whole
+  window, and `Ft4SavgBuilder` stops emitting rows at `nhsym` — so the
+  periodogram the coarse search ran on averaged the stale span rather
+  than the anchored one. `anchor_or_reanchor` now returns
+  `Anchor::DiscardPartial` when it re-phases under a part-filled
+  window, `SlotAccum` drops that window, and the close carries the
+  FT8 line's cross-check with it: a window that closes holding
+  anything other than `CAPTURE_CLOSE_SAMPLES` says so, the way
+  `stage1_inc::finalize_slot` compares `audio_fill` against the
+  reported `total_samples`.
+
+  **A clock correction was queued once per audio block, not once per
+  window.** `phase_error` is a function of the grid's position, and
+  both sides of it advance by the same `take`, so the same real offset
+  answers the same number on every call — while the receiver asks once
+  per UAC read, ~21 ms, ~320 times across a 6.775 s window. The branch
+  exists to absorb NTP stepping an RTC-seeded clock, which is seconds;
+  multiplied by the block count, a 1 s step became ~3.8 M samples of
+  `pending_shift`, and `fill` clamps a gap to one period and carries
+  the rest, so the receiver would skip whole slots for dozens of slots
+  afterwards. `phase_error` is now net of what this cycle has already
+  queued: the first call reports the error and queues it, the rest of
+  the window reports `None`, and the close spends it and re-arms so
+  drift keeps being corrected. The same subtraction fixes the log —
+  the "off the clock — trimmed" line was one per block, on the serial
+  link that also carries the decodes.
+
+  **The anchor log could print more than a slot.** `remain` has the
+  staged backlog added to it before the log, and staging holds up to
+  `STAGING_CAP`, so a 7.5 s grid could report ~11 500 ms to the next
+  boundary. The grid takes it modulo the period internally; the line
+  an operator reads to confirm the anchor now does too.
+
+  Verified the way the rest of this module is: the three cases added
+  for these fail against the code as it was, checked one at a time.
+  Also here, from the same review: the piecewise-fill case asserted
+  something that could not fail (`!closed || room == WINDOW` is true on
+  every non-final push and, on the last, `fill` has already reset the
+  counter), and now pins that the window closes on exactly the final
+  piece; a bare intra-doc link that did not resolve; and four stale
+  `6.25 s` / `1.25 s` figures left from before the capture close moved
+  to 6.775 s. One of those, `RX_ONLY_BUDGET_MS`' "conservative by
+  1.25 s ... `7.5 + 6.25`", could not be reconstructed as a claim at
+  all, so it now states the relationship the constants support: the
+  next window opens 0.725 s after this one closes, and a decode past
+  that spends staging rather than the grid.
 
 ### Added
 

@@ -66,7 +66,35 @@ pub struct SlotGrid {
     /// closes — from the UTC drift check and from the DT-median trim
     /// alike.
     pending_shift: i32,
+    /// How much of `pending_shift` the clock check itself has queued
+    /// for the window now in progress. Subtracted in
+    /// [`SlotGrid::phase_error`] so that asking again inside the same
+    /// window sees the error as already corrected, and cleared by
+    /// [`SlotGrid::fill`] when the correction lands in `skip`.
+    ///
+    /// The receiver asks once per audio block — a UAC read, ~21 ms, so
+    /// ~320 times per FT4 window — and the error is a function of the
+    /// grid's position alone, so without this the same disagreement is
+    /// queued on every one of those calls.
+    clock_trim: i32,
     aligned: bool,
+}
+
+/// What [`SlotGrid::anchor_or_reanchor`] did, for a caller that holds
+/// the audio the grid is only counting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum Anchor {
+    /// The phase was set or trimmed without moving the window now
+    /// filling: nothing to do. A trim queued here lands at the next
+    /// window close, which is what keeps windows exactly one window
+    /// long.
+    Kept,
+    /// The grid re-phased under a part-filled window, so whatever the
+    /// caller has accumulated for it straddles the new boundary and
+    /// must be dropped. Only the first anchor does this: a later trim
+    /// goes through `pending_shift` instead.
+    DiscardPartial,
 }
 
 impl SlotGrid {
@@ -83,6 +111,7 @@ impl SlotGrid {
             filled: 0,
             skip: 0,
             pending_shift: 0,
+            clock_trim: 0,
             aligned: false,
         }
     }
@@ -123,25 +152,58 @@ impl SlotGrid {
     /// that step can be seconds, well past what the Δt search could
     /// pull back. Jitter below the threshold is left for
     /// [`shift_next_window`](Self::shift_next_window).
-    pub fn anchor_or_reanchor(&mut self, samples_to_boundary_from_here: usize) {
+    ///
+    /// The return value matters only to a caller that is accumulating
+    /// audio against this grid: [`Anchor::DiscardPartial`] says the
+    /// window it was filling no longer exists. The grid counts
+    /// samples and the caller holds them, so only the caller can throw
+    /// them away — and it has to, because the first anchor re-phases
+    /// under a window that may be part-filled from before there was a
+    /// clock at all (`time_sync` reports no phase until the RTC or NTP
+    /// lands, while UAC audio arrives regardless).
+    ///
+    /// A correction the DT-median trim had queued before the first
+    /// anchor is dropped with that window: it was measured against a
+    /// free-running phase, on audio that is no longer going to be
+    /// decoded.
+    pub fn anchor_or_reanchor(&mut self, samples_to_boundary_from_here: usize) -> Anchor {
         if !self.aligned {
             // Exactly on a boundary reads as a whole period; that means
             // "open now", not "skip a slot".
             self.skip = samples_to_boundary_from_here % self.period;
+            let had_partial = self.filled > 0;
             self.filled = 0;
             self.pending_shift = 0;
+            self.clock_trim = 0;
             self.aligned = true;
-            return;
+            return if had_partial {
+                Anchor::DiscardPartial
+            } else {
+                Anchor::Kept
+            };
         }
         if let Some(delta) = self.phase_error(samples_to_boundary_from_here) {
             self.pending_shift += delta;
+            self.clock_trim += delta;
         }
+        Anchor::Kept
     }
 
-    /// The signed phase error the next [`anchor_or_reanchor`] would act
-    /// on, or `None` when it is inside the threshold. Positive means
-    /// the clock's boundary is later than the grid's — the grid is
-    /// running early.
+    /// The signed phase error the next
+    /// [`anchor_or_reanchor`](Self::anchor_or_reanchor) would act on,
+    /// or `None` when it is inside the threshold. Positive means the
+    /// clock's boundary is later than the grid's — the grid is running
+    /// early.
+    ///
+    /// **Net of what is already queued.** A correction this cycle's
+    /// clock check has already folded into `pending_shift` is
+    /// subtracted, so the answer is what remains uncorrected rather
+    /// than the raw disagreement. That is what makes it safe to ask
+    /// per audio block: the first call reports the error and queues
+    /// it, and the rest of the window reports `None`. The DT-median
+    /// trim is deliberately *not* subtracted — it is small by
+    /// construction and well inside the threshold, so it never reads
+    /// as a phase error on its own.
     ///
     /// Public because it is the number worth logging: it is the
     /// disagreement between the clock and the grid, which with a
@@ -159,7 +221,8 @@ impl SlotGrid {
         } else if delta <= -period / 2 {
             delta += period;
         }
-        (delta.abs() > self.reanchor_thresh).then_some(delta)
+        let residual = delta - self.clock_trim;
+        (residual.abs() > self.reanchor_thresh).then_some(residual)
     }
 
     /// Fold a signed correction into the next inter-window gap — the
@@ -204,6 +267,11 @@ impl SlotGrid {
             (self.period - self.window) as i32 + core::mem::take(&mut self.pending_shift);
         self.skip = want_skip.clamp(0, self.period as i32) as usize;
         self.pending_shift = want_skip - self.skip as i32;
+        // The clock's contribution has been spent on this gap; the next
+        // window measures the disagreement afresh, which is how drift
+        // keeps being corrected without one reading being applied
+        // twice.
+        self.clock_trim = 0;
         true
     }
 }
@@ -221,7 +289,7 @@ mod tests {
     fn aligned_grid() -> SlotGrid {
         let mut g = SlotGrid::new(WINDOW, PERIOD, THRESH);
         // Anchor with the boundary right here: the window opens now.
-        g.anchor_or_reanchor(0);
+        assert_eq!(g.anchor_or_reanchor(0), Anchor::Kept);
         assert!(g.is_aligned());
         assert_eq!(
             g.take_skip(PERIOD),
@@ -279,7 +347,7 @@ mod tests {
         // was not drifting.
         let mut naive = g;
         assert_eq!(naive.phase_error(remain_from_now), Some(-(BACKLOG as i32)));
-        naive.anchor_or_reanchor(remain_from_now);
+        assert_eq!(naive.anchor_or_reanchor(remain_from_now), Anchor::Kept);
         // A trim lands at the *next* window close, not on the gap
         // already set, so run one cycle to see it.
         assert_eq!(
@@ -291,7 +359,10 @@ mod tests {
         // Converted to this frame first, it reads as no error.
         let mut correct = g;
         assert_eq!(correct.phase_error(remain_from_now + BACKLOG), None);
-        correct.anchor_or_reanchor(remain_from_now + BACKLOG);
+        assert_eq!(
+            correct.anchor_or_reanchor(remain_from_now + BACKLOG),
+            Anchor::Kept
+        );
         assert_eq!(one_cycle(&mut correct), PERIOD - WINDOW);
     }
 
@@ -304,7 +375,7 @@ mod tests {
         let mut g = SlotGrid::new(WINDOW, PERIOD, THRESH);
         // The boundary is 300 samples ahead of *now*, and the
         // accumulator is BACKLOG behind now.
-        g.anchor_or_reanchor(300 + BACKLOG);
+        assert_eq!(g.anchor_or_reanchor(300 + BACKLOG), Anchor::Kept);
         assert_eq!(g.take_skip(PERIOD), 300 + BACKLOG);
     }
 
@@ -318,12 +389,15 @@ mod tests {
 
         // Inside the threshold: left to the DT trim.
         let mut jitter = g;
-        jitter.anchor_or_reanchor(here + (THRESH as usize));
+        assert_eq!(
+            jitter.anchor_or_reanchor(here + (THRESH as usize)),
+            Anchor::Kept
+        );
         assert_eq!(one_cycle(&mut jitter), PERIOD - WINDOW);
 
         // Past it: the next gap moves by exactly the error.
         let mut step = g;
-        step.anchor_or_reanchor(here + 100);
+        assert_eq!(step.anchor_or_reanchor(here + 100), Anchor::Kept);
         assert_eq!(one_cycle(&mut step), (PERIOD - WINDOW) + 100);
     }
 
@@ -357,6 +431,82 @@ mod tests {
         assert_eq!(one_cycle(&mut g), gap as usize);
     }
 
+    /// The receiver asks once per audio block — a UAC read, ~21 ms,
+    /// so ~320 times across an FT4 window — and the error is a
+    /// function of the grid's position, so every one of those calls
+    /// answers the same number. It must be acted on once: an NTP step
+    /// multiplied by the block count would skip whole slots, which is
+    /// exactly the case the re-anchor branch exists to absorb.
+    #[test]
+    fn asking_every_block_queues_the_correction_once() {
+        let mut g = aligned_grid();
+        one_cycle(&mut g);
+        let room = g.room();
+        g.fill(room);
+        let here = g.samples_to_next_window_open() as usize;
+
+        assert_eq!(g.phase_error(here + 100), Some(100));
+        for _ in 0..50 {
+            assert_eq!(g.anchor_or_reanchor(here + 100), Anchor::Kept);
+        }
+        // Queued once. Reading as corrected from here on is also what
+        // stops the caller logging the same trim on every block.
+        assert_eq!(g.phase_error(here + 100), None);
+        assert_eq!(
+            one_cycle(&mut g),
+            (PERIOD - WINDOW) + 100,
+            "one correction, not fifty"
+        );
+        assert_eq!(one_cycle(&mut g), PERIOD - WINDOW);
+
+        // Spent, not disabled: the next window measures afresh, which
+        // is how a drifting RTC keeps being corrected.
+        let room = g.room();
+        g.fill(room);
+        let here = g.samples_to_next_window_open() as usize;
+        assert_eq!(g.phase_error(here + 60), Some(60));
+    }
+
+    /// A receiver has audio before it has a clock —
+    /// `time_sync::samples_to_next_slot_12k_ms` reports nothing until
+    /// the RTC or NTP lands, while UAC audio arrives regardless — so
+    /// the first anchor commonly re-phases under a part-filled window.
+    /// The grid counts samples and the caller holds them, so the grid
+    /// has to say so: otherwise the caller's buffer keeps the
+    /// pre-anchor audio and the window closes holding that *plus* a
+    /// whole window.
+    #[test]
+    fn the_first_anchor_under_a_part_filled_window_discards_it() {
+        let mut g = SlotGrid::new(WINDOW, PERIOD, THRESH);
+        // Free-running, no clock yet: audio simply accumulates.
+        assert!(!g.fill(300));
+        assert_eq!(g.room(), WINDOW - 300);
+
+        assert_eq!(g.anchor_or_reanchor(0), Anchor::DiscardPartial);
+        assert_eq!(g.room(), WINDOW, "the window is whole again");
+        assert_eq!(g.take_skip(PERIOD), 0, "and opens on the boundary");
+
+        // Nothing part-filled, nothing to discard — the ordinary case,
+        // and the one the caller must not pay an allocation for.
+        let mut fresh = SlotGrid::new(WINDOW, PERIOD, THRESH);
+        assert_eq!(fresh.anchor_or_reanchor(0), Anchor::Kept);
+    }
+
+    /// A trim queued before the first anchor was measured against a
+    /// free-running phase, on audio that anchor is about to discard.
+    /// It goes with it rather than being applied to the new grid.
+    #[test]
+    fn the_first_anchor_drops_a_trim_queued_before_it() {
+        let mut g = SlotGrid::new(WINDOW, PERIOD, THRESH);
+        g.shift_next_window(-120);
+        assert_eq!(g.anchor_or_reanchor(0), Anchor::Kept);
+        assert_eq!(
+            one_cycle(&mut g),
+            PERIOD - WINDOW,
+            "the stale trim does not move the anchored grid"
+        );
+    }
+
     /// A block straddling the boundary must not shift the grid, which
     /// is why the caller splits it.
     #[test]
@@ -364,8 +514,13 @@ mod tests {
         let mut whole = aligned_grid();
         let mut pieces = aligned_grid();
         assert!(whole.fill(WINDOW));
-        for _ in 0..(WINDOW / 8) {
-            assert!(!pieces.fill(8) || pieces.room() == WINDOW);
+        let last = WINDOW / 8;
+        for piece in 1..=last {
+            assert_eq!(
+                pieces.fill(8),
+                piece == last,
+                "piece {piece} of {last} must close the window only on the last"
+            );
         }
         assert_eq!(whole.room(), pieces.room());
         assert_eq!(whole.take_skip(PERIOD), pieces.take_skip(PERIOD));

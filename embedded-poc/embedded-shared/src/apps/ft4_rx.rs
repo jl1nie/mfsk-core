@@ -49,7 +49,7 @@ use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use super::ft4_grid::SlotGrid;
+use super::ft4_grid::{Anchor, SlotGrid};
 use mfsk_core::engine::sync::SyncCandidate;
 use num_complex::Complex;
 
@@ -78,9 +78,10 @@ pub const SLOT_SAMPLES: usize = 90_000;
 /// until 2026-09-01 — leaves 0.5 s to decode in before key-up, not the
 /// 1.96 s the budget claimed, because the 1.96 s was anchored to the
 /// slot end rather than to the transmission that follows it. The last
-/// 1.25 s of the slot is audio no candidate can reach: the search tops
+/// 0.94 s of the slot is audio no candidate can reach: the search tops
 /// out at `i0 = 1012` and a frame is 105 x 32 = 3 360 downsampled
-/// samples, so 4 372 of a slot's 5 000.
+/// samples, so 4 372 of a slot's 5 000 — 6.56 s. The close sits 0.22 s
+/// past that so those last samples are filtered against real history.
 ///
 /// Measured lossless on the WSJT-X golden — same 12 candidates and the
 /// same 11 decodes as the whole slot, both with the periodogram
@@ -195,7 +196,7 @@ pub struct SlotAccum {
     half: Vec<f32>,
     /// Where the window sits on the slot grid: the inter-window skip
     /// that keeps this a *slot* grid after the early close (without it
-    /// each window would start 1.25 s earlier than the last and walk
+    /// each window would start 0.725 s earlier than the last and walk
     /// off the transmissions entirely), the pending phase correction,
     /// and whether an external clock has set the phase at all.
     ///
@@ -250,16 +251,31 @@ impl SlotAccum {
     /// from now until the next UTC 7.5 s boundary.
     ///
     /// The first call anchors the grid outright — the next window opens
-    /// on that boundary. Call it before feeding any live audio; a
-    /// partial window already in progress is not discarded. Later calls
-    /// move the grid only when the phase has drifted past
+    /// on that boundary, and **a window already part-filled is thrown
+    /// away**, because it straddles that boundary: its audio starts
+    /// wherever the reader happened to begin, so every DT measured in
+    /// it would be off by that much. One slot is the whole cost, and
+    /// only on a receiver that had audio before it had a clock —
+    /// `time_sync` reports no phase until the RTC or NTP lands, while
+    /// UAC audio arrives regardless.
+    ///
+    /// Later calls move the grid only when the phase has drifted past
     /// [`REANCHOR_THRESH_SAMPLES`], which is what absorbs the clock
     /// stepping when NTP first disciplines an RTC-seeded clock — that
     /// step can be seconds, well past what the DT search could pull
-    /// back. Jitter below the threshold is left for
+    /// back. Those never discard: the correction lands at the next
+    /// window close so windows stay exactly one window long. Jitter
+    /// below the threshold is left for
     /// [`shift_next_window`](Self::shift_next_window).
     pub fn anchor_or_reanchor(&mut self, samples_to_boundary_from_here: usize) {
-        self.grid.anchor_or_reanchor(samples_to_boundary_from_here);
+        if self.grid.anchor_or_reanchor(samples_to_boundary_from_here) == Anchor::DiscardPartial {
+            // Carry the grid across the reset that drops the buffers,
+            // the same way a window close does — the grid is the one
+            // piece of state the new window inherits.
+            let grid = self.grid;
+            *self = Self::new();
+            self.grid = grid;
+        }
     }
 
     /// Fold a signed correction into the next inter-window skip — the
@@ -279,8 +295,8 @@ impl SlotAccum {
     /// size never shifts the slot grid — which matters because a UAC
     /// read is not a divisor of 75 000 either.
     ///
-    /// The window closes at [`CAPTURE_CLOSE_SAMPLES`] — 6.25 s of a
-    /// 7.5 s slot — and the remaining 1.25 s is discarded, because a
+    /// The window closes at [`CAPTURE_CLOSE_SAMPLES`] — 6.775 s of a
+    /// 7.5 s slot — and the remaining 0.725 s is discarded, because a
     /// QSO-capable receiver has to have answered by 8.0 s and no
     /// candidate can read that audio anyway.
     pub fn push(&mut self, samples: &[i16]) -> Option<CapturedSlot> {
@@ -310,6 +326,21 @@ impl SlotAccum {
             self.decim.push_i16(&rest[..take], &mut self.half);
             rest = &rest[take..];
             if self.grid.fill(take) {
+                // The grid counts what this struct buffers, and the two
+                // are advanced by the same `take` — so a disagreement
+                // means the slot about to be decoded is not the window
+                // the grid anchored, and every DT in it is off by the
+                // difference. `stage1_inc::finalize_slot` runs the same
+                // cross-check on FT8's reader (`audio_fill` against the
+                // reported `total_samples`), which is what kept that
+                // line's version of this visible.
+                if self.audio.len() != CAPTURE_CLOSE_SAMPLES {
+                    log::warn!(
+                        "ft4_rx: window closed holding {} samples, grid says {}",
+                        self.audio.len(),
+                        CAPTURE_CLOSE_SAMPLES,
+                    );
+                }
                 // `fill` has already set the next gap; carry the grid
                 // across the reset that moves the buffers out.
                 let grid = self.grid;
@@ -362,8 +393,10 @@ pub const TX_TURNAROUND_BUDGET_MS: i64 = 1_225;
 /// the capture side while slot `N` decodes, and only running past
 /// *this* costs a slot.
 ///
-/// Conservative by 1.25 s since the early close: the next window
-/// actually opens at `7.5 + 6.25` after this one did. Left at a slot
+/// Conservative since the early close: the next window opens 0.725 s
+/// after this one closes, and a decode that runs past *that* spends
+/// staging rather than the grid — which is the only reason a whole
+/// slot is spendable here at all. Left at a slot
 /// because the staging buffer a board holds is sized in seconds of
 /// audio and 7.5 s is already more than it has (`apps/ft4.rs`'s
 /// `STAGING_CAP` is 4 s — a receive-only build that really spent this
