@@ -516,6 +516,32 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   rework, which is what the code matches on — the comment was the stale
   half, so the gate works and its documentation did not describe it.
 
+- **The publish gate read a job's conclusion, which cannot tell "the
+  goldens ran" from "the job was gated out" (#370).** `ci.yml`'s test
+  job puts its suite behind `if: steps.gate.outputs.should_run ==
+  'true'`; when that is false the conditioned steps conclude `skipped`
+  and **the job still concludes `success`**. So the one check standing
+  between a release and the vacuous-golden failure it was written for
+  was satisfiable by a job that ran nothing.
+
+  What kept it honest was a rule in a different file: `ci.yml`'s
+  stage-2 gate short-circuits to `should_run=true` for every suite on
+  `push` events, before consulting the paths filter, and `release.yml`
+  only inspects push-event runs. True today, asserted nowhere, and a
+  reasonable CI-minutes optimisation — "a docs-only push to main need
+  not re-run the matrix" — would have flipped exactly that branch and
+  quietly unhooked the gate, with the comment above it still claiming
+  the opposite.
+
+  The gate now reads the conclusion of the `Run suite` **step** inside
+  that job, and fails closed when the step is absent. A rename on
+  either side stops a release instead of passing it silently, and
+  `ci.yml` says so at the step. Demonstrated against real API
+  payloads, both directions: the main-push job for `b6f59181`
+  (`Run suite: success`) is allowed, the `pull_request` job for the
+  same tree (`Run suite: skipped`, job green in 5 s) is refused — and
+  the pre-fix gate allowed that second one, which is the bug.
+
 ### Added
 
 - **The tier-C sweeps every decode-path change in this section asked

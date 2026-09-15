@@ -448,6 +448,12 @@ jobs:
         if: steps.gate.outputs.should_run == 'true'
         uses: Swatinem/rust-cache@v2
 
+      # `release.yml`'s publish gate reads *this step's* conclusion on
+      # the `tier A+B` job, by this name, to tell "the goldens ran"
+      # from "the job was gated out" — the job concludes `success`
+      # either way (#370). So the name is part of an interface: rename
+      # it and the next tag fails closed until release.yml is updated
+      # with it.
       - name: Run suite
         if: steps.gate.outputs.should_run == 'true'
         env:

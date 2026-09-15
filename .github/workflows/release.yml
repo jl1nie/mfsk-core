@@ -122,11 +122,30 @@ jobs:
       # sibling WSJT-X checkout CI does not have, so five protocols'
       # golden tests skipped and reported success).
       #
-      # So require, at job granularity, that `Test (tier A+B …)`
-      # ran and succeeded. Combined with `MFSK_REQUIRE_CORPUS=1` in
-      # ci.yml — which turns a missing corpus into a failure rather
-      # than a skip — a green `Test (tier A+B …)` is a positive statement
-      # that the tier-B assertions executed against real recordings.
+      # So require that `Test (tier A+B …)` ran and succeeded.
+      #
+      # **At step granularity, not job** (#370). A job's conclusion
+      # cannot tell "ran the tests" from "was gated out": ci.yml's test
+      # job puts the suite behind `if: steps.gate.outputs.should_run ==
+      # 'true'`, and when that is false the conditioned steps conclude
+      # `skipped` while the job itself concludes `success`. Measured on
+      # one commit, both ways — main-push run 34960355950 has
+      # `Run suite: success`, and the pull_request run for the same tree
+      # (34957939393) has `Run suite: skipped` with the job still green
+      # in 5 s.
+      #
+      # This check used to read the job's conclusion, and what stood
+      # between that and a vacuous gate was a rule in a different file:
+      # ci.yml's stage-2 gate short-circuits to `should_run=true` for
+      # every suite on `push` events, before consulting the paths
+      # filter. It still does, and this gate no longer depends on it —
+      # an optimisation that made docs-only pushes skip the matrix would
+      # now fail the release rather than silently pass it.
+      #
+      # Combined with `MFSK_REQUIRE_CORPUS=1` in ci.yml — which turns a
+      # missing corpus into a failure rather than a skip — a green
+      # `Run suite` is a positive statement that the tier-B assertions
+      # executed against real recordings.
       - name: Require Test (tier A+B) to have actually run
         uses: actions/github-script@v7
         with:
@@ -174,7 +193,35 @@ jobs:
                 `pass; refusing to publish.`);
               return;
             }
-            core.info(`'${wanted}' succeeded on ${ref}: ${found.html_url}`);
+
+            // The step that actually runs `cargo test`. Its name is
+            // ci.yml's `- name: Run suite`, and like `wanted` above it
+            // is load-bearing: a rename here fails the release instead
+            // of quietly passing it, which is the whole point of
+            // reading the step rather than the job.
+            const wantedStep = 'Run suite';
+            const step = (found.steps || []).find(st => st.name === wantedStep);
+            if (!step) {
+              core.setFailed(
+                `'${wanted}' on ${ref} has no '${wantedStep}' step: ` +
+                `${found.html_url}. Either ci.yml renamed it — update this ` +
+                `gate with it — or the job never got that far. Refusing to ` +
+                `publish either way.`);
+              return;
+            }
+            if (step.conclusion !== 'success') {
+              core.setFailed(
+                `'${wanted}' concluded 'success' on ${ref} but its ` +
+                `'${wantedStep}' step concluded '${step.conclusion}' — the ` +
+                `job ran and the tests did not (ci.yml gates the suite on ` +
+                `\`steps.gate.outputs.should_run\`). Nothing has asserted ` +
+                `the tier-B goldens on this commit: ${found.html_url}. ` +
+                `Refusing to publish.`);
+              return;
+            }
+            core.info(
+              `'${wanted}' succeeded on ${ref} with '${wantedStep}' run: ` +
+              `${found.html_url}`);
 
   # ── Gate 2 ─────────────────────────────────────────────────────────
   # Tag must be reachable from main and the version embedded in the
