@@ -36,6 +36,13 @@ full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65
 # round-trip.
 serde        = ["dep:serde"]
 
+# Accept the 11 m citizens-band identifiers WSJT-CB uses (`N{1,3}L{1,2}N{1,3}`,
+# e.g. `26AT715`, and the slash form `999ZZ/ZZ`) in the callsign validators.
+# Off by default: without it `is_valid_callsign` / `is_plausible_callsign` stay
+# strict ITU-amateur, and a CB identifier is rejected as any non-amateur token
+# is. Hosts that copy the CB band opt in; everyone else is unaffected.
+cb-callsigns = []
+
 # FFT backend selection. `mfsk-core::core::fft::FftPlanner` is the
 # trait every decode-side caller talks to; one of these features must
 # be on whenever decode-side code is compiled (host gets rustfft;
