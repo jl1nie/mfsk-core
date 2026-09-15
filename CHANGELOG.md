@@ -560,6 +560,16 @@ suite on a Mac rather than by CI, which still has Linux runners only.
   clearing out stale branches, which is the only reason the last copy
   was still reachable.
 
+- **`timer.out` was a committed build artifact.** WSJT-X's Fortran
+  `timer` module writes it into the working directory of whatever ran
+  it, so benchmarking against the real `jt9` from a checkout beside
+  this one drops a copy in the repo root. One was committed in
+  `641b5ff3` (the JT65 SNR-clamp audit, #255) and had been on `main`
+  ever since — 342 bytes reporting a 0.012 s `jt9` run against 85
+  `read_wav` calls, which describes one invocation on one machine in
+  2026 and nothing else. Removed, and `.gitignore` now covers the name
+  so the next benchmark run does not re-add it.
+
 ### Added
 
 - **The tier-C sweeps every decode-path change in this section asked

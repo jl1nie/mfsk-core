@@ -30,3 +30,9 @@ docs/presentations/*/*.pdf
 # package builds a debug binary plus a module cache). `Package.resolved`
 # is absent deliberately — the package has no external dependencies.
 bindings/swift/.build/
+
+# WSJT-X's own Fortran `timer` module writes `timer.out` into the working
+# directory of whatever ran it, so benchmarking against the real `jt9` /
+# `wsprd` from a checkout here leaves one behind. One was committed in
+# 641b5ff3 and lived on main until 2026-09-15.
+timer.out
