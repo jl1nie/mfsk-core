@@ -429,6 +429,14 @@ struct MarkdownDoctestsLibrary;
 #[cfg(doctest)]
 struct MarkdownDoctestsLibraryJa;
 
+#[doc = include_str!("../../docs/reference/BINDINGS.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsBindings;
+
+#[doc = include_str!("../../docs/reference/BINDINGS.ja.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsBindingsJa;
+
 #[doc = include_str!("../../docs/reference/EMBEDDED.md")]
 #[cfg(doctest)]
 struct MarkdownDoctestsEmbedded;
