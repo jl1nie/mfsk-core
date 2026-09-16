@@ -397,7 +397,7 @@ embedded-poc/scripts/udp-log-listen.sh 9999 \
 
 ## 10. Reference
 
-- [`docs/reference/EMBEDDED.md`](EMBEDDED.md) — `mfsk-core` embedded integration reference (scalar architecture, FFT-extern contract, Goertzel per-symbol DFT, Q-format reference, `mfsk-ffi-ft8` C ABI tutorial, performance benchmark, streaming pipeline, binary footprint).
+- [`docs/reference/EMBEDDED.md`](EMBEDDED.md) — `mfsk-core` embedded integration reference (scalar architecture, FFT-extern contract, Goertzel per-symbol DFT, Q-format reference, calling from C, performance benchmark, streaming pipeline, binary footprint).
 - [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) — release milestones and Phase B-Stick / B-Core plan.
 - [`embedded-poc/CLAUDE.md`](../../embedded-poc/CLAUDE.md) — shared embedded toolchain notes (cross-board).
 - [`embedded-poc/m5stack-s3-app/CLAUDE.md`](../../embedded-poc/m5stack-s3-app/CLAUDE.md) — board-specific notes for AI agents working on this crate.

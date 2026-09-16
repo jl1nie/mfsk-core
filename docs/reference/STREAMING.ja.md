@@ -479,6 +479,6 @@ while let Some(msg) = stream.next().await {
   `fft-rustfft` 版 `decode_block_streaming` の完全一致テスト（issue #243）。
 - `mfsk-core/tests/wspr_wsjtx_samples.rs` —— 実信号に対する WSPR
   `decode_scan_streaming` / `decode_scan_subtract_streaming`。
-- [EMBEDDED.ja.md](EMBEDDED.ja.md) —— `mfsk-ffi-ft8` FFI 成果物向けの
-  C ABI ストリーミングチュートリアル（同じ移植性の理由で、C 境界越しに
-  も同じストリーミングの考え方をコールバックベースで実現）。
+- [BINDINGS.ja.md](BINDINGS.ja.md) —— C 境界越しの同じ考え方:
+  `mfsk_stream_*` のリングと `mfsk_session_set_on_decode`。同じ移植性の
+  理由からコールバックベースになっている。

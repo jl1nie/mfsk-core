@@ -379,7 +379,7 @@ embedded-poc/scripts/udp-log-listen.sh 9999 \
 
 ## 10. 参照
 
-- [`docs/reference/EMBEDDED.ja.md`](EMBEDDED.ja.md) — `mfsk-core` 組込統合リファレンス (scalar アーキテクチャ、FFT-extern 契約、Goertzel per-symbol DFT、Q-format リファレンス、`mfsk-ffi-ft8` C ABI チュートリアル、性能ベンチ、streaming pipeline、binary footprint)
+- [`docs/reference/EMBEDDED.ja.md`](EMBEDDED.ja.md) — `mfsk-core` 組込統合リファレンス (scalar アーキテクチャ、FFT-extern 契約、Goertzel per-symbol DFT、Q-format リファレンス、C からの呼び出し、性能ベンチ、streaming pipeline、binary footprint)
 - [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) — リリースマイルストーン + Phase B-Stick / B-Core プラン
 - [`embedded-poc/CLAUDE.md`](../../embedded-poc/CLAUDE.md) — 共通組込ツールチェインメモ (cross-board)
 - [`embedded-poc/m5stack-s3-app/CLAUDE.md`](../../embedded-poc/m5stack-s3-app/CLAUDE.md) — この crate での AI agent 向けボード固有メモ

@@ -502,6 +502,6 @@ while let Some(msg) = stream.next().await {
 - `mfsk-core/tests/wspr_wsjtx_samples.rs` — WSPR
   `decode_scan_streaming` / `decode_scan_subtract_streaming` against
   real signals.
-- [EMBEDDED.md](EMBEDDED.md) — the C ABI streaming tutorial for the
-  `mfsk-ffi-ft8` FFI artifact (the same streaming idea across the C
-  boundary, callback-based for the same portability reasons).
+- [BINDINGS.md](BINDINGS.md) — the same streaming idea across the C
+  boundary: the `mfsk_stream_*` ring and `mfsk_session_set_on_decode`,
+  callback-based for the same portability reasons.
