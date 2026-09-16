@@ -3549,3 +3549,299 @@ candidate reordering (cheapest-first, re-sorted to coarse order before
 the first-wins dedup, which can change a dedup outcome even with no
 budget set). All four channels bit-identical: −21.60 / −21.11 / −20.00
 / −19.67 dB.
+
+## 50. The on-device bring-up log, moved here from EMBEDDED.md (2026-09-16)
+
+The account below was `EMBEDDED.md`'s `## FT4 on embedded` section —
+285 lines that opened with a status line marked "superseded" and put
+the live one 275 lines further down. It is a measurement journal, which
+is what this file is for; the reference manual now carries the
+resulting status and a pointer here.
+
+Moved verbatim, including its cross-references into this file's own
+§32, §34, §37-38 and §42-46 — which is where it was pointing all along.
+
+
+**Status (2026-08-30, superseded — see [Where this stands
+(2026-09-01)](#where-this-stands-2026-09-01--a-receiver-inside-its-budget)
+at the end of this section): builds, decodes correctly on hardware, and is
+3.4× over its slot budget** after the 2026-08-29 optimisations (8.8×
+before them). The remaining excess is spread across three stages, one
+of which — `downsample_cached` — a host-verified DDC front end now
+removes outright.
+
+### What it took to build at all
+
+`ft4 = []` in `mfsk-core/Cargo.toml` has always claimed FT4 is
+backend-agnostic, and it is — `src/ft4/` is 745 lines of trait impls
+and config over `engine::pipeline`, with no `rustfft` and no
+FT8-specific reference anywhere. But no embedded crate had ever
+enabled the feature, and neither `scripts/pre-push-check.sh` nor
+`ci.yml` carried an `alloc ft4 fft-extern` rung, so the claim had
+never been tested. The first `cargo check` against it failed on
+exactly one line — `ft4/subtract.rs`'s `Vec` with no
+`use alloc::vec::Vec;`, byte-for-byte the gap issue #306 found twice
+in FST4. Both matrices now carry the rung.
+
+Two FFT lengths stood between FT4 and a board, both non-power-of-two:
+
+| length | where | resolution |
+|---|---|---|
+| `fft1_size = 92_160` | `build_fft_cache`, once per slot | **baked on host**, fed through `decode_frame`'s `precomputed_fft` seam — the same escape FST4 uses |
+| `fft2_size = 5_120` | `downsample_cached`, once per candidate | `engine::dsp::fft_mixed_5120` — Cooley-Tukey 1024 × 5, reusing the existing `fft_15::fft_5` kernel, the same shape as `fft_mixed_3840`'s 256 × 15 |
+
+`engine::llr::symbol_spectra`'s per-symbol DFT needs no new kernel:
+FT4's `ds_spb = NSPS/NDOWN = 32` is a power of two. (`ft4_coarse_sync`'s
+own `NFFT1 = 2304` = 256 × 9 needed one more wrapper of the same shape;
+`engine::dsp::fft_mixed_2304` is it, added 2026-08-30 — the bench still
+bakes the candidate list, and that stage is 0.3 ms of the host slot.)
+
+### The budget
+
+FT4's slot is 7.5 s. Transmission starts at 0.5 s and runs 105 symbols
+× 48 ms = 5.04 s, so the frame ends at 5.54 s and **1.96 s** is left to
+decode in. Unlike WSPR's and FST4's monitor loops — built with
+deliberate slack, where an overrun is a fault — this is the same shape
+of budget FT8's 15 s slot has: genuinely tight, and an overrun is an
+operating limit.
+
+### Measured
+
+`ft4-bench`, M5Stack CoreS3 @ 240 MHz, `opt-level = 3`, single core, no
+WiFi. 31 coarse candidates from the WSJT-X golden `000000_000002.wav`,
+single pass. Log: `embedded-poc/m5stack-cores3-app/logs/
+ft4-bench_clean_2026-08-29.log`.
+
+| stage | total | per candidate | share |
+|---|---:|---:|---:|
+| `downsample_cached` (5120-pt inverse FFT) | 2 252 ms | 72.7 ms | 13 % |
+| **`ft4_sync_search`** | **13 225 ms** | **424 ms** | **76 %** |
+| LLR + BP (`DecodeDepth::EMBEDDED`) | ~1 861 ms | ~60 ms | 11 % |
+| **total, production call** | **17 339 ms** | 559 ms | — |
+| same at `DecodeDepth::FULL` | 19 684 ms | 635 ms | — |
+
+**11 distinct decodes, identical to the host on the same assets**, at
+both depths — so the ship config gives up no recall here, and OSD buys
+nothing on this file. Memory was never in question: 7.47 MB PSRAM and
+240 KB internal DRAM free throughout, and the bench task used 16.7 KB
+of its 96 KB stack.
+
+**17 339 ms against 1 960 ms is 8.8× over.**
+
+### The bottleneck is structural, not statistical
+
+`ft4_sync_search`'s per-candidate cost across all 31: **min 423 835 µs,
+p50 423 897 µs, max 424 684 µs** — a 0.2 % spread. That is the
+signature of a fixed grid, not of anything candidate-dependent:
+`ft4_sync_search_window` walks the same absolute `[-344, 1012]`
+downsampled-sample window for every candidate regardless of its own
+`dt_sec` (a faithful port — WSJT-X's FT4 decoder determines Δt here and
+nowhere else), scoring ~19 900 (Δf, Δt) cells of 4 Costas blocks × 4
+symbols × 32 samples each. That is ~10.2 M complex MACs per candidate,
+and 424 ms of it works out to roughly 10 cycles per complex MAC — a
+scalar f32 inner loop with an on-the-fly phasor rotation.
+
+So the levers are the grid and the arithmetic inside it, and both are
+measurable before either is attempted:
+
+- **`dsps_dotprod_f32_aes3`** (LX7 PIE) on the inner product. The
+  `dotprod-bench` in this crate already measured what PIE is worth on
+  this chip; ~10 cycles/MAC is a long way from what the kernel can do.
+- **Narrowing the window** — **measured on host, 2026-08-29**, see
+  `docs/notes/FT4_BENCHMARK.md` §18. The production window is ±1.0 s,
+  not a full slot (`i0` is downsampled samples; `dt = 0` sits at
+  `i0 = 333`). Two instruments agree on **±0.5 s being free**: on the
+  real off-air golden all 11 decodes survive (their true DTs span
+  −0.44 … +0.30 s) at a measured **1.91×** on the search, and an
+  `ft4sim` DT sweep shows a hard cliff exactly at the window edge —
+  100 % inside, 0 % outside, and *identical* recall column-to-column
+  near threshold wherever the DT is inside. Narrowing costs **reach,
+  not sensitivity**.
+
+### Both levers applied, and a third that measured smaller than it looked
+
+All three are in, measured on the same 31 candidates
+(`logs/ft4-bench_opt_2026-08-29.log`, full account in
+`docs/notes/FT4_BENCHMARK.md` §19):
+
+| configuration | search | cumulative |
+|---|---:|---:|
+| baseline | 13 225 ms | 1.00× |
+| + `FlatRef` / `dot_f32` | 4 447 ms | **2.97×** |
+| + `cd0` in internal DRAM | 3 937 ms | 3.36× |
+| + ±0.5 s window | **2 492 ms** | **5.31×** |
+
+**The arithmetic was the win.** `ft4_sync_search_window` applied its
+frequency shift inside the innermost sample loop, restarting a rotating
+phasor at every `(df, i0)` cell — but that phasor is indexed by offset
+*within the Costas block*, so it was identical across all ~340 `i0`
+positions per `df`. `fst4_sync_search` was already folding it into the
+reference (`FlatRef`), which also leaves a plain inner product that
+`dot_f32` — hence `dsps_dotprod_f32_aes3` — can serve. FT4 now does the
+same. Sensitivity unmoved (all four sweep channels +0.00 dB) and the
+golden's stage counters identical.
+
+**The PSRAM hypothesis was wrong: 1.12×, not the 5–10× predicted.** The
+byte count was right and the inference was not — after the change the
+access is a sequential `dot_f32` over 2 KB slices, which the S3's PSRAM
+cache serves well; the old loop was compute-bound, not bandwidth-bound.
+Kept (40 KB, free once reserved at boot) but it is not a lever. A
+production FT4 mode would need it through `worker_arena` at boot
+regardless: with WiFi up the largest free internal block here is
+31 744 B.
+
+**Slot total, production path: 17 339 ms → 8 642 ms (2.01×)**, still 11
+decodes matching the host at both depths. With all three applied the
+projection is ~6 686 ms against 1 960 ms — **3.4× over, from 8.8×**.
+
+What is left is no longer one thing: downsample 34 % / search 37 % /
+LLR+BP 29 %. `downsample_cached` has become co-equal with the search,
+and that is a stage a DDC front end removes rather than speeds up —
+which is what the next section is.
+
+### The DDC front end (host-verified 2026-08-30, not yet on hardware)
+
+`mfsk_core::ft4::ddc` builds the per-candidate `cd0` by mixing and
+filtering, so the 92 160-point transform this bench bakes on a host has
+nothing left to feed. Full account in `docs/notes/FT4_BENCHMARK.md` §20.
+
+**FT4 is the easy case.** `fst4::ddc` needs a rational resampler
+because `NSPS = 3888 = 2⁴·3⁵` leaves a `3⁵` denominator; FT4's
+`NDOWN = 18` divides 12 kHz exactly, `666.667 Hz` is already
+`SyncDims::ds_rate`, and `ds_spb = 32` is a power of two. The module is
+two `FirStage`s and two mixers — no `PolyphaseResampler`, no `RxGrid`,
+nothing downstream of `cd0` changed:
+
+```text
+12 kHz real i16
+  → Mixer(f0 + 31.25 Hz)                   complex @ 12 kHz
+  → FirStage A: 199 taps, fc 320 Hz, ÷18   complex @ 666.667 Hz
+  → FirStage B: 263 taps, fc 56 Hz,  ÷1    complex @ 666.667 Hz
+  → Mixer(−31.25 Hz)                       cd0, f0 at DC
+```
+
+**The passband is a decode parameter, not a filter-design free choice.**
+`downsample_cached` keeps `[f0 − 31.25, f0 + 93.75] Hz` and zeroes the
+rest — asymmetric about `f0`, because the tones run upward from it.
+`process_candidate_basic_impl` then RMS-normalises `cd0` over its whole
+length, and `LLR_SCALE` is calibrated against that, so noise admitted
+outside the reference band rescales every LLR feeding BP (the full
+±333 Hz baseband would have been ~2.3× high). Hence the mixer pair:
+centre the *band*, filter symmetrically with real taps, rotate `f0`
+back to DC. Measured equivalent noise bandwidth against the reference:
+**+0.021 dB**.
+
+**Equivalence.** On the WSJT-X golden, from the same 31 candidates:
+11 distinct decodes on both front ends, identical sets, at both
+`DecodeDepth::EMBEDDED` and `FULL`; the refined sync position never
+moves, and one candidate of eleven lands one `ft4_sync_search` grid
+step (1 Hz) away. On the tier-C sweep, paired on the same 560 noise
+realisations across four channels' 50% crossings: **FFT 237 decodes,
+DDC 238**, five disagreements split three/two. The swap costs 0.0 dB.
+
+### The candidate budget was 2.6x too big (2026-08-30)
+
+Every stage after `ft4_coarse_sync` is per-candidate, and the bench's
+search had been passing `sync_min = 0.05`. That is *below the noise
+floor*: `getcandidates4.f90` divides the smoothed spectrum by a fitted
+baseline, so noise sits at ~1.0 and any lower threshold admits every
+peak in the band. WSJT-X's own value is 1.2 (`ft4_decode.f90:195`).
+
+Measured over 560 sweep files straddling four channels' 50% crossings
+plus the golden recording: 0.05 → 1.2 takes the candidate count from
+67.1 to 1.6 (sweep) and 31 to 12 (golden) **with identical recall on
+both**; the knee is at 1.4, where the first decodes start dropping.
+`bench_assets::SYNC_MIN` is now 1.2 and the baked candidate list was
+re-generated — 31 → 12, same 11 decodes at both depths. Sections 17-19
+of `FT4_BENCHMARK.md` were all measured over 31 candidates.
+
+Combined with the DDC, the projection is
+`(2 492 + 1 943) × 12/31 ≈ 1 717 ms` against a 1 960 ms budget — inside
+it for the first time, **on paper**, with neither change measured on the
+board.
+
+The same measurement corrected a claim in the other direction: the
+bench's "`EMBEDDED` and `FULL` decode identically" is true on the golden
+and false on weak data (237 vs 179 of 560 at the crossing), so the ship
+depth does give up about a quarter of its recall to skip OSD. See
+`docs/notes/FT4_BENCHMARK.md` §21.
+
+Like `fst4::ddc`, this is a building block callers reach for, not a
+feature flag that swaps the host's front end.
+
+### Where this stands (2026-09-01) — a receiver, inside its budget
+
+**The 3.4× at the top of this section is superseded**, and so is the
+"no hardware measurement" that used to close it. Everything projected
+above has since been built and run on a CoreS3; the account is
+`docs/notes/FT4_BENCHMARK.md` §32-§34, §37-§38 and §42, and the
+summary is:
+
+| change | what it did |
+|---|---|
+| `Ft4SavgBuilder` — the coarse stage runs *during* capture (§32) | 761 ms → 6 ms after the slot closes |
+| a candidate loop held to a slot deadline (§34) | the overrun became an operating choice instead of a fact |
+| the shared decimation (§42) | ~188 → ~168 ms per candidate |
+| streaming that decimation from the capture path (§42.1) | slot 2 067-2 118 ms → **1 998-2 000** |
+| re-deriving the budget from key-up, not the slot end (§43) | the QSO-capable budget was **500 ms**, not 1 960 |
+| two cores, candidates from a shared cursor (§44) | 1.40× on the candidate loop |
+| task stacks sized from measurement (§45) | 1 290-1 401 ms with WiFi associated |
+| WSJT-X's own ±1.0 s Δt window restored (§46) | budget 1 750 → **1 225 ms**; 11 decodes → 9-10 |
+
+**The budget is key-up, not the slot boundary.** FT4 is a fast-QSO
+mode, so the deadline is the moment the station must transmit — 0.5 s
+into the next slot — and the capture window closes as soon as the
+audio the search can reach has arrived (6.775 s of 7.5 s with WSJT-X's
+full ±1.0 s Δt window, including the DDC chain's group delay).
+Anchored to the slot end instead, a transmitting build had 500 ms to
+decode in. See §43 for the timeline and §46 for why the window is
+WSJT-X's and what that costs.
+
+**Stacks are internal DRAM, and internal DRAM is what WiFi takes.**
+The decode tasks asked for 32 KB each and used 2.6-4.5 KB; with WiFi
+associated that waste pushed the largest free internal block to
+31 744 B and the decoder's own allocations into PSRAM, costing
+400-580 ms a slot. Stopping the radio does *not* fix it
+(`esp_wifi_stop` frees nothing); sizing the stacks does. §45.
+
+`ft4-demo` on the replayed golden slot — the 14-signal, FT8-density
+pessimum — now runs **12 of 12 candidates and decodes 11**, against 11
+of 12 and 10 before the shared front end, at the 1 960 ms transceiver
+budget. At the 5-10 signal occupancy FT4 actually sees (§23) the loop
+finishes with nothing cut.
+
+**The shared decimation is the front end's second half.**
+`ft4::ddc`'s per-candidate chain used to filter all 90 000 samples of
+the slot at 12 kHz for every candidate. `NDOWN = 18` factors as
+`2 · 9`, so `SlotDecimator` (165 taps, ÷2, real input through
+`FirStage::push_block_real`) runs once per slot and
+`CandidateDdc::new_half_rate` runs the same chain in Hz at 6 kHz with
+101 taps. The corner is 2 800 Hz rather than 3 000 because content
+above the new Nyquist folds *into* a candidate's band, and 165 taps
+rather than 111 because a 2 700 → 3 300 transition does not protect the
+top of the search band. Equivalent noise bandwidth against the
+reference is +0.021 dB with the extra stage and +0.021 dB without.
+
+**Slot-grid alignment (#354).** The FT4 boot mode now anchors its
+grid to UTC. `SlotAccum` — which owns the boundary, unlike the FT8
+path where `Ft8ChunkSink` does — gained `anchor_or_reanchor`, driven
+from `apps/ft4.rs` (the board half owns the clock,
+`time_sync::samples_to_next_slot_12k_ms(7_500)`; the shared half only
+moves the grid when told). The first block of live audio anchors the
+next window to the next 7.5 s boundary; a phase error past 100 ms
+re-anchors, which is what catches NTP stepping an RTC-seeded clock by
+seconds. The median DT of each slot's decodes then trims the residual
+— the STAGING latency, and whatever an RTC-only anchor left — and
+settles to zero once aligned. **What this does not cover**: a
+cold start with no clock *and* no decodes. FT4's coarse stage returns
+`dt = 0`, so unlike FT8 there is no `bootstrap_dt_median` to pull the
+grid up from an arbitrary phase — that is #356 (lock phase off the
+air).
+
+**What is still missing**: no esp-dsp binding for
+`FirStage::push_block` (`dsps_fird_f32_aes3`); the 560-file paired
+sweep for the shared front end is written but not yet run; and the FT4
+boot mode has not been run against a radio (it replays a baked golden
+slot by default, `MFSK_FT4_REPLAY=0` turns that off), so the grid
+alignment above is host-reasoned and not yet confirmed on hardware.
+

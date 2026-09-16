@@ -1,18 +1,51 @@
 # 組込ターゲット
 
-`mfsk-core` は `no_std + alloc` 対応で、FT8 デコードパス
-(`mfsk_core::ft8::decode_block`) はキャラクタ側 FFT バックエンドが
-あれば **~150 KB の RAM** のチップでも動く。本文書は組込統合者向け
-のリファレンス — ライブラリが呼び出し側に何を要求するか、どんな
-scratch バッファが必要か、C ABI の形、現在テストしている対象上で
-の性能。
+`mfsk-core` は `no_std + alloc` 対応である。FT8 のデコードパス
+(`mfsk_core::ft8::decode_block`) は、呼び出し側が FFT バックエンドを
+供給すれば実用 RAM ~150 KB のチップでも動作する。FST4・FT4・WSPR も
+それぞれ別の経路で実機に到達している。本書は組込インテグレータ向けの
+リファレンスで、ライブラリが呼び出し側に要求するもの、必要なスクラッチ、
+そして我々が実際に動かしているターゲットで期待できる性能を扱う。
 
-ホスト専用利用 (no embedded) は [`docs/reference/LIBRARY.ja.md`](LIBRARY.ja.md)、
-本ライブラリで作った受信機の操作は
-[`docs/reference/MANUAL_M5STACK_CORES3.ja.md`](MANUAL_M5STACK_CORES3.ja.md)
-(CoreS3 — 無線機の USB Audio から受信) または
-[`docs/reference/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md)
-(StickS3 — デモ用ボード) 参照。
+## 目的別の入口
+
+- **新しい MCU に `mfsk-core` を載せたい** →
+  [FFT extern Rust 契約](#fft-extern-rust-契約)、次に
+  [組込利用向け Cargo feature](#組込利用向け-cargo-feature)。
+  [`embedded-poc/embedded-shared/src/esp_dsp_fft.rs`](https://github.com/jl1nie/mfsk-core/blob/main/embedded-poc/embedded-shared/src/esp_dsp_fft.rs)
+  が写して使える実例。
+- **C から、あるいは非 Rust の ESP-IDF プロジェクトから呼びたい** →
+  [C / 非 Rust プロジェクトからの呼び出し](#c--非-rust-プロジェクトからの呼び出し)、
+  ABI そのものは [`BINDINGS.md`](BINDINGS.ja.md)。
+- **既存のコントローラを運用したい** →
+  [`MANUAL_M5STACK_CORES3.md`](MANUAL_M5STACK_CORES3.ja.md)（CoreS3、
+  USB 経由で無線機から音声を取る）または
+  [`MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.ja.md)（StickS3 デモ機）。
+- **組込アプリに手を入れたい** →
+  [`embedded-poc/CLAUDE.md`](https://github.com/jl1nie/mfsk-core/blob/main/embedded-poc/CLAUDE.md)
+  のボード横断ツールチェーン注記と LX6/LX7 比較表、次に各クレートの
+  `CLAUDE.md`。
+- **FT8 ではなく WSPR** → [WSPR on embedded](#wspr-on-embedded)。
+- **ロードマップを追いたい** → [`ROADMAP.md`](../notes/ROADMAP.md) の
+  Phase B-Stick（StickS3 デモ / 音響フォールバック）、Phase B-Core
+  （CoreS3 メイン UAC コントローラ）、Phase E（WSPR）。
+- **ホスト専用の利用** → [`LIBRARY.md`](LIBRARY.ja.md)。
+
+## 目次
+
+- [アーキテクチャ: f32 と固定小数点が 1 つのコードベースを共有する仕組み](#アーキテクチャ-f32-と固定小数点が-1-つのコードベースを共有する仕組み)
+- [テスト対象](#テスト対象)
+- [組込利用向け Cargo feature](#組込利用向け-cargo-feature)
+- [FFT extern Rust 契約](#fft-extern-rust-契約)
+- [per-symbol DFT: Goertzel](#per-symbol-dft-goertzel)
+- [Q-format クイックリファレンス](#q-format-クイックリファレンス)
+- [C / 非 Rust プロジェクトからの呼び出し](#c--非-rust-プロジェクトからの呼び出し)
+- [出荷していないもの](#出荷していないもの)
+- [性能ベンチマーク](#性能ベンチマーク)
+- [Streaming RX pipeline アーキテクチャ](#streaming-rx-pipeline-アーキテクチャ)
+- [バイナリフットプリント](#バイナリフットプリント-core2-リファレンスxtensa-esp32-elf-size--a)
+- [プロトコル別の組込ステータス](#プロトコル別の組込ステータス)
+- [WSPR on embedded](#wspr-on-embedded)
 
 ## アーキテクチャ: f32 と固定小数点が 1 つのコードベースを共有する仕組み
 
@@ -22,21 +55,9 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 
 - [`engine::scalar::SpecScalar`] — spectrogram / DFT 出力 scalar
   (host は `f32`、embedded cs 格納は `Q14i16`)。
-- [`engine::scalar::LlrScalar`] — wide-accumulator 付き LLR scalar
-  (host は `f32`、組込 BP は **`Q11i16` + i32 wide accumulator**、
-  0.6.2 以降。0.5.x までは `Q3i8` だった。拡張の動機は host
-  fixed-point + rustfft sweep (pre-0.6.3 計測 — 0.6.3 の OSD
-  tightening で f32 host recall は 16/18 → 13/18 に CRC-luck
-  phantom 3 件分下がる前) の結果: `qso3_busy.wav` に対し f32 は
-  16/18 取れたが `Q3i8` の ~0.875 LLR 量子化ステップが Xtensa 上の
-  recall 天井を決め 9/18 まで落ちた — DSP 側ではなく LLR 解像度が
-  ボトルネックだった。`Q11i16` (~1/2048 LSB、BP scratch ~6 KB →
-  ~12 KB、S3 / Core2 内蔵 DRAM 予算内) で解像度律速を解消、host
-  fixed-point recall は f32 同等まで到達 (完全に gap close)。
-  ただし実機 embedded の上乗せは 1 件のみ (6/18 → 7 total) —
-  残る host gap は LLR scalar ではなく組込パイプラインの他要素
-  (NSTEP-half、coarse-sync 簡略化、`fine_refine_pass1` 無し) が
-  律速。`Q3i8` 型は比較経路用に `engine::scalar` に残置)。
+- [`engine::scalar::LlrScalar`] — wide-accumulator 付き LLR scalar。
+  host は `f32`、`fixed-point-llr` 下では **`Q11i16` + i32 wide
+  accumulator**。[^llrwidth]
 - [`engine::scalar::Cmplx<S>`] — `SpecScalar` 上のジェネリック複素数。
   0.6.3 (cleanup β.5) 以降は `num_complex::Complex<S>` の type
   alias、組込整数パスと host f32 パスで同じ複素演算実装を共有。
@@ -49,6 +70,18 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 ビルドは 99 % のコードを共有しており、バグ修正と最適化は一度の作業
 で両方に適用される。
 
+[^llrwidth]: なぜ Q11i16 で、それより狭くないのか。LLR 型は 0.5.x まで
+    `Q3i8` で、0.6.2 が拡げた。`qso3_busy.wav` に対し、host fixed-point
+    + rustfft は f32 なら 16/18 取れたが `Q3i8` では **9/18** まで落ち、
+    その ~0.875 の量子化ステップが recall 天井を決めていた — DSP 側では
+    ない。`Q11i16`（~1/2048 LSB）は host ではその差を完全に埋める。実機
+    では上乗せは1件（6/18 → 7）で、残る host との差は NSTEP-half・
+    coarse-sync の簡略化・`fine_refine_pass1` 不在による。BP scratch は
+    ~6 KB から ~12 KB に倍増するが、S3 / Core2 の内蔵 DRAM 予算内に
+    収まる。`Q3i8` 型は比較経路用に `engine::scalar` に残置。（上記の
+    sweep は 0.6.3 の OSD tightening 以前の計測で、その後 f32 host
+    recall は CRC-luck phantom 3 件分下がって 16/18 → 13/18 になった。）
+
 ### fixed-point スイッチが現在配線されている範囲
 
 | Component | Generic over | Fixed-point switch 配線済み? |
@@ -58,19 +91,19 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — FT8 LDPC(174,91) と FST4/uvpacket LDPC(240,101) で機能 |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ `fixed-point` 経由 |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — 組込でも host と同じ plain f32 を `fft-extern` 経由で実行。整数パスを一度も必要としていない。下記 [WSPR on embedded](#wspr-on-embedded) 参照 |
-| **FT4** | (host f32 のみ) | ❌ — かつ必要が無い。FT4 は FST4 と同じく generic な `engine::pipeline` を通るので `fixed-point` はこの経路では no-op であり、そもそも LX7 では f32 より遅いと実測されている (issue #198)。**実機でビルドしデコードするところまで到達済み** — 後述の [FT4 on embedded](#ft4-on-embedded) 参照 |
+| **FT4** | (host f32 のみ) | ❌ — かつ必要が無い。FT4 は FST4 と同じく generic な `engine::pipeline` を通るので `fixed-point` はこの経路では no-op であり、そもそも LX7 では f32 より遅いと実測されている (issue #198)。**実機でビルドしデコードするところまで到達済み** — [プロトコル別の組込ステータス](#プロトコル別の組込ステータス) 参照 |
 | **Q65 / JT9 / JT65** | (host f32 のみ) | ❌ — host 専用 (`fft-rustfft`、したがって `std`) で、組込パス自体がまだ無い |
 
 つまり: **trait 基盤は protocol 非依存だが、組込ビルドで実際に整数
 パスに切り替わるプロトコルは FT8 のみ。**
 
-この段落は以前「FT4 を追加するのは FT4 専用シンボルレイアウトへの
-`decode_block` 型移植」と書いていた。これは誤りで、issue #306 が
-理由を示した——generic な `engine::pipeline` **そのものが**組込経路
-であり、FST4 は `decode_block` を移植せずに実機へ到達し、FT4 も同じ
-経路で到達した。`decode_block` が存在するのは FT8 自身の downsample
-chain が 192 000 点 FFT を要求するからで、特定の FFT を回避する手段
-であって「チップ上で動く」ことの定義ではない。
+**整数パスに切り替わることは「チップ上で動く」の定義ではない。**
+generic な `engine::pipeline` そのものが組込経路であり、FST4 は
+`decode_block` を移植せずに実機へ到達した（issue #306）。FT4 も同じ道を
+通った。`decode_block` が存在するのは FT8 自身の downsample chain が
+192 000 点 FFT を要求するからで、特定の FFT を回避する手段であって
+組込可能性の定義ではない。[プロトコル別の組込ステータス](#プロトコル別の組込ステータス)
+を参照。
 
 WSPR は全く別経路で組込に到達した（詳細は後述）。上の表だけ見ると
 「FT8 しかチップ上で動かない」と読めてしまうのでここで一言添えておく
@@ -91,23 +124,35 @@ WSPR は全く別経路で組込に到達した（詳細は後述）。上の表
 ### その他のターゲット — 検証済 vs 願望
 
 `fft-extern` 契約はターゲット移植可能になるよう **設計** されており、
-`mfsk-ffi-ft8` は複数の非 Xtensa MCU に clean に cross-build できる:
+`no_std` の feature セットは複数の非 Xtensa MCU に cross-build できる:
 
-| Target | `cargo build` clean | FFT shim 提供 | HW テスト済 |
+| Target | ビルド | FFT shim 提供 | HW テスト済 |
 |---|---|---|---|
 | `xtensa-esp32-espidf` | ✅ | ✅ esp-dsp (Core2) | ✅ qso1/2/3 sweep |
-| `xtensa-esp32s3-espidf` | ✅ | ✅ esp-dsp (S3 bench + S3-app + CoreS3-app bring-up 中、Phase B-Core) | ✅ qso1/2/3 sweep |
-| `thumbv8m.main-none-eabihf` (RP2350 Cortex-M33) | ✅ | ❌ 候補: pico-sdk-rs 経由 CMSIS-DSP | ❌ |
-| `riscv32imac-unknown-none-elf` (RP2350 Hazard3) | ✅ | ❌ DSP ライブラリ無し、FFT は `microfft` | ❌ |
+| `xtensa-esp32s3-espidf` | ✅ | ✅ esp-dsp (S3 bench + S3-app + CoreS3-app) | ✅ 実機オンエア |
+| `thumbv8m.main-none-eabihf` (RP2350 Cortex-M33) | ✅ [^xbuild] | ❌ 候補: pico-sdk-rs 経由 CMSIS-DSP | ❌ |
+| `riscv32imac-unknown-none-elf` (RP2350 Hazard3) | ✅ [^xbuild] | ❌ DSP ライブラリ無し、FFT は `microfft` | ❌ |
 | `thumbv7em-none-eabihf` (Cortex-M4F / M7) | 未試行 | ❌ 候補: CMSIS-DSP `arm_*_q15` | ❌ |
 | `thumbv6m-none-eabi` (Cortex-M0+ / RP2040) | 未試行 | ❌ scalar Rust のみ (DSP unit 無し) | ❌ |
 
+[^xbuild]: RP2350 の2行は退役した `mfsk-ffi-ft8` に対して検証したもので、
+    0.11.0 でそれが削除されて以降**再確認していない**。現在ビルドされる
+    のは `mfsk-core` 自身であり、この feature セットは
+    `scripts/pre-push-check.sh` のマトリクス（`alloc ft8 fft-extern` と
+    `alloc ft8 fft-extern fixed-point`）が push のたびに検査している —
+    ただしホストターゲットでのみ。この2つの ✅ は現在の実測ではなく
+    「動くはず」と読むこと。
+
 **ESP32 / ESP32-S3** (Xtensa LX6 / LX7) のみが実音源で end-to-end
-回しているターゲット。それ以外についてはライブラリは **build はできる**
-(`cargo build -p mfsk-ffi-ft8 --release --no-default-features
---features embedded-fixed-point,embedded-runtime --target <T>` で
-試せる) が、FFT extern Rust シンボルは自前で供給する必要がある。
-具体的な RP2040 / RP2350 / Cortex-M shim は将来作業として追跡。
+回しているターゲット。それ以外については:
+
+```sh
+cargo build -p mfsk-core --release --no-default-features \
+    --features alloc,ft8,fft-extern,fixed-point --target <T>
+```
+
+とし、FFT extern Rust シンボルは自前で供給する必要がある。具体的な
+RP2040 / RP2350 / Cortex-M shim は将来作業として追跡。
 
 `embedded-poc/embedded-shared/src/esp_dsp_fft.rs` がコピー元の
 worked example。
@@ -119,7 +164,7 @@ worked example。
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.8", default-features = false, features = [
+mfsk-core = { version = "0.11", default-features = false, features = [
     "alloc",            # Vec / Box / String — decode 必須
     "ft8",              # FT8 protocol glue
     "fft-extern",       # 呼び出し側が FFT バックエンドを供給
@@ -191,16 +236,6 @@ Xtensa ASM カーネル (`dsps_fft2r_fc32_ae32` + i16 用
 `dsps_fft2r_sc16_ae32`) にブリッジする実装例。RP2040 / Cortex-M
 実装は CMSIS-DSP に同様にブリッジする。
 
-### 除去済み: i16 × Q15 dot product extern (0.8.0, issue #162)
-
-per-symbol DFT (BASIS パス) には別途 `mfsk_core_dot_q15_i32`
-extern シンボルが必須だった。0.6.4 (Phase 1.7.7-Stick) 以降この
-extern は既に decoder から使われておらず — per-symbol DFT は
-in-tree の Goertzel recursion を通っていた (次節参照) — 0.8.0 で
-このシンボル自体、`mfsk_core::core::dotprod` モジュール、BASIS
-fill path 全体を削除した。新規統合ではここに何も実装する必要が
-ない。
-
 ## per-symbol DFT: Goertzel
 
 FT8 per-symbol DFT は `Σ x[n] · exp(-jωn)` を 8 トーン周波数それぞれ
@@ -248,268 +283,82 @@ scratch 引数そのものを削除して仕上げた — 新規統合では scr
 | LLR | f32 (host) または **Q11i16** (`fixed-point`、0.6.2 以降 — 0.5.x は `Q3i8`。解像度律速の recall 天井を解消するため拡張) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) (Q3i8 ±16 (~1/8 LSB) は `engine::scalar` に比較経路用として残置) | `engine::scalar::LlrScalar` |
 | BP messages | T (LLR と同じ) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
-## C / C++ / 非 Rust ESP-IDF プロジェクトからの利用 (`mfsk-ffi-ft8`)
+## C / 非 Rust プロジェクトからの呼び出し
 
-[`mfsk-ffi-ft8`](https://github.com/jl1nie/mfsk-core/tree/main/mfsk-ffi-ft8)
-は FT8 ブロックデコーダの小さな C ABI を export する。非 Rust
-ESP-IDF (or RP2040 / Cortex-M) プロジェクトから組込 FT8 デコーダ
-を呼ぶ推奨方法。
+**どちらにせよ Rust のシムが要る。** `mfsk-core` の組込 FFT 契約は
+`extern "Rust"` シンボル（`mfsk_core_make_default_fft_planner`）であり、
+これは `extern "C"` とは別の ABI で、C の翻訳単位からは定義できない。
+したがって非 Rust の統合でも最低限 Rust の staticlib を1つリンクする
+ことになる。
 
-`embedded-fixed-point` feature では `no_std + alloc` なので、
-生成される `libmfsk_ft8.a` は Rust の `std` ランタイムを持ち込まず、
-2 種類の libc レイヤを混ぜる toolchain weirdness 無く C から
-ドロップイン link 可能。
+どのみち Rust を書くのなら、C ABI を経由するより `mfsk-core` を直接
+呼ぶ方が単純である。**FT8 専用の組込 C ABI だった `mfsk-ffi-ft8` が
+0.11.0 で退役した**のはそのためで、`embedded-poc/` の3ボードはいずれも
+`mfsk-core` を直接呼んでいる。推奨する形はこれ:
 
-**ESP32 Core2 上で end-to-end 検証済** (本来は開発専用の独立
-コンピュート bench `embedded-poc/m5stack-core2/` で実施 — この
-bench は #61 Phase 3 (0.6.3) で retired、wav_sim 経路は production-
-app 形態の `embedded-poc/m5stack-core2-app/` に統合された): 別経路の `ffi_smoke_one` が
-`mfsk_ft8_decode_i16` (C ABI) を direct-Rust `decode_one` パスと
-同じ baked WAV に対し呼んで同一 recall — qso1 (3 / 3)、qso2
-(5 / 5)、**qso3 busy band (7 / 7)**。caller-managed BASIS scratch
-を内部 RAM に置くと FFI パスが内部ヒープ alloc 比 ~2.6 倍速
-(qso3 3.74 s vs 9.57 s)。Goertzel 化 (0.6.4+) 後は **scratch 引数
-すら不要** で同 recall。
-
-### API 概観
-
-cbindgen 生成ヘッダ — `mfsk-ffi-ft8/include/mfsk_ft8.h`、ビルド毎
-に再生成。フル surface:
-
-```c
-typedef struct MfskResult {
-    char     text[40];   // NUL 終端の unpack 済メッセージ
-    float    freq_hz;    // carrier
-    float    dt_sec;     // slot 開始基準の時間 offset
-    float    snr_db;     // JTDX 絶対値に対し xsnr2_db_simple で
-                         // 校正済 (実機で ±3 dB 以内)
-    uint32_t hard_errors;
-    uint8_t  pass;       // staircase stage (0=fast Bp、1=full Bp…)
-} MfskResult;
-
-typedef struct MfskResultList {
-    MfskResult *items;
-    size_t      len;
-    size_t      _capacity;  // private
-} MfskResultList;
-
-// Opaque デコードチューニングハンドル — mfsk_ft8_options_new で構築、
-// mfsk_ft8_options_free で解放。NULL は常に有効な options 引数
-// (このクレートの既定値: 200-3000 Hz、sync_min 1.0、max_cand 30、
-// MFSK_DECODE_DEPTH_BP_ALL_OSD を使う)。
-typedef struct MfskDecodeOptions MfskDecodeOptions;
-
-MfskDecodeOptions *mfsk_ft8_options_new(
-    float freq_min_hz, float freq_max_hz,     // typical 200, 3000
-    float sync_min, int max_cand,             // typical 1.0, 30
-    MfskDecodeDepth depth);                   // 1=BpAll、2=BpAllOsd
-void mfsk_ft8_options_free(MfskDecodeOptions *opts);
-
-// 組込のメインエントリ。呼び出し側 scratch は不要 — decoder は
-// in-tree Goertzel パス (内部 DRAM scratch ゼロ) で per-symbol DFT
-// を埋める。0.8.0 (issue #162) 以前はここで `basis_re`/`basis_im`
-// scratch ポインタも受け取っていたが、削除済み BASIS fill path
-// 用だったため除去した。0.8.0 (issue #205) 以前は 5 個のチューニング
-// 引数を options 経由でなく位置引数で受け取っており、host ビルドは
-// 別名の `mfsk_ft8_decode_i16_alloc` を export していた —
-// pre-0.8.0 ヘッダでビルドしていた C 呼び出し側は両方の更新が必要。
-MfskStatus mfsk_ft8_decode_i16(
-    const int16_t *audio, size_t n_samples,   // 12 kHz, mono, ≥168 000
-    const MfskDecodeOptions *options,         // NULL = 既定値
-    MfskResultList *out);                     // callee が populate
-
-void mfsk_ft8_result_list_free(MfskResultList *list);
+```text
+your-app/                      # esp-idf プロジェクトルート
+├── main/main.c                # アプリケーション
+├── components/mfsk/
+│   ├── CMakeLists.txt         # IMPORTED static-lib コンポーネント
+│   └── lib/libyourshim.a      # 下の Rust ビルド成果物
+└── shim/                      # Rust staticlib
+    ├── Cargo.toml             # mfsk-core に依存
+    ├── .cargo/config.toml     # target = xtensa-esp32s3-espidf, panic=abort
+    └── src/lib.rs             # 自分で定義する #[no_mangle] extern "C"
+                               # エントリポイントと extern "Rust" FFT planner
 ```
 
-### `mfsk_ft8_decode_i16` の呼び出し方
-
-管理すべき scratch バッファは無い — そのまま呼ぶだけ:
-
-```c
-#include "mfsk_ft8.h"
-
-MfskDecodeOptions *options = mfsk_ft8_options_new(
-    200.0f, 3000.0f, 1.0f, 30, MFSK_DECODE_DEPTH_BP_ALL);
-
-MfskResultList results = {0};
-MfskStatus st = mfsk_ft8_decode_i16(audio, n_samples, options, &results);
-// ... results を使う ...
-mfsk_ft8_result_list_free(&results);
-mfsk_ft8_options_free(options);
-```
-
-### Streaming capture: I2S / USB Audio → 12 kHz ring
-
-`mfsk_ft8_decode_i16` は 15 秒の 12 kHz スロットを一度に取る。
-実際の受信機はそうではなく、codec の動作レート (典型的に I2S や
-USB Audio Class 1/2 から 16 / 24 / 48 kHz) で小さな DMA チャンク
-を取る。`mfsk_ft8_stream_*` ファミリが両者の橋渡しを各 consumer に
-再実装させない:
-
-```c
-typedef struct MfskFt8Stream MfskFt8Stream;
-
-// 構築: 任意 src rate + ring 容量 (12 kHz サンプル数)。
-// 標準 15 s スロットなら 180000 を渡す。
-MfskFt8Stream *mfsk_ft8_stream_new(uint32_t src_rate_hz, size_t cap);
-void           mfsk_ft8_stream_free(MfskFt8Stream *);
-
-// DMA chunk を push。内部で 12 kHz に再サンプリング、ring に追加
-// (満杯時は古いサンプルから上書き — rolling-window モデル)。
-MfskStatus mfsk_ft8_stream_push_i16(MfskFt8Stream *,
-                                    const int16_t *samples, size_t n);
-
-// Snapshot: 最新 `cap` 個の 12 kHz サンプルを `out` にコピー。
-// ring は変更しない — decode 成功後 _drain() を呼んで新音源用
-// 領域を空ける。
-size_t mfsk_ft8_stream_buffered_samples(const MfskFt8Stream *);
-size_t mfsk_ft8_stream_peek_latest(const MfskFt8Stream *,
-                                   int16_t *out, size_t cap);
-void   mfsk_ft8_stream_drain(MfskFt8Stream *, size_t n);
-void   mfsk_ft8_stream_clear(MfskFt8Stream *);
-```
-
-内部: Q32 fixed-point linear resampler (carry-over 状態あり、
-チャンク境界 glitch なし) + 固定容量 i16 ring。純粋スカラ演算 —
-FFT なし、DSP backend なし。`host` ビルドと `embedded-fixed-point`
-ビルドの両方で利用可能。
-
-**典型的な RTOS 配線** (capture と decode を別タスクで):
-
-```c
-// 一回だけのセットアップ
-static MfskFt8Stream *g_stream;
-static MfskDecodeOptions *g_options;
-static int16_t g_slot[180000];          // 360 KB; PSRAM 可
-
-void rx_init(void) {
-    g_stream = mfsk_ft8_stream_new(/*src*/16000, /*cap*/180000);
-    g_options = mfsk_ft8_options_new(200.0f, 3000.0f, 1.0f, 30,
-                                      MFSK_DECODE_DEPTH_BP_ALL);
-}
-
-// Capture タスク: I2S DMA コールバック
-void on_i2s_chunk(const int16_t *samples, size_t n) {
-    mfsk_ft8_stream_push_i16(g_stream, samples, n);
-}
-
-// Decode タスク: UTC スロット境界毎 15 秒間隔で発火
-void on_slot_boundary(void) {
-    if (mfsk_ft8_stream_buffered_samples(g_stream) < 168000) return;
-    size_t n = mfsk_ft8_stream_peek_latest(g_stream, g_slot, 180000);
-
-    MfskResultList results = {0};
-    mfsk_ft8_decode_i16(g_slot, n,        // 180000 ではなく n。ring が
-                                          // 満杯でなければ peek は短く
-                                          // 返してくる。
-                        g_options, &results);
-    // ... results を使った後 ...
-    mfsk_ft8_result_list_free(&results);
-    mfsk_ft8_stream_drain(g_stream, 180000);  // 次スロット用に空ける
-}
-```
-
-**スロット境界アライメント。** UTC アライメントは ±2 s 以内で十分
-— `decode_block` の coarse-sync ステージが Costas-array サーチ
-で内部に吸収する。Wi-Fi ボードでは NTP が最も簡単、オフライン /
-モバイル用途では GPS PPS、スタンドアロン bench なら任意の参照時刻
-から正確に 15 秒間隔で free-run しても 1 時間で 50 ppm 以内の
-タイマ安定度があれば decode できる。
-
-**Resampler 品質。** 線形補間 — 演算の単純さ (i64 mul / shift、
-FPU 無し MCU でも余裕、LX6/LX7 で ASM throughput に追随) のため
-選択。16 → 12 kHz や 48 → 12 kHz の典型比率と実音源パスバンド
-(200–3000 Hz) では混入歪 ~–55 dBc、FT8 LDPC の動作 SNR より遥か
-に下。FT8 以外の用途で透明な fidelity が必要なら、ring の前に
-polyphase FIR を入れる。
-
-### Build フラグ
-
-#### Host (`libmfsk_ft8.so` / `libmfsk_ft8.a`、デスクトップテスト用)
+Xtensa ツールチェーンでシムをビルドする:
 
 ```sh
-cargo build -p mfsk-ffi-ft8 --release
-# → target/release/libmfsk_ft8.{so,a}
-# → mfsk-ffi-ft8/include/mfsk_ft8.h (cbindgen 生成)
+source ~/export-esp.sh
+RUSTFLAGS="-C panic=abort" cargo build --release \
+    --target xtensa-esp32s3-espidf          # または xtensa-esp32-espidf
 ```
 
-デフォルト feature は `mfsk-core/std + ft8 + fft-rustfft` を引き
-込む。生成された `.so` を link する C smoke test:
-`mfsk-ffi-ft8/tests/c_smoke/smoke.c`
-
-```sh
-gcc -O2 -I mfsk-ffi-ft8/include \
-    mfsk-ffi-ft8/tests/c_smoke/smoke.c \
-    -L target/release -lmfsk_ft8 -lm -lpthread -ldl \
-    -Wl,-rpath,$PWD/target/release \
-    -o /tmp/mfsk_smoke
-/tmp/mfsk_smoke embedded-poc/assets/qso3_busy.wav
-```
-
-#### 組込 (Xtensa ESP32、`libmfsk_ft8.a` を ESP-IDF link 用)
-
-```sh
-source ~/export-esp.sh                     # Xtensa toolchain
-RUSTFLAGS="-C panic=abort" \
-cargo build -p mfsk-ffi-ft8 --release \
-    --no-default-features \
-    --features embedded-fixed-point,embedded-runtime \
-    --target xtensa-esp32-espidf            # or -esp32s3-espidf
-# → target/xtensa-esp32-espidf/release/libmfsk_ft8.a
-```
-
-`-C panic=abort` 必須 — Rust unwinding panic は `std` を要求する
-が、組込は `panic = "abort"` 一択。ESP-IDF プロジェクトは典型的に
-これを `.cargo/config.toml` で設定する:
+`-C panic=abort` は必須である。Rust の unwinding panic は `std` を
+要するため。ESP-IDF プロジェクトでは通常 `.cargo/config.toml` に置く:
 
 ```toml
-[target.xtensa-esp32-espidf]
+[target.xtensa-esp32s3-espidf]
 rustflags = ["-C", "link-arg=-nostartfiles", "-C", "panic=abort"]
 ```
 
-#### Feature リファレンス
-
-| Feature | デフォルト | 目的 |
-|---|---|---|
-| `host` | ✓ | Host ビルド — `mfsk-core/std + ft8 + fft-rustfft` を引く。host ネイティブ f32 パスを backend とする `mfsk_ft8_decode_i16` を export。0.8.0 (issue #205) 以前はこの feature が別名の `mfsk_ft8_decode_i16_alloc` を export していたが、組込ビルドと同名のシンボルに統合 (backend は host ネイティブのまま)。 |
-| `embedded-fixed-point` | — | `no_std + alloc`。`mfsk-core/fft-extern + fixed-point` (`nstep-half` を含意) を引く。同じ `mfsk_ft8_decode_i16` シンボルを export、backend は fixed-point パス。リンカが `mfsk_core_make_default_fft_planner` + `_planner16` を解決する必要あり (esp-dsp にブリッジする小さな Rust shim 経由が典型)。 |
-| `embedded-runtime` | — | デフォルト `#[panic_handler]` (libc `abort` 呼ぶ) + `#[global_allocator]` (libc `malloc`/`free`) を提供。自己完結型 `staticlib` 用; 同一 image 内で別 Rust runtime を積む場合は off。 |
-
-### ESP-IDF (CMake) プロジェクトへのリンク方法
-
-```text
-your-app/                          # esp-idf プロジェクトルート
-├── main/main.c                    # mfsk_ft8_decode_i16(...) を呼ぶ
-├── components/mfsk_ft8/
-│   ├── CMakeLists.txt             # IMPORTED static-lib component
-│   ├── include/mfsk_ft8.h         # mfsk-ffi-ft8 ビルドから
-│   └── lib/libmfsk_ft8.a          # mfsk-ffi-ft8 ビルドから
-└── shim/                          # 小さな Rust crate (esp-dsp ブリッジ)
-    ├── Cargo.toml                 # mfsk-ffi-ft8 に依存
-    ├── .cargo/config.toml         # target = xtensa-esp32-espidf, panic=abort
-    └── src/lib.rs                 # mfsk_core_make_default_fft_planner[16] を提供
-```
-
-`shim/` Rust crate が必要なのは mfsk-core の FFT-extern 契約が
-`extern "Rust"` シンボル (`extern "C"` とは ABI が違う) を使う
-ため。純粋 C コンパイル単位ではこれを満たせない。shim は ~50 行
-の Rust + `embedded-poc/embedded-shared/src/esp_dsp_fft.rs` の
-vendored コピー。
-
-`components/mfsk_ft8/CMakeLists.txt` 最小例:
+アーカイブはコンポーネントとして取り込む:
 
 ```cmake
 idf_component_register(INCLUDE_DIRS "include"
                        REQUIRES espressif__esp-dsp)
-add_library(mfsk_ft8_rust STATIC IMPORTED)
-set_target_properties(mfsk_ft8_rust PROPERTIES
-    IMPORTED_LOCATION ${CMAKE_CURRENT_LIST_DIR}/lib/libmfsk_ft8.a)
-target_link_libraries(${COMPONENT_LIB} INTERFACE mfsk_ft8_rust)
+add_library(mfsk_rust STATIC IMPORTED)
+set_target_properties(mfsk_rust PROPERTIES
+    IMPORTED_LOCATION ${CMAKE_CURRENT_LIST_DIR}/lib/libyourshim.a)
+target_link_libraries(${COMPONENT_LIB} INTERFACE mfsk_rust)
 ```
 
-ワークする骨組は
-[`embedded-poc/idf-component/`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/idf-component)。
+**手書きのエントリポイントではなく完全な C ABI が欲しい場合**、
+`mfsk-ffi` はこれらのターゲットでも staticlib としてビルドでき、
+全プロトコルを覆う — [`BINDINGS.md`](BINDINGS.ja.md) 参照。ただし
+FT8 専用シムより大きく、session/stream の機構も引き込むので、単一
+プロトコルの MCU ビルドなら手書きシムの方が普通は小さい。
 
+> `embedded-poc/idf-component/README.md` は今も退役した
+> `mfsk-ffi-ft8` を前提に書かれている。Rust シムが*なぜ*必要かの説明と
+> CMake コンポーネントの形は今も正しいが、そこに出てくるクレート名・
+> feature 名・シンボル名は正しくない。
+
+### Streaming capture: I2S / USB Audio → 12 kHz
+
+デコードは 12 kHz の1スロット丸ごとを取る。実際の受信機はそれを持って
+おらず、コーデックのレートのまま小さな DMA チャンクを寄越す（I2S や
+USB Audio Class 1/2 で典型的には 16 / 24 / 48 kHz）。選択肢は2つ:
+
+- **Rust から**は `engine::dsp::resample` で 12 kHz に変換し、リングは
+  アプリ側が持つ。`embedded-poc/embedded-shared/src/pipeline.rs` が
+  実例で、その構成は[下](#streaming-rx-pipeline-アーキテクチャ)にある。
+- **C から**は `mfsk-ffi` の `mfsk_stream_*` 群がまさにこのリングで、
+  モード自身のスロット長からサイズが決まり、ライブラリ側は時計を一切
+  読まない — [`BINDINGS.md` §2.5](BINDINGS.ja.md#25-ストリーミング取り込み) 参照。
 ## 出荷していないもの
 
 mfsk-core はデコード / エンコードパイプラインで止まる。以下は
@@ -591,44 +440,15 @@ PCM、各 ≈ 360 KB)、`rx-wavsim` ストリーミング bench がリアルタ�
 core vs Xtensa 240 MHz × 2 core) — 両者が同一整数パイプライン
 を走らせているのでアルゴリズム / パイプラインオーバーヘッドは無い。
 
-#### なぜ組込パスで PASS1 を広げず / OSD を有効化しないか
+組込パスが取りこぼす 11 局はチューニングの怠慢ではない。PASS1 を広げ
+OSD を有効化する案は実測のうえ却下されている — 取りこぼす信号は
+coarse_sync のランク 100 より下に居て、BP の努力ではなく反復減算を要する
+から。そして FT8 のターンアラウンド予算はスロット全体ではなく
+post-SlotEnd ~2 秒だから。数値は
+[`DESIGN_RATIONALE.md` §5](../notes/DESIGN_RATIONALE.md#5-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd)
+にある。
 
-実機 S3 LX7 上で WSJT-X リファレンス busy band に対しテスト
-(`logs/s3_pass100_max30_2026-05-04.log`):
-
-| config | qso3 post-SlotEnd | qso3 recall | total recall |
-|---|---:|---:|---:|
-| Bp/30/15 (ship)  | **~1.2 s** | 7/18 | 14/22 (phantom 込で 15) |
-| Bp/100/30        | **~1.6 s** | 7/18 (不変) | +1 (qso1 の OH3NIV のみ) |
-| DecodeDepth::FULL/200/100 (host 推定) | ~7 s | 7/18 (+1 で qso3 N1JFU) | 16/22 |
-
-`PASS1=30 / max_cand=15` 維持を決めた非自明な 2 知見:
-
-1. **qso3 busy band の recall は BP / OSD 努力でなく coarse_sync
-   ランクで上限が決まる。** PASS1 30 → 100 + max_cand 15 → 30
-   への拡大で qso3 callsign は何も増えない — 取り逃した signal
-   は coarse_sync ランク 100 以下に全くない。WSJT-X wide-band パス
-   の代名詞である反復減算が必要で、`decode_block` はそれを実装して
-   いない。
-2. **FT8 QSO turnaround 予算は post-SlotEnd ~2 s**、フル 15 s
-   スロットではない。decode 後に UI が waterfall を描き、callsign
-   list を更新、RPRT を render、次スロット TX を準備、そして —
-   NTP 同期や GPS disciplined RTC が無いチップでは — decode され
-   た signal の `dt_sec` の **中央値** から slot timing を推定し
-   直す (素の平均は外れ値に弱い: 1 件の bogus-sync だが CRC-valid
-   decode が slot phase をだいぶずらす; ESP32 の内部 RTC drift が
-   大きいので frame アライメントはこの decoder 由来推定に追従する
-   必要がある)。Bp/100/30 で qso3 では全部やる前に ~0.4 s しか
-   残らず、次 TX 開始までキツすぎる。qso1 限定 +1 recall は
-   ヘッドルーム喪失に見合わない。
-
-つまり組込 `decode_block` は 2 s 予算に綺麗に収まる recall floor
-で出荷している。これ以上を狙うには (a) 反復減算を組込パスに移植
-(コスト未知 — `docs/notes/ROADMAP.md` の「Embedded fine_refine attempt
-postmortem」参照) または (b) QSO turnaround に間に合わない遅着
-「スポッターモード」decode を受け入れるかのどちらか。
-
-`qso3_busy.wav` の per-stage 分解:
+### `qso3_busy.wav` の per-stage 分解
 
 | stage | Core2 LX6 | S3 LX7 | 備考 |
 |---|---:|---:|---|
@@ -651,7 +471,6 @@ postmortem」参照) または (b) QSO turnaround に間に合わない遅着
    core が反対側に落ちた遅い / 失敗 candidate で stall しない。
    qso3 (15 cand 中 ~半数が失敗し 4 種類の LLR variant 全部走る)
    で per-cand BP wall-clock variance を吸収する。
-
 ## Streaming RX pipeline アーキテクチャ
 
 Phase E 以降のパイプライン (`embedded-poc/embedded-shared/src/`
@@ -731,10 +550,54 @@ spectrogram を回せない — 本番向け WAV 入力に対し組込パスは 
 Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回で
 成功する。
 
+## プロトコル別の組込ステータス
+
+| プロトコル | 実機への経路 | 状況 |
+|---|---|---|
+| **FT8** | `ft8::decode_block`、`fixed-point` 整数パイプライン | **オンエアでデコード中。** IC-705 の 40 m で1スロットあたり6〜8局（CoreS3、2026-08-23/24）。基準ターゲットであり、[性能ベンチマーク](#性能ベンチマーク)の数値はすべて FT8 |
+| **FST4** | 汎用 `engine::pipeline` + `fft-extern` — **`decode_block` の移植なし** | **オンエアでデコード中**（CoreS3）。FST4-60 の実機時間は `no8_osd` で 13.6 s、締切重視の既定値で ~7 s 予算の約 1.95 倍 |
+| **FT4** | 汎用 `engine::pipeline`、ホスト f32（LX7 では `fixed-point` の方が*遅かった*、#198） | **オンエアでデコード中**（CoreS3） |
+| **WSPR** | `fft-extern` 経由のホスト `wspr::decode` f32 と `wspr::ddc` | **オンエアでデコード中。** `slot 1 src=uac decoded 1 station(s)`。110 s の締切に対し 82.8〜90.1 s で decode 完了 |
+| **Q65 / JT9 / JT65** | — | **ホスト専用。** `rustfft` を直接呼ぶため `fft-rustfft` を、したがって `std` を引く。組込パスはまだ無い |
+
+**FST4 は `decode_block` を移植せずに実機へ到達した**（issue #306）。
+FT4 も同じ道を通った。`decode_block` があるのは FT8 自身の
+ダウンサンプル鎖が 192 000 点 FFT を要するからで、特定の FFT を回避する
+手段であって「チップで動く」の定義ではない。長く逆に思われていたので
+明記しておくと、`fst4` は**ホスト専用 feature ではない** —
+`alloc,fst4,fft-extern` で型検査が通る。
+
+### FST4 と FT4 のチューニング履歴
+
+FST4 と FT4 を組込予算に収めるには、それぞれ 18 回と 9 回の実測が
+必要だった — 時間が実際どこへ行くのか、どの OSD レバーが本物か、
+`no8_osd` が何と何を交換しているのか、どの「回帰」が測定の側の産物
+だったのか。これらはリファレンスではなく測定日誌なので、他のスイープと
+同じ場所に置いてある:
+
+- [`FST4_BENCHMARK.md` §17](../notes/FST4_BENCHMARK.md) — 実機での18回の
+  試行と、`decode_rung_major` の `offsets` がデコーダ側ではなく呼び出し側の
+  判断になった経緯。
+- [`FT4_BENCHMARK.md` §50](../notes/FT4_BENCHMARK.md) — そもそもビルドを
+  通すまでに要したこと、ボトルネックが統計的でなく構造的である理由、
+  候補数の過剰の修正。
+
+### 実機 UAC ブリングアップ
+
+issue [#163](https://github.com/jl1nie/mfsk-core/issues/163) — USB Audio
+Class キャプチャパスの IC-705 実機確認 — は **2026-08-23 に解決**した。
+WiFi を張ったまま10分間途切れなく、125 MB、エラーゼロ
+（`embedded-poc/m5stack-cores3-app/logs/uac_stream_2026-08-23.log`）。
+
+ブリングアップのチェックリストは、次にこのパスが壊れたときのために
+残してある: [`UAC_BRINGUP_CORES3.md`](../notes/UAC_BRINGUP_CORES3.md)。
+ボードに触る前に `embedded-poc/CLAUDE.md` の「USB host VBUS on CoreS3」と
+「Stacks, heaps, and the space between them」を読むこと。
+
 ## WSPR on embedded
 
 上記とは構造的に別の、2つ目の組込ストーリー — WSPR は `decode_block`
-も `fixed-point` も `mfsk-ffi-ft8` の C ABI も一切通らない。host と
+も `fixed-point` も一切通らない。host と
 同じ `wspr::decode` の f32 パスを `fft-extern` 経由でそのまま
 device 上で走らせ、新規追加は 1 つだけ: `wspr::ddc`、streaming
 down-converter。参照デコーダのスロット全体 FFT チャネライザ
@@ -783,301 +646,3 @@ USB ストリーム開始位置ではなく UTC の偶数分グリッド上で�
 自身の `Network/wsprnet.cpp` から移植) は実装済みで既定 off。
 `SpotSink::Http` パスは実装済みだが実エンドポイントに対しては未検証。
 
-## FT4 on embedded
-
-**状態 (2026-08-30、更新済み — 本節末尾の「現在地 (2026-09-01)」を
-参照): ビルドが通り、実機で正しくデコードし、スロット
-予算を 3.4 倍超過している**（2026-08-29 の最適化前は 8.8 倍）。残りの
-超過は 3 段に分散しており、そのうち `downsample_cached` はホスト側で
-検証済みの DDC フロントエンドが丸ごと消す。
-
-### ビルドが通るまで
-
-`mfsk-core/Cargo.toml` の `ft4 = []` は以前から FT4 が
-backend-agnostic だと主張していて、実際そのとおりだった——`src/ft4/`
-は `engine::pipeline` の上に乗る 745 行の trait impl と設定だけで、
-`rustfft` も FT8 固有コードも参照していない。ただし **その feature を
-有効にした組込クレートは一つも無く**、`scripts/pre-push-check.sh` にも
-`ci.yml` にも `alloc ft4 fft-extern` の段が無かったので、この主張は
-一度も検証されていなかった。最初の `cargo check` はちょうど1行で落ちた
-——`ft4/subtract.rs` の `Vec` に `use alloc::vec::Vec;` が無い。issue
-#306 が FST4 で2回見つけたのと同型。両方の feature 行列に段を追加した。
-
-FT4 と実機の間には、2 つの非 2 冪 FFT 長があった:
-
-| 長さ | 場所 | 解決 |
-|---|---|---|
-| `fft1_size = 92_160` | `build_fft_cache`、スロット1回 | **ホストで焼く** — `decode_frame` の `precomputed_fft` seam 経由。FST4 と同じ抜け道 |
-| `fft2_size = 5_120` | `downsample_cached`、候補ごと1回 | `engine::dsp::fft_mixed_5120` — Cooley-Tukey 1024 × 5。既存の `fft_15::fft_5` カーネルを再利用し、`fft_mixed_3840` の 256 × 15 と同型 |
-
-`engine::llr::symbol_spectra` の per-symbol DFT には新しいカーネルが
-要らない——FT4 の `ds_spb = NSPS/NDOWN = 32` は 2 冪。
-(`ft4_coarse_sync` 自身の `NFFT1 = 2304` = 256 × 9 には同型のラッパが
-もう1つ必要で、2026-08-30 に `engine::dsp::fft_mixed_2304` として
-追加した。ベンチは依然として候補リストを焼いて回避している。この段は
-ホストのスロット全体で 0.3 ms。)
-
-### 予算
-
-FT4 のスロットは 7.5 秒。送信は 0.5 秒から始まり 105 シンボル × 48 ms
-= 5.04 秒なので、フレーム終端は 5.54 秒、残る **1.96 秒**がデコード
-時間。WSPR や FST4 のモニタループ（意図的に余裕を持たせた設計で、超過
-は故障）とは違い、これは FT8 の 15 秒スロットと同じ性質——本質的に
-窮屈で、超過は運用限界を意味する。
-
-### 実測
-
-`ft4-bench`、M5Stack CoreS3 @ 240 MHz、`opt-level = 3`、シングル
-コア、WiFi なし。WSJT-X ゴールデン `000000_000002.wav` から
-`ft4_coarse_sync` が見つけた 31 候補、単一パス。ログ:
-`embedded-poc/m5stack-cores3-app/logs/ft4-bench_clean_2026-08-29.log`。
-
-| 段 | 合計 | 候補あたり | 割合 |
-|---|---:|---:|---:|
-| `downsample_cached` (5120点 逆FFT) | 2 252 ms | 72.7 ms | 13 % |
-| **`ft4_sync_search`** | **13 225 ms** | **424 ms** | **76 %** |
-| LLR + BP (`DecodeDepth::EMBEDDED`) | ~1 861 ms | ~60 ms | 11 % |
-| **合計（本番の `process_candidate_basic`）** | **17 339 ms** | 559 ms | — |
-| 同じく `DecodeDepth::FULL` | 19 684 ms | 635 ms | — |
-
-**実機で 11 件のデコード。同じアセットに対するホストの結果と完全一致**
-（両 depth とも）。つまりここでは ship config が recall を失っておらず、
-OSD もこのファイルでは何も稼いでいない——「OSD を落とす」を最適化案と
-して出す前に知っておく価値がある。（ゴールデンテストが assert する
-14/14 は `sic_rounds(3)` が必要で、単一パスはホストでも 11 で頭打ち。）
-メモリは一度も制約にならなかった: PSRAM 7.47 MB / 内部 DRAM 240 KB が
-常時空き、ベンチタスクのスタック使用は 96 KB 中 16.7 KB。
-
-**1 960 ms に対して 17 339 ms、8.8 倍の超過。**
-
-### コストは統計的でなく構造的
-
-`ft4_sync_search` の候補ごとの実測 (n=31): **min 423 835 µs / p50
-423 897 µs / max 424 684 µs** — ばらつき 0.2 %。これは候補依存の何かで
-はなく固定グリッドの署名であり、設計からそのまま出てくる:
-`ft4_sync_search_window` は各候補の `dt_sec` に関係なく絶対窓
-`[-344, 1012]`（ダウンサンプル後サンプル）を走査する（これは忠実な
-移植——WSJT-X の FT4 デコーダは Δt をここでしか決めない）。約 19 900
-個の (Δf, Δt) セル × 4 Costas ブロック × 4 シンボル × 32 サンプル ≒
-候補あたり 10.2 M 複素 MAC。424 ms はおよそ 1 複素 MAC あたり 10
-サイクルで、これは位相子を都度回すスカラ f32 ループの数字。
-
-したがってレバーはグリッドとその内側の演算の 2 つで、どちらも着手前に
-測定できる:
-
-- **`dsps_dotprod_f32_aes3`** (LX7 PIE) を内積に。このクレートの
-  `dotprod-bench` が既にこのチップで PIE の価値を測っている。10
-  サイクル/MAC はカーネルの能力から遠い。
-- **探索窓を狭める** — **2026-08-29 にホストで実測済み**
-  (`docs/notes/FT4_BENCHMARK.md` §18)。本番の窓は全スロットではなく
-  **±1.0 秒**（`i0` はダウンサンプル後サンプル、`dt = 0` は
-  `i0 = 333`）。2 つの計測器が **±0.5 秒は無損失**で一致した:
-  実録音のゴールデンでは 11 件すべてが残り（真の DT は
-  −0.44 〜 +0.30 秒に分布）、探索は実測 **1.91 倍**。`ft4sim` の DT
-  掃引では窓の縁でちょうど崖になる——内側 100 %、外側 0 %、しかも
-  閾値付近でも DT が窓内なら列間で recall が**同一**。狭めて失うのは
-  **到達範囲であって感度ではない**。
-
-### 2 つのレバーを適用、そして見かけより小さかった 3 つ目
-
-3 つとも投入し、同じ 31 候補で実測した
-（`logs/ft4-bench_opt_2026-08-29.log`、詳細は
-`docs/notes/FT4_BENCHMARK.md` §19）:
-
-| 構成 | 探索 | 累積 |
-|---|---:|---:|
-| ベースライン | 13 225 ms | 1.00× |
-| + `FlatRef` / `dot_f32` | 4 447 ms | **2.97×** |
-| + `cd0` を内部 DRAM へ | 3 937 ms | 3.36× |
-| + ±0.5 秒窓 | **2 492 ms** | **5.31×** |
-
-**効いたのは演算だった。** `ft4_sync_search_window` は周波数シフトを
-最内サンプルループの中で適用し、回転位相子を `(df, i0)` セルごとに
-やり直していた——だがその位相子は Costas ブロック**内**のオフセット
-で決まるので、各 `df` が走査する約 340 個の `i0` すべてで同一であり、
-セルごとの再構築はその回数ぶん冗長だった。`fst4_sync_search` は既に
-参照側へ畳み込んでおり（`FlatRef`）、その形は `dot_f32`——すなわち
-`dsps_dotprod_f32_aes3`——が処理できる素の内積を残す。FT4 も同じに
-した。感度は不変（スイープ 4 チャネルすべて +0.00 dB）、ゴールデンの
-段カウンタも同一。
-
-**PSRAM 仮説は外れた: 予測 5〜10 倍に対して実測 1.12 倍。** バイト数
-の見積もりは正しく、それがボトルネックだという推論が誤りだった——
-上の変更後はアクセスが 2 KB スライスに対する逐次的な `dot_f32` に
-なり、S3 の PSRAM キャッシュがよく効く。旧ループは帯域律速ではなく
-演算律速だった。残す価値はある（40 KB、boot で確保すれば実質無料）
-が、レバーではない。なお本番の FT4 モードではいずれにせよ boot 時に
-`worker_arena` 経由で取る必要がある: WiFi が上がると最大連続空き
-ブロックは 31 744 B しかない。
-
-**スロット合計（本番経路）: 17 339 ms → 8 642 ms (2.01×)**、デコード
-は両 depth とも 11 件でホストと一致のまま。3 つすべて適用した投影は
-1 960 ms に対して約 6 686 ms——**8.8 倍超過が 3.4 倍超過**になる。
-
-残りはもう単一の項ではない: downsample 34 % / 探索 37 % / LLR+BP
-29 %。`downsample_cached` が探索と同格になっており、これは高速化
-ではなく DDC フロントエンドが丸ごと消す種類の段——それが次節。
-
-### DDC フロントエンド（2026-08-30 ホスト検証済み、実機は未測定）
-
-`mfsk_core::ft4::ddc` は候補ごとの `cd0` をミキサと FIR で作るので、
-このベンチがホストで焼いている 92 160 点変換には供給先が無くなる。
-詳細は `docs/notes/FT4_BENCHMARK.md` §20。
-
-**FT4 は簡単な方だった。** `fst4::ddc` が有理リサンプラを必要とする
-のは `NSPS = 3888 = 2⁴·3⁵` が `3⁵` の分母を残すからだが、FT4 の
-`NDOWN = 18` は 12 kHz を整数で割り切る。`666.667 Hz` はすでに
-`SyncDims::ds_rate` そのもので、`ds_spb = 32` も 2 冪。よってこの
-モジュールは `FirStage` 2 段とミキサ 2 個だけ——`PolyphaseResampler`
-も `RxGrid` も不要で、`cd0` から下流は一切変わらない:
-
-```text
-12 kHz 実数 i16
-  → Mixer(f0 + 31.25 Hz)                   複素 @ 12 kHz
-  → FirStage A: 199 taps, fc 320 Hz, ÷18   複素 @ 666.667 Hz
-  → FirStage B: 263 taps, fc 56 Hz,  ÷1    複素 @ 666.667 Hz
-  → Mixer(−31.25 Hz)                       cd0、f0 が DC
-```
-
-**通過帯域はフィルタ設計の自由変数ではなくデコードパラメータ。**
-`downsample_cached` が残すのは `[f0 − 31.25, f0 + 93.75] Hz` で、
-それ以外はゼロ——トーンが `f0` から上方向に並ぶので `f0` に対して
-非対称である。そのあと `process_candidate_basic_impl` が `cd0` 全長で
-RMS 正規化し、`LLR_SCALE` はその単位 RMS 入力に対して較正されている
-ので、参照帯域の外から入れた雑音はそのまま BP に入る全 LLR の
-スケールを狂わせる（666 Hz 全部通すと約 2.3 倍高くなる見込みだった）。
-ゆえにミキサ 2 個: **帯域の中心**を DC に落とし、実数タップで対称に
-濾波し、最後に `f0` を DC へ戻す。参照との等価雑音帯域幅の実測差は
-**+0.021 dB**。
-
-**等価性。** WSJT-X ゴールデンで同一の 31 候補から、`DecodeDepth`
-`EMBEDDED` / `FULL` 双方で **11 件・集合完全一致**。同期位置は 1
-サンプルも動かず、11 件中 1 件だけが `ft4_sync_search` の格子 1 段
-（1 Hz）ずれる。tier-C スイープでは 4 チャネルの 50% クロッシングを
-跨ぐ同一雑音実現 560 ファイルで対応づけ比較し、**FFT 237 件 / DDC
-238 件**、不一致 5 件（DDC 有利 3・不利 2）。**感度コストは 0.0 dB。**
-
-### 候補数は 2.6 倍過剰だった（2026-08-30）
-
-`ft4_coarse_sync` より後段はすべて候補あたりのコストだが、ベンチの
-探索は `sync_min = 0.05` を渡していた。これは**雑音フロアより下**で、
-`getcandidates4.f90` は平滑スペクトルをフィットしたベースラインで
-割るので雑音自体が約 1.0 に来る——それ未満の閾値は帯域内の全ピークを
-通す。WSJT-X 自身の値は 1.2（`ft4_decode.f90:195`）。
-
-4 チャネルの 50% クロッシングを跨ぐ 560 ファイルとゴールデンで実測:
-0.05 → 1.2 で候補数は 67.1 → 1.6（スイープ）、31 → 12（ゴールデン）に
-落ちるが **recall は両方とも不変**。膝は 1.4 で、そこから欠け始める。
-`bench_assets::SYNC_MIN` を 1.2 にし、焼いた候補リストも再生成した
-（31 → 12、両 depth とも同じ 11 件）。`FT4_BENCHMARK.md` §17-19 の
-実機値はすべて 31 候補での測定である。
-
-DDC と合わせた投影は `(2 492 + 1 943) × 12/31 ≈ 1 717 ms` で
-予算 1 960 ms の**内側に初めて入る**——ただし**紙の上での話**で、
-どちらの変更も実機では未計測。
-
-同じ測定は逆方向の訂正も出した: ベンチの「`EMBEDDED` と `FULL` が
-同一デコード」はゴールデンでは真だが弱信号では偽で（クロッシングで
-560 中 237 対 179）、出荷 depth は OSD を省くことで recall の約 1/4 を
-手放している。詳細は `docs/notes/FT4_BENCHMARK.md` §21。
-
-`fst4::ddc` と同様、呼び出し側が使う部品であって、ホストの
-フロントエンドを差し替える feature flag ではない。
-
-### 現在地 (2026-09-01) — 予算内で動く受信機になった
-
-**本節冒頭の「3.4 倍超過」も、末尾にあった「実機計測がまだ無い」も
-すでに古い**。上で投影されていたものは全て実装され、CoreS3 で動いて
-いる。記録は `docs/notes/FT4_BENCHMARK.md` §32-§34, §37-§38, §42。
-要約:
-
-| 変更 | 効果 |
-|---|---|
-| `Ft4SavgBuilder` — coarse 段を**キャプチャ中**に走らせる (§32) | スロット終了後 761 ms → 6 ms |
-| 候補ループにスロット期限を持たせる (§34) | 超過が「事実」から「運用上の選択」になった |
-| shared decimation (§42) | 候補あたり約 188 ms → 約 168 ms |
-| その ÷2 をキャプチャ中に流す (§42.1) | スロット 2 067-2 118 ms → **1 998-2 000** |
-| 予算をスロット終端でなくキーアップから導出 (§43) | QSO 可能な実効予算は 1 960 でなく **500 ms** だった |
-| 2コア、共有カーソルから候補を取る (§44) | 候補ループが 1.40× |
-| タスクスタックを実測値で確保 (§45) | WiFi 接続中で 1 290-1 401 ms |
-| WSJT-X 本来の ±1.0 s Δt 窓に戻す (§46) | 予算 1 750 → **1 225 ms**、11 decodes → 9-10 |
-
-**予算はスロット境界ではなくキーアップから導く。** FT4 は高速 QSO の
-ためのモードなので、締切は「送信を開始しなければならない時刻」＝次
-スロットの +0.5 s。キャプチャ窓は探索が到達しうる音声が揃った時点
-(WSJT-X 本来の ±1.0 s Δt 窓では 7.5 s のうち 6.775 s、DDC の群遅延を
-含む) で閉じる。スロット終端に
-アンカーしていた旧実装では、送信する構成の実効予算は 500 ms しか
-なかった。時系列は §43。
-
-**スタックは内部 DRAM であり、内部 DRAM は WiFi が奪う。** デコード
-タスクは 32 KB ずつ確保して実際には 2.6-4.5 KB しか使っておらず、
-WiFi 接続時にはその無駄が最大空きブロックを 31 744 B まで押し下げ、
-デコーダ自身の確保が PSRAM に落ちてスロットあたり 400-580 ms を
-失っていた。電波を止めても直らない (`esp_wifi_stop` は解放しない)。
-スタックを実測で削ることが解。§45。
-
-`ft4-demo` をゴールデンスロット（14 信号、FT8 密度の最悪ケース）で
-再生した実測で、1 960 ms のトランシーバ予算に対し **12 候補すべてを
-試して 11 デコード** — shared front end 導入前は 11/12 候補で 10
-デコードだった。FT4 本来の 5-10 信号の占有率（§23）ならループは何も
-切らずに終わる。
-
-**shared decimation はフロントエンドの後半分**。`ft4::ddc` の
-候補ごとのチェインは、候補1つにつきスロット 90 000 サンプル全部を
-12 kHz でフィルタしていた。`NDOWN = 18` は `2 · 9` に分解できるので、
-`SlotDecimator`（165 taps, ÷2, `FirStage::push_block_real` による実数
-入力）をスロットに1回走らせ、`CandidateDdc::new_half_rate` が同じ
-チェインを 6 kHz・101 taps で回す。カットオフが 3 000 Hz でなく
-2 800 Hz なのは、新しいナイキストより上の成分が候補の帯域**内**に
-折り返すため。111 taps でなく 165 taps なのは、2 700 → 3 300 の遷移
-では探索帯域の上端を守れないため。参照帯域に対する等価雑音帯域は
-この段を足しても +0.021 dB、足さなくても +0.021 dB。
-
-**スロットグリッド整列 (#354)。** FT4 boot mode はグリッドを UTC に
-アンカーするようになった。境界を持つのは `SlotAccum`（FT8 経路では
-`Ft8ChunkSink` が持つ）で、`anchor_or_reanchor` を追加し `apps/ft4.rs`
-から駆動する — クロックを持つのはボード半分
-（`time_sync::samples_to_next_slot_12k_ms(7_500)`）、共有半分は
-言われたときだけグリッドを動かす。実音声の最初のブロックで次の窓を
-次の 7.5 秒境界にアンカーし、位相誤差が 100 ms を超えると再アンカーする
-（RTC 由来のクロックを NTP が秒単位でステップさせる場合を捕まえるのが
-これ）。各スロットのデコードの DT 中央値が残差（STAGING レイテンシと、
-RTC のみのアンカーが残したぶん）を詰め、整列後はゼロに落ち着く。
-**カバーしないもの**: クロックが無く *かつ* デコードも無いコールド
-スタート。FT4 の coarse 段は `dt = 0` を返すので、FT8 と違って
-`bootstrap_dt_median` で任意位相から引き上げる道が無い — それが #356
-（空中から位相をロックする）。
-
-**まだ足りないもの**: `FirStage::push_block` の esp-dsp バインディング
-（`dsps_fird_f32_aes3`）は未着手。shared front end に対する 560 ファイル
-の paired sweep はテストは書いたが未実行。FT4 boot mode は無線機を
-繋いだ状態でまだ走らせていない（既定では焼いたゴールデンスロットを
-再生する。`MFSK_FT4_REPLAY=0` で無効）ので、上記のグリッド整列は
-ホスト上の論証であって実機未確認。
-
-## 次に読むべきもの
-
-読者の意図別:
-
-- **既存 FT8 コントローラを操作したい** →
-  [`docs/reference/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md) (ビルド /
-  flash / `cfg.toml` / `BootMode` サイクル / UI / QSO workflow /
-  トラブルシュート)。
-- **新しい MCU に `mfsk-core` を統合したい** →
-  まず [FFT extern 契約](#fft-extern-rust-契約)、C から呼ぶなら
-  続けて [`mfsk-ffi-ft8` C ABI](#c--c--非-rust-esp-idf-プロジェクトからの利用-mfsk-ffi-ft8)。
-  [`embedded-poc/embedded-shared/src/esp_dsp_fft.rs`](https://github.com/jl1nie/mfsk-core/blob/main/embedded-poc/embedded-shared/src/esp_dsp_fft.rs)
-  shim がコピー元の worked example。
-- **組込 app のどれかにコントリビュートしたい** →
-  [`embedded-poc/CLAUDE.md`](https://github.com/jl1nie/mfsk-core/blob/main/embedded-poc/CLAUDE.md)
-  でクロスボードツールチェイン notes + LX6/LX7 比較表、それから
-  ボード固有 gotcha のために per-crate `CLAUDE.md`。
-- **組込ロードマップを追いたい** →
-  [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) Phase B-Stick (M5StickS3 demo /
-  音響 fallback) と Phase B-Core (M5Stack CoreS3 main UAC
-  controller) セクション。
-- **FT8 でなく WSPR が知りたい** → 上記 [WSPR on embedded](#wspr-on-embedded)、
-  それから `docs/notes/ROADMAP.md` Phase E と
-  [`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](../notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md)
-  (計測の全記録)。
