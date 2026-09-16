@@ -16,7 +16,7 @@
 //! any other protocol here closely enough to plug into the shared
 //! `fec`/`msg` machinery, and WSPR's decode path (`decode.rs`) doesn't
 //! route through `engine::pipeline` either (see
-//! `docs/reference/LIBRARY.md` §0.5 for the per-protocol shared-vs-
+//! `docs/reference/LIBRARY.md` §3.1 for the per-protocol shared-vs-
 //! bespoke breakdown this crate keeps). This module provides the
 //! [`Wspr`] ZST plus WSPR-specific TX/RX helpers that handle the
 //! interleaver and sync-bit embedding.

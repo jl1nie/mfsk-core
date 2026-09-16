@@ -270,7 +270,7 @@ jobs:
   # One crate ships binaries here: `mfsk-ffi`, the all-mode C ABI —
   # host only for now; Android arm64 deferred, see
   # `bindings/kotlin/` for the Kotlin binding and the cargo-ndk build in
-  # the meantime. See `docs/reference/LIBRARY.md` §8-9.
+  # the meantime. See `docs/reference/BINDINGS.md`.
   #
   # The esp32/esp32s3 tarballs that used to be built here came from
   # `mfsk-ffi-ft8`, which was retired: an ESP-IDF consumer had to write

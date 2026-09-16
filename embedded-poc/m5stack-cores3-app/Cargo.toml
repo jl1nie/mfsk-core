@@ -145,7 +145,7 @@ required-features = ["wspr"]
 # on this comment:
 #
 #   "Same LX7 LLVM regression workaround as sibling crates: opt-level=1
-#    avoids the f32-select code-gen bug in `mfsk-core::core::pipeline`."
+#    avoids the f32-select code-gen bug in `mfsk-core::engine::pipeline`."
 #
 # Tracing that to its source (`embedded-poc/m5stack-s3/Cargo.toml`) said
 # something different: the regression is at opt-level **"s"/"z"**, not

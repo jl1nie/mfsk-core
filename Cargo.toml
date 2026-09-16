@@ -14,7 +14,7 @@ exclude  = ["embedded-poc", "bench/wasm"]
 resolver = "2"
 
 # Single source of truth for the crate version. `mfsk-core`,
-# `mfsk-ffi`, and `mfsk-ffi-ft8` all pull this via `version.workspace
+# `mfsk-ffi`, and `mfsk-ffi-abi` all pull this via `version.workspace
 # = true` in their own `[package]` tables, so a release bump is one
 # edit here instead of three manually-synced literals (mfsk-ffi had
 # drifted to a stale 0.1.0 before this was introduced — see

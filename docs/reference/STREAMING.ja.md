@@ -10,7 +10,7 @@
 橋渡しする完全な実例。
 
 ライブラリ全体（トレイト階層、DSP プリミティブ、C ABI）については
-[LIBRARY.ja.md](LIBRARY.ja.md) を参照。本ドキュメントはそのうち §4 の
+[LIBRARY.ja.md](LIBRARY.ja.md) を参照。本ドキュメントはそのうち §2.4 の
 「ストリーミング配信」を深掘りし、非同期橋渡しの実例を追加したもの。
 
 ---
@@ -467,7 +467,7 @@ while let Some(msg) = stream.next().await {
 
 ## 6. 関連
 
-- [LIBRARY.ja.md](LIBRARY.ja.md) §4 —— ライブラリ API リファレンス内の
+- [LIBRARY.ja.md](LIBRARY.ja.md) §2.4 —— ライブラリ API リファレンス内の
   ストリーミング節、およびそれが属する `DecodeRequest` /
   `SniperRequest` ビルダ面。
 - `DecodeRequest::on_result` の doc コメント

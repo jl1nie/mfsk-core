@@ -36,7 +36,7 @@
 //! (10 GHz rainscatter), Q65-120E (6 m ionoscatter), Q65-300A
 //! (optical scatter) — chosen because WSJT-X ships real off-air
 //! reference recordings for exactly these three (see
-//! `docs/reference/LIBRARY.md` §0.4). This sweep intentionally
+//! `docs/reference/LIBRARY.md` §3.2). This sweep intentionally
 //! covers only what's shipped, not a hypothetical superset — same
 //! scoping call as `tests/jt65_sweep.rs`/`tests/jt9_sweep.rs`.
 //!
@@ -97,7 +97,7 @@
 //! (WSJT-X: 100%); Q65-60A -28 dB 47%→93%, -29 dB 7%→53%. This isn't
 //! a reason to silently fold AP into the no-hint `decode()` path (the crate's
 //! four decoder strategies stay deliberately separate,
-//! `docs/reference/LIBRARY.md` §3) — it's a usage note: an
+//! `docs/reference/LIBRARY.md` §3.4) — it's a usage note: an
 //! application wanting WSJT-X-equivalent behavior for CQ traffic
 //! should call the AP-hinted path with at least a `"CQ"` hint, not
 //! the plain one, the same way WSJT-X's own decoder always does

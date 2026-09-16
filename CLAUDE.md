@@ -6,9 +6,9 @@ the cross-crate map and workflow that's easy to forget between sessions.
 
 Read order for a cold start: this file, then `CONTRIBUTING.md` (testing
 philosophy, WSJT-X porting rules), then whichever of
-`docs/reference/LIBRARY.md` (host API, ~1700 lines) or
-`docs/reference/EMBEDDED.md` (no_std / fixed-point / FFI-to-C) the task
-lands in. `embedded-poc/CLAUDE.md` plus the per-board crate `CLAUDE.md`
+`docs/reference/LIBRARY.md` (Rust host API, ~1100 lines),
+`docs/reference/BINDINGS.md` (C / Kotlin / Swift) or
+`docs/reference/EMBEDDED.md` (no_std / fixed-point) the task lands in. `embedded-poc/CLAUDE.md` plus the per-board crate `CLAUDE.md`
 before touching hardware.
 
 ## What this repo is
@@ -79,10 +79,12 @@ nothing else — `ci.yml`'s path filter has a `bindings` output beside
 
 Everything else:
 
-- `docs/reference/` — the long-form manuals: `LIBRARY.md` (host API,
-  trait hierarchy, decode strategies, FFI), `EMBEDDED.md` (fixed-point
-  architecture, FFT extern contract, Q-format, per-protocol embedded
-  status), `STREAMING.md`, `UVPACKET.md`, and the two operator manuals
+- `docs/reference/` — the long-form manuals, split by audience since
+  2026-09-16: `LIBRARY.md` (Rust host API, trait hierarchy, decode
+  strategies), `BINDINGS.md` (the C ABI written from `mfsk.h`, plus
+  Kotlin and Swift), `EMBEDDED.md` (fixed-point architecture, FFT
+  extern contract, Q-format, per-protocol embedded status),
+  `STREAMING.md`, `UVPACKET.md`, and the two operator manuals
   `MANUAL_M5STACK_CORES3.md` / `MANUAL_M5STICKS3.md`. **Every file here
   has a `.ja.md` twin** — if you edit one, edit both, or say plainly that
   you didn't.
@@ -113,7 +115,7 @@ counts, slot length, sync blocks), and `Protocol` (which binds
 so the abstraction costs compile time and nothing else. Adding a protocol
 is a trait impl plus a registry line — FST4-60A landed without touching
 shared code. `CONTRIBUTING.md` "Adding a new protocol" and
-`LIBRARY.md` §2 are the step-by-steps.
+`LIBRARY.md` §5 are the step-by-steps.
 
 | module | contents |
 |---|---|
@@ -124,11 +126,13 @@ shared code. `CONTRIBUTING.md` "Adding a new protocol" and
 | `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list |
 
 **There is no `src/core/`. The shared module is `src/engine/`.**
-`CONTRIBUTING.md`'s layout block and its `crate::core::pipeline::…`
-snippet, and several `Cargo.toml` feature comments (`mfsk-core::core::fft`,
-`core::pipeline`, `core::scalar`), still use the old name; the source has
-zero `crate::core::` paths. Read those as `engine::`. Don't "fix" a build
-error by inventing a `core` module.
+The source has zero `crate::core::` paths and never had a `core`
+module under this name. `CONTRIBUTING.md`'s layout block, its
+`crate::core::pipeline::…` snippet and the `Cargo.toml` feature
+comments that still said `core::` were corrected 2026-09-16; only
+`CHANGELOG.md` and `docs/historical/` still carry the old spelling,
+where it is a historical record and correct as written. Don't "fix" a
+build error by inventing a `core` module.
 
 **`DecodeRequest` / `SniperRequest` (`msg::decode_request`) are the public
 decode API.** Builder-shaped: `.freq_hint()`, `.osd()`, `.strictness()`,
@@ -173,7 +177,7 @@ single-target; and it ran a *parallel, shallower* per-candidate ladder
 against 11 on the FT4 golden, measured. Both are gone: AP is now a rung
 on `process_candidate_basic`'s own ladder, reaching FT8, FT4 and every
 FST4 sub-mode, and `msg::pipeline_ap` is 96 lines of hypothesis
-generation with no engine of its own. Full writeup in `LIBRARY.md` §4.
+generation with no engine of its own. Full writeup in `docs/notes/DESIGN_RATIONALE.md` §3.
 
 **MSK144 is intentionally outside the `Protocol` trait** — it isn't FSK,
 and `msk144::decode::decode_slot` bypasses `engine::pipeline` by design.

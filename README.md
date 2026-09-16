@@ -95,7 +95,7 @@ transient-burst timing don't fit the static-slot model every other
 protocol here shares, so no ZST implements `Protocol` for it — its own
 `msk144::decode::decode_slot` driver bypasses `engine::pipeline`
 entirely by design (see
-[`docs/reference/LIBRARY.md` §0.5](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#05-generic-vs-bespoke-per-protocol)
+[`docs/reference/LIBRARY.md` §3.1](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#31-generic-vs-bespoke-per-protocol)
 for why — see the MSK144 row and its footnote in the generic-vs-bespoke
 table).
 [`PROTOCOLS`](https://docs.rs/mfsk-core/latest/mfsk_core/static.PROTOCOLS.html)
@@ -244,10 +244,10 @@ This is the same shape for FT8's LDPC(174,91) and JT65's
 Reed-Solomon(63,12) — only the boxes' contents change per protocol.
 See [Design Philosophy](#design-philosophy) for how that's expressed
 in code (a `Protocol` trait, not per-mode copy-paste),
-[`docs/reference/LIBRARY.md` §0.5](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#05-generic-vs-bespoke-per-protocol)
+[`docs/reference/LIBRARY.md` §3.1](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#31-generic-vs-bespoke-per-protocol)
 for a per-protocol table of exactly which boxes are shared vs. bespoke,
 and
-[`docs/reference/LIBRARY.md` §4](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#4-shared-primitives-core)
+[`docs/reference/LIBRARY.md` §6](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#6-engine-primitives)
 for the full data-flow diagram down to function level.
 
 ## Design Philosophy
@@ -285,7 +285,7 @@ FFT/resample/GFSK DSP. The rest is protocol-specific by necessity
 over GF(64) — and different message widths, 77- / 72- / 50-bit) or by
 how far each protocol has migrated onto the shared decode pipeline so
 far — currently FT4 and FST4; see
-[`docs/reference/LIBRARY.md` §0.5](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#05-generic-vs-bespoke-per-protocol)
+[`docs/reference/LIBRARY.md` §3.1](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#31-generic-vs-bespoke-per-protocol)
 for the per-protocol breakdown, which this paragraph is kept in sync
 with. In the Fortran codebase the *possible* commonality is expressed
 by copy-and-paste between per-mode source files; here it is expressed by

@@ -42,7 +42,7 @@
 //! convolutional Fano / Reed-Solomon / QRA over GF(64) — and different
 //! message widths, 77- / 72- / 50-bit) or by how far each protocol has
 //! migrated onto the shared decode pipeline so far — currently FT4
-//! and FST4; see `docs/reference/LIBRARY.md` §0.5 for the per-protocol
+//! and FST4; see `docs/reference/LIBRARY.md` §3.1 for the per-protocol
 //! breakdown this paragraph is kept in sync with. In the Fortran
 //! codebase the *possible* commonality is expressed by copy-and-paste
 //! between per-mode source files; here it is expressed by a small set

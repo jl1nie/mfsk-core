@@ -78,7 +78,7 @@ This crate is repositioned as the **demo / acoustic-fallback** path:
   slot shift while `best_n` stays at 0 (soft anchor; first
   confirmed-decode slot reclaims HWM via the existing path).
   Removes the "BtnA required" cold-start dead-end on quiet
-  bands. Helper lives at `mfsk_core::core::sync::bootstrap_dt_median`
+  bands. Helper lives at `mfsk_core::engine::sync::bootstrap_dt_median`
   and is shared with WebFT8.
 - **Phase 1 (UAC), Phase 2 (BLE CI-V), Phase 5 (ADIF), Phase 6
   (buttons), TX keying**: rolled forward to `m5stack-cores3-app`

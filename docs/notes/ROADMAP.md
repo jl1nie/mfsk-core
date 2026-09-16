@@ -57,7 +57,7 @@ Three tracks, at very different maturities:
    README's unsourced "~80% shared" claim) confirmed the doubt but not
    the diagnosis: the true-generic fraction measures 31.8% (strict,
    protocol-bound code excluded) / 47.7% (directory), not 80% — fixed
-   with a measured figure + methodology pointer to `LIBRARY.md` §0.5
+   with a measured figure + methodology pointer to `LIBRARY.md` §3.1
    (PR #290), plus a permanent `sharing_ratchet_selftest` regression
    guard (PR #291). The root cause wasn't faithfulness-driven
    duplication in general (WSJT-X itself repeats per-protocol code,

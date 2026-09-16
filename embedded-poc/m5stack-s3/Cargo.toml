@@ -43,7 +43,7 @@ harness = false
 [profile.release]
 # `opt-level = 1` mirrors the ESP32-S3 PoC: same Xtensa-Rust LLVM
 # regression at opt-level "s"/"z" with f32-select patterns. The
-# arithmetic-form workaround in `mfsk-core::core::pipeline` (FT4 SIC)
+# arithmetic-form workaround in `mfsk-core::engine::pipeline` (FT4 SIC)
 # dodges the trigger but keeping opt-level low keeps the ELF debuggable.
 opt-level = 1
 

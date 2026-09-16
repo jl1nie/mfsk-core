@@ -27,7 +27,7 @@ harness = false
 
 [profile.release]
 # Same LLVM workaround stance as sibling crates — opt-level=1 dodges
-# the f32-select regression in `mfsk-core::core::pipeline`, keeps the
+# the f32-select regression in `mfsk-core::engine::pipeline`, keeps the
 # ELF debuggable.
 opt-level = 1
 

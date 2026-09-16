@@ -489,7 +489,7 @@ while let Some(msg) = stream.next().await {
 
 ## 6. See also
 
-- [LIBRARY.md](LIBRARY.md) §4 — the streaming section in the wider API
+- [LIBRARY.md](LIBRARY.md) §2.4 — the streaming section in the wider API
   reference, and the `DecodeRequest` / `SniperRequest` builder surface
   it sits in.
 - `DecodeRequest::on_result` doc comment

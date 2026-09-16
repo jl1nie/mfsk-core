@@ -37,16 +37,22 @@ roundtrips for every protocol.
 ```
 mfsk-core/              — published library crate (crates.io)
   src/
-    core/               — protocol traits, DSP, sync, pipeline
-    fec/                — LDPC, convolutional/Fano, Reed-Solomon
-    msg/                — 77-bit / 72-bit / 50-bit message codecs
+    engine/             — protocol traits, DSP, sync, LLR, pipeline
+    fec/                — LDPC, convolutional/Fano, Reed-Solomon, QRA
+    msg/                — 77-bit / 72-bit / 50-bit codecs + DecodeRequest
     ft8/ ft4/ fst4/
-    wspr/ jt9/ jt65/    — per-protocol modules (feature-gated)
+    wspr/ jt9/ jt65/
+    q65/ msk144/        — per-protocol modules (feature-gated)
+    uvpacket/           — applied non-WSJT example
   tests/                — integration tests
 mfsk-ffi/               — C ABI wrapper, not published to crates.io
   src/lib.rs            — mfsk_* functions
   include/mfsk.h        — cbindgen-generated, committed
   examples/cpp_smoke/   — runnable C++ driver (part of CI)
+mfsk-ffi-abi/           — shared #[repr(C)] types the ABI re-emits
+hosttest/               — host-runnable half of the embedded app crates
+bindings/kotlin/        — JNI shim + Mfsk.kt (own CI job)
+bindings/swift/         — SwiftPM package over the same ABI (own CI job)
 .githooks/pre-commit    — local fmt + clippy fence
 .github/workflows/
   ci.yml                — lint + test + feature matrix + FFI + docs
@@ -80,7 +86,7 @@ a new LDPC-based mode:
 4. `impl Protocol for MyMode` — bind `type Fec = …;` and
    `type Msg = …;` to existing codecs (or add a new FEC under `fec/`).
 5. Optionally add `decode.rs` / `encode.rs` thin wrappers that call
-   into `crate::core::pipeline::decode_frame::<MyMode>` and the
+   into `crate::engine::pipeline::decode_frame::<MyMode>` and the
    synth helpers. The pipeline does not need to change.
 6. Feature-gate: `#[cfg(feature = "<mode>")]` in `src/lib.rs` and
    `Cargo.toml`.

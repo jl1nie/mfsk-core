@@ -45,6 +45,61 @@ Kotlin **and Swift** bindings; and Windows/Android cross-compilation
 checked on every PR. The Swift package is verified by running its own
 suite on a Mac rather than by CI, which still has Linux runners only.
 
+### Documentation
+
+- **The reference manuals are split by audience, and the C ABI is
+  rewritten from the header.** `LIBRARY.md` had grown 1667 → 2138 lines
+  in a week across 16 commits that added 578 lines and removed 96;
+  every PR appended its section and nothing was retired. With 0.11.0's
+  breaking FFI rewrite that left §8 — the section this CHANGELOG points
+  C consumers at as "the map" — wrong in both directions: ~20 documented
+  symbols absent from `mfsk-ffi/include/mfsk.h` (`mfsk_decoder_new`,
+  `mfsk_decode_options_new` and its eight setters,
+  `mfsk_decode_{i16,f32}_sniper`, `mfsk_result_list_free`,
+  `mfsk_samples_free`, `MfskProtocol`, `MfskResultList`, `MfskSamples`)
+  and ~40 real ones undocumented, including 13 of the 14
+  `mfsk_session_*` functions. `mfsk_session` appeared three times in
+  2138 lines.
+
+  New `docs/reference/BINDINGS.md` (+ `.ja.md`) is written from the
+  header: session lifecycle, `MfskDecodeParams` / `MfskDecode` field by
+  field, streaming capture, transmit, introspection with the capability
+  bits, the bespoke per-mode entry points, a pre-v2 → v2 porting table,
+  and a grouped index covering all 63 exported functions.
+
+  `LIBRARY.md` is the Rust API reference again (2138 → 1081 lines),
+  ordered for lookup: a table of contents, the runnable FT8 example
+  moved from line 1249 to the top, and `DecodeRequest`/`SniperRequest`
+  as a method table rather than one 30-line bullet.
+
+  `EMBEDDED.md` drops two engineering diaries and a retired crate
+  (2009 → 674). The 782-line FST4 attempt log and the 285-line FT4 one
+  move to `FST4_BENCHMARK.md` §17 and `FT4_BENCHMARK.md` §50; 266 lines
+  documenting `mfsk-ffi-ft8` — named 52 times per language though the
+  crate was removed in 0.11.0 — become a short account of the Rust shim
+  an ESP-IDF consumer actually needs. `## Where to go next` moves from
+  line 1985 of 2009 to the top. A per-protocol embedded status table is
+  new: FT8, FST4, FT4 and WSPR all decoding off the air.
+
+  `docs/notes/DESIGN_RATIONALE.md` collects the argued passages with
+  their measurements; `UAC_BRINGUP_CORES3.md` keeps #163's closed
+  bring-up checklist.
+
+  Both `.ja.md` twins follow, heading for heading. **`on_result`
+  appeared ten times in `LIBRARY.md` and zero times in
+  `LIBRARY.ja.md`** — streaming delivery had never been translated, so
+  a Japanese reader could not learn from that document that it exists.
+
+  Also corrected across the tree: dependency snippets saying 0.8;
+  `SniperRequest::<Ft4>` still promised to work "the same way" when
+  `SupportsSniper` is implemented for `Ft8` alone; the workspace table
+  listing `mfsk-ffi-ft8` as live and omitting `hosttest/mfsk-app-shared`;
+  a module tree missing six `engine/` files; feature tables omitting
+  every no_std and FFT flag; and `CONTRIBUTING.md`'s layout block plus
+  four `Cargo.toml` comments still naming a `core` module that does not
+  exist. Section-number citations in `src/`, `tests/`, `release.yml`,
+  `README.md` and `CLAUDE.md` are renumbered to match.
+
 ### Fixed
 
 - **A grid correction the gap could not hold was applied twice** (#376,

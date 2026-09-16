@@ -87,7 +87,7 @@ non-WSJT protocols the natural way to use `mfsk-core` is as a thin
 library of FEC + DSP + channel-test infrastructure underneath your
 own TX/RX pipeline — exactly the way `uvpacket` itself uses it.
 
-`docs/reference/LIBRARY.md` §10.1 summarises the same dual-probe view from
+`docs/reference/LIBRARY.md` §3.1 summarises the same dual-probe view from
 the trait-design side, and is a one-paragraph companion to this
 section.
 
@@ -115,7 +115,7 @@ they exist only to satisfy the trait signature and the
 `protocol_invariants` test, and are never consulted by
 [`tx::encode`] or `rx::decode_*`. This is documented at
 [`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs)
-and [`docs/reference/LIBRARY.md`](LIBRARY.md) §10.1 as a scope-boundary
+and [`docs/reference/LIBRARY.md`](LIBRARY.md) §3.1 as a scope-boundary
 trade-off rather than disguised.
 
 The crate ships **only the modem**:

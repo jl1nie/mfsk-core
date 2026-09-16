@@ -36,11 +36,11 @@ full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65
 # round-trip.
 serde        = ["dep:serde"]
 
-# FFT backend selection. `mfsk-core::core::fft::FftPlanner` is the
+# FFT backend selection. `mfsk_core::engine::fft::FftPlanner` is the
 # trait every decode-side caller talks to; one of these features must
 # be on whenever decode-side code is compiled (host gets rustfft;
 # embedded targets bring their own backend through the extern Rust
-# factory `mfsk_core_make_default_fft_planner` — see core::fft docs).
+# factory `mfsk_core_make_default_fft_planner` — see engine::fft docs).
 fft-rustfft  = ["std", "dep:rustfft"]
 fft-extern   = ["alloc"]
 
@@ -67,7 +67,7 @@ dotprod-extern = []
 # but only 9/18 with Q3i8. The active hot-loop type has been Q11i16
 # (i16, ±16, ~1/2048 LSB, ~12 KB BP scratch) since the LlrScalar
 # trait unification in `a6425ee` (2026-05-02, shipped 0.6.2). Q3i8
-# stays in `core::scalar` for the comparison path.
+# stays in `engine::scalar` for the comparison path.
 #
 # **`fixed-point` implies `nstep-half`** (Phase 1.7.7b, 2026-05-17).
 # The two were independent features for historical reasons but are

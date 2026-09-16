@@ -429,7 +429,7 @@ mod sharing_ratchet_selftest {
     //!
     //! This is the ratchet for that: it doesn't require every
     //! protocol adopt every mechanism (much of the divergence is
-    //! inherent — see `docs/reference/LIBRARY.md` §0.5, the source of
+    //! inherent — see `docs/reference/LIBRARY.md` §3.1, the source of
     //! truth this table is kept in sync with), but it fails loudly if
     //! a protocol that *currently* uses a shared mechanism silently
     //! stops — the same silent-regression shape `golden_coverage_selftest`
@@ -445,9 +445,9 @@ mod sharing_ratchet_selftest {
     //! itself needs updating alongside whatever renamed the thing.
     //!
     //! **If you land a new adoption**: update the relevant
-    //! `EXPECTED_ADOPTERS` list here, `docs/reference/LIBRARY.md` §0.5,
+    //! `EXPECTED_ADOPTERS` list here, `docs/reference/LIBRARY.md` §3.1,
     //! and the measured-sharing-percentage paragraphs in `README.md` /
-    //! `lib.rs` (`docs/reference/LIBRARY.md` §0.5 is the one table all
+    //! `lib.rs` (`docs/reference/LIBRARY.md` §3.1 is the one table all
     //! three of those should trace back to). This test does not fail
     //! when adoption *increases* — only when it decreases — so
     //! updating those is on the honor system, not enforced here.
@@ -587,7 +587,7 @@ mod sharing_ratchet_selftest {
              evidence in their source: {regressed:?}. If this is intentional (the \
              protocol moved off the shared mechanism for a documented reason), \
              remove it from this test's expected-adopters list and update \
-             `docs/reference/LIBRARY.md` §0.5 to match. If it's accidental, this \
+             `docs/reference/LIBRARY.md` §3.1 to match. If it's accidental, this \
              is exactly the silent-regression shape this test exists to catch."
         );
     }
