@@ -188,9 +188,16 @@ It therefore doesn't appear in `PROTOCOLS` or `protocol_invariants.rs`.
 That is an architectural decision, not a gap to close.
 
 `tests/protocol_invariants.rs` runs one generic
-`assert_protocol_invariants::<P>` over every wired ZST (11 with `full`;
-uvpacket adds four more) and pins ~25 trait-level invariants. A new
-protocol gets one line there.
+`assert_protocol_invariants::<P>` over every wired ZST — **24 of them**:
+20 WSJT-family, plus `uvpacket`'s four — and pins ~25 trait-level
+invariants. A new protocol gets one line there.
+
+(This used to say "11 with `full`; uvpacket adds four more". Those are
+the **`#[test]` function** counts, not ZSTs — the file has 15 test
+functions driving 24 `assert_protocol_invariants::<P>` calls. Stated as
+ZSTs it was wrong, and it was copied into `LIBRARY.md` §8.2 verbatim
+before a review caught it. Corrected in PR #378; count with
+`grep -c 'assert_protocol_invariants::<' mfsk-core/tests/protocol_invariants.rs`.)
 
 ## Feature flags — the ones that bite
 
