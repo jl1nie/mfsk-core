@@ -195,7 +195,7 @@ Feature リファレンス:
 |---|---|---|
 | `std` | `std::env`、`std::time::Instant` を取り込む。rustfft からは分離。 | std がある esp-idf-svc 系ターゲット。bare-metal では任意。 |
 | `alloc` | `extern crate alloc` + Vec / Box。 | 全 decode パス。 |
-| `fft-extern` | `mfsk_core_make_default_fft_planner` extern fn (i16 用 `_planner16` も) 経由の FFT バックエンド。 | 任意の組込ターゲット。 |
+| `fft-extern` | `mfsk_core_make_default_fft_planner` extern fn (i16 用 `_planner_16` も) 経由の FFT バックエンド。 | 任意の組込ターゲット。 |
 | `fft-rustfft` | rustfft を FFT バックエンドに。 | Host 専用。 |
 | `fixed-point` | 組込整数パイプライン: u16 spectrogram + i16 内部 DFT + Q11i16 LLR + 整数 NMS BP。`nstep-half` を含意。(0.5.x は `Q3i8` だったが、host fixed-point + rustfft で `qso3_busy.wav` の recall が f32 16/18 → Q3i8 9/18 と落ちる LLR 解像度律速が判明、0.6.2 で `Q11i16` に拡張。`Q3i8` 型は比較経路用に `engine::scalar` に残置。) | 任意の組込ターゲット — host f32 に近い recall (1/2048 LSB)、PSRAM 帯域半減、~12 KB BP scratch (Q11i16、0.6.2 以降)。 |
 | `nstep-half` | spectrogram カラムレートを NSTEP = NSPS/2 (WSJT-X 忠実な NSPS/4 でなく)。 | `fixed-point` で自動有効。host ビルドで組込パスを明示的に simulate する以外では独立に enable しない。 |
@@ -224,7 +224,7 @@ pub extern "Rust" fn mfsk_core_make_default_fft_planner()
 }
 
 #[unsafe(no_mangle)]
-pub extern "Rust" fn mfsk_core_make_default_fft_planner16()
+pub extern "Rust" fn mfsk_core_make_default_fft_planner_16()
     -> Box<dyn mfsk_core::engine::fft::FftPlanner16>
 {
     Box::new(MyEspDspPlanner16::new())
@@ -342,10 +342,11 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE mfsk_rust)
 FT8 専用シムより大きく、session/stream の機構も引き込むので、単一
 プロトコルの MCU ビルドなら手書きシムの方が普通は小さい。
 
-> `embedded-poc/idf-component/README.md` は今も退役した
-> `mfsk-ffi-ft8` を前提に書かれている。Rust シムが*なぜ*必要かの説明と
-> CMake コンポーネントの形は今も正しいが、そこに出てくるクレート名・
-> feature 名・シンボル名は正しくない。
+[`embedded-poc/idf-component/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/embedded-poc/idf-component/README.md)
+がこれを詳しく書いている — シムの `Cargo.toml`、CMake コンポーネント、
+ビルド手順、そしてリンク方法2種。ビルド可能なスケルトンではなく
+ドキュメントである点に注意: かつて同梱していたファイル群は
+`mfsk-ffi-ft8` 前提で書かれており、移行されなかった。
 
 ### Streaming capture: I2S / USB Audio → 12 kHz
 

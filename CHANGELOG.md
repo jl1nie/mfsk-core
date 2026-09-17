@@ -47,6 +47,32 @@ suite on a Mac rather than by CI, which still has Linux runners only.
 
 ### Documentation
 
+- **The FFT extern symbol was documented under the wrong name, and the
+  ESP-IDF template still described a retired crate.** Both halves of the
+  embedded linking contract were wrong in ways a consumer only finds at
+  link time.
+
+  `EMBEDDED.md` and its twin spelled the i16 planner factory
+  `mfsk_core_make_default_fft_planner16`; the symbol
+  `engine::fft::default_planner_16` actually looks up — and that
+  `embedded-shared/src/esp_dsp_fft.rs` defines — is
+  `mfsk_core_make_default_fft_planner_16`, with an underscore. Copying
+  the documented block gave an undefined-symbol error with nothing
+  naming why. Four sites, two languages.
+
+  `embedded-poc/idf-component/README.md` was written around
+  `mfsk-ffi-ft8`, retired in 0.11.0, and described a file tree
+  (`CMakeLists.txt`, `main/`, `components/`, `shim/`) that no longer
+  exists — the directory is that README alone. It is rewritten against
+  the current shape: why a Rust staticlib shim is required whatever you
+  link (`extern "Rust"` and `Box<dyn Trait>` are not things C can
+  define), the two linking options and when each is smaller, the shim's
+  `Cargo.toml`, the CMake `IMPORTED` component with the
+  `espressif__esp-dsp` requirement that makes the ASM kernels reachable,
+  and the `-C panic=abort` the Xtensa build needs. It now says plainly
+  that it is documentation rather than a buildable skeleton, so nobody
+  goes looking for the files.
+
 - **The reference manuals are split by audience, and the C ABI is
   rewritten from the header.** `LIBRARY.md` had grown 1667 → 2138 lines
   in a week across 16 commits that added 578 lines and removed 96;

@@ -1,105 +1,176 @@
-# mfsk-ffi-ft8 + ESP-IDF (C/C++) integration template
+# mfsk-core + ESP-IDF (C/C++) integration template
 
-A worked example showing how to drop FT8 decoding into a non-Rust
-ESP-IDF project, via the [`mfsk-ffi-ft8`](../../mfsk-ffi-ft8/) crate.
-The skeleton in this directory is intentionally minimal — it shows
-the wiring, not a finished application.
+How to drop an mfsk-core decoder into a non-Rust ESP-IDF project.
 
+**This directory is documentation only.** It used to describe a
+skeleton of real files — `CMakeLists.txt`, `main/`, `components/`,
+`shim/` — built around the `mfsk-ffi-ft8` crate. That crate was retired
+in 0.11.0 and the skeleton was never carried forward, so what follows is
+the wiring written out rather than a tree you can `idf.py build`. The
+three production boards under `embedded-poc/` are the working examples;
+`embedded-poc/embedded-shared/src/esp_dsp_fft.rs` is the file to copy
+from.
+
+## Why a Rust shim is needed, whatever you link
+
+On the embedded path `mfsk-core` takes its FFT backend through an
+**`extern "Rust"` symbol**:
+
+```rust
+#[unsafe(no_mangle)]
+pub extern "Rust" fn mfsk_core_make_default_fft_planner()
+    -> Box<dyn mfsk_core::engine::fft::FftPlanner>
+{
+    Box::new(EspDspPlanner::new())
+}
 ```
-idf-component/
-├── README.md              ← this file
-├── CMakeLists.txt         ← esp-idf project root
-├── sdkconfig.defaults     ← bigger main task stack + heap perf
+
+and, if you enable the i16 spectrogram path, a second one —
+`mfsk_core_make_default_fft_planner_16`, returning
+`Box<dyn FftPlanner16>`. Note the underscore before `16`; the linker
+will not forgive a near miss.
+
+**Pure C cannot define these.** `extern "Rust"` is a different ABI with
+different name mangling, and `Box<dyn Trait>` is not a C type. So every
+non-Rust integration links at least one small Rust staticlib. Missing
+the symbol is a link-time error, not a runtime surprise.
+
+(Before 0.8.0 there was a third symbol, `mfsk_core_dot_q15_i32`, for
+the legacy BASIS per-symbol DFT. Issue #162 removed it once the
+Goertzel fill path made it dead weight — new integrations don't
+implement it. See
+[`EMBEDDED.md`](../../docs/reference/EMBEDDED.md#per-symbol-dft-goertzel).)
+
+## Two ways to link, and which to pick
+
+Once you are writing Rust anyway, the C ABI stops paying for itself —
+which is why `mfsk-ffi-ft8` was retired and why all three boards here
+call `mfsk-core` directly.
+
+**A. Shim exports your own `extern "C"` entry points** — recommended
+for a single-protocol MCU build. The shim depends on `mfsk-core`,
+satisfies the FFT symbol, and exposes exactly the functions your
+`main.c` needs. Smallest binary, and you choose the signatures.
+
+**B. Link `mfsk-ffi`** — the full C ABI over every protocol. Build it
+as a staticlib for the Xtensa target and you get the session/stream API
+described in [`BINDINGS.md`](../../docs/reference/BINDINGS.md). You
+*still* need a Rust shim for the FFT symbol. Larger, and it pulls
+machinery a one-protocol build won't use, but nothing has to be
+hand-written.
+
+## Layout
+
+```text
+your-app/                      # esp-idf project root
+├── CMakeLists.txt
+├── sdkconfig.defaults         # bigger main task stack + heap perf
 ├── main/
 │   ├── CMakeLists.txt
-│   └── main.c             ← FT8 decode demo
-├── components/
-│   └── mfsk_ft8/
-│       ├── CMakeLists.txt ← imports the prebuilt .a + header
-│       ├── include/       ← (gitignored — populated by build step 1)
-│       └── lib/           ← (gitignored — populated by build step 2)
-└── shim/                  ← tiny Rust crate that bridges esp-dsp
-    ├── Cargo.toml
-    ├── .cargo/
-    │   └── config.toml    ← target = xtensa-esp32-espidf, panic=abort
+│   └── main.c                 # your application
+├── components/mfsk/
+│   ├── CMakeLists.txt         # imports the prebuilt .a + header
+│   ├── include/mfsk_shim.h    # your shim's C header (option A), or
+│   │                          # a copy of mfsk-ffi/include/mfsk.h (B)
+│   └── lib/libmfsk_shim.a     # from the Rust build below
+└── shim/
+    ├── Cargo.toml             # depends on mfsk-core (A) or mfsk-ffi (B)
+    ├── .cargo/config.toml     # target + panic=abort
     └── src/
-        ├── lib.rs         ← exports `mfsk_core_make_default_fft_planner`
-        │                    (extern Rust)
-        └── esp_dsp_fft.rs ← esp-dsp ASM bridges (vendored copy of
-                              embedded-shared/src/esp_dsp_fft.rs)
+        ├── lib.rs             # extern "C" entry points + the FFT symbol
+        └── esp_dsp_fft.rs     # copied from embedded-shared/
 ```
 
-## Why a Rust shim is needed
+`shim/Cargo.toml` for option A:
 
-`mfsk-ffi-ft8` calls into `mfsk-core` which on the embedded path
-takes its FFT backend through **one `extern "Rust"` symbol**:
+```toml
+[lib]
+crate-type = ["staticlib"]
 
-- `mfsk_core_make_default_fft_planner()` — returns a boxed
-  `Box<dyn FftPlanner>` for the protocol's FFT calls.
+[dependencies]
+mfsk-core = { path = "../../../mfsk-core", default-features = false,
+              features = ["alloc", "ft8", "fft-extern", "fixed-point"] }
+```
 
-(Prior to 0.8.0 there was a second symbol,
-`mfsk_core_dot_q15_i32`, for the legacy BASIS per-symbol DFT path —
-removed in issue #162 once the Goertzel fill path made it dead
-weight. New integrations don't need to implement it.)
-
-Pure-C code can't define `extern "Rust"` symbols (different name
-mangling, ABI assumptions). So we wrap the ESP-IDF `esp-dsp`
-component in a tiny Rust shim crate (`shim/`) that:
-
-1. Depends on `mfsk-ffi-ft8` (which carries the FT8 decoder).
-2. Implements the extern Rust symbol by calling esp-dsp's
-   `dsps_fft2r_*`.
-3. Compiles to a `staticlib` (`libft8_shim.a`) that the ESP-IDF
-   `mfsk_ft8` component imports.
-
-End result: one `.a` to link, with the FFT/dot-product backend baked
-in. The C app just calls `mfsk_ft8_decode_i16(...)` and gets results.
+`fixed-point` implies `nstep-half` and is what the boards ship; see
+[`EMBEDDED.md`](../../docs/reference/EMBEDDED.md#cargo-features-for-embedded-use)
+for the rest of the feature choices.
 
 ## Build flow
 
-### 1. Build the Rust shim once per target / mfsk-core change
+### 1. Build the Rust shim, once per target or mfsk-core change
 
 ```sh
-cd embedded-poc/idf-component/shim
+cd shim
+source ~/export-esp.sh                      # Xtensa toolchain
 
-# Source the Xtensa toolchain (if not already done)
-source ~/export-esp.sh
+RUSTFLAGS="-C panic=abort" \
+cargo build --release --target xtensa-esp32s3-espidf   # or xtensa-esp32-espidf
+# → target/xtensa-esp32s3-espidf/release/libmfsk_shim.a
 
-# Build for ESP32 (Core2 / classic LX6)
-cargo build --release --target xtensa-esp32-espidf
-# → target/xtensa-esp32-espidf/release/libft8_shim.a
-
-# Copy artifacts into the ESP-IDF component layout
-cp target/xtensa-esp32-espidf/release/libft8_shim.a \
-   ../components/mfsk_ft8/lib/
-cp ../../../mfsk-ffi-ft8/include/mfsk_ft8.h \
-   ../components/mfsk_ft8/include/
+cp target/xtensa-esp32s3-espidf/release/libmfsk_shim.a \
+   ../components/mfsk/lib/
 ```
 
-### 2. Build the ESP-IDF project
+`-C panic=abort` is required — Rust unwinding panics need `std`.
+ESP-IDF projects usually put it in `.cargo/config.toml` instead:
+
+```toml
+[target.xtensa-esp32s3-espidf]
+rustflags = ["-C", "link-arg=-nostartfiles", "-C", "panic=abort"]
+```
+
+For option B, copy `mfsk-ffi/include/mfsk.h` into
+`components/mfsk/include/` as well — it is cbindgen-generated and
+committed, so it needs no build step of its own.
+
+### 2. Import the archive as a component
+
+`components/mfsk/CMakeLists.txt`:
+
+```cmake
+idf_component_register(INCLUDE_DIRS "include"
+                       REQUIRES espressif__esp-dsp)
+add_library(mfsk_rust STATIC IMPORTED)
+set_target_properties(mfsk_rust PROPERTIES
+    IMPORTED_LOCATION ${CMAKE_CURRENT_LIST_DIR}/lib/libmfsk_shim.a)
+target_link_libraries(${COMPONENT_LIB} INTERFACE mfsk_rust)
+```
+
+`REQUIRES espressif__esp-dsp` is what makes the ASM FFT kernels
+(`dsps_fft2r_fc32_ae32`, `dsps_fft2r_sc16_ae32`) available to the shim.
+
+### 3. Build the ESP-IDF project
 
 ```sh
-cd embedded-poc/idf-component
-idf.py set-target esp32
+idf.py set-target esp32s3        # or esp32
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-## What this template does NOT do
+For capturing a session log, prefer
+`embedded-poc/scripts/flash-monitor.sh` — see `embedded-poc/CLAUDE.md`
+for the two foot-guns it avoids.
 
-- Audio I/O — `main.c` decodes a baked-in WAV. Wire your I2S /
-  microphone in your fork.
+## What this template does NOT cover
+
+- Audio I/O — I2S / USB Audio capture and the 12 kHz ring are yours.
+  `engine::dsp::resample` converts sample rates;
+  `embedded-poc/embedded-shared/src/pipeline.rs` is the worked example.
 - Time / NTP / GPS sync — slot alignment is the caller's job.
 - Display, networking, OTA — out of scope.
 
 These are the same explicit non-goals as
-[`docs/reference/EMBEDDED.md`](../../docs/reference/EMBEDDED.md): mfsk-core ships the
-decoder, the integration template ships the wiring, the application
-is your code.
+[`EMBEDDED.md`](../../docs/reference/EMBEDDED.md#what-we-dont-ship):
+mfsk-core ships the decoder, this page ships the wiring, the
+application is your code.
 
 ## Other targets
 
-For RP2040 / RP2350-Hazard3 / Cortex-M, replace `shim/`'s
-`esp_dsp_fft.rs` with an FFT bridge to your DSP library
-(CMSIS-DSP / arm-dsp, etc.) and adjust `shim/.cargo/config.toml`'s
-target. The mfsk-ffi-ft8 / ESP-IDF component wiring is the same.
+For RP2040 / RP2350-Hazard3 / Cortex-M, replace the copied
+`esp_dsp_fft.rs` with an FFT bridge to your DSP library (CMSIS-DSP,
+`microfft`, …) and change the target in `.cargo/config.toml`. Nothing
+else about the wiring differs. Those targets are build-verified at best
+— see
+[`EMBEDDED.md`](../../docs/reference/EMBEDDED.md#other-targets--whats-verified-vs-aspirational)
+for what has and has not actually been run.

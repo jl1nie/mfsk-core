@@ -201,7 +201,7 @@ Feature reference:
 |---|---|---|
 | `std` | Pulls in `std::env`, `std::time::Instant`. Decoupled from rustfft. | esp-idf-svc-style targets that have std. Optional on bare-metal. |
 | `alloc` | `extern crate alloc` + Vec / Box. | All decode paths. |
-| `fft-extern` | FFT backend via `mfsk_core_make_default_fft_planner` extern fn (and the i16 variant `_planner16`). | Any embedded target. |
+| `fft-extern` | FFT backend via `mfsk_core_make_default_fft_planner` extern fn (and the i16 variant `_planner_16`). | Any embedded target. |
 | `fft-rustfft` | rustfft as the FFT backend. | Host only. |
 | `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT. Implies `nstep-half`. **No longer implies the Q11i16 LLR/BP hot loop** — that is `fixed-point-llr`, opt-in since #349, because on an LX7 the i16 BP measures 0.85× f32 (22 813 vs 19 456 µs) and what `fixed-point` actually defends is the spectrogram's 702 → 351 KB. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `engine::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
 | `nstep-half` | NSTEP = NSPS/2 (vs WSJT-X-faithful NSPS/4) for the spectrogram column rate. | Auto-enabled by `fixed-point`. Don't enable independently on a host build unless you're explicitly simulating the embedded path. |
@@ -232,7 +232,7 @@ pub extern "Rust" fn mfsk_core_make_default_fft_planner()
 }
 
 #[unsafe(no_mangle)]
-pub extern "Rust" fn mfsk_core_make_default_fft_planner16()
+pub extern "Rust" fn mfsk_core_make_default_fft_planner_16()
     -> Box<dyn mfsk_core::engine::fft::FftPlanner16>
 {
     Box::new(MyEspDspPlanner16::new())
@@ -354,10 +354,11 @@ protocol — see [`BINDINGS.md`](BINDINGS.md). It is larger than an
 FT8-only shim and pulls the session/stream machinery, so for a
 single-protocol MCU build a hand-written shim is usually smaller.
 
-> `embedded-poc/idf-component/README.md` still describes the retired
-> `mfsk-ffi-ft8` crate. Its explanation of *why* the Rust shim is
-> needed, and its CMake component shape, remain correct; the crate,
-> feature and symbol names in it do not.
+[`embedded-poc/idf-component/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/embedded-poc/idf-component/README.md)
+writes this out at length — the shim's `Cargo.toml`, the CMake
+component, the build flow, and both linking options. It is
+documentation rather than a buildable skeleton: the files it used to
+ship were built around `mfsk-ffi-ft8` and were not carried forward.
 
 ### Streaming capture: I2S / USB Audio → 12 kHz
 
