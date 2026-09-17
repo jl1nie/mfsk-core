@@ -154,9 +154,9 @@ absence. **The phantom-prone code lives in these non-default strategies**
 #243 in `__staged_sic`, #253 in `.sic_early()`), so a new strategy ships
 with its precision guard in the same PR.
 
-**Sniper mode is an FT8-only roofing-filter mode; AP is not part of it.**
-This has been misread more than once, each time costing a design
-decision, so: `SniperRequest`'s ±250 Hz window exists because the
+**Sniper mode is an FT8-only roofing-filter mode. The window is what
+makes it one — not the hint.** This has been misread more than once,
+each time costing a design decision, so: `SniperRequest`'s ±250 Hz window exists because the
 operator narrowed the transceiver's *analogue* roofing filter (FTDX101MP,
 FTDX10 — the few radios offering one at ~500 Hz) and pointed it at a DX
 station whose carrier is already known. The audio arriving is already
@@ -171,6 +171,12 @@ alone** (2026-09-13). The wide-band path is the main path for every mode
 here; if it is not WSJT-X-faithful without a sniper, that is a bug in the
 wide-band path. FT4 is a contest protocol whose premise is working a full
 band, and FST4 narrows through its own DDC channelizer instead.
+
+**`.ap_hint()` does work on `SniperRequest`** — it is set, carried, and
+passed to `decode_sniper_inner`. What follows is about where AP *came
+from*, not whether it is available there; an earlier phrasing here read
+as "AP is unavailable in sniper mode", which is false and contradicts
+`LIBRARY.md` §2.2's own method table.
 
 **A-priori decoding is a general option that got coupled to sniper by
 accident.** The AP engine broke out of its candidate loop on

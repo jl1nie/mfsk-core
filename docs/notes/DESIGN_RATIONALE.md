@@ -73,6 +73,12 @@ and wrong for a narrowed receiver.
 AP locks high-confidence bits and lowers the threshold by 1–3 dB.
 Nothing about it is narrow-band.
 
+**This section is about provenance, not availability.**
+`SniperRequest::ap_hint()` works today and is passed through to the
+decoder; so does `DecodeRequest::ap_hint()`, for FT8, FT4 and every FST4
+sub-mode. What was removed was the *coupling* below, not AP's presence
+on the sniper builder.
+
 But AP used to live in a parallel engine
 (`msg::pipeline_ap::decode_sniper_ap`) that the sniper was the only
 caller of, and that engine broke out of its candidate loop on

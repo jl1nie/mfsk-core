@@ -188,14 +188,22 @@ for r in &results {
 There is no SIC variant — a sniper search is inherently
 single-candidate.
 
-**Sniper mode is a roofing-filter mode, and AP is not part of it.**
-The ±250 Hz window exists because the operator narrowed the
-transceiver's *analogue* roofing filter — the Yaesu FTDX101MP and
-FTDX10 are the usual examples at ~500 Hz — and pointed it at a station
-whose carrier is already known. The audio arriving is already
-band-limited; the decoder is matching the hardware. It is **not** a
-general "hunt one known station" convenience, and `.ap_hint()` is a
-separate, wider feature that also reaches `DecodeRequest`.
+**What makes this sniper mode is the window, not the hint.** The
+±250 Hz search exists because the operator narrowed the transceiver's
+*analogue* roofing filter — the Yaesu FTDX101MP and FTDX10 are the
+usual examples at ~500 Hz — and pointed it at a station whose carrier
+is already known. The audio arriving is already band-limited; the
+decoder is matching the hardware. It is **not** a general "hunt one
+known station" convenience.
+
+**`.ap_hint()` works here** — it is in the table above, and
+`SniperRequest`'s `.decode()` passes it through to the decoder. But AP
+is orthogonal to the window, not part of what sniper *is*: the same
+hint reaches the wide-band `DecodeRequest` for FT8, FT4 and every FST4
+sub-mode. The two were once coupled — AP was reachable only through an
+engine whose candidate loop broke on `if has_ap`, so *holding a hint*
+was what made a search single-target — and that coupling is what was
+removed, not AP's availability here.
 
 FT4 and FST4 sniper entry points existed until 2026-09-13 and were
 removed: the wide-band path is the main path for every mode here, and

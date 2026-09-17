@@ -47,6 +47,37 @@ suite on a Mac rather than by CI, which still has Linux runners only.
 
 ### Documentation
 
+- **"AP is not part of it" read as "AP does not work here", and three
+  source doc comments still described the pre-refactor world.** Raised by
+  a reader who could not work out why sniper mode had no AP. It does:
+  `SniperRequest::ap_hint()` exists, is gated on `SupportsSniper` plus
+  `P::Msg: WsjtApCompatible`, and `__sniper` passes `req.ap_hint` into
+  `decode_sniper_inner`. `LIBRARY.md` §2.2's own method table listed it
+  sixty lines above the sentence denying it.
+
+  The sentence meant "AP is not part of what sniper *is*" — the ±250 Hz
+  window is what makes it the sniper, and AP is an orthogonal option that
+  also reaches the wide-band `DecodeRequest`. Reworded in `LIBRARY.md`,
+  its twin and `CLAUDE.md` to say that, with the availability stated
+  outright. `DESIGN_RATIONALE.md` §3 gains a line saying it is about
+  where AP came from, not whether it is available.
+
+  The 2026-09-13 refactor also left four doc comments in
+  `msg/decode_request.rs` describing the world before it:
+  `SupportsWideBandAp`'s own doc said "FT8 only" while the trait is
+  implemented for `Ft8`, `Ft4` and every FST4 sub-mode; it and
+  `DecodeRequest::ap_hint` both routed FT4/FST4 to AP "through
+  `SniperRequest::ap_hint`", which `SupportsSniper` being FT8-only makes
+  impossible; `SniperRequest::ap_hint` called its own location "an
+  accident of implementation ... for FT4/FST4", protocols that cannot
+  reach that builder. That first comment is what this crate's own
+  documentation pass read when it wrote `.ap_hint()` as FT8-only in the
+  method table — the stale comment propagated once before a review caught
+  it, and would have again.
+
+  The sniper-plus-AP path is pinned by `LIBRARY.md` §2.2's doctest, which
+  builds a `SniperRequest`, sets `.ap_hint()` and asserts a decode.
+
 - **The FFT extern symbol was documented under the wrong name, and the
   ESP-IDF template still described a retired crate.** Both halves of the
   embedded linking contract were wrong in ways a consumer only finds at
