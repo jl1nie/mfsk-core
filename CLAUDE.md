@@ -126,13 +126,16 @@ shared code. `CONTRIBUTING.md` "Adding a new protocol" and
 | `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list |
 
 **There is no `src/core/`. The shared module is `src/engine/`.**
-The source has zero `crate::core::` paths and never had a `core`
-module under this name. `CONTRIBUTING.md`'s layout block, its
-`crate::core::pipeline::…` snippet and the `Cargo.toml` feature
-comments that still said `core::` were corrected 2026-09-16; only
-`CHANGELOG.md` and `docs/historical/` still carry the old spelling,
-where it is a historical record and correct as written. Don't "fix" a
-build error by inventing a `core` module.
+The source has zero `crate::core::` paths. The stale `core::` spellings
+in `CONTRIBUTING.md` and in the `Cargo.toml` feature comments were
+corrected in PR #378; `CHANGELOG.md` and `docs/historical/` still carry
+it, where it is a historical record and correct as written. (Rust's own
+`core::sync::atomic` is everywhere in `src/` and is a different thing —
+don't "correct" it.) Don't "fix" a build error by inventing a `core`
+module.
+
+To check: `grep -rn 'core::pipeline\|core::fft\|core::scalar\|crate::core::'`
+— anything outside CHANGELOG/historical is a leftover.
 
 **`DecodeRequest` / `SniperRequest` (`msg::decode_request`) are the public
 decode API.** Builder-shaped: `.freq_hint()`, `.osd()`, `.strictness()`,

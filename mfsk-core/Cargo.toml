@@ -195,7 +195,7 @@ wspr-ddc-cascade = []
 # against both WSJT-X `samples/MSK144/*.wav` recordings passes 3/3
 # (`tests/msk144_wsjtx_samples.rs`). No `Protocol`-trait ZST is wired
 # (MSK144 isn't FSK — its own top-level driver bypasses
-# `core::pipeline` entirely by design), so it doesn't appear in
+# `engine::pipeline` entirely by design), so it doesn't appear in
 # `PROTOCOLS`/`protocol_invariants.rs`; that's an intentional
 # architectural difference from the other WSJT-family modes, not a
 # gap.
@@ -246,7 +246,7 @@ q65          = ["fft-rustfft"]
 uvpacket     = ["fst4", "std"]
 parallel     = ["std", "dep:rayon"]
 
-# Test-only visibility escape hatch (issue #203). `core::pipeline`'s
+# Test-only visibility escape hatch (issue #203). `engine::pipeline`'s
 # pre-#191 raw engine functions (`decode_frame`, `process_candidate_basic`,
 # `osd_escalation_gates`, the `GenericPipelineProtocol` trait) are
 # `pub(crate)` by default so downstream consumers can't bypass

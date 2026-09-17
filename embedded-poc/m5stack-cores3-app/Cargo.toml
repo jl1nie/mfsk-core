@@ -149,7 +149,7 @@ required-features = ["wspr"]
 #
 # Tracing that to its source (`embedded-poc/m5stack-s3/Cargo.toml`) said
 # something different: the regression is at opt-level **"s"/"z"**, not
-# at 2/3; the arithmetic-form workaround already in `core::pipeline`
+# at 2/3; the arithmetic-form workaround already in `engine::pipeline`
 # "dodges the trigger"; and the actual reason given for staying low was
 # that it "keeps the ELF debuggable". The paraphrase above had dropped
 # both qualifiers and turned a debuggability preference into a
@@ -165,7 +165,7 @@ required-features = ["wspr"]
 #   both: 9/9 golden decodes, decode-for-decode identical
 #
 # So on this path the bug does not fire and `3` is a clean win. That
-# does not generalise to the DSP pipeline `core::pipeline` actually
+# does not generalise to the DSP pipeline `engine::pipeline` actually
 # warns about — FT8's f32-select code lives in the sibling crates,
 # which are deliberately untouched here (changing them invalidates the
 # published timings in `docs/notes/BENCHMARKS.md`/`ROADMAP.md` and is a

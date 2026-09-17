@@ -129,8 +129,8 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.eq_mode(m)` | `EqMode` | `Off` | 全部 | `Off` / `Local`。**入力音声**の性質であって探索の性質ではない |
 | `.known(&[..])` | 復号済みの行 | 空 | 全部 | 前パスで見つかったメッセージをスキップまたは減算する |
 | `.fft_cache(c)` | 前回の `DecodeOutcome` のキャッシュ | 無し | 全部 | 同じ音声への前方 FFT を再利用 |
-| `.ap_hint(&ApHint)` | `&ApHint` | 無し | `SupportsWideBandAp` — **FT8** | 事前仮説からメッセージビットを固定 |
-| `.sic_rounds(n)` | `u8`、`1..=3` にクランプ | 無し | `SupportsSicRounds` — **FT8, FT4** | 平坦な逐次干渉除去 |
+| `.ap_hint(&ApHint)` | `&ApHint` | 無し | `SupportsWideBandAp` — **FT8・FT4・FST4 全サブモード** | 事前仮説からメッセージビットを固定 |
+| `.sic_rounds(n)` | `usize`、`1..=3` にクランプ | 無し | `SupportsSicRounds` — **FT8, FT4** | 平坦な逐次干渉除去 |
 | `.sic_early()` | — | 無し | `SupportsSicEarly` — **FT8** | チェックポイント模倣の早期デコード（3 チェックポイント固定構造） |
 | `.on_result(cb)` | `FnMut(&Row)` | 無し | 全部 | 見つかった順に行を配信 — [§2.4](#24-ストリーミング配信) |
 | `.budget(check)` | `FnMut() -> bool` | 無し | 全部 | 呼び出し側の締切述語 — [§2.3](#23-計算予算) |
@@ -380,21 +380,21 @@ JT9 の多段 AGC/IFFT/コヒーレント加算パイプラインは単純な帯
 - **WSPR** は *FEC 系統*・*メッセージ長*・*sync mode* の 3 つを独立に
   差し替える — これらの軸が本当に直交している証拠。
 - **Q65** は第 3 の FEC 系統 (GF(64) 上の非二進 QRA)、1 マクロから
-  10 sub-mode、そして 5 つの並列デコード戦略 (§3) を、いずれも同じ
+  10 sub-mode、そして 5 つの並列デコード戦略（[§3.4](#34-デコード戦略)）を、いずれも同じ
   `Protocol` super-trait の内側で加える。
 - **uvpacket** は非 WSJT の応用例で、FEC マザーコードだけを再利用し
-  汎用 TX/RX パイプラインは迂回する (§10.1)。
+  汎用 TX/RX パイプラインは迂回する（[UVPACKET.md](UVPACKET.ja.md)）。
 - **MSK144** は唯一、trait 面そのものから外れるプロトコルだが、それでも
   FEC 層とメッセージ層は再利用する。
 
-`§3` が Q65 のデコード戦略を、`§7` が `PROTOCOLS` レジストリと汎用
+[§3.4](#34-デコード戦略) が Q65 のデコード戦略を、[§8](#8-ランタイムレジストリと-trait-面の検証) が `PROTOCOLS` レジストリと汎用
 `tests/protocol_invariants.rs` 検査機構 (実装される 24 ZST — WSJT
 ファミリ 20 + uvpacket 4 — すべての列挙・検証) を扱う。
 
 [^ft8]: FT8 は FT4/FST4 と同じく汎用 `DecodeRequest` ビルダーを使うが、
     内部では `engine::pipeline` ではなく手調整された専用エンジン
-    `ft8::decode_block` (ホスト・組込み共用) を通る。§4「FT8 ブロック
-    デコーダの入口」と §10 を参照。
+    `ft8::decode_block` (ホスト・組込み共用) を通る。
+    [§6](#6-engine-プリミティブ)「FT8 ブロックデコーダのエントリ」を参照。
 
 [^wspr]: `SyncMode::Interleaved` — チャネルシンボルすべての LSB に
     固定 162 bit sync vector の 1 bit を載せる形式で、ブロック Costas
@@ -404,12 +404,13 @@ JT9 の多段 AGC/IFFT/コヒーレント加算パイプラインは単純な帯
     bit-LLR ではなく GF(64) の確率ベクトル上で QRA コーデック
     (`fec::qra` + `fec::qra15_65_64`) が行う。`NTONES = 65` かつ
     `BITS_PER_SYMBOL = 6` (tone 0 は同期専用) が `GRAY_MAP` 長の契約を
-    `[2^BITS_PER_SYMBOL, NTONES]` に緩めた事例。§1「`FecCodec` は
-    シンボル非依存」と [§3.4](#34-デコード戦略) を参照。
+    `[2^BITS_PER_SYMBOL, NTONES]` に緩めた事例。
+    [§4](#4-モジュールとクレートの地図)「`FecCodec` はシンボル粒度から
+    独立」と [§3.4](#34-デコード戦略) を参照。
 
 [^uv]: uvpacket は汎用パイプラインを迂回するため、`ModulationParams`
     定数のいくつかは装飾的 — trait と不変条件テストを満たすためだけに
-    存在する。§10.1 を参照。
+    存在する。[UVPACKET.md](UVPACKET.ja.md) を参照。
 
 [^msk]: MSK144 (issue #25) は連続位相の二値 MSK を offset-QPSK として
     送信し、864 サンプルのフレームを固定スロット内の既知オフセットに
@@ -431,8 +432,9 @@ JT9 の多段 AGC/IFFT/コヒーレント加算パイプラインは単純な帯
 ### 3.2 諸元
 
 配線済み ZST は 24 個 — WSJT 系のプロトコルとサブモードが 20、
-`uvpacket` のサブモードが 4。MSK144 は意図的に不在で、`Protocol` を
-実装しないためこの表にもレジストリにも現れない。
+`uvpacket` のサブモードが 4。MSK144 は参考として最終行に挙げてあるが
+この 24 には**含まれない** — `Protocol` を実装しないため、レジストリ
+にも `tests/protocol_invariants.rs` にも現れない。
 
 | プロトコル       | スロット   | トーン | シンボル | トーン Δf  | FEC                   | Msg   | Sync          | 状態 |
 |------------------|------------|--------|----------|------------|-----------------------|-------|---------------|------|
@@ -484,7 +486,7 @@ JT9 の多段 AGC/IFFT/コヒーレント加算パイプラインは単純な帯
   `fec::qra15_65_64::QRA15_65_64_IRR_E23`)。アプリケーション層は 13
   情報シンボルに CRC-12 を付与し、65 シンボルの符号語から CRC 2
   シンボルを puncture して 63 チャネルシンボルを実送信する。10
-  sub-mode は `NSPS` とトーン間隔 (×1…×16) のみが異なり、5 戦略 (§3)
+  sub-mode は `NSPS` とトーン間隔 (×1…×16) のみが異なり、5 戦略（[§3.4](#34-デコード戦略)）
   はすべて同じ QRA codec を共有する。
 
 ### 3.4 デコード戦略

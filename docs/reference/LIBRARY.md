@@ -127,8 +127,8 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.eq_mode(m)` | `EqMode` | `Off` | all | `Off` / `Local`. A property of the **input audio**, not the search |
 | `.known(&[..])` | decoded rows | empty | all | skip or subtract messages already found in an earlier pass |
 | `.fft_cache(c)` | cache from a previous `DecodeOutcome` | none | all | reuse the forward FFT over the same audio |
-| `.ap_hint(&ApHint)` | `&ApHint` | none | `SupportsWideBandAp` — **FT8** | lock message bits from an a-priori hypothesis |
-| `.sic_rounds(n)` | `u8`, clamped `1..=3` | none | `SupportsSicRounds` — **FT8, FT4** | flat successive-interference cancellation |
+| `.ap_hint(&ApHint)` | `&ApHint` | none | `SupportsWideBandAp` — **FT8, FT4, every FST4 sub-mode** | lock message bits from an a-priori hypothesis |
+| `.sic_rounds(n)` | `usize`, clamped `1..=3` | none | `SupportsSicRounds` — **FT8, FT4** | flat successive-interference cancellation |
 | `.sic_early()` | — | none | `SupportsSicEarly` — **FT8** | checkpoint-emulation early decode, fixed 3-checkpoint structure |
 | `.on_result(cb)` | `FnMut(&Row)` | none | all | deliver rows as they are found — [§2.4](#24-streaming-delivery) |
 | `.budget(check)` | `FnMut() -> bool` | none | all | caller-supplied deadline predicate — [§2.3](#23-compute-budget) |
@@ -397,8 +397,9 @@ What the table makes visible:
 ### 3.2 Geometry
 
 24 wired ZSTs: 20 WSJT-family protocols and sub-modes plus 4
-`uvpacket` sub-modes. MSK144 is deliberately absent — it implements no
-`Protocol` impl, so it is in neither this table nor the registry.
+`uvpacket` sub-modes. MSK144 is listed last for reference but is **not**
+one of them — it implements no `Protocol` impl, so it appears in neither
+the registry nor `tests/protocol_invariants.rs`.
 
 | Protocol   | Slot   | Tones | Symbols | Tone Δf    | FEC              | Msg   | Sync       | Notes |
 |------------|--------|-------|---------|------------|------------------|-------|------------|--------|
@@ -1063,8 +1064,8 @@ its display name.
 ### 8.2 The generic trait-surface checker
 
 `tests/protocol_invariants.rs` runs one generic
-`assert_protocol_invariants::<P>` over every wired ZST — 11 with
-`full`, 15 once `uvpacket` adds its four — and pins ~25 trait-level
+`assert_protocol_invariants::<P>` over every wired ZST — 24 of them:
+20 WSJT-family, plus `uvpacket`'s four — and pins ~25 trait-level
 invariants, among them `FecCodec::N ≤ N_DATA × BITS_PER_SYMBOL` and the
 `GRAY_MAP` length contract `[2^BITS_PER_SYMBOL, NTONES]`.
 

@@ -9,9 +9,10 @@ guarantees, **why it is a plain synchronous callback rather than an
 `async fn` / `Future` / channel-based API**, and a complete worked
 example of bridging it into a Tokio async client.
 
-For the wider library surface (trait hierarchy, DSP primitives, the C
-ABI) see [LIBRARY.md](LIBRARY.md) — this doc drills into one section
-of it (§4's "Streaming delivery") and adds the async-bridge example.
+For the wider library surface (trait hierarchy, DSP primitives) see
+[LIBRARY.md](LIBRARY.md), and [BINDINGS.md](BINDINGS.md) for the C ABI
+— this doc drills into one section of LIBRARY.md (§2.4, "Streaming
+delivery") and adds the async-bridge example.
 
 ---
 

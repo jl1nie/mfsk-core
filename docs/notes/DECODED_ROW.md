@@ -60,7 +60,7 @@ Locked choices (from the 0.9 planning thread):
 Per-protocol `to_decoded(..)` methods (not one trait) — signatures
 differ because the modes genuinely differ, matching the crate's
 "free-function / per-protocol method over a forced trait" philosophy
-(LIBRARY §0.3):
+(LIBRARY §5):
 
 ```rust
 impl DecodeResult { // FT8/FT4/FST4 (shared type)
