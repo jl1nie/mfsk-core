@@ -2494,6 +2494,21 @@ reported the grid healthy while the band said otherwise.
   separate "at the 2-week target" tier for days 13-14 and calls a
   release overdue only past 14.
 
+- **`wsjt77::is_cb_callsign` becomes a public, always-on grammar check.**
+  WSJT-CB (vash909/WSJT-CB) widened the FT8 family to the 11 m citizens
+  band, where an identifier is `N{1,3}L{1,2}N{1,3}` (`26AT715`, or the
+  `/ZZ` split form), and the FT8 block decoder's CRC-14 plausibility gate
+  silently dropped such decodes. The grammar is now exposed as plain
+  `pub fn is_cb_callsign` (with the private `cb_prefix_digits_letters*`
+  helpers and a 25-case table against WSJT-CB's README). Nothing in the
+  decode path calls it yet: accepting CB identifiers is a per-operator
+  policy, so the wiring is a caller-supplied predicate on `DecodeRequest`
+  (its own proposal) rather than a change to the built-in filters. Note
+  the deliberate narrowing vs WSJT-CB's own `Radio::is_callsign`, which
+  also accepts the bare base (`1TT`, `999ZZ`): a unit-less
+  three-character token is the short shape the CRC-14 filter exists to
+  catch, so only the closed and `/LL` split forms pass here.
+
 ## 0.10.1 — ハムフェア2026 booth material, the 12 kHz literal classification (#323), release tooling that runs on macOS, FT4 embedded fits its slot
 
 **Why a patch bump.** Additive public API (five new functions, no

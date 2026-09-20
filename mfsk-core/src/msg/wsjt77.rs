@@ -851,6 +851,94 @@ pub fn is_valid_callsign(call: &str) -> bool {
     }
 }
 
+/// Check whether a string is a CB-style callsign in the WSJT-CB sense.
+///
+/// WSJT-CB (vash909/WSJT-CB) widened the FT8 family to the 11 m citizens
+/// band, where an identifier is `N{1,3}L{1,2}N{1,3}` — a numeric country
+/// prefix, one or two letters, and a unit number (`26AT715`) — rather than
+/// the amateur `[prefix][digit][letter-suffix]` shape. Two extensions ride
+/// on top:
+///
+/// * a **four-digit unit is allowed only behind a one-digit prefix**
+///   (`1TT1000` passes; `26AT1000` and `111TT1000` do not), and
+/// * a trailing **slash form** `N{1,3}L{1,2}/L{2}` (`999ZZ/ZZ`), whose
+///   base carries no unit number of its own.
+///
+/// It deliberately **narrows** WSJT-CB's own grammar. WSJT-CB's
+/// `Radio::is_callsign` / `Radio::is_cb_callsign` also accept a *bare
+/// base* — `1TT`, `12A`, `999ZZ` — via `cb_callsign_base_re`. Here only
+/// the closed form (with a unit) and the `/LL` split form are accepted
+/// (25-case table in the tests, where those four are pinned `false`): a
+/// bare `N{1,3}L{1,2}` is a three-character token with no unit number,
+/// the same short shape the CRC-14 filter's [`is_plausible_callsign`]
+/// exists to catch, and it is never what a station sends on the closed
+/// wire format anyway.
+///
+/// The predicate is case- and whitespace-tolerant the way WSJT-CB's is
+/// (`.trimmed().toUpper()`); the decode path feeds it uppercase by
+/// construction, so this only matters for a caller invoking it directly.
+///
+/// This is a grammar check only. Nothing in the decode path calls it yet:
+/// whether a CB identifier counts as a plausible message is a
+/// per-operator, per-session policy, so the hook for it is a
+/// caller-supplied predicate on a `DecodeRequest` (its own open proposal)
+/// rather than a build-wide switch. A CB-aware host can compose this
+/// predicate with the built-in filter itself.
+pub fn is_cb_callsign(call: &str) -> bool {
+    let b = call.trim().to_ascii_uppercase();
+    let b = b.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    // Trailing `/LL` — the split form. Only one slash, and it must delimit
+    // the final two letters: `999ZZ/ZZ` passes, `1/AT100` does not.
+    if let Some(sl) = b.iter().rposition(|&c| c == b'/') {
+        if b[..sl].contains(&b'/') {
+            return false;
+        }
+        let sfx = &b[sl + 1..];
+        if sfx.len() != 2 || !sfx.iter().all(|c| c.is_ascii_uppercase()) {
+            return false;
+        }
+        return cb_prefix_digits_letters(&b[..sl]);
+    }
+    cb_prefix_digits_letters_digits(b)
+}
+
+/// The split-form base `N{1,3}L{1,2}`.
+fn cb_prefix_digits_letters(b: &[u8]) -> bool {
+    let digits = b.iter().take_while(|&&c| c.is_ascii_digit()).count();
+    let letters = b[digits..]
+        .iter()
+        .take_while(|&&c| c.is_ascii_uppercase())
+        .count();
+    (1..=3).contains(&digits) && (1..=2).contains(&letters) && digits + letters == b.len()
+}
+
+/// The closed form `N{1,3}L{1,2}N{1,4}` with the four-digit-unit caveat.
+fn cb_prefix_digits_letters_digits(b: &[u8]) -> bool {
+    let digits = b.iter().take_while(|&&c| c.is_ascii_digit()).count();
+    let letters = b[digits..]
+        .iter()
+        .take_while(|&&c| c.is_ascii_uppercase())
+        .count();
+    let units = b[digits + letters..]
+        .iter()
+        .take_while(|&&c| c.is_ascii_digit())
+        .count();
+    if !(1..=3).contains(&digits) || !(1..=2).contains(&letters) {
+        return false;
+    }
+    if digits + letters + units != b.len() {
+        return false;
+    }
+    if !(1..=4).contains(&units) {
+        return false;
+    }
+    // A four-digit unit number only behind a one-digit prefix.
+    units < 4 || digits == 1
+}
+
 /// ITU-allocated **letter+digit** 2-char prefix list. The structural
 /// `is_valid_callsign` accepts any letter+digit pair (e.g. `Z7` from
 /// `Z74QTJ`), but real ITU amateur prefix series only allocate
@@ -1796,5 +1884,72 @@ mod tests {
         // Empty report
         let msg = pack77("JA1ABC", "3Y0Z", "").unwrap();
         assert_eq!(unpack77(&msg).unwrap(), "JA1ABC 3Y0Z");
+    }
+
+    /// The WSJT-CB acceptance table, mirrored exactly from vash909/WSJT-CB's
+    /// README so the validator agrees case for case. The four *bare base*
+    /// rows (`1TT`, `1AT`, `12A`, `999ZZ`) are pinned `false` deliberately
+    /// even though WSJT-CB's own `Radio::is_callsign` accepts them — see
+    /// [`is_cb_callsign`]'s docs for the narrowing and why.
+    const WSJT_CB_TABLE: &[(&str, bool)] = &[
+        // (callsign, accepted by WSJT-CB)
+        ("1A1", true),        // 1-digit prefix, 1 letter, 1-digit suffix
+        ("1TT1", true),       // 1-digit prefix, 2 letters, 1-digit suffix
+        ("1TT01", true),      // 1-digit prefix, 2 letters, 2-digit suffix
+        ("1TT001", true),     // 1-digit prefix, 2 letters, 3-digit suffix
+        ("1TT1000", true),    // 4-digit suffix, allowed with a 1-digit prefix
+        ("1AT1000", true),    // 4-digit suffix, allowed with a 1-digit prefix
+        ("11TT1", true),      // 2-digit prefix, 2 letters, 1-digit suffix
+        ("111TT11", true),    // 3-digit prefix, 2 letters, 2-digit suffix
+        ("111TT999", true),   // 3-digit prefix, 2 letters, 3-digit suffix
+        ("26AT715", true),    // 2-digit prefix, 2 letters, 3-digit suffix
+        ("999ZZ/ZZ", true),   // slash form: 3-digit prefix, 2 letters, /ZZ
+        ("26AT1000", false),  // 4-digit suffix is not allowed with a 2-digit prefix
+        ("111TT1000", false), // 4-digit suffix is not allowed with a 3-digit prefix
+        ("99Z9999", false),   // 4-digit suffix is not allowed with a 2-digit prefix
+        ("1TT10000", false),  // suffix longer than 4 digits is not allowed
+        ("1TT", false),       // bare base — deliberately narrowed (no unit)
+        ("1AT", false),       // bare base — deliberately narrowed (no unit)
+        ("AT1000", false),    // missing numeric prefix
+        ("AAA", false),       // letters only; numeric prefix and suffix are both missing
+        ("123", false),       // digits only; the alphabetic middle part is missing
+        ("12A", false),       // bare base — deliberately narrowed (no unit)
+        ("12ABC1", false),    // 3-letter middle part is not allowed
+        ("ABC123", false),    // missing numeric prefix
+        ("1/AT100", false),   // slash is only allowed as a final /LL suffix
+        ("999ZZ", false),     // bare base — deliberately narrowed (no unit)
+    ];
+
+    #[test]
+    fn cb_callsigns_match_wsjt_cb_rejection_table() {
+        for &(call, accepted) in WSJT_CB_TABLE {
+            assert_eq!(
+                is_cb_callsign(call),
+                accepted,
+                "is_cb_callsign({call}) must match WSJT-CB"
+            );
+        }
+    }
+
+    #[test]
+    fn cb_callsigns_comply_with_pack28_when_standard() {
+        // A CB identifier must never be claimed by the standard (pack28)
+        // layout unless it genuinely round-trips there — only /R and /P are
+        // stripped by it, and trailing digits cannot be spelled, so shapes
+        // like `1TT1` fall back to free-text / hashed, as in WSJT-CB. `1A1`
+        // is the dual-shape overlap: it is a CB call *and* a legal 3-char
+        // standard call, so it travels the standard layout honestly.
+        for &(call, _) in WSJT_CB_TABLE.iter() {
+            if !is_cb_callsign(call) {
+                continue;
+            }
+            if is_standard_callsign(call) {
+                assert_eq!(
+                    unpack28(pack28(call).unwrap_or_default()).as_str(),
+                    call,
+                    "{call} must round-trip pack28 if claimed standard"
+                );
+            }
+        }
     }
 }
