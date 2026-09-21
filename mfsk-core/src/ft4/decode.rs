@@ -66,6 +66,39 @@ impl pipeline::GenericPipelineProtocol for Ft4 {
 impl FrameDecodable for Ft4 {
     type DecodeResult = DecodeResult;
 
+    /// **On, and measured before it was turned on.** See
+    /// [`FrameDecodable::MESSAGE_FILTER_DEFAULT`] for why FT8 runs the
+    /// codec's verdict: a CRC-14 false positive that reaches
+    /// `.sic_rounds()` is *subtracted* from the audio, taking whatever
+    /// real signal was underneath with it. FT4 has the same CRC-14 and
+    /// the same `SupportsSicRounds`, so the argument transferred — what
+    /// had never been measured was the cost, because the verdict's
+    /// ITU-prefix allowlist was tuned on an FT8 recording and FT4 is a
+    /// contest mode full of DX prefixes.
+    ///
+    /// Measured 2026-09-21 on the `ft4sim` corpus, 720 slots across the
+    /// threshold window (−21..−13 dB, four ITU-R channels, 20 trials a
+    /// cell — `ft4_sweep::ft4_phantom_rate` and the `ft4_snr_sweep`
+    /// A/B behind `MFSK_FT4_SWEEP_CODEC_FILTER`):
+    ///
+    /// | | verdict off | verdict on |
+    /// |---|---|---|
+    /// | golden rows | 353 | **354** |
+    /// | phantom rows | 7 | **2** |
+    ///
+    /// 35 of the 36 recall cells are identical; the one that moves goes
+    /// *up* (`awgn −17 dB`, 16/20 → 17/20), because a rejection lets the
+    /// candidate ladder keep going and reach a real decode a phantom
+    /// had taken the slot from.
+    ///
+    /// **What that corpus cannot say**: every one of its slots carries
+    /// the same callsign, so the allowlist's own risk — an unusual
+    /// prefix on the air — is not exercised by it. The WSJT-X golden
+    /// recording is (`ft4_message_policy`, where the verdict drops
+    /// nothing), and a deployment that needs more can widen it with
+    /// [`DecodeRequest::also_accept`].
+    const MESSAGE_FILTER_DEFAULT: bool = true;
+
     fn __single_pass<Pol: MessagePolicy>(
         req: &DecodeRequest<'_, Self, Pol>,
     ) -> DecodeOutcome<Self> {

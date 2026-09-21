@@ -409,17 +409,29 @@ it outright, and the thing it replaces removes roughly two thirds of
 the CRC survivors that reach it, so a permissive `f` will surface
 phantom rows.
 
-**On by default for FT8 only, and the reason is subtraction.** A wrong
-decode is not a cosmetic error on a path that subtracts what it
+**On by default for FT8 and FT4, and the reason is subtraction.** A
+wrong decode is not a cosmetic error on a path that subtracts what it
 accepts: `.sic_rounds()` and `.sic_early()` remove the decoded
 waveform from the audio before looking again. Measured on
 `qso3_busy.wav`, with the verdict off `.sic_early()` accepts the
 phantom `CQ G47OXF RD84`, subtracts it, and loses the real
 `CQ EA2BFM IN83` underneath — 18/18 becomes 17/18. On the single-pass
 path the same verdict removes two garbage rows at `max_cand = 200` and
-**nothing at all** at the depth that ships on embedded hardware. FT4
-and FST4 leave it off until their own sensitivity sweeps say
-otherwise.
+**nothing at all** at the depth that ships on embedded hardware.
+
+FT4 shares that CRC-14 and that SIC path, and joined it once the same
+measurement existed for it — 720 `ft4sim` slots across the threshold
+window (−21..−13 dB, four ITU-R channels): phantom rows **7 → 2**,
+golden rows **353 → 354**, and all four 50 %-crossing SNRs unchanged
+to 0.00 dB. The one recall cell that moves moves *up*, because a
+rejection lets the candidate ladder keep going. What that corpus
+cannot test is the allowlist's own risk — every slot in it carries the
+same callsign — so a deployment seeing unusual prefixes widens it with
+`.also_accept()`.
+
+**FST4 leaves it off**, and not for want of measuring: CRC-24 puts its
+false-positive rate 512x below the other two, so there is little for
+the verdict to remove and the recall it could cost is the same.
 
 **Zero-cost when unused.** The policy is a type parameter, not a
 `&dyn Fn` like `.on_result()` and `.budget()`: a request that names

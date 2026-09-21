@@ -350,7 +350,7 @@ pub trait FrameDecodable: Protocol {
     /// Whether this protocol applies its message codec's
     /// [`MessageCodec::is_plausible`] verdict with no caller involved.
     ///
-    /// **`true` for FT8, `false` elsewhere.** The reason is
+    /// **`true` for FT8 and FT4, `false` for FST4.** The reason is
     /// subtraction, not display. This crate's high-recall strategies
     /// (`.sic_rounds()`, `.sic_early()`) *subtract* each decode from
     /// the audio before looking again, so accepting a CRC survivor is
@@ -367,9 +367,16 @@ pub trait FrameDecodable: Protocol {
     /// WSJT-X has no such filter, gating on `nbadcrc` and
     /// `nharderrors <= 36` only.
     ///
-    /// `false` for FT4 and FST4 because turning it on there is a
-    /// behaviour change nobody has measured against their sensitivity
-    /// curves yet. A caller opts in per request with
+    /// FT4 turned it on once the same measurement existed for it
+    /// (2026-09-21, `ft4sim` corpus, 720 slots across the threshold
+    /// window): phantom rows 7 → 2, golden rows 353 → **354**, with 35
+    /// of 36 recall cells identical. `Ft4::MESSAGE_FILTER_DEFAULT`
+    /// carries the table and what the corpus cannot say.
+    ///
+    /// `false` for FST4, and not for want of measuring: CRC-24 puts its
+    /// false-positive rate 512x below FT8's and FT4's, so there is
+    /// almost nothing for the verdict to remove and the recall it could
+    /// cost is the same. A caller opts in per request with
     /// [`DecodeRequest::codec_filter`].
     ///
     /// [`MessageCodec::is_plausible`]: crate::engine::protocol::MessageCodec::is_plausible

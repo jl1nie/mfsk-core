@@ -56,14 +56,37 @@ fn sweep_dir() -> PathBuf {
 #[allow(dead_code)]
 const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 
+/// `MFSK_FT4_SWEEP_CODEC_FILTER=1` — apply the message codec's own
+/// plausibility verdict, which FT4 does **not** run by default.
+///
+/// This is the A/B behind `FrameDecodable::MESSAGE_FILTER_DEFAULT`, and
+/// the sweep is where it has to be answered. FT8 turns the verdict on
+/// because a phantom that survives CRC-14 gets *subtracted* from the
+/// audio by `.sic_rounds()` / `.sic_early()`, taking a real signal with
+/// it (`qso3_busy`: 18/18 becomes 17/18 with the verdict off). FT4 has
+/// the same CRC-14 and the same `SupportsSicRounds`, so the argument
+/// transfers — but the cost side does not transfer with it: the
+/// verdict's ITU-prefix allowlist was tuned on an FT8 recording, and
+/// FT4 is a contest mode full of DX prefixes. What that costs at the
+/// 50 % crossing is a recall question, and only a sweep answers it.
+///
+/// `ft4_message_policy::a_no_op_policy_changes_nothing` already pins
+/// that it costs nothing on the WSJT-X golden; that recording is one
+/// SNR, well above threshold.
+fn codec_filter_requested() -> bool {
+    std::env::var("MFSK_FT4_SWEEP_CODEC_FILTER").is_ok_and(|v| v == "1")
+}
+
 fn decode_wav_ft4(audio: &[i16]) -> bool {
-    mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+    let req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
         audio, 100.0, 3000.0, 0.8, 50,
-    )
-    .decode()
-    .results
-    .iter()
-    .any(|d| {
+    );
+    let out = if codec_filter_requested() {
+        req.codec_filter().decode()
+    } else {
+        req.decode()
+    };
+    out.results.iter().any(|d| {
         let mut m77 = [0u8; 77];
         m77.copy_from_slice(d.message77());
         unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
@@ -1467,4 +1490,105 @@ fn ft4_diag_dt_window_reach() {
             eprintln!();
         }
     }
+}
+
+// ── What the codec verdict removes, and what it costs ────────────────────────
+
+/// Count the rows the codec's plausibility verdict removes, against the
+/// rows it removes that were *real* — the precision half of the
+/// `MESSAGE_FILTER_DEFAULT` question for FT4.
+///
+/// The sweep above answers the recall half: it asks whether the golden
+/// message still decodes, per cell, with and without the verdict
+/// (`MFSK_FT4_SWEEP_CODEC_FILTER=1`). What it cannot see is everything
+/// *else* the decoder emitted, because it only looks for one message.
+/// This walks the same corpus and counts every row instead.
+///
+/// Every generated WAV carries exactly one signal — `ft4sim` synthesises
+/// `CQ JL1NIE PM95` at 1500 Hz and adds noise and fading — so any other
+/// row is, by construction, a CRC-14 false positive. That is what makes
+/// this corpus usable as a phantom measurement and a real recording is
+/// not: on the air, a row that is not the golden may simply be another
+/// station.
+///
+/// ```text
+/// MFSK_FT4_SWEEP_SNR_MIN=-21 MFSK_FT4_SWEEP_SNR_MAX=-13 \
+///   cargo test --release -p mfsk-core --features full,internal-testing \
+///   --test ft4_sweep ft4_phantom_rate -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "manual measurement — run with --ignored --nocapture"]
+fn ft4_phantom_rate() {
+    use rayon::prelude::*;
+
+    let dir = sweep_dir();
+    let all_wavs = collect_wavs(&dir);
+    if all_wavs.is_empty() {
+        eprintln!("No WAVs in {dir:?} — run scripts/gen_ft4_sweep_wavs.sh");
+        return;
+    }
+    let snr_min: Option<i32> = std::env::var("MFSK_FT4_SWEEP_SNR_MIN")
+        .ok()
+        .and_then(|s| s.trim().parse().ok());
+    let snr_max: Option<i32> = std::env::var("MFSK_FT4_SWEEP_SNR_MAX")
+        .ok()
+        .and_then(|s| s.trim().parse().ok());
+    let wavs: Vec<&WavMeta> = all_wavs
+        .iter()
+        .filter(|w| snr_min.is_none_or(|lo| w.snr_db >= lo))
+        .filter(|w| snr_max.is_none_or(|hi| w.snr_db <= hi))
+        .collect();
+
+    // (golden rows, phantom rows) for one configuration.
+    fn tally(audio: &[i16], filtered: bool) -> (u32, u32) {
+        let req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+            audio, 100.0, 3000.0, 0.8, 50,
+        );
+        let out = if filtered {
+            req.codec_filter().decode()
+        } else {
+            req.decode()
+        };
+        let mut golden = 0;
+        let mut phantom = 0;
+        for d in &out.results {
+            let mut m77 = [0u8; 77];
+            m77.copy_from_slice(d.message77());
+            if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
+                golden += 1;
+            } else {
+                phantom += 1;
+            }
+        }
+        (golden, phantom)
+    }
+
+    let totals = wavs
+        .par_iter()
+        .map(|w| {
+            let Some(audio) = load_wav_i16_opt(&w.path) else {
+                return (0, 0, 0, 0);
+            };
+            let (g_off, p_off) = tally(&audio, false);
+            let (g_on, p_on) = tally(&audio, true);
+            (g_off, p_off, g_on, p_on)
+        })
+        .reduce(
+            || (0u32, 0u32, 0u32, 0u32),
+            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3),
+        );
+
+    let (g_off, p_off, g_on, p_on) = totals;
+    println!("\nFT4 codec verdict — {} slots", wavs.len());
+    println!("                    golden rows   phantom rows");
+    println!("  verdict off       {g_off:>11}   {p_off:>12}");
+    println!("  verdict on        {g_on:>11}   {p_on:>12}");
+    println!(
+        "  delta             {:>+11}   {:>+12}",
+        g_on as i64 - g_off as i64,
+        p_on as i64 - p_off as i64
+    );
+    // Nothing is asserted. This is a measurement: what the verdict costs
+    // in real rows and buys in false ones is a judgement about a curve,
+    // and the numbers belong in the issue, not in a threshold here.
 }

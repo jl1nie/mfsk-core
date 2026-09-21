@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.1 — one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381), the message-policy docs catch up with the code
+## 0.11.1 — FT4 filters phantoms by default (#383), one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
 - **CoreS3: the four receivers share one boot sequence
   (`boot::Receiver`).** This crate carried four `main`s: one per app,
@@ -66,6 +66,47 @@
   always `ntp`, because the setting is published before the dispatch
   now.
 
+
+- **FT4 runs the message codec's plausibility verdict by default
+  (#383).** `Ft4::MESSAGE_FILTER_DEFAULT` was `false` for one reason:
+  nobody had measured what turning it on costs. FT8 runs it because a
+  CRC-14 false positive that reaches `.sic_rounds()` / `.sic_early()`
+  is *subtracted* from the audio, taking whatever real signal was
+  underneath with it (`qso3_busy`: 18/18 becomes 17/18 with the verdict
+  off). FT4 has the same CRC-14 and the same `SupportsSicRounds`, so
+  the argument always transferred — the doubt was the cost, since the
+  verdict's ITU-prefix allowlist was tuned on an FT8 recording and FT4
+  is a contest mode full of DX prefixes.
+
+  Measured on the `ft4sim` corpus, 720 slots across the threshold
+  window (−21..−13 dB, four ITU-R channels, 20 trials a cell):
+
+  | | verdict off | verdict on |
+  |---|---|---|
+  | golden rows | 353 | **354** |
+  | phantom rows | 7 | **2** |
+
+  35 of the 36 recall cells are identical and the one that moves goes
+  **up** (`awgn −17 dB`, 16/20 → 17/20) — a rejection lets the
+  candidate ladder keep going and reach a decode a phantom had taken
+  the slot from. All four 50 %-crossing SNRs are unchanged to
+  **0.00 dB** against `sweep-baseline.json`, so the baseline is not
+  refreshed: the curve did not move.
+
+  **What the corpus cannot say**: every slot in it carries the same
+  callsign, so the allowlist's own risk is not exercised by it. The
+  WSJT-X golden recording is (`ft4_message_policy`, where the verdict
+  drops nothing, half of it ARRL RTTY Roundup), and a deployment that
+  needs more widens it with `.also_accept()`.
+
+  Two measurement harnesses land with it, both `#[ignore]`d:
+  `MFSK_FT4_SWEEP_CODEC_FILTER=1` runs `ft4_snr_sweep` with the verdict
+  on, and `ft4_phantom_rate` counts every row the corpus produces
+  rather than only the golden one — which is what makes the phantom
+  column above measurable at all.
+
+  **FST4 stays off**, and not for want of measuring: CRC-24 puts its
+  false-positive rate 512x below FT8's and FT4's.
 
 - **CoreS3: `WIFI: ON` / `WIFI: OFF` on the CONFIG page, and every
   receiver honours it (#381).** `main.rs` decided from the boot mode

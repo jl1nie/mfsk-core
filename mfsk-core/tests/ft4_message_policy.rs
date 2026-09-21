@@ -7,18 +7,21 @@
 //! cannot depend on `msg` and so cannot unpack a codeword itself. This
 //! file holds that seam down from the outside:
 //!
-//! 1. **The default is bit-identical**, and for FT4/FST4 that is a
-//!    stronger claim than for FT8: `MESSAGE_FILTER_DEFAULT` is `false`
-//!    for FST4, so the seam must not even build the message string.
-//!    `PolicyAccept` folds itself away on two compile-time constants;
-//!    the behavioural half is checked here.
+//! 1. **A no-op policy is bit-identical to the default**, which for
+//!    FST4 is a stronger claim than for FT8: `MESSAGE_FILTER_DEFAULT`
+//!    is `false` there, so the seam must not even build the message
+//!    string. `PolicyAccept` folds itself away on two compile-time
+//!    constants; the behavioural half is checked here. FT4 joined FT8
+//!    in running the verdict by default on 2026-09-21 — see
+//!    `Ft4::MESSAGE_FILTER_DEFAULT` for the 720-slot measurement.
 //! 2. **`.message_filter(|_| false)` reaches every rung.** Not a
 //!    tautology: the pipeline accepts candidates at four separate
 //!    points (BP ladder, OSD-2/3, OSD-4 Top-K, a-priori), and an
 //!    unwired one would leak rows.
-//! 3. **`.also_accept()` turns the codec verdict on** for a protocol
-//!    that does not filter by default — the semantics that let
-//!    `.also_accept(f)` mean "the usual filter, plus this" everywhere.
+//! 3. **`.also_accept()` can only widen.** Over a verdict that already
+//!    passes a row it is a no-op, which is what lets `.also_accept(f)`
+//!    mean "the usual filter, plus this" on every protocol, whether or
+//!    not that protocol filters by default.
 //! 4. **`.sic_rounds()` carries the policy too.** FT4's SIC path runs
 //!    a second engine; before this it called the `AcceptAll` wrapper
 //!    and would have ignored the caller silently.
@@ -83,18 +86,20 @@ fn a_no_op_policy_changes_nothing() {
     let base = rows(&req(&a).decode());
     assert!(!base.is_empty(), "the golden recording must decode");
 
-    // FT4 does not apply the verdict by default, so opting out of
-    // everything is the default.
-    let all = rows(&req(&a).message_filter(|_| true).decode());
-    assert_eq!(base, all, "FT4 must not be filtering by default");
-
-    // And opting *in* must cost it nothing on this recording — half of
-    // it is ARRL RTTY Roundup, which the verdict refused outright until
-    // issue #383 gave the type a structural rule. That regression would
-    // be invisible without this assertion, because FT4 never ran the
-    // verdict before.
+    // FT4 runs the verdict by default now, so asking for it explicitly
+    // is the default.
     let verdict = rows(&req(&a).codec_filter().decode());
-    assert_eq!(base, verdict, "the codec verdict dropped an FT4 decode");
+    assert_eq!(base, verdict, "codec_filter is not FT4's default");
+
+    // And the verdict must still cost this recording nothing — half of
+    // it is ARRL RTTY Roundup, which the verdict refused outright until
+    // issue #383 gave the type a structural rule. Turning the filter
+    // *off* is what shows that: every row the default returns has to
+    // survive here too, and on this recording there is nothing extra to
+    // find, because a clean WSJT-X sample has no CRC-14 false positives
+    // in it.
+    let all = rows(&req(&a).message_filter(|_| true).decode());
+    assert_eq!(base, all, "the codec verdict dropped an FT4 decode");
 
     let widened = rows(&req(&a).also_accept(|_| false).decode());
     assert_eq!(
