@@ -85,14 +85,17 @@ echo "  [11/12] fano232.f90 + jt9fano.f90"
 gfortran "${FFLAGS[@]}" -c "$LIB/fano232.f90"
 gfortran "${FFLAGS[@]}" -c "$LIB/jt9fano.f90"
 
-echo "  [12/12] gran.c + sgran.c + init_random_seed.{f90,c} + igray.c"
+echo "  [12/12] gran.c + sim_sgran_stub.c + init_random_seed.{f90,c} + igray.c"
 # Two distinct symbols needed: jt9sim.f90 calls the Fortran
 # subroutine directly (gfortran mangles it to init_random_seed_),
 # while sgran.c's sgran_() wrapper calls the plain C function
 # init_random_seed() (no trailing underscore) -- both source files
 # must be compiled, under different object names.
 gcc -O2 -c "$LIB/gran.c"
-gcc -O2 -c "$LIB/sgran.c"
+# sgran: the repo's own deterministic stub, NOT "$LIB/sgran.c" -- upstream
+# seeds rand() from /dev/urandom so every run is a different corpus.
+# See scripts/sim_sgran_stub.c for why, and MFSK_SIM_SEED to vary it.
+gcc -O2 -c "$SCRIPT_DIR/sim_sgran_stub.c" -o sgran.o
 gfortran "${FFLAGS[@]}" -c "$LIB/init_random_seed.f90" -o init_random_seed_f90.o
 gcc -O2 -c "$LIB/init_random_seed.c" -o init_random_seed_c.o
 gcc -O2 -c "$LIB/igray.c"

@@ -28,10 +28,12 @@
 # Trials per cell: TRIALS env var, default 20. Raising it does not
 # extend an existing corpus: a cell is skipped only when every trial is
 # already there, so an incomplete one is regenerated whole (the
-# simulator is invoked once for all TRIALS) and the files already
-# present are overwritten with a fresh set of realisations. A trial
-# index therefore names a different signal afterwards. Generate into a
-# separate out-dir (2nd positional arg) rather than in place.
+# simulator is invoked once for all TRIALS, drawing the whole cell in
+# one sequence) so every trial index in it gets a different signal than
+# before. Regenerating a cell at the *same* TRIALS is reproducible: this
+# generator is seeded from MFSK_SIM_SEED, default 1 -- see
+# scripts/sim_sgran_stub.c. Generate into a separate out-dir (2nd
+# positional arg) rather than in place.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

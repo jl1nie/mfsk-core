@@ -1,7 +1,7 @@
 {
   "_meta": {
     "schema": 1,
-    "note": "Provenance for the 50%-recall crossing SNRs below. Written and read by scripts/sweep-regression-check.py; scripts/release-status.sh uses each protocol's own date to decide what a release actually needs re-swept. Entries stamped c757d32 were seeded before this block existed and carry no trial count \u2014 the CSVs were not kept. Every later entry is written by --update-baseline from the run itself.",
+    "note": "Provenance for the 50%-recall crossing SNRs below. Written and read by scripts/sweep-regression-check.py; scripts/release-status.sh uses each protocol's own date to decide what a release actually needs re-swept. Entries stamped c757d32 were seeded before this block existed and carry no trial count \u2014 the CSVs were not kept. Every later entry is written by --update-baseline from the run itself. Each crossing is one corpus at MFSK_SIM_SEED=1 (the generators are deterministic since 2026-09-23 -- scripts/sim_sgran_stub.c), and that is deliberate: against a fixed corpus a code change shows up exactly, which is what this file is for. It is NOT an accurate absolute threshold -- one draw is worth up to ~1.1 dB on a fading channel (FT8 ccir_poor ranged -18.90..-20.00 over eight seeds). Quote docs/notes/BENCHMARKS.md for absolute figures, not this file; it carries multi-seed means and the paired comparison against real jt9 on the same corpus.",
     "protocols": {
       "fst4": {
         "date": "2026-09-21",
@@ -11,37 +11,37 @@
         "groups": 20
       },
       "ft4": {
-        "date": "2026-09-21",
-        "commit": "7561cd57",
-        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
+        "date": "2026-09-23",
+        "commit": "76cb70a6-dirty",
+        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 720,
         "groups": 4
       },
       "ft8": {
-        "date": "2026-09-21",
-        "commit": "7561cd57",
-        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
+        "date": "2026-09-23",
+        "commit": "76cb70a6-dirty",
+        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 720,
         "groups": 4
       },
       "jt65": {
-        "date": "2026-09-21",
-        "commit": "7561cd57",
-        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
+        "date": "2026-09-23",
+        "commit": "76cb70a6-dirty",
+        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt65_chase": {
-        "date": "2026-09-21",
-        "commit": "7561cd57",
-        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
+        "date": "2026-09-23",
+        "commit": "76cb70a6-dirty",
+        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt9": {
-        "date": "2026-09-21",
-        "commit": "7561cd57",
-        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
+        "date": "2026-09-23",
+        "commit": "76cb70a6-dirty",
+        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 300,
         "groups": 1
       },
@@ -52,17 +52,17 @@
         "groups": 2
       },
       "q65": {
-        "date": "2026-09-21",
-        "commit": "7561cd57",
-        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
-        "trials": 2820,
+        "date": "2026-09-23",
+        "commit": "76cb70a6-dirty",
+        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
+        "trials": 2640,
         "groups": 20
       },
       "wspr": {
-        "date": "2026-09-21",
-        "commit": "7561cd57",
-        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
-        "trials": 500,
+        "date": "2026-09-23",
+        "commit": "76cb70a6-dirty",
+        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
+        "trials": 260,
         "groups": 1
       }
     }
@@ -87,17 +87,17 @@
   "fst4/60/ccir_good": -26.21875,
   "fst4/60/ccir_moderate": -25.166666666666668,
   "fst4/60/ccir_poor": -24.545454545454547,
-  "ft4/awgn": -18.0,
-  "ft4/ccir_good": -17.615384615384617,
-  "ft4/ccir_moderate": -16.4,
-  "ft4/ccir_poor": -16.25,
-  "ft8/awgn": -21.6,
-  "ft8/ccir_good": -21.11111111111111,
-  "ft8/ccir_moderate": -20.0,
-  "ft8/ccir_poor": -19.666666666666668,
-  "jt65/awgn": -21.818181818181817,
-  "jt65_chase/awgn": -23.666666666666668,
-  "jt9/awgn": -26.53846153846154,
+  "ft4/awgn": -17.555555555555557,
+  "ft4/ccir_good": -17.857142857142858,
+  "ft4/ccir_moderate": -16.2,
+  "ft4/ccir_poor": -16.0,
+  "ft8/awgn": -21.625,
+  "ft8/ccir_good": -21.454545454545453,
+  "ft8/ccir_moderate": -19.75,
+  "ft8/ccir_poor": -18.9,
+  "jt65/awgn": -22.5,
+  "jt65_chase/awgn": -23.5,
+  "jt9/awgn": -26.636363636363637,
   "msk144/long": -5.166666666666667,
   "msk144/short": -5.8,
   "q65/a15/cq": -22.59090909090909,
@@ -120,5 +120,5 @@
   "q65/e120/plain": -26.5,
   "q65/e60/cq": -25.4375,
   "q65/e60/plain": -24.35,
-  "wspr/awgn": -31.416666666666668
+  "wspr/awgn": -31.333333333333332
 }

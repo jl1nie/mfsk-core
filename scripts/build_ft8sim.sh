@@ -60,10 +60,13 @@ gfortran "${FFLAGS[@]}" -c "$LIB/wavhdr.f90"
 echo "  [2/14] prog_args.f90"
 gfortran "${FFLAGS[@]}" -c "$LIB/prog_args.f90"
 
-echo "  [3/14] crc.f90 + crc14.cpp (boost) + sgran.c + init_random_seed.c"
+echo "  [3/14] crc.f90 + crc14.cpp (boost) + sim_sgran_stub.c + init_random_seed.c"
 gfortran "${FFLAGS[@]}" -c "$LIB/crc.f90"
 g++ -O2 -c "$LIB/crc14.cpp" -o crc14.o
-gcc -O2 -I"$LIB" -c "$LIB/sgran.c"
+# sgran: the repo's own deterministic stub, NOT "$LIB/sgran.c" -- upstream
+# seeds rand() from /dev/urandom so every run is a different corpus.
+# See scripts/sim_sgran_stub.c for why, and MFSK_SIM_SEED to vary it.
+gcc -O2 -c "$SCRIPT_DIR/sim_sgran_stub.c" -o sgran.o
 gcc -O2 -I"$LIB" -c "$LIB/init_random_seed.c"
 
 echo "  [4a/14] packjt.f90"

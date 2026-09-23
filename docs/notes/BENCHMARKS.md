@@ -55,9 +55,9 @@ Figures are asserted, not just observed — see each protocol's
 
 | Protocol | Golden-WAV recall | Precision (extra decodes) | AWGN gap vs. WSJT-X | Status |
 |----------|-------------------|---------------------------|----------------------|--------|
-| FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden | AWGN ≈ −21.6 dB (WSJT-X: −20 to −21 dB); CCIR good/moderate/poor ≈ −21.11 / −20.00 / −19.67 dB, re-measured 2026-09-20 — see `FT8_BENCHMARK.md` §12 | at/above parity |
+| FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden | AWGN ≈ −21.48 dB (WSJT-X: −20 to −21 dB); CCIR good/moderate/poor ≈ −21.24 / −19.72 / −19.68 dB — means over 8 deterministic seeds, re-measured 2026-09-23 (sd 0.20/0.24/0.39/0.39; a single seed is worth up to 1.1 dB on the fading channels, so these are not single-run numbers). Against real `jt9 -8 -d3` on the *same* corpus: −0.48 / −0.23 / +0.25 / +0.02 dB — see `FT8_BENCHMARK.md` §12 | at/above parity |
 | FT8 *(ship)* | 7/8 (WSJT-X) — misses `K1BZM DK8NE -10` at −17 dB, which needs AP context (issue #150) | 14 total, **0 uncorroborated** — all 7 extras are in the JTDX 20-entry golden | Not separately swept; the ship config trades recall for the ESP32 time budget | by design |
-| FT4      | 6/6 | **0** (budget 0) | AWGN ≈ **−18.00 dB** (0.11.0: was ≈ −16.9 dB until the a-priori pass was fixed and the always-on blind-CQ pass added — see the FT4 section and `CHANGELOG.md` 0.11.0). 0.5 dB ahead of WSJT-X's published −17.5 dB, where it had been 0.6 dB behind | above parity |
+| FT4      | 6/6 | **0** (budget 0) | AWGN ≈ **−17.56 dB** (0.11.0: was ≈ −16.9 dB until the a-priori pass was fixed and the always-on blind-CQ pass added — see the FT4 section and `CHANGELOG.md` 0.11.0). Level with WSJT-X's published −17.5 dB, where it had been 0.6 dB behind. Re-measured 2026-09-23 on the reproducible seed-1 corpus; the −18.00 dB this row carried until then was one un-reproducible draw of the same decoder | at/above parity |
 | FST4     | 1/1 (FST4-60A only) | **0** (budget 0) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section | at/above parity |
 | WSPR     | 9/9 | **0 phantoms**, and 0 across 5 chained slots with a carried callsign table | AWGN 50% ≈ −31.5 dB, matches live `wsprd` cell for cell | at parity |
 | JT9      | 7/7 | **0** (budget 0) | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
@@ -69,6 +69,177 @@ All AWGN 50%-crossing figures below are linear-interpolated between the
 nearest swept SNR points, in each `*sim` generator's 2500 Hz
 reference-bandwidth convention (matches WSJT-X's own published
 numbers directly, no unit conversion needed).
+
+## Generating the tier-C corpora
+
+Every AWGN/fading 50%-crossing on this page comes from a `*sim`-generated
+corpus under `embedded-poc/assets/*_sweep/` — ~17 GB, gitignored per
+directory, and absent on CI, which is why `scripts/run-sensitivity-sweeps.sh`
+exists at all. A fresh clone has none of it. This section is how to put it
+back on a machine; the per-protocol `FT8_BENCHMARK.md` / `FT4_BENCHMARK.md` /
+`FST4_BENCHMARK.md` carry the same steps for their own protocol in more
+detail, and JT9/JT65/Q65/WSPR had none until 2026-09-23.
+
+**Two properties of these corpora decide how the rest of this section
+reads.** Neither is obvious, and both were measured rather than assumed
+(2026-09-23, on the Ryzen 7 3700X box):
+
+- **Upstream re-seeds five of the seven simulators; this repo stops it.**
+  `gran_()` draws its noise from C `rand()`, and upstream's `sgran_()`
+  seeds that from /dev/urandom, so `ft8sim`, `ft4sim`, `jt9sim`, `jt65sim`
+  and `wsprsim` wrote a different realisation on every run. `fst4sim` and
+  `q65sim` never did — `fst4sim.f90:109` is `!   call sgran()`, commented
+  out upstream, and `q65sim.f90` has no such call. The build scripts here
+  link `scripts/sim_sgran_stub.c` in place of `lib/sgran.c`, which seeds
+  from `MFSK_SIM_SEED` (default 1), so **all seven now regenerate
+  byte-identically**. Verified by running each generator twice and diffing
+  the WAVs.
+- **A corpus is therefore a function of (simulator binary, arguments,
+  seed), and a baseline travels with it.** That is what makes
+  `sweep-baseline.json` comparable between machines at all. Before the
+  stub it was not: re-measuring on a second box against a baseline taken
+  on the first showed the re-seeded protocols scattering by −0.56 to
+  +0.68 dB with the decoder proven byte-identical, while all 20 of Q65's
+  groups — the one deterministic generator in that run — landed on their
+  stored values to the last printed digit, even though the two corpora were
+  not the same size (2 640 trials here against the stored 2 820: the cells
+  they do share are bit-identical, and the surplus sat on plateau points
+  that an interpolated 50%-crossing does not see).
+- **Determinism does not shrink the sampling error, it shares it.** At 20
+  trials per cell the draw-to-draw spread of a 50%-crossing is larger than
+  it looks: five independent FT4 corpora gave sd 0.08-0.27 dB per channel,
+  but a sixth draw moved FT4's `ccir_poor` 0.43 dB, and a single redraw
+  moved FT8's `ccir_poor` **1.32 dB** — same decoder, same grid. Fading
+  channels are the heavy tail. So a fixed seed buys reproducibility, not
+  accuracy: these numbers are exact for detecting a code change against
+  the same corpus, and worth ±1 dB on a fading channel when read as an
+  absolute threshold. To average that down, generate several corpora with
+  different `MFSK_SIM_SEED` values into separate out-dirs and compare.
+
+So: **regenerating a corpus from the same simulator build reproduces it
+exactly.** A baseline still assumes both machines built their simulators
+from the same WSJT-X checkout — that part cannot be checked from inside
+this repo.
+
+### Reading a crossing: pair it against `jt9` on the same corpus
+
+A single corpus's 50%-crossing is not a statement about the decoder. The
+draw it was generated from is worth up to ~1.1 dB on a fading channel, and
+that error is *common to every decoder run against those files* — so the
+way to remove it is to run WSJT-X's own binary over the same corpus and
+read the difference, not the absolute number.
+
+This is worth the two minutes it costs. On 2026-09-23 an FT8 corpus came
+out 1.32 dB "worse" on `ccir_poor` than the previous measurement and
+looked like a regression; the decoder was provably unchanged. Real
+`jt9 -8 -d3` over the same files returned −18.88 dB against mfsk-core's
+−18.90 dB — the corpus was simply a hard draw, and the eight-seed mean
+(−19.68 dB) landed 0.01 dB from the figure the table had carried all
+along.
+
+Build the reference binary from the same CMake tree as `jt65sim`/`q65sim`:
+
+```sh
+cmake --build ~/wsjtx-build --target jt9 -j"$(nproc)"
+# then, per WAV, in a scratch cwd:
+~/wsjtx-build/jt9 -8 -d 3 -a . -t . <file>.wav     # -8 FT8, -5 FT4,
+                                                   # -9 JT9, -6 JT65,
+                                                   # -7 FST4, -3 Q65
+```
+
+Score its output with the sweep's own criteria (message match, frequency
+within 5 Hz, |dt| ≤ 0.6 s) rather than a bare grep, and pick the depth
+deliberately: `-d1`/`-d2`/`-d3` moved FT4's `ccir_poor` by 1.7 dB between
+them, so a comparison that does not say which depth it used says very
+little.
+
+### Prerequisites
+
+A WSJT-X source checkout (`/home/ubuntu/src/WSJT-X` here) and `gfortran`,
+`gcc`, `g++`, `cmake`. The two CMake-built simulators additionally need
+what a full WSJT-X configure wants — Qt5, hamlib, boost, fftw3 — even
+though neither links the GUI.
+
+### The five stand-alone simulators
+
+`scripts/build_*sim.sh` assemble a minimal gfortran subset of WSJT-X's
+`lib/` — no CMake, no Qt, seconds each. Build, then generate:
+
+```sh
+scripts/build_ft8sim.sh            # then gen_ft8_sweep_wavs.sh
+scripts/build_ft4sim.sh            # then gen_ft4_sweep_wavs.sh
+scripts/build_fst4sim.sh           # then gen_fst4_sweep_wavs.sh
+scripts/build_jt9sim.sh            # then gen_jt9_sweep_wavs.sh
+scripts/build_wsprsim.sh           # then gen_wspr_sweep_wavs.sh
+scripts/gen_ft8_sweep_wavs.sh      # each takes [sim-path] [out-dir]
+```
+
+Each `gen_*` script takes an optional simulator path and out-dir, skips
+cells already present, and parallelises over `JOBS` (default `nproc`).
+Re-running one reproduces the same corpus; generate into a **separate
+out-dir** rather than in place when changing `TRIALS` or `MFSK_SIM_SEED`,
+since either redraws a whole cell and reshuffles which signal each trial
+index names.
+
+### `jt65sim` and `q65sim` — the full CMake build
+
+These two link the whole `wsjt_fort` + `wsjt_cxx` libraries rather than a
+pickable subset, so they come from WSJT-X's own CMake build:
+
+```sh
+cmake -S /path/to/WSJT-X -B ~/wsjtx-build -DCMAKE_BUILD_TYPE=Release \
+      -DWSJT_GENERATE_DOCS=OFF -DWSJT_SKIP_MANPAGES=ON
+cmake --build ~/wsjtx-build --target jt65sim q65sim -j"$(nproc)"
+
+scripts/build_jt65sim.sh            # re-link against the seeding stub
+scripts/gen_jt65_sweep_wavs.sh target/jt65sim/jt65sim
+scripts/gen_q65_sweep_wavs.sh  ~/wsjtx-build/q65sim
+```
+
+`q65sim` is used straight from the CMake tree; `jt65sim` is not. CMake's
+`jt65sim` takes `sgran_` out of `libwsjt_fort.a` and so re-seeds per run,
+which `scripts/build_jt65sim.sh` fixes by re-linking the same objects with
+`sim_sgran_stub.o` passed explicitly — the linker resolves the symbol
+before it searches the archive. Seconds, no recompilation.
+
+**`-DWSJT_SKIP_MANPAGES=ON` is not optional**: configure hard-errors
+without it unless `a2x` (asciidoc's, *not* `asciidoctor`'s) is installed,
+and the manpages are of no use here. `-DWSJT_GENERATE_DOCS=OFF` is the
+same bargain for the handbook. Only the two Fortran/C++ libraries actually
+compile — the Qt GUI is never a dependency of these targets — so the build
+is ~2 min, and the same tree also yields the real `jt9` CLI
+(`cmake --build ~/wsjtx-build --target jt9`) that several sections below
+compare against.
+
+### What a complete set looks like
+
+Counts and sizes as generated 2026-09-23 at each script's default
+`TRIALS`; total ~17 GB.
+
+| corpus | simulator | build via | WAVs | size |
+|---|---|---|---|---|
+| `fst4_sweep` | `fst4sim` | `scripts/build_fst4sim.sh` | 5120 | 13 G |
+| `q65_sweep` | `q65sim` | WSJT-X CMake | 1320 | 2.0 G |
+| `wspr_sweep` | `wsprsim` | `scripts/build_wsprsim.sh` | 260 | 716 M |
+| `ft8_sweep` | `ft8sim` | `scripts/build_ft8sim.sh` | 1040 | 358 M |
+| `jt9_sweep` | `jt9sim` | `scripts/build_jt9sim.sh` | 300 | 372 M |
+| `jt65_sweep` | `jt65sim` | CMake + `scripts/build_jt65sim.sh` | 300 | 372 M |
+| `ft4_sweep` | `ft4sim` | `scripts/build_ft4sim.sh` | 1040 | 147 M |
+
+All seven regenerate byte-identically from the same simulator build and
+`MFSK_SIM_SEED` — checked by running each generator twice and diffing the
+WAVs, and end to end by rebuilding the whole 1040-file FT4 corpus and
+finding it identical to the one on disk.
+
+`q65_sweep`'s 120 s and 300 s sub-modes carry 5 trials per cell rather
+than 15 — `gen_q65_sweep_wavs.sh` scales them down on purpose, since both
+disk and decode cost grow with the T/R period.
+
+Generating all seven is minutes of wall clock. *Running* the sweeps is
+not: `fst4_sweep` over all five sub-modes is 8 h+ on the 3700X box
+(~1100 audio-seconds per minute), which is what `MFSK_FST4_SWEEP_MODES`
+/ `_CHANNELS` / `_SNR_MIN` / `_SNR_MAX` and `scripts/sweep-narrow-plan.py`
+are for.
 
 ## Decode speed (single golden-WAV, host)
 

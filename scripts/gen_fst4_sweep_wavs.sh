@@ -42,7 +42,11 @@ if [[ ! -x "$FST4SIM" ]]; then
   exit 1
 fi
 
+# run_cell cd's into a tmpdir before invoking the simulator, so both
+# paths must be absolute regardless of how the caller passed them in.
+[[ -x "$FST4SIM" ]] && FST4SIM="$(cd "$(dirname "$FST4SIM")" && pwd)/$(basename "$FST4SIM")"
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 MSG="CQ JL1NIE PM95"
 F0=1500

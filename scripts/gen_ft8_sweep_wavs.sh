@@ -15,10 +15,12 @@
 # Trials per cell: TRIALS env var, default 20. Raising it does not
 # extend an existing corpus: a cell is skipped only when every trial is
 # already there, so an incomplete one is regenerated whole (the
-# simulator is invoked once for all TRIALS) and the files already
-# present are overwritten with a fresh set of realisations. A trial
-# index therefore names a different signal afterwards. Generate into a
-# separate out-dir (2nd positional arg) rather than in place.
+# simulator is invoked once for all TRIALS, drawing the whole cell in
+# one sequence) so every trial index in it gets a different signal than
+# before. Regenerating a cell at the *same* TRIALS is reproducible: this
+# generator is seeded from MFSK_SIM_SEED, default 1 -- see
+# scripts/sim_sgran_stub.c. Generate into a separate out-dir (2nd
+# positional arg) rather than in place.
 #
 # Mirrors scripts/gen_ft4_sweep_wavs.sh (see docs/notes/FT8_BENCHMARK.md).
 # FT8 has no sub-modes, so there's one SNR grid instead of one per period.
@@ -37,7 +39,11 @@ if [[ ! -x "$FT8SIM" ]]; then
   exit 1
 fi
 
+# run_cell cd's into a tmpdir before invoking the simulator, so both
+# paths must be absolute regardless of how the caller passed them in.
+[[ -x "$FT8SIM" ]] && FT8SIM="$(cd "$(dirname "$FT8SIM")" && pwd)/$(basename "$FT8SIM")"
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 MSG="CQ JL1NIE PM95"
 F0=1500

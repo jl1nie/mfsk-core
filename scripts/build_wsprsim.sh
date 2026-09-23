@@ -94,9 +94,12 @@ gfortran "${FFLAGS[@]}" -c "$LIB/genwspr.f90"
 echo "  [10/14] wspr_wav.f90 (channel symbols -> 12 kHz iwave)"
 gfortran "${FFLAGS[@]}" -c "$LIB/wsprd/wspr_wav.f90"
 
-echo "  [11/14] gran.c + sgran.c + init_random_seed.{f90,c}"
+echo "  [11/14] gran.c + sim_sgran_stub.c + init_random_seed.{f90,c}"
 gcc -O2 -c "$LIB/gran.c"
-gcc -O2 -c "$LIB/sgran.c"
+# sgran: the repo's own deterministic stub, NOT "$LIB/sgran.c" -- upstream
+# seeds rand() from /dev/urandom so every run is a different corpus.
+# See scripts/sim_sgran_stub.c for why, and MFSK_SIM_SEED to vary it.
+gcc -O2 -c "$SCRIPT_DIR/sim_sgran_stub.c" -o sgran.o
 gfortran "${FFLAGS[@]}" -c "$LIB/init_random_seed.f90" -o init_random_seed_f90.o
 gcc -O2 -c "$LIB/init_random_seed.c" -o init_random_seed_c.o
 

@@ -10,6 +10,11 @@
 # rebuild that, which is why every one of these tests silently skips
 # there.
 #
+# How to build those simulators and generate the corpora is
+# docs/notes/BENCHMARKS.md, "Generating the tier-C corpora" -- including
+# the two (jt65sim, q65sim) that need WSJT-X's full CMake build, and why
+# a baseline measured on another machine's corpus is not comparable.
+#
 # A nightly workflow was considered and rejected: on a solo, bursty
 # repo most nights would re-measure unchanged code, and this project
 # has already deleted one scheduled tier for exactly that reason —
@@ -106,6 +111,8 @@ if [ ${#missing[@]} -gt 0 ]; then
   printf '  - %s\n' "${missing[@]}"
   echo "generate with scripts/gen_*_sweep_wavs.sh (build the simulators first:"
   echo "scripts/build_*sim.sh), or pass only the groups you have."
+  echo "full procedure, including jt65sim/q65sim which need WSJT-X's own"
+  echo "CMake build: docs/notes/BENCHMARKS.md, 'Generating the tier-C corpora'."
   echo
 fi
 

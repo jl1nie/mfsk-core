@@ -26,6 +26,46 @@
     them would change decodes. A shared Gray-code helper is deferred to
     #391: it only pays off once the public `jt65::{gray6, inv_gray6}`
     can go, which is a breaking change.
+- **The tier-C corpora regenerate byte-identically, so a sweep baseline
+  now travels between machines.** `gran_()` draws its noise from C
+  `rand()`, and upstream's `sgran_()` seeds that from /dev/urandom — so
+  `ft8sim`, `ft4sim`, `jt9sim`, `jt65sim` and `wsprsim` wrote a different
+  realisation on every run, and a corpus generated on one machine was
+  never the corpus generated on another. `fst4sim` and `q65sim` already
+  did not: `fst4sim.f90:109` is `!   call sgran()`, commented out
+  upstream, and `q65sim.f90` has no such call. The build scripts now link
+  `scripts/sim_sgran_stub.c` in place of `lib/sgran.c`, seeding from
+  `MFSK_SIM_SEED` (default 1); `jt65sim`, which comes from WSJT-X's CMake
+  build and takes `sgran_` out of `libwsjt_fort.a`, gets the same
+  treatment by re-linking through the new `scripts/build_jt65sim.sh`.
+  Verified by generating each corpus twice and diffing, and end to end by
+  rebuilding all 1 040 FT4 WAVs and finding them identical.
+
+  This started as a 0.68 dB disagreement on FT4's `ccir_poor` between two
+  machines running the same commit. It was not the decoder: re-run at the
+  baseline's own commit, and at the commit that set its values, the
+  per-trial results were byte-identical. It was the corpus, and the same
+  effect made an FT8 `ccir_poor` figure move 1.32 dB and look like a
+  regression — real `jt9 -8 -d3` over the same files returned −18.88 dB
+  against this crate's −18.90 dB, and the eight-seed mean landed 0.01 dB
+  from the figure the table had carried all along. `docs/notes/BENCHMARKS.md`
+  gains a "Generating the tier-C corpora" section covering all seven
+  (JT9/JT65/Q65/WSPR had no written procedure at all), the `-DWSJT_SKIP_MANPAGES=ON`
+  that a WSJT-X configure hard-errors without, and the rule that a crossing
+  is read by pairing it against `jt9` on the same corpus rather than as an
+  absolute number.
+
+  `docs/notes/sweep-baseline.json` is re-measured on the seed-1 corpora for
+  FT8/FT4/JT9/JT65/Q65/WSPR. It stays one seed on purpose: against a fixed
+  corpus a code change shows up exactly, which is what a release gate
+  needs, and it costs the same 70 s it always did. Absolute figures belong
+  in `BENCHMARKS.md`, which now carries multi-seed means — one draw is
+  worth up to ~1.1 dB on a fading channel. FST4 is untouched: its generator
+  was already deterministic, so its baseline still transfers.
+
+  Four `gen_*_sweep_wavs.sh` also stopped breaking when handed a relative
+  simulator path — they `cd` into a tmpdir before invoking it, which
+  `gen_jt9`/`gen_wspr`/`gen_q65` had already worked around.
 
 - **One spectrogram builder for JT9, JT65, Q65 and WSPR (#390).** The
   shared `engine::spectrogram` builder called `rustfft` directly, so
