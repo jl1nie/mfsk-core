@@ -10,7 +10,7 @@
 
 #![cfg(feature = "q65")]
 
-use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::search::{SearchParams, default_search_params};
 use mfsk_core::q65::tx::synthesize_standard_for;
 use mfsk_core::q65::{DecodeRequest, Q65a15};
 
@@ -101,7 +101,7 @@ fn q65_15a_default_window_covers_wsjtx_plus_one_second() {
     slot[start..start + n].copy_from_slice(&audio[..n]);
 
     let decodes =
-        DecodeRequest::<Q65a15>::new(&slot, FS, nominal, SearchParams::default()).decode();
+        DecodeRequest::<Q65a15>::new(&slot, FS, nominal, default_search_params()).decode();
     assert!(
         decodes.iter().any(|d| d.message == "CQ JA1ABC PM95"),
         "Q65-15A must decode at Δt = +1.0 s, WSJT-X's own lag2 \

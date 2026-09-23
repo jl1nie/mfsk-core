@@ -302,7 +302,7 @@ fn harvest_osd_inputs() -> Option<std::collections::BTreeMap<i32, (u32, u32, u32
         )
     };
 
-    let params = mfsk_core::wspr::SearchParams::default();
+    let params = mfsk_core::wspr::search::default_search_params();
     let mut per_snr_osd: std::collections::BTreeMap<i32, (u32, u32, u32)> =
         std::collections::BTreeMap::new(); // snr -> (trials, osd_attempts_delta, fano_hits)
 

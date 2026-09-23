@@ -13,6 +13,8 @@
 
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
 use crate::engine::ModulationParams;
@@ -37,83 +39,15 @@ fn build_spectrogram(audio: &[f32], sample_rate: u32) -> Spectrogram {
     Spectrogram::build_for::<Jt65>(audio, sample_rate, NSTEP_PER_SYMBOL)
 }
 
-/// One candidate surviving the coarse (freq × time) sync search.
-#[derive(Clone, Copy, Debug)]
-pub struct SyncCandidate {
-    /// Sample index where symbol 0 is estimated to start.
-    pub start_sample: usize,
-    /// Base-tone (tone 0) frequency in Hz.
-    pub freq_hz: f32,
-    /// Normalised sync score, `sync_pwr / (sync_pwr + noise_floor)`.
-    /// Larger = better; [`DEFAULT_SCORE_THRESHOLD`] is the minimum
-    /// worth handing to a decode attempt.
-    pub score: f32,
-}
+pub use crate::engine::search::{DEFAULT_SCORE_THRESHOLD, SearchParams, SyncCandidate};
+use crate::engine::search::{SearchWindow, rank_and_truncate};
 
-/// Conservative minimum sync score below which candidates are
-/// unlikely to yield a successful decode.
-pub const DEFAULT_SCORE_THRESHOLD: f32 = 0.1;
-
-/// Search-window parameters for [`coarse_search`].
-#[derive(Clone, Copy, Debug)]
-pub struct SearchParams {
-    /// Lower edge of the frequency search band, Hz.
-    pub freq_min_hz: f32,
-    /// Upper edge of the frequency search band, Hz.
-    pub freq_max_hz: f32,
-    /// ±Δt search window around the nominal start sample, **in
-    /// seconds**. Seconds rather than symbols for the same reason
-    /// Q65's is (issue #282): symbol counts do not transfer between
-    /// protocols or sub-modes, and the reference decoder states this
-    /// window in time.
-    pub time_tolerance_sec: f32,
-    /// Minimum candidate score (normalised); see [`SyncCandidate::score`].
-    pub score_threshold: f32,
-    /// Maximum number of candidates returned, best-score first.
-    pub max_candidates: usize,
-}
-
-impl Default for SearchParams {
-    fn default() -> Self {
-        Self {
-            // JT65 typically lives 1000–2000 Hz on the dial.
-            freq_min_hz: 1000.0,
-            freq_max_hz: 2000.0,
-            // WSJT-X `sync65.f90:29-30` searches `lag1=-32 .. lag2=82`
-            // in units of `1024/11025` s = 92.9 ms, i.e. **−2.97 s to
-            // +7.62 s** — deliberately asymmetric, because a JT65
-            // frame is 46.8 s inside a 60 s slot and a late start has
-            // far more room than an early one.
-            //
-            // Searched symmetrically here at the wider (late) half.
-            // `row_min` clamps at row 0 for any realistic nominal
-            // start (~1 s), so the extra negative span costs nothing
-            // reachable; the alternative — carrying two fields to
-            // mirror the asymmetry exactly — buys no behaviour.
-            //
-            // Was `time_tolerance_symbols: 3` (±1.11 s) until issue
-            // #282. Measured against real `jt9 -6 -p 60 -d 3` over a
-            // `jt65sim -t` Δt sweep at −10 dB: `jt9` decoded out to
-            // Δt = +5.0 s; this crate stopped at Δt = 0.0.
-            time_tolerance_sec: 7.62,
-            score_threshold: DEFAULT_SCORE_THRESHOLD,
-            // Stays at 8, *not* raised toward `sync65.f90:3`'s
-            // `MAXCAND=300` (issue #282 proposed that; measurement
-            // withdrew it). The two numbers are not comparable:
-            // WSJT-X's is an array bound for candidates emitted only
-            // at local maxima above `thresh0`, while this one
-            // truncates a ranked list in which *every* entry costs a
-            // full decode attempt.
-            //
-            // Measured on ten `jt65sim` files at −22 dB (the SNR
-            // where recall is partial, so a cap change can show):
-            // 8 → 5/10 in 0.4 s, 300 → 5/10 in 11.0 s. Identical
-            // recall, 27× the time. `tests/jt65_sweep.rs` alone went
-            // 7.4 s → 189 s with the raise, on a test that gates
-            // every PR.
-            max_candidates: 8,
-        }
-    }
+/// JT65's own coarse-search defaults.
+///
+/// 1000-2000 Hz is where JT65 activity actually sits; ±7.62 s is the
+/// window WSJT-X's own search covers.
+pub fn default_search_params() -> SearchParams {
+    SearchParams::symmetric(1000.0, 2000.0, 7.62, 8)
 }
 
 /// Row step between consecutive symbols in a [`Spectrogram`] built at
@@ -188,19 +122,11 @@ pub fn coarse_search_on_spec(
         return Vec::new();
     }
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32;
-
-    let t_span_rows =
-        (params.time_tolerance_sec * sample_rate as f32 / spec.t_step.max(1) as f32).round() as i64;
-    let nominal_row = (nominal_start_sample / spec.t_step) as i64;
-    let row_min = (nominal_row - t_span_rows).max(0);
-    let row_max = nominal_row + t_span_rows;
-
-    let fmin_bin = (params.freq_min_hz / df).floor() as i64;
-    let fmax_bin = (params.freq_max_hz / df).ceil() as i64;
+    let w = SearchWindow::new(spec.t_step, sample_rate, nominal_start_sample, nsps, params);
+    let df = w.df;
 
     let mut out: Vec<SyncCandidate> = Vec::new();
-    for row in row_min..=row_max {
+    for row in w.row_min..=w.row_max {
         if row < 0 {
             continue;
         }
@@ -208,7 +134,7 @@ pub fn coarse_search_on_spec(
         if row + 125 * ROWS_PER_SYMBOL >= spec.n_time {
             continue;
         }
-        for fb in fmin_bin..=fmax_bin {
+        for fb in w.fmin_bin..=w.fmax_bin {
             if fb < 0 || (fb as usize) + 66 > spec.n_freq {
                 continue;
             }
@@ -222,12 +148,7 @@ pub fn coarse_search_on_spec(
             }
         }
     }
-    out.sort_unstable_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
-    out.truncate(params.max_candidates);
+    rank_and_truncate(&mut out, params.max_candidates);
     out
 }
 
@@ -240,7 +161,7 @@ mod tests {
     fn coarse_search_finds_clean_signal() {
         let freq = 1270.0;
         let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("synth");
-        let cands = coarse_search(&audio, 12_000, 0, &SearchParams::default());
+        let cands = coarse_search(&audio, 12_000, 0, &default_search_params());
         assert!(!cands.is_empty());
         let best = cands[0];
         assert!(

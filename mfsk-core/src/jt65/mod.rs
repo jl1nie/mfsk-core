@@ -351,9 +351,9 @@ fn pad_for_early_frames(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
-    time_tolerance_sec: f32,
+    time_tolerance_early_sec: f32,
 ) -> Option<(Vec<f32>, usize)> {
-    let want = (time_tolerance_sec.max(0.0) * sample_rate as f32).round() as usize;
+    let want = (time_tolerance_early_sec.max(0.0) * sample_rate as f32).round() as usize;
     let pad = want.saturating_sub(nominal_start_sample);
     if pad == 0 {
         return None;
@@ -377,7 +377,7 @@ fn decode_scan_inner(
         audio,
         sample_rate,
         nominal_start_sample,
-        params.time_tolerance_sec,
+        params.time_tolerance_early_sec,
     );
     let (audio, pad) = match &padding {
         Some((buf, pad)) => (buf.as_slice(), *pad),
@@ -422,7 +422,7 @@ fn decode_scan_inner(
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Result> {
-    decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
+    decode_scan(audio, sample_rate, 0, &search::default_search_params())
 }
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -493,7 +493,7 @@ fn decode_scan_chase_inner(
         audio,
         sample_rate,
         nominal_start_sample,
-        search_params.time_tolerance_sec,
+        search_params.time_tolerance_early_sec,
     );
     let (audio, pad) = match &padding {
         Some((buf, pad)) => (buf.as_slice(), *pad),
@@ -547,7 +547,7 @@ pub fn decode_scan_chase_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Res
         audio,
         sample_rate,
         0,
-        &search::SearchParams::default(),
+        &search::default_search_params(),
         &chase::ChaseParams::default(),
     )
 }
@@ -665,7 +665,7 @@ mod tests {
             &slot,
             12_000,
             0,
-            &search::SearchParams::default(),
+            &search::default_search_params(),
             &on_result,
         );
         let streamed = streamed_acc.into_inner().unwrap();

@@ -1600,9 +1600,14 @@ fn decode_scan_inner(
     seen
 }
 
-/// Convenience: scan using [`SearchParams::default`].
+/// Convenience: scan using [`super::search::default_search_params`].
 pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<WsprResult> {
-    decode_scan(audio, sample_rate, 0, &SearchParams::default())
+    decode_scan(
+        audio,
+        sample_rate,
+        0,
+        &super::search::default_search_params(),
+    )
 }
 
 /// WSPR subtract configuration (continuous-phase 4-FSK). Mirrors WSJT-X
@@ -1859,7 +1864,7 @@ mod tests {
             &SearchParams {
                 freq_min_hz: 1450.0,
                 freq_max_hz: 1550.0,
-                ..SearchParams::default()
+                ..crate::wspr::search::default_search_params()
             },
         );
         assert!(!decodes.is_empty(), "at least one decode");

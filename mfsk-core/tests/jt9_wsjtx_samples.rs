@@ -95,7 +95,8 @@ fn jt9_search_params() -> SearchParams {
     SearchParams {
         freq_min_hz: 1050.0,
         freq_max_hz: 1550.0,
-        time_tolerance_sec: 1.728,
+        time_tolerance_early_sec: 1.728,
+        time_tolerance_late_sec: 1.728,
         score_threshold: 0.05,
         max_candidates: 200,
     }

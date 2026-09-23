@@ -52,6 +52,8 @@ pub mod scalar;
 // Routes through `engine::fft` (#390), so it builds under either FFT
 // backend, like `sync` / `llr` / `pipeline`.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod search;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod spectrogram;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod sync;

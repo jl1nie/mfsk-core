@@ -282,9 +282,9 @@ fn decode_scan_inner(
 }
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-/// Convenience: scan using [`search::SearchParams::default`].
+/// Convenience: scan using [`search::default_search_params`].
 pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt9Result> {
-    decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
+    decode_scan(audio, sample_rate, 0, &search::default_search_params())
 }
 
 /// JT9 protocol marker.
@@ -381,7 +381,7 @@ mod tests {
         let freq = 1500.0;
         let audio =
             tx::synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("pack+synth");
-        let params = search::SearchParams::default();
+        let params = search::default_search_params();
         for depth in [
             Jt9Depth::Fast,
             Jt9Depth::Normal,
@@ -448,7 +448,7 @@ mod tests {
                 let sp = search::SearchParams {
                     score_threshold: 0.001,
                     max_candidates: 50_000,
-                    ..Default::default()
+                    ..search::default_search_params()
                 };
                 let mut c = search::coarse_search(&audio, 12000, 0, &sp);
                 c.truncate(32);
@@ -522,7 +522,8 @@ mod tests {
         let sp = search::SearchParams {
             freq_min_hz: 1050.0,
             freq_max_hz: 1550.0,
-            time_tolerance_sec: 1.728,
+            time_tolerance_early_sec: 1.728,
+            time_tolerance_late_sec: 1.728,
             score_threshold: 0.05,
             max_candidates: 200,
         };

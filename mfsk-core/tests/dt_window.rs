@@ -96,7 +96,7 @@ fn place(signal: &[f32], start_sec: f32, slot_sec: f32) -> Vec<f32> {
 
 #[test]
 fn jt65_window_reaches_reference_late_edge() {
-    use mfsk_core::jt65::search::SearchParams;
+    use mfsk_core::jt65::search::{SearchParams, default_search_params};
     use mfsk_core::jt65::{decode_scan, tx::synthesize_standard};
 
     let signal = synthesize_standard("K1ABC", "W9XYZ", "EN37", FS, 1500.0, 0.3)
@@ -106,7 +106,7 @@ fn jt65_window_reaches_reference_late_edge() {
     let params = SearchParams {
         freq_min_hz: 1400.0,
         freq_max_hz: 1600.0,
-        ..Default::default()
+        ..default_search_params()
     };
 
     let mut missed: Vec<f32> = Vec::new();
@@ -132,7 +132,7 @@ fn jt65_window_reaches_reference_late_edge() {
 
 #[test]
 fn jt9_window_reaches_reference_late_edge() {
-    use mfsk_core::jt9::search::SearchParams;
+    use mfsk_core::jt9::search::{SearchParams, default_search_params};
     use mfsk_core::jt9::{decode_scan, tx::synthesize_standard};
 
     let signal = synthesize_standard("K1ABC", "W9XYZ", "EN37", FS, 1500.0, 0.3)
@@ -141,7 +141,7 @@ fn jt9_window_reaches_reference_late_edge() {
     let params = SearchParams {
         freq_min_hz: 1400.0,
         freq_max_hz: 1600.0,
-        ..Default::default()
+        ..default_search_params()
     };
 
     let mut missed: Vec<f32> = Vec::new();
@@ -182,7 +182,7 @@ const REFERENCE_Q65_EARLY_SEC: f32 = -1.0;
 /// exactly these frames and so cannot express the case under test.
 #[test]
 fn jt65_decodes_frame_starting_before_the_buffer() {
-    use mfsk_core::jt65::search::SearchParams;
+    use mfsk_core::jt65::search::{SearchParams, default_search_params};
     use mfsk_core::jt65::{decode_scan, tx::synthesize_standard};
 
     let signal = synthesize_standard("K1ABC", "W9XYZ", "EN37", FS, 1500.0, 0.3)
@@ -191,7 +191,7 @@ fn jt65_decodes_frame_starting_before_the_buffer() {
     let params = SearchParams {
         freq_min_hz: 1400.0,
         freq_max_hz: 1600.0,
-        ..Default::default()
+        ..default_search_params()
     };
 
     // Δt = −3.0 s with a 1.0 s nominal puts the frame start 2.0 s
@@ -221,7 +221,7 @@ fn jt65_decodes_frame_starting_before_the_buffer() {
 #[test]
 fn q65_decodes_frame_starting_before_the_buffer() {
     use mfsk_core::q65::decode_request::DecodeRequest;
-    use mfsk_core::q65::search::SearchParams;
+    use mfsk_core::q65::search::default_search_params as q65_default_search_params;
     use mfsk_core::q65::{Q65a15, tx::synthesize_standard_for};
 
     let signal = synthesize_standard_for::<Q65a15>("CQ", "JA1ABC", "PM95", FS, 1500.0, 0.3)
@@ -237,7 +237,7 @@ fn q65_decodes_frame_starting_before_the_buffer() {
         &slot,
         FS,
         (nominal * FS as f32) as usize,
-        SearchParams::default(),
+        q65_default_search_params(),
     )
     .decode();
     let hit = decodes.iter().find(|d| d.message.contains("JA1ABC"));
@@ -269,7 +269,7 @@ const REFERENCE_Q65_60_LATE_SEC: f32 = 5.0;
 #[cfg(feature = "q65")]
 fn q65_60a_default_window_reaches_reference_late_edge() {
     use mfsk_core::q65::decode_request::DecodeRequest;
-    use mfsk_core::q65::search::SearchParams;
+    use mfsk_core::q65::search::default_search_params as q65_default_search_params;
     use mfsk_core::q65::{Q65a60, tx::synthesize_standard_for};
 
     let signal = synthesize_standard_for::<Q65a60>("CQ", "JA1ABC", "PM95", FS, 1500.0, 0.3)
@@ -283,7 +283,7 @@ fn q65_60a_default_window_reaches_reference_late_edge() {
         &slot,
         FS,
         (nominal * FS as f32) as usize,
-        SearchParams::default(),
+        q65_default_search_params(),
     )
     .decode();
     let hit = decodes.iter().find(|d| d.message.contains("JA1ABC"));
@@ -314,7 +314,7 @@ const REFERENCE_Q65_120_LATE_SEC: f32 = 2.0;
 #[cfg(feature = "q65")]
 fn q65_120d_default_window_reaches_reference_late_edge() {
     use mfsk_core::q65::decode_request::DecodeRequest;
-    use mfsk_core::q65::search::SearchParams;
+    use mfsk_core::q65::search::default_search_params as q65_default_search_params;
     use mfsk_core::q65::{Q65d120, tx::synthesize_standard_for};
 
     let signal = synthesize_standard_for::<Q65d120>("CQ", "JA1ABC", "PM95", FS, 1500.0, 0.3)
@@ -328,7 +328,7 @@ fn q65_120d_default_window_reaches_reference_late_edge() {
         &slot,
         FS,
         (nominal * FS as f32) as usize,
-        SearchParams::default(),
+        q65_default_search_params(),
     )
     .decode();
     let hit = decodes.iter().find(|d| d.message.contains("JA1ABC"));

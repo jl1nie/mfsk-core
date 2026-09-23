@@ -48,7 +48,7 @@ real but modest; extraction was not the dominant cost.
 
 Profiling (`q65_multi_period_candidate_count_diag`) found
 `max_candidates=32` (the golden tests' own `SearchParams`, wider than
-the library's own `SearchParams::default()` of `8`) hit and capped at
+the library's own `q65::search::default_search_params()` of `8`) hit and capped at
 **every single slot** — all 4 ionoscatter slots for Q65-30A. Each of
 those 32 candidates pays for the full decode ladder (AP-list + 6-way
 fading sweep + plain Bessel fallback = up to 8 decode attempts) before
@@ -71,7 +71,7 @@ BP stage (up to 6 attempts/candidate) was still ~79% of total
 wall-clock even after the extraction fix, confirming candidate *count*
 — not per-candidate cost — remained the dominant lever. Given the same
 #0-with-margin evidence, cut further to `max_candidates=8`, matching
-`SearchParams::default()` exactly rather than an arbitrary number —
+`q65::search::default_search_params()` exactly rather than an arbitrary number —
 verified bit-identical recall again (same message, freq, dt, and — for
 Q65-30A — the exact same BP iteration count, 37) before settling there.
 

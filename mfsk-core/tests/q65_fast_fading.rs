@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
-use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::search::{SearchParams, default_search_params};
 use mfsk_core::q65::{
     DecodeRequest, Q65a30, Q65a60, Q65d60, SniperRequest, synthesize_standard,
     synthesize_standard_for,
@@ -175,7 +175,7 @@ fn fast_fading_handles_moderate_spread_better_than_bessel() {
             score_threshold: 0.05,
             max_candidates: 16,
         };
-        let bessel = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, SearchParams::default())
+        let bessel = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, default_search_params())
             .decode()
             .is_empty();
         let fading = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, params)

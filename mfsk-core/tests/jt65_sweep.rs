@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 mod common;
 use common::load_wav_f32_opt;
-use mfsk_core::jt65::search::SearchParams;
+use mfsk_core::jt65::search::{SearchParams, default_search_params};
 use mfsk_core::jt65::{decode_scan_chase_default, decode_scan_default};
 
 const GOLDEN_CALL1: &str = "CQ";
@@ -298,7 +298,7 @@ fn jt65_reported_snr_tracks_injected() {
     let params = SearchParams {
         freq_min_hz: GOLDEN_FREQ_HZ - 100.0,
         freq_max_hz: GOLDEN_FREQ_HZ + 100.0,
-        ..SearchParams::default()
+        ..default_search_params()
     };
 
     let mut cells: std::collections::BTreeMap<i32, Vec<f32>> = std::collections::BTreeMap::new();

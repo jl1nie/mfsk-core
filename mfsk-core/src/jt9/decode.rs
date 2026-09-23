@@ -349,7 +349,7 @@ mod gate_diag {
             let sp = SearchParams {
                 score_threshold: 0.001,
                 max_candidates: 50_000,
-                ..Default::default()
+                ..crate::jt9::search::default_search_params()
             };
             let mut cands = coarse_search(&audio, 12_000, 0, &sp);
             cands.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap());

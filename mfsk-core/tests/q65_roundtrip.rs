@@ -15,7 +15,7 @@
 
 #![cfg(feature = "q65")]
 
-use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::search::default_search_params;
 use mfsk_core::q65::{DecodeRequest, Q65a30, synthesize_standard};
 
 const FS: u32 = 12_000;
@@ -35,7 +35,7 @@ fn make_slot(audio: &[f32], start_sample: usize) -> Vec<f32> {
 /// Q65-30A default-search-params scan from sample 0 — replacement for
 /// the pre-#204 `decode_scan_default` convenience wrapper.
 fn scan_default(audio: &[f32], sample_rate: u32) -> Vec<mfsk_core::q65::Q65Result> {
-    DecodeRequest::<Q65a30>::new(audio, sample_rate, 0, SearchParams::default()).decode()
+    DecodeRequest::<Q65a30>::new(audio, sample_rate, 0, default_search_params()).decode()
 }
 
 #[test]

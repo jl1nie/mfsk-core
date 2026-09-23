@@ -38,7 +38,7 @@
 #![cfg(all(feature = "jt65", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
 use mfsk_core::jt65::decode_scan;
-use mfsk_core::jt65::search::SearchParams;
+use mfsk_core::jt65::search::{SearchParams, default_search_params};
 
 #[allow(dead_code)]
 mod common;
@@ -64,7 +64,7 @@ fn decodes() -> Option<Vec<mfsk_core::jt65::Jt65Result>> {
     let params = SearchParams {
         freq_min_hz: 300.0,
         freq_max_hz: 2700.0,
-        ..SearchParams::default()
+        ..default_search_params()
     };
     Some(decode_scan(&a, 12_000, 0, &params))
 }

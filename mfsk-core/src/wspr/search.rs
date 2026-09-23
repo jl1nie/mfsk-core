@@ -31,58 +31,37 @@ use crate::engine::ModulationParams;
 use super::Wspr;
 use super::spectrogram::{Spectrogram, score_candidate};
 
-/// A candidate WSPR alignment, ranked by its sync-vector correlation.
-#[derive(Clone, Copy, Debug)]
-pub struct SyncCandidate {
-    pub start_sample: usize,
-    pub freq_hz: f32,
-    pub score: f32,
-}
+pub use crate::engine::search::{DEFAULT_SCORE_THRESHOLD, SearchParams, SyncCandidate};
+use crate::engine::search::{SearchWindow, rank_and_truncate};
 
-/// Default sync-score threshold for [`super::rx::sync_score`]. Pure
-/// noise scores ≈ 0; misaligned candidates land near 0 or negative;
-/// an aligned frame at +3 dB SNR scores ≈ 0.3 and climbs toward 1.0 as
-/// SNR rises. 0.1 leaves headroom for low-SNR real recordings while
-/// still filtering out clearly-empty candidates.
-pub const DEFAULT_SCORE_THRESHOLD: f32 = 0.1;
-
-/// Search space + ranking controls. All fields have sensible defaults
-/// pushed in via `Default`.
-#[derive(Clone, Copy, Debug)]
-pub struct SearchParams {
-    /// Inclusive lower bound of the base-frequency sweep (Hz).
-    pub freq_min_hz: f32,
-    /// Inclusive upper bound of the base-frequency sweep (Hz).
-    pub freq_max_hz: f32,
-    /// How far to push the start_sample around a nominal t=0 anchor, in
-    /// symbols. WSJT-X tolerates ±2 s → ~3 symbols at the edges.
-    pub time_tolerance_symbols: u32,
-    /// Minimum `sync_score` to accept. See [`DEFAULT_SCORE_THRESHOLD`].
-    pub score_threshold: f32,
-    /// Upper bound on candidates returned (top-N by score).
-    pub max_candidates: usize,
-}
-
-impl Default for SearchParams {
-    fn default() -> Self {
-        Self {
-            freq_min_hz: 1400.0,
-            freq_max_hz: 1600.0,
-            // Real WSPR TX starts ~1 s into the 120-s slot (and can drift).
-            // The signal is 110.6 s long, leaving ≈ 9.4 s of slack. 8
-            // symbols ≈ 5.5 s covers the common case without blowing up
-            // the candidate count.
-            time_tolerance_symbols: 8,
-            score_threshold: DEFAULT_SCORE_THRESHOLD,
-            // wsprd's own cap (`wsprd.c:1088`, `npk < 200`). 16 was
-            // far too tight for a busy band: the coarse ranks by sync,
-            // and on an 8-signal recording the strong stations plus
-            // noise peaks fill the list long before a -23 dB signal
-            // gets a look in.
-            max_candidates: 200,
-        }
+/// WSPR's own coarse-search defaults.
+///
+/// Real WSPR TX starts ~1 s into the 120-s slot (and can drift). The
+/// signal is 110.6 s long, leaving ≈ 9.4 s of slack. 8 symbols ≈ 5.5 s
+/// covers the common case without blowing up the candidate count.
+///
+/// WSPR counted that tolerance in **symbols** until #394, the last
+/// mode still doing so; it is seconds now like every other mode, and
+/// `8 × SYMBOL_DT` is the same window to the row (WSPR's spectrogram
+/// steps at NSPS/4, so 8 symbols is exactly 32 rows either way).
+///
+/// `max_candidates` is wsprd's own cap (`wsprd.c:1088`, `npk < 200`).
+/// 16 was far too tight for a busy band: the coarse search ranks by
+/// sync, and on an 8-signal recording the strong stations plus noise
+/// peaks fill the list long before a -23 dB signal gets a look in.
+pub fn default_search_params() -> SearchParams {
+    SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1600.0,
+        time_tolerance_early_sec: WSPR_TIME_TOLERANCE_SEC,
+        time_tolerance_late_sec: WSPR_TIME_TOLERANCE_SEC,
+        score_threshold: DEFAULT_SCORE_THRESHOLD,
+        max_candidates: 200,
     }
 }
+
+/// 8 symbols, the window WSPR searched when it counted symbols.
+const WSPR_TIME_TOLERANCE_SEC: f32 = 8.0 * <Wspr as ModulationParams>::SYMBOL_DT;
 
 /// Sweep (freq, time) grid and return top-ranked candidates.
 ///
@@ -114,20 +93,13 @@ pub fn coarse_search_on_spec(
         return Vec::new();
     }
     let nsps = (sample_rate as f32 * <Wspr as ModulationParams>::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32;
+    let w = SearchWindow::new(spec.t_step, sample_rate, nominal_start_sample, nsps, params);
+    let df = w.df;
     let rows_per_symbol = 4usize;
-
-    let t_span_rows = params.time_tolerance_symbols as i64 * rows_per_symbol as i64;
-    let nominal_row = (nominal_start_sample / spec.t_step) as i64;
-    let row_min = (nominal_row - t_span_rows).max(0);
-    let row_max = nominal_row + t_span_rows;
-
-    let fmin_bin = (params.freq_min_hz / df).floor() as i64;
-    let fmax_bin = (params.freq_max_hz / df).ceil() as i64;
 
     let mut out: Vec<SyncCandidate> = Vec::new();
 
-    for row in row_min..=row_max {
+    for row in w.row_min..=w.row_max {
         if row < 0 {
             continue;
         }
@@ -137,7 +109,7 @@ pub fn coarse_search_on_spec(
             continue;
         }
 
-        for fb in fmin_bin..=fmax_bin {
+        for fb in w.fmin_bin..=w.fmax_bin {
             if fb < 0 {
                 continue;
             }
@@ -156,11 +128,7 @@ pub fn coarse_search_on_spec(
         }
     }
 
-    out.sort_unstable_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
+    rank_and_truncate(&mut out, params.max_candidates);
     out.truncate(params.max_candidates);
     out
 }
@@ -174,7 +142,7 @@ mod tests {
     fn finds_aligned_tone_at_nominal_anchor() {
         let freq = 1500.0;
         let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3).expect("synth");
-        let params = SearchParams::default();
+        let params = default_search_params();
         let cands = coarse_search(&audio, 12_000, 0, &params);
         assert!(!cands.is_empty(), "should find at least one candidate");
         let best = cands[0];
@@ -198,7 +166,7 @@ mod tests {
         let body = synthesize_type1("K9AN", "EN50", 33, 12_000, freq, 0.3).expect("synth");
         audio.extend_from_slice(&body);
 
-        let params = SearchParams::default();
+        let params = default_search_params();
         // Nominal anchor at 0; search tolerance ±4 symbols covers +3.
         let cands = coarse_search(&audio, 12_000, 0, &params);
         assert!(!cands.is_empty(), "expected candidates with offset signal");

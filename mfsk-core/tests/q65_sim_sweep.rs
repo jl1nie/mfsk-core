@@ -113,7 +113,7 @@ use std::path::{Path, PathBuf};
 mod common;
 use common::load_wav_f32_opt;
 use mfsk_core::msg::ApHint;
-use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::search::default_search_params;
 use mfsk_core::q65::{
     DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
     Q65e120,
@@ -151,7 +151,7 @@ fn parse_snr_tag(tag: &str) -> Option<i32> {
 
 /// `(plain_hit, cq_ap_hinted_hit)`.
 fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool) {
-    let params = SearchParams::default();
+    let params = default_search_params();
     let hit = |freq_hz: f32, msg: &str| {
         msg == GOLDEN_MSG && (freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
     };

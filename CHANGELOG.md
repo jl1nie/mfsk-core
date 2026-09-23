@@ -36,6 +36,52 @@
   `missing_upstream` (never fatal) according to which class they are, so
   the distinction is visible at each call site rather than implied by
   the path it happened to build.
+- **One candidate type, one parameter block, one search window for
+  JT9/JT65/Q65/WSPR (#394).** Third step of the per-mode duplication
+  cleanup, after #389's TX-side fold and #390's FFT entry point. The
+  four modes each carried their own copy of the coarse-search
+  scaffolding: `SyncCandidate` (four field-identical definitions),
+  `SearchParams` (four, differing only in how the time tolerance was
+  spelled), `DEFAULT_SCORE_THRESHOLD` (four, all `0.1`), the row/bin
+  window arithmetic, and the sort-and-cap tail — that last one
+  byte-for-byte identical in all four. They now live once in
+  `engine::search`, along with the time collapse JT9 and Q65 share.
+  Net −207 lines.
+
+  **What did not get folded, and why.** The four differ on four
+  independent axes, not one: time collapse (best-lag-per-bin vs every
+  cell), admission (a fixed floor, or Q65's adaptive percentile gate
+  from `q65.f90:553-574`), frequency local-max suppression (Q65 only,
+  `q65.f90:563-566`), and frequency estimate (log-power refined vs bin
+  centre). One function switching on all four would read worse than the
+  four straight-line bodies it replaced, so each mode keeps its own
+  policy next to the upstream line it ports. `score_candidate` is
+  untouched for the same reason — three of them already delegate to
+  `engine::spectrogram`, and WSPR's is a different estimator (per-bin
+  `sbase_linear` normalisation), not a copy.
+
+  `engine::sync::SyncCandidate` also stays separate: it carries
+  `dt_sec` where these four carry `start_sample`, and merging them
+  means converting FT8's candidate path to samples — 58 `.dt_sec` uses
+  across 13 files, on the hot path, for no behavioural gain. Both types
+  now document why the other exists.
+
+  **Breaking, for four modes.** `jt9`/`jt65`/`q65`/`wspr`'s
+  `search::SearchParams` and `search::SyncCandidate` are now
+  re-exports of the `engine::search` types; `SearchParams::default()`
+  is gone in favour of each mode's `search::default_search_params()`,
+  since the defaults are mode-specific data. `time_tolerance_sec`
+  becomes the `time_tolerance_early_sec`/`_late_sec` pair, and WSPR's
+  `time_tolerance_symbols` becomes seconds — it was the last mode
+  still counting symbols. The measurement rationale that lived in each
+  `Default` impl moved onto the corresponding constructor.
+
+  **Behaviour is unchanged, and this time that is measured exactly
+  rather than argued.** Per-trial sweep CSVs against the same
+  deterministic corpora are byte-identical before and after for JT9,
+  JT65, JT65-chase, WSPR and Q65. WSPR is the one that could have
+  moved — it is the mode whose tolerance changed units — and its
+  window is still exactly 32 rows.
 
 - **One CPFSK synthesiser, one CRC-14 append, one top-K pick.** Code that
   several modes had each copied now lives in one place. None of it changes

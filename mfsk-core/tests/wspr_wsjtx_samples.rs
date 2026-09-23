@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use mfsk_core::wspr::SearchParams;
 use mfsk_core::wspr::WsprResult;
 use mfsk_core::wspr::decode::{decode_scan, decode_scan_streaming};
+use mfsk_core::wspr::search::default_search_params;
 // The deprecated double-SIC wrappers are still exercised here on
 // purpose: two diagnostics measure them, and one test guards their
 // streaming parity. See `decode_scan_subtract`'s doc comment.
@@ -101,7 +102,7 @@ fn sample_and_params() -> Option<(Vec<f32>, SearchParams)> {
             freq_min_hz: 1400.0,
             freq_max_hz: 1620.0,
             max_candidates: 100,
-            ..SearchParams::default()
+            ..default_search_params()
         },
     ))
 }
@@ -181,7 +182,7 @@ fn wspr_golden_recall_and_precision() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
 
     let decodes = decode_scan(&audio, 12_000, 0, &params);
@@ -275,7 +276,7 @@ fn wspr_cascade_ddc_golden_recall_and_precision() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
 
     let decodes = decode_scan(&audio, 12_000, 0, &params);
@@ -423,7 +424,7 @@ fn wspr_scan_subtract_streaming_matches_batch_exactly() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
 
     let streamed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -475,7 +476,7 @@ fn wspr_scan_streaming_superset_of_batch() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
 
     let streamed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -548,7 +549,7 @@ fn wspr_speed_diag() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
 
     // Warm-up (page faults, allocator, etc.) — excluded from timing.
@@ -613,7 +614,7 @@ fn wspr_diag_candidate_cost_split() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
     let sample_rate = 12_000u32;
     let max_drift = 4i32;
@@ -766,7 +767,7 @@ fn wspr_diag_pass_ablation() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
     let sample_rate = 12_000u32;
     let max_drift = 4i32;
@@ -1118,7 +1119,7 @@ fn wspr_diag_g8vdq_rank_after_minsync2() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
     let sample_rate = 12_000u32;
     const FREQ_DEDUP_HZ: f32 = 5.0;
@@ -1342,7 +1343,7 @@ fn wspr_diag_rank_by_pass() {
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
     let sample_rate = 12_000u32;
     const FREQ_DEDUP_HZ: f32 = 5.0;
@@ -1502,7 +1503,7 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
         freq_max_hz: 1620.0,
         max_candidates: 100,
         score_threshold: 0.05,
-        ..SearchParams::default()
+        ..default_search_params()
     };
     let sample_rate = 12_000u32;
     const FREQ_DEDUP_HZ: f32 = 5.0;

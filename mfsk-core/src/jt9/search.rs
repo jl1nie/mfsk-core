@@ -14,6 +14,8 @@
 
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
 use crate::engine::ModulationParams;
@@ -37,72 +39,34 @@ fn build_spectrogram(audio: &[f32], sample_rate: u32) -> Spectrogram {
     Spectrogram::build_for::<Jt9>(audio, sample_rate, NSTEP_PER_SYMBOL)
 }
 
-/// A candidate JT9 alignment, ranked by sync-tone score.
-#[derive(Clone, Copy, Debug)]
-pub struct SyncCandidate {
-    /// Absolute sample index of symbol 0.
-    pub start_sample: usize,
-    /// Frequency of tone 0 (the sync tone, i.e. the low end of the
-    /// 9-tone constellation).
-    pub freq_hz: f32,
-    /// Normalised score; higher is better.
-    pub score: f32,
-}
+pub use crate::engine::search::{DEFAULT_SCORE_THRESHOLD, SearchParams, SyncCandidate};
+use crate::engine::search::{SearchWindow, best_lag_in_bin, rank_and_truncate};
 
-/// Default sync-score threshold. Pure noise scores ≈ 0; a clean
-/// aligned frame scores ≈ 1 for high SNR. 0.1 is a safely-loose
-/// prefilter that still drops most garbage candidates.
-pub const DEFAULT_SCORE_THRESHOLD: f32 = 0.1;
-
-/// JT9 coarse-search parameter block.
-#[derive(Clone, Copy, Debug)]
-pub struct SearchParams {
-    pub freq_min_hz: f32,
-    pub freq_max_hz: f32,
-    /// ±Δt search window around `nominal_start_sample`, **in
-    /// seconds**. Seconds rather than symbols (issue #282) — the
-    /// symbol-denominated form is what let Q65's equivalent window
-    /// silently become a different span per sub-mode.
-    pub time_tolerance_sec: f32,
-    pub score_threshold: f32,
-    pub max_candidates: usize,
-}
-
-impl Default for SearchParams {
-    fn default() -> Self {
-        Self {
-            // `jt9`'s own CLI defaults (`--lowest` 200, `--highest`
-            // 4007). Was 1400-1600 Hz, which is narrower than any
-            // real JT9 sub-band and **could not decode this crate's
-            // own JT9 golden recording**: `tests/jt9_wsjtx_samples.rs`
-            // had to override it, with a comment saying the default
-            // "excludes every" golden decode.
-            //
-            // Measured on `130418_1742.wav` (issue #282 follow-up):
-            // 1400-1600 Hz found 2 decodes, every wider band found 5,
-            // and the wall clock was flat at ~60 ms from 200 Hz wide
-            // to 3800 Hz wide — the coarse search's cost is the
-            // whole-buffer spectrogram build, not the per-bin scan,
-            // so the narrow band was buying nothing at all.
-            freq_min_hz: 200.0,
-            freq_max_hz: 4000.0,
-            // 1.728 s — numerically identical to the previous
-            // `time_tolerance_symbols: 3` (JT9 symbols are 0.576 s),
-            // so this is a unit change, not a behaviour change.
-            //
-            // `jt9_decode.f90:69-70` reads `lag1=-2.5/tstep`,
-            // `lag2=+5.0/tstep`, which looks far wider. Measured
-            // (issue #282), real `jt9 -9 -p 60 -d 3` on a shifted
-            // `jt9sim` sweep decodes only out to Δt ≈ +0.6 s — so
-            // the source's apparent late reach is not usable reach,
-            // and this window already covers what the reference
-            // actually achieves. Guarded by
-            // `tests/dt_window.rs::jt9_window_reaches_reference_late_edge`.
-            time_tolerance_sec: 1.728,
-            score_threshold: DEFAULT_SCORE_THRESHOLD,
-            max_candidates: 8,
-        }
-    }
+/// JT9's own coarse-search defaults.
+///
+/// `jt9`'s own CLI defaults (`--lowest` 200, `--highest` 4007). Was
+/// 1400-1600 Hz, which is narrower than any real JT9 sub-band and
+/// **could not decode this crate's own JT9 golden recording**:
+/// `tests/jt9_wsjtx_samples.rs` had to override it, with a comment
+/// saying the default "excludes every" golden decode.
+///
+/// Measured on `130418_1742.wav` (issue #282 follow-up): 1400-1600 Hz
+/// found 2 decodes, every wider band found 5, and the wall clock was
+/// flat at ~60 ms from 200 Hz wide to 3800 Hz wide — the coarse
+/// search's cost is the whole-buffer spectrogram build, not the
+/// per-bin scan, so the narrow band was buying nothing at all.
+///
+/// The ±1.728 s window is numerically identical to the previous
+/// `time_tolerance_symbols: 3` (JT9 symbols are 0.576 s), so that was
+/// a unit change, not a behaviour change. `jt9_decode.f90:69-70` reads
+/// `lag1=-2.5/tstep`, `lag2=+5.0/tstep`, which looks far wider.
+/// Measured (issue #282), real `jt9 -9 -p 60 -d 3` on a shifted
+/// `jt9sim` sweep decodes only out to Δt ≈ +0.6 s — so the source's
+/// apparent late reach is not usable reach, and this window already
+/// covers what the reference actually achieves. Guarded by
+/// `tests/dt_window.rs::jt9_window_reaches_reference_late_edge`.
+pub fn default_search_params() -> SearchParams {
+    SearchParams::symmetric(200.0, 4000.0, 1.728, 8)
 }
 
 /// Row step between consecutive symbols in a [`Spectrogram`] built at
@@ -172,16 +136,7 @@ pub fn coarse_search_on_spec(
         return Vec::new();
     }
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32;
-
-    let t_span_rows =
-        (params.time_tolerance_sec * sample_rate as f32 / spec.t_step.max(1) as f32).round() as i64;
-    let nominal_row = (nominal_start_sample / spec.t_step) as i64;
-    let row_min = (nominal_row - t_span_rows).max(0);
-    let row_max = nominal_row + t_span_rows;
-
-    let fmin_bin = (params.freq_min_hz / df).floor() as i64;
-    let fmax_bin = (params.freq_max_hz / df).ceil() as i64;
+    let w = SearchWindow::new(spec.t_step, sample_rate, nominal_start_sample, nsps, params);
 
     // For each freq bin, keep ONLY the best-scoring time alignment —
     // mirrors WSJT-X `sync9` `ccfred(i)=max over lags of sum`. Without
@@ -189,40 +144,28 @@ pub fn coarse_search_on_spec(
     // would crowd out lower-scoring real signals at other carriers
     // when we apply `max_candidates`.
     let mut out: Vec<SyncCandidate> = Vec::new();
-    for fb in fmin_bin..=fmax_bin {
+    for fb in w.fmin_bin..=w.fmax_bin {
         if fb < 0 || (fb as usize) + 9 > spec.n_freq {
             continue;
         }
-        let mut best_row: i64 = -1;
-        let mut best_score = f32::NEG_INFINITY;
-        for row in row_min..=row_max {
-            if row < 0 {
-                continue;
-            }
-            let row_u = row as usize;
-            if row_u + 84 * ROWS_PER_SYMBOL >= spec.n_time {
-                continue;
-            }
-            let score = score_candidate(spec, row_u, fb as usize);
-            if score > best_score {
-                best_score = score;
-                best_row = row;
-            }
-        }
-        if best_row >= 0 && best_score >= params.score_threshold {
+        let bin = fb as usize;
+        let best = best_lag_in_bin(
+            &w,
+            bin,
+            |row| row + 84 * ROWS_PER_SYMBOL < spec.n_time,
+            |row, bin| score_candidate(spec, row, bin),
+        );
+        if let Some((row, score)) = best
+            && score >= params.score_threshold
+        {
             out.push(SyncCandidate {
-                start_sample: best_row as usize * spec.t_step,
-                freq_hz: refine_freq_hz(spec, best_row as usize, fb as usize, df),
-                score: best_score,
+                start_sample: row * spec.t_step,
+                freq_hz: refine_freq_hz(spec, row, bin, w.df),
+                score,
             });
         }
     }
-    out.sort_unstable_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
-    out.truncate(params.max_candidates);
+    rank_and_truncate(&mut out, params.max_candidates);
     out
 }
 
@@ -235,7 +178,7 @@ mod tests {
     fn coarse_search_finds_clean_signal() {
         let freq = 1500.0;
         let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("synth");
-        let cands = coarse_search(&audio, 12_000, 0, &SearchParams::default());
+        let cands = coarse_search(&audio, 12_000, 0, &default_search_params());
         assert!(!cands.is_empty(), "expected at least one candidate");
         let best = cands[0];
         assert!(
@@ -276,7 +219,8 @@ mod diag_tests {
         let params = SearchParams {
             freq_min_hz: 1050.0,
             freq_max_hz: 1500.0,
-            time_tolerance_sec: 1.728,
+            time_tolerance_early_sec: 1.728,
+            time_tolerance_late_sec: 1.728,
             score_threshold: 0.001,
             max_candidates: 5000,
         };

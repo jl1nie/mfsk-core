@@ -15,6 +15,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
 use crate::engine::ModulationParams;
@@ -53,86 +55,54 @@ pub fn build_spectrogram<P: ModulationParams>(audio: &[f32], sample_rate: u32) -
     Spectrogram::build_for::<P>(audio, sample_rate, NSTEP_PER_SYMBOL)
 }
 
-/// One candidate surviving the coarse sync search.
-#[derive(Clone, Copy, Debug)]
-pub struct SyncCandidate {
-    /// Sample index where symbol 0 is estimated to start.
-    pub start_sample: usize,
-    /// Tone-0 (sync) frequency in Hz.
-    pub freq_hz: f32,
-    /// Normalised score in `[0, 1]`: `sync_pwr / (sync_pwr + noise_floor)`.
-    pub score: f32,
-}
+pub use crate::engine::search::{DEFAULT_SCORE_THRESHOLD, SearchParams, SyncCandidate};
+use crate::engine::search::{SearchWindow, best_lag_in_bin, rank_and_truncate};
 
-/// Default minimum sync score for handing a candidate to a decode attempt.
-pub const DEFAULT_SCORE_THRESHOLD: f32 = 0.1;
-
-#[derive(Clone, Copy, Debug)]
-pub struct SearchParams {
-    pub freq_min_hz: f32,
-    pub freq_max_hz: f32,
-    /// How far *before* `nominal_start_sample` to search, in seconds.
-    ///
-    /// Seconds, not symbols, because that is the unit WSJT-X uses and
-    /// the two are not interchangeable across sub-modes: Q65 symbol
-    /// length ranges 0.15 s (Q65-15) to 3.456 s (Q65-300), so a
-    /// symbol-denominated tolerance silently becomes a different
-    /// window per sub-mode.
-    pub time_tolerance_early_sec: f32,
-    /// How far *after* `nominal_start_sample` to search, in seconds.
-    ///
-    /// Separate from [`Self::time_tolerance_early_sec`] because the
-    /// reference window is **not symmetric** — see [`Self::default`].
-    pub time_tolerance_late_sec: f32,
-    pub score_threshold: f32,
-    pub max_candidates: usize,
-}
-
-impl Default for SearchParams {
-    fn default() -> Self {
-        Self {
-            // Default Q65 dial range: 200 Hz .. 3000 Hz inside the
-            // SSB passband. Callers can narrow this further.
-            freq_min_hz: 200.0,
-            freq_max_hz: 3_000.0,
-            // The reference Q65 window is **asymmetric**. Measured by
-            // running real `jt9 -3 -d 3` over `q65sim` Δt sweeps:
-            //
-            //   Q65-15A (nsps=1800)   -1.0 .. +1.0 s
-            //   Q65-30A (nsps=3600)   -1.0 .. +1.0 s
-            //   Q65-60A (nsps=7200)   -1.0 .. +5.5 s
-            //
-            // `q65.f90:127-129` sets `lag1=-1.0/dtstep`,
-            // `lag2=1.0/dtstep`, and extends `lag2` to `5.5/dtstep`
-            // when `nsps >= 3600 .and. emedelay > 0`. The measurement
-            // says that extension is live for TR>=60 and not for
-            // TR=30, which the `nsps >= 3600` half alone does not
-            // explain (Q65-30A *is* nsps=3600) — the `emedelay` half
-            // is not observable from outside, so the constants here
-            // follow the measurement rather than the source, per
-            // `tests/dt_window.rs`'s own doctrine.
-            //
-            // +5.5 s is applied to every sub-mode rather than gated on
-            // NSPS: on the short sub-modes the extra span is
-            // geometrically self-limiting (a Q65-15 frame placed +5.5 s
-            // late does not fit in a 15 s slot at all, so those rows
-            // are rejected by the frame-fits guard for the cost of a
-            // scan), and a uniform value cannot silently under-search a
-            // sub-mode the way the old symbol-denominated one did.
-            //
-            // History, because this default has now been wrong twice:
-            // it was `time_tolerance_symbols: 5` until issue #282
-            // (±0.75 s on Q65-15 — narrower than the reference), then
-            // a symmetric `time_tolerance_sec: 1.0`, which fixed
-            // Q65-15 but cut Q65-60A's late reach from +3.0 to +1.0 s
-            // against a reference that goes to +5.5 s. Both slipped
-            // through because every in-tree Q65 test passes explicit
-            // tolerances and none exercised the default.
-            time_tolerance_early_sec: 1.0,
-            time_tolerance_late_sec: 5.5,
-            score_threshold: DEFAULT_SCORE_THRESHOLD,
-            max_candidates: 8,
-        }
+/// Q65's own coarse-search defaults.
+///
+/// Default Q65 dial range: 200 Hz .. 3000 Hz inside the
+/// SSB passband. Callers can narrow this further.
+/// The reference Q65 window is **asymmetric**. Measured by
+/// running real `jt9 -3 -d 3` over `q65sim` Δt sweeps:
+///
+///   Q65-15A (nsps=1800)   -1.0 .. +1.0 s
+///   Q65-30A (nsps=3600)   -1.0 .. +1.0 s
+///   Q65-60A (nsps=7200)   -1.0 .. +5.5 s
+///
+/// `q65.f90:127-129` sets `lag1=-1.0/dtstep`,
+/// `lag2=1.0/dtstep`, and extends `lag2` to `5.5/dtstep`
+/// when `nsps >= 3600 .and. emedelay > 0`. The measurement
+/// says that extension is live for TR>=60 and not for
+/// TR=30, which the `nsps >= 3600` half alone does not
+/// explain (Q65-30A *is* nsps=3600) — the `emedelay` half
+/// is not observable from outside, so the constants here
+/// follow the measurement rather than the source, per
+/// `tests/dt_window.rs`'s own doctrine.
+///
+/// +5.5 s is applied to every sub-mode rather than gated on
+/// NSPS: on the short sub-modes the extra span is
+/// geometrically self-limiting (a Q65-15 frame placed +5.5 s
+/// late does not fit in a 15 s slot at all, so those rows
+/// are rejected by the frame-fits guard for the cost of a
+/// scan), and a uniform value cannot silently under-search a
+/// sub-mode the way the old symbol-denominated one did.
+///
+/// History, because this default has now been wrong twice:
+/// it was `time_tolerance_symbols: 5` until issue #282
+/// (±0.75 s on Q65-15 — narrower than the reference), then
+/// a symmetric `time_tolerance_sec: 1.0`, which fixed
+/// Q65-15 but cut Q65-60A's late reach from +3.0 to +1.0 s
+/// against a reference that goes to +5.5 s. Both slipped
+/// through because every in-tree Q65 test passes explicit
+/// tolerances and none exercised the default.
+pub fn default_search_params() -> SearchParams {
+    SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_early_sec: 1.0,
+        time_tolerance_late_sec: 5.5,
+        score_threshold: DEFAULT_SCORE_THRESHOLD,
+        max_candidates: 8,
     }
 }
 
@@ -184,23 +154,14 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
         return Vec::new();
     }
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32;
+    let w = SearchWindow::new(spec.t_step, sample_rate, nominal_start_sample, nsps, params);
+    let df = w.df;
     let rows_per_symbol = (nsps / spec.t_step.max(1)).max(1);
     // For wider sub-modes (B/C/D/E) the highest data tone sits
     // 64 × bins_per_tone above the sync bin instead of just 64
     // bins; we need that much headroom in the spectrogram before
     // we will accept a candidate base bin.
     let bins_per_tone = (P::TONE_SPACING_HZ / df).round() as usize;
-
-    let rows_per_sec = sample_rate as f32 / spec.t_step.max(1) as f32;
-    let early_rows = (params.time_tolerance_early_sec.max(0.0) * rows_per_sec).round() as i64;
-    let late_rows = (params.time_tolerance_late_sec.max(0.0) * rows_per_sec).round() as i64;
-    let nominal_row = (nominal_start_sample / spec.t_step) as i64;
-    let row_min = (nominal_row - early_rows).max(0);
-    let row_max = nominal_row + late_rows;
-
-    let fmin_bin = (params.freq_min_hz / df).floor() as i64;
-    let fmax_bin = (params.freq_max_hz / df).ceil() as i64;
 
     // Collapse over time first, per frequency bin — mirrors
     // `q65_ccf_22`'s own structure (`lib/qra/q65/q65.f90:506-538`):
@@ -215,8 +176,8 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     // distinct weaker signals (regression caught by
     // `ionoscatter_6m_120e_decodes_with_fading_metric`, a real-off-air
     // multi-signal recording).
-    let fb_lo = fmin_bin.max(0) as usize;
-    let fb_hi = fmax_bin.max(fmin_bin) as usize;
+    let fb_lo = w.fmin_bin.max(0) as usize;
+    let fb_hi = w.fmax_bin.max(w.fmin_bin) as usize;
     let mut curve: Vec<f32> = vec![0.0; fb_hi.saturating_sub(fb_lo) + 1];
     let mut rows: Vec<usize> = vec![0; curve.len()];
     for fb in fb_lo..=fb_hi {
@@ -225,22 +186,14 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
         if fb + 64 * bins_per_tone + 1 > spec.n_freq {
             continue;
         }
-        let mut best: Option<(usize, f32)> = None;
-        for row in row_min..=row_max {
-            if row < 0 {
-                continue;
-            }
-            let row = row as usize;
-            // Need room for the last data symbol (84) + the 64 data
-            // tones above the sync bin.
-            if row + 84 * rows_per_symbol >= spec.n_time {
-                continue;
-            }
-            let score = score_candidate(spec, row, fb);
-            if best.is_none_or(|(_, best_score)| score > best_score) {
-                best = Some((row, score));
-            }
-        }
+        // Need room for the last data symbol (84) + the 64 data
+        // tones above the sync bin.
+        let best = best_lag_in_bin(
+            &w,
+            fb,
+            |row| row + 84 * rows_per_symbol < spec.n_time,
+            |row, bin| score_candidate(spec, row, bin),
+        );
         if let Some((row, score)) = best {
             let idx = fb - fb_lo;
             curve[idx] = score;
@@ -299,12 +252,7 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
             score,
         });
     }
-    out.sort_unstable_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
-    out.truncate(params.max_candidates);
+    rank_and_truncate(&mut out, params.max_candidates);
     out
 }
 
@@ -343,7 +291,7 @@ mod tests {
     fn coarse_search_finds_clean_signal() {
         let freq = 1500.0;
         let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("synth");
-        let cands = coarse_search(&audio, 12_000, 0, &SearchParams::default());
+        let cands = coarse_search(&audio, 12_000, 0, &default_search_params());
         assert!(!cands.is_empty(), "search should find a clean signal");
         let best = cands[0];
         // Frequency bin width is 12000/3600 ≈ 3.33 Hz, so ±4 Hz is

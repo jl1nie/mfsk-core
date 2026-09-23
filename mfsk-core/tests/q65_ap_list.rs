@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use mfsk_core::fec::qra::Q65Codec;
 use mfsk_core::fec::qra15_65_64::QRA15_65_64_IRR_E23;
-use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::search::{SearchParams, default_search_params};
 use mfsk_core::q65::{
     DecodeRequest, Q65a30, Q65a60, SniperRequest, standard_qso_codewords, synthesize_standard,
     synthesize_standard_for,
@@ -171,7 +171,7 @@ fn ap_list_lifts_threshold_versus_plain_decode() {
             score_threshold: 0.05,
             max_candidates: 16,
         };
-        let plain = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, SearchParams::default())
+        let plain = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, default_search_params())
             .decode()
             .is_empty();
         let listed = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, params)

@@ -30,6 +30,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
 use crate::engine::dsp::symbol_fft::SymbolFft;
@@ -1506,9 +1508,13 @@ mod tests {
         let freq = 1500.0;
         let audio =
             synthesize_standard("CQ", "JA1ABC", "PM95", 12_000, freq, 0.3).expect("pack + synth");
-        let decodes =
-            DecodeRequest::<Q65a30>::new(&audio, 12_000, 0, super::super::SearchParams::default())
-                .decode();
+        let decodes = DecodeRequest::<Q65a30>::new(
+            &audio,
+            12_000,
+            0,
+            super::super::search::default_search_params(),
+        )
+        .decode();
         assert!(!decodes.is_empty(), "scan must find a clean signal");
         assert_eq!(decodes[0].message, "CQ JA1ABC PM95");
     }
@@ -1517,9 +1523,13 @@ mod tests {
     fn scan_with_no_signal_returns_empty() {
         // Pure silence (well, low noise) must not produce false decodes.
         let audio = vec![0.0_f32; 12_000 * 30];
-        let decodes =
-            DecodeRequest::<Q65a30>::new(&audio, 12_000, 0, super::super::SearchParams::default())
-                .decode();
+        let decodes = DecodeRequest::<Q65a30>::new(
+            &audio,
+            12_000,
+            0,
+            super::super::search::default_search_params(),
+        )
+        .decode();
         assert!(
             decodes.is_empty(),
             "got false decodes from silence: {decodes:#?}"

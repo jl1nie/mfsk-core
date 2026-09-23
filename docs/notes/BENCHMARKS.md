@@ -755,7 +755,7 @@ Notes:
   (top score) in every slot of both golden recordings with a healthy
   margin. Cut in two verified steps (32→16, then — after re-profiling
   showed the fading-BP stage still ~79% of wall-clock — 16→8, matching
-  the library's own `SearchParams::default()`) — dropping these rows to
+  the library's own `q65::search::default_search_params()`) — dropping these rows to
   0.49 s / 0.64 s (~4×) with bit-identical recall (same message,
   frequency, BP iteration count) at every step. A later pass the same
   day (the coarse-sync overhaul below) moved both again: Q65-60B
