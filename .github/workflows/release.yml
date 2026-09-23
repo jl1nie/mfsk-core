@@ -64,9 +64,10 @@ jobs:
                 // tag-after-merge sequence — so waiting is right.
                 //
                 // After that, the likely one is that this commit has no
-                // CI and never will: `ci.yml` `paths-ignore`s
-                // `embedded-poc/**` and `bench/wasm/**`, so a push that
-                // touches only those trees starts no run whatsoever.
+                // CI and never will: `ci.yml`'s `paths` trigger excludes
+                // `embedded-poc/**` (bar the test assets and the
+                // `mfsk-app-shared` sources) and `bench/wasm/**`, so a
+                // push that touches only those starts no run whatsoever.
                 // Such a commit is not taggable, and waiting 30 minutes
                 // to say so reported it as `Timed out waiting for CI`,
                 // which reads like a scheduler flake and sent the

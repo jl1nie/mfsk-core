@@ -51,9 +51,15 @@ build` would try to compile them with the stable toolchain and fail:
 - `bench/wasm/` — a wasm-bindgen harness for `wasm32-unknown-unknown`
   (issue #208); a manual/periodic tool, not CI-gated.
 
-`ci.yml` `paths-ignore`s both trees, so a change confined to them runs no
-host CI at all. That is intentional, and it is also why "CI is green" says
-nothing about an embedded change.
+`ci.yml`'s `paths` trigger excludes both trees, so a change confined to
+them runs no host CI at all. That is intentional, and it is also why "CI
+is green" says nothing about an embedded change. Three things under
+`embedded-poc/` are re-included, because host CI reads them: the test
+recordings and fixtures (`assets/golden/**`, `assets/*.wav`,
+`assets/*.bin`, which start tier A+B alone) and
+`mfsk-app-shared/src/**` (which `hosttest/` compiles, and starts the
+`ffi` job). Before 2026-09-24 the trigger was `paths-ignore`, which
+cannot re-include anything, so replacing a golden recording ran no CI.
 
 `bindings/` is not Rust and so is in neither list — no `Cargo.toml`,
 so the workspace never sees either of them:
@@ -507,8 +513,9 @@ embedded" section and `docs/notes/ROADMAP.md` Phase E for status.
   `xtensa-esp32s3-espidf` for S3 / CoreS3 (LX7).
 - `cargo check` from inside each crate validates code changes without
   flashing (~30-50 s with prebuilt esp-idf).
-- Host CI never builds these crates (`ci.yml` `paths-ignore`s
-  `embedded-poc/**`). A green CI badge on an embedded-only change means
+- Host CI never builds these crates (`ci.yml`'s trigger excludes
+  `embedded-poc/**` apart from the test assets and the
+  `mfsk-app-shared` sources `hosttest/` compiles). A green CI badge on an embedded-only change means
   the change was not compiled by anything.
 - Logs from the device land in `embedded-poc/<crate>/logs/` — user has
   been capturing per-session sweep output there.

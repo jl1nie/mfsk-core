@@ -108,6 +108,20 @@
   fresh clone was 33 MB in ~2 s, CI checks out at depth 1, and the
   whole set adds ~5 s serial to the ~300 s tier A+B job.
 
+  **A change to a recording now runs the tests that read it.** `ci.yml`
+  triggered on `paths-ignore: embedded-poc/**`, which covered the
+  goldens too, so a PR that replaced or broke one ran no CI at all —
+  and `paths-ignore` has no way to re-include a subdirectory. The
+  trigger is a `paths` list now, excluding `embedded-poc/**` and then
+  re-including `assets/golden/**`, `assets/*.wav`, `assets/*.bin` and
+  `mfsk-app-shared/src/**`. The recordings start tier A+B only, through
+  a new `tier_ab` filter output, not `src`'s feature matrix, FFI,
+  cross-compile and binding jobs, none of which opens a WAV. The
+  `mfsk-app-shared` sources, and `hosttest/` itself, start the `ffi`
+  job that runs `mfsk-app-shared-hosttest` — neither was in `src`, so a
+  change to either ran that job only if something else did. Four
+  filters also lose a `mfsk-core/src/core/**` line that matched nothing.
+
 - **FST4's tier-C gate is 626 lines, not 7 791.** `fst4_sweep.rs` had
   accumulated 46 `#[ignore]`d diagnostic probes from investigations that
   are now closed — #146's AWGN gap, #198's f32-hardcoded `decode_soft`,

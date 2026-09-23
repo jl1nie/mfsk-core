@@ -9,13 +9,33 @@ on:
     # only changes are inside that tree. `bench/wasm/**` is the same
     # deal for a different target (wasm32-unknown-unknown, issue #208)
     # — a manual/periodic tool, not CI-gated.
-    paths-ignore:
-      - 'embedded-poc/**'
-      - 'bench/wasm/**'
+    #
+    # Except for three things under `embedded-poc/` that host CI does
+    # read, re-included after the exclusion (later patterns win): the
+    # recordings and fixtures tier A+B asserts against
+    # (`assets/golden/**`, `assets/*.wav`, `assets/*.bin`), and the
+    # `mfsk-app-shared` sources `hosttest/` compiles via `#[path]`.
+    # This used to be `paths-ignore: embedded-poc/**`, which cannot
+    # re-include anything — so a PR that replaced or broke a golden
+    # recording, or changed a module hosttest covers, ran no CI at all.
+    paths:
+      - '**'
+      - '!embedded-poc/**'
+      - '!bench/wasm/**'
+      - 'embedded-poc/assets/golden/**'
+      - 'embedded-poc/assets/*.wav'
+      - 'embedded-poc/assets/*.bin'
+      - 'embedded-poc/mfsk-app-shared/src/**'
   pull_request:
-    paths-ignore:
-      - 'embedded-poc/**'
-      - 'bench/wasm/**'
+    # Same list as `push` above; keep them in step.
+    paths:
+      - '**'
+      - '!embedded-poc/**'
+      - '!bench/wasm/**'
+      - 'embedded-poc/assets/golden/**'
+      - 'embedded-poc/assets/*.wav'
+      - 'embedded-poc/assets/*.bin'
+      - 'embedded-poc/mfsk-app-shared/src/**'
 
 env:
   CARGO_TERM_COLOR: always
@@ -69,6 +89,8 @@ jobs:
       uvpacket: ${{ steps.filter.outputs.uvpacket }}
       catchall: ${{ steps.filter.outputs.catchall }}
       bindings: ${{ steps.filter.outputs.bindings }}
+      tier_ab: ${{ steps.filter.outputs.tier_ab }}
+      hosttest: ${{ steps.filter.outputs.hosttest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -83,7 +105,7 @@ jobs:
             # and publish-dry-run still run as the doc-surface gate.
             # `Cargo.lock` is in because `cargo update` legitimately
             # changes what gets compiled.
-            src:
+            src: &src
               - '.github/workflows/**'
               - 'Cargo.lock'
               - 'mfsk-core/Cargo.toml'
@@ -93,6 +115,23 @@ jobs:
               - 'mfsk-core/examples/**'
               - 'mfsk-core/benches/**'
               - 'mfsk-ffi/**'
+            # Tier A+B is the only job that reads the recordings, so a
+            # change to one runs that job and not `src`'s others
+            # (feature matrix, ffi, cross, bindings), none of which
+            # opens a WAV.
+            tier_ab:
+              - *src
+              - 'embedded-poc/assets/golden/**'
+              - 'embedded-poc/assets/*.wav'
+              - 'embedded-poc/assets/*.bin'
+            # `hosttest/mfsk-app-shared` compiles modules out of
+            # `embedded-poc/mfsk-app-shared/src/` and runs in the `ffi`
+            # job. Neither path was in `src`, so a change to either
+            # ran the job that tests it only by coincidence.
+            hosttest:
+              - '.github/workflows/**'
+              - 'hosttest/**'
+              - 'embedded-poc/mfsk-app-shared/src/**'
             # The two bindings live outside `src` on purpose: a change
             # confined to `bindings/**` is not a reason to run the
             # protocol tiers, the feature matrix or the cross-compiles.
@@ -111,7 +150,6 @@ jobs:
               - 'mfsk-core/Cargo.toml'
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
-              - 'mfsk-core/src/core/**'
               # Shared DSP/decode engine: a change here reaches every
               # protocol that routes through `engine::pipeline` /
               # `engine::sync`, so it must trip every protocol filter.
@@ -128,7 +166,6 @@ jobs:
               - 'mfsk-core/Cargo.toml'
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
-              - 'mfsk-core/src/core/**'
               # Shared DSP/decode engine: a change here reaches every
               # protocol that routes through `engine::pipeline` /
               # `engine::sync`, so it must trip every protocol filter.
@@ -145,7 +182,6 @@ jobs:
               - 'mfsk-core/Cargo.toml'
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
-              - 'mfsk-core/src/core/**'
               # Shared DSP/decode engine: a change here reaches every
               # protocol that routes through `engine::pipeline` /
               # `engine::sync`, so it must trip every protocol filter.
@@ -165,7 +201,6 @@ jobs:
               - 'mfsk-core/Cargo.toml'
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
-              - 'mfsk-core/src/core/**'
               # Shared DSP/decode engine: a change here reaches every
               # protocol that routes through `engine::pipeline` /
               # `engine::sync`, so it must trip every protocol filter.
@@ -303,7 +338,7 @@ jobs:
           # merge gate; everything else in this matrix is tier C.
           - name: tier A+B — invariants + golden
             kind: default
-            changes_key: src
+            changes_key: tier_ab
             push_only: false
           # The former "ft8 characterization" tier (SNR curves,
           # depth/pass1 sweeps, coarse-sync probe + concurrency
@@ -387,6 +422,7 @@ jobs:
           Q65: ${{ needs.changes.outputs.q65 }}
           UVPACKET: ${{ needs.changes.outputs.uvpacket }}
           CATCHALL: ${{ needs.changes.outputs.catchall }}
+          TIER_AB: ${{ needs.changes.outputs.tier_ab }}
           PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         # Two-stage gate.
         #
@@ -428,6 +464,7 @@ jobs:
                 q65)      [ "$Q65" = "true" ]      && should_run=true ;;
                 uvpacket) [ "$UVPACKET" = "true" ] && should_run=true ;;
                 catchall) [ "$CATCHALL" = "true" ] && should_run=true ;;
+                tier_ab)  [ "$TIER_AB" = "true" ]  && should_run=true ;;
               esac
             fi
           fi
@@ -578,7 +615,12 @@ jobs:
     needs: changes
     # Skip on docs-only PRs (issue #113); see feature-matrix for the
     # push-to-main rationale.
-    if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
+    # `hosttest` beside `src`: this job also runs
+    # `mfsk-app-shared-hosttest`, whose sources are not under `src`.
+    if: >-
+      github.event_name == 'push'
+      || needs.changes.outputs.src == 'true'
+      || needs.changes.outputs.hosttest == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
