@@ -2,6 +2,22 @@
 
 ## 0.11.1 — FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FST4's tier-C gate is 626 lines, not 7 791.** `fst4_sweep.rs` had
+  accumulated 46 `#[ignore]`d diagnostic probes from investigations that
+  are now closed — #146's AWGN gap, #198's f32-hardcoded `decode_soft`,
+  #306's embedded feasibility, #308's `i0` jitter retry, #310's
+  rung-major scheduling and soft Costas-margin proposal, #312's sniper
+  cap. They sat in front of the four tests anyone actually runs before a
+  release.
+
+  They move to `tests/fst4_diagnostics.rs` intact. **Nothing is
+  deleted**: several of these are the refutation that closed the issue —
+  `soft_costas_margin_separation`, `_escalation_priority` and
+  `_conditional_value` are the three steps that talked #310's proposal
+  down, and their docs carry the numbers that did it. A design decision
+  whose evidence is no longer executable is one nobody can re-check.
+  50 tests before, 4 + 46 after.
+
 - **An early signal's dt came back wrong, or as zero (#397).** Two
   defects, in the same handful of lines.
 
