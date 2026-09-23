@@ -25,8 +25,13 @@ the failure mode cannot come back silently.
 | `wspr/150426_0918.wav` | `samples/WSPR/` | WSPR |
 | `msk144/181211_1205{00,08}.wav` | `samples/MSK144/` | MSK144 |
 | `jt65/jt65a_5sig_m18.wav` | `jt65sim` (see below) | JT65A |
+| `q65/30A_Ionoscatter_6m/` (4 periods) | `samples/Q65/` | Q65-30A |
 | `q65/60A_EME_6m/` | `samples/Q65/` | Q65-60A |
+| `q65/60B_1296_Troposcatter/` (3 periods) | `samples/Q65/` | Q65-60B |
 | `q65/60D_EME_10GHz/` | `samples/Q65/` | Q65-60D |
+| `q65/120D_Rainscatter_10_GHz/` | `samples/Q65/` | Q65-120D |
+| `q65/120E_Ionoscatter_6m/` (2 periods) | `samples/Q65/` | Q65-120E |
+| `q65/300A_Optical_Scatter/` | `samples/Q65/` | Q65-300A |
 
 FT8 and JT9 are not here — their recordings (`qso*.wav`,
 `130418_1742.wav`, `191111_*.wav`) already sit in the parent directory.
@@ -47,9 +52,15 @@ its expected output is taken from real `jt9 -6 -p 60 -b A`, which
 reports `K1ABC W9XYZ EN37` at −19 dB. Weaker provenance than the
 others; stated so in `tests/jt65_wsjtx_samples.rs`.
 
-Q65 is only partly vendored: the full sample tree is ~25 MB, so the
-two EME sub-modes with hard assertions are committed and the rest
-still resolve from an upstream checkout when one is present.
+Q65 is vendored whole — every sub-mode directory WSJT-X ships, ~25 MB
+of this directory's ~31 MB. Until 2026-09-24 only 60A and 60D were, and
+the other five resolved from `$WSJTX_SAMPLES_DIR` as optional, so six
+golden tests skipped on CI and reported `ok` (the #395 writeup names
+them). The size was the reason given at the time; measured, it is not
+one: a fresh clone of the repository was 33 MB in ~2 s, CI checks out
+at depth 1, and the six tests add ~5 s serial to a ~300 s job. The
+averaging tests read every period in their directory, so the
+multi-file directories cannot be trimmed to one recording.
 
 ## Licence
 

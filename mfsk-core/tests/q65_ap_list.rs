@@ -239,14 +239,17 @@ fn ap_list_threshold_scales_with_list_size() {
     assert_eq!(result.message, "K1ABC JA1ABC 73");
 }
 
-// ─── WSJT-X 6 m EME reference (optional) ─────────────────────────────
+// ─── WSJT-X 6 m EME reference (vendored golden) ──────────────────
 
 fn samples_dir(rel: &str) -> Option<PathBuf> {
-    let vendored = common::corpus::golden_dir().join("q65").join(rel);
-    if vendored.is_dir() {
-        return Some(vendored);
-    }
-    common::corpus::upstream_sample_dir(&format!("Q65/{rel}"))
+    // Every Q65 sub-mode directory WSJT-X ships is vendored under
+    // `embedded-poc/assets/golden/q65/` (~23 MB beside the original
+    // 60A/60D). Before that only 60A and 60D were, and the rest resolved
+    // from `$WSJTX_SAMPLES_DIR` as optional — so six golden tests
+    // (30A, 60B, 120D, 120E, 300A, and the 30A streaming parity) skipped
+    // on CI and reported `ok`. `golden_subdir` panics under
+    // `MFSK_REQUIRE_CORPUS`, which CI and the merge gate set.
+    common::corpus::golden_subdir(&format!("q65/{rel}"))
 }
 
 #[test]
@@ -258,7 +261,7 @@ fn ap_list_decodes_eme_6m_w7gj_exchanges() {
     // exchanges (e.g. "W7GJ W1VD FN31") with no BP at all.
     let _ = synthesize_standard_for::<Q65a60>; // keep the symbol live for clarity
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        common::corpus::missing_upstream("q65_ap_list", "WSJT-X 6 m EME sample tree");
+        common::skip_or_fail("Q65 golden 6 m EME");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)

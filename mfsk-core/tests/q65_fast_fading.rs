@@ -235,14 +235,17 @@ fn fast_fading_does_not_decode_pure_silence() {
     );
 }
 
-// ─── WSJT-X reference sample (optional) ─────────────────────────
+// ─── WSJT-X reference sample (vendored golden) ─────────────────
 
 fn samples_dir(rel: &str) -> Option<PathBuf> {
-    let vendored = common::corpus::golden_dir().join("q65").join(rel);
-    if vendored.is_dir() {
-        return Some(vendored);
-    }
-    common::corpus::upstream_sample_dir(&format!("Q65/{rel}"))
+    // Every Q65 sub-mode directory WSJT-X ships is vendored under
+    // `embedded-poc/assets/golden/q65/` (~23 MB beside the original
+    // 60A/60D). Before that only 60A and 60D were, and the rest resolved
+    // from `$WSJTX_SAMPLES_DIR` as optional — so six golden tests
+    // (30A, 60B, 120D, 120E, 300A, and the 30A streaming parity) skipped
+    // on CI and reported `ok`. `golden_subdir` panics under
+    // `MFSK_REQUIRE_CORPUS`, which CI and the merge gate set.
+    common::corpus::golden_subdir(&format!("q65/{rel}"))
 }
 
 #[test]
@@ -252,7 +255,7 @@ fn eme_10ghz_reference_decodes_with_fast_fading() {
     // (≈25 Hz at 10 GHz) and never recovers it. Without a sample
     // tree this test reports as skipped.
     let Some(dir) = samples_dir("60D_EME_10GHz") else {
-        common::corpus::missing_upstream("q65_fast_fading", "WSJT-X 10 GHz EME sample tree");
+        common::skip_or_fail("Q65 golden 10 GHz EME");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -324,7 +327,7 @@ fn eme_6m_sample_does_not_regress_with_fast_fading() {
     // tight B90Ts must do at least as well — confirms we have not
     // broken the easy case in pursuit of the hard one.
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        common::corpus::missing_upstream("q65_fast_fading", "WSJT-X 6 m EME sample tree");
+        common::skip_or_fail("Q65 golden 6 m EME");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)

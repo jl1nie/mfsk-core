@@ -20,8 +20,8 @@
 //! ## The fix, in two halves
 //!
 //! 1. **Vendor the recordings** into `embedded-poc/assets/golden/` so
-//!    CI has them at all (~8.7 MB; the WSJT-X samples are GPL, same as
-//!    this crate). [`golden_dir`] resolves there first.
+//!    CI has them at all (~31 MB, ~25 MB of it Q65's seven sub-mode
+//!    trees; the WSJT-X samples are GPL, same as this crate). [`golden_dir`] resolves there first.
 //! 2. **Make absence loud where it matters.** [`require_corpus`]
 //!    returns `None` (skip, as before) on a developer machine, but
 //!    **panics** when `MFSK_REQUIRE_CORPUS=1` — which CI sets. A
@@ -135,8 +135,12 @@ pub fn optional_corpus(rel: &str) -> Option<PathBuf> {
 ///
 /// The third class, beside [`golden_path`] (vendored, required) and
 /// [`optional_corpus`] (tier-C, never in CI): recordings that are too
-/// large or too niche to vendor — the Q65 sub-mode trees, say — but
-/// that a developer machine with the WSJT-X tarball can still run.
+/// large or too niche to vendor — the FST4 recording the timing bench
+/// and `fst4_diagnostics` read, say — but that a developer machine
+/// with the WSJT-X tarball can still run. (The Q65 sub-mode trees were
+/// the example here until they were vendored: six golden tests skipped
+/// on CI while they lived in this class, which is the argument against
+/// putting anything with a hard assertion here.)
 /// Absent is not a failure, even under `MFSK_REQUIRE_CORPUS`, because
 /// CI is never expected to have them.
 ///

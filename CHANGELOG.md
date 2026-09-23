@@ -92,6 +92,22 @@
   `STREAMING.md` (and `.ja.md`) now names the builders for all three
   modes; #404 and #405 had left its table on the old functions.
 
+- **Q65's six skipped golden tests run on CI now.** #395 made them say
+  that they skipped; this makes them stop. The 30A, 60B, 120D, 120E and
+  300A sample directories are vendored under
+  `embedded-poc/assets/golden/q65/` beside the 60A and 60D already there
+  (11 WAVs, ~23 MB, byte-identical to WSJT-X's `samples/Q65/`), and the
+  three Q65 test files resolve through `golden_subdir`, so a missing
+  directory is a failure under `MFSK_REQUIRE_CORPUS` rather than an
+  `ok`. The tests are the 30A/60B multi-period averaging gates, the
+  120D/120E/300A fading-metric gates, and the 30A streaming-vs-batch
+  parity check; `q65_snr_matches_jt9_ground_truth` gains its 120D, 120E
+  and 300A cases.
+
+  Size was why they were left out, and it measures as no reason: a
+  fresh clone was 33 MB in ~2 s, CI checks out at depth 1, and the
+  whole set adds ~5 s serial to the ~300 s tier A+B job.
+
 - **FST4's tier-C gate is 626 lines, not 7 791.** `fst4_sweep.rs` had
   accumulated 46 `#[ignore]`d diagnostic probes from investigations that
   are now closed — #146's AWGN gap, #198's f32-hardcoded `decode_soft`,
