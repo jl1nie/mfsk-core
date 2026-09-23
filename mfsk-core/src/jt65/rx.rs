@@ -18,173 +18,88 @@ use super::gray::inv_gray6;
 use super::interleave::deinterleave;
 use super::sync_pattern::JT65_NPRC;
 
-/// `(symbols, conf, second_sym, rel, raw_pwr, snr_db)` — the richer
-/// demod tuple [`demodulate_aligned_with_runnerup`] and the internal
-/// `_inner` helper return. Factored into a named alias purely to keep
-/// `clippy::type_complexity` quiet; see those functions' own doc
-/// comments for what each element means.
+/// Everything one pass of the JT65 demodulator produces.
 ///
-/// `rel[k]` is WSJT-X `demod64a.f90`'s real `mrprob`/`p1` reliability
-/// metric — `best_pwr / total_pwr` where `total_pwr` sums *all 64*
-/// tone powers at that position, not just the top two. **Not the same
-/// quantity as `conf`** (`(best−second)/best`, a top-2-only margin):
-/// `rel` also captures how much energy leaked into the other 62 tones
-/// (i.e. the position's own local noise floor), which `conf` discards
-/// entirely. This distinction matters — `chase::decode_at_with_chase`
-/// initially (incorrectly) used `conf` where WSJT-X's `ftrsdap` uses
-/// `rxprob`/`mrprob` (i.e. this `rel`), for both the erasure-priority
-/// ordering and the `nsoft` soft-distance weighting; see `chase`'s
-/// module doc for the fix and what it changed. `conf` is still needed
-/// separately (WSJT-X's `rxprob2/rxprob` ratio *is* just
-/// `second_pwr/best_pwr` regardless of the `psum` normalization, so
-/// `1 - conf` remains the right quantity for that one piece).
-///
-/// `raw_pwr[j][tone]` is the un-thresholded FFT-bin power for data
-/// tone `tone` (0..64) at the `j`-th data symbol position (0..63) **in
-/// raw temporal order** — the same order WSJT-X's `s3(64,63)` array
-/// is in, i.e. *before* [`deinterleave`] permutes positions. Needed by
-/// [`crate::jt65::chase`]'s `getpp` port, which re-consults the
-/// original spectrum to score candidate codewords (WSJT-X `extract.f90`
-/// keeps a raw copy `s3a=s3` for exactly this purpose). 63×64 `f32` =
-/// ~16 KB — JT65 already requires `std`/`fft-rustfft`, so this isn't
-/// an embedded/no_std concern.
-type DemodWithRunnerup = (
-    [u8; 63],
-    [f32; 63],
-    [u8; 63],
-    [f32; 63],
-    [[f32; 64]; 63],
-    f32,
-);
+/// One function, [`demodulate_aligned`], returns all of it. Until #390
+/// four public functions ran the same pass and each handed back a
+/// different subset (symbols; + `conf`; + `snr_db`; everything).
+#[derive(Clone, Debug)]
+pub struct Jt65Demod {
+    /// The 63 hard-decision symbols in **RS codeword order**
+    /// (Gray-decoded and de-interleaved), ready for
+    /// [`crate::fec::Rs63_12::decode_jt65`].
+    pub symbols: [u8; 63],
+    /// Per-position confidence `(best_power − second_power) /
+    /// best_power`, in `[0, 1]`, codeword order. 1 means the winning
+    /// tone dominates; 0 means the top two tones are tied.
+    pub conf: [f32; 63],
+    /// Each position's runner-up symbol (Gray-decoded, codeword
+    /// order) — its identity, not just its power. Needed by
+    /// [`crate::jt65::chase`]'s soft-distance ranking, which mirrors
+    /// WSJT-X `ftrsdap`'s `nsoft` check of whether a correction landed
+    /// on the second-best guess.
+    pub second_symbols: [u8; 63],
+    /// WSJT-X `demod64a.f90`'s real `mrprob`/`p1` reliability metric,
+    /// codeword order: `best_pwr / total_pwr`, where `total_pwr` sums
+    /// *all 64* tone powers at that position, not just the top two.
+    ///
+    /// **Not the same quantity as `conf`**, which is a top-2-only
+    /// margin. `rel` also captures how much energy leaked into the
+    /// other 62 tones (the position's own local noise floor), which
+    /// `conf` discards. This matters: `chase::decode_at_with_chase`
+    /// first used `conf` (incorrectly) where WSJT-X's `ftrsdap` uses
+    /// `rxprob`/`mrprob`, i.e. this `rel`, for both the
+    /// erasure-priority ordering and the `nsoft` soft-distance
+    /// weighting. See `chase`'s module doc for the fix and what it
+    /// changed. `conf` is still needed separately: WSJT-X's
+    /// `rxprob2/rxprob` ratio *is* just `second_pwr/best_pwr`
+    /// regardless of the `psum` normalisation, so `1 - conf` remains
+    /// the right quantity for that one piece.
+    pub rel: [f32; 63],
+    /// `raw_pwr[j][tone]` is the un-thresholded FFT-bin power for data
+    /// tone `tone` (0..64) at the `j`-th data symbol position (0..63)
+    /// **in raw temporal order**. That is the order WSJT-X's
+    /// `s3(64,63)` array is in, *before* [`deinterleave`] permutes the
+    /// positions. [`crate::jt65::chase`]'s `getpp` port needs it to
+    /// re-consult the original spectrum when scoring candidate
+    /// codewords (WSJT-X `extract.f90` keeps a raw copy `s3a=s3` for
+    /// exactly this). 63×64 `f32` is about 16 KB.
+    pub raw_pwr: [[f32; 64]; 63],
+    /// Decode-side SNR estimate (dB). Signal is the power at each
+    /// symbol's winning tone; noise is the mean power of the other 63
+    /// candidate tones in the same symbol slot. That is the same
+    /// "opposite-bin" logic as
+    /// [`crate::engine::llr::compute_snr_db_generic`] for FT8/FT4/FST4,
+    /// generalised from a single opposite tone to a 63-tone average,
+    /// since JT65's data alphabet has no natural comb midpoint.
+    ///
+    /// It is converted to WSJT-X's 2500 Hz reference bandwidth by
+    /// `10·log10(2500/df)`, the same bandwidth-normalisation shape as
+    /// FT8's `-27 dB` and wsprd's `-26.3 dB` constants
+    /// (`engine/llr.rs`, `wspr/coarse_baseband.rs`). It is **not
+    /// independently calibrated** against a real JT65 signal corpus
+    /// (`jt65sim` isn't buildable in this environment; see
+    /// `tests/jt65_sweep.rs`), so treat it as accurate to roughly ±1-2
+    /// dB against WSJT-X's own JT65 SNR readout until validated. It is
+    /// clamped to `[-30, -1]` the way WSJT-X's display is.
+    pub snr_db: f32,
+}
 
-/// Demodulate 63 data symbols from aligned audio. Returns the 63
-/// hard-decision symbols in **RS codeword order** (Gray-decoded and
-/// de-interleaved), ready for [`crate::fec::Rs63_12::decode_jt65`].
+/// Demodulate one JT65 frame from aligned audio. Returns `None` if the
+/// 126-symbol frame or the 66-tone band does not fit.
 pub fn demodulate_aligned(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
-) -> Option<[u8; 63]> {
+) -> Option<Jt65Demod> {
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32; // ≡ TONE_SPACING_HZ
     let base_bin = (base_freq_hz / df).round() as usize;
-
-    // Sanity bounds.
     if start_sample + 126 * nsps > audio.len() || base_bin + 66 >= nsps / 2 {
         return None;
     }
 
-    let (syms, _conf, _second_sym, _rel, _raw_pwr, _snr_db) =
-        demodulate_aligned_with_confidence_inner(
-            audio,
-            sample_rate,
-            start_sample,
-            base_freq_hz,
-            nsps,
-            base_bin,
-        )?;
-    Some(syms)
-}
-
-/// Demodulate 63 data symbols AND return per-symbol confidence:
-/// `(best_power - second_best_power) / best_power`. Confidence is in
-/// `[0, 1]`; 1 means the winning tone dominates, 0 means the top two
-/// tones are tied (coin-flip).
-///
-/// Returned in RS codeword order — already Gray-decoded and
-/// de-interleaved, ready for `Rs63_12::decode_jt65_erasures`.
-pub fn demodulate_aligned_with_confidence(
-    audio: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    base_freq_hz: f32,
-) -> Option<([u8; 63], [f32; 63])> {
-    let (syms, conf, _snr_db) =
-        demodulate_aligned_with_confidence_and_snr(audio, sample_rate, start_sample, base_freq_hz)?;
-    Some((syms, conf))
-}
-
-/// Like [`demodulate_aligned_with_confidence`] but also returns the
-/// *identity* of each position's second-most-reliable tone (not just
-/// its power), WSJT-X's real `mrprob`-equivalent reliability metric
-/// (`rel` — **not** the same as `conf`, see `DemodWithRunnerup`'s doc),
-/// the raw un-thresholded power spectrum, and the decode-side SNR
-/// estimate. Used by [`crate::jt65::chase::decode_at_with_chase`]'s
-/// stochastic erasure search: `rel` and the raw spectrum feed WSJT-X
-/// `ftrsdap`'s erasure-ordering/`nsoft`/`getpp` candidate-ranking
-/// metrics (see `DemodWithRunnerup` and the `chase` module's doc
-/// comment for the full rationale).
-pub fn demodulate_aligned_with_runnerup(
-    audio: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    base_freq_hz: f32,
-) -> Option<DemodWithRunnerup> {
-    let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32;
-    let base_bin = (base_freq_hz / df).round() as usize;
-    if start_sample + 126 * nsps > audio.len() || base_bin + 66 >= nsps / 2 {
-        return None;
-    }
-
-    demodulate_aligned_with_confidence_inner(
-        audio,
-        sample_rate,
-        start_sample,
-        base_freq_hz,
-        nsps,
-        base_bin,
-    )
-}
-
-/// Like [`demodulate_aligned_with_confidence`] but also returns a
-/// decode-side SNR estimate (dB): signal = power at each symbol's
-/// winning tone, noise = mean power of the other 63 candidate tones
-/// in the same symbol slot (same "opposite-bin" logic as
-/// [`crate::engine::llr::compute_snr_db_generic`] for FT8/FT4/FST4,
-/// generalised from a single opposite tone to a 63-tone average since
-/// JT65's data alphabet has no natural comb midpoint). Converted to
-/// WSJT-X's 2500 Hz reference bandwidth by `10·log10(2500/df)`, the
-/// same bandwidth-normalisation shape as FT8's `-27 dB` and wsprd's
-/// `-26.3 dB` constants (`engine/llr.rs`, `wspr/coarse_baseband.rs`) —
-/// **not independently calibrated** against a real JT65 signal corpus
-/// (`jt65sim` isn't buildable in this environment; see
-/// `tests/jt65_sweep.rs`), so treat as accurate to roughly ±1-2 dB
-/// versus WSJT-X's own JT65 SNR readout until validated.
-pub fn demodulate_aligned_with_confidence_and_snr(
-    audio: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    base_freq_hz: f32,
-) -> Option<([u8; 63], [f32; 63], f32)> {
-    let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32;
-    let base_bin = (base_freq_hz / df).round() as usize;
-    if start_sample + 126 * nsps > audio.len() || base_bin + 66 >= nsps / 2 {
-        return None;
-    }
-
-    let (syms, conf, _second_sym, _rel, _raw_pwr, snr_db) =
-        demodulate_aligned_with_confidence_inner(
-            audio,
-            sample_rate,
-            start_sample,
-            base_freq_hz,
-            nsps,
-            base_bin,
-        )?;
-    Some((syms, conf, snr_db))
-}
-
-fn demodulate_aligned_with_confidence_inner(
-    audio: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    base_freq_hz: f32,
-    nsps: usize,
-    base_bin: usize,
-) -> Option<DemodWithRunnerup> {
     let mut fft = SymbolFft::new(nsps);
     // Walk 126 symbol windows. Data positions (NPRC[i] == 0) each get
     // argmax of 64 data-tone magnitudes (+ runner-up for confidence).
@@ -199,7 +114,7 @@ fn demodulate_aligned_with_confidence_inner(
     // Raw un-thresholded power per (temporal position, tone) — kept in
     // WSJT-X's `s3a` order (temporal, i.e. *not* deinterleaved) since
     // that's the order `chase::getpp` re-projects a candidate codeword
-    // into before looking values up. See `DemodWithRunnerup`'s doc.
+    // into before looking values up. See `Jt65Demod::raw_pwr`.
     let mut raw_pwr = [[0f32; 64]; 63];
     let mut xsig_sum = 0.0f32;
     let mut xnoi_sum = 0.0f32;
@@ -339,14 +254,14 @@ fn demodulate_aligned_with_confidence_inner(
         }
     };
 
-    Some((
+    Some(Jt65Demod {
         symbols,
-        conf_perm,
-        second_tone_sym,
-        rel_perm,
+        conf: conf_perm,
+        second_symbols: second_tone_sym,
+        rel: rel_perm,
         raw_pwr,
         snr_db,
-    ))
+    })
 }
 
 #[cfg(test)]
@@ -362,7 +277,9 @@ mod tests {
         let freq = 1270.0;
         let audio =
             synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("pack+synth");
-        let received = demodulate_aligned(&audio, 12_000, 0, freq).expect("demod");
+        let received = demodulate_aligned(&audio, 12_000, 0, freq)
+            .expect("demod")
+            .symbols;
         let rs = Rs63_12::new();
         let (info, nerr) = rs.decode_jt65(&received).expect("clean decode");
         assert_eq!(nerr, 0, "clean synth should have zero errors");

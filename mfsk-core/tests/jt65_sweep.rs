@@ -272,7 +272,7 @@ fn jt65_chase_awgn_snr_sweep() {
 /// - Below -22 dB decodes get too sparse for a stable per-cell mean.
 ///
 /// That -22…-10 window is where JT65 actually operates, and where
-/// `jt65::rx::demodulate_aligned_with_confidence_and_snr`'s estimator
+/// `jt65::rx::demodulate_aligned`'s estimator
 /// (a signal/noise power ratio with a `10·log10(2500/TONE_SPACING_HZ)`
 /// bandwidth offset — *not* the generic `engine::llr::compute_snr_db`
 /// heuristic issue #255 assumed) lands within ~0.7 dB of real `jt9`.
@@ -349,7 +349,7 @@ fn jt65_reported_snr_tracks_injected() {
         mean.abs() <= MEAN_ERR_TOL_DB,
         "JT65 reported SNR at injected {snr} dB is off by {mean:+.2} dB on average \
          (tolerance ±{MEAN_ERR_TOL_DB}) — check \
-         `jt65::rx::demodulate_aligned_with_confidence_and_snr`'s bandwidth offset \
+         `jt65::rx::demodulate_aligned`'s bandwidth offset \
          and the WSJT-X [-30,-1] display clamp (jt65_decode.f90:254-255)"
     );
 }

@@ -145,7 +145,7 @@ pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) ->
 /// sits at *exactly* bin 557.5 — the worst possible case). This
 /// estimator recovers the sub-bin offset from the already-computed
 /// [`Spectrogram`] (no extra FFTs) so
-/// [`crate::jt65::rx::demodulate_aligned_with_runnerup`]'s residual-NCO
+/// [`crate::jt65::rx::demodulate_aligned`]'s residual-NCO
 /// correction has a genuinely fractional frequency to act on — a
 /// plain bin-multiple `freq_hz` is a no-op there. See
 /// `docs/notes/BENCHMARKS.md`'s JT65 section for the measured effect

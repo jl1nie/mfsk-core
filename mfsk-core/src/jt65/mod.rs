@@ -104,9 +104,7 @@ pub mod tx;
 pub use chase::{ChaseParams, decode_at_with_chase};
 pub use gray::{gray6, inv_gray6};
 pub use interleave::{deinterleave, interleave};
-pub use rx::{
-    demodulate_aligned, demodulate_aligned_with_confidence, demodulate_aligned_with_runnerup,
-};
+pub use rx::{Jt65Demod, demodulate_aligned};
 pub use sync_pattern::{JT65_DATA_POSITIONS, JT65_NPRC, JT65_SYNC_BLOCKS, JT65_SYNC_POSITIONS};
 pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
 
@@ -119,22 +117,11 @@ pub fn decode_at(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<crate::msg::Jt72Message> {
-    use crate::engine::{DecodeContext, MessageCodec};
-
-    let received = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?;
-    let rs = Rs63_12::new();
-    let (info, _nerr) = rs.decode_jt65(&received)?;
-    let mut payload = [0u8; 72];
-    for (i, bit) in payload.iter_mut().enumerate() {
-        let word = info[i / 6];
-        let shift = 5 - (i % 6);
-        *bit = (word >> shift) & 1;
-    }
-    crate::msg::Jt72Codec::default().unpack(&payload, &DecodeContext::default())
+    decode_at_with_snr(audio, sample_rate, start_sample, base_freq_hz).map(|(msg, _)| msg)
 }
 
 /// Like [`decode_at`] but also returns the decode-side SNR estimate
-/// from [`rx::demodulate_aligned_with_confidence_and_snr`]. Used by
+/// ([`Jt65Demod::snr_db`]). Used by
 /// [`decode_scan`] to populate [`Jt65Result::snr_db`]; kept private
 /// since [`decode_at`]'s return type is part of the stable surface
 /// mirrored by `jt9::decode_at`.
@@ -146,14 +133,10 @@ fn decode_at_with_snr(
 ) -> Option<(crate::msg::Jt72Message, f32)> {
     use crate::engine::{DecodeContext, MessageCodec};
 
-    let (received, _conf, snr_db) = rx::demodulate_aligned_with_confidence_and_snr(
-        audio,
-        sample_rate,
-        start_sample,
-        base_freq_hz,
-    )?;
+    let demod = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?;
+    let snr_db = demod.snr_db;
     let rs = Rs63_12::new();
-    let (info, _nerr) = rs.decode_jt65(&received)?;
+    let (info, _nerr) = rs.decode_jt65(&demod.symbols)?;
     let mut payload = [0u8; 72];
     for (i, bit) in payload.iter_mut().enumerate() {
         let word = info[i / 6];
@@ -186,8 +169,8 @@ pub fn decode_at_with_erasures(
 ) -> Option<crate::msg::Jt72Message> {
     use crate::engine::{DecodeContext, MessageCodec};
 
-    let (symbols, conf) =
-        rx::demodulate_aligned_with_confidence(audio, sample_rate, start_sample, base_freq_hz)?;
+    let rx::Jt65Demod { symbols, conf, .. } =
+        rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?;
     // Ordering of symbol positions from least → most confident; the
     // caller's erasure budget eats from the start. Shared with
     // `chase::decode_at_with_chase`, which sorts on the same
@@ -265,7 +248,7 @@ pub struct Jt65Result {
     pub dt_sec: f32,
     /// Decode-side SNR estimate in dB (WSJT-X 2500 Hz reference
     /// bandwidth convention) — see
-    /// [`rx::demodulate_aligned_with_confidence_and_snr`] for the
+    /// [`Jt65Demod::snr_db`] for the
     /// formula and its calibration caveat.
     pub snr_db: f32,
 }

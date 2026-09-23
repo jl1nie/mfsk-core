@@ -213,7 +213,7 @@ pub struct Q65Result {
 /// [`snr_db_wide`]: `10·log10(xsig/xnoi − 1) − bw_offset_db`, clamped
 /// to a −24 dB floor — the same shape as
 /// [`crate::engine::llr::compute_snr_db_generic`] (FT8/FT4/FST4) and
-/// [`crate::jt65::rx::demodulate_aligned_with_confidence_and_snr`].
+/// [`crate::jt65::Jt65Demod::snr_db`].
 fn snr_db_from_sig_noi(xsig: f32, xnoi: f32, bw_offset_db: f32) -> f32 {
     const SNR_FLOOR_DB: f32 = -24.0;
     // WSJT-X's own display convention ceiling (see e.g. WebFT8's

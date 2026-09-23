@@ -24,12 +24,12 @@
 //!   interleave+Gray-encode the transmitter uses, and averages the
 //!   *original* (pre-decision) FFT-bin power at the resulting 63
 //!   (position, tone) pairs. Needs the raw un-thresholded spectrum,
-//!   which [`super::rx::demodulate_aligned_with_runnerup`] now retains
+//!   which [`super::rx::demodulate_aligned`] now retains
 //!   for exactly this purpose (`raw_pwr`, ~16 KB — JT65 already
 //!   requires `std`/`fft-rustfft`, so this isn't an embedded concern).
 //! - **`nhard`/`nsoft`/`ntotal`**: `ftrsdap.c`'s literal soft-distance
 //!   formula, using the retained runner-up-tone identity
-//!   ([`super::rx::demodulate_aligned_with_runnerup`]) exactly as
+//!   ([`super::rx::demodulate_aligned`]) exactly as
 //!   WSJT-X's `rxdat2`/`mr2sym` does.
 //! - **Acceptance gate**: `ntotal ≤ nd0 && pp2/pp1 ≤ r0`
 //!   (`extract.f90:169-176`), literal `nd0=81`/`r0=0.87` defaults
@@ -64,7 +64,7 @@
 //! two positions with the same top-2 margin can have very different
 //! `mrprob` if one has a quiet noise floor and the other doesn't, and
 //! `conf` can't tell them apart. Fixed by adding `rel` (WSJT-X's real
-//! `mrprob`) to [`super::rx::demodulate_aligned_with_runnerup`]'s
+//! `mrprob`) to [`super::rx::demodulate_aligned`]'s
 //! return and using it everywhere WSJT-X uses `rxprob`/`mrprob` —
 //! `conf` is *still* correct and still used for the `PERR` table's
 //! `ii` ratio bucket, since `rxprob2/rxprob` algebraically reduces to
@@ -242,7 +242,7 @@ impl Lcg {
 /// `cand_sent` is in the same WSJT `sent[]` layout as `symbols`
 /// (RS-codeword order, i.e. what [`super::super::decode_at_with_erasures`]
 /// and [`Rs63_12::decode_jt65_erasures`]/`encode_jt65` operate on).
-/// `raw_pwr` is [`super::rx::demodulate_aligned_with_runnerup`]'s
+/// `raw_pwr` is [`super::rx::demodulate_aligned`]'s
 /// retained pre-decision spectrum, indexed `[temporal position][tone]`
 /// — see that function's doc for why this specific order matches
 /// WSJT-X's `s3a`.
@@ -321,8 +321,14 @@ pub(super) fn decode_at_with_chase_and_snr(
     base_freq_hz: f32,
     params: &ChaseParams,
 ) -> Option<(Jt72Message, f32)> {
-    let (symbols, conf, second_sym, rel, raw_pwr, snr_db) =
-        rx::demodulate_aligned_with_runnerup(audio, sample_rate, start_sample, base_freq_hz)?;
+    let rx::Jt65Demod {
+        symbols,
+        conf,
+        second_symbols: second_sym,
+        rel,
+        raw_pwr,
+        snr_db,
+    } = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?;
 
     let rs = Rs63_12::new();
 
@@ -338,7 +344,7 @@ pub(super) fn decode_at_with_chase_and_snr(
     // `ftrsdap.c:149`: `if(nsum<=0) return;` — no usable reliability
     // signal at all (e.g. a fully silent slot). `nsum` sums `rel`
     // (WSJT-X's real `rxprob`/`mrprob`), **not** `conf` — see `rel`'s
-    // doc comment on `DemodWithRunnerup` for why these differ and why
+    // doc comment on `Jt65Demod::rel` for why these differ and why
     // `rel` is the correct quantity here.
     let nsum: f32 = rel.iter().sum();
     if nsum <= 0.0 {

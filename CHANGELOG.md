@@ -71,6 +71,21 @@
     FFT. The ESP backend scales its inverse, which is why
     `wspr::subtract` carries an explicit `#[cfg]` for the same point.
 
+- **Breaking: one JT65 demodulator entry point (#390).** Four public
+  functions ran the same demodulation pass and each returned a
+  different subset of its output. They are now one,
+  `jt65::demodulate_aligned`, which returns a `jt65::Jt65Demod` struct
+  with named fields. `jt65::decode_at` now reuses the SNR-carrying
+  decode instead of repeating it. Output is unchanged: it is the same
+  pass, and the JT65 golden and chase tests pass as before. Migration:
+
+  | before | after |
+  |---|---|
+  | `demodulate_aligned(..)` → `[u8; 63]` | `demodulate_aligned(..)?.symbols` |
+  | `demodulate_aligned_with_confidence(..)` → `(symbols, conf)` | `.symbols`, `.conf` |
+  | `demodulate_aligned_with_confidence_and_snr(..)` → `(symbols, conf, snr_db)` | `.symbols`, `.conf`, `.snr_db` |
+  | `demodulate_aligned_with_runnerup(..)` → 6-tuple | `.symbols`, `.conf`, `.second_symbols`, `.rel`, `.raw_pwr`, `.snr_db` |
+
 - **`pack77` packs `/P` and `/R` callsigns.** It refused them: the
   suffixed call went straight to `pack28`, which takes six characters
   at most, and the whole message came back `None` — so a portable
