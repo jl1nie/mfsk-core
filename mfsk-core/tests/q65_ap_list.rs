@@ -264,7 +264,7 @@ fn ap_list_decodes_eme_6m_w7gj_exchanges() {
     // exchanges (e.g. "W7GJ W1VD FN31") with no BP at all.
     let _ = synthesize_standard_for::<Q65a60>; // keep the symbol live for clarity
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        eprintln!("skipping: WSJT-X 6 m EME sample tree not found");
+        common::skip_or_fail("WSJT-X 6 m EME sample tree");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -274,7 +274,7 @@ fn ap_list_decodes_eme_6m_w7gj_exchanges() {
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
         .collect();
     if entries.is_empty() {
-        eprintln!("skipping: 6 m EME sample dir empty");
+        common::skip_or_fail("6 m EME sample dir empty");
         return;
     }
 

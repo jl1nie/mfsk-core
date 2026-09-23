@@ -213,3 +213,37 @@ pub const REAL_QSO_WAVS: &[&str] = &[
     asset_path!("191111_110200.wav"),
     asset_path!("qso3_busy.wav"),
 ];
+
+/// Give up on a test for want of an input — but never silently when the
+/// caller said the inputs must be there.
+///
+/// Call it, then `return`. It is a statement rather than a predicate so
+/// it also reads correctly as the body of a `let ... else`, which is
+/// where most of these sites live. Panics instead of printing when
+/// `MFSK_REQUIRE_CORPUS` is set; `what` names the missing input, so a
+/// failure says *which* one was absent rather than only that one was.
+///
+/// # Why this is centralised
+///
+/// `MFSK_REQUIRE_CORPUS` exists because five protocols' golden tests
+/// skipped for weeks against a green suite. It covered the in-repo
+/// corpus and nothing else, so ~70 other skip sites — most of them the
+/// out-of-tree WSJT-X sample tree — kept reporting `ok` while measuring
+/// nothing (issue #395).
+///
+/// That is not hypothetical. Timing the #394 refactor compared a git
+/// worktree against the working tree; the sample tree resolves relative
+/// to `CARGO_MANIFEST_DIR`, so it was absent in the worktree, six of
+/// Q65's golden tests skipped there, and the arm doing less work looked
+/// 25 % faster. Both arms printed `test result: ok`. Hours went into
+/// hunting a regression that did not exist.
+///
+/// So: one funnel, and `MFSK_REQUIRE_CORPUS=1` — which CI and the merge
+/// gate both set — means *every* input the suite wanted was present.
+#[allow(dead_code)]
+pub fn skip_or_fail(what: &str) {
+    if std::env::var("MFSK_REQUIRE_CORPUS").is_ok() {
+        panic!("MFSK_REQUIRE_CORPUS is set but {what} is absent — refusing to skip");
+    }
+    eprintln!("skipping: {what} not found");
+}

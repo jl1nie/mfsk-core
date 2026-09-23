@@ -200,7 +200,7 @@ fn ft4_early_close_costs_nothing_on_the_golden() {
         if std::env::var("MFSK_REQUIRE_CORPUS").is_ok() {
             panic!("MFSK_REQUIRE_CORPUS=1 but the FT4 golden recording is missing");
         }
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
 

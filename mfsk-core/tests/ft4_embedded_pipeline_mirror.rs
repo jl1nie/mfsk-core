@@ -291,7 +291,7 @@ fn mirror_decodes_the_golden_and_reports_what_a_candidate_allocates() {
             !require_corpus(),
             "MFSK_REQUIRE_CORPUS=1 but the FT4 golden recording is missing"
         );
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
 

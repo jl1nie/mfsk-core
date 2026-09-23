@@ -158,7 +158,7 @@ fn fst4_60_diagnose_golden() {
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: WSJT-X FST4 sample not found");
+        common::skip_or_fail("WSJT-X FST4 sample");
         return;
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
@@ -224,7 +224,7 @@ fn fst4_60_diagnose_golden() {
         FREQ_TOL_HZ, DT_TOL_SEC
     );
     if in_window.is_empty() {
-        eprintln!("  (none — coarse_sync proposes nothing in the golden window at all)");
+        common::skip_or_fail("  (none — coarse_sync proposes nothing in the golden window at all)");
         return;
     }
     for cand in &in_window {
@@ -637,7 +637,7 @@ fn fst4_wsjtx_sample_precision_vs_reference_decoder() {
     use common::golden::{DecodeView, GoldenSet, Tolerances, assert_golden};
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: FST4 golden recording not found");
+        common::skip_or_fail("FST4 golden recording");
         return;
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");

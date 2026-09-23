@@ -170,7 +170,7 @@ fn fst4_ddc_snr_calibration() {
         if std::env::var("MFSK_REQUIRE_CORPUS").is_ok() {
             panic!("MFSK_REQUIRE_CORPUS set but fst4/210115_0058.wav is absent");
         }
-        eprintln!("fst4/210115_0058.wav absent — skipping");
+        common::skip_or_fail("fst4/210115_0058.wav absent");
         return;
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV readable");

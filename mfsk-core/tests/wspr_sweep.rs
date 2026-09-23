@@ -342,7 +342,7 @@ fn harvest_osd_inputs() -> Option<std::collections::BTreeMap<i32, (u32, u32, u32
 fn wspr_osd_input_harvest() {
     let dir = sweep_dir();
     let Some(per_snr_osd) = harvest_osd_inputs() else {
-        eprintln!("skipping wspr_osd_input_harvest");
+        common::skip_or_fail("wspr_osd_input_harvest");
         return;
     };
 
@@ -381,7 +381,7 @@ fn wspr_osd_input_harvest() {
 #[cfg(feature = "internal-testing")]
 fn wspr_osd_packed_matches_unpacked() {
     let Some(_) = harvest_osd_inputs() else {
-        eprintln!("skipping wspr_osd_packed_matches_unpacked");
+        common::skip_or_fail("wspr_osd_packed_matches_unpacked");
         return;
     };
     let inputs = mfsk_core::wspr::osd::capture::snapshot();
@@ -437,7 +437,7 @@ fn wspr_rank_sweep() {
 
     let dir = sweep_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        eprintln!("skipping wspr_rank_sweep: corpus dir not found at {dir:?}");
+        common::skip_or_fail("wspr_rank_sweep: corpus dir not found at {dir:?}");
         return;
     };
 
@@ -463,7 +463,7 @@ fn wspr_rank_sweep() {
         });
     }
     if jobs.is_empty() {
-        eprintln!("skipping wspr_rank_sweep: no wspr_awgn_*.wav files found in {dir:?}");
+        common::skip_or_fail("wspr_rank_sweep: no wspr_awgn_*.wav files found in {dir:?}");
         return;
     }
 
@@ -622,7 +622,7 @@ fn wspr_pass2_ladder_position_sweep() {
 
     let dir = sweep_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        eprintln!("skipping wspr_pass2_ladder_position_sweep: corpus dir not found at {dir:?}");
+        common::skip_or_fail("wspr_pass2_ladder_position_sweep: corpus dir not found at {dir:?}");
         return;
     };
 

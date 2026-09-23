@@ -78,7 +78,7 @@ fn decodes() -> Option<Vec<mfsk_core::jt65::Jt65Result>> {
 #[test]
 fn jt65_golden_recall_and_precision() {
     let Some(d) = decodes() else {
-        eprintln!("skipping: JT65 golden recording not found");
+        common::skip_or_fail("JT65 golden recording");
         return;
     };
 
@@ -129,7 +129,7 @@ fn jt65_golden_snr_matches_reference_decoder() {
     const SNR_TOL_DB: f32 = 4.0;
 
     let Some(d) = decodes() else {
-        eprintln!("skipping: JT65 golden recording not found");
+        common::skip_or_fail("JT65 golden recording");
         return;
     };
     assert!(!d.is_empty(), "no JT65 decodes to check SNR against");

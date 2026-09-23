@@ -1030,7 +1030,7 @@ fn wspr_diag_minsync2_would_drop() {
     use mfsk_core::wspr::coarse_baseband::coarse_baseband;
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: WSPR golden not found");
+        common::skip_or_fail("WSPR golden");
         return;
     };
     let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
@@ -1109,7 +1109,7 @@ fn wspr_diag_g8vdq_rank_after_minsync2() {
     use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: WSPR golden not found");
+        common::skip_or_fail("WSPR golden");
         return;
     };
     let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
@@ -1333,7 +1333,7 @@ fn wspr_diag_rank_by_pass() {
     use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: WSPR golden not found");
+        common::skip_or_fail("WSPR golden");
         return;
     };
     let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
@@ -1493,7 +1493,7 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
     use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: WSPR golden not found");
+        common::skip_or_fail("WSPR golden");
         return;
     };
     let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");

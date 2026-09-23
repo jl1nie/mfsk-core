@@ -258,7 +258,7 @@ fn eme_10ghz_reference_decodes_with_fast_fading() {
     // (≈25 Hz at 10 GHz) and never recovers it. Without a sample
     // tree this test reports as skipped.
     let Some(dir) = samples_dir("60D_EME_10GHz") else {
-        eprintln!("skipping: WSJT-X 10 GHz EME sample tree not found");
+        common::skip_or_fail("WSJT-X 10 GHz EME sample tree");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -330,7 +330,7 @@ fn eme_6m_sample_does_not_regress_with_fast_fading() {
     // tight B90Ts must do at least as well — confirms we have not
     // broken the easy case in pursuit of the hard one.
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        eprintln!("skipping: WSJT-X 6 m EME sample tree not found");
+        common::skip_or_fail("WSJT-X 6 m EME sample tree");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -340,7 +340,7 @@ fn eme_6m_sample_does_not_regress_with_fast_fading() {
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
         .collect();
     if entries.is_empty() {
-        eprintln!("skipping: 6 m EME sample dir empty");
+        common::skip_or_fail("6 m EME sample dir empty");
         return;
     }
 

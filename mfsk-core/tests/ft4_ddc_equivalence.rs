@@ -169,7 +169,7 @@ fn ft4_ddc_baseband_decodes_the_golden_like_the_fft_path() {
         if std::env::var("MFSK_REQUIRE_CORPUS").is_ok() {
             panic!("MFSK_REQUIRE_CORPUS=1 but the FT4 golden recording is missing");
         }
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
 
@@ -475,7 +475,7 @@ fn ft4_ddc_recall_matches_the_fft_path_across_the_crossing() {
 
     let present = per_file.iter().filter(|f| f.3).count();
     if present == 0 {
-        eprintln!("skipping: no FT4 sweep corpus under {}", dir.display());
+        common::skip_or_fail(&format!("the FT4 sweep corpus under {}", dir.display()));
         return;
     }
     assert_eq!(
@@ -562,7 +562,7 @@ fn ft4_ddc_arm_never_reads_the_wideband_cache() {
         if std::env::var("MFSK_REQUIRE_CORPUS").is_ok() {
             panic!("MFSK_REQUIRE_CORPUS=1 but the FT4 golden recording is missing");
         }
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
 

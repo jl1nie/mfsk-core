@@ -123,7 +123,7 @@ fn fst4_decode(
 #[test]
 fn ft4_budget_that_never_fires_reproduces_the_unbudgeted_decode() {
     let Some(audio) = ft4_sample() else {
-        eprintln!("skipping: FT4 golden not present");
+        common::skip_or_fail("FT4 golden not present");
         return;
     };
     let (plain, plain_report) = ft4_decode(&audio, None);
@@ -140,7 +140,7 @@ fn ft4_budget_that_never_fires_reproduces_the_unbudgeted_decode() {
 #[test]
 fn ft4_recall_is_monotone_and_never_invents_a_decode() {
     let Some(audio) = ft4_sample() else {
-        eprintln!("skipping: FT4 golden not present");
+        common::skip_or_fail("FT4 golden not present");
         return;
     };
     let full = messages(&ft4_decode(&audio, None).0);
@@ -173,7 +173,7 @@ fn ft4_recall_is_monotone_and_never_invents_a_decode() {
 #[test]
 fn ft4_sic_rounds_are_declined_whole_and_never_repeat_a_message() {
     let Some(audio) = ft4_sample() else {
-        eprintln!("skipping: FT4 golden not present");
+        common::skip_or_fail("FT4 golden not present");
         return;
     };
     // The generic SIC engine subtracts a whole round's accepted decodes
@@ -210,7 +210,7 @@ fn ft4_sic_rounds_are_declined_whole_and_never_repeat_a_message() {
 #[test]
 fn fst4_budget_orders_by_refined_score_and_never_invents_a_decode() {
     let Some(audio) = fst4_sample() else {
-        eprintln!("skipping: FST4 golden not present");
+        common::skip_or_fail("FST4 golden not present");
         return;
     };
     let (plain, plain_report) = fst4_decode(&audio, None);

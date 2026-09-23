@@ -119,7 +119,7 @@ fn msk144_wsjtx_samples_recall_precision_and_snr() {
         ("181211_120800.wav", MSK144_120800_REFERENCE, 2),
     ] {
         let Some(path) = sample_path(file) else {
-            eprintln!("skipping: MSK144 golden {file} not found");
+            common::skip_or_fail(&format!("the MSK144 golden {file}"));
             continue;
         };
         let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");

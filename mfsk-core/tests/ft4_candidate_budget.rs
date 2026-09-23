@@ -136,7 +136,7 @@ fn ft4_golden_decodes_live_near_the_top_of_the_ranking() {
         if std::env::var("MFSK_REQUIRE_CORPUS").is_ok() {
             panic!("MFSK_REQUIRE_CORPUS=1 but the FT4 golden recording is missing");
         }
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
 
@@ -201,7 +201,7 @@ fn ft4_golden_decodes_live_near_the_top_of_the_ranking() {
 #[test]
 fn ft4_sync_min_trades_candidate_count_against_nothing_until_it_bites() {
     let Some(audio) = golden_audio() else {
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
     let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
@@ -373,7 +373,7 @@ fn ft4_candidate_budget_across_the_crossing() {
 
     let present = per_file.iter().filter(|r| r.0).count();
     if present == 0 {
-        eprintln!("skipping: no FT4 sweep corpus under {}", dir.display());
+        common::skip_or_fail(&format!("the FT4 sweep corpus under {}", dir.display()));
         return;
     }
     assert_eq!(

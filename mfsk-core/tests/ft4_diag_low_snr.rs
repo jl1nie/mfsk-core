@@ -4,6 +4,9 @@
 //! Marked `#[ignore]` so `cargo test` stays fast — run explicitly with
 //! `cargo test -p ft4-core --release --test diag_low_snr -- --ignored --nocapture`.
 
+#[allow(dead_code)]
+mod common;
+
 use std::f32::consts::PI;
 
 use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
@@ -117,7 +120,7 @@ fn why_does_neg16db_fail() {
             c.freq_hz, c.dt_sec, c.score
         ),
         None => {
-            eprintln!("  NO truth-proximate candidate in top 200");
+            common::skip_or_fail("  NO truth-proximate candidate in top 200");
             return;
         }
     }

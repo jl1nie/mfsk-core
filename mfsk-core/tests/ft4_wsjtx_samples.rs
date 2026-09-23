@@ -245,7 +245,7 @@ fn ft4_wsjtx_sample_precision_vs_reference_decoder() {
     use common::golden::{DecodeView, GoldenSet, Tolerances, assert_golden};
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
@@ -307,7 +307,7 @@ fn ft4_wsjtx_sample_reaches_jt9_parity_with_sic() {
     use common::golden::{DecodeView, GoldenSet, Tolerances, assert_golden};
 
     let Some(path) = sample_path() else {
-        eprintln!("skipping: FT4 golden recording not found");
+        common::skip_or_fail("FT4 golden recording");
         return;
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
@@ -648,7 +648,7 @@ fn ft4_diag_sync_window_recall() {
     }
 
     let Some(path) = sample_path() else {
-        eprintln!("FT4 golden not found — skipping");
+        common::skip_or_fail("FT4 golden not found");
         return;
     };
     let raw = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");

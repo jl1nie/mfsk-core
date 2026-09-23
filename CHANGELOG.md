@@ -2,6 +2,32 @@
 
 ## 0.11.1 — FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **`MFSK_REQUIRE_CORPUS=1` now covers every input the suite wants, not
+  just the in-repo corpus (#395).** The flag exists because five
+  protocols' golden tests skipped for weeks against a green suite. It
+  guarded the corpus path and nothing else, so 77 other skip sites —
+  most of them the out-of-tree WSJT-X sample tree — went on printing
+  `skipping:` and returning `ok`. They all route through one
+  `tests/common::skip_or_fail` helper now, which panics when the flag
+  is set and names the input that was missing.
+
+  This is not a hypothetical gap. Timing the #394 refactor compared a
+  git worktree against the working tree; the sample tree resolves
+  relative to `CARGO_MANIFEST_DIR`, so it was absent in the worktree,
+  **six of Q65's golden tests skipped there**, and the arm doing less
+  work looked 25 % faster. Both arms printed `test result: ok`. Closure
+  indirection, `#[inline]`, the shared search window, the ranking tail,
+  the `fec/qra` imports, machine drift, cargo overhead and codegen-unit
+  partitioning were all measured and cleared before the cause turned
+  out to be a missing directory nobody was told about. A same-directory
+  re-measurement put the change at −5.9 %.
+
+  Behaviour without the flag is unchanged — a fresh clone with no
+  out-of-tree samples still skips, and says so. With it, a green run is
+  now a statement that every test ran on real inputs. Verified by
+  hiding the sample tree and watching the suite fail with the name of
+  each absent input instead of reporting ok.
+
 - **One CPFSK synthesiser, one CRC-14 append, one top-K pick.** Code that
   several modes had each copied now lives in one place. None of it changes
   output.

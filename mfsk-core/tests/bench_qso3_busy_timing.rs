@@ -117,7 +117,7 @@ fn timing_fst4_300() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/201230_0300.wav");
     let Ok(path) = path.canonicalize() else {
-        eprintln!("skipping: WSJT-X FST4 sample not found (sibling checkout)");
+        common::skip_or_fail("WSJT-X FST4 sample not found (sibling checkout)");
         return;
     };
     let full = load_wav_i16(&path);
