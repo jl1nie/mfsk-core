@@ -49,14 +49,9 @@ pub mod llr;
 pub mod pipeline;
 pub mod protocol;
 pub mod scalar;
-// Hardcodes `rustfft::FftPlanner` directly (matching what JT9/JT65/Q65
-// already did before this was extracted) rather than routing through
-// the `engine::fft` backend-abstraction trait `sync`/`llr`/`pipeline`
-// use — those three protocols' own Cargo features already require
-// `fft-rustfft` specifically (`jt9`/`jt65`/`q65` = [.., "fft-rustfft"]
-// in Cargo.toml, no `fft-extern` alternative), so this gate changes
-// nothing about what builds succeed.
-#[cfg(feature = "fft-rustfft")]
+// Routes through `engine::fft` (#390), so it builds under either FFT
+// backend, like `sync` / `llr` / `pipeline`.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod spectrogram;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod sync;

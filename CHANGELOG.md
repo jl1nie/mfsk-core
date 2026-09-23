@@ -27,6 +27,20 @@
     #391: it only pays off once the public `jt65::{gray6, inv_gray6}`
     can go, which is a breaking change.
 
+- **One spectrogram builder for JT9, JT65, Q65 and WSPR (#390).** The
+  shared `engine::spectrogram` builder called `rustfft` directly, so
+  WSPR, which has to build under `fft-extern` as well, carried its own
+  copy of the same FFT loop and the same bottom-95 % noise estimate. The
+  builder now goes through `engine::fft`, and `wspr::spectrogram`
+  calls it and keeps only its per-bin baseline fit. rustfft is still
+  the host backend (`engine::fft::default_planner()` returns it), so
+  nothing changes on host. All four modes were fingerprinted at 12 and
+  48 kHz: `mags_sqr`, `noise_per_bin`, `df` and WSPR's `sbase_linear`
+  are bit-identical. Build time was measured A/B back to back and is
+  within 1 % (JT65 ≈ 24.5 ms, Q65-30A ≈ 26.5 ms, WSPR ≈ 14.5 ms per
+  slot on an Apple M5). `engine::spectrogram` is now compiled under
+  either FFT backend, not only `fft-rustfft`.
+
 - **`pack77` packs `/P` and `/R` callsigns.** It refused them: the
   suffixed call went straight to `pack28`, which takes six characters
   at most, and the whole message came back `None` — so a portable

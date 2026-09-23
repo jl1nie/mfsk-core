@@ -7,13 +7,15 @@
 //! near-identical copies — `jt9::search::Spectrogram`,
 //! `jt65::search::Spectrogram`, `q65::search::Spectrogram` — whose own
 //! doc comments already cross-referenced each other as "structurally
-//! identical" without anyone unifying them. `WSPR` has the same shape
-//! FFT loop but is deliberately *not* folded in here: it uses the
-//! crate's fixed-point-capable `engine::fft` abstraction rather than
-//! raw `rustfft` (WSPR alone among these needs that), and its
-//! `score_candidate` normalises against a fitted per-bin baseline
-//! (`sbase_linear`) rather than a single flat noise floor — a real
-//! algorithmic difference, not just a naming one.
+//! identical" without anyone unifying them. WSPR's builder
+//! (`wspr::spectrogram`) was a fourth copy of the same FFT loop and noise
+//! estimate, kept apart because this one called `rustfft` directly while
+//! WSPR needed the backend-agnostic `engine::fft`. Since #390 this one
+//! goes through `engine::fft` too, so WSPR calls [`Spectrogram::build_for`]
+//! and adds only its per-bin baseline (`sbase_linear`) on top. On host
+//! `default_planner()` is still rustfft, so the output is bit-identical
+//! to the direct calls it replaced (fingerprinted over JT9/JT65/Q65/WSPR
+//! at 12 and 48 kHz).
 //!
 //! `nstep_per_symbol` and the sync-position list are the only axes
 //! that actually vary between JT9/JT65/Q65: JT9/JT65 both step at
@@ -26,9 +28,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use num_complex::Complex;
-use rustfft::FftPlanner;
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
+use num_traits::Float;
 
 use super::ModulationParams;
+use super::fft::default_planner;
 
 /// FFT-bin spectrogram covering an audio buffer at `nsps /
 /// nstep_per_symbol`-sample time steps. `mags_sqr[t * n_freq + f]` is
@@ -72,9 +78,7 @@ impl Spectrogram {
         }
         let n_time = (audio.len() - nsps) / t_step + 1;
         let mut mags_sqr = vec![0f32; n_time * n_freq];
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(nsps);
-        let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
+        let fft = default_planner().plan_forward(nsps);
         let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
 
         for t in 0..n_time {
@@ -82,7 +86,7 @@ impl Spectrogram {
             for (slot, &s) in buf.iter_mut().zip(&audio[start..start + nsps]) {
                 *slot = Complex::new(s, 0.0);
             }
-            fft.process_with_scratch(&mut buf, &mut scratch);
+            fft.process(&mut buf);
             let row = &mut mags_sqr[t * n_freq..(t + 1) * n_freq];
             for (slot, c) in row.iter_mut().zip(buf.iter().take(n_freq)) {
                 *slot = c.norm_sqr();

@@ -14,13 +14,10 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::engine::ModulationParams;
 use crate::engine::baseline::fit_baseline;
-use crate::engine::fft::default_planner;
 
 use super::Wspr;
 
@@ -51,62 +48,30 @@ impl Spectrogram {
     /// Build a quarter-symbol spectrogram matching WSPR's geometry at
     /// `sample_rate`. Empty if the audio is shorter than one symbol.
     pub fn build(audio: &[f32], sample_rate: u32) -> Self {
-        let nsps = (sample_rate as f32 * <Wspr as ModulationParams>::SYMBOL_DT).round() as usize;
-        let t_step = nsps / 4;
-        let n_freq = nsps / 2;
-        if audio.len() < nsps || t_step == 0 {
+        // The FFT loop and the bottom-95 % noise estimate are the
+        // engine builder's (#390); only the baseline fit below is
+        // WSPR's own.
+        let crate::engine::spectrogram::Spectrogram {
+            mags_sqr,
+            n_time,
+            n_freq,
+            t_step,
+            nsps,
+            df,
+            noise_per_bin,
+        } = crate::engine::spectrogram::Spectrogram::build_for::<Wspr>(audio, sample_rate, 4);
+        if n_time == 0 {
             return Self {
-                mags_sqr: Vec::new(),
-                n_time: 0,
-                n_freq: 0,
-                t_step: 0,
+                mags_sqr,
+                n_time,
+                n_freq,
+                t_step,
                 nsps,
-                df: sample_rate as f32 / nsps as f32,
-                noise_per_bin: 1.0,
+                df,
+                noise_per_bin,
                 sbase_linear: Vec::new(),
             };
         }
-        let n_time = (audio.len() - nsps) / t_step + 1;
-
-        let mut mags_sqr = vec![0f32; n_time * n_freq];
-        let mut planner = default_planner();
-        let fft = planner.plan_forward(nsps);
-        let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
-
-        for t in 0..n_time {
-            let start = t * t_step;
-            for (slot, &s) in buf.iter_mut().zip(&audio[start..start + nsps]) {
-                *slot = Complex::new(s, 0.0);
-            }
-            fft.process(&mut buf);
-            let row = &mut mags_sqr[t * n_freq..(t + 1) * n_freq];
-            for (slot, c) in row.iter_mut().zip(buf.iter().take(n_freq)) {
-                *slot = c.norm_sqr();
-            }
-        }
-
-        // Noise reference: mean power across all bins and times,
-        // discarding the top 5 % to avoid strong signals dragging the
-        // estimate up. Cheap approximation of median-filter noise floor.
-        // Only the *set* of bottom-95% values is needed (order within
-        // that set is irrelevant, we just sum them), not a full
-        // ascending order — `select_nth_unstable_by` partitions in
-        // O(n) average instead of `sort_unstable_by`'s O(n log n), same
-        // fix applied to JT65/JT9's structurally identical
-        // `Spectrogram`/`AudioFft::build` and Q65's `build_for`. Bigger
-        // win here than any of those: this table is ~700 × 4096 ≈ 2.9M
-        // elements per slot (`n_time × n_freq`, see the module doc
-        // comment), the largest of the four.
-        let mut sorted = mags_sqr.clone();
-        let keep = (sorted.len() as f32 * 0.95) as usize;
-        let noise_per_bin = if keep > 0 {
-            sorted.select_nth_unstable_by(keep - 1, |a, b| {
-                a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
-            });
-            sorted[..keep].iter().sum::<f32>() / keep as f32
-        } else {
-            1.0
-        };
 
         // Average power per bin (mean across time slices), then fit the
         // 5-term polynomial baseline on the WSPR ±150 Hz working band
@@ -116,7 +81,6 @@ impl Spectrogram {
         // the WSJT-X polynomial baseline algorithm instead of a single
         // global percentile, so the divisor follows the noise-floor
         // curvature across the band.
-        let df = sample_rate as f32 / nsps as f32;
         let mut avg_pow = vec![0.0f32; n_freq];
         for t in 0..n_time {
             for f in 0..n_freq {
@@ -132,7 +96,7 @@ impl Spectrogram {
         let ia = center_bin.saturating_sub(band_bins);
         let ib = (center_bin + band_bins).min(n_freq - 1);
         let sbase_db = fit_baseline(&avg_pow, ia, ib);
-        let mut sbase_linear = vec![noise_per_bin.max(1e-6); n_freq];
+        let mut sbase_linear = vec![noise_per_bin; n_freq];
         for (i, &db) in sbase_db.iter().enumerate() {
             let bin = ia + i;
             if bin < n_freq {
@@ -147,7 +111,7 @@ impl Spectrogram {
             t_step,
             nsps,
             df,
-            noise_per_bin: noise_per_bin.max(1e-6),
+            noise_per_bin,
             sbase_linear,
         }
     }
