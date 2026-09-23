@@ -26,6 +26,39 @@
     them would change decodes. A shared Gray-code helper is deferred to
     #391: it only pays off once the public `jt65::{gray6, inv_gray6}`
     can go, which is a breaking change.
+- **`jt9`, `jt65` and `q65` are no longer host-only.** They used to imply
+  `fft-rustfft`, and through it `std`. #392 took the backend out of the
+  way by routing every FFT they run through `engine::fft`; what still
+  pinned them was `std` inside the modules — prelude `Vec`/`String`/
+  `format!` and bare `f32` methods, 64 / 44 / 117 errors under
+  `alloc,<mode>,fft-extern` — and JT9's inverse FFT. Both are fixed, so
+  the three features are now unqualified like `ft8`/`ft4`/`fst4`/`wspr`,
+  and each has an `alloc,<mode>,fft-extern` row in CI's feature matrix
+  and `scripts/pre-push-check.sh`. That row is the guard: it is the only
+  build that fails when a `std::` path comes back.
+
+  JT9's `downsam9` had assumed rustfft's convention, where forward and
+  inverse are both unscaled. The embedded backend divides by `len` on
+  its inverse arm, so the same code would have handed the rest of the
+  pipeline numbers a factor of NFFT2 small — and that scale is not free
+  there, since `downsam9` normalises against a measured noise floor.
+  It now carries the same explicit `#[cfg]` `wspr::subtract` has at its
+  own inverse; the `Fft` trait does not specify a convention, so this
+  cannot be left to the type system.
+
+  Dropping the implication also broke `--features jt9` on its own, which
+  had been riding on `fft-rustfft` to pull in `engine`'s FFT-gated
+  modules. Decode-side modules and entry points are now gated on the FFT
+  meta-feature the way `wspr` gates its own, with TX and the const
+  tables left unconditional.
+
+  **Host behaviour is unchanged by construction** — every edit is inert
+  under `std` + `fft-rustfft` — and measured: the tier A+B gate is 799
+  passed / 0 failed. What did *not* change is that nothing embedded
+  drives these modes yet: no fixed-point path, no board app, no
+  on-device measurement. The docs say that rather than implying an
+  embedded JT65 exists.
+
 - **The tier-C corpora regenerate byte-identically, so a sweep baseline
   now travels between machines.** `gran_()` draws its noise from C
   `rand()`, and upstream's `sgran_()` seeds that from /dev/urandom — so
