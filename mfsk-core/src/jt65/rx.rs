@@ -9,6 +9,9 @@
 //! Geometry: NSPS = 4460 samples at 12 kHz gives bin width ≈
 //! 2.6906 Hz = one JT65A tone spacing.
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::engine::ModulationParams;
 use crate::engine::dsp::symbol_fft::SymbolFft;
 use num_complex::Complex;

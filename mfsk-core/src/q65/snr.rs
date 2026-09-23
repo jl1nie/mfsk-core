@@ -84,6 +84,8 @@
 extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use crate::engine::ModulationParams;
 use crate::engine::dsp::symbol_fft::SymbolFft;

@@ -26,6 +26,12 @@
 //!   candidate set (e.g. every standard exchange a known callsign
 //!   pair could produce). Mirrors `q65_decode_fullaplist`.
 
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::engine::dsp::symbol_fft::SymbolFft;
 use crate::engine::pipeline::scan_dedup_match;
 use crate::engine::{DecodeContext, MessageCodec, ModulationParams};

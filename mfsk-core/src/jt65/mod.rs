@@ -88,26 +88,45 @@
 //! }
 //! ```
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+use alloc::vec;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+use num_traits::Float;
+
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 use crate::engine::pipeline::scan_dedup_match_cross;
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::Rs63_12;
 use crate::msg::Jt72Codec;
 
+// Decode-side modules reach their FFT through `engine::fft`, whose own
+// modules are gated on the FFT meta-feature; mirror that gate here so
+// `--features <mode>` alone still builds. TX and the const tables stay
+// unconditional, the same split `wspr::mod` uses.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod chase;
 pub mod gray;
 pub mod interleave;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod search;
 pub mod sync_pattern;
 pub mod tx;
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use chase::{ChaseParams, decode_at_with_chase};
 pub use gray::{gray6, inv_gray6};
 pub use interleave::{deinterleave, interleave};
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use rx::{Jt65Demod, demodulate_aligned};
 pub use sync_pattern::{JT65_DATA_POSITIONS, JT65_NPRC, JT65_SYNC_BLOCKS, JT65_SYNC_POSITIONS};
 pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Top-level: decode a JT65 signal at a known (start_sample, base_freq)
 /// and return the recovered message if RS succeeds. Mirrors the shape of
 /// `mfsk_core::jt9::decode_at`.
@@ -120,6 +139,7 @@ pub fn decode_at(
     decode_at_with_snr(audio, sample_rate, start_sample, base_freq_hz).map(|(msg, _)| msg)
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Like [`decode_at`] but also returns the decode-side SNR estimate
 /// ([`Jt65Demod::snr_db`]). Used by
 /// [`decode_scan`] to populate [`Jt65Result::snr_db`]; kept private
@@ -147,6 +167,7 @@ fn decode_at_with_snr(
     Some((msg, snr_db))
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Decode a JT65 signal at a known alignment, trying progressively
 /// larger erasure counts until Reed-Solomon converges or the bound
 /// is exhausted. Unlike [`decode_at`], this method exploits
@@ -222,6 +243,7 @@ pub fn decode_at_with_erasures(
     None
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// One successful JT65 decode with its alignment info.
 #[derive(Clone, Debug)]
 pub struct Jt65Result {
@@ -253,6 +275,7 @@ pub struct Jt65Result {
     pub snr_db: f32,
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Scan an audio buffer for JT65 frames at any (freq, time) within
 /// the search window: runs [`search::coarse_search`] and tries
 /// [`decode_at`] on each candidate in score order, collapsing
@@ -266,6 +289,7 @@ pub fn decode_scan(
     decode_scan_inner(audio, sample_rate, nominal_start_sample, params, None)
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Streaming variant of [`decode_scan`]: fires `on_result` once per
 /// candidate as it's accepted, *in addition to* (not instead of) the
 /// returned `Vec` — purely additive, same shape as
@@ -299,6 +323,7 @@ pub fn decode_scan_streaming(
     )
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Front-pad `audio` with silence so that a frame starting up to
 /// `params.time_tolerance_sec` *before* `nominal_start_sample` still
 /// has a non-negative index, and return the padded buffer with the
@@ -338,6 +363,7 @@ fn pad_for_early_frames(
     Some((padded, pad))
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 fn decode_scan_inner(
     audio: &[f32],
     sample_rate: u32,
@@ -394,10 +420,12 @@ fn decode_scan_inner(
     seen
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Result> {
     decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Like [`decode_scan`] but decodes each candidate via
 /// [`chase::decode_at_with_chase`]'s randomized multi-trial erasure
 /// search instead of `decode_at_with_snr`'s plain zero-erasure hard
@@ -428,6 +456,7 @@ pub fn decode_scan_chase(
     )
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Streaming variant of [`decode_scan_chase`] — same contract as
 /// [`decode_scan_streaming`] (see that function's doc comment for the
 /// delivery-order/dedup guarantee, which applies identically here).
@@ -449,6 +478,7 @@ pub fn decode_scan_chase_streaming(
     )
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 fn decode_scan_chase_inner(
     audio: &[f32],
     sample_rate: u32,
@@ -511,6 +541,7 @@ fn decode_scan_chase_inner(
     seen
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub fn decode_scan_chase_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Result> {
     decode_scan_chase(
         audio,

@@ -38,6 +38,11 @@
 //! same calibration tables in `super::fading_tables` without
 //! reinterpretation.
 
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use super::fading_tables::{GAUSS_LEN, GAUSS_TAPS, LORENTZ_LEN, LORENTZ_TAPS};
 use super::pdmath;
 use super::{QraCode, QraCodeType};

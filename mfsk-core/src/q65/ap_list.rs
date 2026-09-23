@@ -27,6 +27,9 @@
 //! `q65_set_list2.f90` are intentionally out of scope here — they
 //! are handled by separate generators (not yet ported).
 
+use alloc::format;
+use alloc::vec::Vec;
+
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::q65::pack77_to_symbols;

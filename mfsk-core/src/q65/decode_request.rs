@@ -37,6 +37,9 @@
 //! `.decode()` resolves precedence as ap_list > fading > ap_hint > plain,
 //! documented on each builder's `decode()`.
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;

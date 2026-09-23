@@ -31,27 +31,47 @@
 //! }
 //! ```
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+use num_traits::Float;
+
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 use crate::engine::pipeline::scan_dedup_match;
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano232;
 use crate::msg::Jt72Codec;
 
+// Decode-side modules reach their FFT through `engine::fft`, whose own
+// modules are gated on the FFT meta-feature; mirror that gate here so
+// `--features <mode>` alone still builds. TX and the const tables stay
+// unconditional, the same split `wspr::mod` uses.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod baseband;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod decode;
 pub mod interleave;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod search;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod softsym;
 pub mod sync_pattern;
 pub mod tx;
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode::Jt9Depth;
 pub use interleave::{deinterleave, deinterleave_llrs, interleave};
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use rx::demodulate_aligned;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{JT9_ISYNC, JT9_SYNC_BLOCKS, JT9_SYNC_POSITIONS};
 pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Top-level convenience: decode a JT9 signal at a known (start_sample,
 /// base_freq) and return the recovered message if Fano converges.
 pub fn decode_at(
@@ -70,6 +90,7 @@ pub fn decode_at(
     crate::msg::Jt72Codec::default().unpack(&payload, &DecodeContext::default())
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// One successful JT9 decode with its alignment info.
 #[derive(Clone, Debug)]
 pub struct Jt9Result {
@@ -92,6 +113,7 @@ pub struct Jt9Result {
     pub snr_db: f32,
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Scan an audio buffer for any JT9 frames: runs coarse (freq, time)
 /// search via [`search::coarse_search`] and uses the WSJT-X-faithful
 /// `softsym` pipeline (`downsam9` + `peakdt9` + `symspec2`) on each
@@ -113,6 +135,7 @@ pub fn decode_scan(
     )
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// [`decode_scan`] with an explicit [`Jt9Depth`] instead of the crate
 /// default — trades candidate-loop CPU cost for extra sensitivity on
 /// candidates that don't converge (a real signal converges in
@@ -137,6 +160,7 @@ pub fn decode_scan_with_depth(
     )
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Streaming variant of [`decode_scan`]: fires `on_result` once per
 /// candidate as it's accepted, *in addition to* (not instead of) the
 /// returned `Vec` — purely additive, same shape as
@@ -175,6 +199,7 @@ pub fn decode_scan_streaming(
     )
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// [`decode_scan_streaming`] with an explicit [`Jt9Depth`] — see
 /// [`decode_scan_with_depth`].
 pub fn decode_scan_streaming_with_depth(
@@ -195,6 +220,7 @@ pub fn decode_scan_streaming_with_depth(
     )
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 fn decode_scan_inner(
     audio: &[f32],
     sample_rate: u32,
@@ -223,7 +249,7 @@ fn decode_scan_inner(
     cands.sort_unstable_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(core::cmp::Ordering::Equal)
     });
     cands.truncate(params.max_candidates.max(32));
 
@@ -255,6 +281,7 @@ fn decode_scan_inner(
     seen
 }
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// Convenience: scan using [`search::SearchParams::default`].
 pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt9Result> {
     decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
@@ -503,7 +530,7 @@ mod tests {
         cands.sort_unstable_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(core::cmp::Ordering::Equal)
         });
         cands.truncate(sp.max_candidates.max(32));
 

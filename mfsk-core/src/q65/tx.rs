@@ -14,6 +14,8 @@
 //!    sync, so data symbols `0..=63` map to tones `1..=64`).
 //! 4. Synthesise plain FSK (no GFSK shaping) at the Q65-30A baud.
 
+use alloc::vec::Vec;
+
 use crate::engine::ModulationParams;
 use crate::engine::dsp::cpfsk;
 use crate::fec::qra::Q65Codec;

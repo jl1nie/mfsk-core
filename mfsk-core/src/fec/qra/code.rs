@@ -28,6 +28,11 @@
 //! the Rust port and the upstream source stays trivial. The
 //! `non_snake_case` lint is silenced for those fields.
 
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use super::{npfwht, pdmath};
 
 /// Code type discriminator, mirroring the C `QRATYPE_*` defines from

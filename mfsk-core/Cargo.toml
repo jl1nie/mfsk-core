@@ -243,17 +243,31 @@ wspr-ddc-cascade = []
 # gap.
 msk144       = []
 
-# Heavy modes — jt9/jt65/q65 imply the host build via `fft-rustfft`,
-# which transitively requires `std`. Since #390 every FFT they run goes
-# through `engine::fft`, so the backend is no longer what pins them.
-# What does: the modules lean on `std` (prelude `Vec`, `f32` methods —
-# 64 / 48 / 117 errors under `alloc,<mode>,fft-extern`, counted
-# 2026-09-23), and JT9's `downsam9` inverse FFT assumes rustfft's
-# unscaled convention, which the ESP backend does not share (see
-# `wspr::subtract`'s explicit `#[cfg]` on the same point).
+# jt9/jt65/q65 used to imply the host build via `fft-rustfft`, which
+# transitively requires `std`. #390 removed both halves of that. Every
+# FFT they run goes through `engine::fft`, so the backend stopped
+# pinning them; what still did was `std` inside the modules — prelude
+# `Vec`/`String`/`format!` and bare `f32` methods, 64 / 44 / 117 errors
+# under `alloc,<mode>,fft-extern` on 2026-09-23 — now carrying the same
+# `alloc::` imports and `#[cfg(not(feature = "std"))] use
+# num_traits::Float` the no_std modules already used, plus
+# `core::cmp::Ordering` for the comparator fallbacks. JT9's `downsam9`
+# additionally assumed rustfft's unscaled inverse, which the embedded
+# backend does not share (it divides by `len` — `esp_dsp_fft.rs`'s
+# `!self.forward` arm), and now normalises explicitly the way
+# `wspr::subtract` does at its own inverse.
 #
-# `fst4` is NOT one of these, despite living in this block historically
-# — issue #306 (embedded FST4 feasibility) found no actual `rustfft`
+# Host behaviour is unchanged by construction: every one of those edits
+# is inert under `std` + `fft-rustfft`. The three
+# `alloc,<mode>,fft-extern` rows in `scripts/pre-push-check.sh` and
+# `ci.yml`'s feature matrix are what keeps it that way — they are the
+# only build that fails when a `std::` path comes back.
+#
+# Left unqualified for the same reason `fst4` is: a caller wanting the
+# host default still gets `fft-rustfft` through `full`/`default`.
+#
+# `fst4` got here first, and by a shorter route — issue #306 (embedded
+# FST4 feasibility) found no actual `rustfft`
 # reference anywhere under `src/fst4/`: `fst4::decode` routes entirely
 # through `engine::pipeline`/`engine::dsp::downsample`/`engine::sync`,
 # the same FFT-backend-agnostic machinery FT8/WSPR already use on
@@ -265,9 +279,9 @@ msk144       = []
 # match `ft8`/`ft4`/`wspr` above — a caller wanting the host default
 # still gets `fft-rustfft` via `full`/`default`, unaffected.
 fst4         = []
-jt9          = ["fft-rustfft"]
-jt65         = ["fft-rustfft"]
-q65          = ["fft-rustfft"]
+jt9          = []
+jt65         = []
+q65          = []
 
 # uvpacket pulls in fst4 because it reuses the Ldpc240_101 codec
 # whose `Wsjt77Message::verify_info` length-dispatch logic (CRC-24

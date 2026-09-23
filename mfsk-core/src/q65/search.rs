@@ -12,6 +12,11 @@
 //! sync-positions list and the candidate-selection loop below are
 //! this protocol's own.
 
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::engine::ModulationParams;
 use crate::engine::spectrogram;
 
@@ -297,7 +302,7 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     out.sort_unstable_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(core::cmp::Ordering::Equal)
     });
     out.truncate(params.max_candidates);
     out
@@ -311,7 +316,7 @@ fn percentile(values: &[f32], pct: u32) -> f32 {
         return 0.0;
     }
     let mut sorted: Vec<f32> = values.to_vec();
-    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
     let n = sorted.len();
     let j = ((n as f32 * 0.01 * pct as f32).round() as usize)
         .max(1)

@@ -25,6 +25,11 @@
 //! [`QraCode::mfsk_bessel_metric`] front-end, which is the core path
 //! used by every Q65 decode regardless of subsequent AP refinement.
 
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use super::{DecoderScratch, ExtrinsicResult, QraCode, QraCodeType, pdmath};
 
 /// CRC-6 generator polynomial: x^6 + x + 1 — matches the C reference.

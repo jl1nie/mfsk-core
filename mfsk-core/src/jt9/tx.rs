@@ -11,6 +11,9 @@
 //!    (tone 0 at the sync positions) → 85 tones in the range 0..=8
 //! 7. Emit 9-FSK audio at 1.736 Hz tone spacing (plain FSK, no GFSK)
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::engine::dsp::cpfsk;
 use crate::engine::{FecCodec, ModulationParams};
 use crate::fec::ConvFano232;

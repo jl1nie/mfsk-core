@@ -228,13 +228,17 @@ flag carries the measurement that justified it. The traps:
   private-item errors in `fst4_sweep` / `ft4_sweep` /
   `fst4_wsjtx_samples`. That's a missing flag, not a regression you
   introduced — use the hook's own invocation before concluding otherwise.
-- **`jt9` / `jt65` / `q65` are host-only** — they pull `fft-rustfft` and
-  therefore `std`. Their FFTs go through `engine::fft` since #390; what
-  still pins them is `std` use inside the modules and JT9's reliance on
-  rustfft's unscaled inverse FFT (`mfsk-core/Cargo.toml` has the counts). **`fst4` is not**,
-  despite living in that block historically: issue #306 confirmed it
-  routes entirely through the backend-agnostic `engine` machinery and
-  type-checks clean under `alloc,fst4,fft-extern`.
+- **`jt9` / `jt65` / `q65` stopped being host-only in #390** — they no
+  longer force `fft-rustfft` (and with it `std`). Their FFTs go through
+  `engine::fft`, the modules carry `alloc::` imports and
+  `num_traits::Float` instead of `std`, and JT9's `downsam9` normalises
+  its inverse explicitly instead of assuming rustfft's unscaled
+  convention. Each has an `alloc,<mode>,fft-extern` row in the
+  pre-push/CI feature matrix, which is the only build that catches a
+  `std::` path creeping back. Compiling is all that changed: no
+  fixed-point path and no board app drives them. `fst4` got there first
+  by a shorter route (issue #306) — it never referenced `rustfft` at
+  all.
 - **`uvpacket` declares `std` explicitly** (it reaches for
   `std::f32::consts::PI` and std's prelude). Making it genuinely
   no_std-capable is separate, deliberate work.

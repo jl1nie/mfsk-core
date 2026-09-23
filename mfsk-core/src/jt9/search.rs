@@ -12,6 +12,10 @@
 //! The aligned `decode_at` remains available for callers that already
 //! know both.
 
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::engine::ModulationParams;
 use crate::engine::spectrogram;
 use crate::engine::sync::refine_freq_hz_log_power;
@@ -216,7 +220,7 @@ pub fn coarse_search_on_spec(
     out.sort_unstable_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(core::cmp::Ordering::Equal)
     });
     out.truncate(params.max_candidates);
     out

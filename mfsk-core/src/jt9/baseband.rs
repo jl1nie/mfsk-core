@@ -7,7 +7,12 @@
 //!
 //! NSPS_BB = 6912 / 8 = **864** baseband samples per symbol.
 
-use std::f32::consts::TAU;
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
+use core::f32::consts::TAU;
 
 /// Baseband samples per symbol (1500 Hz, NSPS = 6912 at 12 kHz).
 pub const NSPS_BB: usize = 864;

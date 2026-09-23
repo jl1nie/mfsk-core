@@ -97,7 +97,7 @@ and optimisations land once and apply everywhere.
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ via `fixed-point` |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — runs plain host f32 on embedded too, via `fft-extern`; never needed the integer path. See [WSPR on embedded](#wspr-on-embedded) below. |
 | **FT4** | (host f32 only) | ❌ — and it does not need to be. FT4 routes through the generic `engine::pipeline`, like FST4; `fixed-point` would be a no-op on that path, and on LX7 it measured *slower* than f32 anyway (issue #198). It now **builds and decodes on hardware** — see [Per-protocol embedded status](#per-protocol-embedded-status). |
-| **Q65 / JT9 / JT65** | (host f32 only) | ❌ — these are host-only (`fft-rustfft`, therefore `std`) and have no embedded path at all yet |
+| **Q65 / JT9 / JT65** | (host f32 only) | ❌ — they build under `alloc,<mode>,fft-extern` since #390, but nothing embedded drives them yet: no fixed-point path, no app |
 
 So: **the trait infrastructure is protocol-agnostic, but the only
 protocol that actually flips into the integer path on the embedded
@@ -845,7 +845,7 @@ that allocation now succeeds on the first try.
 | **FST4** | generic `engine::pipeline` + `fft-extern` — **no `decode_block` port** | **Decoding off the air** on CoreS3. FST4-60 on-device: `no8_osd` 13.6 s, ≈1.95× over the ~7 s slot budget at the deadline-tight default |
 | **FT4** | generic `engine::pipeline`, host f32 (`fixed-point` measured *slower* on LX7, #198) | **Decoding off the air** on CoreS3 |
 | **WSPR** | host `wspr::decode` f32 via `fft-extern`, plus `wspr::ddc` | **Decoding off the air.** `slot 1 src=uac decoded 1 station(s)`. Decode lands at 82.8–90.1 s against a 110 s deadline |
-| **Q65 / JT9 / JT65** | — | **Host-only.** They pull `fft-rustfft` and therefore `std`. Since #390 every FFT they run goes through `engine::fft`, but the modules still use `std` (`Vec` from the prelude, `f32` methods), and JT9's `downsam9` assumes rustfft's unscaled inverse. No embedded path yet |
+| **Q65 / JT9 / JT65** | — | **Compile-clean, undriven.** #390 removed the forced `fft-rustfft`: every FFT goes through `engine::fft`, the modules carry `alloc::` imports and `num_traits::Float` instead of `std`, and JT9's `downsam9` normalises its inverse explicitly rather than assuming rustfft's unscaled convention. `alloc,<mode>,fft-extern` is in the feature matrix. What is still missing is everything after compiling: no fixed-point path, no board app, no on-device measurement |
 
 **FST4 reached hardware without porting `decode_block`** (issue #306),
 and FT4 has now done the same. `decode_block` exists because FT8's own

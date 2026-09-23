@@ -207,7 +207,10 @@ impl crate::jt9::Jt9Result {
 /// `(start − nominal) / sample_rate`, the signed dt convention every mode's
 /// `Decoded` uses. Factored out so the three sample-index modes share one
 /// definition.
-#[cfg(any(feature = "q65", feature = "jt65", feature = "jt9"))]
+#[cfg(all(
+    any(feature = "q65", feature = "jt65", feature = "jt9"),
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
 #[inline]
 fn dt_from_samples(start_sample: usize, nominal_start_sample: usize, sample_rate: u32) -> f32 {
     (start_sample as f32 - nominal_start_sample as f32) / sample_rate as f32

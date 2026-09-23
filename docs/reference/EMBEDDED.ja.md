@@ -94,7 +94,7 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ `fixed-point` 経由 |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — 組込でも host と同じ plain f32 を `fft-extern` 経由で実行。整数パスを一度も必要としていない。下記 [WSPR on embedded](#wspr-on-embedded) 参照 |
 | **FT4** | (host f32 のみ) | ❌ — かつ必要が無い。FT4 は FST4 と同じく generic な `engine::pipeline` を通るので `fixed-point` はこの経路では no-op であり、そもそも LX7 では f32 より遅いと実測されている (issue #198)。**実機でビルドしデコードするところまで到達済み** — [プロトコル別の組込ステータス](#プロトコル別の組込ステータス) 参照 |
-| **Q65 / JT9 / JT65** | (host f32 のみ) | ❌ — host 専用 (`fft-rustfft`、したがって `std`) で、組込パス自体がまだ無い |
+| **Q65 / JT9 / JT65** | (host f32 のみ) | ❌ — #390 以降 `alloc,<mode>,fft-extern` でビルドは通るが、組込側から駆動するものがまだ無い（固定小数点パスもアプリも未着手） |
 
 つまり: **trait 基盤は protocol 非依存だが、組込ビルドで実際に整数
 パスに切り替わるプロトコルは FT8 のみ。**
@@ -805,7 +805,7 @@ Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回
 | **FST4** | 汎用 `engine::pipeline` + `fft-extern` — **`decode_block` の移植なし** | **オンエアでデコード中**（CoreS3）。FST4-60 の実機時間は `no8_osd` で 13.6 s、締切重視の既定値で ~7 s 予算の約 1.95 倍 |
 | **FT4** | 汎用 `engine::pipeline`、ホスト f32（LX7 では `fixed-point` の方が*遅かった*、#198） | **オンエアでデコード中**（CoreS3） |
 | **WSPR** | `fft-extern` 経由のホスト `wspr::decode` f32 と `wspr::ddc` | **オンエアでデコード中。** `slot 1 src=uac decoded 1 station(s)`。110 s の締切に対し 82.8〜90.1 s で decode 完了 |
-| **Q65 / JT9 / JT65** | — | **ホスト専用。** `fft-rustfft` を、したがって `std` を引く。#390 以降 FFT はすべて `engine::fft` 経由だが、モジュールがまだ `std` に依存しており（prelude の `Vec`、`f32` のメソッド）、JT9 の `downsam9` は rustfft の正規化しない逆 FFT を前提にしている。組込パスはまだ無い |
+| **Q65 / JT9 / JT65** | — | **ビルドは通るが未駆動。** #390 で `fft-rustfft` の強制を撤去。FFT はすべて `engine::fft` 経由、モジュールは `std` ではなく `alloc::` と `num_traits::Float` を使い、JT9 の `downsam9` は逆 FFT を明示的に正規化する。`alloc,<mode>,fft-extern` は feature matrix に入っている。足りていないのはコンパイルの先で、固定小数点パスもボードアプリも実機計測も無い |
 
 **FST4 は `decode_block` を移植せずに実機へ到達した**（issue #306）。
 FT4 も同じ道を通った。`decode_block` があるのは FT8 自身の

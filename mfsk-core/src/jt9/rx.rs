@@ -17,6 +17,9 @@
 //! The output is 206 bit LLRs suitable for
 //! `crate::fec::ConvFano232::decode_soft`.
 
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use crate::engine::ModulationParams;
 use crate::engine::dsp::symbol_fft::SymbolFft;
 

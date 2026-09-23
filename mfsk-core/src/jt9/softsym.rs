@@ -11,6 +11,11 @@
 //! selection rejects the wide-band noise that the box-car path
 //! drags into our LLRs.
 
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
+
 use num_complex::Complex;
 
 use crate::engine::fft::default_planner;
@@ -126,7 +131,7 @@ impl AudioFft {
         let ia = (nf - 100).max(1) as usize;
         let ib = (nf + 100).min(self.envelope.len() as i64 - 1) as usize;
         let mut env_slice: Vec<f32> = self.envelope[ia..=ib].to_vec();
-        env_slice.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        env_slice.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
         let pcl = env_slice.len() * 40 / 100;
         let avenoise = env_slice[pcl.min(env_slice.len() - 1)].max(1e-6);
         let fac = (1.0 / avenoise).sqrt();
@@ -161,6 +166,29 @@ impl AudioFft {
 
         // IFFT to time domain.
         default_planner().plan_inverse(NFFT2).process(&mut c2);
+
+        // Cross-backend inverse-FFT normalisation, the same point
+        // `wspr::subtract` makes at its own inverse: `rustfft` leaves
+        // forward *and* inverse unscaled, while the embedded backend
+        // divides by `len` on its inverse arm
+        // (`embedded-shared/src/esp_dsp_fft.rs`, the `!self.forward`
+        // block after the kernel — it emulates the inverse by
+        // conjugate-flip around a forward-only kernel and scales
+        // there). `downsam9`'s output scale is not free: `fac` above
+        // normalises it against the measured noise floor, and WSJT-X
+        // scales again in `peakdt9` to keep f32 magnitudes away from
+        // overflow. Multiply the factor back so every backend hands
+        // the rest of the pipeline the host's numbers. The `Fft` trait
+        // does not specify a convention, so this has to be an explicit
+        // `#[cfg]` rather than something the type system catches.
+        #[cfg(not(feature = "fft-rustfft"))]
+        {
+            let n = NFFT2 as f32;
+            for v in c2.iter_mut() {
+                *v *= n;
+            }
+        }
+
         c2
     }
 }
@@ -256,7 +284,7 @@ fn compute_ss2(c5: &[Complex<f32>]) -> [[f32; 85]; 9] {
     assert_eq!(c5.len(), NZ3);
     let mut ss2 = [[0.0f32; 85]; 9];
     let mut work: Vec<Complex<f32>> = c5.to_vec();
-    let dphi = -2.0 * std::f32::consts::PI * TONE_SPACING / FSAMPLE_DOWN;
+    let dphi = -2.0 * core::f32::consts::PI * TONE_SPACING / FSAMPLE_DOWN;
     let step = Complex::new(dphi.cos(), dphi.sin());
 
     for i in 0..9usize {
@@ -458,7 +486,7 @@ pub fn twkfreq_poly(buf: &mut [Complex<f32>], a: [f32; 3]) {
     let n = buf.len() as f32;
     let x0 = 0.5 * (n + 1.0);
     let s = 2.0 / n;
-    let two_pi_over_fs = 2.0 * std::f32::consts::PI / FSAMPLE_DOWN;
+    let two_pi_over_fs = 2.0 * core::f32::consts::PI / FSAMPLE_DOWN;
     let mut w = Complex::new(1.0f32, 0.0);
     for (i, slot) in buf.iter_mut().enumerate() {
         // Fortran is 1-indexed (i = 1..N) — match exactly.
@@ -851,12 +879,12 @@ mod tests {
         let mut phase = 0.0f32;
         for &sym in tones {
             let f = freq + sym as f32 * spacing;
-            let dphi = 2.0 * std::f32::consts::PI * f / SR;
+            let dphi = 2.0 * core::f32::consts::PI * f / SR;
             for _ in 0..NSPS {
                 out.push(amp * phase.cos());
                 phase += dphi;
-                if phase > 2.0 * std::f32::consts::PI {
-                    phase -= 2.0 * std::f32::consts::PI;
+                if phase > 2.0 * core::f32::consts::PI {
+                    phase -= 2.0 * core::f32::consts::PI;
                 }
             }
         }

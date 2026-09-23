@@ -43,6 +43,13 @@ FEATURE_MATRIX=(
   "alloc ft8 fft-extern fixed-point"
   "alloc ft4 fft-extern"
   "alloc ft4 fft-extern fixed-point"
+  # #390 removed jt9/jt65/q65's forced `fft-rustfft` (and with it
+  # `std`). These three are what keeps that true: they are the only
+  # build that fails if a `std::` path or a bare `f32` method comes
+  # back into those modules.
+  "alloc jt9 fft-extern"
+  "alloc jt65 fft-extern"
+  "alloc q65 fft-extern"
   # The shape all three boards actually build: `hash-table-small`
   # swaps `msg::hash_table`'s storage wholesale, so it has a `#[cfg]`
   # split in every method and its own tests. `full` does not include

@@ -73,6 +73,8 @@
 //! a further ~0.9 dB of 50%-crossing improvement — see
 //! `docs/notes/BENCHMARKS.md`'s JT65 section for the corrected numbers.
 
+use alloc::vec::Vec;
+
 use crate::engine::{DecodeContext, MessageCodec};
 use crate::fec::Rs63_12;
 use crate::msg::{Jt72Codec, Jt72Message};
@@ -191,7 +193,7 @@ pub(super) fn confidence_order(conf: &[f32; 63]) -> Vec<usize> {
     order.sort_by(|&a, &b| {
         conf[a]
             .partial_cmp(&conf[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(core::cmp::Ordering::Equal)
     });
     order
 }

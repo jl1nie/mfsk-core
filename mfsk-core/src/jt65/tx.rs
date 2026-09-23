@@ -10,6 +10,8 @@
 //!    data positions emit `gray(sent[k]) + 2`.
 //! 6. Emit CPFSK audio at the JT65A baud (≈ 2.69 Hz tone spacing).
 
+use alloc::vec::Vec;
+
 use crate::engine::ModulationParams;
 use crate::engine::dsp::cpfsk;
 use crate::fec::Rs63_12;

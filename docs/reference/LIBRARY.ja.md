@@ -1257,7 +1257,7 @@ Rust ホスト消費者に関係する分だけをまとめる。`no_std` と固
 | `ft4` | on | FT4 の ZST・decode |
 | `fst4` | off | FST4-15/30/60A/120/300 の ZST・decode。**ホスト専用ではない** — backend 非依存の engine を完全に通り、`alloc,fst4,fft-extern` で型検査が通る（issue #306） |
 | `wspr` | off | WSPR の ZST・decode・synth・スペクトログラム探索 |
-| `jt9` / `jt65` / `q65` | off | **ホスト専用** — `fft-rustfft` を、したがって `std` を引く。FFT は #390 以降 `engine::fft` 経由だが、モジュールがまだ `no_std` に対応していない |
+| `jt9` / `jt65` / `q65` | off | **#390 以降ホスト専用ではない** — バックエンドを強制せず、`alloc,<mode>,fft-extern` で `std`/`rustfft` を一切引かずに型検査が通る（`ci.yml` と `scripts/pre-push-check.sh` の feature matrix に 1 行ずつ）。デコーダのみで、組込アプリからの利用はまだ無い |
 | `msk144` | off | MSK144 — `Protocol` の ZST は無く、独自のトップレベルドライバを持つ |
 | `uvpacket` | off | 非 WSJT の応用例、4 サブモード ZST。`fst4` を引き、かつ **`std` を明示的に宣言する**（`std::f32::consts::PI` を使うため） |
 | `packet-bytes` | off | `PacketBytesMessage` — バイトペイロードの `MessageCodec` 例 |

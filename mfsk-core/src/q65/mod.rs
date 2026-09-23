@@ -67,21 +67,32 @@
 //! - Joe Taylor K1JT, "The Q65 Protocol for Weak-Signal
 //!   Communication", QEX 2022.
 
+// Decode-side modules reach their FFT through `engine::fft`, whose own
+// modules are gated on the FFT meta-feature; mirror that gate here so
+// `--features <mode>` alone still builds. TX and the const tables stay
+// unconditional, the same split `wspr::mod` uses.
 pub mod ap_list;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode_request;
 pub mod protocol;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod search;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod snr;
 pub mod sync_pattern;
 pub mod tx;
 
 pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode_request::{DecodeRequest, MultiPeriodRequest, Q65SubMode, SniperRequest};
 pub use protocol::{
     Q65Fec, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
 };
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use rx::Q65Result;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};
 pub use tx::{
