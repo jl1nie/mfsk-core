@@ -12,35 +12,35 @@
       },
       "ft4": {
         "date": "2026-09-23",
-        "commit": "76cb70a6-dirty",
+        "commit": "06364bf7",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 720,
         "groups": 4
       },
       "ft8": {
         "date": "2026-09-23",
-        "commit": "76cb70a6-dirty",
+        "commit": "06364bf7",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 720,
         "groups": 4
       },
       "jt65": {
         "date": "2026-09-23",
-        "commit": "76cb70a6-dirty",
+        "commit": "06364bf7",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt65_chase": {
         "date": "2026-09-23",
-        "commit": "76cb70a6-dirty",
+        "commit": "06364bf7",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt9": {
         "date": "2026-09-23",
-        "commit": "76cb70a6-dirty",
+        "commit": "06364bf7",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 300,
         "groups": 1
@@ -53,14 +53,14 @@
       },
       "q65": {
         "date": "2026-09-23",
-        "commit": "76cb70a6-dirty",
+        "commit": "06364bf7",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 2640,
         "groups": 20
       },
       "wspr": {
         "date": "2026-09-23",
-        "commit": "76cb70a6-dirty",
+        "commit": "06364bf7",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 260,
         "groups": 1
