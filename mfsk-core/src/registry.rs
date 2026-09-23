@@ -263,7 +263,11 @@ pub struct ProtocolMeta {
     pub payload_bits: u32,
     /// Seconds from the start of the slot buffer to the first frame
     /// symbol — the `dt = 0` reference (`FrameLayout::TX_START_OFFSET_S`).
-    /// 0.5 for FT8, FT4 and FST4-15; 1.0 for the other FST4 sub-modes.
+    /// 0.5 for FT8, FT4, FST4-15 and the Q65 15/30 s periods; 1.0 for
+    /// the other FST4 sub-modes and for Q65 from 60 s up. Q65 follows
+    /// `nsps`, as upstream does (`q65.f90:130-131`) — this enumeration
+    /// omitted Q65 entirely until #399, which is how it went unnoticed
+    /// that every Q65 sub-mode was publishing 1.0.
     /// A host that synthesises a slot has to know this and could not
     /// ask for it.
     pub tx_start_offset_s: f32,

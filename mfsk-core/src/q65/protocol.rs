@@ -91,8 +91,24 @@ macro_rules! q65_submode {
             const N_RAMP: u32 = 0;
             const SYNC_MODE: SyncMode = SyncMode::Block(&Q65_SYNC_BLOCKS);
             const T_SLOT_S: f32 = $period as f32;
-            /// 1.0 s start offset matches WSJT-X's Q65 slot timing.
-            const TX_START_OFFSET_S: f32 = 1.0;
+            /// Nominal start of the signal within the slot, which
+            /// upstream makes depend on the T/R period rather than
+            /// fixing at one value: `q65.f90:130-131` sets
+            /// `j0 = 0.5/dtstep`, then `j0 = 1.0/dtstep` when
+            /// `nsps >= 7200` — 0.5 s for the 15 s and 30 s periods,
+            /// 1.0 s from 60 s up. `q65sim.f90:164-165` places its
+            /// signal on the same rule (`xdt + 0.5`, `xdt + 1.0` for
+            /// `ntrperiod >= 60`).
+            ///
+            /// This was 1.0 for every sub-mode until #399. Nothing in
+            /// the decode path reads it — Q65 centres its search on the
+            /// caller's `nominal_start_sample` and measures `dt_sec`
+            /// against the same anchor, and the tier-C sweep is
+            /// unchanged by this fix (Q65-15A and Q65-30A both 22/330
+            /// before and after). What it feeds is `registry`'s
+            /// published `tx_start_offset_s`, which a host synthesising
+            /// a slot has no other way to ask for.
+            const TX_START_OFFSET_S: f32 = if $nsps >= 7200 { 1.0 } else { 0.5 };
         }
 
         impl Protocol for $name {

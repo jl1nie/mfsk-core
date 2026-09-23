@@ -2,6 +2,23 @@
 
 ## 0.11.1 — FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65's published `tx_start_offset_s` was 1.0 for every sub-mode; the
+  15 s and 30 s periods are 0.5 (#399).** Upstream makes the nominal
+  start depend on `nsps`, not on a single constant: `q65.f90:130-131`
+  sets `j0 = 0.5/dtstep` and then `j0 = 1.0/dtstep` when
+  `nsps >= 7200`, and `q65sim.f90:164-165` places its signal on the same
+  rule. The `q65_submode!` macro applied 1.0 to all ten sub-mode ZSTs.
+
+  **Nothing in the decode path changes.** Q65 centres its search on the
+  caller's `nominal_start_sample` and measures `dt_sec` against the same
+  anchor; the constant is not read there. The tier-C sweep is unchanged
+  — Q65-15A and Q65-30A both 22/330 before and after, 60 s+ untouched.
+  What was wrong is `registry`'s published `tx_start_offset_s`, whose own
+  doc says a host synthesising a slot "has to know this and could not ask
+  for it". That doc also enumerated "0.5 for FT8, FT4 and FST4-15" without
+  mentioning Q65, which is how ten sub-modes came to publish the wrong
+  number unnoticed.
+
 - **Test assets resolve one way, not two (#395).** Ten sites reached for
   `../../WSJT-X/samples/...` relative to `CARGO_MANIFEST_DIR` instead of
   going through `tests/common::corpus`, which made the answer depend on
