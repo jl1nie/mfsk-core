@@ -894,7 +894,8 @@ fn decode_pass1_candidate(
         c.drift_hz,
     )?;
     let start_refined = d.start_sample;
-    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32
+        - <super::Wspr as crate::engine::FrameLayout>::TX_START_OFFSET_S;
     d.start_sample = start_refined.saturating_sub(pad);
     d.snr_db = c.snr_db;
     Some((d, start_refined))
@@ -928,7 +929,8 @@ fn decode_pass2_candidate(
         false,
     )?;
     let start_refined = d.start_sample;
-    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32
+        - <super::Wspr as crate::engine::FrameLayout>::TX_START_OFFSET_S;
     d.start_sample = start_refined.saturating_sub(pad);
     d.snr_db = c.snr_db;
     Some(d)
@@ -1122,7 +1124,8 @@ pub fn deep_decode_pass2_candidate(
         budget,
     )?;
     let start_refined = d.start_sample;
-    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32
+        - <super::Wspr as crate::engine::FrameLayout>::TX_START_OFFSET_S;
     d.start_sample = start_refined.saturating_sub(pad);
     d.snr_db = r.c.snr_db;
     Some(d)

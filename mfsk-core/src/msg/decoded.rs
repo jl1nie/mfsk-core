@@ -154,15 +154,15 @@ impl crate::wspr::WsprResult {
 impl crate::q65::Q65Result {
     /// Resolve into a [`Decoded`] UI row.
     ///
-    /// `dt_sec` is derived from the result's `start_sample`:
-    /// `(start_sample − nominal_start_sample) / sample_rate`, where
-    /// `nominal_start_sample` is the anchor the caller passed to the decode
-    /// builder.
-    pub fn to_decoded(&self, sample_rate: u32, nominal_start_sample: usize) -> Decoded {
+    /// Reads the result's own `dt_sec`. It used to re-derive dt from
+    /// `start_sample`, which is a `usize` clamped at 0 — so every
+    /// signal starting before the nominal position came back as
+    /// dt = 0.0 even though the struct had the real value (#397).
+    pub fn to_decoded(&self) -> Decoded {
         Decoded {
             text: self.message.clone(),
             freq_hz: self.freq_hz,
-            dt_sec: dt_from_samples(self.start_sample, nominal_start_sample, sample_rate),
+            dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Q65,
         }
@@ -172,13 +172,14 @@ impl crate::q65::Q65Result {
 // ── JT65 ─────────────────────────────────────────────────────────────────────
 #[cfg(all(feature = "jt65", any(feature = "fft-rustfft", feature = "fft-extern")))]
 impl crate::jt65::Jt65Result {
-    /// Resolve into a [`Decoded`] UI row. Text via the message's `Display`;
-    /// `dt_sec` derived from `start_sample` the same way Q65's conversion does.
-    pub fn to_decoded(&self, sample_rate: u32, nominal_start_sample: usize) -> Decoded {
+    /// Resolve into a [`Decoded`] UI row. Text via the message's
+    /// `Display`; dt read from the result, for the reason Q65's
+    /// conversion gives.
+    pub fn to_decoded(&self) -> Decoded {
         Decoded {
             text: self.message.to_string(),
             freq_hz: self.freq_hz,
-            dt_sec: dt_from_samples(self.start_sample, nominal_start_sample, sample_rate),
+            dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Jt65,
         }
@@ -188,32 +189,21 @@ impl crate::jt65::Jt65Result {
 // ── JT9 ──────────────────────────────────────────────────────────────────────
 #[cfg(all(feature = "jt9", any(feature = "fft-rustfft", feature = "fft-extern")))]
 impl crate::jt9::Jt9Result {
-    /// Resolve into a [`Decoded`] UI row. Text via the message's `Display`;
-    /// `dt_sec` derived from `start_sample` the same way Q65's conversion does.
+    /// Resolve into a [`Decoded`] UI row. Text via the message's
+    /// `Display`; dt read from the result, for the reason Q65's
+    /// conversion gives.
     ///
     /// Note `snr_db` here is JT9's own per-symbol estimate, comparable across
     /// JT9 decodes but not in absolute terms to other modes' `snr_db`.
-    pub fn to_decoded(&self, sample_rate: u32, nominal_start_sample: usize) -> Decoded {
+    pub fn to_decoded(&self) -> Decoded {
         Decoded {
             text: self.message.to_string(),
             freq_hz: self.freq_hz,
-            dt_sec: dt_from_samples(self.start_sample, nominal_start_sample, sample_rate),
+            dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Jt9,
         }
     }
-}
-
-/// `(start − nominal) / sample_rate`, the signed dt convention every mode's
-/// `Decoded` uses. Factored out so the three sample-index modes share one
-/// definition.
-#[cfg(all(
-    any(feature = "q65", feature = "jt65", feature = "jt9"),
-    any(feature = "fft-rustfft", feature = "fft-extern")
-))]
-#[inline]
-fn dt_from_samples(start_sample: usize, nominal_start_sample: usize, sample_rate: u32) -> f32 {
-    (start_sample as f32 - nominal_start_sample as f32) / sample_rate as f32
 }
 
 #[cfg(test)]
@@ -298,7 +288,7 @@ mod tests {
 
     #[cfg(all(feature = "q65", any(feature = "fft-rustfft", feature = "fft-extern")))]
     #[test]
-    fn q65_to_decoded_derives_dt_from_sample_rate() {
+    fn q65_to_decoded_passes_the_stored_dt_through() {
         use crate::q65::Q65Result;
 
         let r = Q65Result {
@@ -310,10 +300,29 @@ mod tests {
             snr_db: -24.0,
         };
 
-        // (12000 − 6000) / 12000 = 0.5 s late.
-        let d = r.to_decoded(12_000, 6_000);
+        let d = r.to_decoded();
         assert_eq!(d.text, "K1ABC W9XYZ FN42");
         assert_eq!(d.protocol, ProtocolId::Q65);
-        assert!((d.dt_sec - 0.5).abs() < 1e-6);
+        assert!((d.dt_sec - 1.0).abs() < 1e-6);
+    }
+
+    /// The case the old conversion could not express: `start_sample`
+    /// has saturated at 0 for a signal that began before the nominal
+    /// start, and only `dt_sec` still knows it was early (#397).
+    #[cfg(all(feature = "q65", any(feature = "fft-rustfft", feature = "fft-extern")))]
+    #[test]
+    fn q65_to_decoded_keeps_a_negative_dt() {
+        use crate::q65::Q65Result;
+
+        let r = Q65Result {
+            message: "K1ABC W9XYZ FN42".into(),
+            freq_hz: 1000.0,
+            start_sample: 0,
+            dt_sec: -0.5,
+            iterations: 3,
+            snr_db: -24.0,
+        };
+
+        assert!((r.to_decoded().dt_sec + 0.5).abs() < 1e-6);
     }
 }

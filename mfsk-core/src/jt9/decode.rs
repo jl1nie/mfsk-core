@@ -155,6 +155,10 @@ pub fn decode_at_baseband_with_fft_depth(
         message: msg,
         freq_hz: freq_corrected,
         start_sample,
+        // Relative to the buffer origin here; `decode_scan_inner`
+        // subtracts the nominal start. Signed, because an early
+        // frame is negative and `start_sample` clamps at 0.
+        dt_sec: lag_to_audio_sample_signed(lagpk) as f32 / 12_000.0,
         snr_db,
     })
 }
@@ -206,6 +210,19 @@ fn lag_to_audio_sample(lagpk: i64) -> usize {
     let sample = c2_offset.max(0) * ndown;
     let _ = FSAMPLE_DOWN; // silence unused
     sample as usize
+}
+
+/// [`lag_to_audio_sample`] without the clamp.
+///
+/// A frame that starts before the buffer origin has a negative index,
+/// which the `usize` return above cannot carry and so rounds up to 0.
+/// Callers that report dt need the sign (#397), so they take it from
+/// here; `start_sample` keeps the clamped value it always had.
+pub(crate) fn lag_to_audio_sample_signed(lagpk: i64) -> i64 {
+    let i0 = 5 * 16i64;
+    let nspsd = 16i64;
+    let ndown = 432i64;
+    (lagpk - i0 - nspsd + 1) * ndown
 }
 
 #[cfg(test)]

@@ -408,7 +408,15 @@ fn decode_scan_inner(
                 message: msg,
                 freq_hz: c.freq_hz,
                 start_sample: c.start_sample.saturating_sub(pad),
-                dt_sec: (c.start_sample as f32 - pad as f32) / sample_rate as f32,
+                // dt runs from the nominal start. `start_sample` is a
+                // `usize` and saturates at 0 for an early signal, so
+                // this field is the one that keeps the sign. Both terms
+                // are in padded coordinates — `nominal_start_sample` is
+                // shadowed with `+ pad` above — so the padding cancels
+                // and must not be subtracted again. It used to subtract
+                // `pad` alone and omit the nominal entirely, which was
+                // right only when the nominal was 0 (#397).
+                dt_sec: (c.start_sample as f32 - nominal_start_sample as f32) / sample_rate as f32,
                 snr_db,
             };
             if let Some(cb) = on_result {
@@ -529,7 +537,15 @@ fn decode_scan_chase_inner(
                 message: msg,
                 freq_hz: c.freq_hz,
                 start_sample: c.start_sample.saturating_sub(pad),
-                dt_sec: (c.start_sample as f32 - pad as f32) / sample_rate as f32,
+                // dt runs from the nominal start. `start_sample` is a
+                // `usize` and saturates at 0 for an early signal, so
+                // this field is the one that keeps the sign. Both terms
+                // are in padded coordinates — `nominal_start_sample` is
+                // shadowed with `+ pad` above — so the padding cancels
+                // and must not be subtracted again. It used to subtract
+                // `pad` alone and omit the nominal entirely, which was
+                // right only when the nominal was 0 (#397).
+                dt_sec: (c.start_sample as f32 - nominal_start_sample as f32) / sample_rate as f32,
                 snr_db,
             };
             if let Some(cb) = on_result {

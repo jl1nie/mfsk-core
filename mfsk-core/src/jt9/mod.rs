@@ -96,7 +96,13 @@ pub fn decode_at(
 pub struct Jt9Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,
+    /// Sample index of symbol 0, **clamped at 0**: a frame starting
+    /// before the buffer origin has no `usize` to land in. Use
+    /// [`Self::dt_sec`] when the sign matters.
     pub start_sample: usize,
+    /// Time offset from the nominal start, in seconds. Signed, and the
+    /// authoritative one — see [`Self::start_sample`] (#397).
+    pub dt_sec: f32,
     /// Decode-side SNR estimate in dB, in WSJT-X's own displayed
     /// convention — a faithful port of `symspec2.f90:52-54`
     /// (`snrdb = db(max(1, sig-1)) - 61.3`), the tail of the very
@@ -259,9 +265,14 @@ fn decode_scan_inner(
 
     let mut seen: Vec<Jt9Result> = Vec::new();
     for c in cands {
-        let Some(d) = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth) else {
+        let Some(mut d) = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth)
+        else {
             continue;
         };
+        // The builder reports dt from the buffer origin; dt is defined
+        // from the nominal start, and this is the one place that knows
+        // it.
+        d.dt_sec -= nominal_start_sample as f32 / sample_rate as f32;
         let dup = scan_dedup_match(
             &seen,
             &d,

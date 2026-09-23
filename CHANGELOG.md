@@ -2,6 +2,40 @@
 
 ## 0.11.1 — FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **An early signal's dt came back wrong, or as zero (#397).** Two
+  defects, in the same handful of lines.
+
+  `dt_sec` left `nominal_start_sample` out of its derivation in Q65 and
+  JT65 — `(start_sample - pad) / sample_rate`, correct only when the
+  nominal start happened to be 0. And `to_decoded` in Q65, JT65 and JT9
+  re-derived dt from `start_sample` instead of reading the field, which
+  is exactly what that field exists to avoid: `start_sample` is a
+  `usize`, so a frame beginning before the nominal start saturates at 0
+  and loses the sign. JT9 had no `dt_sec` at all and clamped inside
+  `lag_to_audio_sample`.
+
+  Measured on a Q65-30A and a JT65 frame placed 0.5 s early, where dt
+  must be −0.5 s: Q65 reported **−0.013 s** and JT65 **+0.442 s** — the
+  wrong sign. Both are in the searches' own reach (Q65's default window
+  looks 1.0 s early), so this is not an unreachable corner.
+
+  `dt_sec` is measured from the nominal start everywhere now, the four
+  `to_decoded` impls read it rather than recompute, and they take no
+  anchor arguments because they no longer need any. `Jt9Result` gains
+  the field; WSPR's literal `-1.0` becomes `TX_START_OFFSET_S`, which is
+  what it always was. `msg::decoded::dt_from_samples` is gone — nothing
+  derives dt from a clamped index any more.
+
+  **Breaking:** `Q65Result`/`Jt65Result`/`Jt9Result::to_decoded` lose
+  their `(sample_rate, nominal_start_sample)` arguments, matching WSPR's
+  signature. `Jt9Result` has a new public field.
+
+  Sweep CSVs are byte-identical across all five suites, so nothing about
+  which frames decode has changed — only what they report. The unit test
+  that pinned the old behaviour (`to_decoded` deriving 0.5 s from
+  `start_sample` while the struct said 1.0) asserted the bug, and now
+  asserts the contract.
+
 - **Q65's published `tx_start_offset_s` was 1.0 for every sub-mode; the
   15 s and 30 s periods are 0.5 (#399).** Upstream makes the nominal
   start depend on `nsps`, not on a single constant: `q65.f90:130-131`

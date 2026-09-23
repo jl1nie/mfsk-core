@@ -247,11 +247,23 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         let nominal = self.nominal_start_sample + pad;
 
         // Translate a result from padded coordinates back to the
-        // caller's. `start_sample` has nowhere to put a negative, so
-        // it saturates and `dt_sec` carries the truth.
+        // caller's. `start_sample` is a `usize` and has nowhere to put
+        // a negative, so it saturates at 0 and `dt_sec` is the field
+        // that keeps the sign for a signal starting before nominal.
+        //
+        // dt is measured *from the nominal start*, which is what every
+        // consumer means by it. This used to read
+        // `(start_sample - pad) / sample_rate`, leaving
+        // `nominal_start_sample` out — correct only when `pad` happened
+        // to equal it, i.e. when `nominal_start_sample` was 0. With a
+        // nominal of 0.5 s and a 1.0 s early tolerance the reported dt
+        // came back 0.5 s high, and an early signal read as +0.0 rather
+        // than -0.5 (#397).
         let sample_rate = self.sample_rate;
         let untranslate = move |r: &mut Q65Result| {
-            r.dt_sec = (r.start_sample as f32 - pad as f32) / sample_rate as f32;
+            // Both terms are in padded coordinates (`nominal` is
+            // `nominal_start_sample + pad`), so the padding cancels.
+            r.dt_sec = (r.start_sample as f32 - nominal as f32) / sample_rate as f32;
             r.start_sample = r.start_sample.saturating_sub(pad);
         };
         let wrapped;
