@@ -85,9 +85,15 @@ def machine_id() -> str:
 
 
 def git_commit() -> str | None:
-    """Short SHA the run was measured at, `-dirty` when the tree had
-    uncommitted changes — a baseline measured on an uncommitted decoder
-    edit is not reproducible and should say so."""
+    """Short SHA the run was measured at, `-dirty` when *tracked* files
+    differed from HEAD — a baseline measured on an uncommitted decoder
+    edit is not reproducible and should say so.
+
+    Untracked files deliberately do not count. They cannot change what
+    was built, and letting them count made every stamp read `-dirty` for
+    anyone with a scratch directory in the tree (2026-09-23: an
+    unrelated `embedded-poc/m5stack-core2/` did exactly that), which
+    turns the marker into noise precisely when it needs to be trusted."""
     def run(*argv):
         return subprocess.run(
             argv, cwd=REPO_ROOT, capture_output=True, text=True, check=True
@@ -97,7 +103,7 @@ def git_commit() -> str | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     try:
-        if run("git", "status", "--porcelain"):
+        if run("git", "status", "--porcelain", "--untracked-files=no"):
             sha += "-dirty"
     except (OSError, subprocess.CalledProcessError):
         pass
