@@ -1078,9 +1078,11 @@ fn ft4_diag_candidate_cost_split() {
     }
 
     // ── Golden WAV (matches `ft4_wsjtx_samples.rs`'s exact search params) ──
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FT4/000000_000002.wav");
-    if let Ok(golden_path) = golden_path.canonicalize() {
+    let golden = common::corpus::golden_path_or_upstream(
+        "ft4/000000_000002.wav",
+        Some("FT4/000000_000002.wav"),
+    );
+    if let Some(golden_path) = golden {
         if let Some(raw) = load_wav_i16_opt(&golden_path) {
             const SLOT_SAMPLES: usize = 90_000;
             let mut audio = vec![0i16; SLOT_SAMPLES];

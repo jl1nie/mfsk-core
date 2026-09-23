@@ -130,6 +130,53 @@ pub fn optional_corpus(rel: &str) -> Option<PathBuf> {
     p.is_dir().then_some(p)
 }
 
+/// Resolve an asset that lives **only** in the upstream WSJT-X sample
+/// tree, via `$WSJTX_SAMPLES_DIR`.
+///
+/// The third class, beside [`golden_path`] (vendored, required) and
+/// [`optional_corpus`] (tier-C, never in CI): recordings that are too
+/// large or too niche to vendor — the Q65 sub-mode trees, say — but
+/// that a developer machine with the WSJT-X tarball can still run.
+/// Absent is not a failure, even under `MFSK_REQUIRE_CORPUS`, because
+/// CI is never expected to have them.
+///
+/// **Resolution is by environment variable only, never by a path
+/// relative to this checkout.** Ten sites used to reach for
+/// `../../WSJT-X/samples/...` instead, which made the answer depend on
+/// where the working copy happened to sit: the main clone found the
+/// tree, a `git worktree` under /tmp did not, and CI did not either. Six
+/// Q65 golden tests skipped on CI for months that way, and the same
+/// divergence turned a #394 timing comparison between those two
+/// directories into a phantom 25 % regression — the "before" arm was
+/// simply running six fewer decodes. One env var, one answer, wherever
+/// the checkout is.
+#[allow(dead_code)]
+pub fn upstream_sample_path(upstream_rel: &str) -> Option<PathBuf> {
+    let dir = std::env::var("WSJTX_SAMPLES_DIR").ok()?;
+    let p = Path::new(&dir).join(upstream_rel);
+    p.exists().then_some(p)
+}
+
+/// [`upstream_sample_path`] for a whole directory.
+#[allow(dead_code)]
+pub fn upstream_sample_dir(upstream_rel: &str) -> Option<PathBuf> {
+    let dir = std::env::var("WSJTX_SAMPLES_DIR").ok()?;
+    let p = Path::new(&dir).join(upstream_rel);
+    p.is_dir().then_some(p)
+}
+
+/// Say that an upstream-only sample was not available.
+///
+/// Never fails: these are optional by design. It still prints, and it
+/// names `WSJTX_SAMPLES_DIR` so the reader knows the test is one
+/// setting an environment variable would have run.
+#[allow(dead_code)]
+pub fn missing_upstream(test: &str, upstream_rel: &str) {
+    eprintln!(
+        "skipping {test}: {upstream_rel} not under $WSJTX_SAMPLES_DIR          (unset or absent) — set it to a WSJT-X samples tree to run this"
+    );
+}
+
 /// Report a corpus that could not be found.
 ///
 /// Skips quietly when the corpus is genuinely optional for a local

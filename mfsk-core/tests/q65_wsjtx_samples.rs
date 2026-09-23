@@ -14,7 +14,7 @@
 
 #![cfg(feature = "q65")]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
@@ -52,13 +52,7 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
     if vendored.is_dir() {
         return Some(vendored);
     }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let dir = Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65")
-        .join(rel)
-        .canonicalize()
-        .ok()?;
-    if dir.is_dir() { Some(dir) } else { None }
+    common::corpus::upstream_sample_dir(&format!("Q65/{rel}"))
 }
 
 /// Strict gate: stack the four ionoscatter recordings into one
@@ -79,7 +73,7 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
 #[test]
 fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
-        common::skip_or_fail("WSJT-X sample tree");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "WSJT-X sample tree");
         return;
     };
     let mut paths: Vec<_> = std::fs::read_dir(&dir)
@@ -197,7 +191,7 @@ fn eme_6m_sample_yields_decode_with_ap() {
     // should be able to recover at least one of the typical
     // call/CQ patterns even from this real-world weak signal.
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        common::skip_or_fail("WSJT-X 6m EME sample tree");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "WSJT-X 6m EME sample tree");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -337,7 +331,7 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
     let audio = match read_wsjtx_wav(&path) {
         Some(a) => a,
         None => {
-            common::skip_or_fail("WAV format not recognised");
+            common::corpus::missing_upstream("q65_wsjtx_samples", "WAV format not recognised");
             return;
         }
     };
@@ -423,7 +417,10 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
 #[test]
 fn tropo_1296_60b_decodes_via_averaging() {
     let Some(dir) = samples_dir("60B_1296_Troposcatter") else {
-        common::skip_or_fail("WSJT-X 60B_1296_Troposcatter sample tree");
+        common::corpus::missing_upstream(
+            "q65_wsjtx_samples",
+            "WSJT-X 60B_1296_Troposcatter sample tree",
+        );
         return;
     };
     let mut paths: Vec<_> = std::fs::read_dir(&dir)
@@ -523,12 +520,18 @@ fn tropo_1296_60b_decodes_via_averaging() {
 #[test]
 fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
     let Some(dir) = samples_dir("120D_Rainscatter_10_GHz") else {
-        common::skip_or_fail("WSJT-X 120D_Rainscatter_10_GHz sample tree");
+        common::corpus::missing_upstream(
+            "q65_wsjtx_samples",
+            "WSJT-X 120D_Rainscatter_10_GHz sample tree",
+        );
         return;
     };
     let path = dir.join("210117_0920.wav");
     let Some(audio) = read_wsjtx_wav(&path) else {
-        common::skip_or_fail(&format!("a readable WAV at {}", path.display()));
+        common::corpus::missing_upstream(
+            "q65_wsjtx_samples",
+            &format!("a readable WAV at {}", path.display()),
+        );
         return;
     };
 
@@ -603,7 +606,10 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
 #[test]
 fn ionoscatter_6m_120e_decodes_with_fading_metric() {
     let Some(dir) = samples_dir("120E_Ionoscatter_6m") else {
-        common::skip_or_fail("WSJT-X 120E_Ionoscatter_6m sample tree");
+        common::corpus::missing_upstream(
+            "q65_wsjtx_samples",
+            "WSJT-X 120E_Ionoscatter_6m sample tree",
+        );
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -687,12 +693,18 @@ fn ionoscatter_6m_120e_decodes_with_fading_metric() {
 #[test]
 fn optical_scatter_300a_decodes_with_fading_metric() {
     let Some(dir) = samples_dir("300A_Optical_Scatter") else {
-        common::skip_or_fail("WSJT-X 300A_Optical_Scatter sample tree");
+        common::corpus::missing_upstream(
+            "q65_wsjtx_samples",
+            "WSJT-X 300A_Optical_Scatter sample tree",
+        );
         return;
     };
     let path = dir.join("201210_0505.wav");
     let Some(audio) = read_wsjtx_wav(&path) else {
-        common::skip_or_fail(&format!("a readable WAV at {}", path.display()));
+        common::corpus::missing_upstream(
+            "q65_wsjtx_samples",
+            &format!("a readable WAV at {}", path.display()),
+        );
         return;
     };
 
@@ -973,9 +985,13 @@ fn q65_speed_diag_coarse_vs_finetiming() {
         common::skip_or_fail("the Q65-60A sample dir");
     }
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok().unwrap_or_default();
-    let path = std::path::Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65/60D_EME_10GHz/201212_1838.wav");
+    let path = match common::corpus::golden_path_or_upstream(
+        "q65/60D_EME_10GHz/201212_1838.wav",
+        Some("Q65/60D_EME_10GHz/201212_1838.wav"),
+    ) {
+        Some(p) => p,
+        None => return,
+    };
     if let Ok(path) = path.canonicalize() {
         if let Some(audio) = read_wsjtx_wav(&path) {
             let params = SearchParams {
@@ -1093,7 +1109,7 @@ fn q65_multi_period_candidate_count_diag() {
     use mfsk_core::q65::search::{build_spectrogram, coarse_search_on_spec_for};
 
     let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
-        common::skip_or_fail("sample tree");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "sample tree");
         return;
     };
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
@@ -1144,7 +1160,7 @@ fn q65_candidate_score_calibration_diag() {
     use mfsk_core::q65::search::{build_spectrogram, coarse_search_on_spec_for};
 
     let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
-        common::skip_or_fail("sample tree");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "sample tree");
         return;
     };
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
@@ -1210,7 +1226,7 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
     use mfsk_core::q65::{Q65a60, SniperRequest};
 
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        common::skip_or_fail("WSJT-X 6m EME sample tree");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "WSJT-X 6m EME sample tree");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -1270,7 +1286,7 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
 #[test]
 fn q65_scan_streaming_matches_batch_exactly() {
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        common::skip_or_fail("WSJT-X 6m EME sample tree");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "WSJT-X 6m EME sample tree");
         return;
     };
     let Some(path) = std::fs::read_dir(&dir)
@@ -1283,7 +1299,7 @@ fn q65_scan_streaming_matches_batch_exactly() {
         return;
     };
     let Some(audio) = read_wsjtx_wav(&path) else {
-        common::skip_or_fail("WAV format not recognised");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "WAV format not recognised");
         return;
     };
 
@@ -1331,7 +1347,7 @@ fn q65_scan_streaming_matches_batch_exactly() {
 #[test]
 fn q65_multi_period_streaming_matches_batch_exactly() {
     let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
-        common::skip_or_fail("WSJT-X sample tree");
+        common::corpus::missing_upstream("q65_wsjtx_samples", "WSJT-X sample tree");
         return;
     };
     let mut paths: Vec<_> = std::fs::read_dir(&dir)

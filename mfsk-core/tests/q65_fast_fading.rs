@@ -15,7 +15,7 @@ use std::f32::consts::TAU;
 #[allow(dead_code)]
 mod common;
 use common::load_wav_f32_opt as read_wsjtx_wav;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
@@ -242,13 +242,7 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
     if vendored.is_dir() {
         return Some(vendored);
     }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let dir = Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65")
-        .join(rel)
-        .canonicalize()
-        .ok()?;
-    if dir.is_dir() { Some(dir) } else { None }
+    common::corpus::upstream_sample_dir(&format!("Q65/{rel}"))
 }
 
 #[test]
@@ -258,7 +252,7 @@ fn eme_10ghz_reference_decodes_with_fast_fading() {
     // (≈25 Hz at 10 GHz) and never recovers it. Without a sample
     // tree this test reports as skipped.
     let Some(dir) = samples_dir("60D_EME_10GHz") else {
-        common::skip_or_fail("WSJT-X 10 GHz EME sample tree");
+        common::corpus::missing_upstream("q65_fast_fading", "WSJT-X 10 GHz EME sample tree");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -330,7 +324,7 @@ fn eme_6m_sample_does_not_regress_with_fast_fading() {
     // tight B90Ts must do at least as well — confirms we have not
     // broken the easy case in pursuit of the hard one.
     let Some(dir) = samples_dir("60A_EME_6m") else {
-        common::skip_or_fail("WSJT-X 6 m EME sample tree");
+        common::corpus::missing_upstream("q65_fast_fading", "WSJT-X 6 m EME sample tree");
         return;
     };
     let entries: Vec<_> = std::fs::read_dir(&dir)

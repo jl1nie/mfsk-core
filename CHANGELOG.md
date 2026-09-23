@@ -2,31 +2,40 @@
 
 ## 0.11.1 — FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
-- **`MFSK_REQUIRE_CORPUS=1` now covers every input the suite wants, not
-  just the in-repo corpus (#395).** The flag exists because five
-  protocols' golden tests skipped for weeks against a green suite. It
-  guarded the corpus path and nothing else, so 77 other skip sites —
-  most of them the out-of-tree WSJT-X sample tree — went on printing
-  `skipping:` and returning `ok`. They all route through one
-  `tests/common::skip_or_fail` helper now, which panics when the flag
-  is set and names the input that was missing.
+- **Test assets resolve one way, not two (#395).** Ten sites reached for
+  `../../WSJT-X/samples/...` relative to `CARGO_MANIFEST_DIR` instead of
+  going through `tests/common::corpus`, which made the answer depend on
+  where the working copy sat. The main clone found the tree; a `git
+  worktree` under /tmp did not; CI did not either. Same code, different
+  amount of work, no output saying so.
 
-  This is not a hypothetical gap. Timing the #394 refactor compared a
-  git worktree against the working tree; the sample tree resolves
-  relative to `CARGO_MANIFEST_DIR`, so it was absent in the worktree,
-  **six of Q65's golden tests skipped there**, and the arm doing less
-  work looked 25 % faster. Both arms printed `test result: ok`. Closure
-  indirection, `#[inline]`, the shared search window, the ranking tail,
-  the `fec/qra` imports, machine drift, cargo overhead and codegen-unit
-  partitioning were all measured and cleared before the cause turned
-  out to be a missing directory nobody was told about. A same-directory
-  re-measurement put the change at −5.9 %.
+  It cost twice. **Six Q65 golden tests had been skipping on CI** —
+  60B troposcatter, 120D rainscatter, 120E ionoscatter, 300A optical
+  scatter and two more — for as long as the ad-hoc paths existed. And
+  timing the #394 refactor compared a worktree against the working tree,
+  where those same six skipped on one side only, so the arm doing less
+  work read 25 % faster. Closure indirection, `#[inline]`, the shared
+  search window, the ranking tail, machine drift, cargo overhead and
+  codegen-unit partitioning were each measured and cleared before the
+  cause turned out to be a directory nobody was told about. Measured
+  properly, in one directory, the change was −5.9 %.
 
-  Behaviour without the flag is unchanged — a fresh clone with no
-  out-of-tree samples still skips, and says so. With it, a green run is
-  now a statement that every test ran on real inputs. Verified by
-  hiding the sample tree and watching the suite fail with the name of
-  each absent input instead of reporting ok.
+  `corpus` now names three classes instead of two. `golden_path` is a
+  vendored asset that must be there and panics under
+  `MFSK_REQUIRE_CORPUS`; `optional_corpus` is a tier-C sweep corpus that
+  never runs in CI; and `upstream_sample_path`/`upstream_sample_dir` are
+  the large upstream recordings that are **optional by design** —
+  resolved through `$WSJTX_SAMPLES_DIR` only, never through a path
+  relative to this checkout. Point that variable at a WSJT-X samples
+  tree and the tests run; leave it unset and they skip, saying which
+  variable would have run them. `grep -rn '\.\./\.\./WSJT-X' mfsk-core/tests`
+  returns nothing now.
+
+  The 77 bare `eprintln!("skipping…"); return;` sites route through
+  `skip_or_fail` (fatal under `MFSK_REQUIRE_CORPUS`) or
+  `missing_upstream` (never fatal) according to which class they are, so
+  the distinction is visible at each call site rather than implied by
+  the path it happened to build.
 
 - **One CPFSK synthesiser, one CRC-14 append, one top-K pick.** Code that
   several modes had each copied now lives in one place. None of it changes

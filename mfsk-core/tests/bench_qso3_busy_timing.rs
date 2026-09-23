@@ -114,10 +114,8 @@ fn timing_fst4_300() {
     use mfsk_core::fst4::Fst4s300;
     use mfsk_core::msg::decode_request::DecodeRequest;
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/201230_0300.wav");
-    let Ok(path) = path.canonicalize() else {
-        common::skip_or_fail("WSJT-X FST4 sample not found (sibling checkout)");
+    let Some(path) = common::corpus::upstream_sample_path("FST4+FST4W/201230_0300.wav") else {
+        common::corpus::missing_upstream("bench_qso3_busy_timing", "FST4+FST4W/201230_0300.wav");
         return;
     };
     let full = load_wav_i16(&path);

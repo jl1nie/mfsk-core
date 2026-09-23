@@ -911,8 +911,13 @@ fn fst4_60_diag_candidate_cost_split() {
         buckets.len()
     }
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav");
+    let golden_path = match common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) {
+        Some(p) => p,
+        None => return,
+    };
     let Ok(golden_path) = golden_path.canonicalize() else {
         common::skip_or_fail("WSJT-X FST4 sample not found (sibling checkout)");
         return;
@@ -1043,8 +1048,11 @@ fn fst4_300_diag_candidate_cost_split() {
         buckets.len()
     }
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/201230_0300.wav");
+    let Some(golden_path) = common::corpus::upstream_sample_path("FST4+FST4W/201230_0300.wav")
+    else {
+        common::corpus::missing_upstream("fst4_sweep", "FST4+FST4W/201230_0300.wav");
+        return;
+    };
     let Ok(golden_path) = golden_path.canonicalize() else {
         common::skip_or_fail("WSJT-X FST4 sample not found (sibling checkout)");
         return;
@@ -1160,8 +1168,13 @@ fn fst4_60_diag_osd_escalation() {
 
     const BP_MAX_ITER: u32 = 30;
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav");
+    let golden_path = match common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) {
+        Some(p) => p,
+        None => return,
+    };
     let Ok(golden_path) = golden_path.canonicalize() else {
         common::skip_or_fail("WSJT-X FST4 sample not found (sibling checkout)");
         return;
@@ -1327,8 +1340,13 @@ fn fst4_60_diag_npre1_pattern_counts() {
     // `osd_decode_generic` currently walks per candidate for FST4.
     const COMBINATORIAL_ORDER3: u64 = 101 * 100 * 99 / 6;
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav");
+    let golden_path = match common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) {
+        Some(p) => p,
+        None => return,
+    };
     let Ok(golden_path) = golden_path.canonicalize() else {
         common::skip_or_fail("WSJT-X FST4 sample not found (sibling checkout)");
         return;
