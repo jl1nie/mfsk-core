@@ -845,7 +845,7 @@ that allocation now succeeds on the first try.
 | **FST4** | generic `engine::pipeline` + `fft-extern` — **no `decode_block` port** | **Decoding off the air** on CoreS3. FST4-60 on-device: `no8_osd` 13.6 s, ≈1.95× over the ~7 s slot budget at the deadline-tight default |
 | **FT4** | generic `engine::pipeline`, host f32 (`fixed-point` measured *slower* on LX7, #198) | **Decoding off the air** on CoreS3 |
 | **WSPR** | host `wspr::decode` f32 via `fft-extern`, plus `wspr::ddc` | **Decoding off the air.** `slot 1 src=uac decoded 1 station(s)`. Decode lands at 82.8–90.1 s against a 110 s deadline |
-| **Q65 / JT9 / JT65** | — | **Host-only.** These call `rustfft` directly, so they pull `fft-rustfft` and therefore `std`. No embedded path yet |
+| **Q65 / JT9 / JT65** | — | **Host-only.** They pull `fft-rustfft` and therefore `std`. Since #390 every FFT they run goes through `engine::fft`, but the modules still use `std` (`Vec` from the prelude, `f32` methods), and JT9's `downsam9` assumes rustfft's unscaled inverse. No embedded path yet |
 
 **FST4 reached hardware without porting `decode_block`** (issue #306),
 and FT4 has now done the same. `decode_block` exists because FT8's own

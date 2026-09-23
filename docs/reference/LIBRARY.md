@@ -1110,7 +1110,7 @@ justified it. The summary here covers what a Rust host consumer needs;
 | `ft4` | on | FT4 ZST, decode |
 | `fst4` | off | FST4-15/30/60A/120/300 ZSTs, decode. **Not host-only** — routes entirely through the backend-agnostic engine and type-checks clean under `alloc,fst4,fft-extern` (issue #306) |
 | `wspr` | off | WSPR ZST, decode, synth, spectrogram search |
-| `jt9` / `jt65` / `q65` | off | **host-only** — these call `rustfft` directly, so they pull `fft-rustfft` and therefore `std` |
+| `jt9` / `jt65` / `q65` | off | **host-only** — they pull `fft-rustfft` and therefore `std`. Their FFTs go through `engine::fft` since #390, but the modules are not yet `no_std`-clean |
 | `msk144` | off | MSK144 — no `Protocol` ZST; own top-level driver |
 | `uvpacket` | off | applied non-WSJT example, 4 sub-mode ZSTs. Pulls in `fst4`, and **declares `std` explicitly** (it reaches for `std::f32::consts::PI`) |
 | `packet-bytes` | off | `PacketBytesMessage` — byte-payload example `MessageCodec` |

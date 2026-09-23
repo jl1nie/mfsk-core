@@ -26,9 +26,7 @@
 //!   candidate set (e.g. every standard exchange a known callsign
 //!   pair could produce). Mirrors `q65_decode_fullaplist`.
 
-use num_complex::Complex;
-use rustfft::FftPlanner;
-
+use crate::engine::dsp::symbol_fft::SymbolFft;
 use crate::engine::pipeline::scan_dedup_match;
 use crate::engine::{DecodeContext, MessageCodec, ModulationParams};
 use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
@@ -82,12 +80,27 @@ fn extract_data_energies<P: ModulationParams>(
         return None;
     }
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(nsps);
-    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
+    // Q65 data tones are 1..=64 (tone 0 is reserved for sync). The
+    // 6-bit symbol value `s` is on bin `base_bin + (s + 1) * bins_per_tone`.
+    Some(data_symbol_rows(audio, start_sample, nsps, 64, |tone| {
+        base_bin + (tone + 1) * bins_per_tone
+    }))
+}
 
-    let mut energies = vec![0.0_f32; 64 * 63];
+/// `|FFT|²` at `row_len` bins of each of the 63 data symbols, row-major
+/// (`out[row_len * k + i]` is bin `bin_of(i)` of data symbol `k`),
+/// skipping the 22 sync positions. The one loop both
+/// [`extract_data_energies`] and [`extract_data_energies_wide`] run.
+/// The caller has already checked that the frame and every bin fit.
+fn data_symbol_rows(
+    audio: &[f32],
+    start_sample: usize,
+    nsps: usize,
+    row_len: usize,
+    bin_of: impl Fn(usize) -> usize,
+) -> Vec<f32> {
+    let mut fft = SymbolFft::new(nsps);
+    let mut energies = vec![0.0_f32; row_len * 63];
     let mut sync_iter = Q65_SYNC_POSITIONS.iter().peekable();
     let mut k = 0usize;
 
@@ -96,23 +109,15 @@ fn extract_data_energies<P: ModulationParams>(
             sync_iter.next();
             continue;
         }
-        let sym_start = start_sample + sym_idx as usize * nsps;
-        for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-            *slot = Complex::new(s, 0.0);
-        }
-        fft.process_with_scratch(&mut buf, &mut scratch);
-        // Q65 data tones are 1..=64 (tone 0 is reserved for sync).
-        // The 6-bit symbol value `s` is on bin
-        // `base_bin + (s + 1) * bins_per_tone`.
-        let row = &mut energies[64 * k..64 * (k + 1)];
-        for (tone, slot) in row.iter_mut().enumerate() {
-            let bin = base_bin + (tone + 1) * bins_per_tone;
-            *slot = buf[bin].norm_sqr();
+        let buf = fft.real(audio, start_sample + sym_idx as usize * nsps);
+        let row = &mut energies[row_len * k..row_len * (k + 1)];
+        for (i, slot) in row.iter_mut().enumerate() {
+            *slot = buf[bin_of(i)].norm_sqr();
         }
         k += 1;
     }
     debug_assert_eq!(k, 63);
-    Some(energies)
+    energies
 }
 
 /// Extract a wide-energy spectrogram suitable for the fast-fading
@@ -152,33 +157,13 @@ fn extract_data_energies_wide<P: ModulationParams>(
         return None;
     }
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(nsps);
-    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
-
-    let mut energies = vec![0.0_f32; bins_per_symbol * 63];
-    let mut sync_iter = Q65_SYNC_POSITIONS.iter().peekable();
-    let mut k = 0usize;
-
-    for sym_idx in 0..85u32 {
-        if sync_iter.peek().is_some_and(|&&p| p == sym_idx) {
-            sync_iter.next();
-            continue;
-        }
-        let sym_start = start_sample + sym_idx as usize * nsps;
-        for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-            *slot = Complex::new(s, 0.0);
-        }
-        fft.process_with_scratch(&mut buf, &mut scratch);
-        let row = &mut energies[bins_per_symbol * k..bins_per_symbol * (k + 1)];
-        for (i, slot) in row.iter_mut().enumerate() {
-            *slot = buf[wide_start + i].norm_sqr();
-        }
-        k += 1;
-    }
-    debug_assert_eq!(k, 63);
-    Some(energies)
+    Some(data_symbol_rows(
+        audio,
+        start_sample,
+        nsps,
+        bins_per_symbol,
+        |i| wide_start + i,
+    ))
 }
 
 /// Submode index (0..=4 ⇒ A..E) inferred from `P::TONE_SPACING_HZ`

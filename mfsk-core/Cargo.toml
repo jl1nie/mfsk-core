@@ -41,7 +41,15 @@ serde        = ["dep:serde"]
 # be on whenever decode-side code is compiled (host gets rustfft;
 # embedded targets bring their own backend through the extern Rust
 # factory `mfsk_core_make_default_fft_planner` — see engine::fft docs).
-fft-rustfft  = ["std", "dep:rustfft"]
+#
+# `fft-rustfft` also pulls `realfft`, a real-input wrapper over the same
+# `rustfft` (same numerics, same resolved version via Cargo's unifier),
+# as the host override of `FftPlanner::plan_real_forward` (#390). JT9's
+# `softsym::AudioFft::build` runs one 653,184-point FFT per scan on
+# real-valued audio; as a complex-to-complex transform it was ~57% of
+# `decode_scan`'s wall time (measured, `jt9::tests::phase_breakdown_diag`),
+# and a real-input FFT does about half that work.
+fft-rustfft  = ["std", "dep:rustfft", "dep:realfft"]
 fft-extern   = ["alloc"]
 
 # Caller-provided real f32 dot-product backend for the DSP hot loops
@@ -235,9 +243,14 @@ wspr-ddc-cascade = []
 # gap.
 msk144       = []
 
-# Heavy modes — jt9/jt65/q65 still call `rustfft` directly (out of
-# scope of the embedded port; pulling them implies the host build via
-# `fft-rustfft`, which transitively requires `std`).
+# Heavy modes — jt9/jt65/q65 imply the host build via `fft-rustfft`,
+# which transitively requires `std`. Since #390 every FFT they run goes
+# through `engine::fft`, so the backend is no longer what pins them.
+# What does: the modules lean on `std` (prelude `Vec`, `f32` methods —
+# 64 / 48 / 117 errors under `alloc,<mode>,fft-extern`, counted
+# 2026-09-23), and JT9's `downsam9` inverse FFT assumes rustfft's
+# unscaled convention, which the ESP backend does not share (see
+# `wspr::subtract`'s explicit `#[cfg]` on the same point).
 #
 # `fst4` is NOT one of these, despite living in this block historically
 # — issue #306 (embedded FST4 feasibility) found no actual `rustfft`
@@ -252,16 +265,7 @@ msk144       = []
 # match `ft8`/`ft4`/`wspr` above — a caller wanting the host default
 # still gets `fft-rustfft` via `full`/`default`, unaffected.
 fst4         = []
-# `dep:realfft`: JT9's `softsym::AudioFft::build` runs one
-# 653,184-point FFT per scan on real-valued audio — a plain
-# `rustfft` complex-to-complex transform wastes ~2x the work a
-# real-input FFT (Hermitian symmetry) needs, and that FFT is ~57% of
-# `decode_scan`'s wall time (measured, `jt9::tests::phase_breakdown_diag`).
-# `realfft` wraps `rustfft` itself (same numerics, exact same
-# resolved version via Cargo's unifier) so this is a performance-only
-# swap, not a new algorithm — JT9 is already host-only/`fft-rustfft`-
-# gated (see comment above), so no embedded/no_std impact.
-jt9          = ["fft-rustfft", "dep:realfft"]
+jt9          = ["fft-rustfft"]
 jt65         = ["fft-rustfft"]
 q65          = ["fft-rustfft"]
 

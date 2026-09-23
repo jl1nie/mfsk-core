@@ -41,6 +41,36 @@
   slot on an Apple M5). `engine::spectrogram` is now compiled under
   either FFT backend, not only `fft-rustfft`.
 
+- **JT9, JT65 and Q65 reach every FFT through `engine::fft` (#390).**
+  Five demodulator sites planned their own `rustfft` instance for a
+  per-symbol FFT: `jt9::rx`, `jt65::rx`, `q65::rx` twice, and
+  `q65::snr`. They now share `engine::dsp::symbol_fft::SymbolFft`.
+  Each mode still reads its own tone bins, because the reads differ
+  (JT9 squares `norm()`, the others take `norm_sqr()`, and JT65 mixes
+  its input through an NCO first). Q65's two energy extractors, narrow
+  and wide, were the same loop with a different bin map and are now
+  one. JT9's slot-length real FFT and its `downsam9` inverse FFT go
+  through `engine::fft` as well. For the real FFT, `engine::fft`
+  gains `FftPlanner::plan_real_forward` and a `RealFft` trait.
+  - `plan_real_forward` is a provided method, so existing
+    `FftPlanner` implementations, including the embedded ESP backend,
+    compile unchanged: they get a complex-FFT fallback. The rustfft
+    backend overrides it with `realfft`, which is now a dependency of
+    `fft-rustfft` rather than of `jt9`.
+  - rustfft is still the host backend, and the output is
+    bit-identical. The fingerprints compared against `main` cover
+    JT9's LLRs, slot FFT, envelope and `downsam9` output, JT65's full
+    demodulation tuple at a fractional frequency (the NCO path),
+    Q65-30A, -60B and -60E narrow and wide energies, and Q65's SNR
+    composite spectrum. The JT9, JT65, Q65 and WSPR golden tests run
+    in the same time, A/B, within run-to-run noise.
+  - `jt9`, `jt65` and `q65` still imply `fft-rustfft`. The FFT
+    backend no longer pins them; what does is `std` use inside the
+    modules (64, 48 and 117 errors under `alloc,<mode>,fft-extern`)
+    and JT9's `downsam9`, which relies on rustfft's unscaled inverse
+    FFT. The ESP backend scales its inverse, which is why
+    `wspr::subtract` carries an explicit `#[cfg]` for the same point.
+
 - **`pack77` packs `/P` and `/R` callsigns.** It refused them: the
   suffixed call went straight to `pack28`, which takes six characters
   at most, and the whole message came back `None` — so a portable

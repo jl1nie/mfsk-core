@@ -18,8 +18,7 @@
 //! `crate::fec::ConvFano232::decode_soft`.
 
 use crate::engine::ModulationParams;
-use num_complex::Complex;
-use rustfft::FftPlanner;
+use crate::engine::dsp::symbol_fft::SymbolFft;
 
 use super::Jt9;
 use super::interleave::deinterleave_llrs;
@@ -59,10 +58,7 @@ pub fn demodulate_aligned(
         return [0f32; 206];
     }
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(nsps);
-    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
+    let mut fft = SymbolFft::new(nsps);
 
     // Accumulate the 69 data-symbol LLR triples plus a noise reference.
     let mut llrs207 = [0f32; 207];
@@ -71,11 +67,7 @@ pub fn demodulate_aligned(
     let mut j = 0; // data-symbol index within the 69 data slots
 
     for sym_idx in 0..85 {
-        let sym_start = start_sample + sym_idx * nsps;
-        for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-            *slot = Complex::new(s, 0.0);
-        }
-        fft.process_with_scratch(&mut buf, &mut scratch);
+        let buf = fft.real(audio, start_sample + sym_idx * nsps);
 
         // Noise reference from bins just above the 9-tone passband.
         for k in 9..14 {

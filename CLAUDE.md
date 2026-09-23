@@ -228,8 +228,10 @@ flag carries the measurement that justified it. The traps:
   private-item errors in `fst4_sweep` / `ft4_sweep` /
   `fst4_wsjtx_samples`. That's a missing flag, not a regression you
   introduced — use the hook's own invocation before concluding otherwise.
-- **`jt9` / `jt65` / `q65` are host-only** — they call `rustfft` directly,
-  so they pull `fft-rustfft` and therefore `std`. **`fst4` is not**,
+- **`jt9` / `jt65` / `q65` are host-only** — they pull `fft-rustfft` and
+  therefore `std`. Their FFTs go through `engine::fft` since #390; what
+  still pins them is `std` use inside the modules and JT9's reliance on
+  rustfft's unscaled inverse FFT (`mfsk-core/Cargo.toml` has the counts). **`fst4` is not**,
   despite living in that block historically: issue #306 confirmed it
   routes entirely through the backend-agnostic `engine` machinery and
   type-checks clean under `alloc,fst4,fft-extern`.

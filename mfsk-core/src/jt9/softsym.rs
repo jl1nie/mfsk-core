@@ -12,7 +12,8 @@
 //! drags into our LLRs.
 
 use num_complex::Complex;
-use rustfft::FftPlanner;
+
+use crate::engine::fft::default_planner;
 
 use super::interleave::deinterleave_llrs;
 use super::sync_pattern::JT9_ISYNC;
@@ -76,16 +77,18 @@ impl AudioFft {
         // values directly, in roughly half the work. Measured as ~57%
         // of `decode_scan`'s wall time before this fix
         // (`jt9::tests::phase_breakdown_diag`).
-        let mut real_planner = realfft::RealFftPlanner::<f32>::new();
-        let r2c = real_planner.plan_fft_forward(NFFT1);
-        let mut indata = r2c.make_input_vec();
+        //
+        // Planned through `engine::fft` (#390); rustfft's backend
+        // overrides `plan_real_forward` with `realfft`, so on host this
+        // is the same transform as before.
+        let r2c = default_planner().plan_real_forward(NFFT1);
+        let mut indata = vec![0.0f32; NFFT1];
         let n = audio.len().min(NFFT1);
         for i in 0..n {
             indata[i] = audio[i] * 32_768.0;
         }
-        let mut buf = r2c.make_output_vec();
-        r2c.process(&mut indata, &mut buf)
-            .expect("fixed NFFT1-length input/output, shape always matches");
+        let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT1 / 2 + 1];
+        r2c.process(&mut indata, &mut buf);
 
         // 1 Hz-resolution power envelope across 0..5 kHz.
         // #323 analysis-grid: `NFFT1` bin width, same kind as
@@ -157,10 +160,7 @@ impl AudioFft {
         }
 
         // IFFT to time domain.
-        let mut planner = FftPlanner::<f32>::new();
-        let ifft = planner.plan_fft_inverse(NFFT2);
-        let mut scratch = vec![Complex::new(0.0, 0.0); ifft.get_inplace_scratch_len()];
-        ifft.process_with_scratch(&mut c2, &mut scratch);
+        default_planner().plan_inverse(NFFT2).process(&mut c2);
         c2
     }
 }

@@ -143,6 +143,61 @@ pub trait FftPlanner {
 
     /// Plan an inverse FFT of length `len`.
     fn plan_inverse(&mut self, len: usize) -> Box<dyn Fft>;
+
+    /// Plan a forward FFT of a *real* input of length `len`.
+    ///
+    /// The provided implementation runs a `len`-point complex FFT
+    /// through [`plan_forward`](Self::plan_forward), so every backend
+    /// has one without writing anything. A backend with a real-input
+    /// kernel should override it: the rustfft backend does, with
+    /// `realfft`, which does about half the work (#390; JT9's one
+    /// 653 184-point slot FFT was ~57 % of its scan time as a complex
+    /// transform).
+    fn plan_real_forward(&mut self, len: usize) -> Box<dyn RealFft> {
+        Box::new(ComplexBackedRealFft {
+            fft: self.plan_forward(len),
+        })
+    }
+}
+
+/// Forward FFT of a real input of one fixed length, returning only the
+/// `len/2 + 1` non-negative-frequency bins (the rest are their complex
+/// conjugates).
+pub trait RealFft {
+    /// Transform `input` (`len()` samples) into `output`
+    /// (`len()/2 + 1` bins). `input` may be used as scratch; its
+    /// contents afterwards are unspecified.
+    fn process(&self, input: &mut [f32], output: &mut [Complex32]);
+
+    /// Length of the real input this instance was planned for.
+    fn len(&self) -> usize;
+
+    /// `true` when planned for `len == 0`.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// [`FftPlanner::plan_real_forward`]'s fallback: a complex FFT of the
+/// real input, truncated to the non-negative half.
+struct ComplexBackedRealFft {
+    fft: Box<dyn Fft>,
+}
+
+impl RealFft for ComplexBackedRealFft {
+    fn process(&self, input: &mut [f32], output: &mut [Complex32]) {
+        let n = self.fft.len();
+        assert_eq!(input.len(), n, "RealFft::process: input length");
+        assert_eq!(output.len(), n / 2 + 1, "RealFft::process: output length");
+        let mut buf: alloc::vec::Vec<Complex32> =
+            input.iter().map(|&x| Complex32::new(x, 0.0)).collect();
+        self.fft.process(&mut buf);
+        output.copy_from_slice(&buf[..n / 2 + 1]);
+    }
+
+    fn len(&self) -> usize {
+        self.fft.len()
+    }
 }
 
 // ── i16 (fixed-point) trait pair ─────────────────────────────────────
@@ -184,6 +239,7 @@ mod rustfft_backend {
     /// SIMD-accelerated where the host CPU supports it.
     pub struct RustFftPlanner {
         inner: rustfft::FftPlanner<f32>,
+        real: realfft::RealFftPlanner<f32>,
     }
 
     impl RustFftPlanner {
@@ -192,6 +248,7 @@ mod rustfft_backend {
         pub fn new() -> Self {
             Self {
                 inner: rustfft::FftPlanner::new(),
+                real: realfft::RealFftPlanner::new(),
             }
         }
     }
@@ -225,6 +282,26 @@ mod rustfft_backend {
             Box::new(RustFftAdapter {
                 inner: self.inner.plan_fft_inverse(len),
             })
+        }
+        fn plan_real_forward(&mut self, len: usize) -> Box<dyn RealFft> {
+            Box::new(RealFftAdapter {
+                inner: self.real.plan_fft_forward(len),
+            })
+        }
+    }
+
+    struct RealFftAdapter {
+        inner: Arc<dyn realfft::RealToComplex<f32>>,
+    }
+
+    impl RealFft for RealFftAdapter {
+        fn process(&self, input: &mut [f32], output: &mut [Complex32]) {
+            self.inner
+                .process(input, output)
+                .expect("RealFft::process: input is len(), output is len()/2 + 1");
+        }
+        fn len(&self) -> usize {
+            self.inner.len()
         }
     }
 }
@@ -495,5 +572,33 @@ mod tests_rustfft {
             .unwrap()
             .0;
         assert_eq!(peak, bin);
+    }
+
+    /// The provided complex-FFT fallback and rustfft's `realfft`
+    /// override must agree, since embedded backends get the former.
+    #[test]
+    fn real_fft_fallback_matches_realfft_override() {
+        let mut planner = RustFftPlanner::new();
+        let n = 1000;
+        let input: alloc::vec::Vec<f32> = (0..n)
+            .map(|k| (0.37 * k as f32).sin() + 0.25 * (1.9 * k as f32).cos())
+            .collect();
+
+        let fast = planner.plan_real_forward(n);
+        let mut a_in = input.clone();
+        let mut a = alloc::vec![Complex32::new(0.0, 0.0); n / 2 + 1];
+        fast.process(&mut a_in, &mut a);
+
+        let fallback = ComplexBackedRealFft {
+            fft: planner.plan_forward(n),
+        };
+        let mut b_in = input;
+        let mut b = alloc::vec![Complex32::new(0.0, 0.0); n / 2 + 1];
+        fallback.process(&mut b_in, &mut b);
+
+        assert_eq!(fast.len(), n);
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).norm() < 1e-3, "{x} vs {y}");
+        }
     }
 }

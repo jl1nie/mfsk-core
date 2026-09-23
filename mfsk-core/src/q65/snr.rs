@@ -85,10 +85,8 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use num_complex::Complex;
-use rustfft::FftPlanner;
-
 use crate::engine::ModulationParams;
+use crate::engine::dsp::symbol_fft::SymbolFft;
 
 use super::sync_pattern::Q65_SYNC_POSITIONS;
 
@@ -144,10 +142,7 @@ pub(crate) fn q65_composite_spectrum<P: ModulationParams>(
     let mut sync_iter = Q65_SYNC_POSITIONS.iter().peekable();
     let mut data_k = 0usize;
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(nsps);
-    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
+    let mut fft = SymbolFft::new(nsps);
 
     for sym_idx in 0u32..85 {
         // `itone(j)` (`q65.f90:753-761`): 0 for sync symbols, else the
@@ -163,11 +158,7 @@ pub(crate) fn q65_composite_spectrum<P: ModulationParams>(
             t
         };
 
-        let sym_start = start_sample + sym_idx as usize * nsps;
-        for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-            *slot = Complex::new(s, 0.0);
-        }
-        fft.process_with_scratch(&mut buf, &mut scratch);
+        let buf = fft.real(audio, start_sample + sym_idx as usize * nsps);
 
         // `spec(i) += s1(i + mode_q65·itone(k), j)` for `i` in
         // `[ia, ib]` — `i`/`ii` are absolute bin indices in WSJT-X's

@@ -805,7 +805,7 @@ Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回
 | **FST4** | 汎用 `engine::pipeline` + `fft-extern` — **`decode_block` の移植なし** | **オンエアでデコード中**（CoreS3）。FST4-60 の実機時間は `no8_osd` で 13.6 s、締切重視の既定値で ~7 s 予算の約 1.95 倍 |
 | **FT4** | 汎用 `engine::pipeline`、ホスト f32（LX7 では `fixed-point` の方が*遅かった*、#198） | **オンエアでデコード中**（CoreS3） |
 | **WSPR** | `fft-extern` 経由のホスト `wspr::decode` f32 と `wspr::ddc` | **オンエアでデコード中。** `slot 1 src=uac decoded 1 station(s)`。110 s の締切に対し 82.8〜90.1 s で decode 完了 |
-| **Q65 / JT9 / JT65** | — | **ホスト専用。** `rustfft` を直接呼ぶため `fft-rustfft` を、したがって `std` を引く。組込パスはまだ無い |
+| **Q65 / JT9 / JT65** | — | **ホスト専用。** `fft-rustfft` を、したがって `std` を引く。#390 以降 FFT はすべて `engine::fft` 経由だが、モジュールがまだ `std` に依存しており（prelude の `Vec`、`f32` のメソッド）、JT9 の `downsam9` は rustfft の正規化しない逆 FFT を前提にしている。組込パスはまだ無い |
 
 **FST4 は `decode_block` を移植せずに実機へ到達した**（issue #306）。
 FT4 も同じ道を通った。`decode_block` があるのは FT8 自身の

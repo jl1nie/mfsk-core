@@ -10,8 +10,8 @@
 //! 2.6906 Hz = one JT65A tone spacing.
 
 use crate::engine::ModulationParams;
+use crate::engine::dsp::symbol_fft::SymbolFft;
 use num_complex::Complex;
-use rustfft::FftPlanner;
 
 use super::Jt65;
 use super::gray::inv_gray6;
@@ -75,11 +75,6 @@ pub fn demodulate_aligned(
         return None;
     }
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(nsps);
-    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
-
     let (syms, _conf, _second_sym, _rel, _raw_pwr, _snr_db) =
         demodulate_aligned_with_confidence_inner(
             audio,
@@ -88,9 +83,6 @@ pub fn demodulate_aligned(
             base_freq_hz,
             nsps,
             base_bin,
-            &mut buf,
-            &mut scratch,
-            &*fft,
         )?;
     Some(syms)
 }
@@ -136,10 +128,6 @@ pub fn demodulate_aligned_with_runnerup(
         return None;
     }
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(nsps);
-    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
     demodulate_aligned_with_confidence_inner(
         audio,
         sample_rate,
@@ -147,9 +135,6 @@ pub fn demodulate_aligned_with_runnerup(
         base_freq_hz,
         nsps,
         base_bin,
-        &mut buf,
-        &mut scratch,
-        &*fft,
     )
 }
 
@@ -180,10 +165,6 @@ pub fn demodulate_aligned_with_confidence_and_snr(
         return None;
     }
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(nsps);
-    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
     let (syms, conf, _second_sym, _rel, _raw_pwr, snr_db) =
         demodulate_aligned_with_confidence_inner(
             audio,
@@ -192,9 +173,6 @@ pub fn demodulate_aligned_with_confidence_and_snr(
             base_freq_hz,
             nsps,
             base_bin,
-            &mut buf,
-            &mut scratch,
-            &*fft,
         )?;
     Some((syms, conf, snr_db))
 }
@@ -206,10 +184,8 @@ fn demodulate_aligned_with_confidence_inner(
     base_freq_hz: f32,
     nsps: usize,
     base_bin: usize,
-    buf: &mut [Complex<f32>],
-    scratch: &mut [Complex<f32>],
-    fft: &dyn rustfft::Fft<f32>,
 ) -> Option<DemodWithRunnerup> {
+    let mut fft = SymbolFft::new(nsps);
     // Walk 126 symbol windows. Data positions (NPRC[i] == 0) each get
     // argmax of 64 data-tone magnitudes (+ runner-up for confidence).
     // `second_tone` tracks the runner-up's *identity* (not just its
@@ -253,16 +229,17 @@ fn demodulate_aligned_with_confidence_inner(
 
     for sym_idx in 0..126 {
         let sym_start = start_sample + sym_idx * nsps;
-        for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-            *slot = Complex::new(s, 0.0) * Complex::new(phase.cos(), phase.sin());
-            phase += dphi;
-            if phase > core::f32::consts::PI {
-                phase -= core::f32::consts::TAU;
-            } else if phase < -core::f32::consts::PI {
-                phase += core::f32::consts::TAU;
+        let buf = fft.with_input(|buf| {
+            for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
+                *slot = Complex::new(s, 0.0) * Complex::new(phase.cos(), phase.sin());
+                phase += dphi;
+                if phase > core::f32::consts::PI {
+                    phase -= core::f32::consts::TAU;
+                } else if phase < -core::f32::consts::PI {
+                    phase += core::f32::consts::TAU;
+                }
             }
-        }
-        fft.process_with_scratch(buf, scratch);
+        });
         if JT65_NPRC[sym_idx] == 1 {
             continue;
         }
