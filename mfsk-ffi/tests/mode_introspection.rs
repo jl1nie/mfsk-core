@@ -299,6 +299,20 @@ fn defaults_are_published_with_their_scale() {
         assert_eq!(d(m).sync_scale, MfskSyncScale::CostasAbsolute);
     }
 
+    // #413: the scan modes publish the library's own defaults, on a
+    // third scale (a 0..1 fraction), and are not comparable with FT8's.
+    for m in [
+        MfskMode::Wspr,
+        MfskMode::Jt9,
+        MfskMode::Jt65,
+        MfskMode::Q65a60,
+    ] {
+        let x = d(m);
+        assert_eq!(x.sync_scale, MfskSyncScale::SyncFraction, "{m:?}");
+        assert!(x.sync_min > 0.0 && x.sync_min < 1.0, "{m:?}");
+        assert!(x.freq_max_hz > x.freq_min_hz && x.max_cand > 0, "{m:?}");
+    }
+
     assert!(ft8.freq_max_hz > ft8.freq_min_hz && ft8.max_cand > 0);
     assert_eq!(
         unsafe { mfsk_mode_defaults(MfskMode::Ft8 as u32, std::ptr::null_mut()) },

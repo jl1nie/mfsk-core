@@ -634,9 +634,9 @@ slot model with a burst scan.
 | **MSK144** | burst scan over the whole T/R period | — |
 
 **A-priori decoding is a general option, not a sniper feature.** AP is
-a rung on `process_candidate_basic`'s own ladder, reaching FT8, FT4 and
-every FST4 sub-mode; `msg::pipeline_ap` is hypothesis generation with
-no engine of its own. It used to be coupled to the sniper by accident
+the last rung of the per-candidate ladder — `process_candidate_basic`'s
+for FT4 and every FST4 sub-mode, FT8's own for FT8 — and
+`msg::pipeline_ap` is hypothesis generation with no engine of its own. It used to be coupled to the sniper by accident
 and that cost most of the decodes — the measurement is in
 [`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md).
 

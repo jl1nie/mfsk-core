@@ -336,10 +336,11 @@ fn every_mode_claiming_the_handle_can_open_one() {
 
 /// A mode without the bit must refuse **at open**, naming the bit.
 ///
-/// Failing later, at decode, would be worse in a specific way: a mode
-/// with no decode handle also publishes no usable default search, so
-/// the first thing to go wrong is a confusing complaint about
-/// `max_cand` when the real answer is "wrong entry point".
+/// Failing later, at decode, would be worse in a specific way: the
+/// first thing to go wrong would be a complaint about the search
+/// parameters when the real answer is "wrong entry point". Since #413
+/// WSPR, JT9 and JT65 publish a default band, so a caller who filled
+/// `MfskDecodeParams` from `mfsk_mode_defaults` would not even get that.
 #[test]
 fn a_mode_without_the_handle_is_refused_at_open() {
     for mode in [

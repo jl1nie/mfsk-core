@@ -236,6 +236,14 @@ fn sync_scale_is_recorded_and_defaults_respect_it() {
     for m in FST4_MODES {
         assert_eq!(profile(m).sync_scale, SyncScale::CostasAbsolute);
     }
+    // The scan modes score sync as a 0..1 fraction of sync plus noise
+    // (#413): a third scale, not FT8's.
+    #[cfg(all(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
+    for m in ["WSPR", "JT9", "JT65", "Q65-60A"] {
+        assert_eq!(profile(m).sync_scale, SyncScale::SyncFraction, "{m}");
+        let d = profile(m).defaults;
+        assert!(d.sync_min > 0.0 && d.sync_min < 1.0, "{m}: {}", d.sync_min);
+    }
 
     // On the baseline-normalised scale noise sits at ~1.0 by
     // construction, so a default at or below it would admit every peak

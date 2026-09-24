@@ -414,9 +414,16 @@ pub unsafe extern "C" fn mfsk_callsign_hash_table_insert(
 // Q65 helpers (sub-mode dispatch + decoded-message push)
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Wide search params used by every `mfsk_q65_*` decode entry point —
-/// matches the Rust-side defaults that work across both terrestrial
-/// Q65-30A and EME 60A‥E recordings.
+/// Wide search params used by every `mfsk_q65_*` decode entry point,
+/// chosen to work across both terrestrial Q65-30A and EME 60A‥E
+/// recordings.
+///
+/// This is **not** the library's Q65 default, and is not what
+/// `mfsk_mode_defaults` reports for Q65: that is
+/// `q65::search::default_search_params()` (8 candidates, threshold 0.1),
+/// read through the registry (#413). The registry used to publish these
+/// values instead, which made the ABI's answer and the library's
+/// disagree without saying so.
 fn q65_default_search(submode: MfskQ65SubMode) -> mfsk_core::q65::SearchParams {
     // Was a flat `time_tolerance_symbols: 50` before issue #282 moved
     // the field to seconds. Symbols are sub-mode-dependent, so the
@@ -1531,9 +1538,18 @@ pub extern "C" fn mfsk_mode_caps(mode: u32) -> u64 {
 /// data now, published per mode, and `sync_scale` says which of them are
 /// even comparable.
 ///
+/// The numbers are the library's own defaults for that mode's search
+/// (#413), whether or not this ABI exposes the search itself: JT9 and
+/// JT65 publish the band their Rust `DecodeRequest::new` scans, while
+/// their C entry points (`mfsk_jt9_decode_at`, `mfsk_jt65_decode_at`)
+/// are point decodes at a caller-supplied carrier, and the
+/// `mfsk_q65_*` family scans wider than the published Q65 default.
+/// Whether a mode can take these through `MfskDecodeParams` is
+/// `MFSK_CAP_DECODE_HANDLE`, not the presence of defaults.
+///
 /// Size-versioned on the same contract as `mfsk_mode_info`. Returns
-/// `MFSK_STATUS_UNSUPPORTED` for a mode with no wide-band search to
-/// describe.
+/// `MFSK_STATUS_UNSUPPORTED` for a mode with no search to describe
+/// (the uvpacket profiles).
 ///
 /// # Safety
 /// `out` must point to at least `out->size` writable bytes.
@@ -1565,6 +1581,7 @@ pub unsafe extern "C" fn mfsk_mode_defaults(mode: u32, out: *mut MfskDecodeDefau
         sync_scale: match m.profile.sync_scale {
             mfsk_core::registry::SyncScale::CostasAbsolute => MfskSyncScale::CostasAbsolute,
             mfsk_core::registry::SyncScale::BaselineNormalised => MfskSyncScale::BaselineNormalised,
+            mfsk_core::registry::SyncScale::SyncFraction => MfskSyncScale::SyncFraction,
         },
     };
     unsafe { write_size_versioned(out, &defaults) };
@@ -1782,10 +1799,10 @@ fn validate_params(mode: MfskMode, p: &MfskDecodeParams) -> Result<(), String> {
     let name = mode_index(mode).map(mode_name_str).unwrap_or("?");
 
     // First, because everything below is about a wide-band search this
-    // mode may not have at all. A mode without the bit publishes no
-    // usable default band either, so checking anything else first
-    // produces a confusing message about `max_cand` for what is really
-    // "wrong entry point".
+    // mode may not have at all. Checking anything else first would
+    // produce a message about the band or `max_cand` for what is really
+    // "wrong entry point" (and since #413 some modes without the bit do
+    // publish a default band, so those checks would not even fail).
     if caps & MFSK_CAP_DECODE_HANDLE == 0 {
         return Err(format!(
             "{name} has no decode-handle entry point — it is not lesser, it is \
