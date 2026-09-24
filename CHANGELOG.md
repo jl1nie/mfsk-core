@@ -23,6 +23,13 @@
   deliberately wide EME scan, which is unchanged. What those entry
   points decode with is unchanged too: only the published numbers moved.
 
+  These four modes also get their own `SyncScale::SyncFraction`
+  (`MFSK_SYNC_SCALE_SYNC_FRACTION = 2`, and `.syncFraction` in Swift).
+  Their score is sync power as a fraction of sync plus noise, 0‥1, and
+  Q65 had been labelled `CostasAbsolute` beside FT8's 0.8, inviting
+  exactly the cross-mode copy the field exists to stop. ABI revision 2
+  has not shipped yet, so the new value does not bump it.
+
 - **`DecodeResult::sync_cv` means the same thing on every protocol
   (#414).** FT8 computed the per-Costas-block coefficient of variation
   as `sqrt(Σ(x−mean)²)/mean`, without dividing by the block count, so

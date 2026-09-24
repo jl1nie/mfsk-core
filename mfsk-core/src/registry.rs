@@ -187,6 +187,13 @@ pub enum SyncScale {
     /// this is why WSJT-X's own `syncmin = 1.2` (`ft4_decode.f90:195`)
     /// is a floor rather than a knob.
     BaselineNormalised = 1,
+    /// Sync power as a fraction of sync plus noise
+    /// (`engine::spectrogram::score_candidate`), so it lies in 0‥1:
+    /// noise scores near 0 and a clean aligned frame near 1. WSPR, JT9,
+    /// JT65 and every Q65 sub-mode. Their shared default is
+    /// `engine::search::DEFAULT_SCORE_THRESHOLD` (0.1); FT8's 0.8
+    /// copied here would reject almost everything.
+    SyncFraction = 2,
 }
 
 /// The search parameters a caller gets if it does not supply its own.
@@ -480,7 +487,7 @@ macro_rules! scan_defaults {
 const Q65_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::AP_NARROW | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(q65),
-    sync_scale: SyncScale::CostasAbsolute,
+    sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
 };
 
@@ -491,7 +498,7 @@ const Q65_PROFILE: DecodeProfile = DecodeProfile {
 const WSPR_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(wspr),
-    sync_scale: SyncScale::CostasAbsolute,
+    sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
 };
 
@@ -503,7 +510,7 @@ const WSPR_PROFILE: DecodeProfile = DecodeProfile {
 const JT9_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(jt9),
-    sync_scale: SyncScale::CostasAbsolute,
+    sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
 };
 
@@ -512,7 +519,7 @@ const JT9_PROFILE: DecodeProfile = DecodeProfile {
 const JT65_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(jt65),
-    sync_scale: SyncScale::CostasAbsolute,
+    sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
 };
 
@@ -735,7 +742,13 @@ mod tests {
     /// Where the library carries its own search default, the registry
     /// publishes that and nothing else (#413). The hand-written copies
     /// had drifted on all four modes before this was pinned.
-    #[cfg(all(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
+    #[cfg(all(
+        feature = "wspr",
+        feature = "jt9",
+        feature = "jt65",
+        feature = "q65",
+        any(feature = "fft-rustfft", feature = "fft-extern")
+    ))]
     #[test]
     fn scan_defaults_are_the_library_defaults() {
         use crate::engine::search::SearchParams;

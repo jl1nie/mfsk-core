@@ -162,6 +162,10 @@ public enum SyncScale: UInt32, Sendable {
     /// FT4's 1.2 is a floor rather than a preference, and not a number
     /// to copy to another mode.
     case baselineNormalised = 1
+    /// Sync power as a fraction of sync plus noise, so it lies in 0‥1:
+    /// noise scores near 0, a clean aligned frame near 1. WSPR, JT9,
+    /// JT65 and every Q65 sub-mode, whose shared default is 0.1.
+    case syncFraction = 2
 }
 
 /// A mode's published default search parameters.
