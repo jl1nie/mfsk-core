@@ -5,34 +5,28 @@
     "protocols": {
       "fst4": {
         "date": "2026-09-25",
-        "commit": "130de91",
+        "commit": "c874910",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
-        "trials": 2960,
-        "groups": 16,
-        "kept_crossings": [
-          "fst4/60/awgn",
-          "fst4/60/ccir_good",
-          "fst4/60/ccir_moderate",
-          "fst4/60/ccir_poor"
-        ]
+        "trials": 3680,
+        "groups": 20
       },
       "ft4": {
         "date": "2026-09-25",
-        "commit": "130de91",
+        "commit": "c874910",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8": {
         "date": "2026-09-25",
-        "commit": "130de91",
+        "commit": "c874910",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8_sic_early": {
         "date": "2026-09-25",
-        "commit": "130de91",
+        "commit": "c874910",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 1040,
         "groups": 4
@@ -130,10 +124,10 @@
   "fst4/300/ccir_good": -33.0,
   "fst4/300/ccir_moderate": -29.7,
   "fst4/300/ccir_poor": -25.8,
-  "fst4/60/awgn": -27.666666666666668,
-  "fst4/60/ccir_good": -26.21875,
-  "fst4/60/ccir_moderate": -25.166666666666668,
-  "fst4/60/ccir_poor": -24.545454545454547,
+  "fst4/60/awgn": -27.7,
+  "fst4/60/ccir_good": -25.75,
+  "fst4/60/ccir_moderate": -25.375,
+  "fst4/60/ccir_poor": -24.0,
   "ft4/awgn": -17.555555555555557,
   "ft4/ccir_good": -17.857142857142858,
   "ft4/ccir_moderate": -16.2,

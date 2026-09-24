@@ -18,9 +18,11 @@
   speed, which dropped `ft8_strictness_probe`, the one probe that counted
   false accepts, from the run.
 
-  What the first run showed, on today's `main` (recall unchanged: every
-  FT8/FT4/FST4 crossing except `fst4/60`, see #448, is +0.00 dB from its
-  baseline):
+  What the first run showed, on today's `main` (recall unchanged: the
+  FT8 and FT4 pass columns equal the previous run's row for row, and every
+  FT8/FT4/FST4 crossing but `fst4/60` is +0.00 dB from its baseline;
+  `fst4/60` moved 0.2-0.55 dB because its baseline was measured on a
+  different corpus draw, see below):
   - **FT8 emits CRC-valid garbage next to a strong signal**: 5 unexpected
     decodes in 1040 trials, including at -10 and -15 dB, with
     `hard_errors` 28-36 (the injected message has 2-9), random call signs,
@@ -41,9 +43,15 @@
   `ft8_strictness_probe` and `ft4_phantom_rate` are deleted: the `extra`
   column and those knobs cover them. `sweep-regression-check.py --keep
   GROUP` refreshes a baseline while leaving a group whose move is not yet
-  explained alone, and records it under `kept_crossings`; the FST4-60
-  fading groups are kept this way pending #448. `CONTRIBUTING.md` and
-  `CLAUDE.md` now describe tier C as sensitivity **and** precision.
+  explained alone, and records it under `kept_crossings`. It was used once
+  here, for the four `fst4/60` groups, until the move was explained:
+  running the baseline's own commit (`7561cd57`) on the local corpus gives
+  today's values exactly, so it was the corpus, not the decoder. The FST4
+  baseline (2026-09-21, another machine) predates the simulators' fixed
+  seed (2026-09-23), so it came from a different noise draw; the four
+  `fst4/60` entries are now this corpus's values (#448, closed).
+  `CONTRIBUTING.md` and `CLAUDE.md` now describe tier C as sensitivity
+  **and** precision.
 
 - **`src/`-side test WAV loaders have one implementation per protocol,
   not one per diagnostic probe (#421 continued).** JT9's own
