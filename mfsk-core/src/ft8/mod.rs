@@ -130,6 +130,12 @@ impl Protocol for Ft8 {
     type Msg = Wsjt77Message;
     type SyncPhasors = ();
     const ID: ProtocolId = ProtocolId::Ft8;
+    /// `ft8b.f90`: `apmag = maxval(abs(llrz)) * 1.1` — `1.01` through
+    /// WSJT-X 2.7 (`v2.7.0`), `1.1` from 3.0 (`v3.0.0`), the value FT4
+    /// and FST4 already used. (Upstream takes the maximum over the LLR
+    /// set of the pass being run; see the AP ladder in
+    /// `decode_block::process_candidates`.)
+    const AP_MAG_SCALE: f32 = 1.1;
 }
 
 // `params::GRAYMAP` / `params::COSTAS` are `[usize; _]` for historical reasons,

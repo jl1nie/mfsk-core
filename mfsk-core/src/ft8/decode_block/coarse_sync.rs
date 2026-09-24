@@ -774,6 +774,18 @@ fn coarse_sync_inner(
     ))]
     let t_score = std::time::Instant::now();
 
+    // `sync8.f90`'s `mlag`: the fixed half-window of the primary channel,
+    // in coarse-sync steps (NSTEP = NSPS/4 = 0.04 s). 10 (±0.40 s) through
+    // WSJT-X 2.7, 13 (±0.52 s) from 3.0 (read at the `v2.7.0` / `v3.0.0`
+    // tags).
+    //
+    // **Deliberately left at 10 (#438).** 13 is a no-op on the f32 tier-C
+    // sweep (800 trials, byte-identical) and costs one hit on the
+    // fixed-point ship config: `ft8_qso3_apoff_recall` goes 12/20 → 11/20
+    // against its floor of 12, because a wider primary window reorders the
+    // 15 candidates that config keeps. Nothing measured here benefits from
+    // the wider window (it matters for signals more than ±0.4 s off DT 0),
+    // so it is not worth a floor. Revisit with an off-time corpus.
     const MLAG: i32 = 10;
 
     // Two independent noise-floor channels, matching WSJT-X `sync8.f90`
@@ -785,7 +797,8 @@ fn coarse_sync_inner(
     // has a higher expected value under basic extreme-value
     // statistics), silently pushing weak real decodes below `sync_min`
     // even though WSJT-X's actual primary channel — anchored to a
-    // fixed `mlag=10` regardless of `JZ` — would still have caught
+    // fixed `mlag` (10; upstream is 13 from 3.0, see `MLAG`) regardless of
+    // `JZ` — would still have caught
     // them. `red_primary`/`base_primary` restores that JZ-independent
     // anchor; `red_secondary`/`base_secondary` (the old sole channel)
     // now plays its correct WSJT-X role: a supplementary second
