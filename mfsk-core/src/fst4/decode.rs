@@ -19,7 +19,6 @@
 
 use crate::engine::dsp::downsample::DownsampleCfg;
 use crate::engine::pipeline;
-use alloc::vec::Vec;
 
 pub use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
@@ -193,73 +192,7 @@ macro_rules! impl_frame_decodable {
             fn __single_pass<Pol: MessagePolicy>(
                 req: &DecodeRequest<'_, Self, Pol>,
             ) -> DecodeOutcome<Self> {
-                // See `pipeline::known_filtered_on_result`'s doc comment
-                // (same rationale as `ft4::decode`'s copy of this fix):
-                // without this, `on_result` could fire for a candidate
-                // `pipeline::dedup_known` below then silently drops from the
-                // returned `Vec`.
-                let filtered_cb = pipeline::known_filtered_on_result(req.known, req.on_result);
-                let on_result: Option<&(dyn Fn(&DecodeResult) + Sync)> = filtered_cb
-                    .as_ref()
-                    .map(|f| f as &(dyn Fn(&DecodeResult) + Sync));
-                // Every a-priori hypothesis WSJT-X would try, not just the
-                // caller's literal hint — and the blind CQ one **whether or
-                // not a hint was given at all**.
-                //
-                // WSJT-X runs AP passes on every decode: `ft4_decode.f90:328`
-                // `npasses = 3 + nappasses(nQSOProgress)`, and its `iaptype = 1`
-                // locks the first 29 bits to the CQ pattern using no knowledge
-                // of the station at all. mfsk-core ran AP only when a caller
-                // supplied a hint, so a blind decode attempted none — while FT8
-                // has had the equivalent since issue #190, where adding it is
-                // what closed FT8's own gap against the published figure.
-                //
-                // (`ap_passes`' pass 7 is *not* this: it needs the
-                // correspondent's callsign, so it is upstream's iaptype 2/3,
-                // not 1. `BLIND_CQ_MIN_NSYNC`'s doc comment claims otherwise
-                // and is wrong.)
-                let mut ap_hints: Vec<(crate::msg::ap::ApHint, u8)> = req
-                    .ap_hint
-                    .filter(|h| h.has_info())
-                    .map(crate::msg::pipeline_ap::ap_passes)
-                    .unwrap_or_default();
-                ap_hints.push((crate::msg::ap::ApHint::new().with_call1("CQ"), 12));
-                let ap_owned: Vec<(Vec<u8>, Vec<u8>, u8)> = ap_hints
-                    .iter()
-                    .map(|(cfg, pid)| {
-                        let (m, v) = crate::msg::pipeline_ap::ap_bits_for::<$proto>(cfg);
-                        (m, v, *pid)
-                    })
-                    .collect();
-                let ap: Vec<(&[u8], &[u8], u8)> = ap_owned
-                    .iter()
-                    .map(|(m, v, pid)| (m.as_slice(), v.as_slice(), *pid))
-                    .collect();
-                let accept =
-                    crate::msg::decode_request::PolicyAccept::<$proto, Pol>::new(&req.policy);
-                let (raw, fft_cache, budget) = pipeline::decode_frame_budgeted::<$proto, _>(
-                    req.audio,
-                    &$cfg,
-                    req.freq_min,
-                    req.freq_max,
-                    req.sync_min,
-                    req.freq_hint,
-                    req.depth,
-                    req.max_cand,
-                    req.strictness,
-                    req.eq_mode,
-                    SYNC_Q_MIN,
-                    req.fft_cache.as_ref().map(FftCache::as_slice),
-                    on_result,
-                    req.budget,
-                    &ap,
-                    &accept,
-                );
-                DecodeOutcome {
-                    results: pipeline::dedup_known(raw, req.known),
-                    fft_cache,
-                    budget,
-                }
+                crate::msg::decode_request::generic_single_pass(req, &$cfg, SYNC_Q_MIN)
             }
         }
     };
