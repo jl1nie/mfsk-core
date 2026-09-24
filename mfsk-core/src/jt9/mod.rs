@@ -61,6 +61,8 @@ pub mod search;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod softsym;
 pub mod sync_pattern;
+#[cfg(all(test, any(feature = "fft-rustfft", feature = "fft-extern")))]
+mod test_util;
 pub mod tx;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -313,28 +315,6 @@ mod tests {
     fn phase_breakdown_diag() {
         use std::time::Instant;
 
-        fn load_wav(path: &str) -> Vec<f32> {
-            let bytes = std::fs::read(path).unwrap();
-            let mut i = 12;
-            loop {
-                let id = &bytes[i..i + 4];
-                let len =
-                    u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
-                        as usize;
-                if id == b"data" {
-                    let start = i + 8;
-                    let samples: &[u8] = &bytes[start..start + len];
-                    return samples
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-                        .collect();
-                }
-                i += 8 + len + (len % 2);
-            }
-        }
-
         let files = [
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -350,7 +330,7 @@ mod tests {
                 eprintln!("skipping {path} — sample not found (gitignored local corpus)");
                 continue;
             }
-            let mut audio = load_wav(path);
+            let mut audio = super::test_util::load_wav_f32(path);
             audio.resize(720_000, 0.0);
             let n = 10;
 
@@ -422,14 +402,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../embedded-poc/assets/130418_1742.wav"
         );
-        let bytes = std::fs::read(path).unwrap();
-        let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-        let audio: Vec<f32> = bytes[44..44 + dl]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32_768.0)
-            .collect();
+        let audio = super::test_util::load_wav_f32(path);
 
         let sp = search::SearchParams {
             freq_min_hz: 1050.0,

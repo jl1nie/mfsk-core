@@ -1882,6 +1882,47 @@ impl SupportsWideBandAp for Ft8 {}
 mod tests {
     use super::*;
 
+    /// Minimal inline WAV reader (12 kHz mono i16 PCM), chunk-walking
+    /// the RIFF container rather than assuming a fixed header size.
+    /// `tests/common`'s loader isn't reachable from a `src/` unit
+    /// test, so this module keeps its own — one copy now instead of
+    /// the eight byte-identical ones each diagnostic probe used to
+    /// carry (#421).
+    #[allow(dead_code)]
+    fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+            return None;
+        }
+        let mut i = 12usize;
+        let mut data_off = None;
+        let mut data_len = 0usize;
+        while i + 8 <= bytes.len() {
+            let id = &bytes[i..i + 4];
+            let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+            let body = i + 8;
+            if id == b"data" {
+                data_off = Some(body);
+                data_len = sz;
+                break;
+            }
+            match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                Some(next) => i = next,
+                None => break,
+            }
+        }
+        let off = data_off?;
+        let end = off.saturating_add(data_len).min(bytes.len());
+        Some(
+            bytes[off..end]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .collect(),
+        )
+    }
+
     /// `DecodeRequest::ap_hint` round-trips a clean self-synthesised
     /// signal with the hint matching. Doesn't directly assert the AP
     /// gain (that needs a low-SNR fixture); just guards against
@@ -2392,46 +2433,9 @@ mod tests {
     /// too tight — see `decode_block/osd_strategy.rs`) is fixed; kept as
     /// a reusable stage-attribution probe for future internal
     /// investigations rather than deleted.
-    ///
-    /// Minimal inline WAV reader (12 kHz mono i16 PCM) since
-    /// `tests/common`'s loader isn't reachable from a `src/` unit test.
     #[test]
     #[ignore = "manual diagnostic — internal BP/OSD trace on CCIR losing trials (issue #72)"]
     fn ft8_diag_internal_osd_trace() {
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
-
         const GOLDEN_FREQ_HZ: f32 = 1500.0;
         const FREQ_TOL_HZ: f32 = 5.0;
         let manifest = env!("CARGO_MANIFEST_DIR");
@@ -2497,40 +2501,6 @@ mod tests {
         use crate::ft8::downsample::downsample;
         use crate::ft8::llr::compute_llr;
         use crate::msg::wsjt77::unpack77;
-
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
 
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
@@ -3089,40 +3059,6 @@ mod tests {
         use crate::ft8::llr::sync_quality;
         use crate::msg::wsjt77::unpack77;
 
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
-
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
         let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
@@ -3255,40 +3191,6 @@ mod tests {
         use crate::engine::sync::refine_candidate;
         use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
         use crate::ft8::downsample::downsample;
-
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
 
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
@@ -3428,40 +3330,6 @@ mod tests {
         use crate::ft8::downsample::downsample;
         use crate::ft8::llr::compute_llr;
         use crate::ft8::params::LDPC_N;
-
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
 
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
@@ -3603,40 +3471,6 @@ mod tests {
         use crate::ft8::llr::compute_llr;
         use crate::msg::wsjt77::unpack77;
 
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
-
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
         let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
@@ -3738,40 +3572,6 @@ mod tests {
     fn issue_182_zsum_fix_phantom_check() {
         use crate::msg::wsjt77::unpack77;
 
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
-
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
         let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
@@ -3800,40 +3600,6 @@ mod tests {
     #[test]
     #[ignore = "manual diagnostic — issue #182 post-fix wall-clock check"]
     fn issue_182_postfix_wallclock_check() {
-        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
-            let bytes = std::fs::read(path).ok()?;
-            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-                return None;
-            }
-            let mut i = 12usize;
-            let mut data_off = None;
-            let mut data_len = 0usize;
-            while i + 8 <= bytes.len() {
-                let id = &bytes[i..i + 4];
-                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-                let body = i + 8;
-                if id == b"data" {
-                    data_off = Some(body);
-                    data_len = sz;
-                    break;
-                }
-                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
-                    Some(next) => i = next,
-                    None => break,
-                }
-            }
-            let off = data_off?;
-            let end = off.saturating_add(data_len).min(bytes.len());
-            Some(
-                bytes[off..end]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                    .collect(),
-            )
-        }
-
         let manifest = env!("CARGO_MANIFEST_DIR");
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
         let audio = load_wav_i16(&path).expect("load qso3_busy.wav");

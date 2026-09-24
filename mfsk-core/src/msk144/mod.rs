@@ -21,4 +21,6 @@ pub mod frame_decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod spd;
 pub mod sync;
+#[cfg(all(test, any(feature = "fft-rustfft", feature = "fft-extern")))]
+mod test_util;
 pub mod tx;

@@ -203,19 +203,10 @@ mod diag_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../embedded-poc/assets/130418_1742.wav"
         ));
-        if !path.exists() {
+        let Some(audio) = super::super::test_util::load_wav_f32_opt(path) else {
             eprintln!("WAV not found");
             return;
-        }
-        let bytes = std::fs::read(path).unwrap();
-        let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-        let data = &bytes[44..44 + data_len];
-        let audio: Vec<f32> = data
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-            .collect();
+        };
         let params = SearchParams {
             freq_min_hz: 1050.0,
             freq_max_hz: 1500.0,

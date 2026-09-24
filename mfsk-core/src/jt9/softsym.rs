@@ -677,19 +677,6 @@ mod tests {
     use crate::jt9::tx::synthesize_standard;
     use crate::msg::{Jt72Codec, Jt72Message};
 
-    fn load_wav(path: &std::path::Path) -> Option<Vec<f32>> {
-        let bytes = std::fs::read(path).ok()?;
-        let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-        let data = &bytes[44..44 + data_len];
-        Some(
-            data.as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-                .collect(),
-        )
-    }
-
     /// Timing probe isolating `AudioFft::build` (once per `decode_scan`
     /// call) from `downsam9` (once per coarse-search candidate — ~50
     /// simulated here). Added while investigating an apparent JT9
@@ -714,7 +701,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../embedded-poc/assets/130418_1742.wav"
         ));
-        let audio = load_wav(path).expect("golden WAV must load");
+        let audio = super::super::test_util::load_wav_f32_opt(path).expect("golden WAV must load");
 
         fn median(mut v: Vec<f64>) -> f64 {
             v.sort_by(|a, b| a.partial_cmp(b).unwrap());
