@@ -321,11 +321,11 @@ WSPR / JT9 / JT65 にはビルダが無い。劣っているのではなく形�
 MfskDecodeDefaults d = {0};
 d.size = sizeof d;
 mfsk_mode_defaults(MFSK_MODE_FT4, &d);
-/* d.sync_min == 1.2, d.sync_scale == MFSK_SYNC_SCALE_BASELINE_NORMALISED */
+/* d.sync_min == 1.18, d.sync_scale == MFSK_SYNC_SCALE_BASELINE_NORMALISED */
 ```
 
 FT4 はスコアリング前にスペクトルをフィット済みベースラインで割るため、
-雑音は**構成上** 1.0 付近に来る。WSJT-X 自身の 1.2
+雑音は**構成上** 1.0 付近に来る。WSJT-X 自身の 1.18
 （`ft4_decode.f90:195`）は好みではなく下限である。FT8 と FST4 のそれは
 絶対的な Costas スコア。WSPR・JT9・JT65・Q65 は sync を「sync と雑音の和に
 対する sync の割合」で測り（`MFSK_SYNC_SCALE_SYNC_FRACTION`）、0‥1 の値で

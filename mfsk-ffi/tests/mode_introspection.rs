@@ -282,7 +282,7 @@ fn defaults_are_published_with_their_scale() {
 
     let ft4 = d(MfskMode::Ft4);
     assert_eq!(ft4.sync_scale, MfskSyncScale::BaselineNormalised);
-    assert_eq!(ft4.sync_min, 1.2, "WSJT-X ft4_decode.f90:195");
+    assert_eq!(ft4.sync_min, 1.18, "WSJT-X ft4_decode.f90:195");
     assert!(
         ft4.sync_min > 1.0,
         "on its own scale noise sits at 1.0, so anything below is meaningless"

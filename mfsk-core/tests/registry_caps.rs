@@ -247,14 +247,14 @@ fn sync_scale_is_recorded_and_defaults_respect_it() {
 
     // On the baseline-normalised scale noise sits at ~1.0 by
     // construction, so a default at or below it would admit every peak
-    // in the band. WSJT-X's own value is 1.2.
+    // in the band. WSJT-X's own value is 1.18.
     let ft4 = profile("FT4");
     assert!(
         ft4.defaults.sync_min > 1.0,
         "FT4's default sync_min {} is at or below the noise floor its own scale puts at 1.0",
         ft4.defaults.sync_min
     );
-    assert_eq!(ft4.defaults.sync_min, 1.2, "WSJT-X's ft4_decode.f90:195");
+    assert_eq!(ft4.defaults.sync_min, 1.18, "WSJT-X's ft4_decode.f90:195");
 }
 
 /// Every mode that can be decoded must publish a searchable band and a

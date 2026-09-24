@@ -338,7 +338,7 @@ typedef enum MfskSyncScale {
      * The spectrum is divided by a fitted baseline before scoring, so
      * **noise sits at ~1.0 by construction** and any threshold at or
      * below that admits every peak in the band. FT4 only — and it is
-     * why WSJT-X's own 1.2 (`ft4_decode.f90:195`) is a floor rather
+     * why WSJT-X's own 1.18 (`ft4_decode.f90:195`) is a floor rather
      * than a preference, not a number to copy to another mode.
      */
     MFSK_SYNC_SCALE_BASELINE_NORMALISED = 1,

@@ -2,6 +2,29 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT4's published defaults follow WSJT-X 3.x: `sync_min` 1.18,
+  `max_cand` 200 (#440).** `ft4_decode.f90` changed three constants
+  between v2.7.0 and v3.0.0 (the tags were read; 3.0.2 and 3.2.0-rc1
+  carry the same values): `syncmin` 1.2 → 1.18 (`:195`), `MAXCAND`
+  100 → 200 (`:31`), and the AP window `napwid` 80 → 50 Hz (`:352`).
+  The first two are `FT4_PROFILE`'s `DecodeDefaults`, so
+  `mfsk_mode_defaults` / `registry::defaults_for` now return them.
+  **`napwid` is not ported and nothing changes for it**: WSJT-X uses it
+  to keep its AP passes near the QSO target frequency, and this API
+  has no such aim point (see the note in `engine::pipeline`).
+
+  Callers that pass their own `sync_min` / `max_cand` are unaffected.
+  mfsk-core's own FT4 decode with the old pair (1.2, 100) and the new
+  pair (1.18, 200) returns the same messages and frequencies on the real
+  golden slot and 640 `ft4_sweep/` files (AWGN and three CCIR channels,
+  −10 and −14…−20 dB; 366 decodes each, identical file by file). Real
+  `jt9 -5` output is byte-identical between a build of WSJT-X
+  `2b9d654` and one of `967c85a` over the whole 1040-file `ft4_sweep/`
+  corpus at `-d1/-d2/-d3` and over the real `000000_000002.wav`
+  (recorded in #444), so no reference moves. The
+  candidate-count measurements quoted in `ft4_coarse_sync`'s docs were
+  taken at 1.2 and are left as measured.
+
 - **`src/`-side test WAV loaders have one implementation per protocol,
   not one per diagnostic probe (#421 continued).** JT9's own
   `#[ignore]`d probes (`rx.rs`, `decode.rs`, `mod.rs`, `search.rs`,

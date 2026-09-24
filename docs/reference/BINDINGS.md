@@ -331,11 +331,11 @@ numbers are even comparable:
 MfskDecodeDefaults d = {0};
 d.size = sizeof d;
 mfsk_mode_defaults(MFSK_MODE_FT4, &d);
-/* d.sync_min == 1.2, d.sync_scale == MFSK_SYNC_SCALE_BASELINE_NORMALISED */
+/* d.sync_min == 1.18, d.sync_scale == MFSK_SYNC_SCALE_BASELINE_NORMALISED */
 ```
 
 FT4's spectrum is divided by a fitted baseline before scoring, so noise
-sits at ~1.0 **by construction** and WSJT-X's own 1.2
+sits at ~1.0 **by construction** and WSJT-X's own 1.18
 (`ft4_decode.f90:195`) is a floor rather than a preference. FT8's and
 FST4's are absolute Costas scores. WSPR, JT9, JT65 and Q65 score sync
 as a fraction of sync plus noise (`MFSK_SYNC_SCALE_SYNC_FRACTION`), 0‥1
