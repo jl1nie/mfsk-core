@@ -3845,3 +3845,21 @@ boot mode has not been run against a radio (it replays a baked golden
 slot by default, `MFSK_FT4_REPLAY=0` turns that off), so the grid
 alignment above is host-reasoned and not yet confirmed on hardware.
 
+
+## 51. Real `jt9 -5` did not change between WSJT-X 2b9d654 and 3.2.0-rc1 (2026-09-24)
+
+`ft4_decode.f90` changed upstream (`MAXCAND` 100 → 200, `syncmin`
+1.2 → 1.18, AP `napwid` 80 → 50; #440), so the FT4 side of the "vs real
+`jt9`" comparisons was re-checked against a `jt9` built from
+`WSJTX/wsjtx` `967c85a`. Over the whole `ft4_sweep/` corpus (AWGN and three
+CCIR channels, 1040 files, `-d1/-d2/-d3`: 3120 outputs) and the real
+`000000_000002.wav` (16 / 19 / 19 decodes), the output is byte-identical to
+the `2b9d654` build's. Crossings are therefore unchanged: AWGN
+−17.11 / −17.57 / −18.17 dB at `-d1/-d2/-d3`, and the FT4 comparisons in
+`BENCHMARKS.md` stand.
+
+This is a statement about these files only. Each holds one signal and the
+CLI sets no call-sign context, so neither `MAXCAND` nor `napwid` is
+exercised. Method, scorer and the pitfalls hit are in `FT8_BENCHMARK.md`
+§13 and `scripts/score-jt9-sweep.py`. `FT4_BENCHMARK.ja.md` was not
+updated.
