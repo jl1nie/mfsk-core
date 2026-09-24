@@ -59,6 +59,27 @@
   `pass`, on the FT4 and FST4 goldens under default, EQ, AP, OSD-off,
   SIC and loose-threshold requests, and on 108 synthetic weak-signal
   slots that reach the AP rung.
+- **Q65's receiver decodes through one tail and one scan loop (#418).**
+  `q65/rx.rs` repeated the same blocks across its strategies:
+  - the "BP, biased by the AP hint when it has one" match, 3 times
+  - the "unpack → fallback SNR from narrow or wide energies → single-
+    slot or averaged SNR → `Q65Result`" tail, 7 times
+  - the coarse-search → decode → dedup → `on_result` loop, 3 times
+  - two slot-averaging functions that differed only in the extractor
+    they called
+
+  These are now `bp_decode`, `finish` (with small `Energies` /
+  `SnrAudio` enums saying which inputs it has), `scan_with`, and one
+  `averaged_energies` taking the extractor. The multi-period path's own
+  frequency-only dedup is unchanged; folding it into a shared dedup
+  key is #419. Output is bit-identical: every `Q65Result` field on all
+  11 vendored Q65 recordings across seven sub-modes (plain scan with
+  default and wide parameters, AP hint, two fading models, AP list,
+  sniper at three offsets with and without fading and AP list, and
+  multi-period with and without AP list), and on 96 synthetic noisy
+  Q65-30A / Q65-60B slots with a matching AP hint, where every strategy
+  decodes (365 lines).
+
 - **LDPC belief propagation has one body per kernel (breaking, #417).**
   `fec::ldpc::bp` carried two hand-kept copies of the sum-product /
   min-sum loop, `bp_decode_generic_kind` and its `_with_scratch` twin

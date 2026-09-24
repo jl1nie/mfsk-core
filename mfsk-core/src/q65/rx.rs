@@ -324,6 +324,102 @@ fn snr_db_wide<P: ModulationParams>(energies: &[f32], sample_rate: u32, codeword
     snr_db_from_sig_noi(xsig, xnoi, q65_bw_offset_db::<P>())
 }
 
+/// QRA BP + CRC over `intrinsics`, biased by `ap_hint` when it carries
+/// information. The one copy of the match every BP decode path used to
+/// write out for itself (#418).
+fn bp_decode(
+    codec: &mut Q65Codec,
+    intrinsics: &[f32],
+    info_syms: &mut [i32; 13],
+    ap_hint: Option<&ApHint>,
+) -> Result<u32, crate::fec::qra::Q65DecodeError> {
+    match ap_hint {
+        Some(hint) if hint.has_info() => {
+            let (mask, syms) = ap_hint_to_q65_mask(hint);
+            codec.decode_with_ap(intrinsics, info_syms, 50, &mask, &syms)
+        }
+        _ => codec.decode(intrinsics, info_syms, 50),
+    }
+}
+
+/// The 63-symbol channel codeword for `info_syms`, as transmitted.
+fn reencode(codec: &mut Q65Codec, info_syms: &[i32; 13]) -> [i32; 63] {
+    let mut codeword = [0_i32; 63];
+    codec.encode(info_syms, &mut codeword);
+    codeword
+}
+
+/// Which per-symbol energies layout a decode ran on, for the fallback
+/// SNR: [`extract_data_energies`]' narrow rows or
+/// [`extract_data_energies_wide`]'s wide ones.
+enum Energies<'a> {
+    Narrow(&'a [f32]),
+    Wide(&'a [f32]),
+}
+
+/// What the SNR estimate measures over: the one slot decoded, or the
+/// slots a multi-period decode averaged.
+enum SnrAudio<'a> {
+    Slot(&'a [f32]),
+    Averaged(&'a [&'a [f32]]),
+}
+
+/// Unpack a recovered message and build its [`Q65Result`]: the tail
+/// every decode path shared, written out seven times before #418.
+///
+/// `codeword` is the channel codeword that decoded (re-encoded from
+/// `info_syms` on a BP path, the winning template on an AP-list path);
+/// it feeds both SNR estimates. `None` when the message does not
+/// unpack.
+#[allow(clippy::too_many_arguments)]
+fn finish<P: ModulationParams>(
+    info_syms: &[i32; 13],
+    codeword: &[i32; 63],
+    iterations: u32,
+    energies: Energies<'_>,
+    audio: SnrAudio<'_>,
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    ctx: &DecodeContext,
+) -> Option<Q65Result> {
+    // 13 GF(64) symbols → 77-bit Wsjt77 → human-readable.
+    let bits77 = unpack_symbols_to_bits77(info_syms);
+    let text = Q65Message.unpack(&bits77, ctx)?;
+
+    let fallback = match energies {
+        Energies::Narrow(e) => snr_db_narrow::<P>(e, codeword),
+        Energies::Wide(e) => snr_db_wide::<P>(e, sample_rate, codeword),
+    };
+    let snr_db = match audio {
+        SnrAudio::Slot(a) => super::snr::q65_snr_db::<P>(
+            a,
+            sample_rate,
+            start_sample,
+            base_freq_hz,
+            codeword,
+            fallback,
+        ),
+        SnrAudio::Averaged(h) => super::snr::q65_snr_db_averaged::<P>(
+            h,
+            sample_rate,
+            start_sample,
+            base_freq_hz,
+            codeword,
+            fallback,
+        ),
+    };
+
+    Some(Q65Result {
+        message: text,
+        freq_hz: base_freq_hz,
+        start_sample,
+        dt_sec: start_sample as f32 / sample_rate as f32,
+        iterations,
+        snr_db,
+    })
+}
+
 /// Decode a Q65 signal at a known `(start_sample, base_freq_hz)`
 /// for sub-mode `P`.
 ///
@@ -385,40 +481,19 @@ fn decode_at_inner<P: ModulationParams>(
     // QRA + CRC decode, optionally biased by the AP hint.
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let mut info_syms = [0_i32; 13];
-    let iterations = match ap_hint {
-        Some(hint) if hint.has_info() => {
-            let (mask, syms) = ap_hint_to_q65_mask(hint);
-            codec
-                .decode_with_ap(&intrinsics, &mut info_syms, 50, &mask, &syms)
-                .ok()?
-        }
-        _ => codec.decode(&intrinsics, &mut info_syms, 50).ok()?,
-    };
-
-    // 13 GF(64) symbols → 77-bit Wsjt77 → human-readable.
-    let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, ctx)?;
-
-    let mut codeword = [0_i32; 63];
-    codec.encode(&info_syms, &mut codeword);
-    let fallback = snr_db_narrow::<P>(&energies, &codeword);
-    let snr_db = super::snr::q65_snr_db::<P>(
-        audio,
+    let iterations = bp_decode(&mut codec, &intrinsics, &mut info_syms, ap_hint).ok()?;
+    let codeword = reencode(&mut codec, &info_syms);
+    finish::<P>(
+        &info_syms,
+        &codeword,
+        iterations,
+        Energies::Narrow(&energies),
+        SnrAudio::Slot(audio),
         sample_rate,
         start_sample,
         base_freq_hz,
-        &codeword,
-        fallback,
-    );
-
-    Some(Q65Result {
-        message: text,
-        freq_hz: base_freq_hz,
-        start_sample,
-        dt_sec: start_sample as f32 / sample_rate as f32,
-        iterations,
-        snr_db,
-    })
+        ctx,
+    )
 }
 
 /// Decode a Q65 signal at a known `(start_sample, base_freq_hz)`
@@ -461,39 +536,19 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
 
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let mut info_syms = [0_i32; 13];
-    let iterations = match ap_hint {
-        Some(hint) if hint.has_info() => {
-            let (mask, syms) = ap_hint_to_q65_mask(hint);
-            codec
-                .decode_with_ap(&intrinsics, &mut info_syms, 50, &mask, &syms)
-                .ok()?
-        }
-        _ => codec.decode(&intrinsics, &mut info_syms, 50).ok()?,
-    };
-
-    let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, ctx)?;
-
-    let mut codeword = [0_i32; 63];
-    codec.encode(&info_syms, &mut codeword);
-    let fallback = snr_db_wide::<P>(&energies, sample_rate, &codeword);
-    let snr_db = super::snr::q65_snr_db::<P>(
-        audio,
+    let iterations = bp_decode(&mut codec, &intrinsics, &mut info_syms, ap_hint).ok()?;
+    let codeword = reencode(&mut codec, &info_syms);
+    finish::<P>(
+        &info_syms,
+        &codeword,
+        iterations,
+        Energies::Wide(&energies),
+        SnrAudio::Slot(audio),
         sample_rate,
         start_sample,
         base_freq_hz,
-        &codeword,
-        fallback,
-    );
-
-    Some(Q65Result {
-        message: text,
-        freq_hz: base_freq_hz,
-        start_sample,
-        dt_sec: start_sample as f32 / sample_rate as f32,
-        iterations,
-        snr_db,
-    })
+        ctx,
+    )
 }
 
 /// Scan an audio buffer for Q65 frames in sub-mode `P` using the
@@ -512,40 +567,25 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
-    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
-    let cands =
-        super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-    let mut seen: Vec<Q65Result> = Vec::new();
-    for c in cands {
-        let Some(decode) = decode_at_fading_for::<P>(
-            audio,
-            sample_rate,
-            c.start_sample,
-            c.freq_hz,
-            b90_ts,
-            model,
-            ap_hint,
-            ctx,
-        ) else {
-            continue;
-        };
-        let dup = scan_dedup_match(
-            &seen,
-            &decode,
-            |r| &r.message,
-            |r| r.freq_hz,
-            |r| r.start_sample as i64,
-            dedup_freq_tol_hz::<P>(),
-            nsps as i64,
-        );
-        if !dup {
-            if let Some(cb) = on_result {
-                cb(&decode);
-            }
-            seen.push(decode);
-        }
-    }
-    seen
+    scan_with::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        on_result,
+        |c| {
+            decode_at_fading_for::<P>(
+                audio,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                b90_ts,
+                model,
+                ap_hint,
+                ctx,
+            )
+        },
+    )
 }
 
 /// Decode a Q65 signal at a known `(start_sample, base_freq_hz)`
@@ -582,31 +622,20 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
 
     let codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
-
-    let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, ctx)?;
-
-    let fallback = snr_db_narrow::<P>(&energies, &candidates[idx]);
-    let snr_db = super::snr::q65_snr_db::<P>(
-        audio,
+    // The list path does not run BP; report 0 iterations so callers
+    // can still distinguish "decoded via templates" from "decoded via
+    // BP" if they care.
+    finish::<P>(
+        &info_syms,
+        &candidates[idx],
+        0,
+        Energies::Narrow(&energies),
+        SnrAudio::Slot(audio),
         sample_rate,
         start_sample,
         base_freq_hz,
-        &candidates[idx],
-        fallback,
-    );
-
-    Some(Q65Result {
-        message: text,
-        freq_hz: base_freq_hz,
-        start_sample,
-        dt_sec: start_sample as f32 / sample_rate as f32,
-        // The list path does not run BP; report 0 iterations so
-        // callers can still distinguish "decoded via templates" from
-        // "decoded via BP" if they care.
-        iterations: 0,
-        snr_db,
-    })
+        ctx,
+    )
 }
 
 /// Scan an audio buffer for Q65 frames in sub-mode `P` using
@@ -626,38 +655,23 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     if candidates.is_empty() {
         return Vec::new();
     }
-    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
-    let cands =
-        super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-    let mut seen: Vec<Q65Result> = Vec::new();
-    for c in cands {
-        let Some(decode) = decode_at_with_ap_list_for::<P>(
-            audio,
-            sample_rate,
-            c.start_sample,
-            c.freq_hz,
-            candidates,
-            ctx,
-        ) else {
-            continue;
-        };
-        let dup = scan_dedup_match(
-            &seen,
-            &decode,
-            |r| &r.message,
-            |r| r.freq_hz,
-            |r| r.start_sample as i64,
-            dedup_freq_tol_hz::<P>(),
-            nsps as i64,
-        );
-        if !dup {
-            if let Some(cb) = on_result {
-                cb(&decode);
-            }
-            seen.push(decode);
-        }
-    }
-    seen
+    scan_with::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        on_result,
+        |c| {
+            decode_at_with_ap_list_for::<P>(
+                audio,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                candidates,
+                ctx,
+            )
+        },
+    )
 }
 
 /// Post-decode dedup frequency window (issue #287): two candidates
@@ -690,6 +704,47 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
 /// distinct signals.
 fn dedup_freq_tol_hz<P: ModulationParams>() -> f32 {
     (2.0 * P::TONE_SPACING_HZ).max(4.0)
+}
+
+/// The single-period scan every strategy shares: coarse search, then
+/// `decode` on each candidate in score order, collapsing duplicates
+/// (same message, frequency within [`dedup_freq_tol_hz`], start within
+/// ±1 symbol) and reporting each survivor to `on_result` as it lands.
+/// Only the per-candidate decode differs between strategies; this loop
+/// was three copies of itself before #418.
+fn scan_with<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &super::search::SearchParams,
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    mut decode: impl FnMut(&super::search::SyncCandidate) -> Option<Q65Result>,
+) -> Vec<Q65Result> {
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let cands =
+        super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
+    let mut seen: Vec<Q65Result> = Vec::new();
+    for c in cands {
+        let Some(decode) = decode(&c) else {
+            continue;
+        };
+        let dup = scan_dedup_match(
+            &seen,
+            &decode,
+            |r| &r.message,
+            |r| r.freq_hz,
+            |r| r.start_sample as i64,
+            dedup_freq_tol_hz::<P>(),
+            nsps as i64,
+        );
+        if !dup {
+            if let Some(cb) = on_result {
+                cb(&decode);
+            }
+            seen.push(decode);
+        }
+    }
+    seen
 }
 
 /// Scan an audio buffer for Q65 frames in sub-mode `P` within the
@@ -752,38 +807,24 @@ fn decode_scan_inner<P: ModulationParams>(
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
-    let cands =
-        super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-    let mut seen: Vec<Q65Result> = Vec::new();
-    for c in cands {
-        let Some(decode) = decode_at_with_fine_timing_for::<P>(
-            audio,
-            sample_rate,
-            c.start_sample,
-            c.freq_hz,
-            nsps,
-            ap_hint,
-            ctx,
-        ) else {
-            continue;
-        };
-        let dup = scan_dedup_match(
-            &seen,
-            &decode,
-            |r| &r.message,
-            |r| r.freq_hz,
-            |r| r.start_sample as i64,
-            dedup_freq_tol_hz::<P>(),
-            nsps as i64,
-        );
-        if !dup {
-            if let Some(cb) = on_result {
-                cb(&decode);
-            }
-            seen.push(decode);
-        }
-    }
-    seen
+    scan_with::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        on_result,
+        |c| {
+            decode_at_with_fine_timing_for::<P>(
+                audio,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                nsps,
+                ap_hint,
+                ctx,
+            )
+        },
+    )
 }
 
 /// Decode depth for the internal `(Δf, Δt, b90)` grid search — mirrors WSJT-X
@@ -947,38 +988,24 @@ fn decode_at_grid_for<P: ModulationParams>(
                     es_no,
                 );
 
-                let result = match ap_hint {
-                    Some(hint) if hint.has_info() => {
-                        let (mask, syms) = ap_hint_to_q65_mask(hint);
-                        codec.decode_with_ap(&intrinsics, &mut info_syms, 50, &mask, &syms)
-                    }
-                    _ => codec.decode(&intrinsics, &mut info_syms, 50),
-                };
-                let Ok(iterations) = result else { continue };
-
-                let bits77 = unpack_symbols_to_bits77(&info_syms);
-                let Some(text) = Q65Message.unpack(&bits77, ctx) else {
+                let Ok(iterations) = bp_decode(&mut codec, &intrinsics, &mut info_syms, ap_hint)
+                else {
                     continue;
                 };
-                let mut codeword = [0_i32; 63];
-                codec.encode(&info_syms, &mut codeword);
-                let fallback = snr_db_wide::<P>(&energies, sample_rate, &codeword);
-                let snr_db = super::snr::q65_snr_db::<P>(
-                    audio,
+                let codeword = reencode(&mut codec, &info_syms);
+                if let Some(r) = finish::<P>(
+                    &info_syms,
+                    &codeword,
+                    iterations,
+                    Energies::Wide(&energies),
+                    SnrAudio::Slot(audio),
                     sample_rate,
                     shifted_start,
                     freq_shift,
-                    &codeword,
-                    fallback,
-                );
-                return Some(Q65Result {
-                    message: text,
-                    freq_hz: freq_shift,
-                    start_sample: shifted_start,
-                    dt_sec: shifted_start as f32 / sample_rate as f32,
-                    iterations,
-                    snr_db,
-                });
+                    ctx,
+                ) {
+                    return Some(r);
+                }
             }
         }
     }
@@ -1022,21 +1049,19 @@ fn decode_at_with_fine_timing_for<P: ModulationParams>(
 // on `decode_multi_period_for` for the call shape.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Average per-symbol FFT energies (`extract_data_energies` output)
-/// element-wise across `audio_slots[..=current]` at the candidate
-/// `(start_sample, base_freq_hz)`. Returns `None` if no slot yields
-/// usable energies.
-fn averaged_data_energies<P: ModulationParams>(
+/// Average the per-symbol energies `extract` yields element-wise across
+/// `audio_slots` (a plain mean over the slots that yield any). Returns
+/// `None` if none does. One body for the narrow ([`extract_data_energies`])
+/// and wide ([`extract_data_energies_wide`]) layouts, which were two
+/// copies differing only in the extractor they called (#418).
+fn averaged_energies(
     audio_slots: &[&[f32]],
-    sample_rate: u32,
-    start_sample: usize,
-    base_freq_hz: f32,
+    extract: impl Fn(&[f32]) -> Option<Vec<f32>>,
 ) -> Option<Vec<f32>> {
     let mut accum: Option<Vec<f32>> = None;
     let mut count = 0_usize;
     for &audio in audio_slots {
-        let Some(e) = extract_data_energies::<P>(audio, sample_rate, start_sample, base_freq_hz)
-        else {
+        let Some(e) = extract(audio) else {
             continue;
         };
         match accum.as_mut() {
@@ -1059,7 +1084,19 @@ fn averaged_data_energies<P: ModulationParams>(
     Some(accum)
 }
 
-/// Wide-spectrogram variant of [`averaged_data_energies`] for the
+/// [`averaged_energies`] over [`extract_data_energies`] (narrow rows).
+fn averaged_data_energies<P: ModulationParams>(
+    audio_slots: &[&[f32]],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<Vec<f32>> {
+    averaged_energies(audio_slots, |a| {
+        extract_data_energies::<P>(a, sample_rate, start_sample, base_freq_hz)
+    })
+}
+
+/// [`averaged_energies`] over [`extract_data_energies_wide`], for the
 /// fast-fading metric path.
 fn averaged_data_energies_wide<P: ModulationParams>(
     audio_slots: &[&[f32]],
@@ -1067,32 +1104,9 @@ fn averaged_data_energies_wide<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<Vec<f32>> {
-    let mut accum: Option<Vec<f32>> = None;
-    let mut count = 0_usize;
-    for &audio in audio_slots {
-        let Some(e) =
-            extract_data_energies_wide::<P>(audio, sample_rate, start_sample, base_freq_hz)
-        else {
-            continue;
-        };
-        match accum.as_mut() {
-            Some(a) => {
-                for (slot, v) in a.iter_mut().zip(&e) {
-                    *slot += *v;
-                }
-            }
-            None => accum = Some(e),
-        }
-        count += 1;
-    }
-    let mut accum = accum?;
-    if count > 1 {
-        let inv = 1.0_f32 / count as f32;
-        for v in &mut accum {
-            *v *= inv;
-        }
-    }
-    Some(accum)
+    averaged_energies(audio_slots, |a| {
+        extract_data_energies_wide::<P>(a, sample_rate, start_sample, base_freq_hz)
+    })
 }
 
 /// Run the AP-list decoder against averaged narrow energies.
@@ -1123,28 +1137,17 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
 
     let codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
-
-    let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, ctx)?;
-
-    let fallback = snr_db_narrow::<P>(energies, &candidates[idx]);
-    let snr_db = super::snr::q65_snr_db_averaged::<P>(
-        history,
+    finish::<P>(
+        &info_syms,
+        &candidates[idx],
+        0,
+        Energies::Narrow(energies),
+        SnrAudio::Averaged(history),
         sample_rate,
         start_sample,
         base_freq_hz,
-        &candidates[idx],
-        fallback,
-    );
-
-    Some(Q65Result {
-        message: text,
-        freq_hz: base_freq_hz,
-        start_sample,
-        dt_sec: start_sample as f32 / sample_rate as f32,
-        iterations: 0,
-        snr_db,
-    })
+        ctx,
+    )
 }
 
 /// Run the fast-fading metric BP decoder against averaged wide
@@ -1200,31 +1203,19 @@ fn decode_fading_with_energies<P: ModulationParams>(
 
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let mut info_syms = [0_i32; 13];
-    let iterations = codec.decode(&intrinsics, &mut info_syms, 50).ok()?;
-
-    let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, ctx)?;
-
-    let mut codeword = [0_i32; 63];
-    codec.encode(&info_syms, &mut codeword);
-    let fallback = snr_db_wide::<P>(energies, sample_rate, &codeword);
-    let snr_db = super::snr::q65_snr_db_averaged::<P>(
-        history,
+    let iterations = bp_decode(&mut codec, &intrinsics, &mut info_syms, None).ok()?;
+    let codeword = reencode(&mut codec, &info_syms);
+    finish::<P>(
+        &info_syms,
+        &codeword,
+        iterations,
+        Energies::Wide(energies),
+        SnrAudio::Averaged(history),
         sample_rate,
         start_sample,
         base_freq_hz,
-        &codeword,
-        fallback,
-    );
-
-    Some(Q65Result {
-        message: text,
-        freq_hz: base_freq_hz,
-        start_sample,
-        dt_sec: start_sample as f32 / sample_rate as f32,
-        iterations,
-        snr_db,
-    })
+        ctx,
+    )
 }
 
 /// Run plain Bessel-metric BP against averaged narrow energies.
@@ -1244,31 +1235,19 @@ fn decode_averaged_plain_for<P: ModulationParams>(
 
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let mut info_syms = [0_i32; 13];
-    let iterations = codec.decode(&intrinsics, &mut info_syms, 50).ok()?;
-
-    let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, ctx)?;
-
-    let mut codeword = [0_i32; 63];
-    codec.encode(&info_syms, &mut codeword);
-    let fallback = snr_db_narrow::<P>(energies, &codeword);
-    let snr_db = super::snr::q65_snr_db_averaged::<P>(
-        history,
+    let iterations = bp_decode(&mut codec, &intrinsics, &mut info_syms, None).ok()?;
+    let codeword = reencode(&mut codec, &info_syms);
+    finish::<P>(
+        &info_syms,
+        &codeword,
+        iterations,
+        Energies::Narrow(energies),
+        SnrAudio::Averaged(history),
         sample_rate,
         start_sample,
         base_freq_hz,
-        &codeword,
-        fallback,
-    );
-
-    Some(Q65Result {
-        message: text,
-        freq_hz: base_freq_hz,
-        start_sample,
-        dt_sec: start_sample as f32 / sample_rate as f32,
-        iterations,
-        snr_db,
-    })
+        ctx,
+    )
 }
 
 /// Multi-period averaging Q65 decode for sub-mode `P`. Mirrors WSJT-X's
