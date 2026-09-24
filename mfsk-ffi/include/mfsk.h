@@ -342,6 +342,12 @@ typedef enum MfskSyncScale {
      * than a preference, not a number to copy to another mode.
      */
     MFSK_SYNC_SCALE_BASELINE_NORMALISED = 1,
+    /**
+     * Sync power as a fraction of sync plus noise, so it lies in 0‥1:
+     * noise scores near 0, a clean aligned frame near 1. WSPR, JT9,
+     * JT65 and every Q65 sub-mode, whose shared default is 0.1.
+     */
+    MFSK_SYNC_SCALE_SYNC_FRACTION = 2,
 } MfskSyncScale;
 
 /**
@@ -1334,9 +1340,18 @@ uint64_t mfsk_mode_caps(uint32_t mode);
  * data now, published per mode, and `sync_scale` says which of them are
  * even comparable.
  *
+ * The numbers are the library's own defaults for that mode's search
+ * (#413), whether or not this ABI exposes the search itself: JT9 and
+ * JT65 publish the band their Rust `DecodeRequest::new` scans, while
+ * their C entry points (`mfsk_jt9_decode_at`, `mfsk_jt65_decode_at`)
+ * are point decodes at a caller-supplied carrier, and the
+ * `mfsk_q65_*` family scans wider than the published Q65 default.
+ * Whether a mode can take these through `MfskDecodeParams` is
+ * `MFSK_CAP_DECODE_HANDLE`, not the presence of defaults.
+ *
  * Size-versioned on the same contract as `mfsk_mode_info`. Returns
- * `MFSK_STATUS_UNSUPPORTED` for a mode with no wide-band search to
- * describe.
+ * `MFSK_STATUS_UNSUPPORTED` for a mode with no search to describe
+ * (the uvpacket profiles).
  *
  * # Safety
  * `out` must point to at least `out->size` writable bytes.

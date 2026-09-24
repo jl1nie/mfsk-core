@@ -337,8 +337,17 @@ mfsk_mode_defaults(MFSK_MODE_FT4, &d);
 FT4's spectrum is divided by a fitted baseline before scoring, so noise
 sits at ~1.0 **by construction** and WSJT-X's own 1.2
 (`ft4_decode.f90:195`) is a floor rather than a preference. FT8's and
-FST4's are absolute Costas scores. Copying one across modes is wrong,
-and before this field nothing said so.
+FST4's are absolute Costas scores. WSPR, JT9, JT65 and Q65 score sync
+as a fraction of sync plus noise (`MFSK_SYNC_SCALE_SYNC_FRACTION`), 0‥1
+with a shared default of 0.1. Copying one across modes is wrong, and
+before this field nothing said so.
+
+Since #413 these are the library's own defaults for every mode that
+has a search, including those without `MFSK_CAP_DECODE_HANDLE`. JT9
+and JT65 therefore publish the band their Rust scan covers, even
+though their C entry points are point decodes at a known carrier, and
+Q65 publishes the library's default, which is narrower than the wide
+scan the `mfsk_q65_*` family runs.
 
 **`MfskModeInfo::decode_fft1_size` is the field to read before
 budgeting.** It is the forward FFT the decoder takes over the whole

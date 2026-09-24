@@ -189,10 +189,15 @@ accident.** The AP engine broke out of its candidate loop on
 `if has_ap`, so a hint — not a narrow search — was what made it
 single-target; and it ran a *parallel, shallower* per-candidate ladder
 (OSD depth-2 only, no Top-K rescue) that cost most of the decodes — 4
-against 11 on the FT4 golden, measured. Both are gone: AP is now a rung
-on `process_candidate_basic`'s own ladder, reaching FT8, FT4 and every
-FST4 sub-mode, and `msg::pipeline_ap` is 96 lines of hypothesis
-generation with no engine of its own. Full writeup in `docs/notes/DESIGN_RATIONALE.md` §3.
+against 11 on the FT4 golden, measured. Both are gone: AP is now the
+last rung of each per-candidate ladder, and `msg::pipeline_ap` is 96
+lines of hypothesis generation with no engine of its own. There are
+**two** such ladders, not one: `process_candidate_basic` serves FT4 and
+every FST4 sub-mode, while FT8 — which does not implement
+`GenericPipelineProtocol` — runs its own in
+`ft8::decode_block::process_one_candidate_inner`, with an inline copy of
+the hypothesis list (#415; unifying them is #423). Full writeup in
+`docs/notes/DESIGN_RATIONALE.md` §3.
 
 **MSK144 is intentionally outside the `Protocol` trait** — it isn't FSK,
 and `msk144::decode::decode_slot` bypasses `engine::pipeline` by design.

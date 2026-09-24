@@ -356,6 +356,10 @@ pub enum MfskSyncScale {
     /// why WSJT-X's own 1.2 (`ft4_decode.f90:195`) is a floor rather
     /// than a preference, not a number to copy to another mode.
     BaselineNormalised = 1,
+    /// Sync power as a fraction of sync plus noise, so it lies in 0‥1:
+    /// noise scores near 0, a clean aligned frame near 1. WSPR, JT9,
+    /// JT65 and every Q65 sub-mode, whose shared default is 0.1.
+    SyncFraction = 2,
 }
 
 /// Geometry and capability for one mode. **Size-versioned**: set
