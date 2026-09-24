@@ -2,6 +2,49 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Tier C counts unexpected decodes, not just recall, for FT8, FT4 and
+  FST4 (#447).** The sweeps now write a trailing `extra` column, the
+  number of distinct decoded messages that were not the injected one; every
+  sweep WAV holds one transmission plus noise, so each is a CRC-valid
+  payload out of noise. `sweep-regression-check.py` stores them per SNR
+  cell in `sweep-baseline.json` (`_meta.precision`), compares over the
+  cells a run shares with the baseline (so a narrowed re-run still
+  compares), and flags a group that gains at least 3 and at least 1.5x
+  (`--strict` exits 1). Old three-column CSVs still load.
+
+  Why it was missing: nobody decided against it. #264 put precision in
+  tier B after the WSPR case (recall 8/8 with 8 phantoms), and c757d32
+  later trimmed the release runner to each file's "real recall gate" for
+  speed, which dropped `ft8_strictness_probe`, the one probe that counted
+  false accepts, from the run.
+
+  What the first run showed, on today's `main` (recall unchanged: every
+  FT8/FT4/FST4 crossing except `fst4/60`, see #448, is +0.00 dB from its
+  baseline):
+  - **FT8 emits CRC-valid garbage next to a strong signal**: 5 unexpected
+    decodes in 1040 trials, including at -10 and -15 dB, with
+    `hard_errors` 28-36 (the injected message has 2-9), random call signs,
+    at the signal's own frequency or off it; one carries `/R`, which
+    WSJT-X 3.x drops. `jt9` 3.2 decodes only the injected message from
+    the two strong-signal files checked (-15 and -10 dB). `.sic_early()` gives 0-2 per channel.
+  - FT4 gives none in 1040 trials.
+  - FST4, which accepts on CRC-24 alone, gives 0-25 per group (25 in
+    FST4-15 AWGN over 180 trials).
+  The baseline records this state; it does not fix it.
+
+  Also: FT8 is swept through `.sic_early()` into its own CSV
+  (`ft8_sic_early/...`), because the phantom-prone code lives in the
+  non-default strategies; `MFSK_FT8_SWEEP_STRATEGY` and
+  `MFSK_FT8_SWEEP_STRICTNESS` select the strategy and strictness by hand.
+  FT8 and FT4 are no longer narrowed to a window around the crossing
+  (the sweeps take seconds, and the phantoms sit outside that window).
+  `ft8_strictness_probe` and `ft4_phantom_rate` are deleted: the `extra`
+  column and those knobs cover them. `sweep-regression-check.py --keep
+  GROUP` refreshes a baseline while leaving a group whose move is not yet
+  explained alone, and records it under `kept_crossings`; the FST4-60
+  fading groups are kept this way pending #448. `CONTRIBUTING.md` and
+  `CLAUDE.md` now describe tier C as sensitivity **and** precision.
+
 - **`src/`-side test WAV loaders have one implementation per protocol,
   not one per diagnostic probe (#421 continued).** JT9's own
   `#[ignore]`d probes (`rx.rs`, `decode.rs`, `mod.rs`, `search.rs`,

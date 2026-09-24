@@ -118,7 +118,7 @@ out?" and never "did anything else?".
 |---|---|---|---|
 | **A — Invariants** | unit tests, `protocol_invariants`, encode→decode roundtrips, bit-exact parity (streaming == batch, no-alloc == `Vec`), TX waveform properties | every PR | none (synthetic) |
 | **B — Golden fidelity** | **recall** (floor) + **precision** (phantom ceiling) + **SNR accuracy** vs a reference decoder, on real recordings | every PR | vendored in `embedded-poc/assets/golden/`; **missing = failure** in CI |
-| **C — Sensitivity** | AWGN / fading threshold curves | **before a release**, locally | generated, ~17 GB, gitignored |
+| **C — Sensitivity** | AWGN / fading threshold curves (**recall**), and the **unexpected decodes** per SNR cell (**precision**) | **before a release**, locally | generated, ~17 GB, gitignored |
 | **D — none** | print-only probes and diagnostics | — | deleted; a test that cannot fail is not a test |
 
 **Tier B is written through `tests/common/golden.rs::assert_golden`,
@@ -136,6 +136,21 @@ skipped and reported success.
 Tier C is **not** run by CI — the corpora need WSJT-X's Fortran
 simulators built and are far too large. Run it locally before cutting
 a release, or when you have changed something that moves sensitivity.
+
+**Tier C asserts precision too, for FT8, FT4 and FST4.** Every sweep WAV
+holds one injected transmission plus noise, so any other decoded message
+was not sent: the sweeps write it into the CSV's `extra` column, the
+baseline (`sweep-baseline.json`, `_meta.precision`) stores it per SNR
+cell, and `sweep-regression-check.py` flags a group that gains at least 3
+and at least 1.5x the baseline. This is the part tier B cannot give: tier
+B has three real FT8 recordings, tier C has hundreds of weak and strong
+cells. Until 2026-09 tier C measured recall only. That was not decided
+anywhere: #264 put precision in tier B after the WSPR case, and c757d32
+then trimmed the release runner to "the real recall gate" for speed, which
+dropped the one probe that counted false accepts (`ft8_strictness_probe`).
+The first run with the column found FT8 emitting CRC-valid garbage next to
+a strong signal (`hard_errors` 28-36, random call signs) at -10 and -15 dB,
+where `jt9` decodes only the injected message.
 
 ### Decode strategies must each be guarded
 

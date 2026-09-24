@@ -76,8 +76,8 @@ impl FrameDecodable for Ft4 {
     ///
     /// Measured 2026-09-21 on the `ft4sim` corpus, 720 slots across the
     /// threshold window (−21..−13 dB, four ITU-R channels, 20 trials a
-    /// cell — `ft4_sweep::ft4_phantom_rate` and the `ft4_snr_sweep`
-    /// A/B behind `MFSK_FT4_SWEEP_CODEC_FILTER`):
+    /// cell — the `ft4_snr_sweep` `extra` column, run with and without
+    /// `MFSK_FT4_SWEEP_CODEC_FILTER=1`):
     ///
     /// | | verdict off | verdict on |
     /// |---|---|---|

@@ -248,6 +248,29 @@ pub fn skip_or_fail(what: &str) {
     eprintln!("skipping: {what} not found");
 }
 
+/// How many *distinct* decoded messages are not the one signal a sweep
+/// file was generated with.
+///
+/// Every tier-C sweep WAV holds exactly one injected transmission plus
+/// noise, so any other message that comes out was not sent: it is a
+/// CRC-valid payload from noise (or a subtraction residual). This is the
+/// tier-C half of the precision property; tier B asserts it on real
+/// recordings through `golden::assert_golden`. It counts by message text
+/// only, as tier B does: the injected message decoded at the wrong
+/// frequency or time is a recall miss, not an extra, and a message that
+/// comes out twice counts once.
+#[allow(dead_code)]
+pub fn distinct_extras<S: AsRef<str>>(decoded: &[S], injected: &str) -> u32 {
+    let mut seen: Vec<&str> = decoded
+        .iter()
+        .map(|m| m.as_ref())
+        .filter(|m| *m != injected)
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen.len() as u32
+}
+
 /// Parses a corpus filename's SNR tag (`m05` → `-5`, `p03` → `3`) into
 /// its signed dB value. Pulled out of the per-protocol sweep tests
 /// (#421) — `ft8_sweep.rs`, `ft4_sweep.rs`, `fst4_sweep.rs`,

@@ -41,7 +41,7 @@ mod common;
 use common::{load_wav_i16_opt, parse_snr_tag};
 use mfsk_core::msg::wsjt77::unpack77;
 
-fn decode_wav_fst4_60(audio: &[i16]) -> bool {
+fn decode_wav_fst4_60(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::fst4::Fst4s60;
     decode_wav_fst4::<Fst4s60>(audio)
 }
@@ -61,39 +61,46 @@ const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 
 // ── Per-mode decode dispatch ─────────────────────────────────────────────────
 
-fn decode_wav_fst4<P>(audio: &[i16]) -> bool
+/// `(pass, extra)`: whether the injected message came out at the right
+/// frequency and time, and how many *other* distinct messages came out
+/// (see `common::distinct_extras`).
+fn decode_wav_fst4<P>(audio: &[i16]) -> (bool, u32)
 where
     P: mfsk_core::msg::decode_request::FrameDecodable<
             DecodeResult = mfsk_core::fst4::decode::DecodeResult,
         >,
 {
     use mfsk_core::msg::decode_request::DecodeRequest;
-    DecodeRequest::<P>::new(audio, 100.0, 3000.0, 0.8, 50)
+    let results = DecodeRequest::<P>::new(audio, 100.0, 3000.0, 0.8, 50)
         .decode()
-        .results
-        .iter()
-        .any(|d| {
-            let mut m77 = [0u8; 77];
-            m77.copy_from_slice(d.message77());
-            unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
-                && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
-                && d.dt_sec.abs() <= DT_TOL_SEC
-        })
+        .results;
+    let text_of = |d: &mfsk_core::fst4::decode::DecodeResult| -> Option<String> {
+        let mut m77 = [0u8; 77];
+        m77.copy_from_slice(d.message77());
+        unpack77(&m77)
+    };
+    let pass = results.iter().any(|d| {
+        text_of(d).as_deref() == Some(GOLDEN_MSG)
+            && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
+            && d.dt_sec.abs() <= DT_TOL_SEC
+    });
+    let texts: Vec<String> = results.iter().filter_map(text_of).collect();
+    (pass, common::distinct_extras(&texts, GOLDEN_MSG))
 }
 
-fn decode_wav_fst4_15(audio: &[i16]) -> bool {
+fn decode_wav_fst4_15(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::fst4::Fst4s15;
     decode_wav_fst4::<Fst4s15>(audio)
 }
-fn decode_wav_fst4_30(audio: &[i16]) -> bool {
+fn decode_wav_fst4_30(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::fst4::Fst4s30;
     decode_wav_fst4::<Fst4s30>(audio)
 }
-fn decode_wav_fst4_120(audio: &[i16]) -> bool {
+fn decode_wav_fst4_120(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::fst4::Fst4s120;
     decode_wav_fst4::<Fst4s120>(audio)
 }
-fn decode_wav_fst4_300(audio: &[i16]) -> bool {
+fn decode_wav_fst4_300(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::fst4::Fst4s300;
     decode_wav_fst4::<Fst4s300>(audio)
 }
@@ -102,7 +109,7 @@ fn decode_wav_fst4_300(audio: &[i16]) -> bool {
 
 struct SweepMode {
     nsec: u32,
-    decode: fn(&[i16]) -> bool,
+    decode: fn(&[i16]) -> (bool, u32),
     enabled: bool,
 }
 
@@ -250,12 +257,15 @@ fn fst4_snr_sweep() {
 
     eprintln!("\n{:-<72}", "");
     eprintln!(
-        "  {:<10} {:<14} {:>7}   {:>6}  Bar",
-        "Mode", "Channel", "SNR(dB)", "Recall"
+        "  {:<10} {:<14} {:>7}   {:>6}  {:<22}       Extra",
+        "Mode", "Channel", "SNR(dB)", "Recall", "Bar"
     );
     eprintln!("{:-<72}", "");
 
-    let mut csv = common::sweep_csv_writer("MFSK_FST4_SWEEP_CSV", "mode,channel,snr_db,trial,pass");
+    let mut csv = common::sweep_csv_writer(
+        "MFSK_FST4_SWEEP_CSV",
+        "mode,channel,snr_db,trial,pass,extra",
+    );
 
     // Group WAVs by (nsec, channel, snr_db) so we can parallelise within each
     // group and print each row immediately when the group finishes.
@@ -283,7 +293,7 @@ fn fst4_snr_sweep() {
             .unwrap(); // safe: we filtered above
 
         #[cfg(feature = "parallel")]
-        let results: Vec<(u32, bool)> = wav_group
+        let results: Vec<(u32, (bool, u32))> = wav_group
             .par_iter()
             .filter_map(|wav| {
                 load_wav_i16_opt(&wav.path).map(|audio| (wav.trial, decode_fn(&audio)))
@@ -291,7 +301,7 @@ fn fst4_snr_sweep() {
             .collect();
 
         #[cfg(not(feature = "parallel"))]
-        let results: Vec<(u32, bool)> = wav_group
+        let results: Vec<(u32, (bool, u32))> = wav_group
             .iter()
             .filter_map(|wav| {
                 load_wav_i16_opt(&wav.path).map(|audio| (wav.trial, decode_fn(&audio)))
@@ -302,11 +312,12 @@ fn fst4_snr_sweep() {
         if trials == 0 {
             continue;
         }
-        let hits = results.iter().filter(|&(_, h)| *h).count() as u32;
+        let hits = results.iter().filter(|&&(_, (h, _))| h).count() as u32;
+        let extras: u32 = results.iter().map(|&(_, (_, e))| e).sum();
 
         if let Some(f) = csv.as_mut() {
-            for &(trial, pass) in &results {
-                writeln!(f, "{nsec},{chan},{snr},{trial},{}", pass as u8).unwrap();
+            for &(trial, (pass, extra)) in &results {
+                writeln!(f, "{nsec},{chan},{snr},{trial},{},{extra}", pass as u8).unwrap();
             }
         }
 
@@ -319,8 +330,8 @@ fn fst4_snr_sweep() {
         let bar_len = (hits as usize * 20).div_ceil(trials as usize);
         let bar = format!("{}{}", "#".repeat(bar_len), ".".repeat(20 - bar_len));
         eprintln!(
-            "  FST4-{:<4}  {:<14}  {:>4} dB   {:>2}/{:<2}  [{}]  {:4.0}%",
-            nsec, chan, snr, hits, trials, bar, pct
+            "  FST4-{:<4}  {:<14}  {:>4} dB   {:>2}/{:<2}  [{}]  {:4.0}%   {:>3}",
+            nsec, chan, snr, hits, trials, bar, pct, extras
         );
     }
     eprintln!("{:-<72}", "");

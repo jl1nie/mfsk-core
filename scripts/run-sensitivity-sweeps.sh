@@ -145,6 +145,7 @@ mkdir -p "$CSV_DIR"
 # the full generated grid — narrowing never silently drops coverage,
 # only redundant SNR points once a baseline exists.
 # Set MFSK_SWEEP_FULL=1 to always use the full grid regardless.
+# Only FST4 is narrowed (see the note where the FT8/FT4 branch used to be).
 NARROW_PLAN=""
 if [ -z "${MFSK_SWEEP_FULL:-}" ] && [ -f "$REPO_ROOT/docs/notes/sweep-baseline.json" ] \
    && command -v python3 >/dev/null 2>&1; then
@@ -170,7 +171,8 @@ for k in "${want[@]}"; do
     [ "$entry" != "$b" ] && filt="${entry#*:}"
     [ -f "mfsk-core/tests/$b.rs" ] || continue
 
-    unset MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV \
+    unset MFSK_FT8_SWEEP_STRATEGY MFSK_FT8_SWEEP_STRICTNESS \
+          MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV \
           MFSK_WSPR_SWEEP_SUMMARY_CSV MFSK_JT65_SWEEP_SUMMARY_CSV \
           MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV MFSK_JT9_SWEEP_SUMMARY_CSV \
           MFSK_Q65_SWEEP_SUMMARY_CSV MFSK_MSK144_SWEEP_SUMMARY_CSV
@@ -214,16 +216,15 @@ for k in "${want[@]}"; do
       done
       continue
     fi
-    if { [ "$b:$filt" = "ft8_sweep:ft8_snr_sweep" ] || [ "$b:$filt" = "ft4_sweep:ft4_snr_sweep" ]; } \
-       && win="$(narrow_window "${b%_sweep}" '')"; then
-      lo="${win%%$'\t'*}"; hi="${win#*$'\t'}"
-      proto_upper="$(printf '%s' "${b%_sweep}" | tr '[:lower:]' '[:upper:]')"
-      echo "───── $k / $b (narrowed ${lo}..${hi} dB) ─────"
-      run env "MFSK_${proto_upper}_SWEEP_SNR_MIN=$lo" "MFSK_${proto_upper}_SWEEP_SNR_MAX=$hi" \
-          cargo test --release -p mfsk-core --features "$FEATURES" \
-              --test "$b" "$filt" -- --ignored --nocapture || fail=1
-      continue
-    fi
+    # FT8 and FT4 are deliberately NOT narrowed any more. The sweeps take
+    # seconds, and the narrowing was a recall optimisation: the precision
+    # column (`extra`, unexpected decodes) has its hits in cells the
+    # crossing window excludes — deep noise below it, and strong signals
+    # above it, where an over-eager acceptance gate still admits a
+    # CRC-valid payload out of noise (2026-09: FT8 at -10 and -15 dB).
+    # FST4 keeps its narrowing, so its precision is compared over the
+    # narrowed cells only; `sweep-regression-check.py` compares just the
+    # SNR cells present in both the run and the baseline.
 
     if [ -n "$filt" ]; then
       echo "───── $k / $b ─────"
@@ -238,6 +239,19 @@ for k in "${want[@]}"; do
           --test "$b" -- --ignored --nocapture || fail=1
     fi
   done
+
+  # FT8 through `.sic_early()`, into its own CSV (group `ft8_sic_early/...`).
+  # The phantom-prone code lives in the non-default strategies
+  # (CONTRIBUTING.md, "Decode strategies must each be guarded"): both
+  # false-decode bugs this suite has shipped were in a subtraction path, so
+  # a precision baseline for `decode()` alone would guard the path least
+  # likely to break. Seconds, like the default pass.
+  if [ "$k" = "ft8" ] && [ -f mfsk-core/tests/ft8_sweep.rs ]; then
+    echo "───── $k / ft8_sweep (strategy=sic_early) ─────"
+    MFSK_FT8_SWEEP_STRATEGY=sic_early MFSK_FT8_SWEEP_CSV="$CSV_DIR/ft8_sic_early.csv" \
+      run cargo test --release -p mfsk-core --features "$FEATURES" \
+          --test ft8_sweep ft8_snr_sweep -- --ignored --nocapture || fail=1
+  fi
 done
 
 echo
@@ -261,14 +275,19 @@ cat <<'MSG'
 
 These print tables and assert nothing. Before tagging:
 
-  1. Read the regression-check table above (or re-run it: `python3
-     scripts/sweep-regression-check.py target/sweep-csv/*.csv`). A
-     group flagged "!!" moved >=0.5 dB from the stored baseline and is
-     worth explaining before shipping; groups marked NEW have no
-     baseline entry yet.
+  1. Read the regression-check tables above (or re-run it: `python3
+     scripts/sweep-regression-check.py target/sweep-csv/*.csv`). In the
+     crossing table a group flagged "!!" moved >=0.5 dB from the stored
+     baseline; in the precision table it gained unexpected decodes
+     (>=3 and >=1.5x). Both are worth explaining before shipping.
+     Groups marked NEW have no baseline entry yet.
   2. Also sanity-check against docs/notes/*BENCHMARK.md prose and the
-     previous release's numbers — the JSON baseline only covers
-     50%-crossing SNR, not e.g. WSPR's phantom-decode count.
+     previous release's numbers. The JSON baseline covers the
+     50%-crossing SNR and, for ft8/ft4/fst4, the unexpected-decode
+     count per SNR cell (`_meta.precision`); suites that write only
+     `channel,snr_db,trial,pass` (wspr, jt65, jt9, q65, msk144) have
+     no precision baseline, and WSPR's phantom count is still only in
+     its printed table.
   3. Once you understand why the numbers are what they are, refresh
      the baseline: `python3 scripts/sweep-regression-check.py
      --update-baseline target/sweep-csv/*.csv`, and update

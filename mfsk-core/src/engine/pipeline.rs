@@ -470,8 +470,8 @@ impl DecodeStrictness {
     /// this file (plain single-pass/`Strict` don't produce it; `Strict`
     /// at 22 does reject it). The retune below is independently justified
     /// by a real sweep, not a fix for that one anecdote. Calibrated the
-    /// same way issue #72 calibrated FT4's numbers: `ft8_strictness_probe`
-    /// (`tests/ft8_sweep.rs`) drives `DecodeRequest<Ft8>` with each level
+    /// same way issue #72 calibrated FT4's numbers: the FT8 sweep
+    /// (`tests/ft8_sweep.rs`, `MFSK_FT8_SWEEP_STRICTNESS`) drives `DecodeRequest<Ft8>` with each level
     /// across both the plain single-pass strategy and `.sic_early()` over
     /// 16 `ft8sim` AWGN/CCIR cells (320 trials/level/strategy) at/below
     /// the sensitivity crossing, and reports golden recall (the known
