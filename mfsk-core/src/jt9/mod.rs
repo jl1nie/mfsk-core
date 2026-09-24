@@ -38,7 +38,7 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-use crate::engine::pipeline::scan_dedup_match;
+use crate::engine::pipeline::{ScanRow, push_unique};
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano232;
 use crate::msg::Jt72Codec;
@@ -177,23 +177,23 @@ fn decode_scan_inner(
         // from the nominal start, and this is the one place that knows
         // it.
         d.dt_sec -= nominal_start_sample as f32 / sample_rate as f32;
-        let dup = scan_dedup_match(
-            &seen,
-            &d,
-            |r| &r.message,
-            |r| r.freq_hz,
-            |r| r.start_sample as i64,
-            4.0,
-            nsps as i64,
-        );
-        if !dup {
-            if let Some(cb) = on_result {
-                cb(&d);
-            }
-            seen.push(d);
-        }
+        push_unique(&mut seen, d, 4.0, nsps as i64, on_result);
     }
     seen
+}
+
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+impl ScanRow for Jt9Result {
+    type Message = crate::msg::Jt72Message;
+    fn scan_message(&self) -> &Self::Message {
+        &self.message
+    }
+    fn scan_freq_hz(&self) -> f32 {
+        self.freq_hz
+    }
+    fn scan_start_sample(&self) -> i64 {
+        self.start_sample as i64
+    }
 }
 
 /// JT9 protocol marker.

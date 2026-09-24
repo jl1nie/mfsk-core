@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::engine::pipeline::scan_dedup_match;
+use crate::engine::pipeline::{ScanRow, push_unique};
 use crate::msg::WsprMessage;
 
 use super::search::SearchParams;
@@ -54,6 +54,26 @@ pub struct WsprResult {
     /// search; [`super::SniperRequest`] has no coarse candidate to
     /// derive it from and leaves this `0.0`.
     pub snr_db: f32,
+}
+
+/// Scan-dedup tolerances: the same real signal decoded twice by nearby
+/// candidates, or again in a later SIC pass. Shared by the single-scan
+/// and SIC drivers, which each declared their own copy until #419.
+const FREQ_DEDUP_HZ: f32 = 5.0;
+/// One WSPR symbol at 12 kHz.
+const TIME_DEDUP_SAMPLES: i64 = 8192;
+
+impl ScanRow for WsprResult {
+    type Message = WsprMessage;
+    fn scan_message(&self) -> &Self::Message {
+        &self.message
+    }
+    fn scan_freq_hz(&self) -> f32 {
+        self.freq_hz
+    }
+    fn scan_start_sample(&self) -> i64 {
+        self.start_sample as i64
+    }
 }
 
 /// Callsigns confirmed by a **Fano** decode earlier in the same scan.
@@ -1145,8 +1165,6 @@ pub(super) fn decode_scan_inner(
     cands.truncate(params.max_candidates);
     let _audio = &padded[..]; // shadow so all downstream reads use padded buffer
     let mut seen: Vec<WsprResult> = Vec::new();
-    const FREQ_DEDUP_HZ: f32 = 5.0;
-    const TIME_DEDUP_SAMPLES: i64 = 8192; // one WSPR symbol at 12 kHz
     // 2-D refinement: WSPR's Fano (K=32 convolutional, no CRC) is
     // sensitive to *both* sub-bin freq and sub-t_step time mis-
     // alignment. Coarse-search rounds to 1.46 Hz / 170 ms; this
@@ -1254,21 +1272,9 @@ pub(super) fn decode_scan_inner(
 
         let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
         for (d, start_refined) in raw {
-            let dup = scan_dedup_match(
-                &seen,
-                &d,
-                |r| &r.message,
-                |r| r.freq_hz,
-                |r| r.start_sample as i64,
-                FREQ_DEDUP_HZ,
-                TIME_DEDUP_SAMPLES,
-            );
-            if !dup {
-                if let Some(cb) = on_result {
-                    cb(&d);
-                }
+            if let Some(d) = push_unique(&mut seen, d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES, on_result)
+            {
                 this_pass.push((d.clone(), start_refined));
-                seen.push(d);
             }
         }
 
@@ -1374,21 +1380,7 @@ pub(super) fn decode_scan_inner(
             .collect();
 
         for d in raw2 {
-            let dup = scan_dedup_match(
-                &seen,
-                &d,
-                |r| &r.message,
-                |r| r.freq_hz,
-                |r| r.start_sample as i64,
-                FREQ_DEDUP_HZ,
-                TIME_DEDUP_SAMPLES,
-            );
-            if !dup {
-                if let Some(cb) = on_result {
-                    cb(&d);
-                }
-                seen.push(d);
-            }
+            push_unique(&mut seen, d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES, on_result);
         }
     }
 
@@ -1477,6 +1469,7 @@ pub fn decode_scan_subtract(
     on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
 ) -> Vec<WsprResult> {
     use crate::engine::dsp::subtract::subtract_tones_lpf;
+    use crate::engine::pipeline::is_scan_dup;
 
     // The subtract helper takes `&mut [i16]`; convert once, mutate
     // across passes, work on `f32` for `decode_scan` per pass.
@@ -1486,8 +1479,6 @@ pub fn decode_scan_subtract(
         .collect();
 
     let mut all: Vec<WsprResult> = Vec::new();
-    const FREQ_DEDUP_HZ: f32 = 5.0;
-    const TIME_DEDUP_SAMPLES: i64 = 8192;
     // wsprd uses 3 passes. Our `decode_scan` is expensive (~30 s on
     // a 120-s WSPR slot due to the 2-D refine grid), so we cap at 2
     // — empirically the bulk of the SIC benefit lands on pass 2 once
@@ -1511,16 +1502,9 @@ pub fn decode_scan_subtract(
         }
         let mut added = 0usize;
         for d in new_decodes {
-            let dup = scan_dedup_match(
-                &all,
-                &d,
-                |r| &r.message,
-                |r| r.freq_hz,
-                |r| r.start_sample as i64,
-                FREQ_DEDUP_HZ,
-                TIME_DEDUP_SAMPLES,
-            );
-            if dup {
+            // Dedup only here: the subtraction below runs before the
+            // row is reported and kept, so `push_unique` does not fit.
+            if is_scan_dup(&all, &d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES) {
                 continue;
             }
             // Reconstruct the on-air channel symbols (162 4-FSK tones)

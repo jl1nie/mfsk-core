@@ -35,7 +35,7 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use crate::engine::dsp::symbol_fft::SymbolFft;
-use crate::engine::pipeline::scan_dedup_match;
+use crate::engine::pipeline::{ScanRow, push_unique};
 use crate::engine::{DecodeContext, MessageCodec, ModulationParams};
 use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
@@ -217,36 +217,17 @@ pub struct Q65Result {
     pub snr_db: f32,
 }
 
-/// Shared floor/ratio/dB-conversion step for [`snr_db_narrow`] and
-/// [`snr_db_wide`]: `10·log10(xsig/xnoi − 1) − bw_offset_db`, clamped
-/// to a −24 dB floor — the same shape as
-/// [`crate::engine::llr::compute_snr_db_generic`] (FT8/FT4/FST4) and
-/// [`crate::jt65::Jt65Demod::snr_db`].
+/// [`crate::engine::llr::snr_db_from_sig_noi`] with Q65's clamps, the
+/// step [`snr_db_narrow`] and [`snr_db_wide`] share: a −24 dB floor,
+/// and a 49 dB ceiling that is WSJT-X's own display convention (see
+/// e.g. WebFT8's `_autoReport()` clamp cited in issue #226). The
+/// ceiling is also the answer when there is no measurable noise; an
+/// earlier version returned the floor there, caught by
+/// `q65::rx::tests` reading `-24 dB` off a noiseless synth.
 fn snr_db_from_sig_noi(xsig: f32, xnoi: f32, bw_offset_db: f32) -> f32 {
     const SNR_FLOOR_DB: f32 = -24.0;
-    // WSJT-X's own display convention ceiling (see e.g. WebFT8's
-    // `_autoReport()` clamp cited in issue #226). Also serves as this
-    // function's answer when `xnoi` is (near) exactly zero: for a
-    // perfectly clean synthetic signal sampled with an integer number
-    // of cycles per FFT window, DFT orthogonality can leave *zero*
-    // measurable leakage in the non-signal bins — that means "no
-    // measurable noise", the best case, not the worst. Reporting the
-    // floor there (an earlier version of this function did) is
-    // backwards, caught by `q65::rx::tests` decoding a noiseless
-    // synth and reading `-24 dB` instead of a very clean number.
     const SNR_CEIL_DB: f32 = 49.0;
-    if xnoi < f32::EPSILON {
-        return if xsig < f32::EPSILON {
-            SNR_FLOOR_DB
-        } else {
-            SNR_CEIL_DB
-        };
-    }
-    let ratio = xsig / xnoi - 1.0;
-    if ratio <= 0.001 {
-        return SNR_FLOOR_DB;
-    }
-    (10.0 * ratio.log10() - bw_offset_db).clamp(SNR_FLOOR_DB, SNR_CEIL_DB)
+    crate::engine::llr::snr_db_from_sig_noi(xsig, xnoi, bw_offset_db, SNR_FLOOR_DB, SNR_CEIL_DB)
 }
 
 /// Bandwidth-normalisation offset to WSJT-X's 2500 Hz reference:
@@ -728,23 +709,28 @@ fn scan_with<P: ModulationParams>(
         let Some(decode) = decode(&c) else {
             continue;
         };
-        let dup = scan_dedup_match(
-            &seen,
-            &decode,
-            |r| &r.message,
-            |r| r.freq_hz,
-            |r| r.start_sample as i64,
+        push_unique(
+            &mut seen,
+            decode,
             dedup_freq_tol_hz::<P>(),
             nsps as i64,
+            on_result,
         );
-        if !dup {
-            if let Some(cb) = on_result {
-                cb(&decode);
-            }
-            seen.push(decode);
-        }
     }
     seen
+}
+
+impl ScanRow for Q65Result {
+    type Message = String;
+    fn scan_message(&self) -> &Self::Message {
+        &self.message
+    }
+    fn scan_freq_hz(&self) -> f32 {
+        self.freq_hz
+    }
+    fn scan_start_sample(&self) -> i64 {
+        self.start_sample as i64
+    }
 }
 
 /// Scan an audio buffer for Q65 frames in sub-mode `P` within the
