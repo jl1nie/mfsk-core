@@ -196,15 +196,7 @@ mod diag_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../embedded-poc/assets/130418_1742.wav"
         ));
-        let bytes = std::fs::read(path).unwrap();
-        let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-        let data = &bytes[44..44 + dl];
-        let audio: Vec<f32> = data
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-            .collect();
+        let audio = super::super::test_util::load_wav_f32(path);
 
         // Golden: K1JT KF4RWA 73 @ 1224 Hz dt=0.10
         let llrs = demodulate_aligned(&audio, 12_000, 1200, 1224.0);
@@ -244,14 +236,7 @@ mod diag_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../embedded-poc/assets/130418_1742.wav"
         ));
-        let bytes = std::fs::read(path).unwrap();
-        let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-        let audio: Vec<f32> = bytes[44..44 + dl]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-            .collect();
+        let audio = super::super::test_util::load_wav_f32(path);
 
         let codec = ConvFano232;
         let nsps = 6912usize;
@@ -307,6 +292,7 @@ mod diag_tests {
     }
 }
 
+#[cfg(test)]
 #[test]
 #[ignore]
 #[allow(clippy::collapsible_if)]
@@ -315,14 +301,7 @@ fn freq_sweep_1224hz() {
         env!("CARGO_MANIFEST_DIR"),
         "/../embedded-poc/assets/130418_1742.wav"
     ));
-    let bytes = std::fs::read(path).unwrap();
-    let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-    let audio: Vec<f32> = bytes[44..44 + dl]
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-        .collect();
+    let audio = super::test_util::load_wav_f32(path);
     use crate::engine::{DecodeContext, FecOpts, MessageCodec};
     use crate::fec::{ConvFano232, FecCodec};
     use crate::msg::Jt72Codec;
@@ -347,6 +326,7 @@ fn freq_sweep_1224hz() {
     }
 }
 
+#[cfg(test)]
 #[test]
 #[ignore]
 #[allow(clippy::collapsible_if)]
@@ -355,14 +335,7 @@ fn wide_freq_time_sweep() {
         env!("CARGO_MANIFEST_DIR"),
         "/../embedded-poc/assets/130418_1742.wav"
     ));
-    let bytes = std::fs::read(path).unwrap();
-    let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-    let audio: Vec<f32> = bytes[44..44 + dl]
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-        .collect();
+    let audio = super::test_util::load_wav_f32(path);
     use crate::engine::{DecodeContext, FecOpts, MessageCodec};
     use crate::fec::{ConvFano232, FecCodec};
     use crate::msg::Jt72Codec;

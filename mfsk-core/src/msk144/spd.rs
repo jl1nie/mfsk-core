@@ -351,6 +351,9 @@ mod tests {
     use crate::engine::dsp::msk::{build_bitseq, synth_frame};
     use crate::fec::Ldpc128_90;
     use crate::msk144::sync::tweak1;
+    // build_i4tone / msk144sim_reference_audio moved to
+    // super::test_util (#421) — shared with decode.rs's own tests.
+    use super::super::test_util::{build_i4tone, msk144sim_reference_audio};
 
     fn synth_clean_frame(pattern: impl Fn(usize) -> u8) -> Vec<Complex32> {
         let mut info = [0u8; 90];
@@ -469,57 +472,6 @@ mod tests {
             burst_best_snr > noise_best_snr + 3.0,
             "burst_best_snr={burst_best_snr}, noise_best_snr={noise_best_snr}"
         );
-    }
-
-    /// Independent WSJT-X-style reference synthesizer, mirroring
-    /// `msk144sim.f90:52-76` (simple continuous-phase binary FSK at
-    /// ±500 Hz deviation, driven by the *tone* sequence `itone` — not
-    /// this crate's own OQPSK/complex-baseband
-    /// `crate::engine::dsp::msk::synth_frame`). Used only to build a
-    /// test signal whose generation shares no code with the
-    /// `synth_frame`/`matched_filter_softbits` pair under test, so a
-    /// bug shared between TX and RX can't silently cancel out in a
-    /// same-code roundtrip.
-    fn msk144sim_reference_audio(itone: &[u8], freq_hz: f32) -> Vec<f32> {
-        let twopi = 2.0 * core::f32::consts::PI;
-        let baud = 2000.0f32;
-        let dphi0 = twopi * (freq_hz - 0.25 * baud) / 12_000.0;
-        let dphi1 = twopi * (freq_hz + 0.25 * baud) / 12_000.0;
-        let mut phi = 0.0f32;
-        let mut out = Vec::with_capacity(144 * 6);
-        for &tone in itone {
-            let dphi = if tone == 0 { dphi0 } else { dphi1 };
-            for _ in 0..6 {
-                out.push(phi.cos());
-                phi = (phi + dphi) % twopi;
-            }
-        }
-        out
-    }
-
-    /// The `itone` audio-tone sequence msk144sim/genmsk_128_90 actually
-    /// transmits is *not* the raw channel bit sequence — MSK's
-    /// continuous-phase property means the instantaneous tone at each
-    /// symbol depends on the product of adjacent bipolar rail bits.
-    /// Ported from `genmsk_128_90.f90:109-114,118`.
-    fn build_i4tone(bitseq_natural: &[u8; 144]) -> [u8; 144] {
-        let mut bp = [0i8; 144];
-        for i in 0..144 {
-            bp[i] = 2 * bitseq_natural[i] as i8 - 1;
-        }
-        let mut i4tone = [0i8; 144];
-        for i in 1..=72usize {
-            let b_2i_minus_1 = bp[2 * i - 2]; // bitseq(2*i-1)
-            let b_2i = bp[2 * i - 1]; // bitseq(2*i)
-            let b_wrap = bp[(2 * i) % 144]; // bitseq(mod(2*i,144)+1)
-            i4tone[2 * i - 2] = (b_2i * b_2i_minus_1 + 1) / 2; // i4tone(2*i-1)
-            i4tone[2 * i - 1] = -((b_2i * b_wrap - 1) / 2); // i4tone(2*i)
-        }
-        let mut out = [0u8; 144];
-        for i in 0..144 {
-            out[i] = (-i4tone[i] + 1) as u8; // "Flip polarity": i4tone=-i4tone+1
-        }
-        out
     }
 
     /// The full loop, closed with a genuinely independent oracle:

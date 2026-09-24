@@ -2,6 +2,36 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **`src/`-side test WAV loaders have one implementation per protocol,
+  not one per diagnostic probe (#421 continued).** JT9's own
+  `#[ignore]`d probes (`rx.rs`, `decode.rs`, `mod.rs`, `search.rs`,
+  `softsym.rs`) carried ~8 copies of a WAV reader that hardcoded
+  `data` at byte offset 44 — fragile against any WAV with extra
+  chunks (`JUNK`, `LIST`, `bext`, …) ahead of it. They now share
+  `jt9::test_util::load_wav_f32`/`_opt`, a chunk-walking RIFF reader
+  matching what `tests/common` already does. Two of `rx.rs`'s probes
+  (`freq_sweep_1224hz`, `wide_freq_time_sweep`) were `#[test]`
+  functions living outside any `#[cfg(test)]` boundary — an oversight
+  that compiled them into every build, test or not; both now carry
+  `#[cfg(test)]` like the rest of the file.
+
+  FT8's `decode.rs` had the opposite problem: 8 byte-identical copies
+  of an already-correct chunk-walking loader, each with a comment
+  explaining `tests/common`'s isn't reachable from a `src/` unit test
+  (true — it's a separate compiled crate). One copy now lives at the
+  top of `decode.rs`'s own `mod tests`.
+
+  MSK144's `spd.rs` and `decode.rs` each carried their own copy of
+  `build_i4tone` and `msk144sim_reference_audio` (the independent
+  WSJT-X-style oracle used to keep TX/RX test bugs from silently
+  cancelling out) — consolidated into `msk144::test_util`, reused by
+  both. `tests/msk144_snr_sweep.rs`'s own `build_i4tone` (a separate
+  compiled crate, same boundary as FT8's case above) is left alone.
+
+  No behavior change; every touched `#[ignore]`d probe was run
+  directly (not just compiled) to confirm the new loaders produce the
+  same audio the inline ones did.
+
 - **The registry publishes the library's own search defaults for
   WSPR, JT9, JT65 and Q65 (#413).** `registry.rs` held hand-written
   `DecodeDefaults` for these four, and all four had drifted from the

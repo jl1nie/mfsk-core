@@ -244,18 +244,10 @@ mod gate_diag {
             env!("CARGO_MANIFEST_DIR"),
             "/../embedded-poc/assets/130418_1742.wav"
         ));
-        if !path.exists() {
+        let Some(audio) = super::super::test_util::load_wav_f32_opt(path) else {
             eprintln!("skipping — sample not found");
             return;
-        }
-        let bytes = std::fs::read(path).unwrap();
-        let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-        let audio: Vec<f32> = bytes[44..44 + dl]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32_768.0)
-            .collect();
+        };
 
         let big_fft = AudioFft::build(&audio);
 
@@ -326,28 +318,6 @@ mod gate_diag {
         use super::super::search::{SearchParams, coarse_search};
         use super::Jt9Depth;
 
-        fn load_wav(path: &str) -> Vec<f32> {
-            let bytes = std::fs::read(path).unwrap();
-            let mut i = 12;
-            loop {
-                let id = &bytes[i..i + 4];
-                let len =
-                    u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
-                        as usize;
-                if id == b"data" {
-                    let start = i + 8;
-                    let samples: &[u8] = &bytes[start..start + len];
-                    return samples
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-                        .collect();
-                }
-                i += 8 + len + (len % 2);
-            }
-        }
-
         for n in [9, 13, 17] {
             let path = format!(
                 concat!(
@@ -356,11 +326,10 @@ mod gate_diag {
                 ),
                 n
             );
-            if !std::path::Path::new(&path).exists() {
+            let Some(mut audio) = super::super::test_util::load_wav_f32_opt(&path) else {
                 eprintln!("skipping m26_{n:02}.wav — sample not found (gitignored local corpus)");
                 continue;
-            }
-            let mut audio = load_wav(&path);
+            };
             audio.resize(720_000, 0.0);
 
             let sp = SearchParams {
@@ -402,28 +371,6 @@ mod gate_diag {
     #[test]
     #[ignore]
     fn probe_missing_m26_files() {
-        fn load_wav(path: &str) -> Vec<f32> {
-            let bytes = std::fs::read(path).unwrap();
-            let mut i = 12;
-            loop {
-                let id = &bytes[i..i + 4];
-                let len =
-                    u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
-                        as usize;
-                if id == b"data" {
-                    let start = i + 8;
-                    let samples: &[u8] = &bytes[start..start + len];
-                    return samples
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-                        .collect();
-                }
-                i += 8 + len + (len % 2);
-            }
-        }
-
         // 09, 13, 17: this crate misses these at Jt9Depth::Normal;
         // real `jt9 -d1` decodes all three. jt9sim's signal is always
         // at 1400 Hz.
@@ -435,12 +382,11 @@ mod gate_diag {
                 ),
                 n
             );
-            if !std::path::Path::new(&path).exists() {
+            let Some(mut audio) = super::super::test_util::load_wav_f32_opt(&path) else {
                 eprintln!("skipping m26_{n:02}.wav — sample not found (gitignored local corpus)");
                 continue;
-            }
+            };
             eprintln!("\n=== jt9_awgn_m26_{n:02}.wav ===");
-            let mut audio = load_wav(&path);
             audio.resize(720_000, 0.0);
             let big_fft = AudioFft::build(&audio);
 
