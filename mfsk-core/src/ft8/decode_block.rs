@@ -115,6 +115,7 @@ pub(in crate::ft8) use process_candidates::{apply_wsjtx_xsnr2, compute_xsig_wsjt
 #[cfg(feature = "internal-testing")]
 pub use spectrogram::compute_spectrogram_f32_timed;
 pub use spectrogram::{SpecCell, Spectrogram, compute_spectrogram};
+pub(in crate::ft8) use types::LlrT;
 pub use types::{AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC};
 
 // ── Tests ───────────────────────────────────────────────────────────────────

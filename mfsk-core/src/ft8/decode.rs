@@ -15,6 +15,7 @@ use rayon::prelude::*;
 pub use super::equalizer::EqMode;
 use super::{
     Ft8,
+    decode_block::LlrT,
     downsample::build_fft_cache,
     equalizer,
     llr::sync_quality,
@@ -106,15 +107,6 @@ pub use crate::msg::ap::ApHint;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Per-candidate decode helper (used by both inner and sniper paths)
-
-/// `BpScratch`'s LLR-scalar type, matching `decode_block`'s own
-/// `LlrT` selection (`Q11i16` under `fixed-point-llr`, `f32`
-/// otherwise) — must track `decode_block`'s own alias, which is the
-/// one `process_one_candidate_inner`'s signature is written against.
-#[cfg(feature = "fixed-point-llr")]
-type LlrT = crate::engine::scalar::Q11i16;
-#[cfg(not(feature = "fixed-point-llr"))]
-type LlrT = f32;
 
 /// Decode a single sync candidate: downsample → refine → LLR → BP/OSD.
 ///
