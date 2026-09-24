@@ -2,6 +2,22 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT8's host decode loops share one dedup, one sniper candidate
+  closure, one AP hypothesis list and one policy check (#423, first
+  slice).** The `message77` dedup was written five times in
+  `ft8::decode` and `decode_block`; it is now
+  `pipeline::has_message77` / `dedup_unique`. `decode_sniper_inner`
+  wrote its per-candidate closure three times (budgeted, parallel,
+  sequential) and now writes it once. The AP pass list in
+  `process_one_candidate_inner` was `msg::pipeline_ap::ap_passes` line
+  for line and now calls it, adding only FT8's own passes 5 and 12; the
+  `policy.accepts(codec_is_plausible, FT8_FILTERS, ..)` pair became
+  `policy_accepts`. No behaviour change: tier A+B is 815 passed before
+  and after, `ft8_qso3_apoff_recall` passes under `fixed-point`, and
+  the pre-push feature matrix is green. Still open under #423: the two
+  SIC drivers, `fill_symbol_spectra_via_cd0`, the shift loop in
+  `triage_candidate`, and `recompute_nsync`.
+
 - **`src/`-side test WAV loaders have one implementation per protocol,
   not one per diagnostic probe (#421 continued).** JT9's own
   `#[ignore]`d probes (`rx.rs`, `decode.rs`, `mod.rs`, `search.rs`,
