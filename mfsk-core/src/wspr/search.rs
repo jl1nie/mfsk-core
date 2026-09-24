@@ -49,7 +49,7 @@ use crate::engine::search::{SearchWindow, rank_and_truncate};
 /// 16 was far too tight for a busy band: the coarse search ranks by
 /// sync, and on an 8-signal recording the strong stations plus noise
 /// peaks fill the list long before a -23 dB signal gets a look in.
-pub fn default_search_params() -> SearchParams {
+pub const fn default_search_params() -> SearchParams {
     SearchParams {
         freq_min_hz: 1400.0,
         freq_max_hz: 1600.0,

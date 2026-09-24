@@ -65,7 +65,7 @@ use crate::engine::search::{SearchWindow, best_lag_in_bin, rank_and_truncate};
 /// apparent late reach is not usable reach, and this window already
 /// covers what the reference actually achieves. Guarded by
 /// `tests/dt_window.rs::jt9_window_reaches_reference_late_edge`.
-pub fn default_search_params() -> SearchParams {
+pub const fn default_search_params() -> SearchParams {
     SearchParams::symmetric(200.0, 4000.0, 1.728, 8)
 }
 

@@ -263,20 +263,10 @@ fn triage_candidate(
     // brought any non-zero `delf_hz` to 0), so fixed-tone Costas
     // references in `fine_sync_power_per_block` align correctly.
     let i_start = ((refined.dt_sec + 0.5) * 200.0).round() as i32;
-    let sync_cv = {
-        let scores =
-            crate::engine::sync::fine_sync_power_per_block::<crate::ft8::Ft8>(&cd0, i_start);
-        let sa = scores.first().copied().unwrap_or(0.0);
-        let sb = scores.get(1).copied().unwrap_or(0.0);
-        let sc = scores.get(2).copied().unwrap_or(0.0);
-        let mean = (sa + sb + sc) / 3.0;
-        if mean > f32::EPSILON {
-            let sq = (sa - mean).powi(2) + (sb - mean).powi(2) + (sc - mean).powi(2);
-            sq.sqrt() / mean
-        } else {
-            0.0
-        }
-    };
+    let sync_cv =
+        crate::engine::sync::sync_power_cv(&crate::engine::sync::fine_sync_power_per_block::<
+            crate::ft8::Ft8,
+        >(&cd0, i_start));
     drop(cd0);
     // cs from 12 kHz audio directly via `fill_symbol_spectra` —
     // matches embedded `decode_block`'s per-symbol-region DFT exactly.

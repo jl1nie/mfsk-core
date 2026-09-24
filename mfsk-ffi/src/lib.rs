@@ -414,9 +414,16 @@ pub unsafe extern "C" fn mfsk_callsign_hash_table_insert(
 // Q65 helpers (sub-mode dispatch + decoded-message push)
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Wide search params used by every `mfsk_q65_*` decode entry point —
-/// matches the Rust-side defaults that work across both terrestrial
-/// Q65-30A and EME 60A‥E recordings.
+/// Wide search params used by every `mfsk_q65_*` decode entry point,
+/// chosen to work across both terrestrial Q65-30A and EME 60A‥E
+/// recordings.
+///
+/// This is **not** the library's Q65 default, and is not what
+/// `mfsk_mode_defaults` reports for Q65: that is
+/// `q65::search::default_search_params()` (8 candidates, threshold 0.1),
+/// read through the registry (#413). The registry used to publish these
+/// values instead, which made the ABI's answer and the library's
+/// disagree without saying so.
 fn q65_default_search(submode: MfskQ65SubMode) -> mfsk_core::q65::SearchParams {
     // Was a flat `time_tolerance_symbols: 50` before issue #282 moved
     // the field to seconds. Symbols are sub-mode-dependent, so the

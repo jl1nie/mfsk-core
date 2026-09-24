@@ -95,7 +95,7 @@ use crate::engine::search::{SearchWindow, best_lag_in_bin, rank_and_truncate};
 /// against a reference that goes to +5.5 s. Both slipped
 /// through because every in-tree Q65 test passes explicit
 /// tolerances and none exercised the default.
-pub fn default_search_params() -> SearchParams {
+pub const fn default_search_params() -> SearchParams {
     SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,

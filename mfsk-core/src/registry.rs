@@ -422,52 +422,96 @@ const FST4_PROFILE: DecodeProfile = DecodeProfile {
     sniper_max_cand_cap: None,
 };
 
+/// A mode's own [`SearchParams`](crate::engine::search::SearchParams)
+/// default, as the registry publishes it.
+///
+/// WSPR, JT9, JT65 and Q65 each carry a `default_search_params()` that
+/// their `DecodeRequest` starts from, so for them the library is the
+/// source and the registry only reads it (#413). The hand-written copies
+/// this replaced had drifted from all four: WSPR and JT9/JT65 published
+/// no band at all, and Q65 published `mfsk-ffi`'s wide EME scan (32
+/// candidates, threshold 0.05) instead of the library's own 8 / 0.1.
+#[cfg(all(
+    any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"),
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
+const fn defaults_from(p: crate::engine::search::SearchParams) -> DecodeDefaults {
+    DecodeDefaults {
+        freq_min_hz: p.freq_min_hz,
+        freq_max_hz: p.freq_max_hz,
+        sync_min: p.score_threshold,
+        max_cand: p.max_candidates as u32,
+    }
+}
+
+/// `$m`'s published defaults. Without an FFT backend these modes build
+/// their types and encoders but no `search` module and no decoder, so
+/// there is nothing to default and the band is empty.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[allow(unused_macros)] // none of the four modes built
+macro_rules! scan_defaults {
+    ($m:ident) => {
+        defaults_from(crate::$m::search::default_search_params())
+    };
+}
+#[cfg(not(any(feature = "fft-rustfft", feature = "fft-extern")))]
+#[allow(unused_macros)] // none of the four modes built
+macro_rules! scan_defaults {
+    ($m:ident) => {
+        DecodeDefaults {
+            freq_min_hz: 0.0,
+            freq_max_hz: 0.0,
+            sync_min: 0.0,
+            max_cand: 0,
+        }
+    };
+}
+
 /// Q65. Not `FrameDecodable`: its own builder family takes search
 /// parameters with a time tolerance and a nominal start-sample anchor,
 /// and reports `start_sample` rather than a `dt`. It has streaming and
 /// a callsign hash table, and neither `known` nor a budget.
 ///
-/// The defaults mirror what `mfsk-ffi`'s Q65 family already hardcodes.
-#[allow(dead_code)]
+/// Defaults are `q65::search::default_search_params()`. `mfsk-ffi`'s
+/// `mfsk_q65_*` family deliberately scans wider than this (it takes no
+/// alignment hint and is documented for unaligned EME recordings), and
+/// says so where it builds its own parameters.
+#[cfg(feature = "q65")]
 const Q65_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::AP_NARROW | caps::ON_RESULT | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 200.0,
-        freq_max_hz: 3000.0,
-        sync_min: 0.05,
-        max_cand: 32,
-    },
+    defaults: scan_defaults!(q65),
     sync_scale: SyncScale::CostasAbsolute,
     sniper_max_cand_cap: None,
 };
 
-/// WSPR. A whole-slot scan with its own subtract pass; no builder, no
-/// candidate budget a caller can set.
-#[allow(dead_code)]
+/// WSPR. A whole-slot scan with its own subtract pass. Defaults are
+/// `wspr::search::default_search_params()`, which is also what
+/// `mfsk_wspr_decode` scans with.
+#[cfg(feature = "wspr")]
 const WSPR_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::ON_RESULT | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 1400.0,
-        freq_max_hz: 1600.0,
-        sync_min: 0.0,
-        max_cand: 0,
-    },
+    defaults: scan_defaults!(wspr),
     sync_scale: SyncScale::CostasAbsolute,
     sniper_max_cand_cap: None,
 };
 
-/// JT9 and JT65. Fixed-carrier, fixed-alignment `decode_at` — there is
-/// no search to configure, which is why the defaults are the nominal
-/// carrier rather than a band.
-#[allow(dead_code)]
-const JT_PROFILE: DecodeProfile = DecodeProfile {
+/// JT9. `DecodeRequest::new` scans with
+/// `jt9::search::default_search_params()`; `DecodeRequest::sniper` is
+/// the fixed-carrier point decode, which is the only one `mfsk-ffi`
+/// exposes (`mfsk_jt9_decode_at`).
+#[cfg(feature = "jt9")]
+const JT9_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::ON_RESULT | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 0.0,
-        freq_max_hz: 0.0,
-        sync_min: 0.0,
-        max_cand: 0,
-    },
+    defaults: scan_defaults!(jt9),
+    sync_scale: SyncScale::CostasAbsolute,
+    sniper_max_cand_cap: None,
+};
+
+/// JT65. As JT9, with `jt65::search::default_search_params()`.
+#[cfg(feature = "jt65")]
+const JT65_PROFILE: DecodeProfile = DecodeProfile {
+    caps: caps::ON_RESULT | caps::ENCODE,
+    defaults: scan_defaults!(jt65),
     sync_scale: SyncScale::CostasAbsolute,
     sniper_max_cand_cap: None,
 };
@@ -520,9 +564,9 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     #[cfg(feature = "wspr")]
     protocol_meta!("WSPR", crate::Wspr, WSPR_PROFILE),
     #[cfg(feature = "jt9")]
-    protocol_meta!("JT9", crate::Jt9, JT_PROFILE),
+    protocol_meta!("JT9", crate::Jt9, JT9_PROFILE),
     #[cfg(feature = "jt65")]
-    protocol_meta!("JT65", crate::Jt65, JT_PROFILE),
+    protocol_meta!("JT65", crate::Jt65, JT65_PROFILE),
     #[cfg(feature = "q65")]
     protocol_meta!("Q65-15A", crate::q65::Q65a15, Q65_PROFILE),
     #[cfg(feature = "q65")]
@@ -686,5 +730,31 @@ mod tests {
         // on `for_protocol_id(Fst4)` resolving to it.
         let meta = for_protocol_id(ProtocolId::Fst4).expect("fst4 feature is on");
         assert_eq!(meta.name, "FST4-60A");
+    }
+
+    /// Where the library carries its own search default, the registry
+    /// publishes that and nothing else (#413). The hand-written copies
+    /// had drifted on all four modes before this was pinned.
+    #[cfg(all(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
+    #[test]
+    fn scan_defaults_are_the_library_defaults() {
+        use crate::engine::search::SearchParams;
+        let cases: [(&str, SearchParams); 4] = [
+            ("WSPR", crate::wspr::search::default_search_params()),
+            ("JT9", crate::jt9::search::default_search_params()),
+            ("JT65", crate::jt65::search::default_search_params()),
+            ("Q65-60A", crate::q65::search::default_search_params()),
+        ];
+        for (name, p) in cases {
+            let d = by_name(name).expect(name).profile.defaults;
+            assert_eq!(d.freq_min_hz, p.freq_min_hz, "{name}");
+            assert_eq!(d.freq_max_hz, p.freq_max_hz, "{name}");
+            assert_eq!(d.sync_min, p.score_threshold, "{name}");
+            assert_eq!(d.max_cand as usize, p.max_candidates, "{name}");
+            assert!(
+                d.freq_max_hz > d.freq_min_hz && d.max_cand > 0,
+                "{name}: no band"
+            );
+        }
     }
 }
