@@ -151,12 +151,7 @@ const CONFIGS: &[Config] = &[
 ];
 
 fn sweep_dir() -> std::path::PathBuf {
-    if let Ok(d) = std::env::var("MFSK_FT4_SWEEP_DIR") {
-        return std::path::PathBuf::from(d);
-    }
-    std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
-        .join("../embedded-poc/assets/ft4_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_FT4_SWEEP_DIR", "ft4_sweep")
 }
 
 /// Like [`run_ladder`] but returns the decoded message instead of

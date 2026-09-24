@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
 mod common;
-use common::load_wav_f32_opt;
+use common::{load_wav_f32_opt, parse_snr_tag};
 use mfsk_core::jt65::search::{SearchParams, default_search_params};
 use mfsk_core::jt65::{ChaseParams, DecodeRequest};
 
@@ -66,26 +66,10 @@ const GOLDEN_FREQ_HZ: f32 = 1500.0;
 const FREQ_TOL_HZ: f32 = 5.0;
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_JT65_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/jt65_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_JT65_SWEEP_DIR", "jt65_sweep")
 }
 
 /// Parse `jt65_awgn_<snr_tag>_<trial>.wav`. snr_tag: `m20` = -20, `p10` = +10.
-fn parse_snr_tag(tag: &str) -> Option<i32> {
-    if let Some(rest) = tag.strip_prefix('m') {
-        rest.parse::<i32>().ok().map(|v| -v)
-    } else if let Some(rest) = tag.strip_prefix('p') {
-        rest.parse::<i32>().ok()
-    } else {
-        None
-    }
-}
-
 fn is_golden(d: &mfsk_core::jt65::Jt65Result) -> bool {
     matches!(
         &d.message,

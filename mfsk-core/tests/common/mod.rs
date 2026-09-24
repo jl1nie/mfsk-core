@@ -247,3 +247,36 @@ pub fn skip_or_fail(what: &str) {
     }
     eprintln!("skipping: {what} not found");
 }
+
+/// Parses a corpus filename's SNR tag (`m05` → `-5`, `p03` → `3`) into
+/// its signed dB value. Pulled out of the per-protocol sweep tests
+/// (#421) — `ft8_sweep.rs`, `ft4_sweep.rs`, `fst4_sweep.rs`,
+/// `wspr_sweep.rs`, `jt9_sweep.rs`, `jt65_sweep.rs`, `q65_sim_sweep.rs`
+/// and the FST4 DDC sniper probes each carried a byte-identical copy.
+#[allow(dead_code)]
+pub fn parse_snr_tag(tag: &str) -> Option<i32> {
+    if let Some(rest) = tag.strip_prefix('m') {
+        rest.parse::<i32>().ok().map(|v| -v)
+    } else if let Some(rest) = tag.strip_prefix('p') {
+        rest.parse::<i32>().ok()
+    } else {
+        None
+    }
+}
+
+/// Resolves a tier-C sensitivity sweep's WAV corpus directory: an
+/// `env_var` override (e.g. `MFSK_FST4_SWEEP_DIR`) if set, else
+/// `embedded-poc/assets/<sub>` next to the crate. Pulled out of the
+/// per-protocol sweep tests (#421), which each hardcoded their own
+/// env var name and `<sub>` but were otherwise identical.
+#[allow(dead_code)]
+pub fn sweep_dir(env_var: &str, sub: &str) -> std::path::PathBuf {
+    if let Ok(d) = std::env::var(env_var) {
+        return std::path::PathBuf::from(d);
+    }
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    std::path::Path::new(&manifest)
+        .join("../embedded-poc/assets")
+        .join(sub)
+        .to_path_buf()
+}

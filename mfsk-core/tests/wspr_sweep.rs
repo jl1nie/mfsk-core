@@ -41,11 +41,11 @@
 
 #![cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[allow(dead_code)]
 mod common;
-use common::load_wav_f32_opt;
+use common::{load_wav_f32_opt, parse_snr_tag};
 #[cfg(feature = "internal-testing")]
 use mfsk_core::wspr::{DecodeRequest, SniperRequest, WsprCallsignTable};
 
@@ -54,26 +54,10 @@ const GOLDEN_FREQ_HZ: f32 = 1500.0;
 const FREQ_TOL_HZ: f32 = 4.0;
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_WSPR_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/wspr_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_WSPR_SWEEP_DIR", "wspr_sweep")
 }
 
 /// Parse `wspr_awgn_<snr_tag>_<trial>.wav`. snr_tag: `m28` = -28, `p05` = +5.
-fn parse_snr_tag(tag: &str) -> Option<i32> {
-    if let Some(rest) = tag.strip_prefix('m') {
-        rest.parse::<i32>().ok().map(|v| -v)
-    } else if let Some(rest) = tag.strip_prefix('p') {
-        rest.parse::<i32>().ok()
-    } else {
-        None
-    }
-}
-
 /// `(found the transmitted signal, number of decodes that are not it)`.
 ///
 /// Each corpus file contains exactly one transmitted message, so every

@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
 mod common;
-use common::load_wav_i16_opt;
+use common::{load_wav_i16_opt, parse_snr_tag};
 use mfsk_core::msg::wsjt77::unpack77;
 
 const GOLDEN_MSG: &str = "CQ JL1NIE PM95";
@@ -43,13 +43,7 @@ const FREQ_TOL_HZ: f32 = 5.0;
 const DT_TOL_SEC: f32 = 0.6;
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_FT4_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/ft4_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_FT4_SWEEP_DIR", "ft4_sweep")
 }
 
 // ── Channel conditions (must match gen_ft4_sweep_wavs.sh CHANNELS) ─────────
@@ -99,16 +93,6 @@ fn decode_wav_ft4(audio: &[i16]) -> bool {
 
 /// Parse `ft4_<channel>_<snr_tag>_<trial>.wav`.
 /// snr_tag: `m05` = -5, `p05` = +5.
-fn parse_snr_tag(tag: &str) -> Option<i32> {
-    if let Some(rest) = tag.strip_prefix('m') {
-        rest.parse::<i32>().ok().map(|v| -v)
-    } else if let Some(rest) = tag.strip_prefix('p') {
-        rest.parse::<i32>().ok()
-    } else {
-        None
-    }
-}
-
 struct WavMeta {
     channel: String,
     snr_db: i32,

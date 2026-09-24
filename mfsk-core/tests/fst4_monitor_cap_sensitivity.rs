@@ -115,13 +115,7 @@ fn budget_ok() -> bool {
 }
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_FST4_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/fst4_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_FST4_SWEEP_DIR", "fst4_sweep")
 }
 
 struct WavMeta {

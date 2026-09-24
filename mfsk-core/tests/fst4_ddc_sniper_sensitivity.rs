@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 #[allow(dead_code)]
 mod common;
-use common::load_wav_i16_opt;
+use common::{load_wav_i16_opt, parse_snr_tag};
 
 use mfsk_core::engine::dsp::ddc::ddc_block;
 use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
@@ -59,23 +59,7 @@ const DT_TOL_SEC: f32 = 0.6;
 const SEARCH_HALF_WIDTH_HZ: f32 = 250.0; // matches sniper_cascade's own ±250 Hz shape
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_FST4_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/fst4_sweep")
-        .to_path_buf()
-}
-
-fn parse_snr_tag(tag: &str) -> Option<i32> {
-    if let Some(rest) = tag.strip_prefix('m') {
-        rest.parse::<i32>().ok().map(|v| -v)
-    } else if let Some(rest) = tag.strip_prefix('p') {
-        rest.parse::<i32>().ok()
-    } else {
-        None
-    }
+    common::sweep_dir("MFSK_FST4_SWEEP_DIR", "fst4_sweep")
 }
 
 struct WavMeta {
