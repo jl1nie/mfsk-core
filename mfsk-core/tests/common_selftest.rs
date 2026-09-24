@@ -625,8 +625,12 @@ mod sharing_ratchet_selftest {
 
     #[test]
     fn scan_dedup_adoption_does_not_regress() {
+        // Since #419 the same-type form is `is_scan_dup` / `push_unique`
+        // over a `ScanRow` impl; JT65 keeps `scan_dedup_match_cross`.
         assert_no_regression("scan_dedup_match", EXPECTED_SCAN_DEDUP_ADOPTERS, |src| {
             src.contains("scan_dedup_match")
+                || src.contains("is_scan_dup")
+                || src.contains("push_unique")
         });
     }
 

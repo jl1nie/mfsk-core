@@ -233,31 +233,20 @@ pub fn demodulate_aligned(
     // before WSJT-X's own `-30` did, truncating the weakest decodes.
     //
     // Replaces an ad-hoc `[-24, +49]` pair. The ceiling also doubles
-    // as the answer when `xnoi_sum` is (near) exactly zero: a
-    // perfectly clean synthetic signal sampled with an integer number
-    // of cycles per FFT window can leave *zero* measurable leakage in
-    // the non-winning tones — that means "no measurable noise" (best
-    // case), not the worst case the floor implies. See the identical
-    // fix + explanation in `q65::rx::snr_db_from_sig_noi`, which keeps
-    // its own `49.0` because Q65 has no such display clamp.
+    // as the answer when `xnoi_sum` is (near) exactly zero ("no
+    // measurable noise", the best case) — see
+    // `engine::llr::snr_db_from_sig_noi`, which Q65 shares with its
+    // own `49.0` ceiling because Q65 has no such display clamp.
     const SNR_FLOOR_DB: f32 = -30.0;
     const SNR_CEIL_DB: f32 = -1.0;
-    let snr_db = if xnoi_sum < f32::EPSILON {
-        if xsig_sum < f32::EPSILON {
-            SNR_FLOOR_DB
-        } else {
-            SNR_CEIL_DB
-        }
-    } else {
-        let ratio = xsig_sum / xnoi_sum - 1.0;
-        if ratio <= 0.001 {
-            SNR_FLOOR_DB
-        } else {
-            let bw_offset_db =
-                10.0 * (2500.0 / <Jt65 as ModulationParams>::TONE_SPACING_HZ).log10();
-            (10.0 * ratio.log10() - bw_offset_db).clamp(SNR_FLOOR_DB, SNR_CEIL_DB)
-        }
-    };
+    let bw_offset_db = 10.0 * (2500.0 / <Jt65 as ModulationParams>::TONE_SPACING_HZ).log10();
+    let snr_db = crate::engine::llr::snr_db_from_sig_noi(
+        xsig_sum,
+        xnoi_sum,
+        bw_offset_db,
+        SNR_FLOOR_DB,
+        SNR_CEIL_DB,
+    );
 
     Some(Jt65Demod {
         symbols,

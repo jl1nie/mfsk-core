@@ -584,6 +584,40 @@ pub fn compute_snr_db<P: Protocol>(cs: &[Cmplx<f32>], itone: &[u8]) -> f32 {
     compute_snr_db_generic::<P, f32>(cs, itone)
 }
 
+/// `10·log10(xsig/xnoi − 1) − bw_offset_db`, clamped to
+/// `[floor_db, ceil_db]`: the power-ratio-to-dB step JT65's and Q65's
+/// SNR estimates share. Only the clamps differ between them: JT65 uses
+/// WSJT-X's own display clamp (−30 / −1, `jt65_decode.f90:254-255`),
+/// Q65 the −24 / 49 range this crate uses elsewhere. One copy since
+/// #419; each caller keeps its constants and their provenance.
+///
+/// `xnoi` (near) zero means "no measurable noise": a clean synthetic
+/// signal with an integer number of cycles per FFT window can leave
+/// zero leakage in the other bins. That is the best case, so it
+/// returns `ceil_db`, not the floor (`floor_db` only if the signal is
+/// zero too). A ratio at or below 0.001 returns the floor.
+#[cfg(any(feature = "jt65", feature = "q65"))]
+pub(crate) fn snr_db_from_sig_noi(
+    xsig: f32,
+    xnoi: f32,
+    bw_offset_db: f32,
+    floor_db: f32,
+    ceil_db: f32,
+) -> f32 {
+    if xnoi < f32::EPSILON {
+        return if xsig < f32::EPSILON {
+            floor_db
+        } else {
+            ceil_db
+        };
+    }
+    let ratio = xsig / xnoi - 1.0;
+    if ratio <= 0.001 {
+        return floor_db;
+    }
+    (10.0 * ratio.log10() - bw_offset_db).clamp(floor_db, ceil_db)
+}
+
 /// Same as [`compute_snr_db`] but generic over the [`SpecScalar`]
 /// type. The signal/noise sums use `S::Wide` accumulator and convert
 /// to f32 at the boundary, so a `Cmplx<Q14i16>` cs gives a sane SNR

@@ -59,6 +59,25 @@
   `pass`, on the FT4 and FST4 goldens under default, EQ, AP, OSD-off,
   SIC and loose-threshold requests, and on 108 synthetic weak-signal
   slots that reach the AP rung.
+- **One scan-dedup step and one SNR clamp across the scan modes
+  (#419).** JT9, WSPR and Q65 each passed the same `|r| &r.message,
+  |r| r.freq_hz, |r| r.start_sample as i64` closure triple to
+  `scan_dedup_match`, then repeated the same "report to `on_result`,
+  push" step. A `ScanRow` impl per result type now names those three
+  fields once. `push_unique` covers the dedup-report-push step, and
+  `is_scan_dup` covers the check alone for WSPR's SIC driver, which
+  subtracts between the check and the push. JT65 keeps
+  `scan_dedup_match_cross`, because its candidates are compared in
+  unpadded samples against padded rows (documented, and left as is).
+  WSPR's two copies of its dedup tolerances are now one pair of
+  module constants. JT65 and Q65 shared the same ratio → dB → clamp
+  code with different clamps. It is now
+  `engine::llr::snr_db_from_sig_noi(…, floor, ceil)`, and each mode
+  keeps its own constants (−30 / −1 and −24 / 49). Output is
+  bit-identical: every row and every `on_result` call, in order, for
+  the JT9 and JT65 recordings, the WSPR golden through both the scan
+  and the SIC driver, and five Q65 sub-modes' goldens (74 lines).
+
 - **Q65's receiver decodes through one tail and one scan loop (#418).**
   `q65/rx.rs` repeated the same blocks across its strategies:
   - the "BP, biased by the AP hint when it has one" match, 3 times

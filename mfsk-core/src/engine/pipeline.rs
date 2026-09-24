@@ -1615,30 +1615,61 @@ pub(crate) fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec
 /// costs, but changing any of them here is out of scope: this moves
 /// code, not thresholds.
 #[cfg(any(feature = "jt9", feature = "wspr", feature = "q65"))]
-pub(crate) fn scan_dedup_match<T, M: PartialEq>(
+pub(crate) fn is_scan_dup<T: ScanRow>(
     seen: &[T],
     cand: &T,
-    msg: impl Fn(&T) -> &M,
-    freq_hz: impl Fn(&T) -> f32,
-    start_sample: impl Fn(&T) -> i64,
     freq_tol_hz: f32,
     time_tol_samples: i64,
 ) -> bool {
     scan_dedup_match_cross(
         seen,
         cand,
-        &msg,
-        &freq_hz,
-        &start_sample,
-        &msg,
-        &freq_hz,
-        &start_sample,
+        T::scan_message,
+        T::scan_freq_hz,
+        T::scan_start_sample,
+        T::scan_message,
+        T::scan_freq_hz,
+        T::scan_start_sample,
         freq_tol_hz,
         time_tol_samples,
     )
 }
 
-/// [`scan_dedup_match`], but `seen: &[S]` and `cand: &C` may be
+/// The three fields a decode-scan row is deduplicated on. One impl per
+/// result type replaces the `|r| &r.message, |r| r.freq_hz,
+/// |r| r.start_sample as i64` closure triple every call site used to
+/// spell out (#419).
+#[cfg(any(feature = "jt9", feature = "wspr", feature = "q65"))]
+pub(crate) trait ScanRow {
+    type Message: PartialEq;
+    fn scan_message(&self) -> &Self::Message;
+    fn scan_freq_hz(&self) -> f32;
+    fn scan_start_sample(&self) -> i64;
+}
+
+/// Push `cand` onto `seen` unless [`is_scan_dup`] says it is already
+/// there, reporting it to `on_result` first. Returns the pushed row, or
+/// `None` for a duplicate. The accept-and-report step every scan loop
+/// ran after its dedup check (#419).
+#[cfg(any(feature = "jt9", feature = "wspr", feature = "q65"))]
+pub(crate) fn push_unique<'s, T: ScanRow>(
+    seen: &'s mut Vec<T>,
+    cand: T,
+    freq_tol_hz: f32,
+    time_tol_samples: i64,
+    on_result: Option<&(dyn Fn(&T) + Sync)>,
+) -> Option<&'s T> {
+    if is_scan_dup(seen, &cand, freq_tol_hz, time_tol_samples) {
+        return None;
+    }
+    if let Some(cb) = on_result {
+        cb(&cand);
+    }
+    seen.push(cand);
+    seen.last()
+}
+
+/// [`is_scan_dup`], but `seen: &[S]` and `cand: &C` may be
 /// different types.
 ///
 /// `jt65::mod`'s two call sites need this rather than the same-type
