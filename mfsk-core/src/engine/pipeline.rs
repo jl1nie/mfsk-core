@@ -26,7 +26,9 @@ use super::llr::{
     sync_quality,
 };
 use super::protocol::BpPooledFec;
-use super::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync, fine_sync_power_per_block};
+use super::sync::{
+    AudioSource, RxGrid, SyncCandidate, coarse_sync, fine_sync_power_per_block, sync_power_cv,
+};
 use super::{FecOpts, MessageCodec, Protocol};
 
 // ── Stage-timing trace (host diagnostic only) ───────────────────────────────
@@ -1099,19 +1101,7 @@ where
         #[cfg(feature = "std")]
         TRACE_NSYNC_PASS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-        let per_block = fine_sync_power_per_block::<P>(cd0, i0);
-        let sync_cv = if !per_block.is_empty() {
-            let n = per_block.len() as f32;
-            let mean = per_block.iter().sum::<f32>() / n;
-            if mean > f32::EPSILON {
-                let var = per_block.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
-                var.sqrt() / mean
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
+        let sync_cv = sync_power_cv(&fine_sync_power_per_block::<P>(cd0, i0));
 
         let decode = |cs: &[Complex<f32>]| -> Option<DecodeResult> {
             let fec = P::Fec::default();

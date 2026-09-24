@@ -654,9 +654,9 @@ FT4 も同じ CRC-14 と同じ SIC 経路を持つので、自前の実測が揃
 | **MSK144** | T/R 周期全体のバースト走査 | — |
 
 **事前情報デコード (AP) は sniper の機能ではなく一般の選択肢である。**
-AP は `process_candidate_basic` 自身の ladder の一段であり、FT8・FT4・
-FST4 全サブモードに届く。`msg::pipeline_ap` は仮説生成だけで自前の
-エンジンを持たない。かつて偶然 sniper と結合しており、それがデコードの
+AP は候補ごとの ladder の最後の一段である — FT4 と FST4 全サブモードでは
+`process_candidate_basic` の、FT8 では FT8 自身の ladder の。
+`msg::pipeline_ap` は仮説生成だけで自前のエンジンを持たない。かつて偶然 sniper と結合しており、それがデコードの
 大半を失わせていた — 実測は
 [`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md) にある。
 

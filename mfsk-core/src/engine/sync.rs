@@ -1835,6 +1835,31 @@ pub fn fine_sync_power<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> f32 {
     fine_sync_power_per_block::<P>(cd0, i0).into_iter().sum()
 }
 
+/// Coefficient of variation of the per-block sync powers from
+/// [`fine_sync_power_per_block`]: population standard deviation over the
+/// mean, `0.0` for an empty slice or a zero mean. Near 0 on a stable
+/// channel, elevated under QSB — what [`DecodeResult::sync_cv`] reports.
+///
+/// One definition for every protocol (#414). FT8 used to take the root
+/// of the summed squares without dividing by the block count, so its
+/// three-block value came out √3 larger than FT4's and FST4's for the
+/// same channel.
+///
+/// [`DecodeResult::sync_cv`]: crate::engine::pipeline::DecodeResult::sync_cv
+pub fn sync_power_cv(per_block: &[f32]) -> f32 {
+    if per_block.is_empty() {
+        return 0.0;
+    }
+    let n = per_block.len() as f32;
+    let mean = per_block.iter().sum::<f32>() / n;
+    if mean > f32::EPSILON {
+        let var = per_block.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
+        var.sqrt() / mean
+    } else {
+        0.0
+    }
+}
+
 /// Per-block Costas correlation powers for diagnostics and the FT8 double-sync.
 ///
 /// Each block's Costas reference comes from `with_costas_ref`, which
@@ -1971,7 +1996,7 @@ mod tests {
     use super::{
         AudioSource, DEDUP_HZ, DEDUP_SEC, PI, Protocol, RxGrid, SyncCandidate, SyncDims,
         compute_spectra, dedup_suppress, make_costas_ref, make_costas_ref_flat, score_costas_block,
-        score_costas_block_flat,
+        score_costas_block_flat, sync_power_cv,
     };
     use crate::engine::protocol::{FrameLayout, ModulationParams};
     use crate::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
@@ -2178,5 +2203,20 @@ mod tests {
                 assert_eq!(w.score, g.score, "df={df}: candidate {i} score differs");
             }
         }
+    }
+
+    /// Population CV, the same for every block count (#414). FT8 used
+    /// to report `sqrt(Σ(x−mean)²)/mean`, √3 times this for its three
+    /// blocks.
+    #[test]
+    fn sync_power_cv_is_the_population_cv() {
+        assert_eq!(sync_power_cv(&[]), 0.0);
+        assert_eq!(sync_power_cv(&[0.0, 0.0, 0.0]), 0.0);
+        assert_eq!(sync_power_cv(&[5.0, 5.0, 5.0]), 0.0);
+        // mean 2, variance 2/3.
+        let cv = sync_power_cv(&[1.0, 2.0, 3.0]);
+        assert!((cv - (2.0f32 / 3.0).sqrt() / 2.0).abs() < 1e-6, "{cv}");
+        // Scale-free: a louder channel with the same shape reads the same.
+        assert!((sync_power_cv(&[10.0, 20.0, 30.0]) - cv).abs() < 1e-6);
     }
 }

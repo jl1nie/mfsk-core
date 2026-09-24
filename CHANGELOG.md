@@ -2,6 +2,51 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **The registry publishes the library's own search defaults for
+  WSPR, JT9, JT65 and Q65 (#413).** `registry.rs` held hand-written
+  `DecodeDefaults` for these four, and all four had drifted from the
+  `default_search_params()` their `DecodeRequest` actually starts from:
+
+  | mode | published before | now (= the library's default) |
+  |---|---|---|
+  | WSPR | no band, `max_cand` 0 | 1400–1600 Hz, 200 candidates, threshold 0.1 |
+  | JT9 | no band, `max_cand` 0 | 200–4000 Hz, 8, 0.1 |
+  | JT65 | no band, `max_cand` 0 | 1000–2000 Hz, 8, 0.1 |
+  | Q65 (every sub-mode) | 200–3000 Hz, 32, 0.05 | 200–3000 Hz, 8, 0.1 |
+
+  The profiles now read those functions (which became `const fn`)
+  instead of copying them, and a test pins the equality. Through the C
+  ABI, `mfsk_mode_defaults` therefore returns `MFSK_STATUS_OK` with a
+  real band for WSPR, JT9 and JT65, where it used to return
+  `MFSK_STATUS_UNSUPPORTED`. For Q65 it reports the library's 8 / 0.1.
+  The old 32 / 0.05 values were the `mfsk_q65_*` family's own
+  deliberately wide EME scan, which is unchanged. What those entry
+  points decode with is unchanged too: only the published numbers moved.
+
+  These four modes also get their own `SyncScale::SyncFraction`
+  (`MFSK_SYNC_SCALE_SYNC_FRACTION = 2`, and `.syncFraction` in Swift).
+  Their score is sync power as a fraction of sync plus noise, 0‥1, and
+  Q65 had been labelled `CostasAbsolute` beside FT8's 0.8, inviting
+  exactly the cross-mode copy the field exists to stop. ABI revision 2
+  has not shipped yet, so the new value does not bump it.
+
+- **`DecodeResult::sync_cv` means the same thing on every protocol
+  (#414).** FT8 computed the per-Costas-block coefficient of variation
+  as `sqrt(Σ(x−mean)²)/mean`, without dividing by the block count, so
+  its value was √3 times what FT4 and FST4 report for the same channel.
+  Both paths now call one `engine::sync::sync_power_cv`, the population
+  CV. FT8's reported `sync_cv` drops by that factor. Nothing in the
+  library, the FFI or the board crates thresholds on it. The old
+  `sync_cv > 0.3` QSB gain gate was retired when FT8 moved to
+  `subtract_tones_lpf`.
+
+- **Docs: FT8's AP rung is on FT8's own ladder (#415).** `CLAUDE.md`,
+  `DESIGN_RATIONALE.md` §3 and `LIBRARY.md` / `.ja.md` said AP reaches
+  FT8 through `process_candidate_basic`. FT8 does not implement
+  `GenericPipelineProtocol`: its AP rung ends
+  `ft8::decode_block::process_one_candidate_inner`, which builds the
+  same hypotheses inline. Unifying the two ladders is #423.
+
 - **One synthesis entry point, `engine::tx::synthesize::<P>` (breaking,
   #391).** Each mode had its own family: `tones_to_f32` / `_i16` /
   `_into` in `ft8::wave_gen` and `ft4::encode`, the same plus

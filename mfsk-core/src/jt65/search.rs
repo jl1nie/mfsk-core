@@ -46,7 +46,7 @@ use crate::engine::search::{SearchWindow, rank_and_truncate};
 ///
 /// 1000-2000 Hz is where JT65 activity actually sits; ±7.62 s is the
 /// window WSJT-X's own search covers.
-pub fn default_search_params() -> SearchParams {
+pub const fn default_search_params() -> SearchParams {
     SearchParams::symmetric(1000.0, 2000.0, 7.62, 8)
 }
 

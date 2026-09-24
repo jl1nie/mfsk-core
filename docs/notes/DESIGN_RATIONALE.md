@@ -97,10 +97,14 @@ was entirely the ladder: `process_candidate_ap` offered OSD at depth 2
 with no depth-3/4 escalation and no Top-K rescue, and most of that
 recording's decodes come from exactly those.
 
-**The engine is now gone.** AP is a rung at the end of
-`engine::pipeline::process_candidate_basic`'s own ladder — everything
-above it has already run and failed, so it can only add decodes — and
-it therefore reaches FT8, FT4 and every FST4 sub-mode.
+**The engine is now gone.** AP is a rung at the end of the
+per-candidate ladder — everything above it has already run and failed,
+so it can only add decodes. For FT4 and every FST4 sub-mode that ladder
+is `engine::pipeline::process_candidate_basic`. FT8 does not implement
+`GenericPipelineProtocol` and never reaches it: its AP rung sits at the
+end of its own ladder, `ft8::decode_block::process_one_candidate_inner`,
+which builds the same hypotheses inline rather than calling
+`ap_passes` (#415; unifying the two ladders is #423).
 `msg::pipeline_ap` is what remains: `ap_passes` (the hypothesis set,
 WSJT-X's `iaptype` equivalents) and `ap_bits_for`, 96 lines with no
 engine of its own.
