@@ -2,7 +2,20 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
-- **One synthesis entry point, `engine::tx::synthesize::<P>` (breaking,
+- **The generic pipeline's candidate ladder finishes a decode in one
+  place (#416).** Every converging rung of
+  `process_candidate_basic_impl` (BP, OSD depth 2/3, OSD depth 4, and
+  AP) ended with the same re-encode → `snr_db` → descramble → message
+  gate → `DecodeResult` block, written out four times. It is one
+  `finish` closure now. FT4's single-pass strategy and the FST4 macro's
+  were the same 60 lines, comment block included; both call
+  `msg::decode_request::generic_single_pass` with their own downsample
+  config and `nsync` floor. About 110 lines go. Decodes are
+  bit-identical: every `DecodeResult` field, including `snr_db` and
+  `pass`, on the FT4 and FST4 goldens under default, EQ, AP, OSD-off,
+  SIC and loose-threshold requests, and on 108 synthetic weak-signal
+  slots that reach the AP rung.
+
   #391).** Each mode had its own family: `tones_to_f32` / `_i16` /
   `_into` in `ft8::wave_gen` and `ft4::encode`, the same plus
   `_with_gfsk` and `synth_sample_count` in `fst4::encode`,

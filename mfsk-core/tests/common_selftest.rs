@@ -606,7 +606,11 @@ mod sharing_ratchet_selftest {
         assert_no_regression(
             "known_filtered_on_result",
             EXPECTED_KNOWN_FILTER_ADOPTERS,
-            |src| src.contains("known_filtered_on_result"),
+            // Since #416 the single-pass strategy of both adopters is
+            // `msg::decode_request::generic_single_pass`, which applies
+            // the filter itself. FST4 has no other strategy, so calling
+            // that helper is its whole adoption evidence.
+            |src| src.contains("known_filtered_on_result") || src.contains("generic_single_pass"),
         );
     }
 
