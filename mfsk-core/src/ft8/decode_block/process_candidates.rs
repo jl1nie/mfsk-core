@@ -32,8 +32,8 @@ use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
 use super::fill_symbol_spectra::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
 use super::spectrogram::{Spectrogram, compute_spectrogram};
 use super::types::{
-    AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC, NMS_ALPHA, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ,
-    TX_START_OFFSET_S,
+    AudioSample, DEFAULT_Q_THRESH, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, SAMPLE_RATE_HZ,
+    TONE_SPACING_HZ, TX_START_OFFSET_S,
 };
 use crate::engine::scalar::{Cmplx, ComplexSpec};
 use crate::engine::sync::SyncCandidate;
@@ -1265,49 +1265,8 @@ where
     count
 }
 
-/// LLR / BP scalar for the hot loop. `Q11i16` (i16, ±16 range,
-/// 1/2048 resolution, ~12 KB BP scratch on FT8 LDPC(174,91)) under
-/// `fixed-point` (embedded integer pipeline); `f32` otherwise
-/// (host / FPU targets). Both go through the same generic NMS
-/// implementation in `fec::ldpc::bp`.
-///
-/// LlrT history:
-/// - 0.5.x: `Q3i8` (i8, ±16, ~1/8 LSB resolution, ~6 KB BP scratch).
-///   Issue #15 Phase 1 host-only sweep (2026-05-03) initially read
-///   as recall-equivalent to `Q11i16`.
-/// - 0.6.2 / 0.6.3: switched to `Q11i16`. The wider real-silicon
-///   LX7 sweep showed the Q3i8 quantization step (~0.875 LLR units
-///   between codes) was the dominant recall ceiling on Xtensa
-///   builds — pre-0.6.3 host fixed-point + rustfft hit 16/18 with
-///   f32 but only 9/18 with Q3i8 on `qso3_busy.wav` (the host f32
-///   number later dropped to 13/18 in 0.6.3 when OSD tightening
-///   removed 3 CRC-luck phantoms; the Q3i8-vs-f32 gap that
-///   motivated the widening was measured before that). `Q11i16`'s
-///   1/2048 resolution closes the LLR-resolution gap fully on
-///   host (host fixed-point reaches f32-equivalent recall), but
-///   on real silicon the embedded gain is only 1 entry — embedded
-///   recall went 6/18 → 6/18 + 1 bonus = 7 total (XE2X HA2NP RR73),
-///   not the ~10/18 the host sweep had projected. The remaining
-///   headroom is blocked by other parts of the embedded pipeline
-///   (NSTEP-half, coarse-sync simplifications, no `fine_refine_pass1`),
-///   not by the LLR scalar itself. Cost: BP scratch doubles from
-///   ~6 KB to ~12 KB, still inside the S3 / Core2 internal-DRAM
-///   budget.
-///
-/// `Q3i8` stays in `engine::scalar` for the comparison path.
-///
-/// - 0.10.x: `fixed-point` stopped implying it (issue #349). On the
-///   board this was built for, `Q11i16` BP measures **0.85x f32** —
-///   22 813 us against 19 455 on a CoreS3, same LLRs and same
-///   `max_iter` — because the LX7 has an f32 FPU and the saturating
-///   i16 helpers cost more than the narrower loads save. The scalar
-///   is now `fixed-point-llr`, off by default; `fixed-point` keeps
-///   the u16 spectrogram, which is where its 351 KB actually comes
-///   from.
-#[cfg(feature = "fixed-point-llr")]
-type LlrT = crate::engine::scalar::Q11i16;
-#[cfg(not(feature = "fixed-point-llr"))]
-type LlrT = f32;
+// LlrT (the BP scalar type) moved to `super::types` (#420) — see its
+// doc comment there for the type and its history.
 
 /// BP-kind switch (host-only). **Default `tanh`** (= WSJT-X
 /// `bpdecode174_91.f90` log-domain tanh-product, our

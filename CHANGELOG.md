@@ -59,6 +59,22 @@
   `pass`, on the FT4 and FST4 goldens under default, EQ, AP, OSD-off,
   SIC and loose-threshold requests, and on 108 synthetic weak-signal
   slots that reach the AP rung.
+- **One `LlrT` for FT8's host path, not two (#420).** `ft8::decode::decode`
+  and `ft8::decode_block::process_candidates` each declared their own
+  `LlrT` (`Q11i16` under `fixed-point-llr`, `f32` otherwise) with the
+  comment that the two "must track" each other. It is one type alias
+  now, in `decode_block::types`, carrying the LLR-scalar history both
+  copies used to repeat. `#420`'s other item — collapsing the six
+  `pub`-under-`internal-testing` / `pub(crate)`-otherwise signature
+  pairs in `engine::pipeline` — turned out not to be possible: `pub use`
+  cannot widen an item's own declared visibility (confirmed against
+  rustc), so avoiding the duplication would need a bespoke macro
+  parsing each function's generics and `where` clause, which is worse
+  for this file's readability than the duplication it would remove.
+  That item is closed as won't-fix; the issue's cfg-hotspot audit
+  stands as documentation of where the pipeline's `#[cfg]`s are, most
+  of them justified embedded/host splits per its own findings.
+
 - **One scan-dedup step and one SNR clamp across the scan modes
   (#419).** JT9, WSPR and Q65 each passed the same `|r| &r.message,
   |r| r.freq_hz, |r| r.start_sample as i64` closure triple to
