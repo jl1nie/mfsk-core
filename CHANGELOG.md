@@ -16,6 +16,7 @@
   SIC and loose-threshold requests, and on 108 synthetic weak-signal
   slots that reach the AP rung.
 
+- **One synthesis entry point, `engine::tx::synthesize::<P>` (breaking,
   #391).** Each mode had its own family: `tones_to_f32` / `_i16` /
   `_into` in `ft8::wave_gen` and `ft4::encode`, the same plus
   `_with_gfsk` and `synth_sample_count` in `fst4::encode`,
