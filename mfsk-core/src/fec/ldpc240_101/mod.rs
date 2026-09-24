@@ -18,8 +18,7 @@ use alloc::vec::Vec;
 use crate::engine::protocol::BpPooledFec;
 use crate::engine::{FecCodec, FecOpts, FecResult};
 use crate::fec::ldpc::bp::{
-    BpScratch, bp_decode_generic_kind, bp_decode_generic_kind_with_scratch, bp_llr_zsum,
-    bp_llr_zsum_with_scratch,
+    BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_with_scratch,
 };
 use crate::fec::ldpc::osd::{
     OsdResult, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic,
@@ -225,65 +224,8 @@ impl FecCodec for Ldpc240_101 {
     }
 
     fn decode_soft(&self, llr: &[f32], opts: &FecOpts<'_>) -> Option<FecResult> {
-        let (llr_arr, ap_storage) = prepare_ap_llr(llr, opts);
-        let ap_slice: Option<&[bool]> = ap_storage.as_deref();
-
-        if let Some(r) = bp_decode_generic_kind::<Ldpc240_101Params>(
-            &llr_arr,
-            ap_slice,
-            opts.bp_max_iter,
-            opts.verify_info,
-            opts.bp_kind,
-        ) {
-            return Some(FecResult {
-                info: r.info,
-                hard_errors: r.hard_errors,
-                iterations: r.iterations,
-            });
-        }
-
-        if opts.osd_depth == 0 {
-            return None;
-        }
-
-        if let Some(r) = fst4_osd_decode(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info) {
-            return Some(FecResult {
-                info: r.info,
-                hard_errors: r.hard_errors,
-                iterations: 0,
-            });
-        }
-
-        // Issue #146: WSJT-X's `decode240_101` never feeds OSD the raw
-        // channel LLR when BP fails — it feeds the running sum of BP's
-        // variable-node soft estimate across the first two iterations
-        // (`zsave` in `lib/fst4/decode240_101.f90:51-63`, `maxosd=2`).
-        // Diagnostic measurement (`fst4_diag_zsum_osd` in
-        // `tests/fst4_sweep.rs`) on FST4-120 near-threshold AWGN trials —
-        // the sub-mode with the largest residual gap vs WSJT-X — found
-        // this recovers real additional trials (35 of 106 OSD-relevant
-        // trials, raw-LLR-OSD recall 37→62 when tried *in addition to*
-        // the existing raw-LLR attempt) at the cost of 3 trials where
-        // raw succeeds and zsum alone would not — hence "try both", not
-        // "replace": only reached when the raw-LLR OSD attempt above
-        // already failed, so it can only add successes, never remove
-        // any. Skipped under AP hints (`ap_slice.is_some()`) — FST4
-        // doesn't wire AP decoding yet (issue #143), and
-        // `bp_llr_zsum` doesn't clamp AP-locked bits the way the main
-        // BP loop does, so running it under an AP mask would drift
-        // those bits away from their hinted value.
-        if ap_slice.is_none() {
-            let zsum = bp_llr_zsum::<Ldpc240_101Params>(&llr_arr, 2);
-            if let Some(r) = fst4_osd_decode(&zsum, opts.osd_depth.min(3) as u8, opts.verify_info) {
-                return Some(FecResult {
-                    info: r.info,
-                    hard_errors: r.hard_errors,
-                    iterations: 0,
-                });
-            }
-        }
-
-        None
+        // The pooled path with a fresh scratch: one body, not two (#417).
+        self.decode_soft_pooled(llr, opts, &mut BpScratch::new())
     }
 }
 
@@ -314,8 +256,7 @@ impl BpPooledFec for Ldpc240_101 {
             });
         }
 
-        // OSD fallback (raw-LLR attempt) stays unpooled — out of scope
-        // for this pass, identical to `decode_soft`'s tail above.
+        // OSD fallback (raw-LLR attempt) stays unpooled.
         if opts.osd_depth == 0 {
             return None;
         }
@@ -328,10 +269,28 @@ impl BpPooledFec for Ldpc240_101 {
             });
         }
 
-        // zsum-seeded OSD retry (issue #146 — see `decode_soft`'s doc
-        // comment for the full rationale) — pooled: `bp_llr_zsum_with_scratch`
-        // reuses the same `scratch` the BP staircase above already used,
-        // and returns a borrow instead of a fresh `Vec`.
+        // Issue #146: WSJT-X's `decode240_101` never feeds OSD the raw
+        // channel LLR when BP fails — it feeds the running sum of BP's
+        // variable-node soft estimate across the first two iterations
+        // (`zsave` in `lib/fst4/decode240_101.f90:51-63`, `maxosd=2`).
+        // Diagnostic measurement (`fst4_diag_zsum_osd` in
+        // `tests/fst4_sweep.rs`) on FST4-120 near-threshold AWGN trials —
+        // the sub-mode with the largest residual gap vs WSJT-X — found
+        // this recovers real additional trials (35 of 106 OSD-relevant
+        // trials, raw-LLR-OSD recall 37→62 when tried *in addition to*
+        // the existing raw-LLR attempt) at the cost of 3 trials where
+        // raw succeeds and zsum alone would not — hence "try both", not
+        // "replace": only reached when the raw-LLR OSD attempt above
+        // already failed, so it can only add successes, never remove
+        // any. Skipped under AP hints (`ap_slice.is_some()`) — FST4
+        // doesn't wire AP decoding yet (issue #143), and
+        // `bp_llr_zsum` doesn't clamp AP-locked bits the way the main
+        // BP loop does, so running it under an AP mask would drift
+        // those bits away from their hinted value.
+        //
+        // Pooled: `bp_llr_zsum_with_scratch` reuses the same `scratch`
+        // the BP staircase above already used, and returns a borrow
+        // instead of a fresh `Vec`.
         if ap_slice.is_none() {
             let zsum = bp_llr_zsum_with_scratch::<Ldpc240_101Params>(scratch, &llr_arr, 2);
             if let Some(r) = fst4_osd_decode(zsum, opts.osd_depth.min(3) as u8, opts.verify_info) {

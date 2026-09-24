@@ -1320,11 +1320,17 @@ type LlrT = f32;
 /// more decodes" only because its approximation error sometimes
 /// happens to land on a CRC-passing codeword that tanh would
 /// (correctly) reject.
+///
+/// Concrete `f32` rather than generic over `LlrScalar`: this branch only
+/// exists without `fixed-point`, and `fixed-point-llr` implies
+/// `fixed-point`, so `LlrT` is always `f32` here. That is what lets the
+/// `SumProduct` path use the `bp_scratch` it is handed instead of
+/// allocating its own per call (#417).
 #[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
 #[inline]
-fn bp_step_select<T: crate::engine::scalar::LlrScalar>(
-    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<crate::fec::ldpc::Ldpc174_91Params, T>,
-    llr: &[T; LDPC_N],
+fn bp_step_select(
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<crate::fec::ldpc::Ldpc174_91Params, f32>,
+    llr: &[f32; LDPC_N],
     max_iter: u32,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<crate::fec::ldpc::bp::BpResult> {
@@ -1337,12 +1343,18 @@ fn bp_step_select<T: crate::engine::scalar::LlrScalar>(
     // `std::sync::OnceLock<bool>` is sufficient and std-only.
     static USE_NMS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *USE_NMS.get_or_init(|| std::env::var("MFSK_BP_KIND").as_deref() == Ok("nms")) {
-        return crate::fec::ldpc::bp::bp_decode_nms_with_scratch::<T>(
+        return crate::fec::ldpc::bp::bp_decode_nms_with_scratch::<f32>(
             bp_scratch, llr, None, max_iter, verify, NMS_ALPHA,
         );
     }
-    let llr_f32: [f32; LDPC_N] = core::array::from_fn(|i| llr[i].to_f32());
-    crate::fec::ldpc::bp::bp_decode(&llr_f32, None, max_iter, verify)
+    crate::fec::ldpc::bp::bp_decode_generic_kind_with_scratch::<crate::fec::ldpc::Ldpc174_91Params>(
+        bp_scratch,
+        llr,
+        None,
+        max_iter,
+        verify,
+        crate::fec::ldpc::bp::BpKind::SumProduct,
+    )
 }
 
 #[cfg(any(not(feature = "fft-rustfft"), feature = "fixed-point"))]
@@ -1905,8 +1917,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // NMS implementation, bit-identical AWGN behaviour by design.
     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
         super::super::llr::compute_llr_fast(cs_scratch);
-    let bp_step1 =
-        bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
+    let bp_step1 = bp_step_select(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
     if let Some(bp) = bp_step1
         && bp.hard_errors <= strictness.ft8_nharderrors_max()
     {
@@ -1942,8 +1953,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
 
     if accepted.is_none() && run_d {
         // Variant d: free reuse of Step 1's llrd.
-        let bp_d =
-            bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llrd, bp_max_iter, Some(check_crc14));
+        let bp_d = bp_step_select(bp_scratch, &llr_a_fast.llrd, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_d
             && bp.hard_errors <= strictness.ft8_nharderrors_max()
         {
@@ -1959,7 +1969,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     let mut llrb_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_b {
         let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
-        let bp_b = bp_step_select::<LlrT>(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
+        let bp_b = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_b
             && bp.hard_errors <= strictness.ft8_nharderrors_max()
         {
@@ -1976,7 +1986,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     let mut llrc_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_c {
         let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
-        let bp_c = bp_step_select::<LlrT>(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
+        let bp_c = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_c
             && bp.hard_errors <= strictness.ft8_nharderrors_max()
         {

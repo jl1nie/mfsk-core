@@ -170,6 +170,37 @@ pub fn bp_decode_generic_kind<P: LdpcParams>(
     verify: Option<fn(&[u8]) -> bool>,
     kind: BpKind,
 ) -> Option<BpResult> {
+    // One body for both entry points (#417): this used to be a second,
+    // hand-kept copy of `bp_decode_generic_kind_with_scratch`'s loop.
+    // A fresh scratch is exactly the state the old per-call `vec!`s
+    // started from — see `BpScratch::reset`.
+    let mut scratch = BpScratch::<P, f32>::new();
+    bp_decode_generic_kind_with_scratch::<P>(&mut scratch, llr, ap_mask, max_iter, verify, kind)
+}
+
+/// [`bp_decode_generic_kind`] with caller-provided scratch — eliminates
+/// the ~9-Vec per-call allocation churn on whichever kernel is actually
+/// selected, `SumProduct` included (unlike [`bp_decode_generic_nms_with_scratch`],
+/// which only pools the `NormalizedMinSum`/`OffsetMinSum` kernels —
+/// `FecOpts::default()`'s `bp_kind` is `SumProduct`, and neither FT4 nor
+/// any FST4 sub-mode overrides it, so this is the kernel the generic
+/// pipeline's `decode_soft_pooled` ([`crate::engine::pipeline`]) and
+/// FT8's own host-default `bp_step_select` path actually need pooled).
+///
+/// This is the only copy of the loop: [`bp_decode_generic_kind`] is a
+/// shim that builds a fresh scratch and calls it, as
+/// [`bp_decode_generic_nms`] already did for the NMS kernel (#417).
+/// The kernel overview (min1/min2 + XOR-sign trick, the NMS threshold
+/// loss) is on [`bp_decode_generic_kind`]; the per-step notes are in
+/// the loop below.
+pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
+    scratch: &mut BpScratch<P, f32>,
+    llr: &[f32],
+    ap_mask: Option<&[bool]>,
+    max_iter: u32,
+    verify: Option<fn(&[u8]) -> bool>,
+    kind: BpKind,
+) -> Option<BpResult> {
     debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
     if let Some(m) = ap_mask {
         debug_assert_eq!(m.len(), P::N, "ap_mask length must equal P::N");
@@ -180,34 +211,22 @@ pub fn bp_decode_generic_kind<P: LdpcParams>(
     let k = P::K;
     let max_row = P::MAX_ROW;
 
-    // Heap-allocated working buffers. Sizes:
-    //   tov     : N * NCW   (≤ 720 bytes for ldpc240_101)
-    //   toc     : M * MAX_ROW
-    //   tanhtoc : M * MAX_ROW   (sum-product only)
-    //   per-check (min1, min2, idx_min1, sign_xor): 4 × M words
-    //                            (min-sum only)
-    //   zn      : N
-    //   cw      : N
-    // For both codes the total stays under 8 KB — negligible vs the
-    // 30+ BP iterations of inner-loop arithmetic.
-    let mut tov = vec![0f32; n * NCW];
-    let mut toc = vec![0f32; m_checks * max_row];
-    // Allocate tanhtoc only on the SumProduct path; min-sum doesn't
-    // need it. Saving the alloc + the per-iteration loop is one of
-    // the speedups; the rest comes from skipping `tanh` / `atanh`.
-    let mut tanhtoc: Vec<f32> = match kind {
-        BpKind::SumProduct => vec![0f32; m_checks * max_row],
-        BpKind::NormalizedMinSum { .. } | BpKind::OffsetMinSum { .. } => Vec::new(),
-    };
-    // Min-sum scratch: per check node, the two smallest |L|, the
-    // edge index that holds min1, and the XOR'd sign of all incoming
-    // edges (true = negative). Allocated on min-sum paths only.
-    let mut min1 = vec![0f32; m_checks];
-    let mut min2 = vec![0f32; m_checks];
-    let mut idx_min1 = vec![0u32; m_checks];
-    let mut sign_xor = vec![false; m_checks];
-    let mut zn = vec![0f32; n];
-    let mut cw = vec![0u8; n];
+    scratch.reset();
+    if matches!(kind, BpKind::SumProduct) {
+        scratch.ensure_tanhtoc();
+    }
+    let BpScratch {
+        tov,
+        toc,
+        tanhtoc,
+        min1,
+        min2,
+        idx_min1,
+        sign_xor,
+        zn,
+        cw,
+        ..
+    } = scratch;
 
     // Initial messages: each check node receives the raw LLR for the
     // bits it tests.
@@ -275,10 +294,12 @@ pub fn bp_decode_generic_kind<P: LdpcParams>(
                 }
                 let mut message77 = [0u8; 77];
                 message77.copy_from_slice(&decoded[..77]);
+                // Codeword is small (174 / 240 bytes); clone instead of
+                // moving so the scratch's `cw` Vec stays in the pool.
                 return Some(BpResult {
                     message77,
                     info: decoded,
-                    codeword: cw,
+                    codeword: cw.clone(),
                     hard_errors,
                     iterations: iter,
                 });
@@ -442,263 +463,6 @@ pub fn bp_decode_generic_kind<P: LdpcParams>(
     None
 }
 
-/// [`bp_decode_generic_kind`] with caller-provided scratch — eliminates
-/// the ~9-Vec per-call allocation churn on whichever kernel is actually
-/// selected, `SumProduct` included (unlike [`bp_decode_generic_nms_with_scratch`],
-/// which only pools the `NormalizedMinSum`/`OffsetMinSum` kernels —
-/// `FecOpts::default()`'s `bp_kind` is `SumProduct`, and neither FT4 nor
-/// any FST4 sub-mode overrides it, so this is the kernel the generic
-/// pipeline's `decode_soft_pooled` ([`crate::engine::pipeline`]) and
-/// FT8's own host-default `bp_step_select` path actually need pooled).
-///
-/// Body is [`bp_decode_generic_kind`]'s, mechanically scratch-threaded
-/// the same way [`bp_decode_generic_nms_with_scratch`] already
-/// scratch-threaded [`bp_decode_generic_nms`] — not a new pattern.
-pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
-    scratch: &mut BpScratch<P, f32>,
-    llr: &[f32],
-    ap_mask: Option<&[bool]>,
-    max_iter: u32,
-    verify: Option<fn(&[u8]) -> bool>,
-    kind: BpKind,
-) -> Option<BpResult> {
-    debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
-    if let Some(m) = ap_mask {
-        debug_assert_eq!(m.len(), P::N, "ap_mask length must equal P::N");
-    }
-
-    let n = P::N;
-    let m_checks = P::M;
-    let k = P::K;
-    let max_row = P::MAX_ROW;
-
-    scratch.reset();
-    if matches!(kind, BpKind::SumProduct) {
-        scratch.ensure_tanhtoc();
-    }
-    let BpScratch {
-        tov,
-        toc,
-        tanhtoc,
-        min1,
-        min2,
-        idx_min1,
-        sign_xor,
-        zn,
-        cw,
-        ..
-    } = scratch;
-
-    // Initial messages: each check node receives the raw LLR for the
-    // bits it tests.
-    for j in 0..m_checks {
-        let nrw_j = P::nrw(j) as usize;
-        for i in 0..nrw_j {
-            let bit = P::nm(j, i) as usize;
-            toc[j * max_row + i] = llr[bit];
-        }
-    }
-
-    let mut ncnt = 0u32;
-    let mut nclast = 0u32;
-
-    for iter in 0..=max_iter {
-        // Variable-node update: zn = llr + Σ tov, except AP-locked
-        // bits hold their LLR fixed.
-        for i in 0..n {
-            let ap = ap_mask.is_some_and(|mm| mm[i]);
-            if !ap {
-                let mut sum = 0.0f32;
-                for k_ in 0..NCW {
-                    sum += tov[i * NCW + k_];
-                }
-                zn[i] = llr[i] + sum;
-            } else {
-                zn[i] = llr[i];
-            }
-        }
-
-        // Hard decisions.
-        for i in 0..n {
-            cw[i] = if zn[i] > 0.0 { 1 } else { 0 };
-        }
-
-        // Count parity-violating checks.
-        let mut ncheck = 0u32;
-        for i in 0..m_checks {
-            let nrw_i = P::nrw(i) as usize;
-            let mut parity = 0u8;
-            for s in 0..nrw_i {
-                parity ^= cw[P::nm(i, s) as usize];
-            }
-            if parity != 0 {
-                ncheck += 1;
-            }
-        }
-
-        if ncheck == 0 {
-            let mut decoded = vec![0u8; k];
-            decoded.copy_from_slice(&cw[..k]);
-            let accept = match verify {
-                Some(f) => f(&decoded),
-                None => true,
-            };
-            if accept {
-                let mut hard_errors = 0u32;
-                for i in 0..n {
-                    if (cw[i] == 1) != (llr[i] > 0.0) {
-                        hard_errors += 1;
-                    }
-                }
-                let mut message77 = [0u8; 77];
-                message77.copy_from_slice(&decoded[..77]);
-                // Codeword is small (174 / 240 bytes); clone instead of
-                // moving so the scratch's `cw` Vec stays in the pool.
-                return Some(BpResult {
-                    message77,
-                    info: decoded,
-                    codeword: cw.clone(),
-                    hard_errors,
-                    iterations: iter,
-                });
-            }
-        }
-
-        // Stall detector: same heuristic as the WSJT-X reference.
-        if iter > 0 {
-            if ncheck < nclast {
-                ncnt = 0;
-            } else {
-                ncnt += 1;
-            }
-            if ncnt >= 5 && iter >= 10 && ncheck > 15 {
-                return None;
-            }
-        }
-        nclast = ncheck;
-
-        // Check-to-variable message update (extrinsic info).
-        for j in 0..m_checks {
-            let nrw_j = P::nrw(j) as usize;
-            for i in 0..nrw_j {
-                let ibj = P::nm(j, i) as usize;
-                let mut msg = zn[ibj];
-                let mn_ibj = P::mn(ibj);
-                for kk in 0..NCW {
-                    if mn_ibj[kk] as usize == j {
-                        msg -= tov[ibj * NCW + kk];
-                    }
-                }
-                toc[j * max_row + i] = msg;
-            }
-        }
-
-        match kind {
-            BpKind::SumProduct => {
-                // tanh half-message cache.
-                for i in 0..m_checks {
-                    let nrw_i = P::nrw(i) as usize;
-                    for k_ in 0..nrw_i {
-                        tanhtoc[i * max_row + k_] = (-toc[i * max_row + k_] / 2.0).tanh();
-                    }
-                }
-
-                // Variable-to-check message update via 2·atanh(∏ tanh(L/2)).
-                for j in 0..n {
-                    let mn_j = P::mn(j);
-                    for k_ in 0..NCW {
-                        let ichk = mn_j[k_] as usize;
-                        let nrw_ichk = P::nrw(ichk) as usize;
-                        let mut tmn = 1.0f32;
-                        for s in 0..nrw_ichk {
-                            let bit = P::nm(ichk, s) as usize;
-                            if bit != j {
-                                tmn *= tanhtoc[ichk * max_row + s];
-                            }
-                        }
-                        tov[j * NCW + k_] = 2.0 * platanh(-tmn);
-                    }
-                }
-            }
-            BpKind::NormalizedMinSum { .. } | BpKind::OffsetMinSum { .. } => {
-                for i in 0..m_checks {
-                    let nrw_i = P::nrw(i) as usize;
-                    let mut m1 = f32::INFINITY;
-                    let mut m2 = f32::INFINITY;
-                    let mut imin = 0_usize;
-                    let mut sx = false;
-                    for s in 0..nrw_i {
-                        let v = toc[i * max_row + s];
-                        if v < 0.0 {
-                            sx = !sx;
-                        }
-                        let av = v.abs();
-                        if av < m1 {
-                            m2 = m1;
-                            m1 = av;
-                            imin = s;
-                        } else if av < m2 {
-                            m2 = av;
-                        }
-                    }
-                    min1[i] = m1;
-                    min2[i] = m2;
-                    idx_min1[i] = imin as u32;
-                    sign_xor[i] = sx;
-                }
-
-                let alpha_eff = match kind {
-                    BpKind::NormalizedMinSum { alpha } => alpha,
-                    _ => 1.0,
-                };
-                let beta = match kind {
-                    BpKind::OffsetMinSum { beta } => beta,
-                    _ => 0.0,
-                };
-                let is_offset = matches!(kind, BpKind::OffsetMinSum { .. });
-
-                for j in 0..n {
-                    let mn_j = P::mn(j);
-                    for k_ in 0..NCW {
-                        let ichk = mn_j[k_] as usize;
-                        let nrw_ichk = P::nrw(ichk) as usize;
-                        let mut my_slot = nrw_ichk;
-                        for s in 0..nrw_ichk {
-                            if P::nm(ichk, s) as usize == j {
-                                my_slot = s;
-                                break;
-                            }
-                        }
-                        let my_v = if my_slot < nrw_ichk {
-                            toc[ichk * max_row + my_slot]
-                        } else {
-                            0.0
-                        };
-                        let my_neg = my_v < 0.0;
-                        let nrw_odd = (nrw_ichk & 1) != 0;
-                        let extrinsic_sign_neg = sign_xor[ichk] ^ my_neg ^ nrw_odd;
-
-                        let mag = if my_slot < nrw_ichk && my_slot as u32 == idx_min1[ichk] {
-                            min2[ichk]
-                        } else {
-                            min1[ichk]
-                        };
-
-                        let scaled = if is_offset {
-                            (mag - beta).max(0.0)
-                        } else {
-                            alpha_eff * mag
-                        };
-                        tov[j * NCW + k_] = if extrinsic_sign_neg { -scaled } else { scaled };
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
 /// WSJT-X `decode240_101`'s OSD fallback does not feed OSD the raw
 /// channel LLR — it feeds the running sum `zsum = Σ_{i=0}^{n_iter} zn_i`
 /// of the variable-node soft estimate across the *first few* BP
@@ -725,77 +489,9 @@ pub fn bp_decode_generic_kind_with_scratch<P: LdpcParams>(
 /// that ordering is what makes the 3-trial loss moot (raw already had
 /// first try).
 pub fn bp_llr_zsum<P: LdpcParams>(llr: &[f32], n_iter: u32) -> Vec<f32> {
-    let n = P::N;
-    let m_checks = P::M;
-    let max_row = P::MAX_ROW;
-
-    let mut tov = vec![0f32; n * NCW];
-    let mut toc = vec![0f32; m_checks * max_row];
-    let mut tanhtoc = vec![0f32; m_checks * max_row];
-    let mut zn = vec![0f32; n];
-    let mut zsum = vec![0f32; n];
-
-    for j in 0..m_checks {
-        let nrw_j = P::nrw(j) as usize;
-        for i in 0..nrw_j {
-            let bit = P::nm(j, i) as usize;
-            toc[j * max_row + i] = llr[bit];
-        }
-    }
-
-    for _iter in 0..=n_iter {
-        for i in 0..n {
-            let mut sum = 0.0f32;
-            for k_ in 0..NCW {
-                sum += tov[i * NCW + k_];
-            }
-            zn[i] = llr[i] + sum;
-        }
-        for i in 0..n {
-            zsum[i] += zn[i];
-        }
-
-        // Check-to-variable message update (extrinsic info).
-        for j in 0..m_checks {
-            let nrw_j = P::nrw(j) as usize;
-            for i in 0..nrw_j {
-                let ibj = P::nm(j, i) as usize;
-                let mut msg = zn[ibj];
-                let mn_ibj = P::mn(ibj);
-                for kk in 0..NCW {
-                    if mn_ibj[kk] as usize == j {
-                        msg -= tov[ibj * NCW + kk];
-                    }
-                }
-                toc[j * max_row + i] = msg;
-            }
-        }
-
-        for i in 0..m_checks {
-            let nrw_i = P::nrw(i) as usize;
-            for k_ in 0..nrw_i {
-                tanhtoc[i * max_row + k_] = (-toc[i * max_row + k_] / 2.0).tanh();
-            }
-        }
-
-        for j in 0..n {
-            let mn_j = P::mn(j);
-            for k_ in 0..NCW {
-                let ichk = mn_j[k_] as usize;
-                let nrw_ichk = P::nrw(ichk) as usize;
-                let mut tmn = 1.0f32;
-                for s in 0..nrw_ichk {
-                    let bit = P::nm(ichk, s) as usize;
-                    if bit != j {
-                        tmn *= tanhtoc[ichk * max_row + s];
-                    }
-                }
-                tov[j * NCW + k_] = 2.0 * platanh(-tmn);
-            }
-        }
-    }
-
-    zsum
+    // Shim over the pooled body, as `bp_decode_generic_kind` is (#417).
+    let mut scratch = BpScratch::<P, f32>::new();
+    bp_llr_zsum_with_scratch::<P>(&mut scratch, llr, n_iter).to_vec()
 }
 
 /// [`bp_llr_zsum`] with caller-provided scratch — eliminates the 5-Vec
@@ -938,17 +634,6 @@ pub fn bp_decode_kind(
 // ──────────────────────────────────────────────────────────────────────────
 
 use crate::engine::scalar::LlrScalar;
-
-/// Convert an `f32` LLR to Q11 i16 with saturation.
-///
-/// Thin wrapper around [`crate::engine::scalar::Q11i16::from_f32`] —
-/// kept for source compatibility with callers from before the
-/// generic refactor.
-#[inline]
-pub fn llr_f32_to_q11(x: f32) -> i16 {
-    use crate::engine::scalar::Q11i16;
-    Q11i16::from_f32(x).0
-}
 
 /// Generic Normalized-Min-Sum Belief-Propagation decode.
 ///
@@ -1319,20 +1004,7 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
     None
 }
 
-/// LDPC(174,91) BP NMS — generic over LLR scalar.
-pub fn bp_decode_nms<T: LlrScalar>(
-    llr: &[T; LDPC_N],
-    ap_mask: Option<&[bool; LDPC_N]>,
-    max_iter: u32,
-    verify: Option<fn(&[u8]) -> bool>,
-    alpha: f32,
-) -> Option<BpResult> {
-    let ap_slice: Option<&[bool]> = ap_mask.map(|a| a.as_slice());
-    bp_decode_generic_nms::<Ldpc174_91Params, T>(llr.as_slice(), ap_slice, max_iter, verify, alpha)
-}
-
-/// LDPC(174,91) BP NMS with caller-provided scratch — pool-aware
-/// variant of [`bp_decode_nms`]. Lets the FT8 stage-3 driver instantiate
+/// LDPC(174,91) BP NMS with caller-provided scratch. Lets the FT8 stage-3 driver instantiate
 /// one [`BpScratch`] per slot and reuse it across all 5 BP calls × ~15
 /// surviving candidates, saving ~900 KB of `tlsf_malloc` traffic per
 /// slot on Core2.
@@ -1353,24 +1025,6 @@ pub fn bp_decode_nms_with_scratch<T: LlrScalar>(
         verify,
         alpha,
     )
-}
-
-/// Backward-compatible Q11 alias — keeps existing callers compiling.
-/// New code should prefer the generic [`bp_decode_nms`].
-pub fn bp_decode_nms_q11(
-    llr: &[i16; LDPC_N],
-    ap_mask: Option<&[bool; LDPC_N]>,
-    max_iter: u32,
-    verify: Option<fn(&[u8]) -> bool>,
-    alpha: f32,
-) -> Option<BpResult> {
-    use crate::engine::scalar::Q11i16;
-    let ap_slice: Option<&[bool]> = ap_mask.map(|a| a.as_slice());
-    // SAFETY: `Q11i16` is `#[repr(transparent)]`-equivalent — wraps a
-    // single `i16` in a tuple struct. A `&[i16; N]` aliases a
-    // `&[Q11i16; N]` byte-for-byte. (Conservative: copy via map.)
-    let llr_q: alloc::vec::Vec<Q11i16> = llr.iter().map(|&x| Q11i16(x)).collect();
-    bp_decode_generic_nms::<Ldpc174_91Params, Q11i16>(&llr_q, ap_slice, max_iter, verify, alpha)
 }
 
 #[cfg(test)]
@@ -1402,10 +1056,10 @@ mod tests {
             .collect()
     }
 
-    /// [`bp_decode_generic_kind_with_scratch`] must produce byte-
-    /// identical results to [`bp_decode_generic_kind`] — same inputs,
-    /// same `SumProduct`/NMS kernel — since the scratch version is a
-    /// mechanical transform of the same algorithm, not a new one.
+    /// A scratch reused across calls must decode exactly as a fresh one.
+    /// Since #417 [`bp_decode_generic_kind`] *is* the fresh-scratch
+    /// call, so this pins `BpScratch::reset`: the one scratch here
+    /// carries state from every previous seed into the next.
     #[test]
     fn scratch_bp_matches_unpooled_sum_product() {
         let mut scratch = BpScratch::<Ldpc174_91Params, f32>::new();
@@ -1449,10 +1103,9 @@ mod tests {
         }
     }
 
-    /// Same equivalence check for the `NormalizedMinSum` kernel — the
-    /// scratch version's `tanhtoc` is only grown for `SumProduct`, so
-    /// this also confirms the NMS path stays correct with `tanhtoc`
-    /// left empty.
+    /// Same reuse check for the `NormalizedMinSum` kernel. `tanhtoc` is
+    /// only grown for `SumProduct`, so this also confirms the NMS path
+    /// stays correct with `tanhtoc` left empty.
     #[test]
     fn scratch_bp_matches_unpooled_normalized_min_sum() {
         let mut scratch = BpScratch::<Ldpc174_91Params, f32>::new();
@@ -1486,10 +1139,9 @@ mod tests {
         }
     }
 
-    /// [`bp_llr_zsum_with_scratch`] must return byte-identical values
-    /// to [`bp_llr_zsum`] across repeated calls on the same scratch
-    /// instance (checks `ensure_zsum`'s re-zero-on-reuse path, not just
-    /// first-use).
+    /// A reused scratch must give the same `zsum` as a fresh one
+    /// ([`bp_llr_zsum`] since #417). Checks `ensure_zsum`'s
+    /// re-zero-on-reuse path, not just first use.
     #[test]
     fn scratch_zsum_matches_unpooled() {
         let mut scratch = BpScratch::<Ldpc174_91Params, f32>::new();
