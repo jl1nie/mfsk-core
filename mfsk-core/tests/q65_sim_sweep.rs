@@ -107,11 +107,11 @@
 
 #![cfg(all(feature = "q65", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[allow(dead_code)]
 mod common;
-use common::load_wav_f32_opt;
+use common::{load_wav_f32_opt, parse_snr_tag};
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::default_search_params;
 use mfsk_core::q65::{
@@ -128,27 +128,11 @@ const SUBMODES: &[&str] = &[
 ];
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_Q65_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/q65_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_Q65_SWEEP_DIR", "q65_sweep")
 }
 
 /// Parse `q65_<submode>_awgn_<snr_tag>_<trial>.wav`.
 /// snr_tag: `m27` = -27, `p05` = +5.
-fn parse_snr_tag(tag: &str) -> Option<i32> {
-    if let Some(rest) = tag.strip_prefix('m') {
-        rest.parse::<i32>().ok().map(|v| -v)
-    } else if let Some(rest) = tag.strip_prefix('p') {
-        rest.parse::<i32>().ok()
-    } else {
-        None
-    }
-}
-
 /// `(plain_hit, cq_ap_hinted_hit)`.
 fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool) {
     let params = default_search_params();

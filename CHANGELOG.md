@@ -59,6 +59,32 @@
   `pass`, on the FT4 and FST4 goldens under default, EQ, AP, OSD-off,
   SIC and loose-threshold requests, and on 108 synthetic weak-signal
   slots that reach the AP rung.
+- **`tests/common` gains `parse_snr_tag` and `sweep_dir` (#421).**
+  `parse_snr_tag` (a corpus filename's SNR tag, e.g. `m05` → `-5`) was a
+  byte-identical copy in all nine sensitivity-sweep test files
+  (`ft8_sweep.rs`, `ft4_sweep.rs`, `fst4_sweep.rs`, `wspr_sweep.rs`,
+  `jt9_sweep.rs`, `jt65_sweep.rs`, `q65_sim_sweep.rs` and the two FST4
+  DDC sniper probes); it moved once into `tests/common`. `sweep_dir`
+  (the tier-C corpus directory: an env-var override, else
+  `embedded-poc/assets/<sub>` next to the crate) followed the same
+  shape in all sixteen call sites but hardcoded a different env var
+  name and subdirectory each time — `tests/common::sweep_dir(env_var,
+  sub)` now holds the one real implementation, and each file keeps a
+  three-line wrapper naming its own env var and subdirectory. Net ~150
+  lines removed, no behavior change (the fixed-point resolution order —
+  env var first, then `CARGO_MANIFEST_DIR`-relative — and every
+  existing `MFSK_*_SWEEP_DIR` name are unchanged).
+
+  The rest of #421 (per-protocol `collect_wavs`/`make_slot`/
+  `sample_path` "copies", which turned out to differ in filename
+  parsing, synthesis parameters or output type per protocol rather
+  than being genuine duplicates; the `src/`-side WAV parsers and
+  MSK144 helper pairs; `tests/common/embedded_driver_harness.rs`'s own
+  `load_wav_i16`, which is a deliberate copy — its module doc already
+  explains it exists specifically to avoid pulling `fft-rustfft` in
+  through `mod common`'s unconditional `air_channel`) is left for a
+  follow-up; this entry covers the mechanically-safe slice only.
+
 - **One `LlrT` for FT8's host path, not two (#420).** `ft8::decode::decode`
   and `ft8::decode_block::process_candidates` each declared their own
   `LlrT` (`Q11i16` under `fixed-point-llr`, `f32` otherwise) with the

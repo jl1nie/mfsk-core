@@ -50,11 +50,11 @@
 
 #![cfg(all(feature = "jt9", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[allow(dead_code)]
 mod common;
-use common::load_wav_f32_opt;
+use common::{load_wav_f32_opt, parse_snr_tag};
 use mfsk_core::jt9::DecodeRequest;
 
 const GOLDEN_CALL1: &str = "CQ";
@@ -64,26 +64,10 @@ const GOLDEN_FREQ_HZ: f32 = 1400.0;
 const FREQ_TOL_HZ: f32 = 5.0;
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_JT9_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/jt9_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_JT9_SWEEP_DIR", "jt9_sweep")
 }
 
 /// Parse `jt9_awgn_<snr_tag>_<trial>.wav`. snr_tag: `m20` = -20, `p10` = +10.
-fn parse_snr_tag(tag: &str) -> Option<i32> {
-    if let Some(rest) = tag.strip_prefix('m') {
-        rest.parse::<i32>().ok().map(|v| -v)
-    } else if let Some(rest) = tag.strip_prefix('p') {
-        rest.parse::<i32>().ok()
-    } else {
-        None
-    }
-}
-
 fn decode_wav_jt9(audio: &[f32]) -> bool {
     DecodeRequest::new(audio, 12_000).decode().iter().any(|d| {
         matches!(

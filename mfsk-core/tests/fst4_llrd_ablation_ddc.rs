@@ -41,7 +41,7 @@
 
 #![cfg(all(feature = "fst4", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[allow(dead_code)]
 mod common;
@@ -84,13 +84,7 @@ const CONFIGS: [(bool, bool); 4] = [
 const CONFIG_NAMES: [&str; 4] = ["full", "full-llrd", "no8_osd", "no8_osd-llrd"];
 
 fn sweep_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("MFSK_FST4_SWEEP_DIR") {
-        return PathBuf::from(d);
-    }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    Path::new(&manifest)
-        .join("../embedded-poc/assets/fst4_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_FST4_SWEEP_DIR", "fst4_sweep")
 }
 
 fn ddc_refine(c: &SyncCandidate, ci: &[f32], cq: &[f32], delay: usize) -> Vec<Complex<f32>> {

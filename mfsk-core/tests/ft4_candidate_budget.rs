@@ -245,12 +245,7 @@ const BUDGETS: &[usize] = &[4, 8, 12, 16, 20, 24, 31, 50, 100];
 const SYNC_MINS: &[f32] = &[0.05, 0.8, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7, 2.0];
 
 fn sweep_dir() -> std::path::PathBuf {
-    if let Ok(d) = std::env::var("MFSK_FT4_SWEEP_DIR") {
-        return std::path::PathBuf::from(d);
-    }
-    std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
-        .join("../embedded-poc/assets/ft4_sweep")
-        .to_path_buf()
+    common::sweep_dir("MFSK_FT4_SWEEP_DIR", "ft4_sweep")
 }
 
 /// The golden-recording answer above is one file of mostly comfortable
