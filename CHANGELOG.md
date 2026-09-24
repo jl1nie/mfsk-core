@@ -2,6 +2,30 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **LDPC belief propagation has one body per kernel (breaking, #417).**
+  `fec::ldpc::bp` carried two hand-kept copies of the sum-product /
+  min-sum loop, `bp_decode_generic_kind` and its `_with_scratch` twin
+  (about 270 lines each), and two of `bp_llr_zsum`. The unpooled
+  entry points are now shims that build a fresh `BpScratch` and call
+  the pooled body, as `bp_decode_generic_nms` already did. Likewise
+  `Ldpc174_91::decode_soft` and `Ldpc240_101::decode_soft` call their
+  own `decode_soft_pooled` instead of repeating it. FT8's host
+  `bp_step_select` now decodes through the `BpScratch` it was always
+  handed and ignored.
+
+  Removed, with no caller in the crate, the FFI or the board crates:
+  `fec::ldpc::bp::bp_decode_nms` (use `bp_decode_nms_with_scratch`, or
+  `bp_decode_generic_nms::<Ldpc174_91Params, T>`),
+  `bp_decode_nms_q11` (the same with `T = Q11i16`) and
+  `llr_f32_to_q11` (use `Q11i16::from_f32(x).0`).
+
+  Output is bit-identical. Compared with `to_bits()` before and after:
+  every `DecodeResult` field on five FT8 recordings under default, AP,
+  SIC, EQ and OSD-off requests; the FT4 and FST4 goldens; both MSK144
+  goldens; and `decode_soft` on all three LDPC codecs over 360 noisy
+  codewords each at OSD depths 0/2/3/4, with 120–184 BP convergences
+  per codec (4 543 lines, identical). About 410 lines go.
+
 - **One synthesis entry point, `engine::tx::synthesize::<P>` (breaking,
   #391).** Each mode had its own family: `tones_to_f32` / `_i16` /
   `_into` in `ft8::wave_gen` and `ft4::encode`, the same plus

@@ -62,38 +62,8 @@ impl FecCodec for Ldpc174_91 {
     }
 
     fn decode_soft(&self, llr: &[f32], opts: &FecOpts<'_>) -> Option<FecResult> {
-        let (llr_arr, ap_mask) = prepare_ap_llr(llr, opts);
-
-        if let Some(r) = bp_decode_kind(
-            &llr_arr,
-            ap_mask.as_ref(),
-            opts.bp_max_iter,
-            opts.verify_info,
-            opts.bp_kind,
-        ) {
-            // Phase 0c-B: BpResult.info is a Vec<u8> of length P::K
-            // already, so no copy/reconstruction needed.
-            return Some(FecResult {
-                info: r.info,
-                hard_errors: r.hard_errors,
-                iterations: r.iterations,
-            });
-        }
-
-        if opts.osd_depth == 0 {
-            return None;
-        }
-
-        let r = if opts.osd_depth >= 4 {
-            osd_decode_deep4(&llr_arr, 30, opts.verify_info)?
-        } else {
-            osd_decode_deep(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info)?
-        };
-        Some(FecResult {
-            info: r.info,
-            hard_errors: r.hard_errors,
-            iterations: 0,
-        })
+        // The pooled path with a fresh scratch: one body, not two (#417).
+        self.decode_soft_pooled(llr, opts, &mut BpScratch::new())
     }
 }
 
@@ -124,8 +94,7 @@ impl BpPooledFec for Ldpc174_91 {
             });
         }
 
-        // OSD fallback stays unpooled — out of scope for this pass
-        // (identical to `decode_soft`'s tail above).
+        // OSD fallback stays unpooled.
         if opts.osd_depth == 0 {
             return None;
         }
