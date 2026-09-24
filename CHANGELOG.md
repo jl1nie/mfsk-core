@@ -46,6 +46,19 @@
   `GenericPipelineProtocol`: its AP rung ends
   `ft8::decode_block::process_one_candidate_inner`, which builds the
   same hypotheses inline. Unifying the two ladders is #423.
+- **The generic pipeline's candidate ladder finishes a decode in one
+  place (#416).** Every converging rung of
+  `process_candidate_basic_impl` (BP, OSD depth 2/3, OSD depth 4, and
+  AP) ended with the same re-encode → `snr_db` → descramble → message
+  gate → `DecodeResult` block, written out four times. It is one
+  `finish` closure now. FT4's single-pass strategy and the FST4 macro's
+  were the same 60 lines, comment block included; both call
+  `msg::decode_request::generic_single_pass` with their own downsample
+  config and `nsync` floor. About 110 lines go. Decodes are
+  bit-identical: every `DecodeResult` field, including `snr_db` and
+  `pass`, on the FT4 and FST4 goldens under default, EQ, AP, OSD-off,
+  SIC and loose-threshold requests, and on 108 synthetic weak-signal
+  slots that reach the AP rung.
 
 - **One synthesis entry point, `engine::tx::synthesize::<P>` (breaking,
   #391).** Each mode had its own family: `tones_to_f32` / `_i16` /

@@ -259,6 +259,98 @@ where
     }
 }
 
+/// The single-pass strategy of every protocol that decodes through
+/// `engine::pipeline` — FT4 and each FST4 sub-mode. They differ only in
+/// the downsample geometry and the `nsync` floor, which is all this
+/// takes besides the request; the body was two verbatim copies until
+/// #416.
+///
+/// Wraps `on_result` against `known`, builds the a-priori hypothesis
+/// list (including the blind CQ one), runs
+/// `pipeline::decode_frame_budgeted` with the request's message policy,
+/// and drops `known` from the returned rows.
+#[cfg(any(feature = "ft4", feature = "fst4"))]
+pub(crate) fn generic_single_pass<P, Pol>(
+    req: &DecodeRequest<'_, P, Pol>,
+    cfg: &crate::engine::dsp::downsample::DownsampleCfg,
+    sync_q_min: u32,
+) -> DecodeOutcome<P>
+where
+    P: FrameDecodable<DecodeResult = crate::engine::pipeline::DecodeResult>
+        + crate::engine::pipeline::GenericPipelineProtocol,
+    P::Fec: crate::engine::protocol::BpPooledFec,
+    P::Msg: crate::engine::protocol::MessageCodec<Unpacked = Wsjt77Fields>
+        + super::ap::WsjtApCompatible,
+    Pol: MessagePolicy,
+{
+    use crate::engine::pipeline::{self, DecodeResult};
+
+    // See `pipeline::known_filtered_on_result`'s doc comment: without
+    // this, `on_result` could fire for a candidate `pipeline::dedup_known`
+    // below then silently drops from the returned `Vec`.
+    let filtered_cb = pipeline::known_filtered_on_result(req.known, req.on_result);
+    let on_result: Option<&(dyn Fn(&DecodeResult) + Sync)> = filtered_cb
+        .as_ref()
+        .map(|f| f as &(dyn Fn(&DecodeResult) + Sync));
+    // Every a-priori hypothesis WSJT-X would try, not just the
+    // caller's literal hint — and the blind CQ one **whether or
+    // not a hint was given at all**.
+    //
+    // WSJT-X runs AP passes on every decode: `ft4_decode.f90:328`
+    // `npasses = 3 + nappasses(nQSOProgress)`, and its `iaptype = 1`
+    // locks the first 29 bits to the CQ pattern using no knowledge
+    // of the station at all. mfsk-core ran AP only when a caller
+    // supplied a hint, so a blind decode attempted none — while FT8
+    // has had the equivalent since issue #190, where adding it is
+    // what closed FT8's own gap against the published figure.
+    //
+    // (`ap_passes`' pass 7 is *not* this: it needs the
+    // correspondent's callsign, so it is upstream's iaptype 2/3,
+    // not 1. `BLIND_CQ_MIN_NSYNC`'s doc comment claims otherwise
+    // and is wrong.)
+    let mut ap_hints: Vec<(ApHint, u8)> = req
+        .ap_hint
+        .filter(|h| h.has_info())
+        .map(super::pipeline_ap::ap_passes)
+        .unwrap_or_default();
+    ap_hints.push((ApHint::new().with_call1("CQ"), 12));
+    let ap_owned: Vec<(Vec<u8>, Vec<u8>, u8)> = ap_hints
+        .iter()
+        .map(|(hint, pid)| {
+            let (m, v) = super::pipeline_ap::ap_bits_for::<P>(hint);
+            (m, v, *pid)
+        })
+        .collect();
+    let ap: Vec<(&[u8], &[u8], u8)> = ap_owned
+        .iter()
+        .map(|(m, v, pid)| (m.as_slice(), v.as_slice(), *pid))
+        .collect();
+    let accept = PolicyAccept::<P, Pol>::new(&req.policy);
+    let (raw, fft_cache, budget) = pipeline::decode_frame_budgeted::<P, _>(
+        req.audio,
+        cfg,
+        req.freq_min,
+        req.freq_max,
+        req.sync_min,
+        req.freq_hint,
+        req.depth,
+        req.max_cand,
+        req.strictness,
+        req.eq_mode,
+        sync_q_min,
+        req.fft_cache.as_ref().map(FftCache::as_slice),
+        on_result,
+        req.budget,
+        &ap,
+        &accept,
+    );
+    DecodeOutcome {
+        results: pipeline::dedup_known(raw, req.known),
+        fft_cache,
+        budget,
+    }
+}
+
 /// Protocols whose decode path has a message-*text* stage a
 /// [`MessagePolicy`] can be applied at, so
 /// [`DecodeRequest::also_accept`] / [`DecodeRequest::message_filter`] /
