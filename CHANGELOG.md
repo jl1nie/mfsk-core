@@ -33,10 +33,13 @@
   `sweep-baseline.json` values (−21.62 / −21.45 / −19.75 / −18.90 dB);
   the FT8 test binaries and the pre-push fixed-point recall tests pass;
   `qso3_busy.wav` gives 14 / 22 / 22 decodes at D1/D2/D3, as before.
-  That is expected rather than reassuring: the sweep has one signal at
-  DT 0 and passes no AP hint, so a −25 dB gate and a larger AP vote are
-  not exercised. They matter for phantoms near the floor and for hinted
-  decodes, which this suite does not measure.
+  That is expected rather than reassuring. The sweep does run the
+  blind-CQ AP pass (`iaptype` 1, which `jt9` also always runs), and as a
+  probe setting `AP_MAG_SCALE` to 3.0 left it byte-identical too: with
+  this port's normalised min-sum BP a locked bit already dominates the
+  channel LLRs, so the scale is insensitive over that range. The −25 dB
+  gate matters for phantoms near the floor, which one clean signal at DT
+  0 does not produce.
 
   **Not in this change** (#439): the `nsync` gate that upstream raised
   to 7 or 8 by pass and depth, the fifth bit metric, the AP passes at
