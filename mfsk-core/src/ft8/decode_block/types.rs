@@ -222,6 +222,10 @@ pub(in crate::ft8) struct PassCtx {
     /// `ndepth <= 2` (`jt9 -d1/-d2`, [`WsjtxDepth::D1`](crate::ft8::decode::WsjtxDepth)
     /// and `D2`): a higher nsync floor, see [`PassCtx::nsync_floor`].
     pub low_depth: bool,
+    /// `ncontest != 0`: a contest is being worked, so `ft8b.f90` does not
+    /// drop `/R` and `TU; ` messages (see [`Self::FIRST`]'s neighbours in
+    /// `process_candidates::wsjtx_quirky`). Off by default, as `ncontest=0`.
+    pub contest: bool,
 }
 
 impl PassCtx {
@@ -229,7 +233,16 @@ impl PassCtx {
     pub(in crate::ft8) const FIRST: PassCtx = PassCtx {
         imetric: 1,
         low_depth: false,
+        contest: false,
     };
+
+    /// This context with `ncontest != 0` when `on` is set.
+    pub(in crate::ft8) const fn contest(self, on: bool) -> PassCtx {
+        PassCtx {
+            contest: on,
+            ..self
+        }
+    }
 
     /// This context for a `jt9 -d1/-d2` tier (`ndepth <= 2`) when `low` is set.
     pub(in crate::ft8) const fn low_depth(self, low: bool) -> PassCtx {

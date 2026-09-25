@@ -1548,7 +1548,7 @@ impl FrameDecodable for Ft8 {
             req.on_result,
             req.budget,
             &req.policy,
-            PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
+            base_pass_of(req),
         );
         DecodeOutcome {
             results,
@@ -1587,7 +1587,7 @@ impl SupportsSicRounds for Ft8 {
                 req.on_result,
                 &mut budget,
                 &req.policy,
-                PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
+                base_pass_of(req),
             );
             DecodeOutcome {
                 results,
@@ -1615,7 +1615,7 @@ impl SupportsSicRounds for Ft8 {
                 req.on_result,
                 &mut budget,
                 &req.policy,
-                PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
+                base_pass_of(req),
             );
             DecodeOutcome {
                 results,
@@ -1687,7 +1687,7 @@ impl SupportsSicEarly for Ft8 {
             req.on_result,
             &mut budget,
             &req.policy,
-            PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
+            base_pass_of(req),
         );
         let fft_cache = FftCache(build_fft_cache(&residual));
         DecodeOutcome {
@@ -1753,6 +1753,29 @@ pub enum WsjtxDepth {
     D1,
     D2,
     D3,
+}
+
+/// The first pass's context for a request: its `jt9 -d1/-d2` tier and
+/// whether a contest is being worked.
+fn base_pass_of<Pol: MessagePolicy>(req: &DecodeRequest<'_, Ft8, Pol>) -> PassCtx {
+    PassCtx::FIRST
+        .low_depth(req.wsjtx_low_depth)
+        .contest(req.wsjtx_contest)
+}
+
+impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
+    /// A contest is being worked (WSJT-X's `ncontest != 0`).
+    ///
+    /// By default FT8 drops, after a CRC pass, a standard or RTTY Roundup
+    /// message that carries `/R` or starts `TU; ` — `ft8b.f90` (v3.0.0
+    /// onward) does the same when no contest is active, because outside a
+    /// contest those are overwhelmingly false decodes. In a contest they are
+    /// real traffic (`CALL1/R CALL2`, `TU; CALL1 CALL2`); this switches the
+    /// drop off.
+    pub fn contest(mut self, on: bool) -> Self {
+        self.wsjtx_contest = on;
+        self
+    }
 }
 
 impl<'a> DecodeRequest<'a, Ft8> {

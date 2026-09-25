@@ -1828,8 +1828,42 @@ fn codec_is_plausible(message: &Wsjt77Fields) -> bool {
 /// The caller's acceptance policy applied to `message` together with
 /// FT8's codec verdict — the one place the two are joined (#423: the
 /// same call was written at the AP validator and the final accept).
-fn policy_accepts<Pol: MessagePolicy>(policy: &Pol, message: &Wsjt77Fields) -> bool {
-    policy.accepts(codec_is_plausible(message), FT8_FILTERS, message)
+///
+/// Before either, `ft8b.f90`'s own post-CRC message filter
+/// ([`wsjtx_quirky`]) — the reference drops the pass's result there, and
+/// so does this, whatever the policy: a policy widens what the *codec*
+/// finds plausible, it does not reinstate what the decoder itself never
+/// reports.
+fn policy_accepts<Pol: MessagePolicy>(policy: &Pol, message: &Wsjt77Fields, pass: PassCtx) -> bool {
+    (pass.contest || !wsjtx_quirky(message))
+        && policy.accepts(codec_is_plausible(message), FT8_FILTERS, message)
+}
+
+/// `ft8b.f90` v3.0.0, right after `unpack77`:
+///
+/// ```fortran
+/// if(.not.unpk77_success .or. index(msg37,'/R').gt.0 .or.  &
+///      msg37(1:4).eq.'TU; ') then
+///    if(i3.ge.1 .and. i3.le.3 .and. ncontest.eq.0) cycle
+/// endif
+/// ```
+///
+/// i.e. with no contest active, a standard (`i3` 1/2) or RTTY Roundup
+/// (`i3` 3) message carrying `/R` or starting `TU; ` is dropped and the
+/// pass moves on. The two range checks that precede it upstream
+/// (`i3 > 5`, `i3=0 & n3 > 6`, `i3=0 & n3=2`) are already what
+/// [`unpack77_fields`] refuses; an unpack failure is refused there too.
+/// Judged on the rendered text, as upstream does, because `/R` can sit on
+/// either callsign.
+fn wsjtx_quirky(message: &Wsjt77Fields) -> bool {
+    use alloc::string::ToString;
+    matches!(
+        message,
+        Wsjt77Fields::Standard { .. } | Wsjt77Fields::RttyRoundup { .. }
+    ) && {
+        let text = message.to_string();
+        text.contains("/R") || text.starts_with("TU; ")
+    }
 }
 
 /// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
@@ -2204,7 +2238,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                     let Some(message) = unpack77_fields(&msg77, &CallsignHashTable::new()) else {
                         return false;
                     };
-                    if !policy_accepts(policy, &message) {
+                    if !policy_accepts(policy, &message, pass) {
                         return false;
                     }
                     // The hypothesis locked these callsigns into the
@@ -2262,7 +2296,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // and takes the real signal underneath with it — see
     // `FrameDecodable::MESSAGE_FILTER_DEFAULT`.
     let message = unpack77_fields(&bp.message77, &CallsignHashTable::new())?;
-    if !policy_accepts(policy, &message) {
+    if !policy_accepts(policy, &message, pass) {
         return None;
     }
     if known.iter().any(|r| *r.message77() == bp.message77) {
