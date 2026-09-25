@@ -5,10 +5,9 @@
 //! for `BpAllOsd` depth at sufficient `sync_quality`. Computes a
 //! fresh f32 LLR bundle for the candidate (OSD operates on f32
 //! regardless of the embedded fixed-point `LlrT`), and for each of
-//! the four LLR variants (a/b/c/d, matching `ft8b.f90`'s `ipass=1..4`
-//! `llra/b/c/d`), tries the WSJT-X-faithful OSD entry
-//! ([`osd_decode_npre1`] for low-`q` candidates, [`osd_decode_npre1_npre2`]
-//! for `q >= Q_NDEEP3_THRESHOLD`) seeded with `bp_llr_zsum(llr, 1)`
+//! the five LLR variants (a/b/c/d/e, matching `ft8b.f90`'s `ipass=1..5`
+//! `llra/b/c/d/e`), tries the WSJT-X-faithful OSD entry
+//! ([`osd_decode_npre1`], `ndeep=2`, for every candidate) seeded with `bp_llr_zsum(llr, 1)`
 //! then `bp_llr_zsum(llr, 2)` — mirroring `decode174_91.f90`'s own
 //! `do i=1,nosd` loop over its `zsave(:,i)` snapshots — and applies
 //! the `nharderrors > 36` cycle gate to weed out high-error CRC-luck
@@ -16,10 +15,14 @@
 //!
 //! ε.6 of the `docs/CLEANUP_2026_05.md` `decode_block` split. As of
 //! issue **#63** this module hosts the WSJT-X-faithful OSD dispatch
-//! — the q-conditional split mirrors `osd174_91.f90`'s ndeep=2/3
-//! dispatch table, replacing the previous mfsk-core-specific
-//! brute-force ndeep=2/3 split (`osd_decode` / `osd_decode_deep`). As
-//! of issue **#182** the OSD *input* is also WSJT-X-faithful: earlier
+//! (`osd174_91.f90`'s ndeep=2/3 dispatch table). It kept a q-conditional
+//! split until #452: `ndeep=3` ([`osd_decode_npre1_npre2`]) for `q >= 18`.
+//! `ft8b.f90` v3.0.0 calls `decode174_91` with `norder=2` for every
+//! candidate and has no such split, so neither does this now. The split was
+//! covering for the OSD's CRC-on-every-candidate search (see
+//! [`crate::fec::ldpc::osd`]'s `OsdBest`): with the CRC on the winner only,
+//! as upstream, `ndeep=2` decodes `CQ EA2BFM IN83` on `qso3_busy` too, which
+//! it did not before (#453). As of issue **#182** the OSD *input* is also WSJT-X-faithful: earlier
 //! versions fed `osd_decode_npre1`/`_npre2` the raw channel LLR
 //! directly, which is not what real WSJT-X does for FT8's blind
 //! `ndepth=3` dispatch — that always sets `maxosd=2`
@@ -38,12 +41,9 @@
 //! dispatch, reached by bypassing [`crate::engine::FecCodec`] entirely
 //! (same root cause as issue #198). FT4/FST4 get their OSD escalation
 //! through [`crate::engine::pipeline::osd_escalation_gates`] instead —
-//! an independent implementation, independently calibrated. Review
-//! both when tuning either (issue #285, split from #192).
-//! [`Q_NDEEP3_THRESHOLD`]'s doc comment carries a ratchet test against
-//! `osd_escalation_gates::<Ft8>()`'s fallback-branch value so a future
-//! silent divergence fails CI instead of relying on this comment being
-//! read.
+//! an independent implementation, independently calibrated (issue #285,
+//! split from #192). FT8's `q >= 18` split, which that gate's fallback
+//! branch used to be checked against, is gone (#452).
 
 #![cfg(feature = "fft-rustfft")]
 
@@ -51,25 +51,8 @@ use super::super::decode::{DecodeDepth, DecodeStrictness};
 use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::LDPC_N;
 use crate::fec::ldpc::bp::{BpResult, BpScratch, bp_llr_zsum_with_scratch};
-use crate::fec::ldpc::osd::{OsdResult, osd_decode_npre1, osd_decode_npre1_npre2};
+use crate::fec::ldpc::osd::{OsdResult, osd_decode_npre1};
 use crate::fec::ldpc::params::Ldpc174_91Params;
-
-/// `sync_quality` threshold for dispatching to the heavier WSJT-X
-/// ndeep=3 entry ([`osd_decode_npre1_npre2`]) instead of ndeep=2
-/// ([`osd_decode_npre1`]). Mirrors the pre-#63 dispatch's
-/// `q >= 18` split between `osd_decode_deep(_, 3, _)` and
-/// `osd_decode(_)` (ndeep=2), now with WSJT-X-faithful internals on
-/// both sides.
-///
-/// **Generic analog**: [`crate::engine::pipeline::osd_escalation_gates`]
-/// is FT4/FST4's equivalent gate — a `(low, high)` pair rather than
-/// this module's single threshold, structurally different but
-/// covering the same decision. They agree today (both `18` for FT8
-/// via that function's fallback branch) because neither has been
-/// retuned since the other; `tests::q_ndeep3_threshold_matches_generic_gate`
-/// below asserts it so a future silent divergence fails CI rather
-/// than waiting on someone to reread this comment (issue #285).
-const Q_NDEEP3_THRESHOLD: u32 = 18;
 
 // OSD `nharderrors` ceiling — now [`DecodeStrictness::ft8_nharderrors_max`]
 // (issue #221, strictness-wiring follow-up to #220), `Normal` (default) still
@@ -178,22 +161,16 @@ pub(super) fn try_fallback(
         }
     };
 
-    // WSJT-X-faithful OSD dispatch (issue #63). Mirrors WSJT-X's
-    // ndeep=2/3 split: ndeep=2 (= nord=1 + npre1=1, ~165 patterns
-    // post-gate) for the default `q < 18` candidates; ndeep=3
-    // (= ndeep=2 + npre2 weight-3 anchored pairs via a ntau=14
-    // hash table) for cleaner candidates that justify the extra
-    // 64 KB hash-table build.
+    // WSJT-X-faithful OSD dispatch (issue #63): `ft8b.f90` calls
+    // `decode174_91` with `norder=2` for every candidate, i.e. `osd174_91`'s
+    // ndeep=2 (nord=1 + npre1=1, ntheta=10, ~165 patterns post-gate). Until
+    // #452 candidates with `q >= 18` went to ndeep=3 (`osd_decode_npre1_npre2`);
+    // see this module's doc for why that is gone.
     //
-    // Both entries carry implicit `check_crc14` verifiers (mirror
-    // WSJT-X's `nbadcrc` gate inside `osd174_91`), so no
-    // `Some(check_crc14)` argument.
+    // The entry checks `check_crc14` on its winner, as `osd174_91`'s
+    // `nbadcrc` does, so no `Some(check_crc14)` argument.
     let dispatch = |llr: &[f32; LDPC_N]| -> Option<OsdResult> {
-        let osd = if q >= Q_NDEEP3_THRESHOLD {
-            osd_decode_npre1_npre2(llr)
-        } else {
-            osd_decode_npre1(llr)
-        };
+        let osd = osd_decode_npre1(llr);
         // WSJT-X-faithful ceiling (Normal) — see
         // `DecodeStrictness::ft8_nharderrors_max`'s docstring.
         osd.filter(|o| o.hard_errors <= strictness.ft8_nharderrors_max())
@@ -291,34 +268,4 @@ pub(super) fn try_fallback(
     }
 
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Q_NDEEP3_THRESHOLD;
-
-    /// Issue #285: `Q_NDEEP3_THRESHOLD` and
-    /// `engine::pipeline::osd_escalation_gates`'s FT4/FST4-independent
-    /// fallback branch are two separately-tuned implementations of the
-    /// same OSD-escalation decision, with nothing keeping them in sync
-    /// beyond neither having been retuned recently. Asserting equality
-    /// here doesn't unify the mechanisms (that's the issue's "Heavier"
-    /// direction, deliberately not attempted — same WSJT-X-fidelity
-    /// regression risk as the rejected #192 proposal) — it just turns
-    /// "review both when tuning either" from a doc comment someone has
-    /// to remember to read into something CI enforces. If this ever
-    /// fails, it means one side was retuned against real WSJT-X
-    /// reference data and the other wasn't reviewed yet — go do that
-    /// review, then update whichever side is still correct to match
-    /// (or leave them intentionally different with an explanatory
-    /// comment, if the retune reveals they never should have matched).
-    #[test]
-    fn q_ndeep3_threshold_matches_generic_gate() {
-        let (_low, high) = crate::engine::pipeline::osd_escalation_gates::<crate::ft8::Ft8>();
-        assert_eq!(
-            Q_NDEEP3_THRESHOLD, high,
-            "FT8's Q_NDEEP3_THRESHOLD and the generic osd_escalation_gates \
-             fallback branch have diverged — see issue #285"
-        );
-    }
 }

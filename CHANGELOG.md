@@ -2,6 +2,40 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT8's OSD checks the CRC on its winner, as `osd174_91` does, not on
+  every candidate (#452, #453).** `osd174_91.f90` takes the closest of all
+  its candidate codewords by weighted distance and runs `get_crc14` once, on
+  that one. This crate's OSD ran the CRC on every candidate and kept the
+  closest one that passed: more sensitive on weak signals, and about forty
+  times likelier to return a wrong codeword from noise. Measured on iid
+  Gaussian LLRs (sd 2.83) through the ladder's `bp_llr_zsum` then
+  `osd_decode_npre1`: upstream `decode174_91` (gfortran, `maxosd=2`,
+  `norder=2`) 15 CRC-valid results in 260 000 draws (5.8e-5), this crate before
+  452 in 200 000 (2.3e-3), after 180 in 2 000 000 (9.0e-5). New test
+  `ft8_osd_false_accept` holds that down. The search got cheaper: no
+  un-permute and CRC per candidate.
+
+  Effect on the FT8 tier C (against the baseline of #451): unexpected
+  decodes go to **0** on the AWGN/CCIR sweeps, the nine ITU channels and the
+  200 noise-only files, and to 2 (`.sic_early()`, was 9; `jt9 -d3` 3.2: 4) and
+  1 (`decode()`, was 33) over the 420 busy-band files. Recall on the busy band
+  moves -0.7 / -0.8 / -0.1 points (`.sic_early()`, busy10/20/40) and -1.0 /
+  -0.5 / -0.7 (`decode()`), still at or above `jt9`'s 81.5 / 79.9 / 81.0 %.
+  The sweep crossings move by at most 0.17 dB (`.sic_early()` `ccir_poor`
+  -19.71 to -19.55 dB, `decode()` `ccir_poor` -19.00 to -19.17 dB); on the
+  ITU channels `itu_hm` improves by 0.83 dB and `itu_ld`, whose recall is a
+  25-55 % plateau from -8 to +10 dB, crosses 50 % at 0 dB instead of -5 dB
+  (6/20 rather than 10/20 at -5 dB): the CRC-aided search was helping there.
+
+  Two things the previous entry left out are ported with it, because both
+  turned out to be this defect: **OSD `ndeep=2` for every candidate**
+  (upstream; the `q >= 18` `ndeep=3` split is removed, and `CQ EA2BFM IN83`
+  on `qso3_busy`, which the split was needed for, now decodes at `ndeep=2`),
+  and **no separate `sync_min` for the early checkpoint** (3.0 removed the
+  2.0/1.3 scaling; without the OSD fix a zero-tailed buffer produced
+  phantoms from noise, now none: 0 in 200 noise files, `.sic_early()` busy
+  recall +0.6 points on busy20).
+
 - **FT8 decodes as WSJT-X 3.x's `ft8_decode.f90` / `ft8b.f90` do: three
   passes with a squared metric, a fifth LLR, an nsync floor, and no `/R`
   or `TU; ` outside a contest (#439).** Six changes, each its own commit
@@ -45,7 +79,7 @@
   unchanged and the busy-band corpus is neutral to slightly better
   (`.sic_early()` extras 12 to 9; that is the 9 above).
 
-  **Not ported, and why.** The `q >= 18` OSD `ndeep=3` split
+  **Not ported in #451, and why (both since ported, see the entry above).** The `q >= 18` OSD `ndeep=3` split
   stays although upstream is `ndeep=2` throughout: forcing `ndeep=2` was better
   on the sweeps (`ccir_poor` -0.35 dB, busy-band extras 11 to 10 and 31 to 21),
   but the WebFT8-shaped phase-2 decode of `qso3_busy` then loses
