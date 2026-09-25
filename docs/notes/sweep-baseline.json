@@ -26,7 +26,7 @@
       },
       "ft8_busy": {
         "date": "2026-09-25",
-        "commit": "734204b-dirty",
+        "commit": "6274729",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 840,
         "groups": 10
