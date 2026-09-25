@@ -267,6 +267,19 @@ fn sic_early_deep_with_known_and_cache_does_not_false_decode() {
     // The real incremental signals this combination should still find
     // beyond phase 1 (issue #253's own investigation confirmed all six
     // remain reachable after the fix, including DL8YHR).
+    //
+    // `CQ EA2BFM IN83` is looked for in phase 1 as well since #456: its
+    // blind-CQ AP pass (pass 12) now runs the way `decode174_91` runs it
+    // (BP sum into a masked `npre1`, CRC on the winner) and decodes it at
+    // `sync_min = 1.5` with 18 hard errors, where the raw-LLR order-2 search
+    // it replaced found it only here, in phase 2 (pass 14, 29 hard errors).
+    // `known` then drops it from phase 2's rows, as it should. Every other
+    // decode of both phases was identical before and after.
+    let phase1_msgs: BTreeSet<String> = phase1
+        .results
+        .iter()
+        .filter_map(|r| unpack77(r.message77()))
+        .collect();
     for expected in [
         "KD2UGC F6GCP R-23",
         "K1BZM EA3CJ JN01",
@@ -276,8 +289,8 @@ fn sic_early_deep_with_known_and_cache_does_not_false_decode() {
         "WA2FZW DL5AXX RR73",
     ] {
         assert!(
-            phase2_msgs.contains(expected),
-            "issue #253 fix regressed real recall: '{expected}' missing from phase 2 (got: {phase2_msgs:?})"
+            phase2_msgs.contains(expected) || phase1_msgs.contains(expected),
+            "issue #253 fix regressed real recall: '{expected}' missing from both phases (phase 2: {phase2_msgs:?})"
         );
     }
 }
