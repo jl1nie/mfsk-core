@@ -1329,28 +1329,13 @@ where
                             }
                         }
                     }
-                    // OSD depth-4 Top-K pruning gated on high sync quality.
-                    if nsync >= osd_depth3_min {
-                        let osd4_opts = FecOpts {
-                            bp_max_iter,
-                            osd_depth: 4,
-                            ap_mask: None,
-                            verify_info: Some(<P::Msg as MessageCodec>::verify_info),
-                            ..FecOpts::default()
-                        };
-                        for (llr, _) in &variants {
-                            if let Some(r) =
-                                fec.decode_soft_pooled(llr, &osd4_opts, &mut bp_scratch)
-                            {
-                                if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(4) {
-                                    continue;
-                                }
-                                if let Some(d) = finish(r, 13, true) {
-                                    return Some(d);
-                                }
-                            }
-                        }
-                    }
+                    // There used to be a depth-4 rung here (`osd_decode_deep4`, a Top-K
+                    // pruned search, pass id 13) for `nsync >= osd_depth3_min`. It is
+                    // gone (#456): FST4's codec has always mapped depth 4 to
+                    // `min(3)`, i.e. the call just above, and FT4's now runs
+                    // `decode174_91`'s one search at every depth (`ft4_decode.f90` has
+                    // a fixed `ndeep = 2`), so the rung repeated a failed decode with
+                    // the same result and cost the time of one more OSD per LLR variant.
                 }
             }
 

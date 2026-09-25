@@ -31,7 +31,8 @@ pub use params::{Ldpc174_91Params, Ldpc240_101Params, LdpcParams};
 
 use crate::engine::protocol::BpPooledFec;
 use crate::engine::{FecCodec, FecOpts, FecResult};
-use bp::{BpScratch, bp_decode_generic_kind_with_scratch};
+use bp::{BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_ap_with_scratch};
+use osd::osd_decode_npre1_masked;
 
 /// Codeword length of the WSJT LDPC code.
 pub const LDPC_N: usize = 174;
@@ -99,16 +100,36 @@ impl BpPooledFec for Ldpc174_91 {
             return None;
         }
 
-        let r = if opts.osd_depth >= 4 {
-            osd_decode_deep4(&llr_arr, 30, opts.verify_info)?
-        } else {
-            osd_decode_deep(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info)?
-        };
-        Some(FecResult {
-            info: r.info,
-            hard_errors: r.hard_errors,
-            iterations: 0,
-        })
+        // OSD as `decode174_91.f90` runs it (`maxosd = 2`, `norder = 2`): on the BP
+        // sum after 1 and then after 2 iterations (`zsave(:,1)`, `zsave(:,2)`), never
+        // the raw LLR, with the a-priori bits held and never flipped, and the CRC
+        // checked once, on the winner. `ft4_decode.f90` decodes every pass this way,
+        // blind or AP, at a fixed `ndeep = 2`, so every `osd_depth >= 1` is that one
+        // search here. This used to be `osd_decode_deep` / `osd_decode_deep4` on the raw
+        // LLR, the CRC on every candidate: on iid Gaussian LLRs 22.6 % of `osd_depth = 2`
+        // calls returned a CRC-valid wrong codeword against `decode174_91`'s 5.8e-5
+        // (`tests/ft4_osd_false_accept.rs`), and the pipeline's
+        // `hard_errors < osd_max_errors` gate was what kept them out (#456).
+        for n_iter in [1u32, 2] {
+            let zsum = bp_llr_zsum_ap_with_scratch::<Ldpc174_91Params>(
+                scratch,
+                &llr_arr,
+                ap_mask_slice,
+                n_iter,
+            );
+            let mut z = [0f32; LDPC_N];
+            z.copy_from_slice(zsum);
+            if let Some(r) = osd_decode_npre1_masked(&z, ap_mask.as_ref())
+                && opts.verify_info.is_none_or(|f| f(&r.info))
+            {
+                return Some(FecResult {
+                    info: r.info,
+                    hard_errors: r.hard_errors,
+                    iterations: 0,
+                });
+            }
+        }
+        None
     }
 }
 
