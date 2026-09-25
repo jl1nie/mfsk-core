@@ -1589,6 +1589,29 @@ pub(crate) fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec
         .collect()
 }
 
+/// True if `seen` already holds a decode of `r`'s 77-bit message.
+///
+/// The one `message77` membership test FT8's decode loops (single pass,
+/// sniper x2, both SIC drivers) each wrote inline (#423).
+#[cfg(feature = "ft8")]
+pub(crate) fn has_message77(seen: &[DecodeResult], r: &DecodeResult) -> bool {
+    seen.iter().any(|x| x.message77() == r.message77())
+}
+
+/// First occurrence of each message wins; anything already in `known`
+/// is dropped. [`dedup_known`] plus the within-`raw` pass FT8's parallel
+/// candidate loop needs, since its workers cannot see one another.
+#[cfg(feature = "ft8")]
+pub(crate) fn dedup_unique(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResult> {
+    let mut results: Vec<DecodeResult> = Vec::new();
+    for r in raw {
+        if !has_message77(known, &r) && !has_message77(&results, &r) {
+            results.push(r);
+        }
+    }
+    results
+}
+
 /// True if `cand` duplicates an entry already in `seen`: same message,
 /// frequency within `freq_tol_hz`, start sample within
 /// `time_tol_samples` of some earlier-accepted decode from the same
