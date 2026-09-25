@@ -228,6 +228,11 @@ impl PassCtx {
     /// Passes 2 and 3: `imetric` 2.
     pub(in crate::ft8) const LATER: PassCtx = PassCtx { imetric: 2 };
 
+    /// `imetric` 2: the squared metric (`ft8b.f90`: `s2=s2**2`).
+    pub(in crate::ft8) const fn squared(self) -> bool {
+        self.imetric == 2
+    }
+
     /// The context of 0-based decode round `round` (`ipass - 1`):
     /// `ft8_decode.f90` v3.0.0 sets `imetric=1` for pass 1 and `imetric=2`
     /// for passes 2 and 3.

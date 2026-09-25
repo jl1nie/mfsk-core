@@ -1876,7 +1876,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // inlines to `codec_is_plausible` alone, which is what this
     // function did unconditionally before the hook existed.
     policy: &Pol,
-    // Which WSJT-X decode pass this is; nothing reads it yet (#439).
+    // Which WSJT-X decode pass this is: `imetric` picks the LLR metric.
     pass: PassCtx,
 ) -> Option<DecodeResult> {
     debug_assert!(matches!(pass.imetric, 1 | 2));
@@ -1897,7 +1897,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // `LlrT` definition above. Both go through the *same* generic
     // NMS implementation, bit-identical AWGN behaviour by design.
     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
-        super::super::llr::compute_llr_fast(cs_scratch);
+        super::super::llr::compute_llr_fast_metric(cs_scratch, pass.squared());
     let bp_step1 = bp_step_select(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
     if let Some(bp) = bp_step1
         && bp.hard_errors <= strictness.ft8_nharderrors_max()
@@ -1949,7 +1949,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // function's own `#[allow(unused_assignments)]`.
     let mut llrb_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_b {
-        let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
+        let arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llr_partial_metric::<LlrT>(cs_scratch, 2, pass.squared());
         let bp_b = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_b
             && bp.hard_errors <= strictness.ft8_nharderrors_max()
@@ -1966,7 +1967,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // above, for the same reason.
     let mut llrc_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_c {
-        let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
+        let arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llr_partial_metric::<LlrT>(cs_scratch, 3, pass.squared());
         let bp_c = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_c
             && bp.hard_errors <= strictness.ft8_nharderrors_max()
@@ -2014,7 +2016,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                     // Defensive fallback — shouldn't happen when
                     // `depth.osd` (see reasoning above), but a fresh
                     // compute is still correct if it ever does.
-                    _ => Some(super::super::llr::compute_llr(cs_scratch)),
+                    _ => Some(super::super::llr::compute_llr_metric(
+                        cs_scratch,
+                        pass.squared(),
+                    )),
                 }
             }
             #[cfg(feature = "fixed-point")]
@@ -2022,7 +2027,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                 // Steps 1-2's llrb_arr/llrc_arr are Q11i16 here, not
                 // directly reusable as the f32 LlrSet OSD needs —
                 // still must recompute.
-                Some(super::super::llr::compute_llr(cs_scratch))
+                Some(super::super::llr::compute_llr_metric(
+                    cs_scratch,
+                    pass.squared(),
+                ))
             }
         } else {
             None
@@ -2051,6 +2059,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             depth,
             q,
             strictness,
+            pass,
         );
     }
 
@@ -2096,8 +2105,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         // compute fresh. The unwrap_or_else only fires when the
         // pre-compute gate was `false` (BpAll with no OSD) but AP
         // still ran somehow — defensive, but not the dominant path.
-        let llr_full_f32: super::super::llr::LlrSet<f32> =
-            prefetched_llr.unwrap_or_else(|| super::super::llr::compute_llr(cs_scratch));
+        let llr_full_f32: super::super::llr::LlrSet<f32> = prefetched_llr
+            .unwrap_or_else(|| super::super::llr::compute_llr_metric(cs_scratch, pass.squared()));
         let apmag = llr_full_f32
             .llra
             .iter()

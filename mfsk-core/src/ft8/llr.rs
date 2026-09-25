@@ -56,8 +56,14 @@ fn inflate_llr<T: LlrScalar>(v: Vec<T>) -> [T; LDPC_N] {
 /// compat; the internal `compute_llr_generic` consumes a layout-cast
 /// `&[Cmplx<f32>]` view via `flatten_cs`.
 pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
+    compute_llr_metric(cs, false)
+}
+
+/// [`compute_llr`] with WSJT-X's `imetric` chosen: `squared` = `imetric` 2
+/// (`|cs|²` per tone group before the per-bit max; `ft8b.f90` v3.0.0).
+pub fn compute_llr_metric<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79], squared: bool) -> LlrSet<T> {
     let flat = flatten_cs(cs);
-    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(flat, 3);
+    let g = crate::engine::llr::compute_llr_generic_metric::<Ft8, f32, T>(flat, 3, squared);
     // Sanity check scale consistency at build time.
     debug_assert!((crate::engine::llr::LLR_SCALE - LLR_SCALE).abs() < 1e-6);
     LlrSet {
@@ -72,8 +78,16 @@ pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
 /// than [`compute_llr`]). `llrb` / `llrc` come back zero — only
 /// `llra` and `llrd` are valid.
 pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
+    compute_llr_fast_metric(cs, false)
+}
+
+/// [`compute_llr_fast`] with `imetric` chosen (see [`compute_llr_metric`]).
+pub fn compute_llr_fast_metric<T: LlrScalar>(
+    cs: &[[Cmplx<f32>; 8]; 79],
+    squared: bool,
+) -> LlrSet<T> {
     let flat = flatten_cs(cs);
-    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(flat, 1);
+    let g = crate::engine::llr::compute_llr_generic_metric::<Ft8, f32, T>(flat, 1, squared);
     LlrSet {
         llra: inflate_llr(g.llra),
         llrb: inflate_llr(g.llrb),
@@ -90,8 +104,17 @@ pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
 /// `decode_block::process_candidates_with` only ever calls this for
 /// `nsym = 2` and `nsym = 3`.
 pub fn compute_llr_partial<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79], nsym: usize) -> [T; LDPC_N] {
+    compute_llr_partial_metric(cs, nsym, false)
+}
+
+/// [`compute_llr_partial`] with `imetric` chosen (see [`compute_llr_metric`]).
+pub fn compute_llr_partial_metric<T: LlrScalar>(
+    cs: &[[Cmplx<f32>; 8]; 79],
+    nsym: usize,
+    squared: bool,
+) -> [T; LDPC_N] {
     let flat = flatten_cs(cs);
-    let v = crate::engine::llr::compute_llr_partial::<Ft8, f32, T>(flat, nsym);
+    let v = crate::engine::llr::compute_llr_partial_metric::<Ft8, f32, T>(flat, nsym, squared);
     inflate_llr(v)
 }
 

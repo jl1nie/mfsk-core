@@ -152,6 +152,7 @@ pub(super) fn try_fallback(
     depth: DecodeDepth,
     q: u32,
     strictness: DecodeStrictness,
+    pass: super::PassCtx,
 ) -> Option<(BpResult, u8)> {
     if !depth.osd || q <= 6 {
         return None;
@@ -170,7 +171,7 @@ pub(super) fn try_fallback(
     let llr_full_f32: &super::super::llr::LlrSet<f32> = match precomputed_llr {
         Some(llr) => llr,
         None => {
-            owned_llr_storage = super::super::llr::compute_llr(cs_scratch);
+            owned_llr_storage = super::super::llr::compute_llr_metric(cs_scratch, pass.squared());
             &owned_llr_storage
         }
     };
