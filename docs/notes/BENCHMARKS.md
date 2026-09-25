@@ -231,6 +231,26 @@ unexpected decodes in 420 files, mfsk-core 22 with `.sic_early()` and 48 with
 `jt9 -d1` reaches only 92 % on `dt1` (new: 94 %), which is a `jt9` limitation and not
 a corpus problem.
 
+**That table used `sync_min` 0.8, which is not what `jt9 -d3` runs (1.3).** Most of the
+precision gap is that: the test's default is now 1.3 (`MFSK_FT8_BUSY_SYNC_MIN`).
+Swept on the same 420 files (recall over all 2900 signals / unexpected decodes):
+
+| `sync_min` | `.sic_early()` | `decode()` |
+|---|---|---|
+| 0.8 | 82.0 % / 22 | 71.2 % / 48 |
+| 1.0 | 81.9 % / 14 | 71.2 % / 48 |
+| **1.3** | **82.0 % / 6** | 71.2 % / 38 |
+| 1.6 | 81.3 % / 6 | 70.6 % / 27 |
+| 1.9 | 80.3 % / 8 | 69.5 % / 17 |
+| 2.1 | 78.5 % / 6 | 67.8 % / 15 |
+
+`.sic_early()` at 1.3 is within two of new `jt9 -d3` (4). `decode()` keeps 38: `.sic_rounds(3)`
+gives 44, so more subtraction rounds do not cure it; it is the plain pass's
+character, and a higher `sync_min` (1.6-1.9) is the trade if precision matters more
+than the last 1-2 points of recall. Other differences measured and not the cause:
+forcing OSD to ndeep 2 as upstream does (22 -> 19), and upstream's post-CRC filters
+(`/R`, `TU; `, i3/n3 range) would drop only a quarter to a third of the extras.
+
 ### Reading a crossing: pair it against `jt9` on the same corpus
 
 A single corpus's 50%-crossing is not a statement about the decoder. The

@@ -26,7 +26,7 @@
       },
       "ft8_busy": {
         "date": "2026-09-25",
-        "commit": "e792bc9",
+        "commit": "734204b-dirty",
         "machine": "AMD Ryzen 7 3700X 8-Core Processor",
         "trials": 840,
         "groups": 10
@@ -135,37 +135,37 @@
         "files": 40,
         "truth": 400,
         "hits": 332,
-        "extra": 3
+        "extra": 2
       },
       "ft8_busy/busy10/single": {
         "files": 40,
         "truth": 400,
         "hits": 318,
-        "extra": 6
+        "extra": 4
       },
       "ft8_busy/busy20/sic_early": {
         "files": 40,
         "truth": 800,
-        "hits": 651,
-        "extra": 5
+        "hits": 646,
+        "extra": 1
       },
       "ft8_busy/busy20/single": {
         "files": 40,
         "truth": 800,
-        "hits": 590,
-        "extra": 13
+        "hits": 589,
+        "extra": 11
       },
       "ft8_busy/busy40/sic_early": {
         "files": 40,
         "truth": 1600,
-        "hits": 1296,
-        "extra": 14
+        "hits": 1299,
+        "extra": 3
       },
       "ft8_busy/busy40/single": {
         "files": 40,
         "truth": 1600,
-        "hits": 1058,
-        "extra": 25
+        "hits": 1057,
+        "extra": 20
       },
       "ft8_busy/dt1/sic_early": {
         "files": 100,
@@ -177,7 +177,7 @@
         "files": 100,
         "truth": 100,
         "hits": 100,
-        "extra": 4
+        "extra": 3
       },
       "ft8_busy/noise/sic_early": {
         "files": 200,

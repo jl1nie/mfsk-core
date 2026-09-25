@@ -48,6 +48,19 @@ fn busy_dir() -> PathBuf {
     common::sweep_dir("MFSK_FT8_BUSY_DIR", "ft8_busy_sweep")
 }
 
+/// `MFSK_FT8_BUSY_SYNC_MIN` (default 1.3): the coarse-sync score a candidate
+/// needs. 1.3 is what WSJT-X's `jt9 -d3` uses (`ft8_decode.f90`; 2.1 for `-d1/-d2`).
+/// Measured on this corpus (2900 signals, 420 files, `max_cand` 600), `.sic_early()`
+/// at 0.8 / 1.0 / 1.3 / 1.6 / 2.1: recall 82.0 / 81.9 / 82.0 / 81.3 / 78.5 %,
+/// unexpected decodes 22 / 14 / 6 / 6 / 6. 0.8 (the FT8 sweep's value) admits noise
+/// candidates that OSD then accepts by CRC chance.
+fn sync_min() -> f32 {
+    std::env::var("MFSK_FT8_BUSY_SYNC_MIN")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(1.3)
+}
+
 fn max_cand() -> usize {
     std::env::var("MFSK_FT8_BUSY_MAX_CAND")
         .ok()
@@ -108,6 +121,7 @@ fn score(decoded: &[(String, f32, f32)], truth: &[Truth]) -> (u32, u32) {
 enum Strategy {
     Single,
     SicEarly,
+    SicRounds(usize),
 }
 
 impl Strategy {
@@ -115,17 +129,19 @@ impl Strategy {
         match self {
             Strategy::Single => "single",
             Strategy::SicEarly => "sic_early",
+            Strategy::SicRounds(_) => "sic_rounds",
         }
     }
 }
 
-fn decode(audio: &[i16], strategy: Strategy, cap: usize) -> Vec<(String, f32, f32)> {
+fn decode(audio: &[i16], strategy: Strategy, cap: usize, sync_min: f32) -> Vec<(String, f32, f32)> {
     use mfsk_core::ft8::Ft8;
     use mfsk_core::msg::decode_request::DecodeRequest;
-    let req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 0.8, cap);
+    let req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, sync_min, cap);
     let results = match strategy {
         Strategy::Single => req.decode().results,
         Strategy::SicEarly => req.sic_early().decode().results,
+        Strategy::SicRounds(n) => req.sic_rounds(n).decode().results,
     };
     results
         .iter()
@@ -202,6 +218,7 @@ fn ft8_busy_sweep() {
         return;
     };
     let cap = max_cand();
+    let sync_min = sync_min();
 
     struct Job {
         set: &'static str,
@@ -225,17 +242,25 @@ fn ft8_busy_sweep() {
     use std::io::Write;
 
     eprintln!("\n{:-<72}", "");
-    eprintln!("  max_cand {cap}");
+    eprintln!("  max_cand {cap}  sync_min {sync_min}");
     eprintln!(
         "  {:<8} {:<10} {:>5} {:>6} {:>6} {:>8} {:>6}",
         "set", "strategy", "files", "truth", "hits", "recall", "extra"
     );
     eprintln!("{:-<72}", "");
-    for strategy in [Strategy::Single, Strategy::SicEarly] {
+    let mut strategies = vec![Strategy::Single, Strategy::SicEarly];
+    // Diagnostic only (not in the baseline): `MFSK_FT8_BUSY_SIC_ROUNDS=n` adds `.sic_rounds(n)`.
+    if let Some(n) = std::env::var("MFSK_FT8_BUSY_SIC_ROUNDS")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+    {
+        strategies.push(Strategy::SicRounds(n));
+    }
+    for strategy in strategies {
         let rows: Vec<Option<(u32, u32, u32)>> = common::par_map(&jobs, |j| {
             let audio = load_wav_i16_opt(dir.join(format!("{}.wav", j.file)))?;
             let t = truth.get(&j.file).map(Vec::as_slice).unwrap_or(&[]);
-            let (hits, extra) = score(&decode(&audio, strategy, cap), t);
+            let (hits, extra) = score(&decode(&audio, strategy, cap, sync_min), t);
             Some((t.len() as u32, hits, extra))
         });
         let mut agg: BTreeMap<&str, (u32, u32, u32, u32)> = BTreeMap::new();

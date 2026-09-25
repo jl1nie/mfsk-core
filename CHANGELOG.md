@@ -34,8 +34,15 @@
   `jt9 -d3`'s 81.5/79.9/81.0 %, and plain `decode()` 79.5/73.8/66.1 %; and
   noise alone gives no unexpected decodes. **The gap is precision**: `jt9`
   gives 0 (2b9d654) or 4 (3.2) unexpected decodes over all 420 files,
-  mfsk-core 22 with `.sic_early()` and 48 with `decode()`, all in files that
-  contain signals. Recorded in `sweep-baseline.json`; not fixed here.
+  mfsk-core 22 with `.sic_early()` and 48 with `decode()` at `sync_min` 0.8,
+  all in files that contain signals. Most of that is `sync_min`: `jt9 -d3`
+  runs 1.3, and at 1.3 `.sic_early()` gives 6 at the same recall (0.8 / 1.0 /
+  1.3 / 1.6 / 2.1: 22 / 14 / 6 / 6 / 6 extras; recall 82.0 / 81.9 / 82.0 /
+  81.3 / 78.5 %). The test's default is now 1.3 (`MFSK_FT8_BUSY_SYNC_MIN`);
+  `decode()` keeps 38 there (`.sic_rounds(3)` gives 44). Not the cause:
+  OSD ndeep 3 (22 -> 19 when forced to upstream's 2), upstream's post-CRC
+  filters (they would drop a quarter to a third). Recorded in
+  `sweep-baseline.json`; the decoder is not changed here.
 
 - **Tier C counts unexpected decodes, not just recall, for FT8, FT4 and
   FST4 (#447).** The sweeps now write a trailing `extra` column, the

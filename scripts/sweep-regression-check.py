@@ -546,7 +546,7 @@ def main():
         out.update(sorted(baseline.items()))
         args.baseline.parent.mkdir(parents=True, exist_ok=True)
         args.baseline.write_text(dump_baseline(out))
-        stamped = ", ".join(sorted(trials_by_proto)) or "nothing"
+        stamped = ", ".join(sorted(set(trials_by_proto) | {protocol_of(l) for l in current_aggregates})) or "nothing"
         print(f"\nbaseline updated: {args.baseline} (provenance stamped for {stamped})")
 
     if args.strict and (any_flagged or any_precision_flagged or any_agg_flagged):
