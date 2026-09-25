@@ -242,6 +242,16 @@ impl DecodeDepth {
     };
 }
 
+/// `napwid` of `ft4_decode.f90` (`napwid=50`): how close, in Hz, a candidate has to
+/// be to the operator's QSO frequency (here `DecodeRequest::freq_hint`) to be
+/// decoded with `maxosd = 3` rather than 2.
+pub(crate) const QSO_WINDOW_HZ: f32 = 50.0;
+
+/// Whether a candidate at `cand_freq_hz` is inside the QSO window of `freq_hint`.
+pub(crate) fn near_qso_freq(cand_freq_hz: f32, freq_hint: Option<f32>) -> bool {
+    freq_hint.is_some_and(|h| (cand_freq_hz - h).abs() <= QSO_WINDOW_HZ)
+}
+
 /// OSD depth-escalation gates: `(osd_attempt_min, osd_depth3_min)`.
 ///
 /// The `12`/`18` pair was calibrated against FT8's `N_SYNC=21` (3 blocks x
@@ -759,6 +769,7 @@ where
         false,
         false,
         &AcceptAll,
+        false,
     )
 }
 
@@ -794,6 +805,7 @@ where
         false,
         false,
         &AcceptAll,
+        false,
     )
 }
 
@@ -872,6 +884,7 @@ where
         skip_snr,
         skip_llr_nsym_max,
         &AcceptAll,
+        false,
     )
 }
 
@@ -945,13 +958,14 @@ pub(crate) fn process_candidate_basic_ap<P: GenericPipelineProtocol, A: InfoAcce
     sync_q_min: u32,
     ap: &[(&[u8], &[u8], u8)],
     accept: &A,
+    near_qso: bool,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P, A>(
         cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, ap, None, false,
-        false, accept,
+        false, accept, near_qso,
     )
 }
 
@@ -1014,6 +1028,10 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol, A: InfoAccept>(
     // for every existing caller (behaves exactly as before).
     skip_llr_nsym_max: bool,
     accept: &A,
+    // `true` for a candidate within [`QSO_WINDOW_HZ`] of the request's
+    // `freq_hint`: `ft4_decode.f90` decodes those with `maxosd = 3` instead of 2
+    // (`FecOpts::osd_snapshots`). `false` for every caller that has no hint.
+    near_qso: bool,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -1317,6 +1335,7 @@ where
                     let osd_opts = FecOpts {
                         bp_max_iter,
                         osd_depth: osd_depth as u32,
+                        osd_snapshots: if near_qso { 3 } else { 2 },
                         ap_mask: None,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),
                         ..FecOpts::default()
@@ -1384,6 +1403,7 @@ where
                     let ap_opts = FecOpts {
                         bp_max_iter,
                         osd_depth: 2,
+                        osd_snapshots: if near_qso { 3 } else { 2 },
                         ap_mask: Some((mask, values)),
                         ap_mag_scale: <P as Protocol>::AP_MAG_SCALE,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),
@@ -2159,6 +2179,7 @@ where
                     sync_q_min,
                     ap,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 ) {
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2194,6 +2215,7 @@ where
                         sync_q_min,
                         ap,
                         accept,
+                        near_qso_freq(cand.freq_hz, freq_hint),
                     )?;
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2216,6 +2238,7 @@ where
                         sync_q_min,
                         ap,
                         accept,
+                        near_qso_freq(cand.freq_hz, freq_hint),
                     )?;
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2298,6 +2321,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 ) {
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2336,6 +2360,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -2361,6 +2386,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -2578,6 +2604,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )
             })
             .collect();
@@ -2604,6 +2631,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )
             })
             .collect();

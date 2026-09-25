@@ -100,8 +100,9 @@ impl BpPooledFec for Ldpc174_91 {
             return None;
         }
 
-        // OSD as `decode174_91.f90` runs it (`maxosd = 2`, `norder = 2`): on the BP
-        // sum after 1 and then after 2 iterations (`zsave(:,1)`, `zsave(:,2)`), never
+        // OSD as `decode174_91.f90` runs it (`maxosd = opts.osd_snapshots`, 2 unless the
+        // caller says otherwise, `norder = 2`): on the BP sum after 1, 2, ...
+        // iterations (`zsave(:,1)`, `zsave(:,2)`, ...), never
         // the raw LLR, with the a-priori bits held and never flipped, and the CRC
         // checked once, on the winner. `ft4_decode.f90` decodes every pass this way,
         // blind or AP, at a fixed `ndeep = 2`, so every `osd_depth >= 1` is that one
@@ -110,7 +111,7 @@ impl BpPooledFec for Ldpc174_91 {
         // calls returned a CRC-valid wrong codeword against `decode174_91`'s 5.8e-5
         // (`tests/ft4_osd_false_accept.rs`), and the pipeline's
         // `hard_errors < osd_max_errors` gate was what kept them out (#456).
-        for n_iter in [1u32, 2] {
+        for n_iter in 1..=opts.osd_snapshots.max(1) {
             let zsum = bp_llr_zsum_ap_with_scratch::<Ldpc174_91Params>(
                 scratch,
                 &llr_arr,

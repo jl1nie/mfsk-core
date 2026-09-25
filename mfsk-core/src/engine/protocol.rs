@@ -441,6 +441,12 @@ pub struct FecOpts<'a> {
     /// MessageCodec>::verify_info` here so that, e.g., FT8/FT4/FST4
     /// reject parity-only candidates whose CRC-14 doesn't pass.
     pub verify_info: Option<fn(&[u8]) -> bool>,
+    /// How many snapshots of the BP variable-node sum the OSD fallback tries, in
+    /// order: after 1 iteration, after 2, after 3 (`decode174_91.f90`'s `maxosd`,
+    /// its `zsave(:,1..maxosd)`). Default 2, what `ft8b.f90` and `ft4_decode.f90`
+    /// pass; `ft4_decode.f90` passes 3 for a candidate within `napwid` (50 Hz) of the
+    /// operator's QSO frequency. `Ldpc174_91` reads it; the other codecs ignore it.
+    pub osd_snapshots: u32,
     /// LDPC BP check-node update kernel. Defaults to `SumProduct`
     /// (WSJT-X-equivalent). Embedded callers select
     /// `NormalizedMinSum { alpha: 0.75 }` to trade ~0.1 dB threshold
@@ -461,6 +467,7 @@ impl<'a> Default for FecOpts<'a> {
             bp_max_iter: 30,
             ap_mag_scale: 1.01,
             osd_depth: 0,
+            osd_snapshots: 2,
             ap_mask: None,
             verify_info: None,
             bp_kind: BpKind::SumProduct,

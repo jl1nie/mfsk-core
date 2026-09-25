@@ -25,7 +25,7 @@
   shapes, at 2.5 ms a decode against 2.4 for `(1.2, 50)` and 4.8 against 6.2 for
   `(0.05, 100)` (before), and every FT4 test passes under `fixed-point`.
 
-  Two more places where the FT4 ladder differed from `ft4_decode.f90`, each
+  Three more places where the FT4 ladder differed from `ft4_decode.f90`, each
   measured on its own. **The post-OSD `hard_errors < osd_max_errors` gate is gone**:
   upstream's FT4 has none (`nharderror.ge.0` and a message that unpacks), and switched
   off it moved none of the noise slots, the sweep or the recording (`osd_max_errors`
@@ -35,8 +35,16 @@
   0.86 / 0.67 dB more sensitive (AWGN, ccir_good, ccir_moderate, ccir_poor), unexpected
   decodes still 0 in every group, noise slots `(0.05, 100)` 3 against 2, the recording
   the same 11 decodes at 2.28 ms against 2.24 for `(1.2, 50)` and 5.15 against 4.64 for
-  `(0.05, 100)`. `ap_max_errors` (30 / 25) still bounds AP decodes; upstream's FT4 has no
-  such bound, and it is shared with FT8, so it is a separate measurement.
+  `(0.05, 100)`. **`maxosd = 3` near the QSO frequency**: `ft4_decode.f90` decodes a
+  candidate within `napwid` (50 Hz) of `nfqso` with the OSD on a third BP-sum snapshot
+  (`zsave(:,3)`), blind and AP passes alike. New `FecOpts::osd_snapshots` (default 2;
+  `Ldpc174_91` reads it, the other codecs ignore it) and `pipeline::QSO_WINDOW_HZ`; a
+  candidate within 50 Hz of `DecodeRequest::freq_hint` gets 3. On identical BPSK/AWGN LLRs
+  3 snapshots recover everything 2 do and more (257 against 226 of 4000 at amplitude 0.9,
+  none by 2 alone; `tests/ft4_osd_false_accept.rs`). With `freq_hint 1500` the noise-slot
+  phantoms stay at 0 and 3, and the recording gives the same 11 decodes wherever the hint
+  points. `ap_max_errors` (30 / 25) still bounds AP decodes; upstream's FT4 has no such
+  bound, and it is shared with FT8, so it is a separate measurement.
 
   The depth-4 rung of the generic ladder (`osd_decode_deep4`, pass id 13, at
   `nsync >= osd_depth3_min`) is removed: FST4's codec has always mapped depth 4

@@ -120,8 +120,12 @@ fn ft4_noise_slots_measure() {
     use mfsk_core::msg::decode_request::DecodeRequest;
     const SLOTS: usize = 3_000;
     const SAMPLES: usize = 90_000; // 7.5 s at 12 kHz
-    for (label, sync_min, max_cand) in [("(1.2, 50)", 1.2f32, 50usize), ("(0.05, 100)", 0.05, 100)]
-    {
+    for (label, sync_min, max_cand, hint) in [
+        ("(1.2, 50)", 1.2f32, 50usize, None),
+        ("(0.05, 100)", 0.05, 100, None),
+        ("(1.2, 50) + freq_hint 1500", 1.2, 50, Some(1500.0f32)),
+        ("(0.05, 100) + freq_hint 1500", 0.05, 100, Some(1500.0)),
+    ] {
         let per_thread = SLOTS / 12;
         let total: usize = std::thread::scope(|sc| {
             let hs: Vec<_> = (0..12)
@@ -133,12 +137,13 @@ fn ft4_noise_slots_measure() {
                             let audio: Vec<i16> = (0..SAMPLES)
                                 .map(|_| (1000.0 * rng.gauss()).clamp(-32000.0, 32000.0) as i16)
                                 .collect();
-                            n += DecodeRequest::<Ft4>::new(
+                            let mut req = DecodeRequest::<Ft4>::new(
                                 &audio, 100.0, 2700.0, sync_min, max_cand,
-                            )
-                            .decode()
-                            .results
-                            .len();
+                            );
+                            if let Some(h) = hint {
+                                req = req.freq_hint(h);
+                            }
+                            n += req.decode().results.len();
                         }
                         n
                     })
@@ -149,6 +154,69 @@ fn ft4_noise_slots_measure() {
         println!(
             "FT4_NOISE {label}: {total} decodes in {} noise slots",
             per_thread * 12
+        );
+    }
+}
+
+/// Recoveries of a real, CRC-valid codeword by `Ldpc174_91::decode_soft` at
+/// `osd_snapshots` 2 and 3 on the same BPSK/AWGN LLRs (`amp` is the signal
+/// amplitude, noise sd 1, `LLR = 2 * received`): `(count at 2, count at 3, at 3 but
+/// not 2, at 2 but not 3)`.
+fn snapshot_recoveries(amp: f32, draws: usize) -> (u32, u32, u32, u32) {
+    use mfsk_core::fec::ldpc::{append_crc14, ldpc_encode};
+    let mut rng = Rng(0xA5A5_1234_5678_9ABCu64 ^ (amp.to_bits() as u64));
+    let (mut two, mut three, mut only3, mut only2) = (0, 0, 0, 0);
+    for _ in 0..draws {
+        let mut msg = [0u8; 77];
+        for b in msg.iter_mut() {
+            *b = (rng.next() & 1) as u8;
+        }
+        let info = append_crc14(&msg);
+        let cw = ldpc_encode(&info);
+        let mut llr = [0f32; 174];
+        for (l, &b) in llr.iter_mut().zip(cw.iter()) {
+            *l = 2.0 * (amp * (2.0 * b as f32 - 1.0) + rng.gauss());
+        }
+        let run = |snapshots: u32| {
+            let opts = FecOpts {
+                osd_depth: 2,
+                osd_snapshots: snapshots,
+                verify_info: Some(check_crc14),
+                ..FecOpts::default()
+            };
+            Ldpc174_91
+                .decode_soft(&llr, &opts)
+                .is_some_and(|r| r.info[..77] == msg[..])
+        };
+        let (a, b) = (run(2), run(3));
+        two += a as u32;
+        three += b as u32;
+        only3 += (b && !a) as u32;
+        only2 += (a && !b) as u32;
+    }
+    (two, three, only3, only2)
+}
+
+/// `maxosd = 3` (`FecOpts::osd_snapshots`) is `maxosd = 2` plus one more snapshot, so
+/// it recovers everything 2 does and some more: 226 against 257 of 4000 at amplitude
+/// 0.9 (the same draws), none recovered by 2 alone.
+#[test]
+fn three_snapshots_recover_a_superset_of_two() {
+    let (two, three, only3, only2) = snapshot_recoveries(0.9, 4_000);
+    assert_eq!(only2, 0, "2 snapshots recovered {only2} that 3 did not");
+    assert!(
+        only3 >= 15 && three > two,
+        "3 snapshots recovered {three} against {two} for 2 (only 3: {only3}); measured 257 against 226 (31)"
+    );
+}
+
+#[test]
+#[ignore = "measurement, prints; run with --release --ignored --nocapture"]
+fn snapshots_measure() {
+    for amp in [0.70f32, 0.75, 0.80, 0.85, 0.90] {
+        let (two, three, only3, only2) = snapshot_recoveries(amp, 4_000);
+        println!(
+            "SNAP amp {amp}: 2 snapshots {two}, 3 snapshots {three} (only 3: {only3}, only 2: {only2}) of 4000"
         );
     }
 }
