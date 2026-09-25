@@ -41,9 +41,14 @@
   `Ldpc174_91` reads it, the other codecs ignore it) and `pipeline::QSO_WINDOW_HZ`; a
   candidate within 50 Hz of `DecodeRequest::freq_hint` gets 3. On identical BPSK/AWGN LLRs
   3 snapshots recover everything 2 do and more (257 against 226 of 4000 at amplitude 0.9,
-  none by 2 alone; `tests/ft4_osd_false_accept.rs`). With `freq_hint 1500` the noise-slot
-  phantoms stay at 0 and 3, and the recording gives the same 11 decodes wherever the hint
-  points. `ap_max_errors` (30 / 25) still bounds AP decodes; upstream's FT4 has no such
+  none by 2 alone; `tests/ft4_osd_false_accept.rs`). On the FT4 sweep with the hint on
+  its signal (`MFSK_FT4_SWEEP_FREQ_HINT=1500`, 400 trials a cell, 20 800 files, the same
+  files at `maxosd` 2 and 3): 10 972 -> 11 013 hits, **41 gained and none lost** (sign
+  test p < 1e-4), all four channels; the crossings move by only 0.02-0.04 dB, because it
+  acts on the cells at the threshold (37 % -> +1.1 points at -18 dB, 12 % -> +0.4 at
+  -19 dB), and unexpected decodes stay at 3 in every condition. The hint alone changes
+  no file. With `freq_hint 1500` the noise-slot phantoms stay at 0 and 3, and the
+  recording gives the same 11 decodes wherever the hint points. `ap_max_errors` (30 / 25) still bounds AP decodes; upstream's FT4 has no such
   bound, and it is shared with FT8, so it is a separate measurement.
 
   The depth-4 rung of the generic ladder (`osd_decode_deep4`, pass id 13, at
