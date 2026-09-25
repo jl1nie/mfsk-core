@@ -206,6 +206,108 @@ pub(in crate::ft8) type LlrT = crate::engine::scalar::Q11i16;
 #[cfg(not(feature = "fixed-point-llr"))]
 pub(in crate::ft8) type LlrT = f32;
 
+/// Which of WSJT-X's decode passes a candidate is being decoded in
+/// (`ft8_decode.f90`'s `do ipass=1,npass`, v3.0.0 onward), carried down
+/// to [`process_one_candidate_inner`](super::process_candidates) so a
+/// pass can change how the candidate is decoded, not only which
+/// candidates it sees (#439).
+///
+/// `imetric` is `ft8b.f90`'s argument of that name: 1 = the metric
+/// `|cs|` (passes 1), 2 = `|cs|²` (passes 2 and 3). Every caller that has
+/// no pass structure — the embedded driver, the single-pass host path,
+/// sniper — decodes as pass 1, as WSJT-X's `-d1` first pass does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ft8) struct PassCtx {
+    pub imetric: u8,
+    /// `ndepth <= 2` (`jt9 -d1/-d2`, [`WsjtxDepth::D1`](crate::ft8::decode::WsjtxDepth)
+    /// and `D2`): a higher nsync floor, see [`PassCtx::nsync_floor`].
+    pub low_depth: bool,
+    /// `ncontest != 0`: a contest is being worked, so `ft8b.f90` does not
+    /// drop `/R` and `TU; ` messages (see [`Self::FIRST`]'s neighbours in
+    /// `process_candidates::wsjtx_quirky`). Off by default, as `ncontest=0`.
+    pub contest: bool,
+    /// Whether the AP passes may run. `ft8_decode.f90` sets `npasses=5`
+    /// (blind passes only) while `nzhsym < 50`, i.e. in the early
+    /// checkpoint; the final one and everything without a checkpoint
+    /// structure run AP.
+    pub ap: bool,
+}
+
+impl PassCtx {
+    /// Pass 1: `imetric` 1.
+    pub(in crate::ft8) const FIRST: PassCtx = PassCtx {
+        imetric: 1,
+        low_depth: false,
+        contest: false,
+        ap: true,
+    };
+
+    /// This context without the AP passes (the early checkpoint).
+    pub(in crate::ft8) const fn without_ap(self) -> PassCtx {
+        PassCtx { ap: false, ..self }
+    }
+
+    /// This context with `ncontest != 0` when `on` is set.
+    pub(in crate::ft8) const fn contest(self, on: bool) -> PassCtx {
+        PassCtx {
+            contest: on,
+            ..self
+        }
+    }
+
+    /// This context for a `jt9 -d1/-d2` tier (`ndepth <= 2`) when `low` is set.
+    pub(in crate::ft8) const fn low_depth(self, low: bool) -> PassCtx {
+        PassCtx {
+            low_depth: low,
+            ..self
+        }
+    }
+
+    /// `ft8b.f90`'s hard-sync gate: a candidate whose Costas hard-decision
+    /// count `nsync` is at or below this is dropped before any decode
+    /// (`syncmin=6; if(imetric.eq.2) syncmin=7; if(ndepth.le.2) syncmin=8`,
+    /// v3.0.0 onward). The squared metric of passes 2 and 3 gets a floor one
+    /// higher than pass 1's, and the `-d1/-d2` tiers a floor of 8 whatever the
+    /// pass.
+    pub(in crate::ft8) const fn nsync_floor(self) -> u32 {
+        if self.low_depth {
+            8
+        } else if self.imetric == 2 {
+            7
+        } else {
+            6
+        }
+    }
+
+    /// `imetric` 2: the squared metric (`ft8b.f90`: `s2=s2**2`).
+    pub(in crate::ft8) const fn squared(self) -> bool {
+        self.imetric == 2
+    }
+
+    /// The context of 0-based decode round `round` (`ipass - 1`) of a
+    /// decode whose first pass is `self`: `ft8_decode.f90` v3.0.0 sets
+    /// `imetric=1` for pass 1 and `imetric=2` for passes 2 and 3; the tier
+    /// (`low_depth`) carries over.
+    pub(in crate::ft8) const fn round(self, round: usize) -> PassCtx {
+        PassCtx {
+            imetric: if round == 0 { 1 } else { 2 },
+            ..self
+        }
+    }
+
+    /// Whether 0-based round `round` runs, given `decodes_so_far` — every
+    /// message decoded before it, including an earlier stage's
+    /// (`ndecodes`, which `ft8_decode.f90` seeds with `ndec_early`).
+    ///
+    /// v3.0.0: pass 1 and pass 2 always run; pass 3 runs only if there is
+    /// at least one decode (`if(ndecodes.eq.0) cycle`). Before 3.0.0 pass 2
+    /// also needed a decode and pass 3 needed a *new* one; that skip
+    /// rule is gone upstream (#439).
+    pub(in crate::ft8) const fn round_runs(round: usize, decodes_so_far: usize) -> bool {
+        round < 2 || decodes_so_far > 0
+    }
+}
+
 /// Slot start offset (FT8 transmits 0.5 s into the slot).
 pub(super) const TX_START_OFFSET_S: f32 = 0.5;
 
@@ -225,7 +327,7 @@ pub(super) const TX_START_OFFSET_S: f32 = 0.5;
 /// (`sync8.f90` + `ft8_decode.f90`, issue #280) showed WSJT-X finds
 /// `K1BZM DK8NE` only through its *secondary* (full-`±JZ`) channel
 /// at `jpeak2=14` — its fixed-`±mlag=10` primary (upstream moved to 13
-/// in 3.0, which this port has not adopted — see `coarse_sync::MLAG`;
+/// in 3.0, adopted here in #439 — see `coarse_sync::MLAG`;
 /// the probe was against 2.7) scores 0.95, far
 /// under `syncmin` — and only on its second subtraction pass
 /// (`nzhsym=50, ipass=2`), from candidate rank 35 of 337 with no

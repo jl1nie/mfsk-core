@@ -136,6 +136,7 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.also_accept(f)` | `Fn(&Wsjt77Fields) -> bool` | 無し | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | codec が通すもの **＋** `f` が通すもの — [§2.6](#26-メッセージの受理) |
 | `.message_filter(f)` | `Fn(&Wsjt77Fields) -> bool` | 無し | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | codec の判定を `f` で置き換える — [§2.6](#26-メッセージの受理) |
 | `.codec_filter()` | — | FT8 は on、他は off | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | 既定で判定しないプロトコルで codec 自身の判定を適用する — [§2.6](#26-メッセージの受理) |
+| `.contest(on)` | `bool` | `false` | **FT8** | WSJT-X の `ncontest != 0`。FT8 が CRC 後に落とす `/R`・`TU; ` のメッセージを残す — [§2.6](#26-メッセージの受理) |
 | `.on_result(cb)` | `FnMut(&Row)` | 無し | 全部 | 見つかった順に行を配信 — [§2.4](#24-ストリーミング配信) |
 | `.budget(check)` | `FnMut() -> bool` | 無し | 全部 | 呼び出し側の締切述語 — [§2.3](#23-計算予算) |
 | `.sniper(...)` | `(audio, target_hz, max_cand)` | — | `SupportsSniper` — **FT8** | 代わりに `SniperRequest` を作る |
@@ -466,6 +467,14 @@ assert!(unfiltered.results.is_empty());
 有効化する一行の手段である。`.message_filter(f)` は判定を丸ごと置き換え、
 置き換えられる側はそこに到達した CRC 生存者のおよそ 2/3 を落としている
 ので、緩い `f` はファントム行を表に出す。
+
+**FT8 は、ポリシーに関わらず `/R` と `TU; ` のメッセージも落とす。** #439 以降、
+FT8 は `ft8b.f90`（WSJT-X 3.0 以降）が CRC の直後にすることと同じことをする:
+コンテスト中でなければ、`/R` を含む、または `TU; ` で始まる標準または RTTY
+Roundup のメッセージは捨てられ、そのパスは次へ進む。これはポリシーより前に
+あるので、`.message_filter(|_| true)` でもそれらの行は戻らない。戻すのは
+`.contest(true)` で、`CALL1/R CALL2` や `TU; CALL1 CALL2` が実トラフィック
+になるコンテストではこれが正しい設定である。
 
 **既定でオンなのは FT8 と FT4。理由は減算である。** 受理したものを減算する
 経路では、誤ったデコードは表示上の問題では済まない。`.sic_rounds()` と

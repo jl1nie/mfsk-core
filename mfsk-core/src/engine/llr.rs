@@ -183,7 +183,7 @@ pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
     let mut set = compute_llr_generic::<P, f32, T>(cs, P::LLR_NSYM_MAX as usize);
     if let Some(mid) = P::LLR_NSYM_MID {
         let mut bmete = vec![0.0f32; codeword_bit_len::<P>()];
-        fill_bmet_for_nsym::<P, f32>(cs, mid as usize, &mut bmete, None);
+        fill_bmet_for_nsym::<P, f32>(cs, mid as usize, &mut bmete, None, false);
         set.llre = scale_bmet::<T>(bmete, P::LLR_SCALE);
     }
     set
@@ -306,11 +306,18 @@ fn group_scratch_len(span: usize, ntones: usize) -> usize {
         + group_scratch_len(hi, ntones).max(group_scratch_len(lo, ntones))
 }
 
+/// `squared` is WSJT-X FT8's `imetric` 2 (`ft8b.f90`: `if(imetric.eq.2)
+/// s2(0:nt-1)=s2(0:nt-1)**2`, v3.0.0 onward): the group magnitudes are
+/// squared before the per-bit max-when-1 / max-when-0 reduction, so the
+/// metric is a power difference rather than an amplitude difference. The
+/// `llrd` denominator is built from the same `s2`, so it follows. `false`
+/// is the metric every other caller uses, unchanged.
 fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
     bmet_primary: &mut [f32],
     bmet_norm: Option<&mut [f32]>,
+    squared: bool,
 ) {
     let ntones = P::NTONES as usize;
     let bps = P::BITS_PER_SYMBOL as usize;
@@ -350,6 +357,14 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
             );
             for (s2_i, entry) in s2.iter_mut().zip(table.iter()) {
                 *s2_i = (entry.re * entry.re + entry.im * entry.im).sqrt();
+            }
+            if squared {
+                // `abs(...)**2` as ft8b.f90 writes it (magnitude first,
+                // then squared), not `re² + im²`, so the rounding is the
+                // reference's.
+                for s2_i in s2.iter_mut() {
+                    *s2_i *= *s2_i;
+                }
             }
             // Updates every bit position's running max-when-1 /
             // max-when-0 in one sweep, instead of the previous
@@ -497,6 +512,16 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     max_nsym: usize,
 ) -> LlrSet<T> {
+    compute_llr_generic_metric::<P, S, T>(cs, max_nsym, false)
+}
+
+/// [`compute_llr_generic`] with the choice of metric: `squared` is FT8's
+/// `imetric` 2 (`s2` squared before the per-bit max; `ft8b.f90` v3.0.0).
+pub fn compute_llr_generic_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
+    cs: &[Cmplx<S>],
+    max_nsym: usize,
+    squared: bool,
+) -> LlrSet<T> {
     let codeword_len = codeword_bit_len::<P>();
     let mut bmeta = vec![0.0f32; codeword_len];
     let mut bmetb = vec![0.0f32; codeword_len];
@@ -531,9 +556,9 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
             // function-local Vecs but we need disjoint &mut. The
             // explicit shadow keeps the borrow checker happy.
             let (bmeta_slice, bmetd_slice) = (&mut bmeta[..], &mut bmetd[..]);
-            fill_bmet_for_nsym::<P, S>(cs, 1, bmeta_slice, Some(bmetd_slice));
+            fill_bmet_for_nsym::<P, S>(cs, 1, bmeta_slice, Some(bmetd_slice), squared);
         } else {
-            fill_bmet_for_nsym::<P, S>(cs, nsym, primary, None);
+            fill_bmet_for_nsym::<P, S>(cs, nsym, primary, None, squared);
         }
     }
 
@@ -545,6 +570,41 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
         llrd: scale_bmet::<T>(bmetd, s),
         llre: Vec::new(),
     }
+}
+
+/// WSJT-X FT8's fifth metric, `llre` (`ft8b.f90` v3.0.0, pass 5:
+/// "choose best (largest) metric from 1-3"): for each codeword bit, the
+/// **raw** (un-normalised) `nsym`-1/2/3 metric of largest magnitude —
+/// `bmete(i)=temp(maxloc(abs(temp)))` over `(bmeta, bmetb, bmetc)`, a tie
+/// going to the shallower `nsym` as `maxloc` returns the first — then
+/// normalised and scaled like the others.
+///
+/// It needs the raw metrics, which the normalised `llra/llrb/llrc` of
+/// [`compute_llr_generic_metric`] no longer are, so this recomputes them:
+/// about the cost of one full [`compute_llr_generic_metric`].
+pub fn compute_llre_best_of<P: Protocol, S: SpecScalar, T: LlrScalar>(
+    cs: &[Cmplx<S>],
+    max_nsym: usize,
+    squared: bool,
+) -> Vec<T> {
+    let codeword_len = codeword_bit_len::<P>();
+    let mut bmeta = vec![0.0f32; codeword_len];
+    let mut bmetb = vec![0.0f32; codeword_len];
+    let mut bmetc = vec![0.0f32; codeword_len];
+    fill_bmet_for_nsym::<P, S>(cs, 1, &mut bmeta, None, squared);
+    fill_bmet_for_nsym::<P, S>(cs, 2, &mut bmetb, None, squared);
+    fill_bmet_for_nsym::<P, S>(cs, max_nsym, &mut bmetc, None, squared);
+    let mut bmete = vec![0.0f32; codeword_len];
+    for i in 0..codeword_len {
+        let mut best = bmeta[i];
+        for cand in [bmetb[i], bmetc[i]] {
+            if cand.abs() > best.abs() {
+                best = cand;
+            }
+        }
+        bmete[i] = best;
+    }
+    scale_bmet::<T>(bmete, P::LLR_SCALE)
 }
 
 /// Compute a single LLR variant at one `nsym` level, normalised +
@@ -563,10 +623,20 @@ pub fn compute_llr_partial<P: Protocol, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
 ) -> Vec<T> {
+    compute_llr_partial_metric::<P, S, T>(cs, nsym, false)
+}
+
+/// [`compute_llr_partial`] with the choice of metric (see
+/// [`compute_llr_generic_metric`]).
+pub fn compute_llr_partial_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
+    cs: &[Cmplx<S>],
+    nsym: usize,
+    squared: bool,
+) -> Vec<T> {
     debug_assert!((1..=MAX_NSYM).contains(&nsym));
     let codeword_len = codeword_bit_len::<P>();
     let mut bmet = vec![0.0f32; codeword_len];
-    fill_bmet_for_nsym::<P, S>(cs, nsym, &mut bmet, None);
+    fill_bmet_for_nsym::<P, S>(cs, nsym, &mut bmet, None, squared);
     scale_bmet::<T>(bmet, P::LLR_SCALE)
 }
 

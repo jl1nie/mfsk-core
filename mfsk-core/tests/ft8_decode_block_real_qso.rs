@@ -79,8 +79,11 @@ const ENTRIES: &[Entry] = &[
     Entry {
         label: "qso1",
         path: asset_path!("qso1.wav"),
+        // `7J0DNY/R PZ9BNR BM87` was in this list until #439: it carries
+        // `/R`, which ft8b.f90 (v3.0.0 onward) drops when no contest is
+        // active, and neither the 2b9d654 nor the 3.2 `jt9 -d3` reports it
+        // on this file. mfsk-core now drops it too (`.contest(true)` keeps it).
         truth: &[
-            "7J0DNY/R PZ9BNR BM87",
             "CQ DX R6WA LN32",
             "CQ R7IW LN35",
             "CQ TA6CQ KN70",

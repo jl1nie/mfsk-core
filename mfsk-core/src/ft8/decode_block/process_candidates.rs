@@ -32,7 +32,7 @@ use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
 use super::fill_symbol_spectra::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
 use super::spectrogram::{Spectrogram, compute_spectrogram};
 use super::types::{
-    AudioSample, DEFAULT_Q_THRESH, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, SAMPLE_RATE_HZ,
+    AudioSample, DEFAULT_Q_THRESH, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, PassCtx, SAMPLE_RATE_HZ,
     TONE_SPACING_HZ, TX_START_OFFSET_S,
 };
 use crate::engine::scalar::{Cmplx, ComplexSpec};
@@ -318,10 +318,10 @@ pub fn decode_block_with_ap_tuned<S: AudioSample>(
 /// coarse_sync on the (subtracted) audio, fine refine, decode, then
 /// LPF-subtract every fresh CRC-passing decode for the next pass.
 ///
-/// Pass termination matches WSJT-X exactly:
-/// - pass 1 always runs;
-/// - pass 2 skips when pass 1 returned 0 decodes;
-/// - pass 3 skips when pass 2 returned no NEW decodes.
+/// Pass termination matches WSJT-X 3.x (`ft8_decode.f90` v3.0.0; see
+/// [`PassCtx::round_runs`]): passes 1 and 2 always run, pass 3 runs when
+/// there is at least one decode. WSJT-X 2.x skipped pass 2 on zero decodes
+/// and pass 3 on zero new ones; that rule is gone upstream.
 ///
 /// On host (`fft-rustfft`) the audio is cloned to a working `Vec<i16>`
 /// (subtract operates on i16 samples). Embedded targets compile through
@@ -351,7 +351,6 @@ fn decode_block_multipass<S: AudioSample>(
     let trace_stage = stage_trace_enabled();
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
     let mut all: AllocVec<DecodeResult> = AllocVec::new();
-    let mut prev_total: usize = 0;
     // Shared across every pass's per-candidate loop below (issue #199):
     // this driver calls the per-candidate decode entry once per
     // candidate (1-element `vec![cand]`), so without a caller-owned
@@ -361,11 +360,9 @@ fn decode_block_multipass<S: AudioSample>(
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     for ipass in 0..3 {
-        if ipass >= 1 && all.len() == prev_total {
-            // Pass 2 skips on zero from pass 1; pass 3 on zero new.
-            break;
+        if !PassCtx::round_runs(ipass, all.len()) {
+            continue;
         }
-        prev_total = all.len();
 
         let spec = compute_spectrogram(work.as_slice(), freq_max);
         // Capture *this pass's own* spectrogram + per-bin baseline for
@@ -481,6 +478,7 @@ fn decode_block_multipass<S: AudioSample>(
                 fft_cache.as_deref(),
                 &mut bp_scratch,
                 None,
+                PassCtx::FIRST.round(ipass),
             );
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
@@ -1450,6 +1448,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
         fft_cache,
         &mut bp_scratch,
         on_result,
+        PassCtx::FIRST,
     )
 }
 
@@ -1473,6 +1472,7 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
         LlrT,
     >,
     on_result: Option<&mut dyn FnMut(&DecodeResult)>,
+    pass: PassCtx,
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -1492,6 +1492,7 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
         ap_hint,
         strictness,
         on_result,
+        pass,
     )
 }
 
@@ -1622,6 +1623,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         None,
         DecodeStrictness::Normal,
         None,
+        PassCtx::FIRST,
     )
 }
 
@@ -1667,6 +1669,7 @@ where
         None,
         DecodeStrictness::Normal,
         None,
+        PassCtx::FIRST,
     )
 }
 
@@ -1696,6 +1699,7 @@ fn process_candidates_with_ap<S: AudioSample, F>(
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
     mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
+    pass: PassCtx,
 ) -> Vec<DecodeResult>
 where
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
@@ -1732,7 +1736,7 @@ where
         // 56 DFTs / candidate.
         fill(cs_scratch, cand, SymMask::SyncBlocks12);
         let q = sync_quality(cs_scratch);
-        if q <= q_thresh {
+        if q <= q_thresh.max(pass.nsync_floor()) {
             #[cfg(feature = "std")]
             TRACE_NSYNC_FAIL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             continue;
@@ -1753,6 +1757,7 @@ where
             strictness,
             0.0,
             &DefaultPolicy,
+            pass,
         ) {
             if let Some(cb) = on_result.as_mut() {
                 cb(&r);
@@ -1823,8 +1828,42 @@ fn codec_is_plausible(message: &Wsjt77Fields) -> bool {
 /// The caller's acceptance policy applied to `message` together with
 /// FT8's codec verdict — the one place the two are joined (#423: the
 /// same call was written at the AP validator and the final accept).
-fn policy_accepts<Pol: MessagePolicy>(policy: &Pol, message: &Wsjt77Fields) -> bool {
-    policy.accepts(codec_is_plausible(message), FT8_FILTERS, message)
+///
+/// Before either, `ft8b.f90`'s own post-CRC message filter
+/// ([`wsjtx_quirky`]) — the reference drops the pass's result there, and
+/// so does this, whatever the policy: a policy widens what the *codec*
+/// finds plausible, it does not reinstate what the decoder itself never
+/// reports.
+fn policy_accepts<Pol: MessagePolicy>(policy: &Pol, message: &Wsjt77Fields, pass: PassCtx) -> bool {
+    (pass.contest || !wsjtx_quirky(message))
+        && policy.accepts(codec_is_plausible(message), FT8_FILTERS, message)
+}
+
+/// `ft8b.f90` v3.0.0, right after `unpack77`:
+///
+/// ```fortran
+/// if(.not.unpk77_success .or. index(msg37,'/R').gt.0 .or.  &
+///      msg37(1:4).eq.'TU; ') then
+///    if(i3.ge.1 .and. i3.le.3 .and. ncontest.eq.0) cycle
+/// endif
+/// ```
+///
+/// i.e. with no contest active, a standard (`i3` 1/2) or RTTY Roundup
+/// (`i3` 3) message carrying `/R` or starting `TU; ` is dropped and the
+/// pass moves on. The two range checks that precede it upstream
+/// (`i3 > 5`, `i3=0 & n3 > 6`, `i3=0 & n3=2`) are already what
+/// [`unpack77_fields`] refuses; an unpack failure is refused there too.
+/// Judged on the rendered text, as upstream does, because `/R` can sit on
+/// either callsign.
+fn wsjtx_quirky(message: &Wsjt77Fields) -> bool {
+    use alloc::string::ToString;
+    matches!(
+        message,
+        Wsjt77Fields::Standard { .. } | Wsjt77Fields::RttyRoundup { .. }
+    ) && {
+        let text = message.to_string();
+        text.contains("/R") || text.starts_with("TU; ")
+    }
 }
 
 /// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
@@ -1871,7 +1910,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // inlines to `codec_is_plausible` alone, which is what this
     // function did unconditionally before the hook existed.
     policy: &Pol,
+    // Which WSJT-X decode pass this is: `imetric` picks the LLR metric.
+    pass: PassCtx,
 ) -> Option<DecodeResult> {
+    debug_assert!(matches!(pass.imetric, 1 | 2));
     // ── Staircase: cheap → deeper → OSD ─────────────────────────
     //
     // 1) Bp(llra) on the fast nsym=1 LLR. Most candidates that
@@ -1889,7 +1931,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // `LlrT` definition above. Both go through the *same* generic
     // NMS implementation, bit-identical AWGN behaviour by design.
     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
-        super::super::llr::compute_llr_fast(cs_scratch);
+        super::super::llr::compute_llr_fast_metric(cs_scratch, pass.squared());
     let bp_step1 = bp_step_select(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
     if let Some(bp) = bp_step1
         && bp.hard_errors <= strictness.ft8_nharderrors_max()
@@ -1941,7 +1983,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // function's own `#[allow(unused_assignments)]`.
     let mut llrb_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_b {
-        let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
+        let arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llr_partial_metric::<LlrT>(cs_scratch, 2, pass.squared());
         let bp_b = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_b
             && bp.hard_errors <= strictness.ft8_nharderrors_max()
@@ -1958,7 +2001,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // above, for the same reason.
     let mut llrc_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_c {
-        let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
+        let arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llr_partial_metric::<LlrT>(cs_scratch, 3, pass.squared());
         let bp_c = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_c
             && bp.hard_errors <= strictness.ft8_nharderrors_max()
@@ -1966,6 +2010,30 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             accepted = Some((bp, 2));
         }
         llrc_arr = Some(arr);
+    }
+    // Variant e (`ft8b.f90` pass 5): per bit, the raw nsym 1/2/3 metric of
+    // largest magnitude. Same gate as variant c — it is only worth its
+    // cost when the deeper variants are. Pass id 4 (BP variants are 0..3,
+    // the AP passes start at 5).
+    #[cfg(feature = "fft-rustfft")]
+    let mut llre_f32: Option<[f32; LDPC_N]> = None;
+    if accepted.is_none() && run_c {
+        let arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llre_metric::<LlrT>(cs_scratch, pass.squared());
+        let bp_e = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_e
+            && bp.hard_errors <= strictness.ft8_nharderrors_max()
+        {
+            accepted = Some((bp, 4));
+        }
+        #[cfg(feature = "fft-rustfft")]
+        {
+            let mut e = [0f32; LDPC_N];
+            for (o, v) in e.iter_mut().zip(arr.iter()) {
+                *o = crate::engine::scalar::LlrScalar::to_f32(*v);
+            }
+            llre_f32 = Some(e);
+        }
     }
 
     // Pre-compute the f32 `LlrSet` OSD needs, reusing Steps 1-2's own
@@ -2006,7 +2074,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                     // Defensive fallback — shouldn't happen when
                     // `depth.osd` (see reasoning above), but a fresh
                     // compute is still correct if it ever does.
-                    _ => Some(super::super::llr::compute_llr(cs_scratch)),
+                    _ => Some(super::super::llr::compute_llr_metric(
+                        cs_scratch,
+                        pass.squared(),
+                    )),
                 }
             }
             #[cfg(feature = "fixed-point")]
@@ -2014,7 +2085,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                 // Steps 1-2's llrb_arr/llrc_arr are Q11i16 here, not
                 // directly reusable as the f32 LlrSet OSD needs —
                 // still must recompute.
-                Some(super::super::llr::compute_llr(cs_scratch))
+                Some(super::super::llr::compute_llr_metric(
+                    cs_scratch,
+                    pass.squared(),
+                ))
             }
         } else {
             None
@@ -2043,6 +2117,8 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             depth,
             q,
             strictness,
+            pass,
+            llre_f32.as_ref(),
         );
     }
 
@@ -2083,19 +2159,13 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     //   5 (mycall only → ~32 bits, WSJT-X iaptype 2)
     //   12 (blind CQ → always tried last, WSJT-X iaptype 1)
     #[cfg(feature = "fft-rustfft")]
-    if accepted.is_none() {
+    if accepted.is_none() && pass.ap {
         // Reuse the pre-computed LLR from above if it ran; otherwise
         // compute fresh. The unwrap_or_else only fires when the
         // pre-compute gate was `false` (BpAll with no OSD) but AP
         // still ran somehow — defensive, but not the dominant path.
-        let llr_full_f32: super::super::llr::LlrSet<f32> =
-            prefetched_llr.unwrap_or_else(|| super::super::llr::compute_llr(cs_scratch));
-        let apmag = llr_full_f32
-            .llra
-            .iter()
-            .map(|v| v.abs())
-            .fold(0.0f32, f32::max)
-            * <crate::ft8::Ft8 as crate::engine::Protocol>::AP_MAG_SCALE;
+        let llr_full_f32: super::super::llr::LlrSet<f32> = prefetched_llr
+            .unwrap_or_else(|| super::super::llr::compute_llr_metric(cs_scratch, pass.squared()));
         let llr_variants: [&[f32; LDPC_N]; 4] = [
             &llr_full_f32.llra,
             &llr_full_f32.llrb,
@@ -2140,6 +2210,11 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             let max_errors: u32 = strictness.ap_max_errors(locked_bits);
 
             for &base_llr in &llr_variants {
+                // `ft8b.f90`: `apmag=maxval(abs(llrz))*1.1` with `llrz` the
+                // variant the pass starts from (llra or llrc there), not
+                // a fixed llra.
+                let apmag = base_llr.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
+                    * <crate::ft8::Ft8 as crate::engine::Protocol>::AP_MAG_SCALE;
                 let mut llr_ap = *base_llr;
                 // Iterator form (issue #208-style — same shape as
                 // `fill_bmet_for_nsym`'s max-reduction fix) instead of
@@ -2162,7 +2237,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                     let Some(message) = unpack77_fields(&msg77, &CallsignHashTable::new()) else {
                         return false;
                     };
-                    if !policy_accepts(policy, &message) {
+                    if !policy_accepts(policy, &message, pass) {
                         return false;
                     }
                     // The hypothesis locked these callsigns into the
@@ -2220,7 +2295,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // and takes the real signal underneath with it — see
     // `FrameDecodable::MESSAGE_FILTER_DEFAULT`.
     let message = unpack77_fields(&bp.message77, &CallsignHashTable::new())?;
-    if !policy_accepts(policy, &message) {
+    if !policy_accepts(policy, &message, pass) {
         return None;
     }
     if known.iter().any(|r| *r.message77() == bp.message77) {

@@ -134,6 +134,7 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.also_accept(f)` | `Fn(&Wsjt77Fields) -> bool` | none | `SupportsMessageFilter` — **FT8, FT4, every FST4 sub-mode** | accept what the codec accepts **plus** what `f` accepts — [§2.6](#26-message-acceptance) |
 | `.message_filter(f)` | `Fn(&Wsjt77Fields) -> bool` | none | `SupportsMessageFilter` — **FT8, FT4, every FST4 sub-mode** | replace the codec's verdict with `f` — [§2.6](#26-message-acceptance) |
 | `.codec_filter()` | — | on for FT8, off elsewhere | `SupportsMessageFilter` — **FT8, FT4, every FST4 sub-mode** | apply the codec's own verdict on a protocol that does not by default — [§2.6](#26-message-acceptance) |
+| `.contest(on)` | `bool` | `false` | **FT8** | WSJT-X's `ncontest != 0`: keep `/R` and `TU; ` messages, which FT8 otherwise drops after the CRC — [§2.6](#26-message-acceptance) |
 | `.on_result(cb)` | `FnMut(&Row)` | none | all | deliver rows as they are found — [§2.4](#24-streaming-delivery) |
 | `.budget(check)` | `FnMut() -> bool` | none | all | caller-supplied deadline predicate — [§2.3](#23-compute-budget) |
 | `.sniper(...)` | `(audio, target_hz, max_cand)` | — | `SupportsSniper` — **FT8** | build a `SniperRequest` instead |
@@ -451,6 +452,14 @@ protocol that does not run it by default. `.message_filter(f)` replaces
 it outright, and the thing it replaces removes roughly two thirds of
 the CRC survivors that reach it, so a permissive `f` will surface
 phantom rows.
+
+**FT8 also drops `/R` and `TU; ` messages, whatever the policy.** Since
+#439 FT8 does what `ft8b.f90` (WSJT-X 3.0 onward) does right after the
+CRC: with no contest active, a standard or RTTY Roundup message carrying
+`/R` or starting `TU; ` is discarded and the pass moves on. It sits
+before the policy, so `.message_filter(|_| true)` does not bring those
+rows back; `.contest(true)` does, and is the right setting for a
+contest, where `CALL1/R CALL2` and `TU; CALL1 CALL2` are real traffic.
 
 **On by default for FT8 and FT4, and the reason is subtraction.** A
 wrong decode is not a cosmetic error on a path that subtracts what it

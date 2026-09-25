@@ -2,6 +2,61 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT8 decodes as WSJT-X 3.x's `ft8_decode.f90` / `ft8b.f90` do: three
+  passes with a squared metric, a fifth LLR, an nsync floor, and no `/R`
+  or `TU; ` outside a contest (#439).** Six changes, each its own commit
+  with the tier-C numbers it moved:
+  - **Pass structure.** Pass 1 and 2 always run, pass 3 runs when there
+    is any decode (an earlier stage's counted, as `ndecodes=ndec_early`);
+    before 3.0 pass 2 needed a decode and pass 3 a new one.
+  - **`imetric` 2.** Passes 2 and 3 build their bit metrics from `|cs|²`
+    rather than `|cs|` (`s2=s2**2`), for the BP variants, the OSD input and
+    the AP input alike. FT4, FST4 and every other caller keep `|cs|`.
+  - **nsync floor.** A candidate must clear `nsync > 6`, `> 7` in the
+    squared-metric passes, `> 8` for `WsjtxDepth::D1`/`D2` (`ndepth <= 2`).
+    `wsjtx_depth()` carries the tier to the passes.
+  - **Fifth metric `llre`.** Per bit, the raw nsym-1/2/3 metric of largest
+    magnitude; BP (pass id 4) and OSD (ids 18, 23).
+  - **`/R` and `TU; `.** With no contest active a standard or RTTY Roundup
+    message carrying either is dropped after the CRC, as `ft8b.f90` drops
+    it. `DecodeRequest::<Ft8>::contest(true)` (`ncontest != 0`) keeps them.
+    `qso1`'s frozen list loses `7J0DNY/R PZ9BNR BM87`, which neither the
+    2b9d654 nor the 3.2 `jt9 -d3` reports on that file.
+  - **AP.** `apmag` comes from the variant in use, and the early
+    checkpoint (`nzhsym < 50`) runs no AP pass.
+
+  What it did, on the FT8 sweeps and the busy-band corpus (`max_cand` 600,
+  `sync_min` 1.3; the baseline is main before this change): `.sic_early()`
+  crossing -0.28 dB on `ccir_poor`, within 0.08 dB elsewhere; the single
+  pass -0.10 dB on `ccir_poor` (`jt9`'s own change-by-change ablation found
+  +0.33 dB on `ccir_moderate` for the pass rule and the squared metric
+  together; here the gain lands on `ccir_poor` and `moderate` does not
+  move). Unexpected
+  decodes: the squared metric alone took the busy-band `.sic_early()` from
+  6 to 18 and the nsync floor, the `/R` filter and the rest brought it to
+  9 (`jt9 -d3` 3.2: 4); the sweeps' `.sic_early()` 3 to 5, the busy-band
+  `decode()` 38 to 33; recall +0.5 / +1.1 / +0.3 points on busy10/20/40.
+  The AP change measured as neutral.
+
+  **`mlag` is 13, as upstream from 3.0.** On the fixed-point ship shape it
+  loses one of the 20 known signals of `qso3_busy` at every `max_cand` from
+  15 to 30 and ties from 40 up (table at `coarse_sync::MLAG`), so
+  `ft8_qso3_apoff_recall`'s fixed-point floor is 11 (was 12); the sweeps are
+  unchanged and the busy-band corpus is neutral to slightly better
+  (`.sic_early()` extras 12 to 9; that is the 9 above).
+
+  **Not ported, and why.** The `q >= 18` OSD `ndeep=3` split
+  stays although upstream is `ndeep=2` throughout: forcing `ndeep=2` was better
+  on the sweeps (`ccir_poor` -0.35 dB, busy-band extras 11 to 10 and 31 to 21),
+  but the WebFT8-shaped phase-2 decode of `qso3_busy` then loses
+  `CQ EA2BFM IN83`, which both `jt9` builds report. The early checkpoint's
+  `sync_min` scaling (2.0/1.3) stays although 3.0 removed the `syncmin=2.0`
+  line: without it a zero-tailed buffer produces phantoms even from
+  noise-only files (10 in 200 with `.sic_early()`, 0 with the scaling) where
+  `jt9` gives 1, and what in this port makes those buffers so much easier to
+  fool is not yet found. `nQSOProgress`/`naptypes`, `napwid` and the contest
+  AP types have no counterpart here.
+
 - **FT4's published defaults follow WSJT-X 3.x: `sync_min` 1.18,
   `max_cand` 200 (#440).** `ft4_decode.f90` changed three constants
   between v2.7.0 and v3.0.0 (the tags were read; 3.0.2 and 3.2.0-rc1
@@ -49,6 +104,9 @@
   benefits from would be the wrong trade, so `MLAG` stays 10 with the
   reason at the constant. It is worth another look with a corpus that has
   off-time signals (the sweep is all DT 0).
+
+  *Superseded by #439:* with the busy-band corpus (off-time signals) and the
+  rest of the 3.x port in, `mlag` is now 13 and the floor is 11.
 
   **The other two have no measured effect on any local corpus.** After
   each, the FT8 sweep is byte-identical (800 trials, −25…−15 dB, AWGN
