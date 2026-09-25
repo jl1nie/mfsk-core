@@ -672,27 +672,35 @@ struct OsdSetup {
 
 /// Best-so-far accumulator. Tracked separately from the closure
 /// pattern to avoid the borrow tangle that bit the first npre1 impl.
+///
+/// **The best candidate is chosen by distance alone; the CRC is checked once,
+/// on the winner** (`osd174_91.f90`: `if( dd .lt. dmin )` updates `cw` with no
+/// CRC test, and `get_crc14` runs after the loops, negating `nhardmin` on
+/// failure). Until #452 this crate checked every candidate's CRC and kept the
+/// closest one that passed: more sensitive, and roughly 40 times likelier to
+/// hand back a wrong codeword from noise (2.3e-3 against 5.8e-5 per
+/// decode on iid Gaussian LLRs, 200 000 and 260 000 draws).
 struct OsdBest {
-    /// `(info, full codeword)` of the best candidate so far, or `None`
-    /// if no CRC-valid candidate has been found.
-    state: Option<(Vec<u8>, Vec<u8>)>,
-    /// Weighted distance of the best candidate, or `+infinity` when
-    /// `state` is `None`.
+    /// The best candidate so far, in the *permuted* column order, or `None`
+    /// before the first one.
+    cp: Option<[u8; LDPC_N]>,
+    /// Weighted distance of the best candidate, or `+infinity` when `cp` is
+    /// `None`.
     dd: f32,
 }
 
 impl OsdBest {
     fn new() -> Self {
         Self {
-            state: None,
+            cp: None,
             dd: f32::INFINITY,
         }
     }
 
-    fn maybe_update(&mut self, decoded: Vec<u8>, cw: Vec<u8>, dd: f32) {
+    fn maybe_update(&mut self, cp: &[u8; LDPC_N], dd: f32) {
         if dd < self.dd {
             self.dd = dd;
-            self.state = Some((decoded, cw));
+            self.cp = Some(*cp);
         }
     }
 }
@@ -959,7 +967,7 @@ pub(crate) fn osd_decode_npre1_fortran_pivot(llr: &[f32; LDPC_N]) -> Option<OsdR
     let setup = osd_setup_ldpc174_91_fortran_pivot(llr)?;
     let mut best = OsdBest::new();
     osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
-    osd_result_from_best(llr, best)
+    osd_result_from_best(llr, &setup.perm, best)
 }
 
 /// Diagnostic (issue #182, disproven hypothesis): the MRB basis
@@ -1024,10 +1032,6 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
     let mut e2sub = [0u8; LDPC_N - LDPC_K];
     let mut e2 = [0u8; LDPC_N - LDPC_K];
     let mut ce_pair = [0u8; LDPC_N];
-    // Caller-provided buffer for try_candidate_ldpc174_91 — shared
-    // across every CRC try in this pass (Gemini PR #86 review,
-    // ~4186 calls/candidate previously each allocating their own Vec).
-    let mut c_unperm = [0u8; LDPC_N];
 
     // Order-0 baseline.
     {
@@ -1037,12 +1041,9 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
                 wd += setup.absrx_perm[col];
             }
         }
-        if wd < best.dd
-            && let Some((d, cw)) =
-                try_candidate_ldpc174_91(&setup.perm, &setup.c_perm, &mut c_unperm)
-        {
-            best.maybe_update(d, cw, wd);
-        }
+        let mut c0 = [0u8; LDPC_N];
+        c0.copy_from_slice(&setup.c_perm);
+        best.maybe_update(&c0, wd);
     }
 
     for iflag in (0..k).rev() {
@@ -1070,12 +1071,7 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
                 }
             }
             let dd = d1 + parity_wd;
-            if dd < best.dd
-                && let Some((d, cw)) =
-                    try_candidate_ldpc174_91(&setup.perm, &ce_iflag, &mut c_unperm)
-            {
-                best.maybe_update(d, cw, dd);
-            }
+            best.maybe_update(&ce_iflag, dd);
         }
 
         // n1 < iflag pair-anchor. e2 derived incrementally as
@@ -1103,12 +1099,7 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
                 }
             }
             let dd = d1 + setup.absrx_perm[n1] + parity_wd_pair;
-            if dd < best.dd
-                && let Some((d, cw)) =
-                    try_candidate_ldpc174_91(&setup.perm, &ce_pair, &mut c_unperm)
-            {
-                best.maybe_update(d, cw, dd);
-            }
+            best.maybe_update(&ce_pair, dd);
         }
     }
 }
@@ -1243,7 +1234,6 @@ fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
     let mut ce_misub = [0u8; LDPC_N];
     let mut e2sub = [0u8; LDPC_N - LDPC_K];
     let mut ce_test = [0u8; LDPC_N];
-    let mut c_unperm = [0u8; LDPC_N];
 
     for iflag in (0..k).rev() {
         ce_misub.copy_from_slice(&setup.c_perm);
@@ -1292,12 +1282,7 @@ fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
                         dd += setup.absrx_perm[col];
                     }
                 }
-                if dd < best.dd
-                    && let Some((d, cw)) =
-                        try_candidate_ldpc174_91(&setup.perm, &ce_test, &mut c_unperm)
-                {
-                    best.maybe_update(d, cw, dd);
-                }
+                best.maybe_update(&ce_test, dd);
             }
         }
     }
@@ -1307,8 +1292,14 @@ fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
 /// (un-permuted) `llr`. Used by both `osd_decode_npre1` and
 /// `osd_decode_npre1_npre2` to factor out the message77 / hard_errors
 /// computation.
-fn osd_result_from_best(llr: &[f32; LDPC_N], best: OsdBest) -> Option<OsdResult> {
-    let (decoded, codeword) = best.state?;
+///
+/// The one CRC check happens here, on the winner, as `osd174_91.f90` does
+/// after its loops: a winner that fails it means no result, however close it
+/// was.
+fn osd_result_from_best(llr: &[f32; LDPC_N], perm: &[usize], best: OsdBest) -> Option<OsdResult> {
+    let cp = best.cp?;
+    let mut c_unperm = [0u8; LDPC_N];
+    let (decoded, codeword) = try_candidate_ldpc174_91(perm, &cp, &mut c_unperm)?;
     let mut hard_errors = 0u32;
     for i in 0..LDPC_N {
         if (codeword[i] == 1) != (llr[i] > 0.0) {
@@ -1358,7 +1349,7 @@ pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
     let setup = osd_setup_ldpc174_91(llr)?;
     let mut best = OsdBest::new();
     osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
-    osd_result_from_best(llr, best)
+    osd_result_from_best(llr, &setup.perm, best)
 }
 
 /// WSJT-X-faithful `nord=1 + npre1=1 + npre2=1` OSD decode
@@ -1392,7 +1383,7 @@ pub fn osd_decode_npre1_npre2(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
     // the npre2 pass below picks up patterns this would have rejected.
     osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP3);
     osd_npre2_pass(&setup, &mut best, NPRE2_NTAU);
-    osd_result_from_best(llr, best)
+    osd_result_from_best(llr, &setup.perm, best)
 }
 
 /// Packed-elimination setup for [`osd_decode_generic`], generic over

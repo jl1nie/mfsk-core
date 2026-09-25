@@ -810,5 +810,37 @@ Not done: the change-by-change ablation of the ported list against `jt9`
 between the changes is still unknown; the effect of `wsjtx_depth` D1/D2's
 nsync floor of 8 on their own sweeps; FT4/FST4 (untouched by the port).
 
+### Addendum: the precision gap was the OSD (#452, #453)
+
+The two open items above were one defect. `osd174_91.f90` picks the
+closest of all its candidate codewords and checks the CRC once, on that
+winner; this crate checked the CRC on every candidate and kept the closest
+one that passed. Same LLRs (iid Gaussian, sd 2.83) through the ladder's
+`bp_llr_zsum` and OSD: upstream `decode174_91` built with gfortran, 15
+CRC-valid results in 260 000 draws (5.8e-5); this crate 452 in 200 000
+(2.3e-3); after the fix 180 in 2 000 000 (9.0e-5). The search was CRC-aided,
+which is both why it was sensitive and why it gave wrong codewords from
+noise about forty times as often.
+
+With the OSD on the reference's rule, and with the two things it had been
+covering for (the `q >= 18` `ndeep=3` split; the early checkpoint's
+`sync_min` scaling) dropped as upstream does:
+
+| | after §14 | with the OSD fix | `jt9 -d3` 3.2 |
+|---|---|---|---|
+| busy `.sic_early()` unexpected decodes (420 files) | 9 | **2** | 4 |
+| busy `decode()` unexpected decodes | 33 | **1** | — |
+| FT8 sweeps, nine ITU channels, 200 noise files: unexpected decodes | 0-5 per group | **0** | 1 (noise) |
+| busy `.sic_early()` recall busy10/20/40 | 83.5 / 81.9 / 81.5 % | 82.8 / 81.1 / 81.4 % | 81.5 / 79.9 / 81.0 % |
+| `.sic_early()` `ccir_poor` crossing | -19.71 dB | -19.55 dB | -19.71 dB |
+| `decode()` `ccir_poor` crossing | -19.00 dB | -19.17 dB | — |
+| ITU `itu_hm` / `itu_ld` crossing | -1.67 / -5.00 dB | -2.50 / 0.00 dB | — |
+
+Precision is now better than the reference's on this corpus and recall still
+at or above it. The cost is the weakest fading cases: `itu_ld`, whose recall
+is a 25-55 % plateau from -8 to +10 dB, drops from 10/20 to 6/20 at -5 dB,
+which moves its 50 % crossing to 0 dB. `CQ EA2BFM IN83` (`qso3_busy`), which
+the `ndeep=3` split had been needed for, decodes at `ndeep=2` now.
+
 **`FT8_BENCHMARK.ja.md` is not in step and was not updated here**, for the
 reason given at the end of §12.

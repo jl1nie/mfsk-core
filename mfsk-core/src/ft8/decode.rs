@@ -1264,20 +1264,19 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     // arrays with the *content* zeroed past the checkpoint, not
     // shorter arrays.
     //
-    // WSJT-X: `syncmin=2.0` at nzhsym=41 vs `syncmin=1.3` at nzhsym=50
-    // (ndepth=3) — a stricter gate on the early, still-incomplete
-    // window. Scaled by ratio rather than reusing WSJT-X's absolute
-    // `sync8` units, which live on a different score scale than this
-    // crate's `coarse_sync` (see e.g. the FT4/FST4 threshold-scaling
-    // precedent in `engine::pipeline`).
-    const EARLY_SYNC_MIN_SCALE: f32 = 2.0 / 1.3;
+    // No separate `sync_min` for this early window. Through WSJT-X 2.7
+    // `ft8_decode.f90` set `syncmin=2.0` at nzhsym=41 against 1.3 at
+    // nzhsym=50 (ndepth=3), and this used to scale `sync_min` by 2.0/1.3
+    // to match; v3.0.0 commented that line out (`!  if(nzhsym.eq.41)
+    // syncmin=2.0`), so the early pass runs at the same `syncmin` as the
+    // final one and so does this (#452).
     let mut residual_a = vec![0i16; audio.len()];
     residual_a[..A_SAMPLES].copy_from_slice(&audio[..A_SAMPLES]);
     let early_results = sic_inner_passes(
         &mut residual_a,
         freq_min,
         freq_max,
-        sync_min * EARLY_SYNC_MIN_SCALE,
+        sync_min,
         depth,
         max_cand,
         strictness,
