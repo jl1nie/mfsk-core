@@ -11,9 +11,9 @@
         "groups": 20
       },
       "ft4": {
-        "date": "2026-09-25",
-        "commit": "c874910",
-        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
+        "date": "2026-09-26",
+        "commit": "451a0ea9",
+        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
@@ -215,7 +215,7 @@
   "fst4/60/ccir_poor": -24.714285714285715,
   "ft4/awgn": -17.555555555555557,
   "ft4/ccir_good": -17.857142857142858,
-  "ft4/ccir_moderate": -16.2,
+  "ft4/ccir_moderate": -16.285714285714285,
   "ft4/ccir_poor": -16.0,
   "ft8/awgn": -21.9,
   "ft8/ccir_good": -21.53846153846154,
