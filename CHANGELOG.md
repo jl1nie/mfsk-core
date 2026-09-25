@@ -36,12 +36,16 @@
   6 to 18 and the nsync floor, the `/R` filter and the rest brought it to
   12 (`jt9 -d3` 3.2: 4); the sweeps' `.sic_early()` 3 to 5, the busy-band
   `decode()` 38 to 34; recall +0.5 / +1.0 / +0.5 points on busy10/20/40.
-  The AP change and `mlag` 13 measured as neutral.
+  The AP change measured as neutral.
 
-  **Not ported, and why.** `mlag` stays 10: 13 loses one of the 20 known
-  signals of `qso3_busy` at every `max_cand` from 15 to 30 on the fixed-point
-  ship shape and ties from 40 up (table at `coarse_sync::MLAG`), so it would
-  lower `ft8_qso3_apoff_recall`'s floor. The `q >= 18` OSD `ndeep=3` split
+  **`mlag` is 13, as upstream from 3.0.** On the fixed-point ship shape it
+  loses one of the 20 known signals of `qso3_busy` at every `max_cand` from
+  15 to 30 and ties from 40 up (table at `coarse_sync::MLAG`), so
+  `ft8_qso3_apoff_recall`'s fixed-point floor is 11 (was 12); the sweeps are
+  unchanged and the busy-band corpus is neutral to slightly better
+  (`.sic_early()` extras 12 to 9).
+
+  **Not ported, and why.** The `q >= 18` OSD `ndeep=3` split
   stays although upstream is `ndeep=2` throughout: forcing `ndeep=2` was better
   on the sweeps (`ccir_poor` -0.35 dB, busy-band extras 11 to 10 and 31 to 21),
   but the WebFT8-shaped phase-2 decode of `qso3_busy` then loses
@@ -100,6 +104,9 @@
   benefits from would be the wrong trade, so `MLAG` stays 10 with the
   reason at the constant. It is worth another look with a corpus that has
   off-time signals (the sweep is all DT 0).
+
+  *Superseded by #439:* with the busy-band corpus (off-time signals) and the
+  rest of the 3.x port in, `mlag` is now 13 and the floor is 11.
 
   **The other two have no measured effect on any local corpus.** After
   each, the FT8 sweep is byte-identical (800 trials, −25…−15 dB, AWGN

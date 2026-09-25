@@ -779,31 +779,29 @@ fn coarse_sync_inner(
     // WSJT-X 2.7, 13 (±0.52 s) from 3.0 (read at the `v2.7.0` / `v3.0.0`
     // tags).
     //
-    // **Deliberately left at 10 (#438).** 13 is a no-op on the f32 tier-C
-    // sweep (800 trials, byte-identical) and costs one hit on the
-    // fixed-point ship config: `ft8_qso3_apoff_recall` goes 12/20 → 11/20
-    // against its floor of 12, because a wider primary window reorders the
-    // 15 candidates that config keeps. Nothing measured here benefits from
-    // the wider window (it matters for signals more than ±0.4 s off DT 0),
-    // so it is not worth a floor. Revisit with an off-time corpus.
+    // **13 since #439**, as upstream. It was left at 10 in #438: 13 was a
+    // no-op on the f32 tier-C sweep (800 trials, byte-identical) and cost one
+    // hit on the fixed-point ship config (`ft8_qso3_apoff_recall` 12/20 →
+    // 11/20, because a wider primary window reorders the 15 candidates that
+    // config keeps).
     //
-    // Re-measured with the rest of the 3.x port in (#439), `qso3_busy`,
-    // fixed-point ship shape (`decode_block`, `EMBEDDED`, sync_min 1.3),
-    // hits against the 20 known signals by `max_cand`:
+    // Re-measured with the rest of the 3.x port in, `qso3_busy`, fixed-point
+    // ship shape (`decode_block`, `EMBEDDED`, sync_min 1.3), hits of the 20
+    // known signals by `max_cand`:
     //
     // | max_cand | 10-12 | 15-20 | 25-30 | 40 and up |
     // |---|---|---|---|---|
     // | `MLAG` 10 | 11 | 12 | 15 | 16 |
     // | `MLAG` 13 | 11 | 11 | 14 | 16 |
     //
-    // The cost is one signal at every cap from 15 to 30, the range the ship
-    // config could use; the two agree from 40 up, where upstream's
-    // `MAXCAND` of 1000 lives. On the busy-band corpus (DT -0.5..+1.5 s) 13
-    // is neutral to slightly better (.sic_early() unexpected decodes 12 -> 9,
-    // recall +0.1 pt) and the ft8 sweeps are unchanged. So 13 is the faithful
-    // value and 10 is what the 15-candidate ship config can afford; moving to
-    // 13 means lowering `ft8_qso3_apoff_recall`'s fixed-point floor to 11.
-    const MLAG: i32 = 10;
+    // One signal fewer at every cap from 15 to 30, the range the ship config
+    // can use; equal from 40 up, where upstream's `MAXCAND` of 1000 lives. On
+    // the busy-band corpus (DT -0.5..+1.5 s) 13 is neutral to slightly better
+    // (.sic_early() unexpected decodes 12 -> 9, recall +0.1 pt) and the ft8
+    // sweeps are unchanged. Adopted because this crate follows the reference
+    // and nothing measured says the wider window is worse; the ship floor in
+    // `ft8_qso3_apoff_recall` is 11 for it.
+    const MLAG: i32 = 13;
 
     // Two independent noise-floor channels, matching WSJT-X `sync8.f90`
     // exactly (issue #280). Collapsing these into a single
@@ -814,7 +812,7 @@ fn coarse_sync_inner(
     // has a higher expected value under basic extreme-value
     // statistics), silently pushing weak real decodes below `sync_min`
     // even though WSJT-X's actual primary channel — anchored to a
-    // fixed `mlag` (10; upstream is 13 from 3.0, see `MLAG`) regardless of
+    // fixed `mlag` (10 through 2.7, 13 from 3.0; see `MLAG`) regardless of
     // `JZ` — would still have caught
     // them. `red_primary`/`base_primary` restores that JZ-independent
     // anchor; `red_secondary`/`base_secondary` (the old sole channel)

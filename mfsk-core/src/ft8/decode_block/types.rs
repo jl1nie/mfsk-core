@@ -327,7 +327,7 @@ pub(super) const TX_START_OFFSET_S: f32 = 0.5;
 /// (`sync8.f90` + `ft8_decode.f90`, issue #280) showed WSJT-X finds
 /// `K1BZM DK8NE` only through its *secondary* (full-`±JZ`) channel
 /// at `jpeak2=14` — its fixed-`±mlag=10` primary (upstream moved to 13
-/// in 3.0, which this port has not adopted — see `coarse_sync::MLAG`;
+/// in 3.0, adopted here in #439 — see `coarse_sync::MLAG`;
 /// the probe was against 2.7) scores 0.95, far
 /// under `syncmin` — and only on its second subtraction pass
 /// (`nzhsym=50, ipass=2`), from candidate rank 35 of 337 with no

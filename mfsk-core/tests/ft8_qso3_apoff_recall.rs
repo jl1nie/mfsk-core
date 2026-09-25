@@ -74,10 +74,17 @@ const QSO3_PATH: &str = asset_path!("qso3_busy.wav");
 ///
 /// The two the halved grid gives up are `K1JT EA3AGB -15` and
 /// `W0RSJ EA3BMU RR73`.
+///
+/// **`nstep-half` is 11 since #439**, when coarse sync's `mlag` went from 10
+/// to 13 as in WSJT-X 3.0. On this ship shape (`max_cand` 15) the wider
+/// primary window reorders the candidates the config keeps and one signal
+/// falls off the list: hits by `max_cand` are 12 → 11 at 15-20, 15 → 14 at
+/// 25-30, and equal (16) from 40 up (`coarse_sync::MLAG` has the table). The
+/// f32 grid's 14 did not move.
 #[cfg(not(feature = "nstep-half"))]
 const MIN_GOLDEN_HITS: usize = 14;
 #[cfg(feature = "nstep-half")]
-const MIN_GOLDEN_HITS: usize = 12;
+const MIN_GOLDEN_HITS: usize = 11;
 
 #[test]
 fn qso3_apoff_meets_wsjtx_golden_floor() {
