@@ -52,6 +52,7 @@
   path (`osd_decode_deep`), MSK144 and uvpacket is not done (#456); they share
   `osd_decode_generic`. `scripts/score-jt9-sweep.py` reads FST4 and can dump
   per-trial rows in the sweeps' CSV format for a paired comparison.
+
 - **FT8's a-priori OSD runs the way `decode174_91` runs it (#456).** `ft8b.f90`
   sends its AP passes through the same `decode174_91` call as the blind ones,
   with an `apmask`: BP holds the locked bits, OSD runs on the BP sum after 1 and
