@@ -75,6 +75,13 @@ FEATURES="${MFSK_SWEEP_FEATURES:-full,internal-testing}"
 # issue — just not part of the automated release gate.
 declare -A SUITES=(
   [ft8]="ft8_sweep:ft8_snr_sweep ft8_no_nsym3_sweep"
+  # ft8_itu: the same sweep over the ITU fast-fading corpus (ft8_itu_sweep/,
+  # made with a WSJT-X >= 3.0 ft8sim by `FT8_CHANNEL_SET=itu
+  # scripts/gen_ft8_sweep_wavs.sh`). Its own CSV, `ft8_itu.csv`; groups are
+  # `ft8_itu/itu_<lat><cond>` and are deliberately not `ccir_*`: see the
+  # comment in gen_ft8_sweep_wavs.sh for why the two sets are not the same
+  # channel. Override the directory with MFSK_FT8_ITU_SWEEP_DIR.
+  [ft8_itu]="ft8_sweep:ft8_snr_sweep"
   [ft4]="ft4_sweep:ft4_snr_sweep ft4_snr_sweep ft4_diag_low_snr ft4_timing_budget"
   [fst4]="fst4_sweep:fst4_snr_sweep fst4_sim_roundtrip"
   [wspr]="wspr_sweep"
@@ -93,7 +100,7 @@ want=("$@")
 # Corpora these need, so a missing one is reported up front rather
 # than as a wall of silent skips.
 declare -A CORPUS=(
-  [ft8]=ft8_sweep [ft4]=ft4_sweep [fst4]=fst4_sweep [wspr]=wspr_sweep
+  [ft8]=ft8_sweep [ft8_itu]=ft8_itu_sweep [ft4]=ft4_sweep [fst4]=fst4_sweep [wspr]=wspr_sweep
   [jt65]=jt65_sweep [jt9]=jt9_sweep [q65]=q65_sweep [bench]=fst4_sweep
 )
 
@@ -102,7 +109,9 @@ missing=()
 for k in "${want[@]}"; do
   c="${CORPUS[$k]:-}"
   [ -z "$c" ] && continue
-  if ! compgen -G "embedded-poc/assets/$c/*.wav" >/dev/null 2>&1; then
+  cdir="embedded-poc/assets/$c"
+  [ "$k" = ft8_itu ] && cdir="${MFSK_FT8_ITU_SWEEP_DIR:-$cdir}"
+  if ! compgen -G "$cdir/*.wav" >/dev/null 2>&1; then
     missing+=("$k (embedded-poc/assets/$c — scripts/gen_${c%_sweep}_sweep_wavs.sh)")
   fi
 done
@@ -160,6 +169,7 @@ narrow_window() {
     '$1==p && $2==m {print $3"\t"$4; found=1} END{exit !found}'
 }
 
+ORIG_FT8_DIR="${MFSK_FT8_SWEEP_DIR-__unset__}"
 [ -n "$LOG" ] && : > "$LOG"
 fail=0
 for k in "${want[@]}"; do
@@ -170,6 +180,10 @@ for k in "${want[@]}"; do
     filt=""
     [ "$entry" != "$b" ] && filt="${entry#*:}"
     [ -f "mfsk-core/tests/$b.rs" ] || continue
+    # `ft8_itu` re-points MFSK_FT8_SWEEP_DIR at its own corpus below; put the
+    # caller's value back first so it never leaks into the next entry.
+    if [ "$ORIG_FT8_DIR" = "__unset__" ]; then unset MFSK_FT8_SWEEP_DIR
+    else export MFSK_FT8_SWEEP_DIR="$ORIG_FT8_DIR"; fi
 
     unset MFSK_FT8_SWEEP_STRATEGY MFSK_FT8_SWEEP_STRICTNESS \
           MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV \
@@ -189,6 +203,10 @@ for k in "${want[@]}"; do
       q65_sim_sweep:) export MFSK_Q65_SWEEP_SUMMARY_CSV="$CSV_DIR/q65.csv" ;;
       msk144_snr_sweep:) export MFSK_MSK144_SWEEP_SUMMARY_CSV="$CSV_DIR/msk144.csv" ;;
     esac
+    if [ "$k" = ft8_itu ]; then
+      export MFSK_FT8_SWEEP_DIR="${MFSK_FT8_ITU_SWEEP_DIR:-$REPO_ROOT/embedded-poc/assets/ft8_itu_sweep}"
+      export MFSK_FT8_SWEEP_CSV="$CSV_DIR/ft8_itu.csv"
+    fi
 
     echo
 

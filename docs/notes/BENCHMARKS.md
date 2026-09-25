@@ -121,6 +121,57 @@ exactly.** A baseline still assumes both machines built their simulators
 from the same WSJT-X checkout — that part cannot be checked from inside
 this repo.
 
+### Which WSJT-X tree the simulators come from
+
+"Same simulator build" has a concrete answer, and `../WSJT-X` is no longer it.
+
+**The existing corpora need the `2b9d654` tree** (2024-03-12; the tip of the
+mirror this repo tracked until 2026-09). Checked on 2026-09-25: an `fst4sim`
+built by `scripts/build_fst4sim.sh` from a `2b9d654` checkout regenerates
+`fst4_60_ccir_poor_m24_{01,05,20}.wav` byte for byte, and one built from
+`b4f9a43` (WSJT-X 2.7's line, what `../WSJT-X` is now) reproduces the AWGN file
+but **not the fading files**. WSJT-X corrected the Watterson simulator in
+February 2024 (`f21f37ad0` "Correct the definition of fspread", `7ce6e29a7`
+"same spreading function as that used in ITU report ITU-R F.1487"). For the
+same `fspread` argument a newer tree gives a *wider* Doppler spectrum, so
+`ccir_*` regenerated from any tree that has those commits is a different,
+harsher channel under the same name, and AWGN files matching byte for byte
+hides it. The `ccir_good/moderate/poor` numbers (0.1/0.5, 0.5/1.0, 1.0/2.0 Hz
+and ms) are therefore **milder than the ITU channels of the same numbers**.
+Nothing here is wrong by that; it means a baseline is only comparable across
+corpora made from the same tree.
+
+    git -C <WSJT-X> archive 2b9d65408 lib | tar -x -C <dir>/wsjtx-2b9d654
+    scripts/build_fst4sim.sh <dir>/wsjtx-2b9d654 <dir>/fst4sim     # ft4sim, ft8sim, ... likewise
+
+**The ITU fast-fading corpus (`ft8_itu_sweep/`) needs a 3.x tree**, because the
+ITU channel codes (`LQ LM LD MQ MM MD HQ HM HD`) are an `ft8sim` 3.x feature,
+and it uses the corrected Watterson. Its channels are named `itu_*`, never
+`ccir_*`, so the two are not confused, and `sweep-baseline.json` keeps them
+under `ft8_itu/...`:
+
+    git -C <WSJT-X> worktree add <dir>/wsjtx-3.2 v3.2.0-rc1
+    scripts/build_ft8sim.sh <dir>/wsjtx-3.2 <dir>/ft8sim-3.2
+    FT8_CHANNEL_SET=itu scripts/gen_ft8_sweep_wavs.sh <dir>/ft8sim-3.2/ft8sim \
+        embedded-poc/assets/ft8_itu_sweep
+
+`build_ft8sim.sh` needed changes for 3.x (two new 77-bit modules, `gfsk_pulse.f90`
+moved out of `lib/ft2/`, `db()` and `print_version()`); it handles both. The
+3060 files (9 channels x 17 SNR points x 20 trials) are deterministic. To check a
+regeneration, on the machine that made the reference (gfortran 11.4, glibc,
+`MFSK_SIM_SEED` unset):
+
+    md5sum embedded-poc/assets/ft8_itu_sweep/ft8_itu_mm_m20_01.wav   # f36e24bca649c8db84a48ffbfdd11118
+    md5sum embedded-poc/assets/ft8_itu_sweep/ft8_itu_mq_m18_10.wav   # 5a6253d3376a646103f8d28fde5ee25d
+
+What the corpus is for: FT8's crossings on the quiet and moderate channels sit
+near -19.4 to -20.8 dB, but the disturbed ones (`itu_ld`, `itu_hm`: 10 Hz of
+Doppler spread; `itu_hd`: 30 Hz) are wider than FT8's 6.25 Hz tone spacing and
+only cross at -5.0 and -1.7 dB, or never (`itu_hd` is 0 % at +10 dB). That is the
+regime the `ccir_*` set never reaches (its widest spread is 1.0 Hz in the old
+definition), and the one where the choice of how many symbols to combine
+coherently matters most.
+
 ### Reading a crossing: pair it against `jt9` on the same corpus
 
 A single corpus's 50%-crossing is not a statement about the decoder. The
