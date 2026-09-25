@@ -1977,6 +1977,30 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         }
         llrc_arr = Some(arr);
     }
+    // Variant e (`ft8b.f90` pass 5): per bit, the raw nsym 1/2/3 metric of
+    // largest magnitude. Same gate as variant c — it is only worth its
+    // cost when the deeper variants are. Pass id 4 (BP variants are 0..3,
+    // the AP passes start at 5).
+    #[cfg(feature = "fft-rustfft")]
+    let mut llre_f32: Option<[f32; LDPC_N]> = None;
+    if accepted.is_none() && run_c {
+        let arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llre_metric::<LlrT>(cs_scratch, pass.squared());
+        let bp_e = bp_step_select(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_e
+            && bp.hard_errors <= strictness.ft8_nharderrors_max()
+        {
+            accepted = Some((bp, 4));
+        }
+        #[cfg(feature = "fft-rustfft")]
+        {
+            let mut e = [0f32; LDPC_N];
+            for (o, v) in e.iter_mut().zip(arr.iter()) {
+                *o = crate::engine::scalar::LlrScalar::to_f32(*v);
+            }
+            llre_f32 = Some(e);
+        }
+    }
 
     // Pre-compute the f32 `LlrSet` OSD needs, reusing Steps 1-2's own
     // llra/llrd/llrb/llrc instead of a fresh `compute_llr(cs_scratch)`
@@ -2060,6 +2084,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             q,
             strictness,
             pass,
+            llre_f32.as_ref(),
         );
     }
 

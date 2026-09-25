@@ -572,6 +572,41 @@ pub fn compute_llr_generic_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
     }
 }
 
+/// WSJT-X FT8's fifth metric, `llre` (`ft8b.f90` v3.0.0, pass 5:
+/// "choose best (largest) metric from 1-3"): for each codeword bit, the
+/// **raw** (un-normalised) `nsym`-1/2/3 metric of largest magnitude —
+/// `bmete(i)=temp(maxloc(abs(temp)))` over `(bmeta, bmetb, bmetc)`, a tie
+/// going to the shallower `nsym` as `maxloc` returns the first — then
+/// normalised and scaled like the others.
+///
+/// It needs the raw metrics, which the normalised `llra/llrb/llrc` of
+/// [`compute_llr_generic_metric`] no longer are, so this recomputes them:
+/// about the cost of one full [`compute_llr_generic_metric`].
+pub fn compute_llre_best_of<P: Protocol, S: SpecScalar, T: LlrScalar>(
+    cs: &[Cmplx<S>],
+    max_nsym: usize,
+    squared: bool,
+) -> Vec<T> {
+    let codeword_len = codeword_bit_len::<P>();
+    let mut bmeta = vec![0.0f32; codeword_len];
+    let mut bmetb = vec![0.0f32; codeword_len];
+    let mut bmetc = vec![0.0f32; codeword_len];
+    fill_bmet_for_nsym::<P, S>(cs, 1, &mut bmeta, None, squared);
+    fill_bmet_for_nsym::<P, S>(cs, 2, &mut bmetb, None, squared);
+    fill_bmet_for_nsym::<P, S>(cs, max_nsym, &mut bmetc, None, squared);
+    let mut bmete = vec![0.0f32; codeword_len];
+    for i in 0..codeword_len {
+        let mut best = bmeta[i];
+        for cand in [bmetb[i], bmetc[i]] {
+            if cand.abs() > best.abs() {
+                best = cand;
+            }
+        }
+        bmete[i] = best;
+    }
+    scale_bmet::<T>(bmete, P::LLR_SCALE)
+}
+
 /// Compute a single LLR variant at one `nsym` level, normalised +
 /// scaled exactly the way [`compute_llr_generic`] would produce that
 /// array on its own (nsym=1 returns the same `llra` `compute_llr_generic`

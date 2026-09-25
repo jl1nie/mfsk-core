@@ -118,6 +118,16 @@ pub fn compute_llr_partial_metric<T: LlrScalar>(
     inflate_llr(v)
 }
 
+/// WSJT-X's fifth metric `llre`: per bit, the raw `nsym` 1/2/3 metric of
+/// largest magnitude (see [`crate::engine::llr::compute_llre_best_of`]).
+/// `squared` is `imetric` 2, as for the other variants.
+pub fn compute_llre_metric<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79], squared: bool) -> [T; LDPC_N] {
+    let flat = flatten_cs(cs);
+    inflate_llr(crate::engine::llr::compute_llre_best_of::<Ft8, f32, T>(
+        flat, 3, squared,
+    ))
+}
+
 /// WSJT-X compatible SNR from 8-tone spectra + decoded 79-tone sequence.
 pub fn compute_snr_db(cs: &[[Cmplx<f32>; 8]; 79], itone: &[u8; 79]) -> f32 {
     let flat = flatten_cs(cs);

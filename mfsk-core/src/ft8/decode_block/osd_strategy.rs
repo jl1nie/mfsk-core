@@ -153,6 +153,8 @@ pub(super) fn try_fallback(
     q: u32,
     strictness: DecodeStrictness,
     pass: super::PassCtx,
+    // `llre` (see `compute_llre_metric`) if the caller already has it in f32.
+    precomputed_llre: Option<&[f32; LDPC_N]>,
 ) -> Option<(BpResult, u8)> {
     if !depth.osd || q <= 6 {
         return None;
@@ -254,15 +256,29 @@ pub(super) fn try_fallback(
     // `process_one_candidate_inner` and its five callers isn't
     // justified by anything measured.
     let mut zsum_scratch = BpScratch::<Ldpc174_91Params, f32>::new();
+    // The fifth variant (`llre`, ft8b.f90 pass 5) is tried last, as upstream's
+    // `do ipass=1,5` reaches it last. Computed only if a-d all fail.
+    let mut owned_llre: Option<[f32; LDPC_N]> = None;
     for (idx, llr) in [
-        &llr_full_f32.llra,
-        &llr_full_f32.llrb,
-        &llr_full_f32.llrc,
-        &llr_full_f32.llrd,
+        Some(&llr_full_f32.llra),
+        Some(&llr_full_f32.llrb),
+        Some(&llr_full_f32.llrc),
+        Some(&llr_full_f32.llrd),
+        None,
     ]
     .into_iter()
     .enumerate()
     {
+        let llr: &[f32; LDPC_N] = match llr {
+            Some(l) => l,
+            None => match precomputed_llre {
+                Some(e) => e,
+                None => owned_llre.insert(super::super::llr::compute_llre_metric::<f32>(
+                    cs_scratch,
+                    pass.squared(),
+                )),
+            },
+        };
         for (n_iter, base) in [(1u32, PASS_ID_OSD_ZSAVE1_A), (2u32, PASS_ID_OSD_ZSAVE2_A)] {
             let zsum_slice =
                 bp_llr_zsum_with_scratch::<Ldpc174_91Params>(&mut zsum_scratch, llr, n_iter);
