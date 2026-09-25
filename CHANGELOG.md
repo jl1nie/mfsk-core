@@ -2,6 +2,27 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FST4's OSD checks the CRC on its winner too (#456).** The same change as
+  #455, in `osd_decode_npre_generic` (FST4's ndeep 2/3 path;
+  `osd240_101.f90:285` runs `get_crc24` once, on the winner). It used to
+  verify every candidate and keep the closest CRC-valid one. On iid Gaussian
+  LLRs through `Ldpc240_101::decode_soft` at depth 3: 35 CRC-valid results
+  in 24 000 draws before (1.5e-3), 0 in 6 000 after; at depth 2, 0 in 3 600
+  both ways. The upstream `decode240_101` at `norder=3` took over 30 s a draw
+  in gfortran, so it was not measured at depth 3 (at `norder=2`: 0 in
+  1 200, which cannot separate the two).
+
+  Tier C, FST4 (all five sub-modes, four channels, against the previous
+  baseline): unexpected decodes **0 in every group** (they were 0-25 per
+  group, about 99 in all: FST4-15 AWGN 25, FST4-60 `ccir_good` 10, ...).
+  The 50 % crossings: AWGN within 0.2 dB (+0.00 to +0.18), the fading
+  channels 0.2 dB worse on average (-0.17 to +0.71 dB; four groups reach
+  0.5 dB: FST4-15 `ccir_good` +0.58 and `ccir_moderate` +0.50, FST4-300
+  `ccir_good` +0.71 and `ccir_moderate` +0.52). The CRC-aided search was
+  helping on faded signals, as it was for FT8's `itu_ld`. The same rule
+  for FT8's AP path (`osd_decode_deep`), MSK144 and uvpacket is not done;
+  they share `osd_decode_generic`.
+
 - **FT8's OSD checks the CRC on its winner, as `osd174_91` does, not on
   every candidate (#452, #453).** `osd174_91.f90` takes the closest of all
   its candidate codewords by weighted distance and runs `get_crc14` once, on

@@ -2004,41 +2004,27 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
         inv_perm[p] = col;
     }
 
-    // Same verify-gate-first, deferred-scatter `try_and_update` as
-    // `osd_decode_generic` — see that function's doc comment for the
-    // rationale. Here the `ntheta`/`ntau` gates upstream already prune
-    // to a handful of calls (measured mean 11/5151 for FST4-60), so
-    // there's no need for `osd_npre1_pass`'s original
-    // `dd < best.dd`-before-CRC micro-optimisation on top of that.
+    // The best candidate is chosen by weighted distance alone and `verify`
+    // runs once, on the winner, after the searches — as `osd240_101.f90` /
+    // `osd174_91.f90` do (`if( dd .lt. dmin )` with no CRC, `get_crc*` after
+    // the loops). This used to verify every candidate and keep the closest
+    // one that passed; see `OsdBest` (#452) for what that cost in wrong
+    // codewords. The gates upstream already prune to a handful of
+    // candidates (measured mean 11/5151 for FST4-60), so the distance sum
+    // here is cheap.
     let mut best_wd: Option<f32> = None;
-    let mut best_codeword = [0u8; OSD_NPRE_MAX_N];
-    let mut best_decoded = [0u8; OSD_NPRE_MAX_N];
-    let mut scratch_c = [0u8; OSD_NPRE_MAX_N];
-    let mut scratch_decoded = [0u8; OSD_NPRE_MAX_N];
+    let mut best_cp = [0u64; OSD_NPRE_WORDS];
     let mut try_and_update = |cp: &[u64]| {
-        let decoded = &mut scratch_decoded[..k];
-        for (i, d) in decoded.iter_mut().enumerate() {
-            let idx = inv_perm[i];
-            *d = ((cp[idx / 64] >> (idx % 64)) & 1) as u8;
-        }
-        if let Some(f) = verify
-            && !f(decoded)
-        {
-            return;
-        }
-        let c = &mut scratch_c[..n];
         let mut wd = 0.0f32;
         for col in 0..n {
             let bit = ((cp[col / 64] >> (col % 64)) & 1) as u8;
-            c[perm[col]] = bit;
             if bit != hdec_perm[col] {
                 wd += absrx_perm[col];
             }
         }
         if best_wd.is_none_or(|bd| wd < bd) {
             best_wd = Some(wd);
-            best_codeword[..n].copy_from_slice(&scratch_c[..n]);
-            best_decoded[..k].copy_from_slice(&scratch_decoded[..k]);
+            best_cp.copy_from_slice(&cp[..OSD_NPRE_WORDS]);
         }
     };
 
@@ -2155,6 +2141,20 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
     }
 
     best_wd?;
+    let mut best_codeword = [0u8; OSD_NPRE_MAX_N];
+    let mut best_decoded = [0u8; OSD_NPRE_MAX_N];
+    for col in 0..n {
+        best_codeword[perm[col]] = ((best_cp[col / 64] >> (col % 64)) & 1) as u8;
+    }
+    for (i, d) in best_decoded[..k].iter_mut().enumerate() {
+        let idx = inv_perm[i];
+        *d = ((best_cp[idx / 64] >> (idx % 64)) & 1) as u8;
+    }
+    if let Some(f) = verify
+        && !f(&best_decoded[..k])
+    {
+        return None;
+    }
     let codeword = &best_codeword[..n];
     let decoded = &best_decoded[..k];
     let mut hard_errors = 0u32;
