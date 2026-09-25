@@ -369,13 +369,13 @@ const FT8_PROFILE: DecodeProfile = DecodeProfile {
 /// FT4. No checkpoint SIC (no upstream equivalent to port), no
 /// wide-band AP (the shared AP engine early-exits after the first hit).
 ///
-/// `sync_min = 1.2` is **WSJT-X's own** (`ft4_decode.f90:195`), and on
-/// FT4's baseline-normalised scale it is a floor rather than a
-/// preference: noise sits at 1.0 by construction, so anything lower
-/// admits every peak in the band. Measured on 560 sweep files, 0.05 vs
-/// 1.2 costs 2.6×-42× the candidates for identical recall
-/// (`tests/ft4_candidate_budget.rs`). `max_cand = 100` mirrors
-/// `getcandidates4.f90`'s `MAXCAND`.
+/// `sync_min = 1.18` is **WSJT-X's own** (`ft4_decode.f90:195`; it was
+/// 1.2 through WSJT-X 2.7), and on FT4's baseline-normalised scale it is a
+/// floor rather than a preference: noise sits at 1.0 by construction,
+/// so anything lower admits every peak in the band. Measured on 560
+/// sweep files, 0.05 vs 1.2 costs 2.6×-42× the candidates for identical
+/// recall (`tests/ft4_candidate_budget.rs`). `max_cand = 200` mirrors
+/// `ft4_decode.f90`'s `MAXCAND` (100 through WSJT-X 2.7).
 #[allow(dead_code)]
 const FT4_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODE_HANDLE
@@ -392,8 +392,8 @@ const FT4_PROFILE: DecodeProfile = DecodeProfile {
     defaults: DecodeDefaults {
         freq_min_hz: 300.0,
         freq_max_hz: 2700.0,
-        sync_min: 1.2,
-        max_cand: 100,
+        sync_min: 1.18,
+        max_cand: 200,
     },
     sync_scale: SyncScale::BaselineNormalised,
     sniper_max_cand_cap: Some(15),

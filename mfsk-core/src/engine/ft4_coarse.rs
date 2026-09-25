@@ -377,8 +377,10 @@ impl Ft4SavgBuilder {
 ///
 /// ## `sync_min` is not a loose knob — 1.2 is the floor, not a ceiling
 ///
-/// WSJT-X passes `syncmin = 1.2` (`ft4_decode.f90:195`), and the number
-/// means something specific here: `savsm` is divided by the fitted
+/// WSJT-X passes `syncmin = 1.18` (`ft4_decode.f90:195`; it was 1.2
+/// through WSJT-X 2.7, and the measurements below were taken at 1.2 —
+/// the 0.02 difference sits well inside the flat part of the curve), and
+/// the number means something specific here: `savsm` is divided by the fitted
 /// baseline above, so **noise sits at ~1.0 by construction** and any
 /// threshold below that admits every peak in the band. Measured
 /// (`tests/ft4_candidate_budget.rs`, 2026-08-30): 0.05 and 1.2 return

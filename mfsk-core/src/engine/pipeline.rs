@@ -179,7 +179,7 @@ pub struct BudgetReport {
     /// Sync score of the best skipped candidate, on the scale that
     /// protocol's own search works in: the coarse, baseline-normalised
     /// score on FT8 and FT4 (so FT4's is directly comparable to its
-    /// `sync_min`, WSJT-X's own 1.2), and the refined `fst4_sync_search`
+    /// `sync_min`, WSJT-X's own 1.18), and the refined `fst4_sync_search`
     /// score on FST4, which is what its scheduler ranks by. Named after
     /// the embedded FT4 receiver's `SlotOutcome::cut_at_score`, which is
     /// the number that turned out to be worth surfacing to an operator.
