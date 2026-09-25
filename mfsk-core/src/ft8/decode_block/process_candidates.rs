@@ -484,7 +484,7 @@ fn decode_block_multipass<S: AudioSample>(
             );
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
-                if all.iter().any(|x| x.message77() == r.message77()) {
+                if crate::engine::pipeline::has_message77(&all, &r) {
                     continue;
                 }
                 if trace {
@@ -1820,6 +1820,13 @@ fn codec_is_plausible(message: &Wsjt77Fields) -> bool {
     <<crate::ft8::Ft8 as Protocol>::Msg as MessageCodec>::is_plausible(message)
 }
 
+/// The caller's acceptance policy applied to `message` together with
+/// FT8's codec verdict — the one place the two are joined (#423: the
+/// same call was written at the AP validator and the final accept).
+fn policy_accepts<Pol: MessagePolicy>(policy: &Pol, message: &Wsjt77Fields) -> bool {
+    policy.accepts(codec_is_plausible(message), FT8_FILTERS, message)
+}
+
 /// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
 /// and AP iaptype loop on a *fully-filled* `cs_scratch`. Shared
 /// between the embedded `process_candidates_with` driver (above) and
@@ -2096,30 +2103,16 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             &llr_full_f32.llrd,
         ];
 
+        // Passes 6..11 are `msg::pipeline_ap::ap_passes`' list, in its
+        // order; FT8 adds pass 5 (call1 alone) after it, and pass 12
+        // below (#423: the list was a line-for-line copy).
         let mut ap_passes: alloc::vec::Vec<(ApHint, u8)> = alloc::vec::Vec::new();
         if let Some(ap) = ap_hint
             && ap.has_info()
         {
-            if ap.call1.is_some() && ap.call2.is_some() {
-                for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
-                    let ap_full = ap.clone().with_report(rpt);
-                    ap_passes.push((ap_full, pid));
-                }
-            }
-            if ap.call2.is_some() && ap.call1.is_none() {
-                let ap7 = ap.clone().with_call1("CQ");
-                ap_passes.push((ap7, 7));
-            }
-            if ap.call1.is_some() && ap.call2.is_some() {
-                ap_passes.push((ap.clone(), 8));
-            }
-            ap_passes.push((ap.clone(), 6));
-            if ap.call1.is_some() {
-                let mut ap5 = ApHint::new();
-                if let Some(ref c1) = ap.call1 {
-                    ap5 = ap5.with_call1(c1);
-                }
-                ap_passes.push((ap5, 5));
+            ap_passes = crate::msg::pipeline_ap::ap_passes(ap);
+            if let Some(ref c1) = ap.call1 {
+                ap_passes.push((ApHint::new().with_call1(c1), 5));
             }
         }
         // Pass 12: blind-CQ (WSJT-X iaptype 1) — tried regardless of
@@ -2169,7 +2162,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                     let Some(message) = unpack77_fields(&msg77, &CallsignHashTable::new()) else {
                         return false;
                     };
-                    if !policy.accepts(codec_is_plausible(&message), FT8_FILTERS, &message) {
+                    if !policy_accepts(policy, &message) {
                         return false;
                     }
                     // The hypothesis locked these callsigns into the
@@ -2227,7 +2220,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // and takes the real signal underneath with it — see
     // `FrameDecodable::MESSAGE_FILTER_DEFAULT`.
     let message = unpack77_fields(&bp.message77, &CallsignHashTable::new())?;
-    if !policy.accepts(codec_is_plausible(&message), FT8_FILTERS, &message) {
+    if !policy_accepts(policy, &message) {
         return None;
     }
     if known.iter().any(|r| *r.message77() == bp.message77) {

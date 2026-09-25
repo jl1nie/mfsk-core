@@ -743,14 +743,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     }
 
     // Deduplicate: preserve first occurrence; drop messages already in `known`.
-    let mut results: Vec<DecodeResult> = Vec::new();
-    for r in raw {
-        if !known.iter().any(|k| k.message77() == r.message77())
-            && !results.iter().any(|x| x.message77() == r.message77())
-        {
-            results.push(r);
-        }
-    }
+    let results = crate::engine::pipeline::dedup_unique(raw, known);
     (results, fft_cache, budget_report)
 }
 
@@ -979,8 +972,8 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
             };
             // Dedup against `known` (an earlier stage) and this loop's
             // own earlier passes.
-            if known.iter().any(|x| x.message77() == r.message77())
-                || all_results.iter().any(|x| x.message77() == r.message77())
+            if crate::engine::pipeline::has_message77(known, &r)
+                || crate::engine::pipeline::has_message77(&all_results, &r)
             {
                 continue;
             }
@@ -1445,6 +1438,39 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
     // `parallel`: this is a ±250 Hz window with a handful of
     // candidates, so there is nothing here worth the N-fold deadline
     // overshoot that polling from N rayon workers would cost.
+    // One candidate's whole path: ladder, then the xsnr2 gate, then
+    // `on_result`. Written once for the budgeted, parallel and
+    // sequential arms below (#423; it was three copies).
+    let one = |cand: &SyncCandidate| -> Option<DecodeResult> {
+        #[cfg_attr(
+            not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
+            allow(unused_mut)
+        )]
+        let mut r = process_candidate(
+            cand,
+            audio,
+            fft_cache.as_slice(),
+            depth,
+            strictness,
+            &[],
+            eq_mode,
+            ap_hint,
+            policy,
+        )?;
+        #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+        {
+            let xsig =
+                crate::ft8::decode_block::compute_xsig_wsjtx(&r, audio, Some(fft_cache.as_slice()));
+            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
+                return None;
+            }
+        }
+        if let Some(cb) = on_result {
+            cb(&r);
+        }
+        Some(r)
+    };
+
     if budget.check.is_some() {
         let mut raw: Vec<DecodeResult> = Vec::new();
         for (icand, cand) in candidates.iter().enumerate() {
@@ -1453,128 +1479,17 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
                 break;
             }
             budget.report.stages_run += 1;
-            #[cfg_attr(
-                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
-                allow(unused_mut)
-            )]
-            let Some(mut r) = process_candidate(
-                cand,
-                audio,
-                fft_cache.as_slice(),
-                depth,
-                strictness,
-                &[],
-                eq_mode,
-                ap_hint,
-                policy,
-            ) else {
-                continue;
-            };
-            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
-            {
-                let xsig = crate::ft8::decode_block::compute_xsig_wsjtx(
-                    &r,
-                    audio,
-                    Some(fft_cache.as_slice()),
-                );
-                if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
-                    continue;
-                }
-            }
-            if let Some(cb) = on_result {
-                cb(&r);
-            }
-            raw.push(r);
+            raw.extend(one(cand));
         }
-        let mut results: Vec<DecodeResult> = Vec::new();
-        for r in raw {
-            if !results.iter().any(|x| x.message77() == r.message77()) {
-                results.push(r);
-            }
-        }
-        return (results, fft_cache);
+        return (crate::engine::pipeline::dedup_unique(raw, &[]), fft_cache);
     }
 
     #[cfg(feature = "parallel")]
-    let raw: Vec<DecodeResult> = candidates
-        .par_iter()
-        .filter_map(|cand| {
-            #[cfg_attr(
-                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
-                allow(unused_mut)
-            )]
-            let mut r = process_candidate(
-                cand,
-                audio,
-                fft_cache.as_slice(),
-                depth,
-                strictness,
-                &[],
-                eq_mode,
-                ap_hint,
-                policy,
-            )?;
-            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
-            {
-                let xsig = crate::ft8::decode_block::compute_xsig_wsjtx(
-                    &r,
-                    audio,
-                    Some(fft_cache.as_slice()),
-                );
-                if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
-                    return None;
-                }
-            }
-            if let Some(cb) = on_result {
-                cb(&r);
-            }
-            Some(r)
-        })
-        .collect();
+    let raw: Vec<DecodeResult> = candidates.par_iter().filter_map(&one).collect();
     #[cfg(not(feature = "parallel"))]
-    let raw: Vec<DecodeResult> = candidates
-        .iter()
-        .filter_map(|cand| {
-            #[cfg_attr(
-                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
-                allow(unused_mut)
-            )]
-            let mut r = process_candidate(
-                cand,
-                audio,
-                fft_cache.as_slice(),
-                depth,
-                strictness,
-                &[],
-                eq_mode,
-                ap_hint,
-                policy,
-            )?;
-            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
-            {
-                let xsig = crate::ft8::decode_block::compute_xsig_wsjtx(
-                    &r,
-                    audio,
-                    Some(fft_cache.as_slice()),
-                );
-                if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
-                    return None;
-                }
-            }
-            if let Some(cb) = on_result {
-                cb(&r);
-            }
-            Some(r)
-        })
-        .collect();
+    let raw: Vec<DecodeResult> = candidates.iter().filter_map(&one).collect();
 
-    let mut results: Vec<DecodeResult> = Vec::new();
-    for r in raw {
-        if !results.iter().any(|x| x.message77() == r.message77()) {
-            results.push(r);
-        }
-    }
-    (results, fft_cache)
+    (crate::engine::pipeline::dedup_unique(raw, &[]), fft_cache)
 }
 
 // ────────────────────────────────────────────────────────────────────────────

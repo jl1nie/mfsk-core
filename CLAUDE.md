@@ -98,7 +98,8 @@ Everything else:
   at the end is the fastest way to find a subsystem), `BENCHMARKS.md`,
   the per-protocol `*_BENCHMARK.md`, `SNR_FORMULAS.md`, `DECODED_ROW.md`,
   and `sweep-baseline.json` (the machine-checked half of the sensitivity
-  story).
+  story: 50%-crossing SNRs, and for ft8/ft4/fst4 the unexpected-decode
+  count per SNR cell).
 - `docs/historical/` — split-out older CHANGELOG sections. Grep here as
   well as `CHANGELOG.md` when researching precedent.
 - `scripts/` — `build_*sim.sh` / `gen_*_sweep_wavs.sh` build WSJT-X's
@@ -663,12 +664,20 @@ per-trial CSV to `target/sweep-csv/`, and at the end it runs
 `scripts/sweep-regression-check.py` against those CSVs, which
 interpolates each channel's 50%-crossing SNR and prints the delta from
 `docs/notes/sweep-baseline.json`, flagging `!!` on any move
-`>= 0.5 dB`. This replaced manually eyeballing the printed tables (or
+`>= 0.5 dB`. It also prints a **precision** table for ft8/ft4/fst4: the
+unexpected decodes (any message other than the one injected) per group,
+compared over the SNR cells the run shares with the baseline and flagged
+`!!` when they rise by `>= 3` and `>= 1.5x`. This replaced manually eyeballing the printed tables (or
 spawning several agents to do it) against `docs/notes/*BENCHMARK.md` —
 see `~/.claude/projects/.../memory/project_sensitivity_sweep_pre_release_20260814.md`
 for what that used to cost. Still sanity-check the prose in
-`docs/notes/*BENCHMARK.md` too — the JSON baseline only tracks
-50%-crossing SNR, not e.g. WSPR's phantom-decode count. Once you
+`docs/notes/*BENCHMARK.md` too — the JSON baseline tracks 50%-crossing SNR
+and, for ft8/ft4/fst4, unexpected decodes (`_meta.precision`); WSPR's
+phantom-decode count is still only in its printed table. FT8 is also run
+through `.sic_early()` into its own CSV (`ft8_sic_early/...`), because the
+phantom-prone code lives in the non-default strategies. FT8 and FT4 are
+**not** narrowed to a window around the crossing any more: the sweeps take
+seconds, and the phantoms sit outside that window. Once you
 understand why a number moved, refresh the baseline with
 `python3 scripts/sweep-regression-check.py --update-baseline
 target/sweep-csv/*.csv`, and update `docs/notes/BENCHMARKS.md` too if

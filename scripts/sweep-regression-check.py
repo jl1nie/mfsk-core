@@ -12,17 +12,37 @@ MFSK_*_SWEEP_CSV / MFSK_*_SWEEP_SUMMARY_CSV env vars — see
 scripts/run-sensitivity-sweeps.sh, which sets these automatically and
 calls this script at the end of a run):
 
-    <dim1>,<dim2>,...,snr_db,trial,pass
+    <dim1>,<dim2>,...,snr_db,trial,pass[,extra]
 
 Any number of leading "dimension" columns (mode, channel, submode, ap
-mode, ...) is allowed — everything before the fixed trailing
-`snr_db,trial,pass` triple is treated as the group key. One row per
-trial; `pass` is 0/1.
+mode, ...) is allowed — everything before the fixed `snr_db,trial,pass`
+triple is treated as the group key. One row per trial; `pass` is 0/1.
+
+The optional trailing `extra` column is the **precision** half: how many
+distinct decoded messages were *not* the one signal the file was generated
+with. Every sweep WAV holds one injected transmission plus noise, so each
+of those is a CRC-valid payload out of noise. (Before 2026-09 tier C
+recorded recall only; precision lived in tier B's real recordings alone.)
+CSVs without the column still load, and simply have no precision report.
+
+A second, "aggregate" shape serves corpora that have no SNR ladder to
+interpolate, such as the busy-band corpus (several signals per file):
+
+    <dim1>,...,trial,truth,hits,extra
+
+One row per file: `truth` signals were sent, `hits` decoded, `extra` were
+unexpected. Groups are compared by total recall (hits/truth) and total
+`extra`; the baseline keeps them under `_meta.aggregates`. A group is
+flagged when recall falls by AGG_RECALL_DROP (one point) or when `extra`
+rises by the precision rule.
 
 Baseline file format (docs/notes/sweep-baseline.json): a flat
 `{"<protocol>[/<dim>...]": crossing_db}` map, plus one `_meta` key
 carrying per-protocol provenance — when each protocol's numbers were
-measured, at which commit, on which machine, over how many trials.
+measured, at which commit, on which machine, over how many trials — and
+`_meta.precision`, `{group: {snr_db: [extra, trials]}}`, the unexpected
+decodes per SNR cell. Precision is compared over the SNR cells present in
+both the run and the baseline, so a narrowed re-run is still comparable.
 `--update-baseline` refreshes `_meta` for the protocols in the run and
 leaves the rest untouched, so a partial re-sweep can't backdate-launder
 groups it never ran. Nothing reads the crossings out of `_meta`; a
@@ -37,7 +57,14 @@ This prints a report and always exits 0 — like the sweep tests
 themselves, a moved threshold is a judgement call for a human, not a
 boolean pass/fail (see run-sensitivity-sweeps.sh's "WHAT IT DOES NOT
 DO"). Pass --strict to exit 1 when any group moved beyond --threshold
-dB, for a caller that wants a hard gate anyway.
+dB, or gained unexpected decodes beyond the precision rule below, for a
+caller that wants a hard gate anyway.
+
+Precision rule: a group is flagged when, over the shared SNR cells, it has
+at least PRECISION_MIN_INCREASE more unexpected decodes than the baseline
+AND at least PRECISION_RATIO times as many. A handful of extras moves with
+any recall change, so a flat count would cry wolf; one file's worth of
+noise decodes must not flag, while a doubled phantom rate must.
 """
 import argparse
 import csv as csv_mod
@@ -57,6 +84,13 @@ DEFAULT_BASELINE = REPO_ROOT / "docs" / "notes" / "sweep-baseline.json"
 # namespace is `<protocol>[/<dim>...]` and a protocol directory can't
 # start with an underscore.
 META_KEY = "_meta"
+
+# Precision regression rule — see the module docstring.
+PRECISION_MIN_INCREASE = 3
+PRECISION_RATIO = 1.5
+
+# Aggregate corpora: an absolute drop in total recall that is flagged.
+AGG_RECALL_DROP = 0.01
 
 
 def protocol_of(label: str) -> str:
@@ -117,29 +151,53 @@ def protocol_name_from_path(path: Path) -> str:
 
 
 def load_cells(path: Path):
-    """Returns {group_key_tuple: {snr_db: [n_hits, n_trials]}}."""
+    """Returns {group_key_tuple: {snr_db: [n_hits, n_trials]}}.
+
+    Kept as its own function because other scripts import it; the
+    precision column is read by `load_cells_and_extras`."""
+    return load_cells_and_extras(path)[0]
+
+
+def load_cells_and_extras(path: Path):
+    """Returns `(cells, extras)`.
+
+    `cells` is `{group_key_tuple: {snr_db: [n_hits, n_trials]}}`.
+    `extras` is `{group_key_tuple: {snr_db: [n_extra, n_trials]}}`, empty
+    when the CSV has no `extra` column (an older CSV, or a suite that does
+    not count unexpected decodes)."""
     cells = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    extras = defaultdict(lambda: defaultdict(lambda: [0, 0]))
     with path.open(newline="") as f:
         reader = csv_mod.reader(f)
         header = next(reader, None)
         if header is None:
-            return cells
-        if header[-3:] != ["snr_db", "trial", "pass"]:
+            return cells, extras
+        if "snr_db" not in header:
+            raise ValueError(f"{path}: no snr_db column in header {header}")
+        i = header.index("snr_db")
+        if header[i : i + 3] != ["snr_db", "trial", "pass"]:
             raise ValueError(
-                f"{path}: expected header ending in snr_db,trial,pass, got {header}"
+                f"{path}: expected snr_db,trial,pass[,extra], got {header}"
             )
-        ndims = len(header) - 3
+        trailing = header[i + 3 :]
+        if trailing not in ([], ["extra"]):
+            raise ValueError(f"{path}: unexpected trailing columns {trailing}")
+        has_extra = trailing == ["extra"]
         for row in reader:
             if not row:
                 continue
-            key = tuple(row[:ndims])
-            snr = int(row[ndims])
-            passed = row[ndims + 2] == "1"
+            key = tuple(row[:i])
+            snr = int(row[i])
+            passed = row[i + 2] == "1"
             cell = cells[key][snr]
             cell[1] += 1
             if passed:
                 cell[0] += 1
-    return cells
+            if has_extra:
+                e = extras[key][snr]
+                e[1] += 1
+                e[0] += int(row[i + 3])
+    return cells, extras
 
 
 def crossing_snr(snr_hits_trials: dict, target=0.5):
@@ -167,6 +225,87 @@ def crossing_snr(snr_hits_trials: dict, target=0.5):
     return None, "no monotonic crossing found"  # defensive; shouldn't hit given checks above
 
 
+def is_aggregate_csv(path: Path) -> bool:
+    """`...,trial,truth,hits,extra` rather than `...,snr_db,trial,pass[,extra]`."""
+    with path.open(newline="") as f:
+        header = next(csv_mod.reader(f), None) or []
+    return "truth" in header and "hits" in header and "snr_db" not in header
+
+
+def load_aggregates(path: Path):
+    """Returns `{group_key_tuple: {"files": n, "truth": T, "hits": H, "extra": E}}`.
+
+    The group key is every column before `trial`."""
+    out = defaultdict(lambda: {"files": 0, "truth": 0, "hits": 0, "extra": 0})
+    with path.open(newline="") as f:
+        reader = csv_mod.reader(f)
+        header = next(reader, None)
+        if header is None:
+            return out
+        try:
+            i = header.index("trial")
+            ti, hi, ei = header.index("truth"), header.index("hits"), header.index("extra")
+        except ValueError:
+            raise ValueError(f"{path}: expected ...,trial,truth,hits,extra, got {header}")
+        for row in reader:
+            if not row:
+                continue
+            g = out[tuple(row[:i])]
+            g["files"] += 1
+            g["truth"] += int(row[ti])
+            g["hits"] += int(row[hi])
+            g["extra"] += int(row[ei])
+    return out
+
+
+def compare_aggregate(cur: dict, base: dict):
+    """`(recall_cur, recall_base, extra_flagged, recall_flagged)`. Recall is
+    None for a group that sent nothing (a noise-only set)."""
+    def recall(g):
+        return g["hits"] / g["truth"] if g["truth"] else None
+    rc, rb = recall(cur), recall(base)
+    recall_flagged = rc is not None and rb is not None and (rb - rc) >= AGG_RECALL_DROP
+    extra_flagged = (cur["extra"] - base["extra"]) >= PRECISION_MIN_INCREASE and cur["extra"] >= PRECISION_RATIO * base["extra"]
+    return rc, rb, extra_flagged, recall_flagged
+
+
+def compare_precision(current: dict, baseline: dict):
+    """`current` / `baseline`: `{snr_db (int or str): [n_extra, n_trials]}`.
+
+    Compares only the SNR cells present in both. Returns
+    `(cur_extras, base_extras, common_trials, flagged)`; `flagged` follows
+    PRECISION_MIN_INCREASE / PRECISION_RATIO. With no shared cell it returns
+    `(None, None, 0, False)` — nothing to compare, and that is not a pass."""
+    cur = {str(k): v for k, v in current.items()}
+    base = {str(k): v for k, v in baseline.items()}
+    common = sorted(set(cur) & set(base), key=int)
+    if not common:
+        return None, None, 0, False
+    c = sum(cur[k][0] for k in common)
+    b = sum(base[k][0] for k in common)
+    n = sum(cur[k][1] for k in common)
+    flagged = (c - b) >= PRECISION_MIN_INCREASE and c >= PRECISION_RATIO * b
+    return c, b, n, flagged
+
+
+def dump_baseline(out: dict) -> str:
+    """`json.dumps(indent=2)`, except each `_meta.precision` group is one line.
+
+    Plain `indent=2` puts every `[extra, trials]` pair on four lines, which
+    turned the precision block into ~1,450 lines for 32 groups; one line per
+    group keeps it reviewable in a diff."""
+    prec = out.get(META_KEY, {}).get("precision")
+    if not prec:
+        return json.dumps(out, indent=2) + "\n"
+    markers = {label: f"@@precision-{i}@@" for i, label in enumerate(prec)}
+    shell = json.loads(json.dumps(out))
+    shell[META_KEY]["precision"] = markers
+    text = json.dumps(shell, indent=2)
+    for label, marker in markers.items():
+        text = text.replace(f'"{marker}"', json.dumps(prec[label], separators=(", ", ": ")))
+    return text + "\n"
+
+
 def group_label(proto: str, key: tuple) -> str:
     return "/".join((proto,) + key) if key else proto
 
@@ -178,6 +317,10 @@ def main():
     ap.add_argument("--update-baseline", action="store_true", help="write this run's crossings into the baseline file after reporting")
     ap.add_argument("--threshold", type=float, default=0.5, help="dB move to flag (default 0.5, matches CLAUDE.md's release-tag guidance)")
     ap.add_argument("--strict", action="store_true", help="exit 1 if any group moved beyond --threshold (default: always exit 0, this is advisory)")
+    ap.add_argument("--keep", action="append", default=[], metavar="GROUP",
+                    help="with --update-baseline: leave this group's recorded crossing alone (repeatable). "
+                         "For a move you have not explained yet: the rest of the run is still recorded, "
+                         "and the protocol's provenance lists the kept groups so the date is not read as covering them")
     ap.add_argument("--machine", default=None, help="override the recorded machine string (default: /proc/cpuinfo model name)")
     args = ap.parse_args()
 
@@ -188,6 +331,8 @@ def main():
     baseline = {k: v for k, v in raw.items() if not k.startswith("_")}
 
     current = {}
+    current_precision = {}  # label -> {snr_db: [extra, trials]}
+    current_aggregates = {}  # label -> {"files", "truth", "hits", "extra"}
     rows = []  # (label, crossing_or_None, note)
     for spec in args.csvs:
         if "=" in spec and not spec.startswith("/") and not Path(spec).exists():
@@ -199,7 +344,11 @@ def main():
         if not path.exists():
             print(f"warning: {path} not found, skipping", file=sys.stderr)
             continue
-        cells = load_cells(path)
+        if is_aggregate_csv(path):
+            for key, agg in sorted(load_aggregates(path).items()):
+                current_aggregates[group_label(name, key)] = agg
+            continue
+        cells, extras = load_cells_and_extras(path)
         for key, snr_map in sorted(cells.items()):
             label = group_label(name, key)
             crossing, note = crossing_snr(snr_map)
@@ -207,8 +356,12 @@ def main():
             rows.append((label, crossing, note, trials_total))
             if crossing is not None:
                 current[label] = crossing
+            if key in extras:
+                current_precision[label] = {
+                    snr: list(v) for snr, v in sorted(extras[key].items())
+                }
 
-    if not rows:
+    if not rows and not current_aggregates:
         print("no cells found in any input CSV — nothing to report.")
         return 0
 
@@ -217,7 +370,7 @@ def main():
     # which is exactly the question that sent a reader to `git log` on
     # the JSON, and from there to guessing.
     per_proto = meta.get("protocols", {})
-    seen_protos = sorted({protocol_of(r[0]) for r in rows})
+    seen_protos = sorted({protocol_of(r[0]) for r in rows} | {protocol_of(g) for g in current_aggregates})
     if per_proto:
         print("comparing against:")
         for proto in seen_protos:
@@ -233,9 +386,10 @@ def main():
             print(f"  {proto:<12} {', '.join(bits)}")
         print()
 
-    width = max(len(r[0]) for r in rows)
-    print(f"{'group':<{width}}  {'crossing':>10}  {'baseline':>10}  {'delta':>8}  trials")
-    print("-" * (width + 46))
+    width = max((len(r[0]) for r in rows), default=8)
+    if rows:
+        print(f"{'group':<{width}}  {'crossing':>10}  {'baseline':>10}  {'delta':>8}  trials")
+        print("-" * (width + 46))
     any_flagged = False
     any_new = False
     for label, crossing, note, n in sorted(rows):
@@ -255,17 +409,85 @@ def main():
                 any_flagged = True
         print(f"{label:<{width}}  {cur_s:>10}  {base_s:>10}  {delta_s:>8}  {n}")
 
+    # Precision: unexpected decodes, compared over the SNR cells shared with
+    # the baseline. Independent of the recall crossing above — a group can
+    # hold its crossing and still start manufacturing phantoms.
+    precision_base = meta.get("precision", {})
+    any_precision_flagged = False
+    any_precision_new = False
+    if current_precision:
+        print()
+        print("precision (unexpected decodes, over SNR cells shared with the baseline)")
+        pw = max(len(label) for label in current_precision)
+        print(f"{'group':<{pw}}  {'extras':>7}  {'baseline':>8}  {'delta':>7}  trials")
+        print("-" * (pw + 36))
+        for label in sorted(current_precision):
+            cur_cells = current_precision[label]
+            if label not in precision_base:
+                total = sum(v[0] for v in cur_cells.values())
+                n = sum(v[1] for v in cur_cells.values())
+                print(f"{label:<{pw}}  {total:>7}  {'(none)':>8}  {'NEW':>7}  {n}")
+                any_precision_new = True
+                continue
+            c, b, n, flagged = compare_precision(cur_cells, precision_base[label])
+            if c is None:
+                print(f"{label:<{pw}}  {'—':>7}  {'—':>8}  {'no shared SNR cell':>7}")
+                continue
+            mark = " !!" if flagged else ""
+            any_precision_flagged = any_precision_flagged or flagged
+            print(f"{label:<{pw}}  {c:>7}  {b:>8}  {c - b:>+7}{mark}  {n}")
+
+    # Aggregate corpora (busy band): total recall and total unexpected decodes.
+    agg_base = meta.get("aggregates", {})
+    any_agg_flagged = False
+    any_agg_new = False
+    if current_aggregates:
+        print()
+        print("aggregate corpora (recall = hits/truth over all files; extras = unexpected decodes)")
+        aw = max(len(label) for label in current_aggregates)
+        print(f"{'group':<{aw}}  {'files':>5}  {'truth':>6}  {'recall':>7}  {'baseline':>8}  {'extras':>6}  {'baseline':>8}")
+        print("-" * (aw + 56))
+        for label in sorted(current_aggregates):
+            g = current_aggregates[label]
+            rec_s = f"{100 * g['hits'] / g['truth']:.1f}%" if g["truth"] else "-"
+            b = agg_base.get(label)
+            if b is None:
+                any_agg_new = True
+                print(f"{label:<{aw}}  {g['files']:>5}  {g['truth']:>6}  {rec_s:>7}  {'(none)':>8}  {g['extra']:>6}  {'NEW':>8}")
+                continue
+            rc, rb, extra_flagged, recall_flagged = compare_aggregate(g, b)
+            rb_s = f"{100 * rb:.1f}%" if rb is not None else "-"
+            marks = ("!! recall" if recall_flagged else "") + (" !! extras" if extra_flagged else "")
+            any_agg_flagged = any_agg_flagged or recall_flagged or extra_flagged
+            print(f"{label:<{aw}}  {g['files']:>5}  {g['truth']:>6}  {rec_s:>7}  {rb_s:>8}  {g['extra']:>6}  {b['extra']:>8} {marks}")
+
     print()
+    if any_agg_flagged:
+        print(f"⚠ an aggregate group lost >= {100 * AGG_RECALL_DROP:.0f} point of recall, or gained unexpected decodes (!! above).")
+    if any_agg_new:
+        print("  aggregate groups marked NEW have no baseline yet — add with --update-baseline.")
+    if any_precision_flagged:
+        print(f"⚠ unexpected decodes rose by >= {PRECISION_MIN_INCREASE} and >= {PRECISION_RATIO}x the baseline")
+        print("  in one or more groups (!! above). Decide whether the recall gain that came with them")
+        print("  is worth it, or whether an acceptance gate is too loose.")
+    if any_precision_new:
+        print("  precision groups marked NEW have no baseline yet — add with --update-baseline.")
     if any_flagged:
         print(f"⚠ one or more groups moved >= {args.threshold} dB from baseline — see CLAUDE.md's")
         print("  release-tag guidance ('a move worse than ~0.5 dB is worth explaining').")
     if any_new:
         print("  groups marked NEW have no baseline entry yet — add with --update-baseline")
         print("  once you've confirmed the number is correct, not just new.")
-    if not any_flagged and not any_new:
+    if not any_flagged and not any_new and not any_precision_flagged and not any_agg_flagged:
         print("no groups moved beyond threshold.")
 
     if args.update_baseline:
+        kept = sorted(g for g in args.keep if g in baseline)
+        unknown = sorted(set(args.keep) - set(kept))
+        if unknown:
+            print(f"warning: --keep names no recorded group: {', '.join(unknown)}", file=sys.stderr)
+        for g in kept:
+            current.pop(g, None)
         baseline.update(current)
 
         # Provenance is refreshed for the protocols this run actually
@@ -290,20 +512,44 @@ def main():
                 "trials": n_trials,
                 "groups": groups_by_proto[proto],
             }
+            kept_here = [g for g in kept if protocol_of(g) == proto]
+            if kept_here:
+                protocols[proto]["kept_crossings"] = kept_here
+        # Precision cells replace, group by group, only for the groups this
+        # run measured (same partial-refresh rule as the provenance above).
+        # A group that ran without an `extra` column keeps its old entry.
+        precision = dict(meta.get("precision", {}))
+        for label, cells_by_snr in current_precision.items():
+            precision[label] = {
+                str(snr): v for snr, v in sorted(cells_by_snr.items())
+            }
         meta = {
             **meta,
             "schema": 1,
             "protocols": dict(sorted(protocols.items())),
         }
+        if precision:
+            meta["precision"] = dict(sorted(precision.items()))
+        if current_aggregates:
+            aggregates = dict(meta.get("aggregates", {}))
+            aggregates.update({label: dict(g) for label, g in current_aggregates.items()})
+            meta["aggregates"] = dict(sorted(aggregates.items()))
+            by_proto = defaultdict(list)
+            for label, g in current_aggregates.items():
+                by_proto[protocol_of(label)].append(g)
+            protos = dict(meta["protocols"])
+            for proto, gs in by_proto.items():
+                protos[proto] = {**stamp, "trials": sum(g["files"] for g in gs), "groups": len(gs)}
+            meta["protocols"] = dict(sorted(protos.items()))
 
         out = {META_KEY: meta}
         out.update(sorted(baseline.items()))
         args.baseline.parent.mkdir(parents=True, exist_ok=True)
-        args.baseline.write_text(json.dumps(out, indent=2) + "\n")
-        stamped = ", ".join(sorted(trials_by_proto)) or "nothing"
+        args.baseline.write_text(dump_baseline(out))
+        stamped = ", ".join(sorted(set(trials_by_proto) | {protocol_of(l) for l in current_aggregates})) or "nothing"
         print(f"\nbaseline updated: {args.baseline} (provenance stamped for {stamped})")
 
-    if args.strict and any_flagged:
+    if args.strict and (any_flagged or any_precision_flagged or any_agg_flagged):
         return 1
     return 0
 
