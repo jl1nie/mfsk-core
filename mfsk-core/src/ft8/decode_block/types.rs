@@ -224,7 +224,9 @@ pub(super) const TX_START_OFFSET_S: f32 = 0.5;
 /// That coupling is gone. Probing the real `jt9` binary
 /// (`sync8.f90` + `ft8_decode.f90`, issue #280) showed WSJT-X finds
 /// `K1BZM DK8NE` only through its *secondary* (full-`±JZ`) channel
-/// at `jpeak2=14` — its fixed-`±mlag=10` primary scores 0.95, far
+/// at `jpeak2=14` — its fixed-`±mlag=10` primary (upstream moved to 13
+/// in 3.0, which this port has not adopted — see `coarse_sync::MLAG`;
+/// the probe was against 2.7) scores 0.95, far
 /// under `syncmin` — and only on its second subtraction pass
 /// (`nzhsym=50, ipass=2`), from candidate rank 35 of 337 with no
 /// pass-1 truncation at all (`MAXCAND=600`). The equivalent

@@ -72,6 +72,17 @@ gcc -O2 -I"$LIB" -c "$LIB/init_random_seed.c"
 echo "  [4a/14] packjt.f90"
 gfortran "${FFLAGS[@]}" -c "$LIB/packjt.f90"
 
+# WSJT-X 3.x split the 77-bit message tables into two more modules, which
+# packjt77 `use`s. Older trees (2.7 and before) have neither file.
+EXTRA77_OBJS=""
+for m in packjt77_schema packjt77_grammar; do
+  if [[ -f "$LIB/77bit/$m.f90" ]]; then
+    echo "  [4a2] 77bit/$m.f90 (WSJT-X 3.x)"
+    gfortran "${FFLAGS[@]}" -c "$LIB/77bit/$m.f90"
+    EXTRA77_OBJS="$EXTRA77_OBJS $m.o"
+  fi
+done
+
 echo "  [4b/14] 77bit/packjt77.f90"
 gfortran "${FFLAGS[@]}" -c "$LIB/77bit/packjt77.f90"
 
@@ -85,8 +96,12 @@ gfortran "${FFLAGS[@]}" -c "$LIB/fmtmsg.f90"
 echo "  [5c] chkcall.f90"
 gfortran "${FFLAGS[@]}" -c "$LIB/chkcall.f90"
 
-echo "  [5d] ft2/gfsk_pulse.f90"
-gfortran "${FFLAGS[@]}" -c "$LIB/ft2/gfsk_pulse.f90"
+# gfsk_pulse.f90 lived under lib/ft2/ through WSJT-X 2.7 and master; the 3.2
+# release tag removed lib/ft2/ and moved it to lib/.
+GFSK_PULSE="$LIB/ft2/gfsk_pulse.f90"
+[[ -f "$GFSK_PULSE" ]] || GFSK_PULSE="$LIB/gfsk_pulse.f90"
+echo "  [5d] $(basename "$(dirname "$GFSK_PULSE")")/gfsk_pulse.f90"
+gfortran "${FFLAGS[@]}" -c "$GFSK_PULSE"
 
 echo "  [5e] timer_module.f90"
 gfortran "${FFLAGS[@]}" -c "$LIB/timer_module.f90"
@@ -110,13 +125,30 @@ gfortran "${FFLAGS[@]}" -c "$LIB/ft8/watterson.f90"
 echo "  [10/14] gran.c"
 gcc -O2 -c "$LIB/gran.c"
 
+# WSJT-X 3.x's ft8sim also calls db() (Fortran) and print_version() (C, which
+# includes two CMake-generated headers). Stub the headers: the version line is
+# cosmetic. Older trees need neither.
+EXTRA_SIM_OBJS=""
+if [[ -f "$LIB/db.f90" ]]; then
+  echo "  [11a] db.f90 (WSJT-X 3.x)"
+  gfortran "${FFLAGS[@]}" -c "$LIB/db.f90"
+  EXTRA_SIM_OBJS="$EXTRA_SIM_OBJS db.o"
+fi
+if grep -q print_version "$LIB/ft8/ft8sim.f90" && [[ -f "$LIB/print_version.c" ]]; then
+  echo "  [11b] print_version.c (WSJT-X 3.x, stub headers)"
+  printf '#define SCS_VERSION\n#define SCS_VERSION_STR ""\n' > scs_version.h
+  printf '#define PROJECT_VERSION_MAJOR 0\n#define PROJECT_VERSION_MINOR 0\n#define PROJECT_VERSION_PATCH 0\n#define BUILD_TYPE_REVISION ""\n' > wsjtx_config.h
+  gcc -O2 -I. -c "$LIB/print_version.c"
+  EXTRA_SIM_OBJS="$EXTRA_SIM_OBJS print_version.o"
+fi
+
 echo "  [link] ft8sim"
 gfortran "${FFLAGS[@]}" \
   wavhdr.o prog_args.o crc.o crc14.o sgran.o init_random_seed.o \
   deg2grid.o grid2deg.o fmtmsg.o chkcall.o \
-  packjt.o packjt77.o \
+  packjt.o $EXTRA77_OBJS packjt77.o \
   gfsk_pulse.o timer_module.o fftw3mod.o four2a.o \
-  encode174_91.o gen_ft8wave.o genft8.o watterson.o gran.o \
+  encode174_91.o gen_ft8wave.o genft8.o watterson.o gran.o $EXTRA_SIM_OBJS \
   "$LIB/ft8/ft8sim.f90" \
   -o "$OUT_DIR/ft8sim" -lfftw3f -lm -lstdc++
 

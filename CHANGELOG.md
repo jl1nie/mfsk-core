@@ -25,6 +25,164 @@
   candidate-count measurements quoted in `ft4_coarse_sync`'s docs were
   taken at 1.2 and are left as measured.
 
+- **FT8 follows two WSJT-X 3.x constants — SNR floor and gate −25 dB,
+  AP magnitude 1.1 — and does not follow a third, `mlag` 13 (#438).**
+  Read at the `v2.7.0` and `v3.0.0` tags of `lib/ft8/`:
+
+  | | 2.7 | 3.0 → 3.2.0-rc1 | here |
+  |---|---|---|---|
+  | `ft8b.f90` SNR clamp and `nsync <= 10 && xsnr <` bail-out | −24 dB | −25 dB | `FT8_SNR_FLOOR_DB` (the `xsnr2` paths only) |
+  | `ft8b.f90` `apmag` scale | 1.01 | 1.1 | `Ft8::AP_MAG_SCALE` |
+  | `sync8.f90` `mlag` | 10 | 13 | **kept at 10** |
+
+  `Ft8` had used the trait default for `AP_MAG_SCALE`; it now sets its
+  own, and the AP ladder reads it instead of a literal `1.01`. The
+  default stays 1.01 for protocols that do not override it. The
+  adjacent-tone SNR heuristic shared with FT4/FST4 keeps its −24 dB
+  clamp: it is not `ft8b`'s formula.
+
+  **`mlag` 13 was tried and reverted.** It changes nothing on the f32
+  tier-C sweep (byte-identical, trial by trial), but on the fixed-point
+  ship config `ft8_qso3_apoff_recall` drops from 12/20 to 11/20 against
+  its floor of 12: a wider primary window reorders the 15 candidates
+  that config keeps. Lowering the floor to fit a change that nothing here
+  benefits from would be the wrong trade, so `MLAG` stays 10 with the
+  reason at the constant. It is worth another look with a corpus that has
+  off-time signals (the sweep is all DT 0).
+
+  **The other two have no measured effect on any local corpus.** After
+  each, the FT8 sweep is byte-identical (800 trials, −25…−15 dB, AWGN
+  and three CCIR channels) and the crossings stay at the
+  `sweep-baseline.json` values (−21.62 / −21.45 / −19.75 / −18.90 dB);
+  the FT8 test binaries and the pre-push fixed-point recall tests pass;
+  `qso3_busy.wav` gives 14 / 22 / 22 decodes at D1/D2/D3, as before.
+  That is expected rather than reassuring. The sweep does run the
+  blind-CQ AP pass (`iaptype` 1, which `jt9` also always runs), and as a
+  probe setting `AP_MAG_SCALE` to 3.0 left it byte-identical too: with
+  this port's normalised min-sum BP a locked bit already dominates the
+  channel LLRs, so the scale is insensitive over that range. The −25 dB
+  gate matters for phantoms near the floor, which one clean signal at DT
+  0 does not produce.
+
+  **Not in this change** (#439): the `nsync` gate that upstream raised
+  to 7 or 8 by pass and depth, the fifth bit metric, the AP passes at
+  nsym 1 and 2, the `/R` and `TU; ` filter. Those need per-pass state
+  and are where the sweep can move: real `jt9 -8 -d3` became 0.33 to
+  0.84 dB more sensitive between 2.7 and 3.2.0-rc1 and now leads these
+  crossings by 0.05 to 0.81 dB (`FT8_BENCHMARK.md` §13, in #444).
+  `MAXCAND` 1000 and `MAX_EARLY` 200 have no counterpart: `max_cand` is
+  the caller's, and the staged decode has no early-decode cap. `maxosd`
+  for `-d2` does not apply: only the `maxosd > 0` OSD is ported.
+
+- **Two new FT8 corpora that reach what the old ones cannot: ITU fast
+  fading, and a crowded band with time offsets and empty files (#447).**
+  The AWGN/CCIR corpora hold one signal at DT 0, at most 1 Hz of Doppler
+  spread, and never an empty band.
+  - `ft8_itu_sweep/` (`FT8_CHANNEL_SET=itu scripts/gen_ft8_sweep_wavs.sh`,
+    9 ITU channels x 17 SNR points x 20 trials, needs a WSJT-X >= 3.0
+    `ft8sim`). mfsk-core's FT8 crosses 50 % at -19.4 to -20.8 dB on the quiet
+    and moderate ones, at -5.0 dB (`itu_ld`) and -1.7 dB (`itu_hm`) on the 10 Hz
+    ones, and never on `itu_hd` (30 Hz; 0 % at +10 dB). Named `itu_*`, not
+    `ccir_*`: WSJT-X corrected its Watterson simulator in February 2024, so the
+    same fspread now gives a wider Doppler spectrum, and the existing `ccir_*`
+    corpora (made from the `2b9d654` tree) are milder than the ITU channels
+    of the same numbers. Regenerating `ccir_*` from a newer tree gives a
+    different channel under the same name (AWGN files still match; verified
+    byte for byte on FST4-60). `BENCHMARKS.md` now names the tree each corpus
+    needs.
+  - `ft8_busy_sweep/` (`scripts/gen_ft8_busy_wavs.py`): 100 single signals
+    at -16 dB with DT scattered over -0.5..+1.5 s, 40 files each of 10, 20 and
+    40 signals (200-2700 Hz, SNR -24..-6 dB), and 200 noise-only files, with a
+    `truth.csv`. Built from noise-free ft8sim signals rescaled and summed, its
+    SNR calibration checked against ft8sim itself (within 0.02 dB). New test
+    `ft8_busy_sweep` writes an aggregate CSV (`set,strategy,trial,truth,hits,
+    extra`); `sweep-regression-check.py` compares total recall (flagging a fall
+    of a point) and total unexpected decodes per group, baseline in
+    `_meta.aggregates`. Runner groups `ft8_itu` and `ft8_busy`.
+
+  What they show on today's `main` (`max_cand` 600), with `jt9` on the same
+  files: on `dt1` mfsk-core finds all 100 (time window: not a problem); on
+  10/20/40 signals `.sic_early()` recalls 83.0/81.4/81.0 % against new
+  `jt9 -d3`'s 81.5/79.9/81.0 %, and plain `decode()` 79.5/73.8/66.1 %; and
+  noise alone gives no unexpected decodes. **The gap is precision**: `jt9`
+  gives 0 (2b9d654) or 4 (3.2) unexpected decodes over all 420 files,
+  mfsk-core 22 with `.sic_early()` and 48 with `decode()` at `sync_min` 0.8,
+  all in files that contain signals. Most of that is `sync_min`: `jt9 -d3`
+  runs 1.3, and at 1.3 `.sic_early()` gives 6 at the same recall (0.8 / 1.0 /
+  1.3 / 1.6 / 2.1: 22 / 14 / 6 / 6 / 6 extras; recall 82.0 / 81.9 / 82.0 /
+  81.3 / 78.5 %). The test's default is now 1.3 (`MFSK_FT8_BUSY_SYNC_MIN`);
+  `decode()` keeps 38 there (`.sic_rounds(3)` gives 44). Not the cause:
+  OSD ndeep 3 (22 -> 19 when forced to upstream's 2), upstream's post-CRC
+  filters (they would drop a quarter to a third). Recorded in
+  `sweep-baseline.json`; the decoder is not changed here.
+
+- **Tier C counts unexpected decodes, not just recall, for FT8, FT4 and
+  FST4 (#447).** The sweeps now write a trailing `extra` column, the
+  number of distinct decoded messages that were not the injected one; every
+  sweep WAV holds one transmission plus noise, so each is a CRC-valid
+  payload out of noise. `sweep-regression-check.py` stores them per SNR
+  cell in `sweep-baseline.json` (`_meta.precision`), compares over the
+  cells a run shares with the baseline (so a narrowed re-run still
+  compares), and flags a group that gains at least 3 and at least 1.5x
+  (`--strict` exits 1). Old three-column CSVs still load.
+
+  Why it was missing: nobody decided against it. #264 put precision in
+  tier B after the WSPR case (recall 8/8 with 8 phantoms), and c757d32
+  later trimmed the release runner to each file's "real recall gate" for
+  speed, which dropped `ft8_strictness_probe`, the one probe that counted
+  false accepts, from the run.
+
+  What the first run showed, on today's `main` (recall unchanged: the
+  FT8 and FT4 pass columns equal the previous run's row for row, and every
+  FT8/FT4/FST4 crossing but `fst4/60` is +0.00 dB from its baseline;
+  `fst4/60` moved 0.2-0.55 dB because its baseline was measured on a
+  different corpus draw, see below):
+  - **FT8 emits CRC-valid garbage next to a strong signal**: 5 unexpected
+    decodes in 1040 trials, including at -10 and -15 dB, with
+    `hard_errors` 28-36 (the injected message has 2-9), random call signs,
+    at the signal's own frequency or off it; one carries `/R`, which
+    WSJT-X 3.x drops. `jt9` 3.2 decodes only the injected message from
+    the two strong-signal files checked (-15 and -10 dB). `.sic_early()` gives 0-2 per channel.
+  - FT4 gives none in 1040 trials.
+  - FST4, which accepts on CRC-24 alone, gives 0-25 per group (25 in
+    FST4-15 AWGN over 180 trials).
+  The baseline records this state; it does not fix it.
+
+  Also: FT8 is swept through `.sic_early()` into its own CSV
+  (`ft8_sic_early/...`), because the phantom-prone code lives in the
+  non-default strategies; `MFSK_FT8_SWEEP_STRATEGY` and
+  `MFSK_FT8_SWEEP_STRICTNESS` select the strategy and strictness by hand.
+  FT8 and FT4 are no longer narrowed to a window around the crossing
+  (the sweeps take seconds, and the phantoms sit outside that window).
+  `ft8_strictness_probe` and `ft4_phantom_rate` are deleted: the `extra`
+  column and those knobs cover them. `sweep-regression-check.py --keep
+  GROUP` refreshes a baseline while leaving a group whose move is not yet
+  explained alone, and records it under `kept_crossings`. It was used once
+  here, for the four `fst4/60` groups, until the move was explained:
+  running the baseline's own commit (`7561cd57`) on the local corpus gives
+  today's values exactly, so it was the corpus, not the decoder. The FST4
+  baseline (2026-09-21, another machine) predates the simulators' fixed
+  seed (2026-09-23), so it came from a different noise draw; the four
+  `fst4/60` entries are now this corpus's values (#448, closed).
+  `CONTRIBUTING.md` and `CLAUDE.md` now describe tier C as sensitivity
+  **and** precision.
+
+- **FT8's host decode loops share one dedup, one sniper candidate
+  closure, one AP hypothesis list and one policy check (#423, first
+  slice).** The `message77` dedup was written five times in
+  `ft8::decode` and `decode_block`; it is now
+  `pipeline::has_message77` / `dedup_unique`. `decode_sniper_inner`
+  wrote its per-candidate closure three times (budgeted, parallel,
+  sequential) and now writes it once. The AP pass list in
+  `process_one_candidate_inner` was `msg::pipeline_ap::ap_passes` line
+  for line and now calls it, adding only FT8's own passes 5 and 12; the
+  `policy.accepts(codec_is_plausible, FT8_FILTERS, ..)` pair became
+  `policy_accepts`. No behaviour change: tier A+B is 815 passed before
+  and after, `ft8_qso3_apoff_recall` passes under `fixed-point`, and
+  the pre-push feature matrix is green. Still open under #423: the two
+  SIC drivers, `fill_symbol_spectra_via_cd0`, the shift loop in
+  `triage_candidate`, and `recompute_nsync`.
+
 - **`src/`-side test WAV loaders have one implementation per protocol,
   not one per diagnostic probe (#421 continued).** JT9's own
   `#[ignore]`d probes (`rx.rs`, `decode.rs`, `mod.rs`, `search.rs`,

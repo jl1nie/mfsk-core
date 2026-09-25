@@ -1,0 +1,4 @@
+# ft8sim-generated ITU fast-fading sweep WAVs (needs a WSJT-X >= 3.0 ft8sim) -- regenerate with
+#   FT8_CHANNEL_SET=itu scripts/gen_ft8_sweep_wavs.sh <ft8sim> embedded-poc/assets/ft8_itu_sweep
+# See docs/notes/BENCHMARKS.md, "Which WSJT-X tree the simulators come from".
+*.wav

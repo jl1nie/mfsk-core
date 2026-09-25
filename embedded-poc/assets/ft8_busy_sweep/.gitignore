@@ -1,0 +1,5 @@
+# gen_ft8_busy_wavs.py-generated busy-band corpus (WAVs and truth.csv) -- regenerate with
+#   scripts/gen_ft8_busy_wavs.py <ft8sim> embedded-poc/assets/ft8_busy_sweep
+# See docs/notes/BENCHMARKS.md, "The busy-band corpus".
+*.wav
+truth.csv

@@ -422,15 +422,14 @@ pub struct FecOpts<'a> {
     /// is clamped: `apmag = max(|llr|) * ap_mag_scale`.
     ///
     /// **Upstream uses a different value per protocol**, which this was
-    /// previously blind to: `1.01` for FT8 (`ft8b.f90:303`) and `1.1`
-    /// for FT4 (`ft4_decode.f90:327`) and FST4 (`fst4_decode.f90:418`).
-    /// Both codecs here hardcoded 1.01, so FT8 was faithful and the
-    /// other two gave their AP bits a weaker vote than WSJT-X gives
+    /// previously blind to: `1.01` for FT8 through WSJT-X 2.7 and `1.1`
+    /// from 3.0 (`ft8b.f90`), `1.1` for FT4 (`ft4_decode.f90:327`) and
+    /// FST4 (`fst4_decode.f90:418`). Both codecs here hardcoded 1.01, so
+    /// FT4 and FST4 gave their AP bits a weaker vote than WSJT-X gives
     /// them — and FT8/FT4 share `Ldpc174_91`, so the codec cannot know
     /// which it is serving. The caller does.
     ///
-    /// Default 1.01, i.e. FT8's, so an unset caller keeps the previous
-    /// behaviour.
+    /// Default 1.01, so an unset caller keeps the previous behaviour.
     pub ap_mag_scale: f32,
     /// Optional integrity verifier called when the FEC reaches a
     /// parity-converged candidate. Returning `false` rejects the
@@ -757,13 +756,16 @@ pub trait Protocol: ModulationParams + FrameLayout + 'static {
     /// is clamped — `apmag = max(|llr|) * AP_MAG_SCALE`. See
     /// [`FecOpts::ap_mag_scale`].
     ///
-    /// Upstream sets this per protocol and the values differ: `1.01`
-    /// for FT8 (`ft8b.f90:303`), `1.1` for FT4 (`ft4_decode.f90:327`)
-    /// and FST4 (`fst4_decode.f90:418`). It lives here rather than on
-    /// the codec because FT8 and FT4 share `Ldpc174_91`, so the codec
-    /// cannot tell which protocol it is serving.
+    /// Upstream sets this per protocol: FT8 `1.01` through WSJT-X 2.7
+    /// (`ft8b.f90:241`) and `1.1` from 3.0 (`:297`), FT4 `1.1`
+    /// (`ft4_decode.f90:327`), FST4 `1.1` (`fst4_decode.f90:418`). It
+    /// lives here rather than on the codec because FT8 and FT4 share
+    /// `Ldpc174_91`, so the codec cannot tell which protocol it is
+    /// serving.
     ///
-    /// Defaults to FT8's, the value both codecs previously hardcoded.
+    /// Defaults to `1.01`, the value both codecs originally hardcoded
+    /// (FT8's through 2.7); every protocol whose upstream differs sets
+    /// its own, FT8 included.
     const AP_MAG_SCALE: f32 = 1.01;
 
     /// Length of the forward FFT the decoder takes over the whole slot

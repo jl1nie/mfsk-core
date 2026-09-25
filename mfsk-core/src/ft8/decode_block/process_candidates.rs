@@ -46,6 +46,13 @@ use crate::msg::wsjt77::Wsjt77Fields;
 use crate::msg::wsjt77::unpack77_fields;
 use num_complex::Complex;
 
+/// Display floor for FT8's `xsnr2` SNR, and the threshold of the
+/// `nsync <= 10 && xsnr < floor` false-decode bail-out (`ft8b.f90`,
+/// the last lines before `return`). −24 dB through WSJT-X 2.7, −25 dB
+/// from 3.0 (read at the `v2.7.0` / `v3.0.0` tags). The gate and the
+/// clamp share one number upstream, so they share one constant here.
+const FT8_SNR_FLOOR_DB: f32 = -25.0;
+
 // ── Stage-timing trace (host diagnostic only) ───────────────────────────────
 //
 // `MFSK_TRACE_STAGE_FT8` env var — same idiom as this file's own
@@ -175,7 +182,7 @@ pub fn decode_block_streaming<S: AudioSample>(
 /// candidate is pushed into the returned `Vec`.
 ///
 /// Until issue #243 this driver's `xsnr2` SNR validity gate
-/// (`ft8b.f90:456`) ran as a post-hoc batch *after* an entire pass (or,
+/// (`ft8b.f90:483`) ran as a post-hoc batch *after* an entire pass (or,
 /// in the very first cut of the fix, an entire multipass loop)
 /// finished — a candidate could be streamed and then later dropped or
 /// have its `snr_db` rewritten by that batch gate, with no
@@ -477,7 +484,7 @@ fn decode_block_multipass<S: AudioSample>(
             );
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
-                if all.iter().any(|x| x.message77() == r.message77()) {
+                if crate::engine::pipeline::has_message77(&all, &r) {
                     continue;
                 }
                 if trace {
@@ -512,7 +519,7 @@ fn decode_block_multipass<S: AudioSample>(
                 crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
                 fft_cache = None; // `work` changed — cache is stale.
 
-                // WSJT-X xsnr2 validity gate (issue #243, ft8b.f90:456),
+                // WSJT-X xsnr2 validity gate (issue #243, ft8b.f90:483),
                 // applied *immediately*, per candidate — not deferred to
                 // a later batch pass. This is what makes `on_result`
                 // streaming safe to wire for this driver (see
@@ -627,7 +634,7 @@ fn recompute_nsync(
 ///   xbase = mean_over_time(spec[carrier_window]) * cell_scale
 ///   xsig  = sum_over_79_decoded_tones(spec[tone_bin, m]) * cell_scale
 ///   xsnr2 = xsig / xbase / 3e6 - 1
-///   snr_db = 10·log10(xsnr2) - 27        (clamped at -24 dB on degeneracy)
+///   snr_db = 10·log10(xsnr2) - 27        (clamped at `FT8_SNR_FLOOR_DB` on degeneracy)
 /// ```
 ///
 /// `cell_scale = 1.0` for an `f32` spectrogram, `2^FP_SPEC_SHIFT`
@@ -653,7 +660,7 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
     let tone_step = TONE_SPACING_HZ / df;
 
     if spec.n_freq == 0 || spec.n_time == 0 {
-        return -24.0;
+        return FT8_SNR_FLOOR_DB;
     }
 
     // Per-freq baseline — **median** (P50) of cell values inside a
@@ -698,7 +705,7 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
     };
     let xbase = median * cell_scale;
     if xbase <= 0.0 || !xbase.is_finite() {
-        return -24.0;
+        return FT8_SNR_FLOOR_DB;
     }
 
     // xsig at the 79 decoded-tone (freq, m) positions.
@@ -732,10 +739,10 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
 
     let ratio = xsig / xbase;
     if ratio <= 1.0 {
-        return -24.0;
+        return FT8_SNR_FLOOR_DB;
     }
     let snr = 10.0 * ratio.log10() - XSNR2_CAL_DB;
-    snr.max(-24.0)
+    snr.max(FT8_SNR_FLOOR_DB)
 }
 
 /// WSJT-X `ft8b.f90:449-454` xsnr2 SNR formula:
@@ -758,7 +765,7 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
 /// construction (different windows), so an inconsistent pairing adds a
 /// spurious offset rather than cancelling one out.
 ///
-/// Falls back to `-24 dB` if the ratio degenerates.
+/// Falls back to `FT8_SNR_FLOOR_DB` if the ratio degenerates.
 ///
 /// f32-only — fixed-point spectrograms quantise to u16, putting noise
 /// cells at zero and breaking the `log10` baseline; see the comment
@@ -772,8 +779,8 @@ fn recompute_snr_xsnr2(freq_hz: f32, xsig: f32, sbase: &[f32], df: f32) -> f32 {
     // WSJT-X `ft8b.f90:445-454`: `xsnr2 = max(0.001, xsig/xbase/3e6 - 1)`
     // then `xsnr2_db = 10·log10(xsnr2) - 27` → floors at -57 dB.
     // Caller (`retain_mut` in `decode_block_multipass`) applies the
-    // `xsnr < -24` gate against this raw value BEFORE clamping it to
-    // the -24 dB display floor; the previous `snr.max(-24.0)` here
+    // `xsnr < FT8_SNR_FLOOR_DB` gate against this raw value BEFORE clamping it to
+    // the display floor; the previous `snr.max(-24.0)` here (the floor was then -24)
     // pre-clamped and made the gate fire only for arithmetic
     // underflow, not for "degenerate signal" cases.
     //
@@ -855,13 +862,13 @@ pub(crate) fn compute_xsig_wsjtx(
 /// subtract — both are frozen snapshots by the time this runs).
 ///
 /// Returns `false` if the candidate fails WSJT-X's `nsync <= 10 &&
-/// xsnr < -24.0 dB` bail-out (`ft8b.f90:456`) — caller should drop it.
-/// `result.snr_db` is updated (clamped to -24 dB floor) whenever this
+/// xsnr < -25.0 dB` bail-out (`ft8b.f90:483`; -24.0 at :456 through 2.7) — caller should drop it.
+/// `result.snr_db` is updated (clamped to the -25 dB floor) whenever this
 /// returns `true`.
 ///
 /// **WSJT-X post-decode validity gates (#63).** Mirrors
-/// `ft8b.f90:422-459`'s `nsync <= 10 && xsnr < -24.0` bail-out (line
-/// 456) specifically — the msg-type `i3`/`n3` validity (lines
+/// `ft8b.f90:422-459`'s `nsync <= 10 && xsnr < -25.0` bail-out (line
+/// 483; 456 through 2.7) specifically — the msg-type `i3`/`n3` validity (lines
 /// 425-428) and `unpack77` success (line 430) gates are intentionally
 /// omitted here: every `result` this is called with already came
 /// through `process_one_candidate_inner`, which already rejects via
@@ -873,9 +880,9 @@ pub(crate) fn compute_xsig_wsjtx(
 ///
 /// The gate runs on the RAW (un-clamped) `xsnr2` because both WSJT-X
 /// (line 460) and an earlier version of this port clamp the value to
-/// -24 dB for display *after* the gate — clamping first would collapse
-/// every "below floor" result to exactly -24, dead-letter the `xsnr <
-/// -24.0` test, and let exactly the phantoms the gate was designed to
+/// the -25 dB floor for display *after* the gate — clamping first would collapse
+/// every "below floor" result to exactly the floor, dead-letter the `xsnr <
+/// -25.0` test, and let exactly the phantoms the gate was designed to
 /// catch slip through (the qso3_busy phantoms named in issue #63's
 /// body).
 #[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
@@ -891,10 +898,10 @@ pub(crate) fn apply_wsjtx_xsnr2(
 
     let raw_snr = recompute_snr_xsnr2(result.freq_hz, xsig, sbase, df);
     let nsync = recompute_nsync(result, spec, df, tstep, nsps_steps);
-    if nsync <= 10 && raw_snr < -24.0 {
+    if nsync <= 10 && raw_snr < FT8_SNR_FLOOR_DB {
         return false;
     }
-    result.snr_db = raw_snr.max(-24.0);
+    result.snr_db = raw_snr.max(FT8_SNR_FLOOR_DB);
     true
 }
 
@@ -1813,6 +1820,13 @@ fn codec_is_plausible(message: &Wsjt77Fields) -> bool {
     <<crate::ft8::Ft8 as Protocol>::Msg as MessageCodec>::is_plausible(message)
 }
 
+/// The caller's acceptance policy applied to `message` together with
+/// FT8's codec verdict — the one place the two are joined (#423: the
+/// same call was written at the AP validator and the final accept).
+fn policy_accepts<Pol: MessagePolicy>(policy: &Pol, message: &Wsjt77Fields) -> bool {
+    policy.accepts(codec_is_plausible(message), FT8_FILTERS, message)
+}
+
 /// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
 /// and AP iaptype loop on a *fully-filled* `cs_scratch`. Shared
 /// between the embedded `process_candidates_with` driver (above) and
@@ -2081,7 +2095,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             .iter()
             .map(|v| v.abs())
             .fold(0.0f32, f32::max)
-            * 1.01;
+            * <crate::ft8::Ft8 as crate::engine::Protocol>::AP_MAG_SCALE;
         let llr_variants: [&[f32; LDPC_N]; 4] = [
             &llr_full_f32.llra,
             &llr_full_f32.llrb,
@@ -2089,30 +2103,16 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             &llr_full_f32.llrd,
         ];
 
+        // Passes 6..11 are `msg::pipeline_ap::ap_passes`' list, in its
+        // order; FT8 adds pass 5 (call1 alone) after it, and pass 12
+        // below (#423: the list was a line-for-line copy).
         let mut ap_passes: alloc::vec::Vec<(ApHint, u8)> = alloc::vec::Vec::new();
         if let Some(ap) = ap_hint
             && ap.has_info()
         {
-            if ap.call1.is_some() && ap.call2.is_some() {
-                for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
-                    let ap_full = ap.clone().with_report(rpt);
-                    ap_passes.push((ap_full, pid));
-                }
-            }
-            if ap.call2.is_some() && ap.call1.is_none() {
-                let ap7 = ap.clone().with_call1("CQ");
-                ap_passes.push((ap7, 7));
-            }
-            if ap.call1.is_some() && ap.call2.is_some() {
-                ap_passes.push((ap.clone(), 8));
-            }
-            ap_passes.push((ap.clone(), 6));
-            if ap.call1.is_some() {
-                let mut ap5 = ApHint::new();
-                if let Some(ref c1) = ap.call1 {
-                    ap5 = ap5.with_call1(c1);
-                }
-                ap_passes.push((ap5, 5));
+            ap_passes = crate::msg::pipeline_ap::ap_passes(ap);
+            if let Some(ref c1) = ap.call1 {
+                ap_passes.push((ApHint::new().with_call1(c1), 5));
             }
         }
         // Pass 12: blind-CQ (WSJT-X iaptype 1) — tried regardless of
@@ -2162,7 +2162,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                     let Some(message) = unpack77_fields(&msg77, &CallsignHashTable::new()) else {
                         return false;
                     };
-                    if !policy.accepts(codec_is_plausible(&message), FT8_FILTERS, &message) {
+                    if !policy_accepts(policy, &message) {
                         return false;
                     }
                     // The hypothesis locked these callsigns into the
@@ -2220,7 +2220,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // and takes the real signal underneath with it — see
     // `FrameDecodable::MESSAGE_FILTER_DEFAULT`.
     let message = unpack77_fields(&bp.message77, &CallsignHashTable::new())?;
-    if !policy.accepts(codec_is_plausible(&message), FT8_FILTERS, &message) {
+    if !policy_accepts(policy, &message) {
         return None;
     }
     if known.iter().any(|r| *r.message77() == bp.message77) {

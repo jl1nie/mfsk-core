@@ -104,7 +104,7 @@ Notes:
   single-pass/sniper strategies — so a `FnMut` closure that mutates
   captured state is safe on both, and the `Sync` bound is unnecessary
   either way. Before issue #243 the host variant couldn't safely expose
-  a callback here: its `xsnr2` SNR validity gate (`ft8b.f90:456`) ran
+  a callback here: its `xsnr2` SNR validity gate (`ft8b.f90:483`) ran
   as a post-hoc batch *after* subtracting had finished, which could
   drop or mutate a result *after* it would already have streamed, with
   no revise/retract event this callback provides. The gate now runs

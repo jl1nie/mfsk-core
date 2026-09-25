@@ -55,7 +55,7 @@ Figures are asserted, not just observed — see each protocol's
 
 | Protocol | Golden-WAV recall | Precision (extra decodes) | AWGN gap vs. WSJT-X | Status |
 |----------|-------------------|---------------------------|----------------------|--------|
-| FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden | AWGN ≈ −21.48 dB (WSJT-X: −20 to −21 dB); CCIR good/moderate/poor ≈ −21.24 / −19.72 / −19.68 dB — means over 8 deterministic seeds, re-measured 2026-09-23 (sd 0.20/0.24/0.39/0.39; a single seed is worth up to 1.1 dB on the fading channels, so these are not single-run numbers). Against real `jt9 -8 -d3` on the *same* corpus: −0.48 / −0.23 / +0.25 / +0.02 dB — see `FT8_BENCHMARK.md` §12 | at/above parity |
+| FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden | AWGN ≈ −21.48 dB (WSJT-X: −20 to −21 dB); CCIR good/moderate/poor ≈ −21.24 / −19.72 / −19.68 dB — means over 8 deterministic seeds, re-measured 2026-09-23 (sd 0.20/0.24/0.39/0.39; a single seed is worth up to 1.1 dB on the fading channels, so these are not single-run numbers). Against real `jt9 -8 -d3` on the *same* corpus: −0.48 / −0.23 / +0.25 / +0.02 dB — see `FT8_BENCHMARK.md` §12. That `jt9` is WSJT-X `2b9d654` (2024-03); against WSJT-X 3.2.0-rc1's (`967c85a`, measured 2026-09-24) the same four are **+0.05 / +0.33 / +0.58 / +0.81 dB** — see §13 | at/above parity vs the 2024 `jt9`; up to 0.8 dB behind the 3.2.0-rc1 `jt9` on the fading channels |
 | FT8 *(ship)* | 7/8 (WSJT-X) — misses `K1BZM DK8NE -10` at −17 dB, which needs AP context (issue #150) | 14 total, **0 uncorroborated** — all 7 extras are in the JTDX 20-entry golden | Not separately swept; the ship config trades recall for the ESP32 time budget | by design |
 | FT4      | 6/6 | **0** (budget 0) | AWGN ≈ **−17.56 dB** (0.11.0: was ≈ −16.9 dB until the a-priori pass was fixed and the always-on blind-CQ pass added — see the FT4 section and `CHANGELOG.md` 0.11.0). Level with WSJT-X's published −17.5 dB, where it had been 0.6 dB behind. Re-measured 2026-09-23 on the reproducible seed-1 corpus; the −18.00 dB this row carried until then was one un-reproducible draw of the same decoder | at/above parity |
 | FST4     | 1/1 (FST4-60A only) | **0** (budget 0) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section | at/above parity |
@@ -120,6 +120,136 @@ So: **regenerating a corpus from the same simulator build reproduces it
 exactly.** A baseline still assumes both machines built their simulators
 from the same WSJT-X checkout — that part cannot be checked from inside
 this repo.
+
+### Which WSJT-X tree the simulators come from
+
+"Same simulator build" has a concrete answer, and `../WSJT-X` is no longer it.
+
+**The existing corpora need the `2b9d654` tree** (2024-03-12; the tip of the
+mirror this repo tracked until 2026-09). Checked on 2026-09-25: an `fst4sim`
+built by `scripts/build_fst4sim.sh` from a `2b9d654` checkout regenerates
+`fst4_60_ccir_poor_m24_{01,05,20}.wav` byte for byte, and one built from
+`b4f9a43` (WSJT-X 2.7's line, what `../WSJT-X` is now) reproduces the AWGN file
+but **not the fading files**. WSJT-X corrected the Watterson simulator in
+February 2024 (`f21f37ad0` "Correct the definition of fspread", `7ce6e29a7`
+"same spreading function as that used in ITU report ITU-R F.1487"). For the
+same `fspread` argument a newer tree gives a *wider* Doppler spectrum, so
+`ccir_*` regenerated from any tree that has those commits is a different,
+harsher channel under the same name, and AWGN files matching byte for byte
+hides it. The `ccir_good/moderate/poor` numbers (0.1/0.5, 0.5/1.0, 1.0/2.0 Hz
+and ms) are therefore **milder than the ITU channels of the same numbers**.
+Nothing here is wrong by that; it means a baseline is only comparable across
+corpora made from the same tree.
+
+    git -C <WSJT-X> archive 2b9d65408 lib | tar -x -C <dir>/wsjtx-2b9d654
+    scripts/build_fst4sim.sh <dir>/wsjtx-2b9d654 <dir>/fst4sim     # ft4sim, ft8sim, ... likewise
+
+**The ITU fast-fading corpus (`ft8_itu_sweep/`) needs a 3.x tree**, because the
+ITU channel codes (`LQ LM LD MQ MM MD HQ HM HD`) are an `ft8sim` 3.x feature,
+and it uses the corrected Watterson. Its channels are named `itu_*`, never
+`ccir_*`, so the two are not confused, and `sweep-baseline.json` keeps them
+under `ft8_itu/...`:
+
+    git -C <WSJT-X> worktree add <dir>/wsjtx-3.2 v3.2.0-rc1
+    scripts/build_ft8sim.sh <dir>/wsjtx-3.2 <dir>/ft8sim-3.2
+    FT8_CHANNEL_SET=itu scripts/gen_ft8_sweep_wavs.sh <dir>/ft8sim-3.2/ft8sim \
+        embedded-poc/assets/ft8_itu_sweep
+
+`build_ft8sim.sh` needed changes for 3.x (two new 77-bit modules, `gfsk_pulse.f90`
+moved out of `lib/ft2/`, `db()` and `print_version()`); it handles both. The
+3060 files (9 channels x 17 SNR points x 20 trials) are deterministic. To check a
+regeneration, on the machine that made the reference (gfortran 11.4, glibc,
+`MFSK_SIM_SEED` unset):
+
+    md5sum embedded-poc/assets/ft8_itu_sweep/ft8_itu_mm_m20_01.wav   # f36e24bca649c8db84a48ffbfdd11118
+    md5sum embedded-poc/assets/ft8_itu_sweep/ft8_itu_mq_m18_10.wav   # 5a6253d3376a646103f8d28fde5ee25d
+
+What the corpus is for: FT8's crossings on the quiet and moderate channels sit
+near -19.4 to -20.8 dB, but the disturbed ones (`itu_ld`, `itu_hm`: 10 Hz of
+Doppler spread; `itu_hd`: 30 Hz) are wider than FT8's 6.25 Hz tone spacing and
+only cross at -5.0 and -1.7 dB, or never (`itu_hd` is 0 % at +10 dB). That is the
+regime the `ccir_*` set never reaches (its widest spread is 1.0 Hz in the old
+definition), and the one where the choice of how many symbols to combine
+coherently matters most.
+
+### The busy-band corpus
+
+The AWGN/CCIR/ITU corpora hold one signal per file. `ft8_busy_sweep/` holds
+several, scattered in time and frequency, plus files with none, because a
+candidate-list cap, the lag window of the coarse sync and an acceptance gate that
+admits garbage only show up there. `ft8sim` writes one signal per file, so
+`scripts/gen_ft8_busy_wavs.py` asks it for each signal **without noise** (SNR 99),
+rescales it to the SNR it should have, adds the signals and adds one realisation of
+white Gaussian noise. No FT8 is re-implemented; every waveform is ft8sim's.
+
+    scripts/gen_ft8_busy_wavs.py <ft8sim> embedded-poc/assets/ft8_busy_sweep    # 43 s, needs numpy
+
+| set | files x signals | what a miss or an extra means |
+|---|---|---|
+| `dt1` | 100 x 1 | one signal at -16 dB, DT -0.5..+1.5 s: a miss is a time-window problem |
+| `busy10`, `busy20`, `busy40` | 40 x 10 / 20 / 40 | 200-2700 Hz (12 Hz apart at least), DT -0.5..+1.5 s, SNR -24..-6 dB: crowding |
+| `noise` | 200 x 0 | every decode is unexpected |
+
+`truth.csv` lists every transmitted signal (`file,msg,f0,dt,snr`); 2900 rows, 2900
+different messages. A truth signal is a **hit** when its message comes out within
+5 Hz and 0.5 s of its true frequency and DT; an **extra** is a distinct decoded
+message that was not transmitted in that file, by text. The signals are not faded
+(the ITU corpus is for that), and DT stops at +1.5 s because ft8sim shifts the
+waveform circularly inside its 15 s buffer.
+
+**The SNR is calibrated against ft8sim, not assumed.** Fitting the unit waveform to
+noisy files that ft8sim wrote itself gives amplitudes within 0.02 dB of
+`sqrt(2*2500/6000) * 10^(SNR/20)` at -10 and -14 dB (ratio 0.999 and 0.998, eight
+files each), and the noise standard deviation measured in the silence after the
+signal is 1.001 (unit variance before the x100 gain). Regeneration is deterministic
+(`--seed`, default 1: two runs are byte-identical); to check one:
+
+    md5sum ft8_busy_busy20_05.wav   # e715b06cb83cce17eb5eb73fe1e8ccad
+    md5sum ft8_busy_noise_33.wav    # ec465f7da97adff83224b0991d844aae
+    md5sum truth.csv                # a02566306e684fcf6a6fe2c5f10e6a8e
+
+**First measurement (2026-09-25).** Recall = hits / signals sent; the number after
+the slash is unexpected decodes over the set. `mfsk-core` is `main` at `35c78fa` with
+`max_cand` 600 (WSJT-X 2.7's `MAXCAND`, so the cap does not decide the result);
+`jt9` old = the `2b9d654` build, new = `v3.2.0-rc1`.
+
+| set | `jt9 -d3` old | `jt9 -d3` new | mfsk-core `decode()` | mfsk-core `.sic_early()` |
+|---|---|---|---|---|
+| dt1 | 99.0 % / 0 | 100.0 % / 0 | 100.0 % / 4 | 100.0 % / 0 |
+| busy10 | 80.0 % / 0 | 81.5 % / 0 | 79.5 % / 6 | 83.0 % / 3 |
+| busy20 | 77.0 % / 0 | 79.9 % / 1 | 73.8 % / 13 | 81.4 % / 5 |
+| busy40 | 78.9 % / 0 | 81.0 % / 2 | 66.1 % / 25 | 81.0 % / 14 |
+| noise (200 files) | 0 | 1 | 0 | 0 |
+
+Read it as follows. **Recall**: the single-pass `decode()` falls away with crowding
+(it has no subtraction), `.sic_early()` matches new `jt9 -d3` (81.0 % on busy40), and
+on `dt1` both `jt9` builds (99-100 %) and mfsk-core (100 %) find nearly every
+signal, so the time window is not the problem here. **Precision** is where they
+differ: `jt9` emits 0 (old) or 4 (new: 1 + 2 + 1, one of them from noise alone)
+unexpected decodes in 420 files, mfsk-core 22 with `.sic_early()` and 48 with
+`decode()`, all of them in files that contain signals; none from noise alone. Old
+`jt9 -d1` reaches only 92 % on `dt1` (new: 94 %), which is a `jt9` limitation and not
+a corpus problem.
+
+**That table used `sync_min` 0.8, which is not what `jt9 -d3` runs (1.3).** Most of the
+precision gap is that: the test's default is now 1.3 (`MFSK_FT8_BUSY_SYNC_MIN`).
+Swept on the same 420 files (recall over all 2900 signals / unexpected decodes):
+
+| `sync_min` | `.sic_early()` | `decode()` |
+|---|---|---|
+| 0.8 | 82.0 % / 22 | 71.2 % / 48 |
+| 1.0 | 81.9 % / 14 | 71.2 % / 48 |
+| **1.3** | **82.0 % / 6** | 71.2 % / 38 |
+| 1.6 | 81.3 % / 6 | 70.6 % / 27 |
+| 1.9 | 80.3 % / 8 | 69.5 % / 17 |
+| 2.1 | 78.5 % / 6 | 67.8 % / 15 |
+
+`.sic_early()` at 1.3 is within two of new `jt9 -d3` (4). `decode()` keeps 38: `.sic_rounds(3)`
+gives 44, so more subtraction rounds do not cure it; it is the plain pass's
+character, and a higher `sync_min` (1.6-1.9) is the trade if precision matters more
+than the last 1-2 points of recall. Other differences measured and not the cause:
+forcing OSD to ndeep 2 as upstream does (22 -> 19), and upstream's post-CRC filters
+(`/R`, `TU; `, i3/n3 range) would drop only a quarter to a third of the extras.
 
 ### Reading a crossing: pair it against `jt9` on the same corpus
 
