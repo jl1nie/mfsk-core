@@ -1706,15 +1706,18 @@ impl SupportsSicEarly for Ft8 {
 /// `npass=2` exactly (previously this crate had no round-count knob at
 /// all, so `D1` ran the full 3 rounds — see issue #218).
 ///
-/// jt9 also varies `syncmin` per tier (1.6 for d1/d2, 1.3 for d3,
-/// `ft8_decode.f90:176-177`) and OSD *strength* is not just on/off in
+/// jt9 also varies `syncmin` per tier — through WSJT-X 2.7: 1.6 for
+/// d1/d2, 1.3 for d3, and 2.0 for the `nzhsym == 41` early pass
+/// (`ft8_decode.f90:176-178`); from 3.0: 2.1 for d1/d2, 1.3 for d3, and
+/// the early-pass override is gone (`v3.0.0`, `:181-183`) — and OSD *strength* is not just on/off in
 /// jt9 (`maxosd` 0 vs 2 are different algorithms — mfsk-core only
 /// implements the `maxosd>0` branch; see `osd_strategy` module's doc
 /// comment). `D2`'s OSD is therefore closer in kind to jt9 `-d3`'s
 /// than to `-d2`'s lighter `maxosd=0` branch — a likely contributor
 /// to `D2` already matching/exceeding jt9 `-d3`'s recall above.
 /// `sync_min` stays an explicit, caller-supplied parameter (pass
-/// 1.6/1.6/1.3 for closer jt9 parity on that axis).
+/// 2.1/2.1/1.3 for closer parity with WSJT-X 3.x on that axis, or
+/// 1.6/1.6/1.3 for 2.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WsjtxDepth {
     D1,

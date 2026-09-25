@@ -2,6 +2,55 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT8 follows two WSJT-X 3.x constants — SNR floor and gate −25 dB,
+  AP magnitude 1.1 — and does not follow a third, `mlag` 13 (#438).**
+  Read at the `v2.7.0` and `v3.0.0` tags of `lib/ft8/`:
+
+  | | 2.7 | 3.0 → 3.2.0-rc1 | here |
+  |---|---|---|---|
+  | `ft8b.f90` SNR clamp and `nsync <= 10 && xsnr <` bail-out | −24 dB | −25 dB | `FT8_SNR_FLOOR_DB` (the `xsnr2` paths only) |
+  | `ft8b.f90` `apmag` scale | 1.01 | 1.1 | `Ft8::AP_MAG_SCALE` |
+  | `sync8.f90` `mlag` | 10 | 13 | **kept at 10** |
+
+  `Ft8` had used the trait default for `AP_MAG_SCALE`; it now sets its
+  own, and the AP ladder reads it instead of a literal `1.01`. The
+  default stays 1.01 for protocols that do not override it. The
+  adjacent-tone SNR heuristic shared with FT4/FST4 keeps its −24 dB
+  clamp: it is not `ft8b`'s formula.
+
+  **`mlag` 13 was tried and reverted.** It changes nothing on the f32
+  tier-C sweep (byte-identical, trial by trial), but on the fixed-point
+  ship config `ft8_qso3_apoff_recall` drops from 12/20 to 11/20 against
+  its floor of 12: a wider primary window reorders the 15 candidates
+  that config keeps. Lowering the floor to fit a change that nothing here
+  benefits from would be the wrong trade, so `MLAG` stays 10 with the
+  reason at the constant. It is worth another look with a corpus that has
+  off-time signals (the sweep is all DT 0).
+
+  **The other two have no measured effect on any local corpus.** After
+  each, the FT8 sweep is byte-identical (800 trials, −25…−15 dB, AWGN
+  and three CCIR channels) and the crossings stay at the
+  `sweep-baseline.json` values (−21.62 / −21.45 / −19.75 / −18.90 dB);
+  the FT8 test binaries and the pre-push fixed-point recall tests pass;
+  `qso3_busy.wav` gives 14 / 22 / 22 decodes at D1/D2/D3, as before.
+  That is expected rather than reassuring. The sweep does run the
+  blind-CQ AP pass (`iaptype` 1, which `jt9` also always runs), and as a
+  probe setting `AP_MAG_SCALE` to 3.0 left it byte-identical too: with
+  this port's normalised min-sum BP a locked bit already dominates the
+  channel LLRs, so the scale is insensitive over that range. The −25 dB
+  gate matters for phantoms near the floor, which one clean signal at DT
+  0 does not produce.
+
+  **Not in this change** (#439): the `nsync` gate that upstream raised
+  to 7 or 8 by pass and depth, the fifth bit metric, the AP passes at
+  nsym 1 and 2, the `/R` and `TU; ` filter. Those need per-pass state
+  and are where the sweep can move: real `jt9 -8 -d3` became 0.33 to
+  0.84 dB more sensitive between 2.7 and 3.2.0-rc1 and now leads these
+  crossings by 0.05 to 0.81 dB (`FT8_BENCHMARK.md` §13, in #444).
+  `MAXCAND` 1000 and `MAX_EARLY` 200 have no counterpart: `max_cand` is
+  the caller's, and the staged decode has no early-decode cap. `maxosd`
+  for `-d2` does not apply: only the `maxosd > 0` OSD is ported.
+
 - **Two new FT8 corpora that reach what the old ones cannot: ITU fast
   fading, and a crowded band with time offsets and empty files (#447).**
   The AWGN/CCIR corpora hold one signal at DT 0, at most 1 Hz of Doppler
