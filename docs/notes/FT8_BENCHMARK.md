@@ -742,3 +742,73 @@ upstream changes.
 
 **`FT8_BENCHMARK.ja.md` is not in step and was not updated here**, for the
 reason given at the end of §12.
+
+## 14. After the WSJT-X 3.x port: what moved, and what did not close (#439, PR #451, 2026-09-25)
+
+PR #451 ported the `ft8_decode.f90` / `ft8b.f90` changes §13 listed: the
+pass rule, the squared metric of passes 2 and 3, the nsync floor, the fifth
+metric, the AP changes, the `/R` and `TU; ` filter, and `mlag` 13. Numbers
+below are `main` before the PR against the PR, on this machine, seed-1
+corpora (`ft8_sweep`, `ft8_itu_sweep`) and the busy-band corpus
+(`BENCHMARKS.md`, "The busy-band corpus"), `max_cand` 600, `sync_min` 1.3.
+
+### 50 %-recall crossing, dB (negative = more sensitive)
+
+| | `.sic_early()` before → after | `decode()` before → after | `jt9 -d3` 3.2 |
+|---|---|---|---|
+| AWGN | −21.70 → −21.78 | −21.62 → −21.67 | −21.67 |
+| CCIR good | −21.50 → −21.45 | −21.45 → −21.45 | −21.78 |
+| CCIR moderate | −19.80 → −19.80 | −19.75 → −19.75 | −20.33 |
+| CCIR poor | −19.43 → **−19.71** | −18.90 → −19.00 | −19.71 |
+
+`.sic_early()` is the comparable strategy (`jt9 -d3` is the staged
+subtract-and-repeat decode; `decode()` is one pass). mfsk-core minus
+`jt9 -d3`: AWGN −0.11, good +0.33, moderate +0.53, poor **0.00** (was +0.28).
+The poor-channel gap is closed; good and moderate did not move, so the
+0.3-0.5 dB left there is not in the changes ported here. On the nine ITU
+channels (`decode()`) two moved, `itu_hq` and `itu_mm` by 0.5 dB
+in the sensitive direction; the others are within 0.2 dB.
+
+### Busy band (2900 signals, 420 files)
+
+| | before | after | `jt9 -d3` 3.2 |
+|---|---|---|---|
+| `.sic_early()` recall busy10 / 20 / 40 | 83.0 / 80.8 / 81.2 % | 83.5 / 81.9 / 81.5 % | 81.5 / 79.9 / 81.0 % |
+| `.sic_early()` unexpected decodes | 6 | **9** | 4 |
+| `decode()` unexpected decodes | 38 | 33 | — |
+| noise-only files (200) | 0 | 0 | 1 |
+
+**Precision is the part that did not reach the reference.** The squared
+metric alone took the `.sic_early()` count from 6 to 18; the nsync floor,
+the `/R` filter and the rest brought it back down (15, 19, 11, 12), and
+`mlag` 13 to 9. The commit-by-commit figures are in the messages of #451.
+
+### What did not port, and why
+
+- **`ndeep=2` for every candidate** (upstream). It is better on these
+  sweeps (`ccir_poor` −0.35 dB, `decode()` extras 31 → 21) and loses
+  `CQ EA2BFM IN83` on `qso3_busy`, which both `jt9` builds decode: #453.
+- **The early checkpoint's `sync_min`** is still scaled by 2.0/1.3, though 3.0
+  removed the `syncmin=2.0` line. Without the scaling a zero-tailed buffer
+  yields phantoms from noise alone (10 in 200 files against `jt9`'s 1), and
+  what makes this port easier to fool there is not found: #452. Ruled out
+  so far: the `nsync <= 10` xsnr gate, candidate and nsync-pass counts
+  (compared against an instrumented `jt9`), the `zsave` definition.
+
+### Method notes
+
+An instrumented `jt9` (a `write` in `ft8b.f90` after the nsync gate and in
+`ft8_decode.f90` after `sync8`) counted, on five noise files at `-d3`,
+141-193 candidates and ≈ 27 nsync-passing candidates per pass, four passes
+(the third is skipped without decodes). mfsk-core's single pass sees 74-87
+candidates and 29-40 nsync-passing ones per file. `jt9` output was scored
+with the `score_busy.py` rules of #450 (message, ±5 Hz, ±0.5 s; ` ?` / ` aN`
+markers stripped).
+
+Not done: the change-by-change ablation of the ported list against `jt9`
+(Phase 3 of the plan in #447), so how the +0.33 dB §13 measured splits
+between the changes is still unknown; the effect of `wsjtx_depth` D1/D2's
+nsync floor of 8 on their own sweeps; FT4/FST4 (untouched by the port).
+
+**`FT8_BENCHMARK.ja.md` is not in step and was not updated here**, for the
+reason given at the end of §12.
