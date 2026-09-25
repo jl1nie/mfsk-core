@@ -1500,6 +1500,124 @@ fn osd_setup_generic_packed<P: LdpcParams>(
     Some((perm, g, pivot_col))
 }
 
+/// The (240,101) code as `osd240_101.f90` searches it: only the first `keff`
+/// information bits are free, and the last `101 - keff` CRC bits are
+/// cascaded with the LDPC code instead of being searched.
+///
+/// `osd240_101.f90`'s header: "the first `p1 = k - 77` bits of the CRC24 are used
+/// for bad-codeword detection, the last `p2 = 101 - k` are cascaded with the
+/// LDPC code for the purpose of improving the distance spectrum". Its generator
+/// row `i <= 77` is the message unit vector *with its CRC computed*, then the
+/// bits `78..=k` zeroed (they are free bits now); rows `78..=k` are unit vectors
+/// of those free CRC bits; there are no rows for the cascaded ones. FST4 calls it
+/// with `Keff = 91` (`fst4_decode.f90:478`), so the search runs over a
+/// (240,91) subcode of the (240,101) code, 2^10 times fewer codewords than the
+/// full code, all of which agree with the message on ten of the CRC's 24 bits.
+///
+/// Measured (upstream `decode240_101` itself, BPSK/AWGN LLRs, ndeep 2, 4000
+/// draws a point, one `Keff` per process): `Keff = 91` recovers 3432 / 2071 / 593
+/// at amplitude 1.0 / 0.9 / 0.8 where `Keff = 101` recovers 2903 / 1231 / 211 —
+/// about 0.5 dB. This crate searched `Keff = 101` (`P::K`) until #456.
+#[derive(Clone, Copy)]
+pub struct PartialCrc {
+    /// `Keff`: the number of free information bits, in `77..=101`.
+    pub keff: usize,
+    /// The 101-bit info word for a 77-bit message: the message and its CRC-24
+    /// (`ldpc240_101::append_crc24`).
+    pub with_crc: fn(&[u8; 77]) -> [u8; 101],
+}
+
+/// Setup for [`PartialCrc`]: `(perm, g, pivot_col)` in the shape
+/// [`osd_setup_generic_packed`] returns, with `keff` rows and `pivot_col[r] == r`.
+///
+/// The elimination is `osd240_101.f90:84-105` and the FT8 twin
+/// `osd_setup_ldpc174_91_fortran_pivot`: for each row `id`, take the first
+/// column in `id..keff+20` whose bit is set, swap it into position `id`, and
+/// eliminate it from every other row. So the pivots end up in the first `keff`
+/// columns and everything else is the parity window the `npre` gates look at —
+/// which the row-swap elimination in [`osd_setup_generic_packed`] does not
+/// guarantee (its pivots can sit past column `k`; harmless with 101 rows, more
+/// often reached with 91). The swaps are tracked in an order array and the
+/// matrix is not moved, so the row XORs stay word-wide.
+///
+/// A row with no pivot in the window is left un-eliminated by the reference
+/// ("beware"); here it is a failed setup (`None`), which the caller reads as no
+/// decode.
+fn osd_setup_partial_crc<P: LdpcParams>(
+    llr: &[f32],
+    pc: &PartialCrc,
+) -> Option<(Vec<usize>, Vec<u8>, Vec<usize>)> {
+    const PIVOT_WINDOW_SLACK: usize = 20;
+    let n = P::N;
+    let kinfo = P::K;
+    let k = pc.keff;
+    let words = n.div_ceil(64);
+    debug_assert!((77..=kinfo).contains(&k) && kinfo == 101);
+
+    let mut perm: Vec<usize> = (0..n).collect();
+    perm.sort_unstable_by(|&a, &b| {
+        llr[b]
+            .abs()
+            .partial_cmp(&llr[a].abs())
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    // Row `i`: info word `u` = e_i, plus (for message rows) the cascaded tail
+    // of that message's CRC; the codeword is `[u | parity(u)]`, and parity is
+    // linear, so it is the K=101 row of `e_i` XOR the K=101 rows of the tail bits.
+    let mut g_packed: Vec<Vec<u64>> = vec![vec![0u64; words]; k];
+    for (row, packed) in g_packed.iter_mut().enumerate() {
+        let mut u = [0u8; 101];
+        u[row] = 1;
+        if row < 77 {
+            let mut m = [0u8; 77];
+            m[row] = 1;
+            let w = (pc.with_crc)(&m);
+            u[k..kinfo].copy_from_slice(&w[k..kinfo]);
+        }
+        for (col, &j) in perm.iter().enumerate() {
+            let bit = if j < kinfo {
+                u[j]
+            } else {
+                u.iter()
+                    .enumerate()
+                    .filter(|&(_, &b)| b == 1)
+                    .fold(0u8, |acc, (p, _)| acc ^ P::gen_parity(j - kinfo, p))
+            };
+            if bit == 1 {
+                packed[col / 64] |= 1 << (col % 64);
+            }
+        }
+    }
+
+    // `order[pos]` is the column of `g_packed` now standing at position `pos`.
+    let mut order: Vec<usize> = (0..n).collect();
+    let bit_at = |row: &[u64], c: usize| (row[c / 64] >> (c % 64)) & 1;
+    for id in 0..k {
+        let upper = (k + PIVOT_WINDOW_SLACK).min(n);
+        let icol = (id..upper).find(|&pos| bit_at(&g_packed[id], order[pos]) == 1)?;
+        order.swap(id, icol);
+        let c = order[id];
+        let pivot = g_packed[id].clone();
+        for (ii, other) in g_packed.iter_mut().enumerate() {
+            if ii != id && bit_at(other, c) == 1 {
+                for (w, pw) in other.iter_mut().zip(pivot.iter()) {
+                    *w ^= *pw;
+                }
+            }
+        }
+    }
+
+    let mut g = vec![0u8; k * n];
+    for (row, packed) in g_packed.iter().enumerate() {
+        for (pos, &c) in order.iter().enumerate() {
+            g[row * n + pos] = bit_at(packed, c) as u8;
+        }
+    }
+    let perm_final: Vec<usize> = order.iter().map(|&c| perm[c]).collect();
+    Some((perm_final, g, (0..k).collect()))
+}
+
 /// Counts how many patterns WSJT-X's actual `npre1` pre-screening
 /// mechanism (`osd240_101.f90`/`osd174_91.f90`'s `nord=1, npre1=1`
 /// loop, `nt=40`/`ntheta=12` partial-parity gate) would attempt and
@@ -1941,6 +2059,9 @@ const OSD_NPRE_WORDS: usize = OSD_NPRE_MAX_N.div_ceil(64); // 4
 /// - `run_npre2`: `false` runs only the `npre1` pass (WSJT-X `ndeep=2`
 ///   equivalent); `true` adds the `npre2` hash-table pass (`ndeep=3`
 ///   equivalent).
+/// - `partial_crc`: `None` searches all `P::K` information bits as free;
+///   `Some` searches the [`PartialCrc`] subcode, as FST4's
+///   `decode240_101(..., Keff = 91, ...)` does.
 ///
 /// Algorithm identical to `osd_npre1_pass`/`osd_npre2_pass` (both
 /// crate-private, hence unlinked here)
@@ -1952,14 +2073,22 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
     ntheta: u32,
     ntau: usize,
     run_npre2: bool,
+    partial_crc: Option<PartialCrc>,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
     debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
 
     let n = P::N;
-    let k = P::K;
+    // `kinfo`: the length of the information word the codeword carries and
+    // `verify` reads; `k`: how many of its bits the search treats as free.
+    let kinfo = P::K;
+    let k = partial_crc.map_or(kinfo, |pc| pc.keff);
 
-    let Some((perm, g, pivot_col)) = osd_setup_generic_packed::<P>(llr) else {
+    let setup = match partial_crc {
+        Some(pc) => osd_setup_partial_crc::<P>(llr, &pc),
+        None => osd_setup_generic_packed::<P>(llr),
+    };
+    let Some((perm, g, pivot_col)) = setup else {
         return None; // degenerate (shouldn't happen with a valid LDPC code)
     };
 
@@ -2146,17 +2275,17 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
     for col in 0..n {
         best_codeword[perm[col]] = ((best_cp[col / 64] >> (col % 64)) & 1) as u8;
     }
-    for (i, d) in best_decoded[..k].iter_mut().enumerate() {
+    for (i, d) in best_decoded[..kinfo].iter_mut().enumerate() {
         let idx = inv_perm[i];
         *d = ((best_cp[idx / 64] >> (idx % 64)) & 1) as u8;
     }
     if let Some(f) = verify
-        && !f(&best_decoded[..k])
+        && !f(&best_decoded[..kinfo])
     {
         return None;
     }
     let codeword = &best_codeword[..n];
-    let decoded = &best_decoded[..k];
+    let decoded = &best_decoded[..kinfo];
     let mut hard_errors = 0u32;
     for i in 0..n {
         if (codeword[i] == 1) != (llr[i] > 0.0) {
@@ -2702,6 +2831,111 @@ mod packed_setup_differential {
             osd_decode_generic::<Ldpc128_90Params>(&llr, 2, Ldpc128_90Params::K, None, false)
                 .expect("clean codeword must decode");
         assert_eq!(result.info, info);
+    }
+
+    // ── PartialCrc (FST4's Keff = 91) ───────────────────────────────
+
+    fn fst4_partial_crc() -> PartialCrc {
+        PartialCrc {
+            keff: 91,
+            with_crc: crate::fec::ldpc240_101::append_crc24,
+        }
+    }
+
+    /// xorshift64* uniform in (0, 1); deterministic, no dev-dependency.
+    fn next_uniform(state: &mut u64) -> f32 {
+        *state ^= *state >> 12;
+        *state ^= *state << 25;
+        *state ^= *state >> 27;
+        let v = state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40;
+        (v as f32 + 0.5) / 16_777_216.0
+    }
+
+    fn random_message(state: &mut u64) -> [u8; 77] {
+        let mut m = [0u8; 77];
+        for b in m.iter_mut() {
+            *b = (next_uniform(state) > 0.5) as u8;
+        }
+        m
+    }
+
+    /// The generator rows must span every CRC-valid codeword: a clean one has to
+    /// come back with the message that was sent, through both `npre` depths.
+    #[test]
+    fn partial_crc_decodes_a_clean_codeword() {
+        use crate::fec::ldpc240_101::{append_crc24, check_crc24};
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..8 {
+            let msg = random_message(&mut state);
+            let info = append_crc24(&msg);
+            let mut cw = alloc::vec![0u8; Ldpc240_101Params::N];
+            ldpc_encode_generic::<Ldpc240_101Params>(&info, &mut cw);
+            let llr: alloc::vec::Vec<f32> = cw
+                .iter()
+                .map(|&b| if b == 1 { 8.0 } else { -8.0 })
+                .collect();
+            for (ntau, npre2) in [(0, false), (14, true)] {
+                let r = osd_decode_npre_generic::<Ldpc240_101Params>(
+                    &llr,
+                    12,
+                    ntau,
+                    npre2,
+                    Some(fst4_partial_crc()),
+                    Some(check_crc24),
+                )
+                .expect("a clean CRC-valid codeword must decode");
+                assert_eq!(r.info, info);
+                assert_eq!(r.message77, msg);
+            }
+        }
+    }
+
+    /// The reason `PartialCrc` exists: on the same noisy LLRs, the 91-bit
+    /// subcode recovers the sent message more often than the full 101-bit code,
+    /// which is what `decode240_101(Keff = 91)` does and this crate did not.
+    /// OSD alone (no BP in front), ndeep 2, BPSK/AWGN, verify on the winner.
+    #[test]
+    fn partial_crc_recovers_more_than_the_full_code() {
+        use crate::fec::ldpc240_101::{append_crc24, check_crc24};
+        let amp = 0.95f32;
+        let draws = 300;
+        let mut state = 0xD1B5_4A32_D192_ED03u64;
+        let mut ok = [0u32; 2];
+        for _ in 0..draws {
+            let msg = random_message(&mut state);
+            let info = append_crc24(&msg);
+            let mut cw = alloc::vec![0u8; Ldpc240_101Params::N];
+            ldpc_encode_generic::<Ldpc240_101Params>(&info, &mut cw);
+            let llr: alloc::vec::Vec<f32> = cw
+                .iter()
+                .map(|&b| {
+                    let (u1, u2) = (next_uniform(&mut state), next_uniform(&mut state));
+                    let noise = (-2.0 * u1.ln()).sqrt() * (core::f32::consts::TAU * u2).cos();
+                    2.0 * (amp * (2.0 * b as f32 - 1.0) + noise)
+                })
+                .collect();
+            for (i, pc) in [Some(fst4_partial_crc()), None].into_iter().enumerate() {
+                if let Some(r) = osd_decode_npre_generic::<Ldpc240_101Params>(
+                    &llr,
+                    12,
+                    0,
+                    false,
+                    pc,
+                    Some(check_crc24),
+                ) && r.message77 == msg
+                {
+                    ok[i] += 1;
+                }
+            }
+        }
+        // 115 against 70 of 300 when measured (2026-09-25): the margin is wide
+        // enough that a libm difference in `ln`/`cos` cannot flip it.
+        assert!(
+            ok[0] * 10 >= ok[1] * 13,
+            "Keff=91 recovered {} of {draws}, Keff=101 recovered {}",
+            ok[0],
+            ok[1]
+        );
     }
 }
 

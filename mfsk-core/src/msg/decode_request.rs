@@ -239,7 +239,7 @@ where
         // compile-time constants, so for a protocol that does not
         // filter and a request that named no policy the whole body
         // folds to `true` — the message is never even decoded.
-        if !Pol::CAN_REJECT && !P::MESSAGE_FILTER_DEFAULT {
+        if !Pol::CAN_REJECT && !P::MESSAGE_FILTER_DEFAULT && !P::REQUIRES_UNPACK {
             return true;
         }
         // One decode, shared by the codec verdict and the caller's own
@@ -465,14 +465,27 @@ pub trait FrameDecodable: Protocol {
     /// of 36 recall cells identical. `Ft4::MESSAGE_FILTER_DEFAULT`
     /// carries the table and what the corpus cannot say.
     ///
-    /// `false` for FST4, and not for want of measuring: CRC-24 puts its
-    /// false-positive rate 512x below FT8's and FT4's, so there is
-    /// almost nothing for the verdict to remove and the recall it could
-    /// cost is the same. A caller opts in per request with
-    /// [`DecodeRequest::codec_filter`].
+    /// `false` for FST4. The argument that stood here — CRC-24 puts its
+    /// false-positive rate 512x below FT8's and FT4's — described the
+    /// (240,101) search this crate ran until #456. WSJT-X searches
+    /// `Keff = 91` (`fst4_decode.f90:478`), where 14 CRC bits detect and the
+    /// rate per OSD call is FT8's 2^-14; this crate now does the same, and
+    /// [`Self::REQUIRES_UNPACK`] refuses the unpackable share of it. Whether
+    /// the plausibility verdict is worth its recall cost on top of that has
+    /// not been measured for FST4, so the default stays. A caller opts in
+    /// per request with [`DecodeRequest::codec_filter`].
     ///
     /// [`MessageCodec::is_plausible`]: crate::engine::protocol::MessageCodec::is_plausible
     const MESSAGE_FILTER_DEFAULT: bool = false;
+
+    /// Whether a decode whose 77 bits do not unpack to a message is refused
+    /// with no caller involved. WSJT-X does it for every mode it decodes
+    /// (`ft8b.f90`, `ft4_decode.f90:437`, `fst4_decode.f90:570`); this crate
+    /// did it only where [`Self::MESSAGE_FILTER_DEFAULT`] made the unpack
+    /// happen anyway. It is not a plausibility judgement — that is
+    /// `MESSAGE_FILTER_DEFAULT` — only "the payload names no message".
+    /// `false` unless a protocol says otherwise; FST4 says so.
+    const REQUIRES_UNPACK: bool = false;
 
     #[doc(hidden)]
     fn __single_pass<Pol: MessagePolicy>(req: &DecodeRequest<'_, Self, Pol>) -> DecodeOutcome<Self>
