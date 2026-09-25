@@ -1376,9 +1376,14 @@ where
                 let locked = mask.iter().filter(|&&m| m != 0).count();
                 let max_errors = strictness.ap_max_errors(locked);
                 for (llr, _) in &variants {
+                    // `ft4_decode.f90` runs its AP passes through the same
+                    // `decode174_91(..., maxosd=2, ndeep=2, apmask)` as the blind
+                    // ones: BP with the locked bits held, then OSD on the BP sum,
+                    // a pattern that flips a locked bit skipped. `osd_depth: 0`
+                    // here made this rung BP only (#456).
                     let ap_opts = FecOpts {
                         bp_max_iter,
-                        osd_depth: 0,
+                        osd_depth: 2,
                         ap_mask: Some((mask, values)),
                         ap_mag_scale: <P as Protocol>::AP_MAG_SCALE,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),

@@ -23,11 +23,20 @@
   ccir_poor 0.00 dB, ccir_moderate -0.09 dB), unexpected decodes 0 in every group
   as before; the WSJT-X FT4 recording gives the same 11 decodes at both request
   shapes, at 2.5 ms a decode against 2.4 for `(1.2, 50)` and 4.8 against 6.2 for
-  `(0.05, 100)` (before), and every FT4 test passes under `fixed-point`. The
-  `hard_errors` gate looks unnecessary now (switched off it moves none of these:
-  noise slots, sweep, recording), and upstream's FT4 has none; it stays, since
-  nothing measured says what it costs on a crowded real band. The FT4 rung with
-  an AP mask still runs BP only (`osd_depth: 0`), where upstream runs the OSD too.
+  `(0.05, 100)` (before), and every FT4 test passes under `fixed-point`.
+
+  Two more places where the FT4 ladder differed from `ft4_decode.f90`, each
+  measured on its own. **The post-OSD `hard_errors < osd_max_errors` gate is gone**:
+  upstream's FT4 has none (`nharderror.ge.0` and a message that unpacks), and switched
+  off it moved none of the noise slots, the sweep or the recording (`osd_max_errors`
+  stays as public API and says it is applied to no protocol). **The AP rung runs the
+  OSD**: upstream's AP passes go through the same `decode174_91(maxosd=2, apmask)` as
+  the blind ones, and this rung had `osd_depth: 0`, BP only. Crossings 0.34 / 0.39 /
+  0.86 / 0.67 dB more sensitive (AWGN, ccir_good, ccir_moderate, ccir_poor), unexpected
+  decodes still 0 in every group, noise slots `(0.05, 100)` 3 against 2, the recording
+  the same 11 decodes at 2.28 ms against 2.24 for `(1.2, 50)` and 5.15 against 4.64 for
+  `(0.05, 100)`. `ap_max_errors` (30 / 25) still bounds AP decodes; upstream's FT4 has no
+  such bound, and it is shared with FT8, so it is a separate measurement.
 
   The depth-4 rung of the generic ladder (`osd_decode_deep4`, pass id 13, at
   `nsync >= osd_depth3_min`) is removed: FST4's codec has always mapped depth 4
