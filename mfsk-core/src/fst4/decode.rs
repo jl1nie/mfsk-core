@@ -165,9 +165,10 @@ macro_rules! impl_frame_decodable {
 
         /// Opt-in only: `MESSAGE_FILTER_DEFAULT` stays `false` for every
         /// FST4 sub-mode, so a request that names no policy decodes
-        /// bit-identically. CRC-24 puts FST4's false-positive rate 512x
-        /// below FT8/FT4's, which is why the filter is not worth its
-        /// recall cost here — see `FrameDecodable::MESSAGE_FILTER_DEFAULT`.
+        /// bit-identically. Not measured since the OSD searches `Keff = 91`
+        /// (#456), which took the false-positive rate per OSD call from
+        /// 2^-24 to FT8's 2^-14 — see
+        /// `FrameDecodable::MESSAGE_FILTER_DEFAULT`.
         impl crate::msg::decode_request::SupportsMessageFilter for $proto {
             fn __strategy_for<Pol: MessagePolicy>(
                 tag: crate::msg::decode_request::StrategyTag,
@@ -188,6 +189,19 @@ macro_rules! impl_frame_decodable {
 
         impl FrameDecodable for $proto {
             type DecodeResult = DecodeResult;
+
+            /// `fst4_decode.f90:570`: `nharderrors.ge.0 .and. unpk77_success`.
+            /// With `Keff = 91` only 14 of the CRC's 24 bits detect a wrong
+            /// codeword, so garbage that verifies is no longer 2^-24 rare and
+            /// a message that will not unpack is what refuses most of it.
+            ///
+            /// It also does the job of `fst4_decode.f90:484-487`
+            /// (`count(cw.eq.1).eq.0`: drop the all-zero codeword, whose CRC
+            /// is 0 and so always verifies): the raw all-zero word descrambles
+            /// to `FST4_RVEC`, and `unpack77(FST4_RVEC)` is `None` (checked
+            /// 2026-09-25). No separate guard belongs in the (240,101) codec —
+            /// uvpacket shares it, has no scramble, and can send zeros.
+            const REQUIRES_UNPACK: bool = true;
 
             fn __single_pass<Pol: MessagePolicy>(
                 req: &DecodeRequest<'_, Self, Pol>,

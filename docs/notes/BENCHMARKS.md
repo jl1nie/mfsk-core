@@ -58,7 +58,7 @@ Figures are asserted, not just observed — see each protocol's
 | FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden | AWGN ≈ −21.48 dB (WSJT-X: −20 to −21 dB); CCIR good/moderate/poor ≈ −21.24 / −19.72 / −19.68 dB — means over 8 deterministic seeds, re-measured 2026-09-23 (sd 0.20/0.24/0.39/0.39; a single seed is worth up to 1.1 dB on the fading channels, so these are not single-run numbers). Against real `jt9 -8 -d3` on the *same* corpus: −0.48 / −0.23 / +0.25 / +0.02 dB — see `FT8_BENCHMARK.md` §12. That `jt9` is WSJT-X `2b9d654` (2024-03); against WSJT-X 3.2.0-rc1's (`967c85a`, measured 2026-09-24) the same four are **+0.05 / +0.33 / +0.58 / +0.81 dB** — see §13. After the WSJT-X 3.x port (#451) the `.sic_early()` gap to the 3.2.0-rc1 `jt9 -d3` is −0.11 / +0.33 / +0.53 / **0.00** dB (§14) | at/above parity vs the 2024 `jt9`; 0.3-0.5 dB behind the 3.2.0-rc1 `jt9` on CCIR good and moderate |
 | FT8 *(ship)* | 7/8 (WSJT-X) — misses `K1BZM DK8NE -10` at −17 dB, which needs AP context (issue #150) | 14 total, **0 uncorroborated** — all 7 extras are in the JTDX 20-entry golden | Not separately swept; the ship config trades recall for the ESP32 time budget | by design |
 | FT4      | 6/6 | **0** (budget 0) | AWGN ≈ **−17.56 dB** (0.11.0: was ≈ −16.9 dB until the a-priori pass was fixed and the always-on blind-CQ pass added — see the FT4 section and `CHANGELOG.md` 0.11.0). Level with WSJT-X's published −17.5 dB, where it had been 0.6 dB behind. Re-measured 2026-09-23 on the reproducible seed-1 corpus; the −18.00 dB this row carried until then was one un-reproducible draw of the same decoder | at/above parity |
-| FST4     | 1/1 (FST4-60A only) | **0** (budget 0) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section | at/above parity |
+| FST4     | 1/1 (FST4-60A only) | **0** (budget 0) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section; all 20 sub-mode x channel groups against `jt9 -7 -d 3` (AP hits excluded) on 2026-09-25: mean -0.07 dB | at/above parity |
 | WSPR     | 9/9 | **0 phantoms**, and 0 across 5 chained slots with a carried callsign table | AWGN 50% ≈ −31.5 dB, matches live `wsprd` cell for cell | at parity |
 | JT9      | 7/7 | **0** (budget 0) | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
 | JT65     | none available | **0** (budget 0) | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — a real, un-closed gap; the initial "free CQ-AP hypothesis" explanation was checked and ruled out (JT65's AP path gates on `mycall` length exactly like FT4/FST4's), root cause not yet isolated — see JT65 section, task #26 | gap closed (own corpus); real gap vs. live binary open |
@@ -366,8 +366,10 @@ than 15 — `gen_q65_sweep_wavs.sh` scales them down on purpose, since both
 disk and decode cost grow with the T/R period.
 
 Generating all seven is minutes of wall clock. *Running* the sweeps is
-not: `fst4_sweep` over all five sub-modes is 8 h+ on the 3700X box
-(~1100 audio-seconds per minute), which is what `MFSK_FST4_SWEEP_MODES`
+not: `fst4_sweep` over all five sub-modes was 8 h+ on the 3700X box
+(~1100 audio-seconds per minute; on the Ryzen 9 9900X, 24 threads, the same
+sweep through `scripts/run-sensitivity-sweeps.sh fst4` took 22 minutes on
+2026-09-25, so re-measure before assuming the 8 h), which is what `MFSK_FST4_SWEEP_MODES`
 / `_CHANNELS` / `_SNR_MIN` / `_SNR_MAX` and `scripts/sweep-narrow-plan.py`
 are for.
 
@@ -1384,20 +1386,27 @@ constant verified directly against WSJT-X `fst4_decode.f90` /
 
 | Sub-mode | mfsk-core 50% crossing | WSJT-X published | Gap |
 |----------|------------------------:|------------------:|----:|
-| FST4-15  | ≈ −20.60 dB | −20.7 dB | 0.10 dB |
-| FST4-30  | ≈ −23.90 dB | −24.2 dB | 0.30 dB |
-| FST4-60  | ≈ −27.62 dB | −28.1 dB | 0.48 dB |
-| FST4-120 | ≈ −30.70 dB | −31.3 dB | 0.60 dB |
-| FST4-300 | ≈ −34.78 dB | −35.3 dB | 0.52 dB |
+| FST4-15  | ≈ −20.67 dB | −20.7 dB | 0.03 dB |
+| FST4-30  | ≈ −24.00 dB | −24.2 dB | 0.20 dB |
+| FST4-60  | ≈ −27.80 dB | −28.1 dB | 0.30 dB |
+| FST4-120 | ≈ −30.90 dB | −31.3 dB | 0.40 dB |
+| FST4-300 | ≈ −35.00 dB | −35.3 dB | 0.30 dB |
+
+*Crossings refreshed 2026-09-25 (#456) from `sweep-baseline.json` on the
+regenerated fixed-seed corpus with the `Keff = 91` OSD; the values before
+that (−20.60 / −23.90 / −27.62 / −30.70 / −34.78) were the pre-seed corpus
+and the 101-bit OSD. At 20 trials a point the AWGN crossing is good to a few
+tenths of a dB, so a gap under about 0.3 dB is not a finding.*
 
 Closed via a coherent full-slot local sync search, an FST4-specific
 `LLR_NSYM_MAX` override, an nsym=4 LLR rung, and a zsum-OSD fallback.
 
 **2026-08-08: like FT4 above, checked whether these "gaps" reproduce
 against a real binary on the same corpus — they mostly don't.** Real
-`jt9` (`jt9 -7 -p <period>`, bare CLI — FST4's own AP path also
-requires `mycall` ≥3 chars, `lib/fst4_decode.f90:153`, so this is
-genuinely no-AP) run against `tests/fst4_sweep.rs`'s own AWGN corpus,
+`jt9` (`jt9 -7 -p <period>`, bare CLI — default depth 1, and
+`fst4_decode.f90:421` runs no AP at depth 1, so this is genuinely no-AP;
+the reason first given here, that AP needs `mycall` of 3+ characters, was
+wrong for depth 2 and 3: see 2026-09-25 below) run against `tests/fst4_sweep.rs`'s own AWGN corpus,
 the two sub-modes checked:
 
 | Sub-mode | SNR | This crate | Real `jt9 -7` |
@@ -1418,6 +1427,43 @@ the table's 0.60 dB. FST4-15/30/300 not directly checked this session
 "published figure measured under different conditions than this
 `*sim`-driven AWGN corpus" explanation as FT4. Status upgraded to
 "at/above parity" (Summary table) on this finding.
+
+**2026-09-25 (#456): the OSD searches `Keff = 91`, measured against real
+`jt9 -7 -d 3` over all 20 groups.** WSJT-X's `decode240_101` is called with
+`Keff = 91` (`fst4_decode.f90:478`): the message and the first 14 CRC bits are
+free, the last 10 CRC bits are cascaded into the code. This crate searched all
+101 bits until #456. On upstream's own `decode240_101`, same BPSK/AWGN LLRs,
+ndeep 2, 4000 draws a point, `Keff = 91` recovers 3432 / 2071 / 593 at
+amplitude 1.0 / 0.9 / 0.8 where `Keff = 101` recovers 2903 / 1231 / 211
+(about 0.5 dB). `jt9 -7 -p <period> -d 3` was run over the whole `fst4_sweep`
+(5120 files, 5 minutes on 8 processes) and scored with
+`scripts/score-jt9-sweep.py fst4`:
+
+| 50 % crossing, this crate minus `jt9 -d 3` | mean over 20 groups |
+|---|---:|
+| before #456 (CRC on every candidate, 101 bits) | +0.18 dB |
+| winner-only CRC, 101 bits | +0.44 dB |
+| **winner-only CRC, `Keff = 91`, unpack required** | **−0.07 dB** |
+
+Per group the last row runs −0.33 to +0.29 dB, AWGN −0.24 to +0.29 (the numbers
+are in the #457 description). Against the previous baseline the crossings move
+−0.25 dB on average (AWGN −0.08, fading −0.31, none worse); unexpected decodes
+99 → 27 (`jt9`: 7), which is 39 → 10 independent events by (sub-mode, channel,
+trial) against `jt9`'s 5. `fst4sim` draws one noise realisation per trial index
+and reuses it at every SNR (the WAVs of one trial correlate at 1.000 across
+SNRs), so one phantom appears in every cell of its trial.
+
+Two things to know when reading `jt9` numbers on this corpus. **`jt9 -d 2` and
+`-d 3` print CQ AP decodes (` a1`) with no call sign given**, 8.9 % of its hits
+here (322 of 3608); counted, they put `jt9` about 1 dB ahead of this crate on
+average (+0.1 to +2.0 dB by group, before #456), which is what a first
+comparison showed, and excluded they do not.
+Depth 1 has no AP but also no timing jitter. And the comparison is paired on
+files, not on 20-trial crossings: a fading crossing moves up to 1 dB between
+two corpus draws, so a 0.3 dB difference between two decoders is only
+meaningful on the same files. Not measured: upstream at `norder = 3` (over 30 s
+a draw in gfortran), so the `Keff` table above is `norder = 2`, BPSK, without
+fading.
 
 Only FST4-60A has a real-recording golden-WAV lock (1/1,
 `samples/FST4/210115_0058.wav`) — WSJT-X's sample tree ships no

@@ -21,7 +21,7 @@ use crate::fec::ldpc::bp::{
     BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_with_scratch,
 };
 use crate::fec::ldpc::osd::{
-    OsdResult, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic,
+    OsdResult, PartialCrc, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic,
 };
 use crate::fec::ldpc::params::Ldpc240_101Params;
 
@@ -128,6 +128,18 @@ pub fn check_crc24(decoded: &[u8]) -> bool {
 /// (`osd240_101.f90`'s `ndeep=2`/`ndeep=3` branches).
 const FST4_NPRE_NTHETA: u32 = 12;
 
+/// `Keff` for FST4's OSD: `fst4_decode.f90:478` calls
+/// `decode240_101(llr, Keff=91, maxosd=2, norder=3, ...)`, so the search runs
+/// over the 91 free bits (message + the first 14 CRC bits) with the last 10
+/// CRC bits cascaded into the code. See [`PartialCrc`] for the measurement.
+pub const FST4_KEFF: usize = 91;
+
+/// The code FST4's OSD searches: see [`FST4_KEFF`].
+const FST4_PARTIAL_CRC: PartialCrc = PartialCrc {
+    keff: FST4_KEFF,
+    with_crc: append_crc24,
+};
+
 /// `ntau` for FST4's ndeep=3 dispatch (`osd240_101.f90`'s `ndeep=3`
 /// branch). Ignored for ndeep=2 (no `npre2` pass).
 const FST4_NPRE_NTAU: usize = 14;
@@ -191,12 +203,20 @@ fn fst4_osd_decode_dispatch(
         return osd_decode_generic::<Ldpc240_101Params>(llr, ndeep, LDPC_K, verify, false);
     }
     match ndeep {
-        2 => osd_decode_npre_generic::<Ldpc240_101Params>(llr, FST4_NPRE_NTHETA, 0, false, verify),
+        2 => osd_decode_npre_generic::<Ldpc240_101Params>(
+            llr,
+            FST4_NPRE_NTHETA,
+            0,
+            false,
+            Some(FST4_PARTIAL_CRC),
+            verify,
+        ),
         3 => osd_decode_npre_generic::<Ldpc240_101Params>(
             llr,
             FST4_NPRE_NTHETA,
             FST4_NPRE_NTAU,
             true,
+            Some(FST4_PARTIAL_CRC),
             verify,
         ),
         _ => osd_decode_generic::<Ldpc240_101Params>(llr, ndeep, LDPC_K, verify, false),

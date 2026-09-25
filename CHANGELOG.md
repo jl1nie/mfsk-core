@@ -2,6 +2,57 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FST4's OSD searches the code WSJT-X searches, and checks the CRC on its
+  winner (#456).** Two differences from `osd240_101.f90`, both in
+  `osd_decode_npre_generic` (FST4's ndeep 2/3 path).
+
+  *The winner.* As in #455, it verified every candidate and kept the closest
+  CRC-valid one; `osd240_101.f90:285` runs `get_crc24` once, on the winner.
+
+  *The code.* `fst4_decode.f90:478` calls `decode240_101(llr, Keff=91, ...)`:
+  only the message and the first 14 CRC bits are free, the last 10 CRC bits are
+  cascaded into the code, so the search runs over a (240,91) subcode. This
+  crate searched all 101 bits (`P::K`). New `osd::PartialCrc` describes the
+  subcode and `ldpc240_101::FST4_KEFF` is 91; the elimination is upstream's
+  (column swaps, pivots in the first `keff` columns, window `keff+20`).
+  Measured on upstream's own `decode240_101`, same BPSK/AWGN LLRs, ndeep 2,
+  4000 draws a point, one `Keff` per process (`osd240_101` builds its
+  generator once, so `Keff` cannot change inside one): recovered at amplitude
+  1.0 / 0.9 / 0.8, `Keff=91` 3432 / 2071 / 593, `Keff=101` 2903 / 1231 / 211 --
+  about 0.5 dB. The `osd-false-rate` measurements of #455/#457 ran
+  `Keff=101` (`main240.f90`), which is not what `jt9 -7` runs.
+
+  With 14 detecting CRC bits the wrong-codeword rate per OSD call is FT8's
+  2^-14, not 2^-24, so `FrameDecodable::REQUIRES_UNPACK` (new, `false` by
+  default, `true` for FST4) refuses a decode whose 77 bits do not unpack, as
+  `fst4_decode.f90:570` (`unpk77_success`) does. That also does the job of the
+  all-zero-codeword drop at `:484` (the raw all-zero word descrambles to
+  `FST4_RVEC`, which does not unpack). Without it the vendored FST4-60
+  recording produced a third, unpackable decode (`fst4_wsjtx_samples`).
+
+  Tier C, FST4 (20 groups), against the previous baseline and against real
+  `jt9 -7 -d3` (AP decodes excluded, since this crate has none here; `jt9`
+  run over the same 5120 files with `scripts/score-jt9-sweep.py fst4`):
+  - 50 % crossing, this crate minus `jt9`, mean over the 20 groups: +0.18 dB
+    before #456, +0.44 with the winner rule alone, **-0.07 dB** now. Against
+    the previous baseline: mean -0.25 dB (AWGN -0.08, fading -0.31; the worst
+    group -0.71, FST4-60 `ccir_poor`; four groups reach 0.5 dB, all more
+    sensitive).
+  - Unexpected decodes: 99 before, **27** now (`jt9`: 7). They are 39 and 10
+    independent events by (sub-mode, channel, trial): `fst4sim` draws one noise
+    realisation per trial index and reuses it at every SNR, so one phantom
+    shows up in every cell of its trial (`jt9`: 5).
+  - Not measured: upstream at `norder=3` (over 30 s a draw in gfortran); the
+    `Keff` comparison above is `norder=2`, BPSK, without fading. AP decodes
+    are 8.9 % of `jt9`'s hits on this corpus (322 of 3608) and are where its
+    apparent ~1 dB lead came from.
+
+  `osd_decode_npre_generic` takes a `partial_crc: Option<PartialCrc>` (breaking;
+  `None` searches all `P::K` bits as before). The same winner rule for FT8's AP
+  path (`osd_decode_deep`), MSK144 and uvpacket is not done (#456); they share
+  `osd_decode_generic`. `scripts/score-jt9-sweep.py` reads FST4 and can dump
+  per-trial rows in the sweeps' CSV format for a paired comparison.
+
 - **FT8's OSD checks the CRC on its winner, as `osd174_91` does, not on
   every candidate (#452, #453).** `osd174_91.f90` takes the closest of all
   its candidate codewords by weighted distance and runs `get_crc14` once, on
