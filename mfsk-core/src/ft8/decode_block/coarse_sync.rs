@@ -786,6 +786,23 @@ fn coarse_sync_inner(
     // 15 candidates that config keeps. Nothing measured here benefits from
     // the wider window (it matters for signals more than ±0.4 s off DT 0),
     // so it is not worth a floor. Revisit with an off-time corpus.
+    //
+    // Re-measured with the rest of the 3.x port in (#439), `qso3_busy`,
+    // fixed-point ship shape (`decode_block`, `EMBEDDED`, sync_min 1.3),
+    // hits against the 20 known signals by `max_cand`:
+    //
+    // | max_cand | 10-12 | 15-20 | 25-30 | 40 and up |
+    // |---|---|---|---|---|
+    // | `MLAG` 10 | 11 | 12 | 15 | 16 |
+    // | `MLAG` 13 | 11 | 11 | 14 | 16 |
+    //
+    // The cost is one signal at every cap from 15 to 30, the range the ship
+    // config could use; the two agree from 40 up, where upstream's
+    // `MAXCAND` of 1000 lives. On the busy-band corpus (DT -0.5..+1.5 s) 13
+    // is neutral to slightly better (.sic_early() unexpected decodes 12 -> 9,
+    // recall +0.1 pt) and the ft8 sweeps are unchanged. So 13 is the faithful
+    // value and 10 is what the 15-candidate ship config can afford; moving to
+    // 13 means lowering `ft8_qso3_apoff_recall`'s fixed-point floor to 11.
     const MLAG: i32 = 10;
 
     // Two independent noise-floor channels, matching WSJT-X `sync8.f90`

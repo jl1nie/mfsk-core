@@ -1748,7 +1748,16 @@ impl SupportsSicEarly for Ft8 {
 /// to `D2` already matching/exceeding jt9 `-d3`'s recall above.
 /// `sync_min` stays an explicit, caller-supplied parameter (pass
 /// 2.1/2.1/1.3 for closer parity with WSJT-X 3.x on that axis, or
-/// 1.6/1.6/1.3 for 2.7).
+/// 1.6/1.6/1.3 for 2.7). On the busy-band corpus `sync_min` 1.3 is the
+/// value that keeps `.sic_early()`'s recall while cutting its unexpected
+/// decodes from 22 (0.8) to 6; 2.1 costs 3-4 points of recall and gains
+/// nothing more there (`docs/notes/BENCHMARKS.md`, "The busy-band corpus").
+///
+/// What `D1`/`D2` do beyond OSD and SIC: from WSJT-X 3.0, `ndepth <= 2`
+/// also raises the hard-sync (nsync) floor a candidate must clear from 6
+/// (7 in the passes with the squared metric) to 8, and this port applies
+/// that floor for these two tiers (#439). `D3`, and a request that does
+/// not go through [`DecodeRequest::wsjtx_depth`], keep 6/7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WsjtxDepth {
     D1,
