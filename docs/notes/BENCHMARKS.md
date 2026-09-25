@@ -172,6 +172,65 @@ regime the `ccir_*` set never reaches (its widest spread is 1.0 Hz in the old
 definition), and the one where the choice of how many symbols to combine
 coherently matters most.
 
+### The busy-band corpus
+
+The AWGN/CCIR/ITU corpora hold one signal per file. `ft8_busy_sweep/` holds
+several, scattered in time and frequency, plus files with none, because a
+candidate-list cap, the lag window of the coarse sync and an acceptance gate that
+admits garbage only show up there. `ft8sim` writes one signal per file, so
+`scripts/gen_ft8_busy_wavs.py` asks it for each signal **without noise** (SNR 99),
+rescales it to the SNR it should have, adds the signals and adds one realisation of
+white Gaussian noise. No FT8 is re-implemented; every waveform is ft8sim's.
+
+    scripts/gen_ft8_busy_wavs.py <ft8sim> embedded-poc/assets/ft8_busy_sweep    # 43 s, needs numpy
+
+| set | files x signals | what a miss or an extra means |
+|---|---|---|
+| `dt1` | 100 x 1 | one signal at -16 dB, DT -0.5..+1.5 s: a miss is a time-window problem |
+| `busy10`, `busy20`, `busy40` | 40 x 10 / 20 / 40 | 200-2700 Hz (12 Hz apart at least), DT -0.5..+1.5 s, SNR -24..-6 dB: crowding |
+| `noise` | 200 x 0 | every decode is unexpected |
+
+`truth.csv` lists every transmitted signal (`file,msg,f0,dt,snr`); 2900 rows, 2900
+different messages. A truth signal is a **hit** when its message comes out within
+5 Hz and 0.5 s of its true frequency and DT; an **extra** is a distinct decoded
+message that was not transmitted in that file, by text. The signals are not faded
+(the ITU corpus is for that), and DT stops at +1.5 s because ft8sim shifts the
+waveform circularly inside its 15 s buffer.
+
+**The SNR is calibrated against ft8sim, not assumed.** Fitting the unit waveform to
+noisy files that ft8sim wrote itself gives amplitudes within 0.02 dB of
+`sqrt(2*2500/6000) * 10^(SNR/20)` at -10 and -14 dB (ratio 0.999 and 0.998, eight
+files each), and the noise standard deviation measured in the silence after the
+signal is 1.001 (unit variance before the x100 gain). Regeneration is deterministic
+(`--seed`, default 1: two runs are byte-identical); to check one:
+
+    md5sum ft8_busy_busy20_05.wav   # e715b06cb83cce17eb5eb73fe1e8ccad
+    md5sum ft8_busy_noise_33.wav    # ec465f7da97adff83224b0991d844aae
+    md5sum truth.csv                # a02566306e684fcf6a6fe2c5f10e6a8e
+
+**First measurement (2026-09-25).** Recall = hits / signals sent; the number after
+the slash is unexpected decodes over the set. `mfsk-core` is `main` at `35c78fa` with
+`max_cand` 600 (WSJT-X 2.7's `MAXCAND`, so the cap does not decide the result);
+`jt9` old = the `2b9d654` build, new = `v3.2.0-rc1`.
+
+| set | `jt9 -d3` old | `jt9 -d3` new | mfsk-core `decode()` | mfsk-core `.sic_early()` |
+|---|---|---|---|---|
+| dt1 | 99.0 % / 0 | 100.0 % / 0 | 100.0 % / 4 | 100.0 % / 0 |
+| busy10 | 80.0 % / 0 | 81.5 % / 0 | 79.5 % / 6 | 83.0 % / 3 |
+| busy20 | 77.0 % / 0 | 79.9 % / 1 | 73.8 % / 13 | 81.4 % / 5 |
+| busy40 | 78.9 % / 0 | 81.0 % / 2 | 66.1 % / 25 | 81.0 % / 14 |
+| noise (200 files) | 0 | 1 | 0 | 0 |
+
+Read it as follows. **Recall**: the single-pass `decode()` falls away with crowding
+(it has no subtraction), `.sic_early()` matches new `jt9 -d3` (81.0 % on busy40), and
+on `dt1` both `jt9` builds (99-100 %) and mfsk-core (100 %) find nearly every
+signal, so the time window is not the problem here. **Precision** is where they
+differ: `jt9` emits 0 (old) or 4 (new: 1 + 2 + 1, one of them from noise alone)
+unexpected decodes in 420 files, mfsk-core 22 with `.sic_early()` and 48 with
+`decode()`, all of them in files that contain signals; none from noise alone. Old
+`jt9 -d1` reaches only 92 % on `dt1` (new: 94 %), which is a `jt9` limitation and not
+a corpus problem.
+
 ### Reading a crossing: pair it against `jt9` on the same corpus
 
 A single corpus's 50%-crossing is not a statement about the decoder. The
