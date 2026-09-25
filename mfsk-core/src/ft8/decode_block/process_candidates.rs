@@ -2159,19 +2159,13 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     //   5 (mycall only → ~32 bits, WSJT-X iaptype 2)
     //   12 (blind CQ → always tried last, WSJT-X iaptype 1)
     #[cfg(feature = "fft-rustfft")]
-    if accepted.is_none() {
+    if accepted.is_none() && pass.ap {
         // Reuse the pre-computed LLR from above if it ran; otherwise
         // compute fresh. The unwrap_or_else only fires when the
         // pre-compute gate was `false` (BpAll with no OSD) but AP
         // still ran somehow — defensive, but not the dominant path.
         let llr_full_f32: super::super::llr::LlrSet<f32> = prefetched_llr
             .unwrap_or_else(|| super::super::llr::compute_llr_metric(cs_scratch, pass.squared()));
-        let apmag = llr_full_f32
-            .llra
-            .iter()
-            .map(|v| v.abs())
-            .fold(0.0f32, f32::max)
-            * <crate::ft8::Ft8 as crate::engine::Protocol>::AP_MAG_SCALE;
         let llr_variants: [&[f32; LDPC_N]; 4] = [
             &llr_full_f32.llra,
             &llr_full_f32.llrb,
@@ -2216,6 +2210,11 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             let max_errors: u32 = strictness.ap_max_errors(locked_bits);
 
             for &base_llr in &llr_variants {
+                // `ft8b.f90`: `apmag=maxval(abs(llrz))*1.1` with `llrz` the
+                // variant the pass starts from (llra or llrc there), not
+                // a fixed llra.
+                let apmag = base_llr.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
+                    * <crate::ft8::Ft8 as crate::engine::Protocol>::AP_MAG_SCALE;
                 let mut llr_ap = *base_llr;
                 // Iterator form (issue #208-style — same shape as
                 // `fill_bmet_for_nsym`'s max-reduction fix) instead of

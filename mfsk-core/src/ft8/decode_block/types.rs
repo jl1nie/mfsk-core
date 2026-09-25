@@ -226,6 +226,11 @@ pub(in crate::ft8) struct PassCtx {
     /// drop `/R` and `TU; ` messages (see [`Self::FIRST`]'s neighbours in
     /// `process_candidates::wsjtx_quirky`). Off by default, as `ncontest=0`.
     pub contest: bool,
+    /// Whether the AP passes may run. `ft8_decode.f90` sets `npasses=5`
+    /// (blind passes only) while `nzhsym < 50`, i.e. in the early
+    /// checkpoint; the final one and everything without a checkpoint
+    /// structure run AP.
+    pub ap: bool,
 }
 
 impl PassCtx {
@@ -234,7 +239,13 @@ impl PassCtx {
         imetric: 1,
         low_depth: false,
         contest: false,
+        ap: true,
     };
+
+    /// This context without the AP passes (the early checkpoint).
+    pub(in crate::ft8) const fn without_ap(self) -> PassCtx {
+        PassCtx { ap: false, ..self }
+    }
 
     /// This context with `ncontest != 0` when `on` is set.
     pub(in crate::ft8) const fn contest(self, on: bool) -> PassCtx {

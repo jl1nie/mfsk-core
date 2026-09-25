@@ -1288,7 +1288,8 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         on_result,
         budget,
         policy,
-        base_pass,
+        // `ft8_decode.f90` runs no AP pass while `nzhsym < 50` (npasses=5).
+        base_pass.without_ap(),
     );
     // Checkpoint A's own residual is not carried forward — only its
     // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
