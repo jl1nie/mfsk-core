@@ -206,6 +206,26 @@ pub(in crate::ft8) type LlrT = crate::engine::scalar::Q11i16;
 #[cfg(not(feature = "fixed-point-llr"))]
 pub(in crate::ft8) type LlrT = f32;
 
+/// Which of WSJT-X's decode passes a candidate is being decoded in
+/// (`ft8_decode.f90`'s `do ipass=1,npass`, v3.0.0 onward), carried down
+/// to [`process_one_candidate_inner`](super::process_candidates) so a
+/// pass can change how the candidate is decoded, not only which
+/// candidates it sees (#439).
+///
+/// `imetric` is `ft8b.f90`'s argument of that name: 1 = the metric
+/// `|cs|` (passes 1), 2 = `|cs|²` (passes 2 and 3). Every caller that has
+/// no pass structure — the embedded driver, the single-pass host path,
+/// sniper — decodes as pass 1, as WSJT-X's `-d1` first pass does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ft8) struct PassCtx {
+    pub imetric: u8,
+}
+
+impl PassCtx {
+    /// Pass 1: `imetric` 1.
+    pub(in crate::ft8) const FIRST: PassCtx = PassCtx { imetric: 1 };
+}
+
 /// Slot start offset (FT8 transmits 0.5 s into the slot).
 pub(super) const TX_START_OFFSET_S: f32 = 0.5;
 

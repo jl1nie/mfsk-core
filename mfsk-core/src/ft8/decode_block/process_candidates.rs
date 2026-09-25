@@ -32,7 +32,7 @@ use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
 use super::fill_symbol_spectra::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
 use super::spectrogram::{Spectrogram, compute_spectrogram};
 use super::types::{
-    AudioSample, DEFAULT_Q_THRESH, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, SAMPLE_RATE_HZ,
+    AudioSample, DEFAULT_Q_THRESH, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, PassCtx, SAMPLE_RATE_HZ,
     TONE_SPACING_HZ, TX_START_OFFSET_S,
 };
 use crate::engine::scalar::{Cmplx, ComplexSpec};
@@ -481,6 +481,7 @@ fn decode_block_multipass<S: AudioSample>(
                 fft_cache.as_deref(),
                 &mut bp_scratch,
                 None,
+                PassCtx::FIRST,
             );
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
@@ -1450,6 +1451,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
         fft_cache,
         &mut bp_scratch,
         on_result,
+        PassCtx::FIRST,
     )
 }
 
@@ -1473,6 +1475,7 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
         LlrT,
     >,
     on_result: Option<&mut dyn FnMut(&DecodeResult)>,
+    pass: PassCtx,
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -1492,6 +1495,7 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
         ap_hint,
         strictness,
         on_result,
+        pass,
     )
 }
 
@@ -1622,6 +1626,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         None,
         DecodeStrictness::Normal,
         None,
+        PassCtx::FIRST,
     )
 }
 
@@ -1667,6 +1672,7 @@ where
         None,
         DecodeStrictness::Normal,
         None,
+        PassCtx::FIRST,
     )
 }
 
@@ -1696,6 +1702,7 @@ fn process_candidates_with_ap<S: AudioSample, F>(
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
     mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
+    pass: PassCtx,
 ) -> Vec<DecodeResult>
 where
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
@@ -1753,6 +1760,7 @@ where
             strictness,
             0.0,
             &DefaultPolicy,
+            pass,
         ) {
             if let Some(cb) = on_result.as_mut() {
                 cb(&r);
@@ -1871,7 +1879,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     // inlines to `codec_is_plausible` alone, which is what this
     // function did unconditionally before the hook existed.
     policy: &Pol,
+    // Which WSJT-X decode pass this is; nothing reads it yet (#439).
+    pass: PassCtx,
 ) -> Option<DecodeResult> {
+    debug_assert!(matches!(pass.imetric, 1 | 2));
     // ── Staircase: cheap → deeper → OSD ─────────────────────────
     //
     // 1) Bp(llra) on the fast nsym=1 LLR. Most candidates that

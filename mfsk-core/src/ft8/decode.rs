@@ -15,7 +15,7 @@ use rayon::prelude::*;
 pub use super::equalizer::EqMode;
 use super::{
     Ft8,
-    decode_block::LlrT,
+    decode_block::{LlrT, PassCtx},
     downsample::build_fft_cache,
     equalizer,
     llr::sync_quality,
@@ -149,6 +149,7 @@ fn process_candidate<Pol: MessagePolicy>(
         ap_hint,
         &mut bp_scratch,
         policy,
+        PassCtx::FIRST,
     )
 }
 
@@ -179,10 +180,12 @@ fn process_candidate_with_scratch<Pol: MessagePolicy>(
         LlrT,
     >,
     policy: &Pol,
+    pass: PassCtx,
 ) -> Option<DecodeResult> {
     let state = triage_candidate(cand, audio, fft_cache)?;
     run_candidate_ladder(
         state, audio, fft_cache, depth, strictness, known, eq_mode, ap_hint, bp_scratch, policy,
+        pass,
     )
 }
 
@@ -496,6 +499,7 @@ fn decode_scheduled_candidates<Pol: MessagePolicy>(
             ap_hint,
             &mut bp_scratch,
             policy,
+            PassCtx::FIRST,
         ) && let Some(r) = accept(r)
         {
             out.push((idx, r));
@@ -524,6 +528,7 @@ fn run_candidate_ladder<Pol: MessagePolicy>(
         LlrT,
     >,
     policy: &Pol,
+    pass: PassCtx,
 ) -> Option<DecodeResult> {
     let CandidateTriage {
         refined,
@@ -563,6 +568,7 @@ fn run_candidate_ladder<Pol: MessagePolicy>(
             strictness,
             sync_cv,
             policy,
+            pass,
         )
     };
 
@@ -966,6 +972,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 ap_hint,
                 &mut bp_scratch,
                 policy,
+                PassCtx::FIRST,
             ) {
                 Some(r) => r,
                 None => continue,
