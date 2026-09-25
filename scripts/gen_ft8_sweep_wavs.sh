@@ -5,9 +5,27 @@
 #   scripts/gen_ft8_sweep_wavs.sh [ft8sim-path] [out-dir]
 #
 # File naming:  ft8_<channel>_<snr>_<trial>.wav
-#   channel:  awgn | ccir_good | ccir_moderate | ccir_poor
+#   channel:  awgn | ccir_good | ccir_moderate | ccir_poor        (FT8_CHANNEL_SET=ccir, the default)
+#             itu_lq itu_lm itu_ld itu_mq itu_mm itu_md itu_hq itu_hm itu_hd  (FT8_CHANNEL_SET=itu)
 #   snr:      m05 = -5 dB, m24 = -24 dB, etc.
 #   trial:    01..TRIALS
+#
+# TWO CHANNEL SETS, DELIBERATELY NOT INTERCHANGEABLE. The `ccir_*` set is what
+# `sweep-baseline.json` and every "vs jt9" number in docs/notes/ were measured
+# on, and it needs an ft8sim built from the WSJT-X tree the corpus was made
+# with (`2b9d654`). In February 2024 WSJT-X corrected the Watterson simulator
+# (f21f37ad0 "Correct the definition of fspread", 7ce6e29a7 "same spreading
+# function as ITU-R F.1487"): for the same fspread argument a newer tree gives a
+# WIDER Doppler spectrum. So `ccir_*` regenerated from a b4f9a43-or-later tree is
+# a different, harsher channel under the same name (AWGN files still match byte
+# for byte, which hides it), and the old `ccir_*` are milder than the ITU
+# channels their numbers suggest. The `itu_*` set is generated with the
+# corrected simulator and named differently on purpose; it needs ft8sim from
+# `v3.0.0` or later (the ITU channel codes were added in 3.x):
+#   itu_lq/lm/ld = low latitude quiet/moderate/disturbed  (0.5 Hz/0.5 ms, 1.5/2.0, 10/6)
+#   itu_mq/mm/md = mid latitude                            (0.1/0.5, 0.5/1.0, 1.0/2.0)
+#   itu_hq/hm/hd = high latitude                           (0.5/1.0, 10/3, 30/7)
+# The default output directory follows the set (`ft8_sweep`, `ft8_itu_sweep`).
 #
 # Run build_ft8sim.sh first if the binary doesn't exist.
 # Existing files are skipped (safe to re-run after widening the grid).
@@ -29,8 +47,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+FT8_CHANNEL_SET="${FT8_CHANNEL_SET:-ccir}"
+case "$FT8_CHANNEL_SET" in
+  ccir) DEFAULT_DIR_NAME=ft8_sweep ;;
+  itu)  DEFAULT_DIR_NAME=ft8_itu_sweep ;;
+  *) echo "error: FT8_CHANNEL_SET=$FT8_CHANNEL_SET: expected ccir or itu" >&2; exit 1 ;;
+esac
+
 FT8SIM="${1:-$REPO_ROOT/target/ft8sim/ft8sim}"
-OUT_DIR="${2:-$REPO_ROOT/embedded-poc/assets/ft8_sweep}"
+OUT_DIR="${2:-$REPO_ROOT/embedded-poc/assets/$DEFAULT_DIR_NAME}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)}"
 
 if [[ ! -x "$FT8SIM" ]]; then
@@ -58,12 +83,44 @@ TRIALS="${TRIALS:-20}"
 # docs/notes/FST4_BENCHMARK.md section 3).
 SNRS="-5 -10 -15 -17 -18 -19 -20 -21 -22 -23 -24 -25 -26"
 
-CHANNELS=(
-  "awgn          0.0  0.0"
-  "ccir_good     0.1  0.5"
-  "ccir_moderate 0.5  1.0"
-  "ccir_poor     1.0  2.0"
-)
+if [[ "$FT8_CHANNEL_SET" == itu ]]; then
+  # Field 2 is the ITU code ft8sim takes in place of the Doppler spread; field
+  # 3 is a placeholder (ft8sim still requires the argument, and ignores it).
+  # SNR grid: the quiet and moderate channels cross 50 % near -20 dB, but the
+  # disturbed ones (itu_ld, itu_hm, itu_hd: 10-30 Hz of Doppler spread, wider
+  # than FT8's 6.25 Hz tone spacing) are still at 0-50 % at -5 dB, so the grid
+  # reaches +10 dB and is denser through -8..-16.
+  SNRS="10 5 0 -5 -8 -10 -12 -14 -16 -18 -19 -20 -21 -22 -23 -24 -26"
+  CHANNELS=(
+    "itu_lq LQ 1.0"
+    "itu_lm LM 1.0"
+    "itu_ld LD 1.0"
+    "itu_mq MQ 1.0"
+    "itu_mm MM 1.0"
+    "itu_md MD 1.0"
+    "itu_hq HQ 1.0"
+    "itu_hm HM 1.0"
+    "itu_hd HD 1.0"
+  )
+  # An ft8sim without the ITU codes fails on the code argument at run time,
+  # per cell, deep inside the job pool. Say so up front instead.
+  probe="$(mktemp -d)"
+  if ! ( cd "$probe" && "$FT8SIM" "$MSG" "$F0" "$DT" MM 1.0 1 -20 >/dev/null 2>&1 ); then
+    rm -rf "$probe"
+    echo "error: $FT8SIM does not accept ITU channel codes (MM ...)." >&2
+    echo "  FT8_CHANNEL_SET=itu needs an ft8sim built from WSJT-X v3.0.0 or later:" >&2
+    echo "  scripts/build_ft8sim.sh <wsjtx-3.x-tree> <out-dir>" >&2
+    exit 1
+  fi
+  rm -rf "$probe"
+else
+  CHANNELS=(
+    "awgn          0.0  0.0"
+    "ccir_good     0.1  0.5"
+    "ccir_moderate 0.5  1.0"
+    "ccir_poor     1.0  2.0"
+  )
+fi
 
 snr_tag() {
   local snr=$1

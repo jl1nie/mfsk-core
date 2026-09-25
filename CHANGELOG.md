@@ -2,6 +2,48 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Two new FT8 corpora that reach what the old ones cannot: ITU fast
+  fading, and a crowded band with time offsets and empty files (#447).**
+  The AWGN/CCIR corpora hold one signal at DT 0, at most 1 Hz of Doppler
+  spread, and never an empty band.
+  - `ft8_itu_sweep/` (`FT8_CHANNEL_SET=itu scripts/gen_ft8_sweep_wavs.sh`,
+    9 ITU channels x 17 SNR points x 20 trials, needs a WSJT-X >= 3.0
+    `ft8sim`). mfsk-core's FT8 crosses 50 % at -19.4 to -20.8 dB on the quiet
+    and moderate ones, at -5.0 dB (`itu_ld`) and -1.7 dB (`itu_hm`) on the 10 Hz
+    ones, and never on `itu_hd` (30 Hz; 0 % at +10 dB). Named `itu_*`, not
+    `ccir_*`: WSJT-X corrected its Watterson simulator in February 2024, so the
+    same fspread now gives a wider Doppler spectrum, and the existing `ccir_*`
+    corpora (made from the `2b9d654` tree) are milder than the ITU channels
+    of the same numbers. Regenerating `ccir_*` from a newer tree gives a
+    different channel under the same name (AWGN files still match; verified
+    byte for byte on FST4-60). `BENCHMARKS.md` now names the tree each corpus
+    needs.
+  - `ft8_busy_sweep/` (`scripts/gen_ft8_busy_wavs.py`): 100 single signals
+    at -16 dB with DT scattered over -0.5..+1.5 s, 40 files each of 10, 20 and
+    40 signals (200-2700 Hz, SNR -24..-6 dB), and 200 noise-only files, with a
+    `truth.csv`. Built from noise-free ft8sim signals rescaled and summed, its
+    SNR calibration checked against ft8sim itself (within 0.02 dB). New test
+    `ft8_busy_sweep` writes an aggregate CSV (`set,strategy,trial,truth,hits,
+    extra`); `sweep-regression-check.py` compares total recall (flagging a fall
+    of a point) and total unexpected decodes per group, baseline in
+    `_meta.aggregates`. Runner groups `ft8_itu` and `ft8_busy`.
+
+  What they show on today's `main` (`max_cand` 600), with `jt9` on the same
+  files: on `dt1` mfsk-core finds all 100 (time window: not a problem); on
+  10/20/40 signals `.sic_early()` recalls 83.0/81.4/81.0 % against new
+  `jt9 -d3`'s 81.5/79.9/81.0 %, and plain `decode()` 79.5/73.8/66.1 %; and
+  noise alone gives no unexpected decodes. **The gap is precision**: `jt9`
+  gives 0 (2b9d654) or 4 (3.2) unexpected decodes over all 420 files,
+  mfsk-core 22 with `.sic_early()` and 48 with `decode()` at `sync_min` 0.8,
+  all in files that contain signals. Most of that is `sync_min`: `jt9 -d3`
+  runs 1.3, and at 1.3 `.sic_early()` gives 6 at the same recall (0.8 / 1.0 /
+  1.3 / 1.6 / 2.1: 22 / 14 / 6 / 6 / 6 extras; recall 82.0 / 81.9 / 82.0 /
+  81.3 / 78.5 %). The test's default is now 1.3 (`MFSK_FT8_BUSY_SYNC_MIN`);
+  `decode()` keeps 38 there (`.sic_rounds(3)` gives 44). Not the cause:
+  OSD ndeep 3 (22 -> 19 when forced to upstream's 2), upstream's post-CRC
+  filters (they would drop a quarter to a third). Recorded in
+  `sweep-baseline.json`; the decoder is not changed here.
+
 - **Tier C counts unexpected decodes, not just recall, for FT8, FT4 and
   FST4 (#447).** The sweeps now write a trailing `extra` column, the
   number of distinct decoded messages that were not the injected one; every
