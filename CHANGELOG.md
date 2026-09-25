@@ -27,15 +27,15 @@
 
   What it did, on the FT8 sweeps and the busy-band corpus (`max_cand` 600,
   `sync_min` 1.3; the baseline is main before this change): `.sic_early()`
-  crossing -0.32 dB on `ccir_poor`, within 0.08 dB elsewhere; the single
+  crossing -0.28 dB on `ccir_poor`, within 0.08 dB elsewhere; the single
   pass -0.10 dB on `ccir_poor` (`jt9`'s own change-by-change ablation found
   +0.33 dB on `ccir_moderate` for the pass rule and the squared metric
   together; here the gain lands on `ccir_poor` and `moderate` does not
   move). Unexpected
   decodes: the squared metric alone took the busy-band `.sic_early()` from
   6 to 18 and the nsync floor, the `/R` filter and the rest brought it to
-  12 (`jt9 -d3` 3.2: 4); the sweeps' `.sic_early()` 3 to 5, the busy-band
-  `decode()` 38 to 34; recall +0.5 / +1.0 / +0.5 points on busy10/20/40.
+  9 (`jt9 -d3` 3.2: 4); the sweeps' `.sic_early()` 3 to 5, the busy-band
+  `decode()` 38 to 33; recall +0.5 / +1.1 / +0.3 points on busy10/20/40.
   The AP change measured as neutral.
 
   **`mlag` is 13, as upstream from 3.0.** On the fixed-point ship shape it
@@ -43,7 +43,7 @@
   15 to 30 and ties from 40 up (table at `coarse_sync::MLAG`), so
   `ft8_qso3_apoff_recall`'s fixed-point floor is 11 (was 12); the sweeps are
   unchanged and the busy-band corpus is neutral to slightly better
-  (`.sic_early()` extras 12 to 9).
+  (`.sic_early()` extras 12 to 9; that is the 9 above).
 
   **Not ported, and why.** The `q >= 18` OSD `ndeep=3` split
   stays although upstream is `ndeep=2` throughout: forcing `ndeep=2` was better
