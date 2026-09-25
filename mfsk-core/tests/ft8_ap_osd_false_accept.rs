@@ -153,3 +153,67 @@ fn ap_measure() {
         );
     }
 }
+
+/// Whole-pipeline phantoms for FT8: slots of white noise and nothing else, so every
+/// decode is a false one, under the three a-priori conditions the sweeps use: no
+/// hint (only the blind-CQ pass), `CQ,JL1NIE` (a heavy lock) and `K1ABC,W9XYZ`. The
+/// request is the sweep's, `(sync_min 0.8, 50)`. `--ignored --nocapture`.
+#[test]
+#[ignore = "measurement, prints; run with --release --ignored --nocapture"]
+fn ft8_ap_noise_slots_measure() {
+    use mfsk_core::ft8::Ft8;
+    use mfsk_core::msg::ap::ApHint;
+    use mfsk_core::msg::decode_request::DecodeRequest;
+    use mfsk_core::msg::wsjt77::unpack77;
+    const SLOTS: usize = 3_000;
+    const SAMPLES: usize = 180_000; // 15 s at 12 kHz
+    for (label, hint) in [
+        ("no hint", None),
+        (
+            "CQ,JL1NIE",
+            Some(ApHint::new().with_call1("CQ").with_call2("JL1NIE")),
+        ),
+        (
+            "K1ABC,W9XYZ",
+            Some(ApHint::new().with_call1("K1ABC").with_call2("W9XYZ")),
+        ),
+    ] {
+        let per_thread = SLOTS / 12;
+        let hint = &hint;
+        let msgs: Vec<String> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..12)
+                .map(|t| {
+                    sc.spawn(move || {
+                        let mut rng = Rng(0xC0FF_EE00_1234_5678u64 ^ (t as u64 + 77));
+                        let mut out = Vec::new();
+                        for _ in 0..per_thread {
+                            let audio: Vec<i16> = (0..SAMPLES)
+                                .map(|_| (1000.0 * rng.gauss()).clamp(-32000.0, 32000.0) as i16)
+                                .collect();
+                            let mut req = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 50);
+                            if let Some(h) = hint.as_ref() {
+                                req = req.ap_hint(h);
+                            }
+                            for d in req.decode().results {
+                                out.push(format!(
+                                    "{} (pass {}, {} hard errors)",
+                                    unpack77(d.message77()).unwrap_or_default(),
+                                    d.pass,
+                                    d.hard_errors
+                                ));
+                            }
+                        }
+                        out
+                    })
+                })
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        println!(
+            "FT8_NOISE {label}: {} decodes in {} noise slots {:?}",
+            msgs.len(),
+            per_thread * 12,
+            &msgs[..msgs.len().min(4)]
+        );
+    }
+}

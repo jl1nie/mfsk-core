@@ -844,3 +844,47 @@ the `ndeep=3` split had been needed for, decodes at `ndeep=2` now.
 
 **`FT8_BENCHMARK.ja.md` is not in step and was not updated here**, for the
 reason given at the end of §12.
+
+## 15. The a-priori passes against `ft8b.f90`: which LLR variants, and what bounds the hard errors (#456, 2026-09-26)
+
+Two differences between this crate's AP rung and `ft8b.f90`, measured on the sweep corpus
+regenerated at 400 trials a cell (`gen_ft8_sweep_wavs.sh`, TRIALS=400, ft8sim from `2b9d654`,
+seed 1), SNR -17 to -24 dB, 12 800 files a condition, every alternative decoded on the same
+files as `main`. The hint comes from `MFSK_FT8_SWEEP_AP_HINT=<call1>,<call2>`: none (only the
+blind-CQ pass runs), `CQ,JL1NIE` (right: the corpus message is `CQ JL1NIE PM95`; a heavy lock)
+and `K1ABC,W9XYZ` (wrong).
+
+| | hits, `main` -> alternative | gained | lost | unexpected decodes, `main` -> alternative |
+|---|---|---:|---:|---:|
+| `ap_max_errors` 36, no hint | 6509 -> 6548 | 39 | 0 | 3 -> 3 |
+| `ap_max_errors` 36, right hint | 8771 -> **9315** | **544** | 0 | 4 -> 5 |
+| `ap_max_errors` 36, wrong hint | 6508 -> 6547 | 39 | 0 | 5 -> **9** |
+| AP on `llra`, `llrc` only, right hint | 8771 -> 8560 | 0 | **211** | 4 -> 4 |
+
+Every difference is a sign-test p < 1e-4 (gained or lost against none the other way).
+
+**LLR variants.** `ft8b.f90` runs each AP hypothesis on `llra` and then `llrc` (`mod(ipass-5,2)`);
+this crate runs it on `llra`, `llrb`, `llrc`, `llrd`. Restricted to upstream's two, the right
+hint loses 211 of 8771 (crossings 0.12-0.19 dB worse) and finds nothing the four did not,
+with no fewer phantoms. The deviation has a measured reason and stays.
+
+**`ap_max_errors`.** `ft8b.f90` accepts any decode with `nharderrors <= 36`; this crate's
+`DecodeStrictness::ap_max_errors` is 30, or 25 with 55 or more locked bits, calibrated
+against the old AP rung's false accepts (before #459). At 36: with the right hint 544 more hits
+(+6.2 %), crossings 0.26-0.39 dB more sensitive (AWGN -22.62 -> -22.89, ccir_good
+-22.47 -> -22.73, ccir_moderate -21.67 -> -22.03, ccir_poor -21.54 -> -21.93), most of them
+at -21 to -24 dB (151 at -23, 128 at -22, 101 at -21); with no hint 39 more and no extra
+phantom. The price is phantoms: +1 in 12 800 files with the right hint and +4 with the wrong
+one. They are the AP hallucination `ft8b.f90` has too: a hypothesis locked onto a marginal
+signal, within 36 bit errors (`K1ABC W9XYZ 73`, a full 77-bit lock, 34 hard errors, at the true
+signal's frequency; `K1ABC XO4TSH R HA17`, 33), and they carry an AP pass id (5-11), so a UI can
+mark them as `a` decodes do.
+
+Not measured. A crowded band: this corpus has one signal and a hint that is exactly right or
+wrong, so the chance that a wrong lock meets some other station's marginal signal is not
+sampled. Noise alone does not show it: 3 000 noise-only slots give 0 decodes for every
+configuration and hint (`ft8_ap_noise_slots_measure`, `tests/ft8_ap_osd_false_accept.rs`).
+The 100-trial corpus (3 200 files a condition) found 0 phantoms for `main` and 2 for 36 (wrong hint
+only); `main` has some at 400 trials too (3, 4 and 5), which is what more trials showed.
+
+Left to decide: `ap_max_errors`. Nothing here changes it.
