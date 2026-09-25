@@ -371,10 +371,12 @@ fn osd_escalation_gates_impl<P: Protocol>() -> (u32, u32) {
 
 /// Decode strictness: trades off sensitivity vs false-positive rate.
 ///
-/// `process_candidate_basic` bypasses `osd_max_errors` for FST4 (see the
-/// `is_fst4` gate below — issue #146: WSJT-X's own FST4 decoder has no
-/// such gate), so in practice these
-/// numbers are FT4-exclusive. `Normal` (FT4's hardcoded strictness,
+/// `process_candidate_basic` no longer applies `osd_max_errors` to any protocol:
+/// FST4 dropped it first (issue #146: WSJT-X's own FST4 decoder has no such gate)
+/// and FT4 followed in #456, once its OSD stopped returning a wrong codeword for
+/// 22.6 % of noise candidates (`ft4_decode.f90` has no such gate either). The
+/// method stays as public API and for the diagnostics that mirror the old
+/// ladder. `Normal` (FT4's hardcoded strictness,
 /// issue #72) was retuned 2026-07-18 against a `ft4sim` AWGN/CCIR sweep
 /// (`docs/notes/FT4_BENCHMARK.md`) — no longer a placeholder copy of the
 /// FT8 calibration. `Strict`/`Deep` are unused by any current caller but
@@ -1279,27 +1281,28 @@ where
                 variants.push((&llr_set.llrd, 3));
             }
 
-            // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has no
-            // post-OSD hard-error gate: `decode240_101` is called
-            // unconditionally after BP fails, and its only acceptance
-            // test is `nharderrors.ge.0 .and. unpk77_success`
-            // (`fst4_decode.f90:570`) — i.e. "OSD converged to a
-            // CRC-24-verified codeword", full stop, no upper bound on how
-            // many bits OSD had to flip to get there. `osd_max_errors` is
-            // FT8-calibrated (doc'd as "can re-tune later", issue #72)
-            // and was never re-tuned for FST4: near its own sensitivity
-            // threshold, every OSD result that did run had a
-            // CRC-verified hard-error count above `osd_max_errors`
-            // (rejected despite being provably correct) — issue #146.
-            // Bypass it for FST4 to match WSJT-X: trust the CRC-24
-            // verification inside `decode_soft` alone.
+            // Neither WSJT-X's FST4 decoder (`fst4_decode.f90`) nor its FT4 one
+            // (`ft4_decode.f90`) has a post-OSD hard-error gate: `decode240_101` /
+            // `decode174_91` is called unconditionally after BP fails, and the
+            // acceptance test is `nharderrors.ge.0` plus a message that unpacks
+            // (`fst4_decode.f90:570`, `ft4_decode.f90:425-430`) -- "OSD converged to a
+            // CRC-verified codeword", with no upper bound on how many bits it had to
+            // flip. Trust the CRC verification inside `decode_soft` alone.
+            //
+            // FST4 dropped its `osd_max_errors` gate first (#146: near its sensitivity
+            // threshold every OSD result that did run had a CRC-verified hard-error
+            // count above the FT8-calibrated ceiling, rejected despite being provably
+            // correct). FT4 kept it while its OSD returned a wrong codeword for 22.6 % of
+            // noise candidates (#456); since `Ldpc174_91::decode_soft` runs
+            // `decode174_91`'s search (5.8e-5) it holds nothing back that was measured:
+            // switched off, it moved none of 3 000 noise slots, the FT4 sweep or the
+            // WSJT-X recording.
             //
             // (A parallel pre-OSD *attempt* score gate, `osd_score_min`,
             // used to sit here too, bypassed for both FST4 and FT4 for
             // the identical reason — issue #146/#72 section 12. It ended
             // up with no live caller on any protocol once both bypassed
             // it and was removed outright, issue #230.)
-            let is_fst4 = P::ID == super::ProtocolId::Fst4;
             // See `osd_escalation_gates`'s doc comment for the full
             // derivation/history of these two thresholds.
             let (osd_attempt_min, osd_depth3_min) = osd_escalation_gates::<P>();
@@ -1320,9 +1323,6 @@ where
                     };
                     for (llr, _) in &variants {
                         if let Some(r) = fec.decode_soft_pooled(llr, &osd_opts, &mut bp_scratch) {
-                            if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(osd_depth) {
-                                continue;
-                            }
                             let pass = if osd_depth == 3 { 5 } else { 4 };
                             if let Some(d) = finish(r, pass, true) {
                                 return Some(d);
