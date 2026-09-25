@@ -637,3 +637,108 @@ stops at §6 (2026-07-18), so §7 through §11 were already untranslated
 before this section existed; adding a Japanese §12 on its own would
 put the newest numbers after a four-section hole rather than at the
 end of a story. Translating the backlog is its own piece of work.
+
+## 13. Real `jt9` from WSJT-X 3.2.0-rc1 is up to 0.84 dB more sensitive on FT8; FT4 did not move (2026-09-24)
+
+The "vs real `jt9`" figures above, in `BENCHMARKS.md`, and in the test
+comments were measured against a `jt9` built from the local WSJT-X tree,
+which was at `2b9d654` (2024-03-12). That tree was a fork of a mirror
+that had stopped updating; the actively developed repository is
+<https://github.com/WSJTX/wsjtx> (v3.0.0 2026-04-06, v3.2.0-rc1
+2026-09-24). Auditing the difference (#435, #442) turned up FT8 decoder
+changes upstream, so the same corpus was run through both binaries.
+
+**Setup.** Old `jt9` = the existing local build (`build-jt9/jt9`,
+2026-07-29, from the `2b9d654` tree). New `jt9` = `WSJTX/wsjtx`
+`967c85a`, Release,
+`ninja jt9`. On this host the new tree needed two CMake edits to
+configure: `Qt5::WebSockets` dropped from `find_package` and
+`wsjt_qt`'s link line (not installed, not used by `jt9`), and
+`-DWSJT_SKIP_MAP65=ON` (no PortAudio). The old binary reproduces
+`FT8_BENCHMARK.md` §10 and the depth-ladder table exactly (`qso3_busy.wav`:
+14 / 19 / 22 decodes at `-d1/-d2/-d3`; `ccir_poor -d3` −18.88 dB, as
+`BENCHMARKS.md` quotes). Corpus: `ft8_sweep/` and `ft4_sweep/`, 1040 files
+each, 3 depths, both binaries. Scored by `scripts/score-jt9-sweep.py`
+with the sweep's own criteria (message, ±5 Hz, |dt| ≤ 0.6 s) and the same
+`crossing_snr()` as `sweep-baseline.json`.
+
+### FT8: 50%-recall crossing of `jt9 -8`, dB (old → new, Δ; negative = more sensitive)
+
+| Channel | `-d1` | `-d2` | `-d3` |
+|---|---|---|---|
+| AWGN | −20.54 → −20.54 (0.00) | −21.00 → −21.10 (−0.10) | −21.14 → **−21.67** (−0.52) |
+| CCIR good | −20.50 → −20.55 (−0.05) | −21.22 → −21.36 (−0.14) | −21.22 → **−21.78** (−0.56) |
+| CCIR moderate | −18.75 → −18.60 (+0.15) | −19.67 → −19.75 (−0.08) | −20.00 → **−20.33** (−0.33) |
+| CCIR poor | −18.00 → −18.33 (−0.33) | −18.78 → −19.44 (−0.67) | −18.88 → **−19.71** (−0.84) |
+
+`-d3` improves on every channel and `-d2` on three of four. `-d1` is
+inside what 20 files per SNR level can resolve. At the corpus's −5, −10
+and −15 dB points every file gives the same answer on both builds.
+
+### What that does to the comparison
+
+`sweep-baseline.json` carries mfsk-core's own crossings on the same
+seed-1 corpus (AWGN −21.62, good −21.45, moderate −19.75, poor
+−18.90 dB). mfsk-core minus real `jt9 -8 -d3`:
+
+| | vs old `jt9` (`2b9d654`) | vs new `jt9` (3.2.0-rc1) |
+|---|---|---|
+| AWGN | −0.48 | **+0.05** |
+| CCIR good | −0.23 | **+0.33** |
+| CCIR moderate | +0.25 | **+0.58** |
+| CCIR poor | +0.02 | **+0.81** |
+
+Negative means mfsk-core is the more sensitive. The old column is the
+figure `BENCHMARKS.md` already quotes. Against the current WSJT-X the
+"at/above parity" reading no longer holds for FT8's fading channels: it is
+0.3–0.8 dB behind at `-d3`. mfsk-core's own numbers did not change; the
+reference moved.
+
+### What moved in `jt9`
+
+From the Fortran diff, not from profiling: `ft8b.f90` gained a fifth
+bit metric (per-bit largest magnitude of the nsym = 1, 2, 3 variants), doubled AP passes (nsym 1 and 2 per AP type, `apmag` 1.1),
+`nsync` gates of 6/7/8 by `imetric`/depth, a filter dropping `/R` and
+`TU; ` messages when no contest is set, and a −25 dB SNR floor.
+`ft8_decode.f90` changed the pass driver (`syncmin` 2.1 at `-d1/-d2`, the
+`nzhsym==41` override removed, `ndeep` removed so `-d3` pass 1 runs at
+depth 3, pass 2/3 no longer gated on "new decodes", `MAXCAND` 1000) and
+added an a8 decode. These are #438 and #439; the split of the gain
+between them has not been measured.
+
+Real recordings, message by message (5 files): differences are confined to
+marginal decodes. `qso3_busy.wav` goes 14 / 19 / 22 → 14 / 20 / 21: `-d2`
+gains `K1BZM DK8NE -10` (−20 dB, 244 Hz) and `-d3` loses
+`TU; 7N9RST EI8TRF 589 5732` (−24 dB) to the new filter. The
+`191111_110130` / `qso1` recordings gain one −16 to −18 dB decode each.
+
+### FT4
+
+`jt9 -5` output is **byte-identical** between the two builds over all 3120
+sweep outputs (AWGN and three CCIR channels, 3 depths), and over the real
+`000000_000002.wav` (16 / 19 / 19 decodes). Crossings therefore do not move
+(AWGN −17.11 / −17.57 / −18.17 dB at `-d1/-d2/-d3`). This does not
+exercise the changed `MAXCAND` (100 → 200): each file holds one signal, and
+no call-sign context is set so the AP window `napwid` is unused. A busy-band
+FT4 file with more than 100 candidates has not been run (#440).
+
+### Reproducing, and what was not kept
+
+The raw `jt9` outputs (about 12 500 small files) were not kept, in line with
+the CSVs in `sweep-baseline.json`'s note. They are regenerable from the
+seed-1 corpora and the two commits above; the per-file loop and layout are
+in the header of `scripts/score-jt9-sweep.py`. Three pitfalls hit while
+doing this: (1) `jt9` appends ` ?` and ` aN` markers to the message, and a
+scorer that compares the whole field counts correct AP decodes as misses
+and inflates "false decodes" (this happened once; corrected in #442);
+(2) FT4 lines use `+` where FT8 uses `~`; (3) the same corpus must be used
+for both binaries and for mfsk-core, because a single draw is worth up to
+1.1 dB on the fading channels and that error is common to all of them, not
+to any one decoder.
+
+Not measured: the call-sign-context path (`-Q`, a7/a8), FT4 with AP, timing
+(the two builds are not compiled alike), and the effect of individual
+upstream changes.
+
+**`FT8_BENCHMARK.ja.md` is not in step and was not updated here**, for the
+reason given at the end of §12.
