@@ -2,6 +2,61 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT4's OSD runs the way `decode174_91` runs it (#456).** `ft4_decode.f90`
+  decodes every pass, blind or a-priori, through `decode174_91(llr, Keff=91,
+  maxosd=2, ndeep=2, apmask)`: BP, then OSD on the BP sum after 1 and after 2
+  iterations, a test pattern that flips a locked bit skipped, the CRC checked
+  once, on the winner. `Ldpc174_91::decode_soft` ran `osd_decode_deep` /
+  `osd_decode_deep4` on the raw LLR instead, the CRC on every candidate; it now
+  runs the search #459 gave FT8's AP rung (`osd_decode_npre1_masked` on
+  `bp_llr_zsum_ap_with_scratch`), at every `osd_depth >= 1`, with or without an
+  AP mask. Measured on iid Gaussian LLRs (sd 2.83): before, **22.6 %** of
+  `osd_depth` 2 calls passed the CRC (6787 of 30 000) and every depth-3 and
+  depth-4 call did, against `decode174_91`'s 5.8e-5; after, 29 in 300 000
+  (9.7e-5). The pipeline's `hard_errors < osd_max_errors` gate was what kept
+  them out (19 of 30 000 got through it before, 25 of 300 000 after).
+  `tests/ft4_osd_false_accept.rs` holds the rate.
+
+  On 3 000 slots of white noise through the whole pipeline: `(sync_min 1.2, 50)`
+  0 phantoms before and after, `(0.05, 100)` **9 before, 2 after**. Tier C, FT4
+  (same machine, before and after): crossings unchanged (AWGN, ccir_good,
+  ccir_poor 0.00 dB, ccir_moderate -0.09 dB), unexpected decodes 0 in every group
+  as before; the WSJT-X FT4 recording gives the same 11 decodes at both request
+  shapes, at 2.5 ms a decode against 2.4 for `(1.2, 50)` and 4.8 against 6.2 for
+  `(0.05, 100)` (before), and every FT4 test passes under `fixed-point`.
+
+  Three more places where the FT4 ladder differed from `ft4_decode.f90`, each
+  measured on its own. **The post-OSD `hard_errors < osd_max_errors` gate is gone**:
+  upstream's FT4 has none (`nharderror.ge.0` and a message that unpacks), and switched
+  off it moved none of the noise slots, the sweep or the recording (`osd_max_errors`
+  stays as public API and says it is applied to no protocol). **The AP rung runs the
+  OSD**: upstream's AP passes go through the same `decode174_91(maxosd=2, apmask)` as
+  the blind ones, and this rung had `osd_depth: 0`, BP only. Crossings 0.34 / 0.39 /
+  0.86 / 0.67 dB more sensitive (AWGN, ccir_good, ccir_moderate, ccir_poor), unexpected
+  decodes still 0 in every group, noise slots `(0.05, 100)` 3 against 2, the recording
+  the same 11 decodes at 2.28 ms against 2.24 for `(1.2, 50)` and 5.15 against 4.64 for
+  `(0.05, 100)`. **`maxosd = 3` near the QSO frequency**: `ft4_decode.f90` decodes a
+  candidate within `napwid` (50 Hz) of `nfqso` with the OSD on a third BP-sum snapshot
+  (`zsave(:,3)`), blind and AP passes alike. New `FecOpts::osd_snapshots` (default 2;
+  `Ldpc174_91` reads it, the other codecs ignore it) and `pipeline::QSO_WINDOW_HZ`; a
+  candidate within 50 Hz of `DecodeRequest::freq_hint` gets 3. On identical BPSK/AWGN LLRs
+  3 snapshots recover everything 2 do and more (257 against 226 of 4000 at amplitude 0.9,
+  none by 2 alone; `tests/ft4_osd_false_accept.rs`). On the FT4 sweep with the hint on
+  its signal (`MFSK_FT4_SWEEP_FREQ_HINT=1500`, 400 trials a cell, 20 800 files, the same
+  files at `maxosd` 2 and 3): 10 972 -> 11 013 hits, **41 gained and none lost** (sign
+  test p < 1e-4), all four channels; the crossings move by only 0.02-0.04 dB, because it
+  acts on the cells at the threshold (37 % -> +1.1 points at -18 dB, 12 % -> +0.4 at
+  -19 dB), and unexpected decodes stay at 3 in every condition. The hint alone changes
+  no file. With `freq_hint 1500` the noise-slot phantoms stay at 0 and 3, and the
+  recording gives the same 11 decodes wherever the hint points. `ap_max_errors` (30 / 25) still bounds AP decodes; upstream's FT4 has no such
+  bound, and it is shared with FT8, so it is a separate measurement.
+
+  The depth-4 rung of the generic ladder (`osd_decode_deep4`, pass id 13, at
+  `nsync >= osd_depth3_min`) is removed: FST4's codec has always mapped depth 4
+  to `min(3)` and FT4's now runs one search at every depth, so it repeated a
+  failed decode with the same result (FST4-30, all four channels: crossings and
+  unexpected decodes identical without it).
+
 - **FST4's OSD searches the code WSJT-X searches, and checks the CRC on its
   winner (#456).** Two differences from `osd240_101.f90`, both in
   `osd_decode_npre_generic` (FST4's ndeep 2/3 path).

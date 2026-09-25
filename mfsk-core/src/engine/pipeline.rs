@@ -242,6 +242,16 @@ impl DecodeDepth {
     };
 }
 
+/// `napwid` of `ft4_decode.f90` (`napwid=50`): how close, in Hz, a candidate has to
+/// be to the operator's QSO frequency (here `DecodeRequest::freq_hint`) to be
+/// decoded with `maxosd = 3` rather than 2.
+pub(crate) const QSO_WINDOW_HZ: f32 = 50.0;
+
+/// Whether a candidate at `cand_freq_hz` is inside the QSO window of `freq_hint`.
+pub(crate) fn near_qso_freq(cand_freq_hz: f32, freq_hint: Option<f32>) -> bool {
+    freq_hint.is_some_and(|h| (cand_freq_hz - h).abs() <= QSO_WINDOW_HZ)
+}
+
 /// OSD depth-escalation gates: `(osd_attempt_min, osd_depth3_min)`.
 ///
 /// The `12`/`18` pair was calibrated against FT8's `N_SYNC=21` (3 blocks x
@@ -371,10 +381,12 @@ fn osd_escalation_gates_impl<P: Protocol>() -> (u32, u32) {
 
 /// Decode strictness: trades off sensitivity vs false-positive rate.
 ///
-/// `process_candidate_basic` bypasses `osd_max_errors` for FST4 (see the
-/// `is_fst4` gate below — issue #146: WSJT-X's own FST4 decoder has no
-/// such gate), so in practice these
-/// numbers are FT4-exclusive. `Normal` (FT4's hardcoded strictness,
+/// `process_candidate_basic` no longer applies `osd_max_errors` to any protocol:
+/// FST4 dropped it first (issue #146: WSJT-X's own FST4 decoder has no such gate)
+/// and FT4 followed in #456, once its OSD stopped returning a wrong codeword for
+/// 22.6 % of noise candidates (`ft4_decode.f90` has no such gate either). The
+/// method stays as public API and for the diagnostics that mirror the old
+/// ladder. `Normal` (FT4's hardcoded strictness,
 /// issue #72) was retuned 2026-07-18 against a `ft4sim` AWGN/CCIR sweep
 /// (`docs/notes/FT4_BENCHMARK.md`) — no longer a placeholder copy of the
 /// FT8 calibration. `Strict`/`Deep` are unused by any current caller but
@@ -757,6 +769,7 @@ where
         false,
         false,
         &AcceptAll,
+        false,
     )
 }
 
@@ -792,6 +805,7 @@ where
         false,
         false,
         &AcceptAll,
+        false,
     )
 }
 
@@ -870,6 +884,7 @@ where
         skip_snr,
         skip_llr_nsym_max,
         &AcceptAll,
+        false,
     )
 }
 
@@ -943,13 +958,14 @@ pub(crate) fn process_candidate_basic_ap<P: GenericPipelineProtocol, A: InfoAcce
     sync_q_min: u32,
     ap: &[(&[u8], &[u8], u8)],
     accept: &A,
+    near_qso: bool,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P, A>(
         cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, ap, None, false,
-        false, accept,
+        false, accept, near_qso,
     )
 }
 
@@ -1012,6 +1028,10 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol, A: InfoAccept>(
     // for every existing caller (behaves exactly as before).
     skip_llr_nsym_max: bool,
     accept: &A,
+    // `true` for a candidate within [`QSO_WINDOW_HZ`] of the request's
+    // `freq_hint`: `ft4_decode.f90` decodes those with `maxosd = 3` instead of 2
+    // (`FecOpts::osd_snapshots`). `false` for every caller that has no hint.
+    near_qso: bool,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -1279,27 +1299,28 @@ where
                 variants.push((&llr_set.llrd, 3));
             }
 
-            // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has no
-            // post-OSD hard-error gate: `decode240_101` is called
-            // unconditionally after BP fails, and its only acceptance
-            // test is `nharderrors.ge.0 .and. unpk77_success`
-            // (`fst4_decode.f90:570`) — i.e. "OSD converged to a
-            // CRC-24-verified codeword", full stop, no upper bound on how
-            // many bits OSD had to flip to get there. `osd_max_errors` is
-            // FT8-calibrated (doc'd as "can re-tune later", issue #72)
-            // and was never re-tuned for FST4: near its own sensitivity
-            // threshold, every OSD result that did run had a
-            // CRC-verified hard-error count above `osd_max_errors`
-            // (rejected despite being provably correct) — issue #146.
-            // Bypass it for FST4 to match WSJT-X: trust the CRC-24
-            // verification inside `decode_soft` alone.
+            // Neither WSJT-X's FST4 decoder (`fst4_decode.f90`) nor its FT4 one
+            // (`ft4_decode.f90`) has a post-OSD hard-error gate: `decode240_101` /
+            // `decode174_91` is called unconditionally after BP fails, and the
+            // acceptance test is `nharderrors.ge.0` plus a message that unpacks
+            // (`fst4_decode.f90:570`, `ft4_decode.f90:425-430`) -- "OSD converged to a
+            // CRC-verified codeword", with no upper bound on how many bits it had to
+            // flip. Trust the CRC verification inside `decode_soft` alone.
+            //
+            // FST4 dropped its `osd_max_errors` gate first (#146: near its sensitivity
+            // threshold every OSD result that did run had a CRC-verified hard-error
+            // count above the FT8-calibrated ceiling, rejected despite being provably
+            // correct). FT4 kept it while its OSD returned a wrong codeword for 22.6 % of
+            // noise candidates (#456); since `Ldpc174_91::decode_soft` runs
+            // `decode174_91`'s search (5.8e-5) it holds nothing back that was measured:
+            // switched off, it moved none of 3 000 noise slots, the FT4 sweep or the
+            // WSJT-X recording.
             //
             // (A parallel pre-OSD *attempt* score gate, `osd_score_min`,
             // used to sit here too, bypassed for both FST4 and FT4 for
             // the identical reason — issue #146/#72 section 12. It ended
             // up with no live caller on any protocol once both bypassed
             // it and was removed outright, issue #230.)
-            let is_fst4 = P::ID == super::ProtocolId::Fst4;
             // See `osd_escalation_gates`'s doc comment for the full
             // derivation/history of these two thresholds.
             let (osd_attempt_min, osd_depth3_min) = osd_escalation_gates::<P>();
@@ -1314,43 +1335,26 @@ where
                     let osd_opts = FecOpts {
                         bp_max_iter,
                         osd_depth: osd_depth as u32,
+                        osd_snapshots: if near_qso { 3 } else { 2 },
                         ap_mask: None,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),
                         ..FecOpts::default()
                     };
                     for (llr, _) in &variants {
                         if let Some(r) = fec.decode_soft_pooled(llr, &osd_opts, &mut bp_scratch) {
-                            if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(osd_depth) {
-                                continue;
-                            }
                             let pass = if osd_depth == 3 { 5 } else { 4 };
                             if let Some(d) = finish(r, pass, true) {
                                 return Some(d);
                             }
                         }
                     }
-                    // OSD depth-4 Top-K pruning gated on high sync quality.
-                    if nsync >= osd_depth3_min {
-                        let osd4_opts = FecOpts {
-                            bp_max_iter,
-                            osd_depth: 4,
-                            ap_mask: None,
-                            verify_info: Some(<P::Msg as MessageCodec>::verify_info),
-                            ..FecOpts::default()
-                        };
-                        for (llr, _) in &variants {
-                            if let Some(r) =
-                                fec.decode_soft_pooled(llr, &osd4_opts, &mut bp_scratch)
-                            {
-                                if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(4) {
-                                    continue;
-                                }
-                                if let Some(d) = finish(r, 13, true) {
-                                    return Some(d);
-                                }
-                            }
-                        }
-                    }
+                    // There used to be a depth-4 rung here (`osd_decode_deep4`, a Top-K
+                    // pruned search, pass id 13) for `nsync >= osd_depth3_min`. It is
+                    // gone (#456): FST4's codec has always mapped depth 4 to
+                    // `min(3)`, i.e. the call just above, and FT4's now runs
+                    // `decode174_91`'s one search at every depth (`ft4_decode.f90` has
+                    // a fixed `ndeep = 2`), so the rung repeated a failed decode with
+                    // the same result and cost the time of one more OSD per LLR variant.
                 }
             }
 
@@ -1391,9 +1395,15 @@ where
                 let locked = mask.iter().filter(|&&m| m != 0).count();
                 let max_errors = strictness.ap_max_errors(locked);
                 for (llr, _) in &variants {
+                    // `ft4_decode.f90` runs its AP passes through the same
+                    // `decode174_91(..., maxosd=2, ndeep=2, apmask)` as the blind
+                    // ones: BP with the locked bits held, then OSD on the BP sum,
+                    // a pattern that flips a locked bit skipped. `osd_depth: 0`
+                    // here made this rung BP only (#456).
                     let ap_opts = FecOpts {
                         bp_max_iter,
-                        osd_depth: 0,
+                        osd_depth: 2,
+                        osd_snapshots: if near_qso { 3 } else { 2 },
                         ap_mask: Some((mask, values)),
                         ap_mag_scale: <P as Protocol>::AP_MAG_SCALE,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),
@@ -2169,6 +2179,7 @@ where
                     sync_q_min,
                     ap,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 ) {
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2204,6 +2215,7 @@ where
                         sync_q_min,
                         ap,
                         accept,
+                        near_qso_freq(cand.freq_hz, freq_hint),
                     )?;
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2226,6 +2238,7 @@ where
                         sync_q_min,
                         ap,
                         accept,
+                        near_qso_freq(cand.freq_hz, freq_hint),
                     )?;
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2308,6 +2321,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 ) {
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2346,6 +2360,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -2371,6 +2386,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -2588,6 +2604,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )
             })
             .collect();
@@ -2614,6 +2631,7 @@ where
                     false,
                     false,
                     accept,
+                    near_qso_freq(cand.freq_hz, freq_hint),
                 )
             })
             .collect();

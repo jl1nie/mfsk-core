@@ -71,13 +71,26 @@ fn codec_filter_requested() -> bool {
     std::env::var("MFSK_FT4_SWEEP_CODEC_FILTER").is_ok_and(|v| v == "1")
 }
 
+/// `MFSK_FT4_SWEEP_FREQ_HINT=<Hz>` passes that frequency as the request's
+/// `freq_hint`, the operator's QSO frequency. Every signal in this corpus is at
+/// 1500 Hz, so `1500` puts it inside the 50 Hz window in which `ft4_decode.f90`
+/// decodes with `maxosd = 3` (#456). Unset, the sweep has no hint, as it always had.
+fn freq_hint_requested() -> Option<f32> {
+    std::env::var("MFSK_FT4_SWEEP_FREQ_HINT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+}
+
 /// `(pass, extra)`: whether the injected message came out at the right
 /// frequency and time, and how many *other* distinct messages came out
 /// (see `common::distinct_extras`).
 fn decode_wav_ft4(audio: &[i16]) -> (bool, u32) {
-    let req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+    let mut req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
         audio, 100.0, 3000.0, 0.8, 50,
     );
+    if let Some(h) = freq_hint_requested() {
+        req = req.freq_hint(h);
+    }
     let out = if codec_filter_requested() {
         req.codec_filter().decode()
     } else {
