@@ -224,6 +224,32 @@ pub(in crate::ft8) struct PassCtx {
 impl PassCtx {
     /// Pass 1: `imetric` 1.
     pub(in crate::ft8) const FIRST: PassCtx = PassCtx { imetric: 1 };
+
+    /// Passes 2 and 3: `imetric` 2.
+    pub(in crate::ft8) const LATER: PassCtx = PassCtx { imetric: 2 };
+
+    /// The context of 0-based decode round `round` (`ipass - 1`):
+    /// `ft8_decode.f90` v3.0.0 sets `imetric=1` for pass 1 and `imetric=2`
+    /// for passes 2 and 3.
+    pub(in crate::ft8) const fn for_round(round: usize) -> PassCtx {
+        if round == 0 {
+            PassCtx::FIRST
+        } else {
+            PassCtx::LATER
+        }
+    }
+
+    /// Whether 0-based round `round` runs, given `decodes_so_far` — every
+    /// message decoded before it, including an earlier stage's
+    /// (`ndecodes`, which `ft8_decode.f90` seeds with `ndec_early`).
+    ///
+    /// v3.0.0: pass 1 and pass 2 always run; pass 3 runs only if there is
+    /// at least one decode (`if(ndecodes.eq.0) cycle`). Before 3.0.0 pass 2
+    /// also needed a decode and pass 3 needed a *new* one; that skip
+    /// rule is gone upstream (#439).
+    pub(in crate::ft8) const fn round_runs(round: usize, decodes_so_far: usize) -> bool {
+        round < 2 || decodes_so_far > 0
+    }
 }
 
 /// Slot start offset (FT8 transmits 0.5 s into the slot).

@@ -903,10 +903,11 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
 
-    let mut prev_total: usize = 0;
     for ipass in 0..n_rounds {
-        if ipass >= 1 && all_results.len() == prev_total {
-            break;
+        // WSJT-X 3.x: pass 2 always runs, pass 3 needs a decode (this
+        // stage's or an earlier one's — `known`); see `PassCtx::round_runs`.
+        if !PassCtx::round_runs(ipass, known.len() + all_results.len()) {
+            continue;
         }
         // A SIC round is a whole coarse-sync sweep plus a candidate
         // loop; not starting one is the coarsest thing this engine can
@@ -915,7 +916,6 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
         if !budget.allows(None, None) {
             break;
         }
-        prev_total = all_results.len();
 
         let spec = crate::ft8::decode_block::compute_spectrogram(residual, freq_max);
         let candidates =
@@ -972,7 +972,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 ap_hint,
                 &mut bp_scratch,
                 policy,
-                PassCtx::FIRST,
+                PassCtx::for_round(ipass),
             ) {
                 Some(r) => r,
                 None => continue,

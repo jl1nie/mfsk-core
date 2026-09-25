@@ -318,10 +318,10 @@ pub fn decode_block_with_ap_tuned<S: AudioSample>(
 /// coarse_sync on the (subtracted) audio, fine refine, decode, then
 /// LPF-subtract every fresh CRC-passing decode for the next pass.
 ///
-/// Pass termination matches WSJT-X exactly:
-/// - pass 1 always runs;
-/// - pass 2 skips when pass 1 returned 0 decodes;
-/// - pass 3 skips when pass 2 returned no NEW decodes.
+/// Pass termination matches WSJT-X 3.x (`ft8_decode.f90` v3.0.0; see
+/// [`PassCtx::round_runs`]): passes 1 and 2 always run, pass 3 runs when
+/// there is at least one decode. WSJT-X 2.x skipped pass 2 on zero decodes
+/// and pass 3 on zero new ones; that rule is gone upstream.
 ///
 /// On host (`fft-rustfft`) the audio is cloned to a working `Vec<i16>`
 /// (subtract operates on i16 samples). Embedded targets compile through
@@ -351,7 +351,6 @@ fn decode_block_multipass<S: AudioSample>(
     let trace_stage = stage_trace_enabled();
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
     let mut all: AllocVec<DecodeResult> = AllocVec::new();
-    let mut prev_total: usize = 0;
     // Shared across every pass's per-candidate loop below (issue #199):
     // this driver calls the per-candidate decode entry once per
     // candidate (1-element `vec![cand]`), so without a caller-owned
@@ -361,11 +360,9 @@ fn decode_block_multipass<S: AudioSample>(
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     for ipass in 0..3 {
-        if ipass >= 1 && all.len() == prev_total {
-            // Pass 2 skips on zero from pass 1; pass 3 on zero new.
-            break;
+        if !PassCtx::round_runs(ipass, all.len()) {
+            continue;
         }
-        prev_total = all.len();
 
         let spec = compute_spectrogram(work.as_slice(), freq_max);
         // Capture *this pass's own* spectrogram + per-bin baseline for
@@ -481,7 +478,7 @@ fn decode_block_multipass<S: AudioSample>(
                 fft_cache.as_deref(),
                 &mut bp_scratch,
                 None,
-                PassCtx::FIRST,
+                PassCtx::for_round(ipass),
             );
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
