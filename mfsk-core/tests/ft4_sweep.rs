@@ -71,7 +71,10 @@ fn codec_filter_requested() -> bool {
     std::env::var("MFSK_FT4_SWEEP_CODEC_FILTER").is_ok_and(|v| v == "1")
 }
 
-fn decode_wav_ft4(audio: &[i16]) -> bool {
+/// `(pass, extra)`: whether the injected message came out at the right
+/// frequency and time, and how many *other* distinct messages came out
+/// (see `common::distinct_extras`).
+fn decode_wav_ft4(audio: &[i16]) -> (bool, u32) {
     let req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
         audio, 100.0, 3000.0, 0.8, 50,
     );
@@ -80,13 +83,19 @@ fn decode_wav_ft4(audio: &[i16]) -> bool {
     } else {
         req.decode()
     };
-    out.results.iter().any(|d| {
+    let text_of = |d: &_| -> Option<String> {
+        let d: &mfsk_core::ft4::decode::DecodeResult = d;
         let mut m77 = [0u8; 77];
         m77.copy_from_slice(d.message77());
-        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+        unpack77(&m77)
+    };
+    let pass = out.results.iter().any(|d| {
+        text_of(d).as_deref() == Some(GOLDEN_MSG)
             && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
             && d.dt_sec.abs() <= DT_TOL_SEC
-    })
+    });
+    let texts: Vec<String> = out.results.iter().filter_map(text_of).collect();
+    (pass, common::distinct_extras(&texts, GOLDEN_MSG))
 }
 
 // ── Filename parsing ─────────────────────────────────────────────────────────
@@ -187,12 +196,12 @@ fn ft4_snr_sweep() {
 
     eprintln!("\n{:-<64}", "");
     eprintln!(
-        "  {:<14} {:>7}   {:>6}  Bar",
-        "Channel", "SNR(dB)", "Recall"
+        "  {:<14} {:>7}   {:>6}  {:<22}       Extra",
+        "Channel", "SNR(dB)", "Recall", "Bar"
     );
     eprintln!("{:-<64}", "");
 
-    let mut csv = common::sweep_csv_writer("MFSK_FT4_SWEEP_CSV", "channel,snr_db,trial,pass");
+    let mut csv = common::sweep_csv_writer("MFSK_FT4_SWEEP_CSV", "channel,snr_db,trial,pass,extra");
 
     #[cfg(feature = "parallel")]
     use rayon::prelude::*;
@@ -210,7 +219,7 @@ fn ft4_snr_sweep() {
     let mut last_chan: Option<String> = None;
     for ((chan, snr), wav_group) in &groups {
         #[cfg(feature = "parallel")]
-        let results: Vec<(u32, bool)> = wav_group
+        let results: Vec<(u32, (bool, u32))> = wav_group
             .par_iter()
             .filter_map(|wav| {
                 load_wav_i16_opt(&wav.path).map(|audio| (wav.trial, decode_wav_ft4(&audio)))
@@ -218,7 +227,7 @@ fn ft4_snr_sweep() {
             .collect();
 
         #[cfg(not(feature = "parallel"))]
-        let results: Vec<(u32, bool)> = wav_group
+        let results: Vec<(u32, (bool, u32))> = wav_group
             .iter()
             .filter_map(|wav| {
                 load_wav_i16_opt(&wav.path).map(|audio| (wav.trial, decode_wav_ft4(&audio)))
@@ -229,11 +238,12 @@ fn ft4_snr_sweep() {
         if trials == 0 {
             continue;
         }
-        let hits = results.iter().filter(|&(_, h)| *h).count() as u32;
+        let hits = results.iter().filter(|&&(_, (h, _))| h).count() as u32;
+        let extras: u32 = results.iter().map(|&(_, (_, e))| e).sum();
 
         if let Some(f) = csv.as_mut() {
-            for &(trial, pass) in &results {
-                writeln!(f, "{chan},{snr},{trial},{}", pass as u8).unwrap();
+            for &(trial, (pass, extra)) in &results {
+                writeln!(f, "{chan},{snr},{trial},{},{extra}", pass as u8).unwrap();
             }
         }
 
@@ -245,8 +255,8 @@ fn ft4_snr_sweep() {
         let bar_len = (hits as usize * 20).div_ceil(trials as usize);
         let bar = format!("{}{}", "#".repeat(bar_len), ".".repeat(20 - bar_len));
         eprintln!(
-            "  {:<14}  {:>4} dB   {:>2}/{:<2}  [{}]  {:4.0}%",
-            chan, snr, hits, trials, bar, pct
+            "  {:<14}  {:>4} dB   {:>2}/{:<2}  [{}]  {:4.0}%   {:>3}",
+            chan, snr, hits, trials, bar, pct, extras
         );
     }
     eprintln!("{:-<64}", "");
@@ -1476,105 +1486,4 @@ fn ft4_diag_dt_window_reach() {
             eprintln!();
         }
     }
-}
-
-// ── What the codec verdict removes, and what it costs ────────────────────────
-
-/// Count the rows the codec's plausibility verdict removes, against the
-/// rows it removes that were *real* — the precision half of the
-/// `MESSAGE_FILTER_DEFAULT` question for FT4.
-///
-/// The sweep above answers the recall half: it asks whether the golden
-/// message still decodes, per cell, with and without the verdict
-/// (`MFSK_FT4_SWEEP_CODEC_FILTER=1`). What it cannot see is everything
-/// *else* the decoder emitted, because it only looks for one message.
-/// This walks the same corpus and counts every row instead.
-///
-/// Every generated WAV carries exactly one signal — `ft4sim` synthesises
-/// `CQ JL1NIE PM95` at 1500 Hz and adds noise and fading — so any other
-/// row is, by construction, a CRC-14 false positive. That is what makes
-/// this corpus usable as a phantom measurement and a real recording is
-/// not: on the air, a row that is not the golden may simply be another
-/// station.
-///
-/// ```text
-/// MFSK_FT4_SWEEP_SNR_MIN=-21 MFSK_FT4_SWEEP_SNR_MAX=-13 \
-///   cargo test --release -p mfsk-core --features full,internal-testing \
-///   --test ft4_sweep ft4_phantom_rate -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "manual measurement — run with --ignored --nocapture"]
-fn ft4_phantom_rate() {
-    use rayon::prelude::*;
-
-    let dir = sweep_dir();
-    let all_wavs = collect_wavs(&dir);
-    if all_wavs.is_empty() {
-        common::skip_or_fail("No WAVs in {dir:?} — run scripts/gen_ft4_sweep_wavs.sh");
-        return;
-    }
-    let snr_min: Option<i32> = std::env::var("MFSK_FT4_SWEEP_SNR_MIN")
-        .ok()
-        .and_then(|s| s.trim().parse().ok());
-    let snr_max: Option<i32> = std::env::var("MFSK_FT4_SWEEP_SNR_MAX")
-        .ok()
-        .and_then(|s| s.trim().parse().ok());
-    let wavs: Vec<&WavMeta> = all_wavs
-        .iter()
-        .filter(|w| snr_min.is_none_or(|lo| w.snr_db >= lo))
-        .filter(|w| snr_max.is_none_or(|hi| w.snr_db <= hi))
-        .collect();
-
-    // (golden rows, phantom rows) for one configuration.
-    fn tally(audio: &[i16], filtered: bool) -> (u32, u32) {
-        let req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
-            audio, 100.0, 3000.0, 0.8, 50,
-        );
-        let out = if filtered {
-            req.codec_filter().decode()
-        } else {
-            req.decode()
-        };
-        let mut golden = 0;
-        let mut phantom = 0;
-        for d in &out.results {
-            let mut m77 = [0u8; 77];
-            m77.copy_from_slice(d.message77());
-            if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
-                golden += 1;
-            } else {
-                phantom += 1;
-            }
-        }
-        (golden, phantom)
-    }
-
-    let totals = wavs
-        .par_iter()
-        .map(|w| {
-            let Some(audio) = load_wav_i16_opt(&w.path) else {
-                return (0, 0, 0, 0);
-            };
-            let (g_off, p_off) = tally(&audio, false);
-            let (g_on, p_on) = tally(&audio, true);
-            (g_off, p_off, g_on, p_on)
-        })
-        .reduce(
-            || (0u32, 0u32, 0u32, 0u32),
-            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3),
-        );
-
-    let (g_off, p_off, g_on, p_on) = totals;
-    println!("\nFT4 codec verdict — {} slots", wavs.len());
-    println!("                    golden rows   phantom rows");
-    println!("  verdict off       {g_off:>11}   {p_off:>12}");
-    println!("  verdict on        {g_on:>11}   {p_on:>12}");
-    println!(
-        "  delta             {:>+11}   {:>+12}",
-        g_on as i64 - g_off as i64,
-        p_on as i64 - p_off as i64
-    );
-    // Nothing is asserted. This is a measurement: what the verdict costs
-    // in real rows and buys in false ones is a judgement about a curve,
-    // and the numbers belong in the issue, not in a threshold here.
 }
