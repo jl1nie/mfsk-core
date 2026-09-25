@@ -517,6 +517,22 @@ pub fn bp_llr_zsum_with_scratch<'s, P: LdpcParams>(
     llr: &[f32],
     n_iter: u32,
 ) -> &'s [f32] {
+    bp_llr_zsum_ap_with_scratch::<P>(scratch, llr, None, n_iter)
+}
+
+/// [`bp_llr_zsum_with_scratch`] with an a-priori mask: a locked bit keeps its
+/// channel/AP value in `zn` every iteration instead of taking the check
+/// messages' sum, as `decode174_91.f90` does (`if(apmask(i).ne.1)
+/// zn(i)=llr(i)+sum(tov(1:ncw,i)) else zn(i)=llr(i)`). Its OSD is then run on
+/// `zsave(:,1)` and `zsave(:,2)` for the AP passes too, not on the raw LLR.
+///
+/// `ap_mask`, when given, has `P::N` entries.
+pub fn bp_llr_zsum_ap_with_scratch<'s, P: LdpcParams>(
+    scratch: &'s mut BpScratch<P, f32>,
+    llr: &[f32],
+    ap_mask: Option<&[bool]>,
+    n_iter: u32,
+) -> &'s [f32] {
     let n = P::N;
     let m_checks = P::M;
     let max_row = P::MAX_ROW;
@@ -543,6 +559,10 @@ pub fn bp_llr_zsum_with_scratch<'s, P: LdpcParams>(
 
     for _iter in 0..=n_iter {
         for i in 0..n {
+            if ap_mask.is_some_and(|m| m[i]) {
+                zn[i] = llr[i];
+                continue;
+            }
             let mut sum = 0.0f32;
             for k_ in 0..NCW {
                 sum += tov[i * NCW + k_];

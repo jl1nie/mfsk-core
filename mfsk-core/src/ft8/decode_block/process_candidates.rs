@@ -39,7 +39,7 @@ use crate::engine::scalar::{Cmplx, ComplexSpec};
 use crate::engine::sync::SyncCandidate;
 use crate::fec::ldpc::bp::check_crc14;
 #[cfg(feature = "fft-rustfft")]
-use crate::fec::ldpc::osd::osd_decode_deep;
+use crate::fec::ldpc::osd::osd_decode_npre1_masked;
 use crate::msg::decode_request::{DefaultPolicy, MessagePolicy};
 use crate::msg::hash_table::CallsignHashTable;
 use crate::msg::wsjt77::Wsjt77Fields;
@@ -2194,6 +2194,13 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             ap_passes.push((ApHint::new().with_call1("CQ"), 12));
         }
 
+        // `decode174_91`'s OSD input for the AP passes too: the BP sum after 1 and
+        // after 2 iterations with the locked bits held, never the raw LLR.
+        let mut zsum_scratch = crate::fec::ldpc::bp::BpScratch::<
+            crate::fec::ldpc::params::Ldpc174_91Params,
+            f32,
+        >::new();
+
         'ap_outer: for (ap_cfg, pass_id) in &ap_passes {
             // `ApHint::build_bits` (canonical, `crate::msg::ap`) returns
             // dynamically-sized `Vec<u8>` mask/value bits rather than the
@@ -2263,25 +2270,47 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                     accepted = Some((bp, *pass_id));
                     break 'ap_outer;
                 }
-                // AP + OSD-Deep fallback (`depth.osd` only)
-                if depth.osd
-                    && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
-                    && validate(osd.message77, osd.hard_errors)
-                {
-                    // Reuse `osd.codeword` — `OsdResult` already
-                    // carries the decoded bits; the previous
-                    // `vec![0; LDPC_N]` was both wasteful and dropped
-                    // the real codeword on the floor (Gemini PR #86
-                    // review).
-                    let bp = crate::fec::ldpc::bp::BpResult {
-                        message77: osd.message77,
-                        info: osd.info,
-                        codeword: osd.codeword,
-                        hard_errors: osd.hard_errors,
-                        iterations: 0,
-                    };
-                    accepted = Some((bp, *pass_id));
-                    break 'ap_outer;
+                // AP + OSD fallback (`depth.osd` only), as `ft8b.f90` runs it: the
+                // same `decode174_91` call as the blind passes, with `apmask`. OSD
+                // takes `zsave(:,1)` then `zsave(:,2)`, a test pattern that flips a
+                // locked bit is skipped, and the CRC is checked on the winner.
+                //
+                // This used to be `osd_decode_deep(&llr_ap, 2, Some(check_crc14))`:
+                // the raw LLR, an order-2 search over every bit, the CRC on every
+                // candidate. On iid Gaussian LLRs with the CQ lock that passed the
+                // CRC in 22 % of candidates (6676 of 30 000) against `decode174_91`'s
+                // 9.3e-5 (`tests/ft8_ap_osd_false_accept.rs`), and `validate` below,
+                // with `ap_max_errors`, was what kept those out (#456).
+                if depth.osd {
+                    let mut found = None;
+                    for n_iter in [1u32, 2] {
+                        let zsum = crate::fec::ldpc::bp::bp_llr_zsum_ap_with_scratch::<
+                            crate::fec::ldpc::params::Ldpc174_91Params,
+                        >(
+                            &mut zsum_scratch, &llr_ap, Some(&ap_mask), n_iter
+                        );
+                        let mut z = [0f32; LDPC_N];
+                        z.copy_from_slice(zsum);
+                        if let Some(osd) = osd_decode_npre1_masked(&z, Some(&ap_mask))
+                            && validate(osd.message77, osd.hard_errors)
+                        {
+                            found = Some(osd);
+                            break;
+                        }
+                    }
+                    if let Some(osd) = found {
+                        // Reuse `osd.codeword` — `OsdResult` already
+                        // carries the decoded bits.
+                        let bp = crate::fec::ldpc::bp::BpResult {
+                            message77: osd.message77,
+                            info: osd.info,
+                            codeword: osd.codeword,
+                            hard_errors: osd.hard_errors,
+                            iterations: 0,
+                        };
+                        accepted = Some((bp, *pass_id));
+                        break 'ap_outer;
+                    }
                 }
             }
         }

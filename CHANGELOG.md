@@ -53,6 +53,38 @@
   `osd_decode_generic`. `scripts/score-jt9-sweep.py` reads FST4 and can dump
   per-trial rows in the sweeps' CSV format for a paired comparison.
 
+- **FT8's a-priori OSD runs the way `decode174_91` runs it (#456).** `ft8b.f90`
+  sends its AP passes through the same `decode174_91` call as the blind ones,
+  with an `apmask`: BP holds the locked bits, OSD runs on the BP sum after 1 and
+  after 2 iterations (never the raw LLR), a test pattern that flips a locked bit
+  is skipped (`osd174_91.f90`: `if(any(iand(apmaskr(1:k),mi).eq.1)) cycle`), and
+  the CRC is checked on the winner. This crate's AP rung ran
+  `osd_decode_deep(&llr_ap, 2, Some(check_crc14))` instead: the raw LLR, an
+  order-2 search over every bit, the CRC on every candidate. Measured on iid
+  Gaussian LLRs (sd 2.83) with the lock `ft8b.f90` sets up, counting decodes
+  that pass the CRC: CQ lock (bits 1-29, 75-77) upstream 111 in 1 200 000
+  (9.3e-5), this crate before **6676 in 30 000 (22 %)**, after 34 in 300 000
+  (1.1e-4); 58-bit lock upstream 109 in 1 200 000, before 6730 in 30 000, after
+  32 in 300 000. The order-2 search has thousands of candidates that flip the
+  locked bits, each CRC-checked; `validate` and `ap_max_errors` were what kept
+  those out of the decode list. New `osd::osd_decode_npre1_masked` and
+  `bp::bp_llr_zsum_ap_with_scratch` (a locked bit keeps its value in `zn`, as
+  `decode174_91.f90:52-58`); `tests/ft8_ap_osd_false_accept.rs` holds the rate.
+
+  Tier C, FT8 (this machine reproduced the stored baseline exactly before the
+  change): crossings 0.03-0.28 dB more sensitive on the CCIR/AWGN sweeps
+  (`decode()` and `.sic_early()`), 0.12-1.00 dB on the eight ITU channels that
+  cross (`itu_hm` -0.83, `itu_ld` -1.00, both on the noisy 25-55 % plateau);
+  unexpected decodes unchanged at 0 on every sweep and 3 on the busy band; busy
+  band recall -0.3 to +0.3 points (`.sic_early()` -0.1 to -0.3, at most one
+  signal in 400). On `qso3_busy` the only difference is `CQ EA2BFM IN83`: it
+  is now decoded in the `sync_min = 1.5` phase (blind-CQ AP, 18 hard errors)
+  instead of the second one (29), so `ft8_qso3_staged_sic_check` looks for it
+  in either. `ap_max_errors` (30 / 25) was calibrated against the old rung's
+  false accepts and is left alone; loosening it towards upstream's 36 is a
+  separate measurement. FT4's OSD (`Ldpc174_91::decode_soft`) has the same
+  per-candidate CRC on the raw LLR and is not touched here.
+
 - **FT8's OSD checks the CRC on its winner, as `osd174_91` does, not on
   every candidate (#452, #453).** `osd174_91.f90` takes the closest of all
   its candidate codewords by weighted distance and runs `get_crc14` once, on

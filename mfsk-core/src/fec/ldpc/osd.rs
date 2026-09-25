@@ -668,6 +668,10 @@ struct OsdSetup {
     absrx_perm: Vec<f32>,
     /// Order-0 codeword (= `c0 = encode(m0)`) in permuted space.
     c_perm: Vec<u8>,
+    /// The physical bit each MRB row flips: `perm[pivot_col[r]]`. What lets
+    /// an a-priori mask say which rows a pattern may not touch
+    /// (`osd174_91.f90`: `if(any(iand(apmaskr(1:k),mi).eq.1)) cycle`).
+    row_orig: Vec<usize>,
 }
 
 /// Best-so-far accumulator. Tracked separately from the closure
@@ -818,12 +822,14 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
         }
     }
 
+    let row_orig: Vec<usize> = (0..k).map(|r| perm[pivot_col[r]]).collect();
     Some(OsdSetup {
         perm,
         g,
         hdec_perm,
         absrx_perm,
         c_perm,
+        row_orig,
     })
 }
 
@@ -947,12 +953,14 @@ fn osd_setup_ldpc174_91_fortran_pivot(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
         }
     }
 
+    let row_orig: Vec<usize> = perm[..k].to_vec();
     Some(OsdSetup {
         perm,
         g,
         hdec_perm,
         absrx_perm,
         c_perm,
+        row_orig,
     })
 }
 
@@ -966,7 +974,7 @@ fn osd_setup_ldpc174_91_fortran_pivot(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
 pub(crate) fn osd_decode_npre1_fortran_pivot(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
     let setup = osd_setup_ldpc174_91_fortran_pivot(llr)?;
     let mut best = OsdBest::new();
-    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
+    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2, None);
     osd_result_from_best(llr, &setup.perm, best)
 }
 
@@ -1019,10 +1027,17 @@ fn try_candidate_ldpc174_91(
 /// baseline so callers don't need a separate "try order-0 first"
 /// step — re-trying order-0 inside a multi-pass driver is harmless
 /// (idempotent).
-fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
+fn osd_npre1_pass(
+    setup: &OsdSetup,
+    best: &mut OsdBest,
+    ntheta: u32,
+    ap_mask: Option<&[bool; LDPC_N]>,
+) {
     let n = LDPC_N;
     let k = LDPC_K;
     let nt = NPRE1_PARITY_WINDOW.min(n - k);
+    // A pattern may not flip a bit the a-priori mask locks.
+    let locked = |row: usize| ap_mask.is_some_and(|m| m[setup.row_orig[row]]);
 
     // Fixed-size scratch buffers: hoist allocations out of the per-
     // candidate hot loop (Gemini PR #87 review). `LDPC_N` / `LDPC_K`
@@ -1047,6 +1062,9 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
     }
 
     for iflag in (0..k).rev() {
+        if locked(iflag) {
+            continue;
+        }
         ce_iflag.copy_from_slice(&setup.c_perm);
         for col in 0..n {
             ce_iflag[col] ^= setup.g[iflag * n + col];
@@ -1077,6 +1095,9 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
         // n1 < iflag pair-anchor. e2 derived incrementally as
         // `e2sub XOR g[n1, k..n]` — WSJT-X `osd174_91:203`.
         for n1 in (0..iflag).rev() {
+            if locked(n1) {
+                continue;
+            }
             for j in 0..(n - k) {
                 e2[j] = e2sub[j] ^ setup.g[n1 * n + (k + j)];
             }
@@ -1346,9 +1367,24 @@ fn osd_result_from_best(llr: &[f32; LDPC_N], perm: &[usize], best: OsdBest) -> O
 ///
 /// Returns `None` if no CRC-passing candidate is found.
 pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
+    osd_decode_npre1_masked(llr, None)
+}
+
+/// [`osd_decode_npre1`] under an a-priori mask, as `osd174_91.f90` runs it for
+/// the AP passes: `apmaskr` is `apmask` reordered to the reliability order, and a
+/// test pattern that flips any locked position is skipped
+/// (`if(any(iand(apmaskr(1:k),mi).eq.1)) cycle`), so the winner keeps every
+/// locked bit and the search spends its patterns on the unlocked ones. The
+/// CRC is checked on the winner, as everywhere in this module.
+///
+/// `ap_mask[i]` is `true` for a locked bit `i` (original bit order).
+pub fn osd_decode_npre1_masked(
+    llr: &[f32; LDPC_N],
+    ap_mask: Option<&[bool; LDPC_N]>,
+) -> Option<OsdResult> {
     let setup = osd_setup_ldpc174_91(llr)?;
     let mut best = OsdBest::new();
-    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
+    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2, ap_mask);
     osd_result_from_best(llr, &setup.perm, best)
 }
 
@@ -1381,7 +1417,7 @@ pub fn osd_decode_npre1_npre2(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
     let mut best = OsdBest::new();
     // ndeep=3 uses ntheta=12 (vs ndeep=2's 10) — looser gate because
     // the npre2 pass below picks up patterns this would have rejected.
-    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP3);
+    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP3, None);
     osd_npre2_pass(&setup, &mut best, NPRE2_NTAU);
     osd_result_from_best(llr, &setup.perm, best)
 }
@@ -2393,12 +2429,14 @@ mod tests {
             }
         }
 
+        let row_orig: Vec<usize> = (0..k).map(|r| perm[pivot_col[r]]).collect();
         Some(OsdSetup {
             perm,
             g,
             hdec_perm,
             absrx_perm,
             c_perm,
+            row_orig,
         })
     }
 
@@ -2497,7 +2535,7 @@ mod tests {
         for _ in 0..REPS {
             if let Some(setup) = osd_setup_ldpc174_91(&llr) {
                 let mut best = OsdBest::new();
-                osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
+                osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2, None);
             }
         }
         let setup_plus_search = t1.elapsed();
@@ -2816,6 +2854,42 @@ mod packed_setup_differential {
     /// valid RREF wouldn't necessarily show up as a `(perm, g,
     /// pivot_col)` mismatch against a differently-parameterised
     /// reference call.
+    /// A locked bit is not flipped by the masked `npre1` search: a clean
+    /// codeword with one bit locked to the wrong value comes back from the
+    /// unmasked search (one flip repairs it) and does not from the masked one
+    /// (`osd174_91.f90`: `if(any(iand(apmaskr(1:k),mi).eq.1)) cycle`).
+    #[test]
+    fn masked_npre1_does_not_flip_a_locked_bit() {
+        use crate::fec::ldpc::bp::append_crc14;
+        let mut msg = [0u8; 77];
+        for (i, b) in msg.iter_mut().enumerate() {
+            *b = ((i * 5 + 1) % 3 == 0) as u8;
+        }
+        let info = append_crc14(&msg);
+        let cw = ldpc_encode(&info);
+        let mut llr = [0f32; LDPC_N];
+        for (l, &b) in llr.iter_mut().zip(cw.iter()) {
+            *l = if b == 1 { 8.0 } else { -8.0 };
+        }
+        // Lock bit 5 to the wrong value, as strongly as anything else here.
+        let wrong = if cw[5] == 1 { -20.0 } else { 20.0 };
+        llr[5] = wrong;
+        let mut mask = [false; LDPC_N];
+        mask[5] = true;
+
+        let free = osd_decode_npre1_masked(&llr, None).expect("one flip repairs the bit");
+        assert_eq!(free.codeword.as_slice(), cw.as_slice());
+
+        match osd_decode_npre1_masked(&llr, Some(&mask)) {
+            None => {}
+            Some(r) => assert_eq!(
+                r.codeword[5] == 1,
+                wrong > 0.0,
+                "the locked bit was flipped"
+            ),
+        }
+    }
+
     #[test]
     fn osd_decode_generic_recovers_clean_codeword() {
         let info: alloc::vec::Vec<u8> = (0..Ldpc128_90Params::K)

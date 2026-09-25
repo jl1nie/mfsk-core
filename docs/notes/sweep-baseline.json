@@ -19,29 +19,29 @@
       },
       "ft8": {
         "date": "2026-09-25",
-        "commit": "1d71fb5",
-        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
+        "commit": "b4b948a4",
+        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8_busy": {
         "date": "2026-09-25",
-        "commit": "1d71fb5",
-        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
+        "commit": "b4b948a4",
+        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 840,
         "groups": 10
       },
       "ft8_itu": {
         "date": "2026-09-25",
-        "commit": "1d71fb5",
-        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
+        "commit": "b4b948a4",
+        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 2720,
         "groups": 8
       },
       "ft8_sic_early": {
         "date": "2026-09-25",
-        "commit": "1d71fb5",
-        "machine": "AMD Ryzen 7 3700X 8-Core Processor",
+        "commit": "b4b948a4",
+        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
@@ -134,7 +134,7 @@
       "ft8_busy/busy10/sic_early": {
         "files": 40,
         "truth": 400,
-        "hits": 331,
+        "hits": 330,
         "extra": 0
       },
       "ft8_busy/busy10/single": {
@@ -146,25 +146,25 @@
       "ft8_busy/busy20/sic_early": {
         "files": 40,
         "truth": 800,
-        "hits": 649,
+        "hits": 648,
         "extra": 2
       },
       "ft8_busy/busy20/single": {
         "files": 40,
         "truth": 800,
-        "hits": 588,
+        "hits": 590,
         "extra": 1
       },
       "ft8_busy/busy40/sic_early": {
         "files": 40,
         "truth": 1600,
-        "hits": 1302,
+        "hits": 1301,
         "extra": 0
       },
       "ft8_busy/busy40/single": {
         "files": 40,
         "truth": 1600,
-        "hits": 1051,
+        "hits": 1055,
         "extra": 0
       },
       "ft8_busy/dt1/sic_early": {
@@ -217,22 +217,22 @@
   "ft4/ccir_good": -17.857142857142858,
   "ft4/ccir_moderate": -16.2,
   "ft4/ccir_poor": -16.0,
-  "ft8/awgn": -21.625,
-  "ft8/ccir_good": -21.454545454545453,
-  "ft8/ccir_moderate": -19.75,
-  "ft8/ccir_poor": -19.166666666666668,
-  "ft8_itu/itu_hm": -2.5,
-  "ft8_itu/itu_hq": -20.0,
-  "ft8_itu/itu_ld": 0.0,
-  "ft8_itu/itu_lm": -19.375,
-  "ft8_itu/itu_lq": -19.833333333333332,
-  "ft8_itu/itu_md": -19.714285714285715,
-  "ft8_itu/itu_mm": -20.0,
-  "ft8_itu/itu_mq": -20.714285714285715,
-  "ft8_sic_early/awgn": -21.77777777777778,
-  "ft8_sic_early/ccir_good": -21.454545454545453,
-  "ft8_sic_early/ccir_moderate": -19.833333333333332,
-  "ft8_sic_early/ccir_poor": -19.545454545454547,
+  "ft8/awgn": -21.9,
+  "ft8/ccir_good": -21.53846153846154,
+  "ft8/ccir_moderate": -20.0,
+  "ft8/ccir_poor": -19.285714285714285,
+  "ft8_itu/itu_hm": -3.3333333333333335,
+  "ft8_itu/itu_hq": -20.166666666666668,
+  "ft8_itu/itu_ld": -1.0000000000000009,
+  "ft8_itu/itu_lm": -19.666666666666668,
+  "ft8_itu/itu_lq": -20.0,
+  "ft8_itu/itu_md": -19.833333333333332,
+  "ft8_itu/itu_mm": -20.166666666666668,
+  "ft8_itu/itu_mq": -21.11111111111111,
+  "ft8_sic_early/awgn": -21.9,
+  "ft8_sic_early/ccir_good": -21.53846153846154,
+  "ft8_sic_early/ccir_moderate": -20.0,
+  "ft8_sic_early/ccir_poor": -19.583333333333332,
   "jt65/awgn": -22.5,
   "jt65_chase/awgn": -23.5,
   "jt9/awgn": -26.636363636363637,
