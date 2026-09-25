@@ -622,6 +622,13 @@ pub struct DecodeRequest<'a, P: FrameDecodable, Pol: MessagePolicy = DefaultPoli
     /// structure is fixed. Not independently settable — see
     /// `sic_rounds`'s doc comment for why.
     pub(crate) sic_rounds: usize,
+    /// FT8 only: WSJT-X's `ndepth <= 2` (`jt9 -d1/-d2`), which raises the
+    /// hard-sync (nsync) floor from 6/7 to 8. Set by
+    /// `DecodeRequest::<Ft8>::wsjtx_depth` for `D1`/`D2`; there is no
+    /// builder for it, because a caller who wants a different floor has
+    /// `sync_min`. See `ft8::decode_block::PassCtx::nsync_floor`.
+    #[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+    pub(crate) wsjtx_low_depth: bool,
     /// Set via [`DecodeRequest::on_result`] — see that method's doc
     /// comment for the delivery-order/dedup contract.
     pub(crate) on_result: Option<OnResultCallback<'a, P>>,
@@ -668,6 +675,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
             known: &[],
             fft_cache: None,
             sic_rounds: 3,
+            wsjtx_low_depth: false,
             on_result: None,
             budget: None,
             policy: DefaultPolicy,
@@ -948,6 +956,7 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
             known: self.known,
             fft_cache: self.fft_cache,
             sic_rounds: self.sic_rounds,
+            wsjtx_low_depth: self.wsjtx_low_depth,
             on_result: self.on_result,
             budget: self.budget,
             policy,

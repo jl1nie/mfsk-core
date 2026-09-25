@@ -478,7 +478,7 @@ fn decode_block_multipass<S: AudioSample>(
                 fft_cache.as_deref(),
                 &mut bp_scratch,
                 None,
-                PassCtx::for_round(ipass),
+                PassCtx::FIRST.round(ipass),
             );
             #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
             for mut r in single_results {
@@ -1736,7 +1736,7 @@ where
         // 56 DFTs / candidate.
         fill(cs_scratch, cand, SymMask::SyncBlocks12);
         let q = sync_quality(cs_scratch);
-        if q <= q_thresh {
+        if q <= q_thresh.max(pass.nsync_floor()) {
             #[cfg(feature = "std")]
             TRACE_NSYNC_FAIL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             continue;

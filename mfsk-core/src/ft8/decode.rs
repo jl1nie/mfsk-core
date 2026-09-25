@@ -135,6 +135,7 @@ fn process_candidate<Pol: MessagePolicy>(
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     policy: &Pol,
+    pass: PassCtx,
 ) -> Option<DecodeResult> {
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
@@ -149,7 +150,7 @@ fn process_candidate<Pol: MessagePolicy>(
         ap_hint,
         &mut bp_scratch,
         policy,
-        PassCtx::FIRST,
+        pass,
     )
 }
 
@@ -182,7 +183,7 @@ fn process_candidate_with_scratch<Pol: MessagePolicy>(
     policy: &Pol,
     pass: PassCtx,
 ) -> Option<DecodeResult> {
-    let state = triage_candidate(cand, audio, fft_cache)?;
+    let state = triage_candidate(cand, audio, fft_cache, pass)?;
     run_candidate_ladder(
         state, audio, fft_cache, depth, strictness, known, eq_mode, ap_hint, bp_scratch, policy,
         pass,
@@ -219,6 +220,7 @@ fn triage_candidate(
     cand: &SyncCandidate,
     audio: &[i16],
     fft_cache: &[num_complex::Complex<f32>],
+    pass: PassCtx,
 ) -> Option<CandidateTriage> {
     // Use `downsample_cached` directly so the FT8 wrapper's
     // `cache.to_vec()` clone (~3 MB) on the `Some(_)` branch is
@@ -294,7 +296,7 @@ fn triage_candidate(
         Some(fft_cache),
     );
     let nsync = sync_quality(&cs_raw);
-    if nsync <= 6 {
+    if nsync <= pass.nsync_floor() {
         #[cfg(feature = "std")]
         crate::ft8::decode_block::TRACE_NSYNC_FAIL
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -372,10 +374,11 @@ fn decode_all_candidates<Pol: MessagePolicy>(
     ap_hint: Option<&ApHint>,
     accept: &(dyn Fn(DecodeResult) -> Option<DecodeResult> + Sync),
     policy: &Pol,
+    pass: PassCtx,
 ) -> Vec<DecodeResult> {
     let decode_one = |cand: &SyncCandidate| -> Option<DecodeResult> {
         let r = process_candidate(
-            cand, audio, fft_cache, depth, strictness, known, eq_mode, ap_hint, policy,
+            cand, audio, fft_cache, depth, strictness, known, eq_mode, ap_hint, policy, pass,
         )?;
         accept(r)
     };
@@ -426,9 +429,10 @@ fn decode_scheduled_candidates<Pol: MessagePolicy>(
     check: crate::msg::decode_request::BudgetCheck<'_>,
     accept: &(dyn Fn(DecodeResult) -> Option<DecodeResult> + Sync),
     policy: &Pol,
+    pass: PassCtx,
 ) -> (Vec<DecodeResult>, BudgetReport) {
     let triage_one = |(i, cand): (usize, &SyncCandidate)| -> Option<(usize, CandidateTriage)> {
-        triage_candidate(cand, audio, fft_cache).map(|t| (i, t))
+        triage_candidate(cand, audio, fft_cache, pass).map(|t| (i, t))
     };
     #[cfg(feature = "parallel")]
     let mut triaged: Vec<(usize, CandidateTriage)> = candidates
@@ -499,7 +503,7 @@ fn decode_scheduled_candidates<Pol: MessagePolicy>(
             ap_hint,
             &mut bp_scratch,
             policy,
-            PassCtx::FIRST,
+            pass,
         ) && let Some(r) = accept(r)
         {
             out.push((idx, r));
@@ -616,6 +620,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
     budget: Option<crate::msg::decode_request::BudgetCheck<'_>>,
     policy: &Pol,
+    pass: PassCtx,
 ) -> (
     Vec<DecodeResult>,
     Vec<num_complex::Complex<f32>>,
@@ -717,6 +722,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
             ap_hint,
             &accept,
             policy,
+            pass,
         ),
         Some(check) => {
             let (v, rep) = decode_scheduled_candidates(
@@ -731,6 +737,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
                 check,
                 &accept,
                 policy,
+                pass,
             );
             budget_report = rep;
             v
@@ -798,6 +805,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
     budget: &mut BudgetState<'_>,
     policy: &Pol,
+    base_pass: PassCtx,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut residual = audio.to_vec();
     sic_inner_passes_with_cache(
@@ -816,6 +824,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
         on_result,
         budget,
         policy,
+        base_pass,
     )
 }
 
@@ -850,10 +859,11 @@ fn sic_inner_passes<Pol: MessagePolicy>(
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
     budget: &mut BudgetState<'_>,
     policy: &Pol,
+    base_pass: PassCtx,
 ) -> Vec<DecodeResult> {
     sic_inner_passes_with_cache(
         residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, eq_mode,
-        ap_hint, None, n_rounds, on_result, budget, policy,
+        ap_hint, None, n_rounds, on_result, budget, policy, base_pass,
     )
     .0
 }
@@ -890,6 +900,8 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
     budget: &mut BudgetState<'_>,
     policy: &Pol,
+    // The tier's context for round 0; later rounds derive theirs from it.
+    base_pass: PassCtx,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let mut pass0_cache: Option<FftCache> = None;
@@ -972,7 +984,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 ap_hint,
                 &mut bp_scratch,
                 policy,
-                PassCtx::for_round(ipass),
+                base_pass.round(ipass),
             ) {
                 Some(r) => r,
                 None => continue,
@@ -1140,6 +1152,7 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
         // Debug-only residual dump; it has no caller with an opinion
         // about message text, so it takes the codec's own verdict.
         &crate::msg::decode_request::DefaultPolicy,
+        PassCtx::FIRST,
     )
 }
 
@@ -1181,6 +1194,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
     budget: &mut BudgetState<'_>,
     policy: &Pol,
+    base_pass: PassCtx,
 ) -> (Vec<DecodeResult>, Vec<i16>) {
     use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
 
@@ -1235,6 +1249,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             on_result,
             budget,
             policy,
+            base_pass,
         );
         return (r, audio_clean);
     }
@@ -1273,6 +1288,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         on_result,
         budget,
         policy,
+        base_pass,
     );
     // Checkpoint A's own residual is not carried forward — only its
     // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
@@ -1307,6 +1323,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             on_result,
             budget,
             policy,
+            base_pass,
         );
         return (r, audio_clean);
     }
@@ -1385,6 +1402,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         on_result,
         budget,
         policy,
+        base_pass,
     );
 
     let mut all_results = early_results;
@@ -1463,6 +1481,7 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
             eq_mode,
             ap_hint,
             policy,
+            PassCtx::FIRST,
         )?;
         #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
         {
@@ -1529,6 +1548,7 @@ impl FrameDecodable for Ft8 {
             req.on_result,
             req.budget,
             &req.policy,
+            PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
         );
         DecodeOutcome {
             results,
@@ -1567,6 +1587,7 @@ impl SupportsSicRounds for Ft8 {
                 req.on_result,
                 &mut budget,
                 &req.policy,
+                PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
             );
             DecodeOutcome {
                 results,
@@ -1594,6 +1615,7 @@ impl SupportsSicRounds for Ft8 {
                 req.on_result,
                 &mut budget,
                 &req.policy,
+                PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
             );
             DecodeOutcome {
                 results,
@@ -1665,6 +1687,7 @@ impl SupportsSicEarly for Ft8 {
             req.on_result,
             &mut budget,
             &req.policy,
+            PassCtx::FIRST.low_depth(req.wsjtx_low_depth),
         );
         let fft_cache = FftCache(build_fft_cache(&residual));
         DecodeOutcome {
@@ -1748,6 +1771,8 @@ impl<'a> DecodeRequest<'a, Ft8> {
     ) -> Self {
         let mut req = Self::new(audio, freq_min, freq_max, sync_min, max_cand)
             .osd(!matches!(tier, WsjtxDepth::D1));
+        // `ndepth <= 2`: ft8b.f90's nsync floor is 8 (see `PassCtx::nsync_floor`).
+        req.wsjtx_low_depth = !matches!(tier, WsjtxDepth::D3);
         req = match tier {
             WsjtxDepth::D1 => req.sic_rounds(2),
             WsjtxDepth::D2 | WsjtxDepth::D3 => req.sic_early(),
@@ -2398,6 +2423,7 @@ mod tests {
                     EqMode::Off,
                     None,
                     &crate::msg::decode_request::DefaultPolicy,
+                    PassCtx::FIRST,
                 );
                 eprintln!("  -> process_candidate result: {:?}", r.map(|d| d.pass));
             }

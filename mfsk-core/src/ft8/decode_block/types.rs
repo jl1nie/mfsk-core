@@ -219,28 +219,55 @@ pub(in crate::ft8) type LlrT = f32;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::ft8) struct PassCtx {
     pub imetric: u8,
+    /// `ndepth <= 2` (`jt9 -d1/-d2`, [`WsjtxDepth::D1`](crate::ft8::decode::WsjtxDepth)
+    /// and `D2`): a higher nsync floor, see [`PassCtx::nsync_floor`].
+    pub low_depth: bool,
 }
 
 impl PassCtx {
     /// Pass 1: `imetric` 1.
-    pub(in crate::ft8) const FIRST: PassCtx = PassCtx { imetric: 1 };
+    pub(in crate::ft8) const FIRST: PassCtx = PassCtx {
+        imetric: 1,
+        low_depth: false,
+    };
 
-    /// Passes 2 and 3: `imetric` 2.
-    pub(in crate::ft8) const LATER: PassCtx = PassCtx { imetric: 2 };
+    /// This context for a `jt9 -d1/-d2` tier (`ndepth <= 2`) when `low` is set.
+    pub(in crate::ft8) const fn low_depth(self, low: bool) -> PassCtx {
+        PassCtx {
+            low_depth: low,
+            ..self
+        }
+    }
+
+    /// `ft8b.f90`'s hard-sync gate: a candidate whose Costas hard-decision
+    /// count `nsync` is at or below this is dropped before any decode
+    /// (`syncmin=6; if(imetric.eq.2) syncmin=7; if(ndepth.le.2) syncmin=8`,
+    /// v3.0.0 onward). The squared metric of passes 2 and 3 gets a floor one
+    /// higher than pass 1's, and the `-d1/-d2` tiers a floor of 8 whatever the
+    /// pass.
+    pub(in crate::ft8) const fn nsync_floor(self) -> u32 {
+        if self.low_depth {
+            8
+        } else if self.imetric == 2 {
+            7
+        } else {
+            6
+        }
+    }
 
     /// `imetric` 2: the squared metric (`ft8b.f90`: `s2=s2**2`).
     pub(in crate::ft8) const fn squared(self) -> bool {
         self.imetric == 2
     }
 
-    /// The context of 0-based decode round `round` (`ipass - 1`):
-    /// `ft8_decode.f90` v3.0.0 sets `imetric=1` for pass 1 and `imetric=2`
-    /// for passes 2 and 3.
-    pub(in crate::ft8) const fn for_round(round: usize) -> PassCtx {
-        if round == 0 {
-            PassCtx::FIRST
-        } else {
-            PassCtx::LATER
+    /// The context of 0-based decode round `round` (`ipass - 1`) of a
+    /// decode whose first pass is `self`: `ft8_decode.f90` v3.0.0 sets
+    /// `imetric=1` for pass 1 and `imetric=2` for passes 2 and 3; the tier
+    /// (`low_depth`) carries over.
+    pub(in crate::ft8) const fn round(self, round: usize) -> PassCtx {
+        PassCtx {
+            imetric: if round == 0 { 1 } else { 2 },
+            ..self
         }
     }
 
