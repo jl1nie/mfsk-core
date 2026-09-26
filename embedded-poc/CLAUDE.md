@@ -155,7 +155,7 @@ the DIN base on M5Bus so the USB-C port is free, exactly as on WSL.
 |---|---|---|---|
 | Target triple | `xtensa-esp32-espidf` | `xtensa-esp32s3-espidf` | `xtensa-esp32s3-espidf` |
 | Bench bin | (retired `#61` Phase 3 — `m5stack-core2-app` runs the wav_sim decode loop instead) | `mfsk-core-m5stack-s3` | (none; reuses s3 bench if needed) |
-| Production app | `m5stack-core2-app` (FT8 controller) | `m5stack-s3-app` (FT8 controller, **demo / Phase 1.5 acoustic**) | `m5stack-cores3-app` (FT8 controller, **main UAC target**, planned) |
+| Production app | `m5stack-core2-app` (FT8 controller) | `m5stack-s3-app` (FT8 controller, **demo / Phase 1.5 acoustic**) | `m5stack-cores3-app` (FT8 controller, **main UAC target**; live IC-705 UAC verified 2026-08-23, #163) |
 | PMIC | AXP192 (0x34) | M5PM1 (0x6E) | AXP2101 + AW9523B I/O expander (0x58); **USB host VBUS = AW9523B port1 bit7 (BOOST_EN) + port0 bit5 (USB_OTG_EN) + port0 bit1 (BUS_OUT_EN), all three** |
 | Flash / PSRAM | 16 MB / 8 MB (default) | 8 MB / 8 MB Octal (`CONFIG_SPIRAM_MODE_OCT=y`, ~80 MB/s); Quad on M5Stamp S3 | 16 MB / 8 MB **Quad** (`CONFIG_SPIRAM_MODE_QUAD=y`) |
 | Internal DRAM | ~280 KB usable | ~512 KB | ~512 KB |
@@ -539,10 +539,12 @@ there is no serial device to find.
   `project_m5stick_s3_no_usb_host`, and issue #360 for a reader's
   report that host mode does work there off an external 5 V supply).
   UAC code (`uac.rs` ~445 lines) is board-agnostic and stays as canonical
-  reference for the CoreS3 lift in Phase 0-Core. Phase 1.5 (planned)
-  adds internal MEMS-mic acoustic capture as the Stick demo path.
+  reference for the CoreS3 lift in Phase 0-Core. Phase 1.5 (acoustic
+  capture through the ES8311 mic input, the Stick demo path) is done; see
+  `m5stack-s3-app/CLAUDE.md`.
 - **`m5stack-cores3-app/`** — M5Stack CoreS3 FT8 controller (LX7,
-  **main production target**, planned 2026-05-17 onward). Same
+  **main production target**, chosen 2026-05-17; live IC-705 UAC capture
+  verified 2026-08-23, #163). Same
   `mfsk-app-shared` consumer pattern as core2-app. Distinguishing
   HW: AXP2101 PMIC + AW9523B I/O expander (USB host VBUS needs
   three bits HIGH before `usb_host_install()` — see "USB host VBUS

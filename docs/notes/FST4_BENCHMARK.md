@@ -1559,6 +1559,33 @@ of these decodes come from. Deferring the highest-yield stage until
 every candidate has had every cheaper one is exactly what breadth-first
 is for, and under a deadline it is exactly what costs decodes.
 
+**Re-measured 2026-09-27** (HEAD `906592ab`, the same test, the `fst4_sweep`
+corpus as it is on disk). The figures above are the 2026-08-18 snapshot and do
+not reproduce: the FST4 decoder has changed since (its OSD now searches the code
+WSJT-X searches, see the 0.12.0 CHANGELOG), and the run now has 1 178
+candidates, 447 of which decode, 10 424 units total, longest ladder still 14
+stages.
+
+| budget | depth: arrival | depth: `nsync` | depth: oracle | breadth: arrival | breadth: `nsync` | breadth: oracle |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 % | 61 | **241** | 350 | 59 | 59 | 59 |
+| 20 % | 109 | **376** | 447 | 122 | 122 | 122 |
+| 30 % | 172 | **413** | 447 | 173 | 177 | 177 |
+| 40 % | 201 | 427 | 447 | 406 | 427 | 428 |
+| 50 % | 255 | **440** | 447 | 428 | 428 | 428 |
+| 70 % | 392 | 445 | 447 | 428 | 438 | 438 |
+| 100 % | 447 | 447 | 447 | 447 | 447 | 447 |
+
+Points 2 and 3 hold. Depth-first with `nsync` still beats breadth-first under a
+tight budget (241 against 59 at 10 %, 376 against 122 at 20 %, 440 against 428
+at 50 %), and breadth-first still jumps at a stage boundary, from 177 to 427
+between the 30 % and 40 % points. Point 1 holds at 10 % and 20 % but not
+everywhere: at 40 % the `nsync` ordering reaches 427 against 406 for arrival
+order, and at 70 % 438 against 428, so re-sorting the survivors is not worth
+nothing there. The rung-major design argument below stands; the figures in its
+table (350 / 386 and 380 / 386 at ~50 %) are the 2026-08-18 ones, and are 428 /
+447 and 440 / 447 now.
+
 ### The trade-off this quantifies, and the resulting design
 
 This is not an argument against rung-major. Rung-major exists for the
