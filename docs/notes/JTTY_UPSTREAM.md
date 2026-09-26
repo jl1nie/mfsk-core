@@ -761,3 +761,72 @@ The FFI and bindings (P4b) are separate.
 - **ABI.** `mfsk_jtty_encode_tones(text, profile, tones, cap, out_len)`,
   `mfsk_jtty_synth_len`, `mfsk_jtty_tones_to_i16` / `_f32`; a NULL buffer with
   capacity 0 is a size query. Kotlin `MfskJtty`, Swift `Jtty`.
+
+## E0 results: what a receive window costs on the CoreS3 (#499, 2026-09-26)
+
+`embedded-poc/embedded-shared/src/apps/jtty_bench.rs`, `--bin jtty-bench --features jtty` in
+`m5stack-cores3-app`; ESP32-S3 at 240 MHz, 80 MHz quad PSRAM, synthetic input, the esp-dsp backend
+through `default_planner()`. The estimates in #499 were 2–3 ms for an 8192-point FFT, about 0.5 s for
+a sync surface and 0.15–0.3 s for the ladder; the measurements are worse on the two that matter.
+
+**FFT, complex f32, one transform (µs):**
+
+| N | buffer in internal DRAM | buffer in PSRAM |
+|---|---|---|
+| 256 | 107 | 106 |
+| 512 | 229 | 229 |
+| 1024 | 494 | 494 |
+| 2048 | 1 059 | 1 059 |
+| 4096 | 2 264 | 2 379 |
+| 8192 | **4 819** | **67 146** |
+
+The PSRAM penalty is nil up to 4096 points (a 32 KB buffer, the size of the data cache) and **14×** at 8192
+(64 KB). Unlike the FT4 `cd0` case (1.12× where 5–10× had been projected), the projection holds here. The
+FFT belongs in internal DRAM, and the receiver's 8192-point transform needs a 64 KB block of it.
+
+**One sync-surface column** (multiply the 2496-sample sync waveform in, zero-pad, FFT, power over the band,
+1-2-3-2-1 smoothing), times 237 columns:
+
+| | per column | per surface (237) |
+|---|---|---|
+| 8192-point, buffers in internal DRAM | 5.30 ms | **1 257 ms** |
+| 8192-point, buffers in PSRAM | 73.1 ms | 17 330 ms |
+| decimated by 16 (375 Hz), 156-sample waveform, 256-point, channel 0 (68 bins) | 0.149 ms | **35 ms** |
+| the same, channels 1 and 2 (205 bins) | 0.182 ms | **43 ms** |
+
+The receiver searches three bands per window. As it stands that is 3 × 1.26 s at best against a 0.472 s
+window, 8× over with every buffer in internal DRAM and 110× over with the buffers where the allocator puts
+64 KB. Decimated, the three bands are about 120 ms, a quarter of the window, and the placement no longer
+matters (the working set is 2 KB). The same input on the host runs the whole window in 11.7 ms.
+
+**The ladder** (`Ladder::decode`, synthetic correlations of a real frame, four runs each):
+
+| input | mean | worst | outcome |
+|---|---|---|---|
+| +12 dB | 854 ms | 856 ms | rung 1 ×4 |
+| +6 dB | 852 ms | 855 ms | rung 1 ×4 |
+| +3 dB | 1 003 ms | 1 445 ms | rung 1 ×3, rung 2 |
+| 0 dB | 2 315 ms | 2 892 ms | rung 3, none, rung 2, none |
+| −3 dB | 2 889 ms | 2 893 ms | none ×4 |
+| noise only | 2 665 ms | 2 884 ms | none ×3, one false accept (rung 3) |
+
+A rung costs about 0.72–0.85 s, so a candidate that fails all four takes 2.9 s, and even the easiest success
+takes 1.8 windows. `Ladder::new` takes 116 ms once and holds **98 KB of internal DRAM and 272 KB of PSRAM**.
+This is the dominant cost and it is not the FFT. The trellis keeps every metric in `f64`
+(`energies: Vec<f64>`, `wava`, `clean_metric`, the tie-break comparisons), which is software on the LX7. That
+is the likely reason and is **not yet measured**: an `f32` (or integer) trellis is the experiment. The metrics
+are `f64` because upstream's are and ties between equal-metric words are broken on the last bits, so an
+embedded ladder would trade exact agreement with upstream on rare ties for speed, as the embedded FT8 path
+already does; it has to be measured against the 33 ladder cases and the sweep, not assumed.
+
+**Verdict.** Receive as the host does it does not fit, by a factor of 8 on the search and of 2–6 on the ladder.
+The search is fixed by decimating (E1a: recall against the reference on `jtty_sweep`). The ladder needs
+roughly a tenfold speed-up to leave room for the search inside 0.472 s, and nothing here shows that is
+reachable: E1b (an `f32` trellis, on the host first for agreement, then on the device) decides it. Until then
+receive is *not* shown to be feasible. Memory: the ladder's internal DRAM (98 KB) and a 64 KB FFT block
+compete with what the WiFi and USB host leave (about 31 KB of largest block after they start), so both would
+be allocated at boot in JTTY mode from the arena, and the ladder's small allocations would want to go to PSRAM
+if the trellis tolerates it (measure).
+
+Transmit is unaffected by any of this (E2, E3).
+

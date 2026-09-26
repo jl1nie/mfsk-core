@@ -114,6 +114,13 @@ harness = false
 # deprioritized `FecCodec::decode_soft` genericization premise, checked
 # cheaply before committing to that work. See
 # `embedded-shared::apps::scalar_bench`'s module doc comment.
+# JTTY receive-window cost on the LX7 — #499 E0. Synthetic input only.
+[[bin]]
+name = "jtty-bench"
+path = "src/bin/jtty_bench.rs"
+harness = false
+required-features = ["jtty"]
+
 [[bin]]
 name = "scalar-bench"
 path = "src/bin/scalar_bench.rs"
@@ -214,6 +221,8 @@ wspr-golden = ["wspr"]
 # need them carry `required-features` so `cargo build` skips rather
 # than fails.
 fst4 = ["embedded-shared/fst4-bench"]
+# The JTTY cost bench (`jtty-bench` bin), #499 E0.
+jtty = ["embedded-shared/jtty-bench"]
 # The FT4 receiver and its WAV demo bin.
 ft4 = ["embedded-shared/ft4"]
 # Bakes one FT4 slot (180 KB) so the FT4 receiver has something to
