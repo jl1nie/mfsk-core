@@ -665,6 +665,13 @@ impl<'a> Audio<'a> {
 ///
 /// The tables are shared: any number of streams (one per audio channel, say) may
 /// hold the same [`Arc<Receiver>`].
+///
+/// **Time is the sample count.** There is no clock: window `k` starts at sample
+/// `k · STEP`, and a frame continues a message only if it starts one to three frame
+/// periods (±0.1 s) after the last. From a live source the count must therefore
+/// follow real time — a dropped run of samples shifts every later frame earlier and
+/// breaks the message, so push zeros for what was lost (or [`reset`](Self::reset)
+/// after a long gap). A source clock a few hundred ppm off is harmless.
 pub struct Stream {
     rx: Arc<Receiver>,
     params: Params,
