@@ -53,8 +53,9 @@ use crate::msg::ApHint;
 use crate::msg::hash_table::CallsignHashTable;
 
 use super::Q65Result;
-use super::rx::Q65Ap;
+use super::rx::{MaxDrift, Q65Ap};
 use super::search::SearchParams;
+use crate::engine::FrameLayout;
 
 /// Build a [`DecodeContext`] from an optional caller-supplied hash
 /// table, without cloning the table's contents — `Arc::clone` is a
@@ -104,6 +105,8 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     ap_hint: Option<&'a ApHint>,
     /// Set via [`DecodeRequest::pileup`].
     pileup: bool,
+    /// Set via [`DecodeRequest::max_drift`]; 0 is off.
+    max_drift: u32,
     ap_list: Option<&'a [[i32; 63]]>,
     fading: Option<(FadingModel, f32)>,
     /// Set via [`DecodeRequest::on_result`] — see that method's doc
@@ -131,6 +134,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             params,
             ap_hint: None,
             pileup: false,
+            max_drift: 0,
             ap_list: None,
             fading: None,
             on_result: None,
@@ -174,6 +178,23 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             hint,
             pileup: self.pileup,
         })
+    }
+
+    /// WSJT-X's **Max Drift** (`sbMaxDrift`, 0..50 in steps of 5; off by
+    /// default, as upstream's is): search a linear tone drift of up to
+    /// `bins` spectrum bins (one bin = one baud) across the frame at
+    /// every sync candidate (`q65_ccf_22`), then take the drift found out
+    /// of the grid decode (`q65_loops`' `twkfreq`, `a(2)=-0.5*drift`) —
+    /// for the microwave and EME paths where Doppler and oscillator
+    /// drift smear the tones across the period.
+    ///
+    /// The search costs `2*bins+1` times the plain one per bin; upstream
+    /// narrows its window to `nfqso ± ntol` when this is on, so narrow
+    /// [`SearchParams`]' frequency window to match. Applies to the plain
+    /// and [`Self::ap_hint`] scans; `.ap_list()` and `.fading()` ignore it.
+    pub fn max_drift(mut self, bins: u32) -> Self {
+        self.max_drift = bins;
+        self
     }
 
     /// BP-free template-matching decode against a pre-encoded
@@ -317,6 +338,19 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
         ctx: &DecodeContext,
     ) -> Vec<Q65Result> {
+        // The T/R period `twkfreq` normalises the drift over
+        // (`npts=ntrperiod*12000`, centred at `x0=0.5*(npts+1)`), placed
+        // by the nominal frame start's offset into it.
+        let drift = (self.max_drift > 0).then(|| {
+            let sr = self.sample_rate as f32;
+            let len = <P as FrameLayout>::T_SLOT_S * sr;
+            let start = nominal_start_sample as f32 - <P as FrameLayout>::TX_START_OFFSET_S * sr;
+            MaxDrift {
+                max_bins: self.max_drift,
+                period_centre: start + 0.5 * (len - 1.0),
+                period_len: len,
+            }
+        });
         if let Some(candidates) = self.ap_list {
             return super::rx::decode_scan_with_ap_list_for::<P>(
                 audio,
@@ -348,6 +382,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 nominal_start_sample,
                 &self.params,
                 hint,
+                drift,
                 on_result,
                 ctx,
             ),
@@ -356,6 +391,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 self.sample_rate,
                 nominal_start_sample,
                 &self.params,
+                drift,
                 on_result,
                 ctx,
             ),

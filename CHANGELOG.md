@@ -2,6 +2,22 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: WSJT-X's Max Drift (#471).** `q65_ccf_22` can search a linear tone drift
+  across the frame (`do idrift=-max_drift,max_drift`, symbol `k` read at
+  `i+nint(idrift*(k-43)/85)`), and `q65_loops` takes the drift it found out before the
+  symbol spectra (`twkfreq`, `a(2)=-0.5*drift`, normalised over the whole T/R period).
+  The GUI's Max Drift (0..50, default 0) turns it on; this crate had neither half.
+  `q65::DecodeRequest::max_drift(bins)` now does both, for the plain and AP-hint scans.
+  As upstream, the undrifted `(0,0)` sweep (`q65_dec_q012`) runs first and the drifted
+  grid after it. Off by default, and the default path is unchanged. On `q65sim` WAVs
+  (Q65-30A, -20 dB, 10 each) a drift of 30 / 60 / 120 Hz per minute decoded 5 / 0 / 0
+  times plain, and 10 / 10 / 8 times with Max Drift (10 bins; 20 for the 120 Hz/min
+  set). An undrifted set decoded 10 / 10, and 20 noise-only slots at Max Drift 50
+  decoded nothing (`tests/q65_max_drift.rs`). Not ported: the drift-50 "w3sz" stage 5
+  (`q65.f90:211-250`). When everything else has failed at Max Drift 50, it re-runs the
+  q3 list decode on drift-corrected spectra. Here that decode is `.ap_list()`, which
+  does not take Max Drift yet.
+
 - **Q65: WSJT-X 3.2's Pileup "copied last Tx" flag (#470).** WSJT-X 3.2 sends Q65's
   spare 78th payload bit as a flag in Q65 Pileup mode (`genq65.f90`:
   `dgen(13)=2*dgen(13)+iflag`), reports it on decode (`q65_decode.f90:321`, shown as

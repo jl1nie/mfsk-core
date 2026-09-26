@@ -42,6 +42,7 @@ use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::ApHint;
 use crate::msg::Q65Message;
 use crate::msg::q65::{ap_hint_to_q65_mask_for, unpack_flag, unpack_symbols_to_bits77};
+use num_complex::Complex32;
 
 #[cfg(test)]
 use super::Q65a30;
@@ -93,6 +94,66 @@ fn extract_data_energies<P: ModulationParams>(
     Some(data_symbol_rows(audio, start_sample, nsps, 64, |tone| {
         base_bin + (tone + 1) * bins_per_tone
     }))
+}
+
+/// A linear frequency drift to take out before the symbol FFTs:
+/// `q65_loops.f90`'s `a(2)=-0.5*drift` through `twkfreq`, which removes
+/// `drift * (n - centre) / len` Hz at sample `n`, where `len` is the
+/// whole period (`npts`) and `centre` its middle (`x0`) — not the frame's.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Chirp {
+    /// `drift`: the frequency change across `len` samples, in Hz.
+    pub(crate) hz: f32,
+    /// The period's centre, as a sample index into `audio`.
+    pub(crate) centre: f32,
+    /// The period's length in samples.
+    pub(crate) len: f32,
+}
+
+/// [`data_symbol_rows`], or with `chirp` the same rows after mixing each
+/// symbol by `exp(-i 2π ∫ f_off)`, `f_off(n) = chirp.hz * (n - centre) / len`.
+/// A symbol's phase origin does not reach `|FFT|²`, so each starts at 0.
+fn data_symbol_rows_chirped(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    nsps: usize,
+    row_len: usize,
+    bin_of: impl Fn(usize) -> usize,
+    chirp: Option<Chirp>,
+) -> Vec<f32> {
+    let Some(chirp) = chirp else {
+        return data_symbol_rows(audio, start_sample, nsps, row_len, bin_of);
+    };
+    let mut fft = SymbolFft::new(nsps);
+    let mut energies = vec![0.0_f32; row_len * 63];
+    let mut sync_iter = Q65_SYNC_POSITIONS.iter().peekable();
+    let mut k = 0usize;
+    let w = core::f32::consts::TAU / sample_rate as f32;
+    for sym_idx in 0..85u32 {
+        if sync_iter.peek().is_some_and(|&&p| p == sym_idx) {
+            sync_iter.next();
+            continue;
+        }
+        let n0 = start_sample + sym_idx as usize * nsps;
+        let buf = fft.with_input(|b| {
+            let mut phi = 0.0f32;
+            for (i, slot) in b.iter_mut().enumerate() {
+                let n = n0 + i;
+                let (sn, cs) = phi.sin_cos();
+                *slot = Complex32::new(audio[n] * cs, -audio[n] * sn);
+                phi = (phi + w * chirp.hz * (n as f32 - chirp.centre) / chirp.len)
+                    % core::f32::consts::TAU;
+            }
+        });
+        let row = &mut energies[row_len * k..row_len * (k + 1)];
+        for (i, slot) in row.iter_mut().enumerate() {
+            *slot = buf[bin_of(i)].norm_sqr();
+        }
+        k += 1;
+    }
+    debug_assert_eq!(k, 63);
+    energies
 }
 
 /// `|FFT|²` at `row_len` bins of each of the 63 data symbols, row-major
@@ -148,6 +209,18 @@ fn extract_data_energies_wide<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<Vec<f32>> {
+    extract_data_energies_wide_chirped::<P>(audio, sample_rate, start_sample, base_freq_hz, None)
+}
+
+/// [`extract_data_energies_wide`] with an optional drift taken out — see
+/// [`Chirp`].
+fn extract_data_energies_wide_chirped<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    chirp: Option<Chirp>,
+) -> Option<Vec<f32>> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     let base_bin = (base_freq_hz / df).round() as usize;
@@ -165,12 +238,14 @@ fn extract_data_energies_wide<P: ModulationParams>(
         return None;
     }
 
-    Some(data_symbol_rows(
+    Some(data_symbol_rows_chirped(
         audio,
+        sample_rate,
         start_sample,
         nsps,
         bins_per_symbol,
         |i| wide_start + i,
+        chirp,
     ))
 }
 
@@ -570,8 +645,9 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
         sample_rate,
         nominal_start_sample,
         params,
+        0,
         on_result,
-        |c| {
+        |c, _| {
             decode_at_fading_for::<P>(
                 audio,
                 sample_rate,
@@ -658,8 +734,9 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
         sample_rate,
         nominal_start_sample,
         params,
+        0,
         on_result,
-        |c| {
+        |c, _| {
             decode_at_with_ap_list_for::<P>(
                 audio,
                 sample_rate,
@@ -710,20 +787,31 @@ fn dedup_freq_tol_hz<P: ModulationParams>() -> f32 {
 /// ±1 symbol) and reporting each survivor to `on_result` as it lands.
 /// Only the per-candidate decode differs between strategies; this loop
 /// was three copies of itself before #418.
+///
+/// `max_drift` is the Max Drift search in bins (0: none); `decode` gets
+/// each candidate with the drift that scored it, in Hz across the frame.
 fn scan_with<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
+    max_drift: u32,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
-    mut decode: impl FnMut(&super::search::SyncCandidate) -> Option<Q65Result>,
+    mut decode: impl FnMut(&super::search::SyncCandidate, f32) -> Option<Q65Result>,
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
-    let cands =
-        super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
+    let df = sample_rate as f32 / nsps as f32;
+    let cands = super::search::coarse_search_drift_for::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        max_drift,
+    );
     let mut seen: Vec<Q65Result> = Vec::new();
-    for c in cands {
-        let Some(decode) = decode(&c) else {
+    for (c, idrift) in cands {
+        // `drift=df*idrift_best` (`q65.f90:542`).
+        let Some(decode) = decode(&c, df * idrift as f32) else {
             continue;
         };
         push_unique(
@@ -760,6 +848,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
+    drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
@@ -769,6 +858,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
         nominal_start_sample,
         params,
         None,
+        drift,
         on_result,
         ctx,
     )
@@ -785,6 +875,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_hint: Q65Ap<'_>,
+    drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
@@ -794,6 +885,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
         nominal_start_sample,
         params,
         Some(ap_hint),
+        drift,
         on_result,
         ctx,
     )
@@ -806,28 +898,48 @@ fn decode_scan_inner<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_hint: Option<Q65Ap<'_>>,
+    drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
-    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     scan_with::<P>(
         audio,
         sample_rate,
         nominal_start_sample,
         params,
+        drift.map_or(0, |d| d.max_bins),
         on_result,
-        |c| {
-            decode_at_with_fine_timing_for::<P>(
+        |c, drift_hz| {
+            let chirp = drift.filter(|_| drift_hz != 0.0).map(|d| Chirp {
+                hz: drift_hz,
+                centre: d.period_centre,
+                len: d.period_len,
+            });
+            // `GridDepth::Fast`: WSJT-X's own automatic per-slot depth
+            // (`jt9`'s CLI default, `-d 1`).
+            decode_at_grid_for::<P>(
                 audio,
                 sample_rate,
                 c.start_sample,
                 c.freq_hz,
-                nsps,
+                GridDepth::Fast,
                 ap_hint,
+                chirp,
                 ctx,
             )
         },
     )
+}
+
+/// WSJT-X's **Max Drift** for a scan: the search range in bins, and the
+/// period whose centre and length `twkfreq` normalises the drift over
+/// (`npts=ntrperiod*12000`, `x0=0.5*(npts+1)`), as sample positions in
+/// the audio being scanned.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MaxDrift {
+    pub(crate) max_bins: u32,
+    pub(crate) period_centre: f32,
+    pub(crate) period_len: f32,
 }
 
 /// Decode depth for the internal `(Δf, Δt, b90)` grid search — mirrors WSJT-X
@@ -907,6 +1019,7 @@ fn decode_at_grid_for<P: ModulationParams>(
     base_freq_hz: f32,
     depth: GridDepth,
     ap_hint: Option<Q65Ap<'_>>,
+    chirp: Option<Chirp>,
     ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
@@ -924,121 +1037,117 @@ fn decode_at_grid_for<P: ModulationParams>(
     let mut intrinsics = vec![0.0_f32; 64 * 63];
     let es_no = default_es_no_metric();
 
-    for idf in 1..=idfmax {
-        let ndf = zigzag_offset(idf);
-        let freq_shift = base_freq_hz + 0.5 * baud * ndf as f32;
-        for idt in 1..=idtmax {
-            let ndt = zigzag_offset(idt);
-            let ndist_ft = ndf * ndf + ndt * ndt;
-            if ndist_ft > maxdist {
-                // Even the closest b90 (distance 0) can't satisfy the
-                // bound at this (Δf,Δt) — skip the FFT extraction
-                // entirely rather than computing it for nothing.
-                continue;
-            }
-            let dt_offset = ndt as i64 * dt_step;
-            let Ok(shifted_start) = usize::try_from(start_sample as i64 + dt_offset) else {
-                continue;
-            };
-            let Some(energies) =
-                extract_data_energies_wide::<P>(audio, sample_rate, shifted_start, freq_shift)
-            else {
-                continue;
-            };
-
-            for ibw in ibwa..=ibwb {
-                // At the unperturbed (Δf,Δt)=(0,0) cell, WSJT-X always
-                // runs a full, UNPRUNED ibwa..=ibwb sweep first —
-                // `q65_dec_q012` (`lib/qra/q65/q65.f90:381`), called
-                // from `q65_dec0` before `q65_loops` ever runs. Only
-                // once that full-range attempt fails does `q65_loops`
-                // itself run, and *it* prunes by `maxdist` at every
-                // (Δf,Δt) including (0,0) — but by then ibwa..ibwb at
-                // (0,0) is already known to have failed, so the
-                // pruning there is redundant, not restrictive. Pruning
-                // it here too (as an earlier port did) silently drops
-                // the low-ibw end for wide-ibwa submodes (C/D/E) that
-                // matters most for near-zero-fading signals, producing
-                // a measured ~4 dB sensitivity regression vs real jt9
-                // (`-d 1`, `docs/notes/Q65_BENCHMARK.md`).
-                let ndist = ndist_ft + (ibw - ibw0) * (ibw - ibw0);
-                if (ndf != 0 || ndt != 0) && ndist > maxdist {
+    // Without drift, one pass: `q65_dec_q012`'s unpruned sweep at
+    // (0,0) and `q65_loops`' pruned cells around it. With drift, upstream
+    // still runs `q65_dec_q012` on the undrifted spectra first, and only
+    // `q65_loops` takes the drift out (`a(2)=-0.5*drift`) — over every
+    // cell, (0,0) included, pruned and capped like the rest.
+    // `(chirp, centre exempt from pruning, centre cell only)`:
+    let passes: &[(Option<Chirp>, bool, bool)] = match chirp {
+        None => &[(None, true, false)],
+        Some(_) => &[(None, true, true), (chirp, false, false)],
+    };
+    for &(chirp, centre_exempt, centre_only) in passes {
+        let (idfmax, idtmax) = if centre_only {
+            (1, 1)
+        } else {
+            (idfmax, idtmax)
+        };
+        for idf in 1..=idfmax {
+            let ndf = zigzag_offset(idf);
+            let freq_shift = base_freq_hz + 0.5 * baud * ndf as f32;
+            for idt in 1..=idtmax {
+                let ndt = zigzag_offset(idt);
+                let ndist_ft = ndf * ndf + ndt * ndt;
+                if ndist_ft > maxdist {
+                    // Even the closest b90 (distance 0) can't satisfy the
+                    // bound at this (Δf,Δt) — skip the FFT extraction
+                    // entirely rather than computing it for nothing.
                     continue;
                 }
-                let b90 = 1.72_f32.powi(ibw);
-                // `q65_loops.f90:73` caps b90 at 345 Hz for the (Δf,Δt)
-                // retry cells; `q65_dec_q012`'s full (0,0) sweep has no
-                // such cap, so only apply it off-center.
-                if (ndf != 0 || ndt != 0) && b90 > 345.0 {
-                    continue;
-                }
-                let b90_ts = b90 / baud;
-
-                // `q65_dec1`/`q65_dec2` (`q65.f90:598,627`) both
-                // hardcode `nFadingModel=1` — WSJT-X's own automatic
-                // Q65 decode always uses Lorentzian here, never
-                // Gaussian (the Gaussian/Lorentzian choice only varies
-                // in the multi-period fading sweep,
-                // `decode_multi_period_for`, which faithfully tries
-                // both).
-                let _state = intrinsics_fast_fading(
-                    &QRA15_65_64_IRR_E23,
-                    &mut intrinsics,
-                    &energies,
-                    submode,
-                    b90_ts,
-                    FadingModel::Lorentzian,
-                    es_no,
-                );
-
-                let Ok(iterations) = bp_decode(&mut codec, &intrinsics, &mut info_syms, ap_hint)
-                else {
+                let dt_offset = ndt as i64 * dt_step;
+                let Ok(shifted_start) = usize::try_from(start_sample as i64 + dt_offset) else {
                     continue;
                 };
-                let codeword = reencode(&mut codec, &info_syms);
-                if let Some(r) = finish::<P>(
-                    &info_syms,
-                    &codeword,
-                    iterations,
-                    Energies::Wide(&energies),
-                    SnrAudio::Slot(audio),
+                let Some(energies) = extract_data_energies_wide_chirped::<P>(
+                    audio,
                     sample_rate,
                     shifted_start,
                     freq_shift,
-                    ctx,
-                ) {
-                    return Some(r);
+                    chirp,
+                ) else {
+                    continue;
+                };
+
+                for ibw in ibwa..=ibwb {
+                    // At the unperturbed (Δf,Δt)=(0,0) cell, WSJT-X always
+                    // runs a full, UNPRUNED ibwa..=ibwb sweep first —
+                    // `q65_dec_q012` (`lib/qra/q65/q65.f90:381`), called
+                    // from `q65_dec0` before `q65_loops` ever runs. Only
+                    // once that full-range attempt fails does `q65_loops`
+                    // itself run, and *it* prunes by `maxdist` at every
+                    // (Δf,Δt) including (0,0) — but by then ibwa..ibwb at
+                    // (0,0) is already known to have failed, so the
+                    // pruning there is redundant, not restrictive. Pruning
+                    // it here too (as an earlier port did) silently drops
+                    // the low-ibw end for wide-ibwa submodes (C/D/E) that
+                    // matters most for near-zero-fading signals, producing
+                    // a measured ~4 dB sensitivity regression vs real jt9
+                    // (`-d 1`, `docs/notes/Q65_BENCHMARK.md`).
+                    let ndist = ndist_ft + (ibw - ibw0) * (ibw - ibw0);
+                    if !(centre_exempt && ndf == 0 && ndt == 0) && ndist > maxdist {
+                        continue;
+                    }
+                    let b90 = 1.72_f32.powi(ibw);
+                    // `q65_loops.f90:73` caps b90 at 345 Hz for the (Δf,Δt)
+                    // retry cells; `q65_dec_q012`'s full (0,0) sweep has no
+                    // such cap, so only apply it off-center.
+                    if !(centre_exempt && ndf == 0 && ndt == 0) && b90 > 345.0 {
+                        continue;
+                    }
+                    let b90_ts = b90 / baud;
+
+                    // `q65_dec1`/`q65_dec2` (`q65.f90:598,627`) both
+                    // hardcode `nFadingModel=1` — WSJT-X's own automatic
+                    // Q65 decode always uses Lorentzian here, never
+                    // Gaussian (the Gaussian/Lorentzian choice only varies
+                    // in the multi-period fading sweep,
+                    // `decode_multi_period_for`, which faithfully tries
+                    // both).
+                    let _state = intrinsics_fast_fading(
+                        &QRA15_65_64_IRR_E23,
+                        &mut intrinsics,
+                        &energies,
+                        submode,
+                        b90_ts,
+                        FadingModel::Lorentzian,
+                        es_no,
+                    );
+
+                    let Ok(iterations) =
+                        bp_decode(&mut codec, &intrinsics, &mut info_syms, ap_hint)
+                    else {
+                        continue;
+                    };
+                    let codeword = reencode(&mut codec, &info_syms);
+                    if let Some(r) = finish::<P>(
+                        &info_syms,
+                        &codeword,
+                        iterations,
+                        Energies::Wide(&energies),
+                        SnrAudio::Slot(audio),
+                        sample_rate,
+                        shifted_start,
+                        freq_shift,
+                        ctx,
+                    ) {
+                        return Some(r);
+                    }
                 }
             }
         }
     }
     None
-}
-
-/// Try decoding at a coarse candidate's reported alignment via the
-/// WSJT-X-faithful `(Δf, Δt, b90)` grid search — see
-/// [`decode_at_grid_for`]. Uses `GridDepth::Fast`, matching WSJT-X's
-/// own automatic per-slot decode depth (confirmed against `jt9`'s CLI
-/// default, `-d 1`).
-#[allow(clippy::too_many_arguments)]
-fn decode_at_with_fine_timing_for<P: ModulationParams>(
-    audio: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    freq_hz: f32,
-    _nsps: usize,
-    ap_hint: Option<Q65Ap<'_>>,
-    ctx: &DecodeContext,
-) -> Option<Q65Result> {
-    decode_at_grid_for::<P>(
-        audio,
-        sample_rate,
-        start_sample,
-        freq_hz,
-        GridDepth::Fast,
-        ap_hint,
-        ctx,
-    )
 }
 
 // ──────────────────────────────────────────────────────────────────────────
