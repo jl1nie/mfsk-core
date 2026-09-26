@@ -449,14 +449,19 @@ impl<M: Metric> Surv<M> {
 ///
 /// Each predecessor's paths are already best first, and extending them all by the same
 /// branch keeps them so, so an end state's four best are a **merge** of its `2^len` sorted
-/// lists: pick the best head, four times. Upstream (and this crate until #499) inserted every
-/// extension into the end state's list one at a time — 88 % of 280 000 extensions a decode
-/// reached that insert, about 400 cycles each on the LX7. The survivors are the same: the
-/// order is the same total order (`Surv::precedes`), and with `DEDUPE` (the first block of a
-/// pass, where the paths of a state share one key) the first of a key to come out is its best.
-/// One subtlety is kept exact: two paths `a` ahead of `b` on metric alone can round to the
-/// same sum in `f32` and then be ordered by key, so each extended list is re-sorted where
-/// that happened (three comparisons when it did not).
+/// lists: take the best head, four times, extending a path only when it becomes a head.
+/// Upstream (and this crate until #499) inserted every extension into the end state's list one
+/// at a time — 88 % of 280 000 extensions a decode reached that insert, about 400 cycles each
+/// on the LX7; building every list first instead made L=4 slower (614 400 extensions). The
+/// survivors are the same: the order is the same total order ([`Surv::precedes`]), and with
+/// `DEDUPE` (the first block of a pass, where the paths of a state share one key) the first of
+/// a key to come out is its best.
+///
+/// One case is not a plain merge: two paths ordered by metric can round to the same sum and
+/// then be ordered by key, the other way round. Whenever a path becomes a head, the path behind
+/// it is checked for that (an equal sum from unequal metrics, with a smaller key); if it
+/// happened anywhere in an end state, the state is done again by [`advance_state_sorted`],
+/// which sorts each extended list first.
 fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     b: &Block,
     energies: &[M],
@@ -465,14 +470,14 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     cur: &mut [[Surv<M>; PATHS_PER_STATE]],
     probe: &mut P,
 ) {
-    const MAX_WORDS: usize = 16; // coherent length 4
     let words = 1usize << b.len;
     debug_assert!(words <= MAX_WORDS);
     let stride = STATES / words;
     let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
-    let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; MAX_WORDS];
-    let mut lens = [0usize; MAX_WORDS];
-    let mut heads = [0usize; MAX_WORDS];
+    let mut preds = [0usize; MAX_WORDS];
+    let mut branch = [M::zero(); MAX_WORDS];
+    let mut pos = [0usize; MAX_WORDS];
+    let mut head = [Surv::<M>::empty(); MAX_WORDS];
     for (end, out) in cur.iter_mut().enumerate() {
         *out = [Surv::empty(); PATHS_PER_STATE];
         let word = end & (words - 1);
@@ -480,44 +485,57 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
         if prune && identity & reserved != 0 {
             continue;
         }
+        // the extension of `prev[preds[k]][i]`, or empty
+        let extend =
+            |k: usize, i: usize, preds: &[usize; MAX_WORDS], branch: &[M; MAX_WORDS]| match prev
+                [preds[k]]
+                .get(i)
+            {
+                Some(s) if s.valid() => Surv {
+                    metric: s.metric + branch[k],
+                    key: s.key | identity,
+                },
+                _ => Surv::empty(),
+            };
+        // the path behind head `i` of list `k` would come out ahead of it
+        let reordered =
+            |k: usize, i: usize, preds: &[usize; MAX_WORDS], branch: &[M; MAX_WORDS]| {
+                let list = &prev[preds[k]];
+                i + 1 < PATHS_PER_STATE
+                    && list[i + 1].valid()
+                    && list[i].metric != list[i + 1].metric
+                    && list[i].metric + branch[k] == list[i + 1].metric + branch[k]
+                    && list[i + 1].key < list[i].key
+            };
+        let mut inverted = false;
         for k in 0..words {
             let pred = (end >> b.len) + k * stride;
-            let branch = energies[b.energy_offset + usize::from(b.sequence[pred * words + word])];
-            let list = &mut lists[k];
-            let mut n = 0;
-            // a state's paths are best first with the empty slots at the end
-            for s in prev[pred].iter().take_while(|s| s.valid()) {
-                probe.extension();
-                let cand = Surv {
-                    metric: s.metric + branch,
-                    key: s.key | identity,
-                };
-                let mut j = n;
-                while j > 0 && cand.precedes(&list[j - 1]) {
-                    list[j] = list[j - 1];
-                    j -= 1;
-                }
-                list[j] = cand;
-                n += 1;
-            }
-            lens[k] = n;
-            heads[k] = 0;
+            preds[k] = pred;
+            branch[k] = energies[b.energy_offset + usize::from(b.sequence[pred * words + word])];
+            pos[k] = 0;
+            head[k] = extend(k, 0, &preds, &branch);
+            probe.extension();
+            inverted |= reordered(k, 0, &preds, &branch);
         }
         let mut filled = 0;
-        while filled < PATHS_PER_STATE {
+        while !inverted && filled < PATHS_PER_STATE {
             let mut best = MAX_WORDS;
             for k in 0..words {
-                if heads[k] < lens[k]
-                    && (best == MAX_WORDS || lists[k][heads[k]].precedes(&lists[best][heads[best]]))
-                {
+                if head[k].valid() && (best == MAX_WORDS || head[k].precedes(&head[best])) {
                     best = k;
                 }
             }
             if best == MAX_WORDS {
                 break;
             }
-            let cand = lists[best][heads[best]];
-            heads[best] += 1;
+            let cand = head[best];
+            pos[best] += 1;
+            head[best] = extend(best, pos[best], &preds, &branch);
+            probe.extension();
+            if reordered(best, pos[best], &preds, &branch) {
+                inverted = true;
+                break;
+            }
             if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
                 probe.duplicate();
                 continue;
@@ -526,6 +544,76 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
             out[filled] = cand;
             filled += 1;
         }
+        if inverted {
+            advance_state_sorted::<M, P, DEDUPE>(
+                &preds[..words],
+                &branch,
+                identity,
+                prev,
+                out,
+                probe,
+            );
+        }
+    }
+}
+
+/// Coherent length 4: sixteen predecessors.
+const MAX_WORDS: usize = 16;
+
+/// One end state of [`advance`] with each extended list sorted before the merge: the exact form
+/// for when `f32` rounding reordered a list.
+#[cold]
+fn advance_state_sorted<M: Metric, P: Probe, const DEDUPE: bool>(
+    preds: &[usize],
+    branch: &[M; MAX_WORDS],
+    identity: u64,
+    prev: &[[Surv<M>; PATHS_PER_STATE]],
+    out: &mut [Surv<M>; PATHS_PER_STATE],
+    probe: &mut P,
+) {
+    let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; MAX_WORDS];
+    let mut lens = [0usize; MAX_WORDS];
+    let mut heads = [0usize; MAX_WORDS];
+    for (k, &pred) in preds.iter().enumerate() {
+        let mut n = 0;
+        for s in prev[pred].iter().take_while(|s| s.valid()) {
+            let cand = Surv {
+                metric: s.metric + branch[k],
+                key: s.key | identity,
+            };
+            let mut j = n;
+            while j > 0 && cand.precedes(&lists[k][j - 1]) {
+                lists[k][j] = lists[k][j - 1];
+                j -= 1;
+            }
+            lists[k][j] = cand;
+            n += 1;
+        }
+        lens[k] = n;
+    }
+    *out = [Surv::empty(); PATHS_PER_STATE];
+    let mut filled = 0;
+    while filled < PATHS_PER_STATE {
+        let mut best = MAX_WORDS;
+        for k in 0..preds.len() {
+            if heads[k] < lens[k]
+                && (best == MAX_WORDS || lists[k][heads[k]].precedes(&lists[best][heads[best]]))
+            {
+                best = k;
+            }
+        }
+        if best == MAX_WORDS {
+            break;
+        }
+        let cand = lists[best][heads[best]];
+        heads[best] += 1;
+        if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
+            probe.duplicate();
+            continue;
+        }
+        probe.insert_call();
+        out[filled] = cand;
+        filled += 1;
     }
 }
 
