@@ -252,10 +252,32 @@ default 160; channel 0 only 141 (−19, all between −17 and −14 dB); the sam
 the surface width (141 with the wide surface) and *not* the candidate count (3, 9, 14 picks: 141). It is the peak-up:
 skipping it on channel 0 gives 152 with channel 0 only, and 154 (against 160) with all channels — channels 1 and 2 take
 their candidates raw, so on a weak signal they are an unrefined second attempt at the same peak. Peak-up (100 ms × 5 a
-window on the board) buys 6 passes with the second attempt present and costs 11 without. So v1's choice is between
-(a) channel 0 with peak-up only — 141 — and (b) both attempts on channel 0, raw first and peak-up second, which is
-0.5–1 dB nearer the default for one more gate call per pick, and cheaper than five peak-ups if raw goes first and the
-peak-up runs only on candidates whose raw gate fails narrowly. (b) is the next thing to measure.
+window on the board) buys 6 passes with the second attempt present and costs 11 without.
 
-Next: (b) on the host; then the decimated surface as a real `Params` option, the rotated-reference candidate path (no
+**Raw first, peak-up second — measured.** Channel 0 tries every pick unrefined; only when that attempt fails is the
+pick refined and tried again (the decimated surface, channel 0 only in all rows). `jtty_sweep`, weak-signal passes of
+360 (0 unexpected decodes in every row):
+
+| channel 0 | passes |
+|---|---|
+| peak-up only (as v1 stood) | 141 |
+| raw only (no peak-up) | 152 |
+| default, all three channels | 160 |
+| **raw, then peak-up** | **164** |
+| raw, then peak-up only if the raw gate saw ≥ 6 of 13 sync tones | **164** |
+| … ≥ 7 tones | 161 |
+| all three channels, raw then peak-up | 166 |
+
+The hard multi-station set, weak station: 77 (peak-up only) → **92**, and 11 more than `rjtty` finds; easy set and
+unexpected messages unchanged (1 in every variant, the same one). So the fallback restores the 19 passes channel 0
+alone lost and gains 4 over the default, and it is not the peak-up that has to be paid on every pick: a sync count of
+6 in the raw gate (noise expects ~3.3 of 13) is a sufficient reason to refine, and threshold 6 loses nothing against
+refining every failure. Cost per window, noise alone (default channel 0 with peak-up → raw with fallback at 6):
+peak-ups 5.0 → **1.8**, gate calls 5.0 → 6.8, ladder calls 0.073 → 0.098 (+34 %: raw picks that pass the gate now
+reach the ladder as well); six stations 10.3 → 4.2 peak-ups, ladder 0.94 → 1.34. Each gate call here is preceded by a
+whole-window `shift_frequency`; the raw gate needs only the 13 sync symbols' worth of samples, so with the rotated
+reference of section 8's list it is 2 496 multiply-adds a tone instead of a 14 160-sample mix — the gate count is
+cheap, the extra ladder calls are the price (~0.025 a window in noise, ≈ 1 s each on the CoreS3).
+
+Next: the decimated surface and raw-then-peak-up as real `Params` options, the rotated-reference candidate path (no
 whole-window `shift_frequency`), and the on-board measurement of all three.
