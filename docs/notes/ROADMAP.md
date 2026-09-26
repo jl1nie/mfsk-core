@@ -665,6 +665,12 @@ version if you're picking up work.
   rather than decode demand. Deliberately left open as a decision
   record, not as work: **track, don't commit.** Closing it would lose
   the sourcing and invite the question being re-asked from scratch.
+- **#477** — JTTY (new in WSJT-X 3.2.0-rc1, opened 2026-09-26) not
+  implemented. Non-slotted 4-GFSK / TBCC(K=10) mode, so it sits outside
+  `Protocol` like MSK144 but needs a streaming receive API. The upstream
+  source has been read and written up in `JTTY_UPSTREAM.md` (frame, FEC,
+  source grammar, receiver, reuse map, phasing); nothing has been built or
+  measured. Not scheduled — the first decision is the API shape.
 - **#148** — Research idea (not a commitment, from VK3NV): blind-paired
   FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
   Q65's multi-period averaging (`q65/rx.rs`) is the architectural
