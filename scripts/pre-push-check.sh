@@ -41,6 +41,7 @@ FEATURE_MATRIX=(
   "uvpacket"
   "alloc ft8"
   "alloc jtty"
+  "alloc jtty fft-extern"
   "alloc ft8 fft-extern"
   "alloc ft8 fft-extern fixed-point"
   "alloc ft4 fft-extern"

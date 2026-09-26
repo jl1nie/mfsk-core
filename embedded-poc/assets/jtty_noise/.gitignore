@@ -1,0 +1,2 @@
+# noise-only WAVs (sjtty at SNR -99) -- regenerate with scripts/gen_jtty_noise_wavs.sh
+*.wav
