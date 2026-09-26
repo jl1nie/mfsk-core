@@ -623,6 +623,31 @@ the process on exit after everything has otherwise succeeded.
 mutates on every decode. One per thread; concurrent decodes on separate
 sessions are supported.
 
+**Decode parameters are `MfskDecodeParams`, the data class.** Start from
+`Mfsk.defaultParams(mode)` and `copy` what differs — there is no
+constructor default, for the reason the ABI has an init call at all (zeroing
+is not the mode's defaults; a zero `maxCand` decodes nothing):
+
+```kotlin
+val p = Mfsk.defaultParams(ft8).copy(
+    freqHintHz = 1500f,
+    txFreqHz = 1500f,                       // FT8's nftx; needs CAP_TX_FREQ
+    apHint = MfskApHint("K1JT", "HA0DU"),   // the message's fields in order
+)
+MfskSession.open(ft8, p).use { s -> s.decode(pcm) }
+```
+
+`freqHintHz` and `txFreqHz` are nullable (NaN in C, since 0 Hz is a
+frequency). `noiseBlanker` is `MfskNoiseBlanker.Percent(n)` or
+`.Sweep(step, toleranceHz)` (FST4, needs `CAP_NOISE_BLANKER`). As at the C
+level, a parameter the mode does not have **fails at `open`** with a message
+naming the field and the capability bit, rather than being dropped.
+`session.decode(pcm, params = …)` overrides for that call only. The
+parameters cross JNI as three flat arrays whose layout is documented at
+`read_params` in `mfsk_jni.c`; the JVM test sees every slot by the refusal
+that names it, and checks the AP hint, QSO frequency and transmit frequency
+end to end on a weak signal.
+
 **`session.setBudget { … }`, `keepKnown`, `keepFftCache`** are the same
 three strategies, per session. The budget predicate crosses JNI once
 per candidate, so keep it to a `System.nanoTime()` comparison against a

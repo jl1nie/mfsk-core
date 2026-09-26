@@ -237,6 +237,142 @@ fun main() {
     }
     check("a closed session refuses to decode", threwClosed)
 
+    // ── Decode parameters ───────────────────────────────────────────
+    //
+    // The parameters cross JNI as three flat arrays, so the risk is a slot
+    // read as the wrong field: plausible garbage, not a crash. Each field
+    // therefore has to be *seen* — by a refusal that names it, or by a
+    // decode that only comes out right if it arrived.
+    val d = Mfsk.defaultParams(ft8)
+    checkEq("FT8's default band starts at", d.freqMinHz, 100.0f)
+    checkEq("FT8's default band ends at", d.freqMaxHz, 3000.0f)
+    check("a default candidate budget", d.maxCand > 0)
+    checkEq("default depth is the full ladder", d.depth, MfskDecodeParams.DEPTH_BP_ALL_OSD)
+    checkEq("default strictness", d.strictness, MfskDecodeParams.STRICTNESS_NORMAL)
+    checkEq("equalisation is off", d.eqMode, MfskDecodeParams.EQ_OFF)
+    check("no frequency hint (NaN in C)", d.freqHintHz == null)
+    check("no transmit frequency (NaN in C)", d.txFreqHz == null)
+    check("no AP hint", d.apHint == null)
+    check("no noise blanker", d.noiseBlanker == null)
+    checkEq("no SIC", d.sicRounds, 0)
+
+    // The arrays are the wire format: what goes out has to come back.
+    for (nb in listOf(null, MfskNoiseBlanker.Percent(7), MfskNoiseBlanker.Sweep(2, 33.0f))) {
+        val p = d.copy(
+            freqMinHz = 210.0f, freqMaxHz = 2900.0f, syncMin = 1.7f, maxCand = 41,
+            depth = MfskDecodeParams.DEPTH_BP_ALL, strictness = MfskDecodeParams.STRICTNESS_DEEP,
+            eqMode = MfskDecodeParams.EQ_LOCAL, freqHintHz = 1234.5f, sicRounds = 3,
+            sicEarly = true, searchHz = 60.0f, txFreqHz = 1500.25f, noiseBlanker = nb,
+        )
+        checkEq("params survive the arrays ($nb)",
+                MfskDecodeParams.fromArrays(p.floatArray(), p.intArray()), p)
+    }
+
+    fun refused(what: String, needle: String, mode: Int, p: MfskDecodeParams) {
+        var msg: String? = null
+        try {
+            MfskSession.open(mode, p).close()
+        } catch (e: IllegalStateException) {
+            msg = e.message
+        }
+        check("$what is refused, naming $needle (got: $msg)", msg?.contains(needle) == true)
+    }
+    val ft4d = Mfsk.defaultParams(ft4)
+    val f15 = fst4.first { Mfsk.modeName(it) == "FST4-15" }
+    val f15d = Mfsk.defaultParams(f15)
+
+    // Each int slot, by the refusal that names it.
+    refused("an out-of-range depth", "depth", ft8, d.copy(depth = 9))
+    refused("an out-of-range strictness", "strictness", ft8, d.copy(strictness = 9))
+    refused("an out-of-range eq mode", "eq_mode", ft8, d.copy(eqMode = 9))
+    refused("a zero candidate budget", "max_cand", ft8, d.copy(maxCand = 0))
+    refused("SIC on FST4", "successive-interference", f15, f15d.copy(sicRounds = 2))
+    refused("early decode on FT4", "checkpoint", ft4, ft4d.copy(sicEarly = true))
+    refused("a noise blanker level past the GUI's range", "nb_percent",
+            f15, f15d.copy(noiseBlanker = MfskNoiseBlanker.Percent(26)))
+    refused("a blanker sweep step of 3", "nb_sweep_step",
+            f15, f15d.copy(noiseBlanker = MfskNoiseBlanker.Sweep(3, 20.0f)))
+    // Each float slot.
+    refused("an inverted band", "search band", ft8, d.copy(freqMinHz = 2000.0f, freqMaxHz = 1000.0f))
+    refused("a blanker sweep with no window", "nb_ftol_hz",
+            f15, f15d.copy(noiseBlanker = MfskNoiseBlanker.Sweep(5, 0.0f)))
+    refused("a narrow search on FT4", "MFSK_CAP_SNIPER", ft4, ft4d.copy(searchHz = 250.0f))
+    refused("a narrow search with no carrier", "freq_hint_hz", ft8, d.copy(searchHz = 250.0f))
+    refused("a transmit frequency on FT4", "MFSK_CAP_TX_FREQ", ft4, ft4d.copy(txFreqHz = 1500.0f))
+    refused("a blanker on FT8", "MFSK_CAP_NOISE_BLANKER",
+            ft8, d.copy(noiseBlanker = MfskNoiseBlanker.Percent(2)))
+
+    check("only FT8 has a transmit frequency",
+          Mfsk.supports(ft8, Mfsk.CAP_TX_FREQ) && !Mfsk.supports(ft4, Mfsk.CAP_TX_FREQ))
+    check("only FST4 has the noise blanker",
+          fst4.all { Mfsk.supports(it, Mfsk.CAP_NOISE_BLANKER) } &&
+              !Mfsk.supports(ft8, Mfsk.CAP_NOISE_BLANKER))
+
+    // What each accepted shape opens.
+    for (m in fst4) {
+        val base = Mfsk.defaultParams(m)
+        for (nb in listOf(
+            MfskNoiseBlanker.Percent(0), MfskNoiseBlanker.Percent(25),
+            MfskNoiseBlanker.Sweep(1, 20.0f), MfskNoiseBlanker.Sweep(5, 20.0f),
+        )) {
+            MfskSession.open(m, base.copy(noiseBlanker = nb)).close()
+        }
+    }
+    MfskSession.open(ft8, d.copy(searchHz = 250.0f, freqHintHz = 1500.0f)).close()
+    MfskSession.open(ft8, d.copy(txFreqHz = 1500.0f)).close()
+
+    // The band reaches the decoder, and a per-call override does not stick.
+    MfskSession.open(ft8, d).use { s ->
+        val off = d.copy(freqMinHz = 2500.0f, freqMaxHz = 2900.0f)
+        check("a band that excludes the signal finds nothing",
+              s.decode(slot, params = off).none { it.text.contains("JA1ABC") })
+        check("and the override did not stick",
+              s.decode(slot).any { it.text.contains("JA1ABC") })
+    }
+
+    // The AP hint, the QSO frequency and the transmit frequency reach the
+    // decoder: an AP hypothesis that locks both callsigns is tried only
+    // within 50 Hz of the QSO frequency or the transmit frequency. Here the
+    // QSO frequency is 300 Hz off the signal, so the station is left to the
+    // ordinary ladder unless the transmit frequency brings it back in range.
+    // Kotlin's own noise, so the counts are this test's, not the Rust ones.
+    run {
+        val f0 = 1500.0f
+        val sigFrame = Mfsk.synthesize(ft8, "K1JT", "HA0DU", "-12", f0)
+        val sigma = Math.sqrt(
+            (8000.0 * 0.1) * (8000.0 * 0.1) / 2.0 / (Math.pow(10.0, -22.0 / 10.0) * 2500.0 / 6000.0),
+        )
+        val ap = d.copy(apHint = MfskApHint("K1JT", "HA0DU"), freqHintHz = f0 + 300.0f)
+        val withTx = ap.copy(txFreqHz = f0)
+        var without = 0
+        var with = 0
+        var lost = 0
+        var unexpected = 0
+        for (seed in 0 until 12) {
+            val rng = java.util.Random(seed.toLong())
+            val audio = ShortArray(info.slotSamples12k)
+            for (i in audio.indices) {
+                val sig = if (i - start in sigFrame.indices) sigFrame[i - start] * 0.1 else 0.0
+                audio[i] = Math.round(sig + sigma * rng.nextGaussian())
+                    .coerceIn(-32768L, 32767L).toShort()
+            }
+            MfskSession.open(ft8, ap).use { a ->
+                MfskSession.open(ft8, withTx).use { b ->
+                    val ra = a.decode(audio)
+                    val rb = b.decode(audio)
+                    unexpected += (ra + rb).count { it.text != "K1JT HA0DU -12" }
+                    without += ra.size
+                    with += rb.size
+                    if (ra.isNotEmpty() && rb.isEmpty()) lost++
+                }
+            }
+        }
+        println("  AP + QSO frequency 300 Hz off: $without of 12 without txFreqHz, $with with")
+        checkEq("nothing but the injected message decodes", unexpected, 0)
+        checkEq("txFreqHz never loses a station the hint alone found", lost, 0)
+        check("txFreqHz recovers stations the out-of-range hint misses", with >= without + 3)
+    }
+
     // ── JTTY: a stateful receiver, fed a recording in chunks ────────
     val jtty = modes.firstOrNull { Mfsk.modeName(it) == "JTTY" }
     check("JTTY is addressable", jtty != null)

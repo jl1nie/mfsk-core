@@ -25,12 +25,18 @@
     rest as 5).
   - The struct grew by appending after `search_hz`; the size-versioned contract means an
     older caller's shorter `size` leaves the new fields unset (`mfsk_abi_version` stays 2).
-  - Still to expose from #466: the Q65 knobs (pileup, max drift, EME delay, q3 list
-    decode, `Q65History`, `Q65Callers`, the flagged encode) and FT8's `previous_cycle`.
   - Swift: `DecodeParams.transmitFrequencyHz` and `.noiseBlanker` (`.percent(_)` /
     `.sweep(step:toleranceHz:)`), and `Capabilities.transmitFrequency` / `.noiseBlanker`.
     Written without a Swift toolchain on hand, so not yet built or run: verify with
     `bindings/swift/scripts/test.sh` on a Mac.
+  - Kotlin: the binding could not set any `MfskDecodeParams` field (it opened every session
+    with NULL params), so it reached neither `freq_hint_hz`, AP, SIC nor these two. It now
+    has `MfskDecodeParams` (start from `Mfsk.defaultParams(mode)` and `copy`),
+    `MfskApHint`, `MfskNoiseBlanker`, `MfskSession.open(mode, params)` and a per-call
+    `decode(samples, params = …)`, plus `CAP_NOISE_BLANKER` / `CAP_TX_FREQ`. The JVM test
+    pins each slot of the array marshalling by the refusal that names it, and runs the AP +
+    transmit-frequency case end to end (4 of 12 without `txFreqHz`, 11 with). Run here on
+    Temurin 17 and Kotlin 2.0.21, as CI does.
   - Still to expose from #466: the Q65 knobs (pileup, max drift, EME delay, q3 list
     decode, `Q65History`, `Q65Callers`, the flagged encode) and FT8's `previous_cycle`.
 

@@ -308,13 +308,131 @@ static bool on_budget(void* user) {
     return go == JNI_TRUE;
 }
 
+// ── Decode parameters ───────────────────────────────────────────────
+
+/// `MfskDecodeParams` crosses JNI as three flat arrays rather than as an
+/// object the shim reads field by field, so there is no per-field
+/// `GetFieldID` to get wrong and a field added later is one more slot in
+/// each layout below and a line in each of `read_params` / `write_params`.
+/// The order is the contract with `MfskDecodeParams.toArrays` in Mfsk.kt.
+///
+///   floats: freq_min_hz, freq_max_hz, sync_min, freq_hint_hz (NaN unset),
+///           search_hz, tx_freq_hz (NaN unset), nb_ftol_hz
+///   ints:   max_cand, depth, strictness, eq_mode, sic_rounds, sic_early,
+///           has_ap_hint, nb_percent, nb_sweep_step
+///   ap:     ap_call1, ap_call2, ap_grid (null entries are empty)
+enum { kParamFloats = 7, kParamInts = 9, kParamAp = 3 };
+
+/// Build the C struct from the arrays. False, with an exception pending,
+/// on a malformed array — the shim checks lengths because a short array
+/// read as a longer layout would be plausible garbage, not an error.
+static bool read_params(JNIEnv* env, jfloatArray fa, jintArray ia, jobjectArray ap,
+                        MfskDecodeParams* p) {
+    if (fa == NULL || ia == NULL || ap == NULL
+        || (*env)->GetArrayLength(env, fa) != kParamFloats
+        || (*env)->GetArrayLength(env, ia) != kParamInts
+        || (*env)->GetArrayLength(env, ap) != kParamAp) {
+        throw_ise(env, "decode parameter arrays have the wrong shape");
+        return false;
+    }
+    jfloat f[kParamFloats];
+    jint v[kParamInts];
+    (*env)->GetFloatArrayRegion(env, fa, 0, kParamFloats, f);
+    (*env)->GetIntArrayRegion(env, ia, 0, kParamInts, v);
+
+    memset(p, 0, sizeof *p);
+    p->size = sizeof *p;
+    p->freq_min_hz = f[0];
+    p->freq_max_hz = f[1];
+    p->sync_min = f[2];
+    p->freq_hint_hz = f[3];
+    p->search_hz = f[4];
+    p->tx_freq_hz = f[5];
+    p->nb_ftol_hz = f[6];
+    p->max_cand = (uint32_t)v[0];
+    /* Enums go in as the integers the caller wrote; the library checks
+       every discriminant before reading it as a Rust enum. */
+    p->depth = (MfskDecodeDepth)v[1];
+    p->strictness = (MfskStrictness)v[2];
+    p->eq_mode = (MfskEqMode)v[3];
+    p->sic_rounds = (uint8_t)v[4];
+    p->sic_early = v[5] != 0;
+    p->has_ap_hint = v[6] != 0;
+    p->nb_percent = (uint8_t)v[7];
+    p->nb_sweep_step = (uint8_t)v[8];
+
+    char* dst[kParamAp] = { p->ap_call1, p->ap_call2, p->ap_grid };
+    for (int i = 0; i < kParamAp; ++i) {
+        jstring js = (jstring)(*env)->GetObjectArrayElement(env, ap, i);
+        if ((*env)->ExceptionCheck(env)) return false;
+        if (js == NULL) continue;
+        const char* u = (*env)->GetStringUTFChars(env, js, NULL);
+        if (u == NULL) { (*env)->DeleteLocalRef(env, js); return false; }
+        /* Truncated to the ABI's inline capacity, NUL kept: a callsign
+           is at most 13 characters and the field holds 15. */
+        strncpy(dst[i], u, sizeof p->ap_call1 - 1);
+        (*env)->ReleaseStringUTFChars(env, js, u);
+        (*env)->DeleteLocalRef(env, js);
+    }
+    return true;
+}
+
+/// The reverse, for `nativeParamsInit`: what the library wrote into
+/// `p`, back into the caller's arrays. The AP fields come back empty from
+/// `mfsk_decode_params_init`, so they are not carried.
+static void write_params(JNIEnv* env, const MfskDecodeParams* p,
+                         jfloatArray fa, jintArray ia) {
+    const jfloat f[kParamFloats] = {
+        p->freq_min_hz, p->freq_max_hz, p->sync_min, p->freq_hint_hz,
+        p->search_hz, p->tx_freq_hz, p->nb_ftol_hz,
+    };
+    const jint v[kParamInts] = {
+        (jint)p->max_cand, (jint)p->depth, (jint)p->strictness, (jint)p->eq_mode,
+        (jint)p->sic_rounds, p->sic_early ? 1 : 0, p->has_ap_hint ? 1 : 0,
+        (jint)p->nb_percent, (jint)p->nb_sweep_step,
+    };
+    (*env)->SetFloatArrayRegion(env, fa, 0, kParamFloats, f);
+    (*env)->SetIntArrayRegion(env, ia, 0, kParamInts, v);
+}
+
+/// `mfsk_decode_params_init` for `mode`, into the caller's arrays.
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_Mfsk_nativeParamsInit(
+        JNIEnv* env, jclass cls, jint mode, jfloatArray fa, jintArray ia) {
+    (void)cls;
+    if (fa == NULL || ia == NULL
+        || (*env)->GetArrayLength(env, fa) != kParamFloats
+        || (*env)->GetArrayLength(env, ia) != kParamInts) {
+        throw_ise(env, "decode parameter arrays have the wrong shape");
+        return;
+    }
+    MfskDecodeParams p;
+    memset(&p, 0, sizeof p);
+    p.size = sizeof p;
+    if (mfsk_decode_params_init((uint32_t)mode, &p) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+        return;
+    }
+    write_params(env, &p, fa, ia);
+}
+
 // ── Session ─────────────────────────────────────────────────────────
 
 JNIEXPORT jlong JNICALL
-Java_io_github_mfskcore_MfskSession_nativeOpen(JNIEnv* env, jclass cls, jint mode) {
+Java_io_github_mfskcore_MfskSession_nativeOpen(
+        JNIEnv* env, jclass cls, jint mode,
+        jfloatArray fa, jintArray ia, jobjectArray ap) {
     (void)cls;
     MfskStatus st = MFSK_STATUS_INTERNAL;
-    MfskDecodeSession* s = mfsk_session_open((uint32_t)mode, NULL, &st);
+    /* Null arrays mean "the mode's defaults", which is what NULL params
+       means to the library. */
+    MfskDecodeParams params;
+    const MfskDecodeParams* pp = NULL;
+    if (fa != NULL) {
+        if (!read_params(env, fa, ia, ap, &params)) return 0;
+        pp = &params;
+    }
+    MfskDecodeSession* s = mfsk_session_open((uint32_t)mode, pp, &st);
     if (s == NULL) {
         throw_ise(env, mfsk_last_error());
         return 0;
@@ -508,10 +626,20 @@ Java_io_github_mfskcore_MfskSession_nativeAddCallsign(
 JNIEXPORT jobjectArray JNICALL
 Java_io_github_mfskcore_MfskSession_nativeDecode(
         JNIEnv* env, jclass cls, jlong handle,
-        jshortArray samples, jint sampleRate) {
+        jshortArray samples, jint sampleRate,
+        jfloatArray fa, jintArray ia, jobjectArray ap) {
     (void)cls;
     MfskDecodeSession* s = (MfskDecodeSession*)(intptr_t)handle;
     if (s == NULL) { throw_ise(env, "session is closed"); return NULL; }
+
+    /* A per-call override applies to this call only; null arrays leave
+       the session's own parameters in force. */
+    MfskDecodeParams params;
+    const MfskDecodeParams* pp = NULL;
+    if (fa != NULL) {
+        if (!read_params(env, fa, ia, ap, &params)) return NULL;
+        pp = &params;
+    }
 
     const jsize n = (*env)->GetArrayLength(env, samples);
     jshort* pcm = (*env)->GetShortArrayElements(env, samples, NULL);
@@ -524,7 +652,7 @@ Java_io_github_mfskcore_MfskSession_nativeDecode(
     size_t len = 0;
     const MfskStatus st = mfsk_session_decode_i16(
         s, (const int16_t*)pcm, (size_t)n, (uint32_t)sampleRate,
-        NULL, rows, kCap, &len);
+        pp, rows, kCap, &len);
     (*env)->ReleaseShortArrayElements(env, samples, pcm, JNI_ABORT);
 
     if (st != MFSK_STATUS_OK) {

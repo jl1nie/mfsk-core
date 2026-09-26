@@ -600,6 +600,31 @@ MfskSession.open(ft8).use { s ->
 ハッシュテーブルを所有する。スレッドごとに1つ。別セッション同士の並行
 デコードは支援されている。
 
+**デコードのパラメータは data class の `MfskDecodeParams`。**
+`Mfsk.defaultParams(mode)` から始めて、変えたい所だけ `copy` する。
+コンストラクタの既定値は意図的に無い — ABI に init 呼び出しがあるのと同じ
+理由で、0 埋めはモードの既定値と等価ではない（`maxCand` が 0 だと何もデコード
+しない）:
+
+```kotlin
+val p = Mfsk.defaultParams(ft8).copy(
+    freqHintHz = 1500f,
+    txFreqHz = 1500f,                       // FT8 の nftx。CAP_TX_FREQ が必要
+    apHint = MfskApHint("K1JT", "HA0DU"),   // メッセージのフィールド順
+)
+MfskSession.open(ft8, p).use { s -> s.decode(pcm) }
+```
+
+`freqHintHz` と `txFreqHz` は nullable（C では NaN。0 Hz も周波数なので）。
+`noiseBlanker` は `MfskNoiseBlanker.Percent(n)` か
+`.Sweep(step, toleranceHz)`（FST4、`CAP_NOISE_BLANKER` が必要）。C 層と同じく、
+モードが持たないパラメータは丸めずに **`open` で失敗し**、フィールド名と
+能力ビットを含むメッセージを返す。`session.decode(pcm, params = …)` はその
+呼び出しだけを上書きする。パラメータは3本のフラット配列で JNI を渡り、並びは
+`mfsk_jni.c` の `read_params` に書いてある。JVM テストは各スロットを、それを
+名指しする拒否メッセージで確かめ、AP ヒント・QSO 周波数・送信周波数は弱い
+信号で端から端まで確かめている。
+
 **`session.setBudget { … }`、`keepKnown`、`keepFftCache`** は同じ3戦略の
 セッション単位版。budget 述語は候補ごとに JNI を1往復するので、捕捉した
 デッドラインとの `System.nanoTime()` 比較程度に留めること。それより重い
