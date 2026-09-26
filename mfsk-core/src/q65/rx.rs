@@ -59,7 +59,7 @@ use super::sync_pattern::Q65_SYNC_POSITIONS;
 /// high, which lowered every list decode's log-likelihood by about 0.7
 /// against WSJT-X's own and let a q3 decode at -30 dB fall under
 /// `PLOG_MIN` that `jt9` accepts.
-fn default_es_no_metric() -> f32 {
+pub(crate) fn default_es_no_metric() -> f32 {
     let eb_no_db = 2.8_f32;
     let eb_no = 10.0_f32.powf(eb_no_db / 10.0);
     // BITS_PER_SYMBOL is 6 for every Q65 sub-mode.
@@ -256,7 +256,7 @@ fn extract_data_energies_wide_chirped<P: ModulationParams>(
 
 /// Submode index (0..=4 ⇒ A..E) inferred from `P::TONE_SPACING_HZ`
 /// over the FFT bin spacing. Equivalent to `log2(bins_per_tone)`.
-fn submode_index_from_params<P: ModulationParams>() -> u8 {
+pub(crate) fn submode_index_from_params<P: ModulationParams>() -> u8 {
     // bins_per_tone for a Q65 sub-mode is always 1, 2, 4, 8, or 16,
     // and equals `2^(letter - 1)`. The FFT length is `NSPS` so bin
     // spacing == 1 baud == TONE_SPACING_HZ for sub-mode A.
@@ -426,14 +426,14 @@ fn reencode(codec: &mut Q65Codec, info_syms: &[i32; 13]) -> [i32; 63] {
 /// Which per-symbol energies layout a decode ran on, for the fallback
 /// SNR: [`extract_data_energies`]' narrow rows or
 /// [`extract_data_energies_wide`]'s wide ones.
-enum Energies<'a> {
+pub(crate) enum Energies<'a> {
     Narrow(&'a [f32]),
     Wide(&'a [f32]),
 }
 
 /// What the SNR estimate measures over: the one slot decoded, or the
 /// slots a multi-period decode averaged.
-enum SnrAudio<'a> {
+pub(crate) enum SnrAudio<'a> {
     Slot(&'a [f32]),
     Averaged(&'a [&'a [f32]]),
 }
@@ -446,7 +446,7 @@ enum SnrAudio<'a> {
 /// it feeds both SNR estimates. `None` when the message does not
 /// unpack.
 #[allow(clippy::too_many_arguments)]
-fn finish<P: ModulationParams>(
+pub(crate) fn finish<P: ModulationParams>(
     info_syms: &[i32; 13],
     codeword: &[i32; 63],
     iterations: u32,
@@ -994,7 +994,7 @@ impl GridDepth {
 
 /// Submode-specific `b90` sweep lower bound (`ibwa`), matching the
 /// table at `lib/q65_decode.f90:168-178`. `ibwb = min(15, ibwa+6)`.
-fn ibwa_for_submode(submode: u8) -> i32 {
+pub(crate) fn ibwa_for_submode(submode: u8) -> i32 {
     match submode {
         0 => 1, // A
         1 => 3, // B

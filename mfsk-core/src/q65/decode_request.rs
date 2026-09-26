@@ -55,7 +55,11 @@ use crate::msg::hash_table::CallsignHashTable;
 use super::Q65Result;
 use super::rx::{MaxDrift, Q65Ap};
 use super::search::SearchParams;
-use crate::engine::FrameLayout;
+
+/// The q3 decode's F Tol when none is given: the `jt9` CLI's fixed Q65
+/// `ntol` (`jt9_params_init.f90`, `params%ntol = 10 ! Q65 hard`).
+pub const DEFAULT_FTOL_HZ: f32 = 10.0;
+use crate::engine::{FrameLayout, ModulationParams};
 
 /// Build a [`DecodeContext`] from an optional caller-supplied hash
 /// table, without cloning the table's contents — `Arc::clone` is a
@@ -104,6 +108,10 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     params: SearchParams,
     /// Set via [`DecodeRequest::eme_delay`].
     eme_delay: bool,
+    /// Set via [`DecodeRequest::rx_freq`].
+    rx_freq: Option<f32>,
+    /// Set via [`DecodeRequest::ftol`].
+    ftol: f32,
     ap_hint: Option<&'a ApHint>,
     /// Set via [`DecodeRequest::pileup`].
     pileup: bool,
@@ -135,6 +143,8 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             nominal_start_sample,
             params,
             eme_delay: false,
+            rx_freq: None,
+            ftol: DEFAULT_FTOL_HZ,
             ap_hint: None,
             pileup: false,
             max_drift: 0,
@@ -222,11 +232,36 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         p
     }
 
-    /// BP-free template-matching decode against a pre-encoded
-    /// candidate set (e.g. [`super::standard_qso_codewords`]) instead
-    /// of belief propagation.
+    /// Full-AP list decoding against a pre-encoded candidate set (e.g.
+    /// [`super::standard_qso_codewords`]).
+    ///
+    /// With [`Self::rx_freq`] this is WSJT-X's **q3** decode
+    /// (`q65_dec0`'s list branch): the 85-symbol sync of every candidate
+    /// against the symbol spectra within [`Self::ftol`] of the Rx
+    /// frequency (`q65_ccf_85`), then list decoding with the fast-fading
+    /// metric at the best one (`q65_dec_q3`). It runs first, and the scan
+    /// (plain, [`Self::ap_hint`] or [`Self::fading`]) runs after it for
+    /// the rest of the band, as upstream's candidate loop does.
+    ///
+    /// Without [`Self::rx_freq`] it is this crate's own scan: template
+    /// matching (AWGN metric) at every coarse candidate, instead of the
+    /// scan's decode — kept for callers with no Rx frequency.
     pub fn ap_list(mut self, candidates: &'a [[i32; 63]]) -> Self {
         self.ap_list = Some(candidates);
+        self
+    }
+
+    /// The Rx frequency (tone 0), WSJT-X's `nfqso`: where
+    /// [`Self::ap_list`]'s q3 decode looks.
+    pub fn rx_freq(mut self, hz: f32) -> Self {
+        self.rx_freq = Some(hz);
+        self
+    }
+
+    /// WSJT-X's F Tol (`ntol`) around [`Self::rx_freq`]. Default
+    /// [`DEFAULT_FTOL_HZ`].
+    pub fn ftol(mut self, hz: f32) -> Self {
+        self.ftol = hz;
         self
     }
 
@@ -380,6 +415,83 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 period_len: len,
             }
         });
+        if let (Some(codewords), Some(rx)) = (self.ap_list, self.rx_freq) {
+            // q3 first, at the Rx frequency; then the scan for everything
+            // else (`q65_decode.f90`: `q65_dec0` before the `icand` loop).
+            let sr = self.sample_rate as f32;
+            let q3 = super::q3::decode_q3_for::<P>(
+                audio,
+                self.sample_rate,
+                super::q3::Q3Params {
+                    rx_freq_hz: rx,
+                    ftol_hz: self.ftol,
+                    slot_start: nominal_start_sample as i64
+                        - (<P as FrameLayout>::TX_START_OFFSET_S * sr) as i64,
+                    late_sec: self.search_params().time_tolerance_late_sec,
+                    drift_hz: 0.0,
+                },
+                codewords,
+                ctx,
+            );
+            if let (Some(r), Some(cb)) = (&q3, on_result) {
+                cb(r);
+            }
+            let rest = self.scan(audio, nominal_start_sample, drift, on_result, ctx);
+            // The "w3sz" stage 5 (`q65_decode.f90:296-307`, `q65.f90:211-250`):
+            // at Max Drift 50, when nothing decoded at the Rx frequency, the
+            // q3 decode again on spectra with the drift `q65_ccf_22` found
+            // there taken out. `q65_ccf_22` searches `nfqso ± ntol` alone
+            // while the drift search is on (`q65.f90:486-489`).
+            let near_rx = |r: &Q65Result| (r.freq_hz - rx).abs() <= self.ftol;
+            let q3 = if q3.is_none() && self.max_drift == 50 && !rest.iter().any(near_rx) {
+                let mut p = self.search_params();
+                p.freq_min_hz = rx - self.ftol;
+                p.freq_max_hz = rx + self.ftol;
+                let nsps = (self.sample_rate as f32 * <P as ModulationParams>::SYMBOL_DT).round();
+                let df = sr / nsps;
+                let idrift = super::search::coarse_search_drift_for::<P>(
+                    audio,
+                    self.sample_rate,
+                    nominal_start_sample,
+                    &p,
+                    self.max_drift,
+                )
+                .into_iter()
+                .find(|(c, _)| (c.freq_hz - rx).abs() <= self.ftol)
+                .map_or(0, |(_, d)| d);
+                let r = (idrift != 0)
+                    .then(|| {
+                        super::q3::decode_q3_for::<P>(
+                            audio,
+                            self.sample_rate,
+                            super::q3::Q3Params {
+                                rx_freq_hz: rx,
+                                ftol_hz: self.ftol,
+                                slot_start: nominal_start_sample as i64
+                                    - (<P as FrameLayout>::TX_START_OFFSET_S * sr) as i64,
+                                late_sec: self.search_params().time_tolerance_late_sec,
+                                drift_hz: df * idrift as f32,
+                            },
+                            codewords,
+                            ctx,
+                        )
+                    })
+                    .flatten();
+                if let (Some(r), Some(cb)) = (&r, on_result) {
+                    cb(r);
+                }
+                r
+            } else {
+                q3
+            };
+            let mut out: Vec<Q65Result> = q3.into_iter().collect();
+            for r in rest {
+                if !out.iter().any(|o| o.message == r.message) {
+                    out.push(r);
+                }
+            }
+            return out;
+        }
         if let Some(candidates) = self.ap_list {
             return super::rx::decode_scan_with_ap_list_for::<P>(
                 audio,
@@ -391,6 +503,18 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 ctx,
             );
         }
+        self.scan(audio, nominal_start_sample, drift, on_result, ctx)
+    }
+
+    /// The per-candidate scan: fading, AP hint or plain.
+    fn scan(
+        &self,
+        audio: &[f32],
+        nominal_start_sample: usize,
+        drift: Option<MaxDrift>,
+        on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+        ctx: &DecodeContext,
+    ) -> Vec<Q65Result> {
         if let Some((model, b90_ts)) = self.fading {
             return super::rx::decode_scan_fading_for::<P>(
                 audio,
