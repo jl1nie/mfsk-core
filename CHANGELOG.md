@@ -49,6 +49,20 @@
   flag-clear, as `q65_set_list.f90` builds it. The doubled list is `q65_set_list2.f90`'s,
   the contest-caller list, which remains out of scope.
 
+- **Q65: `q65_hist` — the DX station from recent decodes (#472).** WSJT-X keeps its last
+  100 Q65 decodes with their frequencies. On a manual Decode Again with no DX call
+  entered, it takes the DX call (the second word) and the grid (the third word, when it
+  is a grid other than `RR73`) from the most recent decode within 10 Hz of the Rx
+  frequency whose first word is 3 to 12 characters. That feeds the full-AP list
+  (`q65_decode.f90:153-155`, `q65.f90` `q65_hist`). The decoder here is stateless, so
+  `q65::Q65History` is a small type the application holds: `record(&Q65Result)` /
+  `push(freq, msg)` and `lookup(rx_freq_hz) -> Option<DxFromHistory>`, following the
+  same selection rules. Checked against upstream's routine on nine messages: CQ, RR73,
+  reports, 12- and 13-character first words, hashed calls, a one-word message and free
+  text. It is not wired into any request: when to ask (Decode Again, no call entered)
+  is the application's decision, as it is WSJT-X's GUI's. The contest-caller variant
+  `q65_hist2` stays out of scope with `q65_set_list2`.
+
 - **FT8: WSJT-X's a7 and a8 list decoders (#464).** `ft8_decode.f90` runs two passes
   after the candidate loop that this crate did not have. Both choose among messages built
   from call signs already known instead of decoding the LDPC code

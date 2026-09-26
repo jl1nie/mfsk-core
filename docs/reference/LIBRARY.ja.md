@@ -685,6 +685,12 @@ AP は候補ごとの ladder の最後の一段である — FT4 と FST4 全サ
 
 `.ap_list()` と `.fading()` は下層エンジンでは排他であり、`.decode()` は
 `ap_list > fading (+ ap_hint) > ap_hint > plain` の順で解決する。
+`q65::Q65History` は WSJT-X の `q65_hist` で、アプリケーションが保持する。
+デコードのたびに `.record(&result)` で記録し（最新 100 件を保持）、
+`.lookup(rx_freq_hz)` は 10 Hz 以内の最新のデコードから DX コールを返す
+（メッセージにグリッドがあればグリッドも返す）。WSJT-X は DX コール未入力で
+手動の Decode Again を行ったときにこれを使い、オペレータがコールを入力しなくても
+フル AP リスト（`standard_qso_codewords`）を作る。
 `MultiPeriodRequest` は T/R スロットごとに1本の `&[&[f32]]` を取り、
 Rust 専用である（C ABI には無い）。各フロントエンドが実際に何をして
 いるか、既定のスキャンがなぜ素の Bessel パスではないのかは

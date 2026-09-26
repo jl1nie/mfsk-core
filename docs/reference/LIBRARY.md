@@ -666,6 +666,12 @@ and that cost most of the decodes — the measurement is in
 `.ap_list()` and `.fading()` are mutually exclusive in the underlying
 engine; `.decode()` resolves precedence as
 `ap_list > fading (+ ap_hint) > ap_hint > plain`.
+`q65::Q65History` is WSJT-X's `q65_hist`, held by the application:
+`.record(&result)` after each decode (it keeps the last 100), and
+`.lookup(rx_freq_hz)` returns the DX call — plus the grid when the message
+carries one — from the most recent decode within 10 Hz. WSJT-X does this
+on a manual Decode Again with no DX call entered, to build the full-AP
+list (`standard_qso_codewords`) without the operator typing the call.
 `MultiPeriodRequest` takes `&[&[f32]]`, one buffer per T/R slot, and is
 Rust-only — not in the C ABI. What each front end actually does, and
 why the default scan is not the plain Bessel path, is in
