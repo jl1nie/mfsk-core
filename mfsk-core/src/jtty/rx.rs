@@ -70,7 +70,7 @@ use num_complex::Complex32;
 use num_traits::Float;
 
 use super::assemble::{Assembler, FRAME_PERIOD_S, MessageUpdate};
-use super::correlate::{ToneRefs, correlate_payload};
+use super::correlate::ToneRefs;
 use super::dsp::{self, FS6, NSS, db};
 use super::ladder::Ladder;
 use super::source::{self, Atom};
@@ -493,6 +493,43 @@ impl Receiver {
         w.subtracted
     }
 
+    /// The sync surface of the band `p` searches over the analytic window `c0`, as a checksum
+    /// (for `embedded-shared`'s `jtty-bench`, which times it on the LX7).
+    #[doc(hidden)]
+    pub fn bench_surface(&self, c0: &[Complex32], p: &Params) -> f32 {
+        let Some((_, lo, hi)) = channels(p) else {
+            return 0.0;
+        };
+        let s = self.sync_surface(c0, lo, hi, p.decimate_sync);
+        s.data.iter().step_by(97).sum()
+    }
+
+    /// Everything a window costs after its analytic signal, from the analytic window `c0`:
+    /// sync surface, picks, candidates, ladder. Returns the number of frames found (for
+    /// `jtty-bench`, which times it on the LX7, where the analytic stage itself cannot run).
+    #[doc(hidden)]
+    pub fn bench_window(&self, c0: Vec<Complex32>, p: &Params) -> usize {
+        let Some((_, lo, hi)) = channels(p) else {
+            return 0;
+        };
+        let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
+        let audio = alloc::vec![0i16; NCHUNK];
+        let mut asm = Assembler::new();
+        let mut frames = Vec::new();
+        self.analyze(
+            &audio,
+            0.0,
+            p,
+            None,
+            &[],
+            Some(Pre { c0, surface }),
+            &mut asm,
+            &mut |_| {},
+            &mut frames,
+        );
+        frames.len()
+    }
+
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
         let c0 = self.analytic(audio);
@@ -587,19 +624,49 @@ impl Receiver {
         const NF: usize = NFFT / SYNC_DECIM;
         let width = hi - lo + 1;
         let mid = (lo + hi) / 2;
-        let conj: Vec<Complex32> = self.csync.iter().map(|s| s.conj()).collect();
-        let mut refm = alloc::vec![Complex32::new(0.0, 0.0); conj.len()];
-        dsp::shift_frequency(&conj, &mut refm, FS6, -(mid as f32) * DF);
-        let m = refm.len() / SYNC_DECIM;
+        // The sync wave is 13 symbols, each a pure tone that turns a whole number of times, so
+        // (conjugated and mixed by the band centre) it is `c_i · b_t[n]` for symbol `i` sending
+        // tone `t = SYNC[i]`: four 192-sample tables and one phasor per symbol, 6 KB where the
+        // whole wave is 20 KB. Read per column with a window that is also 20 KB, the whole wave
+        // did not stay in the LX7's 32 KB data cache (547 ms a surface, 2.3 ms a column, against
+        // 0.23 ms for the transform).
+        const _: () = assert!(NSS.is_multiple_of(SYNC_DECIM));
+        let wm = f64::from(mid as f32 * DF) * core::f64::consts::TAU / f64::from(FS6);
+        let base: [Vec<Complex32>; 4] = core::array::from_fn(|t| {
+            let psi = -(core::f64::consts::TAU * t as f64 / NSS as f64 + wm);
+            let step = Complex32::new(psi.cos() as f32, psi.sin() as f32);
+            let mut w = Complex32::new((-wm).cos() as f32, (-wm).sin() as f32);
+            (0..NSS)
+                .map(|_| {
+                    let now = w;
+                    w *= step;
+                    now
+                })
+                .collect()
+        });
+        let per_symbol = -wm * NSS as f64;
+        let turn = Complex32::new(per_symbol.cos() as f32, per_symbol.sin() as f32);
+        let mut phasor = Complex32::new(1.0, 0.0);
+        let symbol_phasor: [Complex32; SYNC_SYMBOLS] = core::array::from_fn(|_| {
+            let now = phasor;
+            phasor *= turn;
+            now
+        });
+        let groups = NSS / SYNC_DECIM;
+        let m = SYNC_SYMBOLS * groups;
         let column =
             |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
                 let x = &c0[col * COL_STEP..];
-                for (j, b) in buf.iter_mut().take(m).enumerate() {
-                    let at = j * SYNC_DECIM;
-                    *b = refm[at..at + SYNC_DECIM]
-                        .iter()
-                        .zip(&x[at..at + SYNC_DECIM])
-                        .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
+                for (i, &sent) in SYNC.iter().enumerate() {
+                    let table = &base[usize::from(sent)];
+                    for g in 0..groups {
+                        let (at, out) = (g * SYNC_DECIM, i * groups + g);
+                        buf[out] = symbol_phasor[i]
+                            * table[at..at + SYNC_DECIM]
+                                .iter()
+                                .zip(&x[i * NSS + at..i * NSS + at + SYNC_DECIM])
+                                .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
+                    }
                 }
                 buf[m..].fill(Complex32::new(0.0, 0.0));
                 fft.process(buf);
@@ -692,12 +759,14 @@ impl Receiver {
         } else {
             (pick.xdt_s, pick.f_hz)
         };
-        let mut c1 = alloc::vec![Complex32::new(0.0, 0.0); c0.len()];
-        {
+        // The window is not shifted to put the candidate's lowest tone at 0 Hz, as upstream does
+        // (a 14 160-sample mix and an allocation of the same size, 12 ms and 113 KB of PSRAM on the
+        // LX7); the four tone references are rotated instead, 768 samples (#499).
+        let rot = {
             stat_add!(self, Shifts, 1);
             stat_time!(self, Shift);
-            dsp::shift_frequency(c0, &mut c1, FS6, -f1);
-        }
+            self.refs.rotated(-f1, FS6)
+        };
 
         // ---- sync gate: which tone is strongest in each of the 13 sync symbols
         let start = (xdt * FS6).round() as usize;
@@ -707,17 +776,10 @@ impl Receiver {
         let mut hits = 0usize;
         for (j, &sent) in SYNC.iter().enumerate() {
             let i0 = start + j * NSS;
-            if i0 + NSS > c1.len() {
+            if i0 + NSS > c0.len() {
                 break;
             }
-            let pow: [f32; 4] = core::array::from_fn(|k| {
-                self.refs
-                    .conj(k)
-                    .iter()
-                    .zip(&c1[i0..i0 + NSS])
-                    .fold(Complex32::new(0.0, 0.0), |a, (&r, &x)| a + r * x)
-                    .norm_sqr()
-            });
+            let pow: [f32; 4] = core::array::from_fn(|k| rot.power(k, &c0[i0..i0 + NSS]));
             let best = (0..4).fold(0, |b, k| if pow[k] > pow[b] { k } else { b });
             hits += usize::from(best == usize::from(sent));
             pt += pow[usize::from(sent)];
@@ -745,7 +807,7 @@ impl Receiver {
         let (zsym, zhalf) = {
             stat_add!(self, Correlations, 1);
             stat_time!(self, Correlate);
-            correlate_payload(&self.refs, &c1, start + SYNC_SYMBOLS * NSS)
+            rot.correlate_payload(c0, start + SYNC_SYMBOLS * NSS)
         };
         stat_add!(self, LadderCalls, 1);
         let accepted = {
@@ -1377,15 +1439,20 @@ pub fn peakup(c0: &[Complex32], csync: &[Complex32], xdt0: f32, f0: f32) -> (f32
 
     let (mut pmax, mut fpk, mut xdtpk) = (0f32, 0f32, 0f32);
     let mut zbest = [Complex32::new(0.0, 0.0); SYNC_SYMBOLS];
-    let mut c1 = alloc::vec![Complex32::new(0.0, 0.0); nchunk];
     if ib_signed >= ia as isize {
         let ib = ib_signed as usize;
+        // Only samples `ia..ib + npsync` are read, and the shift is applied to those alone, into a
+        // buffer of that length (about 3 000 samples, 24 KB, where the whole window is 113 KB):
+        // the shift's phase then starts at `ia` instead of at the window's first sample, one
+        // constant factor over everything that is read, which the power sums and the slope of the
+        // phasors' phase do not see (#499).
+        let mut c1 = alloc::vec![Complex32::new(0.0, 0.0); ib + npsync - ia];
         for idf in -5i32..=5 {
             let a1 = -f0 + 0.5 * idf as f32;
-            dsp::shift_frequency(&c0[..ib + npsync], &mut c1[..ib + npsync], FS6, a1);
+            dsp::shift_frequency(&c0[ia..ib + npsync], &mut c1, FS6, a1);
             let mut zcur: [Complex32; SYNC_SYMBOLS] = core::array::from_fn(|i| {
                 (0..NSS).fold(Complex32::new(0.0, 0.0), |acc, n| {
-                    acc + csync[i * NSS + n].conj() * c1[ia + i * NSS + n]
+                    acc + csync[i * NSS + n].conj() * c1[i * NSS + n]
                 })
             });
             for i0 in (ia..=ib).step_by(HOP) {
@@ -1400,11 +1467,12 @@ pub fn peakup(c0: &[Complex32], csync: &[Complex32], xdt0: f32, f0: f32) -> (f32
                     for (i, z) in zcur.iter_mut().enumerate() {
                         let istart = i * NSS;
                         let removed = (0..HOP).fold(Complex32::new(0.0, 0.0), |acc, r| {
-                            acc + csync[istart + r].conj() * c1[i0 + istart + r]
+                            acc + csync[istart + r].conj() * c1[i0 - ia + istart + r]
                         });
                         *z = qstep[i] * (*z - removed);
                         *z += (0..HOP).fold(Complex32::new(0.0, 0.0), |acc, r| {
-                            acc + csync[istart + NSS - HOP + r].conj() * c1[i0 + istart + NSS + r]
+                            acc + csync[istart + NSS - HOP + r].conj()
+                                * c1[i0 - ia + istart + NSS + r]
                         });
                     }
                 }
