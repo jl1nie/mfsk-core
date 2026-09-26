@@ -187,6 +187,11 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **Docs: feeding JTTY from a live source.** `BINDINGS.md` / `.ja.md` and `Stream`'s docs say what the
+  sample count means as time: a run of dropped samples must be replaced by zeros (or a `reset`), a
+  slightly wrong source clock does not matter, and `push` belongs on a worker thread. MSK144's
+  missing incremental receiver is #497.
+
 - **JTTY text packer and transmit path (#477, phase P5).** `jtty::pack::pack(text, profile)` is
   upstream's `pack_jtty`: normalise the text, then pick the fewest frames with a dynamic program
   over character offsets (a callsign action, control phrase, number, grid, `599 <location>` or

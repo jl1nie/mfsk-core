@@ -494,6 +494,26 @@ The handle is not thread-safe: one thread at a time, like `MfskStream`. A build
 without the `jtty` feature keeps the entry points and answers
 `MFSK_STATUS_UNKNOWN_PROTOCOL`.
 
+**Feeding a live source.** There is no slot to align to and no clock in the library:
+time is the number of samples pushed since `open` / `reset`, and `MfskJttyUpdate::start_s`
+is that count over the sample rate. Map it to UTC yourself if you need to (note the UTC
+of the first sample). The consequence for a live capture is that **the sample count must
+follow real time**. A frame continues a message only if it starts one to three frame
+periods (1.888 s, ±0.1 s) after the last, so:
+
+- an audio callback that *drops* samples (an underrun, a USB glitch, a paused stream)
+  shifts every later frame earlier and the message breaks. Push the same number of
+  zeros as the audio you lost, or, after a long gap, `mfsk_jtty_reset`;
+- a source that runs slightly fast or slow (a sound card whose clock is not the
+  operator's) stretches the timing by its ppm error; a few hundred ppm is far inside the
+  ±0.1 s over the 3 frame periods a continuation may span;
+- chunk size does not matter, and there is no benefit to aligning chunks to anything.
+
+Push from a worker, not from the audio callback or the UI thread: hand samples over
+through a ring buffer, since one `push` can take tens of milliseconds. Results follow the
+end of a frame by about half a second (a window is decoded when its last sample arrives).
+MSK144 has the same problem in a sharper form and has no streaming receiver yet (#497).
+
 **Transmit** is the same three stages as elsewhere, with text in front instead of
 a 77-bit message:
 
