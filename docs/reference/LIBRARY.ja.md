@@ -399,6 +399,52 @@ sealed な `Q65SubMode` マーカを介して汎用化されている:
 マーカトレイトではなく素の inherent メソッドである — Q65 は全サブモードが
 全機能を一様に持つため。下層の `q65::rx` 関数群は `pub(crate)`。
 
+**JTTY**（WSJT-X 3.2.0-rc1 の微弱信号キーボードチャット用モード。`lib/jtty/` の
+移植で、#477 と `docs/notes/JTTY_UPSTREAM.md` で管理）は、ここで唯一 **スロットを持たない**
+モードです。31.25 ボーの 4-GFSK、1.888 秒のフレームがいつでも始まり、メッセージは
+複数フレームからなり、受信側が組み立てます。そのため MSK144 と同様 `Protocol` と
+`PROTOCOLS` の外にあり、受信器は *逐次入力* です。`jtty::rx::Stream` は任意サイズの
+チャンクで音声を受け取り、メッセージ更新を `push` の内部で呼び出し元スレッド上の
+コールバックへ渡します（`parallel` 有効時は rayon のプールも使います。結果はスレッド数に
+依存しません）。背後の `Receiver` は不変テーブルだけを持ち `Arc` で共有できるので、
+音声チャンネルごとに `Stream` を作ってもバッファ 1 つ分のコストです。
+
+```rust
+# #[cfg(all(feature = "jtty", feature = "fft-rustfft"))] {
+use std::sync::Arc;
+use mfsk_core::jtty::rx::{Params, Receiver, Stream};
+use mfsk_core::jtty::source::{Atom, CallAction};
+use mfsk_core::jtty::tx;
+
+// 1 フレーム "CQ K1ABC"。送信の最後のフレームには end-of-message が立つ
+let atoms = [Atom::call(CallAction::Cq, "K1ABC")];
+let tones = tx::tones(&atoms).expect("encodable");
+let mut audio: Vec<i16> = vec![0; 12_000];                 // 頭に 1 秒の無音
+audio.extend(tx::synth_f32(&tones, 1500.0, 3000.0).iter().map(|&x| x as i16));
+audio.extend(std::iter::repeat(0).take(4 * 12_000));       // 終わるまでの余白
+
+let mut stream = Stream::new(Arc::new(Receiver::new()), Params::default());
+let mut updates = Vec::new();
+for chunk in audio.chunks(4096) {                          // チャンクサイズは任意
+    stream.push(chunk, &mut |u| updates.push(u));
+}
+stream.finish(&mut |u| updates.push(u));                   // 未完のものを吐き出す
+assert!(updates.iter().any(|u| u.text.contains("CQ K1ABC")));
+# }
+```
+
+`Params` は `rjtty` が取るものを持ちます。運用者の受信周波数と許容幅（チャンネル 0）、
+同期の下限 `smin_db`、チャンネル 1・2 が監視する帯域（運用周波数外の局を
+1350 ± 150 Hz と 1650 ± 150 Hz で探します）。`.subtract`（既定 on）はデコードした
+フレームを信号から引き、それ以前のウィンドウを探し直します。強い局の下の弱い局が
+取れるのはこのためで、off にすると単一信号の受信器になります。`Receiver::scan` /
+`scan_messages` は録音全体を一度に処理する形で、同じサンプルを逐次に流した結果と
+完全に一致します。`MessageUpdate` はメッセージが伸びるたびに 1 回、完了（`complete`）
+または打ち切りで最後に 1 回出ます。`id` はメッセージの存続中変わりません。基準機での
+実測は 0.47 秒ウィンドウあたり 1 スレッドで 11.7 ms（実時間の 43 倍）。既知の限界
+（upstream の受信器と共通、#488）: 約 12〜16 Hz/s を超える周波数ドリフトは追従せず、
+低軌道衛星の最接近付近ではこれを超えうる。
+
 **SNR の比較可能性。** `Jt65Result::snr_db` と Q65 のそれは WSJT-X の
 2500 Hz 基準帯域に換算されている。`Jt9Result::snr_db` は**されていない** —
 JT9 の多段 AGC/IFFT/コヒーレント加算パイプラインは単純な帯域幅オフセットに
@@ -817,6 +863,7 @@ mfsk_core
 │   ├── spd.rs          バースト候補検出 + short-ping デコードループ
 │   ├── frame_decode.rs sync ゲート -> LLR -> LDPC -> メッセージ
 │   └── decode.rs       decode_slot(): スライディングウィンドウ型トップレベルドライバ
+├── jtty/             JTTY — Protocol 実装なし（スロットが無い）。ワイヤ形式・フレームデコーダ・逐次受信器
 └── uvpacket/         非 WSJT 応用例 — 4 sub-mode ZST、独自 tx/rx (UVPACKET.md)
     ├── protocol.rs     ModulationParams/FrameLayout 実装 (一部は装飾的、UVPACKET.md 参照)
     ├── framing.rs      可変長バーストフレーミング
@@ -1384,6 +1431,7 @@ Rust ホスト消費者に関係する分だけをまとめる。`no_std` と固
 | `wspr` | off | WSPR の ZST・decode・synth・スペクトログラム探索 |
 | `jt9` / `jt65` / `q65` | off | **#390 以降ホスト専用ではない** — バックエンドを強制せず、`alloc,<mode>,fft-extern` で `std`/`rustfft` を一切引かずに型検査が通る（`ci.yml` と `scripts/pre-push-check.sh` の feature matrix に 1 行ずつ）。デコーダのみで、組込アプリからの利用はまだ無い |
 | `msk144` | off | MSK144 — `Protocol` の ZST は無く、独自のトップレベルドライバを持つ |
+| `jtty` | off | JTTY — `Protocol` の ZST は無い。ワイヤ形式（`source`・`crc`・`tbcc`・`tx`）はどこでもビルドでき、受信器（`rx`・`assemble`）はホスト FFT（`fft-rustfft` か `fft-extern`）が要る。feature matrix に `alloc,jtty` と `alloc,jtty,fft-extern` の行がある |
 | `uvpacket` | off | 非 WSJT の応用例、4 サブモード ZST。`fst4` を引き、かつ **`std` を明示的に宣言する**（`std::f32::consts::PI` を使うため） |
 | `packet-bytes` | off | `PacketBytesMessage` — バイトペイロードの `MessageCodec` 例 |
 | `full` | off | 全プロトコル + `uvpacket` + `packet-bytes` + `serde` + `parallel` + ホスト FFT |

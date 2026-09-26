@@ -95,6 +95,9 @@ declare -A SUITES=(
   [jt9]="jt9_sweep"
   [q65]="q65_sim_sweep q65_snr_sweep q65_ap_sweep"
   [msk144]="msk144_snr_sweep"
+  # jtty: the JTTY receiver on the generated corpus, groups `jtty/<channel>`
+  # (recall crossing + unexpected decodes per cell; `scripts/gen_jtty_sweep_wavs.sh`).
+  [jtty]="jtty_sweep:jtty_snr_sweep"
   [uvpacket]="uvpacket_per_modes_sweep uvpacket_snr_calibration"
   [fec]="ldpc_min_sum"
   [bench]="bench_qso3_busy_timing"
@@ -107,7 +110,7 @@ want=("$@")
 # than as a wall of silent skips.
 declare -A CORPUS=(
   [ft8]=ft8_sweep [ft8_itu]=ft8_itu_sweep [ft8_busy]=ft8_busy_sweep [ft4]=ft4_sweep [fst4]=fst4_sweep [wspr]=wspr_sweep
-  [jt65]=jt65_sweep [jt9]=jt9_sweep [q65]=q65_sweep [bench]=fst4_sweep
+  [jt65]=jt65_sweep [jt9]=jt9_sweep [jtty]=jtty_sweep [q65]=q65_sweep [bench]=fst4_sweep
 )
 
 echo "== tier C sensitivity sweeps =="
@@ -196,7 +199,7 @@ for k in "${want[@]}"; do
           MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV \
           MFSK_WSPR_SWEEP_SUMMARY_CSV MFSK_JT65_SWEEP_SUMMARY_CSV \
           MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV MFSK_JT9_SWEEP_SUMMARY_CSV \
-          MFSK_Q65_SWEEP_SUMMARY_CSV MFSK_MSK144_SWEEP_SUMMARY_CSV
+          MFSK_Q65_SWEEP_SUMMARY_CSV MFSK_MSK144_SWEEP_SUMMARY_CSV MFSK_JTTY_SWEEP_CSV
     case "$b:$filt" in
       ft8_sweep:ft8_snr_sweep) export MFSK_FT8_SWEEP_CSV="$CSV_DIR/ft8.csv" ;;
       ft4_sweep:ft4_snr_sweep) export MFSK_FT4_SWEEP_CSV="$CSV_DIR/ft4.csv" ;;
@@ -209,6 +212,7 @@ for k in "${want[@]}"; do
       jt9_sweep:) export MFSK_JT9_SWEEP_SUMMARY_CSV="$CSV_DIR/jt9.csv" ;;
       q65_sim_sweep:) export MFSK_Q65_SWEEP_SUMMARY_CSV="$CSV_DIR/q65.csv" ;;
       msk144_snr_sweep:) export MFSK_MSK144_SWEEP_SUMMARY_CSV="$CSV_DIR/msk144.csv" ;;
+      jtty_sweep:jtty_snr_sweep) export MFSK_JTTY_SWEEP_CSV="$CSV_DIR/jtty.csv" ;;
       ft8_busy_sweep:ft8_busy_sweep) export MFSK_FT8_BUSY_CSV="$CSV_DIR/ft8_busy.csv" ;;
     esac
     if [ "$k" = ft8_itu ]; then

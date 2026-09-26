@@ -210,7 +210,7 @@ fi
 echo "  protocols whose own source changed since their own baseline:"
 needed=()
 shared=0
-for proto in ft8 ft4 fst4 wspr jt65 jt9 q65 msk144; do
+for proto in ft8 ft4 fst4 wspr jt65 jt9 q65 msk144 jtty; do
     d="mfsk-core/src/$proto"
     [[ -d "$d" ]] || continue
     since="${base_dates[$proto]:-$file_date}"

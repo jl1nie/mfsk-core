@@ -375,6 +375,57 @@ inherent methods rather than capability-gated traits, since every Q65
 sub-mode supports every capability uniformly. The underlying
 `q65::rx` functions are `pub(crate)`.
 
+**JTTY** (WSJT-X 3.2.0-rc1's mode for weak-signal keyboard chat; a port of
+`lib/jtty/`, tracked in #477 and `docs/notes/JTTY_UPSTREAM.md`) is the one
+mode here with **no slot**: 4-GFSK at 31.25 baud, 1.888 s frames that can
+start at any moment, a message that is several frames long and is put
+together by the receiver. So it is outside `Protocol` and `PROTOCOLS`, like
+MSK144, and its receiver is *incremental*: `jtty::rx::Stream` takes audio in
+chunks of any size and hands each message update to a callback from inside
+`push`, on the caller's thread (and rayon's pool, under `parallel`; the
+result does not depend on the thread count). The `Receiver` behind it holds
+only immutable tables and is shared through an `Arc`, so one `Stream` per
+audio channel costs a buffer each.
+
+```rust
+# #[cfg(all(feature = "jtty", feature = "fft-rustfft"))] {
+use std::sync::Arc;
+use mfsk_core::jtty::rx::{Params, Receiver, Stream};
+use mfsk_core::jtty::source::{Atom, CallAction};
+use mfsk_core::jtty::tx;
+
+// one frame, "CQ K1ABC"; the last frame of a transmission carries end-of-message
+let atoms = [Atom::call(CallAction::Cq, "K1ABC")];
+let tones = tx::tones(&atoms).expect("encodable");
+let mut audio: Vec<i16> = vec![0; 12_000];                 // one second of lead-in
+audio.extend(tx::synth_f32(&tones, 1500.0, 3000.0).iter().map(|&x| x as i16));
+audio.extend(std::iter::repeat(0).take(4 * 12_000));       // and room to finish
+
+let mut stream = Stream::new(Arc::new(Receiver::new()), Params::default());
+let mut updates = Vec::new();
+for chunk in audio.chunks(4096) {                          // any chunk size
+    stream.push(chunk, &mut |u| updates.push(u));
+}
+stream.finish(&mut |u| updates.push(u));                   // flush what is still open
+assert!(updates.iter().any(|u| u.text.contains("CQ K1ABC")));
+# }
+```
+
+`Params` carries what `rjtty` takes: the operator's receive frequency and
+±tolerance (channel 0), the sync floor `smin_db`, and the band channels 1
+and 2 watch (they look 1350 ± 150 Hz and 1650 ± 150 Hz for stations off the
+operator's frequency). `.subtract` (on) takes each decoded frame off the
+signal and re-searches the windows before it — that is what lets a weak
+station under a strong one through; switching it off is a single-signal
+receiver. `Receiver::scan` / `scan_messages` are the one-shot forms for a
+whole recording, and give exactly what streaming the same samples does.
+`MessageUpdate` is emitted each time a message grows and once more when it
+completes (`complete`) or is given up on; `id` is stable for the life of the
+message. Measured on the reference machine: 11.7 ms per 0.47 s window on one
+thread (43x real time). Known limit, shared with upstream's receiver (#488):
+a frequency drift beyond about 12-16 Hz/s is not tracked, which a low-orbit
+satellite pass can exceed near closest approach.
+
 **SNR comparability.** `Jt65Result::snr_db` and `Q65`'s are converted
 to WSJT-X's 2500 Hz reference bandwidth. `Jt9Result::snr_db` is
 **not** — JT9's multi-stage AGC/IFFT/coherent-sum pipeline doesn't
@@ -783,6 +834,7 @@ mfsk_core
 ├── jt65/             JT65 ZST + decode (+ erasure-aware RS, chase)
 ├── q65/              Q65 family — 10 sub-mode ZSTs + decode + synth
 ├── msk144/           MSK144 — no Protocol impl; own top-level driver
+├── jtty/             JTTY — no Protocol impl (no slot); wire format, frame decoder, streaming receiver
 └── uvpacket/         Applied non-WSJT example — 4 sub-mode ZSTs, own tx/rx
 ```
 
@@ -1242,6 +1294,7 @@ justified it. The summary here covers what a Rust host consumer needs;
 | `wspr` | off | WSPR ZST, decode, synth, spectrogram search |
 | `jt9` / `jt65` / `q65` | off | **Not host-only since #390** — no forced backend, and each type-checks clean under `alloc,<mode>,fft-extern` with no `std`/`rustfft` pulled in (one feature-matrix row each, in `ci.yml` and `scripts/pre-push-check.sh`). Decoders only; no embedded app uses them yet |
 | `msk144` | off | MSK144 — no `Protocol` ZST; own top-level driver |
+| `jtty` | off | JTTY — no `Protocol` ZST; wire format (`source`, `crc`, `tbcc`, `tx`) builds anywhere, the receiver (`rx`, `assemble`) needs a host FFT (`fft-rustfft` or `fft-extern`). Has `alloc,jtty` and `alloc,jtty,fft-extern` rows in the feature matrix |
 | `uvpacket` | off | applied non-WSJT example, 4 sub-mode ZSTs. Pulls in `fst4`, and **declares `std` explicitly** (it reaches for `std::f32::consts::PI`) |
 | `packet-bytes` | off | `PacketBytesMessage` — byte-payload example `MessageCodec` |
 | `full` | off | every protocol + `uvpacket` + `packet-bytes` + `serde` + `parallel` + host FFT |

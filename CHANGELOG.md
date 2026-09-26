@@ -112,6 +112,18 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY, the streaming receiver (#477, phase P4a).** `jtty::rx::Stream` takes 12 kHz audio in
+  chunks of any size and passes each `MessageUpdate` to a callback from inside `push`;
+  `finish` reports the messages still open when the audio ends, `reset` starts over. It keeps
+  only the last `NCHUNK + 3 * STEP` samples (about 45 000), which is what the retro re-sweep can
+  still reach, and one `Arc<Receiver>` serves any number of streams. The updates equal
+  `Receiver::scan_messages`' for every chunk size tried (1 sample to the whole recording).
+  `Receiver::scan_messages` and `Stream` now run the same window step, so there is one schedule.
+  Tier C: `tests/jtty_sweep.rs` (`jtty_snr_sweep`) is wired into `run-sensitivity-sweeps.sh` as
+  the `jtty` group and into `sweep-baseline.json`: 50 % crossing -16.20 dB on AWGN and -15.25 dB
+  on the moderate fading channel, 0 unexpected decodes in 360 files. `release-status.sh` now
+  watches `src/jtty`. `LIBRARY.md` (and its `.ja.md`) documents the receiver, with a doctest.
+
 - **JTTY, several signals (#477, phase P3).** `Receiver::scan_messages` returns messages: a
   decoded frame is re-encoded and subtracted from the window (`jtty::subtract`) so a weaker
   station beneath it is found on the residual; the three windows before it are searched again

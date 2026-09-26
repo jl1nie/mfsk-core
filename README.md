@@ -82,8 +82,9 @@ collaborators), which remains the reference implementation — see
 | Q65-60A‥E  | 60 s   | (same QRA codec)                  | 77 bit  | (same sync layout)     | `q65`   |
 | Q65-120D / -120E / -300A | 120-300 s | (same QRA codec)       | 77 bit  | (same sync layout)     | `q65`   |
 | MSK144     | 15 s   | LDPC(128, 90) + CRC-13            | 77 bit  | Meteor-ping burst-scan (matched filter) | `msk144` |
+| JTTY       | none (1.888 s frames, any start) | Tail-biting conv. r=½ K=10 + CRC-12 | 34 bit / frame | 13 symbols + list-WAVA, multi-frame messages | `jtty` |
 
-Eight protocol families, **twenty** wired `Protocol`-trait ZSTs in the
+Nine protocol families, **twenty** wired `Protocol`-trait ZSTs in the
 registry: FST4 contributes five T/R-period sub-modes (FST4-15, -30,
 -60A, -120, -300) and Q65 contributes ten — two terrestrial (Q65-15A,
 -30A), five 60-s EME (Q65-60A‥E), and three long-period (Q65-120D,
@@ -97,9 +98,13 @@ protocol here shares, so no ZST implements `Protocol` for it — its own
 entirely by design (see
 [`docs/reference/LIBRARY.md` §3.1](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#31-generic-vs-bespoke-per-protocol)
 for why — see the MSK144 row and its footnote in the generic-vs-bespoke
-table).
+table). **JTTY** (WSJT-X 3.2's weak-signal keyboard mode) is the other:
+it has no slot at all — frames start whenever the sender likes and a
+message is several of them — so it too stays outside `Protocol`, and its
+receiver, `jtty::rx::Stream`, is incremental (audio in, message updates out
+through a callback).
 [`PROTOCOLS`](https://docs.rs/mfsk-core/latest/mfsk_core/static.PROTOCOLS.html)
-exposes one entry per wired ZST (so MSK144 doesn't appear there);
+exposes one entry per wired ZST (so MSK144 and JTTY don't appear there);
 `uvpacket` (when enabled) adds four more for its rate ladder. See
 [Static set of protocols](#static-set-of-protocols) for why there's no
 runtime `register_protocol()`.
