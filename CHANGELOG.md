@@ -47,6 +47,22 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY, the frame decoder (#477, phase P2).** `jtty::rx::Receiver` (`decode_window`, `scan`)
+  takes 12 kHz audio and returns the validated frames in it, and `jtty::{correlate, trellis,
+  ladder}` are the pieces under it: the list-WAVA decoder of the tail-biting code, the four-rung
+  decode ladder, the sync surface, candidate search and peak-up, and the gate. It is a faithful
+  port of WSJT-X's `jtty_mdecode` **without** signal subtraction, retro re-sweep or message
+  assembly (P3). Against `rjtty` from `v3.2.0-rc1`: the 132 candidate lists of 33 generated frames
+  agree word for word; upstream's sample recording decodes the same ten frames at the same
+  frequency and time; recall is identical in all 18 cells of an AWGN/fading sweep (AWGN 50 % at
+  −16 dB) and in all 22 cells of a frequency-drift sweep; and Gaussian noise decodes nothing. Being
+  the same algorithm it also makes upstream's false decodes — one in the vendored WSPR recording
+  and one in upstream's own sample; #487 tracks what to do about them. A JTTY receiver, like
+  `rjtty`, does not survive a frequency drift of more than about 12–16 Hz/s (#488). With `parallel`
+  every independent step runs on rayon's pool (the 237 sync-surface columns of a window, its
+  candidates, the ladder's rungs, the windows of a recording) and the output is bit-identical for
+  any thread count: 11 ms a window on one thread, 2 ms on 24.
+
 - **JTTY, the wire level (#477, phase P1).** WSJT-X 3.2.0 adds JTTY, a non-slotted 4-GFSK
   mode for RTTY-style contest exchanges; this crate had nothing for it. The new
   `jtty` feature (in `full`; no FFT, no `std` needed) adds `mfsk_core::jtty`: the 32-bit

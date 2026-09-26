@@ -133,7 +133,7 @@ fn collect_range<R: Send>(len: usize, f: impl Fn(usize) -> R + Sync + Send) -> V
 /// symbols are repeated once as dummies so the pulse train is continuous at the
 /// ends, and the audio is read from index `nsps` on. Position `p = nsps + n`
 /// is covered by at most three symbols, so each sample is a short sum.
-fn dphi_at(n: usize, tones: &[u8], pulse: &[f32], carrier: f64) -> f64 {
+fn dphi_at(n: usize, tones: &[u8], pulse: &[f32], carrier: f64, slope: f64) -> f64 {
     let nsym = tones.len();
     let p = NSPS + n;
     let q = p / NSPS;
@@ -154,7 +154,7 @@ fn dphi_at(n: usize, tones: &[u8], pulse: &[f32], carrier: f64) -> f64 {
     } else {
         0.0
     };
-    carrier + TAU * HMOD / NSPS as f64 * (body + head + tail)
+    carrier + slope * n as f64 + TAU * HMOD / NSPS as f64 * (body + head + tail)
 }
 
 /// Integrate `dphi` (exclusive running sum from `start`) and write
@@ -174,6 +174,19 @@ fn integrate_chunk(out: &mut [f32], dphi: &[f64], start: f64, amplitude: f64) {
 /// `f0_hz` the frequency of tone 0 (the lowest); the others are
 /// `f0_hz + tone · 31.25 Hz`. Empty for an empty sequence.
 pub fn synth_f32(tones: &[u8], f0_hz: f32, amplitude: f32) -> Vec<f32> {
+    synth_drifting_f32(tones, f0_hz, amplitude, 0.0)
+}
+
+/// [`synth_f32`] with the whole signal drifting linearly in frequency, `f0_hz`
+/// at the start and `f0_hz + drift_hz_per_s · t` after `t` seconds — a
+/// transmission through a Doppler shift that changes as a satellite passes.
+/// Upstream's `gen_jttywave` has no such term; this is for testing receivers.
+pub fn synth_drifting_f32(
+    tones: &[u8],
+    f0_hz: f32,
+    amplitude: f32,
+    drift_hz_per_s: f32,
+) -> Vec<f32> {
     if tones.is_empty() {
         return Vec::new();
     }
@@ -183,8 +196,10 @@ pub fn synth_f32(tones: &[u8], f0_hz: f32, amplitude: f32) -> Vec<f32> {
         .map(|i| gfsk_pulse(BT, (i as f32 - 1.5 * NSPS as f32) / NSPS as f32))
         .collect();
     let carrier = TAU * f64::from(f0_hz) / f64::from(SAMPLE_RATE);
+    // frequency f(t) = f0 + drift·t: the phase rate grows by 2π·drift/fs² per sample
+    let slope = TAU * f64::from(drift_hz_per_s) / (f64::from(SAMPLE_RATE) * f64::from(SAMPLE_RATE));
 
-    let dphi = collect_range(nwave, |n| dphi_at(n, tones, &pulse, carrier));
+    let dphi = collect_range(nwave, |n| dphi_at(n, tones, &pulse, carrier, slope));
 
     // Chunked scan: the phase at the start of each chunk is the sum of the
     // chunks before it.
@@ -317,7 +332,7 @@ mod tests {
         let mut want: Vec<f32> = (0..t.len() * NSPS)
             .map(|n| {
                 let s = phase.sin() as f32;
-                phase += dphi_at(n, &t, &pulse, carrier);
+                phase += dphi_at(n, &t, &pulse, carrier, 0.0);
                 s
             })
             .collect();

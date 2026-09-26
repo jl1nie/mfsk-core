@@ -26,8 +26,12 @@ symbol errors out of 59. A CRC-valid frame with 27 wrong symbols is far more
 consistent with a false accept than with a weak real signal, on a recording whose
 message is literally "no false decodes". Not investigated: whether the GUI
 filters it, and whether it is the `rc1` receiver or the `rjtty` front end.
-Consequence for the golden test: expect the message and **nothing else**
-(`max_extra: 0`) — this crate should not reproduce that line.
+This crate's receiver is the same algorithm and makes the same false decode
+(`tests/jtty_rx.rs`): the golden test therefore has `max_extra: 1`, pinned to
+exactly that frame, as documented debt rather than the target 0. A second one
+exists: `rjtty` (and this crate) decode `KD7NCT` in the vendored WSPR recording
+`golden/wspr/150426_0918.wav`, which has no JTTY in it. Why neither is simply
+gated away: `docs/notes/JTTY_UPSTREAM.md`, "P2 results".
 
 ## The simulated vectors
 
@@ -60,3 +64,7 @@ tolerance. That isolates the trellis from the DSP in front of it.
 The AWGN/fading sweep corpus is separate (`embedded-poc/assets/jtty_sweep/`,
 `scripts/gen_jtty_sweep_wavs.sh`); it is gitignored, but the score `rjtty`
 gets on it, `UPSTREAM_RECALL.tsv`, is committed.
+
+The noise-only corpus (`embedded-poc/assets/jtty_noise/`, gitignored,
+`scripts/gen_jtty_noise_wavs.sh`, 60 × 30 s at SNR −99 dB) is for the "Gaussian
+noise decodes nothing" test; `rjtty` decodes nothing in it either.

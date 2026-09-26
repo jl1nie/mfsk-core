@@ -572,6 +572,7 @@ jobs:
           - "uvpacket"
           - "alloc ft8"            # no_std + alloc baseline (TX-side host compile)
           - "alloc jtty"           # JTTY through no_std + alloc (needs num_traits::Float for f64 sin/cos)
+          - "alloc jtty fft-extern" # the frame decoder through no_std + alloc + caller-supplied FFT
           - "alloc ft8 fft-extern" # no_std + alloc + caller-supplied FFT (RX preset)
           - "alloc ft8 fft-extern fixed-point" # full embedded integer pipeline
           - "alloc ft4 fft-extern"             # FT4 through the generic pipeline, no_std
