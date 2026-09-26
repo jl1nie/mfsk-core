@@ -264,19 +264,14 @@ fn q65_decodes_frame_starting_before_the_buffer() {
 }
 
 /// Latest Δt real `jt9 -3 -p 60 -b A -d 3` decoded on a `q65sim`
-/// sweep at −25 dB (measured 2026-08-13; it failed at +6.0).
-///
-/// **The reference Q65 window is asymmetric and sub-mode dependent**:
-/// Q65-15A and Q65-30A were measured at −1.0…+1.0, Q65-60A at
-/// −1.0…+5.5. Nothing in the suite exercised `SearchParams::default()`
-/// before this test, which is how the default went out wrong twice in
-/// one issue (#282: too narrow on Q65-15; then its own fix cut
-/// Q65-60A's late reach from +3.0 to +1.0).
-const REFERENCE_Q65_60_LATE_SEC: f32 = 5.0;
+/// sweep at −25 dB (measured 2026-08-13; it failed at +6.0). That `jt9`
+/// runs Q65-60 with the EME delay on (`jt9_params_init.f90`,
+/// `emedelay = 2.5` for TR 60 s), so `lag2` is 5.5 s (`q65.f90:129`):
+/// this is the `.eme_delay(true)` edge. WSJT-X's GUI leaves the delay off
+/// unless "Decode at 52 s" is set, and so does this crate's default.
+const REFERENCE_Q65_60_EME_LATE_SEC: f32 = 5.0;
 
-#[test]
-#[cfg(feature = "q65")]
-fn q65_60a_default_window_reaches_reference_late_edge() {
+fn q65_60a_decodes_at(dt: f32, eme: bool) -> bool {
     use mfsk_core::q65::decode_request::DecodeRequest;
     use mfsk_core::q65::search::default_search_params as q65_default_search_params;
     use mfsk_core::q65::{Q65a60, tx::synthesize_standard_for};
@@ -285,39 +280,48 @@ fn q65_60a_default_window_reaches_reference_late_edge() {
         .expect("Q65-60A synth must succeed");
     // q65sim places TR>=60 at t = Δt + 1.0 s.
     let nominal = 1.0f32;
-    let dt = REFERENCE_Q65_60_LATE_SEC;
     let slot = place(&signal, nominal + dt, 60.0);
-
     let decodes = DecodeRequest::<Q65a60>::new(
         &slot,
         FS,
         (nominal * FS as f32) as usize,
         q65_default_search_params(),
     )
+    .eme_delay(eme)
     .decode();
     let hit = decodes.iter().find(|d| d.message.contains("JA1ABC"));
     println!(
-        "  Q65-60A Δt={dt:>+5.1}s under SearchParams::default()  {}",
+        "  Q65-60A Δt={dt:>+5.1}s eme_delay={eme}  {}",
         hit.map(|h| format!("yes, dt_sec={:+.2}", h.dt_sec))
             .unwrap_or_else(|| "NO".into())
     );
-    assert!(
-        hit.is_some(),
-        "Q65-60A must decode at Δt = {dt:+.1} s under the *default* SearchParams — real \
-         `jt9 -3 -p 60 -b A` reaches +5.5 s. A symmetric ±1.0 s default fails this."
-    );
+    hit.is_some()
 }
 
-/// Latest Δt real `jt9 -3 -p 120 -b D -d 3` decoded on a `q65sim`
-/// sweep at −12 dB (measured 2026-08-13; it failed at +3.0).
+#[test]
+#[cfg(feature = "q65")]
+fn q65_60a_eme_delay_reaches_reference_late_edge() {
+    assert!(
+        q65_60a_decodes_at(REFERENCE_Q65_60_EME_LATE_SEC, true),
+        "Q65-60A must decode at Δt = +5.0 s with .eme_delay(true) — `jt9 -3 -p 60 -b A` \
+         (EME delay on) reaches +5.5 s"
+    );
+    // Without the delay the window is `lag2 = 1.0 s`; +1.0 is inside it,
+    // and a 5 s late frame is not searched.
+    assert!(q65_60a_decodes_at(1.0, false));
+    assert!(!q65_60a_decodes_at(REFERENCE_Q65_60_EME_LATE_SEC, false));
+}
+
+/// How late a Q65-120D frame decodes under the default ±1.0 s window.
 ///
-/// Guards the *long* sub-modes' side of the same default. The
-/// symbol-denominated tolerance this default replaced gave Q65-120
-/// ±6.7 s and Q65-300 ±17.3 s, so moving to a uniform +5.5 s late is a
-/// narrowing for them — measured to be harmless, since the reference
-/// itself only reaches ~+2.0 s here, but it is a narrowing and wants a
-/// test rather than an argument.
-const REFERENCE_Q65_120_LATE_SEC: f32 = 2.0;
+/// `jt9 -3 -p 120 -b D` (EME delay off at TR 120 s, so `lag2` = 1.0 s)
+/// at −12 dB decodes a frame at Δt = +2.0 s but not +2.5 s, reporting
+/// DT 1.0 for every one (2026-09-26): the search stops at the window's
+/// edge and decodes the frame out of alignment, which a 1.33 s symbol
+/// tolerates. This crate does the same up to +1.5 s and not at +2.0 s —
+/// a 0.5 s shortfall at the edge, recorded rather than papered over by
+/// widening the window past upstream's.
+const REFERENCE_Q65_120_LATE_SEC: f32 = 1.5;
 
 #[test]
 #[cfg(feature = "q65")]
@@ -349,6 +353,6 @@ fn q65_120d_default_window_reaches_reference_late_edge() {
     assert!(
         hit.is_some(),
         "Q65-120D must decode at Δt = {dt:+.1} s under the *default* SearchParams — real \
-         `jt9 -3 -p 120 -b D` reaches it"
+         `jt9 -3 -p 120 -b D` reaches +2.0 s at the window's edge"
     );
 }

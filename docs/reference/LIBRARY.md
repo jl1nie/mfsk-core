@@ -697,6 +697,14 @@ plain search per frequency bin; WSJT-X narrows its window to the Rx
 frequency ± F Tol while it is on, so narrow `SearchParams` to match. It
 applies to the plain and `.ap_hint()` scans.
 
+**Q65 time window and EME delay.** `default_search_params()` searches
+-1.0 .. +1.0 s around the nominal start, as WSJT-X's GUI does
+(`q65.f90`'s `lag1`/`lag2`). `.eme_delay(true)` on `q65::DecodeRequest` or
+`MultiPeriodRequest` is its "Decode at 52 s" EME delay: the late edge moves
+to +5.5 s (+4.0 s on Q65-15) for the Earth-Moon-Earth round trip. `dt_sec`
+is measured from the nominal start on both requests; a `SniperRequest`,
+which has none, measures it from the start of the buffer.
+
 ---
 
 ## 4. Module and crate map

@@ -102,6 +102,8 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     sample_rate: u32,
     nominal_start_sample: usize,
     params: SearchParams,
+    /// Set via [`DecodeRequest::eme_delay`].
+    eme_delay: bool,
     ap_hint: Option<&'a ApHint>,
     /// Set via [`DecodeRequest::pileup`].
     pileup: bool,
@@ -132,6 +134,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             sample_rate,
             nominal_start_sample,
             params,
+            eme_delay: false,
             ap_hint: None,
             pileup: false,
             max_drift: 0,
@@ -195,6 +198,28 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     pub fn max_drift(mut self, bins: u32) -> Self {
         self.max_drift = bins;
         self
+    }
+
+    /// WSJT-X's **EME delay** ("Decode at 52 s", `emedelay=2.5`): the
+    /// search reaches +5.5 s past the nominal start, or +4.0 s on Q65-15
+    /// ([`super::search::eme_delay_late_sec`], `q65.f90:129-130`), instead
+    /// of the default +1.0 s — for the ~2.5 s Earth-Moon-Earth round
+    /// trip. Off by default, as in WSJT-X's GUI. Widens the caller's
+    /// `SearchParams` late edge, never narrows it.
+    pub fn eme_delay(mut self, on: bool) -> Self {
+        self.eme_delay = on;
+        self
+    }
+
+    /// `params` with [`Self::eme_delay`] applied.
+    fn search_params(&self) -> SearchParams {
+        let mut p = self.params;
+        if self.eme_delay {
+            p.time_tolerance_late_sec = p
+                .time_tolerance_late_sec
+                .max(super::search::eme_delay_late_sec::<P>());
+        }
+        p
     }
 
     /// BP-free template-matching decode against a pre-encoded
@@ -311,7 +336,13 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         };
         let wrapped;
         let on_result: Option<&(dyn Fn(&Q65Result) + Sync)> = match self.on_result {
-            Some(cb) if pad > 0 => {
+            // Every result goes through `untranslate`, padded or not: it is
+            // also what makes `dt_sec` relative to the nominal start. Gated
+            // on `pad > 0` until 0.12.0, which left `dt_sec` measured from
+            // the buffer's start whenever the nominal start was at least
+            // the early tolerance in — Q65-60A at 1.0 s reported +1.95
+            // for a frame 1.0 s late.
+            Some(cb) => {
                 wrapped = move |r: &Q65Result| {
                     let mut t = r.clone();
                     untranslate(&mut t);
@@ -319,14 +350,12 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 };
                 Some(&wrapped)
             }
-            other => other,
+            None => None,
         };
 
         let mut out = self.decode_dispatch(audio, nominal, on_result, &ctx);
-        if pad > 0 {
-            for r in &mut out {
-                untranslate(r);
-            }
+        for r in &mut out {
+            untranslate(r);
         }
         out
     }
@@ -356,7 +385,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 audio,
                 self.sample_rate,
                 nominal_start_sample,
-                &self.params,
+                &self.search_params(),
                 candidates,
                 on_result,
                 ctx,
@@ -367,7 +396,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 audio,
                 self.sample_rate,
                 nominal_start_sample,
-                &self.params,
+                &self.search_params(),
                 b90_ts,
                 model,
                 self.ap(),
@@ -380,7 +409,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 audio,
                 self.sample_rate,
                 nominal_start_sample,
-                &self.params,
+                &self.search_params(),
                 hint,
                 drift,
                 on_result,
@@ -390,7 +419,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 audio,
                 self.sample_rate,
                 nominal_start_sample,
-                &self.params,
+                &self.search_params(),
                 drift,
                 on_result,
                 ctx,
@@ -557,6 +586,8 @@ pub struct MultiPeriodRequest<'a, P: Q65SubMode> {
     sample_rate: u32,
     nominal_start_sample: usize,
     params: SearchParams,
+    /// Set via [`MultiPeriodRequest::eme_delay`].
+    eme_delay: bool,
     ap_list: Option<&'a [[i32; 63]]>,
     /// Set via [`MultiPeriodRequest::on_result`] — see
     /// [`DecodeRequest::on_result`]'s doc comment for the general
@@ -583,11 +614,34 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
             sample_rate,
             nominal_start_sample,
             params,
+            eme_delay: false,
             ap_list: None,
             on_result: None,
             hash_table: None,
             _marker: PhantomData,
         }
+    }
+
+    /// WSJT-X's **EME delay** ("Decode at 52 s", `emedelay=2.5`): the
+    /// search reaches +5.5 s past the nominal start, or +4.0 s on Q65-15
+    /// ([`super::search::eme_delay_late_sec`], `q65.f90:129-130`), instead
+    /// of the default +1.0 s — for the ~2.5 s Earth-Moon-Earth round
+    /// trip. Off by default, as in WSJT-X's GUI. Widens the caller's
+    /// `SearchParams` late edge, never narrows it.
+    pub fn eme_delay(mut self, on: bool) -> Self {
+        self.eme_delay = on;
+        self
+    }
+
+    /// `params` with [`Self::eme_delay`] applied.
+    fn search_params(&self) -> SearchParams {
+        let mut p = self.params;
+        if self.eme_delay {
+            p.time_tolerance_late_sec = p
+                .time_tolerance_late_sec
+                .max(super::search::eme_delay_late_sec::<P>());
+        }
+        p
     }
 
     /// See [`DecodeRequest::ap_list`]. Tried first (WSJT-X's `iavg=1`
@@ -613,14 +667,36 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
 
     pub fn decode(&self) -> Vec<Q65Result> {
         let ctx = ctx_from_hash_table(self.hash_table.as_ref());
-        super::rx::decode_multi_period_for::<P>(
+        // `dt_sec` from the nominal start, as [`DecodeRequest::decode`]
+        // reports it (#397); this path returned it from the buffer's start.
+        let (nominal, sr) = (self.nominal_start_sample, self.sample_rate);
+        let relative = move |r: &mut Q65Result| {
+            r.dt_sec = (r.start_sample as f32 - nominal as f32) / sr as f32;
+        };
+        let wrapped;
+        let on_result: Option<&(dyn Fn(&Q65Result) + Sync)> = match self.on_result {
+            Some(cb) => {
+                wrapped = move |r: &Q65Result| {
+                    let mut t = r.clone();
+                    relative(&mut t);
+                    cb(&t);
+                };
+                Some(&wrapped)
+            }
+            None => None,
+        };
+        let mut out = super::rx::decode_multi_period_for::<P>(
             self.audio_slots,
             self.sample_rate,
             self.nominal_start_sample,
-            &self.params,
+            &self.search_params(),
             self.ap_list,
-            self.on_result,
+            on_result,
             &ctx,
-        )
+        );
+        for r in &mut out {
+            relative(r);
+        }
+        out
     }
 }

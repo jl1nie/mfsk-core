@@ -2,6 +2,33 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65 searches ±1 s by default, and `.eme_delay(true)` is WSJT-X's EME delay
+  (breaking).** `q65.f90:127-130` searches `lag1 = -1.0 s` to `lag2 = +1.0 s`, and
+  extends `lag2` to +5.5 s (`nsps >= 3600`) or +4.0 s (Q65-15) only when `emedelay > 0`.
+  WSJT-X's GUI sets that only for "Decode at 52 s" (`mainwindow.cpp:5270-5271`).
+  `default_search_params()` was +5.5 s late for every sub-mode. It had been measured
+  against the `jt9` CLI, which turns the EME delay on for TR 60 s by itself
+  (`jt9_params_init.f90`), so the source's `nsps >= 3600` could not explain why Q65-30A
+  stopped at +1 s. The default is now -1.0 .. +1.0 s, and `.eme_delay(true)` on
+  `q65::DecodeRequest` / `MultiPeriodRequest` restores the late reach
+  (`q65::search::eme_delay_late_sec`). `tests/dt_window.rs` pins both.
+  - Q65-60A at +1.0 s decodes by default.
+  - Q65-60A at +5.0 s decodes only with the delay, as `jt9` with it on does.
+  - Q65-120D at +1.5 s decodes at the window's edge, reported as dt +1.0.
+  - Not closed: `jt9` (delay off, -12 dB) still decodes a Q65-120D frame 2.0 s late at
+    that edge, and this crate reaches +1.5 s. The 0.5 s shortfall is recorded, not
+    covered by widening the window past upstream's.
+  - Also fixed: Q65 reported `dt_sec` from the start of the buffer, not from the
+    nominal start (#397), whenever the nominal start was at least the 1 s early
+    tolerance in. That covers every Q65-60 and longer request, and every
+    `MultiPeriodRequest`. A Q65-60A frame 1.0 s late read +1.95.
+  - Tier C (`q65_sim_sweep`, re-baselined): the sweep passed a nominal start of 0, so a
+    TR 60 s frame, which `q65sim` places at 1.0 s, sat on the new window's edge and cost
+    up to 0.5 dB. It now passes the sub-mode's `TX_START_OFFSET_S`, as upstream's `j0`.
+    With that, the 60/120/300 s crossings are within ±0.33 dB of before. Q65-15A/30A
+    are 0.2-0.3 dB later, because their window is now upstream's -0.5 .. +1.5 s of
+    the slot, not the old -1.0 .. +5.5.
+
 - **Q65's decoder metric used the unpunctured code rate, and its list decode had no
   `PLOG_MIN`.** `q65_init` sets `decoderEsNoMetric = nm * R * EbNoMetric` with
   `R = _q65_get_code_rate()`, which is message length over codeword length after
