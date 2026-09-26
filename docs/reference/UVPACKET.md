@@ -471,8 +471,7 @@ T-spaced, comfortably wider than the 15 ms tail tap. Express
 collapses entirely: 9 taps at 1200 baud cover ~7.5 ms and cannot
 resolve the longer taps.
 
-### 3.8 The FM-threshold floor — and why it makes the modem
-###     implementation loss operationally invisible
+### 3.8 The FM-threshold floor — and why it makes the modem implementation loss operationally invisible
 
 The modem sits on top of FM detection. Below CNR ≈ +9–10 dB the
 FM discriminator output is dominated by impulse noise and **any**

@@ -125,10 +125,10 @@ WSPR は全く別経路で組込に到達した（詳細は後述）。上の表
 
 | Target | MCU | Backend | Status |
 |---|---|---|---|
-| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 共通、scalar single-issue) — LX7 PIE `_aes3_` への移行は Phase D D1 で予定、[`PHASE_D_PIE_SIMD.md`](../notes/PHASE_D_PIE_SIMD.md) 参照 | **デモ / 音響 fallback コントローラ** (2026-05-17 pivot) — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。VBUS 源回路が無く（S3 のシリコン自体は host 可、基板が電源経路を配線していない — 外部 5 V を与えれば host 動作する旨の報告が issue #360 にある）バスパワーの USB デバイスを繋いでも給電できないため、本命の UAC コントローラ役は CoreS3 に移譲され、StickS3 は音響経路の実機検証 / デモ機としての位置付けに再定義された。 |
-| **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — `espflash board-info` 確認: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`。ESP32-S2 (LX7、single-core、BT 無し) や S3 では **ない**。 | esp-dsp ASM (`dsps_dotprod_s16_ae32`、`dsps_fft2r_*`) | **本番アプリ (`wav_sim` 専用)** — `embedded-poc/m5stack-core2-app/` が baked `wav_sim` 音源ループに対し同じ `decode_block` を LX6 上で走らせて `mfsk-app-shared` API を交差検証する役割。古典 ESP32 には USB peripheral が無いので mic / speaker / USB-Host 経路はこのボードでは扱わない — Core2 は共有 QSO FSM の LX6 second-board verifier。(独立した Core2 コンピュート bench `embedded-poc/m5stack-core2/` は #61 Phase 3 (0.6.3) で retired、wav_sim 経路はこの app crate に統合済み。) |
+| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 共通、scalar single-issue) — LX7 PIE `_aes3_` への移行は保留中、[`PHASE_D_PIE_SIMD.md`](../notes/PHASE_D_PIE_SIMD.md) 参照 | **デモ / 音響 fallback コントローラ** (2026-05-17 pivot — このボードは USB host 用の VBUS を供給できない。S3 のシリコンは host 可だが、基板が電源経路を配線していない) — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。 |
+| **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — `espflash board-info` 確認: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`。ESP32-S2 (LX7、single-core、BT 無し) や S3 では **ない**。 | esp-dsp ASM (`dsps_dotprod_s16_ae32`、`dsps_fft2r_*`) | **本番アプリ (`wav_sim` 専用)** — `embedded-poc/m5stack-core2-app/` が baked `wav_sim` 音源ループに対し同じ `decode_block` を LX6 上で走らせて `mfsk-app-shared` API を交差検証する役割。古典 ESP32 には USB peripheral が無いので mic / speaker / USB-Host 経路はこのボードでは扱わない — Core2 は共有 QSO FSM の LX6 second-board verifier。(独立した Core2 コンピュート bench `embedded-poc/m5stack-core2/` は #61 Phase 3 で retired、wav_sim 経路はこの app crate に統合済み。) |
 | ESP32-S3 compute bench | Xtensa LX7 | esp-dsp ASM | **タイミング回帰 bench** — `embedded-poc/m5stack-s3/`、缶詰 WAV 入力に対し `decode_block` を走らせ per-stage timing sweep。エンドユーザ向けではない。 |
-| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (USB host の VBUS には port1 bit7 `BOOST_EN` + port0 bit5 `USB_OTG_EN` + port0 bit1 `BUS_OUT_EN` の**3つすべて**が必要 — `embedded-poc/CLAUDE.md` の "USB host VBUS on CoreS3" 参照) | esp-dsp `_ae32_` asm (同じ Phase D D1 移行が適用される) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 は USB-OTG host 用の VBUS を供給できない（シリコンは host 可だが基板に VBUS 源回路が無い — StickS3 側の制約はシリコンではなく基板 — issue #360）ため **デモ / 音響 fallback** ボードに再定義され、IC-705 への実際の USB Audio Class 経路は代わりに CoreS3 に載る。`docs/notes/ROADMAP.md` Phase B-Core 参照。 |
+| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (USB host の VBUS には port1 bit7 `BOOST_EN` + port0 bit5 `USB_OTG_EN` + port0 bit1 `BUS_OUT_EN` の**3つすべて**が必要 — `embedded-poc/CLAUDE.md` の "USB host VBUS on CoreS3" 参照) | esp-dsp `_ae32_` asm (同じ Phase D D1 移行が適用される) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 は USB-OTG host 用の VBUS を供給できない（シリコンは host 可、基板に VBUS 源回路が無い — issue #360 参照）ため **デモ / 音響 fallback** ボードに再定義され、IC-705 への実際の USB Audio Class 経路は代わりに CoreS3 に載る。`docs/notes/ROADMAP.md` Phase B-Core 参照。 |
 
 ### その他のターゲット — 検証済 vs 願望
 
@@ -916,7 +916,7 @@ ESP32-S3 に HS PHY は無いので `otg_dfifo_depth` は 256 行。既定の
 device 上で走らせ、新規追加は 1 つだけ: `wspr::ddc`、streaming
 down-converter。参照デコーダのスロット全体 FFT チャネライザ
 (`wspr::baseband::decimate_to_baseband`) は S3 上で全く動かせない
-— 11.25 MiB の `Complex<f32>` バッファを 1,474,560 点 FFT で必要と
+— 11.25 MiB の `Complex<f32>` バッファを 1 474 560 点 FFT で必要と
 し、2 の冪でもなく `esp-dsp` の 8,192 上限も超える。`wspr::ddc` は
 1500 Hz でミックス (ちょうど Fs/8 なので 8 要素テーブル、毎サンプル
 の三角関数なし)、単段 FIR ローパス、32 サンプルごとの間引き —
@@ -931,7 +931,7 @@ Cargo feature ([組込利用向け Cargo feature](#組込利用向け-cargo-feat
 |---|---|---|
 | `wspr` | WSPR プロトコルの配線。単体では TX-only 組込ビーコンビルド — FFT backend 不要。 | off |
 | `wspr-ddc` | 参照のスロット全体チャネライザではなく streaming down-converter を選択。host は正確な参照実装のまま。組込は選択の余地なし — 参照実装はそこでは動かない。 | off (組込の `wspr-bench` が on にする) |
-| `wspr-fano-cap-fast` | Fano デコーダの cycle budget を 5,000 cycles/bit に制限 (`wsprd` 自身の既定は 10,000、host はこちらを使用) — 120 秒スロットの締切が必要とする wall-clock と引き換えに床の感度を払う。 | off |
+| `wspr-fano-cap-fast` | Fano デコーダの cycle budget を 5 000 cycles/bit に制限 (`wsprd` 自身の既定は 10 000、host はこちらを使用) — 120 秒スロットの締切が必要とする wall-clock と引き換えに床の感度を払う。 | off |
 | `wspr-pass2-topn` | pass-2 候補を refined sync でランク付けし上位 2 件のみ deep-process (dual-core の分割と一致)、全 survivor に対するフルラダーの代わりに。 | off |
 
 Device (M5Stack CoreS3、WiFi associate 継続、dual-core): 4 スロット

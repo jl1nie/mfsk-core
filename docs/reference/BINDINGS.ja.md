@@ -224,8 +224,8 @@ CQ の場合 `ap_call1` は `"CQ"` であって送信局ではない。これら
 ### 2.5 ストリーミング取り込み
 
 音声を押し込む1スロット分のリング。モード自身の `slot_samples_12k` から
-サイズが決まるので、FST4-300 の 360万サンプルのスロットも FT4 の
-9万サンプルと同じ扱いになる。
+サイズが決まるので、FST4-300 の 3.6 M サンプルのスロットも FT4 の
+90 000 サンプルのスロットと同じ扱いになる。
 
 ```c
 MfskStream *mfsk_stream_open(uint32_t mode, uint32_t sample_rate, MfskStatus *out);
