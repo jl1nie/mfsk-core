@@ -60,12 +60,12 @@ default = ["desktop"]
 
 # Everything this crate built before: every protocol it exposes, plus
 # rayon and serde.
-desktop = ["protocols", "legacy", "parallel", "serde"]
+desktop = ["protocols", "legacy", "jtty", "parallel", "serde"]
 
 # Same protocol coverage, single-threaded, no serde. This is the build an
 # Android or iOS app wants, and the one thing it changes is the thing that
 # matters there.
-mobile = ["protocols", "legacy"]
+mobile = ["protocols", "legacy", "jtty"]
 
 # The decoders the C surface actually names. Not individually selectable
 # yet: `src/lib.rs` imports every protocol module unconditionally, so
@@ -85,6 +85,12 @@ protocols = [
 # cannot share the decoder-handle shape. Same caveat as `protocols`: the
 # source does not cfg them out yet.
 legacy = ["mfsk-core/q65", "mfsk-core/wspr", "mfsk-core/jt9", "mfsk-core/jt65"]
+
+# JTTY (WSJT-X 3.2's non-slotted keyboard mode): the `mfsk_jtty_*` receiver
+# handle and `MFSK_MODE_JTTY`. The entry points are always in the header; without
+# this feature they return `MFSK_STATUS_UNKNOWN_PROTOCOL`, as `mfsk_runtime_configure`
+# does without `parallel`.
+jtty = ["protocols", "mfsk-core/jtty"]
 
 parallel = ["mfsk-core/parallel", "dep:rayon"]
 serde    = ["mfsk-core/serde"]

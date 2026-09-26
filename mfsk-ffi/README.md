@@ -287,7 +287,7 @@ for (uint32_t i = 0; i < mfsk_mode_count(); ++i) {
 }
 ```
 
-`MfskMode` addresses all 25 modes — every registry entry plus MSK144 —
+`MfskMode` addresses all 26 modes — every registry entry plus MSK144 and JTTY —
 with discriminants that are ABI and never reordered. They are
 deliberately **not** registry indices: membership is feature-gated, so a
 build without `q65` would shift every index after it.

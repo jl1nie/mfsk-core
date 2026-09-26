@@ -10,7 +10,7 @@ Rust 以外から mfsk-core を利用するための文書。Rust ホスト API 
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`、ヘッダ `mfsk-ffi/include/mfsk.h` | CI `ffi` ジョブ — 両 feature セットでの Rust テストに加え、実在の C++ ドライバ `examples/cpp_smoke/`（マルチスレッド負荷試験を含む） |
 | **Kotlin / Android** | `bindings/kotlin/`（C シム + `Mfsk.kt`） | CI `kotlin` ジョブ、デスクトップ JVM 上 |
-| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 68件と `aarch64-apple-ios` クロスビルド |
+| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 73件と `aarch64-apple-ios` クロスビルド |
 
 3つとも同一の C ABI の上に載っている。`mfsk.h` は cbindgen 生成でリポジトリに
 コミットされており、そのドキュメントコメントがシンボル単位の正本である。
@@ -280,7 +280,7 @@ uint32_t    mfsk_version(void);
 ```
 
 **`MfskMode` は全モードを指し、その discriminant は ABI である。**
-レジストリ項目ごとに1つ＋ MSK144 で、一度割り当てたら並べ替えない —
+レジストリ項目ごとに1つ＋ MSK144 と JTTY で、一度割り当てたら並べ替えない —
 レジストリの登録は feature で変わるため、`q65` 無しのビルドではそれ以降の
 インデックスが全部ずれる。ゆえに意図的にレジストリのインデックスではない。
 このビルドに実際どれがあるかは `mfsk_mode_count` / `mfsk_mode_at` が答える。
@@ -380,6 +380,41 @@ Q65 は「何を手掛かりとして与えるか」で分かれる4つの族を
 ハッシュテーブルはセッションではなく呼び出し側が所有する唯一のハンドル:
 `mfsk_callsign_hash_table_new` / `_insert` / `_free`。
 
+### 2.8.1 JTTY — スロット呼び出しではなく受信器ハンドル
+
+JTTY（WSJT-X 3.2 のキーボードモード）にはスロットが無い。フレームは送信側が
+好きなときに始まり、メッセージは複数フレームからなるので、受信器が状態を持ち、
+出力はメッセージの*更新*になる。モードは `MFSK_MODE_JTTY`、
+`MFSK_CAP_STREAM_RECEIVER` を公開し（`MFSK_CAP_DECODE_HANDLE` は持たない）、
+`mfsk_mode_info` は 1 フレームを記述する — `t_slot_s` はフレーム周期
+（1.888 秒）、`slot_samples_12k` は 22 656。
+
+```c
+MfskJttyParams p;  mfsk_jtty_params_init(&p);        /* rjtty の既定値。NULL でも同じ */
+MfskStatus st;
+MfskJttyReceiver *rx = mfsk_jtty_open(48000, &p, &st); /* 任意のレート。12000 以外はリサンプル */
+
+for (各オーディオコールバック)  {                     /* チャンクサイズは任意 */
+    mfsk_jtty_push_i16(rx, pcm, n);                   /* 完成した窓をデコードしてから戻る */
+    MfskJttyUpdate u = {0};                           /* u.size = sizeof u（0 でも可） */
+    while (mfsk_jtty_poll(rx, &u) == 1)               /* 1 = 1 行書いた, 0 = 無し, <0 = MfskStatus */
+        show(u.id, u.text, u.complete, u.f1_hz);      /* 同じ id の行を置き換える */
+}
+mfsk_jtty_finish(rx);                                 /* 録音が終わった: 未完の最終行 */
+mfsk_jtty_close(rx);
+```
+
+デコードは `push` の中で呼び出しスレッド上（と `mfsk_runtime_configure` が
+設定したプール）で走る。完成した 0.47 秒分のオーディオあたり数十ミリ秒なので、
+UI スレッドではなくワーカーから呼ぶこと。更新はハンドル内のキューで待ち、
+キューは**メッセージ単位で合体する** — ポーリングの間に 2 回伸びたメッセージは
+最新のテキストで 1 回だけ返る。これは upstream の規則であり、キューの上限
+（異なるメッセージ最大 1024。ポーリングしない呼び出し側は古いものを失う）の
+根拠でもある。`id` はメッセージの存続中変わらない。ハンドルはスレッドセーフでは
+なく、`MfskStream` と同様に一度に 1 スレッドのみ。`jtty` フィーチャ無しのビルドでも
+関数は残り、`MFSK_STATUS_UNKNOWN_PROTOCOL` を返す。ABI にはまだ JTTY の送信呼び出しは
+無い（メッセージ整形層は #477 の P5）。
+
 ### 2.9 メッセージ
 
 ```c
@@ -447,7 +482,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 63 個:
+エクスポートされる関数は 73 個:
 
 | 群 | シンボル |
 |---|---|
@@ -457,6 +492,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 | 専用デコード (7) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` |
 | 送信 (12) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
+| JTTY (10) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` |
 | ハッシュテーブル (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | ランタイム (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 
@@ -549,6 +585,14 @@ Android でビューに触れるものはメインルーパへ post しなけれ
 ラムダの生成クラスではなく*インタフェース*から取る。リスナが投げた例外は
 表示のうえクリアされ（rayon ワーカーには伝播先が無い）、デコードは続行する。
 
+**JTTY** は `MfskJttyReceiver`（§2.8.1）: `MfskJttyReceiver.open(sampleRate,
+MfskJttyParams())` のあと `for (u in rx.push(chunk)) …` — `push` は生じた更新
+（メッセージごとに 1 件、最新のテキスト。`id` は不変）を返し、`finish()` は
+未完の最終行を返し、`close()` でハンドルを解放する。`push` は UI スレッドの外で
+呼ぶこと。機能ビットは `Mfsk.CAP_STREAM_RECEIVER`。JVM テストは同梱の upstream
+録音を 4096 サンプルのチャンクで（および 24 kHz のリサンプル経由でも）流し、
+録音のメッセージが出ることを確認する。
+
 **シムが Rust + `jni` ではなく C なのは意図的。** 生成された `mfsk.h` を
 `#include` するので、シムのビルド自体が「もう一つのコンパイラがそのヘッダを
 本物の翻訳単位として読む」検査になる。これは既に元を取っている:
@@ -614,7 +658,16 @@ for row in try session.decode(slot) {
   メッセージのビットを固定するため、順序を誤ると 0.1 dB 単位の損ではなく
   デコードが消える。両方向とも `Q65Tests` で固定されている。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 68 件のテストを
+**JTTY** は `JttyReceiver`（§2.8.1）: `try JttyReceiver(sampleRate:params:)` のあと
+`try receiver.push(samples)` が生じた `[JttyUpdate]`（メッセージごとに 1 件、最新の
+テキスト。`id` は不変、`isComplete`・`frequencyHz`・`startSeconds`）を返し、
+`finish()` は未完の最終行を返す。`Mode.jtty` は `.decodeHandle` ではなく
+`Capabilities.streamReceiver` を報告する。`JttyParams` は受信周波数・許容幅・
+同期下限・帯域・減算の有無を持つ。一度に 1 スレッドで、メインアクターの外から
+呼ぶこと — `push` は戻る前にデコードする。`JttyReceiverTests` は同梱の upstream
+録音を流す（ABI に JTTY の送信が無く合成できないため、`#filePath` で位置を求める）。
+
+`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 73 件のテストを
 走らせる。実アプリからのリンク（および iOS ビルドが `mobile` feature セットを
 選ぶべき理由）は `bindings/swift/README.md` が扱う。
 

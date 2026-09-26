@@ -237,6 +237,90 @@ fun main() {
     }
     check("a closed session refuses to decode", threwClosed)
 
+    // ── JTTY: a stateful receiver, fed a recording in chunks ────────
+    val jtty = modes.firstOrNull { Mfsk.modeName(it) == "JTTY" }
+    check("JTTY is addressable", jtty != null)
+    if (jtty != null) {
+        check("JTTY is a stream receiver", Mfsk.supports(jtty, Mfsk.CAP_STREAM_RECEIVER))
+        check("JTTY has no slot decode handle", !Mfsk.supports(jtty, Mfsk.CAP_DECODE_HANDLE))
+        checkEq("JTTY frame is 22656 samples", Mfsk.modeInfo(jtty).slotSamples12k, 22_656)
+
+        val wavPath = System.getProperty("mfsk.jtty.wav")
+        check("the golden JTTY recording path is set (-Dmfsk.jtty.wav)", wavPath != null)
+        if (wavPath != null) {
+            val bytes = java.io.File(wavPath).readBytes()
+            var at = -1
+            for (i in 0 until bytes.size - 8) {
+                if (bytes[i] == 'd'.code.toByte() && bytes[i + 1] == 'a'.code.toByte() &&
+                    bytes[i + 2] == 't'.code.toByte() && bytes[i + 3] == 'a'.code.toByte()) {
+                    at = i + 8
+                    break
+                }
+            }
+            check("the recording has a data chunk", at > 0)
+            val n = (bytes.size - at) / 2
+            val pcm = ShortArray(n) { i ->
+                val lo = bytes[at + 2 * i].toInt() and 0xff
+                val hi = bytes[at + 2 * i + 1].toInt()
+                ((hi shl 8) or lo).toShort()
+            }
+            val expect = "RAN ALL NIGHT ON BAND NOISE - NO FALSE DECODES!"
+            val latest = LinkedHashMap<Long, MfskJttyUpdate>()
+            MfskJttyReceiver.open().use { rx ->
+                var pos = 0
+                while (pos < pcm.size) {
+                    val end = minOf(pos + 4096, pcm.size)
+                    for (u in rx.push(pcm.copyOfRange(pos, end))) latest[u.id] = u
+                    pos = end
+                }
+                check("push drains after itself", rx.poll().isEmpty())
+                check("nothing is left open once the message completes",
+                      rx.finish().none { it.text.startsWith("RAN ALL NIGHT") })
+            }
+            for (u in latest.values) println("  message ${u.id}: ${u.text}")
+            val msg = latest.values.firstOrNull { it.text == expect }
+            check("the recording's message comes out", msg != null)
+            check("and it is complete", msg?.complete == true)
+            check("at about 1507 Hz", msg != null && Math.abs(msg.freqHz - 1507f) < 3f)
+
+            // Another rate goes through the resampler.
+            val up = ShortArray(pcm.size * 2)
+            for (i in 0 until pcm.size - 1) {
+                up[2 * i] = pcm[i]
+                up[2 * i + 1] = ((pcm[i] + pcm[i + 1]) / 2).toShort()
+            }
+            val seen = ArrayList<MfskJttyUpdate>()
+            MfskJttyReceiver.open(24_000).use { rx ->
+                var pos = 0
+                while (pos < up.size) {
+                    val end = minOf(pos + 8192, up.size)
+                    seen.addAll(rx.push(up.copyOfRange(pos, end)))
+                    pos = end
+                }
+            }
+            check("24 kHz audio decodes too", seen.any { it.text == expect })
+        }
+
+        var threwParams = false
+        try {
+            MfskJttyReceiver.open(12_000, MfskJttyParams(nfaHz = 2000f, nfbHz = 1000f)).close()
+        } catch (e: IllegalStateException) {
+            threwParams = true
+        }
+        check("an empty band is refused", threwParams)
+
+        val closedRx = MfskJttyReceiver.open()
+        closedRx.close()
+        closedRx.close()  // idempotent
+        var threwRx = false
+        try {
+            closedRx.push(ShortArray(16))
+        } catch (e: IllegalStateException) {
+            threwRx = true
+        }
+        check("a closed receiver refuses audio", threwRx)
+    }
+
     if (failures == 0) {
         println("\nALL OK")
     } else {

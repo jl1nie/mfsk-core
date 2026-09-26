@@ -32,7 +32,7 @@ if let slot = try session.decode(stream) {
 bindings/swift/scripts/test.sh          # builds libmfsk, then swift test
 ```
 
-68 tests, ~10 s — most of it Q65, which decodes a 30 s slot five ways.
+73 tests, ~10 s — most of it Q65, which decodes a 30 s slot five ways.
 CI runs exactly this script on `macos-latest` (the
 `Swift binding (macOS) + iOS build` job), which is also where
 `aarch64-apple-ios` is built — both need Xcode, one for XCTest and one

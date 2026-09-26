@@ -123,6 +123,9 @@ object Mfsk {
     const val CAP_FFT_CACHE = 1L shl 12
     const val CAP_ON_RESULT = 1L shl 13
     const val CAP_ENCODE = 1L shl 14
+    /// Received by a stateful receiver handle rather than a slot decode
+    /// (JTTY): see [MfskJttyReceiver].
+    const val CAP_STREAM_RECEIVER = 1L shl 15
 
     /// The boundary's own revision, separate from the crate version.
     val abiVersion: Int get() = nativeAbiVersion()
@@ -345,4 +348,137 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
 
     /// Same, for the budget predicate.
     private var budgetCtx: Long = 0L
+}
+
+/// One JTTY message as far as it is known.
+///
+/// A message is reported each time it grows and once more when it
+/// completes; [id] is stable for its life, so a UI replaces its row by
+/// [id]. Updates are coalesced per message between polls.
+data class MfskJttyUpdate(
+    val id: Long,
+    /// The text so far. Frames that were never heard show as ` ... `;
+    /// TEXT5 spaces as `~`, as upstream shows them.
+    val text: String,
+    /// The end-of-message frame has arrived.
+    val complete: Boolean,
+    /// Frequency of the latest frame, Hz.
+    val freqHz: Float,
+    /// Start of the first frame, seconds from the first sample pushed
+    /// since the receiver was opened or reset.
+    val startSeconds: Float,
+)
+
+/// What a JTTY receiver looks for. The defaults are `rjtty`'s.
+data class MfskJttyParams(
+    /// The operator's receive frequency, Hz (channel 0's centre).
+    val f0Hz: Float = 1500f,
+    /// Half-width of channel 0, Hz.
+    val ftolHz: Float = 50f,
+    /// Sync-gate S/N floor on channel 0, dB.
+    val sminDb: Float = 4.6f,
+    /// The band channels 1 and 2 watch for stations off [f0Hz], Hz.
+    val nfaHz: Float = 200f,
+    val nfbHz: Float = 2800f,
+    /// Take each decoded frame off the signal and search again; off is a
+    /// single-signal receiver that loses a weak station under a strong one.
+    val subtract: Boolean = true,
+)
+
+/// A JTTY receiver: WSJT-X 3.2's non-slotted keyboard mode. Audio goes
+/// in as it arrives, in chunks of any size; messages come out as they
+/// are assembled.
+///
+/// **Not a slot decode.** JTTY frames start whenever the sender likes
+/// and a message is several of them, so the receiver keeps state — the
+/// search window, the messages under assembly, the audio a re-sweep of
+/// earlier windows still needs — and reports *updates*.
+///
+/// **Single-threaded**: one thread at a time, like [MfskSession].
+/// [push] decodes every window the audio completes before it returns —
+/// a few tens of milliseconds per 0.47 s of audio — so call it off the
+/// UI thread.
+///
+/// ```kotlin
+/// MfskJttyReceiver.open(48_000).use { rx ->
+///     for (chunk in audioChunks) for (u in rx.push(chunk)) show(u.id, u.text)
+/// }
+/// ```
+class MfskJttyReceiver private constructor(private var handle: Long) : AutoCloseable {
+
+    companion object {
+        /// Open a receiver taking 16-bit mono PCM at `sampleRate`
+        /// (anything but 12 000 Hz is resampled, linearly). Throws if
+        /// the parameters are invalid or the build lacks JTTY.
+        @JvmStatic
+        fun open(sampleRate: Int = 12_000, params: MfskJttyParams = MfskJttyParams()) =
+            MfskJttyReceiver(
+                nativeOpen(
+                    sampleRate, params.f0Hz, params.ftolHz, params.sminDb,
+                    params.nfaHz, params.nfbHz, params.subtract,
+                ),
+            )
+
+        @JvmStatic private external fun nativeOpen(
+            sampleRate: Int, f0Hz: Float, ftolHz: Float, sminDb: Float,
+            nfaHz: Float, nfbHz: Float, subtract: Boolean,
+        ): Long
+        @JvmStatic private external fun nativeClose(handle: Long)
+        @JvmStatic private external fun nativeSetParams(
+            handle: Long, f0Hz: Float, ftolHz: Float, sminDb: Float,
+            nfaHz: Float, nfbHz: Float, subtract: Boolean,
+        )
+        @JvmStatic private external fun nativePush(
+            handle: Long, samples: ShortArray,
+        ): Array<MfskJttyUpdate>
+        @JvmStatic private external fun nativePoll(handle: Long): Array<MfskJttyUpdate>
+        @JvmStatic private external fun nativeFinish(handle: Long)
+        @JvmStatic private external fun nativeReset(handle: Long)
+    }
+
+    /// Feed audio and return the message updates it produced (already
+    /// drained from the receiver's queue, oldest first, one per message).
+    fun push(samples: ShortArray): List<MfskJttyUpdate> {
+        check(handle != 0L) { "receiver is closed" }
+        return nativePush(handle, samples).toList()
+    }
+
+    /// Updates waiting that a previous call has not returned. [push]
+    /// already drains after itself, so this is for a caller that wants
+    /// to poll on its own schedule; it is empty otherwise.
+    fun poll(): List<MfskJttyUpdate> {
+        check(handle != 0L) { "receiver is closed" }
+        return nativePoll(handle).toList()
+    }
+
+    /// The audio has ended: report every message still waiting for a
+    /// continuation one last time, as incomplete. A live receiver never
+    /// needs this.
+    fun finish(): List<MfskJttyUpdate> {
+        check(handle != 0L) { "receiver is closed" }
+        nativeFinish(handle)
+        return nativePoll(handle).toList()
+    }
+
+    /// Change the settings; they apply from the next window.
+    fun setParams(params: MfskJttyParams) {
+        check(handle != 0L) { "receiver is closed" }
+        nativeSetParams(
+            handle, params.f0Hz, params.ftolHz, params.sminDb,
+            params.nfaHz, params.nfbHz, params.subtract,
+        )
+    }
+
+    /// Forget everything and start again at sample 0.
+    fun reset() {
+        check(handle != 0L) { "receiver is closed" }
+        nativeReset(handle)
+    }
+
+    override fun close() {
+        if (handle != 0L) {
+            nativeClose(handle)
+            handle = 0L
+        }
+    }
 }

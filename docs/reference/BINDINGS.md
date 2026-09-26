@@ -10,7 +10,7 @@ targets see [`EMBEDDED.md`](EMBEDDED.md).
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`, header `mfsk-ffi/include/mfsk.h` | CI `ffi` job — Rust tests under both feature sets plus `examples/cpp_smoke/`, a real C++ driver including a multi-thread stress |
 | **Kotlin / Android** | `bindings/kotlin/` (C shim + `Mfsk.kt`) | CI `kotlin` job, on a desktop JVM |
-| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 68 XCTest cases, plus the `aarch64-apple-ios` cross-build |
+| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 73 XCTest cases, plus the `aarch64-apple-ios` cross-build |
 
 All three sit on the same C ABI. `mfsk.h` is cbindgen-generated and
 committed, and its doc comments are the authoritative per-symbol
@@ -288,7 +288,7 @@ uint32_t    mfsk_version(void);
 ```
 
 **`MfskMode` addresses every mode, and its discriminants are ABI.** One
-per registry entry plus MSK144, assigned once and never reordered —
+per registry entry plus MSK144 and JTTY, assigned once and never reordered —
 deliberately *not* registry indices, because registry membership is
 feature-gated and a build without `q65` would shift every index after
 it. `mfsk_mode_count` / `mfsk_mode_at` say which of them this
@@ -393,6 +393,42 @@ with — all take a `submode` and an optional `MfskCallsignHashTable*`:
 The hash table is the one handle the caller owns rather than the
 session: `mfsk_callsign_hash_table_new` / `_insert` / `_free`.
 
+### 2.8.1 JTTY — a receiver handle instead of a slot call
+
+JTTY (WSJT-X 3.2's keyboard mode) has no slot: frames start whenever the
+sender likes and a message is several of them, so the receiver keeps state
+and the output is message *updates*. The mode is `MFSK_MODE_JTTY`, it
+publishes `MFSK_CAP_STREAM_RECEIVER` (and not `MFSK_CAP_DECODE_HANDLE`), and
+`mfsk_mode_info` describes one frame — `t_slot_s` is the frame period
+(1.888 s), `slot_samples_12k` 22 656.
+
+```c
+MfskJttyParams p;  mfsk_jtty_params_init(&p);        /* rjtty's defaults; NULL is the same */
+MfskStatus st;
+MfskJttyReceiver *rx = mfsk_jtty_open(48000, &p, &st); /* any rate; != 12000 is resampled */
+
+for (each audio callback)  {                          /* chunks of any size */
+    mfsk_jtty_push_i16(rx, pcm, n);                   /* decodes what it completes, then returns */
+    MfskJttyUpdate u = {0};                           /* u.size = sizeof u, or 0 */
+    while (mfsk_jtty_poll(rx, &u) == 1)               /* 1 = row written, 0 = none, <0 = MfskStatus */
+        show(u.id, u.text, u.complete, u.f1_hz);      /* replace the row with this id */
+}
+mfsk_jtty_finish(rx);                                 /* a recording ended: last, incomplete rows */
+mfsk_jtty_close(rx);
+```
+
+Decoding runs inside `push` on the calling thread (and on the pool
+`mfsk_runtime_configure` installed): a few tens of milliseconds per 0.47 s of
+audio completed, so call it from a worker, not the UI thread. The updates wait
+in a queue in the handle; the queue **coalesces per message** — a message that
+grew twice between polls is returned once with its latest text, which is
+upstream's rule and what bounds the queue (at most 1024 distinct messages; a
+caller that never polls loses the oldest). `id` is stable for a message's life.
+The handle is not thread-safe: one thread at a time, like `MfskStream`. A build
+without the `jtty` feature keeps the entry points and answers
+`MFSK_STATUS_UNKNOWN_PROTOCOL`. There is no JTTY transmit call in the ABI yet
+(the message-packing layer is the P5 of #477).
+
 ### 2.9 Messages
 
 ```c
@@ -464,7 +500,7 @@ but does not offer what was asked).
 
 ### 2.12 Symbol index
 
-63 exported functions, grouped:
+73 exported functions, grouped:
 
 | group | symbols |
 |---|---|
@@ -474,6 +510,7 @@ but does not offer what was asked).
 | bespoke decode (7) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` |
 | transmit (12) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
+| JTTY (10) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` |
 | hash table (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | runtime (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 
@@ -572,6 +609,14 @@ from the *interface* rather than from a lambda's spun class. An
 exception it throws is printed and cleared — a rayon worker has nowhere
 to propagate one — and the decode continues.
 
+**JTTY** is `MfskJttyReceiver` (§2.8.1): `MfskJttyReceiver.open(sampleRate,
+MfskJttyParams())` and then `for (u in rx.push(chunk)) …` — `push` returns the
+updates it produced (one per message, latest text; `id` is stable), `finish()`
+returns the last incomplete ones, `close()` releases the handle. Call `push`
+off the UI thread. `Mfsk.CAP_STREAM_RECEIVER` is its capability bit; the JVM
+test feeds the vendored upstream recording in 4096-sample chunks (and again
+through the 24 kHz resampler) and expects the recording's message.
+
 **The shim is C, not Rust-with-`jni`, on purpose.** It `#include`s the
 generated `mfsk.h`, so building it is another compiler reading that
 header as a real translation unit. That has already earned its keep:
@@ -641,7 +686,17 @@ for row in try session.decode(slot) {
   removes the decode instead of costing a fraction of a dB. Both
   directions are pinned in `Q65Tests`.
 
-`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 68
+**JTTY** is `JttyReceiver` (§2.8.1): `try JttyReceiver(sampleRate:params:)`,
+then `try receiver.push(samples)` returns the `[JttyUpdate]` it produced (one per
+message, latest text; `id` is stable, `isComplete`, `frequencyHz`,
+`startSeconds`), `finish()` the last incomplete ones. `Mode.jtty` reports
+`Capabilities.streamReceiver` and not `.decodeHandle`; `JttyParams` carries the
+receive frequency, tolerance, sync floor, band and whether it subtracts. One
+thread at a time, and off the main actor — `push` decodes before it returns.
+`JttyReceiverTests` feeds it the vendored upstream recording (located through
+`#filePath`, since the ABI has no JTTY transmit to synthesise from).
+
+`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 73
 tests; `bindings/swift/README.md` covers linking from a real app,
 including why the `mobile` feature set is the one an iOS build wants.
 

@@ -23,6 +23,9 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <algorithm>
+#include <fstream>
+#include <iterator>
 
 namespace {
 
@@ -1069,6 +1072,103 @@ void test_threads_mixed_modes() {
 
 // ── NULL / invalid-arg handling ─────────────────────────────────────
 
+// ── JTTY: a stateful receiver, fed a recording in chunks ────────────
+
+// Upstream's own sample recording (12 kHz mono 16-bit), the only real
+// JTTY audio there is. `build.sh` bakes its path in.
+std::vector<int16_t> load_wav_i16(const char* path) {
+    std::ifstream f(path, std::ios::binary);
+    std::vector<char> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    for (size_t i = 0; i + 8 <= b.size(); ++i) {
+        if (std::memcmp(&b[i], "data", 4) == 0) {
+            const size_t n = (b.size() - (i + 8)) / 2;
+            std::vector<int16_t> pcm(n);
+            std::memcpy(pcm.data(), &b[i + 8], n * 2);  // little-endian host
+            return pcm;
+        }
+    }
+    return {};
+}
+
+void test_jtty() {
+    std::printf("\n— JTTY receiver\n");
+    const char* expect = "RAN ALL NIGHT ON BAND NOISE - NO FALSE DECODES!";
+
+    MfskModeInfo info;
+    std::memset(&info, 0, sizeof info);
+    info.size = sizeof info;
+    if (mfsk_mode_info(MFSK_MODE_JTTY, &info) != MFSK_STATUS_OK) {
+        fail("jtty", "mfsk_mode_info(JTTY) failed");
+        return;
+    }
+    if (!(info.caps & MFSK_CAP_STREAM_RECEIVER) || (info.caps & MFSK_CAP_DECODE_HANDLE)) {
+        fail("jtty", "JTTY must be a stream receiver and have no slot decode handle");
+    }
+    if (info.slot_samples_12k != 22656 || info.n_symbols != 59) {
+        fail("jtty", "JTTY frame geometry is wrong");
+    }
+
+    const std::vector<int16_t> pcm = load_wav_i16(MFSK_JTTY_WAV);
+    if (pcm.size() < 12000) {
+        fail("jtty", "could not read the golden recording (MFSK_JTTY_WAV)");
+        return;
+    }
+
+    MfskJttyParams params;
+    if (mfsk_jtty_params_init(&params) != MFSK_STATUS_OK || params.size != sizeof params) {
+        fail("jtty", "params_init");
+        return;
+    }
+    MfskStatus st = MFSK_STATUS_INTERNAL;
+    MfskJttyReceiver* rx = mfsk_jtty_open(12000, &params, &st);
+    if (rx == nullptr || st != MFSK_STATUS_OK) {
+        fail("jtty", "mfsk_jtty_open");
+        return;
+    }
+
+    // Fed the way a live audio callback would: 4096 samples at a time,
+    // polled after each push. Keep the latest text per message id.
+    std::vector<std::pair<uint64_t, std::string>> last;
+    bool complete = false;
+    for (size_t pos = 0; pos < pcm.size(); pos += 4096) {
+        const size_t n = std::min<size_t>(4096, pcm.size() - pos);
+        if (mfsk_jtty_push_i16(rx, pcm.data() + pos, n) != MFSK_STATUS_OK) {
+            fail("jtty", "push_i16");
+            break;
+        }
+        MfskJttyUpdate u;
+        std::memset(&u, 0, sizeof u);
+        u.size = sizeof u;
+        while (mfsk_jtty_poll(rx, &u) == 1) {
+            bool seen = false;
+            for (auto& l : last) {
+                if (l.first == u.id) { l.second = u.text; seen = true; }
+            }
+            if (!seen) last.emplace_back(u.id, u.text);
+            if (u.complete && std::strcmp(u.text, expect) == 0) complete = true;
+        }
+    }
+    bool found = false;
+    for (const auto& l : last) {
+        std::printf("  message %llu: %s\n", (unsigned long long)l.first, l.second.c_str());
+        if (l.second == expect) found = true;
+    }
+    if (!found || !complete) fail("jtty", "the recording's message did not come out complete");
+    if (mfsk_jtty_pending(rx) != 0) fail("jtty", "queue should be drained");
+
+    // Nothing waiting is 0, not an error; NULL handles are refused.
+    MfskJttyUpdate u;
+    std::memset(&u, 0, sizeof u);
+    if (mfsk_jtty_poll(rx, &u) != 0) fail("jtty", "poll on an empty queue should be 0");
+    if (mfsk_jtty_poll(nullptr, &u) >= 0) fail("jtty", "poll(NULL) should be negative");
+    if (mfsk_jtty_push_i16(nullptr, pcm.data(), 4) != MFSK_STATUS_NULL_POINTER) {
+        fail("jtty", "push(NULL handle) should be NULL_POINTER");
+    }
+    if (mfsk_jtty_reset(rx) != MFSK_STATUS_OK) fail("jtty", "reset");
+    mfsk_jtty_close(rx);
+    mfsk_jtty_close(nullptr);  // a no-op, like every free here
+}
+
 void test_null_handling() {
     std::printf("\n— NULL / invalid-arg handling\n");
     size_t n = 0;
@@ -1157,6 +1257,7 @@ int main() {
     test_budget_known_cache();
     test_threads_one_session_per_thread();
     test_threads_mixed_modes();
+    test_jtty();
     test_null_handling();
 
     if (g_failures == 0) {

@@ -86,8 +86,8 @@ use mfsk_core::ft8::decode as ft8;
 
 pub use mfsk_ffi_abi::{
     MfskDecode, MfskDecodeDefaults, MfskDecodeDepth, MfskDecodeOptions, MfskDecodeParams,
-    MfskDecodeSession, MfskEqMode, MfskMode, MfskModeInfo, MfskStatus, MfskStrictness,
-    MfskSyncScale,
+    MfskDecodeSession, MfskEqMode, MfskJttyParams, MfskJttyReceiver, MfskJttyUpdate, MfskMode,
+    MfskModeInfo, MfskStatus, MfskStrictness, MfskSyncScale,
 };
 /// Inline capacity of each `MfskDecodeParams` a-priori field.
 ///
@@ -174,6 +174,11 @@ pub const MFSK_CAP_FFT_CACHE: u64 = 1 << 12;
 pub const MFSK_CAP_ON_RESULT: u64 = 1 << 13;
 /// The mode can synthesise as well as decode.
 pub const MFSK_CAP_ENCODE: u64 = 1 << 14;
+/// The mode is received by a stateful, continuously fed receiver handle
+/// with its own entry points rather than by a slot decode — JTTY, whose
+/// frames have no slot. Audio goes in with `mfsk_jtty_push_*` and message
+/// updates come out of `mfsk_jtty_poll`.
+pub const MFSK_CAP_STREAM_RECEIVER: u64 = 1 << 15;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public C types
@@ -1228,6 +1233,7 @@ const MODE_TABLE: &[(MfskMode, &str, bool)] = &[
     (MfskMode::UvStandard, "UvStandard\0", true),
     (MfskMode::UvUltraRobust, "UvUltraRobust\0", true),
     (MfskMode::UvExpress, "UvExpress\0", true),
+    (MfskMode::Jtty, "JTTY\0", false),
 ];
 
 /// MSK144's geometry, which no registry entry carries. Reported rather
@@ -1247,6 +1253,28 @@ impl Msk144Geometry {
     const FEC_K: u32 = 90; // LDPC(128,90)
     const FEC_N: u32 = 128;
     const PAYLOAD_BITS: u32 = 77;
+}
+
+/// JTTY's frame geometry, which no registry entry carries (it is outside
+/// `Protocol`, like MSK144). `t_slot_s` is the **frame period** — the mode has
+/// no slot — and `n_symbols` counts one frame: 13 sync + 46 data.
+struct JttyGeometry;
+impl JttyGeometry {
+    const NTONES: u32 = 4;
+    const BITS_PER_SYMBOL: u32 = 2;
+    const NSPS: u32 = 384; // at 12 kHz: 31.25 baud
+    const SYMBOL_DT: f32 = 0.032;
+    const TONE_SPACING_HZ: f32 = 31.25;
+    const GFSK_BT: f32 = 2.0;
+    const GFSK_HMOD: f32 = 1.0;
+    const N_DATA: u32 = 46;
+    const N_SYNC: u32 = 13;
+    const N_SYMBOLS: u32 = 59;
+    const T_FRAME_S: f32 = 1.888;
+    /// 34 payload bits + CRC-12 through the rate-1/2 tail-biting code: 92 coded bits.
+    const FEC_K: u32 = 46;
+    const FEC_N: u32 = 92;
+    const PAYLOAD_BITS: u32 = 34;
 }
 
 /// Turn a caller-supplied mode value into an `MfskMode`, or `None`.
@@ -1310,6 +1338,9 @@ pub extern "C" fn mfsk_mode_count() -> u32 {
 fn mode_is_present(mode: MfskMode) -> bool {
     if mode == MfskMode::Msk144 {
         return cfg!(feature = "protocols");
+    }
+    if mode == MfskMode::Jtty {
+        return cfg!(feature = "jtty");
     }
     mode_meta(mode).is_some()
 }
@@ -1484,6 +1515,26 @@ pub unsafe extern "C" fn mfsk_mode_info(mode: u32, out: *mut MfskModeInfo) -> Mf
             info.decode_fft1_size = m.decode_fft1_size;
             info.caps = u64::from(m.profile.caps);
         }
+        None if mode == MfskMode::Jtty => {
+            // JTTY: no registry entry, no slot; one frame is described.
+            info.ntones = JttyGeometry::NTONES;
+            info.bits_per_symbol = JttyGeometry::BITS_PER_SYMBOL;
+            info.nsps = JttyGeometry::NSPS;
+            info.symbol_dt = JttyGeometry::SYMBOL_DT;
+            info.tone_spacing_hz = JttyGeometry::TONE_SPACING_HZ;
+            info.gfsk_bt = JttyGeometry::GFSK_BT;
+            info.gfsk_hmod = JttyGeometry::GFSK_HMOD;
+            info.n_data = JttyGeometry::N_DATA;
+            info.n_sync = JttyGeometry::N_SYNC;
+            info.n_symbols = JttyGeometry::N_SYMBOLS;
+            info.t_slot_s = JttyGeometry::T_FRAME_S;
+            // `NSPS * N_SYMBOLS`, exact, for the reason MSK144's row gives.
+            info.slot_samples_12k = JttyGeometry::NSPS * JttyGeometry::N_SYMBOLS;
+            info.fec_k = JttyGeometry::FEC_K;
+            info.fec_n = JttyGeometry::FEC_N;
+            info.payload_bits = JttyGeometry::PAYLOAD_BITS;
+            info.caps = MFSK_CAP_STREAM_RECEIVER;
+        }
         None => {
             // MSK144: no registry entry by design.
             info.ntones = Msk144Geometry::NTONES;
@@ -1526,6 +1577,7 @@ pub extern "C" fn mfsk_mode_caps(mode: u32) -> u64 {
     match mode_meta(mode) {
         Some(m) => u64::from(m.profile.caps),
         None if mode == MfskMode::Msk144 && mode_is_present(mode) => MFSK_CAP_ENCODE,
+        None if mode == MfskMode::Jtty && mode_is_present(mode) => MFSK_CAP_STREAM_RECEIVER,
         None => 0,
     }
 }
@@ -3846,6 +3898,454 @@ pub unsafe extern "C" fn mfsk_session_decode_stream(
         return d.fail(e);
     }
     unsafe { emit(d, out, out_cap, out_len) }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// JTTY receiver (#477, P4b)
+//
+// JTTY has no slot, so none of the slot families above fit: audio arrives
+// continuously, the receiver carries state (the search window, the messages
+// under assembly, the audio a retro re-sweep still needs), and the output is
+// message *updates*, not a list per call. So it gets a handle of its own.
+//
+// Decoding runs inside `mfsk_jtty_push_*`, on the calling thread (and on the
+// pool `mfsk_runtime_configure` installed, or rayon's). The updates go into a
+// queue in the handle, which `mfsk_jtty_poll` drains: the callback the Rust API
+// offers (`jtty::rx::Stream::push`) cannot cross a C boundary without a
+// user-data contract nobody wants for a chat window, and upstream's own
+// `jtty_get_updates` is a poll for the same reason. The queue coalesces per
+// message — a message that grew twice between polls is reported once, with its
+// latest text — which is also upstream's rule and what bounds the queue.
+//
+// The handle is not thread-safe: one thread at a time, like `MfskStream`.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Most distinct messages the queue holds between polls. A caller that never
+/// polls loses the oldest, rather than growing the queue for as long as the
+/// receiver runs.
+#[cfg(feature = "jtty")]
+const JTTY_QUEUE_MAX: usize = 1024;
+
+#[cfg(feature = "jtty")]
+struct JttyInner {
+    stream: mfsk_core::jtty::rx::Stream,
+    sample_rate: u32,
+    resampler: Option<mfsk_core::engine::dsp::resample::LinearResamplerI16To12k>,
+    /// Pending updates, one per message id, oldest first.
+    queue: std::collections::VecDeque<mfsk_core::jtty::assemble::MessageUpdate>,
+}
+
+#[cfg(feature = "jtty")]
+impl JttyInner {
+    fn queue_update(
+        queue: &mut std::collections::VecDeque<mfsk_core::jtty::assemble::MessageUpdate>,
+        u: mfsk_core::jtty::assemble::MessageUpdate,
+    ) {
+        if let Some(slot) = queue.iter_mut().find(|q| q.id == u.id) {
+            *slot = u;
+            return;
+        }
+        if queue.len() >= JTTY_QUEUE_MAX {
+            queue.pop_front();
+        }
+        queue.push_back(u);
+    }
+
+    fn push_12k(&mut self, samples: &[i16]) {
+        let Self { stream, queue, .. } = self;
+        in_pool_mut(|| stream.push(samples, &mut |u| Self::queue_update(queue, u)));
+    }
+}
+
+#[cfg(feature = "jtty")]
+fn jtty_inner<'a>(rx: *mut MfskJttyReceiver) -> Option<&'a mut JttyInner> {
+    unsafe { (rx as *mut JttyInner).as_mut() }
+}
+
+/// The defaults `rjtty` uses: 1500 Hz ± 50 Hz, `smin` 4.6 dB, band 200–2800 Hz,
+/// subtraction on. Sets `size`.
+///
+/// # Safety
+/// `out` must be null or point to a writable `MfskJttyParams`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_params_init(out: *mut MfskJttyParams) -> MfskStatus {
+    if out.is_null() {
+        set_error("mfsk_jtty_params_init: out is NULL");
+        return MfskStatus::NullPointer;
+    }
+    unsafe { out.write(jtty_default_params()) };
+    MfskStatus::Ok
+}
+
+fn jtty_default_params() -> MfskJttyParams {
+    MfskJttyParams {
+        size: core::mem::size_of::<MfskJttyParams>() as u32,
+        subtract: 1,
+        f0_hz: 1500.0,
+        ftol_hz: 50.0,
+        smin_db: 4.6,
+        nfa_hz: 200.0,
+        nfb_hz: 2800.0,
+    }
+}
+
+/// Read a caller's (possibly older, shorter) `MfskJttyParams` over the defaults,
+/// and check it. A NULL pointer is the defaults.
+///
+/// # Safety
+/// `src` must be null or point to at least `src->size` readable bytes.
+unsafe fn read_jtty_params(src: *const MfskJttyParams) -> Result<MfskJttyParams, String> {
+    let mut p = jtty_default_params();
+    if !src.is_null() {
+        let full = core::mem::size_of::<MfskJttyParams>();
+        let declared = unsafe { core::ptr::read_unaligned(src as *const u32) } as usize;
+        let n = if declared == 0 || declared > full {
+            full
+        } else {
+            declared
+        };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src as *const u8,
+                &mut p as *mut MfskJttyParams as *mut u8,
+                n,
+            );
+        }
+        p.size = full as u32;
+    }
+    let ok = |x: f32| x.is_finite();
+    if !(ok(p.f0_hz) && ok(p.ftol_hz) && ok(p.smin_db) && ok(p.nfa_hz) && ok(p.nfb_hz)) {
+        return Err("MfskJttyParams: a frequency or threshold is not finite".into());
+    }
+    if p.ftol_hz < 0.0 || p.nfb_hz <= p.nfa_hz {
+        return Err("MfskJttyParams: ftol_hz must be >= 0 and nfb_hz above nfa_hz".into());
+    }
+    Ok(p)
+}
+
+#[cfg(feature = "jtty")]
+fn jtty_core_params(p: &MfskJttyParams) -> mfsk_core::jtty::rx::Params {
+    mfsk_core::jtty::rx::Params {
+        f0_hz: p.f0_hz,
+        ftol_hz: p.ftol_hz,
+        smin_db: p.smin_db,
+        nfa_hz: p.nfa_hz,
+        nfb_hz: p.nfb_hz,
+        subtract: p.subtract != 0,
+    }
+}
+
+/// Open a JTTY receiver taking audio at `sample_rate` (any rate; anything but
+/// 12 000 Hz is resampled, linearly). `params` may be NULL for the defaults.
+///
+/// Returns NULL and writes the reason to `out_status` on failure:
+/// `MFSK_STATUS_UNKNOWN_PROTOCOL` for a build without the `jtty` feature,
+/// `MFSK_STATUS_INVALID_ARG` for a zero rate or bad parameters.
+///
+/// # Safety
+/// `params` must be null or point to at least `params->size` readable bytes;
+/// `out_status` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_open(
+    sample_rate: u32,
+    params: *const MfskJttyParams,
+    out_status: *mut MfskStatus,
+) -> *mut MfskJttyReceiver {
+    let report = |st: MfskStatus| {
+        if !out_status.is_null() {
+            unsafe { *out_status = st };
+        }
+    };
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = (sample_rate, params);
+        set_error("mfsk_jtty_open: this build was compiled without the jtty feature");
+        report(MfskStatus::UnknownProtocol);
+        ptr::null_mut()
+    }
+    #[cfg(feature = "jtty")]
+    {
+        if sample_rate == 0 {
+            set_error("mfsk_jtty_open: sample_rate is 0");
+            report(MfskStatus::InvalidArg);
+            return ptr::null_mut();
+        }
+        let p = match unsafe { read_jtty_params(params) } {
+            Ok(p) => p,
+            Err(e) => {
+                set_error(format!("mfsk_jtty_open: {e}"));
+                report(MfskStatus::InvalidArg);
+                return ptr::null_mut();
+            }
+        };
+        let rx = std::sync::Arc::new(mfsk_core::jtty::rx::Receiver::new());
+        report(MfskStatus::Ok);
+        Box::into_raw(Box::new(JttyInner {
+            stream: mfsk_core::jtty::rx::Stream::new(rx, jtty_core_params(&p)),
+            sample_rate,
+            resampler: (sample_rate != 12_000).then(|| {
+                mfsk_core::engine::dsp::resample::LinearResamplerI16To12k::new(sample_rate)
+            }),
+            queue: Default::default(),
+        })) as *mut MfskJttyReceiver
+    }
+}
+
+/// Release a receiver. Null is a no-op.
+///
+/// # Safety
+/// `rx` must be a handle from [`mfsk_jtty_open`], released once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_close(rx: *mut MfskJttyReceiver) {
+    #[cfg(feature = "jtty")]
+    if !rx.is_null() {
+        drop(unsafe { Box::from_raw(rx as *mut JttyInner) });
+    }
+    #[cfg(not(feature = "jtty"))]
+    let _ = rx;
+}
+
+/// Change the receive settings; they apply from the next window.
+///
+/// # Safety
+/// `rx` must be a live handle; `params` must point to at least `params->size`
+/// readable bytes (NULL means the defaults).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_set_params(
+    rx: *mut MfskJttyReceiver,
+    params: *const MfskJttyParams,
+) -> MfskStatus {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = (rx, params);
+        set_error("mfsk_jtty_set_params: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol
+    }
+    #[cfg(feature = "jtty")]
+    {
+        let Some(r) = jtty_inner(rx) else {
+            set_error("mfsk_jtty_set_params: null receiver");
+            return MfskStatus::NullPointer;
+        };
+        match unsafe { read_jtty_params(params) } {
+            Ok(p) => {
+                r.stream.set_params(jtty_core_params(&p));
+                MfskStatus::Ok
+            }
+            Err(e) => {
+                set_error(format!("mfsk_jtty_set_params: {e}"));
+                MfskStatus::InvalidArg
+            }
+        }
+    }
+}
+
+/// Feed 16-bit mono PCM at the rate the receiver was opened with, any number of
+/// samples per call (including none). Every window this completes is decoded
+/// before the call returns; what it found waits in the queue for
+/// [`mfsk_jtty_poll`]. A call can take a few tens of milliseconds per 0.47 s of
+/// audio it completes.
+///
+/// # Safety
+/// `samples` must be `n` readable `int16_t` (or null when `n` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_push_i16(
+    rx: *mut MfskJttyReceiver,
+    samples: *const i16,
+    n: usize,
+) -> MfskStatus {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = (rx, samples, n);
+        set_error("mfsk_jtty_push_i16: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol
+    }
+    #[cfg(feature = "jtty")]
+    {
+        let Some(r) = jtty_inner(rx) else {
+            set_error("mfsk_jtty_push_i16: null receiver");
+            return MfskStatus::NullPointer;
+        };
+        if n == 0 {
+            return MfskStatus::Ok;
+        }
+        if samples.is_null() {
+            set_error("mfsk_jtty_push_i16: null samples");
+            return MfskStatus::NullPointer;
+        }
+        let src = unsafe { slice::from_raw_parts(samples, n) };
+        match r.resampler.as_mut() {
+            None => r.push_12k(src),
+            Some(_) => {
+                // Resample in bounded chunks, as `mfsk_stream_push_i16` does.
+                let mut scratch = [0i16; 4096];
+                let mut pos = 0;
+                while pos < src.len() {
+                    let rs = r.resampler.as_mut().expect("checked");
+                    let (consumed, produced) = rs.process(&src[pos..], &mut scratch);
+                    if consumed == 0 && produced == 0 {
+                        break;
+                    }
+                    r.push_12k(&scratch[..produced]);
+                    pos += consumed;
+                }
+            }
+        }
+        MfskStatus::Ok
+    }
+}
+
+/// [`mfsk_jtty_push_i16`] for 32-bit float PCM, nominally `-1.0..=1.0`.
+///
+/// # Safety
+/// `samples` must be `n` readable `float` (or null when `n` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_push_f32(
+    rx: *mut MfskJttyReceiver,
+    samples: *const f32,
+    n: usize,
+) -> MfskStatus {
+    if n == 0 {
+        return unsafe { mfsk_jtty_push_i16(rx, ptr::null(), 0) };
+    }
+    if samples.is_null() {
+        set_error("mfsk_jtty_push_f32: null samples");
+        return MfskStatus::NullPointer;
+    }
+    let src = unsafe { slice::from_raw_parts(samples, n) };
+    let as_i16: Vec<i16> = src
+        .iter()
+        .map(|&x| (x * 32767.0).clamp(-32_768.0, 32_767.0) as i16)
+        .collect();
+    unsafe { mfsk_jtty_push_i16(rx, as_i16.as_ptr(), as_i16.len()) }
+}
+
+/// The audio has ended: queue a last (incomplete) update for every message
+/// still waiting for a continuation. Call it when a recording is exhausted;
+/// a live receiver never needs it.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_finish(rx: *mut MfskJttyReceiver) -> MfskStatus {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = rx;
+        set_error("mfsk_jtty_finish: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol
+    }
+    #[cfg(feature = "jtty")]
+    {
+        let Some(r) = jtty_inner(rx) else {
+            set_error("mfsk_jtty_finish: null receiver");
+            return MfskStatus::NullPointer;
+        };
+        let JttyInner { stream, queue, .. } = r;
+        stream.finish(&mut |u| JttyInner::queue_update(queue, u));
+        MfskStatus::Ok
+    }
+}
+
+/// Forget everything — audio, messages, the queue, the resampler's state — and
+/// start again at sample 0 with the same settings.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_reset(rx: *mut MfskJttyReceiver) -> MfskStatus {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = rx;
+        set_error("mfsk_jtty_reset: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol
+    }
+    #[cfg(feature = "jtty")]
+    {
+        let Some(r) = jtty_inner(rx) else {
+            set_error("mfsk_jtty_reset: null receiver");
+            return MfskStatus::NullPointer;
+        };
+        r.stream.reset();
+        r.queue.clear();
+        if r.resampler.is_some() {
+            r.resampler =
+                Some(mfsk_core::engine::dsp::resample::LinearResamplerI16To12k::new(r.sample_rate));
+        }
+        MfskStatus::Ok
+    }
+}
+
+/// How many updates are waiting.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_jtty_pending(rx: *mut MfskJttyReceiver) -> usize {
+    #[cfg(feature = "jtty")]
+    {
+        jtty_inner(rx).map_or(0, |r| r.queue.len())
+    }
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = rx;
+        0
+    }
+}
+
+/// Take the oldest waiting update into `out` (size-versioned: set
+/// `out->size = sizeof(MfskJttyUpdate)`, or 0 for the whole struct).
+///
+/// Returns 1 when an update was written, 0 when none is waiting, and a negative
+/// `MfskStatus` on error (a null handle or `out`, or a build without the
+/// feature). Call it until it returns 0 after every push:
+///
+/// ```c
+/// MfskJttyUpdate u = {0};
+/// while (mfsk_jtty_poll(rx, &u) == 1) show(u.id, u.text, u.complete);
+/// ```
+///
+/// # Safety
+/// `out` must point to at least `out->size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_poll(
+    rx: *mut MfskJttyReceiver,
+    out: *mut MfskJttyUpdate,
+) -> i32 {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = (rx, out);
+        set_error("mfsk_jtty_poll: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol as i32
+    }
+    #[cfg(feature = "jtty")]
+    {
+        let Some(r) = jtty_inner(rx) else {
+            set_error("mfsk_jtty_poll: null receiver");
+            return MfskStatus::NullPointer as i32;
+        };
+        if out.is_null() {
+            set_error("mfsk_jtty_poll: out is NULL");
+            return MfskStatus::NullPointer as i32;
+        }
+        let Some(u) = r.queue.pop_front() else {
+            return 0;
+        };
+        let mut v = MfskJttyUpdate {
+            size: core::mem::size_of::<MfskJttyUpdate>() as u32,
+            complete: u32::from(u.complete),
+            id: u.id,
+            f1_hz: u.f1_hz,
+            start_s: u.start_s,
+            text: [0; 128],
+        };
+        // Truncate on a character boundary, leaving room for the NUL.
+        let mut end = u.text.len().min(v.text.len() - 1);
+        while !u.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        for (d, &b) in v.text.iter_mut().zip(&u.text.as_bytes()[..end]) {
+            *d = b as c_char;
+        }
+        unsafe { write_size_versioned(out, &v) };
+        1
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

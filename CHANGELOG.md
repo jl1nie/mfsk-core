@@ -112,6 +112,19 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY over the C ABI, Kotlin and Swift (#477, phase P4b).** `MfskMode` 25 is JTTY
+  (`MFSK_MODE_JTTY`, `MFSK_CAP_STREAM_RECEIVER`), and a receiver handle of its own carries it:
+  `mfsk_jtty_params_init` / `_open` / `_set_params` / `_push_i16` / `_push_f32` / `_finish` /
+  `_reset` / `_pending` / `_poll` / `_close` (`MfskJttyParams`, `MfskJttyUpdate`, both
+  size-versioned). Decoding runs inside `push`; the updates wait in a queue in the handle that
+  coalesces per message (upstream's rule), capped at 1024 messages. A new `jtty` feature of
+  `mfsk-ffi` (in `desktop` and `mobile`) gates it; without it the entry points stay in the
+  header and answer `MFSK_STATUS_UNKNOWN_PROTOCOL`. `MfskJttyReceiver` (Kotlin, with the JNI
+  shim) and `JttyReceiver` (Swift) wrap it. The C++ driver, the JVM test, the XCTest suite (73
+  cases now) and `tests/jtty_ffi.rs` each feed upstream's sample recording in chunks and expect
+  `RAN ALL NIGHT ON BAND NOISE - NO FALSE DECODES!`, complete, at about 1507 Hz. There is no
+  JTTY transmit call yet (the message-packing layer is #477's P5).
+
 - **JTTY, the streaming receiver (#477, phase P4a).** `jtty::rx::Stream` takes 12 kHz audio in
   chunks of any size and passes each `MessageUpdate` to a callback from inside `push`;
   `finish` reports the messages still open when the audio ends, `reset` starts over. It keeps

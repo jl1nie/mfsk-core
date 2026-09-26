@@ -603,3 +603,118 @@ Java_io_github_mfskcore_Mfsk_nativeSynthesize(
     if (sst != MFSK_STATUS_OK) { throw_ise(env, mfsk_last_error()); return NULL; }
     return out;
 }
+
+// ── JTTY receiver ───────────────────────────────────────────────────
+
+static void jtty_fill_params(MfskJttyParams* p, jfloat f0, jfloat ftol, jfloat smin,
+                             jfloat nfa, jfloat nfb, jboolean subtract) {
+    mfsk_jtty_params_init(p);
+    p->f0_hz = f0;
+    p->ftol_hz = ftol;
+    p->smin_db = smin;
+    p->nfa_hz = nfa;
+    p->nfb_hz = nfb;
+    p->subtract = (subtract == JNI_TRUE) ? 1u : 0u;
+}
+
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_MfskJttyReceiver_nativeOpen(
+        JNIEnv* env, jclass cls, jint sampleRate, jfloat f0, jfloat ftol, jfloat smin,
+        jfloat nfa, jfloat nfb, jboolean subtract) {
+    (void)cls;
+    MfskJttyParams p;
+    jtty_fill_params(&p, f0, ftol, smin, nfa, nfb, subtract);
+    MfskStatus st = MFSK_STATUS_INTERNAL;
+    MfskJttyReceiver* rx = mfsk_jtty_open((uint32_t)sampleRate, &p, &st);
+    if (rx == NULL) {
+        throw_ise(env, mfsk_last_error());
+        return 0;
+    }
+    return (jlong)(intptr_t)rx;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskJttyReceiver_nativeClose(JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    mfsk_jtty_close((MfskJttyReceiver*)(intptr_t)handle);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskJttyReceiver_nativeSetParams(
+        JNIEnv* env, jclass cls, jlong handle, jfloat f0, jfloat ftol, jfloat smin,
+        jfloat nfa, jfloat nfb, jboolean subtract) {
+    (void)cls;
+    MfskJttyParams p;
+    jtty_fill_params(&p, f0, ftol, smin, nfa, nfb, subtract);
+    if (mfsk_jtty_set_params((MfskJttyReceiver*)(intptr_t)handle, &p) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+    }
+}
+
+/// Everything waiting in the queue as an `MfskJttyUpdate[]`. The rows live
+/// in this frame; nothing here is owned by the library.
+static jobjectArray jtty_drain(JNIEnv* env, MfskJttyReceiver* rx) {
+    jclass cls = (*env)->FindClass(env, CLS "MfskJttyUpdate");
+    if (cls == NULL) return NULL;
+    jmethodID ctor = (*env)->GetMethodID(env, cls, "<init>", "(JLjava/lang/String;ZFF)V");
+    if (ctor == NULL) return NULL;
+
+    const size_t n = mfsk_jtty_pending(rx);
+    jobjectArray out = (*env)->NewObjectArray(env, (jsize)n, cls, NULL);
+    if (out == NULL) return NULL;
+    for (size_t i = 0; i < n; ++i) {
+        MfskJttyUpdate u;
+        memset(&u, 0, sizeof u);
+        u.size = sizeof u;
+        if (mfsk_jtty_poll(rx, &u) != 1) break;
+        jstring text = (*env)->NewStringUTF(env, u.text);
+        if (text == NULL) return NULL;
+        jobject obj = (*env)->NewObject(env, cls, ctor, (jlong)u.id, text,
+                                        u.complete ? JNI_TRUE : JNI_FALSE,
+                                        (jfloat)u.f1_hz, (jfloat)u.start_s);
+        (*env)->DeleteLocalRef(env, text);
+        if (obj == NULL) return NULL;
+        (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
+        (*env)->DeleteLocalRef(env, obj);
+    }
+    return out;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_MfskJttyReceiver_nativePush(
+        JNIEnv* env, jclass cls, jlong handle, jshortArray samples) {
+    (void)cls;
+    MfskJttyReceiver* rx = (MfskJttyReceiver*)(intptr_t)handle;
+    if (rx == NULL) { throw_ise(env, "receiver is closed"); return NULL; }
+    const jsize n = (*env)->GetArrayLength(env, samples);
+    jshort* pcm = (*env)->GetShortArrayElements(env, samples, NULL);
+    if (pcm == NULL) return NULL;
+    const MfskStatus st = mfsk_jtty_push_i16(rx, (const int16_t*)pcm, (size_t)n);
+    (*env)->ReleaseShortArrayElements(env, samples, pcm, JNI_ABORT);
+    if (st != MFSK_STATUS_OK) { throw_ise(env, mfsk_last_error()); return NULL; }
+    return jtty_drain(env, rx);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_MfskJttyReceiver_nativePoll(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    MfskJttyReceiver* rx = (MfskJttyReceiver*)(intptr_t)handle;
+    if (rx == NULL) { throw_ise(env, "receiver is closed"); return NULL; }
+    return jtty_drain(env, rx);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskJttyReceiver_nativeFinish(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    if (mfsk_jtty_finish((MfskJttyReceiver*)(intptr_t)handle) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskJttyReceiver_nativeReset(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    if (mfsk_jtty_reset((MfskJttyReceiver*)(intptr_t)handle) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+    }
+}

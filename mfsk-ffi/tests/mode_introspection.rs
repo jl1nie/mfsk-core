@@ -118,7 +118,7 @@ fn names_round_trip_and_match_the_registry() {
         assert_eq!(back, m, "{name} round-tripped to a different mode");
 
         // MSK144 is the one mode with no registry entry, by design.
-        if m != MfskMode::Msk144 {
+        if m != MfskMode::Msk144 && m != MfskMode::Jtty {
             assert!(
                 mfsk_core::PROTOCOLS.iter().any(|p| p.name == name),
                 "{name} is not a registry key, so by_name would miss it"

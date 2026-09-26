@@ -340,6 +340,14 @@ pub enum MfskMode {
     UvUltraRobust = 23,
     /// uvpacket, express profile.
     UvExpress = 24,
+    /// JTTY — WSJT-X 3.2's weak-signal keyboard mode. **Not slotted**:
+    /// 1.888 s frames that start whenever the sender likes, a message of
+    /// several of them, assembled by the receiver. It has no `Protocol`
+    /// marker type and no registry entry (like MSK144), and it is driven
+    /// through its own handle, `mfsk_jtty_open` and the calls after it,
+    /// which is what `MFSK_CAP_STREAM_RECEIVER` says. `mfsk_mode_info`
+    /// describes one frame: `t_slot_s` is the frame period, not a slot.
+    Jtty = 25,
 }
 
 /// How a mode's `sync_min` is measured — the trap this table exists to
@@ -603,5 +611,77 @@ pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
 /// what it owns: a callsign hash table and the previous slot's rows,
 /// both of which only mean anything across more than one call.
 pub struct MfskDecodeSession {
+    _marker: PhantomData<*mut ()>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// JTTY receiver handle (#477, P4b)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Bytes in [`MfskJttyUpdate::text`], including the NUL. A message keeps at
+/// most 80 characters (`jtty::assemble`); the rest is room for the gap marks
+/// that upstream's display puts between frames that were never heard.
+pub const MFSK_JTTY_TEXT_BUF_LEN: usize = 128;
+
+/// Receive settings for `mfsk_jtty_open` / `mfsk_jtty_set_params`.
+/// **Size-versioned**, like `MfskModeInfo`: set `size = sizeof(MfskJttyParams)`,
+/// or call `mfsk_jtty_params_init`, which fills in the defaults (`rjtty`'s).
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskJttyParams {
+    /// `sizeof(MfskJttyParams)` as the caller understands it.
+    pub size: u32,
+    /// Take each decoded frame off the signal and search again, and re-search
+    /// the windows before it. Non-zero (the default) is upstream's receiver;
+    /// zero is a single-signal receiver that loses a weak station under a
+    /// strong one.
+    pub subtract: u32,
+    /// The operator's receive frequency, Hz (channel 0's centre). Default 1500.
+    pub f0_hz: f32,
+    /// Half-width of channel 0, Hz. Default 50.
+    pub ftol_hz: f32,
+    /// Sync-gate S/N floor on channel 0, dB. Default 4.6.
+    pub smin_db: f32,
+    /// Lowest audio frequency channels 1 and 2 look at, Hz. Default 200.
+    pub nfa_hz: f32,
+    /// Highest audio frequency channels 1 and 2 look at, Hz. Default 2800.
+    pub nfb_hz: f32,
+}
+
+/// One message as far as it is known, as `mfsk_jtty_poll` hands it out.
+/// **Size-versioned.**
+///
+/// A message is reported each time it grows and once more when it completes.
+/// Updates are **coalesced per message between polls**: if a message grew
+/// twice since the last poll, the poll returns its latest text once — the
+/// same rule as upstream's `jtty_get_updates`. `id` is stable for the life of
+/// a message, so a caller replaces its display row by `id`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskJttyUpdate {
+    /// `sizeof(MfskJttyUpdate)` as the caller understands it.
+    pub size: u32,
+    /// Non-zero once the end-of-message frame has arrived. A message that was
+    /// given up on (no continuation came, or `mfsk_jtty_finish` was called) is
+    /// reported one last time with this still 0.
+    pub complete: u32,
+    /// Stable for the life of the message.
+    pub id: u64,
+    /// Frequency of the latest frame, Hz.
+    pub f1_hz: f32,
+    /// Start of the first frame, seconds from the first sample pushed since
+    /// `mfsk_jtty_open` / `mfsk_jtty_reset`.
+    pub start_s: f32,
+    /// The text so far, NUL-terminated UTF-8. Frames that were never heard
+    /// show as ` ... `; TEXT5 spaces as `~`, as upstream shows them.
+    pub text: [core::ffi::c_char; 128],
+}
+const _: () = assert!(MFSK_JTTY_TEXT_BUF_LEN == 128);
+
+/// The JTTY receiver handle.
+///
+/// Emitted as an incomplete type, like [`MfskDecodeOptions`]; the receiver is
+/// what `mfsk_jtty_open` allocates.
+pub struct MfskJttyReceiver {
     _marker: PhantomData<*mut ()>,
 }
