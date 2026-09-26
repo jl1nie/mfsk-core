@@ -208,3 +208,76 @@ Revised picture for section 5: `carry` removes 45 % of the ladder calls (the lar
 band), `sequential` costs parallelism the device does not have, and the subtraction line drops from 21 % of a busy
 window to something small pending the measurement.
 
+
+## 9. The embedded-v1 policy, measured on the host (2026-09-27)
+
+The policy of section 8's end — channel 0 only, no subtraction, a **mask** of decoded frames in place of `carry`, a
+**decimated** channel-0 sync surface — had two measurable claims. Both were tried as throw-away code (env switches, not
+merged; the patch is not kept because the numbers are the point). Corpora as before: `scripts/jtty_multi_study.sh` easy
+(100 pairs) and hard (200 pairs), the 360-file `jtty_sweep`, `jtty_profile`.
+
+**Mask** (zero the sync surface within ±W Hz of a decoded frame's `f1`, for start times from `tsync − 0.1 s` to
+`tsync + 1.888 s − 0.1 s`; `Params::mask`-shaped, applied before picking). Weak station recovered / ladder calls a window
+(recording, 3 stations, 6 stations); default: 69 / 101, 0.90 / 0.54 / 1.30:
+
+| | easy | hard | recording | 3 st. | 6 st. |
+|---|---|---|---|---|---|
+| mask ±5 Hz | 68 | 100 | 0.88 | 0.46 | 0.95 |
+| mask ±20 Hz | 68 | 93 | 0.60 | 0.38 | 0.61 |
+| mask −15/+100 Hz | 64 (A: 91) | 78 | | | |
+| mask ±120 Hz | 50 (A: 80) | 53 | | | |
+| no subtraction | 42 | **0** | 0.55 | 0.38 | 0.54 |
+| no subtraction + mask ±5 Hz | 29 (±120) | 0 | 0.55 | 0.32 | 0.47 |
+
+- The rejects are 80–97 % *within 120 Hz and 2 s* of a decoded frame but only 0–11 % within 40 Hz and 0.1 s. A mask
+  wide enough to remove them also removes the **other station**: two stations 25–120 Hz apart are the ordinary case, and
+  at ±120 Hz the strong one is lost too (easy A 100 → 80) because the weak one decoded first masked it. The mask trades
+  the weak station's recall for ladder calls at about 1 : 1 above ±5 Hz. **It is not a substitute for `carry`**, which
+  removes 45 % of the calls and *gains* 26 weak stations.
+- Without subtraction the ladder calls drop by half (fewer residual phantoms) and the weak station under a strong one is
+  gone: hard set 101 → 0. A v1 without subtraction is a single-station-per-slot-region receiver by construction.
+- Noise alone is untouched by any of this (0.065 ladder calls a window); the mask/subtraction levers only matter on a busy
+  band.
+
+**Decimated channel-0 sync surface.** The product of window and sync wave is 2 496 samples (13 symbols); it is summed
+`D` at a time after mixing the band centre to DC, and transformed with an `8192 / D`-point FFT, so the bins stay on the
+same 0.732 Hz grid. Decisions: `D` = 8, 16, 32 give the **same pass/fail on all 360 sweep files as the full 8192-point
+surface** (0 differing), and 77 against 78 weak stations on the hard set (200 pairs). Host surface time 1.66 → 0.47 ms a
+window (single thread). On the LX7 the point is not the 3.5× fewer flops but that a 512-point transform and the 2 496
+product samples fit the data cache where the 8192-point one did not (section 3: 14× in PSRAM); the estimate is
+237 × (2 496 multiply-adds + one 512-point FFT) ≈ 90 ms, **not measured on the board**.
+
+**Channel 0 alone costs sensitivity, which was not in the estimate.** `jtty_sweep`, weak-signal passes (of 360):
+default 160; channel 0 only 141 (−19, all between −17 and −14 dB); the same with the decimated surface 141. It is *not*
+the surface width (141 with the wide surface) and *not* the candidate count (3, 9, 14 picks: 141). It is the peak-up:
+skipping it on channel 0 gives 152 with channel 0 only, and 154 (against 160) with all channels — channels 1 and 2 take
+their candidates raw, so on a weak signal they are an unrefined second attempt at the same peak. Peak-up (100 ms × 5 a
+window on the board) buys 6 passes with the second attempt present and costs 11 without.
+
+**Raw first, peak-up second — measured.** Channel 0 tries every pick unrefined; only when that attempt fails is the
+pick refined and tried again (the decimated surface, channel 0 only in all rows). `jtty_sweep`, weak-signal passes of
+360 (0 unexpected decodes in every row):
+
+| channel 0 | passes |
+|---|---|
+| peak-up only (as v1 stood) | 141 |
+| raw only (no peak-up) | 152 |
+| default, all three channels | 160 |
+| **raw, then peak-up** | **164** |
+| raw, then peak-up only if the raw gate saw ≥ 6 of 13 sync tones | **164** |
+| … ≥ 7 tones | 161 |
+| all three channels, raw then peak-up | 166 |
+
+The hard multi-station set, weak station: 77 (peak-up only) → **92**, and 11 more than `rjtty` finds; easy set and
+unexpected messages unchanged (1 in every variant, the same one). So the fallback restores the 19 passes channel 0
+alone lost and gains 4 over the default, and it is not the peak-up that has to be paid on every pick: a sync count of
+6 in the raw gate (noise expects ~3.3 of 13) is a sufficient reason to refine, and threshold 6 loses nothing against
+refining every failure. Cost per window, noise alone (default channel 0 with peak-up → raw with fallback at 6):
+peak-ups 5.0 → **1.8**, gate calls 5.0 → 6.8, ladder calls 0.073 → 0.098 (+34 %: raw picks that pass the gate now
+reach the ladder as well); six stations 10.3 → 4.2 peak-ups, ladder 0.94 → 1.34. Each gate call here is preceded by a
+whole-window `shift_frequency`; the raw gate needs only the 13 sync symbols' worth of samples, so with the rotated
+reference of section 8's list it is 2 496 multiply-adds a tone instead of a 14 160-sample mix — the gate count is
+cheap, the extra ladder calls are the price (~0.025 a window in noise, ≈ 1 s each on the CoreS3).
+
+Next: the decimated surface and raw-then-peak-up as real `Params` options, the rotated-reference candidate path (no
+whole-window `shift_frequency`), and the on-board measurement of all three.
