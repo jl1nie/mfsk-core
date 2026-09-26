@@ -53,6 +53,9 @@ pub struct Ladder {
     plans: [Plan; 3],
     /// Carry the path metrics in `f32` (see [`Plan::decode_f32`]).
     f32_metrics: bool,
+    /// Rungs run, for `jtty-stats`.
+    #[cfg(feature = "jtty-stats")]
+    rungs: [core::sync::atomic::AtomicU64; 4],
 }
 
 impl Default for Ladder {
@@ -67,7 +70,23 @@ impl Ladder {
         Self {
             plans: COHERENT_LENGTHS.map(Plan::new),
             f32_metrics: false,
+            #[cfg(feature = "jtty-stats")]
+            rungs: Default::default(),
         }
+    }
+
+    /// Rungs run so far: L=1, L=2, L=4, half-symbol L=1 (`jtty-stats`).
+    #[cfg(feature = "jtty-stats")]
+    pub fn rung_counts(&self) -> [u64; 4] {
+        core::array::from_fn(|i| self.rungs[i].load(core::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Zero the rung counts (`jtty-stats`).
+    #[cfg(feature = "jtty-stats")]
+    pub fn reset_rung_counts(&self) {
+        self.rungs
+            .iter()
+            .for_each(|r| r.store(0, core::sync::atomic::Ordering::Relaxed));
     }
 
     /// The same ladder with the trellis metrics in `f32`: hardware on a core whose `f64` is
@@ -80,6 +99,8 @@ impl Ladder {
 
     /// One rung: the list decode and the acceptance rule.
     fn rung(&self, index: usize, zsym: &Correlations, zhalf: &Correlations) -> Option<Accepted> {
+        #[cfg(feature = "jtty-stats")]
+        self.rungs[index].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let half = index == 3;
         let plan = &self.plans[if half { 0 } else { index }];
         let z = if half { zhalf } else { zsym };
