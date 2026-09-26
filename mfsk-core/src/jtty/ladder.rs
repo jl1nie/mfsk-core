@@ -15,12 +15,11 @@
 //!
 //! ## Parallel by construction
 //!
-//! With the `parallel` feature the four rungs are evaluated concurrently and the
-//! first accepting one *in rung order* is taken, so the result is exactly the
-//! sequential one. This is speculative — a strong signal that L = 1 accepts
-//! still pays for the others, on other cores — but candidates that decode
-//! nothing, the great majority, run every rung anyway and finish in the time of
-//! the slowest instead of the sum.
+//! With the `parallel` feature the rungs run in two lanes, L = 1 then the half-symbol
+//! rung, and L = 2 then L = 4, and the first accepting one *in rung order* is taken, so
+//! the result is exactly the sequential one. A lane's second rung is skipped when an
+//! earlier rung in order has already accepted; candidates that decode nothing, the great
+//! majority, finish in the time of the slower lane instead of the sum of four.
 
 use super::trellis::{Correlations, ListResult, Plan};
 use super::{PAYLOAD_BITS, Payload};
@@ -123,9 +122,40 @@ impl Ladder {
     pub fn decode(&self, zsym: &Correlations, zhalf: &Correlations) -> Option<Accepted> {
         #[cfg(feature = "parallel")]
         {
-            let ((a, b), (c, d)) = rayon::join(
-                || rayon::join(|| self.rung(0, zsym, zhalf), || self.rung(1, zsym, zhalf)),
-                || rayon::join(|| self.rung(2, zsym, zhalf), || self.rung(3, zsym, zhalf)),
+            // Two lanes, each two rungs in turn: L=1 then the half-symbol rung, L=2 then L=4
+            // (about 190+190 and 145+265 ms on the CoreS3). A lane skips its second rung once a
+            // rung earlier in ladder order has accepted, so a frame L=1 takes costs one rung's
+            // time, and one no rung takes the slower lane's instead of all four (#499). The
+            // result is still the first accepting rung in order.
+            use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
+            let accepted: [AtomicBool; 4] = Default::default();
+            let run = |i: usize| {
+                let r = self.rung(i, zsym, zhalf);
+                if r.is_some() {
+                    accepted[i].store(true, SeqCst);
+                }
+                r
+            };
+            let ((a, d), (b, c)) = rayon::join(
+                || {
+                    let a = run(0);
+                    // the half-symbol rung is last in order: skip it if L=1 or L=2 took the frame
+                    let d = if a.is_none() && !accepted[1].load(SeqCst) {
+                        run(3)
+                    } else {
+                        None
+                    };
+                    (a, d)
+                },
+                || {
+                    let b = run(1);
+                    let c = if b.is_none() && !accepted[0].load(SeqCst) {
+                        run(2)
+                    } else {
+                        None
+                    };
+                    (b, c)
+                },
             );
             a.or(b).or(c).or(d)
         }
