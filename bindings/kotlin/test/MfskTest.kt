@@ -373,6 +373,174 @@ fun main() {
         check("txFreqHz recovers stations the out-of-range hint misses", with >= without + 3)
     }
 
+    // ── Q65: the WSJT-X 3.2 settings, and the two lists it keeps ────
+    //
+    // Q65 has no decode handle, so this is `Mfsk.decodeQ65`. Each setting has
+    // to change what is decoded: a field that is accepted and ignored looks
+    // identical to one that works.
+    val q30 = modes.firstOrNull { Mfsk.modeName(it) == "Q65-30A" }
+    check("Q65-30A is addressable", q30 != null)
+    if (q30 != null) {
+        val qd = Mfsk.q65DefaultParams(q30)
+        checkEq("Q65's default band starts at", qd.freqMinHz, 200.0f)
+        checkEq("Q65's default window is WSJT-X's ±1 s (early)", qd.tEarlyS, 1.0f)
+        checkEq("and late", qd.tLateS, 1.0f)
+        checkEq("Q65-30A's frame starts 0.5 s in", qd.nominalStartS, 0.5f)
+        checkEq("F Tol defaults to 10 Hz", qd.ftolHz, 10.0f)
+        check("no Rx frequency, fading, list or hint by default",
+              qd.rxFreqHz == null && qd.fading == null && qd.list == null && qd.apHint == null)
+        check("Q65 defaults for a non-Q65 mode are refused", try {
+            Mfsk.q65DefaultParams(ft8); false
+        } catch (e: IllegalStateException) { true })
+
+        for (fading in listOf(null, MfskQ65Fading(1.5f, MfskQ65Fading.LORENTZIAN))) {
+            val p = qd.copy(
+                freqMinHz = 900.0f, freqMaxHz = 2100.0f, nominalStartS = 0.75f, tEarlyS = 2.0f,
+                tLateS = 3.0f, scoreThreshold = 0.2f, maxCand = 5, pileup = true, emeDelay = true,
+                maxDrift = 20, rxFreqHz = 1500.5f, ftolHz = 25.0f, fading = fading,
+            )
+            checkEq("Q65 params survive the arrays ($fading)",
+                    MfskQ65Params.fromArrays(p.floatArray(), p.intArray()), p)
+        }
+
+        val slotLen = Mfsk.modeInfo(q30).slotSamples12k
+        fun slotOf(sig: FloatArray, startS: Float): FloatArray {
+            val a = FloatArray(slotLen)
+            val at = Math.round(startS * 12_000f)
+            for (i in sig.indices) if (at + i < a.size) a[at + i] = sig[i]
+            return a
+        }
+        val want = "K1ABC JA1ABC -15"
+        val sig = Mfsk.synthesizeQ65(q30, "K1ABC", "JA1ABC", "-15", 1500.0f)
+        val flaggedSig = Mfsk.synthesizeQ65(q30, "K1ABC", "JA1ABC", "-15", 1500.0f, copiedLastTx = true)
+        check("the flag changes the transmission", !sig.contentEquals(flaggedSig))
+
+        fun refusedQ65(what: String, needle: String, p: MfskQ65Params, callers: MfskQ65Callers? = null) {
+            var msg: String? = null
+            try {
+                Mfsk.decodeQ65(q30, FloatArray(slotLen), p, callers)
+            } catch (e: IllegalStateException) {
+                msg = e.message
+            }
+            check("$what is refused, naming $needle (got: $msg)", msg?.contains(needle) == true)
+        }
+        val my = MfskQ65List.Standard("K1ABC", "JA1ABC")
+        refusedQ65("Pileup with no hint", "AP hint", qd.copy(pileup = true))
+        refusedQ65("an Rx frequency with no list", "ap_list", qd.copy(rxFreqHz = 1500.0f))
+        refusedQ65("a list with fading", "mutually exclusive",
+                   qd.copy(list = my, fading = MfskQ65Fading(1.0f)))
+        refusedQ65("drift with fading", "fast-fading",
+                   qd.copy(maxDrift = 10, fading = MfskQ65Fading(1.0f)))
+        refusedQ65("drift past 50", "max_drift", qd.copy(maxDrift = 51))
+        refusedQ65("the contest list with no callers", "MfskQ65Callers",
+                   qd.copy(list = MfskQ65List.Contest("K1ABC")))
+        refusedQ65("an unknown fading model", "fading_model",
+                   qd.copy(fading = MfskQ65Fading(1.0f, model = 7)))
+
+        // dt is measured from the nominal start; the flag reaches the row.
+        for ((startS, wantDt) in listOf(0.5f to 0.0f, 0.9f to 0.4f, 0.2f to -0.3f)) {
+            val rows = Mfsk.decodeQ65(q30, slotOf(sig, startS), qd)
+            checkEq("the frame at $startS s decodes", rows.map { it.text }, listOf(want))
+            check("dt is $wantDt (got ${rows[0].dtSec})", Math.abs(rows[0].dtSec - wantDt) < 0.05f)
+            checkEq("the row carries its mode", rows[0].mode, q30)
+            check("an unflagged frame is not flagged", !rows[0].copiedLastTx)
+        }
+        val flaggedRows = Mfsk.decodeQ65(q30, slotOf(flaggedSig, 0.5f), qd)
+        checkEq("the flagged frame decodes", flaggedRows.map { it.text }, listOf(want))
+        check("and says it copied the last Tx", flaggedRows[0].copiedLastTx)
+
+        // EME delay: a frame 3 s late is beyond ±1 s.
+        val late = slotOf(sig, 3.5f)
+        check("a frame 3 s late is not in the default window",
+              Mfsk.decodeQ65(q30, late, qd).isEmpty())
+        val eme = Mfsk.decodeQ65(q30, late, qd.copy(emeDelay = true))
+        checkEq("the EME delay reaches it", eme.map { it.text }, listOf(want))
+        check("at dt +3 s (got ${eme.firstOrNull()?.dtSec})",
+              eme.isNotEmpty() && Math.abs(eme[0].dtSec - 3.0f) < 0.05f)
+
+        // Pileup: a MyCall + DxCall hint cannot match a flagged reply without it.
+        val hint = MfskQ65ApHint(call1 = "K1ABC", call2 = "JA1ABC")
+        val pile = Mfsk.decodeQ65(q30, slotOf(flaggedSig, 0.5f), qd.copy(pileup = true, apHint = hint))
+        checkEq("Pileup decodes a flagged reply under a MyCall + DxCall hint",
+                pile.map { it.text }, listOf(want))
+        check("and flags it", pile.isNotEmpty() && pile[0].copiedLastTx)
+        checkEq("an unflagged reply decodes under Pileup too",
+                Mfsk.decodeQ65(q30, slotOf(sig, 0.5f), qd.copy(pileup = true, apHint = hint))
+                    .map { it.text }, listOf(want))
+
+        // q3: a window that holds nothing else, so only the list decode at the
+        // Rx frequency can find it.
+        val q3 = qd.copy(
+            freqMinHz = 3900.0f, freqMaxHz = 3950.0f,
+            list = MfskQ65List.Standard("K1ABC", "JA1ABC", "PM95"),
+        )
+        check("the scan window holds nothing",
+              Mfsk.decodeQ65(q30, slotOf(sig, 0.5f), q3).isEmpty())
+        checkEq("q3 finds the list message at the Rx frequency",
+                Mfsk.decodeQ65(q30, slotOf(sig, 0.5f), q3.copy(rxFreqHz = 1500.0f)).map { it.text },
+                listOf(want))
+        check("and not when the Rx frequency is 100 Hz off",
+              Mfsk.decodeQ65(q30, slotOf(sig, 0.5f), q3.copy(rxFreqHz = 1600.0f)).isEmpty())
+
+        // The contest list: K1ABC W9XYZ RR73 is on it only because W9XYZ called.
+        MfskQ65Callers().use { callers ->
+            val rr73 = slotOf(Mfsk.synthesizeQ65(q30, "K1ABC", "W9XYZ", "RR73", 1500.0f), 0.5f)
+            val contest = qd.copy(
+                freqMinHz = 3900.0f, freqMaxHz = 3950.0f, rxFreqHz = 1500.0f,
+                list = MfskQ65List.Contest("K1ABC"),
+            )
+            check("nobody listed: nothing to find",
+                  Mfsk.decodeQ65(q30, rr73, contest, callers).isEmpty())
+            callers.record(1500.0f, "K1ABC W9XYZ EN37", now = 1_000L)
+            checkEq("a remembered caller decodes",
+                    Mfsk.decodeQ65(q30, rr73, contest, callers).map { it.text },
+                    listOf("K1ABC W9XYZ RR73"))
+        }
+    }
+
+    MfskQ65Callers().use { c ->
+        c.record(1500.0f, "K1ABC W9XYZ EN37", 100L)
+        c.record(1510.0f, "K1ABC JA1ABC R PM95", 100L)
+        c.record(1520.0f, "K1ABC VK3ABC -15", 100L)        // no grid: not added
+        c.record(1530.0f, "K1ABC W9XYZ/R EN37", 100L)      // compound: ignored
+        checkEq("the caller list holds two", c.size, 2)
+        checkEq("first caller", c.callers[0], MfskQ65Caller("W9XYZ", "EN37", 100L, 1500))
+        checkEq("second caller", c.callers[1], MfskQ65Caller("JA1ABC", "PM95", 100L, 1510))
+        c.record(1600.0f, "K1ABC W9XYZ RR73", 500L)
+        checkEq("a known caller is refreshed", c.callers[0].lastHeard, 500L)
+        c.expire(100L + 24 * 3600 + 1)
+        checkEq("24 hours on only the refreshed one is left", c.size, 1)
+        c.remove("W9XYZ")
+        checkEq("and it can be forgotten", c.size, 0)
+    }
+    val closedCallers = MfskQ65Callers()
+    closedCallers.close()
+    closedCallers.close()  // idempotent
+    check("a closed caller list refuses use", try {
+        closedCallers.record(1500.0f, "K1ABC W9XYZ EN37", 0L); false
+    } catch (e: IllegalStateException) { true })
+
+    MfskQ65History().use { h ->
+        check("an empty history finds nothing", h.lookup(1500.0f) == null)
+        h.push(1500.0f, "K1ABC JA1ABC PM95")
+        checkEq("the DX station within 10 Hz", h.lookup(1508.0f), MfskQ65Dx("JA1ABC", "PM95"))
+        check("and not outside it", h.lookup(1520.0f) == null)
+        h.push(1500.0f, "CQ VK3ABC QF22")
+        checkEq("a later CQ is passed over", h.lookup(1500.0f), MfskQ65Dx("JA1ABC", "PM95"))
+        h.push(1500.0f, "K1ABC W9XYZ -15")
+        checkEq("a message with no grid names the call alone",
+                h.lookup(1500.0f), MfskQ65Dx("W9XYZ", null))
+        h.record(listOf(MfskDecode(
+            mode = 0, text = "K1ABC DL1XYZ JO62", freqHz = 700.0f, dtSec = 0f, snrDb = 0f,
+            syncScore = 0f, syncCv = 0f, hardErrors = 0, infoBits = 0, pass = 0,
+            hashResolved = false,
+        )))
+        checkEq("rows go in as pushes", h.lookup(700.0f), MfskQ65Dx("DL1XYZ", "JO62"))
+        checkEq("the history holds what was pushed", h.size, 4)
+        for (i in 0 until 120) h.push(2000.0f + i, "K1ABC JA1ABC PM95")
+        checkEq("only the 100 most recent are kept", h.size, 100)
+    }
+
     // ── JTTY: a stateful receiver, fed a recording in chunks ────────
     val jtty = modes.firstOrNull { Mfsk.modeName(it) == "JTTY" }
     check("JTTY is addressable", jtty != null)

@@ -676,6 +676,29 @@ MfskSession.open(ft8, p).use { s -> s.decode(pcm) }
 名指しする拒否メッセージで確かめ、AP ヒント・QSO 周波数・送信周波数は弱い
 信号で端から端まで確かめている。
 
+**Q65 にはデコードハンドルが無いので `Mfsk.decodeQ65`** — `mfsk_q65_decode_ex`（§2.8）
+に対応する、WSJT-X 3.2 の設定を扱う 1 本の呼び出し。`MfskQ65Params` は
+`Mfsk.q65DefaultParams(mode)` から始めて `copy` し、`pileup`・`emeDelay`・
+`maxDrift`・`rxFreqHz` / `ftolHz`・`fading = MfskQ65Fading(…)`・
+`list = MfskQ65List.Standard(…)` または `.Contest(…)`・`apHint` を持つ。行は
+`nominalStartS` からの `dtSec` と `copiedLastTx` を返す:
+
+```kotlin
+val q65 = Mfsk.modes().first { Mfsk.modeName(it) == "Q65-30A" }
+val p = Mfsk.q65DefaultParams(q65).copy(
+    freqMinHz = 1450f, freqMaxHz = 1550f, maxDrift = 10,   // Max Drift、帯域は nfqso ± ntol に絞る
+)
+val rows = Mfsk.decodeQ65(q65, pcmFloat, p)
+```
+
+`MfskQ65History`（`q65_hist`: `push`、`record(rows)`、`lookup(rxFreqHz)`）と
+`MfskQ65Callers`（`q65_hist2`: `record(freqHz, text, now)`、`expire(now)`、
+`remove(call)`、`callers`）は呼び出し側が所有する `AutoCloseable` のハンドルで、
+コンテストリストは `decodeQ65` に渡した callers を読む。`Mfsk.synthesizeQ65(…,
+copiedLastTx)` は Pileup の返信を送る。JVM テストは、EME delay で 3 秒遅れのフレーム、
+Pileup 下のフラグ付き返信、他に何も無い窓での q3 によるリストメッセージをデコードし、
+配列マーシャリングの各スロットを、それを名指しする拒否メッセージで確かめている。
+
 **`session.setBudget { … }`、`keepKnown`、`keepFftCache`** は同じ3戦略の
 セッション単位版。budget 述語は候補ごとに JNI を1往復するので、捕捉した
 デッドラインとの `System.nanoTime()` 比較程度に留めること。それより重い

@@ -27,7 +27,12 @@
     frame with the EME delay, a 60 Hz/min drifting one with Max Drift, a flagged reply under
     Pileup, a list message in a window holding nothing else with q3, a remembered caller with
     the contest list), and disabling the wiring fails five of them.
-  - Kotlin and Swift do not carry these yet.
+  - Kotlin: `Mfsk.decodeQ65(mode, samples, params, callers)` with `MfskQ65Params` (start from
+    `Mfsk.q65DefaultParams(mode)`), `MfskQ65Fading`, `MfskQ65List.Standard` / `.Contest`,
+    `MfskQ65ApHint`, the `AutoCloseable` handles `MfskQ65History` and `MfskQ65Callers`,
+    `Mfsk.synthesizeQ65(..., copiedLastTx)` and `MfskDecode.copiedLastTx`. Kotlin could not
+    decode Q65 at all before: it has no decode handle. 37 new JVM checks; swapping two slots in
+    the shim fails five. Swift does not carry these yet.
 
 - **C ABI: the transmit frequency and FST4's noise blanker, on `MfskDecodeParams` (#466,
   part 1).** Two knobs the Rust builder gained for the 3.2 port had no way in through

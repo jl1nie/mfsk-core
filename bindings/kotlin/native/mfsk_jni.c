@@ -17,6 +17,7 @@
 // Build: `bindings/kotlin/build.sh`.
 
 #include <jni.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -178,7 +179,7 @@ Java_io_github_mfskcore_Mfsk_nativeThreadCount(JNIEnv* env, jclass cls) {
 /// that fails at run time rather than compile time when a field is
 /// added on the Kotlin side and forgotten here.
 static jmethodID row_ctor(JNIEnv* env, jclass rowCls) {
-    return (*env)->GetMethodID(env, rowCls, "<init>", "(ILjava/lang/String;FFFFFIIIZ)V");
+    return (*env)->GetMethodID(env, rowCls, "<init>", "(ILjava/lang/String;FFFFFIIIZZ)V");
 }
 
 /// One C row as one Kotlin `MfskDecode`. Every field is copied — the
@@ -192,7 +193,8 @@ static jobject make_row(JNIEnv* env, jclass rowCls, jmethodID ctor, const MfskDe
         (jfloat)r->freq_hz, (jfloat)r->dt_sec, (jfloat)r->snr_db,
         (jfloat)r->sync_score, (jfloat)r->sync_cv,
         (jint)r->hard_errors, (jint)r->info_bits, (jint)r->pass,
-        (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0));
+        (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
+        (jboolean)((r->flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0));
     (*env)->DeleteLocalRef(env, text);
     return obj;
 }
@@ -678,6 +680,351 @@ Java_io_github_mfskcore_MfskSession_nativeDecode(
         if (obj == NULL) return NULL;
         (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
         (*env)->DeleteLocalRef(env, obj);
+    }
+    return out;
+}
+
+// ── Q65 ─────────────────────────────────────────────────────────────
+//
+// `mfsk_q65_decode_ex` and the two handles WSJT-X keeps for it. Same
+// approach as `MfskDecodeParams`: the struct crosses as flat arrays, in the
+// order below, which is the contract with `MfskQ65Params.floatArray` /
+// `intArray` / `stringArray` in Mfsk.kt.
+//
+//   floats: freq_min_hz, freq_max_hz, nominal_start_s, t_early_s, t_late_s,
+//           score_threshold, rx_freq_hz (NaN unset), ftol_hz,
+//           fading_b90_ts (NaN unset)
+//   ints:   max_cand, pileup, eme_delay, max_drift, fading_model, ap_list,
+//           has_ap_hint
+//   strings: ap_call1, ap_call2, ap_grid, ap_report,
+//            list_my_call, list_his_call, list_his_grid (null is empty)
+enum { kQ65Floats = 9, kQ65Ints = 7, kQ65Strings = 7 };
+
+static bool read_q65_params(JNIEnv* env, jfloatArray fa, jintArray ia, jobjectArray sa,
+                            MfskQ65Params* p) {
+    if (fa == NULL || ia == NULL || sa == NULL
+        || (*env)->GetArrayLength(env, fa) != kQ65Floats
+        || (*env)->GetArrayLength(env, ia) != kQ65Ints
+        || (*env)->GetArrayLength(env, sa) != kQ65Strings) {
+        throw_ise(env, "Q65 parameter arrays have the wrong shape");
+        return false;
+    }
+    jfloat f[kQ65Floats];
+    jint v[kQ65Ints];
+    (*env)->GetFloatArrayRegion(env, fa, 0, kQ65Floats, f);
+    (*env)->GetIntArrayRegion(env, ia, 0, kQ65Ints, v);
+
+    memset(p, 0, sizeof *p);
+    p->size = sizeof *p;
+    p->freq_min_hz = f[0];
+    p->freq_max_hz = f[1];
+    p->nominal_start_s = f[2];
+    p->t_early_s = f[3];
+    p->t_late_s = f[4];
+    p->score_threshold = f[5];
+    p->rx_freq_hz = f[6];
+    p->ftol_hz = f[7];
+    p->fading_b90_ts = f[8];
+    p->max_cand = (uint32_t)v[0];
+    p->pileup = (uint32_t)v[1];
+    p->eme_delay = (uint32_t)v[2];
+    p->max_drift = (uint32_t)v[3];
+    p->fading_model = (uint32_t)v[4];
+    p->ap_list = (uint32_t)v[5];
+    p->has_ap_hint = (uint32_t)v[6];
+
+    char* dst[kQ65Strings] = {
+        p->ap_call1, p->ap_call2, p->ap_grid, p->ap_report,
+        p->list_my_call, p->list_his_call, p->list_his_grid,
+    };
+    for (int i = 0; i < kQ65Strings; ++i) {
+        jstring js = (jstring)(*env)->GetObjectArrayElement(env, sa, i);
+        if ((*env)->ExceptionCheck(env)) return false;
+        if (js == NULL) continue;
+        const char* u = (*env)->GetStringUTFChars(env, js, NULL);
+        if (u == NULL) { (*env)->DeleteLocalRef(env, js); return false; }
+        strncpy(dst[i], u, sizeof p->ap_call1 - 1);
+        (*env)->ReleaseStringUTFChars(env, js, u);
+        (*env)->DeleteLocalRef(env, js);
+    }
+    return true;
+}
+
+/// `mfsk_q65_params_init` for `mode`, into the caller's arrays. The strings
+/// come back empty, so they are not carried.
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_Mfsk_nativeQ65ParamsInit(
+        JNIEnv* env, jclass cls, jint mode, jfloatArray fa, jintArray ia) {
+    (void)cls;
+    if (fa == NULL || ia == NULL
+        || (*env)->GetArrayLength(env, fa) != kQ65Floats
+        || (*env)->GetArrayLength(env, ia) != kQ65Ints) {
+        throw_ise(env, "Q65 parameter arrays have the wrong shape");
+        return;
+    }
+    MfskQ65Params p;
+    memset(&p, 0, sizeof p);
+    p.size = sizeof p;
+    if (mfsk_q65_params_init((uint32_t)mode, &p) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+        return;
+    }
+    const jfloat f[kQ65Floats] = {
+        p.freq_min_hz, p.freq_max_hz, p.nominal_start_s, p.t_early_s, p.t_late_s,
+        p.score_threshold, p.rx_freq_hz, p.ftol_hz, p.fading_b90_ts,
+    };
+    const jint v[kQ65Ints] = {
+        (jint)p.max_cand, (jint)p.pileup, (jint)p.eme_delay, (jint)p.max_drift,
+        (jint)p.fading_model, (jint)p.ap_list, (jint)p.has_ap_hint,
+    };
+    (*env)->SetFloatArrayRegion(env, fa, 0, kQ65Floats, f);
+    (*env)->SetIntArrayRegion(env, ia, 0, kQ65Ints, v);
+}
+
+/// Decode one Q65 slot of 12 kHz-or-other f32 audio; `callers` is 0 or a
+/// `MfskQ65Callers` handle. Returns an `Object[]` of `MfskDecode`.
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativeDecodeQ65(
+        JNIEnv* env, jclass cls, jint mode, jfloatArray samples, jint sampleRate,
+        jfloatArray fa, jintArray ia, jobjectArray sa, jlong callers) {
+    (void)cls;
+    MfskQ65Params params;
+    const MfskQ65Params* pp = NULL;
+    if (fa != NULL) {
+        if (!read_q65_params(env, fa, ia, sa, &params)) return NULL;
+        pp = &params;
+    }
+    const jsize n = (*env)->GetArrayLength(env, samples);
+    jfloat* pcm = (*env)->GetFloatArrayElements(env, samples, NULL);
+    if (pcm == NULL) return NULL;
+
+    enum { kCap = 64 };
+    MfskDecode rows[kCap];
+    memset(rows, 0, sizeof rows);
+    for (int i = 0; i < kCap; ++i) rows[i].size = sizeof rows[i];
+    size_t len = 0;
+    const MfskStatus st = mfsk_q65_decode_ex(
+        (uint32_t)mode, (const float*)pcm, (size_t)n, (uint32_t)sampleRate, pp,
+        (const MfskQ65Callers*)(intptr_t)callers, NULL, rows, kCap, &len);
+    (*env)->ReleaseFloatArrayElements(env, samples, pcm, JNI_ABORT);
+    if (st != MFSK_STATUS_OK) {
+        if (len > kCap) {
+            throw_ise(env, "more decodes than this shim's row buffer holds");
+        } else {
+            throw_ise(env, mfsk_last_error());
+        }
+        return NULL;
+    }
+
+    jclass rowCls = (*env)->FindClass(env, CLS "MfskDecode");
+    if (rowCls == NULL) return NULL;
+    jmethodID ctor = row_ctor(env, rowCls);
+    if (ctor == NULL) return NULL;
+    jobjectArray out = (*env)->NewObjectArray(env, (jsize)len, rowCls, NULL);
+    if (out == NULL) return NULL;
+    for (size_t i = 0; i < len; ++i) {
+        jobject obj = make_row(env, rowCls, ctor, &rows[i]);
+        if (obj == NULL) return NULL;
+        (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
+        (*env)->DeleteLocalRef(env, obj);
+    }
+    return out;
+}
+
+/// `mfsk_encode_q65_flagged` for a `MfskMode` Q65 sub-mode, returning f32 PCM
+/// at 12 kHz. The C entry point takes `MfskQ65SubMode`, which has its own
+/// numbering, so the bridge is here.
+JNIEXPORT jfloatArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativeSynthesizeQ65(
+        JNIEnv* env, jclass cls, jint mode, jstring a, jstring b, jstring c,
+        jboolean flagged, jfloat freqHz) {
+    (void)cls;
+    uint32_t sub;
+    switch ((uint32_t)mode) {
+        case MFSK_MODE_Q65A15:  sub = MFSK_Q65_SUB_MODE_A15;  break;
+        case MFSK_MODE_Q65A30:  sub = MFSK_Q65_SUB_MODE_A30;  break;
+        case MFSK_MODE_Q65A60:  sub = MFSK_Q65_SUB_MODE_A60;  break;
+        case MFSK_MODE_Q65B60:  sub = MFSK_Q65_SUB_MODE_B60;  break;
+        case MFSK_MODE_Q65C60:  sub = MFSK_Q65_SUB_MODE_C60;  break;
+        case MFSK_MODE_Q65D60:  sub = MFSK_Q65_SUB_MODE_D60;  break;
+        case MFSK_MODE_Q65E60:  sub = MFSK_Q65_SUB_MODE_E60;  break;
+        case MFSK_MODE_Q65D120: sub = MFSK_Q65_SUB_MODE_D120; break;
+        case MFSK_MODE_Q65E120: sub = MFSK_Q65_SUB_MODE_E120; break;
+        case MFSK_MODE_Q65A300: sub = MFSK_Q65_SUB_MODE_A300; break;
+        default:
+            throw_ise(env, "not a Q65 mode");
+            return NULL;
+    }
+    const char* sa = (*env)->GetStringUTFChars(env, a, NULL);
+    const char* sb = (*env)->GetStringUTFChars(env, b, NULL);
+    const char* sc = (*env)->GetStringUTFChars(env, c, NULL);
+    jfloatArray out = NULL;
+    if (sa && sb && sc) {
+        size_t need = 0;
+        /* A zero-capacity call reports the size it needs. */
+        (void)mfsk_encode_q65_flagged(sub, sa, sb, sc, flagged ? 1u : 0u, freqHz, NULL, 0, &need);
+        float* buf = (float*)malloc(need * sizeof(float));
+        if (buf == NULL) {
+            throw_ise(env, "out of memory");
+        } else {
+            size_t got = 0;
+            if (mfsk_encode_q65_flagged(sub, sa, sb, sc, flagged ? 1u : 0u, freqHz,
+                                        buf, need, &got) != MFSK_STATUS_OK) {
+                throw_ise(env, mfsk_last_error());
+            } else {
+                out = (*env)->NewFloatArray(env, (jsize)got);
+                if (out != NULL) (*env)->SetFloatArrayRegion(env, out, 0, (jsize)got, buf);
+            }
+            free(buf);
+        }
+    } else {
+        throw_ise(env, "could not read the message strings");
+    }
+    if (sa) (*env)->ReleaseStringUTFChars(env, a, sa);
+    if (sb) (*env)->ReleaseStringUTFChars(env, b, sb);
+    if (sc) (*env)->ReleaseStringUTFChars(env, c, sc);
+    return out;
+}
+
+// ── Q65History ──
+
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_MfskQ65History_nativeNew(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
+    return (jlong)(intptr_t)mfsk_q65_history_new();
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskQ65History_nativeFree(JNIEnv* env, jclass cls, jlong h) {
+    (void)env; (void)cls;
+    mfsk_q65_history_free((MfskQ65History*)(intptr_t)h);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskQ65History_nativePush(
+        JNIEnv* env, jclass cls, jlong h, jfloat freqHz, jstring message) {
+    (void)cls;
+    const char* m = (*env)->GetStringUTFChars(env, message, NULL);
+    if (m == NULL) return;
+    const MfskStatus st = mfsk_q65_history_push((MfskQ65History*)(intptr_t)h, freqHz, m);
+    (*env)->ReleaseStringUTFChars(env, message, m);
+    if (st != MFSK_STATUS_OK) throw_ise(env, mfsk_last_error());
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_MfskQ65History_nativeLen(JNIEnv* env, jclass cls, jlong h) {
+    (void)env; (void)cls;
+    return (jint)mfsk_q65_history_len((const MfskQ65History*)(intptr_t)h);
+}
+
+/// The DX station, as `String[2]` (call, grid or null), or null when nothing
+/// qualifies.
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_MfskQ65History_nativeLookup(
+        JNIEnv* env, jclass cls, jlong h, jfloat rxFreqHz) {
+    (void)cls;
+    MfskQ65Dx dx;
+    memset(&dx, 0, sizeof dx);
+    dx.size = sizeof dx;
+    const MfskStatus st = mfsk_q65_history_lookup(
+        (const MfskQ65History*)(intptr_t)h, rxFreqHz, &dx);
+    if (st == MFSK_STATUS_DECODE_FAILED) return NULL;
+    if (st != MFSK_STATUS_OK) { throw_ise(env, mfsk_last_error()); return NULL; }
+    jclass strCls = (*env)->FindClass(env, "java/lang/String");
+    if (strCls == NULL) return NULL;
+    jobjectArray out = (*env)->NewObjectArray(env, 2, strCls, NULL);
+    if (out == NULL) return NULL;
+    jstring call = (*env)->NewStringUTF(env, dx.call);
+    if (call == NULL) return NULL;
+    (*env)->SetObjectArrayElement(env, out, 0, call);
+    (*env)->DeleteLocalRef(env, call);
+    if (dx.has_grid) {
+        jstring grid = (*env)->NewStringUTF(env, dx.grid);
+        if (grid == NULL) return NULL;
+        (*env)->SetObjectArrayElement(env, out, 1, grid);
+        (*env)->DeleteLocalRef(env, grid);
+    }
+    return out;
+}
+
+// ── Q65Callers ──
+
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_MfskQ65Callers_nativeNew(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
+    return (jlong)(intptr_t)mfsk_q65_callers_new();
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskQ65Callers_nativeFree(JNIEnv* env, jclass cls, jlong h) {
+    (void)env; (void)cls;
+    mfsk_q65_callers_free((MfskQ65Callers*)(intptr_t)h);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskQ65Callers_nativeRecord(
+        JNIEnv* env, jclass cls, jlong h, jfloat freqHz, jstring message, jlong now) {
+    (void)cls;
+    const char* m = (*env)->GetStringUTFChars(env, message, NULL);
+    if (m == NULL) return;
+    const MfskStatus st = mfsk_q65_callers_record(
+        (MfskQ65Callers*)(intptr_t)h, freqHz, m, (uint64_t)now);
+    (*env)->ReleaseStringUTFChars(env, message, m);
+    if (st != MFSK_STATUS_OK) throw_ise(env, mfsk_last_error());
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskQ65Callers_nativeExpire(JNIEnv* env, jclass cls, jlong h, jlong now) {
+    (void)cls;
+    if (mfsk_q65_callers_expire((MfskQ65Callers*)(intptr_t)h, (uint64_t)now) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskQ65Callers_nativeRemove(JNIEnv* env, jclass cls, jlong h, jstring call) {
+    (void)cls;
+    const char* c = (*env)->GetStringUTFChars(env, call, NULL);
+    if (c == NULL) return;
+    const MfskStatus st = mfsk_q65_callers_remove((MfskQ65Callers*)(intptr_t)h, c);
+    (*env)->ReleaseStringUTFChars(env, call, c);
+    if (st != MFSK_STATUS_OK) throw_ise(env, mfsk_last_error());
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_mfskcore_MfskQ65Callers_nativeLen(JNIEnv* env, jclass cls, jlong h) {
+    (void)env; (void)cls;
+    return (jint)mfsk_q65_callers_len((const MfskQ65Callers*)(intptr_t)h);
+}
+
+/// One caller as `String[4]` — call, grid, last-heard (decimal Unix seconds),
+/// frequency (decimal Hz) — since JNI has no cheap way to return a mixed
+/// record and this is not a hot path. Null past the end.
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_MfskQ65Callers_nativeGet(
+        JNIEnv* env, jclass cls, jlong h, jint index) {
+    (void)cls;
+    if (index < 0) return NULL;
+    MfskQ65Caller c;
+    memset(&c, 0, sizeof c);
+    c.size = sizeof c;
+    if (mfsk_q65_callers_get((const MfskQ65Callers*)(intptr_t)h, (size_t)index, &c)
+        != MFSK_STATUS_OK) {
+        return NULL;
+    }
+    char heard[32], freq[32];
+    snprintf(heard, sizeof heard, "%llu", (unsigned long long)c.last_heard);
+    snprintf(freq, sizeof freq, "%d", (int)c.freq_hz);
+    const char* vals[4] = { c.call, c.grid, heard, freq };
+    jclass strCls = (*env)->FindClass(env, "java/lang/String");
+    if (strCls == NULL) return NULL;
+    jobjectArray out = (*env)->NewObjectArray(env, 4, strCls, NULL);
+    if (out == NULL) return NULL;
+    for (int i = 0; i < 4; ++i) {
+        jstring js = (*env)->NewStringUTF(env, vals[i]);
+        if (js == NULL) return NULL;
+        (*env)->SetObjectArrayElement(env, out, i, js);
+        (*env)->DeleteLocalRef(env, js);
     }
     return out;
 }

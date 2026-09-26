@@ -38,6 +38,9 @@ data class MfskDecode(
     /// The text needed the callsign hash table to resolve a `<...>`
     /// reference.
     val hashResolved: Boolean,
+    /// The sender set WSJT-X 3.2's **Q65 Pileup** "copied last Tx" flag, the
+    /// spare 78th payload bit; WSJT-X marks such a decode with `#`. Q65 only.
+    val copiedLastTx: Boolean = false,
 ) {
     val modeName: String get() = Mfsk.modeName(mode)
 }
@@ -232,6 +235,256 @@ data class MfskDecodeParams(
         arrayOf(apHint?.call1, apHint?.call2, apHint?.grid)
 }
 
+/// A Q65 a-priori hint: the message's fields in order, `call1` being `"CQ"` for a
+/// CQ and not the transmitting station. Each field is truncated to 15
+/// characters.
+data class MfskQ65ApHint(
+    val call1: String = "",
+    val call2: String = "",
+    val grid: String = "",
+    /// The report the hint may carry, e.g. `"-15"`.
+    val report: String = "",
+)
+
+/// The fast-fading metric: [b90Ts] is spread bandwidth times symbol period
+/// (typical 0.05 near-AWGN, 1.0 moderate, 5+ severe).
+data class MfskQ65Fading(val b90Ts: Float, val model: Int = GAUSSIAN) {
+    companion object {
+        /// Libration-limited EME, WSJT-X's default.
+        const val GAUSSIAN = 0
+        const val LORENTZIAN = 1
+    }
+}
+
+/// Full-AP list decoding. With [MfskQ65Params.rxFreqHz] it is WSJT-X's **q3**
+/// decode, run first at the Rx frequency; without it, template matching at
+/// every coarse candidate.
+sealed interface MfskQ65List {
+    /// The standard QSO list for `myCall` and the DX station.
+    data class Standard(
+        val myCall: String,
+        val hisCall: String,
+        val hisGrid: String = "",
+    ) : MfskQ65List
+
+    /// The **contest list** (`q65_set_list2`): every caller in the
+    /// [MfskQ65Callers] passed to [Mfsk.decodeQ65], and the DX station too if
+    /// [hisCall] is given.
+    data class Contest(
+        val myCall: String,
+        val hisCall: String = "",
+        val hisGrid: String = "",
+    ) : MfskQ65List
+}
+
+/// Everything a Q65 decode can be asked to do — `MfskQ65Params` in the C ABI.
+///
+/// **Start from [Mfsk.q65DefaultParams] and `copy`.** As with
+/// [MfskDecodeParams] there is deliberately no constructor default. A
+/// combination the engine would quietly not honour — a list with fading, an Rx
+/// frequency with no list, Pileup with no AP hint, Max Drift with fading — is
+/// refused by [Mfsk.decodeQ65] with the reason, not dropped.
+data class MfskQ65Params(
+    val freqMinHz: Float,
+    val freqMaxHz: Float,
+    /// Where `dt = 0` is in the buffer, seconds — the mode's `tx_start_offset_s`
+    /// by default, right for a buffer that begins at the slot boundary. It also
+    /// places the period Max Drift normalises over and the q3 decode's slot
+    /// start, so it has to be true and not merely convenient.
+    val nominalStartS: Float,
+    /// How far before/after [nominalStartS] a frame may start. Default ±1 s,
+    /// WSJT-X's own window.
+    val tEarlyS: Float,
+    val tLateS: Float,
+    /// Coarse-sync acceptance, a fraction of sync plus noise (0..1).
+    val scoreThreshold: Float,
+    val maxCand: Int,
+    /// **Q65 Pileup**: an AP hint naming both callsigns and nothing after them
+    /// leaves the spare 78th bit free, so a reply carrying the "copied last Tx"
+    /// flag still matches. Needs [apHint].
+    val pileup: Boolean,
+    /// **EME delay** ("Decode at 52 s"): the late edge reaches +5.5 s (+4.0 s on
+    /// Q65-15) instead of [tLateS].
+    val emeDelay: Boolean,
+    /// **Max Drift**, spectrum bins `0..=50`; 0 is off. Costs `2*bins+1` times
+    /// the plain search, so narrow the frequency window to match.
+    val maxDrift: Int,
+    /// The Rx frequency the q3 decode looks around, or null. Needs [list].
+    val rxFreqHz: Float?,
+    /// WSJT-X's F Tol around [rxFreqHz].
+    val ftolHz: Float,
+    val fading: MfskQ65Fading?,
+    val list: MfskQ65List?,
+    val apHint: MfskQ65ApHint?,
+) {
+    companion object {
+        // Slot counts of the arrays that cross JNI — the layout is documented
+        // at `read_q65_params` in mfsk_jni.c and must move with it.
+        internal const val FLOATS = 9
+        internal const val INTS = 7
+        internal const val STRINGS = 7
+
+        internal fun fromArrays(f: FloatArray, v: IntArray): MfskQ65Params =
+            MfskQ65Params(
+                freqMinHz = f[0], freqMaxHz = f[1], nominalStartS = f[2],
+                tEarlyS = f[3], tLateS = f[4], scoreThreshold = f[5],
+                maxCand = v[0], pileup = v[1] != 0, emeDelay = v[2] != 0, maxDrift = v[3],
+                // NaN is the ABI's spelling of "unset": 0 Hz is a frequency.
+                rxFreqHz = f[6].takeUnless { it.isNaN() },
+                ftolHz = f[7],
+                fading = f[8].takeUnless { it.isNaN() }?.let { MfskQ65Fading(it, v[4]) },
+                // `mfsk_q65_params_init` never writes a list or a hint.
+                list = null,
+                apHint = null,
+            )
+    }
+
+    internal fun floatArray(): FloatArray = floatArrayOf(
+        freqMinHz, freqMaxHz, nominalStartS, tEarlyS, tLateS, scoreThreshold,
+        rxFreqHz ?: Float.NaN, ftolHz, fading?.b90Ts ?: Float.NaN,
+    )
+
+    internal fun intArray(): IntArray = intArrayOf(
+        maxCand, if (pileup) 1 else 0, if (emeDelay) 1 else 0, maxDrift,
+        fading?.model ?: MfskQ65Fading.GAUSSIAN,
+        when (list) { null -> 0; is MfskQ65List.Standard -> 1; is MfskQ65List.Contest -> 2 },
+        if (apHint != null) 1 else 0,
+    )
+
+    internal fun stringArray(): Array<String?> {
+        val (my, his, grid) = when (val l = list) {
+            null -> Triple(null, null, null)
+            is MfskQ65List.Standard -> Triple(l.myCall, l.hisCall, l.hisGrid)
+            is MfskQ65List.Contest -> Triple(l.myCall, l.hisCall, l.hisGrid)
+        }
+        return arrayOf(
+            apHint?.call1, apHint?.call2, apHint?.grid, apHint?.report, my, his, grid,
+        )
+    }
+}
+
+/// The DX station [MfskQ65History.lookup] found — WSJT-X's `dxcall` and `dxgrid`.
+data class MfskQ65Dx(val call: String, val grid: String?)
+
+/// One station [MfskQ65Callers] remembers.
+data class MfskQ65Caller(
+    /// Up to six characters.
+    val call: String,
+    /// The four-character grid it sent.
+    val grid: String,
+    /// When it was last heard, Unix seconds, as passed to
+    /// [MfskQ65Callers.record].
+    val lastHeard: Long,
+    /// Its audio frequency then, Hz.
+    val freqHz: Int,
+)
+
+/// The 100 most recent Q65 decodes and their frequencies — WSJT-X's `q65_hist`.
+/// It is how a "Decode Again" with no DX call entered finds the DX station, so
+/// the full-AP list can be built without the operator typing the call.
+///
+/// The decoder is stateless, so the history is the application's: feed it each
+/// decode with [record], ask with [lookup]. **Not thread-safe**; close it when
+/// done.
+class MfskQ65History : AutoCloseable {
+    private var handle: Long = run { Mfsk.modes(); nativeNew() }
+
+    companion object {
+        @JvmStatic private external fun nativeNew(): Long
+        @JvmStatic private external fun nativeFree(handle: Long)
+        @JvmStatic private external fun nativePush(handle: Long, freqHz: Float, message: String)
+        @JvmStatic private external fun nativeLen(handle: Long): Int
+        @JvmStatic private external fun nativeLookup(handle: Long, rxFreqHz: Float): Array<String?>?
+    }
+
+    /// Remember one decode at [freqHz] (tone 0); the 100 most recent are kept.
+    fun push(freqHz: Float, message: String) {
+        check(handle != 0L) { "history is closed" }
+        nativePush(handle, freqHz, message)
+    }
+
+    /// Remember every row of a decode, as `q65_decode.f90` calls `q65_hist`
+    /// after each one.
+    fun record(rows: List<MfskDecode>) {
+        for (r in rows) push(r.freqHz, r.text)
+    }
+
+    val size: Int get() = if (handle != 0L) nativeLen(handle) else 0
+
+    /// The DX station from the most recent decode within 10 Hz of [rxFreqHz]
+    /// whose first word is 3 to 12 characters — so a `CQ ...` decode is passed
+    /// over for an older one — or null when nothing qualifies.
+    fun lookup(rxFreqHz: Float): MfskQ65Dx? {
+        check(handle != 0L) { "history is closed" }
+        val v = nativeLookup(handle, rxFreqHz) ?: return null
+        return MfskQ65Dx(v[0]!!, v[1])
+    }
+
+    override fun close() {
+        if (handle != 0L) {
+            nativeFree(handle)
+            handle = 0L
+        }
+    }
+}
+
+/// The contest caller list — WSJT-X's `q65_hist2`: up to 50 stations that called
+/// with a grid, from which the contest full-AP list is built
+/// ([MfskQ65List.Contest]). Times are yours (Unix seconds), since the library
+/// reads no clock. **Not thread-safe**; close it when done.
+class MfskQ65Callers : AutoCloseable {
+    private var handle: Long = run { Mfsk.modes(); nativeNew() }
+
+    /// The native handle, for [Mfsk.decodeQ65].
+    internal val raw: Long get() {
+        check(handle != 0L) { "caller list is closed" }
+        return handle
+    }
+
+    companion object {
+        @JvmStatic private external fun nativeNew(): Long
+        @JvmStatic private external fun nativeFree(handle: Long)
+        @JvmStatic private external fun nativeRecord(
+            handle: Long, freqHz: Float, message: String, now: Long,
+        )
+        @JvmStatic private external fun nativeExpire(handle: Long, now: Long)
+        @JvmStatic private external fun nativeRemove(handle: Long, call: String)
+        @JvmStatic private external fun nativeLen(handle: Long): Int
+        @JvmStatic private external fun nativeGet(handle: Long, index: Int): Array<String>?
+    }
+
+    /// Remember a decode at [freqHz] heard at [now]: a compound call is ignored,
+    /// ` R ` is taken out, the second word is the caller and the next four
+    /// characters its grid. A known caller is refreshed; a new one is added only
+    /// if it sent a grid, the oldest making room once 50 are held.
+    fun record(freqHz: Float, message: String, now: Long) {
+        nativeRecord(raw, freqHz, message, now)
+    }
+
+    /// Drop callers not heard for more than 24 hours. Call before each decode.
+    fun expire(now: Long) = nativeExpire(raw, now)
+
+    /// Forget one caller (worked, say).
+    fun remove(call: String) = nativeRemove(raw, call)
+
+    val size: Int get() = if (handle != 0L) nativeLen(handle) else 0
+
+    /// The stations, oldest first.
+    val callers: List<MfskQ65Caller>
+        get() = (0 until size).mapNotNull { i ->
+            nativeGet(raw, i)?.let {
+                MfskQ65Caller(it[0], it[1], it[2].toLong(), it[3].toInt())
+            }
+        }
+
+    override fun close() {
+        if (handle != 0L) {
+            nativeFree(handle)
+            handle = 0L
+        }
+    }
+}
+
 /// Geometry a host needs to size a buffer or place a transmission.
 data class MfskModeInfo(
     val ntones: Int,
@@ -309,6 +562,43 @@ object Mfsk {
         return MfskDecodeParams.fromArrays(f, v)
     }
 
+    /// `mode`'s Q65 decode defaults — the library's own (±1 s window, threshold
+    /// 0.1, 8 candidates) and the mode's nominal start — as the starting point
+    /// for [decodeQ65]. Throws if [mode] is not a Q65 mode in this build.
+    fun q65DefaultParams(mode: Int): MfskQ65Params {
+        val f = FloatArray(MfskQ65Params.FLOATS)
+        val v = IntArray(MfskQ65Params.INTS)
+        nativeQ65ParamsInit(mode, f, v)
+        return MfskQ65Params.fromArrays(f, v)
+    }
+
+    /// Decode one Q65 slot of 32-bit float audio with every setting WSJT-X 3.2
+    /// offers — Pileup, Max Drift, the EME delay, the q3 list decode, the
+    /// contest list — in one call. [mode] is a Q65 mode; [params] default to
+    /// [q65DefaultParams]. [callers] is read only by [MfskQ65List.Contest].
+    ///
+    /// Rows report `dtSec` from [MfskQ65Params.nominalStartS], as WSJT-X's DT
+    /// column, and [MfskDecode.copiedLastTx] on a Pileup reply. Throws, naming
+    /// the reason, if the settings cannot be honoured together.
+    fun decodeQ65(
+        mode: Int,
+        samples: FloatArray,
+        params: MfskQ65Params = q65DefaultParams(mode),
+        callers: MfskQ65Callers? = null,
+        sampleRate: Int = 12_000,
+    ): List<MfskDecode> = nativeDecodeQ65(
+        mode, samples, sampleRate,
+        params.floatArray(), params.intArray(), params.stringArray(),
+        callers?.raw ?: 0L,
+    ).toList()
+
+    /// Pack `call1 call2 grid-or-report` and synthesise a Q65 frame at 12 kHz.
+    /// [copiedLastTx] sets Pileup's "copied last Tx" flag, the spare 78th bit.
+    fun synthesizeQ65(
+        mode: Int, call1: String, call2: String, gridOrReport: String, freqHz: Float,
+        copiedLastTx: Boolean = false,
+    ): FloatArray = nativeSynthesizeQ65(mode, call1, call2, gridOrReport, copiedLastTx, freqHz)
+
     fun modeInfo(mode: Int): MfskModeInfo {
         val v = nativeModeInfo(mode)
         return MfskModeInfo(v[0], v[1], v[2], v[3], v[4], v[5])
@@ -352,6 +642,14 @@ object Mfsk {
     @JvmStatic private external fun nativeModeName(mode: Int): String?
     @JvmStatic private external fun nativeModeCaps(mode: Int): Long
     @JvmStatic private external fun nativeParamsInit(mode: Int, floats: FloatArray, ints: IntArray)
+    @JvmStatic private external fun nativeQ65ParamsInit(mode: Int, floats: FloatArray, ints: IntArray)
+    @JvmStatic private external fun nativeDecodeQ65(
+        mode: Int, samples: FloatArray, sampleRate: Int,
+        floats: FloatArray, ints: IntArray, strings: Array<String?>, callers: Long,
+    ): Array<MfskDecode>
+    @JvmStatic private external fun nativeSynthesizeQ65(
+        mode: Int, a: String, b: String, c: String, flagged: Boolean, freqHz: Float,
+    ): FloatArray
     @JvmStatic private external fun nativeModeInfo(mode: Int): IntArray
     @JvmStatic private external fun nativeConfigureRuntime(threads: Int, stackBytes: Int): Int
     @JvmStatic private external fun nativeThreadCount(): Int

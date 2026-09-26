@@ -702,6 +702,30 @@ parameters cross JNI as three flat arrays whose layout is documented at
 that names it, and checks the AP hint, QSO frequency and transmit frequency
 end to end on a weak signal.
 
+**Q65 has no decode handle, so it is `Mfsk.decodeQ65`** — one call for WSJT-X
+3.2's settings, mirroring `mfsk_q65_decode_ex` (§2.8). `MfskQ65Params` is
+started from `Mfsk.q65DefaultParams(mode)` and `copy`'d, with `pileup`,
+`emeDelay`, `maxDrift`, `rxFreqHz` / `ftolHz`, `fading = MfskQ65Fading(…)`,
+`list = MfskQ65List.Standard(…)` or `.Contest(…)`, and `apHint`. Rows report `dtSec`
+from `nominalStartS` and `copiedLastTx`:
+
+```kotlin
+val q65 = Mfsk.modes().first { Mfsk.modeName(it) == "Q65-30A" }
+val p = Mfsk.q65DefaultParams(q65).copy(
+    freqMinHz = 1450f, freqMaxHz = 1550f, maxDrift = 10,   // Max Drift, band narrowed to nfqso ± ntol
+)
+val rows = Mfsk.decodeQ65(q65, pcmFloat, p)
+```
+
+`MfskQ65History` (`q65_hist`: `push`, `record(rows)`, `lookup(rxFreqHz)`) and
+`MfskQ65Callers` (`q65_hist2`: `record(freqHz, text, now)`, `expire(now)`,
+`remove(call)`, `callers`) are `AutoCloseable` handles you own; the contest list
+reads the callers passed to `decodeQ65`. `Mfsk.synthesizeQ65(…, copiedLastTx)`
+sends a Pileup reply. The JVM test decodes a frame 3 s late with the EME delay,
+a flagged reply under Pileup, and a list message in a window that holds nothing
+else with q3, and pins each slot of the array marshalling by the refusal that
+names it.
+
 **`session.setBudget { … }`, `keepKnown`, `keepFftCache`** are the same
 three strategies, per session. The budget predicate crosses JNI once
 per candidate, so keep it to a `System.nanoTime()` comparison against a
