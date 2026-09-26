@@ -601,7 +601,11 @@ fn several_stations_in_one_recording_match_rjtty() {
 #[ignore]
 fn diag_messages() {
     let dir = std::env::var("JTTY_DIAG_DIR").expect("JTTY_DIAG_DIR");
-    let rx = Receiver::new();
+    let rx = if std::env::var_os("JTTY_DIAG_EMBEDDED").is_some() {
+        Receiver::new().with_f32_metrics()
+    } else {
+        Receiver::new()
+    };
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -618,7 +622,7 @@ fn diag_messages() {
                     ..Params::default()
                 };
                 if std::env::var_os("JTTY_DIAG_EMBEDDED").is_some() {
-                    p.embedded()
+                    embedded_from_env(p)
                 } else {
                     p
                 }
@@ -998,4 +1002,24 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
         n_embedded >= n_ch0,
         "raw-first found {n_embedded}, less than channel 0 alone ({n_ch0})"
     );
+}
+
+/// `Params::embedded()` adjusted by `MFSK_JTTY_FTOL` (channel 0's half-width, Hz) and
+/// `MFSK_JTTY_BUDGET` (ladder calls a window; 0 for none) (#499).
+#[allow(dead_code)]
+fn embedded_from_env(p: Params) -> Params {
+    let mut p = p.embedded();
+    if let Some(f) = std::env::var("MFSK_JTTY_FTOL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        p.ftol_hz = f;
+    }
+    if let Some(b) = std::env::var("MFSK_JTTY_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        p.ladder_budget = (b > 0).then_some(b);
+    }
+    p
 }

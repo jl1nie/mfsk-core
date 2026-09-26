@@ -94,6 +94,8 @@ const NCOLS: usize = FRAME_SYMBOLS * NSS / 4 / COL_STEP + 1;
 /// `Params::embedded()` it gives the transform's results: `jtty_sweep` 164/360 either way, the hard
 /// two-station set 91/200 (49 taps: 90; 193 taps: 91).
 const FIR_HALF: usize = 48;
+/// Most channel-0 picks a window under [`Params::ladder_budget`].
+const MAX_BUDGET_PICKS: usize = 64;
 /// Decimation of the sync search when [`Params::decimate_sync`] is on: the product of window and
 /// sync wave is summed 16 samples at a time, so `NFFT / 16` = 512 points cover 375 Hz.
 const SYNC_DECIM: usize = 16;
@@ -175,11 +177,21 @@ pub struct Params {
     /// cannot do. Same results with the other `embedded()` options on `jtty_sweep` (164/360)
     /// and the hard two-station set (91/200) (#499).
     pub fir_analytic: bool,
+    /// At most this many ladder calls a window (every kind: candidates, a message's due
+    /// continuation). The candidates that pass the sync gate are ranked by sync tones, then S/N,
+    /// and the best go first; with a budget, channel 0 also takes one pick per 10 Hz of its width
+    /// (upstream: at most 8), so a wide channel 0 — `ftol_hz` of a few hundred Hz — covers the
+    /// band at channel 0's sensitivity. A ladder call costs 0.19 s (success) to 0.79 s (all four
+    /// rungs fail) on the CoreS3 against a 0.472 s window, which is what this bounds. `None` (the
+    /// default): no limit, as upstream (#499).
+    pub ladder_budget: Option<usize>,
 }
 
 impl Params {
-    /// The three search options an embedded receiver wants together: [`Self::ch0_only`],
-    /// [`Self::decimate_sync`], [`Self::raw_first`].
+    /// What an embedded receiver runs: [`Self::ch0_only`], [`Self::decimate_sync`],
+    /// [`Self::raw_first`], [`Self::fir_analytic`], a [`Self::ladder_budget`] of one, and no
+    /// [`Self::subtract`] (one subtraction is 200 ms on the CoreS3, and each brings re-sweeps of
+    /// earlier windows). Pair it with [`Receiver::with_f32_metrics`], as the board does.
     #[must_use]
     pub fn embedded(self) -> Self {
         Self {
@@ -187,6 +199,8 @@ impl Params {
             decimate_sync: true,
             raw_first: true,
             fir_analytic: true,
+            ladder_budget: Some(1),
+            subtract: false,
             ..self
         }
     }
@@ -208,6 +222,7 @@ impl Default for Params {
             decimate_sync: false,
             raw_first: false,
             fir_analytic: false,
+            ladder_budget: None,
         }
     }
 }
@@ -480,6 +495,7 @@ impl Receiver {
             asm,
             sink,
             frames,
+            ladder_left: p.ladder_budget,
         };
         // Phase A: channel 0, twice if the first pass subtracted anything
         for pass in 1..=2 {
@@ -585,8 +601,12 @@ impl Receiver {
     fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize, decimate: bool) -> Surface {
         stat_add!(self, SurfaceBuilds, 1);
         stat_time!(self, Surface);
-        if decimate && hi - lo + 5 <= NFFT / SYNC_DECIM {
-            return self.sync_surface_decimated(c0, lo, hi);
+        if decimate
+            && let Some(&dec) = [SYNC_DECIM, 8, 4]
+                .iter()
+                .find(|&&d| hi - lo + 5 <= NFFT / d)
+        {
+            return self.sync_surface_decimated(c0, lo, hi, dec);
         }
         let width = hi - lo + 1;
         let column =
@@ -637,8 +657,14 @@ impl Receiver {
     /// window is summed `SYNC_DECIM` samples at a time, and the 512-point transform's bins are the
     /// full transform's, shifted by the centre bin (the mixer's phase at a column's first sample
     /// only rotates all bins together, and only powers are kept).
-    fn sync_surface_decimated(&self, c0: &[Complex32], lo: usize, hi: usize) -> Surface {
-        const NF: usize = NFFT / SYNC_DECIM;
+    fn sync_surface_decimated(
+        &self,
+        c0: &[Complex32],
+        lo: usize,
+        hi: usize,
+        dec: usize,
+    ) -> Surface {
+        let nf = NFFT / dec;
         let width = hi - lo + 1;
         let mid = (lo + hi) / 2;
         // The sync wave is 13 symbols, each a pure tone that turns a whole number of times, so
@@ -647,7 +673,7 @@ impl Receiver {
         // whole wave is 20 KB. Read per column with a window that is also 20 KB, the whole wave
         // did not stay in the LX7's 32 KB data cache (547 ms a surface, 2.3 ms a column, against
         // 0.23 ms for the transform).
-        const _: () = assert!(NSS.is_multiple_of(SYNC_DECIM));
+        debug_assert!(NSS.is_multiple_of(dec));
         let wm = f64::from(mid as f32 * DF) * core::f64::consts::TAU / f64::from(FS6);
         let base: [Vec<Complex32>; 4] = core::array::from_fn(|t| {
             let psi = -(core::f64::consts::TAU * t as f64 / NSS as f64 + wm);
@@ -669,7 +695,7 @@ impl Receiver {
             phasor *= turn;
             now
         });
-        let groups = NSS / SYNC_DECIM;
+        let groups = NSS / dec;
         let m = SYNC_SYMBOLS * groups;
         let column =
             |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
@@ -677,25 +703,25 @@ impl Receiver {
                 for (i, &sent) in SYNC.iter().enumerate() {
                     let table = &base[usize::from(sent)];
                     for g in 0..groups {
-                        let (at, out) = (g * SYNC_DECIM, i * groups + g);
+                        let (at, out) = (g * dec, i * groups + g);
                         buf[out] = symbol_phasor[i]
-                            * table[at..at + SYNC_DECIM]
+                            * table[at..at + dec]
                                 .iter()
-                                .zip(&x[i * NSS + at..i * NSS + at + SYNC_DECIM])
+                                .zip(&x[i * NSS + at..i * NSS + at + dec])
                                 .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
                     }
                 }
                 buf[m..].fill(Complex32::new(0.0, 0.0));
                 fft.process(buf);
                 let power: Vec<f32> = (lo - 2..=hi + 2)
-                    .map(|b| buf[(b + NF - mid % NF) % NF].norm_sqr())
+                    .map(|b| buf[(b + nf - mid % nf) % nf].norm_sqr())
                     .collect();
                 power
                     .windows(5)
                     .map(|w| w[0] + 2.0 * w[1] + 3.0 * w[2] + 2.0 * w[3] + w[4])
                     .collect()
             };
-        let zero = || alloc::vec![Complex32::new(0.0, 0.0); NF];
+        let zero = || alloc::vec![Complex32::new(0.0, 0.0); nf];
         #[cfg(feature = "parallel")]
         let rows: Vec<Vec<f32>> = {
             use rayon::prelude::*;
@@ -703,14 +729,14 @@ impl Receiver {
                 .into_par_iter()
                 .with_min_len(16)
                 .map_init(
-                    || (dsp::with_planner(|p| p.plan_forward(NF)), zero()),
+                    || (dsp::with_planner(|p| p.plan_forward(nf)), zero()),
                     |(fft, buf), col| column(col, fft.as_ref(), buf),
                 )
                 .collect()
         };
         #[cfg(not(feature = "parallel"))]
         let rows: Vec<Vec<f32>> = {
-            let fft = dsp::with_planner(|p| p.plan_forward(NF));
+            let fft = dsp::with_planner(|p| p.plan_forward(nf));
             let mut buf = zero();
             (0..NCOLS)
                 .map(|col| column(col, fft.as_ref(), &mut buf))
@@ -741,6 +767,30 @@ impl Receiver {
         self.attempt(c0, pick, t0_s, p, peak, true).0
     }
 
+    /// The sync gate alone, in [`Self::process`]'s order (raw first when `raw_first`): the sync
+    /// tones and S/N of the attempt that passes and whether it was the refined one, or `None`
+    /// ([`Params::ladder_budget`]).
+    fn gate_score(
+        &self,
+        c0: &[Complex32],
+        pick: &Pick,
+        t0_s: f32,
+        p: &Params,
+    ) -> Option<(usize, f32, bool)> {
+        let mut g = (0, 0.0, false);
+        if p.raw_first && pick.channel == 0 {
+            self.attempt_inner(c0, pick, t0_s, p, true, false, false, &mut g);
+            if g.2 {
+                return Some((g.0, g.1, false));
+            }
+            if g.0 < RAW_FIRST_MIN_SYNC {
+                return None;
+            }
+        }
+        self.attempt_inner(c0, pick, t0_s, p, true, true, false, &mut g);
+        g.2.then_some((g.0, g.1, true))
+    }
+
     /// One try at a candidate: with `refine` (channel 0 only) the pick is first pulled to the
     /// local peak. Also returns the sync tones (of 13) the gate saw.
     fn attempt(
@@ -752,9 +802,9 @@ impl Receiver {
         peak: bool,
         refine: bool,
     ) -> (Option<Outcome>, usize) {
-        let mut tones = 0;
-        let outcome = self.attempt_inner(c0, pick, t0_s, p, peak, refine, &mut tones);
-        (outcome, tones)
+        let mut gate = (0, 0.0, false);
+        let outcome = self.attempt_inner(c0, pick, t0_s, p, peak, refine, true, &mut gate);
+        (outcome, gate.0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -766,7 +816,8 @@ impl Receiver {
         p: &Params,
         peak: bool,
         refine: bool,
-        gate_tones: &mut usize,
+        ladder: bool,
+        gate_out: &mut (usize, f32, bool),
     ) -> Option<Outcome> {
         let (xdt, f1) = if pick.channel == 0 && peak && refine {
             stat_add!(self, Peakups, 1);
@@ -802,7 +853,6 @@ impl Receiver {
             pt += pow[usize::from(sent)];
             pa += pow.iter().sum::<f32>();
         }
-        *gate_tones = hits;
         let pn = (pa - pt) / 3.0;
         let snr = if pn > 0.0 { db(pt / pn) } else { -99.9 };
         let passes = if !peak {
@@ -814,6 +864,10 @@ impl Receiver {
         };
         #[cfg(feature = "jtty-stats")]
         drop(gate_span);
+        *gate_out = (hits, snr, passes);
+        if !ladder {
+            return None;
+        }
         if !passes {
             stat_add!(self, GateFail, 1);
             return None;
@@ -1172,9 +1226,60 @@ struct Work<'a> {
     asm: &'a mut Assembler,
     sink: &'a mut dyn FnMut(MessageUpdate),
     frames: &'a mut Vec<FrameDecode>,
+    /// Ladder calls this window may still make ([`Params::ladder_budget`]).
+    ladder_left: Option<usize>,
 }
 
 impl Work<'_> {
+    /// [`Self::decode_picks`] under a ladder budget: every pick is gated first, those that pass
+    /// are ranked by sync tones and then S/N, and the ladder runs on them in that order, once
+    /// each, while the window's budget lasts; a message's due continuation (the sticky retry)
+    /// takes the next call if nothing decoded. No second round after a subtraction.
+    fn decode_budgeted(&mut self, ch: u8, fc: f32, fwid: f32, picks: Vec<Pick>) {
+        let mut ranked: Vec<(usize, f32, bool, Pick)> = picks
+            .iter()
+            .filter_map(|pk| {
+                self.rx
+                    .gate_score(&self.c0, pk, self.t0, self.p)
+                    .map(|(h, s, refined)| (h, s, refined, *pk))
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then(b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
+        });
+        let mut decoded = false;
+        for (_, _, refined, pick) in ranked {
+            if self.ladder_left == Some(0) {
+                break;
+            }
+            self.ladder_left = self.ladder_left.map(|n| n - 1);
+            let outcome = self
+                .rx
+                .attempt(&self.c0, &pick, self.t0, self.p, true, refined)
+                .0;
+            decoded |= self.settle(alloc::vec![outcome], ch);
+        }
+        if !decoded && self.ladder_left != Some(0) {
+            let due: Option<(f32, f32)> = self.asm.continuations().find(|&(f1, tsync)| {
+                (f1 - fc).abs() <= fwid
+                    && ((self.t0 - tsync) - FRAME_PERIOD_S).abs() <= 0.1
+                    && tsync + FRAME_PERIOD_S - self.t0 >= 0.0
+            });
+            if let Some((f1, tsync)) = due {
+                stat_add!(self.rx, StickyRetries, 1);
+                self.ladder_left = self.ladder_left.map(|n| n - 1);
+                let pick = Pick {
+                    channel: ch,
+                    f_hz: f1,
+                    xdt_s: tsync + FRAME_PERIOD_S - self.t0,
+                };
+                let outcome = self.rx.process(&self.c0, &pick, self.t0, self.p, false);
+                self.settle(alloc::vec![outcome], ch);
+            }
+        }
+    }
+
     fn surface(&mut self) -> &mut Surface {
         if self.surface.is_none() {
             self.surface =
@@ -1206,7 +1311,14 @@ impl Work<'_> {
 
     fn pick_candidates(&mut self, ch: u8, band: Band, fwid: f32) -> Vec<Pick> {
         if ch == 0 {
-            let nc = 2usize.max(8usize.min((fwid / (NFZ as f32 * DF)).round() as usize));
+            let per_peak = (fwid / (NFZ as f32 * DF)).round() as usize;
+            // upstream takes at most 8; with a ladder budget the gate ranks them, so a wide
+            // channel 0 takes one per peak-suppression width (#499)
+            let nc = if self.ladder_left.is_some() {
+                per_peak.clamp(2, MAX_BUDGET_PICKS)
+            } else {
+                per_peak.clamp(2, 8)
+            };
             pick_masked(self.surface(), band, nc)
                 .into_iter()
                 .map(|(bin, col)| pick_at(0, bin, col))
@@ -1251,6 +1363,10 @@ impl Work<'_> {
             }
         } else {
             todo = picks;
+        }
+        if self.ladder_left.is_some() {
+            self.decode_budgeted(ch, fc, fwid, todo);
+            return;
         }
         for _round in 0..MAX_ROUNDS {
             let before = self.subtractions;

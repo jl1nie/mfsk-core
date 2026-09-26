@@ -80,7 +80,10 @@ fn jtty_snr_sweep() {
 
     // `MFSK_JTTY_SWEEP_F32=1`: the trellis metrics in `f32` (#499 E1b), to be compared with the
     // default run cell by cell.
-    let rx = if std::env::var_os("MFSK_JTTY_SWEEP_F32").is_some() {
+    // the embedded configuration runs the board's f32 trellis metrics too
+    let rx = if std::env::var_os("MFSK_JTTY_SWEEP_F32").is_some()
+        || std::env::var_os("MFSK_JTTY_SWEEP_EMBEDDED").is_some()
+    {
         Receiver::new().with_f32_metrics()
     } else {
         Receiver::new()
@@ -94,7 +97,7 @@ fn jtty_snr_sweep() {
     // `MFSK_JTTY_SWEEP_EMBEDDED=1`: `Params::embedded()`, channel 0 only with the decimated
     // surface and raw-then-refined candidates (#499): 164 of 360 weak passes, the default 160.
     let params = if std::env::var_os("MFSK_JTTY_SWEEP_EMBEDDED").is_some() {
-        params.embedded()
+        embedded_from_env(params)
     } else {
         params
     };
@@ -131,4 +134,24 @@ fn jtty_snr_sweep() {
     for ((ch, snr), (ok, n, extra)) in &cells {
         println!("{ch:<16} {snr:>6}  {ok:>2}/{n:<3}  {extra}");
     }
+}
+
+/// `Params::embedded()` adjusted by `MFSK_JTTY_FTOL` (channel 0's half-width, Hz) and
+/// `MFSK_JTTY_BUDGET` (ladder calls a window; 0 for none) (#499).
+#[allow(dead_code)]
+fn embedded_from_env(p: Params) -> Params {
+    let mut p = p.embedded();
+    if let Some(f) = std::env::var("MFSK_JTTY_FTOL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        p.ftol_hz = f;
+    }
+    if let Some(b) = std::env::var("MFSK_JTTY_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        p.ladder_budget = (b > 0).then_some(b);
+    }
+    p
 }
