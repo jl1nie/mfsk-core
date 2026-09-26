@@ -2,6 +2,25 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: WSJT-X 3.2's Pileup "copied last Tx" flag (#470).** WSJT-X 3.2 sends Q65's
+  spare 78th payload bit as a flag in Q65 Pileup mode (`genq65.f90`:
+  `dgen(13)=2*dgen(13)+iflag`), reports it on decode (`q65_decode.f90:321`, shown as
+  `#`), and under that mode leaves the bit free in the `MyCall DxCall ???` AP pattern
+  (`q65_ap.f90`, iaptype 3). This crate always sent the bit clear, dropped it on decode,
+  and always locked it in AP. Now:
+  - `Q65Result::copied_last_tx` reports it (a new public field);
+  - `q65::encode_channel_symbols_flagged` / `synthesize_standard_flagged_for` and
+    `msg::q65::pack77_to_symbols_flagged` send it;
+  - `.pileup(true)` on `q65::DecodeRequest` / `SniperRequest` frees it for a hint that
+    names both callsigns and nothing else (`msg::q65::ap_hint_to_q65_mask_for`). Every
+    other hint shape still locks it, as upstream's other iaptypes do.
+
+  Default behaviour is unchanged. A flagged `K1ABC JA1ABC -15` in noise (Q65-30A,
+  sniper, 20 seeds at σ 20) decodes 6 times blind, 0 times with that hint and the bit
+  locked, and 20 times under `.pileup(true)`. The full-AP list (`q65::ap_list`) stays
+  flag-clear, as `q65_set_list.f90` builds it. The doubled list is `q65_set_list2.f90`'s,
+  the contest-caller list, which remains out of scope.
+
 - **FT8: WSJT-X's a7 and a8 list decoders (#464).** `ft8_decode.f90` runs two passes
   after the candidate loop that this crate did not have. Both choose among messages built
   from call signs already known instead of decoding the LDPC code

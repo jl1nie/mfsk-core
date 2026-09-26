@@ -689,6 +689,16 @@ Rust 専用である（C ABI には無い）。各フロントエンドが実際
 いるか、既定のスキャンがなぜ素の Bessel パスではないのかは
 [`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-q65s-decoder-strategies-and-what-each-is-for)。
 
+**Q65 Pileup（WSJT-X 3.2）。** Pileup モードの局は、相手の直前の送信を
+受信できたことを Q65 の予備の 78 ビット目で知らせる。
+`Q65Result::copied_last_tx` がそれを報告し（WSJT-X は行に `#` を付ける）、
+`encode_channel_symbols_flagged` / `synthesize_standard_flagged_for` で送れる。
+どちらのビルダーでも `.pileup(true)` を指定すると上流のこのモードの AP 方針に
+なる: 両方の呼出符号だけを指定した `.ap_hint()` は、このビットを 0 に固定せず
+自由にするので、フラグ付きの応答にも一致する。指定しなければ、そのような
+ヒントはフラグ付きの応答を受け付けない。Pileup 以外の WSJT-X と同じである。
+`.ap_list()` のテンプレートは `q65_set_list.f90` と同じくビットを立てない。
+
 ---
 ## 4. モジュールとクレートの地図
 

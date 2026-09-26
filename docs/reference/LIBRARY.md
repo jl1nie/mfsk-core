@@ -670,6 +670,17 @@ Rust-only — not in the C ABI. What each front end actually does, and
 why the default scan is not the plain Bessel path, is in
 [`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-q65s-decoder-strategies-and-what-each-is-for).
 
+**Q65 Pileup (WSJT-X 3.2).** A Pileup station sets Q65's spare 78th
+payload bit to say it copied its correspondent's last transmission.
+`Q65Result::copied_last_tx` reports it (WSJT-X marks the line `#`), and
+`encode_channel_symbols_flagged` / `synthesize_standard_flagged_for` send
+it. `.pileup(true)` on either builder applies upstream's AP policy for
+that mode: an `.ap_hint()` naming both callsigns and nothing after them
+leaves the bit free instead of locking it to 0, so a flagged reply still
+matches. Without it such a hint rejects a flagged reply, exactly as
+WSJT-X outside Pileup does. The `.ap_list()` templates carry the bit
+clear, as `q65_set_list.f90` builds them.
+
 ---
 
 ## 4. Module and crate map

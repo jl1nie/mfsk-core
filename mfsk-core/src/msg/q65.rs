@@ -5,14 +5,15 @@
 //! (`super::wsjt77`). The only Q65-specific detail at the message
 //! layer is the bit-to-GF(64)-symbol packing that feeds the QRA
 //! encoder: 77 bits go in as **13 GF(64) symbols** with layout `12 ×
-//! 6 bits + 1 × 5 bits`, with the last symbol's LSB zero-padded to
-//! complete a 6-bit symbol value.
+//! 6 bits + 1 × 5 bits`, with the last symbol's LSB — a spare bit,
+//! 0 except in WSJT-X 3.2's Q65 Pileup mode — completing a 6-bit
+//! symbol value.
 //!
 //! Mirrors the Fortran code in `lib/qra/q65/genq65.f90`:
 //!
 //! ```text
 //! read(c77, '(12b6.6, b5.5)') dgen   ! pack 77 bits into 13 ints (last is 5-bit)
-//! dgen(13) = 2 * dgen(13)            ! left-shift the 13th symbol, zero-padding the LSB
+//! dgen(13) = 2 * dgen(13) + iflag    ! left-shift the 13th symbol; iflag is the spare 78th bit
 //! ```
 //!
 //! [`Q65Message`] is the [`MessageCodec`] surface; it delegates pack /
@@ -74,6 +75,14 @@ pub fn pack77_q65(call1: &str, call2: &str, grid_or_report: &str) -> Option<[u8;
 /// `72..77` in its top five bits, with the LSB zero-padded to make
 /// it a valid 6-bit GF(64) value.
 pub fn pack77_to_symbols(bits77: &[u8; 77]) -> [i32; 13] {
+    pack77_to_symbols_flagged(bits77, false)
+}
+
+/// [`pack77_to_symbols`] with the spare 78th bit set to `copied_last_tx`:
+/// `genq65.f90`'s `dgen(13)=2*dgen(13)+iflag`. WSJT-X 3.2 sets it in Q65
+/// Pileup mode when the station being answered is the one whose last
+/// transmission was copied (`mainwindow.cpp:7673-7679`).
+pub fn pack77_to_symbols_flagged(bits77: &[u8; 77], copied_last_tx: bool) -> [i32; 13] {
     let mut out = [0_i32; 13];
     for (i, slot) in out.iter_mut().enumerate().take(12) {
         let mut s = 0_i32;
@@ -88,8 +97,15 @@ pub fn pack77_to_symbols(bits77: &[u8; 77]) -> [i32; 13] {
     for b in 0..5 {
         last = (last << 1) | (bits77[72 + b] & 1) as i32;
     }
-    out[12] = last << 1;
+    out[12] = (last << 1) | copied_last_tx as i32;
     out
+}
+
+/// The spare 78th bit of a decoded message — see
+/// [`pack77_to_symbols_flagged`]. `q65_decode.f90:321`:
+/// `iflagdec=iand(dat4(13),1)`.
+pub fn unpack_flag(symbols: &[i32; 13]) -> bool {
+    symbols[12] & 1 == 1
 }
 
 /// Convert a 77-bit [`ApHint`] into the 13-symbol GF(64) `(mask,
@@ -97,20 +113,38 @@ pub fn pack77_to_symbols(bits77: &[u8; 77]) -> [i32; 13] {
 /// (`_q65_mask` in the C reference) consumes.
 ///
 /// The hint is first projected to the 77-bit Wsjt77 layout via
-/// [`ApHint::build_bits`]. We then extend it to 78 bits — the
-/// padding bit (LSB of symbol 12) is always 0 in a valid Q65
-/// transmission, so we lock it whenever the hint carries any AP
-/// information at all (matching WSJT-X iaptype=1/2/3, which fix
-/// `apmask(75:78) = 1`).
+/// [`ApHint::build_bits`]. We then extend it to 78 bits, locking the
+/// spare bit (LSB of symbol 12) to 0 whenever the hint carries any AP
+/// information at all, as WSJT-X's iaptypes do outside Q65 Pileup mode
+/// (`apmask(75:78) = 1`). Pileup mode can set that bit — see
+/// [`ap_hint_to_q65_mask_for`].
 ///
 /// Pack-into-symbols layout matches [`pack77_to_symbols`]: 12 × 6
 /// bits + 1 × 5 bits left-shifted by one with the LSB acting as
 /// the padding slot.
 pub fn ap_hint_to_q65_mask(hint: &ApHint) -> ([i32; 13], [i32; 13]) {
+    ap_hint_to_q65_mask_for(hint, false)
+}
+
+/// [`ap_hint_to_q65_mask`] under WSJT-X 3.2's **Q65 Pileup** policy when
+/// `pileup` is set: a hint naming both callsigns and nothing after them
+/// (`q65_ap.f90`'s iaptype 3, `MyCall DxCall ???`) leaves the 78th bit
+/// free, since a reply may carry the "copied last Tx" flag
+/// (`if(.not.lq65pileup) apmask(78)=1`). Every other shape locks it to 0
+/// either way, as upstream's iaptypes 1, 2 and 4-6 do.
+pub fn ap_hint_to_q65_mask_for(hint: &ApHint, pileup: bool) -> ([i32; 13], [i32; 13]) {
     let (mut mask77, mut values77) = hint.build_bits(77);
     // Extend to 78 bits, locking the padding bit (= 0) whenever any
     // AP info is present.
-    let lock_padding = if hint.has_info() { 1 } else { 0 };
+    let iaptype3 = hint.call1.as_deref().is_some_and(|c| c != "CQ")
+        && hint.call2.is_some()
+        && hint.grid.is_none()
+        && hint.report.is_none();
+    let lock_padding = if hint.has_info() && !(pileup && iaptype3) {
+        1
+    } else {
+        0
+    };
     mask77.push(lock_padding);
     values77.push(0);
 
@@ -130,8 +164,8 @@ pub fn ap_hint_to_q65_mask(hint: &ApHint) -> ([i32; 13], [i32; 13]) {
 }
 
 /// Inverse of [`pack77_to_symbols`]: extract a 77-bit WSJT message
-/// from the 13-symbol decoder output. The LSB of `symbols[12]` is
-/// discarded (it was zero-padding on the encode side).
+/// from the 13-symbol decoder output. The LSB of `symbols[12]` — the
+/// spare 78th bit, see [`unpack_flag`] — is not part of the message.
 pub fn unpack_symbols_to_bits77(symbols: &[i32; 13]) -> [u8; 77] {
     let mut bits = [0_u8; 77];
     for i in 0..12 {
@@ -140,11 +174,11 @@ pub fn unpack_symbols_to_bits77(symbols: &[i32; 13]) -> [u8; 77] {
             bits[6 * i + b] = ((s >> (5 - b)) & 1) as u8;
         }
     }
-    // bits 72..77 are the top 5 bits of symbol 12; the LSB is dropped.
+    // bits 72..77 are the top 5 bits of symbol 12; the LSB is the flag.
     let s = symbols[12];
     for b in 0..5 {
         // Bit positions 5..1 of the 6-bit symbol value (the LSB / bit
-        // 0 was the zero-pad).
+        // 0 is the spare bit).
         bits[72 + b] = ((s >> (5 - b)) & 1) as u8;
     }
     bits

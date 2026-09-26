@@ -95,4 +95,7 @@ pub use rx::Q65Result;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};
-pub use tx::{encode_channel_symbols, synthesize_standard, synthesize_standard_for};
+pub use tx::{
+    encode_channel_symbols, encode_channel_symbols_flagged, synthesize_standard,
+    synthesize_standard_flagged_for, synthesize_standard_for,
+};
