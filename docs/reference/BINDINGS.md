@@ -10,7 +10,7 @@ targets see [`EMBEDDED.md`](EMBEDDED.md).
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`, header `mfsk-ffi/include/mfsk.h` | CI `ffi` job — Rust tests under both feature sets plus `examples/cpp_smoke/`, a real C++ driver including a multi-thread stress |
 | **Kotlin / Android** | `bindings/kotlin/` (C shim + `Mfsk.kt`) | CI `kotlin` job, on a desktop JVM |
-| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 73 XCTest cases, plus the `aarch64-apple-ios` cross-build |
+| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 75 XCTest cases, plus the `aarch64-apple-ios` cross-build |
 
 All three sit on the same C ABI. `mfsk.h` is cbindgen-generated and
 committed, and its doc comments are the authoritative per-symbol
@@ -426,8 +426,27 @@ upstream's rule and what bounds the queue (at most 1024 distinct messages; a
 caller that never polls loses the oldest). `id` is stable for a message's life.
 The handle is not thread-safe: one thread at a time, like `MfskStream`. A build
 without the `jtty` feature keeps the entry points and answers
-`MFSK_STATUS_UNKNOWN_PROTOCOL`. There is no JTTY transmit call in the ABI yet
-(the message-packing layer is the P5 of #477).
+`MFSK_STATUS_UNKNOWN_PROTOCOL`.
+
+**Transmit** is the same three stages as elsewhere, with text in front instead of
+a 77-bit message:
+
+```c
+size_t n = 0;
+mfsk_jtty_encode_tones("CQ K1ABC CQ", /*profile*/ 0, NULL, 0, &n);   /* size query: n = 59 */
+uint8_t tones[16 * 59];
+mfsk_jtty_encode_tones("CQ K1ABC CQ", 0, tones, sizeof tones, &n);   /* upstream's pack_jtty + genjtty */
+int16_t pcm[16 * 59 * 384 + 4096];  size_t m;                        /* mfsk_jtty_synth_len(n) is the size */
+mfsk_jtty_tones_to_i16(tones, n, 1500.0f, 8000.0f, pcm, sizeof pcm / 2, &m);
+```
+
+`profile` is 0 unknown, 1 Field Day, 2 RTTY Roundup; only RTTY Roundup changes the
+packing (serial-number and state candidates, `599 5` → `599 005`). The packer picks
+the fewest frames: a callsign, grid, report or control phrase is one frame, other text
+five characters a frame. A message over 80 characters, over 16 frames, or an RTTY serial
+that does not fit is `MFSK_STATUS_INVALID_ARG` with the reason in `mfsk_last_error`; an
+empty message is `OK` with `*out_len = 0`. The F-key templates and N1MM tags WSJT-X wraps
+around `pack_jtty` are host policy and are not in the library (see #463 for the line).
 
 ### 2.9 Messages
 
@@ -500,7 +519,7 @@ but does not offer what was asked).
 
 ### 2.12 Symbol index
 
-73 exported functions, grouped:
+77 exported functions, grouped:
 
 | group | symbols |
 |---|---|
@@ -510,7 +529,7 @@ but does not offer what was asked).
 | bespoke decode (7) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` |
 | transmit (12) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
-| JTTY (10) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` |
+| JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
 | hash table (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | runtime (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 
@@ -615,7 +634,8 @@ updates it produced (one per message, latest text; `id` is stable), `finish()`
 returns the last incomplete ones, `close()` releases the handle. Call `push`
 off the UI thread. `Mfsk.CAP_STREAM_RECEIVER` is its capability bit; the JVM
 test feeds the vendored upstream recording in 4096-sample chunks (and again
-through the 24 kHz resampler) and expects the recording's message.
+through the 24 kHz resampler) and expects the recording's message. Transmit is
+`MfskJtty.tones(text, profile)`, `MfskJtty.synthesize(tones)` and `MfskJtty.encode(text)`.
 
 **The shim is C, not Rust-with-`jni`, on purpose.** It `#include`s the
 generated `mfsk.h`, so building it is another compiler reading that
@@ -694,7 +714,8 @@ message, latest text; `id` is stable, `isComplete`, `frequencyHz`,
 receive frequency, tolerance, sync floor, band and whether it subtracts. One
 thread at a time, and off the main actor — `push` decodes before it returns.
 `JttyReceiverTests` feeds it the vendored upstream recording (located through
-`#filePath`, since the ABI has no JTTY transmit to synthesise from).
+`#filePath`) and a loopback of its own: `Jtty.tones(for:profile:)` (the text packer),
+`Jtty.synthesise(_:)` and `Jtty.audio(for:)` turn text into audio.
 
 `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 73
 tests; `bindings/swift/README.md` covers linking from a real app,

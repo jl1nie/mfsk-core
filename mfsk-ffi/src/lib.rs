@@ -1533,7 +1533,7 @@ pub unsafe extern "C" fn mfsk_mode_info(mode: u32, out: *mut MfskModeInfo) -> Mf
             info.fec_k = JttyGeometry::FEC_K;
             info.fec_n = JttyGeometry::FEC_N;
             info.payload_bits = JttyGeometry::PAYLOAD_BITS;
-            info.caps = MFSK_CAP_STREAM_RECEIVER;
+            info.caps = MFSK_CAP_STREAM_RECEIVER | MFSK_CAP_ENCODE;
         }
         None => {
             // MSK144: no registry entry by design.
@@ -1577,7 +1577,9 @@ pub extern "C" fn mfsk_mode_caps(mode: u32) -> u64 {
     match mode_meta(mode) {
         Some(m) => u64::from(m.profile.caps),
         None if mode == MfskMode::Msk144 && mode_is_present(mode) => MFSK_CAP_ENCODE,
-        None if mode == MfskMode::Jtty && mode_is_present(mode) => MFSK_CAP_STREAM_RECEIVER,
+        None if mode == MfskMode::Jtty && mode_is_present(mode) => {
+            MFSK_CAP_STREAM_RECEIVER | MFSK_CAP_ENCODE
+        }
         None => 0,
     }
 }
@@ -4345,6 +4347,239 @@ pub unsafe extern "C" fn mfsk_jtty_poll(
         }
         unsafe { write_size_versioned(out, &v) };
         1
+    }
+}
+
+/// Text → channel tones: pack `text` (NUL-terminated UTF-8, at most 80 characters)
+/// into the fewest JTTY frames under `profile` (0 unknown, 1 Field Day, 2 RTTY
+/// Roundup) and write the tones, 0‥3, 59 per frame.
+///
+/// `*out_len` is always set to the number of tones needed (0 for an empty
+/// message, which is `MFSK_STATUS_OK` with nothing to send). Pass `tones = NULL`
+/// with `cap = 0` to ask for the size first; a buffer too small is
+/// `MFSK_STATUS_INVALID_ARG`, as everywhere in the transmit family. A message
+/// that cannot be packed (over 80 characters, over 16 frames, an RTTY serial that
+/// does not fit) is `MFSK_STATUS_INVALID_ARG` with the reason in `mfsk_last_error`.
+///
+/// This is upstream's `pack_jtty` and `genjtty`; the F-key templates and N1MM tags
+/// around them in WSJT-X are not part of this library.
+///
+/// # Safety
+/// `text` must be a NUL-terminated string; `tones` must be `cap` writable bytes
+/// (or null with `cap` 0); `out_len` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_encode_tones(
+    text: *const c_char,
+    profile: u32,
+    tones: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = (text, profile, tones, cap, out_len);
+        set_error("mfsk_jtty_encode_tones: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol
+    }
+    #[cfg(feature = "jtty")]
+    {
+        use mfsk_core::jtty::pack::{self, ExchangeProfile};
+        if text.is_null() {
+            set_error("mfsk_jtty_encode_tones: text is NULL");
+            return MfskStatus::NullPointer;
+        }
+        let profile = match profile {
+            0 => ExchangeProfile::Unknown,
+            1 => ExchangeProfile::FieldDay,
+            2 => ExchangeProfile::RttyRoundup,
+            _ => {
+                set_error("mfsk_jtty_encode_tones: profile must be 0, 1 or 2");
+                return MfskStatus::InvalidArg;
+            }
+        };
+        let Ok(text) = unsafe { CStr::from_ptr(text) }.to_str() else {
+            set_error("mfsk_jtty_encode_tones: text is not valid UTF-8");
+            return MfskStatus::InvalidArg;
+        };
+        let atoms = match pack::pack(text, profile) {
+            Ok(a) => a,
+            Err(e) => {
+                set_error(format!("mfsk_jtty_encode_tones: {e}"));
+                return MfskStatus::InvalidArg;
+            }
+        };
+        let t = mfsk_core::jtty::tx::tones(&atoms).unwrap_or_default();
+        if !out_len.is_null() {
+            unsafe { *out_len = t.len() };
+        }
+        if t.is_empty() {
+            return MfskStatus::Ok;
+        }
+        if tones.is_null() && cap == 0 {
+            return MfskStatus::Ok; // a size query
+        }
+        if tones.is_null() || cap < t.len() {
+            set_error("mfsk_jtty_encode_tones: buffer too small; *out_len is the size needed");
+            return MfskStatus::InvalidArg;
+        }
+        unsafe { ptr::copy_nonoverlapping(t.as_ptr(), tones, t.len()) };
+        MfskStatus::Ok
+    }
+}
+
+/// Samples at 12 kHz that `n_tones` JTTY tones synthesise to (whole frames of
+/// 59 tones), or 0 if `n_tones` is not a positive multiple of 59.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_jtty_synth_len(n_tones: usize) -> usize {
+    #[cfg(feature = "jtty")]
+    {
+        if n_tones == 0 || !n_tones.is_multiple_of(59) {
+            return 0;
+        }
+        mfsk_core::jtty::tx::samples_for_frames(n_tones / 59)
+    }
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = n_tones;
+        0
+    }
+}
+
+/// Shared by the two JTTY synthesis entry points: validate, synthesise, and
+/// report the length. Returns the samples (empty on a size query).
+#[cfg(feature = "jtty")]
+#[allow(clippy::too_many_arguments)]
+fn jtty_synth(
+    what: &str,
+    tones: *const u8,
+    n_tones: usize,
+    freq_hz: f32,
+    amplitude: f32,
+    out_len: *mut usize,
+    cap: usize,
+    have_out: bool,
+) -> Result<Option<Vec<f32>>, MfskStatus> {
+    let need = mfsk_jtty_synth_len(n_tones);
+    if !out_len.is_null() {
+        unsafe { *out_len = need };
+    }
+    if tones.is_null() {
+        set_error(format!("{what}: tones is NULL"));
+        return Err(MfskStatus::NullPointer);
+    }
+    if need == 0 {
+        set_error(format!(
+            "{what}: n_tones must be a positive multiple of 59 (one frame is 59 tones)"
+        ));
+        return Err(MfskStatus::InvalidArg);
+    }
+    let t = unsafe { slice::from_raw_parts(tones, n_tones) };
+    if t.iter().any(|&x| x > 3) {
+        set_error(format!("{what}: a tone is above 3"));
+        return Err(MfskStatus::InvalidArg);
+    }
+    if !have_out && cap == 0 {
+        return Ok(None); // a size query
+    }
+    if !have_out || cap < need {
+        set_error(format!(
+            "{what}: buffer too small; *out_len is the size needed"
+        ));
+        return Err(MfskStatus::InvalidArg);
+    }
+    Ok(Some(mfsk_core::jtty::tx::synth_f32(t, freq_hz, amplitude)))
+}
+
+/// JTTY tones → 16-bit PCM at 12 kHz, `freq_hz` the frequency of tone 0 (the others
+/// are 31.25 Hz apart), `amplitude` the peak in counts (8000 is a sound default).
+/// `mfsk_jtty_synth_len(n_tones)` is the capacity needed; `*out_len` reports it, and
+/// `out = NULL` with `cap = 0` is a size query. `n_tones` must be a positive multiple
+/// of 59.
+///
+/// # Safety
+/// `tones` must be `n_tones` readable bytes; `out` must be `cap` writable `int16_t`
+/// (or null with `cap` 0); `out_len` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_tones_to_i16(
+    tones: *const u8,
+    n_tones: usize,
+    freq_hz: f32,
+    amplitude: f32,
+    out: *mut i16,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = (tones, n_tones, freq_hz, amplitude, out, cap, out_len);
+        set_error("mfsk_jtty_tones_to_i16: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol
+    }
+    #[cfg(feature = "jtty")]
+    {
+        match jtty_synth(
+            "mfsk_jtty_tones_to_i16",
+            tones,
+            n_tones,
+            freq_hz,
+            amplitude,
+            out_len,
+            cap,
+            !out.is_null(),
+        ) {
+            Err(e) => e,
+            Ok(None) => MfskStatus::Ok,
+            Ok(Some(pcm)) => {
+                let dst = unsafe { slice::from_raw_parts_mut(out, pcm.len()) };
+                for (d, &x) in dst.iter_mut().zip(&pcm) {
+                    *d = x.round().clamp(-32_768.0, 32_767.0) as i16;
+                }
+                MfskStatus::Ok
+            }
+        }
+    }
+}
+
+/// [`mfsk_jtty_tones_to_i16`] as 32-bit float PCM; `amplitude` is the peak in
+/// full-scale units (0.25 is a sound default).
+///
+/// # Safety
+/// As [`mfsk_jtty_tones_to_i16`], with `out` as `float`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_tones_to_f32(
+    tones: *const u8,
+    n_tones: usize,
+    freq_hz: f32,
+    amplitude: f32,
+    out: *mut f32,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    #[cfg(not(feature = "jtty"))]
+    {
+        let _ = (tones, n_tones, freq_hz, amplitude, out, cap, out_len);
+        set_error("mfsk_jtty_tones_to_f32: this build was compiled without the jtty feature");
+        MfskStatus::UnknownProtocol
+    }
+    #[cfg(feature = "jtty")]
+    {
+        match jtty_synth(
+            "mfsk_jtty_tones_to_f32",
+            tones,
+            n_tones,
+            freq_hz,
+            amplitude,
+            out_len,
+            cap,
+            !out.is_null(),
+        ) {
+            Err(e) => e,
+            Ok(None) => MfskStatus::Ok,
+            Ok(Some(pcm)) => {
+                unsafe { ptr::copy_nonoverlapping(pcm.as_ptr(), out, pcm.len()) };
+                MfskStatus::Ok
+            }
+        }
     }
 }
 

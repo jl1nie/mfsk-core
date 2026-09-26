@@ -411,6 +411,32 @@ assert!(updates.iter().any(|u| u.text.contains("CQ K1ABC")));
 # }
 ```
 
+**Sending** starts from text. `jtty::pack::pack(text, profile)` is upstream's `pack_jtty`:
+it normalises the text (upper case, `~` and NUL are spaces, spaces collapse, anything
+outside the 64-character alphabet becomes `#`) and picks the **fewest frames** with a
+dynamic program — a callsign with its action (`CQ K1ABC CQ`), a control phrase (`TU`), a
+number, a grid, `599 <location>`, or a Field Day `3A EMA` is one frame, anything else five
+characters a frame. `ExchangeProfile::RttyRoundup` adds serial-number and state candidates
+(`599 5` is sent as `599 005`); the other profiles pack alike. It refuses rather than
+truncates: over 80 characters, over 16 frames, or a serial that does not fit is a
+`PackError`. The result is what `jtty::tx::tones` and `synth_f32` take. It is tested
+against upstream's own `pack_jtty` on 3 500 messages (`tests/jtty_pack.rs`). What
+WSJT-X's GUI wraps around it — F-key templates, the N1MM tags, deciding the profile from
+the operating activity — is host policy and is not in the library (#463 draws the same
+line for the QSO-state decoders).
+
+```rust
+# #[cfg(all(feature = "jtty", feature = "fft-rustfft"))] {
+use mfsk_core::jtty::pack::{self, ExchangeProfile};
+
+let tones = pack::tones("cq k1abc cq", ExchangeProfile::Unknown)
+    .expect("packs")
+    .expect("not empty");
+assert_eq!(tones.len(), 59);                       // one frame
+assert_eq!(pack::pack("HELLO WORLD", ExchangeProfile::Unknown).unwrap().len(), 3);
+# }
+```
+
 `Params` carries what `rjtty` takes: the operator's receive frequency and
 ±tolerance (channel 0), the sync floor `smin_db`, and the band channels 1
 and 2 watch (they look 1350 ± 150 Hz and 1650 ± 150 Hz for stations off the

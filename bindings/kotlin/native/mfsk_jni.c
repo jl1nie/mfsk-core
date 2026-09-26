@@ -718,3 +718,63 @@ Java_io_github_mfskcore_MfskJttyReceiver_nativeReset(JNIEnv* env, jclass cls, jl
         throw_ise(env, mfsk_last_error());
     }
 }
+
+// ── JTTY transmit ───────────────────────────────────────────────────
+
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_mfskcore_MfskJtty_nativeEncodeTones(
+        JNIEnv* env, jclass cls, jstring text, jint profile) {
+    (void)cls;
+    const char* s = (*env)->GetStringUTFChars(env, text, NULL);
+    if (s == NULL) return NULL;
+    size_t n = 0;
+    MfskStatus st = mfsk_jtty_encode_tones(s, (uint32_t)profile, NULL, 0, &n);
+    uint8_t* tones = NULL;
+    if (st == MFSK_STATUS_OK && n > 0) {
+        tones = (uint8_t*)malloc(n);
+        if (tones == NULL) {
+            (*env)->ReleaseStringUTFChars(env, text, s);
+            throw_ise(env, "out of memory");
+            return NULL;
+        }
+        st = mfsk_jtty_encode_tones(s, (uint32_t)profile, tones, n, &n);
+    }
+    (*env)->ReleaseStringUTFChars(env, text, s);
+    if (st != MFSK_STATUS_OK) {
+        free(tones);
+        throw_ise(env, mfsk_last_error());
+        return NULL;
+    }
+    jbyteArray out = (*env)->NewByteArray(env, (jsize)n);
+    if (out != NULL && n > 0) (*env)->SetByteArrayRegion(env, out, 0, (jsize)n, (const jbyte*)tones);
+    free(tones);
+    return out;
+}
+
+JNIEXPORT jshortArray JNICALL
+Java_io_github_mfskcore_MfskJtty_nativeTonesToPcm(
+        JNIEnv* env, jclass cls, jbyteArray tones, jfloat freqHz, jfloat amplitude) {
+    (void)cls;
+    const jsize n = (*env)->GetArrayLength(env, tones);
+    jbyte* t = (*env)->GetByteArrayElements(env, tones, NULL);
+    if (t == NULL) return NULL;
+    size_t need = 0;
+    MfskStatus st = mfsk_jtty_tones_to_i16((const uint8_t*)t, (size_t)n, freqHz, amplitude, NULL, 0, &need);
+    jshortArray out = NULL;
+    if (st == MFSK_STATUS_OK) {
+        out = (*env)->NewShortArray(env, (jsize)need);
+        jshort* dst = (out != NULL) ? (*env)->GetShortArrayElements(env, out, NULL) : NULL;
+        if (dst != NULL) {
+            size_t wrote = 0;
+            st = mfsk_jtty_tones_to_i16((const uint8_t*)t, (size_t)n, freqHz, amplitude,
+                                        (int16_t*)dst, need, &wrote);
+            (*env)->ReleaseShortArrayElements(env, out, dst, 0);
+        } else {
+            (*env)->ReleaseByteArrayElements(env, tones, t, JNI_ABORT);
+            return NULL;
+        }
+    }
+    (*env)->ReleaseByteArrayElements(env, tones, t, JNI_ABORT);
+    if (st != MFSK_STATUS_OK) { throw_ise(env, mfsk_last_error()); return NULL; }
+    return out;
+}

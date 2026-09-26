@@ -2192,6 +2192,75 @@ int32_t mfsk_jtty_poll(struct MfskJttyReceiver *rx,
                        struct MfskJttyUpdate *out);
 
 /**
+ * Text → channel tones: pack `text` (NUL-terminated UTF-8, at most 80 characters)
+ * into the fewest JTTY frames under `profile` (0 unknown, 1 Field Day, 2 RTTY
+ * Roundup) and write the tones, 0‥3, 59 per frame.
+ *
+ * `*out_len` is always set to the number of tones needed (0 for an empty
+ * message, which is `MFSK_STATUS_OK` with nothing to send). Pass `tones = NULL`
+ * with `cap = 0` to ask for the size first; a buffer too small is
+ * `MFSK_STATUS_INVALID_ARG`, as everywhere in the transmit family. A message
+ * that cannot be packed (over 80 characters, over 16 frames, an RTTY serial that
+ * does not fit) is `MFSK_STATUS_INVALID_ARG` with the reason in `mfsk_last_error`.
+ *
+ * This is upstream's `pack_jtty` and `genjtty`; the F-key templates and N1MM tags
+ * around them in WSJT-X are not part of this library.
+ *
+ * # Safety
+ * `text` must be a NUL-terminated string; `tones` must be `cap` writable bytes
+ * (or null with `cap` 0); `out_len` may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_encode_tones(const char *text,
+                                       uint32_t profile,
+                                       uint8_t *tones,
+                                       uintptr_t cap,
+                                       uintptr_t *out_len);
+
+/**
+ * Samples at 12 kHz that `n_tones` JTTY tones synthesise to (whole frames of
+ * 59 tones), or 0 if `n_tones` is not a positive multiple of 59.
+ */
+MFSK_API
+uintptr_t mfsk_jtty_synth_len(uintptr_t n_tones);
+
+/**
+ * JTTY tones → 16-bit PCM at 12 kHz, `freq_hz` the frequency of tone 0 (the others
+ * are 31.25 Hz apart), `amplitude` the peak in counts (8000 is a sound default).
+ * `mfsk_jtty_synth_len(n_tones)` is the capacity needed; `*out_len` reports it, and
+ * `out = NULL` with `cap = 0` is a size query. `n_tones` must be a positive multiple
+ * of 59.
+ *
+ * # Safety
+ * `tones` must be `n_tones` readable bytes; `out` must be `cap` writable `int16_t`
+ * (or null with `cap` 0); `out_len` may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_tones_to_i16(const uint8_t *tones,
+                                       uintptr_t n_tones,
+                                       float freq_hz,
+                                       float amplitude,
+                                       int16_t *out,
+                                       uintptr_t cap,
+                                       uintptr_t *out_len);
+
+/**
+ * [`mfsk_jtty_tones_to_i16`] as 32-bit float PCM; `amplitude` is the peak in
+ * full-scale units (0.25 is a sound default).
+ *
+ * # Safety
+ * As [`mfsk_jtty_tones_to_i16`], with `out` as `float`.
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_tones_to_f32(const uint8_t *tones,
+                                       uintptr_t n_tones,
+                                       float freq_hz,
+                                       float amplitude,
+                                       float *out,
+                                       uintptr_t cap,
+                                       uintptr_t *out_len);
+
+/**
  * Configure the thread pool every subsequent decode runs on.
  *
  * **Call once, before the first decode.** The pool is built on the

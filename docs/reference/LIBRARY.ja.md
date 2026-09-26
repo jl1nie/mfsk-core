@@ -433,6 +433,31 @@ assert!(updates.iter().any(|u| u.text.contains("CQ K1ABC")));
 # }
 ```
 
+**送信**はテキストから始まる。`jtty::pack::pack(text, profile)` は upstream の
+`pack_jtty` で、テキストを正規化し（大文字化、`~` と NUL は空白、空白は 1 個に畳む、
+64 文字のアルファベット外は `#`）、動的計画法で**フレーム数が最小**になるよう選ぶ —
+アクション付きのコールサイン（`CQ K1ABC CQ`）、制御フレーズ（`TU`）、数値、グリッド、
+`599 <地名>`、Field Day の `3A EMA` は 1 フレーム、それ以外は 5 文字で 1 フレーム。
+`ExchangeProfile::RttyRoundup` はシリアル番号と州の候補を加える（`599 5` は `599 005`
+として送られる）。他のプロファイルは同じ結果になる。切り詰めずに拒否する: 80 文字超、
+16 フレーム超、収まらないシリアルは `PackError`。結果は `jtty::tx::tones` と
+`synth_f32` が取る形。upstream 自身の `pack_jtty` と 3 500 メッセージで突き合わせて
+いる（`tests/jtty_pack.rs`）。WSJT-X の GUI がその外側に持つもの — F キーテンプレート、
+N1MM タグ、運用状況からのプロファイル判定 — はホスト側の方針でライブラリには無い
+（QSO 状態に依存するデコーダについて #463 が同じ線を引いている）。
+
+```rust
+# #[cfg(all(feature = "jtty", feature = "fft-rustfft"))] {
+use mfsk_core::jtty::pack::{self, ExchangeProfile};
+
+let tones = pack::tones("cq k1abc cq", ExchangeProfile::Unknown)
+    .expect("packs")
+    .expect("not empty");
+assert_eq!(tones.len(), 59);                       // 1 フレーム
+assert_eq!(pack::pack("HELLO WORLD", ExchangeProfile::Unknown).unwrap().len(), 3);
+# }
+```
+
 `Params` は `rjtty` が取るものを持ちます。運用者の受信周波数と許容幅（チャンネル 0）、
 同期の下限 `smin_db`、チャンネル 1・2 が監視する帯域（運用周波数外の局を
 1350 ± 150 Hz と 1650 ± 150 Hz で探します）。`.subtract`（既定 on）はデコードした

@@ -107,4 +107,34 @@ final class JttyReceiverTests: XCTestCase {
         params.toleranceHz = -1
         XCTAssertThrowsError(try receiver.setParams(params))
     }
+
+    func testTextGoesToTonesToAudioAndBackThroughTheReceiver() throws {
+        try requireJtty()
+        let tones = try Jtty.tones(for: "CQ K1ABC CQ")
+        XCTAssertEqual(tones.count, 59, "one frame")
+        XCTAssertTrue(tones.allSatisfy { $0 < 4 })
+        let audio = [Int16](repeating: 0, count: 12_000) + (try Jtty.synthesise(tones))
+            + [Int16](repeating: 0, count: 6 * 12_000)
+        let receiver = try JttyReceiver()
+        var heard: [JttyUpdate] = []
+        for start in stride(from: 0, to: audio.count, by: 4096) {
+            heard += try receiver.push(Array(audio[start..<min(start + 4096, audio.count)]))
+        }
+        XCTAssertTrue(heard.contains { $0.text == "CQ K1ABC CQ" && $0.isComplete },
+                      "got \(heard.map(\.text))")
+        XCTAssertEqual(try Jtty.audio(for: "CQ K1ABC CQ").count, audio.count - 12_000 - 6 * 12_000)
+    }
+
+    func testWhatCannotBeSentIsRefused() throws {
+        try requireJtty()
+        XCTAssertTrue(try Jtty.tones(for: "   ").isEmpty, "an empty message has nothing to send")
+        XCTAssertThrowsError(try Jtty.tones(for: String(repeating: "A", count: 81))) { error in
+            XCTAssertEqual((error as? MfskError)?.code, .invalidArgument)
+        }
+        XCTAssertThrowsError(try Jtty.synthesise([0, 1, 2])) { error in
+            XCTAssertEqual((error as? MfskError)?.code, .invalidArgument)
+        }
+        XCTAssertEqual(try Jtty.tones(for: "599 5", profile: .rttyRoundup).count, 59,
+                       "the serial is one frame under RTTY Roundup")
+    }
 }

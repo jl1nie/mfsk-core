@@ -99,7 +99,7 @@ fn jtty_is_addressable_and_describes_its_frame() {
     );
     assert_eq!(
         mfsk_mode_caps(MfskMode::Jtty as u32),
-        MFSK_CAP_STREAM_RECEIVER
+        MFSK_CAP_STREAM_RECEIVER | MFSK_CAP_ENCODE
     );
 
     let mut m = MfskMode::Ft8;
@@ -288,4 +288,145 @@ fn null_handles_are_refused_not_dereferenced() {
         );
         mfsk_jtty_close(rx);
     }
+}
+
+fn encode(text: &str, profile: u32) -> Vec<u8> {
+    let c = std::ffi::CString::new(text).unwrap();
+    let mut need = 0usize;
+    assert_eq!(
+        unsafe { mfsk_jtty_encode_tones(c.as_ptr(), profile, ptr::null_mut(), 0, &mut need) },
+        MfskStatus::Ok
+    );
+    let mut tones = vec![0u8; need];
+    let mut got = 0usize;
+    assert_eq!(
+        unsafe { mfsk_jtty_encode_tones(c.as_ptr(), profile, tones.as_mut_ptr(), need, &mut got) },
+        MfskStatus::Ok
+    );
+    assert_eq!(got, need);
+    tones
+}
+
+fn synth(tones: &[u8], freq: f32) -> Vec<i16> {
+    let mut need = 0usize;
+    assert_eq!(
+        unsafe {
+            mfsk_jtty_tones_to_i16(
+                tones.as_ptr(),
+                tones.len(),
+                freq,
+                8000.0,
+                ptr::null_mut(),
+                0,
+                &mut need,
+            )
+        },
+        MfskStatus::Ok
+    );
+    assert_eq!(need, mfsk_jtty_synth_len(tones.len()));
+    let mut pcm = vec![0i16; need];
+    assert_eq!(
+        unsafe {
+            mfsk_jtty_tones_to_i16(
+                tones.as_ptr(),
+                tones.len(),
+                freq,
+                8000.0,
+                pcm.as_mut_ptr(),
+                need,
+                &mut need,
+            )
+        },
+        MfskStatus::Ok
+    );
+    pcm
+}
+
+#[test]
+fn text_goes_to_tones_to_audio_and_back_through_the_receiver() {
+    for (text, profile) in [
+        ("CQ K1ABC CQ", 0),
+        ("THE QUICK BROWN FOX", 0),
+        ("599 5 CA", 2),
+    ] {
+        let tones = encode(text, profile);
+        assert_eq!(tones.len() % 59, 0);
+        assert!(tones.iter().all(|&t| t < 4));
+        let mut pcm = vec![0i16; 12_000];
+        pcm.extend(synth(&tones, 1500.0));
+        pcm.extend(vec![0i16; 6 * 12_000]);
+        let rx = open(12_000);
+        let last = run(rx, &pcm, 4096);
+        unsafe { mfsk_jtty_close(rx) };
+        // a serial is rendered zero-padded, `599 005`, so the receiver shows that
+        let want = if profile == 2 { "599 005 CA" } else { text };
+        assert!(
+            last.iter().any(|u| u.1.replace('~', " ") == want && u.2),
+            "{text:?}: {last:?}"
+        );
+    }
+}
+
+#[test]
+fn the_transmit_calls_refuse_what_cannot_be_sent() {
+    let long = std::ffi::CString::new("A".repeat(81)).unwrap();
+    let ok = std::ffi::CString::new("CQ K1ABC CQ").unwrap();
+    let mut n = 0usize;
+    let mut buf = [0u8; 59];
+    unsafe {
+        assert_eq!(
+            mfsk_jtty_encode_tones(long.as_ptr(), 0, buf.as_mut_ptr(), 59, &mut n),
+            MfskStatus::InvalidArg
+        );
+        assert_eq!(
+            mfsk_jtty_encode_tones(ok.as_ptr(), 3, buf.as_mut_ptr(), 59, &mut n),
+            MfskStatus::InvalidArg
+        );
+        assert_eq!(
+            mfsk_jtty_encode_tones(ptr::null(), 0, buf.as_mut_ptr(), 59, &mut n),
+            MfskStatus::NullPointer
+        );
+        // too small: the size is reported
+        assert_eq!(
+            mfsk_jtty_encode_tones(ok.as_ptr(), 0, buf.as_mut_ptr(), 10, &mut n),
+            MfskStatus::InvalidArg
+        );
+        assert_eq!(n, 59);
+        // an empty message is nothing to send, not an error
+        let empty = std::ffi::CString::new("  ").unwrap();
+        assert_eq!(
+            mfsk_jtty_encode_tones(empty.as_ptr(), 0, buf.as_mut_ptr(), 59, &mut n),
+            MfskStatus::Ok
+        );
+        assert_eq!(n, 0);
+        // synthesis wants whole frames of tones 0..=3
+        let mut out = 0usize;
+        assert_eq!(
+            mfsk_jtty_tones_to_i16(
+                buf.as_ptr(),
+                58,
+                1500.0,
+                8000.0,
+                ptr::null_mut(),
+                0,
+                &mut out
+            ),
+            MfskStatus::InvalidArg
+        );
+        buf[0] = 4;
+        assert_eq!(
+            mfsk_jtty_tones_to_i16(
+                buf.as_ptr(),
+                59,
+                1500.0,
+                8000.0,
+                ptr::null_mut(),
+                0,
+                &mut out
+            ),
+            MfskStatus::InvalidArg
+        );
+    }
+    assert_eq!(mfsk_jtty_synth_len(60), 0);
+    assert_eq!(mfsk_jtty_synth_len(0), 0);
 }

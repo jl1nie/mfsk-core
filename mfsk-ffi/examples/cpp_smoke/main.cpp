@@ -1101,8 +1101,9 @@ void test_jtty() {
         fail("jtty", "mfsk_mode_info(JTTY) failed");
         return;
     }
-    if (!(info.caps & MFSK_CAP_STREAM_RECEIVER) || (info.caps & MFSK_CAP_DECODE_HANDLE)) {
-        fail("jtty", "JTTY must be a stream receiver and have no slot decode handle");
+    if (!(info.caps & MFSK_CAP_STREAM_RECEIVER) || (info.caps & MFSK_CAP_DECODE_HANDLE) ||
+        !(info.caps & MFSK_CAP_ENCODE)) {
+        fail("jtty", "JTTY must be a stream receiver that can encode, with no slot decode handle");
     }
     if (info.slot_samples_12k != 22656 || info.n_symbols != 59) {
         fail("jtty", "JTTY frame geometry is wrong");
@@ -1167,6 +1168,58 @@ void test_jtty() {
     if (mfsk_jtty_reset(rx) != MFSK_STATUS_OK) fail("jtty", "reset");
     mfsk_jtty_close(rx);
     mfsk_jtty_close(nullptr);  // a no-op, like every free here
+
+    // Transmit: text -> tones -> audio, and back through a fresh receiver.
+    {
+        const char* text = "CQ K1ABC CQ";
+        size_t n_tones = 0;
+        if (mfsk_jtty_encode_tones(text, 0, nullptr, 0, &n_tones) != MFSK_STATUS_OK || n_tones != 59) {
+            fail("jtty", "encode_tones size query: one frame is 59 tones");
+            return;
+        }
+        std::vector<uint8_t> tones(n_tones);
+        if (mfsk_jtty_encode_tones(text, 0, tones.data(), tones.size(), &n_tones) != MFSK_STATUS_OK) {
+            fail("jtty", "encode_tones");
+            return;
+        }
+        size_t n_pcm = 0;
+        if (mfsk_jtty_tones_to_i16(tones.data(), tones.size(), 1500.0f, 8000.0f, nullptr, 0, &n_pcm) !=
+                MFSK_STATUS_OK || n_pcm != mfsk_jtty_synth_len(tones.size())) {
+            fail("jtty", "tones_to_i16 size query");
+            return;
+        }
+        std::vector<int16_t> audio(12000, 0);          // a second of lead-in
+        std::vector<int16_t> pcm(n_pcm);
+        if (mfsk_jtty_tones_to_i16(tones.data(), tones.size(), 1500.0f, 8000.0f, pcm.data(), pcm.size(),
+                                   &n_pcm) != MFSK_STATUS_OK) {
+            fail("jtty", "tones_to_i16");
+            return;
+        }
+        audio.insert(audio.end(), pcm.begin(), pcm.end());
+        audio.resize(audio.size() + 6 * 12000, 0);     // and room to finish
+
+        MfskJttyReceiver* loop = mfsk_jtty_open(12000, nullptr, nullptr);
+        if (loop == nullptr) { fail("jtty", "open (NULL params)"); return; }
+        bool heard = false;
+        for (size_t pos = 0; pos < audio.size(); pos += 4096) {
+            const size_t n = std::min<size_t>(4096, audio.size() - pos);
+            mfsk_jtty_push_i16(loop, audio.data() + pos, n);
+            MfskJttyUpdate u;
+            std::memset(&u, 0, sizeof u);
+            u.size = sizeof u;
+            while (mfsk_jtty_poll(loop, &u) == 1) {
+                if (u.complete && std::strcmp(u.text, text) == 0) heard = true;
+            }
+        }
+        mfsk_jtty_close(loop);
+        if (!heard) fail("jtty", "the transmitted message did not come back through the receiver");
+
+        // What cannot be sent is refused with a reason.
+        const std::string too_long(81, 'A');
+        if (mfsk_jtty_encode_tones(too_long.c_str(), 0, nullptr, 0, &n_tones) != MFSK_STATUS_INVALID_ARG) {
+            fail("jtty", "an 81-character message should be INVALID_ARG");
+        }
+    }
 }
 
 void test_null_handling() {

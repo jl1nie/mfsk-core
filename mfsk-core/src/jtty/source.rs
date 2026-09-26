@@ -23,8 +23,8 @@
 //! these would widen the false-decode surface, which is why they are all here
 //! and all tested.
 //!
-//! Upstream's text packer (`pack_jtty`) is not ported (phase P5): this module
-//! takes typed [`Atom`]s.
+//! This module takes typed [`Atom`]s; turning operator text into atoms is
+//! [`super::pack`] (upstream's `pack_jtty`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -402,7 +402,7 @@ impl Atom {
         }
     }
 
-    fn is_text5(&self) -> bool {
+    pub(super) fn is_text5(&self) -> bool {
         matches!(self, Self::Text5(_))
     }
 }
