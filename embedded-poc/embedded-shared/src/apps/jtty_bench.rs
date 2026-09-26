@@ -385,7 +385,7 @@ fn bench_ladder_profile() {
         now_us() as u32
     }
     let mhz = 1.0; // ticks are microseconds; `ms` below divides by 1000
-    log::info!("ladder profile: CPU {mhz:.0} MHz; laps in ms (microsecond timer)");
+    log::info!("ladder profile: laps in ms (microsecond timer)");
     let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
     let payloads = tx::payloads(&atoms).expect("encodes");
     let data = tx::frame_tones(&payloads[0]);
@@ -412,12 +412,10 @@ fn bench_ladder_profile() {
                     ms(p.laps[6])
                 );
                 log::info!(
-                    "    ext {} cut-offs {} inserts {} dup {} rejects {} pool {} | {:.0} ns per extension, {:.0} ns per insert (wraps)",
+                    "    ext {} placed {} dup {} pool {} | {:.0} ns per extension, {:.0} ns per placed path (wraps)",
                     p.extensions,
-                    p.cut_offs,
                     p.inserts,
                     p.duplicates,
-                    p.rejects,
                     p.pool,
                     1000.0 * f64::from(p.laps[2] + p.laps[3]) / f64::from(p.extensions.max(1)),
                     1000.0 * f64::from(p.laps[2] + p.laps[3]) / f64::from(p.inserts.max(1))
@@ -627,6 +625,8 @@ fn run_bench() {
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
 
+    log::info!("--- 3c. where a rung's time goes ---");
+    bench_ladder_profile();
     log::info!("--- 1. FFT, complex f32, esp-dsp via default_planner ---");
     for n in [256usize, 512, 1024, 2048, 4096, 8192] {
         let reps = if n >= 4096 { 10 } else { 50 };
@@ -657,8 +657,6 @@ fn run_bench() {
     bench_search();
     log::info!("--- 3. the ladder ---");
     bench_ladder();
-    log::info!("--- 3c. where a rung's time goes ---");
-    bench_ladder_profile();
     log::info!("--- 3b. trellis placement ---");
     bench_trellis_placement();
     log_heap("end");

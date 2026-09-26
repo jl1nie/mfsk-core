@@ -73,14 +73,10 @@ impl Metric for f64 {}
 trait Probe {
     /// A candidate extension of a path (a metric was added).
     fn extension(&mut self) {}
-    /// A state's list was full and the next (weaker) predecessor path ended the scan.
-    fn cut_off(&mut self) {}
-    /// A candidate went to `insert`.
+    /// A path was placed in an end state's list.
     fn insert_call(&mut self) {}
-    /// `insert` found the same word already in the list.
+    /// The merge met a word already in the list (first block of a pass only).
     fn duplicate(&mut self) {}
-    /// `insert` placed the candidate nowhere.
-    fn rejected(&mut self) {}
     /// End of phase `i` (see [`Profile::laps`]).
     fn lap(&mut self, _phase: usize) {}
 }
@@ -95,14 +91,10 @@ pub struct Profile {
     pub laps: [u32; 7],
     /// Candidate extensions considered.
     pub extensions: u32,
-    /// Scans of a state's predecessors ended early on a full list.
-    pub cut_offs: u32,
-    /// Candidates handed to `insert`.
+    /// Paths placed in an end state's list.
     pub inserts: u32,
-    /// … of which the word was already in the list (first block only).
+    /// Extensions the merge dropped as a word already in the list (first block only).
     pub duplicates: u32,
-    /// … which found no place.
-    pub rejects: u32,
     /// Distinct closed words.
     pub pool: usize,
     clock: Option<fn() -> u32>,
@@ -112,17 +104,11 @@ impl Probe for Profile {
     fn extension(&mut self) {
         self.extensions += 1;
     }
-    fn cut_off(&mut self) {
-        self.cut_offs += 1;
-    }
     fn insert_call(&mut self) {
         self.inserts += 1;
     }
     fn duplicate(&mut self) {
         self.duplicates += 1;
-    }
-    fn rejected(&mut self) {
-        self.rejects += 1;
     }
     fn lap(&mut self, phase: usize) {
         if let Some(clock) = self.clock {
@@ -330,7 +316,11 @@ impl Plan {
             for (index, b) in self.blocks.iter().enumerate() {
                 let prune =
                     prune_reserved && b.start < RESERVED_BIT && RESERVED_BIT <= b.start + b.len; // block holds bit 33 (1-based)
-                advance(b, &energies, prune, index == 0, &prev, &mut cur, probe);
+                if index == 0 {
+                    advance::<M, P, true>(b, &energies, prune, &prev, &mut cur, probe);
+                } else {
+                    advance::<M, P, false>(b, &energies, prune, &prev, &mut cur, probe);
+                }
                 core::mem::swap(&mut prev, &mut cur);
             }
             probe.lap(2 + wrap);
@@ -451,77 +441,92 @@ impl<M: Metric> Surv<M> {
     }
 }
 
-/// Insert `cand` into a state's four best, best first. `dedupe`: after a pass
-/// restart several ranks of a state share one key, and the better metric wins.
-fn insert<M: Metric, P: Probe>(
-    sel: &mut [Surv<M>; PATHS_PER_STATE],
-    cand: Surv<M>,
-    dedupe: bool,
-    probe: &mut P,
-) {
-    probe.insert_call();
-    if dedupe && let Some(slot) = sel.iter().position(|s| s.valid() && s.key == cand.key) {
-        probe.duplicate();
-        if cand.metric <= sel[slot].metric {
-            return;
-        }
-        sel.copy_within(slot + 1.., slot);
-        sel[PATHS_PER_STATE - 1] = Surv::empty();
-    }
-    let Some(at) = sel.iter().position(|s| !s.valid() || cand.precedes(s)) else {
-        probe.rejected();
-        return;
-    };
-    sel.copy_within(at..PATHS_PER_STATE - 1, at + 1);
-    sel[at] = cand;
-}
-
 /// One block of the trellis: for every end state, its best paths.
 ///
 /// The low `len` bits of an end state are the block's input word, and the
 /// predecessors are the states whose remaining high bits enumerate every
 /// possibility — so no branch table is needed to find them.
-fn advance<M: Metric, P: Probe>(
+///
+/// Each predecessor's paths are already best first, and extending them all by the same
+/// branch keeps them so, so an end state's four best are a **merge** of its `2^len` sorted
+/// lists: pick the best head, four times. Upstream (and this crate until #499) inserted every
+/// extension into the end state's list one at a time — 88 % of 280 000 extensions a decode
+/// reached that insert, about 400 cycles each on the LX7. The survivors are the same: the
+/// order is the same total order (`Surv::precedes`), and with `DEDUPE` (the first block of a
+/// pass, where the paths of a state share one key) the first of a key to come out is its best.
+/// One subtlety is kept exact: two paths `a` ahead of `b` on metric alone can round to the
+/// same sum in `f32` and then be ordered by key, so each extended list is re-sorted where
+/// that happened (three comparisons when it did not).
+fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     b: &Block,
     energies: &[M],
     prune: bool,
-    first_block: bool,
     prev: &[[Surv<M>; PATHS_PER_STATE]],
     cur: &mut [[Surv<M>; PATHS_PER_STATE]],
     probe: &mut P,
 ) {
+    const MAX_WORDS: usize = 16; // coherent length 4
     let words = 1usize << b.len;
+    debug_assert!(words <= MAX_WORDS);
     let stride = STATES / words;
     let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
-    cur.iter_mut().enumerate().for_each(|(end, out)| {
+    let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; MAX_WORDS];
+    let mut lens = [0usize; MAX_WORDS];
+    let mut heads = [0usize; MAX_WORDS];
+    for (end, out) in cur.iter_mut().enumerate() {
         *out = [Surv::empty(); PATHS_PER_STATE];
         let word = end & (words - 1);
         let identity = b.identity[word];
         if prune && identity & reserved != 0 {
-            return;
+            continue;
         }
-        for pred in (0..words).map(|k| (end >> b.len) + k * stride) {
+        for k in 0..words {
+            let pred = (end >> b.len) + k * stride;
             let branch = energies[b.energy_offset + usize::from(b.sequence[pred * words + word])];
-            for s in prev[pred].iter().filter(|s| s.valid()) {
-                let metric = s.metric + branch;
+            let list = &mut lists[k];
+            let mut n = 0;
+            // a state's paths are best first with the empty slots at the end
+            for s in prev[pred].iter().take_while(|s| s.valid()) {
                 probe.extension();
-                // paths are ordered, so once one is too weak the rest are too
-                if out[PATHS_PER_STATE - 1].valid() && metric < out[PATHS_PER_STATE - 1].metric {
-                    probe.cut_off();
-                    break;
+                let cand = Surv {
+                    metric: s.metric + branch,
+                    key: s.key | identity,
+                };
+                let mut j = n;
+                while j > 0 && cand.precedes(&list[j - 1]) {
+                    list[j] = list[j - 1];
+                    j -= 1;
                 }
-                insert(
-                    out,
-                    Surv {
-                        metric,
-                        key: s.key | identity,
-                    },
-                    first_block,
-                    probe,
-                );
+                list[j] = cand;
+                n += 1;
             }
+            lens[k] = n;
+            heads[k] = 0;
         }
-    });
+        let mut filled = 0;
+        while filled < PATHS_PER_STATE {
+            let mut best = MAX_WORDS;
+            for k in 0..words {
+                if heads[k] < lens[k]
+                    && (best == MAX_WORDS || lists[k][heads[k]].precedes(&lists[best][heads[best]]))
+                {
+                    best = k;
+                }
+            }
+            if best == MAX_WORDS {
+                break;
+            }
+            let cand = lists[best][heads[best]];
+            heads[best] += 1;
+            if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
+                probe.duplicate();
+                continue;
+            }
+            probe.insert_call();
+            out[filled] = cand;
+            filled += 1;
+        }
+    }
 }
 
 #[cfg(test)]
