@@ -482,3 +482,45 @@ class MfskJttyReceiver private constructor(private var handle: Long) : AutoClose
         }
     }
 }
+
+/// JTTY transmit: the text packer and the synthesiser.
+///
+/// Upstream's `pack_jtty` picks the fewest frames for the text (a callsign, a grid,
+/// a report or a control phrase is one frame; anything else is five characters a
+/// frame) and `genjtty` turns them into tones. The F-key templates and N1MM tags
+/// WSJT-X puts around it are not part of this library.
+object MfskJtty {
+    /// The exchange profile: only [RTTY_ROUNDUP] changes the packing (it adds
+    /// serial-number and state candidates).
+    const val PROFILE_UNKNOWN = 0
+    const val PROFILE_FIELD_DAY = 1
+    const val PROFILE_RTTY_ROUNDUP = 2
+
+    /// Channel tones (0..3), 59 per frame. Empty for an empty message. Throws if
+    /// the text cannot be sent: over 80 characters, over 16 frames, or an RTTY
+    /// serial that does not fit.
+    fun tones(text: String, profile: Int = PROFILE_UNKNOWN): ByteArray {
+        Mfsk.modes() // loads the native library
+        return nativeEncodeTones(text, profile)
+    }
+
+    /// 16-bit PCM at 12 kHz for `tones`, `freqHz` the frequency of tone 0, `amplitude`
+    /// the peak in counts.
+    fun synthesize(tones: ByteArray, freqHz: Float = 1500f, amplitude: Float = 8000f): ShortArray {
+        Mfsk.modes()
+        return nativeTonesToPcm(tones, freqHz, amplitude)
+    }
+
+    /// Text straight to audio: [tones] then [synthesize].
+    fun encode(
+        text: String, profile: Int = PROFILE_UNKNOWN, freqHz: Float = 1500f, amplitude: Float = 8000f,
+    ): ShortArray {
+        val t = tones(text, profile)
+        return if (t.isEmpty()) ShortArray(0) else synthesize(t, freqHz, amplitude)
+    }
+
+    @JvmStatic private external fun nativeEncodeTones(text: String, profile: Int): ByteArray
+    @JvmStatic private external fun nativeTonesToPcm(
+        tones: ByteArray, freqHz: Float, amplitude: Float,
+    ): ShortArray
+}

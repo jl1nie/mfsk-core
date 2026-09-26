@@ -680,8 +680,9 @@ version if you're picking up work.
   retro re-sweep, assembly: identical on the mixtures, within 2 of 200 on a
   hard random set) are done; P4a (the streaming `Stream` receiver, docs,
   tier-C sweep and baseline) and P4b (the C ABI receiver handle, C++ driver,
-  Kotlin and Swift bindings) are done; P5 (text packer, only on request) and P6
-  (embedded, a separate decision) remain.
+  Kotlin and Swift bindings) and P5 (the text packer, protocol half only; the
+  F-key / N1MM layer is host policy) are done; P6 (embedded, a separate
+  decision) remains.
 - **#148** — Research idea (not a commitment, from VK3NV): blind-paired
   FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
   Q65's multi-period averaging (`q65/rx.rs`) is the architectural

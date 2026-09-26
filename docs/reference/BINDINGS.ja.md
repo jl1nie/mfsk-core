@@ -10,7 +10,7 @@ Rust 以外から mfsk-core を利用するための文書。Rust ホスト API 
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`、ヘッダ `mfsk-ffi/include/mfsk.h` | CI `ffi` ジョブ — 両 feature セットでの Rust テストに加え、実在の C++ ドライバ `examples/cpp_smoke/`（マルチスレッド負荷試験を含む） |
 | **Kotlin / Android** | `bindings/kotlin/`（C シム + `Mfsk.kt`） | CI `kotlin` ジョブ、デスクトップ JVM 上 |
-| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 73件と `aarch64-apple-ios` クロスビルド |
+| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 75件と `aarch64-apple-ios` クロスビルド |
 
 3つとも同一の C ABI の上に載っている。`mfsk.h` は cbindgen 生成でリポジトリに
 コミットされており、そのドキュメントコメントがシンボル単位の正本である。
@@ -412,8 +412,26 @@ UI スレッドではなくワーカーから呼ぶこと。更新はハンド�
 （異なるメッセージ最大 1024。ポーリングしない呼び出し側は古いものを失う）の
 根拠でもある。`id` はメッセージの存続中変わらない。ハンドルはスレッドセーフでは
 なく、`MfskStream` と同様に一度に 1 スレッドのみ。`jtty` フィーチャ無しのビルドでも
-関数は残り、`MFSK_STATUS_UNKNOWN_PROTOCOL` を返す。ABI にはまだ JTTY の送信呼び出しは
-無い（メッセージ整形層は #477 の P5）。
+関数は残り、`MFSK_STATUS_UNKNOWN_PROTOCOL` を返す。
+
+**送信**は他のモードと同じ 3 段で、77 ビットメッセージの代わりにテキストが入る:
+
+```c
+size_t n = 0;
+mfsk_jtty_encode_tones("CQ K1ABC CQ", /*profile*/ 0, NULL, 0, &n);   /* サイズ問い合わせ: n = 59 */
+uint8_t tones[16 * 59];
+mfsk_jtty_encode_tones("CQ K1ABC CQ", 0, tones, sizeof tones, &n);   /* upstream の pack_jtty + genjtty */
+int16_t pcm[16 * 59 * 384 + 4096];  size_t m;                        /* 必要量は mfsk_jtty_synth_len(n) */
+mfsk_jtty_tones_to_i16(tones, n, 1500.0f, 8000.0f, pcm, sizeof pcm / 2, &m);
+```
+
+`profile` は 0 = 不明、1 = Field Day、2 = RTTY Roundup。整形が変わるのは RTTY Roundup
+だけ（シリアル番号と州の候補、`599 5` → `599 005`）。パッカーはフレーム数が最小に
+なるように選ぶ: コールサイン・グリッド・レポート・制御フレーズは 1 フレーム、
+その他のテキストは 5 文字で 1 フレーム。80 文字超、16 フレーム超、RTTY のシリアルが
+収まらない場合は `MFSK_STATUS_INVALID_ARG`（理由は `mfsk_last_error`）。空メッセージは
+`OK` で `*out_len = 0`。WSJT-X が `pack_jtty` の外側に持つ F キーテンプレートと N1MM
+タグはホスト側の方針であり、ライブラリには無い（線引きは #463）。
 
 ### 2.9 メッセージ
 
@@ -482,7 +500,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 73 個:
+エクスポートされる関数は 77 個:
 
 | 群 | シンボル |
 |---|---|
@@ -492,7 +510,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 | 専用デコード (7) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` |
 | 送信 (12) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
-| JTTY (10) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` |
+| JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
 | ハッシュテーブル (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | ランタイム (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 
@@ -591,7 +609,8 @@ MfskJttyParams())` のあと `for (u in rx.push(chunk)) …` — `push` は生�
 未完の最終行を返し、`close()` でハンドルを解放する。`push` は UI スレッドの外で
 呼ぶこと。機能ビットは `Mfsk.CAP_STREAM_RECEIVER`。JVM テストは同梱の upstream
 録音を 4096 サンプルのチャンクで（および 24 kHz のリサンプル経由でも）流し、
-録音のメッセージが出ることを確認する。
+録音のメッセージが出ることを確認する。送信は `MfskJtty.tones(text, profile)`、
+`MfskJtty.synthesize(tones)`、`MfskJtty.encode(text)`。
 
 **シムが Rust + `jni` ではなく C なのは意図的。** 生成された `mfsk.h` を
 `#include` するので、シムのビルド自体が「もう一つのコンパイラがそのヘッダを
@@ -665,9 +684,10 @@ for row in try session.decode(slot) {
 `Capabilities.streamReceiver` を報告する。`JttyParams` は受信周波数・許容幅・
 同期下限・帯域・減算の有無を持つ。一度に 1 スレッドで、メインアクターの外から
 呼ぶこと — `push` は戻る前にデコードする。`JttyReceiverTests` は同梱の upstream
-録音を流す（ABI に JTTY の送信が無く合成できないため、`#filePath` で位置を求める）。
+録音（`#filePath` で位置を求める）と自前のループバックを流す。`Jtty.tones(for:profile:)`
+（テキストパッカー）、`Jtty.synthesise(_:)`、`Jtty.audio(for:)` がテキストを音声にする。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 73 件のテストを
+`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 75 件のテストを
 走らせる。実アプリからのリンク（および iOS ビルドが `mobile` feature セットを
 選ぶべき理由）は `bindings/swift/README.md` が扱う。
 

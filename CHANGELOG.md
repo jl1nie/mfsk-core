@@ -112,6 +112,26 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY text packer and transmit path (#477, phase P5).** `jtty::pack::pack(text, profile)` is
+  upstream's `pack_jtty`: normalise the text, then pick the fewest frames with a dynamic program
+  over character offsets (a callsign action, control phrase, number, grid, `599 <location>` or
+  Field Day class/section is one frame, other text five characters a frame; a structured atom
+  must round-trip through encode → decode → render and read exactly the text; ties go to the
+  structured atom, the longer span, then the lower `100·kind + 2·subtype + role`).
+  `ExchangeProfile::RttyRoundup` adds serial-number and state candidates and rewrites `599 5` to
+  `599 005`. It refuses rather than truncates (`PackError`). Checked against upstream's own
+  `pack_jtty` (a new oracle driver, `scripts/jttysim/jtty_pack_oracle.f90`) on 3 525 messages
+  × profiles (`tests/jtty_pack.rs`, `embedded-poc/assets/golden/jtty/pack_cases.tsv`,
+  `scripts/gen_jtty_pack_cases.sh`): the same frames every time. That found one upstream quirk,
+  kept and documented: a two-letter section after a class token (`1F DX`) is sent as text,
+  because upstream's section lookup rejects an argument shorter than three characters.
+  What WSJT-X's GUI wraps around it (F-key templates, N1MM tags, choosing the profile) is host
+  policy and not here, the line #463 draws for the QSO-state decoders.
+  C ABI: `mfsk_jtty_encode_tones` (text → tones), `mfsk_jtty_synth_len`, `mfsk_jtty_tones_to_i16`,
+  `mfsk_jtty_tones_to_f32`; the JTTY mode now also publishes `MFSK_CAP_ENCODE`. Kotlin `MfskJtty`
+  (`tones`, `synthesize`, `encode`) and Swift `Jtty` / `JttyProfile`. Every binding test now also
+  sends text and receives it back through its own receiver.
+
 - **JTTY over the C ABI, Kotlin and Swift (#477, phase P4b).** `MfskMode` 25 is JTTY
   (`MFSK_MODE_JTTY`, `MFSK_CAP_STREAM_RECEIVER`), and a receiver handle of its own carries it:
   `mfsk_jtty_params_init` / `_open` / `_set_params` / `_push_i16` / `_push_f32` / `_finish` /
@@ -122,8 +142,7 @@
   header and answer `MFSK_STATUS_UNKNOWN_PROTOCOL`. `MfskJttyReceiver` (Kotlin, with the JNI
   shim) and `JttyReceiver` (Swift) wrap it. The C++ driver, the JVM test, the XCTest suite (73
   cases now) and `tests/jtty_ffi.rs` each feed upstream's sample recording in chunks and expect
-  `RAN ALL NIGHT ON BAND NOISE - NO FALSE DECODES!`, complete, at about 1507 Hz. There is no
-  JTTY transmit call yet (the message-packing layer is #477's P5).
+  `RAN ALL NIGHT ON BAND NOISE - NO FALSE DECODES!`, complete, at about 1507 Hz. Transmit came with P5.
 
 - **JTTY, the streaming receiver (#477, phase P4a).** `jtty::rx::Stream` takes 12 kHz audio in
   chunks of any size and passes each `MessageUpdate` to a callback from inside `push`;

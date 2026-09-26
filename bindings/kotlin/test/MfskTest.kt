@@ -309,6 +309,32 @@ fun main() {
         }
         check("an empty band is refused", threwParams)
 
+        // Transmit: text -> tones -> audio, and back through a receiver.
+        val txTones = MfskJtty.tones("CQ K1ABC CQ")
+        checkEq("one frame is 59 tones", txTones.size, 59)
+        val txPcm = ShortArray(12_000) + MfskJtty.synthesize(txTones) + ShortArray(6 * 12_000)
+        val heard = ArrayList<MfskJttyUpdate>()
+        MfskJttyReceiver.open().use { rx ->
+            var pos = 0
+            while (pos < txPcm.size) {
+                val end = minOf(pos + 4096, txPcm.size)
+                heard.addAll(rx.push(txPcm.copyOfRange(pos, end)))
+                pos = end
+            }
+        }
+        check("the transmitted message comes back through the receiver",
+              heard.any { it.text == "CQ K1ABC CQ" && it.complete })
+        check("encode is tones then synthesize",
+              MfskJtty.encode("CQ K1ABC CQ").size == txPcm.size - 12_000 - 6 * 12_000)
+        check("an empty message has nothing to send", MfskJtty.tones("   ").isEmpty())
+        var threwLong = false
+        try {
+            MfskJtty.tones("A".repeat(81))
+        } catch (e: IllegalStateException) {
+            threwLong = true
+        }
+        check("a message over 80 characters is refused", threwLong)
+
         val closedRx = MfskJttyReceiver.open()
         closedRx.close()
         closedRx.close()  // idempotent

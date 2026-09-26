@@ -147,3 +147,61 @@ public final class JttyReceiver {
         try check(mfsk_jtty_reset(handle))
     }
 }
+
+/// The exchange profile the text packer works under. Only ``rttyRoundup`` changes
+/// the packing: it adds serial-number and state/province candidates and rewrites
+/// `599 5` to `599 005`.
+public enum JttyProfile: UInt32, Sendable {
+    case unknown = 0
+    case fieldDay = 1
+    case rttyRoundup = 2
+}
+
+/// JTTY transmit: WSJT-X's text packer (`pack_jtty`, the fewest frames for the text)
+/// and the synthesiser. The F-key templates and N1MM tags WSJT-X puts around it are
+/// not part of this library.
+public enum Jtty {
+    /// Channel tones (0…3), 59 per frame; empty for an empty message. Throws
+    /// ``MfskError/Code/invalidArgument`` for a message that cannot be sent — over 80
+    /// characters, over 16 frames, an RTTY serial that does not fit.
+    public static func tones(for text: String, profile: JttyProfile = .unknown) throws -> [UInt8] {
+        var count: UInt = 0
+        try check(mfsk_jtty_encode_tones(text, profile.rawValue, nil, 0, &count))
+        guard count > 0 else { return [] }
+        let capacity = count
+        var tones = [UInt8](repeating: 0, count: Int(capacity))
+        try tones.withUnsafeMutableBufferPointer { buffer in
+            var written: UInt = 0
+            try check(mfsk_jtty_encode_tones(text, profile.rawValue, buffer.baseAddress, capacity, &written))
+        }
+        return tones
+    }
+
+    /// 16-bit PCM at 12 kHz for `tones` (a whole number of 59-tone frames),
+    /// `frequencyHz` the frequency of tone 0, `amplitude` the peak in counts.
+    public static func synthesise(_ tones: [UInt8], frequencyHz: Float = 1500,
+                                  amplitude: Float = 8000) throws -> [Int16] {
+        var need: UInt = 0
+        try tones.withUnsafeBufferPointer { t in
+            try check(mfsk_jtty_tones_to_i16(t.baseAddress, UInt(t.count), frequencyHz, amplitude,
+                                             nil, 0, &need))
+        }
+        let capacity = need
+        var pcm = [Int16](repeating: 0, count: Int(capacity))
+        try tones.withUnsafeBufferPointer { t in
+            try pcm.withUnsafeMutableBufferPointer { out in
+                var written: UInt = 0
+                try check(mfsk_jtty_tones_to_i16(t.baseAddress, UInt(t.count), frequencyHz, amplitude,
+                                                 out.baseAddress, capacity, &written))
+            }
+        }
+        return pcm
+    }
+
+    /// Text straight to audio: ``tones(for:profile:)`` then ``synthesise(_:frequencyHz:amplitude:)``.
+    public static func audio(for text: String, profile: JttyProfile = .unknown,
+                             frequencyHz: Float = 1500, amplitude: Float = 8000) throws -> [Int16] {
+        let t = try tones(for: text, profile: profile)
+        return t.isEmpty ? [] : try synthesise(t, frequencyHz: frequencyHz, amplitude: amplitude)
+    }
+}

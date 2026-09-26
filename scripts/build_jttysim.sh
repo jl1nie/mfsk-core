@@ -22,7 +22,7 @@
 # root CMakeLists.txt and reuses upstream's CMake/Sources.cmake for the
 # source lists, so the compile units are still upstream's own.
 #
-# Outputs: <out-dir>/build/{sjtty,rjtty,jtty_ladder_oracle}
+# Outputs: <out-dir>/build/{sjtty,rjtty,jtty_ladder_oracle,jtty_pack_oracle}
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -68,9 +68,9 @@ fi
 cmake -S "$SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release \
       -DJTTYSIM_DIR="$SCRIPT_DIR/jttysim" > "$OUT_DIR/configure.log" 2>&1 \
   || { echo "cmake configure failed; see $OUT_DIR/configure.log" >&2; tail -20 "$OUT_DIR/configure.log" >&2; exit 1; }
-cmake --build "$BUILD" --target sjtty rjtty jtty_ladder_oracle -j"$(nproc)" \
+cmake --build "$BUILD" --target sjtty rjtty jtty_ladder_oracle jtty_pack_oracle -j"$(nproc)" \
       > "$OUT_DIR/build.log" 2>&1 \
   || { echo "build failed; see $OUT_DIR/build.log" >&2; grep -n -i error "$OUT_DIR/build.log" | head -20 >&2; exit 1; }
 
 echo "Built from $TAG ($COMMIT):"
-ls -1 "$BUILD/sjtty" "$BUILD/rjtty" "$BUILD/jtty_ladder_oracle"
+ls -1 "$BUILD/sjtty" "$BUILD/rjtty" "$BUILD/jtty_ladder_oracle" "$BUILD/jtty_pack_oracle"

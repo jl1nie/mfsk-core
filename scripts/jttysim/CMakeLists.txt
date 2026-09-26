@@ -64,4 +64,7 @@ endforeach ()
 if (JTTYSIM_DIR)
   add_executable (jtty_ladder_oracle ${JTTYSIM_DIR}/jtty_ladder_oracle.f90)
   target_link_libraries (jtty_ladder_oracle wsjt_fort)
+  # and one for the text packer: scripts/jttysim/jtty_pack_oracle.f90.
+  add_executable (jtty_pack_oracle ${JTTYSIM_DIR}/jtty_pack_oracle.f90)
+  target_link_libraries (jtty_pack_oracle wsjt_fort)
 endif ()

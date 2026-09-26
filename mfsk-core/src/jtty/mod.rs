@@ -49,12 +49,15 @@
 //! | `rx` | window → frames: sync surface, candidates, peak-up, gate, decode, validate (needs an FFT feature) | `jtty_mdecode.f90`, `jtty_peakup.f90` |
 //! | [`trellis`] | list-WAVA decoding of that code from tone correlations | `jtty_tbcc_list_decoder.f90` |
 //! | [`tx`] | atoms → tones → GFSK samples | `genjtty.f90`, `gen_jttywave.f90` |
+//! | [`pack`] | typed message → fewest atoms (exchange profiles) | `pack_jtty` in `jtty_mod.f90` |
 //!
-//! ## Text packing is not here
+//! ## Text packing
 //!
-//! Upstream's `pack_jtty` (turn a typed message into the minimum number of
-//! atoms, with exchange profiles) is host UI policy and phase P5. Callers
-//! here build [`source::Atom`]s directly.
+//! [`pack`] is upstream's `pack_jtty`: a typed message and an exchange profile
+//! in, the fewest atoms out (`pack::tones` goes on to the channel tones). What
+//! upstream's GUI adds around it — F-key templates, the N1MM tags, choosing the
+//! profile — is host policy and is not here (#463's line, drawn for #477 in
+//! `docs/notes/JTTY_UPSTREAM.md`).
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod assemble;
@@ -63,6 +66,7 @@ pub mod crc;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod dsp;
 pub mod ladder;
+pub mod pack;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
 pub mod source;

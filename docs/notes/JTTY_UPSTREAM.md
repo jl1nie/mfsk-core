@@ -457,9 +457,15 @@ mode" because the ABI shape is a stateful handle, not a slot call.
 - **Exit:** the C++ driver and both bindings receive a WAV fed in chunks and
   report the golden message.
 
-### P5 — text packer and macro layer (only on request)
-`pack_jtty`'s dynamic program, exchange profiles, F-key / N1MM compilation.
-Host UI policy upstream, not protocol.
+### P5 — text packer (protocol half only)
+`pack_jtty`'s dynamic program and its exchange profiles: text in, atoms out, and a
+transmit path through the ABI and the bindings. **The F-key templates, N1MM
+`[[JTTY:<ACTION>]]` tags and choosing the profile from the operating activity are
+host UI policy and stay out of the library** — the line #463 draws for the
+QSO-state FT8 decoders, agreed for JTTY on 2026-09-26. The profile is an argument.
+- **Exit (met):** the same frames as upstream's `pack_jtty` on a few thousand messages
+  under all three profiles, the same refusals, the ABI and both bindings sending text
+  and receiving it back.
 
 ### P6 — embedded (separate decision)
 After P2/P3 are measured on a host: whether a continuously running receiver
@@ -689,7 +695,7 @@ The C ABI, the Kotlin and Swift bindings, the C++ driver.
   source, whatever the features); without the feature they answer
   `MFSK_STATUS_UNKNOWN_PROTOCOL`, as `mfsk_runtime_configure` does without `parallel`.
 - **No transmit call.** The ABI has no JTTY synthesis, so every binding test feeds the
-  vendored upstream recording; the message-packing layer is P5.
+  vendored upstream recording (the transmit path and the packer came in P5).
 - **Tests.** `tests/jtty_ffi.rs` (7: introspection, chunk-size independence, coalescing,
   finish/reset, 24 kHz + float, parameter validation, NULL handling), the C++ driver's
   `test_jtty`, the Kotlin JVM test and `JttyReceiverTests` (Swift, 5). The recording gives
@@ -722,3 +728,27 @@ The FFI and bindings (P4b) are separate.
 - **Docs.** `LIBRARY.md` §2.5 (with a doctest that synthesises, streams and decodes a
   message), the module map and the feature table, both languages; README mode table.
 
+## P5 results (2026-09-26)
+
+- **Packer.** `jtty::pack` (`normalize`, `pack`, `tones`, `ExchangeProfile`, `PackError`),
+  a port of `pack_jtty`, `normalize_jtty_message`, `normalize_serials`, `try_compact`,
+  `consider` and `offer`. No FFT, so it builds under `alloc,jtty`.
+- **Oracle.** `scripts/jttysim/jtty_pack_oracle.f90` (ours, linked against upstream's
+  `jtty_mod`) reads `profile<TAB>text` and prints `nframes` and the frames as hex;
+  `scripts/gen_jtty_pack_cases.sh` builds 3 525 cases (curated ones, seeded random
+  compositions of the tokens the packer treats specially, random text) and vendors
+  the answers as `golden/jtty/pack_cases.tsv` (270 KB). `tests/jtty_pack.rs` requires the
+  identical frames, or the identical refusal. Frame counts in the corpus run 0 to 16.
+- **What the oracle found.** One upstream quirk, in the *first* run: `1F DX` came out as
+  TEXT5 upstream and as a class/section atom here. `pack77_arrl_section_index` returns
+  -1 for an argument shorter than three characters and `pack_jtty` hands it `trim(word)`,
+  so a two-letter section (`DX`, `AB`, `MB`, `PE`, …) is never packed as a class/section
+  atom; a longer word matches on its first three characters (which `offer`'s
+  round-trip then rejects). Reproduced and documented in `pack.rs`. Whether it is
+  intended is not knowable from the source; the receiver still decodes such an atom.
+- **Deliberate differences.** More than 80 characters is `PackError::TooLong` (upstream's
+  `character*80` truncates silently at the caller); a non-ASCII character is one `#`, not
+  one per byte. Neither is reachable from an ASCII message of at most 80 characters.
+- **ABI.** `mfsk_jtty_encode_tones(text, profile, tones, cap, out_len)`,
+  `mfsk_jtty_synth_len`, `mfsk_jtty_tones_to_i16` / `_f32`; a NULL buffer with
+  capacity 0 is a size query. Kotlin `MfskJtty`, Swift `Jtty`.
