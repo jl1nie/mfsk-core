@@ -18,7 +18,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use mfsk_core::jtty::rx::{FrameDecode, Params, Receiver};
+use mfsk_core::jtty::rx::{FrameDecode, Params, Receiver, Stream};
 use mfsk_core::jtty::source::{Atom, render_message};
 
 fn load(rel: &str) -> Option<Vec<i16>> {
@@ -676,4 +676,73 @@ fn a_weak_station_under_a_strong_one_needs_the_subtraction() {
         ["CQ K1ABC CQ"],
         "without subtraction only the strong one"
     );
+}
+
+/// Fed a piece at a time, in any sizes, a [`Stream`] reports exactly the updates a
+/// scan of the whole recording does — same messages, same order, same values.
+#[test]
+fn streaming_is_scanning_whatever_the_chunk_size() {
+    let Some(sample) = load("jtty/260807_134110.wav") else {
+        return;
+    };
+    let Some(four) = load("jtty/sim/mix_four_stations.wav") else {
+        return;
+    };
+    let Some(three) = load("jtty/sim/mix_three_channels.wav") else {
+        return;
+    };
+    let rx = std::sync::Arc::new(Receiver::new());
+    for (name, audio) in [
+        ("sample", &sample),
+        ("four_stations", &four),
+        ("three_channels", &three),
+    ] {
+        let want = rx.scan_messages(audio, &Params::default());
+        assert!(!want.is_empty(), "{name}");
+        for chunk in [1usize, 333, 4096, 12_000, 28_320, 100_000, audio.len()] {
+            let mut got = Vec::new();
+            let mut stream = Stream::new(rx.clone(), Params::default());
+            let mut most = 0;
+            for piece in audio.chunks(chunk) {
+                stream.push(piece, &mut |u| got.push(u));
+                most = most.max(stream.buffered_samples());
+            }
+            assert_eq!(got, want, "{name}, chunks of {chunk}");
+            assert_eq!(stream.samples_seen(), audio.len());
+            // only what a re-sweep can reach is kept
+            assert!(
+                most <= 28_320 + 3 * 5_664 + chunk,
+                "{name}, chunks of {chunk}: {most} buffered"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_stream_that_ends_reports_what_was_left_unfinished() {
+    let Some(sample) = load("jtty/260807_134110.wav") else {
+        return;
+    };
+    let rx = std::sync::Arc::new(Receiver::new());
+    let mut stream = Stream::new(rx, Params::default());
+    let mut got = Vec::new();
+    // 12 s of a 22 s message: several frames in, no end of message
+    stream.push(&sample[..12 * 12_000], &mut |u| got.push(u));
+    assert!(!got.is_empty() && got.iter().all(|u| !u.complete));
+    let before = got.len();
+    stream.finish(&mut |u| got.push(u));
+    assert_eq!(
+        got.len(),
+        before + 1,
+        "one incomplete report for the one open message"
+    );
+    let last = got.last().unwrap();
+    assert!(
+        !last.complete && last.text.starts_with("RAN ALL NIGHT"),
+        "{:?}",
+        last.text
+    );
+    // and reset starts over
+    stream.reset();
+    assert_eq!(stream.samples_seen(), 0);
 }

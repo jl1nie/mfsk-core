@@ -436,9 +436,8 @@ and sync surface prepared ahead on the pool.
   for frames and messages; the assembler's rules one by one.
 - Two random two-station studies against `rjtty`
   (`scripts/jtty_multi_study.sh`, easy and hard).
-- **Not done:** wiring the JTTY sweeps into `run-sensitivity-sweeps.sh` and
-  `sweep-baseline.json` (the parity test against `UPSTREAM_RECALL.tsv` exists; the
-  baseline file and the per-release run do not) — P4, with the release plumbing.
+- Wiring the JTTY sweeps into `run-sensitivity-sweeps.sh` and `sweep-baseline.json`
+  was deferred from here and done in P4a (see "P4a results").
 - **Exit (met):** the multi-station fixtures decode as `rjtty`'s; a station under
   a strong one is recovered; the differences from upstream's schedule are
   measured (2 of 200 in the hard set, none in the easy).
@@ -586,7 +585,11 @@ corpora of P0.
   channel 2, 9 of 13, 27 errors, rung 2, rank 2). Both are made by `rjtty` too:
   this is upstream's false-accept behaviour, reproduced. Two events in ~26 min of
   real audio is far too few to state a rate; it is enough to say the rate is not
-  zero and that Gaussian noise is a poor proxy for it.
+  zero. (An earlier draft added "and Gaussian noise is a poor proxy for it";
+  that was not measured. What #487 measured is that the rate follows the number
+  of candidates that pass the sync gate, times 16/4096 for the CRC and the
+  fraction the grammar accepts, so a noise-only set bounds the rate but says
+  nothing until its gated-candidate count is stated.)
 - **Why a simple gate does not remove them.** Correct decodes near threshold
   carry up to 23–26 symbol errors in 59 (AWGN −16…−18 dB, fading −16 dB) against
   21 and 27 for the false ones, so an error-count limit cuts real decodes about
@@ -661,5 +664,31 @@ corpora of P0.
   spends its time.
 - **Not ported / different:** upstream coalesces pending updates between polls
   (`queue_message_update`); here every merge emits an update and the consumer
-  coalesces — the streaming API is P4. `Params::subtract` is new (off = a
+  coalesces — the streaming API is P4a. `Params::subtract` is new (off = a
   single-signal receiver).
+
+## P4a results (2026-09-26)
+
+The core API half of P4: the streaming receiver, its docs and the tier-C wiring.
+The FFI and bindings (P4b) are separate.
+
+- **`jtty::rx::Stream`** (D2 as designed): `push(&[i16], &mut dyn FnMut(MessageUpdate))`,
+  `finish`, `reset`, `set_params`, `samples_seen`, `buffered_samples`. It decodes
+  every window that a push completes, on the caller's thread and rayon's pool, and
+  trims its buffer to what the retro re-sweep can still reach (three windows before
+  the next one). `Receiver::run` was refactored into a `step` over an `Audio` view
+  (`buf` plus the index of `buf[0]`), used by both the one-shot scan and the stream,
+  so there is one schedule and parity is by construction. The test checks it anyway:
+  chunk sizes 1, 333, 4096, 12000, 28320, 100000 and the whole recording give the
+  updates `scan_messages` gives, and the buffer stays within `NCHUNK + 3 * STEP` plus
+  the chunk.
+- **Tier C.** `tests/jtty_sweep.rs::jtty_snr_sweep` scores the `jtty_sweep` corpus
+  (awgn and mid_moderate, -20…-12 dB, 20 files a cell) through `Receiver::scan` into
+  `channel,snr_db,trial,pass,extra`; `run-sensitivity-sweeps.sh jtty` runs it in 7 s.
+  Baseline: 50 % crossing **-16.20 dB** (awgn) and **-15.25 dB** (mid_moderate),
+  **0** unexpected decodes in 360 files. `sweep-baseline.json` stamps `jtty` on its own;
+  `release-status.sh` watches `src/jtty`. The parity test against `UPSTREAM_RECALL.tsv`
+  stays in `jtty_rx.rs`.
+- **Docs.** `LIBRARY.md` §2.5 (with a doctest that synthesises, streams and decodes a
+  message), the module map and the feature table, both languages; README mode table.
+

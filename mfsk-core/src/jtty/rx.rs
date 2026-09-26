@@ -60,6 +60,7 @@
 //! thread count.
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::f32::consts::PI;
 
@@ -575,8 +576,10 @@ impl Receiver {
             return;
         }
         let n = (audio.len() - NCHUNK) / STEP + 1;
-        let window = |w: usize| &audio[w * STEP..w * STEP + NCHUNK];
-        let t_of = |w: usize| (w * STEP) as f32 / 12_000.0;
+        let audio = Audio {
+            buf: audio,
+            base: 0,
+        };
         let mut asm = Assembler::new();
         // Windows are decoded in order — the message state, and the sticky-sync
         // retry that reads it, depend on the windows before — but the analytic
@@ -585,7 +588,7 @@ impl Receiver {
         const BATCH: usize = 16;
         for first in (0..n).step_by(BATCH) {
             let batch: Vec<usize> = (first..n.min(first + BATCH)).collect();
-            let prepare = |w: &usize| self.prepare(window(*w), p);
+            let prepare = |w: &usize| self.prepare(audio.window(*w), p);
             #[cfg(feature = "parallel")]
             let pres: Vec<Option<Pre>> = {
                 use rayon::prelude::*;
@@ -594,27 +597,162 @@ impl Receiver {
             #[cfg(not(feature = "parallel"))]
             let pres: Vec<Option<Pre>> = batch.iter().map(prepare).collect();
             for (w, pre) in batch.into_iter().zip(pres) {
-                asm.prune(t_of(w), sink);
-                let subtracted =
-                    self.analyze(window(w), t_of(w), p, None, pre, &mut asm, sink, frames);
-                for x in &subtracted {
-                    for k in 1..=super::assemble::MAX_RETRO_STEPS {
-                        if w >= k {
-                            let _ = self.analyze(
-                                window(w - k),
-                                t_of(w - k),
-                                p,
-                                Some(x),
-                                None,
-                                &mut asm,
-                                sink,
-                                frames,
-                            );
-                        }
-                    }
+                self.step(&audio, w, p, pre, &mut asm, sink, frames);
+            }
+        }
+    }
+
+    /// Window `w`: age the message state, decode it, and re-sweep the windows
+    /// before it for every signal it subtracted.
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        &self,
+        audio: &Audio,
+        w: usize,
+        p: &Params,
+        pre: Option<Pre>,
+        asm: &mut Assembler,
+        sink: &mut dyn FnMut(MessageUpdate),
+        frames: &mut Vec<FrameDecode>,
+    ) {
+        let t_of = |k: usize| (k * STEP) as f32 / 12_000.0;
+        asm.prune(t_of(w), sink);
+        let subtracted = self.analyze(audio.window(w), t_of(w), p, None, pre, asm, sink, frames);
+        for x in &subtracted {
+            for k in 1..=super::assemble::MAX_RETRO_STEPS {
+                if w >= k {
+                    let _ = self.analyze(
+                        audio.window(w - k),
+                        t_of(w - k),
+                        p,
+                        Some(x),
+                        None,
+                        asm,
+                        sink,
+                        frames,
+                    );
                 }
             }
         }
+    }
+}
+
+/// Audio whose first sample is sample `base` of the recording: window `k` is the
+/// [`NCHUNK`] samples starting at `k · STEP`.
+struct Audio<'a> {
+    buf: &'a [i16],
+    base: usize,
+}
+
+impl<'a> Audio<'a> {
+    fn window(&self, k: usize) -> &'a [i16] {
+        let start = k * STEP - self.base;
+        &self.buf[start..start + NCHUNK]
+    }
+}
+
+/// A receiver fed audio as it arrives (`Receiver::scan_messages`, a sample at a
+/// time): the same windows, subtraction, retro re-sweep, retry and assembly, so
+/// the messages it reports are exactly those of a scan of the whole recording,
+/// whatever the chunk sizes.
+///
+/// It keeps only the audio a re-sweep can still reach — the current window and the
+/// three before it, about 45 000 samples. A window is decoded as soon as its last
+/// sample has arrived, inside [`push`](Self::push), on the caller's thread (and on
+/// rayon's pool, under `parallel`); results come out through the callback, which
+/// is the shape `STREAMING.md` §4 argues for. A poll-style wrapper for callers
+/// that cannot take a closure (the C ABI) is built on top of this, not into it.
+///
+/// The tables are shared: any number of streams (one per audio channel, say) may
+/// hold the same [`Arc<Receiver>`].
+pub struct Stream {
+    rx: Arc<Receiver>,
+    params: Params,
+    buf: Vec<i16>,
+    /// index in the recording of `buf[0]`
+    base: usize,
+    /// the next window to decode
+    next: usize,
+    asm: Assembler,
+}
+
+impl Stream {
+    /// A stream that starts at sample 0 of a recording.
+    pub fn new(rx: Arc<Receiver>, params: Params) -> Self {
+        Self {
+            rx,
+            params,
+            buf: Vec::new(),
+            base: 0,
+            next: 0,
+            asm: Assembler::new(),
+        }
+    }
+
+    /// The receive settings.
+    pub fn params(&self) -> &Params {
+        &self.params
+    }
+
+    /// Change the settings; they apply from the next window.
+    pub fn set_params(&mut self, params: Params) {
+        self.params = params;
+    }
+
+    /// Samples fed so far.
+    pub fn samples_seen(&self) -> usize {
+        self.base + self.buf.len()
+    }
+
+    /// Samples held for the re-sweep of earlier windows: at most about
+    /// `NCHUNK + 3 · STEP` (45 000) plus what has just arrived.
+    pub fn buffered_samples(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Feed 12 kHz mono audio (any number of samples, including none). Every
+    /// window this completes is decoded, and each message update it produces is
+    /// passed to `on_update`, in the order it happened.
+    pub fn push(&mut self, samples: &[i16], on_update: &mut dyn FnMut(MessageUpdate)) {
+        self.buf.extend_from_slice(samples);
+        let mut frames = Vec::new();
+        while self.base + self.buf.len() >= self.next * STEP + NCHUNK {
+            let audio = Audio {
+                buf: &self.buf,
+                base: self.base,
+            };
+            self.rx.step(
+                &audio,
+                self.next,
+                &self.params,
+                None,
+                &mut self.asm,
+                on_update,
+                &mut frames,
+            );
+            frames.clear();
+            self.next += 1;
+        }
+        // nothing before the oldest window a re-sweep can still reach is needed
+        let keep_from = self.next.saturating_sub(super::assemble::MAX_RETRO_STEPS) * STEP;
+        if keep_from > self.base {
+            self.buf.drain(..keep_from - self.base);
+            self.base = keep_from;
+        }
+    }
+
+    /// The stream has ended: report every message still waiting for a
+    /// continuation as incomplete (an [`Assembler::prune`] far in the future).
+    pub fn finish(&mut self, on_update: &mut dyn FnMut(MessageUpdate)) {
+        self.asm.prune(f32::MAX / 4.0, on_update);
+    }
+
+    /// Forget everything and start again at sample 0.
+    pub fn reset(&mut self) {
+        self.buf.clear();
+        self.base = 0;
+        self.next = 0;
+        self.asm = Assembler::new();
     }
 }
 
