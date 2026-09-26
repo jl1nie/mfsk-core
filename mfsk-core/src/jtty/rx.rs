@@ -90,6 +90,10 @@ const DF: f32 = FS6 / NFFT as f32;
 const COL_STEP: usize = 12;
 /// Sync-surface columns: start offsets over one quarter frame.
 const NCOLS: usize = FRAME_SYMBOLS * NSS / 4 / COL_STEP + 1;
+/// Half-length of [`Params::fir_analytic`]'s filter: 97 taps, Kaiser β = 7. With
+/// `Params::embedded()` it gives the transform's results: `jtty_sweep` 164/360 either way, the hard
+/// two-station set 91/200 (49 taps: 90; 193 taps: 91).
+const FIR_HALF: usize = 48;
 /// Decimation of the sync search when [`Params::decimate_sync`] is on: the product of window and
 /// sync wave is summed 16 samples at a time, so `NFFT / 16` = 512 points cover 375 Hz.
 const SYNC_DECIM: usize = 16;
@@ -166,6 +170,11 @@ pub struct Params {
     /// decodes, and in noise alone 1.8 refinements a window instead of 5.0, for 34 % more ladder
     /// calls (#499).
     pub raw_first: bool,
+    /// Compute each window's analytic signal with a 97-tap complex FIR filter
+    /// ([`dsp::AnalyticFir`]) instead of `ana64a`'s 32 768-point transform, which `esp-dsp`
+    /// cannot do. Same results with the other `embedded()` options on `jtty_sweep` (164/360)
+    /// and the hard two-station set (91/200) (#499).
+    pub fir_analytic: bool,
 }
 
 impl Params {
@@ -177,6 +186,7 @@ impl Params {
             ch0_only: true,
             decimate_sync: true,
             raw_first: true,
+            fir_analytic: true,
             ..self
         }
     }
@@ -197,6 +207,7 @@ impl Default for Params {
             ch0_only: false,
             decimate_sync: false,
             raw_first: false,
+            fir_analytic: false,
         }
     }
 }
@@ -239,6 +250,7 @@ pub struct FrameDecode {
 pub struct Receiver {
     ladder: Ladder,
     refs: ToneRefs,
+    fir: dsp::AnalyticFir,
     csync: Vec<Complex32>,
     #[cfg(feature = "jtty-stats")]
     stats: super::stats::Stats,
@@ -343,6 +355,7 @@ impl Receiver {
         Self {
             ladder: Ladder::new(),
             refs: ToneRefs::new(NSS),
+            fir: dsp::AnalyticFir::new(FIR_HALF, 7.0),
             csync: dsp::sync_wave(),
             #[cfg(feature = "jtty-stats")]
             stats: Default::default(),
@@ -437,7 +450,7 @@ impl Receiver {
             // the analytic signal is done, the surface is not: frames carried in change it
             Some(Pre { c0, .. }) if interferer.is_none() => (c0, None),
             _ => {
-                let mut c0 = self.analytic(audio);
+                let mut c0 = self.analytic(audio, p);
                 if let Some(x) = interferer {
                     stat_add!(self, Subtractions, 1);
                     stat_time!(self, Subtract);
@@ -532,16 +545,20 @@ impl Receiver {
 
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
-        let c0 = self.analytic(audio);
+        let c0 = self.analytic(audio, p);
         let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
         Some(Pre { c0, surface })
     }
 
     /// The analytic signal of a window, counted and timed.
-    fn analytic(&self, audio: &[i16]) -> Vec<Complex32> {
+    fn analytic(&self, audio: &[i16], p: &Params) -> Vec<Complex32> {
         stat_add!(self, Analytic, 1);
         stat_time!(self, Analytic);
-        dsp::analytic_6k(audio)
+        if p.fir_analytic {
+            self.fir.apply(audio)
+        } else {
+            dsp::analytic_6k(audio)
+        }
     }
 
     /// Every candidate's outcome, in order; parallel across candidates.

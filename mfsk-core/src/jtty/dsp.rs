@@ -78,6 +78,66 @@ pub fn analytic_6k(audio: &[i16]) -> Vec<Complex32> {
     buf
 }
 
+/// The analytic signal of [`analytic_6k`] by a complex FIR filter instead of a whole-window
+/// transform: a Kaiser-windowed low-pass (cut-off 1 500 Hz) modulated to +1 500 Hz passes
+/// 0–3 000 Hz and stops the negative frequencies, and every other output is kept. No
+/// 32 768-point transform, which `esp-dsp` (at most 8 192 points) cannot do, and nothing that
+/// needs more than the samples around each output, so it can run as the audio arrives (#499).
+/// The edges see zeros outside the window, as the transform's zero padding does.
+pub struct AnalyticFir {
+    /// `h[m + M]` for `m` in `−M..=M`, scale included.
+    taps: Vec<Complex32>,
+}
+
+impl AnalyticFir {
+    /// `2M + 1` taps, Kaiser `beta`.
+    pub fn new(half: usize, beta: f64) -> Self {
+        let i0 = |x: f64| {
+            // modified Bessel function of the first kind, order 0
+            let (mut sum, mut term) = (1.0f64, 1.0f64);
+            for k in 1..40 {
+                term *= (x / 2.0) / k as f64;
+                sum += term * term;
+            }
+            sum
+        };
+        let m = half as f64;
+        let fc = 1500.0 / 12_000.0; // cycles a sample
+        let w0 = TAU * 1500.0 / 12_000.0;
+        let taps = (0..=2 * half)
+            .map(|i| {
+                let t = i as f64 - m;
+                let sinc = if t == 0.0 {
+                    2.0 * fc
+                } else {
+                    (TAU * fc * t).sin() / (core::f64::consts::PI * t)
+                };
+                let win = i0(beta * (1.0 - (t / m).powi(2)).max(0.0).sqrt()) / i0(beta);
+                let g = 2.0 / 32_767.0 * sinc * win;
+                Complex32::new((g * (w0 * t).cos()) as f32, (g * (w0 * t).sin()) as f32)
+            })
+            .collect();
+        Self { taps }
+    }
+
+    /// The analytic signal of `audio` at 6 kHz: `audio.len() / 2` samples, output `k` centred on
+    /// input `2k`.
+    pub fn apply(&self, audio: &[i16]) -> Vec<Complex32> {
+        let half = self.taps.len() / 2;
+        let n = audio.len();
+        (0..n / 2)
+            .map(|k| {
+                let c = 2 * k;
+                let (lo, hi) = (c.saturating_sub(half), (c + half).min(n - 1));
+                // y[c] = Σ h[m] x[c − m]
+                (lo..=hi).fold(Complex32::new(0.0, 0.0), |acc, j| {
+                    acc + self.taps[c + half - j] * f32::from(audio[j])
+                })
+            })
+            .collect()
+    }
+}
+
 /// The 13-symbol sync sequence as a complex baseband waveform at 6 kHz, tone 0
 /// at 0 Hz, phase continuous across symbols (`gen_syncwave.f90`).
 pub fn sync_wave() -> Vec<Complex32> {
@@ -139,6 +199,38 @@ mod tests {
         // and it rotates at +1500 Hz: phase advance per sample = 2π·1500/6000
         let adv = (z[5_001] * z[5_000].conj()).arg();
         assert!((adv - (TAU * 1500.0 / 6000.0) as f32).abs() < 1e-3, "{adv}");
+    }
+
+    /// The FIR form agrees with the transform on a tone: amplitude, rotation and phase.
+    #[test]
+    fn fir_analytic_signal_matches_the_transform() {
+        let n = 28_320;
+        let fir = AnalyticFir::new(48, 7.0);
+        for f in [400.0, 1500.0, 2600.0] {
+            let audio: Vec<i16> = (0..n)
+                .map(|i| (16_383.0 * (TAU * f * i as f64 / 12_000.0 + 0.3).sin()) as i16)
+                .collect();
+            let (a, b) = (analytic_6k(&audio), fir.apply(&audio));
+            assert_eq!(a.len(), b.len());
+            for k in 200..n / 2 - 200 {
+                assert!(
+                    (a[k] - b[k]).norm() < 0.01,
+                    "{f} Hz, sample {k}: {} vs {}",
+                    a[k],
+                    b[k]
+                );
+            }
+        }
+        // negative frequencies are stopped: a tone's image at −f would beat against it
+        let audio: Vec<i16> = (0..n)
+            .map(|i| (16_383.0 * (TAU * 1500.0 * i as f64 / 12_000.0).cos()) as i16)
+            .collect();
+        let b = fir.apply(&audio);
+        let spread = b[500..13_000]
+            .iter()
+            .map(|z| (z.norm() - 0.5).abs())
+            .fold(0f32, f32::max);
+        assert!(spread < 0.005, "{spread}");
     }
 
     #[test]
