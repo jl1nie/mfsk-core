@@ -279,5 +279,10 @@ whole-window `shift_frequency`; the raw gate needs only the 13 sync symbols' wor
 reference of section 8's list it is 2 496 multiply-adds a tone instead of a 14 160-sample mix — the gate count is
 cheap, the extra ladder calls are the price (~0.025 a window in noise, ≈ 1 s each on the CoreS3).
 
-Next: the decimated surface and raw-then-peak-up as real `Params` options, the rotated-reference candidate path (no
-whole-window `shift_frequency`), and the on-board measurement of all three.
+**Implemented** as `Params::ch0_only`, `decimate_sync`, `raw_first` and `Params::embedded()` (default off; the
+first two are the flags of the study, the third refines only above 6 of 13 sync tones). `jtty_sweep` with
+`MFSK_JTTY_SWEEP_EMBEDDED=1` gives 164/360, the hard set 92/200, as measured; the regression test
+`embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak_station` keeps the properties.
+
+Next: the rotated-reference candidate path (no whole-window `shift_frequency`), then the board — `jtty-bench` with
+`Params::embedded()` for the surface, the gate and the peak-up.

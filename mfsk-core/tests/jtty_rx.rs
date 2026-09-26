@@ -611,14 +611,18 @@ fn diag_messages() {
     for f in files {
         let audio = common::load_wav_i16(&f);
         let done: Vec<String> = rx
-            .scan_messages(
-                &audio,
-                &Params {
+            .scan_messages(&audio, &{
+                let p = Params {
                     carry: std::env::var_os("JTTY_DIAG_CARRY").is_some(),
                     sequential: std::env::var_os("JTTY_DIAG_SEQUENTIAL").is_some(),
                     ..Params::default()
-                },
-            )
+                };
+                if std::env::var_os("JTTY_DIAG_EMBEDDED").is_some() {
+                    p.embedded()
+                } else {
+                    p
+                }
+            })
             .into_iter()
             .filter(|u| u.complete)
             .map(|u| u.text)
@@ -907,5 +911,91 @@ fn carrying_decoded_frames_forward_finds_the_weak_station_and_loses_nothing() {
     assert!(
         lost <= 2,
         "sequential lost {lost} messages the default finds"
+    );
+}
+
+/// `Params::embedded()` (#499): channel 0 only, the decimated sync surface, raw-then-refined
+/// candidates. One station at −17…−11 dB within ±30 Hz of the search centre, in noise, over 60
+/// seeded scenes. Channel 0 with the decimated surface must decide exactly as with the full one
+/// (scene by scene: on `jtty_sweep`'s 360 files it differed in none), and the three options
+/// together must find at least as many as the default and nothing the station did not send
+/// (164 against 160 of 360 on `jtty_sweep`; channel 0 alone with the refine-first order, 141).
+#[test]
+fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak_station() {
+    use mfsk_core::jtty::source::CallAction;
+    use mfsk_core::jtty::tx;
+    let mut state = 0x499u64;
+    let mut uniform = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 11) as f64) / ((1u64 << 53) as f64)
+    };
+    let sigma = 400.0;
+    let amp = |snr_db: f64| {
+        (2.0 * sigma * sigma * 2500.0 / 6000.0 * 10f64.powf(snr_db / 10.0)).sqrt() as f32
+    };
+    let rx = Receiver::new();
+    let tones = tx::tones(&[Atom::call(CallAction::Cq, "K1ABC")]).unwrap();
+    let want = Atom::call(CallAction::Cq, "K1ABC").render();
+    let (mut n_default, mut n_ch0, mut n_embedded, mut differing) = (0, 0, 0, 0);
+    for _ in 0..60 {
+        let f = 1470.0 + 60.0 * uniform() as f32;
+        let sig = tx::synth_f32(&tones, f, amp(-17.0 + 6.0 * uniform()));
+        let mut audio = vec![0f32; 8 * 12_000];
+        for x in audio.iter_mut() {
+            let (u1, u2) = (uniform().max(1e-12), uniform());
+            *x = (sigma * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32;
+        }
+        let at = ((1.0 + 2.0 * uniform()) * 12_000.0) as usize;
+        for (i, &v) in sig.iter().enumerate() {
+            audio[at + i] += v;
+        }
+        let audio: Vec<i16> = audio
+            .iter()
+            .map(|&x| x.round().clamp(-32768.0, 32767.0) as i16)
+            .collect();
+        let found = |p: Params| -> Vec<String> {
+            let mut v: Vec<String> = rx
+                .scan(&audio, &p)
+                .into_iter()
+                .map(|d| d.atom.render())
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let plain = Params {
+            ch0_only: true,
+            ..Params::default()
+        };
+        let (d, c, c_dec, e) = (
+            found(Params::default()),
+            found(plain),
+            found(Params {
+                decimate_sync: true,
+                ..plain
+            }),
+            found(Params::default().embedded()),
+        );
+        differing += usize::from(c != c_dec);
+        for v in [&d, &c, &e] {
+            assert!(v.iter().all(|m| *m == want), "unexpected decode {v:?}");
+        }
+        n_default += d.len();
+        n_ch0 += c.len();
+        n_embedded += e.len();
+    }
+    eprintln!(
+        "default {n_default}, channel 0 only {n_ch0}, embedded {n_embedded}, decimation changed {differing} scenes"
+    );
+    assert!(differing <= 1, "decimation changed {differing} scenes");
+    assert!(
+        n_embedded + 1 >= n_default,
+        "embedded options found {n_embedded}, the default {n_default}"
+    );
+    assert!(
+        n_embedded >= n_ch0,
+        "raw-first found {n_embedded}, less than channel 0 alone ({n_ch0})"
     );
 }

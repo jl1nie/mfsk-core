@@ -2,6 +2,21 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: three search options for a receiver that cannot afford the default (#499).**
+  `jtty::rx::Params::ch0_only`, `decimate_sync` and `raw_first`, off by default so the receiver
+  stays upstream's, and `Params::embedded()` sets the three together.
+  - `ch0_only` skips the fixed side channels at 1350 and 1650 Hz; `decimate_sync` builds the sync
+    surface with 512-point transforms instead of 8 192 (same 0.732 Hz bins; the product of window
+    and sync wave is summed 16 samples at a time after mixing the band centre to DC) and falls back
+    to the full one when the band exceeds 375 Hz; `raw_first` tries each channel-0 candidate
+    unrefined and refines it only if that failed with 6 or more of 13 sync tones seen.
+  - Measured on `jtty_sweep` (360 files, weak-signal passes): default 160, `embedded()` **164**,
+    channel 0 alone with the default refine-first order 141; unexpected decodes 0 in each. The
+    decimated surface made the same decision as the full one on every file; on the hard
+    two-station set the weak station is found in 92 of 200 (77 without `raw_first`). In noise alone
+    a window refines 1.8 candidates instead of 5.0 and the host's surface time falls 4x; ladder calls
+    rise 34 % (0.073 to 0.098 a window). `docs/notes/JTTY_EMBEDDED_BUDGET.md` section 9 has the tables.
+
 - **C ABI: WSJT-X 3.2's Q65 settings, `mfsk_q65_decode_ex` (#466, part 2).** Pileup, Max
   Drift, the EME delay and the q3 list decode were Rust-only. The four `mfsk_q65_decode*`
   functions pick a strategy by name and scan a fixed wide window, and these settings are

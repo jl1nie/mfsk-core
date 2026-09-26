@@ -98,14 +98,18 @@ fn report(name: &str, audio: &[i16], rx: &Receiver) {
     let carry = std::env::var_os("MFSK_JTTY_CARRY").is_some();
     rx.reset_stats();
     let t = std::time::Instant::now();
-    let updates = rx.scan_messages(
-        audio,
-        &Params {
+    let updates = rx.scan_messages(audio, &{
+        let p = Params {
             sequential,
             carry,
             ..Params::default()
-        },
-    );
+        };
+        if std::env::var_os("MFSK_JTTY_EMBEDDED").is_some() {
+            p.embedded()
+        } else {
+            p
+        }
+    });
     let wall = t.elapsed().as_secs_f64();
     let s: Snapshot = rx.stats();
     let windows = (audio.len() - NCHUNK) / STEP + 1;

@@ -4867,6 +4867,9 @@ fn jtty_core_params(p: &MfskJttyParams) -> mfsk_core::jtty::rx::Params {
         subtract: p.subtract != 0,
         sequential: false,
         carry: false,
+        ch0_only: false,
+        decimate_sync: false,
+        raw_first: false,
     }
 }
 

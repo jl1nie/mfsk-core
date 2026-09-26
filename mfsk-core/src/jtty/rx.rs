@@ -90,6 +90,12 @@ const DF: f32 = FS6 / NFFT as f32;
 const COL_STEP: usize = 12;
 /// Sync-surface columns: start offsets over one quarter frame.
 const NCOLS: usize = FRAME_SYMBOLS * NSS / 4 / COL_STEP + 1;
+/// Decimation of the sync search when [`Params::decimate_sync`] is on: the product of window and
+/// sync wave is summed 16 samples at a time, so `NFFT / 16` = 512 points cover 375 Hz.
+const SYNC_DECIM: usize = 16;
+/// Sync tones (of 13) a channel-0 candidate's *unrefined* gate must see before
+/// [`Params::raw_first`] spends a peak-up on it; noise expects about 3.3.
+const RAW_FIRST_MIN_SYNC: usize = 6;
 /// Half-width of the peak-suppression rectangle: 10 Hz in bins …
 const NFZ: usize = 14;
 /// … and 16 ms in columns.
@@ -141,6 +147,39 @@ pub struct Params {
     /// overlaps too, so those never reach the ladder (a persistent residual, as a
     /// continuously running receiver would keep). Off is upstream's behaviour (#499).
     pub carry: bool,
+    /// Search channel 0 only; channels 1 and 2 (the fixed side channels at 1350 and 1650 Hz) are
+    /// skipped. Their candidates are not gated on channel 0's rules, and on a weak signal they
+    /// were a second, unrefined attempt at the same peak, worth 19 of 360 weak passes on
+    /// `jtty_sweep` when nothing replaces them — [`Self::raw_first`] does (#499).
+    pub ch0_only: bool,
+    /// Build the sync surface at 1/16 the FFT length (512 points, the same 0.732 Hz bins) by
+    /// summing the sync-wave product 16 samples at a time after mixing the band centre to DC.
+    /// Falls back to the full transform when the band does not fit 375 Hz. Made the same
+    /// decision on all 360 `jtty_sweep` files as the 8 192-point surface; the point is a
+    /// transform that fits the LX7's data cache. Meant for [`Self::ch0_only`] (the union band
+    /// of all three channels is 600 Hz and never fits) (#499).
+    pub decimate_sync: bool,
+    /// Channel 0 tries each pick unrefined first and refines it (`peakup`) only if that attempt
+    /// failed after its sync gate saw at least 6 of 13 tones; the default refines every pick
+    /// before its gate. Refining pulls a weak pick towards a noise peak as often as away
+    /// from one: 164 weak passes of 360 against the default's 160, with no added unexpected
+    /// decodes, and in noise alone 1.8 refinements a window instead of 5.0, for 34 % more ladder
+    /// calls (#499).
+    pub raw_first: bool,
+}
+
+impl Params {
+    /// The three search options an embedded receiver wants together: [`Self::ch0_only`],
+    /// [`Self::decimate_sync`], [`Self::raw_first`].
+    #[must_use]
+    pub fn embedded(self) -> Self {
+        Self {
+            ch0_only: true,
+            decimate_sync: true,
+            raw_first: true,
+            ..self
+        }
+    }
 }
 
 impl Default for Params {
@@ -155,6 +194,9 @@ impl Default for Params {
             subtract: true,
             sequential: false,
             carry: false,
+            ch0_only: false,
+            decimate_sync: false,
+            raw_first: false,
         }
     }
 }
@@ -256,10 +298,17 @@ fn search_band(fc: f32, fwid: f32, nfab: Option<(f32, f32)>) -> Option<(Band, f3
 type Channels = ([Option<(Band, f32)>; 3], usize, usize);
 
 fn channels(p: &Params) -> Option<Channels> {
+    let side = |fc: f32| {
+        if p.ch0_only {
+            None
+        } else {
+            search_band(fc, 150.0, Some((p.nfa_hz, p.nfb_hz)))
+        }
+    };
     let chans = [
         search_band(p.f0_hz, p.ftol_hz, None),
-        search_band(1350.0, 150.0, Some((p.nfa_hz, p.nfb_hz))),
-        search_band(1650.0, 150.0, Some((p.nfa_hz, p.nfb_hz))),
+        side(1350.0),
+        side(1650.0),
     ];
     let lo = chans.iter().flatten().map(|(b, _)| b.ja).min()?;
     let hi = chans.iter().flatten().map(|(b, _)| b.jb).max()?;
@@ -447,7 +496,7 @@ impl Receiver {
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
         let c0 = self.analytic(audio);
-        let surface = self.sync_surface(&c0, lo, hi);
+        let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
         Some(Pre { c0, surface })
     }
 
@@ -479,9 +528,12 @@ impl Receiver {
     }
 
     /// The sync surface over bins `lo..=hi`, all [`NCOLS`] columns (`build_s0`).
-    fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize) -> Surface {
+    fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize, decimate: bool) -> Surface {
         stat_add!(self, SurfaceBuilds, 1);
         stat_time!(self, Surface);
+        if decimate && hi - lo + 5 <= NFFT / SYNC_DECIM {
+            return self.sync_surface_decimated(c0, lo, hi);
+        }
         let width = hi - lo + 1;
         let column =
             |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
@@ -526,6 +578,67 @@ impl Receiver {
         }
     }
 
+    /// [`Self::sync_surface`] at 1/[`SYNC_DECIM`] the FFT length ([`Params::decimate_sync`]): the
+    /// conjugated sync wave is mixed by the band centre once, each column's product with the
+    /// window is summed `SYNC_DECIM` samples at a time, and the 512-point transform's bins are the
+    /// full transform's, shifted by the centre bin (the mixer's phase at a column's first sample
+    /// only rotates all bins together, and only powers are kept).
+    fn sync_surface_decimated(&self, c0: &[Complex32], lo: usize, hi: usize) -> Surface {
+        const NF: usize = NFFT / SYNC_DECIM;
+        let width = hi - lo + 1;
+        let mid = (lo + hi) / 2;
+        let conj: Vec<Complex32> = self.csync.iter().map(|s| s.conj()).collect();
+        let mut refm = alloc::vec![Complex32::new(0.0, 0.0); conj.len()];
+        dsp::shift_frequency(&conj, &mut refm, FS6, -(mid as f32) * DF);
+        let m = refm.len() / SYNC_DECIM;
+        let column =
+            |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
+                let x = &c0[col * COL_STEP..];
+                for (j, b) in buf.iter_mut().take(m).enumerate() {
+                    let at = j * SYNC_DECIM;
+                    *b = refm[at..at + SYNC_DECIM]
+                        .iter()
+                        .zip(&x[at..at + SYNC_DECIM])
+                        .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
+                }
+                buf[m..].fill(Complex32::new(0.0, 0.0));
+                fft.process(buf);
+                let power: Vec<f32> = (lo - 2..=hi + 2)
+                    .map(|b| buf[(b + NF - mid % NF) % NF].norm_sqr())
+                    .collect();
+                power
+                    .windows(5)
+                    .map(|w| w[0] + 2.0 * w[1] + 3.0 * w[2] + 2.0 * w[3] + w[4])
+                    .collect()
+            };
+        let zero = || alloc::vec![Complex32::new(0.0, 0.0); NF];
+        #[cfg(feature = "parallel")]
+        let rows: Vec<Vec<f32>> = {
+            use rayon::prelude::*;
+            (0..NCOLS)
+                .into_par_iter()
+                .with_min_len(16)
+                .map_init(
+                    || (dsp::with_planner(|p| p.plan_forward(NF)), zero()),
+                    |(fft, buf), col| column(col, fft.as_ref(), buf),
+                )
+                .collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let rows: Vec<Vec<f32>> = {
+            let fft = dsp::with_planner(|p| p.plan_forward(NF));
+            let mut buf = zero();
+            (0..NCOLS)
+                .map(|col| column(col, fft.as_ref(), &mut buf))
+                .collect()
+        };
+        Surface {
+            lo,
+            width,
+            data: rows.into_iter().flatten().collect(),
+        }
+    }
+
     /// One candidate: refine, gate, correlate, decode, validate.
     fn process(
         &self,
@@ -535,7 +648,43 @@ impl Receiver {
         p: &Params,
         peak: bool,
     ) -> Option<Outcome> {
-        let (xdt, f1) = if pick.channel == 0 && peak {
+        if peak && p.raw_first && pick.channel == 0 {
+            let (outcome, tones) = self.attempt(c0, pick, t0_s, p, peak, false);
+            if outcome.is_some() || tones < RAW_FIRST_MIN_SYNC {
+                return outcome;
+            }
+        }
+        self.attempt(c0, pick, t0_s, p, peak, true).0
+    }
+
+    /// One try at a candidate: with `refine` (channel 0 only) the pick is first pulled to the
+    /// local peak. Also returns the sync tones (of 13) the gate saw.
+    fn attempt(
+        &self,
+        c0: &[Complex32],
+        pick: &Pick,
+        t0_s: f32,
+        p: &Params,
+        peak: bool,
+        refine: bool,
+    ) -> (Option<Outcome>, usize) {
+        let mut tones = 0;
+        let outcome = self.attempt_inner(c0, pick, t0_s, p, peak, refine, &mut tones);
+        (outcome, tones)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn attempt_inner(
+        &self,
+        c0: &[Complex32],
+        pick: &Pick,
+        t0_s: f32,
+        p: &Params,
+        peak: bool,
+        refine: bool,
+        gate_tones: &mut usize,
+    ) -> Option<Outcome> {
+        let (xdt, f1) = if pick.channel == 0 && peak && refine {
             stat_add!(self, Peakups, 1);
             stat_time!(self, Peakup);
             let (x, f, _) = peakup(c0, &self.csync, pick.xdt_s, pick.f_hz);
@@ -574,6 +723,7 @@ impl Receiver {
             pt += pow[usize::from(sent)];
             pa += pow.iter().sum::<f32>();
         }
+        *gate_tones = hits;
         let pn = (pa - pt) / 3.0;
         let snr = if pn > 0.0 { db(pt / pn) } else { -99.9 };
         let passes = if !peak {
@@ -948,7 +1098,11 @@ struct Work<'a> {
 impl Work<'_> {
     fn surface(&mut self) -> &mut Surface {
         if self.surface.is_none() {
-            self.surface = Some(self.rx.sync_surface(&self.c0, self.lo, self.hi));
+            self.surface =
+                Some(
+                    self.rx
+                        .sync_surface(&self.c0, self.lo, self.hi, self.p.decimate_sync),
+                );
         }
         self.surface.as_mut().unwrap()
     }
@@ -1346,7 +1500,7 @@ mod profile {
         });
         let (lo, hi) = (1636usize, 2459usize);
         time("sync_surface (pool)", 50, &mut || {
-            std::hint::black_box(rx.sync_surface(&c0, lo, hi));
+            std::hint::black_box(rx.sync_surface(&c0, lo, hi, false));
         });
         let pick = Pick {
             channel: 0,
