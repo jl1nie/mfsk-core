@@ -1,10 +1,12 @@
 # JTTY — what WSJT-X 3.2.0-rc1 ships, and what porting it would take
 
 JTTY is the one mode WSJT-X 3.2.0 adds that this crate has no counterpart
-for. This note records how upstream implements it, so that the port (and the
-decision of whether to make it) does not start from a cold read of ~4 000
-lines of Fortran again. Tracking issue: #477. It is a reading of the source, **not** a measurement:
-no JTTY signal has been generated or decoded with this crate, and none of the
+for. This note records how upstream implements it, the design decisions to
+settle first, and a phased plan, so that the port does not start from a cold
+read of ~4 000 lines of Fortran. Tracking issue: #477.
+
+The upstream half is a reading of the source, **not** a measurement: no JTTY
+signal has been generated or decoded with this crate, and none of the
 sensitivity figures upstream might quote are reproduced here.
 
 Read against: `wsjtx` tag `v3.2.0-rc1` (`567ad29ce6abf3d4a44f181cdbc7ceba0d73e5f4`,
@@ -119,10 +121,13 @@ Pipeline, in the order `rjtty_core → jtty_mdecode_step → jtty_mdecode`:
 2. **Windowing**: chunk = 1.25 frames (`nframe + nframe/4`); the start
    advances by a quarter frame (0.472 s) per step; a step is attempted once
    a whole chunk is buffered. Every window sees a fresh candidate search.
-3. **Sync surface** `s0(freq, quarter-frame-step)`: correlate the 13-symbol
-   sync waveform (`gen_syncwave`) with the analytic signal at 12-sample time
-   steps, an 8192-point FFT per step, smoothed over frequency by a 1-2-3-2-1
-   kernel. A Bluestein/chirp path replaces the full FFT when the searched
+3. **Sync surface** `s0(freq, start-offset)`: correlate the 13-symbol
+   sync waveform (`gen_syncwave`) with the analytic signal at 12-sample
+   (2 ms) start offsets, an 8192-point FFT per offset, smoothed over
+   frequency by a 1-2-3-2-1 kernel. The offsets span only the window's
+   **first quarter frame** (237 columns: `ntstep/12 + 1` with `ntstep = 2832`
+   at 6 kHz), so consecutive windows search disjoint start times; only the
+   audio, not the search, overlaps. A Bluestein/chirp path replaces the full FFT when the searched
    band is narrow (`build_s0`); it is an optimisation, not a different
    algorithm.
 4. **Candidates**: three channels — 0 = the operator's RX frequency ±`ftol`,
@@ -227,69 +232,215 @@ Pipeline, in the order `rjtty_core → jtty_mdecode_step → jtty_mdecode`:
 | quantity | value |
 |---|---|
 | frame | 59 symbols × 384 / 12 000 s = 1.888 s |
-| search step | quarter frame = 0.472 s; window 1.25 frames = 2.36 s |
-| sync FFT | 8192 point at 6 kHz (0.73 Hz bins) |
-| trellis | 512 states × width 4 × 2^L branches × ⌈46/L⌉ blocks × 2 passes |
-| one decode attempt | ≤ 4 rungs; each rung is a full list-WAVA over 46 symbols |
+| window / step | 1.25 frames = 2.36 s (28 320 samples at 12 kHz) / a quarter frame = 0.472 s |
+| sync surface | 237 start offsets per window, one 8192-point FFT each (a narrower chirp/Bluestein path when the band is narrow) |
+| analytic signal | one `ana64a` (FFT of the whole window) per window — 80 % of its audio was in the previous window |
+| peak-up (channel 0) | 11 frequency trials per candidate, each shifting the buffer (`twkfreq`) |
+| trellis | 512 states × width 4 × 2^L branches × ⌈46/L⌉ blocks × 2 passes, per rung, ≤ 4 rungs per candidate |
+| retro re-sweep | 3 extra `jtty_mdecode` calls (each rebuilding its sync surface) per signal subtracted in a step |
 
-The trellis work per rung is of the order 10⁵–10⁶ metric additions (our
-arithmetic, unmeasured). A host build is not the question; whether a
-continuously-running receiver fits the CoreS3 budget (which is already
-contested by FT8/FT4/FST4/WSPR) is, and it is **out of scope for the first
-port**.
+None of this is measured. It is a list of where upstream spends work, to be
+turned into a profile before anything is optimised or parallelised (see D4).
 
-## Reuse in this crate
+## Design decisions
 
-| need | exists | notes |
-|---|---|---|
-| call28 | `msg::wsjt77::pack28` / `unpack28` | needs the same round-trip filter as `jtty_standard_call` |
-| ARRL sections (86) | `msg::wsjt77::ARRL_SECTIONS` | private const today |
-| Maidenhead grid | `msg::wsjt77::pack_grid4` | **not reusable as is**: JTTY's GRID4 index is `((f1*18+f2)*10+d1)*10+d2`, domain 0‥32399 — a different mapping from the pack77 `g15` |
-| GFSK synthesis | `engine::dsp::gfsk` | BT 2.0, h = 1, ramp `nsps/8` |
-| analytic signal | `engine::dsp::analytic` | |
-| subtraction | `engine::dsp::subtract` | FT8's; JTTY's works on a complex buffer at 6 kHz |
-| tone-shift (`twkfreq`) | `engine::sync2d::freq_shift_cd0` or `engine::dsp::ddc` | not compared in detail |
-| convolutional code | `fec::conv` (r=½ **K=32** Fano — WSPR) | different code and decoder; nothing shared |
-| CRC-12 | `fec::qra::q65::crc12` | **same generator** x¹²+x¹¹+x³+x²+x+1 (= JTTY's `0x80F` with the leading term implicit), but that routine is LSB-first over 6-bit symbols; JTTY's is a bitwise MSB-first remainder over 46 bits (`jtty_tbcc_crc_valid`). Same polynomial, do not assume the same routine |
+**D1 — placement.** Outside `Protocol` / `PROTOCOLS`, as MSK144 is (it has no
+T/R slot). Feature `jtty`, gated on a host FFT exactly as `msk144` is
+(`Cargo.toml`), added to `full`; host first (`std`). No `Protocol` ZST, so
+nothing in `protocol_invariants.rs`.
 
-New: TBCC encoder, list-WAVA decoder + ladder, the source grammar and text
-packer, the receive-state machine (candidates → assembly), continuous-TX
-plumbing.
+**D2 — receive API: incremental in, synchronous out.** The input has to be
+incremental, and that follows from the mode: there is no slot to hand over,
+and the receiver carries state between calls (the search window, recently
+seen frames, messages under assembly, the past audio the retro sweep reaches
+back into). Precedents for the shape: `engine::ft4_coarse::Ft4SavgBuilder::push`
+/ `push_with_rows(audio, &mut dyn FnMut(..))`, and the `decode_block`
+streaming path.
 
-## Open questions for the port
+The *output* does not need a poll. Decoding happens inside `push`, on the
+caller's thread, so results can be delivered there:
 
-1. **API shape.** MSK144 precedent says "outside `Protocol`, not in
-   `PROTOCOLS`", but a continuous receiver needs a stateful streaming API
-   (feed samples, poll updates — cf. `jtty_get_updates`), not
-   `DecodeRequest::decode()`. `docs/reference/STREAMING.md` is the closest
-   existing shape.
-2. **Whose behaviour is the reference?** Upstream's assembly / dedup /
-   retro-sweep constants are hand-tuned and undocumented beyond comments.
-   A first target should be the *frame* decoder (sample → validated 32-bit
-   word), for which the golden fixtures are unambiguous, and the assembly
-   layer second.
-3. **Fixtures.** Upstream ships one recording, `samples/JTTY/260807_134110.wav`
-   (725 992 bytes), plus `sjtty` (simulator) and `tests/fixtures/jtty/`.
-   The tier-B golden would be that recording; tier-C corpora need an
-   `sjtty`-based generator (`sjtty` is built from `lib/jtty/sjtty.f90`).
-   Decide `max_extra` for the golden up front, as `assert_golden` requires.
-4. **Sensitivity.** Upstream's `lib/jtty/wava/` holds a Monte-Carlo TBCC
-   simulator (AWGN / Rayleigh), an RCU bound and `tbcc_performance_curves.png`.
-   None of it was re-run here. The release-notes claim ("far better weak-signal
-   performance than RTTY") is unverified by this crate.
-5. **Stability.** The mode is new in an rc; the grammar was already changed
-   once without a discriminator. Pin the port to a tag and re-diff on the
-   final 3.2.0 before publishing anything public.
+```rust
+receiver.push(&samples, &mut |u: &MessageUpdate| { /* id, f_hz, start, text, complete */ });
+```
 
-## Suggested phasing
+That is the callback idiom `STREAMING.md` §4 chose on purpose (runtime-free,
+CPU-bound, nothing to `await`), and it composes the same way. A poll is only
+needed when decoding runs on another thread, which the core does not do;
+upstream's `jtty_get_updates` is a poll because its GUI decodes on a worker
+thread. `STREAMING.md` itself is about *output* delivery for a decode whose
+whole slot is already in hand; it is not a template for the input side.
 
-1. Wire-level: source codec (atoms ⇄ 32-bit word ⇄ text), 34-bit payload,
-   CRC-12, TBCC encoder, waveform synth. Verify against the spec's golden
-   vectors and by decoding our own synthesis (tier A).
-2. Frame decoder: sync search, payload correlation, ladder + list-WAVA,
-   grammar validity. Tier B on `260807_134110.wav`.
-3. Multi-signal: subtraction, retro sweep, duplicate suppression, assembly.
-   Its precision guard (false decodes under subtraction) ships in the same PR.
-4. Host packaging: streaming API, FFI (`mfsk-ffi-abi` row types), bindings.
-5. Text packer / macro layer, only if a consumer wants it in the library.
-6. Embedded: separate decision after measuring phase 2 on a host.
+`MessageUpdate` mirrors upstream's `message_update`: a stable message id,
+the **cumulative** text so far, frequency, start time, and a `complete` flag
+(EOM seen). A Rust closure does not cross the C ABI, and a C function-pointer
+callback is awkward to bind from Kotlin and Swift, so `mfsk-ffi` owns a queue
+inside the receiver handle and exposes a poll over it — the poll lives at the
+FFI edge only.
+
+**D3 — no global state.** Upstream keeps the trellis plans and workspaces in
+`save`d module variables and serialises the decode ladder with
+`!$omp critical`. That is an artefact of how they are held, not of the
+algorithm. Here: an immutable plan (`Sync`, shared) and a per-call workspace;
+the receiver owns every piece of mutable state. This is the precondition for
+D4, so it is not deferred.
+
+**D4 — parallelism: designed in, measured before it is kept.**
+Two facts pull in opposite directions.
+
+- *What is freely parallel.* With D3 the decode ladder for different
+  candidates is independent work. The 237 columns of the sync surface are
+  independent of each other. Neither is limited by the language or by
+  upstream's locking.
+- *What is genuinely sequential.* A decoded signal is subtracted from the
+  window, and later candidates in the same pass are demodulated from the
+  *residual* (`c1 = twkfreq(c0, …)` is taken from the current `c0`). Peak
+  selection with masking, duplicate suppression and assembly also depend on
+  order. Decoding a whole pass against one residual and applying subtractions
+  afterwards in a fixed order is legitimate — upstream already runs up to two
+  passes over the residual — but it is a different schedule, so results can
+  differ from upstream in edge cases. Bit-exact parity is therefore claimed
+  only at the decoder boundary (see P2), not for whole-window output.
+
+Rules: the result must not depend on the thread count (with a test); a
+single-threaded path always exists (embedded has no rayon); it sits behind
+the existing `parallel` feature. Whether it *pays* is
+an open measurement: the earlier candidate-loop `par_iter` experiments on
+JT65/Q65/JT9/uvpacket/MSK144 gave nothing because that loop was not the
+bottleneck there and the regions were tiny (≤ 7 items) — that says nothing
+about JTTY, whose ladder is 4 list-WAVA runs per failing candidate and whose
+sync surface is 237 FFTs per window. Profile first, in this order of suspicion
+(all unmeasured): the sync surface, the analytic signal per window, peak-up,
+the ladder on failing candidates, retro sweeps.
+
+**D5 — what to match upstream on.** The frame decoder (sample → validated
+32-bit word) is unambiguous and testable against fixtures; the assembly
+layer is hand-tuned constants. Port the former exactly, the latter
+verbatim first and deviate only with a measurement.
+
+**D6 — frequency drift (satellite / Doppler).** JTTY is expected to matter
+for satellite work. In the code read for this note, sync and peak-up assume
+a **constant** frequency across the frame: peak-up fits a straight line to the
+unwrapped phase of the 13 sync phasors, which yields a frequency *offset*, and
+no drift term appears anywhere in the receiver. Whether that suffices for LEO
+Doppler is unchecked. `sjtty`'s channel model takes Doppler spread and delay
+(`fdop`, `delay`); whether it can model a linear drift was not checked. Since
+the transmit side is ours, drift can be synthesised in Rust and decoded by
+both this crate and upstream's `rjtty` — which separates "our port is weaker"
+from "the mode/upstream receiver is". That comparison is a P2 exit
+criterion, not a later nice-to-have.
+
+## Implementation plan
+
+Each phase is its own PR. Exit criteria are stated so a phase can be judged
+done without re-arguing scope.
+
+### P0 — oracle and fixtures (no library code)
+- Build upstream `sjtty` and `rjtty`. Prefer the upstream CMake targets over a
+  hand-written compile list like `scripts/build_ft4sim.sh`'s: these need
+  FFTW and a much larger set of compile units than the FT4 simulator (not
+  attempted yet). Wrap it in `scripts/build_jttysim.sh`, from a **clean
+  checkout of the tag** — the local `WSJT-X/` tree carries uncommitted edits
+  under `lib/`.
+- Decode `samples/JTTY/260807_134110.wav` with `rjtty` (its defaults are
+  `f0=1500`, `ftol=50`, `nsps=384`, band 200–2800 Hz, `smin=4.6`); cross-check
+  the text against the user guide's `jtty.png`. Vendor the WAV under
+  `embedded-poc/assets/golden/jtty/` and add its README row.
+- Generate a small vector set: messages → `sjtty` WAV → `rjtty` output, plus
+  the 34-bit vectors from the spec, and a small AWGN set at a few SNRs for
+  the P2 sensitivity comparison. Check whether `sjtty`'s noise is seeded; if
+  not, add deterministic noise so a run is reproducible.
+- An **instrumented driver** for P2's decoder-boundary test: a small Fortran
+  program linking upstream's `jtty_*` modules that writes out `zsym`/`zhalf`
+  and the ladder's accepted word for each candidate. `rjtty` does not expose
+  these, so this is new code on the oracle side (kept out of the library).
+- **Exit:** the expected decodes are recorded, reproducible from a script.
+
+### P1 — wire level (`mfsk-core/src/jtty/`)
+`source.rs` (atoms ⇄ 32-bit word ⇄ text, validity), `crc.rs` (CRC-12, a
+bitwise MSB-first remainder — not `fec::qra::q65::crc12`), `tbcc.rs` (encoder),
+`tx.rs` (frames → tones → GFSK via `engine::dsp::gfsk`). `pack28` and the ARRL
+section table are reused (`ARRL_SECTIONS` is private today).
+- Tests (tier A): the spec's 34-bit vectors; encoder ⇄ `sjtty` tone/waveform
+  agreement with noise off or at a very high SNR, if `sjtty` allows it
+  (unchecked; this tests determinism, not sensitivity); round trip of
+  every atom kind; rejection of every invalid class in the grammar.
+- **Exit:** vectors and `sjtty` agreement pass; no receiver yet.
+
+### P2 — frame decoder, single signal
+`sync.rs` (sync surface, peak-up, gate), `correlate.rs`, `list_decoder.rs`
+(a plain reference first, then the optimised one, kept and tested against
+each other as upstream does), `ladder.rs`, validity.
+- Equivalence at the decoder boundary: dump upstream's `zsym`/`zhalf` for
+  the fixtures, feed them to the Rust ladder, require the **same top-4 words in the
+  same order, with metrics equal to f64 tolerance** (f64 accumulation, as
+  upstream). This isolates the trellis
+  from DSP differences.
+- Tier B: `assert_golden` on the sample WAV, `max_extra: 0` as the target.
+- Precision guard: a noise-only recording set must decode nothing;
+  false-accept counted against the ≈0.4 % CRC budget in this note.
+- D6 drift comparison against `rjtty`.
+- **Exit:** golden passes; decoder-boundary equivalence exact; sensitivity on
+  a small `sjtty` AWGN set within noise of `rjtty`; the drift comparison is
+  written up. This is an engineering checkpoint on whether the port is
+  faithful — not a decision about whether JTTY is wanted.
+
+### P3 — multi-signal
+Subtraction (on the 6 kHz analytic buffer), retro sweep, duplicate
+suppression, assembly, and the parallel paths of D4 if the profile justifies
+them. Its precision guard ships in the same PR: both false-decode bugs this
+suite has shipped were in subtraction paths (#243, #253).
+- Tier C: `scripts/gen_jtty_sweep_wavs.sh` on `sjtty`, a sweep test, an entry
+  in `sweep-baseline.json` including the unexpected-decode count; `run-sensitivity-sweeps.sh`
+  wired.
+- Thread-count independence test if D4's parallel path lands.
+- **Exit:** multi-signal fixtures (two overlapping signals, one fading)
+  decode both; the unexpected-decode count is recorded in the baseline, and a
+  later rise of ≥ 3 and ≥ 1.5× is flagged as for ft8/ft4/fst4.
+
+### P4 — host packaging
+`JttyReceiver` (D2), `MessageUpdate`. FFI: a new receiver-handle function
+family in `mfsk-ffi` with a queue and poll, a new `MfskMode` value (25 is the
+next free one), `mfsk.h` regenerated (committed), the C++ smoke driver
+extended, Kotlin and Swift bindings. This is more than MSK144's "one more
+mode" because the ABI shape is a stateful handle, not a slot call.
+- Docs: `docs/reference/{LIBRARY,BINDINGS}.md` and their `.ja.md` twins, the
+  mode tables in README, CLAUDE.md's map; CHANGELOG. `docs/notes/JTTY_BENCHMARK.md`
+  from the P3 sweeps.
+- CI: a `jtty` row in the `feature-matrix` (`ci.yml`) and in
+  `scripts/pre-push-check.sh`; path filters for `src/jtty/**` and `tests/jtty_*`
+  beside the `msk144` ones.
+- **Exit:** the C++ driver and both bindings receive a WAV fed in chunks and
+  report the golden message.
+
+### P5 — text packer and macro layer (only on request)
+`pack_jtty`'s dynamic program, exchange profiles, F-key / N1MM compilation.
+Host UI policy upstream, not protocol.
+
+### P6 — embedded (separate decision)
+After P2/P3 are measured on a host: whether a continuously running receiver
+fits the CoreS3's budget, which FFT sizes, and a fixed-point path if so.
+
+### Versioning and cadence
+A new mode is patch-level by this crate's convention (MSK144 shipped as
+`0.7.4`). Merge phases to `main` as they complete; do not tag for them —
+releases stay on the biweekly cadence.
+
+## Risks
+
+- **Upstream is a release candidate.** The grammar already changed once with
+  no discriminator. Pin to the tag; re-diff on the final 3.2.0 before
+  publishing anything public.
+- **Hand-tuned constants** (sync gate, dedup and continuation tolerances)
+  have no derivation upstream; the fixtures are the only guard.
+- **Single real recording.** Upstream ships one WAV; everything else is
+  `sjtty` synthetic. Noiseless synthetic fixtures are not an instrument for
+  sensitivity — the sweeps must use noise (a deterministic seed), as for the
+  other modes.
+- **f32 vs f64.** Upstream correlates in single precision and scores in
+  double; tie-breaking depends on it. Keep the same split.
+- **Build of the oracle** (P0) is untried and may be the first real cost.
+- **Upstream's sensitivity claim is unverified here.** The release notes say
+  "far better weak-signal performance" than RTTY; `lib/jtty/wava/` holds the
+  simulator, an RCU bound and a curves image, none of which was re-run. P2/P3
+  measure this crate against `rjtty` rather than against the claim.

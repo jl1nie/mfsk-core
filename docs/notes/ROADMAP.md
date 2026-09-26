@@ -670,7 +670,11 @@ version if you're picking up work.
   `Protocol` like MSK144 but needs a streaming receive API. The upstream
   source has been read and written up in `JTTY_UPSTREAM.md` (frame, FEC,
   source grammar, receiver, reuse map, phasing); nothing has been built or
-  measured. Not scheduled — the first decision is the API shape.
+  measured. The maintainer expects the mode to matter for satellite
+  operation, so this is a planned port, not a "track, don't commit" item
+  like #224; the note carries the phased plan (P0 oracle build → P6
+  embedded) and the design decisions to settle first (receive API, no
+  global state, parallelism measured before kept, drift behaviour).
 - **#148** — Research idea (not a commitment, from VK3NV): blind-paired
   FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
   Q65's multi-period averaging (`q65/rx.rs`) is the architectural
