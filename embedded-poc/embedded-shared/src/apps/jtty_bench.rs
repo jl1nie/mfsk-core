@@ -733,6 +733,119 @@ fn bench_stream() {
     );
 }
 
+/// Part 7: the receiver on two cores (#499). `rx::Front` (FIR analytic signal, sync surface) on
+/// a thread pinned to core 1 is fed the audio at its real rate, a window step every 472 ms;
+/// `rx::Back` (candidates, ladder, assembly) runs here on core 0 and takes the windows from a
+/// three-deep queue. Logged: each half's time a window, how late the back end is behind the
+/// audio (from a window's last sample to its decode), and the queue at its fullest.
+fn bench_pipeline() {
+    use alloc::sync::Arc;
+    use esp_idf_svc::hal::cpu::Core;
+    use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
+    use mfsk_core::jtty::rx::{Back, Front, NCHUNK, Params, Prepared, Receiver, STEP};
+    use std::sync::mpsc::sync_channel;
+
+    const WAV: &[u8] = include_bytes!("../../../assets/golden/jtty/260807_134110.wav");
+    let recording: alloc::vec::Vec<i16> = WAV[44..]
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let mut rng = Lcg(0x0015E);
+    let noise: alloc::vec::Vec<i16> =
+        (0..recording.len()).map(|_| (3000.0 * rng.gauss()) as i16).collect();
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+    let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    log_heap("pipeline: receiver built");
+    let emb = Params::default().embedded();
+    let audio_rec = Arc::new(recording);
+    let audio_noise = Arc::new(noise);
+    for (name, params, audio) in [
+        ("+-50 Hz, recording", emb, audio_rec.clone()),
+        ("+-50 Hz, noise", emb, audio_noise.clone()),
+        ("+-150 Hz, noise", Params { ftol_hz: 150.0, ..emb }, audio_noise.clone()),
+        ("+-150 Hz, recording", Params { ftol_hz: 150.0, ..emb }, audio_rec.clone()),
+    ] {
+        rx.reset_stats();
+        let (tx, rq) = sync_channel::<(Prepared, i64)>(3);
+        let depth = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let front_us = Arc::new(core::sync::atomic::AtomicU32::new(0));
+        let t_start = now_us() + 200_000;
+        let cfg = ThreadSpawnConfiguration {
+            name: Some(c"jtty_front"),
+            stack_size: 16 * 1024,
+            priority: 4,
+            pin_to_core: Some(Core::Core1),
+            ..ThreadSpawnConfiguration::default()
+        };
+        let _ = cfg.set();
+        let front_handle = {
+            let (rx, audio, depth, front_us) = (rx.clone(), audio.clone(), depth.clone(), front_us.clone());
+            std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
+                let mut front = Front::new(rx, params).expect("embedded settings");
+                for (i, chunk) in audio.chunks(STEP).enumerate() {
+                    // the audio arrives at its real rate
+                    let due = t_start + ((i + 1) * STEP) as i64 * 1_000_000 / 12_000;
+                    let wait = due - now_us();
+                    if wait > 0 {
+                        std::thread::sleep(core::time::Duration::from_micros(wait as u64));
+                    }
+                    let t = now_us();
+                    let mut ready = alloc::vec::Vec::new();
+                    front.push(chunk, &mut |p| ready.push(p));
+                    front_us.fetch_add((now_us() - t) as u32, core::sync::atomic::Ordering::Relaxed);
+                    for p in ready {
+                        let w = p.window();
+                        let audio_done = t_start + ((w * STEP + NCHUNK) as i64) * 1_000_000 / 12_000;
+                        depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        if tx.send((p, audio_done)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            })
+        };
+        let _ = ThreadSpawnConfiguration::default().set();
+        let Ok(front_handle) = front_handle else {
+            log::error!("pipeline: front thread not started");
+            return;
+        };
+        let mut back = Back::new(rx.clone(), params);
+        let (mut back_total, mut back_worst, mut lag_worst, mut lag_total, mut n, mut deepest) =
+            (0i64, 0i64, 0i64, 0i64, 0i64, 0usize);
+        while let Ok((p, audio_done)) = rq.recv() {
+            deepest = deepest.max(depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed));
+            let t = now_us();
+            back.process(p, &mut |u| {
+                if u.complete {
+                    log::info!("pipeline [{name}]: {:>7.1} Hz done \"{}\"", u.f1_hz, u.text)
+                }
+            });
+            let end = now_us();
+            back_total += end - t;
+            back_worst = back_worst.max(end - t);
+            lag_total += end - audio_done;
+            lag_worst = lag_worst.max(end - audio_done);
+            n += 1;
+        }
+        let _ = front_handle.join();
+        let n = n.max(1);
+        log::info!(
+            "pipeline [{name}]: {n} windows; front {:.0} ms a window (core 1), back {:.0} ms mean {:.0} worst (core 0); decoded {:.0} ms mean {:.0} worst after the window's last sample; queue at most {deepest}",
+            f64::from(front_us.load(core::sync::atomic::Ordering::Relaxed)) / n as f64 / 1000.0,
+            back_total as f64 / n as f64 / 1000.0,
+            back_worst as f64 / 1000.0,
+            lag_total as f64 / n as f64 / 1000.0,
+            lag_worst as f64 / 1000.0
+        );
+        log_stages(name, &rx.stats(), (back_total + i64::from(front_us.load(core::sync::atomic::Ordering::Relaxed))) as f64 / 1000.0);
+    }
+    log::info!(
+        "pipeline: internal DRAM low-water mark {} B",
+        unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) }
+    );
+}
+
 fn run_bench() {
     log::info!("=== jtty-bench: what a JTTY receive window costs on the LX7 (#499, E0) ===");
     log::info!("window budget: 472 ms (a quarter frame); host: 11.7 ms per window, one thread");
@@ -741,6 +854,8 @@ fn run_bench() {
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
 
+    log::info!("--- 7. two cores: Front on core 1, Back on core 0 ---");
+    bench_pipeline();
     log::info!("--- 4. the DSP around the trellis ---");
     bench_dsp();
     log::info!("--- 6. the receiver on the upstream sample recording ---");
