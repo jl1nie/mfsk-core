@@ -372,6 +372,88 @@ fn bench_trellis_placement() {
     unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
 }
 
+/// Part 4: the DSP around the trellis, each at the size the receiver runs it: the unit costs
+/// the per-window model (`docs/notes/JTTY_EMBEDDED_BUDGET.md`) is built from. Buffers in PSRAM
+/// (a 14 160-sample window is 113 KB, so that is where the receiver has it) and, for the
+/// small ones, in internal DRAM.
+#[inline(never)]
+fn bench_dsp() {
+    use mfsk_core::jtty::correlate::{ToneRefs, correlate_payload};
+    use mfsk_core::jtty::dsp::{shift_frequency, sync_wave};
+    use mfsk_core::jtty::rx::{NCHUNK, peakup};
+    use mfsk_core::jtty::subtract::subtract_frame;
+
+    const WIN: usize = NCHUNK / 2; // 14 160 complex samples at 6 kHz
+    let mut rng = Lcg(0xD59);
+    let (Some(mut src), Some(mut dst)) = (Buf::new(WIN, Place::Psram), Buf::new(WIN, Place::Psram)) else {
+        log::warn!("dsp: cannot allocate the window");
+        return;
+    };
+    fill_noise(&mut src, &mut rng);
+    let csync = sync_wave();
+    let refs = ToneRefs::new(192);
+
+    // a whole-window mix to DC, as `process` does for every candidate (plus its allocation)
+    let mut total = 0i64;
+    for _ in 0..5 {
+        let t = now_us();
+        shift_frequency(&src, &mut dst, 6000.0, -1500.3);
+        total += now_us() - t;
+        core::hint::black_box(&dst[0]);
+        yield_now();
+    }
+    log::info!("dsp: shift_frequency, {WIN} samples, PSRAM to PSRAM: {:.2} ms", total as f64 / 5000.0);
+    if let (Some(mut a), Some(mut b)) = (Buf::new(WIN, Place::Internal), Buf::new(WIN, Place::Internal)) {
+        a.copy_from_slice(&src);
+        let mut total = 0i64;
+        for _ in 0..5 {
+            let t = now_us();
+            shift_frequency(&a, &mut b, 6000.0, -1500.3);
+            total += now_us() - t;
+            core::hint::black_box(&b[0]);
+            yield_now();
+        }
+        log::info!("dsp: shift_frequency, {WIN} samples, internal to internal: {:.2} ms", total as f64 / 5000.0);
+    }
+
+    // peak-up: 11 frequency steps, 13 hops, over the sync waveform
+    let mut total = 0i64;
+    let mut sink = 0f32;
+    for i in 0..3 {
+        let t = now_us();
+        let (x, f, s) = peakup(&src, &csync, 0.9 + 0.001 * i as f32, 1500.0);
+        total += now_us() - t;
+        sink += x + f + s;
+        yield_now();
+    }
+    core::hint::black_box(sink);
+    log::info!("dsp: peakup: {:.2} ms", total as f64 / 3000.0);
+
+    // payload correlation: 46 symbols x 4 tones x (full + two halves) x 192 samples
+    let mut total = 0i64;
+    for _ in 0..5 {
+        let t = now_us();
+        let (zs, zh) = correlate_payload(&refs, &src, 4000);
+        total += now_us() - t;
+        core::hint::black_box((zs[0][0], zh[0][0]));
+        yield_now();
+    }
+    log::info!("dsp: correlate_payload: {:.2} ms", total as f64 / 5000.0);
+
+    // subtracting one decoded frame: 11 328 samples, `f64` prefix sums and `sin`/`cos` per sample
+    let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
+    let payloads = tx::payloads(&atoms).expect("encodes");
+    let tones = tx::frame_tones(&payloads[0]);
+    let mut total = 0i64;
+    for _ in 0..3 {
+        let t = now_us();
+        subtract_frame(&mut src, &tones, 1500.0, 0.5);
+        total += now_us() - t;
+        yield_now();
+    }
+    log::info!("dsp: subtract_frame: {:.2} ms", total as f64 / 3000.0);
+}
+
 fn stack_headroom() -> u32 {
     unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) }
 }
@@ -408,6 +490,8 @@ fn run_bench() {
     }
     log_heap("after columns");
 
+    log::info!("--- 4. the DSP around the trellis ---");
+    bench_dsp();
     log::info!("--- 3. the ladder ---");
     bench_ladder();
     log::info!("--- 3b. trellis placement ---");

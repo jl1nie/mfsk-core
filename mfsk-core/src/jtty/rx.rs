@@ -1210,7 +1210,8 @@ fn pick_masked(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
 /// phase of those 13 phasors to remove the sub-half-hertz residual — accepted only
 /// when the fit is clean (rms residual under 1 rad) and moves the frequency by at
 /// most 0.5 Hz. Returns `(start s, frequency Hz, strength)`.
-fn peakup(c0: &[Complex32], csync: &[Complex32], xdt0: f32, f0: f32) -> (f32, f32, f32) {
+#[doc(hidden)] // public for `embedded-shared`'s `jtty-bench`, which times it on the LX7
+pub fn peakup(c0: &[Complex32], csync: &[Complex32], xdt0: f32, f0: f32) -> (f32, f32, f32) {
     const HOP: usize = 4;
     let npsync = SYNC_SYMBOLS * NSS;
     let nchunk = c0.len();
