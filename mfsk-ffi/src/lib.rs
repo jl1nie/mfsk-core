@@ -87,7 +87,8 @@ use mfsk_core::ft8::decode as ft8;
 pub use mfsk_ffi_abi::{
     MfskDecode, MfskDecodeDefaults, MfskDecodeDepth, MfskDecodeOptions, MfskDecodeParams,
     MfskDecodeSession, MfskEqMode, MfskJttyParams, MfskJttyReceiver, MfskJttyUpdate, MfskMode,
-    MfskModeInfo, MfskStatus, MfskStrictness, MfskSyncScale,
+    MfskModeInfo, MfskQ65Caller, MfskQ65Callers, MfskQ65Dx, MfskQ65History, MfskQ65Params,
+    MfskStatus, MfskStrictness, MfskSyncScale,
 };
 /// Inline capacity of each `MfskDecodeParams` a-priori field.
 ///
@@ -113,6 +114,10 @@ pub const MFSK_DECODE_TEXT_LEN: usize = 64;
 /// JNI shim failing to compile, which is the first thing in this repo
 /// to read that field from C.
 pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
+/// `MfskDecode::flags` bit 1: the sender set WSJT-X 3.2's Q65 Pileup
+/// "copied last Tx" flag. Q65 rows only. A literal here for the same
+/// reason as the constant above.
+pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Capability bits
@@ -899,13 +904,84 @@ pub unsafe extern "C" fn mfsk_encode_q65(
     cap: usize,
     out_len: *mut usize,
 ) -> MfskStatus {
+    unsafe {
+        encode_q65_inner(
+            "mfsk_encode_q65",
+            submode,
+            call1,
+            call2,
+            grid_or_report,
+            false,
+            freq_hz,
+            out,
+            cap,
+            out_len,
+        )
+    }
+}
+
+/// [`mfsk_encode_q65`] with WSJT-X 3.2's **Q65 Pileup** "copied last Tx"
+/// flag: a non-zero `copied_last_tx` sets the spare 78th payload bit
+/// (`genq65.f90`'s `iflag`), which a Pileup receiver reports as
+/// `MFSK_DECODE_FLAG_COPIED_LAST_TX`. `copied_last_tx` is an integer, not a
+/// `bool`, so any value a C caller writes is a defined one; 0 is exactly
+/// [`mfsk_encode_q65`].
+///
+/// # Safety
+///
+/// See [`mfsk_encode_ft8`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_encode_q65_flagged(
+    submode: u32,
+    call1: *const c_char,
+    call2: *const c_char,
+    grid_or_report: *const c_char,
+    copied_last_tx: u32,
+    freq_hz: f32,
+    out: *mut f32,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    unsafe {
+        encode_q65_inner(
+            "mfsk_encode_q65_flagged",
+            submode,
+            call1,
+            call2,
+            grid_or_report,
+            copied_last_tx != 0,
+            freq_hz,
+            out,
+            cap,
+            out_len,
+        )
+    }
+}
+
+/// The body both Q65 encode entry points share.
+///
+/// # Safety
+/// As [`mfsk_encode_q65`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn encode_q65_inner(
+    who: &str,
+    submode: u32,
+    call1: *const c_char,
+    call2: *const c_char,
+    grid_or_report: *const c_char,
+    copied_last_tx: bool,
+    freq_hz: f32,
+    out: *mut f32,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
     let Some(submode) = q65_submode_of(submode) else {
-        set_error("mfsk_encode_q65: not a Q65 sub-mode");
+        set_error(format!("{who}: not a Q65 sub-mode"));
         return MfskStatus::InvalidArg;
     };
     use mfsk_core::q65::{
         Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
-        synthesize_standard_for,
+        tx::synthesize_standard_flagged_for as synth,
     };
 
     let Ok(c1) = cstr_to_str(call1) else {
@@ -917,23 +993,18 @@ pub unsafe extern "C" fn mfsk_encode_q65(
     let Ok(gr) = cstr_to_str(grid_or_report) else {
         return MfskStatus::InvalidArg;
     };
+    let f = copied_last_tx;
     let pcm_opt = match submode {
-        MfskQ65SubMode::A15 => synthesize_standard_for::<Q65a15>(c1, c2, gr, 12_000, freq_hz, 0.3),
-        MfskQ65SubMode::A30 => synthesize_standard_for::<Q65a30>(c1, c2, gr, 12_000, freq_hz, 0.3),
-        MfskQ65SubMode::A60 => synthesize_standard_for::<Q65a60>(c1, c2, gr, 12_000, freq_hz, 0.3),
-        MfskQ65SubMode::B60 => synthesize_standard_for::<Q65b60>(c1, c2, gr, 12_000, freq_hz, 0.3),
-        MfskQ65SubMode::C60 => synthesize_standard_for::<Q65c60>(c1, c2, gr, 12_000, freq_hz, 0.3),
-        MfskQ65SubMode::D60 => synthesize_standard_for::<Q65d60>(c1, c2, gr, 12_000, freq_hz, 0.3),
-        MfskQ65SubMode::E60 => synthesize_standard_for::<Q65e60>(c1, c2, gr, 12_000, freq_hz, 0.3),
-        MfskQ65SubMode::D120 => {
-            synthesize_standard_for::<Q65d120>(c1, c2, gr, 12_000, freq_hz, 0.3)
-        }
-        MfskQ65SubMode::E120 => {
-            synthesize_standard_for::<Q65e120>(c1, c2, gr, 12_000, freq_hz, 0.3)
-        }
-        MfskQ65SubMode::A300 => {
-            synthesize_standard_for::<Q65a300>(c1, c2, gr, 12_000, freq_hz, 0.3)
-        }
+        MfskQ65SubMode::A15 => synth::<Q65a15>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::A30 => synth::<Q65a30>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::A60 => synth::<Q65a60>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::B60 => synth::<Q65b60>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::C60 => synth::<Q65c60>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::D60 => synth::<Q65d60>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::E60 => synth::<Q65e60>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::D120 => synth::<Q65d120>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::E120 => synth::<Q65e120>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::A300 => synth::<Q65a300>(c1, c2, gr, f, 12_000, freq_hz, 0.3),
     };
     let Some(pcm) = pcm_opt else {
         set_error("Q65 synth failed (bad pack)");
@@ -3131,16 +3202,680 @@ fn q65_mode(sub: MfskQ65SubMode) -> MfskMode {
 
 fn q65_rows(sub: MfskQ65SubMode, ds: &[mfsk_core::q65::Q65Result]) -> Vec<MfskDecode> {
     ds.iter()
-        .map(|d| {
-            simple_row(
-                q65_mode(sub),
-                d.freq_hz,
-                d.start_sample as f32 / 12_000.0,
-                d.snr_db,
-                &d.message,
-            )
-        })
+        .map(|d| q65_row(q65_mode(sub), d, d.start_sample as f32 / 12_000.0))
         .collect()
+}
+
+/// One Q65 result as a row, with Pileup's "copied last Tx" flag.
+fn q65_row(mode: MfskMode, d: &mfsk_core::q65::Q65Result, dt_sec: f32) -> MfskDecode {
+    let mut row = simple_row(mode, d.freq_hz, dt_sec, d.snr_db, &d.message);
+    if d.copied_last_tx {
+        row.flags |= MFSK_DECODE_FLAG_COPIED_LAST_TX;
+    }
+    row
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Q65 extended decode (#466)
+//
+// The four `mfsk_q65_decode*` functions above pick a *strategy* by name and
+// take the search parameters from a fixed, deliberately wide window. Every
+// setting WSJT-X 3.2 added (Pileup, Max Drift, EME delay, the q3 list
+// decode at an Rx frequency) is a combination of those, so one more
+// positional function per combination was never going to fit. This is the
+// one call that takes all of them, in the size-versioned struct the rest of
+// the ABI uses, and reports `dt` from the nominal start as WSJT-X does.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Which Q65 sub-mode a `MfskMode` addresses, or `None` for any other mode.
+fn q65_sub_of_mode(mode: MfskMode) -> Option<MfskQ65SubMode> {
+    use MfskQ65SubMode::*;
+    [A15, A30, A60, B60, C60, D60, E60, D120, E120, A300]
+        .into_iter()
+        .find(|s| q65_mode(*s) == mode)
+}
+
+/// Fill `out` with `mode`'s Q65 search defaults: the library's own
+/// (`q65::search::default_search_params`, WSJT-X's ±1 s window), not the wide
+/// window the older `mfsk_q65_decode*` functions scan. Always call this
+/// before touching a `MfskQ65Params`: a zero `max_cand` or an empty band
+/// decodes nothing, and `rx_freq_hz` and `fading_b90_ts` have to be NaN
+/// rather than 0 to mean "unset".
+///
+/// # Safety
+/// `out` must point to at least `out->size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_params_init(mode: u32, out: *mut MfskQ65Params) -> MfskStatus {
+    if out.is_null() {
+        set_error("mfsk_q65_params_init: out is NULL");
+        return MfskStatus::InvalidArg;
+    }
+    let Some(mode) = mode_of(mode) else {
+        set_error("mfsk_q65_params_init: not a mode this library knows");
+        return MfskStatus::InvalidArg;
+    };
+    if q65_sub_of_mode(mode).is_none() {
+        set_error("mfsk_q65_params_init: not a Q65 mode");
+        return MfskStatus::InvalidArg;
+    }
+    let Some(meta) = mode_meta(mode) else {
+        set_error("mfsk_q65_params_init: no such mode in this build");
+        return MfskStatus::UnknownProtocol;
+    };
+    let d = mfsk_core::q65::search::default_search_params();
+    let p = MfskQ65Params {
+        size: core::mem::size_of::<MfskQ65Params>() as u32,
+        freq_min_hz: d.freq_min_hz,
+        freq_max_hz: d.freq_max_hz,
+        nominal_start_s: meta.tx_start_offset_s,
+        t_early_s: d.time_tolerance_early_sec,
+        t_late_s: d.time_tolerance_late_sec,
+        score_threshold: d.score_threshold,
+        max_cand: d.max_candidates as u32,
+        pileup: 0,
+        eme_delay: 0,
+        max_drift: 0,
+        rx_freq_hz: f32::NAN,
+        ftol_hz: mfsk_core::q65::decode_request::DEFAULT_FTOL_HZ,
+        fading_b90_ts: f32::NAN,
+        fading_model: MfskQ65FadingModel::Gaussian as u32,
+        ap_list: 0,
+        has_ap_hint: 0,
+        ap_call1: [0; MFSK_AP_FIELD_LEN],
+        ap_call2: [0; MFSK_AP_FIELD_LEN],
+        ap_grid: [0; MFSK_AP_FIELD_LEN],
+        ap_report: [0; MFSK_AP_FIELD_LEN],
+        list_my_call: [0; MFSK_AP_FIELD_LEN],
+        list_his_call: [0; MFSK_AP_FIELD_LEN],
+        list_his_grid: [0; MFSK_AP_FIELD_LEN],
+    };
+    unsafe { write_size_versioned(out, &p) };
+    MfskStatus::Ok
+}
+
+/// Read a caller's `MfskQ65Params`, taking only the prefix its `size`
+/// declares and leaving the rest at what `dst` already holds (the defaults).
+/// Every field is a `u32`, an `f32` or a byte, so any bit pattern is a valid
+/// value and a plain copy is sound — which is why this struct has no enums
+/// and no `bool`s.
+///
+/// # Safety
+/// `src` must point to at least `src->size` readable bytes.
+unsafe fn read_q65_params(src: *const MfskQ65Params, dst: &mut MfskQ65Params) {
+    let full = core::mem::size_of::<MfskQ65Params>();
+    let declared = unsafe { core::ptr::read_unaligned(src as *const u32) } as usize;
+    let n = if declared == 0 || declared > full {
+        full
+    } else {
+        declared
+    };
+    unsafe {
+        core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut MfskQ65Params as *mut u8, n);
+    }
+    dst.size = full as u32;
+}
+
+/// Refuse a combination the engine would quietly not honour. Same rule as
+/// `validate_params`: an option accepted and ignored looks identical to one
+/// that works.
+fn validate_q65_params(name: &str, p: &MfskQ65Params, have_callers: bool) -> Result<(), String> {
+    let fin = |v: f32| v.is_finite();
+    if !fin(p.freq_min_hz) || !fin(p.freq_max_hz) || p.freq_max_hz <= p.freq_min_hz {
+        return Err(format!(
+            "{name}: search band [{}, {}] is not a usable range — did you call \
+             mfsk_q65_params_init?",
+            p.freq_min_hz, p.freq_max_hz
+        ));
+    }
+    if !fin(p.nominal_start_s) || p.nominal_start_s < 0.0 {
+        return Err(format!(
+            "{name}: nominal_start_s {} is not a position in the buffer",
+            p.nominal_start_s
+        ));
+    }
+    if !fin(p.t_early_s) || !fin(p.t_late_s) || p.t_early_s < 0.0 || p.t_late_s < 0.0 {
+        return Err(format!(
+            "{name}: t_early_s / t_late_s ({}, {}) must be finite and not negative",
+            p.t_early_s, p.t_late_s
+        ));
+    }
+    if !fin(p.score_threshold) {
+        return Err(format!("{name}: score_threshold is not a number"));
+    }
+    if p.max_cand == 0 {
+        return Err(format!(
+            "{name}: max_cand is 0, which decodes nothing — did you call \
+             mfsk_q65_params_init?"
+        ));
+    }
+    if p.max_drift > 50 {
+        return Err(format!(
+            "{name}: max_drift {} is outside 0..=50, the range WSJT-X's Max Drift \
+             offers (the search costs 2*bins+1 times the plain one)",
+            p.max_drift
+        ));
+    }
+    if !fin(p.ftol_hz) || p.ftol_hz <= 0.0 {
+        return Err(format!("{name}: ftol_hz must be positive"));
+    }
+    let fading = fin(p.fading_b90_ts);
+    if fading {
+        if p.fading_b90_ts <= 0.0 {
+            return Err(format!("{name}: fading_b90_ts must be positive"));
+        }
+        if q65_fading_of(p.fading_model).is_none() {
+            return Err(format!(
+                "{name}: fading_model {} is not 0 (Gaussian) or 1 (Lorentzian)",
+                p.fading_model
+            ));
+        }
+    }
+    if p.ap_list > 2 {
+        return Err(format!("{name}: ap_list {} is not 0, 1 or 2", p.ap_list));
+    }
+    let list_my = !cstr_field(&p.list_my_call).is_empty();
+    let list_his = !cstr_field(&p.list_his_call).is_empty();
+    match p.ap_list {
+        0 if have_callers => {
+            return Err(format!(
+                "{name}: a MfskQ65Callers handle was passed but ap_list is not 2"
+            ));
+        }
+        1 if !(list_my && list_his) => {
+            return Err(format!(
+                "{name}: ap_list 1 needs list_my_call and list_his_call"
+            ));
+        }
+        2 if !have_callers => {
+            return Err(format!(
+                "{name}: ap_list 2 (the contest list) needs a MfskQ65Callers handle"
+            ));
+        }
+        2 if !list_my => {
+            return Err(format!("{name}: ap_list 2 needs list_my_call"));
+        }
+        1 if have_callers => {
+            return Err(format!(
+                "{name}: a MfskQ65Callers handle is only read by ap_list 2"
+            ));
+        }
+        _ => {}
+    }
+    let rx = fin(p.rx_freq_hz);
+    if p.ap_list != 0 && fading {
+        return Err(format!(
+            "{name}: ap_list and fading_b90_ts are mutually exclusive — no WSJT-X path \
+             combines list decoding with the fast-fading metric"
+        ));
+    }
+    if rx && p.ap_list == 0 {
+        return Err(format!(
+            "{name}: rx_freq_hz is where the q3 list decode looks, so it needs ap_list"
+        ));
+    }
+    if p.pileup != 0 && p.has_ap_hint == 0 {
+        return Err(format!(
+            "{name}: pileup needs an AP hint naming both callsigns (has_ap_hint)"
+        ));
+    }
+    if p.max_drift != 0 && fading {
+        return Err(format!(
+            "{name}: max_drift does not apply to the fast-fading scan"
+        ));
+    }
+    if p.max_drift != 0 && p.ap_list != 0 && !rx {
+        return Err(format!(
+            "{name}: max_drift does not apply to list decoding without rx_freq_hz \
+             (the q3 decode at the Rx frequency is what carries it)"
+        ));
+    }
+    if p.has_ap_hint != 0 && p.ap_list != 0 && !rx {
+        return Err(format!(
+            "{name}: an AP hint is not read by list decoding without rx_freq_hz \
+             (with it, the hint drives the scan that runs after q3)"
+        ));
+    }
+    Ok(())
+}
+
+/// The AP hint a `MfskQ65Params` carries.
+fn q65_hint_of(p: &MfskQ65Params) -> Option<mfsk_core::msg::ApHint> {
+    if p.has_ap_hint == 0 {
+        return None;
+    }
+    let mut h = mfsk_core::msg::ApHint::new();
+    for (v, f) in [
+        (
+            cstr_field(&p.ap_call1),
+            (|h: mfsk_core::msg::ApHint, s: &str| h.with_call1(s))
+                as fn(mfsk_core::msg::ApHint, &str) -> mfsk_core::msg::ApHint,
+        ),
+        (cstr_field(&p.ap_call2), |h, s| h.with_call2(s)),
+        (cstr_field(&p.ap_grid), |h, s| h.with_grid(s)),
+        (cstr_field(&p.ap_report), |h, s| h.with_report(s)),
+    ] {
+        if !v.is_empty() {
+            h = f(h, v);
+        }
+    }
+    h.has_info().then_some(h)
+}
+
+/// One sub-mode's decode, per the params.
+fn q65_decode_ex_for<P: mfsk_core::q65::Q65SubMode>(
+    audio: &[f32],
+    p: &MfskQ65Params,
+    hint: Option<&mfsk_core::msg::ApHint>,
+    codewords: Option<&[[i32; 63]]>,
+    ht: Option<&mfsk_core::msg::hash_table::CallsignHashTable>,
+) -> Vec<mfsk_core::q65::Q65Result> {
+    use mfsk_core::q65::DecodeRequest;
+    const FS: u32 = 12_000;
+    let params = mfsk_core::q65::SearchParams {
+        freq_min_hz: p.freq_min_hz,
+        freq_max_hz: p.freq_max_hz,
+        time_tolerance_early_sec: p.t_early_s,
+        time_tolerance_late_sec: p.t_late_s,
+        score_threshold: p.score_threshold,
+        max_candidates: p.max_cand as usize,
+    };
+    let nominal = (p.nominal_start_s * FS as f32).round() as usize;
+    let mut req = DecodeRequest::<P>::new(audio, FS, nominal, params)
+        .pileup(p.pileup != 0)
+        .eme_delay(p.eme_delay != 0)
+        .max_drift(p.max_drift)
+        .ftol(p.ftol_hz);
+    if p.rx_freq_hz.is_finite() {
+        req = req.rx_freq(p.rx_freq_hz);
+    }
+    if let Some(h) = hint {
+        req = req.ap_hint(h);
+    }
+    if let Some(c) = codewords {
+        req = req.ap_list(c);
+    }
+    if p.fading_b90_ts.is_finite()
+        && let Some(m) = q65_fading_of(p.fading_model)
+    {
+        let model = match m {
+            MfskQ65FadingModel::Gaussian => mfsk_core::fec::qra::FadingModel::Gaussian,
+            MfskQ65FadingModel::Lorentzian => mfsk_core::fec::qra::FadingModel::Lorentzian,
+        };
+        req = req.fading(model, p.fading_b90_ts);
+    }
+    if let Some(ht) = ht {
+        req = req.hash_table(std::sync::Arc::new(ht.clone()));
+    }
+    req.decode()
+}
+
+/// Q65 decode with every setting WSJT-X 3.2 offers: the scan (plain, AP hint
+/// or fast-fading), Pileup, Max Drift, the EME delay, and the full-AP list
+/// decode — at an Rx frequency, WSJT-X's **q3** — in one call.
+///
+/// `mode` is a Q65 `MfskMode` (`MFSK_MODE_Q65A30` …). `params` may be NULL for
+/// the defaults `mfsk_q65_params_init` writes. `callers` is the contest list
+/// (`ap_list = 2`) and must be NULL otherwise; `hash_table` resolves `<...>`
+/// callsigns and may be NULL. Rows carry `dt_sec` measured from
+/// `nominal_start_s`, as WSJT-X's DT column, and
+/// `MFSK_DECODE_FLAG_COPIED_LAST_TX` on a Pileup reply.
+///
+/// **A combination the engine would quietly not honour is refused** rather
+/// than dropped, with the reason in `mfsk_last_error()`: `ap_list` with
+/// `fading_b90_ts`, `rx_freq_hz` without `ap_list`, `pileup` without an AP
+/// hint, `max_drift` with fading or with a list decode that has no Rx
+/// frequency. Returns `MFSK_STATUS_UNSUPPORTED` for those, and
+/// `MFSK_STATUS_DECODE_FAILED` if the AP-list candidate set is empty (a
+/// callsign that will not pack).
+///
+/// # Safety
+/// `samples` must point to `n_samples` valid `f32` values; `params`,
+/// `callers` and `hash_table`, if non-NULL, must be live and of their types;
+/// `out` must point to `cap` writable [`MfskDecode`] rows and `*out_len`
+/// receives the count found (or needed, on `MFSK_STATUS_INVALID_ARG`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_decode_ex(
+    mode: u32,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    params: *const MfskQ65Params,
+    callers: *const MfskQ65Callers,
+    hash_table: *const MfskCallsignHashTable,
+    out: *mut MfskDecode,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    let Some(mode) = mode_of(mode) else {
+        set_error("mfsk_q65_decode_ex: not a mode this library knows");
+        return MfskStatus::InvalidArg;
+    };
+    let Some(sub) = q65_sub_of_mode(mode) else {
+        set_error("mfsk_q65_decode_ex: not a Q65 mode");
+        return MfskStatus::InvalidArg;
+    };
+    let name = mode_index(mode).map(mode_name_str).unwrap_or("Q65");
+    let mut p = std::mem::MaybeUninit::<MfskQ65Params>::zeroed();
+    let st = unsafe { mfsk_q65_params_init(mode as u32, p.as_mut_ptr()) };
+    if st != MfskStatus::Ok {
+        return st;
+    }
+    let mut p = unsafe { p.assume_init() };
+    if !params.is_null() {
+        unsafe { read_q65_params(params, &mut p) };
+    }
+    let callers_ref = unsafe { (callers as *const mfsk_core::q65::Q65Callers).as_ref() };
+    if let Err(e) = validate_q65_params(name, &p, callers_ref.is_some()) {
+        set_error(format!("mfsk_q65_decode_ex: {e}"));
+        return MfskStatus::Unsupported;
+    }
+
+    let audio =
+        match unsafe { q65_prepare_audio(samples, n_samples, sample_rate, "mfsk_q65_decode_ex") } {
+            Ok(a) => a,
+            Err(s) => return s,
+        };
+
+    let codewords: Option<Vec<[i32; 63]>> = match p.ap_list {
+        0 => None,
+        1 => Some(mfsk_core::q65::standard_qso_codewords(
+            cstr_field(&p.list_my_call),
+            cstr_field(&p.list_his_call),
+            cstr_field(&p.list_his_grid),
+        )),
+        _ => callers_ref.map(|c| {
+            mfsk_core::q65::contest_codewords(
+                cstr_field(&p.list_my_call),
+                cstr_field(&p.list_his_call),
+                cstr_field(&p.list_his_grid),
+                c,
+            )
+        }),
+    };
+    if codewords.as_ref().is_some_and(Vec::is_empty) {
+        set_error(
+            "mfsk_q65_decode_ex: the AP candidate set is empty (callsigns that will not pack?)",
+        );
+        if !out_len.is_null() {
+            unsafe { *out_len = 0 };
+        }
+        return MfskStatus::DecodeFailed;
+    }
+
+    let hint = q65_hint_of(&p);
+    let (hint, cw, ht) = (
+        hint.as_ref(),
+        codewords.as_deref(),
+        hash_table_inner(hash_table),
+    );
+    use mfsk_core::q65::{
+        Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
+    };
+    let results = match sub {
+        MfskQ65SubMode::A15 => q65_decode_ex_for::<Q65a15>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::A30 => q65_decode_ex_for::<Q65a30>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::A60 => q65_decode_ex_for::<Q65a60>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::B60 => q65_decode_ex_for::<Q65b60>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::C60 => q65_decode_ex_for::<Q65c60>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::D60 => q65_decode_ex_for::<Q65d60>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::E60 => q65_decode_ex_for::<Q65e60>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::D120 => q65_decode_ex_for::<Q65d120>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::E120 => q65_decode_ex_for::<Q65e120>(&audio, &p, hint, cw, ht),
+        MfskQ65SubMode::A300 => q65_decode_ex_for::<Q65a300>(&audio, &p, hint, cw, ht),
+    };
+    let rows: Vec<MfskDecode> = results.iter().map(|d| q65_row(mode, d, d.dt_sec)).collect();
+    unsafe { emit_rows(&rows, out, cap, out_len) }
+}
+
+// ── Q65History: the DX station from recent decodes (`q65_hist`) ──────────
+
+fn q65_history<'a>(h: *mut MfskQ65History) -> Option<&'a mut mfsk_core::q65::Q65History> {
+    unsafe { (h as *mut mfsk_core::q65::Q65History).as_mut() }
+}
+
+/// A new, empty history. Free with [`mfsk_q65_history_free`]. **Not
+/// thread-safe**: one per thread, or guard it yourself.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_q65_history_new() -> *mut MfskQ65History {
+    Box::into_raw(Box::new(mfsk_core::q65::Q65History::new())) as *mut MfskQ65History
+}
+
+/// Free a history. NULL is a no-op.
+///
+/// # Safety
+/// `h` must be from [`mfsk_q65_history_new`], freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_history_free(h: *mut MfskQ65History) {
+    if !h.is_null() {
+        drop(unsafe { Box::from_raw(h as *mut mfsk_core::q65::Q65History) });
+    }
+}
+
+/// Remember one decode at `freq_hz` (tone 0). The 100 most recent are kept.
+///
+/// # Safety
+/// `h` must be live; `message` a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_history_push(
+    h: *mut MfskQ65History,
+    freq_hz: f32,
+    message: *const c_char,
+) -> MfskStatus {
+    let Some(h) = q65_history(h) else {
+        set_error("mfsk_q65_history_push: null handle");
+        return MfskStatus::NullPointer;
+    };
+    let msg = match cstr_to_str(message) {
+        Ok(m) => m,
+        Err(st) => return st,
+    };
+    h.push(freq_hz, msg);
+    MfskStatus::Ok
+}
+
+/// Remember every row of a decode, as `q65_decode.f90` calls `q65_hist` after
+/// each one. `rows` is an array of `n` [`MfskDecode`] as this library wrote
+/// them (their own stride), e.g. straight from `mfsk_q65_decode_ex`.
+///
+/// # Safety
+/// `h` must be live; `rows` must point to `n` valid rows.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_history_record(
+    h: *mut MfskQ65History,
+    rows: *const MfskDecode,
+    n: usize,
+) -> MfskStatus {
+    let Some(h) = q65_history(h) else {
+        set_error("mfsk_q65_history_record: null handle");
+        return MfskStatus::NullPointer;
+    };
+    if rows.is_null() && n != 0 {
+        set_error("mfsk_q65_history_record: rows is NULL");
+        return MfskStatus::NullPointer;
+    }
+    for r in (0..n).map(|i| unsafe { &*rows.add(i) }) {
+        h.push(r.freq_hz, cstr_field(&r.text));
+    }
+    MfskStatus::Ok
+}
+
+/// How many decodes the history holds (at most 100).
+///
+/// # Safety
+/// `h` must be live or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_history_len(h: *const MfskQ65History) -> usize {
+    unsafe { (h as *const mfsk_core::q65::Q65History).as_ref() }.map_or(0, |h| h.len())
+}
+
+/// The DX station from the most recent decode within 10 Hz of `rx_freq_hz`
+/// whose first word is 3 to 12 characters — WSJT-X's "Decode Again" with no
+/// DX call entered, so a `CQ ...` decode is passed over for an older one.
+/// Returns `MFSK_STATUS_OK` and fills `out`, or `MFSK_STATUS_DECODE_FAILED`
+/// when nothing qualifies (`out` is left untouched).
+///
+/// # Safety
+/// `h` must be live; `out` must point to `out->size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_history_lookup(
+    h: *const MfskQ65History,
+    rx_freq_hz: f32,
+    out: *mut MfskQ65Dx,
+) -> MfskStatus {
+    let Some(h) = (unsafe { (h as *const mfsk_core::q65::Q65History).as_ref() }) else {
+        set_error("mfsk_q65_history_lookup: null handle");
+        return MfskStatus::NullPointer;
+    };
+    if out.is_null() {
+        set_error("mfsk_q65_history_lookup: out is NULL");
+        return MfskStatus::NullPointer;
+    }
+    let Some(dx) = h.lookup(rx_freq_hz) else {
+        return MfskStatus::DecodeFailed;
+    };
+    let mut v = MfskQ65Dx {
+        size: core::mem::size_of::<MfskQ65Dx>() as u32,
+        has_grid: u32::from(dx.grid.is_some()),
+        call: [0; 16],
+        grid: [0; 8],
+    };
+    write_field(&mut v.call, &dx.call);
+    if let Some(g) = &dx.grid {
+        write_field(&mut v.grid, g);
+    }
+    unsafe { write_size_versioned(out, &v) };
+    MfskStatus::Ok
+}
+
+// ── Q65Callers: the contest caller list (`q65_hist2`) ────────────────────
+
+fn q65_callers<'a>(h: *mut MfskQ65Callers) -> Option<&'a mut mfsk_core::q65::Q65Callers> {
+    unsafe { (h as *mut mfsk_core::q65::Q65Callers).as_mut() }
+}
+
+/// A new, empty caller list. Free with [`mfsk_q65_callers_free`]. **Not
+/// thread-safe.**
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_q65_callers_new() -> *mut MfskQ65Callers {
+    Box::into_raw(Box::new(mfsk_core::q65::Q65Callers::new())) as *mut MfskQ65Callers
+}
+
+/// Free a caller list. NULL is a no-op.
+///
+/// # Safety
+/// `h` must be from [`mfsk_q65_callers_new`], freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_callers_free(h: *mut MfskQ65Callers) {
+    if !h.is_null() {
+        drop(unsafe { Box::from_raw(h as *mut mfsk_core::q65::Q65Callers) });
+    }
+}
+
+/// Remember a decode at `freq_hz` heard at `now` (Unix seconds — the library
+/// reads no clock): a compound call is ignored, ` R ` is taken out, the second
+/// word is the caller and the next four characters its grid. A known caller
+/// is refreshed; a new one is added only if it sent a grid, the oldest making
+/// room once 50 are held.
+///
+/// # Safety
+/// `h` must be live; `message` a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_callers_record(
+    h: *mut MfskQ65Callers,
+    freq_hz: f32,
+    message: *const c_char,
+    now: u64,
+) -> MfskStatus {
+    let Some(h) = q65_callers(h) else {
+        set_error("mfsk_q65_callers_record: null handle");
+        return MfskStatus::NullPointer;
+    };
+    let msg = match cstr_to_str(message) {
+        Ok(m) => m,
+        Err(st) => return st,
+    };
+    h.record(freq_hz, msg, now);
+    MfskStatus::Ok
+}
+
+/// Drop callers not heard for more than 24 hours. Call before each decode.
+///
+/// # Safety
+/// `h` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_callers_expire(h: *mut MfskQ65Callers, now: u64) -> MfskStatus {
+    let Some(h) = q65_callers(h) else {
+        set_error("mfsk_q65_callers_expire: null handle");
+        return MfskStatus::NullPointer;
+    };
+    h.expire(now);
+    MfskStatus::Ok
+}
+
+/// Forget one caller (worked, say) — `rm_q3list`. A call that is not listed is
+/// not an error.
+///
+/// # Safety
+/// `h` must be live; `call` a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_callers_remove(
+    h: *mut MfskQ65Callers,
+    call: *const c_char,
+) -> MfskStatus {
+    let Some(h) = q65_callers(h) else {
+        set_error("mfsk_q65_callers_remove: null handle");
+        return MfskStatus::NullPointer;
+    };
+    let c = match cstr_to_str(call) {
+        Ok(c) => c,
+        Err(st) => return st,
+    };
+    h.remove(c);
+    MfskStatus::Ok
+}
+
+/// How many callers are listed (at most 50).
+///
+/// # Safety
+/// `h` must be live or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_callers_len(h: *const MfskQ65Callers) -> usize {
+    unsafe { (h as *const mfsk_core::q65::Q65Callers).as_ref() }.map_or(0, |h| h.callers().len())
+}
+
+/// The `index`th caller, oldest first. `MFSK_STATUS_INVALID_ARG` past the end.
+///
+/// # Safety
+/// `h` must be live; `out` must point to `out->size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_callers_get(
+    h: *const MfskQ65Callers,
+    index: usize,
+    out: *mut MfskQ65Caller,
+) -> MfskStatus {
+    let Some(h) = (unsafe { (h as *const mfsk_core::q65::Q65Callers).as_ref() }) else {
+        set_error("mfsk_q65_callers_get: null handle");
+        return MfskStatus::NullPointer;
+    };
+    if out.is_null() {
+        set_error("mfsk_q65_callers_get: out is NULL");
+        return MfskStatus::NullPointer;
+    }
+    let Some(c) = h.callers().get(index) else {
+        set_error("mfsk_q65_callers_get: index out of range");
+        return MfskStatus::InvalidArg;
+    };
+    let mut v = MfskQ65Caller {
+        size: core::mem::size_of::<MfskQ65Caller>() as u32,
+        freq_hz: c.freq_hz,
+        last_heard: c.last_heard,
+        call: [0; 8],
+        grid: [0; 8],
+    };
+    write_field(&mut v.call, &c.call);
+    write_field(&mut v.grid, &c.grid);
+    unsafe { write_size_versioned(out, &v) };
+    MfskStatus::Ok
 }
 
 // ──────────────────────────────────────────────────────────────────────────

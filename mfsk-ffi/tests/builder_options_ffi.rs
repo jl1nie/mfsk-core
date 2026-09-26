@@ -242,38 +242,6 @@ fn a_per_call_override_does_not_stick() {
 
 // ─── tx_freq_hz (WSJT-X's `nftx`, #466) ──────────────────────────────────
 
-/// Deterministic white Gaussian noise — the generator of
-/// `mfsk-core/tests/common/channel.rs`, which this crate's tests cannot
-/// reach, so the same PCG + Box-Muller in a few lines.
-struct Awgn {
-    sigma: f32,
-    state: u64,
-}
-
-impl Awgn {
-    fn new(sigma: f32, seed: u64) -> Self {
-        Self {
-            sigma,
-            state: seed.wrapping_add(0x9E37_79B9_7F4A_7C15),
-        }
-    }
-
-    fn uniform(&mut self) -> f32 {
-        self.state = self
-            .state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((self.state >> 32) as f32 + 1.0) / 4_294_967_297.0
-    }
-
-    fn apply(&mut self, audio: &mut [f32]) {
-        for s in audio.iter_mut() {
-            let (u1, u2) = (self.uniform(), self.uniform());
-            *s += self.sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-        }
-    }
-}
-
 /// `K1JT HA0DU -12` at `f0`, in noise `snr_db` below the signal in a
 /// 2500 Hz bandwidth. The signal is scaled to 800 counts so the noise it
 /// takes to reach -22 dB (~11 000 rms) still fits an `i16`.

@@ -58,6 +58,13 @@
 #define MFSK_DECODE_FLAG_HASH_RESOLVED (1 << 0)
 
 /**
+ * `MfskDecode::flags` bit 1: the sender set WSJT-X 3.2's Q65 Pileup
+ * "copied last Tx" flag. Q65 rows only. A literal here for the same
+ * reason as the constant above.
+ */
+#define MFSK_DECODE_FLAG_COPIED_LAST_TX (1 << 1)
+
+/**
  * Drives the `DecodeRequest` builder, i.e. `mfsk_decode_i16` and
  * friends apply. Modes without this bit decode through their own
  * entry point (Q65 takes a nominal start sample and a tolerance;
@@ -581,6 +588,19 @@ typedef struct MfskDecodeSession MfskDecodeSession;
 typedef struct MfskJttyReceiver MfskJttyReceiver;
 
 /**
+ * The contest caller list, up to 50 stations that called with a grid —
+ * `q65_hist2`. Emitted as an incomplete type. **Not thread-safe.**
+ */
+typedef struct MfskQ65Callers MfskQ65Callers;
+
+/**
+ * The 100 most recent Q65 decodes and their frequencies — `q65_hist`. Used
+ * to find the DX call on a "Decode Again" with none entered. Emitted as an
+ * incomplete type, like [`MfskDecodeOptions`]. **Not thread-safe.**
+ */
+typedef struct MfskQ65History MfskQ65History;
+
+/**
  * Opaque streaming-capture handle.
  */
 typedef struct MfskStream MfskStream;
@@ -651,7 +671,8 @@ typedef struct MfskDecode {
     uint8_t pass;
     /**
      * Bit 0: the text required the callsign hash table to resolve a
-     * `<...>` reference. Other bits reserved, currently zero.
+     * `<...>` reference. Bit 1: the sender set Q65 Pileup's "copied last
+     * Tx" flag. Other bits reserved, currently zero.
      */
     uint8_t flags;
 } MfskDecode;
@@ -1004,6 +1025,192 @@ typedef struct MfskBudgetReport {
 } MfskBudgetReport;
 
 /**
+ * Search and strategy settings for `mfsk_q65_decode_ex`. **Size-versioned**,
+ * like `MfskModeInfo`: call `mfsk_q65_params_init(mode, &p)` first, which
+ * fills in the library's own defaults, then override what you want.
+ *
+ * Every flag is a `uint32_t` (non-zero is on) and every float that can be
+ * absent is NaN when it is, so an out-of-range value from C is a wrong
+ * answer this ABI can refuse rather than an invalid Rust `bool` or enum.
+ * A setting the request cannot honour together with the others is refused
+ * at the call, not dropped — see `mfsk_q65_decode_ex`.
+ */
+typedef struct MfskQ65Params {
+    /**
+     * `sizeof(MfskQ65Params)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * Low edge of the frequency search, Hz. Default 200.
+     */
+    float freq_min_hz;
+    /**
+     * High edge of the frequency search, Hz. Default 3000.
+     */
+    float freq_max_hz;
+    /**
+     * Where `dt = 0` is in the sample buffer, seconds: the nominal frame
+     * start. `mfsk_q65_params_init` writes the mode's `tx_start_offset_s`
+     * (0.5 s, or 1.0 s from Q65-120), which is right for a buffer that
+     * begins at the slot boundary. It also places the period the Max Drift
+     * search normalises over and the q3 decode's slot start, so it has to
+     * be true and not merely convenient.
+     */
+    float nominal_start_s;
+    /**
+     * How far before `nominal_start_s` a frame may start, seconds.
+     * Default 1.0, WSJT-X's own `lag1`.
+     */
+    float t_early_s;
+    /**
+     * How far after, seconds. Default 1.0 (`lag2`); `eme_delay` widens it.
+     */
+    float t_late_s;
+    /**
+     * Coarse-sync acceptance, as a fraction of sync plus noise (0..1).
+     * Default 0.1.
+     */
+    float score_threshold;
+    /**
+     * Candidate budget. Default 8.
+     */
+    uint32_t max_cand;
+    /**
+     * Non-zero: WSJT-X 3.2's **Q65 Pileup** decode. An AP hint naming both
+     * callsigns and nothing after them leaves the spare 78th bit free, so a
+     * reply carrying the "copied last Tx" flag still matches it. Needs
+     * `has_ap_hint`.
+     */
+    uint32_t pileup;
+    /**
+     * Non-zero: WSJT-X's **EME delay** ("Decode at 52 s"): the search
+     * reaches +5.5 s past the nominal start (+4.0 s on Q65-15) instead of
+     * `t_late_s`. Widens the late edge, never narrows it.
+     */
+    uint32_t eme_delay;
+    /**
+     * WSJT-X's **Max Drift** in spectrum bins (`0..=50`, upstream steps by
+     * 5; 0 is off): search a linear tone drift across the frame at every
+     * sync candidate and take it out before decoding. Costs `2*bins+1` times
+     * the plain search, so narrow the frequency window to match. Applies to
+     * the plain scan, the AP-hint scan and the q3 decode.
+     */
+    uint32_t max_drift;
+    /**
+     * The Rx frequency (tone 0), Hz — WSJT-X's `nfqso`: where the q3 list
+     * decode looks. NaN is unset. Needs `ap_list`.
+     */
+    float rx_freq_hz;
+    /**
+     * WSJT-X's F Tol around `rx_freq_hz`, Hz. Default 10.
+     */
+    float ftol_hz;
+    /**
+     * Fast-fading metric: spread bandwidth times symbol period (typical
+     * 0.05 near-AWGN, 1.0 moderate, 5+ severe). NaN, the default, is the
+     * plain AWGN metric. Excludes `ap_list`.
+     */
+    float fading_b90_ts;
+    /**
+     * `MfskQ65FadingModel` as an integer: 0 Gaussian (libration-limited
+     * EME, WSJT-X's default), 1 Lorentzian. Read only with `fading_b90_ts`.
+     */
+    uint32_t fading_model;
+    /**
+     * Full-AP list decoding: 0 none, 1 the standard QSO list for
+     * `list_my_call` / `list_his_call` / `list_his_grid`, 2 the contest list
+     * for `list_my_call` plus the `MfskQ65Callers` handle passed to the
+     * call (and `list_his_*` if there is a DX station too). With
+     * `rx_freq_hz` set it is WSJT-X's **q3** decode, run first at the Rx
+     * frequency; without it, template matching at every coarse candidate.
+     */
+    uint32_t ap_list;
+    /**
+     * Non-zero when the four `ap_*` fields below carry a hint.
+     */
+    uint32_t has_ap_hint;
+    /**
+     * A-priori hint, as `MfskDecodeParams`'s: the message's fields in order,
+     * `ap_call1` being `"CQ"` for a CQ and not the transmitting station.
+     */
+    char ap_call1[MFSK_AP_FIELD_LEN];
+    /**
+     * See `ap_call1`.
+     */
+    char ap_call2[MFSK_AP_FIELD_LEN];
+    /**
+     * See `ap_call1`.
+     */
+    char ap_grid[MFSK_AP_FIELD_LEN];
+    /**
+     * The report the hint may carry, e.g. `"-15"`.
+     */
+    char ap_report[MFSK_AP_FIELD_LEN];
+    /**
+     * Your call, for the `ap_list` lists.
+     */
+    char list_my_call[MFSK_AP_FIELD_LEN];
+    /**
+     * The DX station's call, for the `ap_list` lists.
+     */
+    char list_his_call[MFSK_AP_FIELD_LEN];
+    /**
+     * The DX station's grid (may be empty), for the `ap_list` lists.
+     */
+    char list_his_grid[MFSK_AP_FIELD_LEN];
+} MfskQ65Params;
+
+/**
+ * The DX station `mfsk_q65_history_lookup` found — `q65_hist`'s `dxcall` and
+ * `dxgrid`. **Size-versioned.**
+ */
+typedef struct MfskQ65Dx {
+    /**
+     * `sizeof(MfskQ65Dx)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * Non-zero when the message carried a grid.
+     */
+    uint32_t has_grid;
+    /**
+     * The DX call, NUL-terminated, up to 12 characters.
+     */
+    char call[16];
+    /**
+     * The four-character grid, NUL-terminated, when `has_grid`.
+     */
+    char grid[8];
+} MfskQ65Dx;
+
+/**
+ * One remembered caller, `mfsk_q65_callers_get`'s answer. **Size-versioned.**
+ */
+typedef struct MfskQ65Caller {
+    /**
+     * `sizeof(MfskQ65Caller)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * Its audio frequency when last heard, Hz.
+     */
+    int32_t freq_hz;
+    /**
+     * When it was last heard, Unix seconds, as the caller passed to
+     * `mfsk_q65_callers_record`.
+     */
+    uint64_t last_heard;
+    /**
+     * Its call (up to six characters), NUL-terminated.
+     */
+    char call[8];
+    /**
+     * The four-character grid it sent, NUL-terminated.
+     */
+    char grid[8];
+} MfskQ65Caller;
+
+/**
  * Receive settings for `mfsk_jtty_open` / `mfsk_jtty_set_params`.
  * **Size-versioned**, like `MfskModeInfo`: set `size = sizeof(MfskJttyParams)`,
  * or call `mfsk_jtty_params_init`, which fills in the defaults (`rjtty`'s).
@@ -1294,6 +1501,29 @@ enum MfskStatus mfsk_encode_q65(uint32_t submode,
                                 float *out,
                                 uintptr_t cap,
                                 uintptr_t *out_len);
+
+/**
+ * [`mfsk_encode_q65`] with WSJT-X 3.2's **Q65 Pileup** "copied last Tx"
+ * flag: a non-zero `copied_last_tx` sets the spare 78th payload bit
+ * (`genq65.f90`'s `iflag`), which a Pileup receiver reports as
+ * `MFSK_DECODE_FLAG_COPIED_LAST_TX`. `copied_last_tx` is an integer, not a
+ * `bool`, so any value a C caller writes is a defined one; 0 is exactly
+ * [`mfsk_encode_q65`].
+ *
+ * # Safety
+ *
+ * See [`mfsk_encode_ft8`].
+ */
+MFSK_API
+enum MfskStatus mfsk_encode_q65_flagged(uint32_t submode,
+                                        const char *call1,
+                                        const char *call2,
+                                        const char *grid_or_report,
+                                        uint32_t copied_last_tx,
+                                        float freq_hz,
+                                        float *out,
+                                        uintptr_t cap,
+                                        uintptr_t *out_len);
 
 /**
  * Plain AWGN Q65 scan-and-decode for any sub-mode. The default
@@ -1836,6 +2066,196 @@ enum MfskStatus mfsk_jt65_decode_at(const int16_t *samples,
                                     struct MfskDecode *out,
                                     uintptr_t cap,
                                     uintptr_t *out_len);
+
+/**
+ * Fill `out` with `mode`'s Q65 search defaults: the library's own
+ * (`q65::search::default_search_params`, WSJT-X's ±1 s window), not the wide
+ * window the older `mfsk_q65_decode*` functions scan. Always call this
+ * before touching a `MfskQ65Params`: a zero `max_cand` or an empty band
+ * decodes nothing, and `rx_freq_hz` and `fading_b90_ts` have to be NaN
+ * rather than 0 to mean "unset".
+ *
+ * # Safety
+ * `out` must point to at least `out->size` writable bytes.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_params_init(uint32_t mode,
+                                     struct MfskQ65Params *out);
+
+/**
+ * Q65 decode with every setting WSJT-X 3.2 offers: the scan (plain, AP hint
+ * or fast-fading), Pileup, Max Drift, the EME delay, and the full-AP list
+ * decode — at an Rx frequency, WSJT-X's **q3** — in one call.
+ *
+ * `mode` is a Q65 `MfskMode` (`MFSK_MODE_Q65A30` …). `params` may be NULL for
+ * the defaults `mfsk_q65_params_init` writes. `callers` is the contest list
+ * (`ap_list = 2`) and must be NULL otherwise; `hash_table` resolves `<...>`
+ * callsigns and may be NULL. Rows carry `dt_sec` measured from
+ * `nominal_start_s`, as WSJT-X's DT column, and
+ * `MFSK_DECODE_FLAG_COPIED_LAST_TX` on a Pileup reply.
+ *
+ * **A combination the engine would quietly not honour is refused** rather
+ * than dropped, with the reason in `mfsk_last_error()`: `ap_list` with
+ * `fading_b90_ts`, `rx_freq_hz` without `ap_list`, `pileup` without an AP
+ * hint, `max_drift` with fading or with a list decode that has no Rx
+ * frequency. Returns `MFSK_STATUS_UNSUPPORTED` for those, and
+ * `MFSK_STATUS_DECODE_FAILED` if the AP-list candidate set is empty (a
+ * callsign that will not pack).
+ *
+ * # Safety
+ * `samples` must point to `n_samples` valid `f32` values; `params`,
+ * `callers` and `hash_table`, if non-NULL, must be live and of their types;
+ * `out` must point to `cap` writable [`MfskDecode`] rows and `*out_len`
+ * receives the count found (or needed, on `MFSK_STATUS_INVALID_ARG`).
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_decode_ex(uint32_t mode,
+                                   const float *samples,
+                                   uintptr_t n_samples,
+                                   uint32_t sample_rate,
+                                   const struct MfskQ65Params *params,
+                                   const struct MfskQ65Callers *callers,
+                                   const struct MfskCallsignHashTable *hash_table,
+                                   struct MfskDecode *out,
+                                   uintptr_t cap,
+                                   uintptr_t *out_len);
+
+/**
+ * A new, empty history. Free with [`mfsk_q65_history_free`]. **Not
+ * thread-safe**: one per thread, or guard it yourself.
+ */
+MFSK_API
+struct MfskQ65History *mfsk_q65_history_new(void);
+
+/**
+ * Free a history. NULL is a no-op.
+ *
+ * # Safety
+ * `h` must be from [`mfsk_q65_history_new`], freed once.
+ */
+MFSK_API
+void mfsk_q65_history_free(struct MfskQ65History *h);
+
+/**
+ * Remember one decode at `freq_hz` (tone 0). The 100 most recent are kept.
+ *
+ * # Safety
+ * `h` must be live; `message` a NUL-terminated UTF-8 string.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_history_push(struct MfskQ65History *h,
+                                      float freq_hz,
+                                      const char *message);
+
+/**
+ * Remember every row of a decode, as `q65_decode.f90` calls `q65_hist` after
+ * each one. `rows` is an array of `n` [`MfskDecode`] as this library wrote
+ * them (their own stride), e.g. straight from `mfsk_q65_decode_ex`.
+ *
+ * # Safety
+ * `h` must be live; `rows` must point to `n` valid rows.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_history_record(struct MfskQ65History *h,
+                                        const struct MfskDecode *rows,
+                                        uintptr_t n);
+
+/**
+ * How many decodes the history holds (at most 100).
+ *
+ * # Safety
+ * `h` must be live or NULL.
+ */
+MFSK_API
+uintptr_t mfsk_q65_history_len(const struct MfskQ65History *h);
+
+/**
+ * The DX station from the most recent decode within 10 Hz of `rx_freq_hz`
+ * whose first word is 3 to 12 characters — WSJT-X's "Decode Again" with no
+ * DX call entered, so a `CQ ...` decode is passed over for an older one.
+ * Returns `MFSK_STATUS_OK` and fills `out`, or `MFSK_STATUS_DECODE_FAILED`
+ * when nothing qualifies (`out` is left untouched).
+ *
+ * # Safety
+ * `h` must be live; `out` must point to `out->size` writable bytes.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_history_lookup(const struct MfskQ65History *h,
+                                        float rx_freq_hz,
+                                        struct MfskQ65Dx *out);
+
+/**
+ * A new, empty caller list. Free with [`mfsk_q65_callers_free`]. **Not
+ * thread-safe.**
+ */
+MFSK_API
+struct MfskQ65Callers *mfsk_q65_callers_new(void);
+
+/**
+ * Free a caller list. NULL is a no-op.
+ *
+ * # Safety
+ * `h` must be from [`mfsk_q65_callers_new`], freed once.
+ */
+MFSK_API
+void mfsk_q65_callers_free(struct MfskQ65Callers *h);
+
+/**
+ * Remember a decode at `freq_hz` heard at `now` (Unix seconds — the library
+ * reads no clock): a compound call is ignored, ` R ` is taken out, the second
+ * word is the caller and the next four characters its grid. A known caller
+ * is refreshed; a new one is added only if it sent a grid, the oldest making
+ * room once 50 are held.
+ *
+ * # Safety
+ * `h` must be live; `message` a NUL-terminated UTF-8 string.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_callers_record(struct MfskQ65Callers *h,
+                                        float freq_hz,
+                                        const char *message,
+                                        uint64_t now);
+
+/**
+ * Drop callers not heard for more than 24 hours. Call before each decode.
+ *
+ * # Safety
+ * `h` must be live.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_callers_expire(struct MfskQ65Callers *h,
+                                        uint64_t now);
+
+/**
+ * Forget one caller (worked, say) — `rm_q3list`. A call that is not listed is
+ * not an error.
+ *
+ * # Safety
+ * `h` must be live; `call` a NUL-terminated UTF-8 string.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_callers_remove(struct MfskQ65Callers *h,
+                                        const char *call);
+
+/**
+ * How many callers are listed (at most 50).
+ *
+ * # Safety
+ * `h` must be live or NULL.
+ */
+MFSK_API
+uintptr_t mfsk_q65_callers_len(const struct MfskQ65Callers *h);
+
+/**
+ * The `index`th caller, oldest first. `MFSK_STATUS_INVALID_ARG` past the end.
+ *
+ * # Safety
+ * `h` must be live; `out` must point to `out->size` writable bytes.
+ */
+MFSK_API
+enum MfskStatus mfsk_q65_callers_get(const struct MfskQ65Callers *h,
+                                     uintptr_t index,
+                                     struct MfskQ65Caller *out);
 
 /**
  * Channel symbols per frame, or 0 for a mode with no exposed tone

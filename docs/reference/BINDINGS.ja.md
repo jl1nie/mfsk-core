@@ -391,6 +391,57 @@ Q65 は「何を手掛かりとして与えるか」で分かれる4つの族を
 ハッシュテーブルはセッションではなく呼び出し側が所有する唯一のハンドル:
 `mfsk_callsign_hash_table_new` / `_insert` / `_free`。
 
+**WSJT-X 3.2 の Q65 設定は `mfsk_q65_decode_ex` 1 本で扱う。** 上の 4 つは
+戦略を名前で選び、決め打ちの広い窓を走査する。Pileup・Max Drift・EME delay・q3
+リストデコードはそれらの組み合わせなので、組み合わせごとに位置引数の関数を
+増やすのではなく、1 つの呼び出しとサイズバージョン付きの構造体にした:
+
+```c
+MfskQ65Params p;
+memset(&p, 0, sizeof p);
+p.size = sizeof p;
+mfsk_q65_params_init(MFSK_MODE_Q65A30, &p);   // ライブラリの既定値
+p.max_drift = 10;
+MfskStatus st = mfsk_q65_decode_ex(MFSK_MODE_Q65A30, pcm, n, 12000, &p,
+                                   /*callers*/ NULL, /*hash_table*/ NULL,
+                                   rows, cap, &n_rows);
+```
+
+`MfskQ65SubMode` ではなく **`MfskMode`**（Q65 のもの）を取り、`dt_sec` は WSJT-X の
+DT 列と同じく `nominal_start_s` からの値で返す（従来の関数は
+`start_sample / 12000` を返す）。`mfsk_q65_params_init` が書くのはライブラリ自身の
+既定値（200–3000 Hz、±1 s、しきい値 0.1、候補 8）で、従来の関数の広い窓ではない。
+
+| フィールド | 意味 |
+|---|---|
+| `nominal_start_s` | バッファ内で `dt = 0` の位置: モードの `tx_start_offset_s`（0.5 s、Q65-120 以降は 1.0 s）。スロット境界から始まるバッファならこれが正しい。Max Drift が正規化する周期と q3 の slot start もこれで決まるので、便宜ではなく正しい値が必要 |
+| `t_early_s`, `t_late_s` | フレーム開始がそこからどれだけ前後にずれてよいか |
+| `pileup` | **Q65 Pileup**: 両方の呼出符号だけを名指しする AP ヒントは予備の 78 ビット目を空けるので、「copied last Tx」フラグ付きの返信も一致する。`has_ap_hint` が必要 |
+| `eme_delay` | **EME delay**（「Decode at 52 s」）: 遅い側の端が +5.5 s（Q65-15 は +4.0 s）まで届く |
+| `max_drift` | **Max Drift**、スペクトルビン `0..=50`: フレーム全体での線形なトーンドリフトを探索して除く。通常探索の `2*bins+1` 倍のコスト。upstream と同様に帯域を `nfqso ± ntol` に絞ること |
+| `rx_freq_hz`, `ftol_hz` | q3 デコードが見る Rx 周波数（NaN で未設定）と F Tol（既定 10 Hz）。`ap_list` が必要 |
+| `ap_list` | 0 なし。1 は `list_my_call` / `list_his_call` / `list_his_grid` の標準 QSO リスト。2 は `list_my_call` と、呼び出しに渡す `MfskQ65Callers*` による**コンテストリスト**。`rx_freq_hz` があれば WSJT-X の **q3** デコードで Rx 周波数で最初に走り、無ければ粗い候補ごとのテンプレート照合 |
+| `fading_b90_ts`, `fading_model` | 高速フェージング用メトリック（NaN、既定は通常の AWGN）。0 は Gaussian、1 は Lorentzian |
+| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` | a-priori ヒント。メッセージのフィールド順 |
+
+フラグはすべて `uint32_t`、省略可能な float は不在なら NaN なので、C からの異常値は
+Rust の不正な `bool` ではなく拒否になる。**エンジンが黙って無視する組み合わせは
+拒否**し、理由を `mfsk_last_error()` に入れる: `ap_list` と `fading_b90_ts`（両者を
+組み合わせる WSJT-X の経路は無い）、`ap_list` の無い `rx_freq_hz`、AP ヒントの無い
+`pileup`、フェージング併用や Rx 周波数の無いリストデコードでの `max_drift`。Pileup の
+返信は `MFSK_DECODE_FLAG_COPIED_LAST_TX`（`MfskDecode::flags` のビット 1、WSJT-X では
+`#`）付きで返り、従来の Q65 呼び出しも立てる。送る側は `mfsk_encode_q65_flagged` が
+`copied_last_tx` 付きの `mfsk_encode_q65`。
+
+**WSJT-X が持つ 2 つのリストは、呼び出し側が所有するハンドル**にした。デコーダは
+状態を持たず、時計はアプリケーションのものだけだから。`MfskQ65History`
+（`q65_hist`、直近 100 件のデコード。`_push`、行配列をまとめて入れる `_record`、
+DX 局が未入力のときの "Decode Again" が読む DX 呼出符号とグリッドを返す
+`_lookup(rx_freq, &dx)`）と `MfskQ65Callers`（`q65_hist2`、グリッド付きで呼んできた
+最大 50 局。`_record(freq, text, now)`、`_expire(now)`、`_remove(call)`、`_len`、
+`_get`）。時刻は呼び出し側が渡す Unix 秒で、ライブラリは時計を読まない。どちらも
+スレッドセーフではない。
+
 ### 2.8.1 JTTY — スロット呼び出しではなく受信器ハンドル
 
 JTTY（WSJT-X 3.2 のキーボードモード）にはスロットが無い。フレームは送信側が

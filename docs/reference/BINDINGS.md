@@ -405,6 +405,60 @@ with — all take a `submode` and an optional `MfskCallsignHashTable*`:
 The hash table is the one handle the caller owns rather than the
 session: `mfsk_callsign_hash_table_new` / `_insert` / `_free`.
 
+**`mfsk_q65_decode_ex` is the one call for WSJT-X 3.2's Q65 settings.** The
+four above pick a strategy by name and scan a fixed, deliberately wide window;
+Pileup, Max Drift, the EME delay and the q3 list decode are combinations of
+them, so instead of one more positional function per combination there is one
+call and a size-versioned struct:
+
+```c
+MfskQ65Params p;
+memset(&p, 0, sizeof p);
+p.size = sizeof p;
+mfsk_q65_params_init(MFSK_MODE_Q65A30, &p);   // the library's defaults
+p.max_drift = 10;
+MfskStatus st = mfsk_q65_decode_ex(MFSK_MODE_Q65A30, pcm, n, 12000, &p,
+                                   /*callers*/ NULL, /*hash_table*/ NULL,
+                                   rows, cap, &n_rows);
+```
+
+It takes a **`MfskMode`** (a Q65 one), not `MfskQ65SubMode`, and reports `dt_sec`
+from `nominal_start_s` as WSJT-X's DT column does — the older functions report
+`start_sample / 12000`. `mfsk_q65_params_init` writes the library's own
+defaults (200–3000 Hz, ±1 s, threshold 0.1, 8 candidates), not the wide window
+those scan.
+
+| field | meaning |
+|---|---|
+| `nominal_start_s` | where `dt = 0` is in the buffer: the mode's `tx_start_offset_s` (0.5 s, 1.0 s from Q65-120), which is right for a buffer that begins at the slot boundary. It also places the period Max Drift normalises over and the q3 decode's slot start, so it has to be true |
+| `t_early_s`, `t_late_s` | how far before/after it a frame may start |
+| `pileup` | **Q65 Pileup**: an AP hint naming both callsigns and nothing after them leaves the spare 78th bit free, so a reply carrying the "copied last Tx" flag still matches. Needs `has_ap_hint` |
+| `eme_delay` | **EME delay** ("Decode at 52 s"): the late edge reaches +5.5 s (+4.0 s on Q65-15) |
+| `max_drift` | **Max Drift**, spectrum bins `0..=50`: search a linear tone drift across the frame and take it out. Costs `2*bins+1` times the plain search; narrow the band to `nfqso ± ntol` as upstream does |
+| `rx_freq_hz`, `ftol_hz` | the Rx frequency (NaN unset) and F Tol (default 10 Hz) the q3 decode looks around. Needs `ap_list` |
+| `ap_list` | 0 none; 1 the standard QSO list for `list_my_call` / `list_his_call` / `list_his_grid`; 2 the **contest list** for `list_my_call` plus the `MfskQ65Callers*` passed to the call. With `rx_freq_hz` it is WSJT-X's **q3** decode, run first at the Rx frequency; without it, template matching at every coarse candidate |
+| `fading_b90_ts`, `fading_model` | the fast-fading metric (NaN, the default, is plain AWGN); 0 Gaussian, 1 Lorentzian |
+| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` | the a-priori hint, the message's fields in order |
+
+Every flag is a `uint32_t` and every optional float is NaN when absent, so a
+wild value from C is a refusal and not an invalid Rust `bool`. **A combination
+the engine would quietly not honour is refused**, with the reason in
+`mfsk_last_error()`: `ap_list` with `fading_b90_ts` (no WSJT-X path combines
+them), `rx_freq_hz` without `ap_list`, `pileup` without an AP hint, `max_drift`
+with fading or with a list decode that has no Rx frequency. A Pileup reply
+comes back with `MFSK_DECODE_FLAG_COPIED_LAST_TX` (bit 1 of `MfskDecode::flags`),
+which WSJT-X shows as `#`; the older Q65 calls set it too. To send one,
+`mfsk_encode_q65_flagged` is `mfsk_encode_q65` with `copied_last_tx`.
+
+**The two lists WSJT-X keeps are handles you own**, because the decoder is
+stateless and the application's clock is the only clock: `MfskQ65History`
+(`q65_hist`, the 100 most recent decodes; `_push`, `_record` for a whole row
+array, `_lookup(rx_freq, &dx)` for the DX call and grid a "Decode Again" with
+none entered would read) and `MfskQ65Callers` (`q65_hist2`, up to 50 stations
+that called with a grid; `_record(freq, text, now)`, `_expire(now)`,
+`_remove(call)`, `_len`, `_get`). Times are Unix seconds you pass, since the
+library reads no clock. Neither is thread-safe.
+
 ### 2.8.1 JTTY — a receiver handle instead of a slot call
 
 JTTY (WSJT-X 3.2's keyboard mode) has no slot: frames start whenever the

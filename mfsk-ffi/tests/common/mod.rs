@@ -282,3 +282,35 @@ pub fn f32_to_i16(pcm: &[f32]) -> Vec<i16> {
         .map(|&s| (s * 32767.0).clamp(-32_768.0, 32_767.0) as i16)
         .collect()
 }
+
+/// Deterministic white Gaussian noise — the generator of
+/// `mfsk-core/tests/common/channel.rs`, which this crate's tests cannot
+/// reach, so the same PCG + Box-Muller in a few lines.
+pub struct Awgn {
+    sigma: f32,
+    state: u64,
+}
+
+impl Awgn {
+    pub fn new(sigma: f32, seed: u64) -> Self {
+        Self {
+            sigma,
+            state: seed.wrapping_add(0x9E37_79B9_7F4A_7C15),
+        }
+    }
+
+    fn uniform(&mut self) -> f32 {
+        self.state = self
+            .state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.state >> 32) as f32 + 1.0) / 4_294_967_297.0
+    }
+
+    pub fn apply(&mut self, audio: &mut [f32]) {
+        for s in audio.iter_mut() {
+            let (u1, u2) = (self.uniform(), self.uniform());
+            *s += self.sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+        }
+    }
+}

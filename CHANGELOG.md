@@ -2,6 +2,33 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **C ABI: WSJT-X 3.2's Q65 settings, `mfsk_q65_decode_ex` (#466, part 2).** Pileup, Max
+  Drift, the EME delay and the q3 list decode were Rust-only. The four `mfsk_q65_decode*`
+  functions pick a strategy by name and scan a fixed wide window, and these settings are
+  combinations of them, so there is one call and a size-versioned `MfskQ65Params` instead of
+  one more positional function each.
+  - `mfsk_q65_params_init(mode, &p)` writes the library's defaults (±1 s, threshold 0.1, 8
+    candidates) and `nominal_start_s`, the mode's `tx_start_offset_s`. Rows report `dt_sec`
+    from that nominal start, as WSJT-X's DT column; the older functions report
+    `start_sample / 12000`.
+  - Settings: `pileup`, `eme_delay`, `max_drift` (0..=50), `rx_freq_hz` / `ftol_hz`, `ap_list`
+    (0 none, 1 the standard QSO list, 2 the contest list), `fading_b90_ts` / `fading_model`,
+    and the AP hint. With `rx_freq_hz` and `ap_list` it is the q3 decode.
+  - Flags are `uint32_t` and absent floats are NaN, so no field can hold an invalid Rust `bool`
+    or enum. A combination the engine would quietly not honour is refused with the reason:
+    `ap_list` with fading, `rx_freq_hz` without a list, `pileup` without an AP hint,
+    `max_drift` with fading or with a list decode that has no Rx frequency.
+  - Rows carry `MFSK_DECODE_FLAG_COPIED_LAST_TX` (`flags` bit 1) on a Pileup reply, on the
+    older Q65 calls too. `mfsk_encode_q65_flagged` sends one.
+  - `MfskQ65History` (`q65_hist`: `_push`, `_record`, `_lookup`) and `MfskQ65Callers`
+    (`q65_hist2`: `_record`, `_expire`, `_remove`, `_len`, `_get`) are handles the caller
+    owns; times are the caller's Unix seconds.
+  - Each setting is checked by a decode that only comes out right if it arrived (a 3 s late
+    frame with the EME delay, a 60 Hz/min drifting one with Max Drift, a flagged reply under
+    Pileup, a list message in a window holding nothing else with q3, a remembered caller with
+    the contest list), and disabling the wiring fails five of them.
+  - Kotlin and Swift do not carry these yet.
+
 - **C ABI: the transmit frequency and FST4's noise blanker, on `MfskDecodeParams` (#466,
   part 1).** Two knobs the Rust builder gained for the 3.2 port had no way in through
   `mfsk-ffi`, so a Kotlin or Swift caller could not reach them.

@@ -613,12 +613,18 @@ pub struct MfskDecode {
     /// diagnostics, not for logic.
     pub pass: u8,
     /// Bit 0: the text required the callsign hash table to resolve a
-    /// `<...>` reference. Other bits reserved, currently zero.
+    /// `<...>` reference. Bit 1: the sender set Q65 Pileup's "copied last
+    /// Tx" flag. Other bits reserved, currently zero.
     pub flags: u8,
 }
 
 /// [`MfskDecode::flags`] bit 0.
 pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
+
+/// [`MfskDecode::flags`] bit 1: the sender set WSJT-X 3.2's **Q65 Pileup**
+/// "copied last Tx" flag, the spare 78th payload bit (`genq65.f90`'s `iflag`).
+/// WSJT-X marks such a decode with `#`. Q65 rows only.
+pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
 
 /// Opaque decode-session handle (FFI v2).
 ///
@@ -707,5 +713,142 @@ const _: () = assert!(MFSK_JTTY_TEXT_BUF_LEN == 128);
 /// Emitted as an incomplete type, like [`MfskDecodeOptions`]; the receiver is
 /// what `mfsk_jtty_open` allocates.
 pub struct MfskJttyReceiver {
+    _marker: PhantomData<*mut ()>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Q65 extended decode (#466)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Search and strategy settings for `mfsk_q65_decode_ex`. **Size-versioned**,
+/// like `MfskModeInfo`: call `mfsk_q65_params_init(mode, &p)` first, which
+/// fills in the library's own defaults, then override what you want.
+///
+/// Every flag is a `uint32_t` (non-zero is on) and every float that can be
+/// absent is NaN when it is, so an out-of-range value from C is a wrong
+/// answer this ABI can refuse rather than an invalid Rust `bool` or enum.
+/// A setting the request cannot honour together with the others is refused
+/// at the call, not dropped — see `mfsk_q65_decode_ex`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskQ65Params {
+    /// `sizeof(MfskQ65Params)` as the caller understands it.
+    pub size: u32,
+    /// Low edge of the frequency search, Hz. Default 200.
+    pub freq_min_hz: f32,
+    /// High edge of the frequency search, Hz. Default 3000.
+    pub freq_max_hz: f32,
+    /// Where `dt = 0` is in the sample buffer, seconds: the nominal frame
+    /// start. `mfsk_q65_params_init` writes the mode's `tx_start_offset_s`
+    /// (0.5 s, or 1.0 s from Q65-120), which is right for a buffer that
+    /// begins at the slot boundary. It also places the period the Max Drift
+    /// search normalises over and the q3 decode's slot start, so it has to
+    /// be true and not merely convenient.
+    pub nominal_start_s: f32,
+    /// How far before `nominal_start_s` a frame may start, seconds.
+    /// Default 1.0, WSJT-X's own `lag1`.
+    pub t_early_s: f32,
+    /// How far after, seconds. Default 1.0 (`lag2`); `eme_delay` widens it.
+    pub t_late_s: f32,
+    /// Coarse-sync acceptance, as a fraction of sync plus noise (0..1).
+    /// Default 0.1.
+    pub score_threshold: f32,
+    /// Candidate budget. Default 8.
+    pub max_cand: u32,
+    /// Non-zero: WSJT-X 3.2's **Q65 Pileup** decode. An AP hint naming both
+    /// callsigns and nothing after them leaves the spare 78th bit free, so a
+    /// reply carrying the "copied last Tx" flag still matches it. Needs
+    /// `has_ap_hint`.
+    pub pileup: u32,
+    /// Non-zero: WSJT-X's **EME delay** ("Decode at 52 s"): the search
+    /// reaches +5.5 s past the nominal start (+4.0 s on Q65-15) instead of
+    /// `t_late_s`. Widens the late edge, never narrows it.
+    pub eme_delay: u32,
+    /// WSJT-X's **Max Drift** in spectrum bins (`0..=50`, upstream steps by
+    /// 5; 0 is off): search a linear tone drift across the frame at every
+    /// sync candidate and take it out before decoding. Costs `2*bins+1` times
+    /// the plain search, so narrow the frequency window to match. Applies to
+    /// the plain scan, the AP-hint scan and the q3 decode.
+    pub max_drift: u32,
+    /// The Rx frequency (tone 0), Hz — WSJT-X's `nfqso`: where the q3 list
+    /// decode looks. NaN is unset. Needs `ap_list`.
+    pub rx_freq_hz: f32,
+    /// WSJT-X's F Tol around `rx_freq_hz`, Hz. Default 10.
+    pub ftol_hz: f32,
+    /// Fast-fading metric: spread bandwidth times symbol period (typical
+    /// 0.05 near-AWGN, 1.0 moderate, 5+ severe). NaN, the default, is the
+    /// plain AWGN metric. Excludes `ap_list`.
+    pub fading_b90_ts: f32,
+    /// `MfskQ65FadingModel` as an integer: 0 Gaussian (libration-limited
+    /// EME, WSJT-X's default), 1 Lorentzian. Read only with `fading_b90_ts`.
+    pub fading_model: u32,
+    /// Full-AP list decoding: 0 none, 1 the standard QSO list for
+    /// `list_my_call` / `list_his_call` / `list_his_grid`, 2 the contest list
+    /// for `list_my_call` plus the `MfskQ65Callers` handle passed to the
+    /// call (and `list_his_*` if there is a DX station too). With
+    /// `rx_freq_hz` set it is WSJT-X's **q3** decode, run first at the Rx
+    /// frequency; without it, template matching at every coarse candidate.
+    pub ap_list: u32,
+    /// Non-zero when the four `ap_*` fields below carry a hint.
+    pub has_ap_hint: u32,
+    /// A-priori hint, as `MfskDecodeParams`'s: the message's fields in order,
+    /// `ap_call1` being `"CQ"` for a CQ and not the transmitting station.
+    pub ap_call1: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
+    /// See `ap_call1`.
+    pub ap_call2: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
+    /// See `ap_call1`.
+    pub ap_grid: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
+    /// The report the hint may carry, e.g. `"-15"`.
+    pub ap_report: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
+    /// Your call, for the `ap_list` lists.
+    pub list_my_call: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
+    /// The DX station's call, for the `ap_list` lists.
+    pub list_his_call: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
+    /// The DX station's grid (may be empty), for the `ap_list` lists.
+    pub list_his_grid: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
+}
+
+/// The DX station `mfsk_q65_history_lookup` found — `q65_hist`'s `dxcall` and
+/// `dxgrid`. **Size-versioned.**
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskQ65Dx {
+    /// `sizeof(MfskQ65Dx)` as the caller understands it.
+    pub size: u32,
+    /// Non-zero when the message carried a grid.
+    pub has_grid: u32,
+    /// The DX call, NUL-terminated, up to 12 characters.
+    pub call: [core::ffi::c_char; 16],
+    /// The four-character grid, NUL-terminated, when `has_grid`.
+    pub grid: [core::ffi::c_char; 8],
+}
+
+/// One remembered caller, `mfsk_q65_callers_get`'s answer. **Size-versioned.**
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskQ65Caller {
+    /// `sizeof(MfskQ65Caller)` as the caller understands it.
+    pub size: u32,
+    /// Its audio frequency when last heard, Hz.
+    pub freq_hz: i32,
+    /// When it was last heard, Unix seconds, as the caller passed to
+    /// `mfsk_q65_callers_record`.
+    pub last_heard: u64,
+    /// Its call (up to six characters), NUL-terminated.
+    pub call: [core::ffi::c_char; 8],
+    /// The four-character grid it sent, NUL-terminated.
+    pub grid: [core::ffi::c_char; 8],
+}
+
+/// The 100 most recent Q65 decodes and their frequencies — `q65_hist`. Used
+/// to find the DX call on a "Decode Again" with none entered. Emitted as an
+/// incomplete type, like [`MfskDecodeOptions`]. **Not thread-safe.**
+pub struct MfskQ65History {
+    _marker: PhantomData<*mut ()>,
+}
+
+/// The contest caller list, up to 50 stations that called with a grid —
+/// `q65_hist2`. Emitted as an incomplete type. **Not thread-safe.**
+pub struct MfskQ65Callers {
     _marker: PhantomData<*mut ()>,
 }
