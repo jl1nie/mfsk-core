@@ -2,6 +2,26 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: the contest caller list, `q65_hist2` / `q65_set_list2`.** In NA VHF / WW Digi /
+  ARRL Digi contest mode WSJT-X remembers up to 50 stations that called with a grid,
+  and builds its full-AP list from all of them. This crate had neither half.
+  - `q65::Q65Callers` is the list, held by the application. `record(freq, msg, now)`
+    follows `q65_hist2`: it ignores compound calls, drops ` R `, takes a six-character
+    call and a grid, refreshes a known caller, and evicts the oldest at 50. `expire(now)`
+    drops callers not heard for 24 hours, and `remove(call)` is `rm_q3list`.
+  - `q65::contest_codewords(my, his, his_grid, &callers)` follows `q65_set_list2`: an
+    all-zero first codeword, then for every caller, and the DX station when it is
+    standard, gridded and not yet listed, `MyCall Caller Grid` / `R Grid` / `RRR` /
+    `RR73` / `73`, each with the 78th bit clear and set.
+  - Checked against v3.2.0-rc1's own `q65_set_list2` on two callers plus a DX station:
+    all 31 codewords identical.
+  - Differences from upstream: times come from the caller, as the crate reads no clock.
+    Expiry removes every stale entry at once, where upstream's shifting loop skips the
+    entry that moves into place until the next decode.
+  - Also `msg::wsjt77::pack77` now packs an `R <grid>` ending (`K1ABC W9XYZ R EN37`, the
+    grid with `ir = 1`), as `pack77_1` does and as `unpack77` prints it. It fell through
+    to the report parser and returned `None`.
+
 - **Q65: WSJT-X's q3 list decode, and the Max Drift 50 stage 5.** With a codeword list,
   `q65_dec0` synchronises on all 85 symbols of every list message within F Tol of the Rx
   frequency (`q65_ccf_85`: symbol spectra at 8 steps per symbol, interpolated and

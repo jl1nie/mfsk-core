@@ -691,6 +691,12 @@ AP は候補ごとの ladder の最後の一段である — FT4 と FST4 全サ
 （メッセージにグリッドがあればグリッドも返す）。WSJT-X は DX コール未入力で
 手動の Decode Again を行ったときにこれを使い、オペレータがコールを入力しなくても
 フル AP リスト（`standard_qso_codewords`）を作る。
+`q65::Q65Callers` と `contest_codewords` はコンテストモード版である
+（`q65_hist2` / `q65_set_list2`）。グリッド付きで呼んできた局を最大 50 局、
+アプリケーションが保持する（`record(freq, msg, now)`、`expire(now)`）。
+そこから、各局について `MyCall Caller Grid` / `R Grid` / `RRR` / `RR73` /
+`73` を 78 ビット目なしとありの両方で作ったフル AP リストを作り、
+`.ap_list()` に渡す。
 `MultiPeriodRequest` は T/R スロットごとに1本の `&[&[f32]]` を取り、
 Rust 専用である（C ABI には無い）。各フロントエンドが実際に何をして
 いるか、既定のスキャンがなぜ素の Bessel パスではないのかは
