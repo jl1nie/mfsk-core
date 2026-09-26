@@ -143,7 +143,13 @@ fn ft4_noise_slots_measure() {
                             if let Some(h) = hint {
                                 req = req.freq_hint(h);
                             }
-                            n += req.decode().results.len();
+                            n += if std::env::var("MFSK_MEASURE_NO_MESSAGE_FILTER")
+                                .is_ok_and(|v| v == "1")
+                            {
+                                req.message_filter(|_| true).decode().results.len()
+                            } else {
+                                req.decode().results.len()
+                            };
                         }
                         n
                     })

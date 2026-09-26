@@ -465,6 +465,15 @@ pub trait FrameDecodable: Protocol {
     /// of 36 recall cells identical. `Ft4::MESSAGE_FILTER_DEFAULT`
     /// carries the table and what the corpus cannot say.
     ///
+    /// Re-measured on 2026-09-26 (#456), once the OSD of FT8, FT4 and FST4 ran as
+    /// upstream's and the CRC no longer let wrong codewords through at 22 % (FT8's AP, FT4's
+    /// ladder): the verdict still earns its place. FT8 busy-band corpus (420 files, 4440
+    /// signals, `MFSK_FT8_BUSY_NO_MESSAGE_FILTER=1` for the off side): hits 4440 and 4440,
+    /// unexpected decodes 3 -> 9 with it off. 2 400 noise-only FT8 slots (`(0.8, 600)`) give
+    /// 1 phantom with it and 2 without, 3 000 FT4 slots (`(0.05, 100)`) 3 and 4. The WSJT-X
+    /// recordings decode the same with it on and off (FT8 `qso3_busy` at three request
+    /// shapes, the FT4 golden at two). It removes a few phantoms and no measured decode.
+    ///
     /// `false` for FST4. The argument that stood here — CRC-24 puts its
     /// false-positive rate 512x below FT8's and FT4's — described the
     /// (240,101) search this crate ran until #456. WSJT-X searches
