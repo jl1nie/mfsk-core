@@ -16,8 +16,10 @@ other platforms/ABIs (including Android) still need a local
 > hot path enabled, distributed as prebuilt static libraries on the
 > same [GitHub Releases](https://github.com/jl1nie/mfsk-core/releases) page
 > (linux-x86_64 / esp32-xtensa / esp32s3-xtensa). `mfsk-ffi` (this
-> crate) is the desktop/mobile-focused superset covering all seven
-> WSJT modes — same footprint tradeoff either way, since desktop and
+> crate) is the desktop/mobile-focused superset covering every
+> `MfskMode` (26 of them: FT8, FT4, the five FST4 sub-modes, WSPR, JT9,
+> JT65, the ten Q65 sub-modes, MSK144, JTTY and uvpacket's four
+> profiles) — same footprint tradeoff either way, since desktop and
 > mobile apps don't need the embedded crate's no_std/fixed-point
 > constraints.
 
@@ -174,7 +176,7 @@ specification.
 
 | Function | Role |
 |---|---|
-| `mfsk_decode_params_init` | Fill `MfskDecodeParams` with a mode's defaults. Zeroing it by hand is not equivalent. |
+| `mfsk_decode_params_init` | Fill `MfskDecodeParams` with a mode's defaults. Zeroing it by hand is not equivalent. `tx_freq_hz` (FT8's `nftx`, `MFSK_CAP_TX_FREQ`) and `nb_percent` / `nb_sweep_step` / `nb_ftol_hz` (FST4's noise blanker, `MFSK_CAP_NOISE_BLANKER`) were appended after `search_hz`; a knob the mode lacks is refused at `mfsk_session_open`. |
 | `mfsk_session_open` / `mfsk_session_close` | The handle. Owns the callsign hash table and the previous slot's rows. |
 | `mfsk_session_decode_i16` / `_f32` | Decode one slot into caller-owned rows. |
 | `mfsk_session_decode_stream` | Decode the capture ring's slot in place, without copying it out and back. |
@@ -205,6 +207,7 @@ specification.
 | `mfsk_message_to_tones` | Stage 2: packed message → channel symbols. |
 | `mfsk_tones_to_i16` / `_f32` | Stage 3: symbols → 12 kHz PCM, into your buffer. |
 | `mfsk_encode_ft8` / `_ft4` / `_fst4s60` / `_wspr` / `_jt9` / `_jt65` / `_q65` | One-call synthesis of a standard message, for callers that do not want the stages. |
+| `mfsk_encode_q65_flagged` | `mfsk_encode_q65` with WSJT-X 3.2's Pileup "copied last Tx" flag set on the frame. |
 
 **Modes with their own entry points** (no `MFSK_CAP_DECODE_HANDLE`)
 
@@ -217,6 +220,25 @@ specification.
 | `mfsk_q65_decode_fading` | Fast-fading metric for microwave EME (5-8 dB on spread channels). |
 | `mfsk_q65_decode_with_ap_list` | Template matching from a known call pair (~3 dB). |
 | `mfsk_callsign_hash_table_new` / `_insert` / `_free` | The table Q65's family takes; a session owns its own. |
+
+**Q65 with WSJT-X 3.2's settings** (`MFSK_CAP_DECODE_HANDLE` is still absent; rows carry `MFSK_DECODE_FLAG_COPIED_LAST_TX`, `flags` bit 1, on a Pileup reply)
+
+| Function | Role |
+|---|---|
+| `mfsk_q65_params_init` | Fill `MfskQ65Params` with a sub-mode's defaults (±1 s, threshold 0.1, 8 candidates) and `nominal_start_s`. Size-versioned; NaN means an unset float. |
+| `mfsk_q65_decode_ex` | One call for Pileup, Max Drift, the EME delay, `rx_freq_hz` / `ftol_hz` and the AP list (0 none, 1 standard QSO list, 2 contest list) — with `rx_freq_hz` and a list it is WSJT-X's **q3** decode. `dt_sec` is measured from `nominal_start_s`. Refuses a combination the engine would quietly not honour. |
+| `mfsk_q65_history_new` / `_free` / `_push` / `_record` / `_lookup` / `_len` | `MfskQ65History`: the 100 most recent decodes (`q65_hist`); `_lookup` names the DX station near an Rx frequency. |
+| `mfsk_q65_callers_new` / `_free` / `_record` / `_expire` / `_remove` / `_len` / `_get` | `MfskQ65Callers`: the contest list of up to 50 callers with grids (`q65_hist2`); times are the caller's Unix seconds. |
+
+**JTTY receiver** (`MFSK_MODE_JTTY`, `MFSK_CAP_STREAM_RECEIVER`; needs the `jtty` feature, otherwise `MFSK_STATUS_UNKNOWN_PROTOCOL`)
+
+| Function | Role |
+|---|---|
+| `mfsk_jtty_params_init` | Fill `MfskJttyParams` with `rjtty`'s defaults (1500 Hz ± 50 Hz, `smin` 4.6 dB, band 200–2800 Hz, subtraction on). Size-versioned. |
+| `mfsk_jtty_open` / `_close` / `_set_params` | The receiver handle at any input sample rate (resampled to 12 kHz); settings apply from the next window. |
+| `mfsk_jtty_push_i16` / `_push_f32` / `_finish` / `_reset` | Feed audio in any chunk size (decoding runs inside the push); `_finish` flushes messages still open at the end of a recording; `_reset` starts again at sample 0. |
+| `mfsk_jtty_pending` / `mfsk_jtty_poll` | The queue of `MfskJttyUpdate`s, coalesced per message between polls; `poll` returns 1 per update written, 0 when none is waiting. |
+| `mfsk_jtty_encode_tones` / `mfsk_jtty_synth_len` / `mfsk_jtty_tones_to_i16` / `_to_f32` | Transmit: text → tones (upstream's `pack_jtty` + `genjtty`, 59 tones per frame) → 12 kHz PCM. |
 
 **Process-wide**
 
@@ -237,12 +259,17 @@ leak that appears when an exception unwinds between a call and its
 release, the thing that made the pre-v2 surface awkward from Kotlin and
 Swift alike.
 
-Three things do have lifetimes, and each has exactly one destructor:
+Six things do have lifetimes, and each has exactly one destructor:
 
 - `MfskDecodeSession*` from `mfsk_session_open` → `mfsk_session_close`.
 - `MfskStream*` from `mfsk_stream_open` → `mfsk_stream_close`.
 - `MfskCallsignHashTable*` from `mfsk_callsign_hash_table_new` →
   `mfsk_callsign_hash_table_free`.
+- `MfskJttyReceiver*` from `mfsk_jtty_open` → `mfsk_jtty_close`.
+- `MfskQ65History*` from `mfsk_q65_history_new` →
+  `mfsk_q65_history_free`.
+- `MfskQ65Callers*` from `mfsk_q65_callers_new` →
+  `mfsk_q65_callers_free`.
 
 Two borrowed pointers, valid only for a bounded window: the row a
 decode callback receives (that call only — copy what you keep), and the

@@ -4,7 +4,7 @@ version.workspace = true
 rust-version.workspace = true
 edition     = "2024"
 license     = "GPL-3.0-or-later"
-description = "Pure-Rust WSJT-family decoders + synthesisers (FT8 FT4 FST4 WSPR JT9 JT65 Q65) behind a zero-cost Protocol trait. Host (rustfft) or no_std embedded (ESP32-S3, RP2350, Cortex-M) via a pluggable FFT backend; fixed-point hot path for FPU-less MCUs. Ships with embedded-poc/m5stack-s3-app, a working M5StickS3 FT8 controller (LCD UI, BLE CI-V to IC-705, acoustic mic, QSO FSM) decoding real on-air signals in ~1.2 s post-SlotEnd on Xtensa LX7."
+description = "Pure-Rust WSJT-family decoders + synthesisers (FT8 FT4 FST4 WSPR JT9 JT65 Q65 MSK144 JTTY, plus the experimental uvpacket) behind a zero-cost Protocol trait. Host (rustfft) or no_std embedded (ESP32-S3, RP2350, Cortex-M) via a pluggable FFT backend; fixed-point hot path for FPU-less MCUs. Ships with embedded-poc/m5stack-s3-app, a working M5StickS3 FT8 controller (LCD UI, BLE CI-V to IC-705, acoustic mic, QSO FSM) decoding real on-air signals in ~1.2 s post-SlotEnd on Xtensa LX7."
 repository  = "https://github.com/jl1nie/mfsk-core"
 readme      = "../README.md"
 keywords    = ["wsjtx", "ft8", "wspr", "q65", "amateur-radio"]
@@ -281,8 +281,14 @@ msk144       = []
 fst4         = []
 # JTTY (WSJT-X 3.2.0): a non-slotted 4-GFSK mode, so like `msk144` it has no
 # `Protocol` ZST and is not in `registry::PROTOCOLS`. The wire level (source
-# grammar, CRC-12, tail-biting convolutional encoder, waveform) needs no FFT;
-# the receiver, when it lands, will (#477). Plan: docs/notes/JTTY_UPSTREAM.md.
+# grammar, CRC-12, tail-biting convolutional encoder, transmit waveform, text
+# packer) needs no FFT. The receiver landed in #477 (`jtty::rx::Receiver` /
+# `Stream`, `jtty::assemble`, the C ABI's `mfsk_jtty_*`, Kotlin and Swift), and
+# `rx`, `dsp` (analytic signal, sync waveform, frequency shift) and `assemble`
+# are compiled only with `fft-rustfft` or `fft-extern` (`jtty/mod.rs`);
+# `source`, `crc`, `tbcc`, `tx`, `pack`, `correlate`, `trellis`, `ladder` and
+# `subtract` are not. Pre-push matrix rows: `alloc jtty`, `alloc jtty
+# fft-extern`. Plan: docs/notes/JTTY_UPSTREAM.md.
 jtty         = []
 jt9          = []
 jt65         = []

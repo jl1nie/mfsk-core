@@ -1,8 +1,9 @@
 //! # mfsk-core
 //!
 //! Pure-Rust library for **WSJT-family digital amateur-radio modes**:
-//! FT8, FT4, FST4, WSPR, JT9, JT65, Q65-30A and MSK144. Decode, encode,
-//! and synthesis in a single crate.
+//! FT8, FT4, FST4 (five T/R periods), WSPR, JT9, JT65, Q65 (ten
+//! sub-modes, Q65-15A‥300A), MSK144 and JTTY, plus the experimental
+//! `uvpacket` mode. Decode, encode, and synthesis in a single crate.
 //!
 //! ## Why this exists
 //!
@@ -142,8 +143,13 @@
 //! - [`msg`] — 77-bit WSJT, 72-bit JT, 50-bit WSPR and Q65 message
 //!   codecs + callsign hash table.
 //! - [`ft8`] / [`ft4`] / [`fst4`] / [`wspr`] / [`jt9`] / [`jt65`] /
-//!   [`q65`] — per-protocol ZSTs, decoders and synthesisers. Each is
-//!   gated behind a feature of the same name.
+//!   [`q65`] / [`uvpacket`] — per-protocol ZSTs, decoders and
+//!   synthesisers. Each is gated behind a feature of the same name.
+//! - [`msk144`] / [`jtty`] — MSK144 (meteor scatter, sliding-window
+//!   `decode_slot`) and JTTY (a non-slotted 4-GFSK mode with a streaming
+//!   receiver). Neither is a slotted FSK mode, so **neither implements
+//!   [`Protocol`] and neither appears in [`PROTOCOLS`]**; each has its own
+//!   top-level driver and feature of the same name.
 //!
 //! ## Feature flags
 //!
@@ -155,8 +161,13 @@
 //! | `wspr`        |          | WSPR (120 s, 4-FSK, conv r=½ K=32 + Fano)    |
 //! | `jt9`         |          | JT9 (60 s, 9-FSK, conv r=½ K=32 + Fano)      |
 //! | `jt65`        |          | JT65 (60 s, 65-FSK, RS(63,12))               |
-//! | `q65`         |          | Q65-30A + Q65-60A‥E (65-FSK, QRA(15,65) GF(64)) |
-//! | `full`        |          | Aggregate of all seven protocols + uvpacket + packet-bytes |
+//! | `q65`         |          | Q65-15A‥300A, ten sub-modes (65-FSK, QRA(15,65) GF(64)) |
+//! | `msk144`      |          | MSK144 (LDPC(128,90), burst-scan sliding window; outside `Protocol`) |
+//! | `jtty`        |          | JTTY (4-GFSK, 1.888 s frames, tail-biting conv. code; outside `Protocol`; source / CRC / tbcc / tx / pack are FFT-free, the receiver needs an FFT feature) |
+//! | `uvpacket`    |          | Experimental packet mode (four ZSTs; pulls in `fst4` and `std`) |
+//! | `packet-bytes`|          | Raw-bytes message codec (`msg::packet_bytes`) |
+//! | `serde`       |          | `Serialize` / `Deserialize` on `msg::decoded::Decoded` and `ProtocolId` |
+//! | `full`        |          | Every protocol above (incl. `msk144`, `jtty`, `uvpacket`) + `packet-bytes` + `serde` + `parallel` + `fft-rustfft` |
 //! | `parallel`    | yes      | Rayon-parallel candidate processing          |
 //! | `fft-rustfft` | yes      | Default host FFT backend (`rustfft`, requires `std`) |
 //! | `fft-extern`  |          | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl |
@@ -181,7 +192,8 @@
 //! ```
 //!
 //! [`by_id`] / [`by_name`] / [`for_protocol_id`] cover the common
-//! lookup patterns. All six Q65 sub-modes (Q65-30A, Q65-60A‥E)
+//! lookup patterns. All ten Q65 sub-modes (Q65-15A, -30A, -60A‥E,
+//! -120D/E, -300A)
 //! appear as distinct registry entries because their NSPS and tone
 //! spacing differ; they share `ProtocolId::Q65` because the FFI
 //! protocol tag is family-level.
@@ -190,8 +202,9 @@
 //!
 //! `tests/protocol_invariants.rs` runs a single generic
 //! `assert_protocol_invariants::<P: Protocol>` over every wired ZST
-//! (FT8 / FT4 / FST4 / WSPR / JT9 / JT65 plus all six Q65 sub-modes
-//! — 11 in total; uvpacket adds four more under `--features uvpacket`).
+//! (24 in all: 20 WSJT-family — FT8, FT4, the five FST4 sub-modes, WSPR,
+//! JT9, JT65 and the ten Q65 sub-modes — plus `uvpacket`'s four, which
+//! need `--features uvpacket`).
 //! It pins ~25 trait-level invariants split across three layers:
 //! modulation (`2^BITS_PER_SYMBOL ≤ NTONES`, `SYMBOL_DT × 12000 ==
 //! NSPS`, GRAY_MAP coverage and uniqueness, GFSK / tone-spacing
@@ -245,7 +258,7 @@
 //! ```toml
 //! # Cargo.toml
 //! [dependencies]
-//! mfsk-core = { version = "0.8", features = ["ft8", "ft4"] }
+//! mfsk-core = { version = "0.12", features = ["ft8", "ft4"] }
 //! ```
 //!
 //! Round-trip a synthesised FT8 frame through the decoder:
@@ -291,7 +304,7 @@
 //! ```toml
 //! # Cargo.toml — TX-only, no_std + alloc, no FFT backend needed
 //! [dependencies]
-//! mfsk-core = { version = "0.8", default-features = false, features = ["alloc", "ft8"] }
+//! mfsk-core = { version = "0.12", default-features = false, features = ["alloc", "ft8"] }
 //! ```
 //!
 //! Encoding (`message_to_tones` / `synthesize_i16`) never touches `std` — no

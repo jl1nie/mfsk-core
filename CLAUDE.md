@@ -14,8 +14,9 @@ before touching hardware.
 ## What this repo is
 
 A pure-Rust 1:1 port of the WSJT-X decoders and synthesisers — FT8, FT4,
-FST4, WSPR, JT9, JT65, Q65 (30A plus 60A‥E), MSK144, and the experimental
-`uvpacket` mode — behind a zero-cost `Protocol` trait, so the same source
+FST4, WSPR, JT9, JT65, Q65 (ten sub-modes, 15A‥300A), MSK144, JTTY, and the
+experimental `uvpacket` mode — seven of the families behind a zero-cost
+`Protocol` trait (MSK144 and JTTY sit outside it, see below), so the same source
 builds for a host (rustfft, rayon), for `wasm32`, and for `no_std`
 embedded targets with a fixed-point hot path. WSJT-X stays the reference
 implementation; this crate exists to put those decoders on platforms
@@ -72,7 +73,7 @@ so the workspace never sees either of them:
   (`import MfskCore`). Its module map includes `mfsk-ffi/include/mfsk.h`
   **in place**, so it follows the header rather than carrying a copy,
   and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
-  XCTest suite (75 tests, ~10 s — XCTest needs Xcode, not just the
+  XCTest suite (86 tests as counted by `grep -rc 'func test' bindings/swift/Tests`, ~10 s when it was 68 — XCTest needs Xcode, not just the
   Command Line Tools, and the script points `DEVELOPER_DIR` at it when
   it has to). The `swift` CI job runs that same script on
   `macos-latest`, and is also where `aarch64-apple-ios` is built: both
@@ -129,8 +130,8 @@ shared code. `CONTRIBUTING.md` "Adding a new protocol" and
 | `engine/` | the shared core: `protocol.rs` (the traits), `pipeline.rs`, `sync.rs` / `sync2d.rs`, `spectrogram.rs`, `llr.rs`, `equalize.rs`, `scalar.rs` (Q-format types), `fft.rs` (the `FftPlanner` trait + extern factory), `tx.rs`, and `dsp/` (resample, downsample, GFSK, envelope, subtract, DDC, FIR/polyphase, dotprod, the fixed-point FFT kernels) |
 | `fec/` | `ldpc/` (174,91), `ldpc240_101/`, `ldpc_128_90/` (MSK144), `conv/` (r=½ K=32 Fano), `rs/` (63,12 over GF(2⁶)), `qra/` + `qra15_65_64/` (Q65) |
 | `msg/` | message codecs — `wsjt77.rs`, `jt72.rs`, `wspr.rs`, `q65.rs`, `packet_bytes.rs`, `callsign28.rs`, `hash_table.rs` — plus `decode_request.rs` and `decoded.rs`, which are the public entry point and the public output row |
-| `ft8/ ft4/ fst4/ wspr/ jt9/ jt65/ q65/ msk144/ uvpacket/` | per-protocol ZSTs, decoders, synthesisers; each feature-gated by its own name |
-| `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list |
+| `ft8/ ft4/ fst4/ wspr/ jt9/ jt65/ q65/ msk144/ jtty/ uvpacket/` | per-protocol ZSTs (not for `msk144` / `jtty`, which have none), decoders, synthesisers; each feature-gated by its own name |
+| `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list. Since 0.12.0 each entry also carries `profile: DecodeProfile` (`caps`, `defaults: DecodeDefaults` — the search a `DecodeRequest` starts from, `sync_scale`), and `registry::caps` is the capability-bit table `mfsk-ffi` republishes (`tests/registry_caps.rs` ties it to the trait impls) |
 
 **There is no `src/core/`. The shared module is `src/engine/`.**
 The source has zero `crate::core::` paths. The stale `core::` spellings
@@ -145,8 +146,14 @@ To check: `grep -rn 'core::pipeline\|core::fft\|core::scalar\|crate::core::'`
 — anything outside CHANGELOG/historical is a leftover.
 
 **`DecodeRequest` / `SniperRequest` (`msg::decode_request`) are the public
-decode API.** Builder-shaped: `.freq_hint()`, `.osd()`, `.strictness()`,
-`.eq_mode()`, `.known()`, `.fft_cache()`, `.on_result()`, then `.decode()`.
+decode API for FT8 / FT4 / FST4.** Builder-shaped: `.freq_hint()`, `.osd()`,
+`.strictness()`, `.eq_mode()`, `.known()`, `.fft_cache()`, `.on_result()`, then
+`.decode()`; trait-gated extras include FT8's `.previous_cycle()` (a7/a8),
+`.tx_freq()` and `.contest()`, and FST4's `.noise_blanker()`. Since 0.12.0
+WSPR, JT9, JT65 and Q65 have their own `DecodeRequest` / `SniperRequest`
+(`wspr::`, `jt9::`, `jt65::`, `q65::decode_request`; Q65 adds
+`MultiPeriodRequest`) with the same builder shape — they do not go through
+`msg::decode_request`.
 The raw engine functions underneath (`decode_frame`,
 `process_candidate_basic`, the `GenericPipelineProtocol` trait) are
 `pub(crate)` on purpose since #191 so downstream can't bypass the request
@@ -191,8 +198,8 @@ accident.** The AP engine broke out of its candidate loop on
 single-target; and it ran a *parallel, shallower* per-candidate ladder
 (OSD depth-2 only, no Top-K rescue) that cost most of the decodes — 4
 against 11 on the FT4 golden, measured. Both are gone: AP is now the
-last rung of each per-candidate ladder, and `msg::pipeline_ap` is 96
-lines of hypothesis generation with no engine of its own. There are
+last rung of each per-candidate ladder, and `msg::pipeline_ap` is
+~100 lines (`wc -l`: 103) of hypothesis generation with no engine of its own. There are
 **two** such ladders, not one: `process_candidate_basic` serves FT4 and
 every FST4 sub-mode, while FT8 — which does not implement
 `GenericPipelineProtocol` — runs its own in
@@ -260,6 +267,12 @@ flag carries the measurement that justified it. The traps:
   fixed-point path and no board app drives them. `fst4` got there first
   by a shorter route (issue #306) — it never referenced `rustfft` at
   all.
+- **`jtty` and `msk144` are features with no ZST.** Neither is in
+  `PROTOCOLS`. `jtty`'s wire level (source, CRC-12, tbcc, tx, pack) needs
+  no FFT, while `jtty::rx` / `dsp` / `assemble` compile only with
+  `fft-rustfft` or `fft-extern`; the matrix has `jtty`, `alloc jtty` and
+  `alloc jtty fft-extern` rows for exactly that split. `msk144`'s
+  burst-scan sync needs an FFT feature too.
 - **`uvpacket` declares `std` explicitly** (it reaches for
   `std::f32::consts::PI` and std's prelude). Making it genuinely
   no_std-capable is separate, deliberate work.
@@ -298,10 +311,13 @@ up.)
   --features full --no-deps`. The rustdoc step is there because broken
   intra-doc links block CI's `docs` job and pollute docs.rs.
 - `scripts/pre-push-check.sh` — adds `-D clippy::perf` and the
-  **feature matrix**: `--no-default-features` alone, then each of `ft8`,
-  `ft4`, `fst4`, `wspr`, `jt9`, `jt65`, `q65`, `uvpacket`, `alloc ft8`,
-  `alloc ft8 fft-extern`, `alloc ft8 fft-extern fixed-point`, `full`.
-  This exists because PR #233 shipped code that compiled only under
+  **feature matrix** (`FEATURE_MATRIX` in that script is the list — read
+  it rather than this file: `--no-default-features` alone, each protocol
+  feature, the `alloc …` / `fft-extern` / `fixed-point` embedded rows,
+  `full`. `ci.yml`'s `feature-matrix` job is the counterpart and is not
+  identical: it also builds `msk144` and `wspr wspr-pass2-topn`), then
+  `mfsk-ffi`'s tests under both its feature sets and the FT8 fixed-point
+  recall floors. This exists because PR #233 shipped code that compiled only under
   `full` — `dead_code` reachability depends on which cfg'd items a given
   feature set exposes, so passing one or two combos proves nothing about
   the rest.

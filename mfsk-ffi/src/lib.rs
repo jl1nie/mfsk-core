@@ -1,21 +1,29 @@
-//! C ABI for the rs-ft8n decoder suite.
+//! C ABI for `mfsk-core`, the WSJT-family decoder suite.
 //!
 //! # Overview
 //!
-//! Exposes FT8 / FT4 / FST4 / WSPR / JT9 / JT65 / Q65 decoders and
-//! synthesisers behind a small opaque-handle C API that C++ and
-//! Kotlin consumers (Android JNI via a thin shim) can link against.
-//! cbindgen generates `include/mfsk.h` on every build; see
+//! Exposes FT8 / FT4 / FST4 / WSPR / JT9 / JT65 / Q65 / MSK144 / JTTY
+//! (and the experimental uvpacket profiles) decoders and synthesisers
+//! behind a small opaque-handle C API that C++, Kotlin (Android JNI via a
+//! thin shim) and Swift consumers can link against — 26 `MfskMode`s in
+//! all. cbindgen generates `include/mfsk.h` on every build; see
 //! `examples/cpp_smoke` for a round-trip demo that exercises every
 //! protocol through the ABI.
 //!
-//! Q65 has six sub-modes (Q65-30A for terrestrial, Q65-60A‥60E for
-//! the EME band lineup) and four decoder strategies (AWGN Bessel,
-//! AP-hint BP, fast-fading metric, AP-list template matching).
-//! The simple `mfsk_decoder_new(MFSK_PROTOCOL_Q65A30)` path covers
-//! the most common terrestrial Q65 case; the dedicated
-//! `mfsk_q65_*` function family exposes every sub-mode and every
-//! strategy.
+//! Q65 has ten sub-modes (Q65-15A/30A terrestrial, Q65-60A‥60E for the
+//! EME band lineup, Q65-120D/E and Q65-300A) and four decoder strategies
+//! (AWGN Bessel, AP-hint BP, fast-fading metric, AP-list template
+//! matching), each with its own `mfsk_q65_decode*` function.
+//! [`mfsk_q65_decode_ex`] takes every WSJT-X 3.2 setting at once —
+//! Pileup, Max Drift, the EME delay, the q3 list decode — through a
+//! size-versioned `MfskQ65Params`, with `MfskQ65History` /
+//! `MfskQ65Callers` handles for the caller's `q65_hist` / `q65_hist2`
+//! state.
+//!
+//! JTTY is not slotted, so it has no decode session: a receiver handle
+//! of its own, [`mfsk_jtty_open`] … `mfsk_jtty_poll`, takes audio in
+//! chunks and hands out message updates, and `mfsk_jtty_encode_tones`
+//! and the two `mfsk_jtty_tones_to_*` functions transmit.
 //!
 //! Status codes, the decode-depth/strictness/equalisation enums and
 //! the mode/row/params types live in `mfsk-ffi-abi` (issue #205), which
@@ -140,7 +148,8 @@ pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
 /// Drives the `DecodeRequest` builder, i.e. `mfsk_decode_i16` and
 /// friends apply. Modes without this bit decode through their own
 /// entry point (Q65 takes a nominal start sample and a tolerance;
-/// WSPR/JT9/JT65 have no builder at all). They are not lesser, they
+/// WSPR/JT9/JT65 are reached through their own entry points, not
+/// through this session). They are not lesser, they
 /// are shaped differently — this is the bit that says which is
 /// which.
 pub const MFSK_CAP_DECODE_HANDLE: u64 = 1 << 0;
@@ -1943,7 +1952,8 @@ fn validate_params(mode: MfskMode, p: &MfskDecodeParams) -> Result<(), String> {
         return Err(format!(
             "{name} has no decode-handle entry point — it is not lesser, it is \
              shaped differently (Q65 takes a nominal start sample and a time \
-             tolerance; WSPR/JT9/JT65 have no builder). Check \
+             tolerance; WSPR/JT9/JT65 are reached through their own entry \
+             points). Check \
              MFSK_CAP_DECODE_HANDLE and use that mode's own family instead"
         ));
     }
@@ -2997,8 +3007,10 @@ pub unsafe extern "C" fn mfsk_session_add_callsign(
 // Entry points for modes that are not driven by the decode session
 //
 // Q65 takes a nominal start sample and a time tolerance and reports
-// `start_sample` rather than `dt`; WSPR/JT9/JT65 have no builder at all,
-// and JT9/JT65 are fixed-carrier point decodes rather than searches.
+// `start_sample` rather than `dt`; the FFI reaches WSPR/JT9/JT65 through
+// their own entry points (each has its own `DecodeRequest` since 0.12.0,
+// but not the session's shape), and JT9/JT65 are fixed-carrier point
+// decodes rather than searches.
 // Forcing them through one `session_decode(params)` would recreate the
 // "eleven options, six silently ignored" failure this redesign exists
 // to end, so they keep their own shapes — and `MFSK_CAP_DECODE_HANDLE`

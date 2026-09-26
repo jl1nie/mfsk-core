@@ -68,7 +68,8 @@
  * Drives the `DecodeRequest` builder, i.e. `mfsk_decode_i16` and
  * friends apply. Modes without this bit decode through their own
  * entry point (Q65 takes a nominal start sample and a tolerance;
- * WSPR/JT9/JT65 have no builder at all). They are not lesser, they
+ * WSPR/JT9/JT65 are reached through their own entry points, not
+ * through this session). They are not lesser, they
  * are shaped differently — this is the bit that says which is
  * which.
  */

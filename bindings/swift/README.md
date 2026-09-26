@@ -1,8 +1,8 @@
 # MfskCore — Swift bindings
 
 A SwiftPM package wrapping `mfsk-ffi`'s C ABI, so an iOS or macOS app
-can decode and synthesise FT8, FT4, FST4, WSPR, JT9 and JT65 without
-writing its own bridging header.
+can decode and synthesise FT8, FT4, FST4, WSPR, JT9, JT65, Q65 (all
+ten sub-modes) and JTTY without writing its own bridging header.
 
 ```swift
 import MfskCore
@@ -32,7 +32,10 @@ if let slot = try session.decode(stream) {
 bindings/swift/scripts/test.sh          # builds libmfsk, then swift test
 ```
 
-75 tests, ~10 s — most of it Q65, which decodes a 30 s slot five ways.
+86 tests (`grep -rc 'func test' Tests`), ~10 s when it was 68 tests —
+most of it Q65, which decodes a 30 s slot five ways. The JTTY and Q65
+extended suites (`JttyReceiverTests`, `Q65ExtendedTests`) came later
+and have not been timed.
 CI runs exactly this script on `macos-latest` (the
 `Swift binding (macOS) + iOS build` job), which is also where
 `aarch64-apple-ios` is built — both need Xcode, one for XCTest and one
@@ -53,7 +56,7 @@ referencing it means there is nothing here to keep in step.
 | Area | Swift | C |
 |---|---|---|
 | Mode introspection | `Mode`, `ModeInfo`, `Capabilities`, `DecodeDefaults` | `mfsk_mode_count` / `_at` / `_name` / `_from_name` / `_info` / `_caps` / `_defaults` |
-| Search parameters | `DecodeParams` (+ `Depth`, `Strictness`, `Equalisation`, `APHint`) | `mfsk_decode_params_init`, `MfskDecodeParams` |
+| Search parameters | `DecodeParams` (+ `Depth`, `Strictness`, `Equalisation`, `APHint`; `.transmitFrequencyHz` for FT8's `nftx`, `.noiseBlanker` — `.percent(_)` / `.sweep(step:toleranceHz:)` — for FST4) and `Capabilities.transmitFrequency` / `.noiseBlanker` | `mfsk_decode_params_init`, `MfskDecodeParams` (`tx_freq_hz`, `nb_*`), `MFSK_CAP_TX_FREQ` / `MFSK_CAP_NOISE_BLANKER` |
 | Decoding | `DecodeSession.decode(_:sampleRate:params:)` for `[Int16]` / `[Float]` | `mfsk_session_open` / `_decode_i16` / `_decode_f32` / `_close` |
 | Live capture | `CaptureStream`, `DecodeSession.decode(_ stream:)` | `mfsk_stream_*`, `mfsk_session_decode_stream` |
 | Hashed callsigns | `DecodeSession.addCallsign(_:)` | `mfsk_session_add_callsign` |
@@ -65,6 +68,8 @@ referencing it means there is nothing here to keep in step.
 | Transmit | `Message` (`standard` / `type1` / `freeText` / `type4`), `Mode.synthesiseFrame`, `Mode.synthesiseSlot` | `mfsk_pack77*`, `mfsk_unpack77`, `mfsk_message_to_tones`, `mfsk_tones_to_i16` / `_f32` |
 | Handle-less modes | `WSPR`, `JT9`, `JT65` | `mfsk_encode_wspr` / `_jt9` / `_jt65`, `mfsk_wspr_decode`, `mfsk_jt9_decode_at`, `mfsk_jt65_decode_at` |
 | Q65 | `Q65` (four strategies), `Q65SubMode`, `Q65FadingModel`, `CallsignHashTable` | `mfsk_encode_q65`, `mfsk_q65_decode` / `_with_ap` / `_fading` / `_with_ap_list`, `mfsk_callsign_hash_table_*` |
+| Q65 with WSJT-X 3.2's settings | `Q65.decode(_:mode:params:callers:sampleRate:hashTable:)` with `Q65.Params` (`try Q65.Params(mode:)`: pileup, EME delay, Max Drift, Rx frequency + F Tol, `Q65.List`, `Q65.Fading`), `Q65History`, `Q65Callers`, `Q65.encode(…, copiedLastTx:)`, `Decode.copiedLastTx` (`Q65Extended.swift`) | `mfsk_q65_params_init`, `mfsk_q65_decode_ex`, `mfsk_q65_history_*`, `mfsk_q65_callers_*`, `mfsk_encode_q65_flagged`, `MFSK_DECODE_FLAG_COPIED_LAST_TX` |
+| JTTY | `JttyReceiver` (`push` / `poll` / `finish` / `reset` / `setParams`, `JttyParams`, `JttyUpdate`), `Jtty.tones(for:profile:)` / `.synthesise` / `.audio(for:)`, `JttyProfile` | `mfsk_jtty_*` |
 | Thread pool, versions | `Runtime` | `mfsk_runtime_configure`, `mfsk_runtime_thread_count`, `mfsk_version`, `mfsk_abi_version` |
 | Errors | `MfskError` (`code` + `detail`) | `MfskStatus`, `mfsk_last_error`, `mfsk_session_last_error` |
 
@@ -96,8 +101,13 @@ both directions so the doc cannot drift from the behaviour.
 
 ## Not wrapped yet, and why
 
-Every function in `mfsk.h` is reachable from this package. What is left
-is one struct field:
+Nearly every function in `mfsk.h` is reachable from this package. The
+`Sources` tree does not call `mfsk_encode_ft8` / `_ft4` / `_fst4s60` (the
+staged `Message` → `Mode.synthesiseFrame` path covers them),
+`mfsk_jtty_pending` (`poll()` drains the queue), `mfsk_jtty_synth_len`,
+`mfsk_jtty_tones_to_f32` (`Jtty.synthesise` writes `Int16`) or
+`mfsk_q65_history_record` (`Q65History.record(_:)` feeds the history a row
+at a time). What is left beyond those is one struct field:
 
 * **The two thread hooks** on `MfskRuntimeConfig`. They exist so an
   Android JNI consumer can `AttachCurrentThread` on each rayon worker;

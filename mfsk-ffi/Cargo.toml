@@ -5,7 +5,7 @@ rust-version.workspace = true
 edition     = "2024"
 license     = "GPL-3.0-or-later"
 publish     = false
-description = "C ABI for mfsk-core — exposes WSJT-family (FT8/FT4/FST4/WSPR/JT9/JT65/Q65) decoders and synthesisers to C/C++/Kotlin via a cbindgen-generated mfsk.h header."
+description = "C ABI for mfsk-core — exposes WSJT-family (FT8/FT4/FST4/WSPR/JT9/JT65/Q65/MSK144/JTTY, plus the experimental uvpacket) decoders and synthesisers to C/C++/Kotlin/Swift via a cbindgen-generated mfsk.h header."
 
 [lib]
 name       = "mfsk"

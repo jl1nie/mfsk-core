@@ -61,10 +61,12 @@ collaborators), which remains the reference implementation — see
   pictured above) decodes real on-air FT8 in ~1.2 s post-slot on an
   ESP32-S3, plus WASM in the browser and Android/iOS via FFI — none
   of which a Fortran/C/Qt desktop application can target.
-- **A `Protocol` trait, not per-mode copy-paste.** Eight protocol
-  families share one generic, monomorphised decode pipeline (no
-  vtable, no dynamic dispatch on the hot path) — adding FST4-60A to
-  the crate was a trait impl on one ZST, not a cross-cutting refactor.
+- **A `Protocol` trait, not per-mode copy-paste.** Nine protocol
+  families, seven of them behind one `Protocol` trait with generic,
+  monomorphised decode machinery (no vtable, no dynamic dispatch on the
+  hot path; MSK144 and JTTY are deliberately outside it) — adding
+  FST4-60A to the crate was a trait impl on one ZST, not a
+  cross-cutting refactor.
   See [Design Philosophy](#design-philosophy).
 
 ## Supported protocols
@@ -114,7 +116,7 @@ runtime `register_protocol()`.
 ```toml
 # Cargo.toml
 [dependencies]
-mfsk-core = { version = "0.10", features = ["ft8", "ft4"] }
+mfsk-core = { version = "0.12", features = ["ft8", "ft4"] }
 ```
 
 New features and fixes land on `main` immediately as PRs merge, but
@@ -168,12 +170,17 @@ points and carries its own Quick example:
 
 - [`mfsk_core::ft8`](https://docs.rs/mfsk-core/latest/mfsk_core/ft8/)
   — `DecodeRequest::<Ft8>` (wide-band) + `SniperRequest::<Ft8>`
-  (narrow-band "sniper" mode)
+  (narrow-band "sniper" mode); `.previous_cycle(&[DecodeResult])` turns
+  on WSJT-X 3.2's a7 list decoder (a8 runs from `.ap_hint()` +
+  `.freq_hint()`), `.tx_freq(hz)` is `nftx` for the two-callsign AP
+  hypothesis, `.contest(true)` keeps the `/R` and `TU; ` messages FT8
+  otherwise drops
 - [`mfsk_core::ft4`](https://docs.rs/mfsk-core/latest/mfsk_core/ft4/)
   — `DecodeRequest::<Ft4>`
 - [`mfsk_core::fst4`](https://docs.rs/mfsk-core/latest/mfsk_core/fst4/)
   — `DecodeRequest::<Fst4s60>` (FST4-60A); other sub-modes via
-  `DecodeRequest::<Fst4s120>` etc.
+  `DecodeRequest::<Fst4s120>` etc.; `.noise_blanker(NoiseBlanker)` is
+  WSJT-X's **NB** setting (a fixed level or a sweep)
 - [`mfsk_core::wspr`](https://docs.rs/mfsk-core/latest/mfsk_core/wspr/)
   — `DecodeRequest` (scan; `.table()` to carry confirmed callsigns
   across slots) / `DecodeRequest::sniper` / `SniperRequest::baseband`
@@ -197,10 +204,29 @@ points and carries its own Quick example:
   gain when the callsign pair is known up-front); and
   `MultiPeriodRequest::<P>` for averaged multi-slot decode
   (ionoscatter / weak-EME signals no single-period decode recovers).
+  WSJT-X 3.2's Q65 settings: `.pileup(true)` (with an AP hint) and
+  `Q65Result::copied_last_tx` (send one with
+  `q65::encode_channel_symbols_flagged`), `.max_drift(bins)`,
+  `.eme_delay(true)`, and `.rx_freq(hz)` / `.ftol(hz)` with `.ap_list()`
+  for the q3 list decode, whose lists come from `standard_qso_codewords`
+  or, in contest mode, `contest_codewords` over a `Q65Callers` the
+  application keeps (`Q65History` is `q65_hist`, the DX station from
+  recent decodes). **Since 0.12.0 the default search window is ±1 s**
+  (WSJT-X's `lag1`/`lag2`; `.eme_delay(true)` restores the late reach)
+  and `dt_sec` is measured from the nominal start, not the start of the
+  buffer (#397) — both breaking.
   Q65's own dedicated builders — unlike FT8/FT4/FST4's
   `msg::decode_request::{DecodeRequest, SniperRequest}` — since every
   `q65::rx` function operates on `&[f32]` audio, not `&[i16]` (issue
   #204)
+- [`mfsk_core::jtty`](https://docs.rs/mfsk-core/latest/mfsk_core/jtty/)
+  — outside `Protocol`: `jtty::rx::Stream` (12 kHz audio in chunks,
+  message updates through a callback; one `Arc<Receiver>` serves any
+  number of streams) or `Receiver::scan_messages` for a whole recording;
+  `jtty::pack::pack` / `pack::tones` (text → atoms → tones, upstream's
+  `pack_jtty`) and `jtty::tx` (tones → GFSK samples)
+- [`mfsk_core::msk144`](https://docs.rs/mfsk-core/latest/mfsk_core/msk144/)
+  — outside `Protocol`: `msk144::decode::decode_slot`
 
 ## Features
 
@@ -213,8 +239,12 @@ points and carries its own Quick example:
 | `jt9`         |         | JT9 decode / synth                           |
 | `jt65`        |         | JT65 decode / synth (+ erasure-aware RS)     |
 | `q65`         |         | Q65 decode / synth (QRA soft-decision, all ten sub-modes) |
+| `msk144`      |         | MSK144 decode / synth (outside `Protocol`; the burst-scan sync search needs an FFT feature) |
+| `jtty`        |         | JTTY (WSJT-X 3.2) transmit and streaming receiver (outside `Protocol`; source / CRC / tbcc / tx / pack are FFT-free, the receiver needs `fft-rustfft` or `fft-extern`) |
 | `uvpacket`    |         | Applied example *(experimental)*: NFM voice-channel packet protocol (QPSK + LDPC), reuses `Ldpc240_101` |
-| `full`        |         | Aggregate of all eight WSJT protocols + uvpacket + packet-bytes |
+| `packet-bytes` |        | Raw-bytes message codec (`msg::packet_bytes`) |
+| `serde`       |         | `Serialize` / `Deserialize` on `Decoded` and `ProtocolId` |
+| `full`        |         | Every protocol above (the nine WSJT-family ones incl. `msk144` and `jtty`, plus `uvpacket`) + `packet-bytes` + `serde` + `parallel` + `fft-rustfft` |
 | `parallel`    | ✓       | Rayon-parallel candidate processing          |
 | `fft-rustfft` | ✓       | Default host FFT backend (`rustfft`, requires `std`) |
 | `fft-extern`  |         | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl (esp-dsp on ESP32-S3, CMSIS-DSP on RP2350, …) |
@@ -531,7 +561,10 @@ and per-mode performance characterisation.
 ## Modules
 
 - `mfsk_core::engine` — protocol traits, DSP (resample / downsample /
-  GFSK / subtract), sync, LLR, equaliser, pipeline driver.
+  GFSK / subtract), sync, LLR, equaliser, pipeline driver;
+  `engine::tx::synthesize::<P>` (tones → `f32` samples for any
+  `FskWaveform`, GFSK or CPFSK; `synthesize_i16` for PCM) and
+  `engine::gray` (`igray.c`'s Gray code, shared by JT9 and JT65).
 - `mfsk_core::fec` — `Ldpc174_91` / `Ldpc240_101` / `ConvFano` /
   `ConvFano232` / `Rs63_12` / `qra::Q65Codec` (with the
   `qra15_65_64::QRA15_65_64_IRR_E23` code instance) for Q65.
@@ -546,6 +579,12 @@ and per-mode performance characterisation.
   `synthesize_standard_for<P>` helper plus the
   `DecodeRequest<P>`/`SniperRequest<P>` builders that pick the right
   NSPS and tone spacing from the type parameter.
+- `mfsk_core::msk144` — MSK144 (LDPC(128, 90), burst-scan sync, the
+  sliding-window `decode::decode_slot` driver); outside `Protocol`.
+- `mfsk_core::jtty` — JTTY (WSJT-X 3.2): source grammar, CRC-12,
+  tail-biting convolutional code, transmit (`tx`, `pack`) and the
+  streaming receiver (`rx::Stream`, `assemble`); outside `Protocol`.
+- `mfsk_core::uvpacket` — the experimental packet mode (four ZSTs).
 
 ## C / C++ / Kotlin / Swift
 
@@ -570,6 +609,17 @@ Cortex-M) build `mfsk-core` directly with `alloc,ft8,fft-extern`; an
 ESP-IDF project needs a Rust staticlib shim for the FFT-planner symbol
 either way, so a C ABI in between adds nothing.
 
+All 26 `MfskMode`s (FT8 … Q65-300A, MSK144, uvpacket's four, JTTY) are
+reachable through the C ABI. JTTY has a receiver handle of its own
+(`mfsk_jtty_*`; `MfskJttyReceiver` in Kotlin, `JttyReceiver` in
+Swift). WSJT-X 3.2's Q65 settings go through `mfsk_q65_decode_ex`
+(with `MfskQ65History` / `MfskQ65Callers` handles and
+`mfsk_encode_q65_flagged`), and `MfskDecodeParams` carries the transmit
+frequency and FST4's noise blanker, gated by `MFSK_CAP_TX_FREQ` (bit
+17) and `MFSK_CAP_NOISE_BLANKER` (bit 16). Kotlin exposes
+`MfskDecodeParams` and Q65; FT8's `previous_cycle` is not exposed
+through the ABI (issue #496).
+
 ## Contributing
 
 PRs welcome — recent forks have shipped FT4 SIC, FT4/FST4 depth +
@@ -582,10 +632,11 @@ strictness controls, and the FT8 wide-band AP path. The local-fence
   git config core.hooksPath .githooks
   ```
 
-  `.githooks/pre-commit` runs `cargo fmt --check`, `cargo clippy
-  --workspace --all-targets --features full -- -D warnings`, and
-  `RUSTDOCFLAGS=-D warnings cargo doc -p mfsk-core --features full
-  --no-deps` (~10–20 s on a warm cache). It deliberately skips the full
+  `.githooks/pre-commit` runs `cargo fmt --all -- --check`, `cargo clippy
+  --workspace --all-targets --features full,internal-testing --no-deps
+  -- -D warnings`, and `RUSTDOCFLAGS=-D warnings cargo doc` for
+  `mfsk-core` (`--features full`) and for `mfsk-ffi` / `mfsk-ffi-abi`
+  (`--no-deps` on both). It deliberately skips the full
   `cargo test` suite (kept in CI to keep commits snappy); fmt / clippy /
   rustdoc each catch a failure mode that would otherwise trip CI after
   the push.
@@ -595,13 +646,16 @@ strictness controls, and the FT8 wide-band AP path. The local-fence
   the part that catches code compiling only under `--features full`. A
   deletions-only push skips it.
 - **CI gates** (`.github/workflows/ci.yml`): same fmt + clippy
-  fence, plus `cargo test -p mfsk-core --features full --release --
-  --include-ignored` (slow synthetic-SNR / AP / fast-fading sweeps
-  enabled), a 13-cell feature matrix that builds every protocol in
-  isolation + the embedded `alloc + ft8 + fft-extern + fixed-point`
-  preset, `cargo test` + the C++ driver for `mfsk-ffi`, rustdoc with
-  `-D warnings`, and a
-  `cargo publish --dry-run` for `mfsk-core`.
+  fence, plus the merge gate `MFSK_REQUIRE_CORPUS=1 cargo test -p
+  mfsk-core --features full,internal-testing --release` (every
+  non-ignored test: invariants and golden recordings; the slow
+  sensitivity sweeps are `#[ignore]`d, run only scoped per test binary
+  on pushes to `main` or PRs labelled `run-full-sweep`, and by hand
+  before a release — see `CLAUDE.md`), a feature matrix that builds
+  each protocol in isolation plus the `no_std + alloc`, `fft-extern` and
+  embedded `fixed-point` presets, `cargo test` + the C++ driver for
+  `mfsk-ffi`, the Kotlin and Swift binding jobs, rustdoc with
+  `-D warnings`, and a `cargo publish --dry-run` for `mfsk-core`.
 - **Release**: tag-driven (`vX.Y.Z`). Pushing a tag that matches the
   workspace version (`Cargo.toml::[workspace.package].version`,
   inherited by `mfsk-core` and `mfsk-ffi` alike) and is
