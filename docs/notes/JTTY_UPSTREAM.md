@@ -48,7 +48,8 @@ reuses existing parts (see "Reuse").
   state is the message's own last 9 bits (`tbcc_encode`).
 - `gen_jttywave` is the same construction as `gen_ft8wave`/`gen_fst4wave`
   (frequency-pulse superposition with dummy first/last symbols); only `bt`
-  and `hmod=1.0` differ. `engine/dsp/gfsk.rs` is the natural host for it.
+  and `hmod=1.0` differ. (This crate's `engine/dsp/gfsk.rs` could not host it as
+  is: see "Reuse" and #482.)
 - A message is 1‥16 frames (`MAX_FRAMES=16`); EOM is set on the last atom
   only; a second queued native message adds no spacing frame.
 - `rjtty_core` accepts `nsps` of 240 / 320 / 384 / 480 (50 / 37.5 / 31.25 /
@@ -229,6 +230,24 @@ Pipeline, in the order `rjtty_core → jtty_mdecode_step → jtty_mdecode`:
   atoms add an implicit separator. Display is capped at 80 characters.
   EOM (`is_last_frame && all_valid`) closes the message.
 
+## Reuse in this crate
+
+| need | exists | notes |
+|---|---|---|
+| call28 | `msg::wsjt77::pack28` / `unpack28` | used (P1); `unpack28` made `pub(crate)`; needs upstream's `standard_call` filter on top (`chkcall` subset, no `/`, no leading `Q`, round trip) — `jtty::source::is_standard_call` |
+| ARRL sections (86) | `msg::wsjt77::ARRL_SECTIONS` | used (P1), made `pub(crate)` |
+| Maidenhead grid | `msg::wsjt77::pack_grid4` | **not reusable as is**: JTTY's GRID4 index is `((f1*18+f2)*10+d1)*10+d2`, domain 0‥32399 — a different mapping from the pack77 `g15` |
+| GFSK synthesis | `engine::dsp::gfsk` | **not reusable as is**: samples the pulse one sample early vs every upstream `gen_*wave.f90` (#482); JTTY has its own `tx::synth_f32` (`gfsk_pulse` is shared) |
+| analytic signal | `engine::dsp::analytic` | for the receiver (P2) |
+| subtraction | `engine::dsp::subtract` | FT8's; JTTY's works on a complex buffer at 6 kHz |
+| tone-shift (`twkfreq`) | `engine::sync2d::freq_shift_cd0` or `engine::dsp::ddc` | not compared in detail |
+| convolutional code | `fec::conv` (r=½ **K=32** Fano — WSPR) | different code and decoder; nothing shared |
+| CRC-12 | `fec::qra::q65::crc12` | **same generator** x¹²+x¹¹+x³+x²+x+1 (= JTTY's `0x80F` with the leading term implicit), but that routine is LSB-first over 6-bit symbols; JTTY's is a bitwise MSB-first remainder over 46 bits (`jtty_tbcc_crc_valid`). Same polynomial, do not assume the same routine — `jtty::crc` |
+
+New: TBCC encoder (P1), list-WAVA decoder + ladder, the source grammar (P1) and
+text packer, the receive-state machine (candidates → assembly), continuous-TX
+plumbing.
+
 ## Numbers that matter for a port
 
 | quantity | value |
@@ -242,7 +261,8 @@ Pipeline, in the order `rjtty_core → jtty_mdecode_step → jtty_mdecode`:
 | retro re-sweep | 3 extra `jtty_mdecode` calls (each rebuilding its sync surface) per signal subtracted in a step |
 
 None of this is measured. It is a list of where upstream spends work, to be
-turned into a profile before anything is optimised or parallelised (see D4).
+turned into a profile that tunes the parallel paths of D4 (chunk sizes, minimum
+lengths) and says which of them dominates.
 
 ## Design decisions
 
@@ -287,33 +307,39 @@ algorithm. Here: an immutable plan (`Sync`, shared) and a per-call workspace;
 the receiver owns every piece of mutable state. This is the precondition for
 D4, so it is not deferred.
 
-**D4 — parallelism: designed in, measured before it is kept.**
-Two facts pull in opposite directions.
+**D4 — parallelism and iterators, from the first version.** Decided by the
+maintainer (2026-09-26), replacing an earlier "designed in, measured before it
+is kept": independent work uses rayon from the start, and the code is written
+in iterator style (`fold` / `scan` / `zip` / `array::from_fn`, not index
+loops), so the parallel form is a substitution, not a rewrite. The earlier
+`par_iter` reverts on JT65/Q65/JT9/uvpacket/MSK144 said nothing about this
+workload — the loop was not the bottleneck there and the regions were tiny —
+and upstream's serialisation (`!$omp critical` over `save`d statics) is an
+artefact of how it holds state, not of the algorithm.
 
-- *What is freely parallel.* With D3 the decode ladder for different
-  candidates is independent work. The 237 columns of the sync surface are
-  independent of each other. Neither is limited by the language or by
-  upstream's locking.
-- *What is genuinely sequential.* A decoded signal is subtracted from the
-  window, and later candidates in the same pass are demodulated from the
-  *residual* (`c1 = twkfreq(c0, …)` is taken from the current `c0`). Peak
-  selection with masking, duplicate suppression and assembly also depend on
-  order. Decoding a whole pass against one residual and applying subtractions
-  afterwards in a fixed order is legitimate — upstream already runs up to two
-  passes over the residual — but it is a different schedule, so results can
-  differ from upstream in edge cases. Bit-exact parity is therefore claimed
-  only at the decoder boundary (see P2), not for whole-window output.
+- *Freely parallel* (with D3): the 237 sync-surface columns per window, the
+  analytic signal per window, the decode ladder for different candidates, the
+  retro re-sweeps, per-frame encoding, waveform synthesis (phase rate per
+  sample, then a chunked scan for the phase).
+- *Genuinely sequential*: a decoded signal is subtracted from the window and
+  later candidates in the same pass are demodulated from the *residual*
+  (`c1 = twkfreq(c0, …)` from the current `c0`); peak selection with masking,
+  duplicate suppression and assembly also depend on order. Deciding a whole
+  pass against one residual and subtracting afterwards in a fixed order is
+  legitimate — upstream already runs up to two passes over the residual — but
+  it is a different schedule, so results can differ from upstream in edge
+  cases. Bit-exact parity is therefore claimed only at the decoder boundary
+  (P2), not for whole-window output.
 
-Rules: the result must not depend on the thread count (with a test); a
-single-threaded path always exists (embedded has no rayon); it sits behind
-the existing `parallel` feature. Whether it *pays* is
-an open measurement: the earlier candidate-loop `par_iter` experiments on
-JT65/Q65/JT9/uvpacket/MSK144 gave nothing because that loop was not the
-bottleneck there and the regions were tiny (≤ 7 items) — that says nothing
-about JTTY, whose ladder is 4 list-WAVA runs per failing candidate and whose
-sync surface is 237 FFTs per window. Profile first, in this order of suspicion
-(all unmeasured): the sync surface, the analytic signal per window, peak-up,
-the ladder on failing candidates, retro sweeps.
+Rules: behind the existing `parallel` feature (rayon, `std`); a sequential
+path always exists (embedded has no rayon) and is the same code with the
+iterator swapped; results are collected in order and reductions have a fixed
+shape, so **the output is bit-identical for any thread count** (a test, for
+every parallel path); no global mutable state. Profiling still has a job —
+choosing chunk sizes and minimum lengths (P1's frame encoding is
+microseconds, so it splits only from four frames up) and finding which of the
+suspects in "Numbers that matter" dominates — but it tunes the parallel path,
+it does not gate it.
 
 **D5 — what to match upstream on.** The frame decoder (sample → validated
 32-bit word) is unambiguous and testable against fixtures; the assembly
@@ -354,16 +380,19 @@ done without re-arguing scope.
 - **Exit (met):** the expected decodes are recorded and every fixture is
   reproducible byte for byte from the scripts.
 
-### P1 — wire level (`mfsk-core/src/jtty/`)
+### P1 — wire level (`mfsk-core/src/jtty/`) — done, see "P1 results"
 `source.rs` (atoms ⇄ 32-bit word ⇄ text, validity), `crc.rs` (CRC-12, a
-bitwise MSB-first remainder — not `fec::qra::q65::crc12`), `tbcc.rs` (encoder),
-`tx.rs` (frames → tones → GFSK via `engine::dsp::gfsk`). `pack28` and the ARRL
-section table are reused (`ARRL_SECTIONS` is private today).
-- Tests (tier A): the spec's 34-bit vectors; encoder ⇄ `sjtty` tone/waveform
-  agreement with noise off or at a very high SNR, if `sjtty` allows it
-  (unchecked; this tests determinism, not sensitivity); round trip of
-  every atom kind; rejection of every invalid class in the grammar.
-- **Exit:** vectors and `sjtty` agreement pass; no receiver yet.
+bitwise MSB-first remainder — not `fec::qra::q65::crc12`), `tbcc.rs` (encoder
+and trellis step), `tx.rs` (frames → tones → GFSK, with its own synthesiser —
+see "P1 results"). `pack28` and the ARRL section table are reused (made
+`pub(crate)`).
+- Tests (tier A/B): the spec's ten 34-bit vectors; every `sjtty` tone sequence
+  in the manifest (15 messages); rendering against what `rjtty` prints;
+  waveform against `sjtty`'s noiseless output; atom round trips for every kind;
+  a rejection test per invalid class in the grammar; serial ⇄ parallel and
+  any-thread-count identity.
+- **Exit (met):** vectors, `sjtty` tones and `sjtty` waveform pass; no receiver
+  yet.
 
 ### P2 — frame decoder, single signal
 `sync.rs` (sync surface, peak-up, gate), `correlate.rs`, `list_decoder.rs`
@@ -387,13 +416,12 @@ each other as upstream does), `ladder.rs`, validity.
 
 ### P3 — multi-signal
 Subtraction (on the 6 kHz analytic buffer), retro sweep, duplicate
-suppression, assembly, and the parallel paths of D4 if the profile justifies
-them. Its precision guard ships in the same PR: both false-decode bugs this
+suppression, assembly, on the parallel paths of D4. Its precision guard ships in the same PR: both false-decode bugs this
 suite has shipped were in subtraction paths (#243, #253).
 - Tier C: `scripts/gen_jtty_sweep_wavs.sh` on `sjtty`, a sweep test, an entry
   in `sweep-baseline.json` including the unexpected-decode count; `run-sensitivity-sweeps.sh`
   wired.
-- Thread-count independence test if D4's parallel path lands.
+- A thread-count independence test for every parallel path (D4).
 - **Exit:** multi-signal fixtures (two overlapping signals, one fading)
   decode both; the unexpected-decode count is recorded in the baseline, and a
   later rise of ≥ 3 and ≥ 1.5× is flagged as for ft8/ft4/fst4.
@@ -476,3 +504,36 @@ Measured with `sjtty` / `rjtty` built by `scripts/build_jttysim.sh` from
   L=2: 8, L=4: 2, half-symbol rung: 10, all rungs fail: 7 — of which some at
   Es/N0 = 0 dB decode at L=4 and some at 10 dB with a half-symbol rotation
   decode at L=2, so the rungs are not simply ordered by SNR).
+
+## P1 results (2026-09-26)
+
+- **Encoder agrees with upstream.** All ten 34-bit vectors from
+  `jtty_source_encoding.txt` encode and decode exactly, and the tone sequences
+  of all 15 `sjtty` manifest messages are reproduced bit for bit — on the first
+  run, including hand-chosen TEXT5 splits. The messages are turned into atoms
+  by hand in the test; upstream's text packer is P5.
+- **Rendering agrees** with what `rjtty` prints for the five vectors that have
+  a WAV.
+- **`sjtty`'s SNR is in a 2500 Hz reference bandwidth** (`sjtty.f90`:
+  `sig = sqrt(2·2500/6000)·10^(snr/20)` against unit-variance noise); at
+  SNR > 90 it writes the noiseless waveform, peak-normalised to 32766.9 — the
+  synthesiser oracle used here. (This settles the "convention unchecked" in the
+  P0 results: the sweep's dB values are 2500 Hz SNRs.)
+- **A bug in the shared GFSK synthesiser (#482).** `engine::dsp::gfsk` samples
+  the Gaussian pulse one sample early relative to *every* upstream
+  `gen_*wave.f90` (they loop 1-based). Against `sjtty`'s noiseless waveform it
+  showed as a uniform worst normalised sample error of 4.9e-2 — exactly
+  2π·Δf/fs for JTTY's largest tone step — and one token (`i + 1`) brought it to
+  1.1e-4. It is a shared-code change with reach into FT8/FT4/FST4 transmit and
+  subtraction references, so it is its own issue; JTTY carries its own
+  synthesiser (`jtty::tx::synth_f32`), which is also the parallel
+  chunked-scan design of D4. Against `sjtty` it is within 6e-4 (one frame) and
+  1e-3 (two frames): that residual is upstream's single-precision phase
+  accumulation, which grows with length; ours is `f64`.
+- **`rjtty` quirk at dt = 0.** On the noiseless two-frame vector at dt 0.0 it
+  emitted the call, then the whole message, a duplicate from the retro
+  re-sweep, and finally `599 123` as a separate message — a transmission that
+  starts at t = 0 is mis-assembled. The vectors use dt 0.3.
+- **rayon from the start.** Frame encoding and waveform synthesis run on the
+  pool under `parallel`; the output is bit-identical for 1, 2, 3 and 8 threads
+  and to a plain sequential running sum (1e-6).

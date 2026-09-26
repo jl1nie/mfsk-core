@@ -64,7 +64,7 @@ const RTTY_STATES: &[&str] = &[
 /// refuses the whole message when `isec` falls outside `1..=86`, and a
 /// 7-bit field spans `0..=127` — so 42 of the 128 codes are invalid and
 /// rejecting them is 33 % of the Field Day phantom surface.
-const ARRL_SECTIONS: &[&str] = &[
+pub(crate) const ARRL_SECTIONS: &[&str] = &[
     "AB", "AK", "AL", "AR", "AZ", "BC", "CO", "CT", "DE", "EB", "EMA", "ENY", "EPA", "EWA", "GA",
     "GH", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "LAX", "NS", "MB", "MDC", "ME", "MI", "MN",
     "MO", "MS", "MT", "NC", "ND", "NE", "NFL", "NH", "NL", "NLI", "NM", "NNJ", "NNY", "TER", "NTX",
@@ -75,8 +75,8 @@ const ARRL_SECTIONS: &[&str] = &[
 
 // ── Token boundaries ─────────────────────────────────────────────────────────
 
-const NTOKENS: u32 = 2_063_592;
-const MAX22: u32 = 4_194_304;
+pub(crate) const NTOKENS: u32 = 2_063_592;
+pub(crate) const MAX22: u32 = 4_194_304;
 const MAX_GRID4: u32 = 32_400;
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ fn fmt_report(isnr: i32, ir: u8) -> String {
 /// Returns the human-readable callsign, "DE", "QRZ", "CQ", "CQ NNN",
 /// "CQ XXXX", or "<...>" when the token is a 22-bit hash that cannot be
 /// resolved without a call-sign database.
-fn unpack28(n28: u32) -> String {
+pub(crate) fn unpack28(n28: u32) -> String {
     if n28 < NTOKENS {
         return match n28 {
             0 => "DE".to_string(),

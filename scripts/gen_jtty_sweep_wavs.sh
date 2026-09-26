@@ -7,7 +7,8 @@
 #
 # File naming:  jtty_<channel>_<snr>_<trial>.wav
 #   channel:  awgn | mid_moderate   (ITU mid-latitude moderate: 0.5 Hz / 1 ms)
-#   snr:      m16 = -16 dB, etc.  (sjtty's SNR convention; see BW in its banner)
+#   snr:      m16 = -16 dB, etc.  (sjtty's SNR is in a 2500 Hz reference bandwidth:
+#             sig = sqrt(2*2500/6000) * 10^(snr/20) against unit-variance noise)
 #   trial:    01..TRIALS
 #
 # Outputs in <out-dir> (default embedded-poc/assets/jtty_sweep/):

@@ -674,7 +674,9 @@ version if you're picking up work.
   operation, so this is a planned port, not a "track, don't commit" item
   like #224; the note carries the phased plan (P0 oracle build → P6
   embedded) and the design decisions to settle first (receive API, no
-  global state, parallelism measured before kept, drift behaviour).
+  global state, rayon and iterators from the start, drift behaviour).
+  P0 (oracle build, fixtures, upstream baseline) and P1 (wire level) are done;
+  P2 (frame decoder) is next.
 - **#148** — Research idea (not a commitment, from VK3NV): blind-paired
   FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
   Q65's multi-period averaging (`q65/rx.rs`) is the architectural

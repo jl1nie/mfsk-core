@@ -10,7 +10,7 @@ tag by `scripts/build_jttysim.sh`, and is regenerated, byte for byte, by
 |---|---|
 | `260807_134110.wav` | upstream's own sample recording (`samples/JTTY/`), 12 kHz mono, 30.24 s. The only real recording upstream ships. |
 | `260807_134110.expected.txt` | what `rjtty 4.6 1 384 1500 50` decodes from it (the WSJT-X defaults: `smin` `ndebug` `nsps` `f0` `ftol`), with its sha256. |
-| `sim/*.wav` | `sjtty` recordings, AWGN at −8 dB SNR, `f0` 1500 Hz, `dt` 0.3 s, deterministic. A message per atom kind / frame count. |
+| `sim/*.wav` | `sjtty` recordings, `f0` 1500 Hz, `dt` 0.3 s, deterministic. A message per atom kind / frame count: AWGN at −8 dB SNR (2500 Hz bandwidth), plus two `clean_*` files at SNR > 90, where `sjtty` writes the noiseless waveform (peak-normalised) — the synthesiser oracle. |
 | `sim/MANIFEST.tsv` | per vector: message, exchange profile, the **tone sequence** `sjtty` prints (the encoder oracle), and what `rjtty` decodes from the WAV. Vectors with `-` for the WAV are tones only. |
 | `ladder_cases.txt` | inputs and outputs of the TBCC decode ladder, produced by our own driver (`scripts/jttysim/jtty_ladder_oracle.f90`, linked against upstream's `jtty_tbcc_*` modules). See below. |
 

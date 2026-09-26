@@ -383,6 +383,9 @@ pub mod uvpacket;
 #[cfg(feature = "msk144")]
 pub mod msk144;
 
+#[cfg(feature = "jtty")]
+pub mod jtty;
+
 pub mod registry;
 
 // Flatten commonly-used types to the crate root.

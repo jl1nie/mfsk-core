@@ -50,6 +50,10 @@ VECTORS=(
   "text5_3frames|unknown|HELLO WORLD 73|1500|0.3|-8|wav"
   "class_section|field-day|1D EMA|1500|0.3|-8|wav"
   "rtty_serial|rtty-roundup|K1ABC 599 001|1500|0.3|-8|wav"
+  # SNR > 90 makes sjtty write the noiseless waveform (peak-normalised): the
+  # encoder/synthesiser oracle. Not a sensitivity fixture.
+  "clean_cq_1frame|unknown|CQ K1ABC CQ|1500|0.3|91|wav"
+  "clean_call_exch_2frames|unknown|WB9XYZ 599 123|1500|0.3|91|wav"
   "tu_call|unknown|TU K1ABC CQ|1500|0.0|-30|tones"
   "call_tu|unknown|K1ABC TU|1500|0.0|-30|tones"
   "call_agn|unknown|W9XYZ AGN?|1500|0.0|-30|tones"
