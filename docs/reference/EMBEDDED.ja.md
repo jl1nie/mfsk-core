@@ -128,7 +128,7 @@ WSPR は全く別経路で組込に到達した（詳細は後述）。上の表
 | **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 共通、scalar single-issue) — LX7 PIE `_aes3_` への移行は Phase D D1 で予定、[`PHASE_D_PIE_SIMD.md`](../notes/PHASE_D_PIE_SIMD.md) 参照 | **デモ / 音響 fallback コントローラ** (2026-05-17 pivot) — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。VBUS 源回路が無く（S3 のシリコン自体は host 可、基板が電源経路を配線していない — 外部 5 V を与えれば host 動作する旨の報告が issue #360 にある）バスパワーの USB デバイスを繋いでも給電できないため、本命の UAC コントローラ役は CoreS3 に移譲され、StickS3 は音響経路の実機検証 / デモ機としての位置付けに再定義された。 |
 | **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — `espflash board-info` 確認: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`。ESP32-S2 (LX7、single-core、BT 無し) や S3 では **ない**。 | esp-dsp ASM (`dsps_dotprod_s16_ae32`、`dsps_fft2r_*`) | **本番アプリ (`wav_sim` 専用)** — `embedded-poc/m5stack-core2-app/` が baked `wav_sim` 音源ループに対し同じ `decode_block` を LX6 上で走らせて `mfsk-app-shared` API を交差検証する役割。古典 ESP32 には USB peripheral が無いので mic / speaker / USB-Host 経路はこのボードでは扱わない — Core2 は共有 QSO FSM の LX6 second-board verifier。(独立した Core2 コンピュート bench `embedded-poc/m5stack-core2/` は #61 Phase 3 (0.6.3) で retired、wav_sim 経路はこの app crate に統合済み。) |
 | ESP32-S3 compute bench | Xtensa LX7 | esp-dsp ASM | **タイミング回帰 bench** — `embedded-poc/m5stack-s3/`、缶詰 WAV 入力に対し `decode_block` を走らせ per-stage timing sweep。エンドユーザ向けではない。 |
-| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (USB host の VBUS には port1 bit7 `BOOST_EN` + port0 bit5 `USB_OTG_EN` + port0 bit1 `BUS_OUT_EN` の**3つすべて**が必要 — `embedded-poc/CLAUDE.md` の "USB host VBUS on CoreS3" 参照) | esp-dsp `_ae32_` asm (Phase D D1 で `_aes3_` 化、S3-app と共通) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 に無い VBUS 源回路を持つので（StickS3 側の制約はシリコンではなく基板 — issue #360）、IC-705 への USB-Host audio class はここで実装する。`docs/notes/ROADMAP.md` Phase B-Core 参照。 |
+| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (USB host の VBUS には port1 bit7 `BOOST_EN` + port0 bit5 `USB_OTG_EN` + port0 bit1 `BUS_OUT_EN` の**3つすべて**が必要 — `embedded-poc/CLAUDE.md` の "USB host VBUS on CoreS3" 参照) | esp-dsp `_ae32_` asm (同じ Phase D D1 移行が適用される) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 は USB-OTG host 用の VBUS を供給できない（シリコンは host 可だが基板に VBUS 源回路が無い — StickS3 側の制約はシリコンではなく基板 — issue #360）ため **デモ / 音響 fallback** ボードに再定義され、IC-705 への実際の USB Audio Class 経路は代わりに CoreS3 に載る。`docs/notes/ROADMAP.md` Phase B-Core 参照。 |
 
 ### その他のターゲット — 検証済 vs 願望
 
@@ -256,7 +256,7 @@ matrix で全 (symbol, tone) ペア (79 sym × 8 tone = 632 DFT/candidate、
 ### Goertzel — `fill_symbol_spectra_goertzel`
 
 一般化 Goertzel recursion: (sym, tone) ごとに 2-tap IIR、3 個の
-f32 状態をスタック上に持ち、return 時に破棄。**呼び出し側
+f32 状態を持ち、return 時に破棄。**呼び出し側
 scratch ゼロ**、内部 DRAM 静的バッファゼロ、extern シンボル要求
 ゼロ。0.6.4 以降、組込呼び出し側の唯一のパス。置き換えられた
 legacy BASIS (Q15 sin/cos dot-product) fill path は 0.8.0 で
@@ -274,7 +274,7 @@ dot product と一致 (S3 `qso3_busy.wav` 上 ~1.4 s)、**scratch ゼロ +
 何故 BASIS を引退させたか: 事前計算済 Q15 sin/cos テーブル
 (`BASIS_RE` / `BASIS_IM`、各 `NTONES × NSPS = 15 360` i16 entry ≈
 30 KB) を ASM dot product が定格 throughput を出すには fast 内部
-SRAM (DRAM) に置く必要があった — 内部 DRAM 30 KB / 軸 × 2 軸 ×
+SRAM (PSRAM ではない) に置く必要があった — 内部 DRAM 30 KB / 軸 × 2 軸 ×
 2 core = **120 KB の内部 DRAM** がまさに M5StickS3 Qso モードの
 双方向 I2S DMA descriptor が割当てたい量。ボードの空き連続内部
 チャンクが両者を満たせず、Qso モード起動が `i2s_alloc_dma_desc:
@@ -387,7 +387,7 @@ mfsk-core はデコード / エンコードパイプラインで止まる。以�
 
 - `embedded-poc/m5stack-s3-app/` — M5StickS3 FT8 controller
   (ES8311 音響 mic、IC-705 への BLE CI-V、LCD UI、QSO FSM、
-  オプション WiFi UDP log)。本番、日常使用ターゲット。
+  オプション WiFi UDP log)。デモ / 音響 fallback ボード (2026-05-17 pivot)。
 - `embedded-poc/m5stack-core2-app/` — Core2 (LX6) 兄弟、デコーダ
   を LCD 配線した baked `wav_sim` 音源ループに対し走らせる。
   外部 I/O は保留。`mfsk-app-shared` API を LX6 上で交差検証
@@ -481,6 +481,7 @@ post-SlotEnd ~2 秒だから。数値は
    core が反対側に落ちた遅い / 失敗 candidate で stall しない。
    qso3 (15 cand 中 ~半数が失敗し 4 種類の LLR variant 全部走る)
    で per-cand BP wall-clock variance を吸収する。
+
 ## Streaming RX pipeline アーキテクチャ
 
 Phase E 以降のパイプライン (`embedded-poc/embedded-shared/src/`

@@ -2,15 +2,15 @@
 
 > **English:** [UVPACKET.md](UVPACKET.md)
 
-`uvpacket` は `mfsk-core` の FEC 基盤（`Ldpc240_101`、BP、OSD-2/3）
-を WSJT-X 系の外で再利用する **応用例** として in-tree に置かれて
-いるモジュールです。WSJT-X 系のメンバーでは**ありません**。設計
-対象は別 — 狭帯域 FM 音声チャンネル（HT/モバイル、~3 kHz 音声
-帯域）でのプライベートグループ向けアマチュア無線メッセージング
-（署名付き QSL 交換、短文、位置レポート）です。
+`uvpacket` は `mfsk-core` の FEC 基盤（`Ldpc240_101`、belief
+propagation、OSD-2/3）を WSJT-X 系の外で再利用できることを示す、
+in-tree の **応用例** です。対象は NFM 音声チャンネル（HT/モバイル、
+~3 kHz 音声帯域）で、AFC エントリポイント経由なら SSB キャリアにも
+使えます。
 
-このドキュメントでは設計上の選択、特性測定結果、既知の modem
-実装損失をまとめます。API は in-source rustdoc を参照。
+このドキュメントは modem 自体を扱います。アプリケーションの意味論
+（署名付き QSL 交換、位置ビーコン、短文）は `mfsk-core` の一部では
+**ありません**。想定するレイヤリングは §1.4 を参照してください。
 
 ## 0. なぜこの応用例があるのか — Q65 と対をなす境界 probe
 
@@ -27,15 +27,15 @@ WSJT 系の内側でどこまで素直に伸びるかを確かめる **positive 
 `Protocol` / `ModulationParams` / `FrameLayout` / `FecCodec` /
 `MessageCodec` の **全層** が、以下を含めてもクリーンに乗りました:
 
-- 非バイナリ符号 (QRA over GF(2⁶)) を `FecCodec` の bit 単位 API に
-  シンボル変換でラップする。
-- 6 サブモードを単一の `q65_submode!` マクロから生やし、すべて
+- **非バイナリ**符号 (QRA over GF(2⁶)) を、自身の `encode` の中で
+  シンボルをパックすることで `FecCodec` の bit 単位 API に接続する。
+- 単一の `q65_submode!` マクロから生成された 6 サブモードが、すべて
   `tests/protocol_invariants.rs` を通る。
-- AWGN / AP-hint / fast-fading / AP-list の 4 並列デコード戦略が
-  `decode_at_for::<P>` の generic コードを共有する。
+- 4 つの並列デコード戦略 (AWGN / AP-hint / fast-fading / AP-list) が
+  単一の generic な `decode_at_for::<P>` 本体を共有する。
 
-これは「trait が WSJT 系の自然な拡張に対しては強い」という positive
-な示唆です。
+これは positive な示唆です: trait の表面は WSJT 系の「自然な拡張」
+に対して、撓むことなく伸びます。
 
 ### `uvpacket` で確認したかったこと (negative)
 
@@ -82,26 +82,74 @@ WSJT 系に対して適切な scope を持っている」。
 ライブラリ」として、自前の TX/RX パイプラインを書く側から使うのが
 自然な使い方です。`uvpacket` はその使い方の働く実例でもあります。
 
-以下、§1 以降は `uvpacket` 単体の設計と特性測定を扱います。trait
-抽象との関係についての要約は LIBRARY.ja.md §3.1 にも 1 段落あり、
-そちらと本節は対のペアです。
+`docs/reference/LIBRARY.ja.md` §3.1 にも trait 設計の側から見た同じ
+二重 probe の要約があり、本節に対する 1 段落の補足になっています。
+
+本ドキュメントの以降（§1 以降）は、`uvpacket` を modem として単体で
+扱います — 設計上の選択、特性測定、実装損失です。
 
 ## 1. スコープ
 
-### 1.1 これが何か
+### 1.1 これが何か — WSJT 系と並置された modem
 
-NFM 音声帯域に収まる **4 モードのパケット modem**。FST4 由来の
-hand-tuned irregular LDPC を親コードとして使用。**両端で同じ
-ソフトウェア**を動かすプライベートグループ向け — 公的な互換
-プロトコル置換ではなく、既存 TNC とも互換性なし。
+`mfsk-core` の第一のスコープは WSJT-X 系のデジタルモード
+（FT8/FT4/FST4/WSPR/JT9/JT65/Q65）です。uvpacket はその系の
+メンバーでは**ありません** — 独自の変調、同期、復調、メッセージ規約
+を持ち、汎用の mfsk-core TX/RX パイプラインをバイパスします。
+FEC 層（FST4 由来の `Ldpc240_101` + BP/OSD 機構）を再利用するため
+in-tree に置かれており、兄弟クレートとして切り出すと成果物に対して
+不釣り合いな保守コストが増えます。
+
+トレードオフとして、`Protocol::ID = ProtocolId::UvPacket` と
+いくつかの `ModulationParams` 定数（`NTONES = 4`、`GFSK_BT`、
+`TONE_SPACING_HZ`、`GFSK_HMOD`）は uvpacket にとって decorative
+です — trait シグネチャと `protocol_invariants` テストを満たすため
+だけに存在し、[`tx::encode`] や `rx::decode_*` からは一切参照され
+ません。これは
+[`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs)
+と [`docs/reference/LIBRARY.ja.md`](LIBRARY.ja.md) §3.1 に、スコープ
+境界のトレードオフとして（偽装せずに）記載されています。
+
+このクレートが提供するのは **modem のみ**:
+
+- `tx::encode(header, payload, audio_centre_hz) -> Result<Vec<f32>, PackError>`
+  — 出力バッファを確保する便利ラッパ。
+- `tx::encode_into(out, header, payload, audio_centre_hz) -> Result<(), PackError>`
+  + `tx::encode_output_len(mode, n_payload_blocks)` — caller-buffer
+  TX（embedded ポートと同時に 0.4.1 で追加）。I2S DMA 型の用途で
+  バーストごとの `Vec` 確保を避けたい場合向け。
+- `rx::decode_known_layout(audio, sample_offset, audio_centre_hz, mode, &fec_opts)`
+  — 基本のデコードエントリ。`default_fec_opts()` を渡せば OSD-2 /
+  bp_max_iter = 50、OSD-3 や caller-side AP マスクが必要なら独自の
+  `FecOpts` を組む。
+- `rx::decode_known_layout_with_afc(.., &afc_opts)` — 同じだが、
+  `±afc_opts.search_hz`（デフォルト ±200 Hz）の AFC sweep を前置する。
+- `rx::decode(audio, audio_centre_hz) -> Vec<DecodedFrame>` —
+  自動検出エントリ: passband を走査し、4 種の preamble バリアントの
+  いずれかの sync ピークを特定し、勝った preamble が選んだモードで
+  それぞれデコードする。
+- `rx::decode_multichannel(audio, &mc_opts, &fec_opts)` と
+  `rx::measure_slot_energies(audio, &mc_opts, slot_spacing_hz)` —
+  マルチチャンネルの passband スキャン + LBT 用のスロット別エネルギー
+  survey（§3.10 参照）。
+
+フレーム構成、アプリケーションレベルのディスパッチ、鍵管理などは
+組み込む側の仕事です。
 
 ### 1.2 これは「ない」もの
 
-- 相互運用モードではない。標準化なし、TNC サポートなし。
+- WSJT 系の peer モードではない。上記のレイヤリングは偶然では
+  ない — WSJT モードは callsign メッセージ規約、スロット整列された
+  フレーミング、構造化メッセージ codec を共有するが、uvpacket は
+  そのどれも共有しない。
+- 相互運用可能なパケットモードではない。標準化なし、TNC サポート
+  なし — 両端で同じソフトウェアを動かすプライベートグループ向けの
+  設計。
 - 音声モードではない。データ専用。
-- 広帯域モードではない。NFM 音声 (~3 kHz) に収まり、ネット
-  スループット 1–1.8 kbps。M17 / D-STAR / DMR / VARA FM とは
-  別の土俵。
+- 広帯域モードではない。3 kHz 音声パスバンドに収まり、ネット
+  1008–1800 bps が公称。M17 / D-STAR / DMR / VARA FM とは設計点が
+  異なる。
+- 署名付き QSL の実装ではない。§1.4 を参照。
 - 弱信号モードではない。FM 閾値（CNR ≥ +9–10 dB）より上の運用
   envelope を狙うもので、それ以下では FM 検波系のどんな modem
   でも崩壊する不可避フロアがチャンネル側にある。
@@ -141,6 +189,40 @@ uvpacket は VARA / M17 / D-STAR クラスの広帯域や音声併用プロト
 成果物: **3 kHz NFM / SSB voice passband に収まり**、両方で動作
 する、サブ秒バースト + 4段階の機会的スループットラダーを持つ
 オープンソース FEC 符号化パケット modem。
+
+### 1.4 アプリケーションアーキテクチャ — modem はここ、アプリは別
+
+uvpacket が想定した旗艦アプリケーションは**プライベートグループ間の
+署名付き QSL 交換**です。想定するレイヤリング:
+
+```text
+┌─────────────────────────────────────────┐
+│  Application (signed QSL, position,     │  app-layer repo,
+│  short text, ARQ-ACK …)                 │  separate from
+│  e.g. browser-WASM PWA via wasm-bindgen │  mfsk-core
+├─────────────────────────────────────────┤
+│  mfsk-core::uvpacket  (this crate)      │  modem only:
+│  — tx::encode / rx::decode_*            │  bytes ↔ audio
+│                                         │  with FEC
+└─────────────────────────────────────────┘
+              ↕  (audio over the air, via the radio)
+```
+
+modem は意図的に、4 bit の `app_type` ディスパッチタグを持つ
+**バイトパイプ API** を公開します。`app_type` ごとの意味は呼び出し側
+が決め、modem はそれに関知しません。§2.5 の推奨割り当ては契約では
+なく慣例です。
+
+署名付き QSL の旗艦向けに計画されているアプリケーションクレートは
+**ブラウザ WASM PWA**（`mfsk-core` とは別の兄弟リポジトリ）です:
+I/O は Web Audio、署名は Web Crypto、鍵とログの保存は IndexedDB /
+OPFS、`mfsk-core` は `wasm-bindgen`（`--features uvpacket`）経由で
+リンクします。署名付き QSL の表面をこのクレートの外に置くことで、
+modem のリリースサイクルが UX の反復に結び付くのを避け、公開
+アーティファクトを小さく保ちます。
+
+ネイティブ（非ブラウザ）の組み込み側も同じバイトパイプ API を使い、
+アプリケーション層は上に載せる任意のプロトコルです。
 
 ## 2. 設計
 
@@ -196,7 +278,8 @@ UltraRobust は Robust と同 FEC レートながらシンボル周期を倍に�
 4 段モードラダーで end-to-end ~12 dB SNR_3kHz 範囲をカバー (§3)。
 
 kSR-greedy は深い rate で uniform-spread に対し ~1–3 dB の Eb/N0
-gain を出し、これが Express をそもそも成立させている。
+gain を出し、これが Express をそもそも成立させている
+（uniform-spread は 76 % parity puncture では収束しない）。
 
 **専用ヘッダ LDPC ブロック**（Ldpc240_101 unpunctured、Robust /
 UltraRobust と同レート）が 4 byte フレームヘッダをペイロードと
@@ -230,27 +313,6 @@ UltraRobust と同レート）が 4 byte フレームヘッダをペイロード
 | 3 | 短文 |
 | 4 | ARQ ACK |
 | 5–15 | ユーザー定義 |
-
-公開エントリポイント (詳細は in-source rustdoc):
-
-- `tx::encode(header, payload, audio_centre_hz) -> Result<Vec<f32>, PackError>`
-  — Vec を確保するシンプルなラッパ。
-- `tx::encode_into(out, header, payload, audio_centre_hz) -> Result<(), PackError>`
-  + `tx::encode_output_len(mode, n_payload_blocks)` — 0.4.1 (embedded
-  ポート) で追加された caller-buffer TX。I2S DMA 等で per-burst
-  Vec 確保を避けたい用途向け。
-- `rx::decode_known_layout(audio, sample_offset, audio_centre_hz, mode, &fec_opts)`
-  — 基本デコード。`default_fec_opts()` で OSD-2 / bp_max_iter = 50、
-  独自の `FecOpts` を組めば OSD-3 や caller-side AP マスクも可能。
-- `rx::decode_known_layout_with_afc(.., &afc_opts)` — 上記に
-  `±afc_opts.search_hz` (デフォルト ±200 Hz) の AFC sweep を前置。
-- `rx::decode(audio, audio_centre_hz) -> Vec<DecodedFrame>` —
-  自動検出: passband を走査し、4 種の preamble バリアントいずれかの
-  sync ピークごとに、勝った preamble が示すモードでデコード。
-- `rx::decode_multichannel(audio, &mc_opts, &fec_opts)` /
-  `rx::measure_slot_energies(audio, &mc_opts, slot_spacing_hz)` —
-  passband 全体のスキャン + LBT 用スロットエネルギー survey
-  (§3.10 参照)。
 
 ## 3. 特性測定
 
@@ -393,7 +455,8 @@ UltraRobust は +6 dB Eb/N0 でも**フロア張り付き** — 600 baud
 1200 baud × 9 タップで ~7.5 ms しかカバーできず長いタップを
 解像できない。
 
-### 3.8 FM 閾値フロア — そして modem 実装損失が運用上不可視な理由
+### 3.8 FM 閾値フロア — そして modem 実装損失が
+###     運用上不可視な理由
 
 modem は FM 検波の上に乗る。CNR ≈ +9–10 dB を下回ると FM
 discriminator 出力はインパルスノイズ支配となり、**どんな**
@@ -497,8 +560,9 @@ spacing) で隣接 grid duplicate を除去、各 survivor を
 `decode_known_layout` で復号 (内部 AFC 不要 — coarse
 grid の ≤ 12.5 Hz 残差は LMS 位相フィットが吸収)。
 
-`measure_slot_energies` は各 `slot_spacing_hz` 間隔のスロット
-中心で matched filter |output|² 平均を返す。policy-free —
+`measure_slot_energies` は各 `slot_spacing_hz` 間隔のスロット中心で
+matched filter の
+|output|² 平均を返す。policy-free —
 呼び出し側が独自の閾値で free vs busy を判定し、free slot から
 uniform random で 1 つ選んで TX。
 
@@ -572,8 +636,8 @@ retry ポリシーを持つ。
   | 伝送              | チャンネル速度 | 正味速度   | 214 B 送出時間 |
   |-------------------|------------:|----------:|--------------:|
   | AX.25 / AFSK 1200 |     1200 bps | ~1100 bps | ~2 秒 + TXDELAY 0.5 秒 |
-  | UvPacket300       |      600 bps |  ~200 bps | ~10 秒 |
-  | UvPacket150       |      300 bps |  ~100 bps | ~18 秒 |
+  | UvPacket300 (LDPC + chain) |      600 bps |  ~200 bps | ~10 秒 |
+  | UvPacket150 (LDPC + chain) |      300 bps |  ~100 bps | ~18 秒 |
 
   AFSK 1200 が運べないチャンネル (Rayleigh フェード / 山岳 / 携行
   弱 SSB) でのみオンエア時間のペナルティが見合う。「AFSK 置換」

@@ -3861,5 +3861,4 @@ the `2b9d654` build's. Crossings are therefore unchanged: AWGN
 This is a statement about these files only. Each holds one signal and the
 CLI sets no call-sign context, so neither `MAXCAND` nor `napwid` is
 exercised. Method, scorer and the pitfalls hit are in `FT8_BENCHMARK.md`
-§13 and `scripts/score-jt9-sweep.py`. `FT4_BENCHMARK.ja.md` was not
-updated.
+§13 and `scripts/score-jt9-sweep.py`.

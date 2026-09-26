@@ -236,7 +236,6 @@ cb(r); }` ループの直後に何も挟まず `all_results.extend(deduped)` が
 
 ---
 
-
 ## 4. なぜ同期コールバックで、`async` / Tokio / チャネルではないのか
 
 これは未完成ではなく意図的な設計判断である。要約すると: **mfsk-core は
@@ -420,7 +419,7 @@ async fn main() {
         // websocket、DB 書き込みへ転送 —— すべてここから `.await` 可能。
     }
 
-    println!("スロットのデコード完了");
+    println!("slot decode complete");
 }
 
 # fn load_one_ft8_slot() -> Vec<i16> { Vec::new() }

@@ -39,8 +39,13 @@ IC-705 (または互換 BLE CI-V / 音声ケーブル対応無線機) と連携�
   デバイスに流す 5 V を出す回路も ID pin 配線も基板に無い。S3 のチップ
   自体は USB host になれるので、外部から 5 V を与えれば host として
   デバイスを認識する (issue #360) が、運用先にもう一つ電源を持ち込む
-  わけにはいかない。後継 CoreS3 への移行予定は
-  `docs/reference/EMBEDDED.ja.md` 参照。共有検証作業のため code は残置。
+  わけにはいかない。後継の経路は M5Stack CoreS3 で、AXP2101 + AW9523B
+  により正規の USB-OTG host mode を備える — `docs/reference/EMBEDDED.ja.md`
+  *What we test* (CoreS3 行) と `docs/notes/ROADMAP.md` Phase B-Core
+  (2026-05-17 pivot; ハードウェア bring-up 進行中、ファーム出荷日は未定)
+  を参照。Uac mode は共有検証作業でコードベースが起動するよう
+  `m5stack-s3-app` に残してあり、StickS3 では "USB-OTG host not
+  supported on this board" のログ行を出してクリーンに終了する。
 
 ---
 
@@ -127,8 +132,10 @@ wrapper を使う理由：
   wrapper はこれを明示ログするので不可解な挙動を追わずに済む。これが
   出たらソースファイルを 1 つ触る (`log::info!` を 1 行ずらす等) と
   rebuild が走る。
-- 実 flash は S3 factory partition で 15-25 秒。その後 monitor が
-  指定秒数 (上記例は `90`) chip stdout を log path にキャプチャ。
+
+実 flash は S3 factory partition で 15-25 秒。その後 monitor が
+chip の stdout を `90` 秒 (または渡した秒数) キャプチャし、log path に
+書き出す。
 
 ### 3.4. `cfg.toml`
 
@@ -361,6 +368,7 @@ bidir DMA alloc が初回で成功して clean に起動。
 | UDP log が PC に届かない | router が subnet broadcast を drop、または firewall | `cfg.toml` で `pc_ip = "192.168.x.y"` (PC unicast)。PC firewall で UDP 9999 開放。WSL2 は §4 参照 |
 | 数分でコンソールフリーズ | USB-CDC host disconnect (chip は `println!` 継続) | ファームで既に修正済 (commit `8b46f4e` が `usb_serial_jtag_is_connected` で `println!` を gating)。fresh build で起きる場合は tooling 古い |
 | デコーダ動いてるが 0 decode | 音声 level 過小 / 過大、または IC-705 の band 違い | `audio capture+tx tick: NNN B/s rx` ログ行を見る — 健全な 48 kHz stereo I2S RX なら 192–196 kB/s 持続。無音なら mic gain (`embedded-poc/m5stack-s3-app/src/audio.rs` `mic_gain_db`) や無線機出力 level 確認 |
+| 最初の 1-2 slot で `auto-sync (cold bootstrap from coarse_sync top-5, p1=N): DT=…s → +… samples` が出るが decode なし | cold-start の時計ずれが ±2.5 s の許容より大きい | 想定内 — bootstrap は coarse_sync candidate からの one-shot anchor。実 decode が 1 件入れば HWM path が引き継ぐ。v0.6.6 以前のファームは `auto-sync (cold): no source — BtnA required` を出して固まっていた。まだ見えるなら更新すること |
 
 ### ログキャプチャ規約
 

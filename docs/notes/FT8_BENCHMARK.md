@@ -632,12 +632,6 @@ four numbers and was refreshed in the same run; `BENCHMARKS.md`'s FT8
 summary row already carried ≈ −21.6 dB and gained the three fading
 channels.
 
-**`FT8_BENCHMARK.ja.md` is not in step and was not updated here.** It
-stops at §6 (2026-07-18), so §7 through §11 were already untranslated
-before this section existed; adding a Japanese §12 on its own would
-put the newest numbers after a four-section hole rather than at the
-end of a story. Translating the backlog is its own piece of work.
-
 ## 13. Real `jt9` from WSJT-X 3.2.0-rc1 is up to 0.84 dB more sensitive on FT8; FT4 did not move (2026-09-24)
 
 The "vs real `jt9`" figures above, in `BENCHMARKS.md`, and in the test
@@ -740,9 +734,6 @@ Not measured: the call-sign-context path (`-Q`, a7/a8), FT4 with AP, timing
 (the two builds are not compiled alike), and the effect of individual
 upstream changes.
 
-**`FT8_BENCHMARK.ja.md` is not in step and was not updated here**, for the
-reason given at the end of §12.
-
 ## 14. After the WSJT-X 3.x port: what moved, and what did not close (#439, PR #451, 2026-09-25)
 
 PR #451 ported the `ft8_decode.f90` / `ft8b.f90` changes §13 listed: the
@@ -841,9 +832,6 @@ at or above it. The cost is the weakest fading cases: `itu_ld`, whose recall
 is a 25-55 % plateau from -8 to +10 dB, drops from 10/20 to 6/20 at -5 dB,
 which moves its 50 % crossing to 0 dB. `CQ EA2BFM IN83` (`qso3_busy`), which
 the `ndeep=3` split had been needed for, decodes at `ndeep=2` now.
-
-**`FT8_BENCHMARK.ja.md` is not in step and was not updated here**, for the
-reason given at the end of §12.
 
 ## 15. The a-priori passes against `ft8b.f90`: which LLR variants, and what bounds the hard errors (#456, 2026-09-26)
 

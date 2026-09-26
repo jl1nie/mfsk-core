@@ -401,7 +401,7 @@ esp-idf-svc) for two specific boards:
 
 - `embedded-poc/m5stack-s3-app/` — M5StickS3 FT8 controller
   (ES8311 acoustic mic, BLE CI-V to IC-705, LCD UI, QSO FSM, optional
-  WiFi UDP log). Production, daily-use target.
+  WiFi UDP log). Demo / acoustic-fallback board (2026-05-17 pivot).
 - `embedded-poc/m5stack-core2-app/` — Core2 (LX6) sibling, runs the
   decoder against a baked `wav_sim` audio loop with the LCD wired
   up. External I/O deferred. Used to cross-validate the

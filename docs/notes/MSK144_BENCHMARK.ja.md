@@ -131,8 +131,9 @@ cd /path/to/WSJT-X/samples/MSK144
 ~/wsjtx-build/jt9 -k -d 3 -f 1477 -F 60 181211_120500.wav 181211_120800.wav
 ```
 
-`mfsk-core/tests/msk144_wsjtx_samples.rs` の `Golden` テーブルにある
-3 件の golden decode を全て再現するはず — message / freq / timing /
+[`reference_msk144_jt65_wsjtx_sample_decode.md`](https://github.com/jl1nie/mfsk-core)
+相当（`mfsk-core/tests/msk144_wsjtx_samples.rs` の `Golden` テーブル）
+の 3 件の golden decode を全て再現するはず — message / freq / timing /
 SNR 全て一致。デフォルトの `-F 20` (周波数探索許容幅) は 2 番目の
 ファイルの 1458 Hz 信号には狭すぎるため、上記のように広げる必要が
 ある。
@@ -145,7 +146,7 @@ repo root ではなくスクラッチディレクトリから実行すること�
 
 `msk144sim.f90` は注入するノイズを加算する前に
 `fac = sqrt(6000.0/2500.0)` でスケーリングしている — シミュレーション
-自体は 12kHz サンプルレート／6kHz Nyquist で動くにも関わらず、
+自体は 12 kHz サンプルレート／6 kHz Nyquist で動くにも関わらず、
 `snrdb` 引数は WSJT-X の**2500 Hz 基準帯域幅**に較正されている。
 これは本クレートの生の full-Nyquist-band SNR convention
 （他の箇所、例えば `msk144::decode::SlotDecode::snr_db` 自身の
