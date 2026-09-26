@@ -2,6 +2,42 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT8: WSJT-X's a7 and a8 list decoders (#464).** `ft8_decode.f90` runs two passes
+  after the candidate loop that this crate did not have. Both choose among messages built
+  from call signs already known instead of decoding the LDPC code
+  (`ft8::list_decode`).
+  - **a7** (`ft8_a7.f90`): for each message decoded in the same sequence one cycle earlier,
+    the 206 messages the same pair could send next (RRR, RR73, 73, grid, CQ, reports) are
+    scored against the four LLR variants at that decode's frequency and DT; the closest is
+    accepted if its distance is at most 100 and the runner-up is 1.3 times further. The
+    table follows `ft8_a7_save` (first two words and a grid; `/`, `<` and `CQ_` skipped; a
+    station decoded again this slot within 3 Hz is not tried). New
+    `DecodeRequest::<Ft8>::previous_cycle(&decodes)`: the application keeps the previous
+    cycle's decodes and passes them, so the library stays stateless.
+  - **a8** (`ft8_a8d.f90`, new in 3.x): with MyCall, HisCall and HisGrid (`ap_hint`) and the
+    QSO frequency (`freq_hint`), the waveforms of that QSO's messages are correlated against
+    the signal near the QSO frequency over +-1 s and +-5 Hz, and the best fit is kept if it
+    passes `nhard <= 54`, `plog >= -159` and `sigobig >= 0.71`.
+  - Pass ids 30 (a7) and 31 (a8). Both run at the end of every FT8 strategy; `.sic_early()`
+    runs them on its residual, as upstream runs them on `dd` after subtraction.
+
+  Measured against `jt9` 3.2.0-rc1 (built from the tag, the CLI's default calls cleared with
+  `-c b -x b` for a7 since they are `K1ABC`/`W9XYZ`/`EN37`), `ft8sim` 3.2 corpora, 20 files a
+  cell, same files for both (`tests/ft8_list_decode.rs`, `FT8_BENCHMARK.md` section 16).
+  a7, `K1ABC W9XYZ RR73` after a strong `-10` one cycle earlier, decoded / of which by a7:
+  jt9 -20 dB 20/1, -21 20/5, -22 20/18, -23 17/17, -24 8/8, -26 0; this crate 20/1, 20/6,
+  20/18, 18/17, 8/8, 0. Without the previous cycle both decode 19, 15 (14), 2, 0 (1), 0.
+  a8, `K1ABC W9XYZ R-12` at 1500 Hz with the hint: jt9 -20 20/1, -22 19/11, -24 14/14,
+  -25 7/7, -26 1/1, -27 0; this crate 20/0, 20/13, 13/13, 8/8, 1/1, 0. Noise at -40 dB:
+  nothing from either list decoder. Gates: `a7_finds_the_pairs_next_message`,
+  `a8_finds_the_qso_message_at_the_qso_frequency`, `list_decoders_find_nothing_in_noise`
+  (mutation-checked).
+
+  Not like upstream: messages with a hashed call in a Type 1 field (a report or grid with
+  one non-standard call) are not generated, since `pack28` has no hash form; the Type 4
+  shapes are. a7's SNR is this crate's FT8 SNR. The FFI does not expose `previous_cycle`
+  yet.
+
 - **`pack77` sends RR73 and -35..-31 dB reports as WSJT-X does, and the RR73 AP
   hypothesis matches a real RR73 (#464).** `pack77_1` (`packjt77.f90`) tries the last
   word as a grid first, so `RR73`, which has a grid's shape, goes out as the grid RR73

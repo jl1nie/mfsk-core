@@ -900,3 +900,49 @@ hypothesis is off (6232 hits, as with no hint). FT8 with the hint at or away fro
 right hint 9315 / 5 phantoms, then 6936 / 3; wrong hint 6547 / 9, then 6547 / 6 (its phantoms are
 on the true signal, inside the window). `MFSK_FT8_SWEEP_FREQ_HINT` and `MFSK_FT4_SWEEP_FREQ_HINT`
 pass the frequency.
+
+## 16. The a7 and a8 list decoders against `jt9` 3.2.0-rc1 (#464, 2026-09-26)
+
+`jt9` built from the `v3.2.0-rc1` tag (the #442 reference; a8 is new in 3.x, so the older
+build cannot stand in). One trap first: **the `jt9` CLI has default call signs**, MyCall
+`K1ABC`, HisCall `W9XYZ`, HisGrid `EN37` (`jt9.f90:127-128`), and runs a8 and the MyCall/
+DxCall AP passes with them at `nfqso` 1500 Hz. A corpus that uses those calls at 1500 Hz is
+decoded with a hint whether one was meant or not; `-c b -x b` clears them. (It may also be
+behind `jt9` phantoms at 1500 Hz on other corpora, such as the `a2` one noted on FST4.)
+
+**a7.** `ft8sim` 3.2, 1500 Hz, DT 0: the previous cycle holds `K1ABC W9XYZ -10` at -10 dB,
+the current one `K1ABC W9XYZ RR73` at the SNR in the table, 20 files a cell (seeds 118-126).
+`jt9 -8 -d 3 -c b -x b` on `000000_000000.wav 000000_000030.wav` in one process (same
+sequence, 30 s apart); this crate `.wsjtx_depth(D3)` with `.previous_cycle()`.
+
+| SNR | `jt9` alone | crate alone | `jt9` with previous (a7) | crate with previous (a7) |
+|---:|---:|---:|---:|---:|
+| -20 | 19 | 19 | 20 (1) | 20 (1) |
+| -21 | 15 | 14 | 20 (5) | 20 (6) |
+| -22 | 2 | 2 | 20 (18) | 20 (18) |
+| -23 | 0 | 1 | 17 (17) | 18 (17) |
+| -24 | 0 | 0 | 8 (8) | 8 (8) |
+| -26 | 0 | 0 | 0 | 0 |
+
+About 2-3 dB for the next message of a pair already heard, as upstream. On the two
+WSJT-X recordings 30 s apart (`191111_110130`, `191111_110200`) neither finds an a7 decode:
+every station of the first is decoded again in the second, and the one that is not
+(`TK4LS YC1MRF 73`) sends nothing more.
+
+**a8.** `K1ABC W9XYZ R-12` at 1500 Hz, 20 files a cell; `jt9` with its default calls and
+`nfqso` 1500, this crate with `ap_hint(K1ABC, W9XYZ, EN37)` and `freq_hint(1500)`.
+
+| SNR | `jt9` decoded (a8) | crate decoded (a8) |
+|---:|---:|---:|
+| -20 | 20 (1) | 20 (0) |
+| -22 | 19 (11) | 20 (13) |
+| -24 | 14 (14) | 13 (13) |
+| -25 | 7 (7) | 8 (8) |
+| -26 | 1 (1) | 1 (1) |
+| -27 | 0 | 0 |
+| -40 (noise) | 0, one other decode | 0 |
+
+The crate's a7 found nothing until `pack77` was fixed (#464's first commit): it packed RR73
+as `MAXGRID4 + 3`, not as the grid RR73 that WSJT-X transmits, so the list's RR73 candidate
+was a different codeword from the one on the air (its parity bits, half the codeword,
+disagreed at chance level).
