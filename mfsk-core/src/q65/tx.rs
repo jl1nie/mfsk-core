@@ -18,8 +18,8 @@ use alloc::vec::Vec;
 
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
+use crate::msg::q65::pack77_q65;
 use crate::msg::q65::pack77_to_symbols;
-use crate::msg::wsjt77;
 
 use super::Q65a30;
 use super::sync_pattern::Q65_SYNC_POSITIONS;
@@ -72,7 +72,7 @@ pub fn synthesize_standard_for<P: crate::engine::tx::FskWaveform>(
     base_freq_hz: f32,
     amplitude: f32,
 ) -> Option<Vec<f32>> {
-    let bits = wsjt77::pack77(call1, call2, grid_or_report)?;
+    let bits = pack77_q65(call1, call2, grid_or_report)?;
     let tones = encode_channel_symbols(&bits);
     Some(crate::engine::tx::synthesize::<P>(
         &tones,
@@ -157,7 +157,7 @@ mod tests {
     fn data_tones_in_valid_range() {
         // A non-trivial message should produce data tones spread
         // across the 1..=64 range.
-        let bits77 = wsjt77::pack77("CQ", "JA1ABC", "PM95").expect("pack");
+        let bits77 = crate::msg::wsjt77::pack77("CQ", "JA1ABC", "PM95").expect("pack");
         let tones = encode_channel_symbols(&bits77);
         for (i, &t) in tones.iter().enumerate() {
             assert!(t <= 64, "tone[{i}] = {t} exceeds Q65 range 0..=64");
