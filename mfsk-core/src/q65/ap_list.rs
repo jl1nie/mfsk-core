@@ -32,8 +32,8 @@ use alloc::vec::Vec;
 
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
+use crate::msg::q65::pack77_q65;
 use crate::msg::q65::pack77_to_symbols;
-use crate::msg::wsjt77::pack77;
 
 /// Hard cap matching `MAX_NCW` in the Fortran reference. Used both
 /// to size the returned `Vec` and to bound the generated list when
@@ -55,7 +55,7 @@ pub fn standard_qso_codewords(my_call: &str, his_call: &str, his_grid: &str) -> 
     let mut out: Vec<[i32; 63]> = Vec::with_capacity(MAX_AP_CODEWORDS);
 
     let mut push = |codec: &mut Q65Codec, c1: &str, c2: &str, report: &str| {
-        if let Some(bits) = pack77(c1, c2, report) {
+        if let Some(bits) = pack77_q65(c1, c2, report) {
             let info = pack77_to_symbols(&bits);
             let mut cw = [0_i32; 63];
             codec.encode(&info, &mut cw);

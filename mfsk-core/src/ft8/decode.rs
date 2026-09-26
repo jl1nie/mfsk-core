@@ -1552,6 +1552,70 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
 // ────────────────────────────────────────────────────────────────────────────
 // `DecodeRequest`/`SniperRequest` dispatch (issue #191)
 
+/// MyCall, HisCall, HisGrid and the QSO frequency for a8, when the request has
+/// them all (`ap_hint` with both calls and a grid, and a `freq_hint`).
+fn a8_inputs<'a, Pol: MessagePolicy>(
+    req: &'a DecodeRequest<'_, Ft8, Pol>,
+) -> Option<(&'a str, &'a str, &'a str, f32)> {
+    let ap = req.ap_hint?;
+    let mycall = ap.call1.as_deref()?;
+    let hiscall = ap.call2.as_deref()?;
+    let hisgrid = ap.grid.as_deref()?;
+    if mycall == "CQ" {
+        return None;
+    }
+    Some((mycall, hiscall, hisgrid, req.freq_hint?))
+}
+
+/// Whether the a7/a8 list decoders have anything to do for this request.
+fn list_decode_wanted<Pol: MessagePolicy>(req: &DecodeRequest<'_, Ft8, Pol>) -> bool {
+    !req.previous_cycle.is_empty() || a8_inputs(req).is_some()
+}
+
+/// `ft8_decode.f90:250-305`: after the ladder, the a7 and a8 list decoders
+/// ([`crate::ft8::list_decode`]), appended to `results` and reported through
+/// `on_result` like any decode. `audio` and `cache` are what they run on.
+fn list_decode_tail<Pol: MessagePolicy>(
+    req: &DecodeRequest<'_, Ft8, Pol>,
+    audio: &[i16],
+    cache: &[num_complex::Complex<f32>],
+    results: &mut Vec<DecodeResult>,
+) {
+    let input = crate::ft8::list_decode::ListDecodeInput {
+        audio,
+        fft_cache: cache,
+        previous: req.previous_cycle,
+        a8: a8_inputs(req),
+        known: req.known,
+    };
+    let new = crate::ft8::list_decode::run(&input, results, |r| {
+        if let Some(cb) = req.on_result {
+            cb(r);
+        }
+    });
+    results.extend(new);
+}
+
+impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
+    /// This sequence's decodes of one cycle earlier (the slot 30 s before this
+    /// one): turns on WSJT-X's **a7** list decoder (`ft8_a7.f90`). For each of
+    /// those messages it builds what the same pair could send next (RRR, RR73,
+    /// 73, a grid, a report) and looks for it at that decode's frequency and DT;
+    /// a station already decoded in this slot near its old frequency is skipped.
+    /// Pass the whole decode list of that slot, a7/a8 decodes included, as
+    /// `ft8_decode.f90` keeps them. The decodes it finds carry pass id
+    /// [`crate::ft8::list_decode::PASS_ID_A7`].
+    ///
+    /// **a8** (`ft8_a8d.f90`) needs no call: it runs when [`Self::ap_hint`] has
+    /// MyCall, HisCall and HisGrid and [`Self::freq_hint`] is set, and looks for
+    /// that QSO's messages at the QSO frequency
+    /// ([`crate::ft8::list_decode::PASS_ID_A8`]).
+    pub fn previous_cycle(mut self, decodes: &'a [DecodeResult]) -> Self {
+        self.previous_cycle = decodes;
+        self
+    }
+}
+
 impl FrameDecodable for Ft8 {
     type DecodeResult = DecodeResult;
 
@@ -1584,6 +1648,10 @@ impl FrameDecodable for Ft8 {
             &req.policy,
             base_pass_of(req),
         );
+        let mut results = results;
+        if list_decode_wanted(req) {
+            list_decode_tail(req, req.audio, &fft_cache, &mut results);
+        }
         DecodeOutcome {
             results,
             fft_cache: FftCache(fft_cache),
@@ -1627,6 +1695,11 @@ impl SupportsSicRounds for Ft8 {
                     tx: req.tx_freq,
                 },
             );
+            let mut results = results;
+            if list_decode_wanted(req) {
+                let cache = build_fft_cache(req.audio);
+                list_decode_tail(req, req.audio, &cache, &mut results);
+            }
             DecodeOutcome {
                 results,
                 fft_cache,
@@ -1659,6 +1732,11 @@ impl SupportsSicRounds for Ft8 {
                     tx: req.tx_freq,
                 },
             );
+            let mut results = results;
+            if list_decode_wanted(req) {
+                let cache = build_fft_cache(req.audio);
+                list_decode_tail(req, req.audio, &cache, &mut results);
+            }
             DecodeOutcome {
                 results,
                 fft_cache,
@@ -1735,6 +1813,12 @@ impl SupportsSicEarly for Ft8 {
             base_pass_of(req),
         );
         let fft_cache = FftCache(build_fft_cache(&residual));
+        // On the residual, as `ft8_decode.f90` runs a7/a8 on `dd` after the
+        // passes' subtractions.
+        let mut results = results;
+        if list_decode_wanted(req) {
+            list_decode_tail(req, &residual, fft_cache.as_slice(), &mut results);
+        }
         DecodeOutcome {
             results,
             fft_cache,

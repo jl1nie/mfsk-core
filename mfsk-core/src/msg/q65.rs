@@ -28,6 +28,43 @@ use super::wsjt77;
 use super::{CallsignHashTable, Wsjt77Message};
 use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
+/// The 15-bit field `genq65.f90` rewrites: `c77(60:74)`, 0-based `59..74`.
+const RPT15: core::ops::Range<usize> = 59..74;
+/// `RR73` as a grid square — what [`wsjt77::pack77`] produces, as `pack77.f90` does.
+const GRID_RR73: u32 = 32373;
+/// `RR73` as the explicit acknowledgement, `MAXGRID4 + 3`.
+const EXPLICIT_RR73: u32 = 32403;
+
+/// Rewrite a grid-square `RR73` into the explicit `RR73` acknowledgement,
+/// as `genq65.f90` does before encoding:
+///
+/// ```text
+/// read(c77(60:74),'(b15)') ng15
+/// if(ng15.eq.32373) c77(60:74)='111111010010011'    !Message is RR73
+/// ```
+///
+/// FT8, FT4 and FST4 transmit `RR73` as the grid square, as `pack77.f90`
+/// packs it; Q65 alone rewrites it, so a Q65 `RR73` is a different codeword.
+/// Like upstream, the field is read whatever the message type.
+pub fn q65_rr73_fixup(bits77: &mut [u8; 77]) {
+    let ng15 = bits77[RPT15]
+        .iter()
+        .fold(0u32, |a, &b| (a << 1) | (b & 1) as u32);
+    if ng15 == GRID_RR73 {
+        for (i, bit) in bits77[RPT15].iter_mut().enumerate() {
+            *bit = ((EXPLICIT_RR73 >> (14 - i)) & 1) as u8;
+        }
+    }
+}
+
+/// [`wsjt77::pack77`] followed by [`q65_rr73_fixup`]: the 77 bits `genq65.f90`
+/// encodes for a standard message.
+pub fn pack77_q65(call1: &str, call2: &str, grid_or_report: &str) -> Option<[u8; 77]> {
+    let mut bits = wsjt77::pack77(call1, call2, grid_or_report)?;
+    q65_rr73_fixup(&mut bits);
+    Some(bits)
+}
+
 /// Pack a 77-bit WSJT message (LSB / MSB convention matching
 /// [`super::wsjt77`]: each byte holds one bit in its LSB) into the
 /// 13-GF(64)-symbol vector that feeds Q65's QRA encoder.
@@ -135,9 +172,13 @@ impl MessageCodec for Q65Message {
     const CRC_BITS: u32 = 12;
 
     fn pack(&self, fields: &MessageFields) -> Option<Vec<u8>> {
-        // Bit-for-bit identical to FT8/FT4/FST4 — Q65 uses the same
-        // 77-bit format. Reuse the existing implementation.
-        Wsjt77Message.pack(fields)
+        // The 77-bit format FT8/FT4/FST4 use, except that `genq65.f90`
+        // sends `RR73` as the explicit acknowledgement, not the grid square.
+        let mut bits = Wsjt77Message.pack(fields)?;
+        let mut arr: [u8; 77] = bits.as_slice().try_into().ok()?;
+        q65_rr73_fixup(&mut arr);
+        bits.copy_from_slice(&arr);
+        Some(bits)
     }
 
     fn unpack(&self, payload: &[u8], ctx: &DecodeContext) -> Option<Self::Unpacked> {
@@ -159,6 +200,36 @@ impl MessageCodec for Q65Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rpt15(bits: &[u8; 77]) -> u32 {
+        bits[RPT15].iter().fold(0, |a, &b| (a << 1) | b as u32)
+    }
+
+    #[test]
+    fn rr73_is_the_explicit_acknowledgement_as_genq65_sends_it() {
+        let ft8 = wsjt77::pack77("K1ABC", "JA1ABC", "RR73").unwrap();
+        assert_eq!(rpt15(&ft8), GRID_RR73, "pack77.f90 packs RR73 as a grid");
+        let q65 = pack77_q65("K1ABC", "JA1ABC", "RR73").unwrap();
+        assert_eq!(rpt15(&q65), EXPLICIT_RR73);
+        assert_eq!(wsjt77::unpack77(&q65).as_deref(), Some("K1ABC JA1ABC RR73"));
+        let via_codec = Q65Message
+            .pack(&MessageFields {
+                call1: Some("K1ABC".into()),
+                call2: Some("JA1ABC".into()),
+                grid: Some("RR73".into()),
+                ..MessageFields::default()
+            })
+            .unwrap();
+        assert_eq!(via_codec.as_slice(), &q65[..]);
+        // Everything else passes through untouched.
+        for rpt in ["RRR", "73", "FN42", "-15", "R+05", ""] {
+            assert_eq!(
+                pack77_q65("K1ABC", "JA1ABC", rpt),
+                wsjt77::pack77("K1ABC", "JA1ABC", rpt),
+                "{rpt}"
+            );
+        }
+    }
 
     #[test]
     fn pack_unpack_roundtrip_random_bits() {

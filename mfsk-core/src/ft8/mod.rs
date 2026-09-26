@@ -69,6 +69,8 @@ pub mod equalizer;
 pub mod hash_table;
 pub mod ldpc;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod list_decode;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod llr;
 pub mod message;
 pub mod params;

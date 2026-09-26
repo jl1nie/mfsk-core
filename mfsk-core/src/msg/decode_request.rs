@@ -638,6 +638,9 @@ pub struct DecodeRequest<'a, P: FrameDecodable, Pol: MessagePolicy = DefaultPoli
     pub(crate) eq_mode: EqMode,
     pub(crate) ap_hint: Option<&'a ApHint>,
     pub(crate) known: &'a [P::DecodeResult],
+    /// FT8 only: this sequence's decodes of one cycle earlier, for the a7 list
+    /// decoder (`DecodeRequest::<Ft8>::previous_cycle`). Empty for every other mode.
+    pub(crate) previous_cycle: &'a [P::DecodeResult],
     pub(crate) fft_cache: Option<FftCache>,
     /// Only consulted by [`SupportsSicRounds::__flat_sic`] (set via
     /// [`DecodeRequest::sic_rounds`]); ignored by every other strategy,
@@ -702,6 +705,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
             eq_mode: EqMode::Off,
             ap_hint: None,
             known: &[],
+            previous_cycle: &[],
             fft_cache: None,
             sic_rounds: 3,
             wsjtx_low_depth: false,
@@ -995,6 +999,7 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
             eq_mode: self.eq_mode,
             ap_hint: self.ap_hint,
             known: self.known,
+            previous_cycle: self.previous_cycle,
             fft_cache: self.fft_cache,
             sic_rounds: self.sic_rounds,
             wsjtx_low_depth: self.wsjtx_low_depth,
