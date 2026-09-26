@@ -4865,6 +4865,8 @@ fn jtty_core_params(p: &MfskJttyParams) -> mfsk_core::jtty::rx::Params {
         nfa_hz: p.nfa_hz,
         nfb_hz: p.nfb_hz,
         subtract: p.subtract != 0,
+        sequential: false,
+        carry: false,
     }
 }
 

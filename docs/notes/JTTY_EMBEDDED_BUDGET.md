@@ -163,3 +163,48 @@ Next, in this order: (1) host experiments that change no output — rotated refe
 `subtract_frame` in `f32`, trellis loop restructuring — each checked bit- or frame-exact against the current receiver;
 (2) host experiments that trade behaviour for cost — the decimated surface, the phase-slope peak-up, the ladder
 pre-reject, retro off — each measured on `jtty_sweep`, the mixtures and the hard set; (3) then, and only then, the device.
+
+## 8. What the host showed next (same day)
+
+Three things came out of the counters, one of them a surprise.
+
+**Who the ladder's rejects are.** A hypothesis first: the candidates that pass the gate and fail the ladder are
+the *sidelobes of a signal that has just decoded*, gated against the signal because a pass is decoded at once.
+`Params::sequential` (candidates one after another, each against what the earlier ones left, upstream's order)
+tests it: ladder calls fall by only 10 % (0.90 → 0.82 a window on the recording, 1.30 → 1.19 with six stations).
+Wrong. The counters say what they are: of the rejected gated candidates, none lies within 40 Hz and 0.1 s of an
+accepted frame and 81–97 % lie within 120 Hz and 2 s of one, median 7–8 sync tones right at 5.2 dB where the accepted
+ones have 12–13 at 8–12 dB. They are **the tails of frames in the windows after the one that decoded them**: a frame
+is 1.888 s, a window starts every quarter of that, so a transmission is in up to four windows and in three of them only
+its tail is there, which the sync search finds partial matches in. Subtracting the frame in its own window does
+nothing for the next window, whose analytic signal is computed afresh. (On 19 vendored non-JTTY recordings, 1 350 s,
+the ladder is called 0.067 times a window, all rejects: the noise floor of the mechanism, one call per 15 windows.)
+
+**`Params::carry`** subtracts a decoded frame from the later windows it overlaps (a persistent residual, as a
+receiver with a continuous analytic stream would keep). Ladder calls a window: recording 0.90 → 0.45, three stations
+0.54 → 0.35, six stations 1.30 → 0.74; ladder time on the host 4.6 → 1.5 ms on the recording. On a device with a
+continuous ring the subtraction is done once per frame, not once per later window.
+
+And it **finds more**. Against WSJT-X's own simulator through `scripts/jtty_multi_study.sh`, weak stations recovered:
+
+| | rjtty | this crate, default | `sequential` | `carry` | `carry` + `sequential` |
+|---|---|---|---|---|---|
+| easy, 100 pairs | 69 | 69 | 69 | **95** | **95** (0 messages only rjtty has) |
+| hard, 200 pairs | 103 | 101 (2 only rjtty) | **103**, identical | 108 | **110** |
+
+`sequential` closes the whole schedule gap of P3 (hard set: identical to `rjtty`, message for message; the 2 it lacked
+were D4's price). `carry` is not in upstream: in the windows after a strong station's frame decodes, its tail still
+masks the weak one, and upstream never takes it off. It is off by default; the single-station `jtty_sweep` (360
+files) is byte-identical with either option, since one frame has no later window to matter in.
+
+**`subtract_frame` in `f32`.** The reference now comes from `tx::Synth` (`Synth::at`, `fill_complex`) and the `cos²`
+filter is three sliding sums over `f32` phasor tables with `Σw = N/2` in closed form: no `f64`, no per-sample
+`sin`/`cos` beyond the reference's. It agrees with the `f64` form to 1e-3 of the frame per sample (tested against
+the kept `subtract_frame_f64`), passes the `cos²`-convolution test at 1e-4, and the studies above are unchanged by
+it (69/101 and 95/110). The 1 832 ms of section 3 was that function's 50 000 software `f64` `sin`/`cos`; the `f32`
+form is a few million cycles, **not yet measured on the board**.
+
+Revised picture for section 5: `carry` removes 45 % of the ladder calls (the largest single lever on the busiest
+band), `sequential` costs parallelism the device does not have, and the subtraction line drops from 21 % of a busy
+window to something small pending the measurement.
+

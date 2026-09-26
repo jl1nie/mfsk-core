@@ -94,9 +94,18 @@ fn busy(n: usize, secs: usize, seed: u64) -> Vec<i16> {
 }
 
 fn report(name: &str, audio: &[i16], rx: &Receiver) {
+    let sequential = std::env::var_os("MFSK_JTTY_SEQUENTIAL").is_some();
+    let carry = std::env::var_os("MFSK_JTTY_CARRY").is_some();
     rx.reset_stats();
     let t = std::time::Instant::now();
-    let updates = rx.scan_messages(audio, &Params::default());
+    let updates = rx.scan_messages(
+        audio,
+        &Params {
+            sequential,
+            carry,
+            ..Params::default()
+        },
+    );
     let wall = t.elapsed().as_secs_f64();
     let s: Snapshot = rx.stats();
     let windows = (audio.len() - NCHUNK) / STEP + 1;
@@ -131,6 +140,58 @@ fn report(name: &str, audio: &[i16], rx: &Receiver) {
         per(C::LadderAccepts),
         per(C::StickyRetries)
     );
+    println!(
+        "            retry rounds: {:.3} candidates re-decoded per window, {:.3} of them ladder calls (of {:.3} ladder calls in all)",
+        per(C::RetryCandidates),
+        per(C::RetryLadderCalls),
+        per(C::LadderCalls)
+    );
+    // Who are the gated candidates the ladder rejects? Distance to the nearest accepted one.
+    let gated = rx.gated_candidates();
+    let good: Vec<_> = gated.iter().filter(|g| g.accepted).collect();
+    let bad: Vec<_> = gated.iter().filter(|g| !g.accepted).collect();
+    if !bad.is_empty() && !good.is_empty() {
+        let near = |b: &&mfsk_core::jtty::stats::GatedCandidate, df: f32, dt: f32| {
+            good.iter()
+                .any(|g| (g.f1_hz - b.f1_hz).abs() <= df && (g.tsync_s - b.tsync_s).abs() <= dt)
+        };
+        let n = bad.len() as f64;
+        println!(
+            "            rejected gated candidates: {}; within 40 Hz and 0.1 s of an accepted frame: {:.0} %, within 120 Hz and 2 s: {:.0} %; median nsync {} / snr {:.1} dB (accepted: {} / {:.1} dB)",
+            bad.len(),
+            100.0 * bad.iter().filter(|b| near(b, 40.0, 0.1)).count() as f64 / n,
+            100.0 * bad.iter().filter(|b| near(b, 120.0, 2.0)).count() as f64 / n,
+            {
+                let mut v: Vec<_> = bad.iter().map(|b| b.nsync).collect();
+                v.sort();
+                v[v.len() / 2]
+            },
+            {
+                let mut v: Vec<_> = bad.iter().map(|b| b.snr_db).collect();
+                v.sort_by(|a, b| a.total_cmp(b));
+                v[v.len() / 2]
+            },
+            {
+                let mut v: Vec<_> = good.iter().map(|b| b.nsync).collect();
+                v.sort();
+                v[v.len() / 2]
+            },
+            {
+                let mut v: Vec<_> = good.iter().map(|b| b.snr_db).collect();
+                v.sort_by(|a, b| a.total_cmp(b));
+                v[v.len() / 2]
+            },
+        );
+    } else if !bad.is_empty() {
+        let mut v: Vec<_> = bad.iter().map(|b| (b.nsync, b.snr_db)).collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        println!(
+            "            rejected gated candidates: {} (nothing accepted); median nsync {} snr {:.1} dB",
+            bad.len(),
+            v[v.len() / 2].0,
+            v[v.len() / 2].1
+        );
+    }
     println!(
         "rungs per window: L1 {:.3}  L2 {:.3}  L4 {:.3}  half {:.3}",
         s.rungs[0] as f64 / w,
@@ -169,6 +230,50 @@ fn profile_the_receive_path() {
     report("noise only", &to_i16(&noise(60, &mut rng)), &rx);
     if let Some(p) = common::corpus::golden_path("jtty/260807_134110.wav") {
         report("upstream sample recording", &common::load_wav_i16(p), &rx);
+    }
+    // real audio with no JTTY in it: what a receiver on an occupied band sees as candidates
+    let dir = common::corpus::golden_path("").unwrap_or_default();
+    fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if let Ok(rd) = std::fs::read_dir(d) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "wav")
+                    && !p.to_string_lossy().contains("jtty")
+                {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&dir, &mut files);
+    files.sort();
+    let mut real: Vec<Vec<i16>> = Vec::new();
+    for f in &files {
+        if let Ok(bytes) = std::fs::read(f) {
+            if bytes.len() < 44 {
+                continue;
+            }
+            // 12 kHz mono 16-bit only
+            let rate = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+            let ch = u16::from_le_bytes(bytes[22..24].try_into().unwrap());
+            if rate == 12_000 && ch == 1 {
+                real.push(common::load_wav_i16(f));
+            }
+        }
+    }
+    let joined: Vec<i16> = real.concat();
+    if joined.len() > NCHUNK {
+        report(
+            &format!(
+                "real audio, {} vendored non-JTTY recordings joined",
+                real.len()
+            ),
+            &joined,
+            &rx,
+        );
     }
     for n in [1, 3, 6] {
         report(

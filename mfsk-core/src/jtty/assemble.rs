@@ -159,6 +159,9 @@ pub struct Assembler {
     active: Vec<Active>,
     recent: Vec<Recent>,
     next_id: u64,
+    /// Frames decoded and subtracted in earlier windows that may still overlap a
+    /// window to come (see [`super::rx::Params::carry`]).
+    pub(super) carried: Vec<super::rx::Subtracted>,
 }
 
 impl Assembler {
@@ -181,6 +184,9 @@ impl Assembler {
     /// a retro re-sweep can revisit are forgotten, and messages with no
     /// continuation within three frame periods of that are reported incomplete.
     pub fn prune(&mut self, forward_tsync: f32, sink: &mut dyn FnMut(MessageUpdate)) {
+        // a decoded frame can still lie in a later window while its end is after that window's start
+        self.carried
+            .retain(|x| x.tsync_s + FRAME_PERIOD_S > forward_tsync);
         let oldest_revisit = forward_tsync - MAX_RETRO_STEPS as f32 * FRAME_PERIOD_S / 4.0;
         self.recent
             .retain(|r| r.tsync >= oldest_revisit - FRAME_HISTORY_TIME_S);

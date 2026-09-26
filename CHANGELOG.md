@@ -187,6 +187,16 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY: `Params::carry`, `Params::sequential`, an `f32` `subtract_frame`, and work counters (`jtty-stats`) (#499).**
+  The counters showed that most candidates the ladder rejects are the tails of frames in the windows after the one that
+  decoded them. `carry` (off by default) subtracts a decoded frame from the later windows it overlaps: ladder calls fall
+  by 45 % and, against WSJT-X's simulator, weak stations recovered rise 69 → 95 of 100 (easy) and 101 → 108 of 200 (hard;
+  `rjtty`: 69 and 103). `sequential` decodes a pass's candidates one after another as upstream does, which makes the hard
+  set identical to `rjtty` (103, no message only one has); with both, 95 and 110. `subtract_frame` no longer uses `f64`
+  (a reference from `tx::Synth::at` + `fill_complex`, the `cos²` filter as sliding sums over `f32` tables; 1e-3 of the frame
+  from the `f64` form, kept as `subtract_frame_f64`); it was 1.8 s per call on the CoreS3. `jtty-stats` (host only) counts
+  and times the stages; `docs/notes/JTTY_EMBEDDED_BUDGET.md` has the per-window model. `Params` gains two fields.
+
 - **JTTY: trellis metrics in `f32` as an option (`Plan::decode_f32`, `Ladder::with_f32_metrics`, `Receiver::with_f32_metrics`, #499 E1b).**
   The list-WAVA trellis carries its path metrics in `f64` (as upstream); the option carries them in `f32`, which
   is hardware on an Xtensa LX7. Default unchanged. Agreement with `f64`: upstream's 33 ladder cases identical in

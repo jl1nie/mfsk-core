@@ -345,6 +345,8 @@ pub struct Synth<F: Float = f64> {
     amplitude: F,
     /// `2π · HMOD / nsps`.
     k: F,
+    /// Samples per symbol.
+    nsps: usize,
 }
 
 impl<F: Float> Synth<F> {
@@ -352,7 +354,25 @@ impl<F: Float> Synth<F> {
     /// frequency of tone 0, with peak `amplitude`. Empty tones give an empty
     /// transmission.
     pub fn new(tones: &[u8], f0_hz: f32, amplitude: f32) -> Self {
-        let g = Geometry::AUDIO;
+        Self::with_geometry(tones, f0_hz, amplitude, Geometry::AUDIO)
+    }
+
+    /// [`Self::new`] at `nsps` samples per symbol and `fs_hz` samples per second: the
+    /// 6 kHz, 192-sample analytic-signal geometry the receiver subtracts its reference
+    /// in (`fill_complex`), or the 12 kHz audio one.
+    pub fn at(tones: &[u8], f0_hz: f32, amplitude: f32, nsps: usize, fs_hz: f32) -> Self {
+        Self::with_geometry(
+            tones,
+            f0_hz,
+            amplitude,
+            Geometry {
+                nsps,
+                fs: f64::from(fs_hz),
+            },
+        )
+    }
+
+    fn with_geometry(tones: &[u8], f0_hz: f32, amplitude: f32, g: Geometry) -> Self {
         let cast = |x: f64| F::from(x).expect("a float");
         Self {
             tones: tones.to_vec(),
@@ -365,6 +385,7 @@ impl<F: Float> Synth<F> {
             cinc: (f64::from(f0_hz) / g.fs * 18_446_744_073_709_551_616.0) as u64,
             amplitude: cast(f64::from(amplitude)),
             k: cast(TAU * HMOD / g.nsps as f64),
+            nsps: g.nsps,
         }
     }
 
@@ -383,49 +404,71 @@ impl<F: Float> Synth<F> {
         self.n >= self.total
     }
 
-    /// Write the next `min(out.len(), remaining())` samples into `out`, returning
-    /// how many. `0` once the transmission is over.
-    pub fn fill(&mut self, out: &mut [f32]) -> usize {
-        let nsps = NSPS;
+    /// The angle (carrier plus modulation) and the envelope of the next sample, and advance.
+    fn step(&mut self) -> (F, F) {
+        let nsps = self.nsps;
         let nsym = self.tones.len();
         let tau = F::from(TAU).expect("a float");
         // radians per unit of the carrier's top 32 bits
         let unit = F::from(TAU / 4_294_967_296.0).expect("a float");
+        let n = self.n;
+        // the carrier's angle from its top 32 bits: resolution 1.5e-9 cycles
+        let carrier = F::from((self.cphase >> 32) as u32).expect("a float") * unit;
+        let out = (self.phase + carrier, ramp(n, self.total, nsps));
+
+        // the phase rate at this sample: a sum of at most three pulse terms
+        let p = nsps + n;
+        let q = p / nsps;
+        let term = |tone: u8, m: usize| F::from(tone).expect("a float") * self.pulse[m];
+        let mut body = F::zero();
+        for j in q.saturating_sub(2)..=q {
+            if j < nsym {
+                body = body + term(self.tones[j], p - j * nsps);
+            }
+        }
+        if p < 2 * nsps {
+            body = body + term(self.tones[0], nsps + p);
+        }
+        if p >= nsym * nsps {
+            body = body + term(self.tones[nsym - 1], p - nsym * nsps);
+        }
+        self.cphase = self.cphase.wrapping_add(self.cinc);
+        self.phase = self.phase + self.k * body;
+        // keep the running phase small: in f32 its resolution is what limits the
+        // waveform, and a wrapped phase has the same sine
+        if self.phase >= tau {
+            self.phase = self.phase - tau;
+        } else if self.phase < F::zero() {
+            self.phase = self.phase + tau;
+        }
+        self.n += 1;
+        out
+    }
+
+    /// Write the next `min(out.len(), remaining())` samples into `out`, returning
+    /// how many. `0` once the transmission is over.
+    pub fn fill(&mut self, out: &mut [f32]) -> usize {
         let count = out.len().min(self.remaining());
         for o in &mut out[..count] {
-            let n = self.n;
-            // the carrier's angle from its top 32 bits: resolution 1.5e-9 cycles
-            let carrier = F::from((self.cphase >> 32) as u32).expect("a float") * unit;
-            *o = (self.amplitude * (self.phase + carrier).sin() * ramp(n, self.total, nsps))
+            let (angle, gain) = self.step();
+            *o = (self.amplitude * angle.sin() * gain)
                 .to_f32()
                 .unwrap_or(0.0);
+        }
+        count
+    }
 
-            // the phase rate at this sample: a sum of at most three pulse terms
-            let p = nsps + n;
-            let q = p / nsps;
-            let term = |tone: u8, m: usize| F::from(tone).expect("a float") * self.pulse[m];
-            let mut body = F::zero();
-            for j in q.saturating_sub(2)..=q {
-                if j < nsym {
-                    body = body + term(self.tones[j], p - j * nsps);
-                }
-            }
-            if p < 2 * nsps {
-                body = body + term(self.tones[0], nsps + p);
-            }
-            if p >= nsym * nsps {
-                body = body + term(self.tones[nsym - 1], p - nsym * nsps);
-            }
-            self.cphase = self.cphase.wrapping_add(self.cinc);
-            self.phase = self.phase + self.k * body;
-            // keep the running phase small: in f32 its resolution is what limits the
-            // waveform, and a wrapped phase has the same sine
-            if self.phase >= tau {
-                self.phase = self.phase - tau;
-            } else if self.phase < F::zero() {
-                self.phase = self.phase + tau;
-            }
-            self.n += 1;
+    /// [`Self::fill`] as the complex baseband waveform `amplitude · gain · exp(jθ)` — what
+    /// [`synth_complex`] returns, in the caller's precision and in pieces.
+    pub fn fill_complex(&mut self, out: &mut [Complex32]) -> usize {
+        let count = out.len().min(self.remaining());
+        for o in &mut out[..count] {
+            let (angle, gain) = self.step();
+            let g = self.amplitude * gain;
+            *o = Complex32::new(
+                (g * angle.cos()).to_f32().unwrap_or(0.0),
+                (g * angle.sin()).to_f32().unwrap_or(0.0),
+            );
         }
         count
     }

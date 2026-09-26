@@ -29,7 +29,7 @@ use num_complex::{Complex32, Complex64};
 #[allow(unused_imports)]
 use num_traits::Float;
 
-use super::tx::synth_complex;
+use super::tx::{Synth, synth_complex};
 use super::{FRAME_SYMBOLS, NSPS};
 
 /// Samples per symbol of the analytic signal (6 kHz).
@@ -43,7 +43,97 @@ const HALF: usize = NFILT / 2;
 /// Subtract the frame whose 59 channel tones are `tones` (13 sync + 46 data), at
 /// `f1_hz` (its lowest tone) and starting `xdt_s` seconds into `c0`, from `c0`.
 /// Samples of the frame that fall outside `c0` are ignored.
+///
+/// All in `f32`, as [`subtract_frame_f64`] is in `f64`: the reference comes from
+/// [`super::tx::Synth`] (an integer carrier oscillator and a wrapped `f32` modulation
+/// phase), and the `cos²` filter is three sliding sums over `f32` phasor tables — which
+/// cost nothing on the host and are about 1 800 ms against a few milliseconds on an
+/// Xtensa LX7, where the `f64` version's 50 000 `sin`/`cos` are software. Agrees with
+/// the `f64` form to `1e-3` of the frame's amplitude per sample (tested), and decodes the
+/// same recordings (`tests/jtty_rx.rs`).
 pub fn subtract_frame(c0: &mut [Complex32], tones: &[u8; FRAME_SYMBOLS], f1_hz: f32, xdt_s: f32) {
+    let nframe = FRAME_SYMBOLS * NSS;
+    let mut cref = alloc::vec![Complex32::new(0.0, 0.0); nframe];
+    Synth::<f32>::at(tones, f1_hz, 1.0, NSS, FS6).fill_complex(&mut cref);
+    let nstart = (xdt_s * FS6).round() as isize;
+    let len = c0.len();
+    let at = |i: usize| -> Option<usize> {
+        let j = nstart + i as isize;
+        (j >= 0 && (j as usize) < len).then_some(j as usize)
+    };
+
+    // camp = c0 · conj(reference) over the frame; zero where c0 does not reach
+    let camp: Vec<Complex32> = (0..nframe)
+        .map(|i| at(i).map_or(Complex32::new(0.0, 0.0), |j| c0[j] * cref[i].conj()))
+        .collect();
+
+    // The window is w(j) = (1 + cos(2πj/N))/2 over j = −N/2..N/2 and cos = (e^{+jθ} + e^{−jθ})/2, so
+    // gain(i) = ½ (Σ camp + ½ (e^{jθ_i} S⁻ + e^{−jθ_i} S⁺)) / Σw with S∓ = Σ camp[m] e^{∓j2πm/N}
+    // over the window, and Σw = N/2. The phasors have period N, so one table of them serves.
+    let rot: Vec<Complex32> = (0..NFILT)
+        .map(|m| Complex32::from_polar(1.0, -(TAU * m as f64 / NFILT as f64) as f32))
+        .collect();
+    // sums over [lo, hi), recomputed outright every `RESYNC` samples so the sliding update
+    // (add the sample that enters, take off the one that leaves) cannot drift
+    const RESYNC: usize = 256;
+    let window = |i: usize| (i.saturating_sub(HALF), (i + HALF + 1).min(nframe));
+    let sums = |lo: usize, hi: usize| {
+        camp[lo..hi].iter().enumerate().fold(
+            (
+                Complex32::new(0.0, 0.0),
+                Complex32::new(0.0, 0.0),
+                Complex32::new(0.0, 0.0),
+            ),
+            |(b, m, p), (k, &c)| {
+                let r = rot[(lo + k) % NFILT];
+                (b + c, m + c * r, p + c * r.conj())
+            },
+        )
+    };
+    let (mut lo, mut hi) = window(0);
+    let (mut boxs, mut minus, mut plus) = sums(lo, hi);
+    for i in 0..nframe {
+        if i % RESYNC == 0 && i > 0 {
+            let (l, h) = window(i);
+            (lo, hi) = (l, h);
+            (boxs, minus, plus) = sums(lo, hi);
+        } else if i > 0 {
+            let (l, h) = window(i);
+            if h > hi {
+                let r = rot[(h - 1) % NFILT];
+                let c = camp[h - 1];
+                boxs += c;
+                minus += c * r;
+                plus += c * r.conj();
+            }
+            if l > lo {
+                let r = rot[lo % NFILT];
+                let c = camp[lo];
+                boxs -= c;
+                minus -= c * r;
+                plus -= c * r.conj();
+            }
+            (lo, hi) = (l, h);
+        }
+        let e = rot[i % NFILT].conj(); // e^{jθ_i}
+        let cos_sum = (e * minus + e.conj() * plus) * 0.5;
+        let gain = (boxs + cos_sum) * (0.5 / (NFILT / 2) as f32);
+        if let Some(j) = at(i) {
+            c0[j] -= gain * cref[i];
+        }
+    }
+}
+
+/// The `f64` form of [`subtract_frame`]: prefix sums in `Complex64`, a `sin`/`cos` per sample for
+/// the reference and the phasors. The reference for the tests, and what `subtract_frame` was
+/// before it was moved to `f32`.
+#[doc(hidden)]
+pub fn subtract_frame_f64(
+    c0: &mut [Complex32],
+    tones: &[u8; FRAME_SYMBOLS],
+    f1_hz: f32,
+    xdt_s: f32,
+) {
     let cref = synth_complex(tones, f1_hz, NSS, FS6);
     let nframe = cref.len();
     let nstart = (xdt_s * FS6).round() as isize;
@@ -260,6 +350,44 @@ mod tests {
             worst = worst.max(f64::from((c0[start + i] - want).norm()));
         }
         assert!(worst < 1e-4, "worst deviation {worst}");
+    }
+
+    /// The `f32` subtraction against the `f64` one, on a varying signal and on a frame buried in one.
+    #[test]
+    fn the_f32_subtraction_agrees_with_the_f64_one() {
+        let tones = frame_tones();
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        for (f1, start, amp) in [
+            (1500.0f32, 500usize, 0.0f32),
+            (1230.5, 1400, 0.3),
+            (1780.25, 100, 2.0),
+        ] {
+            let mut c0: Vec<Complex32> = (0..14_160)
+                .map(|_| Complex32::new(rnd() as f32 * 0.1, rnd() as f32 * 0.1))
+                .collect();
+            let s = signal(&tones, f1, amp, 0.7, start, 14_160);
+            c0.iter_mut().zip(&s).for_each(|(a, b)| *a += *b);
+            let mut a = c0.clone();
+            let mut b = c0.clone();
+            subtract_frame_f64(&mut a, &tones, f1, start as f32 / FS6);
+            subtract_frame(&mut b, &tones, f1, start as f32 / FS6);
+            let worst = a
+                .iter()
+                .zip(&b)
+                .map(|(p, q)| (p - q).norm())
+                .fold(0.0, f32::max);
+            let scale = amp.max(0.1);
+            assert!(
+                worst < 1e-3 * scale,
+                "{f1} Hz amp {amp}: worst deviation {worst}"
+            );
+        }
     }
 
     #[test]

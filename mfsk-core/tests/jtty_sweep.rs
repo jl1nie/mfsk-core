@@ -85,7 +85,12 @@ fn jtty_snr_sweep() {
     } else {
         Receiver::new()
     };
-    let params = Params::default();
+    // `MFSK_JTTY_SWEEP_CARRY=1`, `MFSK_JTTY_SWEEP_SEQUENTIAL=1`: the schedule options (#499).
+    let params = Params {
+        carry: std::env::var_os("MFSK_JTTY_SWEEP_CARRY").is_some(),
+        sequential: std::env::var_os("MFSK_JTTY_SWEEP_SEQUENTIAL").is_some(),
+        ..Params::default()
+    };
     let scored = common::par_map(&trials, |t| {
         let frames = rx.scan(&common::load_wav_i16(&t.path), &params);
         let hit = frames.iter().any(|f| f.atom.render() == MESSAGE);

@@ -44,8 +44,12 @@ pub enum Counter {
     StickyRetries,
     /// Extra decode rounds after a subtraction.
     ExtraRounds,
+    /// Candidates decoded again in those extra rounds.
+    RetryCandidates,
+    /// Ladder calls made by those candidates.
+    RetryLadderCalls,
 }
-const N_COUNTERS: usize = 16;
+const N_COUNTERS: usize = 18;
 
 /// What is timed. Stages do not nest.
 #[derive(Clone, Copy, Debug)]
@@ -72,11 +76,31 @@ pub enum Stage {
 }
 const N_STAGES: usize = 9;
 
+/// One candidate that passed the sync gate, and what the ladder made of it.
+#[derive(Clone, Debug)]
+pub struct GatedCandidate {
+    /// Start of the window, seconds.
+    pub window_s: f32,
+    /// 0, 1 or 2.
+    pub channel: u8,
+    /// Frequency of the lowest tone after peak-up, Hz.
+    pub f1_hz: f32,
+    /// Start of the frame, seconds from the start of the audio.
+    pub tsync_s: f32,
+    /// Sync tones right, of 13.
+    pub nsync: usize,
+    /// S/N of the sync tones, dB.
+    pub snr_db: f32,
+    /// The ladder accepted a word.
+    pub accepted: bool,
+}
+
 /// The counters and timers of one receiver.
 #[derive(Default)]
 pub struct Stats {
     counts: [AtomicU64; N_COUNTERS],
     ns: [AtomicU64; N_STAGES],
+    gated: std::sync::Mutex<Vec<GatedCandidate>>,
 }
 
 /// A plain copy of the counters and timers.
@@ -121,8 +145,17 @@ impl Stats {
             rungs: [0; 4],
         }
     }
+    /// Record a candidate that reached the ladder.
+    pub fn record(&self, c: GatedCandidate) {
+        self.gated.lock().unwrap().push(c);
+    }
+    /// Every candidate that reached the ladder since the last reset.
+    pub fn gated(&self) -> Vec<GatedCandidate> {
+        self.gated.lock().unwrap().clone()
+    }
     /// Zero everything.
     pub fn reset(&self) {
+        self.gated.lock().unwrap().clear();
         self.counts
             .iter()
             .for_each(|c| c.store(0, Ordering::Relaxed));

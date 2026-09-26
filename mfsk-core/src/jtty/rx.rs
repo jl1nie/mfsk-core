@@ -125,6 +125,22 @@ pub struct Params {
     /// as a single-signal receiver would: a weak station under a strong one is
     /// then lost.
     pub subtract: bool,
+    /// Decode a pass's candidates one after another, each against the signal as the
+    /// earlier ones' subtraction left it, as upstream does. Off (the default), a pass
+    /// is decoded at once — on rayon's pool under `parallel` — and the candidates that
+    /// failed are decoded again after a subtraction. Sequential gives up that
+    /// parallelism, and in return the sidelobes of a signal that has just decoded are
+    /// gated against what is left of it, not against the signal: on a band with
+    /// stations they are most of the candidates the ladder rejects (#499).
+    pub sequential: bool,
+    /// Carry every frame that decodes into the windows after it: a frame is 1.888 s long
+    /// and a window starts every quarter of that, so the same transmission is in up to
+    /// four windows, and in the three after the one that decoded it only its tail is
+    /// there — which the sync search finds partial matches in, and the ladder then
+    /// rejects. With this on, a decoded frame is subtracted from the later windows it
+    /// overlaps too, so those never reach the ladder (a persistent residual, as a
+    /// continuously running receiver would keep). Off is upstream's behaviour (#499).
+    pub carry: bool,
 }
 
 impl Default for Params {
@@ -137,6 +153,8 @@ impl Default for Params {
             nfa_hz: 200.0,
             nfb_hz: 2800.0,
             subtract: true,
+            sequential: false,
+            carry: false,
         }
     }
 }
@@ -290,6 +308,12 @@ impl Receiver {
         s
     }
 
+    /// Every candidate that passed the sync gate and reached the ladder (`jtty-stats`).
+    #[cfg(feature = "jtty-stats")]
+    pub fn gated_candidates(&self) -> Vec<super::stats::GatedCandidate> {
+        self.stats.gated()
+    }
+
     /// Zero the counters and timers (`jtty-stats`).
     #[cfg(feature = "jtty-stats")]
     pub fn reset_stats(&self) {
@@ -318,6 +342,7 @@ impl Receiver {
             t0_s,
             p,
             None,
+            &[],
             None,
             &mut asm,
             &mut |_| {},
@@ -340,6 +365,7 @@ impl Receiver {
         t0_s: f32,
         p: &Params,
         interferer: Option<&Subtracted>,
+        carried: &[Subtracted],
         pre: Option<Pre>,
         asm: &mut Assembler,
         sink: &mut dyn FnMut(MessageUpdate),
@@ -354,9 +380,13 @@ impl Receiver {
         let Some((chans, lo, hi)) = channels(p) else {
             return Vec::new();
         };
-        let (c0, surface) = match pre {
+        let (mut c0, surface) = match pre {
             // the state-independent work, already done (only valid with no interferer)
-            Some(Pre { c0, surface }) if interferer.is_none() => (c0, Some(surface)),
+            Some(Pre { c0, surface }) if interferer.is_none() && carried.is_empty() => {
+                (c0, Some(surface))
+            }
+            // the analytic signal is done, the surface is not: frames carried in change it
+            Some(Pre { c0, .. }) if interferer.is_none() => (c0, None),
             _ => {
                 let mut c0 = self.analytic(audio);
                 if let Some(x) = interferer {
@@ -367,6 +397,11 @@ impl Receiver {
                 (c0, None)
             }
         };
+        for x in carried {
+            stat_add!(self, Subtractions, 1);
+            stat_time!(self, Subtract);
+            subtract_frame(&mut c0, &x.tones(), x.f1_hz, x.tsync_s - t0_s);
+        }
         let mut w = Work {
             rx: self,
             p,
@@ -566,7 +601,18 @@ impl Receiver {
         let accepted = {
             stat_time!(self, Ladder);
             self.ladder.decode(&zsym, &zhalf)
-        }?;
+        };
+        #[cfg(feature = "jtty-stats")]
+        self.stats.record(super::stats::GatedCandidate {
+            window_s: t0_s,
+            channel: pick.channel,
+            f1_hz: f1,
+            tsync_s: t0_s + xdt,
+            nsync: hits,
+            snr_db: snr,
+            accepted: accepted.is_some(),
+        });
+        let accepted = accepted?;
         stat_add!(self, LadderAccepts, 1);
         let (atom, eom) = source::decode_payload(&accepted.payload)?;
 
@@ -679,15 +725,40 @@ impl Receiver {
     ) {
         let t_of = |k: usize| (k * STEP) as f32 / 12_000.0;
         asm.prune(t_of(w), sink);
-        let subtracted = self.analyze(audio.window(w), t_of(w), p, None, pre, asm, sink, frames);
+        // frames decoded earlier that still lie in window `k` (`Params::carry`)
+        let carried_in = |asm: &Assembler, k: usize| -> Vec<Subtracted> {
+            if !p.carry {
+                return Vec::new();
+            }
+            let (a, b) = (t_of(k), t_of(k) + NCHUNK as f32 / 12_000.0);
+            asm.carried
+                .iter()
+                .filter(|x| x.tsync_s < b && x.tsync_s + super::assemble::FRAME_PERIOD_S > a)
+                .cloned()
+                .collect()
+        };
+        let carried = carried_in(asm, w);
+        let subtracted = self.analyze(
+            audio.window(w),
+            t_of(w),
+            p,
+            None,
+            &carried,
+            pre,
+            asm,
+            sink,
+            frames,
+        );
         for x in &subtracted {
             for k in 1..=super::assemble::MAX_RETRO_STEPS {
                 if w >= k {
+                    let carried = carried_in(asm, w - k);
                     let _ = self.analyze(
                         audio.window(w - k),
                         t_of(w - k),
                         p,
                         Some(x),
+                        &carried,
                         None,
                         asm,
                         sink,
@@ -695,6 +766,9 @@ impl Receiver {
                     );
                 }
             }
+        }
+        if p.carry {
+            asm.carried.extend(subtracted);
         }
     }
 }
@@ -935,10 +1009,35 @@ impl Work<'_> {
         // something the candidates that failed are decoded again against the
         // residual, until a round subtracts nothing.
         let mut decoded = false;
-        let mut todo: Vec<Pick> = picks;
-        for _ in 0..MAX_ROUNDS {
+        let mut todo: Vec<Pick> = Vec::new();
+        if self.p.sequential {
+            // upstream's order: each candidate against what the earlier ones left
+            for pick in &picks {
+                let outcome = self.rx.process(&self.c0, pick, self.t0, self.p, true);
+                decoded |= self.settle(alloc::vec![outcome], ch);
+            }
+        } else {
+            todo = picks;
+        }
+        for _round in 0..MAX_ROUNDS {
             let before = self.subtractions;
+            #[cfg(feature = "jtty-stats")]
+            let ladder_before = self
+                .rx
+                .stats
+                .snapshot()
+                .count(super::stats::Counter::LadderCalls);
             let outcomes = self.rx.process_all(&self.c0, &todo, self.t0, self.p);
+            #[cfg(feature = "jtty-stats")]
+            if _round > 0 {
+                let now = self
+                    .rx
+                    .stats
+                    .snapshot()
+                    .count(super::stats::Counter::LadderCalls);
+                stat_add!(self.rx, RetryCandidates, todo.len());
+                stat_add!(self.rx, RetryLadderCalls, now - ladder_before);
+            }
             let failed: Vec<Pick> = todo
                 .iter()
                 .zip(&outcomes)
