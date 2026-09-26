@@ -234,3 +234,192 @@ fn ladder_accepts_the_same_rung_and_word_as_upstream() {
         "every outcome must occur: {seen:?}"
     );
 }
+
+// ── f32 metrics against f64 (the E1b experiment of #499) ─────────────────────────────
+
+struct Lcg(u64);
+impl Lcg {
+    fn uniform(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+    fn gauss(&mut self) -> f32 {
+        let (a, b) = (self.uniform().max(1e-12), self.uniform());
+        ((-2.0 * a.ln()).sqrt() * (2.0 * std::f64::consts::PI * b).cos()) as f32
+    }
+}
+
+/// Correlations of a real frame in the oracle's model (zero drift): each symbol the sum of two
+/// half-symbol correlations, the true tone `A/2 + noise` in each, the rest noise.
+fn synth(
+    info: &[u8; INFO_BITS],
+    snr_db: Option<f32>,
+    rng: &mut Lcg,
+) -> (Correlations, Correlations) {
+    use mfsk_core::jtty::tbcc;
+    let tones = tbcc::encode(info);
+    let amp = snr_db.map_or(0.0, |s| 10f32.powf(s / 20.0));
+    let mut zsym = [[Complex32::new(0.0, 0.0); 4]; INFO_BITS];
+    let mut zhalf = zsym;
+    for k in 0..INFO_BITS {
+        for t in 0..4 {
+            let s = if snr_db.is_some() && t == usize::from(tones[k]) {
+                amp / 2.0
+            } else {
+                0.0
+            };
+            let h1 = Complex32::new(s + 0.5 * rng.gauss(), 0.5 * rng.gauss());
+            let h2 = Complex32::new(s + 0.5 * rng.gauss(), 0.5 * rng.gauss());
+            zsym[k][t] = h1 + h2;
+            zhalf[k][t] = Complex32::new((h1.norm_sqr() + h2.norm_sqr()).sqrt(), 0.0);
+        }
+    }
+    (zsym, zhalf)
+}
+
+fn random_info(rng: &mut Lcg) -> [u8; INFO_BITS] {
+    use mfsk_core::jtty::crc;
+    let mut payload = [0u8; 34];
+    for b in payload.iter_mut().take(32) {
+        *b = u8::from(rng.uniform() < 0.5);
+    }
+    payload[33] = u8::from(rng.uniform() < 0.5);
+    crc::append(&payload)
+}
+
+/// The trellis metrics in `f32` against `f64` (the E1b experiment of #499; `f32` is hardware on
+/// an Xtensa LX7, `f64` is software). Measured with 300 frames per SNR (and 2 000 of noise):
+/// of 12 300 lists one differed in words and order, 0 of 4 100 frames accepted a different
+/// word or rung, false accepts were equal, and against upstream's 33 cases every one of the
+/// 132 lists is identical, the worst clean metric off by 3.4e-7 relative. This test runs a
+/// fifth of that.
+#[test]
+fn f32_metrics_agree_with_f64_and_with_upstream() {
+    let plans = [Plan::new(1), Plan::new(2), Plan::new(4)];
+    // 1. the 33 upstream cases
+    if let Some(cases) = load() {
+        let (mut lists, mut list_diff, mut worst_rel) = (0, 0, 0f64);
+        for c in &cases {
+            for r in &c.rungs {
+                let (plan, z) = match r.name.as_str() {
+                    "L1" => (&plans[0], &c.zsym),
+                    "L2" => (&plans[1], &c.zsym),
+                    "L4" => (&plans[2], &c.zsym),
+                    _ => (&plans[0], &c.zhalf),
+                };
+                let g = plan.decode_f32(z, true);
+                lists += 1;
+                let same = g.pool == r.pool
+                    && g.hypotheses.len() == r.count
+                    && g.hypotheses.iter().zip(&r.lines).all(|(h, w)| {
+                        bits_string(&h.bits) == w.bits
+                            && h.crc_valid == w.crc
+                            && h.start_state == w.start
+                    });
+                if !same {
+                    list_diff += 1;
+                    eprintln!(
+                        "  case {} rung {}: list differs from upstream",
+                        c.id, r.name
+                    );
+                }
+                for (h, w) in g.hypotheses.iter().zip(&r.lines) {
+                    worst_rel =
+                        worst_rel.max((h.clean_metric - w.clean).abs() / w.clean.abs().max(1.0));
+                }
+            }
+        }
+        let ladder = Ladder::new().with_f32_metrics();
+        let mut accept_diff = 0;
+        for c in &cases {
+            let got = ladder.decode(&c.zsym, &c.zhalf);
+            let ok = match (&got, c.ok) {
+                (Some(a), true) => {
+                    bits_string(&a.payload) == c.payload && a.rung == c.rungs_evaluated
+                }
+                (None, false) => true,
+                _ => false,
+            };
+            accept_diff += usize::from(!ok);
+        }
+        eprintln!(
+            "upstream cases: {lists} lists, {list_diff} differ in words/order/crc/start/pool; worst clean-metric relative error {worst_rel:.2e}; ladder accept differs in {accept_diff} of {}",
+            cases.len()
+        );
+        assert_eq!(list_diff, 0, "f32 lists must be upstream's");
+        assert_eq!(
+            accept_diff, 0,
+            "f32 must accept upstream's word at upstream's rung"
+        );
+        assert!(worst_rel < 1e-5, "clean metric off by {worst_rel:e}");
+    }
+
+    // 2. f64 against f32 on many synthetic frames
+    let (f64l, f32l) = (Ladder::new(), Ladder::new().with_f32_metrics());
+    let mut rng = Lcg(0x477);
+    let (mut all_list_diff, mut all_acc_diff, mut all_fa_extra) = (0usize, 0usize, 0i64);
+    eprintln!(
+        "{:>11} {:>6} {:>10} {:>9} {:>9} {:>10} {:>10}",
+        "input", "frames", "list-diff", "acc-diff", "f64 right", "f32 right", "f64/f32 false"
+    );
+    for (label, snr) in [
+        ("+9 dB", Some(9.0)),
+        ("+6 dB", Some(6.0)),
+        ("+4 dB", Some(4.0)),
+        ("+2 dB", Some(2.0)),
+        ("0 dB", Some(0.0)),
+        ("-2 dB", Some(-2.0)),
+        ("-4 dB", Some(-4.0)),
+        ("noise", None),
+    ] {
+        let n = if snr.is_none() { 400 } else { 60 };
+        let (mut list_diff, mut acc_diff, mut r64, mut r32, mut fa64, mut fa32) =
+            (0, 0, 0, 0, 0, 0);
+        for _ in 0..n {
+            let info = random_info(&mut rng);
+            let (zsym, zhalf) = synth(&info, snr, &mut rng);
+            for (i, plan) in plans.iter().enumerate() {
+                let (a, b) = (plan.decode(&zsym, true), plan.decode_f32(&zsym, true));
+                let same = a.pool == b.pool
+                    && a.hypotheses.len() == b.hypotheses.len()
+                    && a.hypotheses
+                        .iter()
+                        .zip(&b.hypotheses)
+                        .all(|(x, y)| x.bits == y.bits && x.crc_valid == y.crc_valid);
+                list_diff += usize::from(!same);
+                let _ = i;
+            }
+            let (a, b) = (f64l.decode(&zsym, &zhalf), f32l.decode(&zsym, &zhalf));
+            let word = |x: &Option<mfsk_core::jtty::ladder::Accepted>| {
+                x.as_ref().map(|a| (a.payload, a.rung))
+            };
+            acc_diff += usize::from(word(&a) != word(&b));
+            let truth = |x: &Option<mfsk_core::jtty::ladder::Accepted>| {
+                x.as_ref().is_some_and(|a| a.payload[..] == info[..34])
+            };
+            let false_acc = |x: &Option<mfsk_core::jtty::ladder::Accepted>| {
+                x.as_ref().is_some_and(|a| a.payload[..] != info[..34])
+            };
+            r64 += usize::from(truth(&a));
+            r32 += usize::from(truth(&b));
+            fa64 += usize::from(false_acc(&a));
+            fa32 += usize::from(false_acc(&b));
+        }
+        eprintln!(
+            "{label:>11} {n:>6} {list_diff:>10} {acc_diff:>9} {r64:>9} {r32:>10} {fa64:>5}/{fa32:<4}"
+        );
+        all_list_diff += list_diff;
+        all_acc_diff += acc_diff;
+        all_fa_extra += fa32 as i64 - fa64 as i64;
+    }
+    // a near-tie may reorder one list in thousands; an accepted word or rung must not change
+    assert!(all_list_diff <= 2, "{all_list_diff} lists differ");
+    assert_eq!(all_acc_diff, 0, "f32 accepted a different word or rung");
+    assert!(
+        all_fa_extra <= 0,
+        "f32 made {all_fa_extra} more false accepts"
+    );
+}

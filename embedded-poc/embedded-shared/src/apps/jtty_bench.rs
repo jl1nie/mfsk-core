@@ -266,13 +266,23 @@ fn synth_correlations(tones: &[u8], snr_db: Option<f32>, rng: &mut Lcg) -> (Corr
     (zsym, zhalf)
 }
 
-/// Part 3.
+/// Part 3: the ladder with its trellis metrics in `f64` (as upstream) and in `f32`
+/// (`Ladder::with_f32_metrics`, #499 E1b) on the same synthetic frames.
 fn bench_ladder() {
     log_heap("before Ladder::new");
     let t = now_us();
     let ladder = Ladder::new();
     log::info!("Ladder::new: {} us", now_us() - t);
     log_heap("after Ladder::new");
+    bench_ladder_with("f64", &ladder);
+    let t = now_us();
+    let ladder32 = Ladder::new().with_f32_metrics();
+    log::info!("Ladder::new (f32 metrics): {} us", now_us() - t);
+    bench_ladder_with("f32", &ladder32);
+}
+
+fn bench_ladder_with(name: &str, ladder: &Ladder) {
+    log::info!("--- ladder, {name} metrics ---");
 
     // one real frame: "CQ K1ABC CQ" through CRC-12 and the tail-biting code
     let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
@@ -290,6 +300,8 @@ fn bench_ladder() {
         ("noise only", None),
     ] {
         const RUNS: u32 = 4;
+        // the same frames for both precisions: reseed per condition
+        rng = Lcg(0x477 ^ (snr.map_or(0, |s| s as i64 as u64 + 100)));
         let mut total = 0i64;
         let mut worst = 0i64;
         let mut outcome = alloc::string::String::new();
@@ -307,12 +319,57 @@ fn bench_ladder() {
             });
         }
         log::info!(
-            "ladder {label:<10}: {:>8.1} ms mean, {:>8.1} ms worst over {RUNS}  [{}]",
+            "ladder[{name}] {label:<10}: {:>8.1} ms mean, {:>8.1} ms worst over {RUNS}  [{}]",
             total as f64 / f64::from(RUNS) / 1000.0,
             worst as f64 / 1000.0,
             outcome.trim_start()
         );
     }
+}
+
+/// Part 3b: does *where the trellis lives* matter? `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` is 2048,
+/// so the two 32 KB survivor arrays and the larger plan tables of a decode land in PSRAM, past
+/// the 32 KB data cache — the 14x of the 8192-point FFT. `heap_caps_malloc_extmem_enable`
+/// moves that threshold at run time; the L=1 plan and its working set (about 160 KB) then fit
+/// internal DRAM, and the same decode is timed in both places, `f64` and `f32` metrics.
+fn bench_trellis_placement() {
+    use mfsk_core::jtty::trellis::Plan;
+    let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
+    let payloads = tx::payloads(&atoms).expect("encodes");
+    let data = tx::frame_tones(&payloads[0]);
+    let tones = &data[mfsk_core::jtty::SYNC_SYMBOLS..];
+    for (place, limit) in [("default (> 2 KB in PSRAM)", 2048usize), ("threshold 256 KB (internal)", 256 * 1024)] {
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(limit) };
+        log::info!("--- trellis, L=1 plan, allocations up to {limit} B prefer internal DRAM: {place} ---");
+        log_heap("before Plan::new(1)");
+        let plan = Plan::new(1);
+        log_heap("after Plan::new(1)");
+        for (label, snr) in [("+12 dB", Some(12.0)), ("noise only", None)] {
+            let mut rng = Lcg(0x1177 ^ snr.map_or(0, |s| s as i64 as u64 + 100));
+            let (zsym, _) = synth_correlations(tones, snr, &mut rng);
+            for (name, f32_metrics) in [("f64", false), ("f32", true)] {
+                const RUNS: u32 = 3;
+                let mut total = 0i64;
+                for _ in 0..RUNS {
+                    let t = now_us();
+                    let r = if f32_metrics {
+                        plan.decode_f32(&zsym, true)
+                    } else {
+                        plan.decode(&zsym, true)
+                    };
+                    total += now_us() - t;
+                    core::hint::black_box(r.pool);
+                    yield_now();
+                }
+                log::info!(
+                    "trellis L1 [{name}] {label:<10}: {:>8.1} ms per decode ({place})",
+                    total as f64 / f64::from(RUNS) / 1000.0
+                );
+            }
+        }
+        drop(plan);
+    }
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
 }
 
 fn stack_headroom() -> u32 {
@@ -353,6 +410,8 @@ fn run_bench() {
 
     log::info!("--- 3. the ladder ---");
     bench_ladder();
+    log::info!("--- 3b. trellis placement ---");
+    bench_trellis_placement();
     log_heap("end");
     log::info!("stack headroom: {} B", stack_headroom());
     log::info!("=== jtty-bench done ===");

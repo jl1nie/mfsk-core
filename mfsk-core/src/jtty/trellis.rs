@@ -37,6 +37,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use num_complex::Complex32;
+use num_traits::Float;
 
 use super::tbcc::{STATES, transition};
 use super::{INFO_BITS, crc};
@@ -58,7 +59,20 @@ const VALID: u64 = 1 << 57;
 const ORIGIN_SHIFT: u32 = INFO_BITS as u32;
 const ORIGIN_MASK: u64 = 0x7FF;
 const WORD_MASK: u64 = (1 << INFO_BITS) - 1;
-const NEG: f64 = f64::MIN; // -huge, as upstream's NEGATIVE_METRIC
+
+/// The precision the path metrics are carried in. `f64` is what upstream uses and what
+/// [`Plan::decode`] does; [`Plan::decode_f32`] carries them in `f32`, which is hardware on
+/// an Xtensa LX7 where `f64` is software (`docs/notes/JTTY_UPSTREAM.md`, "E0 results").
+/// Words and keys are integers either way; only the metric arithmetic and comparisons
+/// change.
+trait Metric: Float {}
+impl Metric for f32 {}
+impl Metric for f64 {}
+
+/// `-huge`, as upstream's `NEGATIVE_METRIC`.
+fn neg<M: Metric>() -> M {
+    M::min_value()
+}
 
 /// One returned word.
 #[derive(Clone, Debug, PartialEq)]
@@ -161,8 +175,8 @@ impl Plan {
     }
 
     /// `|Σ z|² / len` for every tone sequence of every block (`precompute_sequence_energies`).
-    fn energies(&self, z: &Correlations) -> Vec<f64> {
-        let mut out = alloc::vec![0f64; self.energy_count];
+    fn energies<M: Metric>(&self, z: &Correlations) -> Vec<M> {
+        let mut out = alloc::vec![M::zero(); self.energy_count];
         for b in &self.blocks {
             for seq in 0..(1usize << (2 * b.len)) {
                 let sum = (0..b.len).fold(Complex32::new(0.0, 0.0), |acc, k| {
@@ -170,21 +184,23 @@ impl Plan {
                     acc + z[b.start + k][tone]
                 });
                 let e = sum.re * sum.re + sum.im * sum.im;
-                out[b.energy_offset + seq] = f64::from(e) / b.len as f64;
+                out[b.energy_offset + seq] =
+                    M::from(e).expect("a float") / M::from(b.len).expect("a float");
             }
         }
         out
     }
 
     /// Single-pass metric of a closed word (`score_planned_identity`).
-    fn clean_metric(&self, energies: &[f64], key: u64) -> f64 {
+    fn clean_metric<M: Metric>(&self, energies: &[M], key: u64) -> M {
         let start = (key & (STATES as u64 - 1)) as u32; // the last MEMORY bits
         let mut state = start;
-        let mut metric = 0.0;
+        let mut metric = M::zero();
         for b in &self.blocks {
             let word = ((key >> (INFO_BITS - b.start - b.len)) & ((1 << b.len) - 1)) as usize;
-            metric += energies
-                [b.energy_offset + usize::from(b.sequence[state as usize * (1 << b.len) + word])];
+            metric = metric
+                + energies[b.energy_offset
+                    + usize::from(b.sequence[state as usize * (1 << b.len) + word])];
             state = ((state << b.len) | word as u32) & (STATES as u32 - 1);
         }
         debug_assert_eq!(state, start, "a closed path must score as closed");
@@ -196,8 +212,19 @@ impl Plan {
     /// With `prune_reserved` set, branches that set the reserved payload bit are
     /// dropped inside the trellis (`prune_reserved_zero`).
     pub fn decode(&self, z: &Correlations, prune_reserved: bool) -> ListResult {
-        let energies = self.energies(z);
-        let mut prev = alloc::vec![[Surv::EMPTY; PATHS_PER_STATE]; STATES];
+        self.decode_with::<f64>(z, prune_reserved)
+    }
+
+    /// [`Self::decode`] with the path metrics carried in `f32`. The words, their order and the
+    /// CRC flags agree with the `f64` decode except where two metrics are within `f32`
+    /// rounding of each other; `clean_metric` and `wava_metric` are the `f32` values widened.
+    pub fn decode_f32(&self, z: &Correlations, prune_reserved: bool) -> ListResult {
+        self.decode_with::<f32>(z, prune_reserved)
+    }
+
+    fn decode_with<M: Metric>(&self, z: &Correlations, prune_reserved: bool) -> ListResult {
+        let energies = self.energies::<M>(z);
+        let mut prev = alloc::vec![[Surv::<M>::empty(); PATHS_PER_STATE]; STATES];
         let mut cur = prev.clone();
         prev.iter_mut()
             .enumerate()
@@ -220,12 +247,12 @@ impl Plan {
         }
 
         // closed paths only, one entry per distinct word
-        struct Entry {
+        struct Entry<M> {
             key: u64,
-            wava: f64,
+            wava: M,
             start: u32,
         }
-        let mut pool: Vec<Entry> = Vec::new();
+        let mut pool: Vec<Entry<M>> = Vec::new();
         let mut index: BTreeMap<u64, usize> = BTreeMap::new();
         for (state, paths) in prev.iter().enumerate() {
             for p in paths.iter().filter(|p| p.valid()) {
@@ -253,7 +280,7 @@ impl Plan {
             }
         }
 
-        let mut scored: Vec<(f64, u64, &Entry)> = pool
+        let mut scored: Vec<(M, u64, &Entry<M>)> = pool
             .iter()
             .map(|e| (self.clean_metric(&energies, e.key), reverse_bits(e.key), e))
             .collect();
@@ -279,8 +306,8 @@ impl Plan {
                 Hypothesis {
                     crc_valid: crc::is_valid(&bits),
                     bits,
-                    clean_metric: clean,
-                    wava_metric: e.wava,
+                    clean_metric: clean.to_f64().expect("a float"),
+                    wava_metric: e.wava.to_f64().expect("a float"),
                     start_state: e.start,
                 }
             })
@@ -301,20 +328,22 @@ fn reverse_bits(key: u64) -> u64 {
 /// A surviving path: its metric and a key packing the word so far (first bit
 /// most significant), the origin state and a valid flag.
 #[derive(Clone, Copy)]
-struct Surv {
-    metric: f64,
+struct Surv<M> {
+    metric: M,
     key: u64,
 }
 
-impl Surv {
-    const EMPTY: Self = Self {
-        metric: NEG,
-        key: 0,
-    };
+impl<M: Metric> Surv<M> {
+    fn empty() -> Self {
+        Self {
+            metric: neg(),
+            key: 0,
+        }
+    }
 
     fn new(state: usize) -> Self {
         Self {
-            metric: 0.0,
+            metric: M::zero(),
             key: VALID | (state as u64) << ORIGIN_SHIFT,
         }
     }
@@ -331,13 +360,13 @@ impl Surv {
 
 /// Insert `cand` into a state's four best, best first. `dedupe`: after a pass
 /// restart several ranks of a state share one key, and the better metric wins.
-fn insert(sel: &mut [Surv; PATHS_PER_STATE], cand: Surv, dedupe: bool) {
+fn insert<M: Metric>(sel: &mut [Surv<M>; PATHS_PER_STATE], cand: Surv<M>, dedupe: bool) {
     if dedupe && let Some(slot) = sel.iter().position(|s| s.valid() && s.key == cand.key) {
         if cand.metric <= sel[slot].metric {
             return;
         }
         sel.copy_within(slot + 1.., slot);
-        sel[PATHS_PER_STATE - 1] = Surv::EMPTY;
+        sel[PATHS_PER_STATE - 1] = Surv::empty();
     }
     let Some(at) = sel.iter().position(|s| !s.valid() || cand.precedes(s)) else {
         return;
@@ -351,19 +380,19 @@ fn insert(sel: &mut [Surv; PATHS_PER_STATE], cand: Surv, dedupe: bool) {
 /// The low `len` bits of an end state are the block's input word, and the
 /// predecessors are the states whose remaining high bits enumerate every
 /// possibility — so no branch table is needed to find them.
-fn advance(
+fn advance<M: Metric>(
     b: &Block,
-    energies: &[f64],
+    energies: &[M],
     prune: bool,
     first_block: bool,
-    prev: &[[Surv; PATHS_PER_STATE]],
-    cur: &mut [[Surv; PATHS_PER_STATE]],
+    prev: &[[Surv<M>; PATHS_PER_STATE]],
+    cur: &mut [[Surv<M>; PATHS_PER_STATE]],
 ) {
     let words = 1usize << b.len;
     let stride = STATES / words;
     let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
     cur.iter_mut().enumerate().for_each(|(end, out)| {
-        *out = [Surv::EMPTY; PATHS_PER_STATE];
+        *out = [Surv::empty(); PATHS_PER_STATE];
         let word = end & (words - 1);
         let identity = b.identity[word];
         if prune && identity & reserved != 0 {

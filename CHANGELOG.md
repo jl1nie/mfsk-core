@@ -187,6 +187,13 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY: trellis metrics in `f32` as an option (`Plan::decode_f32`, `Ladder::with_f32_metrics`, `Receiver::with_f32_metrics`, #499 E1b).**
+  The list-WAVA trellis carries its path metrics in `f64` (as upstream); the option carries them in `f32`, which
+  is hardware on an Xtensa LX7. Default unchanged. Agreement with `f64`: upstream's 33 ladder cases identical in
+  all 132 lists (worst clean metric 3.4e-7 relative); 12 300 synthetic lists, one differs (a near-tie) and 0 of
+  4 100 frames accept a different word or rung; the `jtty_sweep` corpus scores byte-identically. On the CoreS3 it is
+  worth 1.3× (a rung-1 success 856 → 651 ms), not the 10× needed; the analysis is in `JTTY_UPSTREAM.md`, "E1b results".
+
 - **JTTY transmit sequencer for the boards (`mfsk-app-shared::jtty_tx`, #499, E3).** The pure, half-duplex
   sequencing between "a message of N samples is ready" and "the radio is back on receive": Idle → Waiting
   (channel clear for `hold`, at most `max_wait`, then cancel or send anyway) → Lead (PTT on) → Sending → Tail

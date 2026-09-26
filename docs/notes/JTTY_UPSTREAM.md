@@ -830,3 +830,45 @@ if the trellis tolerates it (measure).
 
 Transmit is unaffected by any of this (E2, E3).
 
+## E1b results: the trellis metrics in `f32` (#499, 2026-09-26)
+
+E0 blamed the ladder's `f64` metrics (software on the LX7) "likely, not measured". Measured now, and the
+hypothesis was mostly wrong.
+
+**On the host, `f32` is the same decoder.** `Plan::decode_f32`, `Ladder::with_f32_metrics`,
+`Receiver::with_f32_metrics` carry the path metrics in `f32` (keys and words stay integers).
+- Against upstream's 33 ladder cases (132 lists): every list identical in words, order, CRC flag, start
+  state and pool; the worst clean metric off by 3.4e-7 relative; the ladder accepts the same word at the
+  same rung in 33 of 33 (`tests/jtty_ladder.rs`).
+- Against `f64` on synthetic frames (300 per SNR from +9 to −4 dB and 2 000 of noise, 12 300 lists): one list
+  differs (−2 dB, a near-tie), **0 of 4 100 frames accept a different word or rung**, false accepts equal.
+- Receiver end to end: the same frames from every simulated vector, the mixtures and the sample recording
+  (`tests/jtty_rx.rs`); the 360-file `jtty_sweep` corpus gives a **byte-identical per-trial CSV** with
+  `MFSK_JTTY_SWEEP_F32=1`.
+
+**On the CoreS3 it is 1.3×, not 10×.** One L=1 rung, ms per decode:
+
+| trellis and survivor arrays in | `f64` metrics | `f32` metrics |
+|---|---|---|
+| PSRAM (allocations over 2 KB, the board's setting) | 845 | 635 |
+| internal DRAM (`heap_caps_malloc_extmem_enable(256 KB)` for the run) | 611 | 414 |
+
+The full ladder with the board's setting: 651 ms for a rung-1 success (was 856), 2.1 s for a candidate that
+fails all four rungs (was 2.9 s). So `f32` is worth 1.3×, placement another 1.5×, together 2.0×; the
+survivor arrays (two of 32 KB) and the larger plan tables are past the 32 KB data cache in PSRAM, the effect
+E0 found for the FFT but smaller here. **414 ms for the fastest rung is still about 5× the budget** (a
+candidate has well under 0.47 s of a window, and a weak one needs up to four rungs). Per path extension
+that is about 1.1 µs, 260 cycles, for `377 000` of them (46 blocks × 2 wraps × 512 states × 2 predecessors ×
+4 paths): the loop is compute-bound and inefficient on this core in ways `f32` does not touch. Suspects, not
+measured: 64-bit keys (`u64` word|origin|valid, compared and OR-ed for every extension), 16-byte survivor
+copies in `insert`, iterator-adapter bounds checks, unpredictable branches. Fixed point is not among them
+(the LX7 has a single-precision FPU; i16 BP measured 0.85× `f32` on this board).
+
+**Where this leaves receive.** Search: fixable, 35–43 ms per band decimated (E0). Ladder: `f32` and internal
+placement give 2×; the remaining 5× has to come from the code (split the key, a specialised L=1 loop, no
+per-decode allocation with a workspace reserved in internal DRAM at boot, fewer paths or one wrap where
+recall allows) or from running candidates on the second core. None of that is measured, so receive is still
+not shown feasible. The next step is profiling the trellis on the device (cycle counter around `advance`,
+`insert`, the pool and the re-score) before changing anything: the last two guesses in this note (the FFT
+estimate and `f64`) were both wrong by measuring.
+

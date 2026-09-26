@@ -771,3 +771,44 @@ fn a_message_synthesised_in_f32_pieces_decodes() {
         "{heard:?}"
     );
 }
+
+/// The receiver with the trellis metrics in `f32` (`Receiver::with_f32_metrics`, #499 E1b) reads
+/// the same recordings as the `f64` one, frame for frame: the sample recording, the simulated
+/// vectors and the multi-station mixtures.
+#[test]
+fn f32_metric_receiver_reads_the_same_frames() {
+    let Some(dir) = common::corpus::golden_path("jtty/sim") else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+        .collect();
+    files.sort();
+    if let Some(s) = common::corpus::golden_path("jtty/260807_134110.wav") {
+        files.push(s);
+    }
+    assert!(files.len() >= 10, "{} files", files.len());
+    let (a, b) = (Receiver::new(), Receiver::new().with_f32_metrics());
+    for f in &files {
+        let audio = common::load_wav_i16(f);
+        let key = |v: Vec<FrameDecode>| -> Vec<(String, i64, i64, bool)> {
+            v.into_iter()
+                .map(|d| {
+                    (
+                        d.atom.render(),
+                        (d.tsync_s * 1000.0).round() as i64,
+                        (d.f1_hz * 10.0).round() as i64,
+                        d.eom,
+                    )
+                })
+                .collect()
+        };
+        let (fa, fb) = (
+            key(a.scan(&audio, &Params::default())),
+            key(b.scan(&audio, &Params::default())),
+        );
+        assert_eq!(fa, fb, "{}", f.display());
+    }
+}

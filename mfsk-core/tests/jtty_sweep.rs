@@ -10,7 +10,8 @@
 //!
 //! `MFSK_JTTY_SWEEP_CSV` — per-trial CSV (`channel,snr_db,trial,pass,extra`), the
 //! shape `scripts/run-sensitivity-sweeps.sh` hands to the regression checker.
-//! Groups are `jtty/<channel>`. Set `MFSK_JTTY_SWEEP_DIR` to read another corpus.
+//! Groups are `jtty/<channel>`. Set `MFSK_JTTY_SWEEP_DIR` to read another corpus, and
+//! `MFSK_JTTY_SWEEP_F32=1` to score the receiver with `f32` trellis metrics.
 
 #![cfg(all(feature = "jtty", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
@@ -77,7 +78,13 @@ fn jtty_snr_sweep() {
     }
     trials.sort_by(|a, b| (&a.channel, a.snr_db, a.trial).cmp(&(&b.channel, b.snr_db, b.trial)));
 
-    let rx = Receiver::new();
+    // `MFSK_JTTY_SWEEP_F32=1`: the trellis metrics in `f32` (#499 E1b), to be compared with the
+    // default run cell by cell.
+    let rx = if std::env::var_os("MFSK_JTTY_SWEEP_F32").is_some() {
+        Receiver::new().with_f32_metrics()
+    } else {
+        Receiver::new()
+    };
     let params = Params::default();
     let scored = common::par_map(&trials, |t| {
         let frames = rx.scan(&common::load_wav_i16(&t.path), &params);

@@ -278,6 +278,12 @@ impl Receiver {
         }
     }
 
+    /// [`Self::new`] with the ladder's trellis metrics in `f32` ([`Ladder::with_f32_metrics`]).
+    pub fn with_f32_metrics(mut self) -> Self {
+        self.ladder = self.ladder.with_f32_metrics();
+        self
+    }
+
     /// The frames whose start lies in the first quarter frame of `audio`, which
     /// must be exactly [`NCHUNK`] samples of 12 kHz audio beginning `t0_s` seconds
     /// into the recording — one window, with its subtraction passes but on its
