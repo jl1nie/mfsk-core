@@ -94,6 +94,7 @@ pub mod ladder;
 pub mod pack;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
+mod scratch;
 pub mod source;
 #[cfg(feature = "jtty-stats")]
 pub mod stats;

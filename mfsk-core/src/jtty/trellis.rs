@@ -119,6 +119,26 @@ impl Probe for Profile {
     }
 }
 
+/// The two survivor arrays of an `f32` decode, 32 KB each, for [`Plan::decode_f32_in`].
+pub struct TrellisScratch {
+    a: Vec<[Surv<f32>; PATHS_PER_STATE]>,
+    b: Vec<[Surv<f32>; PATHS_PER_STATE]>,
+}
+
+impl TrellisScratch {
+    /// Allocate both (the caller chooses where by when it calls this).
+    pub fn new() -> Self {
+        let a = alloc::vec![[Surv::<f32>::empty(); PATHS_PER_STATE]; STATES];
+        Self { b: a.clone(), a }
+    }
+}
+
+impl Default for TrellisScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// `-huge`, as upstream's `NEGATIVE_METRIC`.
 fn neg<M: Metric>() -> M {
     M::min_value()
@@ -155,8 +175,10 @@ struct Block {
     len: usize,
     /// Offset of this block's tone-sequence energies in the flat table.
     energy_offset: usize,
-    /// `[state * 2^len + word]` → tone-sequence index within the block.
-    sequence: Vec<u16>,
+    /// `[state * 2^len + word]` → tone-sequence index within the block. It depends on the
+    /// block's length only, so blocks of one length share it: 22 KB for the three plans
+    /// instead of 380 KB, small enough for the LX7's internal DRAM (#499).
+    sequence: alloc::sync::Arc<[u16]>,
     /// `[word]` → the word's bits placed in a survivor key.
     identity: Vec<u64>,
 }
@@ -175,25 +197,31 @@ impl Plan {
     /// If `coherent` is not 1, 2 or 4.
     pub fn new(coherent: usize) -> Self {
         assert!(matches!(coherent, 1 | 2 | 4), "coherent length 1, 2 or 4");
+        let table = |len: usize| -> alloc::sync::Arc<[u16]> {
+            let words = 1usize << len;
+            let mut sequence = alloc::vec![0u16; STATES * words];
+            for state in 0..STATES {
+                for word in 0..words {
+                    let (mut s, mut seq) = (state as u32, 0u16);
+                    for k in 0..len {
+                        let bit = ((word >> (len - 1 - k)) & 1) as u8;
+                        let (next, tone) = transition(s, bit);
+                        seq = seq * 4 + u16::from(tone);
+                        s = next;
+                    }
+                    sequence[state * words + word] = seq;
+                }
+            }
+            sequence.into()
+        };
+        let mut tables: [Option<alloc::sync::Arc<[u16]>>; 5] = Default::default();
         let mut energy_offset = 0;
         let blocks: Vec<Block> = (0..INFO_BITS)
             .step_by(coherent)
             .map(|start| {
                 let len = coherent.min(INFO_BITS - start);
                 let words = 1usize << len;
-                let mut sequence = alloc::vec![0u16; STATES * words];
-                for state in 0..STATES {
-                    for word in 0..words {
-                        let (mut s, mut seq) = (state as u32, 0u16);
-                        for k in 0..len {
-                            let bit = ((word >> (len - 1 - k)) & 1) as u8;
-                            let (next, tone) = transition(s, bit);
-                            seq = seq * 4 + u16::from(tone);
-                            s = next;
-                        }
-                        sequence[state * words + word] = seq;
-                    }
-                }
+                let sequence = tables[len].get_or_insert_with(|| table(len)).clone();
                 let identity = (0..words)
                     .map(|word| {
                         (0..len)
@@ -290,16 +318,42 @@ impl Plan {
         self.decode_probe::<M, ()>(z, prune_reserved, &mut ())
     }
 
+    /// [`Self::decode_f32`] in `scratch`'s survivor arrays instead of two it allocates: an
+    /// embedded receiver makes them once, in memory it chose (#499).
+    pub fn decode_f32_in(
+        &self,
+        z: &Correlations,
+        prune_reserved: bool,
+        scratch: &mut TrellisScratch,
+    ) -> ListResult {
+        let (a, b) = (&mut scratch.a, &mut scratch.b);
+        self.decode_in::<f32, ()>(z, prune_reserved, &mut (), a, b)
+    }
+
     fn decode_probe<M: Metric, P: Probe>(
         &self,
         z: &Correlations,
         prune_reserved: bool,
         probe: &mut P,
     ) -> ListResult {
+        let mut a = alloc::vec![[Surv::<M>::empty(); PATHS_PER_STATE]; STATES];
+        let mut b = a.clone();
+        self.decode_in(z, prune_reserved, probe, &mut a, &mut b)
+    }
+
+    fn decode_in<M: Metric, P: Probe>(
+        &self,
+        z: &Correlations,
+        prune_reserved: bool,
+        probe: &mut P,
+        a: &mut [[Surv<M>; PATHS_PER_STATE]],
+        b: &mut [[Surv<M>; PATHS_PER_STATE]],
+    ) -> ListResult {
         let energies = self.energies::<M>(z);
         probe.lap(0);
-        let mut prev = alloc::vec![[Surv::<M>::empty(); PATHS_PER_STATE]; STATES];
-        let mut cur = prev.clone();
+        let (mut prev, mut cur) = (a, b);
+        prev.iter_mut()
+            .for_each(|p| *p = [Surv::empty(); PATHS_PER_STATE]);
         prev.iter_mut()
             .enumerate()
             .for_each(|(s, p)| p[0] = Surv::new(s));
@@ -317,9 +371,9 @@ impl Plan {
                 let prune =
                     prune_reserved && b.start < RESERVED_BIT && RESERVED_BIT <= b.start + b.len; // block holds bit 33 (1-based)
                 if index == 0 {
-                    advance::<M, P, true>(b, &energies, prune, &prev, &mut cur, probe);
+                    advance::<M, P, true>(b, &energies, prune, prev, cur, probe);
                 } else {
-                    advance::<M, P, false>(b, &energies, prune, &prev, &mut cur, probe);
+                    advance::<M, P, false>(b, &energies, prune, prev, cur, probe);
                 }
                 core::mem::swap(&mut prev, &mut cur);
             }
@@ -650,6 +704,34 @@ mod tests {
             assert_eq!(best.bits, info, "L={l}");
             assert!(best.crc_valid, "L={l}");
             assert!(r.hypotheses.len() <= HYPOTHESES);
+        }
+    }
+
+    /// Decoding into reused survivor arrays gives what fresh ones give, decode after decode.
+    #[test]
+    fn reused_scratch_decodes_as_fresh_arrays() {
+        let mut s = 7u64;
+        let mut u = move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+        };
+        let plans = [Plan::new(1), Plan::new(2), Plan::new(4)];
+        let mut scratch = TrellisScratch::new();
+        for trial in 0..30 {
+            let amp = [0.0f32, 1.0, 3.0][trial % 3];
+            let z: Correlations = core::array::from_fn(|i| {
+                core::array::from_fn(|k| {
+                    Complex32::new(u() + if (i * 7 + trial) % 4 == k { amp } else { 0.0 }, u())
+                })
+            });
+            for p in &plans {
+                assert_eq!(
+                    p.decode_f32_in(&z, true, &mut scratch),
+                    p.decode_f32(&z, true)
+                );
+            }
         }
     }
 

@@ -679,10 +679,14 @@ fn bench_stream() {
         .chunks_exact(2)
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect();
-    // the two 32 KB survivor arrays of a trellis decode in internal DRAM (part 3b: 1.5x)
-    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(40 * 1024) };
+    // The receiver is built while allocations up to 64 KB prefer internal DRAM, so the tables and
+    // scratch it keeps land there (the trellis's survivor arrays: 1.5x, part 3b); everything it
+    // allocates while decoding goes by the default rule again (#499).
     log_heap("stream: before receiver");
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
     let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    log_heap("stream: receiver built");
     // steady state: 30 s of noise alone (unit-variance Gaussian at about 1/10 full scale)
     let mut rng = Lcg(0x0015E);
     let noise: alloc::vec::Vec<i16> = (0..audio.len()).map(|_| (3000.0 * rng.gauss()) as i16).collect();
@@ -723,7 +727,10 @@ fn bench_stream() {
         log_stages(name, &rx.stats(), total as f64 / 1000.0);
         log_heap("stream: after");
     }
-    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    log::info!(
+        "stream: internal DRAM low-water mark {} B",
+        unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) }
+    );
 }
 
 fn run_bench() {

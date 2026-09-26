@@ -21,7 +21,9 @@
 //! earlier rung in order has already accepted; candidates that decode nothing, the great
 //! majority, finish in the time of the slower lane instead of the sum of four.
 
-use super::trellis::{Correlations, ListResult, Plan};
+use super::scratch::Slot;
+use super::trellis::{Correlations, ListResult, Plan, TrellisScratch};
+
 use super::{PAYLOAD_BITS, Payload};
 
 /// Coherent lengths of the three full-symbol rungs.
@@ -52,6 +54,9 @@ pub struct Ladder {
     plans: [Plan; 3],
     /// Carry the path metrics in `f32` (see [`Plan::decode_f32`]).
     f32_metrics: bool,
+    /// Survivor arrays made with the `f32` metrics and reused by every decode that finds them
+    /// free (one at a time; a concurrent rung allocates its own).
+    scratch: Option<Slot<TrellisScratch>>,
     /// Rungs run, for `jtty-stats`.
     #[cfg(feature = "jtty-stats")]
     rungs: [super::stats::Acc; 4],
@@ -69,6 +74,7 @@ impl Ladder {
         Self {
             plans: COHERENT_LENGTHS.map(Plan::new),
             f32_metrics: false,
+            scratch: None,
             #[cfg(feature = "jtty-stats")]
             rungs: Default::default(),
         }
@@ -89,8 +95,14 @@ impl Ladder {
     /// The same ladder with the trellis metrics in `f32`: hardware on a core whose `f64` is
     /// software (`docs/notes/JTTY_UPSTREAM.md`, "E0 results"), and the choice measured
     /// against `f64` by `tests/jtty_f32_metrics.rs`.
+    ///
+    /// The two 32 KB survivor arrays are allocated here, once, and reused by each decode: on
+    /// the CoreS3 a receiver built while allocations prefer internal DRAM keeps them there,
+    /// where a rung costs 190 ms against 410 ms in PSRAM (#499), and later decodes allocate
+    /// nothing whatever the heap then holds.
     pub fn with_f32_metrics(mut self) -> Self {
         self.f32_metrics = true;
+        self.scratch = Some(Slot::new(TrellisScratch::new()));
         self
     }
 
@@ -102,7 +114,10 @@ impl Ladder {
         let plan = &self.plans[if half { 0 } else { index }];
         let z = if half { zhalf } else { zsym };
         let list = if self.f32_metrics {
-            plan.decode_f32(z, true)
+            match self.scratch.as_ref().and_then(Slot::take) {
+                Some(mut guard) => plan.decode_f32_in(z, true, &mut guard),
+                None => plan.decode_f32(z, true),
+            }
         } else {
             plan.decode(z, true)
         };
