@@ -673,7 +673,7 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
     companion object {
         /// Open a session for `mode`, which must claim
         /// [Mfsk.CAP_DECODE_HANDLE]. Q65 takes a nominal start sample
-        /// and a tolerance and WSPR/JT9/JT65 have no builder, so those
+        /// and a tolerance and WSPR/JT9/JT65 have entry points of their own, so those
         /// are refused here rather than decoding something differently
         /// shaped.
         ///

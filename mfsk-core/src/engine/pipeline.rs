@@ -531,8 +531,8 @@ impl DecodeStrictness {
     /// ceiling — shared by the BP staircase and the OSD fallback
     /// (`ft8::decode_block::process_candidates`/`osd_strategy`), which
     /// both apply the same bound WSJT-X does unconditionally on depth
-    /// (`ft8b.f90:422`). Unlike [`Self::osd_max_errors`] (FT4-specific,
-    /// depth-tiered), FT8's real dispatch has no such tiering to port —
+    /// (`ft8b.f90:422`). Unlike [`Self::osd_max_errors`] (depth-tiered, and
+    /// applied to no protocol since #456), FT8's real dispatch has no such tiering to port —
     /// this is a single WSJT-X-faithful number, not three.
     ///
     /// **`Normal = 36` is WSJT-X's own universal ceiling — do not

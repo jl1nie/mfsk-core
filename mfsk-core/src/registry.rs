@@ -70,11 +70,13 @@ use crate::ProtocolId;
 /// A plain `u32` of bits rather than a `bitflags` dependency: this has
 /// to cross a C boundary unchanged, and `no_std` builds carry it too.
 pub mod caps {
-    /// Drives the `DecodeRequest`/`SniperRequest` builder pair (the
-    /// `FrameDecodable` trait). Protocols without this bit decode
-    /// through their own entry point — Q65 takes search parameters and
-    /// reports a start sample rather than a `dt`; WSPR/JT9/JT65 have no
-    /// builder at all. They are not lesser, they are shaped differently.
+    /// Drives the generic `msg::decode_request::DecodeRequest` /
+    /// `SniperRequest` builder pair (the `FrameDecodable` trait).
+    /// Protocols without this bit decode through their own builders, in
+    /// their own modules since 0.12.0 (`wspr`, `jt9`, `jt65`, `q65`):
+    /// Q65 takes search parameters and a nominal start and reports
+    /// `dt_sec` from it, and WSPR/JT9/JT65 take their own parameter
+    /// blocks. They are not lesser, they are shaped differently.
     pub const DECODE_HANDLE: u32 = 1 << 0;
     /// Narrow-band single-target search (`SniperRequest`, gated on the
     /// `SupportsSniper` trait): a ±250 Hz window around a known carrier.
@@ -147,8 +149,8 @@ pub mod caps {
     pub const EQ_MODE: u32 = 1 << 7;
     /// `.strictness()` changes an acceptance threshold that the
     /// protocol's non-AP path actually reads. FST4 does not have this:
-    /// its OSD hard-error ceiling is bypassed to match WSJT-X's own
-    /// `fst4_decode.f90`, which has no such gate.
+    /// `fst4_decode.f90` has no hard-error ceiling, so FST4 accepts on
+    /// the CRC-24 and a successful unpack alone (`REQUIRES_UNPACK`).
     pub const STRICTNESS: u32 = 1 << 8;
     /// `.budget()` — the caller-supplied wall-clock predicate.
     pub const BUDGET: u32 = 1 << 9;
@@ -418,9 +420,9 @@ const FT4_PROFILE: DecodeProfile = DecodeProfile {
 /// Every FST4 sub-mode. No SIC of either kind — WSJT-X's own
 /// `fst4_decode.f90` has no subtract path at all, because FST4 targets
 /// point-to-point links rather than crowded shared bands. No
-/// `STRICTNESS` either: the OSD hard-error ceiling is deliberately
-/// bypassed for FST4 to match upstream, whose only acceptance test is
-/// the CRC-24 (`engine::pipeline`).
+/// `STRICTNESS` either: `fst4_decode.f90` has no hard-error ceiling, so
+/// FST4's acceptance is the CRC-24 plus a successful unpack
+/// (`engine::pipeline`, `REQUIRES_UNPACK`).
 ///
 /// `0.8 / 50` are the values this crate's own FST4 tests and the
 /// embedded wideband monitor both call the production configuration.

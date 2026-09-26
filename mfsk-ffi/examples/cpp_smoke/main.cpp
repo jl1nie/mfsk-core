@@ -507,7 +507,7 @@ void test_fst4() {
 // ── Modes that are not driven by the decode session ─────────────────
 //
 // Q65 takes a nominal start sample and a time tolerance; WSPR/JT9/JT65
-// have no builder, and JT9/JT65 are point decodes at a known carrier
+// have entry points of their own, and JT9/JT65 are point decodes at a known carrier
 // rather than searches. They keep their own entry points and share the
 // row type — MFSK_CAP_DECODE_HANDLE is the bit that says which is which.
 
