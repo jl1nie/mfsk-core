@@ -88,6 +88,7 @@ final class ABIContractTests: XCTestCase {
         // The only other bit this binding names. `flags` is a `uint8_t`,
         // so the cast is the check as much as the comparison is.
         XCTAssertEqual(UInt8(MFSK_DECODE_FLAG_HASH_RESOLVED), 1 << 0)
+        XCTAssertEqual(UInt8(MFSK_DECODE_FLAG_COPIED_LAST_TX), 1 << 1)
     }
 
     func testPackedMessageWidthMatchesTheHeader() {

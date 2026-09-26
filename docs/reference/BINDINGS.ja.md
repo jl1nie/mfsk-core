@@ -786,6 +786,17 @@ for row in try session.decode(slot) {
   — CQ なら `call1` は `"CQ"`、送信局ではない — 探索を誘導するのではなく
   メッセージのビットを固定するため、順序を誤ると 0.1 dB 単位の損ではなく
   デコードが消える。両方向とも `Q65Tests` で固定されている。
+* **`Q65.decode(_:mode:params:callers:)`** は `mfsk_q65_decode_ex`（§2.8）— WSJT-X 3.2
+  の Q65 設定を扱う 1 本の呼び出し。`try Q65.Params(mode: .q65a30)` が既定値を
+  返し、そこから `pileup`・`emeDelay`・`maxDrift`・`rxFrequencyHz` / `ftolHz`・
+  `fading = Q65.Fading(…)`・`list = .standard(…)` または `.contest(…)`・`apHint` を
+  変える。`Q65SubMode` ではなく `Mode` を取り、`Decode.dtSeconds` は
+  `nominalStartSeconds` からの値。`Decode.copiedLastTx` は Pileup の `#`、
+  `Q65.encode(…, copiedLastTx:)` で送る。`Q65History`（`q65_hist`）と
+  `Q65Callers`（`q65_hist2`）は WSJT-X が持つ 2 つのリストで、呼び出し側が所有する
+  クラス。`Q65ExtendedTests` は C と Kotlin のテストに対応している。
+  **Swift ツールチェーンの無い環境で書いた — Mac で
+  `bindings/swift/scripts/test.sh` を走らせること。**
 
 **JTTY** は `JttyReceiver`（§2.8.1）: `try JttyReceiver(sampleRate:params:)` のあと
 `try receiver.push(samples)` が生じた `[JttyUpdate]`（メッセージごとに 1 件、最新の

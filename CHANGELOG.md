@@ -32,7 +32,12 @@
     `MfskQ65ApHint`, the `AutoCloseable` handles `MfskQ65History` and `MfskQ65Callers`,
     `Mfsk.synthesizeQ65(..., copiedLastTx)` and `MfskDecode.copiedLastTx`. Kotlin could not
     decode Q65 at all before: it has no decode handle. 37 new JVM checks; swapping two slots in
-    the shim fails five. Swift does not carry these yet.
+    the shim fails five.
+  - Swift: `Q65.decode(_:mode:params:callers:sampleRate:hashTable:)` with `Q65.Params`
+    (`try Q65.Params(mode:)`), `Q65.Fading`, `Q65.List`, the classes `Q65History` and
+    `Q65Callers`, `Q65.encode(..., copiedLastTx:)` and `Decode.copiedLastTx`, tested by
+    `Q65ExtendedTests`. Written without a Swift toolchain on hand, so not yet built or run:
+    `bindings/swift/scripts/test.sh` on a Mac.
 
 - **C ABI: the transmit frequency and FST4's noise blanker, on `MfskDecodeParams` (#466,
   part 1).** Two knobs the Rust builder gained for the 3.2 port had no way in through

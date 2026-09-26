@@ -820,6 +820,16 @@ for row in try session.decode(slot) {
   message bits rather than steering a search, so the wrong order
   removes the decode instead of costing a fraction of a dB. Both
   directions are pinned in `Q65Tests`.
+* **`Q65.decode(_:mode:params:callers:)`** is `mfsk_q65_decode_ex` (§2.8) — one
+  call for WSJT-X 3.2's Q65 settings. `try Q65.Params(mode: .q65a30)` gives the
+  defaults; then `pileup`, `emeDelay`, `maxDrift`, `rxFrequencyHz` / `ftolHz`,
+  `fading = Q65.Fading(…)`, `list = .standard(…)` or `.contest(…)` and `apHint`.
+  It takes a `Mode`, not a `Q65SubMode`, and `Decode.dtSeconds` is measured from
+  `nominalStartSeconds`; `Decode.copiedLastTx` is Pileup's `#`, and
+  `Q65.encode(…, copiedLastTx:)` sends one. `Q65History` (`q65_hist`) and
+  `Q65Callers` (`q65_hist2`) are the two lists WSJT-X keeps, as classes you own.
+  `Q65ExtendedTests` mirrors the C and Kotlin tests. **Written without a Swift
+  toolchain on hand — run `bindings/swift/scripts/test.sh` on a Mac.**
 
 **JTTY** is `JttyReceiver` (§2.8.1): `try JttyReceiver(sampleRate:params:)`,
 then `try receiver.push(samples)` returns the `[JttyUpdate]` it produced (one per

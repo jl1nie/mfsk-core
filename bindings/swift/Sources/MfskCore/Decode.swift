@@ -39,6 +39,10 @@ public struct Decode: Sendable, Equatable {
     /// constant in the header only because the Kotlin shim found it
     /// missing.
     public let usedHashTable: Bool
+    /// The sender set WSJT-X 3.2's **Q65 Pileup** "copied last Tx" flag, the
+    /// spare 78th payload bit — `MFSK_DECODE_FLAG_COPIED_LAST_TX`. WSJT-X
+    /// marks such a decode with `#`. Q65 rows only; false elsewhere.
+    public let copiedLastTx: Bool
 
     init(_ raw: MfskDecode) {
         self.mode = Mode(rawValue: UInt32(raw.mode.rawValue)) ?? .ft8
@@ -52,6 +56,7 @@ public struct Decode: Sendable, Equatable {
         self.informationBitCount = raw.info_bits
         self.pass = raw.pass
         self.usedHashTable = raw.flags & UInt8(MFSK_DECODE_FLAG_HASH_RESOLVED) != 0
+        self.copiedLastTx = raw.flags & UInt8(MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0
     }
 }
 
