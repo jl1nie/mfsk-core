@@ -289,6 +289,10 @@ impl BpPooledFec for Ldpc240_101 {
             });
         }
 
+        // #456 tried the reference order instead (`zsave(:,1)` then `zsave(:,2)`, no raw
+        // LLR) on the FST4 sweep, same 3520 files: 12 gained, 18 lost (sign test p = 0.36),
+        // unexpected decodes 26 -> 33. Not better, so this stays.
+        //
         // Issue #146: WSJT-X's `decode240_101` never feeds OSD the raw
         // channel LLR when BP fails — it feeds the running sum of BP's
         // variable-node soft estimate across the first two iterations

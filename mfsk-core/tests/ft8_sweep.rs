@@ -103,11 +103,50 @@ fn strictness_from_env() -> Option<mfsk_core::engine::pipeline::DecodeStrictness
 /// `(pass, extra)`: whether the injected message came out at the right
 /// frequency and time, and how many *other* distinct messages came out
 /// (see `common::distinct_extras`).
+/// `MFSK_FT8_SWEEP_AP_HINT=<call1>,<call2>` passes those two callsigns as the request's
+/// `ap_hint` (either may be empty), the operator's a-priori knowledge of a QSO. The
+/// corpus message is `CQ JL1NIE PM95`, so `CQ,JL1NIE` is the right hint (a heavy lock)
+/// and any other pair a wrong one, which is what tells whether locking bits the signal
+/// does not have lets phantoms through (#456). Unset, the sweep has no hint, as always.
+fn ap_hint_requested() -> Option<mfsk_core::msg::ap::ApHint> {
+    let v = std::env::var("MFSK_FT8_SWEEP_AP_HINT").ok()?;
+    let mut parts = v.splitn(2, ',');
+    let (c1, c2) = (
+        parts.next().unwrap_or("").trim(),
+        parts.next().unwrap_or("").trim(),
+    );
+    let mut h = mfsk_core::msg::ap::ApHint::new();
+    if !c1.is_empty() {
+        h = h.with_call1(c1);
+    }
+    if !c2.is_empty() {
+        h = h.with_call2(c2);
+    }
+    Some(h)
+}
+
+/// `MFSK_FT8_SWEEP_FREQ_HINT=<Hz>` passes that frequency as the request's `freq_hint`, the
+/// operator's QSO frequency. Every signal in this corpus is at 1500 Hz, so `1500` is at it
+/// and anything 50 Hz or more away (say `900`) is not: `ft8b.f90` tries the heavy AP
+/// hypotheses (MyCall and DxCall locked) only within `napwid` of it (#456). Unset, no hint.
+fn freq_hint_requested() -> Option<f32> {
+    std::env::var("MFSK_FT8_SWEEP_FREQ_HINT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+}
+
 fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::ft8::Ft8;
 
     use mfsk_core::msg::decode_request::DecodeRequest;
+    let hint = ap_hint_requested();
     let mut req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 0.8, 50);
+    if let Some(f) = freq_hint_requested() {
+        req = req.freq_hint(f);
+    }
+    if let Some(h) = hint.as_ref() {
+        req = req.ap_hint(h);
+    }
     if let Some(level) = strictness_from_env() {
         req = req.strictness(level);
     }

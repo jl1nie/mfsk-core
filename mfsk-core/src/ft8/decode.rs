@@ -136,6 +136,7 @@ fn process_candidate<Pol: MessagePolicy>(
     ap_hint: Option<&ApHint>,
     policy: &Pol,
     pass: PassCtx,
+    qso: crate::engine::pipeline::QsoFreq,
 ) -> Option<DecodeResult> {
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
@@ -151,6 +152,7 @@ fn process_candidate<Pol: MessagePolicy>(
         &mut bp_scratch,
         policy,
         pass,
+        qso,
     )
 }
 
@@ -182,11 +184,12 @@ fn process_candidate_with_scratch<Pol: MessagePolicy>(
     >,
     policy: &Pol,
     pass: PassCtx,
+    qso: crate::engine::pipeline::QsoFreq,
 ) -> Option<DecodeResult> {
     let state = triage_candidate(cand, audio, fft_cache, pass)?;
     run_candidate_ladder(
         state, audio, fft_cache, depth, strictness, known, eq_mode, ap_hint, bp_scratch, policy,
-        pass,
+        pass, qso,
     )
 }
 
@@ -375,10 +378,21 @@ fn decode_all_candidates<Pol: MessagePolicy>(
     accept: &(dyn Fn(DecodeResult) -> Option<DecodeResult> + Sync),
     policy: &Pol,
     pass: PassCtx,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
 ) -> Vec<DecodeResult> {
     let decode_one = |cand: &SyncCandidate| -> Option<DecodeResult> {
         let r = process_candidate(
-            cand, audio, fft_cache, depth, strictness, known, eq_mode, ap_hint, policy, pass,
+            cand,
+            audio,
+            fft_cache,
+            depth,
+            strictness,
+            known,
+            eq_mode,
+            ap_hint,
+            policy,
+            pass,
+            qso_freqs.classify(cand.freq_hz),
         )?;
         accept(r)
     };
@@ -430,6 +444,7 @@ fn decode_scheduled_candidates<Pol: MessagePolicy>(
     accept: &(dyn Fn(DecodeResult) -> Option<DecodeResult> + Sync),
     policy: &Pol,
     pass: PassCtx,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
 ) -> (Vec<DecodeResult>, BudgetReport) {
     let triage_one = |(i, cand): (usize, &SyncCandidate)| -> Option<(usize, CandidateTriage)> {
         triage_candidate(cand, audio, fft_cache, pass).map(|t| (i, t))
@@ -492,6 +507,7 @@ fn decode_scheduled_candidates<Pol: MessagePolicy>(
             break;
         }
         report.stages_run += 1;
+        let qso = qso_freqs.classify(t.refined.freq_hz);
         if let Some(r) = run_candidate_ladder(
             t,
             audio,
@@ -504,6 +520,7 @@ fn decode_scheduled_candidates<Pol: MessagePolicy>(
             &mut bp_scratch,
             policy,
             pass,
+            qso,
         ) && let Some(r) = accept(r)
         {
             out.push((idx, r));
@@ -533,6 +550,7 @@ fn run_candidate_ladder<Pol: MessagePolicy>(
     >,
     policy: &Pol,
     pass: PassCtx,
+    qso: crate::engine::pipeline::QsoFreq,
 ) -> Option<DecodeResult> {
     let CandidateTriage {
         refined,
@@ -573,6 +591,7 @@ fn run_candidate_ladder<Pol: MessagePolicy>(
             sync_cv,
             policy,
             pass,
+            qso,
         )
     };
 
@@ -609,7 +628,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     freq_min: f32,
     freq_max: f32,
     sync_min: f32,
-    freq_hint: Option<f32>,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
     depth: DecodeDepth,
     max_cand: usize,
     strictness: DecodeStrictness,
@@ -627,12 +646,12 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     BudgetReport,
 ) {
     let mut budget_report = BudgetReport::default();
-    // `freq_hint` is intentionally not forwarded — the WSJT-X-faithful
+    // The QSO frequency does not reach the coarse sync: the WSJT-X-faithful
     // decode_block::coarse_sync (the only FT8 coarse-sync after the v0.6
     // consolidation in #48) does not honour candidate-score promotion.
     // Sniper paths in this file constrain freq_min/freq_max around the
-    // target instead, so the loss is contained.
-    let _ = freq_hint;
+    // target instead. It reaches the AP rung (`qso_freqs`, #456).
+
     #[cfg(feature = "std")]
     let trace_stage = crate::ft8::decode_block::stage_trace_enabled();
     #[cfg(feature = "std")]
@@ -723,6 +742,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
             &accept,
             policy,
             pass,
+            qso_freqs,
         ),
         Some(check) => {
             let (v, rep) = decode_scheduled_candidates(
@@ -738,6 +758,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
                 &accept,
                 policy,
                 pass,
+                qso_freqs,
             );
             budget_report = rep;
             v
@@ -806,6 +827,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
     budget: &mut BudgetState<'_>,
     policy: &Pol,
     base_pass: PassCtx,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut residual = audio.to_vec();
     sic_inner_passes_with_cache(
@@ -825,6 +847,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
         budget,
         policy,
         base_pass,
+        qso_freqs,
     )
 }
 
@@ -860,10 +883,11 @@ fn sic_inner_passes<Pol: MessagePolicy>(
     budget: &mut BudgetState<'_>,
     policy: &Pol,
     base_pass: PassCtx,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
 ) -> Vec<DecodeResult> {
     sic_inner_passes_with_cache(
         residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, eq_mode,
-        ap_hint, None, n_rounds, on_result, budget, policy, base_pass,
+        ap_hint, None, n_rounds, on_result, budget, policy, base_pass, qso_freqs,
     )
     .0
 }
@@ -902,6 +926,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
     policy: &Pol,
     // The tier's context for round 0; later rounds derive theirs from it.
     base_pass: PassCtx,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let mut pass0_cache: Option<FftCache> = None;
@@ -985,6 +1010,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
                 &mut bp_scratch,
                 policy,
                 base_pass.round(ipass),
+                qso_freqs.classify(cand.freq_hz),
             ) {
                 Some(r) => r,
                 None => continue,
@@ -1140,7 +1166,7 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
         freq_min,
         freq_max,
         sync_min,
-        freq_hint,
+        crate::engine::pipeline::QsoFreqs::rx(freq_hint),
         depth,
         max_cand,
         strictness,
@@ -1168,7 +1194,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     freq_min: f32,
     freq_max: f32,
     sync_min: f32,
-    freq_hint: Option<f32>,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
     depth: DecodeDepth,
     max_cand: usize,
     strictness: DecodeStrictness,
@@ -1231,7 +1257,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     // by `sic_early_with_ap_silence_shape`). A flat pass has none of
     // checkpoint A's truncation-boundary exposure, so `audio_clean` is
     // fine here.
-    let _ = freq_hint;
+
     if audio.len() < A_SAMPLES {
         let (r, _) = flat_sic_inner(
             &audio_clean,
@@ -1250,6 +1276,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             budget,
             policy,
             base_pass,
+            qso_freqs,
         );
         return (r, audio_clean);
     }
@@ -1289,6 +1316,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         policy,
         // `ft8_decode.f90` runs no AP pass while `nzhsym < 50` (npasses=5).
         base_pass.without_ap(),
+        qso_freqs,
     );
     // Checkpoint A's own residual is not carried forward — only its
     // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
@@ -1324,6 +1352,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             budget,
             policy,
             base_pass,
+            qso_freqs,
         );
         return (r, audio_clean);
     }
@@ -1403,6 +1432,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         budget,
         policy,
         base_pass,
+        qso_freqs,
     );
 
     let mut all_results = early_results;
@@ -1482,6 +1512,7 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
             ap_hint,
             policy,
             PassCtx::FIRST,
+            crate::engine::pipeline::QsoFreqs::rx(Some(target_freq)).classify(cand.freq_hz),
         )?;
         #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
         {
@@ -1537,7 +1568,10 @@ impl FrameDecodable for Ft8 {
             req.freq_min,
             req.freq_max,
             req.sync_min,
-            req.freq_hint,
+            crate::engine::pipeline::QsoFreqs {
+                rx: req.freq_hint,
+                tx: req.tx_freq,
+            },
             req.depth,
             req.max_cand,
             req.strictness,
@@ -1588,6 +1622,10 @@ impl SupportsSicRounds for Ft8 {
                 &mut budget,
                 &req.policy,
                 base_pass_of(req),
+                crate::engine::pipeline::QsoFreqs {
+                    rx: req.freq_hint,
+                    tx: req.tx_freq,
+                },
             );
             DecodeOutcome {
                 results,
@@ -1616,6 +1654,10 @@ impl SupportsSicRounds for Ft8 {
                 &mut budget,
                 &req.policy,
                 base_pass_of(req),
+                crate::engine::pipeline::QsoFreqs {
+                    rx: req.freq_hint,
+                    tx: req.tx_freq,
+                },
             );
             DecodeOutcome {
                 results,
@@ -1677,7 +1719,10 @@ impl SupportsSicEarly for Ft8 {
             req.freq_min,
             req.freq_max,
             req.sync_min,
-            req.freq_hint,
+            crate::engine::pipeline::QsoFreqs {
+                rx: req.freq_hint,
+                tx: req.tx_freq,
+            },
             req.depth,
             req.max_cand,
             req.strictness,
@@ -2456,6 +2501,7 @@ mod tests {
                     None,
                     &crate::msg::decode_request::DefaultPolicy,
                     PassCtx::FIRST,
+                    crate::engine::pipeline::QsoFreq::Unknown,
                 );
                 eprintln!("  -> process_candidate result: {:?}", r.map(|d| d.pass));
             }

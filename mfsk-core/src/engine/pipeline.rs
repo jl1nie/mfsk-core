@@ -242,14 +242,91 @@ impl DecodeDepth {
     };
 }
 
-/// `napwid` of `ft4_decode.f90` (`napwid=50`): how close, in Hz, a candidate has to
-/// be to the operator's QSO frequency (here `DecodeRequest::freq_hint`) to be
-/// decoded with `maxosd = 3` rather than 2.
+/// `napwid` of `ft4_decode.f90` / `ft8_decode.f90` (`napwid=50`): how close, in Hz, a
+/// candidate has to be to the operator's QSO frequency (here `DecodeRequest::freq_hint`)
+/// to count as being at it.
 pub(crate) const QSO_WINDOW_HZ: f32 = 50.0;
 
-/// Whether a candidate at `cand_freq_hz` is inside the QSO window of `freq_hint`.
-pub(crate) fn near_qso_freq(cand_freq_hz: f32, freq_hint: Option<f32>) -> bool {
-    freq_hint.is_some_and(|h| (cand_freq_hz - h).abs() <= QSO_WINDOW_HZ)
+/// From this many locked bits an a-priori hypothesis is a heavy one: `iaptype >= 3` in
+/// `ft4_decode.f90` / `ft8b.f90` (MyCall and DxCall, 58 bits, or all 77). It is also where
+/// [`DecodeStrictness::ap_max_errors`] used to change its bound.
+pub(crate) const HEAVY_AP_LOCKED_BITS: usize = 55;
+
+/// Where a candidate sits relative to the operator's QSO frequency, which upstream reads
+/// from `nfqso` and this crate from `DecodeRequest::freq_hint`.
+///
+/// `ft4_decode.f90` and `ft8b.f90` do two things with it: a candidate within
+/// `napwid` of it is decoded with `maxosd = 3` instead of 2 (FT4), and a heavy AP hypothesis
+/// (`iaptype >= 3`) is tried only there (`if(ncontest.le.5 .and. iaptype.ge.3 .and.
+/// abs(f1-nfqso).gt.napwid) cycle`). Without it, a wrong or stale hint's callsigns get locked
+/// onto every marginal candidate in the band and come back as decodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QsoFreq {
+    /// The request has no `freq_hint`. For `maxosd` it is like `Far`; for the heavy AP
+    /// hypotheses too: upstream always has an `nfqso` and tries them only near it, so
+    /// without one they are not tried ([`ap_hypothesis_allowed`]).
+    Unknown,
+    /// Within [`QSO_WINDOW_HZ`] of the hint.
+    Near,
+    /// The hint is given and the candidate is not within [`QSO_WINDOW_HZ`] of it.
+    Far,
+}
+
+/// Whether an a-priori hypothesis locking `locked_bits` may be tried at a candidate
+/// classified `qso`. A heavy one ([`HEAVY_AP_LOCKED_BITS`] or more: MyCall and DxCall) only
+/// at the QSO frequency, as `ft4_decode.f90` / `ft8b.f90` do (`iaptype >= 3` needs
+/// `abs(f1-nfqso) <= napwid`). Upstream always has an `nfqso`; a request without a
+/// `freq_hint` has none, so there is no candidate it can be near and a heavy hypothesis is
+/// never tried (#456: FT4 with a wrong hint and no `freq_hint` let 64 phantoms through in
+/// 12 800 files when this was allowed). Lighter ones (CQ, MyCall alone) run anywhere.
+pub(crate) fn ap_hypothesis_allowed(locked_bits: usize, qso: QsoFreq) -> bool {
+    locked_bits < HEAVY_AP_LOCKED_BITS || qso == QsoFreq::Near
+}
+
+/// The operator's two frequencies, as `ft8b.f90` reads them: `nfqso`, the QSO (receive)
+/// frequency, from `DecodeRequest::freq_hint`, and `nftx`, the transmit frequency, from
+/// `DecodeRequest::tx_freq`. FT8's heavy AP hypotheses are tried within `napwid` of
+/// either (`abs(f1-nfqso).gt.napwid .and. abs(f1-nftx).gt.napwid` skips them);
+/// `ft4_decode.f90` reads `nfqso` only.
+// Only FT8 reads the transmit frequency; a build without it has no caller.
+#[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct QsoFreqs {
+    pub(crate) rx: Option<f32>,
+    pub(crate) tx: Option<f32>,
+}
+
+#[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+impl QsoFreqs {
+    /// The QSO frequency alone.
+    pub(crate) fn rx(freq_hint: Option<f32>) -> Self {
+        Self {
+            rx: freq_hint,
+            tx: None,
+        }
+    }
+
+    /// `Near` within [`QSO_WINDOW_HZ`] of either frequency, `Unknown` when neither is
+    /// given, `Far` otherwise.
+    pub(crate) fn classify(self, cand_freq_hz: f32) -> QsoFreq {
+        match (
+            qso_freq(cand_freq_hz, self.rx),
+            qso_freq(cand_freq_hz, self.tx),
+        ) {
+            (QsoFreq::Near, _) | (_, QsoFreq::Near) => QsoFreq::Near,
+            (QsoFreq::Unknown, QsoFreq::Unknown) => QsoFreq::Unknown,
+            _ => QsoFreq::Far,
+        }
+    }
+}
+
+/// Classifies a candidate at `cand_freq_hz` against `freq_hint`.
+pub(crate) fn qso_freq(cand_freq_hz: f32, freq_hint: Option<f32>) -> QsoFreq {
+    match freq_hint {
+        None => QsoFreq::Unknown,
+        Some(h) if (cand_freq_hz - h).abs() <= QSO_WINDOW_HZ => QsoFreq::Near,
+        Some(_) => QsoFreq::Far,
+    }
 }
 
 /// OSD depth-escalation gates: `(osd_attempt_min, osd_depth3_min)`.
@@ -424,20 +501,27 @@ impl DecodeStrictness {
         }
     }
 
-    /// Upper bound on `hard_errors` for AP-assisted decode passes, graded by
-    /// the number of locked bits (heavier locks → tighter threshold, since
-    /// random bits flipping to agree with the lock is increasingly
-    /// unlikely). Calibrated from a synthetic QSO scenario (REPORT AP at
-    /// -18 dB: 15% FP rate with old thresholds 30/36) — shared by FT8's
-    /// per-candidate AP loop and the AP rung of this module's generic
-    /// ladder (issue #191 type consolidation; previously duplicated
-    /// byte-for-byte in both places).
+    /// Upper bound on `hard_errors` for AP-assisted decode passes.
+    ///
+    /// `Normal` is `ft8b.f90`'s: `nharderrors.gt.36` is the only bound its AP passes
+    /// have (`ft4_decode.f90` has none), so it is 36 whatever the lock. It was 30, or
+    /// 25 from 55 locked bits, calibrated against the old AP rung's false accepts
+    /// ("REPORT AP at -18 dB: 15 % FP rate with old thresholds 30/36") — a rung that
+    /// passed the CRC for 22 % of noise candidates until #459, and the bound was
+    /// what kept them out. Measured on the FT8 sweep at 400 trials a cell (12 800
+    /// files a condition, same files each way, `docs/notes/FT8_BENCHMARK.md` section
+    /// 15): 36 against 30/25 finds 544 more hits with the right hint (+6.2 %, none
+    /// lost, crossings 0.26-0.39 dB), 39 more with no hint, and costs 1 to 4
+    /// extra phantoms in 12 800 files, the AP hallucination `ft8b.f90` has too.
+    /// `Strict` and `Deep` keep the graded, FT8-copied values.
+    ///
+    /// Shared by FT8's per-candidate AP loop and the AP rung of this module's
+    /// generic ladder (issue #191 type consolidation), so FT4 takes it too.
     pub fn ap_max_errors(self, locked_bits: usize) -> u32 {
         match (self, locked_bits >= 55) {
             (Self::Strict, true) => 20,
             (Self::Strict, false) => 24,
-            (Self::Normal, true) => 25,
-            (Self::Normal, false) => 30,
+            (Self::Normal, _) => 36,
             (Self::Deep, true) => 30,
             (Self::Deep, false) => 36,
         }
@@ -769,7 +853,7 @@ where
         false,
         false,
         &AcceptAll,
-        false,
+        QsoFreq::Unknown,
     )
 }
 
@@ -805,7 +889,7 @@ where
         false,
         false,
         &AcceptAll,
-        false,
+        QsoFreq::Unknown,
     )
 }
 
@@ -884,7 +968,7 @@ where
         skip_snr,
         skip_llr_nsym_max,
         &AcceptAll,
-        false,
+        QsoFreq::Unknown,
     )
 }
 
@@ -958,14 +1042,14 @@ pub(crate) fn process_candidate_basic_ap<P: GenericPipelineProtocol, A: InfoAcce
     sync_q_min: u32,
     ap: &[(&[u8], &[u8], u8)],
     accept: &A,
-    near_qso: bool,
+    qso: QsoFreq,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P, A>(
         cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, ap, None, false,
-        false, accept, near_qso,
+        false, accept, qso,
     )
 }
 
@@ -1028,10 +1112,11 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol, A: InfoAccept>(
     // for every existing caller (behaves exactly as before).
     skip_llr_nsym_max: bool,
     accept: &A,
-    // `true` for a candidate within [`QSO_WINDOW_HZ`] of the request's
-    // `freq_hint`: `ft4_decode.f90` decodes those with `maxosd = 3` instead of 2
-    // (`FecOpts::osd_snapshots`). `false` for every caller that has no hint.
-    near_qso: bool,
+    // Where the candidate is relative to the request's `freq_hint`
+    // ([`QsoFreq`]): `Near` decodes with `maxosd = 3` instead of 2
+    // (`FecOpts::osd_snapshots`) and is the only place the heavy AP hypotheses
+    // run ([`ap_hypothesis_allowed`]). `Unknown` for every caller that has no hint.
+    qso: QsoFreq,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -1335,7 +1420,7 @@ where
                     let osd_opts = FecOpts {
                         bp_max_iter,
                         osd_depth: osd_depth as u32,
-                        osd_snapshots: if near_qso { 3 } else { 2 },
+                        osd_snapshots: if qso == QsoFreq::Near { 3 } else { 2 },
                         ap_mask: None,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),
                         ..FecOpts::default()
@@ -1393,6 +1478,17 @@ where
                 // (scrambled where the protocol scrambles), because the
                 // hint describes the message and the decoder does not.
                 let locked = mask.iter().filter(|&&m| m != 0).count();
+                // `ft4_decode.f90`: `if(ncontest.le.5 .and. iaptype.ge.3 .and.
+                // abs(f1-nfqso).gt.napwid) cycle` -- the heavy hypotheses (MyCall and
+                // DxCall locked) are tried near the QSO frequency only, and never
+                // without a `freq_hint` (#456, `ap_hypothesis_allowed`).
+                //
+                // FT4 only: `fst4_decode.f90` has no such test on its AP passes (it
+                // searches `nfqso +- ntol` and nothing else), and FST4's codec ignores
+                // `osd_snapshots` too.
+                if P::ID == super::ProtocolId::Ft4 && !ap_hypothesis_allowed(locked, qso) {
+                    continue;
+                }
                 let max_errors = strictness.ap_max_errors(locked);
                 for (llr, _) in &variants {
                     // `ft4_decode.f90` runs its AP passes through the same
@@ -1403,7 +1499,7 @@ where
                     let ap_opts = FecOpts {
                         bp_max_iter,
                         osd_depth: 2,
-                        osd_snapshots: if near_qso { 3 } else { 2 },
+                        osd_snapshots: if qso == QsoFreq::Near { 3 } else { 2 },
                         ap_mask: Some((mask, values)),
                         ap_mag_scale: <P as Protocol>::AP_MAG_SCALE,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),
@@ -2179,7 +2275,7 @@ where
                     sync_q_min,
                     ap,
                     accept,
-                    near_qso_freq(cand.freq_hz, freq_hint),
+                    qso_freq(cand.freq_hz, freq_hint),
                 ) {
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2215,7 +2311,7 @@ where
                         sync_q_min,
                         ap,
                         accept,
-                        near_qso_freq(cand.freq_hz, freq_hint),
+                        qso_freq(cand.freq_hz, freq_hint),
                     )?;
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2238,7 +2334,7 @@ where
                         sync_q_min,
                         ap,
                         accept,
-                        near_qso_freq(cand.freq_hz, freq_hint),
+                        qso_freq(cand.freq_hz, freq_hint),
                     )?;
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2321,7 +2417,7 @@ where
                     false,
                     false,
                     accept,
-                    near_qso_freq(cand.freq_hz, freq_hint),
+                    qso_freq(cand.freq_hz, freq_hint),
                 ) {
                     if let Some(cb) = on_result {
                         cb(&r);
@@ -2360,7 +2456,7 @@ where
                     false,
                     false,
                     accept,
-                    near_qso_freq(cand.freq_hz, freq_hint),
+                    qso_freq(cand.freq_hz, freq_hint),
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -2386,7 +2482,7 @@ where
                     false,
                     false,
                     accept,
-                    near_qso_freq(cand.freq_hz, freq_hint),
+                    qso_freq(cand.freq_hz, freq_hint),
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -2604,7 +2700,7 @@ where
                     false,
                     false,
                     accept,
-                    near_qso_freq(cand.freq_hz, freq_hint),
+                    qso_freq(cand.freq_hz, freq_hint),
                 )
             })
             .collect();
@@ -2631,7 +2727,7 @@ where
                     false,
                     false,
                     accept,
-                    near_qso_freq(cand.freq_hz, freq_hint),
+                    qso_freq(cand.freq_hz, freq_hint),
                 )
             })
             .collect();
@@ -2730,4 +2826,63 @@ where
     }
 
     (all_results, budget_report)
+}
+
+#[cfg(test)]
+mod qso_freq_tests {
+    use super::*;
+
+    /// `ft4_decode.f90` / `ft8b.f90`'s `abs(f1-nfqso) > napwid` (`napwid = 50`): at the
+    /// edge is still near; without a hint a candidate is neither.
+    #[test]
+    fn a_candidate_is_near_far_or_unclassified() {
+        assert_eq!(qso_freq(1500.0, None), QsoFreq::Unknown);
+        assert_eq!(qso_freq(1500.0, Some(1500.0)), QsoFreq::Near);
+        assert_eq!(qso_freq(1549.9, Some(1500.0)), QsoFreq::Near);
+        assert_eq!(qso_freq(1450.0, Some(1500.0)), QsoFreq::Near);
+        assert_eq!(qso_freq(1550.1, Some(1500.0)), QsoFreq::Far);
+        assert_eq!(qso_freq(900.0, Some(1500.0)), QsoFreq::Far);
+    }
+
+    /// A heavy hypothesis runs only at the QSO frequency: not away from it, and not
+    /// without a hint, since upstream always has an `nfqso` (#456). CQ (29 bits) runs
+    /// anywhere.
+    #[test]
+    fn heavy_ap_needs_the_qso_frequency() {
+        for qso in [QsoFreq::Unknown, QsoFreq::Near, QsoFreq::Far] {
+            assert!(ap_hypothesis_allowed(29, qso), "{qso:?}");
+        }
+        assert!(ap_hypothesis_allowed(58, QsoFreq::Near));
+        assert!(!ap_hypothesis_allowed(58, QsoFreq::Far));
+        assert!(!ap_hypothesis_allowed(58, QsoFreq::Unknown));
+        assert!(!ap_hypothesis_allowed(77, QsoFreq::Unknown));
+    }
+
+    /// FT8 reads two frequencies (`ft8b.f90`: near `nfqso` or `nftx`): near either is
+    /// near; neither given is unknown; given and near neither is far.
+    #[test]
+    fn near_the_qso_or_the_tx_frequency() {
+        let both = QsoFreqs {
+            rx: Some(1500.0),
+            tx: Some(900.0),
+        };
+        assert_eq!(both.classify(1510.0), QsoFreq::Near);
+        assert_eq!(both.classify(920.0), QsoFreq::Near);
+        assert_eq!(both.classify(1200.0), QsoFreq::Far);
+        let tx_only = QsoFreqs {
+            rx: None,
+            tx: Some(900.0),
+        };
+        assert_eq!(tx_only.classify(900.0), QsoFreq::Near);
+        assert_eq!(tx_only.classify(1500.0), QsoFreq::Far);
+        assert_eq!(QsoFreqs::default().classify(1500.0), QsoFreq::Unknown);
+        assert_eq!(QsoFreqs::rx(Some(1500.0)).classify(1500.0), QsoFreq::Near);
+    }
+
+    /// The heavy hypotheses are the ones that lock MyCall and DxCall: 58 bits and more.
+    /// A hypothesis of 29 bits (blind CQ, MyCall alone) is not heavy and runs anywhere.
+    #[test]
+    fn heavy_starts_where_two_callsigns_are_locked() {
+        const { assert!(HEAVY_AP_LOCKED_BITS > 29 && HEAVY_AP_LOCKED_BITS <= 58) };
+    }
 }

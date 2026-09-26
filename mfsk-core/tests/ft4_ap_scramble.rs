@@ -85,10 +85,16 @@ fn make_slot(msg77: &[u8; 77], freq_hz: f32, snr_db: f32, seed: u64) -> Vec<i16>
         .collect()
 }
 
+/// The QSO frequency the hinted requests pass as `freq_hint`: where `make_slot` puts the
+/// signal. The hints here lock both callsigns, and `ft4_decode.f90` tries such a hypothesis
+/// only within `napwid` of `nfqso` (#456), so without it they would not run at all. At the
+/// signal is also the hardest place for the "does not conjure" tests below.
+const QSO_HZ: f32 = 1000.0;
+
 fn hits(audio: &[i16], hint: Option<&ApHint>, want: &[u8; 77]) -> bool {
     let req = DecodeRequest::<Ft4>::new(audio, 300.0, 2700.0, 1.2, 50);
     let req = match hint {
-        Some(h) => req.ap_hint(h),
+        Some(h) => req.ap_hint(h).freq_hint(QSO_HZ),
         None => req,
     };
     req.decode().results.iter().any(|r| r.message77() == want)
@@ -107,7 +113,7 @@ fn ap_beats_plain_decoding_at_threshold() {
     for snr in [-17i32, -18, -19] {
         let (mut plain, mut aped) = (0, 0);
         for seed in 0..TRIALS {
-            let audio = make_slot(&msg, 1000.0, snr as f32, 0x51EED + seed);
+            let audio = make_slot(&msg, QSO_HZ, snr as f32, 0x51EED + seed);
             if hits(&audio, None, &msg) {
                 plain += 1;
             }
@@ -146,9 +152,10 @@ fn a_hint_for_a_silent_station_does_not_conjure_it() {
 
     for snr in [-15i32, -18, -21] {
         for seed in 0..TRIALS {
-            let audio = make_slot(&present, 1000.0, snr as f32, 0xA11CE + seed);
+            let audio = make_slot(&present, QSO_HZ, snr as f32, 0xA11CE + seed);
             let got = DecodeRequest::<Ft4>::new(&audio, 300.0, 2700.0, 1.2, 50)
                 .ap_hint(&absent_hint)
+                .freq_hint(QSO_HZ)
                 .decode()
                 .results;
             assert!(
@@ -181,6 +188,7 @@ fn a_hint_over_noise_decodes_nothing() {
             .collect();
         let got = DecodeRequest::<Ft4>::new(&noise, 300.0, 2700.0, 1.2, 50)
             .ap_hint(&hint)
+            .freq_hint(QSO_HZ)
             .decode()
             .results;
         assert!(

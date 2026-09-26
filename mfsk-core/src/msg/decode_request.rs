@@ -622,6 +622,7 @@ pub struct DecodeRequest<'a, P: FrameDecodable, Pol: MessagePolicy = DefaultPoli
     pub(crate) freq_max: f32,
     pub(crate) sync_min: f32,
     pub(crate) freq_hint: Option<f32>,
+    pub(crate) tx_freq: Option<f32>,
     pub(crate) depth: DecodeDepth,
     pub(crate) max_cand: usize,
     pub(crate) strictness: DecodeStrictness,
@@ -685,6 +686,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
             freq_max,
             sync_min,
             freq_hint: None,
+            tx_freq: None,
             depth: DecodeDepth::FULL,
             max_cand,
             strictness: DecodeStrictness::Normal,
@@ -705,9 +707,19 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
 }
 
 impl<'a, P: FrameDecodable, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
-    /// Preferred frequency; matching candidates are tried first.
+    /// Preferred frequency; matching candidates are tried first. It is also the QSO
+    /// frequency (`nfqso`) for the a-priori passes: an AP hypothesis that locks both
+    /// callsigns is tried only within 50 Hz of it (or of [`Self::tx_freq`] on FT8), and
+    /// not at all without it, as in `ft4_decode.f90` / `ft8b.f90`.
     pub fn freq_hint(mut self, f: f32) -> Self {
         self.freq_hint = Some(f);
+        self
+    }
+    /// The operator's transmit frequency (`nftx`). FT8 tries an AP hypothesis that
+    /// locks both callsigns within 50 Hz of it as well as of [`Self::freq_hint`]
+    /// (`ft8b.f90`); FT4 and the other modes ignore it (`ft4_decode.f90` has no `nftx`).
+    pub fn tx_freq(mut self, f: f32) -> Self {
+        self.tx_freq = Some(f);
         self
     }
     /// Toggle OSD fallback when the BP staircase fails. `LlrEffort` is
@@ -967,6 +979,7 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
             freq_max: self.freq_max,
             sync_min: self.sync_min,
             freq_hint: self.freq_hint,
+            tx_freq: self.tx_freq,
             depth: self.depth,
             max_cand: self.max_cand,
             strictness: self.strictness,
