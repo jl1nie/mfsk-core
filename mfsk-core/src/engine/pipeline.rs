@@ -283,6 +283,43 @@ pub(crate) fn ap_hypothesis_allowed(locked_bits: usize, qso: QsoFreq) -> bool {
     locked_bits < HEAVY_AP_LOCKED_BITS || qso == QsoFreq::Near
 }
 
+/// The operator's two frequencies, as `ft8b.f90` reads them: `nfqso`, the QSO (receive)
+/// frequency, from `DecodeRequest::freq_hint`, and `nftx`, the transmit frequency, from
+/// `DecodeRequest::tx_freq`. FT8's heavy AP hypotheses are tried within `napwid` of
+/// either (`abs(f1-nfqso).gt.napwid .and. abs(f1-nftx).gt.napwid` skips them);
+/// `ft4_decode.f90` reads `nfqso` only.
+// Only FT8 reads the transmit frequency; a build without it has no caller.
+#[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct QsoFreqs {
+    pub(crate) rx: Option<f32>,
+    pub(crate) tx: Option<f32>,
+}
+
+#[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+impl QsoFreqs {
+    /// The QSO frequency alone.
+    pub(crate) fn rx(freq_hint: Option<f32>) -> Self {
+        Self {
+            rx: freq_hint,
+            tx: None,
+        }
+    }
+
+    /// `Near` within [`QSO_WINDOW_HZ`] of either frequency, `Unknown` when neither is
+    /// given, `Far` otherwise.
+    pub(crate) fn classify(self, cand_freq_hz: f32) -> QsoFreq {
+        match (
+            qso_freq(cand_freq_hz, self.rx),
+            qso_freq(cand_freq_hz, self.tx),
+        ) {
+            (QsoFreq::Near, _) | (_, QsoFreq::Near) => QsoFreq::Near,
+            (QsoFreq::Unknown, QsoFreq::Unknown) => QsoFreq::Unknown,
+            _ => QsoFreq::Far,
+        }
+    }
+}
+
 /// Classifies a candidate at `cand_freq_hz` against `freq_hint`.
 pub(crate) fn qso_freq(cand_freq_hz: f32, freq_hint: Option<f32>) -> QsoFreq {
     match freq_hint {
@@ -2819,6 +2856,27 @@ mod qso_freq_tests {
         assert!(!ap_hypothesis_allowed(58, QsoFreq::Far));
         assert!(!ap_hypothesis_allowed(58, QsoFreq::Unknown));
         assert!(!ap_hypothesis_allowed(77, QsoFreq::Unknown));
+    }
+
+    /// FT8 reads two frequencies (`ft8b.f90`: near `nfqso` or `nftx`): near either is
+    /// near; neither given is unknown; given and near neither is far.
+    #[test]
+    fn near_the_qso_or_the_tx_frequency() {
+        let both = QsoFreqs {
+            rx: Some(1500.0),
+            tx: Some(900.0),
+        };
+        assert_eq!(both.classify(1510.0), QsoFreq::Near);
+        assert_eq!(both.classify(920.0), QsoFreq::Near);
+        assert_eq!(both.classify(1200.0), QsoFreq::Far);
+        let tx_only = QsoFreqs {
+            rx: None,
+            tx: Some(900.0),
+        };
+        assert_eq!(tx_only.classify(900.0), QsoFreq::Near);
+        assert_eq!(tx_only.classify(1500.0), QsoFreq::Far);
+        assert_eq!(QsoFreqs::default().classify(1500.0), QsoFreq::Unknown);
+        assert_eq!(QsoFreqs::rx(Some(1500.0)).classify(1500.0), QsoFreq::Near);
     }
 
     /// The heavy hypotheses are the ones that lock MyCall and DxCall: 58 bits and more.

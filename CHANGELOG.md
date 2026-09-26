@@ -2,6 +2,17 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT8's heavy AP hypotheses also run near the transmit frequency (#456).** `ft8b.f90`
+  tries `iaptype >= 3` within `napwid` of `nfqso` or of `nftx`; this crate had the QSO
+  frequency only. New `DecodeRequest::tx_freq(f)`; FT8 reads it with `freq_hint`
+  (`pipeline::QsoFreqs`), FT4 and the other modes ignore it, as `ft4_decode.f90` has no
+  `nftx`. No sweep passes either frequency, so no baseline moves.
+
+  Tried and not taken: FST4's OSD on `zsave(:,1)` then `zsave(:,2)` with no raw-LLR attempt,
+  as `decode240_101.f90` has it. On the FST4 sweep (the same 3520 files) 12 gained and 18
+  lost (sign test p = 0.36), unexpected decodes 26 -> 33, so the #146 order (raw LLR, then
+  the sum after 2 iterations) stays, with the measurement in its comment.
+
 - **The AP passes take `ft8b.f90`'s bound and `ft4_decode.f90`'s frequency window
   (#456).** `DecodeStrictness::Normal`'s `ap_max_errors` is 36, what `ft8b.f90`
   accepts (`nharderrors.gt.36` is its only bound; `ft4_decode.f90` has none), where it
