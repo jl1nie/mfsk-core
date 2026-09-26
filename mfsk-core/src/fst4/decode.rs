@@ -126,7 +126,7 @@ const SYNC_Q_MIN: u32 = 16;
 /// (`engine::pipeline`/`msg::pipeline_ap`), `REFINE_STEPS`, and
 /// `SYNC_Q_MIN` — only the downsample geometry differs.
 macro_rules! impl_frame_decodable {
-    ($proto:ty, $cfg:expr) => {
+    ($proto:ty, $cfg:expr, $nz:expr) => {
         impl pipeline::GenericPipelineProtocol for $proto {
             /// `fst4_decode.f90:592-621` — see
             /// [`crate::fst4::baseline`]'s module doc for the formula,
@@ -162,6 +162,10 @@ macro_rules! impl_frame_decodable {
         }
 
         impl crate::msg::decode_request::SupportsWideBandAp for $proto {}
+
+        impl crate::msg::decode_request::SupportsNoiseBlanker for $proto {
+            const BLANKER_NZ: usize = $nz;
+        }
 
         /// Opt-in only: `MESSAGE_FILTER_DEFAULT` stays `false` for every
         /// FST4 sub-mode, so a request that names no policy decodes
@@ -212,11 +216,13 @@ macro_rules! impl_frame_decodable {
     };
 }
 
-impl_frame_decodable!(super::Fst4s15, FST4_15_DOWNSAMPLE);
-impl_frame_decodable!(super::Fst4s30, FST4_30_DOWNSAMPLE);
-impl_frame_decodable!(super::Fst4s60, FST4_60A_DOWNSAMPLE);
-impl_frame_decodable!(super::Fst4s120, FST4_120_DOWNSAMPLE);
-impl_frame_decodable!(super::Fst4s300, FST4_300_DOWNSAMPLE);
+// The last argument is `nfft1` in `fst4_decode.f90:180-206`, which the
+// blanker's histogram spans (not `fft1_size`, which differs for 30/60/300).
+impl_frame_decodable!(super::Fst4s15, FST4_15_DOWNSAMPLE, 180_000);
+impl_frame_decodable!(super::Fst4s30, FST4_30_DOWNSAMPLE, 359_856);
+impl_frame_decodable!(super::Fst4s60, FST4_60A_DOWNSAMPLE, 720_000);
+impl_frame_decodable!(super::Fst4s120, FST4_120_DOWNSAMPLE, 1_440_000);
+impl_frame_decodable!(super::Fst4s300, FST4_300_DOWNSAMPLE, 3_594_240);
 
 #[cfg(test)]
 mod tests {

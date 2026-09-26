@@ -326,27 +326,97 @@ where
         .map(|(m, v, pid)| (m.as_slice(), v.as_slice(), *pid))
         .collect();
     let accept = PolicyAccept::<P, Pol>::new(&req.policy);
-    let (raw, fft_cache, budget) = pipeline::decode_frame_budgeted::<P, _>(
-        req.audio,
-        cfg,
-        req.freq_min,
-        req.freq_max,
-        req.sync_min,
-        req.freq_hint,
-        req.depth,
-        req.max_cand,
-        req.strictness,
-        req.eq_mode,
-        sync_q_min,
-        req.fft_cache.as_ref().map(FftCache::as_slice),
-        on_result,
-        req.budget,
-        &ap,
-        &accept,
-    );
+    let pass = |audio: &[i16],
+                precomputed: Option<&[_]>,
+                on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
+                cand_band: Option<(f32, f32)>| {
+        pipeline::decode_frame_budgeted::<P, _>(
+            audio,
+            cfg,
+            req.freq_min,
+            req.freq_max,
+            req.sync_min,
+            req.freq_hint,
+            req.depth,
+            req.max_cand,
+            req.strictness,
+            req.eq_mode,
+            sync_q_min,
+            precomputed,
+            on_result,
+            req.budget,
+            &ap,
+            &accept,
+            cand_band,
+        )
+    };
+    let precomputed = req.fft_cache.as_ref().map(FftCache::as_slice);
+
+    let Some((nb, nz)) = req.noise_blanker else {
+        let (raw, fft_cache, budget) = pass(req.audio, precomputed, on_result, None);
+        return DecodeOutcome {
+            results: pipeline::dedup_known(raw, req.known),
+            fft_cache,
+            budget,
+        };
+    };
+
+    // `fst4_decode.f90:299-301`: the whole decode, once per blanking
+    // level, each on a fresh blanked copy of the raw samples
+    // (`ndropmax = 1`). A message already decoded at an earlier level is
+    // a dupe (`idupe`), so each is kept, and reported, once.
+    let sweep_band = match nb {
+        NoiseBlanker::Sweep { ftol_hz, .. } => {
+            Some(req.freq_hint.map(|f| (f - ftol_hz, f + ftol_hz)))
+        }
+        NoiseBlanker::Percent(_) => None,
+    };
+    let mut results: Vec<DecodeResult> = Vec::new();
+    let mut fft_cache: Option<FftCache> = None;
+    let mut budget = pipeline::BudgetReport::default();
+    for npct in nb.levels() {
+        let cand_band = match sweep_band {
+            // `if(nb.lt.0 .and. npct.ne.0 .and. abs(fc0-..).gt.ntol) cycle`
+            Some(band) if npct != 0 => match band {
+                Some(b) => Some(b),
+                None => continue,
+            },
+            _ => None,
+        };
+        let blanked;
+        let (audio, pre) = if npct == 0 {
+            (req.audio, precomputed)
+        } else {
+            blanked = crate::engine::dsp::blanker::blanker(req.audio, nz, 1, npct);
+            (blanked.as_slice(), None)
+        };
+        // Stream the first level's decodes as they come; a later level's
+        // are reported below, once they are known not to be dupes.
+        let first = results.is_empty() && fft_cache.is_none();
+        let (raw, cache, b) = pass(audio, pre, if first { on_result } else { None }, cand_band);
+        for r in pipeline::dedup_known(raw, req.known) {
+            if results.iter().any(|k| k.info[..77] == r.info[..77]) {
+                continue;
+            }
+            if !first && let Some(cb) = on_result {
+                cb(&r);
+            }
+            results.push(r);
+        }
+        if npct == 0 || fft_cache.is_none() {
+            fft_cache = Some(cache);
+        }
+        budget.exhausted |= b.exhausted;
+        budget.candidates_skipped += b.candidates_skipped;
+        budget.stages_run += b.stages_run;
+        budget.cut_at_score = match (budget.cut_at_score, b.cut_at_score) {
+            (Some(a), Some(c)) => Some(a.max(c)),
+            (a, c) => a.or(c),
+        };
+    }
     DecodeOutcome {
-        results: pipeline::dedup_known(raw, req.known),
-        fft_cache,
+        results,
+        fft_cache: fft_cache.expect("the first level always runs"),
         budget,
     }
 }
@@ -597,6 +667,55 @@ pub trait SupportsSicEarly: FrameDecodable {
 /// sniper is FT8-only that reduces to FT8 either way.
 pub trait SupportsWideBandAp: FrameDecodable {}
 
+/// Protocols whose decoder runs WSJT-X's impulse-noise blanker —
+/// **every FST4 sub-mode**, as `fst4_decode.f90` does (`blanker.f90`, the
+/// GUI's **NB** setting). No other upstream decoder blanks.
+pub trait SupportsNoiseBlanker: FrameDecodable {
+    /// `nfft1` in `fst4_decode.f90`: the sample count the blanker's
+    /// histogram is taken over, padding included.
+    const BLANKER_NZ: usize;
+}
+
+/// WSJT-X's **NB** setting for FST4 (`mainwindow.cpp:5282`,
+/// `nexp_decode += 256*(sbNB+3)`; `fst4_decode.f90:253-267`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NoiseBlanker {
+    /// Blank the loudest `n` percent of samples (`0..=25`; the GUI's
+    /// range, and larger values are clamped to it). `Percent(0)` is
+    /// WSJT-X's default and blanks nothing.
+    Percent(u8),
+    /// Decode once per blanking level `0, step, 2*step, .. 20` percent
+    /// (`nb = -1, -2, -3` for steps 5, 2, 1; the GUI offers -1 and -2).
+    /// Every level above 0 tries only candidates within `ftol_hz` of
+    /// [`DecodeRequest::freq_hint`] — upstream's `ntol` around `nfqso`
+    /// (`fst4_decode.f90:315-316`) — so without a hint only the 0 % pass
+    /// runs. Costs up to 21 decodes.
+    Sweep {
+        /// 5, 2 or 1 percent; anything else is taken as 5.
+        step: u8,
+        /// Upstream's F Tol (`ntol`), in Hz.
+        ftol_hz: f32,
+    },
+}
+
+impl NoiseBlanker {
+    /// The blanking levels to decode at, in upstream's order
+    /// (`do inb=0,inb1,inb2`).
+    #[cfg_attr(not(any(feature = "ft4", feature = "fst4")), allow(dead_code))]
+    pub(crate) fn levels(self) -> Vec<u32> {
+        match self {
+            NoiseBlanker::Percent(p) => alloc::vec![u32::from(p.min(25))],
+            NoiseBlanker::Sweep { step, .. } => {
+                let step = match step {
+                    1 | 2 => u32::from(step),
+                    _ => 5,
+                };
+                (0..=20).step_by(step as usize).collect()
+            }
+        }
+    }
+}
+
 /// Callback type for [`DecodeRequest::on_result`]/[`SniperRequest::on_result`]
 /// — factored into a named alias purely to keep `clippy::type_complexity`
 /// quiet at the two struct-field sites; see `on_result`'s own doc comment
@@ -642,6 +761,10 @@ pub struct DecodeRequest<'a, P: FrameDecodable, Pol: MessagePolicy = DefaultPoli
     /// decoder (`DecodeRequest::<Ft8>::previous_cycle`). Empty for every other mode.
     pub(crate) previous_cycle: &'a [P::DecodeResult],
     pub(crate) fft_cache: Option<FftCache>,
+    /// Set via [`DecodeRequest::noise_blanker`], with the protocol's
+    /// [`SupportsNoiseBlanker::BLANKER_NZ`]. `None`: no blanking.
+    #[cfg_attr(not(any(feature = "ft4", feature = "fst4")), allow(dead_code))]
+    pub(crate) noise_blanker: Option<(NoiseBlanker, usize)>,
     /// Only consulted by [`SupportsSicRounds::__flat_sic`] (set via
     /// [`DecodeRequest::sic_rounds`]); ignored by every other strategy,
     /// including [`SupportsSicEarly::__staged_sic`], whose checkpoint
@@ -707,6 +830,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
             known: &[],
             previous_cycle: &[],
             fft_cache: None,
+            noise_blanker: None,
             sic_rounds: 3,
             wsjtx_low_depth: false,
             wsjtx_contest: false,
@@ -1001,6 +1125,7 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
             known: self.known,
             previous_cycle: self.previous_cycle,
             fft_cache: self.fft_cache,
+            noise_blanker: self.noise_blanker,
             sic_rounds: self.sic_rounds,
             wsjtx_low_depth: self.wsjtx_low_depth,
             wsjtx_contest: self.wsjtx_contest,
@@ -1010,6 +1135,21 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
             tag: self.tag,
             strategy: P::__strategy_for::<Q>(self.tag),
         }
+    }
+}
+
+impl<'a, P: SupportsNoiseBlanker, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
+    /// Blank impulse noise before the whole-slot FFT, as WSJT-X's **NB**
+    /// setting does for FST4 — see [`NoiseBlanker`]. Off by default, as
+    /// WSJT-X's own default (`NB 0 %`) is.
+    ///
+    /// The returned [`DecodeOutcome::fft_cache`] is that of the unblanked
+    /// audio when a pass ran without blanking, and of the blanked audio
+    /// otherwise; a supplied [`DecodeRequest::fft_cache`] is used only by
+    /// an unblanked pass.
+    pub fn noise_blanker(mut self, nb: NoiseBlanker) -> Self {
+        self.noise_blanker = Some((nb, P::BLANKER_NZ));
+        self
     }
 }
 

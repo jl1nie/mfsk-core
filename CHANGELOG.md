@@ -2,6 +2,18 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FST4: WSJT-X's noise blanker (#469).** `fst4_decode.f90` runs its whole decode on
+  samples passed through `blanker.f90`, at the level the GUI's **NB** setting names; this
+  crate had no blanker. `DecodeRequest::noise_blanker(NoiseBlanker)` (FST4 sub-modes,
+  `SupportsNoiseBlanker`) now does the same: `Percent(n)` zeroes the loudest `n` % of the
+  samples and the one after each (`ndropmax = 1`), over upstream's `nfft1` samples;
+  `Sweep { step, ftol_hz }` decodes at 0, step, … 20 % as NB -1 / -2 / -3 do, trying the
+  levels above 0 only within `ftol_hz` of `freq_hint`, and keeps each message once.
+  Off by default, as WSJT-X's NB 0 % is, so a request that does not ask decodes as before.
+  Against `jt9 -7 -p 15 -X` (AP decodes excluded) on 50 FST4-15 slots with 20 full-scale
+  clicks a second: 0 decodes each without NB, 29 (this crate) and 27 (`jt9`) at NB 2 %,
+  differing only on four slots at the edge of decodability (`tests/fst4_noise_blanker.rs`).
+
 - **FT8: WSJT-X's a7 and a8 list decoders (#464).** `ft8_decode.f90` runs two passes
   after the candidate loop that this crate did not have. Both choose among messages built
   from call signs already known instead of decoding the LDPC code
