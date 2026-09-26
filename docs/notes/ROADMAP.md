@@ -676,8 +676,10 @@ version if you're picking up work.
   embedded) and the design decisions to settle first (receive API, no
   global state, rayon and iterators from the start, drift behaviour).
   P0 (oracle build, fixtures, upstream baseline), P1 (wire level) and P2 (the
-  frame decoder: identical to `rjtty` on every fixture) are done; P3
-  (subtraction, retro sweep, assembly) is next.
+  frame decoder: identical to `rjtty` on every fixture) and P3 (subtraction,
+  retro re-sweep, assembly: identical on the mixtures, within 2 of 200 on a
+  hard random set) are done; P4 (host packaging: streaming API, FFI,
+  bindings) is next.
 - **#148** — Research idea (not a commitment, from VK3NV): blind-paired
   FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
   Q65's multi-period averaging (`q65/rx.rs`) is the architectural

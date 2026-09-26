@@ -1,0 +1,9 @@
+# WSJT-X v3.2.0-rc1 (567ad29ce6abf3d4a44f181cdbc7ceba0d73e5f4) sjtty mixtures in one noise, rjtty result
+# name	components	rjtty_messages (| separated, in order)
+two_close	unknown,CQ K1ABC CQ,1500,0.3,AW,-8;unknown,WB9XYZ 599 123,1560,0.9,AW,-12	CQ K1ABC CQ|599 123
+strong_weak	unknown,HELLO WORLD 73,1500,0.3,AW,-3;unknown,CQ W9XYZ CQ,1530,0.6,AW,-12	HELLO WORLD 73
+three_channels	rtty-roundup,K1ABC 599 001,1500,0.3,AW,-8;unknown,CQ JA6DEF CQ,1300,0.5,AW,-8;unknown,TU W7UVW CQ,1700,0.8,AW,-8	CQ JA6DEF CQ|TU W7UVW CQ|K1ABC 599 001
+fading_pair	unknown,CQ K1ABC CQ,1500,0.3,MM,-4;unknown,CQ W9XYZ CQ,1560,0.8,MM,-4	CQ K1ABC CQ
+back_to_back	unknown,CQ K1ABC CQ,1500,0.3,AW,-8;unknown,K1ABC TU,1503,3.3,AW,-8	CQ K1ABC CQ|K1ABC TU
+overlap_same_freq	unknown,HELLO WORLD 73,1500,0.3,AW,-2;unknown,CQ W9XYZ CQ,1515,1.1,AW,-12	HELLO WORLD 73
+four_stations	unknown,CQ K1ABC CQ,1500,0.3,AW,-6;unknown,CQ W9XYZ CQ,1300,0.4,AW,-6;unknown,CQ JA6DEF CQ,1650,0.5,AW,-6;unknown,CQ VK3NV CQ,1750,0.6,AW,-6	CQ K1ABC CQ|CQ W9XYZ CQ|CQ JA6DEF CQ|CQ VK3NV CQ

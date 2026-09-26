@@ -237,7 +237,7 @@ Pipeline, in the order `rjtty_core → jtty_mdecode_step → jtty_mdecode`:
 | call28 | `msg::wsjt77::pack28` / `unpack28` | used (P1); `unpack28` made `pub(crate)`; needs upstream's `standard_call` filter on top (`chkcall` subset, no `/`, no leading `Q`, round trip) — `jtty::source::is_standard_call` |
 | ARRL sections (86) | `msg::wsjt77::ARRL_SECTIONS` | used (P1), made `pub(crate)` |
 | Maidenhead grid | `msg::wsjt77::pack_grid4` | **not reusable as is**: JTTY's GRID4 index is `((f1*18+f2)*10+d1)*10+d2`, domain 0‥32399 — a different mapping from the pack77 `g15` |
-| GFSK synthesis | `engine::dsp::gfsk` | **not reusable as is**: samples the pulse one sample early vs every upstream `gen_*wave.f90` (#482); JTTY has its own `tx::synth_f32` (`gfsk_pulse` is shared) |
+| GFSK synthesis | `engine::dsp::gfsk` | was **not reusable as is** (it sampled the pulse one sample early vs every upstream `gen_*wave.f90`, #482, fixed in #490); JTTY keeps its own `tx::synth_f32` / `synth_complex` (parallel chunked scan, complex output, any symbol length; `gfsk_pulse` is shared) |
 | analytic signal | `engine::dsp::analytic` | for the receiver (P2) |
 | subtraction | `engine::dsp::subtract` | FT8's; JTTY's works on a complex buffer at 6 kHz |
 | tone-shift (`twkfreq`) | `engine::sync2d::freq_shift_cd0` or `engine::dsp::ddc` | not compared in detail |
@@ -420,17 +420,28 @@ shift), `rx.rs` (sync surface, candidates, peak-up, gate, decode, validate;
   the drift comparison is written up. An engineering checkpoint on whether the
   port is faithful — not a decision about whether JTTY is wanted.
 
-### P3 — multi-signal
-Subtraction (on the 6 kHz analytic buffer), retro sweep, duplicate
-suppression, assembly, on the parallel paths of D4. Its precision guard ships in the same PR: both false-decode bugs this
-suite has shipped were in subtraction paths (#243, #253).
-- Tier C: `scripts/gen_jtty_sweep_wavs.sh` on `sjtty`, a sweep test, an entry
-  in `sweep-baseline.json` including the unexpected-decode count; `run-sensitivity-sweeps.sh`
-  wired.
-- A thread-count independence test for every parallel path (D4).
-- **Exit:** multi-signal fixtures (two overlapping signals, one fading)
-  decode both; the unexpected-decode count is recorded in the baseline, and a
-  later rise of ≥ 3 and ≥ 1.5× is flagged as for ft8/ft4/fst4.
+### P3 — multi-signal — done, see "P3 results"
+`subtract.rs` (a decoded frame off the 6 kHz analytic signal), `assemble.rs`
+(`Assembler`, `MessageUpdate`), and in `rx.rs` the pass structure of
+`jtty_mdecode`: channel 0 twice if it subtracted, channels 1 and 2 twice if
+they did; the sticky-sync retry; the retro re-sweep of the three windows before
+each subtracted signal; `Receiver::scan_messages`. Parallel as D4 says: a pass's
+candidates are decoded at once and *settled in order*, failed ones re-decoded on
+the residual while a round subtracts; a batch of windows has its analytic signal
+and sync surface prepared ahead on the pool.
+- Tests: the subtraction against a plain `cos²` convolution and against a direct
+  port of upstream's FFT form; seven `sjtty` mixtures (one noise, calibrated
+  component SNRs) against `rjtty`, a station in every channel among them; a scene
+  in which a weak station needs the subtraction (off: lost); thread-count identity
+  for frames and messages; the assembler's rules one by one.
+- Two random two-station studies against `rjtty`
+  (`scripts/jtty_multi_study.sh`, easy and hard).
+- **Not done:** wiring the JTTY sweeps into `run-sensitivity-sweeps.sh` and
+  `sweep-baseline.json` (the parity test against `UPSTREAM_RECALL.tsv` exists; the
+  baseline file and the per-release run do not) — P4, with the release plumbing.
+- **Exit (met):** the multi-station fixtures decode as `rjtty`'s; a station under
+  a strong one is recovered; the differences from upstream's schedule are
+  measured (2 of 200 in the hard set, none in the easy).
 
 ### P4 — host packaging
 `JttyReceiver` (D2), `MessageUpdate`. FFI: a new receiver-handle function
@@ -532,9 +543,9 @@ Measured with `sjtty` / `rjtty` built by `scripts/build_jttysim.sh` from
   showed as a uniform worst normalised sample error of 4.9e-2 — exactly
   2π·Δf/fs for JTTY's largest tone step — and one token (`i + 1`) brought it to
   1.1e-4. It is a shared-code change with reach into FT8/FT4/FST4 transmit and
-  subtraction references, so it is its own issue; JTTY carries its own
-  synthesiser (`jtty::tx::synth_f32`), which is also the parallel
-  chunked-scan design of D4. Against `sjtty` it is within 6e-4 (one frame) and
+  subtraction references, so it was its own issue, fixed since in #490; JTTY
+  keeps its own synthesiser (`jtty::tx::synth_f32`), which is also the parallel
+  chunked-scan design of D4 and produces the complex reference of P3. Against `sjtty` it is within 6e-4 (one frame) and
   1e-3 (two frames): that residual is upstream's single-precision phase
   accumulation, which grows with length; ours is `f64`.
 - **`rjtty` quirk at dt = 0.** On the noiseless two-frame vector at dt 0.0 it
@@ -603,3 +614,52 @@ corpora of P0.
   11.4 ms per window on one thread (2.4 % of a core in real time), 6.2 ms on 2,
   3.0 ms on 8, 2.0 ms on the default 24-thread pool (247× real time). The output
   is bit-identical for 1, 2, 5 and 16 threads. Not profiled beyond that.
+
+## P3 results (2026-09-26)
+
+- **A bug found by comparing, not by a test.** The first version of
+  `subtract_frame` used a single complex exponential for the `cos²` window's
+  cosine part; `camp` is complex, so the `sin` part does not cancel unless the
+  gain is constant, and the unit tests (constant gain) passed. Comparing the
+  residual with a direct port of upstream's FFT form showed a 20 % difference;
+  with both signs of the exponential the two agree to 2e-15. A test against the
+  plain convolution on a varying signal now pins it.
+- **Mixtures, identical to `rjtty`.** Seven recordings, several stations in one
+  noise at calibrated SNRs (`sim/mix_*.wav`, `MIXES.tsv`): two stations 60 Hz
+  apart, a weak one under a strong one, one in each of the three channels, four
+  stations, a fading pair, back to back on one frequency, overlapping on one
+  frequency. This crate and `rjtty` assemble the same messages in all seven.
+  (`rjtty` at `ndebug 1` also prints frames it absorbed as repeats — counting
+  those credited it with decoding a false frame that the GUI never shows; the
+  comparisons use `ndebug 0`.)
+- **A weak station needs the subtraction.** A strong station and one 20 dB down
+  and 20 Hz away, starting 67 ms later: with `Params::subtract` off only the
+  strong one is decoded, with it on both, and `rjtty` decodes both.
+- **Random two-station recordings** (`scripts/jtty_multi_study.sh`; station A
+  `CQ K1ABC CQ`, B `CQ W9XYZ CQ`, one noise, deterministic):
+  - *easy* — B 25–120 Hz away, within 1.5 s, −14…−6 dB: **100 of 100 recordings
+    identical**; A 100/100 for both, B 69/100 for both, no file differs.
+  - *hard* — B 12–50 Hz away, within 0.3 s, −18…−10 dB, 200 recordings: B recovered
+    **101 (this crate) against 103 (`rjtty`)**, A 200/200 for both; two files where
+    `rjtty` decodes B and this crate does not (both marginal: 10 of 13 sync tones,
+    19 symbol errors in 59 in the one examined), none the other way. Before the
+    failed candidates were re-decoded on the residual it was 100 against 103.
+  That is the cost of the schedule (D4): about 1 % of the weak stations in the
+  hardest case, none where the stations are not almost on top of each other.
+- **Speed** (release, the 30.2 s sample, 60 windows, retro re-sweeps and
+  subtraction included): 11.7 ms per window on one thread (43× real time),
+  6.2 ms on 8 threads (81×), 8.3 ms on the default 24-thread pool. The parallel
+  gain is modest (1.4–1.9×) because windows are taken in order and the tasks
+  inside one are small. By manual timers (`perf` does not run here): the ladder
+  on candidates that pass the gate is about 45 % (~6 ms each on one thread; 50 of
+  891 candidates reach it), sync-surface builds about 30 % (104 builds of 2.4 ms:
+  one per window, one per subtraction, and one per retro window), the rest
+  candidate selection and gating. Caching FFT plans per thread cut an analytic
+  signal from 0.67 ms to 0.05 ms; building a planner per rayon split had been a
+  large share of a window's cost. A retro window cannot use a prepared surface
+  (the interferer changes the signal), which is where a signal-rich recording
+  spends its time.
+- **Not ported / different:** upstream coalesces pending updates between polls
+  (`queue_message_update`); here every merge emits an update and the consumer
+  coalesces — the streaming API is P4. `Params::subtract` is new (off = a
+  single-signal receiver).

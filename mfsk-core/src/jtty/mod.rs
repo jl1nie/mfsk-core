@@ -12,17 +12,20 @@
 //! - **the wire level** (P1): the source grammar, the CRC-12, the tail-biting
 //!   convolutional encoder and the transmit waveform;
 //! - **the frame decoder** (P2): [`rx::Receiver`] takes audio and returns the
-//!   validated frames in it, a faithful port of WSJT-X's `jtty_mdecode` *without*
-//!   signal subtraction, retro re-sweep or message assembly (P3). On upstream's
-//!   own recordings it decodes the same frames at the same frequencies and
-//!   times, scores the same recall in every cell of an AWGN/fading sweep, and —
-//!   being the same algorithm — also makes the same false decodes (see
-//!   `docs/notes/JTTY_UPSTREAM.md`, "P2 results").
+//!   validated frames in it, a faithful port of WSJT-X's `jtty_mdecode`. On
+//!   upstream's own recordings it decodes the same frames at the same
+//!   frequencies and times, scores the same recall in every cell of an AWGN/fading
+//!   sweep, and — being the same algorithm — also makes the same false decodes;
+//! - **several signals** (P3): signal subtraction ([`subtract`]), the retro
+//!   re-sweep, sticky-sync retry, and message assembly ([`assemble`]);
+//!   `Receiver::scan_messages` returns messages. Identical to `rjtty` on every
+//!   fixture, and within 2 of 200 on a hard random set (see
+//!   `docs/notes/JTTY_UPSTREAM.md`, "P2 results" and "P3 results").
 //!
 //! With the `parallel` feature the independent work — frames, waveform
-//! synthesis, the 237 sync-surface columns per window, the candidates of a window,
-//! the rungs of the decode ladder, the windows of a recording — runs on rayon's
-//! pool; every parallel step collects in order, so results do not depend on the
+//! synthesis, the 237 sync-surface columns per window, the candidates of a pass,
+//! the rungs of the decode ladder, the batch of windows a recording prepares ahead
+//! — runs on rayon's pool; every parallel step collects in order, so results do not depend on the
 //! thread count.
 //!
 //! ## Frame
@@ -36,8 +39,10 @@
 //! | module | contents | upstream |
 //! |---|---|---|
 //! | [`source`] | the 32-bit grammar: [`source::Atom`] ⇄ word ⇄ text, validity | `jtty_source_codec.f90`, `jtty_source_encoding.txt` |
+//! | `assemble` | frames → messages: continuation, gaps, repeats, end of message | `jtty_mdecode.f90` (`classify_active_candidate` …) |
 //! | [`correlate`] | complex correlation of the 46 data symbols with the four tone references, and the half-symbol energies | `jtty_payload_correlators.f90` |
 //! | [`crc`] | CRC-12 over the 34-bit payload | `tbcc.f90` (`encode_crc12`), `jtty_tbcc_list_decoder.f90` (`jtty_tbcc_crc_valid`) |
+//! | [`subtract`] | subtracting a decoded frame from the analytic signal | `subtract_jtty.f90` |
 //! | [`tbcc`] | the convolutional encoder and its trellis step | `tbcc.f90` (`tbcc_encode`), `jtty_tbcc_code_profile.f90` |
 //! | `dsp` | analytic signal at 6 kHz, sync waveform, frequency shift (needs an FFT feature) | `ana64a.f90`, `gen_syncwave.f90`, `twkfreq.f90` |
 //! | [`ladder`] | the four-rung decode ladder around it | `jtty_tbcc_decoder.f90` |
@@ -51,6 +56,8 @@
 //! atoms, with exchange profiles) is host UI policy and phase P5. Callers
 //! here build [`source::Atom`]s directly.
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod assemble;
 pub mod correlate;
 pub mod crc;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -59,6 +66,7 @@ pub mod ladder;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
 pub mod source;
+pub mod subtract;
 pub mod tbcc;
 pub mod trellis;
 pub mod tx;

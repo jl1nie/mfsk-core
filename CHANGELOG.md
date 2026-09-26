@@ -112,6 +112,21 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY, several signals (#477, phase P3).** `Receiver::scan_messages` returns messages: a
+  decoded frame is re-encoded and subtracted from the window (`jtty::subtract`) so a weaker
+  station beneath it is found on the residual; the three windows before it are searched again
+  with it gone (the retro re-sweep); an active message whose next frame is due gets a retry at
+  the remembered sync point; and frames are joined into messages, repeats absorbed, with
+  upstream's continuation, gap and completion rules (`jtty::assemble`, `MessageUpdate`).
+  `Params::subtract` turns it off (a single-signal receiver). Against `rjtty` from `v3.2.0-rc1`:
+  seven mixtures with a station in every channel assemble the same messages; on 100 random
+  two-station recordings the two decode the identical messages; on 200 hard ones (12–50 Hz apart,
+  almost simultaneous, the weak one −18…−10 dB) this crate recovers 101 of the weak stations to
+  `rjtty`'s 103 — the price of deciding a pass's candidates at once on rayon's pool instead of one
+  after another (D4). Comparing against `rjtty`'s own subtraction found and fixed a filter error
+  of mine (a `cos²` window built from one complex exponential instead of two; invisible at
+  constant gain). 11.7 ms a window on one thread, 6–8 ms on the pool.
+
 - **JTTY, the frame decoder (#477, phase P2).** `jtty::rx::Receiver` (`decode_window`, `scan`)
   takes 12 kHz audio and returns the validated frames in it, and `jtty::{correlate, trellis,
   ladder}` are the pieces under it: the list-WAVA decoder of the tail-biting code, the four-rung
