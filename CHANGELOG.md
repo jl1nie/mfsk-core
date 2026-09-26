@@ -187,6 +187,16 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY transmit: `jtty::tx::Synth`, the waveform as it is played (#499, E2).** `Synth::<F>::new(tones, f0, amplitude)`
+  then `fill(&mut [f32])` produces the samples of `synth_f32` in pieces of any size with the phase carried
+  between calls, so a transmitter feeding a sound device needs one buffer, not the whole 362 496-sample
+  message, and any chunking gives identical bytes. `Synth<f64>` matches `synth_f32` to rounding.
+  `Synth<f32>` is for the LX7, where `f64` is software: a single `f32` running phase drifts 17 mrad from the
+  reference over 30 s (the carrier increment's representation error, systematic), so the carrier is a 64-bit
+  integer oscillator and only the modulation phase is a wrapped `f32`; what is left is 4.4 mrad at the end of
+  the longest message, at 300, 1500 and 2800 Hz alike, and a message synthesised that way in 480-sample pieces
+  decodes on the receiver. No drift term (`synth_drifting_f32` stays the test-only whole-message form).
+
 - **Docs: feeding JTTY from a live source.** `BINDINGS.md` / `.ja.md` and `Stream`'s docs say what the
   sample count means as time: a run of dropped samples must be replaced by zeros (or a `reset`), a
   slightly wrong source clock does not matter, and `push` belongs on a worker thread. MSK144's

@@ -746,3 +746,28 @@ fn a_stream_that_ends_reports_what_was_left_unfinished() {
     stream.reset();
     assert_eq!(stream.samples_seen(), 0);
 }
+
+/// A message played out by the streaming synthesiser in `f32`, the way a
+/// transmitter feeds a sound device, comes back through the receiver.
+#[test]
+fn a_message_synthesised_in_f32_pieces_decodes() {
+    use mfsk_core::jtty::pack::{self, ExchangeProfile};
+    use mfsk_core::jtty::tx::Synth;
+    let tones = pack::tones("CQ K1ABC CQ", ExchangeProfile::Unknown)
+        .unwrap()
+        .unwrap();
+    let mut synth = Synth::<f32>::new(&tones, 1500.0, 3000.0);
+    let mut audio = vec![0i16; 12_000];
+    let mut piece = [0f32; 480];
+    while !synth.is_finished() {
+        let n = synth.fill(&mut piece);
+        audio.extend(piece[..n].iter().map(|&x| x as i16));
+    }
+    audio.extend(std::iter::repeat_n(0i16, 6 * 12_000));
+    let rx = Receiver::new();
+    let heard = rx.scan_messages(&audio, &Params::default());
+    assert!(
+        heard.iter().any(|u| u.complete && u.text == "CQ K1ABC CQ"),
+        "{heard:?}"
+    );
+}
