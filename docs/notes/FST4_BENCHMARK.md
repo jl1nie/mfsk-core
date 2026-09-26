@@ -1548,9 +1548,12 @@ at 20 %, 288 against 80; at the realistic ~50 %, **380 against 350**.
 
 **3. The mechanism is the OSD stage.** Breadth-first's jump from 137 to
 350 between the 30 % and 40 % budget points is a stage boundary:
-sweeping stages 0-3 (the offset-0 ladder, OSD included) across ~1 263
-candidates costs ~5 050 units, just under the 4 932 units that 40 %
-buys. Below that, breadth-first has spent its entire budget on cheap BP
+sweeping stages 0-3 (the offset-0 ladder, OSD included) across 1 263
+candidates costs at most 4 x 1 263 = 5 052 units (less in fact: a
+candidate that decodes stops there, and one below `osd_attempt_min` has
+no OSD stage), the same size as the 4 932 units that 40 % buys. The
+sweep needs about that much, and the 30 % point's 3 699 does not reach
+it. Below that, breadth-first has spent its entire budget on cheap BP
 stages and **has not reached OSD for anybody** — and OSD is where most
 of these decodes come from. Deferring the highest-yield stage until
 every candidate has had every cheaper one is exactly what breadth-first

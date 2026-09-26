@@ -325,7 +325,7 @@ mfsk-core は*あなたが*供給するクロージャを通じて結果を配�
 [dependencies]
 # `Decoded` + `to_decoded` は 0.9 で導入。デコード行を JSON 化したいなら
 # `features = ["serde"]` を足す。
-mfsk-core = "0.9"
+mfsk-core = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # 任意、§5.3 の Stream アダプタ用のみ:
 tokio-stream = "0.1"
@@ -403,7 +403,7 @@ pub fn decode_slot_stream(audio: Vec<i16>) -> mpsc::Receiver<Decoded> {
 #[tokio::main]
 async fn main() {
     // あなたのキャプチャパイプラインが供給する: スロット境界に整列した
-    // 12 kHz モノラル i16 PCM の 15 秒スロット 1 つ（約 180,000 サンプル）。
+    // 12 kHz モノラル i16 PCM の 15 秒スロット 1 つ（約 180 000 サンプル）。
     let audio: Vec<i16> = load_one_ft8_slot();
 
     let mut rx = decode_slot_stream(audio);

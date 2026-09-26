@@ -40,10 +40,13 @@ IC-705 (または互換 BLE CI-V / 音声ケーブル対応無線機) と連携�
   自体は USB host になれるので、外部から 5 V を与えれば host として
   デバイスを認識する (issue #360) が、運用先にもう一つ電源を持ち込む
   わけにはいかない。後継の経路は M5Stack CoreS3 で、AXP2101 + AW9523B
-  により正規の USB-OTG host mode を備える — `docs/reference/EMBEDDED.ja.md`
-  *What we test* (CoreS3 行) と `docs/notes/ROADMAP.md` Phase B-Core
-  (2026-05-17 pivot; ハードウェア bring-up 進行中、ファーム出荷日は未定)
-  を参照。Uac mode は共有検証作業でコードベースが起動するよう
+  により正規の USB-OTG host mode を備え、その後実際に構築・検証された:
+  IC-705 からの UAC キャプチャが 2026-08-23 に 10 分間途切れずエラー 0 で
+  動作した (issue #163)。よって CoreS3 が現在の主たる UAC コントローラの
+  ターゲットであり、StickS3 は demo / acoustic-fallback 基板である
+  (2026-05-17 pivot)。`docs/reference/MANUAL_M5STACK_CORES3.ja.md`、
+  `docs/reference/EMBEDDED.ja.md` *What we test* (CoreS3 行)、
+  `docs/notes/ROADMAP.md` Phase B-Core を参照。Uac mode は共有検証作業でコードベースが起動するよう
   `m5stack-s3-app` に残してあり、StickS3 では "USB-OTG host not
   supported on this board" のログ行を出してクリーンに終了する。
 
@@ -126,10 +129,13 @@ wrapper を使う理由：
 - `espflash monitor` は `--before default-reset` がデフォルトで、S3
   USB-OTG 基板では flash 後に chip を DOWNLOAD mode に落とす
   ("rst:0x15 USB_UART_CHIP_RESET … waiting for download")。wrapper は
-  `--before no-reset --after no-reset` を渡す。
+  2 つ目のプロセスを決して起動しないことでこれを避ける: 単一の
+  `espflash flash --monitor` が両方を担い、espflash 自身のデフォルト
+  (`--before default-reset`、`--after hard-reset`) で動く。
 - 同一 ELF の再 flash は "Segment … has not changed, skipping write"
   と出て **実際は書き込まれない** — chip は旧バイナリを動かし続ける。
-  wrapper はこれを明示ログするので不可解な挙動を追わずに済む。これが
+  wrapper が取得する transcript にこれが現れるので、不可解な挙動を追わずに
+  済む。これが
   出たらソースファイルを 1 つ触る (`log::info!` を 1 行ずらす等) と
   rebuild が走る。
 

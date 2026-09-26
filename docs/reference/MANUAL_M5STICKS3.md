@@ -42,9 +42,13 @@ Five development / diagnostic modes round out the set:
   in from outside and it enumerates devices (issue #360) — but a second
   power source is not something to carry into the field. The successor
   path is M5Stack CoreS3, which has AXP2101 + AW9523B for proper
-  USB-OTG host mode — see `docs/reference/EMBEDDED.md` *What we test* (CoreS3 row)
-  and `docs/notes/ROADMAP.md` Phase B-Core (2026-05-17 pivot; hardware
-  bring-up in progress, no firmware ship date yet). The Uac mode
+  USB-OTG host mode, and it has since been built and verified: UAC
+  capture from an IC-705 ran ten unbroken minutes with zero errors on
+  2026-08-23 (issue #163), so the CoreS3 is now the main UAC controller
+  target and the StickS3 is the demo / acoustic-fallback board
+  (2026-05-17 pivot). See `docs/reference/MANUAL_M5STACK_CORES3.md`,
+  `docs/reference/EMBEDDED.md` *What we test* (CoreS3 row) and
+  `docs/notes/ROADMAP.md` Phase B-Core. The Uac mode
   is present in `m5stack-s3-app` so the codebase boots for shared
   verification work — on StickS3 it exits cleanly with a "USB-OTG
   host not supported on this board" log line.
@@ -129,11 +133,13 @@ Why the wrapper:
 - `espflash monitor` defaults to `--before default-reset`, which on
   S3 USB-OTG boards drops the chip into DOWNLOAD mode after flash
   ("rst:0x15 USB_UART_CHIP_RESET … waiting for download"). The
-  wrapper passes `--before no-reset --after no-reset`.
+  wrapper avoids this by never starting a second process: a single
+  `espflash flash --monitor` covers both halves, with espflash's own
+  defaults (`--before default-reset`, `--after hard-reset`).
 - Re-flashing an unchanged ELF prints "Segment … has not changed,
   skipping write" and **does not actually re-flash** — the chip keeps
-  running the old binary. The wrapper logs this clearly so you don't
-  chase phantom behaviour. If you see this, touch a source file (bump
+  running the old binary. The transcript the wrapper captures shows
+  this, so you don't chase phantom behaviour. If you see this, touch a source file (bump
   a `log::info!` line) and rebuild.
 
 A real flash takes 15-25 s for the S3's factory partition. The

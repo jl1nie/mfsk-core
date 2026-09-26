@@ -1,8 +1,11 @@
 # m5stack-s3-app — agent notes
 
-Production FT8 controller for M5StickS3 — LCD UI, QSO FSM,
-WiFi UDP log streaming, ES8311 audio, planned USB UAC + BLE
-CI-V to IC-705. The repo-root `CLAUDE.md` is authoritative
+Demo / acoustic-fallback FT8 controller for M5StickS3 (repositioned
+2026-05-17, see "Status" below) — LCD UI, QSO FSM, WiFi UDP log
+streaming, ES8311 audio, BLE CI-V to IC-705. USB UAC does not run on
+this board (it cannot source VBUS); the main UAC controller target is
+`m5stack-cores3-app`, and `uac.rs` here stays as reference only. The
+repo-root `CLAUDE.md` is authoritative
 for flash-and-capture conventions (`scripts/flash-monitor.sh`,
 USB-CDC freeze caveats); see also
 [`embedded-poc/CLAUDE.md`](../CLAUDE.md) for the shared

@@ -339,7 +339,7 @@ Two facts drive the shape:
 [dependencies]
 # `Decoded` + `to_decoded` land in 0.9; add `features = ["serde"]` if you
 # want to serialize decode rows to JSON.
-mfsk-core = "0.9"
+mfsk-core = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # Optional, only for the Stream adaptor in §5.3:
 tokio-stream = "0.1"
