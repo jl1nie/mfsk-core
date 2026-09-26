@@ -126,6 +126,11 @@ object Mfsk {
     /// Received by a stateful receiver handle rather than a slot decode
     /// (JTTY): see [MfskJttyReceiver].
     const val CAP_STREAM_RECEIVER = 1L shl 15
+    /// The transmit frequency (`nftx`) centres the AP window too. FT8 only. (The Kotlin
+    /// binding decodes with the mode's defaults and has no parameters to set it with yet.)
+    const val CAP_TX_FREQ = 1L shl 16
+    /// The FST4 noise blanker is honoured.
+    const val CAP_NOISE_BLANKER = 1L shl 17
 
     /// The boundary's own revision, separate from the crate version.
     val abiVersion: Int get() = nativeAbiVersion()

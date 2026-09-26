@@ -112,6 +112,23 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **The C ABI takes the FT8 transmit frequency and the FST4 noise blanker (#466).** Four fields
+  after `search_hz` on `MfskDecodeParams`: `tx_freq_hz` (FT8's `nftx`; `NaN` is unset), and
+  `nb_percent`, `nb_sweep_step`, `nb_ftol_hz` (WSJT-X's NB setting for FST4: blank the loudest
+  0‥25 % of samples, or sweep 0, step, … 20 % with `step` 5, 2 or 1 within `nb_ftol_hz` of
+  `freq_hint_hz`). Two new capability bits say who has them, `MFSK_CAP_TX_FREQ` (FT8 alone, in the
+  registry as `caps::TX_FREQ`) and `MFSK_CAP_NOISE_BLANKER` (every FST4 sub-mode, `caps::NOISE_BLANKER`,
+  tied to `SupportsNoiseBlanker` in `registry_caps.rs`). As with every option here, a mode without
+  the capability refuses the field (`MFSK_STATUS_UNSUPPORTED`) rather than dropping it — so
+  `tx_freq_hz` is refused on FT4, where the Rust API ignores it, and beside `search_hz`, whose
+  narrow-band request has no transmit frequency. An older, shorter struct leaves all four at their
+  defaults. On FT8 at −21 dB, with the AP hint on the QSO pair and the receive frequency 700 Hz away,
+  `tx_freq_hz` takes 12 fixed-seed files from 3 decoded to 10, the count a hint on the signal gets
+  (`tests/params_tx_nb.rs`). Swift: `DecodeParams.transmitFrequencyHz`, `.noiseBlanker`
+  (`.percent` / `.sweep`), `Capabilities.transmitFrequency` / `.noiseBlanker`. Kotlin has no
+  parameter API yet, so it gets the two capability constants only. The other request knobs of #466
+  (Q65's) are a separate change.
+
 - **JTTY text packer and transmit path (#477, phase P5).** `jtty::pack::pack(text, profile)` is
   upstream's `pack_jtty`: normalise the text, then pick the fewest frames with a dynamic program
   over character offsets (a callsign action, control phrase, number, grid, `599 <location>` or

@@ -126,7 +126,7 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `new` | `(audio, freq_min, freq_max, sync_min, max_cand)` | — | 全部 | 広帯域探索 |
 | `.freq_hint(hz)` | `f32` | 未設定 | 全部 | この周波数付近の候補を優先。**a-priori パスの QSO 周波数（`nfqso`）でもある:** `.ap_hint()` が両方の呼出符号を固定するとき、その仮説はこの周波数の 50 Hz 以内の候補にだけ試し、未設定なら一切試さない（`ft4_decode.f90` / `ft8b.f90` は常に `nfqso` を持つ）。FT4 はこの窓の候補を、OSD の 3 つ目のスナップショット（`maxosd = 3`）でも復号する。CQ と MyCall だけの仮説は、どこでも試す |
 | `.previous_cycle(&[..])` | 復号結果 | 空 | FT8 | 同じ系列の 1 周期前（30 秒前のスロット）の復号結果。WSJT-X の **a7** リスト復号を有効にする: その各組が次に送りうるメッセージを、前回の周波数と DT で照合する（pass id 30）。**a8** は呼び出し不要: `.ap_hint()` に MyCall、HisCall、HisGrid があり `.freq_hint()` があれば動く（pass id 31） |
-| `.tx_freq(hz)` | `f32` | 未設定 | FT8 | 送信周波数（`nftx`）: FT8 は両方の呼出符号を固定する仮説を、この周波数の 50 Hz 以内でも試す。他のモードは無視する（`ft4_decode.f90` に `nftx` はない） |
+| `.tx_freq(hz)` | `f32` | 未設定 | FT8 | 送信周波数（`nftx`）: FT8 は両方の呼出符号を固定する仮説を、この周波数の 50 Hz 以内でも試す。他のモードは無視する（`ft4_decode.f90` に `nftx` はない）。モードに無いものを拒否する C ABI では、FT8 だけに `MFSK_CAP_TX_FREQ` として公開している |
 | `.osd(bool)` | `bool` | `true` | 全部 | BP の階段が失敗したときの OSD フォールバック。ホストデコードでは `LlrEffort` は常に `Full` |
 | `.strictness(s)` | `DecodeStrictness` | `Normal` | 全部 | 採否閾値のプロファイル。どのノブがどのプロトコルに実際に届くかは [§6](#6-engine-プリミティブ) |
 | `.eq_mode(m)` | `EqMode` | `Off` | 全部 | `Off` / `Local`。**入力音声**の性質であって探索の性質ではない |

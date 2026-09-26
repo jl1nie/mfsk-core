@@ -46,6 +46,7 @@ final class ABIContractTests: XCTestCase {
             (.knownFilter, MFSK_CAP_KNOWN_FILTER), (.knownSubtract, MFSK_CAP_KNOWN_SUBTRACT),
             (.fftCache, MFSK_CAP_FFT_CACHE), (.onResult, MFSK_CAP_ON_RESULT),
             (.encode, MFSK_CAP_ENCODE), (.streamReceiver, MFSK_CAP_STREAM_RECEIVER),
+            (.transmitFrequency, MFSK_CAP_TX_FREQ), (.noiseBlanker, MFSK_CAP_NOISE_BLANKER),
         ]
         for (swift, c) in pairs {
             XCTAssertEqual(swift.rawValue, UInt64(c))

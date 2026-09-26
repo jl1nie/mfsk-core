@@ -52,6 +52,10 @@ fun main() {
     val ft4 = modes.first { Mfsk.modeName(it) == "FT4" }
     check("FT4 has no sniper", !Mfsk.supports(ft4, Mfsk.CAP_SNIPER))
     check("FT4 does wide-band AP", Mfsk.supports(ft4, Mfsk.CAP_AP_WIDEBAND))
+    check("FT8 has a transmit frequency", Mfsk.supports(ft8, Mfsk.CAP_TX_FREQ))
+    check("FT4 has none (ft4_decode.f90 has no nftx)", !Mfsk.supports(ft4, Mfsk.CAP_TX_FREQ))
+    check("FT8 has no noise blanker", !Mfsk.supports(ft8, Mfsk.CAP_NOISE_BLANKER))
+    check("FST4 has the noise blanker", fst4.all { Mfsk.supports(it, Mfsk.CAP_NOISE_BLANKER) })
     val wspr = modes.firstOrNull { Mfsk.modeName(it) == "WSPR" }
     if (wspr != null) {
         check("WSPR does not drive the decode handle",

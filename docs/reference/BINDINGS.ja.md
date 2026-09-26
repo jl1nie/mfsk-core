@@ -10,7 +10,7 @@ Rust 以外から mfsk-core を利用するための文書。Rust ホスト API 
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`、ヘッダ `mfsk-ffi/include/mfsk.h` | CI `ffi` ジョブ — 両 feature セットでの Rust テストに加え、実在の C++ ドライバ `examples/cpp_smoke/`（マルチスレッド負荷試験を含む） |
 | **Kotlin / Android** | `bindings/kotlin/`（C シム + `Mfsk.kt`） | CI `kotlin` ジョブ、デスクトップ JVM 上 |
-| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 75件と `aarch64-apple-ios` クロスビルド |
+| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 80件と `aarch64-apple-ios` クロスビルド |
 
 3つとも同一の C ABI の上に載っている。`mfsk.h` は cbindgen 生成でリポジトリに
 コミットされており、そのドキュメントコメントがシンボル単位の正本である。
@@ -178,11 +178,14 @@ p.freq_max_hz = 2600.0f;
 | `depth` | `MfskDecodeDepth` — コスト／再現率の段 |
 | `strictness` | `MfskStrictness` — 採否閾値のプロファイル |
 | `eq_mode` | `MfskEqMode`。**入力音声の性質**であって探索の性質ではない（アナログフィルタが傾けた通過帯域を平坦化する） |
-| `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定。a-priori パスの QSO 周波数でもある: 両方の呼出符号を固定する AP ヒント（`ap_call1` と `ap_call2`）は、この周波数の 50 Hz 以内にだけ試し、未設定なら一切試さない。送信周波数（Rust の `tx_freq`）は、この ABI ではまだ公開していない |
+| `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定。a-priori パスの QSO 周波数でもある: 両方の呼出符号を固定する AP ヒント（`ap_call1` と `ap_call2`）は、この周波数の 50 Hz 以内にだけ試し、未設定なら一切試さない。送信周波数は下の `tx_freq_hz` |
 | `sic_rounds` | 逐次干渉除去の回数、0 で無効。`MFSK_CAP_SIC_ROUNDS` が必要 |
 | `sic_early` | チェックポイント模倣の早期デコード。`MFSK_CAP_SIC_EARLY` が必要 |
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | 事前情報ヒント。`MFSK_CAP_AP_WIDEBAND`（狭帯域呼び出しでは `_AP_NARROW`）が必要 |
 | `search_hz` | 狭帯域探索の半値幅。0 でモード既定。`MFSK_CAP_SNIPER` のときのみ意味を持つ |
+| `tx_freq_hz` | 操作者自身の送信周波数（`nftx`）。`NaN`（`_init` が書く値）は未設定。両方の呼出符号を固定する AP 仮説は、`freq_hint_hz` **または**これの 50 Hz 以内で試す。`MFSK_CAP_TX_FREQ`（FT8 のみ: `ft8b.f90` には `nftx` があり `ft4_decode.f90` には無い）と広帯域探索が必要 — `search_hz` を指定すると拒否される。`search_hz` の後ろに追加したフィールドなので、古い短い構造体では未設定のまま |
+| `nb_percent` | FST4 ノイズブランカ（固定）: 振幅の大きい方から指定パーセントのサンプルを消す、0‥25。0（既定）は何もしない（WSJT-X の NB 0 %）。`MFSK_CAP_NOISE_BLANKER`（全 FST4 サブモード）が必要 |
+| `nb_sweep_step`, `nb_ftol_hz` | FST4 ノイズブランカ（スイープ。WSJT-X の NB −1、−2、−3）: ブランキング量 `0, step, 2·step … 20` パーセントごとに 1 回デコードする。`nb_sweep_step` は 5、2、1。0（既定）はスイープ無しで `nb_percent` が効く。0 より大きい段は `freq_hint_hz` から `nb_ftol_hz`（既定 20）以内の候補だけを見るので、スイープには `freq_hint_hz` が必要。最大 21 回のデコード |
 
 **AP フィールドはメッセージのフィールドをその順に並べたもの**である —
 CQ の場合 `ap_call1` は `"CQ"` であって送信局ではない。これらは探索を
@@ -687,7 +690,7 @@ for row in try session.decode(slot) {
 録音（`#filePath` で位置を求める）と自前のループバックを流す。`Jtty.tones(for:profile:)`
 （テキストパッカー）、`Jtty.synthesise(_:)`、`Jtty.audio(for:)` がテキストを音声にする。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 75 件のテストを
+`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 80 件のテストを
 走らせる。実アプリからのリンク（および iOS ビルドが `mobile` feature セットを
 選ぶべき理由）は `bindings/swift/README.md` が扱う。
 

@@ -544,6 +544,27 @@ pub struct MfskDecodeParams {
     /// Half-width of a narrow-band search, Hz; 0 for the mode's
     /// default. Only meaningful with `MFSK_CAP_SNIPER`.
     pub search_hz: f32,
+    /// The operator's own transmit frequency (`nftx`), Hz. NaN means unset,
+    /// which is what `mfsk_decode_params_init` writes. An a-priori hypothesis
+    /// that locks both callsigns is tried within 50 Hz of `freq_hint_hz` **or**
+    /// of this. Requires `MFSK_CAP_TX_FREQ` (FT8's alone) and the wide-band
+    /// search (`search_hz` 0). Added after `search_hz`, so an older, shorter
+    /// struct leaves it unset.
+    pub tx_freq_hz: f32,
+    /// FST4 noise blanker, sweep mode: the half-width, Hz, around `freq_hint_hz`
+    /// that the blanked passes look at (upstream's F Tol, `ntol`). Only read when
+    /// `nb_sweep_step` is non-zero. Default 20.
+    pub nb_ftol_hz: f32,
+    /// FST4 noise blanker, fixed mode: blank the loudest this-many **percent** of
+    /// samples, 0‥25. 0 (the default) blanks nothing, as WSJT-X's own NB 0 %.
+    /// Requires `MFSK_CAP_NOISE_BLANKER`.
+    pub nb_percent: u8,
+    /// FST4 noise blanker, sweep mode: decode once per blanking level
+    /// `0, step, 2·step, … 20` percent, step 5, 2 or 1 (WSJT-X's NB −1, −2, −3).
+    /// 0 (the default) is not a sweep and `nb_percent` applies instead. A sweep
+    /// costs up to 21 decodes and needs `freq_hint_hz`, since every level above 0
+    /// tries only candidates near it. Requires `MFSK_CAP_NOISE_BLANKER`.
+    pub nb_sweep_step: u8,
 }
 
 /// One decoded transmission, written into caller memory.

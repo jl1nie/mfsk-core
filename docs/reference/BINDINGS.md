@@ -10,7 +10,7 @@ targets see [`EMBEDDED.md`](EMBEDDED.md).
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`, header `mfsk-ffi/include/mfsk.h` | CI `ffi` job — Rust tests under both feature sets plus `examples/cpp_smoke/`, a real C++ driver including a multi-thread stress |
 | **Kotlin / Android** | `bindings/kotlin/` (C shim + `Mfsk.kt`) | CI `kotlin` job, on a desktop JVM |
-| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 75 XCTest cases, plus the `aarch64-apple-ios` cross-build |
+| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 80 XCTest cases, plus the `aarch64-apple-ios` cross-build |
 
 All three sit on the same C ABI. `mfsk.h` is cbindgen-generated and
 committed, and its doc comments are the authoritative per-symbol
@@ -184,11 +184,14 @@ p.freq_max_hz = 2600.0f;
 | `depth` | `MfskDecodeDepth` — cost/recall rung |
 | `strictness` | `MfskStrictness` — accept/reject threshold profile |
 | `eq_mode` | `MfskEqMode`. A property of the *input audio* — it flattens a passband an analogue filter has tilted — not of the search |
-| `freq_hint_hz` | prioritise candidates near this frequency; `NaN` (what `_init` writes) means unset. It is also the QSO frequency for the a-priori passes: an AP hint that locks both callsigns (`ap_call1` and `ap_call2`) is tried only within 50 Hz of it, and not at all when it is unset. The transmit frequency (`tx_freq` in Rust) is not exposed through this ABI yet |
+| `freq_hint_hz` | prioritise candidates near this frequency; `NaN` (what `_init` writes) means unset. It is also the QSO frequency for the a-priori passes: an AP hint that locks both callsigns (`ap_call1` and `ap_call2`) is tried only within 50 Hz of it, and not at all when it is unset. The transmit frequency is `tx_freq_hz`, below |
 | `sic_rounds` | successive-interference-cancellation rounds, 0 for none. Requires `MFSK_CAP_SIC_ROUNDS` |
 | `sic_early` | checkpoint-emulation early decode. Requires `MFSK_CAP_SIC_EARLY` |
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | a-priori hint. Requires `MFSK_CAP_AP_WIDEBAND` (or `_AP_NARROW` on a narrow-band call) |
 | `search_hz` | half-width of a narrow-band search; 0 for the mode's default. Only meaningful with `MFSK_CAP_SNIPER` |
+| `tx_freq_hz` | the operator's own transmit frequency (`nftx`); `NaN` (what `_init` writes) means unset. An AP hypothesis that locks both callsigns is tried within 50 Hz of `freq_hint_hz` **or** of this. Requires `MFSK_CAP_TX_FREQ` (FT8 alone: `ft8b.f90` has an `nftx`, `ft4_decode.f90` does not) and the wide-band search — refused with `search_hz` set. Added after `search_hz`: an older, shorter struct leaves it unset |
+| `nb_percent` | FST4 noise blanker, fixed: blank the loudest this-many percent of samples, 0‥25; 0 (default) blanks nothing, as WSJT-X's NB 0 %. Requires `MFSK_CAP_NOISE_BLANKER` (every FST4 sub-mode) |
+| `nb_sweep_step`, `nb_ftol_hz` | FST4 noise blanker, sweep (WSJT-X's NB −1, −2, −3): decode once per blanking level `0, step, 2·step … 20` percent, `nb_sweep_step` 5, 2 or 1; 0 (default) is no sweep and `nb_percent` applies. The blanked levels look only at candidates within `nb_ftol_hz` (default 20) of `freq_hint_hz`, which a sweep therefore requires. Costs up to 21 decodes |
 
 **The AP fields are the message's fields in order** — `ap_call1` is
 `"CQ"` for a CQ, not the transmitting station. They lock message bits

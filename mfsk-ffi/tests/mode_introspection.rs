@@ -19,7 +19,7 @@ use mfsk_core::registry::caps as r;
 /// built from the same source would prove nothing.
 #[test]
 fn abi_caps_match_the_registry() {
-    let pairs: [(&str, u64, u32); 15] = [
+    let pairs: [(&str, u64, u32); 17] = [
         ("DECODE_HANDLE", MFSK_CAP_DECODE_HANDLE, r::DECODE_HANDLE),
         ("SNIPER", MFSK_CAP_SNIPER, r::SNIPER),
         ("AP_NARROW", MFSK_CAP_AP_NARROW, r::AP_NARROW),
@@ -35,6 +35,8 @@ fn abi_caps_match_the_registry() {
         ("FFT_CACHE", MFSK_CAP_FFT_CACHE, r::FFT_CACHE),
         ("ON_RESULT", MFSK_CAP_ON_RESULT, r::ON_RESULT),
         ("ENCODE", MFSK_CAP_ENCODE, r::ENCODE),
+        ("TX_FREQ", MFSK_CAP_TX_FREQ, r::TX_FREQ),
+        ("NOISE_BLANKER", MFSK_CAP_NOISE_BLANKER, r::NOISE_BLANKER),
     ];
     for (name, abi, reg) in pairs {
         assert_eq!(

@@ -167,6 +167,16 @@ pub mod caps {
     pub const ON_RESULT: u32 = 1 << 13;
     /// A synthesiser exists: message bits in, audio out.
     pub const ENCODE: u32 = 1 << 14;
+    // Bit 15 is not a registry capability: the C ABI puts `MFSK_CAP_STREAM_RECEIVER` there,
+    // for JTTY, which has no registry entry (it is outside `Protocol`).
+    /// `.tx_freq()` — the operator's transmit frequency (`nftx`) — changes the search:
+    /// an AP hypothesis that locks both callsigns is tried within 50 Hz of it as well
+    /// as of `.freq_hint()`. **FT8 only**, because `ft8b.f90` is the one upstream
+    /// decoder with an `nftx`; `ft4_decode.f90` has none.
+    pub const TX_FREQ: u32 = 1 << 16;
+    /// `.noise_blanker()` — WSJT-X's **NB** setting for FST4 (`SupportsNoiseBlanker`):
+    /// blank the loudest samples before the whole-slot transform.
+    pub const NOISE_BLANKER: u32 = 1 << 17;
 }
 
 /// How to read a protocol's `sync_min`, because the three scales are
@@ -355,7 +365,8 @@ const FT8_PROFILE: DecodeProfile = DecodeProfile {
         | caps::KNOWN_SUBTRACT
         | caps::FFT_CACHE
         | caps::ON_RESULT
-        | caps::ENCODE,
+        | caps::ENCODE
+        | caps::TX_FREQ,
     defaults: DecodeDefaults {
         freq_min_hz: 100.0,
         freq_max_hz: 3000.0,
@@ -418,7 +429,8 @@ const FST4_PROFILE: DecodeProfile = DecodeProfile {
         | caps::KNOWN_FILTER
         | caps::FFT_CACHE
         | caps::ON_RESULT
-        | caps::ENCODE,
+        | caps::ENCODE
+        | caps::NOISE_BLANKER,
     defaults: DecodeDefaults {
         freq_min_hz: 100.0,
         freq_max_hz: 3000.0,
