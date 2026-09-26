@@ -262,13 +262,25 @@ pub(crate) const HEAVY_AP_LOCKED_BITS: usize = 55;
 /// onto every marginal candidate in the band and come back as decodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QsoFreq {
-    /// The request has no `freq_hint`: no aim point to be near or far from. Nothing is
-    /// restricted, as before #456.
+    /// The request has no `freq_hint`. For `maxosd` it is like `Far`; for the heavy AP
+    /// hypotheses too: upstream always has an `nfqso` and tries them only near it, so
+    /// without one they are not tried ([`ap_hypothesis_allowed`]).
     Unknown,
     /// Within [`QSO_WINDOW_HZ`] of the hint.
     Near,
     /// The hint is given and the candidate is not within [`QSO_WINDOW_HZ`] of it.
     Far,
+}
+
+/// Whether an a-priori hypothesis locking `locked_bits` may be tried at a candidate
+/// classified `qso`. A heavy one ([`HEAVY_AP_LOCKED_BITS`] or more: MyCall and DxCall) only
+/// at the QSO frequency, as `ft4_decode.f90` / `ft8b.f90` do (`iaptype >= 3` needs
+/// `abs(f1-nfqso) <= napwid`). Upstream always has an `nfqso`; a request without a
+/// `freq_hint` has none, so there is no candidate it can be near and a heavy hypothesis is
+/// never tried (#456: FT4 with a wrong hint and no `freq_hint` let 64 phantoms through in
+/// 12 800 files when this was allowed). Lighter ones (CQ, MyCall alone) run anywhere.
+pub(crate) fn ap_hypothesis_allowed(locked_bits: usize, qso: QsoFreq) -> bool {
+    locked_bits < HEAVY_AP_LOCKED_BITS || qso == QsoFreq::Near
 }
 
 /// Classifies a candidate at `cand_freq_hz` against `freq_hint`.
@@ -1065,8 +1077,8 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol, A: InfoAccept>(
     accept: &A,
     // Where the candidate is relative to the request's `freq_hint`
     // ([`QsoFreq`]): `Near` decodes with `maxosd = 3` instead of 2
-    // (`FecOpts::osd_snapshots`), `Far` skips the heavy AP hypotheses. `Unknown`
-    // for every caller that has no hint.
+    // (`FecOpts::osd_snapshots`) and is the only place the heavy AP hypotheses
+    // run ([`ap_hypothesis_allowed`]). `Unknown` for every caller that has no hint.
     qso: QsoFreq,
 ) -> Option<DecodeResult>
 where
@@ -1431,17 +1443,13 @@ where
                 let locked = mask.iter().filter(|&&m| m != 0).count();
                 // `ft4_decode.f90`: `if(ncontest.le.5 .and. iaptype.ge.3 .and.
                 // abs(f1-nfqso).gt.napwid) cycle` -- the heavy hypotheses (MyCall and
-                // DxCall locked) are tried near the QSO frequency only. With a
-                // `freq_hint` and a candidate away from it they are skipped (#456);
-                // without a hint there is nothing to be away from.
+                // DxCall locked) are tried near the QSO frequency only, and never
+                // without a `freq_hint` (#456, `ap_hypothesis_allowed`).
                 //
                 // FT4 only: `fst4_decode.f90` has no such test on its AP passes (it
                 // searches `nfqso +- ntol` and nothing else), and FST4's codec ignores
                 // `osd_snapshots` too.
-                if P::ID == super::ProtocolId::Ft4
-                    && locked >= HEAVY_AP_LOCKED_BITS
-                    && qso == QsoFreq::Far
-                {
+                if P::ID == super::ProtocolId::Ft4 && !ap_hypothesis_allowed(locked, qso) {
                     continue;
                 }
                 let max_errors = strictness.ap_max_errors(locked);
@@ -2788,7 +2796,7 @@ mod qso_freq_tests {
     use super::*;
 
     /// `ft4_decode.f90` / `ft8b.f90`'s `abs(f1-nfqso) > napwid` (`napwid = 50`): at the
-    /// edge is still near; without a hint there is nothing to be near or far from.
+    /// edge is still near; without a hint a candidate is neither.
     #[test]
     fn a_candidate_is_near_far_or_unclassified() {
         assert_eq!(qso_freq(1500.0, None), QsoFreq::Unknown);
@@ -2797,6 +2805,20 @@ mod qso_freq_tests {
         assert_eq!(qso_freq(1450.0, Some(1500.0)), QsoFreq::Near);
         assert_eq!(qso_freq(1550.1, Some(1500.0)), QsoFreq::Far);
         assert_eq!(qso_freq(900.0, Some(1500.0)), QsoFreq::Far);
+    }
+
+    /// A heavy hypothesis runs only at the QSO frequency: not away from it, and not
+    /// without a hint, since upstream always has an `nfqso` (#456). CQ (29 bits) runs
+    /// anywhere.
+    #[test]
+    fn heavy_ap_needs_the_qso_frequency() {
+        for qso in [QsoFreq::Unknown, QsoFreq::Near, QsoFreq::Far] {
+            assert!(ap_hypothesis_allowed(29, qso), "{qso:?}");
+        }
+        assert!(ap_hypothesis_allowed(58, QsoFreq::Near));
+        assert!(!ap_hypothesis_allowed(58, QsoFreq::Far));
+        assert!(!ap_hypothesis_allowed(58, QsoFreq::Unknown));
+        assert!(!ap_hypothesis_allowed(77, QsoFreq::Unknown));
     }
 
     /// The heavy hypotheses are the ones that lock MyCall and DxCall: 58 bits and more.

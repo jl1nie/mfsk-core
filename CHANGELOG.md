@@ -19,15 +19,16 @@
   crate tried them on every candidate in the band, which the tighter bound had been
   covering for. New `pipeline::QsoFreq` (`Unknown`, `Near`, `Far`, from
   `DecodeRequest::freq_hint`) and `HEAVY_AP_LOCKED_BITS = 55`: with a `freq_hint`, a heavy
-  hypothesis is skipped for a candidate more than 50 Hz from it, in FT4's ladder and in
-  FT8's AP loop (`decode_sniper_inner` takes its target frequency as the hint). Without a
-  `freq_hint` nothing is restricted, as before, and FST4 is left alone (upstream's has no
-  such test). FT4 with a wrong hint, hint at the signal: 64 -> 6 phantoms (14 with the hint
+  hypothesis is tried only for a candidate within 50 Hz of it, in FT4's ladder and in
+  FT8's AP loop (`decode_sniper_inner` takes its target frequency as the hint). **Without a
+  `freq_hint` it is not tried at all**: upstream always has an `nfqso`, so there is no
+  case in which it tries one without a QSO frequency to be near. A caller that passes an
+  `ap_hint` locking both callsigns now has to pass the QSO frequency too
+  (`pipeline::ap_hypothesis_allowed`). FST4 is left alone (upstream's has no such test). FT4 with a wrong hint, hint at the signal: 64 -> 6 phantoms (14 with the hint
   away from it), hits 6232 -> 6274; with the right hint 7821 hits and 6 phantoms (7422 and 3
   before this change), and 6232 with the hint 600 Hz away, the heavy hypothesis being off
   there, as upstream's. FT8's phantoms sit on the true signal, inside the window, so the
-  rule does not touch them (9 -> 9). A wrong or stale hint with no `freq_hint` still pays
-  FT4's 64. FST4-15 and -30, all four channels: crossings 0.00 to -0.17 dB, unexpected
+  rule does not touch them (9 -> 9). FST4-15 and -30, all four channels: crossings 0.00 to -0.17 dB, unexpected
   decodes as in the baseline.
 
 - **FT4's OSD runs the way `decode174_91` runs it (#456).** `ft4_decode.f90`

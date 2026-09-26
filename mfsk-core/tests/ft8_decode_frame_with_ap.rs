@@ -55,6 +55,9 @@ fn matching_ap_hint_decodes_clean_signal() {
 
     let results = DecodeRequest::<Ft8>::new(&audio, 300.0, 2700.0, 1.5, 15)
         .ap_hint(&ap)
+        // The signal's frequency as the QSO frequency: a hint that locks both
+        // callsigns is tried only within `napwid` of it (#456), as in `ft8b.f90`.
+        .freq_hint(1500.0)
         .decode()
         .results;
     assert!(
@@ -80,6 +83,7 @@ fn wrong_ap_hint_does_not_corrupt_clean_decode() {
 
     let results_wrong = DecodeRequest::<Ft8>::new(&audio, 300.0, 2700.0, 1.5, 15)
         .ap_hint(&wrong)
+        .freq_hint(1500.0)
         .decode()
         .results;
 

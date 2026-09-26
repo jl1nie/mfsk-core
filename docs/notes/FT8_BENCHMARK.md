@@ -892,8 +892,9 @@ comparison on FT4's sweep (`MFSK_FT4_SWEEP_AP_HINT`, 400 trials, SNR -14 to -21)
 recall gain (right hint 7422 -> 7780, no hint +31) and a much larger phantom cost with a wrong
 hint, 4 -> 64, 62 of them away from the true signal: FT4 runs the heavy AP hypotheses on every
 candidate, where `ft4_decode.f90` and `ft8b.f90` try them (`iaptype >= 3`) only within
-`napwid` of `nfqso`. That rule is now in (`QsoFreq`, from `DecodeRequest::freq_hint`, no
-restriction without one). With `freq_hint` at the signal a wrong hint gives 6 phantoms on FT4 (64
+`napwid` of `nfqso`. That rule is now in (`QsoFreq`, from `DecodeRequest::freq_hint`), and
+without a `freq_hint` a heavy hypothesis is not tried at all, since upstream always has an
+`nfqso` (so the 64 phantoms of a wrong hint without one are gone too). With `freq_hint` at the signal a wrong hint gives 6 phantoms on FT4 (64
 without a `freq_hint`), a right hint 7821 hits; at 900 Hz, 600 Hz from the signal, the heavy
 hypothesis is off (6232 hits, as with no hint). FT8 with the hint at or away from the signal:
 right hint 9315 / 5 phantoms, then 6936 / 3; wrong hint 6547 / 9, then 6547 / 6 (its phantoms are
