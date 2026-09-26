@@ -1,15 +1,20 @@
-# JTTY — what WSJT-X 3.2.0-rc1 ships, and what porting it would take
+# JTTY — what WSJT-X 3.2.0-rc1 ships, and how it was ported
 
-JTTY is the one mode WSJT-X 3.2.0 adds that this crate has no counterpart
-for. This note records how upstream implements it, the design decisions to
-settle first, and a phased plan, so that the port does not start from a cold
-read of ~4 000 lines of Fortran. Tracking issue: #477.
+JTTY is the one mode WSJT-X 3.2.0 adds. This note records how upstream
+implements it, the design decisions that were settled first, and the phased
+plan, so that the port did not start from a cold read of ~4 000 lines of
+Fortran. Tracking issue: #477 (closed; P6, embedded, is a separate decision).
+The port exists on host, phases P0-P5 (`mfsk_core::jtty`, the C ABI, Kotlin and
+Swift). The sections up to "Implementation plan" are written in the tense they
+were planned in; what each phase actually measured is in the "P0 results" ...
+"P5 results" sections at the end of the file.
 
-The upstream half is a reading of the source, **not** a measurement: no JTTY
-signal has been generated or decoded with this crate. The exception is
-"P0 results" below, which records what upstream's own `sjtty` / `rjtty`
-produced when built and run (2026-09-26) — measurements of upstream, not of
-this crate, and only for the settings stated there.
+The upstream half (the reading sections) is a reading of the source, **not** a
+measurement. Measurements are in the "P* results" sections: "P0 results"
+records what upstream's own `sjtty` / `rjtty` produced when built and run
+(2026-09-26) — measurements of upstream, not of this crate, and only for the
+settings stated there — and "P1 results" onward compare this crate's own
+output against them.
 
 Read against: `wsjtx` tag `v3.2.0-rc1` (`567ad29ce6abf3d4a44f181cdbc7ceba0d73e5f4`,
 2026-09-23), `lib/jtty/`, `Modulator/Jtty*`, `widgets/mainwindow_jtty.cpp`,
@@ -267,9 +272,11 @@ lengths) and says which of them dominates.
 ## Design decisions
 
 **D1 — placement.** Outside `Protocol` / `PROTOCOLS`, as MSK144 is (it has no
-T/R slot). Feature `jtty`, gated on a host FFT exactly as `msk144` is
-(`Cargo.toml`), added to `full`; host first (`std`). No `Protocol` ZST, so
-nothing in `protocol_invariants.rs`.
+T/R slot). Feature `jtty`, added to `full`; host first. As built it is `jtty = []` in
+`Cargo.toml`: the wire level needs no FFT (and no `std`), and only the receiver
+does — `jtty::{dsp, rx, assemble}` are compiled under `fft-rustfft` or
+`fft-extern`, the same split `msk144`'s receive modules make. No `Protocol`
+ZST, so nothing in `protocol_invariants.rs`.
 
 **D2 — receive API: incremental in, synchronous out.** The input has to be
 incremental, and that follows from the mode: there is no slot to hand over,
@@ -449,8 +456,10 @@ next free one), `mfsk.h` regenerated (committed), the C++ smoke driver
 extended, Kotlin and Swift bindings. This is more than MSK144's "one more
 mode" because the ABI shape is a stateful handle, not a slot call.
 - Docs: `docs/reference/{LIBRARY,BINDINGS}.md` and their `.ja.md` twins, the
-  mode tables in README, CLAUDE.md's map; CHANGELOG. `docs/notes/JTTY_BENCHMARK.md`
-  from the P3 sweeps.
+  mode tables in README, CLAUDE.md's map; CHANGELOG. There is no separate
+  benchmark note: the sweep is `mfsk-core/tests/jtty_sweep.rs` (`jtty_snr_sweep`,
+  run by `scripts/run-sensitivity-sweeps.sh jtty`) and its baseline lives in
+  `docs/notes/sweep-baseline.json` (see "P4a results").
 - CI: a `jtty` row in the `feature-matrix` (`ci.yml`) and in
   `scripts/pre-push-check.sh`; path filters for `src/jtty/**` and `tests/jtty_*`
   beside the `msk144` ones.

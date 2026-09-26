@@ -1,4 +1,4 @@
-# Roadmap (post-0.11.0)
+# Roadmap (post-0.11.0; 0.12.0 unreleased)
 
 ## Strategic state (2026-08-10)
 
@@ -153,7 +153,7 @@ the next cycle's centre of gravity is **finishing the embedded product**
 host-UI consumers** (extend track 2). The two aren't exclusive, but
 attention is.
 
-## Current line — tagged through 0.10.1; 0.11.0 bumped, not yet tagged
+## Current line — tagged through 0.11.0; 0.12.0 bumped, not yet tagged
 
 **Do not quote this section for release state.** It is a written
 record of what each release contained, and it rots between cuts —
@@ -225,9 +225,48 @@ protocols owe a sweep) from the repository; run it instead.
   0.6 dB behind WSJT-X's published figure to 0.5 dB ahead. FST4
   unchanged across all twenty sweep cells, FT8 across all four, both
   measured.
-  - **Version bumped and CHANGELOG written; no tag as of 2026-09-15.**
-    Nothing has reached crates.io — CD runs on the tag push. Held for
-    the next scheduled cut rather than blocked on anything.
+  Tagged 2026-09-21 (`v0.11.0`).
+- **0.12.0 (unreleased; workspace version bumped, CHANGELOG's top
+  section is the list)** — one decode entry shape for every mode and a
+  transmit path generic over the protocol (breaking, #403 / #391), dt
+  measured from the nominal start (breaking, #397), one `SyncCandidate` /
+  `SearchParams` (breaking, #394), FT4 filters phantoms by default
+  (#383), the CoreS3 board work (FT4 answers by the reply deadline, one
+  screen for every mode, one boot sequence, WiFi as a setting of its own,
+  #381), and the WSJT-X 3.2.0-rc1 port below. Q65 now searches ±1 s by
+  default (breaking, #481). Not tagged; run `scripts/release-status.sh`
+  for what is outstanding.
+
+### WSJT-X 3.2.0-rc1 port (status as of 2026-09-26)
+
+Reference tree is `v3.2.0-rc1`. Each item cites its issue; statuses were
+read from the tracker, not from memory.
+
+- **Landed on `main`, in 0.12.0's CHANGELOG:** FT8 a7 / a8 list decoders
+  (#464 via PR #468) and the transmit-frequency AP window, `tx_freq` (#456);
+  FST4 noise blanker (#469); Q65 ±1 s search and the EME delay (#481);
+  Q65 Max Drift with its stage 5 (#471, #483); Pileup's copied-last-Tx flag
+  (#470); `q65_hist` (#472); the q3 list decode at the Rx frequency (#483);
+  the contest caller list, `q65_hist2` / `q65_set_list2` (#485); Q65's
+  decoder metric at the punctured code rate 13/63 and `PLOG_MIN` on list
+  decodes (#486); the GFSK pulse one-sample-early fix (#482); JTTY (#477,
+  below); the C ABI, Kotlin and Swift for all of it (#466, closed).
+- **JTTY (#477, closed):** implemented on host, phases P0-P5 — wire level,
+  frame decoder, subtraction and assembly, streaming receiver, C ABI /
+  Kotlin / Swift, text packer. Follow-ups #487 (false decodes) and #488
+  (drift) are closed. P6 (embedded) is a separate decision and open.
+- **Open:** #465 (FST4's AP rung: OSD does not skip locked bits nor run on
+  the AP-held BP sums), #463 (decide whether to port `lib/ft8var`,
+  "ft8md", a second QSO-state-dependent FT8 decoder), #467 (record which
+  WSJT-X tree the `lib/*.f90:line` citations were checked against),
+  #496 (expose FT8's `previous_cycle` through `mfsk-ffi`; design first).
+- **Q65 leftovers:** the averaged q3 on
+  `MultiPeriodRequest` (its `.ap_list()` is unchanged) and on
+  `SniperRequest.ap_list`; Q65-120D's late edge (`jt9` still decodes a
+  frame 2.0 s late at the edge where this crate reaches +1.5 s); the FST4
+  and FT8 `emedelay` branches.
+- **Then:** 0.12.0 release prep (`scripts/release-status.sh`, tier-C
+  sweeps for what it names, CHANGELOG/version already in place).
 
 ## Prior line (0.7.x) — shipped through 0.7.4 (2026-07-19)
 
@@ -665,24 +704,26 @@ version if you're picking up work.
   rather than decode demand. Deliberately left open as a decision
   record, not as work: **track, don't commit.** Closing it would lose
   the sourcing and invite the question being re-asked from scratch.
-- **#477** — JTTY (new in WSJT-X 3.2.0-rc1, opened 2026-09-26) not
-  implemented. Non-slotted 4-GFSK / TBCC(K=10) mode, so it sits outside
-  `Protocol` like MSK144 but needs a streaming receive API. The upstream
-  source has been read and written up in `JTTY_UPSTREAM.md` (frame, FEC,
-  source grammar, receiver, reuse map, phasing); nothing has been built or
-  measured. The maintainer expects the mode to matter for satellite
-  operation, so this is a planned port, not a "track, don't commit" item
-  like #224; the note carries the phased plan (P0 oracle build → P6
-  embedded) and the design decisions to settle first (receive API, no
-  global state, rayon and iterators from the start, drift behaviour).
+- **#477** — JTTY (new in WSJT-X 3.2.0-rc1, opened 2026-09-26),
+  **implemented on host; the issue is closed.** Non-slotted 4-GFSK /
+  TBCC(K=10) mode, so it sits outside `Protocol` like MSK144 and has a
+  streaming receive API (`mfsk_core::jtty`). The upstream source is written
+  up in `JTTY_UPSTREAM.md` (frame, FEC, source grammar, receiver, reuse
+  map, phasing, and per-phase results). The maintainer expects the mode to
+  matter for satellite operation, so this was a planned port, not a "track,
+  don't commit" item like #224; the note carries the phased plan (P0 oracle
+  build → P6 embedded) and the design decisions that were settled first
+  (receive API, no global state, rayon and iterators from the start, drift
+  behaviour). Status by phase:
   P0 (oracle build, fixtures, upstream baseline), P1 (wire level) and P2 (the
   frame decoder: identical to `rjtty` on every fixture) and P3 (subtraction,
   retro re-sweep, assembly: identical on the mixtures, within 2 of 200 on a
   hard random set) are done; P4a (the streaming `Stream` receiver, docs,
   tier-C sweep and baseline) and P4b (the C ABI receiver handle, C++ driver,
   Kotlin and Swift bindings) and P5 (the text packer, protocol half only; the
-  F-key / N1MM layer is host policy) are done; P6 (embedded, a separate
-  decision) remains.
+  F-key / N1MM layer is host policy) are done, so the mode is complete on
+  host, through the C ABI, Kotlin and Swift; P6 (embedded, a separate
+  decision) is open.
 - **#148** — Research idea (not a commitment, from VK3NV): blind-paired
   FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
   Q65's multi-period averaging (`q65/rx.rs`) is the architectural
@@ -1287,13 +1328,18 @@ writeup on the issue itself:
   and the table of effect sizes an on-air arm can actually resolve.
 - Probe templates: `mfsk-core/src/jt9/decode.rs::gate_diag::probe_missing_goldens`.
 - Protocol-specific: `mfsk-core/src/fst4/decode.rs` ⇔
-  `WSJT-X/lib/fst4_decode.f90`; `mfsk-core/src/jt65/{mod,rx,decode}.rs`
-  ⇔ `WSJT-X/lib/jt65_decode.f90`.
+  `WSJT-X/lib/fst4_decode.f90`; `mfsk-core/src/jt65/{mod,rx,chase,search}.rs`
+  ⇔ `WSJT-X/lib/jt65_decode.f90` (`chase.rs` ⇔ `lib/ftrsd/ftrsdap.c`).
+- JTTY (#477): `mfsk-core/src/jtty/` — `source`/`crc`/`tbcc`/`tx`/`pack`
+  (wire level and text packer, no FFT needed) and `correlate`/`trellis`/
+  `ladder`/`subtract`, with `dsp`/`rx`/`assemble` behind
+  `fft-rustfft` / `fft-extern` (the receiver); plan and results in
+  `docs/notes/JTTY_UPSTREAM.md`. C ABI in `mfsk-ffi` (`mfsk_jtty_*`).
 - Embedded shared layers (board-agnostic):
   `embedded-poc/embedded-shared/src/{pipeline,dual_core,stage1_inc,esp_dsp_fft}.rs`
-  (decoder layer), `embedded-poc/mfsk-app-shared/src/{qso,wifi,log_sink,boot_mode,ui/}`
+  (decoder layer), `embedded-poc/mfsk-app-shared/src/{qso,wifi,log_sink,boot_mode,flash_log,ui/}`
   (controller layer).
-- Embedded apps: `embedded-poc/m5stack-s3-app/src/{uac,civ,qso,audio,buttons,flash_log}.rs`
+- Embedded apps: `embedded-poc/m5stack-s3-app/src/{uac,civ,audio,buttons,tx,tx_scheduler,decode_pipeline}.rs`
   (M5StickS3, demo / acoustic fallback per Phase B-Stick);
   `embedded-poc/m5stack-core2-app/src/` (Core2 sibling,
   wav_sim only).

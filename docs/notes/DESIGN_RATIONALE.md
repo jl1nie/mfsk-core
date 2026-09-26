@@ -106,7 +106,7 @@ end of its own ladder, `ft8::decode_block::process_one_candidate_inner`,
 which builds the same hypotheses inline rather than calling
 `ap_passes` (#415; unifying the two ladders is #423).
 `msg::pipeline_ap` is what remains: `ap_passes` (the hypothesis set,
-WSJT-X's `iaptype` equivalents) and `ap_bits_for`, 96 lines with no
+WSJT-X's `iaptype` equivalents) and `ap_bits_for`, 103 lines with no
 engine of its own.
 
 Two bugs were found while wiring it, both shipped:
@@ -133,6 +133,18 @@ AP's risk is manufactured decodes, so wide-band AP ships with precision
 guards in the same file as the gain assertion: a hint naming a station
 that is not transmitting must not produce it, and a confident hint over
 pure noise must decode nothing.
+
+**Where the WSJT-X 3.2 port moved the AP rung (#456, 2026-09-26).** Two
+things were taken from upstream, measured in `FT8_BENCHMARK.md` §15. The
+accept bound is `ft8b.f90`'s: `DecodeStrictness::Normal`'s `ap_max_errors`
+is 36, not 30 (25 from 55 locked bits) — right-hint FT8 8771 → 9315 hits,
+at the price of a few more phantoms with a wrong hint, which carry an AP
+pass id so a UI can mark them. And the heavy hypotheses (`iaptype >= 3`,
+both callsigns locked) are tried only within `napwid` of the QSO frequency
+(`freq_hint`) or, on FT8, of the transmit frequency (`tx_freq`, WSJT-X's
+`nftx`): FT4 had been running them on every candidate, where
+`ft4_decode.f90` and `ft8b.f90` do not, and without a `freq_hint` a heavy
+hypothesis is now not tried at all, as upstream always has an `nfqso`.
 
 ## 4. Q65's decoder strategies, and what each is for
 
@@ -189,6 +201,64 @@ threshold, or returns `None`. Useful when the application has a known
 callsign pair but no QSO state: at −25 dB (1 dB below the published
 Q65-30A threshold) the test sweep shows AP-list decoding **6/6** frames
 where plain BP fails **0/6**. ~3 dB.
+
+That describes `.ap_list()` **without an Rx frequency**, which is the
+old per-candidate match and is kept for callers that have none. With
+`.rx_freq(hz)` (and `.ftol(hz)`, default 10 Hz) `.ap_list()` is WSJT-X's
+**q3** decode instead, and it does run the fast-fading intrinsics: first
+`q65_ccf_85` synchronises on all 85 symbols of every list message within
+F Tol of the Rx frequency, and where one message leads the runner-up by
+1.10 it list-decodes at that alignment over the `b90` sweep
+(`q65_dec_q3` → `q65_dec1`); then the normal scan runs for the rest of
+the band, as `q65_decode.f90` orders it (`q65/decode_request.rs`,
+`q65/q3.rs`). A list decode is accepted only when `plog > PLOG_MIN`
+(−242) and the message is not all zeros; the size-adjusted threshold
+alone (about −256) let a wrong codeword through on the Q65-60B
+troposcatter golden once the metric was corrected, so every list decode
+in the crate (`.ap_list()` scans, sniper, multi-period) now applies both.
+q3 at -24 / -26 / -28 / -30 dB on 20 `q65sim` files each decoded
+20 / 20 / 7 / 2, the same files `jt9 -3` decodes.
+
+The rest of WSJT-X 3.2's Q65 settings are options on the same request
+(`CHANGELOG.md`, 0.12.0 has the measurements):
+
+* **Max Drift** (`.max_drift(bins)`, 0..=50) searches a linear tone drift
+  across the frame (`q65_ccf_22`'s `idrift` loop) and takes it out before
+  the symbol spectra. The undrifted sweep runs first, as upstream; off by
+  default. At 50, when nothing decoded near the Rx frequency, the q3 decode
+  runs again on spectra shifted by the drift found (the "w3sz" stage 5).
+* **EME delay and the ±1 s default.** `q65.f90` searches −1.0 to +1.0 s and
+  reaches +5.5 s (+4.0 s for Q65-15) only when `emedelay > 0`, which the GUI
+  sets for "Decode at 52 s". `default_search_params()` had been late by
+  +5.5 s for every sub-mode, from measuring against the `jt9` CLI, which
+  switches the delay on for TR 60 s itself. The default is now ±1 s and
+  `.eme_delay(true)` restores the reach. Recorded, not closed: `jt9` with
+  the delay off still decodes a Q65-120D frame 2.0 s late where this crate
+  stops at +1.5 s.
+* **Pileup** (`.pileup(true)`, with an `ap_hint` naming both callsigns)
+  leaves the spare 78th bit free so a reply with the "copied last Tx"
+  flag still matches; the row carries `copied_last_tx` (WSJT-X's `#`).
+* **The contest list.** WSJT-X remembers up to 50 stations that called with
+  a grid (`q65_hist2`) and builds its full-AP list from them
+  (`q65_set_list2`). `q65::Q65Callers` is the list, held by the
+  application because the library reads no clock, and
+  `q65::contest_codewords` is the codeword list; it goes through
+  `.ap_list()` like the standard one. `q65_hist` (the DX call and grid
+  from earlier decodes) is likewise application-owned.
+* **The decoder metric uses the punctured code rate 13/63**, not 15/65
+  (`q65_init`'s `decoderEsNoMetric = nm * R * EbNoMetric`, with `R` the rate
+  after puncturing). 15/65 made every Q65 intrinsic 12 % high; the
+  winning codeword's log-likelihood was −242.78 against WSJT-X's −241.92 on
+  identical spectra, 0.78 under `PLOG_MIN`, and is now equal to the
+  hundredth.
+
+**FST4's noise blanker** (`DecodeRequest::noise_blanker`, sub-modes
+implementing `SupportsNoiseBlanker`) is not a Q65 matter but the same kind
+of setting: WSJT-X runs the whole FST4 decode on samples passed through
+`blanker.f90` at the GUI's **NB** level. `Percent(n)` blanks the loudest
+`n` % of samples; `Sweep` decodes at 0, step, … 20 %. Off by default, as NB
+0 % is. On 50 slots with 20 clicks a second: 0 decodes without it, 29 at
+NB 2 % (`jt9 -7`: 27).
 
 `.ap_list()` and `.fading()` are mutually exclusive in the underlying
 engine; `.decode()` resolves precedence as

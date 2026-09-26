@@ -10,7 +10,7 @@ Rust 以外から mfsk-core を利用するための文書。Rust ホスト API 
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`、ヘッダ `mfsk-ffi/include/mfsk.h` | CI `ffi` ジョブ — 両 feature セットでの Rust テストに加え、実在の C++ ドライバ `examples/cpp_smoke/`（マルチスレッド負荷試験を含む） |
 | **Kotlin / Android** | `bindings/kotlin/`（C シム + `Mfsk.kt`） | CI `kotlin` ジョブ、デスクトップ JVM 上 |
-| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 75件と `aarch64-apple-ios` クロスビルド |
+| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 86件と `aarch64-apple-ios` クロスビルド |
 
 3つとも同一の C ABI の上に載っている。`mfsk.h` は cbindgen 生成でリポジトリに
 コミットされており、そのドキュメントコメントがシンボル単位の正本である。
@@ -192,6 +192,12 @@ p.freq_max_hz = 2600.0f;
 `search_hz` の後ろに追加している。古いヘッダでビルドした呼び出し側は短い `size` を
 渡し、ライブラリはその前半だけを読み、残りは既定値（未設定 / オフ）のままにする。
 
+**FT8 の `previous_cycle`**（`DecodeRequest::<Ft8>::previous_cycle`。30 秒前のスロットの
+デコードに対して WSJT-X の a7 リストデコーダを有効にする）は C ABI・Kotlin・Swift の
+いずれからも**公開していない**。課題 #496 が追跡している。「30 秒前」がどのスロットかは
+アプリケーションだけが知っており、C の行（`MfskDecode`）が持つのはテキストで、a7 が読む
+77 ビットのメッセージではない。フィールドを 1 つ足せば済む話ではなく、設計が別に要る。
+
 **AP フィールドはメッセージのフィールドをその順に並べたもの**である —
 CQ の場合 `ap_call1` は `"CQ"` であって送信局ではない。これらは探索を
 誘導するのではなくメッセージのビットを固定するので、順序を誤ると
@@ -213,7 +219,7 @@ CQ の場合 `ap_call1` は `"CQ"` であって送信局ではない。これら
 | `hard_errors` | FEC が訂正した硬判定誤り数 |
 | `info_bits` | FEC 情報ブロック幅、91（CRC-14）または 101（CRC-24） |
 | `pass` | どのパスがこの行を生んだか。**プロトコル私的** — 診断用であってロジック用ではない |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`、`<...>` 参照の解決にハッシュテーブルを要した |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`、`<...>` 参照の解決にハッシュテーブルを要した。bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`、Q65 Pileup の返信（WSJT-X の `#`。従来の `mfsk_q65_decode*` も立てる） |
 
 ### 2.5 ストリーミング取り込み
 
@@ -435,11 +441,13 @@ Rust の不正な `bool` ではなく拒否になる。**エンジンが黙っ�
 
 **WSJT-X が持つ 2 つのリストは、呼び出し側が所有するハンドル**にした。デコーダは
 状態を持たず、時計はアプリケーションのものだけだから。`MfskQ65History`
-（`q65_hist`、直近 100 件のデコード。`_push`、行配列をまとめて入れる `_record`、
-DX 局が未入力のときの "Decode Again" が読む DX 呼出符号とグリッドを返す
-`_lookup(rx_freq, &dx)`）と `MfskQ65Callers`（`q65_hist2`、グリッド付きで呼んできた
-最大 50 局。`_record(freq, text, now)`、`_expire(now)`、`_remove(call)`、`_len`、
-`_get`）。時刻は呼び出し側が渡す Unix 秒で、ライブラリは時計を読まない。どちらも
+（`q65_hist`、直近 100 件のデコード。`mfsk_q65_history_new` / `_free` / `_len` /
+`_push`、行配列をまとめて入れる `mfsk_q65_history_record`、DX 局が未入力のときの
+"Decode Again" が読む DX 呼出符号とグリッドを返す `mfsk_q65_history_lookup(rx_freq, &dx)`）
+と `MfskQ65Callers`（`q65_hist2`、グリッド付きで呼んできた最大 50 局。
+`mfsk_q65_callers_new` / `_free` / `_len` / `_get`、
+`mfsk_q65_callers_record(freq, text, now)`、`mfsk_q65_callers_expire(now)`、
+`mfsk_q65_callers_remove(call)`）。時刻は呼び出し側が渡す Unix 秒で、ライブラリは時計を読まない。どちらも
 スレッドセーフではない。
 
 ### 2.8.1 JTTY — スロット呼び出しではなく受信器ハンドル
@@ -447,7 +455,8 @@ DX 局が未入力のときの "Decode Again" が読む DX 呼出符号とグリ
 JTTY（WSJT-X 3.2 のキーボードモード）にはスロットが無い。フレームは送信側が
 好きなときに始まり、メッセージは複数フレームからなるので、受信器が状態を持ち、
 出力はメッセージの*更新*になる。モードは `MFSK_MODE_JTTY`、
-`MFSK_CAP_STREAM_RECEIVER` を公開し（`MFSK_CAP_DECODE_HANDLE` は持たない）、
+`MFSK_CAP_STREAM_RECEIVER` と `MFSK_CAP_ENCODE` を公開し（`MFSK_CAP_DECODE_HANDLE` は
+持たない）、
 `mfsk_mode_info` は 1 フレームを記述する — `t_slot_s` はフレーム周期
 （1.888 秒）、`slot_samples_12k` は 22 656。
 
@@ -582,15 +591,16 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 77 個:
+エクスポートされる関数は 93 個:
 
 | 群 | シンボル |
 |---|---|
 | session (14) | `mfsk_session_open` `mfsk_session_close` `mfsk_session_decode_i16` `mfsk_session_decode_f32` `mfsk_session_decode_stream` `mfsk_session_set_on_decode` `mfsk_session_set_budget` `mfsk_session_last_budget` `mfsk_session_keep_known` `mfsk_session_known_count` `mfsk_session_keep_fft_cache` `mfsk_session_add_callsign` `mfsk_session_copy_info` `mfsk_session_last_error` |
 | streaming (9) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_buffered` `mfsk_stream_set_epoch` `mfsk_stream_slot_ready` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (10) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_mode_defaults` `mfsk_decode_params_init` `mfsk_abi_version` `mfsk_version` |
-| 専用デコード (7) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` |
-| 送信 (12) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
+| 専用デコード (9) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` `mfsk_q65_decode_ex` `mfsk_q65_params_init` |
+| 送信 (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
+| Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
 | ハッシュテーブル (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
@@ -828,7 +838,7 @@ for row in try session.decode(slot) {
 録音（`#filePath` で位置を求める）と自前のループバックを流す。`Jtty.tones(for:profile:)`
 （テキストパッカー）、`Jtty.synthesise(_:)`、`Jtty.audio(for:)` がテキストを音声にする。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 75 件のテストを
+`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 86 件のテストを
 走らせる。実アプリからのリンク（および iOS ビルドが `mobile` feature セットを
 選ぶべき理由）は `bindings/swift/README.md` が扱う。
 

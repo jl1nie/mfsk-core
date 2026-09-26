@@ -98,10 +98,17 @@ and optimisations land once and apply everywhere.
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — runs plain host f32 on embedded too, via `fft-extern`; never needed the integer path. See [WSPR on embedded](#wspr-on-embedded) below. |
 | **FT4** | (host f32 only) | ❌ — and it does not need to be. FT4 routes through the generic `engine::pipeline`, like FST4; `fixed-point` would be a no-op on that path, and on LX7 it measured *slower* than f32 anyway (issue #198). It now **builds and decodes on hardware** — see [Per-protocol embedded status](#per-protocol-embedded-status). |
 | **Q65 / JT9 / JT65** | (host f32 only) | ❌ — they build under `alloc,<mode>,fft-extern` since #390, but nothing embedded drives them yet: no fixed-point path, no app |
+| **JTTY** | (host f32 only) | ❌ — host only; #477 phase P6 (embedded) is undecided |
 
 So: **the trait infrastructure is protocol-agnostic, but the only
 protocol that actually flips into the integer path on the embedded
 build is FT8.**
+
+Two WSJT-X 3.2 additions to the host decode API do not reach the embedded
+path: FT8's `previous_cycle` (the a7 list decoder, fed by the previous
+slot's decodes; `ft8::decode` only, and nothing under `ft8::decode_block`
+reads it) and FST4's noise blanker (`DecodeRequest::noise_blanker`, off by
+default). No embedded app sets either.
 
 **Flipping into the integer path is not what "runs on a chip" means.**
 The generic `engine::pipeline` is itself an embedded route: FST4
@@ -171,7 +178,7 @@ those off and pick the embedded baseline:
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.11", default-features = false, features = [
+mfsk-core = { version = "0.12", default-features = false, features = [
     "alloc",            # Vec / Box / String — required for decode
     "ft8",              # FT8 protocol glue
     "fft-extern",       # caller supplies the FFT backend
@@ -845,6 +852,7 @@ that allocation now succeeds on the first try.
 | **FST4** | generic `engine::pipeline` + `fft-extern` — **no `decode_block` port** | **Decoding off the air** on CoreS3. FST4-60 on-device: `no8_osd` 13.6 s, ≈1.95× over the ~7 s slot budget at the deadline-tight default |
 | **FT4** | generic `engine::pipeline`, host f32 (`fixed-point` measured *slower* on LX7, #198) | **Decoding off the air** on CoreS3 |
 | **WSPR** | host `wspr::decode` f32 via `fft-extern`, plus `wspr::ddc` | **Decoding off the air.** `slot 1 src=uac decoded 1 station(s)`. Decode lands at 82.8–90.1 s against a 110 s deadline |
+| **JTTY** | — | **Host only.** Implemented on host (#477, phases P0-P5: receiver, C ABI, Kotlin, Swift, text packer); the receiver needs an FFT (`fft-rustfft` or `fft-extern`), the wire level does not, and `alloc,jtty,fft-extern` is in the feature matrix. P6, an embedded receiver, is a separate decision and not started |
 | **Q65 / JT9 / JT65** | — | **Compile-clean, undriven.** #390 removed the forced `fft-rustfft`: every FFT goes through `engine::fft`, the modules carry `alloc::` imports and `num_traits::Float` instead of `std`, and JT9's `downsam9` normalises its inverse explicitly rather than assuming rustfft's unscaled convention. `alloc,<mode>,fft-extern` is in the feature matrix. What is still missing is everything after compiling: no fixed-point path, no board app, no on-device measurement |
 
 **FST4 reached hardware without porting `decode_block`** (issue #306),

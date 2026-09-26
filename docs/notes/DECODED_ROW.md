@@ -48,7 +48,10 @@ Locked choices (from the 0.9 planning thread):
    columns, so hoisting them would just reintroduce per-mode branching.
    `Decoded` is **additive**: native results stay, keep their extras,
    and remain `Clone`+`Send` for callers who need that detail across a
-   channel (they stream the native result instead).
+   channel (they stream the native result instead). Fields added since
+   stay off `Decoded` for the same reason: `copied_last_tx` (Q65's
+   Pileup flag, `q65::rx`), `sync_cv` (`engine::pipeline`) and the pass id
+   live on the native results and on `MfskDecode`, not on `Decoded`.
 3. **unpack failure → `None`.** The FT8-family conversion is
    `Option<Decoded>`; a payload that passed CRC but won't unpack (rare)
    is not surfaced as a placeholder row.
@@ -68,29 +71,32 @@ impl DecodeResult { // FT8/FT4/FST4 (shared type)
                   hash: Option<&CallsignHashTable>) -> Option<Decoded>;
 }
 impl WsprResult { fn to_decoded(&self) -> Decoded; }               // infallible
-impl Q65Result  { fn to_decoded(&self, sample_rate: u32,
-                                nominal_start_sample: usize) -> Decoded; }
-impl Jt65Result { fn to_decoded(&self, sample_rate: u32,
-                                nominal_start_sample: usize) -> Decoded; }
-impl Jt9Result  { fn to_decoded(&self, sample_rate: u32,
-                                nominal_start_sample: usize) -> Decoded; }
+impl Q65Result  { fn to_decoded(&self) -> Decoded; }               // infallible
+impl Jt65Result { fn to_decoded(&self) -> Decoded; }
+impl Jt9Result  { fn to_decoded(&self) -> Decoded; }
 ```
 
 - The FT8-family impl is authored in `msg::decoded` (not `engine`) so it
   can call `unpack77` without `engine` depending on `msg` — the impl
   block lives in `msg`, keeping the crate-wide dependency arrow intact.
-- `dt_sec` for Q65/JT65/JT9 is `(start_sample − nominal_start_sample) /
-  sample_rate`; `nominal_start_sample` is the anchor the caller already
-  passed to `decode_scan` / the decode builder. FT8/WSPR carry `dt_sec`
-  directly, so their conversions need no sample-rate argument.
+- `dt_sec` for Q65/JT65/JT9 is copied from the result's own `dt_sec`,
+  which the decoder measured from the nominal start the caller passed
+  in (#397). It used to be re-derived here as `(start_sample −
+  nominal_start_sample) / sample_rate`, but `start_sample` is a `usize`
+  clamped at 0, so every signal starting before the nominal position
+  came back as dt = 0.0; the conversions therefore take no sample-rate
+  or anchor argument. Every conversion now just copies `dt_sec`.
 
 ## Deferred follow-ups
 
 - **Streaming-doc example** — simplify the Tokio `.on_result` bridge in
   `docs/reference/STREAMING.md` to stream `Decoded` via `to_decoded(..)`
   instead of a hand-rolled struct (the concrete "UI is easier" payoff).
-- **FFI mapping** — `Decoded` is a flat, fixed struct precisely so it
-  can map to a C struct in `mfsk-ffi` later; not wired yet.
+- **FFI mapping** — done: the flat C row is `MfskDecode`
+  (`mfsk-ffi/include/mfsk.h`), a superset of `Decoded` that adds
+  `sync_score`, `sync_cv`, `hard_errors`, `info_bits`, `pass` and `flags`,
+  and reports the concrete sub-mode where `Decoded::protocol` collapses
+  the five FST4 periods.
 - **Generic dispatch** — no unifying `trait ToDecoded` for now (a
   GAT-based context type could unify the differing signatures). Add only
   when a caller actually needs to convert generically over `P`.

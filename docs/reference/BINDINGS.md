@@ -10,7 +10,7 @@ targets see [`EMBEDDED.md`](EMBEDDED.md).
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`, header `mfsk-ffi/include/mfsk.h` | CI `ffi` job — Rust tests under both feature sets plus `examples/cpp_smoke/`, a real C++ driver including a multi-thread stress |
 | **Kotlin / Android** | `bindings/kotlin/` (C shim + `Mfsk.kt`) | CI `kotlin` job, on a desktop JVM |
-| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 75 XCTest cases, plus the `aarch64-apple-ios` cross-build |
+| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 86 XCTest cases, plus the `aarch64-apple-ios` cross-build |
 
 All three sit on the same C ABI. `mfsk.h` is cbindgen-generated and
 committed, and its doc comments are the authoritative per-symbol
@@ -199,6 +199,13 @@ the three `nb_*` fields are the newest, appended after `search_hz`. A caller
 built against the older header passes the shorter `size`, and the library
 reads only that prefix, leaving the rest at their defaults (unset / off).
 
+**FT8's `previous_cycle` (`DecodeRequest::<Ft8>::previous_cycle`, which turns on
+WSJT-X's a7 list decoder over the decodes of the slot 30 s earlier) is not
+exposed** through the C ABI, Kotlin or Swift; issue #496 tracks it. Which slot
+is "30 s earlier" is the application's knowledge, and a C row (`MfskDecode`)
+carries text, not the 77 message bits a7 reads, so it needs a design of its own
+rather than one more field.
+
 **The AP fields are the message's fields in order** — `ap_call1` is
 `"CQ"` for a CQ, not the transmitting station. They lock message bits
 rather than steering a search, so the wrong order removes the decode
@@ -220,7 +227,7 @@ Flat, fixed-size, written into your array. `text` is an inline
 | `hard_errors` | hard-decision errors the FEC corrected |
 | `info_bits` | width of the FEC information block, 91 (CRC-14) or 101 (CRC-24) |
 | `pass` | which decode pass produced the row. **Protocol-private** — diagnostics, not logic |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`; the older `mfsk_q65_decode*` calls set it too) |
 
 ### 2.5 Streaming capture
 
@@ -452,11 +459,13 @@ which WSJT-X shows as `#`; the older Q65 calls set it too. To send one,
 
 **The two lists WSJT-X keeps are handles you own**, because the decoder is
 stateless and the application's clock is the only clock: `MfskQ65History`
-(`q65_hist`, the 100 most recent decodes; `_push`, `_record` for a whole row
-array, `_lookup(rx_freq, &dx)` for the DX call and grid a "Decode Again" with
-none entered would read) and `MfskQ65Callers` (`q65_hist2`, up to 50 stations
-that called with a grid; `_record(freq, text, now)`, `_expire(now)`,
-`_remove(call)`, `_len`, `_get`). Times are Unix seconds you pass, since the
+(`q65_hist`, the 100 most recent decodes; `mfsk_q65_history_new` / `_free` /
+`_len` / `_push`, `mfsk_q65_history_record` for a whole row array,
+`mfsk_q65_history_lookup(rx_freq, &dx)` for the DX call and grid a "Decode
+Again" with none entered would read) and `MfskQ65Callers` (`q65_hist2`, up to 50
+stations that called with a grid; `mfsk_q65_callers_new` / `_free` / `_len` /
+`_get`, `mfsk_q65_callers_record(freq, text, now)`, `mfsk_q65_callers_expire(now)`,
+`mfsk_q65_callers_remove(call)`). Times are Unix seconds you pass, since the
 library reads no clock. Neither is thread-safe.
 
 ### 2.8.1 JTTY — a receiver handle instead of a slot call
@@ -464,7 +473,8 @@ library reads no clock. Neither is thread-safe.
 JTTY (WSJT-X 3.2's keyboard mode) has no slot: frames start whenever the
 sender likes and a message is several of them, so the receiver keeps state
 and the output is message *updates*. The mode is `MFSK_MODE_JTTY`, it
-publishes `MFSK_CAP_STREAM_RECEIVER` (and not `MFSK_CAP_DECODE_HANDLE`), and
+publishes `MFSK_CAP_STREAM_RECEIVER` and `MFSK_CAP_ENCODE` (and not
+`MFSK_CAP_DECODE_HANDLE`), and
 `mfsk_mode_info` describes one frame — `t_slot_s` is the frame period
 (1.888 s), `slot_samples_12k` 22 656.
 
@@ -605,15 +615,16 @@ but does not offer what was asked).
 
 ### 2.12 Symbol index
 
-77 exported functions, grouped:
+93 exported functions, grouped:
 
 | group | symbols |
 |---|---|
 | session (14) | `mfsk_session_open` `mfsk_session_close` `mfsk_session_decode_i16` `mfsk_session_decode_f32` `mfsk_session_decode_stream` `mfsk_session_set_on_decode` `mfsk_session_set_budget` `mfsk_session_last_budget` `mfsk_session_keep_known` `mfsk_session_known_count` `mfsk_session_keep_fft_cache` `mfsk_session_add_callsign` `mfsk_session_copy_info` `mfsk_session_last_error` |
 | streaming (9) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_buffered` `mfsk_stream_set_epoch` `mfsk_stream_slot_ready` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (10) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_mode_defaults` `mfsk_decode_params_init` `mfsk_abi_version` `mfsk_version` |
-| bespoke decode (7) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` |
-| transmit (12) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
+| bespoke decode (9) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` `mfsk_q65_decode_ex` `mfsk_q65_params_init` |
+| transmit (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
+| Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
 | hash table (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
@@ -862,7 +873,7 @@ thread at a time, and off the main actor — `push` decodes before it returns.
 `#filePath`) and a loopback of its own: `Jtty.tones(for:profile:)` (the text packer),
 `Jtty.synthesise(_:)` and `Jtty.audio(for:)` turn text into audio.
 
-`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 73
+`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 86
 tests; `bindings/swift/README.md` covers linking from a real app,
 including why the `mobile` feature set is the one an iOS build wants.
 

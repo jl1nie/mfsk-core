@@ -95,9 +95,16 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — 組込でも host と同じ plain f32 を `fft-extern` 経由で実行。整数パスを一度も必要としていない。下記 [WSPR on embedded](#wspr-on-embedded) 参照 |
 | **FT4** | (host f32 のみ) | ❌ — かつ必要が無い。FT4 は FST4 と同じく generic な `engine::pipeline` を通るので `fixed-point` はこの経路では no-op であり、そもそも LX7 では f32 より遅いと実測されている (issue #198)。**実機でビルドしデコードするところまで到達済み** — [プロトコル別の組込ステータス](#プロトコル別の組込ステータス) 参照 |
 | **Q65 / JT9 / JT65** | (host f32 のみ) | ❌ — #390 以降 `alloc,<mode>,fft-extern` でビルドは通るが、組込側から駆動するものがまだ無い（固定小数点パスもアプリも未着手） |
+| **JTTY** | (host f32 のみ) | ❌ — host のみ。#477 の P6（組込）は未決定 |
 
 つまり: **trait 基盤は protocol 非依存だが、組込ビルドで実際に整数
 パスに切り替わるプロトコルは FT8 のみ。**
+
+WSJT-X 3.2 で host のデコード API に加わった 2 つは、組込パスには届かない:
+FT8 の `previous_cycle`（a7 リストデコーダ。直前スロットのデコードを入力に
+とる。`ft8::decode` だけが持ち、`ft8::decode_block` 以下には読む箇所が無い）
+と、FST4 のノイズブランカ（`DecodeRequest::noise_blanker`、既定はオフ）。
+組込アプリはどちらも設定しない。
 
 **整数パスに切り替わることは「チップ上で動く」の定義ではない。**
 generic な `engine::pipeline` そのものが組込経路であり、FST4 は
@@ -121,7 +128,7 @@ WSPR は全く別経路で組込に到達した（詳細は後述）。上の表
 | **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 共通、scalar single-issue) — LX7 PIE `_aes3_` への移行は Phase D D1 で予定、[`PHASE_D_PIE_SIMD.md`](../notes/PHASE_D_PIE_SIMD.md) 参照 | **デモ / 音響 fallback コントローラ** (2026-05-17 pivot) — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。VBUS 源回路が無く（S3 のシリコン自体は host 可、基板が電源経路を配線していない — 外部 5 V を与えれば host 動作する旨の報告が issue #360 にある）バスパワーの USB デバイスを繋いでも給電できないため、本命の UAC コントローラ役は CoreS3 に移譲され、StickS3 は音響経路の実機検証 / デモ機としての位置付けに再定義された。 |
 | **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — `espflash board-info` 確認: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`。ESP32-S2 (LX7、single-core、BT 無し) や S3 では **ない**。 | esp-dsp ASM (`dsps_dotprod_s16_ae32`、`dsps_fft2r_*`) | **本番アプリ (`wav_sim` 専用)** — `embedded-poc/m5stack-core2-app/` が baked `wav_sim` 音源ループに対し同じ `decode_block` を LX6 上で走らせて `mfsk-app-shared` API を交差検証する役割。古典 ESP32 には USB peripheral が無いので mic / speaker / USB-Host 経路はこのボードでは扱わない — Core2 は共有 QSO FSM の LX6 second-board verifier。(独立した Core2 コンピュート bench `embedded-poc/m5stack-core2/` は #61 Phase 3 (0.6.3) で retired、wav_sim 経路はこの app crate に統合済み。) |
 | ESP32-S3 compute bench | Xtensa LX7 | esp-dsp ASM | **タイミング回帰 bench** — `embedded-poc/m5stack-s3/`、缶詰 WAV 入力に対し `decode_block` を走らせ per-stage timing sweep。エンドユーザ向けではない。 |
-| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (P1 の BUS_OUT_EN が VBUS boost 駆動) | esp-dsp `_ae32_` asm (Phase D D1 で `_aes3_` 化、S3-app と共通) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 に無い VBUS 源回路を持つので（StickS3 側の制約はシリコンではなく基板 — issue #360）、IC-705 への USB-Host audio class はここで実装する。`docs/notes/ROADMAP.md` Phase B-Core 参照。 |
+| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (USB host の VBUS には port1 bit7 `BOOST_EN` + port0 bit5 `USB_OTG_EN` + port0 bit1 `BUS_OUT_EN` の**3つすべて**が必要 — `embedded-poc/CLAUDE.md` の "USB host VBUS on CoreS3" 参照) | esp-dsp `_ae32_` asm (Phase D D1 で `_aes3_` 化、S3-app と共通) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 に無い VBUS 源回路を持つので（StickS3 側の制約はシリコンではなく基板 — issue #360）、IC-705 への USB-Host audio class はここで実装する。`docs/notes/ROADMAP.md` Phase B-Core 参照。 |
 
 ### その他のターゲット — 検証済 vs 願望
 
@@ -166,7 +173,7 @@ worked example。
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.11", default-features = false, features = [
+mfsk-core = { version = "0.12", default-features = false, features = [
     "alloc",            # Vec / Box / String — decode 必須
     "ft8",              # FT8 protocol glue
     "fft-extern",       # 呼び出し側が FFT バックエンドを供給
@@ -199,7 +206,7 @@ Feature リファレンス:
 | `alloc` | `extern crate alloc` + Vec / Box。 | 全 decode パス。 |
 | `fft-extern` | `mfsk_core_make_default_fft_planner` extern fn (i16 用 `_planner_16` も) 経由の FFT バックエンド。 | 任意の組込ターゲット。 |
 | `fft-rustfft` | rustfft を FFT バックエンドに。 | Host 専用。 |
-| `fixed-point` | 組込整数パイプライン: u16 spectrogram + i16 内部 DFT + Q11i16 LLR + 整数 NMS BP。`nstep-half` を含意。(0.5.x は `Q3i8` だったが、host fixed-point + rustfft で `qso3_busy.wav` の recall が f32 16/18 → Q3i8 9/18 と落ちる LLR 解像度律速が判明、0.6.2 で `Q11i16` に拡張。`Q3i8` 型は比較経路用に `engine::scalar` に残置。) | 任意の組込ターゲット — host f32 に近い recall (1/2048 LSB)、PSRAM 帯域半減、~12 KB BP scratch (Q11i16、0.6.2 以降)。 |
+| `fixed-point` | 組込整数パイプライン: u16 spectrogram + i16 内部 DFT。`nstep-half` を含意。**Q11i16 の LLR/BP ホットループはもう含意しない** — それは `fixed-point-llr` で、#349 以降 opt-in。LX7 では i16 の BP が f32 の 0.85 倍（22 813 vs 19 456 µs）と実測され、`fixed-point` が実際に守っているのは spectrogram の 702 → 351 KB だから。(0.5.x は `Q3i8` だったが、host fixed-point + rustfft で `qso3_busy.wav` の recall が f32 16/18 → Q3i8 9/18 と落ちる LLR 解像度律速が判明、0.6.2 で LLR を `Q11i16` に拡張。`Q3i8` 型は比較経路用に `engine::scalar` に残置。) | 任意の組込ターゲット — host f32 に近い recall (1/2048 LSB の LLR 解像度)、PSRAM 帯域半減、~12 KB BP scratch (Q11i16、0.6.2 以降)。 |
 | `nstep-half` | spectrogram カラムレートを NSTEP = NSPS/2 (WSJT-X 忠実な NSPS/4 でなく)。 | `fixed-point` で自動有効。host ビルドで組込パスを明示的に simulate する以外では独立に enable しない。 |
 | `parallel` | Rayon 並列 candidate 処理。 | Host 専用。組込では常に off (`std::thread` 無し)。 |
 | `profile-coarse` | coarse_sync sub-stage timing を常時 stderr 出力。 | 診断専用。 |
@@ -282,7 +289,7 @@ scratch 引数そのものを削除して仕上げた — 新規統合では scr
 |---|---|---|---|
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`、0.6.4 以降飽和 | `ft8::decode_block::spectrogram::Spectrogram` |
 | Symbol cs | `Cmplx<f32>` (デフォルト) または `Cmplx<Q14i16>` (`fixed-point`) | f32 無制限、Q14 ±2 | `engine::scalar::Cmplx` (`num_complex::Complex` の type alias) |
-| LLR | f32 (host) または **Q11i16** (`fixed-point`、0.6.2 以降 — 0.5.x は `Q3i8`。解像度律速の recall 天井を解消するため拡張) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) (Q3i8 ±16 (~1/8 LSB) は `engine::scalar` に比較経路用として残置) | `engine::scalar::LlrScalar` |
+| LLR | f32 (host、**および #349 以降は組込のデフォルトも**) または **Q11i16** (`fixed-point-llr`、opt-in。型は 0.6.2 以降 Q11i16 — 0.5.x は `Q3i8` で、解像度律速の recall 天井を解消するため拡張) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) (Q3i8 ±16 (~1/8 LSB) は `engine::scalar` に比較経路用として残置) | `engine::scalar::LlrScalar` |
 | BP messages | T (LLR と同じ) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## C / 非 Rust プロジェクトからの呼び出し
@@ -805,6 +812,7 @@ Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回
 | **FST4** | 汎用 `engine::pipeline` + `fft-extern` — **`decode_block` の移植なし** | **オンエアでデコード中**（CoreS3）。FST4-60 の実機時間は `no8_osd` で 13.6 s、締切重視の既定値で ~7 s 予算の約 1.95 倍 |
 | **FT4** | 汎用 `engine::pipeline`、ホスト f32（LX7 では `fixed-point` の方が*遅かった*、#198） | **オンエアでデコード中**（CoreS3） |
 | **WSPR** | `fft-extern` 経由のホスト `wspr::decode` f32 と `wspr::ddc` | **オンエアでデコード中。** `slot 1 src=uac decoded 1 station(s)`。110 s の締切に対し 82.8〜90.1 s で decode 完了 |
+| **JTTY** | — | **host のみ。** host では実装済み（#477、P0〜P5: 受信器・C ABI・Kotlin・Swift・テキストパッカー）。受信器は FFT（`fft-rustfft` または `fft-extern`）を要し、ワイヤレベルは要さない。`alloc,jtty,fft-extern` は feature matrix に入っている。P6（組込受信器）は別判断で、未着手 |
 | **Q65 / JT9 / JT65** | — | **ビルドは通るが未駆動。** #390 で `fft-rustfft` の強制を撤去。FFT はすべて `engine::fft` 経由、モジュールは `std` ではなく `alloc::` と `num_traits::Float` を使い、JT9 の `downsam9` は逆 FFT を明示的に正規化する。`alloc,<mode>,fft-extern` は feature matrix に入っている。足りていないのはコンパイルの先で、固定小数点パスもボードアプリも実機計測も無い |
 
 **FST4 は `decode_block` を移植せずに実機へ到達した**（issue #306）。
