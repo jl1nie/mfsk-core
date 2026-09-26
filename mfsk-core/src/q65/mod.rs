@@ -74,6 +74,7 @@
 pub mod ap_list;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode_request;
+pub mod hist;
 pub mod protocol;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
@@ -87,6 +88,7 @@ pub mod tx;
 pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode_request::{DecodeRequest, MultiPeriodRequest, Q65SubMode, SniperRequest};
+pub use hist::{DxFromHistory, Q65History};
 pub use protocol::{
     Q65Fec, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
 };
