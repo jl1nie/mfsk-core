@@ -69,6 +69,70 @@ trait Metric: Float {}
 impl Metric for f32 {}
 impl Metric for f64 {}
 
+/// What a decode reports about itself while it runs; `()` reports nothing and costs nothing.
+trait Probe {
+    /// A candidate extension of a path (a metric was added).
+    fn extension(&mut self) {}
+    /// A state's list was full and the next (weaker) predecessor path ended the scan.
+    fn cut_off(&mut self) {}
+    /// A candidate went to `insert`.
+    fn insert_call(&mut self) {}
+    /// `insert` found the same word already in the list.
+    fn duplicate(&mut self) {}
+    /// `insert` placed the candidate nowhere.
+    fn rejected(&mut self) {}
+    /// End of phase `i` (see [`Profile::laps`]).
+    fn lap(&mut self, _phase: usize) {}
+}
+impl Probe for () {}
+
+/// Cycles and counts of one decode, for `jtty-bench` on the LX7 (#499); [`Plan::profile_f32`].
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Profile {
+    /// Ticks of the caller's clock per phase: 0 energies, 1 survivor arrays, 2 first wrap, 3
+    /// second wrap, 4 closed-word pool, 5 scoring and sort, 6 hypotheses and CRC.
+    pub laps: [u32; 7],
+    /// Candidate extensions considered.
+    pub extensions: u32,
+    /// Scans of a state's predecessors ended early on a full list.
+    pub cut_offs: u32,
+    /// Candidates handed to `insert`.
+    pub inserts: u32,
+    /// … of which the word was already in the list (first block only).
+    pub duplicates: u32,
+    /// … which found no place.
+    pub rejects: u32,
+    /// Distinct closed words.
+    pub pool: usize,
+    clock: Option<fn() -> u32>,
+    last: u32,
+}
+impl Probe for Profile {
+    fn extension(&mut self) {
+        self.extensions += 1;
+    }
+    fn cut_off(&mut self) {
+        self.cut_offs += 1;
+    }
+    fn insert_call(&mut self) {
+        self.inserts += 1;
+    }
+    fn duplicate(&mut self) {
+        self.duplicates += 1;
+    }
+    fn rejected(&mut self) {
+        self.rejects += 1;
+    }
+    fn lap(&mut self, phase: usize) {
+        if let Some(clock) = self.clock {
+            let now = clock();
+            self.laps[phase] = self.laps[phase].wrapping_add(now.wrapping_sub(self.last));
+            self.last = clock();
+        }
+    }
+}
+
 /// `-huge`, as upstream's `NEGATIVE_METRIC`.
 fn neg<M: Metric>() -> M {
     M::min_value()
@@ -222,15 +286,40 @@ impl Plan {
         self.decode_with::<f32>(z, prune_reserved)
     }
 
+    /// [`Self::decode_f32`] counting and timing itself with `clock` (ticks; wraps are handled),
+    /// for `jtty-bench` (#499). Returns the same list; the list is dropped here.
+    #[doc(hidden)]
+    pub fn profile_f32(&self, z: &Correlations, clock: fn() -> u32) -> Profile {
+        let mut probe = Profile {
+            clock: Some(clock),
+            last: clock(),
+            ..Profile::default()
+        };
+        let list = self.decode_probe::<f32, Profile>(z, true, &mut probe);
+        probe.pool = list.pool;
+        probe
+    }
+
     fn decode_with<M: Metric>(&self, z: &Correlations, prune_reserved: bool) -> ListResult {
+        self.decode_probe::<M, ()>(z, prune_reserved, &mut ())
+    }
+
+    fn decode_probe<M: Metric, P: Probe>(
+        &self,
+        z: &Correlations,
+        prune_reserved: bool,
+        probe: &mut P,
+    ) -> ListResult {
         let energies = self.energies::<M>(z);
+        probe.lap(0);
         let mut prev = alloc::vec![[Surv::<M>::empty(); PATHS_PER_STATE]; STATES];
         let mut cur = prev.clone();
         prev.iter_mut()
             .enumerate()
             .for_each(|(s, p)| p[0] = Surv::new(s));
+        probe.lap(1);
 
-        for _ in 0..WRAPS {
+        for wrap in 0..WRAPS {
             // each pass restarts the word and origin of every live path
             prev.iter_mut().enumerate().for_each(|(state, paths)| {
                 paths
@@ -241,9 +330,10 @@ impl Plan {
             for (index, b) in self.blocks.iter().enumerate() {
                 let prune =
                     prune_reserved && b.start < RESERVED_BIT && RESERVED_BIT <= b.start + b.len; // block holds bit 33 (1-based)
-                advance(b, &energies, prune, index == 0, &prev, &mut cur);
+                advance(b, &energies, prune, index == 0, &prev, &mut cur, probe);
                 core::mem::swap(&mut prev, &mut cur);
             }
+            probe.lap(2 + wrap);
         }
 
         // closed paths only, one entry per distinct word
@@ -280,6 +370,7 @@ impl Plan {
             }
         }
 
+        probe.lap(4);
         let mut scored: Vec<(M, u64, &Entry<M>)> = pool
             .iter()
             .map(|e| (self.clean_metric(&energies, e.key), reverse_bits(e.key), e))
@@ -297,6 +388,7 @@ impl Plan {
                         .unwrap_or(core::cmp::Ordering::Equal),
                 )
         });
+        probe.lap(5);
         let hypotheses = scored
             .iter()
             .take(HYPOTHESES)
@@ -312,6 +404,7 @@ impl Plan {
                 }
             })
             .collect();
+        probe.lap(6);
         ListResult {
             hypotheses,
             pool: pool.len(),
@@ -360,8 +453,15 @@ impl<M: Metric> Surv<M> {
 
 /// Insert `cand` into a state's four best, best first. `dedupe`: after a pass
 /// restart several ranks of a state share one key, and the better metric wins.
-fn insert<M: Metric>(sel: &mut [Surv<M>; PATHS_PER_STATE], cand: Surv<M>, dedupe: bool) {
+fn insert<M: Metric, P: Probe>(
+    sel: &mut [Surv<M>; PATHS_PER_STATE],
+    cand: Surv<M>,
+    dedupe: bool,
+    probe: &mut P,
+) {
+    probe.insert_call();
     if dedupe && let Some(slot) = sel.iter().position(|s| s.valid() && s.key == cand.key) {
+        probe.duplicate();
         if cand.metric <= sel[slot].metric {
             return;
         }
@@ -369,6 +469,7 @@ fn insert<M: Metric>(sel: &mut [Surv<M>; PATHS_PER_STATE], cand: Surv<M>, dedupe
         sel[PATHS_PER_STATE - 1] = Surv::empty();
     }
     let Some(at) = sel.iter().position(|s| !s.valid() || cand.precedes(s)) else {
+        probe.rejected();
         return;
     };
     sel.copy_within(at..PATHS_PER_STATE - 1, at + 1);
@@ -380,13 +481,14 @@ fn insert<M: Metric>(sel: &mut [Surv<M>; PATHS_PER_STATE], cand: Surv<M>, dedupe
 /// The low `len` bits of an end state are the block's input word, and the
 /// predecessors are the states whose remaining high bits enumerate every
 /// possibility — so no branch table is needed to find them.
-fn advance<M: Metric>(
+fn advance<M: Metric, P: Probe>(
     b: &Block,
     energies: &[M],
     prune: bool,
     first_block: bool,
     prev: &[[Surv<M>; PATHS_PER_STATE]],
     cur: &mut [[Surv<M>; PATHS_PER_STATE]],
+    probe: &mut P,
 ) {
     let words = 1usize << b.len;
     let stride = STATES / words;
@@ -402,8 +504,10 @@ fn advance<M: Metric>(
             let branch = energies[b.energy_offset + usize::from(b.sequence[pred * words + word])];
             for s in prev[pred].iter().filter(|s| s.valid()) {
                 let metric = s.metric + branch;
+                probe.extension();
                 // paths are ordered, so once one is too weak the rest are too
                 if out[PATHS_PER_STATE - 1].valid() && metric < out[PATHS_PER_STATE - 1].metric {
+                    probe.cut_off();
                     break;
                 }
                 insert(
@@ -413,6 +517,7 @@ fn advance<M: Metric>(
                         key: s.key | identity,
                     },
                     first_block,
+                    probe,
                 );
             }
         }

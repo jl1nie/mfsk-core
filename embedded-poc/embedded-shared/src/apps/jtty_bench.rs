@@ -372,6 +372,63 @@ fn bench_trellis_placement() {
     unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
 }
 
+/// Part 3c: where a ladder rung's time goes (#499). `Plan::profile_f32` runs one decode with a
+/// cycle counter around its phases and counts what the trellis does: extensions considered,
+/// scans cut short on a full list, `insert` calls, duplicates, rejects. The survivor arrays
+/// (two of 32 KB) in PSRAM and in internal DRAM, the plans for coherent lengths 1, 2 and 4, on
+/// a +12 dB frame and on noise.
+fn bench_ladder_profile() {
+    use mfsk_core::jtty::trellis::Plan;
+    // the microsecond timer as the clock (inline assembly for `ccount` is unstable on Xtensa);
+    // every phase below is milliseconds, so the resolution is enough
+    fn ticks() -> u32 {
+        now_us() as u32
+    }
+    let mhz = 1.0; // ticks are microseconds; `ms` below divides by 1000
+    log::info!("ladder profile: CPU {mhz:.0} MHz; laps in ms (microsecond timer)");
+    let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
+    let payloads = tx::payloads(&atoms).expect("encodes");
+    let data = tx::frame_tones(&payloads[0]);
+    let tones = &data[mfsk_core::jtty::SYNC_SYMBOLS..];
+    let ms = |c: u32| f64::from(c) / (mhz * 1000.0);
+    for (place, limit) in [("PSRAM", 2048usize), ("internal", 256 * 1024)] {
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(limit) };
+        for coherent in [1usize, 2, 4] {
+            let plan = Plan::new(coherent);
+            for (label, snr) in [("+12 dB", Some(12.0)), ("noise", None)] {
+                let mut rng = Lcg(0x77 ^ snr.map_or(0, |s| s as i64 as u64 + 100));
+                let (zsym, _) = synth_correlations(tones, snr, &mut rng);
+                let p = plan.profile_f32(&zsym, ticks);
+                let total: u32 = p.laps.iter().sum();
+                log::info!(
+                    "L={coherent} {place:<8} {label:<6}: total {:6.1} | energies {:5.1} arrays {:5.1} wrap1 {:6.1} wrap2 {:6.1} pool {:5.1} score {:5.1} hyp {:5.1}",
+                    ms(total),
+                    ms(p.laps[0]),
+                    ms(p.laps[1]),
+                    ms(p.laps[2]),
+                    ms(p.laps[3]),
+                    ms(p.laps[4]),
+                    ms(p.laps[5]),
+                    ms(p.laps[6])
+                );
+                log::info!(
+                    "    ext {} cut-offs {} inserts {} dup {} rejects {} pool {} | {:.0} ns per extension, {:.0} ns per insert (wraps)",
+                    p.extensions,
+                    p.cut_offs,
+                    p.inserts,
+                    p.duplicates,
+                    p.rejects,
+                    p.pool,
+                    1000.0 * f64::from(p.laps[2] + p.laps[3]) / f64::from(p.extensions.max(1)),
+                    1000.0 * f64::from(p.laps[2] + p.laps[3]) / f64::from(p.inserts.max(1))
+                );
+                yield_now();
+            }
+        }
+    }
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+}
+
 /// Part 4: the DSP around the trellis, each at the size the receiver runs it: the unit costs
 /// the per-window model (`docs/notes/JTTY_EMBEDDED_BUDGET.md`) is built from. Buffers in PSRAM
 /// (a 14 160-sample window is 113 KB, so that is where the receiver has it) and, for the
@@ -600,6 +657,8 @@ fn run_bench() {
     bench_search();
     log::info!("--- 3. the ladder ---");
     bench_ladder();
+    log::info!("--- 3c. where a rung's time goes ---");
+    bench_ladder_profile();
     log::info!("--- 3b. trellis placement ---");
     bench_trellis_placement();
     log_heap("end");
