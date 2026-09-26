@@ -51,6 +51,8 @@ pub struct Accepted {
 /// number of threads.
 pub struct Ladder {
     plans: [Plan; 3],
+    /// Carry the path metrics in `f32` (see [`Plan::decode_f32`]).
+    f32_metrics: bool,
 }
 
 impl Default for Ladder {
@@ -64,14 +66,28 @@ impl Ladder {
     pub fn new() -> Self {
         Self {
             plans: COHERENT_LENGTHS.map(Plan::new),
+            f32_metrics: false,
         }
+    }
+
+    /// The same ladder with the trellis metrics in `f32`: hardware on a core whose `f64` is
+    /// software (`docs/notes/JTTY_UPSTREAM.md`, "E0 results"), and the choice measured
+    /// against `f64` by `tests/jtty_f32_metrics.rs`.
+    pub fn with_f32_metrics(mut self) -> Self {
+        self.f32_metrics = true;
+        self
     }
 
     /// One rung: the list decode and the acceptance rule.
     fn rung(&self, index: usize, zsym: &Correlations, zhalf: &Correlations) -> Option<Accepted> {
         let half = index == 3;
         let plan = &self.plans[if half { 0 } else { index }];
-        let list = plan.decode(if half { zhalf } else { zsym }, true);
+        let z = if half { zhalf } else { zsym };
+        let list = if self.f32_metrics {
+            plan.decode_f32(z, true)
+        } else {
+            plan.decode(z, true)
+        };
         accept(&list).map(|(rank, hyp, pool)| Accepted {
             payload: core::array::from_fn::<u8, PAYLOAD_BITS, _>(|i| hyp.bits[i]),
             rung: index + 1,
