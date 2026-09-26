@@ -19,6 +19,7 @@ pub mod freq_presets;
 pub mod grid_fix;
 pub mod grid_state;
 pub mod http_config;
+pub mod jtty_tx;
 pub mod log_sink;
 pub mod ntp;
 pub mod parity;

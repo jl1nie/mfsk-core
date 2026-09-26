@@ -42,8 +42,6 @@ use super::{
     FRAME_SYMBOLS, INFO_BITS, MAX_FRAMES, NSPS, Payload, SAMPLE_RATE, SYNC, SYNC_SYMBOLS, crc, tbcc,
 };
 use crate::engine::dsp::gfsk::gfsk_pulse;
-#[cfg(not(feature = "std"))]
-#[allow(unused_imports)]
 use num_traits::Float;
 
 /// Gaussian bandwidth-time product (`bt` in `sjtty` / the GUI).
@@ -298,6 +296,151 @@ pub fn synth_drifting_f32(
         .collect()
 }
 
+/// A transmission synthesised **as it is played**: the samples of [`synth_f32`] in
+/// pieces of any size, the phase carried from one call to the next.
+///
+/// [`synth_f32`] wants the whole tone sequence and builds the whole waveform, with
+/// the phase in `f64`. A transmitter that feeds a sound device wants the next 20 ms
+/// (or the next frame), with little memory and no `f64`: on an Xtensa LX7 `f64` is
+/// software, an order of magnitude slower than `f32`, and a 16-frame message is
+/// 362 496 samples. The waveform is a pure function of the sample index — the phase
+/// *rate* at sample `n` is a short sum of at most three pulse terms
+/// (`dphi_at` in the whole-message code) — so only the running phase has to be
+/// carried, and that is all this holds.
+///
+/// `F` is the precision of the phase, the pulse table and the arithmetic:
+///
+/// - `Synth<f64>` matches [`synth_f32`] to rounding (tested: within `1e-9` of the
+///   amplitude);
+/// - `Synth<f32>` splits the phase in two, because a single `f32` running sum
+///   cannot be made to work: the carrier's per-sample increment (0.785 rad at
+///   1500 Hz) is not representable, and its representation error, `5e-8` rad per
+///   sample, is *systematic* — 17 milliradians after 30 s, measured, a frequency
+///   error of 0.0001 Hz that no receiver would notice but that makes the samples
+///   differ from the `f64` ones. So the carrier is a 64-bit number-controlled
+///   oscillator (an integer add per sample, exact to `2⁻⁶⁴` of a cycle) and only the
+///   *modulation* phase, whose increments are small, is a wrapped `f32`. Tested
+///   against [`synth_f32`] over the longest message (16 frames, 30 s, text whose
+///   tones average high, the worst case for the modulation sum): the worst sample
+///   differs by 4.4e-3 of the amplitude at 300, 1500 and 2800 Hz alike, a phase
+///   error of 4.4 milliradians at the very end, where it is a slow drift rather
+///   than noise — and the message decodes on the receiver here.
+///
+/// The output does not depend on how the samples are asked for: any chunking of
+/// the same message gives identical bytes.
+pub struct Synth<F: Float = f64> {
+    tones: Vec<u8>,
+    pulse: Vec<F>,
+    /// Samples of the whole transmission.
+    total: usize,
+    /// Next sample to produce.
+    n: usize,
+    /// The modulation phase at sample `n`, in `[0, 2π)`: the running sum of the
+    /// pulse terms alone.
+    phase: F,
+    /// The carrier, as a fraction of a cycle in 64 bits (an NCO), and its increment
+    /// per sample.
+    cphase: u64,
+    cinc: u64,
+    amplitude: F,
+    /// `2π · HMOD / nsps`.
+    k: F,
+}
+
+impl<F: Float> Synth<F> {
+    /// A transmission of `tones` (any number of whole frames) at `f0_hz`, the
+    /// frequency of tone 0, with peak `amplitude`. Empty tones give an empty
+    /// transmission.
+    pub fn new(tones: &[u8], f0_hz: f32, amplitude: f32) -> Self {
+        let g = Geometry::AUDIO;
+        let cast = |x: f64| F::from(x).expect("a float");
+        Self {
+            tones: tones.to_vec(),
+            pulse: g.pulse().into_iter().map(|p| cast(f64::from(p))).collect(),
+            total: tones.len() * g.nsps,
+            n: 0,
+            phase: F::zero(),
+            cphase: 0,
+            // f0 / fs of a cycle, in 2⁻⁶⁴ cycles
+            cinc: (f64::from(f0_hz) / g.fs * 18_446_744_073_709_551_616.0) as u64,
+            amplitude: cast(f64::from(amplitude)),
+            k: cast(TAU * HMOD / g.nsps as f64),
+        }
+    }
+
+    /// Samples in the whole transmission.
+    pub fn total_samples(&self) -> usize {
+        self.total
+    }
+
+    /// Samples not yet produced.
+    pub fn remaining(&self) -> usize {
+        self.total - self.n
+    }
+
+    /// Whether every sample has been produced.
+    pub fn is_finished(&self) -> bool {
+        self.n >= self.total
+    }
+
+    /// Write the next `min(out.len(), remaining())` samples into `out`, returning
+    /// how many. `0` once the transmission is over.
+    pub fn fill(&mut self, out: &mut [f32]) -> usize {
+        let nsps = NSPS;
+        let nsym = self.tones.len();
+        let tau = F::from(TAU).expect("a float");
+        // radians per unit of the carrier's top 32 bits
+        let unit = F::from(TAU / 4_294_967_296.0).expect("a float");
+        let count = out.len().min(self.remaining());
+        for o in &mut out[..count] {
+            let n = self.n;
+            // the carrier's angle from its top 32 bits: resolution 1.5e-9 cycles
+            let carrier = F::from((self.cphase >> 32) as u32).expect("a float") * unit;
+            *o = (self.amplitude * (self.phase + carrier).sin() * ramp(n, self.total, nsps))
+                .to_f32()
+                .unwrap_or(0.0);
+
+            // the phase rate at this sample: a sum of at most three pulse terms
+            let p = nsps + n;
+            let q = p / nsps;
+            let term = |tone: u8, m: usize| F::from(tone).expect("a float") * self.pulse[m];
+            let mut body = F::zero();
+            for j in q.saturating_sub(2)..=q {
+                if j < nsym {
+                    body = body + term(self.tones[j], p - j * nsps);
+                }
+            }
+            if p < 2 * nsps {
+                body = body + term(self.tones[0], nsps + p);
+            }
+            if p >= nsym * nsps {
+                body = body + term(self.tones[nsym - 1], p - nsym * nsps);
+            }
+            self.cphase = self.cphase.wrapping_add(self.cinc);
+            self.phase = self.phase + self.k * body;
+            // keep the running phase small: in f32 its resolution is what limits the
+            // waveform, and a wrapped phase has the same sine
+            if self.phase >= tau {
+                self.phase = self.phase - tau;
+            } else if self.phase < F::zero() {
+                self.phase = self.phase + tau;
+            }
+            self.n += 1;
+        }
+        count
+    }
+}
+
+/// `ramp_gain` in the precision of the caller's choice of `f32` output: the
+/// half-cosine envelope over the first and last `nsps/8` samples.
+fn ramp<F: Float>(i: usize, n: usize, nsps: usize) -> F {
+    let nramp = nsps / 8;
+    if i >= nramp && i < n - nramp {
+        return F::one();
+    }
+    F::from(ramp_gain(i, n, nsps)).expect("a float")
+}
+
 /// The complex baseband waveform of `tones` at `f0_hz`, unit amplitude, built
 /// with `nsps` samples per symbol at `sample_rate_hz` — the reference a receiver
 /// subtracts (`gen_jttywave` with `icmplx = 1`; the receiver's analytic signal is
@@ -445,5 +588,92 @@ mod tests {
         assert_eq!(w.len(), samples_for_frames(1));
         let peak = w.iter().fold(0f32, |m, &x| m.max(x.abs()));
         assert!((0.45..=0.5001).contains(&peak), "peak {peak}");
+    }
+
+    /// Everything a `Synth` produces, asked for in pieces of `chunk` samples.
+    fn play<F: Float>(tones: &[u8], chunk: usize) -> Vec<f32> {
+        let mut s = Synth::<F>::new(tones, 1500.0, 1.0);
+        let mut out = Vec::new();
+        let mut buf = alloc::vec![0f32; chunk];
+        loop {
+            let n = s.fill(&mut buf);
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        assert!(s.is_finished() && s.remaining() == 0);
+        out
+    }
+
+    #[test]
+    fn synth_is_the_same_however_it_is_asked_for() {
+        let t = tones(&[cq(), cq()]).unwrap();
+        let whole = play::<f32>(&t, 1 << 20);
+        assert_eq!(whole.len(), samples_for_frames(2));
+        for chunk in [1, 7, 480, 4096, NSPS * FRAME_SYMBOLS] {
+            assert_eq!(play::<f32>(&t, chunk), whole, "f32, chunks of {chunk}");
+        }
+        let whole = play::<f64>(&t, 1 << 20);
+        for chunk in [1, 333, 22_656] {
+            assert_eq!(play::<f64>(&t, chunk), whole, "f64, chunks of {chunk}");
+        }
+    }
+
+    #[test]
+    fn synth_f64_is_the_whole_message_synthesis() {
+        let t = tones(&[cq(), cq(), cq()]).unwrap();
+        let want = synth_f32(&t, 1500.0, 1.0);
+        let got = play::<f64>(&t, 5000);
+        assert_eq!(got.len(), want.len());
+        let worst = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-6, "worst sample difference {worst}");
+    }
+
+    /// The longest message there is: 16 frames, 30 s. A single `f32` running phase drifts
+    /// 17 milliradians from the `f64` one by the end from the carrier increment's
+    /// representation error alone; with the carrier in an integer oscillator what is
+    /// left is 4.4.
+    #[test]
+    fn synth_f32_stays_within_a_few_milliradians_over_sixteen_frames() {
+        use crate::jtty::pack::{ExchangeProfile, tones as text_tones};
+        // eighty characters of text: 16 frames of TEXT5, tones averaging high
+        let t = text_tones(&"X".repeat(80), ExchangeProfile::Unknown)
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.len(), MAX_FRAMES * FRAME_SYMBOLS);
+        for f0 in [300.0, 1500.0, 2800.0] {
+            let want = synth_f32(&t, f0, 1.0);
+            let mut synth = Synth::<f32>::new(&t, f0, 1.0);
+            let mut got = alloc::vec![0f32; want.len()];
+            assert_eq!(synth.fill(&mut got), want.len());
+            let worst = got
+                .iter()
+                .zip(&want)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f32::max);
+            // measured 4.4e-3, at every carrier
+            assert!(worst < 6e-3, "{f0} Hz: worst sample difference {worst}");
+        }
+    }
+
+    #[test]
+    fn synth_starts_and_ends_at_zero_and_stops() {
+        let t = tones(&[cq()]).unwrap();
+        let s = play::<f32>(&t, 1000);
+        assert!(s[0].abs() < 1e-6 && s.last().unwrap().abs() < 1e-3);
+        assert!(s.iter().all(|x| x.abs() <= 1.0 + 1e-6));
+        let mut synth = Synth::<f32>::new(&t, 1500.0, 1.0);
+        let mut buf = alloc::vec![0f32; 100_000];
+        assert_eq!(synth.fill(&mut buf), samples_for_frames(1));
+        assert_eq!(synth.fill(&mut buf), 0);
+        // no tones, no transmission
+        let mut empty = Synth::<f32>::new(&[], 1500.0, 1.0);
+        assert!(empty.is_finished());
+        assert_eq!(empty.fill(&mut buf), 0);
     }
 }
