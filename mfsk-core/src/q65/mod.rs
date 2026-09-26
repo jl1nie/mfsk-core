@@ -72,6 +72,7 @@
 // `--features <mode>` alone still builds. TX and the const tables stay
 // unconditional, the same split `wspr::mod` uses.
 pub mod ap_list;
+pub mod contest;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode_request;
 pub mod hist;
@@ -88,6 +89,7 @@ pub mod sync_pattern;
 pub mod tx;
 
 pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
+pub use contest::{Caller, Q65Callers, contest_codewords};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode_request::{DecodeRequest, MultiPeriodRequest, Q65SubMode, SniperRequest};
 pub use hist::{DxFromHistory, Q65History};

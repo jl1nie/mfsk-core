@@ -23,9 +23,8 @@
 //! ## Scope
 //!
 //! Non-standard callsigns (the `<MYCALL>` bracket logic in the
-//! Fortran) and the contest-mode caller history from
-//! `q65_set_list2.f90` are intentionally out of scope here — they
-//! are handled by separate generators (not yet ported).
+//! Fortran) are out of scope here. The contest-mode list,
+//! `q65_set_list2.f90`, is [`super::contest::contest_codewords`].
 
 use alloc::format;
 use alloc::vec::Vec;

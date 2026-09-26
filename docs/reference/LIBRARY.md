@@ -672,6 +672,11 @@ engine; `.decode()` resolves precedence as
 carries one — from the most recent decode within 10 Hz. WSJT-X does this
 on a manual Decode Again with no DX call entered, to build the full-AP
 list (`standard_qso_codewords`) without the operator typing the call.
+`q65::Q65Callers` and `contest_codewords` are the contest-mode variant
+(`q65_hist2` / `q65_set_list2`): up to 50 stations that called with a
+grid, kept by the application (`record(freq, msg, now)`, `expire(now)`),
+and a full-AP list of every `MyCall Caller Grid` / `R Grid` / `RRR` /
+`RR73` / `73` with the 78th bit clear and set, to pass to `.ap_list()`.
 `MultiPeriodRequest` takes `&[&[f32]]`, one buffer per T/R slot, and is
 Rust-only — not in the C ABI. What each front end actually does, and
 why the default scan is not the plain Bessel path, is in

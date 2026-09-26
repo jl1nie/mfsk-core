@@ -1687,6 +1687,14 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
     } else if report.len() == 4 && pack_grid4(report).is_some() {
         // Grid locator (e.g. "PM95"), and "RR73".
         (pack_grid4(report).unwrap(), 0)
+    } else if let Some(g) = report.strip_prefix("R ")
+        && g.len() == 4
+        && let Some(igrid) = pack_grid4(g)
+    {
+        // "R EN37": the grid with `ir = 1`, as `pack77_1` packs a
+        // two-word `R <grid>` ending (`packjt77.f90`) and as unpack prints
+        // it. It fell through to the report parser and failed.
+        (igrid, 1)
     } else if report == "RRR" {
         (MAX_GRID4 + 2, 0)
     } else if report == "73" {
@@ -2652,6 +2660,15 @@ mod tests {
     /// message, decoded (#464). `RR73` is the grid RR73, and -50..-31 dB reports
     /// wrap by 101; this crate had `MAXGRID4 + 3` and a -35..-31 collision with
     /// the bare / RRR / RR73 / 73 values.
+    #[test]
+    fn r_grid_packs_with_ir_set() {
+        let bits = pack77("K1ABC", "W9XYZ", "R EN37").unwrap();
+        assert_eq!(unpack77(&bits).as_deref(), Some("K1ABC W9XYZ R EN37"));
+        assert_eq!(bits[58], 1, "ir");
+        let plain = pack77("K1ABC", "W9XYZ", "EN37").unwrap();
+        assert_eq!(bits[59..74], plain[59..74]);
+    }
+
     #[test]
     fn report_field_matches_wsjtx() {
         let g15 = |m: &[u8; 77]| m[59..74].iter().fold(0u32, |a, &b| a * 2 + b as u32);
