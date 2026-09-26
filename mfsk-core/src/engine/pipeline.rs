@@ -1883,6 +1883,7 @@ where
         None,
         &[],
         &AcceptAll,
+        None,
     );
     (results, fft_cache)
 }
@@ -1913,6 +1914,7 @@ pub(crate) fn decode_frame_budgeted<P: GenericPipelineProtocol, A: InfoAccept>(
     budget: Option<BudgetCheck<'_>>,
     ap: &[(&[u8], &[u8], u8)],
     accept: &A,
+    cand_band: Option<(f32, f32)>,
 ) -> (Vec<DecodeResult>, FftCache, BudgetReport)
 where
     P::Fec: BpPooledFec,
@@ -1934,6 +1936,7 @@ where
         budget,
         ap,
         accept,
+        cand_band,
     )
 }
 
@@ -1977,6 +1980,7 @@ where
         None,
         &[],
         &AcceptAll,
+        None,
     );
     (results, fft_cache)
 }
@@ -2178,6 +2182,12 @@ fn decode_frame_impl<P: GenericPipelineProtocol, A: InfoAccept>(
     // candidate's ladder. See `process_candidate_basic_impl`.
     ap: &[(&[u8], &[u8], u8)],
     accept: &A,
+    // Keep only the coarse candidates whose tone-0 frequency lies in
+    // `[lo, hi]`, *after* the search over `freq_min..freq_max` (so the
+    // noise baseline still sees the whole window): FST4's blanker sweep,
+    // `fst4_decode.f90:315-316`, `abs(fc0-(nfqso+1.5*baud)).gt.ntol`.
+    // `None` everywhere else.
+    cand_band: Option<(f32, f32)>,
 ) -> (Vec<DecodeResult>, FftCache, BudgetReport)
 where
     P::Fec: BpPooledFec,
@@ -2198,7 +2208,7 @@ where
     let trace = false;
     #[cfg(feature = "std")]
     let __trace_t0 = trace.then(std::time::Instant::now);
-    let candidates = if P::ID == super::ProtocolId::Ft4 {
+    let mut candidates = if P::ID == super::ProtocolId::Ft4 {
         super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     } else {
         coarse_sync::<P>(
@@ -2218,6 +2228,9 @@ where
             t0.elapsed().as_secs_f64() * 1000.0,
             candidates.len()
         );
+    }
+    if let Some((lo, hi)) = cand_band {
+        candidates.retain(|c| (lo..=hi).contains(&c.freq_hz));
     }
     let fft_cache = FftCache(match precomputed_fft {
         Some(c) => c.to_vec(),

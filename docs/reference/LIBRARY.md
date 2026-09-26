@@ -130,6 +130,7 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.eq_mode(m)` | `EqMode` | `Off` | all | `Off` / `Local`. A property of the **input audio**, not the search |
 | `.known(&[..])` | decoded rows | empty | all | skip or subtract messages already found in an earlier pass |
 | `.fft_cache(c)` | cache from a previous `DecodeOutcome` | none | all | reuse the forward FFT over the same audio |
+| `.noise_blanker(nb)` | `NoiseBlanker` | off | `SupportsNoiseBlanker` — **every FST4 sub-mode** | WSJT-X's **NB** (`blanker.f90`): zero the loudest samples before the slot FFT. `Percent(n)` blanks `n` % (0..=25); `Sweep { step, ftol_hz }` decodes at 0, step, … 20 %, the levels above 0 only within `ftol_hz` of `.freq_hint()` (up to 21 decodes). Off, like WSJT-X's default NB 0 % |
 | `.ap_hint(&ApHint)` | `&ApHint` | none | `SupportsWideBandAp` — **FT8, FT4, every FST4 sub-mode** | lock message bits from an a-priori hypothesis |
 | `.sic_rounds(n)` | `usize`, clamped `1..=3` | none | `SupportsSicRounds` — **FT8, FT4** | flat successive-interference cancellation |
 | `.sic_early()` | — | none | `SupportsSicEarly` — **FT8** | checkpoint-emulation early decode, fixed 3-checkpoint structure |

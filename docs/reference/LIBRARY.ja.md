@@ -132,6 +132,7 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.eq_mode(m)` | `EqMode` | `Off` | 全部 | `Off` / `Local`。**入力音声**の性質であって探索の性質ではない |
 | `.known(&[..])` | 復号済みの行 | 空 | 全部 | 前パスで見つかったメッセージをスキップまたは減算する |
 | `.fft_cache(c)` | 前回の `DecodeOutcome` のキャッシュ | 無し | 全部 | 同じ音声への前方 FFT を再利用 |
+| `.noise_blanker(nb)` | `NoiseBlanker` | オフ | `SupportsNoiseBlanker` — **FST4 の全サブモード** | WSJT-X の **NB**（`blanker.f90`）: スロット FFT の前に振幅の大きい標本を 0 にする。`Percent(n)` は `n` %（0..=25）を消す。`Sweep { step, ftol_hz }` は 0, step, … 20 % の各レベルでデコードし、0 より上のレベルは `.freq_hint()` の `ftol_hz` 以内だけを試す（最大 21 回のデコード）。既定はオフで、WSJT-X の既定 NB 0 % と同じ |
 | `.ap_hint(&ApHint)` | `&ApHint` | 無し | `SupportsWideBandAp` — **FT8・FT4・FST4 全サブモード** | 事前仮説からメッセージビットを固定 |
 | `.sic_rounds(n)` | `usize`、`1..=3` にクランプ | 無し | `SupportsSicRounds` — **FT8, FT4** | 平坦な逐次干渉除去 |
 | `.sic_early()` | — | 無し | `SupportsSicEarly` — **FT8** | チェックポイント模倣の早期デコード（3 チェックポイント固定構造） |

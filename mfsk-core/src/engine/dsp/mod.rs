@@ -10,6 +10,7 @@
 // once we have alloc.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod analytic;
+pub mod blanker;
 pub mod cpfsk;
 pub mod ddc;
 pub mod dotprod;
