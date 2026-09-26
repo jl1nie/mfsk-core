@@ -2,6 +2,26 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **The GFSK synthesiser sampled its frequency pulse one sample early (#482).**
+  `gen_ft8wave.f90` (and `gen_ft4wave`, `gen_fst4wave`) build the 3-symbol Gaussian pulse
+  with a 1-based loop, `tt=(i-1.5*nsps)/nsps` for `i=1..3*nsps`. `engine::dsp::gfsk` ran
+  the same formula from `i=0`, so every FT8, FT4 and FST4 waveform this crate made (the
+  transmitter, the subtraction references, FT8's a8 correlation) had its whole pulse train
+  shifted one sample. That is a phase error up to 2π·Δf/fs: 0.023 rad on FT8, 0.049 on
+  JTTY, whose own port did it right and found this.
+  - All three pulse tables are fixed: `synth_f32_into`, `synth_complex_f32_into` and
+    `GfskStream`.
+  - Against `ft8sim`'s noiseless output (v3.2.0-rc1, SNR 99), the worst normalised sample
+    error went from 1.3e-2 to 1.2e-4 (`tests/gfsk_vs_wsjtx.rs`). The residue is
+    `gen_ft8wave`'s phase table for its complex output.
+  - `synth_matches_gen_ft8wave` compares the synthesiser with a 1-based f64
+    transliteration of `gen_ft8wave.f90`.
+  - Effect on decoding is small. The fixed-point FT8 qso3_busy recall (the embedded ship
+    configuration, which subtracts) went from 11/20 to 12/20, still with 0 extra.
+  - Tier C FT8 / FT4 / FST4 single-signal: every crossing and phantom count unchanged.
+  - FT8 busy-band, 40 files per density: busy20 `.sic_early()` recall 81.0 → 81.1 % with
+    extras 2 → 1, busy40 81.3 → 81.2 %, the rest identical.
+
 - **Q65: the contest caller list, `q65_hist2` / `q65_set_list2`.** In NA VHF / WW Digi /
   ARRL Digi contest mode WSJT-X remembers up to 50 stations that called with a grid,
   and builds its full-AP list from all of them. This crate had neither half.
