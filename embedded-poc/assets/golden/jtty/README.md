@@ -68,3 +68,12 @@ gets on it, `UPSTREAM_RECALL.tsv`, is committed.
 The noise-only corpus (`embedded-poc/assets/jtty_noise/`, gitignored,
 `scripts/gen_jtty_noise_wavs.sh`, 60 × 30 s at SNR −99 dB) is for the "Gaussian
 noise decodes nothing" test; `rjtty` decodes nothing in it either.
+
+## Several stations in one recording
+
+`sim/mix_*.wav` and `sim/MIXES.tsv`: `sjtty` writes one signal per file, so each
+component is generated noiseless, scaled to its SNR (2500 Hz bandwidth) against
+one noise-only recording, and the lot is added. `MIXES.tsv` lists the components
+and what `rjtty` decodes (its `ndebug 0` output, which leaves out frames it
+absorbed as repeats). `scripts/jtty_multi_study.sh` runs the same recipe over
+hundreds of random pairs and compares the two decoders.

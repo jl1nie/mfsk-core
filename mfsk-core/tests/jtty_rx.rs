@@ -249,28 +249,52 @@ fn scan_is_identical_for_any_thread_count() {
     let Some(audio) = load("jtty/260807_134110.wav") else {
         return;
     };
+    let Some(mix) = load("jtty/sim/mix_four_stations.wav") else {
+        return;
+    };
     let run = |threads: usize| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .unwrap()
-            .install(|| scan(&audio))
-    };
-    let key = |v: &[FrameDecode]| -> Vec<(u8, u32, u32, Vec<u8>, usize)> {
-        v.iter()
-            .map(|f| {
+            .install(|| {
+                let rx = Receiver::new();
+                let p = Params::default();
                 (
-                    f.channel,
-                    f.f1_hz.to_bits(),
-                    f.tsync_s.to_bits(),
-                    f.payload.to_vec(),
-                    f.rank,
+                    rx.scan(&audio, &p),
+                    rx.scan_messages(&audio, &p),
+                    rx.scan_messages(&mix, &p),
                 )
             })
-            .collect()
+    };
+    let key = |r: &(
+        Vec<FrameDecode>,
+        Vec<mfsk_core::jtty::assemble::MessageUpdate>,
+        Vec<mfsk_core::jtty::assemble::MessageUpdate>,
+    )| {
+        (
+            r.0.iter()
+                .map(|f| {
+                    (
+                        f.channel,
+                        f.f1_hz.to_bits(),
+                        f.tsync_s.to_bits(),
+                        f.payload.to_vec(),
+                        f.rank,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            r.1.iter()
+                .map(|u| (u.id, u.f1_hz.to_bits(), u.text.clone(), u.complete))
+                .collect::<Vec<_>>(),
+            r.2.iter()
+                .map(|u| (u.id, u.f1_hz.to_bits(), u.text.clone(), u.complete))
+                .collect::<Vec<_>>(),
+        )
     };
     let one = key(&run(1));
-    assert_eq!(one.len(), 11);
+    assert_eq!(one.0.len(), 11);
+    assert!(one.2.iter().filter(|u| u.3).count() >= 4);
     for t in [2, 5, 16] {
         assert_eq!(key(&run(t)), one, "{t} threads");
     }
@@ -532,4 +556,124 @@ fn speed() {
             seconds / t
         );
     }
+}
+
+/// Several stations in one recording (`sim/mix_*.wav`, one noise, components at
+/// calibrated SNRs — see `scripts/gen_jtty_vectors.sh`): the messages this crate
+/// assembles are exactly the ones `rjtty` shows, no more and no fewer. These
+/// exercise the subtraction, the three channels, the retro re-sweep and the
+/// assembly: `three_channels` and `four_stations` put a station in each channel,
+/// `two_close` a weak one 60 Hz from a strong one.
+#[test]
+fn several_stations_in_one_recording_match_rjtty() {
+    let Some(path) = common::corpus::golden_path("jtty/sim/MIXES.tsv") else {
+        return;
+    };
+    let text = std::fs::read_to_string(path).unwrap();
+    let rx = Receiver::new();
+    let mut checked = 0;
+    for row in text.lines().filter(|l| !l.starts_with('#')) {
+        let f: Vec<&str> = row.split('\t').collect();
+        let audio = load(&format!("jtty/sim/mix_{}.wav", f[0])).unwrap();
+        // the last text of every message, complete or not, distinct
+        let mut last: std::collections::BTreeMap<u64, String> = Default::default();
+        for u in rx.scan_messages(&audio, &Params::default()) {
+            last.insert(u.id, u.text);
+        }
+        let mut ours: Vec<String> = last.into_values().collect();
+        let mut theirs: Vec<String> = f[2]
+            .split('|')
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+            .collect();
+        ours.sort();
+        ours.dedup();
+        theirs.sort();
+        assert_eq!(ours, theirs, "{}: {}", f[0], f[1]);
+        checked += 1;
+    }
+    assert_eq!(checked, 7);
+}
+
+/// Diagnostic for `scripts/jtty_multi_study.sh`: the completed messages of every
+/// WAV in `$JTTY_DIAG_DIR`, one line each: `MSGS <file> <text>|<text>…`.
+#[test]
+#[ignore]
+fn diag_messages() {
+    let dir = std::env::var("JTTY_DIAG_DIR").expect("JTTY_DIAG_DIR");
+    let rx = Receiver::new();
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+        .collect();
+    files.sort();
+    for f in files {
+        let audio = common::load_wav_i16(&f);
+        let done: Vec<String> = rx
+            .scan_messages(&audio, &Params::default())
+            .into_iter()
+            .filter(|u| u.complete)
+            .map(|u| u.text)
+            .collect();
+        eprintln!(
+            "MSGS {} {}",
+            f.file_name().unwrap().to_string_lossy(),
+            done.join("|")
+        );
+    }
+}
+
+/// A scene built here: a strong station and, 20 dB down and 20 Hz away, a weak
+/// one that starts a moment later, in a little noise. Nothing in the weak one's
+/// sync search can see past the strong one until it is taken off — so with
+/// `subtract` off it is lost, and with it on both are decoded.
+#[test]
+fn a_weak_station_under_a_strong_one_needs_the_subtraction() {
+    use mfsk_core::jtty::source::CallAction;
+    use mfsk_core::jtty::tx;
+    let strong = tx::synth_f32(
+        &tx::tones(&[Atom::call(CallAction::Cq, "K1ABC")]).unwrap(),
+        1500.0,
+        8000.0,
+    );
+    let weak = tx::synth_f32(
+        &tx::tones(&[Atom::call(CallAction::Cq, "W9XYZ")]).unwrap(),
+        1520.0,
+        800.0,
+    );
+    let mut noise = Noise(0x1234_5678_9ABC_DEF1);
+    let n = 40_000usize;
+    let audio: Vec<i16> = (0..n)
+        .map(|i| {
+            let s = strong.get(i.wrapping_sub(3600)).copied().unwrap_or(0.0);
+            let w = weak.get(i.wrapping_sub(4400)).copied().unwrap_or(0.0);
+            (s + w + 30.0 * noise.gauss() as f32)
+                .round()
+                .clamp(-32767.0, 32767.0) as i16
+        })
+        .collect();
+    if let Ok(d) = std::env::var("JTTY_PROBE_OUT") {
+        write_wav(&PathBuf::from(d).join("weak_scene.wav"), &audio);
+    }
+    let rx = Receiver::new();
+    let texts = |subtract: bool| -> Vec<String> {
+        let p = Params {
+            subtract,
+            ..Params::default()
+        };
+        let mut t: Vec<String> = rx
+            .scan(&audio, &p)
+            .iter()
+            .map(|f| f.atom.render())
+            .collect();
+        t.sort();
+        t
+    };
+    assert_eq!(texts(true), ["CQ K1ABC CQ", "CQ W9XYZ CQ"]);
+    assert_eq!(
+        texts(false),
+        ["CQ K1ABC CQ"],
+        "without subtraction only the strong one"
+    );
 }

@@ -33,6 +33,8 @@
 use alloc::vec::Vec;
 use core::f64::consts::TAU;
 
+use num_complex::Complex32;
+
 use super::source::Atom;
 use super::{
     FRAME_SYMBOLS, INFO_BITS, MAX_FRAMES, NSPS, Payload, SAMPLE_RATE, SYNC, SYNC_SYMBOLS, crc, tbcc,
@@ -46,8 +48,6 @@ use num_traits::Float;
 const BT: f32 = 2.0;
 /// Modulation index: tone spacing equals the symbol rate.
 const HMOD: f64 = 1.0;
-/// Samples per scan chunk when integrating the phase (one symbol).
-const SCAN_CHUNK: usize = NSPS;
 
 /// Frames below which splitting across threads is not worth a task: encoding one
 /// is microseconds, so the parallel path is mostly about keeping the structure
@@ -109,19 +109,47 @@ pub fn tones(atoms: &[Atom]) -> Option<Vec<u8>> {
 }
 
 /// Order-preserving parallel `collect` over `0..len`.
-fn collect_range<R: Send>(len: usize, f: impl Fn(usize) -> R + Sync + Send) -> Vec<R> {
+fn collect_range<R: Send>(
+    len: usize,
+    min_len: usize,
+    f: impl Fn(usize) -> R + Sync + Send,
+) -> Vec<R> {
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
         (0..len)
             .into_par_iter()
-            .with_min_len(2 * NSPS)
+            .with_min_len(min_len)
             .map(f)
             .collect()
     }
     #[cfg(not(feature = "parallel"))]
     {
+        let _ = min_len;
         (0..len).map(f).collect()
+    }
+}
+
+/// Symbol length and sample rate a waveform is built at.
+#[derive(Clone, Copy)]
+struct Geometry {
+    nsps: usize,
+    fs: f64,
+}
+
+impl Geometry {
+    /// The 12 kHz audio of a transmitter.
+    const AUDIO: Self = Self {
+        nsps: NSPS,
+        fs: SAMPLE_RATE as f64,
+    };
+
+    /// `gen_jttywave.f90`'s pulse: `pulse(i)`, `i = 1..3·nsps`, at
+    /// `tt = (i − 1.5·nsps)/nsps`.
+    fn pulse(&self) -> Vec<f32> {
+        (1..=3 * self.nsps)
+            .map(|i| gfsk_pulse(BT, (i as f32 - 1.5 * self.nsps as f32) / self.nsps as f32))
+            .collect()
     }
 }
 
@@ -133,41 +161,109 @@ fn collect_range<R: Send>(len: usize, f: impl Fn(usize) -> R + Sync + Send) -> V
 /// symbols are repeated once as dummies so the pulse train is continuous at the
 /// ends, and the audio is read from index `nsps` on. Position `p = nsps + n`
 /// is covered by at most three symbols, so each sample is a short sum.
-fn dphi_at(n: usize, tones: &[u8], pulse: &[f32], carrier: f64, slope: f64) -> f64 {
+fn dphi_at(n: usize, tones: &[u8], pulse: &[f32], nsps: usize, carrier: f64, slope: f64) -> f64 {
     let nsym = tones.len();
-    let p = NSPS + n;
-    let q = p / NSPS;
+    let p = nsps + n;
+    let q = p / nsps;
     let term = |tone: u8, m: usize| f64::from(tone) * f64::from(pulse[m]);
     // symbols j with j·nsps ≤ p < (j + 3)·nsps
     let body: f64 = (q.saturating_sub(2)..=q)
         .filter(|&j| j < nsym)
-        .map(|j| term(tones[j], p - j * NSPS))
+        .map(|j| term(tones[j], p - j * nsps))
         .sum();
     // dummy symbol before the first / after the last
-    let head = if p < 2 * NSPS {
-        term(tones[0], NSPS + p)
+    let head = if p < 2 * nsps {
+        term(tones[0], nsps + p)
     } else {
         0.0
     };
-    let tail = if p >= nsym * NSPS {
-        term(tones[nsym - 1], p - nsym * NSPS)
+    let tail = if p >= nsym * nsps {
+        term(tones[nsym - 1], p - nsym * nsps)
     } else {
         0.0
     };
-    carrier + slope * n as f64 + TAU * HMOD / NSPS as f64 * (body + head + tail)
+    carrier + slope * n as f64 + TAU * HMOD / nsps as f64 * (body + head + tail)
 }
 
-/// Integrate `dphi` (exclusive running sum from `start`) and write
-/// `amplitude · sin(phase)` into `out`.
-fn integrate_chunk(out: &mut [f32], dphi: &[f64], start: f64, amplitude: f64) {
-    dphi.iter()
-        .scan(start, |phase, &d| {
-            let now = *phase;
-            *phase += d;
-            Some(now)
+/// The phase, radians, at every output sample of `tones` transmitted at `f0_hz`
+/// (drifting `drift_hz_per_s`): the running sum of the phase rate, built as a
+/// chunked scan — chunk sums in parallel, a short sequential scan over the chunk
+/// offsets, then each chunk integrated in parallel — and carried in `f64`.
+fn phase_track(tones: &[u8], f0_hz: f32, drift_hz_per_s: f32, g: Geometry) -> Vec<f64> {
+    let nwave = tones.len() * g.nsps;
+    let pulse = g.pulse();
+    let carrier = TAU * f64::from(f0_hz) / g.fs;
+    // frequency f(t) = f0 + drift·t: the phase rate grows by 2π·drift/fs² per sample
+    let slope = TAU * f64::from(drift_hz_per_s) / (g.fs * g.fs);
+
+    let dphi = collect_range(nwave, 2 * g.nsps, |n| {
+        dphi_at(n, tones, &pulse, g.nsps, carrier, slope)
+    });
+
+    let chunk = g.nsps;
+    let sums: Vec<f64> = {
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            dphi.par_chunks(chunk).map(|c| c.iter().sum()).collect()
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            dphi.chunks(chunk).map(|c| c.iter().sum()).collect()
+        }
+    };
+    let starts: Vec<f64> = sums
+        .iter()
+        .scan(0.0, |acc, &s| {
+            let start = *acc;
+            *acc += s;
+            Some(start)
         })
-        .zip(out.iter_mut())
-        .for_each(|(phase, o)| *o = (amplitude * phase.sin()) as f32);
+        .collect();
+
+    let mut phase = alloc::vec![0f64; nwave];
+    let integrate = |out: &mut [f64], d: &[f64], start: f64| {
+        d.iter()
+            .scan(start, |p, &x| {
+                let now = *p;
+                *p += x;
+                Some(now)
+            })
+            .zip(out.iter_mut())
+            .for_each(|(p, o)| *o = p);
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        phase
+            .par_chunks_mut(chunk)
+            .zip(dphi.par_chunks(chunk))
+            .zip(starts.par_iter())
+            .for_each(|((o, d), &s)| integrate(o, d, s));
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        phase
+            .chunks_mut(chunk)
+            .zip(dphi.chunks(chunk))
+            .zip(&starts)
+            .for_each(|((o, d), &s)| integrate(o, d, s));
+    }
+    phase
+}
+
+/// The half-cosine envelope over the first and last `nsps/8` samples
+/// (`nramp = nint(nsps/8)`): `gain(i, n)` for sample `i` of `n`.
+fn ramp_gain(i: usize, n: usize, nsps: usize) -> f64 {
+    let nramp = nsps / 8;
+    let up = |k: usize| (1.0 - (TAU * k as f64 / (2.0 * nramp as f64)).cos()) / 2.0;
+    if i < nramp {
+        up(i)
+    } else if i >= n - nramp {
+        1.0 - up(i - (n - nramp))
+    } else {
+        1.0
+    }
 }
 
 /// Audio for a tone sequence: real samples at 12 kHz, peak about `amplitude`,
@@ -190,71 +286,42 @@ pub fn synth_drifting_f32(
     if tones.is_empty() {
         return Vec::new();
     }
-    let nwave = tones.len() * NSPS;
-    // gen_jttywave.f90: pulse(i), i = 1..3·nsps, at tt = (i − 1.5·nsps)/nsps
-    let pulse: Vec<f32> = (1..=3 * NSPS)
-        .map(|i| gfsk_pulse(BT, (i as f32 - 1.5 * NSPS as f32) / NSPS as f32))
-        .collect();
-    let carrier = TAU * f64::from(f0_hz) / f64::from(SAMPLE_RATE);
-    // frequency f(t) = f0 + drift·t: the phase rate grows by 2π·drift/fs² per sample
-    let slope = TAU * f64::from(drift_hz_per_s) / (f64::from(SAMPLE_RATE) * f64::from(SAMPLE_RATE));
-
-    let dphi = collect_range(nwave, |n| dphi_at(n, tones, &pulse, carrier, slope));
-
-    // Chunked scan: the phase at the start of each chunk is the sum of the
-    // chunks before it.
-    let sums: Vec<f64> = {
-        #[cfg(feature = "parallel")]
-        {
-            use rayon::prelude::*;
-            dphi.par_chunks(SCAN_CHUNK)
-                .map(|c| c.iter().sum())
-                .collect()
-        }
-        #[cfg(not(feature = "parallel"))]
-        {
-            dphi.chunks(SCAN_CHUNK).map(|c| c.iter().sum()).collect()
-        }
-    };
-    let starts: Vec<f64> = sums
+    let g = Geometry::AUDIO;
+    let phase = phase_track(tones, f0_hz, drift_hz_per_s, g);
+    let (n, amplitude) = (phase.len(), f64::from(amplitude));
+    phase
         .iter()
-        .scan(0.0, |acc, &s| {
-            let start = *acc;
-            *acc += s;
-            Some(start)
+        .enumerate()
+        .map(|(i, p)| (amplitude * p.sin() * ramp_gain(i, n, g.nsps)) as f32)
+        .collect()
+}
+
+/// The complex baseband waveform of `tones` at `f0_hz`, unit amplitude, built
+/// with `nsps` samples per symbol at `sample_rate_hz` — the reference a receiver
+/// subtracts (`gen_jttywave` with `icmplx = 1`; the receiver's analytic signal is
+/// at 6 kHz, 192 samples per symbol). `nsps` must be a multiple of 8.
+pub fn synth_complex(tones: &[u8], f0_hz: f32, nsps: usize, sample_rate_hz: f32) -> Vec<Complex32> {
+    assert!(
+        nsps > 0 && nsps.is_multiple_of(8),
+        "nsps must be a multiple of 8"
+    );
+    if tones.is_empty() {
+        return Vec::new();
+    }
+    let g = Geometry {
+        nsps,
+        fs: f64::from(sample_rate_hz),
+    };
+    let phase = phase_track(tones, f0_hz, 0.0, g);
+    let n = phase.len();
+    phase
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let r = ramp_gain(i, n, nsps);
+            Complex32::new((r * p.cos()) as f32, (r * p.sin()) as f32)
         })
-        .collect();
-
-    let amplitude = f64::from(amplitude);
-    let mut out = alloc::vec![0f32; nwave];
-    #[cfg(feature = "parallel")]
-    {
-        use rayon::prelude::*;
-        out.par_chunks_mut(SCAN_CHUNK)
-            .zip(dphi.par_chunks(SCAN_CHUNK))
-            .zip(starts.par_iter())
-            .for_each(|((o, d), &s)| integrate_chunk(o, d, s, amplitude));
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        out.chunks_mut(SCAN_CHUNK)
-            .zip(dphi.chunks(SCAN_CHUNK))
-            .zip(&starts)
-            .for_each(|((o, d), &s)| integrate_chunk(o, d, s, amplitude));
-    }
-
-    // Half-cosine envelope over the first and last nsps/8 samples.
-    let nramp = NSPS / 8;
-    let env = |i: usize| (1.0 - (TAU * i as f64 / (2.0 * nramp as f64)).cos()) / 2.0;
-    out[..nramp]
-        .iter_mut()
-        .enumerate()
-        .for_each(|(i, o)| *o *= env(i) as f32);
-    out[nwave - nramp..]
-        .iter_mut()
-        .enumerate()
-        .for_each(|(i, o)| *o *= (1.0 - env(i)) as f32);
-    out
+        .collect()
 }
 
 /// Length in samples of a transmission of `frames` frames, `1.888 s` each.
@@ -332,7 +399,7 @@ mod tests {
         let mut want: Vec<f32> = (0..t.len() * NSPS)
             .map(|n| {
                 let s = phase.sin() as f32;
-                phase += dphi_at(n, &t, &pulse, carrier, 0.0);
+                phase += dphi_at(n, &t, &pulse, NSPS, carrier, 0.0);
                 s
             })
             .collect();

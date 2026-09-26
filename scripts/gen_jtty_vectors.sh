@@ -12,6 +12,7 @@
 #   golden/jtty/260807_134110.expected.txt   rjtty's decode of it (ndebug=1)
 #   golden/jtty/sim/*.wav                    sjtty recordings (AWGN, deterministic)
 #   golden/jtty/sim/MANIFEST.tsv             message, profile, tones, rjtty result
+#   golden/jtty/sim/mix_*.wav, MIXES.tsv      several signals in one recording, rjtty's messages
 #   golden/jtty/ladder_cases.txt             TBCC ladder inputs and outputs
 #
 # Everything is deterministic: sjtty seeds its noise (same arguments give the
@@ -88,6 +89,76 @@ for v in "${VECTORS[@]}"; do
     >> "$OUT/sim/MANIFEST.tsv.tmp"
 done
 mv "$OUT/sim/MANIFEST.tsv.tmp" "$OUT/sim/MANIFEST.tsv"
+
+# ---- 2b. multi-signal recordings --------------------------------------------
+# sjtty writes one signal per file, with its own noise. To get several signals in
+# *one* noise, each component is generated noiseless (SNR 91: peak-normalised to
+# 32766.9), scaled to its SNR against one noise-only recording (sjtty at SNR -99,
+# noise sigma 100 units, i.e. 4167 in 2500 Hz: signal amplitude
+# sqrt(2 * 4167 * 10^(snr/10))), and everything is added sample by sample
+# (int16, saturating). What rjtty decodes (its ndebug-0 output, which leaves out
+# frames it absorbed as repeats) is the expected result.
+# name | component;component... where a component is
+#   profile,message,f0,dt,fading(AW|MM|...),snr
+MIXES=(
+  "two_close|unknown,CQ K1ABC CQ,1500,0.3,AW,-8;unknown,WB9XYZ 599 123,1560,0.9,AW,-12"
+  "strong_weak|unknown,HELLO WORLD 73,1500,0.3,AW,-3;unknown,CQ W9XYZ CQ,1530,0.6,AW,-12"
+  "three_channels|rtty-roundup,K1ABC 599 001,1500,0.3,AW,-8;unknown,CQ JA6DEF CQ,1300,0.5,AW,-8;unknown,TU W7UVW CQ,1700,0.8,AW,-8"
+  "fading_pair|unknown,CQ K1ABC CQ,1500,0.3,MM,-4;unknown,CQ W9XYZ CQ,1560,0.8,MM,-4"
+  "back_to_back|unknown,CQ K1ABC CQ,1500,0.3,AW,-8;unknown,K1ABC TU,1503,3.3,AW,-8"
+  "overlap_same_freq|unknown,HELLO WORLD 73,1500,0.3,AW,-2;unknown,CQ W9XYZ CQ,1515,1.1,AW,-12"
+  "four_stations|unknown,CQ K1ABC CQ,1500,0.3,AW,-6;unknown,CQ W9XYZ CQ,1300,0.4,AW,-6;unknown,CQ JA6DEF CQ,1650,0.5,AW,-6;unknown,CQ VK3NV CQ,1750,0.6,AW,-6"
+)
+NOISE="$WORK/noise"; mkdir -p "$NOISE"
+( cd "$NOISE" && "$TOOLS/sjtty" "AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AAAAA AA" 1500 0.3 AW 0 384 1 -99 > /dev/null )
+cp "$NOISE/000000_000001.wav" "$WORK/../jtty_noise_$$.wav"; NOISEWAV="$WORK/../jtty_noise_$$.wav"
+printf '# WSJT-X %s (%s) sjtty mixtures in one noise, rjtty result\n# name\tcomponents\trjtty_messages (| separated, in order)\n' \
+  "$TAG" "$COMMIT" > "$OUT/sim/MIXES.tsv.tmp"
+for m in "${MIXES[@]}"; do
+  name="${m%%|*}"; comps="${m#*|}"
+  rm -rf "$WORK"/c*; n=0; args=()
+  IFS=';' read -ra parts <<<"$comps"
+  for c in "${parts[@]}"; do
+    n=$((n+1)); IFS=',' read -r profile msg f0 dt fad snr <<<"$c"
+    mkdir "$WORK/c$n"
+    ( cd "$WORK/c$n" && "$TOOLS/sjtty" "--exchange-profile=$profile" "$msg" "$f0" "$dt" "$fad" 0 384 1 91 > /dev/null )
+    args+=("$WORK/c$n/000000_000001.wav:$snr")
+  done
+  python3 - "$OUT/sim/mix_$name.wav" "$NOISEWAV" "${args[@]}" <<'PY'
+import sys, wave, array, math
+out, noise, *comps = sys.argv[1:]
+def read(p):
+    w = wave.open(p); assert w.getframerate() == 12000 and w.getsampwidth() == 2
+    a = array.array('h'); a.frombytes(w.readframes(w.getnframes())); return a
+sigs = []
+for c in comps:
+    path, snr = c.rsplit(':', 1)
+    a = read(path)
+    amp = math.sqrt(2 * 4167.0 * 10 ** (float(snr) / 10))   # peak amplitude for this SNR in 2500 Hz
+    sigs.append((a, amp / 32766.9))
+n = max(len(a) for a, _ in sigs)
+nz = read(noise)
+mix = array.array('h', [0]) * n
+for i in range(n):
+    x = nz[i] + sum(g * a[i] for a, g in sigs if i < len(a))
+    mix[i] = max(-32768, min(32767, int(round(x))))
+w = wave.open(out, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(12000)
+w.writeframes(mix.tobytes()); w.close()
+PY
+  # ndebug 0: only frames that were not absorbed as repeats; keep the distinct texts
+  # that are not a prefix of another (a message's earlier frames are its prefixes)
+  complete="$(cd "$OUT/sim" && "$TOOLS/rjtty" 4.6 0 384 1500 50 "mix_$name.wav" \
+    | awk 'NF>=2 {$1=""; sub(/^ +/,""); print}' | python3 -c '
+import sys
+t = []
+for l in sys.stdin:
+    l = l.rstrip("\n")
+    if l and l not in t: t.append(l)
+print("|".join(x for x in t if not any(y != x and y.startswith(x) for y in t)))')"
+  printf '%s\t%s\t%s\n' "$name" "$comps" "$complete" >> "$OUT/sim/MIXES.tsv.tmp"
+done
+rm -f "$NOISEWAV"
+mv "$OUT/sim/MIXES.tsv.tmp" "$OUT/sim/MIXES.tsv"
 
 # ---- 3. TBCC ladder oracle -------------------------------------------------
 LADDER="$OUT/ladder_cases.txt"
