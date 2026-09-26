@@ -48,18 +48,23 @@ use num_complex::Complex32;
 use super::Q65a30;
 use super::sync_pattern::Q65_SYNC_POSITIONS;
 
-/// Es/No metric used by the Q65 intrinsic-probability front end.
+/// Es/No metric used by the Q65 intrinsic-probability front end —
+/// `q65_init`'s `decoderEsNoMetric = nm * R * EbNoMetric`
+/// (`lib/qra/q65/q65.c`), with `EbNodBMetric = 2.8 dB` and
+/// `R = _q65_get_code_rate()`: message length over codeword length
+/// *after puncturing*. Q65's code is `QRATYPE_CRCPUNCTURED2`, so that is
+/// `(K-2)/(N-2)` = 13/63.
 ///
-/// Matches the `EbNodBMetric = 2.8 dB` convention from
-/// `q65_init` in `lib/qra/q65/q65.c`. Stored linearised (i.e.
-/// `10^(2.8/10) ≈ 1.905`) and scaled by `nm * R = 6 * 15/65` to land
-/// on the C reference's `decoderEsNoMetric` value.
+/// This used 15/65, the unpunctured (15,65), until 0.12.0: a metric 12 %
+/// high, which lowered every list decode's log-likelihood by about 0.7
+/// against WSJT-X's own and let a q3 decode at -30 dB fall under
+/// `PLOG_MIN` that `jt9` accepts.
 fn default_es_no_metric() -> f32 {
     let eb_no_db = 2.8_f32;
     let eb_no = 10.0_f32.powf(eb_no_db / 10.0);
     // BITS_PER_SYMBOL is 6 for every Q65 sub-mode.
     let nm = 6.0_f32;
-    let rate = 15.0 / 65.0;
+    let rate = 13.0 / 63.0;
     nm * rate * eb_no
 }
 
@@ -662,6 +667,25 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     )
 }
 
+/// `q65_dec1`'s acceptance (`q65.f90`): `PLOG_MIN`, the floor on the
+/// winning codeword's log-likelihood.
+pub(crate) const PLOG_MIN: f32 = -242.0;
+
+/// The list decode with `q65_dec1`'s acceptance on top of
+/// `q65_decode_fullaplist`'s: the winner's log-likelihood must exceed
+/// [`PLOG_MIN`] and its message must not be all zeros
+/// (`if(sum(dat4).le.0) irc=-2`; `if(irc.ge.0 .and. plog.gt.PLOG_MIN)`).
+/// The list-size threshold alone is `-260 + ln(ncw/3)`, about -256 for
+/// the 206-entry standard list: 14 below the floor WSJT-X decodes with.
+fn list_decode(
+    codec: &Q65Codec,
+    intrinsics: &[f32],
+    candidates: &[[i32; 63]],
+) -> Option<(usize, [i32; 13])> {
+    let (idx, info, plog) = codec.decode_with_codeword_list_llh(intrinsics, candidates)?;
+    (plog > PLOG_MIN && info.iter().sum::<i32>() > 0).then_some((idx, info))
+}
+
 /// Decode a Q65 signal at a known `(start_sample, base_freq_hz)`
 /// using **AP-list (template-matching) decoding** instead of belief
 /// propagation.
@@ -695,7 +719,7 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, &energies, 63, default_es_no_metric());
 
     let codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
-    let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
+    let (idx, info_syms) = list_decode(&codec, &intrinsics, candidates)?;
     // The list path does not run BP; report 0 iterations so callers
     // can still distinguish "decoded via templates" from "decoded via
     // BP" if they care.
@@ -1248,7 +1272,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, energies, 63, default_es_no_metric());
 
     let codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
-    let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
+    let (idx, info_syms) = list_decode(&codec, &intrinsics, candidates)?;
     finish::<P>(
         &info_syms,
         &candidates[idx],
@@ -1580,6 +1604,14 @@ mod tests {
     use super::super::decode_request::DecodeRequest;
     use super::super::tx::synthesize_standard;
     use super::*;
+
+    #[test]
+    fn es_no_metric_is_q65_inits() {
+        // `1.0f*nm*R*EbNoMetric` with R = 13/63 (`_q65_get_code_rate` of a
+        // CRCPUNCTURED2 (15,65) code) and EbNoMetric = 10^(2.8/10).
+        let want = 6.0 * (13.0 / 63.0) * 10f32.powf(0.28);
+        assert!((default_es_no_metric() - want).abs() < 1e-6);
+    }
 
     #[test]
     fn aligned_decode_recovers_clean_message() {

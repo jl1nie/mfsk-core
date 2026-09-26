@@ -2,6 +2,24 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65's decoder metric used the unpunctured code rate, and its list decode had no
+  `PLOG_MIN`.** `q65_init` sets `decoderEsNoMetric = nm * R * EbNoMetric` with
+  `R = _q65_get_code_rate()`, which is message length over codeword length after
+  puncturing. Q65's (15,65) code is `QRATYPE_CRCPUNCTURED2`, so that is 13/63. This crate
+  used 15/65, a metric 12 % high, in every Q65 intrinsics computation (AWGN and
+  fast-fading).
+  - Found chasing a q3 decode that `jt9` made at -30 dB and this crate did not. The
+    winning codeword's log-likelihood was -242.78 here against WSJT-X's -241.92 on
+    identical symbol spectra, 0.78 under `PLOG_MIN`. With 13/63 it is -241.92 to the
+    hundredth.
+  - Correcting it let a wrong codeword through `MultiPeriodRequest`'s AP list on the
+    Q65-60B troposcatter golden (`VK7MO VK7PD +44`). That path accepted anything above
+    the list-size threshold (-260 + ln(ncw/3), about -256), where `q65_dec1` also
+    requires `plog > PLOG_MIN` (-242) and a message that is not all zeros. The crate's
+    list decodes (`.ap_list()` scans, sniper, multi-period) now apply both. Goldens back
+    to 0 extra.
+  - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
+
 - **JTTY, the wire level (#477, phase P1).** WSJT-X 3.2.0 adds JTTY, a non-slotted 4-GFSK
   mode for RTTY-style contest exchanges; this crate had nothing for it. The new
   `jtty` feature (in `full`; no FFT, no `std` needed) adds `mfsk_core::jtty`: the 32-bit
