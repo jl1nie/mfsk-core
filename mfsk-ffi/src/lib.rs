@@ -179,6 +179,12 @@ pub const MFSK_CAP_ENCODE: u64 = 1 << 14;
 /// frames have no slot. Audio goes in with `mfsk_jtty_push_*` and message
 /// updates come out of `mfsk_jtty_poll`.
 pub const MFSK_CAP_STREAM_RECEIVER: u64 = 1 << 15;
+/// WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`).
+/// Every FST4 sub-mode and no other mode.
+pub const MFSK_CAP_NOISE_BLANKER: u64 = 1 << 16;
+/// The operator's transmit frequency (`tx_freq_hz`, WSJT-X's `nftx`)
+/// steers the a-priori search. FT8 only.
+pub const MFSK_CAP_TX_FREQ: u64 = 1 << 17;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public C types
@@ -1830,6 +1836,11 @@ pub unsafe extern "C" fn mfsk_decode_params_init(
         ap_call2: [0; MFSK_AP_FIELD_LEN],
         ap_grid: [0; MFSK_AP_FIELD_LEN],
         search_hz: 0.0,
+        tx_freq_hz: f32::NAN,
+        nb_ftol_hz: 0.0,
+        nb_percent: 0,
+        nb_sweep_step: 0,
+        _pad2: [0; 2],
     };
     // A mode that cannot turn OSD off should not be told to.
     if meta.profile.caps & mfsk_core::registry::caps::OSD == 0 {
@@ -1911,6 +1922,45 @@ fn validate_params(mode: MfskMode, p: &MfskDecodeParams) -> Result<(), String> {
     if p.eq_mode != MfskEqMode::Off && caps & MFSK_CAP_EQ_MODE == 0 {
         return Err(format!("{name} does not honour eq_mode"));
     }
+    if p.tx_freq_hz.is_finite() {
+        if caps & MFSK_CAP_TX_FREQ == 0 {
+            return Err(format!(
+                "{name} has no use for a transmit frequency — tx_freq_hz is \
+                 meaningful only with MFSK_CAP_TX_FREQ, which is FT8's alone"
+            ));
+        }
+        if p.search_hz != 0.0 {
+            return Err(format!(
+                "{name}: tx_freq_hz steers the wide-band search; a narrow-band \
+                 call (search_hz) does not read it"
+            ));
+        }
+    }
+    if (p.nb_percent != 0 || p.nb_sweep_step != 0) && caps & MFSK_CAP_NOISE_BLANKER == 0 {
+        return Err(format!(
+            "{name} has no impulse-noise blanker — nb_percent and nb_sweep_step \
+             are meaningful only with MFSK_CAP_NOISE_BLANKER, which is FST4's alone"
+        ));
+    }
+    if p.nb_percent > 25 {
+        return Err(format!(
+            "{name}: nb_percent {} is outside 0..=25, the range WSJT-X's NB \
+             setting offers",
+            p.nb_percent
+        ));
+    }
+    if !matches!(p.nb_sweep_step, 0 | 1 | 2 | 5) {
+        return Err(format!(
+            "{name}: nb_sweep_step {} is not 0 (off), 1, 2 or 5",
+            p.nb_sweep_step
+        ));
+    }
+    if p.nb_sweep_step != 0 && !(p.nb_ftol_hz.is_finite() && p.nb_ftol_hz > 0.0) {
+        return Err(format!(
+            "{name}: a blanker sweep needs nb_ftol_hz > 0 — the window every \
+             blanked pass searches around freq_hint_hz"
+        ));
+    }
     Ok(())
 }
 
@@ -1964,6 +2014,11 @@ pub unsafe extern "C" fn mfsk_session_open(
         ap_call2: [0; MFSK_AP_FIELD_LEN],
         ap_grid: [0; MFSK_AP_FIELD_LEN],
         search_hz: 0.0,
+        tx_freq_hz: f32::NAN,
+        nb_ftol_hz: 0.0,
+        nb_percent: 0,
+        nb_sweep_step: 0,
+        _pad2: [0; 2],
     };
     if unsafe { mfsk_decode_params_init(mode as u32, &mut p) } != MfskStatus::Ok {
         report(MfskStatus::UnknownProtocol);
@@ -2136,6 +2191,23 @@ fn ap_hint_of(p: &MfskDecodeParams) -> Option<mfsk_core::msg::ApHint> {
     h.has_info().then_some(h)
 }
 
+/// The blanker a params struct describes, if any. `validate_params` has
+/// already refused anything the engine would have quietly reinterpreted
+/// (a step other than 1/2/5, a percentage past 25), so this only maps.
+fn noise_blanker_of(p: &MfskDecodeParams) -> Option<mfsk_core::msg::decode_request::NoiseBlanker> {
+    use mfsk_core::msg::decode_request::NoiseBlanker;
+    if p.nb_sweep_step != 0 {
+        Some(NoiseBlanker::Sweep {
+            step: p.nb_sweep_step,
+            ftol_hz: p.nb_ftol_hz,
+        })
+    } else if p.nb_percent != 0 {
+        Some(NoiseBlanker::Percent(p.nb_percent))
+    } else {
+        None
+    }
+}
+
 /// One decoded row, built from a `DecodeResult` plus the text its
 /// protocol's codec produced.
 fn row(mode: MfskMode, r: &ft8::DecodeResult, text: &str, resolved: bool) -> MfskDecode {
@@ -2295,6 +2367,12 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             if let Some(h) = hint.as_ref() {
                 req = req.ap_hint(h);
             }
+            // Only FST4 reaches this macro, and `validate_params` has
+            // already refused a blanker on any mode without
+            // `MFSK_CAP_NOISE_BLANKER`.
+            if let Some(nb) = noise_blanker_of(p) {
+                req = req.noise_blanker(nb);
+            }
             collect!($proto, req.decode())
         }};
     }
@@ -2334,6 +2412,9 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             }
             if let Some(h) = hint.as_ref() {
                 req = req.ap_hint(h);
+            }
+            if p.tx_freq_hz.is_finite() {
+                req = req.tx_freq(p.tx_freq_hz);
             }
             if p.sic_rounds > 0 {
                 req = req.sic_rounds(p.sic_rounds as usize);
@@ -2393,6 +2474,9 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             }
             if p.freq_hint_hz.is_finite() {
                 req = req.freq_hint(p.freq_hint_hz);
+            }
+            if p.tx_freq_hz.is_finite() {
+                req = req.tx_freq(p.tx_freq_hz);
             }
             if let Some(h) = hint.as_ref() {
                 req = req.ap_hint(h);

@@ -94,6 +94,22 @@ public struct DecodeParams: Sendable {
         case local = 1
     }
 
+    /// WSJT-X's **NB** setting for FST4 — an impulse-noise blanker run
+    /// before the slot transform, for the ignition and power-line clicks
+    /// whose energy the transform spreads across the whole band.
+    public enum NoiseBlanker: Sendable, Equatable {
+        /// Blank the loudest `n` percent of samples, `0...25` (the GUI's
+        /// range; more is refused rather than clamped). 0 blanks nothing,
+        /// and is what ``DecodeParams/noiseBlanker`` `nil` means.
+        case percent(UInt8)
+        /// Decode once per blanking level `0, step, 2*step, .. 20` percent.
+        /// `step` is 5, 2 or 1 (the GUI offers 5 and 2). Every level above
+        /// 0 searches only within `toleranceHz` of
+        /// ``DecodeParams/frequencyHintHz``, so **without a hint only the
+        /// 0 % pass runs**. Costs up to 21 decodes.
+        case sweep(step: UInt8, toleranceHz: Float)
+    }
+
     /// An a-priori hypothesis, as the message's own fields in order:
     /// `call1` is the first callsign field — `"CQ"` for a CQ, not the
     /// transmitting station — and locks message bits 0-28, `call2` the
@@ -135,6 +151,14 @@ public struct DecodeParams: Sendable {
     /// Half-width of a narrow-band search, Hz; 0 for the mode's default.
     /// Only meaningful with ``Capabilities/sniper``.
     public var searchHalfWidthHz: Float
+    /// The operator's transmit frequency (WSJT-X's `nftx`), or nil. FT8
+    /// tries an a-priori hypothesis that locks both callsigns within 50 Hz
+    /// of it as well as of ``frequencyHintHz``. Needs
+    /// ``Capabilities/transmitFrequency`` and the wide-band search.
+    public var transmitFrequencyHz: Float?
+    /// Impulse-noise blanker, or nil for none. Needs
+    /// ``Capabilities/noiseBlanker``.
+    public var noiseBlanker: NoiseBlanker?
 
     /// This mode's published defaults, as the starting point the ABI
     /// insists on.
@@ -161,6 +185,14 @@ public struct DecodeParams: Sendable {
                      grid: stringFromCArray(raw.ap_grid))
             : nil
         self.searchHalfWidthHz = raw.search_hz
+        self.transmitFrequencyHz = raw.tx_freq_hz.isNaN ? nil : raw.tx_freq_hz
+        if raw.nb_sweep_step != 0 {
+            self.noiseBlanker = .sweep(step: raw.nb_sweep_step, toleranceHz: raw.nb_ftol_hz)
+        } else if raw.nb_percent != 0 {
+            self.noiseBlanker = .percent(raw.nb_percent)
+        } else {
+            self.noiseBlanker = nil
+        }
     }
 
     /// Marshal into the C struct for the duration of `body`. One copy,
@@ -186,6 +218,16 @@ public struct DecodeParams: Sendable {
             setCArray(&raw.ap_grid, to: hint.grid)
         }
         raw.search_hz = searchHalfWidthHz
+        raw.tx_freq_hz = transmitFrequencyHz ?? Float.nan
+        switch noiseBlanker {
+        case .none:
+            break
+        case .percent(let n):
+            raw.nb_percent = n
+        case .sweep(let step, let toleranceHz):
+            raw.nb_sweep_step = step
+            raw.nb_ftol_hz = toleranceHz
+        }
         return try withUnsafePointer(to: &raw) { try body($0) }
     }
 }

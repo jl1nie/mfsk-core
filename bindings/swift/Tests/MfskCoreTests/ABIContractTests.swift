@@ -46,6 +46,7 @@ final class ABIContractTests: XCTestCase {
             (.knownFilter, MFSK_CAP_KNOWN_FILTER), (.knownSubtract, MFSK_CAP_KNOWN_SUBTRACT),
             (.fftCache, MFSK_CAP_FFT_CACHE), (.onResult, MFSK_CAP_ON_RESULT),
             (.encode, MFSK_CAP_ENCODE), (.streamReceiver, MFSK_CAP_STREAM_RECEIVER),
+            (.noiseBlanker, MFSK_CAP_NOISE_BLANKER), (.transmitFrequency, MFSK_CAP_TX_FREQ),
         ]
         for (swift, c) in pairs {
             XCTAssertEqual(swift.rawValue, UInt64(c))
@@ -106,5 +107,7 @@ final class ABIContractTests: XCTestCase {
         XCTAssertGreaterThan(params.maxCandidates, 0)
         XCTAssertGreaterThan(params.frequencyRangeHz.upperBound, params.frequencyRangeHz.lowerBound)
         XCTAssertNil(params.frequencyHintHz, "the ABI's 'unset' hint is NaN, which must arrive as nil")
+        XCTAssertNil(params.transmitFrequencyHz, "an unset transmit frequency is NaN in C, nil here")
+        XCTAssertNil(params.noiseBlanker, "the blanker is off by default, as WSJT-X's NB 0 %")
     }
 }

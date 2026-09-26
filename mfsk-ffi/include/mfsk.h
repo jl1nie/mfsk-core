@@ -153,6 +153,18 @@
 #define MFSK_CAP_STREAM_RECEIVER (1 << 15)
 
 /**
+ * WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`).
+ * Every FST4 sub-mode and no other mode.
+ */
+#define MFSK_CAP_NOISE_BLANKER (1 << 16)
+
+/**
+ * The operator's transmit frequency (`tx_freq_hz`, WSJT-X's `nftx`)
+ * steers the a-priori search. FT8 only.
+ */
+#define MFSK_CAP_TX_FREQ (1 << 17)
+
+/**
  * Outcome of a fallible `mfsk_*` / `mfsk_ft8_*` call.
  *
  * Zero is success; negative values are errors. Both crates additionally
@@ -888,6 +900,40 @@ typedef struct MfskDecodeParams {
      * default. Only meaningful with `MFSK_CAP_SNIPER`.
      */
     float search_hz;
+    /**
+     * The operator's transmit frequency, Hz (WSJT-X's `nftx`). NaN means
+     * unset, which is what `mfsk_decode_params_init` writes. FT8 tries an
+     * a-priori hypothesis that locks both callsigns within 50 Hz of it as
+     * well as of `freq_hint_hz`. Requires `MFSK_CAP_TX_FREQ` (FT8 alone),
+     * and the wide-band search — a narrow-band call has no use for it.
+     */
+    float tx_freq_hz;
+    /**
+     * Half-width, Hz, of the window every blanked pass searches around
+     * `freq_hint_hz` (WSJT-X's F Tol, `ntol`). Read only when
+     * `nb_sweep_step` is non-zero, and then it must be positive: there is
+     * no default to inherit, so `mfsk_decode_params_init` writes 0.
+     */
+    float nb_ftol_hz;
+    /**
+     * Impulse-noise blanker, percent of the loudest samples blanked
+     * (`0..=25`, the GUI's range; more is refused rather than clamped).
+     * 0 — the default, as WSJT-X's — blanks nothing. Requires
+     * `MFSK_CAP_NOISE_BLANKER` (every FST4 sub-mode) when non-zero.
+     */
+    uint8_t nb_percent;
+    /**
+     * Non-zero decodes once per blanking level `0, step, 2*step, .. 20`
+     * percent instead of at one level: 5, 2 or 1 (the GUI offers 5 and 2).
+     * Overrides `nb_percent`. Every level above 0 searches only within
+     * `nb_ftol_hz` of `freq_hint_hz`, so without a hint only the 0 % pass
+     * runs; up to 21 decodes. Requires `MFSK_CAP_NOISE_BLANKER`.
+     */
+    uint8_t nb_sweep_step;
+    /**
+     * Padding to keep the struct's layout stable across compilers.
+     */
+    uint8_t _pad2[2];
 } MfskDecodeParams;
 
 /**

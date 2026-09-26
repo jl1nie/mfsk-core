@@ -184,11 +184,20 @@ p.freq_max_hz = 2600.0f;
 | `depth` | `MfskDecodeDepth` — cost/recall rung |
 | `strictness` | `MfskStrictness` — accept/reject threshold profile |
 | `eq_mode` | `MfskEqMode`. A property of the *input audio* — it flattens a passband an analogue filter has tilted — not of the search |
-| `freq_hint_hz` | prioritise candidates near this frequency; `NaN` (what `_init` writes) means unset. It is also the QSO frequency for the a-priori passes: an AP hint that locks both callsigns (`ap_call1` and `ap_call2`) is tried only within 50 Hz of it, and not at all when it is unset. The transmit frequency (`tx_freq` in Rust) is not exposed through this ABI yet |
+| `freq_hint_hz` | prioritise candidates near this frequency; `NaN` (what `_init` writes) means unset. It is also the QSO frequency for the a-priori passes: an AP hint that locks both callsigns (`ap_call1` and `ap_call2`) is tried only within 50 Hz of it, and not at all when it is unset. The transmit frequency is `tx_freq_hz` below |
 | `sic_rounds` | successive-interference-cancellation rounds, 0 for none. Requires `MFSK_CAP_SIC_ROUNDS` |
 | `sic_early` | checkpoint-emulation early decode. Requires `MFSK_CAP_SIC_EARLY` |
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | a-priori hint. Requires `MFSK_CAP_AP_WIDEBAND` (or `_AP_NARROW` on a narrow-band call) |
 | `search_hz` | half-width of a narrow-band search; 0 for the mode's default. Only meaningful with `MFSK_CAP_SNIPER` |
+| `tx_freq_hz` | the operator's transmit frequency (WSJT-X's `nftx`); `NaN` (what `_init` writes) means unset. FT8 also tries an AP hypothesis that locks both callsigns within 50 Hz of it, as well as of `freq_hint_hz` (`ft8b.f90`). Requires `MFSK_CAP_TX_FREQ` — **FT8 alone**, and not on a narrow-band call (`search_hz`), which never reads it. Any other mode refuses it at `mfsk_session_open` |
+| `nb_percent` | impulse-noise blanker: blank the loudest `n` percent of samples, `0..=25`, before the slot transform (WSJT-X's **NB** setting). 0, the default, blanks nothing. More than 25 is refused rather than clamped. Requires `MFSK_CAP_NOISE_BLANKER` when non-zero |
+| `nb_sweep_step` | non-zero decodes once per blanking level `0, step, 2*step, .. 20` percent (5, 2 or 1; the GUI offers 5 and 2) instead of at one. Overrides `nb_percent`. Every level above 0 searches only within `nb_ftol_hz` of `freq_hint_hz`, so **without a hint only the 0 % pass runs**; costs up to 21 decodes. Requires `MFSK_CAP_NOISE_BLANKER` |
+| `nb_ftol_hz` | the sweep's window half-width, Hz (WSJT-X's F Tol). Read only with `nb_sweep_step`, and then it must be positive — `_init` writes 0 because there is no default to inherit |
+
+`MfskDecodeParams` has grown since it was first published — `tx_freq_hz` and
+the three `nb_*` fields are the newest, appended after `search_hz`. A caller
+built against the older header passes the shorter `size`, and the library
+reads only that prefix, leaving the rest at their defaults (unset / off).
 
 **The AP fields are the message's fields in order** — `ap_call1` is
 `"CQ"` for a CQ, not the transmitting station. They lock message bits
@@ -313,6 +322,9 @@ caller can read rather than a fact it has to know.
 | 7 | `MFSK_CAP_EQ_MODE` | equalisation reaches the decoder |
 | 8 | `MFSK_CAP_STRICTNESS` | the strictness profile is honoured rather than accepted and dropped |
 | 9 | `MFSK_CAP_BUDGET` | a caller-supplied budget predicate is polled |
+| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | see `mfsk.h` |
+| 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`). **Every FST4 sub-mode and no other** |
+| 17 | `MFSK_CAP_TX_FREQ` | the transmit frequency (`tx_freq_hz`) steers the a-priori search. **FT8 only** |
 
 The bits mirror `mfsk_core::registry::caps`, which
 `mfsk-core/tests/registry_caps.rs` ties to the trait impls in both

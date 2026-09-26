@@ -2,6 +2,38 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **C ABI: the transmit frequency and FST4's noise blanker, on `MfskDecodeParams` (#466,
+  part 1).** Two knobs the Rust builder gained for the 3.2 port had no way in through
+  `mfsk-ffi`, so a Kotlin or Swift caller could not reach them.
+  - `tx_freq_hz` is WSJT-X's `nftx`: FT8 also tries the AP hypothesis that locks both
+    callsigns within 50 Hz of it, not only of `freq_hint_hz`. `NaN` is unset, as for the
+    hint. On a weak `K1JT HA0DU -12` at -22 dB with the QSO frequency 300 Hz off, 12
+    fixed-seed slots decode 3 without it and 8 with it, and nothing else
+    (`tx_freq_brings_the_two_callsign_ap_hypothesis_into_range`).
+  - `nb_percent` and `nb_sweep_step` / `nb_ftol_hz` are the **NB** setting, every FST4
+    sub-mode: a fixed level (`0..=25`), or a sweep over `0, step, .. 20` percent, whose
+    levels above 0 need `freq_hint_hz`. The Rust `fst4_noise_blanker` slot, driven through
+    the ABI, goes from buried under clicks to decoded at NB 2 %.
+  - Two new capability bits say which mode has which: `MFSK_CAP_NOISE_BLANKER` (16, FST4
+    only) and `MFSK_CAP_TX_FREQ` (17, FT8 only), mirrored in `registry::caps` and pinned
+    in `tests/registry_caps.rs`. Bit 15 stays `MFSK_CAP_STREAM_RECEIVER`, which only
+    `mfsk-ffi` defines.
+  - As everywhere in this ABI, a knob the mode does not have is refused at
+    `mfsk_session_open`, not dropped: `tx_freq_hz` on FT4 or FST4, a blanker on FT8 or
+    FT4. Numbers the engine would quietly reinterpret are refused too — `nb_percent` past
+    25 (the engine clamps it) and a `nb_sweep_step` other than 1, 2 or 5 (it reads the
+    rest as 5).
+  - The struct grew by appending after `search_hz`; the size-versioned contract means an
+    older caller's shorter `size` leaves the new fields unset (`mfsk_abi_version` stays 2).
+  - Still to expose from #466: the Q65 knobs (pileup, max drift, EME delay, q3 list
+    decode, `Q65History`, `Q65Callers`, the flagged encode) and FT8's `previous_cycle`.
+  - Swift: `DecodeParams.transmitFrequencyHz` and `.noiseBlanker` (`.percent(_)` /
+    `.sweep(step:toleranceHz:)`), and `Capabilities.transmitFrequency` / `.noiseBlanker`.
+    Written without a Swift toolchain on hand, so not yet built or run: verify with
+    `bindings/swift/scripts/test.sh` on a Mac.
+  - Still to expose from #466: the Q65 knobs (pileup, max drift, EME delay, q3 list
+    decode, `Q65History`, `Q65Callers`, the flagged encode) and FT8's `previous_cycle`.
+
 - **The GFSK synthesiser sampled its frequency pulse one sample early (#482).**
   `gen_ft8wave.f90` (and `gen_ft4wave`, `gen_fst4wave`) build the 3-symbol Gaussian pulse
   with a 1-based loop, `tt=(i-1.5*nsps)/nsps` for `i=1..3*nsps`. `engine::dsp::gfsk` ran

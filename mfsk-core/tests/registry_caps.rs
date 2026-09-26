@@ -37,7 +37,8 @@
 use std::collections::BTreeSet;
 
 use mfsk_core::msg::decode_request::{
-    FrameDecodable, SupportsSicEarly, SupportsSicRounds, SupportsSniper, SupportsWideBandAp,
+    FrameDecodable, SupportsNoiseBlanker, SupportsSicEarly, SupportsSicRounds, SupportsSniper,
+    SupportsWideBandAp,
 };
 use mfsk_core::registry::{DecodeProfile, SyncScale, caps};
 use mfsk_core::{PROTOCOLS, ProtocolMeta};
@@ -83,6 +84,13 @@ fn check_sniper<P: SupportsSniper>(name: &str) {
     );
 }
 
+fn check_noise_blanker<P: SupportsNoiseBlanker>(name: &str) {
+    assert!(
+        profile(name).caps & caps::NOISE_BLANKER != 0,
+        "{name} implements SupportsNoiseBlanker but its entry does not claim caps::NOISE_BLANKER"
+    );
+}
+
 fn check_decode_handle<P: FrameDecodable>(name: &str) {
     assert!(
         profile(name).caps & caps::DECODE_HANDLE != 0,
@@ -115,6 +123,12 @@ fn implemented_capabilities_are_claimed() {
     check_wideband_ap::<Fst4s60>("FST4-60A");
 
     check_sniper::<Ft8>("FT8");
+
+    check_noise_blanker::<Fst4s15>("FST4-15");
+    check_noise_blanker::<Fst4s30>("FST4-30");
+    check_noise_blanker::<Fst4s60>("FST4-60A");
+    check_noise_blanker::<Fst4s120>("FST4-120");
+    check_noise_blanker::<Fst4s300>("FST4-300");
 }
 
 /// The other direction: a bit claimed by an entry that the list above
@@ -171,6 +185,23 @@ fn claimed_capabilities_are_implemented() {
          own DDC channelizer; see SupportsSniper"
     );
 
+    assert_eq!(
+        claims(caps::NOISE_BLANKER),
+        BTreeSet::from(FST4_MODES),
+        "the impulse-noise blanker is `fst4_decode.f90`'s alone — no other \
+         upstream decoder calls `blanker`"
+    );
+    // No marker trait behind this one: `DecodeRequest::tx_freq` compiles for
+    // every protocol and only FT8's `ft8b.f90` reads `nftx`. So the list is
+    // the whole check, and `mfsk-ffi`'s `tx_freq_is_refused_off_ft8` is what
+    // pins the behaviour it stands for.
+    assert_eq!(
+        claims(caps::TX_FREQ),
+        BTreeSet::from(["FT8"]),
+        "`nftx` is read by `ft8b.f90` alone; `ft4_decode.f90` has no transmit \
+         frequency"
+    );
+
     let mut handles = BTreeSet::from(["FT8", "FT4"]);
     handles.extend(FST4_MODES);
     assert_eq!(
@@ -201,6 +232,8 @@ fn every_capability_is_claimed_by_something() {
         ("FFT_CACHE", caps::FFT_CACHE),
         ("ON_RESULT", caps::ON_RESULT),
         ("ENCODE", caps::ENCODE),
+        ("NOISE_BLANKER", caps::NOISE_BLANKER),
+        ("TX_FREQ", caps::TX_FREQ),
     ];
     for (name, bit) in all {
         assert!(

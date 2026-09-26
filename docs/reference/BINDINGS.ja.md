@@ -178,11 +178,19 @@ p.freq_max_hz = 2600.0f;
 | `depth` | `MfskDecodeDepth` — コスト／再現率の段 |
 | `strictness` | `MfskStrictness` — 採否閾値のプロファイル |
 | `eq_mode` | `MfskEqMode`。**入力音声の性質**であって探索の性質ではない（アナログフィルタが傾けた通過帯域を平坦化する） |
-| `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定。a-priori パスの QSO 周波数でもある: 両方の呼出符号を固定する AP ヒント（`ap_call1` と `ap_call2`）は、この周波数の 50 Hz 以内にだけ試し、未設定なら一切試さない。送信周波数（Rust の `tx_freq`）は、この ABI ではまだ公開していない |
+| `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定。a-priori パスの QSO 周波数でもある: 両方の呼出符号を固定する AP ヒント（`ap_call1` と `ap_call2`）は、この周波数の 50 Hz 以内にだけ試し、未設定なら一切試さない。送信周波数は下の `tx_freq_hz` |
 | `sic_rounds` | 逐次干渉除去の回数、0 で無効。`MFSK_CAP_SIC_ROUNDS` が必要 |
 | `sic_early` | チェックポイント模倣の早期デコード。`MFSK_CAP_SIC_EARLY` が必要 |
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | 事前情報ヒント。`MFSK_CAP_AP_WIDEBAND`（狭帯域呼び出しでは `_AP_NARROW`）が必要 |
 | `search_hz` | 狭帯域探索の半値幅。0 でモード既定。`MFSK_CAP_SNIPER` のときのみ意味を持つ |
+| `tx_freq_hz` | 運用者の送信周波数（WSJT-X の `nftx`）。`NaN`（`_init` が書く値）は未設定。FT8 は、両方の呼出符号を固定する AP 仮説を `freq_hint_hz` の 50 Hz 以内に加えて、この周波数の 50 Hz 以内でも試す（`ft8b.f90`）。`MFSK_CAP_TX_FREQ` が必要で、**FT8 のみ**。狭帯域呼び出し（`search_hz`）では読まれないので併用不可。他のモードは `mfsk_session_open` で拒否する |
+| `nb_percent` | インパルスノイズブランカ: スロット全体の変換の前に、大きい方から `n` パーセントのサンプルを消す（`0..=25`、WSJT-X の **NB** 設定）。既定の 0 は何も消さない。25 を超える値は丸めずに拒否する。0 以外のとき `MFSK_CAP_NOISE_BLANKER` が必要 |
+| `nb_sweep_step` | 0 以外なら、ブランキングを 1 段でなく `0, step, 2*step, .. 20` パーセントの各段で 1 回ずつデコードする（5・2・1。GUI が出すのは 5 と 2）。`nb_percent` より優先。0 より大きい各段は `freq_hint_hz` の `nb_ftol_hz` 以内だけを探すので、**ヒントが無ければ 0 % の段しか走らない**。最大 21 回のデコード。`MFSK_CAP_NOISE_BLANKER` が必要 |
+| `nb_ftol_hz` | スイープの探索窓の半値幅（Hz、WSJT-X の F Tol）。`nb_sweep_step` のときだけ読まれ、その場合は正の値が必要。引き継ぐ既定値が無いので `_init` は 0 を書く |
+
+`MfskDecodeParams` は公開後も伸びてきた。`tx_freq_hz` と 3 つの `nb_*` が最新で、
+`search_hz` の後ろに追加している。古いヘッダでビルドした呼び出し側は短い `size` を
+渡し、ライブラリはその前半だけを読み、残りは既定値（未設定 / オフ）のままにする。
 
 **AP フィールドはメッセージのフィールドをその順に並べたもの**である —
 CQ の場合 `ap_call1` は `"CQ"` であって送信局ではない。これらは探索を
@@ -304,6 +312,9 @@ WSPR / JT9 / JT65 にはビルダが無い。劣っているのではなく形�
 | 7 | `MFSK_CAP_EQ_MODE` | イコライズがデコーダまで届く |
 | 8 | `MFSK_CAP_STRICTNESS` | strictness プロファイルが受理して捨てられるのではなく効く |
 | 9 | `MFSK_CAP_BUDGET` | 呼び出し側の budget 述語がポーリングされる |
+| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | `mfsk.h` を参照 |
+| 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X のインパルスノイズブランカ（`nb_percent`、`nb_sweep_step`）。**FST4 の全サブモードのみ** |
+| 17 | `MFSK_CAP_TX_FREQ` | 送信周波数（`tx_freq_hz`）が a-priori 探索に効く。**FT8 のみ** |
 
 これらのビットは `mfsk_core::registry::caps` を写したもので、
 `mfsk-core/tests/registry_caps.rs` が双方向にトレイト実装と結び付けている —

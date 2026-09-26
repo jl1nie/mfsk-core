@@ -231,6 +231,130 @@ fn unsupported_options_are_refused_not_dropped() {
     }
 }
 
+/// `tx_freq_hz` is FT8's alone (`MFSK_CAP_TX_FREQ`). The Rust builder
+/// accepts the call on every protocol and the others never read it, which
+/// is exactly the accepted-and-ignored shape this ABI refuses — so the
+/// claim in `mfsk-core/tests/registry_caps.rs`, which has no marker trait
+/// behind it, is pinned here by behaviour.
+#[test]
+fn tx_freq_is_refused_off_ft8() {
+    for mode in [MfskMode::Ft4, MfskMode::Fst4s15, MfskMode::Fst4s60] {
+        let mut p = params(mode);
+        p.tx_freq_hz = 1_500.0;
+        let mut st = MfskStatus::Ok;
+        let d = unsafe { mfsk_session_open(mode as u32, &p, &mut st) };
+        assert!(d.is_null(), "{mode:?} has no transmit frequency to use");
+        assert_eq!(st, MfskStatus::Unsupported, "{mode:?}");
+    }
+
+    // FT8 takes it on the wide-band search…
+    let mut p = params(MfskMode::Ft8);
+    assert!(p.tx_freq_hz.is_nan(), "unset is NaN, as freq_hint_hz");
+    p.tx_freq_hz = 1_500.0;
+    unsafe { mfsk_session_close(open(MfskMode::Ft8, Some(&p))) };
+
+    // …but not on the narrow-band one, which never reads it.
+    p.search_hz = 250.0;
+    p.freq_hint_hz = 1_500.0;
+    let mut st = MfskStatus::Ok;
+    assert!(unsafe { mfsk_session_open(MfskMode::Ft8 as u32, &p, &mut st) }.is_null());
+    assert_eq!(st, MfskStatus::Unsupported);
+}
+
+/// The blanker is FST4's alone, and its numbers are validated rather than
+/// reinterpreted: the engine clamps a percentage past 25 and reads any
+/// step but 1 or 2 as 5, and a C caller who typed 30 or 3 should be told.
+#[test]
+fn the_noise_blanker_is_fst4s_and_its_numbers_are_checked() {
+    for mode in [MfskMode::Ft8, MfskMode::Ft4] {
+        for mutate in [
+            (|p: &mut MfskDecodeParams| p.nb_percent = 2) as fn(&mut MfskDecodeParams),
+            |p| {
+                p.nb_sweep_step = 5;
+                p.nb_ftol_hz = 20.0;
+            },
+        ] {
+            let mut p = params(mode);
+            mutate(&mut p);
+            let mut st = MfskStatus::Ok;
+            assert!(unsafe { mfsk_session_open(mode as u32, &p, &mut st) }.is_null());
+            assert_eq!(st, MfskStatus::Unsupported, "{mode:?}");
+        }
+    }
+
+    type Case<'a> = (&'a dyn Fn(&mut MfskDecodeParams), &'a str);
+    let bad: [Case; 4] = [
+        (&|p| p.nb_percent = 26, "26 % is past the GUI's range"),
+        (&|p| p.nb_sweep_step = 3, "a step of 3"),
+        (
+            &|p| p.nb_sweep_step = 5,
+            "a sweep with no window (nb_ftol_hz = 0)",
+        ),
+        (
+            &|p| {
+                p.nb_sweep_step = 5;
+                p.nb_ftol_hz = f32::NAN;
+            },
+            "a sweep with a NaN window",
+        ),
+    ];
+    for (mutate, what) in bad {
+        let mut p = params(MfskMode::Fst4s15);
+        mutate(&mut p);
+        let mut st = MfskStatus::Ok;
+        assert!(
+            unsafe { mfsk_session_open(MfskMode::Fst4s15 as u32, &p, &mut st) }.is_null(),
+            "{what} should not open"
+        );
+        assert_eq!(st, MfskStatus::Unsupported, "{what}");
+    }
+
+    // The defaults, and each accepted shape, open on every FST4 sub-mode.
+    for mode in [
+        MfskMode::Fst4s15,
+        MfskMode::Fst4s30,
+        MfskMode::Fst4s60,
+        MfskMode::Fst4s120,
+        MfskMode::Fst4s300,
+    ] {
+        let p = params(mode);
+        assert_eq!((p.nb_percent, p.nb_sweep_step), (0, 0), "off by default");
+        unsafe { mfsk_session_close(open(mode, Some(&p))) };
+        for pct in [0u8, 2, 25] {
+            let mut p = params(mode);
+            p.nb_percent = pct;
+            unsafe { mfsk_session_close(open(mode, Some(&p))) };
+        }
+        for step in [1u8, 2, 5] {
+            let mut p = params(mode);
+            p.nb_sweep_step = step;
+            p.nb_ftol_hz = 20.0;
+            unsafe { mfsk_session_close(open(mode, Some(&p))) };
+        }
+    }
+}
+
+/// A struct from before these fields existed — its `size` ends at
+/// `search_hz` — must read as "unset", not as whatever bytes follow it.
+/// The size-versioned contract is what lets the ABI grow at all.
+#[test]
+fn an_older_params_struct_leaves_the_new_fields_at_their_defaults() {
+    use std::mem::{offset_of, size_of};
+    let mut p = params(MfskMode::Ft8);
+    // The struct as a pre-#466 header declared it.
+    p.size = (offset_of!(MfskDecodeParams, search_hz) + size_of::<f32>()) as u32;
+    // Bytes past `size` are garbage a short caller never wrote. `nb_percent`
+    // is the tell: FT8 refuses a blanker, so if the tail were read the open
+    // below would fail.
+    p.tx_freq_hz = 1_500.0;
+    p.nb_percent = 9;
+    let mut st = MfskStatus::Ok;
+    let d = unsafe { mfsk_session_open(MfskMode::Ft8 as u32, &p, &mut st) };
+    assert!(!d.is_null(), "the garbage tail must not be read: {st:?}");
+    assert_eq!(st, MfskStatus::Ok);
+    unsafe { mfsk_session_close(d) };
+}
+
 /// A capability the mode *does* have must still be accepted, or the
 /// check above is just refusing everything.
 #[test]

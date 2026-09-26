@@ -544,6 +544,30 @@ pub struct MfskDecodeParams {
     /// Half-width of a narrow-band search, Hz; 0 for the mode's
     /// default. Only meaningful with `MFSK_CAP_SNIPER`.
     pub search_hz: f32,
+    /// The operator's transmit frequency, Hz (WSJT-X's `nftx`). NaN means
+    /// unset, which is what `mfsk_decode_params_init` writes. FT8 tries an
+    /// a-priori hypothesis that locks both callsigns within 50 Hz of it as
+    /// well as of `freq_hint_hz`. Requires `MFSK_CAP_TX_FREQ` (FT8 alone),
+    /// and the wide-band search — a narrow-band call has no use for it.
+    pub tx_freq_hz: f32,
+    /// Half-width, Hz, of the window every blanked pass searches around
+    /// `freq_hint_hz` (WSJT-X's F Tol, `ntol`). Read only when
+    /// `nb_sweep_step` is non-zero, and then it must be positive: there is
+    /// no default to inherit, so `mfsk_decode_params_init` writes 0.
+    pub nb_ftol_hz: f32,
+    /// Impulse-noise blanker, percent of the loudest samples blanked
+    /// (`0..=25`, the GUI's range; more is refused rather than clamped).
+    /// 0 — the default, as WSJT-X's — blanks nothing. Requires
+    /// `MFSK_CAP_NOISE_BLANKER` (every FST4 sub-mode) when non-zero.
+    pub nb_percent: u8,
+    /// Non-zero decodes once per blanking level `0, step, 2*step, .. 20`
+    /// percent instead of at one level: 5, 2 or 1 (the GUI offers 5 and 2).
+    /// Overrides `nb_percent`. Every level above 0 searches only within
+    /// `nb_ftol_hz` of `freq_hint_hz`, so without a hint only the 0 % pass
+    /// runs; up to 21 decodes. Requires `MFSK_CAP_NOISE_BLANKER`.
+    pub nb_sweep_step: u8,
+    /// Padding to keep the struct's layout stable across compilers.
+    pub _pad2: [u8; 2],
 }
 
 /// One decoded transmission, written into caller memory.

@@ -167,6 +167,21 @@ pub mod caps {
     pub const ON_RESULT: u32 = 1 << 13;
     /// A synthesiser exists: message bits in, audio out.
     pub const ENCODE: u32 = 1 << 14;
+    // Bit 15 is `MFSK_CAP_STREAM_RECEIVER`, which `mfsk-ffi` defines on its
+    // own (JTTY has no registry entry to claim it). Skipped here so the two
+    // vocabularies never assign it twice.
+    /// `.noise_blanker()` reaches the decoder (`SupportsNoiseBlanker`):
+    /// WSJT-X's impulse-noise blanker, **every FST4 sub-mode** and no
+    /// other — `fst4_decode.f90` is the only upstream decoder that blanks.
+    pub const NOISE_BLANKER: u32 = 1 << 16;
+    /// `.tx_freq()` (WSJT-X's `nftx`) changes the search: FT8 tries an AP
+    /// hypothesis that locks both callsigns within 50 Hz of the transmit
+    /// frequency as well as of the QSO frequency (`ft8b.f90`). **FT8 only.**
+    /// Unlike the bits above this one has no marker trait — the Rust
+    /// builder accepts the call for every protocol and the others simply
+    /// never read it — so it is pinned by the claim list in
+    /// `tests/registry_caps.rs` rather than by a bound.
+    pub const TX_FREQ: u32 = 1 << 17;
 }
 
 /// How to read a protocol's `sync_min`, because the three scales are
@@ -355,6 +370,7 @@ const FT8_PROFILE: DecodeProfile = DecodeProfile {
         | caps::KNOWN_SUBTRACT
         | caps::FFT_CACHE
         | caps::ON_RESULT
+        | caps::TX_FREQ
         | caps::ENCODE,
     defaults: DecodeDefaults {
         freq_min_hz: 100.0,
@@ -418,6 +434,7 @@ const FST4_PROFILE: DecodeProfile = DecodeProfile {
         | caps::KNOWN_FILTER
         | caps::FFT_CACHE
         | caps::ON_RESULT
+        | caps::NOISE_BLANKER
         | caps::ENCODE,
     defaults: DecodeDefaults {
         freq_min_hz: 100.0,

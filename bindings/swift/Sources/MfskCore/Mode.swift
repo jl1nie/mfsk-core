@@ -154,6 +154,12 @@ public struct Capabilities: OptionSet, Sendable {
     /// Received by a stateful receiver handle with its own entry points
     /// rather than a slot decode — JTTY, see ``JttyReceiver``.
     public static let streamReceiver = Capabilities(rawValue: 1 << 15)
+    /// WSJT-X's impulse-noise blanker reaches the decoder — see
+    /// ``DecodeParams/noiseBlanker``. Every FST4 sub-mode and no other.
+    public static let noiseBlanker = Capabilities(rawValue: 1 << 16)
+    /// The operator's transmit frequency steers the a-priori search — see
+    /// ``DecodeParams/transmitFrequencyHz``. FT8 only.
+    public static let transmitFrequency = Capabilities(rawValue: 1 << 17)
 }
 
 /// How a mode's sync threshold is measured — the trap

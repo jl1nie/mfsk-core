@@ -96,6 +96,47 @@ final class RoundTripTests: XCTestCase {
         }
     }
 
+    func testTheTransmitFrequencyIsFT8sAlone() throws {
+        _ = try requireSupported(.ft8)
+        XCTAssertTrue(Mode.ft8.capabilities.contains(.transmitFrequency))
+        var params = try DecodeParams(mode: .ft8)
+        params.transmitFrequencyHz = 1500
+        XCTAssertNoThrow(try DecodeSession(mode: .ft8, params: params))
+
+        // FT4 has no `nftx` to read — refused at open, not dropped.
+        guard (try? Mode.ft4.info) != nil else { throw XCTSkip("this build has no FT4") }
+        XCTAssertFalse(Mode.ft4.capabilities.contains(.transmitFrequency))
+        var ft4 = try DecodeParams(mode: .ft4)
+        ft4.transmitFrequencyHz = 1500
+        XCTAssertThrowsError(try DecodeSession(mode: .ft4, params: ft4))
+    }
+
+    func testTheNoiseBlankerIsFST4sAloneAndItsNumbersAreChecked() throws {
+        guard (try? Mode.fst4s15.info) != nil else { throw XCTSkip("this build has no FST4") }
+        XCTAssertTrue(Mode.fst4s15.capabilities.contains(.noiseBlanker))
+        XCTAssertFalse(Mode.ft8.capabilities.contains(.noiseBlanker))
+
+        var params = try DecodeParams(mode: .fst4s15)
+        params.noiseBlanker = .percent(2)
+        XCTAssertNoThrow(try DecodeSession(mode: .fst4s15, params: params))
+        params.noiseBlanker = .sweep(step: 5, toleranceHz: 20)
+        XCTAssertNoThrow(try DecodeSession(mode: .fst4s15, params: params))
+
+        // Past the GUI's range, a step the engine would quietly read as 5,
+        // and a sweep with no window are each an error rather than a guess.
+        for bad: DecodeParams.NoiseBlanker in [
+            .percent(26), .sweep(step: 3, toleranceHz: 20), .sweep(step: 5, toleranceHz: 0),
+        ] {
+            params.noiseBlanker = bad
+            XCTAssertThrowsError(try DecodeSession(mode: .fst4s15, params: params), "\(bad)")
+        }
+
+        // And the wrong mode.
+        var ft8 = try DecodeParams(mode: .ft8)
+        ft8.noiseBlanker = .percent(2)
+        XCTAssertThrowsError(try DecodeSession(mode: .ft8, params: ft8))
+    }
+
     func testTooLittleAudioDecodesNothingRatherThanFailing() throws {
         _ = try requireSupported(.ft8)
         let session = try DecodeSession(mode: .ft8)
