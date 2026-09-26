@@ -19,10 +19,8 @@ fn sample() -> Vec<i16> {
     );
     let b = std::fs::read(path).expect("vendored golden recording");
     let at = b.windows(4).position(|w| w == b"data").expect("data chunk") + 8;
-    b[at..]
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect()
+    let (pairs, _) = b[at..].as_chunks::<2>();
+    pairs.iter().map(|c| i16::from_le_bytes(*c)).collect()
 }
 
 fn open(rate: u32) -> *mut MfskJttyReceiver {
