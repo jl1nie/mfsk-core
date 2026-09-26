@@ -715,6 +715,14 @@ WSJT-X の Max Drift 設定（0..50、既定はオフ）である。同期探索
 絞るので、`SearchParams` も同じように絞ること。通常のスキャンと
 `.ap_hint()` のスキャンに効く。
 
+**Q65 の時間窓と EME 遅延。** `default_search_params()` は公称開始の
+-1.0 .. +1.0 s を探索する。WSJT-X の GUI と同じである（`q65.f90` の
+`lag1`/`lag2`）。`q65::DecodeRequest` と `MultiPeriodRequest` の
+`.eme_delay(true)` は "Decode at 52 s" の EME 遅延に当たり、月面反射の往復分
+として後ろ側の端を +5.5 s（Q65-15 は +4.0 s）に広げる。`dt_sec` はどちらの
+リクエストでも公称開始からの値である。公称開始を持たない `SniperRequest` は
+バッファ先頭からの値を返す。
+
 ---
 ## 4. モジュールとクレートの地図
 

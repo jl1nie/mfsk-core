@@ -109,6 +109,8 @@
 
 use std::path::PathBuf;
 
+use mfsk_core::engine::FrameLayout;
+
 #[allow(dead_code)]
 mod common;
 use common::{load_wav_f32_opt, parse_snr_tag};
@@ -141,11 +143,15 @@ fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool
     };
     macro_rules! decode_both {
         ($p:ty) => {{
-            let plain = DecodeRequest::<$p>::new(audio, 12_000, 0, params)
+            // The nominal start as `q65sim` places the frame (0.5 s, or
+            // 1.0 s from TR 60 s): the search is ±1 s around it (0.12.0),
+            // so a nominal of 0 puts a TR>=60 frame at the window's edge.
+            let nominal = (<$p as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
+            let plain = DecodeRequest::<$p>::new(audio, 12_000, nominal, params)
                 .decode()
                 .iter()
                 .any(|d| hit(d.freq_hz, &d.message));
-            let cq = DecodeRequest::<$p>::new(audio, 12_000, 0, params)
+            let cq = DecodeRequest::<$p>::new(audio, 12_000, nominal, params)
                 .ap_hint(cq_hint)
                 .decode()
                 .iter()

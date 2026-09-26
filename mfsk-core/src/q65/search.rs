@@ -62,52 +62,46 @@ use crate::engine::search::{SearchWindow, best_lag_in_bin};
 ///
 /// Default Q65 dial range: 200 Hz .. 3000 Hz inside the
 /// SSB passband. Callers can narrow this further.
-/// The reference Q65 window is **asymmetric**. Measured by
-/// running real `jt9 -3 -d 3` over `q65sim` Δt sweeps:
 ///
-///   Q65-15A (nsps=1800)   -1.0 .. +1.0 s
-///   Q65-30A (nsps=3600)   -1.0 .. +1.0 s
-///   Q65-60A (nsps=7200)   -1.0 .. +5.5 s
+/// The time window is `q65.f90:127-128`'s `lag1=-1.0/dtstep`,
+/// `lag2=1.0/dtstep`: -1.0 .. +1.0 s around the nominal start for every
+/// sub-mode, which is what WSJT-X's GUI searches unless its EME delay
+/// ("Decode at 52 s") is set (`mainwindow.cpp:5270-5271`,
+/// `emedelay=0.0`). With it set, `lag2` reaches +5.5 s (`nsps >= 3600`)
+/// or +4.0 s (Q65-15) — [`eme_delay_late_sec`], which the Q65 requests'
+/// `.eme_delay(true)` applies.
 ///
-/// `q65.f90:127-129` sets `lag1=-1.0/dtstep`,
-/// `lag2=1.0/dtstep`, and extends `lag2` to `5.5/dtstep`
-/// when `nsps >= 3600 .and. emedelay > 0`. The measurement
-/// says that extension is live for TR>=60 and not for
-/// TR=30, which the `nsps >= 3600` half alone does not
-/// explain (Q65-30A *is* nsps=3600) — the `emedelay` half
-/// is not observable from outside, so the constants here
-/// follow the measurement rather than the source, per
-/// `tests/dt_window.rs`'s own doctrine.
-///
-/// `q65.f90:130` has a third case, `lag2 = 4/dtstep` for Q65-15 (`ntrperiod = 15` with
-/// `nsps >= 900` and `emedelay > 0`). This crate has no EME delay setting and the +5.5 s
-/// below already covers 4 s, so there is nothing to add for it (#441).
-///
-/// +5.5 s is applied to every sub-mode rather than gated on
-/// NSPS: on the short sub-modes the extra span is
-/// geometrically self-limiting (a Q65-15 frame placed +5.5 s
-/// late does not fit in a 15 s slot at all, so those rows
-/// are rejected by the frame-fits guard for the cost of a
-/// scan), and a uniform value cannot silently under-search a
-/// sub-mode the way the old symbol-denominated one did.
-///
-/// History, because this default has now been wrong twice:
-/// it was `time_tolerance_symbols: 5` until issue #282
-/// (±0.75 s on Q65-15 — narrower than the reference), then
-/// a symmetric `time_tolerance_sec: 1.0`, which fixed
-/// Q65-15 but cut Q65-60A's late reach from +3.0 to +1.0 s
-/// against a reference that goes to +5.5 s. Both slipped
-/// through because every in-tree Q65 test passes explicit
-/// tolerances and none exercised the default.
+/// History: this default was +5.5 s late for every sub-mode from #282
+/// until 0.12.0, set from measurements of the `jt9` CLI, which turns the
+/// EME delay on for TR 60 s by itself (`jt9_params_init.f90`
+/// `apply_per_mode_policy`, `emedelay = 2.5` for Q65-60). That is why
+/// Q65-60A reached +5.5 s there and Q65-30A did not — `lag2`'s
+/// `nsps >= 3600` covers both; `emedelay` was the difference. Before
+/// that it was `time_tolerance_symbols: 5` (±0.75 s on Q65-15).
 pub const fn default_search_params() -> SearchParams {
     SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
         time_tolerance_early_sec: 1.0,
-        time_tolerance_late_sec: 5.5,
+        time_tolerance_late_sec: 1.0,
         score_threshold: DEFAULT_SCORE_THRESHOLD,
         max_candidates: 8,
     }
+}
+
+/// How late the search reaches with WSJT-X's EME delay on
+/// (`emedelay > 0`): `q65.f90:129-130`, `lag2=5.5/dtstep` when
+/// `nsps >= 3600`, and `lag2=4/dtstep` for Q65-15 (`ntrperiod.eq.15`,
+/// `nsps >= 900`). The early edge stays at -1.0 s.
+pub fn eme_delay_late_sec<P: ModulationParams + crate::engine::FrameLayout>() -> f32 {
+    let mut late = 1.0;
+    if P::NSPS >= 3600 {
+        late = 5.5;
+    }
+    if P::T_SLOT_S == 15.0 && P::NSPS >= 900 {
+        late = 4.0;
+    }
+    late
 }
 
 /// Score one `(start_row, base_bin)`: sum tone-0 power across the
