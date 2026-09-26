@@ -1675,17 +1675,22 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
     let report = report.trim();
 
     // Determine igrid and ir flag
+    // `pack77_1` (`packjt77.f90`): the last word is tried as a grid *first*
+    // (`is_grid4(w(nwords)(1:4))`), so `RR73`, which has a grid's shape, goes
+    // out as the grid RR73 (15-bit value 32373), not as `MAXGRID4 + 3`. Only
+    // `RRR` and `73` take the `MAXGRID4 + irpt` values. Both forms unpack as
+    // "RR73", which is how this crate packed the second one without noticing;
+    // on the air, and in upstream's AP pattern for RR73 (`mrr73` in `ft8b.f90`),
+    // it is the grid (#464).
     let (igrid, ir): (u32, u8) = if report.is_empty() {
         (MAX_GRID4 + 1, 0)
+    } else if report.len() == 4 && pack_grid4(report).is_some() {
+        // Grid locator (e.g. "PM95"), and "RR73".
+        (pack_grid4(report).unwrap(), 0)
     } else if report == "RRR" {
         (MAX_GRID4 + 2, 0)
-    } else if report == "RR73" {
-        (MAX_GRID4 + 3, 0)
     } else if report == "73" {
         (MAX_GRID4 + 4, 0)
-    } else if report.len() == 4 && pack_grid4(report).is_some() {
-        // Grid locator (e.g. "PM95")
-        (pack_grid4(report).unwrap(), 0)
     } else {
         // dB report: "-12", "+05", "R-12", "R+05"
         let (r_prefix, num_str) = if let Some(s) = report.strip_prefix('R') {
@@ -1697,11 +1702,16 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
         if !(-50..=49).contains(&snr) {
             return None;
         }
-        let mut isnr = snr + 35;
-        if isnr < 0 {
-            isnr += 101;
-        }
-        (MAX_GRID4 + isnr as u32, r_prefix)
+        // `if(irpt.ge.-50 .and. irpt.le.-31) irpt=irpt+101; irpt=irpt+35`: -50..-31
+        // go to 86..105. This used to add 101 only when `snr + 35` was negative,
+        // so -35..-31 packed as 0..4, and -34..-31 collided with the bare / RRR /
+        // RR73 / 73 values (a -34 dB report read back as no report at all).
+        let irpt = if (-50..=-31).contains(&snr) {
+            snr + 101
+        } else {
+            snr
+        } + 35;
+        (MAX_GRID4 + irpt as u32, r_prefix)
     };
 
     let mut msg = [0u8; 77];
@@ -2637,6 +2647,40 @@ mod tests {
     }
 
     /// `packjt77.f90:494,509` — a CQ cannot acknowledge and cannot
+    /// The 15-bit grid/report field `pack77` writes, against what WSJT-X puts on
+    /// the air: each value is the field of `ft8sim` (3.2.0-rc1) transmitting that
+    /// message, decoded (#464). `RR73` is the grid RR73, and -50..-31 dB reports
+    /// wrap by 101; this crate had `MAXGRID4 + 3` and a -35..-31 collision with
+    /// the bare / RRR / RR73 / 73 values.
+    #[test]
+    fn report_field_matches_wsjtx() {
+        let g15 = |m: &[u8; 77]| m[59..74].iter().fold(0u32, |a, &b| a * 2 + b as u32);
+        for (report, field, ir) in [
+            ("RR73", 32373, 0),
+            ("RRR", 32402, 0),
+            ("73", 32404, 0),
+            ("", 32401, 0),
+            ("-33", 32503, 0),
+            ("R-33", 32503, 1),
+            ("-50", 32486, 0),
+            ("-35", 32501, 0),
+            ("-31", 32505, 0),
+            ("+49", 32484, 0),
+            ("EN37", 8537, 0),
+        ] {
+            let m = pack77("K1ABC", "W9XYZ", report).unwrap();
+            assert_eq!(g15(&m), field, "{report}");
+            assert_eq!(m[58], ir, "{report} ir");
+            let text = unpack77(&m).unwrap();
+            let want = if report.is_empty() {
+                "K1ABC W9XYZ".to_string()
+            } else {
+                format!("K1ABC W9XYZ {report}")
+            };
+            assert_eq!(text, want);
+        }
+    }
+
     /// carry a report.
     #[test]
     fn cq_rejects_r_and_any_report() {

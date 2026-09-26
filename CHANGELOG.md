@@ -2,6 +2,21 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **`pack77` sends RR73 and -35..-31 dB reports as WSJT-X does, and the RR73 AP
+  hypothesis matches a real RR73 (#464).** `pack77_1` (`packjt77.f90`) tries the last
+  word as a grid first, so `RR73`, which has a grid's shape, goes out as the grid RR73
+  (15-bit field 32373); this crate packed it as `MAXGRID4 + 3` (32403). Both unpack as
+  "RR73", which is why it went unnoticed, but they are different codewords: this crate's
+  transmitted RR73 was not bit-identical to WSJT-X's, and `ApHint`'s RR73 pattern, which
+  copied the same value, never matched a received RR73 (`ft8b.f90`'s `mrr73` is the
+  grid). Reports -50..-31 dB wrap by 101 upstream (`irpt+101`, then `+35`); this crate
+  wrapped only when `snr + 35` was negative, so -35..-31 packed as 0..4 and -34..-31
+  collided with the bare / RRR / RR73 / 73 values (a -34 dB report read back as none).
+  Checked by decoding what `ft8sim` (3.2.0-rc1) transmits for ten messages
+  (RR73, RRR, 73, -50, -35, -33, R-33, -31, +49, a CQ with a grid): bit-identical now;
+  `report_field_matches_wsjtx` pins the values. Found while porting a7, which builds its
+  candidates with `pack77` and could not match an on-air RR73.
+
 - **FT8's heavy AP hypotheses also run near the transmit frequency (#456).** `ft8b.f90`
   tries `iaptype >= 3` within `napwid` of `nfqso` or of `nftx`; this crate had the QSO
   frequency only. New `DecodeRequest::tx_freq(f)`; FT8 reads it with `freq_hint`

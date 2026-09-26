@@ -129,9 +129,13 @@ impl ApHint {
             }
         }
         if let Some(ref rpt) = self.report {
+            // `ft8b.f90`'s `mrrr` / `mrr73` / `m73`: RRR and 73 are `MAXGRID4 + 2`
+            // and `+ 4`, and RR73 is the *grid* RR73 (32373), as `pack77_1` sends
+            // it. This locked `MAXGRID4 + 3` for RR73 until #464, a pattern no
+            // transmitted RR73 carries.
             let igrid_val: Option<u32> = match rpt.as_str() {
                 "RRR" => Some(32_400 + 2),
-                "RR73" => Some(32_400 + 3),
+                "RR73" => pack_grid4("RR73"),
                 "73" => Some(32_400 + 4),
                 _ => None,
             };
