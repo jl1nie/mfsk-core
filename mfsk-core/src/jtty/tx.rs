@@ -23,13 +23,15 @@
 //!
 //! ## Why not `engine::dsp::gfsk`
 //!
-//! That synthesiser samples the Gaussian pulse one sample earlier than every
-//! upstream `gen_*wave.f90` (#482) — 0.049 rad for JTTY's largest tone step,
-//! which is what a comparison against `sjtty`'s noiseless output showed (worst
-//! normalised sample error 4.9e-2, against 1.1e-4 with the pulse index
-//! corrected). The waveform is also what a receiver's subtraction will use as
-//! its reference, so JTTY carries its own, faithful to `gen_jttywave.f90`.
-
+//! When this was written that synthesiser sampled the Gaussian pulse one sample
+//! earlier than every upstream `gen_*wave.f90` (#482, fixed since in #490) —
+//! 0.049 rad for JTTY's largest tone step, which is what a comparison against
+//! `sjtty`'s noiseless output showed (worst normalised sample error 4.9e-2,
+//! against 1.1e-4 with the pulse index corrected). JTTY keeps its own all the
+//! same: it is generic over the symbol length and produces the complex reference a
+//! receiver subtracts (at 6 kHz, 192 samples per symbol), its phase is carried in
+//! `f64`, and it is built without a sample loop, which the shared one is not.
+//!
 use alloc::vec::Vec;
 use core::f64::consts::TAU;
 

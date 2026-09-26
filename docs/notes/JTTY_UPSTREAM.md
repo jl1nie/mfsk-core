@@ -237,7 +237,7 @@ Pipeline, in the order `rjtty_core → jtty_mdecode_step → jtty_mdecode`:
 | call28 | `msg::wsjt77::pack28` / `unpack28` | used (P1); `unpack28` made `pub(crate)`; needs upstream's `standard_call` filter on top (`chkcall` subset, no `/`, no leading `Q`, round trip) — `jtty::source::is_standard_call` |
 | ARRL sections (86) | `msg::wsjt77::ARRL_SECTIONS` | used (P1), made `pub(crate)` |
 | Maidenhead grid | `msg::wsjt77::pack_grid4` | **not reusable as is**: JTTY's GRID4 index is `((f1*18+f2)*10+d1)*10+d2`, domain 0‥32399 — a different mapping from the pack77 `g15` |
-| GFSK synthesis | `engine::dsp::gfsk` | **not reusable as is**: samples the pulse one sample early vs every upstream `gen_*wave.f90` (#482); JTTY has its own `tx::synth_f32` (`gfsk_pulse` is shared) |
+| GFSK synthesis | `engine::dsp::gfsk` | was **not reusable as is** (it sampled the pulse one sample early vs every upstream `gen_*wave.f90`, #482, fixed in #490); JTTY keeps its own `tx::synth_f32` / `synth_complex` (parallel chunked scan, complex output, any symbol length; `gfsk_pulse` is shared) |
 | analytic signal | `engine::dsp::analytic` | for the receiver (P2) |
 | subtraction | `engine::dsp::subtract` | FT8's; JTTY's works on a complex buffer at 6 kHz |
 | tone-shift (`twkfreq`) | `engine::sync2d::freq_shift_cd0` or `engine::dsp::ddc` | not compared in detail |
@@ -543,9 +543,9 @@ Measured with `sjtty` / `rjtty` built by `scripts/build_jttysim.sh` from
   showed as a uniform worst normalised sample error of 4.9e-2 — exactly
   2π·Δf/fs for JTTY's largest tone step — and one token (`i + 1`) brought it to
   1.1e-4. It is a shared-code change with reach into FT8/FT4/FST4 transmit and
-  subtraction references, so it is its own issue; JTTY carries its own
-  synthesiser (`jtty::tx::synth_f32`), which is also the parallel
-  chunked-scan design of D4. Against `sjtty` it is within 6e-4 (one frame) and
+  subtraction references, so it was its own issue, fixed since in #490; JTTY
+  keeps its own synthesiser (`jtty::tx::synth_f32`), which is also the parallel
+  chunked-scan design of D4 and produces the complex reference of P3. Against `sjtty` it is within 6e-4 (one frame) and
   1e-3 (two frames): that residual is upstream's single-precision phase
   accumulation, which grows with length; ours is `f64`.
 - **`rjtty` quirk at dt = 0.** On the noiseless two-frame vector at dt 0.0 it
