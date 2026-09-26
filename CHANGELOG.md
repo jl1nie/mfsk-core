@@ -51,7 +51,10 @@
   Checked by decoding what `ft8sim` (3.2.0-rc1) transmits for ten messages
   (RR73, RRR, 73, -50, -35, -33, R-33, -31, +49, a CQ with a grid): bit-identical now;
   `report_field_matches_wsjtx` pins the values. Found while porting a7, which builds its
-  candidates with `pack77` and could not match an on-air RR73.
+  candidates with `pack77` and could not match an on-air RR73. Q65 is the exception and
+  is unchanged on the air: `genq65.f90` rewrites the grid RR73 to 32403 before encoding,
+  so the Q65 synthesiser (and `mfsk_encode_q65`), its full AP list and
+  `Q65Message::pack` now go through `msg::q65::pack77_q65`, which does the same.
 
 - **FT8's heavy AP hypotheses also run near the transmit frequency (#456).** `ft8b.f90`
   tries `iaptype >= 3` within `napwid` of `nfqso` or of `nftx`; this crate had the QSO
