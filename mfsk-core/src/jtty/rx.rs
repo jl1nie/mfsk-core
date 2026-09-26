@@ -451,7 +451,11 @@ impl Receiver {
         sink: &mut dyn FnMut(MessageUpdate),
         frames: &mut Vec<FrameDecode>,
     ) -> Vec<Subtracted> {
-        assert_eq!(audio.len(), NCHUNK, "a window is exactly NCHUNK samples");
+        // a [`Back`] hands its windows over already prepared, without their audio
+        assert!(
+            audio.len() == NCHUNK || (audio.is_empty() && pre.is_some()),
+            "a window is exactly NCHUNK samples"
+        );
         if interferer.is_some() {
             stat_add!(self, RetroWindows, 1);
         } else {
@@ -1060,17 +1064,13 @@ impl Receiver {
                 .collect()
         };
         let carried = carried_in(asm, w);
-        let subtracted = self.analyze(
-            audio.window(w),
-            t_of(w),
-            p,
-            None,
-            &carried,
-            pre,
-            asm,
-            sink,
-            frames,
-        );
+        // a [`Back`]'s windows come prepared, with no audio
+        let window = if audio.buf.is_empty() {
+            &[][..]
+        } else {
+            audio.window(w)
+        };
+        let subtracted = self.analyze(window, t_of(w), p, None, &carried, pre, asm, sink, frames);
         for x in &subtracted {
             for k in 1..=super::assemble::MAX_RETRO_STEPS {
                 if w >= k {
@@ -1253,6 +1253,139 @@ impl Stream {
         self.asm = Assembler::new();
         self.ana.clear();
         self.ana_k0 = 0;
+    }
+}
+
+/// A window's state-independent work, done: what [`Front`] hands to [`Back`].
+pub struct Prepared {
+    window: usize,
+    pre: Pre,
+}
+
+impl Prepared {
+    /// The window's index (window `k` starts at sample `k · STEP`).
+    pub fn window(&self) -> usize {
+        self.window
+    }
+}
+
+/// The first half of a [`Stream`] under `Params::embedded()`-like settings, for running the two
+/// halves on two cores (#499): it takes the audio, keeps the FIR analytic signal (computed once
+/// per sample) and, for each window its audio completes, builds the sync surface, and hands the
+/// window on as a [`Prepared`]. It keeps no message state. [`Back`] does the rest; together, in
+/// order, they report exactly what a [`Stream`] does.
+///
+/// Only for settings with no subtraction and no `carry`, whose windows need nothing from the
+/// others: [`Front::new`] returns `None` otherwise.
+pub struct Front {
+    rx: Arc<Receiver>,
+    params: Params,
+    buf: Vec<i16>,
+    base: usize,
+    next: usize,
+    ana: Vec<Complex32>,
+    ana_k0: usize,
+}
+
+impl Front {
+    /// A front end starting at sample 0; `None` unless `params` has `fir_analytic` and neither
+    /// `subtract` nor `carry`.
+    pub fn new(rx: Arc<Receiver>, params: Params) -> Option<Self> {
+        (params.fir_analytic && !params.subtract && !params.carry).then(|| Self {
+            rx,
+            params,
+            buf: Vec::new(),
+            base: 0,
+            next: 0,
+            ana: Vec::new(),
+            ana_k0: 0,
+        })
+    }
+
+    /// Feed 12 kHz mono audio; every window it completes is prepared and passed to `out`.
+    pub fn push(&mut self, samples: &[i16], out: &mut dyn FnMut(Prepared)) {
+        self.buf.extend_from_slice(samples);
+        let have = self.ana_k0 + self.ana.len();
+        let avail = self.base + self.buf.len();
+        let half = self.rx.fir.half();
+        let upto = if avail > half {
+            (avail - half - 1) / 2 + 1
+        } else {
+            0
+        }
+        .max(have);
+        let more = self.rx.fir_outputs(&self.buf, self.base, have, upto);
+        self.ana.extend(more);
+        while self.base + self.buf.len() >= self.next * STEP + NCHUNK {
+            let c0 = self
+                .rx
+                .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next);
+            let surface = channels(&self.params)
+                .map(|(_, lo, hi)| self.rx.sync_surface(&c0, lo, hi, self.params.decimate_sync));
+            out(Prepared {
+                window: self.next,
+                pre: Pre { c0, surface },
+            });
+            self.next += 1;
+        }
+        // the next window starts at `next · STEP`; the filter reads `half` samples before it
+        let keep_from = (self.next * STEP).saturating_sub(2 * half);
+        if keep_from > self.base {
+            self.buf.drain(..keep_from - self.base);
+            self.base = keep_from;
+        }
+        let keep_k = (self.next * STEP) / 2;
+        if keep_k > self.ana_k0 {
+            let n = (keep_k - self.ana_k0).min(self.ana.len());
+            self.ana.drain(..n);
+            self.ana_k0 += n;
+        }
+    }
+}
+
+/// The second half of a [`Stream`] (see [`Front`]): candidates, ladder and message assembly,
+/// one [`Prepared`] window at a time, in window order.
+pub struct Back {
+    rx: Arc<Receiver>,
+    params: Params,
+    next: usize,
+    asm: Assembler,
+}
+
+impl Back {
+    /// A back end for the windows of a [`Front`] made with the same `params`.
+    pub fn new(rx: Arc<Receiver>, params: Params) -> Self {
+        Self {
+            rx,
+            params,
+            next: 0,
+            asm: Assembler::new(),
+        }
+    }
+
+    /// Decode one window; message updates go to `on_update`.
+    ///
+    /// # Panics
+    /// If `prepared` is not the next window.
+    pub fn process(&mut self, prepared: Prepared, on_update: &mut dyn FnMut(MessageUpdate)) {
+        assert_eq!(prepared.window, self.next, "windows in order");
+        let audio = Audio { buf: &[], base: 0 };
+        let mut frames = Vec::new();
+        self.rx.step(
+            &audio,
+            prepared.window,
+            &self.params,
+            Some(prepared.pre),
+            &mut self.asm,
+            on_update,
+            &mut frames,
+        );
+        self.next += 1;
+    }
+
+    /// The stream has ended (as [`Stream::finish`]).
+    pub fn finish(&mut self, on_update: &mut dyn FnMut(MessageUpdate)) {
+        self.asm.prune(f32::MAX / 4.0, on_update);
     }
 }
 

@@ -1034,3 +1034,54 @@ fn embedded_from_env(p: Params) -> Params {
     }
     p
 }
+
+/// Run in two halves — [`Front`] preparing windows, [`Back`] decoding them, as two cores would —
+/// the embedded receiver reports exactly what a [`Stream`] does, whatever the chunk size (#499).
+#[test]
+fn front_and_back_are_a_stream() {
+    use mfsk_core::jtty::rx::{Back, Front};
+    let Some(sample) = load("jtty/260807_134110.wav") else {
+        return;
+    };
+    let Some(four) = load("jtty/sim/mix_four_stations.wav") else {
+        return;
+    };
+    let rx = std::sync::Arc::new(Receiver::new().with_f32_metrics());
+    let embedded = Params::default().embedded();
+    for (name, audio, params) in [
+        ("sample", &sample, embedded),
+        (
+            "four_stations, +-300 Hz, budget 2",
+            &four,
+            Params {
+                ftol_hz: 300.0,
+                ladder_budget: Some(2),
+                ..embedded
+            },
+        ),
+    ] {
+        let mut want = Vec::new();
+        let mut stream = Stream::new(rx.clone(), params);
+        stream.push(audio, &mut |u| want.push(u));
+        stream.finish(&mut |u| want.push(u));
+        assert!(!want.is_empty(), "{name}");
+        for chunk in [1usize, 5_000, 28_320, audio.len()] {
+            let mut front = Front::new(rx.clone(), params).expect("embedded settings");
+            let mut back = Back::new(rx.clone(), params);
+            let mut got = Vec::new();
+            for piece in audio.chunks(chunk) {
+                let mut ready = Vec::new();
+                front.push(piece, &mut |p| ready.push(p));
+                for p in ready {
+                    back.process(p, &mut |u| got.push(u));
+                }
+            }
+            back.finish(&mut |u| got.push(u));
+            assert_eq!(got, want, "{name}, chunks of {chunk}");
+        }
+    }
+    assert!(
+        Front::new(rx.clone(), Params::default()).is_none(),
+        "subtraction needs audio in the back end"
+    );
+}
