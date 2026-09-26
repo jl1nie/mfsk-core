@@ -381,6 +381,18 @@ impl Q65Codec {
         intrinsics: &[f32],
         candidates: &[[i32; 63]],
     ) -> Option<(usize, [i32; 13])> {
+        self.decode_with_codeword_list_llh(intrinsics, candidates)
+            .map(|(i, info, _)| (i, info))
+    }
+
+    /// [`Self::decode_with_codeword_list`] that also returns the winner's
+    /// log-likelihood — `q65_llh`, which `q65_dec_fullaplist_` hands back
+    /// as `plog` (`q65_subs.c:132`) for `q65_dec1`'s `plog.gt.PLOG_MIN`.
+    pub fn decode_with_codeword_list_llh(
+        &self,
+        intrinsics: &[f32],
+        candidates: &[[i32; 63]],
+    ) -> Option<(usize, [i32; 13], f32)> {
         if candidates.is_empty() {
             return None;
         }
@@ -411,7 +423,7 @@ impl Q65Codec {
         let cw = &candidates[idx];
         let mut info = [0_i32; 13];
         info.copy_from_slice(&cw[..n_user]);
-        Some((idx, info))
+        Some((idx, info, best_llh))
     }
 }
 
