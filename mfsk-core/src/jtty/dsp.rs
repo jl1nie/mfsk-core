@@ -87,6 +87,9 @@ pub fn analytic_6k(audio: &[i16]) -> Vec<Complex32> {
 pub struct AnalyticFir {
     /// `h[m + M]` for `m` in `−M..=M`, scale included.
     taps: Vec<Complex32>,
+    /// The taps reversed, real and imaginary parts apart: `y[c] = Σ_i rev[i]·x[c − M + i]`.
+    rev_re: Vec<f32>,
+    rev_im: Vec<f32>,
 }
 
 impl AnalyticFir {
@@ -116,24 +119,48 @@ impl AnalyticFir {
                 let g = 2.0 / 32_767.0 * sinc * win;
                 Complex32::new((g * (w0 * t).cos()) as f32, (g * (w0 * t).sin()) as f32)
             })
-            .collect();
-        Self { taps }
+            .collect::<Vec<Complex32>>();
+        let rev_re = taps.iter().rev().map(|z| z.re).collect();
+        let rev_im = taps.iter().rev().map(|z| z.im).collect();
+        Self {
+            taps,
+            rev_re,
+            rev_im,
+        }
+    }
+
+    /// Half the filter length: output `k` reads inputs `2k − M ..= 2k + M`.
+    pub fn half(&self) -> usize {
+        self.taps.len() / 2
+    }
+
+    /// The output centred on input `c` of `x`, the inputs outside `0..end` taken as zero.
+    pub fn at(&self, x: &[i16], c: isize, end: usize) -> Complex32 {
+        let half = self.half() as isize;
+        let (lo, hi) = ((c - half).max(0), (c + half).min(end as isize - 1));
+        if lo > hi {
+            return Complex32::new(0.0, 0.0);
+        }
+        let skip = (lo - (c - half)) as usize;
+        let xs = &x[lo as usize..=hi as usize];
+        let (mut re, mut im) = (0f32, 0f32);
+        for ((&v, &a), &b) in xs
+            .iter()
+            .zip(&self.rev_re[skip..])
+            .zip(&self.rev_im[skip..])
+        {
+            let v = f32::from(v);
+            re += a * v;
+            im += b * v;
+        }
+        Complex32::new(re, im)
     }
 
     /// The analytic signal of `audio` at 6 kHz: `audio.len() / 2` samples, output `k` centred on
     /// input `2k`.
     pub fn apply(&self, audio: &[i16]) -> Vec<Complex32> {
-        let half = self.taps.len() / 2;
-        let n = audio.len();
-        (0..n / 2)
-            .map(|k| {
-                let c = 2 * k;
-                let (lo, hi) = (c.saturating_sub(half), (c + half).min(n - 1));
-                // y[c] = Σ h[m] x[c − m]
-                (lo..=hi).fold(Complex32::new(0.0, 0.0), |acc, j| {
-                    acc + self.taps[c + half - j] * f32::from(audio[j])
-                })
-            })
+        (0..audio.len() / 2)
+            .map(|k| self.at(audio, 2 * k as isize, audio.len()))
             .collect()
     }
 }

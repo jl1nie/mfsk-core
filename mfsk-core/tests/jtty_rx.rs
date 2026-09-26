@@ -707,16 +707,27 @@ fn streaming_is_scanning_whatever_the_chunk_size() {
         return;
     };
     let rx = std::sync::Arc::new(Receiver::new());
-    for (name, audio) in [
-        ("sample", &sample),
-        ("four_stations", &four),
-        ("three_channels", &three),
+    // and the embedded configuration, whose FIR analytic signal a stream computes once per sample
+    // as it arrives and a scan once for the whole recording (#499)
+    for (name, audio, params) in [
+        ("sample", &sample, Params::default()),
+        ("four_stations", &four, Params::default()),
+        ("three_channels", &three, Params::default()),
+        ("sample, embedded", &sample, Params::default().embedded()),
+        (
+            "four_stations, embedded, +-300 Hz",
+            &four,
+            Params {
+                ftol_hz: 300.0,
+                ..Params::default().embedded()
+            },
+        ),
     ] {
-        let want = rx.scan_messages(audio, &Params::default());
+        let want = rx.scan_messages(audio, &params);
         assert!(!want.is_empty(), "{name}");
         for chunk in [1usize, 333, 4096, 12_000, 28_320, 100_000, audio.len()] {
             let mut got = Vec::new();
-            let mut stream = Stream::new(rx.clone(), Params::default());
+            let mut stream = Stream::new(rx.clone(), params);
             let mut most = 0;
             for piece in audio.chunks(chunk) {
                 stream.push(piece, &mut |u| got.push(u));

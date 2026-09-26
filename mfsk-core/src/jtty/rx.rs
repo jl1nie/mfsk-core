@@ -94,6 +94,9 @@ const NCOLS: usize = FRAME_SYMBOLS * NSS / 4 / COL_STEP + 1;
 /// `Params::embedded()` it gives the transform's results: `jtty_sweep` 164/360 either way, the hard
 /// two-station set 91/200 (49 taps: 90; 193 taps: 91).
 const FIR_HALF: usize = 48;
+/// Refinements (`peakup`) a window under [`Params::ladder_budget`] for picks whose unrefined
+/// gate failed narrowly.
+const REFINEMENTS_PER_WINDOW: usize = 2;
 /// Most channel-0 picks a window under [`Params::ladder_budget`].
 const MAX_BUDGET_PICKS: usize = 64;
 /// Decimation of the sync search when [`Params::decimate_sync`] is on: the product of window and
@@ -347,7 +350,7 @@ fn channels(p: &Params) -> Option<Channels> {
 /// computes these ahead, in parallel.
 struct Pre {
     c0: Vec<Complex32>,
-    surface: Surface,
+    surface: Option<Surface>,
 }
 
 /// A peak to try: where the sync surface said it was.
@@ -460,7 +463,7 @@ impl Receiver {
         let (mut c0, surface) = match pre {
             // the state-independent work, already done (only valid with no interferer)
             Some(Pre { c0, surface }) if interferer.is_none() && carried.is_empty() => {
-                (c0, Some(surface))
+                (c0, surface)
             }
             // the analytic signal is done, the surface is not: frames carried in change it
             Some(Pre { c0, .. }) if interferer.is_none() => (c0, None),
@@ -551,7 +554,10 @@ impl Receiver {
             p,
             None,
             &[],
-            Some(Pre { c0, surface }),
+            Some(Pre {
+                c0,
+                surface: Some(surface),
+            }),
             &mut asm,
             &mut |_| {},
             &mut frames,
@@ -562,8 +568,50 @@ impl Receiver {
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
         let c0 = self.analytic(audio, p);
-        let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
+        let surface = Some(self.sync_surface(&c0, lo, hi, p.decimate_sync));
         Some(Pre { c0, surface })
+    }
+
+    /// Window `w`'s analytic signal under [`Params::fir_analytic`], from the continuous filter
+    /// output `ana` (output `k` at `ana[k − k0]`, each computed once from the audio around it)
+    /// and the audio `buf` (sample `j` at `buf[j − base]`): what the filter gives with the audio
+    /// before the window as it was and nothing after the window's end. The outputs whose inputs
+    /// reach past that end — the last 24 — are recomputed with zeros there, so a window decoded
+    /// as soon as its last sample arrives and one decoded later see the same signal (#499).
+    fn fir_window(
+        &self,
+        ana: &[Complex32],
+        k0: usize,
+        buf: &[i16],
+        base: usize,
+        w: usize,
+    ) -> Vec<Complex32> {
+        stat_add!(self, Analytic, 1);
+        stat_time!(self, Analytic);
+        let half = self.fir.half();
+        let (first, end) = (w * STEP / 2, w * STEP + NCHUNK);
+        (first..first + NCHUNK / 2)
+            .map(|k| {
+                let c = 2 * k;
+                if c + half < end && k >= k0 && k - k0 < ana.len() {
+                    ana[k - k0]
+                } else {
+                    self.fir.at(buf, c as isize - base as isize, end - base)
+                }
+            })
+            .collect()
+    }
+
+    /// The continuous filter output for outputs `k0..k1` from `buf` (sample `j` at
+    /// `buf[j − base]`, nothing before sample 0 or past `buf`'s end).
+    fn fir_outputs(&self, buf: &[i16], base: usize, k0: usize, k1: usize) -> Vec<Complex32> {
+        stat_time!(self, Analytic);
+        (k0..k1)
+            .map(|k| {
+                self.fir
+                    .at(buf, (2 * k) as isize - base as isize, buf.len())
+            })
+            .collect()
     }
 
     /// The analytic signal of a window, counted and timed.
@@ -767,30 +815,6 @@ impl Receiver {
         self.attempt(c0, pick, t0_s, p, peak, true).0
     }
 
-    /// The sync gate alone, in [`Self::process`]'s order (raw first when `raw_first`): the sync
-    /// tones and S/N of the attempt that passes and whether it was the refined one, or `None`
-    /// ([`Params::ladder_budget`]).
-    fn gate_score(
-        &self,
-        c0: &[Complex32],
-        pick: &Pick,
-        t0_s: f32,
-        p: &Params,
-    ) -> Option<(usize, f32, bool)> {
-        let mut g = (0, 0.0, false);
-        if p.raw_first && pick.channel == 0 {
-            self.attempt_inner(c0, pick, t0_s, p, true, false, false, &mut g);
-            if g.2 {
-                return Some((g.0, g.1, false));
-            }
-            if g.0 < RAW_FIRST_MIN_SYNC {
-                return None;
-            }
-        }
-        self.attempt_inner(c0, pick, t0_s, p, true, true, false, &mut g);
-        g.2.then_some((g.0, g.1, true))
-    }
-
     /// One try at a candidate: with `refine` (channel 0 only) the pick is first pulled to the
     /// local peak. Also returns the sync tones (of 13) the gate saw.
     fn attempt(
@@ -977,9 +1001,24 @@ impl Receiver {
         // signal and sync surface of a window do not, and they are most of its
         // cost, so a batch of windows has them computed on the pool first.
         const BATCH: usize = 16;
+        // with the FIR analytic signal, each output once for the whole recording
+        let ana = if p.fir_analytic {
+            self.fir_outputs(audio.buf, 0, 0, audio.buf.len() / 2)
+        } else {
+            Vec::new()
+        };
         for first in (0..n).step_by(BATCH) {
             let batch: Vec<usize> = (first..n.min(first + BATCH)).collect();
-            let prepare = |w: &usize| self.prepare(audio.window(*w), p);
+            let prepare = |w: &usize| {
+                if p.fir_analytic {
+                    let (_, lo, hi) = channels(p)?;
+                    let c0 = self.fir_window(&ana, 0, audio.buf, 0, *w);
+                    let surface = Some(self.sync_surface(&c0, lo, hi, p.decimate_sync));
+                    Some(Pre { c0, surface })
+                } else {
+                    self.prepare(audio.window(*w), p)
+                }
+            };
             #[cfg(feature = "parallel")]
             let pres: Vec<Option<Pre>> = {
                 use rayon::prelude::*;
@@ -1100,6 +1139,10 @@ pub struct Stream {
     /// the next window to decode
     next: usize,
     asm: Assembler,
+    /// [`Params::fir_analytic`]: the filter outputs computed so far, output `k` at
+    /// `ana[k − ana_k0]`
+    ana: Vec<Complex32>,
+    ana_k0: usize,
 }
 
 impl Stream {
@@ -1112,6 +1155,8 @@ impl Stream {
             base: 0,
             next: 0,
             asm: Assembler::new(),
+            ana: Vec::new(),
+            ana_k0: 0,
         }
     }
 
@@ -1141,17 +1186,38 @@ impl Stream {
     /// passed to `on_update`, in the order it happened.
     pub fn push(&mut self, samples: &[i16], on_update: &mut dyn FnMut(MessageUpdate)) {
         self.buf.extend_from_slice(samples);
+        if self.params.fir_analytic {
+            // every filter output whose inputs have all arrived, once
+            let have = self.ana_k0 + self.ana.len();
+            // output k is complete when 2k + half < samples so far
+            let avail = self.base + self.buf.len();
+            let half = self.rx.fir.half();
+            let upto = if avail > half {
+                (avail - half - 1) / 2 + 1
+            } else {
+                0
+            }
+            .max(have);
+            let more = self.rx.fir_outputs(&self.buf, self.base, have, upto);
+            self.ana.extend(more);
+        }
         let mut frames = Vec::new();
         while self.base + self.buf.len() >= self.next * STEP + NCHUNK {
             let audio = Audio {
                 buf: &self.buf,
                 base: self.base,
             };
+            let pre = self.params.fir_analytic.then(|| Pre {
+                c0: self
+                    .rx
+                    .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next),
+                surface: None,
+            });
             self.rx.step(
                 &audio,
                 self.next,
                 &self.params,
-                None,
+                pre,
                 &mut self.asm,
                 on_update,
                 &mut frames,
@@ -1164,6 +1230,12 @@ impl Stream {
         if keep_from > self.base {
             self.buf.drain(..keep_from - self.base);
             self.base = keep_from;
+        }
+        let keep_k = keep_from / 2;
+        if keep_k > self.ana_k0 {
+            let n = (keep_k - self.ana_k0).min(self.ana.len());
+            self.ana.drain(..n);
+            self.ana_k0 += n;
         }
     }
 
@@ -1179,6 +1251,8 @@ impl Stream {
         self.base = 0;
         self.next = 0;
         self.asm = Assembler::new();
+        self.ana.clear();
+        self.ana_k0 = 0;
     }
 }
 
@@ -1236,23 +1310,47 @@ impl Work<'_> {
     /// each, while the window's budget lasts; a message's due continuation (the sticky retry)
     /// takes the next call if nothing decoded. No second round after a subtraction.
     fn decode_budgeted(&mut self, ch: u8, fc: f32, fwid: f32, picks: Vec<Pick>) {
+        // every pick through the unrefined gate (1.6 ms on the CoreS3); a refinement (`peakup`,
+        // 42 ms) only for the best-ranked picks that failed it narrowly, while refinements last
+        let raw_first = self.p.raw_first && ch == 0;
         let mut ranked: Vec<(usize, f32, bool, Pick)> = picks
             .iter()
             .filter_map(|pk| {
-                self.rx
-                    .gate_score(&self.c0, pk, self.t0, self.p)
-                    .map(|(h, s, refined)| (h, s, refined, *pk))
+                let mut g = (0, 0.0, false);
+                self.rx.attempt_inner(
+                    &self.c0, pk, self.t0, self.p, true, !raw_first, false, &mut g,
+                );
+                (g.2 || (raw_first && g.0 >= RAW_FIRST_MIN_SYNC)).then_some((g.0, g.1, g.2, *pk))
             })
             .collect();
         ranked.sort_by(|a, b| {
             b.0.cmp(&a.0)
                 .then(b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
         });
+        let mut refinements = std::env::var("JM_PKCAP")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(REFINEMENTS_PER_WINDOW);
         let mut decoded = false;
-        for (_, _, refined, pick) in ranked {
+        for (_, _, passed, pick) in ranked {
             if self.ladder_left == Some(0) {
                 break;
             }
+            let refined = if passed {
+                !raw_first
+            } else {
+                if refinements == 0 {
+                    continue;
+                }
+                refinements -= 1;
+                let mut g = (0, 0.0, false);
+                self.rx
+                    .attempt_inner(&self.c0, &pick, self.t0, self.p, true, true, false, &mut g);
+                if !g.2 {
+                    continue;
+                }
+                true
+            };
             self.ladder_left = self.ladder_left.map(|n| n - 1);
             let outcome = self
                 .rx
@@ -1532,7 +1630,60 @@ fn suppress(s: &mut Surface, band: Band, bin: usize, col: usize) {
 /// Channel 0's peaks: `nc` of them, each masking its neighbourhood in a private
 /// mask, so a candidate that later fails does not spoil the surface channels 1 and
 /// 2 will search.
+///
+/// The same picks as scanning the whole masked band for each (`pick_masked_scan`, kept for the
+/// test): every bin keeps its best unmasked column, and a pick re-scans only the bins its
+/// rectangle touched. Scanning the band once per pick cost 447 ms a window on the CoreS3 with
+/// 15 picks over ±150 Hz (#499).
 fn pick_masked(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
+    let nb = band.jb - band.ja + 1;
+    let mut live = alloc::vec![true; nb * NCOLS]; // [bin - ja][col]
+    // best unmasked (value, column) of a bin; ties to the earliest column
+    let best_of = |live: &[bool], b: usize| -> Option<(f32, usize)> {
+        let mut best: Option<(f32, usize)> = None;
+        for col in 0..NCOLS {
+            if !live[b * NCOLS + col] {
+                continue;
+            }
+            let v = s.at(col, band.ja + b);
+            if best.is_none_or(|(bv, _)| v > bv) {
+                best = Some((v, col));
+            }
+        }
+        best
+    };
+    let mut per_bin: Vec<Option<(f32, usize)>> = (0..nb).map(|b| best_of(&live, b)).collect();
+    (0..nc)
+        .map(|_| {
+            // the strongest over bins; ties to the earliest column, then the lowest bin
+            let mut pick: Option<(f32, usize, usize)> = None;
+            for (b, e) in per_bin.iter().enumerate() {
+                if let Some((v, col)) = *e
+                    && pick.is_none_or(|(pv, pb, pc)| {
+                        v > pv || (v == pv && (col < pc || (col == pc && b < pb)))
+                    })
+                {
+                    pick = Some((v, b, col));
+                }
+            }
+            let (bin, col) = pick.map_or((band.ja, 0), |(_, b, col)| (band.ja + b, col));
+            let (bins, cols) = peak_rect(band, bin, col);
+            for b in bins {
+                for c in cols.clone() {
+                    live[(b - band.ja) * NCOLS + c] = false;
+                }
+                per_bin[b - band.ja] = best_of(&live, b - band.ja);
+            }
+            (bin, col)
+        })
+        .collect()
+}
+
+/// Channel 0's peaks: `nc` of them, each masking its neighbourhood in a private
+/// mask, so a candidate that later fails does not spoil the surface channels 1 and
+/// 2 will search.
+#[cfg(test)]
+fn pick_masked_scan(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
     let mut mask = alloc::vec![false; s.data.len()];
     for col in 0..NCOLS {
         for bin in band.ja..=band.jb {
@@ -1725,5 +1876,46 @@ mod profile {
         time("decode_window (whole)", 20, &mut || {
             std::hint::black_box(rx.decode_window(win, 0.0, &p));
         });
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    /// The incremental pick finds exactly the whole-band scans' picks, ties included.
+    #[test]
+    fn incremental_picks_match_the_whole_band_scan() {
+        let mut state = 0x77u64;
+        let mut rnd = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for trial in 0..40 {
+            let (lo, width) = (1900usize, 450usize);
+            let data: Vec<f32> = (0..NCOLS * width)
+                .map(|_| {
+                    if trial % 2 == 0 {
+                        (rnd() % 7) as f32
+                    } else {
+                        (rnd() % 100_000) as f32 / 7.0
+                    }
+                })
+                .collect();
+            let s = Surface { lo, width, data };
+            let band = Band {
+                ja: lo + 3 + trial,
+                jb: lo + 60 + 9 * trial,
+            };
+            for nc in [1, 5, 15, 40] {
+                assert_eq!(
+                    pick_masked(&s, band, nc),
+                    pick_masked_scan(&s, band, nc),
+                    "trial {trial} nc {nc}"
+                );
+            }
+        }
     }
 }
