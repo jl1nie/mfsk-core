@@ -41,7 +41,7 @@ use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::ApHint;
 use crate::msg::Q65Message;
-use crate::msg::q65::{ap_hint_to_q65_mask, unpack_symbols_to_bits77};
+use crate::msg::q65::{ap_hint_to_q65_mask_for, unpack_flag, unpack_symbols_to_bits77};
 
 #[cfg(test)]
 use super::Q65a30;
@@ -215,6 +215,12 @@ pub struct Q65Result {
     /// other-tones power ratio (`snr_db_narrow`/`snr_db_wide` in
     /// `q65::rx`). Closes issue #226.
     pub snr_db: f32,
+    /// The spare 78th payload bit: set by a WSJT-X 3.2 station in **Q65
+    /// Pileup** mode to say it copied its correspondent's last
+    /// transmission (`genq65.f90`'s `iflag`). Recovered as
+    /// `q65_decode.f90:321` does (`iflagdec=iand(dat4(13),1)`); WSJT-X
+    /// marks such a decode with `#` (`decoder_callbacks.f90:677`).
+    pub copied_last_tx: bool,
 }
 
 /// [`crate::engine::llr::snr_db_from_sig_noi`] with Q65's clamps, the
@@ -305,6 +311,16 @@ fn snr_db_wide<P: ModulationParams>(energies: &[f32], sample_rate: u32, codeword
     snr_db_from_sig_noi(xsig, xnoi, q65_bw_offset_db::<P>())
 }
 
+/// An a-priori hint and the bit-78 policy it is applied under: with
+/// `pileup`, a MyCall + DxCall hint leaves the spare 78th bit free
+/// (`q65_ap.f90`, iaptype 3 under `lq65pileup`) — see
+/// [`crate::msg::q65::ap_hint_to_q65_mask_for`].
+#[derive(Clone, Copy)]
+pub(crate) struct Q65Ap<'a> {
+    pub(crate) hint: &'a ApHint,
+    pub(crate) pileup: bool,
+}
+
 /// QRA BP + CRC over `intrinsics`, biased by `ap_hint` when it carries
 /// information. The one copy of the match every BP decode path used to
 /// write out for itself (#418).
@@ -312,11 +328,11 @@ fn bp_decode(
     codec: &mut Q65Codec,
     intrinsics: &[f32],
     info_syms: &mut [i32; 13],
-    ap_hint: Option<&ApHint>,
+    ap_hint: Option<Q65Ap<'_>>,
 ) -> Result<u32, crate::fec::qra::Q65DecodeError> {
     match ap_hint {
-        Some(hint) if hint.has_info() => {
-            let (mask, syms) = ap_hint_to_q65_mask(hint);
+        Some(ap) if ap.hint.has_info() => {
+            let (mask, syms) = ap_hint_to_q65_mask_for(ap.hint, ap.pileup);
             codec.decode_with_ap(intrinsics, info_syms, 50, &mask, &syms)
         }
         _ => codec.decode(intrinsics, info_syms, 50),
@@ -392,6 +408,7 @@ fn finish<P: ModulationParams>(
     };
 
     Some(Q65Result {
+        copied_last_tx: unpack_flag(info_syms),
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
@@ -432,7 +449,7 @@ pub(crate) fn decode_at_with_ap_for<P: ModulationParams>(
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
-    ap_hint: &ApHint,
+    ap_hint: Q65Ap<'_>,
     ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     decode_at_inner::<P>(
@@ -450,7 +467,7 @@ fn decode_at_inner<P: ModulationParams>(
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
-    ap_hint: Option<&ApHint>,
+    ap_hint: Option<Q65Ap<'_>>,
     ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     let energies = extract_data_energies::<P>(audio, sample_rate, start_sample, base_freq_hz)?;
@@ -498,7 +515,7 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
     base_freq_hz: f32,
     b90_ts: f32,
     model: FadingModel,
-    ap_hint: Option<&ApHint>,
+    ap_hint: Option<Q65Ap<'_>>,
     ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     let energies = extract_data_energies_wide::<P>(audio, sample_rate, start_sample, base_freq_hz)?;
@@ -544,7 +561,7 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     params: &super::search::SearchParams,
     b90_ts: f32,
     model: FadingModel,
-    ap_hint: Option<&ApHint>,
+    ap_hint: Option<Q65Ap<'_>>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
@@ -767,7 +784,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
-    ap_hint: &ApHint,
+    ap_hint: Q65Ap<'_>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
@@ -788,7 +805,7 @@ fn decode_scan_inner<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
-    ap_hint: Option<&ApHint>,
+    ap_hint: Option<Q65Ap<'_>>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
@@ -889,7 +906,7 @@ fn decode_at_grid_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     depth: GridDepth,
-    ap_hint: Option<&ApHint>,
+    ap_hint: Option<Q65Ap<'_>>,
     ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
@@ -1010,7 +1027,7 @@ fn decode_at_with_fine_timing_for<P: ModulationParams>(
     start_sample: usize,
     freq_hz: f32,
     _nsps: usize,
-    ap_hint: Option<&ApHint>,
+    ap_hint: Option<Q65Ap<'_>>,
     ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     decode_at_grid_for::<P>(
