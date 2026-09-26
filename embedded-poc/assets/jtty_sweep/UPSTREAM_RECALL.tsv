@@ -1,0 +1,20 @@
+# rjtty 4.6 0 384 1500 50 over the sjtty corpus (message "CQ K1ABC CQ", f0=1500, dt=0.3, TRIALS=20)
+# channel	snr_db	trials	correct	unexpected_decodes
+awgn	-20	20	0	0
+awgn	-19	20	0	0
+awgn	-18	20	1	0
+awgn	-17	20	6	0
+awgn	-16	20	11	0
+awgn	-15	20	17	0
+awgn	-14	20	20	0
+awgn	-13	20	20	0
+awgn	-12	20	20	0
+mid_moderate	-20	20	0	0
+mid_moderate	-19	20	0	0
+mid_moderate	-18	20	0	0
+mid_moderate	-17	20	0	0
+mid_moderate	-16	20	7	0
+mid_moderate	-15	20	11	0
+mid_moderate	-14	20	15	0
+mid_moderate	-13	20	16	0
+mid_moderate	-12	20	16	0

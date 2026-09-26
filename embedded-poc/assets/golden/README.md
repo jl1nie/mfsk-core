@@ -32,6 +32,8 @@ the failure mode cannot come back silently.
 | `q65/120D_Rainscatter_10_GHz/` | `samples/Q65/` | Q65-120D |
 | `q65/120E_Ionoscatter_6m/` (2 periods) | `samples/Q65/` | Q65-120E |
 | `q65/300A_Optical_Scatter/` | `samples/Q65/` | Q65-300A |
+| `jtty/260807_134110.wav` | `samples/JTTY/` | JTTY (WSJT-X 3.2.0-rc1) |
+| `jtty/sim/*.wav` | `sjtty` (see `jtty/README.md`) | JTTY |
 
 FT8 and JT9 are not here — their recordings (`qso*.wav`,
 `130418_1742.wav`, `191111_*.wav`) already sit in the parent directory.
