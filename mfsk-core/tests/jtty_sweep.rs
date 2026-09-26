@@ -91,6 +91,13 @@ fn jtty_snr_sweep() {
         sequential: std::env::var_os("MFSK_JTTY_SWEEP_SEQUENTIAL").is_some(),
         ..Params::default()
     };
+    // `MFSK_JTTY_SWEEP_EMBEDDED=1`: `Params::embedded()`, channel 0 only with the decimated
+    // surface and raw-then-refined candidates (#499): 164 of 360 weak passes, the default 160.
+    let params = if std::env::var_os("MFSK_JTTY_SWEEP_EMBEDDED").is_some() {
+        params.embedded()
+    } else {
+        params
+    };
     let scored = common::par_map(&trials, |t| {
         let frames = rx.scan(&common::load_wav_i16(&t.path), &params);
         let hit = frames.iter().any(|f| f.atom.render() == MESSAGE);
