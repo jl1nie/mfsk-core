@@ -2,6 +2,34 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **The AP passes take `ft8b.f90`'s bound and `ft4_decode.f90`'s frequency window
+  (#456).** `DecodeStrictness::Normal`'s `ap_max_errors` is 36, what `ft8b.f90`
+  accepts (`nharderrors.gt.36` is its only bound; `ft4_decode.f90` has none), where it
+  was 30, or 25 from 55 locked bits, calibrated against the old AP rung's false accepts
+  (gone since #459 and #460). Measured on the sweep corpus at 400 trials a cell (12 800
+  files a condition, the same files each way; `docs/notes/FT8_BENCHMARK.md` section 15):
+  FT8 with the right hint 8771 -> 9315 hits (+544, +6.2 %, none lost, crossings 0.26-0.39
+  dB), with no hint +39; FT4 right hint 7422 -> 7780 (+358, +4.8 %), no hint +31. The
+  price is AP hallucinations, a hypothesis locked onto a marginal signal (`K1ABC W9XYZ
+  73`, 34 hard errors): FT8 +1 (right hint) or +4 (wrong hint) in 12 800 files. FT4's
+  was 4 -> 64 with a wrong hint, and that is what the second half is for.
+
+  `ft4_decode.f90` and `ft8b.f90` try the heavy AP hypotheses (`iaptype >= 3`: MyCall and
+  DxCall locked, 58 bits or all 77) only within `napwid` (50 Hz) of `nfqso`; this
+  crate tried them on every candidate in the band, which the tighter bound had been
+  covering for. New `pipeline::QsoFreq` (`Unknown`, `Near`, `Far`, from
+  `DecodeRequest::freq_hint`) and `HEAVY_AP_LOCKED_BITS = 55`: with a `freq_hint`, a heavy
+  hypothesis is skipped for a candidate more than 50 Hz from it, in FT4's ladder and in
+  FT8's AP loop (`decode_sniper_inner` takes its target frequency as the hint). Without a
+  `freq_hint` nothing is restricted, as before, and FST4 is left alone (upstream's has no
+  such test). FT4 with a wrong hint, hint at the signal: 64 -> 6 phantoms (14 with the hint
+  away from it), hits 6232 -> 6274; with the right hint 7821 hits and 6 phantoms (7422 and 3
+  before this change), and 6232 with the hint 600 Hz away, the heavy hypothesis being off
+  there, as upstream's. FT8's phantoms sit on the true signal, inside the window, so the
+  rule does not touch them (9 -> 9). A wrong or stale hint with no `freq_hint` still pays
+  FT4's 64. FST4-15 and -30, all four channels: crossings 0.00 to -0.17 dB, unexpected
+  decodes as in the baseline.
+
 - **FT4's OSD runs the way `decode174_91` runs it (#456).** `ft4_decode.f90`
   decodes every pass, blind or a-priori, through `decode174_91(llr, Keff=91,
   maxosd=2, ndeep=2, apmask)`: BP, then OSD on the BP sum after 1 and after 2

@@ -1758,6 +1758,7 @@ where
             0.0,
             &DefaultPolicy,
             pass,
+            crate::engine::pipeline::QsoFreq::Unknown,
         ) {
             if let Some(cb) = on_result.as_mut() {
                 cb(&r);
@@ -1912,6 +1913,11 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
     policy: &Pol,
     // Which WSJT-X decode pass this is: `imetric` picks the LLR metric.
     pass: PassCtx,
+    // Where the candidate is relative to the request's `freq_hint`
+    // ([`crate::engine::pipeline::QsoFreq`]): `Far` skips the heavy AP hypotheses
+    // (`ft8b.f90`: `iaptype.ge.3 .and. abs(f1-nfqso).gt.napwid`). `Unknown` for a
+    // caller with no hint, which restricts nothing.
+    qso: crate::engine::pipeline::QsoFreq,
 ) -> Option<DecodeResult> {
     debug_assert!(matches!(pass.imetric, 1 | 2));
     // ── Staircase: cheap → deeper → OSD ─────────────────────────
@@ -2214,6 +2220,16 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                 *dst = src != 0;
             }
             let locked_bits = ap_mask.iter().filter(|&&m| m).count();
+            // `ft8b.f90`: `if(ncontest.le.5 .and. iaptype.ge.3 .and. abs(f1-nfqso).gt.napwid
+            // .and. abs(f1-nftx).gt.napwid) cycle` -- MyCall and DxCall locked (58 bits or
+            // all 77) is tried near the QSO frequency only. Away from a given `freq_hint`
+            // the hypothesis is skipped (#456); with no hint there is nothing to be away
+            // from, and this crate has no TX frequency to add.
+            if locked_bits >= crate::engine::pipeline::HEAVY_AP_LOCKED_BITS
+                && qso == crate::engine::pipeline::QsoFreq::Far
+            {
+                continue;
+            }
             let max_errors: u32 = strictness.ap_max_errors(locked_bits);
 
             for &base_llr in &llr_variants {

@@ -125,12 +125,25 @@ fn ap_hint_requested() -> Option<mfsk_core::msg::ap::ApHint> {
     Some(h)
 }
 
+/// `MFSK_FT8_SWEEP_FREQ_HINT=<Hz>` passes that frequency as the request's `freq_hint`, the
+/// operator's QSO frequency. Every signal in this corpus is at 1500 Hz, so `1500` is at it
+/// and anything 50 Hz or more away (say `900`) is not: `ft8b.f90` tries the heavy AP
+/// hypotheses (MyCall and DxCall locked) only within `napwid` of it (#456). Unset, no hint.
+fn freq_hint_requested() -> Option<f32> {
+    std::env::var("MFSK_FT8_SWEEP_FREQ_HINT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+}
+
 fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::ft8::Ft8;
 
     use mfsk_core::msg::decode_request::DecodeRequest;
     let hint = ap_hint_requested();
     let mut req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 0.8, 50);
+    if let Some(f) = freq_hint_requested() {
+        req = req.freq_hint(f);
+    }
     if let Some(h) = hint.as_ref() {
         req = req.ap_hint(h);
     }
