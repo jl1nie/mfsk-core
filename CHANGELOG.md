@@ -187,6 +187,17 @@
     to 0 extra.
   - Tier C Q65 (plain and CQ-AP): every group within 0.15 dB.
 
+- **JTTY transmit sequencer for the boards (`mfsk-app-shared::jtty_tx`, #499, E3).** The pure, half-duplex
+  sequencing between "a message of N samples is ready" and "the radio is back on receive": Idle → Waiting
+  (channel clear for `hold`, at most `max_wait`, then cancel or send anyway) → Lead (PTT on) → Sending → Tail
+  (PTT off). It is driven by the audio clock, not a wall clock: `poll(samples, channel_busy)` returns segments
+  that add up to exactly those samples, the PTT edges among them, and events, and the timeline does not depend
+  on how the audio is chunked. A segment that is not `Receive` is a stretch during which the JTTY receiver must
+  be fed zeros so its sample-count timeline stays true (BINDINGS §2.8.1). It knows nothing of tones; the board
+  fills `Message` segments from `jtty::tx::Synth` at the offsets given, which `hosttest` checks against the
+  whole-message synthesis at chunk sizes from 1 sample to a frame. Abort while waiting drops the message; abort
+  while sending cuts the audio and runs the tail.
+
 - **JTTY transmit: `jtty::tx::Synth`, the waveform as it is played (#499, E2).** `Synth::<F>::new(tones, f0, amplitude)`
   then `fill(&mut [f32])` produces the samples of `synth_f32` in pieces of any size with the phase carried
   between calls, so a transmitter feeding a sound device needs one buffer, not the whole 362 496-sample

@@ -38,6 +38,12 @@ pub mod wspr_bands;
 #[path = "../../../embedded-poc/mfsk-app-shared/src/freq_presets.rs"]
 pub mod freq_presets;
 
+/// The JTTY transmit sequencer — pure sample arithmetic over the audio clock
+/// (#499): waiting for a clear channel, PTT lead and tail, and which samples are
+/// the message and which the receiver must be fed zeros for.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/jtty_tx.rs"]
+pub mod jtty_tx;
+
 /// Slot parity — pure arithmetic; `time_sync` needs it.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/parity.rs"]
 pub mod parity;

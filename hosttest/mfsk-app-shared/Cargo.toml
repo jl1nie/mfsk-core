@@ -18,4 +18,4 @@ embedded-graphics = "0.8"
 # Only for `activator_pack_tests`: every message the activator can
 # emit must survive mfsk-core's packer, which is what the board hands
 # it to. `mfsk-app-shared` itself has no mfsk-core dependency.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["std", "ft8"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["std", "ft8", "jtty"] }
