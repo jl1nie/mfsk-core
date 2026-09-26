@@ -493,6 +493,43 @@ impl Receiver {
         w.subtracted
     }
 
+    /// The sync surface of the band `p` searches over the analytic window `c0`, as a checksum
+    /// (for `embedded-shared`'s `jtty-bench`, which times it on the LX7).
+    #[doc(hidden)]
+    pub fn bench_surface(&self, c0: &[Complex32], p: &Params) -> f32 {
+        let Some((_, lo, hi)) = channels(p) else {
+            return 0.0;
+        };
+        let s = self.sync_surface(c0, lo, hi, p.decimate_sync);
+        s.data.iter().step_by(97).sum()
+    }
+
+    /// Everything a window costs after its analytic signal, from the analytic window `c0`:
+    /// sync surface, picks, candidates, ladder. Returns the number of frames found (for
+    /// `jtty-bench`, which times it on the LX7, where the analytic stage itself cannot run).
+    #[doc(hidden)]
+    pub fn bench_window(&self, c0: Vec<Complex32>, p: &Params) -> usize {
+        let Some((_, lo, hi)) = channels(p) else {
+            return 0;
+        };
+        let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
+        let audio = alloc::vec![0i16; NCHUNK];
+        let mut asm = Assembler::new();
+        let mut frames = Vec::new();
+        self.analyze(
+            &audio,
+            0.0,
+            p,
+            None,
+            &[],
+            Some(Pre { c0, surface }),
+            &mut asm,
+            &mut |_| {},
+            &mut frames,
+        );
+        frames.len()
+    }
+
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
         let c0 = self.analytic(audio);
@@ -587,19 +624,49 @@ impl Receiver {
         const NF: usize = NFFT / SYNC_DECIM;
         let width = hi - lo + 1;
         let mid = (lo + hi) / 2;
-        let conj: Vec<Complex32> = self.csync.iter().map(|s| s.conj()).collect();
-        let mut refm = alloc::vec![Complex32::new(0.0, 0.0); conj.len()];
-        dsp::shift_frequency(&conj, &mut refm, FS6, -(mid as f32) * DF);
-        let m = refm.len() / SYNC_DECIM;
+        // The sync wave is 13 symbols, each a pure tone that turns a whole number of times, so
+        // (conjugated and mixed by the band centre) it is `c_i · b_t[n]` for symbol `i` sending
+        // tone `t = SYNC[i]`: four 192-sample tables and one phasor per symbol, 6 KB where the
+        // whole wave is 20 KB. Read per column with a window that is also 20 KB, the whole wave
+        // did not stay in the LX7's 32 KB data cache (547 ms a surface, 2.3 ms a column, against
+        // 0.23 ms for the transform).
+        const _: () = assert!(NSS.is_multiple_of(SYNC_DECIM));
+        let wm = f64::from(mid as f32 * DF) * core::f64::consts::TAU / f64::from(FS6);
+        let base: [Vec<Complex32>; 4] = core::array::from_fn(|t| {
+            let psi = -(core::f64::consts::TAU * t as f64 / NSS as f64 + wm);
+            let step = Complex32::new(psi.cos() as f32, psi.sin() as f32);
+            let mut w = Complex32::new((-wm).cos() as f32, (-wm).sin() as f32);
+            (0..NSS)
+                .map(|_| {
+                    let now = w;
+                    w *= step;
+                    now
+                })
+                .collect()
+        });
+        let per_symbol = -wm * NSS as f64;
+        let turn = Complex32::new(per_symbol.cos() as f32, per_symbol.sin() as f32);
+        let mut phasor = Complex32::new(1.0, 0.0);
+        let symbol_phasor: [Complex32; SYNC_SYMBOLS] = core::array::from_fn(|_| {
+            let now = phasor;
+            phasor *= turn;
+            now
+        });
+        let groups = NSS / SYNC_DECIM;
+        let m = SYNC_SYMBOLS * groups;
         let column =
             |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
                 let x = &c0[col * COL_STEP..];
-                for (j, b) in buf.iter_mut().take(m).enumerate() {
-                    let at = j * SYNC_DECIM;
-                    *b = refm[at..at + SYNC_DECIM]
-                        .iter()
-                        .zip(&x[at..at + SYNC_DECIM])
-                        .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
+                for (i, &sent) in SYNC.iter().enumerate() {
+                    let table = &base[usize::from(sent)];
+                    for g in 0..groups {
+                        let (at, out) = (g * SYNC_DECIM, i * groups + g);
+                        buf[out] = symbol_phasor[i]
+                            * table[at..at + SYNC_DECIM]
+                                .iter()
+                                .zip(&x[i * NSS + at..i * NSS + at + SYNC_DECIM])
+                                .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
+                    }
                 }
                 buf[m..].fill(Complex32::new(0.0, 0.0));
                 fft.process(buf);

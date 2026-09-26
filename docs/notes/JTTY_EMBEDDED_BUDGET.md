@@ -286,3 +286,36 @@ first two are the flags of the study, the third refines only above 6 of 13 sync 
 
 Next: the rotated-reference candidate path (no whole-window `shift_frequency`), then the board — `jtty-bench` with
 `Params::embedded()` for the surface, the gate and the peak-up.
+
+## 10. On the board: rotated references and `Params::embedded()` (2026-09-27)
+
+`jtty-bench` part 5 (`Receiver::bench_window` / `bench_surface`, `#[doc(hidden)]`): everything a window costs after its
+analytic signal, from synthetic noise (unit variance per component) and the same with one frame at 1500 Hz, about 12 dB
+in the symbol bandwidth. `f32` trellis metrics, ladder in PSRAM. Logs: `m5stack-cores3-app/logs/jtty_bench_rotated_*` and
+`jtty_bench_rotated2_*`.
+
+| | before (section 3/4) | now |
+|---|---|---|
+| candidate gate: whole-window mix + gate | 12 + ~2 ms, 113 KB allocated | rotated references + 13-symbol gate **1.6 ms**, nothing allocated |
+| `peakup` | 100 ms | **42 ms** (shifts the ~3 000 samples it reads into a 24 KB buffer) |
+| `subtract_frame` (not used by v1) | 1 832 ms | 200 ms (`f32`) |
+| sync surface, default (8 192-point, PSRAM) | 17.3 s | 17.7 s |
+| sync surface, `embedded()`, whole sync wave as reference | est. 90 ms | 547 ms |
+| sync surface, `embedded()`, four 192-sample tables + a phasor per symbol | | **172 ms** |
+| noise window, default search | | 21.4 s |
+| noise window, `embedded()` | | **321 ms** (68 % of 472) |
+| window with a frame that decodes, `embedded()`, no subtraction | | **991 ms** (321 + 670: the ladder's rung-1 success) |
+| the same with subtraction | | 1 566 ms |
+| the same, default search | | 43.7 s |
+
+- The first `embedded()` surface was 6× the estimate: 2.1 ms of each 2.3 ms column was the 2 496 multiply-adds, whose
+  reference (20 KB) and window (20 KB) together exceed the 32 KB data cache. Splitting the reference into its four tone
+  tables (6 KB) gave 3.2×. That is consistent with the cache explanation and was not isolated further (the tables were
+  not varied one at a time). The 172 ms is still twice the estimate; the transform itself is 0.23 ms × 237 = 54 ms.
+- Decisions did not change: `jtty_sweep` 164/360 for `embedded()`, none differing from the version before the
+  restructuring, multi-station studies as before.
+- A window with nothing to decode now fits (321 ms). A window in which a candidate decodes does not: 991 ms, of which
+  the ladder is two thirds. A frame decodes once in its four windows; the other three have its tail, which the sync search
+  finds partial matches in (section 8) and the ladder rejects at up to 2.1 s a call. `carry` is what removed those on the
+  host and it needs the subtraction v1 does without; `Params::mask` (section 9) does not substitute for it. So the next
+  item is the ladder's cost (rung 1 alone 414 ms with the trellis in internal DRAM), not the front end.

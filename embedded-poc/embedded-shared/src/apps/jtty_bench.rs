@@ -429,6 +429,34 @@ fn bench_dsp() {
     core::hint::black_box(sink);
     log::info!("dsp: peakup: {:.2} ms", total as f64 / 3000.0);
 
+    // the candidate path since #499: four rotated references (768 samples) and the 13-symbol gate
+    // on the unshifted window, in place of the whole-window mix above
+    let mut total = 0i64;
+    let mut sink = 0f32;
+    for _ in 0..10 {
+        let t = now_us();
+        let rot = refs.rotated(-1500.3, 6000.0);
+        for j in 0..13 {
+            for k in 0..4 {
+                sink += rot.power(k, &src[4000 + j * 192..4000 + (j + 1) * 192]);
+            }
+        }
+        total += now_us() - t;
+        yield_now();
+    }
+    core::hint::black_box(sink);
+    log::info!("dsp: rotated references + 13-symbol gate: {:.2} ms", total as f64 / 10000.0);
+    let rot = refs.rotated(-1500.3, 6000.0);
+    let mut total = 0i64;
+    for _ in 0..5 {
+        let t = now_us();
+        let (zs, zh) = rot.correlate_payload(&src, 4000);
+        total += now_us() - t;
+        core::hint::black_box((zs[0][0], zh[0][0]));
+        yield_now();
+    }
+    log::info!("dsp: rotated correlate_payload: {:.2} ms", total as f64 / 5000.0);
+
     // payload correlation: 46 symbols x 4 tones x (full + two halves) x 192 samples
     let mut total = 0i64;
     for _ in 0..5 {
@@ -456,6 +484,82 @@ fn bench_dsp() {
 
 fn stack_headroom() -> u32 {
     unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) }
+}
+
+/// Part 5: what a window costs after its analytic signal, with the default search and with
+/// `Params::embedded()` (channel 0 only, decimated 512-point surface, raw-then-refined
+/// candidates), on noise alone and with one frame in it. The analytic stage is not in these
+/// numbers: its 32 768-point transform does not run here.
+fn bench_search() {
+    use mfsk_core::jtty::rx::{NCHUNK, Params, Receiver};
+    use mfsk_core::jtty::tx::Synth;
+
+    const WIN: usize = NCHUNK / 2;
+    let rx = Receiver::new().with_f32_metrics();
+    log_heap("search: receiver built");
+    let mut rng = Lcg(0x5EA);
+    let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
+    let payloads = tx::payloads(&atoms).expect("encodes");
+    let tones = tx::frame_tones(&payloads[0]);
+    let mut noise = alloc::vec![Complex32::new(0.0, 0.0); WIN];
+    fill_noise(&mut noise, &mut rng);
+    let mut frame = alloc::vec![Complex32::new(0.0, 0.0); WIN];
+    // 0.35 against unit-variance noise per component: about 12 dB in the symbol bandwidth
+    let mut synth = Synth::<f32>::at(&tones, 1500.0, 0.35, 192, 6000.0);
+    let start = 1800; // 0.3 s
+    let n = synth.fill_complex(&mut frame[start..(start + 59 * 192).min(WIN)]);
+    log::info!("search: frame of {n} samples at 1500 Hz, start {start}");
+    for (a, b) in frame.iter_mut().zip(&noise) {
+        *a += *b;
+    }
+
+    let default = Params::default();
+    let embedded = Params::default().embedded();
+    let embedded_nosub = Params { subtract: false, ..embedded };
+    let variants: [(&str, &Params); 3] = [
+        ("default          ", &default),
+        ("embedded         ", &embedded),
+        ("embedded, no sub ", &embedded_nosub),
+    ];
+    for (name, p) in variants {
+        let reps = if p.ch0_only { 3 } else { 1 };
+        let mut total = 0i64;
+        let mut sink = 0f32;
+        for _ in 0..reps {
+            let t = now_us();
+            sink += rx.bench_surface(&noise, p);
+            total += now_us() - t;
+            yield_now();
+        }
+        core::hint::black_box(sink);
+        log::info!("search: {name} sync surface: {:.1} ms", total as f64 / (1000.0 * reps as f64));
+    }
+    log_heap("search: after surfaces");
+    for (label, win) in [("noise ", &noise), ("frame ", &frame)] {
+        for (name, p) in variants {
+            // the default search takes 20-45 s a window here: once, and not with a frame in it
+            let slow = !p.ch0_only;
+            if slow && label == "frame " {
+                continue;
+            }
+            let mut times = [0f64; 3];
+            let mut found = 0;
+            for t in times.iter_mut().take(if slow { 1 } else { 3 }) {
+                let c0 = win.to_vec();
+                let t0 = now_us();
+                found = rx.bench_window(c0, p);
+                *t = (now_us() - t0) as f64 / 1000.0;
+                yield_now();
+            }
+            log::info!(
+                "search: {label}window, {name} {:.0} / {:.0} / {:.0} ms (0 = not run), {found} frame(s)",
+                times[0],
+                times[1],
+                times[2]
+            );
+        }
+        log_heap("search: after windows");
+    }
 }
 
 fn run_bench() {
@@ -492,6 +596,8 @@ fn run_bench() {
 
     log::info!("--- 4. the DSP around the trellis ---");
     bench_dsp();
+    log::info!("--- 5. a window after its analytic signal ---");
+    bench_search();
     log::info!("--- 3. the ladder ---");
     bench_ladder();
     log::info!("--- 3b. trellis placement ---");
