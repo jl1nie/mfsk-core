@@ -72,6 +72,11 @@ fst4-bench = ["mfsk-core/fst4", "mfsk-core/internal-testing"]
 # receiver, board-agnostic. `internal-testing` is what makes
 # `process_candidate_precomputed` public, the seam the DDC path needs.
 ft4 = ["mfsk-core/ft4", "mfsk-core/internal-testing"]
+
+# `apps::jtty_bench` — issue #499 E0: what a JTTY receive window costs on the LX7
+# (esp-dsp FFT sizes and placements, one sync-surface column, the list-WAVA ladder).
+# No `internal-testing`: everything it calls is public.
+jtty-bench = ["mfsk-core/jtty"]
 ft4-bench = ["ft4"]
 
 [dependencies]
