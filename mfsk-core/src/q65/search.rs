@@ -56,7 +56,7 @@ pub fn build_spectrogram<P: ModulationParams>(audio: &[f32], sample_rate: u32) -
 }
 
 pub use crate::engine::search::{DEFAULT_SCORE_THRESHOLD, SearchParams, SyncCandidate};
-use crate::engine::search::{SearchWindow, best_lag_in_bin, rank_and_truncate};
+use crate::engine::search::{SearchWindow, best_lag_in_bin};
 
 /// Q65's own coarse-search defaults.
 ///
@@ -135,6 +135,25 @@ pub fn coarse_search_for<P: ModulationParams>(
     coarse_search_on_spec_for::<P>(&spec, sample_rate, nominal_start_sample, params)
 }
 
+/// [`coarse_search_for`] with the Max Drift search — see
+/// [`coarse_search_drift_on_spec_for`].
+pub fn coarse_search_drift_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+    max_drift: u32,
+) -> Vec<(SyncCandidate, i32)> {
+    let spec = build_spectrogram::<P>(audio, sample_rate);
+    coarse_search_drift_on_spec_for::<P>(
+        &spec,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        max_drift,
+    )
+}
+
 /// Q65-30A convenience wrapper for [`coarse_search_for`].
 pub fn coarse_search(
     audio: &[f32],
@@ -154,6 +173,55 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<SyncCandidate> {
+    coarse_search_drift_on_spec_for::<P>(spec, sample_rate, nominal_start_sample, params, 0)
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect()
+}
+
+/// Sync power over the 22 sync symbols with the tone drifting
+/// `idrift` bins across the frame — `q65_ccf_22`'s inner sum
+/// (`q65.f90:506-516`): symbol `k` (1-based) is read at bin
+/// `i + nint(idrift*(k-43)/85.0)`, and a bin off the spectrum drops
+/// that term. `idrift = 0` is [`score_candidate`]'s sum.
+fn drifted_sync_power(
+    spec: &Spectrogram,
+    start_row: usize,
+    base_bin: usize,
+    idrift: i32,
+    rows_per_symbol: usize,
+) -> f32 {
+    let mut pwr = 0.0f32;
+    for &sym in Q65_SYNC_POSITIONS.iter() {
+        let k = sym as f32 + 1.0;
+        let off = (idrift as f32 * (k - 43.0) / 85.0).round() as i64;
+        let bin = base_bin as i64 + off;
+        if bin < 0 || bin as usize >= spec.n_freq {
+            continue;
+        }
+        pwr += spec.get(start_row + sym as usize * rows_per_symbol, bin as usize);
+    }
+    pwr
+}
+
+/// [`coarse_search_on_spec_for`] with WSJT-X's **Max Drift** search:
+/// every frequency bin keeps the best score over lag *and* over a tone
+/// drift of `-max_drift..=max_drift` bins across the frame
+/// (`q65_ccf_22`, `do idrift=-max_drift,max_drift`; the GUI's Max Drift,
+/// 0..50). Each candidate comes back with the drift, in bins, that
+/// scored it. `max_drift = 0` is the plain search.
+///
+/// Upstream also narrows the window to `nfqso ± ntol` when the drift
+/// search is on (`q65.f90:486-489`), because it costs `2*max_drift+1`
+/// times the plain search; here the caller's window is the window, so
+/// narrow it to match.
+pub fn coarse_search_drift_on_spec_for<P: ModulationParams>(
+    spec: &Spectrogram,
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+    max_drift: u32,
+) -> Vec<(SyncCandidate, i32)> {
     if spec.n_time == 0 {
         return Vec::new();
     }
@@ -184,6 +252,9 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     let fb_hi = w.fmax_bin.max(w.fmin_bin) as usize;
     let mut curve: Vec<f32> = vec![0.0; fb_hi.saturating_sub(fb_lo) + 1];
     let mut rows: Vec<usize> = vec![0; curve.len()];
+    let mut drifts: Vec<i32> = vec![0; curve.len()];
+    let max_drift = max_drift as i32;
+    let noise_floor = spec.noise_per_bin * Q65_SYNC_POSITIONS.len() as f32;
     for fb in fb_lo..=fb_hi {
         // Tone 64 (highest data tone) sits at base_bin + 64 *
         // bins_per_tone for the active sub-mode.
@@ -192,16 +263,30 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
         }
         // Need room for the last data symbol (84) + the 64 data
         // tones above the sync bin.
-        let best = best_lag_in_bin(
-            &w,
-            fb,
-            |row| row + 84 * rows_per_symbol < spec.n_time,
-            |row, bin| score_candidate(spec, row, bin),
-        );
-        if let Some((row, score)) = best {
+        let row_fits = |row: usize| row + 84 * rows_per_symbol < spec.n_time;
+        let best = if max_drift == 0 {
+            best_lag_in_bin(&w, fb, row_fits, |row, bin| score_candidate(spec, row, bin))
+                .map(|(row, score)| (row, score, 0))
+        } else {
+            // `do lag=lag1,lag2; do idrift=-max_drift,max_drift`, keeping
+            // the first maximum as `ccft.gt.ccfmax` does.
+            let mut best: Option<(usize, f32, i32)> = None;
+            for idrift in -max_drift..=max_drift {
+                if let Some((row, score)) = best_lag_in_bin(&w, fb, row_fits, |row, bin| {
+                    let pwr = drifted_sync_power(spec, row, bin, idrift, rows_per_symbol);
+                    pwr / (pwr + noise_floor)
+                }) && best.is_none_or(|(_, b, _)| score > b)
+                {
+                    best = Some((row, score, idrift));
+                }
+            }
+            best
+        };
+        if let Some((row, score, idrift)) = best {
             let idx = fb - fb_lo;
             curve[idx] = score;
             rows[idx] = row;
+            drifts[idx] = idrift;
         }
     }
 
@@ -226,7 +311,7 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     // i4=i+mode_q65; if(ccf2(i).ne.biggest) cycle`
     // (`lib/qra/q65/q65.f90:563-566`) — `mode_q65` there is exactly
     // our `bins_per_tone` (`nBinsPerTone = 1<<submode`, `q65.c:351`).
-    let mut out: Vec<SyncCandidate> = Vec::new();
+    let mut out: Vec<(SyncCandidate, i32)> = Vec::new();
     for (idx, &score) in curve.iter().enumerate() {
         if score <= 0.0 {
             continue;
@@ -250,13 +335,22 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
         if !is_local_max {
             continue;
         }
-        out.push(SyncCandidate {
-            start_sample: rows[idx] * spec.t_step,
-            freq_hz: (fb_lo + idx) as f32 * df,
-            score,
-        });
+        out.push((
+            SyncCandidate {
+                start_sample: rows[idx] * spec.t_step,
+                freq_hz: (fb_lo + idx) as f32 * df,
+                score,
+            },
+            drifts[idx],
+        ));
     }
-    rank_and_truncate(&mut out, params.max_candidates);
+    // `rank_and_truncate`'s order, carrying each candidate's drift.
+    out.sort_unstable_by(|a, b| {
+        b.0.score
+            .partial_cmp(&a.0.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    out.truncate(params.max_candidates);
     out
 }
 

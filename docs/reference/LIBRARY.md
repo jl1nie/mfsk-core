@@ -682,6 +682,15 @@ matches. Without it such a hint rejects a flagged reply, exactly as
 WSJT-X outside Pileup does. The `.ap_list()` templates carry the bit
 clear, as `q65_set_list.f90` builds them.
 
+**Q65 Max Drift.** `.max_drift(bins)` on `q65::DecodeRequest` is
+WSJT-X's Max Drift setting (0..50, off by default). The sync search tries
+a linear tone drift of up to `bins` spectrum bins (one bin = one baud)
+across the frame (`q65_ccf_22`), and the grid decode takes the drift it
+found back out (`q65_loops`' `twkfreq`). It costs `2*bins+1` times the
+plain search per frequency bin; WSJT-X narrows its window to the Rx
+frequency ± F Tol while it is on, so narrow `SearchParams` to match. It
+applies to the plain and `.ap_hint()` scans.
+
 ---
 
 ## 4. Module and crate map
