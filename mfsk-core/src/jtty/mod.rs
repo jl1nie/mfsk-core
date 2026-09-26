@@ -59,6 +59,31 @@
 //! profile — is host policy and is not here (#463's line, drawn for #477 in
 //! `docs/notes/JTTY_UPSTREAM.md`).
 
+/// Count `n` of a [`stats::Counter`] on the receiver's [`stats::Stats`]; nothing without `jtty-stats`.
+#[cfg(feature = "jtty-stats")]
+macro_rules! stat_add {
+    ($rx:expr, $c:ident, $n:expr) => {
+        $rx.stats.add($crate::jtty::stats::Counter::$c, $n as u64)
+    };
+}
+#[cfg(not(feature = "jtty-stats"))]
+#[allow(unused_macros)] // the receiver, its only user, needs an FFT backend
+macro_rules! stat_add {
+    ($rx:expr, $c:ident, $n:expr) => {};
+}
+/// Time the rest of the scope as a [`stats::Stage`]; nothing without `jtty-stats`.
+#[cfg(feature = "jtty-stats")]
+macro_rules! stat_time {
+    ($rx:expr, $s:ident) => {
+        let _span = $rx.stats.time($crate::jtty::stats::Stage::$s);
+    };
+}
+#[cfg(not(feature = "jtty-stats"))]
+#[allow(unused_macros)]
+macro_rules! stat_time {
+    ($rx:expr, $s:ident) => {};
+}
+
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod assemble;
 pub mod correlate;
@@ -70,6 +95,8 @@ pub mod pack;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
 pub mod source;
+#[cfg(feature = "jtty-stats")]
+pub mod stats;
 pub mod subtract;
 pub mod tbcc;
 pub mod trellis;

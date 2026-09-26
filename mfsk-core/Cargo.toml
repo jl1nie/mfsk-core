@@ -290,6 +290,9 @@ fst4         = []
 # `subtract` are not. Pre-push matrix rows: `alloc jtty`, `alloc jtty
 # fft-extern`. Plan: docs/notes/JTTY_UPSTREAM.md.
 jtty         = []
+# Work counters and stage timers on the JTTY receiver (`jtty::stats`), for measuring what a window
+# costs (#499). Host only: 64-bit atomics and wall-clock timers. Not in `full`.
+jtty-stats   = ["jtty", "std"]
 jt9          = []
 jt65         = []
 q65          = []

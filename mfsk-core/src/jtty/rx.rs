@@ -125,6 +125,22 @@ pub struct Params {
     /// as a single-signal receiver would: a weak station under a strong one is
     /// then lost.
     pub subtract: bool,
+    /// Decode a pass's candidates one after another, each against the signal as the
+    /// earlier ones' subtraction left it, as upstream does. Off (the default), a pass
+    /// is decoded at once — on rayon's pool under `parallel` — and the candidates that
+    /// failed are decoded again after a subtraction. Sequential gives up that
+    /// parallelism, and in return the sidelobes of a signal that has just decoded are
+    /// gated against what is left of it, not against the signal: on a band with
+    /// stations they are most of the candidates the ladder rejects (#499).
+    pub sequential: bool,
+    /// Carry every frame that decodes into the windows after it: a frame is 1.888 s long
+    /// and a window starts every quarter of that, so the same transmission is in up to
+    /// four windows, and in the three after the one that decoded it only its tail is
+    /// there — which the sync search finds partial matches in, and the ladder then
+    /// rejects. With this on, a decoded frame is subtracted from the later windows it
+    /// overlaps too, so those never reach the ladder (a persistent residual, as a
+    /// continuously running receiver would keep). Off is upstream's behaviour (#499).
+    pub carry: bool,
 }
 
 impl Default for Params {
@@ -137,6 +153,8 @@ impl Default for Params {
             nfa_hz: 200.0,
             nfb_hz: 2800.0,
             subtract: true,
+            sequential: false,
+            carry: false,
         }
     }
 }
@@ -180,6 +198,8 @@ pub struct Receiver {
     ladder: Ladder,
     refs: ToneRefs,
     csync: Vec<Complex32>,
+    #[cfg(feature = "jtty-stats")]
+    stats: super::stats::Stats,
 }
 
 impl Default for Receiver {
@@ -275,7 +295,30 @@ impl Receiver {
             ladder: Ladder::new(),
             refs: ToneRefs::new(NSS),
             csync: dsp::sync_wave(),
+            #[cfg(feature = "jtty-stats")]
+            stats: Default::default(),
         }
+    }
+
+    /// The work counters and stage timers so far (`jtty-stats`), the ladder's rung counts included.
+    #[cfg(feature = "jtty-stats")]
+    pub fn stats(&self) -> super::stats::Snapshot {
+        let mut s = self.stats.snapshot();
+        s.rungs = self.ladder.rung_counts();
+        s
+    }
+
+    /// Every candidate that passed the sync gate and reached the ladder (`jtty-stats`).
+    #[cfg(feature = "jtty-stats")]
+    pub fn gated_candidates(&self) -> Vec<super::stats::GatedCandidate> {
+        self.stats.gated()
+    }
+
+    /// Zero the counters and timers (`jtty-stats`).
+    #[cfg(feature = "jtty-stats")]
+    pub fn reset_stats(&self) {
+        self.stats.reset();
+        self.ladder.reset_rung_counts();
     }
 
     /// [`Self::new`] with the ladder's trellis metrics in `f32` ([`Ladder::with_f32_metrics`]).
@@ -299,6 +342,7 @@ impl Receiver {
             t0_s,
             p,
             None,
+            &[],
             None,
             &mut asm,
             &mut |_| {},
@@ -321,26 +365,43 @@ impl Receiver {
         t0_s: f32,
         p: &Params,
         interferer: Option<&Subtracted>,
+        carried: &[Subtracted],
         pre: Option<Pre>,
         asm: &mut Assembler,
         sink: &mut dyn FnMut(MessageUpdate),
         frames: &mut Vec<FrameDecode>,
     ) -> Vec<Subtracted> {
         assert_eq!(audio.len(), NCHUNK, "a window is exactly NCHUNK samples");
+        if interferer.is_some() {
+            stat_add!(self, RetroWindows, 1);
+        } else {
+            stat_add!(self, Windows, 1);
+        }
         let Some((chans, lo, hi)) = channels(p) else {
             return Vec::new();
         };
-        let (c0, surface) = match pre {
+        let (mut c0, surface) = match pre {
             // the state-independent work, already done (only valid with no interferer)
-            Some(Pre { c0, surface }) if interferer.is_none() => (c0, Some(surface)),
+            Some(Pre { c0, surface }) if interferer.is_none() && carried.is_empty() => {
+                (c0, Some(surface))
+            }
+            // the analytic signal is done, the surface is not: frames carried in change it
+            Some(Pre { c0, .. }) if interferer.is_none() => (c0, None),
             _ => {
-                let mut c0 = dsp::analytic_6k(audio);
+                let mut c0 = self.analytic(audio);
                 if let Some(x) = interferer {
+                    stat_add!(self, Subtractions, 1);
+                    stat_time!(self, Subtract);
                     subtract_frame(&mut c0, &x.tones(), x.f1_hz, x.tsync_s - t0_s);
                 }
                 (c0, None)
             }
         };
+        for x in carried {
+            stat_add!(self, Subtractions, 1);
+            stat_time!(self, Subtract);
+            subtract_frame(&mut c0, &x.tones(), x.f1_hz, x.tsync_s - t0_s);
+        }
         let mut w = Work {
             rx: self,
             p,
@@ -385,9 +446,16 @@ impl Receiver {
 
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
-        let c0 = dsp::analytic_6k(audio);
+        let c0 = self.analytic(audio);
         let surface = self.sync_surface(&c0, lo, hi);
         Some(Pre { c0, surface })
+    }
+
+    /// The analytic signal of a window, counted and timed.
+    fn analytic(&self, audio: &[i16]) -> Vec<Complex32> {
+        stat_add!(self, Analytic, 1);
+        stat_time!(self, Analytic);
+        dsp::analytic_6k(audio)
     }
 
     /// Every candidate's outcome, in order; parallel across candidates.
@@ -412,6 +480,8 @@ impl Receiver {
 
     /// The sync surface over bins `lo..=hi`, all [`NCOLS`] columns (`build_s0`).
     fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize) -> Surface {
+        stat_add!(self, SurfaceBuilds, 1);
+        stat_time!(self, Surface);
         let width = hi - lo + 1;
         let column =
             |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
@@ -466,16 +536,24 @@ impl Receiver {
         peak: bool,
     ) -> Option<Outcome> {
         let (xdt, f1) = if pick.channel == 0 && peak {
+            stat_add!(self, Peakups, 1);
+            stat_time!(self, Peakup);
             let (x, f, _) = peakup(c0, &self.csync, pick.xdt_s, pick.f_hz);
             (x, f)
         } else {
             (pick.xdt_s, pick.f_hz)
         };
         let mut c1 = alloc::vec![Complex32::new(0.0, 0.0); c0.len()];
-        dsp::shift_frequency(c0, &mut c1, FS6, -f1);
+        {
+            stat_add!(self, Shifts, 1);
+            stat_time!(self, Shift);
+            dsp::shift_frequency(c0, &mut c1, FS6, -f1);
+        }
 
         // ---- sync gate: which tone is strongest in each of the 13 sync symbols
         let start = (xdt * FS6).round() as usize;
+        #[cfg(feature = "jtty-stats")]
+        let gate_span = self.stats.time(super::stats::Stage::Gate);
         let (mut pt, mut pa) = (0f32, 0f32);
         let mut hits = 0usize;
         for (j, &sent) in SYNC.iter().enumerate() {
@@ -505,13 +583,37 @@ impl Receiver {
         } else {
             hits >= OTHER_MIN_SYNC && snr >= OTHER_MIN_SNR_DB
         };
+        #[cfg(feature = "jtty-stats")]
+        drop(gate_span);
         if !passes {
+            stat_add!(self, GateFail, 1);
             return None;
         }
+        stat_add!(self, GatePass, 1);
 
         // ---- decode
-        let (zsym, zhalf) = correlate_payload(&self.refs, &c1, start + SYNC_SYMBOLS * NSS);
-        let accepted = self.ladder.decode(&zsym, &zhalf)?;
+        let (zsym, zhalf) = {
+            stat_add!(self, Correlations, 1);
+            stat_time!(self, Correlate);
+            correlate_payload(&self.refs, &c1, start + SYNC_SYMBOLS * NSS)
+        };
+        stat_add!(self, LadderCalls, 1);
+        let accepted = {
+            stat_time!(self, Ladder);
+            self.ladder.decode(&zsym, &zhalf)
+        };
+        #[cfg(feature = "jtty-stats")]
+        self.stats.record(super::stats::GatedCandidate {
+            window_s: t0_s,
+            channel: pick.channel,
+            f1_hz: f1,
+            tsync_s: t0_s + xdt,
+            nsync: hits,
+            snr_db: snr,
+            accepted: accepted.is_some(),
+        });
+        let accepted = accepted?;
+        stat_add!(self, LadderAccepts, 1);
         let (atom, eom) = source::decode_payload(&accepted.payload)?;
 
         // ---- S/N and symbol errors from the decoded frame
@@ -623,15 +725,40 @@ impl Receiver {
     ) {
         let t_of = |k: usize| (k * STEP) as f32 / 12_000.0;
         asm.prune(t_of(w), sink);
-        let subtracted = self.analyze(audio.window(w), t_of(w), p, None, pre, asm, sink, frames);
+        // frames decoded earlier that still lie in window `k` (`Params::carry`)
+        let carried_in = |asm: &Assembler, k: usize| -> Vec<Subtracted> {
+            if !p.carry {
+                return Vec::new();
+            }
+            let (a, b) = (t_of(k), t_of(k) + NCHUNK as f32 / 12_000.0);
+            asm.carried
+                .iter()
+                .filter(|x| x.tsync_s < b && x.tsync_s + super::assemble::FRAME_PERIOD_S > a)
+                .cloned()
+                .collect()
+        };
+        let carried = carried_in(asm, w);
+        let subtracted = self.analyze(
+            audio.window(w),
+            t_of(w),
+            p,
+            None,
+            &carried,
+            pre,
+            asm,
+            sink,
+            frames,
+        );
         for x in &subtracted {
             for k in 1..=super::assemble::MAX_RETRO_STEPS {
                 if w >= k {
+                    let carried = carried_in(asm, w - k);
                     let _ = self.analyze(
                         audio.window(w - k),
                         t_of(w - k),
                         p,
                         Some(x),
+                        &carried,
                         None,
                         asm,
                         sink,
@@ -639,6 +766,9 @@ impl Receiver {
                     );
                 }
             }
+        }
+        if p.carry {
+            asm.carried.extend(subtracted);
         }
     }
 }
@@ -828,7 +958,21 @@ impl Work<'_> {
     /// subtract what decoded and merge it into the messages. If nothing at all
     /// decoded, try the continuation an active message is due to produce.
     fn channel(&mut self, ch: u8, band: Band, fc: f32, fwid: f32) {
-        let picks: Vec<Pick> = if ch == 0 {
+        // the surface is built (and timed) before the picks are, so the two stages do not nest
+        let _ = self.surface();
+        let picks: Vec<Pick> = {
+            #[cfg(feature = "jtty-stats")]
+            let rx = self.rx;
+            stat_time!(rx, Pick);
+            self.pick_candidates(ch, band, fwid)
+        };
+        stat_add!(self.rx, PicksCh0, if ch == 0 { picks.len() } else { 0 });
+        stat_add!(self.rx, PicksOther, if ch == 0 { 0 } else { picks.len() });
+        self.decode_picks(ch, fc, fwid, picks);
+    }
+
+    fn pick_candidates(&mut self, ch: u8, band: Band, fwid: f32) -> Vec<Pick> {
+        if ch == 0 {
             let nc = 2usize.max(8usize.min((fwid / (NFZ as f32 * DF)).round() as usize));
             pick_masked(self.surface(), band, nc)
                 .into_iter()
@@ -855,17 +999,45 @@ impl Work<'_> {
                     pick_at(ch, bin, col)
                 })
                 .collect()
-        };
+        }
+    }
+
+    fn decode_picks(&mut self, ch: u8, fc: f32, fwid: f32, picks: Vec<Pick>) {
         // Decode every candidate against the signal as it now is. Upstream takes
         // them one after another, each seeing what the earlier ones' subtraction
         // left; a whole pass is decoded at once here, so whenever a round subtracted
         // something the candidates that failed are decoded again against the
         // residual, until a round subtracts nothing.
         let mut decoded = false;
-        let mut todo: Vec<Pick> = picks;
-        for _ in 0..MAX_ROUNDS {
+        let mut todo: Vec<Pick> = Vec::new();
+        if self.p.sequential {
+            // upstream's order: each candidate against what the earlier ones left
+            for pick in &picks {
+                let outcome = self.rx.process(&self.c0, pick, self.t0, self.p, true);
+                decoded |= self.settle(alloc::vec![outcome], ch);
+            }
+        } else {
+            todo = picks;
+        }
+        for _round in 0..MAX_ROUNDS {
             let before = self.subtractions;
+            #[cfg(feature = "jtty-stats")]
+            let ladder_before = self
+                .rx
+                .stats
+                .snapshot()
+                .count(super::stats::Counter::LadderCalls);
             let outcomes = self.rx.process_all(&self.c0, &todo, self.t0, self.p);
+            #[cfg(feature = "jtty-stats")]
+            if _round > 0 {
+                let now = self
+                    .rx
+                    .stats
+                    .snapshot()
+                    .count(super::stats::Counter::LadderCalls);
+                stat_add!(self.rx, RetryCandidates, todo.len());
+                stat_add!(self.rx, RetryLadderCalls, now - ladder_before);
+            }
             let failed: Vec<Pick> = todo
                 .iter()
                 .zip(&outcomes)
@@ -876,6 +1048,7 @@ impl Work<'_> {
             if self.subtractions == before || failed.is_empty() || !self.p.subtract {
                 break;
             }
+            stat_add!(self.rx, ExtraRounds, 1);
             todo = failed;
         }
 
@@ -888,6 +1061,7 @@ impl Work<'_> {
                     && tsync + FRAME_PERIOD_S - self.t0 >= 0.0
             });
             if let Some((f1, tsync)) = due {
+                stat_add!(self.rx, StickyRetries, 1);
                 let pick = Pick {
                     channel: ch,
                     f_hz: f1,
@@ -925,6 +1099,10 @@ impl Work<'_> {
             }
             // take the frame off the signal so weaker ones beneath it can be found
             if self.p.subtract {
+                stat_add!(self.rx, Subtractions, 1);
+                #[cfg(feature = "jtty-stats")]
+                let rx = self.rx;
+                stat_time!(rx, Subtract);
                 subtract_frame(
                     &mut self.c0,
                     &super::tx::frame_tones(&f.payload),

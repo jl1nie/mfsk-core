@@ -611,7 +611,14 @@ fn diag_messages() {
     for f in files {
         let audio = common::load_wav_i16(&f);
         let done: Vec<String> = rx
-            .scan_messages(&audio, &Params::default())
+            .scan_messages(
+                &audio,
+                &Params {
+                    carry: std::env::var_os("JTTY_DIAG_CARRY").is_some(),
+                    sequential: std::env::var_os("JTTY_DIAG_SEQUENTIAL").is_some(),
+                    ..Params::default()
+                },
+            )
             .into_iter()
             .filter(|u| u.complete)
             .map(|u| u.text)
@@ -811,4 +818,94 @@ fn f32_metric_receiver_reads_the_same_frames() {
         );
         assert_eq!(fa, fb, "{}", f.display());
     }
+}
+
+/// Two stations, a strong one and a weak one 25–100 Hz away that starts within 1.5 s of it, in noise;
+/// the weak one's frame lies under the *tail* of the strong one's in the windows after the window
+/// that decodes the strong one. `Params::carry` (#499) subtracts a decoded frame from those later
+/// windows, so the weak one is found there. Over 30 seeded scenes it must never lose a message the
+/// default finds, and must find more; `sequential` is upstream's candidate order and must not lose
+/// any either. (`scripts/jtty_multi_study.sh` measures the same against `rjtty` on WSJT-X's own
+/// simulator: 69 → 95 of 100 weak stations, 101 → 110 of 200 in the hard set.)
+#[test]
+fn carrying_decoded_frames_forward_finds_the_weak_station_and_loses_nothing() {
+    use mfsk_core::jtty::source::CallAction;
+    use mfsk_core::jtty::tx;
+    let mut state = 0x477u64;
+    let mut uniform = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 11) as f64) / ((1u64 << 53) as f64)
+    };
+    let sigma = 400.0;
+    // SNR in 2 500 Hz → peak amplitude, for noise of this sigma over 6 kHz
+    let amp = |snr_db: f64| {
+        (2.0 * sigma * sigma * 2500.0 / 6000.0 * 10f64.powf(snr_db / 10.0)).sqrt() as f32
+    };
+    let (mut gained, mut lost) = (0, 0);
+    let rx = Receiver::new();
+    for scene in 0..30 {
+        let fa = 1460.0 + 80.0 * uniform() as f32;
+        let df = (25.0 + 75.0 * uniform() as f32) * if uniform() < 0.5 { -1.0 } else { 1.0 };
+        let (ta, tb) = (1.0 + uniform() as f32, 0.0);
+        let tb = ta + (uniform() as f32 - 0.5) * 3.0 + tb;
+        let a = tx::synth_f32(
+            &tx::tones(&[Atom::call(CallAction::Cq, "K1ABC")]).unwrap(),
+            fa,
+            amp(-4.0 + 4.0 * uniform()),
+        );
+        let b = tx::synth_f32(
+            &tx::tones(&[Atom::call(CallAction::Cq, "W9XYZ")]).unwrap(),
+            fa + df,
+            amp(-14.0 + 6.0 * uniform()),
+        );
+        let mut audio = vec![0f32; 12 * 12_000];
+        for x in audio.iter_mut() {
+            let (u1, u2) = (uniform().max(1e-12), uniform());
+            *x = (sigma * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32;
+        }
+        for (s, t0) in [(&a, ta), (&b, tb.max(0.2))] {
+            let at = (t0 * 12_000.0) as usize;
+            for (i, &v) in s.iter().enumerate() {
+                audio[at + i] += v;
+            }
+        }
+        let audio: Vec<i16> = audio
+            .iter()
+            .map(|&x| x.round().clamp(-32768.0, 32767.0) as i16)
+            .collect();
+        let found = |p: Params| -> std::collections::BTreeSet<String> {
+            rx.scan_messages(&audio, &p)
+                .into_iter()
+                .filter(|u| u.complete)
+                .map(|u| u.text)
+                .collect()
+        };
+        let base = found(Params::default());
+        let carried = found(Params {
+            carry: true,
+            ..Params::default()
+        });
+        let seq = found(Params {
+            sequential: true,
+            ..Params::default()
+        });
+        assert!(
+            base.is_subset(&carried),
+            "scene {scene}: carry lost {:?}",
+            base.difference(&carried).collect::<Vec<_>>()
+        );
+        lost += base.difference(&seq).count();
+        gained += carried.difference(&base).count();
+    }
+    eprintln!("carry found {gained} more messages in 30 scenes; sequential lost {lost}");
+    assert!(
+        gained >= 4,
+        "carry found only {gained} more messages in 30 scenes"
+    );
+    assert!(
+        lost <= 2,
+        "sequential lost {lost} messages the default finds"
+    );
 }
