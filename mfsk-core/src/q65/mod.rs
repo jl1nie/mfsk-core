@@ -77,6 +77,8 @@ pub mod decode_request;
 pub mod hist;
 pub mod protocol;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub(crate) mod q3;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod search;

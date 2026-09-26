@@ -2,6 +2,31 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: WSJT-X's q3 list decode, and the Max Drift 50 stage 5.** With a codeword list,
+  `q65_dec0` synchronises on all 85 symbols of every list message within F Tol of the Rx
+  frequency (`q65_ccf_85`: symbol spectra at 8 steps per symbol, interpolated and
+  smoothed as `q65_symspec`). Where one message leads the runner-up by 1.10, it list
+  decodes at that alignment with the fast-fading metric over the `b90` sweep
+  (`q65_dec_q3` → `q65_dec1`, accepted above `PLOG_MIN` = -242). This crate's
+  `.ap_list()` instead matched templates with the AWGN metric at every 22-symbol sync
+  candidate, and replaced the scan.
+  - `q65::DecodeRequest` gains `.rx_freq(hz)` and `.ftol(hz)`, default 10 Hz as the
+    `jt9` CLI. `.ap_list()` with an Rx frequency runs the ported q3 first, then the
+    usual scan for the rest of the band, as `q65_decode.f90` does. Without one it keeps
+    the old per-candidate match.
+  - At `.max_drift(50)`, when nothing decoded near the Rx frequency, the q3 decode
+    runs again on symbol spectra shifted by the drift found there (the "w3sz"
+    stage 5, `q65.f90:211-250`).
+  - `q65sim` Q65-30A, 20 WAVs per level at -24 / -26 / -28 / -30 dB: q3 here 20 / 20 /
+    7 / 2, and `jt9 -3 -d 1` with the same list (`-c K1ABC -x JA1ABC -g PM95 -f 1500
+    -F 10`) 20 / 20 / 7 / 2, the same files. It was 1 at -30 dB until the decoder metric
+    used the punctured code rate (below).
+  - Stage 5 on 10 WAVs at -24 dB drifting 60 / 120 Hz per minute: 0 / 0 → 7 / 1.
+  - Noise-only, F Tol 100 Hz, 100 slots: 0 false decodes, with and without stage 5
+    (`tests/q65_q3.rs`).
+  - `MultiPeriodRequest`'s `.ap_list()` (the averaged q3) and `SniperRequest`'s are
+    unchanged.
+
 - **Q65 searches ±1 s by default, and `.eme_delay(true)` is WSJT-X's EME delay
   (breaking).** `q65.f90:127-130` searches `lag1 = -1.0 s` to `lag2 = +1.0 s`, and
   extends `lag2` to +5.5 s (`nsps >= 3600`) or +4.0 s (Q65-15) only when `emedelay > 0`.

@@ -705,6 +705,16 @@ to +5.5 s (+4.0 s on Q65-15) for the Earth-Moon-Earth round trip. `dt_sec`
 is measured from the nominal start on both requests; a `SniperRequest`,
 which has none, measures it from the start of the buffer.
 
+**Q65 q3 list decoding.** `.ap_list(&codewords).rx_freq(hz)` (with
+`.ftol(hz)`, default 10 Hz, the `jt9` CLI's) is WSJT-X's q3 decode:
+the 85-symbol sync of every list message within F Tol of the Rx frequency
+(`q65_ccf_85`), then the list decode with the fast-fading metric over the
+`b90` sweep (`q65_dec_q3`). It runs first, and the scan runs after it for
+the rest of the band. At `.max_drift(50)`, when nothing decoded at the Rx
+frequency, it runs again on spectra with the drift found there taken out
+(the "w3sz" stage 5). Without `.rx_freq()`, `.ap_list()` is this crate's
+own per-candidate template match instead of the scan.
+
 ---
 
 ## 4. Module and crate map
