@@ -3,12 +3,15 @@
 > **日本語版:** [LIBRARY.ja.md](LIBRARY.ja.md)
 
 A pure-Rust reimplementation of the WSJT-X weak-signal decoders — FT8,
-FT4, FST4, WSPR, JT9, JT65, Q65, MSK144 — behind one generic core. The
+FT4, FST4, WSPR, JT9, JT65, Q65, MSK144 and JTTY — plus the
+experimental, non-WSJT `uvpacket` mode, behind one generic core. The
 core (`engine` / `fec` / `msg`) is protocol-agnostic; each protocol is
 a zero-sized type that plugs a FEC codec, a message codec and a sync
 mode into it. One receive flow runs for every wired protocol —
 `coarse-sync → refine → LLR → FEC decode → message unpack` — with
-per-protocol strategy variations layered on top.
+per-protocol strategy variations layered on top. MSK144 and JTTY sit
+beside that core rather than in it: neither has a slot, so neither has
+a `Protocol` type ([§3.1](#31-generic-vs-bespoke-per-protocol)).
 
 This document is the Rust host API. Other audiences:
 
@@ -48,7 +51,7 @@ This document is the Rust host API. Other audiences:
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.11", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.12", features = ["ft8", "ft4", "wspr"] }
 ```
 
 Pull in only the protocol features you need; the examples below enable
@@ -103,8 +106,9 @@ The engine functions underneath (`decode_frame`,
 request types. The non-default `internal-testing` feature reopens them
 for the crate's own integration tests.
 
-Q65, WSPR, JT65, JT9 and uvpacket keep their own entry points —
-[§2.5](#25-protocols-with-their-own-entry-point).
+Q65, WSPR, JT65, JT9, uvpacket and JTTY keep their own entry points —
+[§2.5](#25-protocols-with-their-own-entry-point) (MSK144's is
+`msk144::decode::decode_slot`).
 
 ### 2.1 `DecodeRequest<P>`
 
@@ -142,6 +146,20 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.budget(check)` | `FnMut() -> bool` | none | all | caller-supplied deadline predicate — [§2.3](#23-compute-budget) |
 | `.sniper(...)` | `(audio, target_hz, max_cand)` | — | `SupportsSniper` — **FT8** | build a `SniperRequest` instead |
 | `.decode()` | — | — | all | run it |
+
+**`DecodeRequest::<Ft8>::wsjtx_depth(audio, freq_min, freq_max, sync_min,
+max_cand, tier, ap)`** is a second *constructor* (not a method), FT8 only,
+in `ft8::decode`. It builds the request whose (OSD, SIC strategy, AP)
+triple mirrors `jt9 -d1/-d2/-d3`: `WsjtxDepth::D1` is OSD off plus
+`.sic_rounds(2)`, `D2` is OSD plus `.sic_early()`, and `D3` adds
+`.ap_hint(ap)` (`ap: Option<&ApHint>` is read for `D3` only, ignored for
+`D1`/`D2` as `jt9`'s own depth/AP coupling). `D1` and `D2` also raise the
+hard-sync (nsync) floor a candidate must clear from 6 (7 in the
+squared-metric passes) to 8, as WSJT-X 3.0's `ndepth <= 2` does (#439).
+`sync_min` stays yours: on the busy-band corpus 1.3 keeps `.sic_early()`'s
+recall while cutting its unexpected decodes from 22 (at 0.8) to 6, and
+2.1, WSJT-X 3.x's value for `-d1/-d2`, costs 3-4 points of recall there
+([`BENCHMARKS.md`](../notes/BENCHMARKS.md), "The busy-band corpus").
 
 **The strategy extensions are where phantom decodes come from.** Both
 false-decode bugs this suite has shipped were in subtraction paths
@@ -255,7 +273,10 @@ Every protocol offers the same shape through its own entry point:
 `.on_result(cb)` on `wspr::DecodeRequest`, `jt9::DecodeRequest`,
 `jt65::DecodeRequest` and `q65::{DecodeRequest, SniperRequest,
 MultiPeriodRequest}`. WSPR's is the parallel contract, not the exact
-one — see [`STREAMING.md`](STREAMING.md) §3b.
+one — see [`STREAMING.md`](STREAMING.md) §3b. JTTY has no request
+builder and delivers by callback from inside the audio call:
+`jtty::rx::Stream::push(samples, &mut |update| …)` (and `finish`) call it
+on the caller's thread — [§2.5](#25-protocols-with-their-own-entry-point).
 
 ### 2.5 Protocols with their own entry point
 
@@ -373,13 +394,58 @@ mirroring `msg::decode_request`'s shape and generic over a sealed
 multi-slot). `.ap_hint()`, `.ap_list()` and `.fading()` are plain
 inherent methods rather than capability-gated traits, since every Q65
 sub-mode supports every capability uniformly. The underlying
-`q65::rx` functions are `pub(crate)`.
+`q65::rx` functions are `pub(crate)`. Which builder takes which method
+(`q65/decode_request.rs`; a method a builder lacks is a compile error,
+not a silent no-op):
+
+| method | `DecodeRequest` | `SniperRequest` | `MultiPeriodRequest` |
+|---|---|---|---|
+| `.ap_hint(&ApHint)` | yes | yes | no |
+| `.ap_list(&codewords)` | yes | yes | yes |
+| `.fading(model, b90_ts)` | yes | yes | no |
+| `.pileup(bool)` | yes | yes | no |
+| `.max_drift(bins)` | yes | no | no |
+| `.eme_delay(bool)` | yes | no | yes |
+| `.rx_freq(hz)` / `.ftol(hz)` | yes | no | no |
+| `.hash_table(Arc<CallsignHashTable>)` | yes | yes | yes |
+| `.on_result(cb)` | yes | yes | yes |
+| `.decode()` returns | `Vec<Q65Result>` | `Option<Q65Result>` | `Vec<Q65Result>` |
+
+`.hash_table()` is the session `CallsignHashTable` that resolves
+`<...>` hashed-callsign (Type 4) placeholders; unset, they stay
+unresolved. It is `Arc`-shared, so passing the same table to every
+`decode()` of a session is a refcount bump, and the caller owns and grows
+it.
+
+**`dt_sec`, `SearchParams` and `SyncCandidate`.** For WSPR, JT9, JT65 and
+Q65 the result's `dt_sec` runs from the **nominal start** — the
+request's `nominal_start` sample (WSPR: its fixed 1.0 s `TX_START_OFFSET_S`) — and is signed, so
+a frame that begins early reads negative (#397; it was measured from the
+buffer start for Q65 and JT65, and a 0.5 s early frame read −0.013 s and
++0.442 s). `to_decoded` on `Q65Result` / `Jt65Result` / `Jt9Result` reads
+that field and no longer takes `(sample_rate, nominal_start_sample)`;
+`Jt9Result` gained `dt_sec`; `msg::decoded::dt_from_samples` is gone.
+**Breaking in 0.12**, with the rest in
+[0.12 breaking changes](#012-breaking-changes). The scan modes share one
+coarse-search vocabulary in `engine::search` (#394):
+`SearchParams { freq_min_hz, freq_max_hz, time_tolerance_early_sec,
+time_tolerance_late_sec, score_threshold, max_candidates }` (the window
+is an early/late pair in **seconds** because Q65's is asymmetric;
+`SearchParams::symmetric(..)` sets both) and `SyncCandidate { start_sample,
+freq_hz, score }`, where `freq_hz` is tone 0 and `.dt_sec(nominal, rate)`
+converts. There is no `SearchParams::default()`: the defaults are
+mode-specific data, so each mode has `search::default_search_params()`
+(Q65: 200-3000 Hz, ±1.0 s, 8 candidates, threshold 0.1). FT8, FT4 and
+FST4 keep `engine::sync::SyncCandidate`, which carries `dt_sec` instead
+of `start_sample`, on purpose.
 
 **JTTY** (WSJT-X 3.2.0-rc1's mode for weak-signal keyboard chat; a port of
 `lib/jtty/`, tracked in #477 and `docs/notes/JTTY_UPSTREAM.md`) is the one
-mode here with **no slot**: 4-GFSK at 31.25 baud, 1.888 s frames that can
-start at any moment, a message that is several frames long and is put
-together by the receiver. So it is outside `Protocol` and `PROTOCOLS`, like
+mode here with **no slot**: 4-GFSK at 31.25 baud, 1.888 s frames (59
+symbols: 13 sync + 46 data) that can start at any moment, a message that is
+several frames long and is put together by the receiver. From C, Kotlin and
+Swift it is a receiver handle: `mfsk_jtty_*`, `MfskJttyReceiver` and
+`JttyReceiver`, in [`BINDINGS.md` §2.8.1](BINDINGS.md#281-jtty--a-receiver-handle-instead-of-a-slot-call). So it is outside `Protocol` and `PROTOCOLS`, like
 MSK144, and its receiver is *incremental*: `jtty::rx::Stream` takes audio in
 chunks of any size and hands each message update to a callback from inside
 `push`, on the caller's thread (and rayon's pool, under `parallel`; the
@@ -420,13 +486,14 @@ characters a frame. `ExchangeProfile::RttyRoundup` adds serial-number and state 
 (`599 5` is sent as `599 005`); the other profiles pack alike. It refuses rather than
 truncates: over 80 characters, over 16 frames, or a serial that does not fit is a
 `PackError`. The result is what `jtty::tx::tones` and `synth_f32` take. It is tested
-against upstream's own `pack_jtty` on 3 500 messages (`tests/jtty_pack.rs`). What
+against upstream's own `pack_jtty` on 3 525 messages × exchange profiles
+(`tests/jtty_pack.rs`), the same frames every time. What
 WSJT-X's GUI wraps around it — F-key templates, the N1MM tags, deciding the profile from
 the operating activity — is host policy and is not in the library (#463 draws the same
 line for the QSO-state decoders).
 
 ```rust
-# #[cfg(all(feature = "jtty", feature = "fft-rustfft"))] {
+# #[cfg(feature = "jtty")] {
 use mfsk_core::jtty::pack::{self, ExchangeProfile};
 
 let tones = pack::tones("cq k1abc cq", ExchangeProfile::Unknown)
@@ -594,6 +661,7 @@ protocol's own module).
 | **Q65**  | own `Q65Fec` + QRA codec over GF(64) [^q65] | own `Q65Message` (77-bit) | `Block` | bespoke `q65::rx` + Q65-local `DecodeRequest` |
 | **uvpacket** | shared `Ldpc240_101` (punctured) | own `UvPacketRawMessage` (byte-pipe) | `Block` — Costas-4 [^uv] | bespoke `uvpacket::rx` |
 | **MSK144** | shared `Ldpc128_90` + CRC-13 | shared `msg::wsjt77` (77-bit) | **none — opts out of `Protocol`** [^msk] | bespoke `msk144::decode::decode_slot` |
+| **JTTY** | own tail-biting conv r=½ K=10 (`jtty::tbcc`, list-WAVA in `jtty::trellis`) + CRC-12 | own 32-bit `jtty::source` grammar (`Atom`), several frames a message | **none — opts out of `Protocol`** [^jtty]; 13-tone sync at the head of every frame | bespoke `jtty::rx::{Receiver, Stream}` |
 
 What the table makes visible:
 
@@ -602,13 +670,16 @@ What the table makes visible:
 - **WSPR** swaps all three of *FEC family*, *message width* and *sync
   mode* independently — the proof that those axes are orthogonal.
 - **Q65** adds a third FEC family (non-binary QRA over GF(64)), ten
-  sub-modes from one macro, and five parallel decoder strategies, all
-  inside the same `Protocol` super-trait.
+  sub-modes from one macro, and a family of decoder strategies
+  (§3.4), all inside the same `Protocol` super-trait.
 - **uvpacket** is a non-WSJT applied example: it reuses only the FEC
   mother code and bypasses the generic TX/RX pipeline. Full account in
   [`UVPACKET.md`](UVPACKET.md).
 - **MSK144** opts out of the trait surface entirely, yet still reuses
   the FEC and message layers.
+- **JTTY** opts out too, and shares nothing above the DSP: its FEC,
+  message grammar and receiver are its own (`jtty::*`), and it is the one
+  mode whose receiver is incremental — [§2.5](#25-protocols-with-their-own-entry-point).
 
 > This table is the source of truth that
 > `mfsk-core/tests/common_selftest.rs`'s code-sharing ratchet, the
@@ -646,12 +717,26 @@ What the table makes visible:
     (`fec::ldpc_128_90`). Golden-WAV recall vs WSJT-X
     `samples/MSK144/*.wav` is 3/3 (`tests/msk144_wsjtx_samples.rs`).
 
+[^jtty]: JTTY (WSJT-X 3.2.0-rc1, #477) is 4-GFSK at 31.25 baud (`NSPS`
+    384, GFSK BT 2, modulation index 1, so tone spacing = baud) in
+    self-contained 1.888 s frames — 13 sync + 46 data tones — that may
+    start at any moment. There is no T/R slot, so `ModulationParams` /
+    `FrameLayout` have nothing to say and no ZST implements `Protocol`
+    for it; it is not in `PROTOCOLS` (only `mfsk-ffi` gives it a mode
+    number, `MFSK_MODE_JTTY`). `jtty::rx::Receiver` decodes a window and
+    `Stream` a live feed, both port `jtty_mdecode` (signal subtraction,
+    retro re-sweep, message assembly included), and `jtty::pack` /
+    `jtty::tx` send text. Recall against upstream's `rjtty`: identical in
+    all 18 cells of an AWGN/fading sweep; tier C 50 % crossing −16.20 dB
+    (AWGN) and −15.25 dB (moderate fading), 0 unexpected decodes in 360
+    files (`tests/jtty_sweep.rs`).
+
 ### 3.2 Geometry
 
 24 wired ZSTs: 20 WSJT-family protocols and sub-modes plus 4
-`uvpacket` sub-modes. MSK144 is listed last for reference but is **not**
-one of them — it implements no `Protocol` impl, so it appears in neither
-the registry nor `tests/protocol_invariants.rs`.
+`uvpacket` sub-modes. MSK144 and JTTY are listed last for reference but
+are **not** among them — neither implements `Protocol`, so they appear in
+neither the registry nor `tests/protocol_invariants.rs`.
 
 | Protocol   | Slot   | Tones | Symbols | Tone Δf    | FEC              | Msg   | Sync       | Notes |
 |------------|--------|-------|---------|------------|------------------|-------|------------|--------|
@@ -676,9 +761,34 @@ the registry nor `tests/protocol_invariants.rs`.
 | Q65-120E   | 120 s  | 65    | 85      | 12.0 Hz    | (same QRA codec) | 77 b  | (same)     | 6 m ionoscatter |
 | Q65-300A   | 300 s  | 65    | 85      | 0.289 Hz   | (same QRA codec) | 77 b  | (same)     | optical scatter, deepest AWGN |
 | MSK144     | T/R period | 2 (MSK) | 144 | — | LDPC(128, 90) + CRC-13 | 77 b | burst scan | not a `Protocol` impl |
+| JTTY       | none (any start) | 4 | 59 (13 sync + 46 data) | 31.25 Hz | tail-biting conv r=½ K=10 + CRC-12 | 32 b source + 2 flag b | 13-tone head sync | 1.888 s frame, NSPS 384 (31.25 baud); not a `Protocol` impl |
 
 ### 3.3 Per-protocol notes
 
+- **FT8 / FT4 — what WSJT-X 3.x changed, and what this crate follows.**
+  Read at the `v2.7.0` and `v3.0.0` tags (3.2.0-rc1 carries the same
+  values). FT8 has the SNR floor and the `xsnr2` bail-out at **−25 dB**
+  (`FT8_SNR_FLOOR_DB`, was −24), `Ft8::AP_MAG_SCALE` **1.1** (was 1.01),
+  `mlag` **13**, three passes with passes 2 and 3 on the squared `|cs|²`
+  metric, a fifth LLR variant `llre`, the nsync floor (`> 6`, `> 7` in
+  the squared-metric passes, `> 8` for `WsjtxDepth::D1/D2`), and drops
+  `/R` and `TU; ` messages outside a contest (#438, #439; §2.6). FT4's
+  published defaults are `sync_min` 1.18, `max_cand` 200 (#440;
+  `ft4_decode.f90` moved from 1.2 / 100). The message packer follows
+  `pack77_1`: `RR73` goes out as the grid `RR73` (field 32373, not
+  `MAXGRID4 + 3`), reports −35..−31 dB wrap by 101 as upstream does, and
+  `/P` / `/R` calls pack (Type 2 when either carries `/P`) (#464).
+  **OSD runs the way `decode174_91` runs it (#456).** For FT4 (and FT8's
+  AP rung) that is BP, then OSD on the BP sum after 1 and after 2
+  iterations, a test pattern that flips a locked bit skipped, the CRC
+  checked once on the winner (`osd_decode_npre1_masked` on
+  `bp_llr_zsum_ap_with_scratch`). Before, the raw LLR was searched with
+  the CRC on every candidate: on iid Gaussian LLRs **22.6 %** of
+  `osd_depth` 2 calls passed the CRC against `decode174_91`'s 5.8e-5
+  (9.7e-5 after). Within 50 Hz of `.freq_hint()` FT4 also takes a third
+  OSD snapshot (`FecOpts::osd_snapshots`, `maxosd = 3`): 41 gained, none
+  lost on 20 800 sweep files. The post-OSD `osd_max_errors` gate is gone
+  ([§6](#6-engine-primitives)).
 - **FST4** — LDPC(240, 101) + 24-bit CRC (`fec::ldpc240_101`); the
   BP/OSD code is the same across LDPC sizes, so the new material is
   just the parity-check/generator tables and code dimensions. The five
@@ -688,7 +798,22 @@ the registry nor `tests/protocol_invariants.rs`.
   `fst4_submode!` macro. FST4-900 / FST4-1800 remain unwired (no user
   demand). FST4W — the WSPR-style one-way 50-bit beacon variant,
   LDPC(240, 74) — is a separate message format and out of scope
-  (issue #23).
+  (issue #23). The **OSD searches the (240, 91) subcode**, as
+  `fst4_decode.f90:478` (`decode240_101(llr, Keff=91, …)`) does: only the
+  message and the first 14 CRC bits are free, the last 10 CRC bits are
+  cascaded into the code (`ldpc240_101::FST4_KEFF = 91`, `osd::PartialCrc`).
+  On upstream's own `decode240_101`, 4000 BPSK/AWGN draws a point, that
+  recovers 3432 / 2071 / 593 at amplitude 1.0 / 0.9 / 0.8 against 2903 /
+  1231 / 211 with all 101 bits free, about 0.5 dB. The CRC-24 is checked
+  once, on the OSD winner (`osd240_101.f90:285`); with 14 detecting bits the
+  wrong-codeword rate per call is FT8's 2⁻¹⁴, so
+  `FrameDecodable::REQUIRES_UNPACK` (true for FST4) refuses a decode whose
+  77 bits do not unpack, as `fst4_decode.f90:570` does. Tier C against
+  `jt9 -7 -d3`, 20 groups: crossing −0.07 dB (this crate minus `jt9`, was
+  +0.18), unexpected decodes 27 (was 99; `jt9` 7) (#456).
+  `.noise_blanker()` is WSJT-X's **NB** ([§2.1](#21-decoderequestp)): on 50
+  FST4-15 slots with 20 full-scale clicks a second, 0 decodes without it, 29
+  here and 27 for `jt9` at NB 2 % (#469).
 - **WSPR** — `ConvFano` ported from WSJT-X `lib/wsprd/fano.c`;
   `Wspr50Message` covers Types 1 / 2 / 3. The module adds a
   quarter-symbol spectrogram to keep the 120-s-slot coarse search
@@ -702,25 +827,35 @@ the registry nor `tests/protocol_invariants.rs`.
   a CRC-12 over 13 information symbols and punctures the two CRC
   symbols out of the 65-symbol codeword, leaving 63 channel symbols
   transmitted. Ten sub-modes differ only in `NSPS` and tone spacing
-  (×1…×16); all five decoder strategies share the one QRA codec.
+  (×1…×16); all the decoder strategies share the one QRA codec. The
+  decoder metric uses the punctured code rate 13/63 as `q65_init` does
+  (it was 15/65, 12 % high), and every list decode requires
+  `plog > PLOG_MIN` (−242) and a non-zero message, as `q65_dec1` does.
+- **JTTY** — see the footnote in [§3.1](#31-generic-vs-bespoke-per-protocol)
+  and [§2.5](#25-protocols-with-their-own-entry-point). Its constants
+  live in `jtty` (`NSPS`, `SYNC_SYMBOLS`, `FRAME_SYMBOLS`, `MAX_FRAMES` =
+  16), not in trait constants. It has its own 1-based GFSK pulse in
+  `jtty::tx`, not `engine::dsp::gfsk`: that pulse sat one sample early
+  until #482, which JTTY's waveform check (4.9e-2 against upstream) exposed.
 
 ### 3.4 Decoder strategies
 
 Every protocol runs the same underlying flow; the *strategy* wrapped
 around it varies. Most are a single pass. Only Q65 exposes several
-parallel receiver chains for one FEC frame, and MSK144 replaces the
-slot model with a burst scan.
+parallel receiver chains for one FEC frame, MSK144 replaces the
+slot model with a burst scan, and JTTY with an incremental receiver.
 
 | Protocol | Default strategy | Optional strategies |
 |----------|------------------|---------------------|
-| **FT8**  | single-pass BP + OSD | AP iaptype loop (1–12); SIC 1–3 rounds; `.sic_early()`; sniper |
+| **FT8**  | single-pass BP + OSD | AP iaptype loop (1–12); SIC 1–3 rounds; `.sic_early()`; sniper; the **a7 / a8 list decoders** (pass ids 30 / 31, run at the end of every FT8 strategy; a7 via `.previous_cycle()`, a8 via an `.ap_hint()` with MyCall, HisCall, HisGrid plus `.freq_hint()`); `wsjtx_depth(…)` presets |
 | **FT4**  | single-pass BP + OSD | SIC 1–3 rounds; full-slot coherent sync (`sync2d`) |
-| **FST4** | single-pass BP + OSD | full-slot two-stage coherent sync search |
+| **FST4** | single-pass BP + OSD | full-slot two-stage coherent sync search; noise blanker (`.noise_blanker()`, fixed % or sweep) |
 | **WSPR** | single bespoke pass (quarter-symbol spectrogram scan) | — |
 | **JT9**  | single bespoke pass | — |
 | **JT65** | single bespoke pass | RS erasure decode; stochastic Chase decoder |
-| **Q65**  | `(Δf,Δt,b90)` grid + Lorentzian fading BP (scan) | AP-hint, explicit fast-fading, AP-list, multi-period |
+| **Q65**  | `(Δf,Δt,b90)` grid + Lorentzian fading BP (scan) | AP-hint, explicit fast-fading, AP-list, multi-period; **q3** list decode (`.ap_list().rx_freq()`); Max Drift; Pileup; EME delay |
 | **MSK144** | burst scan over the whole T/R period | — |
+| **JTTY** | streaming: sync surface, candidates, four-rung list-WAVA ladder, gate; decoded frames subtracted, retro re-sweep, frames assembled into messages | `Params::subtract` off (single-signal receiver) |
 
 **A-priori decoding is a general option, not a sniper feature.** AP is
 the last rung of the per-candidate ladder — `process_candidate_basic`'s
@@ -738,6 +873,7 @@ and that cost most of the decodes — the measurement is in
 | Known callsign(s) or report, terrestrial channel | AP-hint BP | `.ap_hint(&ap)` on either builder | ~2 dB |
 | Doppler-spread channel, explicit model (microwave EME, ≥10 Hz spread) | Fast-fading metric + BP, caller-picked `(b90_ts, FadingModel)` | `.fading(model, b90_ts)` on either builder | 5–8 dB on spread channels |
 | Known call pair, no QSO context, terrestrial | AP-list template matching | `.ap_list(&candidates)` on either builder | ~3 dB |
+| Known call pair and an Rx frequency (WSJT-X's q3) | 85-symbol sync of every list message near the Rx frequency, then list decode | `.ap_list(&codewords).rx_freq(hz)` (+ `.ftol(hz)`) on `DecodeRequest` | `q65sim` Q65-30A, 20 files a level at −24 / −26 / −28 / −30 dB: 20 / 20 / 7 / 2, `jt9 -3 -d 1` the same on the same files |
 | Weak / ionoscatter signal spanning several T/R periods | Multi-period EMA averaging (3-stage cascade) | `MultiPeriodRequest::<P>::new(...).decode()` | recovers signals no single-period strategy can |
 
 `.ap_list()` and `.fading()` are mutually exclusive in the underlying
@@ -805,12 +941,16 @@ own per-candidate template match instead of the scan.
 mfsk_core
 ├── engine/           Protocol traits, DSP, sync, LLR, equaliser, pipeline
 │   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
-│   ├── dsp/            resample · downsample · gfsk · subtract · msk · analytic ·
-│   │                   ddc · fir · dotprod · fixed-point FFT kernels
+│   ├── dsp/            resample · downsample · gfsk · cpfsk · envelope · subtract ·
+│   │                   msk · analytic · ddc · fir_decimate · polyphase · dotprod ·
+│   │                   symbol_fft · blanker · fixed-point FFT kernels
 │   ├── fft.rs          FftPlanner trait + the extern factory (see EMBEDDED.md)
 │   ├── scalar.rs       Q-format fixed-point scalar types
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── sync2d.rs       FT4 / FST4 full-slot coherent sync searches
+│   ├── search.rs       SearchParams / SyncCandidate / SearchWindow — the coarse
+│   │                   search shared by WSPR, JT9, JT65, Q65 (#394)
+│   ├── gray.rs         gray / inv_gray, width-parameterised (`igray.c`) — JT65, JT9
 │   ├── ft4_coarse.rs   FT4 coarse candidate generation
 │   ├── baseline.rs     spectral baseline fit (FT4 / FST4 normalisation)
 │   ├── llr.rs          symbol_spectra / compute_llr / sync_quality
@@ -821,7 +961,8 @@ mfsk_core
 │   ├── interleave.rs   bit-reversal interleave_bitrev/deinterleave_bitrev
 │   │                   — WSPR, JT9 (JT65's is a 7×9 matrix transpose,
 │   │                   a different algorithm, and stays in jt65/)
-│   ├── tx.rs           shared transmit-side helpers
+│   ├── tx.rs           message_to_tones / info_to_tones, FskWaveform, and
+│   │                   synthesize / synthesize_into / synthesize_i16 / synth_len
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) internals — call via
 │                       msg::decode_request::DecodeRequest/SniperRequest)
@@ -853,14 +994,26 @@ mfsk_core
 │   └── hash_table.rs   Callsign hash table
 ├── registry.rs       PROTOCOLS static + ProtocolMeta + by_id / by_name
 ├── ft8/              FT8 ZST + decode + decode_block + wave_gen
+│   ├── list_decode.rs  WSJT-X's a7 / a8 list decoders (pass ids 30 / 31)
+│   └── acquire.rs      cold slot-phase acquisition from off-air audio (#356)
 ├── ft4/              FT4 ZST + decode
 ├── fst4/             FST4 family — 5 sub-mode ZSTs (15/30/60A/120/300) + decode
 ├── wspr/             WSPR ZST + decode + synth + spectrogram search + ddc
 ├── jt9/              JT9 ZST + decode
 ├── jt65/             JT65 ZST + decode (+ erasure-aware RS, chase)
 ├── q65/              Q65 family — 10 sub-mode ZSTs + decode + synth
+│   ├── decode_request.rs DecodeRequest / SniperRequest / MultiPeriodRequest (§2.5)
+│   ├── search.rs       default_search_params, eme_delay_late_sec
+│   ├── ap_list.rs      full-AP codeword list (`q65_set_list`)
+│   ├── hist.rs         Q65History (`q65_hist`)
+│   ├── contest.rs      Q65Callers, contest_codewords (`q65_hist2` / `q65_set_list2`)
+│   └── q3.rs           q3 list decode (`q65_dec0` list branch; crate-private)
 ├── msk144/           MSK144 — no Protocol impl; own top-level driver
 ├── jtty/             JTTY — no Protocol impl (no slot); wire format, frame decoder, streaming receiver
+│   ├── source.rs · crc.rs · tbcc.rs   32-bit grammar, CRC-12, tail-biting encoder
+│   ├── pack.rs · tx.rs                text → fewest atoms → tones → audio
+│   ├── trellis.rs · correlate.rs · ladder.rs · subtract.rs   list-WAVA decoder, correlators, ladder, subtraction
+│   └── dsp.rs · rx.rs · assemble.rs   (FFT feature) window decoder, `Stream`, frame → message
 └── uvpacket/         Applied non-WSJT example — 4 sub-mode ZSTs, own tx/rx
 ```
 
@@ -979,7 +1132,13 @@ pub trait ModulationParams: Copy + Default + 'static {
     const NFFT_PER_SYMBOL_FACTOR: u32;
     const NSTEP_PER_SYMBOL: u32;
     const NDOWN: u32;
+    // Defaulted knobs — a protocol overrides only what its WSJT-X
+    // counterpart does differently (`engine/protocol.rs`):
     const LLR_SCALE: f32 = 2.83;
+    const LLR_NSYM_MAX: u32 = 3;                    // FT4 4, FST4 8
+    const LLR_NSYM_MID: Option<u32> = None;         // FST4 Some(4): the nsym=4 rung
+    const INFO_SCRAMBLE_RVEC: Option<&'static [u8]> = None;  // FT4, FST4: the 77-element rvec
+    const SPECTRUM_WINDOW: SpectrumWindow = SpectrumWindow::Rectangular;  // FT4 Nuttall4
 }
 
 pub trait FrameLayout: Copy + Default + 'static {
@@ -990,6 +1149,7 @@ pub trait FrameLayout: Copy + Default + 'static {
     const SYNC_MODE: SyncMode;  // Block(&[SyncBlock]) or Interleaved { .. }
     const T_SLOT_S: f32;
     const TX_START_OFFSET_S: f32;
+    const CODEWORD_INTERLEAVE: Option<&'static [u16]> = None;  // no wired protocol sets it
 }
 
 pub enum SyncMode {
@@ -1008,7 +1168,10 @@ pub enum SyncMode {
 pub trait Protocol: ModulationParams + FrameLayout + 'static {
     type Fec: FecCodec;
     type Msg: MessageCodec;
+    type SyncPhasors: SyncPhasors;   // what the Δt search precomputes; `()` except FT4
     const ID: ProtocolId;
+    const AP_MAG_SCALE: f32 = 1.01;  // apmag = max|llr| * this; FT8 1.1, FT4 1.1, FST4 1.1 (3.0 onward)
+    const DECODE_FFT1_SIZE: u32 = 0; // forward-FFT length over the slot; 0 = no shared downsampler
 }
 ```
 
@@ -1189,7 +1352,11 @@ FST4-60A landed without touching shared code.
 |---|---|
 | `resample` | linear resampler to 12 kHz |
 | `downsample` | FFT-based complex decimation (`DownsampleCfg`) |
-| `gfsk` | GFSK tone-to-PCM synthesiser (`GfskCfg`) |
+| `gfsk` | GFSK tone-to-PCM synthesiser (`GfskCfg`, `GfskStream`). The 3-symbol Gaussian pulse is **1-based** since #482, as `gen_ft8wave.f90` / `gen_ft4wave` / `gen_fst4wave` build it (`tt=(i-1.5*nsps)/nsps`, `i=1..3*nsps`); it had run from `i=0`, one sample early, so every FT8 / FT4 / FST4 waveform was shifted (phase error up to 2π·Δf/fs, 0.023 rad on FT8). Worst normalised sample error against `ft8sim` (v3.2.0-rc1, SNR 99): 1.3e-2 → 1.2e-4 (`tests/gfsk_vs_wsjtx.rs`) |
+| `cpfsk` | plain continuous-phase FSK synthesiser — WSJT-X's positive-`toneSpacing` transmit loop, WSPR / JT9 / JT65 / Q65 (`synth_f32`, `synth_f32_into`); one copy, where four `tx.rs` files had each carried one |
+| `envelope` | the raised-cosine ramp WSJT-X's modulator puts on those four modes' transmissions (`ramp_samples`, `apply_ramp`; #259) |
+| `symbol_fft` | `SymbolFft`: one `nsps`-point FFT reused across a frame's symbols, planned through `engine::fft` — JT9, JT65, Q65 demodulators (#390) |
+| `blanker` | `blanker(audio, nz, ndropmax, npct)`: `blanker.f90`'s impulse-noise blanker, behind FST4's `.noise_blanker()` |
 | `subtract` | phase-continuous least-squares SIC (`SubtractCfg`) |
 | `ddc` | streaming digital down-converter (WSPR's embedded channelizer) |
 | `fir` / `dotprod` | polyphase FIR and the dot-product kernel the extern hook replaces |
@@ -1199,14 +1366,26 @@ tuning parameters include composite-FFT sizes not trivially derived
 from trait constants. Protocol modules expose module-level constants —
 `ft8::downsample::FT8_CFG`, `ft4::decode::FT4_DOWNSAMPLE`, etc.
 
+**Gray code.** `engine::gray::{gray, inv_gray}(n, bits)` is `igray.c`
+for any width 1..=8 (computed in `u32`: the C loop's shift overflows a
+`u8` from 4 bits up). JT65 (6 bits) and JT9 (3) use it; FT8 / FT4 / FST4
+use their per-protocol `GRAY_MAP` table instead.
+
 ### Sync (`mfsk_core::engine::sync`)
 
-* `coarse_sync::<P>(audio, freq_min, freq_max, …)` — UTC-aligned 2D
+* `coarse_sync::<P>(audio: AudioSource, freq_min, freq_max, sync_min,
+  freq_hint: Option<f32>, max_cand, grid: RxGrid)` — UTC-aligned 2D
   peak search over `P::SYNC_MODE.blocks()` for non-FT8 protocols.
+  `AudioSource` is `Real(&[i16])` or `Complex(&[f32], &[f32])`, paired
+  with an `RxGrid` (`RxGrid::real(12_000.0)` for ordinary PCM).
 * `refine_candidate::<P>(cd0, cand, search_steps)` — integer-sample
   scan + parabolic sub-sample interpolation.
 * `make_costas_ref` / `score_costas_block` — raw correlation helpers
   exposed for diagnostics and custom pipelines.
+* `sync_power_cv(per_block)` — the population coefficient of variation
+  behind `DecodeResult::sync_cv`, one definition for every protocol
+  since #414 (FT8's had been √3 times FT4's and FST4's for the same
+  channel; nothing thresholds on it).
 
 **FT8 routes through `ft8::decode_block::coarse_sync` exclusively.**
 Calling `engine::sync::coarse_sync::<Ft8>` is still the right path for
@@ -1250,9 +1429,11 @@ improvement for busy wideband scans.
 * `symbol_spectra::<P>(cd0, i_start)` — per-symbol FFT bins. FT8
   callers should prefer `ft8::decode_block::fill_symbol_spectra`, which
   avoids the intermediate `cd0` allocation.
-* `compute_llr::<P>(cs)` — four WSJT-style LLR variants (a/b/c/d),
-  built from `nsym ∈ {1, 2, P::LLR_NSYM_MAX}` correlation-ladder
-  hypotheses. `LLR_NSYM_MAX` defaults to 3; FT4 overrides it to 4 and
+* `compute_llr::<P, T>(cs)` (`T: LlrScalar`, returns `LlrSet<T>`) — four
+  WSJT-style LLR variants (a/b/c/d), built from
+  `nsym ∈ {1, 2, P::LLR_NSYM_MAX}` correlation-ladder hypotheses, plus
+  an `llre` at `nsym = P::LLR_NSYM_MID` when the protocol sets one
+  (FST4: 4). `LLR_NSYM_MAX` defaults to 3; FT4 overrides it to 4 and
   FST4 to 8, both matching their own WSJT-X bit-metric code
   (`get_ft4_bitmetrics.f90` / `get_fst4_bitmetrics.f90`).
 * `sync_quality::<P>(cs)` — hard-decision sync symbol count.
@@ -1277,9 +1458,9 @@ protocol equally** — check which knob applies before assuming
 
 | method | live for |
 |---|---|
-| `osd_max_errors()` — post-OSD hard-error ceiling, `osd_depth`-tiered | **FT4 only in practice.** FST4 bypasses it (`is_fst4` in `engine/pipeline.rs`) and trusts CRC-24 alone, matching WSJT-X's own FST4 acceptance test (`fst4_decode.f90:570`). FT8 has never called it |
-| `ap_max_errors(locked_bits)` — AP-assisted ceiling, graded by locked-bit count | FT8's per-candidate AP loop and FT4/FST4's AP path alike, numerically unified (issue #191) |
-| `ft8_nharderrors_max()` — FT8's own flat (not tiered) ceiling for the non-AP BP staircase and OSD fallback | FT8 (`ft8::decode_block::process_candidates`/`osd_strategy`). `Normal` returns 36, WSJT-X's own `ft8b.f90:422` ceiling. `Strict = 22` reuses prior art from issue #72; `Deep = 40` is exploratory and not yet swept against a fading corpus |
+| `osd_max_errors()` — post-OSD hard-error ceiling, `osd_depth`-tiered | **No decode path.** `process_candidate_basic` applies it to no protocol any more: FST4 dropped it first (#146) and accepts on CRC-24 plus a successful unpack (`REQUIRES_UNPACK = true`, as `fst4_decode.f90:570`); FT4 followed in #456, once its OSD stopped returning a wrong codeword for 22.6 % of noise candidates (`ft4_decode.f90` has no such gate). FT8 has never called it. The method stays as public API and for the diagnostics that mirror the old ladder |
+| `ap_max_errors(locked_bits)` — AP-assisted ceiling, graded by locked-bit count | FT8's per-candidate AP loop and the AP rung of the generic ladder (FT4, every FST4 sub-mode), numerically unified (issue #191). `Normal` is a flat **36**, `ft8b.f90`'s bound (`ft4_decode.f90` has none); 36 against the earlier 30 / 25 found 544 more hits on the FT8 sweep (+6.2 %, none lost) for 1-4 extra phantoms per 12 800 files (#456). `Strict` is 20 from 55 locked bits, else 24; `Deep` is 30 from 55, else 36 |
+| `ft8_nharderrors_max()` — FT8's own flat (not tiered) ceiling for the non-AP BP staircase and OSD fallback | FT8 (`ft8::decode_block::process_candidates`/`osd_strategy`). `Normal` returns 36, WSJT-X's own `ft8b.f90:422` ceiling. `Strict = 22` reuses prior art from issue #72; `Deep = 37`, retuned from 40 in #253 by the FT8 sweep (`MFSK_FT8_SWEEP_STRICTNESS`, 16 AWGN/CCIR cells, 320 trials per level per strategy): golden recall was already saturated at 37 (105/320 single-pass, 108/320 `.sic_early()`, identical through 40) while false accepts kept climbing (15 → 16, 20 → 21) |
 
 ### FT8 block-decoder entry points (`mfsk_core::ft8::decode_block`)
 
@@ -1298,6 +1479,34 @@ and differ only in which inner steps they enable:
 * `coarse_sync` / `coarse_sync_with_allsum` — the FT8 sync grid itself.
 * `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — per-symbol
   FFT extraction directly from audio.
+
+FT8 also has `ft8::list_decode` (the a7 / a8 list decoders, run at the end
+of every strategy — [§3.4](#34-decoder-strategies)) and `ft8::acquire`
+(`acquire_slot_phase`: cold slot-phase acquisition for a receiver with no
+clock, three ±2.5 s windows of a longer capture 5 s apart, reduced with
+`circular_dt_medoid`; #356).
+
+### 0.12 breaking changes
+
+What a 0.11 caller has to change (full text and migration tables:
+`CHANGELOG.md`, `## 0.12.0`). Output is bit-identical unless noted.
+
+| area | 0.11 | 0.12 |
+|---|---|---|
+| decode entry, JT9 (#403) | `decode_scan*`, `decode_at` (6 functions) | `jt9::DecodeRequest::new(..).decode()`, `::sniper(..)` |
+| decode entry, JT65 (#403) | `decode_scan*`, `decode_scan_chase*`, `decode_at*`, `chase::decode_at_with_chase` (9) | `jt65::DecodeRequest` / `SniperRequest`, `.chase(..)`, `.erasures(..)` |
+| decode entry, WSPR (#403) | 14 functions, `decode_at_baseband_nblocks_gated_drift` and kin; `decode_scan_subtract*` public | `wspr::DecodeRequest` / `SniperRequest`; the SIC pair only behind `internal-testing` |
+| synthesis (#391) | `ft8::wave_gen::tones_to_*`, `ft4::encode::*`, `fst4::encode::*`, `wspr::tx::synthesize_audio`, `q65::synthesize_audio_for` … | `engine::tx::synthesize::<P>` / `synthesize_into` / `synthesize_i16[_into]` / `synth_len`, over `FskWaveform` |
+| tones (#391) | per-mode `message_to_tones`, FT8's on `&[u8]` → `[u8; 79]` | `engine::tx::message_to_tones::<P>(&[u8; 77]) -> Vec<u8>`; `DecodeResult::message77()` returns `&[u8; 77]` (compare with `*r.message77() == m77`) |
+| Gray code (#391) | `jt65::{gray6, inv_gray6}` | `engine::gray::{gray, inv_gray}(n, bits)`; `fst4::encode::append_crc24` → `fec::ldpc240_101::append_crc24` |
+| JT65 demodulator (#390) | four `demodulate_aligned*` functions returning tuples | `jt65::demodulate_aligned(..)?` returns a `Jt65Demod` (`.symbols`, `.conf`, `.second_symbols`, `.rel`, `.raw_pwr`, `.snr_db`) |
+| `dt_sec` (#397) | Q65 / JT65 from the buffer start; JT9 had none | from the nominal start everywhere; `to_decoded` takes no arguments; `Jt9Result::dt_sec` new; `dt_from_samples` gone |
+| search types (#394) | four `SearchParams` / `SyncCandidate`, `SearchParams::default()`, `time_tolerance_sec`, WSPR `time_tolerance_symbols` | `engine::search` re-exports; `default_search_params()` per mode; `time_tolerance_early_sec` / `_late_sec` in seconds |
+| Q65 window | `default_search_params()` −1.0 … +5.5 s | −1.0 … +1.0 s as `q65.f90:127-130`; `.eme_delay(true)` restores the late reach |
+| LDPC BP (#417) | `fec::ldpc::bp::bp_decode_nms`, `bp_decode_nms_q11`, `llr_f32_to_q11` | `bp_decode_nms_with_scratch`, or `bp_decode_generic_nms::<Ldpc174_91Params, T>`; `Q11i16::from_f32(x).0`; one body per kernel |
+| `sync_cv` (#414) | FT8's a root of summed squares | the population CV on every protocol, so FT8's value is 1/√3 of what it was |
+| FST4 OSD (#456) | searched all 101 bits | `osd_decode_npre_generic(.., partial_crc: Option<PartialCrc>)`; FST4 passes the (240, 91) subcode |
+| default behaviour | FT4 `sync_min` 1.2 / `max_cand` 100; FT4 message policy off | 1.18 / 200 (#440); on (#383) |
 
 ---
 
@@ -1320,7 +1529,7 @@ justified it. The summary here covers what a Rust host consumer needs;
 | `wspr` | off | WSPR ZST, decode, synth, spectrogram search |
 | `jt9` / `jt65` / `q65` | off | **Not host-only since #390** — no forced backend, and each type-checks clean under `alloc,<mode>,fft-extern` with no `std`/`rustfft` pulled in (one feature-matrix row each, in `ci.yml` and `scripts/pre-push-check.sh`). Decoders only; no embedded app uses them yet |
 | `msk144` | off | MSK144 — no `Protocol` ZST; own top-level driver |
-| `jtty` | off | JTTY — no `Protocol` ZST; wire format (`source`, `crc`, `tbcc`, `tx`) builds anywhere, the receiver (`rx`, `assemble`) needs a host FFT (`fft-rustfft` or `fft-extern`). Has `alloc,jtty` and `alloc,jtty,fft-extern` rows in the feature matrix |
+| `jtty` | off | JTTY — no `Protocol` ZST; the FFT-free modules (`source`, `crc`, `tbcc`, `tx`, `pack`, `trellis`, `correlate`, `ladder`, `subtract`) build anywhere, `dsp`, `rx` and `assemble` need a host FFT (`fft-rustfft` or `fft-extern`). Has `alloc,jtty` and `alloc,jtty,fft-extern` rows in the feature matrix |
 | `uvpacket` | off | applied non-WSJT example, 4 sub-mode ZSTs. Pulls in `fst4`, and **declares `std` explicitly** (it reaches for `std::f32::consts::PI`) |
 | `packet-bytes` | off | `PacketBytesMessage` — byte-payload example `MessageCodec` |
 | `full` | off | every protocol + `uvpacket` + `packet-bytes` + `serde` + `parallel` + host FFT |
@@ -1378,6 +1587,59 @@ family-level), display `name`, and every constant the trait surface
 exposes: modulation (`ntones`, `bits_per_symbol`, `nsps`, `symbol_dt`,
 `tone_spacing_hz`, `gfsk_bt`, `gfsk_hmod`), frame (`n_data`, `n_sync`,
 `n_symbols`, `t_slot_s`) and codec (`fec_k`, `fec_n`, `payload_bits`).
+Beyond that geometry it publishes what a host cannot otherwise ask for:
+
+* `tx_start_offset_s` — seconds from the start of the slot buffer to the
+  first symbol, the `dt = 0` reference: 0.5 for FT8, FT4, FST4-15 and Q65
+  15 / 30 s, 1.0 for the other FST4 sub-modes and Q65 from 60 s up (Q65
+  followed `nsps` as `q65.f90:130-131` does; every sub-mode had published
+  1.0 until #399).
+* `slot_samples_12k` — the slot in samples (FT4 90 000, FT8 180 000,
+  FST4-300 3 600 000), and `decode_fft1_size` — the forward FFT the
+  decoder takes over the whole slot (`Protocol::DECODE_FFT1_SIZE`; FT4
+  92 160, FT8 192 000, **FST4-300 4 194 304**, 0 for the modes with their
+  own front end). The second is the number that makes "one call shape for
+  every mode" wrong as a memory story.
+* `profile: DecodeProfile { caps, defaults, sync_scale, sniper_max_cand_cap }`.
+
+`caps` is a `u32` of bits in `registry::caps` — 17 of them, cross-checked
+in both directions against the real trait impls by `tests/registry_caps.rs`
+(a bit claimed without the trait fails, and so does a trait without the
+bit): `DECODE_HANDLE` 0, `SNIPER` 1, `AP_NARROW` 2, `AP_WIDEBAND` 3,
+`SIC_ROUNDS` 4, `SIC_EARLY` 5, `OSD` 6, `EQ_MODE` 7, `STRICTNESS` 8,
+`BUDGET` 9, `KNOWN_FILTER` 10, `KNOWN_SUBTRACT` 11, `FFT_CACHE` 12,
+`ON_RESULT` 13, `ENCODE` 14, then `NOISE_BLANKER` = 1 << 16 (every FST4
+sub-mode) and `TX_FREQ` = 1 << 17 (FT8; no marker trait, so the claim list
+pins it). **Bit 15 is skipped on purpose**: it is `MFSK_CAP_STREAM_RECEIVER`,
+which only `mfsk-ffi` defines (JTTY has no registry entry to claim it).
+`sync_scale` says how to read `sync_min`, because the scales are not the
+same number: `CostasAbsolute` (FT8, FST4; noise has no fixed value),
+`BaselineNormalised` (FT4: the spectrum is divided by a fitted baseline,
+so noise sits at ~1.0 and any threshold below that admits every peak), and
+`SyncFraction` (WSPR, JT9, JT65, Q65: sync power over sync plus noise, in
+0‥1, default `DEFAULT_SCORE_THRESHOLD` = 0.1). `sniper_max_cand_cap` is the
+bound the sniper path silently applies to `max_cand` (FT4: 15).
+
+`profile.defaults` is what a caller that does not choose its own gets
+(these are this crate's host-configuration values; the C ABI's
+`mfsk_mode_defaults` returns the same):
+
+| entry | band (Hz) | `sync_min` | `max_cand` | source |
+|---|---|---|---|---|
+| FT8 | 100-3000 | 0.8 | 60 | `FT8_PROFILE` |
+| FT4 | 300-2700 | 1.18 | 200 | WSJT-X 3.x `ft4_decode.f90` `syncmin` / `MAXCAND` (#440; was 1.2 / 100) |
+| FST4 (all five) | 100-3000 | 0.8 | 50 | `FST4_PROFILE` |
+| WSPR | 1400-1600 | 0.1 | 200 | `wspr::search::default_search_params()`; ±5.46 s (8 symbols) |
+| JT9 | 200-4000 | 0.1 | 8 | `jt9::search::default_search_params()`; ±1.728 s |
+| JT65 | 1000-2000 | 0.1 | 8 | `jt65::search::default_search_params()`; ±7.62 s |
+| Q65 (all ten) | 200-3000 | 0.1 | 8 | `q65::search::default_search_params()`; ±1.0 s (#399, #413) |
+| uvpacket | — | 0 | 0 | none of the search machinery applies |
+
+Since #413 WSPR, JT9, JT65 and Q65 read their row from the library's own
+`default_search_params()` rather than a hand-kept copy, which had drifted
+from all four (WSPR / JT9 / JT65 published no band, and Q65 published
+`mfsk-ffi`'s wide EME scan of 32 candidates at 0.05). Without an FFT backend
+those four have no `search` module and publish an empty band.
 
 Lookup:
 
@@ -1403,9 +1665,9 @@ its display name.
 invariants, among them `FecCodec::N ≤ N_DATA × BITS_PER_SYMBOL` and the
 `GRAY_MAP` length contract `[2^BITS_PER_SYMBOL, NTONES]`.
 
-A new protocol gets one line there. MSK144 does not appear, because it
-implements no `Protocol` impl — that is an architectural decision, not
-a gap to close.
+A new protocol gets one line there. MSK144 and JTTY do not appear,
+because neither implements `Protocol` — that is an architectural
+decision, not a gap to close.
 
 ---
 
