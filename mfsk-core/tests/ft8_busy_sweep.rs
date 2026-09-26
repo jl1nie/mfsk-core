@@ -134,14 +134,31 @@ impl Strategy {
     }
 }
 
+/// `MFSK_FT8_BUSY_NO_MESSAGE_FILTER=1` turns the codec's plausibility verdict off (FT8's
+/// default keeps it on, `FrameDecodable::MESSAGE_FILTER_DEFAULT`), to see what it removes.
+fn no_message_filter() -> bool {
+    std::env::var("MFSK_FT8_BUSY_NO_MESSAGE_FILTER").is_ok_and(|v| v == "1")
+}
+
 fn decode(audio: &[i16], strategy: Strategy, cap: usize, sync_min: f32) -> Vec<(String, f32, f32)> {
     use mfsk_core::ft8::Ft8;
     use mfsk_core::msg::decode_request::DecodeRequest;
     let req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, sync_min, cap);
-    let results = match strategy {
-        Strategy::Single => req.decode().results,
-        Strategy::SicEarly => req.sic_early().decode().results,
-        Strategy::SicRounds(n) => req.sic_rounds(n).decode().results,
+    let results = if no_message_filter() {
+        // Every message that unpacks is kept: the codec's plausibility verdict, which
+        // `ft8b.f90` does not have, is off (#456).
+        let req = req.message_filter(|_| true);
+        match strategy {
+            Strategy::Single => req.decode().results,
+            Strategy::SicEarly => req.sic_early().decode().results,
+            Strategy::SicRounds(n) => req.sic_rounds(n).decode().results,
+        }
+    } else {
+        match strategy {
+            Strategy::Single => req.decode().results,
+            Strategy::SicEarly => req.sic_early().decode().results,
+            Strategy::SicRounds(n) => req.sic_rounds(n).decode().results,
+        }
     };
     results
         .iter()

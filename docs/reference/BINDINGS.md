@@ -184,7 +184,7 @@ p.freq_max_hz = 2600.0f;
 | `depth` | `MfskDecodeDepth` — cost/recall rung |
 | `strictness` | `MfskStrictness` — accept/reject threshold profile |
 | `eq_mode` | `MfskEqMode`. A property of the *input audio* — it flattens a passband an analogue filter has tilted — not of the search |
-| `freq_hint_hz` | prioritise candidates near this frequency; `NaN` (what `_init` writes) means unset |
+| `freq_hint_hz` | prioritise candidates near this frequency; `NaN` (what `_init` writes) means unset. It is also the QSO frequency for the a-priori passes: an AP hint that locks both callsigns (`ap_call1` and `ap_call2`) is tried only within 50 Hz of it, and not at all when it is unset. The transmit frequency (`tx_freq` in Rust) is not exposed through this ABI yet |
 | `sic_rounds` | successive-interference-cancellation rounds, 0 for none. Requires `MFSK_CAP_SIC_ROUNDS` |
 | `sic_early` | checkpoint-emulation early decode. Requires `MFSK_CAP_SIC_EARLY` |
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | a-priori hint. Requires `MFSK_CAP_AP_WIDEBAND` (or `_AP_NARROW` on a narrow-band call) |

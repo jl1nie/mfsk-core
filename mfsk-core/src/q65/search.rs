@@ -79,6 +79,10 @@ use crate::engine::search::{SearchWindow, best_lag_in_bin, rank_and_truncate};
 /// follow the measurement rather than the source, per
 /// `tests/dt_window.rs`'s own doctrine.
 ///
+/// `q65.f90:130` has a third case, `lag2 = 4/dtstep` for Q65-15 (`ntrperiod = 15` with
+/// `nsps >= 900` and `emedelay > 0`). This crate has no EME delay setting and the +5.5 s
+/// below already covers 4 s, so there is nothing to add for it (#441).
+///
 /// +5.5 s is applied to every sub-mode rather than gated on
 /// NSPS: on the short sub-modes the extra span is
 /// geometrically self-limiting (a Q65-15 frame placed +5.5 s

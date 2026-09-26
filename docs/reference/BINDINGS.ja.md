@@ -178,7 +178,7 @@ p.freq_max_hz = 2600.0f;
 | `depth` | `MfskDecodeDepth` — コスト／再現率の段 |
 | `strictness` | `MfskStrictness` — 採否閾値のプロファイル |
 | `eq_mode` | `MfskEqMode`。**入力音声の性質**であって探索の性質ではない（アナログフィルタが傾けた通過帯域を平坦化する） |
-| `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定 |
+| `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定。a-priori パスの QSO 周波数でもある: 両方の呼出符号を固定する AP ヒント（`ap_call1` と `ap_call2`）は、この周波数の 50 Hz 以内にだけ試し、未設定なら一切試さない。送信周波数（Rust の `tx_freq`）は、この ABI ではまだ公開していない |
 | `sic_rounds` | 逐次干渉除去の回数、0 で無効。`MFSK_CAP_SIC_ROUNDS` が必要 |
 | `sic_early` | チェックポイント模倣の早期デコード。`MFSK_CAP_SIC_EARLY` が必要 |
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | 事前情報ヒント。`MFSK_CAP_AP_WIDEBAND`（狭帯域呼び出しでは `_AP_NARROW`）が必要 |

@@ -283,6 +283,24 @@ deliberately: `-d1`/`-d2`/`-d3` moved FT4's `ccir_poor` by 1.7 dB between
 them, so a comparison that does not say which depth it used says very
 little.
 
+**Which `jt9` (decided 2026-09-26, #442).** The reference is built from the
+**`v3.2.0-rc1` tag** of `WSJTX/wsjtx`, not from `2b9d654` and not from a moving
+`master`: the FT8 and FT4 decoders this crate follows are that tag's (#439), and a
+comparison against an older binary measures the port, not the decoder. Say the tag
+(and the depth, and whether AP hits were counted) next to any `jt9` number.
+`jt9` output has to be scored with its ` ?` / ` aN` markers stripped, and with the
+AP decodes it prints at `-d 2`/`-d 3` even with no call sign given (`a1`, the CQ
+pass) either counted or excluded on purpose: `scripts/score-jt9-sweep.py`.
+
+Two things the tag does *not* replace. The **simulators** that generate the
+`ccir_*` corpora stay on `2b9d654`: the Watterson fading model was corrected in
+February 2024, so a newer `ft8sim` makes a harsher channel under the same name and
+a baseline is only comparable within one tree (see "Which WSJT-X tree the
+simulators come from"). And `jt9` numbers already recorded here from the `2b9d654`
+build (the 2026-07/08 sections) stay as the dated records they are: they say what
+that build gave on that day, and are not re-run. A `jt9` reference used *for a
+decision* is the tag's.
+
 ### Prerequisites
 
 A WSJT-X source checkout (`/home/ubuntu/src/WSJT-X` here) and `gfortran`,

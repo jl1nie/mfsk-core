@@ -456,6 +456,49 @@ impl Default for CallsignHashTable {
 mod tests {
     use super::*;
 
+    /// `ihashcall` against WSJT-X's own, value for value. `packjt77.f90` (3.2.0-rc1)
+    /// replaced `ishft(47055833459_8*n8, m-64)` by `ihashcall_from_n8`, 16-bit limbs that
+    /// return "the top `m` bits of the low 64 bits of `47055833459*n8`" without the signed
+    /// 64-bit overflow the old form risked (#441). This crate's `wrapping_mul` is that same
+    /// value, and the test is what says so: the vectors are `ihashcall(c, 10)`, `(c, 12)`
+    /// and `(c, 22)` from that Fortran (gfortran, the two functions lifted out of
+    /// `packjt77.f90`), for callsigns whose base-38 value times the constant overflows
+    /// `i64` (nearly all of them: the product is up to about 7.7e27) and the extremes.
+    #[test]
+    fn ihashcall_matches_wsjtx_3_2() {
+        const VECTORS: &[(&str, u32, u32, u32)] = &[
+            ("K1ABC", 712, 2851, 2920267),
+            ("W9XYZ", 972, 3889, 3982604),
+            ("JA1ABC", 1, 6, 6274),
+            ("PJ4/K1ABC", 346, 1387, 1420834),
+            ("3DA0XYZ", 483, 1932, 1979256),
+            ("VK3NV", 471, 1884, 1929750),
+            ("JL1NIE", 17, 71, 73715),
+            ("3Y0Z", 573, 2294, 2349372),
+            ("K1JT", 511, 2047, 2096289),
+            ("YC1MRF", 608, 2434, 2492464),
+            ("DL8YHR", 965, 3861, 3953752),
+            ("ZL4ZZZ", 371, 1485, 1521353),
+            ("A61AB", 582, 2329, 2385011),
+            ("9A1A/P", 914, 3656, 3744151),
+            ("HB9CQK", 602, 2409, 2466836),
+            ("EA6VQ", 802, 3209, 3286080),
+            ("XE2X", 538, 2153, 2205628),
+            ("TF/G4ABC", 817, 3269, 3347813),
+            ("ZZZZZZZZ/ZZ", 902, 3609, 3695734),
+            ("///////////", 671, 2685, 2749801),
+            ("0", 179, 717, 734621),
+            ("Z", 312, 1250, 1280558),
+            ("ZZZZZZZZZZZ", 902, 3609, 3695718),
+            ("9Z9Z9Z9Z9Z9", 950, 3800, 3891230),
+        ];
+        for &(call, h10, h12, h22) in VECTORS {
+            assert_eq!(ihashcall(call, 10), h10, "{call} at 10 bits");
+            assert_eq!(ihashcall(call, 12), h12, "{call} at 12 bits");
+            assert_eq!(ihashcall(call, 22), h22, "{call} at 22 bits");
+        }
+    }
+
     /// How many callsigns the table holds before evicting. The two
     /// builds store them differently — see [`CallsignHashTable`] — so
     /// the shared tests below ask for the cap rather than naming one.

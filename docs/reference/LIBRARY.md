@@ -122,7 +122,8 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | method | takes | default | available on | effect |
 |---|---|---|---|---|
 | `new` | `(audio, freq_min, freq_max, sync_min, max_cand)` | — | all | the wide-band search |
-| `.freq_hint(hz)` | `f32` | unset | all | prioritise candidates near this frequency |
+| `.freq_hint(hz)` | `f32` | unset | all | prioritise candidates near this frequency. **Also the QSO frequency (`nfqso`) for the a-priori passes:** with an `.ap_hint()` that locks both callsigns, those hypotheses are tried only for a candidate within 50 Hz of it, and not at all without it (`ft4_decode.f90` / `ft8b.f90` always have an `nfqso`). FT4 also decodes candidates in that window with a third OSD snapshot (`maxosd = 3`). CQ and MyCall-only hypotheses run anywhere |
+| `.tx_freq(hz)` | `f32` | unset | FT8 | the transmit frequency (`nftx`): FT8 also tries the both-callsigns hypotheses within 50 Hz of it. Ignored by the other modes (`ft4_decode.f90` has no `nftx`) |
 | `.osd(bool)` | `bool` | `true` | all | OSD fallback when the BP staircase fails. `LlrEffort` is always `Full` for host decodes |
 | `.strictness(s)` | `DecodeStrictness` | `Normal` | all | accept/reject threshold profile — see [§6](#6-engine-primitives) for which protocols each knob actually reaches |
 | `.eq_mode(m)` | `EqMode` | `Off` | all | `Off` / `Local`. A property of the **input audio**, not the search |
