@@ -67,6 +67,7 @@ macro_rules! stat_add {
     };
 }
 #[cfg(not(feature = "jtty-stats"))]
+#[allow(unused_macros)] // the receiver, its only user, needs an FFT backend
 macro_rules! stat_add {
     ($rx:expr, $c:ident, $n:expr) => {};
 }
@@ -78,6 +79,7 @@ macro_rules! stat_time {
     };
 }
 #[cfg(not(feature = "jtty-stats"))]
+#[allow(unused_macros)]
 macro_rules! stat_time {
     ($rx:expr, $s:ident) => {};
 }
