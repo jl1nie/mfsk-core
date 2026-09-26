@@ -255,12 +255,13 @@ finger lands, a 2 px border is drawn round the whole screen — no
 animation. Border means the panel felt it; no border means the touch is
 not reaching it. That is all it is there to say.
 
-The overlay opens on a three-row **root**:
+The overlay opens on a four-row **root**:
 
 | Row | What it holds |
 |---|---|
 | `MODE` | which receiver boots (FT8, FT4, WSPR, FST4) |
 | `CONFIG` | how the slot phase is kept (NTP, or the air's DT), and whether WiFi comes up |
+| `FREQ` | the running receiver's dial presets, sent to the radio over CAT (see below) |
 | `DEMO` | running without a radio (`WAV REPLAY` — a recording, decoded on a loop) |
 
 Pages have different numbers of rows. **Pressing an unused band does
@@ -273,7 +274,7 @@ a page it works as it always has: **select, then commit**.
    confirmation step exists to let you check it.
 2. **Press the bar underneath**, which reads `APPLY <what you picked>`.
    It goes amber while pressed, then green with `APPLYING …`.
-3. The board writes NVS and restarts (both kinds of setting restart).
+3. The board writes NVS and restarts (both kinds of setting restart; `FREQ`, below, is the exception).
 
 The setting this boot is running carries a `*`. Tapping outside
 dismisses the overlay, and the next open starts at the root again — an
@@ -354,6 +355,115 @@ picker, so the same three presses turn it on again.
 
 To change mode without the panel: erase NVS, and set `boot_mode` in
 `cfg.toml`.
+
+### FREQ — the dial
+
+`FREQ` is on the root rather than under CONFIG because CONFIG already
+fills all four rows, and changing the dial is the one setting an
+operator makes in the field.
+
+It lists the **running receiver's** dial presets and nobody else's: an
+FT8 board has no use for a WSPR dial.
+
+| Receiver | Presets (dial, MHz) |
+|---|---|
+| FT8 | 160 m 1.908 (`JA`), 80 m 3.531 (`JA`), 80 m 3.573, 40 m 7.041 (`JA`), 40 m 7.074, 30 m 10.136, 20 m 14.074, 17 m 18.100, 15 m 21.074, 12 m 24.915, 10 m 28.074, 6 m 50.313, 2 m 144.460 (`JA`) |
+| FT4 | 80 m 3.575, 40 m 7.0475, 30 m 10.140, 20 m 14.080, 17 m 18.104, 15 m 21.140, 12 m 24.919, 10 m 28.180, 6 m 50.318 |
+| WSPR | 160 m 1.8366, 80 m 3.5686, 60 m 5.3647, 40 m 7.0386, 30 m 10.1387, 20 m 14.0956, 17 m 18.1046, 15 m 21.0946, 12 m 24.9246, 10 m 28.1246, 6 m 50.293, 2 m 144.489 |
+| FST4 | none — the bar reads `no presets for this mode` |
+
+The FT8 table carries the JA channels beside the IARU ones, labelled
+`JA` so an operator abroad can tell them from the IARU channel on the
+same band. The IARU FT8 channels and the whole FT4 table are the ones
+WSJT-X itself lists; the WSPR table is the band list the WSPR receiver
+already uses. FST4 has no table yet: WSJT-X's defaults for it are LF/MF,
+which the IC-705 does not transmit on, and no HF channel has been agreed.
+
+The widget has four rows. A table that fits is shown whole; a longer one
+gives the last row to `NEXT >` and shows three presets per page (FT8
+five pages, FT4 three, WSPR four), and the bar underneath reads
+`pick a dial  1/5`. `NEXT >` past the last page wraps to the first, and
+tapping it turns the page — it is not a selection. Opening `FREQ` lands
+on the page that holds the radio's dial when that dial is one of the
+presets. That row carries the `*`: it marks the dial the radio last
+reported.
+
+Then it works as the other pages do — tap a row, press the bar, which
+reads `APPLY <what you picked>` — with two differences. **It does not
+restart the board**: the overlay closes at once and the receiver carries
+on, since a wrong dial costs one more tap rather than a reboot. And what
+it writes is the radio, not NVS-then-reboot:
+
+- `05` sets the frequency, then `26 00 01 01 01` sets USB, data on,
+  filter 1 (what WSJT-X asks for as "Data/Pkt" on an IC-705).
+- The board then reads the dial back. Transceive only reports a dial the
+  radio *moved* to, so this is what makes a refused `05` show as the old
+  dial in the status bar rather than the requested one.
+- The dial is saved to NVS as `rig_hz` and **sent again the next time the
+  radio connects** — after a reboot the board puts the radio back on the
+  last dial applied here, USB-D FIL1 included, whatever it was left on.
+  It is saved once the radio has been sent it, and not again while it is
+  unchanged.
+
+The command goes out within 0.2 s of the press. With no radio connected
+the page still lists the presets and can be applied, but there is no `*`
+(no dial has been reported), and the dial is held rather than
+lost: the newest choice is sent when the radio connects, and nothing is
+written to NVS until then. CAT only exists in host mode, so on a board
+that did not come up as a USB host nothing ever sends it.
+
+### CAT — the radio's USB CI-V port
+
+CAT is how the board reads the radio's dial, and sets it from `FREQ`. It
+starts with the USB host and needs nothing configured on the board.
+
+**What it needs.**
+
+- The IC-705, on the same USB-C cable that carries the audio. It is one
+  composite device (VID `0c26`, PID `0036`) with the audio interfaces and
+  **two** CDC-ACM serial functions; CI-V is the first, which the radio
+  calls "USB (A)". The firmware opens that function's **data
+  interface (interface 1)** directly, not its control interface.
+- CI-V address **`A4`**, the IC-705's factory default (not `94`, which is
+  the IC-7300's). The firmware has no setting for another one and drops
+  frames from any other address.
+- Audio first. The CAT task waits (up to 60 s) until the audio input
+  stream has enumerated before it opens the port, so a shortage of USB
+  resources can cost CAT and never the receiver.
+
+**Why the data interface.** The ESP32-S3's USB host has eight channels,
+one per open pipe, and the IC-705 already takes seven of them. Opening
+the control interface added a notification pipe beside the two bulk
+ones; the radio's audio interface then failed to enumerate ("No more HCD
+channels available") and the board restarted about every 33 s. On the
+data interface the driver allocates only the two bulk pipes, and audio
+held 0 errors and FT8 7 decodes per slot with it open.
+
+**What it reads.** On connect, the dial (`03`) and the mode (`26 00`).
+After that, the radio's transceive frames: the dial the status bar shows
+follows the radio's knob. That same dial is where `all.txt` and the ADIF
+log take their frequency from. The mode is only written to
+the log; CAT does not fill the status bar's mode field, which reads
+`---`. When the radio is unplugged the task closes the port, waits, and
+opens it again when the radio returns.
+
+**What it writes.** Only the `FREQ` page's commit (above). Nothing else
+is ever sent: no PTT and no keying, so the CoreS3 remains a receiver.
+
+**What it does not touch.** DTR and RTS are never asserted. The IC-705's
+"USB SEND" and "USB Keying" settings can map either line to PTT or CW
+keying, and the driver leaves both alone unless asked; opening the data
+interface means it offers no line-control calls on the handle at all.
+CAT carries a dial and a mode and nothing about time: the clock and the
+slot phase (CONFIG above, §7) do not depend on it.
+
+**Not yet confirmed on hardware.** The port choice and the frame
+exchange were probed on the IC-705 on 2026-09-23 with a read-only build:
+`03` answered 7.041 MHz, `26 00` answered USB-D FIL1, transceive
+frames followed the dial, and the radio's USB echo-back was off. The CAT
+task and the `FREQ` page themselves have not been run against the radio
+yet. Whether any IC-705 CI-V menu setting has to be changed for this to
+work is not settled either; the sources do not record one.
 
 ---
 
@@ -504,6 +614,17 @@ Short-press reset while plugged in and it comes back as a peripheral.
 −40 to −25 dBFS. Much lower and the radio's USB AF output level needs
 raising; `clipped` above zero means it is too high.
 
+**The dial in the status bar reads `----`, or `FREQ` shows no `*`.**
+No dial has been reported over CAT. CAT exists only in host mode, opens
+only after the audio input has enumerated, and accepts only replies from
+CI-V address `A4`. Look for `cat: IC-705 CI-V open (USB A)` in the UDP
+log; if it never appears, the port was not opened.
+
+**`FREQ` was applied and the status bar still shows the old dial.**
+The radio refused the frequency command. The log carries
+`cat: rig refused a command (NG)`, and the dial the board reads back
+after every apply is the old one.
+
 **Under WSL**, every chip reset re-enumerates the USB device and
 detaches it from Linux. `embedded-poc/scripts/wsl-attach-board.sh`
 re-attaches it.
@@ -518,6 +639,7 @@ re-attaches it.
 | `src/display.rs` | FT8 controller screen and USB host bring-up |
 | `src/apps/wspr.rs`, `src/apps/fst4.rs` | The other two receivers |
 | `src/uac.rs` | USB host + UAC class driver, audio sinks |
+| `src/civ_usb.rs` | CAT: the IC-705's CI-V over USB |
 | `src/pmic.rs` | AXP2101 + AW9523B |
 | `src/rtc.rs` | BM8563 |
 | `src/touch.rs` | FT5x06 |
