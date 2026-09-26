@@ -53,6 +53,7 @@ use crate::msg::ApHint;
 use crate::msg::hash_table::CallsignHashTable;
 
 use super::Q65Result;
+use super::rx::Q65Ap;
 use super::search::SearchParams;
 
 /// Build a [`DecodeContext`] from an optional caller-supplied hash
@@ -101,6 +102,8 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     nominal_start_sample: usize,
     params: SearchParams,
     ap_hint: Option<&'a ApHint>,
+    /// Set via [`DecodeRequest::pileup`].
+    pileup: bool,
     ap_list: Option<&'a [[i32; 63]]>,
     fading: Option<(FadingModel, f32)>,
     /// Set via [`DecodeRequest::on_result`] — see that method's doc
@@ -127,6 +130,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             nominal_start_sample,
             params,
             ap_hint: None,
+            pileup: false,
             ap_list: None,
             fading: None,
             on_result: None,
@@ -152,6 +156,24 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     pub fn ap_hint(mut self, hint: &'a ApHint) -> Self {
         self.ap_hint = Some(hint);
         self
+    }
+
+    /// WSJT-X 3.2's **Q65 Pileup** mode (`q65PileupDecodeFlag`,
+    /// `lq65pileup`): an [`Self::ap_hint`] naming both callsigns and
+    /// nothing after them leaves the spare 78th bit free, so a reply
+    /// carrying the "copied last Tx" flag
+    /// ([`Q65Result::copied_last_tx`]) still matches it (`q65_ap.f90`,
+    /// iaptype 3). Off by default, as outside that mode.
+    pub fn pileup(mut self, on: bool) -> Self {
+        self.pileup = on;
+        self
+    }
+
+    fn ap(&self) -> Option<Q65Ap<'a>> {
+        self.ap_hint.map(|hint| Q65Ap {
+            hint,
+            pileup: self.pileup,
+        })
     }
 
     /// BP-free template-matching decode against a pre-encoded
@@ -314,12 +336,12 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 &self.params,
                 b90_ts,
                 model,
-                self.ap_hint,
+                self.ap(),
                 on_result,
                 ctx,
             );
         }
-        match self.ap_hint {
+        match self.ap() {
             Some(hint) => super::rx::decode_scan_with_ap_for::<P>(
                 audio,
                 self.sample_rate,
@@ -354,6 +376,8 @@ pub struct SniperRequest<'a, P: Q65SubMode> {
     start_sample: usize,
     base_freq_hz: f32,
     ap_hint: Option<&'a ApHint>,
+    /// Set via [`DecodeRequest::pileup`].
+    pileup: bool,
     ap_list: Option<&'a [[i32; 63]]>,
     fading: Option<(FadingModel, f32)>,
     /// Set via [`SniperRequest::on_result`] — see
@@ -377,6 +401,7 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
             start_sample,
             base_freq_hz,
             ap_hint: None,
+            pileup: false,
             ap_list: None,
             fading: None,
             on_result: None,
@@ -389,6 +414,19 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
     pub fn ap_hint(mut self, hint: &'a ApHint) -> Self {
         self.ap_hint = Some(hint);
         self
+    }
+
+    /// See [`DecodeRequest::pileup`].
+    pub fn pileup(mut self, on: bool) -> Self {
+        self.pileup = on;
+        self
+    }
+
+    fn ap(&self) -> Option<Q65Ap<'a>> {
+        self.ap_hint.map(|hint| Q65Ap {
+            hint,
+            pileup: self.pileup,
+        })
     }
 
     /// See [`DecodeRequest::ap_list`].
@@ -437,11 +475,11 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
                 self.base_freq_hz,
                 b90_ts,
                 model,
-                self.ap_hint,
+                self.ap(),
                 &ctx,
             )
         } else {
-            match self.ap_hint {
+            match self.ap() {
                 Some(hint) => super::rx::decode_at_with_ap_for::<P>(
                     self.audio,
                     self.sample_rate,

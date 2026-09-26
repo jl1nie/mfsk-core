@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::q65::pack77_q65;
-use crate::msg::q65::pack77_to_symbols;
+use crate::msg::q65::pack77_to_symbols_flagged;
 
 use super::Q65a30;
 use super::sync_pattern::Q65_SYNC_POSITIONS;
@@ -30,9 +30,16 @@ use super::sync_pattern::Q65_SYNC_POSITIONS;
 /// Tone values: `0` at the 22 sync positions, `1..=64` at the 63
 /// data positions (corresponding QRA symbol values `0..=63`).
 pub fn encode_channel_symbols(bits77: &[u8; 77]) -> [u8; 85] {
-    // 77 bits → 13 GF(64) info symbols (last symbol is 5 bits + zero
-    // padding to 6 — done inside `pack77_to_symbols`).
-    let info_syms = pack77_to_symbols(bits77);
+    encode_channel_symbols_flagged(bits77, false)
+}
+
+/// [`encode_channel_symbols`] with the spare 78th bit set to
+/// `copied_last_tx` — WSJT-X 3.2's Q65 Pileup "copied last Tx" flag
+/// (`genq65.f90`'s `iflag`; see [`crate::msg::q65::pack77_to_symbols_flagged`]).
+pub fn encode_channel_symbols_flagged(bits77: &[u8; 77], copied_last_tx: bool) -> [u8; 85] {
+    // 77 bits → 13 GF(64) info symbols (last symbol is 5 bits + the
+    // spare bit — done inside `pack77_to_symbols_flagged`).
+    let info_syms = pack77_to_symbols_flagged(bits77, copied_last_tx);
 
     // Q65 FEC encode: 13 user info → +CRC12 → QRA → puncture → 63 ch.
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
@@ -72,8 +79,30 @@ pub fn synthesize_standard_for<P: crate::engine::tx::FskWaveform>(
     base_freq_hz: f32,
     amplitude: f32,
 ) -> Option<Vec<f32>> {
+    synthesize_standard_flagged_for::<P>(
+        call1,
+        call2,
+        grid_or_report,
+        false,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+    )
+}
+
+/// [`synthesize_standard_for`] with WSJT-X 3.2's Q65 Pileup "copied last
+/// Tx" flag — see [`encode_channel_symbols_flagged`].
+pub fn synthesize_standard_flagged_for<P: crate::engine::tx::FskWaveform>(
+    call1: &str,
+    call2: &str,
+    grid_or_report: &str,
+    copied_last_tx: bool,
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+) -> Option<Vec<f32>> {
     let bits = pack77_q65(call1, call2, grid_or_report)?;
-    let tones = encode_channel_symbols(&bits);
+    let tones = encode_channel_symbols_flagged(&bits, copied_last_tx);
     Some(crate::engine::tx::synthesize::<P>(
         &tones,
         sample_rate,
