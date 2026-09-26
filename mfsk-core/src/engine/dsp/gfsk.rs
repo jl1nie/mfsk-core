@@ -129,7 +129,7 @@ impl GfskStream {
         let pulse_len = 3 * nsps;
         let pulse: Vec<f32> = (0..pulse_len)
             .map(|i| {
-                let tt = (i as f32 - 1.5 * nsps as f32) / nsps as f32;
+                let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
                 gfsk_pulse(cfg.bt, tt)
             })
             .collect();
@@ -289,9 +289,12 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
     let dt = 1.0 / cfg.sample_rate;
 
     let pulse_len = 3 * nsps;
+    // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft8wave.f90:22-24`,
+    // and `gen_ft4wave`, `gen_fst4wave` alike): the Fortran index is
+    // 1-based, so element `i` here is at `i + 1` (#482).
     let pulse: Vec<f32> = (0..pulse_len)
         .map(|i| {
-            let tt = (i as f32 - 1.5 * nsps as f32) / nsps as f32;
+            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
             gfsk_pulse(cfg.bt, tt)
         })
         .collect();
@@ -383,9 +386,12 @@ pub fn synth_complex_f32_into(
     let dt = 1.0 / cfg.sample_rate;
 
     let pulse_len = 3 * nsps;
+    // `do i=1,3*nsps; tt=(i-1.5*nsps)/real(nsps)` (`gen_ft8wave.f90:22-24`,
+    // and `gen_ft4wave`, `gen_fst4wave` alike): the Fortran index is
+    // 1-based, so element `i` here is at `i + 1` (#482).
     let pulse: Vec<f32> = (0..pulse_len)
         .map(|i| {
-            let tt = (i as f32 - 1.5 * nsps as f32) / nsps as f32;
+            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
             gfsk_pulse(cfg.bt, tt)
         })
         .collect();
@@ -543,6 +549,51 @@ mod stream_tests {
         // A Costas-ish spread so every tone index is exercised and the
         // pulse overlap has something to do at each boundary.
         (0..79u32).map(|i| ((i * 5 + 3) % 8) as u8).collect()
+    }
+
+    /// `gen_ft8wave.f90`, transliterated with its 1-based indices and in
+    /// f64: the frequency pulse, the two dummy symbols, the carrier and the
+    /// ramp. The synthesiser matched it only to 1.3e-2 while it sampled the
+    /// pulse one sample early (#482), which is what this pins.
+    #[test]
+    fn synth_matches_gen_ft8wave() {
+        let t = tones();
+        let (nsps, nsym) = (FT8.samples_per_symbol, t.len());
+        let fs = f64::from(FT8.sample_rate);
+        let pulse: Vec<f64> = (1..=3 * nsps)
+            .map(|i| {
+                let tt = (i as f64 - 1.5 * nsps as f64) / nsps as f64;
+                f64::from(gfsk_pulse(FT8.bt, tt as f32))
+            })
+            .collect();
+        let dphi_peak = 2.0 * core::f64::consts::PI * f64::from(FT8.hmod) / nsps as f64;
+        let mut dphi = vec![0f64; (nsym + 2) * nsps];
+        for (j, &tone) in t.iter().enumerate() {
+            let ib = j * nsps; // `ib=(j-1)*nsps`
+            for i in 0..3 * nsps {
+                dphi[ib + i] += dphi_peak * pulse[i] * f64::from(tone);
+            }
+        }
+        for i in 0..2 * nsps {
+            dphi[i] += dphi_peak * f64::from(t[0]) * pulse[nsps + i];
+            dphi[nsym * nsps + i] += dphi_peak * f64::from(t[nsym - 1]) * pulse[i];
+        }
+        let f0 = 1_500.0;
+        let (mut phi, nwave) = (0f64, nsym * nsps);
+        let mut want = vec![0f64; nwave];
+        for (k, w) in want.iter_mut().enumerate() {
+            *w = phi.sin();
+            phi += dphi[k + nsps] + 2.0 * core::f64::consts::PI * f0 / fs;
+        }
+        let got = synth_f32(&t, f0 as f32, 1.0, &FT8);
+        let nramp = FT8.ramp_samples;
+        let worst = (nramp..nwave - nramp)
+            .map(|k| (f64::from(got[k]) - want[k]).abs())
+            .fold(0f64, f64::max);
+        assert!(
+            worst < 2e-3,
+            "worst |error| {worst:.3e} away from the ramps"
+        );
     }
 
     /// **The stream is the same waveform.** Not "close enough": the
