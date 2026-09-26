@@ -145,6 +145,14 @@
 #define MFSK_CAP_ENCODE (1 << 14)
 
 /**
+ * The mode is received by a stateful, continuously fed receiver handle
+ * with its own entry points rather than by a slot decode — JTTY, whose
+ * frames have no slot. Audio goes in with `mfsk_jtty_push_*` and message
+ * updates come out of `mfsk_jtty_poll`.
+ */
+#define MFSK_CAP_STREAM_RECEIVER (1 << 15)
+
+/**
  * Outcome of a fallible `mfsk_*` / `mfsk_ft8_*` call.
  *
  * Zero is success; negative values are errors. Both crates additionally
@@ -322,6 +330,16 @@ typedef enum MfskMode {
      * uvpacket, express profile.
      */
     MFSK_MODE_UV_EXPRESS = 24,
+    /**
+     * JTTY — WSJT-X 3.2's weak-signal keyboard mode. **Not slotted**:
+     * 1.888 s frames that start whenever the sender likes, a message of
+     * several of them, assembled by the receiver. It has no `Protocol`
+     * marker type and no registry entry (like MSK144), and it is driven
+     * through its own handle, `mfsk_jtty_open` and the calls after it,
+     * which is what `MFSK_CAP_STREAM_RECEIVER` says. `mfsk_mode_info`
+     * describes one frame: `t_slot_s` is the frame period, not a slot.
+     */
+    MFSK_MODE_JTTY = 25,
 } MfskMode;
 
 /**
@@ -541,6 +559,14 @@ typedef struct MfskCallsignHashTable MfskCallsignHashTable;
  * both of which only mean anything across more than one call.
  */
 typedef struct MfskDecodeSession MfskDecodeSession;
+
+/**
+ * The JTTY receiver handle.
+ *
+ * Emitted as an incomplete type, like [`MfskDecodeOptions`]; the receiver is
+ * what `mfsk_jtty_open` allocates.
+ */
+typedef struct MfskJttyReceiver MfskJttyReceiver;
 
 /**
  * Opaque streaming-capture handle.
@@ -930,6 +956,86 @@ typedef struct MfskBudgetReport {
      */
     float cut_at_score;
 } MfskBudgetReport;
+
+/**
+ * Receive settings for `mfsk_jtty_open` / `mfsk_jtty_set_params`.
+ * **Size-versioned**, like `MfskModeInfo`: set `size = sizeof(MfskJttyParams)`,
+ * or call `mfsk_jtty_params_init`, which fills in the defaults (`rjtty`'s).
+ */
+typedef struct MfskJttyParams {
+    /**
+     * `sizeof(MfskJttyParams)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * Take each decoded frame off the signal and search again, and re-search
+     * the windows before it. Non-zero (the default) is upstream's receiver;
+     * zero is a single-signal receiver that loses a weak station under a
+     * strong one.
+     */
+    uint32_t subtract;
+    /**
+     * The operator's receive frequency, Hz (channel 0's centre). Default 1500.
+     */
+    float f0_hz;
+    /**
+     * Half-width of channel 0, Hz. Default 50.
+     */
+    float ftol_hz;
+    /**
+     * Sync-gate S/N floor on channel 0, dB. Default 4.6.
+     */
+    float smin_db;
+    /**
+     * Lowest audio frequency channels 1 and 2 look at, Hz. Default 200.
+     */
+    float nfa_hz;
+    /**
+     * Highest audio frequency channels 1 and 2 look at, Hz. Default 2800.
+     */
+    float nfb_hz;
+} MfskJttyParams;
+
+/**
+ * One message as far as it is known, as `mfsk_jtty_poll` hands it out.
+ * **Size-versioned.**
+ *
+ * A message is reported each time it grows and once more when it completes.
+ * Updates are **coalesced per message between polls**: if a message grew
+ * twice since the last poll, the poll returns its latest text once — the
+ * same rule as upstream's `jtty_get_updates`. `id` is stable for the life of
+ * a message, so a caller replaces its display row by `id`.
+ */
+typedef struct MfskJttyUpdate {
+    /**
+     * `sizeof(MfskJttyUpdate)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * Non-zero once the end-of-message frame has arrived. A message that was
+     * given up on (no continuation came, or `mfsk_jtty_finish` was called) is
+     * reported one last time with this still 0.
+     */
+    uint32_t complete;
+    /**
+     * Stable for the life of the message.
+     */
+    uint64_t id;
+    /**
+     * Frequency of the latest frame, Hz.
+     */
+    float f1_hz;
+    /**
+     * Start of the first frame, seconds from the first sample pushed since
+     * `mfsk_jtty_open` / `mfsk_jtty_reset`.
+     */
+    float start_s;
+    /**
+     * The text so far, NUL-terminated UTF-8. Frames that were never heard
+     * show as ` ... `; TEXT5 spaces as `~`, as upstream shows them.
+     */
+    char text[128];
+} MfskJttyUpdate;
 
 /**
  * Called on each worker thread as it starts and as it exits.
@@ -1964,6 +2070,126 @@ enum MfskStatus mfsk_session_decode_stream(struct MfskDecodeSession *dec,
                                            uintptr_t out_cap,
                                            uintptr_t *out_len,
                                            double *out_slot_start_utc);
+
+/**
+ * The defaults `rjtty` uses: 1500 Hz ± 50 Hz, `smin` 4.6 dB, band 200–2800 Hz,
+ * subtraction on. Sets `size`.
+ *
+ * # Safety
+ * `out` must be null or point to a writable `MfskJttyParams`.
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_params_init(struct MfskJttyParams *out);
+
+/**
+ * Open a JTTY receiver taking audio at `sample_rate` (any rate; anything but
+ * 12 000 Hz is resampled, linearly). `params` may be NULL for the defaults.
+ *
+ * Returns NULL and writes the reason to `out_status` on failure:
+ * `MFSK_STATUS_UNKNOWN_PROTOCOL` for a build without the `jtty` feature,
+ * `MFSK_STATUS_INVALID_ARG` for a zero rate or bad parameters.
+ *
+ * # Safety
+ * `params` must be null or point to at least `params->size` readable bytes;
+ * `out_status` may be null.
+ */
+MFSK_API
+struct MfskJttyReceiver *mfsk_jtty_open(uint32_t sample_rate,
+                                        const struct MfskJttyParams *params,
+                                        enum MfskStatus *out_status);
+
+/**
+ * Release a receiver. Null is a no-op.
+ *
+ * # Safety
+ * `rx` must be a handle from [`mfsk_jtty_open`], released once.
+ */
+MFSK_API
+void mfsk_jtty_close(struct MfskJttyReceiver *rx);
+
+/**
+ * Change the receive settings; they apply from the next window.
+ *
+ * # Safety
+ * `rx` must be a live handle; `params` must point to at least `params->size`
+ * readable bytes (NULL means the defaults).
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_set_params(struct MfskJttyReceiver *rx,
+                                     const struct MfskJttyParams *params);
+
+/**
+ * Feed 16-bit mono PCM at the rate the receiver was opened with, any number of
+ * samples per call (including none). Every window this completes is decoded
+ * before the call returns; what it found waits in the queue for
+ * [`mfsk_jtty_poll`]. A call can take a few tens of milliseconds per 0.47 s of
+ * audio it completes.
+ *
+ * # Safety
+ * `samples` must be `n` readable `int16_t` (or null when `n` is 0).
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_push_i16(struct MfskJttyReceiver *rx,
+                                   const int16_t *samples,
+                                   uintptr_t n);
+
+/**
+ * [`mfsk_jtty_push_i16`] for 32-bit float PCM, nominally `-1.0..=1.0`.
+ *
+ * # Safety
+ * `samples` must be `n` readable `float` (or null when `n` is 0).
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_push_f32(struct MfskJttyReceiver *rx,
+                                   const float *samples,
+                                   uintptr_t n);
+
+/**
+ * The audio has ended: queue a last (incomplete) update for every message
+ * still waiting for a continuation. Call it when a recording is exhausted;
+ * a live receiver never needs it.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_finish(struct MfskJttyReceiver *rx);
+
+/**
+ * Forget everything — audio, messages, the queue, the resampler's state — and
+ * start again at sample 0 with the same settings.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_reset(struct MfskJttyReceiver *rx);
+
+/**
+ * How many updates are waiting.
+ */
+MFSK_API
+uintptr_t mfsk_jtty_pending(struct MfskJttyReceiver *rx);
+
+/**
+ * Take the oldest waiting update into `out` (size-versioned: set
+ * `out->size = sizeof(MfskJttyUpdate)`, or 0 for the whole struct).
+ *
+ * Returns 1 when an update was written, 0 when none is waiting, and a negative
+ * `MfskStatus` on error (a null handle or `out`, or a build without the
+ * feature). Call it until it returns 0 after every push:
+ *
+ * ```c
+ * MfskJttyUpdate u = {0};
+ * while (mfsk_jtty_poll(rx, &u) == 1) show(u.id, u.text, u.complete);
+ * ```
+ *
+ * # Safety
+ * `out` must point to at least `out->size` writable bytes.
+ */
+MFSK_API
+int32_t mfsk_jtty_poll(struct MfskJttyReceiver *rx,
+                       struct MfskJttyUpdate *out);
 
 /**
  * Configure the thread pool every subsequent decode runs on.

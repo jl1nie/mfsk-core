@@ -38,6 +38,9 @@ public enum Mode: UInt32, CaseIterable, Sendable {
     case uvStandard = 22
     case uvUltraRobust = 23
     case uvExpress = 24
+    /// WSJT-X 3.2's non-slotted keyboard mode. Received by ``JttyReceiver``,
+    /// not ``DecodeSession``; ``ModeInfo/slotSeconds`` is its frame period.
+    case jtty = 25
 
     /// The stable display name (`"FT8"`, `"FST4-120"`), which is also
     /// the key ``init(name:)`` accepts — the two round-trip. Answers for
@@ -148,6 +151,9 @@ public struct Capabilities: OptionSet, Sendable {
     public static let onResult = Capabilities(rawValue: 1 << 13)
     /// The mode can synthesise as well as decode.
     public static let encode = Capabilities(rawValue: 1 << 14)
+    /// Received by a stateful receiver handle with its own entry points
+    /// rather than a slot decode — JTTY, see ``JttyReceiver``.
+    public static let streamReceiver = Capabilities(rawValue: 1 << 15)
 }
 
 /// How a mode's sync threshold is measured — the trap

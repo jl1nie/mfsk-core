@@ -64,6 +64,7 @@ timeout "$MFSK_KT_CC_TIMEOUT" \
 stage "java (JVM test)"
 timeout "$MFSK_KT_JAVA_TIMEOUT" \
     java -Djava.library.path="$OUT" \
+         -Dmfsk.jtty.wav="$ROOT/embedded-poc/assets/golden/jtty/260807_134110.wav" \
          -cp "$OUT/classes:$STDLIB" \
          io.github.mfskcore.MfskTestKt \
     || { echo "::error::the JVM test timed out or failed"; exit 1; }

@@ -667,6 +667,36 @@ corpora of P0.
   coalesces — the streaming API is P4a. `Params::subtract` is new (off = a
   single-signal receiver).
 
+## P4b results (2026-09-26)
+
+The C ABI, the Kotlin and Swift bindings, the C++ driver.
+
+- **ABI.** `MfskMode` 25 = JTTY (`MFSK_MODE_JTTY`), described as one frame
+  (`t_slot_s` = the 1.888 s frame period, `slot_samples_12k` 22 656). New
+  capability bit `MFSK_CAP_STREAM_RECEIVER` (1 << 15): the mode is received by a
+  handle, not a slot decode, and `MFSK_CAP_DECODE_HANDLE` stays clear. Functions:
+  `mfsk_jtty_{params_init, open, close, set_params, push_i16, push_f32, finish,
+  reset, pending, poll}`; `MfskJttyParams` and `MfskJttyUpdate` are size-versioned.
+  `mfsk_abi_version` stays 2: the change is additive.
+- **Poll at the edge, callback inside** (D2). The Rust `Stream::push` takes a
+  callback; the handle turns that into a queue. The queue **coalesces per message
+  id** — a message that grew twice between polls comes out once with its latest
+  text, which is what upstream's `jtty_get_updates` does and what bounds the queue
+  (1024 messages; a caller that never polls loses the oldest). `poll` returns
+  1 / 0 / negative `MfskStatus`, not an enum, because "nothing waiting" is not an error.
+- **Feature.** `mfsk-ffi/jtty` (in `desktop` and `mobile`, implies `protocols` for
+  the FFT). The entry points are always in the header (it is generated from one
+  source, whatever the features); without the feature they answer
+  `MFSK_STATUS_UNKNOWN_PROTOCOL`, as `mfsk_runtime_configure` does without `parallel`.
+- **No transmit call.** The ABI has no JTTY synthesis, so every binding test feeds the
+  vendored upstream recording; the message-packing layer is P5.
+- **Tests.** `tests/jtty_ffi.rs` (7: introspection, chunk-size independence, coalescing,
+  finish/reset, 24 kHz + float, parameter validation, NULL handling), the C++ driver's
+  `test_jtty`, the Kotlin JVM test and `JttyReceiverTests` (Swift, 5). The recording gives
+  two messages, as in `tests/jtty_rx.rs`: the sentence, and upstream's known false
+  decode `4>-P'` on channel 2 (the Rust and C++ tests see both; the Kotlin and Swift
+  ones look only for the sentence).
+
 ## P4a results (2026-09-26)
 
 The core API half of P4: the streaming receiver, its docs and the tier-C wiring.

@@ -10,6 +10,7 @@ cargo build -p mfsk-ffi --release
 
 g++ -std=c++17 \
     -I"$REPO_ROOT/mfsk-ffi/include" \
+    -DMFSK_JTTY_WAV="\"$REPO_ROOT/embedded-poc/assets/golden/jtty/260807_134110.wav\"" \
     main.cpp \
     -L"$MFSK_TARGET" -lmfsk \
     -pthread -ldl -lm \

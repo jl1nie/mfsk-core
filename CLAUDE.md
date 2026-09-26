@@ -72,7 +72,7 @@ so the workspace never sees either of them:
   (`import MfskCore`). Its module map includes `mfsk-ffi/include/mfsk.h`
   **in place**, so it follows the header rather than carrying a copy,
   and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
-  XCTest suite (68 tests, ~10 s — XCTest needs Xcode, not just the
+  XCTest suite (73 tests, ~10 s — XCTest needs Xcode, not just the
   Command Line Tools, and the script points `DEVELOPER_DIR` at it when
   it has to). The `swift` CI job runs that same script on
   `macos-latest`, and is also where `aarch64-apple-ios` is built: both
@@ -199,6 +199,15 @@ every FST4 sub-mode, while FT8 — which does not implement
 `ft8::decode_block::process_one_candidate_inner`, with an inline copy of
 the hypothesis list (#415; unifying them is #423). Full writeup in
 `docs/notes/DESIGN_RATIONALE.md` §3.
+
+**JTTY is outside the `Protocol` trait too, for a different reason: it has
+no slot.** Frames start whenever the sender likes and a message is several
+of them, so the receiver (`jtty::rx::Stream`, incremental; a callback per
+`MessageUpdate`) carries state, and the C ABI gives it a handle of its own
+(`mfsk_jtty_*`, poll-based with a per-message-coalescing queue) rather than
+a slot call. Port of WSJT-X 3.2.0-rc1's `lib/jtty/`; the plan, the
+upstream read-through and every measurement are in
+`docs/notes/JTTY_UPSTREAM.md` (issue #477).
 
 **MSK144 is intentionally outside the `Protocol` trait** — it isn't FSK,
 and `msk144::decode::decode_slot` bypasses `engine::pipeline` by design.

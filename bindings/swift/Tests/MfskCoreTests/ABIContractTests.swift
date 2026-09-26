@@ -26,6 +26,7 @@ final class ABIContractTests: XCTestCase {
             (.msk144, MFSK_MODE_MSK144),
             (.uvRobust, MFSK_MODE_UV_ROBUST), (.uvStandard, MFSK_MODE_UV_STANDARD),
             (.uvUltraRobust, MFSK_MODE_UV_ULTRA_ROBUST), (.uvExpress, MFSK_MODE_UV_EXPRESS),
+            (.jtty, MFSK_MODE_JTTY),
         ]
         // Every case, not a sample: a mode missing from this list is a
         // mode nothing checks.
@@ -44,7 +45,7 @@ final class ABIContractTests: XCTestCase {
             (.strictness, MFSK_CAP_STRICTNESS), (.budget, MFSK_CAP_BUDGET),
             (.knownFilter, MFSK_CAP_KNOWN_FILTER), (.knownSubtract, MFSK_CAP_KNOWN_SUBTRACT),
             (.fftCache, MFSK_CAP_FFT_CACHE), (.onResult, MFSK_CAP_ON_RESULT),
-            (.encode, MFSK_CAP_ENCODE),
+            (.encode, MFSK_CAP_ENCODE), (.streamReceiver, MFSK_CAP_STREAM_RECEIVER),
         ]
         for (swift, c) in pairs {
             XCTAssertEqual(swift.rawValue, UInt64(c))
