@@ -35,7 +35,7 @@ pub struct GfskCfg {
 
 /// Gaussian pulse matching WSJT-X `gfsk_pulse` (3-symbol wide).
 #[inline]
-fn gfsk_pulse(bt: f32, t: f32) -> f32 {
+pub(crate) fn gfsk_pulse(bt: f32, t: f32) -> f32 {
     let c = PI * (2.0_f32 / 2.0_f32.ln()).sqrt();
     0.5 * (erf(c * bt * (t + 0.5)) - erf(c * bt * (t - 0.5)))
 }

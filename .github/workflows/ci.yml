@@ -215,10 +215,12 @@ jobs:
               - 'mfsk-core/src/jt65/**'
               - 'mfsk-core/src/wspr/**'
               - 'mfsk-core/src/msk144/**'
+              - 'mfsk-core/src/jtty/**'
               - 'mfsk-core/src/uvpacket/**'
               - 'mfsk-core/tests/ft4_*'
               - 'mfsk-core/tests/fst4_*'
               - 'mfsk-core/tests/msk144_*'
+              - 'mfsk-core/tests/jtty_*'
               - 'mfsk-core/tests/ldpc_min_sum*'
               - 'mfsk-core/tests/common/**'
 
@@ -566,8 +568,10 @@ jobs:
           - "jt65"
           - "q65"
           - "msk144"
+          - "jtty"         # #477: wire level; no FFT, no std needed
           - "uvpacket"
           - "alloc ft8"            # no_std + alloc baseline (TX-side host compile)
+          - "alloc jtty"           # JTTY through no_std + alloc (needs num_traits::Float for f64 sin/cos)
           - "alloc ft8 fft-extern" # no_std + alloc + caller-supplied FFT (RX preset)
           - "alloc ft8 fft-extern fixed-point" # full embedded integer pipeline
           - "alloc ft4 fft-extern"             # FT4 through the generic pipeline, no_std

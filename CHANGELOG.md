@@ -2,6 +2,23 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY, the wire level (#477, phase P1).** WSJT-X 3.2.0 adds JTTY, a non-slotted 4-GFSK
+  mode for RTTY-style contest exchanges; this crate had nothing for it. The new
+  `jtty` feature (in `full`; no FFT, no `std` needed) adds `mfsk_core::jtty`: the 32-bit
+  source grammar (`jtty::source`, with every validity rule a receiver applies before it
+  displays, assembles or subtracts a frame), the CRC-12, the tail-biting K = 10
+  convolutional encoder, and the transmit chain atoms → tones → audio (`jtty::tx`). Like
+  MSK144 it has no `Protocol` type and is not in `PROTOCOLS`. **There is no receiver yet**
+  (P2). Checked against WSJT-X `v3.2.0-rc1`'s own `sjtty`: the ten 34-bit vectors of its
+  spec, the tone sequences of 15 messages bit for bit, and the noiseless waveform to 6e-4
+  (one frame) / 1e-3 (two) of the peak — upstream's residual, from its single-precision
+  phase sum. With `parallel`, frames are encoded and the waveform is synthesised on rayon's
+  pool (phase as a chunked scan in `f64`); the output is bit-identical for any thread
+  count. Not a use of `engine::dsp::gfsk`: that samples the Gaussian pulse one sample early
+  relative to every upstream `gen_*wave.f90` (#482), which showed up here as a 4.9e-2
+  waveform error. Plan, upstream reading and fixtures: `docs/notes/JTTY_UPSTREAM.md`,
+  `embedded-poc/assets/golden/jtty/`.
+
 - **FST4: WSJT-X's noise blanker (#469).** `fst4_decode.f90` runs its whole decode on
   samples passed through `blanker.f90`, at the level the GUI's **NB** setting names; this
   crate had no blanker. `DecodeRequest::noise_blanker(NoiseBlanker)` (FST4 sub-modes,
