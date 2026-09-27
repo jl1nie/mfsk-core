@@ -107,8 +107,12 @@ pub enum Stage {
     Ladder,
     /// `subtract_frame`.
     Subtract,
+    /// Within the decimated surface: the product of window and sync wave.
+    SurfaceFill,
+    /// Within the decimated surface: the transforms.
+    SurfaceFft,
 }
-const N_STAGES: usize = 9;
+const N_STAGES: usize = 11;
 
 /// One candidate that passed the sync gate, and what the ladder made of it.
 #[derive(Clone, Debug)]

@@ -211,6 +211,29 @@ pub struct Params {
     /// 0.34 -> 0.27 on a six-station band, and not a frame lost on jtty_sweep, the fading corpus,
     /// the testsig catalogue or the two-station mixtures (host).
     pub skip_decoded_hz: f32,
+    /// The channels searched beside channel 0 (unless [`Self::ch0_only`]). They take their
+    /// candidates as upstream's side channels do: two each, no refinement, a stricter gate
+    /// (9 of 13 sync tones, 5 dB), and nothing channel 0 already found.
+    pub side_channels: SideChannels,
+}
+
+/// What the side channels cover ([`Params::side_channels`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SideChannels {
+    /// `rjtty`'s two, 1350 and 1650 Hz ± 150 Hz — a narrowing, "temporarily, at least", of a
+    /// scan of the whole band in 200 Hz channels (upstream b00c9bd04).
+    Upstream,
+    /// Channels `width_hz` wide from `lo_hz` up to `hi_hz`, as upstream scanned before.
+    Band {
+        /// Lower edge of the first channel, Hz.
+        lo_hz: f32,
+        /// Upper limit, Hz.
+        hi_hz: f32,
+        /// Channel width, Hz.
+        width_hz: f32,
+        /// Candidates a channel takes a window (upstream's side channels: 2).
+        picks: usize,
+    },
 }
 
 impl Params {
@@ -229,7 +252,15 @@ impl Params {
     #[must_use]
     pub fn embedded(self) -> Self {
         Self {
-            ch0_only: true,
+            ch0_only: false,
+            // one candidate a channel: on single stations across the band the same as two, and
+            // half the gates (#499)
+            side_channels: SideChannels::Band {
+                lo_hz: 200.0,
+                hi_hz: 2800.0,
+                width_hz: 200.0,
+                picks: 1,
+            },
             decimate_sync: true,
             raw_first: true,
             fir_analytic: true,
@@ -263,6 +294,7 @@ impl Default for Params {
             coarse_sync_grid: false,
             ladder_rungs: Rungs::ALL,
             skip_decoded_hz: 0.0,
+            side_channels: SideChannels::Upstream,
         }
     }
 }
@@ -306,6 +338,15 @@ pub struct Receiver {
     ladder: Ladder,
     refs: ToneRefs,
     fir: dsp::AnalyticFir,
+    /// A decimated surface's per-column power, made with the receiver so that it lives in
+    /// internal DRAM on the CoreS3 (#499).
+    #[cfg_attr(feature = "parallel", allow(dead_code))]
+    power_buf: super::scratch::Slot<Vec<f32>>,
+    /// A decimated surface's transform buffer, 16-byte aligned and made with the receiver: an
+    /// esp-dsp transform runs in place on it, in internal DRAM, where one on a buffer in PSRAM
+    /// took 10 ms at 4 096 points instead of 2.3 (#499).
+    #[cfg_attr(feature = "parallel", allow(dead_code))]
+    fft_buf: super::scratch::Slot<Vec<Quad>>,
     csync: Vec<Complex32>,
     #[cfg(feature = "jtty-stats")]
     stats: super::stats::Stats,
@@ -321,15 +362,44 @@ impl Default for Receiver {
 struct Surface {
     lo: usize,
     width: usize,
+    /// Only every `stride`-th column is computed and kept; the others read as zero. The side
+    /// channels' surface at 8 ms over 200–2800 Hz kept whole was 3.4 MB (#499).
+    stride: usize,
+    /// Bins are kept `step` of the 0.732 Hz bins apart (`width` of them from `lo`); a bin in
+    /// between reads as the kept one below it.
+    step: usize,
     data: Vec<f32>,
 }
 
 impl Surface {
     fn at(&self, col: usize, bin: usize) -> f32 {
-        self.data[col * self.width + (bin - self.lo)]
+        if !col.is_multiple_of(self.stride) {
+            return 0.0;
+        }
+        self.data[col / self.stride * self.width + (bin - self.lo) / self.step]
     }
     fn set(&mut self, col: usize, bin: usize, v: f32) {
-        self.data[col * self.width + (bin - self.lo)] = v;
+        if col.is_multiple_of(self.stride) {
+            self.data[col / self.stride * self.width + (bin - self.lo) / self.step] = v;
+        }
+    }
+    /// Bins `lo..` of kept column `col` (a multiple of `stride`).
+    fn row_from(&self, col: usize, bin: usize) -> &[f32] {
+        &self.data[col / self.stride * self.width + (bin - self.lo)..]
+    }
+}
+
+/// Four complex samples, 16-byte aligned: a transform buffer an LX7 PIE kernel can use in place.
+#[derive(Clone, Copy)]
+#[repr(C, align(16))]
+struct Quad([Complex32; 4]);
+
+impl Quad {
+    #[cfg_attr(feature = "parallel", allow(dead_code))]
+    fn as_complex(q: &mut [Quad]) -> &mut [Complex32] {
+        // SAFETY: `Quad` is `repr(C)` over `[Complex32; 4]` with no padding (32 bytes, a multiple
+        // of its 16-byte alignment), so `q` is `4 · q.len()` contiguous `Complex32`.
+        unsafe { core::slice::from_raw_parts_mut(q.as_mut_ptr().cast::<Complex32>(), q.len() * 4) }
     }
 }
 
@@ -362,24 +432,79 @@ fn search_band(fc: f32, fwid: f32, nfab: Option<(f32, f32)>) -> Option<(Band, f3
 
 /// The three frequency channels of a receive setting: their bin ranges (and
 /// centres) and the bin range the sync surface must cover.
-type Channels = ([Option<(Band, f32)>; 3], usize, usize);
+type Channels = (Vec<Option<(Band, f32, f32)>>, usize, usize);
 
 fn channels(p: &Params) -> Option<Channels> {
-    let side = |fc: f32| {
+    let side = |fc: f32, half: f32| {
         if p.ch0_only {
             None
         } else {
-            search_band(fc, 150.0, Some((p.nfa_hz, p.nfb_hz)))
+            search_band(fc, half, Some((p.nfa_hz, p.nfb_hz))).map(|(b, fc)| (b, fc, half))
         }
     };
-    let chans = [
-        search_band(p.f0_hz, p.ftol_hz, None),
-        side(1350.0),
-        side(1650.0),
-    ];
-    let lo = chans.iter().flatten().map(|(b, _)| b.ja).min()?;
-    let hi = chans.iter().flatten().map(|(b, _)| b.jb).max()?;
+    let mut chans =
+        alloc::vec![search_band(p.f0_hz, p.ftol_hz, None).map(|(b, fc)| (b, fc, p.ftol_hz))];
+    match p.side_channels {
+        SideChannels::Upstream => {
+            chans.push(side(1350.0, 150.0));
+            chans.push(side(1650.0, 150.0));
+        }
+        SideChannels::Band {
+            lo_hz,
+            hi_hz,
+            width_hz,
+            ..
+        } => {
+            let mut fc = lo_hz + width_hz / 2.0;
+            while fc - width_hz / 2.0 < hi_hz {
+                chans.push(side(fc, width_hz / 2.0));
+                fc += width_hz;
+            }
+        }
+    }
+    let lo = chans.iter().flatten().map(|(b, _, _)| b.ja).min()?;
+    let hi = chans.iter().flatten().map(|(b, _, _)| b.jb).max()?;
     Some((chans, lo, hi))
+}
+
+/// With a decimated surface and side channels, channel 0 and the side channels get surfaces of
+/// their own: channel 0's narrow and fine (the 256-point transform, a 4 ms grid), the side
+/// channels' as wide as they reach, coarser in time ([`SCAN_STRIDE`]). One surface for both would
+/// make channel 0's as expensive as the whole band's. The bin ranges `(channel 0, side)`, or
+/// `None` for one shared surface (#499).
+fn split_ranges(
+    p: &Params,
+    chans: &[Option<(Band, f32, f32)>],
+) -> Option<((usize, usize), (usize, usize))> {
+    if !p.decimate_sync || p.ch0_only {
+        return None;
+    }
+    let (b0, _, _) = chans.first().copied().flatten()?;
+    let sides = chans.iter().skip(1).flatten();
+    let lo = sides.clone().map(|(b, _, _)| b.ja).min()?;
+    let hi = sides.map(|(b, _, _)| b.jb).max()?;
+    Some(((b0.ja, b0.jb), (lo, hi)))
+}
+
+/// A surface's bin range, `lo..=hi`.
+type Bins = (usize, usize);
+
+/// Columns of the side channels' surface are this many of channel 0's 2 ms apart: 8 ms. The
+/// correlation peak is about 16 ms wide and the side channels' gate asks for 9 of 13 sync tones:
+/// on single stations across 200–2800 Hz, the same frames as at 4 ms (host, #499).
+const SCAN_STRIDE: usize = 4;
+/// The side channels' surface keeps every other 0.732 Hz bin (1.46 Hz apart). Over 200–2800 Hz
+/// that is a 2 048-point transform, 64 ms a surface on the CoreS3 against 136 at 4 096 (#499).
+const SCAN_BIN_STEP: usize = 2;
+
+/// The surfaces a window needs: the main one over `lo..=hi` (channel 0's range when split) and
+/// the side channels' own when split.
+fn window_ranges(p: &Params) -> Option<(Bins, Option<Bins>)> {
+    let (chans, lo, hi) = channels(p)?;
+    Some(match split_ranges(p, &chans) {
+        Some((main, side)) => (main, Some(side)),
+        None => ((lo, hi), None),
+    })
 }
 
 /// What a window needs before any state is consulted: its analytic signal and the
@@ -388,6 +513,8 @@ fn channels(p: &Params) -> Option<Channels> {
 struct Pre {
     c0: Vec<Complex32>,
     surface: Option<Surface>,
+    /// The side channels' own surface, when they have one ([`split_ranges`]).
+    side: Option<Surface>,
 }
 
 /// A peak to try: where the sync surface said it was.
@@ -411,6 +538,10 @@ impl Receiver {
             ladder: Ladder::new(),
             refs: ToneRefs::new(NSS),
             fir: dsp::AnalyticFir::new(FIR_HALF, 7.0),
+            power_buf: super::scratch::Slot::new(alloc::vec![0f32; NFFT / 2 + 4]),
+            fft_buf: super::scratch::Slot::new(
+                alloc::vec![Quad([Complex32::new(0.0, 0.0); 4]); NFFT / 8],
+            ),
             csync: dsp::sync_wave(),
             #[cfg(feature = "jtty-stats")]
             stats: Default::default(),
@@ -501,13 +632,15 @@ impl Receiver {
         let Some((chans, lo, hi)) = channels(p) else {
             return Vec::new();
         };
-        let (mut c0, surface) = match pre {
+        let split = split_ranges(p, &chans);
+        let (lo, hi) = split.map_or((lo, hi), |(main, _)| main);
+        let (mut c0, surface, side) = match pre {
             // the state-independent work, already done (only valid with no interferer)
-            Some(Pre { c0, surface }) if interferer.is_none() && carried.is_empty() => {
-                (c0, surface)
+            Some(Pre { c0, surface, side }) if interferer.is_none() && carried.is_empty() => {
+                (c0, surface, side)
             }
             // the analytic signal is done, the surface is not: frames carried in change it
-            Some(Pre { c0, .. }) if interferer.is_none() => (c0, None),
+            Some(Pre { c0, .. }) if interferer.is_none() => (c0, None, None),
             _ => {
                 let mut c0 = self.analytic(audio, p);
                 if let Some(x) = interferer {
@@ -515,7 +648,7 @@ impl Receiver {
                     stat_time!(self, Subtract);
                     subtract_frame(&mut c0, &x.tones(), x.f1_hz, x.tsync_s - t0_s);
                 }
-                (c0, None)
+                (c0, None, None)
             }
         };
         for x in carried {
@@ -531,6 +664,8 @@ impl Receiver {
             surface,
             lo,
             hi,
+            side,
+            side_range: split.map(|(_, s)| s),
             seen: Vec::new(),
             ch0_ok: Vec::new(),
             subtracted: Vec::new(),
@@ -546,7 +681,7 @@ impl Receiver {
             if pass == 2 && !w.any_sub {
                 break;
             }
-            if let Some((band, fc)) = chans[0] {
+            if let Some((band, fc, _)) = chans[0] {
                 w.channel(0, band, fc, p.ftol_hz);
             }
         }
@@ -556,12 +691,13 @@ impl Receiver {
             if pass == 2 && !w.any_sub {
                 break;
             }
-            for ch in [1usize, 2] {
-                if let Some((band, fc)) = chans[ch] {
-                    w.channel(ch as u8, band, fc, 150.0);
+            for (ch, c) in chans.iter().enumerate().skip(1) {
+                if let Some((band, fc, half)) = *c {
+                    w.channel(ch as u8, band, fc, half);
                 }
             }
             w.surface = None; // rebuilt from what is left before a second pass
+            w.side = None;
         }
         w.subtracted
     }
@@ -575,6 +711,18 @@ impl Receiver {
         };
         let s = self.sync_surface(c0, lo, hi, p);
         s.data.iter().step_by(97).sum()
+    }
+
+    /// The side channels' own surface for `p` over `c0`, as a checksum; 0 when they share
+    /// channel 0's (for `jtty-bench`).
+    #[doc(hidden)]
+    pub fn bench_side_surface(&self, c0: &[Complex32], p: &Params) -> f32 {
+        match window_ranges(p) {
+            Some((_, Some((lo, hi)))) => {
+                self.side_surface(c0, lo, hi).data.iter().step_by(97).sum()
+            }
+            _ => 0.0,
+        }
     }
 
     /// Everything a window costs after its analytic signal, from the analytic window `c0`:
@@ -598,6 +746,7 @@ impl Receiver {
             Some(Pre {
                 c0,
                 surface: Some(surface),
+                side: None,
             }),
             &mut asm,
             &mut |_| {},
@@ -607,10 +756,30 @@ impl Receiver {
     }
 
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
-        let (_, lo, hi) = channels(p)?;
         let c0 = self.analytic(audio, p);
+        self.prepare_surfaces(c0, p)
+    }
+
+    /// A window's surfaces for `c0` (see [`window_ranges`]).
+    fn prepare_surfaces(&self, c0: Vec<Complex32>, p: &Params) -> Option<Pre> {
+        let ((lo, hi), side) = window_ranges(p)?;
         let surface = Some(self.sync_surface(&c0, lo, hi, p));
-        Some(Pre { c0, surface })
+        let side = side.map(|(lo, hi)| self.side_surface(&c0, lo, hi));
+        Some(Pre { c0, surface, side })
+    }
+
+    /// The side channels' surface over `lo..=hi` ([`SCAN_STRIDE`]).
+    fn side_surface(&self, c0: &[Complex32], lo: usize, hi: usize) -> Surface {
+        stat_add!(self, SurfaceBuilds, 1);
+        stat_time!(self, Surface);
+        // bins 1.46 Hz apart: a 2 048-point transform for the whole of 200-2800 Hz
+        match [SYNC_DECIM_NARROW, SYNC_DECIM, 8, 4, 2]
+            .iter()
+            .find(|&&d| (hi - lo) / SCAN_BIN_STEP + 5 <= NFFT / d / SCAN_BIN_STEP)
+        {
+            Some(&dec) => self.sync_surface_decimated(c0, lo, hi, dec, SCAN_STRIDE, SCAN_BIN_STEP),
+            None => self.sync_surface(c0, lo, hi, &Params::default()),
+        }
     }
 
     /// Window `w`'s analytic signal under [`Params::fir_analytic`], from the continuous filter
@@ -691,12 +860,12 @@ impl Receiver {
         stat_add!(self, SurfaceBuilds, 1);
         stat_time!(self, Surface);
         if p.decimate_sync
-            && let Some(&dec) = [SYNC_DECIM_NARROW, SYNC_DECIM, 8, 4]
+            && let Some(&dec) = [SYNC_DECIM_NARROW, SYNC_DECIM, 8, 4, 2]
                 .iter()
                 .find(|&&d| hi - lo + 5 <= NFFT / d)
         {
             let stride = if p.coarse_sync_grid { 2 } else { 1 };
-            return self.sync_surface_decimated(c0, lo, hi, dec, stride);
+            return self.sync_surface_decimated(c0, lo, hi, dec, stride, 1);
         }
         let width = hi - lo + 1;
         let column =
@@ -738,6 +907,8 @@ impl Receiver {
         Surface {
             lo,
             width,
+            stride: 1,
+            step: 1,
             data: rows.into_iter().flatten().collect(),
         }
     }
@@ -754,10 +925,13 @@ impl Receiver {
         hi: usize,
         dec: usize,
         stride: usize,
+        step: usize,
     ) -> Surface {
-        let nf = NFFT / dec;
-        let width = hi - lo + 1;
-        let mid = (lo + hi) / 2;
+        // `step` > 1 keeps every `step`-th bin: a transform `step` times shorter, bins
+        // `step · 0.732` Hz apart
+        let nf = NFFT / dec / step;
+        let width = (hi - lo) / step + 1;
+        let mid = lo + (hi - lo) / 2 / step * step;
         // The sync wave is 13 symbols, each a pure tone that turns a whole number of times, so
         // (conjugated and mixed by the band centre) it is `c_i · b_t[n]` for symbol `i` sending
         // tone `t = SYNC[i]`: four 192-sample tables and one phasor per symbol, 6 KB where the
@@ -794,23 +968,35 @@ impl Receiver {
             for (i, &sent) in SYNC.iter().enumerate() {
                 let table = &base[usize::from(sent)];
                 let xs = &x[i * NSS..(i + 1) * NSS];
-                for g in 0..groups {
-                    let at = g * dec;
+                let out = &mut buf[i * groups..(i + 1) * groups];
+                // chunk by chunk, with no per-group slicing: at decimation 2 that bookkeeping
+                // was most of 3 ms a column on the CoreS3 (#499)
+                for ((o, rs), vs) in out
+                    .iter_mut()
+                    .zip(table.chunks_exact(dec))
+                    .zip(xs.chunks_exact(dec))
+                {
                     let (mut re, mut im) = (0f32, 0f32);
-                    for (r, v) in table[at..at + dec].iter().zip(&xs[at..at + dec]) {
+                    for (r, v) in rs.iter().zip(vs) {
                         re += r.re * v.re - r.im * v.im;
                         im += r.re * v.im + r.im * v.re;
                     }
-                    buf[i * groups + g] = symbol_phasor[i] * Complex32::new(re, im);
+                    *o = symbol_phasor[i] * Complex32::new(re, im);
                 }
             }
             buf[m..].fill(Complex32::new(0.0, 0.0));
         };
         // bins `lo − 2 ..= hi + 2` of the transform, whose bin 0 is the band centre `mid`
-        let first = (lo + 2 * nf - 2 - mid % nf) % nf;
+        let first = (2 * nf - (mid - lo) / step - 2) % nf;
         let spectrum = |buf: &[Complex32], power: &mut [f32]| {
-            for (j, p) in power.iter_mut().enumerate() {
-                *p = buf[(first + j) % nf].norm_sqr();
+            // `first + j` wraps round the transform at most once: no division per bin
+            let mut k = first;
+            for p in power.iter_mut() {
+                *p = buf[k].norm_sqr();
+                k += 1;
+                if k == nf {
+                    k = 0;
+                }
             }
         };
         // 1-2-3-2-1 smoothing across frequency
@@ -824,9 +1010,6 @@ impl Receiver {
         #[cfg(feature = "parallel")]
         let column =
             |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
-                if !col.is_multiple_of(stride) {
-                    return alloc::vec![0.0; width];
-                }
                 fill(col, buf);
                 fft.process(buf);
                 let mut power = alloc::vec![0f32; width + 4];
@@ -839,8 +1022,9 @@ impl Receiver {
         #[cfg(feature = "parallel")]
         let rows: Vec<Vec<f32>> = {
             use rayon::prelude::*;
-            (0..NCOLS)
+            (0..NCOLS.div_ceil(stride))
                 .into_par_iter()
+                .map(|i| i * stride)
                 .with_min_len(16)
                 .map_init(
                     || (dsp::with_planner(|p| p.plan_forward(nf)), zero()),
@@ -851,25 +1035,51 @@ impl Receiver {
         #[cfg(not(feature = "parallel"))]
         {
             let fft = dsp::with_planner(|p| p.plan_forward(nf));
-            let mut buf = zero();
-            let mut data = Vec::with_capacity(NCOLS * width);
-            let mut power = alloc::vec![0f32; width + 4];
-            for col in 0..NCOLS {
-                if !col.is_multiple_of(stride) {
-                    data.extend(core::iter::repeat_n(0.0, width));
-                    continue;
+            let mut held = self.fft_buf.take();
+            let mut own: Vec<Complex32>;
+            let buf: &mut [Complex32] = match held.as_mut() {
+                Some(q) if q.len() * 4 >= nf => &mut Quad::as_complex(q)[..nf],
+                _ => {
+                    own = zero();
+                    &mut own[..]
                 }
-                fill(col, &mut buf);
-                fft.process(&mut buf);
-                spectrum(&buf, &mut power);
-                smooth(&power, &mut data);
+            };
+            let mut data = Vec::with_capacity(NCOLS.div_ceil(stride) * width);
+            let mut held = self.power_buf.take();
+            let mut own: Vec<f32>;
+            let power: &mut [f32] = match held.as_mut() {
+                Some(b) if b.len() >= width + 4 => &mut b[..width + 4],
+                _ => {
+                    own = alloc::vec![0f32; width + 4];
+                    &mut own[..]
+                }
+            };
+            for col in (0..NCOLS).step_by(stride) {
+                {
+                    stat_time!(self, SurfaceFill);
+                    fill(col, buf);
+                }
+                {
+                    stat_time!(self, SurfaceFft);
+                    fft.process(buf);
+                }
+                spectrum(buf, power);
+                smooth(power, &mut data);
             }
-            Surface { lo, width, data }
+            Surface {
+                lo,
+                width,
+                stride,
+                step,
+                data,
+            }
         }
         #[cfg(feature = "parallel")]
         Surface {
             lo,
             width,
+            stride,
+            step,
             data: rows.into_iter().flatten().collect(),
         }
     }
@@ -1088,10 +1298,8 @@ impl Receiver {
             let batch: Vec<usize> = (first..n.min(first + BATCH)).collect();
             let prepare = |w: &usize| {
                 if p.fir_analytic {
-                    let (_, lo, hi) = channels(p)?;
                     let c0 = self.fir_window(&ana, 0, audio.buf, 0, *w);
-                    let surface = Some(self.sync_surface(&c0, lo, hi, p));
-                    Some(Pre { c0, surface })
+                    self.prepare_surfaces(c0, p)
                 } else {
                     self.prepare(audio.window(*w), p)
                 }
@@ -1285,6 +1493,7 @@ impl Stream {
                     .rx
                     .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next),
                 surface: None,
+                side: None,
             });
             self.rx.step(
                 &audio,
@@ -1393,11 +1602,17 @@ impl Front {
             let c0 = self
                 .rx
                 .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next);
-            let surface = channels(&self.params)
-                .map(|(_, lo, hi)| self.rx.sync_surface(&c0, lo, hi, &self.params));
+            let pre = self
+                .rx
+                .prepare_surfaces(c0.clone(), &self.params)
+                .unwrap_or(Pre {
+                    c0,
+                    surface: None,
+                    side: None,
+                });
             out(Prepared {
                 window: self.next,
-                pre: Pre { c0, surface },
+                pre,
             });
             self.next += 1;
         }
@@ -1496,6 +1711,9 @@ struct Work<'a> {
     surface: Option<Surface>,
     lo: usize,
     hi: usize,
+    /// The side channels' own surface and its bin range, when they have one ([`split_ranges`]).
+    side: Option<Surface>,
+    side_range: Option<(usize, usize)>,
     /// text and start time of every frame decoded so far in this window
     seen: Vec<(String, f32)>,
     /// `(f1, tsync)` of channel-0 successes, so channels 1 and 2 do not repeat them
@@ -1609,6 +1827,19 @@ impl Work<'_> {
         }
     }
 
+    /// The surface channel `ch` searches: the side channels' own when they have one.
+    fn surface_for(&mut self, ch: u8) -> &mut Surface {
+        match (ch, self.side_range) {
+            (0, _) | (_, None) => self.surface(),
+            (_, Some((lo, hi))) => {
+                if self.side.is_none() {
+                    self.side = Some(self.rx.side_surface(&self.c0, lo, hi));
+                }
+                self.side.as_mut().unwrap()
+            }
+        }
+    }
+
     fn surface(&mut self) -> &mut Surface {
         if self.surface.is_none() {
             self.surface = Some(self.rx.sync_surface(&self.c0, self.lo, self.hi, self.p));
@@ -1622,7 +1853,7 @@ impl Work<'_> {
     /// decoded, try the continuation an active message is due to produce.
     fn channel(&mut self, ch: u8, band: Band, fc: f32, fwid: f32) {
         // the surface is built (and timed) before the picks are, so the two stages do not nest
-        let _ = self.surface();
+        let _ = self.surface_for(ch);
         let picks: Vec<Pick> = {
             #[cfg(feature = "jtty-stats")]
             let rx = self.rx;
@@ -1682,7 +1913,12 @@ impl Work<'_> {
         } else {
             // erase what channel 0 found, so this does not rediscover it
             let found: Vec<f32> = self.ch0_ok.iter().map(|&(f1, _)| f1).collect();
-            let surface = self.surface();
+            let split = self.side_range.is_some();
+            let n = match self.p.side_channels {
+                SideChannels::Band { picks, .. } => picks,
+                SideChannels::Upstream => OTHER_CANDIDATES,
+            };
+            let surface = self.surface_for(ch);
             for f1 in found {
                 let centre = (f1 / DF).round() as isize;
                 let (ja, jb) = (
@@ -1692,6 +1928,14 @@ impl Work<'_> {
                 for bin in ja.max(band.ja)..=jb.min(band.jb) {
                     (0..NCOLS).for_each(|col| surface.set(col, bin, 0.0));
                 }
+            }
+            if split {
+                // the side channels' own surface: read in its own order, kept cells only
+
+                return pick_kept(surface, band, n)
+                    .into_iter()
+                    .map(|(bin, col)| pick_at(ch, bin, col))
+                    .collect();
             }
             (0..OTHER_CANDIDATES)
                 .map(|_| {
@@ -1904,8 +2148,18 @@ fn pick_masked(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
     // own order — reading it a bin at a time missed the cache on every column (#499).
     let rescan = |live: &[bool], per_bin: &mut [Option<(f32, usize)>], b0: usize, b1: usize| {
         per_bin[b0..=b1].fill(None);
-        for col in 0..NCOLS {
-            let row = &s.data[col * s.width + (band.ja + b0 - s.lo)..];
+        for col in (0..NCOLS).step_by(s.stride) {
+            if s.step > 1 {
+                for b in b0..=b1 {
+                    let (v, ok) = (s.at(col, band.ja + b), live[col * nb + b]);
+                    let e = &mut per_bin[b];
+                    if ok && e.is_none_or(|(bv, _)| v > bv) {
+                        *e = Some((v, col));
+                    }
+                }
+                continue;
+            }
+            let row = s.row_from(col, band.ja + b0);
             let alive = &live[col * nb + b0..];
             for (i, (&v, &ok)) in row.iter().zip(alive).take(b1 - b0 + 1).enumerate() {
                 let e = &mut per_bin[b0 + i];
@@ -1962,6 +2216,42 @@ fn pick_masked_scan(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
             (bin, col)
         })
         .collect()
+}
+
+/// [`pick_masked`] for a surface that keeps only some columns and bins (`stride`, `step`): each
+/// pick is one pass over the kept cells of `band` in memory order, skipping the rectangles of the
+/// picks before it. Ties go to the earliest column, then the lowest bin, as a scan of the whole
+/// masked band does; a pick's bin is the lowest 0.732 Hz bin its kept cell stands for. Built for
+/// the side channels' 8 ms / 1.46 Hz surface, where `pick_masked`'s per-channel masks cost
+/// 200 ms a window on the CoreS3 (#499).
+fn pick_kept(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
+    let (k0, k1) = ((band.ja - s.lo) / s.step, (band.jb - s.lo) / s.step);
+    let mut picks: Vec<(usize, usize)> = Vec::with_capacity(nc);
+    let mut rects: Vec<(
+        core::ops::RangeInclusive<usize>,
+        core::ops::RangeInclusive<usize>,
+    )> = Vec::with_capacity(nc);
+    for _ in 0..nc {
+        let mut best: Option<(f32, usize, usize)> = None;
+        for col in (0..NCOLS).step_by(s.stride) {
+            let row = &s.data[col / s.stride * s.width..(col / s.stride + 1) * s.width];
+            for (k, &v) in row.iter().enumerate().take(k1 + 1).skip(k0) {
+                let bin = s.lo + k * s.step;
+                if best.is_some_and(|(bv, _, _)| v <= bv)
+                    || rects
+                        .iter()
+                        .any(|(b, c)| b.contains(&bin) && c.contains(&col))
+                {
+                    continue;
+                }
+                best = Some((v, bin.max(band.ja), col));
+            }
+        }
+        let (bin, col) = best.map_or((band.ja, 0), |(_, b, c)| (b, c));
+        rects.push(peak_rect(band, bin, col));
+        picks.push((bin, col));
+    }
+    picks
 }
 
 /// Refine a candidate's frequency and start time (`jtty_peakup.f90`): search ±4 ms
@@ -2164,7 +2454,13 @@ mod pick_tests {
                     }
                 })
                 .collect();
-            let s = Surface { lo, width, data };
+            let s = Surface {
+                lo,
+                width,
+                stride: 1,
+                step: 1,
+                data,
+            };
             let band = Band {
                 ja: lo + 3 + trial,
                 jb: lo + 60 + 9 * trial,

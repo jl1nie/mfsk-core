@@ -993,12 +993,65 @@ fn run_bench() {
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
 
-    log::info!("--- 8b. slow back-end windows, heavy patterns ---");
-    bench_patterns(&["noise only", "awgn -16", "two stations", "long message"], Some(350));
     log::info!("--- 3c. where a rung's time goes ---");
     bench_ladder_profile();
+    {
+        use mfsk_core::jtty::rx::{Params, Receiver};
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+        let rx = Receiver::new().with_f32_metrics();
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+        let mut rng = Lcg(0x5EA);
+        let mut c0 = alloc::vec![num_complex::Complex32::new(0.0, 0.0); mfsk_core::jtty::rx::NCHUNK / 2];
+        fill_noise(&mut c0, &mut rng);
+        use mfsk_core::jtty::rx::SideChannels;
+        for (lo, hi) in [(200.0f32, 2800.0f32), (500.0, 2500.0), (800.0, 2200.0)] {
+        let p = Params {
+            side_channels: SideChannels::Band {
+                lo_hz: lo,
+                hi_hz: hi,
+                width_hz: 200.0,
+                picks: 2,
+            },
+            ..Params::default().embedded()
+        };
+        log::info!("side band {lo}-{hi} Hz:");
+        for _ in 0..1 {
+            rx.reset_stats();
+            let t = now_us();
+            let s = rx.bench_side_surface(&c0, &p);
+            let side = now_us() - t;
+            {
+                use mfsk_core::jtty::stats::Stage as S;
+                let st = rx.stats();
+                log::info!(
+                    "side surface: fill {:.1} ms, transforms {:.1} ms, the rest {:.1} ms",
+                    st.seconds(S::SurfaceFill) * 1e3,
+                    st.seconds(S::SurfaceFft) * 1e3,
+                    side as f64 / 1000.0 - (st.seconds(S::SurfaceFill) + st.seconds(S::SurfaceFft)) * 1e3
+                );
+            }
+            let t = now_us();
+            let m = rx.bench_surface(&c0, &Params { ch0_only: true, ..p });
+            log::info!(
+                "surfaces alone: side (200-2800 Hz, 8 ms) {:.1} ms, channel 0 {:.1} ms [{}]",
+                side as f64 / 1000.0,
+                (now_us() - t) as f64 / 1000.0,
+                s + m
+            );
+        }
+        }
+        let mut buf = alloc::vec![num_complex::Complex32::new(0.0, 0.0); 4096];
+        let fft = default_planner().plan_forward(4096);
+        let t = now_us();
+        for _ in 0..10 {
+            fft.process(&mut buf);
+        }
+        log::info!("4096-point FFT, PSRAM buffer: {:.2} ms", (now_us() - t) as f64 / 10000.0);
+    }
     log::info!("--- 7. two cores: Front on core 1, Back on core 0 ---");
     bench_pipeline();
+    log::info!("--- 8b. slow back-end windows, heavy patterns ---");
+    bench_patterns(&["noise only", "awgn -16", "two stations", "long message"], Some(350));
     log::info!("--- 4. the DSP around the trellis ---");
     bench_dsp();
     log::info!("--- 6. the receiver on the upstream sample recording ---");

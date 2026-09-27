@@ -406,3 +406,38 @@ core (341 ms alone) — plus picks, gate and a peak-up. Two fixes, neither chang
 What is left over the window's 472 ms is the failing ladder call itself. It is left there: the mean is 35–40 % of a window
 and the queue between the cores absorbs a slow window (at most one window deep in the real-time runs); cutting L=4 from
 failing candidates would bring it under at the cost of most of the 19 in 163 frames only L=4 decodes.
+
+## 13. A band scan beside channel 0 (2026-09-27)
+
+rjtty's side channels at 1350/1650 Hz are a narrowing ("temporarily, at least", upstream b00c9bd04) of a scan of the whole
+band in 200 Hz channels, each taking two candidates, unrefined, through a stricter gate (9 of 13 sync tones, 5 dB). That is
+now `Params::side_channels`: `SideChannels::Upstream` (the default) or `SideChannels::Band { lo_hz, hi_hz, width_hz, picks }`.
+
+**Host, single stations every 100 Hz from 300 to 2700 Hz, three trials each (found / present):**
+
+| side channels | 1200–1800 Hz, −14/−10/−6/−2 dB | elsewhere | unexpected | ladder calls a window, station / noise |
+|---|---|---|---|---|
+| none (channel 0 only) | 0/16 each | 0/56 each | 0 | 0.057 / 0.059 |
+| upstream 1350/1650 ± 150 | 9, 16, 15, 16 | 0, 0, 0, 1 | 0 | 0.088 / 0.056 |
+| 200–2800 Hz, 200 Hz channels | 10, 14, 15, 15 | 43, 55, 55, 54 | 0 | 0.19 / 0.08 |
+
+**On the CoreS3.** With a decimated surface the side channels get a surface of their own (channel 0's would otherwise
+become as wide as the band): every fourth column (8 ms — at 16 ms the unrefined candidates fail the gate: 1 of 56 at
+−14 dB) and every other bin (1.46 Hz, a 2 048-point transform over 200–2800 Hz; the same frames as 0.732 Hz), kept
+compactly (the whole 237-column surface was a 3.4 MB allocation that failed). Alone it went 485 → 148 ms a window: the
+transform's buffer, 16-byte aligned in internal DRAM, runs the esp-dsp kernel in place (in PSRAM it took 10 ms at 4 096
+points); the per-column power sits in internal DRAM; one candidate a channel (the same frames as two on these single
+stations) picked from the kept cells in memory order (per-channel masks had cost 200 ms).
+
+`Params::embedded()` now scans 200–2800 Hz beside channel 0. Two cores, audio at its real rate:
+
+| | front (core 1) | back (core 0) mean / worst | decoded after a window, mean / worst |
+|---|---|---|---|
+| ±50 Hz, sample recording | 310 ms | 205 / 744 ms | 0.54 / 1.35 s |
+| ±50 Hz, noise | 301 ms | 166 / 683 ms | 0.48 / 1.08 s |
+| ±150 Hz, sample recording | 468 ms | 444 / 929 ms | 1.72 / 2.47 s |
+
+Channel 0 reads as before (jtty_sweep 163, the fading corpus and the testsig catalogue unchanged); on a busy band the host
+profile finds 9 messages with three stations and 14 with six, against 4 and 10 without the scan. Internal DRAM low-water
+fell to 54 KB (the 32 KB transform buffer and the 16 KB power row), which the application will have to watch. The front end
+is at two thirds of a window with the scan; ±150 Hz with it does not keep up.
