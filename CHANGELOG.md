@@ -2,6 +2,11 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: `Receiver::new_f32_metrics`, the trellis survivors allocated first (#499).** Where a buffer lands is decided when
+  it is allocated. Built as `new().with_f32_metrics()`, the two 32 KB survivors come last, and on the CoreS3 one of them
+  found no internal block even on a fresh heap; a second receiver in the same process got neither. That was the rebuild
+  slowdown. A ladder call costs 235 ms with both internal against 556 ms in PSRAM. `new_f32_metrics` decodes exactly as
+  the builder does. The CoreS3 placement measurements are in `docs/notes/JTTY_CORES3_APP.md` §3.
 - **JTTY: a receiver that drops windows instead of stalling, and its own ladder call for the band scan (#499).**
   `Front::push_or_drop` asks for room before each window and, when the decoder has fallen behind, drops the window
   unprepared; `Back` now takes the gap in window numbers (`Front::dropped`, `Back::skipped`), so the queue between the

@@ -816,7 +816,9 @@ fn f32_metric_receiver_reads_the_same_frames() {
         files.push(s);
     }
     assert!(files.len() >= 10, "{} files", files.len());
-    let (a, b) = (Receiver::new(), Receiver::new().with_f32_metrics());
+    let (a, b) = (Receiver::new(), Receiver::new_f32_metrics());
+    // the same receiver built the other way round
+    let c = Receiver::new().with_f32_metrics();
     for f in &files {
         let audio = common::load_wav_i16(f);
         let key = |v: Vec<FrameDecode>| -> Vec<(String, i64, i64, bool)> {
@@ -836,6 +838,12 @@ fn f32_metric_receiver_reads_the_same_frames() {
             key(b.scan(&audio, &Params::default())),
         );
         assert_eq!(fa, fb, "{}", f.display());
+        assert_eq!(
+            key(c.scan(&audio, &Params::default())),
+            fb,
+            "{}",
+            f.display()
+        );
     }
 }
 

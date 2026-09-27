@@ -68,6 +68,34 @@ surface sits 152 bytes above 64 KiB, so the bench's 64 KiB build threshold must 
 
 Build the receiver **once**, in `prepare`: a second build moved ~32 KB to PSRAM and slowed busy bands by half (§14).
 
+### E0, first half: measured in the bench (2026-09-27/28)
+
+The CoreS3, no WiFi, audio at its real rate, five trials each of six stations across the band and of noise only. The
+buffers were placed by build order: `Receiver::new` allocates the side surface's FFT buffer and power row, and
+`with_f32_metrics` allocates the survivors. Internal use is per receiver.
+
+| configuration | internal | a ladder call (band) | front / back mean, ms | back worst | delay worst | windows dropped | band found |
+|---|---|---|---|---|---|---|---|
+| A scan, all internal (builder order) | 154 KB | 337 ms | 407 / 371 | 1057 | 3.13 s | 0 | 20/30 |
+| B scan, survivors in PSRAM | 121 KB | 556 ms | 502 / 572 | 1547 | 6.44 s | 40 | 11/30 |
+| C scan, survivors internal, the rest in PSRAM | 78 KB | 235 ms | 481 / 352 | 855 | 2.24 s | 0 | 20/30 |
+| D scan, all in PSRAM | 14 KB | 705 ms | 778 / 778 | 2015 | 12.1 s | 39 | 16/30 |
+| E channel 0 only, survivors internal | 78 KB | 276 ms | 147 / 133 | 457 | 0.63 s | 0 | 3/30 |
+| F channel 0 only, all in PSRAM | 14 KB | 614 ms | 176 / 220 | 930 | 1.77 s | 0 | 3/30 |
+| G = C with both stacks in PSRAM | 78 KB | 244 ms | 499 / 370 | 913 | 2.58 s | 0 | 20/30 |
+| A built again | 122 KB | 559 ms | 501 / 566 | 1547 | 6.42 s | 39 | 9/30 |
+
+- **The survivors decide the ladder.** A call costs 235 ms with both survivors internal and 556–705 ms with them in PSRAM.
+  Built after the rest, as `new().with_f32_metrics()` does, one of the two found no free 32 KB internal block even on a
+  fresh heap (A is 33 KB above B, and slower than C). A second receiver got neither ("A built again" repeats B). That
+  was §14's rebuild slowdown. `Receiver::new_f32_metrics` now allocates them first.
+- **The scan's buffers decide the front end.** In PSRAM they cost ~150 ms a window (C's front 481 ms against a 472 ms
+  window). With everything in PSRAM (D) the front end does not keep up at all.
+- **Stacks in PSRAM cost little**: C → G is +4 % on a ladder call and +18 ms on the back end.
+- **What fits beside WiFi:** channel 0 only. E (78 KB internal) is the lightest, and whether it fits is E0's second
+  half. F (14 KB) certainly fits, and keeps up. The scan needs ~126 KB internal (survivors plus the scan's buffers), so
+  it needs library work first: smaller survivors, or a side surface that is fast in PSRAM.
+
 ## 4. Audio path, tasks, and the sample clock
 
 ```

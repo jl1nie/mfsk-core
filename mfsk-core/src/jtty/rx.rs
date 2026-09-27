@@ -553,8 +553,22 @@ struct Outcome {
 impl Receiver {
     /// Build the tables (the ladder's trellis plans, tone references, sync wave).
     pub fn new() -> Self {
+        Self::with_ladder(Ladder::new())
+    }
+
+    /// [`Self::new`] with the ladder's trellis metrics in `f32`, as [`Self::with_f32_metrics`],
+    /// but with the trellis survivors (2 × 32 KB) allocated **first**, before the receiver's
+    /// other buffers. Where they land is decided when they are allocated: on the CoreS3 a rung
+    /// costs 235 ms with both in internal DRAM and 556 ms with them in PSRAM, and built after
+    /// the rest (`new().with_f32_metrics()`), one of the two found no 32 KB internal block left
+    /// even on a fresh heap, and a second receiver in the same process got neither (#499, E0).
+    pub fn new_f32_metrics() -> Self {
+        Self::with_ladder(Ladder::new().with_f32_metrics())
+    }
+
+    fn with_ladder(ladder: Ladder) -> Self {
         Self {
-            ladder: Ladder::new(),
+            ladder,
             refs: ToneRefs::new(NSS),
             fir: dsp::AnalyticFir::new(FIR_HALF, 7.0),
             power_buf: super::scratch::Slot::new(alloc::vec![0f32; NFFT / 2 + 4]),
@@ -589,6 +603,8 @@ impl Receiver {
     }
 
     /// [`Self::new`] with the ladder's trellis metrics in `f32` ([`Ladder::with_f32_metrics`]).
+    /// The survivors are allocated after the rest of the receiver; where placement matters,
+    /// [`Self::new_f32_metrics`] allocates them first.
     pub fn with_f32_metrics(mut self) -> Self {
         self.ladder = self.ladder.with_f32_metrics();
         self
