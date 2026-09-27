@@ -319,3 +319,61 @@ in the symbol bandwidth. `f32` trellis metrics, ladder in PSRAM. Logs: `m5stack-
   finds partial matches in (section 8) and the ladder rejects at up to 2.1 s a call. `carry` is what removed those on the
   host and it needs the subtraction v1 does without; `Params::mask` (section 9) does not substitute for it. So the next
   item is the ladder's cost (rung 1 alone 414 ms with the trellis in internal DRAM), not the front end.
+
+## 11. A receiver that runs: two cores, speed first (2026-09-27)
+
+Everything here is on the CoreS3 unless it says host; the logs are `m5stack-cores3-app/logs/jtty_*_2026-09-27.log`.
+
+**Where the time went, and what took it away.** `jtty-stats` now runs on the board (64-bit counters behind a mutex where
+the target has no 64-bit atomics), so `jtty-bench` prints each stage's time a window.
+
+| change | stage | before → after (ms a window, ±50 Hz) |
+|---|---|---|
+| FIR analytic signal computed once per sample as it arrives, not once per overlapping window | analytic | 181 → 47 |
+| channel-0 picks kept per bin and re-read only where a pick masks, in the surface's memory order | pick | 55 → 20 (±150 Hz: 447 → 64) |
+| trellis tables shared per block length (380 → 22 KB); survivor arrays made once, in internal DRAM | ladder, recording | 434 → 221 |
+| 256-point surface when channel 0 fits 187 Hz; sync on a 4 ms grid (`coarse_sync_grid`) | surface | 221 → 77 |
+| one-bit trellis blocks by a small fixed-size merge | rung L=1 | 190 → 140 |
+| merge of sorted lists instead of an insert per extension (L=4 lazily) | rungs L=1/2/4 | 424/308/341 → 140/142/201 |
+
+The ladder's "about 1 s a call" was not the plan tables: the bench held the internal-DRAM preference at 40 KB while
+decoding, small allocations filled internal DRAM, and the 32 KB survivor arrays fell to PSRAM. A receiver is now built
+while allocations prefer internal DRAM and allocates nothing of size while it decodes. Copying the surface's input to
+internal DRAM changed nothing (compute-bound) and was dropped. rayon on two workers pinned one to each core made things
+slower (surface 221 → 332 ms: the cores share a 32 KB data cache and a 16 KB instruction cache), and was dropped.
+
+**Two cores.** `rx::Front` (analytic signal, sync surface) and `rx::Back` (candidates, ladder, assembly) split a
+`Stream` for settings without subtraction; together they report exactly what a `Stream` does (test). `jtty-bench` part 7
+runs Front on core 1 fed at the audio's real rate and Back on core 0 behind a three-deep queue.
+
+**`Params::embedded()`, speed first**: channel 0 only, FIR analytic signal, decimated surface on a 4 ms grid,
+raw-then-refined candidates, a ladder budget of one call a window, rungs L=1 and L=4, no subtraction, `f32` metrics.
+
+| two cores, real time | front (core 1) | back (core 0) mean / worst | decoded after the window's last sample, mean / worst |
+|---|---|---|---|
+| ±50 Hz, sample recording | 138 ms | 178 / 485 ms | 0.32 / 0.63 s |
+| ±50 Hz, noise | 136 ms | 92 / 463 ms | 0.23 / 0.62 s |
+| ±150 Hz, sample recording | 210 ms | 279 / 555 ms | 0.51 / 0.80 s |
+| ±150 Hz, noise | 205 ms | 192 / 570 ms | 0.41 / 0.77 s |
+
+against a window of 472 ms; the queue never held more than one window; internal DRAM low-water mark 100 KB.
+
+**What it reads, against `rjtty`** (sjtty, 20 trials a cell; frames at 1500 Hz):
+
+| corpus | rjtty | `embedded()` | budget 2 + refined retry, rungs L=1/2/4 |
+|---|---|---|---|
+| AWGN and ITU mid-moderate (`jtty_sweep`, 360) | 160 | 163 | 163 |
+| AWGN off the bin grid, f0 = 1500.37 Hz (140) | 89 | 92 | 93 |
+| ITU LM, 1.5 Hz / 2 ms (120) | 97 | 92 | 97 |
+| ITU MD, 1 Hz / 2 ms (120) | 92 | 89 | 92 |
+| ITU LD, 10 Hz / 6 ms (120) | 78 | 67 | 75 |
+| unexpected decodes | — | 0 | 0 |
+
+The host's default configuration matches `rjtty` file for file on the fading corpus. What `embedded()` does not read by
+design: stations outside channel 0 (rjtty's side channels at 1350/1650 Hz, a temporary narrowing of a whole-band scan
+upstream, commit b00c9bd04), and a weak station under a strong one near it (no subtraction). The half-symbol rung accepted
+no frame the others missed on any of these 860 files and made the unexpected decodes; it is off in `embedded()`
+(`Rungs::FULL_SYMBOL` and `Rungs::L1_L4`).
+
+Still open: the receiver inside the CoreS3 application (display, WiFi and UAC on the same cores), a band scan in
+upstream's manner (strict gate, no refinement) beside channel 0, and a drifting-carrier corpus (sjtty has no drift).
