@@ -1030,7 +1030,11 @@ fn bench_stack_place() {
 /// front ms a window, back ms a window, the slowest back window, and the time taken over the
 /// audio's length. `scripts/jtty_board_stats.py` tabulates it beside the host's
 /// `jtty_board_patterns` output.
-fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: bool, budget: Option<usize>, side_budget: Option<usize>, queue: usize) {
+/// E0 (#499, app design §3): put the front end's stack in PSRAM.
+static FRONT_STACK_PSRAM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[allow(clippy::too_many_arguments)]
+fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: bool, budget: Option<usize>, side_budget: Option<usize>, queue: usize, max_trials: u32, tweak: &dyn Fn(&mut mfsk_core::jtty::rx::Params)) {
     use alloc::string::String;
     use alloc::sync::Arc;
     use esp_idf_svc::hal::cpu::Core;
@@ -1046,8 +1050,10 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
         params.ladder_budget = (b > 0).then_some(b);
     }
     params.side_ladder_budget = side_budget;
+    tweak(&mut params);
     log::info!(
-        "patterns: channel 0 budget {:?}, side budget {:?}, queue {}",
+        "patterns: channel 0 only {}, channel 0 budget {:?}, side budget {:?}, queue {}",
+        params.ch0_only,
         params.ladder_budget,
         params.side_ladder_budget,
         queue
@@ -1056,7 +1062,10 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
     let cases: alloc::vec::Vec<_> = all
         .into_iter()
         .filter(|c| only.is_empty() || only.iter().any(|o| c.pattern.starts_with(o)))
+        .filter(|c| c.trial < max_trials)
         .collect();
+    let stats_before = rx.stats();
+    let mut all_windows = 0i64;
     log::info!("patterns: {} cases", cases.len());
     for case in cases {
         let Some(audio) = case.audio() else {
@@ -1069,13 +1078,17 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
         let dropped = Arc::new(core::sync::atomic::AtomicUsize::new(0));
         let front_us = Arc::new(core::sync::atomic::AtomicU32::new(0));
         let depth = Arc::new(core::sync::atomic::AtomicUsize::new(0));
-        let cfg = ThreadSpawnConfiguration {
+        let mut cfg = ThreadSpawnConfiguration {
             name: Some(c"jtty_front"),
             stack_size: 16 * 1024,
             priority: 4,
             pin_to_core: Some(Core::Core1),
             ..ThreadSpawnConfiguration::default()
         };
+        if FRONT_STACK_PSRAM.load(core::sync::atomic::Ordering::Relaxed) {
+            use esp_idf_svc::hal::task::thread::MallocCap;
+            cfg.stack_alloc_caps = MallocCap::Spiram | MallocCap::Cap8bit;
+        }
         apply_spawn_config(&cfg, "cfg");
         let t_start = now_us();
         let handle = {
@@ -1173,6 +1186,7 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
         });
         let _ = handle.join();
         let wall = (now_us() - t_start) as f64 / 1e6;
+        all_windows += windows;
         done.sort();
         let w = windows.max(1) as f64;
         log::info!(
@@ -1187,6 +1201,26 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
             if paced { lag_worst as f64 / 1e6 } else { 0.0 },
             deepest,
             dropped.load(core::sync::atomic::Ordering::Relaxed)
+        );
+    }
+    {
+        use mfsk_core::jtty::stats::{Counter as C, Stage as S};
+        let (a, b) = (rx.stats(), stats_before);
+        let w = all_windows.max(1) as f64;
+        let ms = |s: S| (a.seconds(s) - b.seconds(s)) * 1000.0;
+        let calls = a.count(C::LadderCalls) - b.count(C::LadderCalls);
+        log::info!(
+            "STAGES\t{} windows\tms/window: analytic {:.0} surface {:.0} pick {:.0} peakup {:.0} gate {:.0} correlate {:.0} ladder {:.0}\tladder calls {} at {:.0} ms each",
+            all_windows,
+            ms(S::Analytic) / w,
+            ms(S::Surface) / w,
+            ms(S::Pick) / w,
+            ms(S::Peakup) / w,
+            ms(S::Gate) / w,
+            ms(S::Correlate) / w,
+            ms(S::Ladder) / w,
+            calls,
+            ms(S::Ladder) / calls.max(1) as f64
         );
     }
     log::info!(
@@ -1325,6 +1359,93 @@ fn bench_selftest() {
     log::info!("SELFTEST: PASS ({checked} case(s))");
 }
 
+/// E0 of the app design (`docs/notes/JTTY_CORES3_APP.md` §3): the same patterns, audio at its
+/// real rate, with the receiver's buffers placed in internal DRAM or PSRAM by build order —
+/// `Receiver::new` allocates the side surface's FFT buffer and power row, `with_f32_metrics`
+/// the trellis survivors — and the tasks' stacks in either. Each configuration builds its own
+/// receiver; the heap before and after each build shows where it went, and the first
+/// configuration runs again last, to catch a later build landing differently (§14).
+fn bench_placement() {
+    use alloc::sync::Arc;
+    use esp_idf_svc::hal::cpu::Core;
+    use esp_idf_svc::hal::task::thread::{MallocCap, ThreadSpawnConfiguration};
+    use mfsk_core::jtty::rx::{Params, Receiver};
+
+    struct Config {
+        name: &'static str,
+        scan: bool,
+        rest_internal: bool,
+        survivors_internal: bool,
+        stacks_psram: bool,
+        /// `Receiver::new_f32_metrics`: the survivors allocated first, under `rest_internal`
+        survivors_first: bool,
+    }
+    const fn c(name: &'static str, scan: bool, rest_internal: bool, survivors_internal: bool, stacks_psram: bool) -> Config {
+        Config { name, scan, rest_internal, survivors_internal, stacks_psram, survivors_first: false }
+    }
+    const fn first(name: &'static str) -> Config {
+        Config { name, scan: true, rest_internal: true, survivors_internal: true, stacks_psram: false, survivors_first: true }
+    }
+    // First run (2026-09-27, all nine with the builder order): A B C D E F G H and A again; the
+    // survivors built last lost an internal block (A: one of two; A again: both).
+    let configs = [
+        first("A' survivors first, all internal"),
+        c("C scan, survivors internal, the rest in PSRAM", true, false, true, false),
+        first("A' again"),
+    ];
+    const TRIALS: u32 = 5;
+    const QUEUE: usize = 6;
+    let threshold = |internal: bool| unsafe {
+        esp_idf_svc::sys::heap_caps_malloc_extmem_enable(if internal { 64 * 1024 } else { 2048 })
+    };
+    for cfg in configs {
+        log::info!("PLACEMENT\t{}", cfg.name);
+        log_heap("placement: before the receiver");
+        let rx = if cfg.survivors_first {
+            threshold(cfg.rest_internal);
+            Arc::new(Receiver::new_f32_metrics())
+        } else {
+            threshold(cfg.rest_internal);
+            let rx = Receiver::new();
+            threshold(cfg.survivors_internal);
+            Arc::new(rx.with_f32_metrics())
+        };
+        threshold(false);
+        log_heap("placement: receiver built");
+        FRONT_STACK_PSRAM.store(cfg.stacks_psram, core::sync::atomic::Ordering::Relaxed);
+        let scan = cfg.scan;
+        let run = move || {
+            let tweak = move |p: &mut Params| p.ch0_only = !scan;
+            bench_patterns(&rx, true, &["band"], None, true, None, Some(1), QUEUE, TRIALS, &tweak);
+            bench_patterns(&rx, false, &["noise only"], None, true, None, Some(1), QUEUE, TRIALS, &tweak);
+        };
+        if cfg.stacks_psram {
+            // the back end on a PSRAM stack, where the app would put it: core 0, priority 5
+            let spawn = ThreadSpawnConfiguration {
+                name: Some(c"jtty_back"),
+                stack_size: 32 * 1024,
+                priority: 5,
+                pin_to_core: Some(Core::Core0),
+                stack_alloc_caps: MallocCap::Spiram | MallocCap::Cap8bit,
+                ..ThreadSpawnConfiguration::default()
+            };
+            apply_spawn_config(&spawn, "jtty_back");
+            let handle = std::thread::Builder::new().stack_size(32 * 1024).spawn(run);
+            apply_spawn_config(&ThreadSpawnConfiguration::default(), "the default");
+            match handle {
+                Ok(h) => {
+                    let _ = h.join();
+                }
+                Err(e) => log::error!("placement: back thread not started: {e:?}"),
+            }
+        } else {
+            run();
+        }
+        FRONT_STACK_PSRAM.store(false, core::sync::atomic::Ordering::Relaxed);
+        log_heap("placement: receiver dropped");
+    }
+}
+
 fn run_bench() {
     log::info!("=== jtty-bench: what a JTTY receive window costs on the LX7 (#499, E0) ===");
     log::info!("window budget: 472 ms (a quarter frame); host: 11.7 ms per window, one thread");
@@ -1396,18 +1517,8 @@ fn run_bench() {
     log::info!("--- 7b. Front's and Back's task stacks, internal vs PSRAM (#499, app design §3/§11) ---");
     bench_stack_place();
     log::info!("--- 8c. pileups and busy bands, audio at its real rate ---");
-    {
-        // one receiver for every set, as an application builds it once
-        log_heap("patterns: before the receiver");
-        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
-        let rx = alloc::sync::Arc::new(mfsk_core::jtty::rx::Receiver::new().with_f32_metrics());
-        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
-        log_heap("patterns: receiver built");
-        let busy = ["band", "channel 0, 2", "pileup 3 callers,"];
-        // six windows may wait: on six stations sending at once, a depth of 3 dropped 7 windows
-        // and 5 messages of 60 (delay at most 2.65 s), 5 dropped 2 windows and nothing decoded
-        bench_patterns(&rx, true, &busy, None, true, None, Some(1), 6);
-    }
+    log::info!("--- E0. where the receiver's memory lives, and what it costs (app design section 3) ---");
+    bench_placement();
     log::info!("--- 4. the DSP around the trellis ---");
     bench_dsp();
     log::info!("--- 6. the receiver on the upstream sample recording ---");
