@@ -4,6 +4,9 @@
 #![no_std]
 
 extern crate alloc;
+// `jtty-bench` runs its two-core pipeline on std threads (#499)
+#[cfg(feature = "jtty-bench")]
+extern crate std;
 
 pub mod apps;
 pub mod dual_core;

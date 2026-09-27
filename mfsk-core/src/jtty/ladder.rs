@@ -15,18 +15,71 @@
 //!
 //! ## Parallel by construction
 //!
-//! With the `parallel` feature the four rungs are evaluated concurrently and the
-//! first accepting one *in rung order* is taken, so the result is exactly the
-//! sequential one. This is speculative — a strong signal that L = 1 accepts
-//! still pays for the others, on other cores — but candidates that decode
-//! nothing, the great majority, run every rung anyway and finish in the time of
-//! the slowest instead of the sum.
+//! With the `parallel` feature the rungs run in two lanes, L = 1 then the half-symbol
+//! rung, and L = 2 then L = 4, and the first accepting one *in rung order* is taken, so
+//! the result is exactly the sequential one. A lane's second rung is skipped when an
+//! earlier rung in order has already accepted; candidates that decode nothing, the great
+//! majority, finish in the time of the slower lane instead of the sum of four.
 
-use super::trellis::{Correlations, ListResult, Plan};
+use super::scratch::Slot;
+use super::trellis::{Correlations, ListResult, Plan, TrellisScratch};
+
 use super::{PAYLOAD_BITS, Payload};
 
 /// Coherent lengths of the three full-symbol rungs.
 pub const COHERENT_LENGTHS: [usize; 3] = [1, 2, 4];
+
+/// Which rungs of the ladder to try (a receiver setting, `rx::Params::ladder_rungs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rungs {
+    /// Coherent length 1, 2 and 4 on the full-symbol correlations.
+    pub l1: bool,
+    /// Coherent length 2.
+    pub l2: bool,
+    /// Coherent length 4.
+    pub l4: bool,
+    /// Length 1 on the half-symbol energies.
+    pub half: bool,
+}
+
+impl Rungs {
+    /// All four, as upstream.
+    pub const ALL: Self = Self {
+        l1: true,
+        l2: true,
+        l4: true,
+        half: true,
+    };
+    /// The three full-symbol rungs. On 860 simulated files — AWGN at 1500 Hz and off the bin
+    /// grid, ITU LM, MD and LD fading — the half-symbol rung accepted no frame the others missed
+    /// and made all four unexpected decodes of the embedded receiver; on the CoreS3 it is 140 ms
+    /// of every candidate that fails (#499).
+    pub const FULL_SYMBOL: Self = Self {
+        half: false,
+        ..Self::ALL
+    };
+
+    /// L=1 then L=4: what an embedded receiver keeps when speed comes before the last frames.
+    /// On the CoreS3 a candidate that fails every rung costs 341 ms, against 483 with L=2 and
+    /// 623 with all four; jtty_sweep's AWGN and mid-moderate files decode the same (163 of 360),
+    /// ITU LM / MD fading loses 2 + 2 of 240 frames and AWGN off the bin grid 1 of 140 (#499).
+    pub const L1_L4: Self = Self {
+        l1: true,
+        l2: false,
+        l4: true,
+        half: false,
+    };
+
+    fn has(self, i: usize) -> bool {
+        [self.l1, self.l2, self.l4, self.half][i]
+    }
+}
+
+impl Default for Rungs {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
 
 /// A payload some rung accepted, and how.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,9 +106,12 @@ pub struct Ladder {
     plans: [Plan; 3],
     /// Carry the path metrics in `f32` (see [`Plan::decode_f32`]).
     f32_metrics: bool,
+    /// Survivor arrays made with the `f32` metrics and reused by every decode that finds them
+    /// free (one at a time; a concurrent rung allocates its own).
+    scratch: Option<Slot<TrellisScratch>>,
     /// Rungs run, for `jtty-stats`.
     #[cfg(feature = "jtty-stats")]
-    rungs: [core::sync::atomic::AtomicU64; 4],
+    rungs: [super::stats::Acc; 4],
 }
 
 impl Default for Ladder {
@@ -70,6 +126,7 @@ impl Ladder {
         Self {
             plans: COHERENT_LENGTHS.map(Plan::new),
             f32_metrics: false,
+            scratch: None,
             #[cfg(feature = "jtty-stats")]
             rungs: Default::default(),
         }
@@ -78,34 +135,41 @@ impl Ladder {
     /// Rungs run so far: L=1, L=2, L=4, half-symbol L=1 (`jtty-stats`).
     #[cfg(feature = "jtty-stats")]
     pub fn rung_counts(&self) -> [u64; 4] {
-        core::array::from_fn(|i| self.rungs[i].load(core::sync::atomic::Ordering::Relaxed))
+        core::array::from_fn(|i| self.rungs[i].get())
     }
 
     /// Zero the rung counts (`jtty-stats`).
     #[cfg(feature = "jtty-stats")]
     pub fn reset_rung_counts(&self) {
-        self.rungs
-            .iter()
-            .for_each(|r| r.store(0, core::sync::atomic::Ordering::Relaxed));
+        self.rungs.iter().for_each(super::stats::Acc::clear);
     }
 
     /// The same ladder with the trellis metrics in `f32`: hardware on a core whose `f64` is
     /// software (`docs/notes/JTTY_UPSTREAM.md`, "E0 results"), and the choice measured
     /// against `f64` by `tests/jtty_f32_metrics.rs`.
+    ///
+    /// The two 32 KB survivor arrays are allocated here, once, and reused by each decode: on
+    /// the CoreS3 a receiver built while allocations prefer internal DRAM keeps them there,
+    /// where a rung costs 190 ms against 410 ms in PSRAM (#499), and later decodes allocate
+    /// nothing whatever the heap then holds.
     pub fn with_f32_metrics(mut self) -> Self {
         self.f32_metrics = true;
+        self.scratch = Some(Slot::new(TrellisScratch::new()));
         self
     }
 
     /// One rung: the list decode and the acceptance rule.
     fn rung(&self, index: usize, zsym: &Correlations, zhalf: &Correlations) -> Option<Accepted> {
         #[cfg(feature = "jtty-stats")]
-        self.rungs[index].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.rungs[index].add(1);
         let half = index == 3;
         let plan = &self.plans[if half { 0 } else { index }];
         let z = if half { zhalf } else { zsym };
         let list = if self.f32_metrics {
-            plan.decode_f32(z, true)
+            match self.scratch.as_ref().and_then(Slot::take) {
+                Some(mut guard) => plan.decode_f32_in(z, true, &mut guard),
+                None => plan.decode_f32(z, true),
+            }
         } else {
             plan.decode(z, true)
         };
@@ -123,17 +187,63 @@ impl Ladder {
     /// Run the ladder on the full-symbol correlations `zsym` and the half-symbol
     /// energies `zhalf` (real values in a `Correlations`).
     pub fn decode(&self, zsym: &Correlations, zhalf: &Correlations) -> Option<Accepted> {
+        self.decode_rungs(zsym, zhalf, Rungs::ALL)
+    }
+
+    /// [`Self::decode`] trying only the rungs in `rungs`, in ladder order.
+    pub fn decode_rungs(
+        &self,
+        zsym: &Correlations,
+        zhalf: &Correlations,
+        rungs: Rungs,
+    ) -> Option<Accepted> {
         #[cfg(feature = "parallel")]
         {
-            let ((a, b), (c, d)) = rayon::join(
-                || rayon::join(|| self.rung(0, zsym, zhalf), || self.rung(1, zsym, zhalf)),
-                || rayon::join(|| self.rung(2, zsym, zhalf), || self.rung(3, zsym, zhalf)),
+            // Two lanes, each two rungs in turn: L=1 then the half-symbol rung, L=2 then L=4
+            // (about 190+190 and 145+265 ms on the CoreS3). A lane skips its second rung once a
+            // rung earlier in ladder order has accepted, so a frame L=1 takes costs one rung's
+            // time, and one no rung takes the slower lane's instead of all four (#499). The
+            // result is still the first accepting rung in order.
+            use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
+            let accepted: [AtomicBool; 4] = Default::default();
+            let run = |i: usize| {
+                if !rungs.has(i) {
+                    return None;
+                }
+                let r = self.rung(i, zsym, zhalf);
+                if r.is_some() {
+                    accepted[i].store(true, SeqCst);
+                }
+                r
+            };
+            let ((a, d), (b, c)) = rayon::join(
+                || {
+                    let a = run(0);
+                    // the half-symbol rung is last in order: skip it if L=1 or L=2 took the frame
+                    let d = if a.is_none() && !accepted[1].load(SeqCst) {
+                        run(3)
+                    } else {
+                        None
+                    };
+                    (a, d)
+                },
+                || {
+                    let b = run(1);
+                    let c = if b.is_none() && !accepted[0].load(SeqCst) {
+                        run(2)
+                    } else {
+                        None
+                    };
+                    (b, c)
+                },
             );
             a.or(b).or(c).or(d)
         }
         #[cfg(not(feature = "parallel"))]
         {
-            (0..4).find_map(|i| self.rung(i, zsym, zhalf))
+            (0..4)
+                .filter(|&i| rungs.has(i))
+                .find_map(|i| self.rung(i, zsym, zhalf))
         }
     }
 }

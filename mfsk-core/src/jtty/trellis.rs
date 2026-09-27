@@ -69,6 +69,76 @@ trait Metric: Float {}
 impl Metric for f32 {}
 impl Metric for f64 {}
 
+/// What a decode reports about itself while it runs; `()` reports nothing and costs nothing.
+trait Probe {
+    /// A candidate extension of a path (a metric was added).
+    fn extension(&mut self) {}
+    /// A path was placed in an end state's list.
+    fn insert_call(&mut self) {}
+    /// The merge met a word already in the list (first block of a pass only).
+    fn duplicate(&mut self) {}
+    /// End of phase `i` (see [`Profile::laps`]).
+    fn lap(&mut self, _phase: usize) {}
+}
+impl Probe for () {}
+
+/// Cycles and counts of one decode, for `jtty-bench` on the LX7 (#499); [`Plan::profile_f32`].
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Profile {
+    /// Ticks of the caller's clock per phase: 0 energies, 1 survivor arrays, 2 first wrap, 3
+    /// second wrap, 4 closed-word pool, 5 scoring and sort, 6 hypotheses and CRC.
+    pub laps: [u32; 7],
+    /// Candidate extensions considered.
+    pub extensions: u32,
+    /// Paths placed in an end state's list.
+    pub inserts: u32,
+    /// Extensions the merge dropped as a word already in the list (first block only).
+    pub duplicates: u32,
+    /// Distinct closed words.
+    pub pool: usize,
+    clock: Option<fn() -> u32>,
+    last: u32,
+}
+impl Probe for Profile {
+    fn extension(&mut self) {
+        self.extensions += 1;
+    }
+    fn insert_call(&mut self) {
+        self.inserts += 1;
+    }
+    fn duplicate(&mut self) {
+        self.duplicates += 1;
+    }
+    fn lap(&mut self, phase: usize) {
+        if let Some(clock) = self.clock {
+            let now = clock();
+            self.laps[phase] = self.laps[phase].wrapping_add(now.wrapping_sub(self.last));
+            self.last = clock();
+        }
+    }
+}
+
+/// The two survivor arrays of an `f32` decode, 32 KB each, for [`Plan::decode_f32_in`].
+pub struct TrellisScratch {
+    a: Vec<[Surv<f32>; PATHS_PER_STATE]>,
+    b: Vec<[Surv<f32>; PATHS_PER_STATE]>,
+}
+
+impl TrellisScratch {
+    /// Allocate both (the caller chooses where by when it calls this).
+    pub fn new() -> Self {
+        let a = alloc::vec![[Surv::<f32>::empty(); PATHS_PER_STATE]; STATES];
+        Self { b: a.clone(), a }
+    }
+}
+
+impl Default for TrellisScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// `-huge`, as upstream's `NEGATIVE_METRIC`.
 fn neg<M: Metric>() -> M {
     M::min_value()
@@ -105,8 +175,10 @@ struct Block {
     len: usize,
     /// Offset of this block's tone-sequence energies in the flat table.
     energy_offset: usize,
-    /// `[state * 2^len + word]` → tone-sequence index within the block.
-    sequence: Vec<u16>,
+    /// `[state * 2^len + word]` → tone-sequence index within the block. It depends on the
+    /// block's length only, so blocks of one length share it: 22 KB for the three plans
+    /// instead of 380 KB, small enough for the LX7's internal DRAM (#499).
+    sequence: alloc::sync::Arc<[u16]>,
     /// `[word]` → the word's bits placed in a survivor key.
     identity: Vec<u64>,
 }
@@ -125,25 +197,31 @@ impl Plan {
     /// If `coherent` is not 1, 2 or 4.
     pub fn new(coherent: usize) -> Self {
         assert!(matches!(coherent, 1 | 2 | 4), "coherent length 1, 2 or 4");
+        let table = |len: usize| -> alloc::sync::Arc<[u16]> {
+            let words = 1usize << len;
+            let mut sequence = alloc::vec![0u16; STATES * words];
+            for state in 0..STATES {
+                for word in 0..words {
+                    let (mut s, mut seq) = (state as u32, 0u16);
+                    for k in 0..len {
+                        let bit = ((word >> (len - 1 - k)) & 1) as u8;
+                        let (next, tone) = transition(s, bit);
+                        seq = seq * 4 + u16::from(tone);
+                        s = next;
+                    }
+                    sequence[state * words + word] = seq;
+                }
+            }
+            sequence.into()
+        };
+        let mut tables: [Option<alloc::sync::Arc<[u16]>>; 5] = Default::default();
         let mut energy_offset = 0;
         let blocks: Vec<Block> = (0..INFO_BITS)
             .step_by(coherent)
             .map(|start| {
                 let len = coherent.min(INFO_BITS - start);
                 let words = 1usize << len;
-                let mut sequence = alloc::vec![0u16; STATES * words];
-                for state in 0..STATES {
-                    for word in 0..words {
-                        let (mut s, mut seq) = (state as u32, 0u16);
-                        for k in 0..len {
-                            let bit = ((word >> (len - 1 - k)) & 1) as u8;
-                            let (next, tone) = transition(s, bit);
-                            seq = seq * 4 + u16::from(tone);
-                            s = next;
-                        }
-                        sequence[state * words + word] = seq;
-                    }
-                }
+                let sequence = tables[len].get_or_insert_with(|| table(len)).clone();
                 let identity = (0..words)
                     .map(|word| {
                         (0..len)
@@ -222,15 +300,66 @@ impl Plan {
         self.decode_with::<f32>(z, prune_reserved)
     }
 
+    /// [`Self::decode_f32`] counting and timing itself with `clock` (ticks; wraps are handled),
+    /// for `jtty-bench` (#499). Returns the same list; the list is dropped here.
+    #[doc(hidden)]
+    pub fn profile_f32(&self, z: &Correlations, clock: fn() -> u32) -> Profile {
+        let mut probe = Profile {
+            clock: Some(clock),
+            last: clock(),
+            ..Profile::default()
+        };
+        let list = self.decode_probe::<f32, Profile>(z, true, &mut probe);
+        probe.pool = list.pool;
+        probe
+    }
+
     fn decode_with<M: Metric>(&self, z: &Correlations, prune_reserved: bool) -> ListResult {
+        self.decode_probe::<M, ()>(z, prune_reserved, &mut ())
+    }
+
+    /// [`Self::decode_f32`] in `scratch`'s survivor arrays instead of two it allocates: an
+    /// embedded receiver makes them once, in memory it chose (#499).
+    pub fn decode_f32_in(
+        &self,
+        z: &Correlations,
+        prune_reserved: bool,
+        scratch: &mut TrellisScratch,
+    ) -> ListResult {
+        let (a, b) = (&mut scratch.a, &mut scratch.b);
+        self.decode_in::<f32, ()>(z, prune_reserved, &mut (), a, b)
+    }
+
+    fn decode_probe<M: Metric, P: Probe>(
+        &self,
+        z: &Correlations,
+        prune_reserved: bool,
+        probe: &mut P,
+    ) -> ListResult {
+        let mut a = alloc::vec![[Surv::<M>::empty(); PATHS_PER_STATE]; STATES];
+        let mut b = a.clone();
+        self.decode_in(z, prune_reserved, probe, &mut a, &mut b)
+    }
+
+    fn decode_in<M: Metric, P: Probe>(
+        &self,
+        z: &Correlations,
+        prune_reserved: bool,
+        probe: &mut P,
+        a: &mut [[Surv<M>; PATHS_PER_STATE]],
+        b: &mut [[Surv<M>; PATHS_PER_STATE]],
+    ) -> ListResult {
         let energies = self.energies::<M>(z);
-        let mut prev = alloc::vec![[Surv::<M>::empty(); PATHS_PER_STATE]; STATES];
-        let mut cur = prev.clone();
+        probe.lap(0);
+        let (mut prev, mut cur) = (a, b);
+        prev.iter_mut()
+            .for_each(|p| *p = [Surv::empty(); PATHS_PER_STATE]);
         prev.iter_mut()
             .enumerate()
             .for_each(|(s, p)| p[0] = Surv::new(s));
+        probe.lap(1);
 
-        for _ in 0..WRAPS {
+        for wrap in 0..WRAPS {
             // each pass restarts the word and origin of every live path
             prev.iter_mut().enumerate().for_each(|(state, paths)| {
                 paths
@@ -241,9 +370,14 @@ impl Plan {
             for (index, b) in self.blocks.iter().enumerate() {
                 let prune =
                     prune_reserved && b.start < RESERVED_BIT && RESERVED_BIT <= b.start + b.len; // block holds bit 33 (1-based)
-                advance(b, &energies, prune, index == 0, &prev, &mut cur);
+                if index == 0 {
+                    advance::<M, P, true>(b, &energies, prune, prev, cur, probe);
+                } else {
+                    advance::<M, P, false>(b, &energies, prune, prev, cur, probe);
+                }
                 core::mem::swap(&mut prev, &mut cur);
             }
+            probe.lap(2 + wrap);
         }
 
         // closed paths only, one entry per distinct word
@@ -280,6 +414,7 @@ impl Plan {
             }
         }
 
+        probe.lap(4);
         let mut scored: Vec<(M, u64, &Entry<M>)> = pool
             .iter()
             .map(|e| (self.clean_metric(&energies, e.key), reverse_bits(e.key), e))
@@ -297,6 +432,7 @@ impl Plan {
                         .unwrap_or(core::cmp::Ordering::Equal),
                 )
         });
+        probe.lap(5);
         let hypotheses = scored
             .iter()
             .take(HYPOTHESES)
@@ -312,6 +448,7 @@ impl Plan {
                 }
             })
             .collect();
+        probe.lap(6);
         ListResult {
             hypotheses,
             pool: pool.len(),
@@ -358,65 +495,267 @@ impl<M: Metric> Surv<M> {
     }
 }
 
-/// Insert `cand` into a state's four best, best first. `dedupe`: after a pass
-/// restart several ranks of a state share one key, and the better metric wins.
-fn insert<M: Metric>(sel: &mut [Surv<M>; PATHS_PER_STATE], cand: Surv<M>, dedupe: bool) {
-    if dedupe && let Some(slot) = sel.iter().position(|s| s.valid() && s.key == cand.key) {
-        if cand.metric <= sel[slot].metric {
-            return;
-        }
-        sel.copy_within(slot + 1.., slot);
-        sel[PATHS_PER_STATE - 1] = Surv::empty();
-    }
-    let Some(at) = sel.iter().position(|s| !s.valid() || cand.precedes(s)) else {
-        return;
-    };
-    sel.copy_within(at..PATHS_PER_STATE - 1, at + 1);
-    sel[at] = cand;
-}
-
 /// One block of the trellis: for every end state, its best paths.
 ///
 /// The low `len` bits of an end state are the block's input word, and the
 /// predecessors are the states whose remaining high bits enumerate every
 /// possibility — so no branch table is needed to find them.
-fn advance<M: Metric>(
+///
+/// Each predecessor's paths are already best first, and extending them all by the same
+/// branch keeps them so, so an end state's four best are a **merge** of its `2^len` sorted
+/// lists: take the best head, four times, extending a path only when it becomes a head.
+/// Upstream (and this crate until #499) inserted every extension into the end state's list one
+/// at a time — 88 % of 280 000 extensions a decode reached that insert, about 400 cycles each
+/// on the LX7; building every list first instead made L=4 slower (614 400 extensions). The
+/// survivors are the same: the order is the same total order ([`Surv::precedes`]), and with
+/// `DEDUPE` (the first block of a pass, where the paths of a state share one key) the first of
+/// a key to come out is its best.
+///
+/// One case is not a plain merge: two paths ordered by metric can round to the same sum and
+/// then be ordered by key, the other way round. Whenever a path becomes a head, the path behind
+/// it is checked for that (an equal sum from unequal metrics, with a smaller key); if it
+/// happened anywhere in an end state, the state is done again by [`advance_state_sorted`],
+/// which sorts each extended list first.
+fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     b: &Block,
     energies: &[M],
     prune: bool,
-    first_block: bool,
     prev: &[[Surv<M>; PATHS_PER_STATE]],
     cur: &mut [[Surv<M>; PATHS_PER_STATE]],
+    probe: &mut P,
 ) {
+    // one-bit blocks by the small merge: 190 -> 138 ms a rung on the CoreS3; two-bit blocks
+    // were slower that way (145 -> 180 ms) and keep the lazy one
+    if b.len == 1 {
+        return advance_small::<M, P, DEDUPE, 2>(b, energies, prune, prev, cur, probe);
+    }
     let words = 1usize << b.len;
+    debug_assert!(words <= MAX_WORDS);
     let stride = STATES / words;
     let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
-    cur.iter_mut().enumerate().for_each(|(end, out)| {
+    let mut preds = [0usize; MAX_WORDS];
+    let mut branch = [M::zero(); MAX_WORDS];
+    let mut pos = [0usize; MAX_WORDS];
+    let mut head = [Surv::<M>::empty(); MAX_WORDS];
+    for (end, out) in cur.iter_mut().enumerate() {
         *out = [Surv::empty(); PATHS_PER_STATE];
         let word = end & (words - 1);
         let identity = b.identity[word];
         if prune && identity & reserved != 0 {
-            return;
+            continue;
         }
-        for pred in (0..words).map(|k| (end >> b.len) + k * stride) {
-            let branch = energies[b.energy_offset + usize::from(b.sequence[pred * words + word])];
-            for s in prev[pred].iter().filter(|s| s.valid()) {
-                let metric = s.metric + branch;
-                // paths are ordered, so once one is too weak the rest are too
-                if out[PATHS_PER_STATE - 1].valid() && metric < out[PATHS_PER_STATE - 1].metric {
-                    break;
+        // the extension of `prev[preds[k]][i]`, or empty
+        let extend =
+            |k: usize, i: usize, preds: &[usize; MAX_WORDS], branch: &[M; MAX_WORDS]| match prev
+                [preds[k]]
+                .get(i)
+            {
+                Some(s) if s.valid() => Surv {
+                    metric: s.metric + branch[k],
+                    key: s.key | identity,
+                },
+                _ => Surv::empty(),
+            };
+        // the path behind head `i` of list `k` would come out ahead of it
+        let reordered =
+            |k: usize, i: usize, preds: &[usize; MAX_WORDS], branch: &[M; MAX_WORDS]| {
+                let list = &prev[preds[k]];
+                i + 1 < PATHS_PER_STATE
+                    && list[i + 1].valid()
+                    && list[i].metric != list[i + 1].metric
+                    && list[i].metric + branch[k] == list[i + 1].metric + branch[k]
+                    && list[i + 1].key < list[i].key
+            };
+        let mut inverted = false;
+        for k in 0..words {
+            let pred = (end >> b.len) + k * stride;
+            preds[k] = pred;
+            branch[k] = energies[b.energy_offset + usize::from(b.sequence[pred * words + word])];
+            pos[k] = 0;
+            head[k] = extend(k, 0, &preds, &branch);
+            probe.extension();
+            inverted |= reordered(k, 0, &preds, &branch);
+        }
+        let mut filled = 0;
+        while !inverted && filled < PATHS_PER_STATE {
+            let mut best = MAX_WORDS;
+            for k in 0..words {
+                if head[k].valid() && (best == MAX_WORDS || head[k].precedes(&head[best])) {
+                    best = k;
                 }
-                insert(
-                    out,
-                    Surv {
-                        metric,
-                        key: s.key | identity,
-                    },
-                    first_block,
-                );
+            }
+            if best == MAX_WORDS {
+                break;
+            }
+            let cand = head[best];
+            pos[best] += 1;
+            head[best] = extend(best, pos[best], &preds, &branch);
+            probe.extension();
+            if reordered(best, pos[best], &preds, &branch) {
+                inverted = true;
+                break;
+            }
+            if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
+                probe.duplicate();
+                continue;
+            }
+            probe.insert_call();
+            out[filled] = cand;
+            filled += 1;
+        }
+        if inverted {
+            advance_state_sorted::<M, P, DEDUPE>(
+                &preds[..words],
+                &branch,
+                identity,
+                prev,
+                out,
+                probe,
+            );
+        }
+    }
+}
+
+/// [`advance`] for blocks of one or two bits (`W` = 2 or 4 predecessors): every extension is
+/// built — at most 16 — each list checked to be still in order (it is unless an `f32` sum tied two
+/// paths the other way round, then [`advance_state_sorted`] takes the state), and the lists merged.
+/// Fixed-size arrays and no per-head bookkeeping, for the one-bit blocks of L=1 and the
+/// half-symbol rung, most of the ladder's calls: 190 -> 138 ms a rung on the LX7 (#499).
+#[inline(always)]
+fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
+    b: &Block,
+    energies: &[M],
+    prune: bool,
+    prev: &[[Surv<M>; PATHS_PER_STATE]],
+    cur: &mut [[Surv<M>; PATHS_PER_STATE]],
+    probe: &mut P,
+) {
+    let stride = STATES / W;
+    let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
+    let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; W];
+    let mut lens = [0usize; W];
+    for (end, out) in cur.iter_mut().enumerate() {
+        let word = end & (W - 1);
+        let identity = b.identity[word];
+        if prune && identity & reserved != 0 {
+            *out = [Surv::empty(); PATHS_PER_STATE];
+            continue;
+        }
+        let mut sorted = true;
+        let mut preds = [0usize; MAX_WORDS];
+        let mut branch = [M::zero(); MAX_WORDS];
+        for k in 0..W {
+            let pred = (end >> b.len) + k * stride;
+            let br = energies[b.energy_offset + usize::from(b.sequence[pred * W + word])];
+            preds[k] = pred;
+            branch[k] = br;
+            let src = &prev[pred];
+            let mut n = 0;
+            while n < PATHS_PER_STATE && src[n].valid() {
+                probe.extension();
+                lists[k][n] = Surv {
+                    metric: src[n].metric + br,
+                    key: src[n].key | identity,
+                };
+                if n > 0 && lists[k][n].precedes(&lists[k][n - 1]) {
+                    sorted = false;
+                }
+                n += 1;
+            }
+            lens[k] = n;
+        }
+        if !sorted {
+            advance_state_sorted::<M, P, DEDUPE>(&preds[..W], &branch, identity, prev, out, probe);
+            continue;
+        }
+        let mut heads = [0usize; W];
+        let mut filled = 0;
+        while filled < PATHS_PER_STATE {
+            let mut best = W;
+            for k in 0..W {
+                if heads[k] < lens[k]
+                    && (best == W || lists[k][heads[k]].precedes(&lists[best][heads[best]]))
+                {
+                    best = k;
+                }
+            }
+            if best == W {
+                break;
+            }
+            let cand = lists[best][heads[best]];
+            heads[best] += 1;
+            if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
+                probe.duplicate();
+                continue;
+            }
+            probe.insert_call();
+            out[filled] = cand;
+            filled += 1;
+        }
+        for s in &mut out[filled..] {
+            *s = Surv::empty();
+        }
+    }
+}
+
+/// Coherent length 4: sixteen predecessors.
+const MAX_WORDS: usize = 16;
+
+/// One end state of [`advance`] with each extended list sorted before the merge: the exact form
+/// for when `f32` rounding reordered a list.
+#[cold]
+fn advance_state_sorted<M: Metric, P: Probe, const DEDUPE: bool>(
+    preds: &[usize],
+    branch: &[M; MAX_WORDS],
+    identity: u64,
+    prev: &[[Surv<M>; PATHS_PER_STATE]],
+    out: &mut [Surv<M>; PATHS_PER_STATE],
+    probe: &mut P,
+) {
+    let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; MAX_WORDS];
+    let mut lens = [0usize; MAX_WORDS];
+    let mut heads = [0usize; MAX_WORDS];
+    for (k, &pred) in preds.iter().enumerate() {
+        let mut n = 0;
+        for s in prev[pred].iter().take_while(|s| s.valid()) {
+            let cand = Surv {
+                metric: s.metric + branch[k],
+                key: s.key | identity,
+            };
+            let mut j = n;
+            while j > 0 && cand.precedes(&lists[k][j - 1]) {
+                lists[k][j] = lists[k][j - 1];
+                j -= 1;
+            }
+            lists[k][j] = cand;
+            n += 1;
+        }
+        lens[k] = n;
+    }
+    *out = [Surv::empty(); PATHS_PER_STATE];
+    let mut filled = 0;
+    while filled < PATHS_PER_STATE {
+        let mut best = MAX_WORDS;
+        for k in 0..preds.len() {
+            if heads[k] < lens[k]
+                && (best == MAX_WORDS || lists[k][heads[k]].precedes(&lists[best][heads[best]]))
+            {
+                best = k;
             }
         }
-    });
+        if best == MAX_WORDS {
+            break;
+        }
+        let cand = lists[best][heads[best]];
+        heads[best] += 1;
+        if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
+            probe.duplicate();
+            continue;
+        }
+        probe.insert_call();
+        out[filled] = cand;
+        filled += 1;
+    }
 }
 
 #[cfg(test)]
@@ -452,6 +791,34 @@ mod tests {
             assert_eq!(best.bits, info, "L={l}");
             assert!(best.crc_valid, "L={l}");
             assert!(r.hypotheses.len() <= HYPOTHESES);
+        }
+    }
+
+    /// Decoding into reused survivor arrays gives what fresh ones give, decode after decode.
+    #[test]
+    fn reused_scratch_decodes_as_fresh_arrays() {
+        let mut s = 7u64;
+        let mut u = move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+        };
+        let plans = [Plan::new(1), Plan::new(2), Plan::new(4)];
+        let mut scratch = TrellisScratch::new();
+        for trial in 0..30 {
+            let amp = [0.0f32, 1.0, 3.0][trial % 3];
+            let z: Correlations = core::array::from_fn(|i| {
+                core::array::from_fn(|k| {
+                    Complex32::new(u() + if (i * 7 + trial) % 4 == k { amp } else { 0.0 }, u())
+                })
+            });
+            for p in &plans {
+                assert_eq!(
+                    p.decode_f32_in(&z, true, &mut scratch),
+                    p.decode_f32(&z, true)
+                );
+            }
         }
     }
 

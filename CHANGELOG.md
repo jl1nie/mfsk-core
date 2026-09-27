@@ -2,6 +2,22 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: an embedded receiver that runs in real time on the CoreS3 (#499).** `Params::embedded()`
+  now also sets `fir_analytic` (the analytic signal by a 97-tap complex FIR, computed once per
+  sample as it arrives), `coarse_sync_grid` (sync on a 4 ms grid), `ladder_budget: Some(1)` (at
+  most one ladder call a window, candidates ranked by the gate) and `ladder_rungs: Rungs::L1_L4`,
+  and no subtraction; `rx::Front` and `rx::Back` split a `Stream` in two for two cores and together
+  report exactly what it does. With those, on the CoreS3 (front on core 1, back on core 0, audio
+  at its real rate) a window's front end takes 138 ms and its back end 178 ms on average against
+  472 ms, and the sample recording's message is decoded 0.3 s after each window on average.
+  Against `rjtty` on sjtty corpora it reads 163 of 360 frames at 1500 Hz (160), fewer under fast
+  fading (ITU LD 67 against 78 of 120; a budget of two with the refined retry and
+  `Rungs::FULL_SYMBOL` read 75), and no stations outside channel 0. Exact speed-ups on every
+  configuration: the list trellis merges its predecessors' sorted lists instead of inserting
+  each extension (output identical on 5 400 random decodes), its tables are shared per block
+  length (380 to 22 KB), and with `f32` metrics its survivor arrays are made once. `jtty-stats`
+  builds on targets without 64-bit atomics. `docs/notes/JTTY_EMBEDDED_BUDGET.md` sections 9 to 11
+  have the measurements.
 - **JTTY: three search options for a receiver that cannot afford the default (#499).**
   `jtty::rx::Params::ch0_only`, `decimate_sync` and `raw_first`, off by default so the receiver
   stays upstream's, and `Params::embedded()` sets the three together.

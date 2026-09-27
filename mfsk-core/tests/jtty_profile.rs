@@ -105,7 +105,7 @@ fn report(name: &str, audio: &[i16], rx: &Receiver) {
             ..Params::default()
         };
         if std::env::var_os("MFSK_JTTY_EMBEDDED").is_some() {
-            p.embedded()
+            embedded_from_env(p)
         } else {
             p
         }
@@ -229,7 +229,11 @@ fn report(name: &str, audio: &[i16], rx: &Receiver) {
 #[test]
 #[ignore = "prints; run with --nocapture (see the module doc)"]
 fn profile_the_receive_path() {
-    let rx = Receiver::new();
+    let rx = if std::env::var_os("MFSK_JTTY_EMBEDDED").is_some() {
+        Receiver::new().with_f32_metrics()
+    } else {
+        Receiver::new()
+    };
     let mut rng = Lcg(1);
     report("noise only", &to_i16(&noise(60, &mut rng)), &rx);
     if let Some(p) = common::corpus::golden_path("jtty/260807_134110.wav") {
@@ -287,4 +291,24 @@ fn profile_the_receive_path() {
         );
     }
     let _ = tx::samples_for_frames(1);
+}
+
+/// `Params::embedded()` adjusted by `MFSK_JTTY_FTOL` (channel 0's half-width, Hz) and
+/// `MFSK_JTTY_BUDGET` (ladder calls a window; 0 for none) (#499).
+#[allow(dead_code)]
+fn embedded_from_env(p: Params) -> Params {
+    let mut p = p.embedded();
+    if let Some(f) = std::env::var("MFSK_JTTY_FTOL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        p.ftol_hz = f;
+    }
+    if let Some(b) = std::env::var("MFSK_JTTY_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        p.ladder_budget = (b > 0).then_some(b);
+    }
+    p
 }

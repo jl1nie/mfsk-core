@@ -601,7 +601,11 @@ fn several_stations_in_one_recording_match_rjtty() {
 #[ignore]
 fn diag_messages() {
     let dir = std::env::var("JTTY_DIAG_DIR").expect("JTTY_DIAG_DIR");
-    let rx = Receiver::new();
+    let rx = if std::env::var_os("JTTY_DIAG_EMBEDDED").is_some() {
+        Receiver::new().with_f32_metrics()
+    } else {
+        Receiver::new()
+    };
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -618,7 +622,7 @@ fn diag_messages() {
                     ..Params::default()
                 };
                 if std::env::var_os("JTTY_DIAG_EMBEDDED").is_some() {
-                    p.embedded()
+                    embedded_from_env(p)
                 } else {
                     p
                 }
@@ -703,16 +707,27 @@ fn streaming_is_scanning_whatever_the_chunk_size() {
         return;
     };
     let rx = std::sync::Arc::new(Receiver::new());
-    for (name, audio) in [
-        ("sample", &sample),
-        ("four_stations", &four),
-        ("three_channels", &three),
+    // and the embedded configuration, whose FIR analytic signal a stream computes once per sample
+    // as it arrives and a scan once for the whole recording (#499)
+    for (name, audio, params) in [
+        ("sample", &sample, Params::default()),
+        ("four_stations", &four, Params::default()),
+        ("three_channels", &three, Params::default()),
+        ("sample, embedded", &sample, Params::default().embedded()),
+        (
+            "four_stations, embedded, +-300 Hz",
+            &four,
+            Params {
+                ftol_hz: 300.0,
+                ..Params::default().embedded()
+            },
+        ),
     ] {
-        let want = rx.scan_messages(audio, &Params::default());
+        let want = rx.scan_messages(audio, &params);
         assert!(!want.is_empty(), "{name}");
         for chunk in [1usize, 333, 4096, 12_000, 28_320, 100_000, audio.len()] {
             let mut got = Vec::new();
-            let mut stream = Stream::new(rx.clone(), Params::default());
+            let mut stream = Stream::new(rx.clone(), params);
             let mut most = 0;
             for piece in audio.chunks(chunk) {
                 stream.push(piece, &mut |u| got.push(u));
@@ -938,7 +953,7 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
     let rx = Receiver::new();
     let tones = tx::tones(&[Atom::call(CallAction::Cq, "K1ABC")]).unwrap();
     let want = Atom::call(CallAction::Cq, "K1ABC").render();
-    let (mut n_default, mut n_ch0, mut n_embedded, mut differing) = (0, 0, 0, 0);
+    let (mut n_default, mut n_ch0, mut n_embedded, mut differing, mut n_dec) = (0, 0, 0, 0, 0);
     for _ in 0..60 {
         let f = 1470.0 + 60.0 * uniform() as f32;
         let sig = tx::synth_f32(&tones, f, amp(-17.0 + 6.0 * uniform()));
@@ -979,6 +994,7 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
             found(Params::default().embedded()),
         );
         differing += usize::from(c != c_dec);
+        n_dec += c_dec.len();
         for v in [&d, &c, &e] {
             assert!(v.iter().all(|m| *m == want), "unexpected decode {v:?}");
         }
@@ -987,9 +1003,15 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
         n_embedded += e.len();
     }
     eprintln!(
-        "default {n_default}, channel 0 only {n_ch0}, embedded {n_embedded}, decimation changed {differing} scenes"
+        "default {n_default}, channel 0 only {n_ch0} ({n_dec} decimated), embedded {n_embedded}, decimation changed {differing} scenes"
     );
-    assert!(differing <= 1, "decimation changed {differing} scenes");
+    // at ±50 Hz the surface is decimated by 32 (256 points): 3 of 60 scenes differ, 39 against 38
+    // found (jtty_sweep: the same 163 of 360 as by 16)
+    assert!(differing <= 3, "decimation changed {differing} scenes");
+    assert!(
+        n_dec + 1 >= n_ch0,
+        "decimated {n_dec}, full surface {n_ch0}"
+    );
     assert!(
         n_embedded + 1 >= n_default,
         "embedded options found {n_embedded}, the default {n_default}"
@@ -997,5 +1019,76 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
     assert!(
         n_embedded >= n_ch0,
         "raw-first found {n_embedded}, less than channel 0 alone ({n_ch0})"
+    );
+}
+
+/// `Params::embedded()` adjusted by `MFSK_JTTY_FTOL` (channel 0's half-width, Hz) and
+/// `MFSK_JTTY_BUDGET` (ladder calls a window; 0 for none) (#499).
+#[allow(dead_code)]
+fn embedded_from_env(p: Params) -> Params {
+    let mut p = p.embedded();
+    if let Some(f) = std::env::var("MFSK_JTTY_FTOL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        p.ftol_hz = f;
+    }
+    if let Some(b) = std::env::var("MFSK_JTTY_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        p.ladder_budget = (b > 0).then_some(b);
+    }
+    p
+}
+
+/// Run in two halves — [`Front`] preparing windows, [`Back`] decoding them, as two cores would —
+/// the embedded receiver reports exactly what a [`Stream`] does, whatever the chunk size (#499).
+#[test]
+fn front_and_back_are_a_stream() {
+    use mfsk_core::jtty::rx::{Back, Front};
+    let Some(sample) = load("jtty/260807_134110.wav") else {
+        return;
+    };
+    let Some(four) = load("jtty/sim/mix_four_stations.wav") else {
+        return;
+    };
+    let rx = std::sync::Arc::new(Receiver::new().with_f32_metrics());
+    let embedded = Params::default().embedded();
+    for (name, audio, params) in [
+        ("sample", &sample, embedded),
+        (
+            "four_stations, +-300 Hz, budget 2",
+            &four,
+            Params {
+                ftol_hz: 300.0,
+                ladder_budget: Some(2),
+                ..embedded
+            },
+        ),
+    ] {
+        let mut want = Vec::new();
+        let mut stream = Stream::new(rx.clone(), params);
+        stream.push(audio, &mut |u| want.push(u));
+        stream.finish(&mut |u| want.push(u));
+        assert!(!want.is_empty(), "{name}");
+        for chunk in [1usize, 5_000, 28_320, audio.len()] {
+            let mut front = Front::new(rx.clone(), params).expect("embedded settings");
+            let mut back = Back::new(rx.clone(), params);
+            let mut got = Vec::new();
+            for piece in audio.chunks(chunk) {
+                let mut ready = Vec::new();
+                front.push(piece, &mut |p| ready.push(p));
+                for p in ready {
+                    back.process(p, &mut |u| got.push(u));
+                }
+            }
+            back.finish(&mut |u| got.push(u));
+            assert_eq!(got, want, "{name}, chunks of {chunk}");
+        }
+    }
+    assert!(
+        Front::new(rx.clone(), Params::default()).is_none(),
+        "subtraction needs audio in the back end"
     );
 }

@@ -76,7 +76,7 @@ ft4 = ["mfsk-core/ft4", "mfsk-core/internal-testing"]
 # `apps::jtty_bench` — issue #499 E0: what a JTTY receive window costs on the LX7
 # (esp-dsp FFT sizes and placements, one sync-surface column, the list-WAVA ladder).
 # No `internal-testing`: everything it calls is public.
-jtty-bench = ["mfsk-core/jtty"]
+jtty-bench = ["mfsk-core/jtty", "mfsk-core/jtty-stats"]
 ft4-bench = ["ft4"]
 
 [dependencies]

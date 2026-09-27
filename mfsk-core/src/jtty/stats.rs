@@ -2,11 +2,45 @@
 //! (#499). Compiled only with the `jtty-stats` feature; without it the `stat_add!` and
 //! `stat_time!` macros the receiver is instrumented with expand to nothing.
 //!
-//! Counters are `AtomicU64` and timers accumulate nanoseconds of wall clock, so this is a host
-//! tool (a target without 64-bit atomics cannot build it). Run single-threaded (no
-//! `parallel` feature) for stage times that add up: under rayon the stages overlap.
+//! Counters and nanosecond timers are 64-bit: `AtomicU64` where the target has it, a mutex
+//! where it does not (the Xtensa LX7 of the CoreS3, where `jtty-bench` reads them). Run
+//! single-threaded (no `parallel` feature) for stage times that add up: under rayon the stages
+//! overlap.
 
+#[cfg(target_has_atomic = "64")]
 use core::sync::atomic::{AtomicU64, Ordering};
+
+/// A 64-bit accumulator shared between threads.
+#[derive(Default)]
+pub(crate) struct Acc(
+    #[cfg(target_has_atomic = "64")] AtomicU64,
+    #[cfg(not(target_has_atomic = "64"))] std::sync::Mutex<u64>,
+);
+
+impl Acc {
+    pub(crate) fn add(&self, n: u64) {
+        #[cfg(target_has_atomic = "64")]
+        self.0.fetch_add(n, Ordering::Relaxed);
+        #[cfg(not(target_has_atomic = "64"))]
+        {
+            *self.0.lock().unwrap() += n;
+        }
+    }
+    pub(crate) fn get(&self) -> u64 {
+        #[cfg(target_has_atomic = "64")]
+        return self.0.load(Ordering::Relaxed);
+        #[cfg(not(target_has_atomic = "64"))]
+        return *self.0.lock().unwrap();
+    }
+    pub(crate) fn clear(&self) {
+        #[cfg(target_has_atomic = "64")]
+        self.0.store(0, Ordering::Relaxed);
+        #[cfg(not(target_has_atomic = "64"))]
+        {
+            *self.0.lock().unwrap() = 0;
+        }
+    }
+}
 
 /// What is counted.
 #[derive(Clone, Copy, Debug)]
@@ -98,8 +132,8 @@ pub struct GatedCandidate {
 /// The counters and timers of one receiver.
 #[derive(Default)]
 pub struct Stats {
-    counts: [AtomicU64; N_COUNTERS],
-    ns: [AtomicU64; N_STAGES],
+    counts: [Acc; N_COUNTERS],
+    ns: [Acc; N_STAGES],
     gated: std::sync::Mutex<Vec<GatedCandidate>>,
 }
 
@@ -128,7 +162,7 @@ impl Snapshot {
 impl Stats {
     /// Add `n` to a counter.
     pub fn add(&self, c: Counter, n: u64) {
-        self.counts[c as usize].fetch_add(n, Ordering::Relaxed);
+        self.counts[c as usize].add(n);
     }
     /// Start timing a stage; the time is added when the guard drops.
     pub fn time(&self, s: Stage) -> Span<'_> {
@@ -140,8 +174,8 @@ impl Stats {
     /// Copy the values (the rung counts are the ladder's, filled in by the receiver).
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            counts: core::array::from_fn(|i| self.counts[i].load(Ordering::Relaxed)),
-            ns: core::array::from_fn(|i| self.ns[i].load(Ordering::Relaxed)),
+            counts: core::array::from_fn(|i| self.counts[i].get()),
+            ns: core::array::from_fn(|i| self.ns[i].get()),
             rungs: [0; 4],
         }
     }
@@ -156,22 +190,19 @@ impl Stats {
     /// Zero everything.
     pub fn reset(&self) {
         self.gated.lock().unwrap().clear();
-        self.counts
-            .iter()
-            .for_each(|c| c.store(0, Ordering::Relaxed));
-        self.ns.iter().for_each(|c| c.store(0, Ordering::Relaxed));
+        self.counts.iter().for_each(Acc::clear);
+        self.ns.iter().for_each(Acc::clear);
     }
 }
 
 /// A running stage timer.
 pub struct Span<'a> {
-    slot: &'a AtomicU64,
+    slot: &'a Acc,
     t0: std::time::Instant,
 }
 
 impl Drop for Span<'_> {
     fn drop(&mut self) {
-        self.slot
-            .fetch_add(self.t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.slot.add(self.t0.elapsed().as_nanos() as u64);
     }
 }

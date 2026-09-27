@@ -72,7 +72,7 @@ use num_traits::Float;
 use super::assemble::{Assembler, FRAME_PERIOD_S, MessageUpdate};
 use super::correlate::ToneRefs;
 use super::dsp::{self, FS6, NSS, db};
-use super::ladder::Ladder;
+use super::ladder::{Ladder, Rungs};
 use super::source::{self, Atom};
 use super::subtract::subtract_frame;
 use super::{FRAME_SYMBOLS, INFO_BITS, NSPS, Payload, SYNC, SYNC_SYMBOLS, crc, tbcc};
@@ -90,6 +90,18 @@ const DF: f32 = FS6 / NFFT as f32;
 const COL_STEP: usize = 12;
 /// Sync-surface columns: start offsets over one quarter frame.
 const NCOLS: usize = FRAME_SYMBOLS * NSS / 4 / COL_STEP + 1;
+/// Half-length of [`Params::fir_analytic`]'s filter: 97 taps, Kaiser β = 7. With
+/// `Params::embedded()` it gives the transform's results: `jtty_sweep` 164/360 either way, the hard
+/// two-station set 91/200 (49 taps: 90; 193 taps: 91).
+const FIR_HALF: usize = 48;
+/// Refinements (`peakup`) a window under [`Params::ladder_budget`] for picks whose unrefined
+/// gate failed narrowly.
+const REFINEMENTS_PER_WINDOW: usize = 2;
+/// Most channel-0 picks a window under [`Params::ladder_budget`].
+const MAX_BUDGET_PICKS: usize = 64;
+/// Decimation of the sync search when channel 0 alone is narrow enough (±50 Hz: 137 bins of 251):
+/// a 256-point transform, 0.107 ms on the CoreS3 against 0.229 for 512 (#499).
+const SYNC_DECIM_NARROW: usize = 32;
 /// Decimation of the sync search when [`Params::decimate_sync`] is on: the product of window and
 /// sync wave is summed 16 samples at a time, so `NFFT / 16` = 512 points cover 375 Hz.
 const SYNC_DECIM: usize = 16;
@@ -166,17 +178,55 @@ pub struct Params {
     /// decodes, and in noise alone 1.8 refinements a window instead of 5.0, for 34 % more ladder
     /// calls (#499).
     pub raw_first: bool,
+    /// Compute each window's analytic signal with a 97-tap complex FIR filter
+    /// ([`dsp::AnalyticFir`]) instead of `ana64a`'s 32 768-point transform, which `esp-dsp`
+    /// cannot do. Same results with the other `embedded()` options on `jtty_sweep` (164/360)
+    /// and the hard two-station set (91/200) (#499).
+    pub fir_analytic: bool,
+    /// At most this many ladder calls a window (every kind: candidates, a message's due
+    /// continuation). The candidates that pass the sync gate are ranked by sync tones, then S/N,
+    /// and the best go first; with a budget, channel 0 also takes one pick per 10 Hz of its width
+    /// (upstream: at most 8), so a wide channel 0 — `ftol_hz` of a few hundred Hz — covers the
+    /// band at channel 0's sensitivity. A ladder call costs 0.19 s (success) to 0.79 s (all four
+    /// rungs fail) on the CoreS3 against a 0.472 s window, which is what this bounds. `None` (the
+    /// default): no limit, as upstream (#499).
+    pub ladder_budget: Option<usize>,
+    /// Search sync on a 4 ms grid instead of upstream's 2 ms (every other column of the
+    /// decimated surface; the others read as zero). The correlation peak is about 16 ms wide, so
+    /// half its columns find the same frames: `jtty_sweep` 163 of 360 either way (7 trials
+    /// differ, 3 each way and one extra decode), for half the surface's time, 90 ms a window on
+    /// the CoreS3 (#499). Only with [`Self::decimate_sync`].
+    pub coarse_sync_grid: bool,
+    /// The ladder's rungs to try (upstream: all four). `embedded()` drops the half-symbol rung,
+    /// which found nothing the others missed on any corpus here (see [`Rungs::FULL_SYMBOL`]).
+    /// Dropping L=2 as well costs 5 of 500 frames under fading and saves another 140 ms of
+    /// every failing candidate on the CoreS3; it is left to the caller (#499).
+    pub ladder_rungs: Rungs,
 }
 
 impl Params {
-    /// The three search options an embedded receiver wants together: [`Self::ch0_only`],
-    /// [`Self::decimate_sync`], [`Self::raw_first`].
+    /// What an embedded receiver runs: [`Self::ch0_only`], [`Self::decimate_sync`],
+    /// [`Self::raw_first`], [`Self::fir_analytic`], [`Self::coarse_sync_grid`], a
+    /// [`Self::ladder_budget`] of one, [`Rungs::L1_L4`], and no [`Self::subtract`] (one
+    /// subtraction is 200 ms on the CoreS3, and each brings re-sweeps of earlier windows). Pair
+    /// it with [`Receiver::with_f32_metrics`], as the board does. Chosen for speed first.
+    ///
+    /// Against `rjtty` on sjtty corpora (20 trials a cell), frames at 1500 Hz: AWGN and ITU
+    /// mid-moderate 163 against 160 of 360; AWGN off the bin grid 92 / 89 of 140; LM 92 / 97,
+    /// MD 89 / 92, LD 67 / 78 of 120. What buys the fading frames back, for more time: a
+    /// `ladder_budget` of two, which lets a raw candidate the ladder rejected be refined and
+    /// tried again (LM 97, MD 92, LD 75), and [`Rungs::FULL_SYMBOL`] (#499).
     #[must_use]
     pub fn embedded(self) -> Self {
         Self {
             ch0_only: true,
             decimate_sync: true,
             raw_first: true,
+            fir_analytic: true,
+            ladder_budget: Some(1),
+            coarse_sync_grid: true,
+            ladder_rungs: Rungs::L1_L4,
+            subtract: false,
             ..self
         }
     }
@@ -197,6 +247,10 @@ impl Default for Params {
             ch0_only: false,
             decimate_sync: false,
             raw_first: false,
+            fir_analytic: false,
+            ladder_budget: None,
+            coarse_sync_grid: false,
+            ladder_rungs: Rungs::ALL,
         }
     }
 }
@@ -239,6 +293,7 @@ pub struct FrameDecode {
 pub struct Receiver {
     ladder: Ladder,
     refs: ToneRefs,
+    fir: dsp::AnalyticFir,
     csync: Vec<Complex32>,
     #[cfg(feature = "jtty-stats")]
     stats: super::stats::Stats,
@@ -320,7 +375,7 @@ fn channels(p: &Params) -> Option<Channels> {
 /// computes these ahead, in parallel.
 struct Pre {
     c0: Vec<Complex32>,
-    surface: Surface,
+    surface: Option<Surface>,
 }
 
 /// A peak to try: where the sync surface said it was.
@@ -343,6 +398,7 @@ impl Receiver {
         Self {
             ladder: Ladder::new(),
             refs: ToneRefs::new(NSS),
+            fir: dsp::AnalyticFir::new(FIR_HALF, 7.0),
             csync: dsp::sync_wave(),
             #[cfg(feature = "jtty-stats")]
             stats: Default::default(),
@@ -420,7 +476,11 @@ impl Receiver {
         sink: &mut dyn FnMut(MessageUpdate),
         frames: &mut Vec<FrameDecode>,
     ) -> Vec<Subtracted> {
-        assert_eq!(audio.len(), NCHUNK, "a window is exactly NCHUNK samples");
+        // a [`Back`] hands its windows over already prepared, without their audio
+        assert!(
+            audio.len() == NCHUNK || (audio.is_empty() && pre.is_some()),
+            "a window is exactly NCHUNK samples"
+        );
         if interferer.is_some() {
             stat_add!(self, RetroWindows, 1);
         } else {
@@ -432,12 +492,12 @@ impl Receiver {
         let (mut c0, surface) = match pre {
             // the state-independent work, already done (only valid with no interferer)
             Some(Pre { c0, surface }) if interferer.is_none() && carried.is_empty() => {
-                (c0, Some(surface))
+                (c0, surface)
             }
             // the analytic signal is done, the surface is not: frames carried in change it
             Some(Pre { c0, .. }) if interferer.is_none() => (c0, None),
             _ => {
-                let mut c0 = self.analytic(audio);
+                let mut c0 = self.analytic(audio, p);
                 if let Some(x) = interferer {
                     stat_add!(self, Subtractions, 1);
                     stat_time!(self, Subtract);
@@ -467,6 +527,7 @@ impl Receiver {
             asm,
             sink,
             frames,
+            ladder_left: p.ladder_budget,
         };
         // Phase A: channel 0, twice if the first pass subtracted anything
         for pass in 1..=2 {
@@ -500,7 +561,7 @@ impl Receiver {
         let Some((_, lo, hi)) = channels(p) else {
             return 0.0;
         };
-        let s = self.sync_surface(c0, lo, hi, p.decimate_sync);
+        let s = self.sync_surface(c0, lo, hi, p);
         s.data.iter().step_by(97).sum()
     }
 
@@ -512,7 +573,7 @@ impl Receiver {
         let Some((_, lo, hi)) = channels(p) else {
             return 0;
         };
-        let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
+        let surface = self.sync_surface(&c0, lo, hi, p);
         let audio = alloc::vec![0i16; NCHUNK];
         let mut asm = Assembler::new();
         let mut frames = Vec::new();
@@ -522,7 +583,10 @@ impl Receiver {
             p,
             None,
             &[],
-            Some(Pre { c0, surface }),
+            Some(Pre {
+                c0,
+                surface: Some(surface),
+            }),
             &mut asm,
             &mut |_| {},
             &mut frames,
@@ -532,16 +596,62 @@ impl Receiver {
 
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
-        let c0 = self.analytic(audio);
-        let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
+        let c0 = self.analytic(audio, p);
+        let surface = Some(self.sync_surface(&c0, lo, hi, p));
         Some(Pre { c0, surface })
     }
 
-    /// The analytic signal of a window, counted and timed.
-    fn analytic(&self, audio: &[i16]) -> Vec<Complex32> {
+    /// Window `w`'s analytic signal under [`Params::fir_analytic`], from the continuous filter
+    /// output `ana` (output `k` at `ana[k − k0]`, each computed once from the audio around it)
+    /// and the audio `buf` (sample `j` at `buf[j − base]`): what the filter gives with the audio
+    /// before the window as it was and nothing after the window's end. The outputs whose inputs
+    /// reach past that end — the last 24 — are recomputed with zeros there, so a window decoded
+    /// as soon as its last sample arrives and one decoded later see the same signal (#499).
+    fn fir_window(
+        &self,
+        ana: &[Complex32],
+        k0: usize,
+        buf: &[i16],
+        base: usize,
+        w: usize,
+    ) -> Vec<Complex32> {
         stat_add!(self, Analytic, 1);
         stat_time!(self, Analytic);
-        dsp::analytic_6k(audio)
+        let half = self.fir.half();
+        let (first, end) = (w * STEP / 2, w * STEP + NCHUNK);
+        (first..first + NCHUNK / 2)
+            .map(|k| {
+                let c = 2 * k;
+                if c + half < end && k >= k0 && k - k0 < ana.len() {
+                    ana[k - k0]
+                } else {
+                    self.fir.at(buf, c as isize - base as isize, end - base)
+                }
+            })
+            .collect()
+    }
+
+    /// The continuous filter output for outputs `k0..k1` from `buf` (sample `j` at
+    /// `buf[j − base]`, nothing before sample 0 or past `buf`'s end).
+    fn fir_outputs(&self, buf: &[i16], base: usize, k0: usize, k1: usize) -> Vec<Complex32> {
+        stat_time!(self, Analytic);
+        (k0..k1)
+            .map(|k| {
+                self.fir
+                    .at(buf, (2 * k) as isize - base as isize, buf.len())
+            })
+            .collect()
+    }
+
+    /// The analytic signal of a window, counted and timed.
+    fn analytic(&self, audio: &[i16], p: &Params) -> Vec<Complex32> {
+        stat_add!(self, Analytic, 1);
+        stat_time!(self, Analytic);
+        if p.fir_analytic {
+            self.fir.apply(audio)
+        } else {
+            dsp::analytic_6k(audio)
+        }
     }
 
     /// Every candidate's outcome, in order; parallel across candidates.
@@ -565,11 +675,16 @@ impl Receiver {
     }
 
     /// The sync surface over bins `lo..=hi`, all [`NCOLS`] columns (`build_s0`).
-    fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize, decimate: bool) -> Surface {
+    fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize, p: &Params) -> Surface {
         stat_add!(self, SurfaceBuilds, 1);
         stat_time!(self, Surface);
-        if decimate && hi - lo + 5 <= NFFT / SYNC_DECIM {
-            return self.sync_surface_decimated(c0, lo, hi);
+        if p.decimate_sync
+            && let Some(&dec) = [SYNC_DECIM_NARROW, SYNC_DECIM, 8, 4]
+                .iter()
+                .find(|&&d| hi - lo + 5 <= NFFT / d)
+        {
+            let stride = if p.coarse_sync_grid { 2 } else { 1 };
+            return self.sync_surface_decimated(c0, lo, hi, dec, stride);
         }
         let width = hi - lo + 1;
         let column =
@@ -620,8 +735,15 @@ impl Receiver {
     /// window is summed `SYNC_DECIM` samples at a time, and the 512-point transform's bins are the
     /// full transform's, shifted by the centre bin (the mixer's phase at a column's first sample
     /// only rotates all bins together, and only powers are kept).
-    fn sync_surface_decimated(&self, c0: &[Complex32], lo: usize, hi: usize) -> Surface {
-        const NF: usize = NFFT / SYNC_DECIM;
+    fn sync_surface_decimated(
+        &self,
+        c0: &[Complex32],
+        lo: usize,
+        hi: usize,
+        dec: usize,
+        stride: usize,
+    ) -> Surface {
+        let nf = NFFT / dec;
         let width = hi - lo + 1;
         let mid = (lo + hi) / 2;
         // The sync wave is 13 symbols, each a pure tone that turns a whole number of times, so
@@ -630,7 +752,7 @@ impl Receiver {
         // whole wave is 20 KB. Read per column with a window that is also 20 KB, the whole wave
         // did not stay in the LX7's 32 KB data cache (547 ms a surface, 2.3 ms a column, against
         // 0.23 ms for the transform).
-        const _: () = assert!(NSS.is_multiple_of(SYNC_DECIM));
+        debug_assert!(NSS.is_multiple_of(dec));
         let wm = f64::from(mid as f32 * DF) * core::f64::consts::TAU / f64::from(FS6);
         let base: [Vec<Complex32>; 4] = core::array::from_fn(|t| {
             let psi = -(core::f64::consts::TAU * t as f64 / NSS as f64 + wm);
@@ -652,33 +774,56 @@ impl Receiver {
             phasor *= turn;
             now
         });
-        let groups = NSS / SYNC_DECIM;
+        let groups = NSS / dec;
         let m = SYNC_SYMBOLS * groups;
-        let column =
-            |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
-                let x = &c0[col * COL_STEP..];
-                for (i, &sent) in SYNC.iter().enumerate() {
-                    let table = &base[usize::from(sent)];
-                    for g in 0..groups {
-                        let (at, out) = (g * SYNC_DECIM, i * groups + g);
-                        buf[out] = symbol_phasor[i]
-                            * table[at..at + SYNC_DECIM]
-                                .iter()
-                                .zip(&x[i * NSS + at..i * NSS + at + SYNC_DECIM])
-                                .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
+        // the column's decimated product of window and sync wave
+        let fill = |col: usize, buf: &mut [Complex32]| {
+            let x = &c0[col * COL_STEP..];
+            for (i, &sent) in SYNC.iter().enumerate() {
+                let table = &base[usize::from(sent)];
+                let xs = &x[i * NSS..(i + 1) * NSS];
+                for g in 0..groups {
+                    let at = g * dec;
+                    let (mut re, mut im) = (0f32, 0f32);
+                    for (r, v) in table[at..at + dec].iter().zip(&xs[at..at + dec]) {
+                        re += r.re * v.re - r.im * v.im;
+                        im += r.re * v.im + r.im * v.re;
                     }
+                    buf[i * groups + g] = symbol_phasor[i] * Complex32::new(re, im);
                 }
-                buf[m..].fill(Complex32::new(0.0, 0.0));
-                fft.process(buf);
-                let power: Vec<f32> = (lo - 2..=hi + 2)
-                    .map(|b| buf[(b + NF - mid % NF) % NF].norm_sqr())
-                    .collect();
+            }
+            buf[m..].fill(Complex32::new(0.0, 0.0));
+        };
+        // bins `lo − 2 ..= hi + 2` of the transform, whose bin 0 is the band centre `mid`
+        let first = (lo + 2 * nf - 2 - mid % nf) % nf;
+        let spectrum = |buf: &[Complex32], power: &mut [f32]| {
+            for (j, p) in power.iter_mut().enumerate() {
+                *p = buf[(first + j) % nf].norm_sqr();
+            }
+        };
+        // 1-2-3-2-1 smoothing across frequency
+        let smooth = |power: &[f32], out: &mut Vec<f32>| {
+            out.extend(
                 power
                     .windows(5)
-                    .map(|w| w[0] + 2.0 * w[1] + 3.0 * w[2] + 2.0 * w[3] + w[4])
-                    .collect()
+                    .map(|w| w[0] + 2.0 * w[1] + 3.0 * w[2] + 2.0 * w[3] + w[4]),
+            );
+        };
+        #[cfg(feature = "parallel")]
+        let column =
+            |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
+                if !col.is_multiple_of(stride) {
+                    return alloc::vec![0.0; width];
+                }
+                fill(col, buf);
+                fft.process(buf);
+                let mut power = alloc::vec![0f32; width + 4];
+                spectrum(buf, &mut power);
+                let mut row = Vec::with_capacity(width);
+                smooth(&power, &mut row);
+                row
             };
-        let zero = || alloc::vec![Complex32::new(0.0, 0.0); NF];
+        let zero = || alloc::vec![Complex32::new(0.0, 0.0); nf];
         #[cfg(feature = "parallel")]
         let rows: Vec<Vec<f32>> = {
             use rayon::prelude::*;
@@ -686,19 +831,30 @@ impl Receiver {
                 .into_par_iter()
                 .with_min_len(16)
                 .map_init(
-                    || (dsp::with_planner(|p| p.plan_forward(NF)), zero()),
+                    || (dsp::with_planner(|p| p.plan_forward(nf)), zero()),
                     |(fft, buf), col| column(col, fft.as_ref(), buf),
                 )
                 .collect()
         };
         #[cfg(not(feature = "parallel"))]
-        let rows: Vec<Vec<f32>> = {
-            let fft = dsp::with_planner(|p| p.plan_forward(NF));
+        {
+            let fft = dsp::with_planner(|p| p.plan_forward(nf));
             let mut buf = zero();
-            (0..NCOLS)
-                .map(|col| column(col, fft.as_ref(), &mut buf))
-                .collect()
-        };
+            let mut data = Vec::with_capacity(NCOLS * width);
+            let mut power = alloc::vec![0f32; width + 4];
+            for col in 0..NCOLS {
+                if !col.is_multiple_of(stride) {
+                    data.extend(core::iter::repeat_n(0.0, width));
+                    continue;
+                }
+                fill(col, &mut buf);
+                fft.process(&mut buf);
+                spectrum(&buf, &mut power);
+                smooth(&power, &mut data);
+            }
+            Surface { lo, width, data }
+        }
+        #[cfg(feature = "parallel")]
         Surface {
             lo,
             width,
@@ -735,9 +891,9 @@ impl Receiver {
         peak: bool,
         refine: bool,
     ) -> (Option<Outcome>, usize) {
-        let mut tones = 0;
-        let outcome = self.attempt_inner(c0, pick, t0_s, p, peak, refine, &mut tones);
-        (outcome, tones)
+        let mut gate = (0, 0.0, false);
+        let outcome = self.attempt_inner(c0, pick, t0_s, p, peak, refine, true, &mut gate);
+        (outcome, gate.0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -749,7 +905,8 @@ impl Receiver {
         p: &Params,
         peak: bool,
         refine: bool,
-        gate_tones: &mut usize,
+        ladder: bool,
+        gate_out: &mut (usize, f32, bool),
     ) -> Option<Outcome> {
         let (xdt, f1) = if pick.channel == 0 && peak && refine {
             stat_add!(self, Peakups, 1);
@@ -785,7 +942,6 @@ impl Receiver {
             pt += pow[usize::from(sent)];
             pa += pow.iter().sum::<f32>();
         }
-        *gate_tones = hits;
         let pn = (pa - pt) / 3.0;
         let snr = if pn > 0.0 { db(pt / pn) } else { -99.9 };
         let passes = if !peak {
@@ -797,6 +953,10 @@ impl Receiver {
         };
         #[cfg(feature = "jtty-stats")]
         drop(gate_span);
+        *gate_out = (hits, snr, passes);
+        if !ladder {
+            return None;
+        }
         if !passes {
             stat_add!(self, GateFail, 1);
             return None;
@@ -812,7 +972,7 @@ impl Receiver {
         stat_add!(self, LadderCalls, 1);
         let accepted = {
             stat_time!(self, Ladder);
-            self.ladder.decode(&zsym, &zhalf)
+            self.ladder.decode_rungs(&zsym, &zhalf, p.ladder_rungs)
         };
         #[cfg(feature = "jtty-stats")]
         self.stats.record(super::stats::GatedCandidate {
@@ -906,9 +1066,24 @@ impl Receiver {
         // signal and sync surface of a window do not, and they are most of its
         // cost, so a batch of windows has them computed on the pool first.
         const BATCH: usize = 16;
+        // with the FIR analytic signal, each output once for the whole recording
+        let ana = if p.fir_analytic {
+            self.fir_outputs(audio.buf, 0, 0, audio.buf.len() / 2)
+        } else {
+            Vec::new()
+        };
         for first in (0..n).step_by(BATCH) {
             let batch: Vec<usize> = (first..n.min(first + BATCH)).collect();
-            let prepare = |w: &usize| self.prepare(audio.window(*w), p);
+            let prepare = |w: &usize| {
+                if p.fir_analytic {
+                    let (_, lo, hi) = channels(p)?;
+                    let c0 = self.fir_window(&ana, 0, audio.buf, 0, *w);
+                    let surface = Some(self.sync_surface(&c0, lo, hi, p));
+                    Some(Pre { c0, surface })
+                } else {
+                    self.prepare(audio.window(*w), p)
+                }
+            };
             #[cfg(feature = "parallel")]
             let pres: Vec<Option<Pre>> = {
                 use rayon::prelude::*;
@@ -950,17 +1125,13 @@ impl Receiver {
                 .collect()
         };
         let carried = carried_in(asm, w);
-        let subtracted = self.analyze(
-            audio.window(w),
-            t_of(w),
-            p,
-            None,
-            &carried,
-            pre,
-            asm,
-            sink,
-            frames,
-        );
+        // a [`Back`]'s windows come prepared, with no audio
+        let window = if audio.buf.is_empty() {
+            &[][..]
+        } else {
+            audio.window(w)
+        };
+        let subtracted = self.analyze(window, t_of(w), p, None, &carried, pre, asm, sink, frames);
         for x in &subtracted {
             for k in 1..=super::assemble::MAX_RETRO_STEPS {
                 if w >= k {
@@ -1029,6 +1200,10 @@ pub struct Stream {
     /// the next window to decode
     next: usize,
     asm: Assembler,
+    /// [`Params::fir_analytic`]: the filter outputs computed so far, output `k` at
+    /// `ana[k − ana_k0]`
+    ana: Vec<Complex32>,
+    ana_k0: usize,
 }
 
 impl Stream {
@@ -1041,6 +1216,8 @@ impl Stream {
             base: 0,
             next: 0,
             asm: Assembler::new(),
+            ana: Vec::new(),
+            ana_k0: 0,
         }
     }
 
@@ -1070,17 +1247,38 @@ impl Stream {
     /// passed to `on_update`, in the order it happened.
     pub fn push(&mut self, samples: &[i16], on_update: &mut dyn FnMut(MessageUpdate)) {
         self.buf.extend_from_slice(samples);
+        if self.params.fir_analytic {
+            // every filter output whose inputs have all arrived, once
+            let have = self.ana_k0 + self.ana.len();
+            // output k is complete when 2k + half < samples so far
+            let avail = self.base + self.buf.len();
+            let half = self.rx.fir.half();
+            let upto = if avail > half {
+                (avail - half - 1) / 2 + 1
+            } else {
+                0
+            }
+            .max(have);
+            let more = self.rx.fir_outputs(&self.buf, self.base, have, upto);
+            self.ana.extend(more);
+        }
         let mut frames = Vec::new();
         while self.base + self.buf.len() >= self.next * STEP + NCHUNK {
             let audio = Audio {
                 buf: &self.buf,
                 base: self.base,
             };
+            let pre = self.params.fir_analytic.then(|| Pre {
+                c0: self
+                    .rx
+                    .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next),
+                surface: None,
+            });
             self.rx.step(
                 &audio,
                 self.next,
                 &self.params,
-                None,
+                pre,
                 &mut self.asm,
                 on_update,
                 &mut frames,
@@ -1093,6 +1291,12 @@ impl Stream {
         if keep_from > self.base {
             self.buf.drain(..keep_from - self.base);
             self.base = keep_from;
+        }
+        let keep_k = keep_from / 2;
+        if keep_k > self.ana_k0 {
+            let n = (keep_k - self.ana_k0).min(self.ana.len());
+            self.ana.drain(..n);
+            self.ana_k0 += n;
         }
     }
 
@@ -1108,6 +1312,141 @@ impl Stream {
         self.base = 0;
         self.next = 0;
         self.asm = Assembler::new();
+        self.ana.clear();
+        self.ana_k0 = 0;
+    }
+}
+
+/// A window's state-independent work, done: what [`Front`] hands to [`Back`].
+pub struct Prepared {
+    window: usize,
+    pre: Pre,
+}
+
+impl Prepared {
+    /// The window's index (window `k` starts at sample `k · STEP`).
+    pub fn window(&self) -> usize {
+        self.window
+    }
+}
+
+/// The first half of a [`Stream`] under `Params::embedded()`-like settings, for running the two
+/// halves on two cores (#499): it takes the audio, keeps the FIR analytic signal (computed once
+/// per sample) and, for each window its audio completes, builds the sync surface, and hands the
+/// window on as a [`Prepared`]. It keeps no message state. [`Back`] does the rest; together, in
+/// order, they report exactly what a [`Stream`] does.
+///
+/// Only for settings with no subtraction and no `carry`, whose windows need nothing from the
+/// others: [`Front::new`] returns `None` otherwise.
+pub struct Front {
+    rx: Arc<Receiver>,
+    params: Params,
+    buf: Vec<i16>,
+    base: usize,
+    next: usize,
+    ana: Vec<Complex32>,
+    ana_k0: usize,
+}
+
+impl Front {
+    /// A front end starting at sample 0; `None` unless `params` has `fir_analytic` and neither
+    /// `subtract` nor `carry`.
+    pub fn new(rx: Arc<Receiver>, params: Params) -> Option<Self> {
+        (params.fir_analytic && !params.subtract && !params.carry).then(|| Self {
+            rx,
+            params,
+            buf: Vec::new(),
+            base: 0,
+            next: 0,
+            ana: Vec::new(),
+            ana_k0: 0,
+        })
+    }
+
+    /// Feed 12 kHz mono audio; every window it completes is prepared and passed to `out`.
+    pub fn push(&mut self, samples: &[i16], out: &mut dyn FnMut(Prepared)) {
+        self.buf.extend_from_slice(samples);
+        let have = self.ana_k0 + self.ana.len();
+        let avail = self.base + self.buf.len();
+        let half = self.rx.fir.half();
+        let upto = if avail > half {
+            (avail - half - 1) / 2 + 1
+        } else {
+            0
+        }
+        .max(have);
+        let more = self.rx.fir_outputs(&self.buf, self.base, have, upto);
+        self.ana.extend(more);
+        while self.base + self.buf.len() >= self.next * STEP + NCHUNK {
+            let c0 = self
+                .rx
+                .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next);
+            let surface = channels(&self.params)
+                .map(|(_, lo, hi)| self.rx.sync_surface(&c0, lo, hi, &self.params));
+            out(Prepared {
+                window: self.next,
+                pre: Pre { c0, surface },
+            });
+            self.next += 1;
+        }
+        // the next window starts at `next · STEP`; the filter reads `half` samples before it
+        let keep_from = (self.next * STEP).saturating_sub(2 * half);
+        if keep_from > self.base {
+            self.buf.drain(..keep_from - self.base);
+            self.base = keep_from;
+        }
+        let keep_k = (self.next * STEP) / 2;
+        if keep_k > self.ana_k0 {
+            let n = (keep_k - self.ana_k0).min(self.ana.len());
+            self.ana.drain(..n);
+            self.ana_k0 += n;
+        }
+    }
+}
+
+/// The second half of a [`Stream`] (see [`Front`]): candidates, ladder and message assembly,
+/// one [`Prepared`] window at a time, in window order.
+pub struct Back {
+    rx: Arc<Receiver>,
+    params: Params,
+    next: usize,
+    asm: Assembler,
+}
+
+impl Back {
+    /// A back end for the windows of a [`Front`] made with the same `params`.
+    pub fn new(rx: Arc<Receiver>, params: Params) -> Self {
+        Self {
+            rx,
+            params,
+            next: 0,
+            asm: Assembler::new(),
+        }
+    }
+
+    /// Decode one window; message updates go to `on_update`.
+    ///
+    /// # Panics
+    /// If `prepared` is not the next window.
+    pub fn process(&mut self, prepared: Prepared, on_update: &mut dyn FnMut(MessageUpdate)) {
+        assert_eq!(prepared.window, self.next, "windows in order");
+        let audio = Audio { buf: &[], base: 0 };
+        let mut frames = Vec::new();
+        self.rx.step(
+            &audio,
+            prepared.window,
+            &self.params,
+            Some(prepared.pre),
+            &mut self.asm,
+            on_update,
+            &mut frames,
+        );
+        self.next += 1;
+    }
+
+    /// The stream has ended (as [`Stream::finish`]).
+    pub fn finish(&mut self, on_update: &mut dyn FnMut(MessageUpdate)) {
+        self.asm.prune(f32::MAX / 4.0, on_update);
     }
 }
 
@@ -1155,16 +1494,104 @@ struct Work<'a> {
     asm: &'a mut Assembler,
     sink: &'a mut dyn FnMut(MessageUpdate),
     frames: &'a mut Vec<FrameDecode>,
+    /// Ladder calls this window may still make ([`Params::ladder_budget`]).
+    ladder_left: Option<usize>,
 }
 
 impl Work<'_> {
+    /// [`Self::decode_picks`] under a ladder budget: every pick is gated first, those that pass
+    /// are ranked by sync tones and then S/N, and the ladder runs on them in that order, once
+    /// each, while the window's budget lasts; a message's due continuation (the sticky retry)
+    /// takes the next call if nothing decoded. No second round after a subtraction.
+    fn decode_budgeted(&mut self, ch: u8, fc: f32, fwid: f32, picks: Vec<Pick>) {
+        // every pick through the unrefined gate (1.6 ms on the CoreS3); a refinement (`peakup`,
+        // 42 ms) only for the best-ranked picks that failed it narrowly, while refinements last
+        let raw_first = self.p.raw_first && ch == 0;
+        let mut ranked: Vec<(usize, f32, bool, Pick)> = picks
+            .iter()
+            .filter_map(|pk| {
+                let mut g = (0, 0.0, false);
+                self.rx.attempt_inner(
+                    &self.c0, pk, self.t0, self.p, true, !raw_first, false, &mut g,
+                );
+                (g.2 || (raw_first && g.0 >= RAW_FIRST_MIN_SYNC)).then_some((g.0, g.1, g.2, *pk))
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then(b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
+        });
+        let mut refinements = REFINEMENTS_PER_WINDOW;
+        let mut decoded = false;
+        for (_, _, passed, pick) in ranked {
+            if self.ladder_left == Some(0) {
+                break;
+            }
+            let refine_passed = |rx: &Receiver| {
+                let mut g = (0, 0.0, false);
+                rx.attempt_inner(&self.c0, &pick, self.t0, self.p, true, true, false, &mut g);
+                g.2
+            };
+            let refined = if passed {
+                !raw_first
+            } else {
+                if refinements == 0 {
+                    continue;
+                }
+                refinements -= 1;
+                if !refine_passed(self.rx) {
+                    continue;
+                }
+                true
+            };
+            self.ladder_left = self.ladder_left.map(|n| n - 1);
+            let (mut outcome, tones) = self
+                .rx
+                .attempt(&self.c0, &pick, self.t0, self.p, true, refined);
+            // A raw candidate the ladder rejected is refined and tried again while the budget
+            // lasts, as `process` does without a budget: under fading the unrefined position is
+            // often not good enough for the ladder even though it passed the gate.
+            if outcome.is_none()
+                && !refined
+                && raw_first
+                && tones >= RAW_FIRST_MIN_SYNC
+                && refinements > 0
+                && self.ladder_left != Some(0)
+            {
+                refinements -= 1;
+                if refine_passed(self.rx) {
+                    self.ladder_left = self.ladder_left.map(|n| n - 1);
+                    outcome = self
+                        .rx
+                        .attempt(&self.c0, &pick, self.t0, self.p, true, true)
+                        .0;
+                }
+            }
+            decoded |= self.settle(alloc::vec![outcome], ch);
+        }
+        if !decoded && self.ladder_left != Some(0) {
+            let due: Option<(f32, f32)> = self.asm.continuations().find(|&(f1, tsync)| {
+                (f1 - fc).abs() <= fwid
+                    && ((self.t0 - tsync) - FRAME_PERIOD_S).abs() <= 0.1
+                    && tsync + FRAME_PERIOD_S - self.t0 >= 0.0
+            });
+            if let Some((f1, tsync)) = due {
+                stat_add!(self.rx, StickyRetries, 1);
+                self.ladder_left = self.ladder_left.map(|n| n - 1);
+                let pick = Pick {
+                    channel: ch,
+                    f_hz: f1,
+                    xdt_s: tsync + FRAME_PERIOD_S - self.t0,
+                };
+                let outcome = self.rx.process(&self.c0, &pick, self.t0, self.p, false);
+                self.settle(alloc::vec![outcome], ch);
+            }
+        }
+    }
+
     fn surface(&mut self) -> &mut Surface {
         if self.surface.is_none() {
-            self.surface =
-                Some(
-                    self.rx
-                        .sync_surface(&self.c0, self.lo, self.hi, self.p.decimate_sync),
-                );
+            self.surface = Some(self.rx.sync_surface(&self.c0, self.lo, self.hi, self.p));
         }
         self.surface.as_mut().unwrap()
     }
@@ -1189,7 +1616,14 @@ impl Work<'_> {
 
     fn pick_candidates(&mut self, ch: u8, band: Band, fwid: f32) -> Vec<Pick> {
         if ch == 0 {
-            let nc = 2usize.max(8usize.min((fwid / (NFZ as f32 * DF)).round() as usize));
+            let per_peak = (fwid / (NFZ as f32 * DF)).round() as usize;
+            // upstream takes at most 8; with a ladder budget the gate ranks them, so a wide
+            // channel 0 takes one per peak-suppression width (#499)
+            let nc = if self.ladder_left.is_some() {
+                per_peak.clamp(2, MAX_BUDGET_PICKS)
+            } else {
+                per_peak.clamp(2, 8)
+            };
             pick_masked(self.surface(), band, nc)
                 .into_iter()
                 .map(|(bin, col)| pick_at(0, bin, col))
@@ -1234,6 +1668,10 @@ impl Work<'_> {
             }
         } else {
             todo = picks;
+        }
+        if self.ladder_left.is_some() {
+            self.decode_budgeted(ch, fc, fwid, todo);
+            return;
         }
         for _round in 0..MAX_ROUNDS {
             let before = self.subtractions;
@@ -1399,7 +1837,59 @@ fn suppress(s: &mut Surface, band: Band, bin: usize, col: usize) {
 /// Channel 0's peaks: `nc` of them, each masking its neighbourhood in a private
 /// mask, so a candidate that later fails does not spoil the surface channels 1 and
 /// 2 will search.
+///
+/// The same picks as scanning the whole masked band for each (`pick_masked_scan`, kept for the
+/// test): every bin keeps its best unmasked column, and a pick re-scans only the bins its
+/// rectangle touched. Scanning the band once per pick cost 447 ms a window on the CoreS3 with
+/// 15 picks over ±150 Hz (#499).
 fn pick_masked(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
+    let nb = band.jb - band.ja + 1;
+    let mut live = alloc::vec![true; NCOLS * nb]; // [col][bin - ja], the surface's own order
+    // Each bin's best unmasked (value, column), ties to the earliest column, for the bins
+    // `b0..=b1`: read column by column, so the surface (in PSRAM on the CoreS3) is read in its
+    // own order — reading it a bin at a time missed the cache on every column (#499).
+    let rescan = |live: &[bool], per_bin: &mut [Option<(f32, usize)>], b0: usize, b1: usize| {
+        per_bin[b0..=b1].fill(None);
+        for col in 0..NCOLS {
+            let row = &s.data[col * s.width + (band.ja + b0 - s.lo)..];
+            let alive = &live[col * nb + b0..];
+            for (i, (&v, &ok)) in row.iter().zip(alive).take(b1 - b0 + 1).enumerate() {
+                let e = &mut per_bin[b0 + i];
+                if ok && e.is_none_or(|(bv, _)| v > bv) {
+                    *e = Some((v, col));
+                }
+            }
+        }
+    };
+    let mut per_bin: Vec<Option<(f32, usize)>> = alloc::vec![None; nb];
+    rescan(&live, &mut per_bin, 0, nb - 1);
+    (0..nc)
+        .map(|_| {
+            // the strongest over bins; ties to the earliest column, then the lowest bin
+            let mut pick: Option<(f32, usize, usize)> = None;
+            for (b, e) in per_bin.iter().enumerate() {
+                if let Some((v, col)) = *e
+                    && pick.is_none_or(|(pv, pb, pc)| {
+                        v > pv || (v == pv && (col < pc || (col == pc && b < pb)))
+                    })
+                {
+                    pick = Some((v, b, col));
+                }
+            }
+            let (bin, col) = pick.map_or((band.ja, 0), |(_, b, col)| (band.ja + b, col));
+            let (bins, cols) = peak_rect(band, bin, col);
+            let (b0, b1) = (*bins.start() - band.ja, *bins.end() - band.ja);
+            for c in cols {
+                live[c * nb + b0..=c * nb + b1].fill(false);
+            }
+            rescan(&live, &mut per_bin, b0, b1);
+            (bin, col)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn pick_masked_scan(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
     let mut mask = alloc::vec![false; s.data.len()];
     for col in 0..NCOLS {
         for bin in band.ja..=band.jb {
@@ -1568,7 +2058,7 @@ mod profile {
         });
         let (lo, hi) = (1636usize, 2459usize);
         time("sync_surface (pool)", 50, &mut || {
-            std::hint::black_box(rx.sync_surface(&c0, lo, hi, false));
+            std::hint::black_box(rx.sync_surface(&c0, lo, hi, &Params::default()));
         });
         let pick = Pick {
             channel: 0,
@@ -1592,5 +2082,46 @@ mod profile {
         time("decode_window (whole)", 20, &mut || {
             std::hint::black_box(rx.decode_window(win, 0.0, &p));
         });
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    /// The incremental pick finds exactly the whole-band scans' picks, ties included.
+    #[test]
+    fn incremental_picks_match_the_whole_band_scan() {
+        let mut state = 0x77u64;
+        let mut rnd = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as u32
+        };
+        for trial in 0..40 {
+            let (lo, width) = (1900usize, 450usize);
+            let data: Vec<f32> = (0..NCOLS * width)
+                .map(|_| {
+                    if trial % 2 == 0 {
+                        (rnd() % 7) as f32
+                    } else {
+                        (rnd() % 100_000) as f32 / 7.0
+                    }
+                })
+                .collect();
+            let s = Surface { lo, width, data };
+            let band = Band {
+                ja: lo + 3 + trial,
+                jb: lo + 60 + 9 * trial,
+            };
+            for nc in [1, 5, 15, 40] {
+                assert_eq!(
+                    pick_masked(&s, band, nc),
+                    pick_masked_scan(&s, band, nc),
+                    "trial {trial} nc {nc}"
+                );
+            }
+        }
     }
 }

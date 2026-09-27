@@ -372,6 +372,61 @@ fn bench_trellis_placement() {
     unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
 }
 
+/// Part 3c: where a ladder rung's time goes (#499). `Plan::profile_f32` runs one decode with a
+/// cycle counter around its phases and counts what the trellis does: extensions considered,
+/// scans cut short on a full list, `insert` calls, duplicates, rejects. The survivor arrays
+/// (two of 32 KB) in PSRAM and in internal DRAM, the plans for coherent lengths 1, 2 and 4, on
+/// a +12 dB frame and on noise.
+fn bench_ladder_profile() {
+    use mfsk_core::jtty::trellis::Plan;
+    // the microsecond timer as the clock (inline assembly for `ccount` is unstable on Xtensa);
+    // every phase below is milliseconds, so the resolution is enough
+    fn ticks() -> u32 {
+        now_us() as u32
+    }
+    let mhz = 1.0; // ticks are microseconds; `ms` below divides by 1000
+    log::info!("ladder profile: laps in ms (microsecond timer)");
+    let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
+    let payloads = tx::payloads(&atoms).expect("encodes");
+    let data = tx::frame_tones(&payloads[0]);
+    let tones = &data[mfsk_core::jtty::SYNC_SYMBOLS..];
+    let ms = |c: u32| f64::from(c) / (mhz * 1000.0);
+    for (place, limit) in [("PSRAM", 2048usize), ("internal", 256 * 1024)] {
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(limit) };
+        for coherent in [1usize, 2, 4] {
+            let plan = Plan::new(coherent);
+            for (label, snr) in [("+12 dB", Some(12.0)), ("noise", None)] {
+                let mut rng = Lcg(0x77 ^ snr.map_or(0, |s| s as i64 as u64 + 100));
+                let (zsym, _) = synth_correlations(tones, snr, &mut rng);
+                let p = plan.profile_f32(&zsym, ticks);
+                let total: u32 = p.laps.iter().sum();
+                log::info!(
+                    "L={coherent} {place:<8} {label:<6}: total {:6.1} | energies {:5.1} arrays {:5.1} wrap1 {:6.1} wrap2 {:6.1} pool {:5.1} score {:5.1} hyp {:5.1}",
+                    ms(total),
+                    ms(p.laps[0]),
+                    ms(p.laps[1]),
+                    ms(p.laps[2]),
+                    ms(p.laps[3]),
+                    ms(p.laps[4]),
+                    ms(p.laps[5]),
+                    ms(p.laps[6])
+                );
+                log::info!(
+                    "    ext {} placed {} dup {} pool {} | {:.0} ns per extension, {:.0} ns per placed path (wraps)",
+                    p.extensions,
+                    p.inserts,
+                    p.duplicates,
+                    p.pool,
+                    1000.0 * f64::from(p.laps[2] + p.laps[3]) / f64::from(p.extensions.max(1)),
+                    1000.0 * f64::from(p.laps[2] + p.laps[3]) / f64::from(p.inserts.max(1))
+                );
+                yield_now();
+            }
+        }
+    }
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+}
+
 /// Part 4: the DSP around the trellis, each at the size the receiver runs it: the unit costs
 /// the per-window model (`docs/notes/JTTY_EMBEDDED_BUDGET.md`) is built from. Buffers in PSRAM
 /// (a 14 160-sample window is 113 KB, so that is where the receiver has it) and, for the
@@ -456,6 +511,17 @@ fn bench_dsp() {
         yield_now();
     }
     log::info!("dsp: rotated correlate_payload: {:.2} ms", total as f64 / 5000.0);
+
+    // the analytic signal of a window by the 97-tap FIR (`Params::fir_analytic`)
+    {
+        let fir = mfsk_core::jtty::dsp::AnalyticFir::new(48, 7.0);
+        let audio: alloc::vec::Vec<i16> = (0..NCHUNK).map(|_| (3000.0 * rng.gauss()) as i16).collect();
+        let t = now_us();
+        let z = fir.apply(&audio);
+        log::info!("dsp: FIR analytic signal, {} samples: {:.1} ms", z.len(), (now_us() - t) as f64 / 1000.0);
+        core::hint::black_box(&z[0]);
+        yield_now();
+    }
 
     // payload correlation: 46 symbols x 4 tones x (full + two halves) x 192 samples
     let mut total = 0i64;
@@ -562,6 +628,224 @@ fn bench_search() {
     }
 }
 
+/// Where a stream's time went, per window, from the receiver's `jtty-stats` counters.
+fn log_stages(name: &str, s: &mfsk_core::jtty::stats::Snapshot, total_ms: f64) {
+    use mfsk_core::jtty::stats::{Counter as C, Stage as S};
+    let w = s.count(C::Windows).max(1) as f64;
+    let ms = |st: S| 1000.0 * s.seconds(st) / w;
+    let stages = [
+        ("analytic", S::Analytic),
+        ("surface", S::Surface),
+        ("pick", S::Pick),
+        ("peakup", S::Peakup),
+        ("rotate", S::Shift),
+        ("gate", S::Gate),
+        ("correlate", S::Correlate),
+        ("ladder", S::Ladder),
+        ("subtract", S::Subtract),
+    ];
+    let sum: f64 = stages.iter().map(|&(_, st)| ms(st)).sum();
+    let mut line = alloc::string::String::new();
+    for (label, st) in stages {
+        line.push_str(&alloc::format!("{label} {:.0}  ", ms(st)));
+    }
+    log::info!(
+        "stages [{name}] ms/window: {line}| sum {sum:.0}, rest {:.0}",
+        total_ms / w - sum
+    );
+    let per = |c: C| s.count(c) as f64 / w;
+    log::info!(
+        "counts [{name}] /window: picks {:.2} peakups {:.2} gates pass {:.2} fail {:.2} ladder {:.2} accepts {:.2} sticky {:.2}; rungs {:?}",
+        per(C::PicksCh0),
+        per(C::Peakups),
+        per(C::GatePass),
+        per(C::GateFail),
+        per(C::LadderCalls),
+        per(C::LadderAccepts),
+        per(C::StickyRetries),
+        s.rungs
+    );
+}
+
+/// Part 6: the receiver as it would run — `rx::Stream` with `Params::embedded()` fed the upstream
+/// sample recording (`260807_134110.wav`, 30 s, one station sending "RAN ALL NIGHT ON BAND NOISE -
+/// NO FALSE DECODES!") a window's worth at a time, every message update logged, and the time each
+/// push took against the 472 ms a window's audio lasts.
+fn bench_stream() {
+    use alloc::sync::Arc;
+    use mfsk_core::jtty::rx::{Params, Receiver, STEP, Stream};
+    const WAV: &[u8] = include_bytes!("../../../assets/golden/jtty/260807_134110.wav");
+    let audio: alloc::vec::Vec<i16> = WAV[44..]
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    // The receiver is built while allocations up to 64 KB prefer internal DRAM, so the tables and
+    // scratch it keeps land there (the trellis's survivor arrays: 1.5x, part 3b); everything it
+    // allocates while decoding goes by the default rule again (#499).
+    log_heap("stream: before receiver");
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+    let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    log_heap("stream: receiver built");
+    // steady state: 30 s of noise alone (unit-variance Gaussian at about 1/10 full scale)
+    let mut rng = Lcg(0x0015E);
+    let noise: alloc::vec::Vec<i16> = (0..audio.len()).map(|_| (3000.0 * rng.gauss()) as i16).collect();
+    let emb = Params::default().embedded();
+    for (name, params, audio) in [
+        ("+-50 Hz, budget 1, recording", emb, &audio),
+        ("+-50 Hz, budget 1, noise", emb, &noise),
+        ("+-150 Hz, budget 1, noise", Params { ftol_hz: 150.0, ..emb }, &noise),
+    ] {
+        rx.reset_stats();
+        log::info!("stream [{name}]: {} samples, {} per window step", audio.len(), STEP);
+        let mut stream = Stream::new(rx.clone(), params);
+        let (mut worst, mut total, mut windows) = (0i64, 0i64, 0u32);
+        for chunk in audio.chunks(STEP) {
+            let t = now_us();
+            stream.push(chunk, &mut |u| {
+                log::info!(
+                    "stream [{name}]: {:>7.1} Hz {:>6.2} s {} \"{}\"",
+                    u.f1_hz,
+                    u.start_s,
+                    if u.complete { "done" } else { "    " },
+                    u.text
+                )
+            });
+            let dt = now_us() - t;
+            worst = worst.max(dt);
+            total += dt;
+            windows += 1;
+            yield_now();
+        }
+        stream.finish(&mut |u| log::info!("stream [{name}]: end: \"{}\" complete {}", u.text, u.complete));
+        log::info!(
+            "stream [{name}]: {windows} pushes, {:.0} ms mean, {:.0} ms worst (a window's audio lasts 472 ms); {:.1} s for 30.2 s of audio",
+            total as f64 / f64::from(windows) / 1000.0,
+            worst as f64 / 1000.0,
+            total as f64 / 1e6
+        );
+        log_stages(name, &rx.stats(), total as f64 / 1000.0);
+        log_heap("stream: after");
+    }
+    log::info!(
+        "stream: internal DRAM low-water mark {} B",
+        unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) }
+    );
+}
+
+/// Part 7: the receiver on two cores (#499). `rx::Front` (FIR analytic signal, sync surface) on
+/// a thread pinned to core 1 is fed the audio at its real rate, a window step every 472 ms;
+/// `rx::Back` (candidates, ladder, assembly) runs here on core 0 and takes the windows from a
+/// three-deep queue. Logged: each half's time a window, how late the back end is behind the
+/// audio (from a window's last sample to its decode), and the queue at its fullest.
+fn bench_pipeline() {
+    use alloc::sync::Arc;
+    use esp_idf_svc::hal::cpu::Core;
+    use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
+    use mfsk_core::jtty::rx::{Back, Front, NCHUNK, Params, Prepared, Receiver, STEP};
+    use std::sync::mpsc::sync_channel;
+
+    const WAV: &[u8] = include_bytes!("../../../assets/golden/jtty/260807_134110.wav");
+    let recording: alloc::vec::Vec<i16> = WAV[44..]
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let mut rng = Lcg(0x0015E);
+    let noise: alloc::vec::Vec<i16> =
+        (0..recording.len()).map(|_| (3000.0 * rng.gauss()) as i16).collect();
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+    let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    log_heap("pipeline: receiver built");
+    let emb = Params::default().embedded();
+    let audio_rec = Arc::new(recording);
+    let audio_noise = Arc::new(noise);
+    for (name, params, audio) in [
+        ("+-50 Hz, recording", emb, audio_rec.clone()),
+        ("+-50 Hz, noise", emb, audio_noise.clone()),
+        ("+-150 Hz, noise", Params { ftol_hz: 150.0, ..emb }, audio_noise.clone()),
+        ("+-150 Hz, recording", Params { ftol_hz: 150.0, ..emb }, audio_rec.clone()),
+    ] {
+        rx.reset_stats();
+        let (tx, rq) = sync_channel::<(Prepared, i64)>(3);
+        let depth = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let front_us = Arc::new(core::sync::atomic::AtomicU32::new(0));
+        let t_start = now_us() + 200_000;
+        let cfg = ThreadSpawnConfiguration {
+            name: Some(c"jtty_front"),
+            stack_size: 16 * 1024,
+            priority: 4,
+            pin_to_core: Some(Core::Core1),
+            ..ThreadSpawnConfiguration::default()
+        };
+        let _ = cfg.set();
+        let front_handle = {
+            let (rx, audio, depth, front_us) = (rx.clone(), audio.clone(), depth.clone(), front_us.clone());
+            std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
+                let mut front = Front::new(rx, params).expect("embedded settings");
+                for (i, chunk) in audio.chunks(STEP).enumerate() {
+                    // the audio arrives at its real rate
+                    let due = t_start + ((i + 1) * STEP) as i64 * 1_000_000 / 12_000;
+                    let wait = due - now_us();
+                    if wait > 0 {
+                        std::thread::sleep(core::time::Duration::from_micros(wait as u64));
+                    }
+                    let t = now_us();
+                    let mut ready = alloc::vec::Vec::new();
+                    front.push(chunk, &mut |p| ready.push(p));
+                    front_us.fetch_add((now_us() - t) as u32, core::sync::atomic::Ordering::Relaxed);
+                    for p in ready {
+                        let w = p.window();
+                        let audio_done = t_start + ((w * STEP + NCHUNK) as i64) * 1_000_000 / 12_000;
+                        depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        if tx.send((p, audio_done)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            })
+        };
+        let _ = ThreadSpawnConfiguration::default().set();
+        let Ok(front_handle) = front_handle else {
+            log::error!("pipeline: front thread not started");
+            return;
+        };
+        let mut back = Back::new(rx.clone(), params);
+        let (mut back_total, mut back_worst, mut lag_worst, mut lag_total, mut n, mut deepest) =
+            (0i64, 0i64, 0i64, 0i64, 0i64, 0usize);
+        while let Ok((p, audio_done)) = rq.recv() {
+            deepest = deepest.max(depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed));
+            let t = now_us();
+            back.process(p, &mut |u| {
+                if u.complete {
+                    log::info!("pipeline [{name}]: {:>7.1} Hz done \"{}\"", u.f1_hz, u.text)
+                }
+            });
+            let end = now_us();
+            back_total += end - t;
+            back_worst = back_worst.max(end - t);
+            lag_total += end - audio_done;
+            lag_worst = lag_worst.max(end - audio_done);
+            n += 1;
+        }
+        let _ = front_handle.join();
+        let n = n.max(1);
+        log::info!(
+            "pipeline [{name}]: {n} windows; front {:.0} ms a window (core 1), back {:.0} ms mean {:.0} worst (core 0); decoded {:.0} ms mean {:.0} worst after the window's last sample; queue at most {deepest}",
+            f64::from(front_us.load(core::sync::atomic::Ordering::Relaxed)) / n as f64 / 1000.0,
+            back_total as f64 / n as f64 / 1000.0,
+            back_worst as f64 / 1000.0,
+            lag_total as f64 / n as f64 / 1000.0,
+            lag_worst as f64 / 1000.0
+        );
+        log_stages(name, &rx.stats(), (back_total + i64::from(front_us.load(core::sync::atomic::Ordering::Relaxed))) as f64 / 1000.0);
+    }
+    log::info!(
+        "pipeline: internal DRAM low-water mark {} B",
+        unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) }
+    );
+}
+
 fn run_bench() {
     log::info!("=== jtty-bench: what a JTTY receive window costs on the LX7 (#499, E0) ===");
     log::info!("window budget: 472 ms (a quarter frame); host: 11.7 ms per window, one thread");
@@ -570,6 +854,14 @@ fn run_bench() {
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
 
+    log::info!("--- 3c. where a rung's time goes ---");
+    bench_ladder_profile();
+    log::info!("--- 7. two cores: Front on core 1, Back on core 0 ---");
+    bench_pipeline();
+    log::info!("--- 4. the DSP around the trellis ---");
+    bench_dsp();
+    log::info!("--- 6. the receiver on the upstream sample recording ---");
+    bench_stream();
     log::info!("--- 1. FFT, complex f32, esp-dsp via default_planner ---");
     for n in [256usize, 512, 1024, 2048, 4096, 8192] {
         let reps = if n >= 4096 { 10 } else { 50 };
