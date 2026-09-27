@@ -215,6 +215,18 @@ pub struct Params {
     /// candidates as upstream's side channels do: two each, no refinement, a stricter gate
     /// (9 of 13 sync tones, 5 dB), and nothing channel 0 already found.
     pub side_channels: SideChannels,
+    /// With [`Self::subtract`], sweep the windows before one that subtracted a frame again with
+    /// it taken off (upstream's retro re-sweep). Off, a subtraction serves only the window it
+    /// was made in — what a receiver split into [`Front`] and [`Back`] can do (#499).
+    pub retro_sweep: bool,
+    /// With [`Self::subtract`], subtract what the side channels decode too (upstream). Off,
+    /// only channel 0's frames are taken off (#499).
+    pub subtract_side_channels: bool,
+    /// Ladder calls the side channels may make a window, apart from channel 0's
+    /// [`Self::ladder_budget`]; `None` shares that budget (channel 0 first). A budget of their
+    /// own keeps a busy band from taking channel 0's calls and channel 0 from starving the scan
+    /// (#499).
+    pub side_ladder_budget: Option<usize>,
 }
 
 /// What the side channels cover ([`Params::side_channels`]).
@@ -265,6 +277,10 @@ impl Params {
             raw_first: true,
             fir_analytic: true,
             ladder_budget: Some(1),
+            // the scan's own call, so that a busy band does not take channel 0's: on six
+            // stations sending at once, 20 -> 38 of 60 messages (host); two was too slow for
+            // the CoreS3 (a backlog of 10 s)
+            side_ladder_budget: Some(1),
             coarse_sync_grid: true,
             ladder_rungs: Rungs::L1_L4,
             skip_decoded_hz: 20.0,
@@ -295,6 +311,9 @@ impl Default for Params {
             ladder_rungs: Rungs::ALL,
             skip_decoded_hz: 0.0,
             side_channels: SideChannels::Upstream,
+            retro_sweep: true,
+            subtract_side_channels: true,
+            side_ladder_budget: None,
         }
     }
 }
@@ -675,6 +694,7 @@ impl Receiver {
             sink,
             frames,
             ladder_left: p.ladder_budget,
+            side_left: p.side_ladder_budget,
         };
         // Phase A: channel 0, twice if the first pass subtracted anything
         for pass in 1..=2 {
@@ -1352,7 +1372,7 @@ impl Receiver {
             audio.window(w)
         };
         let subtracted = self.analyze(window, t_of(w), p, None, &carried, pre, asm, sink, frames);
-        for x in &subtracted {
+        for x in subtracted.iter().filter(|_| p.retro_sweep) {
             for k in 1..=super::assemble::MAX_RETRO_STEPS {
                 if w >= k {
                     let carried = carried_in(asm, w - k);
@@ -1567,25 +1587,43 @@ pub struct Front {
     next: usize,
     ana: Vec<Complex32>,
     ana_k0: usize,
+    dropped: usize,
 }
 
 impl Front {
     /// A front end starting at sample 0; `None` unless `params` has `fir_analytic` and neither
     /// `subtract` nor `carry`.
     pub fn new(rx: Arc<Receiver>, params: Params) -> Option<Self> {
-        (params.fir_analytic && !params.subtract && !params.carry).then(|| Self {
-            rx,
-            params,
-            buf: Vec::new(),
-            base: 0,
-            next: 0,
-            ana: Vec::new(),
-            ana_k0: 0,
-        })
+        (params.fir_analytic && (!params.subtract || !params.retro_sweep) && !params.carry).then(
+            || Self {
+                rx,
+                params,
+                buf: Vec::new(),
+                base: 0,
+                next: 0,
+                ana: Vec::new(),
+                ana_k0: 0,
+                dropped: 0,
+            },
+        )
     }
 
     /// Feed 12 kHz mono audio; every window it completes is prepared and passed to `out`.
     pub fn push(&mut self, samples: &[i16], out: &mut dyn FnMut(Prepared)) {
+        self.push_or_drop(samples, &mut || true, out);
+    }
+
+    /// [`Self::push`], asking `room` before each window it completes: when there is none the
+    /// window is dropped — its surfaces are not built and [`Back`] sees a gap in the window
+    /// numbers. For a live source whose decoder has fallen behind: the queue between the cores
+    /// stays bounded, and so does the delay, instead of the audio input stalling (#499). The
+    /// frames that start in a dropped window are not decoded, channel 0's included.
+    pub fn push_or_drop(
+        &mut self,
+        samples: &[i16],
+        room: &mut dyn FnMut() -> bool,
+        out: &mut dyn FnMut(Prepared),
+    ) {
         self.buf.extend_from_slice(samples);
         let have = self.ana_k0 + self.ana.len();
         let avail = self.base + self.buf.len();
@@ -1599,6 +1637,11 @@ impl Front {
         let more = self.rx.fir_outputs(&self.buf, self.base, have, upto);
         self.ana.extend(more);
         while self.base + self.buf.len() >= self.next * STEP + NCHUNK {
+            if !room() {
+                self.dropped += 1;
+                self.next += 1;
+                continue;
+            }
             let c0 = self
                 .rx
                 .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next);
@@ -1629,15 +1672,22 @@ impl Front {
             self.ana_k0 += n;
         }
     }
+
+    /// Windows [`Self::push_or_drop`] has dropped.
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
 }
 
 /// The second half of a [`Stream`] (see [`Front`]): candidates, ladder and message assembly,
-/// one [`Prepared`] window at a time, in window order.
+/// one [`Prepared`] window at a time, in window order, with gaps where the front end dropped
+/// windows ([`Front::push_or_drop`]).
 pub struct Back {
     rx: Arc<Receiver>,
     params: Params,
     next: usize,
     asm: Assembler,
+    skipped: usize,
 }
 
 impl Back {
@@ -1648,15 +1698,24 @@ impl Back {
             params,
             next: 0,
             asm: Assembler::new(),
+            skipped: 0,
         }
     }
 
-    /// Decode one window; message updates go to `on_update`.
+    /// Windows that never arrived (dropped by the front end).
+    pub fn skipped(&self) -> usize {
+        self.skipped
+    }
+
+    /// Decode one window; message updates go to `on_update`. Windows missing before it were
+    /// dropped: a message is assembled by the frames' times, so their frames are simply absent.
     ///
     /// # Panics
-    /// If `prepared` is not the next window.
+    /// If `prepared` comes before a window already processed.
     pub fn process(&mut self, prepared: Prepared, on_update: &mut dyn FnMut(MessageUpdate)) {
-        assert_eq!(prepared.window, self.next, "windows in order");
+        assert!(prepared.window >= self.next, "windows in order");
+        self.skipped += prepared.window - self.next;
+        self.next = prepared.window;
         let audio = Audio { buf: &[], base: 0 };
         let mut frames = Vec::new();
         self.rx.step(
@@ -1726,6 +1785,8 @@ struct Work<'a> {
     frames: &'a mut Vec<FrameDecode>,
     /// Ladder calls this window may still make ([`Params::ladder_budget`]).
     ladder_left: Option<usize>,
+    /// The side channels' own ladder calls left ([`Params::side_ladder_budget`]).
+    side_left: Option<usize>,
 }
 
 impl Work<'_> {
@@ -1734,6 +1795,17 @@ impl Work<'_> {
     /// each, while the window's budget lasts; a message's due continuation (the sticky retry)
     /// takes the next call if nothing decoded. No second round after a subtraction.
     fn decode_budgeted(&mut self, ch: u8, fc: f32, fwid: f32, picks: Vec<Pick>) {
+        // the side channels spend their own budget when they have one
+        if ch != 0 && self.side_left.is_some() {
+            let shared = core::mem::replace(&mut self.ladder_left, self.side_left);
+            self.decode_budgeted_inner(ch, fc, fwid, picks);
+            self.side_left = core::mem::replace(&mut self.ladder_left, shared);
+        } else {
+            self.decode_budgeted_inner(ch, fc, fwid, picks);
+        }
+    }
+
+    fn decode_budgeted_inner(&mut self, ch: u8, fc: f32, fwid: f32, picks: Vec<Pick>) {
         // every pick through the unrefined gate (1.6 ms on the CoreS3); a refinement (`peakup`,
         // 42 ms) only for the best-ranked picks that failed it narrowly, while refinements last
         let raw_first = self.p.raw_first && ch == 0;
@@ -2050,7 +2122,7 @@ impl Work<'_> {
                 self.asm.decoded.push((f.f1_hz, f.tsync_s));
             }
             // take the frame off the signal so weaker ones beneath it can be found
-            if self.p.subtract {
+            if self.p.subtract && (ch == 0 || self.p.subtract_side_channels) {
                 stat_add!(self.rx, Subtractions, 1);
                 #[cfg(feature = "jtty-stats")]
                 let rx = self.rx;
@@ -2065,7 +2137,10 @@ impl Work<'_> {
                 self.subtractions += 1;
                 self.surface = None;
             }
-            if self.p.subtract && self.subtracted.len() < MAX_KEPT {
+            if self.p.subtract
+                && (ch == 0 || self.p.subtract_side_channels)
+                && self.subtracted.len() < MAX_KEPT
+            {
                 self.subtracted.push(Subtracted {
                     f1_hz: f.f1_hz,
                     tsync_s: f.tsync_s,

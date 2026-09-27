@@ -1098,3 +1098,58 @@ fn front_and_back_are_a_stream() {
         "subtraction needs audio in the back end"
     );
 }
+
+/// A window [`Front::push_or_drop`] drops is one [`Back`] never sees: the rest decode exactly as
+/// when every window is prepared and the same ones are thrown away after, so skipping the
+/// surfaces leaves the filter state whole, and the gap costs only the frames in it (#499).
+#[test]
+fn front_drops_windows_and_back_takes_the_gap() {
+    use mfsk_core::jtty::rx::{Back, Front};
+    let Some(four) = load("jtty/sim/mix_four_stations.wav") else {
+        return;
+    };
+    let rx = std::sync::Arc::new(Receiver::new().with_f32_metrics());
+    let params = Params {
+        ftol_hz: 300.0,
+        ladder_budget: Some(2),
+        ..Params::default().embedded()
+    };
+    // every seventh window, from the fourth
+    let drop = |k: usize| k % 7 == 3;
+
+    // every window prepared, the dropped ones thrown away before the back end
+    let mut want = Vec::new();
+    let mut front = Front::new(rx.clone(), params).expect("embedded settings");
+    let mut back = Back::new(rx.clone(), params);
+    for piece in four.chunks(5_000) {
+        let mut ready = Vec::new();
+        front.push(piece, &mut |p| ready.push(p));
+        for p in ready.into_iter().filter(|p| !drop(p.window())) {
+            back.process(p, &mut |u| want.push(u));
+        }
+    }
+    back.finish(&mut |u| want.push(u));
+    let skipped = back.skipped();
+    assert!(skipped > 0);
+
+    // the same windows dropped by the front end, unprepared
+    let mut got = Vec::new();
+    let mut front = Front::new(rx.clone(), params).expect("embedded settings");
+    let mut back = Back::new(rx.clone(), params);
+    let mut k = 0usize;
+    for piece in four.chunks(5_000) {
+        let mut ready = Vec::new();
+        let mut room = || {
+            k += 1;
+            !drop(k - 1)
+        };
+        front.push_or_drop(piece, &mut room, &mut |p| ready.push(p));
+        for p in ready {
+            back.process(p, &mut |u| got.push(u));
+        }
+    }
+    back.finish(&mut |u| got.push(u));
+    assert_eq!((front.dropped(), back.skipped()), (skipped, skipped));
+    assert!(!got.is_empty(), "the windows left still decode");
+    assert_eq!(got, want);
+}
