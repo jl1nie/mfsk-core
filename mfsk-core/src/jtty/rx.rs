@@ -99,6 +99,9 @@ const FIR_HALF: usize = 48;
 const REFINEMENTS_PER_WINDOW: usize = 2;
 /// Most channel-0 picks a window under [`Params::ladder_budget`].
 const MAX_BUDGET_PICKS: usize = 64;
+/// Decimation of the sync search when channel 0 alone is narrow enough (±50 Hz: 137 bins of 251):
+/// a 256-point transform, 0.107 ms on the CoreS3 against 0.229 for 512 (#499).
+const SYNC_DECIM_NARROW: usize = 32;
 /// Decimation of the sync search when [`Params::decimate_sync`] is on: the product of window and
 /// sync wave is summed 16 samples at a time, so `NFFT / 16` = 512 points cover 375 Hz.
 const SYNC_DECIM: usize = 16;
@@ -188,6 +191,12 @@ pub struct Params {
     /// rungs fail) on the CoreS3 against a 0.472 s window, which is what this bounds. `None` (the
     /// default): no limit, as upstream (#499).
     pub ladder_budget: Option<usize>,
+    /// Search sync on a 4 ms grid instead of upstream's 2 ms (every other column of the
+    /// decimated surface; the others read as zero). The correlation peak is about 16 ms wide, so
+    /// half its columns find the same frames: `jtty_sweep` 163 of 360 either way (7 trials
+    /// differ, 3 each way and one extra decode), for half the surface's time, 90 ms a window on
+    /// the CoreS3 (#499). Only with [`Self::decimate_sync`].
+    pub coarse_sync_grid: bool,
 }
 
 impl Params {
@@ -203,6 +212,7 @@ impl Params {
             raw_first: true,
             fir_analytic: true,
             ladder_budget: Some(1),
+            coarse_sync_grid: true,
             subtract: false,
             ..self
         }
@@ -226,6 +236,7 @@ impl Default for Params {
             raw_first: false,
             fir_analytic: false,
             ladder_budget: None,
+            coarse_sync_grid: false,
         }
     }
 }
@@ -536,7 +547,7 @@ impl Receiver {
         let Some((_, lo, hi)) = channels(p) else {
             return 0.0;
         };
-        let s = self.sync_surface(c0, lo, hi, p.decimate_sync);
+        let s = self.sync_surface(c0, lo, hi, p);
         s.data.iter().step_by(97).sum()
     }
 
@@ -548,7 +559,7 @@ impl Receiver {
         let Some((_, lo, hi)) = channels(p) else {
             return 0;
         };
-        let surface = self.sync_surface(&c0, lo, hi, p.decimate_sync);
+        let surface = self.sync_surface(&c0, lo, hi, p);
         let audio = alloc::vec![0i16; NCHUNK];
         let mut asm = Assembler::new();
         let mut frames = Vec::new();
@@ -572,7 +583,7 @@ impl Receiver {
     fn prepare(&self, audio: &[i16], p: &Params) -> Option<Pre> {
         let (_, lo, hi) = channels(p)?;
         let c0 = self.analytic(audio, p);
-        let surface = Some(self.sync_surface(&c0, lo, hi, p.decimate_sync));
+        let surface = Some(self.sync_surface(&c0, lo, hi, p));
         Some(Pre { c0, surface })
     }
 
@@ -650,15 +661,16 @@ impl Receiver {
     }
 
     /// The sync surface over bins `lo..=hi`, all [`NCOLS`] columns (`build_s0`).
-    fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize, decimate: bool) -> Surface {
+    fn sync_surface(&self, c0: &[Complex32], lo: usize, hi: usize, p: &Params) -> Surface {
         stat_add!(self, SurfaceBuilds, 1);
         stat_time!(self, Surface);
-        if decimate
-            && let Some(&dec) = [SYNC_DECIM, 8, 4]
+        if p.decimate_sync
+            && let Some(&dec) = [SYNC_DECIM_NARROW, SYNC_DECIM, 8, 4]
                 .iter()
                 .find(|&&d| hi - lo + 5 <= NFFT / d)
         {
-            return self.sync_surface_decimated(c0, lo, hi, dec);
+            let stride = if p.coarse_sync_grid { 2 } else { 1 };
+            return self.sync_surface_decimated(c0, lo, hi, dec, stride);
         }
         let width = hi - lo + 1;
         let column =
@@ -715,6 +727,7 @@ impl Receiver {
         lo: usize,
         hi: usize,
         dec: usize,
+        stride: usize,
     ) -> Surface {
         let nf = NFFT / dec;
         let width = hi - lo + 1;
@@ -749,29 +762,52 @@ impl Receiver {
         });
         let groups = NSS / dec;
         let m = SYNC_SYMBOLS * groups;
-        let column =
-            |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
-                let x = &c0[col * COL_STEP..];
-                for (i, &sent) in SYNC.iter().enumerate() {
-                    let table = &base[usize::from(sent)];
-                    for g in 0..groups {
-                        let (at, out) = (g * dec, i * groups + g);
-                        buf[out] = symbol_phasor[i]
-                            * table[at..at + dec]
-                                .iter()
-                                .zip(&x[i * NSS + at..i * NSS + at + dec])
-                                .fold(Complex32::new(0.0, 0.0), |a, (&r, &v)| a + r * v);
+        // the column's decimated product of window and sync wave
+        let fill = |col: usize, buf: &mut [Complex32]| {
+            let x = &c0[col * COL_STEP..];
+            for (i, &sent) in SYNC.iter().enumerate() {
+                let table = &base[usize::from(sent)];
+                let xs = &x[i * NSS..(i + 1) * NSS];
+                for g in 0..groups {
+                    let at = g * dec;
+                    let (mut re, mut im) = (0f32, 0f32);
+                    for (r, v) in table[at..at + dec].iter().zip(&xs[at..at + dec]) {
+                        re += r.re * v.re - r.im * v.im;
+                        im += r.re * v.im + r.im * v.re;
                     }
+                    buf[i * groups + g] = symbol_phasor[i] * Complex32::new(re, im);
                 }
-                buf[m..].fill(Complex32::new(0.0, 0.0));
-                fft.process(buf);
-                let power: Vec<f32> = (lo - 2..=hi + 2)
-                    .map(|b| buf[(b + nf - mid % nf) % nf].norm_sqr())
-                    .collect();
+            }
+            buf[m..].fill(Complex32::new(0.0, 0.0));
+        };
+        // bins `lo − 2 ..= hi + 2` of the transform, whose bin 0 is the band centre `mid`
+        let first = (lo + 2 * nf - 2 - mid % nf) % nf;
+        let spectrum = |buf: &[Complex32], power: &mut [f32]| {
+            for (j, p) in power.iter_mut().enumerate() {
+                *p = buf[(first + j) % nf].norm_sqr();
+            }
+        };
+        // 1-2-3-2-1 smoothing across frequency
+        let smooth = |power: &[f32], out: &mut Vec<f32>| {
+            out.extend(
                 power
                     .windows(5)
-                    .map(|w| w[0] + 2.0 * w[1] + 3.0 * w[2] + 2.0 * w[3] + w[4])
-                    .collect()
+                    .map(|w| w[0] + 2.0 * w[1] + 3.0 * w[2] + 2.0 * w[3] + w[4]),
+            );
+        };
+        #[cfg(feature = "parallel")]
+        let column =
+            |col: usize, fft: &dyn crate::engine::fft::Fft, buf: &mut Vec<Complex32>| -> Vec<f32> {
+                if !col.is_multiple_of(stride) {
+                    return alloc::vec![0.0; width];
+                }
+                fill(col, buf);
+                fft.process(buf);
+                let mut power = alloc::vec![0f32; width + 4];
+                spectrum(buf, &mut power);
+                let mut row = Vec::with_capacity(width);
+                smooth(&power, &mut row);
+                row
             };
         let zero = || alloc::vec![Complex32::new(0.0, 0.0); nf];
         #[cfg(feature = "parallel")]
@@ -787,13 +823,24 @@ impl Receiver {
                 .collect()
         };
         #[cfg(not(feature = "parallel"))]
-        let rows: Vec<Vec<f32>> = {
+        {
             let fft = dsp::with_planner(|p| p.plan_forward(nf));
             let mut buf = zero();
-            (0..NCOLS)
-                .map(|col| column(col, fft.as_ref(), &mut buf))
-                .collect()
-        };
+            let mut data = Vec::with_capacity(NCOLS * width);
+            let mut power = alloc::vec![0f32; width + 4];
+            for col in 0..NCOLS {
+                if !col.is_multiple_of(stride) {
+                    data.extend(core::iter::repeat_n(0.0, width));
+                    continue;
+                }
+                fill(col, &mut buf);
+                fft.process(&mut buf);
+                spectrum(&buf, &mut power);
+                smooth(&power, &mut data);
+            }
+            Surface { lo, width, data }
+        }
+        #[cfg(feature = "parallel")]
         Surface {
             lo,
             width,
@@ -1017,7 +1064,7 @@ impl Receiver {
                 if p.fir_analytic {
                     let (_, lo, hi) = channels(p)?;
                     let c0 = self.fir_window(&ana, 0, audio.buf, 0, *w);
-                    let surface = Some(self.sync_surface(&c0, lo, hi, p.decimate_sync));
+                    let surface = Some(self.sync_surface(&c0, lo, hi, p));
                     Some(Pre { c0, surface })
                 } else {
                     self.prepare(audio.window(*w), p)
@@ -1321,7 +1368,7 @@ impl Front {
                 .rx
                 .fir_window(&self.ana, self.ana_k0, &self.buf, self.base, self.next);
             let surface = channels(&self.params)
-                .map(|(_, lo, hi)| self.rx.sync_surface(&c0, lo, hi, self.params.decimate_sync));
+                .map(|(_, lo, hi)| self.rx.sync_surface(&c0, lo, hi, &self.params));
             out(Prepared {
                 window: self.next,
                 pre: Pre { c0, surface },
@@ -1513,11 +1560,7 @@ impl Work<'_> {
 
     fn surface(&mut self) -> &mut Surface {
         if self.surface.is_none() {
-            self.surface =
-                Some(
-                    self.rx
-                        .sync_surface(&self.c0, self.lo, self.hi, self.p.decimate_sync),
-                );
+            self.surface = Some(self.rx.sync_surface(&self.c0, self.lo, self.hi, self.p));
         }
         self.surface.as_mut().unwrap()
     }
@@ -1770,22 +1813,25 @@ fn suppress(s: &mut Surface, band: Band, bin: usize, col: usize) {
 /// 15 picks over ±150 Hz (#499).
 fn pick_masked(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
     let nb = band.jb - band.ja + 1;
-    let mut live = alloc::vec![true; nb * NCOLS]; // [bin - ja][col]
-    // best unmasked (value, column) of a bin; ties to the earliest column
-    let best_of = |live: &[bool], b: usize| -> Option<(f32, usize)> {
-        let mut best: Option<(f32, usize)> = None;
+    let mut live = alloc::vec![true; NCOLS * nb]; // [col][bin - ja], the surface's own order
+    // Each bin's best unmasked (value, column), ties to the earliest column, for the bins
+    // `b0..=b1`: read column by column, so the surface (in PSRAM on the CoreS3) is read in its
+    // own order — reading it a bin at a time missed the cache on every column (#499).
+    let rescan = |live: &[bool], per_bin: &mut [Option<(f32, usize)>], b0: usize, b1: usize| {
+        per_bin[b0..=b1].fill(None);
         for col in 0..NCOLS {
-            if !live[b * NCOLS + col] {
-                continue;
-            }
-            let v = s.at(col, band.ja + b);
-            if best.is_none_or(|(bv, _)| v > bv) {
-                best = Some((v, col));
+            let row = &s.data[col * s.width + (band.ja + b0 - s.lo)..];
+            let alive = &live[col * nb + b0..];
+            for (i, (&v, &ok)) in row.iter().zip(alive).take(b1 - b0 + 1).enumerate() {
+                let e = &mut per_bin[b0 + i];
+                if ok && e.is_none_or(|(bv, _)| v > bv) {
+                    *e = Some((v, col));
+                }
             }
         }
-        best
     };
-    let mut per_bin: Vec<Option<(f32, usize)>> = (0..nb).map(|b| best_of(&live, b)).collect();
+    let mut per_bin: Vec<Option<(f32, usize)>> = alloc::vec![None; nb];
+    rescan(&live, &mut per_bin, 0, nb - 1);
     (0..nc)
         .map(|_| {
             // the strongest over bins; ties to the earliest column, then the lowest bin
@@ -1801,20 +1847,16 @@ fn pick_masked(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
             }
             let (bin, col) = pick.map_or((band.ja, 0), |(_, b, col)| (band.ja + b, col));
             let (bins, cols) = peak_rect(band, bin, col);
-            for b in bins {
-                for c in cols.clone() {
-                    live[(b - band.ja) * NCOLS + c] = false;
-                }
-                per_bin[b - band.ja] = best_of(&live, b - band.ja);
+            let (b0, b1) = (*bins.start() - band.ja, *bins.end() - band.ja);
+            for c in cols {
+                live[c * nb + b0..=c * nb + b1].fill(false);
             }
+            rescan(&live, &mut per_bin, b0, b1);
             (bin, col)
         })
         .collect()
 }
 
-/// Channel 0's peaks: `nc` of them, each masking its neighbourhood in a private
-/// mask, so a candidate that later fails does not spoil the surface channels 1 and
-/// 2 will search.
 #[cfg(test)]
 fn pick_masked_scan(s: &Surface, band: Band, nc: usize) -> Vec<(usize, usize)> {
     let mut mask = alloc::vec![false; s.data.len()];
@@ -1985,7 +2027,7 @@ mod profile {
         });
         let (lo, hi) = (1636usize, 2459usize);
         time("sync_surface (pool)", 50, &mut || {
-            std::hint::black_box(rx.sync_surface(&c0, lo, hi, false));
+            std::hint::black_box(rx.sync_surface(&c0, lo, hi, &Params::default()));
         });
         let pick = Pick {
             channel: 0,

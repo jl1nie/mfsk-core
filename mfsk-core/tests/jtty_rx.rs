@@ -953,7 +953,7 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
     let rx = Receiver::new();
     let tones = tx::tones(&[Atom::call(CallAction::Cq, "K1ABC")]).unwrap();
     let want = Atom::call(CallAction::Cq, "K1ABC").render();
-    let (mut n_default, mut n_ch0, mut n_embedded, mut differing) = (0, 0, 0, 0);
+    let (mut n_default, mut n_ch0, mut n_embedded, mut differing, mut n_dec) = (0, 0, 0, 0, 0);
     for _ in 0..60 {
         let f = 1470.0 + 60.0 * uniform() as f32;
         let sig = tx::synth_f32(&tones, f, amp(-17.0 + 6.0 * uniform()));
@@ -994,6 +994,7 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
             found(Params::default().embedded()),
         );
         differing += usize::from(c != c_dec);
+        n_dec += c_dec.len();
         for v in [&d, &c, &e] {
             assert!(v.iter().all(|m| *m == want), "unexpected decode {v:?}");
         }
@@ -1002,9 +1003,15 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
         n_embedded += e.len();
     }
     eprintln!(
-        "default {n_default}, channel 0 only {n_ch0}, embedded {n_embedded}, decimation changed {differing} scenes"
+        "default {n_default}, channel 0 only {n_ch0} ({n_dec} decimated), embedded {n_embedded}, decimation changed {differing} scenes"
     );
-    assert!(differing <= 1, "decimation changed {differing} scenes");
+    // at ±50 Hz the surface is decimated by 32 (256 points): 3 of 60 scenes differ, 39 against 38
+    // found (jtty_sweep: the same 163 of 360 as by 16)
+    assert!(differing <= 3, "decimation changed {differing} scenes");
+    assert!(
+        n_dec + 1 >= n_ch0,
+        "decimated {n_dec}, full surface {n_ch0}"
+    );
     assert!(
         n_embedded + 1 >= n_default,
         "embedded options found {n_embedded}, the default {n_default}"
