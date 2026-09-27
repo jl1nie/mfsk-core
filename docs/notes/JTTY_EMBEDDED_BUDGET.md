@@ -377,3 +377,32 @@ no frame the others missed on any of these 860 files and made the unexpected dec
 
 Still open: the receiver inside the CoreS3 application (display, WiFi and UAC on the same cores), a band scan in
 upstream's manner (strict gate, no refinement) beside channel 0, and a drifting-carrier corpus (sjtty has no drift).
+
+## 12. On the board, by pattern, and its slowest windows (2026-09-27)
+
+**Board and host agree.** `jtty::testsig` makes recordings from a seed (Gaussian noise, carrier offset, drift, Rayleigh
+fading, several stations), so `jtty-bench` part 8 and `tests/jtty_board_patterns.rs` decode the same audio;
+`scripts/jtty_board_stats.py` tabulates both. The full catalogue — SNR −18…−10 dB, offsets 1455–1548 Hz, drift 0.2–2 Hz/s,
+fading 0.5–10 Hz, a four-frame message, two stations 40 Hz apart, 30 s of noise; 21 patterns × 10 trials — decoded the same
+on the CoreS3 as on the host in 210 of 210 cases (182 messages of 210, no unexpected ones). Recall statistics are therefore
+taken on the host; the board measures what only the board can: time, memory, the two cores' interference.
+
+**The slowest back-end windows.** Logged per window over 350 ms on the heavy patterns (long message, two stations,
+noise): every one is a single ladder call that fails L=1 and runs L=4 — 340–420 ms with the front end running on the other
+core (341 ms alone) — plus picks, gate and a peak-up. Two fixes, neither changing a decoded frame:
+
+- a refined candidate ran `peakup` twice (once for its gate, again for the ladder): now the refined position is reused;
+- `Params::skip_decoded_hz` (20 Hz in `embedded()`): the sync search skips a decoded frame's own span in the windows after
+  it, where it found partial matches of the frame's tail. Host: ladder calls a window 0.42 → 0.32 (sample recording),
+  0.34 → 0.27 (six stations), no frame lost on any corpus at 5, 10 or 20 Hz.
+
+| heavy patterns, 40 cases | before | after |
+|---|---|---|
+| back-end windows over 472 ms | 71 | 47 |
+| over 550 ms | 42 | 12 |
+| worst | 640 ms | 599 ms |
+| back end, mean, long message / two stations | 193 / 226 ms | 167 / 161 ms |
+
+What is left over the window's 472 ms is the failing ladder call itself. It is left there: the mean is 35–40 % of a window
+and the queue between the cores absorbs a slow window (at most one window deep in the real-time runs); cutting L=4 from
+failing candidates would bring it under at the cost of most of the 19 in 163 frames only L=4 decodes.
