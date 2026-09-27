@@ -215,6 +215,13 @@ pub struct Params {
     /// candidates as upstream's side channels do: two each, no refinement, a stricter gate
     /// (9 of 13 sync tones, 5 dB), and nothing channel 0 already found.
     pub side_channels: SideChannels,
+    /// With [`Self::subtract`], sweep the windows before one that subtracted a frame again with
+    /// it taken off (upstream's retro re-sweep). Off, a subtraction serves only the window it
+    /// was made in — what a receiver split into [`Front`] and [`Back`] can do (#499).
+    pub retro_sweep: bool,
+    /// With [`Self::subtract`], subtract what the side channels decode too (upstream). Off,
+    /// only channel 0's frames are taken off (#499).
+    pub subtract_side_channels: bool,
 }
 
 /// What the side channels cover ([`Params::side_channels`]).
@@ -295,6 +302,8 @@ impl Default for Params {
             ladder_rungs: Rungs::ALL,
             skip_decoded_hz: 0.0,
             side_channels: SideChannels::Upstream,
+            retro_sweep: true,
+            subtract_side_channels: true,
         }
     }
 }
@@ -1352,7 +1361,7 @@ impl Receiver {
             audio.window(w)
         };
         let subtracted = self.analyze(window, t_of(w), p, None, &carried, pre, asm, sink, frames);
-        for x in &subtracted {
+        for x in subtracted.iter().filter(|_| p.retro_sweep) {
             for k in 1..=super::assemble::MAX_RETRO_STEPS {
                 if w >= k {
                     let carried = carried_in(asm, w - k);
@@ -1573,15 +1582,17 @@ impl Front {
     /// A front end starting at sample 0; `None` unless `params` has `fir_analytic` and neither
     /// `subtract` nor `carry`.
     pub fn new(rx: Arc<Receiver>, params: Params) -> Option<Self> {
-        (params.fir_analytic && !params.subtract && !params.carry).then(|| Self {
-            rx,
-            params,
-            buf: Vec::new(),
-            base: 0,
-            next: 0,
-            ana: Vec::new(),
-            ana_k0: 0,
-        })
+        (params.fir_analytic && (!params.subtract || !params.retro_sweep) && !params.carry).then(
+            || Self {
+                rx,
+                params,
+                buf: Vec::new(),
+                base: 0,
+                next: 0,
+                ana: Vec::new(),
+                ana_k0: 0,
+            },
+        )
     }
 
     /// Feed 12 kHz mono audio; every window it completes is prepared and passed to `out`.
@@ -2050,7 +2061,7 @@ impl Work<'_> {
                 self.asm.decoded.push((f.f1_hz, f.tsync_s));
             }
             // take the frame off the signal so weaker ones beneath it can be found
-            if self.p.subtract {
+            if self.p.subtract && (ch == 0 || self.p.subtract_side_channels) {
                 stat_add!(self.rx, Subtractions, 1);
                 #[cfg(feature = "jtty-stats")]
                 let rx = self.rx;
@@ -2065,7 +2076,10 @@ impl Work<'_> {
                 self.subtractions += 1;
                 self.surface = None;
             }
-            if self.p.subtract && self.subtracted.len() < MAX_KEPT {
+            if self.p.subtract
+                && (ch == 0 || self.p.subtract_side_channels)
+                && self.subtracted.len() < MAX_KEPT
+            {
                 self.subtracted.push(Subtracted {
                     f1_hz: f.f1_hz,
                     tsync_s: f.tsync_s,

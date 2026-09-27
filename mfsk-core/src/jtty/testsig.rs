@@ -240,3 +240,94 @@ pub fn catalogue(trials: u32) -> Vec<Case> {
     add("noise only".into(), 30.0, Vec::new());
     cases
 }
+
+/// Callers of the pileup patterns, in the order a pattern takes them.
+pub const CALLERS: [&str; 5] = ["W9XYZ", "JA1ABC", "DL2XY", "K4ABC", "VK3NV"];
+const CALLERS_TWICE: [&str; 5] = [
+    "W9XYZ W9XYZ",
+    "JA1ABC JA1ABC",
+    "DL2XY DL2XY",
+    "K4ABC K4ABC",
+    "VK3NV VK3NV",
+];
+const LONGS: [&str; 3] = [
+    "RAN ALL NIGHT ON BAND NOISE",
+    "TNX FER QSO 73 GL",
+    "WX HERE SUNNY 25C",
+];
+
+/// Heavier patterns for the two-core receiver (#499): a CQ answered by a pileup of `n` callers,
+/// each sending its call once or twice, starting 0-1.2 s after the CQ ends at a random offset of
+/// up to ±30 Hz from it and -14…-2 dB; two or three stations sending long messages at once
+/// inside channel 0; and a band of six stations sending long messages across 300-2700 Hz. The
+/// recording starts as the CQ ends (a half-duplex receiver hears nothing of its own CQ).
+/// Each trial draws its own offsets from its seed.
+pub fn pileups(trials: u32) -> Vec<Case> {
+    use alloc::format;
+    let mut cases = Vec::new();
+    let mut add = |pattern: alloc::string::String,
+                   secs: f32,
+                   draw: &dyn Fn(&mut Rng) -> Vec<Station<'static>>| {
+        for trial in 0..trials {
+            let mut case = Case {
+                pattern: pattern.clone(),
+                trial,
+                secs,
+                stations: Vec::new(),
+            };
+            let mut rng = Rng::new(case.seed() ^ 0x5eed);
+            case.stations = draw(&mut rng);
+            cases.push(case);
+        }
+    };
+    let caller = |text: &'static str, rng: &mut Rng| Station {
+        text,
+        f0_hz: 1500.0 + 60.0 * (rng.uniform() - 0.5),
+        start_s: 0.5 + 1.2 * rng.uniform(),
+        snr_db: -14.0 + 12.0 * rng.uniform(),
+        drift_hz_s: 0.0,
+        fading_hz: 0.0,
+    };
+    for n in [1usize, 2, 3, 5] {
+        add(format!("pileup {n} callers"), 5.0, &|rng: &mut Rng| {
+            CALLERS[..n].iter().map(|&c| caller(c, rng)).collect()
+        });
+        add(
+            format!("pileup {n} callers, call twice"),
+            7.0,
+            &|rng: &mut Rng| CALLERS_TWICE[..n].iter().map(|&c| caller(c, rng)).collect(),
+        );
+    }
+    for n in [2usize, 3] {
+        add(
+            format!("channel 0, {n} long messages at once"),
+            20.0,
+            &|rng: &mut Rng| {
+                LONGS[..n]
+                    .iter()
+                    .map(|&text| Station {
+                        text,
+                        f0_hz: 1500.0 + 60.0 * (rng.uniform() - 0.5),
+                        start_s: 0.5 + 1.9 * rng.uniform(),
+                        snr_db: -12.0 + 10.0 * rng.uniform(),
+                        drift_hz_s: 0.0,
+                        fading_hz: 0.0,
+                    })
+                    .collect()
+            },
+        );
+    }
+    add("band, 6 long messages".into(), 20.0, &|rng: &mut Rng| {
+        (0..6)
+            .map(|i| Station {
+                text: LONGS[i % 3],
+                f0_hz: 300.0 + 400.0 * i as f32 + 100.0 * rng.uniform(),
+                start_s: 0.5 + 1.9 * rng.uniform(),
+                snr_db: -12.0 + 10.0 * rng.uniform(),
+                drift_hz_s: 0.0,
+                fading_hz: 0.0,
+            })
+            .collect()
+    });
+    cases
+}
