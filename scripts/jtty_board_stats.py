@@ -67,7 +67,7 @@ def table(name, cases, timing):
     print(f"\n== {name}")
     hdr = f"{'pattern':<36}{'found':>10}{'unexpected':>11}"
     if any(s[4] for s in by.values()):
-        hdr += f"{'front ms':>10}{'back ms':>9}{'back max':>9}{'time/audio':>10}{'lag max s':>10}{'queue':>6}"
+        hdr += f"{'front ms':>10}{'back ms':>9}{'back max':>9}{'time/audio':>10}{'lag max s':>10}{'queue':>6}{'drop':>6}"
     print(hdr)
     tf = te = tu = 0
     for p, (e, f, u, n, tm) in by.items():
@@ -81,6 +81,8 @@ def table(name, cases, timing):
             row += f"{front:>10.0f}{back:>9.0f}{bmax:>9.0f}{rtf:>10.2f}"
             if len(tm[0]) > 5:
                 row += f"{max(x[4] for x in tm):>10.2f}{int(max(x[5] for x in tm)):>6}"
+            if len(tm[0]) > 6:
+                row += f"{int(sum(x[6] for x in tm)):>6}"
         print(row)
     print(f"{'total':<36}{f'{tf}/{te}':>10}{tu:>11}")
 

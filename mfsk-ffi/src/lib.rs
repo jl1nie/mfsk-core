@@ -4878,6 +4878,7 @@ fn jtty_core_params(p: &MfskJttyParams) -> mfsk_core::jtty::rx::Params {
         side_channels: mfsk_core::jtty::rx::SideChannels::Upstream,
         retro_sweep: true,
         subtract_side_channels: true,
+        side_ladder_budget: None,
     }
 }
 

@@ -441,3 +441,62 @@ Channel 0 reads as before (jtty_sweep 163, the fading corpus and the testsig cat
 profile finds 9 messages with three stations and 14 with six, against 4 and 10 without the scan. Internal DRAM low-water
 fell to 54 KB (the 32 KB transform buffer and the 16 KB power row), which the application will have to watch. The front end
 is at two thirds of a window with the scan; ±150 Hz with it does not keep up.
+
+## 14. Pileups, a busy band, and what to do when the decoder falls behind (2026-09-27)
+
+`jtty::testsig::pileups` adds the traffic a CQ draws: 1–5 callers answering 0.5–1.7 s after it, ±30 Hz off, −14 to
+−2 dB, once or twice; two or three long messages at once inside channel 0; six across the band. The host and the board run
+the same seeded audio (`tests/jtty_board_patterns.rs`, `jtty-bench` part 8c, `scripts/jtty_board_stats.py`).
+
+**The side channels' own ladder budget.** Shared with channel 0 (`side_ladder_budget: None`), the scan got a call only in
+windows channel 0 left one, and read 20 of 60 messages with six stations on the band. `Params::embedded()` now gives it one
+call of its own (`side_ladder_budget: Some(1)`): 38 of 60 on the host, and 145 of the 330 pileup messages in all. Two
+calls did not keep up on the CoreS3 (a backlog of 10 s).
+
+**On the board, one receiver, audio at its real rate** (the same decodes as the host in every trial):
+
+| pattern | found | back mean / worst | decoded after the window, worst | queue at most |
+|---|---|---|---|---|
+| pileup 3 callers, each twice | 10/30 | 281 / 1042 ms | 1.38 s | 2 |
+| 2 long messages at once in channel 0 | 13/20 | 225 / 1127 ms | 1.46 s | 2 |
+| 6 long messages across the band | 38/60 | 321 / 1036 ms | 2.86 s | 4 |
+| noise only | – | 143 / 738 ms | 1.39 s | 2 |
+
+(The noise row was measured with the side-surface masking below still in; nothing decodes on noise, so it did not act.)
+The slowest windows on noise are one failed ladder call, L=1 then L=4: 732 and 738 ms, of which 543 and 588 ms are the
+ladder. The mean stays inside the 472 ms a window; only the six-station band backs up.
+
+**Building a second receiver slows everything.** `jtty-bench` used to build a `Receiver` for each set of patterns. After
+the first, about 32 KB that had been in internal DRAM landed in PSRAM (internal use 154 → 122 KB, PSRAM 32 → 64 KB, the
+largest internal block 31–32 KB either way), and the busy patterns ran slower: six stations' back mean 320 → 486 ms and the
+delay 2.85 → 8.62 s; noise's back mean 143 → 176 ms. The same receiver used twice gives identical figures. Which buffer
+moved is not identified. An application builds its receiver once, early; the bench now does too.
+
+**When the decoder falls behind, drop whole windows at the queue.** `Front::push_or_drop` asks for room before each window
+and drops the window when there is none — its surfaces are not built — and `Back` accepts the gap (`Front::dropped`,
+`Back::skipped`). Frames are assembled by their times, so a dropped window costs only the frames that start in it,
+channel 0's included; on the host, dropping every seventh window in `Front` gives exactly what preparing all of them and
+discarding the same ones gives. Before, the front end blocked on a full queue — harmless in a bench, but on the board the
+audio input sits in front of it. Six stations across the band, board (measured with the masking below still
+in, which changes nothing on six stations on the host):
+
+| windows allowed to wait | windows dropped (10 trials) | found | delay, worst |
+|---|---|---|---|
+| 3 | 7 | 33/60 | 2.65 s |
+| 5 | 2 | 38/60 (as the host) | 2.99 s |
+| 6 | 0 | 38/60 (as the host) | 3.11 s |
+
+The bench uses 6; the depth-6 run is on the final settings, and the pileup and channel-0 patterns dropped nothing at any
+depth.
+
+**Measured and not kept:**
+
+- *Shedding the scan when windows wait* (`ch0_only` for a window when one or more were queued): six stations 38 → 25 of
+  60 for a delay of 2.86 → 1.93 s, the board then differs from the host in 6–11 of 30 trials, and the single slow
+  window, which is what sets the delay on noise, is untouched.
+- *Masking the side surface* (channel 0's band and the frames already decoded): 145 → 137 of the 330 pileup messages on the
+  host (139 masking only the decoded frames) — the side scan was reading the second caller near f0 that channel 0's one
+  call could not — for 30 ms of back time on three callers and nothing on the busy band.
+- *No side call, or L=1 only, in a window where channel 0 made one*: none reads 116 of 330 (six stations 20 of 60); L=1
+  only decodes exactly as before and saves 56 of 726 L=4 rungs, because such windows are rare — they were not the slow
+  windows, which (above) were the rebuilt receiver.

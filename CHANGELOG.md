@@ -2,6 +2,17 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: a receiver that drops windows instead of stalling, and its own ladder call for the band scan (#499).**
+  `Front::push_or_drop` asks for room before each window and, when the decoder has fallen behind, drops the window
+  unprepared; `Back` now takes the gap in window numbers (`Front::dropped`, `Back::skipped`), so the queue between the
+  cores and the delay stay bounded instead of the audio input stalling. Only the frames that start in a dropped window are
+  lost. `Params::side_ladder_budget` gives the side channels ladder calls of their own; `Params::embedded()` gives them
+  one, which reads 38 of 60 messages with six stations sending at once against 20 when they shared channel 0's.
+  `jtty::testsig::pileups` adds pileup and busy-band patterns, and `Params::retro_sweep` / `subtract_side_channels`
+  make upstream's re-sweep and side-channel subtraction optional. On the CoreS3 with six stations, a queue of 3 windows
+  dropped 7 in 10 trials (33 of 60 messages, delay at most 2.65 s), 5 dropped 2 (38 of 60, as the host), and 6 none (delay at most 3.11 s). Building a
+  second `Receiver` in the same process put about 32 KB of it in PSRAM and slowed busy bands by half: build it once.
+  Measurements in `docs/notes/JTTY_EMBEDDED_BUDGET.md` §14.
 - **JTTY: a band scan beside channel 0, `Params::side_channels` (#499).** `SideChannels::Upstream`
   (the default: rjtty's 1350/1650 Hz ± 150 Hz) or `SideChannels::Band { lo_hz, hi_hz, width_hz,
   picks }`, upstream's earlier scan of the whole band in 200 Hz channels, each taking unrefined

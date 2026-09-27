@@ -853,23 +853,28 @@ fn bench_pipeline() {
 /// front ms a window, back ms a window, the slowest back window, and the time taken over the
 /// audio's length. `scripts/jtty_board_stats.py` tabulates it beside the host's
 /// `jtty_board_patterns` output.
-fn bench_patterns(pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: bool, budget: Option<usize>) {
+fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: bool, budget: Option<usize>, side_budget: Option<usize>, queue: usize) {
     use alloc::string::String;
     use alloc::sync::Arc;
     use esp_idf_svc::hal::cpu::Core;
     use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
-    use mfsk_core::jtty::rx::{Back, Front, Params, Prepared, Receiver, STEP};
+    use mfsk_core::jtty::rx::{Back, Front, Params, Prepared, STEP};
     use mfsk_core::jtty::testsig::{catalogue, pileups as pileup_cases};
     use std::sync::mpsc::sync_channel;
 
     const TRIALS: u32 = 10; // as the host test
-    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
-    let rx = Arc::new(Receiver::new().with_f32_metrics());
-    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    let rx = rx.clone();
     let mut params = Params::default().embedded();
     if let Some(b) = budget {
         params.ladder_budget = (b > 0).then_some(b);
     }
+    params.side_ladder_budget = side_budget;
+    log::info!(
+        "patterns: channel 0 budget {:?}, side budget {:?}, queue {}",
+        params.ladder_budget,
+        params.side_ladder_budget,
+        queue
+    );
     let all = if pileups { pileup_cases(TRIALS) } else { catalogue(TRIALS) };
     let cases: alloc::vec::Vec<_> = all
         .into_iter()
@@ -882,7 +887,9 @@ fn bench_patterns(pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: boo
             continue;
         };
         let audio = Arc::new(audio);
-        let (tx, rq) = sync_channel::<Prepared>(3);
+        // `queue` windows may wait between the cores; the front end drops what does not fit
+        let (tx, rq) = sync_channel::<Prepared>(queue);
+        let dropped = Arc::new(core::sync::atomic::AtomicUsize::new(0));
         let front_us = Arc::new(core::sync::atomic::AtomicU32::new(0));
         let depth = Arc::new(core::sync::atomic::AtomicUsize::new(0));
         let cfg = ThreadSpawnConfiguration {
@@ -895,7 +902,8 @@ fn bench_patterns(pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: boo
         let _ = cfg.set();
         let t_start = now_us();
         let handle = {
-            let (rx, audio, front_us, depth) = (rx.clone(), audio.clone(), front_us.clone(), depth.clone());
+            let (rx, audio, front_us, depth, dropped) =
+                (rx.clone(), audio.clone(), front_us.clone(), depth.clone(), dropped.clone());
             std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
                 let mut front = Front::new(rx, params).expect("embedded settings");
                 for (i, chunk) in audio.chunks(STEP).enumerate() {
@@ -909,8 +917,10 @@ fn bench_patterns(pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: boo
                     }
                     let t = now_us();
                     let mut ready = alloc::vec::Vec::new();
-                    front.push(chunk, &mut |p| ready.push(p));
+                    let mut room = || depth.load(core::sync::atomic::Ordering::Relaxed) < queue;
+                    front.push_or_drop(chunk, &mut room, &mut |p| ready.push(p));
                     front_us.fetch_add((now_us() - t) as u32, core::sync::atomic::Ordering::Relaxed);
+                    dropped.store(front.dropped(), core::sync::atomic::Ordering::Relaxed);
                     for p in ready {
                         depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                         if tx.send(p).is_err() {
@@ -931,7 +941,9 @@ fn bench_patterns(pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: boo
         let (mut lag_worst, mut deepest) = (0i64, 0usize);
         while let Ok(p) = rq.recv() {
             let w = p.window();
-            deepest = deepest.max(depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed));
+            let queued = depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+            deepest = deepest.max(queued);
+            // windows still waiting behind this one
             let before = slow_ms.map(|_| rx.stats());
             let t = now_us();
             back.process(p, &mut |u| {
@@ -987,7 +999,7 @@ fn bench_patterns(pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: boo
         done.sort();
         let w = windows.max(1) as f64;
         log::info!(
-            "CASE\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{:.2}\t{:.2}\t{}",
+            "CASE\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{:.2}\t{:.2}\t{}\t{}",
             case.pattern,
             case.trial,
             done.join("|"),
@@ -996,7 +1008,8 @@ fn bench_patterns(pileups: bool, only: &[&str], slow_ms: Option<i64>, paced: boo
             back_worst as f64 / 1000.0,
             wall / (audio.len() as f64 / 12_000.0),
             if paced { lag_worst as f64 / 1e6 } else { 0.0 },
-            deepest
+            deepest,
+            dropped.load(core::sync::atomic::Ordering::Relaxed)
         );
     }
     log::info!(
@@ -1071,7 +1084,18 @@ fn run_bench() {
     log::info!("--- 7. two cores: Front on core 1, Back on core 0 ---");
     bench_pipeline();
     log::info!("--- 8c. pileups and busy bands, audio at its real rate ---");
-    bench_patterns(true, &[], None, true, None);
+    {
+        // one receiver for every set, as an application builds it once
+        log_heap("patterns: before the receiver");
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+        let rx = alloc::sync::Arc::new(mfsk_core::jtty::rx::Receiver::new().with_f32_metrics());
+        unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+        log_heap("patterns: receiver built");
+        let busy = ["band", "channel 0, 2", "pileup 3 callers,"];
+        // six windows may wait: on six stations sending at once, a depth of 3 dropped 7 windows
+        // and 5 messages of 60 (delay at most 2.65 s), 5 dropped 2 windows and nothing decoded
+        bench_patterns(&rx, true, &busy, None, true, None, Some(1), 6);
+    }
     log::info!("--- 4. the DSP around the trellis ---");
     bench_dsp();
     log::info!("--- 6. the receiver on the upstream sample recording ---");

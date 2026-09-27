@@ -34,6 +34,13 @@ fn board_patterns_on_the_host() {
     {
         params.ladder_budget = (b > 0).then_some(b);
     }
+    // `MFSK_JTTY_SIDE_BUDGET=n`: the side channels' own ladder budget
+    if let Some(b) = std::env::var("MFSK_JTTY_SIDE_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        params.side_ladder_budget = Some(b);
+    }
     // `MFSK_JTTY_SUB=1`: subtract channel 0's frames within their window (no retro sweep)
     if std::env::var_os("MFSK_JTTY_SUB").is_some() {
         params.subtract = true;
@@ -53,6 +60,8 @@ fn board_patterns_on_the_host() {
         catalogue(TRIALS)
     };
     for case in cases {
+        #[cfg(feature = "jtty-stats")]
+        let before = rx.stats();
         let audio = case.audio().expect("packs");
         let mut done: Vec<String> = Vec::new();
         let mut on = |u: mfsk_core::jtty::assemble::MessageUpdate| {
@@ -79,5 +88,28 @@ fn board_patterns_on_the_host() {
         }
         done.sort();
         println!("CASE\t{}\t{}\t{}", case.pattern, case.trial, done.join("|"));
+        #[cfg(feature = "jtty-stats")]
+        {
+            let a = rx.stats();
+            println!(
+                "CALLS\t{}\t{}\t{}\t{}",
+                case.pattern,
+                case.trial,
+                a.count(mfsk_core::jtty::stats::Counter::LadderCalls)
+                    - before.count(mfsk_core::jtty::stats::Counter::LadderCalls),
+                a.rungs[2] - before.rungs[2]
+            );
+        }
+    }
+    // ladder calls and the rungs they ran, over every case
+    #[cfg(feature = "jtty-stats")]
+    {
+        use mfsk_core::jtty::stats::Counter;
+        let s = rx.stats();
+        println!(
+            "LADDER\tcalls {}\trungs {:?}",
+            s.count(Counter::LadderCalls),
+            s.rungs
+        );
     }
 }
