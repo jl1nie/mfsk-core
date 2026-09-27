@@ -207,15 +207,15 @@ pub struct Params {
 impl Params {
     /// What an embedded receiver runs: [`Self::ch0_only`], [`Self::decimate_sync`],
     /// [`Self::raw_first`], [`Self::fir_analytic`], [`Self::coarse_sync_grid`], a
-    /// [`Self::ladder_budget`] of two, the full-symbol [`Self::ladder_rungs`], and no
-    /// [`Self::subtract`] (one subtraction is 200 ms on the CoreS3, and each brings re-sweeps of
-    /// earlier windows). Pair it with [`Receiver::with_f32_metrics`], as the board does.
+    /// [`Self::ladder_budget`] of one, [`Rungs::L1_L4`], and no [`Self::subtract`] (one
+    /// subtraction is 200 ms on the CoreS3, and each brings re-sweeps of earlier windows). Pair
+    /// it with [`Receiver::with_f32_metrics`], as the board does. Chosen for speed first.
     ///
-    /// Against `rjtty` on sjtty corpora (20 trials a cell), frames at 1500 Hz: AWGN 163 against
-    /// 160 of 360, ITU mid-moderate included; AWGN off the bin grid 93 / 89 of 140; LM 97 / 97, MD
-    /// 92 / 92, LD 75 / 78 of 120. A budget of one lost LD 67, LM 94, MD 91: under fading a
-    /// candidate the ladder rejects unrefined often decodes refined, and that second try is what
-    /// the second call buys (#499).
+    /// Against `rjtty` on sjtty corpora (20 trials a cell), frames at 1500 Hz: AWGN and ITU
+    /// mid-moderate 163 against 160 of 360; AWGN off the bin grid 92 / 89 of 140; LM 92 / 97,
+    /// MD 89 / 92, LD 67 / 78 of 120. What buys the fading frames back, for more time: a
+    /// `ladder_budget` of two, which lets a raw candidate the ladder rejected be refined and
+    /// tried again (LM 97, MD 92, LD 75), and [`Rungs::FULL_SYMBOL`] (#499).
     #[must_use]
     pub fn embedded(self) -> Self {
         Self {
@@ -223,9 +223,9 @@ impl Params {
             decimate_sync: true,
             raw_first: true,
             fir_analytic: true,
-            ladder_budget: Some(2),
+            ladder_budget: Some(1),
             coarse_sync_grid: true,
-            ladder_rungs: Rungs::FULL_SYMBOL,
+            ladder_rungs: Rungs::L1_L4,
             subtract: false,
             ..self
         }

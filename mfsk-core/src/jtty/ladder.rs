@@ -59,6 +59,17 @@ impl Rungs {
         ..Self::ALL
     };
 
+    /// L=1 then L=4: what an embedded receiver keeps when speed comes before the last frames.
+    /// On the CoreS3 a candidate that fails every rung costs 341 ms, against 483 with L=2 and
+    /// 623 with all four; jtty_sweep's AWGN and mid-moderate files decode the same (163 of 360),
+    /// ITU LM / MD fading loses 2 + 2 of 240 frames and AWGN off the bin grid 1 of 140 (#499).
+    pub const L1_L4: Self = Self {
+        l1: true,
+        l2: false,
+        l4: true,
+        half: false,
+    };
+
     fn has(self, i: usize) -> bool {
         [self.l1, self.l2, self.l4, self.half][i]
     }
