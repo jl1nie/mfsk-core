@@ -100,6 +100,8 @@ pub mod source;
 pub mod stats;
 pub mod subtract;
 pub mod tbcc;
+#[doc(hidden)]
+pub mod testsig;
 pub mod trellis;
 pub mod tx;
 

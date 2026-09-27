@@ -846,6 +846,145 @@ fn bench_pipeline() {
     );
 }
 
+/// Part 8: the pattern run (#499). Every case of `jtty::testsig::catalogue` — SNR sweep, carrier
+/// offsets, drift, fading, a long message, two stations, noise — is made here from its seed and
+/// decoded by `Params::embedded()` on two cores (Front on core 1, Back on core 0, as fast as they
+/// go, three windows of queue). One `CASE` line each: pattern, trial, the complete messages, then
+/// front ms a window, back ms a window, the slowest back window, and the time taken over the
+/// audio's length. `scripts/jtty_board_stats.py` tabulates it beside the host's
+/// `jtty_board_patterns` output.
+fn bench_patterns(only: &[&str], slow_ms: Option<i64>) {
+    use alloc::string::String;
+    use alloc::sync::Arc;
+    use esp_idf_svc::hal::cpu::Core;
+    use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
+    use mfsk_core::jtty::rx::{Back, Front, Params, Prepared, Receiver, STEP};
+    use mfsk_core::jtty::testsig::catalogue;
+    use std::sync::mpsc::sync_channel;
+
+    const TRIALS: u32 = 10; // as the host test
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+    let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    let params = Params::default().embedded();
+    let cases: alloc::vec::Vec<_> = catalogue(TRIALS)
+        .into_iter()
+        .filter(|c| only.is_empty() || only.iter().any(|o| c.pattern.starts_with(o)))
+        .collect();
+    log::info!("patterns: {} cases", cases.len());
+    for case in cases {
+        let Some(audio) = case.audio() else {
+            log::error!("patterns: {} #{} does not pack", case.pattern, case.trial);
+            continue;
+        };
+        let audio = Arc::new(audio);
+        let (tx, rq) = sync_channel::<Prepared>(3);
+        let front_us = Arc::new(core::sync::atomic::AtomicU32::new(0));
+        let cfg = ThreadSpawnConfiguration {
+            name: Some(c"jtty_front"),
+            stack_size: 16 * 1024,
+            priority: 4,
+            pin_to_core: Some(Core::Core1),
+            ..ThreadSpawnConfiguration::default()
+        };
+        let _ = cfg.set();
+        let t_start = now_us();
+        let handle = {
+            let (rx, audio, front_us) = (rx.clone(), audio.clone(), front_us.clone());
+            std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
+                let mut front = Front::new(rx, params).expect("embedded settings");
+                for chunk in audio.chunks(STEP) {
+                    let t = now_us();
+                    let mut ready = alloc::vec::Vec::new();
+                    front.push(chunk, &mut |p| ready.push(p));
+                    front_us.fetch_add((now_us() - t) as u32, core::sync::atomic::Ordering::Relaxed);
+                    for p in ready {
+                        if tx.send(p).is_err() {
+                            return;
+                        }
+                    }
+                }
+            })
+        };
+        let _ = ThreadSpawnConfiguration::default().set();
+        let Ok(handle) = handle else {
+            log::error!("patterns: front thread not started");
+            return;
+        };
+        let mut back = Back::new(rx.clone(), params);
+        let mut done: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+        let (mut back_total, mut back_worst, mut windows) = (0i64, 0i64, 0i64);
+        while let Ok(p) = rq.recv() {
+            let w = p.window();
+            let before = slow_ms.map(|_| rx.stats());
+            let t = now_us();
+            back.process(p, &mut |u| {
+                if u.complete {
+                    done.push(u.text)
+                }
+            });
+            let dt = now_us() - t;
+            if let (Some(limit), Some(b)) = (slow_ms, before) {
+                if dt <= limit * 1000 {
+                    // fast enough; nothing to log
+                } else {
+                use mfsk_core::jtty::stats::{Counter as C, Stage as S};
+                let a = rx.stats();
+                let ms = |s: S| (a.seconds(s) - b.seconds(s)) * 1000.0;
+                let n = |c: C| a.count(c) - b.count(c);
+                let r: [u64; 4] = core::array::from_fn(|i| a.rungs[i] - b.rungs[i]);
+                log::info!(
+                    "SLOW\t{}\t#{}\twindow {w}\t{:.0} ms: pick {:.0} peakup {:.0} gate {:.0} rotate {:.0} correlate {:.0} ladder {:.0} | peakups {} gates {}/{} ladder {} accepts {} sticky {} rungs {:?}",
+                    case.pattern,
+                    case.trial,
+                    dt as f64 / 1000.0,
+                    ms(S::Pick),
+                    ms(S::Peakup),
+                    ms(S::Gate),
+                    ms(S::Shift),
+                    ms(S::Correlate),
+                    ms(S::Ladder),
+                    n(C::Peakups),
+                    n(C::GatePass),
+                    n(C::GatePass) + n(C::GateFail),
+                    n(C::LadderCalls),
+                    n(C::LadderAccepts),
+                    n(C::StickyRetries),
+                    r
+                );
+                }
+            }
+            back_total += dt;
+            back_worst = back_worst.max(dt);
+            windows += 1;
+            yield_now();
+        }
+        back.finish(&mut |u| {
+            if u.complete {
+                done.push(u.text)
+            }
+        });
+        let _ = handle.join();
+        let wall = (now_us() - t_start) as f64 / 1e6;
+        done.sort();
+        let w = windows.max(1) as f64;
+        log::info!(
+            "CASE\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{:.2}",
+            case.pattern,
+            case.trial,
+            done.join("|"),
+            f64::from(front_us.load(core::sync::atomic::Ordering::Relaxed)) / w / 1000.0,
+            back_total as f64 / w / 1000.0,
+            back_worst as f64 / 1000.0,
+            wall / (audio.len() as f64 / 12_000.0)
+        );
+    }
+    log::info!(
+        "patterns: done; internal DRAM low-water mark {} B",
+        unsafe { esp_idf_svc::sys::heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) }
+    );
+}
+
 fn run_bench() {
     log::info!("=== jtty-bench: what a JTTY receive window costs on the LX7 (#499, E0) ===");
     log::info!("window budget: 472 ms (a quarter frame); host: 11.7 ms per window, one thread");
@@ -854,6 +993,8 @@ fn run_bench() {
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
 
+    log::info!("--- 8b. slow back-end windows, heavy patterns ---");
+    bench_patterns(&["noise only", "awgn -16", "two stations", "long message"], Some(350));
     log::info!("--- 3c. where a rung's time goes ---");
     bench_ladder_profile();
     log::info!("--- 7. two cores: Front on core 1, Back on core 0 ---");

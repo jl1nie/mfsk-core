@@ -891,7 +891,7 @@ impl Receiver {
         peak: bool,
         refine: bool,
     ) -> (Option<Outcome>, usize) {
-        let mut gate = (0, 0.0, false);
+        let mut gate = (0, 0.0, false, 0.0, 0.0);
         let outcome = self.attempt_inner(c0, pick, t0_s, p, peak, refine, true, &mut gate);
         (outcome, gate.0)
     }
@@ -906,7 +906,7 @@ impl Receiver {
         peak: bool,
         refine: bool,
         ladder: bool,
-        gate_out: &mut (usize, f32, bool),
+        gate_out: &mut (usize, f32, bool, f32, f32),
     ) -> Option<Outcome> {
         let (xdt, f1) = if pick.channel == 0 && peak && refine {
             stat_add!(self, Peakups, 1);
@@ -953,7 +953,7 @@ impl Receiver {
         };
         #[cfg(feature = "jtty-stats")]
         drop(gate_span);
-        *gate_out = (hits, snr, passes);
+        *gate_out = (hits, snr, passes, xdt, f1);
         if !ladder {
             return None;
         }
@@ -1510,7 +1510,7 @@ impl Work<'_> {
         let mut ranked: Vec<(usize, f32, bool, Pick)> = picks
             .iter()
             .filter_map(|pk| {
-                let mut g = (0, 0.0, false);
+                let mut g = (0, 0.0, false, 0.0, 0.0);
                 self.rx.attempt_inner(
                     &self.c0, pk, self.t0, self.p, true, !raw_first, false, &mut g,
                 );
@@ -1527,27 +1527,35 @@ impl Work<'_> {
             if self.ladder_left == Some(0) {
                 break;
             }
-            let refine_passed = |rx: &Receiver| {
-                let mut g = (0, 0.0, false);
+            // The refined pick if its gate passes. The ladder then runs on that position as it
+            // stands: refining it again for the ladder cost a second `peakup`, 50 ms on the
+            // CoreS3, in every window that used one (#499).
+            let refine = |rx: &Receiver| -> Option<Pick> {
+                let mut g = (0, 0.0, false, 0.0, 0.0);
                 rx.attempt_inner(&self.c0, &pick, self.t0, self.p, true, true, false, &mut g);
-                g.2
+                g.2.then_some(Pick {
+                    xdt_s: g.3,
+                    f_hz: g.4,
+                    ..pick
+                })
             };
-            let refined = if passed {
-                !raw_first
+            let (at, refine_now) = if passed {
+                (pick, !raw_first)
             } else {
                 if refinements == 0 {
                     continue;
                 }
                 refinements -= 1;
-                if !refine_passed(self.rx) {
-                    continue;
+                match refine(self.rx) {
+                    Some(p) => (p, false),
+                    None => continue,
                 }
-                true
             };
+            let refined = !passed || !raw_first;
             self.ladder_left = self.ladder_left.map(|n| n - 1);
             let (mut outcome, tones) = self
                 .rx
-                .attempt(&self.c0, &pick, self.t0, self.p, true, refined);
+                .attempt(&self.c0, &at, self.t0, self.p, true, refine_now);
             // A raw candidate the ladder rejected is refined and tried again while the budget
             // lasts, as `process` does without a budget: under fading the unrefined position is
             // often not good enough for the ladder even though it passed the gate.
@@ -1559,11 +1567,11 @@ impl Work<'_> {
                 && self.ladder_left != Some(0)
             {
                 refinements -= 1;
-                if refine_passed(self.rx) {
+                if let Some(p) = refine(self.rx) {
                     self.ladder_left = self.ladder_left.map(|n| n - 1);
                     outcome = self
                         .rx
-                        .attempt(&self.c0, &pick, self.t0, self.p, true, true)
+                        .attempt(&self.c0, &p, self.t0, self.p, true, false)
                         .0;
                 }
             }
