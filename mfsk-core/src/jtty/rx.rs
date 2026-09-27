@@ -72,7 +72,7 @@ use num_traits::Float;
 use super::assemble::{Assembler, FRAME_PERIOD_S, MessageUpdate};
 use super::correlate::ToneRefs;
 use super::dsp::{self, FS6, NSS, db};
-use super::ladder::Ladder;
+use super::ladder::{Ladder, Rungs};
 use super::source::{self, Atom};
 use super::subtract::subtract_frame;
 use super::{FRAME_SYMBOLS, INFO_BITS, NSPS, Payload, SYNC, SYNC_SYMBOLS, crc, tbcc};
@@ -197,6 +197,11 @@ pub struct Params {
     /// differ, 3 each way and one extra decode), for half the surface's time, 90 ms a window on
     /// the CoreS3 (#499). Only with [`Self::decimate_sync`].
     pub coarse_sync_grid: bool,
+    /// The ladder's rungs to try (upstream: all four). `embedded()` drops the half-symbol rung,
+    /// which found nothing the others missed on any corpus here (see [`Rungs::FULL_SYMBOL`]).
+    /// Dropping L=2 as well costs 5 of 500 frames under fading and saves another 140 ms of
+    /// every failing candidate on the CoreS3; it is left to the caller (#499).
+    pub ladder_rungs: Rungs,
 }
 
 impl Params {
@@ -213,6 +218,7 @@ impl Params {
             fir_analytic: true,
             ladder_budget: Some(1),
             coarse_sync_grid: true,
+            ladder_rungs: Rungs::FULL_SYMBOL,
             subtract: false,
             ..self
         }
@@ -237,6 +243,7 @@ impl Default for Params {
             fir_analytic: false,
             ladder_budget: None,
             coarse_sync_grid: false,
+            ladder_rungs: Rungs::ALL,
         }
     }
 }
@@ -958,7 +965,7 @@ impl Receiver {
         stat_add!(self, LadderCalls, 1);
         let accepted = {
             stat_time!(self, Ladder);
-            self.ladder.decode(&zsym, &zhalf)
+            self.ladder.decode_rungs(&zsym, &zhalf, p.ladder_rungs)
         };
         #[cfg(feature = "jtty-stats")]
         self.stats.record(super::stats::GatedCandidate {

@@ -29,6 +29,47 @@ use super::{PAYLOAD_BITS, Payload};
 /// Coherent lengths of the three full-symbol rungs.
 pub const COHERENT_LENGTHS: [usize; 3] = [1, 2, 4];
 
+/// Which rungs of the ladder to try (a receiver setting, `rx::Params::ladder_rungs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rungs {
+    /// Coherent length 1, 2 and 4 on the full-symbol correlations.
+    pub l1: bool,
+    /// Coherent length 2.
+    pub l2: bool,
+    /// Coherent length 4.
+    pub l4: bool,
+    /// Length 1 on the half-symbol energies.
+    pub half: bool,
+}
+
+impl Rungs {
+    /// All four, as upstream.
+    pub const ALL: Self = Self {
+        l1: true,
+        l2: true,
+        l4: true,
+        half: true,
+    };
+    /// The three full-symbol rungs. On 860 simulated files — AWGN at 1500 Hz and off the bin
+    /// grid, ITU LM, MD and LD fading — the half-symbol rung accepted no frame the others missed
+    /// and made all four unexpected decodes of the embedded receiver; on the CoreS3 it is 140 ms
+    /// of every candidate that fails (#499).
+    pub const FULL_SYMBOL: Self = Self {
+        half: false,
+        ..Self::ALL
+    };
+
+    fn has(self, i: usize) -> bool {
+        [self.l1, self.l2, self.l4, self.half][i]
+    }
+}
+
+impl Default for Rungs {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 /// A payload some rung accepted, and how.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Accepted {
@@ -135,6 +176,16 @@ impl Ladder {
     /// Run the ladder on the full-symbol correlations `zsym` and the half-symbol
     /// energies `zhalf` (real values in a `Correlations`).
     pub fn decode(&self, zsym: &Correlations, zhalf: &Correlations) -> Option<Accepted> {
+        self.decode_rungs(zsym, zhalf, Rungs::ALL)
+    }
+
+    /// [`Self::decode`] trying only the rungs in `rungs`, in ladder order.
+    pub fn decode_rungs(
+        &self,
+        zsym: &Correlations,
+        zhalf: &Correlations,
+        rungs: Rungs,
+    ) -> Option<Accepted> {
         #[cfg(feature = "parallel")]
         {
             // Two lanes, each two rungs in turn: L=1 then the half-symbol rung, L=2 then L=4
@@ -145,6 +196,9 @@ impl Ladder {
             use core::sync::atomic::{AtomicBool, Ordering::SeqCst};
             let accepted: [AtomicBool; 4] = Default::default();
             let run = |i: usize| {
+                if !rungs.has(i) {
+                    return None;
+                }
                 let r = self.rung(i, zsym, zhalf);
                 if r.is_some() {
                     accepted[i].store(true, SeqCst);
@@ -176,7 +230,9 @@ impl Ladder {
         }
         #[cfg(not(feature = "parallel"))]
         {
-            (0..4).find_map(|i| self.rung(i, zsym, zhalf))
+            (0..4)
+                .filter(|&i| rungs.has(i))
+                .find_map(|i| self.rung(i, zsym, zhalf))
         }
     }
 }
