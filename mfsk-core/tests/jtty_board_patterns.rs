@@ -21,7 +21,13 @@ pub const TRIALS: u32 = 10;
 #[ignore = "prints; compare with the board's log"]
 fn board_patterns_on_the_host() {
     let rx = Arc::new(Receiver::new().with_f32_metrics());
-    let params = Params::default().embedded();
+    let mut params = Params::default().embedded();
+    if let Some(w) = std::env::var("MFSK_JTTY_SKIP_HZ")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        params.skip_decoded_hz = w;
+    }
     for case in catalogue(TRIALS) {
         let audio = case.audio().expect("packs");
         let mut front = Front::new(rx.clone(), params).expect("embedded settings");

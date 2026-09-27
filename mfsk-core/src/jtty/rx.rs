@@ -202,12 +202,22 @@ pub struct Params {
     /// Dropping L=2 as well costs 5 of 500 frames under fading and saves another 140 ms of
     /// every failing candidate on the CoreS3; it is left to the caller (#499).
     pub ladder_rungs: Rungs,
+    /// Do not search within this many Hz of a frame decoded in an earlier window, over that
+    /// frame's own span (from its start to 0.1 s before the next frame of its message is due);
+    /// 0 searches everywhere, as upstream. A frame lies in up to four windows and the three after
+    /// the one that decoded it hold its tail, where the sync search finds partial matches the
+    /// ladder then rejects: the slowest windows on the CoreS3 were those (#499). With
+    /// `embedded()`, 20 Hz: ladder calls a window 0.42 -> 0.32 on the sample recording and
+    /// 0.34 -> 0.27 on a six-station band, and not a frame lost on jtty_sweep, the fading corpus,
+    /// the testsig catalogue or the two-station mixtures (host).
+    pub skip_decoded_hz: f32,
 }
 
 impl Params {
     /// What an embedded receiver runs: [`Self::ch0_only`], [`Self::decimate_sync`],
     /// [`Self::raw_first`], [`Self::fir_analytic`], [`Self::coarse_sync_grid`], a
-    /// [`Self::ladder_budget`] of one, [`Rungs::L1_L4`], and no [`Self::subtract`] (one
+    /// [`Self::ladder_budget`] of one, [`Rungs::L1_L4`], [`Self::skip_decoded_hz`] of 20 Hz,
+    /// and no [`Self::subtract`] (one
     /// subtraction is 200 ms on the CoreS3, and each brings re-sweeps of earlier windows). Pair
     /// it with [`Receiver::with_f32_metrics`], as the board does. Chosen for speed first.
     ///
@@ -226,6 +236,7 @@ impl Params {
             ladder_budget: Some(1),
             coarse_sync_grid: true,
             ladder_rungs: Rungs::L1_L4,
+            skip_decoded_hz: 20.0,
             subtract: false,
             ..self
         }
@@ -251,6 +262,7 @@ impl Default for Params {
             ladder_budget: None,
             coarse_sync_grid: false,
             ladder_rungs: Rungs::ALL,
+            skip_decoded_hz: 0.0,
         }
     }
 }
@@ -1622,8 +1634,39 @@ impl Work<'_> {
         self.decode_picks(ch, fc, fwid, picks);
     }
 
+    /// Zero the surface over the regions of frames decoded in earlier windows
+    /// ([`Params::skip_decoded_hz`]).
+    fn skip_decoded(&mut self) {
+        let w = self.p.skip_decoded_hz;
+        if w <= 0.0 || self.asm.decoded.is_empty() {
+            return;
+        }
+        let regions = self.asm.decoded.clone();
+        let t0 = self.t0;
+        let surface = self.surface();
+        let (lo, hi) = (surface.lo, surface.lo + surface.width - 1);
+        for (f1, tsync) in regions {
+            let (b0, b1) = (
+                (((f1 - w) / DF).floor().max(lo as f32)) as usize,
+                (((f1 + w) / DF).ceil() as usize).min(hi),
+            );
+            if b0 > b1 {
+                continue;
+            }
+            for col in 0..NCOLS {
+                let start = t0 + (col * COL_STEP) as f32 / FS6;
+                if start >= tsync - 0.1 && start < tsync + FRAME_PERIOD_S - 0.1 {
+                    for bin in b0..=b1 {
+                        surface.set(col, bin, 0.0);
+                    }
+                }
+            }
+        }
+    }
+
     fn pick_candidates(&mut self, ch: u8, band: Band, fwid: f32) -> Vec<Pick> {
         if ch == 0 {
+            self.skip_decoded();
             let per_peak = (fwid / (NFZ as f32 * DF)).round() as usize;
             // upstream takes at most 8; with a ladder budget the gate ranks them, so a wide
             // channel 0 takes one per peak-suppression width (#499)
@@ -1758,6 +1801,9 @@ impl Work<'_> {
             self.seen.push((o.text.clone(), f.tsync_s));
             if dupe {
                 continue;
+            }
+            if self.p.skip_decoded_hz > 0.0 {
+                self.asm.decoded.push((f.f1_hz, f.tsync_s));
             }
             // take the frame off the signal so weaker ones beneath it can be found
             if self.p.subtract {
