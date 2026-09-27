@@ -2,6 +2,14 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: a band scan beside channel 0, `Params::side_channels` (#499).** `SideChannels::Upstream`
+  (the default: rjtty's 1350/1650 Hz ± 150 Hz) or `SideChannels::Band { lo_hz, hi_hz, width_hz,
+  picks }`, upstream's earlier scan of the whole band in 200 Hz channels, each taking unrefined
+  candidates through the side channels' stricter gate. With a decimated surface the side channels
+  get their own, 8 ms by 1.46 Hz and kept compactly. `Params::embedded()` scans 200–2800 Hz with
+  one candidate a channel: on the host single stations away from channel 0 are found 43, 55, 55
+  and 54 times of 56 at −14/−10/−6/−2 dB, and on the CoreS3 the two-core receiver keeps up (front
+  310 ms, back 205 ms against 472). Channel 0's decodes are unchanged.
 - **JTTY: `Params::skip_decoded_hz` and a test-signal generator (#499).** With it set (20 Hz in
   `Params::embedded()`) the sync search does not look within that distance of a frame decoded in
   an earlier window, over that frame's own span, where it found partial matches of the frame's
