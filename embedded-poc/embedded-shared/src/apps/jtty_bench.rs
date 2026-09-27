@@ -854,14 +854,14 @@ fn run_bench() {
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
 
+    log::info!("--- 3c. where a rung's time goes ---");
+    bench_ladder_profile();
     log::info!("--- 7. two cores: Front on core 1, Back on core 0 ---");
     bench_pipeline();
     log::info!("--- 4. the DSP around the trellis ---");
     bench_dsp();
     log::info!("--- 6. the receiver on the upstream sample recording ---");
     bench_stream();
-    log::info!("--- 3c. where a rung's time goes ---");
-    bench_ladder_profile();
     log::info!("--- 1. FFT, complex f32, esp-dsp via default_planner ---");
     for n in [256usize, 512, 1024, 2048, 4096, 8192] {
         let reps = if n >= 4096 { 10 } else { 50 };

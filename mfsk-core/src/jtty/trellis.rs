@@ -524,6 +524,11 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     cur: &mut [[Surv<M>; PATHS_PER_STATE]],
     probe: &mut P,
 ) {
+    // one-bit blocks by the small merge: 190 -> 138 ms a rung on the CoreS3; two-bit blocks
+    // were slower that way (145 -> 180 ms) and keep the lazy one
+    if b.len == 1 {
+        return advance_small::<M, P, DEDUPE, 2>(b, energies, prune, prev, cur, probe);
+    }
     let words = 1usize << b.len;
     debug_assert!(words <= MAX_WORDS);
     let stride = STATES / words;
@@ -607,6 +612,88 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
                 out,
                 probe,
             );
+        }
+    }
+}
+
+/// [`advance`] for blocks of one or two bits (`W` = 2 or 4 predecessors): every extension is
+/// built — at most 16 — each list checked to be still in order (it is unless an `f32` sum tied two
+/// paths the other way round, then [`advance_state_sorted`] takes the state), and the lists merged.
+/// Fixed-size arrays and no per-head bookkeeping, for the one-bit blocks of L=1 and the
+/// half-symbol rung, most of the ladder's calls: 190 -> 138 ms a rung on the LX7 (#499).
+#[inline(always)]
+fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
+    b: &Block,
+    energies: &[M],
+    prune: bool,
+    prev: &[[Surv<M>; PATHS_PER_STATE]],
+    cur: &mut [[Surv<M>; PATHS_PER_STATE]],
+    probe: &mut P,
+) {
+    let stride = STATES / W;
+    let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
+    let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; W];
+    let mut lens = [0usize; W];
+    for (end, out) in cur.iter_mut().enumerate() {
+        let word = end & (W - 1);
+        let identity = b.identity[word];
+        if prune && identity & reserved != 0 {
+            *out = [Surv::empty(); PATHS_PER_STATE];
+            continue;
+        }
+        let mut sorted = true;
+        let mut preds = [0usize; MAX_WORDS];
+        let mut branch = [M::zero(); MAX_WORDS];
+        for k in 0..W {
+            let pred = (end >> b.len) + k * stride;
+            let br = energies[b.energy_offset + usize::from(b.sequence[pred * W + word])];
+            preds[k] = pred;
+            branch[k] = br;
+            let src = &prev[pred];
+            let mut n = 0;
+            while n < PATHS_PER_STATE && src[n].valid() {
+                probe.extension();
+                lists[k][n] = Surv {
+                    metric: src[n].metric + br,
+                    key: src[n].key | identity,
+                };
+                if n > 0 && lists[k][n].precedes(&lists[k][n - 1]) {
+                    sorted = false;
+                }
+                n += 1;
+            }
+            lens[k] = n;
+        }
+        if !sorted {
+            advance_state_sorted::<M, P, DEDUPE>(&preds[..W], &branch, identity, prev, out, probe);
+            continue;
+        }
+        let mut heads = [0usize; W];
+        let mut filled = 0;
+        while filled < PATHS_PER_STATE {
+            let mut best = W;
+            for k in 0..W {
+                if heads[k] < lens[k]
+                    && (best == W || lists[k][heads[k]].precedes(&lists[best][heads[best]]))
+                {
+                    best = k;
+                }
+            }
+            if best == W {
+                break;
+            }
+            let cand = lists[best][heads[best]];
+            heads[best] += 1;
+            if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
+                probe.duplicate();
+                continue;
+            }
+            probe.insert_call();
+            out[filled] = cand;
+            filled += 1;
+        }
+        for s in &mut out[filled..] {
+            *s = Surv::empty();
         }
     }
 }
