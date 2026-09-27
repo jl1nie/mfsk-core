@@ -1521,10 +1521,7 @@ impl Work<'_> {
             b.0.cmp(&a.0)
                 .then(b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal))
         });
-        let mut refinements = std::env::var("JM_PKCAP")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(REFINEMENTS_PER_WINDOW);
+        let mut refinements = REFINEMENTS_PER_WINDOW;
         let mut decoded = false;
         for (_, _, passed, pick) in ranked {
             if self.ladder_left == Some(0) {
