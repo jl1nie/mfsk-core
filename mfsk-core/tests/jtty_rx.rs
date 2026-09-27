@@ -1033,6 +1033,12 @@ fn embedded_from_env(p: Params) -> Params {
     {
         p.ftol_hz = f;
     }
+    if let Some(w) = std::env::var("MFSK_JTTY_SKIP_HZ")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        p.skip_decoded_hz = w;
+    }
     if let Some(b) = std::env::var("MFSK_JTTY_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())

@@ -4874,6 +4874,7 @@ fn jtty_core_params(p: &MfskJttyParams) -> mfsk_core::jtty::rx::Params {
         ladder_budget: None,
         coarse_sync_grid: false,
         ladder_rungs: mfsk_core::jtty::ladder::Rungs::ALL,
+        skip_decoded_hz: 0.0,
     }
 }
 

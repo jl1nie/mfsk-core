@@ -162,6 +162,9 @@ pub struct Assembler {
     /// Frames decoded and subtracted in earlier windows that may still overlap a
     /// window to come (see [`super::rx::Params::carry`]).
     pub(super) carried: Vec<super::rx::Subtracted>,
+    /// `(f1, tsync)` of frames decoded in earlier windows, whose own region later windows do
+    /// not search (see [`super::rx::Params::skip_decoded_hz`]).
+    pub(super) decoded: Vec<(f32, f32)>,
 }
 
 impl Assembler {
@@ -187,6 +190,8 @@ impl Assembler {
         // a decoded frame can still lie in a later window while its end is after that window's start
         self.carried
             .retain(|x| x.tsync_s + FRAME_PERIOD_S > forward_tsync);
+        self.decoded
+            .retain(|&(_, tsync)| tsync + FRAME_PERIOD_S > forward_tsync);
         let oldest_revisit = forward_tsync - MAX_RETRO_STEPS as f32 * FRAME_PERIOD_S / 4.0;
         self.recent
             .retain(|r| r.tsync >= oldest_revisit - FRAME_HISTORY_TIME_S);

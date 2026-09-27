@@ -2,6 +2,14 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: `Params::skip_decoded_hz` and a test-signal generator (#499).** With it set (20 Hz in
+  `Params::embedded()`) the sync search does not look within that distance of a frame decoded in
+  an earlier window, over that frame's own span, where it found partial matches of the frame's
+  tail that the ladder then rejected: a quarter fewer ladder calls on a busy band and no frame
+  lost on any corpus. The budgeted candidate path no longer refines a candidate twice. The
+  hidden `jtty::testsig` module makes JTTY recordings from a seed (noise, offset, drift, Rayleigh
+  fading, several stations); the CoreS3 bench and `tests/jtty_board_patterns.rs` run the same
+  catalogue, and the board decoded all 210 cases as the host does.
 - **JTTY: an embedded receiver that runs in real time on the CoreS3 (#499).** `Params::embedded()`
   now also sets `fir_analytic` (the analytic signal by a 97-tap complex FIR, computed once per
   sample as it arrives), `coarse_sync_grid` (sync on a 4 ms grid), `ladder_budget: Some(1)` (at
