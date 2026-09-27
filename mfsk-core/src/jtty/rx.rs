@@ -206,9 +206,16 @@ pub struct Params {
 
 impl Params {
     /// What an embedded receiver runs: [`Self::ch0_only`], [`Self::decimate_sync`],
-    /// [`Self::raw_first`], [`Self::fir_analytic`], a [`Self::ladder_budget`] of one, and no
+    /// [`Self::raw_first`], [`Self::fir_analytic`], [`Self::coarse_sync_grid`], a
+    /// [`Self::ladder_budget`] of two, the full-symbol [`Self::ladder_rungs`], and no
     /// [`Self::subtract`] (one subtraction is 200 ms on the CoreS3, and each brings re-sweeps of
     /// earlier windows). Pair it with [`Receiver::with_f32_metrics`], as the board does.
+    ///
+    /// Against `rjtty` on sjtty corpora (20 trials a cell), frames at 1500 Hz: AWGN 163 against
+    /// 160 of 360, ITU mid-moderate included; AWGN off the bin grid 93 / 89 of 140; LM 97 / 97, MD
+    /// 92 / 92, LD 75 / 78 of 120. A budget of one lost LD 67, LM 94, MD 91: under fading a
+    /// candidate the ladder rejects unrefined often decodes refined, and that second try is what
+    /// the second call buys (#499).
     #[must_use]
     pub fn embedded(self) -> Self {
         Self {
@@ -216,7 +223,7 @@ impl Params {
             decimate_sync: true,
             raw_first: true,
             fir_analytic: true,
-            ladder_budget: Some(1),
+            ladder_budget: Some(2),
             coarse_sync_grid: true,
             ladder_rungs: Rungs::FULL_SYMBOL,
             subtract: false,
@@ -1523,6 +1530,11 @@ impl Work<'_> {
             if self.ladder_left == Some(0) {
                 break;
             }
+            let refine_passed = |rx: &Receiver| {
+                let mut g = (0, 0.0, false);
+                rx.attempt_inner(&self.c0, &pick, self.t0, self.p, true, true, false, &mut g);
+                g.2
+            };
             let refined = if passed {
                 !raw_first
             } else {
@@ -1530,19 +1542,34 @@ impl Work<'_> {
                     continue;
                 }
                 refinements -= 1;
-                let mut g = (0, 0.0, false);
-                self.rx
-                    .attempt_inner(&self.c0, &pick, self.t0, self.p, true, true, false, &mut g);
-                if !g.2 {
+                if !refine_passed(self.rx) {
                     continue;
                 }
                 true
             };
             self.ladder_left = self.ladder_left.map(|n| n - 1);
-            let outcome = self
+            let (mut outcome, tones) = self
                 .rx
-                .attempt(&self.c0, &pick, self.t0, self.p, true, refined)
-                .0;
+                .attempt(&self.c0, &pick, self.t0, self.p, true, refined);
+            // A raw candidate the ladder rejected is refined and tried again while the budget
+            // lasts, as `process` does without a budget: under fading the unrefined position is
+            // often not good enough for the ladder even though it passed the gate.
+            if outcome.is_none()
+                && !refined
+                && raw_first
+                && tones >= RAW_FIRST_MIN_SYNC
+                && refinements > 0
+                && self.ladder_left != Some(0)
+            {
+                refinements -= 1;
+                if refine_passed(self.rx) {
+                    self.ladder_left = self.ladder_left.map(|n| n - 1);
+                    outcome = self
+                        .rx
+                        .attempt(&self.c0, &pick, self.t0, self.p, true, true)
+                        .0;
+                }
+            }
             decoded |= self.settle(alloc::vec![outcome], ch);
         }
         if !decoded && self.ladder_left != Some(0) {
