@@ -80,7 +80,13 @@ fn main() -> ! {
     // No WiFi: this demo needs no network, and skipping it keeps the board flashable and
     // free of the association/UDP-log complications a live radio session already has to
     // deal with separately.
-    app::waterfall_feed::init(BootMode::Decode);
+    // No slot rules — JTTY has no slot, so a rule every 15 s (Decode's
+    // period) marks nothing on the air — and the column-width transform:
+    // the panel shares core 0 with `Back`, which has no slack to give it.
+    app::waterfall_feed::init_with(app::waterfall_feed::FeedConfig {
+        slot_period_ms: 0,
+        nfft: embedded_shared::waterfall::WF_NFFT_COLUMN,
+    });
     if let Ok(mut ui) = UI.lock() {
         ui.set_slot_period_ms(UI_SLOT_PERIOD_MS);
     }

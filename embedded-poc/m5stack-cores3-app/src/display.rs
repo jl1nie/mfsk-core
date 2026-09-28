@@ -649,6 +649,11 @@ pub fn run_log_panel(
         DECODED_ROWS
     };
     let mut status_strip = Strip::new(status_bar::ORIGIN_Y, SHARED_UI_WIDTH, status_bar::HEIGHT);
+    // The link bar changes about once a second too — the battery and VBUS
+    // readings it shows refresh at 1 Hz — so it pays the per-pixel path's
+    // ~10 ms as often as the status bar did (jtty-demo, 2026-09-28: `bars`
+    // stayed at 11-16 ms/s with only the status bar moved to a strip).
+    let mut link_strip = Strip::new(LINK_BAR_Y, SHARED_UI_WIDTH, link_bar::HEIGHT);
     let mut list_strip = Strip::new(
         decoded_list::ORIGIN_Y,
         SHARED_UI_WIDTH,
@@ -1022,7 +1027,10 @@ pub fn run_log_panel(
         }
         let link = crate::uac::link_info();
         if last_link != Some(link) {
-            link_bar::render(&mut display, &link, SHARED_UI_WIDTH, LINK_BAR_Y).ok();
+            link_bar::render(&mut link_strip, &link, SHARED_UI_WIDTH, LINK_BAR_Y).ok();
+            let t_send = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+            blit_strip!(display, link_strip, wf_block);
+            bars_send_us += unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t_send;
             last_link = Some(link);
         }
         bars_us += unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t_bars;
