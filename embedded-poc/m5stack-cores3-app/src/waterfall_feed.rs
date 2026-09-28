@@ -51,6 +51,32 @@ static MARKS_DRAWN: AtomicU32 = AtomicU32::new(0);
 /// Slot period of the booted mode, ms; 0 draws no marks.
 static PERIOD_MS: AtomicU32 = AtomicU32::new(0);
 
+/// The row transform's length, real samples (`waterfall::WF_NFFT_*`).
+static NFFT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(embedded_shared::waterfall::WF_NFFT_FINE);
+
+/// What a receiver asks of the feed.
+#[derive(Clone, Copy, Debug)]
+pub struct FeedConfig {
+    /// Where the slot rules fall, ms; `0` draws none — a receiver with no
+    /// slot, like JTTY, whose rules would mark nothing on the air.
+    pub slot_period_ms: u32,
+    /// `waterfall::WF_NFFT_FINE` for the slotted modes, or
+    /// `WF_NFFT_COLUMN` where the panel's core has no slack to give
+    /// (see those constants for what each costs and shows).
+    pub nfft: usize,
+}
+
+impl FeedConfig {
+    /// The slotted receivers': their slot's rules, the finer transform.
+    pub fn for_mode(mode: BootMode) -> Self {
+        Self {
+            slot_period_ms: mode.slot_period_ms(),
+            nfft: embedded_shared::waterfall::WF_NFFT_FINE,
+        }
+    }
+}
+
 struct Ring {
     buf: Vec<i16>,
     /// Samples accepted into the ring in all — the stream the rows and
@@ -78,7 +104,13 @@ static DRAIN: Mutex<Option<Drain>> = Mutex::new(None);
 /// Allocate the ring and set the mode's slot period. Called once from
 /// `boot::run`; [`push`] is a no-op before it.
 pub fn init(mode: BootMode) {
-    PERIOD_MS.store(mode.slot_period_ms(), Ordering::Release);
+    init_with(FeedConfig::for_mode(mode));
+}
+
+/// [`init`] with the rules and the transform chosen explicitly.
+pub fn init_with(cfg: FeedConfig) {
+    PERIOD_MS.store(cfg.slot_period_ms, Ordering::Release);
+    NFFT.store(cfg.nfft, Ordering::Release);
     if let Ok(mut g) = RING.lock() {
         *g = Some(Ring {
             buf: Vec::with_capacity(CAP),
@@ -139,7 +171,7 @@ pub fn drain_to_ui() {
         return;
     };
     let d = dg.get_or_insert_with(|| Drain {
-        builder: WfRowBuilder::new(),
+        builder: WfRowBuilder::new(NFFT.load(Ordering::Acquire)),
         spare: Vec::with_capacity(CAP),
         marks: heapless::Deque::new(),
         last_report_us: now_us(),

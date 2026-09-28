@@ -611,7 +611,7 @@ static FC32_INSTALL_LOCK: AtomicUsize = AtomicUsize::new(0);
 /// does exactly this to its own table after generating it
 /// (`dsps_fft2r_fc32_ansi.c:89-93`), so these tables are the same
 /// bytes the shared one held, and the transforms are bit-identical.
-fn fc32_table(len: usize) -> *const f32 {
+pub(crate) fn fc32_table(len: usize) -> *const f32 {
     for (l, p) in FC32_TABLE_LENS.iter().zip(&FC32_TABLE_PTRS) {
         if l.load(Ordering::Acquire) == len {
             return p.load(Ordering::Acquire);

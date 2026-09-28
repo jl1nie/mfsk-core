@@ -11,16 +11,26 @@
 //! serves every mode and a new mode gets a waterfall without writing
 //! one.
 //!
-//! **All of it on esp-dsp.** A row is a real 2 048-point transform, so
-//! it runs the way esp-dsp's own `fft4real` example does: the samples,
-//! windowed by `dsps_mul_f32`, are read as 1 024 *complex* points, put
-//! through the radix-4 PIE kernel (`dsps_fft4r_fc32_aes3_`) and bit
-//! reversal, and `dsps_cplx2real_fc32` unfolds that into the real
-//! input's spectrum: a transform of half the points, where a plain
-//! complex FFT of real samples would compute a mirror image and throw
-//! half of it away. The power spectrum is two more esp-dsp
-//! passes (`dsps_mul_f32`, `dsps_add_f32`). What is left in Rust is the
-//! column mapping, which is branches and integer arithmetic.
+//! **All of it on esp-dsp.** A row is a real transform, run the way
+//! esp-dsp's own `fft4real` example does: the samples, windowed by
+//! `dsps_mul_f32`, are read as half as many *complex* points, transformed,
+//! and
+//! `dsps_cplx2real_fc32` unfolds that into the real input's spectrum — a
+//! transform of half the points, where a plain complex FFT of real
+//! samples would compute a mirror image and throw half of it away. The
+//! power spectrum is two more esp-dsp passes (`dsps_mul_f32`,
+//! `dsps_add_f32`). What is left in Rust is the column mapping, which is
+//! branches and integer arithmetic.
+//!
+//! **Two sizes, two kernels, one unfold table.** The slotted modes run
+//! 2 048 real points ([`WF_NFFT_FINE`]) as 1 024 complex — a power of 4 —
+//! on the radix-4 PIE kernel. JTTY runs 1 024 ([`WF_NFFT_COLUMN`]) as 512
+//! complex, which esp-dsp's radix-4 kernel refuses
+//! (`dsps_fft4r_fc32_ansi.c`: `log2N` must be even), so that transform is
+//! the radix-2 PIE kernel on `esp_dsp_fft`'s read-only 512-point table.
+//! `dsps_cplx2real_fc32` has no such limit — it strides the radix-4
+//! twiddle table by `table_size / N` — so both sizes unfold with that one
+//! table.
 //!
 //! No threading and no board state here: push audio, receive rows.
 //! Where the audio comes from and who owns the builder is the board's.
@@ -34,13 +44,34 @@ use mfsk_core::engine::fft::AlignedComplexBuf;
 
 use crate::pipeline::WF_ROW_LEN;
 
-/// Transform length, in real samples: 5.86 Hz bins against the panel's
-/// 11.7 Hz columns, so every column sees two whole bins, over a 171 ms
-/// window.
-pub const WF_NFFT: usize = 2_048;
+/// Transform length, in real samples, for the slotted modes (FT8, FT4,
+/// FST4, WSPR): 5.86 Hz bins against the panel's 11.7 Hz columns, so
+/// every column sees two whole bins, over a 171 ms window — a row sees
+/// all of each 167 ms of audio at `WF_HOP`.
+pub const WF_NFFT_FINE: usize = 2_048;
 
-/// Complex points the real transform runs as.
-const HALF: usize = WF_NFFT / 2;
+/// Transform length for a receiver whose decode leaves the panel's core
+/// no slack (JTTY): 11.7 Hz bins, the panel's own column width, over an
+/// 85 ms window.
+///
+/// At 2 048 points the transform was the panel's largest CPU cost —
+/// ~35 ms of every second of the core it shares with JTTY's `Back`,
+/// against ~5 ms for building the drawn rows (jtty-demo, 2026-09-28; the
+/// rest of the redraw is SPI DMA the core is free through) — and half its
+/// bins were max-pooled away by the 11.7 Hz columns anyway. Measured there
+/// at 1 024: 1.0-1.2 ms a row against 3.9-4.1, and one palette step
+/// (~2 dB) less contrast between a station and its neighbourhood (5-7
+/// against 3-4, where 2 048 gives 6-8), as the wider bin predicts. A row
+/// then sees only 85 ms of each 167 ms, which is why the slotted modes,
+/// with slack to spare, stay on [`WF_NFFT_FINE`].
+pub const WF_NFFT_COLUMN: usize = 1_024;
+
+/// The radix-4 twiddle table is process-global and built once, for the
+/// largest transform either size runs as ([`WF_NFFT_FINE`] / 2 complex
+/// points). The 1 024-point transform's unfold reads every fourth entry
+/// of it rather than a table of its own (`dsps_cplx2real_fc32` strides by
+/// `table_size / N`).
+const FFT4R_TABLE_POINTS: usize = WF_NFFT_FINE / 2;
 
 /// Samples between rows: 6 rows a second, one per panel frame
 /// (`display.rs`'s `FRAME_US`), so each redraw moves the waterfall by
@@ -60,8 +91,8 @@ pub const WF_FREQ_LO_HZ: f32 = 200.0;
 /// Up to 3 000 Hz: the top of the band the FT8 decoder searches
 /// (`stage1_inc`'s `ALLSUM_FREQ_MAX`). FT8's own rows used to stop at
 /// 2 700, so stations between 2 700 and 3 000 Hz decoded without ever
-/// being drawn. 240 columns over 2 800 Hz are 11.7 Hz each, two of this
-/// builder's bins.
+/// being drawn. 240 columns over 2 800 Hz are 11.7 Hz each: two bins at
+/// [`WF_NFFT_FINE`], one at [`WF_NFFT_COLUMN`].
 pub const WF_FREQ_HI_HZ: f32 = 3_000.0;
 
 const SAMPLE_RATE_HZ: f32 = 12_000.0;
@@ -76,6 +107,11 @@ unsafe extern "C" {
     #[cfg(not(feature = "aes3"))]
     fn dsps_fft4r_fc32_ae32_(data: *mut f32, n: i32, table: *mut f32, table_size: i32) -> i32;
     fn dsps_bit_rev4r_fc32_ae32(data: *mut f32, n: i32) -> i32;
+    #[cfg(feature = "aes3")]
+    fn dsps_fft2r_fc32_aes3_(data: *mut f32, n: i32, w: *const f32) -> i32;
+    #[cfg(not(feature = "aes3"))]
+    fn dsps_fft2r_fc32_ae32_(data: *mut f32, n: i32, w: *const f32) -> i32;
+    fn dsps_bit_rev_fc32_ansi(data: *mut f32, n: i32) -> i32;
     fn dsps_cplx2real_fc32_ae32_(data: *mut f32, n: i32, table: *mut f32, table_size: i32) -> i32;
     fn dsps_mul_f32_ae32(
         a: *const f32,
@@ -130,12 +166,15 @@ fn now_us() -> i64 {
 /// Builds waterfall rows from a 12 kHz stream, whatever block sizes it
 /// arrives in.
 pub struct WfRowBuilder {
-    /// 16-byte aligned for the PIE kernel: [`HALF`] complex points,
-    /// i.e. [`WF_NFFT`] floats.
+    /// Transform length in real samples: [`WF_NFFT_FINE`] or
+    /// [`WF_NFFT_COLUMN`].
+    n: usize,
+    /// 16-byte aligned for the PIE kernel: `n / 2` complex points, i.e.
+    /// `n` floats.
     buf: AlignedComplexBuf,
     window: Vec<f32>,
-    /// The last [`WF_NFFT`] samples, circular: `head` is the oldest
-    /// once `filled` reaches [`WF_NFFT`].
+    /// The last `n` samples, circular: `head` is the oldest once `filled`
+    /// reaches `n`.
     hist: Vec<f32>,
     head: usize,
     filled: usize,
@@ -152,20 +191,38 @@ pub struct WfRowBuilder {
 
 impl Default for WfRowBuilder {
     fn default() -> Self {
-        Self::new()
+        Self::new(WF_NFFT_FINE)
     }
 }
 
 impl WfRowBuilder {
-    pub fn new() -> Self {
+    /// A builder running `nfft`-point transforms: [`WF_NFFT_FINE`] or
+    /// [`WF_NFFT_COLUMN`].
+    ///
+    /// # Panics
+    /// On any other length.
+    pub fn new(nfft: usize) -> Self {
+        assert!(
+            nfft == WF_NFFT_FINE || nfft == WF_NFFT_COLUMN,
+            "waterfall: {nfft}-point rows are not supported"
+        );
         if !FFT4R_READY.swap(true, Ordering::AcqRel) {
             // SAFETY: null buffer asks esp-dsp to allocate the table.
-            let r = unsafe { dsps_fft4r_init_fc32(core::ptr::null_mut(), HALF as i32) };
+            let r =
+                unsafe { dsps_fft4r_init_fc32(core::ptr::null_mut(), FFT4R_TABLE_POINTS as i32) };
             if r != 0 {
                 log::error!("waterfall: dsps_fft4r_init_fc32 failed ({r:#x})");
             }
         }
-        let n = WF_NFFT;
+        let n = nfft;
+        let half = n / 2;
+        if half != FFT4R_TABLE_POINTS {
+            // The radix-2 table this size's transform runs on, installed
+            // here rather than on the first row: it is allocated from
+            // internal DRAM once, and the first row is drawn after WiFi has
+            // taken its share.
+            let _ = crate::esp_dsp_fft::fc32_table(half);
+        }
         // Hann: the sidelobes of a strong signal would otherwise paint
         // across columns and bury the weak ones beside it.
         let window = (0..n)
@@ -175,9 +232,10 @@ impl WfRowBuilder {
                 s * s
             })
             .collect();
-        let bins = ((WF_FREQ_HI_HZ / (SAMPLE_RATE_HZ / n as f32)) as usize + 2).min(HALF);
+        let bins = ((WF_FREQ_HI_HZ / (SAMPLE_RATE_HZ / n as f32)) as usize + 2).min(half);
         Self {
-            buf: AlignedComplexBuf::zeroed(HALF),
+            n,
+            buf: AlignedComplexBuf::zeroed(half),
             window,
             hist: alloc::vec![0.0; n],
             head: 0,
@@ -195,13 +253,13 @@ impl WfRowBuilder {
     pub fn push(&mut self, samples: &[i16], on_row: &mut dyn FnMut([u8; WF_ROW_LEN], u64)) {
         for &s in samples {
             // Overwrite the oldest: a circular history costs one store
-            // a sample, where shifting a linear one costs 2 048.
+            // a sample, where shifting a linear one costs `n`.
             self.hist[self.head] = s as f32;
-            self.head = (self.head + 1) % WF_NFFT;
-            self.filled = (self.filled + 1).min(WF_NFFT);
+            self.head = (self.head + 1) % self.n;
+            self.filled = (self.filled + 1).min(self.n);
             self.total += 1;
             self.since_row += 1;
-            if self.since_row >= WF_HOP && self.filled == WF_NFFT {
+            if self.since_row >= WF_HOP && self.filled == self.n {
                 self.since_row = 0;
                 on_row(self.row(), self.total);
             }
@@ -216,16 +274,18 @@ impl WfRowBuilder {
     fn row(&mut self) -> [u8; WF_ROW_LEN] {
         let t0 = now_us();
         // SAFETY: `Complex32` is `repr(C)` over two `f32`, so the buffer
-        // is `WF_NFFT` contiguous floats — the real samples, read as
-        // `HALF` interleaved complex points.
+        // is `n` contiguous floats — the real samples, read as `n / 2`
+        // interleaved complex points.
         let data = self.buf.as_mut_slice().as_mut_ptr() as *mut f32;
+        let half = self.n / 2;
         // Oldest first: `head` onwards, then the start up to it — one
         // windowed multiply per segment.
-        let older = WF_NFFT - self.head;
+        let older = self.n - self.head;
         let bins = self.spec.len();
         // SAFETY: every pointer spans the length passed with it; the
-        // twiddle table is the one `dsps_fft4r_init_fc32` built for
-        // `HALF` points, and read only.
+        // twiddle tables are the radix-4 one `dsps_fft4r_init_fc32` built
+        // for `FFT4R_TABLE_POINTS` points and, at 512, `esp_dsp_fft`'s
+        // radix-2 table for exactly `half`, both read only.
         unsafe {
             dsps_mul_f32_ae32(
                 self.hist.as_ptr().add(self.head),
@@ -249,12 +309,21 @@ impl WfRowBuilder {
             }
             let table = dsps_fft4r_w_table_fc32;
             let table_size = dsps_fft4r_w_table_size;
-            #[cfg(feature = "aes3")]
-            dsps_fft4r_fc32_aes3_(data, HALF as i32, table, table_size);
-            #[cfg(not(feature = "aes3"))]
-            dsps_fft4r_fc32_ae32_(data, HALF as i32, table, table_size);
-            dsps_bit_rev4r_fc32_ae32(data, HALF as i32);
-            dsps_cplx2real_fc32_ae32_(data, HALF as i32, table, table_size);
+            if half == FFT4R_TABLE_POINTS {
+                #[cfg(feature = "aes3")]
+                dsps_fft4r_fc32_aes3_(data, half as i32, table, table_size);
+                #[cfg(not(feature = "aes3"))]
+                dsps_fft4r_fc32_ae32_(data, half as i32, table, table_size);
+                dsps_bit_rev4r_fc32_ae32(data, half as i32);
+            } else {
+                let w2 = crate::esp_dsp_fft::fc32_table(half);
+                #[cfg(feature = "aes3")]
+                dsps_fft2r_fc32_aes3_(data, half as i32, w2);
+                #[cfg(not(feature = "aes3"))]
+                dsps_fft2r_fc32_ae32_(data, half as i32, w2);
+                dsps_bit_rev_fc32_ansi(data, half as i32);
+            }
+            dsps_cplx2real_fc32_ae32_(data, half as i32, table, table_size);
             // |X|² = re² + im², for the bins the row reads.
             dsps_mul_f32_ae32(data, data, self.sq.as_mut_ptr(), (2 * bins) as i32, 1, 1, 1);
             dsps_add_f32_ae32(
@@ -268,7 +337,7 @@ impl WfRowBuilder {
             );
         }
         let t1 = now_us();
-        let row = wf_row(&self.spec, SAMPLE_RATE_HZ / WF_NFFT as f32);
+        let row = wf_row(&self.spec, SAMPLE_RATE_HZ / self.n as f32);
         let t2 = now_us();
         let t = &mut self.timing;
         t.rows += 1;
