@@ -1163,7 +1163,7 @@ where
 
     let _ = ntones;
     let _ = n_sym;
-    // BP iteration budget: WSJT-X's `ft8b.f90:96` and `fst4/decode240_101.f90:27`
+    // BP iteration budget: WSJT-X's `ft8b.f90:97` and `fst4/decode240_101.f90:27`
     // both use `max_iterations=30`, but `ft4_decode.f90:194` uses 40 — FT4 is
     // the outlier, not the other two. Scoped to `P::ID == Ft4` (issue #72,
     // discovered while checking whether BP/OSD strength explains the residual
@@ -1265,7 +1265,7 @@ where
                     } else {
                         f32::NAN
                     };
-                    // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
+                    // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:67`): undo
                     // the rvec XOR before presenting the 77-bit payload.
                     descramble_info::<P>(&mut r.info);
                     // The message-text gate — rejecting here lets the ladder

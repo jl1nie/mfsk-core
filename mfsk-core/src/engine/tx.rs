@@ -129,7 +129,7 @@ pub fn codeword_to_itone<P: Protocol>(cw: &[u8]) -> Vec<u8> {
 /// One function where there used to be three, `ft8::wave_gen`,
 /// `ft4::encode` and `fst4::encode` each carrying its own copy (#391).
 /// They differed only in data the trait already carries: FT4 and FST4
-/// XOR the message with an RVEC first (WSJT-X `genft4.f90:64`,
+/// XOR the message with an RVEC first (WSJT-X `genft4.f90:67`,
 /// `genfst4.f90:63`) and FT8 does not; FST4's LDPC(240, 101) wants a
 /// CRC-24 where the others want a CRC-14, which is the message codec's
 /// length dispatch.

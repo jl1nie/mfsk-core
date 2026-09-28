@@ -165,7 +165,7 @@ fn sym_in_mask(sym: usize, mask: SymMask) -> bool {
 /// f32 wrapper. **WSJT-X-faithful** when `fft-rustfft` is enabled:
 /// routes through the `ft8_downsample` chain (192k FFT → tapered LPF
 /// → 200 sps cd0) + per-symbol 32-pt FFT, matching
-/// `lib/ft8/ft8b.f90:154-161` exactly. Out-of-band signals (broadband
+/// `lib/ft8/ft8b.f90:155-162` exactly. Out-of-band signals (broadband
 /// birdies, sidelobes) are suppressed by the downsample's
 /// edge-tapered filter, instead of leaking into per-tone DFT
 /// sidelobes as they would in a rectangular-window per-tone DFT.
@@ -205,7 +205,7 @@ pub fn fill_symbol_spectra<S: AudioSample>(
     fill_symbol_spectra_generic::<f32, S>(out, audio, freq_hz, dt_sec, mask);
 }
 
-/// WSJT-X cd0-based per-symbol FFT. Mirrors `ft8b.f90:154-161`:
+/// WSJT-X cd0-based per-symbol FFT. Mirrors `ft8b.f90:155-162`:
 /// ```fortran
 /// call ft8_downsample(dd, newdat, f1, cd0)
 /// do k=1,NN

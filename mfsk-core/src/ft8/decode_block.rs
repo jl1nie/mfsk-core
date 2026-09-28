@@ -1,7 +1,7 @@
 //! Embedded-friendly FT8 decode (no 192 k FFT cache, no cd0 chain).
 //!
 //! Mirrors the host `decode_frame` pipeline but skips the whole
-//! `ft8b.f90:154-161` route the host takes to build a candidate's
+//! `ft8b.f90:155-162` route the host takes to build a candidate's
 //! symbol spectra — 192_000-pt wide-band FFT → tapered LPF →
 //! 3_200-pt inverse FFT to a 200 sps `cd0` baseband → per-symbol
 //! 32-pt FFT. Neither 192_000 nor 3_200 is a power of two, so

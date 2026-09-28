@@ -4,7 +4,7 @@
 //! `decode240_101.f90` runs its AP passes with an `apmask`: BP holds the
 //! locked bits, OSD's `npre1`/`npre1+npre2` search runs on the BP sum after
 //! 1 and after 2 iterations (never the raw LLR), a test pattern that flips a
-//! locked bit is skipped (`osd240_101.f90:191`/`:262`), and the CRC is
+//! locked bit is skipped (`osd240_101.f90:192`/`:263`), and the CRC is
 //! checked on the winner. Before #465, FST4's AP rung ran
 //! `osd_decode_npre_generic` unmasked on the raw LLR — a test pattern could
 //! flip a locked bit, and there was no BP-sum feed under AP at all.

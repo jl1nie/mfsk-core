@@ -71,7 +71,7 @@ pub fn avg_spectrum(spec: &crate::ft8::decode_block::Spectrogram, out: &mut [f32
 ///
 /// **Must be paired with a matching `xsig`** computed from the WSJT-X
 /// `cd0`/per-symbol-FFT pipeline (`fill_symbol_spectra`,
-/// `ft8b.f90:154-161`), *not* from `compute_spectrogram`'s rectangular
+/// `ft8b.f90:155-162`), *not* from `compute_spectrogram`'s rectangular
 /// spectrum — the `3e6`/`-27dB` calibration in `recompute_snr_xsnr2`
 /// is fit to that specific pipeline pair, and the two mismatches don't
 /// cancel when only one side is corrected (verified 2026-08-10).

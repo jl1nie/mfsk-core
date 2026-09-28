@@ -565,7 +565,7 @@ fn decode_block_multipass<S: AudioSample>(
     all
 }
 
-/// Hard-decision sync count (= WSJT-X `ft8b.f90:163-176` nsync) read
+/// Hard-decision sync count (= WSJT-X `ft8b.f90:164-177` nsync) read
 /// from the pass-1 spectrogram at the result's refined (freq, dt).
 /// 21-bit upper bound (3 sync blocks × 7 Costas positions).
 ///
@@ -790,7 +790,7 @@ fn recompute_snr_xsnr2(freq_hz: f32, xsig: f32, sbase: &[f32], df: f32) -> f32 {
     10.0 * xsnr2.log10() - 27.0
 }
 
-/// `xsig` (WSJT-X `ft8b.f90:154-161`'s `s8`) via the real `cd0`/
+/// `xsig` (WSJT-X `ft8b.f90:155-162`'s `s8`) via the real `cd0`/
 /// per-symbol-FFT pipeline (`fill_symbol_spectra`) — the same one this
 /// codebase already uses for LLR, and the same one real WSJT-X's own
 /// `xsig` comes from. **Not** `compute_spectrogram`'s rectangular
@@ -1604,7 +1604,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         &mut bp_scratch,
         |cs, cand, mask| {
             // Host fft-rustfft: cd0-based 32-pt FFT cs builder (=
-            // ft8b.f90:154-161). WSJT-X-faithful; out-of-band signals
+            // ft8b.f90:155-162). WSJT-X-faithful; out-of-band signals
             // suppressed by the downsample's edge-tapered filter.
             #[cfg(feature = "fft-rustfft")]
             {
