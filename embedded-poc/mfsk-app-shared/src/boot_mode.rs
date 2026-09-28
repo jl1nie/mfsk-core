@@ -91,6 +91,16 @@ pub enum BootMode {
     /// is about four more stations on a crowded band — the budget is
     /// what bounds the candidate list, not headroom (§37).
     Ft4,
+    /// CoreS3 JTTY receiver (`apps/jtty.rs`, #499). Same reasoning as
+    /// [`BootMode::Wspr`] for the cycle.
+    ///
+    /// **It has no slot.** A frame starts whenever the sender likes and
+    /// a message is several of them, so the three things the slotted
+    /// modes read off one period are separate here: how long a row stays
+    /// green ([`BootMode::fresh_row_ms`]), where the waterfall rules fall
+    /// (nowhere — [`BootMode::slot_rules_ms`]), and when `all.txt` may
+    /// be written (the receiver says, `storage`'s no-slot path).
+    Jtty,
 }
 
 impl BootMode {
@@ -105,6 +115,7 @@ impl BootMode {
             BootMode::Wspr => "wspr",
             BootMode::Fst4 => "fst4",
             BootMode::Ft4 => "ft4",
+            BootMode::Jtty => "jtty",
             BootMode::Uac => "uac",
         }
     }
@@ -112,12 +123,43 @@ impl BootMode {
     /// The receiver's slot period, ms — what the panel measures "heard
     /// this slot" and rules its waterfall against. FT8's 15 s for every
     /// mode that runs the FT8 pipeline.
+    ///
+    /// **Never 0**, for a mode with no slot too: `storage::decoded_slot_unix`
+    /// divides by it. JTTY has none, and nothing on its path reads this —
+    /// it goes through [`Self::fresh_row_ms`] and [`Self::slot_rules_ms`] —
+    /// so its value here is only the safe default.
     pub fn slot_period_ms(self) -> u32 {
         match self {
             BootMode::Ft4 => 7_500,
             BootMode::Wspr => 120_000,
             BootMode::Fst4 => 60_000,
             _ => 15_000,
+        }
+    }
+
+    /// How long a station-list row counts as heard ("green"), ms. One
+    /// slot for the slotted modes, which is what `UiState` has always
+    /// been given.
+    ///
+    /// JTTY's rows are published when a message completes, so "heard"
+    /// means "finished recently": 10 s, a few seconds past the ~1-3 s a
+    /// completed message takes to reach the screen (jtty-demo, #518) —
+    /// the "a few seconds" of `docs/notes/JTTY_CORES3_APP.md` §5, not a
+    /// measured optimum.
+    pub fn fresh_row_ms(self) -> u32 {
+        match self {
+            BootMode::Jtty => 10_000,
+            m => m.slot_period_ms(),
+        }
+    }
+
+    /// Where the waterfall's slot rules fall, ms; 0 draws none. The
+    /// slot for the slotted modes; none for JTTY, whose rules would mark
+    /// nothing on the air.
+    pub fn slot_rules_ms(self) -> u32 {
+        match self {
+            BootMode::Jtty => 0,
+            m => m.slot_period_ms(),
         }
     }
 
@@ -133,6 +175,7 @@ impl BootMode {
             BootMode::Wspr => "WSPR",
             BootMode::Fst4 => "FST4",
             BootMode::Ft4 => "FT4",
+            BootMode::Jtty => "JTTY",
         }
     }
 
@@ -149,6 +192,7 @@ impl BootMode {
             "wspr" => BootMode::Wspr,
             "fst4" => BootMode::Fst4,
             "ft4" => BootMode::Ft4,
+            "jtty" => BootMode::Jtty,
             other => {
                 log::warn!("cfg boot_mode unknown value '{other}'; defaulting to decode");
                 BootMode::Decode
@@ -174,7 +218,7 @@ impl BootMode {
             BootMode::Uac => BootMode::Decode,
             // Not part of the cycle — see their doc comments. A board
             // that somehow lands here walks back to a mode it can run.
-            BootMode::Wspr | BootMode::Fst4 | BootMode::Ft4 => BootMode::Decode,
+            BootMode::Wspr | BootMode::Fst4 | BootMode::Ft4 | BootMode::Jtty => BootMode::Decode,
         }
     }
 }
@@ -217,6 +261,7 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
         Ok(Some(s)) if s == "wspr" => BootMode::Wspr,
         Ok(Some(s)) if s == "fst4" => BootMode::Fst4,
         Ok(Some(s)) if s == "ft4" => BootMode::Ft4,
+        Ok(Some(s)) if s == "jtty" => BootMode::Jtty,
         Ok(Some(other)) => {
             log::warn!("NVS boot_mode unrecognised value '{other}'; defaulting to decode");
             BootMode::Decode
