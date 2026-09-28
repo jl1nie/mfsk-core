@@ -41,8 +41,11 @@ use mfsk_core::jtty::testsig::pileups;
 
 use mfsk_core_m5stack_cores3_app as app;
 
-/// The two cores' queue depth. Matches `jtty-bench`'s own finding (#512, PR §14): a depth
-/// of 6 loses no windows on this same busy pattern on this board.
+/// The two cores' queue depth — 6, `jtty-bench`'s finding on this pattern (#512, §14), where
+/// with `Back` alone on core 0 this case peaked at 5 deep with nothing dropped. 7 was tried
+/// here (logs/jtty_demo_queue7_2026-09-28.log): the queue filled to 7 every pass and drops
+/// went 2 -> 1, completions unchanged — `Back` falls behind for a stretch rather than
+/// through a burst, so depth only moves the drop later, for 605 KB of PSRAM a slot.
 const QUEUE_DEPTH: usize = 6;
 
 /// Longest a JTTY message runs (`mfsk_app_shared::jtty_tx::MAX_SAMPLES` / 12 kHz), so a
@@ -82,7 +85,10 @@ fn main() -> ! {
         ui.set_slot_period_ms(UI_SLOT_PERIOD_MS);
     }
 
-    let spawn = app::board::spawn_named(c"jttyfeed", FRONT_STACK, feed_loop);
+    // Pinned to core 0: `Back` runs here, and a comparison with `jtty-bench` (Back on core 0)
+    // means nothing if the scheduler is free to move it to core 1 when the panel leaves.
+    let spawn =
+        app::board::spawn_named_tuned(c"jttyfeed", FRONT_STACK, None, Some(Core::Core0), feed_loop);
     if let Err(e) = spawn {
         log::error!("jtty-demo: feed thread spawn failed ({e})");
     }
@@ -96,6 +102,23 @@ fn main() -> ! {
     // has the same fix for the same reason (its decode is also not idle-friendly): raise
     // this thread — which is about to become the panel loop — above the feed thread,
     // matching `display::PANEL_PRIORITY`.
+    if PANEL_ON_CORE1 {
+        // Diagnostic: core 0 left to `Back` alone, as in `jtty-bench`, to test whether the
+        // panel sharing core 0 is what `Back` falls behind by. Not the design — in the real
+        // mode core 1 carries WiFi and lwIP (docs/notes/JTTY_CORES3_APP.md §4). Same stack
+        // and priority FST4 gives its core-1 panel.
+        app::display::spawn_log_panel(
+            app::boot::Display { i2c0: peripherals.i2c0, spi2: peripherals.spi2, pins: peripherals.pins },
+            nvs,
+            BootMode::Decode,
+            24 * 1024,
+            app::display::PANEL_PRIORITY,
+        );
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    }
+
     unsafe {
         esp_idf_svc::sys::vTaskPrioritySet(core::ptr::null_mut(), app::display::PANEL_PRIORITY)
     };
@@ -109,6 +132,10 @@ fn main() -> ! {
         BootMode::Decode,
     )
 }
+
+/// `MFSK_JTTY_DEMO_PANEL_CORE1=1`: run the panel as a core-1 task instead of on `main`
+/// (core 0). A diagnostic switch, compile-time like the crate's other measurement knobs.
+const PANEL_ON_CORE1: bool = option_env!("MFSK_JTTY_DEMO_PANEL_CORE1").is_some();
 
 /// Build the busy-pattern audio once, then loop it through a fresh `Front`/`Back` pair
 /// forever — each pass is its own stream, exactly as a real reset would give the receiver
@@ -199,15 +226,19 @@ fn feed_loop() {
 
         let mut back = Back::new(rx.clone(), params);
         let mut n_complete = 0u32;
+        // The queue at its fullest, counting the window just taken: the margin left under
+        // `QUEUE_DEPTH`, which the drop count alone only shows once it is gone.
+        let mut deepest = 0usize;
         while let Ok(p) = rq.recv() {
-            depth.fetch_sub(1, Ordering::Relaxed);
+            deepest = deepest.max(depth.fetch_sub(1, Ordering::Relaxed));
             back.process(p, &mut |u| on_update(&mut n_complete, u));
         }
         back.finish(&mut |u| on_update(&mut n_complete, u));
         let _ = front_handle.join();
 
         log::info!(
-            "jtty-demo: pass {pass} done — {n_complete}/{} messages, {} window(s) dropped",
+            "jtty-demo: pass {pass} done — {n_complete}/{} messages, {} window(s) dropped, \
+             queue at most {deepest} of {QUEUE_DEPTH}",
             case.stations.len(),
             dropped.load(Ordering::Relaxed)
         );
