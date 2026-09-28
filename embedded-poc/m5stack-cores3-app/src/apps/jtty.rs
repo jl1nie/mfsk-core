@@ -19,13 +19,19 @@
 //! - the receiver is built while allocations up to 64 KB prefer internal DRAM
 //!   — its trellis survivors, FFT buffer and power row in PSRAM put Front at
 //!   161 % of core 1 and dropped 16 of ~42 windows;
-//! - Front's stack is internal (in PSRAM it cost +25 % a window, #516), Back's
-//!   is PSRAM (measured free, #516) and 32 KB (the demo's 16 KB peaked with
-//!   ~3 KB left);
+//! - both stacks are internal. #516's "PSRAM stack" figures never ran a PSRAM
+//!   stack (§12 of the design note), and Back's stack is reserved from the
+//!   worker arena in `prepare`, before anything else can fragment the heap —
+//!   at `start` a 32 KB internal stack could no longer be found;
 //! - the panel runs above Back (`display::PANEL_PRIORITY`): below it, it
 //!   starved for 20 s at a time;
 //! - the waterfall uses the column-width transform and draws no slot rules
 //!   (`waterfall_feed::FeedConfig::for_mode`).
+//!
+//! **No WiFi in this mode** (user decision, 2026-09-28, §6): the WiFi driver's
+//! ~105 KB of internal DRAM is what this receiver needs. No UDP console, no
+//! NTP, no config page; the `all.txt` anchor comes from the BM8563 RTC, which
+//! `pmic::init` reads into the system clock at every boot.
 //!
 //! **Not here yet**: rows that grow while a message is still arriving (E2 —
 //! a row is published once, on `complete`), an S/N for the row and the log
@@ -33,12 +39,12 @@
 //! `all.txt` leaves both columns blank), the operator's `f0` / `ftol` as a
 //! setting (a fixed default, §6), and on-air use (E3).
 
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver as ChanRx, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use esp_idf_svc::hal::cpu::Core;
-use esp_idf_svc::hal::task::thread::{MallocCap, ThreadSpawnConfiguration};
+use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use mfsk_app_shared::jtty_rx_clock::{SampleClock, Staging, Verdict};
 use mfsk_app_shared::ui::state::{SlotDecode, UI};
 use mfsk_core::jtty::assemble::MessageUpdate;
@@ -56,8 +62,14 @@ const QUEUE_DEPTH: usize = 6;
 /// one `push` (≲ 0.5 s at the worst window measured).
 const STAGING_CAP: usize = 48_000;
 
-const FRONT_STACK: usize = 16 * 1024;
-const BACK_STACK: usize = 32 * 1024;
+/// Front's peak on the golden and band6 scenes was 2 576 B of a 16 KB stack
+/// (13 808 B free at worst, `[stacks]`, 2026-09-28): 8 KB is 3.2x that.
+const FRONT_STACK: usize = 8 * 1024;
+/// Back's peak was 13 088 B of 32 KB (19 680 B free at worst, band6,
+/// 2026-09-28) — the ladder's correlations live on it. 20 KB is 1.56x that,
+/// with `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK` as the net if a scene goes
+/// deeper. Taken from `embedded_shared::worker_arena` in `prepare`.
+const BACK_STACK: usize = 20 * 1024;
 const FRONT_PRIORITY: u8 = 4;
 const BACK_PRIORITY: u8 = 5;
 
@@ -79,6 +91,11 @@ struct Sink {
     /// UTC ms of the current stream's sample 0, for `all.txt`; `None` without
     /// a clock.
     anchor_unix_ms: Option<i64>,
+    /// `time_sync::clock_epoch()` the anchor was taken at. The clock can be
+    /// set after the stream starts — the BM8563 is read by the panel's
+    /// `pmic::init`, after `start` — so the anchor is taken again whenever
+    /// the clock's source changes.
+    anchor_epoch: Option<u32>,
     /// `esp_timer` µs of the current stream's sample 0, for the decode delay.
     t0_us: Option<i64>,
 }
@@ -93,6 +110,15 @@ static RESETS: AtomicU32 = AtomicU32::new(0);
 static DROPPED: AtomicU32 = AtomicU32::new(0); // windows, all generations
 static QUEUED: AtomicUsize = AtomicUsize::new(0);
 static FRONT_US: AtomicU32 = AtomicU32::new(0); // since the last report
+static FRONT_WINDOWS: AtomicU32 = AtomicU32::new(0); // windows Front finished (sent or dropped), idem
+/// Back is inside `Back::process`. Front files each push's time under whether
+/// Back was working through all of it, none of it, or part: the question is
+/// whether Front runs slower while the other core is decoding (the two share
+/// the data cache and the PSRAM bus), which a per-core CPU share cannot show.
+static BACK_BUSY: AtomicBool = AtomicBool::new(false);
+/// [idle, busy, mixed] × (µs, windows), since the last report.
+static FRONT_BUCKET_US: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+static FRONT_BUCKET_WINDOWS: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
 
 /// Front to Back: a window, or the start of a new stream.
 enum Msg {
@@ -110,13 +136,9 @@ impl Receiver for JttyRx {
         // the heap is whole: installed lazily they would come after WiFi.
         embedded_shared::esp_dsp_fft::prewarm(256);
         embedded_shared::esp_dsp_fft::prewarm(2048);
-        let internal = || unsafe {
-            esp_idf_svc::sys::heap_caps_get_free_size(esp_idf_svc::sys::MALLOC_CAP_INTERNAL)
-        };
-        let before = internal();
-        let largest_before = unsafe {
-            esp_idf_svc::sys::heap_caps_get_largest_free_block(esp_idf_svc::sys::MALLOC_CAP_INTERNAL)
-        };
+        let (before, largest_before, psram_before) = heap_now();
+        let blocks_before = heap_blocks();
+        log_free_internal(&blocks_before);
         // Allocations up to 64 KB prefer internal DRAM while the receiver is
         // built, then the board's 2 KB rule again: the channel-0 surface is
         // 152 B over 64 KiB and must not follow into internal DRAM while
@@ -124,20 +146,32 @@ impl Receiver for JttyRx {
         unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
         let decoder = Arc::new(Decoder::new().with_f32_metrics());
         unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+        let (after, largest_after, psram_after) = heap_now();
+        // `jtty-bench` and `jtty-demo` took 152-154 KB internal for the same
+        // build; less here means a hot buffer went to PSRAM.
         log::info!(
-            "jtty_app: receiver built — {} KB of internal DRAM taken ({} KB free before, largest block {} KB), {} KB left",
-            (before - internal()) / 1024,
-            before / 1024,
-            largest_before / 1024,
-            internal() / 1024
+            "jtty_app: receiver built — internal {} B taken, PSRAM {} B taken | internal before {} B (largest {} B), after {} B (largest {} B)",
+            before - after,
+            psram_before - psram_after,
+            before,
+            largest_before,
+            after,
+            largest_after
         );
+        log_new_blocks(&blocks_before, &heap_blocks());
         let _ = DECODER.set(decoder);
+        // Back's stack, while the heap is still whole (worker_arena's reason).
+        if embedded_shared::worker_arena::reserve(embedded_shared::worker_arena::Owner::JttyBack, BACK_STACK) {
+            let (f, l, _) = heap_now();
+            log::info!("jtty_app: Back's {BACK_STACK} B stack reserved — internal now {f} B (largest {l} B)");
+        }
         if let Ok(mut g) = SINK.lock() {
             *g = Some(Sink {
                 staging: Staging::new(STAGING_CAP),
                 clock: SampleClock::new(),
                 generation: 0,
                 anchor_unix_ms: None,
+                anchor_epoch: None,
                 t0_us: None,
             });
         }
@@ -148,23 +182,12 @@ impl Receiver for JttyRx {
     }
 
     fn net_config(_ctx: &BootCtx) -> Option<crate::net::Config> {
-        // `MFSK_JTTY_NO_WIFI=1`: a measurement knob — the same receiver with
-        // the WiFi driver's internal DRAM left unclaimed (§3's question).
-        if option_env!("MFSK_JTTY_NO_WIFI").is_some() {
-            log::warn!("jtty_app: MFSK_JTTY_NO_WIFI — no network this boot");
-            return None;
-        }
-        // As FT4 (§6): the console and the files over WiFi, NTP for the
-        // `all.txt` anchor. Decoding needs no clock.
-        Some(crate::net::Config {
-            name: "jtty_app::net",
-            power_save: true,
-            ntp: true,
-            without: "no NTP, no UDP log, no config page",
-            bringup: crate::net::Bringup::Connect,
-            http: true,
-            on_ntp: |synced| log::info!("jtty_app: NTP synced = {synced}"),
-        })
+        // Never (§6, user decision 2026-09-28): beside the WiFi driver internal
+        // DRAM ran to 1-7 KB free and the receiver dropped windows (§12).
+        log::warn!(
+            "jtty_app: no WiFi in JTTY mode — no UDP log, no NTP, no config page; all.txt time from the RTC"
+        );
+        None
     }
 
     fn start(_ctx: &BootCtx) {
@@ -240,6 +263,7 @@ impl crate::uac::AudioSink for JttySink {
                 s.staging.clear();
                 s.clock = SampleClock::new();
                 s.anchor_unix_ms = None;
+                s.anchor_epoch = None;
                 s.t0_us = None;
                 RESETS.fetch_add(1, Ordering::Relaxed);
                 log::warn!(
@@ -249,11 +273,19 @@ impl crate::uac::AudioSink for JttySink {
                 let _ = s.clock.delivered(samples.len(), now);
             }
         }
-        if s.t0_us.is_none() {
-            let t0 = s.clock.t0_us().unwrap_or(now);
-            s.t0_us = Some(t0);
-            s.anchor_unix_ms = mfsk_app_shared::time_sync::utc_now_ms()
-                .map(|ms| ms as i64 - (now - t0) / 1_000);
+        let t0 = *s.t0_us.get_or_insert(s.clock.t0_us().unwrap_or(now));
+        let epoch = mfsk_app_shared::time_sync::clock_epoch();
+        if s.anchor_epoch != Some(epoch) {
+            // Sample 0's UTC: now, less the audio since (the clock
+            // reconciliation keeps samples and `esp_timer` within ~20 ms).
+            s.anchor_epoch = Some(epoch);
+            s.anchor_unix_ms = mfsk_app_shared::time_sync::utc_now_ms().map(|ms| ms as i64 - (now - t0) / 1_000);
+            log::info!(
+                "jtty_app: stream {} all.txt anchor {:?} ms, clock from {:?}",
+                s.generation,
+                s.anchor_unix_ms,
+                mfsk_app_shared::time_sync::clock_source()
+            );
         }
         let lost = s.staging.push(samples);
         if lost > 0 {
@@ -303,12 +335,26 @@ fn spawn_front(tx: SyncSender<Msg>, params: Params) {
                 continue;
             }
             let t = now_us();
+            let busy_at_start = BACK_BUSY.load(Ordering::Relaxed);
             let mut ready = Vec::new();
             let dropped_before = front.dropped();
             let mut room = || QUEUED.load(Ordering::Relaxed) < QUEUE_DEPTH;
             front.push_or_drop(&block, &mut room, &mut |p| ready.push(p));
-            DROPPED.fetch_add((front.dropped() - dropped_before) as u32, Ordering::Relaxed);
+            let dropped_now = (front.dropped() - dropped_before) as u32;
+            DROPPED.fetch_add(dropped_now, Ordering::Relaxed);
             FRONT_US.fetch_add((now_us() - t) as u32, Ordering::Relaxed);
+            FRONT_WINDOWS.fetch_add(dropped_now + ready.len() as u32, Ordering::Relaxed);
+            // Only pushes that finished a window: the rest are FIR-only and short.
+            let finished = dropped_now + ready.len() as u32;
+            if finished > 0 {
+                let b = match (busy_at_start, BACK_BUSY.load(Ordering::Relaxed)) {
+                    (false, false) => 0,
+                    (true, true) => 1,
+                    _ => 2,
+                };
+                FRONT_BUCKET_US[b].fetch_add((now_us() - t) as u32, Ordering::Relaxed);
+                FRONT_BUCKET_WINDOWS[b].fetch_add(finished, Ordering::Relaxed);
+            }
             for prepared in ready {
                 QUEUED.fetch_add(1, Ordering::Relaxed);
                 if tx.send(Msg::Window { generation, prepared }).is_err() {
@@ -323,37 +369,44 @@ fn spawn_front(tx: SyncSender<Msg>, params: Params) {
     }
 }
 
-/// The back end: core 0 below the panel, its 32 KB stack in PSRAM.
+/// The back end: core 0 below the panel, on the internal stack `prepare`
+/// reserved. A FreeRTOS task rather than a pthread because a pthread's stack
+/// is allocated at spawn, from whatever the heap has left by then.
 fn spawn_back(rx: ChanRx<Msg>, params: Params) {
-    let mut cfg = ThreadSpawnConfiguration {
-        name: Some(c"jtty_back"),
-        stack_size: BACK_STACK,
-        priority: BACK_PRIORITY,
-        pin_to_core: Some(Core::Core0),
-        ..ThreadSpawnConfiguration::default()
-    };
-    // `Cap8bit` is not optional: `esp_pthread_set_cfg` refuses stack caps
-    // without it (`pthread.c`, ESP_ERR_INVALID_ARG), and a refused config
-    // leaves the *previous* one in force — which is how `jtty-bench`'s
-    // stack-placement run (#516) measured an unpinned, default-priority
-    // thread with an internal stack and reported it as "PSRAM".
-    // `MFSK_JTTY_BACK_STACK_INTERNAL=1`: measurement knob, the stack in
-    // internal DRAM instead.
-    cfg.stack_alloc_caps = if option_env!("MFSK_JTTY_BACK_STACK_INTERNAL").is_some() {
-        MallocCap::Internal | MallocCap::Cap8bit
-    } else {
-        MallocCap::Spiram | MallocCap::Cap8bit
-    };
-    if let Err(e) = cfg.set() {
-        log::error!("jtty_app: back end thread config refused ({e}) — not spawning it");
+    use esp_idf_svc::sys;
+    static mut BACK_TCB: core::mem::MaybeUninit<sys::StaticTask_t> = core::mem::MaybeUninit::uninit();
+
+    let Some(stack) = embedded_shared::worker_arena::claim(embedded_shared::worker_arena::Owner::JttyBack, BACK_STACK)
+    else {
+        log::error!("jtty_app: no reserved stack for the back end — not spawning it");
         return;
+    };
+    unsafe extern "C" fn entry(arg: *mut core::ffi::c_void) {
+        // SAFETY: `arg` is the box leaked below, handed to this task alone.
+        let (rx, params) = *unsafe { Box::from_raw(arg as *mut (ChanRx<Msg>, Params)) };
+        back_loop(rx, params);
+        // A FreeRTOS task must not return.
+        unsafe { sys::vTaskDelete(core::ptr::null_mut()) };
     }
-    let spawned = std::thread::Builder::new()
-        .stack_size(BACK_STACK)
-        .spawn(move || back_loop(rx, params));
-    let _ = ThreadSpawnConfiguration::default().set();
-    if let Err(e) = spawned {
-        log::error!("jtty_app: back end spawn failed ({e})");
+    let arg = Box::into_raw(Box::new((rx, params))) as *mut core::ffi::c_void;
+    // SAFETY: the stack is the arena block this mode reserved and nothing else
+    // claims; the TCB is static and this runs once per boot.
+    let h = unsafe {
+        sys::xTaskCreateStaticPinnedToCore(
+            Some(entry),
+            c"jtty_back".as_ptr(),
+            BACK_STACK as u32,
+            arg,
+            u32::from(BACK_PRIORITY),
+            stack,
+            core::ptr::addr_of_mut!(BACK_TCB) as *mut sys::StaticTask_t,
+            0,
+        )
+    };
+    if h.is_null() {
+        log::error!("jtty_app: back end task not created");
+        // SAFETY: the task never started, so the box is still ours.
+        drop(unsafe { Box::from_raw(arg as *mut (ChanRx<Msg>, Params)) });
     }
 }
 
@@ -381,6 +434,8 @@ fn back_loop(rx: ChanRx<Msg>, params: Params) {
     let mut last_report = now_us();
     let mut last_status = 0i64;
     let mut last_quiet = 0i64;
+    // The first report takes the baseline, each later one prints its span.
+    let mut cpu = CpuTally::default();
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Reset { generation: g } => {
@@ -402,7 +457,9 @@ fn back_loop(rx: ChanRx<Msg>, params: Params) {
                 }
                 let w = prepared.window();
                 let t = now_us();
+                BACK_BUSY.store(true, Ordering::Relaxed);
                 back.process(prepared, &mut |u| on_update(u, &mut open, &mut rep));
+                BACK_BUSY.store(false, Ordering::Relaxed);
                 let end = now_us();
                 let dt = end - t;
                 rep.windows += 1;
@@ -431,6 +488,9 @@ fn back_loop(rx: ChanRx<Msg>, params: Params) {
         }
         if now - last_report >= REPORT_US {
             log_report(&mut rep, now - last_report);
+            if crate::uac::sim_feeding() {
+                cpu.log();
+            }
             last_report = now;
         }
     }
@@ -499,7 +559,12 @@ fn log_report(rep: &mut Report, span_us: i64) {
         MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM,
     };
     let w = i64::from(rep.windows.max(1));
-    let front_ms = i64::from(FRONT_US.swap(0, Ordering::Relaxed)) / w / 1000;
+    // Per window Front finished, sent or dropped — as `jtty-bench` divides it
+    // (where none are dropped).
+    let fw = i64::from(FRONT_WINDOWS.swap(0, Ordering::Relaxed).max(1));
+    let front_ms = i64::from(FRONT_US.swap(0, Ordering::Relaxed)) / fw / 1000;
+    // SAFETY: null = the calling task, which is Back.
+    let back_hw = unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
     let (ifree, ilarge, imin, pfree, plarge) = unsafe {
         (
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
@@ -513,7 +578,7 @@ fn log_report(rep: &mut Report, span_us: i64) {
         "jtty_app: {} s: {} windows ({} stale), {} messages | front {front_ms} ms, back {} ms mean {} worst, \
          delay {} ms mean {} worst | queue at most {} of {QUEUE_DEPTH}, dropped {} (all time), gaps {} ms, \
          overflow {} ms, resets {} | internal {ifree} KB free (min {imin}, largest {ilarge}), PSRAM {pfree} KB \
-         (largest {plarge})",
+         (largest {plarge}) | Back stack {back_hw} B free of {BACK_STACK}",
         span_us / 1_000_000,
         rep.windows,
         rep.stale,
@@ -528,8 +593,162 @@ fn log_report(rep: &mut Report, span_us: i64) {
         OVERFLOWED.load(Ordering::Relaxed) / 12,
         RESETS.load(Ordering::Relaxed),
     );
-    // Stack high-water marks: the panel logs every task's (`board::log_task_stacks`).
+    // Every task's stack high-water: the panel logs it (`board::log_task_stacks`).
     *rep = Report::default();
+}
+
+/// One heap block of 1 KB or more: (address, size, used).
+type Block = (usize, usize, bool);
+
+/// Every heap block of 1 KB or more, used or free, across all heaps.
+///
+/// The walker runs under the heap lock, so it must not allocate: the Vec is
+/// sized first and blocks past its capacity are counted, not stored.
+fn heap_blocks() -> Vec<Block> {
+    struct Acc {
+        v: Vec<Block>,
+        missed: usize,
+    }
+    unsafe extern "C" fn walk(
+        _heap: esp_idf_svc::sys::walker_heap_into_t,
+        b: esp_idf_svc::sys::walker_block_info_t,
+        user: *mut core::ffi::c_void,
+    ) -> bool {
+        // SAFETY: `user` is the `Acc` below, alive for the whole walk.
+        let acc = unsafe { &mut *(user as *mut Acc) };
+        if b.size >= 1024 {
+            if acc.v.len() < acc.v.capacity() {
+                acc.v.push((b.ptr as usize, b.size, b.used));
+            } else {
+                acc.missed += 1;
+            }
+        }
+        true
+    }
+    let mut acc = Acc { v: Vec::with_capacity(512), missed: 0 };
+    // SAFETY: the callback only writes into `acc`, which outlives the call.
+    unsafe { esp_idf_svc::sys::heap_caps_walk_all(Some(walk), &mut acc as *mut Acc as *mut core::ffi::c_void) };
+    if acc.missed > 0 {
+        log::warn!("jtty_app: heap walk: {} blocks past the snapshot's capacity", acc.missed);
+    }
+    acc.v
+}
+
+/// Internal DRAM or PSRAM, by address (ESP32-S3 data-bus windows).
+fn region(addr: usize) -> &'static str {
+    if (0x3FC8_8000..0x3FD0_0000).contains(&addr) {
+        "internal"
+    } else if (0x3C00_0000..0x3E00_0000).contains(&addr) {
+        "PSRAM"
+    } else {
+        "other"
+    }
+}
+
+/// The free internal blocks the build has to fit into.
+fn log_free_internal(blocks: &[Block]) {
+    let mut free: Vec<usize> =
+        blocks.iter().filter(|b| !b.2 && region(b.0) == "internal").map(|b| b.1).collect();
+    free.sort_unstable_by(|a, b| b.cmp(a));
+    log::info!("jtty_app: free internal blocks >= 1 KB before the build (B): {free:?}");
+}
+
+/// What the build allocated, block by block: which hot buffer went where.
+fn log_new_blocks(before: &[Block], after: &[Block]) {
+    let mut new: Vec<&Block> =
+        after.iter().filter(|b| b.2 && !before.iter().any(|o| o.2 && o.0 == b.0)).collect();
+    new.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    for (addr, size, _) in new.iter().filter(|b| b.1 >= 4096) {
+        log::info!("jtty_app: build allocated {size} B at {addr:#x} ({})", region(*addr));
+    }
+    let small: usize = new.iter().filter(|b| b.1 < 4096).map(|b| b.1).sum();
+    log::info!("jtty_app: build allocated {small} B more in blocks of 1-4 KB");
+}
+
+/// Internal free, internal largest block, PSRAM free — bytes.
+fn heap_now() -> (usize, usize, usize) {
+    use esp_idf_svc::sys::{heap_caps_get_free_size, heap_caps_get_largest_free_block, MALLOC_CAP_INTERNAL, MALLOC_CAP_SPIRAM};
+    // SAFETY: read-only queries.
+    unsafe {
+        (
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+            heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        )
+    }
+}
+
+/// Each task's CPU over a report span, grouped by the core it is pinned to
+/// (`-` = unpinned) — FreeRTOS's run-time counters, as `board::log_task_cpu`,
+/// but over 30 s rather than the panel's few seconds: a task's counter moves
+/// only when it is switched out, so one busy stretch of Front (~0.4 s) lands
+/// in whichever short interval it ends in (the panel's line read 189 %).
+///
+/// SIM only: `uxTaskGetSystemState` holds the scheduler while it walks every
+/// stack, which costs a radio's isochronous packets (`board::log_task_cpu`).
+#[derive(Default)]
+struct CpuTally {
+    prev: Vec<(usize, u32)>,
+    prev_us: i64,
+}
+
+impl CpuTally {
+    fn log(&mut self) {
+        use esp_idf_svc::sys;
+        const MAX_TASKS: usize = 40;
+        let mut tasks: Vec<sys::TaskStatus_t> = Vec::with_capacity(MAX_TASKS);
+        let mut total = 0u32;
+        // SAFETY: room for MAX_TASKS entries; the call reports how many it wrote.
+        let n = unsafe { sys::uxTaskGetSystemState(tasks.as_mut_ptr(), MAX_TASKS as u32, &mut total) } as usize;
+        // SAFETY: the first `n` entries were written just now.
+        unsafe { tasks.set_len(n.min(MAX_TASKS)) };
+        let now = now_us();
+        let wall = now - self.prev_us;
+        let mut rows: Vec<(i32, u32, String)> = Vec::new();
+        for t in &tasks {
+            let h = t.xHandle as usize;
+            if let Some(&(_, b)) = self.prev.iter().find(|(k, _)| *k == h) {
+                // SAFETY: the handle was reported a moment ago; names are NUL-terminated.
+                let core = unsafe { sys::xTaskGetCoreID(t.xHandle) };
+                let core = if core as u32 == 0x7FFF_FFFF { -1 } else { core };
+                let name = unsafe { core::ffi::CStr::from_ptr(t.pcTaskName) }.to_string_lossy().into_owned();
+                rows.push((core, t.ulRunTimeCounter.wrapping_sub(b), name));
+            }
+        }
+        let first = self.prev_us == 0;
+        self.prev = tasks.iter().map(|t| (t.xHandle as usize, t.ulRunTimeCounter)).collect();
+        self.prev_us = now;
+        if first || wall <= 0 {
+            return;
+        }
+        rows.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        let mut line = String::new();
+        let mut core_seen = i32::MIN;
+        for (core, d, name) in &rows {
+            let pct10 = i64::from(*d) * 1000 / wall;
+            if pct10 < 5 && !name.starts_with("IDLE") {
+                continue;
+            }
+            if *core != core_seen {
+                core_seen = *core;
+                let label = if *core < 0 { "-".to_string() } else { core.to_string() };
+                let _ = core::fmt::Write::write_fmt(&mut line, format_args!(" | core {label}:"));
+            }
+            let _ = core::fmt::Write::write_fmt(&mut line, format_args!(" {name} {}.{}%", pct10 / 10, pct10 % 10));
+        }
+        log::info!("jtty_app: cpu over {} s{line}", wall / 1_000_000);
+        // Front's time a finished window, by what core 0's Back was doing.
+        let mut f = String::new();
+        for (i, label) in ["Back idle", "Back busy", "mixed"].iter().enumerate() {
+            let us = FRONT_BUCKET_US[i].swap(0, Ordering::Relaxed);
+            let n = FRONT_BUCKET_WINDOWS[i].swap(0, Ordering::Relaxed);
+            let _ = core::fmt::Write::write_fmt(
+                &mut f,
+                format_args!(" | {label}: {n} windows, {} ms", if n > 0 { us / n / 1000 } else { 0 }),
+            );
+        }
+        log::info!("jtty_app: front per window{f}");
+    }
 }
 
 /// `MFSK_CORES3_SIM`: feed baked audio through the real [`JttySink`], as one

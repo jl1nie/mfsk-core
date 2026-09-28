@@ -1,7 +1,7 @@
 //! One internal-DRAM block for whichever mode's decode workers are
 //! running, taken at boot before anything else has fragmented the heap.
 //!
-//! Three consumers each need a large internal-DRAM scratch, and only
+//! Four consumers each need a large internal-DRAM scratch, and only
 //! one of them is ever live in a given boot:
 //!
 //! | consumer | bytes | used by |
@@ -9,6 +9,7 @@
 //! | [`Owner::WsprWorker`] | 81 920 | WSPR's `wspr_dual_core` worker stack |
 //! | [`Owner::Fst4Worker`] | 24 576 | FST4's `fst4_dual_core` worker stack |
 //! | [`Owner::Ft8Scratch`] | 10 112 | FT8's two `cs Box` staging buffers |
+//! | [`Owner::JttyBack`] | 20 480 | JTTY's `Back` task stack (`m5stack-cores3-app` `apps::jtty`) |
 //!
 //! ## Why not `.bss`, which is where these used to live
 //!
@@ -69,6 +70,7 @@ pub enum Owner {
     Ft8Scratch = 1,
     Fst4Worker = 2,
     WsprWorker = 3,
+    JttyBack = 4,
 }
 
 static OWNER: AtomicU8 = AtomicU8::new(0);

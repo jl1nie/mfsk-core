@@ -6,14 +6,19 @@
   Picked from the touch panel like FT8/FT4/FST4/WSPR. JTTY has no slot, so the sample count is its clock: the audio sink
   stages samples with positioned gap markers for overflow, a clock reconciliation (`mfsk_app_shared::jtty_rx_clock`,
   hosttested) inserts zeros for a deficit above 20 ms against `esp_timer` and resets the stream above 1 s, and every
-  reset starts a new generation of `Front`/`Back`. Front runs on core 1 (prio 4, 16 KB internal stack), Back on core 0
-  (prio 5, 32 KB PSRAM stack), queue 6, the panel above Back. A message is published once, on `complete`; ALL.TXT
-  stamps it from a UTC anchor plus its `start_s` and is flushed when no message is open (or after 10 min). The slot
-  period is split three ways (`BootMode::fresh_row_ms` / `slot_rules_ms`), so nothing sees a period of 0. On the SIM
-  feed it decodes the golden recording at the host's start times, but **beside WiFi the receiver is over budget**
-  (internal DRAM 1–7 KB free, dozens of windows dropped on a six-station band) — measured and written up in the design
-  note's §12, which also records that #516's PSRAM-stack bench never ran with a PSRAM stack. FT8/FT4/FST4/WSPR are
-  unchanged (FT8 SIM A/B against `main`: 60 decodes each over 9 slots, `cut=0`, identical panel timing).
+  reset starts a new generation of `Front`/`Back`. Front runs on core 1 (prio 4, 8 KB internal stack), Back on core 0
+  (prio 5, 20 KB internal stack reserved from `worker_arena` at boot), queue 6, the panel above Back. **JTTY mode runs
+  without WiFi**: beside the WiFi driver internal DRAM ran to 1–7 KB free and the receiver dropped dozens of windows
+  (design note §12), so there is no UDP log, NTP or config page in this mode, and the ALL.TXT anchor comes from the
+  BM8563 RTC (re-taken when the clock is set after the stream starts). A message is published once, on `complete`;
+  ALL.TXT stamps it from that anchor plus its `start_s` and is flushed when no message is open (or after 10 min). The
+  slot period is split three ways (`BootMode::fresh_row_ms` / `slot_rules_ms`), so nothing sees a period of 0. On the
+  SIM feed it decodes the golden recording at the host's start times, but it is still slower than `jtty-bench`: both
+  trellis survivor buffers land in PSRAM because `Receiver` allocates them after its smaller buffers have filled the
+  one internal region that could hold them, and Front runs 255 ms a window while Back is idle against 430–462 ms while
+  it decodes (§13). #516's PSRAM-stack bench never ran with a PSRAM stack (§12). FT8/FT4/FST4/WSPR are unchanged
+  (FT8 SIM A/B against `main`: 60 decodes each over 9 slots and identical panel timing; re-run after the
+  `worker_arena` change, 7 a slot on every slot after the one a boot-time NTP re-alignment cut).
 
 - **docs: pin `lib/*.f90`/`lib/*.c` citations to the `v3.2.0-rc1` tag of `WSJTX/wsjtx`, and fix 7 that had drifted (#467).**
   `CONTRIBUTING.md` now states the reference tree explicitly — line numbers move between trees on any file that sees
