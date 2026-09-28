@@ -104,9 +104,17 @@ jobs:
             # Build/Test/C++ matrix skip while rustfmt+clippy, rustdoc,
             # and publish-dry-run still run as the doc-surface gate.
             # `Cargo.lock` is in because `cargo update` legitimately
-            # changes what gets compiled.
+            # changes what gets compiled. So is the root `Cargo.toml`: it
+            # holds the workspace member list, `workspace.package.version`
+            # and `rust-version`, which every crate inherits. Without it,
+            # #411 (a version bump touching only the root manifest and
+            # the CHANGELOG) ran as a docs-only PR and skipped the build
+            # matrix, ffi, cross and bindings jobs — harmless for a version
+            # string, but a member added or removed there would have
+            # merged uncompiled.
             src: &src
               - '.github/workflows/**'
+              - 'Cargo.toml'
               - 'Cargo.lock'
               - 'mfsk-core/Cargo.toml'
               - 'mfsk-core/build.rs'
