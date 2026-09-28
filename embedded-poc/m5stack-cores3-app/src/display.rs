@@ -760,7 +760,6 @@ pub fn run_log_panel(
                 log::warn!("UI mutex poisoned — skipping render frame");
                 continue;
             };
-            ui.status.free_heap_kb = (heap / 1024) as u32;
             ui.status.mode = mode_picker::mode_name(mode);
             // The UTC field has existed in `StatusInfo` since the bar
             // was written and nothing ever wrote it, so the panel read
@@ -770,8 +769,24 @@ pub fn run_log_panel(
             // and when it is not, thirty candidates a slot decode to
             // nothing. The one indicator that would have said so was
             // the one that was never connected.
-            ui.status.utc_sod =
+            let sod =
                 mfsk_app_shared::time_sync::utc_now_ms().map(|ms| ((ms / 1000) % 86_400) as u32);
+            // **The heap figure moves with the clock, not every frame.**
+            // The bar redraws only when its snapshot changes, and the
+            // free heap (internal + PSRAM) changes by KBs on almost every
+            // frame in a mode that churns PSRAM continuously — JTTY
+            // allocates and frees a ~605 KB window every 472 ms — which
+            // defeated that gate: the status bar repainted at the full
+            // 6 frames/s, ~12 ms each, ~70 ms of every second of core 0,
+            // above the receiver's Back (jtty-demo, 2026-09-28). The
+            // clock needs a redraw once a second anyway; the heap rides
+            // it. With no clock, once a second by frame count instead.
+            let second_ticked = sod != ui.status.utc_sod
+                || (sod.is_none() && tick % (1_000_000 / FRAME_US) as u32 == 0);
+            if second_ticked {
+                ui.status.free_heap_kb = (heap / 1024) as u32;
+            }
+            ui.status.utc_sod = sod;
             status_snapshot = ui.status.clone();
             decoded_snapshot.clear();
             current_snapshot.clear();
