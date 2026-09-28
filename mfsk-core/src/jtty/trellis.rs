@@ -392,6 +392,8 @@ impl Plan {
         b: &mut [[Surv<M>; PATHS_PER_STATE]],
     ) -> ListResult {
         let energies = self.energies::<M>(z);
+        // what `advance_state_top` needs for its sums to be ordered as the paths they extend
+        let finite = energies.iter().all(|e| e.is_finite());
         probe.lap(0);
         let (mut prev, mut cur) = (a, b);
         prev.iter_mut()
@@ -413,9 +415,9 @@ impl Plan {
                 let prune =
                     prune_reserved && b.start < RESERVED_BIT && RESERVED_BIT <= b.start + b.len; // block holds bit 33 (1-based)
                 if index == 0 {
-                    advance::<M, P, true>(b, &energies, prune, prev, cur, probe);
+                    advance::<M, P, true>(b, &energies, finite, prune, prev, cur, probe);
                 } else {
-                    advance::<M, P, false>(b, &energies, prune, prev, cur, probe);
+                    advance::<M, P, false>(b, &energies, finite, prune, prev, cur, probe);
                 }
                 core::mem::swap(&mut prev, &mut cur);
             }
@@ -579,6 +581,7 @@ impl<M: Metric> Surv<M> {
 fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     b: &Block,
     energies: &[M],
+    finite: bool,
     prune: bool,
     prev: &[[Surv<M>; PATHS_PER_STATE]],
     cur: &mut [[Surv<M>; PATHS_PER_STATE]],
@@ -603,6 +606,12 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
         let identity = b.identity[word];
         if prune && identity & reserved != 0 {
             continue;
+        }
+        if !DEDUPE && finite {
+            if advance_state_top(b, end, words, identity, energies, prev, out, probe) {
+                continue;
+            }
+            *out = [Surv::empty(); PATHS_PER_STATE];
         }
         // the extension of `prev[preds[k]][i]`, or empty
         let extend =
@@ -765,6 +774,75 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool>(
             *s = Surv::empty();
         }
     }
+}
+
+/// One end state of [`advance`] as the best four of all its extensions, kept sorted while every
+/// predecessor's list is read until an extension no longer beats the fourth: the merge's result
+/// without its scan over every head for each path it places — at L=4 that scan is sixteen heads.
+///
+/// The merge's result is the four best of the extended lists under [`Surv::precedes`] (keys are
+/// distinct here, the first block of a pass being left to the merge), so it is the same four in
+/// the same order, provided the paths left unread in a list cannot beat the fourth. They cannot
+/// when the list's sums fall as its metrics do: adding one finite branch metric to each of a
+/// sorted list's metrics rounds monotonically, so the unread sums are at most the rejected one's,
+/// which is below the fourth unless it equals it. Returns `false`, having left `out` partly
+/// written, for the merge to take the state when that ordering is not certain: a rejected sum
+/// equal to the fourth's, or two equal sums in one list (where a smaller key behind could come
+/// out ahead, the case [`advance`] checks every head for).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn advance_state_top<M: Metric, P: Probe>(
+    b: &Block,
+    end: usize,
+    words: usize,
+    identity: u64,
+    energies: &[M],
+    prev: &[[Surv<M>; PATHS_PER_STATE]],
+    out: &mut [Surv<M>; PATHS_PER_STATE],
+    probe: &mut P,
+) -> bool {
+    let stride = STATES / words;
+    let word = end & (words - 1);
+    let mut filled = 0;
+    for k in 0..words {
+        let pred = (end >> b.len) + k * stride;
+        let br = energies[b.energy_offset + usize::from(b.sequence[pred * words + word])];
+        let mut last = M::zero();
+        for (n, s) in prev[pred].iter().enumerate() {
+            if !s.valid() {
+                break;
+            }
+            probe.extension();
+            let e = Surv {
+                metric: s.metric + br,
+                key: s.key | identity,
+            };
+            let mut p = filled;
+            if filled == PATHS_PER_STATE {
+                let fourth = &out[PATHS_PER_STATE - 1];
+                if !e.precedes_lazily(fourth) {
+                    if { e.metric } == { fourth.metric } {
+                        return false;
+                    }
+                    break;
+                }
+                p = PATHS_PER_STATE - 1;
+            } else {
+                filled += 1;
+            }
+            if n > 0 && { e.metric } == last {
+                return false;
+            }
+            last = e.metric;
+            while p > 0 && e.precedes_lazily(&out[p - 1]) {
+                out[p] = out[p - 1];
+                p -= 1;
+            }
+            out[p] = e;
+            probe.insert_call();
+        }
+    }
+    true
 }
 
 /// Coherent length 4: sixteen predecessors.
