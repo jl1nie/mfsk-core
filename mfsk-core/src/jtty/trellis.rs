@@ -590,6 +590,9 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     // one-bit blocks by the small merge: 190 -> 138 ms a rung on the CoreS3; two-bit blocks
     // were slower that way (145 -> 180 ms) and keep the lazy one
     if b.len == 1 {
+        if !DEDUPE && finite {
+            return advance_pair(b, energies, prune, prev, cur, probe);
+        }
         return advance_small::<M, P, DEDUPE>(b, energies, prune, prev, cur, probe);
     }
     let words = 1usize << b.len;
@@ -690,6 +693,8 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
 /// round, then [`advance_state_sorted`] takes the state), and the two lists merged. Fixed-size
 /// arrays and no per-head bookkeeping, for the one-bit blocks of L=1 and the half-symbol rung,
 /// most of the ladder's calls: 190 -> 138 ms a rung on the LX7 (#499).
+/// Since [`advance_pair`], only a pass's first block (`DEDUPE`) and non-finite branch metrics
+/// come here.
 #[inline(always)]
 fn advance_small<M: Metric, P: Probe, const DEDUPE: bool>(
     b: &Block,
@@ -843,6 +848,100 @@ fn advance_state_top<M: Metric, P: Probe>(
         }
     }
     true
+}
+
+/// [`advance`] for a one-bit block past a pass's first, with finite branch metrics: the two
+/// predecessors' lists merged by two heads, each extension built only when it becomes a head.
+///
+/// The merge is exact when each list's sums strictly fall. Monotonic rounding gives at least
+/// `<=`, so a path that becomes a head is checked against the one it follows, and each list's
+/// last head against the path behind it; an equal sum anywhere there (where a smaller key could
+/// come out ahead, the reordering [`advance_small`] checks every pair for) hands the state to
+/// [`advance_state_sorted`], which is exact.
+#[inline(always)]
+fn advance_pair<M: Metric, P: Probe>(
+    b: &Block,
+    energies: &[M],
+    prune: bool,
+    prev: &[[Surv<M>; PATHS_PER_STATE]],
+    cur: &mut [[Surv<M>; PATHS_PER_STATE]],
+    probe: &mut P,
+) {
+    let stride = STATES / 2;
+    let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
+    for (end, out) in cur.iter_mut().enumerate() {
+        let word = end & 1;
+        let identity = b.identity[word];
+        if prune && identity & reserved != 0 {
+            *out = [Surv::empty(); PATHS_PER_STATE];
+            continue;
+        }
+        let (p0, p1) = (end >> 1, (end >> 1) + stride);
+        let br0 = energies[b.energy_offset + usize::from(b.sequence[p0 * 2 + word])];
+        let br1 = energies[b.energy_offset + usize::from(b.sequence[p1 * 2 + word])];
+        let (s0, s1) = (&prev[p0], &prev[p1]);
+        let ext = |s: &Surv<M>, br: M| Surv {
+            metric: s.metric + br,
+            key: s.key | identity,
+        };
+        let n0 = s0.iter().take_while(|s| s.valid()).count();
+        let n1 = s1.iter().take_while(|s| s.valid()).count();
+        let mut h0 = if n0 > 0 {
+            ext(&s0[0], br0)
+        } else {
+            Surv::empty()
+        };
+        let mut h1 = if n1 > 0 {
+            ext(&s1[0], br1)
+        } else {
+            Surv::empty()
+        };
+        let (mut i, mut j, mut filled) = (0, 0, 0);
+        let mut exact = true;
+        while filled < PATHS_PER_STATE {
+            if j < n1 && (i >= n0 || h1.precedes_lazily(&h0)) {
+                out[filled] = h1;
+                j += 1;
+                if j < n1 {
+                    let next = ext(&s1[j], br1);
+                    if { next.metric } >= { h1.metric } {
+                        exact = false;
+                        break;
+                    }
+                    h1 = next;
+                }
+            } else if i < n0 {
+                out[filled] = h0;
+                i += 1;
+                if i < n0 {
+                    let next = ext(&s0[i], br0);
+                    if { next.metric } >= { h0.metric } {
+                        exact = false;
+                        break;
+                    }
+                    h0 = next;
+                }
+            } else {
+                break;
+            }
+            probe.insert_call();
+            filled += 1;
+        }
+        // the path behind each list's last head
+        exact = exact
+            && (i + 1 >= n0 || { ext(&s0[i + 1], br0).metric } < { h0.metric })
+            && (j + 1 >= n1 || { ext(&s1[j + 1], br1).metric } < { h1.metric });
+        if !exact {
+            let mut branch = [M::zero(); MAX_WORDS];
+            branch[0] = br0;
+            branch[1] = br1;
+            advance_state_sorted::<M, P, false>(&[p0, p1], &branch, identity, prev, out, probe);
+            continue;
+        }
+        for s in &mut out[filled..] {
+            *s = Surv::empty();
+        }
+    }
 }
 
 /// Coherent length 4: sixteen predecessors.
