@@ -711,8 +711,13 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
                     metric: src[n].metric + br,
                     key: src[n].key | identity,
                 };
-                if n > 0 && lists[k][n].precedes(&lists[k][n - 1]) {
-                    sorted = false;
+                if n > 0 {
+                    // `precedes`, with the key read only behind one metric compare that is
+                    // almost never true (both of its arms need `m >= om`)
+                    let (m, om) = (lists[k][n].metric, lists[k][n - 1].metric);
+                    if m >= om && (m > om || { lists[k][n].key } < { lists[k][n - 1].key }) {
+                        sorted = false;
+                    }
                 }
                 n += 1;
             }
