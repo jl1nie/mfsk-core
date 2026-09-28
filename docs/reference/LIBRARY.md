@@ -933,6 +933,16 @@ frequency, it runs again on spectra with the drift found there taken out
 (the "w3sz" stage 5). Without `.rx_freq()`, `.ap_list()` is this crate's
 own per-candidate template match instead of the scan.
 
+**Not a 1:1 port everywhere `.ap_list()` appears** (issue #522): upstream's
+list decode only ever runs as q3, gated on the Rx frequency. Two of this
+crate's three `.ap_list()` builders can never reach that q3 path, because
+neither has an Rx frequency to gate on — `SniperRequest::ap_list` (sniper
+is itself a crate-native mode, see §2.2) and `DecodeRequest::ap_list`
+without `.rx_freq()` (the paragraph above) — so both always run the
+crate's own AWGN-metric template match, with no upstream counterpart.
+This is a deliberate extension, not a fidelity gap; each method's own doc
+comment says so.
+
 ---
 
 ## 4. Module and crate map
