@@ -142,9 +142,10 @@ impl Receiver for JttyRx {
         // Allocations up to 64 KB prefer internal DRAM while the receiver is
         // built, then the board's 2 KB rule again: the channel-0 surface is
         // 152 B over 64 KiB and must not follow into internal DRAM while
-        // decoding (§3).
+        // decoding (§3). Largest allocation first: built in `new().with_f32_metrics()`'s
+        // order, both trellis survivor arrays came last and landed in PSRAM (§13).
         unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
-        let decoder = Arc::new(Decoder::new().with_f32_metrics());
+        let decoder = Arc::new(Decoder::new_with_f32_metrics());
         unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
         let (after, largest_after, psram_after) = heap_now();
         // `jtty-bench` and `jtty-demo` took 152-154 KB internal for the same

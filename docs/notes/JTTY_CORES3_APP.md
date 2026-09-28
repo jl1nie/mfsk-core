@@ -267,3 +267,26 @@ Golden and band6 on the SIM feed, WiFi off (`logs/jtty_e1b_*_2026-09-28.log`).
 Putting the survivors in internal DRAM needs them allocated before the smaller buffers — a change in `mfsk-core`
 (`Receiver`'s construction order, or a constructor that takes the f32 scratch first). Left for the user to decide.
 
+
+## 14. E1c: the survivors internal (`Receiver::new_with_f32_metrics`), and internal DRAM runs out (2026-09-28)
+
+`Receiver::new_with_f32_metrics()` builds the same receiver largest allocation first (`mfsk-core`, bit-identical
+decodes, `tests/jtty_rx.rs`). SIM feed, WiFi off (`logs/jtty_e1c_*_2026-09-28.log`).
+
+- **Placement** (heap walk): the three 32 768 B blocks allocated first — both survivor arrays and the transform buffer —
+  and the 20 480 B sync wave are internal; a 16 896 B block and a 6 144 B block went to PSRAM. The build takes
+  160 968 B internal and 23 048 B PSRAM (218 999 B free before; 58 031 B after, largest 31 744). After Back's 20 KB
+  reservation: 37 547 B (largest 15 872).
+- **Speed now matches the bench.** Golden: front 330–340 ms a window, back 203–247 ms mean (612–637 worst), delay
+  530–597 ms mean, queue at most 1, **0 windows dropped**, every message intact. Band6: front 366–394 ms, back
+  318–420 ms mean (862–907 worst), delay 0.8–1.5 s mean, queue at most 5, **0 dropped**, every message intact, and the
+  first three passes equal to the host's `sim_streams_looped_on_the_host` message for message (start, frequency,
+  text). Per-core CPU: golden `jtty_back` 39–48 %, IDLE0 43–52 %; band6 `jtty_back` 64–76 %.
+- **Front under Back mostly went away.** Front a window with Back idle / busy: golden 278–279 / 318–329 ms, band6
+  279–280 / 344–375 ms (before: 255 / 430–462 on golden). The remaining ~15–30 % is the shared cache and PSRAM bus
+  (the surfaces and `Prepared` windows are still PSRAM).
+- **Internal DRAM does not fit.** Steady state 3–6 KB free, **minimum 0**, largest block 0–4 KB; the storage task
+  could not get its 5 KB internal stack (`storage: could not spawn the task (Not enough space)`), so **no `all.txt`
+  this boot**. Stacks: Back 12 996 B peak of 20 480, Front 2 616 of 8 192, `uac_sim` (SIM only) 1 920 of 8 192,
+  `main` 9 816 B free. On the radio there is no `uac_sim`, but the USB host and the UAC driver need internal DRAM of
+  their own — E3 needs more room than this, not less.
