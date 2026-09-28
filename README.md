@@ -19,35 +19,46 @@
 
 `mfsk-core` provides **portable, high-performance Rust implementations of
 the WSJT-X digital modes**, validated against the upstream reference
-decoders. It is a single pure-Rust crate covering FT8, FT4, FST4, WSPR,
-JT9, JT65 and Q65 (all ten sub-modes) decode / encode / synthesis on top
-of a small set of shared primitives (DSP, sync correlation, LLR, LDPC /
-convolutional / Reed-Solomon / QRA FEC, message codecs). It runs anywhere
-Rust runs: desktop, WASM in the browser, Android/iOS, and `no_std`
-embedded MCUs.
+decoders.
 
-It is a library, not an application: there is no GUI, and the aim is to
-let you embed WSJT-X-quality decoders in your own system. What the
-project keeps up is the validation around the code — golden recordings
-taken from WSJT-X (every PR is gated on them, recall and phantom decodes
-together), sensitivity sweeps against WSJT-X's own simulators before
-releases, and the numbers written down in
+It is a single pure-Rust crate covering FT8, FT4, FST4, WSPR, JT9, JT65,
+and Q65 (all ten sub-modes), with decoding, encoding, and waveform
+synthesis built on top of a small set of shared primitives: DSP,
+synchronization and correlation, LLRs, LDPC / convolutional /
+Reed-Solomon / QRA FEC, and message codecs.
+
+It runs anywhere Rust runs: desktop, WASM in the browser, Android/iOS,
+and `no_std` embedded MCUs.
+
+It is a library, not an application. There is no GUI, and the aim is to
+let you embed WSJT-X-quality decoders and modems in your own system
+rather than to build another WSJT-X.
+
+A major part of the project is the validation around the code. Golden
+recordings taken from WSJT-X gate every PR, checking recall and phantom
+decodes together. Before releases, sensitivity sweeps are run against
+WSJT-X's own simulators and reference binaries, with the results
+recorded in
 [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
 
-Two working receivers ship with the source tree, both running this
-library on Xtensa LX7.
+The embedded targets demonstrate that portability rather than define the
+library's scope. Two working receivers ship with the source tree, both
+running this library on Xtensa LX7.
+
 [`embedded-poc/m5stack-cores3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-cores3-app/)
-is the main target: one image carrying **four receivers** — FT8 over
-USB Audio from a radio, WSPR, FST4, and a radio-free demo — chosen from
-the touch panel. Verified on 2026-08-23 against an IC-705 on 40 m: six
-to eight FT8 stations per slot, +8 to −24 dB.
+is the main target: one image carrying four receivers — FT8 over USB
+Audio from a radio, WSPR, FST4, and a radio-free demo — selected from the
+touch panel. It was verified on 2026-08-23 with an IC-705 on 40 m,
+decoding six to eight FT8 stations per slot from +8 to −24 dB.
+
 [`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
-is the M5StickS3 demo path — LCD UI, BLE CI-V to an IC-705, acoustic
-mic capture, QSO FSM. The image above is one of its decode slots.
+is the M5StickS3 demo path, with an LCD UI, BLE CI-V to an IC-705,
+acoustic microphone capture, and a QSO state machine. The image above is
+one of its decode slots.
 
 Every algorithm is a Rust re-implementation of
-[WSJT-X](https://sourceforge.net/projects/wsjt/) (Joe Taylor K1JT and
-collaborators), which remains the reference implementation — see
+[WSJT-X](https://sourceforge.net/projects/wsjt/), developed by Joe Taylor
+K1JT and collaborators, which remains the reference implementation. See
 [Attribution](#attribution) below.
 
 ## Why mfsk-core
