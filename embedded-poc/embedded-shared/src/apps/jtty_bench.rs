@@ -1152,6 +1152,136 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
     );
 }
 
+/// Part 0b: an on-device correctness gate, not a timing measurement — every other function in
+/// this file logs numbers for a human to read; this one `assert_eq!`s. It is the two-core version
+/// of the host's `front_and_back_are_a_stream` (`tests/jtty_rx.rs`, #499): for each case, decode
+/// once single-threaded (`rx::Stream`, the reference — the same ground truth that host test
+/// checks against) and once through the real split, `Front` on its own thread pinned to core 1
+/// paced at the audio's own rate, `Back` on this thread, and assert the sorted complete-message
+/// texts are identical. A mismatch panics with the two lists, which on this board prints a
+/// backtrace and halts/reboots rather than leaving a log line an operator has to notice — the
+/// bench's numbers (queue depths, ladder timings, memory) are worth nothing if the two-core split
+/// silently drops or duplicates a message on real Xtensa hardware, which no host test can rule
+/// out (it may share Rust source with the host build, but not its scheduler, its atomics, or its
+/// FPU rounding).
+fn bench_selftest() {
+    use alloc::string::String;
+    use alloc::sync::Arc;
+    use esp_idf_svc::hal::cpu::Core;
+    use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
+    use mfsk_core::jtty::rx::{Back, Front, Params, Prepared, Receiver, STEP, Stream};
+    use mfsk_core::jtty::testsig::pileups;
+    use std::sync::mpsc::sync_channel;
+
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+    let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    let emb = Params::default().embedded();
+
+    const WAV: &[u8] = include_bytes!("../../../assets/golden/jtty/260807_134110.wav");
+    let recording: alloc::vec::Vec<i16> =
+        WAV[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+
+    let mut cases: alloc::vec::Vec<(String, alloc::vec::Vec<i16>, Params)> =
+        alloc::vec![(String::from("upstream recording"), recording, emb)];
+    // "band, 6 long messages" is a `pileups` pattern, not `catalogue`'s — getting that wrong
+    // once already made this `find` silently run one case instead of two, with no complaint from
+    // `if let`. Turn a lookup miss into a loud failure instead: this is a correctness gate, and a
+    // gate that quietly checks less than it claims to is the exact failure mode it exists to
+    // catch elsewhere.
+    let case = pileups(1)
+        .into_iter()
+        .find(|c| c.pattern.starts_with("band, 6 long messages"))
+        .expect("selftest: \"band, 6 long messages\" pattern not found in testsig::pileups");
+    let audio = case.audio().expect("selftest: pileups case did not pack");
+    cases.push((alloc::format!("{} #{}", case.pattern, case.trial), audio, emb));
+
+    let mut checked = 0usize;
+    for (name, audio, params) in cases {
+        let mut want: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+        {
+            // Chunked, with a yield between pushes — a single call over the whole ~30 s
+            // recording starves IDLE0 long enough to trip the task watchdog (harmless per
+            // #499/#512, but there is no reason to invite it here). `bench_stream` above
+            // does the same for the same reason.
+            let mut stream = Stream::new(rx.clone(), params);
+            for chunk in audio.chunks(STEP) {
+                stream.push(chunk, &mut |u| {
+                    if u.complete {
+                        want.push(u.text)
+                    }
+                });
+                yield_now();
+            }
+            stream.finish(&mut |u| {
+                if u.complete {
+                    want.push(u.text)
+                }
+            });
+        }
+        want.sort();
+        assert!(!want.is_empty(), "selftest [{name}]: the single-threaded reference decoded nothing");
+
+        let audio = Arc::new(audio);
+        let (tx, rq) = sync_channel::<Prepared>(3);
+        let t_start = now_us();
+        let front_cfg = ThreadSpawnConfiguration {
+            name: Some(c"jtty_front"),
+            stack_size: 16 * 1024,
+            priority: 4,
+            pin_to_core: Some(Core::Core1),
+            ..ThreadSpawnConfiguration::default()
+        };
+        let _ = front_cfg.set();
+        let front_handle = {
+            let (rx, audio, params) = (rx.clone(), audio.clone(), params);
+            std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
+                let mut front = Front::new(rx, params).expect("embedded settings");
+                for (i, chunk) in audio.chunks(STEP).enumerate() {
+                    let due = t_start + ((i + 1) * STEP) as i64 * 1_000_000 / 12_000;
+                    let wait = due - now_us();
+                    if wait > 0 {
+                        std::thread::sleep(core::time::Duration::from_micros(wait as u64));
+                    }
+                    let mut ready = alloc::vec::Vec::new();
+                    front.push(chunk, &mut |p| ready.push(p));
+                    for p in ready {
+                        if tx.send(p).is_err() {
+                            return;
+                        }
+                    }
+                }
+            })
+        };
+        let _ = ThreadSpawnConfiguration::default().set();
+        let Ok(front_handle) = front_handle else {
+            panic!("selftest [{name}]: front thread did not start");
+        };
+
+        let mut back = Back::new(rx.clone(), params);
+        let mut got: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+        while let Ok(p) = rq.recv() {
+            back.process(p, &mut |u| {
+                if u.complete {
+                    got.push(u.text)
+                }
+            });
+        }
+        back.finish(&mut |u| {
+            if u.complete {
+                got.push(u.text)
+            }
+        });
+        let _ = front_handle.join();
+        got.sort();
+
+        assert_eq!(got, want, "selftest [{name}]: two-core Front+Back disagrees with the single-threaded reference");
+        checked += 1;
+        log::info!("selftest [{name}]: two-core Front+Back agrees with the reference ({} message(s))", want.len());
+    }
+    log::info!("SELFTEST: PASS ({checked} case(s))");
+}
+
 fn run_bench() {
     log::info!("=== jtty-bench: what a JTTY receive window costs on the LX7 (#499, E0) ===");
     log::info!("window budget: 472 ms (a quarter frame); host: 11.7 ms per window, one thread");
@@ -1159,6 +1289,9 @@ fn run_bench() {
 
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
+
+    log::info!("--- 0b. selftest: two-core Front+Back against the single-threaded reference (#499) ---");
+    bench_selftest();
 
     log::info!("--- 3c. where a rung's time goes ---");
     bench_ladder_profile();
