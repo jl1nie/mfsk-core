@@ -62,12 +62,26 @@ bindings/swift/         — SwiftPM package over the same ABI (own CI job)
 ## Relationship to WSJT-X
 
 Every algorithm file in `src/` cites the `lib/*.f90` / `lib/*.c` file
-it ports. When changing a decoder internal, the expected workflow is:
+it ports, as `<file>:<line>` or `<file>:<line-range>`. When changing a
+decoder internal, the expected workflow is:
 
 1. Read the corresponding WSJT-X source.
 2. Make the matching change in Rust.
 3. Keep the comment pointers valid — if you restructure, update the
    `Ported from…` note so the next reader can cross-reference.
+
+**Citations are against the `v3.2.0-rc1` tag of `WSJTX/wsjtx`** (issue
+#467) — not `master`, which moves, and not this project's own earlier
+reference commit `2b9d654`. Line numbers drift between trees on files
+that see any edit at all: two citations landed off by one line, and one
+by four, from checking a `master`/`develop` checkout instead of the
+pinned tag (caught auditing #467 itself). A citation from an older tree
+that hasn't been re-checked carries that tree instead
+(`2b9d654:lib/foo.f90:42`), rather than silently implying `v3.2.0-rc1`.
+`docs/notes/BENCHMARKS.md`'s "Which `jt9`" section has the worktree
+recipe (`git worktree add <dir> v3.2.0-rc1`) — use the same tree for
+reading source as for building any reference `jt9`/`ft8sim` binary you
+compare against.
 
 Algorithmic corrections that *diverge* from WSJT-X (e.g. we implement a
 smarter refiner than upstream) are welcome, but call them out in a

@@ -208,7 +208,7 @@ pub trait ModulationParams: Copy + Default + 'static {
     const LLR_NSYM_MID: Option<u32> = None;
 
     /// Optional 77-bit pre-LDPC scrambler. WSJT-X applies an
-    /// FT4-specific scrambler in `genft4.f90:64`
+    /// FT4-specific scrambler in `genft4.f90:67`
     /// (`msgbits=mod(msgbits+rvec,2)`) before computing CRC-14 and
     /// running LDPC encode; the receiver removes it after LDPC
     /// decode + CRC verify (`ft4_decode.f90:430`). Without this our

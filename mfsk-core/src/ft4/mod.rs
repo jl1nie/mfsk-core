@@ -101,7 +101,7 @@ impl ModulationParams for Ft4 {
     // codeword instead of a CRC-14 false positive.
     const LLR_NSYM_MAX: u32 = 4;
 
-    // 77-bit pre-LDPC scrambler (WSJT-X `genft4.f90:64`).
+    // 77-bit pre-LDPC scrambler (WSJT-X `genft4.f90:67`).
     const INFO_SCRAMBLE_RVEC: Option<&'static [u8]> = Some(&FT4_RVEC);
 }
 

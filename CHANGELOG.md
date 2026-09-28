@@ -2,9 +2,16 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **docs: pin `lib/*.f90`/`lib/*.c` citations to the `v3.2.0-rc1` tag of `WSJTX/wsjtx`, and fix 7 that had drifted (#467).**
+  `CONTRIBUTING.md` now states the reference tree explicitly — line numbers move between trees on any file that sees
+  an edit, and nothing previously recorded which tree a citation's line number was checked against. Auditing this
+  crate's own FT8/FT4/FST4 citations against the pinned tag found 7 real drifts, 2 introduced this session (#519,
+  #465, both caught before merge would have been too late) and 5 pre-existing (`ft8b.f90:96→97`, `:154-161→155-162`,
+  `:163-176→164-177`, `ft8_decode.f90:162→158`, `genft4.f90:64→67`) — comment-only, no behavior change.
+
 - **FST4: the AP rung's OSD masks locked bits and runs on the AP-held BP sums, as `osd240_101.f90`/`decode240_101.f90` do (#465).**
   `osd_decode_npre_generic` takes an `ap_mask`: a test pattern that would flip a locked bit is skipped in both the
-  `npre1` and `npre2` passes (`osd240_101.f90:191`/`:262`), mirroring `osd_decode_npre1_masked`'s FT8/FT4-pinned
+  `npre1` and `npre2` passes (`osd240_101.f90:192`/`:263`), mirroring `osd_decode_npre1_masked`'s FT8/FT4-pinned
   counterpart (#459). `Ldpc240_101`'s AP rung now also runs OSD on `bp_llr_zsum_ap_with_scratch`'s locked-bit-held sum
   after 1 and 2 BP iterations instead of the raw channel LLR — previously skipped entirely under an AP mask
   (`ap_slice.is_some()`), on the mistaken belief FST4 had no AP wiring yet (issue #143 is about SIC/list-decode, not
@@ -13,7 +20,7 @@
   than FT8's old combinatorial `osd_decode_deep` bug; both rates stay low in absolute terms
   (`tests/fst4_ap_osd_false_accept.rs`).
 - **FT8: `DecodeRequest::eme_delay`, WSJT-X's EME-delay display shift (#519).**
-  Ported from `ft8_decode.f90:230` (`if(emedelay.ne.0) xdt=xdt+2.0`): with it on, every delivered decode's `dt_sec` is
+  Ported from `ft8_decode.f90:234` (`if(emedelay.ne.0) xdt=xdt+2.0`): with it on, every delivered decode's `dt_sec` is
   offset by +2.0 s — a report-layer convention for the ~2.5 s Earth-Moon-Earth round trip, not a search change; off by
   default, as in WSJT-X's GUI. Applied at both of FT8's independent result-delivery points (the single-pass `accept`
   closure and the shared `.sic_rounds()`/`.sic_early()` engine), after the xsnr2 gate and after any waveform

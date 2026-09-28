@@ -2102,7 +2102,7 @@ const OSD_NPRE_WORDS: usize = OSD_NPRE_MAX_N.div_ceil(64); // 4
 ///   does for FST4's AP passes (issue #465): `ap_mask[i]` is `true` for
 ///   a locked bit `i` (original bit order, length `P::N`). A test
 ///   pattern that would flip any locked position is skipped —
-///   `osd240_101.f90:191` (npre1) and `:262` (npre2) both run the
+///   `osd240_101.f90:192` (npre1) and `:263` (npre2) both run the
 ///   identical `any(iand(apmaskr(1:k),mi).eq.1)) cycle` check — so the
 ///   winner always keeps every locked bit, mirroring
 ///   [`osd_decode_npre1_masked`]'s FT8/FT4-pinned counterpart. `None`
@@ -3003,7 +3003,7 @@ mod packed_setup_differential {
     /// counterpart to `masked_npre1_does_not_flip_a_locked_bit` above
     /// (issue #465): a clean codeword with one bit locked to the wrong
     /// value comes back from the unmasked search (one flip repairs it)
-    /// and does not from the masked one (`osd240_101.f90:191`).
+    /// and does not from the masked one (`osd240_101.f90:192`).
     #[test]
     fn masked_npre1_does_not_flip_a_locked_bit_ldpc240_101() {
         use crate::fec::ldpc240_101::append_crc24;

@@ -1403,7 +1403,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     let mut buf_c = vec![0i16; audio.len()];
     buf_c[..b_len].copy_from_slice(&buf_b[..b_len]);
     buf_c[b_len..c_len].copy_from_slice(&audio_clean[b_len..c_len]);
-    // `ft8_decode.f90:162` — same `lrefinedt=.true.` re-search as
+    // `ft8_decode.f90:158` — same `lrefinedt=.true.` re-search as
     // checkpoint B above, for the late-`dt` decodes deferred to here.
     for r in &deferred {
         subtract_signal_lpf_refine_dt(&mut buf_c, r);
@@ -1911,7 +1911,7 @@ fn base_pass_of<Pol: MessagePolicy>(req: &DecodeRequest<'_, Ft8, Pol>) -> PassCt
         .contest(req.wsjtx_contest)
 }
 
-/// WSJT-X's EME-delay display shift (`ft8_decode.f90:230`,
+/// WSJT-X's EME-delay display shift (`ft8_decode.f90:234`,
 /// `if(emedelay.ne.0) xdt=xdt+2.0`) applied to a result about to be
 /// delivered, then fires `on_result`. Every caller of this — the
 /// single-pass `accept` closure and [`sic_inner_passes_with_cache`]'s
@@ -1952,7 +1952,7 @@ impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
 
     /// WSJT-X's **EME delay** flag (`emedelay`, "Decode at 52 s" checked in
     /// the GUI): shifts every delivered decode's `dt_sec` by +2.0 s
-    /// (`ft8_decode.f90:230`, `if(emedelay.ne.0) xdt=xdt+2.0`) — a display
+    /// (`ft8_decode.f90:234`, `if(emedelay.ne.0) xdt=xdt+2.0`) — a display
     /// convention for the ~2.5 s Earth-Moon-Earth round trip, not a search
     /// change. Off by default, as in WSJT-X's GUI. Unlike Q65's
     /// [`crate::q65::decode_request::DecodeRequest::eme_delay`], which
@@ -2583,7 +2583,7 @@ mod tests {
     }
 
     /// `.eme_delay(true)` shifts a delivered decode's `dt_sec` by exactly
-    /// +2.0 s (`ft8_decode.f90:230`, issue #519), on both the single-pass
+    /// +2.0 s (`ft8_decode.f90:234`, issue #519), on both the single-pass
     /// engine and the `.sic_rounds()` engine — the two independent
     /// delivery choke-points (`decode_frame_inner`'s `accept` closure and
     /// `sic_inner_passes_with_cache`'s loop). The search itself is
