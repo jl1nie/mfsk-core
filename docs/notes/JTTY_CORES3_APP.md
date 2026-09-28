@@ -39,7 +39,7 @@ is no quiet point for flash writes or for the panel.
 | trellis survivors (`with_f32_metrics`) | 2 × 32 KB | a rung 190 ms vs 410 ms (§11 of the budget) |
 | side-surface FFT buffer, 16-byte aligned | 32 KB | 4096 points 2.3 ms vs 10 ms (§13) |
 | side-surface power row | 16 KB | part of 485 → 148 ms (§13) |
-| `Back` stack (the ladder's correlations live there) | 32 KB (bench, internal) | PSRAM stack not measured |
+| `Back` stack (the ladder's correlations live there) | 32 KB | **no difference** — 190 ms mean either way, 1007 vs 1017 ms worst (`jtty-bench` §7b, #499) |
 | `Front` stack | 16 KB (bench, internal) | not measured |
 
 That is ~160 KB with the band scan, ~112 KB without it (no FFT buffer or power row), each piece needing up to a 32 KB
@@ -52,7 +52,7 @@ largest block is 31.7 KB; the USB host and the panel take more, and FT8 runs wit
 |---|---|---|
 | as the bench (scan, all hot buffers internal, internal stacks) | ~160 KB | **no** |
 | channel 0 only, survivors internal, internal stacks | ~112 KB | **no** |
-| survivors internal, stacks in PSRAM | ~64 KB (+48 with the scan) | only just, without the scan — unmeasured |
+| survivors internal, stacks in PSRAM | ~64 KB (+48 with the scan) | only just, without the scan — `Back`'s half now measured at no speed cost; `Front`'s stack still unmeasured |
 | survivors in PSRAM | small | yes, but each ladder call ~2.2× slower (worst window ~740 ms → ~1.4 s, estimated from 190 vs 410 ms a rung; E0 measures it) |
 
 WiFi is not optional in practice: with the USB host installed, USB-Serial-JTAG is gone and the UDP log is the only
