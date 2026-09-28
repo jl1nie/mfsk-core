@@ -2,6 +2,16 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FST4: the AP rung's OSD masks locked bits and runs on the AP-held BP sums, as `osd240_101.f90`/`decode240_101.f90` do (#465).**
+  `osd_decode_npre_generic` takes an `ap_mask`: a test pattern that would flip a locked bit is skipped in both the
+  `npre1` and `npre2` passes (`osd240_101.f90:191`/`:262`), mirroring `osd_decode_npre1_masked`'s FT8/FT4-pinned
+  counterpart (#459). `Ldpc240_101`'s AP rung now also runs OSD on `bp_llr_zsum_ap_with_scratch`'s locked-bit-held sum
+  after 1 and 2 BP iterations instead of the raw channel LLR — previously skipped entirely under an AP mask
+  (`ap_slice.is_some()`), on the mistaken belief FST4 had no AP wiring yet (issue #143 is about SIC/list-decode, not
+  this). Noise false-accept measured (300 000 draws, CQ-style lock): 32 after against 10 before, in 300 000 — not the
+  order-of-magnitude improvement FT8/FT4 saw, because FST4's "before" was already the pruned `npre1` search rather
+  than FT8's old combinatorial `osd_decode_deep` bug; both rates stay low in absolute terms
+  (`tests/fst4_ap_osd_false_accept.rs`).
 - **FT8: `DecodeRequest::eme_delay`, WSJT-X's EME-delay display shift (#519).**
   Ported from `ft8_decode.f90:230` (`if(emedelay.ne.0) xdt=xdt+2.0`): with it on, every delivered decode's `dt_sec` is
   offset by +2.0 s — a report-layer convention for the ~2.5 s Earth-Moon-Earth round trip, not a search change; off by

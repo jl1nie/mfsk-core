@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use crate::engine::protocol::BpPooledFec;
 use crate::engine::{FecCodec, FecOpts, FecResult};
 use crate::fec::ldpc::bp::{
-    BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_with_scratch,
+    BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_ap_with_scratch,
 };
 use crate::fec::ldpc::osd::{
     OsdResult, PartialCrc, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic,
@@ -176,12 +176,24 @@ pub fn fst4_osd_diag_force_old(force_old: bool) {
 /// FST4's OSD dispatch: WSJT-X-faithful `npre1`/`npre1+npre2` for
 /// `ndeep` 2/3 (see module-level doc comment above), falling back to
 /// [`osd_decode_generic`] for any other depth.
-fn fst4_osd_decode(llr: &[f32], ndeep: u8, verify: Option<fn(&[u8]) -> bool>) -> Option<OsdResult> {
+///
+/// `ap_mask`, when given, is `osd240_101.f90`'s `apmaskr` (issue #465):
+/// a test pattern flipping a locked bit is skipped, so the winner keeps
+/// every locked bit. Only reaches the `npre1`/`npre1+npre2` search
+/// (`ndeep` 2/3) — `osd_decode_generic`'s combinatorial fallback (`use_npre
+/// = false`, or `ndeep` outside 2/3) has no upstream AP counterpart to
+/// port and stays unmasked, as it always has.
+fn fst4_osd_decode(
+    llr: &[f32],
+    ndeep: u8,
+    ap_mask: Option<&[bool]>,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<OsdResult> {
     #[cfg(feature = "internal-testing")]
     let use_npre = !OSD_DIAG_FORCE_OLD.load(core::sync::atomic::Ordering::Relaxed);
     #[cfg(not(feature = "internal-testing"))]
     let use_npre = true;
-    fst4_osd_decode_dispatch(llr, ndeep, verify, use_npre)
+    fst4_osd_decode_dispatch(llr, ndeep, ap_mask, verify, use_npre)
 }
 
 /// Shared implementation behind [`fst4_osd_decode`], parameterised on
@@ -196,6 +208,7 @@ fn fst4_osd_decode(llr: &[f32], ndeep: u8, verify: Option<fn(&[u8]) -> bool>) ->
 fn fst4_osd_decode_dispatch(
     llr: &[f32],
     ndeep: u8,
+    ap_mask: Option<&[bool]>,
     verify: Option<fn(&[u8]) -> bool>,
     use_npre: bool,
 ) -> Option<OsdResult> {
@@ -209,6 +222,7 @@ fn fst4_osd_decode_dispatch(
             0,
             false,
             Some(FST4_PARTIAL_CRC),
+            ap_mask,
             verify,
         ),
         3 => osd_decode_npre_generic::<Ldpc240_101Params>(
@@ -217,6 +231,7 @@ fn fst4_osd_decode_dispatch(
             FST4_NPRE_NTAU,
             true,
             Some(FST4_PARTIAL_CRC),
+            ap_mask,
             verify,
         ),
         _ => osd_decode_generic::<Ldpc240_101Params>(llr, ndeep, LDPC_K, verify, false),
@@ -281,7 +296,12 @@ impl BpPooledFec for Ldpc240_101 {
             return None;
         }
 
-        if let Some(r) = fst4_osd_decode(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info) {
+        if let Some(r) = fst4_osd_decode(
+            &llr_arr,
+            opts.osd_depth.min(3) as u8,
+            ap_slice,
+            opts.verify_info,
+        ) {
             return Some(FecResult {
                 info: r.info,
                 hard_errors: r.hard_errors,
@@ -306,24 +326,31 @@ impl BpPooledFec for Ldpc240_101 {
         // raw succeeds and zsum alone would not — hence "try both", not
         // "replace": only reached when the raw-LLR OSD attempt above
         // already failed, so it can only add successes, never remove
-        // any. Skipped under AP hints (`ap_slice.is_some()`) — FST4
-        // doesn't wire AP decoding yet (issue #143), and
-        // `bp_llr_zsum` doesn't clamp AP-locked bits the way the main
-        // BP loop does, so running it under an AP mask would drift
-        // those bits away from their hinted value.
+        // any.
         //
-        // Pooled: `bp_llr_zsum_with_scratch` reuses the same `scratch`
+        // Under AP hints (issue #465, was skipped entirely before this):
+        // `decode240_101.f90` runs this same zsum step with the locked
+        // bits held at their channel/AP value every BP iteration
+        // (`bp_llr_zsum_ap_with_scratch`, `decode174_91.f90`'s
+        // `if(apmask(i).ne.1) zn(i)=... else zn(i)=llr(i)` rule) instead
+        // of drifting them — `bp_llr_zsum_with_scratch` is exactly this
+        // with `ap_mask=None`, so one call covers both cases.
+        //
+        // Pooled: `bp_llr_zsum_ap_with_scratch` reuses the same `scratch`
         // the BP staircase above already used, and returns a borrow
         // instead of a fresh `Vec`.
-        if ap_slice.is_none() {
-            let zsum = bp_llr_zsum_with_scratch::<Ldpc240_101Params>(scratch, &llr_arr, 2);
-            if let Some(r) = fst4_osd_decode(zsum, opts.osd_depth.min(3) as u8, opts.verify_info) {
-                return Some(FecResult {
-                    info: r.info,
-                    hard_errors: r.hard_errors,
-                    iterations: 0,
-                });
-            }
+        let zsum = bp_llr_zsum_ap_with_scratch::<Ldpc240_101Params>(scratch, &llr_arr, ap_slice, 2);
+        if let Some(r) = fst4_osd_decode(
+            zsum,
+            opts.osd_depth.min(3) as u8,
+            ap_slice,
+            opts.verify_info,
+        ) {
+            return Some(FecResult {
+                info: r.info,
+                hard_errors: r.hard_errors,
+                iterations: 0,
+            });
         }
 
         None
