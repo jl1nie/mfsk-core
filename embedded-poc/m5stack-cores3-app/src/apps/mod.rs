@@ -20,5 +20,7 @@ pub mod ft8;
 pub mod fst4;
 #[cfg(feature = "ft4")]
 pub mod ft4;
+#[cfg(feature = "jtty-rx")]
+pub mod jtty;
 #[cfg(feature = "wspr")]
 pub mod wspr;

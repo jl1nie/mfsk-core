@@ -113,6 +113,9 @@ enum Req {
     AppendAll { text: String, period_ms: u64 },
     /// Write what is held, finishing by this `esp_timer` time (µs).
     Quiet { until_us: i64 },
+    /// A receiver with no slot says nothing it cares about is running:
+    /// write what is held if it has waited [`NO_SLOT_QUIET_AGE_US`].
+    QuietRx,
     /// Write everything held, then answer — before a restart.
     Flush { reply: SyncSender<()> },
     /// A record, and the header to write first if the file is new.
@@ -306,9 +309,21 @@ fn now_us() -> i64 {
 fn serve(req: Req, st: &mut Held) {
     match req {
         Req::AppendAll { text, period_ms } => {
+            if st.all.pending.is_empty() {
+                st.all_since_us = now_us();
+            }
             st.all.hold(&text);
             st.period_ms = period_ms;
             st.schedule();
+        }
+        Req::QuietRx => {
+            if st.period_ms == 0
+                && !st.all.pending.is_empty()
+                && now_us() - st.all_since_us >= NO_SLOT_QUIET_AGE_US
+            {
+                st.write_until(i64::MAX, usize::MAX, "quiet");
+                st.schedule();
+            }
         }
         Req::AppendQso { record, header } => {
             log::info!("storage: qso.adi held: {}", record.trim_end());
@@ -344,8 +359,11 @@ struct Held {
     qso: Vec<(String, String)>,
     /// `esp_timer` µs the oldest held record arrived.
     qso_since_us: i64,
-    /// The slot period the latest lines came from.
+    /// The slot period the latest lines came from; 0 for a receiver with
+    /// none (JTTY), which reports its own quiet moments instead.
     period_ms: u64,
+    /// `esp_timer` µs the oldest held `all.txt` line arrived.
+    all_since_us: i64,
     /// `esp_timer` µs of the next wake, and whether it is a
     /// receive-only write point (`true`) or only a time to decide again
     /// (`false`: a held contact reaching [`QSO_MAX_HOLD_US`]).
@@ -361,6 +379,14 @@ impl Held {
     fn schedule(&mut self) {
         let now = now_us();
         let qso_expired = !self.qso.is_empty() && now - self.qso_since_us >= QSO_MAX_HOLD_US;
+        if self.period_ms == 0 && !self.all.pending.is_empty() {
+            // No slot, so no point in one to write at: the receiver sends
+            // `QuietRx` when nothing it cares about is running, and this is
+            // only the bound for a band that never goes quiet — written then
+            // whatever it stalls.
+            self.due = Some((self.all_since_us + NO_SLOT_MAX_AGE_US, true));
+            return;
+        }
         self.due = if self.all.pending.len() >= ALL_HIGH_WATER || qso_expired {
             next_rx_quiet_point(self.period_ms).map(|t| (t, true))
         } else if !self.qso.is_empty() {
@@ -474,6 +500,32 @@ pub fn flush_blocking(timeout: Duration) -> bool {
 /// the moment the next slot begins. What is held goes out then.
 pub fn quiet_window(until_us: i64) {
     send(Req::Quiet { until_us });
+}
+
+/// **For a receiver with no slot** (JTTY): nothing it is receiving would
+/// be hurt by a flash write now — no message is open and nothing waits
+/// to be decoded. Held `all.txt` lines are written if the oldest has
+/// waited [`NO_SLOT_QUIET_AGE_US`], so a quiet band does not stall the
+/// board for every single line. Cheap to call often: it only queues.
+pub fn quiet_rx() {
+    let _ = ensure_channel().map(|tx| tx.try_send(Req::QuietRx));
+}
+
+/// No slot: how long `all.txt` lines wait for a quiet moment before one is
+/// used — batching, so each flash stall (~85 ms, both cores) carries many.
+const NO_SLOT_QUIET_AGE_US: i64 = 30_000_000;
+
+/// No slot: the longest lines are held with no quiet moment at all, after
+/// which they are written anyway. A power cut loses at most this much of
+/// the log; a band busy enough never to go quiet for ten minutes pays one
+/// stall for it.
+const NO_SLOT_MAX_AGE_US: i64 = 600_000_000;
+
+/// `all.txt` lines from a receiver with no slot: held like any other, but
+/// written only at the moments [`quiet_rx`] reports, or past
+/// [`NO_SLOT_MAX_AGE_US`].
+pub fn append_all_txt_no_slot(text: String) {
+    append_all_txt(text, 0);
 }
 
 /// Receive-only: write once `all.txt` holds this much. ~45 min of a

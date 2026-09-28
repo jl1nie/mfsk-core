@@ -113,3 +113,67 @@ fn board_patterns_on_the_host() {
         );
     }
 }
+
+/// The host's side of the CoreS3 JTTY mode's SIM feed (#499, E1): the same
+/// recordings `apps::jtty`'s `MFSK_CORES3_SIM` loops through the board's real
+/// sink — `uac::spawn_sim_feed_continuous`, the whole recording end to start
+/// with no slot re-alignment — decoded here by `Params::embedded()` in two
+/// halves with nothing dropped. When the board drops no window, its completed
+/// messages should be these (`docs/notes/JTTY_CORES3_APP.md` §7).
+///
+/// ```text
+/// cargo test -p mfsk-core --release --features full --test jtty_board_patterns -- --ignored --nocapture sim_streams
+/// ```
+#[test]
+#[ignore = "prints; compare with the board's SIM log"]
+fn sim_streams_looped_on_the_host() {
+    const PASSES: usize = 3;
+    let rx = Arc::new(Receiver::new().with_f32_metrics());
+    let params = Params::default().embedded();
+    let golden = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/golden/jtty/260807_134110.wav"
+    ))
+    .expect("the golden JTTY recording is vendored");
+    // the board skips exactly the 44-byte header (`SimSource::Wav`)
+    let golden: Vec<i16> = golden[44..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&b| i16::from_le_bytes(b))
+        .collect();
+    let band6 = pileups(1)
+        .into_iter()
+        .find(|c| c.pattern.starts_with("band, 6 long messages"))
+        .expect("a pileups pattern")
+        .audio()
+        .expect("packs");
+    for (scene, one) in [("golden", golden), ("band6", band6)] {
+        let stream: Vec<i16> = (0..PASSES).flat_map(|_| one.iter().copied()).collect();
+        let mut front = Front::new(rx.clone(), params).expect("embedded settings");
+        let mut back = Back::new(rx.clone(), params);
+        let mut done: Vec<(f32, f32, String)> = Vec::new();
+        let mut on = |u: mfsk_core::jtty::assemble::MessageUpdate| {
+            if u.complete {
+                done.push((u.start_s, u.f1_hz, u.text));
+            }
+        };
+        // the SIM feed's own block size
+        for chunk in stream.chunks(256) {
+            let mut ready = Vec::new();
+            front.push(chunk, &mut |p| ready.push(p));
+            for p in ready {
+                back.process(p, &mut on);
+            }
+        }
+        back.finish(&mut on);
+        println!(
+            "SIM\t{scene}\t{} s a pass\t{PASSES} passes\t{} messages",
+            one.len() / 12_000,
+            done.len()
+        );
+        for (start, f, text) in &done {
+            println!("SIM\t{scene}\t{start:>8.2} s\t{f:>7.1} Hz\t{text}");
+        }
+    }
+}

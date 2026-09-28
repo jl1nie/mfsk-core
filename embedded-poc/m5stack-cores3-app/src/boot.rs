@@ -162,9 +162,11 @@ pub fn run<R: Receiver>(
     // Before anything can deliver audio: the ring is what the audio
     // paths append to, for every mode alike.
     crate::waterfall_feed::init(mode);
-    // What "heard this slot" is measured against on the station list.
+    // What "heard this slot" is measured against on the station list —
+    // one slot for the slotted modes, a few seconds for JTTY, which has
+    // none (`BootMode::fresh_row_ms`).
     if let Ok(mut ui) = mfsk_app_shared::ui::state::UI.lock() {
-        ui.set_slot_period_ms(mode.slot_period_ms());
+        ui.set_slot_period_ms(mode.fresh_row_ms());
     }
     R::prepare(&ctx);
 
