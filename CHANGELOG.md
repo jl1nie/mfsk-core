@@ -2,6 +2,16 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: the trellis survivors take 12 bytes an entry, not 16 (#499).** `Surv` is `repr(C, packed(4))`: with an `f32`
+  metric the default layout spent 4 of its 16 bytes on padding before the 8-aligned key, so `TrellisScratch`'s two arrays
+  go from 32 to 24 KB each — 16 KB of internal DRAM on the CoreS3, where the JTTY receiver had run it down to 0–6 KB
+  free (`docs/notes/JTTY_CORES3_APP.md` §14–§15). The key stays 4-aligned, which is all a 64-bit load needs on Xtensa,
+  and fields are only ever read by value. Decodes do not move by a bit: `tests/jtty_ladder.rs`'s new
+  `list_decodes_are_pinned` folds every `f64`, `f32` and reused-scratch list for 360 frames into a fingerprint taken
+  from the unpacked layout, and the upstream ladder cases and `largest_first_build_decodes_bit_identically` pass
+  unchanged. Not slower on the board either: JTTY's Back went from 203–247 to 184–228 ms a window on the golden
+  recording.
+
 - **JTTY: `Receiver::new_with_f32_metrics()`, the same receiver built largest allocation first (#499).**
   Decodes bit-identically to `Receiver::new().with_f32_metrics()` (`tests/jtty_rx.rs`, the streamed updates and the
   scan on WSJT-X's recording and on `testsig`'s six-station band); only the order of its allocations differs. On the

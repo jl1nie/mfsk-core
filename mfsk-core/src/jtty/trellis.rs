@@ -397,7 +397,8 @@ impl Plan {
                 match index.get(&key) {
                     Some(&i) => {
                         let e = &mut pool[i];
-                        if p.metric > e.wava || (p.metric >= e.wava && (state as u32) < e.start) {
+                        let metric = p.metric;
+                        if metric > e.wava || (metric >= e.wava && (state as u32) < e.start) {
                             e.wava = p.metric;
                             e.start = state as u32;
                         }
@@ -464,7 +465,15 @@ fn reverse_bits(key: u64) -> u64 {
 
 /// A surviving path: its metric and a key packing the word so far (first bit
 /// most significant), the origin state and a valid flag.
+///
+/// `packed(4)`: with an `f32` metric the default layout is 16 bytes, 4 of them padding
+/// before the 8-aligned key, and the two survivor arrays ([`TrellisScratch`]) 32 KB each;
+/// packed they are 12 and 24 KB, which on the CoreS3 is internal DRAM the app did not have
+/// (`docs/notes/JTTY_CORES3_APP.md` §14). The key is still 4-aligned, which is all a 64-bit
+/// load needs on Xtensa (two 32-bit words). Fields are only ever read by value (a reference
+/// to the key would be unaligned).
 #[derive(Clone, Copy)]
+#[repr(C, packed(4))]
 struct Surv<M> {
     metric: M,
     key: u64,
@@ -486,12 +495,14 @@ impl<M: Metric> Surv<M> {
     }
 
     fn valid(&self) -> bool {
-        self.key & VALID != 0
+        let key = self.key;
+        key & VALID != 0
     }
 
     /// Better metric first; ties by key (origin, then word).
     fn precedes(&self, other: &Self) -> bool {
-        self.metric > other.metric || (self.metric == other.metric && self.key < other.key)
+        let (m, om, k, ok) = (self.metric, other.metric, self.key, other.key);
+        m > om || (m == om && k < ok)
     }
 }
 
@@ -562,8 +573,8 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
                 let list = &prev[preds[k]];
                 i + 1 < PATHS_PER_STATE
                     && list[i + 1].valid()
-                    && list[i].metric != list[i + 1].metric
-                    && list[i].metric + branch[k] == list[i + 1].metric + branch[k]
+                    && { list[i].metric } != { list[i + 1].metric }
+                    && { list[i].metric } + branch[k] == { list[i + 1].metric } + branch[k]
                     && list[i + 1].key < list[i].key
             };
         let mut inverted = false;
@@ -820,6 +831,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn survivors_are_packed_to_twelve_bytes() {
+        // The CoreS3's internal DRAM budget counts on it (§14 of JTTY_CORES3_APP.md).
+        assert_eq!(core::mem::size_of::<Surv<f32>>(), 12);
+        assert_eq!(
+            core::mem::size_of::<[Surv<f32>; PATHS_PER_STATE]>() * STATES,
+            24 * 1024
+        );
     }
 
     #[test]

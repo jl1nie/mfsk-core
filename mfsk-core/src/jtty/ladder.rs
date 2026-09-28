@@ -148,7 +148,7 @@ impl Ladder {
     /// software (`docs/notes/JTTY_UPSTREAM.md`, "E0 results"), and the choice measured
     /// against `f64` by `tests/jtty_f32_metrics.rs`.
     ///
-    /// The two 32 KB survivor arrays are allocated here, once, and reused by each decode: on
+    /// The two survivor arrays (24 KB each) are allocated here, once, and reused by each decode: on
     /// the CoreS3 a receiver built while allocations prefer internal DRAM keeps them there,
     /// where a rung costs 190 ms against 410 ms in PSRAM (#499), and later decodes allocate
     /// nothing whatever the heap then holds.
