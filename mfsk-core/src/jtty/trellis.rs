@@ -546,6 +546,13 @@ impl<M: Metric> Surv<M> {
         let (m, om, k, ok) = (self.metric, other.metric, self.key, other.key);
         m > om || (m == om && k < ok)
     }
+
+    /// [`Surv::precedes`], with the key read only behind a `m >= om` that both of its arms need.
+    #[inline(always)]
+    fn precedes_lazily(&self, other: &Self) -> bool {
+        let (m, om) = (self.metric, other.metric);
+        m >= om && (m > om || { self.key } < { other.key })
+    }
 }
 
 /// One block of the trellis: for every end state, its best paths.
@@ -735,7 +742,8 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool>(
         let (mut i, mut j) = (0, 0);
         let mut filled = 0;
         while filled < PATHS_PER_STATE {
-            let cand = if j < lens[1] && (i >= lens[0] || lists[1][j].precedes(&lists[0][i])) {
+            let cand = if j < lens[1] && (i >= lens[0] || lists[1][j].precedes_lazily(&lists[0][i]))
+            {
                 j += 1;
                 lists[1][j - 1]
             } else if i < lens[0] {
