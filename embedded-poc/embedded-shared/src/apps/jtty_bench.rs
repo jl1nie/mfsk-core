@@ -377,6 +377,93 @@ fn bench_trellis_placement() {
 /// scans cut short on a full list, `insert` calls, duplicates, rejects. The survivor arrays
 /// (two of 32 KB) in PSRAM and in internal DRAM, the plans for coherent lengths 1, 2 and 4, on
 /// a +12 dB frame and on noise.
+/// `MFSK_JTTY_BENCH_LADDER_ONLY=1`: the ladder profile and [`ladder_fingerprint`], then stop —
+/// a flash-and-read loop of under a minute for work on the list decoder.
+const LADDER_ONLY: bool = option_env!("MFSK_JTTY_BENCH_LADDER_ONLY").is_some();
+
+/// A hash of what the `f32` list decoder returns for fixed pseudo-random correlations at every
+/// coherent length — words, CRC flags, both metrics' bits, start states, pool sizes. Equal
+/// before and after a change to the decoder means the board decodes the same, not only the host.
+fn ladder_fingerprint() {
+    use mfsk_core::jtty::trellis::{Plan, TrellisScratch};
+    let mut scratch = TrellisScratch::new();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |x: u64| {
+        h ^= x;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    let mut s = 0x5eedu64;
+    let mut u = move || {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+    };
+    let t = now_us();
+    for coherent in [1usize, 2, 4] {
+        let plan = Plan::new(coherent);
+        for trial in 0..40 {
+            let amp = [0.0f32, 0.7, 1.5, 3.0][trial % 4];
+            let z: mfsk_core::jtty::trellis::Correlations = core::array::from_fn(|i| {
+                core::array::from_fn(|k| {
+                    num_complex::Complex32::new(u() + if (i * 5 + trial) % 4 == k { amp } else { 0.0 }, u())
+                })
+            });
+            let r = plan.decode_f32_in(&z, true, &mut scratch);
+            mix(r.pool as u64);
+            for hy in &r.hypotheses {
+                for &b in &hy.bits {
+                    mix(u64::from(b));
+                }
+                mix(u64::from(hy.crc_valid));
+                mix(hy.clean_metric.to_bits());
+                mix(hy.wava_metric.to_bits());
+                mix(u64::from(hy.start_state));
+            }
+        }
+    }
+    log::info!(
+        "ladder fingerprint: {h:#018x} (120 decodes, L=1/2/4, {} ms)",
+        (now_us() - t) / 1000
+    );
+}
+
+/// Where an L=1 rung's cycles go inside a one-bit block: cycles per end state and block for
+/// the extension-and-check part, the merge, and the rest, from the CPU cycle counter, with the
+/// counter's own cost measured and stated beside them. Survivors in internal DRAM.
+fn ladder_parts() {
+    use mfsk_core::jtty::trellis::Plan;
+    fn ticks() -> u32 {
+        now_us() as u32
+    }
+    fn ccount() -> u32 {
+        unsafe { esp_idf_svc::sys::xthal_get_ccount() }
+    }
+    // the cost of one mark: two counter reads and the bookkeeping, taken back to back
+    let t0 = ccount();
+    let mut acc = 0u32;
+    for _ in 0..10_000 {
+        let a = ccount();
+        acc = acc.wrapping_add(ccount().wrapping_sub(a));
+    }
+    let per_read = f64::from(ccount().wrapping_sub(t0)) / 20_000.0;
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(256 * 1024) };
+    let atoms = pack::pack("CQ K1ABC CQ", ExchangeProfile::Unknown).expect("packs");
+    let payloads = tx::payloads(&atoms).expect("encodes");
+    let data = tx::frame_tones(&payloads[0]);
+    let tones = &data[mfsk_core::jtty::SYNC_SYMBOLS..];
+    let plan = Plan::new(1);
+    let mut rng = Lcg(0x77);
+    let (zsym, _) = synth_correlations(tones, None, &mut rng);
+    let p = plan.profile_f32_parts(&zsym, ticks, ccount);
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    let states = f64::from(p.parts[3]) / 3.0; // three marks per end state
+    log::info!(
+        "ladder parts (L=1, noise, internal, {states:.0} end-state steps): extend+check {:.0}, merge {:.0}, rest {:.0} cycles each; a counter read is {per_read:.1} cycles (~2 per mark) [{acc}]",
+        f64::from(p.parts[0]) / states,
+        f64::from(p.parts[1]) / states,
+        f64::from(p.parts[2]) / states,
+    );
+}
+
 fn bench_ladder_profile() {
     use mfsk_core::jtty::trellis::Plan;
     // the microsecond timer as the clock (inline assembly for `ccount` is unstable on Xtensa);
@@ -1289,6 +1376,15 @@ fn run_bench() {
 
     // The esp-dsp twiddle tables: 8192 is `CONFIG_DSP_MAX_FFT_SIZE`'s ceiling here.
     crate::esp_dsp_fft::prewarm(8192);
+
+    if LADDER_ONLY {
+        log::info!("--- 3c. where a rung's time goes (ladder only) ---");
+        bench_ladder_profile();
+        ladder_parts();
+        ladder_fingerprint();
+        log::info!("=== jtty-bench done ===");
+        return;
+    }
 
     log::info!("--- 0b. selftest: two-core Front+Back against the single-threaded reference (#499) ---");
     bench_selftest();

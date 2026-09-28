@@ -79,6 +79,8 @@ trait Probe {
     fn duplicate(&mut self) {}
     /// End of phase `i` (see [`Profile::laps`]).
     fn lap(&mut self, _phase: usize) {}
+    /// Cycles since the previous mark go to part `i` of a one-bit block (see [`Profile::parts`]).
+    fn mark(&mut self, _part: usize) {}
 }
 impl Probe for () {}
 
@@ -97,8 +99,15 @@ pub struct Profile {
     pub duplicates: u32,
     /// Distinct closed words.
     pub pool: usize,
+    /// One-bit blocks (L=1) only, cycles of `fine`'s clock per part of an end state: 0 the
+    /// predecessors, branch metrics and extended lists with their order check, 1 the merge, 2
+    /// the rest (clearing the tail, the loop); 3 how many marks were taken, to subtract their
+    /// own cost.
+    pub parts: [u32; 4],
     clock: Option<fn() -> u32>,
     last: u32,
+    fine: Option<fn() -> u32>,
+    fine_last: u32,
 }
 impl Probe for Profile {
     fn extension(&mut self) {
@@ -115,6 +124,17 @@ impl Probe for Profile {
             let now = clock();
             self.laps[phase] = self.laps[phase].wrapping_add(now.wrapping_sub(self.last));
             self.last = clock();
+        }
+        if let Some(fine) = self.fine {
+            self.fine_last = fine();
+        }
+    }
+    fn mark(&mut self, part: usize) {
+        if let Some(fine) = self.fine {
+            let now = fine();
+            self.parts[part] = self.parts[part].wrapping_add(now.wrapping_sub(self.fine_last));
+            self.parts[3] += 1;
+            self.fine_last = fine();
         }
     }
 }
@@ -307,6 +327,28 @@ impl Plan {
         let mut probe = Profile {
             clock: Some(clock),
             last: clock(),
+            ..Profile::default()
+        };
+        let list = self.decode_probe::<f32, Profile>(z, true, &mut probe);
+        probe.pool = list.pool;
+        probe
+    }
+
+    /// [`Self::profile_f32`] that also splits the one-bit blocks' time into [`Profile::parts`]
+    /// with `cycles` (a cycle counter; its own cost lands in the parts, so compare it with
+    /// [`Profile::parts`]`[3]` marks of an empty measurement). Slower than an unmarked decode.
+    #[doc(hidden)]
+    pub fn profile_f32_parts(
+        &self,
+        z: &Correlations,
+        clock: fn() -> u32,
+        cycles: fn() -> u32,
+    ) -> Profile {
+        let mut probe = Profile {
+            clock: Some(clock),
+            last: clock(),
+            fine: Some(cycles),
+            fine_last: cycles(),
             ..Profile::default()
         };
         let list = self.decode_probe::<f32, Profile>(z, true, &mut probe);
@@ -646,6 +688,7 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
     let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; W];
     let mut lens = [0usize; W];
     for (end, out) in cur.iter_mut().enumerate() {
+        probe.mark(2);
         let word = end & (W - 1);
         let identity = b.identity[word];
         if prune && identity & reserved != 0 {
@@ -675,6 +718,7 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
             }
             lens[k] = n;
         }
+        probe.mark(0);
         if !sorted {
             advance_state_sorted::<M, P, DEDUPE>(&preds[..W], &branch, identity, prev, out, probe);
             continue;
@@ -703,6 +747,7 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
             out[filled] = cand;
             filled += 1;
         }
+        probe.mark(1);
         for s in &mut out[filled..] {
             *s = Surv::empty();
         }
