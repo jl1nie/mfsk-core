@@ -13,14 +13,26 @@
 [![docs.rs](https://img.shields.io/docsrs/mfsk-core)](https://docs.rs/mfsk-core)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
+日本語: [README.ja.md](README.ja.md)
+
 ## What is this?
 
-`mfsk-core` is a pure-Rust library for **WSJT-family digital amateur-radio
-modes** — a single crate that implements FT8, FT4, FST4, WSPR, JT9, JT65
-and Q65 (all ten sub-modes) decode / encode / synthesis on top of a small set of shared
-primitives (DSP, sync correlation, LLR, LDPC / convolutional /
-Reed-Solomon / QRA FEC, message codecs). It runs anywhere Rust runs:
-desktop, WASM in the browser, Android/iOS, and `no_std` embedded MCUs.
+`mfsk-core` provides **portable, high-performance Rust implementations of
+the WSJT-X digital modes**, validated against the upstream reference
+decoders. It is a single pure-Rust crate covering FT8, FT4, FST4, WSPR,
+JT9, JT65 and Q65 (all ten sub-modes) decode / encode / synthesis on top
+of a small set of shared primitives (DSP, sync correlation, LLR, LDPC /
+convolutional / Reed-Solomon / QRA FEC, message codecs). It runs anywhere
+Rust runs: desktop, WASM in the browser, Android/iOS, and `no_std`
+embedded MCUs.
+
+It is a library, not an application: there is no GUI, and the aim is to
+let you embed WSJT-X-quality decoders in your own system. What the
+project keeps up is the validation around the code — golden recordings
+taken from WSJT-X (every PR is gated on them, recall and phantom decodes
+together), sensitivity sweeps against WSJT-X's own simulators before
+releases, and the numbers written down in
+[`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
 
 Two working receivers ship with the source tree, both running this
 library on Xtensa LX7.
