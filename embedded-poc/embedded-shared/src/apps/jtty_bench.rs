@@ -846,6 +846,132 @@ fn bench_pipeline() {
     );
 }
 
+/// Part 7b: `Back`'s own task stack, internal DRAM (the default `ThreadSpawnConfiguration`)
+/// versus PSRAM (`stack_alloc_caps` set to `MallocCap::Spiram`) — the one item the CoreS3 app
+/// design (§11) lists under E0 that this bench did not yet measure. `Front` stays on its usual
+/// internal 16 KB/core 1; only `Back`'s 32 KB/core 0 stack moves. One case (`+-50 Hz`, noise —
+/// the budget-representative `embedded()` config) run to completion is enough to see the delta;
+/// `bench_pipeline` above already covers the recording/`+-150 Hz` variants at the default
+/// placement.
+fn bench_back_stack_place() {
+    use alloc::sync::Arc;
+    // No native 64-bit atomics on Xtensa; every accumulator here is microseconds over at
+    // most a few dozen windows, well inside `i32`.
+    use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
+    use esp_idf_svc::hal::cpu::Core;
+    use esp_idf_svc::hal::task::thread::{MallocCap, ThreadSpawnConfiguration};
+    use mfsk_core::jtty::rx::{Back, Front, NCHUNK, Params, Prepared, Receiver, STEP};
+    use std::sync::mpsc::sync_channel;
+
+    let mut rng = Lcg(0xB57A57);
+    // 24 s of noise: enough windows (about 50) for a stable mean without the recording's
+    // decode-callback overhead, which the default-placement case already measured.
+    let audio: Arc<alloc::vec::Vec<i16>> =
+        Arc::new((0..12_000 * 24).map(|_| (3000.0 * rng.gauss()) as i16).collect());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
+    let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    let params = Params::default().embedded();
+
+    for (place, caps) in [("internal (default ThreadSpawnConfiguration)", None), ("PSRAM (stack_alloc_caps = Spiram)", Some(MallocCap::Spiram))] {
+        rx.reset_stats();
+        let (tx, rq) = sync_channel::<(Prepared, i64)>(3);
+        let front_us = Arc::new(AtomicU32::new(0));
+        let depth = Arc::new(AtomicUsize::new(0));
+        let t_start = now_us() + 200_000;
+
+        let front_cfg = ThreadSpawnConfiguration {
+            name: Some(c"jtty_front"),
+            stack_size: 16 * 1024,
+            priority: 4,
+            pin_to_core: Some(Core::Core1),
+            ..ThreadSpawnConfiguration::default()
+        };
+        let _ = front_cfg.set();
+        let front_handle = {
+            let (rx, audio, depth, front_us) = (rx.clone(), audio.clone(), depth.clone(), front_us.clone());
+            std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
+                let mut front = Front::new(rx, params).expect("embedded settings");
+                for (i, chunk) in audio.chunks(STEP).enumerate() {
+                    let due = t_start + ((i + 1) * STEP) as i64 * 1_000_000 / 12_000;
+                    let wait = due - now_us();
+                    if wait > 0 {
+                        std::thread::sleep(core::time::Duration::from_micros(wait as u64));
+                    }
+                    let t = now_us();
+                    let mut ready = alloc::vec::Vec::new();
+                    front.push(chunk, &mut |p| ready.push(p));
+                    front_us.fetch_add((now_us() - t) as u32, Ordering::Relaxed);
+                    for p in ready {
+                        let w = p.window();
+                        let audio_done = t_start + ((w * STEP + NCHUNK) as i64) * 1_000_000 / 12_000;
+                        depth.fetch_add(1, Ordering::Relaxed);
+                        if tx.send((p, audio_done)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            })
+        };
+        let _ = ThreadSpawnConfiguration::default().set();
+        let Ok(front_handle) = front_handle else {
+            log::error!("back stack: front thread not started");
+            return;
+        };
+
+        let mut back_cfg = ThreadSpawnConfiguration {
+            name: Some(c"jtty_back"),
+            stack_size: 32 * 1024,
+            priority: 5,
+            pin_to_core: Some(Core::Core0),
+            ..ThreadSpawnConfiguration::default()
+        };
+        if let Some(cap) = caps {
+            back_cfg.stack_alloc_caps = enumset::EnumSet::only(cap);
+        }
+        let _ = back_cfg.set();
+        let (back_total, back_worst) = (Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0)));
+        let (lag_total, lag_worst, n) = (Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0)));
+        let back_handle = {
+            let (rx, back_total, back_worst, lag_total, lag_worst, n) =
+                (rx.clone(), back_total.clone(), back_worst.clone(), lag_total.clone(), lag_worst.clone(), n.clone());
+            std::thread::Builder::new().stack_size(32 * 1024).spawn(move || {
+                let mut back = Back::new(rx, params);
+                while let Ok((p, audio_done)) = rq.recv() {
+                    let t = now_us();
+                    back.process(p, &mut |_| {});
+                    let end = now_us();
+                    let (dt, lag) = ((end - t) as i32, (end - audio_done) as i32);
+                    back_total.fetch_add(dt, Ordering::Relaxed);
+                    back_worst.fetch_max(dt, Ordering::Relaxed);
+                    lag_total.fetch_add(lag, Ordering::Relaxed);
+                    lag_worst.fetch_max(lag, Ordering::Relaxed);
+                    n.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+        let _ = ThreadSpawnConfiguration::default().set();
+        let Ok(back_handle) = back_handle else {
+            log::error!("back stack [{place}]: back thread not started");
+            let _ = front_handle.join();
+            continue;
+        };
+        let _ = front_handle.join();
+        let _ = back_handle.join();
+
+        let n = n.load(Ordering::Relaxed).max(1);
+        log::info!(
+            "back stack [{place}]: {n} windows; front {:.0} ms a window (core 1), back {:.0} ms mean {:.0} worst (core 0); decoded {:.0} ms mean {:.0} worst after the window's last sample",
+            f64::from(front_us.load(Ordering::Relaxed)) / n as f64 / 1000.0,
+            back_total.load(Ordering::Relaxed) as f64 / n as f64 / 1000.0,
+            back_worst.load(Ordering::Relaxed) as f64 / 1000.0,
+            lag_total.load(Ordering::Relaxed) as f64 / n as f64 / 1000.0,
+            lag_worst.load(Ordering::Relaxed) as f64 / 1000.0
+        );
+    }
+    log_heap("back stack: done");
+}
+
 /// Part 8: the pattern run (#499). Every case of `jtty::testsig::catalogue` — SNR sweep, carrier
 /// offsets, drift, fading, a long message, two stations, noise — is made here from its seed and
 /// decoded by `Params::embedded()` on two cores (Front on core 1, Back on core 0, as fast as they
@@ -1083,6 +1209,8 @@ fn run_bench() {
     }
     log::info!("--- 7. two cores: Front on core 1, Back on core 0 ---");
     bench_pipeline();
+    log::info!("--- 7b. Back's task stack, internal vs PSRAM (#499, app design §11) ---");
+    bench_back_stack_place();
     log::info!("--- 8c. pileups and busy bands, audio at its real rate ---");
     {
         // one receiver for every set, as an application builds it once
