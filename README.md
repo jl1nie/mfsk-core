@@ -19,41 +19,46 @@
 
 `mfsk-core` provides **portable, high-performance Rust implementations of
 the WSJT-X digital modes**, validated against the upstream reference
-decoders. It is a single pure-Rust crate covering FT8, FT4, FST4, WSPR,
-JT9, JT65, and Q65 (all ten sub-modes): decoding, encoding, and waveform
-synthesis built on a small set of shared primitives — DSP,
+decoders.
+
+It is a single pure-Rust crate covering FT8, FT4, FST4, WSPR, JT9, JT65,
+and Q65 (all ten sub-modes), with decoding, encoding, and waveform
+synthesis built on top of a small set of shared primitives: DSP,
 synchronization and correlation, LLRs, LDPC / convolutional /
-Reed-Solomon / QRA FEC, and message codecs. It runs anywhere Rust runs:
-desktop, WASM in the browser, Android/iOS, and `no_std` embedded MCUs.
+Reed-Solomon / QRA FEC, and message codecs.
 
-It is a library, not an application. There is no GUI, and the goal is to
-let applications embed WSJT-X-quality modems and decoders rather than to
-build another WSJT-X application.
+It runs anywhere Rust runs: desktop, WASM in the browser, Android/iOS,
+and `no_std` embedded MCUs.
 
-The code is only half of the project; the other half is validation
-against upstream WSJT-X. Golden recordings derived from WSJT-X gate every
-PR, checking both recall and phantom decodes. Before releases,
-sensitivity sweeps are run against WSJT-X's own simulators and reference
-binaries, with the results recorded in
+It is a library, not an application. There is no GUI, and the aim is to
+let you embed WSJT-X-quality decoders and modems in your own system
+rather than to build another WSJT-X.
+
+A major part of the project is the validation around the code. Golden
+recordings taken from WSJT-X gate every PR, checking recall and phantom
+decodes together. Before releases, sensitivity sweeps are run against
+WSJT-X's own simulators and reference binaries, with the results
+recorded in
 [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
 
-The embedded targets demonstrate portability rather than define the
-scope of the library. Two working receivers ship in the source tree, both
-running `mfsk-core` on Xtensa LX7.
-[`embedded-poc/m5stack-cores3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-cores3-app/)
-is the main target: a single image containing **four receivers** — FT8
-over USB Audio from a radio, WSPR, FST4, and a radio-free demo —
-selectable from the touch panel. On 2026-08-23 it was verified with an
-IC-705 on 40 m, decoding six to eight FT8 stations per slot down to
-−24 dB.
-[`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
-is the M5StickS3 demonstration path, combining an LCD UI, BLE CI-V to an
-IC-705, acoustic microphone capture, and a QSO state machine. The image
-above shows one of its decode slots.
+The embedded targets demonstrate that portability rather than define the
+library's scope. Two working receivers ship with the source tree, both
+running this library on Xtensa LX7.
 
-Every algorithm is an independent Rust re-implementation of
+[`embedded-poc/m5stack-cores3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-cores3-app/)
+is the main target: one image carrying four receivers — FT8 over USB
+Audio from a radio, WSPR, FST4, and a radio-free demo — selected from the
+touch panel. It was verified on 2026-08-23 with an IC-705 on 40 m,
+decoding six to eight FT8 stations per slot from +8 to −24 dB.
+
+[`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
+is the M5StickS3 demo path, with an LCD UI, BLE CI-V to an IC-705,
+acoustic microphone capture, and a QSO state machine. The image above is
+one of its decode slots.
+
+Every algorithm is a Rust re-implementation of
 [WSJT-X](https://sourceforge.net/projects/wsjt/), developed by Joe Taylor
-K1JT and collaborators. WSJT-X remains the reference implementation; see
+K1JT and collaborators, which remains the reference implementation. See
 [Attribution](#attribution) below.
 
 ## Why mfsk-core
