@@ -2,6 +2,16 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: `Receiver::new_with_f32_metrics()`, the same receiver built largest allocation first (#499).**
+  Decodes bit-identically to `Receiver::new().with_f32_metrics()` (`tests/jtty_rx.rs`, the streamed updates and the
+  scan on WSJT-X's recording and on `testsig`'s six-station band); only the order of its allocations differs. On the
+  ESP32-S3, where a receiver is built while allocations prefer internal DRAM and each one takes the first heap region
+  with room, that order decides placement: the CoreS3 app has one internal region that can hold a 32 KB block, and the
+  old order filled it with the smaller tables before the two 32 KB trellis survivor arrays, which landed in PSRAM (a
+  rung 410 ms against 190). Built survivors first, then the transform buffer and the sync wave (made at its exact
+  length, `dsp::sync_wave_exact`, so it never needs a second block while it grows), the four fit, and on the board Back
+  went from 327–436 to 203–247 ms a window on the golden recording. `new()` and `with_f32_metrics()` are unchanged.
+
 - **CoreS3: JTTY as a fifth receive mode, behind `--features jtty-rx` (#499, E1 of `docs/notes/JTTY_CORES3_APP.md`).**
   Picked from the touch panel like FT8/FT4/FST4/WSPR. JTTY has no slot, so the sample count is its clock: the audio sink
   stages samples with positioned gap markers for overflow, a clock reconciliation (`mfsk_app_shared::jtty_rx_clock`,

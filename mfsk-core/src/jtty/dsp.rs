@@ -168,14 +168,26 @@ impl AnalyticFir {
 /// The 13-symbol sync sequence as a complex baseband waveform at 6 kHz, tone 0
 /// at 0 Hz, phase continuous across symbols (`gen_syncwave.f90`).
 pub fn sync_wave() -> Vec<Complex32> {
+    sync_wave_samples().collect()
+}
+
+/// [`sync_wave`] in one allocation of exactly its length, rather than the doubling
+/// reallocations `collect` makes through a `scan` (1 KB up to 32 KB): a receiver built largest
+/// allocation first (`rx::Receiver::new_with_f32_metrics`) must not need a second block
+/// beside the first while it grows. Same samples.
+pub(crate) fn sync_wave_exact() -> Vec<Complex32> {
+    let mut w = Vec::with_capacity(SYNC_SYMBOLS * NSS);
+    w.extend(sync_wave_samples());
+    w
+}
+
+fn sync_wave_samples() -> impl Iterator<Item = Complex32> {
     let step = |t: u8| TAU * f64::from(BAUD) * f64::from(t) / f64::from(FS6);
-    (0..SYNC_SYMBOLS * NSS)
-        .scan(0.0f64, |phase, i| {
-            let now = *phase;
-            *phase += step(SYNC[i / NSS]);
-            Some(Complex32::new(now.cos() as f32, now.sin() as f32))
-        })
-        .collect()
+    (0..SYNC_SYMBOLS * NSS).scan(0.0f64, move |phase, i| {
+        let now = *phase;
+        *phase += step(SYNC[i / NSS]);
+        Some(Complex32::new(now.cos() as f32, now.sin() as f32))
+    })
 }
 
 /// Shift `c` by `shift_hz` (`twkfreq.f90` with no drift terms): sample `i` is
@@ -196,6 +208,18 @@ pub fn shift_frequency(c: &[Complex32], out: &mut [Complex32], fs: f32, shift_hz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_wave_exact_is_sync_wave_in_one_block() {
+        let (w, x) = (sync_wave(), sync_wave_exact());
+        assert_eq!(x.capacity(), x.len());
+        assert!(
+            w.iter()
+                .zip(&x)
+                .all(|(a, b)| a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits())
+        );
+        assert_eq!(w.len(), x.len());
+    }
 
     #[test]
     fn sync_wave_is_unit_amplitude_and_starts_at_phase_zero() {

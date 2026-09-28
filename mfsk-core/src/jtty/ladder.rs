@@ -152,9 +152,15 @@ impl Ladder {
     /// the CoreS3 a receiver built while allocations prefer internal DRAM keeps them there,
     /// where a rung costs 190 ms against 410 ms in PSRAM (#499), and later decodes allocate
     /// nothing whatever the heap then holds.
-    pub fn with_f32_metrics(mut self) -> Self {
+    pub fn with_f32_metrics(self) -> Self {
+        self.with_f32_scratch(TrellisScratch::new())
+    }
+
+    /// [`Self::with_f32_metrics`] around survivor arrays the caller already allocated — so
+    /// that [`super::rx::Receiver::new_with_f32_metrics`] can take them before anything else.
+    pub(crate) fn with_f32_scratch(mut self, scratch: TrellisScratch) -> Self {
         self.f32_metrics = true;
-        self.scratch = Some(Slot::new(TrellisScratch::new()));
+        self.scratch = Some(Slot::new(scratch));
         self
     }
 

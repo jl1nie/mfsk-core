@@ -1153,3 +1153,50 @@ fn front_drops_windows_and_back_takes_the_gap() {
     assert!(!got.is_empty(), "the windows left still decode");
     assert_eq!(got, want);
 }
+
+/// `Receiver::new_with_f32_metrics` builds the same receiver as
+/// `Receiver::new().with_f32_metrics()` in another allocation order (for where the buffers land
+/// on the CoreS3, `docs/notes/JTTY_CORES3_APP.md` §13). Nothing it decodes may differ: the
+/// streamed updates under the embedded settings the board runs and under the defaults, and
+/// the frames of a whole-recording scan, on WSJT-X's recording and on the six-station busy
+/// band from `testsig::pileups`. Compared through `Debug`, which prints every `f32` exactly.
+#[test]
+fn largest_first_build_decodes_bit_identically() {
+    use std::sync::Arc;
+    let Some(golden) = load("jtty/260807_134110.wav") else {
+        return;
+    };
+    let band6 = mfsk_core::jtty::testsig::pileups(1)
+        .into_iter()
+        .find(|c| c.pattern.starts_with("band, 6 long messages"))
+        .expect("a testsig::pileups pattern")
+        .audio()
+        .expect("the band6 scene packs");
+    let reference = Arc::new(Receiver::new().with_f32_metrics());
+    let largest_first = Arc::new(Receiver::new_with_f32_metrics());
+    let streamed = |rx: &Arc<Receiver>, audio: &[i16], params: Params| {
+        let mut out = Vec::new();
+        let mut stream = Stream::new(rx.clone(), params);
+        for piece in audio.chunks(4_096) {
+            stream.push(piece, &mut |u| out.push(u));
+        }
+        stream.finish(&mut |u| out.push(u));
+        format!("{out:?}")
+    };
+    for (name, audio) in [("golden", &golden), ("band6", &band6)] {
+        for params in [Params::default().embedded(), Params::default()] {
+            let want = streamed(&reference, audio, params);
+            assert!(
+                want.contains("complete: true"),
+                "{name}: the reference decodes something"
+            );
+            assert_eq!(
+                streamed(&largest_first, audio, params),
+                want,
+                "{name}, streamed"
+            );
+        }
+        let scan = |rx: &Receiver| format!("{:?}", rx.scan(audio, &Params::default()));
+        assert_eq!(scan(&largest_first), scan(&reference), "{name}, scan");
+    }
+}
