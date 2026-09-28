@@ -640,6 +640,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     budget: Option<crate::msg::decode_request::BudgetCheck<'_>>,
     policy: &Pol,
     pass: PassCtx,
+    eme_delay: bool,
 ) -> (
     Vec<DecodeResult>,
     Vec<num_complex::Complex<f32>>,
@@ -718,10 +719,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
                 return None;
             }
         }
-        if let Some(cb) = on_result {
-            cb(&r);
-        }
-        Some(r)
+        Some(deliver_result(r, eme_delay, on_result))
     };
 
     let raw: Vec<DecodeResult> = match budget {
@@ -828,6 +826,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
     policy: &Pol,
     base_pass: PassCtx,
     qso_freqs: crate::engine::pipeline::QsoFreqs,
+    eme_delay: bool,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut residual = audio.to_vec();
     sic_inner_passes_with_cache(
@@ -848,6 +847,7 @@ fn flat_sic_inner<Pol: MessagePolicy>(
         policy,
         base_pass,
         qso_freqs,
+        eme_delay,
     )
 }
 
@@ -884,10 +884,11 @@ fn sic_inner_passes<Pol: MessagePolicy>(
     policy: &Pol,
     base_pass: PassCtx,
     qso_freqs: crate::engine::pipeline::QsoFreqs,
+    eme_delay: bool,
 ) -> Vec<DecodeResult> {
     sic_inner_passes_with_cache(
         residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, eq_mode,
-        ap_hint, None, n_rounds, on_result, budget, policy, base_pass, qso_freqs,
+        ap_hint, None, n_rounds, on_result, budget, policy, base_pass, qso_freqs, eme_delay,
     )
     .0
 }
@@ -927,6 +928,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
     // The tier's context for round 0; later rounds derive theirs from it.
     base_pass: PassCtx,
     qso_freqs: crate::engine::pipeline::QsoFreqs,
+    eme_delay: bool,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let mut pass0_cache: Option<FftCache> = None;
@@ -1071,9 +1073,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
             if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, &sbase, &spec) {
                 continue;
             }
-            if let Some(cb) = on_result {
-                cb(&r);
-            }
+            let r = deliver_result(r, eme_delay, on_result);
             all_results.push(r);
         }
     }
@@ -1179,6 +1179,7 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
         // about message text, so it takes the codec's own verdict.
         &crate::msg::decode_request::DefaultPolicy,
         PassCtx::FIRST,
+        false,
     )
 }
 
@@ -1221,6 +1222,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     budget: &mut BudgetState<'_>,
     policy: &Pol,
     base_pass: PassCtx,
+    eme_delay: bool,
 ) -> (Vec<DecodeResult>, Vec<i16>) {
     use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
 
@@ -1277,6 +1279,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             policy,
             base_pass,
             qso_freqs,
+            eme_delay,
         );
         return (r, audio_clean);
     }
@@ -1317,6 +1320,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         // `ft8_decode.f90` runs no AP pass while `nzhsym < 50` (npasses=5).
         base_pass.without_ap(),
         qso_freqs,
+        eme_delay,
     );
     // Checkpoint A's own residual is not carried forward — only its
     // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
@@ -1353,6 +1357,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             policy,
             base_pass,
             qso_freqs,
+            eme_delay,
         );
         return (r, audio_clean);
     }
@@ -1433,6 +1438,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         policy,
         base_pass,
         qso_freqs,
+        eme_delay,
     );
 
     let mut all_results = early_results;
@@ -1647,6 +1653,7 @@ impl FrameDecodable for Ft8 {
             req.budget,
             &req.policy,
             base_pass_of(req),
+            req.eme_delay,
         );
         let mut results = results;
         if list_decode_wanted(req) {
@@ -1694,6 +1701,7 @@ impl SupportsSicRounds for Ft8 {
                     rx: req.freq_hint,
                     tx: req.tx_freq,
                 },
+                req.eme_delay,
             );
             let mut results = results;
             if list_decode_wanted(req) {
@@ -1731,6 +1739,7 @@ impl SupportsSicRounds for Ft8 {
                     rx: req.freq_hint,
                     tx: req.tx_freq,
                 },
+                req.eme_delay,
             );
             let mut results = results;
             if list_decode_wanted(req) {
@@ -1811,6 +1820,7 @@ impl SupportsSicEarly for Ft8 {
             &mut budget,
             &req.policy,
             base_pass_of(req),
+            req.eme_delay,
         );
         let fft_cache = FftCache(build_fft_cache(&residual));
         // On the residual, as `ft8_decode.f90` runs a7/a8 on `dd` after the
@@ -1901,6 +1911,31 @@ fn base_pass_of<Pol: MessagePolicy>(req: &DecodeRequest<'_, Ft8, Pol>) -> PassCt
         .contest(req.wsjtx_contest)
 }
 
+/// WSJT-X's EME-delay display shift (`ft8_decode.f90:230`,
+/// `if(emedelay.ne.0) xdt=xdt+2.0`) applied to a result about to be
+/// delivered, then fires `on_result`. Every caller of this — the
+/// single-pass `accept` closure and [`sic_inner_passes_with_cache`]'s
+/// loop — runs it *after* any waveform reconstruction/subtract that
+/// reads `r.dt_sec` (those always see the unshifted value, matching
+/// upstream: `subtractft8.f90`'s model uses the pre-shift `xdt`, and
+/// only the value handed to the callback/decode table is offset), and
+/// *after* the xsnr2 validity gate, so a rejected candidate is never
+/// shifted or delivered.
+#[inline]
+fn deliver_result(
+    mut r: DecodeResult,
+    eme_delay: bool,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
+) -> DecodeResult {
+    if eme_delay {
+        r.dt_sec += 2.0;
+    }
+    if let Some(cb) = on_result {
+        cb(&r);
+    }
+    r
+}
+
 impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
     /// A contest is being worked (WSJT-X's `ncontest != 0`).
     ///
@@ -1912,6 +1947,20 @@ impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
     /// drop off.
     pub fn contest(mut self, on: bool) -> Self {
         self.wsjtx_contest = on;
+        self
+    }
+
+    /// WSJT-X's **EME delay** flag (`emedelay`, "Decode at 52 s" checked in
+    /// the GUI): shifts every delivered decode's `dt_sec` by +2.0 s
+    /// (`ft8_decode.f90:230`, `if(emedelay.ne.0) xdt=xdt+2.0`) — a display
+    /// convention for the ~2.5 s Earth-Moon-Earth round trip, not a search
+    /// change. Off by default, as in WSJT-X's GUI. Unlike Q65's
+    /// [`crate::q65::decode_request::DecodeRequest::eme_delay`], which
+    /// widens the search window, FT8's own coarse sync already runs a full
+    /// slot's candidate search regardless of this flag — upstream applies
+    /// no corresponding window change either (see `#519`).
+    pub fn eme_delay(mut self, on: bool) -> Self {
+        self.eme_delay = on;
         self
     }
 }
@@ -2531,6 +2580,55 @@ mod tests {
         let dt = results[0].dt_sec;
         eprintln!("DT = {dt:+.3} s (expected ≈ 0.0)");
         assert!(dt.abs() < 0.5, "DT={dt} is too far from 0");
+    }
+
+    /// `.eme_delay(true)` shifts a delivered decode's `dt_sec` by exactly
+    /// +2.0 s (`ft8_decode.f90:230`, issue #519), on both the single-pass
+    /// engine and the `.sic_rounds()` engine — the two independent
+    /// delivery choke-points (`decode_frame_inner`'s `accept` closure and
+    /// `sic_inner_passes_with_cache`'s loop). The search itself is
+    /// unaffected: both requests must find the same candidate.
+    #[test]
+    fn eme_delay_shifts_dt_by_two_seconds() {
+        use super::super::message::pack77_type1;
+
+        let msg = pack77_type1("CQ", "JA1ABC", "PM95").unwrap();
+        let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(&msg);
+        let pcm = crate::engine::tx::synthesize::<crate::ft8::Ft8>(&itone, 12_000, 1000.0, 1.0);
+
+        let mut audio_f32 = vec![0.0f32; 180_000];
+        let start = (0.5 * 12000.0) as usize;
+        for (i, &s) in pcm.iter().enumerate() {
+            if start + i < audio_f32.len() {
+                audio_f32[start + i] = s;
+            }
+        }
+        let audio: Vec<i16> = audio_f32
+            .iter()
+            .map(|&s| (s * 20000.0).clamp(-32767.0, 32767.0) as i16)
+            .collect();
+
+        let plain = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
+            .decode()
+            .results;
+        let shifted = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
+            .eme_delay(true)
+            .decode()
+            .results;
+        assert!(!plain.is_empty() && !shifted.is_empty());
+        assert!((shifted[0].dt_sec - (plain[0].dt_sec + 2.0)).abs() < 1e-6);
+
+        let plain_sic = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
+            .sic_rounds(1)
+            .decode()
+            .results;
+        let shifted_sic = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
+            .sic_rounds(1)
+            .eme_delay(true)
+            .decode()
+            .results;
+        assert!(!plain_sic.is_empty() && !shifted_sic.is_empty());
+        assert!((shifted_sic[0].dt_sec - (plain_sic[0].dt_sec + 2.0)).abs() < 1e-6);
     }
 
     /// Internal per-candidate probe for the CCIR fading gap investigation

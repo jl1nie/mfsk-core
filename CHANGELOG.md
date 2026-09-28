@@ -2,6 +2,16 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT8: `DecodeRequest::eme_delay`, WSJT-X's EME-delay display shift (#519).**
+  Ported from `ft8_decode.f90:230` (`if(emedelay.ne.0) xdt=xdt+2.0`): with it on, every delivered decode's `dt_sec` is
+  offset by +2.0 s — a report-layer convention for the ~2.5 s Earth-Moon-Earth round trip, not a search change; off by
+  default, as in WSJT-X's GUI. Applied at both of FT8's independent result-delivery points (the single-pass `accept`
+  closure and the shared `.sic_rounds()`/`.sic_early()` engine), after the xsnr2 gate and after any waveform
+  subtraction that reads the unshifted `dt_sec` — matching upstream's placement exactly. Unlike Q65's `.eme_delay()`,
+  which widens the search window, this is display-only: FT8's coarse sync already covers a full slot regardless of the
+  flag, and upstream applies no search change for FT8 either. Split from #501's audit of leftover WSJT-X 3.2.0-rc1
+  fidelity gaps; FST4's `emedelay` and the other three items split into #520/#521/#522.
+
 - **JTTY: a receiver that drops windows instead of stalling, and its own ladder call for the band scan (#499).**
   `Front::push_or_drop` asks for room before each window and, when the decoder has fallen behind, drops the window
   unprepared; `Back` now takes the gap in window numbers (`Front::dropped`, `Back::skipped`), so the queue between the

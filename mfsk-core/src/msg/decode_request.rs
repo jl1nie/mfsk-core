@@ -783,6 +783,12 @@ pub struct DecodeRequest<'a, P: FrameDecodable, Pol: MessagePolicy = DefaultPoli
     /// `ft8b.f90` drops them.
     #[cfg_attr(not(feature = "ft8"), allow(dead_code))]
     pub(crate) wsjtx_contest: bool,
+    /// FT8 only: WSJT-X's `emedelay` display shift. Set by
+    /// `DecodeRequest::<Ft8>::eme_delay`; with it off (the default) a
+    /// delivered decode's `dt_sec` is unshifted. See that method's doc
+    /// comment (issue #519).
+    #[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+    pub(crate) eme_delay: bool,
     /// Set via [`DecodeRequest::on_result`] — see that method's doc
     /// comment for the delivery-order/dedup contract.
     pub(crate) on_result: Option<OnResultCallback<'a, P>>,
@@ -834,6 +840,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
             sic_rounds: 3,
             wsjtx_low_depth: false,
             wsjtx_contest: false,
+            eme_delay: false,
             on_result: None,
             budget: None,
             policy: DefaultPolicy,
@@ -1129,6 +1136,7 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
             sic_rounds: self.sic_rounds,
             wsjtx_low_depth: self.wsjtx_low_depth,
             wsjtx_contest: self.wsjtx_contest,
+            eme_delay: self.eme_delay,
             on_result: self.on_result,
             budget: self.budget,
             policy,
