@@ -41,6 +41,34 @@ fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
 
+/// Apply a thread-spawn configuration, or stop the bench.
+///
+/// **A rejected configuration is not an error you can ignore here.**
+/// `ThreadSpawnConfiguration::set` returns ESP-IDF's verdict, and when it
+/// is a refusal the next spawn silently uses whatever was set before.
+/// That is how PR #516 reported "Back's stack in PSRAM: no difference" and
+/// "Front's stack in PSRAM: +25 %" without ever creating a PSRAM stack:
+/// `esp_pthread_set_cfg` refuses stack caps without `MALLOC_CAP_8BIT`
+/// (`components/pthread/pthread.c:159`, ESP-IDF v5.5.3), the result was
+/// dropped, and both cases ran on the default configuration (see #499).
+fn apply_spawn_config(cfg: &esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration, what: &str) {
+    if let Err(e) = cfg.set() {
+        panic!("jtty-bench: thread configuration for {what} rejected: {e:?}");
+    }
+}
+
+/// Where the calling thread's stack is, read from the address of a local
+/// rather than taken from the configuration that asked for it.
+fn stack_place() -> &'static str {
+    let probe = core::hint::black_box(0u8);
+    let a = &probe as *const u8 as u32;
+    if (esp_idf_svc::sys::SOC_EXTRAM_DATA_LOW..esp_idf_svc::sys::SOC_EXTRAM_DATA_HIGH).contains(&a) {
+        "PSRAM"
+    } else {
+        "internal"
+    }
+}
+
 /// Install the ESP-IDF logger, at most once per boot — the same guard the other
 /// benches use.
 pub fn init_logger_once() {
@@ -778,7 +806,7 @@ fn bench_pipeline() {
             pin_to_core: Some(Core::Core1),
             ..ThreadSpawnConfiguration::default()
         };
-        let _ = cfg.set();
+        apply_spawn_config(&cfg, "cfg");
         let front_handle = {
             let (rx, audio, depth, front_us) = (rx.clone(), audio.clone(), depth.clone(), front_us.clone());
             std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
@@ -805,7 +833,7 @@ fn bench_pipeline() {
                 }
             })
         };
-        let _ = ThreadSpawnConfiguration::default().set();
+        apply_spawn_config(&ThreadSpawnConfiguration::default(), "the default");
         let Ok(front_handle) = front_handle else {
             log::error!("pipeline: front thread not started");
             return;
@@ -854,7 +882,18 @@ fn bench_pipeline() {
 /// (`+-50 Hz`, noise — the budget-representative `embedded()` config) run to completion is
 /// enough to see the delta; `bench_pipeline` above already covers the recording/`+-150 Hz`
 /// variants at the default placement.
+///
+/// **Its first published results (PR #516) are void**: the PSRAM caps were
+/// refused (no `MALLOC_CAP_8BIT`) and the refusal ignored, so every case ran
+/// on the default configuration (#499). The caps now carry the 8-bit flag,
+/// every configuration is checked ([`apply_spawn_config`]), and each thread
+/// logs where its stack actually is ([`stack_place`]) — read those lines
+/// before the timings.
 fn bench_stack_place() {
+    /// Back's stack here: 20 KB. The E1 receiver measured its peak at 13 020 B, and at 32 KB
+    /// the internal cases could not be spawned at all at this point of the bench — the
+    /// largest free internal block was 31 KB (2026-09-28, the first run after the caps fix).
+    const BACK_STACK: usize = 20 * 1024;
     use alloc::sync::Arc;
     // No native 64-bit atomics on Xtensa; every accumulator here is microseconds over at
     // most a few dozen windows, well inside `i32`.
@@ -893,12 +932,14 @@ fn bench_stack_place() {
             ..ThreadSpawnConfiguration::default()
         };
         if let Some(cap) = front_caps {
-            front_cfg.stack_alloc_caps = enumset::EnumSet::only(cap);
+            // `MALLOC_CAP_8BIT` too: ESP-IDF refuses stack caps without it.
+            front_cfg.stack_alloc_caps = enumset::EnumSet::only(cap) | MallocCap::Cap8bit;
         }
-        let _ = front_cfg.set();
+        apply_spawn_config(&front_cfg, "front_cfg");
         let front_handle = {
             let (rx, audio, depth, front_us) = (rx.clone(), audio.clone(), depth.clone(), front_us.clone());
             std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
+                log::info!("stack place [{place}]: Front's stack is in {}", stack_place());
                 let mut front = Front::new(rx, params).expect("embedded settings");
                 for (i, chunk) in audio.chunks(STEP).enumerate() {
                     let due = t_start + ((i + 1) * STEP) as i64 * 1_000_000 / 12_000;
@@ -921,7 +962,7 @@ fn bench_stack_place() {
                 }
             })
         };
-        let _ = ThreadSpawnConfiguration::default().set();
+        apply_spawn_config(&ThreadSpawnConfiguration::default(), "the default");
         let Ok(front_handle) = front_handle else {
             log::error!("stack place: front thread not started");
             return;
@@ -929,21 +970,23 @@ fn bench_stack_place() {
 
         let mut back_cfg = ThreadSpawnConfiguration {
             name: Some(c"jtty_back"),
-            stack_size: 32 * 1024,
+            stack_size: BACK_STACK,
             priority: 5,
             pin_to_core: Some(Core::Core0),
             ..ThreadSpawnConfiguration::default()
         };
         if let Some(cap) = back_caps {
-            back_cfg.stack_alloc_caps = enumset::EnumSet::only(cap);
+            // `MALLOC_CAP_8BIT` too: ESP-IDF refuses stack caps without it.
+            back_cfg.stack_alloc_caps = enumset::EnumSet::only(cap) | MallocCap::Cap8bit;
         }
-        let _ = back_cfg.set();
+        apply_spawn_config(&back_cfg, "back_cfg");
         let (back_total, back_worst) = (Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0)));
         let (lag_total, lag_worst, n) = (Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0)), Arc::new(AtomicI32::new(0)));
         let back_handle = {
             let (rx, back_total, back_worst, lag_total, lag_worst, n) =
                 (rx.clone(), back_total.clone(), back_worst.clone(), lag_total.clone(), lag_worst.clone(), n.clone());
-            std::thread::Builder::new().stack_size(32 * 1024).spawn(move || {
+            std::thread::Builder::new().stack_size(BACK_STACK).spawn(move || {
+                log::info!("stack place [{place}]: Back's stack is in {}", stack_place());
                 let mut back = Back::new(rx, params);
                 while let Ok((p, audio_done)) = rq.recv() {
                     let t = now_us();
@@ -958,7 +1001,7 @@ fn bench_stack_place() {
                 }
             })
         };
-        let _ = ThreadSpawnConfiguration::default().set();
+        apply_spawn_config(&ThreadSpawnConfiguration::default(), "the default");
         let Ok(back_handle) = back_handle else {
             log::error!("stack place [{place}]: back thread not started");
             let _ = front_handle.join();
@@ -1033,7 +1076,7 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
             pin_to_core: Some(Core::Core1),
             ..ThreadSpawnConfiguration::default()
         };
-        let _ = cfg.set();
+        apply_spawn_config(&cfg, "cfg");
         let t_start = now_us();
         let handle = {
             let (rx, audio, front_us, depth, dropped) =
@@ -1064,7 +1107,7 @@ fn bench_patterns(rx: &alloc::sync::Arc<mfsk_core::jtty::rx::Receiver>, pileups:
                 }
             })
         };
-        let _ = ThreadSpawnConfiguration::default().set();
+        apply_spawn_config(&ThreadSpawnConfiguration::default(), "the default");
         let Ok(handle) = handle else {
             log::error!("patterns: front thread not started");
             return;
@@ -1232,7 +1275,7 @@ fn bench_selftest() {
             pin_to_core: Some(Core::Core1),
             ..ThreadSpawnConfiguration::default()
         };
-        let _ = front_cfg.set();
+        apply_spawn_config(&front_cfg, "front_cfg");
         let front_handle = {
             let (rx, audio, params) = (rx.clone(), audio.clone(), params);
             std::thread::Builder::new().stack_size(16 * 1024).spawn(move || {
@@ -1253,7 +1296,7 @@ fn bench_selftest() {
                 }
             })
         };
-        let _ = ThreadSpawnConfiguration::default().set();
+        apply_spawn_config(&ThreadSpawnConfiguration::default(), "the default");
         let Ok(front_handle) = front_handle else {
             panic!("selftest [{name}]: front thread did not start");
         };
