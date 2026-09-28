@@ -890,6 +890,10 @@ fn bench_pipeline() {
 /// logs where its stack actually is ([`stack_place`]) — read those lines
 /// before the timings.
 fn bench_stack_place() {
+    /// Back's stack here: 20 KB. The E1 receiver measured its peak at 13 020 B, and at 32 KB
+    /// the internal cases could not be spawned at all at this point of the bench — the
+    /// largest free internal block was 31 KB (2026-09-28, the first run after the caps fix).
+    const BACK_STACK: usize = 20 * 1024;
     use alloc::sync::Arc;
     // No native 64-bit atomics on Xtensa; every accumulator here is microseconds over at
     // most a few dozen windows, well inside `i32`.
@@ -966,7 +970,7 @@ fn bench_stack_place() {
 
         let mut back_cfg = ThreadSpawnConfiguration {
             name: Some(c"jtty_back"),
-            stack_size: 32 * 1024,
+            stack_size: BACK_STACK,
             priority: 5,
             pin_to_core: Some(Core::Core0),
             ..ThreadSpawnConfiguration::default()
@@ -981,7 +985,7 @@ fn bench_stack_place() {
         let back_handle = {
             let (rx, back_total, back_worst, lag_total, lag_worst, n) =
                 (rx.clone(), back_total.clone(), back_worst.clone(), lag_total.clone(), lag_worst.clone(), n.clone());
-            std::thread::Builder::new().stack_size(32 * 1024).spawn(move || {
+            std::thread::Builder::new().stack_size(BACK_STACK).spawn(move || {
                 log::info!("stack place [{place}]: Back's stack is in {}", stack_place());
                 let mut back = Back::new(rx, params);
                 while let Ok((p, audio_done)) = rq.recv() {
