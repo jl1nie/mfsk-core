@@ -348,6 +348,10 @@ runs Front on core 1 fed at the audio's real rate and Back on core 0 behind a th
 
 **`Params::embedded()`, speed first**: channel 0 only, FIR analytic signal, decimated surface on a 4 ms grid,
 raw-then-refined candidates, a ladder budget of one call a window, rungs L=1 and L=4, no subtraction, `f32` metrics.
+L=2 and the half-symbol rung are dropped rather than cut down further: on 860 sjtty/testsig files the half-symbol
+rung never accepted a frame the others missed and only added the unexpected decodes, while cutting L=4 from
+failing candidates (the mean's dominant cost, section 12) would trade away 19 of the 163 `jtty_sweep` frames that
+only L=4 reads — a trade not taken (issue #499).
 
 | two cores, real time | front (core 1) | back (core 0) mean / worst | decoded after the window's last sample, mean / worst |
 |---|---|---|---|
