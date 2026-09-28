@@ -127,7 +127,26 @@ fn feed_loop() {
         audio.len() as f32 / 12_000.0
     );
 
+    // Build the receiver while allocations up to 64 KB prefer internal DRAM, then restore the
+    // board's 2 KB rule — exactly what `jtty-bench` does. `Receiver::new().with_f32_metrics()`
+    // allocates its hot buffers once, here: the trellis survivors (2 x 32 KB), the aligned
+    // side-surface FFT buffer (32 KB) and the power row (~16 KB). At this board's
+    // `SPIRAM_MALLOC_ALWAYSINTERNAL=2048` they otherwise land in PSRAM, where a ladder rung is
+    // 410 ms instead of 190 and the side-surface transform 10 ms instead of 2.3
+    // (docs/notes/JTTY_CORES3_APP.md §3). The first demo build did that: Front at 161% of
+    // core 1, 16-17 of ~42 windows dropped, and the decode count swinging run to run.
+    // Restored straight after, because the channel-0 surface is 152 B over 64 KiB and must
+    // not follow it inside while decoding (same §3).
+    let internal_free =
+        || unsafe { esp_idf_svc::sys::heap_caps_get_free_size(esp_idf_svc::sys::MALLOC_CAP_INTERNAL) };
+    let before = internal_free();
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(64 * 1024) };
     let rx = Arc::new(Receiver::new().with_f32_metrics());
+    unsafe { esp_idf_svc::sys::heap_caps_malloc_extmem_enable(2048) };
+    log::info!(
+        "jtty-demo: receiver built, {} KB of internal DRAM taken (hot buffers ~112 KB expected)",
+        (before - internal_free()) / 1024
+    );
     let params = Params::default().embedded();
     let mut pass = 0u32;
 
