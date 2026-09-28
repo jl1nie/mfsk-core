@@ -245,7 +245,13 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     ///
     /// Without [`Self::rx_freq`] it is this crate's own scan: template
     /// matching (AWGN metric) at every coarse candidate, instead of the
-    /// scan's decode — kept for callers with no Rx frequency.
+    /// scan's decode — kept for callers with no Rx frequency. **This
+    /// branch is a crate-native extension, not present upstream**:
+    /// upstream's list decode only ever runs as q3, gated on knowing
+    /// the Rx frequency (issue #522). It is not a defect — the two
+    /// branches simply serve different callers — but a reader auditing
+    /// this method against `q65_dec0` should not expect a 1:1 match
+    /// when `.rx_freq()` is unset.
     pub fn ap_list(mut self, candidates: &'a [[i32; 63]]) -> Self {
         self.ap_list = Some(candidates);
         self
@@ -618,7 +624,16 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
         })
     }
 
-    /// See [`DecodeRequest::ap_list`].
+    /// Full-AP list decoding against a pre-encoded candidate set, at the
+    /// known target carrier (`Self::new`'s `target_freq`).
+    ///
+    /// **A crate-native extension, not a 1:1 port** (issue #522):
+    /// upstream has no sniper mode at all, so there is no `q65_ccf_85`/q3
+    /// counterpart to run here — unlike [`DecodeRequest::ap_list`], which
+    /// *can* reach the real q3 decode via [`DecodeRequest::rx_freq`], this
+    /// method always runs the crate's own template matching (AWGN metric)
+    /// at the target carrier. See that method's doc comment for the
+    /// upstream/crate-native split it documents.
     pub fn ap_list(mut self, candidates: &'a [[i32; 63]]) -> Self {
         self.ap_list = Some(candidates);
         self
