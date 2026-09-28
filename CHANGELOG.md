@@ -2,6 +2,19 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **CoreS3: JTTY as a fifth receive mode, behind `--features jtty-rx` (#499, E1 of `docs/notes/JTTY_CORES3_APP.md`).**
+  Picked from the touch panel like FT8/FT4/FST4/WSPR. JTTY has no slot, so the sample count is its clock: the audio sink
+  stages samples with positioned gap markers for overflow, a clock reconciliation (`mfsk_app_shared::jtty_rx_clock`,
+  hosttested) inserts zeros for a deficit above 20 ms against `esp_timer` and resets the stream above 1 s, and every
+  reset starts a new generation of `Front`/`Back`. Front runs on core 1 (prio 4, 16 KB internal stack), Back on core 0
+  (prio 5, 32 KB PSRAM stack), queue 6, the panel above Back. A message is published once, on `complete`; ALL.TXT
+  stamps it from a UTC anchor plus its `start_s` and is flushed when no message is open (or after 10 min). The slot
+  period is split three ways (`BootMode::fresh_row_ms` / `slot_rules_ms`), so nothing sees a period of 0. On the SIM
+  feed it decodes the golden recording at the host's start times, but **beside WiFi the receiver is over budget**
+  (internal DRAM 1–7 KB free, dozens of windows dropped on a six-station band) — measured and written up in the design
+  note's §12, which also records that #516's PSRAM-stack bench never ran with a PSRAM stack. FT8/FT4/FST4/WSPR are
+  unchanged (FT8 SIM A/B against `main`: 60 decodes each over 9 slots, `cut=0`, identical panel timing).
+
 - **docs: pin `lib/*.f90`/`lib/*.c` citations to the `v3.2.0-rc1` tag of `WSJTX/wsjtx`, and fix 7 that had drifted (#467).**
   `CONTRIBUTING.md` now states the reference tree explicitly — line numbers move between trees on any file that sees
   an edit, and nothing previously recorded which tree a citation's line number was checked against. Auditing this

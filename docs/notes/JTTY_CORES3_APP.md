@@ -39,8 +39,8 @@ is no quiet point for flash writes or for the panel.
 | trellis survivors (`with_f32_metrics`) | 2 × 32 KB | a rung 190 ms vs 410 ms (§11 of the budget) |
 | side-surface FFT buffer, 16-byte aligned | 32 KB | 4096 points 2.3 ms vs 10 ms (§13) |
 | side-surface power row | 16 KB | part of 485 → 148 ms (§13) |
-| `Back` stack (the ladder's correlations live there) | 32 KB | **no difference** — 190 ms mean either way, 1007 vs 1017 ms worst (`jtty-bench` §7b, #499) |
-| `Front` stack | 16 KB | **matters** — front 401 vs 321 ms a window (+25%), decoded 962 vs 543 ms mean, 2260 vs 1297 ms worst (`jtty-bench` §7b, #499); unlike `Back`, `Front`'s FIR/analytic-signal work touches its own stack on the hot path |
+| `Back` stack (the ladder's correlations live there) | 32 KB | **not measured** — the §7b "no difference" compared internal against internal (§12) |
+| `Front` stack | 16 KB | **not measured** — §7b's +25% compared a pinned prio-4 task against an unpinned default-priority one, both stacks internal (§12) |
 
 That is ~160 KB with the band scan, ~112 KB without it (no FFT buffer or power row), each piece needing up to a 32 KB
 contiguous block.
@@ -101,8 +101,9 @@ uac_reader (core 0, prio 8)             jtty_front (core 1, prio 4)          jtt
   panel at 1 only because of its reply deadline, and JTTY has none; with Back busy continuously a priority-1 panel would
   starve, and with it the waterfall drain. FT8's `PANEL_PRIORITY = 7` is the precedent (8–13 % of core 0, measured).
 - Watchdog: `DEINIT_WDT = true`, the default for non-FT8 receivers (the front end never lets IDLE1 run).
-- Stacks: Back stays on a 32 KB internal stack until a PSRAM stack is measured (the correlations are on it); every stack is
-  sized from `board::log_task_stacks`, not copied.
+- Stacks: ~~Back stays on a 32 KB internal stack until a PSRAM stack is measured~~ — Back's 32 KB stack is in PSRAM,
+  because an internal one cannot be allocated once the receiver is built (§12); Front's 16 KB stack is internal. Every
+  stack is sized from `board::log_task_stacks`, not copied.
 - Log volume: per-window lines are rate-limited — the UDP log goes out through lwIP on core 1, beside the front end.
 
 ## 5. UI under the one-screen rule
@@ -183,3 +184,35 @@ the receiver every transmission — to check first in T0.
 - The SIM feed cannot measure memory (the board stays a USB peripheral) and cuts a looped stream at slot boundaries (§7).
 - Also: prewarm FFT tables before WiFi, `m5stack-s3-app`'s `BootMode` match, feature unification with `jtty-stats`, UDP log
   volume on core 1, the IN stream during TX.
+
+## 12. E1 on the board (2026-09-28), what changed
+
+Measured with the SIM feed (§7: the board is a USB peripheral, so the USB host's DRAM and interrupts are absent — these
+are floors, not the host-mode figures E0 still owes). Logs: `m5stack-cores3-app/logs/jtty_e1_sim_*_2026-09-28.log`.
+
+- **`jtty-bench` §7b (#516) did not measure a PSRAM stack.** `esp_pthread_set_cfg` rejects `stack_alloc_caps` without
+  `MALLOC_CAP_8BIT` (`ESP_ERR_INVALID_ARG`, esp-idf v5.5.3 `pthread.c:159`); the bench set `EnumSet::only(Spiram)` and
+  discarded `set()`'s result, so each "PSRAM" case ran with the previous (default) config: unpinned, default priority,
+  internal stack. Its "Back: no difference" compared internal with internal; its "Front: +25 %" compared pinned prio 4
+  with unpinned default priority. The §3 stack rows are struck; the app spawns with `Spiram | Cap8bit` and checks every
+  `set()`.
+- **An internal stack for Back cannot be allocated.** Building the receiver takes 122 KB internal (214 KB free before,
+  largest block 136 KB; 92 KB left); a 32 KB internal Back stack then fails with ENOMEM even with WiFi off
+  (`…_nowifi_backinternal`). Back's stack is in PSRAM by necessity, not by choice.
+- **Stack high-water** (`board::log_task_stacks`, golden and band6): Front uses ≤ 2.6 KB of its 16 KB internal stack
+  (13 808 bytes free at worst), Back ≤ 13 KB of its 32 KB (19 680 free, band6). Front's stack is the one internal
+  allocation here that is plainly oversized.
+- **Beside WiFi, internal DRAM is exhausted and the receiver runs over budget.** Golden loop, WiFi on: internal 1–7 KB
+  free (minimum 0), front 479–558 ms a window, back 385–515 ms mean, delay 2.9–3.8 s mean, 23 windows dropped in ~2 min,
+  and only the pass with no drop decodes the whole text. `band6` (`testsig::pileups(1)`), WiFi on: internal 4–6 KB,
+  front 612–842 ms, back 698–1017 ms mean (1.9 s worst), 67 dropped, 4 messages complete with gaps where the host
+  decodes 12 on the same 3-pass stream. WiFi off (`…_nowifi`): internal 47 KB free, front 415–476 ms, back 353–471 ms,
+  7 dropped; start times match the host's (3.14 / 33.38 / 63.63 s) — still slower than the bench on the same recording
+  (front 320, back 223 ms). E0's "then in host mode on the radio with WiFi" was never run before E1; this is what it would
+  have found, and it reopens §3's decision (open question 1) before E3.
+- E1's own choices where the draft left a number open: the clock reconciliation tracks a baseline that follows the
+  deficit at up to 1000 ppm (the IC-705 against the ESP crystal is well inside; a ±325 ppm source over an hour is
+  hosttested), and fills only a jump above it (> 20 ms), resets above 1 s. The green-row age is 10 s
+  (`BootMode::fresh_row_ms`); the waterfall has no slot rules (`slot_rules_ms` = 0). ALL.TXT is written when no message
+  is open and the queue is empty (`storage::quiet_rx`) for lines ≥ 30 s old, and in any case at 10 min. The JTTY SIM
+  feed is continuous (`uac::spawn_sim_feed_continuous`) — no boundary alignment and no per-pass re-alignment.
