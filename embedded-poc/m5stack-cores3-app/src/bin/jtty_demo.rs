@@ -87,6 +87,19 @@ fn main() -> ! {
         log::error!("jtty-demo: feed thread spawn failed ({e})");
     }
 
+    // `jttyfeed` (this thread's `Back::process`) runs at the pthread default (5) and, on
+    // this busy pattern, close to continuously — unlike FT4's demo, which never raises its
+    // panel priority because FT4's decode duty is low (`apps/ft4.rs`'s own comment). Left
+    // at `main`'s default (1) the panel starved: the first hardware run showed 7 panel
+    // frames in 20 s and a 19.8 s gap between two of them — no waterfall motion, no list
+    // updates, exactly what "動作がスムーズではない" reported. `apps/ft8.rs::run_forever`
+    // has the same fix for the same reason (its decode is also not idle-friendly): raise
+    // this thread — which is about to become the panel loop — above the feed thread,
+    // matching `display::PANEL_PRIORITY`.
+    unsafe {
+        esp_idf_svc::sys::vTaskPrioritySet(core::ptr::null_mut(), app::display::PANEL_PRIORITY)
+    };
+
     app::display::run_log_panel(
         peripherals.i2c0,
         peripherals.spi2,
