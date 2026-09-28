@@ -156,6 +156,112 @@ const FRAME_US: i64 = 166_667;
 /// rather than a PSRAM buffer the driver would copy into a bounce.
 const WF_BLOCK_ROWS: usize = 4;
 
+/// A full-width strip of the panel, drawn in memory and sent the way the
+/// waterfall is: one address window, then byte blocks over DMA
+/// ([`blit_strip!`]).
+///
+/// **Why the bars and the list need it.** Drawn straight to the display,
+/// `embedded-graphics` text goes through `fill_contiguous`'s per-pixel
+/// iterator, which `display-interface-spi` sends 64 pixels at a time —
+/// the path the waterfall left because it was half of a 39 ms redraw
+/// (see the waterfall block). Measured on a CoreS3 running jtty-demo
+/// (2026-09-28), the status bar cost ~20 ms a redraw and the list up to
+/// ~40 ms a second of core 0, almost all of it CPU, against 5 ms a second
+/// for building every waterfall row. Here the same widgets draw into RAM
+/// (a store per pixel) and the bytes go out as DMA the core is free
+/// through.
+///
+/// Starts black, which is what the boot clear leaves on the panel: the
+/// status bar paints only its glyph cells and the tail, and its two
+/// margin rows show whatever is under them.
+struct Strip {
+    y0: i32,
+    w: u32,
+    h: u32,
+    /// Big-endian RGB565, row-major — the panel's own byte order, as
+    /// `waterfall::row_rgb565_be` writes it.
+    buf: Vec<u8>,
+}
+
+impl Strip {
+    fn new(y0: i32, w: u32, h: u32) -> Self {
+        Self { y0, w, h, buf: vec![0u8; (w * h * 2) as usize] }
+    }
+}
+
+impl Dimensions for Strip {
+    fn bounding_box(&self) -> Rectangle {
+        Rectangle::new(Point::new(0, self.y0), Size::new(self.w, self.h))
+    }
+}
+
+impl DrawTarget for Strip {
+    type Color = Rgb565;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Rgb565>>,
+    {
+        for Pixel(p, c) in pixels {
+            let (x, y) = (p.x, p.y - self.y0);
+            if x >= 0 && y >= 0 && (x as u32) < self.w && (y as u32) < self.h {
+                let i = ((y as u32 * self.w + x as u32) * 2) as usize;
+                let v = embedded_graphics::pixelcolor::raw::RawU16::from(c).into_inner();
+                self.buf[i] = (v >> 8) as u8;
+                self.buf[i + 1] = v as u8;
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_solid(&mut self, area: &Rectangle, color: Rgb565) -> Result<(), Self::Error> {
+        let a = area.intersection(&self.bounding_box());
+        if a.size.width == 0 || a.size.height == 0 {
+            return Ok(());
+        }
+        let v = embedded_graphics::pixelcolor::raw::RawU16::from(color).into_inner();
+        let (hi, lo) = ((v >> 8) as u8, v as u8);
+        for y in a.top_left.y..a.top_left.y + a.size.height as i32 {
+            let row = ((y - self.y0) as u32 * self.w) as usize;
+            let x0 = a.top_left.x as usize;
+            for x in x0..x0 + a.size.width as usize {
+                self.buf[(row + x) * 2] = hi;
+                self.buf[(row + x) * 2 + 1] = lo;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Send a [`Strip`] to its place on the panel: the address window once,
+/// then the pixels through `$bounce`, a block of internal DRAM the SPI
+/// DMA can read (the strips themselves are large enough to land in
+/// PSRAM). The waterfall's block buffer serves.
+macro_rules! blit_strip {
+    ($display:expr, $strip:expr, $bounce:expr) => {{
+        let s = &$strip;
+        let opened = $display.set_pixels(
+            0,
+            s.y0 as u16,
+            (s.w - 1) as u16,
+            (s.y0 + s.h as i32 - 1) as u16,
+            core::iter::empty(),
+        );
+        if opened.is_ok() {
+            use display_interface::WriteOnlyDataCommand as _;
+            for chunk in s.buf.chunks($bounce.len()) {
+                $bounce[..chunk.len()].copy_from_slice(chunk);
+                // SAFETY: raw data after the RAMWR `set_pixels` just issued,
+                // inside the window it set — as the waterfall block does.
+                let _ = unsafe { $display.dcs() }
+                    .di
+                    .send_data(display_interface::DataFormat::U8(&$bounce[..chunk.len()]));
+            }
+        }
+    }};
+}
+
 pub fn run_log_panel(
     i2c0: I2C0<'static>,
     spi2: SPI2<'static>,
@@ -537,6 +643,17 @@ pub fn run_log_panel(
     // One block of waterfall rows in wire format; see the draw site.
     let mut wf_block: Vec<u8> =
         vec![0u8; WF_BLOCK_ROWS * waterfall::WIDTH as usize * 2];
+    let list_rows = if USB_PANEL {
+        ((USB_REGION_Y - decoded_list::ORIGIN_Y) as u32 / decoded_list::ROW_PX) as usize
+    } else {
+        DECODED_ROWS
+    };
+    let mut status_strip = Strip::new(status_bar::ORIGIN_Y, SHARED_UI_WIDTH, status_bar::HEIGHT);
+    let mut list_strip = Strip::new(
+        decoded_list::ORIGIN_Y,
+        SHARED_UI_WIDTH,
+        list_rows as u32 * decoded_list::ROW_PX,
+    );
     let mut last_status: Option<mfsk_app_shared::ui::state::StatusInfo> = None;
     let mut last_link: Option<mfsk_app_shared::ui::link_bar::LinkInfo> = None;
     // The longest time between two frames, every ~10 s: how long the
@@ -551,8 +668,17 @@ pub fn run_log_panel(
     let mut busy_us: i64 = 0;
     let mut feed_us: i64 = 0;
     let mut wf_draw_us: i64 = 0;
+    // The redraw split in two: building the RGB565 rows (CPU) and sending
+    // them (the DMA wait, during which the core is free) — `wf_draw_us`
+    // alone cannot say how much of the panel's time a decoder on the same
+    // core actually loses.
+    let mut wf_conv_us: i64 = 0;
+    let mut wf_send_us: i64 = 0;
     let mut bars_us: i64 = 0;
     let mut list_us: i64 = 0;
+    // Each split into drawing into its strip (CPU) and sending it (DMA).
+    let mut bars_send_us: i64 = 0;
+    let mut list_send_us: i64 = 0;
     let mut pre_us: i64 = 0;
     let mut frame_top_us: i64;
     loop {
@@ -569,17 +695,23 @@ pub fn run_log_panel(
                 let secs = ((now - frame_report_us) / 1_000_000).max(1);
                 log::info!(
                     "panel: {frame_count} frames, longest gap {} ms | busy {} ms/s = feed {} + \
-                     waterfall {} + bars {} + list {} + pre-draw {} (incl. feed) + rest",
+                     waterfall {} (rows {} + send {}) + bars {} (send {}) + list {} (send {}) + pre-draw {} (incl. feed) + rest",
                     frame_gap_max_us / 1_000,
                     busy_us / 1_000 / secs,
                     feed_us / 1_000 / secs,
                     wf_draw_us / 1_000 / secs,
+                    wf_conv_us / 1_000 / secs,
+                    wf_send_us / 1_000 / secs,
                     bars_us / 1_000 / secs,
+                    bars_send_us / 1_000 / secs,
                     list_us / 1_000 / secs,
+                    list_send_us / 1_000 / secs,
                     pre_us / 1_000 / secs,
                 );
                 bars_us = 0;
                 list_us = 0;
+                bars_send_us = 0;
+                list_send_us = 0;
                 pre_us = 0;
                 // The per-task walk stops the USB host's interrupt for
                 // milliseconds and drops isochronous packets
@@ -594,6 +726,8 @@ pub fn run_log_panel(
                 busy_us = 0;
                 feed_us = 0;
                 wf_draw_us = 0;
+                wf_conv_us = 0;
+                wf_send_us = 0;
                 frame_report_us = now;
             }
         }
@@ -880,7 +1014,10 @@ pub fn run_log_panel(
         // a CoreS3 panel, more than the station list and the waterfall
         // feed combined, for text that changes about once a second.
         if last_status.as_ref() != Some(&status_snapshot) {
-            status_bar::render(&mut display, &status_snapshot, SHARED_UI_WIDTH).ok();
+            status_bar::render(&mut status_strip, &status_snapshot, SHARED_UI_WIDTH).ok();
+            let t_send = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+            blit_strip!(display, status_strip, wf_block);
+            bars_send_us += unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t_send;
             last_status = Some(status_snapshot.clone());
         }
         let link = crate::uac::link_info();
@@ -917,6 +1054,7 @@ pub fn run_log_panel(
                 let mut row = 0usize;
                 while row < waterfall::HEIGHT as usize {
                     let rows = WF_BLOCK_ROWS.min(waterfall::HEIGHT as usize - row);
+                    let t_conv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
                     for k in 0..rows {
                         let r = row + k;
                         let (line, marked) = if r < blank {
@@ -936,9 +1074,12 @@ pub fn run_log_panel(
                     // issued, inside the window it set — nothing the
                     // driver tracks is changed.
                     use display_interface::WriteOnlyDataCommand as _;
+                    let t_send = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+                    wf_conv_us += t_send - t_conv;
                     let _ = unsafe { display.dcs() }
                         .di
                         .send_data(display_interface::DataFormat::U8(&wf_block[..rows * w * 2]));
+                    wf_send_us += unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t_send;
                     row += rows;
                 }
             }
@@ -949,19 +1090,18 @@ pub fn run_log_panel(
         if decoded_fp != last_decoded_fp {
             let t = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
             decoded_list::render_in_flags(
-                &mut display,
+                &mut list_strip,
                 &decoded_snapshot,
                 &current_snapshot,
                 None,
                 SHARED_UI_WIDTH,
                 decoded_list::ORIGIN_Y,
-                if USB_PANEL {
-                    ((USB_REGION_Y - decoded_list::ORIGIN_Y) as u32 / decoded_list::ROW_PX) as usize
-                } else {
-                    DECODED_ROWS
-                },
+                list_rows,
             )
             .ok();
+            let t_send = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+            blit_strip!(display, list_strip, wf_block);
+            list_send_us += unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t_send;
             list_us += unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t;
             last_decoded_fp = decoded_fp;
         }

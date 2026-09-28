@@ -242,7 +242,44 @@ fn feed_loop() {
             case.stations.len(),
             dropped.load(Ordering::Relaxed)
         );
+        log_waterfall_peaks(&case.stations);
     }
+}
+
+/// Where the waterfall puts its bright columns, against where the scene's stations are —
+/// a check that the rows are the band's spectrum at the right frequencies whatever builds
+/// them. Every held row is max-held per column (a station's tones hop), and every
+/// column at level 10 of 15 or more that is a local maximum is reported at its centre
+/// frequency. A station's tones sit from its `f0_hz` up.
+fn log_waterfall_peaks(stations: &[mfsk_core::jtty::testsig::Station<'static>]) {
+    use mfsk_app_shared::ui::state::WF_COLS;
+    let Ok(ui) = UI.lock() else { return };
+    let mut held = [0u8; WF_COLS];
+    // Every row the panel holds (100, ~17 s): the scene's messages end before its 20 s
+    // do, so the last couple of seconds alone are mostly noise.
+    for row in ui.waterfall_iter() {
+        for (h, &v) in held.iter_mut().zip(row.iter()) {
+            *h = (*h).max(v & 0x0F);
+        }
+    }
+    drop(ui);
+    let lo = embedded_shared::waterfall::WF_FREQ_LO_HZ;
+    let col_hz = (embedded_shared::waterfall::WF_FREQ_HI_HZ - lo) / WF_COLS as f32;
+    let col_of = |f: f32| (((f - lo) / col_hz) as usize).min(WF_COLS - 1);
+    // The band's floor: the median held level over every column.
+    let mut sorted = held;
+    sorted.sort_unstable();
+    let floor = sorted[WF_COLS / 2];
+    // Each station: its brightest held level over its own tones (f0 .. f0 + 100 Hz), and
+    // the brightest over a same-width stretch 150 Hz below it, where nothing transmits.
+    let mut out: heapless::String<200> = heapless::String::new();
+    for s in stations {
+        let span = |a: f32| held[col_of(a)..=col_of(a + 100.0)].iter().copied().max().unwrap_or(0);
+        let on = span(s.f0_hz);
+        let off = if s.f0_hz - 150.0 >= lo { span(s.f0_hz - 150.0) } else { 0 };
+        let _ = core::fmt::Write::write_fmt(&mut out, format_args!(" {:.0}:{on}/{off}", s.f0_hz));
+    }
+    log::info!("jtty-demo: waterfall level at station:on/150Hz-below (0-15), floor {floor}:{out}");
 }
 
 /// One `MessageUpdate`: log it, and — once it is complete — push it as a `DecodedRow` so

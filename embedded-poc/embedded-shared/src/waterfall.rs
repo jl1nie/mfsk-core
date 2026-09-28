@@ -11,16 +11,24 @@
 //! serves every mode and a new mode gets a waterfall without writing
 //! one.
 //!
-//! **All of it on esp-dsp.** A row is a real 2 048-point transform, so
-//! it runs the way esp-dsp's own `fft4real` example does: the samples,
-//! windowed by `dsps_mul_f32`, are read as 1 024 *complex* points, put
-//! through the radix-4 PIE kernel (`dsps_fft4r_fc32_aes3_`) and bit
-//! reversal, and `dsps_cplx2real_fc32` unfolds that into the real
-//! input's spectrum: a transform of half the points, where a plain
-//! complex FFT of real samples would compute a mirror image and throw
-//! half of it away. The power spectrum is two more esp-dsp
-//! passes (`dsps_mul_f32`, `dsps_add_f32`). What is left in Rust is the
-//! column mapping, which is branches and integer arithmetic.
+//! **All of it on esp-dsp.** A row is a real 1 024-point transform, run
+//! the way esp-dsp's own `fft4real` example does: the samples, windowed
+//! by `dsps_mul_f32`, are read as 512 *complex* points, transformed, and
+//! `dsps_cplx2real_fc32` unfolds that into the real input's spectrum — a
+//! transform of half the points, where a plain complex FFT of real
+//! samples would compute a mirror image and throw half of it away. The
+//! power spectrum is two more esp-dsp passes (`dsps_mul_f32`,
+//! `dsps_add_f32`). What is left in Rust is the column mapping, which is
+//! branches and integer arithmetic.
+//!
+//! **Radix-2 for the transform, radix-4's table for the unfold.** 512 is
+//! not a power of 4, and esp-dsp's radix-4 kernel refuses it
+//! (`dsps_fft4r_fc32_ansi.c`: `log2N` must be even), so the complex
+//! transform is the radix-2 PIE kernel on `esp_dsp_fft`'s read-only
+//! 512-point table. `dsps_cplx2real_fc32` has no such limit — it strides
+//! the radix-4 twiddle table by `table_size / N` — so it keeps that
+//! table, initialised for 512 exactly as the `fft4real` example pairs
+//! `dsps_fft4r_init_fc32(N >> 1)` with `dsps_cplx2real_fc32(N >> 1)`.
 //!
 //! No threading and no board state here: push audio, receive rows.
 //! Where the audio comes from and who owns the builder is the board's.
@@ -34,10 +42,19 @@ use mfsk_core::engine::fft::AlignedComplexBuf;
 
 use crate::pipeline::WF_ROW_LEN;
 
-/// Transform length, in real samples: 5.86 Hz bins against the panel's
-/// 11.7 Hz columns, so every column sees two whole bins, over a 171 ms
-/// window.
-pub const WF_NFFT: usize = 2_048;
+/// Transform length, in real samples: 11.7 Hz bins, the panel's own
+/// column width, over an 85 ms window.
+///
+/// It was 2 048 (5.86 Hz, two bins a column, a 171 ms window). The
+/// panel draws 240 columns of 11.7 Hz, so half those bins were only ever
+/// max-pooled away, and the transform was the panel's largest CPU cost:
+/// ~35 ms of every second of the core it shares with a decoder, against
+/// ~5 ms for building the drawn rows (jtty-demo, 2026-09-28 — the rest
+/// of the redraw is SPI DMA the core is free through). What the shorter
+/// window gives up is coverage: at `WF_HOP` a row now sees 85 ms of each
+/// 167 ms of audio rather than all of it, which a waterfall of
+/// multi-second transmissions does not show.
+pub const WF_NFFT: usize = 1_024;
 
 /// Complex points the real transform runs as.
 const HALF: usize = WF_NFFT / 2;
@@ -60,7 +77,7 @@ pub const WF_FREQ_LO_HZ: f32 = 200.0;
 /// Up to 3 000 Hz: the top of the band the FT8 decoder searches
 /// (`stage1_inc`'s `ALLSUM_FREQ_MAX`). FT8's own rows used to stop at
 /// 2 700, so stations between 2 700 and 3 000 Hz decoded without ever
-/// being drawn. 240 columns over 2 800 Hz are 11.7 Hz each, two of this
+/// being drawn. 240 columns over 2 800 Hz are 11.7 Hz each, one of this
 /// builder's bins.
 pub const WF_FREQ_HI_HZ: f32 = 3_000.0;
 
@@ -72,10 +89,10 @@ unsafe extern "C" {
     /// Process-global; nothing else in this tree uses radix-4.
     fn dsps_fft4r_init_fc32(fft_table_buff: *mut f32, max_fft_size: i32) -> i32;
     #[cfg(feature = "aes3")]
-    fn dsps_fft4r_fc32_aes3_(data: *mut f32, n: i32, table: *mut f32, table_size: i32) -> i32;
+    fn dsps_fft2r_fc32_aes3_(data: *mut f32, n: i32, w: *const f32) -> i32;
     #[cfg(not(feature = "aes3"))]
-    fn dsps_fft4r_fc32_ae32_(data: *mut f32, n: i32, table: *mut f32, table_size: i32) -> i32;
-    fn dsps_bit_rev4r_fc32_ae32(data: *mut f32, n: i32) -> i32;
+    fn dsps_fft2r_fc32_ae32_(data: *mut f32, n: i32, w: *const f32) -> i32;
+    fn dsps_bit_rev_fc32_ansi(data: *mut f32, n: i32) -> i32;
     fn dsps_cplx2real_fc32_ae32_(data: *mut f32, n: i32, table: *mut f32, table_size: i32) -> i32;
     fn dsps_mul_f32_ae32(
         a: *const f32,
@@ -165,6 +182,10 @@ impl WfRowBuilder {
                 log::error!("waterfall: dsps_fft4r_init_fc32 failed ({r:#x})");
             }
         }
+        // The radix-2 table for the transform itself, installed here rather
+        // than on the first row: it is allocated from internal DRAM once,
+        // and the first row is drawn after WiFi has taken its share.
+        let _ = crate::esp_dsp_fft::fc32_table(HALF);
         let n = WF_NFFT;
         // Hann: the sidelobes of a strong signal would otherwise paint
         // across columns and bury the weak ones beside it.
@@ -247,13 +268,14 @@ impl WfRowBuilder {
                     1,
                 );
             }
+            let w2 = crate::esp_dsp_fft::fc32_table(HALF);
+            #[cfg(feature = "aes3")]
+            dsps_fft2r_fc32_aes3_(data, HALF as i32, w2);
+            #[cfg(not(feature = "aes3"))]
+            dsps_fft2r_fc32_ae32_(data, HALF as i32, w2);
+            dsps_bit_rev_fc32_ansi(data, HALF as i32);
             let table = dsps_fft4r_w_table_fc32;
             let table_size = dsps_fft4r_w_table_size;
-            #[cfg(feature = "aes3")]
-            dsps_fft4r_fc32_aes3_(data, HALF as i32, table, table_size);
-            #[cfg(not(feature = "aes3"))]
-            dsps_fft4r_fc32_ae32_(data, HALF as i32, table, table_size);
-            dsps_bit_rev4r_fc32_ae32(data, HALF as i32);
             dsps_cplx2real_fc32_ae32_(data, HALF as i32, table, table_size);
             // |X|² = re² + im², for the bins the row reads.
             dsps_mul_f32_ae32(data, data, self.sq.as_mut_ptr(), (2 * bins) as i32, 1, 1, 1);
