@@ -25,8 +25,6 @@ Rust が動く場所ならどこでも動きます。
 - リリース前に WSJT-X 自身のシミュレータを使って行う感度スイープ
 - 数値の記録: [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)
 
-個人プロジェクトであり、本家 WSJT-X への追従はベストエフォートです。時期の約束はしません。
-
 ## 組み込みでの動作
 
 リポジトリには、Xtensa LX7 上でこのライブラリを動かす受信機が2つ含まれます。

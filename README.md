@@ -33,8 +33,6 @@ taken from WSJT-X (every PR is gated on them, recall and phantom decodes
 together), sensitivity sweeps against WSJT-X's own simulators before
 releases, and the numbers written down in
 [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
-It is a personal project and follows upstream WSJT-X on a best-effort
-basis, with no schedule promised.
 
 Two working receivers ship with the source tree, both running this
 library on Xtensa LX7.
