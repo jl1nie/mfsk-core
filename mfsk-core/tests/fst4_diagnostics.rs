@@ -3039,10 +3039,24 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
             let ord1 = osd_decode_generic::<Ldpc240_101Params>(llr, 1, 101, verify_info, false);
             let ord2 = osd_decode_generic::<Ldpc240_101Params>(llr, 2, 101, verify_info, false);
             let ord3 = osd_decode_generic::<Ldpc240_101Params>(llr, 3, 101, verify_info, false);
-            let npre1 =
-                osd_decode_npre_generic::<Ldpc240_101Params>(llr, 12, 0, false, None, verify_info);
-            let npre12 =
-                osd_decode_npre_generic::<Ldpc240_101Params>(llr, 12, 14, true, None, verify_info);
+            let npre1 = osd_decode_npre_generic::<Ldpc240_101Params>(
+                llr,
+                12,
+                0,
+                false,
+                None,
+                None,
+                verify_info,
+            );
+            let npre12 = osd_decode_npre_generic::<Ldpc240_101Params>(
+                llr,
+                12,
+                14,
+                true,
+                None,
+                None,
+                verify_info,
+            );
             println!(
                 "freq={:.1} nsync={nsync} variant={label}: ord1={} ord2={} ord3={} npre1={} npre1+2={}",
                 c.freq_hz,

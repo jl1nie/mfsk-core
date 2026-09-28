@@ -2098,6 +2098,15 @@ const OSD_NPRE_WORDS: usize = OSD_NPRE_MAX_N.div_ceil(64); // 4
 /// - `partial_crc`: `None` searches all `P::K` information bits as free;
 ///   `Some` searches the [`PartialCrc`] subcode, as FST4's
 ///   `decode240_101(..., Keff = 91, ...)` does.
+/// - `ap_mask`: `Some` runs under an a-priori mask, as `osd240_101.f90`
+///   does for FST4's AP passes (issue #465): `ap_mask[i]` is `true` for
+///   a locked bit `i` (original bit order, length `P::N`). A test
+///   pattern that would flip any locked position is skipped —
+///   `osd240_101.f90:191` (npre1) and `:262` (npre2) both run the
+///   identical `any(iand(apmaskr(1:k),mi).eq.1)) cycle` check — so the
+///   winner always keeps every locked bit, mirroring
+///   [`osd_decode_npre1_masked`]'s FT8/FT4-pinned counterpart. `None`
+///   is the unmasked search, unchanged.
 ///
 /// Algorithm identical to `osd_npre1_pass`/`osd_npre2_pass` (both
 /// crate-private, hence unlinked here)
@@ -2110,9 +2119,14 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
     ntau: usize,
     run_npre2: bool,
     partial_crc: Option<PartialCrc>,
+    ap_mask: Option<&[bool]>,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
     debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
+    debug_assert!(
+        ap_mask.is_none_or(|m| m.len() == P::N),
+        "ap_mask length must equal P::N"
+    );
 
     let n = P::N;
     // `kinfo`: the length of the information word the codeword carries and
@@ -2127,6 +2141,11 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
     let Some((perm, g, pivot_col)) = setup else {
         return None; // degenerate (shouldn't happen with a valid LDPC code)
     };
+
+    // A pattern may not flip a bit the a-priori mask locks — see this
+    // function's own doc comment. `row` is in MRB order; `pivot_col[row]`
+    // maps it to a permuted column, `perm[..]` back to the original bit.
+    let locked = |row: usize| ap_mask.is_some_and(|m| m[perm[pivot_col[row]]]);
 
     let mut mrb = [0u8; OSD_NPRE_MAX_N];
     let mrb = &mut mrb[..k];
@@ -2206,6 +2225,9 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
     let mut ce_pair_packed = [0u64; OSD_NPRE_WORDS];
 
     for iflag in (0..k).rev() {
+        if locked(iflag) {
+            continue;
+        }
         for w in 0..OSD_NPRE_WORDS {
             ce_iflag_packed[w] = c_perm_packed[w] ^ g_packed[iflag][w];
         }
@@ -2224,6 +2246,9 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
         }
 
         for n1 in (0..iflag).rev() {
+            if locked(n1) {
+                continue;
+            }
             for j in 0..(n - k) {
                 let col = k + j;
                 let g_bit = ((g_packed[n1][col / 64] >> (col % 64)) & 1) as u8;
@@ -2267,6 +2292,9 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
         let mut ce_misub_packed = [0u64; OSD_NPRE_WORDS];
         let mut ce_test_packed = [0u64; OSD_NPRE_WORDS];
         for iflag in (0..k).rev() {
+            if locked(iflag) {
+                continue;
+            }
             for w in 0..OSD_NPRE_WORDS {
                 ce_misub_packed[w] = c_perm_packed[w] ^ g_packed[iflag][w];
             }
@@ -2292,7 +2320,12 @@ pub fn osd_decode_npre_generic<P: LdpcParams>(
                 for (in1, in2) in table.iter_pairs(key) {
                     let in1_u = in1 as usize;
                     let in2_u = in2 as usize;
-                    if iflag == in1_u || iflag == in2_u || in1_u == in2_u {
+                    if iflag == in1_u
+                        || iflag == in2_u
+                        || in1_u == in2_u
+                        || locked(in1_u)
+                        || locked(in2_u)
+                    {
                         continue;
                     }
                     for w in 0..OSD_NPRE_WORDS {
@@ -2955,12 +2988,66 @@ mod packed_setup_differential {
                     ntau,
                     npre2,
                     Some(fst4_partial_crc()),
+                    None,
                     Some(check_crc24),
                 )
                 .expect("a clean CRC-valid codeword must decode");
                 assert_eq!(r.info, info);
                 assert_eq!(r.message77, msg);
             }
+        }
+    }
+
+    /// A locked bit is not flipped by the masked `npre1` search over
+    /// [`Ldpc240_101Params`] — [`osd_decode_npre_generic`]'s own
+    /// counterpart to `masked_npre1_does_not_flip_a_locked_bit` above
+    /// (issue #465): a clean codeword with one bit locked to the wrong
+    /// value comes back from the unmasked search (one flip repairs it)
+    /// and does not from the masked one (`osd240_101.f90:191`).
+    #[test]
+    fn masked_npre1_does_not_flip_a_locked_bit_ldpc240_101() {
+        use crate::fec::ldpc240_101::append_crc24;
+        let msg = random_message(&mut 0x1234_5678_9ABC_DEF0u64);
+        let info = append_crc24(&msg);
+        let mut cw = alloc::vec![0u8; Ldpc240_101Params::N];
+        ldpc_encode_generic::<Ldpc240_101Params>(&info, &mut cw);
+        let mut llr: alloc::vec::Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 1 { 8.0 } else { -8.0 })
+            .collect();
+        // Lock bit 5 to the wrong value, as strongly as anything else here.
+        let wrong = if cw[5] == 1 { -20.0 } else { 20.0 };
+        llr[5] = wrong;
+        let mut mask = alloc::vec![false; Ldpc240_101Params::N];
+        mask[5] = true;
+
+        let free = osd_decode_npre_generic::<Ldpc240_101Params>(
+            &llr,
+            12,
+            0,
+            false,
+            Some(fst4_partial_crc()),
+            None,
+            None,
+        )
+        .expect("one flip repairs the bit");
+        assert_eq!(free.codeword.as_slice(), cw.as_slice());
+
+        match osd_decode_npre_generic::<Ldpc240_101Params>(
+            &llr,
+            12,
+            0,
+            false,
+            Some(fst4_partial_crc()),
+            Some(&mask),
+            None,
+        ) {
+            None => {}
+            Some(r) => assert_eq!(
+                r.codeword[5] == 1,
+                wrong > 0.0,
+                "the locked bit was flipped"
+            ),
         }
     }
 
@@ -2995,6 +3082,7 @@ mod packed_setup_differential {
                     0,
                     false,
                     pc,
+                    None,
                     Some(check_crc24),
                 ) && r.message77 == msg
                 {
