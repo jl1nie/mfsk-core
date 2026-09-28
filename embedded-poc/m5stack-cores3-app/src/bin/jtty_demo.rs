@@ -27,7 +27,7 @@
 //! Build: `cargo build --release --features jtty-rx --bin jtty-demo`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use esp_idf_hal::cpu::Core;
 use esp_idf_hal::peripherals::Peripherals;
@@ -139,6 +139,11 @@ fn main() -> ! {
     )
 }
 
+/// `MFSK_JTTY_DEMO_QUIET=1`: no log line per message update. Measurement switch: the
+/// updates arrive from inside `Back::process`, so a console that blocks on them is time
+/// taken from `Back`.
+const QUIET_UPDATES: bool = option_env!("MFSK_JTTY_DEMO_QUIET").is_some();
+
 /// `MFSK_JTTY_DEMO_PANEL_CORE1=1`: run the panel as a core-1 task instead of on `main`
 /// (core 0). A diagnostic switch, compile-time like the crate's other measurement knobs.
 const PANEL_ON_CORE1: bool = option_env!("MFSK_JTTY_DEMO_PANEL_CORE1").is_some();
@@ -189,6 +194,8 @@ fn feed_loop() {
         let (tx, rq) = std::sync::mpsc::sync_channel::<Prepared>(QUEUE_DEPTH);
         let depth = Arc::new(AtomicUsize::new(0));
         let dropped = Arc::new(AtomicUsize::new(0));
+        // Front's own time, µs, over the pass (a pass is ~6 s of it: u32 holds it).
+        let front_us = Arc::new(AtomicU32::new(0));
         let t_start = now_us();
 
         let front_cfg = ThreadSpawnConfiguration {
@@ -200,7 +207,8 @@ fn feed_loop() {
         };
         let _ = front_cfg.set();
         let front_handle = {
-            let (rx, audio, depth, dropped) = (rx.clone(), audio.clone(), depth.clone(), dropped.clone());
+            let (rx, audio, depth, dropped, front_us) =
+                (rx.clone(), audio.clone(), depth.clone(), dropped.clone(), front_us.clone());
             std::thread::Builder::new().stack_size(FRONT_STACK).spawn(move || {
                 let mut front = Front::new(rx, params).expect("embedded settings");
                 for (i, chunk) in audio.chunks(STEP).enumerate() {
@@ -212,7 +220,9 @@ fn feed_loop() {
                     app::waterfall_feed::push(chunk);
                     let mut room = || depth.load(Ordering::Relaxed) < QUEUE_DEPTH;
                     let mut ready = Vec::new();
+                    let t = now_us();
                     front.push_or_drop(chunk, &mut room, &mut |p| ready.push(p));
+                    front_us.fetch_add((now_us() - t) as u32, Ordering::Relaxed);
                     dropped.store(front.dropped(), Ordering::Relaxed);
                     for p in ready {
                         depth.fetch_add(1, Ordering::Relaxed);
@@ -235,18 +245,41 @@ fn feed_loop() {
         // The queue at its fullest, counting the window just taken: the margin left under
         // `QUEUE_DEPTH`, which the drop count alone only shows once it is gone.
         let mut deepest = 0usize;
+        // Per pass, as `jtty-bench`'s CASE line reports them: Back's time a window, mean and
+        // worst, which says whether the work fits where the drop count only says where the
+        // backlog sat. And the update callback's share of it (the logging below), apart.
+        let (mut windows, mut back_total, mut back_worst) = (0i64, 0i64, 0i64);
+        let (mut cb_total, mut cb_worst) = (0i64, 0i64);
         while let Ok(p) = rq.recv() {
             deepest = deepest.max(depth.fetch_sub(1, Ordering::Relaxed));
-            back.process(p, &mut |u| on_update(&mut n_complete, u));
+            let t = now_us();
+            back.process(p, &mut |u| {
+                let tc = now_us();
+                on_update(&mut n_complete, u);
+                let dc = now_us() - tc;
+                cb_total += dc;
+                cb_worst = cb_worst.max(dc);
+            });
+            let dt = now_us() - t;
+            windows += 1;
+            back_total += dt;
+            back_worst = back_worst.max(dt);
         }
         back.finish(&mut |u| on_update(&mut n_complete, u));
         let _ = front_handle.join();
 
+        let w = windows.max(1);
         log::info!(
             "jtty-demo: pass {pass} done — {n_complete}/{} messages, {} window(s) dropped, \
-             queue at most {deepest} of {QUEUE_DEPTH}",
+             queue at most {deepest} of {QUEUE_DEPTH} | {windows} windows: front {} ms, back {} ms \
+             mean {} worst, of which update callbacks {} ms in all (worst {} ms)",
             case.stations.len(),
-            dropped.load(Ordering::Relaxed)
+            dropped.load(Ordering::Relaxed),
+            i64::from(front_us.load(Ordering::Relaxed)) / w / 1000,
+            back_total / w / 1000,
+            back_worst / 1000,
+            cb_total / 1000,
+            cb_worst / 1000,
         );
         log_waterfall_peaks(&case.stations);
     }
@@ -292,13 +325,15 @@ fn log_waterfall_peaks(stations: &[mfsk_core::jtty::testsig::Station<'static>]) 
 /// it shows on the shared panel. Growing-but-incomplete updates are logged only; live
 /// in-place row updates are `docs/notes/JTTY_CORES3_APP.md` §9's E2, not this demo.
 fn on_update(n_complete: &mut u32, u: mfsk_core::jtty::assemble::MessageUpdate) {
-    log::info!(
+    if !QUIET_UPDATES {
+        log::info!(
         "jtty-demo: {:>7.1} Hz {:>6.2} s {} \"{}\"",
         u.f1_hz,
         u.start_s,
         if u.complete { "done " } else { "     " },
         u.text
-    );
+        );
+    }
     if !u.complete {
         return;
     }
