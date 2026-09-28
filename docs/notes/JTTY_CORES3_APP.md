@@ -39,8 +39,8 @@ is no quiet point for flash writes or for the panel.
 | trellis survivors (`with_f32_metrics`) | 2 × 32 KB | a rung 190 ms vs 410 ms (§11 of the budget) |
 | side-surface FFT buffer, 16-byte aligned | 32 KB | 4096 points 2.3 ms vs 10 ms (§13) |
 | side-surface power row | 16 KB | part of 485 → 148 ms (§13) |
-| `Back` stack (the ladder's correlations live there) | 32 KB | **no difference** — 190 ms mean either way, 1007 vs 1017 ms worst (`jtty-bench` §7b, #499) |
-| `Front` stack | 16 KB | **matters** — front 401 vs 321 ms a window (+25%), decoded 962 vs 543 ms mean, 2260 vs 1297 ms worst (`jtty-bench` §7b, #499); unlike `Back`, `Front`'s FIR/analytic-signal work touches its own stack on the hot path |
+| `Back` stack (the ladder's correlations live there) | 32 KB | **not measured** — the §7b "no difference" compared internal against internal (§12) |
+| `Front` stack | 16 KB | **not measured** — §7b's +25% compared a pinned prio-4 task against an unpinned default-priority one, both stacks internal (§12) |
 
 That is ~160 KB with the band scan, ~112 KB without it (no FFT buffer or power row), each piece needing up to a 32 KB
 contiguous block.
@@ -55,6 +55,9 @@ largest block is 31.7 KB; the USB host and the panel take more, and FT8 runs wit
 | survivors internal, `Back`'s stack in PSRAM | ~80 KB (+48 with the scan) | **no** — free (no speed cost), but still short by itself |
 | survivors internal, both stacks in PSRAM | ~64 KB (+48 with the scan) | only just, without the scan — and at a real cost: `Front`'s stack in PSRAM alone costs it +25% a window and nearly doubles decode latency (§7b) |
 | survivors in PSRAM | small | yes, but each ladder call ~2.2× slower (worst window ~740 ms → ~1.4 s, estimated from 190 vs 410 ms a rung; E0 measures it) |
+
+**Superseded 2026-09-28 (user decision): JTTY mode runs without WiFi** — §6 has the consequences, §12 the measurement
+that forced it. The argument below is kept as it was made.
 
 WiFi is not optional in practice: with the USB host installed, USB-Serial-JTAG is gone and the UDP log is the only
 console; it also serves the files and settings. So the real choice is between **survivors in PSRAM** (slower ladder, more
@@ -101,8 +104,10 @@ uac_reader (core 0, prio 8)             jtty_front (core 1, prio 4)          jtt
   panel at 1 only because of its reply deadline, and JTTY has none; with Back busy continuously a priority-1 panel would
   starve, and with it the waterfall drain. FT8's `PANEL_PRIORITY = 7` is the precedent (8–13 % of core 0, measured).
 - Watchdog: `DEINIT_WDT = true`, the default for non-FT8 receivers (the front end never lets IDLE1 run).
-- Stacks: Back stays on a 32 KB internal stack until a PSRAM stack is measured (the correlations are on it); every stack is
-  sized from `board::log_task_stacks`, not copied.
+- Stacks: both internal. Back's is 20 KB, reserved from `embedded_shared::worker_arena` in `prepare` while the heap is
+  whole and run as a static FreeRTOS task (a pthread's stack is allocated at spawn, when a 32 KB internal block could no
+  longer be found, §12); its peak is 12 996 B (1.56x margin, `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK` behind it).
+  Front's is 8 KB, peak 2 616 B. Both measured with `board::log_task_stacks` on the golden and band6 scenes (§13).
 - Log volume: per-window lines are rate-limited — the UDP log goes out through lwIP on core 1, beside the front end.
 
 ## 5. UI under the one-screen rule
@@ -128,8 +133,23 @@ No new screen, no new renderer. What the shared code does today, and what JTTY n
 
 ## 6. Settings and WiFi
 
-WiFi as FT4 (`http` on), for the console and files; no NTP requirement for decoding, but the UTC anchor for ALL.TXT
-wants the clock. The operator's `f0_hz` / `ftol_hz`: a fixed default (1500 Hz ± 50 Hz, the scan 200–2800 Hz) in E1, a
+**No WiFi in JTTY mode** (user decision, 2026-09-28): `JttyRx::net_config` returns `None`, whatever the CONFIG page
+says; the other modes keep their WiFi as before. Beside the WiFi driver internal DRAM ran to 1–7 KB free and the
+receiver dropped windows (§12). What that costs on the radio, where the board is the USB host:
+
+- **No console but the LCD.** USB-Serial-JTAG is gone in host mode and the UDP log needs WiFi, so nothing streams off
+  the board; the status strip (queue, drops, gaps, resets) is the operator's view. Measurement runs happen on the SIM
+  feed, where the board is a USB peripheral and the serial console works.
+- **No NTP.** The `all.txt` anchor comes from the BM8563 RTC, which `pmic::init` reads into the system clock — at the
+  panel's start, *after* `start`, so the first audio can arrive while the clock is still `Unset`. The sink therefore
+  re-takes the anchor whenever `time_sync::clock_epoch()` moves (measured: `Unset` → `Rtc`, the anchor moved by 640 and
+  933 ms on two boots, and `all.txt` lines were written from it). The RTC is only as good as its last setting: another
+  mode's NTP sync writes it back (`rtc::write_from_system_clock`), and it holds the minute for weeks (`MANUAL_M5STACK_CORES3.md` §7). A board whose RTC was never set writes no `all.txt` lines — a
+  line stamped 1970 is worse.
+- **No HTTP config page**, so no file download or settings over the network in this mode; files stay on LittleFS for
+  the next boot in a mode with WiFi.
+
+The operator's `f0_hz` / `ftol_hz`: a fixed default (1500 Hz ± 50 Hz, the scan 200–2800 Hz) in E1, a
 setting later.
 
 ## 7. Verification
@@ -183,3 +203,116 @@ the receiver every transmission — to check first in T0.
 - The SIM feed cannot measure memory (the board stays a USB peripheral) and cuts a looped stream at slot boundaries (§7).
 - Also: prewarm FFT tables before WiFi, `m5stack-s3-app`'s `BootMode` match, feature unification with `jtty-stats`, UDP log
   volume on core 1, the IN stream during TX.
+
+## 12. E1 on the board (2026-09-28), what changed
+
+Measured with the SIM feed (§7: the board is a USB peripheral, so the USB host's DRAM and interrupts are absent — these
+are floors, not the host-mode figures E0 still owes). Logs: `m5stack-cores3-app/logs/jtty_e1_sim_*_2026-09-28.log`.
+
+- **`jtty-bench` §7b (#516) did not measure a PSRAM stack.** `esp_pthread_set_cfg` rejects `stack_alloc_caps` without
+  `MALLOC_CAP_8BIT` (`ESP_ERR_INVALID_ARG`, esp-idf v5.5.3 `pthread.c:159`); the bench set `EnumSet::only(Spiram)` and
+  discarded `set()`'s result, so each "PSRAM" case ran with the previous (default) config: unpinned, default priority,
+  internal stack. Its "Back: no difference" compared internal with internal; its "Front: +25 %" compared pinned prio 4
+  with unpinned default priority. The §3 stack rows are struck; the app spawns with `Spiram | Cap8bit` and checks every
+  `set()`.
+- **An internal stack for Back cannot be allocated.** Building the receiver takes 122 KB internal (214 KB free before,
+  largest block 136 KB; 92 KB left); a 32 KB internal Back stack then fails with ENOMEM even with WiFi off
+  (`…_nowifi_backinternal`). Back's stack is in PSRAM by necessity, not by choice.
+- **Stack high-water** (`board::log_task_stacks`, golden and band6): Front uses ≤ 2.6 KB of its 16 KB internal stack
+  (13 808 bytes free at worst), Back ≤ 13 KB of its 32 KB (19 680 free, band6). Front's stack is the one internal
+  allocation here that is plainly oversized.
+- **Beside WiFi, internal DRAM is exhausted and the receiver runs over budget.** Golden loop, WiFi on: internal 1–7 KB
+  free (minimum 0), front 479–558 ms a window, back 385–515 ms mean, delay 2.9–3.8 s mean, 23 windows dropped in ~2 min,
+  and only the pass with no drop decodes the whole text. `band6` (`testsig::pileups(1)`), WiFi on: internal 4–6 KB,
+  front 612–842 ms, back 698–1017 ms mean (1.9 s worst), 67 dropped, 4 messages complete with gaps where the host
+  decodes 12 on the same 3-pass stream. WiFi off (`…_nowifi`): internal 47 KB free, front 415–476 ms, back 353–471 ms,
+  7 dropped; start times match the host's (3.14 / 33.38 / 63.63 s) — still slower than the bench on the same recording
+  (front 320, back 223 ms). E0's "then in host mode on the radio with WiFi" was never run before E1; this is what it would
+  have found, and it reopens §3's decision (open question 1) before E3.
+- E1's own choices where the draft left a number open: the clock reconciliation tracks a baseline that follows the
+  deficit at up to 1000 ppm (the IC-705 against the ESP crystal is well inside; a ±325 ppm source over an hour is
+  hosttested), and fills only a jump above it (> 20 ms), resets above 1 s. The green-row age is 10 s
+  (`BootMode::fresh_row_ms`); the waterfall has no slot rules (`slot_rules_ms` = 0). ALL.TXT is written when no message
+  is open and the queue is empty (`storage::quiet_rx`) for lines ≥ 30 s old, and in any case at 10 min. The JTTY SIM
+  feed is continuous (`uac::spawn_sim_feed_continuous`) — no boundary alignment and no per-pass re-alignment.
+
+## 13. E1b: WiFi off, Back's stack internal, and why the receiver is still slower than the bench (2026-09-28)
+
+Golden and band6 on the SIM feed, WiFi off (`logs/jtty_e1b_*_2026-09-28.log`).
+
+- **Memory.** The receiver build takes 125 124 B internal and 71 692 B PSRAM (218 999 B internal free before, largest
+  131 072; 93 875 B after, largest 31 744). Back's 20 KB reservation leaves 73 391 B; running, internal sits at
+  34–35 KB free (min 19–20, largest 13). Before this change (Back's stack in PSRAM, Front 16 KB) it was 47 KB free.
+- **Both trellis survivor buffers are in PSRAM.** A heap walk around the build lists every new block: two 32 768 B
+  blocks landed side by side in PSRAM (`0x3c3bd9b8`, `0x3c3c59d0`); two more 32 768 B blocks, two of 17 408 and two
+  of 4 352 B are internal. The walk gives placement, not order; that the PSRAM pair is the survivors follows from the
+  construction order (`TrellisScratch::new` allocates its two 32 KB buffers last) and from the region arithmetic below. Before the build the internal free blocks are 138 912, 32 024, 32 020
+  and 8 156 B: only one region can hold a 32 KB block (the two ~32 KB regions are 744 B short; one is probably the
+  32 KB internal pool the IDF logs reserving at boot), four such blocks need 131 088 B of it, and `Receiver::new()` fills that region with its
+  smaller pieces first because the survivors come last (`with_f32_metrics` → `TrellisScratch::new`). The same build in
+  `jtty-bench` had 245 KB free with a 156 KB region and took 154 KB internal. §3 puts the survivors in PSRAM at 410 ms
+  a rung against 190.
+- **Front's gap is the other core, not core 1.** Per-task CPU over 30 s spans: core 1 is `jtty_front` 84–88 % and
+  IDLE1 12–16 %, nothing else; core 0 is `jtty_back` 63–75 %, `main` (panel, prio 7) 8.2–8.6 %, `uac_sim` 1.1–1.3 %.
+  Timing each window's push by what Back was doing meanwhile: **255 ms with Back idle, 430–462 ms with Back decoding**
+  (golden, four spans, 16–22 and 31–92 windows each). The bench's 320 ms is between the two because its Back was
+  idle more. The cores share the data cache and the PSRAM bus, and Back's survivors are now PSRAM traffic.
+- **Back's gap**: the survivors in PSRAM (above), plus the panel's ~8.5 % of core 0 above it. Back's stack in PSRAM was
+  not it: moved internal, golden back mean went 353–471 → 327–436 ms.
+- **Results.** Golden: front 391–433 ms, back 327–436 ms mean (1.2–1.3 s worst), delay 1.0–1.9 s mean, 10 windows
+  dropped in 150 s, every message at the host's start times, intact only in the passes with no drop. Band6: back
+  623–795 ms mean, core 0 at 84–90 %, 118 windows dropped in ~180 s, 23 completes of which 6 intact (the host decodes
+  4 intact a 20 s pass).
+
+Putting the survivors in internal DRAM needs them allocated before the smaller buffers — a change in `mfsk-core`
+(`Receiver`'s construction order, or a constructor that takes the f32 scratch first). Left for the user to decide.
+
+
+## 14. E1c: the survivors internal (`Receiver::new_with_f32_metrics`), and internal DRAM runs out (2026-09-28)
+
+`Receiver::new_with_f32_metrics()` builds the same receiver largest allocation first (`mfsk-core`, bit-identical
+decodes, `tests/jtty_rx.rs`). SIM feed, WiFi off (`logs/jtty_e1c_*_2026-09-28.log`).
+
+- **Placement** (heap walk): the three 32 768 B blocks allocated first — both survivor arrays and the transform buffer —
+  and the 20 480 B sync wave are internal; a 16 896 B block and a 6 144 B block went to PSRAM. The build takes
+  160 968 B internal and 23 048 B PSRAM (218 999 B free before; 58 031 B after, largest 31 744). After Back's 20 KB
+  reservation: 37 547 B (largest 15 872).
+- **Speed now matches the bench.** Golden: front 330–340 ms a window, back 203–247 ms mean (612–637 worst), delay
+  530–597 ms mean, queue at most 1, **0 windows dropped**, every message intact. Band6: front 366–394 ms, back
+  318–420 ms mean (862–907 worst), delay 0.8–1.5 s mean, queue at most 5, **0 dropped**, every message intact, and the
+  first three passes equal to the host's `sim_streams_looped_on_the_host` message for message (start, frequency,
+  text). Per-core CPU: golden `jtty_back` 39–48 %, IDLE0 43–52 %; band6 `jtty_back` 64–76 %.
+- **Front under Back mostly went away.** Front a window with Back idle / busy: golden 278–279 / 318–329 ms, band6
+  279–280 / 344–375 ms (before: 255 / 430–462 on golden). The remaining ~15–30 % is the shared cache and PSRAM bus
+  (the surfaces and `Prepared` windows are still PSRAM).
+- **Internal DRAM does not fit.** Steady state 3–6 KB free, **minimum 0**, largest block 0–4 KB; the storage task
+  could not get its 5 KB internal stack (`storage: could not spawn the task (Not enough space)`), so **no `all.txt`
+  this boot**. Stacks: Back 12 996 B peak of 20 480, Front 2 616 of 8 192, `uac_sim` (SIM only) 1 920 of 8 192,
+  `main` 9 816 B free. On the radio there is no `uac_sim`, but the USB host and the UAC driver need internal DRAM of
+  their own — E3 needs more room than this, not less.
+
+## 15. E1d: survivors packed, the storage stack reserved (2026-09-28)
+
+User decision on §14: pack the survivor entries (`mfsk-core`) and reserve the storage task's stack at boot; Back's and
+Front's stacks and the power row / sync wave stay where they are. SIM feed, WiFi off (`logs/jtty_e1d_*_2026-09-28.log`).
+
+- **Packing.** `Surv<f32>` is 12 bytes (`repr(C, packed(4))`); the survivor arrays are 24 576 B each, both internal
+  (heap walk). Decodes are bit-identical (a fingerprint of every list for 360 frames, pinned from the unpacked
+  layout; the 33 upstream ladder cases; the golden/band6 stream and scan comparison), and nothing got slower: golden
+  back 184–228 ms mean against 203–247 unpacked, front 304–318 against 330–340.
+- **Storage.** `storage::reserve_stack()` (JTTY only; every other mode keeps its lazy pthread) takes the 5 120 B stack
+  in `prepare`, and the task runs on it as a static FreeRTOS task. `all.txt` lines are written again
+  (`storage: [quiet] all.txt +192 B`). Peak 3 008 B of 5 120.
+- **Memory.** The build takes 144 584 B internal and 23 048 B PSRAM (218 655 B free before, largest 131 072; 74 071 B
+  after, largest 31 744). After Back's 20 KB: 53 587 B; after storage's 5 KB: 48 463 B (largest 31 744). Running:
+  9–16 KB free, largest 5–7 KB, **minimum 0–1 KB**. The dips come from each window's small allocations (at the
+  board's 2 KB `ALWAYSINTERNAL` rule they try internal first and fall back to PSRAM); no allocation failed in either
+  run.
+- **Golden**: front 304–318 ms, back 184–228 ms mean (582–605 worst), delay 473–537 ms mean, queue at most 1,
+  0 dropped, every message intact. Front with Back idle / busy: 253–254 / 332–335 ms.
+- **Band6**: front 342–362 ms, back 293–388 ms mean (807–848 worst), delay 0.7–1.0 s mean, queue at most 4, 0 dropped,
+  39 completes with no gaps, the first three passes equal to the host's message for message. Front with Back idle /
+  busy: 255–262 / 337–348 ms. Core 0: `jtty_back` 58–72 %.
+- **Stacks**: Back 13 020 B peak of 20 480, Front 2 624 of 8 192, storage 3 008 of 5 120.
+- **Still open for E3**: on the radio the USB host and UAC driver need internal DRAM that `uac_sim` (8 KB here) does
+  not; with 9–16 KB free and a 0–1 KB minimum, that is the next number to measure.

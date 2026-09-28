@@ -557,14 +557,53 @@ impl Receiver {
             ladder: Ladder::new(),
             refs: ToneRefs::new(NSS),
             fir: dsp::AnalyticFir::new(FIR_HALF, 7.0),
-            power_buf: super::scratch::Slot::new(alloc::vec![0f32; NFFT / 2 + 4]),
-            fft_buf: super::scratch::Slot::new(
-                alloc::vec![Quad([Complex32::new(0.0, 0.0); 4]); NFFT / 8],
-            ),
+            power_buf: super::scratch::Slot::new(Self::power_buf()),
+            fft_buf: super::scratch::Slot::new(Self::fft_buf()),
             csync: dsp::sync_wave(),
             #[cfg(feature = "jtty-stats")]
             stats: Default::default(),
         }
+    }
+
+    /// The same receiver as `Receiver::new().with_f32_metrics()` — same tables, same
+    /// decodes, bit for bit (`tests/jtty_rx.rs`) — built **largest allocation first**.
+    ///
+    /// On the ESP32-S3 the order is what decides where each buffer lands. A receiver built
+    /// while allocations prefer internal DRAM (`heap_caps_malloc_extmem_enable`, the board's
+    /// `SPIRAM_MALLOC_ALWAYSINTERNAL` raised for the build) puts each buffer in the first heap
+    /// region with room, else in PSRAM; and on the CoreS3 app only one internal region can
+    /// hold a block of 32 KB or so at all (138 912 B free, the next 32 024).
+    /// `new().with_f32_metrics()` fills that region with the plans, tone references and power
+    /// row first and allocates the two trellis survivor arrays (32 KB each then, 24 KB since
+    /// `Surv` is packed) last — so both landed in PSRAM, where a rung costs 410 ms against 190
+    /// (`docs/notes/JTTY_CORES3_APP.md` §13, heap walk, 2026-09-28). Here the four largest
+    /// blocks come first — the survivors, then the transform buffer and the sync wave (Front's
+    /// hot data, made at its exact length so it never needs a second block while it grows) —
+    /// and those four fit that region; the smaller pieces follow, power row first, into
+    /// whatever is left.
+    pub fn new_with_f32_metrics() -> Self {
+        let scratch = super::trellis::TrellisScratch::new();
+        let fft_buf = Self::fft_buf();
+        let csync = dsp::sync_wave_exact();
+        let power_buf = Self::power_buf();
+        Self {
+            ladder: Ladder::new().with_f32_scratch(scratch),
+            refs: ToneRefs::new(NSS),
+            fir: dsp::AnalyticFir::new(FIR_HALF, 7.0),
+            power_buf: super::scratch::Slot::new(power_buf),
+            fft_buf: super::scratch::Slot::new(fft_buf),
+            csync,
+            #[cfg(feature = "jtty-stats")]
+            stats: Default::default(),
+        }
+    }
+
+    fn power_buf() -> Vec<f32> {
+        alloc::vec![0f32; NFFT / 2 + 4]
+    }
+
+    fn fft_buf() -> Vec<Quad> {
+        alloc::vec![Quad([Complex32::new(0.0, 0.0); 4]); NFFT / 8]
     }
 
     /// The work counters and stage timers so far (`jtty-stats`), the ladder's rung counts included.

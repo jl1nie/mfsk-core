@@ -685,24 +685,46 @@ pub fn sim_feeding() -> bool {
 /// of them; see the note inside for what a partial slot did to the
 /// measurement it was supposed to make.
 pub fn spawn_sim_feed(src: SimSource, slot_samples: usize, lead_silence: usize) {
+    spawn_sim_feed_inner(src, slot_samples, lead_silence, false);
+}
+
+/// Feed baked audio **as one continuous stream**: the whole recording,
+/// looped end to start, from the moment the task starts — no slot, so
+/// nothing to align the first sample to and no re-alignment at the top
+/// of each pass.
+///
+/// For a receiver with no slot (JTTY). The slotted feed's re-alignment
+/// skips or holds samples at every pass to keep a *slot* on the clock;
+/// for a stream whose only clock is its sample count that is a cut in
+/// the audio, and `docs/notes/JTTY_CORES3_APP.md` §7 names it as the
+/// thing a JTTY SIM loop must avoid. The recording's sample 0 is the
+/// stream's sample 0, so a host run over the same recording repeated
+/// sees exactly what the board does.
+pub fn spawn_sim_feed_continuous(src: SimSource) {
+    spawn_sim_feed_inner(src, usize::MAX, 0, true);
+}
+
+fn spawn_sim_feed_inner(src: SimSource, slot_samples: usize, lead_silence: usize, continuous: bool) {
     struct Cfg {
         src: SimSource,
         slot: usize,
         lead: usize,
+        continuous: bool,
     }
     let cfg = Box::into_raw(Box::new(Cfg {
         src,
         slot: slot_samples,
         lead: lead_silence,
+        continuous,
     })) as *mut core::ffi::c_void;
 
     extern "C" fn entry(arg: *mut core::ffi::c_void) {
         // SAFETY: `spawn_sim_feed` leaked exactly this box. Drop it once
         // its fields are copied into locals — the task never returns,
         // so nothing else needs it.
-        let (src, slot_samples, lead) = {
+        let (src, slot_samples, lead, continuous) = {
             let cfg = unsafe { Box::from_raw(arg as *mut Cfg) };
-            (cfg.src, cfg.slot, cfg.lead)
+            (cfg.src, cfg.slot, cfg.lead, cfg.continuous)
         };
         let bytes = match src {
             SimSource::Wav(w) => &w[44..],
@@ -731,13 +753,20 @@ pub fn spawn_sim_feed(src: SimSource, slot_samples: usize, lead_silence: usize) 
         } else {
             pcm.len()
         };
-        log::warn!(
-            "uac SIM: feeding {loop_len} of {} baked samples on loop ({} slot(s), {} trimmed for phase continuity), {} ms lead silence — no radio",
-            pcm.len(),
-            loop_len / slot_samples.max(1),
-            pcm.len() - loop_len,
-            lead / 12
-        );
+        if continuous {
+            log::warn!(
+                "uac SIM: feeding {loop_len} baked samples on loop as one continuous stream \
+                 (no slot, no re-alignment) — no radio"
+            );
+        } else {
+            log::warn!(
+                "uac SIM: feeding {loop_len} of {} baked samples on loop ({} slot(s), {} trimmed for phase continuity), {} ms lead silence — no radio",
+                pcm.len(),
+                loop_len / slot_samples.max(1),
+                pcm.len() - loop_len,
+                lead / 12
+            );
+        }
         // **Put the recording on the grid before feeding it.**
         //
         // A sim feed that just starts at boot places its slot
@@ -768,7 +797,7 @@ pub fn spawn_sim_feed(src: SimSource, slot_samples: usize, lead_silence: usize) 
         // (4 916, 5 787 ms) decoded **zero** of 13 candidates, on
         // unchanged decoder code — read at the time as a flaky grid.
         // Bounded: a board with no RTC and no network still feeds.
-        if option_env!("MFSK_SIM_NO_CLOCK").is_none() {
+        if option_env!("MFSK_SIM_NO_CLOCK").is_none() && !continuous {
             let t_wait = unsafe { sys::esp_timer_get_time() };
             while mfsk_app_shared::time_sync::clock_source()
                 == mfsk_app_shared::time_sync::ClockSource::Unset
@@ -789,10 +818,14 @@ pub fn spawn_sim_feed(src: SimSource, slot_samples: usize, lead_silence: usize) 
         // start from the moment `vTaskDelay` returned, so the
         // recording itself sat wherever the 10 ms tick put it.
         let now_esp = unsafe { sys::esp_timer_get_time() };
-        let align_us: Option<i64> = mfsk_app_shared::time_sync::utc_now_us().map(|u| {
-            let period_us = (slot_samples / 12) as u64 * 1_000;
-            (period_us - u % period_us) as i64
-        });
+        let align_us: Option<i64> = if continuous {
+            None
+        } else {
+            mfsk_app_shared::time_sync::utc_now_us().map(|u| {
+                let period_us = (slot_samples / 12) as u64 * 1_000;
+                (period_us - u % period_us) as i64
+            })
+        };
         let start_at = match align_us {
             Some(to_boundary_us) => {
                 log::warn!(
@@ -804,6 +837,7 @@ pub fn spawn_sim_feed(src: SimSource, slot_samples: usize, lead_silence: usize) 
                 );
                 now_esp + to_boundary_us + (lead as i64 * 1_000 / 12)
             }
+            None if continuous => now_esp,
             None => {
                 log::warn!(
                     "uac SIM: no clock — feeding from now, after {} ms of deliberate offset",

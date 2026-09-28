@@ -68,11 +68,17 @@ pub struct FeedConfig {
 }
 
 impl FeedConfig {
-    /// The slotted receivers': their slot's rules, the finer transform.
+    /// A receiver's own: the slotted modes their slot's rules and the
+    /// finer transform; JTTY no rules (`BootMode::slot_rules_ms`) and the
+    /// column-width transform, because its `Back` shares the panel's
+    /// core with no slack to give (see `WF_NFFT_COLUMN`).
     pub fn for_mode(mode: BootMode) -> Self {
         Self {
-            slot_period_ms: mode.slot_period_ms(),
-            nfft: embedded_shared::waterfall::WF_NFFT_FINE,
+            slot_period_ms: mode.slot_rules_ms(),
+            nfft: match mode {
+                BootMode::Jtty => embedded_shared::waterfall::WF_NFFT_COLUMN,
+                _ => embedded_shared::waterfall::WF_NFFT_FINE,
+            },
         }
     }
 }

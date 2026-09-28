@@ -44,6 +44,13 @@ pub mod freq_presets;
 #[path = "../../../embedded-poc/mfsk-app-shared/src/jtty_tx.rs"]
 pub mod jtty_tx;
 
+/// The JTTY receiver's sample clock and staging ring on a board (#499, E1):
+/// positioned gaps, and a deficit against the timer that tells a lost run of
+/// samples from a source clock that is merely slow — pure arithmetic over
+/// sample counts and microseconds passed in.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/jtty_rx_clock.rs"]
+pub mod jtty_rx_clock;
+
 /// Slot parity — pure arithmetic; `time_sync` needs it.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/parity.rs"]
 pub mod parity;
@@ -326,5 +333,125 @@ mod log_format_tests {
             "ADIF Export\n<adif_ver:5>3.1.4\n<created_timestamp:15>20260922 101500\n"
         ));
         assert!(h.ends_with("<eoh>\n"));
+    }
+}
+
+#[cfg(test)]
+mod jtty_rx_clock_tests {
+    use super::jtty_rx_clock::{FS, SampleClock, Staging, Verdict};
+
+    /// Hand over `n`-sample blocks for `secs`, each `late_us` after it was
+    /// recorded, at a source rate of `rate` samples a second; the verdicts.
+    fn run(secs: i64, n: usize, rate: f64, late_us: impl Fn(usize) -> i64) -> Vec<Verdict> {
+        let mut c = SampleClock::new();
+        let mut out = Vec::new();
+        let blocks = (secs as f64 * rate / n as f64) as usize;
+        for k in 1..=blocks {
+            let recorded_us = (k * n) as f64 * 1e6 / rate;
+            out.push(c.delivered(n, recorded_us as i64 + late_us(k)));
+        }
+        out
+    }
+
+    #[test]
+    fn a_timely_source_is_never_filled() {
+        assert!(
+            run(600, 256, 12_000.0, |_| 0)
+                .iter()
+                .all(|v| *v == Verdict::Ok)
+        );
+    }
+
+    #[test]
+    fn delivery_jitter_under_20_ms_is_not_a_gap() {
+        // a UAC read or SIM block handed over up to 19 ms after it was recorded
+        let v = run(120, 256, 12_000.0, |k| ((k * 7919) % 19) as i64 * 1_000);
+        assert!(v.iter().all(|v| *v == Verdict::Ok), "{v:?}");
+    }
+
+    #[test]
+    fn a_source_clock_off_by_hundreds_of_ppm_is_not_a_gap() {
+        // an IC-705 measured at 12 003.9 sa/s, and the same the other way
+        for rate in [12_003.9, 11_996.1] {
+            let v = run(3_600, 256, rate, |_| 0);
+            assert!(v.iter().all(|v| *v == Verdict::Ok), "rate {rate}");
+        }
+    }
+
+    #[test]
+    fn a_lost_run_is_filled_where_it_happened_and_only_once() {
+        let mut c = SampleClock::new();
+        let n = 256usize;
+        let mut t = 0i64;
+        for _ in 0..100 {
+            t += n as i64 * 1_000_000 / FS;
+            assert_eq!(c.delivered(n, t), Verdict::Ok);
+        }
+        // 50 ms of audio never arrives
+        t += 50_000 + n as i64 * 1_000_000 / FS;
+        match c.delivered(n, t) {
+            Verdict::Fill(z) => {
+                assert!((595..=605).contains(&z), "{z}");
+                c.filled(z);
+            }
+            v => panic!("{v:?}"),
+        }
+        for _ in 0..100 {
+            t += n as i64 * 1_000_000 / FS;
+            assert_eq!(c.delivered(n, t), Verdict::Ok);
+        }
+    }
+
+    #[test]
+    fn more_than_a_second_missing_is_a_reset() {
+        let mut c = SampleClock::new();
+        assert_eq!(c.delivered(256, 21_333), Verdict::Ok);
+        assert_eq!(c.delivered(256, 21_333 * 2 + 1_500_000), Verdict::Reset);
+    }
+
+    #[test]
+    fn staging_puts_the_zeros_where_the_samples_were_lost() {
+        let mut s = Staging::new(4);
+        assert_eq!(s.push(&[1, 2, 3]), 0);
+        assert_eq!(s.push(&[4, 5, 6]), 2); // 5, 6 do not fit
+        s.gap(1); // and one more missing at the same place
+        let mut out = Vec::new();
+        assert_eq!(s.drain_into(&mut out), 3);
+        assert_eq!(out, vec![1, 2, 3, 4, 0, 0, 0]);
+        assert!(s.is_empty());
+        // the next samples follow the zeros
+        s.push(&[7]);
+        s.drain_into(&mut out);
+        assert_eq!(out.last(), Some(&7));
+    }
+
+    #[test]
+    fn a_gap_between_blocks_lands_between_them() {
+        let mut s = Staging::new(100);
+        s.push(&[1, 2]);
+        s.gap(3);
+        s.push(&[9]);
+        let mut out = Vec::new();
+        assert_eq!(s.drain_into(&mut out), 3);
+        assert_eq!(out, vec![1, 2, 0, 0, 0, 9]);
+    }
+}
+
+#[cfg(test)]
+mod jtty_all_txt_tests {
+    use super::all_txt::message_line;
+
+    #[test]
+    fn a_jtty_line_leaves_snr_and_dt_blank_in_their_columns() {
+        // 2026-09-22 10:15:07 UTC
+        let l = message_line(1_790_072_107, None, "JTTY", 1506, "CQ JA1ABC CQ");
+        assert_eq!(
+            l,
+            "260922_101507     0.000 Rx JTTY            1506 CQ JA1ABC CQ\n"
+        );
+        // the frequency column sits where rx_line puts it
+        let r =
+            super::all_txt::rx_line(1_790_072_107, None, "JTTY", -12, 0.3, 1506, "CQ JA1ABC CQ");
+        assert_eq!(l.find("1506"), r.find("1506"));
     }
 }

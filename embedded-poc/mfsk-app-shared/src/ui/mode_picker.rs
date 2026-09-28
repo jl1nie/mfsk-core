@@ -163,11 +163,12 @@ pub const CONFIG_ROWS: [ConfigRow; 4] = [
 /// Five rows is 5 x [`PITCH`] + [`COMMIT_H`] = 280 px, against a
 /// 240x320 panel — it fits, with the widget's top moving from y=44 to
 /// y=20 as it centres. A sixth would not.
-pub const MODES: [(BootMode, &str); 4] = [
+pub const MODES: [(BootMode, &str); 5] = [
     (BootMode::Uac, "FT8"),
     (BootMode::Ft4, "FT4"),
     (BootMode::Wspr, "WSPR"),
     (BootMode::Fst4, "FST4"),
+    (BootMode::Jtty, "JTTY"),
 ];
 
 /// The name the screen shows for a boot mode — the picker's own label

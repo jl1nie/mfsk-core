@@ -51,6 +51,20 @@ pub fn rx_line(
     s
 }
 
+/// A received message with no report to give — JTTY's, whose decoder
+/// carries neither an S/N nor a DT (`docs/notes/JTTY_CORES3_APP.md`
+/// §5): the two columns are left blank, in their widths, rather than
+/// written `0` / `0.0`, which would read as measurements. `unix` is when
+/// the message began.
+pub fn message_line(unix: i64, dial_hz: Option<u64>, mode: &str, df_hz: i32, msg: &str) -> String {
+    let mut s = String::with_capacity(80);
+    prefix(&mut s, unix, dial_hz, "Rx", mode);
+    let _ = write!(s, "         {df_hz:5} {msg}");
+    s.truncate(s.trim_end().len());
+    s.push('\n');
+    s
+}
+
 /// A transmission beginning at `unix`, at audio offset `df_hz`.
 pub fn tx_line(unix: i64, dial_hz: Option<u64>, mode: &str, df_hz: i32, msg: &str) -> String {
     let mut s = String::with_capacity(80);

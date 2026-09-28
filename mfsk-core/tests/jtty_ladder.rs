@@ -423,3 +423,56 @@ fn f32_metrics_agree_with_f64_and_with_upstream() {
         "f32 made {all_fa_extra} more false accepts"
     );
 }
+
+// ── the list decoder's exact output, pinned ──────────────────────────────────────────
+
+/// Every list the trellis returns — `f64`, `f32`, and `f32` in a reused [`TrellisScratch`] —
+/// for 360 frames across the three coherent lengths, both reserved-bit settings, noise and
+/// three signal levels, folded into one FNV-1a fingerprint of their `Debug` text (which prints
+/// every metric exactly). Pinned from the survivor layout before `Surv` was packed to 12 bytes
+/// (#499, `docs/notes/JTTY_CORES3_APP.md` §14): a layout change must not move a single bit.
+///
+/// Inputs use nothing but integer arithmetic and IEEE `+ - * /` (no libm), and the trellis
+/// itself only multiplies and adds, so the fingerprint does not depend on the platform's libm.
+#[test]
+fn list_decodes_are_pinned() {
+    use mfsk_core::jtty::tbcc;
+    use mfsk_core::jtty::trellis::TrellisScratch;
+    const PINNED: u64 = 0x76df_0ba6_ea98_4eca;
+    let mut fp: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |s: &str| {
+        for b in s.bytes() {
+            fp = (fp ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    let mut rng = Lcg(0x5EED_0499);
+    let noise = |rng: &mut Lcg| (rng.uniform() - 0.5) as f32;
+    let plans = [Plan::new(1), Plan::new(2), Plan::new(4)];
+    let mut scratch = TrellisScratch::new();
+    for frame in 0..360 {
+        let info = random_info(&mut rng);
+        let tones = tbcc::encode(&info);
+        let amp = [0.0f32, 0.6, 1.2, 2.4][frame % 4];
+        let mut z = [[Complex32::new(0.0, 0.0); 4]; INFO_BITS];
+        for (k, row) in z.iter_mut().enumerate() {
+            for (t, c) in row.iter_mut().enumerate() {
+                let s = if t == usize::from(tones[k]) { amp } else { 0.0 };
+                *c = Complex32::new(s + noise(&mut rng), noise(&mut rng));
+            }
+        }
+        let plan = &plans[frame % 3];
+        let prune = frame % 2 == 0;
+        let f32_list = plan.decode_f32(&z, prune);
+        assert_eq!(
+            plan.decode_f32_in(&z, prune, &mut scratch),
+            f32_list,
+            "frame {frame}"
+        );
+        feed(&format!("{f32_list:?}"));
+        feed(&format!("{:?}", plan.decode(&z, prune)));
+    }
+    if std::env::var_os("MFSK_JTTY_PRINT_FINGERPRINT").is_some() {
+        eprintln!("list decode fingerprint {fp:#018x}");
+    }
+    assert_eq!(fp, PINNED, "the list decoder's output moved: {fp:#018x}");
+}

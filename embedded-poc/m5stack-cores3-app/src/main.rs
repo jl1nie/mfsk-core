@@ -157,6 +157,15 @@ fn main() -> ! {
         boot_mode::BootMode::Ft4 => {
             boot::run::<apps::ft4::Ft4Rx>(mode, peripherals, nvs_part, nvs)
         }
+        #[cfg(feature = "jtty-rx")]
+        boot_mode::BootMode::Jtty => {
+            boot::run::<apps::jtty::JttyRx>(mode, peripherals, nvs_part, nvs)
+        }
+        #[cfg(not(feature = "jtty-rx"))]
+        boot_mode::BootMode::Jtty => log::error!(
+            "boot_mode=jtty but this image was built without --features jtty-rx — \
+             continuing as an FT8 controller"
+        ),
         #[cfg(not(feature = "ft4"))]
         boot_mode::BootMode::Ft4 => log::error!(
             "boot_mode=ft4 but this image was built without --features ft4 — \

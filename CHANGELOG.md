@@ -2,6 +2,44 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: the trellis survivors take 12 bytes an entry, not 16 (#499).** `Surv` is `repr(C, packed(4))`: with an `f32`
+  metric the default layout spent 4 of its 16 bytes on padding before the 8-aligned key, so `TrellisScratch`'s two arrays
+  go from 32 to 24 KB each — 16 KB of internal DRAM on the CoreS3, where the JTTY receiver had run it down to 0–6 KB
+  free (`docs/notes/JTTY_CORES3_APP.md` §14–§15). The key stays 4-aligned, which is all a 64-bit load needs on Xtensa,
+  and fields are only ever read by value. Decodes do not move by a bit: `tests/jtty_ladder.rs`'s new
+  `list_decodes_are_pinned` folds every `f64`, `f32` and reused-scratch list for 360 frames into a fingerprint taken
+  from the unpacked layout, and the upstream ladder cases and `largest_first_build_decodes_bit_identically` pass
+  unchanged. Not slower on the board either: JTTY's Back went from 203–247 to 184–228 ms a window on the golden
+  recording.
+
+- **JTTY: `Receiver::new_with_f32_metrics()`, the same receiver built largest allocation first (#499).**
+  Decodes bit-identically to `Receiver::new().with_f32_metrics()` (`tests/jtty_rx.rs`, the streamed updates and the
+  scan on WSJT-X's recording and on `testsig`'s six-station band); only the order of its allocations differs. On the
+  ESP32-S3, where a receiver is built while allocations prefer internal DRAM and each one takes the first heap region
+  with room, that order decides placement: the CoreS3 app has one internal region that can hold a 32 KB block, and the
+  old order filled it with the smaller tables before the two 32 KB trellis survivor arrays, which landed in PSRAM (a
+  rung 410 ms against 190). Built survivors first, then the transform buffer and the sync wave (made at its exact
+  length, `dsp::sync_wave_exact`, so it never needs a second block while it grows), the four fit, and on the board Back
+  went from 327–436 to 203–247 ms a window on the golden recording. `new()` and `with_f32_metrics()` are unchanged.
+
+- **CoreS3: JTTY as a fifth receive mode, behind `--features jtty-rx` (#499, E1 of `docs/notes/JTTY_CORES3_APP.md`).**
+  Picked from the touch panel like FT8/FT4/FST4/WSPR. JTTY has no slot, so the sample count is its clock: the audio sink
+  stages samples with positioned gap markers for overflow, a clock reconciliation (`mfsk_app_shared::jtty_rx_clock`,
+  hosttested) inserts zeros for a deficit above 20 ms against `esp_timer` and resets the stream above 1 s, and every
+  reset starts a new generation of `Front`/`Back`. Front runs on core 1 (prio 4, 8 KB internal stack), Back on core 0
+  (prio 5, 20 KB internal stack reserved from `worker_arena` at boot), queue 6, the panel above Back. **JTTY mode runs
+  without WiFi**: beside the WiFi driver internal DRAM ran to 1–7 KB free and the receiver dropped dozens of windows
+  (design note §12), so there is no UDP log, NTP or config page in this mode, and the ALL.TXT anchor comes from the
+  BM8563 RTC (re-taken when the clock is set after the stream starts). A message is published once, on `complete`;
+  ALL.TXT stamps it from that anchor plus its `start_s` and is flushed when no message is open (or after 10 min). The
+  slot period is split three ways (`BootMode::fresh_row_ms` / `slot_rules_ms`), so nothing sees a period of 0. On the
+  SIM feed it decodes the golden recording at the host's start times, but it is still slower than `jtty-bench`: both
+  trellis survivor buffers land in PSRAM because `Receiver` allocates them after its smaller buffers have filled the
+  one internal region that could hold them, and Front runs 255 ms a window while Back is idle against 430–462 ms while
+  it decodes (§13). #516's PSRAM-stack bench never ran with a PSRAM stack (§12). FT8/FT4/FST4/WSPR are unchanged
+  (FT8 SIM A/B against `main`: 60 decodes each over 9 slots and identical panel timing; re-run after the
+  `worker_arena` change, 7 a slot on every slot after the one a boot-time NTP re-alignment cut).
+
 - **docs: pin `lib/*.f90`/`lib/*.c` citations to the `v3.2.0-rc1` tag of `WSJTX/wsjtx`, and fix 7 that had drifted (#467).**
   `CONTRIBUTING.md` now states the reference tree explicitly — line numbers move between trees on any file that sees
   an edit, and nothing previously recorded which tree a citation's line number was checked against. Auditing this
