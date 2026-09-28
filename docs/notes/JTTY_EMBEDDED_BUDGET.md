@@ -500,3 +500,69 @@ depth.
 - *No side call, or L=1 only, in a window where channel 0 made one*: none reads 116 of 330 (six stations 20 of 60); L=1
   only decodes exactly as before and saves 56 of 726 L=4 rungs, because such windows are rare — they were not the slow
   windows, which (above) were the rebuilt receiver.
+
+## 15. The list Viterbi on the LX7: the same survivors, found with less work (2026-09-28)
+
+User decision: speed the trellis up for the board, **keeping every decode bit-identical**, upstream's tie order
+included. `jtty-bench` gained a ladder-only mode (`MFSK_JTTY_BENCH_LADDER_ONLY`): the per-rung profile, a cycle split
+of a one-bit step (`Plan::profile_f32_parts`, `xthal_get_ccount`), and a fingerprint of 120 `f32` decodes (L=1/2/4, 40
+each, noise and signal) that has to stay `0xe484721a2eeb476e`. Every change below kept it, and kept the host gates: the
+33 upstream ladder cases, `list_decodes_are_pinned` (`0x76df0ba6ea984eca`), and the `jtty_rx` constructor tests.
+CoreS3, survivors internal (`logs/trellis_*_2026-09-28.log`):
+
+| step | 120 decodes | L=1 | L=2 | L=4 (ms a rung) |
+|---|---|---|---|---|
+| baseline (packed survivors, `JTTY_CORES3_APP.md` §15) | 27 590 ms | 142 | 145 | 198 |
+| order check reads the key only behind `m >= om` | 27 135 | 138\* | 154\* | 214\* |
+| one-bit merge by two indices | 27 051 | 127\* | 152\* | 213\* |
+| the same compare in that merge | 27 043 | 125\* | 152\* | 212\* |
+| **top four for two- and four-bit blocks** | **21 748** | 126\* | **115** | **145** |
+| **one-bit blocks merged lazily by two heads** | **21 020** | **85** | 115 | 145 |
+
+\* with the cycle marks inside `advance_small`, which cost about 13 ms at L=1 (142 → 155 on the baseline) and move the
+other rungs' laps by code layout; compare starred numbers with each other. The fingerprint's time has no marks.
+
+What the split showed first: a one-bit end state was 564 cycles building and order-checking its eight extensions,
+246 merging, 57 the rest. The disassembly had the 64-bit key compare — two words, a branch chain — evaluated for every
+adjacent pair ahead of the metric test that almost always settles it. Both arms of `precedes` need `m >= om`, so
+testing that first is the same relation, NaN included (564 → 467 cycles). Then the merge: two indices instead of a
+scan over `heads[]` (254 → 192).
+
+The two changes that mattered rest on one fact. **With finite branch metrics a list's sums can only fall or stay
+equal**: every entry gets the same branch metric, and IEEE rounding is monotonic. An end state's four survivors are the
+four best of its extended lists under `precedes`, keys being distinct outside a pass's first block; so
+
+- **two- and four-bit blocks** (`advance_state_top`): keep a sorted four, and read each predecessor's list only until an
+  extension fails to beat the fourth — the unread ones sum no higher. It replaces a merge that compared all 4 or 16
+  heads for each survivor placed (64 compares a state at L=4);
+- **one-bit blocks** (`advance_pair`): merge the two lists by two heads, building an extension only when it becomes a
+  head, instead of building all eight and checking every pair.
+
+An equal sum is the one case the order is not certain — a smaller key behind could come out ahead, which is the f32
+reordering the old code already checked for. Both paths detect it (a rejected sum equal to the fourth's, two equal
+sums in one list, or a head's successor summing equal to it) and give the state to `advance_state_sorted`, which is
+exact. A pass's first block (`DEDUPE`) and a decode with a non-finite branch metric (checked once, over the energies)
+keep the previous code.
+
+**Tried and not kept:** `precedes` rewritten as `if m != om { return m > om }` (27 590 → 28 543 ms); the lazy compare
+made `precedes` itself, which reaches `advance`'s head scan (L=2 152 → 159 ms, L=4 213 → 225, L=1 −4); the top-four
+selection for one-bit blocks too (L=1 126 → 132, 21 748 → 22 174 ms).
+
+**Host** (`jtty_profile`, `f64`, Ryzen 7 3700X, two runs each): ladder ms a window, noise 0.45 → 0.32, the upstream
+recording 5.09–5.18 → 3.60–3.63, busy band with 1/3/6 stations 1.44–1.50 / 3.15–3.31 / 6.89–6.96 → 1.03–1.05 /
+2.24–2.29 / 4.72–4.78.
+
+**JTTY mode on the board** (SIM feed, WiFi off, `logs/jtty_trellis_{before,after}_sim_*_2026-09-28*.log`; "before" is
+this branch's app with the old `trellis.rs`):
+
+| | Back a window, mean | Back, worst | delay, mean / worst | queue at most | dropped |
+|---|---|---|---|---|---|
+| golden, before | 201–244 ms | 575–619 ms | 516–578 / 971–1036 ms | 1 of 6 | 0 |
+| golden, after | 169–198 ms | 427–479 ms | 473–507 / 746–787 ms | 1 of 6 | 0 |
+| band6, before | 345–398 ms | 851–870 ms | 810–1177 / 1313–2850 ms | 5 of 6 | 0 |
+| band6, after | 222–292 ms | 543–570 ms | 542–630 / 869–1010 ms | 1 of 6 | 0 |
+
+Decodes are the same message for message: golden one message a pass at 1506.6 Hz in both; band6 the same frequencies
+in every 20 s pass the two runs share (4, 4, 4, 4, 5, 5), which for the first passes is the host's four intact a pass
+(`JTTY_CORES3_APP.md` §14). Front barely moved (golden 329–337 → 323–329 ms a window, band6 352–369 → 333–346, less
+of Back to share the cache with), so on band6 the slower half is now Front, not Back.

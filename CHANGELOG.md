@@ -2,6 +2,22 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **JTTY: the list Viterbi is 30–40 % faster on the ESP32-S3, and decodes exactly as before (#499).** Each end state's
+  four survivors are the four best extensions of its predecessors' lists. For two- and four-bit blocks
+  (`advance_state_top`) they are now kept as a sorted four while each predecessor's list is read only until an extension
+  fails to beat the fourth, instead of a merge that compared every head for each survivor placed (64 comparisons a state
+  at L=4). For one-bit blocks (`advance_pair`) the two lists are merged by two heads, each extension built only when it
+  becomes a head. Both rest on one fact: with finite branch metrics a list's sums fall or stay equal, because rounding is
+  monotonic. An equal sum is the only case where a smaller key behind could come out ahead, so whenever one is met, the
+  state goes to the exact sorted path, as does a pass's first block and any non-finite metric. The tie order is
+  upstream's too: the 33 upstream ladder cases, `list_decodes_are_pinned` and the `jtty_rx` constructor tests pass
+  unchanged, and on the board a fingerprint of 120 `f32` decodes is identical before and after. CoreS3, survivors in
+  internal DRAM: L=1 142 → 85 ms a rung, L=2 145 → 115, L=4 198 → 145. JTTY mode's Back fell from 201–244 to
+  169–198 ms a window on the golden recording; on the six-station band6 scene Back fell from 345–398 to 222–292 ms and the queue from 5 waiting windows to 1, with the same decodes (`docs/notes/JTTY_EMBEDDED_BUDGET.md` §15). The
+  host's `f64` ladder got faster too: 6.9 → 4.8 ms a window with six stations. Tried and not kept: reading the key
+  only behind the metric compare everywhere (L=2 and L=4 slower), and the top-four selection for one-bit blocks (slower
+  than the two-head merge).
+
 - **JTTY: the trellis survivors take 12 bytes an entry, not 16 (#499).** `Surv` is `repr(C, packed(4))`: with an `f32`
   metric the default layout spent 4 of its 16 bytes on padding before the 8-aligned key, so `TrellisScratch`'s two arrays
   go from 32 to 24 KB each — 16 KB of internal DRAM on the CoreS3, where the JTTY receiver had run it down to 0–6 KB
