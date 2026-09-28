@@ -40,7 +40,7 @@ is no quiet point for flash writes or for the panel.
 | side-surface FFT buffer, 16-byte aligned | 32 KB | 4096 points 2.3 ms vs 10 ms (§13) |
 | side-surface power row | 16 KB | part of 485 → 148 ms (§13) |
 | `Back` stack (the ladder's correlations live there) | 32 KB | **no difference** — 190 ms mean either way, 1007 vs 1017 ms worst (`jtty-bench` §7b, #499) |
-| `Front` stack | 16 KB (bench, internal) | not measured |
+| `Front` stack | 16 KB | **matters** — front 401 vs 321 ms a window (+25%), decoded 962 vs 543 ms mean, 2260 vs 1297 ms worst (`jtty-bench` §7b, #499); unlike `Back`, `Front`'s FIR/analytic-signal work touches its own stack on the hot path |
 
 That is ~160 KB with the band scan, ~112 KB without it (no FFT buffer or power row), each piece needing up to a 32 KB
 contiguous block.
@@ -52,7 +52,8 @@ largest block is 31.7 KB; the USB host and the panel take more, and FT8 runs wit
 |---|---|---|
 | as the bench (scan, all hot buffers internal, internal stacks) | ~160 KB | **no** |
 | channel 0 only, survivors internal, internal stacks | ~112 KB | **no** |
-| survivors internal, stacks in PSRAM | ~64 KB (+48 with the scan) | only just, without the scan — `Back`'s half now measured at no speed cost; `Front`'s stack still unmeasured |
+| survivors internal, `Back`'s stack in PSRAM | ~80 KB (+48 with the scan) | **no** — free (no speed cost), but still short by itself |
+| survivors internal, both stacks in PSRAM | ~64 KB (+48 with the scan) | only just, without the scan — and at a real cost: `Front`'s stack in PSRAM alone costs it +25% a window and nearly doubles decode latency (§7b) |
 | survivors in PSRAM | small | yes, but each ladder call ~2.2× slower (worst window ~740 ms → ~1.4 s, estimated from 190 vs 410 ms a rung; E0 measures it) |
 
 WiFi is not optional in practice: with the USB host installed, USB-Serial-JTAG is gone and the UDP log is the only
