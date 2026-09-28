@@ -121,6 +121,14 @@ path = "src/bin/jtty_bench.rs"
 harness = false
 required-features = ["jtty"]
 
+# JTTY receiver, WAV/testsig demo — the desk equivalent of a busy contest band.
+# No USB host, so the serial console stays attached (see the bin's own doc comment).
+[[bin]]
+name = "jtty-demo"
+path = "src/bin/jtty_demo.rs"
+harness = false
+required-features = ["jtty-rx"]
+
 [[bin]]
 name = "scalar-bench"
 path = "src/bin/scalar_bench.rs"
@@ -223,6 +231,10 @@ wspr-golden = ["wspr"]
 fst4 = ["embedded-shared/fst4-bench"]
 # The JTTY cost bench (`jtty-bench` bin), #499 E0.
 jtty = ["embedded-shared/jtty-bench"]
+# The JTTY receive demo (`jtty-demo` bin). Deliberately not `jtty-bench`'s
+# `embedded-shared/jtty-bench` — that pulls `mfsk-core/jtty-stats` (a mutex in the
+# hot path), which a receiver has no reason to carry. Direct `mfsk-core/jtty` only.
+jtty-rx = ["mfsk-core/jtty"]
 # The FT4 receiver and its WAV demo bin.
 ft4 = ["embedded-shared/ft4"]
 # Bakes one FT4 slot (180 KB) so the FT4 receiver has something to
