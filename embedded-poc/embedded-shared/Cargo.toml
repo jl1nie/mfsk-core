@@ -82,6 +82,11 @@ ft4-bench = ["ft4"]
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+# `ThreadSpawnConfiguration::stack_alloc_caps` (`apps::jtty_bench`'s Back-stack-in-PSRAM
+# measurement, CoreS3 app design §11) is an `EnumSet<MallocCap>`; esp-idf-hal already pulls
+# this crate in transitively but does not re-export it, so a direct dependency is needed to
+# name the type. Same version esp-idf-hal 24e99b8 resolves to.
+enumset = { version = "1.1.13", default-features = false }
 
 mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "ft8", "fft-extern", "dotprod-extern", "fixed-point", "profile-coarse", "nstep-half"] }
 num-complex = { version = "0.4", default-features = false }
