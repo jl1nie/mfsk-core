@@ -166,6 +166,12 @@ impl Receiver for JttyRx {
             let (f, l, _) = heap_now();
             log::info!("jtty_app: Back's {BACK_STACK} B stack reserved — internal now {f} B (largest {l} B)");
         }
+        // The storage task's too: spawned lazily as in every mode, it found no
+        // 5 KB internal block once this receiver ran, and wrote no all.txt (§14).
+        if crate::storage::reserve_stack() {
+            let (f, l, _) = heap_now();
+            log::info!("jtty_app: storage stack reserved — internal now {f} B (largest {l} B)");
+        }
         if let Ok(mut g) = SINK.lock() {
             *g = Some(Sink {
                 staging: Staging::new(STAGING_CAP),

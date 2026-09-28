@@ -209,16 +209,52 @@ pub fn start_if_requested() {
     });
 }
 
+/// Internal DRAM for the task's stack, taken at boot by a mode that
+/// cannot count on finding [`TASK_STACK`] contiguous later.
+///
+/// Only JTTY calls it. Its receiver leaves 3-6 KB of internal DRAM free
+/// once it runs, and there the lazy spawn failed with ENOMEM — no
+/// `all.txt` that boot (`docs/notes/JTTY_CORES3_APP.md` §14). Every
+/// other mode keeps the lazy pthread above, whose reason (not carving
+/// the decoder's block at boot) still holds for them.
+static RESERVED_STACK: core::sync::atomic::AtomicPtr<u8> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Take the task's stack now. Call while the heap is whole, before
+/// anything fragments it (`worker_arena`'s reason); the task still
+/// spawns lazily, on the first request, onto this block.
+pub fn reserve_stack() -> bool {
+    use esp_idf_svc::sys;
+    // SAFETY: a plain sized allocation, never freed — the task runs for
+    // the life of the process.
+    let p = unsafe { sys::heap_caps_malloc(TASK_STACK, sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT) }
+        as *mut u8;
+    if p.is_null() {
+        log::error!("storage: could not reserve its {TASK_STACK} B stack");
+        return false;
+    }
+    RESERVED_STACK.store(p, Ordering::Release);
+    log::info!("storage: {TASK_STACK} B stack reserved at {p:p}");
+    true
+}
+
 /// Spawn the storage task; it mounts the partition (formatting it the
 /// first time) before taking requests.
 ///
 /// A `std::thread` with its stack caps set to internal DRAM explicitly
 /// — `uac::spawn_psram_thread`'s mechanism with the opposite caps — so
-/// the channel below parks a pthread, as `std` expects.
+/// the channel below parks a pthread, as `std` expects. With a stack
+/// from [`reserve_stack`] it is a static FreeRTOS task instead, as
+/// JTTY's `Back` is, whose channel receive parks the same way.
 fn spawn(rx: Receiver<Req>) {
     use esp_idf_svc::hal::cpu::Core;
     use esp_idf_svc::hal::task::thread::{MallocCap, ThreadSpawnConfiguration};
 
+    let reserved = RESERVED_STACK.load(Ordering::Acquire);
+    if !reserved.is_null() {
+        spawn_static(rx, reserved);
+        return;
+    }
     let d = ThreadSpawnConfiguration::default();
     let cfg = ThreadSpawnConfiguration {
         name: Some(TASK_NAME),
@@ -234,44 +270,81 @@ fn spawn(rx: Receiver<Req>) {
     }
     let spawned = std::thread::Builder::new()
         .stack_size(TASK_STACK)
-        .spawn(move || {
-            if mount() {
-                MOUNTED.store(true, Ordering::Release);
-            }
-            let mut st = Held::default();
-            let ok = mounted();
-            loop {
-                // Wake for a request, or for the receive-only write
-                // point when one is due.
-                let req = match st.next_due_us() {
-                    Some(due) => {
-                        let wait = (due - now_us()).max(0) as u64;
-                        match rx.recv_timeout(Duration::from_micros(wait)) {
-                            Ok(r) => Some(r),
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-                            Err(_) => break,
-                        }
-                    }
-                    None => match rx.recv() {
-                        Ok(r) => Some(r),
-                        Err(_) => break,
-                    },
-                };
-                if !ok {
-                    if req.is_some() {
-                        DROPPED.fetch_add(1, Ordering::Relaxed);
-                    }
-                    continue;
-                }
-                match req {
-                    Some(r) => serve(r, &mut st),
-                    None => st.rx_quiet_point(),
-                }
-            }
-        });
+        .spawn(move || task_main(rx));
     let _ = ThreadSpawnConfiguration::default().set();
     if let Err(e) = spawned {
         log::error!("storage: could not spawn the task ({e}) — no logs this boot");
+    }
+}
+
+/// [`spawn`] onto the stack [`reserve_stack`] took: same name, priority
+/// and core.
+fn spawn_static(rx: Receiver<Req>, stack: *mut u8) {
+    use esp_idf_svc::sys;
+    static mut TCB: core::mem::MaybeUninit<sys::StaticTask_t> = core::mem::MaybeUninit::uninit();
+    unsafe extern "C" fn entry(arg: *mut core::ffi::c_void) {
+        // SAFETY: `arg` is the box leaked below, handed to this task alone.
+        let rx = *unsafe { Box::from_raw(arg as *mut Receiver<Req>) };
+        task_main(rx);
+        // A FreeRTOS task must not return.
+        unsafe { sys::vTaskDelete(core::ptr::null_mut()) };
+    }
+    let arg = Box::into_raw(Box::new(rx)) as *mut core::ffi::c_void;
+    // SAFETY: the stack is the block `reserve_stack` took for this task
+    // alone; the TCB is static and `start_if_requested` runs this once.
+    let h = unsafe {
+        sys::xTaskCreateStaticPinnedToCore(
+            Some(entry),
+            TASK_NAME.as_ptr(),
+            TASK_STACK as u32,
+            arg,
+            u32::from(TASK_PRIO),
+            stack,
+            core::ptr::addr_of_mut!(TCB) as *mut sys::StaticTask_t,
+            1,
+        )
+    };
+    if h.is_null() {
+        log::error!("storage: could not create the task on its reserved stack — no logs this boot");
+        // SAFETY: the task never started, so the box is still ours.
+        drop(unsafe { Box::from_raw(arg as *mut Receiver<Req>) });
+    }
+}
+
+/// The task: mount, then serve requests and receive-only write points.
+fn task_main(rx: Receiver<Req>) {
+    if mount() {
+        MOUNTED.store(true, Ordering::Release);
+    }
+    let mut st = Held::default();
+    let ok = mounted();
+    loop {
+        // Wake for a request, or for the receive-only write
+        // point when one is due.
+        let req = match st.next_due_us() {
+            Some(due) => {
+                let wait = (due - now_us()).max(0) as u64;
+                match rx.recv_timeout(Duration::from_micros(wait)) {
+                    Ok(r) => Some(r),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(_) => break,
+                }
+            }
+            None => match rx.recv() {
+                Ok(r) => Some(r),
+                Err(_) => break,
+            },
+        };
+        if !ok {
+            if req.is_some() {
+                DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+            continue;
+        }
+        match req {
+            Some(r) => serve(r, &mut st),
+            None => st.rx_quiet_point(),
+        }
     }
 }
 

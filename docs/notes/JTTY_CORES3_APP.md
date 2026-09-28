@@ -290,3 +290,29 @@ decodes, `tests/jtty_rx.rs`). SIM feed, WiFi off (`logs/jtty_e1c_*_2026-09-28.lo
   this boot**. Stacks: Back 12 996 B peak of 20 480, Front 2 616 of 8 192, `uac_sim` (SIM only) 1 920 of 8 192,
   `main` 9 816 B free. On the radio there is no `uac_sim`, but the USB host and the UAC driver need internal DRAM of
   their own — E3 needs more room than this, not less.
+
+## 15. E1d: survivors packed, the storage stack reserved (2026-09-28)
+
+User decision on §14: pack the survivor entries (`mfsk-core`) and reserve the storage task's stack at boot; Back's and
+Front's stacks and the power row / sync wave stay where they are. SIM feed, WiFi off (`logs/jtty_e1d_*_2026-09-28.log`).
+
+- **Packing.** `Surv<f32>` is 12 bytes (`repr(C, packed(4))`); the survivor arrays are 24 576 B each, both internal
+  (heap walk). Decodes are bit-identical (a fingerprint of every list for 360 frames, pinned from the unpacked
+  layout; the 33 upstream ladder cases; the golden/band6 stream and scan comparison), and nothing got slower: golden
+  back 184–228 ms mean against 203–247 unpacked, front 304–318 against 330–340.
+- **Storage.** `storage::reserve_stack()` (JTTY only; every other mode keeps its lazy pthread) takes the 5 120 B stack
+  in `prepare`, and the task runs on it as a static FreeRTOS task. `all.txt` lines are written again
+  (`storage: [quiet] all.txt +192 B`). Peak 3 008 B of 5 120.
+- **Memory.** The build takes 144 584 B internal and 23 048 B PSRAM (218 655 B free before, largest 131 072; 74 071 B
+  after, largest 31 744). After Back's 20 KB: 53 587 B; after storage's 5 KB: 48 463 B (largest 31 744). Running:
+  9–16 KB free, largest 5–7 KB, **minimum 0–1 KB**. The dips come from each window's small allocations (at the
+  board's 2 KB `ALWAYSINTERNAL` rule they try internal first and fall back to PSRAM); no allocation failed in either
+  run.
+- **Golden**: front 304–318 ms, back 184–228 ms mean (582–605 worst), delay 473–537 ms mean, queue at most 1,
+  0 dropped, every message intact. Front with Back idle / busy: 253–254 / 332–335 ms.
+- **Band6**: front 342–362 ms, back 293–388 ms mean (807–848 worst), delay 0.7–1.0 s mean, queue at most 4, 0 dropped,
+  39 completes with no gaps, the first three passes equal to the host's message for message. Front with Back idle /
+  busy: 255–262 / 337–348 ms. Core 0: `jtty_back` 58–72 %.
+- **Stacks**: Back 13 020 B peak of 20 480, Front 2 624 of 8 192, storage 3 008 of 5 120.
+- **Still open for E3**: on the radio the USB host and UAC driver need internal DRAM that `uac_sim` (8 KB here) does
+  not; with 9–16 KB free and a 0–1 KB minimum, that is the next number to measure.
