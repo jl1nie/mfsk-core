@@ -580,7 +580,7 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     // one-bit blocks by the small merge: 190 -> 138 ms a rung on the CoreS3; two-bit blocks
     // were slower that way (145 -> 180 ms) and keep the lazy one
     if b.len == 1 {
-        return advance_small::<M, P, DEDUPE, 2>(b, energies, prune, prev, cur, probe);
+        return advance_small::<M, P, DEDUPE>(b, energies, prune, prev, cur, probe);
     }
     let words = 1usize << b.len;
     debug_assert!(words <= MAX_WORDS);
@@ -669,13 +669,13 @@ fn advance<M: Metric, P: Probe, const DEDUPE: bool>(
     }
 }
 
-/// [`advance`] for blocks of one or two bits (`W` = 2 or 4 predecessors): every extension is
-/// built — at most 16 — each list checked to be still in order (it is unless an `f32` sum tied two
-/// paths the other way round, then [`advance_state_sorted`] takes the state), and the lists merged.
-/// Fixed-size arrays and no per-head bookkeeping, for the one-bit blocks of L=1 and the
-/// half-symbol rung, most of the ladder's calls: 190 -> 138 ms a rung on the LX7 (#499).
+/// [`advance`] for one-bit blocks (two predecessors): every extension is built — at most 8 —
+/// each list checked to be still in order (it is unless an `f32` sum tied two paths the other way
+/// round, then [`advance_state_sorted`] takes the state), and the two lists merged. Fixed-size
+/// arrays and no per-head bookkeeping, for the one-bit blocks of L=1 and the half-symbol rung,
+/// most of the ladder's calls: 190 -> 138 ms a rung on the LX7 (#499).
 #[inline(always)]
-fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
+fn advance_small<M: Metric, P: Probe, const DEDUPE: bool>(
     b: &Block,
     energies: &[M],
     prune: bool,
@@ -683,6 +683,7 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
     cur: &mut [[Surv<M>; PATHS_PER_STATE]],
     probe: &mut P,
 ) {
+    const W: usize = 2;
     let stride = STATES / W;
     let reserved = 1u64 << (INFO_BITS - RESERVED_BIT);
     let mut lists = [[Surv::<M>::empty(); PATHS_PER_STATE]; W];
@@ -728,22 +729,21 @@ fn advance_small<M: Metric, P: Probe, const DEDUPE: bool, const W: usize>(
             advance_state_sorted::<M, P, DEDUPE>(&preds[..W], &branch, identity, prev, out, probe);
             continue;
         }
-        let mut heads = [0usize; W];
+        // the first list's head unless the second's precedes it — the choice a scan over the
+        // heads makes, by two indices: 254 -> 192 cycles an end state on the LX7,
+        // 138 -> 127 ms the L=1 rung (both from `profile_f32_parts`)
+        let (mut i, mut j) = (0, 0);
         let mut filled = 0;
         while filled < PATHS_PER_STATE {
-            let mut best = W;
-            for k in 0..W {
-                if heads[k] < lens[k]
-                    && (best == W || lists[k][heads[k]].precedes(&lists[best][heads[best]]))
-                {
-                    best = k;
-                }
-            }
-            if best == W {
+            let cand = if j < lens[1] && (i >= lens[0] || lists[1][j].precedes(&lists[0][i])) {
+                j += 1;
+                lists[1][j - 1]
+            } else if i < lens[0] {
+                i += 1;
+                lists[0][i - 1]
+            } else {
                 break;
-            }
-            let cand = lists[best][heads[best]];
-            heads[best] += 1;
+            };
             if DEDUPE && out[..filled].iter().any(|s| s.key == cand.key) {
                 probe.duplicate();
                 continue;
