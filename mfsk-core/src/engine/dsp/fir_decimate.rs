@@ -50,6 +50,72 @@ pub fn design_lowpass(ntaps: usize, fc_norm: f32) -> Vec<f32> {
     h
 }
 
+/// Zeroth-order modified Bessel function of the first kind, by its power
+/// series (converges fast for the `β` a Kaiser window uses; no `std` needed).
+fn bessel_i0(x: f64) -> f64 {
+    let (mut sum, mut term, q) = (1.0f64, 1.0f64, x * x / 4.0);
+    let mut k = 1.0f64;
+    while term > sum * 1e-17 {
+        term *= q / (k * k);
+        sum += term;
+        k += 1.0;
+    }
+    sum
+}
+
+/// Kaiser's estimate for a low-pass with `atten_db` of stopband attenuation
+/// (and the same passband ripple, `δ = 10^{-A/20}`) and a transition
+/// `transition_norm` wide in cycles per sample: `(ntaps, β)`, `ntaps` odd.
+/// The formula `scipy.signal.kaiserord` uses:
+/// `N - 1 = (A - 7.95) / (2.285 · 2π · Δf)`, `β = 0.1102 (A - 8.7)` for
+/// `A > 50`.
+pub fn kaiser_order(atten_db: f64, transition_norm: f64) -> (usize, f64) {
+    let n = ((atten_db - 7.95) / (2.285 * core::f64::consts::TAU * transition_norm)).ceil()
+        as usize
+        + 1;
+    let beta = if atten_db > 50.0 {
+        0.1102 * (atten_db - 8.7)
+    } else if atten_db >= 21.0 {
+        0.5842 * (atten_db - 21.0).powf(0.4) + 0.07886 * (atten_db - 21.0)
+    } else {
+        0.0
+    };
+    (n.max(3) | 1, beta)
+}
+
+/// Windowed-sinc low-pass, cutoff `fc_norm` normalised to the sample rate,
+/// **Kaiser** window with parameter `beta`, unit DC gain. Computed in `f64`.
+///
+/// [`design_lowpass`]'s Blackman window stops at about 74 dB whatever the
+/// length; this reaches whatever [`kaiser_order`] was asked for, which is
+/// what a channel filter with a stated selectivity target needs.
+pub fn design_lowpass_kaiser(ntaps: usize, fc_norm: f64, beta: f64) -> Vec<f32> {
+    let m = (ntaps - 1) as f64;
+    let i0b = bessel_i0(beta);
+    let mut h: Vec<f64> = (0..ntaps)
+        .map(|k| {
+            let x = k as f64 - m / 2.0;
+            let sinc = if x == 0.0 {
+                2.0 * fc_norm
+            } else {
+                (core::f64::consts::TAU * fc_norm * x).sin() / (core::f64::consts::PI * x)
+            };
+            let r = if m == 0.0 {
+                0.0
+            } else {
+                2.0 * k as f64 / m - 1.0
+            };
+            let w = bessel_i0(beta * (1.0 - r * r).max(0.0).sqrt()) / i0b;
+            sinc * w
+        })
+        .collect();
+    let sum: f64 = h.iter().sum();
+    for t in h.iter_mut() {
+        *t /= sum;
+    }
+    h.into_iter().map(|t| t as f32).collect()
+}
+
 /// One real-tapped FIR-and-decimate stage over a complex (I, Q)
 /// history. Owns its buffers (`Vec`) — sized by the caller's `ntaps` +
 /// `hist_margin`, so a caller with a small `ntaps` (a cascade stage,
@@ -159,6 +225,24 @@ impl FirStage {
     ) -> Self {
         assert!(ntaps % 2 == 1, "ntaps must be odd for linear phase");
         let designed = design_lowpass(ntaps, fc_norm);
+        Self::from_taps_with_min_alloc(&designed, decim, hist_margin, min_alloc_bytes)
+    }
+
+    /// A stage over taps the caller designed (e.g. with
+    /// [`design_lowpass_kaiser`]): linear phase, so `taps.len()` must be odd
+    /// and the taps symmetric. Otherwise as [`Self::new`].
+    pub fn from_taps(taps: &[f32], decim: usize, hist_margin: usize) -> Self {
+        Self::from_taps_with_min_alloc(taps, decim, hist_margin, 0)
+    }
+
+    fn from_taps_with_min_alloc(
+        designed: &[f32],
+        decim: usize,
+        hist_margin: usize,
+        min_alloc_bytes: usize,
+    ) -> Self {
+        let ntaps = designed.len();
+        assert!(ntaps % 2 == 1, "ntaps must be odd for linear phase");
         let mut taps_rev: Vec<f32> =
             Vec::with_capacity(ntaps.max(min_alloc_bytes.div_ceil(core::mem::size_of::<f32>())));
         taps_rev.resize(ntaps, 0.0);
@@ -452,6 +536,75 @@ impl FirStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `|H(f)|` of a real FIR at `f` cycles per sample, in f64.
+    fn gain_at(h: &[f32], f: f64) -> f64 {
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, &t) in h.iter().enumerate() {
+            let w = core::f64::consts::TAU * f * n as f64;
+            re += t as f64 * w.cos();
+            im -= t as f64 * w.sin();
+        }
+        (re * re + im * im).sqrt()
+    }
+
+    /// `kaiser_order` agrees with `scipy.signal.kaiserord` on the designs the
+    /// IQ front end uses (`scripts/iq_pfb_design.py` prints the same numbers).
+    #[test]
+    fn kaiser_order_matches_scipy() {
+        // (atten, transition in cycles/sample) -> (ntaps, beta)
+        assert_eq!(kaiser_order(100.0, 400.0 / 12_000.0).0, 195);
+        assert_eq!(kaiser_order(120.0, 400.0 / 12_000.0).0, 237);
+        assert_eq!(kaiser_order(100.0, 5_600.0 / 48_000.0).0, 57);
+        let (_, beta) = kaiser_order(100.0, 0.01);
+        assert!((beta - 10.0612).abs() < 1e-3, "{beta}");
+    }
+
+    /// A Kaiser design reaches the attenuation it was sized for across its
+    /// whole stopband, is flat in the passband, and has unit DC gain.
+    #[test]
+    fn kaiser_design_meets_its_spec() {
+        for atten in [80.0f64, 100.0, 120.0] {
+            // The IQ front end's sharp filter at 12 kHz: pass 2.8 k, stop 3.2 k.
+            let (pass, stop) = (2_800.0 / 12_000.0, 3_200.0 / 12_000.0);
+            let (n, beta) = kaiser_order(atten, stop - pass);
+            let h = design_lowpass_kaiser(n, (pass + stop) / 2.0, beta);
+            assert_eq!(h.len(), n);
+            assert!((gain_at(&h, 0.0) - 1.0).abs() < 1e-6);
+            let worst_stop = (0..=400)
+                .map(|k| stop + (0.5 - stop) * k as f64 / 400.0)
+                .map(|f| gain_at(&h, f))
+                .fold(0.0f64, f64::max);
+            // f32 taps: within half a dB of the f64 design.
+            assert!(
+                20.0 * worst_stop.log10() <= -(atten - 0.5),
+                "{atten} dB: stop {:.1} dB",
+                20.0 * worst_stop.log10()
+            );
+            let ripple = (0..=200)
+                .map(|k| gain_at(&h, pass * k as f64 / 200.0))
+                .fold((f64::MAX, 0.0f64), |(lo, hi), g| (lo.min(g), hi.max(g)));
+            assert!(
+                20.0 * (ripple.1 / ripple.0).log10() < 0.01,
+                "{atten} dB: ripple"
+            );
+        }
+    }
+
+    /// `FirStage::from_taps` over `design_lowpass`'s taps is the stage
+    /// `FirStage::new` builds.
+    #[test]
+    fn from_taps_matches_new() {
+        let taps = design_lowpass(31, 0.1);
+        let (mut a, mut b) = (
+            FirStage::new(31, 4, 0.1, 64),
+            FirStage::from_taps(&taps, 4, 64),
+        );
+        for k in 0..500 {
+            let (i, q) = ((k as f32 * 0.37).sin(), (k as f32 * 0.11).cos());
+            assert_eq!(a.push_one(i, q), b.push_one(i, q));
+        }
+    }
 
     /// `push_block` is defined as "the same as `push_one` in a loop" —
     /// this pins that down bit-for-bit, including across a compaction

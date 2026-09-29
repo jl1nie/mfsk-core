@@ -611,9 +611,9 @@ for JTTY's reason: no user-data contract to cross the boundary, and a wrapper
 in Kotlin, Swift or C# is simpler over a poll. The handle is not thread-safe:
 one thread at a time.
 
-Cost is linear in channels, since each mixes at the input rate: measured on one
-thread, 768 kS/s is 1.1 % of a core for one channel, 11 % for eight and 44 % for
-thirty-two.
+Selectivity is 120 dB outside the channel's window. Cost is linear in
+channels, since each mixes at the input rate: measured on one thread, 0.93 % of
+a core per channel at 768 kS/s, 2.42 % at 2.4 MS/s.
 
 ### 2.9 Messages
 

@@ -2,6 +2,23 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **IQ front end: 120 dB of selectivity, all filters Kaiser designs; the sharp filter moved to 12 kHz (#534).**
+  The `Direct` path (`IqToAudio`, and `IqReceiver` on it) used Blackman windows, which stop at about 74 dB: measured, an
+  interferer at the channel's window edge came through at −73.5 dB. Every filter is now a Kaiser design for
+  `iq::REJECT_DB` = 120 dB, the noise floor of an ideal 16-bit ADC in 2500 Hz at 768 kS/s (−108 for 14 bits, −96 for 12,
+  so 100 dB would let a full-scale interferer leak above a 14- or 16-bit SDR's floor), designed at 123 dB because
+  Kaiser's order estimate falls short at the stop edge for short filters (at exactly 120 a 71-tap stage let an alias
+  through at −117.9 dB). The resampler now comes before the sharp filter: it reaches 12 kHz *complex* and only has to stop
+  at 8.8 kHz, and the 400 Hz-transition filter runs at 12 kHz (243 taps) instead of 24. New in `engine::dsp`:
+  `kaiser_order`, `design_lowpass_kaiser` (series `I0`, `no_std`), `FirStage::from_taps`,
+  `PolyphaseResampler::from_prototype`; the existing constructors are unchanged and now go through them.
+  Measured, one thread, eight channels, worst over ~550 interferer positions per rate plus ~600 aimed at every stage's
+  alias edges: selectivity −73.5 → −124.0 dB at 192 kS/s, → −121.0 at 768 k, → −122.0 at 2.4 M; cost per channel
+  0.56 → 0.36 %, 1.04 → 0.93 %, 2.33 → 2.42 % of a core (at 2.4 MS/s the input-rate first stage is two-thirds of it).
+  `tests/iq_front_end.rs` asserts ≤ −119 dB over 160 positions at 768 kS/s; every IQ decode test is unchanged.
+  `docs/notes/IQ_CHANNELIZER.md` is the study this came out of: the design of a polyphase filter bank for many
+  channels (not built), and the overlap-save channelizer tried first and dropped (−71 dB between FFT bins).
+
 - **Docs for the IQ input: `LIBRARY.md` §2.7 and `BINDINGS.md` §2.8.2, with their `.ja.md` twins (#534, phase 5).**
   §2.7 covers `IqToAudio` and `IqReceiver`: the signal path, the audio-200 Hz floor and why (the real part folds the
   sideband below the dial onto the wanted one), placement errors, the time model and what drops an open slot, modes, the

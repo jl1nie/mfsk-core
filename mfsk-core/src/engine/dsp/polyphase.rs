@@ -74,10 +74,20 @@ impl PolyphaseResampler {
         assert!(l > 0 && m > 0, "l and m must be nonzero");
 
         let fc_norm = (1.0 / (2.0 * l as f32)).min(1.0 / (2.0 * m as f32));
-        let mut h = design_lowpass(ntaps, fc_norm);
-        for tap in h.iter_mut() {
-            *tap *= l as f32;
-        }
+        let h = design_lowpass(ntaps, fc_norm);
+        Self::from_prototype(l, m, &h, hist_margin)
+    }
+
+    /// A resampler over a prototype the caller designed at the interpolated
+    /// rate `Fs·L` (e.g. with
+    /// [`design_lowpass_kaiser`](super::fir_decimate::design_lowpass_kaiser)),
+    /// with unit DC gain; it is scaled by `L` here, as [`Self::new`] does.
+    /// `h.len()` must be odd.
+    pub fn from_prototype(l: u32, m: u32, h: &[f32], hist_margin: usize) -> Self {
+        let ntaps = h.len();
+        assert!(ntaps % 2 == 1, "ntaps must be odd for linear phase");
+        assert!(l > 0 && m > 0, "l and m must be nonzero");
+        let h: Vec<f32> = h.iter().map(|&t| t * l as f32).collect();
 
         let max_depth = ntaps.div_ceil(l as usize);
         let mut taps_rev = Vec::with_capacity(l as usize);

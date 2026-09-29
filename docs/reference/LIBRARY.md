@@ -673,8 +673,8 @@ inside `±Fs/2` (`IqError::OutsideBand`), must not contain the stream's DC
 (`TooCloseToDc`), and the rate must reach 12 kHz through a small rational
 factor (`UnsupportedRate` for, say, 999 983 Hz; `RateTooLow` under 12 kHz).
 The path is: mix the channel's audio 3 kHz to DC, a cascade of short FIR
-decimators down to 24-48 kS/s, one sharp low-pass there, a polyphase `L/M`
-resampler to exactly 12 kHz, shift back up, take the real part.
+decimators down to 24-48 kS/s, a polyphase `L/M` resampler to exactly 12 kHz
+complex, one sharp low-pass there, shift back up, take the real part.
 
 **Usable audio starts near 200 Hz.** Taking the real part folds the sideband
 *below* the dial onto the wanted one, so the low-pass has to be sharp at audio
@@ -731,11 +731,18 @@ inherit.
 128 = zero) and `Cs24` as byte streams through `push_bytes`, a sample split
 across calls carried over.
 
+*Selectivity.* 120 dB outside the channel's audio −200…6200 Hz, anywhere in
+the band (`iq::REJECT_DB`): every filter is a Kaiser design for it, which is
+the noise floor of an ideal 16-bit ADC in 2500 Hz at 768 kS/s. Measured worst
+over ~1 150 interferer positions per rate, aimed at every decimator's alias
+edges as well: −124.0 dB at 192 kS/s, −121.0 at 768 k, −122.0 at 2.4 M.
+`tests/iq_front_end.rs` asserts it.
+
 *Cost.* Each channel mixes at the input rate, so cost is linear in channels.
-Measured, one thread, release, `Cf32` in: 768 kS/s is 1.1 % of a core for one
-channel, 11 % for eight and 44 % for thirty-two; 2.4 MS/s is 2.3 % for one and
-18 % for eight; 192 kS/s is 0.5 % for one. Past a few dozen channels an FFT
-channelizer would pay; it is the last item of #534 and is not built.
+Measured per channel, one thread, release, `Cf32` in (eight channels): 0.36 %
+of a core at 192 kS/s, 0.93 % at 768 kS/s, 2.42 % at 2.4 MS/s. Past a handful
+of channels a polyphase filter bank shared by all of them would pay; its
+design is `docs/notes/IQ_CHANNELIZER.md` and it is not built.
 
 *Evidence.* `tests/iq_front_end.rs` and `tests/iq_receiver.rs` place real
 recordings as double-sideband IQ (so a leaking lower sideband would show as

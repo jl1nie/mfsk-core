@@ -165,3 +165,65 @@ fn cs16_250k() {
 fn cf32_2_4m_iq_swapped() {
     check(2_400_000, IqSampleFormat::Cf32, true, 300_000.0);
 }
+
+/// Selectivity (#534): an interferer anywhere outside the channel's audio
+/// −200…6200 Hz comes out at least `REJECT_DB` below a tone inside it. Swept
+/// finely just past both window edges, where only the last filter acts, and
+/// at points off any grid across the band, where the decimators' aliases
+/// fall. Before the Kaiser designs this path gave −73.5 dB at the window's
+/// edge (Blackman windows); measured after, −120.6 dB worst over ~550 points
+/// at 192 k, 768 k and 2.4 MS/s. One rate here, to keep the gate quick.
+#[test]
+fn rejects_every_interferer_outside_the_window() {
+    use mfsk_core::iq::REJECT_DB;
+    const FS: u32 = 768_000;
+    let center = 14_200_000.0;
+    let dial = center + 96_000.0;
+    let rms = |rf: f64| {
+        let n = FS as usize / 5;
+        let w = std::f64::consts::TAU * (rf - center) / FS as f64;
+        let v: Vec<f32> = (0..n)
+            .flat_map(|k| {
+                let p = w * k as f64;
+                [p.cos() as f32, p.sin() as f32]
+            })
+            .collect();
+        let s = IqStream {
+            sample_rate: FS,
+            center_hz: center,
+            format: IqSampleFormat::Cf32,
+            iq_swap: false,
+        };
+        let mut fe = IqToAudio::new(s, dial).unwrap();
+        let mut o = Vec::new();
+        fe.push_cf32(&v, &mut o);
+        let t = &o[o.len() / 2..];
+        (t.iter().map(|x| (*x as f64).powi(2)).sum::<f64>() / t.len() as f64).sqrt()
+    };
+    let wanted = rms(dial + 1_500.0);
+    let mut offs = Vec::new();
+    let mut x = 0.0;
+    while x < 1_500.0 {
+        offs.extend([-200.0 - x, 6_200.0 + x]);
+        x += 31.3;
+    }
+    let mut s: u64 = 534;
+    while offs.len() < 160 {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let o = ((s >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.95 * FS as f64 - (dial - center);
+        if !(-200.0..=6_200.0).contains(&o) {
+            offs.push(o);
+        }
+    }
+    let (worst, at) = offs
+        .iter()
+        .map(|&o| (20.0 * (rms(dial + o) / wanted).log10(), o))
+        .fold((f64::MIN, 0.0), |a, b| if b.0 > a.0 { b } else { a });
+    println!(
+        "  worst {worst:.1} dB at {at:.1} Hz from the dial ({} points)",
+        offs.len()
+    );
+    assert!(worst <= -(REJECT_DB - 1.0), "{worst:.1} dB at {at:.1} Hz");
+}

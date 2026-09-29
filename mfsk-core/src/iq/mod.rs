@@ -11,7 +11,7 @@
 //! ## Signal path
 //!
 //! ```text
-//! IQ @ Fs ─ mix (dial + 3 kHz → DC) ─ FirStage × k ─ sharp FIR ─ L/M ─ ×e^{+jπn/2} ─ Re ─ audio @ 12 kHz
+//! IQ @ Fs ─ mix (dial + 3 kHz → DC) ─ FirStage × k ─ L/M to 12 kHz ─ sharp FIR ─ ×e^{+jπn/2} ─ Re ─ audio @ 12 kHz
 //! ```
 //!
 //! The channel's audio band is shifted so audio 3000 Hz sits at DC, which
@@ -22,17 +22,28 @@
 //! usable audio starts at about 200 Hz, which is where an SSB receiver's own
 //! filter starts. A signal at 0-200 Hz is attenuated, not decoded reliably.
 //!
-//! The integer decimation is a cascade of short [`FirStage`]s whose
-//! transition bands are only as sharp as aliasing into the final ±2.8 kHz
-//! needs; the one sharp filter (400 Hz transition) runs after them, at
-//! 24-48 kS/s where it is a few hundred taps, not at the input rate where it
-//! would be thousands. A last [`PolyphaseResampler`] `L/M` reaches exactly
-//! 12 kHz from whatever integer rate is left, so any integer `Fs` works as
-//! long as `L` stays small ([`IqError::UnsupportedRate`]).
+//! **Selectivity: [`REJECT_DB`] (120 dB) everywhere outside the window**,
+//! every filter a Kaiser design for it ([`kaiser_order`]). 120 dB is the noise
+//! floor of an ideal 16-bit ADC in 2500 Hz at 768 kS/s (−120 dBFS; −108 for 14
+//! bits, −96 for 12), so a full-scale interferer leaks no higher than the
+//! quietest SDR's own floor; f32 holds it (the arithmetic floor of these FIRs
+//! is −136 dBFS). Before #534's channelizer study this path used Blackman
+//! windows, which stop at about 74 dB: an interferer 512 Hz below the dial
+//! came through at −87 dB.
 //!
-//! Group delay is compensated at the resampler; the FIR stages centre their
-//! outputs on the input already. The reported offset is verified against the
-//! WAV path in `tests/iq_front_end.rs`.
+//! The integer decimation is a cascade of short [`FirStage`]s, each passing
+//! ±3.2 kHz and stopping where its aliases would reach the window. A
+//! [`PolyphaseResampler`] `L/M` then reaches exactly 12 kHz *complex* from
+//! whatever integer rate is left (so any integer `Fs` works as long as `L`
+//! stays small, [`IqError::UnsupportedRate`]); it only has to stop at 8.8 kHz,
+//! where its aliases land outside the window. The one sharp filter (400 Hz
+//! transition) runs last, at 12 kHz, where 120 dB is 237 taps — half the
+//! rate, and so half the cost, of running it before the resampler.
+//!
+//! The FIR stages centre their outputs on the input; the resampler's group
+//! delay is a whole number of output samples by construction and is dropped,
+//! so audio index 0 is IQ sample 0 (`tests/iq_front_end.rs` checks the DT the
+//! decoders report against the WAV path).
 //!
 //! Gain: a real audio tone that entered the IQ as `A·cos(ωt)·e^{jΩt}`
 //! (double sideband, as a real signal mixed up) comes out at `A/2`; an
@@ -73,7 +84,7 @@ pub mod receiver;
 ))]
 pub use receiver::{ChannelId, IqDecode, IqMode, IqReceiver};
 
-use crate::engine::dsp::fir_decimate::FirStage;
+use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser, kaiser_order};
 use crate::engine::dsp::polyphase::PolyphaseResampler;
 
 #[cfg(not(feature = "std"))]
@@ -88,8 +99,16 @@ const AUDIO_CENTRE_HZ: f64 = 3_000.0;
 const PASS_HZ: f64 = 2_800.0;
 /// Stop edge, Hz from [`AUDIO_CENTRE_HZ`]: audio -200 Hz on the LSB side.
 const STOP_HZ: f64 = 3_200.0;
-/// Rate the integer decimation stops at or above, so the sharp filter and
-/// the resampler both work on at least 2x the output rate.
+/// Stopband attenuation of every filter on the path, dB. See the module
+/// docs for why 120.
+pub const REJECT_DB: f64 = 120.0;
+/// Each filter is *designed* this much above [`REJECT_DB`]: Kaiser's order
+/// estimate is short at the stop edge for short filters. Designed at exactly
+/// 120 dB, the 768 → 96 kHz stage passed an alias 0.8 kHz past its stop edge
+/// at −117.9 dB (`tests/iq_front_end.rs`'s sweep).
+const DESIGN_MARGIN_DB: f64 = 3.0;
+/// Rate the integer decimation stops at or above, so the resampler works on
+/// at least 2x the output rate.
 const MIN_INTERMEDIATE_HZ: u32 = 24_000;
 /// Largest interpolation factor `L` the resampler is allowed: its tap table
 /// is `32 * L` floats.
@@ -260,13 +279,6 @@ fn stage_factors(mut d: u32) -> Vec<u32> {
     stages
 }
 
-/// Odd tap count for a Blackman low-pass with the given transition width
-/// (in cycles per sample), transition ~ 5.5 / N.
-fn taps_for(transition_norm: f64) -> usize {
-    let n = (5.5 / transition_norm).ceil() as usize;
-    n.max(15) | 1
-}
-
 /// A complex phasor stepping by `e^{-jω}` per sample, kept in `f64`.
 struct Nco {
     re: f64,
@@ -355,34 +367,47 @@ impl IqToAudio {
             return Err(IqError::TooCloseToDc);
         }
 
+        // Each stage passes the window (±STOP_HZ) and stops where its
+        // aliases would land in it (`out − STOP_HZ`).
+        let kaiser = |pass: f64, stop: f64, rate: f64| {
+            let (n, beta) = kaiser_order(REJECT_DB + DESIGN_MARGIN_DB, (stop - pass) / rate);
+            (n, beta, (pass + stop) / 2.0 / rate)
+        };
         let mut stages = Vec::new();
         let mut rate = fs as f64;
         for f in stage_factors(d) {
             let out = rate / f as f64;
-            let transition = (out - STOP_HZ - PASS_HZ) / rate;
-            let fc = (PASS_HZ + out - STOP_HZ) / 2.0 / rate;
-            stages.push(FirStage::new(
-                taps_for(transition),
+            let (n, beta, fc) = kaiser(STOP_HZ, out - STOP_HZ, rate);
+            stages.push(FirStage::from_taps(
+                &design_lowpass_kaiser(n, fc, beta),
                 f as usize,
-                fc as f32,
                 BLOCK,
             ));
             rate = out;
         }
-        let sharp = FirStage::new(
-            taps_for((STOP_HZ - PASS_HZ) / rate),
-            1,
-            ((PASS_HZ + STOP_HZ) / 2.0 / rate) as f32,
-            BLOCK,
-        );
+        // To 12 kHz complex: the prototype runs at `rate · L` and stops at
+        // 12 kHz − STOP_HZ, where aliases fall outside the window. Its length
+        // is rounded up to `2·M·k + 1` so the group delay is `k` whole
+        // output samples.
         let resampler = if l == 1 && m == 1 {
             None
         } else {
-            Some(PolyphaseResampler::new(l, m, 32 * l as usize + 1, BLOCK))
+            let up = rate * l as f64;
+            let (n, beta, fc) = kaiser(STOP_HZ, AUDIO_RATE_HZ as f64 - STOP_HZ, up);
+            let two_m = 2 * m as usize;
+            let n = (n - 1).div_ceil(two_m) * two_m + 1;
+            Some(PolyphaseResampler::from_prototype(
+                l,
+                m,
+                &design_lowpass_kaiser(n, fc, beta),
+                BLOCK,
+            ))
         };
         let skip = resampler
             .as_ref()
             .map_or(0, PolyphaseResampler::group_delay_output);
+        let (n, beta, fc) = kaiser(PASS_HZ, STOP_HZ, AUDIO_RATE_HZ as f64);
+        let sharp = FirStage::from_taps(&design_lowpass_kaiser(n, fc, beta), 1, BLOCK);
 
         Ok(Self {
             stream,
@@ -505,37 +530,38 @@ impl IqToAudio {
             core::mem::swap(&mut xi, &mut self.ai);
             core::mem::swap(&mut xq, &mut self.aq);
         }
-        self.ai.clear();
-        self.aq.clear();
-        self.sharp.push_block(&xi, &xq, &mut self.ai, &mut self.aq);
 
         self.ri.clear();
         self.rq.clear();
         match self.resampler.as_mut() {
             Some(rs) => {
-                for (&i, &q) in self.ai.iter().zip(&self.aq) {
-                    rs.push(i, q, &mut self.ri, &mut self.rq);
+                self.ai.clear();
+                self.aq.clear();
+                for (&i, &q) in xi.iter().zip(&xq) {
+                    rs.push(i, q, &mut self.ai, &mut self.aq);
                 }
+                // Its group delay, a whole number of samples, is dropped.
+                let drop = self.skip.min(self.ai.len());
+                self.skip -= drop;
+                self.sharp.push_block(
+                    &self.ai[drop..],
+                    &self.aq[drop..],
+                    &mut self.ri,
+                    &mut self.rq,
+                );
             }
-            None => {
-                core::mem::swap(&mut self.ri, &mut self.ai);
-                core::mem::swap(&mut self.rq, &mut self.aq);
-            }
+            None => self.sharp.push_block(&xi, &xq, &mut self.ri, &mut self.rq),
         }
 
         // Shift audio 3000 Hz back up from DC: multiply by e^{+jπn/2}
-        // (1, j, -1, -j), and keep the real part.
+        // (1, j, -1, -j), n counted from audio index 0, and keep the real part.
         for (&i, &q) in self.ri.iter().zip(&self.rq) {
-            if self.skip > 0 {
-                self.skip -= 1;
-            } else {
-                out.push(match self.out_phase {
-                    0 => i,
-                    1 => -q,
-                    2 => -i,
-                    _ => q,
-                });
-            }
+            out.push(match self.out_phase {
+                0 => i,
+                1 => -q,
+                2 => -i,
+                _ => q,
+            });
             self.out_phase = (self.out_phase + 1) & 3;
         }
 
