@@ -39,7 +39,7 @@
 //! analytic (single sideband) IQ tone of amplitude `A` comes out at `A`.
 //! Decoders here are scale-free, so this only matters when converting to `i16`.
 //!
-//! `IqReceiver` (needs an FFT backend and one of `ft8` / `ft4` / `fst4`) builds on this: N channels of one
+//! `IqReceiver` (needs an FFT backend and a protocol feature) builds on this: N channels of one
 //! stream, slots cut on UTC from the sample count, each decoded with its
 //! mode's own request, rows carrying the absolute RF frequency.
 
@@ -48,12 +48,28 @@ use core::f64::consts::TAU;
 
 #[cfg(all(
     any(feature = "fft-rustfft", feature = "fft-extern"),
-    any(feature = "ft8", feature = "ft4", feature = "fst4")
+    any(
+        feature = "ft8",
+        feature = "ft4",
+        feature = "fst4",
+        feature = "wspr",
+        feature = "jt9",
+        feature = "jt65",
+        feature = "q65"
+    )
 ))]
 pub mod receiver;
 #[cfg(all(
     any(feature = "fft-rustfft", feature = "fft-extern"),
-    any(feature = "ft8", feature = "ft4", feature = "fst4")
+    any(
+        feature = "ft8",
+        feature = "ft4",
+        feature = "fst4",
+        feature = "wspr",
+        feature = "jt9",
+        feature = "jt65",
+        feature = "q65"
+    )
 ))]
 pub use receiver::{ChannelId, IqDecode, IqMode, IqReceiver};
 
@@ -414,7 +430,15 @@ impl IqToAudio {
     /// [`IqReceiver`] does once for all its channels.
     #[cfg(all(
         any(feature = "fft-rustfft", feature = "fft-extern"),
-        any(feature = "ft8", feature = "ft4", feature = "fst4")
+        any(
+            feature = "ft8",
+            feature = "ft4",
+            feature = "fst4",
+            feature = "wspr",
+            feature = "jt9",
+            feature = "jt65",
+            feature = "q65"
+        )
     ))]
     pub(crate) fn push_planar(&mut self, i: &[f32], q: &[f32], out: &mut Vec<f32>) {
         debug_assert_eq!(i.len(), q.len());

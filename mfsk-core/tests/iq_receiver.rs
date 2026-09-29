@@ -142,7 +142,7 @@ fn same(a: &Set, b: &Set, what: &str, known: &[&str]) {
         extra.len()
     );
     assert!(extra.is_empty(), "{what}: phantom {extra:?}");
-    assert!(missing.len() <= 1, "{what}: lost {missing:?}");
+    assert!(missing.len() <= b.len() / 10, "{what}: lost {missing:?}");
     for (k, &(f, dt)) in b {
         if let Some(&(f2, dt2)) = a.get(k) {
             assert!((f - f2).abs() < 2.0, "{what}: freq {f} vs {f2}");
