@@ -2,6 +2,22 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **New `mfsk_core::iq`: one channel of a wideband IQ stream as 12 kHz USB audio (#534, phase 1).**
+  `IqToAudio::new(IqStream { sample_rate, center_hz, format, iq_swap }, dial_hz)` then `push_cf32` / `push_cs16` /
+  `push_bytes` (a sample split across calls is carried over) appends the audio a transceiver's USB output would have
+  carried for that dial frequency, ready for any `DecodeRequest` after scaling to `i16`. Any integer rate from 12 kHz
+  up: a cascade of short `FirStage`s down to 24-48 kS/s, one sharp filter there (2.8 kHz pass, 3.2 kHz stop around audio
+  3 kHz, so the sideband below the dial that `Re()` would fold onto the wanted one is rejected from audio -200 Hz down
+  and usable audio starts near 200 Hz), then a `PolyphaseResampler` `L/M`; rates that need `L > 2048` are refused
+  (`UnsupportedRate`), as are a channel whose 0-6 kHz window is outside `±Fs/2` or that contains DC. The sample count is
+  the clock (`samples_in()`); no time source is read. Formats `Cf32` and `Cs16`; `CU8` / `CS8` / `CS24`, the
+  multi-channel `IqReceiver`, UTC slotting and the C ABI are the later phases of #534. Evidence: `tests/iq_front_end.rs`
+  places `qso3_busy.wav` as double-sideband IQ (so the lower sideband must be rejected) at 48 k, 192 k, 250 k
+  (`Cs16`), 768 k (channel 150 kHz below DC) and 2.4 M (I/Q swapped) with blocks of mixed sizes, and decodes it with the
+  WAV path's request: 16/16 messages at every point, 0 extra, frequency within 1 Hz and DT within 0.05 s of the WAV
+  decode. Unit tests pin tone frequency and amplitude across 48 k-2.4 M rates (including 2.048 M), the LSB rejection,
+  `iq_swap`, the byte form against `Cf32`, and the placement errors.
+
 - **Q65: the grid decode conditions the symbol spectra the way `q65_loops` does — Q65-120D now decodes to +2.0 s late like `jt9` (#521).**
   `q65_loops.f90:64-68` runs `spec64`'s passband equalisation (45th-percentile baseline per bin, smoothed), divides by
   `pctile(s3, 40)`, clips at `s3lim = 20` and zaps birdies (`q65_bzap`) before any `q65_dec2`; this crate fed raw `|FFT|²`

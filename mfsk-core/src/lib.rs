@@ -367,6 +367,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod engine;
 pub mod fec;
+pub mod iq;
 pub mod msg;
 
 #[cfg(feature = "ft8")]
