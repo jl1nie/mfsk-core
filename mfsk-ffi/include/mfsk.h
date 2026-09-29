@@ -27,6 +27,32 @@
 
 
 /**
+ * `mfsk_iq_open`'s `format`: `f32` I, `f32` Q, little-endian. A literal here
+ * for the cbindgen reason [`MFSK_AP_FIELD_LEN`] gives.
+ */
+#define MFSK_IQ_FORMAT_CF32 0
+
+/**
+ * `i16` I, `i16` Q, full scale 32768.
+ */
+#define MFSK_IQ_FORMAT_CS16 1
+
+/**
+ * `i8` I, `i8` Q, full scale 128 (HackRF).
+ */
+#define MFSK_IQ_FORMAT_CS8 2
+
+/**
+ * `u8` I, `u8` Q, 128 = zero, full scale 128 (RTL-SDR).
+ */
+#define MFSK_IQ_FORMAT_CU8 3
+
+/**
+ * 24-bit signed I, Q, full scale 8 388 608.
+ */
+#define MFSK_IQ_FORMAT_CS24 4
+
+/**
  * Inline capacity of each `MfskDecodeParams` a-priori field.
  *
  * A literal here, not a re-export of `mfsk_ffi_abi`'s, for the same
@@ -579,6 +605,13 @@ typedef struct MfskCallsignHashTable MfskCallsignHashTable;
  * both of which only mean anything across more than one call.
  */
 typedef struct MfskDecodeSession MfskDecodeSession;
+
+/**
+ * The wideband IQ receiver handle.
+ *
+ * Emitted as an incomplete type; what `mfsk_iq_open` allocates.
+ */
+typedef struct MfskIqReceiver MfskIqReceiver;
 
 /**
  * The JTTY receiver handle.
@@ -1339,6 +1372,61 @@ typedef struct MfskRuntimeConfig {
      */
     void *thread_user;
 } MfskRuntimeConfig;
+
+/**
+ * One decode out of `mfsk_iq_poll`: the row of a channel of a wideband IQ
+ * stream, with the absolute RF frequency and where its slot started.
+ *
+ * Size-versioned like the other rows: `size` is `sizeof(MfskIqDecode)` as
+ * the caller understands it (0 means the whole struct).
+ */
+typedef struct MfskIqDecode {
+    /**
+     * `sizeof(MfskIqDecode)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * The handle `mfsk_iq_add_channel` returned.
+     */
+    uint32_t channel;
+    /**
+     * The channel's concrete mode.
+     */
+    enum MfskMode mode;
+    /**
+     * Non-zero when a time anchor was set, so `slot_start_utc_ns` means
+     * something. Zero on a free-running grid.
+     */
+    uint32_t has_utc;
+    /**
+     * RF frequency of tone 0, Hz: the channel's dial plus `freq_hz`.
+     */
+    double abs_freq_hz;
+    /**
+     * Index (of the IQ stream, complex samples) the slot started at.
+     */
+    uint64_t slot_start_sample;
+    /**
+     * UTC of the slot start, ns since the Unix epoch, when `has_utc`.
+     */
+    int64_t slot_start_utc_ns;
+    /**
+     * Audio frequency of tone 0 within the channel, Hz.
+     */
+    float freq_hz;
+    /**
+     * Time offset from the slot's `dt = 0` reference, seconds.
+     */
+    float dt_sec;
+    /**
+     * Estimated SNR in a 2500 Hz reference bandwidth, dB.
+     */
+    float snr_db;
+    /**
+     * Decoded message text, NUL-terminated.
+     */
+    char text[MFSK_DECODE_TEXT_LEN];
+} MfskIqDecode;
 
 #ifdef __cplusplus
 extern "C" {
@@ -2760,6 +2848,151 @@ enum MfskStatus mfsk_runtime_configure(const struct MfskRuntimeConfig *config);
  */
 MFSK_API
 uint32_t mfsk_runtime_thread_count(void);
+
+/**
+ * Open a receiver for an IQ stream: `sample_rate` complex samples per second
+ * (any integer of 12 000 or more whose ratio to 12 kHz is a small fraction),
+ * `center_hz` the RF frequency of DC, `format` one of `MFSK_IQ_FORMAT_*`,
+ * `iq_swap` non-zero when I and Q are exchanged (sound-card IQ often is).
+ *
+ * Returns NULL and writes the reason to `out_status` on failure:
+ * `MFSK_STATUS_INVALID_ARG` for an unknown format, a rate below 12 kHz or a
+ * non-finite centre.
+ *
+ * # Safety
+ * `out_status` may be null.
+ */
+MFSK_API
+struct MfskIqReceiver *mfsk_iq_open(uint32_t sample_rate,
+                                    double center_hz,
+                                    uint32_t format,
+                                    uint32_t iq_swap,
+                                    enum MfskStatus *out_status);
+
+/**
+ * Release a receiver. Null is a no-op.
+ *
+ * # Safety
+ * `rx` must be a handle from [`mfsk_iq_open`], released once.
+ */
+MFSK_API
+void mfsk_iq_close(struct MfskIqReceiver *rx);
+
+/**
+ * Add a channel whose dial (audio 0 Hz) is `dial_hz`, carrying `mode` (a
+ * `MfskMode`: FT8, FT4, the five FST4 periods, WSPR, JT9, JT65 or a Q65
+ * sub-mode). On success `*out_channel` is the handle rows carry.
+ *
+ * `MFSK_STATUS_INVALID_ARG` when the channel cannot be placed (DC inside its
+ * 0-6 kHz audio window, or the window outside the IQ band) or the mode is not
+ * one the receiver carries; `MFSK_STATUS_UNKNOWN_PROTOCOL` for a mode this
+ * build was compiled without.
+ *
+ * # Safety
+ * `out_channel` may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_iq_add_channel(struct MfskIqReceiver *rx,
+                                    double dial_hz,
+                                    uint32_t mode,
+                                    uint32_t *out_channel);
+
+/**
+ * Remove a channel. `MFSK_STATUS_INVALID_ARG` if there is no such channel.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_iq_remove_channel(struct MfskIqReceiver *rx,
+                                       uint32_t channel);
+
+/**
+ * Say what UTC (ns since the Unix epoch) IQ sample 0 fell on. Slot boundaries
+ * move with it, so every open slot is dropped. Without it the grid free-runs
+ * from sample 0, which is right for replaying a recording.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_iq_set_time_anchor(struct MfskIqReceiver *rx,
+                                        int64_t utc_ns_at_sample_0);
+
+/**
+ * The tuner moved to `center_hz`: every channel is re-placed against it and
+ * the open slots are dropped; the sample clock continues. All or nothing:
+ * `MFSK_STATUS_INVALID_ARG`, and nothing changes, if a channel no longer fits.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_iq_retune(struct MfskIqReceiver *rx,
+                               double center_hz);
+
+/**
+ * `lost` samples never arrived: the clock advances past them and the open
+ * slots are dropped.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_iq_gap(struct MfskIqReceiver *rx,
+                            uint64_t lost);
+
+/**
+ * Push `n_bytes` of IQ in the format the receiver was opened with,
+ * little-endian, I then Q; a sample split across calls is carried over. Every
+ * slot this completes is decoded before the call returns; what it found waits
+ * for [`mfsk_iq_poll`].
+ *
+ * # Safety
+ * `data` must be `n_bytes` readable bytes (or null when `n_bytes` is 0).
+ */
+MFSK_API
+enum MfskStatus mfsk_iq_push(struct MfskIqReceiver *rx,
+                             const void *data,
+                             uintptr_t n_bytes);
+
+/**
+ * Complex samples consumed so far, gaps included: the stream's clock.
+ *
+ * # Safety
+ * `rx` must be a live handle or null (0).
+ */
+MFSK_API
+uint64_t mfsk_iq_samples_in(struct MfskIqReceiver *rx);
+
+/**
+ * How many decodes wait for [`mfsk_iq_poll`].
+ *
+ * # Safety
+ * `rx` must be a live handle or null (0).
+ */
+MFSK_API
+uintptr_t mfsk_iq_pending(struct MfskIqReceiver *rx);
+
+/**
+ * Take the oldest waiting decode into `*out` (`out->size` is
+ * `sizeof(MfskIqDecode)`, or 0 for the whole struct).
+ *
+ * Returns 1 when a decode was written, 0 when none is waiting, and a negative
+ * `MfskStatus` on error (a null handle or `out`). Call it until it returns 0
+ * after every push:
+ *
+ * ```c
+ * MfskIqDecode d = {0};
+ * while (mfsk_iq_poll(rx, &d) == 1) show(d.channel, d.text, d.abs_freq_hz);
+ * ```
+ *
+ * # Safety
+ * `out` must point to at least `out->size` writable bytes.
+ */
+MFSK_API
+int32_t mfsk_iq_poll(struct MfskIqReceiver *rx,
+                     struct MfskIqDecode *out);
 
 /**
  * Library version, major.minor.patch packed into a 32-bit integer (8

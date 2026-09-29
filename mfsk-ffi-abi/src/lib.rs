@@ -708,6 +708,46 @@ pub struct MfskJttyUpdate {
 }
 const _: () = assert!(MFSK_JTTY_TEXT_BUF_LEN == 128);
 
+/// One decode out of `mfsk_iq_poll`: the row of a channel of a wideband IQ
+/// stream, with the absolute RF frequency and where its slot started.
+///
+/// Size-versioned like the other rows: `size` is `sizeof(MfskIqDecode)` as
+/// the caller understands it (0 means the whole struct).
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskIqDecode {
+    /// `sizeof(MfskIqDecode)` as the caller understands it.
+    pub size: u32,
+    /// The handle `mfsk_iq_add_channel` returned.
+    pub channel: u32,
+    /// The channel's concrete mode.
+    pub mode: MfskMode,
+    /// Non-zero when a time anchor was set, so `slot_start_utc_ns` means
+    /// something. Zero on a free-running grid.
+    pub has_utc: u32,
+    /// RF frequency of tone 0, Hz: the channel's dial plus `freq_hz`.
+    pub abs_freq_hz: f64,
+    /// Index (of the IQ stream, complex samples) the slot started at.
+    pub slot_start_sample: u64,
+    /// UTC of the slot start, ns since the Unix epoch, when `has_utc`.
+    pub slot_start_utc_ns: i64,
+    /// Audio frequency of tone 0 within the channel, Hz.
+    pub freq_hz: f32,
+    /// Time offset from the slot's `dt = 0` reference, seconds.
+    pub dt_sec: f32,
+    /// Estimated SNR in a 2500 Hz reference bandwidth, dB.
+    pub snr_db: f32,
+    /// Decoded message text, NUL-terminated.
+    pub text: [core::ffi::c_char; MFSK_DECODE_TEXT_LEN],
+}
+
+/// The wideband IQ receiver handle.
+///
+/// Emitted as an incomplete type; what `mfsk_iq_open` allocates.
+pub struct MfskIqReceiver {
+    _marker: PhantomData<*mut ()>,
+}
+
 /// The JTTY receiver handle.
 ///
 /// Emitted as an incomplete type, like [`MfskDecodeOptions`]; the receiver is
