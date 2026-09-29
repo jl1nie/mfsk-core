@@ -15,6 +15,7 @@
 
 #include "mfsk.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -1288,6 +1289,136 @@ void test_null_handling() {
 
 }  // namespace
 
+// ── Wideband IQ receiver (mfsk_iq_*, #534) ──────────────────────────
+//
+// An FT8 slot made by the library's own synthesiser, placed as
+// double-sideband IQ at 48 kS/s (12 kHz audio interpolated by 4, mixed up by
+// the dial's offset from the centre) and pushed as bytes in each of the wire
+// formats. The receiver must hand back the message, on the channel and mode
+// it was added with, at the absolute frequency the dial makes of it.
+void test_iq() {
+    const uint32_t fs = 48000;
+    const double center = 14077000.0;
+    const double dial = center + 6000.0;
+    const int64_t t0_ns = 1700000100LL * 1000000000LL;
+
+    const std::vector<int16_t> slot = synth_slot(MFSK_MODE_FT8, "CQ", "JA1ABC", "PM95", 1500.0f);
+    if (slot.empty()) { fail("iq", "no FT8 slot to feed"); return; }
+
+    // 12 kHz -> 48 kHz by linear interpolation is enough here: the audio is
+    // narrow (<= 3 kHz) and the front end low-passes what the interpolation
+    // leaves above it.
+    std::vector<float> up(slot.size() * 4);
+    for (size_t i = 0; i < slot.size(); ++i) {
+        const float a = slot[i] / 32768.0f;
+        const float b = (i + 1 < slot.size() ? slot[i + 1] : 0) / 32768.0f;
+        for (int k = 0; k < 4; ++k) up[i * 4 + k] = a + (b - a) * (k / 4.0f);
+    }
+    const double w = 6.283185307179586 * (dial - center) / fs;
+    std::vector<float> iq;  // interleaved I,Q
+    iq.reserve((up.size() + fs / 2) * 2);
+    float peak = 1e-9f;
+    for (size_t n = 0; n < up.size(); ++n) {
+        const float i = up[n] * static_cast<float>(std::cos(w * n));
+        const float q = up[n] * static_cast<float>(std::sin(w * n));
+        iq.push_back(i);
+        iq.push_back(q);
+        peak = std::max(peak, std::max(std::fabs(i), std::fabs(q)));
+    }
+    for (size_t n = 0; n < fs / 2; ++n) { iq.push_back(0.0f); iq.push_back(0.0f); }
+    for (float& v : iq) v = v * 0.7f / peak;
+
+    const uint32_t formats[] = {MFSK_IQ_FORMAT_CF32, MFSK_IQ_FORMAT_CS16, MFSK_IQ_FORMAT_CS8,
+                                MFSK_IQ_FORMAT_CU8, MFSK_IQ_FORMAT_CS24};
+    for (uint32_t fmt : formats) {
+        std::vector<uint8_t> bytes;
+        for (float v : iq) {
+            switch (fmt) {
+            case MFSK_IQ_FORMAT_CF32: {
+                uint8_t b[4]; std::memcpy(b, &v, 4);
+                bytes.insert(bytes.end(), b, b + 4);
+                break;
+            }
+            case MFSK_IQ_FORMAT_CS16: {
+                const int16_t x = static_cast<int16_t>(v * 32768.0f);
+                bytes.push_back(x & 0xff); bytes.push_back((x >> 8) & 0xff);
+                break;
+            }
+            case MFSK_IQ_FORMAT_CS8:
+                bytes.push_back(static_cast<uint8_t>(static_cast<int8_t>(
+                    std::max(-128.0f, std::min(127.0f, std::round(v * 128.0f))))));
+                break;
+            case MFSK_IQ_FORMAT_CU8:
+                bytes.push_back(static_cast<uint8_t>(
+                    std::max(0.0f, std::min(255.0f, std::round(v * 128.0f + 128.0f)))));
+                break;
+            default: {
+                const int32_t x = static_cast<int32_t>(std::round(v * 8388608.0f));
+                bytes.push_back(x & 0xff); bytes.push_back((x >> 8) & 0xff);
+                bytes.push_back((x >> 16) & 0xff);
+            }
+            }
+        }
+
+        MfskStatus st = MFSK_STATUS_INTERNAL;
+        MfskIqReceiver* rx = mfsk_iq_open(fs, center, fmt, 0, &st);
+        if (rx == nullptr || st != MFSK_STATUS_OK) { fail("iq", "mfsk_iq_open"); return; }
+        uint32_t ch = 0xffffffffu;
+        if (mfsk_iq_add_channel(rx, dial, MFSK_MODE_FT8, &ch) != MFSK_STATUS_OK) {
+            fail("iq", "add_channel"); mfsk_iq_close(rx); return;
+        }
+        mfsk_iq_set_time_anchor(rx, t0_ns);
+        // Chunks that split samples.
+        for (size_t pos = 0; pos < bytes.size(); pos += 65537) {
+            const size_t n = std::min<size_t>(65537, bytes.size() - pos);
+            if (mfsk_iq_push(rx, bytes.data() + pos, n) != MFSK_STATUS_OK) {
+                fail("iq", "push"); mfsk_iq_close(rx); return;
+            }
+        }
+        bool found = false;
+        MfskIqDecode d;
+        std::memset(&d, 0, sizeof d);
+        d.size = sizeof d;
+        while (mfsk_iq_poll(rx, &d) == 1) {
+            if (std::strstr(d.text, "CQ JA1ABC PM95") == nullptr) continue;
+            found = true;
+            if (d.channel != ch || d.mode != MFSK_MODE_FT8) fail("iq", "row names the wrong channel or mode");
+            if (std::fabs(d.abs_freq_hz - (dial + d.freq_hz)) > 1e-6) fail("iq", "abs_freq_hz != dial + freq_hz");
+            if (std::fabs(d.freq_hz - 1500.0f) > 3.0f) fail("iq", "audio frequency is off");
+            if (!d.has_utc || d.slot_start_utc_ns != t0_ns) fail("iq", "slot start UTC is wrong");
+        }
+        if (!found) {
+            char what[64];
+            std::snprintf(what, sizeof what, "format %u: the message did not come out", fmt);
+            fail("iq", what);
+        }
+        if (mfsk_iq_pending(rx) != 0) fail("iq", "queue should be drained");
+        if (mfsk_iq_samples_in(rx) != iq.size() / 2) fail("iq", "samples_in is not the count pushed");
+        mfsk_iq_close(rx);
+    }
+
+    // Refusals are statuses, not crashes.
+    MfskStatus st = MFSK_STATUS_OK;
+    if (mfsk_iq_open(fs, center, 99, 0, &st) != nullptr || st != MFSK_STATUS_INVALID_ARG) {
+        fail("iq", "an unknown format should be INVALID_ARG");
+    }
+    MfskIqReceiver* rx = mfsk_iq_open(fs, center, MFSK_IQ_FORMAT_CF32, 0, &st);
+    if (rx == nullptr) { fail("iq", "open"); return; }
+    if (mfsk_iq_add_channel(rx, center - 1000.0, MFSK_MODE_FT8, nullptr) != MFSK_STATUS_INVALID_ARG) {
+        fail("iq", "a channel on DC should be INVALID_ARG");
+    }
+    if (mfsk_iq_add_channel(rx, dial, MFSK_MODE_MSK144, nullptr) != MFSK_STATUS_INVALID_ARG) {
+        fail("iq", "a mode the receiver does not carry should be INVALID_ARG");
+    }
+    MfskIqDecode d;
+    std::memset(&d, 0, sizeof d);
+    if (mfsk_iq_poll(nullptr, &d) >= 0) fail("iq", "poll(NULL) should be negative");
+    if (mfsk_iq_poll(rx, &d) != 0) fail("iq", "poll on an empty queue should be 0");
+    mfsk_iq_close(rx);
+    mfsk_iq_close(nullptr);  // a no-op, like every free here
+    std::printf("  [iq] all five formats decode, refusals are statuses\n");
+}
+
 int main() {
     const uint32_t ver = mfsk_version();
     std::printf("mfsk-ffi version: %u.%u.%u (ABI %u)\n",
@@ -1311,6 +1442,7 @@ int main() {
     test_threads_one_session_per_thread();
     test_threads_mixed_modes();
     test_jtty();
+    test_iq();
     test_null_handling();
 
     if (g_failures == 0) {

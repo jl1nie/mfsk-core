@@ -2,6 +2,24 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **C ABI for the IQ receiver: `mfsk_iq_*` (#534, phase 3).**
+  A handle of its own, as JTTY has: `mfsk_iq_open(sample_rate, center_hz, format, iq_swap, &status)` (`format` one of
+  `MFSK_IQ_FORMAT_CF32/CS16/CS8/CU8/CS24`), `mfsk_iq_add_channel(rx, dial_hz, mode, &channel)` for FT8, FT4, the five
+  FST4 periods, WSPR, JT9, JT65 and the ten Q65 sub-modes (a mode the receiver does not carry, or a dial that cannot be
+  placed, is `INVALID_ARG`), `mfsk_iq_remove_channel`, `mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0)`,
+  `mfsk_iq_retune`, `mfsk_iq_gap`, `mfsk_iq_push(rx, bytes, n)`, `mfsk_iq_samples_in`, `mfsk_iq_pending`, `mfsk_iq_close`.
+  Decodes are collected by `mfsk_iq_poll(rx, &row)` into a size-versioned `MfskIqDecode` (channel, `MfskMode`, text, audio
+  and absolute frequency, DT, SNR, the IQ sample index and UTC of the slot start, `has_utc`), returning 1 / 0 / negative
+  as `mfsk_jtty_poll` does; a queue of 4096 drops its oldest. Decoding runs inside `mfsk_iq_push`, so a host that cannot
+  block pushes from a worker thread; the handle is one-thread-at-a-time. Polling rather than a callback is the JTTY
+  reason: no user-data contract to cross the boundary, and the Kotlin / Swift / C# wrappers (#533) are simpler.
+  Evidence: `mfsk-ffi/tests/iq_ffi.rs` decodes a synthesised `CQ JA1ABC PM95` (FT8, audio 1500 Hz, in noise) placed as IQ at
+  48 kS/s through each of the five formats, with the row's channel, mode, absolute frequency, UTC and slot sample checked,
+  a free-running grid reporting `has_utc == 0`, a `retune` and a `gap` in the middle of the slot costing that slot, and
+  the refusals (unknown format, rate under 12 kHz, non-finite centre, DC in the band, band edge, a mode the receiver does
+  not carry, a retune that would put a channel out, NULL handles) as statuses; the C++ smoke driver does the same
+  end-to-end through `mfsk.h`, which `header_compile.sh` compiles as C11 and C++17. `mfsk.h` is regenerated (+207 lines).
+
 - **IQ sample formats `Cu8`, `Cs8` and `Cs24` (#534, phase 4).**
   `IqSampleFormat` gains `Cu8` (RTL-SDR, 128 = zero), `Cs8` (HackRF) and `Cs24` (24-bit IQ WAV), byte streams only through
   `push_bytes` on both `IqToAudio` and `IqReceiver`, which now share one converter (`IqSampleFormat::convert`); a sample

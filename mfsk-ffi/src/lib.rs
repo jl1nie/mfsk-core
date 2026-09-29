@@ -94,10 +94,22 @@ use mfsk_core::ft8::decode as ft8;
 
 pub use mfsk_ffi_abi::{
     MfskDecode, MfskDecodeDefaults, MfskDecodeDepth, MfskDecodeOptions, MfskDecodeParams,
-    MfskDecodeSession, MfskEqMode, MfskJttyParams, MfskJttyReceiver, MfskJttyUpdate, MfskMode,
-    MfskModeInfo, MfskQ65Caller, MfskQ65Callers, MfskQ65Dx, MfskQ65History, MfskQ65Params,
-    MfskStatus, MfskStrictness, MfskSyncScale,
+    MfskDecodeSession, MfskEqMode, MfskIqDecode, MfskIqReceiver, MfskJttyParams, MfskJttyReceiver,
+    MfskJttyUpdate, MfskMode, MfskModeInfo, MfskQ65Caller, MfskQ65Callers, MfskQ65Dx,
+    MfskQ65History, MfskQ65Params, MfskStatus, MfskStrictness, MfskSyncScale,
 };
+/// `mfsk_iq_open`'s `format`: `f32` I, `f32` Q, little-endian. A literal here
+/// for the cbindgen reason [`MFSK_AP_FIELD_LEN`] gives.
+pub const MFSK_IQ_FORMAT_CF32: u32 = 0;
+/// `i16` I, `i16` Q, full scale 32768.
+pub const MFSK_IQ_FORMAT_CS16: u32 = 1;
+/// `i8` I, `i8` Q, full scale 128 (HackRF).
+pub const MFSK_IQ_FORMAT_CS8: u32 = 2;
+/// `u8` I, `u8` Q, 128 = zero, full scale 128 (RTL-SDR).
+pub const MFSK_IQ_FORMAT_CU8: u32 = 3;
+/// 24-bit signed I, Q, full scale 8 388 608.
+pub const MFSK_IQ_FORMAT_CS24: u32 = 4;
+
 /// Inline capacity of each `MfskDecodeParams` a-priori field.
 ///
 /// A literal here, not a re-export of `mfsk_ffi_abi`'s, for the same
@@ -5686,6 +5698,396 @@ unsafe fn emit_pcm(
     }
     unsafe { ptr::copy_nonoverlapping(pcm.as_ptr(), out, pcm.len()) };
     MfskStatus::Ok
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Wideband IQ receiver (#534, phase 3)
+//
+// `mfsk_core::iq::IqReceiver` behind a handle of its own, the way JTTY has
+// one: the input is a stream of IQ, not audio, the receiver carries state
+// (per-channel filters, open slots, the sample clock), and a slot that
+// completes is decoded inside the `push` that finishes it. The rows go into
+// a queue in the handle which `mfsk_iq_poll` drains, for the reason
+// `mfsk_jtty_poll` gives: a callback cannot cross the C boundary without a
+// user-data contract, and Kotlin / Swift / C# wrap a poll more easily.
+//
+// The handle is not thread-safe: one thread at a time. Since decoding runs
+// inside `push`, a caller that cannot block pushes from a worker thread.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Most decodes the queue holds between polls; a caller that never polls
+/// loses the oldest.
+const IQ_QUEUE_MAX: usize = 4096;
+
+struct IqInner {
+    rx: mfsk_core::iq::IqReceiver,
+    queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<mfsk_core::iq::IqDecode>>>,
+}
+
+fn iq_inner<'a>(rx: *mut MfskIqReceiver) -> Option<&'a mut IqInner> {
+    unsafe { (rx as *mut IqInner).as_mut() }
+}
+
+/// The `IqMode` a `MfskMode` addresses, or `None` for a mode the IQ receiver
+/// does not carry (MSK144, JTTY, uvpacket) or a build without it.
+fn iq_mode_of(m: MfskMode) -> Option<mfsk_core::iq::IqMode> {
+    use mfsk_core::iq::IqMode as I;
+    Some(match m {
+        MfskMode::Ft8 => I::Ft8,
+        MfskMode::Ft4 => I::Ft4,
+        MfskMode::Fst4s15 => I::Fst4S15,
+        MfskMode::Fst4s30 => I::Fst4S30,
+        MfskMode::Fst4s60 => I::Fst4S60,
+        MfskMode::Fst4s120 => I::Fst4S120,
+        MfskMode::Fst4s300 => I::Fst4S300,
+        MfskMode::Wspr => I::Wspr,
+        MfskMode::Jt9 => I::Jt9,
+        MfskMode::Jt65 => I::Jt65,
+        MfskMode::Q65a15 => I::Q65A15,
+        MfskMode::Q65a30 => I::Q65A30,
+        MfskMode::Q65a60 => I::Q65A60,
+        MfskMode::Q65b60 => I::Q65B60,
+        MfskMode::Q65c60 => I::Q65C60,
+        MfskMode::Q65d60 => I::Q65D60,
+        MfskMode::Q65e60 => I::Q65E60,
+        MfskMode::Q65d120 => I::Q65D120,
+        MfskMode::Q65e120 => I::Q65E120,
+        MfskMode::Q65a300 => I::Q65A300,
+        _ => return None,
+    })
+}
+
+/// The `MfskMode` an `IqMode` came from: the inverse of [`iq_mode_of`], by
+/// search, so the two cannot disagree.
+fn mfsk_mode_of_iq(m: mfsk_core::iq::IqMode) -> MfskMode {
+    (0u32..)
+        .map_while(mode_of_index)
+        .find(|x| iq_mode_of(*x) == Some(m))
+        .expect("every IqMode is some MfskMode's")
+}
+
+/// `MfskMode` by discriminant, for as long as there is one.
+fn mode_of_index(i: u32) -> Option<MfskMode> {
+    mode_of(i)
+}
+
+fn iq_error_status(e: mfsk_core::iq::IqError) -> MfskStatus {
+    let _ = e;
+    MfskStatus::InvalidArg
+}
+
+/// Open a receiver for an IQ stream: `sample_rate` complex samples per second
+/// (any integer of 12 000 or more whose ratio to 12 kHz is a small fraction),
+/// `center_hz` the RF frequency of DC, `format` one of `MFSK_IQ_FORMAT_*`,
+/// `iq_swap` non-zero when I and Q are exchanged (sound-card IQ often is).
+///
+/// Returns NULL and writes the reason to `out_status` on failure:
+/// `MFSK_STATUS_INVALID_ARG` for an unknown format, a rate below 12 kHz or a
+/// non-finite centre.
+///
+/// # Safety
+/// `out_status` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_open(
+    sample_rate: u32,
+    center_hz: f64,
+    format: u32,
+    iq_swap: u32,
+    out_status: *mut MfskStatus,
+) -> *mut MfskIqReceiver {
+    use mfsk_core::iq::IqSampleFormat as F;
+    let report = |st: MfskStatus| {
+        if !out_status.is_null() {
+            unsafe { *out_status = st };
+        }
+    };
+    let format = match format {
+        MFSK_IQ_FORMAT_CF32 => F::Cf32,
+        MFSK_IQ_FORMAT_CS16 => F::Cs16,
+        MFSK_IQ_FORMAT_CS8 => F::Cs8,
+        MFSK_IQ_FORMAT_CU8 => F::Cu8,
+        MFSK_IQ_FORMAT_CS24 => F::Cs24,
+        _ => {
+            set_error("mfsk_iq_open: not an MFSK_IQ_FORMAT_* value");
+            report(MfskStatus::InvalidArg);
+            return ptr::null_mut();
+        }
+    };
+    if sample_rate < 12_000 || !center_hz.is_finite() {
+        set_error("mfsk_iq_open: sample_rate must be at least 12000 and center_hz finite");
+        report(MfskStatus::InvalidArg);
+        return ptr::null_mut();
+    }
+    let mut rx = mfsk_core::iq::IqReceiver::new(mfsk_core::iq::IqStream {
+        sample_rate,
+        center_hz,
+        format,
+        iq_swap: iq_swap != 0,
+    });
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let sink = queue.clone();
+    rx.on_decode(move |d| {
+        let mut q = sink.lock().unwrap_or_else(|e| e.into_inner());
+        if q.len() >= IQ_QUEUE_MAX {
+            q.pop_front();
+        }
+        q.push_back(d.clone());
+    });
+    report(MfskStatus::Ok);
+    Box::into_raw(Box::new(IqInner { rx, queue })) as *mut MfskIqReceiver
+}
+
+/// Release a receiver. Null is a no-op.
+///
+/// # Safety
+/// `rx` must be a handle from [`mfsk_iq_open`], released once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_close(rx: *mut MfskIqReceiver) {
+    if !rx.is_null() {
+        drop(unsafe { Box::from_raw(rx as *mut IqInner) });
+    }
+}
+
+/// Add a channel whose dial (audio 0 Hz) is `dial_hz`, carrying `mode` (a
+/// `MfskMode`: FT8, FT4, the five FST4 periods, WSPR, JT9, JT65 or a Q65
+/// sub-mode). On success `*out_channel` is the handle rows carry.
+///
+/// `MFSK_STATUS_INVALID_ARG` when the channel cannot be placed (DC inside its
+/// 0-6 kHz audio window, or the window outside the IQ band) or the mode is not
+/// one the receiver carries; `MFSK_STATUS_UNKNOWN_PROTOCOL` for a mode this
+/// build was compiled without.
+///
+/// # Safety
+/// `out_channel` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_add_channel(
+    rx: *mut MfskIqReceiver,
+    dial_hz: f64,
+    mode: u32,
+    out_channel: *mut u32,
+) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_add_channel: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    let Some(m) = mode_of(mode) else {
+        set_error("mfsk_iq_add_channel: not a mode this library knows");
+        return MfskStatus::InvalidArg;
+    };
+    // A mode the receiver never carries (MSK144, JTTY, uvpacket) is the
+    // caller's mistake whatever the build; only then is a carried mode
+    // that this build lacks `UnknownProtocol`.
+    let Some(iq_mode) = iq_mode_of(m) else {
+        set_error("mfsk_iq_add_channel: the IQ receiver does not carry this mode");
+        return MfskStatus::InvalidArg;
+    };
+    if mode_meta(m).is_none() {
+        set_error("mfsk_iq_add_channel: no such mode in this build");
+        return MfskStatus::UnknownProtocol;
+    }
+    if !dial_hz.is_finite() {
+        set_error("mfsk_iq_add_channel: dial_hz is not finite");
+        return MfskStatus::InvalidArg;
+    }
+    match r.rx.add_channel(dial_hz, iq_mode) {
+        Ok(id) => {
+            if !out_channel.is_null() {
+                unsafe { *out_channel = id.0 as u32 };
+            }
+            MfskStatus::Ok
+        }
+        Err(e) => {
+            set_error(format!("mfsk_iq_add_channel: {e}"));
+            iq_error_status(e)
+        }
+    }
+}
+
+/// Remove a channel. `MFSK_STATUS_INVALID_ARG` if there is no such channel.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_remove_channel(
+    rx: *mut MfskIqReceiver,
+    channel: u32,
+) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_remove_channel: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    if r.rx
+        .remove_channel(mfsk_core::iq::ChannelId(channel as usize))
+    {
+        MfskStatus::Ok
+    } else {
+        set_error("mfsk_iq_remove_channel: no such channel");
+        MfskStatus::InvalidArg
+    }
+}
+
+/// Say what UTC (ns since the Unix epoch) IQ sample 0 fell on. Slot boundaries
+/// move with it, so every open slot is dropped. Without it the grid free-runs
+/// from sample 0, which is right for replaying a recording.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_set_time_anchor(
+    rx: *mut MfskIqReceiver,
+    utc_ns_at_sample_0: i64,
+) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_set_time_anchor: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    r.rx.set_time_anchor(utc_ns_at_sample_0);
+    MfskStatus::Ok
+}
+
+/// The tuner moved to `center_hz`: every channel is re-placed against it and
+/// the open slots are dropped; the sample clock continues. All or nothing:
+/// `MFSK_STATUS_INVALID_ARG`, and nothing changes, if a channel no longer fits.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_retune(rx: *mut MfskIqReceiver, center_hz: f64) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_retune: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    if !center_hz.is_finite() {
+        set_error("mfsk_iq_retune: center_hz is not finite");
+        return MfskStatus::InvalidArg;
+    }
+    match r.rx.retune(center_hz) {
+        Ok(()) => MfskStatus::Ok,
+        Err(e) => {
+            set_error(format!("mfsk_iq_retune: {e}"));
+            iq_error_status(e)
+        }
+    }
+}
+
+/// `lost` samples never arrived: the clock advances past them and the open
+/// slots are dropped.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_gap(rx: *mut MfskIqReceiver, lost: u64) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_gap: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    r.rx.gap(lost);
+    MfskStatus::Ok
+}
+
+/// Push `n_bytes` of IQ in the format the receiver was opened with,
+/// little-endian, I then Q; a sample split across calls is carried over. Every
+/// slot this completes is decoded before the call returns; what it found waits
+/// for [`mfsk_iq_poll`].
+///
+/// # Safety
+/// `data` must be `n_bytes` readable bytes (or null when `n_bytes` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_push(
+    rx: *mut MfskIqReceiver,
+    data: *const c_void,
+    n_bytes: usize,
+) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_push: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    if n_bytes == 0 {
+        return MfskStatus::Ok;
+    }
+    if data.is_null() {
+        set_error("mfsk_iq_push: data is NULL");
+        return MfskStatus::NullPointer;
+    }
+    let bytes = unsafe { slice::from_raw_parts(data as *const u8, n_bytes) };
+    in_pool_mut(|| r.rx.push_bytes(bytes));
+    MfskStatus::Ok
+}
+
+/// Complex samples consumed so far, gaps included: the stream's clock.
+///
+/// # Safety
+/// `rx` must be a live handle or null (0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_samples_in(rx: *mut MfskIqReceiver) -> u64 {
+    iq_inner(rx).map(|r| r.rx.samples_in()).unwrap_or(0)
+}
+
+/// How many decodes wait for [`mfsk_iq_poll`].
+///
+/// # Safety
+/// `rx` must be a live handle or null (0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_pending(rx: *mut MfskIqReceiver) -> usize {
+    iq_inner(rx)
+        .map(|r| r.queue.lock().unwrap_or_else(|e| e.into_inner()).len())
+        .unwrap_or(0)
+}
+
+/// Take the oldest waiting decode into `*out` (`out->size` is
+/// `sizeof(MfskIqDecode)`, or 0 for the whole struct).
+///
+/// Returns 1 when a decode was written, 0 when none is waiting, and a negative
+/// `MfskStatus` on error (a null handle or `out`). Call it until it returns 0
+/// after every push:
+///
+/// ```c
+/// MfskIqDecode d = {0};
+/// while (mfsk_iq_poll(rx, &d) == 1) show(d.channel, d.text, d.abs_freq_hz);
+/// ```
+///
+/// # Safety
+/// `out` must point to at least `out->size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqDecode) -> i32 {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_poll: null receiver");
+        return MfskStatus::NullPointer as i32;
+    };
+    if out.is_null() {
+        set_error("mfsk_iq_poll: out is NULL");
+        return MfskStatus::NullPointer as i32;
+    }
+    let Some(d) = r
+        .queue
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop_front()
+    else {
+        return 0;
+    };
+    let mut v = MfskIqDecode {
+        size: core::mem::size_of::<MfskIqDecode>() as u32,
+        channel: d.channel.0 as u32,
+        mode: mfsk_mode_of_iq(d.mode),
+        has_utc: u32::from(d.slot_start_utc_ns.is_some()),
+        abs_freq_hz: d.abs_freq_hz,
+        slot_start_sample: d.slot_start_sample,
+        slot_start_utc_ns: d.slot_start_utc_ns.unwrap_or(0),
+        freq_hz: d.decoded.freq_hz,
+        dt_sec: d.decoded.dt_sec,
+        snr_db: d.decoded.snr_db,
+        text: [0; mfsk_ffi_abi::MFSK_DECODE_TEXT_LEN],
+    };
+    let mut end = d.decoded.text.len().min(v.text.len() - 1);
+    while !d.decoded.text.is_char_boundary(end) {
+        end -= 1;
+    }
+    for (dst, &b) in v.text.iter_mut().zip(&d.decoded.text.as_bytes()[..end]) {
+        *dst = b as c_char;
+    }
+    unsafe { write_size_versioned(out, &v) };
+    1
 }
 
 /// Library version, major.minor.patch packed into a 32-bit integer (8
