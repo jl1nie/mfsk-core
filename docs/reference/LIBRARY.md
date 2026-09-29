@@ -33,6 +33,7 @@ This document is the Rust host API. Other audiences:
   - [2.4 Streaming delivery](#24-streaming-delivery)
   - [2.5 Protocols with their own entry point](#25-protocols-with-their-own-entry-point)
   - [2.6 Message acceptance](#26-message-acceptance)
+  - [2.7 Wideband IQ input](#27-wideband-iq-input)
 - [3. Protocols](#3-protocols)
   - [3.1 Generic vs bespoke, per protocol](#31-generic-vs-bespoke-per-protocol)
   - [3.2 Geometry](#32-geometry)
@@ -642,6 +643,108 @@ the message stage, which is why it is worth the type parameter.
 
 ---
 
+### 2.7 Wideband IQ input
+
+`mfsk_core::iq` takes a wideband complex-IQ stream (an SDR, an IQ recording)
+where every decoder above takes 12 kHz real audio. It is library scope: DSP
+plus decoding, no device handling, no UI, no spot upload. What it does *not*
+do is find signals: the caller says which dial frequency carries which mode,
+and the decoders search the channel's audio 200-3000 Hz themselves.
+
+**One channel: `IqToAudio`.** The audio a transceiver's USB output would have
+carried for a dial frequency, from IQ at any integer rate of 12 kHz or more:
+
+```rust
+use mfsk_core::iq::{IqError, IqSampleFormat, IqStream, IqToAudio};
+
+let stream = IqStream { sample_rate: 768_000, center_hz: 14_200_000.0,
+                        format: IqSampleFormat::Cf32, iq_swap: false };
+// 14.290 MHz is 90 kHz above the centre: inside the band, clear of DC.
+let mut ch = IqToAudio::new(stream, 14_290_000.0).unwrap();
+let mut audio = Vec::new();
+ch.push_cf32(&[0.0; 2 * 1024], &mut audio);   // interleaved I/Q; appends 12 kHz f32 audio
+assert_eq!(ch.samples_in(), 1024);
+// DC inside the channel's 0-6 kHz window is refused.
+assert_eq!(IqToAudio::new(stream, 14_199_000.0).err(), Some(IqError::TooCloseToDc));
+```
+
+Placement is checked up front: the channel's 0-6 kHz audio window must lie
+inside `±Fs/2` (`IqError::OutsideBand`), must not contain the stream's DC
+(`TooCloseToDc`), and the rate must reach 12 kHz through a small rational
+factor (`UnsupportedRate` for, say, 999 983 Hz; `RateTooLow` under 12 kHz).
+The path is: mix the channel's audio 3 kHz to DC, a cascade of short FIR
+decimators down to 24-48 kS/s, one sharp low-pass there, a polyphase `L/M`
+resampler to exactly 12 kHz, shift back up, take the real part.
+
+**Usable audio starts near 200 Hz.** Taking the real part folds the sideband
+*below* the dial onto the wanted one, so the low-pass has to be sharp at audio
+0, not at Nyquist: it passes audio 200-5800 Hz and stops at -200 Hz. A signal
+at 0-200 Hz is attenuated, not decoded reliably. An SSB receiver's own filter
+starts about there; a decoder given complex input directly would not have the
+limit, and would be a much larger change than this front end (issue #534).
+
+**N channels, on UTC: `IqReceiver`.** (Needs an FFT backend and a protocol
+feature.)
+
+```rust,ignore
+let mut rx = IqReceiver::new(IqStream { sample_rate: 768_000, center_hz: 14_200_000.0,
+                                        format: IqSampleFormat::Cf32, iq_swap: false });
+rx.add_channel(14_074_000.0, IqMode::Ft8)?;         // Err if DC is in its window or it is out of band
+rx.add_channel(14_080_000.0, IqMode::Ft4)?;
+rx.set_time_anchor(utc_ns_at_sample_0);             // otherwise the grid free-runs from sample 0
+rx.on_decode(|row: &IqDecode| { /* row.abs_freq_hz, row.decoded.text, row.slot_start_utc_ns */ });
+rx.push_cf32(&iq);                                  // typed; also push_cs16 / push_bytes
+rx.retune(new_center_hz)?;                          // drops the open slots, keeps the sample clock
+rx.gap(lost_samples);                               // same
+```
+
+Modes: `IqMode` covers FT8, FT4, the five FST4 periods, WSPR, JT9, JT65 and the
+ten Q65 sub-modes. FT8, FT4 and FST4 go through `DecodeRequest` with the
+registry's default search; the others through their own request type with its
+`default_search_params`, all with the nominal start the registry gives the
+mode, so `dt` reads as it does on a WAV. Q65 is single-period here: nothing
+averages across slots.
+
+*Time.* The sample count is the clock; no time source is read. A channel's
+audio index `k` is `k/12000` s after sample 0, and slot `j` of a mode with
+period `T` covers UTC `[j·T, (j+1)·T)`, computed in integers. A slot is decoded
+once all of it has arrived; the partial slot the stream opened in the middle of
+is not. `retune`, `gap` and re-anchoring drop every open slot, because audio
+that straddles a change of centre, a hole in the samples or a moved grid is not
+a slot; `retune` is all-or-nothing (`Err`, and nothing changes, if a channel no
+longer fits). A slot's last audio sample comes out a few filter lengths after
+the last IQ sample that carries it, so a recording needs a moment of padding
+after its end, as a live stream has.
+
+*Rows.* `IqDecode` is the cross-mode `Decoded` plus `abs_freq_hz` (dial plus
+audio frequency), the IQ sample index the slot started at and, with an anchor,
+its UTC in ns.
+
+*Threading.* A slot that completes is decoded inside the `push_*` call that
+completes it (hundreds of milliseconds on a busy FT8 band), and its rows are
+delivered through the callback on that thread. A caller that cannot block
+pushes from a worker thread. Each slot is scaled to a fixed RMS before the
+decoders see it; they are scale-free and the IQ's own level is not something to
+inherit.
+
+*Formats.* `Cf32`, `Cs16` typed or as bytes; `Cs8` (HackRF), `Cu8` (RTL-SDR,
+128 = zero) and `Cs24` as byte streams through `push_bytes`, a sample split
+across calls carried over.
+
+*Cost.* Each channel mixes at the input rate, so cost is linear in channels.
+Measured, one thread, release, `Cf32` in: 768 kS/s is 1.1 % of a core for one
+channel, 11 % for eight and 44 % for thirty-two; 2.4 MS/s is 2.3 % for one and
+18 % for eight; 192 kS/s is 0.5 % for one. Past a few dozen channels an FFT
+channelizer would pay; it is the last item of #534 and is not built.
+
+*Evidence.* `tests/iq_front_end.rs` and `tests/iq_receiver.rs` place real
+recordings as double-sideband IQ (so a leaking lower sideband would show as
+phantoms) at 48 k, 192 k, 250 k, 768 k and 2.4 MS/s, I/Q swapped and off DC, and
+require the WAV path's own decode set: 16/16 and 14/14 FT8, 11/11 FT4, with no
+phantoms, frequency within 2 Hz and DT within 0.05 s. `tests/iq_receiver_modes.rs`
+does the same for WSPR (9/9), JT9 (5/5), JT65 and Q65-120D / -300A. The C ABI is
+[`mfsk_iq_*`](BINDINGS.md#282-wideband-iq--a-receiver-handle-for-an-sdr-stream).
+
 ## 3. Protocols
 
 ### 3.1 Generic vs bespoke, per protocol
@@ -1009,6 +1112,7 @@ mfsk_core
 │   ├── packet_bytes.rs PacketBytesMessage — byte-payload example codec
 │   └── hash_table.rs   Callsign hash table
 ├── registry.rs       PROTOCOLS static + ProtocolMeta + by_id / by_name
+├── iq/               wideband IQ in: IqToAudio (one channel → 12 kHz USB audio), IqReceiver (N channels, UTC slots) — §2.7
 ├── ft8/              FT8 ZST + decode + decode_block + wave_gen
 │   ├── list_decode.rs  WSJT-X's a7 / a8 list decoders (pass ids 30 / 31)
 │   └── acquire.rs      cold slot-phase acquisition from off-air audio (#356)
