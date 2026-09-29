@@ -2,6 +2,14 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Docs for the IQ input: `LIBRARY.md` §2.7 and `BINDINGS.md` §2.8.2, with their `.ja.md` twins (#534, phase 5).**
+  §2.7 covers `IqToAudio` and `IqReceiver`: the signal path, the audio-200 Hz floor and why (the real part folds the
+  sideband below the dial onto the wanted one), placement errors, the time model and what drops an open slot, modes, the
+  formats, the threading contract, the measured cost per channel and the evidence tests. §2.8.2 is the C face,
+  `mfsk_iq_*`, with the loop a host writes and the same threading and time notes. The symbol index gains an IQ group and
+  the exported-function count goes from 93 to 104 (counted with `nm -D` on `libmfsk.so`). The Rust examples are
+  doctests (`LIBRARY.md` is included as one), so they compile and run in the docs job.
+
 - **C ABI for the IQ receiver: `mfsk_iq_*` (#534, phase 3).**
   A handle of its own, as JTTY has: `mfsk_iq_open(sample_rate, center_hz, format, iq_swap, &status)` (`format` one of
   `MFSK_IQ_FORMAT_CF32/CS16/CS8/CU8/CS24`), `mfsk_iq_add_channel(rx, dial_hz, mode, &channel)` for FT8, FT4, the five

@@ -524,6 +524,69 @@ mfsk_jtty_tones_to_i16(tones, n, 1500.0f, 8000.0f, pcm, sizeof pcm / 2, &m);
 `OK` で `*out_len = 0`。WSJT-X が `pack_jtty` の外側に持つ F キーテンプレートと N1MM
 タグはホスト側の方針であり、ライブラリには無い（線引きは #463）。
 
+### 2.8.2 広帯域 IQ — SDR ストリーム用の受信器ハンドル
+
+`mfsk_iq_*` は `mfsk_core::iq::IqReceiver`（LIBRARY.ja.md §2.7）の C 側の顔です。広帯域の複素 IQ
+ストリームを 1 本入れると、ダイヤル周波数ごとにモードを載せた N チャンネルが出てきて、スロットは
+サンプル数を基準に UTC で切り出されます。入力が音声ではなく IQ で、受信器が状態（チャンネルごとの
+フィルタ、開いているスロット、サンプル時計）を持つので、JTTY と同じく専用のハンドルです。何も探しません。
+どのダイヤルがどのモードかは呼び出し側が指定します。
+
+```c
+MfskStatus st;
+/* 14.200 MHz を中心にした CF32 の 768 kS/s、iq_swap = 0 */
+MfskIqReceiver *rx = mfsk_iq_open(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, &st);
+
+uint32_t ft8, ft4;
+mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &ft8);   /* INVALID_ARG: 窓に DC が入る、または帯域外 */
+mfsk_iq_add_channel(rx, 14080000.0, MFSK_MODE_FT4, &ft4);
+mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0);            /* 無ければサンプル 0 から自走する */
+
+for (SDR からの各ブロック) {
+    mfsk_iq_push(rx, bytes, n_bytes);                       /* 完了したスロットをデコードしてから返る */
+    MfskIqDecode d = {0};                                   /* d.size = sizeof d、または 0 */
+    while (mfsk_iq_poll(rx, &d) == 1)                       /* 1 = 行を書いた、0 = 無い、<0 = MfskStatus */
+        show(d.channel, d.text, d.abs_freq_hz, d.snr_db);
+}
+mfsk_iq_retune(rx, new_center_hz);                          /* チューナが動いた */
+mfsk_iq_gap(rx, lost_samples);                              /* サンプルが届かなかった */
+mfsk_iq_close(rx);
+```
+
+`format` は `MFSK_IQ_FORMAT_CF32`、`_CS16`、`_CS8`（HackRF）、`_CU8`（RTL-SDR、128 = ゼロ）、
+`_CS24` のいずれかで、リトルエンディアン、I の次に Q の順です。`mfsk_iq_push` はその形式のバイト列を
+受け取り、2 回の呼び出しにまたがって分割されたサンプルは引き継がれます。`iq_swap` が 0 でなければ I と Q
+を入れ替えます（サウンドカードの IQ でしばしば必要）。12 000 以上で、12 kHz との比が小さな分数になる
+整数レートを受け付け、そうでないものには `mfsk_iq_open` が `INVALID_ARG` の NULL を返します。
+
+チャンネルは FT8、FT4、FST4 の 5 周期のどれか、WSPR、JT9、JT65、Q65 のサブモード（`MfskMode`）を
+載せられます。MSK144、JTTY、uvpacket は `INVALID_ARG` です。**使える音声はおよそ 200 Hz から**
+（フロントエンドがダイヤルより下の側波帯を落とす必要があるため）で、Q65 は単一周期です。スロットをまたぐ
+平均は行いません。
+
+`MfskIqDecode` は他の行と同じくサイズ版管理です。`channel`（`add_channel` が返した値）、具体的な
+`mode`、`text`、`freq_hz`（音声）、`abs_freq_hz`（ダイヤルにそれを足した値、`double`）、`dt_sec`、`snr_db`、
+`slot_start_sample`（IQ ストリームへのインデックス）、`slot_start_utc_ns` を持ち、`has_utc` がアンカーが
+設定されたかを示します。
+
+**時間と不連続**: サンプル数が時計で、ライブラリは時刻源を読みません。スロットは全部届いてから
+デコードされ、ストリームが途中から始まったときの部分スロットはデコードされません。`mfsk_iq_retune`、
+`mfsk_iq_gap`、`mfsk_iq_set_time_anchor` は、それぞれ開いているスロットをすべて捨て（中心の変更、欠落、
+動いたグリッドをまたぐ音声はスロットではないため）、時計は進め続けます。`retune` は全か無かで、
+チャンネルが収まらなくなるなら何も変えずに `INVALID_ARG` を返します。録音には、ライブのストリームと
+同じように、終端の後に少し余白が要ります。スロットの最後の音声サンプルは、それを運ぶ最後の IQ サンプルの
+数フィルタ長後に出てくるからです。
+
+**スレッド**: デコードは `mfsk_iq_push` の中で、呼び出しスレッド上、および `mfsk_runtime_configure` が
+設定したプール上で走ります（混んだ FT8 のスロットで数百ミリ秒）。UI スレッドや SDR 自身のコールバック
+スレッドではなく、ワーカーから push してください。行はハンドル内のキューで待ち、`mfsk_iq_poll` が
+取り出します（最大 4096 件で、poll しない呼び出し側は古いものから失います）。コールバックでなく poll なのは
+JTTY と同じ理由です。境界をまたぐユーザーデータの契約が要らず、Kotlin、Swift、C# のラッパーも poll の方が
+簡単です。ハンドルはスレッドセーフではなく、一度に 1 スレッドです。
+
+コストは、各チャンネルが入力レートで混合するためチャンネル数に比例します。1 スレッドでの実測では、
+768 kS/s は 1 チャンネルで 1 コアの 1.1 %、8 チャンネルで 11 %、32 チャンネルで 44 % です。
+
 ### 2.9 メッセージ
 
 ```c
@@ -591,7 +654,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 93 個:
+エクスポートされる関数は 104 個:
 
 | 群 | シンボル |
 |---|---|
@@ -603,6 +666,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 | Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
+| IQ (11) | `mfsk_iq_open` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
 | ハッシュテーブル (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | ランタイム (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 

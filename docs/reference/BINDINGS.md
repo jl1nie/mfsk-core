@@ -544,6 +544,77 @@ that does not fit is `MFSK_STATUS_INVALID_ARG` with the reason in `mfsk_last_err
 empty message is `OK` with `*out_len = 0`. The F-key templates and N1MM tags WSJT-X wraps
 around `pack_jtty` are host policy and are not in the library (see #463 for the line).
 
+### 2.8.2 Wideband IQ — a receiver handle for an SDR stream
+
+`mfsk_iq_*` is the C face of `mfsk_core::iq::IqReceiver` (LIBRARY.md §2.7): one
+wideband complex-IQ stream in, N channels out, each carrying a mode on a dial
+frequency, with the slots cut on UTC from the sample count. It is a handle of
+its own, like JTTY's, because the input is IQ rather than audio and the
+receiver carries state (per-channel filters, open slots, the sample clock). It
+finds nothing: you say which dial carries which mode.
+
+```c
+MfskStatus st;
+/* 768 kS/s of CF32 centred on 14.200 MHz; iq_swap = 0 */
+MfskIqReceiver *rx = mfsk_iq_open(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, &st);
+
+uint32_t ft8, ft4;
+mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &ft8);   /* INVALID_ARG: DC in its window, or out of band */
+mfsk_iq_add_channel(rx, 14080000.0, MFSK_MODE_FT4, &ft4);
+mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0);            /* without it the grid free-runs from sample 0 */
+
+for (each block from the SDR) {
+    mfsk_iq_push(rx, bytes, n_bytes);                       /* decodes every slot this completes, then returns */
+    MfskIqDecode d = {0};                                   /* d.size = sizeof d, or 0 */
+    while (mfsk_iq_poll(rx, &d) == 1)                       /* 1 = row written, 0 = none, <0 = MfskStatus */
+        show(d.channel, d.text, d.abs_freq_hz, d.snr_db);
+}
+mfsk_iq_retune(rx, new_center_hz);                          /* the tuner moved */
+mfsk_iq_gap(rx, lost_samples);                              /* samples never arrived */
+mfsk_iq_close(rx);
+```
+
+`format` is one of `MFSK_IQ_FORMAT_CF32`, `_CS16`, `_CS8` (HackRF), `_CU8`
+(RTL-SDR, 128 = zero) and `_CS24`, little-endian, I then Q, and `mfsk_iq_push`
+takes bytes in that format; a sample split across two calls is carried over.
+`iq_swap` non-zero exchanges I and Q, which sound-card IQ often needs. Any
+integer rate of 12 000 or more whose ratio to 12 kHz is a small fraction is
+accepted; `mfsk_iq_open` returns NULL with `INVALID_ARG` for one that is not.
+
+A channel carries FT8, FT4, any of the five FST4 periods, WSPR, JT9, JT65 or a
+Q65 sub-mode (`MfskMode`); MSK144, JTTY and uvpacket are `INVALID_ARG`. **Usable
+audio starts near 200 Hz** (the front end must reject the sideband below the
+dial), and Q65 is single-period: nothing averages across slots.
+
+`MfskIqDecode` is size-versioned like the other rows. It carries `channel`
+(what `add_channel` returned), the concrete `mode`, `text`, `freq_hz` (audio),
+`abs_freq_hz` (the dial plus that, `double`), `dt_sec`, `snr_db`,
+`slot_start_sample` (an index into the IQ stream) and `slot_start_utc_ns` with
+`has_utc` saying whether an anchor was set.
+
+**Time and discontinuities.** The sample count is the clock and the library
+reads none. A slot is decoded when all of it has arrived; the partial slot the
+stream opened in the middle of is not. `mfsk_iq_retune`, `mfsk_iq_gap` and
+`mfsk_iq_set_time_anchor` each drop every open slot (audio across a change of
+centre, a hole or a moved grid is not a slot) and keep the clock going;
+`retune` is all-or-nothing and returns `INVALID_ARG`, changing nothing, if a
+channel would no longer fit. A recording needs a moment of padding after its
+end, as a live stream has: a slot's last audio sample comes out a few filter
+lengths after the last IQ sample that carries it.
+
+**Threads.** Decoding runs inside `mfsk_iq_push` (hundreds of milliseconds for a
+busy FT8 slot), on the calling thread and on the pool `mfsk_runtime_configure`
+installed. Push from a worker, not the UI or the SDR's own callback thread. The
+rows wait in a queue in the handle that `mfsk_iq_poll` drains (at most 4096; a
+caller that never polls loses the oldest). It is a poll rather than a callback
+for JTTY's reason: no user-data contract to cross the boundary, and a wrapper
+in Kotlin, Swift or C# is simpler over a poll. The handle is not thread-safe:
+one thread at a time.
+
+Cost is linear in channels, since each mixes at the input rate: measured on one
+thread, 768 kS/s is 1.1 % of a core for one channel, 11 % for eight and 44 % for
+thirty-two.
+
 ### 2.9 Messages
 
 ```c
@@ -615,7 +686,7 @@ but does not offer what was asked).
 
 ### 2.12 Symbol index
 
-93 exported functions, grouped:
+104 exported functions, grouped:
 
 | group | symbols |
 |---|---|
@@ -627,6 +698,7 @@ but does not offer what was asked).
 | Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
+| IQ (11) | `mfsk_iq_open` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
 | hash table (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | runtime (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 
