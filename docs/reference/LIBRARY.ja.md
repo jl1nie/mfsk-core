@@ -404,7 +404,7 @@ sealed な `Q65SubMode` マーカを介して汎用化されている:
 | `.pileup(bool)` | yes | yes | no |
 | `.max_drift(bins)` | yes | no | no |
 | `.eme_delay(bool)` | yes | no | yes |
-| `.rx_freq(hz)` / `.ftol(hz)` | yes | no | no |
+| `.rx_freq(hz)` / `.ftol(hz)` | yes | no | yes（`.ap_list()` と併用で `iavg=1` の q3） |
 | `.hash_table(Arc<CallsignHashTable>)` | yes | yes | yes |
 | `.on_result(cb)` | yes | yes | yes |
 | `.decode()` の戻り値 | `Vec<Q65Result>` | `Option<Q65Result>` | `Vec<Q65Result>` |
@@ -905,6 +905,12 @@ F Tol 以内で、リストの各メッセージの 85 シンボル全部を使�
 ドリフトを取り除いたスペクトルでもう一度実行する（"w3sz" の段階 5）。
 `.rx_freq()` がない場合の `.ap_list()` は、スキャンの代わりに候補ごとに
 テンプレートを照合する crate 独自の方式である。
+
+`MultiPeriodRequest` では同じ組み合わせが `iavg=1` の q3 になる（issue #520）。
+2 スロット目以降、各スロットのシンボルスペクトルの移動平均（`s1a`、重み
+`1/min(navg, 4)`）に対して sync とリスト復号を行い、フェージング / plain の
+ラダーより先に実行する。1 スロットにつき結果は 1 つなので、q3 が当たった
+スロットではラダーを飛ばす（upstream は続けて候補ループに入る）。
 
 **`.ap_list()` のすべての箇所が 1:1 移植というわけではない**（issue #522）。
 upstream のリスト復号は常に受信周波数を条件とする q3 としてしか動かない。

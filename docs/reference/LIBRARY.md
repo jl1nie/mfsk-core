@@ -406,7 +406,7 @@ not a silent no-op):
 | `.pileup(bool)` | yes | yes | no |
 | `.max_drift(bins)` | yes | no | no |
 | `.eme_delay(bool)` | yes | no | yes |
-| `.rx_freq(hz)` / `.ftol(hz)` | yes | no | no |
+| `.rx_freq(hz)` / `.ftol(hz)` | yes | no | yes (`iavg=1` q3, with `.ap_list()`) |
 | `.hash_table(Arc<CallsignHashTable>)` | yes | yes | yes |
 | `.on_result(cb)` | yes | yes | yes |
 | `.decode()` returns | `Vec<Q65Result>` | `Option<Q65Result>` | `Vec<Q65Result>` |
@@ -932,6 +932,12 @@ the rest of the band. At `.max_drift(50)`, when nothing decoded at the Rx
 frequency, it runs again on spectra with the drift found there taken out
 (the "w3sz" stage 5). Without `.rx_freq()`, `.ap_list()` is this crate's
 own per-candidate template match instead of the scan.
+
+On `MultiPeriodRequest` the same pair is `iavg=1`'s q3 (issue #520): from the
+second slot on, the sync and list decode run on the running average of the
+slots' symbol spectra (`s1a`, weight `1/min(navg, 4)`), before the
+fading/plain ladder. One result a slot, so a q3 hit skips that slot's ladder
+(upstream goes on to its candidate loop).
 
 **Not a 1:1 port everywhere `.ap_list()` appears** (issue #522): upstream's
 list decode only ever runs as q3, gated on the Rx frequency. Two of this

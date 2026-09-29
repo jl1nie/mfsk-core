@@ -2,6 +2,19 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: `MultiPeriodRequest` gets WSJT-X's `iavg=1` q3 decode — `.ap_list()` + `.rx_freq()` on the averaged spectra (#520).**
+  Upstream's second pass (`q65_decode.f90:263-272`) runs the 85-symbol sync of every list message (`q65_ccf_85`) and the
+  list decode (`q65_dec_q3`) on the running average `s1a` of the periods' symbol spectra (`u = 1/min(navg, 4)`), once
+  two periods are in. `MultiPeriodRequest` had `.ap_list()` but no Rx frequency, so it always used the crate's own
+  template match. `.rx_freq(hz)` / `.ftol(hz)` now turn the q3 on, from the second slot, ahead of the fading/plain
+  ladder; one result a slot as before, so a q3 hit skips that slot's ladder (upstream goes on to its candidate loop).
+  On the four-recording `30A_Ionoscatter_6m` golden, real `jt9 -3 -p 30 -b A -d 17 -c K1JT -x K9AN` decodes `K1JT K9AN
+  R-16` at 1010 Hz, DT 0.3, −19 dB from the fourth file; this crate's q3 gives 1010.0 Hz, DT 0.32, `iterations=0`, −21.1 dB
+  (the SNR comes from the averaged spectra, not `q65_snr`'s per-symbol alignment, hence 2 dB). The issue's oracle run had
+  already shown the crate's fading/plain ladder recovering the same message without a list, so this is parity of
+  mechanism, not a measured recall gain; no synthetic multi-period corpus exists to sweep it. Also corrects
+  `tests/q65_wsjtx_samples.rs`, which claimed `jt9` cannot be driven through averaging — `-d 17` does it.
+
 - **embedded: `jtty-bench`'s stack-placement run now checks that it got the configuration it asked for (#499, #528).**
   #516's "Back's stack in PSRAM" results were void: `bench_stack_place()` set `stack_alloc_caps` to
   `MallocCap::Spiram` alone, which `esp_pthread_set_cfg` refuses without `MALLOC_CAP_8BIT`

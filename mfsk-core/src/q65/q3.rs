@@ -63,6 +63,7 @@ pub(crate) struct Q3Params {
 
 /// `q65_symspec`'s `s1(iz, jz)`, stored `s1[(j - 1) * iz + (i - 1)]` for
 /// Fortran's 1-based `(i, j)`; bin `i` is FFT bin `i`.
+#[derive(Clone)]
 struct S1 {
     iz: usize,
     jz: usize,
@@ -289,6 +290,71 @@ pub(crate) fn decode_q3_for<P: ModulationParams>(
     if codewords.is_empty() {
         return None;
     }
+    let s1 = symspec::<P>(audio, sample_rate, params.slot_start);
+    decode_q3_on_s1::<P>(s1, audio, sample_rate, params, codewords, ctx)
+}
+
+/// The running `s1a` of `q65_symspec` (`q65.f90:300-304`), one per
+/// sequence parity: [`Self::push`] each period's spectra, then
+/// [`decode_q3_averaged`] runs `iavg=1`'s q3 on the average.
+pub(crate) struct AveragedSpectra {
+    s1a: Option<S1>,
+    navg: usize,
+}
+
+impl AveragedSpectra {
+    pub(crate) fn new() -> Self {
+        Self { s1a: None, navg: 0 }
+    }
+
+    /// `navg=navg+1; ntc=min(navg,4); u=1.0/ntc; s1a=u*s1+(1.0-u)*s1a`.
+    /// The first period is `s1a` outright (`u = 1`).
+    pub(crate) fn push<P: ModulationParams>(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        slot_start: i64,
+    ) {
+        let s1 = symspec::<P>(audio, sample_rate, slot_start);
+        self.navg += 1;
+        let u = 1.0 / self.navg.min(4) as f32;
+        match self.s1a.as_mut() {
+            Some(a) if a.data.len() == s1.data.len() => {
+                for (a, n) in a.data.iter_mut().zip(&s1.data) {
+                    *a = u * n + (1.0 - u) * *a;
+                }
+            }
+            _ => self.s1a = Some(s1),
+        }
+    }
+}
+
+/// `q65_dec0` with `iavg=1` (`q65.f90:148-154`): the q3 decode on the
+/// averaged spectra. Upstream runs it when `navg(iseq) >= 2`
+/// (`q65_decode.f90:259-263`); `None` before that.
+pub(crate) fn decode_q3_averaged<P: ModulationParams>(
+    avg: &AveragedSpectra,
+    last_audio: &[f32],
+    sample_rate: u32,
+    params: Q3Params,
+    codewords: &[[i32; 63]],
+    ctx: &DecodeContext,
+) -> Option<Q65Result> {
+    if codewords.is_empty() || avg.navg < 2 {
+        return None;
+    }
+    let s1 = avg.s1a.as_ref()?.clone();
+    decode_q3_on_s1::<P>(s1, last_audio, sample_rate, params, codewords, ctx)
+}
+
+fn decode_q3_on_s1<P: ModulationParams>(
+    mut s1: S1,
+    audio: &[f32],
+    sample_rate: u32,
+    params: Q3Params,
+    codewords: &[[i32; 63]],
+    ctx: &DecodeContext,
+) -> Option<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let submode = submode_index_from_params::<P>();
     let mode_q65 = 1i64 << submode;
@@ -307,7 +373,6 @@ pub(crate) fn decode_q3_for<P: ModulationParams>(
     let iia = (200.0 / df) as i64;
     let i0 = (params.rx_freq_hz / df).round() as i64;
 
-    let mut s1 = symspec::<P>(audio, sample_rate, params.slot_start);
     if params.drift_hz != 0.0 {
         // `s1w(w3f,w3t)=s1(mm,w3t)`, `mm=w3f+nint(drift*w3t/(jz*df))`, where
         // `mm` is in range; `s1w=s1` elsewhere.

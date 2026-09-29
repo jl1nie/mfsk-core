@@ -1419,6 +1419,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_codewords: Option<&[[i32; 63]]>,
+    q3: Option<super::q3::Q3Params>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
@@ -1437,6 +1438,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
 
     let b90_ladder = [3.0_f32, 8.0, 15.0];
     let fading_models = [FadingModel::Gaussian, FadingModel::Lorentzian];
+    let mut q3_avg = q3.map(|_| super::q3::AveragedSpectra::new());
 
     for (i, &audio) in audio_slots.iter().enumerate() {
         if i > 0 {
@@ -1461,11 +1463,23 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
             // still contributes to per-candidate energy averaging.)
         }
 
-        let candidates =
-            coarse_search_on_spec_for::<P>(&ema_spec, sample_rate, nominal_start_sample, params);
+        // `iavg=1` (`q65_decode.f90:263-272`): once two periods are in, the
+        // q3 decode on the averaged `s1a` at the Rx frequency, before the
+        // rest of the ladder. One result a slot, as everywhere below.
+        let mut slot_decode: Option<Q65Result> = None;
+        if let (Some(codewords), Some(q3p), Some(avg)) = (ap_codewords, q3, q3_avg.as_mut()) {
+            avg.push::<P>(audio, sample_rate, q3p.slot_start);
+            slot_decode =
+                super::q3::decode_q3_averaged::<P>(avg, audio, sample_rate, q3p, codewords, ctx);
+        }
+
+        let candidates = if slot_decode.is_some() {
+            Vec::new()
+        } else {
+            coarse_search_on_spec_for::<P>(&ema_spec, sample_rate, nominal_start_sample, params)
+        };
 
         let history = &audio_slots[..=i];
-        let mut slot_decode: Option<Q65Result> = None;
 
         'candidate_loop: for cand in candidates {
             // Narrow energies feed both Stage B and Stage C-plain below
