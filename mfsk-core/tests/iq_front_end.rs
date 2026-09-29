@@ -14,43 +14,15 @@
 
 use std::collections::BTreeMap;
 
-use mfsk_core::engine::dsp::polyphase::PolyphaseResampler;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::iq::{IqSampleFormat, IqStream, IqToAudio};
 use mfsk_core::msg::decode_request::DecodeRequest;
 
 #[allow(dead_code)]
 mod common;
+use common::iq::synth_iq;
 
 const QSO3: &str = asset_path!("qso3_busy.wav");
-
-fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 { a } else { gcd(b, a % b) }
-}
-
-/// `audio` (12 kHz) as IQ at `fs` centred on `center_hz`, with the audio's
-/// 0 Hz at `dial_hz`.
-fn synth_iq(audio: &[i16], fs: u32, center_hz: f64, dial_hz: f64) -> Vec<(f32, f32)> {
-    let g = gcd(fs as u64, 12_000);
-    let (l, m) = ((fs as u64 / g) as u32, (12_000 / g) as u32);
-    // The audio-to-IQ upsampler: L/M = fs / 12000.
-    let mut rs = PolyphaseResampler::new(l, m, 32 * l as usize + 1, 4096);
-    let (mut ri, mut rq) = (Vec::new(), Vec::new());
-    for &s in audio {
-        rs.push(s as f32 / 32_768.0, 0.0, &mut ri, &mut rq);
-    }
-    // Drop the resampler's group delay so the audio keeps its timing.
-    let skip = rs.group_delay_output();
-    let w = std::f64::consts::TAU * (dial_hz - center_hz) / fs as f64;
-    ri.iter()
-        .skip(skip)
-        .enumerate()
-        .map(|(n, &a)| {
-            let p = w * n as f64;
-            (a * p.cos() as f32, a * p.sin() as f32)
-        })
-        .collect()
-}
 
 /// `message77 -> (freq, dt)` for one decode of `audio`.
 fn decode(audio: &[i16]) -> BTreeMap<Vec<u8>, (f32, f32)> {

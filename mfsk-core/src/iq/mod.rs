@@ -38,9 +38,18 @@
 //! (double sideband, as a real signal mixed up) comes out at `A/2`; an
 //! analytic (single sideband) IQ tone of amplitude `A` comes out at `A`.
 //! Decoders here are scale-free, so this only matters when converting to `i16`.
+//!
+//! [`IqReceiver`] (needs an FFT backend) builds on this: N channels of one
+//! stream, slots cut on UTC from the sample count, each decoded with its
+//! mode's own request, rows carrying the absolute RF frequency.
 
 use alloc::vec::Vec;
 use core::f64::consts::TAU;
+
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod receiver;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use receiver::{ChannelId, IqDecode, IqMode, IqReceiver};
 
 use crate::engine::dsp::fir_decimate::FirStage;
 use crate::engine::dsp::polyphase::PolyphaseResampler;
@@ -393,6 +402,18 @@ impl IqToAudio {
                 self.push_cs16(&v, out);
             }
         }
+    }
+
+    /// Push already-converted planar I/Q (equal lengths), as
+    /// [`IqReceiver`] does once for all its channels.
+    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+    pub(crate) fn push_planar(&mut self, i: &[f32], q: &[f32], out: &mut Vec<f32>) {
+        debug_assert_eq!(i.len(), q.len());
+        self.bi.clear();
+        self.bq.clear();
+        self.bi.extend_from_slice(i);
+        self.bq.extend_from_slice(q);
+        self.run(i.len(), out);
     }
 
     /// The `n` samples in `bi`/`bq` through the chain.
