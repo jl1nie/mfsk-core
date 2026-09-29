@@ -5,6 +5,8 @@
 pub mod air_channel;
 pub mod channel;
 pub mod corpus;
+#[allow(dead_code)]
+pub mod iq;
 // The CoreS3 FT4 receiver reproduced on the host. Gated the way it
 // compiles: `ft4` for the protocol, and one FFT backend because
 // `engine::sync2d` needs one.

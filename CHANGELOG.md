@@ -2,6 +2,31 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **`iq::IqReceiver`: N channels of one IQ stream, slots cut on UTC from the sample count, absolute frequency in the row (#534, phase 2).**
+  `add_channel(dial_hz, IqMode)` (FT8, FT4 and the five FST4 sub-modes, the ones sharing `DecodeRequest`; WSPR, JT9/JT65
+  and Q65 have their own request types and follow), `set_time_anchor(utc_ns_at_sample_0)`, `on_decode(cb)`, then
+  `push_cf32` / `push_cs16` / `push_bytes`. Slot `j` of a mode with period `T` covers UTC `[j·T, (j+1)·T)`, computed in
+  integers from the sample count (each channel's audio index `k` is `k/12000` s after sample 0; the front end drops its own
+  group delay so index 0 is IQ sample 0); with no anchor the grid free-runs from sample 0, right for a recording. A slot
+  is decoded, with the registry's default search for its mode, once all of it has arrived; the partial slot the stream
+  opened in the middle of is not. `retune(center_hz)` (all-or-nothing: `Err` and nothing changes if a channel no longer
+  fits), `gap(lost_samples)` and re-anchoring drop the open slots and keep the sample clock going. Each row is the
+  cross-mode `Decoded` plus `abs_freq_hz` (dial + audio frequency), the IQ sample index and the UTC of the slot start.
+  Each slot is scaled to a fixed RMS before the `i16` the decoders take, and decoding runs inside `push`, so a caller that
+  cannot block pushes from a worker thread. The dial is the caller's to choose: the decoders search the channel's audio
+  200-3000 Hz themselves, and nothing here looks for signals.
+  Evidence, `tests/iq_receiver.rs`: `qso3_busy.wav` (FT8) and the FT4 golden in **one** 192 kS/s stream on two dials, blocks
+  of odd sizes, UTC-anchored: 14/14 FT8 and 11/11 FT4 messages of the WAV path, 0 extra, frequency within 2 Hz and DT
+  within 0.05 s of it, `abs_freq_hz = dial + audio` exactly. The same recording after 3 s of nothing with the grid
+  anchored 3 s early decodes on the next boundary; a `retune` or a `gap` in the middle of the first of two back-to-back
+  slots costs that slot only and the second decodes as before; byte pushes split inside samples match typed ones. One
+  decode in those runs is `K1BZM DK8NE -10`, the -17 dB entry of `common::ft8_qso3`'s known-real list that the WAV path's
+  default search misses, so an extra that is in that list is allowed rather than counted as a phantom.
+  Cost, one thread, release, `Cf32` in, per `IqToAudio` (so per channel; each mixes at the input rate): 768 kS/s one
+  channel 1.1 % of a core (89x real time), 8 channels 11 %, 32 channels 44 %; 2.4 MS/s one channel 2.3 %, 8 channels
+  18 %; 192 kS/s one channel 0.5 %. Linear in channels, which is the point where the FFT channelizer of #534's phase 4
+  starts to earn its keep.
+
 - **New `mfsk_core::iq`: one channel of a wideband IQ stream as 12 kHz USB audio (#534, phase 1).**
   `IqToAudio::new(IqStream { sample_rate, center_hz, format, iq_swap }, dial_hz)` then `push_cf32` / `push_cs16` /
   `push_bytes` (a sample split across calls is carried over) appends the audio a transceiver's USB output would have
