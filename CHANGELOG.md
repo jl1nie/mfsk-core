@@ -2,6 +2,22 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **embedded: `jtty-bench`'s stack-placement run now checks that it got the configuration it asked for (#499, #528).**
+  #516's "Back's stack in PSRAM" results were void: `bench_stack_place()` set `stack_alloc_caps` to
+  `MallocCap::Spiram` alone, which `esp_pthread_set_cfg` refuses without `MALLOC_CAP_8BIT`
+  (`components/pthread/pthread.c:159`, ESP-IDF v5.5.3), and the bench dropped the refusal (`let _ = cfg.set();`), so
+  each case spawned on the previous default — "Back's stack in PSRAM" measured internal against internal, and "Front's
+  stack in PSRAM" an unpinned default-priority Front. All ten `ThreadSpawnConfiguration::set()` calls in the bench now
+  go through `apply_spawn_config`, which panics on a refusal instead of measuring something else; the PSRAM caps carry
+  `Cap8bit`; and each thread logs where its stack actually is (`stack_place()`, a local's address against
+  `SOC_EXTRAM_DATA_LOW`/`HIGH`), so the configuration under test is read off the log. The first run after the fix
+  (`logs/jtty_bench_stackplace_fixed_2026-09-28.log`) put every stack where it was asked, but the two cases needing an
+  internal 32 KB stack for Back could not spawn it (31 KB was the largest free internal block at that point of the
+  bench), so Back now runs on a 20 KB stack — it peaks at 13 020 B in the E1 receiver, the same code. Of the cases that
+  ran, only Back-in-PSRAM with Front internal was measured (Back 155 ms mean, 660 worst; Front 297 ms a window) — alone,
+  not a comparison. **Not yet re-run on the board with the 20 KB stack, so #516's placement question is still open.**
+  Bench-only: no library or receiver code changes.
+
 - **JTTY: the trellis survivors take 12 bytes an entry, not 16 (#499).** `Surv` is `repr(C, packed(4))`: with an `f32`
   metric the default layout spent 4 of its 16 bytes on padding before the 8-aligned key, so `TrellisScratch`'s two arrays
   go from 32 to 24 KB each — 16 KB of internal DRAM on the CoreS3, where the JTTY receiver had run it down to 0–6 KB
