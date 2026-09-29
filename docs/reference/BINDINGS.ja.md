@@ -584,9 +584,12 @@ mfsk_iq_close(rx);
 JTTY と同じ理由です。境界をまたぐユーザーデータの契約が要らず、Kotlin、Swift、C# のラッパーも poll の方が
 簡単です。ハンドルはスレッドセーフではなく、一度に 1 スレッドです。
 
-選択度は、チャンネルの窓の外で 120 dB です。コストは、各チャンネルが入力レートで混合するため
-チャンネル数に比例します。1 スレッドでの実測では、768 kS/s で 1 チャンネルあたり 1 コアの 0.93 %、
-2.4 MS/s で 2.42 % です。
+選択度は、チャンネルの窓の外で 120 dB です。`mfsk_iq_open` は Direct 経路で、各チャンネルが入力レートで
+混合するため、コストはチャンネル数に比例します（768 kS/s で 1 チャンネルあたり 1 コアの 0.92 %）。
+チャンネルが多いときは `mfsk_iq_open_with(..., MFSK_IQ_CHANNELIZER_PFB, &status)` で、1 つのポリフェーズ
+フィルタバンクを全チャンネルで共有します。768 kS/s で 1 チャンネル 2.7 %、32 チャンネル 10 %、
+128 チャンネル 35 % で、Direct の 32 チャンネル 30 % に対して軽くなります。損益分岐は約 4 チャンネルです。
+バンクには 40 kS/s 以上が必要で（それ未満は `INVALID_ARG`）、行の形式と他の呼び出しは両方で同じです。
 
 ### 2.9 メッセージ
 
@@ -655,7 +658,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 104 個:
+エクスポートされる関数は 105 個:
 
 | 群 | シンボル |
 |---|---|
@@ -667,7 +670,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 | Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (11) | `mfsk_iq_open` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| IQ (12) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
 | ハッシュテーブル (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | ランタイム (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 

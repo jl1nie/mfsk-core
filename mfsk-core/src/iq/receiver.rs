@@ -35,7 +35,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use super::{IqError, IqStream, IqToAudio};
+use super::{IqError, IqStream, IqToAudio, PfbChannelizer};
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 use crate::engine::pipeline::DecodeResult;
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
@@ -261,6 +261,25 @@ fn q65_with<P: crate::q65::Q65SubMode>(audio: &[f32], nominal: usize) -> Vec<Dec
     .collect()
 }
 
+/// How an [`IqReceiver`] turns IQ into each channel's audio. Both meet the
+/// same 120 dB selectivity and give the decoders the same audio (the IQ
+/// decode tests run through each); they differ in how cost grows.
+///
+/// - `Direct` (the default): one [`IqToAudio`] per channel, each mixing and
+///   decimating from the input rate. Cheapest for the handful of channels an
+///   amateur band needs: 0.93 % of a core per channel at 768 kS/s.
+/// - `Pfb`: one [`PfbChannelizer`] shared by every channel. A fixed cost of
+///   about two and a half `Direct` channels, then a small back end per
+///   channel at the sub-band rate, independent of `Fs`: the choice for many
+///   channels. Measured break-even and cost are in
+///   `docs/notes/IQ_CHANNELIZER.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Channelizer {
+    #[default]
+    Direct,
+    Pfb,
+}
+
 /// The decode callback [`IqReceiver::on_decode`] stores.
 type DecodeCallback = Box<dyn FnMut(&IqDecode) + Send>;
 
@@ -294,7 +313,10 @@ struct Channel {
     dial_hz: f64,
     mode: IqMode,
     meta: &'static ProtocolMeta,
-    fe: IqToAudio,
+    /// `Some` on the `Direct` path; `None` when the shared bank feeds it.
+    fe: Option<IqToAudio>,
+    /// Its index in the shared bank, on the `Pfb` path.
+    bank_idx: usize,
     /// Audio index of the next sample this channel will emit.
     k_next: u64,
     slot: Option<OpenSlot>,
@@ -386,6 +408,10 @@ impl Channel {
 pub struct IqReceiver {
     stream: IqStream,
     channels: Vec<Channel>,
+    /// The shared bank, on the [`Channelizer::Pfb`] path.
+    bank: Option<PfbChannelizer>,
+    /// The bank's audio by its channel index, between the bank and `feed`.
+    bank_out: Vec<Vec<f32>>,
     anchor_ns: Option<i64>,
     samples_in: u64,
     next_id: usize,
@@ -396,10 +422,13 @@ pub struct IqReceiver {
 }
 
 impl IqReceiver {
+    /// A receiver on the [`Channelizer::Direct`] path.
     pub fn new(stream: IqStream) -> Self {
         Self {
             stream,
             channels: Vec::new(),
+            bank: None,
+            bank_out: Vec::new(),
             anchor_ns: None,
             samples_in: 0,
             next_id: 0,
@@ -410,6 +439,25 @@ impl IqReceiver {
         }
     }
 
+    /// A receiver on the chosen path. [`Channelizer::Pfb`] fails for a rate
+    /// no bank fits (`UnsupportedRate`: every rate under 40 kS/s).
+    pub fn with_channelizer(stream: IqStream, kind: Channelizer) -> Result<Self, IqError> {
+        let mut rx = Self::new(stream);
+        if kind == Channelizer::Pfb {
+            rx.bank = Some(PfbChannelizer::new(stream)?);
+        }
+        Ok(rx)
+    }
+
+    /// The path this receiver uses.
+    pub fn channelizer(&self) -> Channelizer {
+        if self.bank.is_some() {
+            Channelizer::Pfb
+        } else {
+            Channelizer::Direct
+        }
+    }
+
     /// Audio index of the stream's current position.
     fn audio_index_now(&self) -> u64 {
         (self.samples_in as u128 * 12_000 / self.stream.sample_rate as u128) as u64
@@ -417,9 +465,24 @@ impl IqReceiver {
 
     /// Add a channel whose dial (audio 0 Hz) is `dial_hz`. Errors as
     /// [`IqToAudio::new`]: too close to DC, or a window outside `±Fs/2`.
-    /// Added mid-stream, it starts with the next sample.
+    /// Added mid-stream, it starts with the next sample (on the `Pfb` path,
+    /// the next sub-band sample that falls on a whole audio sample).
     pub fn add_channel(&mut self, dial_hz: f64, mode: IqMode) -> Result<ChannelId, IqError> {
-        let fe = IqToAudio::new(self.stream, dial_hz)?;
+        let (fe, bank_idx, k_next) = match self.bank.as_mut() {
+            Some(bank) => {
+                let k = bank.next_audio_index();
+                let idx = bank.add_channel(dial_hz)?;
+                if self.bank_out.len() <= idx {
+                    self.bank_out.resize_with(idx + 1, Vec::new);
+                }
+                (None, idx, k)
+            }
+            None => (
+                Some(IqToAudio::new(self.stream, dial_hz)?),
+                0,
+                self.audio_index_now(),
+            ),
+        };
         let id = ChannelId(self.next_id);
         self.next_id += 1;
         self.channels.push(Channel {
@@ -428,7 +491,8 @@ impl IqReceiver {
             mode,
             meta: mode.meta(),
             fe,
-            k_next: self.audio_index_now(),
+            bank_idx,
+            k_next,
             slot: None,
             scratch: Vec::new(),
         });
@@ -437,9 +501,14 @@ impl IqReceiver {
 
     /// Remove a channel; `false` if it was not there.
     pub fn remove_channel(&mut self, id: ChannelId) -> bool {
-        let n = self.channels.len();
-        self.channels.retain(|c| c.id != id);
-        self.channels.len() != n
+        let Some(at) = self.channels.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let c = self.channels.remove(at);
+        if let Some(bank) = self.bank.as_mut() {
+            bank.remove_channel(c.bank_idx);
+        }
+        true
     }
 
     /// Set what UTC (ns since the Unix epoch) IQ sample 0 fell on. Slot
@@ -465,42 +534,63 @@ impl IqReceiver {
         }
     }
 
-    /// Fresh front ends, no open slots, audio index re-derived from the
-    /// clock. All-or-nothing: `Err` leaves everything as it was.
-    fn rebuild(&mut self, stream: IqStream) -> Result<(), IqError> {
-        let fes = self
-            .channels
-            .iter()
-            .map(|c| IqToAudio::new(stream, c.dial_hz))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.stream = stream;
-        let k = self.audio_index_now();
-        for (c, fe) in self.channels.iter_mut().zip(fes) {
-            c.fe = fe;
+    /// Every channel's open slot dropped and its next audio index `k`.
+    fn reset_channels(&mut self, k: u64) {
+        for c in &mut self.channels {
             c.slot = None;
             c.k_next = k;
         }
+        for out in &mut self.bank_out {
+            out.clear();
+        }
         self.pending.clear();
-        Ok(())
     }
 
     /// The tuner moved: every channel is re-placed against `center_hz`
     /// (`Err`, and nothing changes, if one no longer fits) and the open
     /// slots are dropped. The sample clock continues.
     pub fn retune(&mut self, center_hz: f64) -> Result<(), IqError> {
-        self.rebuild(IqStream {
+        let stream = IqStream {
             center_hz,
             ..self.stream
-        })
+        };
+        if let Some(bank) = self.bank.as_mut() {
+            bank.retune(center_hz)?;
+            let k = bank.next_audio_index();
+            self.stream = stream;
+            self.reset_channels(k);
+            return Ok(());
+        }
+        let fes = self
+            .channels
+            .iter()
+            .map(|c| IqToAudio::new(stream, c.dial_hz))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.stream = stream;
+        for (c, fe) in self.channels.iter_mut().zip(fes) {
+            c.fe = Some(fe);
+        }
+        let k = self.audio_index_now();
+        self.reset_channels(k);
+        Ok(())
     }
 
     /// `lost` samples never arrived: the clock advances past them and the
     /// open slots are dropped, since audio that spans the hole is not a slot.
     pub fn gap(&mut self, lost: u64) {
         self.samples_in += lost;
+        if let Some(bank) = self.bank.as_mut() {
+            bank.gap(lost);
+            let k = bank.next_audio_index();
+            self.reset_channels(k);
+            return;
+        }
         let stream = self.stream;
-        self.rebuild(stream)
-            .expect("the same stream and dials built before");
+        for c in &mut self.channels {
+            c.fe = Some(IqToAudio::new(stream, c.dial_hz).expect("placed before"));
+        }
+        let k = self.audio_index_now();
+        self.reset_channels(k);
     }
 
     fn run_block(&mut self, n: usize, rows: &mut Vec<IqDecode>) {
@@ -509,8 +599,14 @@ impl IqReceiver {
             core::mem::swap(&mut self.bi, &mut self.bq);
         }
         let (anchor, fs) = (self.anchor_ns, self.stream.sample_rate);
+        if let Some(bank) = self.bank.as_mut() {
+            bank.push_planar(&self.bi, &self.bq, &mut self.bank_out);
+        }
         for c in &mut self.channels {
-            c.fe.push_planar(&self.bi, &self.bq, &mut c.scratch);
+            match c.fe.as_mut() {
+                Some(fe) => fe.push_planar(&self.bi, &self.bq, &mut c.scratch),
+                None => core::mem::swap(&mut c.scratch, &mut self.bank_out[c.bank_idx]),
+            }
             c.feed(anchor, fs, rows);
         }
     }
@@ -577,6 +673,17 @@ impl IqReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A receiver moves to a worker thread, which is how it is meant to be
+    /// driven (decoding runs inside `push`). A `Box<dyn Fft>` field would
+    /// quietly break that; the PFB plans per push for exactly this reason.
+    #[test]
+    fn receiver_and_channelizers_are_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<IqReceiver>();
+        assert_send::<crate::iq::PfbChannelizer>();
+        assert_send::<IqToAudio>();
+    }
 
     /// Every variant this build has is a registry entry, with the slot the
     /// mode's period says.

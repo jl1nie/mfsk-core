@@ -79,8 +79,12 @@ fn encode(iq: &[(f32, f32)], format: u32) -> Vec<u8> {
 }
 
 fn open(format: u32) -> *mut MfskIqReceiver {
+    open_with(format, MFSK_IQ_CHANNELIZER_DIRECT)
+}
+
+fn open_with(format: u32, channelizer: u32) -> *mut MfskIqReceiver {
     let mut st = MfskStatus::Internal;
-    let rx = unsafe { mfsk_iq_open(FS, CENTER, format, 0, &mut st) };
+    let rx = unsafe { mfsk_iq_open_with(FS, CENTER, format, 0, channelizer, &mut st) };
     assert_eq!(st, MfskStatus::Ok);
     assert!(!rx.is_null());
     rx
@@ -105,6 +109,15 @@ fn drain(rx: *mut MfskIqReceiver) -> Vec<MfskIqDecode> {
 
 #[test]
 fn every_format_decodes_the_injected_message() {
+    every_format_through(MFSK_IQ_CHANNELIZER_DIRECT);
+}
+
+#[test]
+fn every_format_decodes_the_injected_message_through_the_pfb() {
+    every_format_through(MFSK_IQ_CHANNELIZER_PFB);
+}
+
+fn every_format_through(channelizer: u32) {
     let iq = scene();
     for format in [
         MFSK_IQ_FORMAT_CF32,
@@ -114,7 +127,7 @@ fn every_format_decodes_the_injected_message() {
         MFSK_IQ_FORMAT_CS24,
     ] {
         let bytes = encode(&iq, format);
-        let rx = open(format);
+        let rx = open_with(format, channelizer);
         let mut ch = u32::MAX;
         assert_eq!(
             unsafe { mfsk_iq_add_channel(rx, DIAL, MfskMode::Ft8 as u32, &mut ch) },
@@ -197,6 +210,15 @@ fn errors_are_statuses_not_crashes() {
     assert!(unsafe { mfsk_iq_open(8_000, CENTER, MFSK_IQ_FORMAT_CF32, 0, &mut st) }.is_null());
     assert_eq!(st, MfskStatus::InvalidArg);
     assert!(unsafe { mfsk_iq_open(FS, f64::NAN, MFSK_IQ_FORMAT_CF32, 0, &mut st) }.is_null());
+    assert_eq!(st, MfskStatus::InvalidArg);
+    // An unknown channelizer, and the bank at a rate none fits.
+    assert!(unsafe { mfsk_iq_open_with(FS, CENTER, MFSK_IQ_FORMAT_CF32, 0, 7, &mut st) }.is_null());
+    assert_eq!(st, MfskStatus::InvalidArg);
+    let pfb = MFSK_IQ_CHANNELIZER_PFB;
+    assert!(
+        unsafe { mfsk_iq_open_with(30_000, CENTER, MFSK_IQ_FORMAT_CF32, 0, pfb, &mut st) }
+            .is_null()
+    );
     assert_eq!(st, MfskStatus::InvalidArg);
 
     let rx = open(MFSK_IQ_FORMAT_CF32);

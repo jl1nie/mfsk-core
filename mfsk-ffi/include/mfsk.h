@@ -53,6 +53,18 @@
 #define MFSK_IQ_FORMAT_CS24 4
 
 /**
+ * `mfsk_iq_open_with`'s `channelizer`: one filter chain per channel from the
+ * input rate. The default, and the cheapest for up to about four channels.
+ */
+#define MFSK_IQ_CHANNELIZER_DIRECT 0
+
+/**
+ * A polyphase filter bank shared by every channel: a fixed cost of about
+ * three direct channels, then about a quarter of one per channel.
+ */
+#define MFSK_IQ_CHANNELIZER_PFB 1
+
+/**
  * Inline capacity of each `MfskDecodeParams` a-priori field.
  *
  * A literal here, not a re-export of `mfsk_ffi_abi`'s, for the same
@@ -2868,6 +2880,25 @@ struct MfskIqReceiver *mfsk_iq_open(uint32_t sample_rate,
                                     uint32_t format,
                                     uint32_t iq_swap,
                                     enum MfskStatus *out_status);
+
+/**
+ * [`mfsk_iq_open`] with the channelizer chosen: `MFSK_IQ_CHANNELIZER_DIRECT`
+ * (what `mfsk_iq_open` gives) or `MFSK_IQ_CHANNELIZER_PFB`. Both give the
+ * decoders the same audio at the same 120 dB selectivity; the bank costs
+ * more for one channel and less from about four (768 kS/s: 2.7 % of a core
+ * for one, 10 % for 32, against 0.9 % and 30 % direct). `INVALID_ARG` for an
+ * unknown value, or `PFB` at a rate no bank fits (under 40 kS/s).
+ *
+ * # Safety
+ * `out_status` may be null.
+ */
+MFSK_API
+struct MfskIqReceiver *mfsk_iq_open_with(uint32_t sample_rate,
+                                         double center_hz,
+                                         uint32_t format,
+                                         uint32_t iq_swap,
+                                         uint32_t channelizer,
+                                         enum MfskStatus *out_status);
 
 /**
  * Release a receiver. Null is a no-op.

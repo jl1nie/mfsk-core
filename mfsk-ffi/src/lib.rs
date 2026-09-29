@@ -110,6 +110,13 @@ pub const MFSK_IQ_FORMAT_CU8: u32 = 3;
 /// 24-bit signed I, Q, full scale 8 388 608.
 pub const MFSK_IQ_FORMAT_CS24: u32 = 4;
 
+/// `mfsk_iq_open_with`'s `channelizer`: one filter chain per channel from the
+/// input rate. The default, and the cheapest for up to about four channels.
+pub const MFSK_IQ_CHANNELIZER_DIRECT: u32 = 0;
+/// A polyphase filter bank shared by every channel: a fixed cost of about
+/// three direct channels, then about a quarter of one per channel.
+pub const MFSK_IQ_CHANNELIZER_PFB: u32 = 1;
+
 /// Inline capacity of each `MfskDecodeParams` a-priori field.
 ///
 /// A literal here, not a re-export of `mfsk_ffi_abi`'s, for the same
@@ -5795,6 +5802,36 @@ pub unsafe extern "C" fn mfsk_iq_open(
     iq_swap: u32,
     out_status: *mut MfskStatus,
 ) -> *mut MfskIqReceiver {
+    unsafe {
+        mfsk_iq_open_with(
+            sample_rate,
+            center_hz,
+            format,
+            iq_swap,
+            MFSK_IQ_CHANNELIZER_DIRECT,
+            out_status,
+        )
+    }
+}
+
+/// [`mfsk_iq_open`] with the channelizer chosen: `MFSK_IQ_CHANNELIZER_DIRECT`
+/// (what `mfsk_iq_open` gives) or `MFSK_IQ_CHANNELIZER_PFB`. Both give the
+/// decoders the same audio at the same 120 dB selectivity; the bank costs
+/// more for one channel and less from about four (768 kS/s: 2.7 % of a core
+/// for one, 10 % for 32, against 0.9 % and 30 % direct). `INVALID_ARG` for an
+/// unknown value, or `PFB` at a rate no bank fits (under 40 kS/s).
+///
+/// # Safety
+/// `out_status` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_open_with(
+    sample_rate: u32,
+    center_hz: f64,
+    format: u32,
+    iq_swap: u32,
+    channelizer: u32,
+    out_status: *mut MfskStatus,
+) -> *mut MfskIqReceiver {
     use mfsk_core::iq::IqSampleFormat as F;
     let report = |st: MfskStatus| {
         if !out_status.is_null() {
@@ -5818,12 +5855,29 @@ pub unsafe extern "C" fn mfsk_iq_open(
         report(MfskStatus::InvalidArg);
         return ptr::null_mut();
     }
-    let mut rx = mfsk_core::iq::IqReceiver::new(mfsk_core::iq::IqStream {
+    let kind = match channelizer {
+        MFSK_IQ_CHANNELIZER_DIRECT => mfsk_core::iq::Channelizer::Direct,
+        MFSK_IQ_CHANNELIZER_PFB => mfsk_core::iq::Channelizer::Pfb,
+        _ => {
+            set_error("mfsk_iq_open_with: not an MFSK_IQ_CHANNELIZER_* value");
+            report(MfskStatus::InvalidArg);
+            return ptr::null_mut();
+        }
+    };
+    let stream = mfsk_core::iq::IqStream {
         sample_rate,
         center_hz,
         format,
         iq_swap: iq_swap != 0,
-    });
+    };
+    let mut rx = match mfsk_core::iq::IqReceiver::with_channelizer(stream, kind) {
+        Ok(rx) => rx,
+        Err(e) => {
+            set_error(format!("mfsk_iq_open_with: {e}"));
+            report(MfskStatus::InvalidArg);
+            return ptr::null_mut();
+        }
+    };
     let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
     let sink = queue.clone();
     rx.on_decode(move |d| {

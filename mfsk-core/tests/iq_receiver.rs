@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use mfsk_core::engine::pipeline::DecodeResult;
-use mfsk_core::iq::{ChannelId, IqDecode, IqError, IqMode, IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::iq::{
+    ChannelId, Channelizer, IqDecode, IqError, IqMode, IqReceiver, IqSampleFormat, IqStream,
+};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::{Ft4, Ft8, by_name};
 
@@ -104,8 +106,8 @@ fn stream() -> IqStream {
     }
 }
 
-fn receiver() -> (IqReceiver, Arc<Mutex<Vec<IqDecode>>>) {
-    let mut rx = IqReceiver::new(stream());
+fn receiver(kind: Channelizer) -> (IqReceiver, Arc<Mutex<Vec<IqDecode>>>) {
+    let mut rx = IqReceiver::with_channelizer(stream(), kind).unwrap();
     let rows = Arc::new(Mutex::new(Vec::new()));
     let sink = rows.clone();
     rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
@@ -158,14 +160,13 @@ fn wideband(s: &Scene) -> Vec<(f32, f32)> {
     pad(iq)
 }
 
-#[test]
-fn two_channels_one_stream() {
+fn two_channels_one_stream(kind: Channelizer) {
     let Some(s) = scene() else {
         common::skip_or_fail("FT8/FT4 recordings");
         return;
     };
     let iq = wideband(&s);
-    let (mut rx, rows) = receiver();
+    let (mut rx, rows) = receiver(kind);
     let ft8 = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
     let ft4 = rx.add_channel(FT4_DIAL, IqMode::Ft4).unwrap();
     rx.set_time_anchor(T0_NS);
@@ -188,8 +189,7 @@ fn two_channels_one_stream() {
     assert!(rows.iter().any(|r| r.mode == IqMode::Ft4));
 }
 
-#[test]
-fn stream_that_opens_mid_slot_decodes_the_next_whole_one() {
+fn stream_that_opens_mid_slot_decodes_the_next_whole_one(kind: Channelizer) {
     let Some(s) = scene() else {
         common::skip_or_fail("FT8/FT4 recordings");
         return;
@@ -199,7 +199,7 @@ fn stream_that_opens_mid_slot_decodes_the_next_whole_one() {
     let mut iq = vec![(0.0f32, 0.0f32); lead];
     iq.extend(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
     let iq = pad(iq);
-    let (mut rx, rows) = receiver();
+    let (mut rx, rows) = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS - 3_000_000_000);
     rx.push_cf32(&interleave(&iq));
@@ -214,14 +214,13 @@ fn stream_that_opens_mid_slot_decodes_the_next_whole_one() {
     assert!(rows.iter().all(|r| r.slot_start_sample == lead as u64));
 }
 
-#[test]
-fn free_running_grid_without_an_anchor() {
+fn free_running_grid_without_an_anchor(kind: Channelizer) {
     let Some(s) = scene() else {
         common::skip_or_fail("FT8/FT4 recordings");
         return;
     };
     let iq = pad(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
-    let (mut rx, rows) = receiver();
+    let (mut rx, rows) = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
     rx.push_cf32(&interleave(&iq));
     let rows = rows.lock().unwrap();
@@ -243,14 +242,13 @@ fn two_slots(s: &Scene) -> Vec<(f32, f32)> {
     pad(iq)
 }
 
-#[test]
-fn retune_mid_slot_drops_that_slot_only() {
+fn retune_mid_slot_drops_that_slot_only(kind: Channelizer) {
     let Some(s) = scene() else {
         common::skip_or_fail("FT8/FT4 recordings");
         return;
     };
     let iq = two_slots(&s);
-    let (mut rx, rows) = receiver();
+    let (mut rx, rows) = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     let cut = 7 * FS as usize;
@@ -270,14 +268,13 @@ fn retune_mid_slot_drops_that_slot_only() {
     );
 }
 
-#[test]
-fn gap_mid_slot_drops_that_slot_only() {
+fn gap_mid_slot_drops_that_slot_only(kind: Channelizer) {
     let Some(s) = scene() else {
         common::skip_or_fail("FT8/FT4 recordings");
         return;
     };
     let iq = two_slots(&s);
-    let (mut rx, rows) = receiver();
+    let (mut rx, rows) = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     let (cut, lost) = (5 * FS as usize, 1_000usize);
@@ -298,9 +295,8 @@ fn gap_mid_slot_drops_that_slot_only() {
     );
 }
 
-#[test]
-fn placement_is_refused_and_a_bad_retune_changes_nothing() {
-    let mut rx = IqReceiver::new(stream());
+fn placement_is_refused_and_a_bad_retune_changes_nothing(kind: Channelizer) {
+    let mut rx = IqReceiver::with_channelizer(stream(), kind).unwrap();
     // DC inside the band.
     assert_eq!(
         rx.add_channel(CENTER - 1_000.0, IqMode::Ft8),
@@ -320,8 +316,7 @@ fn placement_is_refused_and_a_bad_retune_changes_nothing() {
     assert_eq!(rx.retune(CENTER + 200_000.0), Ok(()));
 }
 
-#[test]
-fn byte_stream_matches_typed_push() {
+fn byte_stream_matches_typed_push(kind: Channelizer) {
     let Some(s) = scene() else {
         common::skip_or_fail("FT8/FT4 recordings");
         return;
@@ -329,7 +324,7 @@ fn byte_stream_matches_typed_push() {
     let iq = pad(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
     let f = interleave(&iq);
     let bytes: Vec<u8> = f.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let (mut rx, rows) = receiver();
+    let (mut rx, rows) = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     // Split inside samples.
@@ -350,8 +345,7 @@ fn byte_stream_matches_typed_push() {
 /// (`Cs24`) delivers it, at 48 kS/s so the wanted signal is a fifth of the
 /// band. 8 bits leave ~48 dB below full scale, spread over the band and
 /// filtered down to 3 kHz; the recording's own noise floor sits well above.
-#[test]
-fn byte_formats_match_the_wav_path() {
+fn byte_formats_match_the_wav_path(kind: Channelizer) {
     let Some(s) = scene() else {
         common::skip_or_fail("FT8/FT4 recordings");
         return;
@@ -383,12 +377,16 @@ fn byte_formats_match_the_wav_path() {
                 }
             }
         }
-        let mut rx = IqReceiver::new(IqStream {
-            sample_rate: fs,
-            center_hz: CENTER,
-            format: fmt,
-            iq_swap: false,
-        });
+        let mut rx = IqReceiver::with_channelizer(
+            IqStream {
+                sample_rate: fs,
+                center_hz: CENTER,
+                format: fmt,
+                iq_swap: false,
+            },
+            kind,
+        )
+        .unwrap();
         let rows = Arc::new(Mutex::new(Vec::new()));
         let sink = rows.clone();
         rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
@@ -409,4 +407,70 @@ fn byte_formats_match_the_wav_path() {
 fn pad_at(mut iq: Vec<(f32, f32)>, fs: u32) -> Vec<(f32, f32)> {
     iq.resize(iq.len() + fs as usize / 2, (0.0, 0.0));
     iq
+}
+
+// Every scene above through both paths: same recordings, same expectations.
+#[test]
+fn two_channels_one_stream_direct() {
+    two_channels_one_stream(Channelizer::Direct);
+}
+#[test]
+fn two_channels_one_stream_pfb() {
+    two_channels_one_stream(Channelizer::Pfb);
+}
+#[test]
+fn stream_that_opens_mid_slot_decodes_the_next_whole_one_direct() {
+    stream_that_opens_mid_slot_decodes_the_next_whole_one(Channelizer::Direct);
+}
+#[test]
+fn stream_that_opens_mid_slot_decodes_the_next_whole_one_pfb() {
+    stream_that_opens_mid_slot_decodes_the_next_whole_one(Channelizer::Pfb);
+}
+#[test]
+fn free_running_grid_without_an_anchor_direct() {
+    free_running_grid_without_an_anchor(Channelizer::Direct);
+}
+#[test]
+fn free_running_grid_without_an_anchor_pfb() {
+    free_running_grid_without_an_anchor(Channelizer::Pfb);
+}
+#[test]
+fn retune_mid_slot_drops_that_slot_only_direct() {
+    retune_mid_slot_drops_that_slot_only(Channelizer::Direct);
+}
+#[test]
+fn retune_mid_slot_drops_that_slot_only_pfb() {
+    retune_mid_slot_drops_that_slot_only(Channelizer::Pfb);
+}
+#[test]
+fn gap_mid_slot_drops_that_slot_only_direct() {
+    gap_mid_slot_drops_that_slot_only(Channelizer::Direct);
+}
+#[test]
+fn gap_mid_slot_drops_that_slot_only_pfb() {
+    gap_mid_slot_drops_that_slot_only(Channelizer::Pfb);
+}
+#[test]
+fn placement_is_refused_and_a_bad_retune_changes_nothing_direct() {
+    placement_is_refused_and_a_bad_retune_changes_nothing(Channelizer::Direct);
+}
+#[test]
+fn placement_is_refused_and_a_bad_retune_changes_nothing_pfb() {
+    placement_is_refused_and_a_bad_retune_changes_nothing(Channelizer::Pfb);
+}
+#[test]
+fn byte_stream_matches_typed_push_direct() {
+    byte_stream_matches_typed_push(Channelizer::Direct);
+}
+#[test]
+fn byte_stream_matches_typed_push_pfb() {
+    byte_stream_matches_typed_push(Channelizer::Pfb);
+}
+#[test]
+fn byte_formats_match_the_wav_path_direct() {
+    byte_formats_match_the_wav_path(Channelizer::Direct);
+}
+#[test]
+fn byte_formats_match_the_wav_path_pfb() {
+    byte_formats_match_the_wav_path(Channelizer::Pfb);
 }

@@ -13,7 +13,6 @@ use num_complex::Complex32;
 use num_traits::Float;
 
 use super::{NSPS, SYNC, SYNC_SYMBOLS};
-use crate::engine::fft::{FftPlanner, default_planner};
 
 /// Sample rate of the analytic signal, Hz.
 pub const FS6: f32 = 6_000.0;
@@ -22,24 +21,9 @@ pub const NSS: usize = NSPS / 2;
 /// Symbol rate, baud.
 pub const BAUD: f32 = FS6 / NSS as f32;
 
-/// Run `f` with an FFT planner. On `std` builds each thread keeps one for its
-/// lifetime, so plans (twiddle tables) are built once per thread rather than once
-/// per window per task — planning was a large share of a window's cost, and
-/// rayon's workers live as long as the pool.
-pub fn with_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
-    #[cfg(feature = "std")]
-    {
-        use core::cell::RefCell;
-        std::thread_local! {
-            static PLANNER: RefCell<alloc::boxed::Box<dyn FftPlanner>> = RefCell::new(default_planner());
-        }
-        PLANNER.with(|p| f(p.borrow_mut().as_mut()))
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        f(default_planner().as_mut())
-    }
-}
+/// Run `f` with an FFT planner kept per thread; see
+/// [`crate::engine::fft::with_planner`], which this is.
+pub use crate::engine::fft::with_planner;
 
 /// `10·log10(x)`, or −99 when `x` is at or below `1.259e-10` (`db.f90`).
 pub fn db(x: f32) -> f32 {

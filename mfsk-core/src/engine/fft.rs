@@ -467,6 +467,30 @@ pub fn default_planner() -> Box<dyn FftPlanner> {
     }
 }
 
+/// Run `f` with an FFT planner. On `std` builds each thread keeps one for its
+/// lifetime, so plans (twiddle tables) are built once per thread rather than
+/// once per call — planning was a large share of a JTTY window's cost, and
+/// rayon's workers live as long as the pool. Without `std` a fresh planner.
+///
+/// It is also how a long-lived type that needs an FFT stays `Send`: a
+/// `Box<dyn Fft>` is not, so such a type plans on use instead of holding one
+/// (`iq::PfbChannelizer`, once per push).
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub fn with_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
+    #[cfg(feature = "std")]
+    {
+        use core::cell::RefCell;
+        std::thread_local! {
+            static PLANNER: RefCell<Box<dyn FftPlanner>> = RefCell::new(default_planner());
+        }
+        PLANNER.with(|p| f(p.borrow_mut().as_mut()))
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        f(default_planner().as_mut())
+    }
+}
+
 /// i16 sibling of [`default_planner`]. Gated behind `fixed-point` —
 /// only embedded builds with that feature need an i16 backend.
 #[cfg(all(

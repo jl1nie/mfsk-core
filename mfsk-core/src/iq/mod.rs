@@ -57,6 +57,11 @@
 use alloc::vec::Vec;
 use core::f64::consts::TAU;
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod pfb;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use pfb::PfbChannelizer;
+
 #[cfg(all(
     any(feature = "fft-rustfft", feature = "fft-extern"),
     any(
@@ -82,7 +87,7 @@ pub mod receiver;
         feature = "q65"
     )
 ))]
-pub use receiver::{ChannelId, IqDecode, IqMode, IqReceiver};
+pub use receiver::{ChannelId, Channelizer, IqDecode, IqMode, IqReceiver};
 
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser, kaiser_order};
 use crate::engine::dsp::polyphase::PolyphaseResampler;
@@ -94,7 +99,7 @@ use num_traits::Float;
 /// The audio rate every decoder takes.
 pub const AUDIO_RATE_HZ: u32 = 12_000;
 /// Where audio 3000 Hz is put, so the wanted 0…6 kHz is a ±3 kHz window.
-const AUDIO_CENTRE_HZ: f64 = 3_000.0;
+pub(crate) const AUDIO_CENTRE_HZ: f64 = 3_000.0;
 /// Pass edge of the channel low-pass, Hz from [`AUDIO_CENTRE_HZ`].
 const PASS_HZ: f64 = 2_800.0;
 /// Stop edge, Hz from [`AUDIO_CENTRE_HZ`]: audio -200 Hz on the LSB side.
@@ -106,7 +111,7 @@ pub const REJECT_DB: f64 = 120.0;
 /// estimate is short at the stop edge for short filters. Designed at exactly
 /// 120 dB, the 768 → 96 kHz stage passed an alias 0.8 kHz past its stop edge
 /// at −117.9 dB (`tests/iq_front_end.rs`'s sweep).
-const DESIGN_MARGIN_DB: f64 = 3.0;
+pub(crate) const DESIGN_MARGIN_DB: f64 = 3.0;
 /// Rate the integer decimation stops at or above, so the resampler works on
 /// at least 2x the output rate.
 const MIN_INTERMEDIATE_HZ: u32 = 24_000;
@@ -279,6 +284,21 @@ fn stage_factors(mut d: u32) -> Vec<u32> {
     stages
 }
 
+/// Whether a channel `off_hz` above the stream's centre can be placed at
+/// `fs`: its audio 0 Hz .. 6 kHz window must lie inside the band with the
+/// sharp filter's transition to spare, and must not contain DC (the SDR's own
+/// spike) within 200 Hz of the used audio band 200…5800 Hz.
+pub(crate) fn check_placement(fs: f64, off_hz: f64) -> Result<(), IqError> {
+    let half = fs / 2.0;
+    if off_hz < -half + 200.0 || off_hz + 6_000.0 > half - 200.0 {
+        return Err(IqError::OutsideBand);
+    }
+    if -off_hz > -200.0 && -off_hz < 6_000.0 {
+        return Err(IqError::TooCloseToDc);
+    }
+    Ok(())
+}
+
 /// A complex phasor stepping by `e^{-jω}` per sample, kept in `f64`.
 struct Nco {
     re: f64,
@@ -353,19 +373,20 @@ pub struct IqToAudio {
 impl IqToAudio {
     /// A front end for the channel whose dial (audio 0 Hz) is `dial_hz`.
     pub fn new(stream: IqStream, dial_hz: f64) -> Result<Self, IqError> {
+        // The rate first, as it always was: a rate below 12 kHz is that, not
+        // a placement problem.
+        plan(stream.sample_rate)?;
+        check_placement(stream.sample_rate as f64, dial_hz - stream.center_hz)?;
+        Self::build(stream, dial_hz)
+    }
+
+    /// The chain without the placement checks: for a caller that has placed
+    /// the window itself, as the PFB does inside one of its sub-bands, where
+    /// the sub-band's centre is not an SDR's DC.
+    pub(crate) fn build(stream: IqStream, dial_hz: f64) -> Result<Self, IqError> {
         let fs = stream.sample_rate;
         let (d, l, m) = plan(fs)?;
-        // Audio 0 Hz .. 6 kHz must lie inside the band with the sharp
-        // filter's transition to spare.
         let off = dial_hz - stream.center_hz;
-        let half = fs as f64 / 2.0;
-        if off < -half + 200.0 || off + 6_000.0 > half - 200.0 {
-            return Err(IqError::OutsideBand);
-        }
-        // DC inside (or within 200 Hz of) the used audio band 200…5800 Hz.
-        if -off > -200.0 && -off < 6_000.0 {
-            return Err(IqError::TooCloseToDc);
-        }
 
         // Each stage passes the window (±STOP_HZ) and stops where its
         // aliases would land in it (`out − STOP_HZ`).
@@ -492,19 +513,9 @@ impl IqToAudio {
     }
 
     /// Push already-converted planar I/Q (equal lengths), as
-    /// [`IqReceiver`] does once for all its channels.
-    #[cfg(all(
-        any(feature = "fft-rustfft", feature = "fft-extern"),
-        any(
-            feature = "ft8",
-            feature = "ft4",
-            feature = "fst4",
-            feature = "wspr",
-            feature = "jt9",
-            feature = "jt65",
-            feature = "q65"
-        )
-    ))]
+    /// `IqReceiver` does once for all its channels and [`PfbChannelizer`]
+    /// does with each sub-band.
+    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
     pub(crate) fn push_planar(&mut self, i: &[f32], q: &[f32], out: &mut Vec<f32>) {
         debug_assert_eq!(i.len(), q.len());
         self.bi.clear();

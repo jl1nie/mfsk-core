@@ -1,7 +1,9 @@
 # IQ channelizer — detailed design (issue #534, last item)
 
-Status: **the PFB is designed, not built.** The selectivity target (§1) and
-the `Direct` rework that came out of this study (§7a) are done. Every number
+Status: **built** as `iq::PfbChannelizer`, selected with
+`IqReceiver::with_channelizer(.., Channelizer::Pfb)` / `mfsk_iq_open_with`,
+beside the default `Direct` path; measured in §7b. The selectivity target (§1)
+and the `Direct` rework that came out of this study (§7a) are done. Every number
 below is either measured on this tree or computed by
 `scripts/iq_pfb_design.py` / `scripts/iq_pfb_chain.py` (numpy + scipy, at the
 same 120 dB + 3 dB design margin the code uses); rerun them rather than
@@ -101,8 +103,9 @@ be up to S/2 from the nearest sub-band centre, so
 | 6 000 000 | 250 | 24 000 | 48 000 | 4 | 15 500 | 32 500 |
 | 10 000 000 | 400 | 25 000 | 50 000 | 4.167 | 16 000 | 34 000 |
 
-A rate with no such M (48 kS/s, or one whose factors do not allow it) keeps
-the `Direct` path. M need not be a power of two; the FFT backend takes mixed
+A rate with no such M (every rate under 40 kS/s, or one whose factors do not
+allow it) keeps the `Direct` path; 48 kS/s is M = 2, which works and is only
+overhead. M need not be a power of two; the FFT backend takes mixed
 radices.
 
 **Prototype.** Kaiser window, designed at 123 dB, β = 12.60, length
@@ -182,8 +185,8 @@ from its own filter rules (49.6 MFLOP/s per channel at 768 kS/s; measured
 | 32 | 611 | 1 588 | 2.60× | 981 | 3 843 | 3.92× |
 | 128 | 2 087 | 6 353 | 3.04× | 2 458 | 15 372 | 6.25× |
 
-Break-even is 4 channels at 768 kS/s and 6 at 2.4 MS/s. The implementation
-measures these (§9) and this table is replaced by the measurement.
+Break-even is 4 channels at 768 kS/s and 6 at 2.4 MS/s by the model; §7b is
+the measurement.
 
 ### 7a. `Direct`, reworked first
 
@@ -205,23 +208,67 @@ Selectivity is the worst of a sweep of ~550 interferer positions per rate plus
 (÷10 at the input rate, 85 taps) is 68 % of the cost, which is why the rework
 does not make it cheaper there; that is the part a PFB shares across channels.
 
-## 8. Integration
+### 7b. The bank, measured
+
+`iq::PfbChannelizer`, one thread, release, `Cf32` in, % of a core; `Direct` is
+the same number of `IqToAudio`s:
+
+| channels | 768 kS/s Direct | 768 kS/s Pfb | 2.4 MS/s Direct | 2.4 MS/s Pfb |
+|---:|---:|---:|---:|---:|
+| 1 | 0.92 | 2.66 | 2.38 | 9.08 |
+| 2 | 1.85 | 2.88 | 4.78 | 9.31 |
+| 4 | 3.68 | 3.34 | 9.51 | 9.78 |
+| 8 | 7.40 | 4.32 | 19.13 | 10.77 |
+| 32 | 29.89 | 10.22 | 76.51 | 16.64 |
+| 128 | — | 34.94 | — | 41.15 |
+
+The bank's fixed part is about 2.4 % at 768 kS/s and 8.8 % at 2.4 MS/s, and a
+channel costs about 0.25 % on top at either rate, as the model said (2.5
+`Direct` channels; 15.4 against 49.6 MFLOP/s). Break-even is about four
+channels at both rates; the model's six at 2.4 MS/s was pessimistic.
+
+Selectivity, measured on the bank the same way as `Direct` (§7a), with the
+window placed at −S/2 … +S/2 of its sub-band and interferers aimed at the
+prototype's folds and the sub-band boundaries plus random positions, about
+1 000 per rate: **−124.4 dB** at 192 kS/s (M = 8), **−124.3** at 250 kS/s
+(M = 10, R = 50 k, the L/M back end), **−124.3** at 768 kS/s (M = 32),
+**−124.4** at 2.048 MS/s (M = 80, R = 51.2 k), **−124.4** at 2.4 MS/s
+(M = 100). The worst sits just past the window edge, where only the sharp
+filter acts; the bank's own folds are below it everywhere.
+
+Every IQ decode test (`iq_receiver.rs`, `iq_receiver_modes.rs`: FT8, FT4,
+WSPR, JT9, JT65, Q65-120D / -300A, retune, gap, partial slot, free-running,
+byte formats) runs through both paths and gets the WAV path's set with no
+extra decode. `iq::pfb`'s unit tests pin the plan table, flatness across a
+sub-band (spread < 0.05 dB, gain within 1 %), selectivity at every fold
+(≤ −119 dB), timing against `Direct` (±1 sample), placement, retune and gap.
+
+One implementation detail the design did not foresee: holding the bank's
+`Box<dyn Fft>` made `IqReceiver` `!Send`, which the C ABI's pool (and any
+caller moving a receiver to a worker) needs. The bank plans its IFFT once per
+`push` through a per-thread planner (`engine::fft::with_planner`, moved there
+from `jtty::dsp`), and a test pins `Send` on the receiver and both channelizers.
+
+## 8. Integration (as built)
 
 - `mfsk_core::iq::Channelizer { Direct, Pfb }`; `IqReceiver::with_channelizer`.
-  `Direct` stays the default and is unchanged. `Pfb` fails construction with
-  `UnsupportedRate` for a rate with no M in §4.
-- Already in `engine::dsp` from §7a: the Kaiser designer (`kaiser_order`,
-  `design_lowpass_kaiser`, with a series `I0` for `no_std`),
-  `FirStage::from_taps` and `PolyphaseResampler::from_prototype`. New:
-  `iq::pfb::AnalysisBank` (§5), and the back end of §6 as its own type so the
-  two paths share nothing but the filters.
-- `retune`: the bank does not depend on the centre; each channel's (b, r) is
-  recomputed and its back end reset; the bank's history is cleared, since it
-  spans the change. `gap`: the bank's history is cleared and the clock
-  advanced. Open slots are dropped either way, as now (R5).
+  `Direct` is the default and is unchanged. `Pfb` fails construction with
+  `UnsupportedRate` under 40 kS/s. The receiver's time, slot, retune and gap
+  semantics are the same on both.
+- `engine::dsp`: `kaiser_order`, `design_lowpass_kaiser`, `FirStage::from_taps`,
+  `PolyphaseResampler::from_prototype` (§7a); `engine::fft::with_planner`.
+- `iq::pfb`: `AnalysisBank` (§5, private) and `PfbChannelizer` (public). A
+  channel's back end is `IqToAudio::build` on its sub-band: the same chain as
+  `Direct`, without the SDR's DC check (a sub-band's centre is not DC; the
+  stream's own DC and band edges are still checked).
+- `retune`: every channel re-placed, all-or-nothing; `gap`: clock advanced.
+  Both restart the bank's framing on the next input sample that falls on a
+  whole 12 kHz audio sample, so audio stays aligned to the IQ clock.
 - C ABI: `mfsk_iq_open` keeps `Direct`; `mfsk_iq_open_with(..., channelizer,
-  &status)` selects. `MfskIqDecode` is unchanged.
-- The overlap-save prototype of §2 is deleted, with its measurement kept here.
+  &status)` with `MFSK_IQ_CHANNELIZER_DIRECT` / `_PFB`. `MfskIqDecode` is
+  unchanged. Both paths are in `mfsk-ffi/tests/iq_ffi.rs` and the C++ smoke
+  driver.
+- The overlap-save prototype of §2 is not in the tree.
 
 ## 9. Verification plan
 
@@ -246,4 +293,4 @@ does not make it cheaper there; that is the part a PFB shares across channels.
 1. Selectivity target **120 dB** (§1), designed at 123 — decided.
 2. `Direct` reworked first (§7a) — done.
 3. `Direct` stays the default; the caller picks `Pfb` (no automatic switch,
-   since the channel count is not known at open) — proposed.
+   since the channel count is not known at open) — built that way.
