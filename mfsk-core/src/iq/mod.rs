@@ -100,13 +100,23 @@ const BLOCK: usize = 8_192;
 const RENORM_EVERY: usize = 1_024;
 
 /// Interleaved sample formats [`IqToAudio::push_bytes`] understands,
-/// little-endian.
+/// little-endian, I then Q.
+///
+/// The typed pushes (`push_cf32`, `push_cs16`) take the two 4- and 8-byte
+/// forms already unpacked; the 8-bit and 24-bit ones exist as byte streams
+/// only, which is what their sources produce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IqSampleFormat {
-    /// `f32` I, `f32` Q.
+    /// `f32` I, `f32` Q: SDR#, libairspyhf, GNU Radio, SoapySDR.
     Cf32,
-    /// `i16` I, `i16` Q; full scale 32768.
+    /// `i16` I, `i16` Q, full scale 32768: IQ WAV recordings, SoapySDR.
     Cs16,
+    /// `i8` I, `i8` Q, full scale 128: HackRF.
+    Cs8,
+    /// `u8` I, `u8` Q, 128 = zero, full scale 128: RTL-SDR.
+    Cu8,
+    /// 24-bit signed I, Q, full scale 8 388 608: some WAV recordings.
+    Cs24,
 }
 
 impl IqSampleFormat {
@@ -115,6 +125,48 @@ impl IqSampleFormat {
         match self {
             IqSampleFormat::Cf32 => 8,
             IqSampleFormat::Cs16 => 4,
+            IqSampleFormat::Cs8 | IqSampleFormat::Cu8 => 2,
+            IqSampleFormat::Cs24 => 6,
+        }
+    }
+
+    /// Append the samples in `bytes` (a whole number of them) to `bi` / `bq`
+    /// as floats scaled to full scale 1.0.
+    pub(crate) fn convert(self, bytes: &[u8], bi: &mut Vec<f32>, bq: &mut Vec<f32>) {
+        debug_assert_eq!(bytes.len() % self.bytes_per_sample(), 0);
+        match self {
+            IqSampleFormat::Cf32 => {
+                for c in bytes.as_chunks::<8>().0 {
+                    bi.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+                    bq.push(f32::from_le_bytes([c[4], c[5], c[6], c[7]]));
+                }
+            }
+            IqSampleFormat::Cs16 => {
+                for c in bytes.as_chunks::<4>().0 {
+                    bi.push(i16::from_le_bytes([c[0], c[1]]) as f32 / 32_768.0);
+                    bq.push(i16::from_le_bytes([c[2], c[3]]) as f32 / 32_768.0);
+                }
+            }
+            IqSampleFormat::Cs8 => {
+                for &[i, q] in bytes.as_chunks::<2>().0 {
+                    bi.push(i as i8 as f32 / 128.0);
+                    bq.push(q as i8 as f32 / 128.0);
+                }
+            }
+            IqSampleFormat::Cu8 => {
+                for &[i, q] in bytes.as_chunks::<2>().0 {
+                    bi.push((i as f32 - 128.0) / 128.0);
+                    bq.push((q as f32 - 128.0) / 128.0);
+                }
+            }
+            IqSampleFormat::Cs24 => {
+                // Sign-extend by placing the 24 bits at the top of an i32.
+                let s24 = |b: &[u8]| (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32;
+                for c in bytes.as_chunks::<6>().0 {
+                    bi.push(s24(&c[0..3]) / 8_388_608.0);
+                    bq.push(s24(&c[3..6]) / 8_388_608.0);
+                }
+            }
         }
     }
 }
@@ -404,25 +456,13 @@ impl IqToAudio {
         self.pending.extend_from_slice(bytes);
         let usable = self.pending.len() / w * w;
         let taken: Vec<u8> = self.pending.drain(..usable).collect();
-        match self.stream.format {
-            IqSampleFormat::Cf32 => {
-                let v: Vec<f32> = taken
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|&b| f32::from_le_bytes(b))
-                    .collect();
-                self.push_cf32(&v, out);
-            }
-            IqSampleFormat::Cs16 => {
-                let v: Vec<i16> = taken
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|&b| i16::from_le_bytes(b))
-                    .collect();
-                self.push_cs16(&v, out);
-            }
+        for chunk in taken.chunks(w * BLOCK) {
+            self.bi.clear();
+            self.bq.clear();
+            self.stream
+                .format
+                .convert(chunk, &mut self.bi, &mut self.bq);
+            self.run(chunk.len() / w, out);
         }
     }
 
@@ -625,6 +665,123 @@ mod tests {
             .map(|(x, y)| (x - y).abs())
             .fold(0.0, f32::max);
         assert!(err < 1e-3, "max diff {err}");
+    }
+
+    /// Every byte format reads back what was put in, to its own precision.
+    #[test]
+    fn every_format_converts_to_the_same_floats() {
+        let want: [(f32, f32); 5] = [
+            (0.5, -0.25),
+            (-1.0, 0.0),
+            (0.999, -0.5),
+            (0.0, 0.0),
+            (0.125, 0.75),
+        ];
+        for (fmt, tol) in [
+            (IqSampleFormat::Cf32, 0.0),
+            (IqSampleFormat::Cs16, 1.0 / 32_768.0),
+            (IqSampleFormat::Cs8, 1.0 / 128.0),
+            (IqSampleFormat::Cu8, 1.0 / 128.0),
+            (IqSampleFormat::Cs24, 1.0 / 8_388_608.0),
+        ] {
+            let mut bytes = Vec::new();
+            for &(i, q) in &want {
+                for v in [i, q] {
+                    match fmt {
+                        IqSampleFormat::Cf32 => bytes.extend(v.to_le_bytes()),
+                        IqSampleFormat::Cs16 => {
+                            bytes.extend(((v * 32_768.0).round() as i16).to_le_bytes())
+                        }
+                        IqSampleFormat::Cs8 => {
+                            bytes.push(((v * 128.0).round().clamp(-128.0, 127.0) as i8) as u8)
+                        }
+                        IqSampleFormat::Cu8 => {
+                            bytes.push((v * 128.0 + 128.0).round().clamp(0.0, 255.0) as u8)
+                        }
+                        IqSampleFormat::Cs24 => {
+                            let x =
+                                (v * 8_388_608.0).round().clamp(-8_388_608.0, 8_388_607.0) as i32;
+                            bytes.extend(&x.to_le_bytes()[..3]);
+                        }
+                    }
+                }
+            }
+            assert_eq!(bytes.len(), want.len() * fmt.bytes_per_sample(), "{fmt:?}");
+            let (mut bi, mut bq) = (Vec::new(), Vec::new());
+            fmt.convert(&bytes, &mut bi, &mut bq);
+            for (k, &(i, q)) in want.iter().enumerate() {
+                assert!(
+                    (bi[k] - i).abs() <= tol + 1e-6,
+                    "{fmt:?} I[{k}] {} vs {i}",
+                    bi[k]
+                );
+                assert!(
+                    (bq[k] - q).abs() <= tol + 1e-6,
+                    "{fmt:?} Q[{k}] {} vs {q}",
+                    bq[k]
+                );
+            }
+        }
+    }
+
+    /// The byte path through the front end matches `Cf32` for every format,
+    /// with samples split mid-way across calls.
+    #[test]
+    fn byte_forms_match_cf32_for_every_format() {
+        let (fs, center) = (96_000, 7_000_000.0);
+        let dial = center + 10_000.0;
+        let f = tone_iq(fs, center, dial + 1200.0, 48_000, 0.4);
+        let mut a = IqToAudio::new(stream(fs, center), dial).unwrap();
+        let mut reference = Vec::new();
+        a.push_cf32(&f, &mut reference);
+        for fmt in [
+            IqSampleFormat::Cs8,
+            IqSampleFormat::Cu8,
+            IqSampleFormat::Cs24,
+        ] {
+            let mut bytes = Vec::new();
+            for &v in &f {
+                match fmt {
+                    IqSampleFormat::Cs8 => {
+                        bytes.push(((v * 128.0).round().clamp(-128.0, 127.0) as i8) as u8)
+                    }
+                    IqSampleFormat::Cu8 => {
+                        bytes.push((v * 128.0 + 128.0).round().clamp(0.0, 255.0) as u8)
+                    }
+                    _ => bytes.extend(&((v * 8_388_608.0).round() as i32).to_le_bytes()[..3]),
+                }
+            }
+            let mut s = stream(fs, center);
+            s.format = fmt;
+            let mut b = IqToAudio::new(s, dial).unwrap();
+            let mut out = Vec::new();
+            let cut = 1_001;
+            b.push_bytes(&bytes[..cut], &mut out);
+            b.push_bytes(&bytes[cut..], &mut out);
+            assert_eq!(out.len(), reference.len(), "{fmt:?}");
+            // 8-bit quantisation noise (1/128 per component) is spread over
+            // the wideband IQ and filtered down to the channel: compare RMS
+            // error to the signal's, not sample by sample.
+            let err = (out
+                .iter()
+                .zip(&reference)
+                .map(|(x, y)| (x - y).powi(2))
+                .sum::<f32>()
+                / out.len() as f32)
+                .sqrt();
+            let sig = rms(&reference);
+            let limit = if fmt == IqSampleFormat::Cs24 {
+                1e-4
+            } else {
+                0.03
+            };
+            assert!(
+                err / sig < limit,
+                "{fmt:?}: error {} of signal {}",
+                err,
+                sig
+            );
+        }
     }
 
     #[test]

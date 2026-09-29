@@ -2,6 +2,15 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **IQ sample formats `Cu8`, `Cs8` and `Cs24` (#534, phase 4).**
+  `IqSampleFormat` gains `Cu8` (RTL-SDR, 128 = zero), `Cs8` (HackRF) and `Cs24` (24-bit IQ WAV), byte streams only through
+  `push_bytes` on both `IqToAudio` and `IqReceiver`, which now share one converter (`IqSampleFormat::convert`); a sample
+  split across calls is carried over as before. Full scales: 128, 128 and 8 388 608. Evidence: a unit test round-trips
+  the five formats to their own precision; the byte path through the front end matches `Cf32` (RMS error over signal
+  under 3 % for the 8-bit forms, under 0.01 % for `Cs24`); and `tests/iq_receiver.rs` quantises `qso3_busy.wav` as IQ at
+  48 kS/s to each of the three with the peak at 0.7 of full scale, and the receiver decodes the WAV path's 14/14 with
+  0 extra from each.
+
 - **`IqReceiver` decodes WSPR, JT9, JT65 and every Q65 sub-mode too (#534, phase 2 completed).**
   `IqMode` gains `Wspr`, `Jt9`, `Jt65` and `Q65A15` … `Q65A300` (ten sub-modes), each through its own request type with
   its `default_search_params` and the nominal start the registry gives the mode, so `dt` reads as it does on the WAV path;

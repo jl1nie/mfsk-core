@@ -70,6 +70,8 @@ fn through_front_end(
                     .collect();
                 fe.push_cs16(&v, &mut out);
             }
+            // Byte-only formats have their own tests (`iq_receiver.rs`).
+            other => unreachable!("{other:?} is not driven by this test"),
         }
     }
     assert_eq!(fe.samples_in(), iq.len() as u64);
