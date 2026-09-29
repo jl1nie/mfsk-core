@@ -2,6 +2,21 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: the grid decode conditions the symbol spectra the way `q65_loops` does — Q65-120D now decodes to +2.0 s late like `jt9` (#521).**
+  `q65_loops.f90:64-68` runs `spec64`'s passband equalisation (45th-percentile baseline per bin, smoothed), divides by
+  `pctile(s3, 40)`, clips at `s3lim = 20` and zaps birdies (`q65_bzap`) before any `q65_dec2`; this crate fed raw `|FFT|²`
+  to the fast-fading metric. With the window off the symbol boundary the neighbouring symbol's tone is the strong one, and
+  unclipped it out-weighs the true tone without bound; clipped, both sit at 20 against a noise floor of 1 and the code
+  sorts them out. #521's own analysis had ruled out the sync window and the `Δt` retry, correctly; this is the step it
+  left unnamed. Six noise seeds per Δt at −12 dB (2500 Hz), the same synthetic frames through real `jt9 -3 -p 120 -b D
+  -d 1` and this crate: the last Δt with every seed decoded is +2.0 for `jt9` (4/6 at +2.05, 0/6 at +2.15), +1.75 for
+  this crate before and +1.95 after (3/6 at +2.05, 0/6 at +2.15). The conditioning is skipped when there is no noise
+  floor (`pctile40 / pctile10 > 30`): a noise-free float synthesis leaves `pctile 40` at leakage level and the clip
+  would flatten every tone (`dt_window`'s truncated-frame test caught it). That ratio is 4.5-8.2 on the 48 golden
+  cells and 512 sweep cells measured, 4.9-5.9 on a +27 dB signal in noise, 67 and up on noise-free frames. Sensitivity
+  is unchanged: `q65_sim_sweep` / `q65_snr_sweep` / `q65_ap_sweep` cross within 0.33 dB of the baseline on every group
+  (the largest, `e120/cq`, is 55 trials), tier A+B green. `dt_window`'s Q65-120D reference moves from +1.5 to +2.0 s.
+
 - **Q65: `MultiPeriodRequest` gets WSJT-X's `iavg=1` q3 decode — `.ap_list()` + `.rx_freq()` on the averaged spectra (#520).**
   Upstream's second pass (`q65_decode.f90:263-272`) runs the 85-symbol sync of every list message (`q65_ccf_85`) and the
   list decode (`q65_dec_q3`) on the running average `s1a` of the periods' symbol spectra (`u = 1/min(navg, 4)`), once

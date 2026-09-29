@@ -351,7 +351,7 @@ pub fn coarse_search_drift_on_spec_for<P: ModulationParams>(
 /// Nearest-rank percentile — matches WSJT-X's own `pctile`
 /// (`lib/pctile.f90`): sort ascending, take element at
 /// `round(n * pct/100)` (1-indexed, clamped to `[1, n]`).
-fn percentile(values: &[f32], pct: u32) -> f32 {
+pub(super) fn percentile(values: &[f32], pct: u32) -> f32 {
     if values.is_empty() {
         return 0.0;
     }
