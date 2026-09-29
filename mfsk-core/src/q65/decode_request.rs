@@ -728,6 +728,10 @@ pub struct MultiPeriodRequest<'a, P: Q65SubMode> {
     /// Set via [`MultiPeriodRequest::eme_delay`].
     eme_delay: bool,
     ap_list: Option<&'a [[i32; 63]]>,
+    /// Set via [`MultiPeriodRequest::rx_freq`].
+    rx_freq: Option<f32>,
+    /// Set via [`MultiPeriodRequest::ftol`].
+    ftol: f32,
     /// Set via [`MultiPeriodRequest::on_result`] — see
     /// [`DecodeRequest::on_result`]'s doc comment for the general
     /// contract. Here, `cb` fires once per *slot* that yields an
@@ -755,6 +759,8 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
             params,
             eme_delay: false,
             ap_list: None,
+            rx_freq: None,
+            ftol: DEFAULT_FTOL_HZ,
             on_result: None,
             hash_table: None,
             _marker: PhantomData,
@@ -788,6 +794,27 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
     /// ladder.
     pub fn ap_list(mut self, candidates: &'a [[i32; 63]]) -> Self {
         self.ap_list = Some(candidates);
+        self
+    }
+
+    /// The Rx frequency (tone 0), WSJT-X's `nfqso`. With
+    /// [`Self::ap_list`] it turns on WSJT-X's **`iavg=1` q3 decode**
+    /// (`q65_decode.f90:263-272`): from the second slot on, the 85-symbol
+    /// sync of every candidate message against the running average of the
+    /// slots' symbol spectra (`s1a`, weight `1/min(navg, 4)`) within
+    /// [`Self::ftol`] of this frequency (`q65_ccf_85`), then list decoding
+    /// at the best one — tried before the fading/plain ladder, and at most
+    /// one result a slot as everywhere in this request. Without it,
+    /// `.ap_list()` keeps the crate's own template matching.
+    pub fn rx_freq(mut self, hz: f32) -> Self {
+        self.rx_freq = Some(hz);
+        self
+    }
+
+    /// WSJT-X's F Tol (`ntol`) around [`Self::rx_freq`]. Default
+    /// [`DEFAULT_FTOL_HZ`].
+    pub fn ftol(mut self, hz: f32) -> Self {
+        self.ftol = hz;
         self
     }
 
@@ -830,6 +857,16 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
             self.nominal_start_sample,
             &self.search_params(),
             self.ap_list,
+            self.ap_list
+                .and(self.rx_freq)
+                .map(|rx| super::q3::Q3Params {
+                    rx_freq_hz: rx,
+                    ftol_hz: self.ftol,
+                    slot_start: self.nominal_start_sample as i64
+                        - (<P as FrameLayout>::TX_START_OFFSET_S * self.sample_rate as f32) as i64,
+                    late_sec: self.search_params().time_tolerance_late_sec,
+                    drift_hz: 0.0,
+                }),
             on_result,
             &ctx,
         );

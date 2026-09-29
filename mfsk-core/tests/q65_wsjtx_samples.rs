@@ -51,6 +51,68 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
     common::corpus::golden_subdir(&format!("q65/{rel}"))
 }
 
+/// `iavg=1`'s q3 decode (`q65_decode.f90:263-272`) on the same four recordings:
+/// with `.ap_list()` and `.rx_freq()` the averaged spectra are correlated
+/// against every candidate message's 85 tones at the Rx frequency
+/// (`q65_ccf_85`), instead of the crate's own template matching (#520).
+///
+/// Oracle: real `jt9 -3 -p 30 -b A -d 17 -c K1JT -x K9AN` over the four
+/// files (`-d 17` = depth 1 | the averaging bit) decodes `K1JT K9AN R-16` at
+/// 1010 Hz, −19 dB, `idec=0` (2026-09-28, #520's comment); none of the four
+/// decodes alone, and none averaged without `-c`/`-x`.
+#[test]
+fn ionoscatter_6m_q3_on_averaged_spectra() {
+    use mfsk_core::q65::search::default_search_params;
+    use mfsk_core::q65::standard_qso_codewords;
+    let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
+        common::skip_or_fail("Q65 golden 30A_Ionoscatter_6m");
+        return;
+    };
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+    paths.sort();
+    let audios: Vec<Vec<f32>> = paths.iter().filter_map(read_wsjtx_wav).collect();
+    assert_eq!(audios.len(), 4, "the golden has four recordings");
+    let slots: Vec<&[f32]> = audios.iter().map(|v| v.as_slice()).collect();
+    let codewords = standard_qso_codewords("K1JT", "K9AN", "");
+
+    // Nominal start 0.5 s into the slot (`TX_START_OFFSET_S`), default window.
+    let run = |rx: Option<f32>, n: usize| {
+        let mut req =
+            MultiPeriodRequest::<Q65a30>::new(&slots[..n], 12_000, 6_000, default_search_params())
+                .ap_list(&codewords);
+        if let Some(rx) = rx {
+            req = req.rx_freq(rx);
+        }
+        req.decode()
+    };
+    let q3 = run(Some(1010.0), 4);
+    for d in &q3 {
+        eprintln!(
+            "  q3 avg → freq={:.1} dt={:.2} iter={} snr={:.1} : {}",
+            d.freq_hz, d.dt_sec, d.iterations, d.snr_db, d.message
+        );
+    }
+    let hit = q3
+        .iter()
+        .find(|d| d.message == "K1JT K9AN R-16")
+        .expect("q3 on the averaged spectra must decode the golden message");
+    assert!((hit.freq_hz - 1010.0).abs() <= 2.0, "freq {}", hit.freq_hz);
+    // A list decode: no BP iterations.
+    assert_eq!(hit.iterations, 0);
+    // Not from the first period alone — `navg >= 2` is upstream's gate.
+    assert!(
+        run(Some(1010.0), 1)
+            .iter()
+            .all(|d| d.message != "K1JT K9AN R-16"),
+        "one period must not decode it (jt9 -d 1: nothing on any single file)"
+    );
+}
+
 /// Strict gate: stack the four ionoscatter recordings into one
 /// running EMA via [`mfsk_core::q65::MultiPeriodRequest`] and require at least
 /// one decode total.
@@ -147,13 +209,13 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     }
 
     // Golden: "K1JT K9AN R-16" @ 1010 Hz — both the no-AP and AP-list
-    // paths agree on it (see the `[info]` prints above). No independent
-    // `jt9` cross-check is possible here: `jt9`'s CLI has no flag to
-    // drive the `iavg` multi-period-averaging state real WSJT-X uses
-    // for this recording (verified experimentally — feeding it several
-    // files in one invocation just runs independent single-slot
-    // attempts), so this is the crate's own two independently-computed
-    // paths agreeing with each other, not agreement with a reference
+    // paths agree on it (see the `[info]` prints above). `jt9` can be
+    // driven through the same averaging (`-d 17 -c K1JT -x K9AN`, all four
+    // files in one invocation — #520's oracle run) but decodes it only with
+    // the list, the q3 path `ionoscatter_6m_q3_on_averaged_spectra` covers.
+    // These two paths are the crate's own, agreeing with each other, not
+    // with a reference decoder; this comment used to say `jt9` had no flag
+    // to drive `iavg`, which `-d 17` disproves.
     // decoder. `dt_sec`/`snr_db` are left unchecked for the same
     // reason: the no-AP and AP-list runs differ slightly on `snr_db`
     // (-20.0 vs -19.4) with nothing external to say which is "right".
