@@ -148,6 +148,10 @@ fn condition_symbol_spectra(energies: &mut [f32], row_len: usize) {
         }
     }
     let base = percentile(energies, 40);
+    // All-zero input (digital silence): `0 / 0` would put NaN into the metric.
+    if base <= 0.0 {
+        return;
+    }
     for e in energies.iter_mut() {
         *e = (*e / base).min(S3LIM);
     }
