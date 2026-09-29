@@ -2,6 +2,21 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **`IqReceiver` decodes WSPR, JT9, JT65 and every Q65 sub-mode too (#534, phase 2 completed).**
+  `IqMode` gains `Wspr`, `Jt9`, `Jt65` and `Q65A15` … `Q65A300` (ten sub-modes), each through its own request type with
+  its `default_search_params` and the nominal start the registry gives the mode, so `dt` reads as it does on the WAV path;
+  FT8, FT4 and FST4 are unchanged. The module now builds with any one protocol feature. Slots are handed to the decoders
+  as `f32` at the level the `i16` decoders take divided by 32768; the FT8 family converts back to `i16` itself.
+  Evidence, `tests/iq_receiver_modes.rs`: each recording placed as IQ at 48 kS/s on a UTC grid anchored on a 600 s
+  boundary (a multiple of every period from 7.5 s to 300 s), decoded through the receiver against the same request on
+  the WAV: WSPR `150426_0918.wav` 9/9, JT9 `130418_1742.wav` 5/5, JT65 golden, Q65-120D rain-scatter golden and
+  Q65-300A optical-scatter golden all identical, 0 extra, frequency within 2 Hz and DT within 0.1 s, `abs_freq_hz` =
+  dial + audio. The other Q65 recordings vendored here only decode by averaging several periods and the receiver does
+  not average, so they are not used; a unit test pins that every `IqMode` variant is a registry entry with the slot its
+  period says. Two tests were tightened while doing this: a set of fewer than ten may lose no decode (the "one weak-edge
+  decode may tip" allowance had let a Q65 recording lose its only message), and the first anchor used in the new test
+  was a multiple of 300 s, not 120 s, which put WSPR and Q65-120 slots off their boundary and decoded nothing.
+
 - **`iq::IqReceiver`: N channels of one IQ stream, slots cut on UTC from the sample count, absolute frequency in the row (#534, phase 2).**
   `add_channel(dial_hz, IqMode)` (FT8, FT4 and the five FST4 sub-modes, the ones sharing `DecodeRequest`; WSPR, JT9/JT65
   and Q65 have their own request types and follow), `set_time_anchor(utc_ns_at_sample_0)`, `on_decode(cb)`, then
