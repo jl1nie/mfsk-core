@@ -315,40 +315,30 @@ fn q65_60a_eme_delay_reaches_reference_late_edge() {
 /// How late a Q65-120D frame decodes under the default ±1.0 s window.
 ///
 /// `jt9 -3 -p 120 -b D` (EME delay off at TR 120 s, so `lag2` = 1.0 s)
-/// at −12 dB decodes a frame at Δt = +2.0 s but not +2.5 s, reporting
-/// DT 1.0 for every one (2026-09-26): the search stops at the window's
-/// edge and decodes the frame out of alignment, which a 1.33 s symbol
-/// tolerates. This crate does the same up to +1.5 s and not at +2.0 s —
-/// a 0.5 s shortfall at the edge, recorded rather than papered over by
-/// widening the window past upstream's.
+/// decodes a frame at Δt = +2.0 s but not +2.5 s, reporting DT 1.0 for
+/// every one (2026-09-26): the search stops at the window's edge and
+/// decodes the frame a full second out of alignment, which a 1.33 s symbol
+/// tolerates *only because `q65_loops` conditions the symbol spectra
+/// first* (issue #521).
 ///
-/// **Root cause, resolved (issue #521):** not the coarse-sync lag
-/// window, and not a missing fine-alignment retry. `q65::search`'s
-/// `NSTEP_PER_SYMBOL = 8` already matches upstream's `NSTEP=8`
-/// (`lib/qra/q65/q65.f90:3`) bit-for-bit — both compute
-/// `dtstep = nsps/(8*12000)` = 0.1667 s here, `lag2 = 1.0/dtstep +
-/// 0.9999` truncated = 6 steps = exactly +1.0 s reach in *either*
-/// implementation, confirmed by re-deriving upstream's own formula
-/// (an earlier reading of this gap mistakenly compared against the
-/// *generic* `ModulationParams::NSTEP_PER_SYMBOL = 2` FT4/FST4 use,
-/// not Q65's own override). Nor is there a fine `Δt` retry active at
-/// either implementation's default depth: `GridDepth::Fast`
-/// (`q65::rx`, matching `jt9`'s own automatic per-slot `-d 1`) sweeps
-/// only the unperturbed `(Δf,Δt)=(0,0)` cell — `zigzag_offset(1) ==
-/// 0` — no retry, by design, on both sides.
+/// **Root cause (issue #521):** `q65_loops.f90:64-68` runs `spec64`'s
+/// passband equalisation (45th-percentile baseline per bin), divides by
+/// `pctile(s3, 40)`, clips at `s3lim = 20` and zaps birdies before any
+/// `q65_dec2`. This crate fed raw `|FFT|²` to the fast-fading metric, so a
+/// strong wrong tone (the neighbouring symbol's, once the window is off
+/// the boundary) out-weighed the weak right one without bound. Measured on
+/// the same synthetic frames through real `jt9 -d 1` and this crate, six
+/// noise seeds per Δt at −12 dB (2500 Hz), the last Δt with every seed
+/// decoded: `jt9` +2.0 (4/6 at +2.05, 0/6 at +2.15), this crate +1.75
+/// before, +1.95 (3/6 at +2.05, 0/6 at +2.15) after.
+/// `q65::rx::condition_symbol_spectra` is that step; it is skipped when
+/// there is no noise floor, where `pctile 40` is leakage and the clip would
+/// flatten every tone.
 ///
-/// So the entire 0.5–1.0 s of reach beyond the raw +1.0 s coarse
-/// window, on both sides, comes from the frame decoding successfully
-/// *despite* the best-scoring candidate being found at a row short of
-/// the true start — plain tolerance to residual symbol-boundary
-/// misalignment in the FEC/demod, not a search-window property at
-/// all. Upstream tolerates about 1.0 s of that misalignment (decodes
-/// at true Δt = 2.0 s, 1.0 s past its own +1.0 s window); this crate
-/// tolerates about 0.5 s. Closing that gap means finding why
-/// `extract_data_energies`'s (or a sibling extractor's) tolerance to
-/// a misaligned start differs from `q65_dec_q012`'s — not searching
-/// wider — and is unscoped follow-up work, not this issue.
-const REFERENCE_Q65_120_LATE_SEC: f32 = 1.5;
+/// Not the coarse-sync window (`NSTEP_PER_SYMBOL = 8` matches upstream's
+/// `NSTEP`, `lag2` = 6 steps = +1.0 s in both) and not a `Δt` retry
+/// (`GridDepth::Fast` sweeps only `(0,0)`, as `-d 1` does).
+const REFERENCE_Q65_120_LATE_SEC: f32 = 2.0;
 
 #[test]
 #[cfg(feature = "q65")]

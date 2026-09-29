@@ -101,6 +101,63 @@ fn extract_data_energies<P: ModulationParams>(
     }))
 }
 
+/// What `q65_loops.f90:64-68` does to `spec64`'s symbol spectra before any
+/// decode attempt: `spec64`'s passband-shape equalisation (45th-percentile
+/// baseline per bin over the 63 symbols, smoothed over 2*25 bins), then
+/// `s3 = s3 / pctile(s3, 40)`, a clip at `s3lim = 20`, and `q65_bzap`.
+/// The clip is what bounds a strong wrong tone when the window is not on a
+/// symbol boundary (issue #521). `energies` is 63 rows of `row_len` bins.
+fn condition_symbol_spectra(energies: &mut [f32], row_len: usize) {
+    use super::search::percentile;
+    const NH: usize = 25;
+    const S3LIM: f32 = 20.0;
+    let ll = row_len;
+    // Divergence from upstream: no noise floor, no conditioning. WSJT-X's
+    // input is int16 audio, so `pctile(s3, 40)` is always a noise level. A
+    // noise-free float synthesis leaves it at leakage level (1e-6 against a
+    // mean of 3.6e5) and the clip then flattens every tone to 20. Told
+    // apart by `pctile40 / pctile10`, which is ~4.8 for chi-square(2) noise:
+    // 4.5-8.2 on the 48 golden cells and 512 sweep cells measured, 4.9-5.9
+    // on a +27 dB signal in noise, 67 and up on noise-free frames. (Not
+    // `mean / pctile40`: that is 2e3-4e3 on the +27 dB signal.) 30 sits
+    // between with >3x on the noise side.
+    if percentile(energies, 40) > 30.0 * percentile(energies, 10) {
+        return;
+    }
+    let mut col = [0.0_f32; 63];
+    let mut xbase0 = vec![0.0_f32; ll];
+    for (i, x0) in xbase0.iter_mut().enumerate() {
+        for (k, c) in col.iter_mut().enumerate() {
+            *c = energies[k * ll + i];
+        }
+        *x0 = percentile(&col, 45);
+    }
+    let mut xbase = vec![0.0_f32; ll];
+    // `sum(...)/(nh-1.0)` over 24 bins at the low edge but 25 at the high
+    // one, and `/(2*nh+1)` over 50: upstream's arithmetic, kept as is.
+    let lo = xbase0[..NH - 1].iter().sum::<f32>() / (NH as f32 - 1.0);
+    let hi = xbase0[ll - NH..].iter().sum::<f32>() / (NH as f32 - 1.0);
+    xbase[..NH - 1].fill(lo);
+    xbase[ll - NH..].fill(hi);
+    for i in NH - 1..ll - NH {
+        xbase[i] = xbase0[i + 1 - NH..i + NH].iter().sum::<f32>() / (2.0 * NH as f32 + 1.0);
+    }
+    for row in energies.chunks_exact_mut(ll) {
+        for (e, &b) in row.iter_mut().zip(&xbase) {
+            *e /= b + 0.001;
+        }
+    }
+    let base = percentile(energies, 40);
+    // All-zero input (digital silence): `0 / 0` would put NaN into the metric.
+    if base <= 0.0 {
+        return;
+    }
+    for e in energies.iter_mut() {
+        *e = (*e / base).min(S3LIM);
+    }
+    super::q3::bzap(energies, ll);
+}
+
 /// A linear frequency drift to take out before the symbol FFTs:
 /// `q65_loops.f90`'s `a(2)=-0.5*drift` through `twkfreq`, which removes
 /// `drift * (n - centre) / len` Hz at sample `n`, where `len` is the
@@ -1099,6 +1156,8 @@ fn decode_at_grid_for<P: ModulationParams>(
                 ) else {
                     continue;
                 };
+                let mut energies = energies;
+                condition_symbol_spectra(&mut energies, 64 * (2 + (1usize << submode)));
 
                 for ibw in ibwa..=ibwb {
                     // At the unperturbed (Δf,Δt)=(0,0) cell, WSJT-X always

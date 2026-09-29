@@ -226,6 +226,31 @@ fn ccf_85(
     })
 }
 
+/// `q65_bzap`: a bin that holds the peak of more than NBZAP symbols
+/// is a birdie; flatten it to 1.0. `s3` is 63 rows of `ll` bins.
+pub(super) fn bzap(s3: &mut [f32], ll: usize) {
+    let mut hist = vec![0usize; ll];
+    for n in 0..63 {
+        let row = &s3[n * ll..(n + 1) * ll];
+        let mut pk = 0;
+        for (b, &v) in row.iter().enumerate() {
+            if v > row[pk] {
+                pk = b;
+            }
+        }
+        hist[pk] += 1;
+    }
+    if hist.iter().any(|&h| h > NBZAP) {
+        for (b, &h) in hist.iter().enumerate() {
+            if h > NBZAP {
+                for n in 0..63 {
+                    s3[n * ll + b] = 1.0;
+                }
+            }
+        }
+    }
+}
+
 /// `q65_s1_to_s3` then `q65_bzap`: the 63 data symbols' `LL` bins from
 /// `i1 = i0 + ipk - 64 + mode_q65`, laid out as the wide energies the
 /// fast-fading intrinsics read.
@@ -252,28 +277,7 @@ fn s1_to_s3(s1: &S1, i0: i64, ipk: i64, jpk: i64, j0: i64, mode_q65: i64) -> Vec
             n += 1;
         }
     }
-    // `q65_bzap`: a bin that holds the peak of more than NBZAP symbols
-    // is a birdie; flatten it to 1.0.
-    let mut hist = vec![0usize; ll];
-    for n in 0..63 {
-        let row = &s3[n * ll..(n + 1) * ll];
-        let mut pk = 0;
-        for (b, &v) in row.iter().enumerate() {
-            if v > row[pk] {
-                pk = b;
-            }
-        }
-        hist[pk] += 1;
-    }
-    if hist.iter().any(|&h| h > NBZAP) {
-        for (b, &h) in hist.iter().enumerate() {
-            if h > NBZAP {
-                for n in 0..63 {
-                    s3[n * ll + b] = 1.0;
-                }
-            }
-        }
-    }
+    bzap(&mut s3, ll);
     s3
 }
 
