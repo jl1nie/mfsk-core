@@ -1011,6 +1011,69 @@ fn zigzag_offset(idx1: i32) -> i32 {
     if idx1 % 2 == 0 { -n } else { n }
 }
 
+/// What `q65_loops.f90` does to each cell's spectra before `q65_dec2`:
+/// `spec64`'s passband flattening (a 45th-percentile-per-bin baseline
+/// over the 63 symbols, boxcar-smoothed over 49 bins, divided out), then
+/// division by the 40th percentile of the whole array, a clamp at
+/// `s3lim = 20`, and `q65_bzap`. The clamp is what lets a frame decode
+/// with the symbol windows misaligned by up to ~1 s (issue #521): a wrong
+/// tone that dominates a straddling window can no longer outvote the
+/// right one by more than 20x. Ported as written, including the
+/// `/(nh-1)` and `/(2nh+1)` divisors that do not match their sums'
+/// lengths. `energies` is row-major `63 × ll`.
+fn loops_normalise(energies: &mut [f32], ll: usize) {
+    const NH: usize = 25;
+    const S3LIM: f32 = 20.0;
+    const NBZAP: usize = 15;
+    let pctile = |v: &[f32], pct: f32| {
+        let mut t = v.to_vec();
+        t.sort_unstable_by(|a, b| a.total_cmp(b));
+        let j = ((t.len() as f32 * 0.01 * pct).round() as usize).clamp(1, t.len());
+        t[j - 1]
+    };
+    let mut col = [0.0f32; 63];
+    let xbase0: Vec<f32> = (0..ll)
+        .map(|i| {
+            for (n, c) in col.iter_mut().enumerate() {
+                *c = energies[n * ll + i];
+            }
+            pctile(&col, 45.0)
+        })
+        .collect();
+    let mut xbase = vec![0.0f32; ll];
+    let head = xbase0[..NH - 1].iter().sum::<f32>() / (NH as f32 - 1.0);
+    let tail = xbase0[ll - NH..].iter().sum::<f32>() / (NH as f32 - 1.0);
+    xbase[..NH - 1].fill(head);
+    xbase[ll - NH..].fill(tail);
+    for i in NH - 1..ll - NH {
+        xbase[i] = xbase0[i + 1 - NH..i + NH].iter().sum::<f32>() / (2 * NH + 1) as f32;
+    }
+    for row in energies.chunks_exact_mut(ll) {
+        for (v, b) in row.iter_mut().zip(&xbase) {
+            *v /= b + 0.001;
+        }
+    }
+    let base = pctile(energies, 40.0);
+    for v in energies.iter_mut() {
+        *v = (*v / base).min(S3LIM);
+    }
+    let mut hist = vec![0usize; ll];
+    for row in energies.chunks_exact(ll) {
+        let mut pk = 0;
+        for (b, &v) in row.iter().enumerate() {
+            if v > row[pk] {
+                pk = b;
+            }
+        }
+        hist[pk] += 1;
+    }
+    for (b, _) in hist.iter().enumerate().filter(|&(_, &h)| h > NBZAP) {
+        for row in energies.chunks_exact_mut(ll) {
+            row[b] = 1.0;
+        }
+    }
+}
+
 /// WSJT-X-faithful `(Δf, Δt, b90)` grid search around a coarse
 /// candidate — port of `lib/qra/q65/q65_loops.f90`.
 ///
@@ -1046,6 +1109,7 @@ fn decode_at_grid_for<P: ModulationParams>(
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let baud = 1.0 / P::SYMBOL_DT;
     let dt_step = (nsps / 16).max(1) as i64;
+    let bins_per_tone = (P::TONE_SPACING_HZ / (sample_rate as f32 / nsps as f32)).round() as usize;
 
     let (idfmax, idtmax, maxdist) = depth.params();
     let submode = submode_index_from_params::<P>();
@@ -1058,17 +1122,17 @@ fn decode_at_grid_for<P: ModulationParams>(
     let mut intrinsics = vec![0.0_f32; 64 * 63];
     let es_no = default_es_no_metric();
 
-    // Without drift, one pass: `q65_dec_q012`'s unpruned sweep at
-    // (0,0) and `q65_loops`' pruned cells around it. With drift, upstream
-    // still runs `q65_dec_q012` on the undrifted spectra first, and only
-    // `q65_loops` takes the drift out (`a(2)=-0.5*drift`) — over every
-    // cell, (0,0) included, pruned and capped like the rest.
-    // `(chirp, centre exempt from pruning, centre cell only)`:
-    let passes: &[(Option<Chirp>, bool, bool)] = match chirp {
-        None => &[(None, true, false)],
-        Some(_) => &[(None, true, true), (chirp, false, false)],
-    };
-    for &(chirp, centre_exempt, centre_only) in passes {
+    // Two passes, as upstream: `q65_dec_q012` sweeps the unperturbed
+    // (0,0) cell on the raw spectra over the whole `ibwa..=ibwb` range,
+    // then `q65_loops` runs the pruned `(Δf, Δt, b90)` grid on spectra
+    // that `q65_loops.f90:63-67` first normalises ([`loops_normalise`]),
+    // with the drift taken out (`a(2)=-0.5*drift`) when there is one —
+    // (0,0) included, pruned and capped like the rest.
+    // `(chirp, q012 pass: centre cell only, raw, unpruned)`:
+    let passes: &[(Option<Chirp>, bool)] = &[(None, true), (chirp, false)];
+    for &(chirp, q012) in passes {
+        let centre_exempt = q012;
+        let centre_only = q012;
         let (idfmax, idtmax) = if centre_only {
             (1, 1)
         } else {
@@ -1090,7 +1154,7 @@ fn decode_at_grid_for<P: ModulationParams>(
                 let Ok(shifted_start) = usize::try_from(start_sample as i64 + dt_offset) else {
                     continue;
                 };
-                let Some(energies) = extract_data_energies_wide_chirped::<P>(
+                let Some(mut energies) = extract_data_energies_wide_chirped::<P>(
                     audio,
                     sample_rate,
                     shifted_start,
@@ -1099,6 +1163,13 @@ fn decode_at_grid_for<P: ModulationParams>(
                 ) else {
                     continue;
                 };
+                // `finish`'s SNR reads the spectra as extracted, not as
+                // `q65_dec2` sees them.
+                let raw = (!q012).then(|| energies.clone());
+                if !q012 {
+                    loops_normalise(&mut energies, 64 * (2 + bins_per_tone));
+                }
+                let snr_energies = raw.as_deref().unwrap_or(&energies);
 
                 for ibw in ibwa..=ibwb {
                     // At the unperturbed (Δf,Δt)=(0,0) cell, WSJT-X always
@@ -1155,7 +1226,7 @@ fn decode_at_grid_for<P: ModulationParams>(
                         &info_syms,
                         &codeword,
                         iterations,
-                        Energies::Wide(&energies),
+                        Energies::Wide(snr_energies),
                         SnrAudio::Slot(audio),
                         sample_rate,
                         shifted_start,

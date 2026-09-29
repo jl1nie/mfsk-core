@@ -2,6 +2,20 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: the `(Δf, Δt, b90)` grid now normalises its spectra as `q65_loops` does, so Q65-120D decodes at Δt = +2.0 s like `jt9` (#521).**
+  `jt9 -3 -p 120 -b D -d 1` decodes a frame 2.0 s late (search window +1.0 s, so the symbol windows are 1.0 s
+  misaligned); this crate stopped at +1.5 s. Neither hypothesis in the issue was it — the coarse window is identical
+  (`NSTEP=8`) and `-d 1` runs no `Δt` retry. Debug prints in a scratch `jt9` build showed `q65_dec0`'s raw q012 pass
+  failing and `q65_loops`'s centre cell decoding, and the difference is that `q65_loops` first flattens the passband
+  (`spec64`: 45th-percentile baseline per bin, 49-bin boxcar), divides by the 40th percentile of the whole array,
+  clamps at `s3lim = 20` and runs `q65_bzap` — a wrong tone dominating a straddling window can no longer outvote the
+  right one by more than 20×. `decode_at_grid_for` is now two passes as upstream: the raw unpruned centre-cell sweep
+  (q012), then the pruned grid on normalised spectra (`loops_normalise`); the SNR estimate still reads the raw
+  spectra. `tests/dt_window.rs`'s `REFERENCE_Q65_120_LATE_SEC` goes 1.5 → 2.0. `q65_sim_sweep` / `q65_snr_sweep` /
+  `q65_ap_sweep`: every 50 %-crossing unchanged (+0.00 dB, 2820 trials) — the aligned corpus decodes in the raw pass.
+  Off-centre `Normal`/`Deep` cells now see normalised spectra too (they saw raw before), which is upstream's behaviour;
+  no test exercises that depth against a reference.
+
 - **embedded: `jtty-bench`'s stack-placement run now checks that it got the configuration it asked for (#499, #528).**
   #516's "Back's stack in PSRAM" results were void: `bench_stack_place()` set `stack_alloc_caps` to
   `MallocCap::Spiram` alone, which `esp_pthread_set_cfg` refuses without `MALLOC_CAP_8BIT`
