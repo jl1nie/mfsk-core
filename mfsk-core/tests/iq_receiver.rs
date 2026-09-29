@@ -344,3 +344,69 @@ fn byte_stream_matches_typed_push() {
         &known_ft8(),
     );
 }
+
+/// The 8-bit and 24-bit byte formats through the receiver: the recording
+/// quantised the way an RTL-SDR (`Cu8`), a HackRF (`Cs8`) or a 24-bit IQ WAV
+/// (`Cs24`) delivers it, at 48 kS/s so the wanted signal is a fifth of the
+/// band. 8 bits leave ~48 dB below full scale, spread over the band and
+/// filtered down to 3 kHz; the recording's own noise floor sits well above.
+#[test]
+fn byte_formats_match_the_wav_path() {
+    let Some(s) = scene() else {
+        common::skip_or_fail("FT8/FT4 recordings");
+        return;
+    };
+    let fs = 48_000u32;
+    let dial = CENTER + 6_000.0;
+    let iq = pad_at(synth_iq(&s.ft8, fs, CENTER, dial), fs);
+    // Scale the peak to 0.7 of full scale: a receiver's gain does that.
+    let peak = iq
+        .iter()
+        .fold(0.0f32, |m, &(i, q)| m.max(i.abs()).max(q.abs()));
+    let g = 0.7 / peak;
+    for fmt in [
+        IqSampleFormat::Cu8,
+        IqSampleFormat::Cs8,
+        IqSampleFormat::Cs24,
+    ] {
+        let mut bytes = Vec::new();
+        for &(i, q) in &iq {
+            for v in [i * g, q * g] {
+                match fmt {
+                    IqSampleFormat::Cu8 => {
+                        bytes.push((v * 128.0 + 128.0).round().clamp(0.0, 255.0) as u8)
+                    }
+                    IqSampleFormat::Cs8 => {
+                        bytes.push(((v * 128.0).round().clamp(-128.0, 127.0) as i8) as u8)
+                    }
+                    _ => bytes.extend(&((v * 8_388_608.0).round() as i32).to_le_bytes()[..3]),
+                }
+            }
+        }
+        let mut rx = IqReceiver::new(IqStream {
+            sample_rate: fs,
+            center_hz: CENTER,
+            format: fmt,
+            iq_swap: false,
+        });
+        let rows = Arc::new(Mutex::new(Vec::new()));
+        let sink = rows.clone();
+        rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
+        let ch = rx.add_channel(dial, IqMode::Ft8).unwrap();
+        rx.set_time_anchor(T0_NS);
+        for chunk in bytes.chunks(100_003) {
+            rx.push_bytes(chunk);
+        }
+        same(
+            &set_of(&rows.lock().unwrap(), ch),
+            &s.ft8_ref,
+            &format!("FT8 from {fmt:?}"),
+            &known_ft8(),
+        );
+    }
+}
+
+fn pad_at(mut iq: Vec<(f32, f32)>, fs: u32) -> Vec<(f32, f32)> {
+    iq.resize(iq.len() + fs as usize / 2, (0.0, 0.0));
+    iq
+}

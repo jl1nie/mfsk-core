@@ -35,7 +35,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use super::{IqError, IqSampleFormat, IqStream, IqToAudio};
+use super::{IqError, IqStream, IqToAudio};
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 use crate::engine::pipeline::DecodeResult;
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
@@ -561,26 +561,16 @@ impl IqReceiver {
         self.pending.extend_from_slice(bytes);
         let usable = self.pending.len() / w * w;
         let taken: Vec<u8> = self.pending.drain(..usable).collect();
-        match self.stream.format {
-            IqSampleFormat::Cf32 => {
-                let v: Vec<f32> = taken
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|&b| f32::from_le_bytes(b))
-                    .collect();
-                self.push_cf32(&v);
-            }
-            IqSampleFormat::Cs16 => {
-                let v: Vec<i16> = taken
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|&b| i16::from_le_bytes(b))
-                    .collect();
-                self.push_cs16(&v);
-            }
+        let mut rows = Vec::new();
+        for chunk in taken.chunks(w * BLOCK) {
+            self.bi.clear();
+            self.bq.clear();
+            self.stream
+                .format
+                .convert(chunk, &mut self.bi, &mut self.bq);
+            self.run_block(chunk.len() / w, &mut rows);
         }
+        self.deliver(rows);
     }
 }
 
