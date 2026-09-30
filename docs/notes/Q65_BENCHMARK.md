@@ -274,3 +274,62 @@ exactly). See `BENCHMARKS.md`'s Q65 section for the full table.
   warnings` clean throughout.
 - AWGN sensitivity: see `BENCHMARKS.md`'s Q65 section for the full
   before/after/jt9 table.
+
+## The `s3lim` clip: 0.3 s of late edge for 0.1–0.4 dB (2026-09-30)
+
+#521 (`accdbd4e`) added `q65_loops.f90:64-68`'s conditioning of the symbol
+spectra: passband equalisation, division by `pctile(s3, 40)`, a clip at
+`s3lim = 20`, and `q65_bzap`. The release sweep before 0.12.0 showed small
+moves on the Q65 groups. They came from that one commit, and from the clip
+alone. Kept, because the clip is also what #521 was for.
+
+**Which step.** On a `q65sim` AWGN corpus three of the four steps do nothing
+that matters. The equalisation and the percentile division are one scale
+factor over a flat passband, and B-60 does not move at all. There are no
+birdies to zap. The clip is the only step whose effect depends on SNR.
+Measured by setting `S3LIM` to infinity at `accdbd4e`, 60 trials per cell on
+B/C/D/E-60 and D/E-120: 11 of 12 groups returned to the pre-#521 crossing
+within 0.08 dB, and trials lost against gained from pre-#521 were 40/35
+(p = 0.64).
+
+**What it costs.** The clip caps the correct tone's bin. After normalisation
+a noise bin averages about 2 and exceeds 20 with probability about 4e-5. A
+signal bin averages about 2(1 + S), with S the per-symbol, per-bin SNR at the
+crossing. So the loss follows S: about 7.5 for D/E-120 plain, about 5.5 for
+C/D/E-60, and about 2.9 for B-60. At 60 trials per cell, #521 against its
+parent `c73da50a`:
+
+| group | before | after | move | lost / gained | `jt9 -3 -d 1` |
+|---|---|---|---|---|---|
+| B-60 plain / cq | −27.14 / −28.14 | −27.19 / −28.14 | −0.05 / 0.00 | 1/2, 1/1 | −25.61 / −27.24 |
+| C-60 plain / cq | −24.56 / −25.41 | −24.49 / −25.30 | +0.07 / +0.12 | 7/0, 8/2 | −23.80 / −24.74 |
+| D-60 plain / cq | −24.43 / −25.30 | −24.29 / −25.10 | +0.15 / +0.20 | 10/0, 12/0 | −23.34 / −24.21 |
+| E-60 plain / cq | −24.47 / −25.27 | −24.38 / −25.11 | +0.10 / +0.16 | 8/0, 6/0 | −22.48 / −23.41 |
+| D-120 plain / cq | −26.76 / −27.66 | −26.36 / −27.44 | +0.40 / +0.22 | 31/0, 19/0 | −26.44 / −27.29 |
+| E-120 plain / cq | −26.85 / −27.71 | −26.51 / −27.51 | +0.34 / +0.20 | 26/0, 16/1 | −25.88 / −26.93 |
+
+Every group still sits at or above `jt9` (2b9d654, whose `q65_loops.f90` has
+the same clip), and each move is toward it. The 5- and 15-trial release
+corpus could not show this: D-120 plain read ±0.00 there and moves 0.40 dB
+here. Under `q65sim` Doppler spread (`fDop`, 60 trials) the clip costs
+0.04–0.18 dB at 5 Hz and nothing at 20 Hz, where the spread keeps any one bin
+below the cap. It never helped.
+
+**What it buys.** The late edge of the default window. Q65-120D at −12 dB,
+six noise seeds per Δt:
+
+| Δt (s) | 1.80 | 1.85–2.00 | 2.05 | 2.10 | 2.15 |
+|---|---|---|---|---|---|
+| before #521 | 4/6 | 0/6 | 0/6 | 0/6 | 0/6 |
+| #521, clip | 6/6 | 6/6 | 5/6 | 3/6 | 0/6 |
+| #521, no clip | 4/6 | 0/6 | 0/6 | 0/6 | 0/6 |
+
+`jt9` reaches +2.0 s. Without the clip, `dt_window`'s
+`q65_120d_default_window_reaches_reference_late_edge` fails.
+
+What was not measured: robustness against birdies, impulsive noise or QRM,
+which may be what upstream added the clip for (`s3lim` dates from the
+2020 QRA64/QRA66 work, `dd471c6b5` at 10, later 20, with no stated reason).
+The comparison at 20 Hz also found a gap unrelated to the clip. On
+D/E-120 this crate trails `jt9` by 0.17–0.69 dB, clip or not; see issue
+#551.

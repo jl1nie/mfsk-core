@@ -107,6 +107,16 @@ fn extract_data_energies<P: ModulationParams>(
 /// `s3 = s3 / pctile(s3, 40)`, a clip at `s3lim = 20`, and `q65_bzap`.
 /// The clip is what bounds a strong wrong tone when the window is not on a
 /// symbol boundary (issue #521). `energies` is 63 rows of `row_len` bins.
+///
+/// The clip has a measured cost as well. It is the only one of the four steps
+/// that moves anything on `q65sim` corpora, and it caps the *correct* tone
+/// too once the per-bin SNR at the crossing is high. At 60 trials per cell
+/// that costs 0.07–0.40 dB of AWGN sensitivity on C/D/E (D-120 plain the
+/// most), 0.04–0.18 dB under 5 Hz Doppler spread, nothing at 20 Hz or on
+/// A/B. What it buys is the late edge: Q65-120D decodes to +2.10 s with it and
+/// to +1.80 s without, and `jt9` reaches +2.0 s. Kept, as upstream keeps it.
+/// With the clip, every group is still at or above `jt9 -d 1`.
+/// `docs/notes/Q65_BENCHMARK.md`, "The `s3lim` clip".
 fn condition_symbol_spectra(energies: &mut [f32], row_len: usize) {
     use super::search::percentile;
     const NH: usize = 25;
