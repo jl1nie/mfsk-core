@@ -371,7 +371,26 @@ No trial was lost anywhere. At 20 Hz, D/E-120 now reads −25.73 / −26.54
 unexpected decodes on any of these corpora, nor on 400 noise-only frames
 (D/E-60/120 at −50 dB).
 
-Time: 0–2 % per file, D-60 and E-120, single-threaded and with rayon (for
-example E-120 AWGN 471 → 474 ms for a plain plus a CQ-AP scan). `jt9 -3 -d 1` takes
-274–633 ms on the same files. It runs its AP passes inside one scan, where
-this benchmark ran two.
+Time: the second sync adds 0–2 % per file, D-60 and E-120, single-threaded
+and with rayon (for example E-120 AWGN 471 → 474 ms for a plain plus a CQ-AP
+scan).
+
+Against `jt9` the scan is slow, and was before this change. The same
+sequence was timed on both sides, single-threaded, over 120 files: a no-AP
+decode, then CQ-AP only if nothing decoded, which is what one `jt9 -3 -d 1`
+run does. For `jt9` the figure is `timer.out`'s `dec_q65`, which leaves out
+process start, with FFTW wisdom kept warm.
+
+| files | `jt9` | this crate | ratio | this crate, no-AP scan alone |
+|---|---|---|---|---|
+| D-60 at the crossing (AWGN / 20 Hz) | 147–178 ms | 490–509 ms | 2.9–3.3× | 408–409 ms |
+| D-60 below it, and noise only | 200–207 ms | 892–906 ms | 4.3–4.5× | 446–453 ms |
+| E-120 at the crossing (AWGN / 20 Hz) | 187–208 ms | 616–685 ms | 3.3× | 516–527 ms |
+| E-120 below it, and noise only | 264–265 ms | 1096–1106 ms | 4.2× | 551–556 ms |
+
+A no-AP scan alone costs 2–2.7× `jt9`'s whole sequence. The AP rescan
+roughly doubles that whenever the first finds nothing. The first timing
+of this comparison ran `jt9` once per fresh directory, so it also paid
+process start and FFTW planning (274–633 ms), and read as near parity. It
+was wrong. Decode counts on the crossing files: `jt9` 12/20 D-60 and 19/20
+E-120, this crate 20/20 and 20/20.
