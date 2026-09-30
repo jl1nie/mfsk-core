@@ -81,7 +81,7 @@
       },
       "q65": {
         "date": "2026-10-01",
-        "commit": "e55831db",
+        "commit": "22ceba7c",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 2640,
         "groups": 20
