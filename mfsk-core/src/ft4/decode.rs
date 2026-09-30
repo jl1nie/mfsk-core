@@ -9,6 +9,7 @@ use super::Ft4;
 use crate::engine::dsp::downsample::DownsampleCfg;
 use crate::engine::dsp::subtract::SubtractCfg;
 use crate::engine::pipeline;
+use alloc::vec::Vec;
 
 pub use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;

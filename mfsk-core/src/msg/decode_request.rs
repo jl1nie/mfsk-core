@@ -259,16 +259,6 @@ where
     }
 }
 
-/// The single-pass strategy of every protocol that decodes through
-/// `engine::pipeline` — FT4 and each FST4 sub-mode. They differ only in
-/// the downsample geometry and the `nsync` floor, which is all this
-/// takes besides the request; the body was two verbatim copies until
-/// #416.
-///
-/// Wraps `on_result` against `known`, builds the a-priori hypothesis
-/// list (including the blind CQ one), runs
-/// `pipeline::decode_frame_budgeted` with the request's message policy,
-/// and drops `known` from the returned rows.
 #[cfg(any(feature = "ft4", feature = "fst4"))]
 /// The a-priori hypotheses a WSJT-X decode tries: those the caller's hint
 /// implies (`pipeline_ap::ap_passes`), plus the blind CQ one, which needs no
@@ -296,6 +286,17 @@ where
         .collect()
 }
 
+/// The single-pass strategy of every protocol that decodes through
+/// `engine::pipeline` — FT4 and each FST4 sub-mode. They differ only in
+/// the downsample geometry and the `nsync` floor, which is all this
+/// takes besides the request; the body was two verbatim copies until
+/// #416.
+///
+/// Wraps `on_result` against `known`, builds the a-priori hypothesis
+/// list (including the blind CQ one), runs
+/// `pipeline::decode_frame_budgeted` with the request's message policy,
+/// and drops `known` from the returned rows.
+#[cfg(any(feature = "ft4", feature = "fst4"))]
 pub(crate) fn generic_single_pass<P, Pol>(
     req: &DecodeRequest<'_, P, Pol>,
     cfg: &crate::engine::dsp::downsample::DownsampleCfg,
