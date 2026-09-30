@@ -536,6 +536,8 @@ mfsk_jtty_tones_to_i16(tones, n, 1500.0f, 8000.0f, pcm, sizeof pcm / 2, &m);
 MfskStatus st;
 /* 14.200 MHz を中心にした CF32 の 768 kS/s、iq_swap = 0 */
 MfskIqReceiver *rx = mfsk_iq_open(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, &st);
+/* チャンネルが多いときは 1 つのポリフェーズフィルタバンクを共有する（下の「選択度」を参照）:
+   mfsk_iq_open_with(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, MFSK_IQ_CHANNELIZER_PFB, &st); */
 
 uint32_t ft8, ft4;
 mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &ft8);   /* INVALID_ARG: 窓に DC が入る、または帯域外 */

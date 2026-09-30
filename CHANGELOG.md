@@ -2,6 +2,13 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Docs: the PFB in the module maps and examples, and §6's DSP table corrected (#534).**
+  `LIBRARY.md` / `.ja.md`: the `iq/` line of the module map names `PfbChannelizer` and `Channelizer::Direct | Pfb`;
+  `engine/fft.rs` names `with_planner`; the `IqReceiver` example shows `with_channelizer`. `BINDINGS.md` / `.ja.md`: the C
+  example shows `mfsk_iq_open_with`. §6's DSP table listed a module `fir` that does not exist; it now lists what does:
+  `fir_decimate` (`FirStage`, `design_lowpass`, `kaiser_order`, `design_lowpass_kaiser`, `from_taps`) and `polyphase`
+  (`PolyphaseResampler`, `from_prototype`), each with its `.ja.md` twin row.
+
 - **IQ: a polyphase filter bank, `iq::PfbChannelizer`, as an option beside the `Direct` path (#534).**
   `IqReceiver::with_channelizer(stream, Channelizer::Pfb)` (C: `mfsk_iq_open_with(.., MFSK_IQ_CHANNELIZER_PFB, ..)`) shares
   one bank among all channels instead of mixing and decimating each from the input rate: 2x oversampled (hop M/2),
