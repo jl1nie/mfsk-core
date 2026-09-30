@@ -371,26 +371,62 @@ No trial was lost anywhere. At 20 Hz, D/E-120 now reads −25.73 / −26.54
 unexpected decodes on any of these corpora, nor on 400 noise-only frames
 (D/E-60/120 at −50 dB).
 
-Time: the second sync adds 0–2 % per file, D-60 and E-120, single-threaded
-and with rayon (for example E-120 AWGN 471 → 474 ms for a plain plus a CQ-AP
-scan).
+Time: the second sync doubled decode time when it landed, 1.65–2.17× per file
+on D-60 and E-120. A first timing reported 0–2 %. Both of its sides had run
+one binary, built by two worktrees into a shared `CARGO_TARGET_DIR`, so it
+compared the build with itself. What the dual sync costs now is in the next
+section.
 
-Against `jt9` the scan is slow, and was before this change. The same
-sequence was timed on both sides, single-threaded, over 120 files: a no-AP
-decode, then CQ-AP only if nothing decoded, which is what one `jt9 -3 -d 1`
-run does. For `jt9` the figure is `timer.out`'s `dec_q65`, which leaves out
-process start, with FFTW wisdom kept warm.
+## Candidate admission as `q65_ccf_22` does it: 3.4–11× faster (#552, 2026-10-01)
 
-| files | `jt9` | this crate | ratio | this crate, no-AP scan alone |
-|---|---|---|---|---|
-| D-60 at the crossing (AWGN / 20 Hz) | 147–178 ms | 490–509 ms | 2.9–3.3× | 408–409 ms |
-| D-60 below it, and noise only | 200–207 ms | 892–906 ms | 4.3–4.5× | 446–453 ms |
-| E-120 at the crossing (AWGN / 20 Hz) | 187–208 ms | 616–685 ms | 3.3× | 516–527 ms |
-| E-120 below it, and noise only | 264–265 ms | 1096–1106 ms | 4.2× | 551–556 ms |
+Timed against `jt9` on the same sequence the scan was slow, and had been before
+#551. The sequence is what one `jt9 -3 -d 1` run does: a no-AP decode, then CQ-AP
+only if nothing decoded. Both sides were single-threaded over 120 files, `jt9`
+from `timer.out`'s `dec_q65` (no process start, FFTW wisdom warm). Before #551
+it was 1.5–2.3× `jt9`, after it 2.8–4.5×.
 
-A no-AP scan alone costs 2–2.7× `jt9`'s whole sequence. The AP rescan
-roughly doubles that whenever the first finds nothing. The first timing
-of this comparison ran `jt9` once per fresh directory, so it also paid
-process start and FFTW planning (274–633 ms), and read as near parity. It
-was wrong. Decode counts on the crossing files: `jt9` 12/20 D-60 and 19/20
-E-120, this crate 20/20 and 20/20.
+**Where the time went.** A profile put 68–84 % in BP (`QraCode::extrinsic`).
+Counting per file showed why: every scan decoded `max_candidates` = 8
+candidates, each with the full 7-step `b90` sweep, and a noise-only frame ran
+112 BP decodes across its no-AP and CQ-AP scans. `jt9` decodes only candidates
+whose `q65_ccf_22` sync SNR is at least 6, plus the best sync near `nfqso`.
+
+**Why the relative test never gated.** The coarse search already had
+`(score − ave)/rms ≥ 6`. It also had a fixed floor, `score ≥ 0.1`, OR'd in beside
+it, on a score of `sync / (sync + noise floor)`. On noise that score is about 0.5,
+so the floor admitted every bin. Dropping the floor alone was not enough either.
+A steady carrier scores near 1 on that ratio. On `samples/Q65/300A_Optical_Scatter`
+the top twelve bins were carriers at 885, 1740 and 2594 Hz. The signal, at
+1002 Hz, was not among them, and nothing reached SNR 6. Upstream's curve subtracts
+the bin's average over the whole spectrogram, `ccft − (22/jz)·s1avg(i)`, which
+takes a carrier to about zero. With that curve the signal ranks second at 9.8.
+
+**What changed.** `q65::search::coarse_search_drift_on_spec_for` ranks on
+upstream's mean-subtracted curve, and admits SNR ≥ 6 plus the curve's highest
+point. That highest point stands in for upstream's `nfqso ± ntol` pick: a plain
+scan has no Rx frequency. It is a deliberate divergence, and it is needed.
+Without it, E-120 at 20 Hz spread fell from 9/10 to 0/10 at −26 dB.
+
+| files (ms per file) | `jt9` | before #551 | #551 | now | now / `jt9` |
+|---|---|---|---|---|---|
+| D-60 AWGN −24 dB | 178 | 259 | 498 | 47 | 0.26 |
+| D-60 AWGN −27 dB | 207 | 453 | 863 | 139 | 0.67 |
+| D-60 noise only | 200 | 457 | 905 | 165 | 0.83 |
+| D-60 20 Hz −23 dB | 147 | 274 | 490 | 53 | 0.36 |
+| E-120 AWGN −26 dB | 187 | 286 | 601 | 142 | 0.76 |
+| E-120 AWGN −30 dB | 264 | 505 | 1083 | 311 | 1.18 |
+| E-120 noise only | 265 | 504 | 1088 | 318 | 1.20 |
+| E-120 20 Hz −26 dB | 208 | 420 | 680 | 167 | 0.80 |
+
+Decode counts on the crossing files are unchanged from #551 (D-60 20/20 and
+10/10, E-120 20/20 and 9/10; `jt9` 12, 9, 19, 8). Across the 60-trial corpora
+(AWGN, 5 Hz, 20 Hz, B/C) and the release corpus, 15 840 trials, every group's
+crossing is within 0.05 dB of #551. 21 trials were lost and 8 gained, which is
+detectable (p = 0.02) but spread across the fading cells. There were no
+unexpected decodes, including on 400 noise-only frames. Tier A+B passes, and
+with it the real recordings in `q65_wsjtx_samples` and `iq_receiver_modes`.
+`SearchParams::score_threshold` is no longer read by the Q65 search.
+
+E-120 below the crossing is the one case still slower than `jt9`, at about
+1.2×. It is not profiled yet. The E sub-mode's 128 smoothing passes for the
+second sync are the obvious suspect.

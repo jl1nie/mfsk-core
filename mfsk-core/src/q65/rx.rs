@@ -925,9 +925,14 @@ fn scan_with<P: ModulationParams>(
     // lost no trial anywhere. It gained 0.40-0.79 dB on D/E-120 at 20 Hz,
     // which trailed `jt9 -d 1` by up to 0.69 dB and now matches or beats it,
     // and 0.03-0.27 dB at 5 Hz. There were no unexpected decodes, including
-    // on 400 noise-only frames. The cost is 0-2 % of decode time (D-60 and
-    // E-120, one file at a time, single-threaded and with rayon). A has
-    // `nsmo = 0` and is untouched.
+    // on 400 noise-only frames. A has `nsmo = 0` and is untouched.
+    //
+    // It doubled decode time when it landed (1.65-2.17x, D-60 and E-120,
+    // one file at a time), because every scan then took the full
+    // `max_candidates` from both syncs. With the coarse search's relative
+    // admission (#552) most scans take one or two, and the dual sync
+    // together with #552 runs at 0.09-0.29x its first cost. (An earlier
+    // note here said 0-2 %: both sides of that timing had run one binary.)
     let Some(smoothed) = super::search::smoothed_for_sync::<P>(&spec) else {
         return seen;
     };

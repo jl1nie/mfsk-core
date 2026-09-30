@@ -112,6 +112,9 @@ use crate::engine::search::{SearchWindow, best_lag_in_bin};
 /// Q65-60A reached +5.5 s there and Q65-30A did not — `lag2`'s
 /// `nsps >= 3600` covers both; `emedelay` was the difference. Before
 /// that it was `time_tolerance_symbols: 5` (±0.75 s on Q65-15).
+///
+/// `score_threshold` is not read by the Q65 search (#552). Admission is
+/// `q65_ccf_22`'s own relative test, see [`coarse_search_drift_on_spec_for`].
 pub const fn default_search_params() -> SearchParams {
     SearchParams {
         freq_min_hz: 200.0,
@@ -140,6 +143,10 @@ pub fn eme_delay_late_sec<P: ModulationParams + crate::engine::FrameLayout>() ->
 
 /// Score one `(start_row, base_bin)`: sum tone-0 power across the
 /// 22 sync positions, divide by `(sum + noise_floor)`.
+///
+/// Not what the coarse search ranks by since #552: that is
+/// `q65_ccf_22`'s mean-subtracted sum, see
+/// [`coarse_search_drift_on_spec_for`].
 pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) -> f32 {
     let rows_per_symbol = (spec.nsps / spec.t_step).max(1);
     spectrogram::score_candidate(
@@ -282,7 +289,29 @@ pub fn coarse_search_drift_on_spec_for<P: ModulationParams>(
     let mut rows: Vec<usize> = vec![0; curve.len()];
     let mut drifts: Vec<i32> = vec![0; curve.len()];
     let max_drift = max_drift as i32;
-    let noise_floor = spec.noise_per_bin * Q65_SYNC_POSITIONS.len() as f32;
+    // `q65_ccf_22`'s curve (`q65.f90:492-494,503-516`): the 22 sync symbols' power
+    // minus `(22.0/jz)*s1avg(i)`, what 22 rows of that bin hold on average
+    // over the whole spectrogram. A steady carrier or birdie is as strong in
+    // the sync rows as anywhere else and scores about zero. The ratio this
+    // crate used before, `pwr / (pwr + noise_floor)`, scored every bin about
+    // 0.5 on noise and a steady carrier near 1. That made the relative test
+    // below useless: on the WSJT-X Q65-300A optical-scatter sample, carriers
+    // at 885, 1740 and 2594 Hz outranked the signal at 1002 Hz and nothing
+    // reached SNR 6. With the subtraction the signal is second, at 9.8 (#552).
+    let sync_mean: Vec<f32> = {
+        let mut col = vec![0.0_f32; spec.n_freq];
+        for row in spec.mags_sqr.chunks_exact(spec.n_freq) {
+            for (c, &v) in col.iter_mut().zip(row) {
+                *c += v;
+            }
+        }
+        let k = Q65_SYNC_POSITIONS.len() as f32 / spec.n_time as f32;
+        col.iter_mut().for_each(|c| *c *= k);
+        col
+    };
+    let ccf = |row: usize, bin: usize, idrift: i32| {
+        drifted_sync_power(spec, row, bin, idrift, rows_per_symbol) - sync_mean[bin]
+    };
     for fb in fb_lo..=fb_hi {
         // Tone 64 (highest data tone) sits at base_bin + 64 *
         // bins_per_tone for the active sub-mode.
@@ -293,17 +322,16 @@ pub fn coarse_search_drift_on_spec_for<P: ModulationParams>(
         // tones above the sync bin.
         let row_fits = |row: usize| row + 84 * rows_per_symbol < spec.n_time;
         let best = if max_drift == 0 {
-            best_lag_in_bin(&w, fb, row_fits, |row, bin| score_candidate(spec, row, bin))
+            best_lag_in_bin(&w, fb, row_fits, |row, bin| ccf(row, bin, 0))
                 .map(|(row, score)| (row, score, 0))
         } else {
             // `do lag=lag1,lag2; do idrift=-max_drift,max_drift`, keeping
             // the first maximum as `ccft.gt.ccfmax` does.
             let mut best: Option<(usize, f32, i32)> = None;
             for idrift in -max_drift..=max_drift {
-                if let Some((row, score)) = best_lag_in_bin(&w, fb, row_fits, |row, bin| {
-                    let pwr = drifted_sync_power(spec, row, bin, idrift, rows_per_symbol);
-                    pwr / (pwr + noise_floor)
-                }) && best.is_none_or(|(_, b, _)| score > b)
+                if let Some((row, score)) =
+                    best_lag_in_bin(&w, fb, row_fits, |row, bin| ccf(row, bin, idrift))
+                    && best.is_none_or(|(_, b, _)| score > b)
                 {
                     best = Some((row, score, idrift));
                 }
@@ -323,12 +351,7 @@ pub fn coarse_search_drift_on_spec_for<P: ModulationParams>(
     // `ave` = 50th percentile, `base` = 84th percentile of the whole
     // per-frequency score curve (≈ mean+1σ for a roughly-Gaussian
     // noise floor), `rms = base - ave`, admit only candidates with
-    // `(score-ave)/rms >= 6.0`. This adapts to each recording's own
-    // noise spread instead of a fixed absolute `score_threshold`,
-    // which — verified against real jt9 on a pure-AWGN sweep,
-    // `docs/notes/Q65_BENCHMARK.md` — was rejecting genuine weak
-    // signals outright at low SNR well before `max_candidates`
-    // truncation ever mattered.
+    // `(score-ave)/rms >= 6.0`.
     let ave = percentile(&curve, 50);
     let base = percentile(&curve, 84);
     let rms = base - ave;
@@ -339,21 +362,36 @@ pub fn coarse_search_drift_on_spec_for<P: ModulationParams>(
     // i4=i+mode_q65; if(ccf2(i).ne.biggest) cycle`
     // (`lib/qra/q65/q65.f90:563-566`) — `mode_q65` there is exactly
     // our `bins_per_tone` (`nBinsPerTone = 1<<submode`, `q65.c:351`).
+    //
+    // The curve's highest point is admitted whatever its SNR. Upstream
+    // always tries the best sync within `nfqso ± ntol` (`q65_dec0`'s
+    // `ibest`, `q65.f90:528-534`) before its SNR-gated candidate list.
+    // DIVERGENCE: this crate has no Rx frequency in a plain scan, so it takes
+    // the best over the whole window instead. Without it, the relative test
+    // alone loses weak spread signals whose sync peak sits under 6: Q65-120E
+    // at 20 Hz Doppler spread decoded 0/10 at -26 dB where it had 9/10
+    // (60-trial cells, #552).
+    //
+    // This replaces a fixed floor, `score >= params.score_threshold`
+    // (0.1), OR'd in beside the relative test. On the old ratio every bin
+    // scored about 0.5, so the floor admitted all of them, and every scan
+    // decoded `max_candidates` = 8 candidates, noise or not. On a noise-only
+    // Q65-60D frame that meant 8 grid decodes and 56 BP runs per scan
+    // against 0 now (#552).
+    let best_idx = curve
+        .iter()
+        .enumerate()
+        .fold(None, |acc: Option<(usize, f32)>, (i, &v)| match acc {
+            Some((_, b)) if b >= v => acc,
+            _ => Some((i, v)),
+        })
+        .map(|(i, _)| i);
     let mut out: Vec<(SyncCandidate, i32)> = Vec::new();
     for (idx, &score) in curve.iter().enumerate() {
         if score <= 0.0 {
             continue;
         }
-        // OR, not replace: the adaptive gate rescues weak-but-real
-        // signals the fixed floor would reject outright (the AWGN
-        // case this was added for), but a clean/strong signal must
-        // still be admitted on its own absolute score even if the
-        // curve's noise estimate is itself distorted (e.g. broadband
-        // transients from a hard on/off edge in a synthetic test
-        // buffer inflating `rms` well above what a continuous-noise
-        // real recording would show).
-        let admitted =
-            score >= params.score_threshold || (use_adaptive && (score - ave) / rms >= SNR_ADMIT);
+        let admitted = Some(idx) == best_idx || (use_adaptive && (score - ave) / rms >= SNR_ADMIT);
         if !admitted {
             continue;
         }
@@ -428,6 +466,11 @@ mod tests {
             best.freq_hz
         );
         assert_eq!(best.start_sample, 0, "clean synth starts at sample 0");
-        assert!(best.score > 0.5, "clean signal should score > 0.5");
+        // The curve is `q65_ccf_22`'s mean-subtracted sync sum: positive
+        // where the sync rows hold more than the bin's average.
+        assert!(
+            best.score > 0.0,
+            "clean signal should score above its bin's mean"
+        );
     }
 }

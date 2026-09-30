@@ -2,6 +2,19 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65 decodes 3.4–11× faster: the coarse search admits candidates as `q65_ccf_22` does (#552).** Every Q65 scan
+  decoded `max_candidates` = 8 candidates, even on noise alone. The search scored a bin
+  `sync / (sync + noise floor)`, which is about 0.5 on noise, and a fixed floor of 0.1 admitted all of them. The
+  relative test beside it (`q65_ccf_22`'s SNR ≥ 6) was ineffective too: on that ratio a steady carrier scores near
+  1, so on the WSJT-X Q65-300A sample three carriers outranked the signal and nothing reached 6. The curve is now
+  upstream's: the 22 sync symbols' power minus the bin's average over the whole spectrogram, so a carrier scores
+  about zero. Admission is SNR ≥ 6 plus the curve's highest point, in place of upstream's best sync within
+  `nfqso ± ntol`, which a plain scan here has no Rx frequency for. `SearchParams::score_threshold` is no longer
+  read by the Q65 search. Timed one file at a time, single-threaded, on `jt9 -3 -d 1`'s own sequence (no-AP, then
+  CQ-AP if nothing decoded): D-60 and E-120 now take 0.26–1.20× `jt9`'s decode time, from 2.8–4.5× (with #551's
+  dual sync) and 1.5–2.3× (before it). Sensitivity is unchanged within 0.05 dB on every group of the 60-trial and
+  release corpora, 21 trials lost against 8 gained over 15 840. There were no unexpected decodes, and tier A+B
+  passes, including the real WSJT-X recordings.
 - **Q65: a second coarse sync on smoothed spectra recovers up to 0.8 dB under wide Doppler spread (#551).** On a
   `q65sim` corpus with 20 Hz spread, Q65-120D/E trailed `jt9 -d 1` by 0.17–0.69 dB, the only condition measured where
   this crate was behind. The decoder was not at fault: the coarse sync lost the frame's (Δt, Δf) under spread.
@@ -9,8 +22,8 @@
   crate's sync did not. The scan now syncs twice, on the raw and on the smoothed spectra. Upstream syncs on the
   smoothed ones only, which costs narrow signals up to 0.38 dB. At 60 trials per cell it lost no trial on any corpus;
   it gained 0.40–0.79 dB on D/E-120 at 20 Hz, which now match or beat `jt9`, and up to 0.27 dB at 5 Hz. There were no
-  unexpected decodes, including on 400 noise-only frames. Decode time is 0–2 % longer; sub-mode A is unaffected
-  (`nsmo = 0`). Details in `docs/notes/Q65_BENCHMARK.md`.
+  unexpected decodes, including on 400 noise-only frames. Sub-mode A is unaffected (`nsmo = 0`). On its own it
+  doubled decode time; the next entry takes that back and more. Details in `docs/notes/Q65_BENCHMARK.md`.
 - **Tier-C corpora carry a provenance stamp, and the sweep runner refuses one without it.** A sweep baseline is
   only comparable with a corpus generated at `MFSK_SIM_SEED=1` (#390), and nothing checked that: a release sweep on
   2026-09-30 flagged JT65 +0.68 dB worse in unchanged code, because the local `jt65_sweep/` was a July corpus drawn
