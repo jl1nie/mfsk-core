@@ -2,6 +2,16 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Fix: `alloc,fst4,fft-extern` did not build — `fst4::ddc::choose_k` called `f32::ceil`, which `no_std` lacks.**
+  Every other no-`std` module carries `num_traits::Float` for exactly this; `fst4/ddc.rs` did not, and nothing built
+  FST4 with `alloc` and without `std`: the pre-push feature matrix and CI's `feature-matrix` job had `alloc ft8`,
+  `alloc ft4`, `alloc jt9`, `alloc jt65`, `alloc q65` and `alloc jtty` rows but no `alloc fst4`. The CoreS3 builds FST4 *with*
+  `std`, so no board build showed it. The import is added and both matrix lists gain `alloc fst4 fft-extern`. Found by
+  accident, while adding a trial row for another change. Swept at the same time, every other protocol as `alloc <mode>
+  fft-extern`: `msk144`, `uvpacket`, `jtty` and `ft8 ft4 fst4` build; **`wspr` does not** (`wspr::osd` uses
+  `std::sync::OnceLock` and `String`) and is left alone on purpose: it needs `std` by design, `embedded-shared`'s
+  `wspr-bench` brings `mfsk-core/std`, and nothing asks for it without.
+
 - **CoreS3: the WSPR receiver is removed (#313).**
   Gone from `m5stack-cores3-app`: the `wspr` and `wspr-golden` features, `apps/wspr.rs` (1 251 lines), the `wspr-bench`
   and `wifi-probe` bins (the latter needed `wspr`), the `boot_mode` dispatch arms and `MFSK_WSPR_SYNTH`. Gone from the

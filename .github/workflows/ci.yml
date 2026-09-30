@@ -577,6 +577,7 @@ jobs:
           - "alloc ft8 fft-extern fixed-point" # full embedded integer pipeline
           - "alloc ft4 fft-extern"             # FT4 through the generic pipeline, no_std
           - "alloc ft4 fft-extern fixed-point" # same, with the integer implications on
+          - "alloc fst4 fft-extern"            # FST4 through no_std + alloc: caught a bare `f32::ceil` in fst4::ddc
           - "alloc jt9 fft-extern"   # #390: no longer pinned to rustfft/std
           - "alloc jt65 fft-extern"  # same
           - "alloc q65 fft-extern"   # same
