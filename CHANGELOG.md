@@ -2,6 +2,17 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **CoreS3: `[boot-summary]` is printed on a boot with no WiFi too, when there is a console to print it to.**
+  It went out on the first frame after the UDP log sink existed, so a boot that brought no WiFi (`WIFI: OFF`, or now
+  `TIME: AIR DT`, #381) never printed it anywhere — not even on the USB-Serial-JTAG console a board plugged into a PC
+  has from the first instruction — and the host/RTC/PMIC/I2C diagnostics it carries were lost. In peripheral mode it now
+  also goes out when the boot will bring no WiFi, or 30 s in without the UDP sink (an AP that is not there); host mode
+  with no WiFi still has no console to send it to. Found on the first `TIME: AIR DT` boot on a CoreS3 after #381. Verified
+  on that board, both ways: `AIR DT` (NVS `grid_src=air`, WiFi driver never initialised) prints all four
+  `[boot-summary]` lines on the serial console; `NTP` (WiFi up, UDP sink attempt 1) prints them once, after the sink.
+  The same session is the first on-hardware confirmation of #381: `no WiFi — TIME: AIR DT (...)` and zero `wifi:` driver
+  lines under AIR DT, association and NTP under NTP.
+
 - **Fix: `alloc,fst4,fft-extern` did not build — `fst4::ddc::choose_k` called `f32::ceil`, which `no_std` lacks.**
   Every other no-`std` module carries `num_traits::Float` for exactly this; `fst4/ddc.rs` did not, and nothing built
   FST4 with `alloc` and without `std`: the pre-push feature matrix and CI's `feature-matrix` job had `alloc ft8`,
