@@ -158,7 +158,10 @@ fun main() {
         }
     }
 
-    MfskSession.open(ft8).use { s ->
+    // Pinned to the single pass: its scheduler polls per candidate, which is
+    // what candidatesSkipped and cutAtSync describe. FT8's default since
+    // 0.12.0 (sic_early) polls per stage.
+    MfskSession.open(ft8, Mfsk.defaultParams(ft8).copy(singlePass = true)).use { s ->
         val full = s.decode(busy)
         check("the busy slot decodes both stations", full.size >= 2)
 

@@ -33,9 +33,14 @@ final class StrategyTests: XCTestCase {
         XCTAssertNil(report.cutAtScore)
     }
 
+    /// Pinned to the single pass: its scheduler polls per candidate, which is
+    /// what `candidatesSkipped` and `cutAtSync` describe. FT8's default since
+    /// 0.12.0 (`sicEarly`) polls per stage.
     func testABudgetThatRefusesEverythingCutsTheSearch() throws {
         let audio = try twoStationSlot()
-        let session = try DecodeSession(mode: .ft8)
+        var params = try DecodeParams(mode: .ft8)
+        params.singlePass = true
+        let session = try DecodeSession(mode: .ft8, params: params)
         let full = try session.decode(audio).count
         XCTAssertGreaterThan(full, 0)
 
