@@ -284,7 +284,7 @@ pub fn run_log_panel(
     // host unconditionally on battery.
     let mut host_mode = matches!(
         mode,
-        BootMode::Uac | BootMode::Ft4 | BootMode::Wspr | BootMode::Fst4 | BootMode::Jtty
+        BootMode::Uac | BootMode::Ft4 | BootMode::Fst4 | BootMode::Jtty
     );
 
     // Boot-time reading only.

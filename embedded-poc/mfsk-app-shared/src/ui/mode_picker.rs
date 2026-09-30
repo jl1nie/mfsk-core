@@ -160,13 +160,12 @@ pub const CONFIG_ROWS: [ConfigRow; 4] = [
 /// nothing a reader could use: every one of these takes its audio from
 /// the radio over USB, so "UAC" is the board, not the choice.
 ///
-/// Five rows is 5 x [`PITCH`] + [`COMMIT_H`] = 280 px, against a
-/// 240x320 panel — it fits, with the widget's top moving from y=44 to
-/// y=20 as it centres. A sixth would not.
-pub const MODES: [(BootMode, &str); 5] = [
+/// Four rows (five until the WSPR receiver was removed, 2026-09-30) is
+/// 4 x [`PITCH`] + [`COMMIT_H`], against a 240x320 panel; the widget centres
+/// on however many there are.
+pub const MODES: [(BootMode, &str); 4] = [
     (BootMode::Uac, "FT8"),
     (BootMode::Ft4, "FT4"),
-    (BootMode::Wspr, "WSPR"),
     (BootMode::Fst4, "FST4"),
     (BootMode::Jtty, "JTTY"),
 ];

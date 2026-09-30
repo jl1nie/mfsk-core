@@ -2,6 +2,24 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **CoreS3: the WSPR receiver is removed (#313).**
+  Gone from `m5stack-cores3-app`: the `wspr` and `wspr-golden` features, `apps/wspr.rs` (1 251 lines), the `wspr-bench`
+  and `wifi-probe` bins (the latter needed `wspr`), the `boot_mode` dispatch arms and `MFSK_WSPR_SYNTH`. Gone from the
+  shared crate `mfsk-app-shared`, because nothing else read them: `BootMode::Wspr` and its `MODE` picker row (four rows
+  now, the widget centres on however many), `wsprnet.rs` (the spot uploader), `wspr_bands.rs`, the WSPR dial table of
+  `CONFIG > FREQ`, and the WSPR half of `settings` / `http_config` (callsign, grid, TX power, band, wsprnet). What is
+  left of the settings page is what every receiver uses — the NTP switch and server, and the log downloads — under their
+  **unchanged `wspr_` NVS keys**, so an NTP server an operator set survives; the old keys stay in flash unread.
+  A board that stored `boot_mode=wspr` (or was built with it in `cfg.toml`) would have fallen to `decode`, which replays a
+  baked WAV; it now boots `uac`, the FT8 controller, and logs that `wspr` was removed. `m5stack-s3-app`'s `BootMode`
+  matches follow. **Kept**: the library's WSPR (`mfsk-core`, `wspr::ddc` and the `wspr-ddc*` / `wspr-pass2-topn` /
+  `wspr-fano-cap-fast` tuning features), `embedded-shared`'s `wspr_bench` / `wspr_scan` / `wspr_dual_core`, and the
+  `m5stack-s3` bench crate that measures them. The receiver had reached `decoded 1 station(s)` on air once and never
+  been run against a radio beyond that. Manual (`MANUAL_M5STACK_CORES3.md` / `.ja.md`), both `CLAUDE.md`s, `ROADMAP.md`
+  and `EMBEDDED.md` / `.ja.md` say so and no longer point at the deleted files. The three app crates and `m5stack-s3`
+  build for `xtensa-esp32s3-espidf` / `xtensa-esp32-espidf` (`cargo check --release`); host tests
+  (`mfsk-app-shared-hosttest`) pass, 124 of them with #381's three (`wsprnet` and `wspr_bands` took 14 with them). **Not flashed.**
+
 - **CoreS3: `TIME: AIR DT` turns WiFi off, whatever the `WIFI` row says (#381).**
   The rule is `mfsk_app_shared::wifi_policy::decide(wifi_on, air_dt)`, a truth table in its own module so the host
   compiles and tests it (`hosttest/mfsk-app-shared`, three tests); `net::bring_up`, the one place every receiver's WiFi
@@ -13,7 +31,7 @@
   earlier decision (tying WiFi to the grid source was rejected so that a hilltop with a hotspot could have AIR DT and a
   log); the maintainer chose the tie on 2026-09-30 and `wifi_pref.rs` records both. The price, in the manual
   (`MANUAL_M5STACK_CORES3.md` / `.ja.md`): in FT8 (UAC) mode the USB host driver has taken USB-Serial-JTAG, so under AIR DT
-  there is no console at all but the panel, and **a WSPR board on AIR DT uploads nothing**. Built for `xtensa-esp32s3-espidf`
+  there is no console at all but the panel, and (until the WSPR receiver was removed, above) a WSPR board on AIR DT uploaded nothing. Built for `xtensa-esp32s3-espidf`
   (`cargo check --release`, default and `ft4,wspr,fst4,jtty-rx`); **not flashed**.
 
 - **Docs: the PFB in the module maps and examples, and §6's DSP table corrected (#534).**

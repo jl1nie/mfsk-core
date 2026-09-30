@@ -812,7 +812,7 @@ Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回
 | **FT8** | `ft8::decode_block`、`fixed-point` 整数パイプライン | **オンエアでデコード中。** IC-705 の 40 m で1スロットあたり6〜8局（CoreS3、2026-08-23/24）。同じパイプラインで `qso3_busy` は fine sync 込みで1スロット10局（2026-09-18、[詳細](#cores3-の-per-slot-デコード-fine-sync再試行key-up-基準の打ち切り)）。基準ターゲットであり、[性能ベンチマーク](#性能ベンチマーク)の数値はすべて FT8 |
 | **FST4** | 汎用 `engine::pipeline` + `fft-extern` — **`decode_block` の移植なし** | **オンエアでデコード中**（CoreS3）。FST4-60 の実機時間は `no8_osd` で 13.6 s、締切重視の既定値で ~7 s 予算の約 1.95 倍 |
 | **FT4** | 汎用 `engine::pipeline`、ホスト f32（LX7 では `fixed-point` の方が*遅かった*、#198） | **オンエアでデコード中**（CoreS3） |
-| **WSPR** | `fft-extern` 経由のホスト `wspr::decode` f32 と `wspr::ddc` | **オンエアでデコード中。** `slot 1 src=uac decoded 1 station(s)`。110 s の締切に対し 82.8〜90.1 s で decode 完了 |
+| **WSPR** | `fft-extern` 経由のホスト `wspr::decode` f32 と `wspr::ddc` | **オンエアで 1 度デコードした**（`slot 1 src=uac decoded 1 station(s)`）。110 s の締切に対し 82.8〜90.1 s で decode 完了。**CoreS3 の WSPR 受信アプリは 2026-09-30 に削除**。デコーダ層の成果と計測ベンチ（`m5stack-s3`）は残る |
 | **JTTY** | — | **host のみ。** host では実装済み（#477、P0〜P5: 受信器・C ABI・Kotlin・Swift・テキストパッカー）。受信器は FFT（`fft-rustfft` または `fft-extern`）を要し、ワイヤレベルは要さない。`alloc,jtty,fft-extern` は feature matrix に入っている。P6（組込受信器）は別判断で、未着手 |
 | **Q65 / JT9 / JT65** | — | **ビルドは通るが未駆動。** #390 で `fft-rustfft` の強制を撤去。FFT はすべて `engine::fft` 経由、モジュールは `std` ではなく `alloc::` と `num_traits::Float` を使い、JT9 の `downsam9` は逆 FFT を明示的に正規化する。`alloc,<mode>,fft-extern` は feature matrix に入っている。足りていないのはコンパイルの先で、固定小数点パスもボードアプリも実機計測も無い |
 
@@ -943,20 +943,18 @@ Device (M5Stack CoreS3、WiFi associate 継続、dual-core): 4 スロット
 かった試みも含めた計測の全記録 (再挑戦を防ぐため削除せず保持) は
 [`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](../notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md)、
 これらの数字が出てくる実行可能なベンチは
-`embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs`。
+`embedded-poc/m5stack-s3/src/bin/wspr_bench.rs`（CoreS3 側の同名バイナリは WSPR 受信機と
+共に 2026-09-30 に削除した。どちらも `embedded_shared::apps::wspr_bench` への薄いシムだった）。
 
-**このバイナリでは未検証**: 実音声キャプチャ。上記は全て WAV 給餌 /
-合成ベースバンドに対する計測。両ラインが依存していた UAC 実機検証
-[#163](https://github.com/jl1nie/mfsk-core/issues/163) は
-**2026-08-23 に完了** — FT8 controller 側で、WiFi 接続を保ったまま
-192,512 B/s・エラー 0 で 10 分連続キャプチャを確認した。`wspr_app` は
-同じ `uac.rs` を共有するので経路自体は実証済みで、未実施なのは
-*このバイナリ*を実機の無線機に繋ぐことのみ。キャプチャ窓は
-USB ストリーム開始位置ではなく UTC の偶数分グリッド上で開くように
-なり、各スポットはデコード後の時計読みではなく「受信した窓の開始
-時刻」を持つ (#313 item 1、2026-09-07) — ソフトウェアのみの変更で、
-本段落の他の項目と同様に実機未検証。
-`mfsk_app_shared::wsprnet` (wsprnet.org へのスポット送信、WSJT-X
-自身の `Network/wsprnet.cpp` から移植) は実装済みで既定 off。
-`SpotSink::Http` パスは実装済みだが実エンドポイントに対しては未検証。
+**実音声キャプチャと、その上に作った受信アプリ**。上記は全て WAV 給餌 / 合成ベースバンドに
+対する計測。UAC 実機検証 [#163](https://github.com/jl1nie/mfsk-core/issues/163) は
+**2026-08-23 に完了** — FT8 controller 側で、WiFi 接続を保ったまま 192,512 B/s・エラー 0 で
+10 分連続キャプチャを確認した。同じ `uac.rs` の上に CoreS3 の WSPR 受信アプリ
+（`apps/wspr.rs`、WSJT-X の `Network/wsprnet.cpp` から移植した wsprnet.org へのスポット
+送信つき）を作り、実機で `decoded 1 station(s)` を 1 度出したが、それ以上の時間は実機の
+無線機で運用されず、wsprnet の経路も実エンドポイントに対しては一度も動かしていない。
+**2026-09-30 に削除した**（#313 もこれで閉じた）。送信部、WSPR のバンド表、WSPR の設定も
+一緒に削除した。この節で計測済みとして述べた内容 — ストリーミングのダウンコンバータ、
+デュアルコアのワーカー、Fano の予算、82.8〜90.1 s の定常状態 — は `mfsk-core` と
+`embedded-shared` のデコーダ層の成果で、残る。
 

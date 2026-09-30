@@ -67,23 +67,16 @@ pub enum BootMode {
     /// cold boot (`flipped()` で Decode へ戻す) で復帰。詳細は memory
     /// `project_m5stick_s3_no_usb_host`。
     Uac,
-    /// CoreS3 standalone WSPR receiver (`src/bin/wspr_app.rs`, Phase E
-    /// / #260): DDC + Fano decode over 120 s slots, spot list on the
-    /// LCD, settings over HTTP. Shares `uac.rs` with the FT8 line for
-    /// live audio.
-    ///
-    /// Deliberately **not** in [`BootMode::flipped`]'s button cycle —
+    /// CoreS3 standalone FST4 receiver (`src/bin/fst4_app.rs`, #306 /
+    /// #307). Deliberately **not** in [`BootMode::flipped`]'s button cycle —
     /// CoreS3 has no buttons, and putting a CoreS3-only mode in
     /// M5StickS3's KEY1/KEY2 walk would offer a mode that board cannot
-    /// run. Selected from `cfg.toml`, NVS, or the HTTP config page.
-    Wspr,
-    /// CoreS3 standalone FST4 receiver (`src/bin/fst4_app.rs`, #306 /
-    /// #307). Same reasoning as [`BootMode::Wspr`] for the cycle.
+    /// run. Selected from `cfg.toml`, NVS, the HTTP config page or the panel.
     Fst4,
     /// CoreS3 standalone FT4 receiver (`apps/ft4.rs`). Same reasoning
-    /// as [`BootMode::Wspr`] for the cycle.
+    /// as [`BootMode::Fst4`] for the cycle.
     ///
-    /// Unlike the three above, its coarse stage runs **during**
+    /// Unlike FST4, its coarse stage runs **during**
     /// capture: `Ft4SavgBuilder` accumulates the periodogram from the
     /// audio callback so only the peak search is left after the slot,
     /// 754 ms of a 1 960 ms budget that stops being spent
@@ -92,7 +85,7 @@ pub enum BootMode {
     /// what bounds the candidate list, not headroom (§37).
     Ft4,
     /// CoreS3 JTTY receiver (`apps/jtty.rs`, #499). Same reasoning as
-    /// [`BootMode::Wspr`] for the cycle.
+    /// [`BootMode::Fst4`] for the cycle.
     ///
     /// **It has no slot.** A frame starts whenever the sender likes and
     /// a message is several of them, so the three things the slotted
@@ -101,6 +94,17 @@ pub enum BootMode {
     /// (nowhere — [`BootMode::slot_rules_ms`]), and when `all.txt` may
     /// be written (the receiver says, `storage`'s no-slot path).
     Jtty,
+}
+
+/// The WSPR receiver was removed from the CoreS3 app (2026-09-30). A board
+/// that stored `wspr` (NVS) or was built with it in `cfg.toml` would fall to
+/// `decode`, which replays a baked WAV — a mode nobody chose for a radio.
+/// It gets the FT8 controller instead, and says so.
+fn removed_wspr() -> BootMode {
+    log::warn!(
+        "boot_mode 'wspr' was removed (the CoreS3 WSPR receiver is gone); using uac (FT8 controller)"
+    );
+    BootMode::Uac
 }
 
 impl BootMode {
@@ -112,7 +116,6 @@ impl BootMode {
             BootMode::CivTest => "civtest",
             BootMode::TxTest => "txtest",
             BootMode::Qso => "qso",
-            BootMode::Wspr => "wspr",
             BootMode::Fst4 => "fst4",
             BootMode::Ft4 => "ft4",
             BootMode::Jtty => "jtty",
@@ -131,7 +134,6 @@ impl BootMode {
     pub fn slot_period_ms(self) -> u32 {
         match self {
             BootMode::Ft4 => 7_500,
-            BootMode::Wspr => 120_000,
             BootMode::Fst4 => 60_000,
             _ => 15_000,
         }
@@ -172,7 +174,6 @@ impl BootMode {
             BootMode::TxTest => "TXTEST",
             BootMode::Qso => "QSO",
             BootMode::Uac => "UAC",
-            BootMode::Wspr => "WSPR",
             BootMode::Fst4 => "FST4",
             BootMode::Ft4 => "FT4",
             BootMode::Jtty => "JTTY",
@@ -189,7 +190,7 @@ impl BootMode {
             "txtest" => BootMode::TxTest,
             "qso" => BootMode::Qso,
             "uac" => BootMode::Uac,
-            "wspr" => BootMode::Wspr,
+            "wspr" => removed_wspr(),
             "fst4" => BootMode::Fst4,
             "ft4" => BootMode::Ft4,
             "jtty" => BootMode::Jtty,
@@ -218,7 +219,7 @@ impl BootMode {
             BootMode::Uac => BootMode::Decode,
             // Not part of the cycle — see their doc comments. A board
             // that somehow lands here walks back to a mode it can run.
-            BootMode::Wspr | BootMode::Fst4 | BootMode::Ft4 | BootMode::Jtty => BootMode::Decode,
+            BootMode::Fst4 | BootMode::Ft4 | BootMode::Jtty => BootMode::Decode,
         }
     }
 }
@@ -258,7 +259,7 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
         Ok(Some(s)) if s == "txtest" => BootMode::TxTest,
         Ok(Some(s)) if s == "qso" => BootMode::Qso,
         Ok(Some(s)) if s == "uac" => BootMode::Uac,
-        Ok(Some(s)) if s == "wspr" => BootMode::Wspr,
+        Ok(Some(s)) if s == "wspr" => removed_wspr(),
         Ok(Some(s)) if s == "fst4" => BootMode::Fst4,
         Ok(Some(s)) if s == "ft4" => BootMode::Ft4,
         Ok(Some(s)) if s == "jtty" => BootMode::Jtty,

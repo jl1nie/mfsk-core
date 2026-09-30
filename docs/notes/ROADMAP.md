@@ -141,8 +141,9 @@ Three tracks, at very different maturities:
    held). See
    **Phase E** below. Shared #163 as an unverified dependency for live
    audio (still WAV-fed/synthetic baseband here — the UAC path is proven
-   on the FT8 controller but `wspr_app` has not been run against a radio
-   yet) but is otherwise independent — most of what closed here (dual-core safety, task-stack
+   on the FT8 controller; the CoreS3 WSPR receiver built on it was never
+   run against a radio and was **removed 2026-09-30**, the measurement
+   track staying) but is otherwise independent — most of what closed here (dual-core safety, task-stack
    placement, a streaming down-converter) generalizes to any future
    embedded decode-heavy protocol, not just WSPR.
 
@@ -485,11 +486,13 @@ version if you're picking up work.
   slot-alignment item, and this makes it load-bearing rather than
   cosmetic.
 
-  Still open: `wspr_app`/`fst4_app` have not been run against a radio
-  at all.
+  Still open: `fst4_app` has not been run against a radio at all
+  (`wspr_app` was removed 2026-09-30 without having been).
 
 - **#313** — CoreS3 WSPR standalone app, open items left after #260
-  closed. **Wall-clock slot alignment landed 2026-09-07**;
+  closed. **Closed 2026-09-30 by removing the app** (`apps/wspr.rs`, the
+  `wspr` feature, the wsprnet uploader): the items below describe what it
+  was. **Wall-clock slot alignment landed 2026-09-07**;
   `SpotSink::Http` has still never been run against a real wsprnet
   endpoint, `wspr_app` has still never been run against a radio, and
   the two-stage DDC decimation was deferred rather than rejected.
@@ -1289,9 +1292,9 @@ phase was measured against a host-baked baseband as a stand-in.
 | Dual-core safety | **Done** — persistent worker + job queue (was spawn-per-pass, which silently fell back to sequential once WiFi held memory); worker stack reserved at boot before WiFi (was `.bss`, and before that a lazy heap allocation that silently lost the race — see `embedded-shared/src/worker_arena.rs`); scan-task stack placed before WiFi starts. |
 | Fano cycle-budget split | **Done** — host now runs `wsprd`'s own 10 000 cycles/bit (`wsprd.c:799`); embedded keeps 5 000 via `wspr-fano-cap-fast`, paying floor recall for the slot deadline. Swept with a phantom-count column added to `wspr_awgn_snr_sweep` (a false-decode cliff exists above ~200 000; not visible from recall alone). |
 | Coarse-stage perf | **Done** — loop interchange + a redundant-sqrt hoist in `refine_alignment_top_k` (97.5 % of the coarse stage was PSRAM re-reads, not FFTs); bit-exact, no new memory. |
-| wsprnet spot reporting (`mfsk_app_shared::wsprnet`) | **Done**, off by default — ported from WSJT-X's own `Network/wsprnet.cpp`. `SpotSink::Http` upload path implemented but unverified against a real endpoint. |
+| wsprnet spot reporting (`mfsk_app_shared::wsprnet`, **removed 2026-09-30** with the CoreS3 WSPR receiver) | **Done**, off by default — ported from WSJT-X's own `Network/wsprnet.cpp`. `SpotSink::Http` upload path implemented but unverified against a real endpoint. |
 | Steady-state pipeline measurement | **Done** — 4 consecutive slots, WiFi associated, front end running at its real duty cycle beside the decoder: decode 82.8–90.1 s against a 110 s deadline (120 s slot − 10 s spot-upload reserve), DDC 18.5–24.1 s under that load. 9/9 golden held every slot. |
-| Live audio capture | **Not done here** — #163 closed 2026-08-23 and the shared `uac.rs` is proven on the FT8 controller (10 min, 0 errors), but `wspr_app` has not been run against a radio. Everything above is still measured against WAV-fed/synthetic baseband. |
+| Live audio capture | **Not done here** — #163 closed 2026-08-23 and the shared `uac.rs` is proven on the FT8 controller (10 min, 0 errors), but `wspr_app` was never run against a radio (and was removed 2026-09-30). Everything above is still measured against WAV-fed/synthetic baseband. |
 | Two-stage DDC decimation (more margin) | **Deferred, not abandoned** — a first estimate (4× filter-cost reduction) didn't survive re-derivation by hand; steady-state margin measured at 19.9 s made it not worth chasing further this round. |
 
 Full measurement account, including several attempts that measured
@@ -1349,7 +1352,8 @@ writeup on the issue itself:
   (the bench body — steady-state pipeline mode is `run_with_hooks`/
   `PIPELINE_SLOTS`), `embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs`
   (the bin, incl. `MFSK_WSPR_SPOT`/`MFSK_WSPR_BENCH_WIFI` build-time
-  switches), `embedded-poc/mfsk-app-shared/src/wsprnet.rs` (spot
+  switches; **removed 2026-09-30**, `m5stack-s3`'s `wspr_bench` shim still
+  runs the same body), `embedded-poc/mfsk-app-shared/src/wsprnet.rs` (removed 2026-09-30; spot
   reporting).
 - User manual: [`docs/reference/MANUAL_M5STICKS3.md`](../reference/MANUAL_M5STICKS3.md)
   ([JA](../reference/MANUAL_M5STICKS3.ja.md)).

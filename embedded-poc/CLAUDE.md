@@ -81,7 +81,7 @@ around the call, all of it learned the expensive way in one session
   the measurement it was meant to compare against.
 - **Fails when nothing was captured.** With a marker regex, an empty
   log is an error, not a result.
-- **Names the download-mode case.** The `ft4`/`fst4`/`wspr` *apps*
+- **Names the download-mode case.** The `ft4`/`fst4` *apps*
   install the USB host driver through the display panel, which
   detaches USB-Serial-JTAG — the running image cannot then be
   re-flashed without holding RST ~2 s first. Benches and `ft4-demo` do
@@ -551,25 +551,23 @@ there is no serial device to find.
   on CoreS3" below), ILI9342C
   LCD with FT6336U capacitive touch, ES7210 dual-mic codec. See
   Phase B-Core in `docs/notes/ROADMAP.md` for the work breakdown.
-  Also hosts `src/bin/wspr_bench.rs`, a **separate** binary for the
-  WSPR embedded RX work (Phase E in `docs/notes/ROADMAP.md`, issue
-  #260) — decoder-level, not part of the FT8 controller line above;
-  build-time switches `MFSK_WSPR_SPOT`/`MFSK_WSPR_BENCH_WIFI`. See
-  `docs/reference/EMBEDDED.md`'s "WSPR on embedded" section. A third
-  receiver, `src/apps/wspr.rs`, is the actual receiver UI
-  built on top of that decode work — stations display + spot history
-  on the CoreS3's own 320×240 panel, settings edited from a browser
-  (`mfsk-app-shared`'s `http_config`/`ntp`/`settings` modules) rather
-  than any on-device input (CoreS3 has none). Live audio capture is
-  wired but unproven here: #163 cleared on the FT8 controller
-  (2026-08-23, 10 min of unbroken UAC capture at 0 errors), and
-  `wspr_app` shares that `uac.rs`, but this bin has not been run
-  against a radio yet — every slot still decodes the same baked golden
-  baseband. See memory
-  `project_wspr_app_cores3_ui` for the full design/status. A fourth
+  **The CoreS3 WSPR receiver was removed (2026-09-30)**: the `wspr` feature,
+  `src/apps/wspr.rs` (the receiver UI: stations and spot history on the 320×240
+  panel), the `wspr-bench` and `wifi-probe` bins, `BootMode::Wspr` and its picker
+  row, and — because nothing else read them — the wsprnet uploader, the WSPR band
+  table and the WSPR half of `mfsk-app-shared`'s `settings` / `http_config`
+  (callsign, grid, TX power, band, wsprnet; the NTP server and the log page stay,
+  under their old `wspr_` NVS keys). It had not been run against a radio beyond
+  one `decoded 1 station(s)` line. What stays is the *measurement* track: the
+  library's WSPR and its `wspr-ddc*` / `wspr-pass2-topn` / `wspr-fano-cap-fast`
+  features, and `m5stack-s3`'s `wspr_bench`, which reaches
+  `embedded-shared`'s `apps::wspr_bench`, `wspr_scan` and `wspr_dual_core` (Phase
+  E in `docs/notes/ROADMAP.md`, issue #260; `docs/reference/EMBEDDED.md`'s "WSPR on
+  embedded"). A board that stored `boot_mode=wspr` boots `uac` and logs why. A
+  fourth
   bin, `src/bin/fst4_bench.rs` (`fst4-bench`), is issue #306's
   decoder-only FST4-60 bench — a separate feasibility question from
-  the WSPR track above (FST4's LDPC/BP/OSD path shares nothing
+  the WSPR track (FST4's LDPC/BP/OSD path shares nothing
   algorithmically with WSPR's Fano decoder), sharing only the
   baked-golden-asset pattern. `include_bytes!`s a host-baked FFT cache
   (`fst4::decode`'s `FST4_60A_DOWNSAMPLE.fft1_size = 746_496`-point
@@ -581,23 +579,22 @@ there is no serial device to find.
   crate, so re-flashing after that change resets the littlefs-stored
   settings (re-enter via the HTTP config server).
 
-  **The two non-FT8 receivers are default-off features (2026-08-30).**
-  `apps/fst4.rs` and `apps/wspr.rs` are 1 382 and 1 815 lines each,
-  with their own tasks, screens, slot grids and worker stacks, plus the
-  decoder behind each — and one image can only boot into one mode, so
-  carrying both by default charged every FT8 controller for two
-  receivers it would never run. `--features fst4` / `--features wspr`
-  bring them back; the benches that need them carry `required-features`
-  so a plain `cargo build --bins` skips rather than fails. Default ELF
-  2 770 968 B against 3 412 112 with both, i.e. **626 KB**. `boot_mode`
-  keeps its `Wspr`/`Fst4` variants either way — NVS outlives a reflash,
-  so a board can ask for a mode the image lacks, and `main` logs
-  exactly that instead of silently continuing.
+  **FST4 is a default-off feature (2026-08-30).** `apps/fst4.rs` is
+  1 382 lines, with its own tasks, screen, slot grid and worker
+  stacks, plus the decoder behind it — and one image can only boot into
+  one mode, so carrying it by default charged every FT8 controller for a
+  receiver it would never run. `--features fst4` brings it back; the
+  benches that need it carry `required-features` so a plain `cargo build
+  --bins` skips rather than fails. It was measured as **626 KB** together
+  with the WSPR receiver, then removed (2026-09-30). `boot_mode` keeps its
+  `Fst4` variant either way — NVS outlives a reflash, so a board can ask
+  for a mode the image lacks, and `main` logs exactly that instead of
+  silently continuing.
 
-  **One binary, three receivers (2026-08-23).** `wspr_app.rs` and
-  `fst4_app.rs` are no longer their own `[[bin]]`s — they moved to
-  `src/apps/{wspr,fst4}.rs` and `main` dispatches on the NVS
-  `boot_mode` (`decode` / `uac` / `wspr` / `fst4`). Changing mode used
+  **One binary, several receivers (2026-08-23).** `wspr_app.rs` and
+  `fst4_app.rs` stopped being their own `[[bin]]`s — they moved to
+  `src/apps/` (WSPR's since removed) and `main` dispatches on the NVS
+  `boot_mode` (`decode` / `uac` / `ft4` / `fst4` / `jtty`). Changing mode used
   to mean re-flashing, and on this board that means unplugging the
   radio, because `usb_host_install` takes the port the flasher would
   use. The image is 4.18 MB against a 9 MiB `factory`; static DRAM is

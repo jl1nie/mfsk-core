@@ -15,10 +15,6 @@
 //! Only add a module here if it is genuinely target-independent. If it
 //! needs `esp_idf_svc`, it does not belong.
 
-/// wsprnet.org spot encoding — pure string building, no I/O.
-#[path = "../../../embedded-poc/mfsk-app-shared/src/wsprnet.rs"]
-pub mod wsprnet;
-
 /// Unix-epoch → UTC calendar time — pure integer arithmetic, no I/O.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/civil_time.rs"]
 pub mod civil_time;
@@ -28,10 +24,6 @@ pub mod civil_time;
 /// splitting and the gap between windows are testable without a radio.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/capture_window.rs"]
 pub mod capture_window;
-
-/// WSPR band/dial-frequency table — pure data, no I/O.
-#[path = "../../../embedded-poc/mfsk-app-shared/src/wspr_bands.rs"]
-pub mod wspr_bands;
 
 /// CONFIG > FREQ tables and their paging — pure data; the NVS half is
 /// `#[cfg(espidf)]`.

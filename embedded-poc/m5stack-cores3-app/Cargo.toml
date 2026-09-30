@@ -24,22 +24,8 @@ rust-version = "1.93"
 name = "mfsk-core-m5stack-cores3-app"
 harness = false
 
-# WSPR candidate-loop bench — issue #260 Phase 1/2, see
-# `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md`. Lives here rather than
-# in the `m5stack-s3` bench crate only because the bench hardware is a
-# CoreS3 and `m5stack-s3`'s sdkconfig pins Octal PSRAM; see the bin's
-# own doc comment.
-[[bin]]
-name = "wspr-bench"
-path = "src/bin/wspr_bench.rs"
-harness = false
-required-features = ["wspr"]
-
-# WSPR receiver app (CoreS3 WSPR app plan, steps 1-8) — the actual UI
-# built on top of the WSPR embedded RX work above. See
-# `docs/notes/ROADMAP.md` Phase E and this crate's own CLAUDE.md.
 # FST4-60 decoder-only bench — issue #306, embedded feasibility
-# question. Separate track from the WSPR bench above: does the FST4
+# question. Does the FST4
 # decoder (candidate search + LLR/BP/OSD, fed a host-baked FFT cache)
 # fit the ~7 s post-slot margin. See
 # `embedded-shared::apps::fst4_bench`'s module doc comment.
@@ -142,19 +128,6 @@ name = "lcd-minimal"
 path = "src/bin/lcd_minimal.rs"
 harness = false
 
-# WiFi-only diagnostic — repeated connect/disconnect cycles against
-# the AP, verbose lwIP DHCP trace, no scan/DDC/display tasks at all.
-# Same rationale as `lcd-minimal`: isolate the thing under
-# investigation (WiFi flakiness against this AP, see wspr-app's own
-# design memory) from wspr-app's own confounds (scan_loop's
-# decode-time internal-DRAM churn, task competition). See its own doc
-# comment.
-[[bin]]
-name = "wifi-probe"
-path = "src/bin/wifi_probe.rs"
-harness = false
-required-features = ["wspr"]
-
 [profile.release]
 # **Changed 2026-08-13, verified on hardware** — issue #260. Was `1`,
 # on this comment:
@@ -170,7 +143,8 @@ required-features = ["wspr"]
 # both qualifiers and turned a debuggability preference into a
 # correctness requirement.
 #
-# Measured on the S3 WSPR candidate-loop bench (`wspr-bench`,
+# Measured on the S3 WSPR candidate-loop bench (`wspr-bench`, in the
+# `m5stack-s3` bench crate;
 # `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`), which reports
 # per-stage wall-clock *and* a 9/9 golden-decode check that would have
 # caught the f32-select bug if it were real on this path:
@@ -207,27 +181,23 @@ esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
 # stations land on the spot list looking exactly like received ones,
 # which is why the default is off rather than merely unread.
 fst4-replay = ["fst4"]
-wspr-golden = ["wspr"]
 
-# The two non-FT8 receiver modes, **off by default**.
+# The FST4 receiver mode, **off by default**.
 #
-# Each is a whole receiver — `apps/fst4.rs` and `apps/wspr.rs` are 1 382
-# and 1 815 lines, with their own tasks, screens, slot grids and worker
-# stacks — plus the decoder behind it (`mfsk-core/fst4`, or
-# `mfsk-core/wspr` and its three embedded tuning features) and the
-# benches that exercise them. A board booted into `decode`/`uac` never
-# reaches any of it, and one image cannot boot into two modes at once,
-# so carrying both by default charges every FT8 controller for two
-# receivers it will not run.
+# It is a whole receiver — `apps/fst4.rs` is 1 382 lines, with its own
+# tasks, screen, slot grid and worker stacks — plus the decoder behind it
+# (`mfsk-core/fst4`) and the benches that exercise it. A board booted into
+# `decode`/`uac` never reaches any of it, and one image cannot boot into two
+# modes at once, so carrying it by default charges every FT8 controller for a
+# receiver it will not run.
 #
-# `boot_mode` still *has* `Wspr` and `Fst4` variants when they are
-# compiled out — an NVS setting outlives a reflash, so a board can ask
-# for a mode this image does not have. `main` says so plainly rather
-# than falling through to FT8 in silence.
+# `boot_mode` still *has* an `Fst4` variant when it is compiled out — an NVS
+# setting outlives a reflash, so a board can ask for a mode this image does
+# not have. `main` says so plainly rather than falling through to FT8 in
+# silence. (There was a WSPR receiver beside it until 2026-09-30.)
 #
-# Turn on with `--features fst4` / `--features wspr`; the benches that
-# need them carry `required-features` so `cargo build` skips rather
-# than fails.
+# Turn on with `--features fst4`; the benches that need it carry
+# `required-features` so `cargo build` skips rather than fails.
 fst4 = ["embedded-shared/fst4-bench"]
 # The JTTY cost bench (`jtty-bench` bin), #499 E0.
 jtty = ["embedded-shared/jtty-bench"]
@@ -245,7 +215,6 @@ ft4-replay = ["ft4"]
 # FT8's per-stage bench (`ft8-bench` bin). The 360 KB `qso3_busy.wav`
 # it bakes is why this is opt-in rather than always linked.
 ft8-bench = []
-wspr = ["embedded-shared/wspr-bench"]
 
 [dependencies]
 log = "0.4"
@@ -263,7 +232,7 @@ num-complex = { version = "0.4", default-features = false }
 # doc comment for why `fst4` no longer needs `fft-rustfft`/`std` and
 # why `internal-testing` is required regardless (it gates
 # `decode_frame`'s `precomputed_fft` parameter, the seam that bench
-# depends on). Crate-wide like `wspr-bench`'s features below, not
+# depends on). Crate-wide, not
 # scoped to just the `fst4-bench` bin — Cargo has no per-bin feature
 # sets within one crate.
 # `hash-table-small`: one 256-entry callsign table (7 KB) instead of

@@ -22,5 +22,3 @@ pub mod fst4;
 pub mod ft4;
 #[cfg(feature = "jtty-rx")]
 pub mod jtty;
-#[cfg(feature = "wspr")]
-pub mod wspr;
