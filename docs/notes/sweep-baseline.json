@@ -12,7 +12,7 @@
       },
       "ft4": {
         "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "commit": "d25a4a35",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
@@ -212,10 +212,10 @@
   "fst4/60/ccir_good": -26.428571428571427,
   "fst4/60/ccir_moderate": -25.666666666666668,
   "fst4/60/ccir_poor": -24.857142857142858,
-  "ft4/awgn": -17.444444444444443,
-  "ft4/ccir_good": -17.428571428571427,
-  "ft4/ccir_moderate": -16.0,
-  "ft4/ccir_poor": -15.2,
+  "ft4/awgn": -17.9,
+  "ft4/ccir_good": -18.285714285714285,
+  "ft4/ccir_moderate": -17.142857142857142,
+  "ft4/ccir_poor": -16.8,
   "ft8/awgn": -21.9,
   "ft8/ccir_good": -21.88888888888889,
   "ft8/ccir_moderate": -20.5,
