@@ -46,6 +46,10 @@ FEATURE_MATRIX=(
   "alloc ft8 fft-extern fixed-point"
   "alloc ft4 fft-extern"
   "alloc ft4 fft-extern fixed-point"
+  # FST4 reaches embedded through its own DDC, never through `std`. This row
+  # is what caught `fst4::ddc`'s bare `f32::ceil`, which built everywhere
+  # except here (issue: none was filed; found while adding another row).
+  "alloc fst4 fft-extern"
   # #390 removed jt9/jt65/q65's forced `fft-rustfft` (and with it
   # `std`). These three are what keeps that true: they are the only
   # build that fails if a `std::` path or a bare `f32` method comes

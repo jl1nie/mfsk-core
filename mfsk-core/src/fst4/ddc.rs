@@ -51,6 +51,12 @@ use crate::engine::dsp::ddc::DdcCascadeConfig;
 /// otherwise need.
 const SYMBOL_DT_S: f32 = 0.324;
 
+// `f32::ceil` below: not in `core`, so `no_std` needs the trait (the `alloc fst4
+// fft-extern` matrix row is what keeps this true).
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+use num_traits::Float;
+
 /// Smallest power-of-two `K` whose `Fs_c = K/SYMBOL_DT_S` covers
 /// `bandwidth_hz` — see the module doc comment's `K`-selection
 /// derivation.
