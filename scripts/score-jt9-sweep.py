@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score real `jt9` output over a tier-C sweep corpus and print 50%-recall crossings.
 
-`docs/notes/BENCHMARKS.md`, "Reading a crossing: pair it against `jt9`", says to
+`docs/notes/TIER_C_MANUAL.md` §4.1.1, "pairing against `jt9`", says to
 run WSJT-X's own binary over the same corpus and score it with the sweep's own
 criteria. This is that scorer, so the comparison does not depend on someone's
 one-off script.

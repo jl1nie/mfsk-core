@@ -716,9 +716,13 @@ see `~/.claude/projects/.../memory/project_sensitivity_sweep_pre_release_2026081
 for what that used to cost. Still sanity-check the prose in
 `docs/notes/*BENCHMARK.md` too — the JSON baseline tracks 50%-crossing SNR
 and, for ft8/ft4/fst4, unexpected decodes (`_meta.precision`); WSPR's
-phantom-decode count is still only in its printed table. FT8 is also run
-through `.sic_early()` into its own CSV (`ft8_sic_early/...`), because the
-phantom-prone code lives in the non-default strategies. FT8 and FT4 are
+phantom-decode count is still only in its printed table. FT8, FT4 and
+FST4 sweep as their upstream task T1 (`scripts/upstream_tasks.json`),
+so one sweep serves both baselines. FT8's T1 runs `.sic_early()`, where
+the phantom-prone code lives, which replaced the separate
+`ft8_sic_early` pass. `ft8_itu` and `ft8_busy` keep the default
+`decode()` path under a baseline. The full procedure, setup included,
+is `docs/notes/TIER_C_MANUAL.md`. FT8 and FT4 are
 **not** narrowed to a window around the crossing any more: the sweeps take
 seconds, and the phantoms sit outside that window. Once you
 understand why a number moved, refresh the baseline with
@@ -785,10 +789,10 @@ call, not something to infer on your own from "this seems important."
 **Versioning within this cadence**: a new protocol/mode addition is
 patch-level by this crate's own established convention (MSK144
 shipped as `0.7.4`, not `0.8.0` — grep `CHANGELOG.md` **and**
-`docs/historical/CHANGELOG-0.6-0.7.md`/`CHANGELOG-0.x.md` for prior
-protocol additions before assuming otherwise; older releases get
-split out of the top-level file periodically to keep it skimmable,
-see `CHANGELOG.md`'s own footer for the current archive list).
+`docs/historical/CHANGELOG-*.md` for prior protocol additions before
+assuming otherwise; older minor series move out of the top-level file
+by the rule under "House conventions", and `CHANGELOG.md`'s own footer
+lists the archives).
 Minor bumps
 (`0.6→0.7`) have historically marked a more structural change — a
 breaking or structural API move, e.g. `0.7.0`'s generic
@@ -835,7 +839,17 @@ concludes.
   cross-references — issue number, and the upstream SHA / `file:line` if
   the change came from WSJT-X.
 - **CHANGELOG entries land with the PR**, in the top section, written for
-  someone who wasn't in the conversation.
+  someone who wasn't in the conversation. Aim for eight lines or fewer:
+  what changed, why, the measured effect, and where the detail lives
+  (an issue, a `docs/notes/` section). The measurement story belongs in
+  `docs/notes/`, not here. The 0.12.0 section reached 2 560 lines
+  before its release.
+- **CHANGELOG.md holds the unreleased section and the two latest minor
+  series.** Each new minor's release PR moves the oldest series,
+  verbatim, to `docs/historical/CHANGELOG-<range>.md` and updates the
+  footer. This is a docs-only change, so it fits the release PR's
+  metadata-and-docs rule. It was set on 2026-10-01, when the file had
+  reached 11 259 lines; 0.8.0 – 0.10.1 went out first.
 - **Bilingual docs**: `docs/reference/*.md` all have `.ja.md` twins. Keep
   them in step or say which one you skipped.
 - **Don't hardcode machine paths** anywhere a test can reach — see "Test

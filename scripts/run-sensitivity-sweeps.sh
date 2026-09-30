@@ -11,7 +11,7 @@
 # there.
 #
 # How to build those simulators and generate the corpora is
-# docs/notes/BENCHMARKS.md, "Generating the tier-C corpora" -- including
+# docs/notes/TIER_C_MANUAL.md §3 -- including
 # the two (jt65sim, q65sim) that need WSJT-X's full CMake build, and why
 # a baseline measured on another machine's corpus is not comparable.
 #
@@ -131,7 +131,7 @@ if [ ${#missing[@]} -gt 0 ]; then
   echo "generate with scripts/gen_*_sweep_wavs.sh (build the simulators first:"
   echo "scripts/build_*sim.sh), or pass only the groups you have."
   echo "full procedure, including jt65sim/q65sim which need WSJT-X's own"
-  echo "CMake build: docs/notes/BENCHMARKS.md, 'Generating the tier-C corpora'."
+  echo "CMake build: docs/notes/TIER_C_MANUAL.md, section 3."
   echo
 fi
 
@@ -240,15 +240,24 @@ for k in "${want[@]}"; do
     if [ "$ORIG_FT8_DIR" = "__unset__" ]; then unset MFSK_FT8_SWEEP_DIR
     else export MFSK_FT8_SWEEP_DIR="$ORIG_FT8_DIR"; fi
 
-    unset MFSK_FT8_SWEEP_STRATEGY MFSK_FT8_SWEEP_STRICTNESS MFSK_FT8_BUSY_CSV \
+    unset MFSK_FT8_SWEEP_TASK MFSK_FT4_SWEEP_TASK MFSK_FST4_SWEEP_TASK \
+          MFSK_FT8_SWEEP_STRATEGY MFSK_FT8_SWEEP_STRICTNESS MFSK_FT8_BUSY_CSV \
           MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV \
           MFSK_WSPR_SWEEP_SUMMARY_CSV MFSK_JT65_SWEEP_SUMMARY_CSV \
           MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV MFSK_JT9_SWEEP_SUMMARY_CSV \
           MFSK_Q65_SWEEP_SUMMARY_CSV MFSK_MSK144_SWEEP_SUMMARY_CSV MFSK_JTTY_SWEEP_CSV
+    # FT8, FT4 and FST4 sweep as their upstream-baseline task T1
+    # (scripts/upstream_tasks.json), so one sweep serves both checks below:
+    # against this crate's past and against upstream. ft8_itu and ft8_busy
+    # keep the library's default request, which keeps `decode()`'s
+    # single-pass path under a baseline.
     case "$b:$filt" in
-      ft8_sweep:ft8_snr_sweep) export MFSK_FT8_SWEEP_CSV="$CSV_DIR/ft8.csv" ;;
-      ft4_sweep:ft4_snr_sweep) export MFSK_FT4_SWEEP_CSV="$CSV_DIR/ft4.csv" ;;
-      fst4_sweep:fst4_snr_sweep) export MFSK_FST4_SWEEP_CSV="$CSV_DIR/fst4.csv" ;;
+      ft8_sweep:ft8_snr_sweep)
+        export MFSK_FT8_SWEEP_CSV="$CSV_DIR/ft8.csv"
+        [ "$k" = ft8 ] && export MFSK_FT8_SWEEP_TASK=t1
+        ;;
+      ft4_sweep:ft4_snr_sweep) export MFSK_FT4_SWEEP_CSV="$CSV_DIR/ft4.csv" MFSK_FT4_SWEEP_TASK=t1 ;;
+      fst4_sweep:fst4_snr_sweep) export MFSK_FST4_SWEEP_CSV="$CSV_DIR/fst4.csv" MFSK_FST4_SWEEP_TASK=t1 ;;
       wspr_sweep:) export MFSK_WSPR_SWEEP_SUMMARY_CSV="$CSV_DIR/wspr.csv" ;;
       jt65_sweep:)
         export MFSK_JT65_SWEEP_SUMMARY_CSV="$CSV_DIR/jt65.csv"
@@ -315,18 +324,11 @@ for k in "${want[@]}"; do
     fi
   done
 
-  # FT8 through `.sic_early()`, into its own CSV (group `ft8_sic_early/...`).
-  # The phantom-prone code lives in the non-default strategies
-  # (CONTRIBUTING.md, "Decode strategies must each be guarded"): both
-  # false-decode bugs this suite has shipped were in a subtraction path, so
-  # a precision baseline for `decode()` alone would guard the path least
-  # likely to break. Seconds, like the default pass.
-  if [ "$k" = "ft8" ] && [ -f mfsk-core/tests/ft8_sweep.rs ]; then
-    echo "───── $k / ft8_sweep (strategy=sic_early) ─────"
-    MFSK_FT8_SWEEP_STRATEGY=sic_early MFSK_FT8_SWEEP_CSV="$CSV_DIR/ft8_sic_early.csv" \
-      run cargo test --release -p mfsk-core --features "$FEATURES" \
-          --test ft8_sweep ft8_snr_sweep -- --ignored --nocapture || fail=1
-  fi
+  # There used to be a second FT8 pass here through `.sic_early()`, into
+  # `ft8_sic_early.csv`, because the phantom-prone code lives in the
+  # non-default strategies (CONTRIBUTING.md, "Decode strategies must each be
+  # guarded"). FT8's T1 above *is* that path: `wsjtx_depth(D3)` runs
+  # `.sic_early()`, with OSD and a CQ hint on top, so the pass is folded in.
 done
 
 echo
@@ -349,16 +351,21 @@ fi
 # with WSJT-X's committed outcome on the same files, plus a speed ratio.
 # `sweep-baseline.json` cannot show a decoder that was behind upstream from
 # the start, which is how Q65 ran 2.9-4.5x slower than jt9 unnoticed (#552).
-# The CSVs go to a subdirectory so the regression check's glob above does
-# not read them as groups of their own.
+# It reads the CSVs the sweeps above wrote -- each protocol with a task
+# sweeps as that task -- so the only extra cost is the timing, a few files
+# per group.
 if command -v python3 >/dev/null 2>&1; then
   for k in "${want[@]}"; do
     for task in $(python3 -c "import json,sys; print(' '.join(t for t in json.load(open(sys.argv[1])) if t.split('/')[0]==sys.argv[2]))" \
                     "$REPO_ROOT/scripts/upstream_tasks.json" "$k"); do
       [ -f "$REPO_ROOT/docs/notes/upstream/${task//\//_}.csv" ] || continue
+      csv="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]]['runner_csv'])" \
+               "$REPO_ROOT/scripts/upstream_tasks.json" "$task")"
+      [ -f "$CSV_DIR/$csv" ] || continue
       echo
       echo "== against upstream: $task =="
-      run python3 "$REPO_ROOT/scripts/upstream-baseline.py" run "$task" "$CSV_DIR/upstream" || true
+      run python3 "$REPO_ROOT/scripts/upstream-baseline.py" compare "$task" "$CSV_DIR/$csv" || true
+      run python3 "$REPO_ROOT/scripts/upstream-baseline.py" time "$task" || true
     done
   done
 fi

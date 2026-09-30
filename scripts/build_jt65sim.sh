@@ -13,8 +13,7 @@
 # `wsjt_fort` + `wsjt_cxx` libraries per WSJT-X's own CMakeLists.txt. So
 # this script does not rebuild it from scratch; it reuses the CMake
 # tree's libraries and only replaces one object. Configure and build
-# that tree first (see docs/notes/BENCHMARKS.md, "Generating the tier-C
-# corpora"):
+# that tree first (see docs/notes/TIER_C_MANUAL.md §3.2):
 #
 #   cmake -S /path/to/WSJT-X -B ~/wsjtx-build -DCMAKE_BUILD_TYPE=Release \
 #         -DWSJT_GENERATE_DOCS=OFF -DWSJT_SKIP_MANPAGES=ON

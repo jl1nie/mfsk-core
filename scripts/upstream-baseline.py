@@ -15,7 +15,7 @@ per upstream release or corpus, and its per-trial outcome is committed under
 
     scripts/upstream-baseline.py generate ft8/t1       # run upstream, write docs/notes/upstream/ft8_t1.csv
     scripts/upstream-baseline.py compare  ft8/t1 <crate.csv>
-    scripts/upstream-baseline.py time     ft8/t1 [--per-cell 5]
+    scripts/upstream-baseline.py time     ft8/t1 [--per-cell 2]
     scripts/upstream-baseline.py run      ft8/t1 <csv-dir>   # crate sweep of the task, compare, time
     scripts/upstream-baseline.py tasks                        # list them
 
@@ -457,13 +457,13 @@ def main():
     c.add_argument("--extra-tol", type=int, default=3)
     tm = sub.add_parser("time")
     tm.add_argument("task")
-    tm.add_argument("--per-cell", type=int, default=5)
+    tm.add_argument("--per-cell", type=int, default=2)
     rn = sub.add_parser("run")
     rn.add_argument("task")
     rn.add_argument("csv_dir")
     rn.add_argument("--alpha", type=float, default=0.05)
     rn.add_argument("--extra-tol", type=int, default=3)
-    rn.add_argument("--per-cell", type=int, default=5)
+    rn.add_argument("--per-cell", type=int, default=2)
     a = ap.parse_args()
     if a.cmd == "tasks":
         for k, v in tasks().items():

@@ -1,6 +1,7 @@
 {
   "_note": "One task per entry: what upstream is asked to do, and how this crate is asked to do the same thing. scripts/upstream-baseline.py reads the upstream half. The sweep test reads the crate half through `sweep_env`. Edit both halves together, or the comparison stops meaning anything. T1 is wideband monitoring: 200-3000 Hz, no callsign known, upstream at its deepest setting with AP left at its default, and this crate at its counterpart of that setting. Q65 has no wideband-only form in jt9: `-3` always tries its Rx frequency first. Its task therefore gives the Rx frequency. Build the upstream binaries with scripts/build_jt9_upstream.sh.",
   "ft8/t1": {
+    "runner_csv": "ft8.csv",
     "task": "Wideband monitoring, 200-3000 Hz, no callsign known. WSJT-X Deep with AP enabled, which with no callsigns tries only the CQ hypothesis.",
     "upstream_bin": "jt9",
     "upstream_args": ["-8", "-d", "3", "-L", "200", "-H", "3000"],
@@ -14,6 +15,7 @@
     "sweep_csv_env": "MFSK_FT8_SWEEP_CSV", "sweep_dir_env": "MFSK_FT8_SWEEP_DIR"
   },
   "ft4/t1": {
+    "runner_csv": "ft4.csv",
     "task": "Wideband monitoring, 200-3000 Hz, no callsign known. ft4_decode at ndepth=3: three subtraction passes, BP+OSD, syncmin 1.18, MAXCAND 200, AP on (CQ only with no callsigns).",
     "upstream_bin": "jt9",
     "upstream_args": ["-5", "-d", "3", "-L", "200", "-H", "3000"],
@@ -27,6 +29,7 @@
     "sweep_csv_env": "MFSK_FT4_SWEEP_CSV", "sweep_dir_env": "MFSK_FT4_SWEEP_DIR"
   },
   "fst4/t1": {
+    "runner_csv": "fst4.csv",
     "task": "Wideband monitoring, 200-3000 Hz, no callsign known, every sub-mode. fst4_decode at ndepth=3 with AP (CQ only with no callsigns), single decode off.",
     "upstream_bin": "jt9",
     "upstream_args": ["-7", "-p", "{mode}", "-d", "3", "-L", "200", "-H", "3000"],
@@ -42,6 +45,7 @@
     "sweep_csv_env": "MFSK_FST4_SWEEP_CSV", "sweep_dir_env": "MFSK_FST4_SWEEP_DIR"
   },
   "q65/t1": {
+    "runner_csv": "q65.csv",
     "task": "Monitoring with the Rx frequency known (1500 Hz, F Tol 20), no callsign: what `jt9 -3` does by default (depth 1, AP passes on, which with no callsigns means CQ). `plain` counts a decode without AP (jt9 q0); `cq` counts any decode (jt9 q0 or q1; this crate's plain scan, then its CQ-hint scan).",
     "upstream_bin": "jt9",
     "upstream_args": ["-3", "-p", "{period}", "-b", "{letter}", "-d", "1", "-f", "1500", "-F", "20"],
@@ -57,6 +61,7 @@
     "sweep_csv_env": "MFSK_Q65_SWEEP_SUMMARY_CSV", "sweep_dir_env": "MFSK_Q65_SWEEP_DIR"
   },
   "jt9/t1": {
+    "runner_csv": "jt9.csv",
     "task": "Wideband monitoring, 200-3000 Hz, no callsign known. jt9 -9 at depth 3.",
     "upstream_bin": "jt9",
     "upstream_args": ["-9", "-p", "60", "-d", "3", "-L", "200", "-H", "3000"],
@@ -70,6 +75,7 @@
     "sweep_csv_env": "MFSK_JT9_SWEEP_SUMMARY_CSV", "sweep_dir_env": "MFSK_JT9_SWEEP_DIR"
   },
   "jt65/t1": {
+    "runner_csv": "jt65_chase.csv",
     "task": "Wideband monitoring, 200-3000 Hz, no callsign known. jt9 -6 (JT65A) at depth 3, whose soft-decision decoder the crate's Chase path is the counterpart of.",
     "upstream_bin": "jt9",
     "upstream_args": ["-6", "-p", "60", "-b", "A", "-d", "3", "-L", "200", "-H", "3000"],
@@ -83,6 +89,7 @@
     "sweep_csv_env": "MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV", "sweep_dir_env": "MFSK_JT65_SWEEP_DIR"
   },
   "wspr/t1": {
+    "runner_csv": "wspr.csv",
     "task": "Wideband monitoring of one WSPR slot, no callsign known. wsprd at its defaults.",
     "upstream_bin": "wsprd",
     "upstream_args": [],

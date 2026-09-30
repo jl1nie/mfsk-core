@@ -25,7 +25,7 @@
 //! ```
 //!
 //! Most need the tier-C corpus under `embedded-poc/assets/fst4_sweep/`
-//! (see `docs/notes/BENCHMARKS.md`, "Generating the tier-C corpora").
+//! (see `docs/notes/TIER_C_MANUAL.md` §3).
 
 //!
 //! This test is `#[ignore]` — run it manually before merging a new sub-mode:
