@@ -106,18 +106,42 @@ fn ap_hint_requested() -> Option<mfsk_core::msg::ap::ApHint> {
 /// `(pass, extra)`: whether the injected message came out at the right
 /// frequency and time, and how many *other* distinct messages came out
 /// (see `common::distinct_extras`).
+/// `MFSK_FT4_SWEEP_TASK=t1`: the upstream-baseline task (T1 in
+/// `scripts/upstream_tasks.json`), the request that mirrors
+/// `jt9 -5 -d 3 -L 200 -H 3000`. `ft4_decode.f90` at `ndepth=3` runs three
+/// subtraction passes (`nsp`), BP+OSD, `syncmin` 1.18 and `MAXCAND` 200. That
+/// `jt9` has AP on and no callsigns, so only CQ, and the request gets a CQ
+/// hint. The other `MFSK_FT4_SWEEP_*` knobs do not apply to it.
+fn task_t1_requested() -> bool {
+    match std::env::var("MFSK_FT4_SWEEP_TASK").as_deref() {
+        Ok("t1") => true,
+        Err(_) => false,
+        Ok(other) => panic!("MFSK_FT4_SWEEP_TASK={other}: expected t1"),
+    }
+}
+
 fn decode_wav_ft4(audio: &[i16]) -> (bool, u32) {
     let ap = ap_hint_requested();
-    let mut req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
-        audio, 100.0, 3000.0, 0.8, 50,
-    );
+    let cq = mfsk_core::msg::ApHint::new().with_call1("CQ");
+    let mut req = if task_t1_requested() {
+        mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+            audio, 200.0, 3000.0, 1.18, 200,
+        )
+        .ap_hint(&cq)
+    } else {
+        mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+            audio, 100.0, 3000.0, 0.8, 50,
+        )
+    };
     if let Some(h) = freq_hint_requested() {
         req = req.freq_hint(h);
     }
     if let Some(h) = ap.as_ref() {
         req = req.ap_hint(h);
     }
-    let out = if codec_filter_requested() {
+    let out = if task_t1_requested() {
+        req.sic_rounds(3).decode()
+    } else if codec_filter_requested() {
         req.codec_filter().decode()
     } else {
         req.decode()

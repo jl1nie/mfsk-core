@@ -10,8 +10,10 @@
   (`docs/notes/upstream/`), then pairs every trial of a crate sweep against it (exact McNemar per group, plus
   unexpected decodes) and times both sides on a few files. `run-sensitivity-sweeps.sh` runs it for every task of a
   protocol it sweeps. No corpus grows and CI is unchanged. `scripts/build_jt9_upstream.sh` rebuilds the `v3.2.0-rc1`
-  reference `jt9`/`wsprd` reproducibly. First task, FT8 wideband with no QSO context against `jt9 -8 -d 3`: no
-  channel behind upstream, 0.42–0.49× its decode time.
+  reference `jt9`/`wsprd` reproducibly. Seven tasks are defined: FT8, FT4, FST4, Q65, JT9, JT65 and WSPR. FT8,
+  Q65, JT9 and WSPR are at or ahead of upstream and faster. **FT4 and FST4 are behind** on accuracy (up to 1.4 dB)
+  and speed (about 4–6×), not yet diagnosed. JT65's known gap is recorded and not chased. Details in
+  `docs/notes/BENCHMARKS.md`, "The upstream baseline".
 - **Q65 decodes 3.4–11× faster: the coarse search admits candidates as `q65_ccf_22` does (#552).** Every Q65 scan
   decoded `max_candidates` = 8 candidates, even on noise alone. The search scored a bin
   `sync / (sync + noise floor)`, which is about 0.5 on noise, and a fixed floor of 0.1 admitted all of them. The

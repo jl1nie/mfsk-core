@@ -386,6 +386,31 @@ Measured 2026-10-01 on the 9900X:
 Time is 0.42× upstream on the noise cells (272 against 644 ms) and 0.49×
 at the crossing (310 against 629 ms). No group is behind upstream.
 
+All seven tasks, measured 2026-10-01 on the 9900X
+(`scripts/upstream-baseline.py run`). "Behind" means the paired test is
+significant, p < 0.05:
+
+| task | upstream | groups behind upstream | crossing, crate − upstream | time ratio (noise / crossing) |
+|---|---|---|---|---|
+| `ft8/t1` | `jt9 -8 -d 3` | 0 of 4 | −0.10 … −0.23 dB | 0.42 / 0.49 |
+| `ft4/t1` | `jt9 -5 -d 3` | **4 of 4** | **+0.50 … +1.36 dB** | **6.0 / 4.1** |
+| `fst4/t1` | `jt9 -7 -d 3` | **15 of 20** | **up to +1.33 dB** (120/awgn: 9 unexpected decodes against 0) | **4.1 / 3.9** |
+| `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.48 dB | 0.90 / 0.71 |
+| `jt9/t1` | `jt9 -9 -d 3` | 0 of 1 | +0.09 dB (p = 0.51) | 0.18 / 0.19 |
+| `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.60 / 0.86 |
+| `jt65/t1` | `jt9 -6 -d 3` | 1 of 1 | upstream never falls below 50 % on this grid | 0.24 / 0.06 |
+
+FT4 and FST4 are behind upstream on both accuracy and speed. They are not
+yet diagnosed. For FT4, check the task alignment first: the crate's T1
+crossing (awgn −17.44) is worse than its own sweep configuration's
+(−17.90), so the `sync_min` scale and `sic_rounds`' per-round
+threshold relaxation are open questions. FST4's own sweep configuration
+gives the same crossings, so its gap is not the task's.
+
+JT65's gap is known, and the protocol is legacy; it is recorded here and
+not chased. The tier-C cost of all seven tasks is about 8.5 minutes, most
+of it FST4: its narrowed sweep plus 20 files timed single-threaded.
+
 ### Prerequisites
 
 A WSJT-X source checkout (`/home/ubuntu/src/WSJT-X` here) and `gfortran`,

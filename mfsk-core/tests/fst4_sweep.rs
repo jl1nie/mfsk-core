@@ -68,12 +68,28 @@ fn decode_wav_fst4<P>(audio: &[i16]) -> (bool, u32)
 where
     P: mfsk_core::msg::decode_request::FrameDecodable<
             DecodeResult = mfsk_core::fst4::decode::DecodeResult,
-        >,
+        > + mfsk_core::msg::decode_request::SupportsWideBandAp,
 {
     use mfsk_core::msg::decode_request::DecodeRequest;
-    let results = DecodeRequest::<P>::new(audio, 100.0, 3000.0, 0.8, 50)
-        .decode()
-        .results;
+    // `MFSK_FST4_SWEEP_TASK=t1`: the upstream-baseline task (T1 in
+    // `scripts/upstream_tasks.json`), mirroring `jt9 -7 -p <n> -d 3 -L 200
+    // -H 3000`: the band set to 200-3000 Hz and, because that `jt9` runs AP at
+    // `ndepth` >= 2 with no callsigns, a CQ hint.
+    let results = match std::env::var("MFSK_FST4_SWEEP_TASK").as_deref() {
+        Ok("t1") => {
+            let cq = mfsk_core::msg::ApHint::new().with_call1("CQ");
+            DecodeRequest::<P>::new(audio, 200.0, 3000.0, 0.8, 50)
+                .ap_hint(&cq)
+                .decode()
+                .results
+        }
+        Err(_) => {
+            DecodeRequest::<P>::new(audio, 100.0, 3000.0, 0.8, 50)
+                .decode()
+                .results
+        }
+        Ok(other) => panic!("MFSK_FST4_SWEEP_TASK={other}: expected t1"),
+    };
     let text_of = |d: &mfsk_core::fst4::decode::DecodeResult| -> Option<String> {
         let mut m77 = [0u8; 77];
         m77.copy_from_slice(d.message77());
