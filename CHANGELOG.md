@@ -2,6 +2,12 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **FT4 `.sic_rounds()`: the blind CQ AP rung restored, and rounds as `ft4_decode.f90` runs them (#553).** The SIC path
+  passed an empty AP list, so it lost 0.5-1.4 dB to FT4's own single pass. Against `jt9 -5 -d 3` it was 4 of 4
+  channels behind. It also relaxed `sync_min` x0.75/x0.5 in later rounds and ran every round, where upstream keeps
+  `syncmin` and stops when a pass adds nothing. That made it 4-7x slower than `jt9`. Both now match upstream. On the
+  upstream baseline no channel is behind, and the 1040-file corpus decodes in 0.9 s instead of 10.9 s. A regression test
+  pins the AP rung: at the threshold the old path decoded 2 of 24 seeds where the single pass decoded 9.
 - **Tier C's method and setup are one manual, `docs/notes/TIER_C_MANUAL.md`**: principles, which WSJT-X tree
   builds what, corpus generation, running and reading the output, and the traps hit so far. `BENCHMARKS.md` keeps
   the results. FT8, FT4 and FST4 now sweep as their upstream task T1, so one sweep serves both baselines. The

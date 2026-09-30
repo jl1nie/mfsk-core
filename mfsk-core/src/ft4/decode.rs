@@ -138,6 +138,11 @@ impl SupportsSicRounds for Ft4 {
             .as_ref()
             .map(|f| f as &(dyn Fn(&DecodeResult) + Sync));
         let accept = crate::msg::decode_request::PolicyAccept::<Ft4, Pol>::new(&req.policy);
+        let ap_owned = crate::msg::decode_request::wsjt_ap_list::<Ft4>(req.ap_hint);
+        let ap: Vec<(&[u8], &[u8], u8)> = ap_owned
+            .iter()
+            .map(|(m, v, pid)| (m.as_slice(), v.as_slice(), *pid))
+            .collect();
         let (raw, budget) = pipeline::decode_frame_subtract::<Ft4, _>(
             req.audio,
             &FT4_DOWNSAMPLE,
@@ -181,6 +186,7 @@ impl SupportsSicRounds for Ft4 {
             req.fft_cache.as_ref().map(FftCache::as_slice),
             on_result,
             req.budget,
+            &ap,
             &accept,
         );
         // Multi-pass SIC has no single "the" cache (residual changes every

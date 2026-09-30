@@ -2578,10 +2578,8 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol, A: InfoAccept>(
     // FT8's own SIC engine has always passed it.
     eq_mode: EqMode,
     // Upper bound on SIC rounds, 1..=3 (`DecodeRequest::sic_rounds`
-    // already clamps to this range — not re-validated here, this
-    // function has exactly one caller). `passes.len() == 3`, so this
-    // slices the shared progressive-`sync_min`-relaxation schedule
-    // rather than iterating all of it.
+    // already clamps to this range; not re-validated here, since this
+    // function has exactly one caller).
     max_rounds: usize,
     sync_q_min: u32,
     // Channel-aware LPF subtract tuning (issue #178/#179 FT4 port).
@@ -2618,6 +2616,10 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol, A: InfoAccept>(
     // Declining to start a round is therefore the granularity this
     // engine actually offers.
     budget: Option<BudgetCheck<'_>>,
+    // The a-priori hypotheses, as the single-pass engine takes them
+    // (`process_candidate_basic_impl`'s `ap`). This function passed an
+    // empty list until #553, so every SIC round dropped the blind CQ rung.
+    ap: &[(&[u8], &[u8], u8)],
     accept: &A,
 ) -> (Vec<DecodeResult>, BudgetReport)
 where
@@ -2638,9 +2640,15 @@ where
 
     let mut residual = audio.to_vec();
     let mut all_results: Vec<DecodeResult> = Vec::new();
-    let passes: &[f32] = &[1.0, 0.75, 0.5][..max_rounds];
-
-    for (pass_idx, &factor) in passes.iter().enumerate() {
+    // `ft4_decode.f90:205-212`: the same `syncmin` every pass (`isp`), and a
+    // pass runs only if the one before it added a decode. This function used
+    // to relax `sync_min` by x0.75 and x0.5 in rounds 2 and 3 and to run every
+    // round regardless. On a residual with nothing left to find, that meant
+    // most of a crowd of noise candidates, and FT4 ran 4-7x slower than
+    // `jt9 -5 -d 3` with no decode to show for it (#553): 10.9 s against
+    // 0.9 s for the 1040-file sweep corpus. Recall was unchanged there, and
+    // every FT4 test, including the WSJT-X sample at 14/14, passes either way.
+    for pass_idx in 0..max_rounds {
         if let Some(check) = budget
             && !check()
         {
@@ -2653,19 +2661,14 @@ where
         // See the identical `P::ID == Ft4` branch in `decode_frame` above.
         let candidates = if P::ID == super::ProtocolId::Ft4 {
             super::ft4_coarse::ft4_coarse_sync(
-                &residual,
-                freq_min,
-                freq_max,
-                sync_min * factor,
-                freq_hint,
-                max_cand,
+                &residual, freq_min, freq_max, sync_min, freq_hint, max_cand,
             )
         } else {
             coarse_sync::<P>(
                 AudioSource::Real(&residual),
                 freq_min,
                 freq_max,
-                sync_min * factor,
+                sync_min,
                 freq_hint,
                 max_cand,
                 RxGrid::real(12_000.0),
@@ -2681,7 +2684,7 @@ where
             );
         }
         if candidates.is_empty() {
-            continue;
+            break;
         }
         let fft_cache = match (pass_idx, precomputed_fft) {
             (0, Some(c)) => c.to_vec(),
@@ -2708,7 +2711,7 @@ where
                     &all_results,
                     eq_mode,
                     sync_q_min,
-                    &[],
+                    ap,
                     None,
                     false,
                     false,
@@ -2735,7 +2738,7 @@ where
                     &all_results,
                     eq_mode,
                     sync_q_min,
-                    &[],
+                    ap,
                     None,
                     false,
                     false,
@@ -2791,7 +2794,7 @@ where
             // `subtractft4.f90` directly showed WSJT-X never does
             // this: `subtractft4` is always a single call, and deeper
             // suppression of a persistent signal comes from the
-            // *outer* multi-pass loop above (`for &factor in passes`)
+            // *outer* multi-pass loop above (`for pass_idx in 0..max_rounds`)
             // re-detecting it as a fresh candidate in a later pass —
             // which this function already does independently of any
             // inner iteration. The inner convergence loop had no
@@ -2835,7 +2838,11 @@ where
                 cb(r);
             }
         }
+        let added = deduped.len();
         all_results.extend(deduped);
+        if added == 0 {
+            break;
+        }
     }
 
     (all_results, budget_report)

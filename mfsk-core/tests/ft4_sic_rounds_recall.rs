@@ -1,9 +1,7 @@
 //! FT4 counterpart to `ft8_sic_rounds_recall.rs`: regression coverage
 //! for issue #218's `.sic_rounds(n)` on FT4's
-//! `engine::pipeline::decode_frame_subtract`, whose `&[1.0, 0.75,
-//! 0.5][..max_rounds]` slice is genuinely new logic (not just a
-//! rename) that the FT8-side golden/monotonicity test doesn't
-//! exercise at all.
+//! `engine::pipeline::decode_frame_subtract`, whose round loop is FT4's
+//! own and which the FT8-side golden/monotonicity test doesn't exercise.
 //!
 //! Self-contained synthetic scenario (no external WSJT-X sample tree
 //! dependency, unlike `ft4_wsjtx_samples.rs`) so this always runs in
@@ -152,12 +150,71 @@ fn ft4_sic_rounds_recall_is_monotonic() {
     // Scenario must actually discriminate between round counts — if
     // round 1 already found everything round 3 does, the subset
     // assertions above pass vacuously and this test isn't exercising
-    // `&[1.0, 0.75, 0.5][..max_rounds]`'s slicing at all.
+    // the round loop at all.
     assert!(
         r1.len() < r3.len(),
         "scenario not discriminating: sic_rounds(1) already matched \
          sic_rounds(3) ({} decodes) — strengthen the close-frequency \
          pairs so subtraction across rounds actually matters",
         r3.len()
+    );
+}
+
+/// #553: the SIC path must try every a-priori hypothesis the single pass
+/// tries, the blind CQ one included. It passed an empty AP list until
+/// then, so a weak CQ the single pass decoded through that rung was lost
+/// as soon as `.sic_rounds()` was asked for, which is the configuration
+/// that mirrors `jt9 -5 -d 3`. One weak station in noise, over a range of
+/// seeds near the threshold: every seed the single pass decodes, three SIC
+/// rounds must decode too. The scene must sit at the threshold (some seeds
+/// decode, some do not), which is where the CQ rung decides. Before the fix
+/// three SIC rounds decoded 2 of the 24 seeds against the single pass's 9.
+/// Near FT4's threshold against `AwgnChannel::new(4500.0, _)`: 9 of the 24
+/// seeds decode (amplitude 450 gives 2, 550 gives 17).
+const AMP_NEAR_THRESHOLD: i16 = 500;
+
+#[test]
+fn ft4_sic_rounds_keep_the_blind_cq_rung() {
+    let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
+    let msg = pack("CQ", "JQ1AAA", "PM95");
+    let text = unpack77(&msg).expect("unpacks");
+    let decodes = |audio: &[i16], rounds: usize| -> bool {
+        let req = DecodeRequest::<Ft4>::new(audio, 100.0, 2700.0, 1.18, 200);
+        let out = if rounds == 0 {
+            req.decode()
+        } else {
+            req.sic_rounds(rounds).decode()
+        };
+        out.results.iter().any(|r| {
+            let mut m = [0u8; 77];
+            m.copy_from_slice(r.message77());
+            unpack77(&m).as_deref() == Some(text.as_str())
+        })
+    };
+    let (mut single, mut sic, mut lost) = (0, 0, Vec::new());
+    for seed in 0..24u64 {
+        let mut audio = vec![0i16; SLOT_SAMPLES];
+        mix_i16(&mut audio, &msg, 1500.0, AMP_NEAR_THRESHOLD, pad);
+        let mut f: Vec<f32> = audio.iter().map(|&s| s as f32).collect();
+        common::channel::AwgnChannel::new(4500.0, seed).apply(&mut f);
+        let audio: Vec<i16> = f
+            .iter()
+            .map(|&s| s.clamp(-32768.0, 32767.0) as i16)
+            .collect();
+        let (a, b) = (decodes(&audio, 0), decodes(&audio, 3));
+        single += a as u32;
+        sic += b as u32;
+        if a && !b {
+            lost.push(seed);
+        }
+    }
+    eprintln!("single pass {single}/24, sic_rounds(3) {sic}/24, lost by SIC: {lost:?}");
+    assert!(
+        lost.is_empty(),
+        "sic_rounds(3) lost what the single pass decoded, seeds {lost:?}"
+    );
+    assert!(
+        single > 0 && single < 24,
+        "scene not near the threshold: single pass {single}/24"
     );
 }

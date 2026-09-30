@@ -270,6 +270,32 @@ where
 /// `pipeline::decode_frame_budgeted` with the request's message policy,
 /// and drops `known` from the returned rows.
 #[cfg(any(feature = "ft4", feature = "fst4"))]
+/// The a-priori hypotheses a WSJT-X decode tries: those the caller's hint
+/// implies (`pipeline_ap::ap_passes`), plus the blind CQ one, which needs no
+/// hint (`iaptype = 1`, `ft4_decode.f90:321-325`). Each is
+/// `(mask, values, pass_id)` over the codeword, the shape the engine takes.
+/// Both the single-pass and the SIC strategies build their list here, so
+/// neither can drop it. FT4's SIC path passed an empty list until #553 and
+/// lost 0.5-1.4 dB to its own single pass.
+pub(crate) fn wsjt_ap_list<P>(ap_hint: Option<&ApHint>) -> Vec<(Vec<u8>, Vec<u8>, u8)>
+where
+    P: Protocol,
+    P::Msg: super::ap::WsjtApCompatible,
+{
+    let mut ap_hints: Vec<(ApHint, u8)> = ap_hint
+        .filter(|h| h.has_info())
+        .map(super::pipeline_ap::ap_passes)
+        .unwrap_or_default();
+    ap_hints.push((ApHint::new().with_call1("CQ"), 12));
+    ap_hints
+        .iter()
+        .map(|(hint, pid)| {
+            let (m, v) = super::pipeline_ap::ap_bits_for::<P>(hint);
+            (m, v, *pid)
+        })
+        .collect()
+}
+
 pub(crate) fn generic_single_pass<P, Pol>(
     req: &DecodeRequest<'_, P, Pol>,
     cfg: &crate::engine::dsp::downsample::DownsampleCfg,
@@ -308,19 +334,7 @@ where
     // correspondent's callsign, so it is upstream's iaptype 2/3,
     // not 1. `BLIND_CQ_MIN_NSYNC`'s doc comment claims otherwise
     // and is wrong.)
-    let mut ap_hints: Vec<(ApHint, u8)> = req
-        .ap_hint
-        .filter(|h| h.has_info())
-        .map(super::pipeline_ap::ap_passes)
-        .unwrap_or_default();
-    ap_hints.push((ApHint::new().with_call1("CQ"), 12));
-    let ap_owned: Vec<(Vec<u8>, Vec<u8>, u8)> = ap_hints
-        .iter()
-        .map(|(hint, pid)| {
-            let (m, v) = super::pipeline_ap::ap_bits_for::<P>(hint);
-            (m, v, *pid)
-        })
-        .collect();
+    let ap_owned = wsjt_ap_list::<P>(req.ap_hint);
     let ap: Vec<(&[u8], &[u8], u8)> = ap_owned
         .iter()
         .map(|(m, v, pid)| (m.as_slice(), v.as_slice(), *pid))
@@ -1205,16 +1219,12 @@ impl<'a, P: SupportsSicRounds, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
     /// (shrinking) residual buffer. `n` is clamped to 1..=3 — WSJT-X's own
     /// `npass`/`nsp` never exceeds 3.
     ///
-    /// **The two implementors differ in two ways this doc used to paper
-    /// over**, and a caller comparing them will see both:
-    ///
-    /// - *Threshold schedule.* FT8 holds `sync_min` fixed across rounds.
-    ///   FT4 **relaxes** it — the generic engine multiplies by
-    ///   `[1.0, 0.75, 0.5]`, one factor per round, so a later round looks
-    ///   deeper into the noise on a residual that has had the strong
-    ///   signals removed.
-    /// - *Termination.* FT8 stops early once a round adds nothing. FT4
-    ///   runs every round it was given.
+    /// Both implementors hold `sync_min` fixed across rounds and stop
+    /// once a round adds nothing, as `ft8_decode.f90` and
+    /// `ft4_decode.f90:205-212` do. FT4 used to relax `sync_min` by
+    /// `[1.0, 0.75, 0.5]` and run every round. It also dropped the blind
+    /// CQ AP rung on this path. That cost it 0.5-1.4 dB against its own
+    /// single pass and made it 4-7x slower than `jt9 -5 -d 3` (#553).
     ///
     /// Both subtract sequentially on FT8 (each accepted decode is removed
     /// before the next candidate in the same round is tried); FT4's
