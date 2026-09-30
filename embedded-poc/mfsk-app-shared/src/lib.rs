@@ -32,6 +32,7 @@ pub mod tx_picker;
 pub mod udp_log;
 pub mod ui;
 pub mod wifi;
+pub mod wifi_policy;
 pub mod wifi_pref;
 pub mod wspr_bands;
 pub mod wsprnet;

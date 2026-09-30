@@ -99,6 +99,27 @@ pub fn wifi_pref() -> mfsk_app_shared::wifi_pref::WifiPref {
     }
 }
 
+/// What this boot does about WiFi and why: the CONFIG page's `WIFI` row, unless
+/// `TIME: AIR DT` is selected, which turns it off (#381,
+/// `mfsk_app_shared::wifi_policy`). The one place the rule is applied.
+pub fn wifi_decision() -> mfsk_app_shared::wifi_policy::WifiDecision {
+    mfsk_app_shared::wifi_policy::decide(
+        wifi_pref().enabled(),
+        grid_source() == mfsk_app_shared::grid_src::GridSource::AirDt,
+    )
+}
+
+/// The `WIFI` row as it is *running*, for the panel: `WIFI: OFF` under `TIME:
+/// AIR DT` whatever is stored, so the picker does not show ON on a board with
+/// no radio. The stored choice is untouched (it is what applies under NTP).
+pub fn effective_wifi_pref() -> mfsk_app_shared::wifi_pref::WifiPref {
+    if wifi_decision().enabled() {
+        mfsk_app_shared::wifi_pref::WifiPref::On
+    } else {
+        mfsk_app_shared::wifi_pref::WifiPref::Off
+    }
+}
+
 /// One of the CONFIG page's settings, as handed to
 /// [`commit_config_and_restart`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

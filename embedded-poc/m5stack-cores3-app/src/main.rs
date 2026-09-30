@@ -89,7 +89,7 @@ fn main() -> ! {
     // `net::bring_up`'s to say now.
     let wifi_pref = mfsk_app_shared::wifi_pref::read(&nvs);
     set_wifi_pref(wifi_pref);
-    log::info!("wifi: {} (CONFIG page)", wifi_pref.label());
+    log::info!("wifi: {} (CONFIG page; TIME: AIR DT turns it off)", wifi_pref.label());
     // **How the slot grid's phase is kept** — the CONFIG page's other
     // setting, read once here and published for whoever boots.
     //
