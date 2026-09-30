@@ -121,6 +121,35 @@ exactly.** A baseline still assumes both machines built their simulators
 from the same WSJT-X checkout — that part cannot be checked from inside
 this repo.
 
+**Every corpus carries a `.corpus-stamp`, and the sweep runner refuses one
+without it** (since 2026-09-30, `scripts/lib/corpus-stamp.sh`). The
+generators write it beside the WAVs: seed, simulator path and sha256, and
+the commit that generated it. Two guards come with it. A generator refuses
+a simulator that was not linked with `sim_sgran_stub.c` (the stub's
+`MFSK_SIM_SEED` literal is what it looks for), and refuses to add cells to
+a directory whose WAVs carry no stamp or another seed, since a generator
+only fills in missing cells. `scripts/run-sensitivity-sweeps.sh` stops on a
+corpus with no stamp or with the wrong seed, and notes one whose generator
+or simulator build changed after it was stamped. `MFSK_SWEEP_ALLOW_UNSTAMPED=1`
+overrides the stop; never `--update-baseline` from such a run.
+
+What prompted it, on the 9900X box: a release sweep flagged JT65 +0.68 dB
+worse in unchanged code. The local `jt65_sweep/`, `jt9_sweep/` and
+`wspr_sweep/` were July/August corpora drawn from /dev/urandom, made before
+the stub existed. Regenerated at seed 1, all four groups landed on the
+baseline exactly. The same session found `target/ft8sim/ft8sim` and
+`target/ft4sim/ft4sim`, the generators' default simulator paths, still
+holding unseeded July/August builds. The corpora in use had come from the
+seeded `target/ft8sim-2b9/` and `target/ft4sim-2b9/`; a generator run with
+its defaults would have written an unreproducible corpus without a word.
+Adopting the stamp meant regenerating every corpus into an empty directory
+and comparing. All ten (`ft8`, `ft8_itu`, `ft8_busy`, `ft4`, `fst4`, `q65`,
+`jt65`, `jt9`, `wspr`, `jtty`) came out byte-identical to the corpora they
+replaced, 13 220 WAVs in all. The one difference was 90 `q65_sweep` files
+that today's grid no longer writes: 5-trial cells at −19..−23 dB from an
+earlier grid, on the 100 % plateau of their sub-modes. They are the surplus
+behind the 2 820 against 2 640 trials above, and were left out.
+
 ### Which WSJT-X tree the simulators come from
 
 "Same simulator build" has a concrete answer, and `../WSJT-X` is no longer it.

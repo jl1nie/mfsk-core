@@ -120,6 +120,11 @@ for CHAN_SPEC in "${CHANNELS[@]}"; do
   done
 done
 
+# Refuse an unseeded simulator, and an out-dir whose WAVs came from another
+# seed or binary: scripts/lib/corpus-stamp.sh.
+source "$SCRIPT_DIR/lib/corpus-stamp.sh"
+corpus_preflight "$OUT_DIR" "$FT4SIM" seeded
+
 echo "Generating FT4 sweep corpus: ${#CELLS[@]} cells, TRIALS=$TRIALS, JOBS=$JOBS"
 echo "Output: $OUT_DIR"
 echo ""
@@ -142,6 +147,7 @@ for pid in "${pids[@]}"; do
   wait "$pid"
 done
 
+corpus_stamp "$OUT_DIR" "$FT4SIM" seeded "$0"
 echo ""
 echo "Done. Assets: $OUT_DIR"
 echo "  $(ls "$OUT_DIR" | wc -l) files total"

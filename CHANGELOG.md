@@ -2,6 +2,17 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Tier-C corpora carry a provenance stamp, and the sweep runner refuses one without it.** A sweep baseline is
+  only comparable with a corpus generated at `MFSK_SIM_SEED=1` (#390), and nothing checked that: a release sweep on
+  2026-09-30 flagged JT65 +0.68 dB worse in unchanged code, because the local `jt65_sweep/` was a July corpus drawn
+  from /dev/urandom before the seeded stub existed. The generators now write `.corpus-stamp` (seed, simulator and its
+  sha256, generating commit) beside the WAVs, through `scripts/lib/corpus-stamp.sh`. They refuse a simulator not
+  linked with `sim_sgran_stub.c`. The generators' default `target/ft8sim/ft8sim` and `target/ft4sim/ft4sim` on the
+  machine that found this were still unseeded builds. They also refuse to add cells to a directory of unstamped or
+  differently-seeded WAVs. `scripts/run-sensitivity-sweeps.sh` stops on a corpus with no stamp or the wrong seed
+  (`MFSK_SWEEP_ALLOW_UNSTAMPED=1` overrides), and notes one whose generator changed since it was stamped. Every
+  existing corpus was regenerated into an empty directory to adopt it: all ten, 13 220 WAVs, came out byte-identical,
+  so no stored baseline moved (`docs/notes/BENCHMARKS.md`, "Generating the tier-C corpora").
 - **CoreS3: `[boot-summary]` is printed on a boot with no WiFi too, when there is a console to print it to.**
   It went out on the first frame after the UDP log sink existed, so a boot that brought no WiFi (`WIFI: OFF`, or now
   `TIME: AIR DT`, #381) never printed it anywhere — not even on the USB-Serial-JTAG console a board plugged into a PC

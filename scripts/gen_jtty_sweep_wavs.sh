@@ -74,8 +74,14 @@ for spec in "${CHANNELS[@]}"; do
   read -r chan model del <<<"$spec"
   for snr in $SNRS; do CELLS+=("$chan $model $del $snr"); done
 done
+# Refuse an out-dir whose WAVs came from another sjtty binary:
+# scripts/lib/corpus-stamp.sh. sjtty seeds its own noise, so no seed to check.
+source "$SCRIPT_DIR/lib/corpus-stamp.sh"
+corpus_preflight "$OUT_DIR" "$TOOLS/sjtty" deterministic
+
 echo "Generating JTTY sweep corpus: ${#CELLS[@]} cells, TRIALS=$TRIALS, JOBS=$JOBS"
 printf '%s\n' "${CELLS[@]}" | xargs -P "$JOBS" -L1 bash -c 'run_cell $0 $1 $2 $3'
+corpus_stamp "$OUT_DIR" "$TOOLS/sjtty" deterministic "$0"
 
 # ---- score rjtty ------------------------------------------------------------
 # rjtty is run in the WAV's directory (it truncates long path names). A file

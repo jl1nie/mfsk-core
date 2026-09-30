@@ -135,6 +135,51 @@ if [ ${#missing[@]} -gt 0 ]; then
   echo
 fi
 
+# A corpus is only comparable with sweep-baseline.json when it is the one
+# the generators write at MFSK_SIM_SEED=1. On 2026-09-30 a local jt65
+# corpus drawn from /dev/urandom before the seeded stub existed showed as
+# a +0.68 dB regression in unchanged code. The generators now leave a
+# .corpus-stamp (scripts/lib/corpus-stamp.sh); a corpus without one, or
+# with another seed, stops the run here rather than producing numbers
+# that read as a regression. MFSK_SWEEP_ALLOW_UNSTAMPED=1 runs anyway --
+# then do not --update-baseline from it.
+# shellcheck source=lib/corpus-stamp.sh
+source "$REPO_ROOT/scripts/lib/corpus-stamp.sh"
+declare -A CORPUS_RNG=(
+  [ft8_sweep]=seeded [ft8_itu_sweep]=seeded [ft8_busy_sweep]=seeded [ft4_sweep]=seeded
+  [wspr_sweep]=seeded [jt65_sweep]=seeded [jt9_sweep]=seeded
+  [fst4_sweep]=deterministic [q65_sweep]=deterministic [jtty_sweep]=deterministic
+)
+stale=()
+declare -A seen_corpus=()
+for k in "${want[@]}"; do
+  c="${CORPUS[$k]:-}"
+  [ -z "$c" ] && continue
+  cdir="embedded-poc/assets/$c"
+  [ "$k" = ft8_itu ] && cdir="${MFSK_FT8_ITU_SWEEP_DIR:-$cdir}"
+  [ "$k" = ft8_busy ] && cdir="${MFSK_FT8_BUSY_DIR:-$cdir}"
+  [ -n "${seen_corpus[$cdir]:-}" ] && continue
+  seen_corpus[$cdir]=1
+  compgen -G "$cdir/*.wav" >/dev/null 2>&1 || continue
+  if msg="$(corpus_check "$cdir" "${CORPUS_RNG[$c]:-seeded}" "$REPO_ROOT")"; then
+    [ -n "$msg" ] && echo "note: $cdir: ${msg#warn: }"
+  else
+    stale+=("$k ($cdir): $msg")
+  fi
+done
+if [ ${#stale[@]} -gt 0 ]; then
+  echo "corpora of unknown or wrong provenance -- not comparable with the baseline:"
+  printf '  - %s\n' "${stale[@]}"
+  echo "move each aside and regenerate into an empty directory with its"
+  echo "scripts/gen_*_sweep_wavs.sh (seed ${MFSK_SIM_SEED:-1}), which stamps it."
+  if [ -z "${MFSK_SWEEP_ALLOW_UNSTAMPED:-}" ]; then
+    echo "(MFSK_SWEEP_ALLOW_UNSTAMPED=1 runs anyway; never --update-baseline from that.)"
+    exit 1
+  fi
+  echo "MFSK_SWEEP_ALLOW_UNSTAMPED is set: running anyway."
+  echo
+fi
+
 run() {
   if [ -n "$LOG" ]; then "$@" 2>&1 | tee -a "$LOG"; else "$@"; fi
 }

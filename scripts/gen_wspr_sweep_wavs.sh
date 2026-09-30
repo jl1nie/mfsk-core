@@ -110,6 +110,11 @@ run_cell() {
 export -f run_cell snr_tag
 export WSPRSIM OUT_DIR TRIALS MSG
 
+# Refuse an unseeded simulator, and an out-dir whose WAVs came from another
+# seed or binary: scripts/lib/corpus-stamp.sh.
+source "$SCRIPT_DIR/lib/corpus-stamp.sh"
+corpus_preflight "$OUT_DIR" "$WSPRSIM" seeded
+
 echo "Generating WSPR AWGN sweep corpus: $(echo $SNRS | wc -w) SNR points, TRIALS=$TRIALS, JOBS=$JOBS"
 echo "Output: $OUT_DIR"
 echo ""
@@ -130,6 +135,7 @@ for pid in "${pids[@]}"; do
   wait "$pid"
 done
 
+corpus_stamp "$OUT_DIR" "$WSPRSIM" seeded "$0"
 echo ""
 echo "Done. Assets: $OUT_DIR"
 echo "  $(ls "$OUT_DIR" | wc -l) files total"

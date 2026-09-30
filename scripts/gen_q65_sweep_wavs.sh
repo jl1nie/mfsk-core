@@ -155,6 +155,11 @@ export -f run_cell snr_tag
 export Q65SIM OUT_DIR TRIALS MSG F0
 
 TOTAL_CELLS=$(( ${#CONFIGS[@]} * $(echo $OFFSETS | wc -w) ))
+# Refuse an unseeded simulator, and an out-dir whose WAVs came from another
+# seed or binary: scripts/lib/corpus-stamp.sh.
+source "$SCRIPT_DIR/lib/corpus-stamp.sh"
+corpus_preflight "$OUT_DIR" "$Q65SIM" deterministic
+
 echo "Generating Q65 AWGN sweep corpus: ${#CONFIGS[@]} sub-modes x $(echo $OFFSETS | wc -w) SNR points = $TOTAL_CELLS cells, TRIALS=$TRIALS, JOBS=$JOBS"
 echo "Output: $OUT_DIR"
 echo ""
@@ -179,6 +184,7 @@ for pid in "${pids[@]}"; do
   wait "$pid"
 done
 
+corpus_stamp "$OUT_DIR" "$Q65SIM" deterministic "$0"
 echo ""
 echo "Done. Assets: $OUT_DIR"
 echo "  $(ls "$OUT_DIR" | wc -l) files total"

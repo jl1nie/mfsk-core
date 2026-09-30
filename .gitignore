@@ -36,3 +36,7 @@ bindings/swift/.build/
 # `wsprd` from a checkout here leaves one behind. One was committed in
 # 641b5ff3 and lived on main until 2026-09-15.
 timer.out
+
+# Provenance stamp the tier-C corpus generators write beside their WAVs
+# (scripts/lib/corpus-stamp.sh). Local to the corpus, like the WAVs.
+embedded-poc/assets/*_sweep/.corpus-stamp

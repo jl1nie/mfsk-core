@@ -414,6 +414,15 @@ scripts/run-sensitivity-sweeps.sh              # everything present
 scripts/run-sensitivity-sweeps.sh ft4 fst4     # or just what moved
 ```
 
+It also refuses a corpus without a `.corpus-stamp` or with a seed
+other than 1 (`scripts/lib/corpus-stamp.sh`, 2026-09-30). If it stops
+there, regenerate that corpus into an **empty** directory. Don't
+override the check to get numbers. The last time a stale corpus got
+through, it showed as a JT65 "+0.68 dB regression" in unchanged
+code. The generators also refuse an unseeded simulator binary. On this machine `target/ft8sim/ft8sim` and
+`target/ft4sim/ft4sim` are such builds, so pass `target/ft8sim-2b9/` /
+`ft4sim-2b9/`, or `ft8sim-3.2/` for the ITU and busy-band corpora.
+
 **"Plausibly moves sensitivity" means the code path, not the
 protocol name.** Before running a protocol's sweep, check it actually
 shares the code you touched. FT8's `decode_block::coarse_sync` /

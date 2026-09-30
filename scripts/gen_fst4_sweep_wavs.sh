@@ -134,6 +134,11 @@ for NSEC in 15 30 60 120 300; do
   done
 done
 
+# Refuse an unseeded simulator, and an out-dir whose WAVs came from another
+# seed or binary: scripts/lib/corpus-stamp.sh.
+source "$SCRIPT_DIR/lib/corpus-stamp.sh"
+corpus_preflight "$OUT_DIR" "$FST4SIM" deterministic
+
 echo "Generating FST4 sweep corpus: ${#CELLS[@]} cells, TRIALS=$TRIALS, JOBS=$JOBS"
 echo "Output: $OUT_DIR"
 echo ""
@@ -154,6 +159,7 @@ for CELL in "${CELLS[@]}"; do
 done
 wait
 
+corpus_stamp "$OUT_DIR" "$FST4SIM" deterministic "$0"
 echo ""
 echo "Done. Assets: $OUT_DIR"
 echo "  $(ls "$OUT_DIR" | wc -l) files total"

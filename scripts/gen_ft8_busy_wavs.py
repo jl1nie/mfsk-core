@@ -39,6 +39,9 @@ Needs numpy and an ft8sim; SNR 99 works on any ft8sim, ITU codes are not used.
 """
 import argparse
 import csv
+import datetime
+import hashlib
+import platform
 import subprocess
 import sys
 import tempfile
@@ -149,6 +152,36 @@ def draw_frequencies(rng, n):
     return fs
 
 
+STAMP = ".corpus-stamp"
+
+
+def read_stamp(out_dir):
+    path = out_dir / STAMP
+    if not path.exists():
+        return None
+    return dict(l.split("=", 1) for l in path.read_text().splitlines() if "=" in l and not l.startswith("#"))
+
+
+def write_stamp(out_dir, ft8sim, seed):
+    """The provenance stamp scripts/lib/corpus-stamp.sh writes for the shell
+    generators, in the same format, so run-sensitivity-sweeps.sh can check this
+    corpus too. `seed` is --seed: the noise and every random choice come from
+    numpy here, and ft8sim is only ever asked for a noiseless waveform."""
+    root = Path(__file__).resolve().parent.parent
+    def git(*a):
+        r = subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True)
+        return r
+    commit = git("rev-parse", "HEAD").stdout.strip() or "unknown"
+    dirty = 0 if git("diff", "--quiet", "HEAD", "--", "scripts").returncode == 0 else 1
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (out_dir / STAMP).write_text(
+        f"# Written by {Path(__file__).name}; read by scripts/run-sensitivity-sweeps.sh.\n"
+        "# See scripts/lib/corpus-stamp.sh. Do not hand-edit.\n"
+        f"generator={Path(__file__).name}\nrng=seeded\nseed={seed}\n"
+        f"simulator={ft8sim}\nsimulator_sha256={hashlib.sha256(ft8sim.read_bytes()).hexdigest()}\n"
+        f"commit={commit}\nscripts_dirty={dirty}\ndate={now}\nhost={platform.node()}\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("ft8sim", type=Path)
@@ -159,6 +192,14 @@ def main():
 
     ft8sim = args.ft8sim.resolve()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    # A partial run (--only) merges into what is there, so that must be the
+    # same corpus: known provenance and the same seed.
+    if args.only and any(args.out_dir.glob("*.wav")):
+        st = read_stamp(args.out_dir)
+        if st is None or st.get("seed") != str(args.seed):
+            have = "no stamp" if st is None else f"seed={st.get('seed')}"
+            sys.exit(f"error: {args.out_dir} holds WAVs with {have}; --only would mix "
+                     f"them with seed={args.seed}. Generate into an empty out-dir.")
     truth_rows = []
     for si, (name, (n_files, n_sig)) in enumerate(SETS.items()):
         if args.only and name not in args.only:
@@ -197,6 +238,7 @@ def main():
         w.writerow(["file", "msg", "f0", "dt", "snr"])
         w.writerows(kept)
         w.writerows(truth_rows)
+    write_stamp(args.out_dir, ft8sim, args.seed)
     print(f"wrote {len(list(args.out_dir.glob('*.wav')))} wavs, {len(kept) + len(truth_rows)} truth rows -> {args.out_dir}", file=sys.stderr)
 
 
