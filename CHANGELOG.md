@@ -2,6 +2,23 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **IQ: a polyphase filter bank, `iq::PfbChannelizer`, as an option beside the `Direct` path (#534).**
+  `IqReceiver::with_channelizer(stream, Channelizer::Pfb)` (C: `mfsk_iq_open_with(.., MFSK_IQ_CHANNELIZER_PFB, ..)`) shares
+  one bank among all channels instead of mixing and decimating each from the input rate: 2x oversampled (hop M/2),
+  sub-bands about 24 kHz apart at 48 kS/s (M = 32 at 768 kS/s, 100 at 2.4 MS/s), a Kaiser prototype of M(K−1)+1 taps
+  (K = 13) so its delay is a whole number of hops, and each channel's back end an `IqToAudio` on the sub-band nearest its
+  window. `Direct` (`IqReceiver::new`, `mfsk_iq_open`) stays the default and is unchanged: an amateur band's handful of
+  channels is cheaper there. Measured, % of a core, one thread: 768 kS/s 1 / 4 / 8 / 32 / 128 channels 2.66 / 3.34 /
+  4.32 / 10.22 / 34.94 on the bank against 0.92 / 3.68 / 7.40 / 29.89 direct; 2.4 MS/s 9.08 / 9.78 / 10.77 / 16.64 /
+  41.15 against 2.38 / 9.51 / 19.13 / 76.51 — break-even about four channels. Selectivity on the bank −124.3…−124.4 dB at
+  192 k, 250 k, 768 k, 2.048 M and 2.4 MS/s (window across a whole sub-band, ~1 000 interferer positions each). Every IQ
+  decode test now runs through both paths with the same result, and the FFI test and C++ smoke driver drive both.
+  `engine::fft::with_planner` (moved from `jtty::dsp`, which re-exports it) is how the bank plans its IFFT per push:
+  holding a `Box<dyn Fft>` made `IqReceiver` `!Send`, and a test now pins `Send` on the receiver and both channelizers.
+  `IqToAudio::new` reports a rate below 12 kHz before a placement error, as before the refactor. `mfsk.h` gains
+  `mfsk_iq_open_with` and `MFSK_IQ_CHANNELIZER_DIRECT` / `_PFB` (105 exported functions). Design and measurements:
+  `docs/notes/IQ_CHANNELIZER.md` §7b; `LIBRARY.md` §2.7 and `BINDINGS.md` §2.8.2 with their `.ja.md` twins.
+
 - **IQ front end: 120 dB of selectivity, all filters Kaiser designs; the sharp filter moved to 12 kHz (#534).**
   The `Direct` path (`IqToAudio`, and `IqReceiver` on it) used Blackman windows, which stop at about 74 dB: measured, an
   interferer at the channel's window edge came through at −73.5 dB. Every filter is now a Kaiser design for

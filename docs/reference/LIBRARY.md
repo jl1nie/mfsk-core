@@ -735,14 +735,34 @@ across calls carried over.
 the band (`iq::REJECT_DB`): every filter is a Kaiser design for it, which is
 the noise floor of an ideal 16-bit ADC in 2500 Hz at 768 kS/s. Measured worst
 over ~1 150 interferer positions per rate, aimed at every decimator's alias
-edges as well: −124.0 dB at 192 kS/s, −121.0 at 768 k, −122.0 at 2.4 M.
-`tests/iq_front_end.rs` asserts it.
+edges as well: −124.0 dB at 192 kS/s, −121.0 at 768 k, −122.0 at 2.4 M on the
+`Direct` path; −124.3…−124.4 dB on the `Pfb` path at five rates (window placed
+across a whole sub-band, ~1 000 positions each). `tests/iq_front_end.rs` and
+`iq::pfb`'s unit tests assert it.
 
-*Cost.* Each channel mixes at the input rate, so cost is linear in channels.
-Measured per channel, one thread, release, `Cf32` in (eight channels): 0.36 %
-of a core at 192 kS/s, 0.93 % at 768 kS/s, 2.42 % at 2.4 MS/s. Past a handful
-of channels a polyphase filter bank shared by all of them would pay; its
-design is `docs/notes/IQ_CHANNELIZER.md` and it is not built.
+*Two channelizers, one choice.* `IqReceiver::new` uses `Channelizer::Direct`:
+one `IqToAudio` per channel, each mixing and decimating from the input rate,
+so cost is linear in channels. `IqReceiver::with_channelizer(stream,
+Channelizer::Pfb)` shares one polyphase filter bank (`iq::PfbChannelizer`)
+among all channels instead: 2x oversampled, sub-bands ~24 kHz apart, each
+channel's back end an `IqToAudio` on the sub-band nearest its window. Both give
+the decoders the same audio at the same selectivity: every IQ decode test runs
+through each and gets the WAV path's set. Measured, one thread, release, `Cf32`
+in, % of a core:
+
+| channels | 768 kS/s Direct | 768 kS/s Pfb | 2.4 MS/s Direct | 2.4 MS/s Pfb |
+|---:|---:|---:|---:|---:|
+| 1 | 0.92 | 2.66 | 2.38 | 9.08 |
+| 4 | 3.68 | 3.34 | 9.51 | 9.78 |
+| 8 | 7.40 | 4.32 | 19.13 | 10.77 |
+| 32 | 29.89 | 10.22 | 76.51 | 16.64 |
+| 128 | — | 34.94 | — | 41.15 |
+
+Break-even is about four channels at either rate. An amateur band's handful
+of modes fits `Direct`; a skimmer across a band wants `Pfb`. The bank needs a
+rate of 40 kS/s or more (`UnsupportedRate` otherwise). Its design, and why it
+is a polyphase bank rather than an FFT with a mask (which leaked −71 dB between
+bins), is `docs/notes/IQ_CHANNELIZER.md`.
 
 *Evidence.* `tests/iq_front_end.rs` and `tests/iq_receiver.rs` place real
 recordings as double-sideband IQ (so a leaking lower sideband would show as

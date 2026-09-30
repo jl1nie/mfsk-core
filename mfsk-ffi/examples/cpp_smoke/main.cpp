@@ -1360,8 +1360,9 @@ void test_iq() {
             }
         }
 
+      for (uint32_t chz : {MFSK_IQ_CHANNELIZER_DIRECT, MFSK_IQ_CHANNELIZER_PFB}) {
         MfskStatus st = MFSK_STATUS_INTERNAL;
-        MfskIqReceiver* rx = mfsk_iq_open(fs, center, fmt, 0, &st);
+        MfskIqReceiver* rx = mfsk_iq_open_with(fs, center, fmt, 0, chz, &st);
         if (rx == nullptr || st != MFSK_STATUS_OK) { fail("iq", "mfsk_iq_open"); return; }
         uint32_t ch = 0xffffffffu;
         if (mfsk_iq_add_channel(rx, dial, MFSK_MODE_FT8, &ch) != MFSK_STATUS_OK) {
@@ -1388,13 +1389,14 @@ void test_iq() {
             if (!d.has_utc || d.slot_start_utc_ns != t0_ns) fail("iq", "slot start UTC is wrong");
         }
         if (!found) {
-            char what[64];
-            std::snprintf(what, sizeof what, "format %u: the message did not come out", fmt);
+            char what[80];
+            std::snprintf(what, sizeof what, "format %u, channelizer %u: the message did not come out", fmt, chz);
             fail("iq", what);
         }
         if (mfsk_iq_pending(rx) != 0) fail("iq", "queue should be drained");
         if (mfsk_iq_samples_in(rx) != iq.size() / 2) fail("iq", "samples_in is not the count pushed");
         mfsk_iq_close(rx);
+      }
     }
 
     // Refusals are statuses, not crashes.
@@ -1416,7 +1418,7 @@ void test_iq() {
     if (mfsk_iq_poll(rx, &d) != 0) fail("iq", "poll on an empty queue should be 0");
     mfsk_iq_close(rx);
     mfsk_iq_close(nullptr);  // a no-op, like every free here
-    std::printf("  [iq] all five formats decode, refusals are statuses\n");
+    std::printf("  [iq] all five formats decode through both channelizers, refusals are statuses\n");
 }
 
 int main() {

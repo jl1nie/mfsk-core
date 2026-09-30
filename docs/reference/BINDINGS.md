@@ -611,9 +611,14 @@ for JTTY's reason: no user-data contract to cross the boundary, and a wrapper
 in Kotlin, Swift or C# is simpler over a poll. The handle is not thread-safe:
 one thread at a time.
 
-Selectivity is 120 dB outside the channel's window. Cost is linear in
-channels, since each mixes at the input rate: measured on one thread, 0.93 % of
-a core per channel at 768 kS/s, 2.42 % at 2.4 MS/s.
+Selectivity is 120 dB outside the channel's window. `mfsk_iq_open` gives the
+direct path, where each channel mixes at the input rate and cost is linear in
+channels (0.92 % of a core per channel at 768 kS/s). For many channels,
+`mfsk_iq_open_with(..., MFSK_IQ_CHANNELIZER_PFB, &status)` shares one polyphase
+filter bank among them: 2.7 % of a core for one channel at 768 kS/s, 10 % for
+32, 35 % for 128, against 30 % for 32 direct. Break-even is about four
+channels. The bank needs 40 kS/s or more (`INVALID_ARG` otherwise); rows and
+every other call are the same on both.
 
 ### 2.9 Messages
 
@@ -686,7 +691,7 @@ but does not offer what was asked).
 
 ### 2.12 Symbol index
 
-104 exported functions, grouped:
+105 exported functions, grouped:
 
 | group | symbols |
 |---|---|
@@ -698,7 +703,7 @@ but does not offer what was asked).
 | Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (11) | `mfsk_iq_open` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| IQ (12) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
 | hash table (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
 | runtime (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
 
