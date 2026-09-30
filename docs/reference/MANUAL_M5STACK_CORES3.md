@@ -298,7 +298,7 @@ which drifts on its own — is kept.
 | Row | Meaning |
 |---|---|
 | `TIME: NTP` | take NTP at boot; UTC owns the slot phase. The default |
-| `TIME: AIR DT` | do not start NTP; the phase comes from the air, the clock stays the RTC's (for the log) |
+| `TIME: AIR DT` | do not start NTP; the phase comes from the air, the clock stays the RTC's (for the log). **Also turns WiFi off** (see WiFi below) |
 
 What drifts: the ESP crystal at −3.3 ppm, about 11.9 ms an hour. A few
 days away from a network makes that **seconds**, against FT8's ±1.0 s
@@ -328,13 +328,16 @@ it recovers **whole seconds of error** as well as the fraction.
 | `WIFI: ON` | associate at boot, as every build did before this setting. The default |
 | `WIFI: OFF` | leave the radio down for this boot |
 
-**Why this is its own setting and not a consequence of `TIME: AIR DT`.**
-The two answer different questions: the time source says where the
-*phase* comes from, this says whether there is a *console*. A hilltop
-with a phone hotspot wants `AIR DT` and a log both, so one setting
-cannot stand for the other.
+**`TIME: AIR DT` turns WiFi off, whatever this row says** (from 2026-09-30,
+#381). `AIR DT` means there is no infrastructure to reach, and trying
+costs decoder throughput on exactly the slots that place the grid (below).
+The panel shows `WIFI: OFF` while `AIR DT` is selected, so it never claims a
+radio that is not running; the stored `WIFI` choice is left as it was and
+applies again under `TIME: NTP`. Before this, the two were independent
+(a hilltop with a phone hotspot could take `AIR DT` and a log); that
+combination is gone.
 
-What `WIFI: OFF` buys, on a hilltop where the configured AP is not
+What no WiFi buys, on a hilltop where the configured AP is not
 there: the association campaign is four attempts three seconds apart,
 and while the driver hunts for an AP it cannot find it runs at FreeRTOS
 priority 23 — above anything this app creates. Measured at ~40 % of
@@ -342,16 +345,17 @@ decoder throughput (`fst4_sync_search` 711 → 1 395 ms per candidate),
 and it lands on the first slots after boot, which are exactly the ones
 a cold `AIR DT` acquisition needs.
 
-What it costs. In FT8 (UAC) mode the USB host driver has taken
+What it costs, under `WIFI: OFF` and under `TIME: AIR DT` alike. In FT8 (UAC) mode the USB host driver has taken
 USB-Serial-JTAG, so **WiFi is the only console**: the UDP log and the
 HTTP config page both go with it, and a board that fails on a hilltop
 shows nothing but its panel. It also takes NTP (so `TIME: NTP` has
 nothing to sync from and the grid falls back to the RTC), and in WSPR
 mode it takes the wsprnet upload, which is most of what a WSPR receiver
-is for.
+is for: **a WSPR board on `TIME: AIR DT` uploads nothing.**
 
 The way back is the panel: `WIFI: OFF` does not disable the mode
-picker, so the same three presses turn it on again.
+picker, so the same three presses turn it on again. Under `AIR DT`, `WIFI: ON`
+is stored but does nothing until `TIME` is set back to `NTP`.
 
 To change mode without the panel: erase NVS, and set `boot_mode` in
 `cfg.toml`.

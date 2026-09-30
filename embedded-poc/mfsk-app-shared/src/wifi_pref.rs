@@ -9,12 +9,23 @@
 //! infrastructure here, take the phase off the band" — still ran an
 //! association campaign at boot (issue #381).
 //!
-//! The obvious fix, tying WiFi to the grid source, was rejected: the
+//! The obvious fix, tying WiFi to the grid source, was rejected at first: the
 //! two answer different questions. The grid source says where *time*
 //! comes from; this says whether there is a *console*. A hilltop with a
 //! phone hotspot wants `AIR DT` **and** a log; a home bench with a
 //! working clock might still want the radio silent. One setting cannot
 //! express both, and the one it would express is the less useful half.
+//!
+//! **Since 2026-09-30 the tie is made anyway, on top of this setting**
+//! ([`crate::wifi_policy`]): `TIME: AIR DT` turns WiFi off whatever this
+//! says, because on the first slots an air-placed grid needs the
+//! association costs the decoder ~40 % (below), and the maintainer would
+//! rather have those slots than the log. This setting stays as it was:
+//! it is the choice under `TIME: NTP`, and its stored value is untouched
+//! by the grid source, so switching back finds it as left. The price is
+//! the one named above — in `BootMode::Uac` there is then **no console**
+//! under `AIR DT`, only the panel — and the panel shows `WIFI: OFF`
+//! there so it does not claim a radio that is not running.
 //!
 //! ## What the association actually costs
 //!

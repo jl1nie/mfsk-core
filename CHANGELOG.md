@@ -2,6 +2,20 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **CoreS3: `TIME: AIR DT` turns WiFi off, whatever the `WIFI` row says (#381).**
+  The rule is `mfsk_app_shared::wifi_policy::decide(wifi_on, air_dt)`, a truth table in its own module so the host
+  compiles and tests it (`hosttest/mfsk-app-shared`, three tests); `net::bring_up`, the one place every receiver's WiFi
+  decision goes through, asks it and logs why there is no radio (`TIME: AIR DT (...)` or `WIFI: OFF (CONFIG page)`, the
+  grid source winning when both hold). The panel shows the running value (`effective_wifi_pref`), so it reads `WIFI: OFF`
+  under AIR DT instead of claiming a radio that is not up; the stored `WIFI` choice is untouched and applies again under
+  `TIME: NTP`. Why: an association campaign costs the decoder ~40 % (`fst4_sync_search` 711 → 1 395 ms per candidate,
+  measured 2026-08-22) on the first slots, which are the ones an air-placed grid needs. This reverses `wifi_pref`'s own
+  earlier decision (tying WiFi to the grid source was rejected so that a hilltop with a hotspot could have AIR DT and a
+  log); the maintainer chose the tie on 2026-09-30 and `wifi_pref.rs` records both. The price, in the manual
+  (`MANUAL_M5STACK_CORES3.md` / `.ja.md`): in FT8 (UAC) mode the USB host driver has taken USB-Serial-JTAG, so under AIR DT
+  there is no console at all but the panel, and **a WSPR board on AIR DT uploads nothing**. Built for `xtensa-esp32s3-espidf`
+  (`cargo check --release`, default and `ft4,wspr,fst4,jtty-rx`); **not flashed**.
+
 - **Docs: the PFB in the module maps and examples, and §6's DSP table corrected (#534).**
   `LIBRARY.md` / `.ja.md`: the `iq/` line of the module map names `PfbChannelizer` and `Channelizer::Direct | Pfb`;
   `engine/fft.rs` names `with_planner`; the `IqReceiver` example shows `with_channelizer`. `BINDINGS.md` / `.ja.md`: the C

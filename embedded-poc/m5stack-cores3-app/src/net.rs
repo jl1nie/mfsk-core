@@ -39,7 +39,8 @@
 //! is not handed back on `Err`, so it lived in each app's own `run`.
 //! `boot` takes the modem out of `Peripherals` before it dispatches
 //! into a receiver, so [`bring_up`] now owns the whole thing: the
-//! three-way decision (the CONFIG page's `wifi_pref`, an empty
+//! three-way decision (`wifi_decision`: the CONFIG page's `wifi_pref`, or
+//! `TIME: AIR DT`, which turns WiFi off; an empty
 //! `WIFI_SSID`, a receiver that asked for no radio), the driver, and
 //! the task above.
 //!
@@ -208,13 +209,15 @@ pub fn bring_up<M>(
         return;
     };
     let tag = cfg.name;
-    if !crate::wifi_pref().enabled() {
-        // The CONFIG page's choice. Issue #381: this used to be four
+    let decision = crate::wifi_decision();
+    if !decision.enabled() {
+        // The CONFIG page's `WIFI` row, or `TIME: AIR DT` (which turns it
+        // off whatever the row says). Issue #381: this used to be four
         // copies of the same `if`, one per receiver, and before that it
         // was not asked at all — a board told to take its phase off the
         // air still ran an association campaign over the slots a cold
         // acquisition needs.
-        log::warn!("{tag}: WIFI: OFF (CONFIG page) — {}", cfg.without);
+        log::warn!("{tag}: no WiFi — {} — {}", decision.reason(), cfg.without);
         return;
     }
     if crate::WIFI_SSID.is_empty() {

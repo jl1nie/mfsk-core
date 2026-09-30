@@ -51,6 +51,11 @@ pub mod jtty_tx;
 #[path = "../../../embedded-poc/mfsk-app-shared/src/jtty_rx_clock.rs"]
 pub mod jtty_rx_clock;
 
+/// Whether a boot brings WiFi up — the `WIFI` and `TIME` rows of the CONFIG
+/// page as a truth table (#381): `TIME: AIR DT` turns it off.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/wifi_policy.rs"]
+pub mod wifi_policy;
+
 /// Slot parity — pure arithmetic; `time_sync` needs it.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/parity.rs"]
 pub mod parity;

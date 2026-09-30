@@ -826,7 +826,7 @@ pub fn run_log_panel(
             apply_commit(&nvs, commit);
         }
         picker
-            .render(&mut display, mode, crate::grid_source(), crate::wifi_pref(), rig_hz())
+            .render(&mut display, mode, crate::grid_source(), crate::effective_wifi_pref(), rig_hz())
             .ok();
         if picker.take_just_closed() {
             // The overlay covered the panel; force everything back.
@@ -992,7 +992,7 @@ pub fn run_log_panel(
         // vanished a moment after opening.
         if picker.is_open() {
             picker
-            .render(&mut display, mode, crate::grid_source(), crate::wifi_pref(), rig_hz())
+            .render(&mut display, mode, crate::grid_source(), crate::effective_wifi_pref(), rig_hz())
             .ok();
             // The overlay is the one screen that is nothing but input;
             // spend its idle time sampling rather than sleeping.
