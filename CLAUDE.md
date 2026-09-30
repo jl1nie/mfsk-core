@@ -423,6 +423,15 @@ code. The generators also refuse an unseeded simulator binary. On this machine `
 `target/ft4sim/ft4sim` are such builds, so pass `target/ft8sim-2b9/` /
 `ft4sim-2b9/`, or `ft8sim-3.2/` for the ITU and busy-band corpora.
 
+The runner also compares against upstream: every task in
+`scripts/upstream_tasks.json` for a swept protocol is paired per trial
+with WSJT-X's committed outcome, and both sides are timed
+(`scripts/upstream-baseline.py`, BENCHMARKS.md "The upstream baseline").
+A `jt9` comparison is only meaningful on a task defined on both sides.
+Define it there, never as "both at their defaults". Q65's first `jt9`
+comparisons differed in band, Rx frequency and AP sequencing, and were
+not measuring anything.
+
 **"Plausibly moves sensitivity" means the code path, not the
 protocol name.** Before running a protocol's sweep, check it actually
 shares the code you touched. FT8's `decode_block::coarse_sync` /

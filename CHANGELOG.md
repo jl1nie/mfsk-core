@@ -2,6 +2,16 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Tier C compares against upstream on a defined task, not only against this crate's past.**
+  `sweep-baseline.json` could not show a decoder that was behind WSJT-X from the start; Q65 ran 2.9–4.5× slower
+  than `jt9` unnoticed (#552). A task (band, operator knowledge, depth) is now defined once in
+  `scripts/upstream_tasks.json`, with the upstream command line and the crate request side by side.
+  `scripts/upstream-baseline.py` commits upstream's per-trial outcome on the existing corpus
+  (`docs/notes/upstream/`), then pairs every trial of a crate sweep against it (exact McNemar per group, plus
+  unexpected decodes) and times both sides on a few files. `run-sensitivity-sweeps.sh` runs it for every task of a
+  protocol it sweeps. No corpus grows and CI is unchanged. `scripts/build_jt9_upstream.sh` rebuilds the `v3.2.0-rc1`
+  reference `jt9`/`wsprd` reproducibly. First task, FT8 wideband with no QSO context against `jt9 -8 -d 3`: no
+  channel behind upstream, 0.42–0.49× its decode time.
 - **Q65 decodes 3.4–11× faster: the coarse search admits candidates as `q65_ccf_22` does (#552).** Every Q65 scan
   decoded `max_candidates` = 8 candidates, even on noise alone. The search scored a bin
   `sync / (sync + noise floor)`, which is about 0.5 on noise, and a fixed floor of 0.1 admitted all of them. The

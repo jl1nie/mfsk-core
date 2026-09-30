@@ -330,6 +330,62 @@ build (the 2026-07/08 sections) stay as the dated records they are: they say wha
 that build gave on that day, and are not re-run. A `jt9` reference used *for a
 decision* is the tag's.
 
+### The upstream baseline: one task, both decoders, every trial (2026-10-01)
+
+The paragraphs above describe a manual comparison. This one is the
+standing version, and it rests on one idea: **define the task first**. A
+comparison is only meaningful when both decoders are asked to do the same
+thing. Q65's first comparison was not like that. `jt9 -3` tries the
+Rx frequency (1500 ± 20 Hz) first, and the corpus signal sits exactly
+there, while this crate scanned 200–3000 Hz with no Rx frequency. The same
+comparison also ran AP as a separate full rescan. A task names the job
+(band, what the operator knows, depth) and the configuration on each side
+that does it. Accuracy and speed are compared within it.
+
+- `scripts/upstream_tasks.json`: the tasks, each with the upstream command
+  line and the crate request side by side. Edit both halves together.
+- `scripts/build_jt9_upstream.sh`: builds `jt9` and `wsprd` from
+  `v3.2.0-rc1` reproducibly, with the CMake edits this host needs. Check:
+  `qso3_busy.wav` decodes 14 / 20 / 21 at `-8 -d1/-d2/-d3`.
+- `scripts/upstream-baseline.py generate <task>`: runs upstream over the
+  task's tier-C corpus once. It commits the per-trial outcome to
+  `docs/notes/upstream/<task>.csv`, stamped with the binary's sha256, the
+  flags and the corpus stamp. `compare` refuses a corpus that does not match.
+- `scripts/upstream-baseline.py run <task> <dir>`: the crate half. It runs
+  the sweep test with the task's configuration, pairs every trial with
+  upstream's, and times both sides. `scripts/run-sensitivity-sweeps.sh`
+  calls it for every task of a protocol it sweeps.
+
+**Accuracy is paired, not compared as crossings.** Each group reports the
+trials both decoded, those only upstream decoded, and those only the crate
+decoded. It is flagged `!!` when upstream-only exceeds crate-only by an
+exact McNemar test at p < 0.05. This is what lets the existing corpora
+suffice. Two 20-trial crossings cannot resolve a few tenths of a dB; 260
+paired trials can. So no corpus grows and CI is untouched. Unexpected
+decodes are flagged when the crate's exceed upstream's by more than 3.
+
+**Speed is a ratio on a few files.** Per channel, 5 files from the
+lowest-SNR cell (effectively noise) and 5 from the cell nearest upstream's
+crossing. Both sides decode one file at a time, single-threaded. Upstream's
+figure is `timer.out`'s total, which leaves out process start, with FFTW
+wisdom warm. The ratio is machine-independent enough to track.
+
+First task, `ft8/t1`: wideband monitoring, 200–3000 Hz, no callsign known.
+Upstream runs `jt9 -8 -d 3 -L 200 -H 3000`, with AP on by default, which
+with no calls tries CQ only. The crate runs
+`DecodeRequest::wsjtx_depth(.., 200, 3000, 1.3, 1000, D3, CQ)`.
+Measured 2026-10-01 on the 9900X:
+
+| channel | both | upstream only | crate only | p | crossing upstream / crate |
+|---|---|---|---|---|---|
+| awgn | 164 | 0 | 5 | 0.06 | −21.67 / −21.90 |
+| ccir_good | 161 | 3 | 5 | 0.73 | −21.78 / −21.89 |
+| ccir_moderate | 135 | 1 | 4 | 0.38 | −20.33 / −20.50 |
+| ccir_poor | 130 | 1 | 4 | 0.38 | −19.71 / −19.82 |
+
+Time is 0.42× upstream on the noise cells (272 against 644 ms) and 0.49×
+at the crossing (310 against 629 ms). No group is behind upstream.
+
 ### Prerequisites
 
 A WSJT-X source checkout (`/home/ubuntu/src/WSJT-X` here) and `gfortran`,

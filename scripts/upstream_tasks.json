@@ -1,0 +1,17 @@
+{
+  "_note": "One task, one entry: what upstream is asked to do and how this crate is asked to do the same thing. scripts/upstream-baseline.py reads the upstream half, and the sweep test reads the crate half through `sweep_env`. Edit both halves together, or the comparison stops meaning anything. Build the upstream binary with scripts/build_jt9_upstream.sh.",
+  "ft8/t1": {
+    "task": "Wideband monitoring, 200-3000 Hz, no QSO context: every signal in one slot, with no callsign known. WSJT-X Deep with AP enabled, which with no callsigns tries only the CQ hypothesis.",
+    "upstream_tag": "v3.2.0-rc1",
+    "upstream_bin": "jt9",
+    "upstream_args": ["-8", "-d", "3", "-L", "200", "-H", "3000"],
+    "crate": "DecodeRequest::<Ft8>::wsjtx_depth(audio, 200, 3000, 1.3, 1000, WsjtxDepth::D3, Some(CQ hint))",
+    "sweep_test": "ft8_sweep",
+    "sweep_filter": "ft8_snr_sweep",
+    "sweep_env": {"MFSK_FT8_SWEEP_TASK": "t1"},
+    "sweep_csv_env": "MFSK_FT8_SWEEP_CSV",
+    "sweep_dir_env": "MFSK_FT8_SWEEP_DIR",
+    "corpus": "ft8_sweep",
+    "file_re": "^ft8_(?P<channel>awgn|ccir_\\w+?)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$"
+  }
+}

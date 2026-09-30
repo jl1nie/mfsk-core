@@ -344,6 +344,25 @@ if [ "${#csvs[@]}" -gt 0 ] && command -v python3 >/dev/null 2>&1; then
   run python3 "$REPO_ROOT/scripts/sweep-regression-check.py" "${csvs[@]}"
 fi
 
+# Against upstream, not only against this crate's own past: every task in
+# scripts/upstream_tasks.json for a protocol swept here, paired per trial
+# with WSJT-X's committed outcome on the same files, plus a speed ratio.
+# `sweep-baseline.json` cannot show a decoder that was behind upstream from
+# the start, which is how Q65 ran 2.9-4.5x slower than jt9 unnoticed (#552).
+# The CSVs go to a subdirectory so the regression check's glob above does
+# not read them as groups of their own.
+if command -v python3 >/dev/null 2>&1; then
+  for k in "${want[@]}"; do
+    for task in $(python3 -c "import json,sys; print(' '.join(t for t in json.load(open(sys.argv[1])) if t.split('/')[0]==sys.argv[2]))" \
+                    "$REPO_ROOT/scripts/upstream_tasks.json" "$k"); do
+      [ -f "$REPO_ROOT/docs/notes/upstream/${task//\//_}.csv" ] || continue
+      echo
+      echo "== against upstream: $task =="
+      run python3 "$REPO_ROOT/scripts/upstream-baseline.py" run "$task" "$CSV_DIR/upstream" || true
+    done
+  done
+fi
+
 cat <<'MSG'
 
 == done ==

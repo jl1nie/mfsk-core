@@ -135,10 +135,40 @@ fn freq_hint_requested() -> Option<f32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
+/// `MFSK_FT8_SWEEP_TASK=t1` runs the upstream-baseline task instead of the
+/// sweep's own configuration: T1 in `scripts/upstream_tasks.json`, wideband
+/// monitoring with no QSO context, the request that mirrors
+/// `jt9 -8 -d 3 -L 200 -H 3000`. That `jt9` has AP on and no callsigns, so
+/// only the CQ hypothesis runs, and the request gets a CQ hint to match.
+/// The other `MFSK_FT8_SWEEP_*` knobs do not apply to it.
+fn task_t1_requested() -> bool {
+    match std::env::var("MFSK_FT8_SWEEP_TASK").as_deref() {
+        Ok("t1") => true,
+        Err(_) => false,
+        Ok(other) => panic!("MFSK_FT8_SWEEP_TASK={other}: expected t1"),
+    }
+}
+
 fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::ft8::Ft8;
 
     use mfsk_core::msg::decode_request::DecodeRequest;
+    if task_t1_requested() {
+        use mfsk_core::ft8::decode::{ApHint, WsjtxDepth};
+        let cq = ApHint::new().with_call1("CQ");
+        let results = DecodeRequest::<Ft8>::wsjtx_depth(
+            audio,
+            200.0,
+            3000.0,
+            1.3,
+            1000,
+            WsjtxDepth::D3,
+            Some(&cq),
+        )
+        .decode()
+        .results;
+        return score_ft8(&results);
+    }
     let hint = ap_hint_requested();
     let mut req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 0.8, 50);
     if let Some(f) = freq_hint_requested() {
@@ -155,6 +185,10 @@ fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
         Strategy::SicEarly => req.sic_early().decode().results,
         Strategy::SicRounds => req.sic_rounds(3).decode().results,
     };
+    score_ft8(&results)
+}
+
+fn score_ft8(results: &[mfsk_core::ft8::decode::DecodeResult]) -> (bool, u32) {
     let pass = results.iter().any(|d| {
         unpack77(d.message77()).as_deref() == Some(GOLDEN_MSG)
             && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
