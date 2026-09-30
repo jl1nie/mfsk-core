@@ -785,12 +785,28 @@ pub fn run_log_panel(
                 // Once, the first frame after a sink exists to receive
                 // it. In host mode this is the only record there will
                 // ever be of how the boot went.
+                //
+                // "A sink" was the UDP one alone, so a boot with no WiFi
+                // never printed this anywhere — not even on the
+                // USB-Serial-JTAG console that a peripheral-mode board
+                // (plugged into a PC) has from the first instruction.
+                // `WIFI: OFF` made that possible and `TIME: AIR DT`
+                // (#381) made it the default on a hilltop; found on the
+                // first AIR DT boot after that change, 2026-09-30. So in
+                // peripheral mode it also goes out when this boot will
+                // bring no WiFi, or when 30 s pass without the UDP sink
+                // (an AP that is not there). Host mode with no WiFi has
+                // no console at all and nothing to send it to.
                 if !boot_summary_sent
-                    && crate::FANOUT
+                    && (crate::FANOUT
                         .udp
                         .try_lock()
                         .map(|g| g.is_some())
                         .unwrap_or(false)
+                        || (!host_mode
+                            && (!crate::wifi_decision().enabled()
+                                || unsafe { esp_idf_svc::sys::esp_timer_get_time() }
+                                    > 30_000_000)))
                 {
                     boot_summary_sent = true;
                     let r = crate::uac::HOST_RESULT.read();
