@@ -181,7 +181,7 @@ fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
         req = req.strictness(level);
     }
     let results = match strategy_from_env() {
-        Strategy::Single => req.decode().results,
+        Strategy::Single => req.single_pass().decode().results,
         Strategy::SicEarly => req.sic_early().decode().results,
         Strategy::SicRounds => req.sic_rounds(3).decode().results,
     };

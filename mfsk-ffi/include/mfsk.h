@@ -998,9 +998,20 @@ typedef struct MfskDecodeParams {
      */
     uint8_t nb_sweep_step;
     /**
+     * One pass, no subtraction, in place of the mode's default strategy.
+     * Since 0.12.0 FT8 subtracts by default (`sic_early`) and FT4 does too
+     * (`sic_rounds` 3), as WSJT-X does. This asks for the single pass
+     * instead. Refused together with `sic_rounds` or `sic_early`. On a mode
+     * that already decodes in one pass it changes nothing. It takes one
+     * byte of what was padding, so the struct's size and every other
+     * offset are unchanged, and a caller that zeroed the padding gets the
+     * default.
+     */
+    bool single_pass;
+    /**
      * Padding to keep the struct's layout stable across compilers.
      */
-    uint8_t _pad2[2];
+    uint8_t _pad2[1];
 } MfskDecodeParams;
 
 /**

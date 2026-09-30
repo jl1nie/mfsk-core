@@ -90,7 +90,7 @@ fn ft4_decode(
     audio: &[i16],
     budget: Option<&CandidateBudget>,
 ) -> (Vec<DecodeResult>, BudgetReport) {
-    let req = DecodeRequest::<Ft4>::new(audio, 300.0, 2700.0, 1.2, 50);
+    let req = DecodeRequest::<Ft4>::new(audio, 300.0, 2700.0, 1.2, 50).single_pass();
     let check;
     let req = match budget {
         None => req,
@@ -183,6 +183,7 @@ fn ft4_sic_rounds_are_declined_whole_and_never_repeat_a_message() {
         let budget = CandidateBudget::new(n);
         let check = || budget.check();
         let out = DecodeRequest::<Ft4>::new(&audio, 300.0, 2700.0, 1.2, 50)
+            .single_pass()
             .sic_rounds(3)
             .budget(&check)
             .decode();

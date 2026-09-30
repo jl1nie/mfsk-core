@@ -125,7 +125,7 @@ fn message_filter_replaces_the_verdict() {
 #[test]
 fn the_strategy_survives_a_policy_change_in_either_order() {
     let a = audio();
-    let single = rows(&req(&a).also_accept(|_| false).decode());
+    let single = rows(&req(&a).single_pass().also_accept(|_| false).decode());
     let before = rows(&req(&a).also_accept(|_| false).sic_early().decode());
     let after = rows(&req(&a).sic_early().also_accept(|_| false).decode());
 

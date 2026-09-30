@@ -154,6 +154,7 @@ fn sic_early_with_known_and_cache_finds_dl8yhr() {
     // shape of WebFT8's `decode_phase1`. Captures both the decoded
     // messages and the FFT cache for reuse.
     let phase1 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
+        .single_pass()
         .strictness(DecodeStrictness::Normal)
         .decode();
     assert!(

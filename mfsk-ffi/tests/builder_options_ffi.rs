@@ -143,7 +143,9 @@ fn sic_rounds_and_sic_early_recover_more_stations_than_default() {
         p
     };
 
-    let default_n = count(&base(), &audio);
+    let mut single = base();
+    single.single_pass = true;
+    let single_n = count(&single, &audio);
 
     let mut early = base();
     early.sic_early = true;
@@ -154,13 +156,44 @@ fn sic_rounds_and_sic_early_recover_more_stations_than_default() {
     let rounds_n = count(&rounds, &audio);
 
     assert!(
-        early_n > default_n,
-        "sic_early ({early_n}) should beat default ({default_n}) on qso3_busy"
+        early_n > single_n,
+        "sic_early ({early_n}) should beat the single pass ({single_n}) on qso3_busy"
     );
     assert!(
-        rounds_n > default_n,
-        "sic_rounds(3) ({rounds_n}) should beat default ({default_n}) on qso3_busy"
+        rounds_n > single_n,
+        "sic_rounds(3) ({rounds_n}) should beat the single pass ({single_n}) on qso3_busy"
     );
+    // Since 0.12.0 FT8's default *is* `sic_early`, as WSJT-X's default subtracts.
+    assert_eq!(
+        count(&base(), &audio),
+        early_n,
+        "FT8's default should be sic_early"
+    );
+}
+
+/// `single_pass` with a SIC request asks for two different things; it is
+/// refused, not resolved by precedence.
+#[test]
+fn single_pass_with_subtraction_is_refused() {
+    for (mode, sic) in [
+        (
+            MfskMode::Ft8,
+            &(|p: &mut MfskDecodeParams| p.sic_early = true) as &dyn Fn(&mut MfskDecodeParams),
+        ),
+        (MfskMode::Ft8, &|p: &mut MfskDecodeParams| p.sic_rounds = 2),
+        (MfskMode::Ft4, &|p: &mut MfskDecodeParams| p.sic_rounds = 3),
+    ] {
+        let mut p = params(mode);
+        p.single_pass = true;
+        sic(&mut p);
+        let mut st = MfskStatus::Ok;
+        let d = unsafe { mfsk_session_open(mode as u32, &p, &mut st) };
+        assert!(
+            d.is_null(),
+            "{mode:?}: single_pass with SIC should not open"
+        );
+        assert_ne!(st, MfskStatus::Ok);
+    }
 }
 
 /// An AP hint must take no decode away, and must surface the blind-CQ

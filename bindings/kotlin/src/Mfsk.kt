@@ -168,6 +168,10 @@ data class MfskDecodeParams(
     /// Impulse-noise blanker, or null for none. Needs
     /// [Mfsk.CAP_NOISE_BLANKER].
     val noiseBlanker: MfskNoiseBlanker?,
+    /// One pass, no subtraction, in place of the mode's default. Since
+    /// 0.12.0 FT8 and FT4 subtract by default, as WSJT-X does. Refused
+    /// together with [sicRounds] or [sicEarly].
+    val singlePass: Boolean = false,
 ) {
     companion object {
         const val DEPTH_MODE_DEFAULT = 0
@@ -187,7 +191,7 @@ data class MfskDecodeParams(
         // Slot counts of the three arrays that cross JNI — the layout is
         // documented at `read_params` in mfsk_jni.c and must move with it.
         internal const val FLOATS = 7
-        internal const val INTS = 9
+        internal const val INTS = 10
 
         internal fun fromArrays(f: FloatArray, v: IntArray): MfskDecodeParams =
             MfskDecodeParams(
@@ -211,6 +215,7 @@ data class MfskDecodeParams(
                     v[7] != 0 -> MfskNoiseBlanker.Percent(v[7])
                     else -> null
                 },
+                singlePass = v[9] != 0,
             )
     }
 
@@ -228,6 +233,7 @@ data class MfskDecodeParams(
         return intArrayOf(
             maxCand, depth, strictness, eqMode, sicRounds,
             if (sicEarly) 1 else 0, if (apHint != null) 1 else 0, pct, step,
+            if (singlePass) 1 else 0,
         )
     }
 

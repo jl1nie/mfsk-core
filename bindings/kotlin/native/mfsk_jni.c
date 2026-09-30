@@ -321,9 +321,9 @@ static bool on_budget(void* user) {
 ///   floats: freq_min_hz, freq_max_hz, sync_min, freq_hint_hz (NaN unset),
 ///           search_hz, tx_freq_hz (NaN unset), nb_ftol_hz
 ///   ints:   max_cand, depth, strictness, eq_mode, sic_rounds, sic_early,
-///           has_ap_hint, nb_percent, nb_sweep_step
+///           has_ap_hint, nb_percent, nb_sweep_step, single_pass
 ///   ap:     ap_call1, ap_call2, ap_grid (null entries are empty)
-enum { kParamFloats = 7, kParamInts = 9, kParamAp = 3 };
+enum { kParamFloats = 7, kParamInts = 10, kParamAp = 3 };
 
 /// Build the C struct from the arrays. False, with an exception pending,
 /// on a malformed array — the shim checks lengths because a short array
@@ -362,6 +362,7 @@ static bool read_params(JNIEnv* env, jfloatArray fa, jintArray ia, jobjectArray 
     p->has_ap_hint = v[6] != 0;
     p->nb_percent = (uint8_t)v[7];
     p->nb_sweep_step = (uint8_t)v[8];
+    p->single_pass = v[9] != 0;
 
     char* dst[kParamAp] = { p->ap_call1, p->ap_call2, p->ap_grid };
     for (int i = 0; i < kParamAp; ++i) {
@@ -391,7 +392,7 @@ static void write_params(JNIEnv* env, const MfskDecodeParams* p,
     const jint v[kParamInts] = {
         (jint)p->max_cand, (jint)p->depth, (jint)p->strictness, (jint)p->eq_mode,
         (jint)p->sic_rounds, p->sic_early ? 1 : 0, p->has_ap_hint ? 1 : 0,
-        (jint)p->nb_percent, (jint)p->nb_sweep_step,
+        (jint)p->nb_percent, (jint)p->nb_sweep_step, p->single_pass ? 1 : 0,
     };
     (*env)->SetFloatArrayRegion(env, fa, 0, kParamFloats, f);
     (*env)->SetIntArrayRegion(env, ia, 0, kParamInts, v);

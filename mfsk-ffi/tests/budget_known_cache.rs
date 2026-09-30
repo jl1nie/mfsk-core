@@ -68,10 +68,15 @@ fn without_a_budget_the_report_is_all_zero() {
     unsafe { mfsk_session_close(dec) };
 }
 
+/// Pinned to the single pass: its scheduler polls once per candidate, which
+/// is what `candidates_skipped` and `cut_at_sync` describe. FT8's default
+/// since 0.12.0 (`sic_early`) polls at stage boundaries and reports stages.
 #[test]
 fn a_budget_that_refuses_everything_cuts_the_search_and_says_so() {
     let audio = two_station_slot();
-    let dec = open(MfskMode::Ft8, None);
+    let mut sp = params(MfskMode::Ft8);
+    sp.single_pass = true;
+    let dec = open(MfskMode::Ft8, Some(&sp));
     let full = decode_i16(dec, &audio).len();
     assert!(full > 0);
 

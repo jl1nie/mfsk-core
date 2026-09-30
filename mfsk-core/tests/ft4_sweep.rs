@@ -142,9 +142,9 @@ fn decode_wav_ft4(audio: &[i16]) -> (bool, u32) {
     let out = if task_t1_requested() {
         req.sic_rounds(3).decode()
     } else if codec_filter_requested() {
-        req.codec_filter().decode()
+        req.single_pass().codec_filter().decode()
     } else {
-        req.decode()
+        req.single_pass().decode()
     };
     let text_of = |d: &_| -> Option<String> {
         let d: &mfsk_core::ft4::decode::DecodeResult = d;

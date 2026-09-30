@@ -2,6 +2,13 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Breaking (behaviour): FT8 and FT4 subtract by default, as WSJT-X does.** A plain `DecodeRequest::new(..).decode()`
+  now runs `.sic_early()` on FT8 and `.sic_rounds(3)` on FT4. Before this it ran a single pass, which WSJT-X never does.
+  `.single_pass()` asks for one pass, and the C ABI has `MfskDecodeParams::single_pass`, in what was padding, so the
+  layout is unchanged; Kotlin `singlePass`, Swift `singlePass`. FT8 gains up to 21 points of recall on a crowded band
+  (40 signals: 60 % to 81 %) and 0.3-1.5 dB on fading, at 2-3× the time. FT4 loses nothing and costs the same on noise.
+  A caller that timed or budgeted the old default, such as WebFT8's phase-1 pass, should add `.single_pass()`. A budget
+  on the new defaults is polled per stage, not per candidate.
 - **FT4 `.sic_rounds()`: the blind CQ AP rung restored, and rounds as `ft4_decode.f90` runs them (#553).** The SIC path
   passed an empty AP list, so it lost 0.5-1.4 dB to FT4's own single pass. Against `jt9 -5 -d 3` it was 4 of 4
   channels behind. It also relaxed `sync_min` x0.75/x0.5 in later rounds and ran every round, where upstream keeps

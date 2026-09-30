@@ -164,6 +164,10 @@ public struct DecodeParams: Sendable {
     /// Impulse-noise blanker, or nil for none. Needs
     /// ``Capabilities/noiseBlanker``.
     public var noiseBlanker: NoiseBlanker?
+    /// One pass, no subtraction, in place of the mode's default. Since
+    /// 0.12.0 FT8 and FT4 subtract by default, as WSJT-X does. Refused
+    /// together with ``sicRounds`` or ``sicEarly``.
+    public var singlePass: Bool
 
     /// This mode's published defaults, as the starting point the ABI
     /// insists on.
@@ -198,6 +202,7 @@ public struct DecodeParams: Sendable {
         } else {
             self.noiseBlanker = nil
         }
+        self.singlePass = raw.single_pass
     }
 
     /// Marshal into the C struct for the duration of `body`. One copy,
@@ -216,6 +221,7 @@ public struct DecodeParams: Sendable {
         raw.freq_hint_hz = frequencyHintHz ?? Float.nan
         raw.sic_rounds = sicRounds
         raw.sic_early = sicEarly
+        raw.single_pass = singlePass
         raw.has_ap_hint = apHint != nil
         if let hint = apHint {
             setCArray(&raw.ap_call1, to: hint.call1)

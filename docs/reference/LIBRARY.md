@@ -137,8 +137,9 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.fft_cache(c)` | cache from a previous `DecodeOutcome` | none | all | reuse the forward FFT over the same audio |
 | `.noise_blanker(nb)` | `NoiseBlanker` | off | `SupportsNoiseBlanker` — **every FST4 sub-mode** | WSJT-X's **NB** (`blanker.f90`): zero the loudest samples before the slot FFT. `Percent(n)` blanks `n` % (0..=25); `Sweep { step, ftol_hz }` decodes at 0, step, … 20 %, the levels above 0 only within `ftol_hz` of `.freq_hint()` (up to 21 decodes). Off, like WSJT-X's default NB 0 % |
 | `.ap_hint(&ApHint)` | `&ApHint` | none | `SupportsWideBandAp` — **FT8, FT4, every FST4 sub-mode** | lock message bits from an a-priori hypothesis |
-| `.sic_rounds(n)` | `usize`, clamped `1..=3` | none | `SupportsSicRounds` — **FT8, FT4** | flat successive-interference cancellation |
-| `.sic_early()` | — | none | `SupportsSicEarly` — **FT8** | checkpoint-emulation early decode, fixed 3-checkpoint structure |
+| `.sic_rounds(n)` | `usize`, clamped `1..=3` | **FT4's default** (3) | `SupportsSicRounds` — **FT8, FT4** | flat successive-interference cancellation |
+| `.sic_early()` | — | **FT8's default** | `SupportsSicEarly` — **FT8** | checkpoint-emulation early decode, fixed 3-checkpoint structure |
+| `.single_pass()` | — | FST4's default | all | one pass, no subtraction, in place of the protocol's default. Since 0.12.0 a plain `.decode()` subtracts on FT8 and FT4, as WSJT-X does by default. On FT8 that costs 2-3× the single pass's time and takes a 40-signal busy band from 60 % to 81 % recall; on FT4 recall is unchanged on single-signal files, the WSJT-X sample goes from 11 to 14 decodes, and noise costs the same |
 | `.also_accept(f)` | `Fn(&Wsjt77Fields) -> bool` | none | `SupportsMessageFilter` — **FT8, FT4, every FST4 sub-mode** | accept what the codec accepts **plus** what `f` accepts — [§2.6](#26-message-acceptance) |
 | `.message_filter(f)` | `Fn(&Wsjt77Fields) -> bool` | none | `SupportsMessageFilter` — **FT8, FT4, every FST4 sub-mode** | replace the codec's verdict with `f` — [§2.6](#26-message-acceptance) |
 | `.codec_filter()` | — | on for FT8, off elsewhere | `SupportsMessageFilter` — **FT8, FT4, every FST4 sub-mode** | apply the codec's own verdict on a protocol that does not by default — [§2.6](#26-message-acceptance) |
@@ -979,8 +980,8 @@ slot model with a burst scan, and JTTY with an incremental receiver.
 
 | Protocol | Default strategy | Optional strategies |
 |----------|------------------|---------------------|
-| **FT8**  | single-pass BP + OSD | AP iaptype loop (1–12); SIC 1–3 rounds; `.sic_early()`; sniper; the **a7 / a8 list decoders** (pass ids 30 / 31, run at the end of every FT8 strategy; a7 via `.previous_cycle()`, a8 via an `.ap_hint()` with MyCall, HisCall, HisGrid plus `.freq_hint()`); `wsjtx_depth(…)` presets |
-| **FT4**  | single-pass BP + OSD | SIC 1–3 rounds; full-slot coherent sync (`sync2d`) |
+| **FT8**  | `.sic_early()` (since 0.12.0; `.single_pass()` for one pass) | AP iaptype loop (1–12); SIC 1–3 rounds; single pass; sniper; the **a7 / a8 list decoders** (pass ids 30 / 31, run at the end of every FT8 strategy; a7 via `.previous_cycle()`, a8 via an `.ap_hint()` with MyCall, HisCall, HisGrid plus `.freq_hint()`); `wsjtx_depth(…)` presets |
+| **FT4**  | `.sic_rounds(3)` (since 0.12.0; `.single_pass()` for one pass) | SIC 1–2 rounds; single pass; full-slot coherent sync (`sync2d`) |
 | **FST4** | single-pass BP + OSD | full-slot two-stage coherent sync search; noise blanker (`.noise_blanker()`, fixed % or sweep) |
 | **WSPR** | single bespoke pass (quarter-symbol spectrogram scan) | — |
 | **JT9**  | single bespoke pass | — |

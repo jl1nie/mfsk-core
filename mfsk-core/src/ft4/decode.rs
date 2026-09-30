@@ -65,6 +65,20 @@ impl pipeline::GenericPipelineProtocol for Ft4 {
 impl FrameDecodable for Ft4 {
     type DecodeResult = DecodeResult;
 
+    /// `.sic_rounds(3)`: `ft4_decode.f90` subtracts in up to three passes at
+    /// `ndepth` 2 and 3. Since #553 that path matches the single pass's recall
+    /// on the AWGN/CCIR sweep corpus exactly. It reaches `jt9`'s 14/14 on the
+    /// WSJT-X sample, where the single pass reaches 11. It stops when a pass
+    /// adds nothing, so on noise it costs what the single pass costs.
+    const DEFAULT_STRATEGY: crate::msg::decode_request::StrategyTag =
+        crate::msg::decode_request::StrategyTag::FlatSic;
+
+    fn __default_strategy<Pol: MessagePolicy>(
+        req: &DecodeRequest<'_, Self, Pol>,
+    ) -> DecodeOutcome<Self> {
+        <Self as SupportsSicRounds>::__flat_sic(req)
+    }
+
     /// **On, and measured before it was turned on.** See
     /// [`FrameDecodable::MESSAGE_FILTER_DEFAULT`] for why FT8 runs the
     /// codec's verdict: a CRC-14 false positive that reaches

@@ -181,6 +181,7 @@ p.freq_max_hz = 2600.0f;
 | `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定。a-priori パスの QSO 周波数でもある: 両方の呼出符号を固定する AP ヒント（`ap_call1` と `ap_call2`）は、この周波数の 50 Hz 以内にだけ試し、未設定なら一切試さない。送信周波数は下の `tx_freq_hz` |
 | `sic_rounds` | 逐次干渉除去の回数、0 で無効。`MFSK_CAP_SIC_ROUNDS` が必要 |
 | `sic_early` | チェックポイント模倣の早期デコード。`MFSK_CAP_SIC_EARLY` が必要 |
+| `single_pass` | モードの既定の代わりに、減算なしの 1 パスで復号する。0.12.0 から、`sic_rounds` も `sic_early` も指定しないとき、FT8 と FT4 は減算する（FT8 は `sic_early`、FT4 は 3 ラウンド。WSJT-X の既定と同じ）。`sic_rounds` / `sic_early` との同時指定は拒否される。もともと 1 パスで復号するモードでは何も変わらない。以前パディングだった 1 バイトを使うので、構造体のサイズとほかの項目のオフセットは変わらない。予算（`mfsk_session_set_budget`）は、単一パスでは候補ごとに、減算する既定では段階ごとに確認される。そのため報告の `candidates_skipped` / `cut_at_sync` が意味を持つのは単一パスのとき |
 | `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | 事前情報ヒント。`MFSK_CAP_AP_WIDEBAND`（狭帯域呼び出しでは `_AP_NARROW`）が必要 |
 | `search_hz` | 狭帯域探索の半値幅。0 でモード既定。`MFSK_CAP_SNIPER` のときのみ意味を持つ |
 | `tx_freq_hz` | 運用者の送信周波数（WSJT-X の `nftx`）。`NaN`（`_init` が書く値）は未設定。FT8 は、両方の呼出符号を固定する AP 仮説を `freq_hint_hz` の 50 Hz 以内に加えて、この周波数の 50 Hz 以内でも試す（`ft8b.f90`）。`MFSK_CAP_TX_FREQ` が必要で、**FT8 のみ**。狭帯域呼び出し（`search_hz`）では読まれないので併用不可。他のモードは `mfsk_session_open` で拒否する |

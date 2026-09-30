@@ -255,6 +255,7 @@ fun main() {
     check("no AP hint", d.apHint == null)
     check("no noise blanker", d.noiseBlanker == null)
     checkEq("no SIC", d.sicRounds, 0)
+    check("the mode's default strategy, not a forced single pass", !d.singlePass)
 
     // The arrays are the wire format: what goes out has to come back.
     for (nb in listOf(null, MfskNoiseBlanker.Percent(7), MfskNoiseBlanker.Sweep(2, 33.0f))) {
@@ -263,6 +264,7 @@ fun main() {
             depth = MfskDecodeParams.DEPTH_BP_ALL, strictness = MfskDecodeParams.STRICTNESS_DEEP,
             eqMode = MfskDecodeParams.EQ_LOCAL, freqHintHz = 1234.5f, sicRounds = 3,
             sicEarly = true, searchHz = 60.0f, txFreqHz = 1500.25f, noiseBlanker = nb,
+            singlePass = true,
         )
         checkEq("params survive the arrays ($nb)",
                 MfskDecodeParams.fromArrays(p.floatArray(), p.intArray()), p)
@@ -282,6 +284,7 @@ fun main() {
     val f15d = Mfsk.defaultParams(f15)
 
     // Each int slot, by the refusal that names it.
+    refused("single pass with sic_early", "single_pass", ft8, d.copy(singlePass = true, sicEarly = true))
     refused("an out-of-range depth", "depth", ft8, d.copy(depth = 9))
     refused("an out-of-range strictness", "strictness", ft8, d.copy(strictness = 9))
     refused("an out-of-range eq mode", "eq_mode", ft8, d.copy(eqMode = 9))

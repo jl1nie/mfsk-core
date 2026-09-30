@@ -1939,7 +1939,8 @@ pub unsafe extern "C" fn mfsk_decode_params_init(
         nb_ftol_hz: 0.0,
         nb_percent: 0,
         nb_sweep_step: 0,
-        _pad2: [0; 2],
+        single_pass: false,
+        _pad2: [0; 1],
     };
     // A mode that cannot turn OSD off should not be told to.
     if meta.profile.caps & mfsk_core::registry::caps::OSD == 0 {
@@ -1997,6 +1998,12 @@ fn validate_params(mode: MfskMode, p: &MfskDecodeParams) -> Result<(), String> {
     if p.sic_rounds > 0 && caps & MFSK_CAP_SIC_ROUNDS == 0 {
         return Err(format!(
             "{name} has no successive-interference cancellation"
+        ));
+    }
+    if p.single_pass && (p.sic_rounds > 0 || p.sic_early) {
+        return Err(format!(
+            "{name}: single_pass asks for one pass, and sic_rounds / sic_early for subtraction; \
+             set one of them"
         ));
     }
     if p.sic_early && caps & MFSK_CAP_SIC_EARLY == 0 {
@@ -2118,7 +2125,8 @@ pub unsafe extern "C" fn mfsk_session_open(
         nb_ftol_hz: 0.0,
         nb_percent: 0,
         nb_sweep_step: 0,
-        _pad2: [0; 2],
+        single_pass: false,
+        _pad2: [0; 1],
     };
     if unsafe { mfsk_decode_params_init(mode as u32, &mut p) } != MfskStatus::Ok {
         report(MfskStatus::UnknownProtocol);
@@ -2249,6 +2257,7 @@ unsafe fn read_params(
     for (name, off) in [
         ("sic_early", offset_of!(MfskDecodeParams, sic_early)),
         ("has_ap_hint", offset_of!(MfskDecodeParams, has_ap_hint)),
+        ("single_pass", offset_of!(MfskDecodeParams, single_pass)),
     ] {
         let b = bool_at(off);
         if b > 1 {
@@ -2518,6 +2527,9 @@ fn run_decode(d: &mut V2Decoder, audio: &[i16], p: &MfskDecodeParams) -> Result<
             }
             if p.sic_rounds > 0 {
                 req = req.sic_rounds(p.sic_rounds as usize);
+            }
+            if p.single_pass {
+                req = req.single_pass();
             }
             let _ = $early;
             collect!($proto, req.decode())

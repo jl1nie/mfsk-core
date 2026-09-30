@@ -149,13 +149,13 @@ fn decode(audio: &[i16], strategy: Strategy, cap: usize, sync_min: f32) -> Vec<(
         // `ft8b.f90` does not have, is off (#456).
         let req = req.message_filter(|_| true);
         match strategy {
-            Strategy::Single => req.decode().results,
+            Strategy::Single => req.single_pass().decode().results,
             Strategy::SicEarly => req.sic_early().decode().results,
             Strategy::SicRounds(n) => req.sic_rounds(n).decode().results,
         }
     } else {
         match strategy {
-            Strategy::Single => req.decode().results,
+            Strategy::Single => req.single_pass().decode().results,
             Strategy::SicEarly => req.sic_early().decode().results,
             Strategy::SicRounds(n) => req.sic_rounds(n).decode().results,
         }

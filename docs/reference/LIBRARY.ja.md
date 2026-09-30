@@ -137,8 +137,9 @@ DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
 | `.fft_cache(c)` | 前回の `DecodeOutcome` のキャッシュ | 無し | 全部 | 同じ音声への前方 FFT を再利用 |
 | `.noise_blanker(nb)` | `NoiseBlanker` | オフ | `SupportsNoiseBlanker` — **FST4 の全サブモード** | WSJT-X の **NB**（`blanker.f90`）: スロット FFT の前に振幅の大きい標本を 0 にする。`Percent(n)` は `n` %（0..=25）を消す。`Sweep { step, ftol_hz }` は 0, step, … 20 % の各レベルでデコードし、0 より上のレベルは `.freq_hint()` の `ftol_hz` 以内だけを試す（最大 21 回のデコード）。既定はオフで、WSJT-X の既定 NB 0 % と同じ |
 | `.ap_hint(&ApHint)` | `&ApHint` | 無し | `SupportsWideBandAp` — **FT8・FT4・FST4 全サブモード** | 事前仮説からメッセージビットを固定 |
-| `.sic_rounds(n)` | `usize`、`1..=3` にクランプ | 無し | `SupportsSicRounds` — **FT8, FT4** | 平坦な逐次干渉除去 |
-| `.sic_early()` | — | 無し | `SupportsSicEarly` — **FT8** | チェックポイント模倣の早期デコード（3 チェックポイント固定構造） |
+| `.sic_rounds(n)` | `usize`、`1..=3` にクランプ | **FT4 の既定**（3） | `SupportsSicRounds` — **FT8, FT4** | 平坦な逐次干渉除去 |
+| `.sic_early()` | — | **FT8 の既定** | `SupportsSicEarly` — **FT8** | チェックポイント模倣の早期デコード（3 チェックポイント固定構造） |
+| `.single_pass()` | — | FST4 の既定 | 全プロトコル | プロトコルの既定の代わりに、減算なしの 1 パスで復号する。0.12.0 から、素の `.decode()` は FT8 と FT4 で減算する（WSJT-X の既定と同じ）。FT8 では単一パスの 2〜3 倍の時間がかかり、40 局の混雑帯域で recall が 60 % から 81 % になる。FT4 では信号 1 局のファイルの recall は変わらず、WSJT-X のサンプルは 11 件から 14 件になり、雑音のみのコストは変わらない |
 | `.also_accept(f)` | `Fn(&Wsjt77Fields) -> bool` | 無し | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | codec が通すもの **＋** `f` が通すもの — [§2.6](#26-メッセージの受理) |
 | `.message_filter(f)` | `Fn(&Wsjt77Fields) -> bool` | 無し | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | codec の判定を `f` で置き換える — [§2.6](#26-メッセージの受理) |
 | `.codec_filter()` | — | FT8 は on、他は off | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | 既定で判定しないプロトコルで codec 自身の判定を適用する — [§2.6](#26-メッセージの受理) |
@@ -935,8 +936,8 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 
 | プロトコル | 既定の戦略 | 任意の戦略 |
 |----------|-----------|-----------|
-| **FT8** | 単一パス BP + OSD | AP iaptype ループ (1–12)、SIC 1–3 ラウンド、`.sic_early()`、sniper、**a7 / a8 リストデコーダ**（pass id 30 / 31。FT8 の全戦略の最後に走る。a7 は `.previous_cycle()`、a8 は MyCall・HisCall・HisGrid を持つ `.ap_hint()` と `.freq_hint()`）、`wsjtx_depth(…)` プリセット |
-| **FT4** | 単一パス BP + OSD | SIC 1–3 ラウンド、フルスロット・コヒーレント sync (`sync2d`) |
+| **FT8** | `.sic_early()`（0.12.0 から。1 パスは `.single_pass()`） | AP iaptype ループ (1–12)、SIC 1–3 ラウンド、単一パス、sniper、**a7 / a8 リストデコーダ**（pass id 30 / 31。FT8 の全戦略の最後に走る。a7 は `.previous_cycle()`、a8 は MyCall・HisCall・HisGrid を持つ `.ap_hint()` と `.freq_hint()`）、`wsjtx_depth(…)` プリセット |
+| **FT4** | `.sic_rounds(3)`（0.12.0 から。1 パスは `.single_pass()`） | SIC 1–2 ラウンド、単一パス、フルスロット・コヒーレント sync (`sync2d`) |
 | **FST4** | 単一パス BP + OSD | フルスロット2段コヒーレント sync 探索、ノイズブランカ（`.noise_blanker()`、固定 % またはスイープ） |
 | **WSPR** | 単一の専用パス（四半シンボル・スペクトログラム走査） | — |
 | **JT9** | 単一の専用パス | — |

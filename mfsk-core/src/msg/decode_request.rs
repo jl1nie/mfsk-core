@@ -585,6 +585,25 @@ pub trait FrameDecodable: Protocol {
     fn __single_pass<Pol: MessagePolicy>(req: &DecodeRequest<'_, Self, Pol>) -> DecodeOutcome<Self>
     where
         Self: Sized;
+
+    /// The strategy a plain `DecodeRequest::new(..).decode()` runs: what
+    /// WSJT-X does by default, which subtracts. FT8 overrides it with
+    /// `.sic_early()` and FT4 with `.sic_rounds(3)`. FST4 keeps the single
+    /// pass, since `fst4_decode.f90` has no subtraction. `.single_pass()`
+    /// chooses the single pass explicitly.
+    #[doc(hidden)]
+    const DEFAULT_STRATEGY: StrategyTag = StrategyTag::SinglePass;
+
+    /// The function behind [`Self::DEFAULT_STRATEGY`].
+    #[doc(hidden)]
+    fn __default_strategy<Pol: MessagePolicy>(
+        req: &DecodeRequest<'_, Self, Pol>,
+    ) -> DecodeOutcome<Self>
+    where
+        Self: Sized,
+    {
+        Self::__single_pass(req)
+    }
 }
 
 /// Protocols with a narrow-band single-target search
@@ -859,13 +878,25 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P, DefaultPolicy> {
             on_result: None,
             budget: None,
             policy: DefaultPolicy,
-            tag: StrategyTag::SinglePass,
-            strategy: P::__single_pass,
+            tag: P::DEFAULT_STRATEGY,
+            strategy: P::__default_strategy,
         }
     }
 }
 
 impl<'a, P: FrameDecodable, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
+    /// One pass, no subtraction, in place of the protocol's default
+    /// strategy. Since 0.12.0 a plain `.decode()` subtracts on FT8
+    /// (`.sic_early()`) and FT4 (`.sic_rounds(3)`), as WSJT-X does by default.
+    /// On FT8 the default costs 2-3x the single pass's time and gains up to
+    /// 21 points of recall on a crowded band. This is for a caller that wants
+    /// the single pass's latency: an embedded budget, say, or a
+    /// like-for-like with an older release.
+    pub fn single_pass(mut self) -> Self {
+        self.tag = StrategyTag::SinglePass;
+        self.strategy = P::__single_pass;
+        self
+    }
     /// Preferred frequency; matching candidates are tried first. It is also the QSO
     /// frequency (`nfqso`) for the a-priori passes: an AP hypothesis that locks both
     /// callsigns is tried only within 50 Hz of it (or of [`Self::tx_freq`] on FT8), and
@@ -1248,16 +1279,14 @@ impl<'a, P: SupportsSicRounds, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
     /// [`SupportsSicRounds`]'s doc comment for why (an upstream WSJT-X
     /// absence, not an mfsk-core gap).
     ///
-    /// # You probably want this if you are comparing against WSJT-X
+    /// # The default on FT4, since 0.12.0
     ///
-    /// The default strategy is single-pass, so a plain
-    /// `DecodeRequest::new(…).decode()` does **no** subtraction —
-    /// while real `jt9`/`wsjtx` run their multi-pass subtraction by
-    /// default. Comparing the two without calling this is not
-    /// like-for-like, and the difference is not small: on
-    /// `WSJT-X/samples/FT4/000000_000002.wav` the default reaches
-    /// 11 of the 14 decodes `jt9` reports, and `.sic_rounds(2)`
-    /// reaches all 14 with no false decodes.
+    /// A plain `DecodeRequest::<Ft4>::new(…).decode()` runs
+    /// `.sic_rounds(3)`, as `jt9`/`wsjtx` subtract by default. Before, the
+    /// default was a single pass with no subtraction. On
+    /// `WSJT-X/samples/FT4/000000_000002.wav` the single pass reaches 11 of
+    /// the 14 decodes `jt9` reports, and `.sic_rounds(2)` reaches all 14 with
+    /// no false decodes. [`Self::single_pass`] still asks for one pass.
     ///
     /// The three it recovers are the ones subtraction exists for —
     /// weak signals inside a stronger neighbour's 83 Hz occupied

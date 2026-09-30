@@ -92,7 +92,8 @@ fn decode_with_budget(
     Vec<DecodeResult>,
     mfsk_core::msg::decode_request::BudgetReport,
 ) {
-    let req = DecodeRequest::<Ft8>::new(audio, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND);
+    let req =
+        DecodeRequest::<Ft8>::new(audio, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND).single_pass();
     let check;
     let req = match budget {
         None => req,

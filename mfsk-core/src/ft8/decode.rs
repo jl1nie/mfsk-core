@@ -1625,6 +1625,22 @@ impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
 impl FrameDecodable for Ft8 {
     type DecodeResult = DecodeResult;
 
+    /// `.sic_early()`: `ft8_decode.f90` subtracts at every depth, and at
+    /// `-d 2/-d 3` it stages its passes the way `.sic_early()` does. Measured
+    /// against the single pass with the library defaults (60-trial
+    /// equivalent corpora, 2026-10-01), it lost no trial on AWGN, CCIR or ITU,
+    /// gained 0.33 dB on `ccir_poor` and 1.5 dB on `itu_ld`, and took a
+    /// 40-signal busy band from 60 % to 81 % recall with no unexpected decode.
+    /// It costs 2-3x the time.
+    const DEFAULT_STRATEGY: crate::msg::decode_request::StrategyTag =
+        crate::msg::decode_request::StrategyTag::StagedSic;
+
+    fn __default_strategy<Pol: MessagePolicy>(
+        req: &DecodeRequest<'_, Self, Pol>,
+    ) -> DecodeOutcome<Self> {
+        <Self as SupportsSicEarly>::__staged_sic(req)
+    }
+
     /// See [`FrameDecodable::MESSAGE_FILTER_DEFAULT`]: FT8 is the one
     /// protocol whose subtraction strategies are measured, and the
     /// measurement says the verdict is worth a real decode there.

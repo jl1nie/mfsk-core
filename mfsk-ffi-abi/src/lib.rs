@@ -566,8 +566,17 @@ pub struct MfskDecodeParams {
     /// `nb_ftol_hz` of `freq_hint_hz`, so without a hint only the 0 % pass
     /// runs; up to 21 decodes. Requires `MFSK_CAP_NOISE_BLANKER`.
     pub nb_sweep_step: u8,
+    /// One pass, no subtraction, in place of the mode's default strategy.
+    /// Since 0.12.0 FT8 subtracts by default (`sic_early`) and FT4 does too
+    /// (`sic_rounds` 3), as WSJT-X does. This asks for the single pass
+    /// instead. Refused together with `sic_rounds` or `sic_early`. On a mode
+    /// that already decodes in one pass it changes nothing. It takes one
+    /// byte of what was padding, so the struct's size and every other
+    /// offset are unchanged, and a caller that zeroed the padding gets the
+    /// default.
+    pub single_pass: bool,
     /// Padding to keep the struct's layout stable across compilers.
-    pub _pad2: [u8; 2],
+    pub _pad2: [u8; 1],
 }
 
 /// One decoded transmission, written into caller memory.
