@@ -557,6 +557,8 @@ finds nothing: you say which dial carries which mode.
 MfskStatus st;
 /* 768 kS/s of CF32 centred on 14.200 MHz; iq_swap = 0 */
 MfskIqReceiver *rx = mfsk_iq_open(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, &st);
+/* Many channels? Share one polyphase filter bank instead (see "Selectivity" below):
+   mfsk_iq_open_with(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, MFSK_IQ_CHANNELIZER_PFB, &st); */
 
 uint32_t ft8, ft4;
 mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &ft8);   /* INVALID_ARG: DC in its window, or out of band */

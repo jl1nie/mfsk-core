@@ -691,6 +691,8 @@ let mut rx = IqReceiver::new(IqStream { sample_rate: 768_000, center_hz: 14_200_
                                         format: IqSampleFormat::Cf32, iq_swap: false });
 rx.add_channel(14_074_000.0, IqMode::Ft8)?;         // Err if DC is in its window or it is out of band
 rx.add_channel(14_080_000.0, IqMode::Ft4)?;
+// Many channels: share one polyphase filter bank instead (see "Two channelizers" below):
+//   IqReceiver::with_channelizer(stream, Channelizer::Pfb)?
 rx.set_time_anchor(utc_ns_at_sample_0);             // otherwise the grid free-runs from sample 0
 rx.on_decode(|row: &IqDecode| { /* row.abs_freq_hz, row.decoded.text, row.slot_start_utc_ns */ });
 rx.push_cf32(&iq);                                  // typed; also push_cs16 / push_bytes
@@ -1090,7 +1092,7 @@ mfsk_core
 │   ├── dsp/            resample · downsample · gfsk · cpfsk · envelope · subtract ·
 │   │                   msk · analytic · ddc · fir_decimate · polyphase · dotprod ·
 │   │                   symbol_fft · blanker · fixed-point FFT kernels
-│   ├── fft.rs          FftPlanner trait + the extern factory (see EMBEDDED.md)
+│   ├── fft.rs          FftPlanner trait + the extern factory (see EMBEDDED.md); `with_planner`, a per-thread planner
 │   ├── scalar.rs       Q-format fixed-point scalar types
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── sync2d.rs       FT4 / FST4 full-slot coherent sync searches
@@ -1139,7 +1141,8 @@ mfsk_core
 │   ├── packet_bytes.rs PacketBytesMessage — byte-payload example codec
 │   └── hash_table.rs   Callsign hash table
 ├── registry.rs       PROTOCOLS static + ProtocolMeta + by_id / by_name
-├── iq/               wideband IQ in: IqToAudio (one channel → 12 kHz USB audio), IqReceiver (N channels, UTC slots) — §2.7
+├── iq/               wideband IQ in — §2.7: IqToAudio (one channel → 12 kHz USB audio, 120 dB), IqReceiver (N channels,
+│                     UTC slots, `Channelizer::Direct` or `Pfb`), PfbChannelizer (polyphase filter bank, many channels)
 ├── ft8/              FT8 ZST + decode + decode_block + wave_gen
 │   ├── list_decode.rs  WSJT-X's a7 / a8 list decoders (pass ids 30 / 31)
 │   └── acquire.rs      cold slot-phase acquisition from off-air audio (#356)
@@ -1506,7 +1509,9 @@ FST4-60A landed without touching shared code.
 | `blanker` | `blanker(audio, nz, ndropmax, npct)`: `blanker.f90`'s impulse-noise blanker, behind FST4's `.noise_blanker()` |
 | `subtract` | phase-continuous least-squares SIC (`SubtractCfg`) |
 | `ddc` | streaming digital down-converter (WSPR's embedded channelizer) |
-| `fir` / `dotprod` | polyphase FIR and the dot-product kernel the extern hook replaces |
+| `fir_decimate` | `FirStage`, a streaming FIR-and-decimate over complex I/Q, and the low-pass designers: `design_lowpass` (Blackman, ~74 dB) and, for a stated selectivity, `kaiser_order` + `design_lowpass_kaiser` (Kaiser, `f64`, `no_std`). `FirStage::from_taps` takes a designed prototype (#534) |
+| `polyphase` | `PolyphaseResampler`, a streaming rational `L/M` resampler over complex I/Q; `from_prototype` takes a designed prototype (#534) |
+| `dotprod` | the dot-product kernel the extern hook replaces |
 
 Each takes a runtime `*Cfg` struct rather than `<P>`, because the
 tuning parameters include composite-FFT sizes not trivially derived

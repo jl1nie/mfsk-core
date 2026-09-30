@@ -664,6 +664,8 @@ let mut rx = IqReceiver::new(IqStream { sample_rate: 768_000, center_hz: 14_200_
                                         format: IqSampleFormat::Cf32, iq_swap: false });
 rx.add_channel(14_074_000.0, IqMode::Ft8)?;         // 窓に DC が入る、または帯域外なら Err
 rx.add_channel(14_080_000.0, IqMode::Ft4)?;
+// チャンネルが多いときは 1 つのポリフェーズフィルタバンクを共有する（下の「2 つのチャネライザ」）:
+//   IqReceiver::with_channelizer(stream, Channelizer::Pfb)?
 rx.set_time_anchor(utc_ns_at_sample_0);             // 無ければサンプル 0 から自走する
 rx.on_decode(|row: &IqDecode| { /* row.abs_freq_hz, row.decoded.text, row.slot_start_utc_ns */ });
 rx.push_cf32(&iq);                                  // 型付き。push_cs16 / push_bytes もある
@@ -1045,7 +1047,7 @@ mfsk_core
 │   ├── dsp/            resample · downsample · gfsk · cpfsk · envelope · subtract ·
 │   │                   msk · analytic · ddc · fir_decimate · polyphase · dotprod ·
 │   │                   symbol_fft · blanker · 固定小数点 FFT カーネル
-│   ├── fft.rs          FftPlanner トレイトと extern factory (EMBEDDED.md 参照)
+│   ├── fft.rs          FftPlanner トレイトと extern factory (EMBEDDED.md 参照)。スレッドごとのプランナ `with_planner`
 │   ├── scalar.rs       Q-format 固定小数点スカラ型
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── sync2d.rs       FT4 / FST4 フルスロット・コヒーレント sync 探索
@@ -1094,7 +1096,8 @@ mfsk_core
 │   ├── packet_bytes.rs PacketBytesMessage — バイトペイロード例示コーデック
 │   └── hash_table.rs   コールサインハッシュテーブル
 ├── registry.rs       PROTOCOLS 静的配列 + ProtocolMeta + by_id / by_name
-├── iq/               広帯域 IQ 入力: IqToAudio（1 チャンネル → 12 kHz USB 音声）、IqReceiver（N チャンネル、UTC スロット）— §2.7
+├── iq/               広帯域 IQ 入力 — §2.7: IqToAudio（1 チャンネル → 12 kHz USB 音声、120 dB）、IqReceiver（N チャンネル、
+│                     UTC スロット、`Channelizer::Direct` か `Pfb`）、PfbChannelizer（多チャンネル向けポリフェーズフィルタバンク）
 ├── ft8/              FT8 ZST + decode + decode_block + wave_gen
 │   ├── list_decode.rs  WSJT-X の a7 / a8 リストデコーダ (pass id 30 / 31)
 │   └── acquire.rs      実電波の音声からの cold スロット位相取得 (#356)
@@ -1453,7 +1456,9 @@ FST4-60A は共有コードに一切触れずに追加できた。
 | `blanker` | `blanker(audio, nz, ndropmax, npct)`: `blanker.f90` のインパルスノイズブランカで、FST4 の `.noise_blanker()` の背後にある |
 | `subtract` | 位相連続最小二乗 SIC (`SubtractCfg`) |
 | `ddc` | ストリーミング・デジタルダウンコンバータ (WSPR の組込チャネライザ) |
-| `fir` / `dotprod` | ポリフェーズ FIR と、extern フックが置き換えるドット積カーネル |
+| `fir_decimate` | `FirStage`（複素 I/Q に対するストリーミング FIR + 間引き）とローパスの設計関数: `design_lowpass`（Blackman、約 74 dB）、および選択度を指定する場合の `kaiser_order` + `design_lowpass_kaiser`（Kaiser、`f64`、`no_std`）。`FirStage::from_taps` は設計済みのプロトタイプを受け取る（#534） |
+| `polyphase` | `PolyphaseResampler`（複素 I/Q に対するストリーミング有理比 `L/M` リサンプラ）。`from_prototype` は設計済みのプロトタイプを受け取る（#534） |
+| `dotprod` | extern フックが置き換えるドット積カーネル |
 
 いずれもランタイム `*Cfg` 構造体を引数に取る (`<P>` ではない) のは、
 FFT サイズなどチューニングが trait 定数だけから単純派生できない
