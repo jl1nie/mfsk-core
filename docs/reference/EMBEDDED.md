@@ -851,7 +851,7 @@ that allocation now succeeds on the first try.
 | **FT8** | `ft8::decode_block`, `fixed-point` integer pipeline | **Decoding off the air.** Six to eight stations per slot against an IC-705 on 40 m (CoreS3, 2026-08-23/24). `qso3_busy` through the same pipeline: 10 a slot with fine sync (2026-09-18, [details](#per-slot-decode-on-the-cores3-fine-sync-retries-the-key-up-bound)). The reference target; every number in [Performance benchmark](#performance-benchmark) is FT8 |
 | **FST4** | generic `engine::pipeline` + `fft-extern` — **no `decode_block` port** | **Decoding off the air** on CoreS3. FST4-60 on-device: `no8_osd` 13.6 s, ≈1.95× over the ~7 s slot budget at the deadline-tight default |
 | **FT4** | generic `engine::pipeline`, host f32 (`fixed-point` measured *slower* on LX7, #198) | **Decoding off the air** on CoreS3 |
-| **WSPR** | host `wspr::decode` f32 via `fft-extern`, plus `wspr::ddc` | **Decoding off the air.** `slot 1 src=uac decoded 1 station(s)`. Decode lands at 82.8–90.1 s against a 110 s deadline |
+| **WSPR** | host `wspr::decode` f32 via `fft-extern`, plus `wspr::ddc` | **Decoded off the air once** (`slot 1 src=uac decoded 1 station(s)`); decode lands at 82.8–90.1 s against a 110 s deadline. **The CoreS3 WSPR receiver app was removed 2026-09-30**; the decoder-level work and its measurement bench (`m5stack-s3`) stay |
 | **JTTY** | — | **Host only.** Implemented on host (#477, phases P0-P5: receiver, C ABI, Kotlin, Swift, text packer); the receiver needs an FFT (`fft-rustfft` or `fft-extern`), the wire level does not, and `alloc,jtty,fft-extern` is in the feature matrix. P6, an embedded receiver, is a separate decision and not started |
 | **Q65 / JT9 / JT65** | — | **Compile-clean, undriven.** #390 removed the forced `fft-rustfft`: every FFT goes through `engine::fft`, the modules carry `alloc::` imports and `num_traits::Float` instead of `std`, and JT9's `downsam9` normalises its inverse explicitly rather than assuming rustfft's unscaled convention. `alloc,<mode>,fft-extern` is in the feature matrix. What is still missing is everything after compiling: no fixed-point path, no board app, no on-device measurement |
 
@@ -988,23 +988,23 @@ cycle beside the previous slot's decode (the two overlap — a slot's
 Full measurement account — including several attempts that didn't
 pan out, kept rather than deleted so they aren't retried — is
 [`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](../notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md);
-`embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs` is the
-runnable bench these numbers come from.
+`embedded-poc/m5stack-s3/src/bin/wspr_bench.rs` is the
+runnable bench these numbers come from (the CoreS3 copy of that bin was removed
+2026-09-30 with the WSPR receiver; both were shims over
+`embedded_shared::apps::wspr_bench`).
 
-**Not yet verified here**: live audio capture. Everything above is
-measured against a WAV-fed / synthetic baseband.
-[#163](https://github.com/jl1nie/mfsk-core/issues/163), the UAC
-hardware verification both lines depend on, **closed 2026-08-23** —
-ten unbroken minutes of capture at 192,512 B/s and zero errors, with
-WiFi associated, on the FT8 controller. `wspr_app` shares that same
-`uac.rs`, so the path is proven; what has not happened is running
-*this* binary against a radio. Its capture window does now open on the
-UTC even-minute grid rather than wherever the USB stream came up, and
-each spot carries the start time of the window it was heard in rather
-than a clock read taken after the decode (#313 item 1, 2026-09-07) —
-software-only, and still unverified against a radio like everything
-else in this paragraph. `mfsk_app_shared::wsprnet` (wsprnet.org spot
-upload, ported from WSJT-X's own `Network/wsprnet.cpp`) exists and is
-off by default; its `SpotSink::Http` path is implemented but untested
-against a real endpoint.
+**Live audio capture, and the receiver app that was built on this.** Everything
+above is measured against a WAV-fed / synthetic baseband.
+[#163](https://github.com/jl1nie/mfsk-core/issues/163), the UAC hardware
+verification, **closed 2026-08-23** — ten unbroken minutes of capture at
+192,512 B/s and zero errors, with WiFi associated, on the FT8 controller. A
+CoreS3 WSPR receiver (`apps/wspr.rs`, with a wsprnet.org spot uploader ported
+from WSJT-X's `Network/wsprnet.cpp`) was built on that same `uac.rs` and reached
+one `decoded 1 station(s)` line on air, but was never run against a radio for
+longer than that, and its wsprnet path was never run against a real endpoint.
+**It was removed on 2026-09-30** (#313 closed with it), along with the uploader,
+the WSPR band table and the WSPR settings. What this section describes as
+measured — the streaming down-converter, the dual-core worker, the Fano budget,
+the 82.8–90.1 s steady state — is decoder-level work in `mfsk-core` and
+`embedded-shared`, and stays.
 

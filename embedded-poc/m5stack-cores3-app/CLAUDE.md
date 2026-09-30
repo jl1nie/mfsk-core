@@ -18,7 +18,6 @@ rather than the ~173 KB a naive merge would cost.
 |---|---|---|
 | `uac` | `apps::ft8::Ft8Controller` → `decode_pipeline` | UAC |
 | `ft4` | `apps::ft4::Ft4Rx` | UAC |
-| `wspr` | `apps::wspr::WsprRx` | UAC |
 | `fst4` | `apps::fst4::Fst4Rx` | UAC |
 | `decode` | `apps::ft8::Ft8Controller` (no radio) | baked WAV |
 
@@ -109,8 +108,7 @@ answering. Do not surface a cached value as a live one.
 |---|---|
 | `MFSK_CORES3_FORCE_UAC=1` | take USB host mode even with external power. Back-powers a PC; for bench use only |
 | `MFSK_CORES3_USB_PANEL=1` | draw the ten-line USB diagnostic panel. Off by default — it covers the decodes, and the link bar carries what an operator needs |
-| `MFSK_WSPR_SYNTH=1` | fabricate a WSPR slot when no radio is attached. Off by default: it puts `DDC_TEST_CALL` on the station list every two minutes, indistinguishable from a real decode |
-| `MFSK_FST4_REPLAY=1` | replay a baked FST4 slot when no radio is attached. Same reasoning |
+| `MFSK_FST4_REPLAY=1` | replay a baked FST4 slot when no radio is attached. Off by default: a replayed slot shows the same stations forever, indistinguishable from a real decode |
 | `MFSK_CORES3_SIM=1` | in `BootMode::Uac`, feed `qso3_busy.wav` through the **real** `Ft8ChunkSink` on loop — unlike `Decode`/wav_sim it exercises the UTC anchor, air-sync, cold acquisition and the NVS grid fix. Flashed over USB the board stays a peripheral (console alive). Compile-time — a sim build is a deliberate rebuild |
 | `MFSK_SIM_OFFSET_MS=N` | with `MFSK_CORES3_SIM`, prepend `N` ms of silence so the sink's slot grid starts `N` ms mis-aligned from the signal |
 | `MFSK_SIM_NO_CLOCK=1` | with `MFSK_CORES3_SIM`, make `time_sync::utc_now_ms` report nothing (`sim_suppress_clock`) — the clockless hilltop, without stopping `pmic::init` seeding the clock from the RTC |
@@ -120,9 +118,8 @@ answering. Do not surface a cached value as a live one.
 | `MFSK_FT8_BUDGET_MS=N` / `MFSK_FT8_MAX_CAND` / `MFSK_FT8_PASS1_LIMIT` | `decode_pipeline` knobs for the #357 investigation. Budget defaults to 2000 |
 | `MFSK_CORES3_TX_PROBE=1` | **TX/QSO feasibility Phase T0.** Opens the IC-705's USB audio OUT interface on `TxConnected` and writes 20 chunks of digital silence, then closes it. Never sends a nonzero sample — a real tone risks keying TX by itself if the radio's `PTT SOURCE` is `VOX`, which this file cannot see. Off by default (`TxConnected` stays logged-and-ignored). See `uac.rs`'s `handle_tx_connected` doc comment |
 
-Cargo features `wspr-golden` and `fst4-replay` link the fixtures those
-two read. Off by default, which is 1.8 MB of image: a receiver taking
-audio from a radio never reads either.
+The Cargo feature `fst4-replay` links the fixture that one reads. Off by
+default: a receiver taking audio from a radio never reads it.
 
 `cfg.toml` (gitignored, never committed) carries `[wifi]`, `[station]`
 and `[app] boot_mode`. `boot_mode` is a **seed**, written only when NVS
@@ -135,7 +132,7 @@ reapplied every boot would undo it.
   `.collect()` temporaries are not folded. A 13.5 KB `heapless::Vec`
   built on the stack becomes 27 KB. Box the large snapshots.
 - **PSRAM task stacks cannot write flash.** `xTaskCreatePinnedToCoreWithCaps(…,
-  MALLOC_CAP_SPIRAM)` gives the WSPR/FST4 display tasks their stacks,
+  MALLOC_CAP_SPIRAM)` gives the FST4 display task its stack,
   and a flash write disables the cache that maps PSRAM, so NVS from
   those tasks aborts. `boot_mode::commit_and_restart` does it from a
   short-lived internal-stack task.
@@ -146,7 +143,7 @@ reapplied every boot would undo it.
   anything `pmic` newly depends on has to be declared there too.
 - **Slot-budget logs mean opposite things per mode.** FT8's 15 s slot
   genuinely runs out on a busy band — that is the operating limit.
-  WSPR and FST4 monitor loops are built with deliberate slack, so
+  The FST4 monitor loop is built with deliberate slack, so
   exceeding the slot there is a fault. Do not carry one framing across.
 
 ## FT4 live audio — the experiment that has not been run (2026-09-02)
@@ -274,19 +271,24 @@ a real over-the-air QSO.
 
 Live reception verified against an IC-705 on 40 m. **FT8**: six to
 eight decodes per slot, +8 to −24 dB, callsigns and grids consistent.
-**WSPR**: `slot 1 src=uac decoded 1 station(s)` — enumeration, audio
-and decode, after the memory work below. USB host and audio transport
-verified in all three radio modes. Not yet confirmed: FST4 producing
-decodes from live audio over a full slot.
+USB host and audio transport verified in every radio mode. Not yet
+confirmed: FST4 producing decodes from live audio over a full slot.
 
-WSPR took four fixes to get there, and each was a thing one of the
-other two receivers already did: the scan task could not get its stack
-(the decode path was keeping three 10 368 B `IsQs` alive at once, so
-both it and the worker arena were sized against a peak 20 KB larger
-than necessary); `start_host` ran before the boost had ramped; the
-sequence around it was not shared, so `esp_log_bridge` never reached
-this mode and `EXT_HUB: ESP_ERR_NO_MEM` was invisible; and the display
-task held 32 KiB of internal DRAM in a stack FST4 keeps in PSRAM.
+**The WSPR receiver was removed on 2026-09-30** (the `wspr` feature,
+`apps/wspr.rs`, the `wspr-bench` and `wifi-probe` bins, `BootMode::Wspr`,
+the wsprnet uploader, the WSPR settings and band table). It had reached
+`slot 1 src=uac decoded 1 station(s)` on air after four fixes, each a thing
+one of the other receivers already did — worth knowing before writing the
+next receiver: the scan task could not get its stack (the decode path was
+keeping three 10 368 B `IsQs` alive at once, so both it and the worker arena
+were sized against a peak 20 KB larger than necessary); `start_host` ran
+before the boost had ramped; the sequence around it was not shared, so
+`esp_log_bridge` never reached that mode and `EXT_HUB: ESP_ERR_NO_MEM` was
+invisible; and its display task held 32 KiB of internal DRAM in a stack FST4
+keeps in PSRAM. What stays: the library's WSPR (`mfsk-core`, its embedded
+`wspr-ddc*` tuning features) and the `m5stack-s3` bench crate that measures it
+through `embedded-shared`'s `wspr_bench`, `wspr_scan` and `wspr_dual_core`. A
+board that stored `boot_mode=wspr` boots `uac` and logs why.
 
 **#357** — FT8's per-slot decode cost alternates ~2× by TX period: one
 period `coarse` ~100 ms / decodes 4–8, the other `coarse` ~180 ms /

@@ -2,7 +2,7 @@
 //! receiver, and the rig frequency the operator last applied.
 //!
 //! Only the running receiver's table is shown: an FT8 board has no use
-//! for a WSPR dial, and one mode's list already needs paging on a
+//! for an FT4 dial, and one mode's list already needs paging on a
 //! four-row widget ([`page`]).
 //!
 //! The FT8 table carries the JA channels beside the IARU ones — the list
@@ -11,8 +11,8 @@
 //! `JA` so an operator abroad can tell them from the IARU channel on
 //! the same band. The IARU FT8 channels and the whole FT4 table are
 //! the ones WSJT-X itself lists (`widgets/mainwindow.cpp:5528`, the
-//! `Freq` vector its combined-message check compares against). WSPR reuses
-//! [`crate::wspr_bands::WSPR_BANDS`] (a test holds the two equal). FST4
+//! `Freq` vector its combined-message check compares against). There was a
+//! WSPR table until the CoreS3 WSPR receiver was removed (2026-09-30). FST4
 //! has no table yet: WSJT-X's defaults for it are LF/MF, which the
 //! IC-705 does not transmit on, and no HF channel has been agreed.
 
@@ -55,24 +55,6 @@ pub const FT4: &[FreqPreset] = &[
     p("6m      50.318", 50_318_000),
 ];
 
-/// [`crate::wspr_bands::WSPR_BANDS`] in this module's shape. Duplicated
-/// because a label with the frequency in it has to be a `&'static str`;
-/// `wspr_table_matches_wspr_bands` keeps them from drifting.
-pub const WSPR: &[FreqPreset] = &[
-    p("160m     1.8366", 1_836_600),
-    p("80m      3.5686", 3_568_600),
-    p("60m      5.3647", 5_364_700),
-    p("40m      7.0386", 7_038_600),
-    p("30m     10.1387", 10_138_700),
-    p("20m     14.0956", 14_095_600),
-    p("17m     18.1046", 18_104_600),
-    p("15m     21.0946", 21_094_600),
-    p("12m     24.9246", 24_924_600),
-    p("10m     28.1246", 28_124_600),
-    p("6m      50.293", 50_293_000),
-    p("2m     144.489", 144_489_000),
-];
-
 pub const FST4: &[FreqPreset] = &[];
 
 /// Which table a receiver shows, by the name the picker gives it
@@ -81,7 +63,6 @@ pub fn for_mode(name: &str) -> &'static [FreqPreset] {
     match name {
         "FT8" => FT8,
         "FT4" => FT4,
-        "WSPR" => WSPR,
         "FST4" => FST4,
         _ => &[],
     }
@@ -181,23 +162,13 @@ mod tests {
     #[test]
     fn labels_fit_the_widget_and_frequencies_ascend() {
         // 208 px of FONT_6X10 less the 10 px indent and the `*` column.
-        for t in [FT8, FT4, WSPR, FST4] {
+        for t in [FT8, FT4, FST4] {
             for f in t {
                 assert!(f.label.len() <= 30, "{} too long", f.label);
             }
             for w in t.windows(2) {
                 assert!(w[0].hz < w[1].hz, "{} !< {}", w[0].label, w[1].label);
             }
-        }
-    }
-
-    #[test]
-    fn wspr_table_matches_wspr_bands() {
-        let bands = crate::wspr_bands::WSPR_BANDS;
-        assert_eq!(WSPR.len(), bands.len());
-        for (p, b) in WSPR.iter().zip(bands) {
-            assert_eq!(p.hz, (b.dial_mhz * 1e6).round() as u32, "{}", b.label);
-            assert!(p.label.starts_with(b.label), "{} vs {}", p.label, b.label);
         }
     }
 }

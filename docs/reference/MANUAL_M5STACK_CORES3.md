@@ -25,7 +25,6 @@ driver takes the port a flasher would use.
 |---|---|---|
 | `uac` | FT8 from the radio's USB Audio interface | yes |
 | `ft4` | FT4 from the radio's USB Audio interface | yes |
-| `wspr` | WSPR receiver, with wsprnet upload | yes |
 | `fst4` | FST4 wideband monitor | yes |
 | `decode` | FT8 from a WAV baked into the image | no |
 
@@ -33,8 +32,8 @@ driver takes the port a flasher would use.
 the fastest way to confirm a board works at all.
 
 **Every mode shows the same screen** — the FT8 one: status bar,
-waterfall, station list, link bar, and the menu over the top. WSPR
-and FST4 had spot-list screens of their own until 2026-09-21.
+waterfall, station list, link bar, and the menu over the top. FST4
+had a spot-list screen of its own until 2026-09-21.
 
 - **The waterfall is drawn from the audio itself**, the same way in
   every mode, at 6 rows a second (about 17 s on screen) over 200-3 000 Hz. Its horizontal
@@ -180,7 +179,7 @@ WiFi is not a debugging convenience on this board. It carries:
 
 - **NTP**, which the FT8 slot grid needs before it can decode anything
   (§7),
-- the **HTTP settings page** (WSPR callsign, band, wsprnet),
+- the **HTTP settings page** (the NTP server, and the logs to download),
 - the **UDP log**, which in host mode is the only console there is.
 
 Omit the section, or set `ssid = ""`, to disable WiFi. The board still
@@ -208,9 +207,6 @@ for a receive-only station** — the FSM then stays idle, which is
 correct, and better than identifying as somebody else even in a log
 line nobody transmits.
 
-WSPR takes its callsign from the HTTP settings page instead, not from
-here, because it is changed more often than a rebuild is convenient.
-
 ### `[app]`
 
 ```toml
@@ -221,8 +217,10 @@ A **seed**, not an override: written to NVS only when NVS has no mode
 yet. The touch picker writes NVS at runtime, and a value here that
 reapplied on every boot would undo that choice on the next restart.
 
-Values: `uac` | `wspr` | `fst4` | `decode`. Omit to keep whatever NVS
-holds.
+Values: `uac` | `ft4` | `fst4` | `decode`. Omit to keep whatever NVS
+holds. (`wspr` was a value until the WSPR receiver was removed on
+2026-09-30; a board that stored it, or is built with it, boots `uac` and
+says so in the log.)
 
 ### Build-time switches
 
@@ -232,18 +230,15 @@ Environment variables read at compile time. All default to off.
 |---|---|
 | `MFSK_CORES3_FORCE_UAC=1` | take USB host mode even with external power. Back-powers a PC; bench use only |
 | `MFSK_CORES3_USB_PANEL=1` | draw the ten-line USB diagnostic panel, at the cost of decoded rows |
-| `MFSK_WSPR_SYNTH=1` | fabricate a WSPR slot when no radio is attached |
 | `MFSK_FST4_REPLAY=1` | replay a baked FST4 slot when no radio is attached |
 
-The last two exist for desk work with no radio. **They are off by
-default because what they produce is indistinguishable from a real
-decode**: a fabricated `K1ABC` lands on the station list every two
-minutes, and a replayed slot shows the same stations forever. A
+The last one exists for desk work with no radio. **It is off by
+default because what it produces is indistinguishable from a real
+decode**: a replayed slot shows the same stations forever. A
 receiver with nothing to hear should say so.
 
-Their fixtures are behind Cargo features (`wspr-golden`,
-`fst4-replay`) so the bytes are not linked in when off — 1.8 MB of
-image, off every flash.
+Its fixture is behind a Cargo feature (`fst4-replay`) so the bytes are
+not linked in when off.
 
 
 ---
@@ -259,7 +254,7 @@ The overlay opens on a four-row **root**:
 
 | Row | What it holds |
 |---|---|
-| `MODE` | which receiver boots (FT8, FT4, WSPR, FST4) |
+| `MODE` | which receiver boots (FT8, FT4, FST4) |
 | `CONFIG` | how the slot phase is kept (NTP, or the air's DT), and whether WiFi comes up |
 | `FREQ` | the running receiver's dial presets, sent to the radio over CAT (see below) |
 | `DEMO` | running without a radio (`WAV REPLAY` — a recording, decoded on a loop) |
@@ -349,9 +344,7 @@ What it costs, under `WIFI: OFF` and under `TIME: AIR DT` alike. In FT8 (UAC) mo
 USB-Serial-JTAG, so **WiFi is the only console**: the UDP log and the
 HTTP config page both go with it, and a board that fails on a hilltop
 shows nothing but its panel. It also takes NTP (so `TIME: NTP` has
-nothing to sync from and the grid falls back to the RTC), and in WSPR
-mode it takes the wsprnet upload, which is most of what a WSPR receiver
-is for: **a WSPR board on `TIME: AIR DT` uploads nothing.**
+nothing to sync from and the grid falls back to the RTC).
 
 The way back is the panel: `WIFI: OFF` does not disable the mode
 picker, so the same three presses turn it on again. Under `AIR DT`, `WIFI: ON`
@@ -367,25 +360,23 @@ fills all four rows, and changing the dial is the one setting an
 operator makes in the field.
 
 It lists the **running receiver's** dial presets and nobody else's: an
-FT8 board has no use for a WSPR dial.
+FT8 board has no use for an FT4 dial.
 
 | Receiver | Presets (dial, MHz) |
 |---|---|
 | FT8 | 160 m 1.908 (`JA`), 80 m 3.531 (`JA`), 80 m 3.573, 40 m 7.041 (`JA`), 40 m 7.074, 30 m 10.136, 20 m 14.074, 17 m 18.100, 15 m 21.074, 12 m 24.915, 10 m 28.074, 6 m 50.313, 2 m 144.460 (`JA`) |
 | FT4 | 80 m 3.575, 40 m 7.0475, 30 m 10.140, 20 m 14.080, 17 m 18.104, 15 m 21.140, 12 m 24.919, 10 m 28.180, 6 m 50.318 |
-| WSPR | 160 m 1.8366, 80 m 3.5686, 60 m 5.3647, 40 m 7.0386, 30 m 10.1387, 20 m 14.0956, 17 m 18.1046, 15 m 21.0946, 12 m 24.9246, 10 m 28.1246, 6 m 50.293, 2 m 144.489 |
 | FST4 | none — the bar reads `no presets for this mode` |
 
 The FT8 table carries the JA channels beside the IARU ones, labelled
 `JA` so an operator abroad can tell them from the IARU channel on the
 same band. The IARU FT8 channels and the whole FT4 table are the ones
-WSJT-X itself lists; the WSPR table is the band list the WSPR receiver
-already uses. FST4 has no table yet: WSJT-X's defaults for it are LF/MF,
+WSJT-X itself lists. FST4 has no table yet: WSJT-X's defaults for it are LF/MF,
 which the IC-705 does not transmit on, and no HF channel has been agreed.
 
 The widget has four rows. A table that fits is shown whole; a longer one
 gives the last row to `NEXT >` and shows three presets per page (FT8
-five pages, FT4 three, WSPR four), and the bar underneath reads
+five pages, FT4 three), and the bar underneath reads
 `pick a dial  1/5`. `NEXT >` past the last page wraps to the first, and
 tapping it turns the page — it is not a selection. Opening `FREQ` lands
 on the page that holds the radio's dial when that dial is one of the
@@ -578,16 +569,14 @@ genuinely tight, the cost of the front end scales with how much signal
 is present, and stations transmit in alternating periods, so the
 busier of the two can run out of time and defer candidates.
 
-**WSPR and FST4** are the opposite case. Their monitor loops are built
-with large deliberate slack — a 2-minute WSPR slot against a few
-seconds of work — and that slack is what absorbs a crowded slot, a WiFi
-burst and the display task without dropping candidates. A low occupancy
-figure there is the design working, not headroom to reclaim, and
-exceeding the slot means a fault rather than a busy band:
+**FST4** is the opposite case. Its monitor loop is built with large
+deliberate slack — a minute-long slot against a few seconds of work — and
+that slack is what absorbs a crowded slot, a WiFi burst and the display
+task without dropping candidates. A low occupancy figure there is the
+design working, not headroom to reclaim, and exceeding the slot means a
+fault rather than a busy band:
 
 ```text
-wspr_app: slot 2316 src=uac decoded 3 station(s)
-wspr_app::ddc: compute occupancy 8210 ms / 120000 ms slot budget (6.8%)
 fst4_app::scan: slot 4 budget — 13643 ms of 60000 ms (23%), 46357 ms spare
 ```
 
@@ -602,12 +591,12 @@ at boot — unplug from the PC, short-press reset, then attach the radio.
 **Signals on the waterfall, `dec=0` on every slot.**
 Three causes, in the order they are worth checking:
 
-1. **The radio is on LSB.** FT8, FST4 and WSPR are always USB, on every
+1. **The radio is on LSB.** FT8, FT4 and FST4 are always USB, on every
    band, including the ones where voice is LSB. On LSB the tone order
    is mirrored and the sync pattern cannot match — the waterfall looks
    perfect and nothing decodes.
 2. **No clock.** Link bar shows `-` rather than `T`. See §7.
-3. **Wrong frequency.** FT8 is 7074 kHz on 40 m; WSPR is 7038.6 kHz.
+3. **Wrong frequency.** FT8 is 7074 kHz on 40 m; FT4 is 7047.5 kHz.
    They are not the same band segment.
 
 **The board vanished from the PC.**
@@ -641,7 +630,7 @@ re-attaches it.
 |---|---|
 | `src/main.rs` | Boot, mode dispatch, WiFi/NTP |
 | `src/display.rs` | FT8 controller screen and USB host bring-up |
-| `src/apps/wspr.rs`, `src/apps/fst4.rs` | The other two receivers |
+| `src/apps/ft4.rs`, `src/apps/fst4.rs`, `src/apps/jtty.rs` | The other receivers |
 | `src/uac.rs` | USB host + UAC class driver, audio sinks |
 | `src/civ_usb.rs` | CAT: the IC-705's CI-V over USB |
 | `src/pmic.rs` | AXP2101 + AW9523B |

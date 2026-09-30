@@ -140,15 +140,11 @@ fn main() -> ! {
     // steps, in its own order, and the FT8 controller's copy was this
     // function's own body — so the receiver with the most behaviour was
     // the one with no name. `boot::run` is that sequence, written once;
-    // `apps::*` are the differences. `Wspr` and `Fst4` are behind
-    // default-off features, so say which mode a board asked for and
+    // `apps::*` are the differences. `Fst4` is behind a
+    // default-off feature, so say which mode a board asked for and
     // carry on as an FT8 controller rather than appearing to ignore the
     // NVS setting.
     match mode {
-        #[cfg(feature = "wspr")]
-        boot_mode::BootMode::Wspr => {
-            boot::run::<apps::wspr::WsprRx>(mode, peripherals, nvs_part, nvs)
-        }
         #[cfg(feature = "fst4")]
         boot_mode::BootMode::Fst4 => {
             boot::run::<apps::fst4::Fst4Rx>(mode, peripherals, nvs_part, nvs)
@@ -169,11 +165,6 @@ fn main() -> ! {
         #[cfg(not(feature = "ft4"))]
         boot_mode::BootMode::Ft4 => log::error!(
             "boot_mode=ft4 but this image was built without --features ft4 — \
-             continuing as an FT8 controller"
-        ),
-        #[cfg(not(feature = "wspr"))]
-        boot_mode::BootMode::Wspr => log::error!(
-            "boot_mode=wspr but this image was built without --features wspr — \
              continuing as an FT8 controller"
         ),
         #[cfg(not(feature = "fst4"))]
