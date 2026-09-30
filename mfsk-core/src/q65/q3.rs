@@ -78,7 +78,7 @@ impl S1 {
 }
 
 /// `smo121`, as `ft8::list_decode` has it.
-fn smo121(x: &mut [f32]) {
+pub(super) fn smo121(x: &mut [f32]) {
     if x.len() < 3 {
         return;
     }

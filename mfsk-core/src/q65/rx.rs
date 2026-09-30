@@ -889,15 +889,16 @@ fn scan_with<P: ModulationParams>(
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
-    let cands = super::search::coarse_search_drift_for::<P>(
-        audio,
+    let spec = super::search::build_spectrogram::<P>(audio, sample_rate);
+    let cands = super::search::coarse_search_drift_on_spec_for::<P>(
+        &spec,
         sample_rate,
         nominal_start_sample,
         params,
         max_drift,
     );
     let mut seen: Vec<Q65Result> = Vec::new();
-    for (c, idrift) in cands {
+    for &(c, idrift) in &cands {
         // `drift=df*idrift_best` (`q65.f90:542`).
         let Some(decode) = decode(&c, df * idrift as f32) else {
             continue;
@@ -909,6 +910,47 @@ fn scan_with<P: ModulationParams>(
             nsps as i64,
             on_result,
         );
+    }
+    // A second sync, on the spectra `q65_ccf_22` syncs on: `q65_symspec`
+    // smooths every symbol spectrum `nsmo` times (`smo121`, D 32, E 128)
+    // first, and under Doppler spread that finds the frame's (Δt, Δf) more
+    // precisely than the unsmoothed spectrogram does (issue #551).
+    //
+    // DIVERGENCE from WSJT-X, deliberate: upstream syncs on the smoothed
+    // spectra *only*. That costs narrow signals: syncing on them alone lost
+    // 0.15-0.38 dB on AWGN D/E-60 here. So this keeps the unsmoothed sync
+    // above and adds the smoothed one, skipping a candidate already tried or
+    // a frequency already decoded. Measured on `q65sim` corpora at 60
+    // trials per cell (B/C/D/E-60, D/E-120; AWGN and 5 / 20 Hz `fDop`), it
+    // lost no trial anywhere. It gained 0.40-0.79 dB on D/E-120 at 20 Hz,
+    // which trailed `jt9 -d 1` by up to 0.69 dB and now matches or beats it,
+    // and 0.03-0.27 dB at 5 Hz. There were no unexpected decodes, including
+    // on 400 noise-only frames. The cost is 0-2 % of decode time (D-60 and
+    // E-120, one file at a time, single-threaded and with rayon). A has
+    // `nsmo = 0` and is untouched.
+    let Some(smoothed) = super::search::smoothed_for_sync::<P>(&spec) else {
+        return seen;
+    };
+    let cands2 = super::search::coarse_search_drift_on_spec_for::<P>(
+        &smoothed,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        max_drift,
+    );
+    let tol = dedup_freq_tol_hz::<P>();
+    for (c, idrift) in cands2 {
+        let same_cell = cands
+            .iter()
+            .any(|(r, _)| r.start_sample == c.start_sample && r.freq_hz == c.freq_hz);
+        let decoded_here = seen.iter().any(|r| (r.freq_hz - c.freq_hz).abs() <= tol);
+        if same_cell || decoded_here {
+            continue;
+        }
+        let Some(decode) = decode(&c, df * idrift as f32) else {
+            continue;
+        };
+        push_unique(&mut seen, decode, tol, nsps as i64, on_result);
     }
     seen
 }

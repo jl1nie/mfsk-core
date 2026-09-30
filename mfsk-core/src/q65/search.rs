@@ -56,6 +56,40 @@ pub fn build_spectrogram<P: ModulationParams>(audio: &[f32], sample_rate: u32) -
 }
 
 pub use crate::engine::search::{DEFAULT_SCORE_THRESHOLD, SearchParams, SyncCandidate};
+/// `nsmo`, the number of `smo121` passes `q65_symspec` puts on every
+/// symbol spectrum (`q65.f90:96-97,292-295`): `int(0.5 * mode_q65²)`, and
+/// none when that is 1 or less. A 0, B 2, C 8, D 32, E 128.
+pub(crate) fn nsmo_for<P: ModulationParams>() -> usize {
+    let mode_q65 = (P::TONE_SPACING_HZ * P::SYMBOL_DT).round() as usize;
+    let nsmo = (0.5 * (mode_q65 * mode_q65) as f32) as usize;
+    if nsmo <= 1 { 0 } else { nsmo }
+}
+
+/// A copy of `spec` with every time row smoothed [`nsmo_for`] times, the
+/// spectra `q65_ccf_22` syncs on (`q65_symspec`). `None` when `nsmo` is 0.
+/// `noise_per_bin` is carried over unchanged.
+pub(crate) fn smoothed_for_sync<P: ModulationParams>(spec: &Spectrogram) -> Option<Spectrogram> {
+    let nsmo = nsmo_for::<P>();
+    if nsmo == 0 || spec.n_freq == 0 {
+        return None;
+    }
+    let mut mags_sqr = spec.mags_sqr.clone();
+    for row in mags_sqr.chunks_exact_mut(spec.n_freq) {
+        for _ in 0..nsmo {
+            super::q3::smo121(row);
+        }
+    }
+    Some(Spectrogram {
+        mags_sqr,
+        n_time: spec.n_time,
+        n_freq: spec.n_freq,
+        t_step: spec.t_step,
+        nsps: spec.nsps,
+        df: spec.df,
+        noise_per_bin: spec.noise_per_bin,
+    })
+}
+
 use crate::engine::search::{SearchWindow, best_lag_in_bin};
 
 /// Q65's own coarse-search defaults.

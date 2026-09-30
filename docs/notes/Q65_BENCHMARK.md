@@ -333,3 +333,45 @@ which may be what upstream added the clip for (`s3lim` dates from the
 The comparison at 20 Hz also found a gap unrelated to the clip. On
 D/E-120 this crate trails `jt9` by 0.17–0.69 dB, clip or not; see issue
 #551.
+
+## A second sync on smoothed spectra: wide Doppler spread (#551, 2026-10-01)
+
+On a `q65sim` corpus with 20 Hz Doppler spread, D/E-120 trailed `jt9 -3 -d 1` by
+0.17–0.69 dB. It was the only condition where this crate was behind. The
+cause was the coarse sync, not the decoder. Decoding at the true position with sync
+bypassed beats `jt9` on every group. Restricting the scan to `jt9`'s
+`nfqso ± ntol` changed no trial, so the candidate was found; its (Δt, Δf) was
+what degraded.
+
+`q65_symspec` (`q65.f90:292-295`) smooths every symbol spectrum `nsmo` times
+(`smo121`; `nsmo = int(0.5·mode_q65²)`: B 2, C 8, D 32, E 128) before
+`q65_ccf_22` syncs on it, and `q65::search::build_spectrogram` did not.
+Syncing on the smoothed spectra alone closes the 20 Hz gap and costs narrow
+signals 0.15–0.38 dB on AWGN D/E-60. The same smoothing is also why this crate
+was ahead of `jt9` on AWGN: decoding on the smoothed `s1`, as
+`q65_dec_q012` does, reproduces `jt9`'s AWGN and 5 Hz crossings within
+0.3 dB.
+
+So `q65::rx::scan_with` keeps the unsmoothed sync and adds a second one on the
+smoothed spectra. It skips a candidate already tried, and one at a frequency
+already decoded. This is a deliberate divergence: upstream uses the smoothed
+sync only. Measured at 60 trials per cell against the single sync:
+
+| corpus | groups | lost / gained | crossing move |
+|---|---|---|---|
+| 20 Hz, D/E-60 | 4 | 0 / 85 | −0.20 to −0.42 dB |
+| 20 Hz, D/E-120 | 4 | 0 / 171 | −0.40 to −0.79 dB |
+| 5 Hz, D/E-60/120 | 8 | 0 / 71 | −0.03 to −0.27 dB |
+| AWGN, B/C/D/E-60, D/E-120 | 12 | 0 / 9 | 0.00 to −0.08 dB |
+| release corpus, B–E | — | 0 / 3 | |
+
+No trial was lost anywhere. At 20 Hz, D/E-120 now reads −25.73 / −26.54
+(D plain / cq) and −26.12 / −26.93 (E), against `jt9`'s −25.63 / −26.51 and
+−25.62 / −26.69. Every group measured is at or ahead of `jt9`. There were no
+unexpected decodes on any of these corpora, nor on 400 noise-only frames
+(D/E-60/120 at −50 dB).
+
+Time: 0–2 % per file, D-60 and E-120, single-threaded and with rayon (for
+example E-120 AWGN 471 → 474 ms for a plain plus a CQ-AP scan). `jt9 -3 -d 1` takes
+274–633 ms on the same files. It runs its AP passes inside one scan, where
+this benchmark ran two.

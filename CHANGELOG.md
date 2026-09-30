@@ -2,6 +2,15 @@
 
 ## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
 
+- **Q65: a second coarse sync on smoothed spectra recovers up to 0.8 dB under wide Doppler spread (#551).** On a
+  `q65sim` corpus with 20 Hz spread, Q65-120D/E trailed `jt9 -d 1` by 0.17–0.69 dB, the only condition measured where
+  this crate was behind. The decoder was not at fault: the coarse sync lost the frame's (Δt, Δf) under spread.
+  `q65_symspec` smooths each symbol spectrum `nsmo` times (D 32, E 128) before `q65_ccf_22` syncs on it, and this
+  crate's sync did not. The scan now syncs twice, on the raw and on the smoothed spectra. Upstream syncs on the
+  smoothed ones only, which costs narrow signals up to 0.38 dB. At 60 trials per cell it lost no trial on any corpus;
+  it gained 0.40–0.79 dB on D/E-120 at 20 Hz, which now match or beat `jt9`, and up to 0.27 dB at 5 Hz. There were no
+  unexpected decodes, including on 400 noise-only frames. Decode time is 0–2 % longer; sub-mode A is unaffected
+  (`nsmo = 0`). Details in `docs/notes/Q65_BENCHMARK.md`.
 - **Tier-C corpora carry a provenance stamp, and the sweep runner refuses one without it.** A sweep baseline is
   only comparable with a corpus generated at `MFSK_SIM_SEED=1` (#390), and nothing checked that: a release sweep on
   2026-09-30 flagged JT65 +0.68 dB worse in unchanged code, because the local `jt65_sweep/` was a July corpus drawn
