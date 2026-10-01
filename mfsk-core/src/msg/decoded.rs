@@ -36,7 +36,7 @@
 //!   than a placeholder row. It also takes the caller's
 //!   [`ProtocolId`](crate::engine::protocol::ProtocolId) (the result type is
 //!   shared across the three) and an optional
-//!   [`CallsignHashTable`](crate::msg::hash_table::CallsignHashTable) to
+//!   [`CallsignHashTable`] to
 //!   resolve `<...>` hashed callsigns.
 //! - **WSPR** ([`WsprResult`](crate::wspr::WsprResult)`::to_decoded`) is
 //!   infallible — text via `Display`, `dt_sec` already present on the result.
