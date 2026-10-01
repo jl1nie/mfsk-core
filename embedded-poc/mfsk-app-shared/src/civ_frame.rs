@@ -122,6 +122,14 @@ pub fn ptt(to: u8, on: bool) -> Frame {
     build(to, &[0x1C, 0x00, on as u8])
 }
 
+/// `1C 00` with no data: ask the radio whether it is transmitting. The
+/// reply parses as [`Event::Ptt`] — the readback that says a `ptt`
+/// command took effect, where the `FB` after it only says it was
+/// understood.
+pub fn read_ptt(to: u8) -> Frame {
+    build(to, &[0x1C, 0x00])
+}
+
 pub fn gps_query(to: u8) -> Frame {
     build(to, &[0x23, 0x00])
 }
@@ -305,6 +313,10 @@ mod tests {
         assert_eq!(
             ptt(R, false).as_slice(),
             &[0xFE, 0xFE, 0xA4, 0xE0, 0x1C, 0x00, 0x00, 0xFD]
+        );
+        assert_eq!(
+            read_ptt(R).as_slice(),
+            &[0xFE, 0xFE, 0xA4, 0xE0, 0x1C, 0x00, 0xFD]
         );
         assert_eq!(
             read_mode(R).as_slice(),

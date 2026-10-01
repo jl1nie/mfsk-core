@@ -2147,6 +2147,36 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
 /// `PTT SOURCE` menu is anything but `VOX`.
 const TX_PROBE_ENABLED: bool = option_env!("MFSK_CORES3_TX_PROBE").is_some();
 
+/// The radio's audio OUT interface as `addr << 8 | iface`, or
+/// `u32::MAX` before `TxConnected`. Written by `app_task`, which only
+/// records it.
+static TX_IFACE: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// `(addr, iface)` of the radio's audio OUT interface, once enumerated.
+pub(crate) fn tx_iface() -> Option<(u8, u8)> {
+    let v = TX_IFACE.load(Ordering::Acquire);
+    (v != u32::MAX).then_some(((v >> 8) as u8, v as u8))
+}
+
+/// Device callback for an OUT handle. Not [`device_event_cb`]: that one
+/// stops the RX reader on `DISCONNECTED`, and a transmit handle's
+/// events are not the receiver's.
+pub(crate) extern "C" fn tx_device_event_cb(
+    _handle: sys::uac::uac_host_device_handle_t,
+    event: sys::uac::uac_host_device_event_t,
+    _arg: *mut core::ffi::c_void,
+) {
+    if event == sys::uac::uac_host_device_event_t_UAC_HOST_DEVICE_EVENT_TX_DONE {
+        TX_DONE_EVENTS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        log::warn!("uac: tx device event raw={event}");
+    }
+}
+
+/// `TX_DONE` callbacks from OUT handles — how often the driver drained
+/// the OUT ring to below its threshold.
+pub(crate) static TX_DONE_EVENTS: AtomicU32 = AtomicU32::new(0);
+
 /// One silent write attempt, this many times, before closing again.
 /// Enough to see whether the ring buffer keeps accepting writes past
 /// the first one (an OUT endpoint that stalls after N packets would
@@ -2156,6 +2186,10 @@ const TX_PROBE_WRITES: u32 = 20;
 /// `STREAM_BUFFER_THRESHOLD`'s sizing logic, scaled down since this
 /// only needs to exercise the path, not sustain real-time throughput.
 const TX_PROBE_CHUNK_BYTES: usize = 1920; // 10 ms @ 48k stereo 16b
+/// Passed to `uac_host_device_write`, which takes **ticks**, not ms
+/// (`uac_host.h`: "Timeout in ticks"). At `CONFIG_FREERTOS_HZ=100`
+/// this is 1 s — long enough that a full ring blocks rather than
+/// fails, which is the backpressure `write_ft8_frame` paces on.
 const TX_PROBE_WRITE_TIMEOUT_MS: u32 = 100;
 
 /// **Amplitude for a real FT8 frame, and why it is not the default.**
@@ -2181,7 +2215,7 @@ const TX_PROBE_WRITE_TIMEOUT_MS: u32 = 100;
 /// 20 000 of 32 767 is what `m5stack-s3-app`'s `tx.rs` uses (≈ −4 dBFS,
 /// headroom for the GFSK envelope while staying above the noise an ALC
 /// needs).
-const TX_AMPLITUDE: i16 = match option_env!("MFSK_CORES3_TX_AMPLITUDE") {
+pub(crate) const TX_AMPLITUDE: i16 = match option_env!("MFSK_CORES3_TX_AMPLITUDE") {
     Some(s) => crate::decode_pipeline::parse_u32(s) as i16,
     None => 0,
 };
@@ -2212,7 +2246,7 @@ const TX_CHUNK_BYTES: usize = TX_CHUNK_12K * 4 * 2 * 2;
 /// 472 ms up front and 1.2 MB of PSRAM temporaries, which put the
 /// decoder's deadline before the end of the slot it was decoding
 /// (`docs/notes/CORES3_FT8_SLOT_BUDGET.md` §10).
-fn write_ft8_frame(
+pub(crate) fn write_ft8_frame(
     handle: sys::uac::uac_host_device_handle_t,
     msg77: &[u8; 77],
     df_hz: f32,
@@ -2878,6 +2912,10 @@ fn app_task(rx: std::sync::mpsc::Receiver<DriverEvent>) {
                 }
             }
             DriverEvent::TxConnected { addr, iface_num } => {
+                // Recorded for whoever opens the OUT side later
+                // (`tx_bringup`); opening it here would block the
+                // `RxConnected` queued behind this event.
+                TX_IFACE.store(((addr as u32) << 8) | iface_num as u32, Ordering::Release);
                 if TX_PROBE_ENABLED {
                     handle_tx_connected(addr, iface_num);
                 } else {
@@ -3620,6 +3658,7 @@ pub fn start_host_when_ready() {
     }
     if started.is_ok() {
         crate::civ_usb::start();
+        crate::tx_bringup::start();
     }
     crate::log_free_internal("post-uac-host-install");
 }

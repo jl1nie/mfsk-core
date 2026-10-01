@@ -118,6 +118,7 @@ answering. Do not surface a cached value as a live one.
 | `MFSK_SIM_CLOCK_STEP_MS=N` | with `MFSK_CORES3_SIM`, step the system clock by N ms once, 90 s into the feed — an NTP correction on demand, for the grid trim and the feed's re-alignment |
 | `MFSK_FT8_BUDGET_MS=N` / `MFSK_FT8_MAX_CAND` / `MFSK_FT8_PASS1_LIMIT` | `decode_pipeline` knobs for the #357 investigation. Budget defaults to 2000 |
 | `MFSK_CORES3_TX_PROBE=1` | **TX/QSO feasibility Phase T0.** Opens the IC-705's USB audio OUT interface on `TxConnected` and writes 20 chunks of digital silence, then closes it. Never sends a nonzero sample — a real tone risks keying TX by itself if the radio's `PTT SOURCE` is `VOX`, which this file cannot see. Off by default (`TxConnected` stays logged-and-ignored). See `uac.rs`'s `handle_tx_connected` doc comment |
+| `MFSK_CORES3_TX_BRINGUP=a\|b` | **Transmit bring-up (plan stage P1), `src/tx_bringup.rs`.** Runs once the receiver streams. `a`: opens audio OUT beside IN and CI-V (mono 48 k, rings 4 KB and 8 KB), streams one silent FT8 frame, never keys. `b`: **keys PTT over CI-V with no audio** for 15 s and 35 s, logging `FB`/readback latency and the IN stream while keyed — dummy load, minimum power, `PTT SOURCE` not `VOX`. Grep `txb:` |
 
 The Cargo feature `fst4-replay` links the fixture that one reads. Off by
 default: a receiver taking audio from a radio never reads it.

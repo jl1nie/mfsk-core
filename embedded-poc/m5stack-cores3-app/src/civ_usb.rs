@@ -17,7 +17,8 @@
 //! - sends a dial chosen on the FREQ page ([`request_freq`]) as `05`
 //!   plus `26 00 01 01 01` (USB, data on, FIL1), and saves it so the
 //!   next boot sends it again;
-//! - closes on unplug and waits for the radio to come back.
+//! - closes on unplug and waits for the radio to come back;
+//! - sends PTT off the moment it opens, and keys on request ([`ptt`]).
 //!
 //! It never touches DTR or RTS. The IC-705's "USB SEND" / "USB Keying"
 //! settings can map either line to PTT or CW keying, and
@@ -27,7 +28,7 @@ use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 use esp_idf_svc::sys;
 use esp_idf_svc::sys::cdc_acm as cdc;
 use mfsk_app_shared::civ_frame::{self, Event, IC705_ADDR};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const IC705_VID: u16 = 0x0c26;
@@ -74,6 +75,24 @@ static DISCONNECTED: AtomicBool = AtomicBool::new(false);
 static NVS: OnceLock<Arc<Mutex<EspNvs<NvsDefault>>>> = OnceLock::new();
 
 static READER: Mutex<civ_frame::Reader> = Mutex::new(civ_frame::Reader::new());
+
+/// The open CI-V handle, null while there is none. Published so [`ptt`]
+/// can send from the caller's task instead of waiting out [`POLL_MS`]:
+/// `cdc_acm_host_data_tx_blocking` serialises its callers on the
+/// device's own `out_mux`, so two tasks sending is safe.
+static HDL: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
+/// Held by [`ptt`] for its whole exchange and by the CAT task around
+/// `cdc_acm_host_close`, so a handle cannot be closed under a sender
+/// that loaded it a moment before the unplug.
+static HDL_USE: Mutex<()> = Mutex::new(());
+/// The radio's last reported PTT state: 0 unknown, 1 receiving, 2
+/// transmitting. Written by the RX callback.
+static PTT_SEEN: AtomicU8 = AtomicU8::new(0);
+/// Bumped on every `FB` from the radio, so a waiter can tell a fresh
+/// acknowledgement from an old one.
+static OK_SEQ: AtomicU32 = AtomicU32::new(0);
+/// Bumped on every PTT readback, for the same reason.
+static PTT_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// Hand over the NVS handle before the host starts; the saved dial is
 /// read from it once the radio connects.
@@ -163,6 +182,13 @@ unsafe extern "C" fn on_data(data: *const u8, len: usize, _arg: *mut core::ffi::
         match civ_frame::parse(&frame, IC705_ADDR) {
             Some(Event::Freq(hz)) => RIG_HZ.store(hz, Ordering::Release),
             Some(Event::Ng) => log::warn!("cat: rig refused a command (NG)"),
+            Some(Event::Ok) => {
+                OK_SEQ.fetch_add(1, Ordering::AcqRel);
+            }
+            Some(Event::Ptt(on)) => {
+                PTT_SEEN.store(if on { 2 } else { 1 }, Ordering::Release);
+                PTT_SEQ.fetch_add(1, Ordering::AcqRel);
+            }
             Some(Event::Mode { mode, data, filter }) => {
                 log::info!("cat: mode {mode:#04x} data={data:?} fil{filter}")
             }
@@ -209,6 +235,72 @@ fn send(hdl: cdc::cdc_acm_dev_hdl_t, frame: &[u8]) {
     }
 }
 
+/// Whether CI-V is open — i.e. whether [`ptt`] can reach the radio.
+pub fn is_open() -> bool {
+    !HDL.load(Ordering::Acquire).is_null()
+}
+
+/// How a [`ptt`] call went, in microseconds from the moment the frame
+/// was handed to the driver. `None` means it did not arrive inside the
+/// wait.
+#[derive(Clone, Copy, Debug)]
+pub struct PttTiming {
+    /// The `FB` acknowledging the `1C 00 0x` command.
+    pub ack_us: Option<u32>,
+    /// The `1C 00` readback reporting the requested state.
+    pub readback_us: Option<u32>,
+}
+
+/// Key (`true`) or unkey the radio over CI-V, from the caller's task,
+/// and wait up to `wait_ms` for the radio to confirm both that it
+/// understood (`FB`) and that it is now in that state (`1C 00`
+/// readback). `Err` when CI-V is not open — the caller must not assume
+/// the radio did anything.
+///
+/// Blocks the caller for at most `wait_ms` plus two 200 ms send
+/// timeouts. The readback is the confirmation that matters: an `FB`
+/// means the frame parsed, not that the transmitter followed.
+pub fn ptt(on: bool, wait_ms: u32) -> Result<PttTiming, &'static str> {
+    let _held = HDL_USE.lock().map_err(|_| "CI-V lock poisoned")?;
+    let h = HDL.load(Ordering::Acquire) as cdc::cdc_acm_dev_hdl_t;
+    if h.is_null() {
+        return Err("CI-V not open");
+    }
+    let now_us = || unsafe { sys::esp_timer_get_time() };
+    let ok0 = OK_SEQ.load(Ordering::Acquire);
+    let t0 = now_us();
+    send(h, &civ_frame::ptt(IC705_ADDR, on));
+    let mut ack_us = None;
+    let deadline = t0 + wait_ms as i64 * 1_000;
+    while now_us() < deadline {
+        if OK_SEQ.load(Ordering::Acquire) != ok0 {
+            ack_us = Some((now_us() - t0) as u32);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let want = if on { 2 } else { 1 };
+    let mut readback_us = None;
+    while now_us() < deadline {
+        let seq0 = PTT_SEQ.load(Ordering::Acquire);
+        send(h, &civ_frame::read_ptt(IC705_ADDR));
+        let ask = now_us();
+        // One reply per ask; re-ask after 50 ms, for a radio that has
+        // not switched yet when the first one is answered.
+        while now_us() < (ask + 50_000).min(deadline) {
+            if PTT_SEQ.load(Ordering::Acquire) != seq0 && PTT_SEEN.load(Ordering::Acquire) == want {
+                readback_us = Some((now_us() - t0) as u32);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if readback_us.is_some() {
+            break;
+        }
+    }
+    Ok(PttTiming { ack_us, readback_us })
+}
+
 fn cat_task() {
     // Audio first: open only once the PCM2901's IN stream has
     // enumerated, so a channel shortage can cost CAT and never the
@@ -226,6 +318,12 @@ fn cat_task() {
         };
         DISCONNECTED.store(false, Ordering::Release);
         log::warn!("cat: IC-705 CI-V open (USB A)");
+        // Unkey first. A board that reset while transmitting left the
+        // radio keyed, and nothing else here would ever unkey it; this
+        // is the first frame the radio hears from a new boot.
+        send(h, &civ_frame::ptt(IC705_ADDR, false));
+        send(h, &civ_frame::read_ptt(IC705_ADDR));
+        HDL.store(h as *mut core::ffi::c_void, Ordering::Release);
         send(h, &civ_frame::read_freq(IC705_ADDR));
         send(h, &civ_frame::read_mode(IC705_ADDR));
         while !DISCONNECTED.load(Ordering::Acquire) {
@@ -255,9 +353,13 @@ fn cat_task() {
             }
             std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
         }
+        HDL.store(core::ptr::null_mut(), Ordering::Release);
+        PTT_SEEN.store(0, Ordering::Release);
         log::warn!("cat: IC-705 unplugged — waiting for it");
+        let _held = HDL_USE.lock();
         // SAFETY: opened above; the driver wants a close after a
-        // disconnect to free the handle.
+        // disconnect to free the handle. No `ptt` caller holds it:
+        // `HDL` is cleared and `HDL_USE` is ours.
         let err = unsafe { cdc::cdc_acm_host_close(h) };
         if err != sys::ESP_OK {
             log::warn!("cat: close failed err={err:#x}");

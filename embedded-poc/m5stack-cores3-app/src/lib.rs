@@ -26,6 +26,7 @@ pub mod pmic;
 pub mod rtc;
 pub mod storage;
 pub mod touch;
+pub mod tx_bringup;
 pub mod uac;
 pub mod waterfall_feed;
 
