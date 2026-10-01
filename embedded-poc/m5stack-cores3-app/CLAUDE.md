@@ -6,7 +6,7 @@ bit table, the stack-versus-heap trap and the AW9523B pin names all
 live there and all apply to this crate. The user-facing manual is
 `docs/reference/MANUAL_M5STACK_CORES3.md`; do not duplicate it here.
 
-## One binary, four receivers
+## One binary, several receivers
 
 `main` reads NVS `boot_mode`, publishes the two CONFIG-page settings
 (`grid_src`, `wifi_pref`), and hands one `boot::Receiver` to
@@ -18,7 +18,8 @@ rather than the ~173 KB a naive merge would cost.
 |---|---|---|
 | `uac` | `apps::ft8::Ft8Controller` → `decode_pipeline` | UAC |
 | `ft4` | `apps::ft4::Ft4Rx` | UAC |
-| `fst4` | `apps::fst4::Fst4Rx` | UAC |
+| `jtty` | `apps::jtty::JttyRx` (no WiFi) | UAC |
+| `fst4` | `apps::fst4::Fst4Rx` (`--features fst4` only; off the picker since 2026-10-01) | UAC |
 | `decode` | `apps::ft8::Ft8Controller` (no radio) | baked WAV |
 
 **One boot sequence, six hooks.** `boot::run` is

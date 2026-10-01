@@ -15,6 +15,12 @@
 //! WSPR table until the CoreS3 WSPR receiver was removed (2026-09-30). FST4
 //! has no table yet: WSJT-X's defaults for it are LF/MF, which the
 //! IC-705 does not transmit on, and no HF channel has been agreed.
+//!
+//! The JTTY table is WSJT-X v3.2.0-rc1's own (`models/FrequencyList.cpp`
+//! L74-303): the conventional RTTY frequency, or that plus 10 kHz where
+//! the band leaves room once the 1500 Hz audio offset is added. Not yet
+//! checked against the JA band plan, where 3.575 and 7.090 in particular
+//! need a look before anyone transmits there.
 
 /// One row of a table: what the page draws, and the dial it sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +63,18 @@ pub const FT4: &[FreqPreset] = &[
 
 pub const FST4: &[FreqPreset] = &[];
 
+pub const JTTY: &[FreqPreset] = &[
+    p("160m     1.838", 1_838_000),
+    p("80m      3.575", 3_575_000),
+    p("40m      7.090", 7_090_000),
+    p("30m     10.140", 10_140_000),
+    p("20m     14.090", 14_090_000),
+    p("17m     18.100", 18_100_000),
+    p("15m     21.090", 21_090_000),
+    p("12m     24.920", 24_920_000),
+    p("10m     28.090", 28_090_000),
+];
+
 /// Which table a receiver shows, by the name the picker gives it
 /// (`mode_picker::mode_name`). Empty for anything without one.
 pub fn for_mode(name: &str) -> &'static [FreqPreset] {
@@ -64,6 +82,7 @@ pub fn for_mode(name: &str) -> &'static [FreqPreset] {
         "FT8" => FT8,
         "FT4" => FT4,
         "FST4" => FST4,
+        "JTTY" => JTTY,
         _ => &[],
     }
 }
@@ -162,13 +181,22 @@ mod tests {
     #[test]
     fn labels_fit_the_widget_and_frequencies_ascend() {
         // 208 px of FONT_6X10 less the 10 px indent and the `*` column.
-        for t in [FT8, FT4, FST4] {
+        for t in [FT8, FT4, FST4, JTTY] {
             for f in t {
                 assert!(f.label.len() <= 30, "{} too long", f.label);
             }
             for w in t.windows(2) {
                 assert!(w[0].hz < w[1].hz, "{} !< {}", w[0].label, w[1].label);
             }
+        }
+    }
+
+    /// The picker's three modes (`ui::mode_picker::MODES`, which the host
+    /// test cannot build) each have a table.
+    #[test]
+    fn every_picker_mode_has_a_table() {
+        for name in ["FT8", "FT4", "JTTY"] {
+            assert!(!for_mode(name).is_empty(), "{name} has no FREQ presets");
         }
     }
 }

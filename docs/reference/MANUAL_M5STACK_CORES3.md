@@ -25,7 +25,8 @@ driver takes the port a flasher would use.
 |---|---|---|
 | `uac` | FT8 from the radio's USB Audio interface | yes |
 | `ft4` | FT4 from the radio's USB Audio interface | yes |
-| `fst4` | FST4 wideband monitor | yes |
+| `jtty` | JTTY (WSJT-X 3.2's keyboard mode) from the radio's USB Audio interface | yes |
+| `fst4` | FST4 wideband monitor — only in an image built with `--features fst4`, and not on the menu | yes |
 | `decode` | FT8 from a WAV baked into the image | no |
 
 `decode` is the demo mode: it needs no radio and no antenna, and is
@@ -142,6 +143,10 @@ cargo build --release
     logs/boot_$(date +%F).log 110
 ```
 
+The default build carries FT8, FT4 and JTTY (Cargo features `ft4` and
+`jtty-rx` are on by default since 2026-10-01). FST4 needs
+`cargo build --release --features fst4`.
+
 Use the script rather than `espflash` directly. It detects the flash
 size (writing the wrong one bricks the app in a way that survives
 `erase-flash`), and it distinguishes a failed write from a successful
@@ -217,7 +222,7 @@ A **seed**, not an override: written to NVS only when NVS has no mode
 yet. The touch picker writes NVS at runtime, and a value here that
 reapplied on every boot would undo that choice on the next restart.
 
-Values: `uac` | `ft4` | `fst4` | `decode`. Omit to keep whatever NVS
+Values: `uac` | `ft4` | `jtty` | `fst4` | `decode`. Omit to keep whatever NVS
 holds. (`wspr` was a value until the WSPR receiver was removed on
 2026-09-30; a board that stored it, or is built with it, boots `uac` and
 says so in the log.)
@@ -254,7 +259,7 @@ The overlay opens on a four-row **root**:
 
 | Row | What it holds |
 |---|---|
-| `MODE` | which receiver boots (FT8, FT4, FST4) |
+| `MODE` | which receiver boots (FT8, FT4, JTTY) |
 | `CONFIG` | how the slot phase is kept (NTP, or the air's DT), and whether WiFi comes up |
 | `FREQ` | the running receiver's dial presets, sent to the radio over CAT (see below) |
 | `DEMO` | running without a radio (`WAV REPLAY` — a recording, decoded on a loop) |
@@ -366,12 +371,14 @@ FT8 board has no use for an FT4 dial.
 |---|---|
 | FT8 | 160 m 1.908 (`JA`), 80 m 3.531 (`JA`), 80 m 3.573, 40 m 7.041 (`JA`), 40 m 7.074, 30 m 10.136, 20 m 14.074, 17 m 18.100, 15 m 21.074, 12 m 24.915, 10 m 28.074, 6 m 50.313, 2 m 144.460 (`JA`) |
 | FT4 | 80 m 3.575, 40 m 7.0475, 30 m 10.140, 20 m 14.080, 17 m 18.104, 15 m 21.140, 12 m 24.919, 10 m 28.180, 6 m 50.318 |
+| JTTY | 160 m 1.838, 80 m 3.575, 40 m 7.090, 30 m 10.140, 20 m 14.090, 17 m 18.100, 15 m 21.090, 12 m 24.920, 10 m 28.090 |
 | FST4 | none — the bar reads `no presets for this mode` |
 
 The FT8 table carries the JA channels beside the IARU ones, labelled
 `JA` so an operator abroad can tell them from the IARU channel on the
 same band. The IARU FT8 channels and the whole FT4 table are the ones
-WSJT-X itself lists. FST4 has no table yet: WSJT-X's defaults for it are LF/MF,
+WSJT-X itself lists, and so is the JTTY table (not yet checked against the
+JA band plan; 3.575 and 7.090 in particular). FST4 has no table yet: WSJT-X's defaults for it are LF/MF,
 which the IC-705 does not transmit on, and no HF channel has been agreed.
 
 The widget has four rows. A table that fits is shown whole; a longer one

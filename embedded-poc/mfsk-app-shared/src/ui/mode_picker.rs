@@ -1,6 +1,7 @@
 //! Mode picker — the way back out of whichever receiver is running.
 //!
-//! The CoreS3 app is one binary carrying three receivers, chosen at
+//! The CoreS3 app is one binary carrying its receivers (FT8, FT4, JTTY;
+//! FST4 too in an image built with that feature), chosen at
 //! boot from the NVS `boot_mode`. That only helps if the choice can be
 //! changed from the running app: the board has no buttons, and in UAC
 //! host mode it has no serial console either, because the USB host
@@ -129,7 +130,7 @@ pub enum Commit {
 /// cheaper of the two: a third level would put two taps between the
 /// operator and a setting that is changed at the moment the board is
 /// somewhere awkward, and four rows is exactly what the widget already
-/// draws for `MODES`.
+/// draws ([`ROWS`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConfigRow {
     Grid(GridSource),
@@ -160,13 +161,14 @@ pub const CONFIG_ROWS: [ConfigRow; 4] = [
 /// nothing a reader could use: every one of these takes its audio from
 /// the radio over USB, so "UAC" is the board, not the choice.
 ///
-/// Four rows (five until the WSPR receiver was removed, 2026-09-30) is
-/// 4 x [`PITCH`] + [`COMMIT_H`], against a 240x320 panel; the widget centres
-/// on however many there are.
-pub const MODES: [(BootMode, &str); 4] = [
+/// FT8, FT4 and JTTY (2026-10-01): the three modes the app is being built
+/// around — automatic QSOs on FT8 and FT4, template messages on JTTY.
+/// FST4 left the list then; its receiver stays behind the `fst4` feature,
+/// and a board whose NVS still says `fst4` boots it if the image has it
+/// (or falls back to FT8 and logs why), so [`mode_name`] still names it.
+pub const MODES: [(BootMode, &str); 3] = [
     (BootMode::Uac, "FT8"),
     (BootMode::Ft4, "FT4"),
-    (BootMode::Fst4, "FST4"),
     (BootMode::Jtty, "JTTY"),
 ];
 
@@ -176,6 +178,8 @@ pub const MODES: [(BootMode, &str); 4] = [
 pub fn mode_name(mode: BootMode) -> Option<&'static str> {
     match mode {
         BootMode::Decode => Some("FT8"),
+        // Off the picker since 2026-10-01, still a receiver an image can boot.
+        BootMode::Fst4 => Some("FST4"),
         m => MODES.iter().find(|(b, _)| *b == m).map(|(_, name)| *name),
     }
 }
@@ -229,10 +233,13 @@ pub const HOLD_BORDER_W: u32 = 2;
 pub const COMMIT_H: u32 = 40;
 
 /// Total height: the mode rows plus the commit bar.
-/// Rows the widget is sized for — the widest page. Compile-checked
-/// against the others so adding a row to any page cannot quietly leave
-/// it undrawable.
-pub const ROWS: usize = MODES.len();
+/// Rows the widget is sized for — the widest page. A fixed four, not any
+/// one page's length: it was `MODES.len()`, and taking FST4 off the MODE
+/// page would then have shrunk the widget under the root and CONFIG, which
+/// have four. Compile-checked against every page so adding a row to any of
+/// them cannot quietly leave it undrawable.
+pub const ROWS: usize = 4;
+const _: () = assert!(ROWS >= MODES.len(), "MODE has more rows than the widget draws");
 const _: () = assert!(ROWS >= ROOT.len(), "the root has more rows than the widget draws");
 const _: () = assert!(ROWS >= CONFIG_ROWS.len(), "CONFIG has more rows than the widget draws");
 const _: () = assert!(ROWS >= DEMOS.len(), "DEMO has more rows than the widget draws");

@@ -171,6 +171,11 @@ esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal.git" }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
 
 [features]
+# The image an operator flashes: FT8 (always built), FT4 and JTTY — the three
+# modes the app's mode picker offers (2026-10-01). FST4 stays opt-in below.
+# A plain `cargo build --release` used to give an FT8-only image whose picker
+# still listed FT4 and JTTY, and choosing either logged an error and ran FT8.
+default = ["ft4", "jtty-rx"]
 # Baked audio fixtures, off by default.
 #
 # A receiver that takes audio from a radio never reads either of these,

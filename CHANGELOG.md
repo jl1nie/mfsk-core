@@ -15,6 +15,12 @@
   `syncmin` and stops when a pass adds nothing. That made it 4-7x slower than `jt9`. Both now match upstream. On the
   upstream baseline no channel is behind, and the 1040-file corpus decodes in 0.9 s instead of 10.9 s. A regression test
   pins the AP rung: at the threshold the old path decoded 2 of 24 seeds where the single pass decoded 9.
+- **CoreS3: three modes, FT8, FT4 and JTTY, in the default build.** The mode picker lists FT8, FT4 and JTTY;
+  FST4 leaves the menu but keeps its receiver behind `--features fst4` (a board whose NVS says `fst4` still boots it,
+  or FT8 with a logged reason). `ft4` and `jtty-rx` are now default features: a plain `cargo build --release` used to
+  give an FT8-only image whose picker offered FT4 and JTTY and fell back to FT8 on either. The image grows from 2.36 to
+  2.72 MB of a 9 MiB partition. JTTY gets FREQ presets, WSJT-X v3.2.0-rc1's own (`models/FrequencyList.cpp`). First
+  step of the CoreS3 QSO/TX plan (automatic FT8/FT4 QSOs, JTTY templates, real transmission).
 - **Q65 at 0.31x / 0.29x `jt9 -3`'s time, from 0.77x / 0.69x (#555).** `DecodeRequest::ap_hint()` now tries each
   candidate without AP first, as `q65_decode.f90`'s `ipass` loop does, so one hinted scan does what a plain scan plus
   a hinted one did; the new `Q65Result::ap` says which carried a decode. A candidate inside a decoded signal's band is
