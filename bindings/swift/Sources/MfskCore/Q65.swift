@@ -218,9 +218,11 @@ public enum Q65 {
     /// 0-28; `call2` is the second and locks 29-57; `grid` and `report`
     /// both lock 58-73, so they are alternatives (see
     /// `mfsk_core::msg::ap`). A hint locks bits rather than steering a
-    /// search, so **getting the order wrong does not degrade
-    /// gracefully**: the wrong lock removes the decode entirely rather
-    /// than costing a fraction of a dB. `Q65Tests` pins both directions.
+    /// search, so **a hint in the wrong order is a wrong hint**, not a
+    /// weaker one: the AP pass cannot decode with it. Every candidate is
+    /// tried without AP first (as `jt9 -3` does, since #555), so a signal
+    /// strong enough for that still decodes; one that needed the hint is
+    /// lost. `Q65Tests` pins both directions.
     ///
     /// Each is nil when unknown; all four nil is a legal call and falls
     /// through to the plain strategy.

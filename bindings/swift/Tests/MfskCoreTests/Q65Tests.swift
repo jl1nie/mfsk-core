@@ -62,16 +62,18 @@ final class Q65Tests: XCTestCase {
             .contains { $0.text.contains(hisCall) })
     }
 
-    func testASwappedAPHintRemovesTheDecodeRatherThanCostingSensitivity() throws {
-        // The trap the field order is worth documenting for: a hint
-        // locks message bits, so hinting the *right* callsigns in the
-        // *wrong* fields is not a weaker hint, it is a wrong one — and
-        // a clean signal that decodes four other ways decodes not at
-        // all. This is the assertion that made the binding's doc
-        // comment say "fields in order, not roles".
+    func testASwappedAPHintIsWastedButThePlainPassStillDecodes() throws {
+        // A hint locks message bits, so the right callsigns in the wrong
+        // fields are a wrong hint, not a weaker one: the AP pass cannot
+        // decode with it. Since #555 a hinted decode tries every candidate
+        // without AP first, as `jt9 -3` does, so a clean signal still
+        // decodes; what the wrong order costs is the AP gain on a weak one.
+        // (Before #555 the hinted path tried only the hint, and this
+        // assertion was `isEmpty`.)
         let pcm = try audio()
         let swapped = Q65.APHint(call1: hisCall, call2: "CQ", grid: grid)
-        XCTAssertTrue(try Q65.decode(pcm, subMode: subMode, apHint: swapped).isEmpty)
+        XCTAssertTrue(try Q65.decode(pcm, subMode: subMode, apHint: swapped)
+            .contains { $0.text.contains(hisCall) })
     }
 
     func testAPHintWithNoHintsIsALegalCall() throws {

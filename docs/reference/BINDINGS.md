@@ -209,8 +209,10 @@ rather than one more field.
 
 **The AP fields are the message's fields in order** — `ap_call1` is
 `"CQ"` for a CQ, not the transmitting station. They lock message bits
-rather than steering a search, so the wrong order removes the decode
-instead of costing a fraction of a dB.
+rather than steering a search, so a hint in the wrong order is a wrong
+hint: its AP pass cannot decode. Every mode tries a candidate without AP
+first (Q65 since #555), so what the wrong order costs is the AP gain, on
+exactly the weak signals the hint was for.
 
 ### 2.4 `MfskDecode` — one result row
 
@@ -928,9 +930,11 @@ for row in try session.decode(slot) {
   into `mfsk.h`; before that a wrapper would have had to hardcode 0…9.
 * An AP hint's fields are the **message's fields in order** — `call1`
   is `"CQ"` for a CQ, not the transmitting station — and they lock
-  message bits rather than steering a search, so the wrong order
-  removes the decode instead of costing a fraction of a dB. Both
-  directions are pinned in `Q65Tests`.
+  message bits rather than steering a search, so a hint in the wrong
+  order is a wrong hint. A decode still tries each candidate without AP
+  first (since #555, as `jt9 -3` does), so a clean signal decodes either
+  way; a weak one that needed the hint is lost. Both directions are
+  pinned in `Q65Tests`.
 * **`Q65.decode(_:mode:params:callers:)`** is `mfsk_q65_decode_ex` (§2.8) — one
   call for WSJT-X 3.2's Q65 settings. `try Q65.Params(mode: .q65a30)` gives the
   defaults; then `pileup`, `emeDelay`, `maxDrift`, `rxFrequencyHz` / `ftolHz`,
