@@ -403,18 +403,20 @@ jobs:
           for attempt in $(seq 1 90); do
             code=$(curl -sS -o /tmp/status.json -w '%{http_code}' \
               -H 'User-Agent: mfsk-core release workflow (github actions)' "$url" || echo 000)
-            if [ "$code" = "200" ]; then
-              if [ "$(jq -r '.doc_status' /tmp/status.json)" = "true" ]; then
-                echo "docs.rs built mfsk-core ${VERSION}"
-                exit 0
-              fi
-              echo "::error::docs.rs FAILED to build mfsk-core ${VERSION} — see ${page}"
-              exit 1
+            # `doc_status: false` is not a verdict. On v0.12.0 the second
+            # poll got 200 with false while the build was still queued,
+            # this step failed the release after crates.io had accepted
+            # it, and minutes later the same URL said true. So only
+            # `true` ends the wait early; a real failure surfaces as the
+            # timeout below, with the page to look at.
+            if [ "$code" = "200" ] && [ "$(jq -r '.doc_status' /tmp/status.json)" = "true" ]; then
+              echo "docs.rs built mfsk-core ${VERSION}"
+              exit 0
             fi
-            echo "attempt ${attempt}: docs.rs returned ${code}, waiting"
+            echo "attempt ${attempt}: docs.rs returned ${code} $(cat /tmp/status.json 2>/dev/null | head -c 80), waiting"
             sleep 20
           done
-          echo "::error::docs.rs did not report on mfsk-core ${VERSION} within 30 min — see ${page}"
+          echo "::error::docs.rs did not report a successful build of mfsk-core ${VERSION} within 30 min — see ${page}"
           exit 1
 
       - name: Create GitHub release
