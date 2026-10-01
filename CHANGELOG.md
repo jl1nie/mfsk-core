@@ -21,6 +21,10 @@
   skipped (`q65_decode.f90:375-377`): a strong signal cost 50 BP calls, now 1. The QRA BP kernels are specialised to
   `M = 64` (same arithmetic, noise files 119 -> 68 ms), and `maxiters` is upstream's 40 per depth instead of 50: 3 of
   2 640 sweep trials lost, none of which upstream decodes. No group behind upstream. Details: `BENCHMARKS.md`.
+- **Q65's sync smoothing covers only the bins the search reads (#556).** `nsmo` passes of `smo121` (E: 128) ran over
+  the whole 0-6 kHz row; now over the search window ± Max Drift, widened by `nsmo`, which is bit-identical where it
+  is read (unit test, and the sweep's 2 640 trials unchanged). Q65-120 noise files 116 -> 96 ms; the T1 task 0.29x /
+  0.26x `jt9 -3`'s time.
 - **Breaking (behaviour): FST4 finds candidates as `get_candidates_fst4` does, so its `sync_min` is upstream's
   `minsync` (#554).** FST4 used the generic 2-D Costas search. On noise it let `max_cand` candidates through on every
   file, and each one paid a full ±1.5 s `fst4_sync_search`; upstream refines 2-6. The search is now a port of

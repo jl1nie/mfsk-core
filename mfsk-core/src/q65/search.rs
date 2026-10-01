@@ -68,15 +68,33 @@ pub(crate) fn nsmo_for<P: ModulationParams>() -> usize {
 /// A copy of `spec` with every time row smoothed [`nsmo_for`] times, the
 /// spectra `q65_ccf_22` syncs on (`q65_symspec`). `None` when `nsmo` is 0.
 /// `noise_per_bin` is carried over unchanged.
-pub(crate) fn smoothed_for_sync<P: ModulationParams>(spec: &Spectrogram) -> Option<Spectrogram> {
+///
+/// Only bins `need.0..=need.1` come back smoothed exactly; the rest of
+/// each row is whatever the narrowed smoothing left there, and must not be
+/// read. `smo121` computes a bin from its neighbours' previous values and
+/// leaves a slice's two end bins alone, so smoothing the slice widened by
+/// `nsmo` bins each side gives `need` bit for bit what smoothing the whole
+/// row does: an end's influence moves one bin inward per pass. The coarse
+/// search reads only the sync bins of its window, widened by the drift
+/// (`scan_with`). Smoothing the whole 0-6 kHz row was ~20 % of a Q65-120
+/// decode on noise, E's `nsmo` being 128 passes (#556).
+pub(crate) fn smoothed_for_sync<P: ModulationParams>(
+    spec: &Spectrogram,
+    need: (usize, usize),
+) -> Option<Spectrogram> {
     let nsmo = nsmo_for::<P>();
     if nsmo == 0 || spec.n_freq == 0 {
         return None;
     }
+    let lo = need.0.saturating_sub(nsmo);
+    let hi = need.1.saturating_add(nsmo).min(spec.n_freq - 1);
     let mut mags_sqr = spec.mags_sqr.clone();
-    for row in mags_sqr.chunks_exact_mut(spec.n_freq) {
-        for _ in 0..nsmo {
-            super::q3::smo121(row);
+    if lo <= hi {
+        for row in mags_sqr.chunks_exact_mut(spec.n_freq) {
+            let part = &mut row[lo..=hi];
+            for _ in 0..nsmo {
+                super::q3::smo121(part);
+            }
         }
     }
     Some(Spectrogram {
@@ -450,6 +468,51 @@ pub fn coarse_search_on_spec(
 mod tests {
     use super::super::tx::synthesize_standard;
     use super::*;
+
+    /// The narrowed smoothing equals whole-row smoothing, bit for bit, on
+    /// the bins it promises (#556), for E's 128 passes and B's 2, with the
+    /// window at a row's edge and in its middle.
+    #[test]
+    fn narrowed_sync_smoothing_is_exact_where_read() {
+        let n_freq = 900;
+        let n_time = 3;
+        let mut x = 0x1234_5678_u32;
+        let mags_sqr: Vec<f32> = (0..n_freq * n_time)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x % 10_000) as f32 / 37.0
+            })
+            .collect();
+        let spec = Spectrogram {
+            mags_sqr,
+            n_time,
+            n_freq,
+            t_step: 1,
+            nsps: 1,
+            df: 1.0,
+            noise_per_bin: 1.0,
+        };
+        fn check<P: ModulationParams>(spec: &Spectrogram, need: (usize, usize)) {
+            let full = smoothed_for_sync::<P>(spec, (0, spec.n_freq - 1)).unwrap();
+            let part = smoothed_for_sync::<P>(spec, need).unwrap();
+            for t in 0..spec.n_time {
+                for f in need.0..=need.1 {
+                    let i = t * spec.n_freq + f;
+                    assert_eq!(
+                        full.mags_sqr[i].to_bits(),
+                        part.mags_sqr[i].to_bits(),
+                        "t {t} f {f}"
+                    );
+                }
+            }
+        }
+        for need in [(0, 40), (300, 520), (860, 899)] {
+            check::<super::super::Q65e120>(&spec, need);
+            check::<super::super::Q65b60>(&spec, need);
+        }
+    }
 
     #[test]
     fn coarse_search_finds_clean_signal() {

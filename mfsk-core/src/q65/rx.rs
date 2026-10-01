@@ -996,7 +996,15 @@ fn scan_with<P: ModulationParams>(
     // admission (#552) most scans take one or two, and the dual sync
     // together with #552 runs at 0.09-0.29x its first cost. (An earlier
     // note here said 0-2 %: both sides of that timing had run one binary.)
-    let Some(smoothed) = super::search::smoothed_for_sync::<P>(&spec) else {
+    // The bins the coarse search reads: its window's sync bins
+    // (`SearchWindow`'s `fmin_bin`/`fmax_bin`), each shifted by up to
+    // `max_drift` across the frame (`drifted_sync_power`).
+    let need = (
+        ((params.freq_min_hz / spec.df).floor().max(0.0) as usize)
+            .saturating_sub(max_drift as usize),
+        (params.freq_max_hz / spec.df).ceil().max(0.0) as usize + max_drift as usize,
+    );
+    let Some(smoothed) = super::search::smoothed_for_sync::<P>(&spec, need) else {
         return seen;
     };
     let cands2 = super::search::coarse_search_drift_on_spec_for::<P>(
