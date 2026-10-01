@@ -21,6 +21,11 @@
   skipped (`q65_decode.f90:375-377`): a strong signal cost 50 BP calls, now 1. The QRA BP kernels are specialised to
   `M = 64` (same arithmetic, noise files 119 -> 68 ms), and `maxiters` is upstream's 40 per depth instead of 50: 3 of
   2 640 sweep trials lost, none of which upstream decodes. No group behind upstream. Details: `BENCHMARKS.md`.
+- **WSPR's Fano decoder resets its root node, as `fano.c:127` does (#557).** The node scratch is pooled across a
+  candidate's 17 DT positions and its blocksizes (since `362b7690`), and the root's `encstate` was never reset, so
+  from the second call on a search could start from the previous call's low bit. A test now holds every pooled call
+  to a fresh one. The WSPR crossing does not move. Looked at while trying to halve WSPR's time; that was not found
+  without changing decodes (`BENCHMARKS.md`): the crate runs at `wsprd`'s speed, Fano-bound like it.
 - **Q65's sync smoothing covers only the bins the search reads (#556).** `nsmo` passes of `smo121` (E: 128) ran over
   the whole 0-6 kHz row; now over the search window ± Max Drift, widened by `nsmo`, which is bit-identical where it
   is read (unit test, and the sweep's 2 640 trials unchanged). Q65-120 noise files 116 -> 96 ms; the T1 task 0.29x /

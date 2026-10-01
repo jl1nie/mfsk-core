@@ -165,7 +165,7 @@ significant, p < 0.05:
 | `fst4/t1` | `jt9 -7 -d 3` | 0 of 20 (was 15 of 20 before #554) | +0.50 … −0.79 dB | 0.42 / 0.53 (was 4.1 / 3.9) |
 | `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.31 dB | 0.29 / 0.26 (was 0.77 / 0.69 before #555, #556) |
 | `jt9/t1` | `jt9 -9 -d 3` | 0 of 1 | +0.09 dB (p = 0.51) | 0.18 / 0.19 |
-| `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.60 / 0.86 |
+| `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.67 / 1.0 (10 files a cell; 0.60 / 0.86 was 2) |
 | `jt65/t1` | `jt9 -6 -d 3` | 1 of 1 | upstream never falls below 50 % on this grid | 0.24 / 0.06 |
 | `jtty/t1` | `rjtty 4.6 0 384 1500 50` | 0 of 2 | +0.00 dB: all 360 trials agree, either way | 0.11 / 0.14 |
 
@@ -202,6 +202,19 @@ passes of `smo121`, 128 for E) ran over the whole 0–6 kHz row, ~20 % of a
 Q65-120 decode on noise. Restricted to the search window ± Max Drift,
 widened by `nsmo` so that it stays bit-identical where read, it took the
 120 s noise files from 116 to 96 ms.
+
+WSPR stays at about `wsprd`'s speed (#557), and that is where a faithful
+port lands: 70–74 % of both is the Fano decoder, on the same candidates
+with the same 10 000-cycle cap, and the crate's ~49 ms of Fano a file
+matches `wsprd`'s ~50 ms. The loop is bound by branch misprediction.
+Structure-of-arrays nodes made it 17 % slower, unchecked indexing gained
+nothing measurable, and no change that keeps every decode identical was
+found to do better. Halving it would need fewer Fano cycles, which costs
+sensitivity and, past the cap, adds false decodes (`wspr::decode`'s swept
+table). The look did find a bug: the pooled Fano scratch never reset the
+root node's `encstate` (`fano.c:127` does), so a candidate's second and
+later DT positions could start from the wrong state. Fixed; the crossing
+did not move.
 
 JT65's gap is known, and the protocol is legacy; it is recorded here and
 not chased.

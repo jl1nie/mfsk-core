@@ -285,6 +285,13 @@ pub fn fano_decode_with_scratch(
         let lsym = encode_step(0) as usize;
         let m0 = nodes[0].metrics[lsym];
         let m1 = nodes[0].metrics[3 ^ lsym];
+        // `fano.c:127`, `np->encstate = 0`. Missing until #557: the node is
+        // pooled across a candidate's 17 DT positions and its blocksizes
+        // (`wspr::decode`), so from the second call on the root started
+        // from the last call's low bit — 1 whenever that call had flipped
+        // it — and with `m0 > m1` below left it there, searching from a
+        // state that disagreed with the branch it scored.
+        nodes[0].encstate = 0;
         if m0 > m1 {
             nodes[0].tm = [m0, m1];
         } else {
@@ -392,6 +399,79 @@ pub fn fano_decode_with_scratch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pooled scratch must not carry state into the next call (#557):
+    /// the root node's `encstate` was never reset, so a call after one that
+    /// had flipped it searched from the wrong state. Every call here must
+    /// equal the same call on a fresh scratch, over converging and
+    /// exhausted searches alike.
+    #[test]
+    fn pooled_scratch_matches_a_fresh_one() {
+        let mut x = 0x2545_f491_u32;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        let mut pooled = FanoScratch::new();
+        let (mut ok, mut fail) = (0, 0);
+        for trial in 0..400_i32 {
+            let nbits = 81;
+            let mut data = [0u8; 11];
+            for b in data.iter_mut().take(7) {
+                *b = rnd() as u8;
+            }
+            data[6] &= 0xc0;
+            let mut sym = vec![0u8; 2 * nbits];
+            conv_encode(&data, nbits, &mut sym);
+            let snr = trial % 20;
+            let bias = 5 + (trial % 7) * 15;
+            let bm: Vec<[i32; 2]> = sym
+                .iter()
+                .map(|&s| {
+                    let noise = (rnd() % 1200) as i32 - 600;
+                    let l = if s == 1 { snr * 2 } else { -snr * 2 } + noise;
+                    [-l / 2 - bias, l / 2 - bias]
+                })
+                .collect();
+            for delta in [17, 60] {
+                for cap in [50u64, 10_000] {
+                    let a = fano_decode_with_scratch(&mut pooled, &bm, nbits, delta, cap);
+                    let b = fano_decode(&bm, nbits, delta, cap);
+                    // An unconverged search's bytes past `max_np` are
+                    // whatever the scratch held; compare the rest.
+                    let reached = if a.converged {
+                        a.data.len()
+                    } else {
+                        (a.max_np + 1) / 8
+                    };
+                    assert_eq!(
+                        (
+                            &a.data[..reached],
+                            a.metric,
+                            a.cycles,
+                            a.max_np,
+                            a.converged
+                        ),
+                        (
+                            &b.data[..reached],
+                            b.metric,
+                            b.cycles,
+                            b.max_np,
+                            b.converged
+                        ),
+                        "trial {trial} delta {delta} cap {cap}"
+                    );
+                    if a.converged { ok += 1 } else { fail += 1 }
+                }
+            }
+        }
+        assert!(
+            ok > 100 && fail > 100,
+            "both outcomes exercised: {ok} converged, {fail} not"
+        );
+    }
 
     #[test]
     fn encode_then_decode_noise_free() {
