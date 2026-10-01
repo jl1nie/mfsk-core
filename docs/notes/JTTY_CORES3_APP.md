@@ -100,6 +100,28 @@ buffers were placed by build order: `Receiver::new` allocates the side surface's
   half. F (14 KB) certainly fits, and keeps up. The scan needs ~126 KB internal (survivors plus the scan's buffers), so
   it needs library work first: smaller survivors, or a side surface that is fast in PSRAM.
 
+### E0, survivors first: measured on the board (2026-10-01)
+
+`jtty-bench` built from `main` (`f1ae0a5a`, after #513), the same CoreS3, no WiFi, the same five trials of six stations
+and of noise only. Log (local; `logs/` is not committed): `jtty-bench_main-f1ae0a5a_2026-10-01.log`. "Internal" is the internal
+heap the receiver took (free before the build minus free after).
+
+| configuration | internal | a ladder call (band) | front / back mean, ms | back worst | delay worst | windows dropped | band found |
+|---|---|---|---|---|---|---|---|
+| A' scan, all internal, `new_f32_metrics` (survivors first) | 169 KB | 206 ms | 314 / 259 | 699 | 1.40 s | 0 | 22/30 |
+| C scan, survivors internal, the rest in PSRAM | 62 KB | 234 ms | 480 / 352 | 866 | 2.21 s | 0 | 22/30 |
+| A' built again | 171 KB | 206 ms | 314 / 258 | 696 | 1.40 s | 0 | 22/30 |
+
+- **Allocating the survivors first does what #513 said.** Against A (builder order, 2026-09-27) a ladder call is 337 →
+  206 ms, the back end's worst window 1057 → 699 ms, the worst delay 3.13 → 1.40 s, and 20 → 22 of 30 band messages.
+- **The rebuild slowdown is gone.** "A built again" fell to 559 ms, 39 dropped windows and 9/30; "A' built again"
+  repeats A' to the millisecond.
+- The two-core split's correctness gate passed on the board in the same run (`SELFTEST: PASS`, 2 cases: the upstream
+  recording, and six long messages on a busy band).
+- 47 task-watchdog warnings (IDLE0 starved while the bench synthesises its audio), as in earlier runs; no reset.
+- Still open: whether channel 0 (E) fits beside WiFi is moot since JTTY runs without WiFi (§6); A' needs 169 KB
+  internal, so the app must build the receiver before anything else takes the large blocks.
+
 ## 4. Audio path, tasks, and the sample clock
 
 ```
