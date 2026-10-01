@@ -57,6 +57,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job carries a `timeout-minutes`. They are ceilings for a hang,
+# not budgets: each sits well above the job's normal run so a slow
+# runner never trips one. Without them a hung job runs to GitHub's
+# 6-hour default, which is what happened on 2026-10-01 when rustc
+# 1.99.0 stopped making progress compiling `mfsk-core` for aarch64
+# (the Android build in `cross` and the Swift job, together).
 jobs:
   # ───────────────────────────────────────────────────────────────
   # Path-filter pre-pass — works out which slow-sweep matrix entries
@@ -82,6 +88,7 @@ jobs:
   changes:
     name: path filter
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       src: ${{ steps.filter.outputs.src }}
       ft8: ${{ steps.filter.outputs.ft8 }}
@@ -240,6 +247,7 @@ jobs:
   lint:
     name: rustfmt + clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -327,6 +335,7 @@ jobs:
     name: Test (${{ matrix.suite.name }})
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -563,6 +572,7 @@ jobs:
     # docs (defensive — a rebase could surface a regression).
     if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -636,6 +646,7 @@ jobs:
       || needs.changes.outputs.src == 'true'
       || needs.changes.outputs.hosttest == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -721,6 +732,7 @@ jobs:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -728,8 +740,33 @@ jobs:
           targets: x86_64-pc-windows-gnu, aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
 
+      # The download, not apt, is what this step costs: on 2026-10-01
+      # `apt-get update` took 5 s and the archive fetch 10 min 20 s
+      # (84 MB at 136 kB/s from azure.archive.ubuntu.com, with `Ign`
+      # retries), where an hour earlier it took 15 s. Two changes take
+      # the mirror out of the path. `gcc-mingw-w64-x86-64` is a
+      # metapackage pulling both the posix and win32 threading
+      # variants; the `x86_64-w64-mingw32-gcc` alternative already
+      # resolved to win32, so that variant alone is what was being
+      # linked with. And the .debs are cached, so only a version bump
+      # in the runner image's package lists reaches the network.
+      - name: Restore the MinGW packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-mingw
+          key: apt-mingw-win32-${{ runner.os }}-noble-v1
       - name: Install the MinGW linker
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          mkdir -p ~/apt-mingw/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            -o Dir::Cache::archives="$HOME/apt-mingw" \
+            -o Acquire::Retries=3 \
+            gcc-mingw-w64-x86-64-win32 binutils-mingw-w64-x86-64
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-mingw
+          rm -rf ~/apt-mingw/partial ~/apt-mingw/lock
 
       - name: Build for Windows (GNU)
         run: cargo build -p mfsk-ffi --release --target x86_64-pc-windows-gnu
@@ -749,8 +786,12 @@ jobs:
           done
           echo "all checked symbols exported"
 
+      # A prebuilt binary: `cargo install` compiled it from source on
+      # every run, 54 s of the job on 2026-10-01.
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
 
       # `.cargo/config.toml` sets the 16 KB page flag, but the global
       # `RUSTFLAGS: -D warnings` at the top of this workflow **overrides**
@@ -823,6 +864,7 @@ jobs:
       || needs.changes.outputs.src == 'true'
       || needs.changes.outputs.bindings == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -873,6 +915,7 @@ jobs:
       || needs.changes.outputs.src == 'true'
       || needs.changes.outputs.bindings == 'true'
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -909,6 +952,7 @@ jobs:
   docs:
     name: rustdoc
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -950,6 +994,7 @@ jobs:
   msrv:
     name: MSRV (1.93)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -974,6 +1019,7 @@ jobs:
   publish-dry-run:
     name: cargo publish --dry-run
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
