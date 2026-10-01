@@ -67,7 +67,8 @@ sized to the ESP32 time budget.
 "Extra decodes" means decodes not in the reference decoder's list for
 that recording. That is *not* the same as false decodes, and FT8 is the
 case that shows why: `qso3_busy.wav`'s WSJT-X golden lists 8 decodes, from
-an older WSJT-X reference, and the crate decodes more. Those extras are
+a WSJT-X run with AP off (2026-05-05; its version and depth were not
+recorded), and the crate decodes more. Those extras are
 real: WSJT-X `v3.2.0-rc1`'s `jt9 -8 -d 3` decodes 21 messages from the
 same file (14 at `-d 1`, 20 at `-d 2`), the crate's `-d 3` counterpart
 decodes the same 21, message for message, and all 20 of JTDX's
@@ -88,7 +89,7 @@ Golden recordings and false decodes (sensitivity is the table above):
 
 | Protocol | Golden-WAV recall | Precision (extra decodes) |
 |----------|-------------------|---------------------------|
-| FT8 *(host)* | 8/8 (older WSJT-X list), 18/18 (JTDX); at `-d 3` the same 21 messages as `jt9` 3.2.0-rc1 | **0 uncorroborated** — every decode beyond the 8 is also decoded by `jt9` 3.2.0-rc1 |
+| FT8 *(host)* | 8/8 (a WSJT-X AP-off list), 18/18 (JTDX); at `-d 3` the same 21 messages as `jt9` 3.2.0-rc1 | **0 uncorroborated** — every decode beyond the 8 is also decoded by `jt9` 3.2.0-rc1 |
 | FT8 *(ship)* | 7/8 (WSJT-X) — misses `K1BZM DK8NE -10` at −17 dB, which needs AP context (issue #150) | 14 total, **0 uncorroborated** — all 7 extras are in the JTDX 20-entry golden |
 | FT4 | 6/6 | **0** (budget 0) |
 | FST4 | 2/2 (FST4-60A only) | **0** (budget 0) |
