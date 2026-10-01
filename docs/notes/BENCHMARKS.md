@@ -162,7 +162,7 @@ significant, p < 0.05:
 |---|---|---|---|---|
 | `ft8/t1` | `jt9 -8 -d 3` | 0 of 4 | −0.10 … −0.23 dB | 0.42 / 0.49 |
 | `ft4/t1` | `jt9 -5 -d 3` | 0 of 4 (was 4 of 4 before #553) | +0.27 … −0.64 dB | 0.18 / 0.36 (was 6.0 / 4.1) |
-| `fst4/t1` | `jt9 -7 -d 3` | **15 of 20** | **up to +1.33 dB** (120/awgn: 9 unexpected decodes against 0) | **4.1 / 3.9** |
+| `fst4/t1` | `jt9 -7 -d 3` | 0 of 20 (was 15 of 20 before #554) | +0.42 … −0.95 dB (120/awgn: 9 unexpected decodes against 0, unchanged) | **3.1 / 2.8** (was 4.1 / 3.9) |
 | `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.48 dB | 0.90 / 0.71 |
 | `jt9/t1` | `jt9 -9 -d 3` | 0 of 1 | +0.09 dB (p = 0.51) | 0.18 / 0.19 |
 | `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.60 / 0.86 |
@@ -171,9 +171,13 @@ significant, p < 0.05:
 FT4 was behind on both. The cause was its SIC path (#553). It dropped the
 blind CQ AP rung, relaxed `sync_min` in later rounds, and ran every
 round. Fixed in `d25a4a35`, it is now at or ahead of upstream on every
-channel and 3-5x faster. FST4 is still behind on both and not yet
-diagnosed (#554). Its own sweep configuration gives the same crossings, so
-its gap is not the task's.
+channel and 3-5x faster. FST4's accuracy gap was its AP
+rung (#554). Every frame traced that upstream decoded and the crate did not
+came from upstream's CQ AP pass, with 40–58 hard errors. The crate capped AP
+decodes at FT8's 36, which `fst4_decode.f90` does not do. With the rung as
+upstream runs it (no cap, OSD depth 3, the nsym=8 LLR set only), no group
+is behind and unexpected decodes are unchanged. FST4 is still about 3× slower
+than upstream.
 
 JT65's gap is known, and the protocol is legacy; it is recorded here and
 not chased.

@@ -277,13 +277,19 @@ where
         .map(super::pipeline_ap::ap_passes)
         .unwrap_or_default();
     ap_hints.push((ApHint::new().with_call1("CQ"), 12));
-    ap_hints
-        .iter()
-        .map(|(hint, pid)| {
-            let (m, v) = super::pipeline_ap::ap_bits_for::<P>(hint);
-            (m, v, *pid)
-        })
-        .collect()
+    // A hint of `CQ` alone yields the blind CQ hypothesis a second time
+    // (pass 6 from `ap_passes`, pass 12 here). The same bits locked twice
+    // decode the same way twice, so the second copy only cost time: 868 ->
+    // 770 ms a file on the FST4 T1 timing set (#554). First one wins, which
+    // keeps the hint's pass id.
+    let mut out: Vec<(Vec<u8>, Vec<u8>, u8)> = Vec::with_capacity(ap_hints.len());
+    for (hint, pid) in &ap_hints {
+        let (m, v) = super::pipeline_ap::ap_bits_for::<P>(hint);
+        if !out.iter().any(|(m2, v2, _)| *m2 == m && *v2 == v) {
+            out.push((m, v, *pid));
+        }
+    }
+    out
 }
 
 /// The single-pass strategy of every protocol that decodes through

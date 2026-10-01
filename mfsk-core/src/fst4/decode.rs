@@ -111,10 +111,16 @@ pub const FST4_300_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
     edge_taper_bins: 101,
 };
 
-/// FST4 has 40 sync symbols (5 × 8). Matches WSJT-X's own pre-ladder
-/// gate exactly (`get_fst4_bitmetrics.f90`: `if(nsync .lt. 16)
-/// badsync=.true.; return` — bails before the expensive nsym=1/2/4/8
-/// correlation ladder, `engine::llr::compute_llr`, ever runs). Was `10`
+/// FST4 has 40 sync symbols (5 × 8). Stands for WSJT-X's pre-ladder gate
+/// (`get_fst4_bitmetrics.f90`: `if(nsync .lt. 16) badsync=.true.; return`
+/// — bails before the expensive nsym=1/2/4/8 correlation ladder,
+/// `engine::llr::compute_llr`, ever runs), but is **one stricter**: the
+/// engine rejects `nsync <= sync_q_min`, so 16 itself is turned away where
+/// upstream lets it through. Measured against `jt9 -7 -d 3` on the T1 task
+/// (#554): admitting 16 cost 40 % more time and up to 8 more unexpected
+/// decodes a channel group, and moved recall in no group, so the
+/// divergence stays. (Upstream's second gate, `nsync_qual >= 46` on the
+/// sync bits, removed none of those decodes either.) Was `10`
 /// (a quarter of 40) — looser than WSJT-X's `16` (40%), so candidates
 /// WSJT-X would already reject pre-ladder were paying for the full
 /// ladder (including the 65536-hypothesis nsym=8 rung) in our pipeline

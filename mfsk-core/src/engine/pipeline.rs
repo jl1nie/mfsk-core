@@ -1463,9 +1463,9 @@ where
             //
             // Risk here is false decodes, not recall: locking bits tells
             // every candidate — including the noise — what some of its
-            // bits "are". `strictness.ap_max_errors(locked)` is the
-            // ceiling that keeps it honest, and it tightens as more bits
-            // are locked.
+            // bits "are". For FT4, `strictness.ap_max_errors(locked)` is the
+            // ceiling that keeps it honest; FST4 has none upstream and gets
+            // its protection from trying one LLR set instead (below).
             // Gated on the same `nsync` the OSD escalation uses. A
             // candidate that rung declined is the same bet here, and
             // the gate is already calibrated per protocol
@@ -1489,8 +1489,48 @@ where
                 if P::ID == super::ProtocolId::Ft4 && !ap_hypothesis_allowed(locked, qso) {
                     continue;
                 }
-                let max_errors = strictness.ap_max_errors(locked);
-                for (llr, _) in &variants {
+                // FST4's AP passes follow `fst4_decode.f90:441-483`, which
+                // differs from FT4's in three ways, all ported (#554):
+                // - one LLR set, `llr=llrs(:,nblock)`, the largest block
+                //   (nsym=8), not every variant of the ladder;
+                // - `decode240_101(..., maxosd=2, norder=3, ...)`, so OSD
+                //   depth 3;
+                // - no bound on the hard errors: the only acceptance test is
+                //   `nharderrors.ge.0 .and. unpk77_success`. The FT8 bound
+                //   (36, for 174 bits) was applied to 240 bits here and threw
+                //   away exactly the decodes upstream gets: on the FST4-15
+                //   AWGN files at -20/-21 dB that `jt9 -7 -d 3` decoded and
+                //   this crate did not, all eleven came from upstream's CQ AP
+                //   pass with 40-58 hard errors (`fst4_decodes.dat`).
+                // Measured against `jt9 -7 -d 3` on the T1 task (FST4-15/30/60,
+                // twelve channel groups, paired per file): before, upstream
+                // ahead by 0.6-1.3 dB in ten groups; after, in none (the
+                // largest upstream-favoured move is +0.36 dB, p = 0.34), and
+                // ahead of it by 0.95 dB on FST4-15 CCIR-moderate. Unexpected
+                // decodes unchanged (3 of the 12 groups, 1-3 each, all from the
+                // blind OSD, as before). Trying every variant instead admitted
+                // 0-6 more per group (`CQ T12CRU/R HM54`, 70-77 hard errors).
+                // `Strict` keeps its bound: it is the caller asking for fewer
+                // false decodes than upstream gives.
+                let fst4 = P::ID == super::ProtocolId::Fst4;
+                let max_errors = if fst4 && strictness != DecodeStrictness::Strict {
+                    u32::MAX
+                } else {
+                    strictness.ap_max_errors(locked)
+                };
+                // The deepest rung this call built: nsym=8 unless the caller
+                // skipped it (`skip_llr_nsym_max`, the embedded bench).
+                let fst4_ap_basis: u8 = if !skip_llr_nsym_max {
+                    2
+                } else if !llr_set.llre.is_empty() {
+                    6
+                } else {
+                    1
+                };
+                for (llr, _) in variants
+                    .iter()
+                    .filter(|(_, id)| !fst4 || *id == fst4_ap_basis)
+                {
                     // `ft4_decode.f90` runs its AP passes through the same
                     // `decode174_91(..., maxosd=2, ndeep=2, apmask)` as the blind
                     // ones: BP with the locked bits held, then OSD on the BP sum,
@@ -1498,7 +1538,7 @@ where
                     // here made this rung BP only (#456).
                     let ap_opts = FecOpts {
                         bp_max_iter,
-                        osd_depth: 2,
+                        osd_depth: if fst4 { 3 } else { 2 },
                         osd_snapshots: if qso == QsoFreq::Near { 3 } else { 2 },
                         ap_mask: Some((mask, values)),
                         ap_mag_scale: <P as Protocol>::AP_MAG_SCALE,

@@ -50,7 +50,11 @@ pub const FT4_SUBTRACT: SubtractCfg = SubtractCfg {
     }),
 };
 
-/// FT4 has 16 sync symbols (4 × 4); require at least half correct.
+/// FT4 has 16 sync symbols (4 × 4). The engine rejects `nsync <= 8`, so
+/// this asks for 9 correct; `get_ft4_bitmetrics.f90` rejects `nsync .lt. 8`
+/// and so asks for 8, one looser. Not measured for FT4; the FST4 twin of
+/// this gate was (`fst4::decode`'s `SYNC_Q_MIN`, #554), where admitting the
+/// boundary value added time and false decodes and no recall.
 const SYNC_Q_MIN: u32 = 8;
 
 impl pipeline::GenericPipelineProtocol for Ft4 {
