@@ -5,21 +5,21 @@
     "protocols": {
       "fst4": {
         "date": "2026-10-01",
-        "commit": "1627a559-dirty",
+        "commit": "2e56279b",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 3360,
         "groups": 20
       },
       "ft4": {
         "date": "2026-10-01",
-        "commit": "d25a4a35",
+        "commit": "2e56279b",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8": {
         "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "commit": "2e56279b",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
@@ -61,7 +61,7 @@
       },
       "jtty": {
         "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "commit": "2e56279b",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 360,
         "groups": 2
@@ -75,7 +75,7 @@
       },
       "q65": {
         "date": "2026-10-01",
-        "commit": "6d3bec92-dirty",
+        "commit": "2e56279b",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 2640,
         "groups": 20
