@@ -10,6 +10,7 @@
     "corpus": "ft8_sweep",
     "file_re": "^ft8_(?P<channel>awgn|ccir_\\w+?)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",
     "groups": ["channel"],
+    "time_per_cell": 5,
     "sweep_test": "ft8_sweep", "sweep_filter": "ft8_snr_sweep",
     "sweep_env": {"MFSK_FT8_SWEEP_TASK": "t1"},
     "sweep_csv_env": "MFSK_FT8_SWEEP_CSV", "sweep_dir_env": "MFSK_FT8_SWEEP_DIR"
@@ -24,6 +25,7 @@
     "corpus": "ft4_sweep",
     "file_re": "^ft4_(?P<channel>awgn|ccir_\\w+?)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",
     "groups": ["channel"],
+    "time_per_cell": 5,
     "sweep_test": "ft4_sweep", "sweep_filter": "ft4_snr_sweep",
     "sweep_env": {"MFSK_FT4_SWEEP_TASK": "t1"},
     "sweep_csv_env": "MFSK_FT4_SWEEP_CSV", "sweep_dir_env": "MFSK_FT4_SWEEP_DIR"
@@ -70,6 +72,7 @@
     "corpus": "jt9_sweep",
     "file_re": "^jt9_(?P<channel>awgn)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",
     "groups": ["channel"],
+    "time_per_cell": 10,
     "sweep_test": "jt9_sweep", "sweep_filter": "jt9_awgn_snr_sweep",
     "sweep_env": {},
     "sweep_csv_env": "MFSK_JT9_SWEEP_SUMMARY_CSV", "sweep_dir_env": "MFSK_JT9_SWEEP_DIR"
@@ -84,6 +87,7 @@
     "corpus": "jt65_sweep",
     "file_re": "^jt65_(?P<channel>awgn)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",
     "groups": ["channel"],
+    "time_per_cell": 10,
     "sweep_test": "jt65_sweep", "sweep_filter": "jt65_chase_awgn_snr_sweep",
     "sweep_env": {},
     "sweep_csv_env": "MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV", "sweep_dir_env": "MFSK_JT65_SWEEP_DIR"

@@ -2,7 +2,10 @@
 
 How this crate's sensitivity and speed are measured, how the corpora behind
 the measurements are set up, and what went wrong often enough to be written
-down. Results live in `BENCHMARKS.md` and the per-protocol `*_BENCHMARK.md`.
+down. Results live in `BENCHMARKS.md` and the per-protocol `*_BENCHMARK.md`;
+the comparison against WSJT-X is recorded in `UPSTREAM_EVALUATION.md`, an
+evaluation sheet, and summarised as a verdict and a speed at the top of
+`BENCHMARKS.md`.
 This file is the method. `CLAUDE.md` says *when* tier C runs (before a
 release tag, and after a change that plausibly moves sensitivity). This says
 *how*.
@@ -418,9 +421,10 @@ corpus on disk. All eight tasks take about 5 minutes on 24 threads, FST4 the lon
 The whole run, every corpus present, took 548 s on the Ryzen 9 9900X on
 2026-10-01. It took 383 s before the upstream comparison was added. Of the
 difference, about 100 s is the timing and the rest is the T1 sweeps' heavier
-requests (FT8 at D3, FT4 with three subtraction rounds). Timing uses two files
-per group and cell kind. That is enough for a ratio, but noisy for `wsprd`,
-whose files take tens of milliseconds.
+requests (FT8 at D3, FT4 with three subtraction rounds). Timing then used two
+files per group and cell kind, which proved too few (`wspr/t1` read 0.60 to
+1.60); every task now times at least ten files a kind (`time_per_cell`), so
+a whole run takes somewhat longer than these figures. Not re-measured.
 
 Nothing asserts. A flagged group is a question to answer before tagging.
 Once the answer is understood, refresh the baseline with
@@ -441,7 +445,14 @@ counts. `!!` means upstream is significantly ahead, or the crate's
 unexpected decodes exceed upstream's by more than 3. The crossings are
 the usual interpolation, a summary only. The timing lines give ms per file
 and the crate/upstream ratio, for noise-level files and files at upstream's
-crossing.
+crossing. Time at least ten files a kind (`time_per_cell` in the task): on
+two, `wspr/t1` read anywhere from 0.60 to 1.60.
+
+Record a re-measurement in `UPSTREAM_EVALUATION.md` (counts, groups behind
+and ahead, crossing range, times) and carry its verdict and speed into the
+headline table of `BENCHMARKS.md`. The headline says "the same", "better in
+N of M conditions" or "behind", and a speed as "× faster"; it does not show
+p-values or crossings.
 
 #### 4.1.1 Background: pairing against `jt9`
 

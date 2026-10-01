@@ -6,7 +6,33 @@ detail) or `docs/notes/ROADMAP.md` (open follow-ups). For "how do I
 reproduce this sweep myself", see the protocol-specific
 `*_BENCHMARK.md` docs linked per section below.
 
-Two kinds of numbers appear per protocol:
+## Against WSJT-X on the same task
+
+Each mode is run against WSJT-X `v3.2.0-rc1` on the same job (band, what the
+operator knows, decode depth) and the same recordings, file by file.
+Ryzen 9 9900X, one thread each side, 2026-10-01.
+
+| mode | WSJT-X decoder | sensitivity against WSJT-X | speed |
+|---|---|---|---|
+| FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 2.0–2.3× faster |
+| FT4 | `jt9 -5 -d 3` | the same (4 conditions) | 2.9–6.4× faster |
+| FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 1.9–2.4× faster |
+| Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.6–3.8× faster |
+| JT9 | `jt9 -9 -d 3` | the same | 5.5–5.9× faster |
+| JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
+| WSPR | `wsprd` | the same | 1.0–1.5× faster |
+| JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–17× faster |
+
+"The same" means no condition (channel, sub-mode) differs by more than
+chance in a paired test; "better" and "behind" mean a condition that does.
+Speed is the range over noise-only and near-threshold files. MSK144 is not
+in this comparison yet; an earlier per-cell check against a real `jt9`
+matched it in 25 of 28 SNR cells (MSK144 section). The counts, tests and timings behind every cell
+are the evaluation sheet, [`UPSTREAM_EVALUATION.md`](UPSTREAM_EVALUATION.md).
+
+## Other numbers in this file
+
+Two more kinds of numbers appear per protocol:
 
 - **Golden-WAV recall** — decode a real WSJT-X-distributed recording,
   compare messages/frequency/timing (and for MSK144, SNR) against a
@@ -53,17 +79,19 @@ Figures are asserted, not just observed — see each protocol's
 `*_wsjtx_samples` test.
 
 
-| Protocol | Golden-WAV recall | Precision (extra decodes) | AWGN gap vs. WSJT-X | Status |
-|----------|-------------------|---------------------------|----------------------|--------|
-| FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden | AWGN ≈ −21.48 dB (WSJT-X: −20 to −21 dB); CCIR good/moderate/poor ≈ −21.24 / −19.72 / −19.68 dB — means over 8 deterministic seeds, re-measured 2026-09-23 (sd 0.20/0.24/0.39/0.39; a single seed is worth up to 1.1 dB on the fading channels, so these are not single-run numbers). Against real `jt9 -8 -d3` on the *same* corpus: −0.48 / −0.23 / +0.25 / +0.02 dB — see `FT8_BENCHMARK.md` §12. That `jt9` is WSJT-X `2b9d654` (2024-03); against WSJT-X 3.2.0-rc1's (`967c85a`, measured 2026-09-24) the same four are **+0.05 / +0.33 / +0.58 / +0.81 dB** — see §13. After the WSJT-X 3.x port (#451) the `.sic_early()` gap to the 3.2.0-rc1 `jt9 -d3` is −0.11 / +0.33 / +0.53 / **0.00** dB (§14) | at/above parity vs the 2024 `jt9`; 0.3-0.5 dB behind the 3.2.0-rc1 `jt9` on CCIR good and moderate |
-| FT8 *(ship)* | 7/8 (WSJT-X) — misses `K1BZM DK8NE -10` at −17 dB, which needs AP context (issue #150) | 14 total, **0 uncorroborated** — all 7 extras are in the JTDX 20-entry golden | Not separately swept; the ship config trades recall for the ESP32 time budget | by design |
-| FT4      | 6/6 | **0** (budget 0) | AWGN ≈ **−17.90 dB** (#456, 2026-09-26: was ≈ −17.56 dB until the OSD ran the way `ft4_decode.f90`'s does and the a-priori passes got it too; ccir_good −18.25, moderate −17.14, poor −16.67 dB. 0.11.0: was ≈ −16.9 dB until the a-priori pass was fixed and the always-on blind-CQ pass added — see the FT4 section and `CHANGELOG.md` 0.11.0). Past WSJT-X's published −17.5 dB by 0.4 dB (−17.56 was level with it; it had been 0.6 dB behind). Re-measured 2026-09-23 on the reproducible seed-1 corpus; the −18.00 dB this row carried until then was one un-reproducible draw of the same decoder | at/above parity |
-| FST4     | 1/1 (FST4-60A only) | **0** (budget 0) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section; all 20 sub-mode x channel groups against `jt9 -7 -d 3` (AP hits excluded) on 2026-09-25: mean -0.07 dB | at/above parity |
-| WSPR     | 9/9 | **0 phantoms**, and 0 across 5 chained slots with a carried callsign table | AWGN 50% ≈ −31.5 dB, matches live `wsprd` cell for cell | at parity |
-| JT9      | 7/7 | **0** (budget 0) | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
-| JT65     | none available | **0** (budget 0) | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — a real, un-closed gap; the initial "free CQ-AP hypothesis" explanation was checked and ruled out (JT65's AP path gates on `mycall` length exactly like FT4/FST4's), root cause not yet isolated — see JT65 section, task #26 | gap closed (own corpus); real gap vs. live binary open |
-| Q65      | 7 real EME/scatter recordings (7 of 10 sub-modes) | no aggregate figure; guarded per sub-mode on clean synth | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
-| MSK144   | 3/3 (incl. exact SNR match) | **0** (budget 0) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
+Golden recordings and false decodes (sensitivity is the table above):
+
+| Protocol | Golden-WAV recall | Precision (extra decodes) |
+|----------|-------------------|---------------------------|
+| FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden |
+| FT8 *(ship)* | 7/8 (WSJT-X) — misses `K1BZM DK8NE -10` at −17 dB, which needs AP context (issue #150) | 14 total, **0 uncorroborated** — all 7 extras are in the JTDX 20-entry golden |
+| FT4 | 6/6 | **0** (budget 0) |
+| FST4 | 2/2 (FST4-60A only) | **0** (budget 0) |
+| WSPR | 9/9 | **0 phantoms**, and 0 across 5 chained slots with a carried callsign table |
+| JT9 | 7/7 | **0** (budget 0) |
+| JT65 | none available | **0** (budget 0) |
+| Q65 | 7 real EME/scatter recordings (7 of 10 sub-modes) | no aggregate figure; guarded per sub-mode on clean synth |
+| MSK144 | 3/3 (incl. exact SNR match) | **0** (budget 0) |
 
 All AWGN 50%-crossing figures below are linear-interpolated between the
 nearest swept SNR points, in each `*sim` generator's 2500 Hz
@@ -133,96 +161,12 @@ corpus's crossing carries that draw's error, up to about 1.1 dB on a fading
 channel. The error is common to every decoder run on the same files, so
 read the difference against `jt9`, not the absolute number.
 
-### The upstream baseline: one task, both decoders, every trial (2026-10-01)
+### The upstream baseline
 
-The method (tasks, pairing, timing) is in [`TIER_C_MANUAL.md`](TIER_C_MANUAL.md)
-§2 and §4.1. The results:
-
-First task, `ft8/t1`: wideband monitoring, 200–3000 Hz, no callsign known.
-Upstream runs `jt9 -8 -d 3 -L 200 -H 3000`, with AP on by default, which
-with no calls tries CQ only. The crate runs
-`DecodeRequest::wsjtx_depth(.., 200, 3000, 1.3, 1000, D3, CQ)`.
-Measured 2026-10-01 on the 9900X:
-
-| channel | both | upstream only | crate only | p | crossing upstream / crate |
-|---|---|---|---|---|---|
-| awgn | 164 | 0 | 5 | 0.06 | −21.67 / −21.90 |
-| ccir_good | 161 | 3 | 5 | 0.73 | −21.78 / −21.89 |
-| ccir_moderate | 135 | 1 | 4 | 0.38 | −20.33 / −20.50 |
-| ccir_poor | 130 | 1 | 4 | 0.38 | −19.71 / −19.82 |
-
-Time is 0.42× upstream on the noise cells (272 against 644 ms) and 0.49×
-at the crossing (310 against 629 ms). No group is behind upstream.
-
-All eight tasks, measured 2026-10-01 on the 9900X
-(`scripts/upstream-baseline.py run`). "Behind" means the paired test is
-significant, p < 0.05:
-
-| task | upstream | groups behind upstream | crossing, crate − upstream | time ratio (noise / crossing) |
-|---|---|---|---|---|
-| `ft8/t1` | `jt9 -8 -d 3` | 0 of 4 | −0.10 … −0.23 dB | 0.42 / 0.49 |
-| `ft4/t1` | `jt9 -5 -d 3` | 0 of 4 (was 4 of 4 before #553) | +0.27 … −0.64 dB | 0.18 / 0.36 (was 6.0 / 4.1) |
-| `fst4/t1` | `jt9 -7 -d 3` | 0 of 20 (was 15 of 20 before #554) | +0.50 … −0.79 dB | 0.42 / 0.53 (was 4.1 / 3.9) |
-| `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.31 dB | 0.29 / 0.26 (was 0.77 / 0.69 before #555, #556) |
-| `jt9/t1` | `jt9 -9 -d 3` | 0 of 1 | +0.09 dB (p = 0.51) | 0.18 / 0.19 |
-| `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.67 / 1.0 (10 files a cell; 0.60 / 0.86 was 2) |
-| `jt65/t1` | `jt9 -6 -d 3` | 1 of 1 | upstream never falls below 50 % on this grid | 0.24 / 0.06 |
-| `jtty/t1` | `rjtty 4.6 0 384 1500 50` | 0 of 2 | +0.00 dB: all 360 trials agree, either way | 0.11 / 0.14 |
-
-FT4 was behind on both. The cause was its SIC path (#553). It dropped the
-blind CQ AP rung, relaxed `sync_min` in later rounds, and ran every
-round. Fixed in `d25a4a35`, it is now at or ahead of upstream on every
-channel and 3-5x faster. FST4's accuracy gap was its AP
-rung (#554). Every frame traced that upstream decoded and the crate did not
-came from upstream's CQ AP pass, with 40–58 hard errors. The crate capped AP
-decodes at FT8's 36, which `fst4_decode.f90` does not do. With the rung as
-upstream runs it (no cap, OSD depth 3, the nsym=8 LLR set only), no group
-is behind and unexpected decodes are unchanged. Its speed gap was the
-candidate search: the generic Costas search let 50 candidates through on
-every file, each refined over ±1.5 s, where upstream's `get_candidates_fst4`
-yields 2–6. Ported (`engine::fst4_coarse`), FST4 runs at 0.42× / 0.53×
-upstream's time, and unexpected decodes fall from 19 to 5 across the 20
-groups (120/awgn: 9 to 0).
-
-Q65 was at or ahead of upstream on accuracy but only 0.77× / 0.69× its
-time (#555). Three things, in order of what they bought on the timing set:
-the BP kernels (`fwht`, `imul`) at Q65's fixed `M = 64`, unrolled and
-vectorised with the same arithmetic (noise files 119 → 68 ms); one scan
-instead of two, because a hinted scan now tries each candidate without AP
-first as `jt9 -3` does, so the task no longer pays for two coarse searches;
-and `maxiters = 40`, upstream's depth-1 value, against an unsourced 50. The
-kernels change no decode (same arithmetic). One scan and the band skip
-below, measured together, moved one crossing, b60 plain by +0.12 dB, and
-left the other 19 at 0.00. `maxiters` lost 3 of 2 640 trials, none of which
-upstream decodes. Separately, a candidate inside an already-decoded
-signal's band is now skipped (`q65_decode.f90:375-377`). That is where
-strong signals spent their time: 50 BP calls and ~200 ms on a −12 to −18 dB
-file, against 1 BP call and 7–60 ms. Then #556: the sync smoothing (`nsmo`
-passes of `smo121`, 128 for E) ran over the whole 0–6 kHz row, ~20 % of a
-Q65-120 decode on noise. Restricted to the search window ± Max Drift,
-widened by `nsmo` so that it stays bit-identical where read, it took the
-120 s noise files from 116 to 96 ms.
-
-WSPR stays at about `wsprd`'s speed (#557), and that is where a faithful
-port lands: 70–74 % of both is the Fano decoder, on the same candidates
-with the same 10 000-cycle cap, and the crate's ~49 ms of Fano a file
-matches `wsprd`'s ~50 ms. The loop is bound by branch misprediction.
-Structure-of-arrays nodes made it 17 % slower, unchecked indexing gained
-nothing measurable, and no change that keeps every decode identical was
-found to do better. Halving it would need fewer Fano cycles, which costs
-sensitivity and, past the cap, adds false decodes (`wspr::decode`'s swept
-table). The look did find a bug: the pooled Fano scratch never reset the
-root node's `encstate` (`fano.c:127` does), so a candidate's second and
-later DT positions could start from the wrong state. Fixed; the crossing
-did not move.
-
-JT65's gap is known, and the protocol is legacy; it is recorded here and
-not chased.
-
-What it costs: FT8, FT4 and FST4 sweep as their T1 task, so the comparison
-reads the CSVs the runner already writes, and its own cost is the timing,
-two files per group and cell kind. See `TIER_C_MANUAL.md` §4 for the
-whole-run figure.
+The same-task comparison against WSJT-X is summarised at the top of this
+file and recorded in full, trial counts, tests and timings, in
+[`UPSTREAM_EVALUATION.md`](UPSTREAM_EVALUATION.md), with what moved it.
+The method is `TIER_C_MANUAL.md` §2 and §4.1.
 
 ## Decode speed (single golden-WAV, host)
 

@@ -96,8 +96,10 @@ Everything else:
   has a `.ja.md` twin** — if you edit one, edit both, or say plainly that
   you didn't.
 - `docs/notes/` — `ROADMAP.md` (phase status; the "Quick file-path index"
-  at the end is the fastest way to find a subsystem), `BENCHMARKS.md`,
-  the per-protocol `*_BENCHMARK.md`, `SNR_FORMULAS.md`, `DECODED_ROW.md`,
+  at the end is the fastest way to find a subsystem), `BENCHMARKS.md`
+  (what a reader is shown: verdict and speed against WSJT-X up top),
+  `UPSTREAM_EVALUATION.md` (the evaluation sheet behind that headline:
+  paired counts, tests, timings), the per-protocol `*_BENCHMARK.md`, `SNR_FORMULAS.md`, `DECODED_ROW.md`,
   and `sweep-baseline.json` (the machine-checked half of the sensitivity
   story: 50%-crossing SNRs, and for ft8/ft4/fst4 the unexpected-decode
   count per SNR cell).
@@ -426,7 +428,11 @@ code. The generators also refuse an unseeded simulator binary. On this machine `
 The runner also compares against upstream: every task in
 `scripts/upstream_tasks.json` for a swept protocol is paired per trial
 with WSJT-X's committed outcome, and both sides are timed
-(`scripts/upstream-baseline.py`, BENCHMARKS.md "The upstream baseline").
+(`scripts/upstream-baseline.py`). The record is
+`docs/notes/UPSTREAM_EVALUATION.md`, an evaluation sheet; its verdicts
+and speeds feed the headline table at the top of `BENCHMARKS.md`, so a
+re-measurement updates both. The sheet's p-values and crossings stay out
+of the headline.
 A `jt9` comparison is only meaningful on a task defined on both sides.
 Define it there, never as "both at their defaults". Q65's first `jt9`
 comparisons differed in band, Rx frequency and AP sequencing, and were

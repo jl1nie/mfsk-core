@@ -66,7 +66,7 @@
   against `rjtty`. FT8, Q65, JT9 and WSPR are at or ahead of upstream and faster; JTTY agrees with `rjtty` on all 360
   trials at 0.11-0.14x its time. FT4 and FST4 were behind on accuracy (up to 1.4 dB)
   and speed (about 4–6×); both are now at or ahead on both (#553, #554). JT65's known gap is recorded and not chased. Details in
-  `docs/notes/BENCHMARKS.md`, "The upstream baseline".
+  `docs/notes/UPSTREAM_EVALUATION.md` (the evaluation sheet; `BENCHMARKS.md` leads with its verdicts and speeds).
 - **Q65 decodes 3.4–11× faster: the coarse search admits candidates as `q65_ccf_22` does (#552).** Every Q65 scan
   decoded `max_candidates` = 8 candidates, even on noise alone. The search scored a bin
   `sync / (sync + noise floor)`, which is about 0.5 on noise, and a fixed floor of 0.1 admitted all of them. The
