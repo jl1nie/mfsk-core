@@ -15,6 +15,12 @@
   `syncmin` and stops when a pass adds nothing. That made it 4-7x slower than `jt9`. Both now match upstream. On the
   upstream baseline no channel is behind, and the 1040-file corpus decodes in 0.9 s instead of 10.9 s. A regression test
   pins the AP rung: at the threshold the old path decoded 2 of 24 seeds where the single pass decoded 9.
+- **Builds for aarch64 on rustc 1.99.0 no longer hang.** At opt-level 3, 1.99.0's loop vectorizer never finishes
+  on `ft8::refine_fine`'s Costas phasor table (cos/sin plus a ±π wrap), so a release build for Android, iOS or
+  Apple-silicon macOS stopped in `mfsk-core` indefinitely. 1.98.1 and x86_64 were unaffected. A `black_box` on the
+  phase step keeps that loop scalar; the arithmetic, and so the table, is unchanged. A 20-line standalone copy of the
+  loop reproduces it: 36 ms on 1.98.1, still compiling after 60 s on 1.99.0. Found when CI's Android and Swift jobs
+  ran for six hours on 2026-10-01; every CI job now has a `timeout-minutes`.
 - **CoreS3: transmit bring-up probes, and PTT off on every CAT connect.** `MFSK_CORES3_TX_BRINGUP=a` opens the radio's
   audio OUT beside the IN stream and CI-V and streams one silent FT8 frame (never keys); `=b` keys PTT over CI-V with
   no audio for 15 s and 35 s, logging the `FB` and `1C 00` readback latency and the IN stream while keyed. Both are

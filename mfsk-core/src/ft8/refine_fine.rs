@@ -51,7 +51,17 @@ fn build_costas_ref_table() -> CostasRefTable {
         let mut phi = 0.0_f32;
         for slot in row.iter_mut() {
             *slot = Complex::new(phi.cos(), phi.sin());
-            phi += dphi;
+            // `black_box` keeps LLVM's loop vectorizer off this loop.
+            // rustc 1.99.0 at opt-level=3 for aarch64 never finishes
+            // `loop-vectorize` here: a standalone copy of this function
+            // compiled in 36 ms on 1.98.1 and was still running after
+            // 60 s on 1.99.0, while x86_64, opt-level 2 / s, and the same
+            // loop without either the cos/sin or the wrap below all
+            // compile in ~30 ms. It hung the Android and macOS CI jobs
+            // for six hours on 2026-10-01. The arithmetic is unchanged,
+            // so the table is bit-identical; 256 iterations once per
+            // process lose nothing by staying scalar.
+            phi = core::hint::black_box(phi + dphi);
             if phi > core::f32::consts::PI {
                 phi -= core::f32::consts::TAU;
             }
