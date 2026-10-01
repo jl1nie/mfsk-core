@@ -163,7 +163,7 @@ significant, p < 0.05:
 | `ft8/t1` | `jt9 -8 -d 3` | 0 of 4 | −0.10 … −0.23 dB | 0.42 / 0.49 |
 | `ft4/t1` | `jt9 -5 -d 3` | 0 of 4 (was 4 of 4 before #553) | +0.27 … −0.64 dB | 0.18 / 0.36 (was 6.0 / 4.1) |
 | `fst4/t1` | `jt9 -7 -d 3` | 0 of 20 (was 15 of 20 before #554) | +0.50 … −0.79 dB | 0.42 / 0.53 (was 4.1 / 3.9) |
-| `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.31 dB | 0.31 / 0.29 (was 0.77 / 0.69 before #555) |
+| `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.31 dB | 0.29 / 0.26 (was 0.77 / 0.69 before #555, #556) |
 | `jt9/t1` | `jt9 -9 -d 3` | 0 of 1 | +0.09 dB (p = 0.51) | 0.18 / 0.19 |
 | `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.60 / 0.86 |
 | `jt65/t1` | `jt9 -6 -d 3` | 1 of 1 | upstream never falls below 50 % on this grid | 0.24 / 0.06 |
@@ -197,7 +197,11 @@ left the other 19 at 0.00. `maxiters` lost 3 of 2 640 trials, none of which
 upstream decodes. Separately, a candidate inside an already-decoded
 signal's band is now skipped (`q65_decode.f90:375-377`). That is where
 strong signals spent their time: 50 BP calls and ~200 ms on a −12 to −18 dB
-file, against 1 BP call and 7–60 ms.
+file, against 1 BP call and 7–60 ms. Then #556: the sync smoothing (`nsmo`
+passes of `smo121`, 128 for E) ran over the whole 0–6 kHz row, ~20 % of a
+Q65-120 decode on noise. Restricted to the search window ± Max Drift,
+widened by `nsmo` so that it stays bit-identical where read, it took the
+120 s noise files from 116 to 96 ms.
 
 JT65's gap is known, and the protocol is legacy; it is recorded here and
 not chased.
