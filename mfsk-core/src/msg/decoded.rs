@@ -299,6 +299,7 @@ mod tests {
             iterations: 3,
             snr_db: -24.0,
             copied_last_tx: false,
+            ap: false,
         };
 
         let d = r.to_decoded();
@@ -323,6 +324,7 @@ mod tests {
             iterations: 3,
             snr_db: -24.0,
             copied_last_tx: false,
+            ap: false,
         };
 
         assert!((r.to_decoded().dt_sec + 0.5).abs() < 1e-6);

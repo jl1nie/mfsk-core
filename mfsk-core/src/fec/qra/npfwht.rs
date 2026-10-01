@@ -30,6 +30,9 @@
 /// that the operation is in-place. Callers that need separate src
 /// and dst buffers should `dst.copy_from_slice(src)` first.
 pub fn fwht(buf: &mut [f32]) {
+    if let Ok(b) = <&mut [f32; 64]>::try_from(&mut *buf) {
+        return fwht_n(b);
+    }
     let n = buf.len();
     debug_assert!(
         n.is_power_of_two() && n <= 64,
@@ -39,6 +42,29 @@ pub fn fwht(buf: &mut [f32]) {
     while h < n {
         let mut i = 0;
         while i < n {
+            for j in i..i + h {
+                let a = buf[j];
+                let b = buf[j + h];
+                buf[j] = a + b;
+                buf[j + h] = a - b;
+            }
+            i += h * 2;
+        }
+        h *= 2;
+    }
+}
+
+/// [`fwht`] at a length known when compiling: the same butterflies in the
+/// same order, so the same result bit for bit. Q65's `M = 64` takes this
+/// path; with the bound known the loops unroll and vectorise. Together
+/// with [`super::pdmath::imul`]'s 64 path it cut Q65's noise-only decode
+/// from 119 to 68 ms a file (single-threaded, #555).
+#[inline]
+fn fwht_n<const N: usize>(buf: &mut [f32; N]) {
+    let mut h = 1;
+    while h < N {
+        let mut i = 0;
+        while i < N {
             for j in i..i + h {
                 let a = buf[j];
                 let b = buf[j + h];

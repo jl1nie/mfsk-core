@@ -413,6 +413,14 @@ not a silent no-op):
 | `.on_result(cb)` | yes | yes | yes |
 | `.decode()` returns | `Vec<Q65Result>` | `Option<Q65Result>` | `Vec<Q65Result>` |
 
+**`DecodeRequest::ap_hint()` tries each candidate without AP first**, then
+with the hint, as `q65_decode.f90`'s `ipass` loop does, so one hinted scan
+returns what a plain scan and a hinted scan returned between them.
+`Q65Result::ap` says which carried a decode (WSJT-X's `q1`-`q3` against
+`q0`; AP-list decodes set it too). Since #555; before, a hinted scan tried
+only the hint. `SniperRequest` and `.fading()` still try only what they are
+given.
+
 `.hash_table()` is the session `CallsignHashTable` that resolves
 `<...>` hashed-callsign (Type 4) placeholders; unset, they stay
 unresolved. It is `Arc`-shared, so passing the same table to every

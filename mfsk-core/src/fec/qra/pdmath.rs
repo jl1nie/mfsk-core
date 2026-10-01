@@ -50,6 +50,17 @@ const UNIFORM64: [f32; 64] = [1.0 / 64.0; 64];
 ///
 /// Mirrors `pd_imul`. `dst` and `src` must have the same length.
 pub fn imul(dst: &mut [f32], src: &[f32]) {
+    // Q65's M = 64 at a length known when compiling, so the loop vectorises;
+    // the same products, so the same result (see `npfwht::fwht_n`).
+    if let (Ok(d), Ok(s)) = (
+        <&mut [f32; 64]>::try_from(&mut *dst),
+        <&[f32; 64]>::try_from(src),
+    ) {
+        for i in 0..64 {
+            d[i] *= s[i];
+        }
+        return;
+    }
     assert_eq!(dst.len(), src.len(), "imul: length mismatch");
     for (d, &s) in dst.iter_mut().zip(src.iter()) {
         *d *= s;

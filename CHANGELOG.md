@@ -15,6 +15,12 @@
   `syncmin` and stops when a pass adds nothing. That made it 4-7x slower than `jt9`. Both now match upstream. On the
   upstream baseline no channel is behind, and the 1040-file corpus decodes in 0.9 s instead of 10.9 s. A regression test
   pins the AP rung: at the threshold the old path decoded 2 of 24 seeds where the single pass decoded 9.
+- **Q65 at 0.31x / 0.29x `jt9 -3`'s time, from 0.77x / 0.69x (#555).** `DecodeRequest::ap_hint()` now tries each
+  candidate without AP first, as `q65_decode.f90`'s `ipass` loop does, so one hinted scan does what a plain scan plus
+  a hinted one did; the new `Q65Result::ap` says which carried a decode. A candidate inside a decoded signal's band is
+  skipped (`q65_decode.f90:375-377`): a strong signal cost 50 BP calls, now 1. The QRA BP kernels are specialised to
+  `M = 64` (same arithmetic, noise files 119 -> 68 ms), and `maxiters` is upstream's 40 per depth instead of 50: 3 of
+  2 640 sweep trials lost, none of which upstream decodes. No group behind upstream. Details: `BENCHMARKS.md`.
 - **Breaking (behaviour): FST4 finds candidates as `get_candidates_fst4` does, so its `sync_min` is upstream's
   `minsync` (#554).** FST4 used the generic 2-D Costas search. On noise it let `max_cand` candidates through on every
   file, and each one paid a full ±1.5 s `fst4_sync_search`; upstream refines 2-6. The search is now a port of

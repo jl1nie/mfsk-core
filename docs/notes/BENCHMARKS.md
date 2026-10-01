@@ -163,7 +163,7 @@ significant, p < 0.05:
 | `ft8/t1` | `jt9 -8 -d 3` | 0 of 4 | −0.10 … −0.23 dB | 0.42 / 0.49 |
 | `ft4/t1` | `jt9 -5 -d 3` | 0 of 4 (was 4 of 4 before #553) | +0.27 … −0.64 dB | 0.18 / 0.36 (was 6.0 / 4.1) |
 | `fst4/t1` | `jt9 -7 -d 3` | 0 of 20 (was 15 of 20 before #554) | +0.50 … −0.79 dB | 0.42 / 0.53 (was 4.1 / 3.9) |
-| `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.48 dB | 0.90 / 0.71 |
+| `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 0 of 20 | +0.33 … −2.31 dB | 0.31 / 0.29 (was 0.77 / 0.69 before #555) |
 | `jt9/t1` | `jt9 -9 -d 3` | 0 of 1 | +0.09 dB (p = 0.51) | 0.18 / 0.19 |
 | `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.60 / 0.86 |
 | `jt65/t1` | `jt9 -6 -d 3` | 1 of 1 | upstream never falls below 50 % on this grid | 0.24 / 0.06 |
@@ -183,6 +183,21 @@ every file, each refined over ±1.5 s, where upstream's `get_candidates_fst4`
 yields 2–6. Ported (`engine::fst4_coarse`), FST4 runs at 0.42× / 0.53×
 upstream's time, and unexpected decodes fall from 19 to 5 across the 20
 groups (120/awgn: 9 to 0).
+
+Q65 was at or ahead of upstream on accuracy but only 0.77× / 0.69× its
+time (#555). Three things, in order of what they bought on the timing set:
+the BP kernels (`fwht`, `imul`) at Q65's fixed `M = 64`, unrolled and
+vectorised with the same arithmetic (noise files 119 → 68 ms); one scan
+instead of two, because a hinted scan now tries each candidate without AP
+first as `jt9 -3` does, so the task no longer pays for two coarse searches;
+and `maxiters = 40`, upstream's depth-1 value, against an unsourced 50. The
+kernels change no decode (same arithmetic). One scan and the band skip
+below, measured together, moved one crossing, b60 plain by +0.12 dB, and
+left the other 19 at 0.00. `maxiters` lost 3 of 2 640 trials, none of which
+upstream decodes. Separately, a candidate inside an already-decoded
+signal's band is now skipped (`q65_decode.f90:375-377`). That is where
+strong signals spent their time: 50 BP calls and ~200 ms on a −12 to −18 dB
+file, against 1 BP call and 7–60 ms.
 
 JT65's gap is known, and the protocol is legacy; it is recorded here and
 not chased.

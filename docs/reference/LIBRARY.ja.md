@@ -411,6 +411,14 @@ sealed な `Q65SubMode` マーカを介して汎用化されている:
 | `.on_result(cb)` | yes | yes | yes |
 | `.decode()` の戻り値 | `Vec<Q65Result>` | `Option<Q65Result>` | `Vec<Q65Result>` |
 
+**`DecodeRequest::ap_hint()` は各候補をまず AP なしで試し**、次にヒント付きで
+試す。`q65_decode.f90` の `ipass` ループと同じ順で、1 回のヒント付き走査が、
+従来の plain 走査とヒント付き走査を合わせた結果を返す。
+`Q65Result::ap` はどちらでデコードしたかを示す（WSJT-X の `q1`-`q3` と `q0`
+の区別。AP リストによるデコードも立てる）。#555 以降で、それ以前のヒント付き
+走査はヒントだけを試していた。`SniperRequest` と `.fading()` は、渡されたものだけを
+試すままである。
+
 `.hash_table()` は、`<...>` というハッシュ化コールサイン（Type 4）の
 プレースホルダを解決するセッションの `CallsignHashTable` である。未設定なら
 未解決のまま残る。`Arc` で共有されるので、セッション中の全 `decode()` に同じ

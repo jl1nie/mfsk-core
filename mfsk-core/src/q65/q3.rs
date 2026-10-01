@@ -437,7 +437,11 @@ fn decode_q3_on_s1<P: ModulationParams>(
             start_sample,
             f0,
             ctx,
-        );
+        )
+        .map(|mut r| {
+            r.ap = true;
+            r
+        });
     }
     None
 }

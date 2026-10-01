@@ -231,7 +231,7 @@ def read_rows(path, t, crate=False):
             key += (r["mode"],)
         extra = int(r["extra"]) if r.get("extra") not in (None, "") else None
         rows[key + (int(r["snr_db"]), int(r["trial"]))] = (int(r["pass"]), extra)
-    if crate and "crate_modes" in t:  # Q65: this crate's cq = its plain scan, then its CQ scan
+    if crate and "crate_modes" in t:  # Q65: cq = plain or cq (since #555 the cq column already includes plain)
         combined = {}
         for k in rows:
             *g, _mode, snr, trial = k

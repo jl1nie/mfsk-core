@@ -147,15 +147,14 @@ fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool
             // 1.0 s from TR 60 s): the search is ±1 s around it (0.12.0),
             // so a nominal of 0 puts a TR>=60 frame at the window's edge.
             let nominal = (<$p as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
-            let plain = DecodeRequest::<$p>::new(audio, 12_000, nominal, params)
-                .decode()
-                .iter()
-                .any(|d| hit(d.freq_hz, &d.message));
-            let cq = DecodeRequest::<$p>::new(audio, 12_000, nominal, params)
+            // One scan, as `jt9 -3` runs one: a hinted scan tries every
+            // candidate without AP first (#555), so `plain` is a hit that
+            // needed no AP (`q0`) and `cq` any hit (`q0` or `q1`).
+            let out = DecodeRequest::<$p>::new(audio, 12_000, nominal, params)
                 .ap_hint(cq_hint)
-                .decode()
-                .iter()
-                .any(|d| hit(d.freq_hz, &d.message));
+                .decode();
+            let plain = out.iter().any(|d| !d.ap && hit(d.freq_hz, &d.message));
+            let cq = out.iter().any(|d| hit(d.freq_hz, &d.message));
             (plain, cq)
         }};
     }

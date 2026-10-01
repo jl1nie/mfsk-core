@@ -46,10 +46,10 @@
   },
   "q65/t1": {
     "runner_csv": "q65.csv",
-    "task": "Monitoring with the Rx frequency known (1500 Hz, F Tol 20), no callsign: what `jt9 -3` does by default (depth 1, AP passes on, which with no callsigns means CQ). `plain` counts a decode without AP (jt9 q0); `cq` counts any decode (jt9 q0 or q1; this crate's plain scan, then its CQ-hint scan).",
+    "task": "Monitoring with the Rx frequency known (1500 Hz, F Tol 20), no callsign: what `jt9 -3` does by default (depth 1, AP passes on, which with no callsigns means CQ). `plain` counts a decode without AP (jt9 q0); `cq` counts any decode (jt9 q0 or q1; this crate's one CQ-hinted scan, which tries each candidate without AP first).",
     "upstream_bin": "jt9",
     "upstream_args": ["-3", "-p", "{period}", "-b", "{letter}", "-d", "1", "-f", "1500", "-F", "20"],
-    "crate": "q65::DecodeRequest::<P>::new(audio, 12000, nominal, default_search_params()), then .ap_hint(CQ)",
+    "crate": "q65::DecodeRequest::<P>::new(audio, 12000, nominal, default_search_params()).ap_hint(CQ): one scan, each candidate without AP first (plain = a hit with ap == false)",
     "score": {"msg": "CQ JL1NIE PM95", "freq": 1500, "freq_tol": 4, "dt_tol": null},
     "corpus": "q65_sweep",
     "file_re": "^q65_(?P<submode>[a-e]\\d+)_awgn_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",
