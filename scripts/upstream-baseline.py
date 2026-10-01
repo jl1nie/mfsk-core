@@ -82,6 +82,8 @@ def out_path(task):
 
 
 def upstream_binary(t):
+    if "upstream_path" in t:  # built by its own script, e.g. rjtty by build_jttysim.sh
+        return os.path.join(ROOT, t["upstream_path"])
     return os.path.join(ROOT, "target", "upstream", f"build-{UPSTREAM_TAG}", t["upstream_bin"])
 
 
@@ -138,6 +140,11 @@ def parse(stdout, fmt):
     for line in stdout.splitlines():
         if "DecodeFinished" in line:
             continue
+        if fmt == "rjtty":  # "<freq Hz>  <message>": no time on the line
+            m = re.match(r"\s*(\d+)\s+(.*?)\s*$", line)
+            if m and m[2]:
+                out.append((0.0, float(m[1]), m[2], None))
+            continue
         if fmt == "wsprd":
             m = _WSPRD.match(line)
             if m:
@@ -154,12 +161,15 @@ def score(t, decodes, qtypes=None):
     s = t["score"]
     hit = any(
         msg == s["msg"]
-        and abs(f - s["freq"]) <= s["freq_tol"]
+        and (s.get("freq") is None or abs(f - s["freq"]) <= s["freq_tol"])
         and (s["dt_tol"] is None or abs(dt) <= s["dt_tol"])
         and (qtypes is None or q in qtypes)
         for dt, f, msg, q in decodes
     )
-    return hit, len({msg for _dt, _f, msg, _q in decodes if msg != s["msg"]})
+    others = [msg for _dt, _f, msg, _q in decodes if msg != s["msg"]]
+    # rjtty and the crate's JTTY receiver report frames, and the JTTY sweep counts
+    # every other frame; the WSJT-family sweeps count distinct messages.
+    return hit, len(others) if s.get("count_frames") else len(set(others))
 
 
 def run_upstream(binary, args, wav, cwd):

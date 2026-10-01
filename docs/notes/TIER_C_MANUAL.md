@@ -391,7 +391,7 @@ scripts/upstream-baseline.py generate ft4/t1       # runs jt9 over ft4_sweep; se
 
 Regenerate when the upstream tag changes or a corpus is regenerated.
 `compare` refuses an upstream CSV whose corpus stamp does not match the
-corpus on disk. All seven tasks take about 5 minutes on 24 threads, FST4 the longest at 2.
+corpus on disk. All eight tasks take about 5 minutes on 24 threads, FST4 the longest at 2; JTTY's takes 3 s.
 
 ## 4. Running tier C
 
@@ -510,6 +510,11 @@ that does it. Accuracy and speed are compared within it.
 - `scripts/build_jt9_upstream.sh`: builds `jt9` and `wsprd` from
   `v3.2.0-rc1` reproducibly, with the CMake edits this host needs. Check:
   `qso3_busy.wav` decodes 14 / 20 / 21 at `-8 -d1/-d2/-d3`.
+- JTTY's upstream is `rjtty`, not `jt9`. `scripts/gen_jtty_sweep_wavs.sh`
+  builds it beside `sjtty` from `v3.2.0-rc1` (`target/jttysim/build/rjtty`),
+  and the task names that path (`upstream_path`). Its per-trial outcome must
+  match the corpus's own `UPSTREAM_RECALL.tsv`, written by the generator
+  with the same binary: it did, in all 18 cells.
 - `scripts/upstream-baseline.py generate <task>`: runs upstream over the
   task's tier-C corpus once. It commits the per-trial outcome to
   `docs/notes/upstream/<task>.csv`, stamped with the binary's sha256, the
@@ -559,6 +564,7 @@ wisdom warm. The ratio is machine-independent enough to track.
 | `jt9_sweep` | `MFSK_JT9_SWEEP_DIR` | `MFSK_JT9_SWEEP_SUMMARY_CSV` | (the sweep is the task) |
 | `jt65_sweep` | `MFSK_JT65_SWEEP_DIR` | `MFSK_JT65_SWEEP_SUMMARY_CSV`, `MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV` | (the Chase sweep is the task) |
 | `wspr_sweep` | `MFSK_WSPR_SWEEP_DIR` | `MFSK_WSPR_SWEEP_SUMMARY_CSV` | (the sweep is the task) |
+| `jtty_sweep` | `MFSK_JTTY_SWEEP_DIR` | `MFSK_JTTY_SWEEP_CSV` | (the sweep is the task: `Params::default()`) |
 
 Also: `MFSK_SIM_SEED` (generators, default 1), `MFSK_SWEEP_FEATURES` and
 `MFSK_SWEEP_FULL` (runner), `MFSK_SWEEP_ALLOW_UNSTAMPED`, `JOBS` and

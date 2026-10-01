@@ -101,5 +101,21 @@
     "sweep_test": "wspr_sweep", "sweep_filter": "wspr_awgn_snr_sweep",
     "sweep_env": {},
     "sweep_csv_env": "MFSK_WSPR_SWEEP_SUMMARY_CSV", "sweep_dir_env": "MFSK_WSPR_SWEEP_DIR"
+  },
+  "jtty/t1": {
+    "runner_csv": "jtty.csv",
+    "task": "The rjtty command-line decode of one recording: Rx channel 1500 Hz ± 50 Hz plus the fixed side channels over 200-2800 Hz, smin 4.6 dB. That is Params::default(), and upstream's own defaults.",
+    "upstream_bin": "rjtty",
+    "upstream_path": "target/jttysim/build/rjtty",
+    "upstream_args": ["4.6", "0", "384", "1500", "50"],
+    "crate": "jtty::rx::Receiver::new().scan(audio, &Params::default())",
+    "score": {"msg": "CQ K1ABC CQ", "freq": null, "freq_tol": null, "dt_tol": null, "format": "rjtty", "count_frames": true},
+    "corpus": "jtty_sweep",
+    "file_re": "^jtty_(?P<channel>awgn|mid_moderate)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",
+    "groups": ["channel"],
+    "time_per_cell": 10,
+    "sweep_test": "jtty_sweep", "sweep_filter": "jtty_snr_sweep",
+    "sweep_env": {},
+    "sweep_csv_env": "MFSK_JTTY_SWEEP_CSV", "sweep_dir_env": "MFSK_JTTY_SWEEP_DIR"
   }
 }

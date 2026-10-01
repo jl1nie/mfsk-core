@@ -154,7 +154,7 @@ Measured 2026-10-01 on the 9900X:
 Time is 0.42× upstream on the noise cells (272 against 644 ms) and 0.49×
 at the crossing (310 against 629 ms). No group is behind upstream.
 
-All seven tasks, measured 2026-10-01 on the 9900X
+All eight tasks, measured 2026-10-01 on the 9900X
 (`scripts/upstream-baseline.py run`). "Behind" means the paired test is
 significant, p < 0.05:
 
@@ -167,6 +167,7 @@ significant, p < 0.05:
 | `jt9/t1` | `jt9 -9 -d 3` | 0 of 1 | +0.09 dB (p = 0.51) | 0.18 / 0.19 |
 | `wspr/t1` | `wsprd` | 0 of 1 | +0.11 dB (p = 1.0) | 0.60 / 0.86 |
 | `jt65/t1` | `jt9 -6 -d 3` | 1 of 1 | upstream never falls below 50 % on this grid | 0.24 / 0.06 |
+| `jtty/t1` | `rjtty 4.6 0 384 1500 50` | 0 of 2 | +0.00 dB: all 360 trials agree, either way | 0.11 / 0.14 |
 
 FT4 was behind on both. The cause was its SIC path (#553). It dropped the
 blind CQ AP rung, relaxed `sync_min` in later rounds, and ran every
