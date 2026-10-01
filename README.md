@@ -22,7 +22,7 @@ the WSJT-X digital modes**, validated against the upstream reference
 decoders.
 
 It is a single pure-Rust crate covering FT8, FT4, FST4, WSPR, JT9, JT65,
-and Q65 (all ten sub-modes), with decoding, encoding, and waveform
+Q65 (all ten sub-modes), MSK144 and WSJT-X 3.2's JTTY, with decoding, encoding, and waveform
 synthesis built on top of a small set of shared primitives: DSP,
 synchronization and correlation, LLRs, LDPC / convolutional /
 Reed-Solomon / QRA FEC, and message codecs.
@@ -46,9 +46,8 @@ library's scope. Two working receivers ship with the source tree, both
 running this library on Xtensa LX7.
 
 [`embedded-poc/m5stack-cores3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-cores3-app/)
-is the main target: one image carrying four receivers — FT8 over USB
-Audio from a radio, WSPR, FST4, and a radio-free demo — selected from the
-touch panel. It was verified on 2026-08-23 with an IC-705 on 40 m,
+is the main target: one image carrying FT8, FT4 and JTTY over USB Audio
+from a radio, and a radio-free demo, selected from the touch panel. It was verified on 2026-08-23 with an IC-705 on 40 m,
 decoding six to eight FT8 stations per slot from +8 to −24 dB.
 
 [`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
@@ -746,8 +745,8 @@ reference:
 - **M5Stack CoreS3 receiver manual:**
   [English `docs/reference/MANUAL_M5STACK_CORES3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.md)
   / [日本語 `docs/reference/MANUAL_M5STACK_CORES3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.ja.md)
-  — the main hardware target: four receivers in one image (FT8 over USB
-  Audio, WSPR, FST4, and a radio-free demo), mode switching from the
+  — the main hardware target: FT8, FT4 and JTTY over USB Audio and a
+  radio-free demo in one image, mode switching from the
   touch panel, the host-versus-peripheral power rule, the RTC, and why
   a board with no clock decodes nothing.
 - **M5StickS3 FT8 controller manual:**
@@ -796,13 +795,12 @@ UI + QSO FSM + WiFi-UDP log streaming), both consuming the
 board-agnostic `embedded-poc/mfsk-app-shared/`.
 `embedded-poc/m5stack-cores3-app/` is the **main target** (M5Stack
 CoreS3 has the PMIC/IO-expander wiring the StickS3 lacks) — one image
-carrying four receivers, chosen from the touch panel, taking audio
-from a radio over USB Audio. Live IC-705 verification cleared
-2026-08-23 (issue #163); FT8 and WSPR have both decoded off the air.
-It is receive-only today; TX/QSO feasibility work started 2026-09-06
-(Phase T0 — the IC-705's USB audio OUT interface and wired CI-V over
-the same cable both look reachable from the vendored driver headers,
-unverified on hardware yet). See
+carrying FT8, FT4 and JTTY receivers, chosen from the touch panel, taking
+audio from a radio over USB Audio. Live IC-705 verification cleared
+2026-08-23 (issue #163) and FT8 decodes off the air; CAT (CI-V) runs
+over the same USB cable. It is receive-only today: the transmit
+bring-up probes exist (`MFSK_CORES3_TX_BRINGUP`) and have not yet been
+run on hardware. See
 `docs/reference/MANUAL_M5STACK_CORES3.md` to operate it, and
 `docs/notes/ROADMAP.md`'s Phase B-Core section for what it unblocks. `embedded-poc/m5stack-s3/` is a
 decoder-only compute-bench crate for S3 timing-regression tracking.

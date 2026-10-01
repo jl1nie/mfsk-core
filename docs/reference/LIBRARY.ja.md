@@ -1614,6 +1614,9 @@ FT8 には `ft8::list_decode`（a7 / a8 リストデコーダ。全戦略の最�
 | `sync_cv` (#414) | FT8 のものは二乗和の平方根 | 全プロトコルで母集団の CV。したがって FT8 の値は以前の 1/√3 になる |
 | FST4 OSD (#456) | 101 ビット全部を探索した | `osd_decode_npre_generic(.., partial_crc: Option<PartialCrc>)`。FST4 は (240, 91) 部分符号を渡す |
 | 既定の挙動 | FT4 の `sync_min` 1.2 / `max_cand` 100。FT4 のメッセージポリシーはオフ | 1.18 / 200 (#440)。オン (#383) |
+| FT8 / FT4 の既定戦略 | `decode()` は 1 パスだった | WSJT-X と同じく FT8 は `.sic_early()`、FT4 は `.sic_rounds(3)`。従来の挙動は `.single_pass()`（C ABI は `MfskDecodeParams::single_pass`、Kotlin / Swift は `singlePass`）。ビット単位では同一でない: デコードが増え、FT8 は 2〜3 倍の時間がかかる |
+| FST4 の候補探索 (#554) | 汎用の Costas 探索。`sync_min` 0.8 / `max_cand` 50 | `get_candidates_fst4` の移植。ベースライン正規化尺度（`sync_scale` `BaselineNormalised`）で `sync_min` 1.20（FST4-15: 1.15）/ 200。0.8 / 50 を渡し続ける呼び出し側は 0.8 を超える全ピークを通し、50 で打ち切る |
+| `.ap_hint()` 付きの Q65 (#555) | ヒント付きのパスだけ | `q65_decode.f90` の `ipass` ループと同じく、各候補をまず AP なしで試す。どちらで復号したかは `Q65Result::ap`。BP の `maxiters` は 40。ビット単位では同一でない: スイープ 2 640 試行のうち 3 件を失い、そのいずれも `jt9` は復号しない |
 
 ---
 

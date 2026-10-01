@@ -1668,6 +1668,9 @@ What a 0.11 caller has to change (full text and migration tables:
 | `sync_cv` (#414) | FT8's a root of summed squares | the population CV on every protocol, so FT8's value is 1/√3 of what it was |
 | FST4 OSD (#456) | searched all 101 bits | `osd_decode_npre_generic(.., partial_crc: Option<PartialCrc>)`; FST4 passes the (240, 91) subcode |
 | default behaviour | FT4 `sync_min` 1.2 / `max_cand` 100; FT4 message policy off | 1.18 / 200 (#440); on (#383) |
+| FT8 / FT4 default strategy | `decode()` ran one pass | FT8 `.sic_early()`, FT4 `.sic_rounds(3)`, as WSJT-X runs them; `.single_pass()` (C ABI `MfskDecodeParams::single_pass`, Kotlin / Swift `singlePass`) for the old behaviour. Not bit-identical: more decodes, and FT8 takes 2-3× the time |
+| FST4 candidate search (#554) | the generic Costas search; `sync_min` 0.8 / `max_cand` 50 | a port of `get_candidates_fst4`; `sync_min` 1.20 (FST4-15: 1.15) / 200 on the baseline-normalised scale (`sync_scale` `BaselineNormalised`). A caller still passing 0.8 / 50 admits every peak above 0.8 and stops at 50 |
+| Q65 with `.ap_hint()` (#555) | the hinted pass only | each candidate without AP first, as `q65_decode.f90`'s `ipass` loop; `Q65Result::ap` says which decoded; BP `maxiters` 40. Not bit-identical: 3 of 2 640 sweep trials lost, none of which `jt9` decodes |
 
 ---
 

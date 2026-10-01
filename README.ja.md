@@ -12,7 +12,7 @@ English: [README.md](README.md)
 `mfsk-core` は、**WSJT-X のデジタルモードをポータブルかつ高速な純 Rust 実装として提供し、
 本家のリファレンスデコーダーと照合して検証しているライブラリ**です。
 
-FT8、FT4、FST4、WSPR、JT9、JT65、Q65(全10サブモード)の復調・符号化・波形合成を、
+FT8、FT4、FST4、WSPR、JT9、JT65、Q65(全10サブモード)、MSK144、WSJT-X 3.2 の JTTY の復調・符号化・波形合成を、
 共通部品(DSP、同期・相関、LLR、LDPC / 畳み込み / Reed-Solomon / QRA の各 FEC、
 メッセージコーデック)の上に1つのクレートとして実装しています。
 
@@ -34,7 +34,7 @@ WSJT-X 由来の golden 録音が全 PR をゲートし、recall と誤検出の
 リポジトリには、Xtensa LX7 上で `mfsk-core` を動かす受信機が2つ含まれます。
 
 - [`embedded-poc/m5stack-cores3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-cores3-app/):
-  主ターゲット。FT8(無線機からの USB Audio)、WSPR、FST4、無線機不要のデモの4受信機を
+  主ターゲット。無線機からの USB Audio で受ける FT8、FT4、JTTY と、無線機不要のデモを
   1イメージに収め、タッチパネルで切り替えます。2026-08-23 に IC-705 の 40 m で確認し、
   1スロットあたり FT8 を 6〜8 局(+8〜−24 dB)デコードしました。
 - [`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/):

@@ -24,8 +24,8 @@ WSJT-X can't reach. Every algorithm file cites the `lib/*.f90` / `lib/*.c`
 it ports, and keeping those citations valid is part of the diff.
 
 Alongside the library, the repo carries a working embedded line: an
-M5Stack CoreS3 that takes USB-audio from an IC-705 and decodes FT8, FT4,
-FST4 and WSPR off the air.
+M5Stack CoreS3 that takes USB-audio from an IC-705 and receives FT8, FT4
+and JTTY, with CAT over the same cable.
 
 ## Repository map
 

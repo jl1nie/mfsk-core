@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.0 — one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394), FT4 filters phantoms by default (#383), FT4 on the CoreS3 answers by the reply deadline, one screen for every mode, one boot sequence for the CoreS3's four receivers, WiFi becomes a setting of its own (#381)
+## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY
 
 - **Breaking (behaviour): FT8 and FT4 subtract by default, as WSJT-X does.** A plain `DecodeRequest::new(..).decode()`
   now runs `.sic_early()` on FT8 and `.sic_rounds(3)` on FT4. Before this it ran a single pass, which WSJT-X never does.
@@ -15,6 +15,11 @@
   `syncmin` and stops when a pass adds nothing. That made it 4-7x slower than `jt9`. Both now match upstream. On the
   upstream baseline no channel is behind, and the 1040-file corpus decodes in 0.9 s instead of 10.9 s. A regression test
   pins the AP rung: at the threshold the old path decoded 2 of 24 seeds where the single pass decoded 9.
+- **CoreS3: transmit bring-up probes, and PTT off on every CAT connect.** `MFSK_CORES3_TX_BRINGUP=a` opens the radio's
+  audio OUT beside the IN stream and CI-V and streams one silent FT8 frame (never keys); `=b` keys PTT over CI-V with
+  no audio for 15 s and 35 s, logging the `FB` and `1C 00` readback latency and the IN stream while keyed. Both are
+  off by default and not yet run on hardware. In every build the CAT task now sends PTT off as its first frame, so a
+  board that reset while transmitting unkeys the radio. Stage P1 of the CoreS3 QSO/TX plan; `src/tx_bringup.rs`.
 - **CoreS3: three modes, FT8, FT4 and JTTY, in the default build.** The mode picker lists FT8, FT4 and JTTY;
   FST4 leaves the menu but keeps its receiver behind `--features fst4` (a board whose NVS says `fst4` still boots it,
   or FT8 with a logged reason). `ft4` and `jtty-rx` are now default features: a plain `cargo build --release` used to
