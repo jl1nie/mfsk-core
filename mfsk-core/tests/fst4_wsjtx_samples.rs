@@ -103,7 +103,7 @@ fn fst4_60_wsjtx_sample_on_result_fires_once_per_decode() {
             fired.lock().unwrap().push(t);
         }
     };
-    let outcome = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
+    let outcome = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .on_result(&cb)
         .decode();
 
@@ -641,7 +641,7 @@ fn fst4_wsjtx_sample_precision_vs_reference_decoder() {
         return;
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
-    let out = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 50).decode();
+    let out = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 200).decode();
 
     assert_golden(
         &out.results,

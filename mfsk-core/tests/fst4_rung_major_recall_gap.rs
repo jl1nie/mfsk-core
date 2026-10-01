@@ -86,6 +86,11 @@ const GOLDEN_MSG: &str = "CQ JL1NIE PM95";
 const CENTER_HZ: f32 = 1550.0;
 const HALF: f32 = 1450.0;
 const SYNC_MIN: f32 = 0.8;
+/// `DecodeRequest`'s own defaults since #554: `get_candidates_fst4`'s
+/// `minsync` and candidate count (`registry`'s FST4 profile). The
+/// constants above stay on the Costas scale of the embedded search.
+const HOST_SYNC_MIN: f32 = 1.2;
+const HOST_MAX_CAND: usize = 200;
 const MAX_CAND: usize = 50;
 const SYNC_Q_MIN: u32 = 16;
 
@@ -148,12 +153,17 @@ fn fst4_60_rung_major_vs_production_ladder_at_threshold() {
             .par_iter()
             .filter_map(|p| {
                 let audio = load_wav_i16_opt(p)?;
-                let baseline =
-                    DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, SYNC_MIN, MAX_CAND)
-                        .decode()
-                        .results
-                        .iter()
-                        .any(|r| is_golden(r.message77()));
+                let baseline = DecodeRequest::<Fst4s60>::new(
+                    &audio,
+                    100.0,
+                    3000.0,
+                    HOST_SYNC_MIN,
+                    HOST_MAX_CAND,
+                )
+                .decode()
+                .results
+                .iter()
+                .any(|r| is_golden(r.message77()));
 
                 let cfg = wideband_cascade(CENTER_HZ);
                 let mut ddc = mfsk_core::engine::dsp::ddc::StreamingComplexDdc::new(&cfg);
@@ -272,11 +282,12 @@ fn fst4_60_rung_major_vs_production_ladder_at_threshold() {
 /// [`fst4_60_ccir_moderate_timing_x_pruning`] can run it twice per
 /// cell, once per OSD search.
 fn trial_arms(audio: &[i16]) -> (bool, bool, bool, bool) {
-    let baseline = DecodeRequest::<Fst4s60>::new(audio, 100.0, 3000.0, SYNC_MIN, MAX_CAND)
-        .decode()
-        .results
-        .iter()
-        .any(|r| is_golden(r.message77()));
+    let baseline =
+        DecodeRequest::<Fst4s60>::new(audio, 100.0, 3000.0, HOST_SYNC_MIN, HOST_MAX_CAND)
+            .decode()
+            .results
+            .iter()
+            .any(|r| is_golden(r.message77()));
 
     let cfg = wideband_cascade(CENTER_HZ);
     let mut ddc = mfsk_core::engine::dsp::ddc::StreamingComplexDdc::new(&cfg);

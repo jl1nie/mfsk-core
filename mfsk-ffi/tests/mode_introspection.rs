@@ -297,8 +297,11 @@ fn defaults_are_published_with_their_scale() {
         "the whole point of publishing the scale is that these two are not comparable"
     );
 
+    // FST4 is on FT4's scale since #554 (`get_candidates_fst4`'s minsync).
+    assert_eq!(d(MfskMode::Fst4s15).sync_min, 1.15, "fst4_decode.f90:309");
+    assert_eq!(d(MfskMode::Fst4s300).sync_min, 1.20, "fst4_decode.f90:308");
     for m in [MfskMode::Fst4s15, MfskMode::Fst4s300] {
-        assert_eq!(d(m).sync_scale, MfskSyncScale::CostasAbsolute);
+        assert_eq!(d(m).sync_scale, MfskSyncScale::BaselineNormalised);
     }
 
     // #413: the scan modes publish the library's own defaults, on a

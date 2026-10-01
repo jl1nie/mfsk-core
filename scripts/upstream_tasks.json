@@ -33,7 +33,7 @@
     "task": "Wideband monitoring, 200-3000 Hz, no callsign known, every sub-mode. fst4_decode at ndepth=3 with AP (CQ only with no callsigns), single decode off.",
     "upstream_bin": "jt9",
     "upstream_args": ["-7", "-p", "{mode}", "-d", "3", "-L", "200", "-H", "3000"],
-    "crate": "DecodeRequest::<Fst4sN>::new(audio, 200, 3000, 0.8, 50).ap_hint(CQ)",
+    "crate": "DecodeRequest::<Fst4sN>::new(audio, 200, 3000, minsync, 200).ap_hint(CQ), minsync 1.20 (1.15 for FST4-15) as fst4_decode.f90:308-309",
     "score": {"msg": "CQ JL1NIE PM95", "freq": 1500, "freq_tol": 5, "dt_tol": 0.6},
     "corpus": "fst4_sweep",
     "file_re": "^fst4_(?P<mode>\\d+)_(?P<channel>awgn|ccir_\\w+?)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",

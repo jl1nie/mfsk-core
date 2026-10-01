@@ -266,8 +266,14 @@ fn known_subtract_implies_known_filter() {
 fn sync_scale_is_recorded_and_defaults_respect_it() {
     assert_eq!(profile("FT4").sync_scale, SyncScale::BaselineNormalised);
     assert_eq!(profile("FT8").sync_scale, SyncScale::CostasAbsolute);
+    // FST4 since #554: `get_candidates_fst4`'s minsync, on the same
+    // baseline-normalised scale as FT4, with upstream's values
+    // (`fst4_decode.f90:308-309`).
     for m in FST4_MODES {
-        assert_eq!(profile(m).sync_scale, SyncScale::CostasAbsolute);
+        assert_eq!(profile(m).sync_scale, SyncScale::BaselineNormalised, "{m}");
+        let want = if m == "FST4-15" { 1.15 } else { 1.20 };
+        assert_eq!(profile(m).defaults.sync_min, want, "{m}");
+        assert_eq!(profile(m).defaults.max_cand, 200, "{m}");
     }
     // The scan modes score sync as a 0..1 fraction of sync plus noise
     // (#413): a third scale, not FT8's.

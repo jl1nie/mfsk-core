@@ -1711,9 +1711,9 @@ for p in PROTOCOLS {
 `MFSK_CAP_STREAM_RECEIVER` で、`mfsk-ffi` だけが定義する（JTTY にはそれを
 主張するレジストリ entry が無い）。
 `sync_scale` は `sync_min` の読み方を示す。スケールは同じ数値ではないからだ:
-`CostasAbsolute`（FT8、FST4。雑音に固定値は無い）、`BaselineNormalised`
-（FT4: スペクトルをフィットしたベースラインで割るので、雑音は ~1.0 にあり、
-それ未満の閾値はあらゆるピークを通す）、`SyncFraction`（WSPR、JT9、JT65、
+`CostasAbsolute`（FT8。雑音に固定値は無い）、`BaselineNormalised`
+（FT4、および #554 以降の FST4: スペクトルをフィットしたベースラインで割るので、
+雑音は ~1.0 にあり、それ未満の閾値はあらゆるピークを通す）、`SyncFraction`（WSPR、JT9、JT65、
 Q65: sync の電力を sync と雑音の和で割った 0‥1 の値で、既定は
 `DEFAULT_SCORE_THRESHOLD` = 0.1）。`sniper_max_cand_cap` は sniper 経路が
 `max_cand` に黙って適用する上限である（FT4: 15）。
@@ -1725,7 +1725,7 @@ Q65: sync の電力を sync と雑音の和で割った 0‥1 の値で、既定
 |---|---|---|---|---|
 | FT8 | 100-3000 | 0.8 | 60 | `FT8_PROFILE` |
 | FT4 | 300-2700 | 1.18 | 200 | WSJT-X 3.x `ft4_decode.f90` の `syncmin` / `MAXCAND`（#440。以前は 1.2 / 100） |
-| FST4（5 つすべて） | 100-3000 | 0.8 | 50 | `FST4_PROFILE` |
+| FST4（5 つすべて） | 100-3000 | 1.20（FST4-15: 1.15） | 200 | WSJT-X `fst4_decode.f90` の `minsync` と候補配列（#554。以前は Costas スケールで 0.8 / 50） |
 | WSPR | 1400-1600 | 0.1 | 200 | `wspr::search::default_search_params()`、±5.46 s（8 シンボル） |
 | JT9 | 200-4000 | 0.1 | 8 | `jt9::search::default_search_params()`、±1.728 s |
 | JT65 | 1000-2000 | 0.1 | 8 | `jt65::search::default_search_params()`、±7.62 s |

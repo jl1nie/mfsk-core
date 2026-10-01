@@ -107,7 +107,7 @@ fn fst4_decode(
     audio: &[i16],
     budget: Option<&CandidateBudget>,
 ) -> (Vec<DecodeResult>, BudgetReport) {
-    let req = DecodeRequest::<Fst4s60>::new(audio, 100.0, 3000.0, 0.8, 50);
+    let req = DecodeRequest::<Fst4s60>::new(audio, 100.0, 3000.0, 1.2, 200);
     let check;
     let req = match budget {
         None => req,

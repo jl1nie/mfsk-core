@@ -168,7 +168,7 @@ pub fn fit_baseline_with(
 
 /// Polynomial fit y = sum_{k=0..nterms-1} a[k] * x^k  via normal equations.
 /// Direct Gauss elimination on the `nterms`x`nterms` system.
-fn polyfit_nterm(xs: &[f64], ys: &[f64], nterms: usize) -> Vec<f64> {
+pub(crate) fn polyfit_nterm(xs: &[f64], ys: &[f64], nterms: usize) -> Vec<f64> {
     debug_assert_eq!(xs.len(), ys.len());
     debug_assert!(xs.len() >= nterms);
 

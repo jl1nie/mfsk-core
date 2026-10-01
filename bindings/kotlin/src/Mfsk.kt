@@ -134,8 +134,9 @@ data class MfskDecodeParams(
     /// Search band edges, Hz.
     val freqMinHz: Float,
     val freqMaxHz: Float,
-    /// Sync threshold. **Not comparable across modes**: FT4's is measured
-    /// on a different scale from FT8's and FST4's.
+    /// Sync threshold. **Not comparable across modes**: FT4's and FST4's
+    /// are measured on a different scale from FT8's (`mfsk_mode_defaults`
+    /// publishes each mode's scale).
     val syncMin: Float,
     val maxCand: Int,
     /// [DEPTH_MODE_DEFAULT], [DEPTH_BP_ALL] or [DEPTH_BP_ALL_OSD].

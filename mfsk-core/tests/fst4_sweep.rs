@@ -75,16 +75,25 @@ where
     // `scripts/upstream_tasks.json`), mirroring `jt9 -7 -p <n> -d 3 -L 200
     // -H 3000`: the band set to 200-3000 Hz and, because that `jt9` runs AP at
     // `ndepth` >= 2 with no callsigns, a CQ hint.
+    //
+    // `sync_min` is `get_candidates_fst4`'s minsync (#554): 1.20, or 1.15 for
+    // the 15 s period (`fst4_decode.f90:308-309`), with upstream's 200
+    // candidates.
+    let minsync = if <P as mfsk_core::engine::FrameLayout>::T_SLOT_S < 20.0 {
+        1.15
+    } else {
+        1.20
+    };
     let results = match std::env::var("MFSK_FST4_SWEEP_TASK").as_deref() {
         Ok("t1") => {
             let cq = mfsk_core::msg::ApHint::new().with_call1("CQ");
-            DecodeRequest::<P>::new(audio, 200.0, 3000.0, 0.8, 50)
+            DecodeRequest::<P>::new(audio, 200.0, 3000.0, minsync, 200)
                 .ap_hint(&cq)
                 .decode()
                 .results
         }
         Err(_) => {
-            DecodeRequest::<P>::new(audio, 100.0, 3000.0, 0.8, 50)
+            DecodeRequest::<P>::new(audio, 100.0, 3000.0, minsync, 200)
                 .decode()
                 .results
         }

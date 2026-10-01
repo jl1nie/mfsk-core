@@ -1394,6 +1394,11 @@ pub fn coarse_sync_from_sync2d<P: Protocol>(
     // still the existing Costas-grid value (whatever it is), so
     // downstream OSD-gating semantics (calibrated against that scale)
     // are unaffected.
+    //
+    // Since #554 the host `DecodeRequest` does not come here for FST4: it
+    // runs the port of `get_candidates_fst4` itself (`engine::fst4_coarse`).
+    // This path remains for callers without a whole-slot FFT, the embedded
+    // wideband monitor and the DDC paths.
     let stage1_norm: Vec<f32> = if P::ID == super::ProtocolId::Fst4 {
         let avg_power = s.avg_power_per_bin();
         // `avg_power` is offset-relative (indexed from `s.freq_offset()`,

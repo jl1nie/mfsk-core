@@ -407,15 +407,16 @@ typedef enum MfskMode {
 typedef enum MfskSyncScale {
     /**
      * Absolute Costas correlation score. Noise has no fixed value, so
-     * a threshold is empirical. FT8, FST4.
+     * a threshold is empirical. FT8.
      */
     MFSK_SYNC_SCALE_COSTAS_ABSOLUTE = 0,
     /**
      * The spectrum is divided by a fitted baseline before scoring, so
      * **noise sits at ~1.0 by construction** and any threshold at or
-     * below that admits every peak in the band. FT4 only — and it is
-     * why WSJT-X's own 1.18 (`ft4_decode.f90:195`) is a floor rather
-     * than a preference, not a number to copy to another mode.
+     * below that admits every peak in the band. FT4, and FST4 since
+     * #554 — which is why WSJT-X's own values (FT4 1.18,
+     * `ft4_decode.f90:195`; FST4 1.20, or 1.15 for FST4-15,
+     * `fst4_decode.f90:308-309`) are floors rather than preferences.
      */
     MFSK_SYNC_SCALE_BASELINE_NORMALISED = 1,
     /**

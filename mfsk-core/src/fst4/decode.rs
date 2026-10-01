@@ -252,7 +252,7 @@ mod tests {
         let copy_len = audio.len().min(slot.len() - offset);
         slot[offset..offset + copy_len].copy_from_slice(&audio[..copy_len]);
 
-        let results = DecodeRequest::<crate::fst4::Fst4s60>::new(&slot, 1000.0, 2000.0, 0.8, 20)
+        let results = DecodeRequest::<crate::fst4::Fst4s60>::new(&slot, 1000.0, 2000.0, 1.2, 200)
             .decode()
             .results;
         assert!(
@@ -339,7 +339,7 @@ mod tests {
         let copy_len = audio.len().min(slot_len.saturating_sub(offset));
         slot[offset..offset + copy_len].copy_from_slice(&audio[..copy_len]);
 
-        let results = DecodeRequest::<P>::new(&slot, freq_min, freq_max, 0.8, 20)
+        let results = DecodeRequest::<P>::new(&slot, freq_min, freq_max, 1.2, 200)
             .decode()
             .results;
         assert!(

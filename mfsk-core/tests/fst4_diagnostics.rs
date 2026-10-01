@@ -2015,7 +2015,7 @@ fn fst4_60_diag_candidate_cost_split() {
     // investigation's start).
     let t0 = Instant::now();
     let decodes = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s60>::new(
-        &audio, 100.0, 3000.0, 1.0, 50,
+        &audio, 100.0, 3000.0, 1.2, 200,
     )
     .decode()
     .results;
@@ -2147,7 +2147,7 @@ fn fst4_300_diag_candidate_cost_split() {
 
     let t0 = Instant::now();
     let decodes = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s300>::new(
-        &audio, 100.0, 3000.0, 1.0, 50,
+        &audio, 100.0, 3000.0, 1.2, 200,
     )
     .decode()
     .results;

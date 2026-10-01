@@ -33,6 +33,8 @@ pub mod dsp;
 pub mod equalize;
 pub mod fft;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod fst4_coarse;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod ft4_coarse;
 pub mod gray;
 // Pure bit-permutation, no FFT/complex-number dependency — ungated

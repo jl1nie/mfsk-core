@@ -55,7 +55,7 @@ fn fst4_60_streaming_single_pass_superset_of_batch() {
         }
     };
 
-    let outcome = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
+    let outcome = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .on_result(&on_result)
         .decode();
 

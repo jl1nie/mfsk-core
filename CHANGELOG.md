@@ -15,6 +15,18 @@
   `syncmin` and stops when a pass adds nothing. That made it 4-7x slower than `jt9`. Both now match upstream. On the
   upstream baseline no channel is behind, and the 1040-file corpus decodes in 0.9 s instead of 10.9 s. A regression test
   pins the AP rung: at the threshold the old path decoded 2 of 24 seeds where the single pass decoded 9.
+- **Breaking (behaviour): FST4 finds candidates as `get_candidates_fst4` does, so its `sync_min` is upstream's
+  `minsync` (#554).** FST4 used the generic 2-D Costas search. On noise it let `max_cand` candidates through on every
+  file, and each one paid a full ±1.5 s `fst4_sync_search`; upstream refines 2-6. The search is now a port of
+  `get_candidates_fst4` and `fst4_baseline` (`engine::fst4_coarse`): a four-tone CCF over the whole-slot FFT the
+  pipeline already builds, divided by a fitted noise baseline, then peaks peeled off with a CLEAN loop until one falls
+  below `minsync`. `sync_min` is therefore on FT4's baseline-normalised scale, where noise sits near 1.0: the registry
+  and `mfsk_mode_defaults` publish 1.20 (FST4-15: 1.15) and 200 candidates, as `fst4_decode.f90:308-309` does, with
+  `sync_scale` `BaselineNormalised`. A caller passing the old 0.8 / 50 now admits every peak above 0.8 and stops at
+  50. On a busy recording that can drop a real signal: on the WSJT-X FST4-60 sample, CQ N5TM is the 145th candidate.
+  Against `jt9 -7 -d 3` on the T1 task this takes FST4 from 3.1x/2.8x upstream's time to 0.42x/0.53x (noise /
+  crossing), with no channel group behind upstream; unexpected decodes fall from 19 to 5 over the 20 groups (FST4-120
+  AWGN: 9 to 0). The embedded wideband monitor keeps the generic search and its 0.8 / 50.
 - **FST4's a-priori pass as `fst4_decode.f90` runs it: no longer 0.6-1.3 dB behind `jt9 -7` (#554).** Against
   `jt9 -7 -d 3` on the T1 task FST4 was behind in 15 of 20 channel groups. Every frame upstream decoded and this
   crate missed, in the sample traced, came from upstream's CQ AP pass, with 40-58 hard errors. The AP rung here
@@ -37,7 +49,7 @@
   protocol it sweeps. No corpus grows and CI is unchanged. `scripts/build_jt9_upstream.sh` rebuilds the `v3.2.0-rc1`
   reference `jt9`/`wsprd` reproducibly. Seven tasks are defined: FT8, FT4, FST4, Q65, JT9, JT65 and WSPR. FT8,
   Q65, JT9 and WSPR are at or ahead of upstream and faster. FT4 and FST4 were behind on accuracy (up to 1.4 dB)
-  and speed (about 4–6×); both are now at or ahead on accuracy (#553, #554), and FST4 is still about 3× slower. JT65's known gap is recorded and not chased. Details in
+  and speed (about 4–6×); both are now at or ahead on both (#553, #554). JT65's known gap is recorded and not chased. Details in
   `docs/notes/BENCHMARKS.md`, "The upstream baseline".
 - **Q65 decodes 3.4–11× faster: the coarse search admits candidates as `q65_ccf_22` does (#552).** Every Q65 scan
   decoded `max_candidates` = 8 candidates, even on noise alone. The search scored a bin

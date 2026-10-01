@@ -2248,8 +2248,20 @@ where
     let trace = false;
     #[cfg(feature = "std")]
     let __trace_t0 = trace.then(std::time::Instant::now);
+    // FST4 finds its candidates in the whole-slot FFT the pipeline builds
+    // anyway (`get_candidates_fst4`, see `engine::fst4_coarse`), so the
+    // cache is built first for it; everything else builds it after.
+    let fst4 = P::ID == super::ProtocolId::Fst4;
+    let early_cache: Option<Vec<Complex<f32>>> = fst4.then(|| match precomputed_fft {
+        Some(c) => c.to_vec(),
+        None => build_fft_cache(audio, cfg),
+    });
     let mut candidates = if P::ID == super::ProtocolId::Ft4 {
         super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
+    } else if let Some(cache) = early_cache.as_deref() {
+        super::fst4_coarse::fst4_coarse_sync::<P>(
+            cache, cfg, freq_min, freq_max, sync_min, max_cand,
+        )
     } else {
         coarse_sync::<P>(
             AudioSource::Real(audio),
@@ -2272,9 +2284,10 @@ where
     if let Some((lo, hi)) = cand_band {
         candidates.retain(|c| (lo..=hi).contains(&c.freq_hz));
     }
-    let fft_cache = FftCache(match precomputed_fft {
-        Some(c) => c.to_vec(),
-        None => build_fft_cache(audio, cfg),
+    let fft_cache = FftCache(match (early_cache, precomputed_fft) {
+        (Some(c), _) => c,
+        (None, Some(c)) => c.to_vec(),
+        (None, None) => build_fft_cache(audio, cfg),
     });
     if candidates.is_empty() {
         return (Vec::new(), fft_cache, budget_report);

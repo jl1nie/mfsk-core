@@ -128,7 +128,7 @@ fn timing_fst4_300() {
         if chunk.len() < 300 * 12_000 {
             continue;
         }
-        let r = DecodeRequest::<Fst4s300>::new(chunk, 100.0, 3000.0, 0.8, 50).decode();
+        let r = DecodeRequest::<Fst4s300>::new(chunk, 100.0, 3000.0, 1.2, 200).decode();
         println!(
             "slot[{i}] {} decodes: {:?}",
             r.results.len(),
@@ -150,14 +150,14 @@ fn timing_fst4_300() {
         slot.len() as f32 / 12_000.0
     );
 
-    let r0 = DecodeRequest::<Fst4s300>::new(&slot, 100.0, 3000.0, 0.8, 50).decode();
+    let r0 = DecodeRequest::<Fst4s300>::new(&slot, 100.0, 3000.0, 1.2, 200).decode();
     println!("warm-up: {} decodes", r0.results.len());
 
     let n_iters = 5;
     let mut times = Vec::with_capacity(n_iters);
     for i in 0..n_iters {
         let t0 = Instant::now();
-        let r = DecodeRequest::<Fst4s300>::new(&slot, 100.0, 3000.0, 0.8, 50).decode();
+        let r = DecodeRequest::<Fst4s300>::new(&slot, 100.0, 3000.0, 1.2, 200).decode();
         let dt = t0.elapsed();
         println!(
             "iter {i:2}: {:8.3} ms  ({} decodes)",
@@ -199,7 +199,7 @@ fn timing_fst4_300_sanity_strong_signal() {
         }
         total += 1;
         let audio = load_wav_i16(&path);
-        let r = DecodeRequest::<Fst4s300>::new(&audio, 100.0, 3000.0, 0.8, 50).decode();
+        let r = DecodeRequest::<Fst4s300>::new(&audio, 100.0, 3000.0, 1.2, 200).decode();
         let msgs: Vec<_> = r
             .results
             .iter()

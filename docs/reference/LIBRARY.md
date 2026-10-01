@@ -1766,9 +1766,10 @@ sub-mode) and `TX_FREQ` = 1 << 17 (FT8; no marker trait, so the claim list
 pins it). **Bit 15 is skipped on purpose**: it is `MFSK_CAP_STREAM_RECEIVER`,
 which only `mfsk-ffi` defines (JTTY has no registry entry to claim it).
 `sync_scale` says how to read `sync_min`, because the scales are not the
-same number: `CostasAbsolute` (FT8, FST4; noise has no fixed value),
-`BaselineNormalised` (FT4: the spectrum is divided by a fitted baseline,
-so noise sits at ~1.0 and any threshold below that admits every peak), and
+same number: `CostasAbsolute` (FT8; noise has no fixed value),
+`BaselineNormalised` (FT4, and FST4 since #554: the spectrum is divided by a
+fitted baseline, so noise sits at ~1.0 and any threshold below that admits
+every peak), and
 `SyncFraction` (WSPR, JT9, JT65, Q65: sync power over sync plus noise, in
 0‥1, default `DEFAULT_SCORE_THRESHOLD` = 0.1). `sniper_max_cand_cap` is the
 bound the sniper path silently applies to `max_cand` (FT4: 15).
@@ -1781,7 +1782,7 @@ bound the sniper path silently applies to `max_cand` (FT4: 15).
 |---|---|---|---|---|
 | FT8 | 100-3000 | 0.8 | 60 | `FT8_PROFILE` |
 | FT4 | 300-2700 | 1.18 | 200 | WSJT-X 3.x `ft4_decode.f90` `syncmin` / `MAXCAND` (#440; was 1.2 / 100) |
-| FST4 (all five) | 100-3000 | 0.8 | 50 | `FST4_PROFILE` |
+| FST4 (all five) | 100-3000 | 1.20 (FST4-15: 1.15) | 200 | WSJT-X `fst4_decode.f90` `minsync` and candidate array (#554; was 0.8 / 50 on the Costas scale) |
 | WSPR | 1400-1600 | 0.1 | 200 | `wspr::search::default_search_params()`; ±5.46 s (8 symbols) |
 | JT9 | 200-4000 | 0.1 | 8 | `jt9::search::default_search_params()`; ±1.728 s |
 | JT65 | 1000-2000 | 0.1 | 8 | `jt65::search::default_search_params()`; ±7.62 s |

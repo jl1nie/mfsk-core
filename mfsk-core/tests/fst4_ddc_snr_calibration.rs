@@ -73,6 +73,11 @@ use mfsk_core::msg::wsjt77::unpack77;
 const CENTER_HZ: f32 = 1550.0;
 const HALF: f32 = 1450.0;
 const SYNC_MIN: f32 = 0.8;
+/// `DecodeRequest`'s own defaults since #554: `get_candidates_fst4`'s
+/// `minsync` and candidate count (`registry`'s FST4 profile). The
+/// constants above stay on the Costas scale of the embedded search.
+const HOST_SYNC_MIN: f32 = 1.2;
+const HOST_MAX_CAND: usize = 200;
 const MAX_CAND: usize = 50;
 const SYNC_Q_MIN: u32 = 16;
 
@@ -176,7 +181,7 @@ fn fst4_ddc_snr_calibration() {
     let audio = load_wav_i16_opt(&path).expect("golden WAV readable");
 
     let production: Vec<(String, f32)> =
-        DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, SYNC_MIN, MAX_CAND)
+        DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, HOST_SYNC_MIN, HOST_MAX_CAND)
             .decode()
             .results
             .iter()

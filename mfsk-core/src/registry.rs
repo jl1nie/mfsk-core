@@ -196,13 +196,14 @@ pub mod caps {
 #[repr(u8)]
 pub enum SyncScale {
     /// Absolute Costas correlation score. Noise has no fixed value, so
-    /// a threshold here is empirical. FT8, FST4.
+    /// a threshold here is empirical. FT8.
     CostasAbsolute = 0,
     /// The smoothed spectrum is divided by a fitted baseline before
     /// scoring, so **noise sits at ~1.0 by construction** and any
     /// threshold below that admits every peak in the band. FT4 — and
     /// this is why WSJT-X's own `syncmin = 1.2` (`ft4_decode.f90:195`)
-    /// is a floor rather than a knob.
+    /// is a floor rather than a knob. FST4 too since #554
+    /// (`get_candidates_fst4`'s `minsync`, 1.20 / 1.15).
     BaselineNormalised = 1,
     /// Sync power as a fraction of sync plus noise
     /// (`engine::spectrogram::score_candidate`), so it lies in 0‥1:
@@ -424,8 +425,14 @@ const FT4_PROFILE: DecodeProfile = DecodeProfile {
 /// FST4's acceptance is the CRC-24 plus a successful unpack
 /// (`engine::pipeline`, `REQUIRES_UNPACK`).
 ///
-/// `0.8 / 50` are the values this crate's own FST4 tests and the
-/// embedded wideband monitor both call the production configuration.
+/// `sync_min` is `get_candidates_fst4`'s `minsync` since #554: the
+/// four-tone CCF divided by a fitted noise baseline, so noise sits near
+/// 1.0 (`engine::fst4_coarse`). `1.20` is upstream's
+/// (`fst4_decode.f90:308`), and FST4-15 has its own profile for upstream's
+/// `1.15`. `max_cand = 200` is the size of upstream's candidate array.
+/// Until #554 this was `0.8 / 50` on the Costas scale of the generic
+/// search, which the embedded wideband monitor still uses
+/// (`embedded-shared::fst4_monitor`) and this registry does not describe.
 #[allow(dead_code)]
 const FST4_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODE_HANDLE
@@ -441,10 +448,34 @@ const FST4_PROFILE: DecodeProfile = DecodeProfile {
     defaults: DecodeDefaults {
         freq_min_hz: 100.0,
         freq_max_hz: 3000.0,
-        sync_min: 0.8,
-        max_cand: 50,
+        sync_min: 1.20,
+        max_cand: 200,
     },
-    sync_scale: SyncScale::CostasAbsolute,
+    sync_scale: SyncScale::BaselineNormalised,
+    sniper_max_cand_cap: None,
+};
+
+/// FST4-15: [`FST4_PROFILE`] with upstream's 15 s `minsync`, `1.15`
+/// (`fst4_decode.f90:309`).
+#[allow(dead_code)]
+const FST4_15_PROFILE: DecodeProfile = DecodeProfile {
+    caps: caps::DECODE_HANDLE
+        | caps::AP_WIDEBAND
+        | caps::OSD
+        | caps::EQ_MODE
+        | caps::BUDGET
+        | caps::KNOWN_FILTER
+        | caps::FFT_CACHE
+        | caps::ON_RESULT
+        | caps::NOISE_BLANKER
+        | caps::ENCODE,
+    defaults: DecodeDefaults {
+        freq_min_hz: 100.0,
+        freq_max_hz: 3000.0,
+        sync_min: 1.15,
+        max_cand: 200,
+    },
+    sync_scale: SyncScale::BaselineNormalised,
     sniper_max_cand_cap: None,
 };
 
@@ -580,7 +611,7 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-60A", crate::Fst4s60, FST4_PROFILE),
     #[cfg(feature = "fst4")]
-    protocol_meta!("FST4-15", crate::fst4::Fst4s15, FST4_PROFILE),
+    protocol_meta!("FST4-15", crate::fst4::Fst4s15, FST4_15_PROFILE),
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-30", crate::fst4::Fst4s30, FST4_PROFILE),
     #[cfg(feature = "fst4")]

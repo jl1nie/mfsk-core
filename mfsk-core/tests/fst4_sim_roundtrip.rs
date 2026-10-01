@@ -94,7 +94,7 @@ fn fst4_60_sim_roundtrip() {
         return;
     };
 
-    let decodes = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 0.8, 50)
+    let decodes = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .decode()
         .results;
     let decoded: Vec<(String, f32, f32)> = decodes
@@ -137,7 +137,7 @@ fn fst4_15_sim_roundtrip() {
         common::corpus::missing("fst4_15_sim_roundtrip", &sim_corpus_hint());
         return;
     };
-    let decodes = DecodeRequest::<Fst4s15>::new(&audio, 100.0, 3000.0, 0.8, 50)
+    let decodes = DecodeRequest::<Fst4s15>::new(&audio, 100.0, 3000.0, 1.15, 200)
         .decode()
         .results;
     check_golden_hit(15, &decodes);
@@ -157,7 +157,7 @@ fn fst4_30_sim_roundtrip() {
         common::corpus::missing("fst4_30_sim_roundtrip", &sim_corpus_hint());
         return;
     };
-    let decodes = DecodeRequest::<Fst4s30>::new(&audio, 100.0, 3000.0, 0.8, 50)
+    let decodes = DecodeRequest::<Fst4s30>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .decode()
         .results;
     check_golden_hit(30, &decodes);
@@ -177,7 +177,7 @@ fn fst4_120_sim_roundtrip() {
         common::corpus::missing("fst4_120_sim_roundtrip", &sim_corpus_hint());
         return;
     };
-    let decodes = DecodeRequest::<Fst4s120>::new(&audio, 100.0, 3000.0, 0.8, 50)
+    let decodes = DecodeRequest::<Fst4s120>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .decode()
         .results;
     check_golden_hit(120, &decodes);
@@ -197,7 +197,7 @@ fn fst4_300_sim_roundtrip() {
         common::corpus::missing("fst4_300_sim_roundtrip", &sim_corpus_hint());
         return;
     };
-    let decodes = DecodeRequest::<Fst4s300>::new(&audio, 100.0, 3000.0, 0.8, 50)
+    let decodes = DecodeRequest::<Fst4s300>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .decode()
         .results;
     check_golden_hit(300, &decodes);

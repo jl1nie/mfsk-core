@@ -77,6 +77,11 @@ const CENTER_HZ: f32 = 1550.0;
 const HALF_WIDTH_HZ: f32 = 1450.0;
 const GRID_BW_HZ: f32 = 2900.0;
 const SYNC_MIN: f32 = 0.8;
+/// `DecodeRequest`'s own defaults since #554: `get_candidates_fst4`'s
+/// `minsync` and candidate count (`registry`'s FST4 profile). The
+/// constants above stay on the Costas scale of the embedded search.
+const HOST_SYNC_MIN: f32 = 1.2;
+const HOST_MAX_CAND: usize = 200;
 /// `fst4::decode`'s own (private) sync-quality floor, redeclared the
 /// same way `fst4_ddc_bench` redeclares it.
 const SYNC_Q_MIN: u32 = 16;
@@ -200,11 +205,12 @@ struct TrialOutcome {
 }
 
 fn run_trial(audio: &[i16]) -> TrialOutcome {
-    let baseline = DecodeRequest::<Fst4s60>::new(audio, 100.0, 3000.0, SYNC_MIN, MAX_CAND)
-        .decode()
-        .results
-        .iter()
-        .any(|r| unpack77(r.message77()).as_deref() == Some(GOLDEN_MSG));
+    let baseline =
+        DecodeRequest::<Fst4s60>::new(audio, 100.0, 3000.0, HOST_SYNC_MIN, HOST_MAX_CAND)
+            .decode()
+            .results
+            .iter()
+            .any(|r| unpack77(r.message77()).as_deref() == Some(GOLDEN_MSG));
 
     let cfg = wideband_cascade(CENTER_HZ);
     let mut ddc = StreamingComplexDdc::new(&cfg);

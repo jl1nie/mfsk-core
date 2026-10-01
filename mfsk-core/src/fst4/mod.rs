@@ -38,7 +38,8 @@
 //!
 //! # let audio: Vec<i16> = vec![];
 //! // `audio` is 720_000 i16 samples at 12 kHz (60 s FST4-60A slot).
-//! let results = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3_000.0, 0.8, /* max_cand */ 30)
+//! // sync_min is `get_candidates_fst4`'s minsync: 1.2 (1.15 for FST4-15).
+//! let results = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3_000.0, 1.2, /* max_cand */ 200)
 //!     .decode()
 //!     .results;
 //! for r in &results {

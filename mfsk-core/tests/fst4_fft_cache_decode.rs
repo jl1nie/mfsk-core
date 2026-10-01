@@ -48,7 +48,7 @@ fn fst4_60_fft_cache_override_actually_used() {
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
 
-    let plain = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
+    let plain = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .decode()
         .results;
     assert!(
@@ -59,11 +59,11 @@ fn fst4_60_fft_cache_override_actually_used() {
     // A real (correctly-shaped) but *wrong* FftCache, built from silence
     // the same length as the golden WAV.
     let silence = vec![0i16; audio.len()];
-    let wrong_cache = DecodeRequest::<Fst4s60>::new(&silence, 100.0, 3000.0, 1.0, 50)
+    let wrong_cache = DecodeRequest::<Fst4s60>::new(&silence, 100.0, 3000.0, 1.2, 200)
         .decode()
         .fft_cache;
 
-    let poisoned = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
+    let poisoned = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 200)
         .fft_cache(wrong_cache)
         .decode()
         .results;

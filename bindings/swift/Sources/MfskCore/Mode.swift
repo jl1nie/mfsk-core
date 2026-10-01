@@ -166,13 +166,13 @@ public struct Capabilities: OptionSet, Sendable {
 /// ``DecodeDefaults/syncMin`` exists alongside.
 public enum SyncScale: UInt32, Sendable {
     /// Absolute Costas correlation score; a threshold is empirical.
-    /// FT8, FST4.
+    /// FT8.
     case costasAbsolute = 0
     /// The spectrum is divided by a fitted baseline first, so **noise
     /// sits at ~1.0 by construction** and any threshold at or below
-    /// that admits every peak in the band. FT4 only — which is why
-    /// FT4's 1.2 is a floor rather than a preference, and not a number
-    /// to copy to another mode.
+    /// that admits every peak in the band. FT4, and FST4 since #554 —
+    /// which is why their defaults (FT4 1.18, FST4 1.20 or 1.15 for
+    /// FST4-15) are floors rather than preferences.
     case baselineNormalised = 1
     /// Sync power as a fraction of sync plus noise, so it lies in 0‥1:
     /// noise scores near 0, a clean aligned frame near 1. WSPR, JT9,
