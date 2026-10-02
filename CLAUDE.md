@@ -332,6 +332,18 @@ sets, the C++ driver including its multi-thread stress, and
 asserting the DLL exports its symbols and the `.so` is 16 KB aligned),
 `docs`, and `publish-dry-run`. `RUSTFLAGS: -D warnings` is set globally.
 
+**The host toolchain is pinned** in the root `rust-toolchain.toml`
+(1.98.1 as of 2026-10-02), and every `dtolnay/rust-toolchain@` in
+`ci.yml` / `release.yml` names that version — the `lint` job fails if
+one doesn't. It was `@stable` until rustc 1.99.0's aarch64
+loop-vectorizer hang (rust-lang/rust#163626) held two jobs for six
+hours. The `msrv` job overrides it with `RUSTUP_TOOLCHAIN` (a toolchain
+file outranks rustup's default). Downstream crates never see the pin,
+so `toolchain-canary.yml` builds and tests on the latest stable (beta
+weekly) outside the merge gate; raise the pin once that is green on the
+newer version. The `esp` toolchains under `embedded-poc/` are separate
+and unaffected.
+
 `kotlin` (the JNI shim + a JVM test over `bindings/kotlin/`) runs
 per-PR too. **None of these three cost wall clock**: measured at 120 s,
 90-140 s and ~70 s against the `Test (tier A+B)` job's ~300 s, which

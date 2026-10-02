@@ -252,9 +252,28 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (stable, with rustfmt + clippy)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
+
+      # Every `dtolnay/rust-toolchain@X` in ci.yml / release.yml must be
+      # rust-toolchain.toml's channel, or the MSRV in Cargo.toml for the
+      # MSRV job. A job installing a different version than the file
+      # names would build with the file's anyway (rustup reads it) but
+      # without the targets/components the action added — and a pin
+      # bump that misses one workflow would go unnoticed.
+      - name: Toolchain pins agree with rust-toolchain.toml
+        run: |
+          pin=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          msrv=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
+          bad=$(grep -nE 'uses: *dtolnay/rust-toolchain@' .github/workflows/ci.yml .github/workflows/release.yml \
+                | grep -vE "@(${pin}|${msrv}\.0)\$" || true)
+          if [ -n "$bad" ]; then
+            echo "::error::toolchain pins that are neither ${pin} (rust-toolchain.toml) nor ${msrv}.0 (MSRV):"
+            echo "$bad"; exit 1
+          fi
+          grep -q "RUSTUP_TOOLCHAIN: ${msrv}.0" .github/workflows/ci.yml \
+            || { echo "::error::MSRV job's RUSTUP_TOOLCHAIN is not ${msrv}.0"; exit 1; }
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -496,9 +515,9 @@ jobs:
             fi
           fi
 
-      - name: Install Rust (stable)
+      - name: Install Rust (pinned, rust-toolchain.toml)
         if: steps.gate.outputs.should_run == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo
         if: steps.gate.outputs.should_run == 'true'
@@ -604,8 +623,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (pinned, rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -650,8 +669,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (pinned, rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -735,7 +754,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: x86_64-pc-windows-gnu, aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
@@ -867,7 +886,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-java@v4
         with:
@@ -920,7 +939,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust (stable, with the iOS target)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: aarch64-apple-ios
 
@@ -958,8 +977,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (pinned, rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -995,6 +1014,10 @@ jobs:
     name: MSRV (1.93)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # rust-toolchain.toml outranks rustup's default, so without this the
+    # job would install 1.93 and then check with the pinned toolchain.
+    env:
+      RUSTUP_TOOLCHAIN: 1.93.0
     steps:
       - uses: actions/checkout@v4
 
@@ -1023,8 +1046,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (pinned, rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

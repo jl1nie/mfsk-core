@@ -32,7 +32,10 @@ version = "0.12.0"
 # **1.93** ("Allow `const` items that contain mutable references to
 # `static`", 1.93.0, 2026-01-22). 1.93 builds the workspace clean.
 #
-# CI runs `dtolnay/rust-toolchain@stable`, so nothing here checks this
-# number on an ongoing basis; it is a claim about what the source needs
-# today, re-measured when someone reaches for a newer feature.
+# CI's `msrv` job checks the workspace against exactly this version on
+# every run; everything else builds with the toolchain pinned in
+# `rust-toolchain.toml`, which is a different number on purpose — the
+# pin is what this repo builds with, this is what a downstream crate
+# needs. Raising it is a decision, made when someone reaches for a newer
+# feature.
 rust-version = "1.93"

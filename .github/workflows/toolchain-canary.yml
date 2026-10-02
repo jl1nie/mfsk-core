@@ -1,0 +1,96 @@
+name: Toolchain canary
+
+# CI (`ci.yml`) builds with the toolchain pinned in `rust-toolchain.toml`,
+# so a new rustc cannot stop the merge gate. Downstream crates do not see
+# that pin: they build `mfsk-core` with whatever stable they have. This
+# workflow is that downstream view — the latest stable on every push and
+# PR, beta once a week — so a compiler regression is found here before a
+# user finds it, and the pin is raised only once this has been green on
+# the newer version.
+#
+# It is not part of the merge gate, and `release.yml` waits on the `CI`
+# workflow by name only, so a red canary blocks neither a merge nor a tag.
+#
+# What it builds is what broke on 2026-10-01 (rust-lang/rust#163626):
+# rustc 1.99.0 never finished `loop-vectorize` on FT8's Costas phasor
+# table at opt-level 3 for aarch64. A release build of the library for
+# aarch64 needs no cross linker (it is an rlib) and reproduces that
+# class of hang on an x86_64 runner; tier A+B then checks the new
+# compiler's code still decodes what the pinned one does.
+#
+# `RUSTFLAGS` is left at its default, unlike ci.yml's `-D warnings`: a
+# lint a new stable adds is worth knowing about when raising the pin,
+# not a reason to turn this red and hide a real miscompile behind it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**'
+      - '!embedded-poc/**'
+      - '!bench/wasm/**'
+      - 'embedded-poc/assets/golden/**'
+      - 'embedded-poc/assets/*.wav'
+      - 'embedded-poc/assets/*.bin'
+  pull_request:
+    paths:
+      - '**'
+      - '!embedded-poc/**'
+      - '!bench/wasm/**'
+      - 'embedded-poc/assets/golden/**'
+      - 'embedded-poc/assets/*.wav'
+      - 'embedded-poc/assets/*.bin'
+  schedule:
+    # Mondays 03:17 UTC. Beta is ~6 weeks ahead of stable, so a weekly
+    # look gives several chances to see a regression before it ships.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  canary:
+    name: Canary (${{ matrix.toolchain }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Beta only on the weekly schedule or by hand; stable everywhere.
+        # (A job-level `if` cannot see `matrix`, so the list itself varies.)
+        toolchain: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["stable","beta"]' || '["stable"]') }}
+    runs-on: ubuntu-latest
+    # A ceiling for a hang, like ci.yml's: the aarch64 build takes ~1 min
+    # and tier A+B ~5 on a healthy compiler.
+    timeout-minutes: 30
+    env:
+      # Outranks rust-toolchain.toml, which would otherwise select the pin.
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (${{ matrix.toolchain }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.toolchain }}
+
+      - run: rustc --version
+
+      - name: Release build for aarch64 (features = full)
+        timeout-minutes: 10
+        run: cargo build -p mfsk-core --release --features full --target aarch64-unknown-linux-gnu
+
+      - name: Tier A+B
+        env:
+          MFSK_REQUIRE_CORPUS: "1"
+        run: cargo test -p mfsk-core --features full,internal-testing --release
