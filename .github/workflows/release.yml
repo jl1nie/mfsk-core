@@ -291,7 +291,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build -p mfsk-ffi --release
@@ -331,8 +331,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (pinned, rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

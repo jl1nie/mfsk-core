@@ -1,0 +1,23 @@
+# Host toolchain for this workspace, pinned so CI and the local hooks
+# build with the same compiler and a new stable cannot stop the merge
+# gate overnight.
+#
+# 1.98.1, not 1.99.0: on 2026-10-01 rustc 1.99.0 never finished
+# `loop-vectorize` on FT8's Costas phasor table at opt-level 3 for
+# aarch64, and the Android and Swift jobs sat in `Compiling mfsk-core`
+# for six hours (rust-lang/rust#163626; worked around in `cd126324`,
+# so 1.99.0 builds the crate now, and the pin is about not being the
+# first to find the next one). Raise it deliberately, once the
+# `Toolchain canary` workflow has been green on the newer stable — and
+# for 1.99, once #163626's fix has shipped.
+#
+# Only this repository's own builds see this. A crate depending on
+# `mfsk-core` from crates.io builds with its own toolchain, which is
+# why the canary keeps testing the latest stable. The floor those users
+# need is `rust-version` in Cargo.toml (the MSRV job checks it).
+# `embedded-poc/*` select the Xtensa `esp` toolchain with their own
+# `rust-toolchain.toml`, which takes precedence inside those trees.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
