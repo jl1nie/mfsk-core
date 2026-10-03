@@ -35,6 +35,8 @@ export interface ModeInfo {
 }
 
 export interface DecodeRow {
+  /** Unique and increasing, assigned on arrival: the table's key. */
+  id: number;
   channel: number;
   mode: string;
   /** UTC of the slot start, ms since the epoch. */

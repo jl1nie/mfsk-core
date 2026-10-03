@@ -6,7 +6,13 @@
     rows,
     channels,
     slotS,
-  }: { rows: DecodeRow[]; channels: ChannelSetting[]; slotS: Record<string, number> } = $props();
+    onclear,
+  }: {
+    rows: DecodeRow[];
+    channels: ChannelSetting[];
+    slotS: Record<string, number>;
+    onclear: () => void;
+  } = $props();
 
   // One row shape for every mode: UTC, mode, frequency, SNR, DT, message.
   let channel = $state(-1);
@@ -74,6 +80,7 @@
     <label class="check"><input type="checkbox" bind:checked={cqOnly} /> CQ only</label>
     <input class="search" bind:value={search} placeholder="Search call or text" spellcheck="false" />
     <span class="count">{shown.length} rows</span>
+    <button class="link" onclick={onclear} title="Clear the table (ALL.TXT keeps every decode)">Clear</button>
     {#if !follow}
       <button class="link" onclick={() => (follow = true)}>Follow ↓</button>
     {/if}
@@ -85,7 +92,7 @@
         <tr><th>UTC</th><th>Mode</th><th class="num">MHz</th><th class="num">dB</th><th class="num">DT</th><th>Message</th></tr>
       </thead>
       <tbody>
-        {#each shown as r, i (i)}
+        {#each shown as r, i (r.id)}
           {#if heading(i)}
             <tr class="slot" class:alt={bandOf(r) === 1}>
               <td colspan="6">{r.mode} {(r.dialHz / 1000).toFixed(1)} kHz · slot {hhmmss(r.slotUtcMs)} UTC</td>

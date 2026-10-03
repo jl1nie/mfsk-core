@@ -17,7 +17,11 @@
   let health = $state<Status | null>(null);
   /** Per configured channel: in the current stream, or paused. */
   let active = $state<boolean[]>([]);
-  let rows = $state<DecodeRow[]>([]);
+  // Raw, not a deep proxy: 5000 row objects are replaced wholesale, never mutated.
+  let rows = $state.raw<DecodeRow[]>([]);
+  let nextId = 0;
+  let pending: DecodeRow[] = [];
+  let flushing = false;
   /** Per configured channel: decodes in the latest slot it reported. */
   let slotCounts = $state<number[]>([]);
   let slotOf: (number | null)[] = [];
@@ -81,7 +85,7 @@
         break;
       case 'decode': {
         const { type: _, ...row } = e;
-        addRow(row);
+        addRow({ ...row, id: nextId++ });
         break;
       }
       case 'gap':
@@ -102,9 +106,26 @@
     }
   }
 
+  /** One table update per frame, however many decodes arrived in it. */
+  function flushRows() {
+    flushing = false;
+    if (pending.length === 0) return;
+    const all = rows.length + pending.length > MAX_ROWS ? rows.concat(pending).slice(-MAX_ROWS) : rows.concat(pending);
+    pending = [];
+    rows = all;
+  }
+
+  function clearRows() {
+    pending = [];
+    rows = [];
+  }
+
   function addRow(r: DecodeRow) {
-    rows.push(r);
-    if (rows.length > MAX_ROWS) rows.splice(0, rows.length - MAX_ROWS);
+    pending.push(r);
+    if (!flushing) {
+      flushing = true;
+      requestAnimationFrame(flushRows);
+    }
     while (slotCounts.length <= r.channel) slotCounts.push(0);
     if (slotOf[r.channel] !== r.slotUtcMs) {
       slotOf[r.channel] = r.slotUtcMs;
@@ -253,7 +274,7 @@
 
     </aside>
 
-    <DecodeTable {rows} channels={settings.channels} {slotS} />
+    <DecodeTable {rows} channels={settings.channels} {slotS} onclear={clearRows} />
   </main>
 {:else}
   <p class="loading">Loading…</p>
