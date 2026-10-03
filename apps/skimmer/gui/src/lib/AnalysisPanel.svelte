@@ -5,16 +5,14 @@
   import { blankForm, toQuery, type QueryForm } from './analysis';
   import QueryBar from './QueryBar.svelte';
   import MapView from './MapView.svelte';
-  import BandsView from './BandsView.svelte';
   import ResultsView from './ResultsView.svelte';
   import ClockView from './ClockView.svelte';
 
   let { dir, me }: { dir: string; me: string } = $props();
 
-  type Tab = 'map' | 'bands' | 'results' | 'clock';
+  type Tab = 'map' | 'results' | 'clock';
   const TABS: [Tab, string][] = [
     ['map', 'Map'],
-    ['bands', 'Band openings'],
     ['results', 'Results'],
     ['clock', 'Clock'],
   ];
@@ -23,7 +21,7 @@
   function restore(): { form: QueryForm; tab: Tab } {
     try {
       const s = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-      if (s?.form) return { form: { ...blankForm(), ...s.form }, tab: s.tab ?? 'map' };
+      if (s?.form) return { form: { ...blankForm(), ...s.form }, tab: TABS.some(([id]) => id === s.tab) ? s.tab : 'map' };
     } catch {
       /* private window, or unreadable: start fresh */
     }
@@ -66,7 +64,7 @@
       bands = bs;
       summary = sm;
       q = next;
-      if (tab === 'bands') activity = await api.dbActivity(dir, next);
+      if (tab === 'results') activity = await api.dbActivity(dir, next);
       if (tab === 'map') points = await api.dbPoints(dir, next, slice);
     } catch (e) {
       const m = String(e);
@@ -107,10 +105,8 @@
   <div class="body">
     {#if tab === 'map'}
       <MapView {points} {me} since={q.since} until={q.until} bind:slice />
-    {:else if tab === 'bands'}
-      <BandsView {activity} {nowMs} />
     {:else if tab === 'results'}
-      <ResultsView {dir} {q} />
+      <ResultsView {dir} {q} {activity} {nowMs} />
     {:else}
       <ClockView {dir} since={q.since} until={q.until} />
     {/if}
@@ -123,8 +119,17 @@
     border: 1px solid var(--line);
     border-radius: 6px;
     padding: 10px 14px 14px;
-    margin-bottom: 10px;
-    min-height: 360px;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+  .body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
   nav {
     display: flex;

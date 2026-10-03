@@ -31,7 +31,6 @@
   let anim = $state(false);
   let playing = $state(false);
   let fps = $state(4);
-  let trail = $state(true);
   let cur = $state(0);
 
   type Proj = 'azimuthal' | 'mercator';
@@ -65,20 +64,10 @@
     }
     return [...m.values()];
   });
-  /** The window at `cur` and, faded, the three before it. */
-  const frame = $derived.by(() => {
-    const out: (Dot & { alpha: number })[] = [];
-    const seen = new Set<string>();
-    for (let k = 0; k <= (trail ? 3 : 0); k++) {
-      for (const p of byT.get(cur - k * slice) ?? []) {
-        const key = `${p.call}|${p.band}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({ call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1, alpha: 1 - k * 0.27 });
-      }
-    }
-    return out;
-  });
+  /** The stations heard in the window at `cur`. */
+  const frame = $derived<(Dot & { alpha: number })[]>(
+    (byT.get(cur) ?? []).map((p) => ({ call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1, alpha: 1 })),
+  );
   const shown = $derived(anim ? frame : overall.map((d) => ({ ...d, alpha: 1 })));
 
   $effect(() => {
@@ -216,7 +205,7 @@
       ctx.fillStyle = dark ? '#e4e7eb' : '#1c2026';
       ctx.textAlign = 'left';
       ctx.fillText(`${stamp(cur)}–${new Date((cur + slice) * 1000).toISOString().slice(11, 16)} UTC · ${
-        frame.filter((d) => d.alpha === 1).length
+        frame.length
       } stations`, 8, h - 8);
     }
     if (me2) {
@@ -280,7 +269,6 @@
           {#each [1, 2, 4, 8, 16] as f (f)}<option value={f}>{f} windows/s</option>{/each}
         </select>
       </label>
-      <label><input type="checkbox" bind:checked={trail} /> fading trail</label>
       <input
         class="seek"
         type="range"

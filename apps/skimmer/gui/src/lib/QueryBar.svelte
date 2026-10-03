@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MODE_CHIPS, PRESETS, blankForm, sortBands, toLocalInput, type QueryForm } from './analysis';
+  import { MODE_CHIPS, PRESETS, blankForm, sortBands, toLocalInput, type PresetId, type QueryForm } from './analysis';
 
   let {
     form = $bindable(),
@@ -68,13 +68,14 @@
     <div class="grid">
       <label>
         Period (UTC)
-        <select bind:value={form.preset} onchange={preset}>
+        <!-- Set the value in the handler: with bind:value, onchange can run first and search with the old one. -->
+        <select value={form.preset} onchange={(e) => { form.preset = e.currentTarget.value as PresetId; preset(); }}>
           {#each PRESETS as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
         </select>
       </label>
       {#if form.preset === 'custom'}
-        <label>From <input type="datetime-local" bind:value={form.from} onchange={onapply} /></label>
-        <label>To <input type="datetime-local" bind:value={form.to} onchange={onapply} /></label>
+        <label>From <input type="datetime-local" value={form.from} onchange={(e) => { form.from = e.currentTarget.value; onapply(); }} /></label>
+        <label>To <input type="datetime-local" value={form.to} onchange={(e) => { form.to = e.currentTarget.value; onapply(); }} /></label>
       {/if}
       <label title="Regular expression, case-insensitive; ^JA matches calls starting JA, ^(JA|JH)\d, W[0-9]X">
         Call (regex) <input bind:value={form.call} placeholder="^JA" spellcheck="false" />
@@ -87,7 +88,7 @@
       </label>
       <label>
         CQ
-        <select bind:value={form.cq} onchange={onapply}>
+        <select value={form.cq} onchange={(e) => { form.cq = e.currentTarget.value; onapply(); }}>
           <option value="any">any message</option>
           <option value="*">every CQ</option>
           <option value="">plain CQ</option>

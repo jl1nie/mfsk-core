@@ -1,10 +1,11 @@
 <script lang="ts">
   import * as api from './api';
-  import type { Query, Spot, StationRow } from './types';
+  import type { Activity, Query, Spot, StationRow } from './types';
+  import BandsView from './BandsView.svelte';
   import PresenceMap from './PresenceMap.svelte';
   import { stamp } from './analysis';
 
-  let { dir, q }: { dir: string; q: Query } = $props();
+  let { dir, q, activity, nowMs }: { dir: string; q: Query; activity: Activity[]; nowMs: number } = $props();
   let view = $state<'stations' | 'decodes'>('stations');
   let stations = $state<StationRow[]>([]);
   let decodes = $state<Spot[]>([]);
@@ -33,6 +34,8 @@
 </script>
 
 <div class="results">
+  <!-- When the bands opened, for what the query found. -->
+  <BandsView {activity} {nowMs} />
   <div class="bar">
     <label><input type="radio" bind:group={view} value="stations" /> Stations</label>
     <label><input type="radio" bind:group={view} value="decodes" /> Decodes</label>
@@ -110,8 +113,18 @@
     color: #d9822b;
     font-size: 12px;
   }
+  .results {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .results > :global(.bands) {
+    flex: none;
+  }
   .scroll {
-    max-height: 520px;
+    flex: 1;
+    min-height: 0;
     overflow: auto;
   }
   table {
