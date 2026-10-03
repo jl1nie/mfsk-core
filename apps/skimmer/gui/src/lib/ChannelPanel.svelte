@@ -296,15 +296,19 @@
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
         {#if (c.server ?? 0) === si}
       {@const s = slot(c.mode)}
-      <li class:paused={active.length > 0 && !active[i]}>
+      {@const idle = active.length > 0 && !active[i]}
+      <li class:paused={idle}>
         <div class="line">
           <span class="mode">{c.mode}</span>
           <span class="freq">{(c.dialHz / 1000).toFixed(1)} kHz</span>
           {#if s}
             <span
               class="slotpie"
-              style="--p: {(s.frac * 100).toFixed(1)}%"
-              title="Slot {s.start} UTC ({s.periodS} s slots): {s.left} s to the next boundary, then this slot is decoded"
+              class:idle
+              style="--p: {idle ? 0 : (s.frac * 100).toFixed(1)}%"
+              title={idle
+                ? 'Not decoding now (outside the radio\'s band, or waiting for its turn in the rotation)'
+                : `Slot ${s.start} UTC (${s.periodS} s slots): ${s.left} s to the next boundary, then this slot is decoded`}
             ></span>
           {/if}
           <span class="count" title="Decodes in the latest slot; paused: outside the radio's band; later: heard when its band's turn in the rotation comes">{channelState(i)}</span>

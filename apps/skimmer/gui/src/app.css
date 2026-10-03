@@ -133,6 +133,12 @@ button.icon.on {
   gap: 8px;
 }
 
+.slotpie.idle {
+  /* A decoder that is not running has no slot to show. */
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
 .slotpie {
   width: 14px;
   height: 14px;
