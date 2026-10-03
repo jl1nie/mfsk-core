@@ -450,3 +450,7 @@ tr.mine {
 .rightcol .decodes {
   min-height: 0;
 }
+
+input.bad {
+  outline: 1px solid var(--warn, #d9822b);
+}

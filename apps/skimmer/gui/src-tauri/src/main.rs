@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
+use skimmer_core::store;
 use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_mode, slot_seconds};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::{
@@ -49,6 +50,9 @@ struct ChannelSetting {
     averaging: bool,
     deep_search: bool,
     eme_delay: bool,
+    /// This channel's own call and locator; empty uses Settings'.
+    my_call: Option<String>,
+    my_grid: Option<String>,
 }
 
 impl ChannelSetting {
@@ -105,6 +109,10 @@ impl ChannelSetting {
             },
             contest,
             dx_call: text(&self.dx_call),
+            station: Station {
+                call: text(&self.my_call).unwrap_or_default(),
+                grid: text(&self.my_grid).unwrap_or_default(),
+            },
         })
     }
 }
@@ -129,6 +137,8 @@ struct Settings {
     network_delay_ms: f64,
     /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
     channelizer: String,
+    /// Every decode in a SQLite file (statistics, maps) beside the ALL.TXT.
+    db_enabled: bool,
     log_enabled: bool,
     /// Folder the ALL.TXT goes in.
     log_dir: String,
@@ -160,7 +170,9 @@ impl Default for Settings {
             ntp_server: "pool.ntp.org".into(),
             network_delay_ms: 0.0,
             channelizer: "auto".into(),
-            log_enabled: true,
+            db_enabled: true,
+            // ALL.TXT grows without bound; the database is the record now.
+            log_enabled: false,
             log_dir: String::new(),
             my_call: String::new(),
             my_grid: String::new(),
@@ -353,6 +365,7 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 const LOG_FILE: &str = "ALL.TXT";
+const DB_FILE: &str = "skimmer.db";
 /// Beside ALL.TXT: one line per health event with the host's wall clock, so a
 /// long run can be read back (queue, push, decode, drift, drops).
 const HEALTH_FILE: &str = "STATUS.log";
@@ -628,8 +641,16 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
     } else {
         None
     };
-    let mut health = if settings.log_enabled {
+    let mut health = if settings.log_enabled || settings.db_enabled {
         open_health(&settings.log_dir)
+    } else {
+        None
+    };
+    let mut db = if settings.db_enabled {
+        let dir = PathBuf::from(&settings.log_dir);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let path = dir.join(DB_FILE);
+        Some(store::Writer::open(&path).map_err(|e| format!("{}: {e}", path.display()))?)
     } else {
         None
     };
@@ -660,6 +681,14 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
                 };
                 let _ = writeln!(f, "{line}{extra}");
             }
+            if let Some(w) = db.as_mut() {
+                match &ev {
+                    Event::Decode(d) => w.push(d),
+                    // A quiet band must not leave the last decodes unwritten.
+                    Event::Status(_) => w.flush(),
+                    _ => {}
+                }
+            }
             if let (Event::Decode(d), Some(f)) = (&ev, log.as_mut())
                 && let Err(e) = writeln!(f, "{}", all_txt_line(d))
             {
@@ -675,6 +704,61 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
     });
     *state.running.lock().unwrap() = Some(Running { live, stop, thread });
     Ok(())
+}
+
+fn reader(dir: &str) -> Result<store::Reader, String> {
+    let path = PathBuf::from(dir).join(DB_FILE);
+    store::Reader::open(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Stations heard in `[since, until]` (UTC seconds) with their bearing from
+/// `me`, per band.
+#[tauri::command]
+fn db_heard(dir: String, me: String, band: Option<String>, since: i64, until: i64) -> Result<Vec<store::Heard>, String> {
+    let me = Some(me.trim()).filter(|m| !m.is_empty());
+    reader(&dir)?.heard(me, band.as_deref(), since, until).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_activity(dir: String, since: i64, until: i64) -> Result<Vec<store::Activity>, String> {
+    reader(&dir)?.activity(since, until).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_presence(dir: String, call: String, since: i64, until: i64) -> Result<Vec<store::Presence>, String> {
+    reader(&dir)?
+        .presence(&call.trim().to_ascii_uppercase(), since, until)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_calls(dir: String, prefix: String) -> Result<Vec<(String, i64)>, String> {
+    reader(&dir)?.calls(prefix.trim(), 12).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn db_cqs(dir: String, me: String, band: Option<String>, kind: Option<String>, since: i64, until: i64, limit: usize) -> Result<Vec<store::Cq>, String> {
+    let me = Some(me.trim()).filter(|m| !m.is_empty());
+    reader(&dir)?
+        .cqs(me, band.as_deref(), kind.as_deref(), since, until, limit)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_occupancy(dir: String, band: String, mode: String, bin_hz: i64, since: i64, until: i64) -> Result<Vec<(i64, i64)>, String> {
+    reader(&dir)?.occupancy(&band, &mode, bin_hz, since, until).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_dt(dir: String, bucket_s: i64, since: i64, until: i64) -> Result<Vec<store::DtPoint>, String> {
+    reader(&dir)?.dt_median(bucket_s, since, until).map_err(|e| e.to_string())
+}
+
+/// First and last decode (UTC seconds) and the number of rows stored.
+#[tauri::command]
+fn db_span(dir: String) -> Result<(Option<i64>, Option<i64>, i64), String> {
+    reader(&dir)?.span().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -697,6 +781,14 @@ fn main() {
             set_channel_options,
             set_station,
             set_network_delay,
+            db_heard,
+            db_activity,
+            db_presence,
+            db_calls,
+            db_cqs,
+            db_occupancy,
+            db_dt,
+            db_span,
             set_gain,
             radio_state,
             set_waterfall,

@@ -23,6 +23,9 @@ export interface ChannelSetting {
   ap?: ApSetting | null;
   /** A station to hunt (a-priori hint). */
   dxCall?: string | null;
+  /** This channel's own call and locator; empty uses Settings'. */
+  myCall?: string | null;
+  myGrid?: string | null;
   /** The QSO in progress; nQSOProgress as a name or 0-5. */
   hisCall?: string | null;
   hisGrid?: string | null;
@@ -50,6 +53,8 @@ export interface Settings {
   /** Fixed delay between the SDR and this PC, taken off arrival times, ms. */
   networkDelayMs: number;
   channelizer: 'auto' | 'direct' | 'pfb';
+  /** Every decode in a SQLite file, for the Analysis view. */
+  dbEnabled: boolean;
   logEnabled: boolean;
   /** Folder the ALL.TXT is written in. */
   logDir: string;

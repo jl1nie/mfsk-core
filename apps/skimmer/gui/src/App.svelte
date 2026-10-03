@@ -32,6 +32,16 @@
   const wfStore = new WaterfallStore();
   let wfTick = $state(0);
   let wfFocus = $state(0);
+  const gridOk = $derived(
+    !settings?.myGrid.trim() || /^[A-R]{2}\d{2}([A-X]{2})?$/i.test(settings.myGrid.trim()),
+  );
+  function stationChanged() {
+    if (!settings) return;
+    settings.myCall = settings.myCall.trim().toUpperCase();
+    const g = settings.myGrid.trim();
+    settings.myGrid = g.slice(0, 4).toUpperCase() + g.slice(4).toLowerCase();
+    if (running) api.setStation(settings.myCall, settings.myGrid);
+  }
   /** The clock line from the core: NTP offset, or why NTP is not in use. */
   let clockText = $state('');
   /** The table's channel selector (-1 = All); it and the large waterfall follow each other, except on All. */
@@ -353,6 +363,28 @@
           {#if running && !canControl}
             <p class="hint">This client is a guest (SDR# has control): the gain is SDR#'s to set.</p>
           {/if}
+          <h3>Station</h3>
+          <div class="field" title="Your callsign and locator. Used for the QSO-context a-priori decoding, and as the centre of the maps and the origin of every bearing. A channel can override them in its options.">
+            <span>My call</span>
+            <input
+              class="call"
+              bind:value={settings.myCall}
+              placeholder="JL1NIE"
+              spellcheck="false"
+              onchange={stationChanged}
+            />
+          </div>
+          <div class="field" title="4 or 6 characters, e.g. PM95 or PM95tl">
+            <span>My grid</span>
+            <input
+              class="grid"
+              class:bad={!gridOk}
+              bind:value={settings.myGrid}
+              placeholder="PM95"
+              spellcheck="false"
+              onchange={stationChanged}
+            />
+          </div>
           <h3>Connection</h3>
           <div class="field">
             <span>IQ format</span>
@@ -411,13 +443,17 @@
               onchange={() => running && api.setNetworkDelay(Number(settings!.networkDelayMs) || 0)}
             />
           </div>
+          <label class="check" title="skimmer.db in the folder below: every decode, indexed, for the Analysis view. Far smaller than ALL.TXT for the same data.">
+            <input type="checkbox" bind:checked={settings.dbEnabled} disabled={running} />
+            <span>Keep decodes in a database (skimmer.db)</span>
+          </label>
           <label class="check">
             <input type="checkbox" bind:checked={settings.logEnabled} disabled={running} />
             <span>Write ALL.TXT</span>
           </label>
-          <div class="folder" class:off={!settings.logEnabled}>
+          <div class="folder" class:off={!settings.logEnabled && !settings.dbEnabled}>
             <span class="path" title={settings.logDir}>{settings.logDir}</span>
-            <button onclick={chooseLogDir} disabled={running || !settings.logEnabled}>Choose…</button>
+            <button onclick={chooseLogDir} disabled={running || (!settings.logEnabled && !settings.dbEnabled)}>Choose…</button>
           </div>
           {#if running}<p class="hint">Disconnect to change these.</p>{/if}
         </div>
@@ -455,9 +491,8 @@
         {slotCounts}
         onchange={channelsChanged}
         onoptions={channelOptionsChanged}
-        bind:myCall={settings.myCall}
-        bind:myGrid={settings.myGrid}
-        onstation={() => running && api.setStation(settings!.myCall, settings!.myGrid)}
+        stationCall={settings.myCall}
+        stationGrid={settings.myGrid}
       />
 
     </aside>

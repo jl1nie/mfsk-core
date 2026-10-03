@@ -89,6 +89,9 @@ pub struct ChannelOptions {
     /// A station to hunt: its call is given to the decoder as an a-priori
     /// hint (FT8, FT4, FST4, Q65; ignored by modes without AP).
     pub dx_call: Option<String>,
+    /// This channel's own `mycall` / `mygrid`; an empty field uses the
+    /// operator's station ([`LiveOptions::set_station`]).
+    pub station: Station,
 }
 
 /// Options changed while the skimmer runs: [`LiveOptions::set`] from any
@@ -230,7 +233,12 @@ fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions, station: &Station) {
     p.averaging = o.averaging;
     p.deep_search = o.deep_search;
     p.eme_delay = o.eme_delay;
-    p.station = station.clone();
+    // A channel's own call or locator wins; an empty one is the operator's.
+    let pick = |own: &str, all: &str| if own.is_empty() { all } else { own }.to_string();
+    p.station = Station {
+        call: pick(&o.station.call, &station.call),
+        grid: pick(&o.station.grid, &station.grid),
+    };
     p.qso = o.qso.clone();
     p.contest = o.contest;
     let hint = o.dx_call.as_ref().map(|dx| ApHint {

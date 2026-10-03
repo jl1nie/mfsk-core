@@ -45,6 +45,22 @@ pub fn sender(mode: &str, text: &str) -> (Option<String>, Option<String>) {
 
 /// A letter-and-digit callsign, possibly with `/`: at least 3 characters, one
 /// digit, one letter. Hashed `<...>` calls are not.
+/// What a `CQ` message calls for: `Some("")` for a plain CQ, `Some("DX")`,
+/// `Some("POTA")`, `Some("NA")`... for a modified one, `None` if it is not a CQ.
+pub fn cq_kind(text: &str) -> Option<String> {
+    let mut t = text.split_whitespace();
+    if t.next() != Some("CQ") {
+        return None;
+    }
+    let second = t.next().unwrap_or("");
+    let is_modifier = !is_call(second.trim_matches(['<', '>'])) && t.next().is_some();
+    Some(if is_modifier {
+        second.to_string()
+    } else {
+        String::new()
+    })
+}
+
 pub fn is_call(s: &str) -> bool {
     s.len() >= 3
         && s.len() <= 13
@@ -88,6 +104,15 @@ mod tests {
         assert_eq!(s("FT8", "JA1ABC K1XYZ RR73"), some("K1XYZ", None));
         assert_eq!(s("FT8", "JA1ABC K1XYZ R-05"), some("K1XYZ", None));
         assert_eq!(s("FT8", "CQ 000 DL1ABC JO62"), some("DL1ABC", Some("JO62")));
+    }
+
+    #[test]
+    fn cq_kinds() {
+        assert_eq!(cq_kind("CQ K1ABC FN42"), Some(String::new()));
+        assert_eq!(cq_kind("CQ DX K1ABC FN42"), Some("DX".into()));
+        assert_eq!(cq_kind("CQ POTA W9XYZ EN34"), Some("POTA".into()));
+        assert_eq!(cq_kind("CQ K1ABC"), Some(String::new()));
+        assert_eq!(cq_kind("JA1ABC K1XYZ -10"), None);
     }
 
     #[test]

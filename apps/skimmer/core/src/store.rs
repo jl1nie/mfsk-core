@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS decodes (
     dt      REAL    NOT NULL,
     call    TEXT,               -- the sender, when the text names one
     grid    TEXT,               -- its locator, when the text carries one
+    cq      TEXT,               -- NULL: not a CQ; '': plain CQ; else DX, POTA, NA...
     text    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS decodes_t      ON decodes (t);
@@ -88,6 +89,7 @@ struct Row {
     dt: f64,
     call: Option<String>,
     grid: Option<String>,
+    cq: Option<String>,
     text: String,
 }
 
@@ -124,6 +126,7 @@ impl Writer {
             dt: f64::from(d.dt_s),
             call,
             grid,
+            cq: spot::cq_kind(&d.text),
             text: d.text.clone(),
         });
         if self.pending.len() >= FLUSH_ROWS || self.since.elapsed() >= FLUSH_EVERY {
@@ -148,8 +151,8 @@ impl Writer {
         let tx = self.conn.transaction()?;
         {
             let mut ins = tx.prepare_cached(
-                "INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, call, grid, text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, call, grid, cq, text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
             let mut st = tx.prepare_cached(
                 "INSERT INTO stations (call, grid, seen) VALUES (?1, ?2, ?3)
@@ -158,7 +161,8 @@ impl Writer {
             )?;
             for r in rows {
                 ins.execute(params![
-                    r.t, r.mode, r.band, r.dial_hz, r.freq_hz, r.snr, r.dt, r.call, r.grid, r.text
+                    r.t, r.mode, r.band, r.dial_hz, r.freq_hz, r.snr, r.dt, r.call, r.grid, r.cq,
+                    r.text
                 ])?;
                 if let (Some(c), Some(g)) = (&r.call, &r.grid) {
                     st.execute(params![c, g, r.t])?;
@@ -176,7 +180,8 @@ impl Drop for Writer {
 }
 
 /// A station heard in a period.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Heard {
     pub call: String,
     pub band: String,
@@ -191,7 +196,8 @@ pub struct Heard {
 }
 
 /// Decodes of one hour on one band.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Activity {
     /// UTC hour since the epoch (`t / 3600`).
     pub hour: i64,
@@ -201,12 +207,37 @@ pub struct Activity {
 }
 
 /// A station's hours on the air.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Presence {
     pub hour: i64,
     pub band: String,
     pub count: i64,
     pub best_snr: i64,
+}
+
+/// A CQ heard.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cq {
+    pub t: i64,
+    pub call: Option<String>,
+    pub grid: Option<String>,
+    pub kind: String,
+    pub band: String,
+    pub mode: String,
+    pub snr: i64,
+    pub bearing: Option<f64>,
+    pub km: Option<f64>,
+}
+
+/// The median DT of the strong stations in one bucket of time.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DtPoint {
+    pub t: i64,
+    pub median_s: f64,
+    pub n: i64,
 }
 
 /// Read-only queries; any number may run beside the writer.
@@ -308,6 +339,112 @@ impl Reader {
         rows.collect()
     }
 
+    /// CQs in `[since, until]`, newest first. `kind` of `None` is every CQ;
+    /// `Some("DX")` only those with that modifier; `Some("")` plain ones.
+    pub fn cqs(
+        &self,
+        me: Option<&str>,
+        band: Option<&str>,
+        kind: Option<&str>,
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<Cq>> {
+        let mut q = self.conn.prepare_cached(
+            "SELECT d.t, d.call, COALESCE(d.grid, s.grid), d.cq, d.band, d.mode, d.snr
+             FROM decodes d LEFT JOIN stations s ON s.call = d.call
+             WHERE d.t BETWEEN ?1 AND ?2 AND d.cq IS NOT NULL
+               AND (?3 IS NULL OR d.band = ?3) AND (?4 IS NULL OR d.cq = ?4)
+             ORDER BY d.t DESC LIMIT ?5",
+        )?;
+        let from = me.and_then(geo::grid_center);
+        let rows = q.query_map(params![since, until, band, kind, limit as i64], |r| {
+            let grid: Option<String> = r.get(2)?;
+            let bd = from
+                .zip(grid.as_deref().and_then(geo::grid_center))
+                .map(|(a, b)| geo::bearing_distance(a, b));
+            Ok(Cq {
+                t: r.get(0)?,
+                call: r.get(1)?,
+                grid,
+                kind: r.get(3)?,
+                band: r.get(4)?,
+                mode: r.get(5)?,
+                snr: r.get(6)?,
+                bearing: bd.map(|x| x.0),
+                km: bd.map(|x| x.1),
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// How busy each audio frequency was on `band` in `mode`: decodes per
+    /// `bin_hz` of audio offset. The gaps are where a transmission fits.
+    pub fn occupancy(
+        &self,
+        band: &str,
+        mode: &str,
+        bin_hz: i64,
+        since: i64,
+        until: i64,
+    ) -> rusqlite::Result<Vec<(i64, i64)>> {
+        let mut q = self.conn.prepare_cached(
+            "SELECT (freq_hz - dial_hz) / ?1, COUNT(*) FROM decodes
+             WHERE band = ?2 AND mode = ?3 AND t BETWEEN ?4 AND ?5
+             GROUP BY 1 ORDER BY 1",
+        )?;
+        let rows = q.query_map(params![bin_hz.max(1), band, mode, since, until], |r| {
+            Ok((r.get::<_, i64>(0)? * bin_hz.max(1), r.get(1)?))
+        })?;
+        rows.collect()
+    }
+
+    /// Median DT per `bucket_s` of the stations at least `-12 dB` strong.
+    /// Every station's DT carries its own clock error, so the median of many
+    /// is the skimmer's: it moves when the clock or the network delay does.
+    pub fn dt_median(
+        &self,
+        bucket_s: i64,
+        since: i64,
+        until: i64,
+    ) -> rusqlite::Result<Vec<DtPoint>> {
+        let b = bucket_s.max(1);
+        let mut q = self.conn.prepare_cached(
+            "SELECT t / ?1, dt FROM decodes
+             WHERE t BETWEEN ?2 AND ?3 AND mode IN ('FT8', 'FT4') AND snr >= -12
+             ORDER BY t",
+        )?;
+        let mut out: Vec<DtPoint> = Vec::new();
+        let mut cur: Option<i64> = None;
+        let mut vals: Vec<f64> = Vec::new();
+        let flush = |k: i64, v: &mut Vec<f64>, out: &mut Vec<DtPoint>| {
+            if v.len() >= 5 {
+                v.sort_by(f64::total_cmp);
+                out.push(DtPoint {
+                    t: k * b,
+                    median_s: v[v.len() / 2],
+                    n: v.len() as i64,
+                });
+            }
+            v.clear();
+        };
+        let mut rows = q.query(params![b, since, until])?;
+        while let Some(r) = rows.next()? {
+            let (k, dt): (i64, f64) = (r.get(0)?, r.get(1)?);
+            if cur != Some(k) {
+                if let Some(c) = cur {
+                    flush(c, &mut vals, &mut out);
+                }
+                cur = Some(k);
+            }
+            vals.push(dt);
+        }
+        if let Some(c) = cur {
+            flush(c, &mut vals, &mut out);
+        }
+        Ok(out)
+    }
+
     /// Time span and size of what is stored: first and last decode, rows.
     pub fn span(&self) -> rusqlite::Result<(Option<i64>, Option<i64>, i64)> {
         self.conn
@@ -389,6 +526,17 @@ mod tests {
         let act = r.activity(h, h + 7200).unwrap();
         assert!(act.iter().any(|a| a.band == "40m" && a.stations == 1));
         assert_eq!(r.calls("K1", 5).unwrap(), vec![("K1ABC".to_string(), 3)]);
+        let cqs = r.cqs(Some("PM95"), None, None, h, h + 7200, 10).unwrap();
+        assert_eq!(cqs.len(), 3);
+        assert_eq!(cqs[0].call.as_deref(), Some("K1ABC"));
+        assert_eq!(
+            r.cqs(None, None, Some("DX"), h, h + 7200, 10)
+                .unwrap()
+                .len(),
+            0
+        );
+        let occ = r.occupancy("20m", "FT8", 50, h, h + 7200).unwrap();
+        assert_eq!(occ, vec![(1500, 3)]);
         drop(w);
         let _ = std::fs::remove_file(&p);
     }

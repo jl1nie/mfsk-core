@@ -9,6 +9,7 @@ description = "Sample app: decode FT8/FT4/WSPR/JT9/JT65/FST4/Q65 from a SpyServe
 
 [dependencies]
 num-complex = "0.4"
+serde = { version = "1", features = ["derive"] }
 # WAL, indexed statistics of every decode; the C library is compiled in so
 # nothing has to be installed on the PC.
 rusqlite = { version = "0.37", features = ["bundled"] }
