@@ -31,11 +31,16 @@ export function spanMs(slotSeconds: number): number {
   return Math.min(130, t * Math.max(slots, t >= 60 ? 1 : 2)) * 1000;
 }
 
+/** A thumbnail bin: four of the coarse waterfall's 2.93 Hz bins. */
+const THUMB_BIN_HZ = 11.72;
+
 const empty = (): Strip => ({ fLo: 0, binHz: 1, rows: [], utc: [] });
 
 export class WaterfallStore {
   thumbs = new Map<number, Strip>();
   big: Strip & { channel: number } = { ...empty(), channel: -1 };
+  /** Rows of the focused channel seen, to thin its thumbnail as the backend thins the others'. */
+  private focusRows = 0;
 
   push(e: { channel: number; focus: boolean; utcMs: number; fLoHz: number; binHz: number; levels: number[] }) {
     const row = Uint8Array.from(e.levels);
@@ -49,6 +54,26 @@ export class WaterfallStore {
       b.fLo = e.fLoHz;
       b.binHz = e.binHz;
       add(b, row, e.utcMs);
+      // The backend sends the focused channel whole, to the large view only: its
+      // thumbnail would stand still. Make its thumbnail row here, as the backend does
+      // for the others: the strongest of four coarse bins, every second row.
+      if (++this.focusRows % 2 === 0) {
+        const by = Math.max(1, Math.round(THUMB_BIN_HZ / e.binHz));
+        const pooled = new Uint8Array(Math.ceil(row.length / by));
+        for (let i = 0; i < row.length; i++) pooled[(i / by) | 0] = Math.max(pooled[(i / by) | 0], row[i]);
+        let t = this.thumbs.get(e.channel);
+        if (!t) {
+          t = empty();
+          this.thumbs.set(e.channel, t);
+        }
+        // Rows come oldest first after a choice of channel (the backend replays its past):
+        // those the thumbnail has already, or older, are not put in front of newer ones.
+        if (t.utc.length === 0 || e.utcMs > t.utc[0]) {
+          t.fLo = e.fLoHz;
+          t.binHz = e.binHz * by;
+          add(t, pooled, e.utcMs);
+        }
+      }
     } else {
       let s = this.thumbs.get(e.channel);
       if (!s) {
