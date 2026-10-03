@@ -242,7 +242,8 @@
         if (settings?.waterfall) api.setWaterfall(wfFocus, settings.waterfallFine);
         s.phase = 'Decoding';
         s.state = 'on';
-        s.detail = `IQ ${(e.rate / 1e3).toFixed(0)} kS/s at ${mhz(e.centerHz)} MHz · device ${mhz(e.deviceHz)} MHz · ${e.channelizer}`;
+        // The device is not shown: the server's first word after a retune still has the old centre.
+        s.detail = `IQ ${(e.rate / 1e3).toFixed(0)} kS/s at ${mhz(e.centerHz)} MHz · ${e.channelizer}`;
         e.channels.forEach((c, k) => (active[c] = e.active[k]));
         break;
       case 'step':
@@ -698,17 +699,19 @@
     </div>
     <button class:primary={!running} onclick={startStop}>{running ? 'Disconnect' : 'Connect'}</button>
     <div class="state">
-      <div class="phase">{cur.phase}</div>
+      <div class="phase">
+        <span class="ph">{cur.phase}</span>
+        {#if health}
+          <span class="health" title={healthDetail}>
+            <span class:warn={clockBad}>{clockShort}</span>
+            <span>delay {health.delayMs.toFixed(0)} ms · drift {health.driftMs >= 0 ? '+' : ''}{health.driftMs.toFixed(0)} ms</span>
+            <span>decode {health.longestDecodeMs.toFixed(0)} ms</span>
+            {#each problems as p (p)}<span class="warn">{p}</span>{/each}
+          </span>
+        {/if}
+      </div>
       <div class="detail">{cur.detail}</div>
     </div>
-    {#if health}
-      <div class="health" title={healthDetail}>
-        <span class:warn={clockBad}>{clockShort}</span>
-        <span>delay {health.delayMs.toFixed(0)} ms · drift {health.driftMs >= 0 ? '+' : ''}{health.driftMs.toFixed(0)} ms</span>
-        <span>decode {health.longestDecodeMs.toFixed(0)} ms</span>
-        {#each problems as p (p)}<span class="warn">{p}</span>{/each}
-      </div>
-    {/if}
   </header>
   {#if notice}
     <div class="notice">

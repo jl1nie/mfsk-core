@@ -804,7 +804,7 @@ fn health_line(ev: &Event) -> Option<String> {
             device_hz,
             ..
         } => format!(
-            "streaming {rate} S/s IQ centre {center_hz:.0} Hz device {device_hz:.0} Hz {active:?}"
+            "streaming {rate} S/s IQ centre {center_hz:.0} Hz device {device_hz:.0} Hz (the server's last word) {active:?}"
         ),
         Event::Moved { device_hz, iq_hz } => format!("moved device {device_hz:.0} iq {iq_hz:.0}"),
         _ => return None,

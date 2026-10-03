@@ -150,10 +150,30 @@ button.icon.on {
 header .state {
   flex: 1;
   min-width: 240px;
+  overflow: hidden;
 }
 
+/* The phase and the health share one line, and nothing wraps: the header keeps its height. */
 .phase {
   font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  white-space: nowrap;
+}
+.phase .ph {
+  flex: none;
+}
+.phase .health {
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detail {
+  min-height: 1.4em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .detail,
@@ -165,8 +185,9 @@ header .state {
 
 .health {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0 12px;
+  white-space: nowrap;
 }
 .health .warn {
   color: var(--warn, #d9822b);
