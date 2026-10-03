@@ -1,0 +1,76 @@
+// Mirrors of the Rust side (src-tauri/src/main.rs). Field names are camelCase
+// there by `serde(rename_all…)`, so these are the JSON shapes as received.
+
+export type WireFormat = 'float' | 'int16';
+
+export interface ChannelSetting {
+  mode: string;
+  dialHz: number;
+}
+
+export interface Settings {
+  server: string;
+  channels: ChannelSetting[];
+  format: WireFormat;
+  tune: boolean;
+  channelizer: 'auto' | 'direct' | 'pfb';
+  logEnabled: boolean;
+  /** Folder the ALL.TXT is written in. */
+  logDir: string;
+}
+
+export interface ModeInfo {
+  name: string;
+  /** Slot (T/R period); slots start on multiples of it from 00:00 UTC. */
+  slotS: number;
+}
+
+export interface DecodeRow {
+  channel: number;
+  mode: string;
+  /** UTC of the slot start, ms since the epoch. */
+  slotUtcMs: number | null;
+  dialHz: number;
+  freqHz: number;
+  snrDb: number;
+  dtS: number;
+  text: string;
+}
+
+export interface Status {
+  streamedS: number;
+  delayMs: number;
+  driftMs: number;
+  longestPushMs: number;
+  queuedBytes: number;
+  gaps: number;
+  reanchors: number;
+}
+
+export type UiEvent =
+  | { type: 'connecting'; server: string }
+  | {
+      type: 'connected';
+      deviceKind: number;
+      maxRate: number;
+      bandwidthHz: number;
+      control: boolean;
+      deviceHz: number;
+    }
+  | { type: 'yielded' }
+  | { type: 'noChannelFits'; deviceHz: number }
+  | {
+      type: 'streaming';
+      rate: number;
+      decimation: number;
+      centerHz: number;
+      deviceHz: number;
+      active: boolean[];
+      channelizer: string;
+    }
+  | { type: 'moved'; deviceHz: number; iqHz: number }
+  | ({ type: 'decode' } & DecodeRow)
+  | { type: 'gap'; messages: number; atS: number }
+  | { type: 'reanchor'; byS: number }
+  | ({ type: 'status' } & Status)
+  | { type: 'disconnected'; error: string };

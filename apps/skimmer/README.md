@@ -9,7 +9,7 @@ frequency, and all channels in the IQ span are decoded from one stream.
 |---|---|---|
 | `core/` | `skimmer-core`: SpyServer client, stream planner, time anchor, event loop | the workspace (CI lint + tests) |
 | `cli/` | `skimmer`: prints decodes, appends an `ALL.TXT`-style log | the workspace (CI lint) |
-| `gui/` | Tauri + Svelte front end over `skimmer-core` (v1: connection, channels, decodes, settings, log) | outside the workspace (needs a webview and Node) |
+| `gui/` | Tauri + Svelte front end over `skimmer-core` (v1: connection, channels, decodes, settings, log); see below | outside the workspace (needs a webview and Node) |
 
 This is sample code. It shows how to drive the library from a live source.
 It is not a supported application, and `mfsk-core` itself has no network
@@ -28,6 +28,40 @@ Options: `--tune` (take control of the device and tune it), `--center HZ`,
 channels on), `--iq-swap`, `--reanchor-ms MS` (default 500). Modes:
 `FT8 FT4 FST4-15 FST4-30 FST4-60 FST4-120 FST4-300 WSPR JT9 JT65 Q65-15A
 Q65-30A Q65-60A … Q65-300A`.
+
+## GUI (`gui/`)
+
+The GUI is a Tauri 2 shell (`gui/src-tauri`) around `skimmer-core` with a
+Svelte 5 front end (`gui/src`). It has a connection bar, a channel list with
+band presets, and a decode list. The decode list uses one row format for
+every mode, highlights CQ and your own call, and can filter by channel, CQ
+or a search string. Settings are saved and restored, and decodes are
+appended to an `ALL.TXT`. The presets come from WSJT-X's
+`default_frequency_list` (all-region and Region 3 entries), plus FT8 at
+7041 kHz for JA.
+
+Build the front end on the WSL side, then the app on Windows (WebView2):
+
+```sh
+cd apps/skimmer/gui && npm install && npm run check && npm run build   # WSL
+```
+
+```powershell
+# Windows PowerShell; the source can stay on the WSL share
+$env:CARGO_TARGET_DIR = "C:\Users\<you>\skimmer-gui-target"
+Set-Location \\wsl.localhost\Ubuntu-24.04\home\<you>\src\mfsk-core\apps\skimmer\gui
+cargo tauri build      # app + NSIS installer under release\bundle\nsis
+```
+
+The settings file is `%APPDATA%\io.github.jl1nie.mfsk-skimmer\settings.json`.
+The default log path is `Documents\mfsk-skimmer\ALL.TXT`. When Documents is
+redirected to OneDrive, the log syncs there; change the path in Settings if
+that is not wanted.
+
+Verified on Windows against the SpyServer below, beside SDR#: 26 FT8
+decodes in one slot at 7041 kHz, CQ rows highlighted, and the log and the
+settings both written. `cargo tauri dev` against `npm run dev` on WSL has
+not been tried.
 
 ## Sharing the radio with SDR#
 

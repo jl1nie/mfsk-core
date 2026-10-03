@@ -11,7 +11,8 @@
   back-to-back slots anchored 40 µs off.
 - **Sample app: a SpyServer skimmer, `apps/skimmer/`.** `skimmer-core` drives `IqReceiver` from a SpyServer
   (protocol as SDR++ speaks it) and reports connection, stream, decode and health as events; the `skimmer` CLI prints
-  them and appends WSJT-X `ALL.TXT`-style lines; a Tauri GUI follows. It shares the radio with SDR#: it never tunes the
+  them and appends WSJT-X `ALL.TXT`-style lines; a Tauri + Svelte GUI (`apps/skimmer/gui`, built on Windows) shows
+  channels with slot-progress pies and band presets from WSJT-X's frequency list, and decodes banded by slot. It shares the radio with SDR#: it never tunes the
   device unless `--tune`, sets only its own DDC centre, gives control back, and pauses channels outside the band. The
   socket is read on its own thread: the first decode (400-650 ms) had made the server drop IQ on Windows in 3 of 3
   runs, 0 after. Against an Airspy HF+ at 7041 kHz beside SDR#: 19-26 JA FT8 decodes per slot, WSL and Windows.

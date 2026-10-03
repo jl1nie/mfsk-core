@@ -70,7 +70,8 @@ pub struct Config {
     /// Use control of the device to tune it to the IQ centre.
     pub tune: bool,
     pub format: WireFormat,
-    pub channelizer: Channelizer,
+    /// `None` chooses by channel count: see [`AUTO_PFB_CHANNELS`].
+    pub channelizer: Option<Channelizer>,
     pub iq_swap: bool,
     /// Re-anchor when the arrival-time estimate moves by more than this.
     pub reanchor: Duration,
@@ -88,7 +89,7 @@ impl Config {
             gain: None,
             tune: false,
             format: WireFormat::Float,
-            channelizer: Channelizer::Direct,
+            channelizer: None,
             iq_swap: false,
             reanchor: Duration::from_millis(500),
             retry: Duration::from_secs(10),
@@ -159,6 +160,7 @@ pub enum Event {
         center_hz: f64,
         device_hz: f64,
         active: Vec<bool>,
+        channelizer: Channelizer,
     },
     /// The server moved the device or this client's IQ centre; planning again.
     Moved {
@@ -225,6 +227,22 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// With [`Config::channelizer`] unset, streams with at least this many
+/// active channels use the filter bank, fewer use `Direct`. Measured
+/// break-even (`docs/notes/IQ_CHANNELIZER.md` §7b, one thread): about four
+/// channels at both 768 kS/s and 2.4 MS/s (4 channels: Direct 3.68 % of a
+/// core against the bank's 3.34 % at 768 kS/s).
+pub const AUTO_PFB_CHANNELS: usize = 4;
+
+/// The channelizer a stream with `active` channels uses.
+pub fn channelizer_for(cfg: &Config, active: usize) -> Channelizer {
+    cfg.channelizer.unwrap_or(if active >= AUTO_PFB_CHANNELS {
+        Channelizer::Pfb
+    } else {
+        Channelizer::Direct
+    })
 }
 
 /// How long the minimum-delay anchor estimate looks back. Long enough that a
@@ -331,6 +349,7 @@ fn session(
             active: (0..cfg.channels.len())
                 .map(|i| p.active.contains(&i))
                 .collect(),
+            channelizer: channelizer_for(cfg, p.active.len()),
         });
         c.set(SET_STREAMING_ENABLED, 1)?;
         match stream(&mut c, stop, cfg, &p, sync, on_event)? {
@@ -436,7 +455,7 @@ fn receiver(
         format,
         iq_swap: cfg.iq_swap,
     };
-    let mut rx = IqReceiver::with_channelizer(stream, cfg.channelizer)
+    let mut rx = IqReceiver::with_channelizer(stream, channelizer_for(cfg, p.active.len()))
         .map_err(|e| std::io::Error::other(format!("{} S/s: {e}", p.rate)))?;
     let mut by_id = Vec::new();
     for &i in &p.active {
@@ -590,6 +609,18 @@ mod tests {
             all_txt_line(&d),
             "261003_044215      7.041 Rx FT8      -7  0.1  1811 CQ JO1ZQG/P PM95"
         );
+    }
+
+    #[test]
+    fn channelizer_auto_switches_at_the_break_even() {
+        let mut cfg = Config::new("x", Vec::new());
+        assert_eq!(
+            channelizer_for(&cfg, AUTO_PFB_CHANNELS - 1),
+            Channelizer::Direct
+        );
+        assert_eq!(channelizer_for(&cfg, AUTO_PFB_CHANNELS), Channelizer::Pfb);
+        cfg.channelizer = Some(Channelizer::Direct);
+        assert_eq!(channelizer_for(&cfg, 32), Channelizer::Direct);
     }
 
     #[test]

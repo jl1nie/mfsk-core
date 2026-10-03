@@ -23,8 +23,10 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ [--ch ...] [--log FILE]\n\
          \x20      [--tune] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
-         \x20      [--pfb] [--iq-swap] [--reanchor-ms MS]\n\
+         \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS]\n\
+         channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
+        skimmer_core::AUTO_PFB_CHANNELS,
         modes.join(" ")
     );
     ExitCode::from(2)
@@ -49,7 +51,8 @@ fn parse_args() -> Option<(Config, Option<String>)> {
                     _ => return None,
                 }
             }
-            "--pfb" => cfg.channelizer = Channelizer::Pfb,
+            "--pfb" => cfg.channelizer = Some(Channelizer::Pfb),
+            "--direct" => cfg.channelizer = Some(Channelizer::Direct),
             "--iq-swap" => cfg.iq_swap = true,
             "--reanchor-ms" => {
                 cfg.reanchor = Duration::from_millis(it.next()?.parse().ok()?);
@@ -136,10 +139,11 @@ fn main() -> ExitCode {
             center_hz,
             device_hz,
             active,
+            channelizer,
         } => {
             eprintln!(
                 "IQ {rate} S/s (decimation {decimation}) centre {center_hz:.0} Hz, \
-                 span {:.0}..{:.0}; device centre {device_hz:.0}",
+                 span {:.0}..{:.0}; device centre {device_hz:.0}; {channelizer:?} channelizer",
                 center_hz - rate as f64 / 2.0,
                 center_hz + rate as f64 / 2.0
             );

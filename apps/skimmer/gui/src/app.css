@@ -1,0 +1,406 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1c2026;
+  --muted: #687280;
+  --line: #dde1e6;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --cq: #e8f5e9;
+  --alt: #e3e7ec;
+  --mine: #fff3cd;
+  --paused: #9aa3ad;
+  --notice: #fff4e5;
+  color-scheme: light dark;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181c;
+    --panel: #1d2126;
+    --text: #e4e7eb;
+    --muted: #8b95a1;
+    --line: #2d333a;
+    --accent: #3b82f6;
+    --cq: #173322;
+    --alt: #262d35;
+    --mine: #3b3214;
+    --paused: #5f6872;
+    --notice: #3a2c14;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+header .server {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+header .server label {
+  margin: 0;
+}
+
+header .server input {
+  width: 200px;
+}
+
+button.icon {
+  padding: 4px 8px;
+}
+
+button.icon.on {
+  border-color: var(--accent);
+}
+
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  width: 360px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
+.folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.folder.off .path {
+  opacity: 0.5;
+}
+
+.folder .path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.channels .line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slotpie {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent) var(--p), var(--line) 0);
+}
+
+header .state {
+  flex: 1;
+  min-width: 240px;
+}
+
+.phase {
+  font-weight: 600;
+}
+
+.detail,
+.health,
+.count {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notice {
+  padding: 6px 12px;
+  background: var(--notice);
+  border-bottom: 1px solid var(--line);
+}
+
+main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+aside {
+  width: 300px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+section {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+/* Checkbox rows: the box in a fixed column, wrapped text aligned beside it. */
+label.check {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: start;
+  column-gap: 6px;
+  font-size: 13px;
+}
+
+label.check input {
+  margin: 2px 0 0;
+  width: 14px;
+  height: 14px;
+}
+
+.toolbar label.check {
+  grid-template-columns: 18px auto;
+  align-items: center;
+  margin: 0;
+}
+
+.toolbar label.check input {
+  margin: 0;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  align-items: center;
+  margin: 6px 0;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 2px 4px;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.channels li {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.channels li.paused {
+  color: var(--paused);
+}
+
+.channels li.empty {
+  color: var(--muted);
+}
+
+.channels .mode {
+  width: 64px;
+  font-weight: 600;
+}
+
+.channels .freq {
+  font-variant-numeric: tabular-nums;
+}
+
+.channels .count {
+  margin-left: auto;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.row input {
+  width: 90px;
+}
+
+.presets li button {
+  font-size: 13px;
+}
+
+.decodes {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.toolbar .search {
+  width: 220px;
+}
+
+.table {
+  flex: 1;
+  overflow-y: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+td {
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.num {
+  text-align: right;
+}
+
+.mono {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+td.msg {
+  width: 100%;
+}
+
+tr.slot td {
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+/* Alternate slots get a band, so a slot's rows read as one block. CQ and
+   your own call are highlighted on top of it. */
+tr.alt {
+  background: var(--alt);
+}
+
+tr.cq {
+  background: var(--cq);
+}
+
+tr.mine {
+  background: var(--mine);
+}
+
+.loading {
+  padding: 24px;
+  color: var(--muted);
+}
