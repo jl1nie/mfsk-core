@@ -11,6 +11,8 @@
     since,
     until,
     slice = $bindable(300),
+    picked = null,
+    onclear,
   }: {
     points: MapPoint[];
     me: string;
@@ -18,6 +20,9 @@
     until: number;
     /** Seconds per window of the animation; the parent re-reads the points at it. */
     slice: number;
+    /** The station opened in Results: ringed and named on the map. */
+    picked?: { call: string; grid: string } | null;
+    onclear?: () => void;
   } = $props();
 
   const WINDOWS = [
@@ -107,6 +112,7 @@
 
   $effect(() => {
     void shown;
+    void picked;
     void proj;
     void paths;
     void size;
@@ -211,6 +217,30 @@
         frame.length
       } stations`, 8, h - 8);
     }
+    // The station opened in Results.
+    if (picked) {
+      const g = gridLonLat(picked.grid);
+      const xy = g ? p(g) : null;
+      if (xy) {
+        if (mine) {
+          ctx.beginPath();
+          path({ type: 'LineString', coordinates: [mine, g] } as any);
+          ctx.strokeStyle = '#d9822b';
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(xy[0], xy[1], 9, 0, 2 * Math.PI);
+        ctx.strokeStyle = '#d9822b';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = dark ? '#fff' : '#000';
+        ctx.fillText(picked.call, xy[0] + 13, xy[1]);
+      }
+    }
     if (me2) {
       ctx.beginPath();
       ctx.moveTo(me2[0], me2[1] - 7);
@@ -251,6 +281,9 @@
     <label><input type="radio" bind:group={proj} value="azimuthal" /> Great-circle (centred on home)</label>
     <label><input type="radio" bind:group={proj} value="mercator" /> Mercator</label>
     <label><input type="checkbox" bind:checked={paths} /> paths</label>
+    {#if picked}
+      <button type="button" class="picked" title="Opened in Results; click to clear" onclick={() => onclear?.()}>Selected: {picked.call} ✕</button>
+    {/if}
     <label class="anim"><input type="checkbox" bind:checked={anim} /> Animate</label>
     <span class="legend"><i style="background:{snrColour(-24)}"></i>−24 dB <i style="background:{snrColour(-7)}"></i>−7 <i style="background:{snrColour(10)}"></i>+10 dB · size = decodes</span>
   </div>
@@ -301,6 +334,13 @@
     align-items: center;
     padding: 4px 0 8px;
     font-size: 12px;
+  }
+  .picked {
+    padding: 1px 9px;
+    border-radius: 12px;
+    font-size: 12px;
+    background: #d9822b;
+    color: #fff;
   }
   .seek {
     flex: 1;

@@ -117,6 +117,8 @@ pub struct LiveOptions {
     /// Stay on the band being heard instead of rotating (see
     /// [`LiveOptions::set_hold`]).
     hold: std::sync::atomic::AtomicBool,
+    /// The server is switched off ([`LiveOptions::set_enabled`]).
+    disabled: std::sync::atomic::AtomicBool,
     /// What a channel keeps while its band is not being listened to (a
     /// rotation): its decoder, with the callsign table.
     bank: std::sync::Mutex<Bank>,
@@ -205,6 +207,16 @@ impl LiveOptions {
 
     fn network_delay_ns(&self) -> i64 {
         self.network_delay_ns.load(Ordering::Acquire)
+    }
+
+    /// Switch this server off (`false`: its connection is closed and nothing is
+    /// decoded from it) or on again. It can be off from the start.
+    pub fn set_enabled(&self, on: bool) {
+        self.disabled.store(!on, Ordering::Release);
+    }
+
+    pub fn enabled(&self) -> bool {
+        !self.disabled.load(Ordering::Acquire)
     }
 
     /// Hold the rotation on the band being heard (`true`), or let it go on
@@ -701,6 +713,8 @@ pub enum Event {
     },
     /// Once a minute of samples.
     Status(Status),
+    /// The server was switched off ([`LiveOptions::set_enabled`]); its connection is closed.
+    Off,
     /// The connection failed or dropped; retrying after `retry`.
     Disconnected {
         error: String,
@@ -830,26 +844,53 @@ pub fn run_all(cfgs: &[Config], stop: &AtomicBool, mut on_event: impl FnMut(usiz
 }
 
 fn run_server(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) {
-    while !stop.load(Ordering::Relaxed) {
-        on_event(Event::Connecting {
-            server: cfg.server.clone(),
-        });
-        match session(cfg, stop, &mut on_event) {
-            Ok(End::Stopped) => return,
-            Ok(End::Yielded) => on_event(Event::Yielded),
-            Err(e) if is_stop(&e) => return,
-            Err(e) => on_event(Event::Disconnected {
-                error: describe(&e),
-            }),
-        }
-        let until = Instant::now() + cfg.retry;
-        while Instant::now() < until {
-            if stop.load(Ordering::Relaxed) {
-                return;
+    // What the session watches: the run's stop, or this server being switched off.
+    let local = AtomicBool::new(false);
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Relaxed) {
+                local.store(
+                    stop.load(Ordering::Relaxed) || !cfg.live.enabled(),
+                    Ordering::Relaxed,
+                );
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(100));
+        });
+        let mut announced = false;
+        while !stop.load(Ordering::Relaxed) {
+            if !cfg.live.enabled() {
+                if !announced {
+                    announced = true;
+                    on_event(Event::Off);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            announced = false;
+            local.store(false, Ordering::Relaxed);
+            on_event(Event::Connecting {
+                server: cfg.server.clone(),
+            });
+            match session(cfg, &local, &mut on_event) {
+                // Stopped: the run's, or this server switched off; the top of the loop tells which.
+                Ok(End::Stopped) => continue,
+                Ok(End::Yielded) => on_event(Event::Yielded),
+                Err(e) if is_stop(&e) => continue,
+                Err(e) => on_event(Event::Disconnected {
+                    error: describe(&e),
+                }),
+            }
+            let until = Instant::now() + cfg.retry;
+            while Instant::now() < until {
+                if stop.load(Ordering::Relaxed) || !cfg.live.enabled() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
-    }
+        done.store(true, Ordering::Relaxed);
+    });
 }
 
 fn session(

@@ -48,6 +48,8 @@ export interface ServerSetting {
   grid: string;
   /** Fixed delay between the SDR and this PC, taken off arrival times, ms. */
   networkDelayMs: number;
+  /** Connected when Connect is pressed; off keeps its settings and channels but listens to nothing. */
+  enabled: boolean;
   /** Hold control and tune the radio even beside an operator's client. */
   tune: boolean;
   /** Leave control to an SDR# started later, instead of holding it. */
@@ -172,6 +174,7 @@ export type UiEventBody =
   | { type: 'clock'; text: string }
   | { type: 'step'; index: number | null; of: number; endsUtcS: number; held: boolean }
   | ({ type: 'status' } & Status)
+  | { type: 'off' }
   | { type: 'disconnected'; error: string };
 
 /** An event and the server (an index into `Settings.servers`) it came from. */

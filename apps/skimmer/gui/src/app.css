@@ -556,3 +556,95 @@ button.danger {
 .rothours {
   margin: -2px 0 10px 4px;
 }
+
+/* A server in the header: its on/off dot, then its name (fixed width, whatever it is doing). */
+.srvchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  border-radius: 14px;
+  background: var(--alt);
+  overflow: hidden;
+}
+.srvchip.on {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.srvchip.off .name {
+  opacity: 0.55;
+}
+.srvchip .power {
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  position: relative;
+  cursor: pointer;
+}
+.srvchip .power::after {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--paused);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.srvchip .power.on::after {
+  background: #2e9e5b;
+}
+.srvchip .power.connecting::after,
+.srvchip .power.waiting::after {
+  background: #d9b22b;
+}
+.srvchip .power.error::after {
+  background: #d94a2b;
+}
+.srvchip .power.disabled::after {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--muted);
+}
+.srvchip .name {
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 3px 12px 3px 0;
+  font-size: 12.5px;
+}
+
+/* The rotation beside the channels: band, time left; pressed, it holds. */
+.srvrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+.srvrow .srvhead {
+  margin: 0;
+}
+.srvhead.off {
+  opacity: 0.55;
+}
+.rot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 9px;
+  border-radius: 12px;
+  font-size: 12px;
+  margin-left: auto;
+}
+.rot .time {
+  font-variant-numeric: tabular-nums;
+  min-width: 3.2em;
+  text-align: right;
+}
+.rot.held {
+  background: #d9822b;
+  color: #fff;
+}

@@ -143,18 +143,6 @@
     return sv.rotation.filter((r) => have.has(r.band)).map((r) => r.band);
   }
 
-  /** What the server's button says about its rotation: the band, and the time left or that it is held. */
-  function rotationText(server: number): string {
-    const s = srv[server];
-    const sv = settings?.servers[server];
-    if (!s || !sv?.rotate || !running || s.state === 'off') return '';
-    if (s.stepIdx === null) return s.stepEnds ? 'no band in' : '';
-    const band = stepBands(server)[s.stepIdx] ?? `step ${s.stepIdx + 1}`;
-    if (s.held) return `${band} held`;
-    const left = Math.max(0, Math.round((s.stepEnds - now) / 1000));
-    return `${band} ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
-  }
-
   const mhz = (hz: number) => (hz / 1e6).toFixed(3);
   const slotS = $derived(Object.fromEntries(modes.map((m) => [m.name, m.slotS])));
   const geom = $derived(Object.fromEntries(modes.map((m) => [m.name, m])));
@@ -295,6 +283,14 @@
         clockText = st.clock;
         break;
       }
+      case 'off':
+        s.phase = 'Off';
+        s.state = 'off';
+        s.detail = '';
+        s.step = '';
+        s.held = false;
+        for (const c of channelsOf(e.server)) active[c] = false;
+        break;
       case 'disconnected':
         s.phase = `Disconnected (${e.error}); retrying`;
         s.state = 'error';
@@ -401,26 +397,46 @@
     await api.setChannelOptions(i, $state.snapshot(settings!.channels[i]));
   }
 
-  /** The server's button: choose it; pressed again while it is chosen, it holds (or releases) its rotation. */
+  /** Choose a server: its channels, thumbnails, gain and settings are shown. */
   function selectServer(i: number) {
-    const rotating = !!settings?.servers[i]?.rotate && (settings?.servers[i]?.rotation.length ?? 0) > 0;
-    if (i === sel && running && rotating) {
-      const hold = !srv[i].held;
-      srv[i].held = hold;
-      void api.setHold(i, hold);
-      return;
-    }
     sel = i;
     // The large waterfall follows to a channel of the server shown.
     const mine = channelsOf(i);
     if (mine.length && !mine.includes(wfFocus)) focusChannel(mine[0]);
   }
 
+  /** The dot of a server: switch it off (its connection is closed) or on. */
+  function toggleServer(i: number) {
+    const sv = settings?.servers[i];
+    if (!sv) return;
+    sv.enabled = !sv.enabled;
+    if (running) void api.setServerEnabled(i, sv.enabled);
+    else if (!sv.enabled) srv[i] = { ...blankSrv() };
+  }
+
+  /** The rotation of a server, beside its channels: press to hold it on the band it is on, or let it go on. */
+  function toggleHold(i: number) {
+    if (!running || !srv[i]) return;
+    const hold = !srv[i].held;
+    srv[i].held = hold;
+    void api.setHold(i, hold);
+  }
+
+  /** What the channel list shows of a server's rotation: the band, the time left, whether it is held. */
+  function rotationInfo(server: number): { band: string; left: string; held: boolean } | null {
+    const s = srv[server];
+    const sv = settings?.servers[server];
+    if (!s || !sv?.rotate || !running || s.state === 'off' || !sv.enabled || s.stepIdx === null) return null;
+    const band = stepBands(server)[s.stepIdx] ?? `step ${s.stepIdx + 1}`;
+    const left = Math.max(0, Math.round((s.stepEnds - now) / 1000));
+    return { band, left: `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`, held: s.held };
+  }
+
   function addServer() {
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', grid: '', networkDelayMs: 0, tune: false, yieldControl: false, rotate: false, rotation: [],
+      name: `Server ${n}`, address: '', grid: '', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [],
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -485,16 +501,17 @@
     <div class="server">
       <div class="srvs" role="tablist" aria-label="Servers">
         {#each settings.servers as sv, i (i)}
-          <button
-            role="tab"
-            class="srvchip"
-            class:on={sel === i}
-            aria-selected={sel === i}
-            title={`${sv.address}${srv[i]?.step ? ' · ' + srv[i].step : ''}\n${srv[i]?.phase ?? ''}${sv.rotate && sel === i ? '\nPress again to ' + (srv[i]?.held ? 'resume the rotation' : 'hold the rotation on this band') : ''}`}
-            onclick={() => selectServer(i)}
-          >
-            <i class="dot {srv[i]?.state ?? 'off'}"></i>{srv[i]?.held ? '⏸ ' : ''}{sv.name}{rotationText(i) ? ` · ${rotationText(i)}` : ''}
-          </button>
+          <span class="srvchip" class:on={sel === i} class:off={!sv.enabled}>
+            <button
+              type="button"
+              class="power {sv.enabled ? (srv[i]?.state ?? 'off') : 'disabled'}"
+              aria-label={sv.enabled ? 'Switch this server off' : 'Switch this server on'}
+              aria-pressed={sv.enabled}
+              title={sv.enabled ? `${srv[i]?.phase ?? ''}\nClick to switch this server off` : 'Off. Click to switch this server on'}
+              onclick={() => toggleServer(i)}
+            ></button>
+            <button type="button" role="tab" class="name" aria-selected={sel === i} title={sv.address} onclick={() => selectServer(i)}>{sv.name}</button>
+          </span>
         {/each}
         {#if settings.servers.length < MAX_SERVERS}
           <button class="srvchip add" title="Add a server" aria-label="Add a server" onclick={addServer}>+</button>
@@ -706,6 +723,8 @@
         bind:channels={settings.channels}
         servers={settings.servers}
         {sel}
+        {rotationInfo}
+        onhold={toggleHold}
         {modes}
         {slotS}
         {now}
@@ -743,7 +762,7 @@
           tick={wfTick}
           channels={settings.channels}
           server={sel}
-          servers={settings.servers.map((sv, i) => ({ name: sv.name, state: srv[i]?.state ?? 'off', step: rotationText(i), held: srv[i]?.held ?? false }))}
+          servers={settings.servers.map((sv, i) => ({ name: sv.name, state: sv.enabled ? (srv[i]?.state ?? 'off') : 'disabled', step: '', held: false }))}
           onserver={selectServer}
           focus={Math.min(wfFocus, Math.max(0, settings.channels.length - 1))}
           onfocus={(i) => {

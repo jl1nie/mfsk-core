@@ -274,6 +274,7 @@ fn main() -> ExitCode {
                 s.gaps,
                 s.reanchors
             ),
+            Event::Off => eprintln!("{tag}{}: off", cfg.server),
             Event::Disconnected { error } => eprintln!("{tag}{}: {error}", cfg.server),
         }
     });

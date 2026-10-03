@@ -131,6 +131,8 @@ struct ServerSetting {
     grid: String,
     /// Fixed delay between the SDR and this PC taken off arrival times, ms.
     network_delay_ms: f64,
+    /// Connected when Connect is pressed; off keeps its settings and channels but listens to nothing.
+    enabled: bool,
     /// Hold control and tune the radio even beside an operator's client.
     tune: bool,
     /// Leave control to an SDR# started later, instead of holding it.
@@ -211,6 +213,7 @@ impl Default for ServerSetting {
             address: "127.0.0.1:5555".into(),
             grid: String::new(),
             network_delay_ms: 0.0,
+            enabled: true,
             tune: false,
             yield_control: false,
             rotate: false,
@@ -423,6 +426,7 @@ enum UiEvent {
         gaps: u64,
         reanchors: u64,
     },
+    Off,
     Disconnected {
         error: String,
     },
@@ -520,6 +524,7 @@ impl UiEvent {
                 gaps: s.gaps,
                 reanchors: s.reanchors,
             },
+            Event::Off => UiEvent::Off,
             Event::Disconnected { error } => UiEvent::Disconnected { error },
         }
     }
@@ -679,6 +684,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         let mut cfg = Config::new(srv.address.trim(), channels);
         cfg.name = srv.name.clone();
         cfg.live.set_station(s.station());
+        cfg.live.set_enabled(srv.enabled);
         cfg.rotation_origin = (!s.rotation_utc).then_some(started);
         cfg.tune = srv.tune;
         cfg.yield_control = srv.yield_control;
@@ -775,6 +781,7 @@ fn health_line(ev: &Event) -> Option<String> {
         Event::Gap { messages, at_s } => format!("gap {messages} msg at {at_s:.1}s"),
         Event::Reanchor { by_s } => format!("reanchor {by_s:+.3}s"),
         Event::Clock(text) => format!("clock {text}"),
+        Event::Off => "off".to_string(),
         Event::Disconnected { error } => format!("disconnected {error}"),
         Event::Connecting { server } => format!("connecting {server}"),
         Event::Connected {
@@ -790,7 +797,15 @@ fn health_line(ev: &Event) -> Option<String> {
             r.gain, r.max_gain, r.can_control
         ),
         Event::Yielded => "yielded: got control, leaving it (yield_control is set)".to_string(),
-        Event::Streaming { rate, active, .. } => format!("streaming {rate} S/s {active:?}"),
+        Event::Streaming {
+            rate,
+            active,
+            center_hz,
+            device_hz,
+            ..
+        } => format!(
+            "streaming {rate} S/s IQ centre {center_hz:.0} Hz device {device_hz:.0} Hz {active:?}"
+        ),
         Event::Moved { device_hz, iq_hz } => format!("moved device {device_hz:.0} iq {iq_hz:.0}"),
         _ => return None,
     };
@@ -815,6 +830,16 @@ fn set_station(state: State<'_, AppState>, my_call: String, my_grid: String) {
                 grid: my_grid.trim().to_ascii_uppercase(),
             });
         }
+    }
+}
+
+/// Switch a server on or off in a running skimmer: off closes its connection.
+#[tauri::command]
+fn set_server_enabled(state: State<'_, AppState>, server: usize, on: bool) {
+    if let Some(r) = state.running.lock().unwrap().as_ref()
+        && let Some(s) = r.server(server)
+    {
+        s.live.set_enabled(on);
     }
 }
 
@@ -980,7 +1005,7 @@ async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Setting
                         *slot = Some(*r);
                     }
                 }
-                Event::Disconnected { .. } | Event::Yielded | Event::Connecting { .. } => {
+                Event::Disconnected { .. } | Event::Off | Event::Yielded | Event::Connecting { .. } => {
                     if let Some(slot) = radio.lock().unwrap().get_mut(*server) {
                         *slot = None;
                     }
@@ -1110,6 +1135,7 @@ fn main() {
             set_station,
             set_network_delay,
             set_hold,
+            set_server_enabled,
             db_activity,
             db_stations,
             db_decodes,

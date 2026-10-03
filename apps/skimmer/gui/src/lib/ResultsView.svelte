@@ -3,9 +3,26 @@
   import type { Activity, Query, Spot, StationRow } from './types';
   import BandsView from './BandsView.svelte';
   import PresenceMap from './PresenceMap.svelte';
+  import MiniMap from './MiniMap.svelte';
   import { stamp } from './analysis';
 
-  let { dir, q, activity, nowMs }: { dir: string; q: Query; activity: Activity[]; nowMs: number } = $props();
+  let {
+    dir,
+    q,
+    activity,
+    nowMs,
+    me,
+    picked = $bindable(null),
+  }: {
+    dir: string;
+    q: Query;
+    activity: Activity[];
+    nowMs: number;
+    /** The locator the small map is drawn from: home, or the server the map is centred on. */
+    me: string;
+    /** The station opened, which the Map tab marks. */
+    picked: { call: string; grid: string } | null;
+  } = $props();
   let view = $state<'stations' | 'decodes'>('stations');
   let stations = $state<StationRow[]>([]);
   let decodes = $state<Spot[]>([]);
@@ -38,6 +55,17 @@
 
   /** More than one server heard anything: say which. */
   const multi = $derived(activity.length > 0 && (stations.some((x) => x.servers.includes(',')) || new Set(decodes.map((d) => d.server)).size > 1 || new Set(stations.map((x) => x.servers)).size > 1));
+  /** Open a station (or close it): the Map tab marks the open one. */
+  function pick(s: StationRow) {
+    if (open === s.call) {
+      open = null;
+      picked = null;
+    } else {
+      open = s.call;
+      picked = s.grid ? { call: s.call, grid: s.grid } : null;
+    }
+  }
+
   const km = (r: { km: number | null; bearing: number | null }) =>
     r.km != null ? `${Math.round(r.km).toLocaleString()} km @ ${Math.round(r.bearing ?? 0)}°` : '';
 </script>
@@ -65,7 +93,7 @@
         </thead>
         <tbody>
           {#each stations as s (s.call)}
-            <tr class="row" class:open={open === s.call} onclick={() => (open = open === s.call ? null : s.call)}>
+            <tr class="row" class:open={open === s.call} onclick={() => pick(s)}>
               <td>{s.call}</td>
               <td>{s.grid ?? ''}</td>
               <td>{s.bands}</td>
@@ -77,7 +105,14 @@
               <td>{stamp(s.last)}</td>
             </tr>
             {#if open === s.call}
-              <tr class="detail"><td colspan={multi ? 9 : 8}><PresenceMap {dir} {q} call={s.call} /></td></tr>
+              <tr class="detail">
+                <td colspan={multi ? 9 : 8}>
+                  <div class="drill">
+                    {#if s.grid}<MiniMap {me} grid={s.grid} call={s.call} km={s.km} bearing={s.bearing} />{/if}
+                    <div class="hours"><PresenceMap {dir} {q} call={s.call} /></div>
+                  </div>
+                </td>
+              </tr>
             {/if}
           {/each}
         </tbody>
@@ -165,6 +200,15 @@
   }
   .msg {
     font-family: ui-monospace, monospace;
+  }
+  .drill {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+  .hours {
+    flex: 1;
+    min-width: 0;
   }
   .detail td {
     padding: 6px 0 12px;

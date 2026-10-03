@@ -186,7 +186,7 @@
       <div class="tabs" role="tablist" aria-label="Servers">
         {#each servers as sv, i (i)}
           <button role="tab" class:on={server === i} aria-selected={server === i} onclick={() => onserver(i)} title={sv.step}>
-            <i class="dot {sv.state}"></i>{sv.held ? '⏸ ' : ''}{sv.name}{sv.step ? ` · ${sv.step}` : ''}
+            <i class="dot {sv.state}"></i>{sv.name}
           </button>
         {/each}
       </div>

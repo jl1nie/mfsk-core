@@ -6,6 +6,8 @@
     channels = $bindable(),
     servers,
     sel,
+    rotationInfo,
+    onhold,
     modes,
     slotS,
     now,
@@ -20,6 +22,10 @@
     servers: ServerSetting[];
     /** The server new channels go to. */
     sel: number;
+    /** A server's rotation now: the band, the time left, whether it is held; null without one. */
+    rotationInfo: (server: number) => { band: string; left: string; held: boolean } | null;
+    /** Hold (or release) a server's rotation. */
+    onhold: (server: number) => void;
     modes: ModeInfo[];
     /** Slot length in seconds by mode name. */
     slotS: Record<string, number>;
@@ -289,8 +295,28 @@
 <section>
   <h2>Channels</h2>
   {#each servers as sv, si (si)}
-    {#if servers.length > 1}
-      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.rotate && sv.rotation.length ? ` · rotating ${sv.rotation.map((r) => `${r.band} ${r.minutes}${r.hours.length === 24 && !r.hours.every(Boolean) ? ' (some hours)' : ''}`).join(' / ')}` : ''}</h3>
+    {@const rot = rotationInfo(si)}
+    {#if servers.length > 1 || rot}
+      <div class="srvrow">
+        {#if servers.length > 1}
+          <h3 class="srvhead" class:sel={si === sel} class:off={!sv.enabled}>{sv.name}{sv.enabled ? '' : ' · off'}</h3>
+        {/if}
+        {#if rot}
+          <button
+            type="button"
+            class="rot"
+            class:held={rot.held}
+            title={rot.held
+              ? `Rotation held on ${rot.band}. Click to let it go on.`
+              : `Rotating: ${rot.band} for ${rot.left} more. Click to hold on ${rot.band}.`}
+            onclick={() => onhold(si)}
+          >
+            <span class="ico">{rot.held ? '⏸' : '⟳'}</span>
+            <b>{rot.band}</b>
+            <span class="time">{rot.held ? 'held' : rot.left}</span>
+          </button>
+        {/if}
+      </div>
     {/if}
     <ul class="channels">
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}

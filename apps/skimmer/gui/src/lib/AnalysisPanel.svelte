@@ -44,6 +44,8 @@
   let servers = $state<[string, string][]>([]);
   /** The map is centred on home or on a server. */
   let centre = $state('');
+  /** The station opened in Results, which the map marks. */
+  let picked = $state<{ call: string; grid: string } | null>(null);
   let span = $state<[number | null, number | null, number]>([null, null, 0]);
   let error = $state('');
 
@@ -138,9 +140,9 @@
           </select>
         </label>
       {/if}
-      <MapView {points} me={mapMe} since={q.since} until={q.until} bind:slice />
+      <MapView {points} me={mapMe} since={q.since} until={q.until} bind:slice {picked} onclear={() => (picked = null)} />
     {:else if tab === 'results'}
-      <ResultsView {dir} {q} {activity} {nowMs} />
+      <ResultsView {dir} {q} {activity} {nowMs} me={mapMe} bind:picked />
     {:else}
       <ClockView {dir} since={q.since} until={q.until} />
     {/if}
