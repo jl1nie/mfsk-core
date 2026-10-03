@@ -57,8 +57,10 @@
   };
 
   // Keep the newest row in view unless the user has scrolled up.
+  // Keyed on the newest row, not the count: at the row cap the count stops
+  // changing and the table would stop following.
   $effect(() => {
-    void shown.length;
+    void shown[shown.length - 1]?.id;
     if (!follow || !box) return;
     tick().then(() => box && (box.scrollTop = box.scrollHeight));
   });

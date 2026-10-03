@@ -20,6 +20,8 @@
   // Raw, not a deep proxy: 5000 row objects are replaced wholesale, never mutated.
   let rows = $state.raw<DecodeRow[]>([]);
   let nextId = 0;
+  /** Decodes the window has received; compare with the table to see whether it dropped any. */
+  let received = $state(0);
   let pending: DecodeRow[] = [];
   let flushing = false;
   /** Per configured channel: decodes in the latest slot it reported. */
@@ -85,6 +87,7 @@
         break;
       case 'decode': {
         const { type: _, ...row } = e;
+        received += 1;
         addRow({ ...row, id: nextId++ });
         break;
       }
@@ -107,13 +110,28 @@
     }
   }
 
-  /** One table update per frame, however many decodes arrived in it. */
+  /**
+   * One table update per tick, however many decodes arrived in it. The
+   * per-channel counts are updated here, from the rows the table gets, so the
+   * two cannot disagree. A timer, not requestAnimationFrame: a window that is
+   * covered or minimised gets no animation frames, and the table would stand
+   * still while the decoder ran.
+   */
   function flushRows() {
     flushing = false;
     if (pending.length === 0) return;
-    const all = rows.length + pending.length > MAX_ROWS ? rows.concat(pending).slice(-MAX_ROWS) : rows.concat(pending);
+    const batch = pending;
     pending = [];
-    rows = all;
+    for (const r of batch) {
+      while (slotCounts.length <= r.channel) slotCounts.push(0);
+      if (slotOf[r.channel] !== r.slotUtcMs) {
+        slotOf[r.channel] = r.slotUtcMs;
+        slotCounts[r.channel] = 0;
+      }
+      slotCounts[r.channel] += 1;
+    }
+    const all = rows.concat(batch);
+    rows = all.length > MAX_ROWS ? all.slice(-MAX_ROWS) : all;
   }
 
   function clearRows() {
@@ -125,14 +143,8 @@
     pending.push(r);
     if (!flushing) {
       flushing = true;
-      requestAnimationFrame(flushRows);
+      setTimeout(flushRows, 100);
     }
-    while (slotCounts.length <= r.channel) slotCounts.push(0);
-    if (slotOf[r.channel] !== r.slotUtcMs) {
-      slotOf[r.channel] = r.slotUtcMs;
-      slotCounts[r.channel] = 0;
-    }
-    slotCounts[r.channel] += 1;
   }
 
   async function startStop() {
@@ -269,7 +281,7 @@
         delay {health.delayMs.toFixed(0)} ms · drift {health.driftMs >= 0 ? '+' : ''}{health.driftMs.toFixed(0)} ms ·
         push {health.longestPushMs.toFixed(0)} ms · decode {health.longestDecodeMs.toFixed(0)} ms · queue {(health.queuedBytes / 1e3).toFixed(0)} kB ·
         slots {health.queuedSlots}/{health.droppedSlots} ·
-        {health.gaps} gap · {health.reanchors} re-anchor
+        {health.gaps} gap · {health.reanchors} re-anchor · window got {received}
       </div>
     {/if}
   </header>
