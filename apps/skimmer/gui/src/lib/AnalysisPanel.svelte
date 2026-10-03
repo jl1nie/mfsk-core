@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import * as api from './api';
   import type { Activity, MapPoint, Query, Summary } from './types';
-  import { blankForm, toQuery, type QueryForm } from './analysis';
+  import { blankForm, formErrors, toQuery, type QueryForm } from './analysis';
   import QueryBar from './QueryBar.svelte';
   import MapView from './MapView.svelte';
   import ResultsView from './ResultsView.svelte';
@@ -46,6 +46,8 @@
   let q = $state<Query>(untrack(() => toQuery(form, me, nowMs)));
 
   function apply() {
+    // A box that cannot be read would be ignored without a word: not searched at all.
+    if (formErrors(form).length) return;
     rev++;
   }
 

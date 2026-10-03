@@ -54,6 +54,32 @@ const num = (s: string | number | null) => {
   const v = t === '' ? NaN : Number(t);
   return Number.isFinite(v) ? v : null;
 };
+/** A number box is fine if empty or a number; anything else would be silently ignored. */
+export const badNumber = (s: string) => s.trim() !== '' && num(s) === null;
+
+const NUMBERS: [keyof QueryForm, string][] = [
+  ['snrMin', 'SNR min'], ['snrMax', 'SNR max'], ['kmMin', 'Distance min'], ['kmMax', 'Distance max'],
+  ['bearingFrom', 'Bearing from'], ['bearingTo', 'Bearing to'],
+];
+
+/** What is wrong with the form, in words; empty if it can be searched. */
+export function formErrors(f: QueryForm): string[] {
+  const out: string[] = [];
+  for (const [k, label] of NUMBERS) {
+    const v = f[k] as string;
+    if (badNumber(v)) out.push(`${label}: "${v}" is not a number`);
+  }
+  if ((f.bearingFrom.trim() === '') !== (f.bearingTo.trim() === '')) out.push('Bearing needs both from and to');
+  for (const [k, label] of [['call', 'Call'], ['grid', 'Grid'], ['text', 'Text']] as const) {
+    try {
+      new RegExp(f[k]);
+    } catch {
+      out.push(`${label}: not a valid regular expression`);
+    }
+  }
+  return out;
+}
+
 export const toLocalInput = (utcS: number) => new Date(utcS * 1000).toISOString().slice(0, 16);
 
 /** The form as a query ending now (presets move with the clock). */

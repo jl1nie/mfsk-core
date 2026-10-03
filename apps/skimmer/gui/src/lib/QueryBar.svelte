@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MODE_CHIPS, PRESETS, blankForm, sortBands, toLocalInput, type PresetId, type QueryForm } from './analysis';
+  import { MODE_CHIPS, PRESETS, badNumber, blankForm, formErrors, sortBands, toLocalInput, type PresetId, type QueryForm } from './analysis';
 
   let {
     form = $bindable(),
@@ -18,6 +18,7 @@
   } = $props();
 
   let open = $state(true);
+  const problems = $derived(formErrors(form));
 
   function toggle(list: string[], v: string): string[] {
     return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
@@ -62,7 +63,7 @@
   <div class="head">
     <button type="button" class="link" onclick={() => (open = !open)}>{open ? '▾' : '▸'} Query</button>
     {#if !open}<span class="brief">{brief}</span>{/if}
-    <span class="sum" class:err={!!error}>{error || summary}</span>
+    <span class="sum" class:err={!!error || problems.length > 0}>{problems[0] ?? (error || summary)}</span>
   </div>
   {#if open}
     <div class="grid">
@@ -98,12 +99,12 @@
           <option value="TEST">CQ TEST</option>
         </select>
       </label>
-      <label>SNR dB <span class="range"><input class="n" value={form.snrMin} onchange={(e) => { form.snrMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" value={form.snrMax} onchange={(e) => { form.snrMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span></label>
+      <label>SNR dB <span class="range"><input class="n" class:bad={badNumber(form.snrMin)} value={form.snrMin} onchange={(e) => { form.snrMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" class:bad={badNumber(form.snrMax)} value={form.snrMax} onchange={(e) => { form.snrMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span></label>
       <label title="Great-circle distance from your grid (Settings > Station)">
-        Distance km <span class="range"><input class="n" value={form.kmMin} onchange={(e) => { form.kmMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" value={form.kmMax} onchange={(e) => { form.kmMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span>
+        Distance km <span class="range"><input class="n" class:bad={badNumber(form.kmMin)} value={form.kmMin} onchange={(e) => { form.kmMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" class:bad={badNumber(form.kmMax)} value={form.kmMax} onchange={(e) => { form.kmMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span>
       </label>
       <label title="Bearing from your grid, degrees clockwise from north. From greater than to wraps through north: 315 to 45 is the northern quarter.">
-        Bearing ° <span class="range"><input class="n" value={form.bearingFrom} onchange={(e) => { form.bearingFrom = e.currentTarget.value; onapply(); }} placeholder="from" /> – <input class="n" value={form.bearingTo} onchange={(e) => { form.bearingTo = e.currentTarget.value; onapply(); }} placeholder="to" /></span>
+        Bearing ° <span class="range"><input class="n" class:bad={badNumber(form.bearingFrom)} value={form.bearingFrom} onchange={(e) => { form.bearingFrom = e.currentTarget.value; onapply(); }} placeholder="from" /> – <input class="n" class:bad={badNumber(form.bearingTo)} value={form.bearingTo} onchange={(e) => { form.bearingTo = e.currentTarget.value; onapply(); }} placeholder="to" /></span>
       </label>
     </div>
     <div class="chips">
