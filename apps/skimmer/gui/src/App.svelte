@@ -262,25 +262,6 @@
       {#if serverOpen}
         <div class="popover">
           <h2>Settings</h2>
-          <h3>Operator</h3>
-          <div class="field" title="mycall / mygrid: with a channel's QSO, the QSO-context AP of FT8, FT4 and FST4 is derived from them">
-            <span>My call</span>
-            <input
-              bind:value={settings.myCall}
-              placeholder="JL1NIE"
-              spellcheck="false"
-              onchange={() => running && api.setStation(settings!.myCall, settings!.myGrid)}
-            />
-          </div>
-          <div class="field">
-            <span>My grid</span>
-            <input
-              bind:value={settings.myGrid}
-              placeholder="PM95"
-              spellcheck="false"
-              onchange={() => running && api.setStation(settings!.myCall, settings!.myGrid)}
-            />
-          </div>
           <h3>Radio</h3>
           <div
             class="field slider"
@@ -385,6 +366,9 @@
         {slotCounts}
         onchange={channelsChanged}
         onoptions={channelOptionsChanged}
+        bind:myCall={settings.myCall}
+        bind:myGrid={settings.myGrid}
+        onstation={() => running && api.setStation(settings!.myCall, settings!.myGrid)}
       />
 
     </aside>

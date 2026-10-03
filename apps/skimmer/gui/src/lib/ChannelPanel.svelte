@@ -11,6 +11,9 @@
     slotCounts,
     onchange,
     onoptions,
+    myCall = $bindable(),
+    myGrid = $bindable(),
+    onstation,
   }: {
     channels: ChannelSetting[];
     modes: ModeInfo[];
@@ -23,6 +26,10 @@
     onchange: () => void;
     /** A channel's decode options changed; applied to a running skimmer. */
     onoptions: (i: number) => void;
+    /** The operator (mycall, mygrid), one for every channel. */
+    myCall: string;
+    myGrid: string;
+    onstation: () => void;
   } = $props();
 
   let band = $state('40m');
@@ -73,11 +80,12 @@
     lo: string; hi: string; rx: string; tol: string; tx: string;
     depth: DepthSetting; ap: ApSetting; dx: string;
     hisCall: string; hisGrid: string; progress: string; contest: string;
+    myCall: string; myGrid: string;
     averaging: boolean; deepSearch: boolean; emeDelay: boolean;
   };
   const blank = (): Form => ({
     lo: '', hi: '', rx: '', tol: '', tx: '', depth: '', ap: '', dx: '',
-    hisCall: '', hisGrid: '', progress: '', contest: '', averaging: false, deepSearch: false, emeDelay: false,
+    hisCall: '', hisGrid: '', progress: '', contest: '', myCall: '', myGrid: '', averaging: false, deepSearch: false, emeDelay: false,
   });
   let f = $state<Form>(blank());
   let eError = $state('');
@@ -91,6 +99,7 @@
       lo: str(c.bandLo), hi: str(c.bandHi), rx: str(c.rxFreqHz), tol: str(c.tolHz), tx: str(c.txFreqHz),
       depth: c.depth ?? '', ap: c.ap ?? '', dx: c.dxCall ?? '',
       hisCall: c.hisCall ?? '', hisGrid: c.hisGrid ?? '', progress: c.progress ?? '', contest: c.contest ?? '',
+      myCall: myCall ?? '', myGrid: myGrid ?? '',
       averaging: !!c.averaging, deepSearch: !!c.deepSearch, emeDelay: !!c.emeDelay,
     };
     eError = '';
@@ -130,6 +139,13 @@
     c.progress = f.progress || null;
     c.contest = f.contest || null;
     c.averaging = f.averaging; c.deepSearch = f.deepSearch; c.emeDelay = f.emeDelay;
+    const call = f.myCall.trim().toUpperCase();
+    const grid = f.myGrid.trim().toUpperCase();
+    if (call !== (myCall ?? '') || grid !== (myGrid ?? '')) {
+      myCall = call;
+      myGrid = grid;
+      onstation();
+    }
     onoptions(editing);
     dialog?.close();
   }
@@ -206,11 +222,16 @@
         <label title="Hunt one station: its call is given to the decoder as an a-priori hint (FT8, FT4, FST4, Q65)">
           DX call <input class="call" bind:value={f.dx} placeholder="JA1ABC" />
         </label>
+        <label title="mycall / mygrid, one for every channel. With a QSO below, FT8, FT4 and FST4 derive upstream's QSO-context AP from them. Empty is fine for plain monitoring.">
+          My call <input class="call" bind:value={f.myCall} placeholder="JL1NIE" />
+          grid <input class="grid" bind:value={f.myGrid} placeholder="PM95" />
+          <span class="hint">all channels</span>
+        </label>
       </fieldset>
 
       <fieldset>
         <legend>QSO in progress</legend>
-        <label title="hiscall / hisgrid. With 'My call' (Settings), FT8, FT4 and FST4 derive upstream's QSO-context AP from these">
+        <label title="hiscall / hisgrid. With 'My call' above, FT8, FT4 and FST4 derive upstream's QSO-context AP from these">
           His call <input class="call" bind:value={f.hisCall} placeholder="JA1ABC" />
           grid <input class="grid" bind:value={f.hisGrid} placeholder="PM95" />
         </label>
