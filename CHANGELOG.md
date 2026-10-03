@@ -74,6 +74,11 @@
   device unless `--tune`, sets only its own DDC centre, gives control back, and pauses channels outside the band. The
   socket is read on its own thread: the first decode (400-650 ms) had made the server drop IQ on Windows in 3 of 3
   runs, 0 after. Against an Airspy HF+ at 7041 kHz beside SDR#: 19-26 JA FT8 decodes per slot, WSL and Windows.
+- **FT8's T1 sensitivity task now asks for what `jt9 -8 -d 3` does.** With no callsign known the AP tries only the CQ
+  hypothesis; the 0.12 sweep asked for it with `ApHint::with_call1("CQ")`, which a `Decoder` still accepts and which
+  reproduces the old numbers bit for bit. The CQ-only derivation is 0.2-0.5 dB behind that in fading channels
+  (ccir_moderate -20.00 against -20.50 dB) and level with WSJT-X in paired counts (5 up-only against 3 crate-only, p =
+  0.73); the AWGN crossing and every other protocol's are unchanged. AP is off by default.
 - **The skimmer keeps every decode in SQLite and answers questions about them.** `skimmer.db` (WAL, indexed on time,
   band and call; ALL.TXT is off by default) records each decode with its sender, locator, CQ kind and the server that
   heard it. An Analysis view runs one query (UTC period, regexes on call, locator and text, band, mode, server, SNR,

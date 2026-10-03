@@ -18,8 +18,8 @@
         "groups": 4
       },
       "ft8": {
-        "date": "2026-10-02",
-        "commit": "f41b2bc0",
+        "date": "2026-10-04",
+        "commit": "dbdf244c",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
@@ -39,22 +39,22 @@
         "groups": 8
       },
       "jt65": {
-        "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "date": "2026-10-04",
+        "commit": "dbdf244c",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt65_chase": {
-        "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "date": "2026-10-04",
+        "commit": "dbdf244c",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt9": {
-        "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "date": "2026-10-04",
+        "commit": "dbdf244c",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
@@ -74,15 +74,15 @@
         "groups": 2
       },
       "q65": {
-        "date": "2026-10-01",
-        "commit": "2e56279b",
+        "date": "2026-10-04",
+        "commit": "dbdf244c",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 2640,
         "groups": 20
       },
       "wspr": {
-        "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "date": "2026-10-04",
+        "commit": "dbdf244c",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 260,
         "groups": 1
@@ -217,9 +217,9 @@
   "ft4/ccir_moderate": -17.142857142857142,
   "ft4/ccir_poor": -16.8,
   "ft8/awgn": -21.9,
-  "ft8/ccir_good": -21.88888888888889,
-  "ft8/ccir_moderate": -20.5,
-  "ft8/ccir_poor": -19.818181818181817,
+  "ft8/ccir_good": -21.583333333333332,
+  "ft8/ccir_moderate": -20.0,
+  "ft8/ccir_poor": -19.615384615384617,
   "ft8_itu/itu_hm": -3.3333333333333335,
   "ft8_itu/itu_hq": -20.166666666666668,
   "ft8_itu/itu_ld": -1.0000000000000009,
@@ -255,5 +255,5 @@
   "q65/e120/plain": -26.5,
   "q65/e60/cq": -25.1875,
   "q65/e60/plain": -24.318181818181817,
-  "wspr/awgn": -31.333333333333332
+  "wspr/awgn": -31.4
 }
