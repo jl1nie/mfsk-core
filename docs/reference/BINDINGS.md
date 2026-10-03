@@ -1058,6 +1058,9 @@ thread at a time, and off the main actor — `push` decodes before it returns.
 `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the tests;
 `bindings/swift/README.md` covers linking from a real app, including why the
 `mobile` feature set is the one an iOS build wants.
+`bindings/swift/scripts/build-xcframework.sh` packages the iOS device and
+simulator builds as `target/xcframework/Mfsk.xcframework` (module `CMfsk`),
+link-checking both slices before it reports success.
 
 CI runs that same script on `macos-latest` (`Swift binding (macOS) +
 iOS build`), which is also where `aarch64-apple-ios` is cross-compiled:

@@ -57,6 +57,12 @@
   device unless `--tune`, sets only its own DDC centre, gives control back, and pauses channels outside the band. The
   socket is read on its own thread: the first decode (400-650 ms) had made the server drop IQ on Windows in 3 of 3
   runs, 0 after. Against an Airspy HF+ at 7041 kHz beside SDR#: 19-26 JA FT8 decodes per slot, WSL and Windows.
+- **An XCFramework for iOS apps.** `bindings/swift/scripts/build-xcframework.sh` builds `libmfsk` for the iOS device
+  (`aarch64-apple-ios`) and the Apple-silicon simulator (`aarch64-apple-ios-sim`) with the `mobile` features, and
+  packages both as `target/xcframework/Mfsk.xcframework`. Each slice carries `mfsk.h` and a module map, so Swift code
+  imports it as `CMfsk`, the same name the SwiftPM package uses. Before it reports success, the script compiles and
+  links a small Swift program against each slice. It is not run in CI, and `Package.swift` still links by `-L` rather
+  than through the XCFramework.
 
 ## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY
 
