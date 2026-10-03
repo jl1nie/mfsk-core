@@ -541,6 +541,25 @@ impl Reader {
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
+    /// How many decodes at each SNR, with the query's own SNR limits left
+    /// out: the distribution a limit is chosen against.
+    pub fn snr_histogram(&self, q: &Query) -> Result<Vec<(i64, i64)>, String> {
+        let open = Query {
+            snr_min: None,
+            snr_max: None,
+            ..q.clone()
+        };
+        let (w, p) = open.sql()?;
+        let sql = format!("SELECT d.snr, COUNT(*) FROM {FROM} WHERE {w} GROUP BY d.snr ORDER BY 1");
+        let mut st = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(p), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+
     pub fn summary(&self, q: &Query) -> Result<Summary, String> {
         let (w, p) = q.sql()?;
         let sql = format!("SELECT COUNT(*), COUNT(DISTINCT d.call) FROM {FROM} WHERE {w}");
@@ -714,6 +733,17 @@ mod tests {
         assert_eq!(r.bands().unwrap().len(), 2);
         assert_eq!(on(&|x| x.snr_min = Some(-11)), 2);
         assert_eq!(on(&|x| x.snr_max = Some(-12)), 2);
+        let hist = r
+            .snr_histogram(&Query {
+                snr_max: Some(-12),
+                ..q(h)
+            })
+            .unwrap();
+        assert_eq!(
+            hist.iter().map(|x| x.1).sum::<i64>(),
+            4,
+            "the SNR limit is left out of its own histogram"
+        );
         assert_eq!(on(&|x| (x.snr_min, x.snr_max) = (Some(-12), Some(-10))), 2);
         // CQ kinds.
         assert_eq!(on(&|x| x.cq = Some("*".into())), 3);

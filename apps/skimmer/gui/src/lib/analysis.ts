@@ -45,7 +45,7 @@ const utc = (s: string) => {
   return Number.isFinite(t) ? Math.floor(t / 1000) : null;
 };
 /** A number typed in a box; full-width digits and minus signs from a Japanese IME are read too. */
-const num = (s: string | number | null) => {
+export const num = (s: string | number | null) => {
   if (s === null || s === undefined) return null;
   const t = String(s)
     .replace(/[０-９．]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))

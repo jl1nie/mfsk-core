@@ -732,6 +732,11 @@ fn db_points(dir: String, q: store::Query, slice_s: i64) -> Result<Vec<store::Po
 }
 
 #[tauri::command]
+fn db_snr_hist(dir: String, q: store::Query) -> Result<Vec<(i64, i64)>, String> {
+    reader(&dir)?.snr_histogram(&q)
+}
+
+#[tauri::command]
 fn db_bands(dir: String) -> Result<Vec<String>, String> {
     reader(&dir)?.bands().map_err(|e| e.to_string())
 }
@@ -778,6 +783,7 @@ fn main() {
             db_points,
             db_summary,
             db_bands,
+            db_snr_hist,
             db_dt,
             db_span,
             set_gain,

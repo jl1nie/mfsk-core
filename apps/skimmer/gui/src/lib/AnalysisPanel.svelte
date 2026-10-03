@@ -39,6 +39,7 @@
   let activity = $state<Activity[]>([]);
   let points = $state<MapPoint[]>([]);
   let summary = $state<Summary | null>(null);
+  let snrHist = $state<[number, number][]>([]);
   let span = $state<[number | null, number | null, number]>([null, null, 0]);
   let error = $state('');
 
@@ -64,11 +65,17 @@
       /* not essential */
     }
     try {
-      const [sp, bs, sm] = await Promise.all([api.dbSpan(dir), api.dbBands(dir), api.dbSummary(dir, next)]);
+      const [sp, bs, sm, sh] = await Promise.all([
+        api.dbSpan(dir),
+        api.dbBands(dir),
+        api.dbSummary(dir, next),
+        api.dbSnrHist(dir, next),
+      ]);
       if (mine !== seq) return;
       span = sp;
       bands = bs;
       summary = sm;
+      snrHist = sh;
       const act = tab === 'results' ? await api.dbActivity(dir, next) : null;
       const pts = tab === 'map' ? await api.dbPoints(dir, next, slice) : null;
       if (mine !== seq) return;
@@ -105,7 +112,7 @@
 </script>
 
 <section class="analysis">
-  <QueryBar bind:form {bands} onapply={apply} summary={line} {error} />
+  <QueryBar bind:form {bands} onapply={apply} summary={line} {error} {snrHist} />
   <nav>
     {#each TABS as [id, label] (id)}
       <button class:on={tab === id} onclick={() => (tab = id)}>{label}</button>

@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { MODE_CHIPS, PRESETS, badNumber, blankForm, formErrors, sortBands, toLocalInput, type PresetId, type QueryForm } from './analysis';
+  import RangeSlider from './RangeSlider.svelte';
+  import BearingPicker from './BearingPicker.svelte';
+  import { MODE_CHIPS, PRESETS, badNumber, num, blankForm, formErrors, sortBands, toLocalInput, type PresetId, type QueryForm } from './analysis';
 
   let {
     form = $bindable(),
@@ -7,6 +9,7 @@
     onapply,
     summary,
     error,
+    snrHist,
   }: {
     form: QueryForm;
     /** Bands there are decodes for. */
@@ -15,10 +18,23 @@
     /** "1 234 decodes · 210 stations" of the applied query. */
     summary: string;
     error: string;
+    /** Decodes per dB for the query without its SNR limits. */
+    snrHist: [number, number][];
   } = $props();
 
   let open = $state(true);
   const problems = $derived(formErrors(form));
+
+  type Preset = [string, number | null, number | null];
+  const SNR_PRESETS: Preset[] = [['weak ≤ −15', null, -15], ['mid', -15, 0], ['strong ≥ 0', 0, null]];
+  const KM_PRESETS: Preset[] = [['local < 500', null, 500], ['regional 500–3000', 500, 3000], ['DX > 5000', 5000, null], ['long path > 15000', 15000, null]];
+
+  function setRange(kLo: 'snrMin' | 'kmMin' | 'bearingFrom', kHi: 'snrMax' | 'kmMax' | 'bearingTo', lo: number | null, hi: number | null) {
+    form[kLo] = lo === null ? '' : String(lo);
+    form[kHi] = hi === null ? '' : String(hi);
+    onapply();
+  }
+  const same = (a: string, b: string, lo: number | null, hi: number | null) => num(a) === lo && num(b) === hi;
 
   function toggle(list: string[], v: string): string[] {
     return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
@@ -99,13 +115,48 @@
           <option value="TEST">CQ TEST</option>
         </select>
       </label>
-      <label>SNR dB <span class="range"><input class="n" class:bad={badNumber(form.snrMin)} value={form.snrMin} onchange={(e) => { form.snrMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" class:bad={badNumber(form.snrMax)} value={form.snrMax} onchange={(e) => { form.snrMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span></label>
-      <label title="Great-circle distance from your grid (Settings > Station)">
-        Distance km <span class="range"><input class="n" class:bad={badNumber(form.kmMin)} value={form.kmMin} onchange={(e) => { form.kmMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" class:bad={badNumber(form.kmMax)} value={form.kmMax} onchange={(e) => { form.kmMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span>
-      </label>
-      <label title="Bearing from your grid, degrees clockwise from north. From greater than to wraps through north: 315 to 45 is the northern quarter.">
-        Bearing ° <span class="range"><input class="n" class:bad={badNumber(form.bearingFrom)} value={form.bearingFrom} onchange={(e) => { form.bearingFrom = e.currentTarget.value; onapply(); }} placeholder="from" /> – <input class="n" class:bad={badNumber(form.bearingTo)} value={form.bearingTo} onchange={(e) => { form.bearingTo = e.currentTarget.value; onapply(); }} placeholder="to" /></span>
-      </label>
+    </div>
+    <div class="filters">
+      <div class="card">
+        <div class="t">SNR</div>
+        <RangeSlider lo={num(form.snrMin)} hi={num(form.snrMax)} min={-30} max={20} unit=" dB" bars={snrHist}
+          onchange={(l, h) => setRange('snrMin', 'snrMax', l, h)} />
+        <div class="pre">
+          {#each SNR_PRESETS as [name, l, h] (name)}
+            <button type="button" class="chip" class:on={same(form.snrMin, form.snrMax, l, h)} onclick={() => setRange('snrMin', 'snrMax', l, h)}>{name}</button>
+          {/each}
+        </div>
+        <div class="num">
+          <input class:bad={badNumber(form.snrMin)} value={form.snrMin} placeholder="min" onchange={(e) => { form.snrMin = e.currentTarget.value; onapply(); }} />
+          –
+          <input class:bad={badNumber(form.snrMax)} value={form.snrMax} placeholder="max" onchange={(e) => { form.snrMax = e.currentTarget.value; onapply(); }} />
+        </div>
+      </div>
+      <div class="card" title="Great-circle distance from your grid (Settings > Station)">
+        <div class="t">Distance</div>
+        <RangeSlider lo={num(form.kmMin)} hi={num(form.kmMax)} min={0} max={20000} log unit=" km"
+          onchange={(l, h) => setRange('kmMin', 'kmMax', l, h)} />
+        <div class="pre">
+          {#each KM_PRESETS as [name, l, h] (name)}
+            <button type="button" class="chip" class:on={same(form.kmMin, form.kmMax, l, h)} onclick={() => setRange('kmMin', 'kmMax', l, h)}>{name}</button>
+          {/each}
+        </div>
+        <div class="num">
+          <input class:bad={badNumber(form.kmMin)} value={form.kmMin} placeholder="min" onchange={(e) => { form.kmMin = e.currentTarget.value; onapply(); }} />
+          –
+          <input class:bad={badNumber(form.kmMax)} value={form.kmMax} placeholder="max" onchange={(e) => { form.kmMax = e.currentTarget.value; onapply(); }} />
+        </div>
+      </div>
+      <div class="card" title="Bearing from your grid, clockwise from north. Click a direction; click a neighbour to widen, an end wedge to narrow. From greater than to wraps through north.">
+        <div class="t">Bearing</div>
+        <BearingPicker from={num(form.bearingFrom)} to={num(form.bearingTo)}
+          onchange={(f, t) => setRange('bearingFrom', 'bearingTo', f, t)} />
+        <div class="num">
+          <input class:bad={badNumber(form.bearingFrom)} value={form.bearingFrom} placeholder="from" onchange={(e) => { form.bearingFrom = e.currentTarget.value; onapply(); }} />
+          –
+          <input class:bad={badNumber(form.bearingTo)} value={form.bearingTo} placeholder="to" onchange={(e) => { form.bearingTo = e.currentTarget.value; onapply(); }} />
+        </div>
+      </div>
     </div>
     <div class="chips">
       <span class="lab">Band</span>
@@ -163,13 +214,35 @@
   label select {
     width: 150px;
   }
-  .range {
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    padding: 4px 0 8px;
+  }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 200px;
+  }
+  .card .t {
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .pre {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-width: 230px;
+  }
+  .num {
     display: flex;
     gap: 4px;
     align-items: center;
   }
-  .n {
-    width: 62px;
+  .num input {
+    width: 70px;
   }
   .chips {
     display: flex;
