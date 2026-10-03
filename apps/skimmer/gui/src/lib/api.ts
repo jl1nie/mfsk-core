@@ -19,3 +19,4 @@ export async function pickFolder(defaultPath: string): Promise<string | null> {
 }
 export const setChannelOptions = (index: number, channel: ChannelSetting) =>
   invoke<void>('set_channel_options', { index, channel });
+export const autostartRequested = () => invoke<boolean>('autostart_requested');

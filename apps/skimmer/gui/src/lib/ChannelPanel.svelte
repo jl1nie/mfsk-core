@@ -62,6 +62,49 @@
     return parts.join(' · ');
   }
 
+  // The channel being edited, as strings until Apply.
+  let dialog: HTMLDialogElement | undefined = $state();
+  let editing = $state<number | null>(null);
+  let eLo = $state('');
+  let eHi = $state('');
+  let eDx = $state('');
+  let eDepth = $state<DepthSetting>('');
+  let eError = $state('');
+
+  function openOptions(i: number) {
+    const c = channels[i];
+    editing = i;
+    eLo = c.bandLo != null ? String(c.bandLo) : '';
+    eHi = c.bandHi != null ? String(c.bandHi) : '';
+    eDx = c.dxCall ?? '';
+    eDepth = c.depth ?? '';
+    eError = '';
+    dialog?.showModal();
+  }
+
+  function applyOptions() {
+    if (editing === null) return;
+    const lo = num(eLo);
+    const hi = num(eHi);
+    if ((lo === null) !== (hi === null) || (lo !== null && hi !== null && !(lo >= 0 && lo < hi))) {
+      eError = 'Band needs both ends, low below high (Hz), or neither.';
+      return;
+    }
+    const c = channels[editing];
+    c.bandLo = lo;
+    c.bandHi = hi;
+    c.dxCall = eDx.trim().toUpperCase() || null;
+    c.depth = eDepth;
+    onoptions(editing);
+    dialog?.close();
+  }
+
+  function resetOptions() {
+    eLo = eHi = eDx = '';
+    eDepth = '';
+    eError = '';
+  }
+
   function channelState(i: number): string {
     if (active.length === 0) return '';
     return active[i] ? `${slotCounts[i] ?? 0}` : 'paused';
@@ -83,6 +126,43 @@
   }
 </script>
 
+<dialog bind:this={dialog} class="optdialog" onclose={() => (editing = null)}>
+  {#if editing !== null}
+    {@const c = channels[editing]}
+    <form method="dialog" onsubmit={(e) => { e.preventDefault(); applyOptions(); }}>
+      <h3>{c.mode} · {(c.dialHz / 1000).toFixed(1)} kHz</h3>
+      <label title="Audio band searched. Empty: the mode's default">
+        Band (Hz)
+        <input bind:value={eLo} placeholder="low" inputmode="decimal" />–<input
+          bind:value={eHi}
+          placeholder="high"
+          inputmode="decimal"
+        />
+      </label>
+      <label title="Hunt one station: its call is given to the decoder as an a-priori hint (FT8, FT4, FST4, Q65)">
+        DX call
+        <input class="call" bind:value={eDx} placeholder="JA1ABC" />
+      </label>
+      <label title="WSJT-X decoding depth">
+        Depth
+        <select bind:value={eDepth}>
+          <option value="">default (deep)</option>
+          <option value="fast">fast</option>
+          <option value="normal">normal</option>
+          <option value="deep">deep</option>
+        </select>
+      </label>
+      {#if eError}<p class="err">{eError}</p>{/if}
+      <div class="buttons">
+        <button type="button" class="link" onclick={resetOptions}>Reset</button>
+        <button type="button" onclick={() => dialog?.close()}>Cancel</button>
+        <button type="submit">Apply</button>
+      </div>
+      <p class="hint">Applies to the running skimmer at this channel's next slot.</p>
+    </form>
+  {/if}
+</dialog>
+
 <section>
   <h2>Channels</h2>
   <ul class="channels">
@@ -100,45 +180,14 @@
             ></span>
           {/if}
           <span class="count" title="Decodes in the latest slot, or paused: outside the radio's band">{channelState(i)}</span>
+          <button
+            class="link gear"
+            class:set={optionSummary(c) !== ''}
+            onclick={() => openOptions(i)}
+            aria-label="Decode options"
+            title={optionSummary(c) || 'Decode options: band, DX call, depth'}>⚙</button>
           <button class="link" onclick={() => remove(i)} aria-label="Remove">✕</button>
         </div>
-        <details class="opts">
-          <summary>Decode options{optionSummary(c) ? ` — ${optionSummary(c)}` : ''}</summary>
-          <label title="Audio band searched. Empty: the mode's default">
-            Band
-            <input
-              value={c.bandLo ?? ''}
-              placeholder="lo"
-              inputmode="decimal"
-              onchange={(e) => { c.bandLo = num(e.currentTarget.value); onoptions(i); }}
-            />–<input
-              value={c.bandHi ?? ''}
-              placeholder="hi"
-              inputmode="decimal"
-              onchange={(e) => { c.bandHi = num(e.currentTarget.value); onoptions(i); }}
-            /> Hz
-          </label>
-          <label title="Hunt one station: its call is given to the decoder as an a-priori hint (FT8, FT4, FST4, Q65)">
-            DX call
-            <input
-              value={c.dxCall ?? ''}
-              placeholder="JA1ABC"
-              onchange={(e) => { c.dxCall = e.currentTarget.value.trim().toUpperCase() || null; onoptions(i); }}
-            />
-          </label>
-          <label title="WSJT-X decoding depth">
-            Depth
-            <select
-              value={c.depth ?? ''}
-              onchange={(e) => { c.depth = e.currentTarget.value as DepthSetting; onoptions(i); }}
-            >
-              <option value="">default (deep)</option>
-              <option value="fast">fast</option>
-              <option value="normal">normal</option>
-              <option value="deep">deep</option>
-            </select>
-          </label>
-        </details>
       </li>
     {:else}
       <li class="empty">No channels yet</li>
@@ -176,18 +225,48 @@
 </section>
 
 <style>
-  .opts {
-    margin: 0.25rem 0 0.5rem 0.5rem;
-    font-size: 0.85em;
+  .gear.set {
+    color: var(--accent, #4da3ff);
   }
-  .opts label {
-    display: block;
-    margin: 0.2rem 0;
+  .optdialog {
+    border: 1px solid var(--line, #444);
+    border-radius: 8px;
+    background: var(--panel, Canvas);
+    color: inherit;
+    padding: 1rem 1.25rem;
+    min-width: 20rem;
   }
-  .opts input {
-    width: 5em;
+  .optdialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
   }
-  .opts input[placeholder='JA1ABC'] {
-    width: 8em;
+  .optdialog h3 {
+    margin: 0 0 0.75rem;
+  }
+  .optdialog label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+  }
+  .optdialog input {
+    width: 6em;
+  }
+  .optdialog input.call {
+    width: 9em;
+  }
+  .optdialog .buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+  .optdialog .err {
+    color: #e66;
+    margin: 0.25rem 0;
+  }
+  .optdialog .hint {
+    color: var(--muted, #888);
+    font-size: 0.8em;
+    margin: 0.75rem 0 0;
   }
 </style>

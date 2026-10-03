@@ -37,6 +37,7 @@
       modes = await api.modes();
       autoPfb = await api.autoPfbChannels();
       unlisten = await api.onEvent(handle);
+      if (await api.autostartRequested()) await startStop();
     })();
     return () => {
       clearInterval(clock);
