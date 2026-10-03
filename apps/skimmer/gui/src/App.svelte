@@ -71,7 +71,7 @@
         break;
       case 'yielded':
         phase = 'Had control of the radio: leaving it for SDR# and retrying';
-        notice = 'Start SDR# first, or enable "Tune the radio" in Settings (⚙) to run alone.';
+        notice = 'Control was given back (Settings ⚙: "Give control back" is on). Turn it off to run alone.';
         break;
       case 'noChannelFits':
         phase = `No channel fits the band around ${mhz(e.deviceHz)} MHz; waiting for the radio to move`;
@@ -256,8 +256,11 @@
             (direct costs about 0.9 % of a core per channel at 768 kS/s, the bank a fixed 2.4 % plus 0.25 % per channel).
           </p>
           <label class="check">
-            <input type="checkbox" bind:checked={settings.tune} disabled={running} />
-            <span>Tune the radio. Only when no other client (SDR#) is connected: the skimmer then holds control.</span>
+            <input type="checkbox" bind:checked={settings.yieldControl} disabled={running} />
+            <span>
+              Give control back when nobody else is connected, for an SDR# started later. Off (default): with no other
+              client the skimmer takes control and tunes the radio; beside a running SDR# it is a guest and never tunes.
+            </span>
           </label>
           <label class="check">
             <input type="checkbox" bind:checked={settings.logEnabled} disabled={running} />

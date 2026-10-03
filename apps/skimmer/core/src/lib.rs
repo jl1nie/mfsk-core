@@ -5,16 +5,22 @@
 //! [`run`] connects, plans a stream, decodes, and reports everything as an
 //! [`Event`] until `stop` is set, reconnecting on errors.
 //!
-//! **Sharing the radio.** Run it beside the operator's client (SDR#): start
-//! SDR# first, since control of the device goes to whoever connects first,
-//! and while a guest is connected the controlling client cannot move the
-//! device outside its band (both seen with SDR# and an Airspy HF+,
-//! 2026-10-03). This never tunes the device unless [`Config::tune`] is set;
-//! it sets only its own IQ (DDC) centre, which a client without control may
-//! place anywhere in the device's band. Given control without `tune`, it
-//! leaves and reconnects after [`Config::retry`], so the operator's client
-//! can take it. Channels outside the band are paused; a later move by the
-//! server plans again.
+//! **Sharing the radio.** Control of the device goes to whoever connects
+//! first, and while a guest is connected the controlling client cannot move
+//! the device outside its band (both seen with SDR# and an Airspy HF+,
+//! 2026-10-03). So:
+//!
+//! - **Beside SDR#** (started first): this is the guest. It never tunes the
+//!   device; it sets only its own IQ (DDC) centre, which a client without
+//!   control may place anywhere in the device's band. Channels outside the
+//!   band are paused; a later move by the server plans again.
+//! - **Alone** (nobody else connected): this is given control and keeps it,
+//!   tuning the device to its IQ centre. An SDR# started afterwards joins as a
+//!   guest and cannot tune until this disconnects.
+//! - [`Config::yield_control`] restores the old behaviour for an operator who
+//!   starts SDR# later: given control, leave and reconnect after
+//!   [`Config::retry`] so that SDR# can take it. It woke the radio and dropped
+//!   it every retry, which read as an error with no SDR# running.
 //!
 //! **Time.** SpyServer sends no timestamps; see [`anchor`].
 
@@ -269,10 +275,14 @@ pub struct Config {
     pub center_hz: Option<f64>,
     /// IQ rate; default the lowest that holds the most channels.
     pub rate: Option<u32>,
-    /// Device gain index, applied only with `tune`.
+    /// Device gain index, applied when holding control.
     pub gain: Option<u32>,
-    /// Use control of the device to tune it to the IQ centre.
+    /// Hold control and tune the radio even if [`Self::yield_control`] is set.
     pub tune: bool,
+    /// When given control, leave it for an operator's client started later
+    /// (and reconnect after [`Self::retry`] as a guest) instead of holding it.
+    /// Default `false`: take control and tune.
+    pub yield_control: bool,
     pub format: WireFormat,
     /// `None` chooses by channel count: see [`AUTO_PFB_CHANNELS`].
     pub channelizer: Option<Channelizer>,
@@ -294,6 +304,7 @@ impl Config {
             rate: None,
             gain: None,
             tune: false,
+            yield_control: false,
             format: WireFormat::Float,
             channelizer: None,
             iq_swap: false,
@@ -360,7 +371,7 @@ pub enum Event {
         control: bool,
         device_hz: f64,
     },
-    /// Got control without `tune`: leaving it for the operator's client.
+    /// Got control with `yield_control` set: leaving it for the operator's client.
     Yielded,
     /// No channel fits the band around the device centre; waiting for it to move.
     NoChannelFits {
@@ -521,13 +532,14 @@ fn session(
         control: sync.can_control,
         device_hz: sync.device_hz,
     });
-    if sync.can_control && !cfg.tune {
-        // Holding control would lock the operator's client out of tuning,
-        // and the protocol has no way to hand it on: leave, come back as a
-        // guest.
+    // Given control: hold it and tune, unless asked to leave it for an
+    // operator's client started later (holding control would lock that client
+    // out of tuning, and the protocol has no way to hand it on).
+    let hold = sync.can_control && (cfg.tune || !cfg.yield_control);
+    if sync.can_control && !hold {
         return Ok(End::Yielded);
     }
-    let tune = cfg.tune && sync.can_control;
+    let tune = hold;
 
     loop {
         let Some(p) = plan(

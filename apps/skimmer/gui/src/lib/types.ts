@@ -39,6 +39,8 @@ export interface Settings {
   channels: ChannelSetting[];
   format: WireFormat;
   tune: boolean;
+  /** Leave control to an SDR# started later, instead of holding it. */
+  yieldControl: boolean;
   channelizer: 'auto' | 'direct' | 'pfb';
   logEnabled: boolean;
   /** Folder the ALL.TXT is written in. */

@@ -32,7 +32,8 @@ QSO-context AP is derived from), `:contest=NAME`, `:avg=1`, `:deepsearch=1`,
 QSO in progress, other) and the operator's call and grid under Settings and apply to a running skimmer at
 the channel's next slot, without a reconnect.
 
-Options: `--tune` (take control of the device and tune it), `--center HZ`,
+Options: `--yield` (leave control to an SDR# started later), `--tune` (hold control
+and tune even with `--yield`), `--center HZ`,
 `--rate S/s`, `--gain N` (with `--tune`), `--format float|int16`
 (default float), `--pfb` (polyphase channelizer; cheaper from a handful of
 channels on), `--iq-swap`, `--reanchor-ms MS` (default 500). Modes:
@@ -112,17 +113,22 @@ SpyServer below: it connects once local network access is allowed.
 
 Observed with SDR# and an Airspy HF+ (2026-10-03):
 
-- Control goes to the first client that connects. **Start SDR# first.** If
-  the skimmer gets control without `--tune`, it leaves and reconnects 10 s
-  later, which hands control to SDR#.
+- Control goes to the first client that connects.
+  - **Alone** (no other client): the skimmer takes control and tunes the radio
+    to its IQ centre, and keeps it. An SDR# started afterwards joins as a guest
+    and cannot tune until the skimmer disconnects.
+  - **Beside SDR#** (started first): the skimmer is the guest and never tunes the
+    device. It sets only its own IQ (DDC) centre, which a client without control
+    may place anywhere in the device's band. It uses the lowest rate that holds
+    the most channels, and pauses the channels that fall outside the band.
+  - `--yield` (GUI: *Give control back*) is the older behaviour for an operator
+    who starts SDR# after the skimmer: given control, leave and reconnect 10 s
+    later, which hands control to SDR#. It wakes the radio and drops it on every
+    retry, so it is off by default.
 - While a second client is connected, the controlling client cannot move the
   device outside its band (about 780 kHz on the HF+). SDR# can still tune
   anywhere inside that band, for example all of 40 m. **To change band, stop
   the skimmer, retune in SDR#, then start the skimmer again.**
-- The skimmer never tunes the device. It sets only its own IQ (DDC) centre,
-  which a client without control may place anywhere in the device's band.
-  It uses the lowest rate that holds the most channels, and pauses the
-  channels that fall outside the band.
 
 ## Time
 

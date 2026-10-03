@@ -117,6 +117,8 @@ struct Settings {
     /// "float" or "int16".
     format: String,
     tune: bool,
+    /// Leave control to an SDR# started later, instead of holding it.
+    yield_control: bool,
     /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
     channelizer: String,
     log_enabled: bool,
@@ -143,6 +145,7 @@ impl Default for Settings {
             channels: Vec::new(),
             format: "float".into(),
             tune: false,
+            yield_control: false,
             channelizer: "auto".into(),
             log_enabled: true,
             log_dir: String::new(),
@@ -377,6 +380,7 @@ fn config(s: &Settings) -> Result<Config, String> {
     let mut cfg = Config::new(s.server.trim(), channels);
     cfg.live.set_station(s.station());
     cfg.tune = s.tune;
+    cfg.yield_control = s.yield_control;
     cfg.format = if s.format == "int16" {
         WireFormat::Int16
     } else {
@@ -429,6 +433,11 @@ fn health_line(ev: &Event) -> Option<String> {
         Event::Gap { messages, at_s } => format!("gap {messages} msg at {at_s:.1}s"),
         Event::Reanchor { by_s } => format!("reanchor {by_s:+.3}s"),
         Event::Disconnected { error } => format!("disconnected {error}"),
+        Event::Connecting { server } => format!("connecting {server}"),
+        Event::Connected { control, device_hz, .. } => {
+            format!("connected control={control} device {device_hz:.0} Hz")
+        }
+        Event::Yielded => "yielded: got control, leaving it (yield_control is set)".to_string(),
         Event::Streaming { rate, active, .. } => format!("streaming {rate} S/s {active:?}"),
         Event::Moved { device_hz, iq_hz } => format!("moved device {device_hz:.0} iq {iq_hz:.0}"),
         _ => return None,

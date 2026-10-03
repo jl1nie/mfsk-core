@@ -23,7 +23,7 @@ fn usage() -> ExitCode {
     let modes: Vec<&str> = MODES.iter().map(|m| m.0).collect();
     eprintln!(
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
-         \x20      [--tune] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
+         \x20      [--tune] [--yield] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS]\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
@@ -43,6 +43,7 @@ fn parse_args() -> Option<(Config, Option<String>)> {
             "--server" => cfg.server = it.next()?,
             "--log" => log = Some(it.next()?),
             "--tune" => cfg.tune = true,
+            "--yield" => cfg.yield_control = true,
             "--center" => cfg.center_hz = Some(it.next()?.parse().ok()?),
             "--rate" => cfg.rate = Some(it.next()?.parse().ok()?),
             "--gain" => cfg.gain = Some(it.next()?.parse().ok()?),
@@ -131,7 +132,7 @@ fn main() -> ExitCode {
         ),
         Event::Yielded => eprintln!(
             "got control of the device; leaving it for the operator's client \
-             (start SDR# first, or pass --tune to run alone)"
+             (--yield is set; drop it to hold control and tune the radio)"
         ),
         Event::NoChannelFits { device_hz } => eprintln!(
             "no channel fits the band around {device_hz:.0} Hz; waiting for the device to move"
