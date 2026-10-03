@@ -114,10 +114,13 @@ export function paint(img: ImageData, s: Strip, spanMs: number) {
   if (s.rows.length === 0) return;
   const newest = s.utc[0];
   const per = spanMs / h;
+  const oldest = s.utc[s.utc.length - 1];
   let r = 0;
   let acc: Uint8Array | null = null;
   for (let y = 0; y < h; y++) {
     const t0 = newest - (y + 1) * per;
+    // Older than the oldest row: nothing to show, and nothing to stretch.
+    if (t0 + per < oldest) break;
     let got: Uint8Array | null = null;
     while (r < s.rows.length && s.utc[r] > t0) {
       const row = s.rows[r];

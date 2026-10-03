@@ -822,6 +822,24 @@ struct ChannelWaterfall {
     coarse: waterfall::Waterfall,
     fine: waterfall::Waterfall,
     ticks: u32,
+    /// The last ~2 minutes of rows at each resolution, so that choosing this
+    /// channel for the large waterfall (or the fine resolution) shows its past
+    /// at once instead of starting empty.
+    hist_coarse: std::collections::VecDeque<waterfall::Row>,
+    hist_fine: std::collections::VecDeque<waterfall::Row>,
+}
+
+/// How much waterfall history is kept, ns: the longest screen any mode shows.
+const WF_KEEP_NS: i64 = 135_000_000_000;
+
+fn remember(hist: &mut std::collections::VecDeque<waterfall::Row>, row: &waterfall::Row) {
+    hist.push_back(row.clone());
+    while hist
+        .front()
+        .is_some_and(|f| f.utc_ns < row.utc_ns - WF_KEEP_NS)
+    {
+        hist.pop_front();
+    }
 }
 
 /// The audio band a waterfall shows: the decoders' own bands lie inside it.
@@ -833,6 +851,8 @@ impl ChannelWaterfall {
             coarse: waterfall::Waterfall::new(4096, 2048, WF_BAND_HZ.0, WF_BAND_HZ.1),
             fine: waterfall::Waterfall::new(8192, 4096, WF_BAND_HZ.0, WF_BAND_HZ.1),
             ticks: 0,
+            hist_coarse: Default::default(),
+            hist_fine: Default::default(),
         }
     }
 }
@@ -933,6 +953,8 @@ fn stream(
     let mut dropped_slots = 0u64;
     let mut seen_generation = cfg.live.generation();
     let mut applied_gain = cfg.live.gain();
+    // The (focus, fine) choice whose history has been sent.
+    let mut wf_sent: (Option<usize>, bool) = (None, false);
     let mut radio = RadioState {
         gain: sync.gain,
         max_gain: dev.max_gain,
@@ -1034,40 +1056,65 @@ fn stream(
             let focus = cfg.live.waterfall_focus();
             let fine = cfg.live.wf_fine.load(Ordering::Acquire);
             let end = rx.utc_of(rx.samples_in());
+            // A new choice of channel or resolution: send its past first.
+            if (focus, fine) != wf_sent {
+                wf_sent = (focus, fine);
+                if let Some(ch) = focus
+                    && let Some(id) = cfg_index.iter().position(|&c| c == ch)
+                    && let Some(Some(wf)) = wfs.get(id)
+                {
+                    let hist = if fine { &wf.hist_fine } else { &wf.hist_coarse };
+                    for row in hist {
+                        on_event(Event::Waterfall(WaterfallRow {
+                            channel: ch,
+                            focus: true,
+                            row: row.clone(),
+                        }));
+                    }
+                }
+            }
             let mut audio = Vec::new();
-            let mut rows = Vec::new();
+            let mut coarse_rows = Vec::new();
+            let mut fine_rows = Vec::new();
             for (id, wf) in wfs.iter_mut().enumerate() {
                 let Some(wf) = wf else { continue };
                 audio.clear();
                 rx.take_audio(mfsk_core::iq::ChannelId(id), &mut audio);
                 let channel = cfg_index[id];
                 let is_focus = focus == Some(channel);
-                rows.clear();
-                // Both resolutions are fed so that switching loses nothing.
-                wf.coarse.push(&audio, end, &mut rows);
-                let mut fine_rows = Vec::new();
-                if is_focus && fine {
-                    wf.fine.push(&audio, end, &mut fine_rows);
+                coarse_rows.clear();
+                fine_rows.clear();
+                // Both resolutions run for every channel: choosing one later
+                // then has a history to show.
+                wf.coarse.push(&audio, end, &mut coarse_rows);
+                wf.fine.push(&audio, end, &mut fine_rows);
+                for r in &coarse_rows {
+                    remember(&mut wf.hist_coarse, r);
                 }
-                let chosen = if is_focus && fine {
-                    fine_rows
+                for r in &fine_rows {
+                    remember(&mut wf.hist_fine, r);
+                }
+                let sent = if is_focus && fine {
+                    &fine_rows
                 } else {
-                    std::mem::take(&mut rows)
+                    &coarse_rows
                 };
-                for row in chosen {
-                    wf.ticks = wf.ticks.wrapping_add(1);
+                for row in sent {
                     if is_focus {
                         on_event(Event::Waterfall(WaterfallRow {
                             channel,
                             focus: true,
-                            row,
+                            row: row.clone(),
                         }));
-                    } else if wf.ticks.is_multiple_of(2) {
-                        on_event(Event::Waterfall(WaterfallRow {
-                            channel,
-                            focus: false,
-                            row: row.pooled(4),
-                        }));
+                    } else {
+                        wf.ticks = wf.ticks.wrapping_add(1);
+                        if wf.ticks.is_multiple_of(2) {
+                            on_event(Event::Waterfall(WaterfallRow {
+                                channel,
+                                focus: false,
+                                row: row.pooled(4),
+                            }));
+                        }
                     }
                 }
             }
