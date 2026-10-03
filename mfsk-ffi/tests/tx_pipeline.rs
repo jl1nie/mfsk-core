@@ -139,6 +139,12 @@ fn every_fst4_submode_has_its_own_geometry() {
 
 /// FST4-60A round-trips too, which is the one that can be decoded
 /// cheaply enough to check here.
+///
+/// At 1000 Hz, inside the band `mfsk_decoder_open` gives FST4 by default:
+/// the GUI's F Low / F High, 600-1400 Hz. This test synthesised at 1500 Hz
+/// from the 0.12 ABI, whose FST4 band was wider, and decoded nothing once
+/// the decoder took the GUI's defaults; it skips unless
+/// `RUN_FST4_ROUNDTRIP` is set, so only CI's `ffi` job saw it fail.
 #[test]
 fn fst4_round_trips() {
     if std::env::var_os("RUN_FST4_ROUNDTRIP").is_none() {
@@ -146,7 +152,7 @@ fn fst4_round_trips() {
         return;
     }
     let msg = pack("CQ", "JA1ABC", "PM95");
-    let frame = synth_i16(MfskMode::Fst4s60, &msg, 1500.0);
+    let frame = synth_i16(MfskMode::Fst4s60, &msg, 1000.0);
     let mut slot = vec![0i16; 60 * FS as usize];
     let start = FS as usize;
     for (i, s) in frame.iter().enumerate() {

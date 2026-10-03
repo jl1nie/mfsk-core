@@ -812,7 +812,7 @@ jobs:
           set -euo pipefail
           DLL=target/x86_64-pc-windows-gnu/release/mfsk.dll
           test -f "$DLL" || { echo "::error::no DLL produced"; exit 1; }
-          for sym in mfsk_abi_version mfsk_session_open mfsk_session_decode_i16 \
+          for sym in mfsk_abi_version mfsk_decoder_open mfsk_decoder_decode_i16 \
                      mfsk_mode_count mfsk_pack77 mfsk_stream_open; do
             x86_64-w64-mingw32-nm -g --defined-only "$DLL" | grep -q " $sym\$" \
               || { echo "::error::$sym is not exported from the DLL"; exit 1; }
