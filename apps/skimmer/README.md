@@ -157,8 +157,20 @@ SpyServer sends no timestamps. The slot grid is anchored on the host clock:
 the anchor is the minimum `arrival − samples/fs` over 30 s, since delay only
 ever makes a message late. After that the device's sample clock keeps time,
 and the skimmer re-anchors only when the estimate moves more than 500 ms.
-Keep the host on NTP. Measured against an Airspy HF+ on the LAN: delivery
-delay 3–11 ms, drift 7 ms in 9 min.
+Measured against an Airspy HF+ on the LAN: delivery delay 3–11 ms, drift 7 ms
+in 9 min.
+
+The host clock can itself be out (Windows syncs weekly by default), which
+moves every station's DT. `--ntp HOST` (GUI: Settings > Clock > NTP, the
+default, `pool.ntp.org`) has the skimmer measure its offset to an NTP server
+(SNTP, the best of five queries by round trip, repeated every 10 minutes) and
+add it to the host clock; the host clock itself is not changed, and if the
+server cannot be reached the host clock is used and the health line says so.
+
+The minimum removes the *varying* part of the delivery delay, not the fixed
+part (the server's buffer, the path), which on the internet is tens to
+hundreds of ms. `--net-delay MS` (GUI: Network delay) is taken off every
+arrival time, live: if every station shows the same DT offset, enter it.
 
 ## Health
 
