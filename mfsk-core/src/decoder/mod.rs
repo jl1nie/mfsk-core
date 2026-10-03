@@ -24,6 +24,15 @@
 //! A one-shot decode of a recording is `Decoder::<P>::new(params)` and one
 //! call.
 
+#[cfg(any(
+    feature = "ft8",
+    feature = "ft4",
+    feature = "fst4",
+    feature = "wspr",
+    feature = "jt9",
+    feature = "jt65",
+    feature = "q65"
+))]
 mod any;
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 mod frame;
@@ -50,6 +59,15 @@ pub use frame::{
     MessageFilter, Sniper, Tuning,
 };
 
+#[cfg(any(
+    feature = "ft8",
+    feature = "ft4",
+    feature = "fst4",
+    feature = "wspr",
+    feature = "jt9",
+    feature = "jt65",
+    feature = "q65"
+))]
 pub use any::{AnyDecoder, AnyExtras, AnySlotResult, Unsupported};
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
 pub use params::SearchTuning;

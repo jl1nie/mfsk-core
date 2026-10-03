@@ -458,6 +458,22 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            // MFSK_SKIMMER_AUTOSTART=1: start with the saved settings, for an
+            // unattended run that only needs the logs (the window shows the
+            // decodes, but its Start button does not know it is running).
+            if std::env::var_os("MFSK_SKIMMER_AUTOSTART").is_some() {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let settings = load_settings(h.clone());
+                    let state = h.state::<AppState>();
+                    if let Err(e) = start(h.clone(), state, settings).await {
+                        eprintln!("autostart: {e}");
+                    }
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
