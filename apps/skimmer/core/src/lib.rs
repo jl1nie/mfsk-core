@@ -408,20 +408,40 @@ pub struct Step {
     /// to a whole number of slots of every mode in it (WSPR's two minutes, so
     /// five is six), so a step ends between slots, not in the middle of one.
     pub minutes: u32,
-    /// The hours of the UTC day this step takes part in, as seconds of the
-    /// day `[from, to)`; `from > to` runs through midnight. `None`: all day.
-    /// Outside them the step is left out of the cycle, which goes on among
-    /// the steps that are in.
-    pub hours: Option<(u32, u32)>,
+    /// The hours of the UTC day this step takes part in, one bit per hour
+    /// (bit 0 is 00:00-01:00): any set of hours, not only a stretch.
+    /// `None`: all day. Outside them the step is left out of the cycle, which
+    /// goes on among the steps that are in.
+    pub hours: Option<u32>,
+}
+
+/// Hours `from` up to (not including) `to` as a mask; `from > to` runs
+/// through midnight.
+pub fn hour_mask(from: u32, to: u32) -> u32 {
+    (0..24)
+        .filter(|&h| {
+            if from <= to {
+                (from..to).contains(&h)
+            } else {
+                h >= from || h < to
+            }
+        })
+        .fold(0, |m, h| m | 1 << h)
 }
 
 impl Step {
     fn is_in(&self, second_of_day: u32) -> bool {
-        match self.hours {
-            None => true,
-            Some((from, to)) if from <= to => (from..to).contains(&second_of_day),
-            Some((from, to)) => second_of_day >= from || second_of_day < to,
-        }
+        self.hours
+            .is_none_or(|m| m >> (second_of_day / 3600) & 1 == 1)
+    }
+
+    /// Seconds of the day at which this step comes in or goes out.
+    fn edges(&self) -> impl Iterator<Item = u32> + '_ {
+        (0..24u32).filter_map(move |h| {
+            let m = self.hours?;
+            let (now, before) = (m >> h & 1, m >> ((h + 23) % 24) & 1);
+            (now != before).then_some(h * 3600)
+        })
     }
 }
 
@@ -468,10 +488,7 @@ impl Config {
         let mut edges: Vec<i64> = Vec::new();
         for d in [day - 86_400, day, day + 86_400, day + 2 * 86_400] {
             for st in &self.steps {
-                if let Some((f, t)) = st.hours {
-                    edges.push(d + i64::from(f));
-                    edges.push(d + i64::from(t));
-                }
+                edges.extend(st.edges().map(|e| d + i64::from(e)));
             }
         }
         let last_edge = edges.iter().copied().filter(|&e| e <= utc_s).max();
@@ -1642,8 +1659,8 @@ mod tests {
     #[test]
     fn bands_take_part_in_their_hours() {
         let mut c = rotating();
-        c.steps[0].hours = Some((6 * 3600, 18 * 3600)); // 20 m, day
-        c.steps[2].hours = Some((18 * 3600, 6 * 3600)); // 80 m, night, through midnight
+        c.steps[0].hours = Some(hour_mask(6, 18)); // 20 m, day
+        c.steps[2].hours = Some(hour_mask(18, 6)); // 80 m, night, through midnight
         let band = |t: i64| c.step_at(DAY + t).and_then(|s| s.0);
         // 03:00: night. 40 m (10 min) and 80 m (5 min) are in.
         let ins: std::collections::HashSet<_> = (0..120).map(|m| band(3 * H + m * 60)).collect();
@@ -1660,12 +1677,28 @@ mod tests {
         assert!(end <= DAY + 6 * H, "{end}");
     }
 
+    /// Hours need not be one stretch: 40 m at 03, 04 and 21 UTC only.
+    #[test]
+    fn hours_can_be_any_set() {
+        let mut c = rotating();
+        c.steps[0].hours = Some(1 << 3 | 1 << 4 | 1 << 21);
+        c.steps.truncate(1);
+        let band = |h: i64, m: i64| c.step_at(DAY + h * H + m * 60).map(|s| s.0);
+        assert_eq!(band(3, 30), Some(Some(0)));
+        assert_eq!(band(4, 59), Some(Some(0)));
+        assert_eq!(band(5, 0), Some(None), "05 is out");
+        assert_eq!(band(21, 0), Some(Some(0)));
+        // The next change after 03:00-05:00 is 21:00; after 21:00-22:00, 03:00 next day.
+        assert_eq!(c.step_at(DAY + 12 * H), Some((None, DAY + 21 * H)));
+        assert_eq!(c.step_at(DAY + 22 * H), Some((None, DAY + 27 * H)));
+    }
+
     /// Nothing is in for a stretch: the rotation says so, and when it ends.
     #[test]
     fn a_gap_in_the_windows_is_idle() {
         let mut c = rotating();
         for s in &mut c.steps {
-            s.hours = Some((10 * 3600, 12 * 3600));
+            s.hours = Some(hour_mask(10, 12));
         }
         assert_eq!(c.step_at(DAY + 9 * H), Some((None, DAY + 10 * H)));
         assert_eq!(c.mask_at(DAY + 9 * H).0, vec![false; 3]);

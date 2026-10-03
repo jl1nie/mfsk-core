@@ -148,9 +148,14 @@ struct ServerSetting {
 struct RotationStep {
     band: String,
     minutes: u32,
-    /// The UTC hours this band takes part in, `HH:MM`; both empty: all day. From
-    /// later than to runs through midnight.
+    /// The UTC hours this band takes part in: 24 flags, hour 0 first. Empty:
+    /// all day.
+    hours: Vec<bool>,
+    /// From before hours were set one by one: a stretch `HH:MM`-`HH:MM`, read
+    /// into `hours` and not written back.
+    #[serde(skip_serializing)]
     from: String,
+    #[serde(skip_serializing)]
     to: String,
 }
 
@@ -158,7 +163,8 @@ impl Default for RotationStep {
     fn default() -> Self {
         RotationStep {
             band: String::new(),
-            minutes: 10,
+            minutes: 6,
+            hours: Vec::new(),
             from: String::new(),
             to: String::new(),
         }
@@ -166,27 +172,35 @@ impl Default for RotationStep {
 }
 
 impl RotationStep {
-    /// The window as seconds of the UTC day; `None` is all day.
-    fn hours(&self) -> Result<Option<(u32, u32)>, String> {
-        let t = |s: &str| -> Result<u32, String> {
-            let (h, m) = s
-                .trim()
-                .split_once(':')
-                .ok_or_else(|| format!("{}: time {s:?} is not HH:MM", self.band))?;
-            let (h, m): (u32, u32) = (
-                h.parse().map_err(|_| format!("{}: bad hour {h:?}", self.band))?,
-                m.parse().map_err(|_| format!("{}: bad minute {m:?}", self.band))?,
-            );
-            if h > 24 || m > 59 || (h == 24 && m > 0) {
-                return Err(format!("{}: time {s:?} is out of range", self.band));
-            }
-            Ok(h * 3600 + m * 60)
-        };
-        match (self.from.trim(), self.to.trim()) {
-            ("", "") => Ok(None),
-            (f, to) if !f.is_empty() && !to.is_empty() => Ok(Some((t(f)?, t(to)?)).filter(|(a, b)| a != b)),
-            _ => Err(format!("{}: give both the start and the end, or neither", self.band)),
+    /// An old `from`-`to` stretch as hour flags (the hours it touches).
+    fn migrate(&mut self) {
+        if !self.hours.is_empty() || self.from.trim().is_empty() || self.to.trim().is_empty() {
+            return;
         }
+        let hour = |s: &str| s.trim().split(':').next().and_then(|h| h.parse::<u32>().ok());
+        if let (Some(f), Some(t)) = (hour(&self.from), hour(&self.to)) {
+            let (f, t) = (f % 24, t % 24);
+            if f != t {
+                self.hours = (0..24)
+                    .map(|h| if f < t { h >= f && h < t } else { h >= f || h < t })
+                    .collect();
+            }
+        }
+        self.from.clear();
+        self.to.clear();
+    }
+
+    /// The hours as the bits the rotation takes; `None` is all day.
+    fn mask(&self) -> Option<u32> {
+        if self.hours.len() != 24 || self.hours.iter().all(|&h| h) {
+            return None;
+        }
+        Some(
+            self.hours
+                .iter()
+                .enumerate()
+                .fold(0, |m, (h, &on)| m | u32::from(on) << h),
+        )
     }
 }
 
@@ -264,6 +278,11 @@ impl Settings {
             s.yield_control = self.yield_control;
             s.network_delay_ms = self.network_delay_ms;
             self.servers.push(s);
+        }
+        for s in &mut self.servers {
+            for r in &mut s.rotation {
+                r.migrate();
+            }
         }
         // Names are the database's key: unique, and never empty.
         let mut seen = std::collections::HashSet::new();
@@ -680,7 +699,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         if srv.rotate && !srv.rotation.is_empty() {
             let mut steps = Vec::new();
             for r in &srv.rotation {
-                let hours = r.hours()?;
+                let hours = r.mask();
                 let chs: Vec<usize> = mine
                     .iter()
                     .enumerate()

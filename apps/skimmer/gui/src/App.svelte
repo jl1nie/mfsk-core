@@ -411,7 +411,7 @@
       (settings?.channels ?? []).filter((c) => (c.server ?? 0) === i).map((c) => bandOfHz(c.dialHz)),
     );
     const next = sv.rotation.filter((r) => bands.has(r.band));
-    for (const b of sortBands(bands)) if (!next.some((r) => r.band === b)) next.push({ band: b, minutes: 10, from: '', to: '' });
+    for (const b of sortBands(bands)) if (!next.some((r) => r.band === b)) next.push({ band: b, minutes: 6, hours: [] });
     if (JSON.stringify(next) !== JSON.stringify(sv.rotation)) sv.rotation = next;
   }
 
@@ -515,10 +515,10 @@
                   <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
                 </div>
                 <div class="rothours">
-                  <HoursPicker from={r.from} to={r.to} grid={sv.grid} onchange={(a, b) => { r.from = a; r.to = b; rotationChanged(); }} />
+                  <HoursPicker hours={r.hours} grid={sv.grid} onchange={(h) => { r.hours = h; rotationChanged(); }} />
                 </div>
               {/each}
-              <p class="hint">At least 4 minutes each, rounded up to a whole number of the slots of the band's modes (WSPR's are 2 minutes, so 5 becomes 6); a retune costs a slot or two. Drag across the hours (UTC) a band takes part in, leftwards to run through midnight; or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
+              <p class="hint">At least 4 minutes each, rounded up to a whole number of the slots of the band's modes (WSPR's are 2 minutes, so 5 becomes 6); a retune costs a slot or two. Click the hours (UTC) a band takes part in, one by one, or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
             {/if}
           {/if}
           <h3>Radio · {settings.servers[sel]?.name}</h3>

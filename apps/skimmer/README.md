@@ -172,13 +172,13 @@ from UTC midnight instead, so a restart is at the same step at the same moment. 
 decoded before leaving, and a channel's decoder (with its callsign table) and
 its waterfall history wait for the band's next turn.
 
-Each band can also be given the **UTC hours it takes part in** (empty is all
-day; `20:00`–`04:00` runs through midnight): 7 MHz all day, 14 MHz only by
-day, 3.5 MHz only by night. In the GUI, "day" and "night" are 06–18 and 18–06 of the
-local time of the server (from its locator's longitude, else this PC's time zone),
-shown in UTC. The cycle goes on among the bands that are in at
-that hour and starts again whenever the set changes; when none is in, nothing
-is heard until one opens.
+Each band can also be given the **UTC hours it takes part in**, hour by hour
+(24 dots to click, any set of hours: 7 MHz all day, 14 MHz only by day, 3.5 MHz
+only by night, or just 03, 04 and 21). In the GUI, "day" and "night" are 06-18 and
+18-06 of the local time of the server (from its locator's longitude, else this PC's
+time zone), shown in UTC. The cycle goes on among the bands that are in at that
+hour and starts again whenever the set changes; when none is in, nothing is heard
+until one opens.
 
 The database records which server heard each decode and where that server is,
 so Analysis can filter by server, centre the map on any of them, and measure

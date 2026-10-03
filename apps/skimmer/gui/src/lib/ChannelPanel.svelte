@@ -290,7 +290,7 @@
   <h2>Channels</h2>
   {#each servers as sv, si (si)}
     {#if servers.length > 1}
-      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.rotate && sv.rotation.length ? ` · rotating ${sv.rotation.map((r) => `${r.band} ${r.minutes}${r.from && r.to ? ` (${r.from}–${r.to})` : ''}`).join(' / ')}` : ''}</h3>
+      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.rotate && sv.rotation.length ? ` · rotating ${sv.rotation.map((r) => `${r.band} ${r.minutes}${r.hours.length === 24 && !r.hours.every(Boolean) ? ' (some hours)' : ''}`).join(' / ')}` : ''}</h3>
     {/if}
     <ul class="channels">
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}

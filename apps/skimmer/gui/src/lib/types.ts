@@ -57,13 +57,12 @@ export interface ServerSetting {
   rotation: RotationStep[];
 }
 
-/** One band of a rotation: the channels of the band (its modes together) are heard for `minutes`. */
+/** One band of a rotation: the channels of the band (its modes together) are heard for `minutes` per turn. */
 export interface RotationStep {
   band: string;
   minutes: number;
-  /** The UTC hours this band takes part in, `HH:MM`; both empty: all day. From later than to runs through midnight. */
-  from: string;
-  to: string;
+  /** The UTC hours this band takes part in: 24 flags, hour 0 first; empty is all day. */
+  hours: boolean[];
 }
 
 export interface Settings {
