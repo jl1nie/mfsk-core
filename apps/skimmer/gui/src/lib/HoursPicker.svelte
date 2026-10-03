@@ -4,13 +4,18 @@
    * across (drag leftwards to run through midnight), and presets for the usual.
    * Empty from/to is the whole day.
    */
+  import { gridLonLat } from './analysis';
+
   let {
     from,
     to,
+    grid = '',
     onchange,
   }: {
     from: string;
     to: string;
+    /** The server's locator: its local time sets what "day" and "night" mean. */
+    grid?: string;
     onchange: (from: string, to: string) => void;
   } = $props();
 
@@ -49,17 +54,26 @@
     else onchange(clock(a), clock(end));
   }
 
-  const PRESETS: [string, string, string][] = [
-    ['all day', '', ''],
-    ['day 06–18', '06:00', '18:00'],
-    ['night 18–06', '18:00', '06:00'],
-  ];
-  // The same hours on this PC's clock, for those who think in local time.
+  /**
+   * Hours from UTC to the local time of the server: its longitude / 15 (mean
+   * solar time) when the grid is given, else this PC's time zone.
+   */
+  const place = $derived.by(() => {
+    const g = gridLonLat(grid);
+    if (g) return { off: Math.round(g[0] / 15), name: `at ${grid.toUpperCase()}` };
+    return { off: Math.round(-new Date().getTimezoneOffset() / 60), name: 'on this PC' };
+  });
+  const utcOf = (localHour: number) => clock((((localHour - place.off) % 24) + 24) % 24);
+  const presets = $derived<[string, string, string, string][]>([
+    ['all day', '', '', 'The whole UTC day'],
+    ['day', utcOf(6), utcOf(18), `06:00–18:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off})`],
+    ['night', utcOf(18), utcOf(6), `18:00–06:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off})`],
+  ]);
+  // The same hours on that clock.
   const local = $derived.by(() => {
     if (allDay) return '';
-    const off = -new Date().getTimezoneOffset() / 60;
-    const z = (x: number) => clock((((Math.round(x + off) % 24) + 24) % 24));
-    return `${z(f!)}–${z(t!)} local`;
+    const z = (x: number) => clock((((Math.round(x + place.off) % 24) + 24) % 24));
+    return `${z(f!)}–${z(t!)} local ${place.name}`;
   });
 </script>
 
@@ -81,8 +95,8 @@
   </div>
   <div class="scale"><span>0</span><span>6</span><span>12</span><span>18</span><span>24 UTC</span></div>
   <div class="pre">
-    {#each PRESETS as [name, a, b] (name)}
-      <button type="button" class="chip" class:on={from === a && to === b} onclick={() => onchange(a, b)}>{name}</button>
+    {#each presets as [name, a, b, tip] (name)}
+      <button type="button" class="chip" class:on={from === a && to === b} title={tip} onclick={() => onchange(a, b)}>{name}</button>
     {/each}
     <span class="hint">{allDay ? 'all day' : `${from}–${to} UTC`}{local ? ` · ${local}` : ''}</span>
   </div>

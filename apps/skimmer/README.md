@@ -173,7 +173,9 @@ its waterfall history wait for the band's next turn.
 
 Each band can also be given the **UTC hours it takes part in** (empty is all
 day; `20:00`–`04:00` runs through midnight): 7 MHz all day, 14 MHz only by
-day, 3.5 MHz only by night. The cycle goes on among the bands that are in at
+day, 3.5 MHz only by night. In the GUI, "day" and "night" are 06–18 and 18–06 of the
+local time of the server (from its locator's longitude, else this PC's time zone),
+shown in UTC. The cycle goes on among the bands that are in at
 that hour and starts again whenever the set changes; when none is in, nothing
 is heard until one opens.
 

@@ -515,7 +515,7 @@
                   <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
                 </div>
                 <div class="rothours">
-                  <HoursPicker from={r.from} to={r.to} onchange={(a, b) => { r.from = a; r.to = b; rotationChanged(); }} />
+                  <HoursPicker from={r.from} to={r.to} grid={sv.grid} onchange={(a, b) => { r.from = a; r.to = b; rotationChanged(); }} />
                 </div>
               {/each}
               <p class="hint">At least 5 minutes each (a retune costs a slot or two). Drag across the hours (UTC) a band takes part in, leftwards to run through midnight; or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
