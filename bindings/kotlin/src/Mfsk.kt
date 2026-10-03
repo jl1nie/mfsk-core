@@ -7,16 +7,39 @@
 // stays in `mfsk-ffi`, so a Kotlin consumer gets exactly what a C
 // consumer gets — including the refusals.
 //
+// One decoder handle serves every slot mode (FT8, FT4, FST4, WSPR, JT9,
+// JT65, Q65): [MfskDecoder], opened with an [MfskParams] (WSJT-X's
+// per-period parameter block) and an [MfskExtras] (the library's options).
+// JTTY has no slot and keeps its own receiver, [MfskJttyReceiver].
+//
 // Works on a desktop JVM and on Android with the NDK; CI builds the
 // shim and runs the test below on Linux every PR.
 
 package io.github.mfskcore
 
+/// A call the library refused or could not do. The message is the ABI's own
+/// text for the failure (the decoder's per-handle error slot when there is a
+/// handle), and [status] the `MfskStatus` it came with.
+open class MfskException(message: String, val status: Int) : RuntimeException(message)
+
+/// `MFSK_STATUS_UNSUPPORTED`: the mode exists in this build but does not have
+/// what was asked for (an option it lacks, a budget it does not poll, hashed
+/// calls it does not carry). The message names the mode and the option. The
+/// `Mfsk.CAP_*` bits say in advance which mode has what.
+class MfskUnsupportedException(message: String, status: Int) : MfskException(message, status)
+
+/// `MFSK_STATUS_INVALID_ARG`: a value out of range, a buffer too short, a
+/// parameter block that is not usable. Refused, never clamped.
+class MfskInvalidArgException(message: String, status: Int) : MfskException(message, status)
+
+/// `MFSK_STATUS_UNKNOWN_PROTOCOL`: the mode is not in this build.
+class MfskUnknownModeException(message: String, status: Int) : MfskException(message, status)
+
 /// One decoded transmission.
 ///
 /// A value type, not a handle: the ABI writes rows into memory the
 /// caller owns, so there is nothing here to close and nothing that can
-/// outlive a session.
+/// outlive a decoder.
 data class MfskDecode(
     /// The concrete sub-mode — FST4-120 rather than "FST4".
     val mode: Int,
@@ -49,7 +72,7 @@ data class MfskDecode(
 /// them before the call returns.
 ///
 /// A `fun interface`, so a lambda is enough:
-/// `session.onDecode { row -> ... }`.
+/// `decoder.onDecode { row -> ... }`.
 fun interface MfskDecodeListener {
     fun onDecode(row: MfskDecode)
 }
@@ -60,7 +83,7 @@ fun interface MfskDecodeListener {
 /// **The library reads no clock**, so the deadline is yours:
 /// ```kotlin
 /// val deadline = System.nanoTime() + 200_000_000
-/// session.setBudget { System.nanoTime() < deadline }
+/// decoder.setBudget { System.nanoTime() < deadline }
 /// ```
 /// This is polled per candidate and crosses JNI each time, so keep it
 /// to a comparison — anything heavier belongs behind a boolean the JVM
@@ -89,18 +112,157 @@ data class MfskBudgetReport(
     val cutAtScore: Float?,
 )
 
-/// An a-priori hypothesis, as the message's own fields in order.
+// ── The parameter block ─────────────────────────────────────────────
+
+/// `ndepth & 7`.
+enum class MfskDepth(internal val code: Int) {
+    FAST(1), NORMAL(2),
+    /// The GUI's default.
+    DEEP(3);
+
+    internal companion object {
+        // 0 is the ABI's spelling of "the default", which is Deep.
+        fun of(code: Int): MfskDepth = entries.firstOrNull { it.code == code } ?: DEEP
+    }
+}
+
+/// Which a-priori hypotheses the QSO context may add (`lft8apon`, `lapcqonly`).
+enum class MfskApMode(internal val code: Int) {
+    OFF(0),
+    /// Only the CQ hypothesis.
+    CQ_ONLY(1),
+    /// Every hypothesis the QSO context allows.
+    FULL(2);
+
+    internal companion object {
+        fun of(code: Int): MfskApMode = entries.first { it.code == code }
+    }
+}
+
+/// `ncontest`.
+enum class MfskContest(internal val code: Int) {
+    NONE(0),
+    /// NA VHF, WW Digi, ARRL Digi, Q65 pileup: a 4-character grid exchange.
+    GRID_EXCHANGE(1),
+    EU_VHF(2), FIELD_DAY(3), RTTY_ROUNDUP(4),
+    /// FT8 DXpedition, Fox.
+    FOX(6),
+    /// FT8 DXpedition, Hound.
+    HOUND(7);
+
+    internal companion object {
+        fun of(code: Int): MfskContest = entries.first { it.code == code }
+    }
+}
+
+/// `nQSOProgress`: where the operator's own QSO stands, which decides the AP
+/// hypotheses tried.
+enum class MfskQsoProgress(internal val code: Int) {
+    CALLING(0), REPLYING(1), REPORT(2), ROGER_REPORT(3), ROGERS(4), SIGNOFF(5);
+
+    internal companion object {
+        fun of(code: Int): MfskQsoProgress = entries.first { it.code == code }
+    }
+}
+
+/// `mycall` and `mygrid`.
+data class MfskStation(val call: String = "", val grid: String = "")
+
+/// `hiscall`, `hisgrid` and `nQSOProgress`.
+data class MfskQso(
+    val hisCall: String = "",
+    val hisGrid: String = "",
+    val progress: MfskQsoProgress = MfskQsoProgress.CALLING,
+)
+
+/// The per-period parameter block — WSJT-X's `params` common block
+/// (`lib/jt9com.f90`): what the GUI fills before each period and the decoder
+/// reads. A mode reads what its upstream decoder reads and ignores the rest,
+/// as `jt9` does; [depth] decides every search setting the way `ndepth` does.
 ///
-/// `call1` is the message's **first** callsign field — `"CQ"` for a CQ, not
-/// the transmitting station — and locks message bits 0-28, `call2` the
-/// second and locks 29-57, `grid` locks 58-73. A hint locks bits rather
-/// than steering a search, so the wrong order removes decodes instead of
-/// costing a fraction of a dB. Each field is truncated to the ABI's 15
-/// characters.
+/// **Start from [Mfsk.defaultParams] and `copy` what you want to change.**
+/// The constructor's defaults are the neutral ones, not each mode's: FT4's
+/// AP starts on and FT8's off, and the band is the mode's own.
+/// The text fields are limited to the ABI's inline capacity (15 characters
+/// for a call, 7 for a grid); longer is refused, not truncated.
+data class MfskParams(
+    /// Audio band searched, Hz (`nfa`..`nfb`).
+    val band: ClosedFloatingPointRange<Float>,
+    /// The Rx frequency, Hz (`nfqso`), or null.
+    val rxFreqHz: Float? = null,
+    /// Tolerance around the Rx frequency, Hz (`ntol`), or null.
+    val tolHz: Float? = null,
+    /// The Tx frequency, Hz (`nftx`), or null. Steers FT8's AP search.
+    val txFreqHz: Float? = null,
+    val depth: MfskDepth = MfskDepth.DEEP,
+    /// Average over periods (`ndepth & 16`; JT65 and Q65). Needs a `period`
+    /// on each decode, consecutive ones.
+    val averaging: Boolean = false,
+    /// JT65 deep search (`ndepth & 32`).
+    val deepSearch: Boolean = false,
+    /// EME delay (`emedelay`; Q65: the late edge reaches +5.5 s).
+    val emeDelay: Boolean = false,
+    val station: MfskStation = MfskStation(),
+    val qso: MfskQso = MfskQso(),
+    val ap: MfskApMode = MfskApMode.OFF,
+    val contest: MfskContest = MfskContest.NONE,
+) {
+    internal companion object {
+        // Slot counts of the three arrays that cross JNI — the layout is
+        // documented at `read_params` in mfsk_jni.c and must move with it.
+        const val FLOATS = 5
+        const val INTS = 5
+        const val STRINGS = 4
+
+        fun fromArrays(f: FloatArray, v: IntArray, s: Array<String?>): MfskParams =
+            MfskParams(
+                band = f[0]..f[1],
+                // NaN is the ABI's spelling of "unset": 0 Hz is a frequency.
+                rxFreqHz = f[2].takeUnless { it.isNaN() },
+                tolHz = f[3].takeUnless { it.isNaN() },
+                txFreqHz = f[4].takeUnless { it.isNaN() },
+                depth = MfskDepth.of(v[0]),
+                averaging = v[1] and 1 != 0,
+                deepSearch = v[1] and 2 != 0,
+                emeDelay = v[1] and 4 != 0,
+                ap = MfskApMode.of(v[2]),
+                contest = MfskContest.of(v[3]),
+                station = MfskStation(s[0] ?: "", s[1] ?: ""),
+                qso = MfskQso(s[2] ?: "", s[3] ?: "", MfskQsoProgress.of(v[4])),
+            )
+    }
+
+    internal fun floatArray() = floatArrayOf(
+        band.start, band.endInclusive,
+        rxFreqHz ?: Float.NaN, tolHz ?: Float.NaN, txFreqHz ?: Float.NaN,
+    )
+
+    internal fun intArray() = intArrayOf(
+        depth.code,
+        (if (averaging) 1 else 0) or (if (deepSearch) 2 else 0) or (if (emeDelay) 4 else 0),
+        ap.code, contest.code, qso.progress.code,
+    )
+
+    internal fun stringArray(): Array<String?> =
+        arrayOf(station.call, station.grid, qso.hisCall, qso.hisGrid)
+}
+
+// ── The library's options ───────────────────────────────────────────
+
+/// An a-priori hypothesis, as the message's own fields in order, beside the
+/// QSO-context AP (it wins when both are given).
+///
+/// [call1] is the message's **first** callsign field — `"CQ"` for a CQ, not
+/// the transmitting station — and locks message bits 0-28, [call2] the
+/// second and locks 29-57, [grid] locks 58-73, [report] is `"RRR"`, `"RR73"`,
+/// `"73"` or a report. A hint locks bits rather than steering a search, so the
+/// wrong order removes decodes instead of costing a fraction of a dB. Each
+/// field is limited to the ABI's 15 characters.
 data class MfskApHint(
     val call1: String = "",
     val call2: String = "",
     val grid: String = "",
+    val report: String = "",
 )
 
 /// WSJT-X's **NB** setting for FST4: an impulse-noise blanker run before
@@ -114,146 +276,52 @@ sealed interface MfskNoiseBlanker {
 
     /// Decode once per blanking level `0, step, 2*step, .. 20` percent.
     /// [step] is 5, 2 or 1 (the GUI offers 5 and 2). Every level above 0
-    /// searches only within [toleranceHz] of [MfskDecodeParams.freqHintHz],
-    /// so **without a hint only the 0 % pass runs**. Costs up to 21 decodes.
+    /// searches only within [toleranceHz] of [MfskParams.rxFreqHz], so
+    /// **without an Rx frequency only the 0 % pass runs**. Costs up to 21
+    /// decodes.
     data class Sweep(val step: Int, val toleranceHz: Float) : MfskNoiseBlanker
 }
 
-/// Everything a decode can be asked to do — `MfskDecodeParams` in the C
-/// ABI.
-///
-/// **Start from [Mfsk.defaultParams] and `copy` what you want to change.**
-/// There is deliberately no constructor default: zeroing the fields is not
-/// equivalent to a mode's defaults — a zero [maxCand] or a zero band
-/// decodes nothing — which is why the ABI has an init call at all.
-///
-/// A parameter the mode does not have is an error at
-/// [MfskSession.open], not a field silently dropped at decode time; the
-/// `Mfsk.CAP_*` bits say which mode has what.
-data class MfskDecodeParams(
-    /// Search band edges, Hz.
-    val freqMinHz: Float,
-    val freqMaxHz: Float,
-    /// Sync threshold. **Not comparable across modes**: FT4's and FST4's
-    /// are measured on a different scale from FT8's (`mfsk_mode_defaults`
-    /// publishes each mode's scale).
-    val syncMin: Float,
-    val maxCand: Int,
-    /// [DEPTH_MODE_DEFAULT], [DEPTH_BP_ALL] or [DEPTH_BP_ALL_OSD].
-    val depth: Int,
-    /// [STRICTNESS_STRICT], [STRICTNESS_NORMAL] or [STRICTNESS_DEEP].
-    val strictness: Int,
-    /// [EQ_OFF] or [EQ_LOCAL]. A property of the *input audio* — it
-    /// flattens a passband an analogue filter has tilted — not of the
-    /// search.
-    val eqMode: Int,
-    /// Prioritise candidates near this frequency, or null. It is also the
-    /// QSO frequency for the a-priori passes: an AP hint that locks both
-    /// callsigns is tried only within 50 Hz of it (or of [txFreqHz] on
-    /// FT8), and not at all when it is unset.
-    val freqHintHz: Float?,
-    /// Successive-interference-cancellation rounds, 0 for none. Needs
-    /// [Mfsk.CAP_SIC_ROUNDS].
-    val sicRounds: Int,
-    /// Checkpoint-emulation early decode. Needs [Mfsk.CAP_SIC_EARLY].
-    val sicEarly: Boolean,
-    /// A-priori hint, or null. Needs [Mfsk.CAP_AP_WIDEBAND].
-    val apHint: MfskApHint?,
-    /// Half-width of a narrow-band search, Hz; 0 for the mode's default.
-    /// Needs [Mfsk.CAP_SNIPER], and [freqHintHz] as the carrier to aim at.
-    val searchHz: Float,
-    /// The operator's transmit frequency (WSJT-X's `nftx`), or null. FT8
-    /// also tries the AP hypothesis that locks both callsigns within 50 Hz
-    /// of it. Needs [Mfsk.CAP_TX_FREQ] and the wide-band search.
-    val txFreqHz: Float?,
-    /// Impulse-noise blanker, or null for none. Needs
-    /// [Mfsk.CAP_NOISE_BLANKER].
-    val noiseBlanker: MfskNoiseBlanker?,
-    /// One pass, no subtraction, in place of the mode's default. Since
-    /// 0.12.0 FT8 and FT4 subtract by default, as WSJT-X does. Refused
-    /// together with [sicRounds] or [sicEarly].
-    val singlePass: Boolean = false,
-) {
-    companion object {
-        const val DEPTH_MODE_DEFAULT = 0
-        /// Full LLR-variant staircase + BP, no OSD fallback.
-        const val DEPTH_BP_ALL = 1
-        /// Above + OSD fallback (host-only).
-        const val DEPTH_BP_ALL_OSD = 2
+/// How the search is run, in place of the depth's own.
+sealed interface MfskStrategy {
+    /// The depth's.
+    data object Default : MfskStrategy
 
-        const val STRICTNESS_STRICT = 0
-        const val STRICTNESS_NORMAL = 1
-        /// Deliberately exceeds WSJT-X's own FT8 ceiling; exploratory.
-        const val STRICTNESS_DEEP = 2
+    /// One pass, no subtraction. Since 0.12.0 FT8 and FT4 subtract by default,
+    /// as WSJT-X does.
+    data object SinglePass : MfskStrategy
 
-        const val EQ_OFF = 0
-        const val EQ_LOCAL = 1
+    /// [rounds] rounds of flat successive-interference cancellation. FT8, FT4.
+    data class SicRounds(val rounds: Int) : MfskStrategy
 
-        // Slot counts of the three arrays that cross JNI — the layout is
-        // documented at `read_params` in mfsk_jni.c and must move with it.
-        internal const val FLOATS = 7
-        internal const val INTS = 10
-
-        internal fun fromArrays(f: FloatArray, v: IntArray): MfskDecodeParams =
-            MfskDecodeParams(
-                freqMinHz = f[0],
-                freqMaxHz = f[1],
-                syncMin = f[2],
-                maxCand = v[0],
-                depth = v[1],
-                strictness = v[2],
-                eqMode = v[3],
-                // NaN is the ABI's spelling of "unset": 0 Hz is a frequency.
-                freqHintHz = f[3].takeUnless { it.isNaN() },
-                sicRounds = v[4],
-                sicEarly = v[5] != 0,
-                // `mfsk_decode_params_init` never writes an AP hint.
-                apHint = null,
-                searchHz = f[4],
-                txFreqHz = f[5].takeUnless { it.isNaN() },
-                noiseBlanker = when {
-                    v[8] != 0 -> MfskNoiseBlanker.Sweep(v[8], f[6])
-                    v[7] != 0 -> MfskNoiseBlanker.Percent(v[7])
-                    else -> null
-                },
-                singlePass = v[9] != 0,
-            )
-    }
-
-    internal fun floatArray(): FloatArray {
-        val sweep = noiseBlanker as? MfskNoiseBlanker.Sweep
-        return floatArrayOf(
-            freqMinHz, freqMaxHz, syncMin, freqHintHz ?: Float.NaN,
-            searchHz, txFreqHz ?: Float.NaN, sweep?.toleranceHz ?: 0f,
-        )
-    }
-
-    internal fun intArray(): IntArray {
-        val pct = (noiseBlanker as? MfskNoiseBlanker.Percent)?.percent ?: 0
-        val step = (noiseBlanker as? MfskNoiseBlanker.Sweep)?.step ?: 0
-        return intArrayOf(
-            maxCand, depth, strictness, eqMode, sicRounds,
-            if (sicEarly) 1 else 0, if (apHint != null) 1 else 0, pct, step,
-            if (singlePass) 1 else 0,
-        )
-    }
-
-    internal fun apArray(): Array<String?> =
-        arrayOf(apHint?.call1, apHint?.call2, apHint?.grid)
+    /// FT8's checkpointed passes (`sic_early`). FT8 only.
+    data object SicEarly : MfskStrategy
 }
 
-/// A Q65 a-priori hint: the message's fields in order, `call1` being `"CQ"` for a
-/// CQ and not the transmitting station. Each field is truncated to 15
-/// characters.
-data class MfskQ65ApHint(
-    val call1: String = "",
-    val call2: String = "",
-    val grid: String = "",
-    /// The report the hint may carry, e.g. `"-15"`.
-    val report: String = "",
-)
+/// `0` off, `1` local per-signal equalisation. A property of the *input audio*
+/// — it flattens a passband an analogue filter has tilted — not of the search.
+enum class MfskEqMode(internal val code: Int) { OFF(0), LOCAL(1) }
 
-/// The fast-fading metric: [b90Ts] is spread bandwidth times symbol period
+/// The accept/reject profile.
+enum class MfskStrictness(internal val code: Int) {
+    STRICT(0), NORMAL(1),
+    /// Deliberately exceeds WSJT-X's own FT8 ceiling; exploratory.
+    DEEP(2);
+
+    internal companion object {
+        fun of(code: Int): MfskStrictness? = entries.firstOrNull { it.code == code }
+    }
+}
+
+/// Which messages are kept.
+enum class MfskMessageFilter(internal val code: Int) {
+    /// The protocol's own message filter.
+    DEFAULT(0),
+    /// The codec's verdict alone.
+    CODEC(1),
+}
+
+/// The Q65 fast-fading metric: [b90Ts] is spread bandwidth times symbol period
 /// (typical 0.05 near-AWGN, 1.0 moderate, 5+ severe).
 data class MfskQ65Fading(val b90Ts: Float, val model: Int = GAUSSIAN) {
     companion object {
@@ -263,111 +331,127 @@ data class MfskQ65Fading(val b90Ts: Float, val model: Int = GAUSSIAN) {
     }
 }
 
-/// Full-AP list decoding. With [MfskQ65Params.rxFreqHz] it is WSJT-X's **q3**
-/// decode, run first at the Rx frequency; without it, template matching at
-/// every coarse candidate.
-sealed interface MfskQ65List {
-    /// The standard QSO list for `myCall` and the DX station.
-    data class Standard(
-        val myCall: String,
-        val hisCall: String,
-        val hisGrid: String = "",
-    ) : MfskQ65List
-
-    /// The **contest list** (`q65_set_list2`): every caller in the
-    /// [MfskQ65Callers] passed to [Mfsk.decodeQ65], and the DX station too if
-    /// [hisCall] is given.
-    data class Contest(
-        val myCall: String,
-        val hisCall: String = "",
-        val hisGrid: String = "",
-    ) : MfskQ65List
-}
-
-/// Everything a Q65 decode can be asked to do — `MfskQ65Params` in the C ABI.
+/// The library's options beyond the parameter block — `MfskExtras` in the C
+/// ABI. Every field's default is "unset", which is the depth's own value, so
+/// `MfskExtras()` is what `mfsk_extras_init` writes.
 ///
-/// **Start from [Mfsk.q65DefaultParams] and `copy`.** As with
-/// [MfskDecodeParams] there is deliberately no constructor default. A
-/// combination the engine would quietly not honour — a list with fading, an Rx
-/// frequency with no list, Pileup with no AP hint, Max Drift with fading — is
-/// refused by [Mfsk.decodeQ65] with the reason, not dropped.
-data class MfskQ65Params(
-    val freqMinHz: Float,
-    val freqMaxHz: Float,
-    /// Where `dt = 0` is in the buffer, seconds — the mode's `tx_start_offset_s`
-    /// by default, right for a buffer that begins at the slot boundary. It also
-    /// places the period Max Drift normalises over and the q3 decode's slot
-    /// start, so it has to be true and not merely convenient.
-    val nominalStartS: Float,
-    /// How far before/after [nominalStartS] a frame may start. Default ±1 s,
-    /// WSJT-X's own window.
-    val tEarlyS: Float,
-    val tLateS: Float,
-    /// Coarse-sync acceptance, a fraction of sync plus noise (0..1).
-    val scoreThreshold: Float,
-    val maxCand: Int,
-    /// **Q65 Pileup**: an AP hint naming both callsigns and nothing after them
-    /// leaves the spare 78th bit free, so a reply carrying the "copied last Tx"
-    /// flag still matches. Needs [apHint].
-    val pileup: Boolean,
-    /// **EME delay** ("Decode at 52 s"): the late edge reaches +5.5 s (+4.0 s on
-    /// Q65-15) instead of [tLateS].
-    val emeDelay: Boolean,
-    /// **Max Drift**, spectrum bins `0..=50`; 0 is off. Costs `2*bins+1` times
-    /// the plain search, so narrow the frequency window to match.
-    val maxDrift: Int,
-    /// The Rx frequency the q3 decode looks around, or null. Needs [list].
-    val rxFreqHz: Float?,
-    /// WSJT-X's F Tol around [rxFreqHz].
-    val ftolHz: Float,
-    val fading: MfskQ65Fading?,
-    val list: MfskQ65List?,
-    val apHint: MfskQ65ApHint?,
+/// **An option the mode does not have is refused**, with
+/// [MfskUnsupportedException] naming it, when the extras are applied
+/// ([MfskDecoder.open], [MfskDecoder.setExtras]) — never dropped at decode
+/// time. [MfskDecoder.setExtras] replaces the whole block, so what you leave
+/// unset goes back to the depth's value.
+data class MfskExtras(
+    /// Sync threshold over the depth's. **Not comparable across modes.**
+    val syncMin: Float? = null,
+    /// Candidate budget over the depth's.
+    val maxCand: Int? = null,
+    /// OSD over the depth's.
+    val osd: Boolean? = null,
+    val strictness: MfskStrictness? = null,
+    val strategy: MfskStrategy = MfskStrategy.Default,
+    val eqMode: MfskEqMode = MfskEqMode.OFF,
+    val messageFilter: MfskMessageFilter = MfskMessageFilter.DEFAULT,
+    /// FT8's a7 list decoder (`ft8_a7.f90`), fed by the decoder's own decodes
+    /// two periods back. Needs a `period` on each decode.
+    val a7: Boolean = false,
+    /// Half-width of FT8's roofing-filter ("sniper") search around the Rx
+    /// frequency, Hz; null is the wide-band search. It matches an *analogue*
+    /// roofing filter the operator has narrowed. Needs [Mfsk.CAP_SNIPER].
+    val sniperHz: Float? = null,
+    val apHint: MfskApHint? = null,
+    /// FST4 only.
+    val noiseBlanker: MfskNoiseBlanker? = null,
+    /// WSPR, JT9, JT65, Q65: how far before the nominal start a frame may
+    /// begin, seconds (default the mode's own).
+    val tEarlyS: Float? = null,
+    /// As [tEarlyS], after the nominal start.
+    val tLateS: Float? = null,
+    /// As [tEarlyS]: coarse-sync acceptance, 0..1.
+    val scoreThreshold: Float? = null,
+    /// WSPR: Fano cycles per bit (`wsprd -C`).
+    val maxCyclesPerBit: Int? = null,
+    /// JT65: Chase trials (`nvec`).
+    val chaseTrials: Int? = null,
+    /// **Q65 Pileup**: a reply carrying "copied last Tx" matches an AP hint
+    /// that names both callsigns. Needs [apHint].
+    val pileup: Boolean = false,
+    /// Q65 **Max Drift**, spectrum bins `0..=50`; 0 is off. Costs `2*bins+1`
+    /// times the plain search.
+    val maxDrift: Int = 0,
+    /// Q65 fast-fading metric, or null for the plain one.
+    val fading: MfskQ65Fading? = null,
 ) {
-    companion object {
+    internal companion object {
         // Slot counts of the arrays that cross JNI — the layout is documented
-        // at `read_q65_params` in mfsk_jni.c and must move with it.
-        internal const val FLOATS = 9
-        internal const val INTS = 7
-        internal const val STRINGS = 7
+        // at `read_extras` in mfsk_jni.c and must move with it.
+        const val FLOATS = 7
+        const val INTS = 16
+        const val STRINGS = 4
 
-        internal fun fromArrays(f: FloatArray, v: IntArray): MfskQ65Params =
-            MfskQ65Params(
-                freqMinHz = f[0], freqMaxHz = f[1], nominalStartS = f[2],
-                tEarlyS = f[3], tLateS = f[4], scoreThreshold = f[5],
-                maxCand = v[0], pileup = v[1] != 0, emeDelay = v[2] != 0, maxDrift = v[3],
-                // NaN is the ABI's spelling of "unset": 0 Hz is a frequency.
-                rxFreqHz = f[6].takeUnless { it.isNaN() },
-                ftolHz = f[7],
-                fading = f[8].takeUnless { it.isNaN() }?.let { MfskQ65Fading(it, v[4]) },
-                // `mfsk_q65_params_init` never writes a list or a hint.
-                list = null,
-                apHint = null,
+        fun fromArrays(f: FloatArray, v: IntArray, s: Array<String?>): MfskExtras {
+            fun nz(x: Float) = x.takeUnless { it.isNaN() }
+            return MfskExtras(
+                syncMin = nz(f[0]),
+                maxCand = v[0].takeIf { it > 0 },
+                osd = when (v[1]) { 0 -> false; 1 -> true; else -> null },
+                strictness = MfskStrictness.of(v[2]),
+                strategy = when (v[3]) {
+                    1 -> MfskStrategy.SinglePass
+                    2 -> MfskStrategy.SicRounds(v[4])
+                    3 -> MfskStrategy.SicEarly
+                    else -> MfskStrategy.Default
+                },
+                eqMode = if (v[5] != 0) MfskEqMode.LOCAL else MfskEqMode.OFF,
+                messageFilter = if (v[6] != 0) MfskMessageFilter.CODEC else MfskMessageFilter.DEFAULT,
+                a7 = v[7] != 0,
+                sniperHz = f[1].takeIf { it > 0f },
+                apHint = if (v[8] != 0) {
+                    MfskApHint(s[0] ?: "", s[1] ?: "", s[2] ?: "", s[3] ?: "")
+                } else null,
+                noiseBlanker = when {
+                    v[10] != 0 -> MfskNoiseBlanker.Sweep(v[10], f[2])
+                    v[9] != 0 -> MfskNoiseBlanker.Percent(v[9])
+                    else -> null
+                },
+                tEarlyS = nz(f[3]), tLateS = nz(f[4]), scoreThreshold = nz(f[5]),
+                maxCyclesPerBit = v[11].takeIf { it > 0 },
+                chaseTrials = v[12].takeIf { it > 0 },
+                pileup = v[13] != 0,
+                maxDrift = v[14],
+                fading = nz(f[6])?.let { MfskQ65Fading(it, v[15]) },
             )
-    }
-
-    internal fun floatArray(): FloatArray = floatArrayOf(
-        freqMinHz, freqMaxHz, nominalStartS, tEarlyS, tLateS, scoreThreshold,
-        rxFreqHz ?: Float.NaN, ftolHz, fading?.b90Ts ?: Float.NaN,
-    )
-
-    internal fun intArray(): IntArray = intArrayOf(
-        maxCand, if (pileup) 1 else 0, if (emeDelay) 1 else 0, maxDrift,
-        fading?.model ?: MfskQ65Fading.GAUSSIAN,
-        when (list) { null -> 0; is MfskQ65List.Standard -> 1; is MfskQ65List.Contest -> 2 },
-        if (apHint != null) 1 else 0,
-    )
-
-    internal fun stringArray(): Array<String?> {
-        val (my, his, grid) = when (val l = list) {
-            null -> Triple(null, null, null)
-            is MfskQ65List.Standard -> Triple(l.myCall, l.hisCall, l.hisGrid)
-            is MfskQ65List.Contest -> Triple(l.myCall, l.hisCall, l.hisGrid)
         }
-        return arrayOf(
-            apHint?.call1, apHint?.call2, apHint?.grid, apHint?.report, my, his, grid,
-        )
     }
+
+    internal fun floatArray() = floatArrayOf(
+        syncMin ?: Float.NaN, sniperHz ?: 0f,
+        (noiseBlanker as? MfskNoiseBlanker.Sweep)?.toleranceHz ?: 0f,
+        tEarlyS ?: Float.NaN, tLateS ?: Float.NaN, scoreThreshold ?: Float.NaN,
+        fading?.b90Ts ?: Float.NaN,
+    )
+
+    internal fun intArray() = intArrayOf(
+        maxCand ?: 0,
+        when (osd) { null -> -1; false -> 0; true -> 1 },
+        strictness?.code ?: -1,
+        when (strategy) {
+            MfskStrategy.Default -> 0
+            MfskStrategy.SinglePass -> 1
+            is MfskStrategy.SicRounds -> 2
+            MfskStrategy.SicEarly -> 3
+        },
+        (strategy as? MfskStrategy.SicRounds)?.rounds ?: 0,
+        eqMode.code, messageFilter.code, if (a7) 1 else 0,
+        if (apHint != null) 1 else 0,
+        (noiseBlanker as? MfskNoiseBlanker.Percent)?.percent ?: 0,
+        (noiseBlanker as? MfskNoiseBlanker.Sweep)?.step ?: 0,
+        maxCyclesPerBit ?: 0, chaseTrials ?: 0,
+        if (pileup) 1 else 0, maxDrift,
+        fading?.model ?: MfskQ65Fading.GAUSSIAN,
+    )
+
+    internal fun stringArray(): Array<String?> =
+        arrayOf(apHint?.call1, apHint?.call2, apHint?.grid, apHint?.report)
 }
 
 /// The DX station [MfskQ65History.lookup] found — WSJT-X's `dxcall` and `dxgrid`.
@@ -390,8 +474,8 @@ data class MfskQ65Caller(
 /// It is how a "Decode Again" with no DX call entered finds the DX station, so
 /// the full-AP list can be built without the operator typing the call.
 ///
-/// The decoder is stateless, so the history is the application's: feed it each
-/// decode with [record], ask with [lookup]. **Not thread-safe**; close it when
+/// A [MfskDecoder] does not keep one, so the history is the application's: feed
+/// it each decode with [record], ask with [lookup]. **Not thread-safe**; close it when
 /// done.
 class MfskQ65History : AutoCloseable {
     private var handle: Long = run { Mfsk.modes(); nativeNew() }
@@ -437,12 +521,12 @@ class MfskQ65History : AutoCloseable {
 
 /// The contest caller list — WSJT-X's `q65_hist2`: up to 50 stations that called
 /// with a grid, from which the contest full-AP list is built
-/// ([MfskQ65List.Contest]). Times are yours (Unix seconds), since the library
-/// reads no clock. **Not thread-safe**; close it when done.
+/// ([MfskDecoder.setQ65Callers] with [MfskContest.GRID_EXCHANGE]). Times are
+/// yours (Unix seconds), since the library reads no clock. **Not thread-safe**; close it when done.
 class MfskQ65Callers : AutoCloseable {
     private var handle: Long = run { Mfsk.modes(); nativeNew() }
 
-    /// The native handle, for [Mfsk.decodeQ65].
+    /// The native handle, for [MfskDecoder.setQ65Callers].
     internal val raw: Long get() {
         check(handle != 0L) { "caller list is closed" }
         return handle
@@ -514,6 +598,8 @@ object Mfsk {
     }
 
     // Capability bits, mirroring `MFSK_CAP_*` in mfsk.h.
+    /// Kept for ABI parity. Every slot mode is driven through [MfskDecoder]
+    /// now, whether or not it sets this bit.
     const val CAP_DECODE_HANDLE = 1L shl 0
     const val CAP_SNIPER = 1L shl 1
     const val CAP_AP_NARROW = 1L shl 2
@@ -523,6 +609,7 @@ object Mfsk {
     const val CAP_OSD = 1L shl 6
     const val CAP_EQ_MODE = 1L shl 7
     const val CAP_STRICTNESS = 1L shl 8
+    /// [MfskDecoder.setBudget] is honoured.
     const val CAP_BUDGET = 1L shl 9
     const val CAP_KNOWN_FILTER = 1L shl 10
     const val CAP_KNOWN_SUBTRACT = 1L shl 11
@@ -533,10 +620,10 @@ object Mfsk {
     /// (JTTY): see [MfskJttyReceiver].
     const val CAP_STREAM_RECEIVER = 1L shl 15
     /// WSJT-X's impulse-noise blanker reaches the decoder: every FST4
-    /// sub-mode, no other. See [MfskDecodeParams.noiseBlanker].
+    /// sub-mode, no other. See [MfskExtras.noiseBlanker].
     const val CAP_NOISE_BLANKER = 1L shl 16
     /// The transmit frequency steers the a-priori search: FT8 only. See
-    /// [MfskDecodeParams.txFreqHz].
+    /// [MfskParams.txFreqHz].
     const val CAP_TX_FREQ = 1L shl 17
 
     /// The boundary's own revision, separate from the crate version.
@@ -553,58 +640,34 @@ object Mfsk {
 
     fun supports(mode: Int, cap: Long): Boolean = (caps(mode) and cap) != 0L
 
-    /// `mode`'s published decode defaults — the starting point every
-    /// [MfskDecodeParams] should come from, then `copy` what differs:
+    /// `mode`'s published defaults — the starting point every [MfskParams]
+    /// should come from, then `copy` what differs:
     ///
     /// ```kotlin
-    /// val p = Mfsk.defaultParams(ft8).copy(freqHintHz = 1500f, txFreqHz = 1500f)
-    /// MfskSession.open(ft8, p)
+    /// val p = Mfsk.defaultParams(ft8).copy(rxFreqHz = 1500f, txFreqHz = 1500f)
+    /// MfskDecoder.open(ft8, p).use { ... }
     /// ```
     ///
-    /// Throws if the mode is not in this build.
-    fun defaultParams(mode: Int): MfskDecodeParams {
-        val f = FloatArray(MfskDecodeParams.FLOATS)
-        val v = IntArray(MfskDecodeParams.INTS)
-        nativeParamsInit(mode, f, v)
-        return MfskDecodeParams.fromArrays(f, v)
+    /// Throws [MfskException] if the mode has no slot decoder in this build
+    /// (MSK144, JTTY) or is not a mode at all.
+    fun defaultParams(mode: Int): MfskParams {
+        val f = FloatArray(MfskParams.FLOATS)
+        val v = IntArray(MfskParams.INTS)
+        val s = arrayOfNulls<String>(MfskParams.STRINGS)
+        nativeParamsInit(mode, f, v, s)
+        return MfskParams.fromArrays(f, v, s)
     }
 
-    /// `mode`'s Q65 decode defaults — the library's own (±1 s window, threshold
-    /// 0.1, 8 candidates) and the mode's nominal start — as the starting point
-    /// for [decodeQ65]. Throws if [mode] is not a Q65 mode in this build.
-    fun q65DefaultParams(mode: Int): MfskQ65Params {
-        val f = FloatArray(MfskQ65Params.FLOATS)
-        val v = IntArray(MfskQ65Params.INTS)
-        nativeQ65ParamsInit(mode, f, v)
-        return MfskQ65Params.fromArrays(f, v)
+    /// What `mfsk_extras_init` writes: every option unset. It equals
+    /// `MfskExtras()`; the library is asked so that a change to the ABI's
+    /// sentinels shows up as a test failure rather than a silent difference.
+    internal fun libraryDefaultExtras(): MfskExtras {
+        val f = FloatArray(MfskExtras.FLOATS)
+        val v = IntArray(MfskExtras.INTS)
+        val s = arrayOfNulls<String>(MfskExtras.STRINGS)
+        nativeExtrasInit(f, v, s)
+        return MfskExtras.fromArrays(f, v, s)
     }
-
-    /// Decode one Q65 slot of 32-bit float audio with every setting WSJT-X 3.2
-    /// offers — Pileup, Max Drift, the EME delay, the q3 list decode, the
-    /// contest list — in one call. [mode] is a Q65 mode; [params] default to
-    /// [q65DefaultParams]. [callers] is read only by [MfskQ65List.Contest].
-    ///
-    /// Rows report `dtSec` from [MfskQ65Params.nominalStartS], as WSJT-X's DT
-    /// column, and [MfskDecode.copiedLastTx] on a Pileup reply. Throws, naming
-    /// the reason, if the settings cannot be honoured together.
-    fun decodeQ65(
-        mode: Int,
-        samples: FloatArray,
-        params: MfskQ65Params = q65DefaultParams(mode),
-        callers: MfskQ65Callers? = null,
-        sampleRate: Int = 12_000,
-    ): List<MfskDecode> = nativeDecodeQ65(
-        mode, samples, sampleRate,
-        params.floatArray(), params.intArray(), params.stringArray(),
-        callers?.raw ?: 0L,
-    ).toList()
-
-    /// Pack `call1 call2 grid-or-report` and synthesise a Q65 frame at 12 kHz.
-    /// [copiedLastTx] sets Pileup's "copied last Tx" flag, the spare 78th bit.
-    fun synthesizeQ65(
-        mode: Int, call1: String, call2: String, gridOrReport: String, freqHz: Float,
-        copiedLastTx: Boolean = false,
-    ): FloatArray = nativeSynthesizeQ65(mode, call1, call2, gridOrReport, copiedLastTx, freqHz)
 
     fun modeInfo(mode: Int): MfskModeInfo {
         val v = nativeModeInfo(mode)
@@ -635,106 +698,332 @@ object Mfsk {
     /// Worker threads decoding will use. 1 means serial.
     val threadCount: Int get() = nativeThreadCount()
 
+    // ── Transmit ────────────────────────────────────────────────────
+
+    /// Pack `call1 call2 report` into the 77-bit message (one bit per byte).
+    /// Throws [MfskException] if it does not fit the format.
+    fun pack77(call1: String, call2: String, report: String): ByteArray {
+        modes() // loads the native library
+        return nativePack77(call1, call2, report)
+    }
+
+    /// Pack a **type 4** message: a non-standard call, with the standard one
+    /// carried as a hash, so a receiver that has not heard the standard call
+    /// reads `<...>`. [report] may be null; [isCq] makes it a CQ.
+    fun pack77Type4(nonstdCall: String, stdCall: String, report: String?, isCq: Boolean): ByteArray {
+        modes()
+        return nativePack77Type4(nonstdCall, stdCall, report, isCq)
+    }
+
+    /// Unpack a 77-bit message to text. A `<...>` hash stays `<...>`; ask a
+    /// [MfskDecoder.unpack77] that has heard the call to resolve it.
+    fun unpack77(message77: ByteArray): String {
+        modes()
+        return nativeUnpack77(message77)
+    }
+
     /// Pack `call1 call2 report` and synthesise a frame at 12 kHz.
     ///
     /// Throws if the message does not fit the format or the mode has no
     /// tone stage — `mfsk_symbol_count` returning 0 is how the ABI says
     /// which modes those are.
     fun synthesize(mode: Int, call1: String, call2: String, report: String, freqHz: Float)
-        : ShortArray = nativeSynthesize(mode, call1, call2, report, freqHz)
+        : ShortArray = synthesize(mode, pack77(call1, call2, report), freqHz)
+
+    /// Synthesise a packed 77-bit message at 12 kHz. Modes with a tone stage:
+    /// FT8, FT4, FST4.
+    fun synthesize(mode: Int, message77: ByteArray, freqHz: Float): ShortArray {
+        modes()
+        return nativeSynthesize(mode, message77, freqHz)
+    }
+
+    /// Pack `call1 call2 grid-or-report` and synthesise a Q65 frame at 12 kHz.
+    /// [copiedLastTx] sets Pileup's "copied last Tx" flag, the spare 78th bit.
+    fun synthesizeQ65(
+        mode: Int, call1: String, call2: String, gridOrReport: String, freqHz: Float,
+        copiedLastTx: Boolean = false,
+    ): FloatArray = nativeSynthesizeQ65(mode, call1, call2, gridOrReport, copiedLastTx, freqHz)
+
+    /// A standard JT9 or JT65 message (`call1 call2 grid-or-report`) as f32
+    /// PCM at 12 kHz.
+    fun synthesizeJt(mode: Int, call1: String, call2: String, gridOrReport: String, freqHz: Float)
+        : FloatArray = nativeSynthesizeJt(mode, call1, call2, gridOrReport, freqHz)
+
+    /// A Type-1 WSPR message (`call grid power_dbm`) as f32 PCM at 12 kHz.
+    fun synthesizeWspr(call: String, grid: String, powerDbm: Int, freqHz: Float): FloatArray {
+        modes()
+        return nativeSynthesizeWspr(call, grid, powerDbm, freqHz)
+    }
 
     @JvmStatic private external fun nativeAbiVersion(): Int
     @JvmStatic private external fun nativeModeCount(): Int
     @JvmStatic private external fun nativeModeAt(index: Int): Int
     @JvmStatic private external fun nativeModeName(mode: Int): String?
     @JvmStatic private external fun nativeModeCaps(mode: Int): Long
-    @JvmStatic private external fun nativeParamsInit(mode: Int, floats: FloatArray, ints: IntArray)
-    @JvmStatic private external fun nativeQ65ParamsInit(mode: Int, floats: FloatArray, ints: IntArray)
-    @JvmStatic private external fun nativeDecodeQ65(
-        mode: Int, samples: FloatArray, sampleRate: Int,
-        floats: FloatArray, ints: IntArray, strings: Array<String?>, callers: Long,
-    ): Array<MfskDecode>
-    @JvmStatic private external fun nativeSynthesizeQ65(
-        mode: Int, a: String, b: String, c: String, flagged: Boolean, freqHz: Float,
-    ): FloatArray
+    @JvmStatic private external fun nativeParamsInit(
+        mode: Int, floats: FloatArray, ints: IntArray, strings: Array<String?>,
+    )
+    @JvmStatic private external fun nativeExtrasInit(
+        floats: FloatArray, ints: IntArray, strings: Array<String?>,
+    )
     @JvmStatic private external fun nativeModeInfo(mode: Int): IntArray
     @JvmStatic private external fun nativeConfigureRuntime(threads: Int, stackBytes: Int): Int
     @JvmStatic private external fun nativeThreadCount(): Int
+    @JvmStatic private external fun nativePack77(a: String, b: String, c: String): ByteArray
+    @JvmStatic private external fun nativePack77Type4(
+        nonstd: String, std: String, report: String?, isCq: Boolean,
+    ): ByteArray
+    @JvmStatic private external fun nativeUnpack77(message77: ByteArray): String
     @JvmStatic private external fun nativeSynthesize(
-        mode: Int, call1: String, call2: String, report: String, freqHz: Float,
+        mode: Int, message77: ByteArray, freqHz: Float,
     ): ShortArray
+    @JvmStatic private external fun nativeSynthesizeQ65(
+        mode: Int, a: String, b: String, c: String, flagged: Boolean, freqHz: Float,
+    ): FloatArray
+    @JvmStatic private external fun nativeSynthesizeJt(
+        mode: Int, a: String, b: String, c: String, freqHz: Float,
+    ): FloatArray
+    @JvmStatic private external fun nativeSynthesizeWspr(
+        call: String, grid: String, powerDbm: Int, freqHz: Float,
+    ): FloatArray
 }
 
-/// A decode session.
+// ── The decoder ─────────────────────────────────────────────────────
+
+/// How a [MfskStream] clock reading was taken.
+enum class MfskClockChange {
+    /// The first reading: the clock is anchored.
+    FIRST,
+    /// The clock moved towards the reading by at most its slew limit (400 ppm);
+    /// open slots are unaffected.
+    SLEWED,
+    /// The reading was more than a second away: the clock re-anchored and the
+    /// slot that straddled the jump is dropped.
+    STEPPED;
+
+    internal companion object {
+        fun of(code: Int) = entries[code.coerceIn(0, entries.size - 1)]
+    }
+}
+
+/// What [MfskDecoder.decodeStream] decoded: the stream's ready slot, with its
+/// index on the UTC grid.
+data class MfskSlotDecode(
+    /// The slot's index on the mode's UTC grid (UTC `period * T` with a clock
+    /// set, counted from the first sample without one). Also what the decoder
+    /// was given as the period.
+    val period: Long,
+    /// UTC of the slot start, ns since the Unix epoch, or null when no clock
+    /// was set on the stream.
+    val slotStartUtcNs: Long?,
+    val rows: List<MfskDecode>,
+)
+
+/// A decoder: one persistent decoder of one mode, driven once per period like
+/// WSJT-X's own (`jt9 -s`). Serves FT8, FT4, every FST4 sub-mode, WSPR, JT9,
+/// JT65 and every Q65 sub-mode through the same calls.
 ///
-/// **Single-threaded**, deliberately: it owns a callsign hash table it
-/// mutates on every decode, so one per thread. Concurrent decodes on
-/// separate sessions are supported.
+/// It owns what upstream keeps across periods and nothing else: the callsign
+/// hash table (never shared with another decoder, as upstream's is not), FT8's
+/// a7 list, Q65's and JT65's averages, WSPR's call table. A `<...>` reference
+/// cannot be expanded without having seen the callsign, and a table that does
+/// not outlive the slot that populated it is worth nothing — which is why this
+/// is a handle and not a function.
 ///
-/// The hash table is why this is a session rather than a function. A
-/// `<...>` reference cannot be expanded without having seen the
-/// callsign, and a table that does not outlive the slot that populated
-/// it is worth nothing.
-class MfskSession private constructor(private var handle: Long) : AutoCloseable {
+/// **Single-threaded**, deliberately: one decode at a time on a decoder, one
+/// decoder per thread. Concurrent decodes on separate decoders are supported.
+///
+/// ```kotlin
+/// val p = Mfsk.defaultParams(ft8).copy(rxFreqHz = 1500f)
+/// MfskDecoder.open(ft8, p, MfskExtras(a7 = true)).use { dec ->
+///     for ((period, audio) in periods) for (row in dec.decode(audio, period)) show(row)
+/// }
+/// ```
+class MfskDecoder private constructor(
+    private var handle: Long,
+    /// The `MfskMode` this decodes.
+    val mode: Int,
+    private val owned: Boolean,
+) : AutoCloseable {
 
     companion object {
-        /// Open a session for `mode`, which must claim
-        /// [Mfsk.CAP_DECODE_HANDLE]. Q65 takes a nominal start sample
-        /// and a tolerance and WSPR/JT9/JT65 have entry points of their own, so those
-        /// are refused here rather than decoding something differently
-        /// shaped.
+        /// `period` for a decode whose slot index is not known; the decoder
+        /// then leaves its period-to-period state (a7, averaging) alone.
+        const val PERIOD_NONE = Long.MIN_VALUE
+
+        /// Open a decoder for `mode`; [params] and [extras] null are the mode's
+        /// defaults (`Mfsk.defaultParams(mode)`, nothing set).
         ///
-        /// [params] are the session's search parameters, from
-        /// [Mfsk.defaultParams]; null is the mode's defaults. **A parameter
-        /// the mode does not support fails here**, with a message naming
-        /// the mode, rather than being dropped at decode time.
+        /// **An option the mode does not support fails here** with
+        /// [MfskUnsupportedException] naming the mode and the option, rather
+        /// than being dropped at decode time. A value out of range is an
+        /// [MfskInvalidArgException]; a mode this build lacks, an
+        /// [MfskUnknownModeException].
         @JvmStatic
-        fun open(mode: Int, params: MfskDecodeParams? = null): MfskSession =
-            MfskSession(
+        fun open(mode: Int, params: MfskParams? = null, extras: MfskExtras? = null): MfskDecoder =
+            MfskDecoder(
                 nativeOpen(
-                    mode, params?.floatArray(), params?.intArray(), params?.apArray(),
+                    mode,
+                    params?.floatArray(), params?.intArray(), params?.stringArray(),
+                    extras?.floatArray(), extras?.intArray(), extras?.stringArray(),
                 ),
+                mode, owned = true,
             )
 
+        /// A decoder the IQ receiver owns, for configuring only.
+        internal fun borrowed(handle: Long, mode: Int) = MfskDecoder(handle, mode, owned = false)
+
         @JvmStatic private external fun nativeOpen(
-            mode: Int, floats: FloatArray?, ints: IntArray?, ap: Array<String?>?,
+            mode: Int,
+            pf: FloatArray?, pi: IntArray?, ps: Array<String?>?,
+            ef: FloatArray?, ei: IntArray?, es: Array<String?>?,
         ): Long
-        @JvmStatic private external fun nativeClose(
-            handle: Long, callbackCtx: Long, budgetCtx: Long,
+        @JvmStatic private external fun nativeClose(handle: Long, callbackCtx: Long, budgetCtx: Long)
+        @JvmStatic private external fun nativeLastError(handle: Long): String?
+        @JvmStatic private external fun nativeSetParams(
+            handle: Long, pf: FloatArray, pi: IntArray, ps: Array<String?>,
         )
-        @JvmStatic private external fun nativeSetBudget(
-            handle: Long, check: MfskBudgetCheck?, oldCtx: Long,
-        ): Long
-        @JvmStatic private external fun nativeLastBudget(handle: Long): IntArray
-        @JvmStatic private external fun nativeKeepKnown(handle: Long, keep: Boolean)
-        @JvmStatic private external fun nativeKnownCount(handle: Long): Int
-        @JvmStatic private external fun nativeKeepFftCache(handle: Long, keep: Boolean)
+        @JvmStatic private external fun nativeSetExtras(
+            handle: Long, ef: FloatArray, ei: IntArray, es: Array<String?>,
+        )
+        @JvmStatic private external fun nativeSetQ65Callers(handle: Long, callers: Long)
+        @JvmStatic private external fun nativeClear(handle: Long)
         @JvmStatic private external fun nativeAddCallsign(handle: Long, call: String)
         @JvmStatic private external fun nativeSetOnDecode(
             handle: Long, listener: MfskDecodeListener?, oldCtx: Long,
         ): Long
-        @JvmStatic private external fun nativeDecode(
-            handle: Long, samples: ShortArray, sampleRate: Int,
-            floats: FloatArray?, ints: IntArray?, ap: Array<String?>?,
+        @JvmStatic private external fun nativeSetBudget(
+            handle: Long, check: MfskBudgetCheck?, oldCtx: Long,
+        ): Long
+        @JvmStatic private external fun nativeLastBudget(handle: Long): IntArray
+        @JvmStatic private external fun nativeDecodeI16(
+            handle: Long, samples: ShortArray, sampleRate: Int, period: Long,
         ): Array<MfskDecode>
+        @JvmStatic private external fun nativeDecodeF32(
+            handle: Long, samples: FloatArray, sampleRate: Int, period: Long,
+        ): Array<MfskDecode>
+        @JvmStatic private external fun nativeCopyInfo(handle: Long, index: Int): ByteArray
+        @JvmStatic private external fun nativeUnpack77(handle: Long, message77: ByteArray): String
+        @JvmStatic private external fun nativeDecodeStream(
+            handle: Long, stream: Long, meta: LongArray,
+        ): Array<MfskDecode>?
     }
 
-    /// Decode one slot of 16-bit PCM.
+    private fun live(): Long {
+        check(handle != 0L) { "decoder is closed" }
+        return handle
+    }
+
+    private fun owner(what: String): Long {
+        check(owned) { "$what: this decoder belongs to an IQ receiver, which decodes with it" }
+        return live()
+    }
+
+    /// The last error recorded **on this decoder**, or null. Unlike the
+    /// library's global one it is not thread-local, so a coroutine that hopped
+    /// threads still reads it. The exceptions this class throws carry it.
+    val lastError: String? get() = nativeLastError(live())
+
+    /// Change the parameter block between periods, as the GUI rewrites it
+    /// before each one. What the decoder carries between periods is kept.
+    fun setParams(params: MfskParams) {
+        nativeSetParams(live(), params.floatArray(), params.intArray(), params.stringArray())
+    }
+
+    /// Replace the library's options. What the block leaves unset goes back to
+    /// the depth's value; an option the mode lacks throws
+    /// [MfskUnsupportedException] and nothing changes. What the decoder carries
+    /// between periods is kept.
+    fun setExtras(extras: MfskExtras) {
+        nativeSetExtras(live(), extras.floatArray(), extras.intArray(), extras.stringArray())
+    }
+
+    /// Q65 only: the contest callers heard (`q65_hist2`), so that with
+    /// [MfskContest.GRID_EXCHANGE] they join the full-AP list. The list is
+    /// **copied** at this call: record more callers, then set it again. Null
+    /// removes it. Survives [setExtras].
+    fun setQ65Callers(callers: MfskQ65Callers?) {
+        nativeSetQ65Callers(live(), callers?.raw ?: 0L)
+    }
+
+    /// Forget everything the decoder carries between periods (WSJT-X's "Clear
+    /// Avg" and `ndepth & 128`): the hash table, a7, averages.
+    fun clear() = nativeClear(live())
+
+    /// Teach the decoder a callsign, so a later period's `<...>` reference to
+    /// it resolves. Decoded messages populate the table by themselves; this is
+    /// for calls known from outside (a band map, a log). Throws
+    /// [MfskUnsupportedException] for a mode whose messages carry no hashed
+    /// calls (WSPR, say).
+    fun addCallsign(call: String) = nativeAddCallsign(live(), call)
+
+    /// Decode one period of 16-bit PCM.
     ///
-    /// [params] override the session's for **this call only** and do not
-    /// stick — a decode with a narrower band, say, does not narrow the next
-    /// one. Null uses what the session was opened with.
+    /// [period] is the period's index on the UTC grid (`utc_seconds / T`), or
+    /// null when it is not known; a decoder keeps what upstream keeps across
+    /// periods, and the parts that need consecutive periods (a7, averaging)
+    /// use them only when the index is given. [sampleRate] other than 12 000
+    /// is resampled.
+    ///
+    /// [onRow], if given, sees each row as it is found for this call only;
+    /// see [onDecode] for the threading rules. The returned list stays
+    /// authoritative.
     fun decode(
         samples: ShortArray,
+        period: Long? = null,
         sampleRate: Int = 12_000,
-        params: MfskDecodeParams? = null,
-    ): List<MfskDecode> {
-        check(handle != 0L) { "session is closed" }
-        return nativeDecode(
-            handle, samples, sampleRate,
-            params?.floatArray(), params?.intArray(), params?.apArray(),
-        ).toList()
+        onRow: MfskDecodeListener? = null,
+    ): List<MfskDecode> = withRowListener(onRow) {
+        nativeDecodeI16(owner("decode"), samples, sampleRate, period ?: PERIOD_NONE).toList()
     }
+
+    /// Decode one period of 32-bit float PCM, **at any level**: the modes
+    /// whose engines work in float (WSPR, JT9, JT65, Q65) never see 16 bits,
+    /// and FT8, FT4 and FST4, which take 16-bit audio as WSJT-X does, get it
+    /// scaled to a fixed level, so a caller never picks one.
+    fun decode(
+        samples: FloatArray,
+        period: Long? = null,
+        sampleRate: Int = 12_000,
+        onRow: MfskDecodeListener? = null,
+    ): List<MfskDecode> = withRowListener(onRow) {
+        nativeDecodeF32(owner("decode"), samples, sampleRate, period ?: PERIOD_NONE).toList()
+    }
+
+    private inline fun <T> withRowListener(l: MfskDecodeListener?, body: () -> T): T {
+        if (l == null) return body()
+        val previous = listener
+        onDecode(l)
+        try {
+            return body()
+        } finally {
+            onDecode(previous)
+        }
+    }
+
+    /// The FEC information bits ([MfskDecode.infoBits] of them, one per byte)
+    /// of the `index`-th row of the **last** decode. They are not a row field
+    /// because only a caller doing subtraction or persistence wants them.
+    /// Throws [MfskInvalidArgException] past the last row.
+    fun copyInfo(index: Int): ByteArray = nativeCopyInfo(owner("copyInfo"), index)
+
+    /// Decode the stream's ready slot, with the slot's own index as the
+    /// period, or return null when no whole slot is ready yet — so this can be
+    /// polled in place of [MfskStream.slotReady]. The stream has to be for the
+    /// same mode.
+    fun decodeStream(stream: MfskStream): MfskSlotDecode? {
+        val meta = LongArray(2)
+        val rows = nativeDecodeStream(owner("decodeStream"), stream.raw, meta) ?: return null
+        return MfskSlotDecode(
+            period = meta[0],
+            slotStartUtcNs = meta[1].takeIf { it != 0L },
+            rows = rows.toList(),
+        )
+    }
+
+    /// As [Mfsk.unpack77], resolving `<...>` calls against this decoder's own
+    /// callsign table.
+    fun unpack77(message77: ByteArray): String = nativeUnpack77(live(), message77)
 
     /// Deliver decodes to `listener` as they are found, **in addition
     /// to** the list [decode] returns. Pass null to stop.
@@ -759,9 +1048,11 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
     /// rayon worker: it is printed and swallowed, and the decode
     /// continues.
     fun onDecode(listener: MfskDecodeListener?) {
-        check(handle != 0L) { "session is closed" }
-        callbackCtx = nativeSetOnDecode(handle, listener, callbackCtx)
+        callbackCtx = nativeSetOnDecode(owner("onDecode"), listener, callbackCtx)
+        this.listener = listener
     }
+
+    private var listener: MfskDecodeListener? = null
 
     /// Poll `check` during every subsequent decode; returning false
     /// stops the search and returns what was found. Pass null to remove
@@ -772,17 +1063,16 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
     /// Measured at ~13 ms of a ~28 ms FT8 decode. `maxCand` is the knob
     /// that moves the floor.
     ///
-    /// Throws if the mode does not publish [Mfsk.CAP_BUDGET].
+    /// Throws [MfskUnsupportedException] if the mode does not publish
+    /// [Mfsk.CAP_BUDGET].
     fun setBudget(check: MfskBudgetCheck?) {
-        check(handle != 0L) { "session is closed" }
-        budgetCtx = nativeSetBudget(handle, check, budgetCtx)
+        budgetCtx = nativeSetBudget(owner("setBudget"), check, budgetCtx)
     }
 
     /// What the budget cut short on the **last** decode.
     val lastBudget: MfskBudgetReport
         get() {
-            check(handle != 0L) { "session is closed" }
-            val v = nativeLastBudget(handle)
+            val v = nativeLastBudget(live())
             return MfskBudgetReport(
                 exhausted = v[0] != 0,
                 candidatesSkipped = v[1],
@@ -794,52 +1084,21 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
             )
         }
 
-    /// Carry each decode's results into the next as **known** signals:
-    /// skipped rather than re-reported, and subtracted from the audio
-    /// where the mode publishes [Mfsk.CAP_KNOWN_SUBTRACT].
-    ///
-    /// `false` both stops carrying and drops what is held, which is how
-    /// a new slot starts.
-    fun keepKnown(keep: Boolean) {
-        check(handle != 0L) { "session is closed" }
-        nativeKeepKnown(handle, keep)
-    }
-
-    /// How many known signals the session carries into the next decode.
-    val knownCount: Int
-        get() = if (handle != 0L) nativeKnownCount(handle) else 0
-
-    /// Keep the slot FFT and reuse it for the next decode **of the same
-    /// audio**. Reuse is checked rather than trusted: the cache is
-    /// stored with a fingerprint of the audio it came from, so a decode
-    /// of anything else transforms afresh instead of returning a
-    /// confident wrong answer.
-    fun keepFftCache(keep: Boolean) {
-        check(handle != 0L) { "session is closed" }
-        nativeKeepFftCache(handle, keep)
-    }
-
-    /// Teach the session a callsign, so a later slot's `<...>`
-    /// reference to it resolves. Decoded messages populate the table
-    /// automatically; this is for calls known from a band map or a log.
-    fun addCallsign(call: String) {
-        check(handle != 0L) { "session is closed" }
-        nativeAddCallsign(handle, call)
-    }
-
     override fun close() {
         if (handle != 0L) {
-            // The native side clears the callback before closing and
-            // then frees the context: the session holds a raw pointer
-            // to it, so the order is not decorative.
-            nativeClose(handle, callbackCtx, budgetCtx)
+            if (owned) {
+                // The native side clears the callback and the budget before
+                // closing and then frees their contexts: the decoder holds
+                // raw pointers to them, so the order is not decorative.
+                nativeClose(handle, callbackCtx, budgetCtx)
+            }
             callbackCtx = 0L
             budgetCtx = 0L
             handle = 0L
         }
     }
 
-    /// Opaque pointer to the shim's per-session callback state — the
+    /// Opaque pointer to the shim's per-decoder callback state — the
     /// listener's global ref and the cached IDs. Owned here so there is
     /// exactly one, and freed by [close].
     private var callbackCtx: Long = 0L
@@ -847,6 +1106,287 @@ class MfskSession private constructor(private var handle: Long) : AutoCloseable 
     /// Same, for the budget predicate.
     private var budgetCtx: Long = 0L
 }
+
+// ── Streams ─────────────────────────────────────────────────────────
+
+/// A capture stream for one slot mode: audio goes in as it arrives, in chunks
+/// of any size, and whole slots come out cut on the mode's UTC grid.
+///
+/// With no clock set ([setTime]) the grid free-runs from the first sample,
+/// right for replaying a recording; with one, a slot starts on its own
+/// boundary and a drifting clock moves the boundary by milliseconds, losing no
+/// slot. At most one completed slot waits; a newer one replaces it
+/// ([dropped] counts those).
+///
+/// Decode the ready slot with [MfskDecoder.decodeStream], or take its audio
+/// with [takeSlot]. Single-threaded; close it when done.
+class MfskStream private constructor(private var handle: Long, val mode: Int) : AutoCloseable {
+
+    companion object {
+        /// Open a stream for `mode`, accepting 16-bit audio at `sampleRate`
+        /// (anything but 12 000 Hz is resampled, linearly). Throws
+        /// [MfskUnsupportedException] for a mode that is not cut into slots.
+        @JvmStatic
+        fun open(mode: Int, sampleRate: Int = 12_000): MfskStream {
+            Mfsk.modes() // loads the native library
+            return MfskStream(nativeOpen(mode, sampleRate), mode)
+        }
+
+        @JvmStatic private external fun nativeOpen(mode: Int, sampleRate: Int): Long
+        @JvmStatic private external fun nativeClose(handle: Long)
+        @JvmStatic private external fun nativePushI16(handle: Long, samples: ShortArray)
+        @JvmStatic private external fun nativePushF32(handle: Long, samples: FloatArray)
+        @JvmStatic private external fun nativePosition(handle: Long): Long
+        @JvmStatic private external fun nativeSetTime(handle: Long, utcNs: Long, atSample: Long): Int
+        @JvmStatic private external fun nativeSlotReady(handle: Long): Boolean
+        @JvmStatic private external fun nativeDropped(handle: Long): Long
+        @JvmStatic private external fun nativeTakeSlot(handle: Long, cap: Int, meta: LongArray): ShortArray?
+        @JvmStatic private external fun nativeClear(handle: Long)
+    }
+
+    internal val raw: Long
+        get() {
+            check(handle != 0L) { "stream is closed" }
+            return handle
+        }
+
+    fun push(samples: ShortArray) = nativePushI16(raw, samples)
+
+    /// Float PCM, nominally -1.0..1.0.
+    fun push(samples: FloatArray) = nativePushF32(raw, samples)
+
+    /// 12 kHz samples taken in so far: the stream's clock, to pass as
+    /// `atSample` to [setTime].
+    val position: Long get() = nativePosition(raw)
+
+    /// The stream's sample [atSample] (12 kHz, as [position] counts) was at UTC
+    /// [utcNs] (ns since the Unix epoch). Call it as often as you have a
+    /// reading: the stream follows the readings at up to 400 ppm, so noisy
+    /// readings and a drifting clock move slot boundaries by milliseconds and
+    /// lose nothing.
+    fun setTime(utcNs: Long, atSample: Long): MfskClockChange =
+        MfskClockChange.of(nativeSetTime(raw, utcNs, atSample))
+
+    /// Whether a completed slot is waiting.
+    val slotReady: Boolean get() = nativeSlotReady(raw)
+
+    /// Completed slots a newer one replaced before they were taken.
+    val dropped: Long get() = nativeDropped(raw)
+
+    /// Take the waiting slot's audio (12 kHz) with its period and UTC start, or
+    /// null if none is ready. Prefer [MfskDecoder.decodeStream], which does not
+    /// copy it out and back in.
+    fun takeSlot(): Triple<ShortArray, Long, Long?>? {
+        val meta = LongArray(2)
+        val audio = nativeTakeSlot(raw, Mfsk.modeInfo(mode).slotSamples12k, meta) ?: return null
+        return Triple(audio, meta[0], meta[1].takeIf { it != 0L })
+    }
+
+    /// Drop the waiting slot and the one being cut, keeping the clock.
+    fun clear() = nativeClear(raw)
+
+    override fun close() {
+        if (handle != 0L) {
+            nativeClose(handle)
+            handle = 0L
+        }
+    }
+}
+
+// ── Wideband IQ ─────────────────────────────────────────────────────
+
+/// `mfsk_iq_open`'s sample format.
+enum class MfskIqFormat(internal val code: Int) {
+    /// `f32` I, `f32` Q, little-endian.
+    CF32(0),
+    /// `i16` I, `i16` Q, full scale 32768.
+    CS16(1),
+    /// `i8` I, `i8` Q, full scale 128 (HackRF).
+    CS8(2),
+    /// `u8` I, `u8` Q, 128 = zero (RTL-SDR).
+    CU8(3),
+    /// 24-bit signed I, Q.
+    CS24(4),
+}
+
+enum class MfskIqChannelizer(internal val code: Int) {
+    /// One filter chain per channel from the input rate. The default, and the
+    /// cheapest for up to about four channels.
+    DIRECT(0),
+    /// A polyphase filter bank shared by every channel: a fixed cost of about
+    /// three direct channels, then about a quarter of one per channel.
+    PFB(1),
+}
+
+/// One decode out of [MfskIqReceiver.poll]: the row of a channel of a wideband
+/// IQ stream, with the absolute RF frequency and where its slot started.
+class MfskIqDecode internal constructor(
+    /// The handle [MfskIqReceiver.addChannel] returned.
+    val channel: Int,
+    /// The channel's concrete mode.
+    val mode: Int,
+    val text: String,
+    /// RF frequency of tone 0, Hz: the channel's dial plus [freqHz].
+    val absFreqHz: Double,
+    /// Audio frequency of tone 0 within the channel, Hz.
+    val freqHz: Float,
+    val dtSec: Float,
+    val snrDb: Float,
+    /// The slot's index on the mode's UTC grid (counted from sample 0 without
+    /// a clock).
+    val period: Long,
+    /// Index (of the IQ stream, complex samples) the slot started at.
+    val slotStartSample: Long,
+    hasUtc: Boolean,
+    utcNs: Long,
+) {
+    /// UTC of the slot start, ns since the Unix epoch, or null on a
+    /// free-running grid.
+    val slotStartUtcNs: Long? = if (hasUtc) utcNs else null
+
+    override fun toString() =
+        "MfskIqDecode(ch=$channel ${Mfsk.modeName(mode)} ${"%.1f".format(absFreqHz)} Hz '$text')"
+}
+
+/// A wideband IQ receiver: one IQ stream, any number of channels, each with
+/// its own [MfskDecoder] — the SDR skimmer's shape.
+///
+/// Push IQ bytes; every slot the push completes is decoded before it returns,
+/// and what was found waits for [poll]. **Single-threaded**; call [push] off
+/// the UI thread. Close it when done.
+class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseable {
+
+    companion object {
+        /// Open a receiver for an IQ stream of [sampleRate] complex samples per
+        /// second (12 000 or more), [centerHz] the RF frequency of DC, [iqSwap]
+        /// when I and Q are exchanged (sound-card IQ often is).
+        @JvmStatic
+        fun open(
+            sampleRate: Int, centerHz: Double,
+            format: MfskIqFormat = MfskIqFormat.CS16,
+            iqSwap: Boolean = false,
+            channelizer: MfskIqChannelizer = MfskIqChannelizer.DIRECT,
+        ): MfskIqReceiver {
+            Mfsk.modes()
+            return MfskIqReceiver(
+                nativeOpen(sampleRate, centerHz, format.code, iqSwap, channelizer.code),
+            )
+        }
+
+        @JvmStatic private external fun nativeOpen(
+            sampleRate: Int, centerHz: Double, format: Int, iqSwap: Boolean, channelizer: Int,
+        ): Long
+        @JvmStatic private external fun nativeClose(handle: Long)
+        @JvmStatic private external fun nativeAddChannel(
+            handle: Long, dialHz: Double, mode: Int,
+            pf: FloatArray?, pi: IntArray?, ps: Array<String?>?,
+            ef: FloatArray?, ei: IntArray?, es: Array<String?>?,
+        ): Int
+        @JvmStatic private external fun nativeChannelDecoder(handle: Long, channel: Int): Long
+        @JvmStatic private external fun nativeChannelState(handle: Long, channel: Int): Int
+        @JvmStatic private external fun nativeRemoveChannel(handle: Long, channel: Int)
+        @JvmStatic private external fun nativeSetTime(handle: Long, utcNs: Long, atSample: Long): Int
+        @JvmStatic private external fun nativeRetune(handle: Long, centerHz: Double): IntArray
+        @JvmStatic private external fun nativeGap(handle: Long, lost: Long)
+        @JvmStatic private external fun nativePush(handle: Long, data: ByteArray, length: Int)
+        @JvmStatic private external fun nativeSamplesIn(handle: Long): Long
+        @JvmStatic private external fun nativePending(handle: Long): Int
+        @JvmStatic private external fun nativePoll(handle: Long): Array<MfskIqDecode>
+    }
+
+    private fun live(): Long {
+        check(handle != 0L) { "receiver is closed" }
+        return handle
+    }
+
+    /// Add a channel whose dial (audio 0 Hz) is [dialHz], carrying [mode], decoded
+    /// with its own decoder opened from [params] and [extras] (null: the mode's
+    /// defaults). Returns the channel handle rows carry. Throws
+    /// [MfskInvalidArgException] if the channel cannot be placed (DC inside its
+    /// 0-6 kHz audio window, or the window outside the IQ band) or the mode is
+    /// not one the receiver carries, [MfskUnsupportedException] for an option
+    /// the mode lacks.
+    fun addChannel(
+        dialHz: Double, mode: Int, params: MfskParams? = null, extras: MfskExtras? = null,
+    ): Int {
+        val ch = nativeAddChannel(
+            live(), dialHz, mode,
+            params?.floatArray(), params?.intArray(), params?.stringArray(),
+            extras?.floatArray(), extras?.intArray(), extras?.stringArray(),
+        )
+        modes[ch] = mode
+        return ch
+    }
+
+    /// The channel's decoder, for the calls that configure one: [MfskDecoder.setParams],
+    /// [MfskDecoder.setExtras], [MfskDecoder.addCallsign], [MfskDecoder.unpack77],
+    /// [MfskDecoder.setQ65Callers], [MfskDecoder.clear]. **Borrowed**: closing
+    /// it does nothing, it dies with the channel (or the receiver), and it
+    /// refuses to decode — the receiver does. Null if there is no such channel.
+    fun channelDecoder(channel: Int): MfskDecoder? {
+        val h = nativeChannelDecoder(live(), channel)
+        if (h == 0L) return null
+        return MfskDecoder.borrowed(h, channelMode(channel))
+    }
+
+    private val modes = HashMap<Int, Int>()
+    private fun channelMode(channel: Int) = modes[channel] ?: -1
+
+    /// Whether a channel is being received: true, or false when a retune left
+    /// its audio window outside the band (it keeps its dial and decoder and
+    /// resumes when a later retune brings it back). Null if there is no such
+    /// channel.
+    fun isActive(channel: Int): Boolean? = when (nativeChannelState(live(), channel)) {
+        0 -> true
+        1 -> false
+        else -> null
+    }
+
+    fun removeChannel(channel: Int) {
+        nativeRemoveChannel(live(), channel)
+        modes.remove(channel)
+    }
+
+    /// The stream's complex sample [atSample] (as [samplesIn] counts) was at
+    /// UTC [utcNs]. Call it as often as you have a reading; see
+    /// [MfskStream.setTime].
+    fun setTime(utcNs: Long, atSample: Long): MfskClockChange =
+        MfskClockChange.of(nativeSetTime(live(), utcNs, atSample))
+
+    /// The tuner moved to [centerHz]: every channel that still fits is
+    /// re-placed, one that no longer fits is paused, and the open slots are
+    /// dropped. Returns (paused, resumed) channel counts.
+    fun retune(centerHz: Double): Pair<Int, Int> {
+        val v = nativeRetune(live(), centerHz)
+        return v[0] to v[1]
+    }
+
+    /// [lost] samples never arrived: the clock advances past them and the open
+    /// slots are dropped.
+    fun gap(lost: Long) = nativeGap(live(), lost)
+
+    /// Push IQ in the format the receiver was opened with, little-endian, I
+    /// then Q; a sample split across calls is carried over. Decodes every slot
+    /// this completes before returning.
+    fun push(data: ByteArray, length: Int = data.size) = nativePush(live(), data, length)
+
+    /// Complex samples consumed so far, gaps included: the stream's clock.
+    val samplesIn: Long get() = nativeSamplesIn(live())
+
+    /// Decodes waiting for [poll].
+    val pending: Int get() = nativePending(live())
+
+    /// Take every waiting decode, oldest first.
+    fun poll(): List<MfskIqDecode> = nativePoll(live()).toList()
+
+    override fun close() {
+        if (handle != 0L) {
+            nativeClose(handle)
+            handle = 0L
+        }
+    }
+}
+
 
 /// One JTTY message as far as it is known.
 ///
@@ -892,7 +1432,7 @@ data class MfskJttyParams(
 /// search window, the messages under assembly, the audio a re-sweep of
 /// earlier windows still needs — and reports *updates*.
 ///
-/// **Single-threaded**: one thread at a time, like [MfskSession].
+/// **Single-threaded**: one thread at a time, like [MfskDecoder].
 /// [push] decodes every window the audio completes before it returns —
 /// a few tens of milliseconds per 0.47 s of audio — so call it off the
 /// UI thread.
