@@ -8,7 +8,8 @@ on:
     # workspace and not built by host CI; skip the workflow if the
     # only changes are inside that tree. `bench/wasm/**` is the same
     # deal for a different target (wasm32-unknown-unknown, issue #208)
-    # — a manual/periodic tool, not CI-gated.
+    # — a manual/periodic tool, not CI-gated. `apps/skimmer/gui/**`
+    # (the Tauri app) needs a webview and Node, so it is out too.
     #
     # Except for three things under `embedded-poc/` that host CI does
     # read, re-included after the exclusion (later patterns win): the
@@ -22,6 +23,7 @@ on:
       - '**'
       - '!embedded-poc/**'
       - '!bench/wasm/**'
+      - '!apps/skimmer/gui/**'
       - 'embedded-poc/assets/golden/**'
       - 'embedded-poc/assets/*.wav'
       - 'embedded-poc/assets/*.bin'
@@ -32,6 +34,7 @@ on:
       - '**'
       - '!embedded-poc/**'
       - '!bench/wasm/**'
+      - '!apps/skimmer/gui/**'
       - 'embedded-poc/assets/golden/**'
       - 'embedded-poc/assets/*.wav'
       - 'embedded-poc/assets/*.bin'
@@ -130,6 +133,8 @@ jobs:
               - 'mfsk-core/examples/**'
               - 'mfsk-core/benches/**'
               - 'mfsk-ffi/**'
+              - 'apps/skimmer/core/**'
+              - 'apps/skimmer/cli/**'
             # Tier A+B is the only job that reads the recordings, so a
             # change to one runs that job and not `src`'s others
             # (feature matrix, ffi, cross, bindings), none of which
@@ -682,6 +687,12 @@ jobs:
       # `MFSK_REQUIRE_CORPUS` exists.
       - name: cargo test -p mfsk-app-shared-hosttest
         run: cargo test -p mfsk-app-shared-hosttest --release
+
+      # The SpyServer skimmer's shared core (`apps/skimmer/core`): protocol
+      # parsing, the stream planner, the anchor estimator. Lint already
+      # covers it as a workspace member; nothing else would run its tests.
+      - name: cargo test -p skimmer-core
+        run: cargo test -p skimmer-core --release
 
       - name: Build mfsk-ffi
         run: cargo build -p mfsk-ffi --release

@@ -37,6 +37,7 @@ Host workspace members (`Cargo.toml` `[workspace] members`):
 | `mfsk-ffi/` | C ABI over *all* protocols; `include/mfsk.h` is cbindgen-generated and committed; `examples/cpp_smoke/` is a real C++ driver run by CI | no |
 | `mfsk-ffi-abi/` | shared `#[repr(C)]` mode / status / params / row types `mfsk-ffi` re-emits (issue #205) | no |
 | `hosttest/mfsk-app-shared/` | runs the host-testable parts of `embedded-poc/mfsk-app-shared` under a normal `cargo test` | no |
+| `apps/skimmer/core/`, `apps/skimmer/cli/` | sample app: SpyServer skimmer over `IqReceiver` (`skimmer-core` + the `skimmer` CLI); see `apps/skimmer/README.md`. `mfsk-core` itself has no network code, by decision | no |
 
 Only `mfsk-core` reaches crates.io; the rest are `publish = false`.
 `workspace.package.version` in the root `Cargo.toml` is the single source
@@ -51,8 +52,11 @@ build` would try to compile them with the stable toolchain and fail:
   "Embedded targets" below.
 - `bench/wasm/` — a wasm-bindgen harness for `wasm32-unknown-unknown`
   (issue #208); a manual/periodic tool, not CI-gated.
+- `apps/skimmer/gui/` — the skimmer's Tauri + Svelte GUI over
+  `skimmer-core`; needs a webview (WebView2 / webkit2gtk) and Node, which
+  host CI lacks. Build it on Windows with the Windows Rust toolchain.
 
-`ci.yml`'s `paths` trigger excludes both trees, so a change confined to
+`ci.yml`'s `paths` trigger excludes these trees, so a change confined to
 them runs no host CI at all. That is intentional, and it is also why "CI
 is green" says nothing about an embedded change. Three things under
 `embedded-poc/` are re-included, because host CI reads them: the test

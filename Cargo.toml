@@ -1,5 +1,10 @@
 [workspace]
-members  = ["mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "hosttest/mfsk-app-shared"]
+members  = [
+    "mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "hosttest/mfsk-app-shared",
+    # Sample apps: the SpyServer skimmer's shared core and its CLI. The
+    # Tauri GUI beside them (`apps/skimmer/gui`) is excluded below.
+    "apps/skimmer/core", "apps/skimmer/cli",
+]
 # `embedded-poc/*` are stand-alone Cargo projects targeting embedded
 # MCUs (ESP32-S3, RP2350, …) with their own toolchain (`+esp` for
 # Xtensa, etc). They depend on mfsk-core via a path dep but must not
@@ -10,7 +15,10 @@ members  = ["mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "hosttest/mfsk-app-shared"]
 # a wasm-bindgen harness for wasm32-unknown-unknown (issue #208), not
 # meant to build under a normal host `cargo build`/`cargo test` — see
 # bench/wasm/README.md.
-exclude  = ["embedded-poc", "bench/wasm"]
+#
+# `apps/skimmer/gui` is the Tauri app: it needs a webview (WebView2 /
+# webkit2gtk) and Node for its front end, which host CI does not have.
+exclude  = ["embedded-poc", "bench/wasm", "apps/skimmer/gui"]
 resolver = "2"
 
 # Single source of truth for the crate version. `mfsk-core`,
