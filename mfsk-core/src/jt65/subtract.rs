@@ -68,7 +68,10 @@ pub(super) fn subtract65(dd: &mut [f32], start: usize, f0_hz: f32, tones: &[u8; 
                 Some(&v) => (f64::from(v) * c, -f64::from(v) * s),
                 None => (0.0, 0.0),
             });
-            phi = (phi + dphi).rem_euclid(two_pi);
+            phi += dphi;
+            if phi >= two_pi {
+                phi -= two_pi;
+            }
         }
     }
 
