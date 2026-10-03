@@ -54,7 +54,9 @@ build` would try to compile them with the stable toolchain and fail:
   (issue #208); a manual/periodic tool, not CI-gated.
 - `apps/skimmer/gui/` — the skimmer's Tauri + Svelte GUI over
   `skimmer-core`; needs a webview (WebView2 / webkit2gtk) and Node, which
-  host CI lacks. Build it on Windows with the Windows Rust toolchain.
+  host CI lacks. `skimmer-installers.yml` builds it on Windows and macOS
+  (PRs touching `apps/skimmer/**`, and every release, which attaches the
+  installers); locally, Windows or a Mac.
 
 `ci.yml`'s `paths` trigger excludes these trees, so a change confined to
 them runs no host CI at all. That is intentional, and it is also why "CI

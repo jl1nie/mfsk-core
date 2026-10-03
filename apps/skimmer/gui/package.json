@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "check": "svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
@@ -14,6 +15,7 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "^2.12.1",
     "@tsconfig/svelte": "^5.0.8",
     "svelte": "^5.57.1",
     "svelte-check": "^4.7.6",

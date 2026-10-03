@@ -1,0 +1,127 @@
+name: Skimmer installers
+
+# Builds the SpyServer skimmer's Tauri GUI (`apps/skimmer/gui`) into a
+# Windows installer and a macOS disk image.
+#
+# Two callers:
+#   - `release.yml` calls this with the release version, then attaches
+#     the results to the GitHub release after the crates.io publish.
+#     A failure here does not hold the library back: the skimmer is a
+#     sample app, so its job sits beside the publish, not in front of it.
+#   - A pull request that touches `apps/skimmer/**`. `ci.yml` excludes
+#     `apps/skimmer/gui/**` because it needs a webview and Node, so before
+#     this workflow the GUI was built only by hand, on Windows.
+#
+# The macOS build is signed ad hoc (`bundle.macOS.signingIdentity: "-"`),
+# not with a Developer ID, so a downloaded copy is quarantined by
+# Gatekeeper on first open; see `apps/skimmer/README.md`. The signature
+# still matters: with only the linker's signature, the identifier was a
+# random `skimmer_gui-<hash>` and Info.plist was not bound, and macOS
+# refused the SpyServer connection on the LAN with "No route to host"
+# without asking. The verify step below checks both.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version stamped on the installers (no leading v). Empty: tauri.conf.json's."
+        type: string
+        default: ""
+  pull_request:
+    paths:
+      - 'apps/skimmer/**'
+      - '.github/workflows/skimmer-installers.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    name: Skimmer installer — ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            bundles: nsis
+            built: nsis/*-setup.exe
+            suffix: windows-x64-setup.exe
+          # macos-latest is Apple silicon; an Intel or universal build
+          # is not made (decided 2026-10-03, nothing to test it on).
+          - name: macos-arm64
+            os: macos-latest
+            bundles: app,dmg
+            built: dmg/*.dmg
+            suffix: macos-arm64.dmg
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/skimmer/gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned, rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/skimmer/gui/src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/skimmer/gui/package-lock.json
+
+      - name: Front end
+        run: |
+          npm ci
+          npm run check
+          npm run build
+
+      # The version goes in through a config file rather than inline
+      # JSON: on Windows `npm run` hands its arguments to cmd.exe, which
+      # does not keep the quotes.
+      - name: Build the installer
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$VERSION" ]; then
+            VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          fi
+          echo "{\"version\": \"$VERSION\"}" > "$RUNNER_TEMP/version.json"
+          npm run tauri -- build --bundles ${{ matrix.bundles }} --config "$RUNNER_TEMP/version.json"
+          mkdir -p "$GITHUB_WORKSPACE/skimmer-out"
+          shopt -s nullglob
+          built=(src-tauri/target/release/bundle/${{ matrix.built }})
+          if [ "${#built[@]}" -ne 1 ]; then
+            echo "::error::expected one ${{ matrix.built }}, found ${#built[@]}"
+            exit 1
+          fi
+          cp "${built[0]}" "$GITHUB_WORKSPACE/skimmer-out/mfsk-skimmer-v$VERSION-${{ matrix.suffix }}"
+          ls -l "$GITHUB_WORKSPACE/skimmer-out"
+
+      - name: Verify the app's signature and local-network entry
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          app="src-tauri/target/release/bundle/macos/mfsk skimmer.app"
+          codesign --verify --strict --deep "$app"
+          info=$(codesign -dv --verbose=2 "$app" 2>&1)
+          echo "$info"
+          grep -q '^Identifier=io.github.jl1nie.mfsk-skimmer$' <<<"$info"
+          if grep -q '^Info.plist=not bound' <<<"$info"; then
+            echo "::error::Info.plist is not bound to the signature"
+            exit 1
+          fi
+          plutil -extract NSLocalNetworkUsageDescription raw "$app/Contents/Info.plist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skimmer-${{ matrix.name }}
+          path: skimmer-out/*
+          if-no-files-found: error
