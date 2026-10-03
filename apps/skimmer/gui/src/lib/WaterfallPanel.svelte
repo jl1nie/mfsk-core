@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ChannelSetting, DecodeRow } from './types';
-  import { BIG_ROWS, paint, type WaterfallStore } from './waterfall';
+  import { BIG_PX, THUMB_PX, paint, spanMs, type WaterfallStore } from './waterfall';
 
   let {
     store,
@@ -23,13 +23,14 @@
     open: boolean;
   } = $props();
 
-  const ROW_PX = 2;
   let thumbs: HTMLCanvasElement[] = $state([]);
   let big: HTMLCanvasElement | undefined = $state();
   let over: HTMLCanvasElement | undefined = $state();
   let hover = $state('');
   let hoverAt = $state({ x: 0, y: 0 });
   let scheduled = false;
+  /** The large waterfall holds rows of the focused channel (re-read whenever rows arrive). */
+  const ready = $derived(tick >= 0 && store.big.channel === focus && store.big.rows.length > 0);
 
   /** A decode's box on the large waterfall, in canvas pixels. */
   type Box = { x0: number; x1: number; y0: number; y1: number; text: string };
@@ -51,26 +52,25 @@
       if (!cv || !s || s.rows.length === 0) return;
       const w = s.rows[0].length;
       if (cv.width !== w) cv.width = w;
-      if (cv.height !== 60) cv.height = 60;
+      if (cv.height !== THUMB_PX) cv.height = THUMB_PX;
       const ctx = cv.getContext('2d');
       if (!ctx) return;
-      const img = ctx.createImageData(w, 60);
-      paint(img, s.rows, 1);
+      const img = ctx.createImageData(w, THUMB_PX);
+      paint(img, s, spanMs(slotS[channels[i].mode] ?? 15));
       ctx.putImageData(img, 0, 0);
     });
     // The large one.
     const b = store.big;
     if (big && b.channel === focus && b.rows.length > 0) {
       const w = b.rows[0].length;
-      const h = BIG_ROWS * ROW_PX;
-      if (big.width !== w || big.height !== h) {
+      if (big.width !== w || big.height !== BIG_PX) {
         big.width = w;
-        big.height = h;
+        big.height = BIG_PX;
       }
       const ctx = big.getContext('2d');
       if (ctx) {
-        const img = ctx.createImageData(w, h);
-        paint(img, b.rows, ROW_PX);
+        const img = ctx.createImageData(w, BIG_PX);
+        paint(img, b, spanMs(slotS[channels[focus]?.mode ?? ''] ?? 15));
         ctx.putImageData(img, 0, 0);
       }
     }
@@ -89,19 +89,19 @@
     if (!ctx) return;
     ctx.clearRect(0, 0, W, H);
     boxes = [];
-    if (b.channel !== focus || b.rows.length < 2) return;
-    const span = b.binHz * b.rows[0].length;
-    const xOf = (hz: number) => ((hz - b.fLo) / span) * W;
+    if (b.channel !== focus || b.rows.length < 1) return;
+    const hzSpan = b.binHz * b.rows[0].length;
+    const xOf = (hz: number) => ((hz - b.fLo) / hzSpan) * W;
     const n = b.rows.length;
-    const rowMs = (b.utc[0] - b.utc[n - 1]) / (n - 1);
     const newest = b.utc[0];
-    const yOf = (utc: number) => ((newest - utc) / rowMs) * (H / BIG_ROWS);
+    const span = spanMs(slotS[channels[focus]?.mode ?? ''] ?? 15);
+    const yOf = (utc: number) => ((newest - utc) / span) * H;
     ctx.font = '10px sans-serif';
     ctx.textBaseline = 'top';
     // Frequency ticks every 500 Hz.
     ctx.strokeStyle = 'rgba(255,255,255,0.35)';
     ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    for (let f = Math.ceil(b.fLo / 500) * 500; f < b.fLo + span; f += 500) {
+    for (let f = Math.ceil(b.fLo / 500) * 500; f < b.fLo + hzSpan; f += 500) {
       const x = xOf(f);
       ctx.beginPath();
       ctx.moveTo(x, 0);
@@ -113,7 +113,7 @@
     const c = channels[focus];
     const T = (slotS[c?.mode ?? ''] ?? 15) * 1000;
     ctx.strokeStyle = 'rgba(255,255,255,0.45)';
-    for (let t = Math.floor(newest / T) * T; t > b.utc[n - 1]; t -= T) {
+    for (let t = Math.floor(newest / T) * T; t > newest - span; t -= T) {
       const y = yOf(t);
       ctx.beginPath();
       ctx.moveTo(0, y);
@@ -127,13 +127,15 @@
       if (r.channel !== focus || r.slotUtcMs === null || !c) continue;
       const f = r.freqHz - c.dialHz;
       const half = Math.max(12, 4 * 6.25);
-      const y0 = yOf(r.slotUtcMs + 0.5 * 1000);
-      const y1 = yOf(r.slotUtcMs + T * 0.84);
-      if (y1 < 0 || y0 > H) continue;
+      // yLow is the box's lower edge (the slot's start), yHigh its upper (the end).
+      const yLow = yOf(r.slotUtcMs + 0.5 * 1000);
+      const yHigh = yOf(r.slotUtcMs + T * 0.84);
+      // Until it has left the screen entirely: below the bottom edge, not before.
+      if (yLow < 0 || yHigh > H) continue;
       const x0 = xOf(f - half);
       const x1 = xOf(f + half);
-      ctx.strokeRect(x0, y1, x1 - x0, y0 - y1);
-      boxes.push({ x0, x1, y0: y1, y1: y0, text: `${r.text}  ${r.snrDb.toFixed(0)} dB` });
+      ctx.strokeRect(x0, yHigh, x1 - x0, yLow - yHigh);
+      boxes.push({ x0, x1, y0: yHigh, y1: yLow, text: `${r.text}  ${r.snrDb.toFixed(0)} dB` });
     }
   }
 
@@ -176,12 +178,12 @@
       {/each}
     </div>
     <div class="bigbox">
-      <canvas class="big" bind:this={big} width="1024" height={BIG_ROWS * ROW_PX}></canvas>
+      <canvas class="big" bind:this={big} width="1024" height={BIG_PX}></canvas>
       <canvas class="over" bind:this={over} onmousemove={onmove} onmouseleave={() => (hover = '')}></canvas>
       {#if hover}
         <div class="tip" style="left: {hoverAt.x + 10}px; top: {hoverAt.y + 10}px">{hover}</div>
       {/if}
-      {#if store.big.channel !== focus}
+      {#if !ready}
         <div class="wait">waiting for {channels[focus] ? channels[focus].mode + ' ' + (channels[focus].dialHz / 1000).toFixed(1) : 'a channel'}…</div>
       {/if}
     </div>
