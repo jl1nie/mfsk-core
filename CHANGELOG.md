@@ -2,6 +2,10 @@
 
 ## Unreleased — `IqReceiver` no longer drops every other slot on a real timestamp; a SpyServer skimmer sample app
 
+- **0.12.0 is yanked (2026-10-03).** Its `iq::IqReceiver` lost every other slot with a real-clock time anchor and
+  never resolved hashed (`<...>`) callsigns, so it was unusable for live reception; the fix is an API redesign, which
+  ships as 0.13.0 rather than a 0.12.x patch. A `Cargo.lock` already holding 0.12.0 keeps working; new resolutions of
+  `mfsk-core = "0.12"` fail until 0.13.0, and FT8/FT4/WAV users can stay on 0.11.x meanwhile.
 - **`IqReceiver` decodes every slot when its time anchor is off the 12 kHz grid (#534).** A slot starts at its
   boundary rounded up to a sample, so the sample after a slot can lie just past the next boundary, and
   `next_boundary` skipped to the boundary after that. With an anchor off the grid, which a wall-clock timestamp
