@@ -3,6 +3,7 @@
 //! mode's slot length from the library's registry.
 
 use mfsk_core::Mode;
+use mfsk_core::decoder::{ApMode, Contest, QsoProgress};
 
 /// (name a user types, mode, the registry's name for it).
 pub const MODES: &[(&str, Mode, &str)] = &[
@@ -66,8 +67,49 @@ pub fn parse_depth(s: &str) -> Option<mfsk_core::decoder::Depth> {
     }
 }
 
+fn num(k: &str, v: &str) -> Result<f32, String> {
+    v.parse().map_err(|_| format!("bad {k} {v:?}"))
+}
+
+fn flag(k: &str, v: &str) -> Result<bool, String> {
+    match v {
+        "1" | "on" | "true" => Ok(true),
+        "0" | "off" | "false" => Ok(false),
+        _ => Err(format!("bad {k} {v:?}, expected 0|1")),
+    }
+}
+
+/// `nQSOProgress`, 0 to 5, or its name.
+pub fn parse_progress(s: &str) -> Option<QsoProgress> {
+    Some(match s.to_ascii_lowercase().as_str() {
+        "0" | "calling" => QsoProgress::Calling,
+        "1" | "replying" => QsoProgress::Replying,
+        "2" | "report" => QsoProgress::Report,
+        "3" | "rogerreport" => QsoProgress::RogerReport,
+        "4" | "rogers" => QsoProgress::Rogers,
+        "5" | "signoff" => QsoProgress::Signoff,
+        _ => return None,
+    })
+}
+
+/// `ncontest`'s activities by name.
+pub fn parse_contest(s: &str) -> Option<Contest> {
+    Some(match s.to_ascii_lowercase().as_str() {
+        "none" | "" => Contest::None,
+        "grid" | "gridexchange" => Contest::GridExchange,
+        "euvhf" => Contest::EuVhf,
+        "fieldday" => Contest::FieldDay,
+        "rtty" | "rttyroundup" => Contest::RttyRoundup,
+        "fox" => Contest::Fox,
+        "hound" => Contest::Hound,
+        _ => return None,
+    })
+}
+
 /// A channel written `MODE@DIAL_HZ` followed by any of `:band=LO-HI` (audio
-/// Hz), `:dx=CALL` and `:depth=fast|normal|deep`.
+/// Hz), `:dx=CALL`, `:depth=fast|normal|deep`, `:rx=HZ`, `:tol=HZ`, `:tx=HZ`,
+/// `:ap=off|cq|full`, `:hiscall=`, `:hisgrid=`, `:progress=0..5`, `:contest=NAME`,
+/// `:avg=1`, `:deepsearch=1` and `:eme=1` (WSJT-X's parameter block).
 pub fn parse_channel(spec: &str) -> Result<crate::ChannelSpec, String> {
     let mut parts = spec.split(':');
     let head = parts.next().unwrap_or("");
@@ -88,12 +130,36 @@ pub fn parse_channel(spec: &str) -> Result<crate::ChannelSpec, String> {
                     .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
                     .filter(|(a, b): &(f32, f32)| a < b)
                     .ok_or_else(|| format!("bad band {v:?}, expected LO-HI"))?;
-                ch.band_hz = Some((lo, hi));
+                ch.options.band_hz = Some((lo, hi));
             }
-            "dx" => ch.dx_call = Some(v.to_ascii_uppercase()),
+            "dx" => ch.options.dx_call = Some(v.to_ascii_uppercase()),
             "depth" => {
-                ch.depth = Some(parse_depth(v).ok_or_else(|| format!("bad depth {v:?}"))?);
+                ch.options.depth = Some(parse_depth(v).ok_or_else(|| format!("bad depth {v:?}"))?);
             }
+            "rx" => ch.options.rx_freq_hz = Some(num(k, v)?),
+            "tol" => ch.options.tol_hz = Some(num(k, v)?),
+            "tx" => ch.options.tx_freq_hz = Some(num(k, v)?),
+            "ap" => {
+                ch.options.ap = Some(match v {
+                    "off" => ApMode::Off,
+                    "cq" => ApMode::CqOnly,
+                    "full" => ApMode::Full,
+                    _ => return Err(format!("bad ap {v:?}, expected off|cq|full")),
+                });
+            }
+            "hiscall" => ch.options.qso.his_call = v.to_ascii_uppercase(),
+            "hisgrid" => ch.options.qso.his_grid = v.to_ascii_uppercase(),
+            "progress" => {
+                ch.options.qso.progress =
+                    parse_progress(v).ok_or_else(|| format!("bad progress {v:?}, expected 0-5"))?;
+            }
+            "contest" => {
+                ch.options.contest =
+                    parse_contest(v).ok_or_else(|| format!("bad contest {v:?}"))?;
+            }
+            "avg" => ch.options.averaging = flag(k, v)?,
+            "deepsearch" => ch.options.deep_search = flag(k, v)?,
+            "eme" => ch.options.eme_delay = flag(k, v)?,
             _ => return Err(format!("unknown option {k:?}")),
         }
     }
@@ -109,14 +175,27 @@ mod tests {
         let c = parse_channel("ft8@7074000:band=300-3000:dx=ja1abc:depth=fast").unwrap();
         assert_eq!(c.mode, Mode::Ft8);
         assert_eq!(c.dial_hz, 7_074_000.0);
-        assert_eq!(c.band_hz, Some((300.0, 3000.0)));
-        assert_eq!(c.dx_call.as_deref(), Some("JA1ABC"));
-        assert_eq!(c.depth, Some(mfsk_core::decoder::Depth::Fast));
+        assert_eq!(c.options.band_hz, Some((300.0, 3000.0)));
+        assert_eq!(c.options.dx_call.as_deref(), Some("JA1ABC"));
+        assert_eq!(c.options.depth, Some(mfsk_core::decoder::Depth::Fast));
         assert_eq!(
             parse_channel("FT8@7074000").unwrap(),
             crate::ChannelSpec::new(Mode::Ft8, 7_074_000.0)
         );
+        let d = parse_channel(
+            "FT8@7074000:rx=1500:tol=20:ap=cq:hiscall=ja1abc:progress=2:contest=fieldday:avg=1",
+        )
+        .unwrap();
+        assert_eq!(d.options.rx_freq_hz, Some(1500.0));
+        assert_eq!(d.options.ap, Some(ApMode::CqOnly));
+        assert_eq!(d.options.qso.his_call, "JA1ABC");
+        assert_eq!(d.options.qso.progress, QsoProgress::Report);
+        assert_eq!(d.options.contest, Contest::FieldDay);
+        assert!(d.options.averaging);
         for bad in [
+            "FT8@1:ap=maybe",
+            "FT8@1:progress=9",
+            "FT8@1:avg=2",
             "FT8",
             "FT9@1",
             "FT8@x",

@@ -15,13 +15,14 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+use skimmer_core::Station;
 use skimmer_core::modes::{MODES, mode_name, parse_channel};
 use skimmer_core::{Channelizer, Config, Event, WireFormat, all_txt_line};
 
 fn usage() -> ExitCode {
     let modes: Vec<&str> = MODES.iter().map(|m| m.0).collect();
     eprintln!(
-        "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--log FILE]\n\
+        "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
          \x20      [--tune] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS]\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
@@ -35,6 +36,7 @@ fn usage() -> ExitCode {
 fn parse_args() -> Option<(Config, Option<String>)> {
     let mut cfg = Config::new("127.0.0.1:5555", Vec::new());
     let mut log = None;
+    let (mut mycall, mut mygrid) = (String::new(), String::new());
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -57,6 +59,8 @@ fn parse_args() -> Option<(Config, Option<String>)> {
             "--reanchor-ms" => {
                 cfg.reanchor = Duration::from_millis(it.next()?.parse().ok()?);
             }
+            "--mycall" => mycall = it.next()?.to_ascii_uppercase(),
+            "--mygrid" => mygrid = it.next()?.to_ascii_uppercase(),
             "--ch" => match parse_channel(&it.next()?) {
                 Ok(ch) => cfg.channels.push(ch),
                 Err(e) => {
@@ -67,6 +71,10 @@ fn parse_args() -> Option<(Config, Option<String>)> {
             _ => return None,
         }
     }
+    cfg.live.set_station(Station {
+        call: mycall,
+        grid: mygrid,
+    });
     (!cfg.channels.is_empty()).then_some((cfg, log))
 }
 

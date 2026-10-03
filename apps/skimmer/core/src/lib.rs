@@ -27,7 +27,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use mfsk_core::Mode;
-use mfsk_core::decoder::{AnyDecoder, Depth, default_params};
+use mfsk_core::decoder::{AnyDecoder, default_params};
+pub use mfsk_core::decoder::{ApMode, Contest, Depth, QsoContext, QsoProgress, Station};
 pub use mfsk_core::iq::Channelizer;
 use mfsk_core::iq::CompletedSlot;
 use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
@@ -45,54 +46,93 @@ pub fn now_ns() -> i64 {
         .as_nanos() as i64
 }
 
-/// One channel: a mode at a USB dial frequency.
+/// One channel: a mode at a USB dial frequency, and how it is decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelSpec {
     pub mode: Mode,
     pub dial_hz: f64,
-    /// Audio band searched (`nfa`, `nfb`); `None` is the mode's default.
+    pub options: ChannelOptions,
+}
+
+/// A channel's part of WSJT-X's parameter block (`jt9com`) plus the library's
+/// "hunt one DX" hint. `None` / `false` / empty keep the mode's default, as
+/// the GUI's untouched boxes do. Each mode reads what its upstream decoder
+/// reads and ignores the rest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChannelOptions {
+    /// Audio band searched (`nfa`, `nfb`), Hz.
     pub band_hz: Option<(f32, f32)>,
+    /// The Rx frequency (`nfqso`), tolerance (`ntol`) and Tx frequency
+    /// (`nftx`), Hz.
+    pub rx_freq_hz: Option<f32>,
+    pub tol_hz: Option<f32>,
+    pub tx_freq_hz: Option<f32>,
+    /// `ndepth & 7`; `None` is Deep, the GUI default.
+    pub depth: Option<Depth>,
+    /// AP (`lft8apon` / `lapcqonly`); `None` is the mode's GUI default.
+    pub ap: Option<ApMode>,
+    /// `ndepth & 16` (JT65, Q65), `ndepth & 32` (JT65), `emedelay`.
+    pub averaging: bool,
+    pub deep_search: bool,
+    pub eme_delay: bool,
+    /// `hiscall`, `hisgrid`, `nQSOProgress`: with the station, what the QSO
+    /// context AP of FT8, FT4 and FST4 is derived from.
+    pub qso: QsoContext,
+    /// `ncontest`.
+    pub contest: Contest,
     /// A station to hunt: its call is given to the decoder as an a-priori
     /// hint (FT8, FT4, FST4, Q65; ignored by modes without AP).
     pub dx_call: Option<String>,
-    /// Decoding depth; `None` is the library's default (Deep).
-    pub depth: Option<Depth>,
-}
-
-/// What can change on a running channel.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ChannelOptions {
-    pub band_hz: Option<(f32, f32)>,
-    pub dx_call: Option<String>,
-    pub depth: Option<Depth>,
 }
 
 /// Options changed while the skimmer runs: [`LiveOptions::set`] from any
 /// thread, picked up by the stream loop between IQ messages and handed to
 /// the channel's decoder thread, which applies them before its next slot.
+/// The operator's station (`mycall`, `mygrid`) is one for all channels.
 #[derive(Debug, Default)]
 pub struct LiveOptions {
     generation: std::sync::atomic::AtomicU64,
-    options: std::sync::Mutex<Vec<ChannelOptions>>,
+    state: std::sync::Mutex<LiveState>,
+}
+
+#[derive(Debug, Default)]
+struct LiveState {
+    options: Vec<ChannelOptions>,
+    station: Station,
 }
 
 impl LiveOptions {
     /// Replace channel `index`'s options (an index of `Config::channels`).
     pub fn set(&self, index: usize, options: ChannelOptions) {
-        let mut all = self.options.lock().unwrap();
-        if all.len() <= index {
-            all.resize(index + 1, ChannelOptions::default());
+        let mut st = self.state.lock().unwrap();
+        if st.options.len() <= index {
+            st.options.resize(index + 1, ChannelOptions::default());
         }
-        all[index] = options;
+        st.options[index] = options;
+        drop(st);
         self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    /// Replace the operator's station, for every channel.
+    pub fn set_station(&self, station: Station) {
+        self.state.lock().unwrap().station = station;
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn station(&self) -> Station {
+        self.state.lock().unwrap().station.clone()
     }
 
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
 
-    fn get(&self, index: usize) -> Option<ChannelOptions> {
-        self.options.lock().unwrap().get(index).cloned()
+    fn get(&self, index: usize) -> Option<(ChannelOptions, Station)> {
+        let st = self.state.lock().unwrap();
+        st.options
+            .get(index)
+            .cloned()
+            .map(|o| (o, st.station.clone()))
     }
 }
 
@@ -101,35 +141,35 @@ impl ChannelSpec {
         ChannelSpec {
             mode,
             dial_hz,
-            band_hz: None,
-            dx_call: None,
-            depth: None,
-        }
-    }
-
-    pub fn options(&self) -> ChannelOptions {
-        ChannelOptions {
-            band_hz: self.band_hz,
-            dx_call: self.dx_call.clone(),
-            depth: self.depth,
+            options: ChannelOptions::default(),
         }
     }
 
     /// This channel's decoder, as configured.
-    fn decoder(&self) -> AnyDecoder {
+    fn decoder(&self, station: &Station) -> AnyDecoder {
         let mut d = AnyDecoder::with_defaults(self.mode);
-        apply_options(&mut d, &self.options());
+        apply_options(&mut d, &self.options, station);
         d
     }
 }
 
-/// Set `o` on `d`: unset fields return to the mode's defaults. A mode
-/// without AP simply hunts nothing.
-fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions) {
+/// Set `o` and the station on `d`: unset fields return to the mode's
+/// defaults. A mode without AP simply hunts nothing.
+fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions, station: &Station) {
     let dflt = default_params(d.mode());
     let p = d.params_mut();
     p.band_hz = o.band_hz.unwrap_or(dflt.band_hz);
+    p.rx_freq_hz = o.rx_freq_hz;
+    p.tol_hz = o.tol_hz;
+    p.tx_freq_hz = o.tx_freq_hz;
     p.depth = o.depth.unwrap_or(dflt.depth);
+    p.ap = o.ap.unwrap_or(dflt.ap);
+    p.averaging = o.averaging;
+    p.deep_search = o.deep_search;
+    p.eme_delay = o.eme_delay;
+    p.station = station.clone();
+    p.qso = o.qso.clone();
+    p.contest = o.contest;
     let hint = o.dx_call.as_ref().map(|dx| ApHint {
         call2: Some(dx.clone()),
         ..ApHint::default()
@@ -140,7 +180,7 @@ fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions) {
 /// What a channel's worker has to do.
 enum Job {
     Slot(CompletedSlot),
-    Options(ChannelOptions),
+    Options(ChannelOptions, Station),
 }
 
 /// One channel's decoder thread. The socket reader only cuts slots and
@@ -171,8 +211,8 @@ impl Worker {
                 for job in rx {
                     let slot = match job {
                         Job::Slot(slot) => slot,
-                        Job::Options(o) => {
-                            apply_options(&mut decoder, &o);
+                        Job::Options(o, station) => {
+                            apply_options(&mut decoder, &o, &station);
                             continue;
                         }
                     };
@@ -649,7 +689,7 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
         workers[id.0] = Some(Worker::spawn(
             i,
             ch.dial_hz,
-            ch.decoder(),
+            ch.decoder(&cfg.live.station()),
             rtx.clone(),
             busy.clone(),
             longest_us.clone(),
@@ -725,8 +765,8 @@ fn stream(
             let mut all_sent = true;
             for (id, w) in workers.iter().enumerate() {
                 let Some(w) = w else { continue };
-                if let Some(o) = cfg.live.get(cfg_index[id])
-                    && w.tx.try_send(Job::Options(o)).is_err()
+                if let Some((o, station)) = cfg.live.get(cfg_index[id])
+                    && w.tx.try_send(Job::Options(o, station)).is_err()
                 {
                     all_sent = false;
                 }

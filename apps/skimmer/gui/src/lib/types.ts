@@ -4,17 +4,34 @@
 export type WireFormat = 'float' | 'int16';
 
 export type DepthSetting = '' | 'fast' | 'normal' | 'deep';
+export type ApSetting = '' | 'off' | 'cq' | 'full';
 
+/** A channel and its share of WSJT-X's decode parameter block; unset keeps the mode's default. */
 export interface ChannelSetting {
   mode: string;
   dialHz: number;
   /** Audio band searched, Hz; both or neither. */
   bandLo?: number | null;
   bandHi?: number | null;
-  /** A station to hunt (a-priori hint). */
-  dxCall?: string | null;
+  /** Rx frequency, tolerance and Tx frequency, Hz. */
+  rxFreqHz?: number | null;
+  tolHz?: number | null;
+  txFreqHz?: number | null;
   /** Empty is the library default (deep). */
   depth?: DepthSetting | null;
+  /** Empty is the mode's GUI default (FT8 and JT65 off, the others full). */
+  ap?: ApSetting | null;
+  /** A station to hunt (a-priori hint). */
+  dxCall?: string | null;
+  /** The QSO in progress; nQSOProgress as a name or 0-5. */
+  hisCall?: string | null;
+  hisGrid?: string | null;
+  progress?: string | null;
+  /** An ncontest activity by name; empty is none. */
+  contest?: string | null;
+  averaging?: boolean;
+  deepSearch?: boolean;
+  emeDelay?: boolean;
 }
 
 export interface Settings {
@@ -26,6 +43,9 @@ export interface Settings {
   logEnabled: boolean;
   /** Folder the ALL.TXT is written in. */
   logDir: string;
+  /** The operator, for the QSO-context AP. */
+  myCall: string;
+  myGrid: string;
 }
 
 export interface ModeInfo {

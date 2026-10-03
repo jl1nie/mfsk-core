@@ -15,47 +15,96 @@ use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
 use skimmer_core::modes::{MODES, mode_name, parse_mode, slot_seconds};
-use skimmer_core::modes::parse_depth;
+use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::{
-    ChannelOptions, ChannelSpec, Channelizer, Config, Event, LiveOptions, WireFormat, all_txt_line,
+    ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
+    QsoContext, QsoProgress, Station, WireFormat, all_txt_line,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 struct ChannelSetting {
     mode: String,
     dial_hz: f64,
     /// Audio band searched, Hz; both or neither.
     band_lo: Option<f32>,
     band_hi: Option<f32>,
-    /// A station to hunt (a-priori hint).
-    dx_call: Option<String>,
+    /// The Rx frequency, its tolerance and the Tx frequency, Hz.
+    rx_freq_hz: Option<f32>,
+    tol_hz: Option<f32>,
+    tx_freq_hz: Option<f32>,
     /// "fast", "normal" or "deep"; empty is the library default.
     depth: Option<String>,
+    /// "off", "cq" or "full"; empty is the mode's GUI default.
+    ap: Option<String>,
+    /// A station to hunt (a-priori hint).
+    dx_call: Option<String>,
+    /// The QSO in progress: `hiscall`, `hisgrid`, `nQSOProgress` (0-5).
+    his_call: Option<String>,
+    his_grid: Option<String>,
+    progress: Option<String>,
+    /// An `ncontest` activity by name; empty is none.
+    contest: Option<String>,
+    averaging: bool,
+    deep_search: bool,
+    eme_delay: bool,
 }
 
 impl ChannelSetting {
     fn options(&self) -> Result<ChannelOptions, String> {
+        let name = &self.mode;
         let band_hz = match (self.band_lo, self.band_hi) {
             (Some(lo), Some(hi)) if lo < hi && lo >= 0.0 => Some((lo, hi)),
             (None, None) => None,
-            _ => return Err(format!("{}: band must be LO < HI", self.mode)),
+            _ => return Err(format!("{name}: band must be LO < HI")),
+        };
+        let positive = |what: &str, v: Option<f32>| match v {
+            Some(x) if !(x.is_finite() && x >= 0.0) => Err(format!("{name}: bad {what}")),
+            other => Ok(other),
+        };
+        let text = |v: &Option<String>| {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_ascii_uppercase)
         };
         let depth = match self.depth.as_deref() {
             None | Some("") => None,
             Some(d) => Some(parse_depth(d).ok_or_else(|| format!("unknown depth {d:?}"))?),
         };
-        let dx_call = self
-            .dx_call
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(str::to_ascii_uppercase);
+        let ap = match self.ap.as_deref() {
+            None | Some("") => None,
+            Some("off") => Some(ApMode::Off),
+            Some("cq") => Some(ApMode::CqOnly),
+            Some("full") => Some(ApMode::Full),
+            Some(o) => return Err(format!("{name}: unknown AP mode {o:?}")),
+        };
+        let progress = match self.progress.as_deref() {
+            None | Some("") => QsoProgress::default(),
+            Some(p) => parse_progress(p).ok_or_else(|| format!("{name}: bad progress {p:?}"))?,
+        };
+        let contest = match self.contest.as_deref() {
+            None => Contest::None,
+            Some(c) => parse_contest(c).ok_or_else(|| format!("{name}: unknown contest {c:?}"))?,
+        };
         Ok(ChannelOptions {
             band_hz,
-            dx_call,
+            rx_freq_hz: positive("Rx frequency", self.rx_freq_hz)?,
+            tol_hz: positive("tolerance", self.tol_hz)?,
+            tx_freq_hz: positive("Tx frequency", self.tx_freq_hz)?,
             depth,
+            ap,
+            averaging: self.averaging,
+            deep_search: self.deep_search,
+            eme_delay: self.eme_delay,
+            qso: QsoContext {
+                his_call: text(&self.his_call).unwrap_or_default(),
+                his_grid: text(&self.his_grid).unwrap_or_default(),
+                progress,
+            },
+            contest,
+            dx_call: text(&self.dx_call),
         })
     }
 }
@@ -73,6 +122,18 @@ struct Settings {
     log_enabled: bool,
     /// Folder the ALL.TXT goes in.
     log_dir: String,
+    /// The operator (`mycall`, `mygrid`), for the QSO-context AP.
+    my_call: String,
+    my_grid: String,
+}
+
+impl Settings {
+    fn station(&self) -> Station {
+        Station {
+            call: self.my_call.trim().to_ascii_uppercase(),
+            grid: self.my_grid.trim().to_ascii_uppercase(),
+        }
+    }
 }
 
 impl Default for Settings {
@@ -85,6 +146,8 @@ impl Default for Settings {
             channelizer: "auto".into(),
             log_enabled: true,
             log_dir: String::new(),
+            my_call: String::new(),
+            my_grid: String::new(),
         }
     }
 }
@@ -303,11 +366,8 @@ fn config(s: &Settings) -> Result<Config, String> {
         .iter()
         .map(|c| {
             let mode = parse_mode(&c.mode).ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
-            let o = c.options()?;
             let mut spec = ChannelSpec::new(mode, c.dial_hz);
-            spec.band_hz = o.band_hz;
-            spec.dx_call = o.dx_call;
-            spec.depth = o.depth;
+            spec.options = c.options()?;
             Ok::<ChannelSpec, String>(spec)
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -315,6 +375,7 @@ fn config(s: &Settings) -> Result<Config, String> {
         return Err("no channels".into());
     }
     let mut cfg = Config::new(s.server.trim(), channels);
+    cfg.live.set_station(s.station());
     cfg.tune = s.tune;
     cfg.format = if s.format == "int16" {
         WireFormat::Int16
@@ -380,6 +441,17 @@ fn halt(state: &AppState) {
     if let Some(r) = running {
         r.stop.store(true, Ordering::Relaxed);
         let _ = r.thread.join();
+    }
+}
+
+/// Change the operator's station in a running skimmer, for every channel.
+#[tauri::command]
+fn set_station(state: State<'_, AppState>, my_call: String, my_grid: String) {
+    if let Some(r) = state.running.lock().unwrap().as_ref() {
+        r.live.set_station(Station {
+            call: my_call.trim().to_ascii_uppercase(),
+            grid: my_grid.trim().to_ascii_uppercase(),
+        });
     }
 }
 
@@ -474,6 +546,7 @@ fn main() {
             start,
             stop,
             set_channel_options,
+            set_station,
             autostart_requested
         ])
         .on_window_event(|window, event| {

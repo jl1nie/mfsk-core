@@ -23,10 +23,13 @@ cargo run --release -p skimmer -- --server 192.168.1.26:5555 \
     --ch FT4@7047500 --log ALL.TXT
 ```
 
-Per-channel options follow the dial: `:band=LO-HI` (audio Hz searched),
+Per-channel options follow the dial (WSJT-X's parameter block, `--mycall`/`--mygrid` for the operator): `:band=LO-HI` (audio Hz searched),
 `:dx=CALL` (an a-priori hint for that station, FT8/FT4/FST4/Q65) and
-`:depth=fast|normal|deep` (WSJT-X's `ndepth`; default deep). In the GUI they
-are under each channel's *Decode options* and apply to a running skimmer at
+`:depth=fast|normal|deep` (WSJT-X's `ndepth`; default deep), `:rx=`/`:tol=`/`:tx=`
+(Hz), `:ap=off|cq|full`, `:hiscall=`/`:hisgrid=`/`:progress=0..5` (the QSO the
+QSO-context AP is derived from), `:contest=NAME`, `:avg=1`, `:deepsearch=1`,
+`:eme=1`. In the GUI they are under each channel's ⚙ dialog (search, a-priori,
+QSO in progress, other) and the operator's call and grid under Settings and apply to a running skimmer at
 the channel's next slot, without a reconnect.
 
 Options: `--tune` (take control of the device and tune it), `--center HZ`,
