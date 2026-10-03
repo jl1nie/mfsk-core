@@ -89,7 +89,8 @@
         break;
       }
       case 'gap':
-        notice = `Gap: ${e.messages} IQ message(s) lost at ${e.atS.toFixed(1)} s; that slot is skipped`;
+        // Counted in the health line and written to the health log; a
+        // notice per gap was more noise than an operator wanted.
         break;
       case 'reanchor':
         notice = `Time re-anchored by ${e.byS >= 0 ? '+' : ''}${e.byS.toFixed(3)} s`;
