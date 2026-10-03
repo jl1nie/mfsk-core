@@ -3,6 +3,7 @@
   import * as api from './lib/api';
   import type { DecodeRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
   import { bandOfHz, sortBands } from './lib/analysis';
+  import HoursPicker from './lib/HoursPicker.svelte';
   import ChannelPanel from './lib/ChannelPanel.svelte';
   import DecodeTable from './lib/DecodeTable.svelte';
   import AnalysisPanel from './lib/AnalysisPanel.svelte';
@@ -510,16 +511,14 @@
                   <input type="number" min="5" step="5" value={r.minutes} title="Minutes per turn"
                     onchange={(e) => { r.minutes = Math.max(5, Number(e.currentTarget.value) || 5); rotationChanged(); }} />
                   <span class="hint">min</span>
-                  <input type="time" value={r.from} title="From (UTC); empty both: all day"
-                    onchange={(e) => { r.from = e.currentTarget.value; rotationChanged(); }} />
-                  <span class="hint">–</span>
-                  <input type="time" value={r.to} title="To (UTC); earlier than From runs through midnight"
-                    onchange={(e) => { r.to = e.currentTarget.value; rotationChanged(); }} />
                   <button class="link" aria-label="Earlier" disabled={k === 0} onclick={() => moveStep(sel, k, -1)}>▲</button>
                   <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
                 </div>
+                <div class="rothours">
+                  <HoursPicker from={r.from} to={r.to} onchange={(a, b) => { r.from = a; r.to = b; rotationChanged(); }} />
+                </div>
               {/each}
-              <p class="hint">At least 5 minutes each (a retune costs a slot or two). The times (UTC) are the hours a band takes part in; empty is all day, and 20:00–04:00 runs through midnight. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
+              <p class="hint">At least 5 minutes each (a retune costs a slot or two). Drag across the hours (UTC) a band takes part in, leftwards to run through midnight; or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
             {/if}
           {/if}
           <h3>Radio · {settings.servers[sel]?.name}</h3>

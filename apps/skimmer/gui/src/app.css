@@ -546,3 +546,7 @@ button.danger {
 .field.rot input[type='time'] {
   width: 84px;
 }
+
+.rothours {
+  margin: -2px 0 8px 70px;
+}
