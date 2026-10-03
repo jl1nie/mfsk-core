@@ -114,22 +114,27 @@ SpyServer below: it connects once local network access is allowed.
 
 Observed with SDR# and an Airspy HF+ (2026-10-03):
 
-- Control goes to the first client that connects.
-  - **Alone** (no other client): the skimmer takes control and tunes the radio
-    to its IQ centre, and keeps it. An SDR# started afterwards joins as a guest
-    and cannot tune until the skimmer disconnects.
-  - **Beside SDR#** (started first): the skimmer is the guest and never tunes the
-    device. It sets only its own IQ (DDC) centre, which a client without control
-    may place anywhere in the device's band. It uses the lowest rate that holds
-    the most channels, and pauses the channels that fall outside the band.
-  - `--yield` (GUI: *Give control back*) is the older behaviour for an operator
-    who starts SDR# after the skimmer: given control, leave and reconnect 10 s
-    later, which hands control to SDR#. It wakes the radio and drops it on every
-    retry, so it is off by default.
+- The server gives control to one client at a time, and **SDR# takes it when it
+  connects, whichever was first**: with the skimmer holding control, starting
+  SDR# made the skimmer's next sync read `control=false` and SDR# moved the
+  device (2026-10-03 23:46); closing SDR# returned control to the skimmer
+  (`control=true`) with no reconnect. So SDR# can be started or closed at any
+  time. The skimmer follows, and is a guest while SDR# has control.
+  - **Alone**: the skimmer has control, tunes the radio to its IQ centre, and
+    can write the gain (Settings → Radio).
+  - **Beside SDR#**: the skimmer is the guest and never tunes the device or
+    writes the gain; the slider shows what SDR# set. It sets only its own IQ
+    (DDC) centre, which a client without control may place anywhere in the
+    device's band. It uses the lowest rate that holds the most channels, and
+    pauses the channels that fall outside the band.
+  - `--yield` (GUI: *Give control back*) is the older behaviour: given control,
+    leave and reconnect 10 s later. It woke the radio and dropped it on every
+    retry, and is no longer needed to let SDR# in, so it is off by default.
 - While a second client is connected, the controlling client cannot move the
   device outside its band (about 780 kHz on the HF+). SDR# can still tune
-  anywhere inside that band, for example all of 40 m. **To change band, stop
-  the skimmer, retune in SDR#, then start the skimmer again.**
+  anywhere inside that band, for example all of 40 m. To change band while the
+  skimmer holds control, retune in SDR#: it takes control, and the skimmer
+  plans again around the new centre (channels outside the band pause).
 
 - The server counts a client until it hears the connection close. A laptop that
   sleeps with the skimmer still connected can keep its slot (the network

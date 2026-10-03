@@ -5,22 +5,22 @@
 //! [`run`] connects, plans a stream, decodes, and reports everything as an
 //! [`Event`] until `stop` is set, reconnecting on errors.
 //!
-//! **Sharing the radio.** Control of the device goes to whoever connects
-//! first, and while a guest is connected the controlling client cannot move
-//! the device outside its band (both seen with SDR# and an Airspy HF+,
-//! 2026-10-03). So:
+//! **Sharing the radio.** The server gives control to one client at a time,
+//! and the operator's client takes it when it connects, whichever was first
+//! (seen with SDR# and an Airspy HF+, 2026-10-03: SDR# started while this held
+//! control, took it and moved the device; closing SDR# gave it back with no
+//! reconnect). A client without control cannot move the device outside its
+//! band. So:
 //!
-//! - **Beside SDR#** (started first): this is the guest. It never tunes the
-//!   device; it sets only its own IQ (DDC) centre, which a client without
-//!   control may place anywhere in the device's band. Channels outside the
-//!   band are paused; a later move by the server plans again.
-//! - **Alone** (nobody else connected): this is given control and keeps it,
-//!   tuning the device to its IQ centre. An SDR# started afterwards joins as a
-//!   guest and cannot tune until this disconnects.
-//! - [`Config::yield_control`] restores the old behaviour for an operator who
-//!   starts SDR# later: given control, leave and reconnect after
-//!   [`Config::retry`] so that SDR# can take it. It woke the radio and dropped
-//!   it every retry, which read as an error with no SDR# running.
+//! - **Alone**: this has control and keeps it, tuning the device to its IQ
+//!   centre and able to write the gain.
+//! - **Beside SDR#**: this is the guest. It never tunes the device or writes the
+//!   gain; it sets only its own IQ (DDC) centre, which a client without control
+//!   may place anywhere in the device's band. Channels outside the band are
+//!   paused; a move by the server plans again ([`Event::Moved`]).
+//! - [`Config::yield_control`] is the older behaviour: given control, leave and
+//!   reconnect after [`Config::retry`]. It woke the radio and dropped it every
+//!   retry and is not needed to let SDR# in.
 //!
 //! **Time.** SpyServer sends no timestamps; see [`anchor`].
 
