@@ -57,6 +57,12 @@ export interface ModeInfo {
   name: string;
   /** Slot (T/R period); slots start on multiples of it from 00:00 UTC. */
   slotS: number;
+  /** Seconds from the slot start to the first symbol at dt = 0. */
+  offsetS: number;
+  /** Length of a frame, s. */
+  frameS: number;
+  /** Width of a frame on the band, Hz. */
+  widthHz: number;
 }
 
 export interface DecodeRow {

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
-use skimmer_core::modes::{MODES, mode_name, parse_mode, slot_seconds};
+use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_mode, slot_seconds};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::{
     ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
@@ -381,6 +381,12 @@ struct ModeInfo {
     name: &'static str,
     /// Slot (T/R period); slots start on multiples of it from 00:00 UTC.
     slot_s: f32,
+    /// Seconds from the slot start to the first symbol at dt = 0.
+    offset_s: f32,
+    /// Length of a frame, s.
+    frame_s: f32,
+    /// Width of a frame on the band, Hz.
+    width_hz: f32,
 }
 
 /// Active channels from which "auto" picks the filter bank.
@@ -393,9 +399,15 @@ fn auto_pfb_channels() -> usize {
 fn modes() -> Vec<ModeInfo> {
     MODES
         .iter()
-        .map(|&(name, m, _)| ModeInfo {
-            name,
-            slot_s: slot_seconds(m),
+        .map(|&(name, m, _)| {
+            let (offset_s, frame_s, width_hz) = frame_geometry(m);
+            ModeInfo {
+                name,
+                slot_s: slot_seconds(m),
+                offset_s,
+                frame_s,
+                width_hz,
+            }
         })
         .collect()
 }

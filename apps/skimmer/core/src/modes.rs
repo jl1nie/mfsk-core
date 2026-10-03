@@ -56,6 +56,25 @@ pub fn slot_seconds(m: Mode) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// Where a frame sits in its slot and on the band, from the registry:
+/// (seconds from the slot start to the first symbol at dt = 0, frame length
+/// in seconds, Hz from the reported frequency, the lowest tone, to the top of
+/// the highest).
+pub fn frame_geometry(m: Mode) -> (f32, f32, f32) {
+    MODES
+        .iter()
+        .find(|&&(_, x, _)| x == m)
+        .and_then(|&(.., r)| mfsk_core::registry::by_name(r))
+        .map(|meta| {
+            (
+                meta.tx_start_offset_s,
+                meta.n_symbols as f32 * meta.symbol_dt,
+                meta.ntones as f32 * meta.tone_spacing_hz,
+            )
+        })
+        .unwrap_or((0.5, 0.0, 50.0))
+}
+
 /// `fast`, `normal` or `deep` (any case); WSJT-X's `ndepth` 1, 2, 3.
 pub fn parse_depth(s: &str) -> Option<mfsk_core::decoder::Depth> {
     use mfsk_core::decoder::Depth;

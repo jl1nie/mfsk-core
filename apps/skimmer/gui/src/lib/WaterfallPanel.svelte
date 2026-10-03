@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ChannelSetting, DecodeRow } from './types';
+  import type { ChannelSetting, DecodeRow, ModeInfo } from './types';
   import { BIG_PX, THUMB_PX, paint, spanMs, type WaterfallStore } from './waterfall';
 
   let {
@@ -10,6 +10,7 @@
     onfocus,
     rows,
     slotS,
+    geom,
     open = $bindable(true),
   }: {
     store: WaterfallStore;
@@ -20,6 +21,7 @@
     onfocus: (i: number) => void;
     rows: DecodeRow[];
     slotS: Record<string, number>;
+    geom: Record<string, ModeInfo>;
     open: boolean;
   } = $props();
 
@@ -126,14 +128,17 @@
     for (const r of rows) {
       if (r.channel !== focus || r.slotUtcMs === null || !c) continue;
       const f = r.freqHz - c.dialHz;
-      const half = Math.max(12, 4 * 6.25);
-      // yLow is the box's lower edge (the slot's start), yHigh its upper (the end).
-      const yLow = yOf(r.slotUtcMs + 0.5 * 1000);
-      const yHigh = yOf(r.slotUtcMs + T * 0.84);
+      const g = geom[c.mode];
+      if (!g) continue;
+      // The reported frequency is the lowest tone; the frame starts offsetS
+      // (+ dt) after the slot start and lasts frameS.
+      const t0 = r.slotUtcMs + (g.offsetS + r.dtS) * 1000;
+      const yLow = yOf(t0);
+      const yHigh = yOf(t0 + g.frameS * 1000);
       // Until it has left the screen entirely: below the bottom edge, not before.
       if (yLow < 0 || yHigh > H) continue;
-      const x0 = xOf(f - half);
-      const x1 = xOf(f + half);
+      const x0 = xOf(f);
+      const x1 = xOf(f + g.widthHz);
       ctx.strokeRect(x0, yHigh, x1 - x0, yLow - yHigh);
       boxes.push({ x0, x1, y0: yHigh, y1: yLow, text: `${r.text}  ${r.snrDb.toFixed(0)} dB` });
     }

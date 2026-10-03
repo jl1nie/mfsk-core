@@ -59,6 +59,7 @@
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(3);
   const slotS = $derived(Object.fromEntries(modes.map((m) => [m.name, m.slotS])));
+  const geom = $derived(Object.fromEntries(modes.map((m) => [m.name, m])));
 
   onMount(() => {
     let unlisten: (() => void) | undefined;
@@ -423,6 +424,7 @@
           }}
           {rows}
           {slotS}
+          {geom}
           bind:open={wfOpen}
         />
       {/if}
