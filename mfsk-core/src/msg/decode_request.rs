@@ -942,7 +942,15 @@ impl<'a, P: FrameDecodable, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
         self.depth = DecodeDepth {
             llr_effort: LlrEffort::Full,
             osd: on,
+            jitter: on,
         };
+        self
+    }
+    /// Retry a candidate's timing at `i0 ± 1` (FST4's `jittermax`), apart
+    /// from [`Self::osd`], which sets both. WSJT-X's fastest depth has OSD
+    /// and no jitter (`fst4_decode.f90:234-248`).
+    pub fn jitter(mut self, on: bool) -> Self {
+        self.depth.jitter = on;
         self
     }
     pub fn strictness(mut self, s: DecodeStrictness) -> Self {
@@ -1491,6 +1499,7 @@ impl<'a, P: SupportsSniper, Pol: MessagePolicy> SniperRequest<'a, P, Pol> {
         self.depth = DecodeDepth {
             llr_effort: LlrEffort::Full,
             osd: on,
+            jitter: on,
         };
         self
     }

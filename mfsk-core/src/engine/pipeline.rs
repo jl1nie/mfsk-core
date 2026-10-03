@@ -221,6 +221,10 @@ pub struct BudgetReport {
 pub struct DecodeDepth {
     pub llr_effort: LlrEffort,
     pub osd: bool,
+    /// Retry a candidate at `i0 ± 1` (FST4 only): `fst4_decode.f90:234-248`
+    /// sets `jittermax` to 2 at `ndepth` 2 and 3 and 0 at `ndepth` 1,
+    /// independently of whether OSD runs.
+    pub jitter: bool,
 }
 
 impl DecodeDepth {
@@ -228,16 +232,19 @@ impl DecodeDepth {
     pub const EMBEDDED: Self = Self {
         llr_effort: LlrEffort::Minimal,
         osd: false,
+        jitter: false,
     };
     /// Full LLR effort, no OSD — host "fast" baseline (was `BpAll`).
     pub const BP_ONLY: Self = Self {
         llr_effort: LlrEffort::Full,
         osd: false,
+        jitter: false,
     };
     /// Full LLR effort + OSD fallback — host default (was `BpAllOsd`).
     pub const FULL: Self = Self {
         llr_effort: LlrEffort::Full,
         osd: true,
+        jitter: true,
     };
 }
 
@@ -1656,7 +1663,7 @@ where
     // tested a different retry axis (segment boundary, not timing
     // jitter) on a different protocol, but it's why this is scoped to
     // FST4 only rather than assumed for FT4 too.
-    if P::ID != super::ProtocolId::Ft4 && depth.osd {
+    if P::ID != super::ProtocolId::Ft4 && depth.jitter {
         for ioffset in [1i32, -1i32] {
             if let Some(r) = try_position(freq_hz, i0 + ioffset, score) {
                 return Some(r);

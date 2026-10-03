@@ -562,9 +562,8 @@ macro_rules! fst4_decodable {
                 slot: &SlotInput<'_>,
                 on_row: Option<OnRow<'_, DecodeResult>>,
             ) -> SlotResult<DecodeResult> {
-                // `fst4_decode.f90:53,308-309,421-423`. Depth's jitter split
-                // from OSD is not yet expressible: every depth runs OSD with
-                // jitter.
+                // `fst4_decode.f90:53,234-248,308-309,421-423`: OSD at every
+                // depth, the `i0 ± 1` timing retry (`jittermax`) from Normal.
                 let search = Search {
                     sync_min: $minsync,
                     max_cand: 200,
@@ -581,6 +580,7 @@ macro_rules! fst4_decodable {
                     let mut req = base_request::<$ty>(
                         pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
                     );
+                    req = req.jitter(params.depth != Depth::Fast && s.osd);
                     if let Some(nb) = extras.noise_blanker {
                         req = req.noise_blanker(nb);
                     }
