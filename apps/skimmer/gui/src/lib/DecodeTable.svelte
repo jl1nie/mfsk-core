@@ -5,6 +5,7 @@
   let {
     rows,
     channels,
+    serverNames,
     slotS,
     onclear,
     channel = $bindable(-1),
@@ -12,6 +13,8 @@
   }: {
     rows: DecodeRow[];
     channels: ChannelSetting[];
+    /** Names of the servers, when there is more than one (the table then says which heard a row). */
+    serverNames: string[];
     slotS: Record<string, number>;
     onclear: () => void;
     channel?: number;
@@ -79,8 +82,8 @@
   <div class="toolbar">
     <select bind:value={channel} onchange={() => channel >= 0 && onpick?.(channel)}>
       <option value={-1}>All channels</option>
-      {#each channels as c, i (c.mode + c.dialHz)}
-        <option value={i}>{c.mode} {(c.dialHz / 1000).toFixed(1)} kHz</option>
+      {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
+        <option value={i}>{serverNames.length > 1 ? `${serverNames[c.server ?? 0]} · ` : ''}{c.mode} {(c.dialHz / 1000).toFixed(1)} kHz</option>
       {/each}
     </select>
     <label class="check"><input type="checkbox" bind:checked={cqOnly} /> CQ only</label>
@@ -95,17 +98,18 @@
   <div class="table" bind:this={box} {onscroll}>
     <table>
       <thead>
-        <tr><th>UTC</th><th>Mode</th><th class="num">MHz</th><th class="num">dB</th><th class="num">DT</th><th>Message</th></tr>
+        <tr><th>UTC</th>{#if serverNames.length > 1}<th>Server</th>{/if}<th>Mode</th><th class="num">MHz</th><th class="num">dB</th><th class="num">DT</th><th>Message</th></tr>
       </thead>
       <tbody>
         {#each shown as r, i (r.id)}
           {#if heading(i)}
             <tr class="slot" class:alt={bandOf(r) === 1}>
-              <td colspan="6">{r.mode} {(r.dialHz / 1000).toFixed(1)} kHz · slot {hhmmss(r.slotUtcMs)} UTC</td>
+              <td colspan={serverNames.length > 1 ? 7 : 6}>{serverNames.length > 1 ? `${serverNames[channels[r.channel]?.server ?? 0]} · ` : ''}{r.mode} {(r.dialHz / 1000).toFixed(1)} kHz · slot {hhmmss(r.slotUtcMs)} UTC</td>
             </tr>
           {/if}
           <tr class:alt={bandOf(r) === 1} class:cq={isCq(r.text)}>
             <td class="mono">{hhmmss(r.slotUtcMs)}</td>
+            {#if serverNames.length > 1}<td>{serverNames[channels[r.channel]?.server ?? 0] ?? ''}</td>{/if}
             <td>{r.mode}</td>
             <td class="num mono">{(r.freqHz / 1e6).toFixed(4)}</td>
             <td class="num mono">{r.snrDb.toFixed(0)}</td>

@@ -1,9 +1,11 @@
 <script lang="ts">
-  import type { ApSetting, ChannelSetting, DepthSetting, ModeInfo } from './types';
+  import type { ApSetting, ChannelSetting, DepthSetting, ModeInfo, ServerSetting } from './types';
   import { BANDS, PRESETS } from './presets';
 
   let {
     channels = $bindable(),
+    servers,
+    sel,
     modes,
     slotS,
     now,
@@ -15,6 +17,9 @@
     stationGrid,
   }: {
     channels: ChannelSetting[];
+    servers: ServerSetting[];
+    /** The server new channels go to. */
+    sel: number;
     modes: ModeInfo[];
     /** Slot length in seconds by mode name. */
     slotS: Record<string, number>;
@@ -34,9 +39,11 @@
   let mode = $state('FT8');
   let dialKhz = $state('');
 
-  const same = (a: ChannelSetting, b: ChannelSetting) => a.mode === b.mode && a.dialHz === b.dialHz;
+  const same = (a: ChannelSetting, b: ChannelSetting) =>
+    (a.server ?? 0) === (b.server ?? 0) && a.mode === b.mode && a.dialHz === b.dialHz;
 
   function add(c: ChannelSetting) {
+    c = { ...c, server: sel, step: 0 };
     if (channels.some((x) => same(x, c))) return;
     channels.push(c);
     onchange();
@@ -278,8 +285,13 @@
 
 <section>
   <h2>Channels</h2>
-  <ul class="channels">
-    {#each channels as c, i (c.mode + c.dialHz)}
+  {#each servers as sv, si (si)}
+    {#if servers.length > 1}
+      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.stepMinutes.length > 1 ? ` · rotation ${sv.stepMinutes.join('/')} min` : ''}</h3>
+    {/if}
+    <ul class="channels">
+      {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
+        {#if (c.server ?? 0) === si}
       {@const s = slot(c.mode)}
       <li class:paused={active.length > 0 && !active[i]}>
         <div class="line">
@@ -293,6 +305,16 @@
             ></span>
           {/if}
           <span class="count" title="Decodes in the latest slot, or paused: outside the radio's band">{channelState(i)}</span>
+          {#if sv.stepMinutes.length > 1}
+            <select
+              class="step"
+              title="Heard in this step of the rotation"
+              value={c.step ?? 0}
+              onchange={(e) => { c.step = Number(e.currentTarget.value); onchange(); }}
+            >
+              {#each sv.stepMinutes as m, k (k)}<option value={k}>{k + 1}</option>{/each}
+            </select>
+          {/if}
           <button
             class="link gear"
             class:set={optionSummary(c) !== ''}
@@ -302,10 +324,13 @@
           <button class="link" onclick={() => remove(i)} aria-label="Remove">✕</button>
         </div>
       </li>
-    {:else}
-      <li class="empty">No channels yet</li>
-    {/each}
-  </ul>
+        {/if}
+      {/each}
+      {#if !channels.some((c) => (c.server ?? 0) === si)}
+        <li class="empty">No channels yet</li>
+      {/if}
+    </ul>
+  {/each}
 
   <div class="row">
     <select bind:value={mode}>

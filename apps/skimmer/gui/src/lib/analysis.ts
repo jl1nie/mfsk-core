@@ -29,6 +29,7 @@ export interface QueryForm {
   bearingFrom: string;
   bearingTo: string;
   cq: string; // 'any' | '*' | '' | 'DX' ...
+  servers: string[];
 }
 
 export const MODE_CHIPS = ['FT8', 'FT4', 'FST4*', 'Q65*', 'WSPR', 'JT9', 'JT65'];
@@ -36,7 +37,7 @@ export const MODE_CHIPS = ['FT8', 'FT4', 'FST4*', 'Q65*', 'WSPR', 'JT9', 'JT65']
 export function blankForm(): QueryForm {
   return {
     preset: '24h', from: '', to: '', call: '', grid: '', text: '', bands: [], modes: [],
-    snrMin: '', snrMax: '', kmMin: '', kmMax: '', bearingFrom: '', bearingTo: '', cq: 'any',
+    snrMin: '', snrMax: '', kmMin: '', kmMax: '', bearingFrom: '', bearingTo: '', cq: 'any', servers: [],
   };
 }
 
@@ -104,6 +105,7 @@ export function toQuery(f: QueryForm, me: string, nowMs: number): Query {
     bearingFrom: bf !== null && bt !== null ? bf : null,
     bearingTo: bf !== null && bt !== null ? bt : null,
     cq: f.cq === 'any' ? null : f.cq,
+    servers: f.servers,
   };
 }
 

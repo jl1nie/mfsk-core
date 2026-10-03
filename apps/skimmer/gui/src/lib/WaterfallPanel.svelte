@@ -6,6 +6,7 @@
     store,
     tick,
     channels,
+    server,
     focus,
     onfocus,
     rows,
@@ -17,6 +18,8 @@
     /** Bumped whenever the store has new rows. */
     tick: number;
     channels: ChannelSetting[];
+    /** The server whose channels are shown as thumbnails. */
+    server: number;
     focus: number;
     onfocus: (i: number) => void;
     rows: DecodeRow[];
@@ -175,11 +178,13 @@
   </header>
   {#if open}
     <div class="thumbs">
-      {#each channels as c, i (c.mode + c.dialHz)}
-        <button class="thumb" class:on={i === focus} onclick={() => onfocus(i)} title="Show this channel large">
-          <canvas bind:this={thumbs[i]} width="256" height="60"></canvas>
-          <span>{c.mode} {(c.dialHz / 1000).toFixed(1)}</span>
-        </button>
+      {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
+        {#if (c.server ?? 0) === server}
+          <button class="thumb" class:on={i === focus} onclick={() => onfocus(i)} title="Show this channel large">
+            <canvas bind:this={thumbs[i]} width="256" height="60"></canvas>
+            <span>{c.mode} {(c.dialHz / 1000).toFixed(1)}</span>
+          </button>
+        {/if}
       {/each}
     </div>
     <div class="bigbox">

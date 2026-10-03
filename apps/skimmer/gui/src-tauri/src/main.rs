@@ -268,7 +268,7 @@ struct Tagged {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum UiEvent {
     Connecting {
-        server: String,
+        address: String,
     },
     Connected {
         device_kind: u32,
@@ -360,7 +360,7 @@ impl UiEvent {
     fn new(e: Event, map: &[usize]) -> Self {
         let global = |c: usize| map.get(c).copied().unwrap_or(c);
         match e {
-            Event::Connecting { server } => UiEvent::Connecting { server },
+            Event::Connecting { server } => UiEvent::Connecting { address: server },
             Event::Connected {
                 device,
                 control,

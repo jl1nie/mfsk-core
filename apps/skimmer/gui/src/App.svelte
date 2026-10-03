@@ -14,18 +14,40 @@
   let settings = $state<Settings | null>(null);
   let modes = $state<ModeInfo[]>([]);
   let running = $state(false);
-  let phase = $state('Stopped');
-  /** From the connected device: the highest gain index, and whether this client can set it. */
-  let maxGain = $state<number | null>(null);
-  let canControl = $state(false);
-  /** The gain the radio had when we connected (SDR# had set it), and the one moved to since. */
-  let deviceGain = $state<number | null>(null);
-  let gainSet = $state<number | null>(null);
-  const gainShown = $derived(gainSet ?? deviceGain);
-  let lastGainMove = 0;
-  let detail = $state('');
+  /** What the window knows about one server: how it is doing, its radio, its health. */
+  type Srv = {
+    phase: string;
+    detail: string;
+    /** The rotation step in force, "2/3 until 12:30 UTC", or empty. */
+    step: string;
+    /** From the connected device: the highest gain index, and whether this client can set it. */
+    maxGain: number | null;
+    canControl: boolean;
+    /** The gain the radio had when we connected (SDR# had set it), and the one moved to since. */
+    deviceGain: number | null;
+    gainSet: number | null;
+    lastGainMove: number;
+    health: Status | null;
+    state: 'off' | 'connecting' | 'on' | 'waiting' | 'error';
+  };
+  const blankSrv = (): Srv => ({
+    phase: 'Stopped', detail: '', step: '', maxGain: null, canControl: false, deviceGain: null,
+    gainSet: null, lastGainMove: 0, health: null, state: 'off',
+  });
+  /** By index in `settings.servers`. */
+  let srv = $state<Srv[]>([]);
+  /** The server the gain slider, the health line and the thumbnails are about. */
+  let sel = $state(0);
+  const cur = $derived(srv[sel] ?? blankSrv());
+  const gainShown = $derived(cur.gainSet ?? cur.deviceGain);
+  function syncSrv() {
+    const n = settings?.servers.length ?? 0;
+    while (srv.length < n) srv.push(blankSrv());
+    if (srv.length > n) srv.length = n;
+    if (sel >= n) sel = Math.max(0, n - 1);
+  }
   let notice = $state('');
-  let health = $state<Status | null>(null);
+  const health = $derived(cur.health);
   /** Per configured channel: in the current stream, or paused. */
   let active = $state<boolean[]>([]);
   // Raw, not a deep proxy: 5000 row objects are replaced wholesale, never mutated.
@@ -55,8 +77,10 @@
   /** The slider moves continuously; the radio gets the value once it rests for a moment. */
   function gainChanged() {
     clearTimeout(gainTimer);
+    const server = sel;
     gainTimer = setTimeout(() => {
-      if (running && gainSet !== null) api.setGain(gainSet);
+      const g = srv[server]?.gainSet;
+      if (running && g !== null && g !== undefined) api.setGain(server, g);
     }, 150);
   }
 
@@ -109,10 +133,14 @@
     // The window asks the backend for the radio's state, so a missed or reordered
     // event (the autostart connects before the first paint) cannot leave it unread.
     const radioPoll = setInterval(async () => {
-      if (running) takeRadio(await api.radioState().catch(() => null));
+      if (!running || !settings) return;
+      for (let i = 0; i < settings.servers.length; i++) {
+        takeRadio(i, await api.radioState(i).catch(() => null));
+      }
     }, 1000);
     (async () => {
       settings = await api.loadSettings();
+      syncSrv();
       modes = await api.modes();
       autoPfb = await api.autoPfbChannels();
       unlisten = await api.onEvent(handle);
@@ -136,58 +164,74 @@
 
   /** The radio's state as the backend last heard it (event or poll). A slider the user is
    * dragging is left alone for a moment so a reading does not pull it back. */
-  function takeRadio(r: { gain: number; maxGain: number; canControl: boolean } | null) {
+  function takeRadio(i: number, r: { gain: number; maxGain: number; canControl: boolean } | null) {
+    const s = srv[i];
+    if (!s) return;
     if (r === null) {
-      deviceGain = null;
-      gainSet = null;
-      canControl = false;
+      s.deviceGain = null;
+      s.gainSet = null;
+      s.canControl = false;
       return;
     }
-    maxGain = r.maxGain;
-    canControl = r.canControl;
-    deviceGain = r.gain;
-    if (Date.now() - lastGainMove > 1500) gainSet = null;
+    s.maxGain = r.maxGain;
+    s.canControl = r.canControl;
+    s.deviceGain = r.gain;
+    if (Date.now() - s.lastGainMove > 1500) s.gainSet = null;
   }
 
+  /** The window's numbers of the channels one server listens to. */
+  const channelsOf = (server: number) =>
+    (settings?.channels ?? []).flatMap((c, i) => ((c.server ?? 0) === server ? [i] : []));
+
   function handle(e: UiEvent) {
+    syncSrv();
+    const s = srv[e.server];
+    if (!s) return;
     switch (e.type) {
       case 'connecting':
-        phase = `Connecting to ${e.server}…`;
+        s.phase = `Connecting to ${e.address}…`;
+        s.state = 'connecting';
         break;
       case 'connected':
-        maxGain = e.maxGain;
-        deviceGain = e.gain;
-        gainSet = null;
-        canControl = e.control;
-        phase = e.control ? 'Connected with control of the radio' : 'Connected as a guest';
-        detail = `device centre ${mhz(e.deviceHz)} MHz, band ${(e.bandwidthHz / 1e3).toFixed(0)} kHz`;
+        s.maxGain = e.maxGain;
+        s.deviceGain = e.gain;
+        s.gainSet = null;
+        s.canControl = e.control;
+        s.phase = e.control ? 'Connected with control of the radio' : 'Connected as a guest';
+        s.detail = `device centre ${mhz(e.deviceHz)} MHz, band ${(e.bandwidthHz / 1e3).toFixed(0)} kHz`;
         break;
       case 'radio':
-        takeRadio(e);
+        takeRadio(e.server, e);
         break;
       case 'waterfall':
         wfStore.push(e);
         wfTick++;
         break;
       case 'yielded':
-        phase = 'Had control of the radio: leaving it for SDR# and retrying';
+        s.phase = 'Had control of the radio: leaving it for SDR# and retrying';
+        s.state = 'waiting';
         notice = 'Control was given back (Settings ⚙: "Give control back" is on). Turn it off to run alone.';
         break;
       case 'noChannelFits':
-        phase = `No channel fits the band around ${mhz(e.deviceHz)} MHz; waiting for the radio to move`;
-        active = active.map(() => false);
+        s.phase = `No channel fits the band around ${mhz(e.deviceHz)} MHz; waiting for the radio to move`;
+        s.state = 'waiting';
+        for (const c of channelsOf(e.server)) active[c] = false;
         break;
       case 'streaming':
         if (settings?.waterfall) api.setWaterfall(wfFocus, settings.waterfallFine);
-        phase = 'Decoding';
-        detail = `IQ ${(e.rate / 1e3).toFixed(0)} kS/s at ${mhz(e.centerHz)} MHz · device ${mhz(e.deviceHz)} MHz · ${e.channelizer}`;
-        active = e.active;
+        s.phase = 'Decoding';
+        s.state = 'on';
+        s.detail = `IQ ${(e.rate / 1e3).toFixed(0)} kS/s at ${mhz(e.centerHz)} MHz · device ${mhz(e.deviceHz)} MHz · ${e.channelizer}`;
+        e.channels.forEach((c, k) => (active[c] = e.active[k]));
+        break;
+      case 'step':
+        s.step = `step ${e.index + 1}/${e.of} until ${new Date(e.endsUtcS * 1000).toISOString().slice(11, 16)} UTC`;
         break;
       case 'moved':
-        phase = `Radio moved to ${mhz(e.deviceHz)} MHz; planning again`;
+        s.phase = `Radio moved to ${mhz(e.deviceHz)} MHz; planning again`;
         break;
       case 'decode': {
-        const { type: _, ...row } = e;
+        const { type: _, server: __, ...row } = e;
         received += 1;
         addRow({ ...row, id: nextId++ });
         break;
@@ -197,20 +241,21 @@
         // notice per gap was more noise than an operator wanted.
         break;
       case 'reanchor':
-        notice = `Time re-anchored by ${e.byS >= 0 ? '+' : ''}${e.byS.toFixed(3)} s`;
+        notice = `${settings?.servers[e.server]?.name ?? 'Server'}: time re-anchored by ${e.byS >= 0 ? '+' : ''}${e.byS.toFixed(3)} s`;
         break;
       case 'clock':
         clockText = e.text;
         break;
       case 'status': {
-        const { type: _, ...s } = e;
-        health = s;
-        clockText = s.clock;
+        const { type: _, server: __, ...st } = e;
+        s.health = st;
+        clockText = st.clock;
         break;
       }
       case 'disconnected':
-        phase = `Disconnected (${e.error}); retrying`;
-        active = active.map(() => false);
+        s.phase = `Disconnected (${e.error}); retrying`;
+        s.state = 'error';
+        for (const c of channelsOf(e.server)) active[c] = false;
         break;
     }
   }
@@ -242,6 +287,7 @@
   /** Show a channel's waterfall large; the backend sends whole rows only for it. */
   function focusChannel(i: number) {
     wfFocus = i;
+    sel = settings?.channels[i]?.server ?? sel;
     wfStore.big.channel = -1;
     wfStore.big.rows = [];
     wfStore.big.utc = [];
@@ -270,10 +316,11 @@
       // before that are already queued ahead of the state below.
       await api.stop();
       running = false;
-      phase = 'Stopped';
-      detail = '';
+      for (let i = 0; i < srv.length; i++) {
+        srv[i] = { ...blankSrv() };
+        takeRadio(i, null);
+      }
       active = [];
-      takeRadio(null);
       return;
     }
     if (settings.channels.length === 0) {
@@ -284,7 +331,7 @@
       slotCounts = settings.channels.map(() => 0);
       slotOf = [];
       wfStore.clear();
-      health = null;
+      for (let i = 0; i < srv.length; i++) srv[i] = { ...blankSrv(), phase: 'Starting…', state: 'connecting' };
       await api.start($state.snapshot(settings));
       running = true;
       if (settings.waterfall) api.setWaterfall(wfFocus, settings.waterfallFine);
@@ -310,6 +357,62 @@
     await api.setChannelOptions(i, $state.snapshot(settings!.channels[i]));
   }
 
+  function selectServer(i: number) {
+    sel = i;
+    // The large waterfall follows to a channel of the server shown.
+    const mine = channelsOf(i);
+    if (mine.length && !mine.includes(wfFocus)) focusChannel(mine[0]);
+  }
+
+  function addServer() {
+    if (!settings || settings.servers.length >= 8) return;
+    const n = settings.servers.length + 1;
+    settings.servers.push({
+      name: `Server ${n}`, address: '', grid: '', networkDelayMs: 0, tune: false, yieldControl: false, stepMinutes: [],
+    });
+    syncSrv();
+    sel = settings.servers.length - 1;
+    serverOpen = true;
+  }
+
+  async function removeServer(i: number) {
+    if (!settings || settings.servers.length < 2) return;
+    settings.channels = settings.channels
+      .filter((c) => (c.server ?? 0) !== i)
+      .map((c) => ((c.server ?? 0) > i ? { ...c, server: (c.server ?? 0) - 1 } : c));
+    settings.servers.splice(i, 1);
+    syncSrv();
+    await channelsChanged();
+  }
+
+  function toggleRotation(i: number, on: boolean) {
+    const sv = settings!.servers[i];
+    sv.stepMinutes = on ? [10, 10] : [];
+    if (!on) for (const c of settings!.channels) if ((c.server ?? 0) === i) c.step = 0;
+    rotationChanged();
+  }
+
+  function addStep(i: number) {
+    settings!.servers[i].stepMinutes.push(10);
+    rotationChanged();
+  }
+
+  function removeStep(i: number, k: number) {
+    settings!.servers[i].stepMinutes.splice(k, 1);
+    // Its channels move to the step before it; later steps close up.
+    for (const c of settings!.channels) {
+      if ((c.server ?? 0) !== i) continue;
+      const st = c.step ?? 0;
+      c.step = st === k ? Math.max(0, k - 1) : st > k ? st - 1 : st;
+    }
+    rotationChanged();
+  }
+
+  /** A rotation changed: a running skimmer plans again from scratch. */
+  function rotationChanged() {
+    void channelsChanged();
+  }
+
   async function chooseLogDir() {
     const dir = await api.pickFolder(settings!.logDir);
     if (dir) settings!.logDir = dir;
@@ -319,10 +422,23 @@
 {#if settings}
   <header>
     <div class="server">
-      <label>
-        SpyServer
-        <input bind:value={settings.server} disabled={running} placeholder="host:5555" spellcheck="false" />
-      </label>
+      <div class="srvs" role="tablist" aria-label="Servers">
+        {#each settings.servers as sv, i (i)}
+          <button
+            role="tab"
+            class="srvchip"
+            class:on={sel === i}
+            aria-selected={sel === i}
+            title={`${sv.address}${srv[i]?.step ? ' · ' + srv[i].step : ''}\n${srv[i]?.phase ?? ''}`}
+            onclick={() => selectServer(i)}
+          >
+            <i class="dot {srv[i]?.state ?? 'off'}"></i>{sv.name}{srv[i]?.step ? ` · ${srv[i].step}` : ''}
+          </button>
+        {/each}
+        {#if settings.servers.length < 8}
+          <button class="srvchip add" title="Add a server" aria-label="Add a server" onclick={addServer}>+</button>
+        {/if}
+      </div>
       <button
         class="icon"
         class:on={serverOpen}
@@ -333,7 +449,49 @@
       {#if serverOpen}
         <div class="popover">
           <h2>Settings</h2>
-          <h3>Radio</h3>
+          <h3>Server · {settings.servers[sel]?.name}</h3>
+          {#if settings.servers[sel]}
+            {@const sv = settings.servers[sel]}
+            <div class="field"><span>Name</span><input bind:value={sv.name} disabled={running} spellcheck="false" /></div>
+            <div class="field"><span>Address</span><input bind:value={sv.address} disabled={running} placeholder="host:5555" spellcheck="false" /></div>
+            <div class="field" title="Where this server's antenna is. Bearings and distances of what it hears are measured from here.">
+              <span>Grid</span>
+              <input class="grid" class:bad={!!sv.grid.trim() && !/^[A-R]{2}\d{2}([A-X]{2})?$/i.test(sv.grid.trim())} bind:value={sv.grid} placeholder={settings.myGrid || 'PM95'} spellcheck="false" disabled={running} />
+            </div>
+            <div class="field" title="Fixed delay from the SDR to this PC (server buffer, path), taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here.">
+              <span>Network delay (ms)</span>
+              <input type="number" step="10" min="0" bind:value={sv.networkDelayMs}
+                onchange={() => running && api.setNetworkDelay(sel, Number(sv.networkDelayMs) || 0)} />
+            </div>
+            <label class="check">
+              <input type="checkbox" bind:checked={sv.yieldControl} disabled={running} />
+              <span>
+                Give control back when nobody else is connected, for an SDR# started later. Off (default): with no other
+                client the skimmer takes control and tunes the radio; beside a running SDR# it is a guest and never tunes.
+              </span>
+            </label>
+            <label class="check" title="Rotate through bands: each step lists the channels heard in it, and for how long. The cycle counts from UTC midnight, so servers and restarts agree.">
+              <input type="checkbox" checked={sv.stepMinutes.length > 1} onchange={(e) => toggleRotation(sel, e.currentTarget.checked)} />
+              <span>Rotate through bands</span>
+            </label>
+            {#if sv.stepMinutes.length > 1}
+              {#each sv.stepMinutes as m, k (k)}
+                <div class="field">
+                  <span>Step {k + 1}</span>
+                  <input type="number" min="5" step="5" value={m}
+                    onchange={(e) => { sv.stepMinutes[k] = Math.max(5, Number(e.currentTarget.value) || 5); rotationChanged(); }} />
+                  <span class="hint">min</span>
+                  {#if sv.stepMinutes.length > 2}<button class="link" aria-label="Remove step" onclick={() => removeStep(sel, k)}>✕</button>{/if}
+                </div>
+              {/each}
+              <button onclick={() => addStep(sel)}>+ step</button>
+              <p class="hint">At least 5 minutes each (a retune costs a slot or two). Choose each channel's step in the channel list.</p>
+            {/if}
+            {#if settings.servers.length > 1}
+              <button class="link danger" onclick={() => removeServer(sel)}>Remove this server and its channels</button>
+            {/if}
+          {/if}
+          <h3>Radio · {settings.servers[sel]?.name}</h3>
           <div
             class="field slider"
             title="The radio's own gain index (SpyServer; the HF+ steps its attenuator and LNA), as the radio reports it, also when SDR# moves it. Moving the slider writes it when this client has control and shows the value written; as a guest it cannot write, and the slider keeps showing the value read. Nothing is saved."
@@ -343,13 +501,13 @@
               <input
                 type="range"
                 min="0"
-                max={maxGain ?? 20}
+                max={cur.maxGain ?? 20}
                 step="1"
                 value={gainShown}
                 oninput={(e) => {
-                  if (canControl) {
-                    gainSet = Number(e.currentTarget.value);
-                    lastGainMove = Date.now();
+                  if (cur.canControl) {
+                    srv[sel].gainSet = Number(e.currentTarget.value);
+                    srv[sel].lastGainMove = Date.now();
                     gainChanged();
                   } else {
                     // A guest cannot write it: show what was read.
@@ -358,12 +516,12 @@
                 }}
                 aria-label="Gain index"
               />
-              <output>{gainShown}{maxGain !== null ? ` / ${maxGain}` : ''}</output>
+              <output>{gainShown}{cur.maxGain !== null ? ` / ${cur.maxGain}` : ''}</output>
             {:else}
               <span class="hint">{running ? 'reading…' : 'read when connected'}</span>
             {/if}
           </div>
-          {#if running && !canControl}
+          {#if running && !cur.canControl}
             <p class="hint">This client is a guest (SDR# has control): the gain is SDR#'s to set.</p>
           {/if}
           <h3>Station</h3>
@@ -408,13 +566,6 @@
             Auto uses the filter bank from {autoPfb} channels in the stream, direct below that: the measured break-even
             (direct costs about 0.9 % of a core per channel at 768 kS/s, the bank a fixed 2.4 % plus 0.25 % per channel).
           </p>
-          <label class="check">
-            <input type="checkbox" bind:checked={settings.yieldControl} disabled={running} />
-            <span>
-              Give control back when nobody else is connected, for an SDR# started later. Off (default): with no other
-              client the skimmer takes control and tunes the radio; beside a running SDR# it is a guest and never tunes.
-            </span>
-          </label>
           <label class="check" title="A fine spectrum of each channel's audio (2.9 Hz per bin) under the channel list, with the decodes marked on it">
             <input type="checkbox" bind:checked={settings.waterfall} disabled={running} />
             <span>Waterfall</span>
@@ -436,16 +587,6 @@
             </select>
             <input bind:value={settings.ntpServer} disabled={running || settings.clockSource !== 'ntp'} spellcheck="false" />
           </div>
-          <div class="field" title="Fixed delay from the SDR to this PC (server buffer, path), taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here.">
-            <span>Network delay (ms)</span>
-            <input
-              type="number"
-              step="10"
-              min="0"
-              bind:value={settings.networkDelayMs}
-              onchange={() => running && api.setNetworkDelay(Number(settings!.networkDelayMs) || 0)}
-            />
-          </div>
           <label class="check" title="skimmer.db in the folder below: every decode, indexed, for the Analysis view. Far smaller than ALL.TXT for the same data.">
             <input type="checkbox" bind:checked={settings.dbEnabled} disabled={running} />
             <span>Keep decodes in a database (skimmer.db)</span>
@@ -464,8 +605,8 @@
     </div>
     <button class:primary={!running} onclick={startStop}>{running ? 'Disconnect' : 'Connect'}</button>
     <div class="state">
-      <div class="phase">{phase}</div>
-      <div class="detail">{detail}</div>
+      <div class="phase">{cur.phase}</div>
+      <div class="detail">{cur.detail}</div>
     </div>
     {#if health}
       <div class="health" title={healthDetail}>
@@ -487,6 +628,8 @@
     <aside>
       <ChannelPanel
         bind:channels={settings.channels}
+        servers={settings.servers}
+        {sel}
         {modes}
         {slotS}
         {now}
@@ -523,6 +666,7 @@
           store={wfStore}
           tick={wfTick}
           channels={settings.channels}
+          server={sel}
           focus={Math.min(wfFocus, Math.max(0, settings.channels.length - 1))}
           onfocus={(i) => {
             focusChannel(i);
@@ -537,6 +681,7 @@
       <DecodeTable
         {rows}
         channels={settings.channels}
+        serverNames={settings.servers.map((x) => x.name)}
         {slotS}
         onclear={clearRows}
         bind:channel={tableCh}

@@ -35,23 +35,40 @@ export interface ChannelSetting {
   averaging?: boolean;
   deepSearch?: boolean;
   emeDelay?: boolean;
+  /** Which server (an index into `Settings.servers`) listens to it. */
+  server?: number;
+  /** Its step in that server's rotation (an index into `stepMinutes`). */
+  step?: number;
 }
 
-export interface Settings {
-  server: string;
-  channels: ChannelSetting[];
-  format: WireFormat;
+/** One SpyServer. */
+export interface ServerSetting {
+  /** Shown in the window and kept in the database; unique. */
+  name: string;
+  address: string;
+  /** Where its antenna is (a locator): the origin of the bearings of what it hears. */
+  grid: string;
+  /** Fixed delay between the SDR and this PC, taken off arrival times, ms. */
+  networkDelayMs: number;
+  /** Hold control and tune the radio even beside an operator's client. */
   tune: boolean;
   /** Leave control to an SDR# started later, instead of holding it. */
   yieldControl: boolean;
+  /** A rotation: minutes of each step; a channel's `step` says which it is heard in. One or none: no rotation. */
+  stepMinutes: number[];
+}
+
+export interface Settings {
+  servers: ServerSetting[];
+  /** The channels of every server, in one list. */
+  channels: ChannelSetting[];
+  format: WireFormat;
   /** Draw the channels' waterfalls; fine is 1.5 Hz per bin instead of 2.9. */
   waterfall: boolean;
   waterfallFine: boolean;
   /** The PC clock as it is, or corrected against an NTP server. */
   clockSource: 'system' | 'ntp';
   ntpServer: string;
-  /** Fixed delay between the SDR and this PC, taken off arrival times, ms. */
-  networkDelayMs: number;
   channelizer: 'auto' | 'direct' | 'pfb';
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
@@ -104,8 +121,8 @@ export interface Status {
   clock: string;
 }
 
-export type UiEvent =
-  | { type: 'connecting'; server: string }
+export type UiEventBody =
+  | { type: 'connecting'; address: string }
   | {
       type: 'connected';
       deviceKind: number;
@@ -130,6 +147,8 @@ export type UiEvent =
   | { type: 'noChannelFits'; deviceHz: number }
   | {
       type: 'streaming';
+      /** The window's number of each channel of this server, in its own order. */
+      channels: number[];
       rate: number;
       decimation: number;
       centerHz: number;
@@ -142,8 +161,12 @@ export type UiEvent =
   | { type: 'gap'; messages: number; atS: number }
   | { type: 'reanchor'; byS: number }
   | { type: 'clock'; text: string }
+  | { type: 'step'; index: number; of: number; endsUtcS: number }
   | ({ type: 'status' } & Status)
   | { type: 'disconnected'; error: string };
+
+/** An event and the server (an index into `Settings.servers`) it came from. */
+export type UiEvent = UiEventBody & { server: number };
 
 export interface RadioState {
   gain: number;
@@ -170,6 +193,8 @@ export interface Query {
   bearingTo: number | null;
   /** null: any message; '*': any CQ; '': plain CQ; 'DX', 'POTA'... */
   cq: string | null;
+  /** Only what these servers heard (by name); empty is all. */
+  servers: string[];
 }
 
 export interface Activity {
