@@ -157,6 +157,16 @@ header .state {
   font-size: 12px;
 }
 
+.health {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+}
+.health .warn {
+  color: var(--warn, #d9822b);
+  font-weight: 600;
+}
+
 .notice {
   padding: 6px 12px;
   background: var(--notice);

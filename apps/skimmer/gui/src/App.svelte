@@ -49,6 +49,33 @@
 
   /** Decodes the window has received; compare with the table to see whether it dropped any. */
   let received = $state(0);
+  /** `NTP +83 ms` from `NTP +83 ms (round trip 24 ms)`; a failure keeps its whole text. */
+  const clockShort = $derived(clockText ? clockText.replace(/ \(.*\)$/, '') : 'PC clock');
+  const clockBad = $derived(clockText.includes('failed') || clockText.includes('keeping'));
+  /** Shown only when something is wrong; the counts since connecting. */
+  const problems = $derived.by(() => {
+    const h = health;
+    if (!h) return [];
+    const p: string[] = [];
+    if (h.droppedSlots > 0) p.push(`${h.droppedSlots} slot${h.droppedSlots > 1 ? 's' : ''} dropped`);
+    if (h.gaps > 0) p.push(`${h.gaps} gap${h.gaps > 1 ? 's' : ''}`);
+    if (h.reanchors > 0) p.push(`${h.reanchors} re-anchor${h.reanchors > 1 ? 's' : ''}`);
+    if (h.queuedBytes > 500_000 || h.queuedSlots > 2)
+      p.push(`backlog ${(h.queuedBytes / 1e3).toFixed(0)} kB, ${h.queuedSlots} slots`);
+    return p;
+  });
+  const healthDetail = $derived(
+    health
+      ? [
+          clockText || 'PC clock',
+          `arrival delay past the anchor estimate ${health.delayMs.toFixed(0)} ms, anchor drift ${health.driftMs.toFixed(0)} ms`,
+          `longest push ${health.longestPushMs.toFixed(0)} ms, longest decode ${health.longestDecodeMs.toFixed(0)} ms`,
+          `read queue ${(health.queuedBytes / 1e3).toFixed(0)} kB, slots queued ${health.queuedSlots} / dropped ${health.droppedSlots}`,
+          `gaps ${health.gaps}, re-anchors ${health.reanchors}`,
+          `decodes the window received ${received}`,
+        ].join('\n')
+      : '',
+  );
   let pending: DecodeRow[] = [];
   let flushing = false;
   /** Per configured channel: decodes in the latest slot it reported. */
@@ -402,11 +429,11 @@
       <div class="detail">{detail}</div>
     </div>
     {#if health}
-      <div class="health" title="Arrival delay · anchor drift · longest push · longest decode · read queue · slots queued/dropped · gaps · re-anchors">
-        delay {health.delayMs.toFixed(0)} ms · drift {health.driftMs >= 0 ? '+' : ''}{health.driftMs.toFixed(0)} ms ·
-        push {health.longestPushMs.toFixed(0)} ms · decode {health.longestDecodeMs.toFixed(0)} ms · queue {(health.queuedBytes / 1e3).toFixed(0)} kB ·
-        slots {health.queuedSlots}/{health.droppedSlots} ·
-        {health.gaps} gap · {health.reanchors} re-anchor · window got {received}{clockText ? ` · ${clockText}` : ''}
+      <div class="health" title={healthDetail}>
+        <span class:warn={clockBad}>{clockShort}</span>
+        <span>delay {health.delayMs.toFixed(0)} ms · drift {health.driftMs >= 0 ? '+' : ''}{health.driftMs.toFixed(0)} ms</span>
+        <span>decode {health.longestDecodeMs.toFixed(0)} ms</span>
+        {#each problems as p (p)}<span class="warn">{p}</span>{/each}
       </div>
     {/if}
   </header>
