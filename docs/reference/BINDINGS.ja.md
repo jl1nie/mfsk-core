@@ -1008,6 +1008,9 @@ for row in try decoder.decode(slot) {
 `bindings/swift/scripts/test.sh` が `libmfsk` をビルドしてテストを走らせる。
 実アプリからのリンク（および iOS ビルドが `mobile` feature セットを選ぶべき理由）は
 `bindings/swift/README.md` が扱う。
+`bindings/swift/scripts/build-xcframework.sh` は iOS 実機向けとシミュレータ向けの
+ビルドを `target/xcframework/Mfsk.xcframework`（モジュール名 `CMfsk`）にまとめ、
+成功を報告する前に両スライスへのリンクを確認する。
 
 CI は同じスクリプトを `macos-latest` 上で走らせ（`Swift binding (macOS) +
 iOS build`）、そこが `aarch64-apple-ios` のクロスコンパイル場所でもある。

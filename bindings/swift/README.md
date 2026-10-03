@@ -158,5 +158,18 @@ backgrounded. With it dropped, `.on_result` delivery also gets a
 *stronger* contract rather than a weaker one (see
 `docs/reference/STREAMING.md` §3a/§3b).
 
-An `.xcframework` with a `binaryTarget`, so an app does not build Rust
-at all, is the obvious next step and is not here yet.
+To hand an app one artefact instead of a Rust build, package both iOS
+slices as an XCFramework:
+
+```sh
+bindings/swift/scripts/build-xcframework.sh   # → target/xcframework/Mfsk.xcframework
+```
+
+It builds `aarch64-apple-ios` and `aarch64-apple-ios-sim` with the
+`mobile` features, puts `mfsk.h` and a `CMfsk` module map in each slice,
+then compiles and links a two-line Swift program against both slices,
+so a broken module map fails here and not in the app. Drag the result
+into Xcode, or point a `binaryTarget(path:)` at it, and `import CMfsk`
+works as it does in this package. This package's own `Package.swift`
+still links by `-L` and does not consume the XCFramework; switching it
+to a `binaryTarget` is a separate decision.

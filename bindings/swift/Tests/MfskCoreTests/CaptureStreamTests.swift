@@ -92,9 +92,17 @@ final class CaptureStreamTests: XCTestCase {
         XCTAssertTrue(stream.isSlotReady)
         stream.clear()
         XCTAssertFalse(stream.isSlotReady)
-        // The clock survived: the next slot still lands on the grid.
-        try stream.push([Int16](repeating: 0, count: Int(info.slotSamples12k) + 12_000))
+        // The slot being cut went too: the fill ended 1 s into the slot after
+        // the boundary's, so that slot is gone and the next one opens on the
+        // boundary after it. A slot and a second more does not complete it.
+        let slot = Int(info.slotSamples12k)
+        try stream.push([Int16](repeating: 0, count: slot + 12_000))
+        XCTAssertFalse(stream.isSlotReady, "the slot that was being cut is not resumed")
+        // The clock survived: that next slot lands on its own boundary.
+        try stream.push([Int16](repeating: 0, count: slot))
         let taken = try XCTUnwrap(stream.takeSlot())
-        XCTAssertNotNil(taken.startUTCNanoseconds)
+        XCTAssertEqual(taken.samples.count, slot)
+        XCTAssertEqual(taken.period, 1_700_000_010 / 15 + 2)
+        XCTAssertEqual(taken.startUTCNanoseconds, taken.period * 15_000_000_000)
     }
 }
