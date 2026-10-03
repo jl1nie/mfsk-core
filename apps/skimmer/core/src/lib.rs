@@ -598,9 +598,16 @@ fn session(
     if sync.can_control && !hold {
         return Ok(End::Yielded);
     }
-    let tune = hold;
+    // `--gain` is written once, when this client first holds control: a plan
+    // made again later (the operator's client moved the device) must not write
+    // it over what that client has set.
+    let mut gain_once = if hold { cfg.gain } else { None };
 
     loop {
+        // Whether this client has control is the server's latest word, not what
+        // it was when we connected: SDR# takes control when it connects, and a
+        // client without it cannot tune the device or write the gain.
+        let tune = sync.can_control && (cfg.tune || !cfg.yield_control);
         let Some(p) = plan(
             &cfg.channels,
             cfg.center_hz,
@@ -615,7 +622,12 @@ fn session(
             sync = wait_for_move(&mut c, stop, sync)?;
             continue;
         };
-        let got = apply(&mut c, stop, &dev, &p, cfg, tune)?;
+        let writes = Writes {
+            tune,
+            set_gain: gain_once.take(),
+            gain_now: sync.gain,
+        };
+        let got = apply(&mut c, stop, &dev, &p, cfg, writes)?;
         sync = got;
         if got.iq_hz != p.center_hz {
             // Refused or clamped by the server: plan against what it says.
@@ -636,7 +648,7 @@ fn session(
             channelizer: channelizer_for(cfg, p.active.len()),
         });
         c.set(SET_STREAMING_ENABLED, 1)?;
-        match stream(&mut c, stop, cfg, &dev, tune, &p, sync, on_event)? {
+        match stream(&mut c, stop, cfg, &dev, &p, sync, on_event)? {
             None => return Ok(End::Stopped),
             Some(s) => {
                 on_event(Event::Moved {
@@ -659,8 +671,13 @@ fn apply(
     dev: &Device,
     p: &Plan,
     cfg: &Config,
-    tune: bool,
+    w: Writes,
 ) -> std::io::Result<Sync> {
+    let Writes {
+        tune,
+        set_gain,
+        gain_now,
+    } = w;
     c.set(SET_STREAMING_ENABLED, 0)?;
     c.set(
         SET_IQ_FORMAT,
@@ -670,9 +687,12 @@ fn apply(
         },
     )?;
     c.set(SET_IQ_FREQUENCY, p.center_hz as u32)?;
-    let gain = cfg.live.gain().or(cfg.gain);
-    if tune && let Some(g) = gain {
+    // The gain the radio has, or the one just written: the Airspy One's digital
+    // gain makes up the difference.
+    let mut gain = gain_now;
+    if tune && let Some(g) = set_gain {
         c.set(SET_GAIN, g)?;
+        gain = g;
     }
     let other = if p.decimation > dev.rates[0].0 {
         p.decimation - 1
@@ -684,7 +704,10 @@ fn apply(
     // As SDR++ does: 3 dB of digital gain per decimation stage keeps the
     // level in the integer formats (`computeDigitalGain`); the Airspy One
     // also makes up its device gain.
-    c.set(SET_IQ_DIGITAL_GAIN, digital_gain(dev, p.decimation, gain))?;
+    c.set(
+        SET_IQ_DIGITAL_GAIN,
+        digital_gain(dev, p.decimation, Some(gain)),
+    )?;
     c.set(SET_STREAMING_MODE, STREAM_MODE_IQ_ONLY)?;
     c.command(CMD_PING, &[])?;
     let mut last = None;
@@ -748,6 +771,16 @@ struct Live {
     format: IqSampleFormat,
 }
 
+/// What [`apply`] may write to the device: only a client with control can.
+struct Writes {
+    /// Whether this client has control (and wants to use it).
+    tune: bool,
+    /// A gain to write now (`--gain`, once).
+    set_gain: Option<u32>,
+    /// The gain the radio has now, for the Airspy One's digital gain.
+    gain_now: u32,
+}
+
 /// The IQ digital gain SDR++ sets (`computeDigitalGain`): 3 dB per decimation
 /// stage keeps the level in the integer formats, and the Airspy One also makes
 /// up its device gain.
@@ -804,13 +837,11 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
 
 /// Decode until stopped (`None`) or the server says the device or this
 /// client's IQ centre moved (`Some`).
-#[allow(clippy::too_many_arguments)]
 fn stream(
     c: &mut Conn,
     stop: &AtomicBool,
     cfg: &Config,
     dev: &Device,
-    hold: bool,
     p: &Plan,
     sync: Sync,
     on_event: &mut impl FnMut(Event),
@@ -826,7 +857,7 @@ fn stream(
     let mut worst_push = Duration::ZERO;
     let mut dropped_slots = 0u64;
     let mut seen_generation = cfg.live.generation();
-    let mut applied_gain = cfg.live.gain().or(cfg.gain);
+    let mut applied_gain = cfg.live.gain();
     let mut radio = RadioState {
         gain: sync.gain,
         max_gain: dev.max_gain,
@@ -875,7 +906,9 @@ fn stream(
         // A gain changed while running (only the controlling client's request
         // is honoured by the server). The Airspy One's digital gain makes up
         // the device gain, so it follows.
-        if hold && let Some(g) = cfg.live.gain().filter(|g| Some(*g) != applied_gain) {
+        if radio.can_control
+            && let Some(g) = cfg.live.gain().filter(|g| Some(*g) != applied_gain)
+        {
             c.set(SET_GAIN, g)?;
             c.set(
                 SET_IQ_DIGITAL_GAIN,
