@@ -195,8 +195,11 @@ pub mod caps {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SyncScale {
-    /// Absolute Costas correlation score. Noise has no fixed value, so
-    /// a threshold here is empirical. FT8.
+    /// FT8's `sync8` score: the Costas correlation ratio, normalised so the
+    /// 40th percentile of the candidates is 1 (`sync8.f90:129-135`), the same
+    /// number as upstream's `syncmin`. The name is from before that was
+    /// checked against `decode_block::coarse_sync`; the variant's value is
+    /// part of the C ABI.
     CostasAbsolute = 0,
     /// The smoothed spectrum is divided by a fitted baseline before
     /// scoring, so **noise sits at ~1.0 by construction** and any
@@ -354,9 +357,10 @@ macro_rules! protocol_meta {
 /// tree uses, nor the embedded ship config (1.0 / 15), which is tuned
 /// for an ESP32's power budget rather than a desktop's recall.
 ///
-/// Real `jt9` varies its own threshold by depth (1.6 for `-d1`/`-d2`,
-/// 1.3 for `-d3` — `ft8_decode.f90:176-177`), so there is no single
-/// upstream number to copy here the way there is for FT4.
+/// Real `jt9` varies its own threshold by depth: 2.1 for `-d1`/`-d2` and 1.3
+/// for `-d3` in v3.0 and later (`ft8_decode.f90:180-181`; through 2.7 it was
+/// 1.6 and 1.3), so there is no single upstream number to copy here the way
+/// there is for FT4. `crate::decoder::Decoder<Ft8>` takes it from `Depth`.
 #[allow(dead_code)] // unused when the matching protocol feature is off
 const FT8_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODE_HANDLE

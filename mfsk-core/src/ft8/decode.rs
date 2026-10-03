@@ -623,6 +623,15 @@ fn run_candidate_ladder<Pol: MessagePolicy>(
 /// Returns `(decoded_results, fft_cache)`.  Callers that don't need the cache
 /// can simply ignore the second element.
 #[allow(clippy::too_many_arguments)]
+/// `sync8.f90:157-164`: candidates within 10 Hz of `nfqso` go to the top of
+/// the list, in their sync order, ahead of the rest. The order matters
+/// wherever candidates are decoded one after another: a budget that runs
+/// out, and a subtracting pass whose later candidates see the residue.
+fn promote_near_rx(candidates: &mut [crate::engine::sync::SyncCandidate], rx: Option<f32>) {
+    let Some(rx) = rx else { return };
+    candidates.sort_by_key(|c| (c.freq_hz - rx).abs() > 10.0);
+}
+
 fn decode_frame_inner<Pol: MessagePolicy>(
     audio: &[i16],
     freq_min: f32,
@@ -647,19 +656,21 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     BudgetReport,
 ) {
     let mut budget_report = BudgetReport::default();
-    // The QSO frequency does not reach the coarse sync: the WSJT-X-faithful
-    // decode_block::coarse_sync (the only FT8 coarse-sync after the v0.6
-    // consolidation in #48) does not honour candidate-score promotion.
-    // Sniper paths in this file constrain freq_min/freq_max around the
-    // target instead. It reaches the AP rung (`qso_freqs`, #456).
+    // The WSJT-X-faithful decode_block::coarse_sync (the only FT8 coarse-sync
+    // after the v0.6 consolidation in #48) does not take the QSO frequency,
+    // so the candidates it returns are put in `sync8`'s order after the
+    // fact (`promote_near_rx`). Sniper paths in this file constrain
+    // freq_min/freq_max around the target instead. The frequency also
+    // reaches the AP rung (`qso_freqs`, #456).
 
     #[cfg(feature = "std")]
     let trace_stage = crate::ft8::decode_block::stage_trace_enabled();
     #[cfg(feature = "std")]
     let __trace_t0 = trace_stage.then(std::time::Instant::now);
     let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
-    let candidates =
+    let mut candidates =
         crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+    promote_near_rx(&mut candidates, qso_freqs.rx);
     #[cfg(feature = "std")]
     if let Some(t0) = __trace_t0 {
         eprintln!(
@@ -957,8 +968,9 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
         }
 
         let spec = crate::ft8::decode_block::compute_spectrogram(residual, freq_max);
-        let candidates =
+        let mut candidates =
             crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+        promote_near_rx(&mut candidates, qso_freqs.rx);
         if candidates.is_empty() {
             continue;
         }
@@ -3752,5 +3764,39 @@ mod tests {
                 results.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod promote_tests {
+    use super::*;
+    use crate::engine::sync::SyncCandidate;
+
+    fn c(freq_hz: f32, score: f32) -> SyncCandidate {
+        SyncCandidate {
+            freq_hz,
+            dt_sec: 0.0,
+            score,
+        }
+    }
+
+    /// `sync8.f90:157-164`: those within 10 Hz of nfqso first, each group in
+    /// its own (sync) order.
+    #[test]
+    fn candidates_near_the_rx_frequency_go_first_and_keep_their_order() {
+        let mut v = [
+            c(500.0, 9.0),
+            c(1495.0, 4.0),
+            c(900.0, 8.0),
+            c(1508.0, 3.0),
+            c(1520.0, 7.0),
+        ];
+        promote_near_rx(&mut v, Some(1500.0));
+        let f: Vec<f32> = v.iter().map(|c| c.freq_hz).collect();
+        assert_eq!(f, [1495.0, 1508.0, 500.0, 900.0, 1520.0]);
+        // No Rx frequency: untouched.
+        let mut w = [c(2.0, 1.0), c(1.0, 2.0)];
+        promote_near_rx(&mut w, None);
+        assert_eq!(w[0].freq_hz, 2.0);
     }
 }
