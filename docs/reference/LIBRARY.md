@@ -666,8 +666,7 @@ carried for a dial frequency, from IQ at any integer rate of 12 kHz or more:
 ```rust
 use mfsk_core::iq::{IqError, IqSampleFormat, IqStream, IqToAudio};
 
-let stream = IqStream { sample_rate: 768_000, center_hz: 14_200_000.0,
-                        format: IqSampleFormat::Cf32, iq_swap: false };
+let stream = IqStream::new(768_000, 14_200_000.0, IqSampleFormat::Cf32);
 // 14.290 MHz is 90 kHz above the centre: inside the band, clear of DC.
 let mut ch = IqToAudio::new(stream, 14_290_000.0).unwrap();
 let mut audio = Vec::new();
@@ -696,8 +695,7 @@ limit, and would be a much larger change than this front end (issue #534).
 feature.)
 
 ```rust,ignore
-let mut rx = IqReceiver::new(IqStream { sample_rate: 768_000, center_hz: 14_200_000.0,
-                                        format: IqSampleFormat::Cf32, iq_swap: false });
+let mut rx = IqReceiver::new(IqStream::new(768_000, 14_200_000.0, IqSampleFormat::Cf32));
 rx.add_channel(14_074_000.0, IqMode::Ft8)?;         // Err if DC is in its window or it is out of band
 rx.add_channel(14_080_000.0, IqMode::Ft4)?;
 // Many channels: share one polyphase filter bank instead (see "Two channelizers" below):

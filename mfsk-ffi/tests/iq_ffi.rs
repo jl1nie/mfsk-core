@@ -243,10 +243,10 @@ fn errors_are_statuses_not_crashes() {
         unsafe { mfsk_iq_add_channel(rx, DIAL, MfskMode::Wspr as u32, &mut ch) },
         MfskStatus::Ok
     );
-    // A retune that puts the channel outside is refused whole.
+    // A retune that puts the channel outside pauses it; it is not an error.
     assert_eq!(
         unsafe { mfsk_iq_retune(rx, CENTER + 200_000.0) },
-        MfskStatus::InvalidArg
+        MfskStatus::Ok
     );
     assert_eq!(unsafe { mfsk_iq_remove_channel(rx, ch) }, MfskStatus::Ok);
     assert_eq!(

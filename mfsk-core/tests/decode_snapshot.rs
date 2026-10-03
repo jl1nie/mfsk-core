@@ -427,16 +427,17 @@ fn q65_request_shapes() {
     }
 }
 
-/// The IQ path as 0.12 ships it: FT8 and FT4 recordings in one 192 kS/s
-/// stream, decoded by `IqReceiver` with its frozen defaults. 0.13's
-/// receiver plus a default `AnyDecoder` per channel must reproduce these
-/// rows, except that `<...>` may now resolve.
+/// The IQ path as 0.12 shipped it: FT8 and FT4 recordings in one 192 kS/s
+/// stream, cut into slots by `IqReceiver` and decoded with the registry's
+/// 0.12 search (FT8 100-3000 Hz, sync 0.8, 60 candidates; FT4 300-2700 Hz,
+/// sync 1.18, 200). The receiver no longer decodes: one decoder per channel
+/// does, and must reproduce those rows.
 #[test]
 fn iq_receiver_rows() {
     use common::iq::{add_into, interleave, synth_iq};
     use mfsk_core::Mode;
+    use mfsk_core::decoder::{AnyDecoder, AnyExtras, DecodeParams, Depth};
     use mfsk_core::iq::{Channelizer, IqReceiver, IqSampleFormat, IqStream};
-    use std::sync::{Arc, Mutex};
 
     const FS: u32 = 192_000;
     const CENTER: f64 = 14_077_000.0;
@@ -448,31 +449,43 @@ fn iq_receiver_rows() {
     add_into(&mut iq, &synth_iq(&ft4, FS, CENTER, ft4_dial));
     iq.resize(iq.len() + FS as usize / 2, (0.0, 0.0));
 
-    for (kind, name) in [(Channelizer::Direct, "direct"), (Channelizer::Pfb, "pfb")] {
-        let stream = IqStream {
-            sample_rate: FS,
-            center_hz: CENTER,
-            format: IqSampleFormat::Cf32,
-            iq_swap: false,
+    let legacy = |mode: Mode| {
+        let (band, sync, n) = match mode {
+            Mode::Ft8 => ((100.0, 3000.0), 0.8, 60),
+            _ => ((300.0, 2700.0), 1.18, 200),
         };
+        let mut d = AnyDecoder::new(mode, DecodeParams::for_band(band).depth(Depth::Deep));
+        match d.extras_mut() {
+            AnyExtras::Ft8(e) => {
+                e.tuning.sync_min = Some(sync);
+                e.tuning.max_cand = Some(n);
+            }
+            AnyExtras::Ft4(e) => {
+                e.tuning.sync_min = Some(sync);
+                e.tuning.max_cand = Some(n);
+            }
+            _ => unreachable!(),
+        }
+        d
+    };
+
+    for (kind, name) in [(Channelizer::Direct, "direct"), (Channelizer::Pfb, "pfb")] {
+        let stream = IqStream::new(FS, CENTER, IqSampleFormat::Cf32);
         let mut rx = IqReceiver::with_channelizer(stream, kind).unwrap();
-        let rows = Arc::new(Mutex::new(Vec::new()));
-        let sink = rows.clone();
-        rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
         let c8 = rx.add_channel(ft8_dial, Mode::Ft8).unwrap();
         let c4 = rx.add_channel(ft4_dial, Mode::Ft4).unwrap();
-        rx.set_time_anchor(1_700_000_010 * 1_000_000_000);
+        rx.set_time(1_700_000_010 * 1_000_000_000, 0);
+        let mut slots = Vec::new();
         for chunk in interleave(&iq).chunks(2 * 77_777) {
-            rx.push_cf32(chunk);
+            rx.push_cf32(chunk, &mut slots);
         }
-        let rows = rows.lock().unwrap();
-        for (ch, mode) in [(c8, "ft8"), (c4, "ft4")] {
-            let got = decoded_rows(
-                rows.iter()
-                    .filter(|r| r.channel == ch)
-                    .map(|r| r.decoded.clone()),
-            );
-            check_text(&format!("iq_{name}_{mode}"), got);
+        for (ch, mode, label) in [(c8, Mode::Ft8, "ft8"), (c4, Mode::Ft4, "ft4")] {
+            let mut d = legacy(mode);
+            let mut rows = Vec::new();
+            for slot in slots.iter().filter(|s| s.channel == ch) {
+                rows.extend(d.decode(&slot.input()).rows);
+            }
+            check_text(&format!("iq_{name}_{label}"), decoded_rows(rows));
         }
     }
 }

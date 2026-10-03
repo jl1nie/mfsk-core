@@ -2963,9 +2963,10 @@ enum MfskStatus mfsk_iq_set_time_anchor(struct MfskIqReceiver *rx,
                                         int64_t utc_ns_at_sample_0);
 
 /**
- * The tuner moved to `center_hz`: every channel is re-placed against it and
- * the open slots are dropped; the sample clock continues. All or nothing:
- * `MFSK_STATUS_INVALID_ARG`, and nothing changes, if a channel no longer fits.
+ * The tuner moved to `center_hz`: every channel that still fits is re-placed
+ * against it, one that no longer fits is paused (it keeps its dial and its
+ * decoder, and resumes when a later retune brings it back inside the band),
+ * and the open slots are dropped; the sample clock continues.
  *
  * # Safety
  * `rx` must be a live handle.

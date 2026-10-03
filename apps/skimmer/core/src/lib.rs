@@ -24,12 +24,13 @@ pub mod plan;
 pub mod spyserver;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use mfsk_core::Mode;
+use mfsk_core::decoder::AnyDecoder;
 pub use mfsk_core::iq::Channelizer;
-use mfsk_core::iq::{IqDecode, IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::slotgrid::ClockChange;
 
 use anchor::AnchorEstimate;
 use plan::{Plan, plan};
@@ -440,25 +441,19 @@ struct Live {
     rx: IqReceiver,
     /// By `ChannelId`: which configured channel, and its dial.
     by_id: Vec<(usize, f64)>,
+    /// By `ChannelId`: the channel's decoder, which keeps its own callsign
+    /// table from slot to slot.
+    decoders: Vec<Option<AnyDecoder>>,
     format: IqSampleFormat,
 }
 
 /// A receiver for the plan's channels, built for the format the server sends.
-fn receiver(
-    cfg: &Config,
-    p: &Plan,
-    format: IqSampleFormat,
-    sink: &Arc<Mutex<Vec<IqDecode>>>,
-) -> std::io::Result<Live> {
-    let stream = IqStream {
-        sample_rate: p.rate,
-        center_hz: p.center_hz,
-        format,
-        iq_swap: cfg.iq_swap,
-    };
+fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<Live> {
+    let stream = IqStream::new(p.rate, p.center_hz, format).iq_swap(cfg.iq_swap);
     let mut rx = IqReceiver::with_channelizer(stream, channelizer_for(cfg, p.active.len()))
         .map_err(|e| std::io::Error::other(format!("{} S/s: {e}", p.rate)))?;
     let mut by_id = Vec::new();
+    let mut decoders: Vec<Option<AnyDecoder>> = Vec::new();
     for &i in &p.active {
         let ch = cfg.channels[i];
         let id = rx
@@ -468,10 +463,17 @@ fn receiver(
             by_id.resize(id.0 + 1, (usize::MAX, 0.0));
         }
         by_id[id.0] = (i, ch.dial_hz);
+        if decoders.len() <= id.0 {
+            decoders.resize_with(id.0 + 1, || None);
+        }
+        decoders[id.0] = Some(AnyDecoder::with_defaults(ch.mode));
     }
-    let sink = sink.clone();
-    rx.on_decode(move |d| sink.lock().unwrap().push(d.clone()));
-    Ok(Live { rx, by_id, format })
+    Ok(Live {
+        rx,
+        by_id,
+        decoders,
+        format,
+    })
 }
 
 /// Decode until stopped (`None`) or the server says the device or this
@@ -485,7 +487,6 @@ fn stream(
     on_event: &mut impl FnMut(Event),
 ) -> std::io::Result<Option<Sync>> {
     let rate = p.rate;
-    let sink = Arc::new(Mutex::new(Vec::new()));
     // Built on the first IQ message, in the format the server actually sends.
     let mut live: Option<Live> = None;
     let mut est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
@@ -511,11 +512,16 @@ fn stream(
             continue;
         };
         if live.as_ref().is_none_or(|l| l.format != format) {
-            live = Some(receiver(cfg, p, format, &sink)?);
+            live = Some(receiver(cfg, p, format)?);
             (anchor, next_seq) = (None, None);
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
         }
-        let Live { rx, by_id, .. } = live.as_mut().unwrap();
+        let Live {
+            rx,
+            by_id,
+            decoders,
+            ..
+        } = live.as_mut().unwrap();
         let n = m.body.len() / format.bytes_per_sample();
 
         // The sequence counts messages; a hole of d messages is taken to be
@@ -534,47 +540,52 @@ fn stream(
         next_seq = Some(m.seq.wrapping_add(1));
 
         let t = Instant::now();
-        rx.push_bytes(&m.body);
-        worst_push = worst_push.max(t.elapsed());
-        for d in sink.lock().unwrap().drain(..) {
-            let (channel, dial_hz) = by_id[d.channel.0];
-            on_event(Event::Decode(Decode {
-                channel,
-                mode: d.mode,
-                slot_utc_ns: d.slot_start_utc_ns,
-                dial_hz,
-                freq_hz: d.abs_freq_hz,
-                snr_db: d.decoded.snr_db,
-                dt_s: d.decoded.dt_sec,
-                text: d.decoded.text,
-            }));
+        let mut slots = Vec::new();
+        rx.push_bytes(&m.body, &mut slots);
+        for slot in &slots {
+            let (channel, dial_hz) = by_id[slot.channel.0];
+            let Some(decoder) = decoders[slot.channel.0].as_mut() else {
+                continue;
+            };
+            for d in decoder.decode(&slot.input()).rows {
+                on_event(Event::Decode(Decode {
+                    channel,
+                    mode: slot.mode,
+                    slot_utc_ns: slot.utc_ns,
+                    dial_hz,
+                    freq_hz: slot.abs_freq_hz(d.freq_hz),
+                    snr_db: d.snr_db,
+                    dt_s: d.dt_sec,
+                    text: d.text,
+                }));
+            }
         }
+        worst_push = worst_push.max(t.elapsed());
 
-        // The arrival stamps the *end* of this message.
+        // The arrival stamps the *end* of this message; `best` is the UTC of
+        // sample 0 the lowest delay in the window implies. The receiver
+        // follows it at a bounded rate, so a drifting host clock moves the
+        // slot boundaries by milliseconds and loses no slot.
         let samples = rx.samples_in();
         let best = est.push(samples, rate, m.arrival_ns);
         let warming_up = samples < 2 * rate as u64;
-        match anchor {
-            Some(a) if !warming_up && (best - a).abs() <= cfg.reanchor.as_nanos() as i64 => {}
-            Some(a) if !warming_up => {
-                reanchors += 1;
-                on_event(Event::Reanchor {
-                    by_s: (best - a) as f64 * 1e-9,
-                });
-                rx.set_time_anchor(best);
-                anchor = Some(best);
-            }
-            // The first two seconds settle the minimum; no slot is complete yet.
-            _ => {
-                if anchor != Some(best) {
-                    rx.set_time_anchor(best);
-                    anchor = Some(best);
+        // The first two seconds settle the minimum; no slot is complete yet.
+        if !warming_up || anchor.is_none() {
+            let at = best + (samples as i128 * 1_000_000_000 / rate as i128) as i64;
+            match rx.set_time(at, samples) {
+                ClockChange::Stepped { by_ns } if anchor.is_some() => {
+                    reanchors += 1;
+                    on_event(Event::Reanchor {
+                        by_s: by_ns as f64 * 1e-9,
+                    });
                 }
+                _ => {}
             }
+            anchor = rx.utc_of(0);
         }
         if samples - last_report >= 60 * rate as u64 {
             last_report = samples;
-            let a = anchor.unwrap();
+            let a = anchor.unwrap_or(best);
             on_event(Event::Status(Status {
                 streamed_s: samples as f64 / rate as f64,
                 delay_ms: (m.arrival_ns - a) as f64 * 1e-6 - samples as f64 * 1e3 / rate as f64,

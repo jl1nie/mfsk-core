@@ -5738,9 +5738,23 @@ unsafe fn emit_pcm(
 /// loses the oldest.
 const IQ_QUEUE_MAX: usize = 4096;
 
+/// One decode with where it came from, as `mfsk_iq_poll` hands it out.
+struct IqRow {
+    channel: mfsk_core::iq::ChannelId,
+    mode: mfsk_core::Mode,
+    decoded: mfsk_core::msg::Decoded,
+    abs_freq_hz: f64,
+    slot_start_sample: u64,
+    slot_start_utc_ns: Option<i64>,
+}
+
+/// The receiver cuts slots; this handle decodes them, one
+/// [`AnyDecoder`](mfsk_core::decoder::AnyDecoder) per channel, so a channel
+/// keeps its own callsign table.
 struct IqInner {
     rx: mfsk_core::iq::IqReceiver,
-    queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<mfsk_core::iq::IqDecode>>>,
+    decoders: std::collections::HashMap<usize, mfsk_core::decoder::AnyDecoder>,
+    queue: std::collections::VecDeque<IqRow>,
 }
 
 fn iq_inner<'a>(rx: *mut MfskIqReceiver) -> Option<&'a mut IqInner> {
@@ -5876,13 +5890,8 @@ pub unsafe extern "C" fn mfsk_iq_open_with(
             return ptr::null_mut();
         }
     };
-    let stream = mfsk_core::iq::IqStream {
-        sample_rate,
-        center_hz,
-        format,
-        iq_swap: iq_swap != 0,
-    };
-    let mut rx = match mfsk_core::iq::IqReceiver::with_channelizer(stream, kind) {
+    let stream = mfsk_core::iq::IqStream::new(sample_rate, center_hz, format).iq_swap(iq_swap != 0);
+    let rx = match mfsk_core::iq::IqReceiver::with_channelizer(stream, kind) {
         Ok(rx) => rx,
         Err(e) => {
             set_error(format!("mfsk_iq_open_with: {e}"));
@@ -5890,17 +5899,12 @@ pub unsafe extern "C" fn mfsk_iq_open_with(
             return ptr::null_mut();
         }
     };
-    let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    let sink = queue.clone();
-    rx.on_decode(move |d| {
-        let mut q = sink.lock().unwrap_or_else(|e| e.into_inner());
-        if q.len() >= IQ_QUEUE_MAX {
-            q.pop_front();
-        }
-        q.push_back(d.clone());
-    });
     report(MfskStatus::Ok);
-    Box::into_raw(Box::new(IqInner { rx, queue })) as *mut MfskIqReceiver
+    Box::into_raw(Box::new(IqInner {
+        rx,
+        decoders: Default::default(),
+        queue: Default::default(),
+    })) as *mut MfskIqReceiver
 }
 
 /// Release a receiver. Null is a no-op.
@@ -5957,6 +5961,8 @@ pub unsafe extern "C" fn mfsk_iq_add_channel(
     }
     match r.rx.add_channel(dial_hz, iq_mode) {
         Ok(id) => {
+            r.decoders
+                .insert(id.0, mfsk_core::decoder::AnyDecoder::with_defaults(iq_mode));
             if !out_channel.is_null() {
                 unsafe { *out_channel = id.0 as u32 };
             }
@@ -5985,6 +5991,7 @@ pub unsafe extern "C" fn mfsk_iq_remove_channel(
     if r.rx
         .remove_channel(mfsk_core::iq::ChannelId(channel as usize))
     {
+        r.decoders.remove(&(channel as usize));
         MfskStatus::Ok
     } else {
         set_error("mfsk_iq_remove_channel: no such channel");
@@ -6007,13 +6014,14 @@ pub unsafe extern "C" fn mfsk_iq_set_time_anchor(
         set_error("mfsk_iq_set_time_anchor: null receiver");
         return MfskStatus::NullPointer;
     };
-    r.rx.set_time_anchor(utc_ns_at_sample_0);
+    r.rx.set_time(utc_ns_at_sample_0, 0);
     MfskStatus::Ok
 }
 
-/// The tuner moved to `center_hz`: every channel is re-placed against it and
-/// the open slots are dropped; the sample clock continues. All or nothing:
-/// `MFSK_STATUS_INVALID_ARG`, and nothing changes, if a channel no longer fits.
+/// The tuner moved to `center_hz`: every channel that still fits is re-placed
+/// against it, one that no longer fits is paused (it keeps its dial and its
+/// decoder, and resumes when a later retune brings it back inside the band),
+/// and the open slots are dropped; the sample clock continues.
 ///
 /// # Safety
 /// `rx` must be a live handle.
@@ -6027,13 +6035,10 @@ pub unsafe extern "C" fn mfsk_iq_retune(rx: *mut MfskIqReceiver, center_hz: f64)
         set_error("mfsk_iq_retune: center_hz is not finite");
         return MfskStatus::InvalidArg;
     }
-    match r.rx.retune(center_hz) {
-        Ok(()) => MfskStatus::Ok,
-        Err(e) => {
-            set_error(format!("mfsk_iq_retune: {e}"));
-            iq_error_status(e)
-        }
-    }
+    // A channel that no longer fits is paused, not an error; the report
+    // reaches C with the ABI rewrite (`MfskIqRetuneReport`).
+    let _ = r.rx.retune(center_hz);
+    MfskStatus::Ok
 }
 
 /// `lost` samples never arrived: the clock advances past them and the open
@@ -6076,7 +6081,28 @@ pub unsafe extern "C" fn mfsk_iq_push(
         return MfskStatus::NullPointer;
     }
     let bytes = unsafe { slice::from_raw_parts(data as *const u8, n_bytes) };
-    in_pool_mut(|| r.rx.push_bytes(bytes));
+    in_pool_mut(|| {
+        let mut slots = Vec::new();
+        r.rx.push_bytes(bytes, &mut slots);
+        for slot in &slots {
+            let Some(d) = r.decoders.get_mut(&slot.channel.0) else {
+                continue;
+            };
+            for decoded in d.decode(&slot.input()).rows {
+                if r.queue.len() >= IQ_QUEUE_MAX {
+                    r.queue.pop_front();
+                }
+                r.queue.push_back(IqRow {
+                    channel: slot.channel,
+                    mode: slot.mode,
+                    abs_freq_hz: slot.abs_freq_hz(decoded.freq_hz),
+                    slot_start_sample: slot.start_sample,
+                    slot_start_utc_ns: slot.utc_ns,
+                    decoded,
+                });
+            }
+        }
+    });
     MfskStatus::Ok
 }
 
@@ -6095,9 +6121,7 @@ pub unsafe extern "C" fn mfsk_iq_samples_in(rx: *mut MfskIqReceiver) -> u64 {
 /// `rx` must be a live handle or null (0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_iq_pending(rx: *mut MfskIqReceiver) -> usize {
-    iq_inner(rx)
-        .map(|r| r.queue.lock().unwrap_or_else(|e| e.into_inner()).len())
-        .unwrap_or(0)
+    iq_inner(rx).map(|r| r.queue.len()).unwrap_or(0)
 }
 
 /// Take the oldest waiting decode into `*out` (`out->size` is
@@ -6124,12 +6148,7 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
         set_error("mfsk_iq_poll: out is NULL");
         return MfskStatus::NullPointer as i32;
     }
-    let Some(d) = r
-        .queue
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .pop_front()
-    else {
+    let Some(d) = r.queue.pop_front() else {
         return 0;
     };
     let mut v = MfskIqDecode {

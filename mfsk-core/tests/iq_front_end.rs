@@ -96,12 +96,7 @@ fn check(fs: u32, format: IqSampleFormat, iq_swap: bool, dial_off_hz: f64) {
     let center = 14_200_000.0;
     let dial = center + dial_off_hz;
     let iq = synth_iq(&wav, fs, center, dial);
-    let stream = IqStream {
-        sample_rate: fs,
-        center_hz: center,
-        format,
-        iq_swap,
-    };
+    let stream = IqStream::new(fs, center, format).iq_swap(iq_swap);
     // A swapped stream is the conjugate one: feed swap(I,Q) and it undoes.
     let audio = through_front_end(&iq, stream, dial, iq_swap);
     let via_iq = decode(&audio);
@@ -188,12 +183,7 @@ fn rejects_every_interferer_outside_the_window() {
                 [p.cos() as f32, p.sin() as f32]
             })
             .collect();
-        let s = IqStream {
-            sample_rate: FS,
-            center_hz: center,
-            format: IqSampleFormat::Cf32,
-            iq_swap: false,
-        };
+        let s = IqStream::new(FS, center, IqSampleFormat::Cf32);
         let mut fe = IqToAudio::new(s, dial).unwrap();
         let mut o = Vec::new();
         fe.push_cf32(&v, &mut o);

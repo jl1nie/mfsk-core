@@ -781,7 +781,7 @@ pub struct DecodeOutcome<P: FrameDecodable> {
     pub results: Vec<P::DecodeResult>,
     /// Read only by `internal-testing` tests that feed it back through
     /// [`DecodeRequest::fft_cache`].
-    #[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
+    #[cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
     pub fft_cache: FftCache,
     /// What a [`DecodeRequest::budget`] cut short, if one was set.
     /// [`BudgetReport::default()`] when it wasn't.
@@ -975,7 +975,7 @@ impl<'a, P: FrameDecodable, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
     /// Messages already decoded in an earlier pass — skipped (and, for SIC
     /// strategies, subtracted) rather than re-reported. Test hook only: a
     /// `crate::decoder::Decoder` decodes a whole period once.
-    #[cfg(feature = "internal-testing")]
+    #[cfg(any(test, feature = "internal-testing"))]
     pub fn known(mut self, k: &'a [P::DecodeResult]) -> Self {
         self.known = k;
         self
@@ -983,7 +983,7 @@ impl<'a, P: FrameDecodable, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
     /// Reuse a previously-built [`FftCache`] (e.g. from an earlier
     /// [`DecodeOutcome::fft_cache`]) instead of rebuilding it from `audio`.
     /// Test hook only, like [`Self::known`].
-    #[cfg(feature = "internal-testing")]
+    #[cfg(any(test, feature = "internal-testing"))]
     pub fn fft_cache(mut self, c: FftCache) -> Self {
         self.fft_cache = Some(c);
         self

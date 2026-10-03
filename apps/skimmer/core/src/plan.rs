@@ -66,14 +66,9 @@ pub fn plan(
 }
 
 fn fits(c: &ChannelSpec, rate: u32, center_hz: f64) -> bool {
-    IqReceiver::new(IqStream {
-        sample_rate: rate,
-        center_hz,
-        format: IqSampleFormat::Cf32,
-        iq_swap: false,
-    })
-    .add_channel(c.dial_hz, c.mode)
-    .is_ok()
+    IqReceiver::new(IqStream::new(rate, center_hz, IqSampleFormat::Cf32))
+        .add_channel(c.dial_hz, c.mode)
+        .is_ok()
 }
 
 #[cfg(test)]

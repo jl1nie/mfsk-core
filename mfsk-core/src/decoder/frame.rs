@@ -234,7 +234,11 @@ pub(crate) fn f32_gain(a: &[f32]) -> Option<f32> {
     if rms.is_nan() || rms <= 0.0 {
         return None;
     }
-    Some(F32_TO_I16_RMS / 32_768.0 / rms)
+    let g = F32_TO_I16_RMS / 32_768.0 / rms;
+    // Audio already at the level (the IQ receiver hands slots over scaled to
+    // it) is converted as it is, not regained by a rounding error that would
+    // move an `i16` sample by one now and then.
+    Some(if (g - 1.0).abs() < 1e-3 { 1.0 } else { g })
 }
 
 /// The interim AP hint from the parameter block: with AP on and no QSO

@@ -642,8 +642,7 @@ UI、スポット送信は含みません。**信号を探すことはしませ�
 ```rust
 use mfsk_core::iq::{IqError, IqSampleFormat, IqStream, IqToAudio};
 
-let stream = IqStream { sample_rate: 768_000, center_hz: 14_200_000.0,
-                        format: IqSampleFormat::Cf32, iq_swap: false };
+let stream = IqStream::new(768_000, 14_200_000.0, IqSampleFormat::Cf32);
 // 14.290 MHz は中心から 90 kHz 上: 帯域内で、DC から離れている。
 let mut ch = IqToAudio::new(stream, 14_290_000.0).unwrap();
 let mut audio = Vec::new();
@@ -669,8 +668,7 @@ assert_eq!(IqToAudio::new(stream, 14_199_000.0).err(), Some(IqError::TooCloseToD
 **N チャンネル、UTC 基準: `IqReceiver`**（FFT バックエンドとプロトコル feature が必要）。
 
 ```rust,ignore
-let mut rx = IqReceiver::new(IqStream { sample_rate: 768_000, center_hz: 14_200_000.0,
-                                        format: IqSampleFormat::Cf32, iq_swap: false });
+let mut rx = IqReceiver::new(IqStream::new(768_000, 14_200_000.0, IqSampleFormat::Cf32));
 rx.add_channel(14_074_000.0, IqMode::Ft8)?;         // 窓に DC が入る、または帯域外なら Err
 rx.add_channel(14_080_000.0, IqMode::Ft4)?;
 // チャンネルが多いときは 1 つのポリフェーズフィルタバンクを共有する（下の「2 つのチャネライザ」）:

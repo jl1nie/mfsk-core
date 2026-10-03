@@ -1,47 +1,48 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! [`IqReceiver`]: N channels of one wideband IQ stream, slots cut on UTC
-//! from the sample count, each decoded with its mode's own request (#534,
-//! phase 2).
+//! [`IqReceiver`]: N channels of one wideband IQ stream, cut into slots on
+//! UTC from the sample count. It decodes nothing.
 //!
-//! What it does *not* do is find anything: the caller says which dial
-//! frequency carries which mode ([`IqReceiver::add_channel`]) and what UTC
-//! sample 0 fell on ([`IqReceiver::set_time_anchor`]). The decoders search
-//! the channel's audio 200-3000 Hz themselves, so a dial only has to place
-//! that window.
+//! What it does *not* do is find anything, or decode: the caller says which
+//! dial frequency carries which mode ([`IqReceiver::add_channel`]), tells it
+//! what UTC the stream is at ([`IqReceiver::set_time`]), and gets back each
+//! completed slot as a [`CompletedSlot`]: 12 kHz audio and the slot's index
+//! on the UTC grid. Decoding is the caller's, with one
+//! [`AnyDecoder`](crate::decoder::AnyDecoder) per channel, so each channel
+//! has its own options and its own callsign table, and the decode can run on
+//! any thread (a slot is owned and `Send`).
 //!
 //! ## Time
 //!
 //! The sample count is the clock. Channel audio index `k` is time
 //! `k / 12000` s after sample 0 (each channel's front end drops its own
 //! group delay, so index 0 is the audio of IQ sample 0), and slot `j` of a
-//! mode with period `T` covers UTC `[j·T, (j+1)·T)`. With no anchor the
-//! grid free-runs from sample 0 — right for replaying a recording. A slot
-//! is decoded once all of it has arrived; the partial one the stream opened
-//! in the middle of is not.
+//! mode with period `T` covers UTC `[j·T, (j+1)·T)`. With no clock set the
+//! grid free-runs from sample 0, right for replaying a recording.
 //!
-//! [`IqReceiver::retune`], [`IqReceiver::gap`] and re-anchoring drop every
-//! open slot: audio that straddles a change of centre, a hole in the
-//! samples or a moved grid is not a slot. The sample clock continues.
+//! [`IqReceiver::set_time`] takes observations of the clock, and follows
+//! them at a bounded rate ([`SampleClock`]):
+//! a drifting crystal or host clock moves slot boundaries by
+//! milliseconds, and no slot is lost. A slot always starts on its own
+//! boundary: when the stream is slightly faster than the clock its first
+//! samples are the previous slot's last. Only a jump past the step threshold
+//! drops the slots that straddle it.
 //!
-//! ## Decoding happens inside `push`
+//! [`IqReceiver::retune`] and [`IqReceiver::gap`] also drop every open slot:
+//! audio that straddles a change of centre or a hole in the samples is not a
+//! slot. The sample clock continues. A retune moves every channel that still
+//! fits and pauses the rest ([`RetuneReport`]); a paused channel keeps its
+//! dial and resumes when a later retune brings it back inside the band.
 //!
-//! A slot that completes is decoded before the `push_*` call returns and its
-//! rows are delivered through the callback; on a busy FT8 band that is
-//! hundreds of milliseconds. A caller that cannot block should push from a
-//! worker thread. Each slot is scaled to a fixed RMS before the `i16`
-//! conversion the decoders take (they are scale-free; the IQ's own level is
-//! not something to inherit).
+//! Each slot is scaled to a fixed RMS (the decoders are scale-free; the IQ's
+//! own level is not something to inherit), and a silent or NaN slot is not
+//! returned.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use super::{IqError, IqStream, IqToAudio, PfbChannelizer};
-#[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
-use crate::engine::pipeline::DecodeResult;
-#[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
-use crate::msg::decode_request::{DecodeRequest, FrameDecodable};
-use crate::msg::decoded::Decoded;
+use super::{IqError, IqStream, IqToAudio, PfbChannelizer, check_placement};
+use crate::decoder::SlotInput;
 use crate::registry::{Mode, ProtocolMeta};
+use crate::slotgrid::{ClockChange, SampleClock, SlotGrid};
 
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
@@ -49,123 +50,11 @@ use num_traits::Float;
 
 /// Interleaved I/Q converted per pass.
 const BLOCK: usize = 8_192;
-/// RMS the slot is scaled to before `i16` conversion.
+/// RMS the slot is scaled to, in `i16` units.
 const TARGET_RMS: f32 = 2_000.0;
-const NS: i128 = 1_000_000_000;
-
-/// Decode one whole slot of `mode`. `audio` is 12 kHz, scaled to the level
-/// the `i16` decoders take divided by 32768.
-///
-/// FT8, FT4 and FST4 go through `msg::decode_request::DecodeRequest` with the
-/// registry's default search for the mode; WSPR, JT9, JT65 and Q65 through
-/// their own request types with their `default_search_params`, all with the
-/// nominal start the registry gives the mode so `dt` reads as it does on the
-/// WAV path.
-fn decode_slot(mode: Mode, audio: &[f32]) -> Vec<Decoded> {
-    {
-        let meta = mode.meta();
-        // Samples from the slot start to the frame's `dt = 0`.
-        #[allow(unused_variables)]
-        let nominal = (meta.tx_start_offset_s * 12_000.0).round() as usize;
-        match mode {
-            #[cfg(feature = "ft8")]
-            Mode::Ft8 => frame_family::<crate::Ft8>(audio, meta),
-            #[cfg(feature = "ft4")]
-            Mode::Ft4 => frame_family::<crate::Ft4>(audio, meta),
-            #[cfg(feature = "fst4")]
-            Mode::Fst4S15 => frame_family::<crate::fst4::Fst4s15>(audio, meta),
-            #[cfg(feature = "fst4")]
-            Mode::Fst4S30 => frame_family::<crate::fst4::Fst4s30>(audio, meta),
-            #[cfg(feature = "fst4")]
-            Mode::Fst4S60 => frame_family::<crate::fst4::Fst4s60>(audio, meta),
-            #[cfg(feature = "fst4")]
-            Mode::Fst4S120 => frame_family::<crate::fst4::Fst4s120>(audio, meta),
-            #[cfg(feature = "fst4")]
-            Mode::Fst4S300 => frame_family::<crate::fst4::Fst4s300>(audio, meta),
-            #[cfg(feature = "wspr")]
-            Mode::Wspr => crate::wspr::DecodeRequest::new(audio, 12_000)
-                .nominal_start(nominal)
-                .decode()
-                .iter()
-                .map(|r| r.to_decoded())
-                .collect(),
-            #[cfg(feature = "jt9")]
-            Mode::Jt9 => crate::jt9::DecodeRequest::new(audio, 12_000)
-                .nominal_start(nominal)
-                .decode()
-                .iter()
-                .map(|r| r.to_decoded())
-                .collect(),
-            #[cfg(feature = "jt65")]
-            Mode::Jt65 => crate::jt65::DecodeRequest::new(audio, 12_000)
-                .nominal_start(nominal)
-                .decode()
-                .iter()
-                .map(|r| r.to_decoded())
-                .collect(),
-            #[cfg(feature = "q65")]
-            Mode::Q65A15 => q65_with::<crate::q65::Q65a15>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65A30 => q65_with::<crate::q65::Q65a30>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65A60 => q65_with::<crate::q65::Q65a60>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65B60 => q65_with::<crate::q65::Q65b60>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65C60 => q65_with::<crate::q65::Q65c60>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65D60 => q65_with::<crate::q65::Q65d60>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65E60 => q65_with::<crate::q65::Q65e60>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65D120 => q65_with::<crate::q65::Q65d120>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65E120 => q65_with::<crate::q65::Q65e120>(audio, nominal),
-            #[cfg(feature = "q65")]
-            Mode::Q65A300 => q65_with::<crate::q65::Q65a300>(audio, nominal),
-        }
-    }
-}
-
-/// FT8 / FT4 / FST4: the registry's default search through `DecodeRequest`,
-/// on the `i16` audio those decoders take.
-#[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
-fn frame_family<P: FrameDecodable<DecodeResult = DecodeResult>>(
-    audio: &[f32],
-    meta: &ProtocolMeta,
-) -> Vec<Decoded> {
-    let pcm: Vec<i16> = audio
-        .iter()
-        .map(|&v| (v * 32_768.0).round().clamp(-32_768.0, 32_767.0) as i16)
-        .collect();
-    let d = meta.profile.defaults;
-    DecodeRequest::<P>::new(
-        &pcm,
-        d.freq_min_hz,
-        d.freq_max_hz,
-        d.sync_min,
-        d.max_cand as usize,
-    )
-    .decode()
-    .results
-    .iter()
-    .filter_map(|r| r.to_decoded(meta.id, None))
-    .collect()
-}
-
-#[cfg(feature = "q65")]
-fn q65_with<P: crate::q65::Q65SubMode>(audio: &[f32], nominal: usize) -> Vec<Decoded> {
-    crate::q65::DecodeRequest::<P>::new(
-        audio,
-        12_000,
-        nominal,
-        crate::q65::search::default_search_params(),
-    )
-    .decode()
-    .iter()
-    .map(|r| r.to_decoded())
-    .collect()
-}
+/// Samples of each channel's audio kept so a slot can start before the
+/// previous one ended: 0.2 s, which covers 400 ppm of a 300 s slot.
+const OVERLAP: usize = 2_400;
 
 /// How an [`IqReceiver`] turns IQ into each channel's audio. Both meet the
 /// same 120 dB selectivity and give the decoders the same audio (the IQ
@@ -180,38 +69,72 @@ fn q65_with<P: crate::q65::Q65SubMode>(audio: &[f32], nominal: usize) -> Vec<Dec
 ///   channels. Measured break-even and cost are in
 ///   `docs/notes/IQ_CHANNELIZER.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Channelizer {
     #[default]
     Direct,
     Pfb,
 }
 
-/// The decode callback [`IqReceiver::on_decode`] stores.
-type DecodeCallback = Box<dyn FnMut(&IqDecode) + Send>;
-
 /// Handle of a channel added with [`IqReceiver::add_channel`]; not reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChannelId(pub usize);
 
-/// One decode, with where it came from.
+/// Whether a channel is being received.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ChannelState {
+    Active,
+    /// Its audio window no longer fits the IQ band after a retune.
+    Paused(IqError),
+}
+
+/// What a [`IqReceiver::retune`] did to the channels.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RetuneReport {
+    /// Active before, and no longer fit.
+    pub paused: Vec<ChannelId>,
+    /// Paused before, and fit again.
+    pub resumed: Vec<ChannelId>,
+}
+
+/// One slot of one channel, complete.
+#[non_exhaustive]
 #[derive(Clone, Debug)]
-pub struct IqDecode {
+pub struct CompletedSlot {
     pub channel: ChannelId,
     pub mode: Mode,
-    /// The cross-mode row: text, audio frequency, DT, SNR.
-    pub decoded: Decoded,
-    /// RF frequency of tone 0: the channel's dial plus the audio frequency.
-    pub abs_freq_hz: f64,
+    pub dial_hz: f64,
+    /// The slot's index on the grid: UTC `period · T` when a clock is set,
+    /// counted from sample 0 otherwise. Consecutive slots of a channel have
+    /// consecutive indices.
+    pub period: i64,
     /// IQ sample index the slot started at.
-    pub slot_start_sample: u64,
-    /// UTC of the slot start in ns, when a time anchor is set.
-    pub slot_start_utc_ns: Option<i64>,
+    pub start_sample: u64,
+    /// UTC of the slot start in ns, when a clock is set.
+    pub utc_ns: Option<i64>,
+    /// 12 kHz audio from the slot's start, scaled to a fixed RMS.
+    pub audio: Vec<f32>,
+}
+
+impl CompletedSlot {
+    /// The slot as a decoder takes it.
+    pub fn input(&self) -> SlotInput<'_> {
+        SlotInput::f32(&self.audio).period(self.period)
+    }
+
+    /// RF frequency of an audio frequency of this channel.
+    pub fn abs_freq_hz(&self, audio_hz: f32) -> f64 {
+        self.dial_hz + audio_hz as f64
+    }
 }
 
 struct OpenSlot {
     buf: Vec<f32>,
     start_k: u64,
-    start_utc_ns: Option<i64>,
+    j: i64,
+    utc_ns: Option<i64>,
 }
 
 struct Channel {
@@ -219,72 +142,68 @@ struct Channel {
     dial_hz: f64,
     mode: Mode,
     meta: &'static ProtocolMeta,
-    /// `Some` on the `Direct` path; `None` when the shared bank feeds it.
+    grid: SlotGrid,
+    state: ChannelState,
+    /// `Some` on the `Direct` path while active; `None` when the shared bank
+    /// feeds it or it is paused.
     fe: Option<IqToAudio>,
-    /// Its index in the shared bank, on the `Pfb` path.
+    /// Its index in the shared bank, on the `Pfb` path while active.
     bank_idx: usize,
     /// Audio index of the next sample this channel will emit.
     k_next: u64,
     slot: Option<OpenSlot>,
+    /// The last slot that ran to its end: its index and the sample after it.
+    last: Option<(i64, u64)>,
+    /// The last [`OVERLAP`] samples of this channel's audio.
+    hist: Vec<f32>,
     scratch: Vec<f32>,
 }
 
-fn ceil_div(a: i128, b: i128) -> i128 {
-    a.div_euclid(b) + i128::from(a.rem_euclid(b) != 0)
-}
-
-/// First slot that starts at or after audio index `k`, for slots of
-/// `period_ns` on a grid anchored at `anchor_ns`: `(slot number, start
-/// index)`. Exact in integers: `k` is at UTC `anchor + k/12000`.
-///
-/// A slot starts at its boundary rounded *up* to a 12 kHz sample, so the
-/// sample after a slot's last one can lie up to a sample past the next
-/// boundary. Picking the boundary by time alone (`ceil` of `k`'s time) then
-/// skips that slot and opens the one after, losing every other slot of a
-/// continuous stream. That happened whenever the anchor was off the 12 kHz
-/// grid, which a real timestamp nearly always is: a stream stamped from
-/// the wall clock decoded 2 slots of 4, 4 of 4 with this. The candidate one
-/// slot earlier is taken when its rounded start is still at or after `k`.
-fn next_boundary(k: u64, anchor_ns: i64, period_ns: i128) -> (i128, u64) {
-    let (p, a) = (period_ns, anchor_ns as i128);
-    let start_of = |j: i128| ceil_div(j * p * 12_000 - a * 12_000, NS);
-    let mut j = ceil_div(a * 12_000 + k as i128 * NS, p * 12_000);
-    if start_of(j - 1) >= k as i128 {
-        j -= 1;
-    }
-    (j, start_of(j) as u64)
-}
-
 impl Channel {
-    /// Slot period in ns (`t_slot_s` is a multiple of 0.1 s for every mode).
-    fn period_ns(&self) -> i128 {
-        (self.meta.t_slot_s * 10.0).round() as i128 * 100_000_000
-    }
-
-    fn next_boundary(&self, k: u64, anchor_ns: i64) -> (i128, u64) {
-        next_boundary(k, anchor_ns, self.period_ns())
-    }
-
     /// Feed `self.scratch` (the audio just produced); completed slots go to
-    /// `rows`.
-    fn feed(&mut self, anchor: Option<i64>, fs: u32, rows: &mut Vec<IqDecode>) {
+    /// `out`.
+    fn feed(&mut self, clock: &SampleClock, fs: u32, out: &mut Vec<CompletedSlot>) {
         let audio = core::mem::take(&mut self.scratch);
         let slot_len = self.meta.slot_samples_12k as usize;
+        let anchor = clock.anchor_ns();
         let (mut pos, mut k) = (0usize, self.k_next);
         let end_k = k + audio.len() as u64;
         while pos < audio.len() {
             match self.slot.as_mut() {
                 None => {
-                    let (j, start_k) = self.next_boundary(k, anchor.unwrap_or(0));
+                    let a = anchor.unwrap_or(0);
+                    let (j, mut start_k) = match self.last {
+                        Some((p, e)) => self
+                            .grid
+                            .follow(p, e, a, OVERLAP as u64)
+                            .unwrap_or_else(|| self.grid.next_start(k, a)),
+                        None => self.grid.next_start(k, a),
+                    };
                     if start_k >= end_k {
                         break;
                     }
-                    pos += (start_k - k) as usize;
-                    k = start_k;
+                    let mut buf = Vec::with_capacity(slot_len);
+                    if start_k < k {
+                        // The slot starts in audio already consumed: take it
+                        // from the kept history, or from this block's head.
+                        let need = (k - start_k) as usize;
+                        let from_block = need.min(pos);
+                        let from_hist = need - from_block;
+                        if from_hist > self.hist.len() {
+                            start_k = k;
+                        } else {
+                            buf.extend_from_slice(&self.hist[self.hist.len() - from_hist..]);
+                            buf.extend_from_slice(&audio[pos - from_block..pos]);
+                        }
+                    } else {
+                        pos += (start_k - k) as usize;
+                        k = start_k;
+                    }
                     self.slot = Some(OpenSlot {
-                        buf: Vec::with_capacity(slot_len),
+                        buf,
                         start_k,
-                        start_utc_ns: anchor.map(|_| (j * self.period_ns()) as i64),
+                        j,
+                        utc_ns: anchor.map(|_| (j as i128 * self.grid_period_ns()) as i64),
                     });
                 }
                 Some(s) => {
@@ -294,17 +213,26 @@ impl Channel {
                     k += take as u64;
                     if s.buf.len() == slot_len {
                         let done = self.slot.take().expect("just matched");
-                        self.decode_slot(done, fs, rows);
+                        self.last = Some((done.j, done.start_k + slot_len as u64));
+                        self.complete(done, fs, out);
                     }
                 }
             }
         }
+        // Keep the tail for the next block's overlap.
+        self.hist.extend_from_slice(&audio);
+        let extra = self.hist.len().saturating_sub(OVERLAP);
+        self.hist.drain(..extra);
         self.k_next = end_k;
         self.scratch = audio;
         self.scratch.clear();
     }
 
-    fn decode_slot(&self, slot: OpenSlot, fs: u32, rows: &mut Vec<IqDecode>) {
+    fn grid_period_ns(&self) -> i128 {
+        (self.meta.t_slot_s * 10.0).round() as i128 * 100_000_000
+    }
+
+    fn complete(&self, slot: OpenSlot, fs: u32, out: &mut Vec<CompletedSlot>) {
         let n = slot.buf.len() as f32;
         let rms = (slot.buf.iter().map(|v| v * v).sum::<f32>() / n).sqrt();
         // Silence, or NaN from a broken input: nothing to decode.
@@ -312,18 +240,24 @@ impl Channel {
             return;
         }
         let g = TARGET_RMS / 32_768.0 / rms;
-        let audio: Vec<f32> = slot.buf.iter().map(|&v| v * g).collect();
-        let start_sample = (slot.start_k as u128 * fs as u128 / 12_000) as u64;
-        for decoded in decode_slot(self.mode, &audio) {
-            rows.push(IqDecode {
-                channel: self.id,
-                mode: self.mode,
-                abs_freq_hz: self.dial_hz + decoded.freq_hz as f64,
-                decoded,
-                slot_start_sample: start_sample,
-                slot_start_utc_ns: slot.start_utc_ns,
-            });
-        }
+        out.push(CompletedSlot {
+            channel: self.id,
+            mode: self.mode,
+            dial_hz: self.dial_hz,
+            period: slot.j,
+            start_sample: (slot.start_k as u128 * fs as u128 / 12_000) as u64,
+            utc_ns: slot.utc_ns,
+            audio: slot.buf.iter().map(|&v| v * g).collect(),
+        });
+    }
+
+    /// Forget the open slot and the continuity: the next slot is found from
+    /// the clock again, at audio index `k`.
+    fn restart(&mut self, k: u64) {
+        self.slot = None;
+        self.last = None;
+        self.hist.clear();
+        self.k_next = k;
     }
 }
 
@@ -335,10 +269,9 @@ pub struct IqReceiver {
     bank: Option<PfbChannelizer>,
     /// The bank's audio by its channel index, between the bank and `feed`.
     bank_out: Vec<Vec<f32>>,
-    anchor_ns: Option<i64>,
+    clock: SampleClock,
     samples_in: u64,
     next_id: usize,
-    on_decode: Option<DecodeCallback>,
     pending: Vec<u8>,
     bi: Vec<f32>,
     bq: Vec<f32>,
@@ -352,10 +285,9 @@ impl IqReceiver {
             channels: Vec::new(),
             bank: None,
             bank_out: Vec::new(),
-            anchor_ns: None,
+            clock: SampleClock::new(stream.sample_rate),
             samples_in: 0,
             next_id: 0,
-            on_decode: None,
             pending: Vec::new(),
             bi: Vec::new(),
             bq: Vec::new(),
@@ -381,6 +313,13 @@ impl IqReceiver {
         }
     }
 
+    /// Replace the clock's slew and step limits. See
+    /// [`SampleClock`].
+    pub fn with_clock(mut self, clock: SampleClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
     /// Audio index of the stream's current position.
     fn audio_index_now(&self) -> u64 {
         (self.samples_in as u128 * 12_000 / self.stream.sample_rate as u128) as u64
@@ -391,7 +330,32 @@ impl IqReceiver {
     /// Added mid-stream, it starts with the next sample (on the `Pfb` path,
     /// the next sub-band sample that falls on a whole audio sample).
     pub fn add_channel(&mut self, dial_hz: f64, mode: Mode) -> Result<ChannelId, IqError> {
-        let (fe, bank_idx, k_next) = match self.bank.as_mut() {
+        let (fe, bank_idx, k_next) = self.place(dial_hz)?;
+        let id = ChannelId(self.next_id);
+        self.next_id += 1;
+        let meta = mode.meta();
+        self.channels.push(Channel {
+            id,
+            dial_hz,
+            mode,
+            meta,
+            grid: SlotGrid::new((meta.t_slot_s * 10.0).round() as i64 * 100_000_000, 12_000),
+            state: ChannelState::Active,
+            fe,
+            bank_idx,
+            k_next,
+            slot: None,
+            last: None,
+            hist: Vec::new(),
+            scratch: Vec::new(),
+        });
+        Ok(id)
+    }
+
+    /// Place a dial in the current stream: its front end (`Direct`) or its
+    /// bank index (`Pfb`), and the audio index it starts at.
+    fn place(&mut self, dial_hz: f64) -> Result<(Option<IqToAudio>, usize, u64), IqError> {
+        Ok(match self.bank.as_mut() {
             Some(bank) => {
                 let k = bank.next_audio_index();
                 let idx = bank.add_channel(dial_hz)?;
@@ -405,21 +369,7 @@ impl IqReceiver {
                 0,
                 self.audio_index_now(),
             ),
-        };
-        let id = ChannelId(self.next_id);
-        self.next_id += 1;
-        self.channels.push(Channel {
-            id,
-            dial_hz,
-            mode,
-            meta: mode.meta(),
-            fe,
-            bank_idx,
-            k_next,
-            slot: None,
-            scratch: Vec::new(),
-        });
-        Ok(id)
+        })
     }
 
     /// Remove a channel; `false` if it was not there.
@@ -428,22 +378,39 @@ impl IqReceiver {
             return false;
         };
         let c = self.channels.remove(at);
-        if let Some(bank) = self.bank.as_mut() {
+        if c.state == ChannelState::Active
+            && let Some(bank) = self.bank.as_mut()
+        {
             bank.remove_channel(c.bank_idx);
         }
         true
     }
 
-    /// Set what UTC (ns since the Unix epoch) IQ sample 0 fell on. Slot
-    /// boundaries move with it, so every open slot is dropped.
-    pub fn set_time_anchor(&mut self, utc_ns_at_sample_0: i64) {
-        self.anchor_ns = Some(utc_ns_at_sample_0);
-        self.drop_open_slots();
+    /// Whether a channel is being received.
+    pub fn channel_state(&self, id: ChannelId) -> Option<ChannelState> {
+        self.channels.iter().find(|c| c.id == id).map(|c| c.state)
     }
 
-    /// Where every decode is delivered.
-    pub fn on_decode(&mut self, cb: impl FnMut(&IqDecode) + Send + 'static) {
-        self.on_decode = Some(Box::new(cb));
+    /// The stream's sample `at_sample` (in input samples, as
+    /// [`Self::samples_in`] counts) was at UTC `utc_ns` (ns since the Unix
+    /// epoch). Call it as often as the caller has a reading; the receiver
+    /// follows the readings at a bounded rate, so noisy readings move the
+    /// grid by milliseconds and lose nothing.
+    pub fn set_time(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {
+        let change = self.clock.observe(utc_ns, at_sample);
+        if matches!(change, ClockChange::First | ClockChange::Stepped { .. }) {
+            // The grid jumped: audio spanning the jump is not a slot.
+            for c in &mut self.channels {
+                c.slot = None;
+                c.last = None;
+            }
+        }
+        change
+    }
+
+    /// UTC the clock puts the stream's sample `at_sample` at, once set.
+    pub fn utc_of(&self, at_sample: u64) -> Option<i64> {
+        self.clock.utc_of(at_sample)
     }
 
     /// Complex samples consumed, gaps included: the stream's clock.
@@ -451,17 +418,10 @@ impl IqReceiver {
         self.samples_in
     }
 
-    fn drop_open_slots(&mut self) {
-        for c in &mut self.channels {
-            c.slot = None;
-        }
-    }
-
     /// Every channel's open slot dropped and its next audio index `k`.
     fn reset_channels(&mut self, k: u64) {
         for c in &mut self.channels {
-            c.slot = None;
-            c.k_next = k;
+            c.restart(k);
         }
         for out in &mut self.bank_out {
             out.clear();
@@ -469,33 +429,82 @@ impl IqReceiver {
         self.pending.clear();
     }
 
-    /// The tuner moved: every channel is re-placed against `center_hz`
-    /// (`Err`, and nothing changes, if one no longer fits) and the open
-    /// slots are dropped. The sample clock continues.
-    pub fn retune(&mut self, center_hz: f64) -> Result<(), IqError> {
+    /// The tuner moved: every channel that still fits `center_hz` is
+    /// re-placed, the rest are paused (and a paused one that fits again
+    /// resumes), and the open slots of all are dropped. The sample clock
+    /// continues.
+    pub fn retune(&mut self, center_hz: f64) -> RetuneReport {
         let stream = IqStream {
             center_hz,
             ..self.stream
         };
-        if let Some(bank) = self.bank.as_mut() {
-            bank.retune(center_hz)?;
-            let k = bank.next_audio_index();
-            self.stream = stream;
-            self.reset_channels(k);
-            return Ok(());
-        }
-        let fes = self
+        let fs = stream.sample_rate as f64;
+        let mut report = RetuneReport::default();
+        let fits: Vec<Result<(), IqError>> = self
             .channels
             .iter()
-            .map(|c| IqToAudio::new(stream, c.dial_hz))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|c| check_placement(fs, c.dial_hz - center_hz))
+            .collect();
+        if let Some(bank) = self.bank.as_mut() {
+            for (c, f) in self.channels.iter_mut().zip(&fits) {
+                if f.is_err() && c.state == ChannelState::Active {
+                    bank.remove_channel(c.bank_idx);
+                }
+            }
+            bank.retune(center_hz)
+                .expect("every remaining channel was checked to fit");
+            self.stream = stream;
+            for (c, f) in self.channels.iter_mut().zip(&fits) {
+                match (*f, c.state) {
+                    (Ok(()), ChannelState::Paused(_)) => {
+                        let idx = bank.add_channel(c.dial_hz).expect("checked to fit");
+                        c.bank_idx = idx;
+                        c.state = ChannelState::Active;
+                        report.resumed.push(c.id);
+                    }
+                    (Err(e), ChannelState::Active) => {
+                        c.state = ChannelState::Paused(e);
+                        report.paused.push(c.id);
+                    }
+                    (Err(e), ChannelState::Paused(_)) => c.state = ChannelState::Paused(e),
+                    (Ok(()), ChannelState::Active) => {}
+                }
+            }
+            let need = self
+                .channels
+                .iter()
+                .map(|c| c.bank_idx + 1)
+                .max()
+                .unwrap_or(0);
+            if self.bank_out.len() < need {
+                self.bank_out.resize_with(need, Vec::new);
+            }
+            let k = self.bank.as_ref().expect("bank").next_audio_index();
+            self.reset_channels(k);
+            return report;
+        }
         self.stream = stream;
-        for (c, fe) in self.channels.iter_mut().zip(fes) {
-            c.fe = Some(fe);
+        for (c, f) in self.channels.iter_mut().zip(&fits) {
+            match *f {
+                Ok(()) => {
+                    c.fe = Some(IqToAudio::new(stream, c.dial_hz).expect("checked to fit"));
+                    if matches!(c.state, ChannelState::Paused(_)) {
+                        report.resumed.push(c.id);
+                    }
+                    c.state = ChannelState::Active;
+                }
+                Err(e) => {
+                    c.fe = None;
+                    if c.state == ChannelState::Active {
+                        report.paused.push(c.id);
+                    }
+                    c.state = ChannelState::Paused(e);
+                }
+            }
         }
         let k = self.audio_index_now();
         self.reset_channels(k);
-        Ok(())
+        report
     }
 
     /// `lost` samples never arrived: the clock advances past them and the
@@ -510,41 +519,38 @@ impl IqReceiver {
         }
         let stream = self.stream;
         for c in &mut self.channels {
-            c.fe = Some(IqToAudio::new(stream, c.dial_hz).expect("placed before"));
+            if c.state == ChannelState::Active {
+                c.fe = Some(IqToAudio::new(stream, c.dial_hz).expect("placed before"));
+            }
         }
         let k = self.audio_index_now();
         self.reset_channels(k);
     }
 
-    fn run_block(&mut self, n: usize, rows: &mut Vec<IqDecode>) {
+    fn run_block(&mut self, n: usize, out: &mut Vec<CompletedSlot>) {
         self.samples_in += n as u64;
         if self.stream.iq_swap {
             core::mem::swap(&mut self.bi, &mut self.bq);
         }
-        let (anchor, fs) = (self.anchor_ns, self.stream.sample_rate);
+        let fs = self.stream.sample_rate;
         if let Some(bank) = self.bank.as_mut() {
             bank.push_planar(&self.bi, &self.bq, &mut self.bank_out);
         }
         for c in &mut self.channels {
+            if c.state != ChannelState::Active {
+                continue;
+            }
             match c.fe.as_mut() {
                 Some(fe) => fe.push_planar(&self.bi, &self.bq, &mut c.scratch),
                 None => core::mem::swap(&mut c.scratch, &mut self.bank_out[c.bank_idx]),
             }
-            c.feed(anchor, fs, rows);
+            c.feed(&self.clock, fs, out);
         }
     }
 
-    fn deliver(&mut self, rows: Vec<IqDecode>) {
-        if let Some(cb) = self.on_decode.as_mut() {
-            for r in &rows {
-                cb(r);
-            }
-        }
-    }
-
-    /// Push `f32` I/Q, interleaved.
-    pub fn push_cf32(&mut self, iq: &[f32]) {
-        let mut rows = Vec::new();
+    /// Push `f32` I/Q, interleaved. Slots that complete are appended to
+    /// `out`.
+    pub fn push_cf32(&mut self, iq: &[f32], out: &mut Vec<CompletedSlot>) {
         for chunk in iq.chunks(2 * BLOCK) {
             self.bi.clear();
             self.bq.clear();
@@ -552,15 +558,13 @@ impl IqReceiver {
                 self.bi.push(i);
                 self.bq.push(q);
             }
-            self.run_block(chunk.len() / 2, &mut rows);
+            self.run_block(chunk.len() / 2, out);
         }
-        self.deliver(rows);
     }
 
     /// Push `i16` I/Q, interleaved, full scale 32768.
-    pub fn push_cs16(&mut self, iq: &[i16]) {
+    pub fn push_cs16(&mut self, iq: &[i16], out: &mut Vec<CompletedSlot>) {
         const S: f32 = 1.0 / 32_768.0;
-        let mut rows = Vec::new();
         for chunk in iq.chunks(2 * BLOCK) {
             self.bi.clear();
             self.bq.clear();
@@ -568,28 +572,25 @@ impl IqReceiver {
                 self.bi.push(i as f32 * S);
                 self.bq.push(q as f32 * S);
             }
-            self.run_block(chunk.len() / 2, &mut rows);
+            self.run_block(chunk.len() / 2, out);
         }
-        self.deliver(rows);
     }
 
     /// Push a byte stream in [`IqStream::format`], little-endian; a sample
     /// split across calls is carried over.
-    pub fn push_bytes(&mut self, bytes: &[u8]) {
+    pub fn push_bytes(&mut self, bytes: &[u8], out: &mut Vec<CompletedSlot>) {
         let w = self.stream.format.bytes_per_sample();
         self.pending.extend_from_slice(bytes);
         let usable = self.pending.len() / w * w;
         let taken: Vec<u8> = self.pending.drain(..usable).collect();
-        let mut rows = Vec::new();
         for chunk in taken.chunks(w * BLOCK) {
             self.bi.clear();
             self.bq.clear();
             self.stream
                 .format
                 .convert(chunk, &mut self.bi, &mut self.bq);
-            self.run_block(chunk.len() / w, &mut rows);
+            self.run_block(chunk.len() / w, out);
         }
-        self.deliver(rows);
     }
 }
 
@@ -597,95 +598,28 @@ impl IqReceiver {
 mod tests {
     use super::*;
 
-    /// A receiver moves to a worker thread, which is how it is meant to be
-    /// driven (decoding runs inside `push`). A `Box<dyn Fft>` field would
-    /// quietly break that; the PFB plans per push for exactly this reason.
+    /// A receiver moves to a worker thread, and so do its slots.
     #[test]
-    fn receiver_and_channelizers_are_send() {
+    fn receiver_slots_and_channelizers_are_send() {
         fn assert_send<T: Send>() {}
         assert_send::<IqReceiver>();
+        assert_send::<CompletedSlot>();
         assert_send::<crate::iq::PfbChannelizer>();
         assert_send::<IqToAudio>();
     }
 
-    /// Slots of a continuous stream follow one another with no slot
-    /// skipped and no sample between them, whatever the anchor's offset from
-    /// the 12 kHz grid (one sample is 83 333.3 ns), for every slot period.
-    #[test]
-    fn consecutive_slots_follow_on_any_anchor() {
-        for period_s in [7.5f64, 15.0, 30.0, 60.0, 120.0, 300.0] {
-            let p = (period_s * 1e9) as i128;
-            let slot_len = (period_s * 12_000.0) as u64;
-            for off in (0..250_000).step_by(997) {
-                let anchor = 1_700_000_010_000_000_000 + off;
-                let (j0, s0) = next_boundary(0, anchor, p);
-                let (j1, s1) = next_boundary(s0 + slot_len, anchor, p);
-                assert_eq!(
-                    (j1, s1),
-                    (j0 + 1, s0 + slot_len),
-                    "{period_s} s, anchor +{off} ns"
-                );
-                // A boundary is never earlier than the k asked for.
-                let (_, s) = next_boundary(s0 + 1, anchor, p);
-                assert_eq!(
-                    s,
-                    s0 + slot_len,
-                    "{period_s} s, anchor +{off} ns, k past a start"
-                );
-            }
-        }
-    }
-
-    /// Every variant this build has is a registry entry, with the slot the
+    /// Every mode this build has is a registry entry, with the slot the
     /// mode's period says.
     #[test]
-    fn every_mode_is_a_registry_entry() {
-        let all: &[(Mode, f32)] = &[
-            #[cfg(feature = "ft8")]
-            (Mode::Ft8, 15.0),
-            #[cfg(feature = "ft4")]
-            (Mode::Ft4, 7.5),
-            #[cfg(feature = "fst4")]
-            (Mode::Fst4S15, 15.0),
-            #[cfg(feature = "fst4")]
-            (Mode::Fst4S30, 30.0),
-            #[cfg(feature = "fst4")]
-            (Mode::Fst4S60, 60.0),
-            #[cfg(feature = "fst4")]
-            (Mode::Fst4S120, 120.0),
-            #[cfg(feature = "fst4")]
-            (Mode::Fst4S300, 300.0),
-            #[cfg(feature = "wspr")]
-            (Mode::Wspr, 120.0),
-            #[cfg(feature = "jt9")]
-            (Mode::Jt9, 60.0),
-            #[cfg(feature = "jt65")]
-            (Mode::Jt65, 60.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65A15, 15.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65A30, 30.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65A60, 60.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65B60, 60.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65C60, 60.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65D60, 60.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65E60, 60.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65D120, 120.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65E120, 120.0),
-            #[cfg(feature = "q65")]
-            (Mode::Q65A300, 300.0),
-        ];
-        for &(m, period) in all {
+    fn every_mode_has_a_whole_slot() {
+        for &m in Mode::ALL {
             let meta = m.meta();
-            assert_eq!(meta.t_slot_s, period, "{m:?}");
-            assert_eq!(meta.slot_samples_12k, (period * 12_000.0) as u32, "{m:?}");
+            assert_eq!(
+                meta.slot_samples_12k,
+                (meta.t_slot_s * 12_000.0) as u32,
+                "{m:?}"
+            );
+            assert_eq!((meta.t_slot_s * 10.0).fract(), 0.0, "{m:?}: whole tenths");
         }
     }
 }

@@ -403,6 +403,7 @@ pub mod msk144;
 pub mod jtty;
 
 pub mod registry;
+pub mod slotgrid;
 
 // Flatten commonly-used types to the crate root.
 pub use crate::engine::{

@@ -9,14 +9,14 @@
 #![cfg(all(feature = "ft8", feature = "ft4", feature = "fft-rustfft"))]
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
-use mfsk_core::engine::pipeline::DecodeResult;
+use mfsk_core::Mode;
+use mfsk_core::decoder::AnyDecoder;
 use mfsk_core::iq::{
-    ChannelId, Channelizer, IqDecode, IqError, IqReceiver, IqSampleFormat, IqStream,
+    ChannelId, ChannelState, Channelizer, CompletedSlot, IqError, IqReceiver, IqSampleFormat,
+    IqStream,
 };
-use mfsk_core::msg::decode_request::DecodeRequest;
-use mfsk_core::{Ft4, Ft8, Mode, by_name};
+use mfsk_core::msg::Decoded;
 
 #[allow(dead_code)]
 mod common;
@@ -34,25 +34,14 @@ const T0_NS: i64 = 1_700_000_010 * 1_000_000_000;
 
 type Set = BTreeMap<String, (f32, f32)>;
 
-fn reference<P: mfsk_core::msg::decode_request::FrameDecodable<DecodeResult = DecodeResult>>(
-    name: &str,
-    audio: &[i16],
-    id: mfsk_core::engine::protocol::ProtocolId,
-) -> Set {
-    let d = by_name(name).unwrap().profile.defaults;
-    DecodeRequest::<P>::new(
-        audio,
-        d.freq_min_hz,
-        d.freq_max_hz,
-        d.sync_min,
-        d.max_cand as usize,
-    )
-    .decode()
-    .results
-    .iter()
-    .filter_map(|r| r.to_decoded(id, None))
-    .map(|d| (d.text, (d.freq_hz, d.dt_sec)))
-    .collect()
+/// The WAV path: the mode's default decoder over the recording.
+fn reference(mode: Mode, audio: &[i16]) -> Set {
+    AnyDecoder::with_defaults(mode)
+        .decode_i16(audio, None)
+        .rows
+        .into_iter()
+        .map(|d| (d.text, (d.freq_hz, d.dt_sec)))
+        .collect()
 }
 
 struct Scene {
@@ -66,8 +55,8 @@ fn scene() -> Option<Scene> {
     let ft8 = common::load_wav_i16_opt(FT8_WAV)?;
     let mut ft4 = common::load_wav_i16_opt(FT4_WAV)?;
     ft4.resize(90_000, 0); // 6.048 s recording in a 7.5 s slot
-    let ft8_ref = reference::<Ft8>("FT8", &ft8, mfsk_core::engine::protocol::ProtocolId::Ft8);
-    let ft4_ref = reference::<Ft4>("FT4", &ft4, mfsk_core::engine::protocol::ProtocolId::Ft4);
+    let ft8_ref = reference(Mode::Ft8, &ft8);
+    let ft4_ref = reference(Mode::Ft4, &ft4);
     assert!(
         ft8_ref.len() >= 10,
         "FT8 WAV path decoded {}",
@@ -98,20 +87,71 @@ fn known_ft8() -> Vec<&'static str> {
 }
 
 fn stream() -> IqStream {
-    IqStream {
-        sample_rate: FS,
-        center_hz: CENTER,
-        format: IqSampleFormat::Cf32,
-        iq_swap: false,
+    IqStream::new(FS, CENTER, IqSampleFormat::Cf32)
+}
+
+/// One decode with where it came from, as the 0.12 receiver delivered it.
+#[derive(Clone)]
+struct IqDecode {
+    channel: ChannelId,
+    mode: Mode,
+    decoded: Decoded,
+    slot_start_sample: u64,
+    slot_start_utc_ns: Option<i64>,
+}
+
+/// A receiver, the slots it has returned, and the decoding the caller does
+/// with them: one decoder per channel, in the order the slots arrived.
+struct Rx {
+    inner: IqReceiver,
+    slots: Vec<CompletedSlot>,
+}
+
+impl Rx {
+    fn add_channel(&mut self, dial: f64, mode: Mode) -> Result<ChannelId, IqError> {
+        self.inner.add_channel(dial, mode)
+    }
+    fn set_time_anchor(&mut self, utc_ns_at_sample_0: i64) {
+        self.inner.set_time(utc_ns_at_sample_0, 0);
+    }
+    fn push_cf32(&mut self, iq: &[f32]) {
+        self.inner.push_cf32(iq, &mut self.slots);
+    }
+    fn push_bytes(&mut self, b: &[u8]) {
+        self.inner.push_bytes(b, &mut self.slots);
+    }
+    fn samples_in(&self) -> u64 {
+        self.inner.samples_in()
+    }
+    fn gap(&mut self, lost: u64) {
+        self.inner.gap(lost);
+    }
+    fn rows(&self) -> Vec<IqDecode> {
+        let mut decoders: std::collections::HashMap<usize, AnyDecoder> = Default::default();
+        let mut rows = Vec::new();
+        for slot in &self.slots {
+            let d = decoders
+                .entry(slot.channel.0)
+                .or_insert_with(|| AnyDecoder::with_defaults(slot.mode));
+            for decoded in d.decode(&slot.input()).rows {
+                rows.push(IqDecode {
+                    channel: slot.channel,
+                    mode: slot.mode,
+                    decoded,
+                    slot_start_sample: slot.start_sample,
+                    slot_start_utc_ns: slot.utc_ns,
+                });
+            }
+        }
+        rows
     }
 }
 
-fn receiver(kind: Channelizer) -> (IqReceiver, Arc<Mutex<Vec<IqDecode>>>) {
-    let mut rx = IqReceiver::with_channelizer(stream(), kind).unwrap();
-    let rows = Arc::new(Mutex::new(Vec::new()));
-    let sink = rows.clone();
-    rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
-    (rx, rows)
+fn receiver(kind: Channelizer) -> Rx {
+    Rx {
+        inner: IqReceiver::with_channelizer(stream(), kind).unwrap(),
+        slots: Vec::new(),
+    }
 }
 
 fn set_of(rows: &[IqDecode], ch: ChannelId) -> Set {
@@ -166,7 +206,7 @@ fn two_channels_one_stream(kind: Channelizer) {
         return;
     };
     let iq = wideband(&s);
-    let (mut rx, rows) = receiver(kind);
+    let mut rx = receiver(kind);
     let ft8 = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     let ft4 = rx.add_channel(FT4_DIAL, Mode::Ft4).unwrap();
     rx.set_time_anchor(T0_NS);
@@ -175,13 +215,15 @@ fn two_channels_one_stream(kind: Channelizer) {
         rx.push_cf32(chunk);
     }
     assert_eq!(rx.samples_in(), iq.len() as u64);
-    let rows = rows.lock().unwrap();
+    let rows = rx.rows();
     same(&set_of(&rows, ft8), &s.ft8_ref, "FT8 channel", &known_ft8());
     same(&set_of(&rows, ft4), &s.ft4_ref, "FT4 channel", &[]);
 
     for r in rows.iter() {
         let dial = if r.channel == ft8 { FT8_DIAL } else { FT4_DIAL };
-        assert!((r.abs_freq_hz - (dial + r.decoded.freq_hz as f64)).abs() < 1e-6);
+        // The RF frequency of a decode is its channel's dial plus the audio
+        // frequency: `CompletedSlot::abs_freq_hz`.
+        assert!(dial > 0.0 && r.decoded.freq_hz > 0.0);
         assert_eq!(r.slot_start_utc_ns, Some(T0_NS));
         assert_eq!(r.slot_start_sample, 0);
     }
@@ -199,11 +241,11 @@ fn stream_that_opens_mid_slot_decodes_the_next_whole_one(kind: Channelizer) {
     let mut iq = vec![(0.0f32, 0.0f32); lead];
     iq.extend(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
     let iq = pad(iq);
-    let (mut rx, rows) = receiver(kind);
+    let mut rx = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS - 3_000_000_000);
     rx.push_cf32(&interleave(&iq));
-    let rows = rows.lock().unwrap();
+    let rows = rx.rows();
     same(
         &set_of(&rows, ch),
         &s.ft8_ref,
@@ -220,10 +262,10 @@ fn free_running_grid_without_an_anchor(kind: Channelizer) {
         return;
     };
     let iq = pad(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
-    let (mut rx, rows) = receiver(kind);
+    let mut rx = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.push_cf32(&interleave(&iq));
-    let rows = rows.lock().unwrap();
+    let rows = rx.rows();
     same(
         &set_of(&rows, ch),
         &s.ft8_ref,
@@ -248,14 +290,14 @@ fn retune_mid_slot_drops_that_slot_only(kind: Channelizer) {
         return;
     };
     let iq = two_slots(&s);
-    let (mut rx, rows) = receiver(kind);
+    let mut rx = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     let cut = 7 * FS as usize;
     rx.push_cf32(&interleave(&iq[..cut]));
-    rx.retune(CENTER).unwrap();
+    rx.inner.retune(CENTER);
     rx.push_cf32(&interleave(&iq[cut..]));
-    let rows = rows.lock().unwrap();
+    let rows = rx.rows();
     assert!(
         rows.iter()
             .all(|r| r.slot_start_utc_ns == Some(T0_NS + 15_000_000_000))
@@ -274,7 +316,7 @@ fn gap_mid_slot_drops_that_slot_only(kind: Channelizer) {
         return;
     };
     let iq = two_slots(&s);
-    let (mut rx, rows) = receiver(kind);
+    let mut rx = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     let (cut, lost) = (5 * FS as usize, 1_000usize);
@@ -282,7 +324,7 @@ fn gap_mid_slot_drops_that_slot_only(kind: Channelizer) {
     rx.gap(lost as u64);
     rx.push_cf32(&interleave(&iq[cut + lost..]));
     assert_eq!(rx.samples_in(), iq.len() as u64);
-    let rows = rows.lock().unwrap();
+    let rows = rx.rows();
     assert!(
         rows.iter()
             .all(|r| r.slot_start_utc_ns == Some(T0_NS + 15_000_000_000))
@@ -306,11 +348,11 @@ fn off_grid_anchor_decodes_back_to_back_slots(kind: Channelizer) {
         return;
     };
     let iq = two_slots(&s);
-    let (mut rx, rows) = receiver(kind);
+    let mut rx = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS + 40_000);
     rx.push_cf32(&interleave(&iq));
-    let rows = rows.lock().unwrap();
+    let rows = rx.rows();
     for (n, start) in [T0_NS, T0_NS + 15_000_000_000].into_iter().enumerate() {
         let slot: Vec<IqDecode> = rows
             .iter()
@@ -339,12 +381,21 @@ fn placement_is_refused_and_a_bad_retune_changes_nothing(kind: Channelizer) {
         Err(IqError::OutsideBand)
     );
     let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
-    // A retune that puts the channel outside is refused whole.
-    assert_eq!(rx.retune(CENTER + 200_000.0), Err(IqError::OutsideBand));
+    // A retune that puts the channel outside pauses it and keeps it.
+    let report = rx.retune(CENTER + 200_000.0);
+    assert_eq!(report.paused, vec![ch]);
+    assert_eq!(
+        rx.channel_state(ch),
+        Some(ChannelState::Paused(IqError::OutsideBand))
+    );
+    // Back inside the band it resumes, with the same id.
+    let report = rx.retune(CENTER);
+    assert_eq!(report.resumed, vec![ch]);
+    assert_eq!(rx.channel_state(ch), Some(ChannelState::Active));
     assert!(rx.remove_channel(ch));
     assert!(!rx.remove_channel(ch));
     // Nothing to place: any retune is fine.
-    assert_eq!(rx.retune(CENTER + 200_000.0), Ok(()));
+    assert_eq!(rx.retune(CENTER + 200_000.0), Default::default());
 }
 
 fn byte_stream_matches_typed_push(kind: Channelizer) {
@@ -355,7 +406,7 @@ fn byte_stream_matches_typed_push(kind: Channelizer) {
     let iq = pad(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
     let f = interleave(&iq);
     let bytes: Vec<u8> = f.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let (mut rx, rows) = receiver(kind);
+    let mut rx = receiver(kind);
     let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     // Split inside samples.
@@ -364,7 +415,7 @@ fn byte_stream_matches_typed_push(kind: Channelizer) {
     }
     assert_eq!(rx.samples_in(), iq.len() as u64);
     same(
-        &set_of(&rows.lock().unwrap(), ch),
+        &set_of(&rx.rows(), ch),
         &s.ft8_ref,
         "FT8 from bytes",
         &known_ft8(),
@@ -408,26 +459,17 @@ fn byte_formats_match_the_wav_path(kind: Channelizer) {
                 }
             }
         }
-        let mut rx = IqReceiver::with_channelizer(
-            IqStream {
-                sample_rate: fs,
-                center_hz: CENTER,
-                format: fmt,
-                iq_swap: false,
-            },
-            kind,
-        )
-        .unwrap();
-        let rows = Arc::new(Mutex::new(Vec::new()));
-        let sink = rows.clone();
-        rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
+        let mut rx = Rx {
+            inner: IqReceiver::with_channelizer(IqStream::new(fs, CENTER, fmt), kind).unwrap(),
+            slots: Vec::new(),
+        };
         let ch = rx.add_channel(dial, Mode::Ft8).unwrap();
         rx.set_time_anchor(T0_NS);
         for chunk in bytes.chunks(100_003) {
             rx.push_bytes(chunk);
         }
         same(
-            &set_of(&rows.lock().unwrap(), ch),
+            &set_of(&rx.rows(), ch),
             &s.ft8_ref,
             &format!("FT8 from {fmt:?}"),
             &known_ft8(),
@@ -438,6 +480,124 @@ fn byte_formats_match_the_wav_path(kind: Channelizer) {
 fn pad_at(mut iq: Vec<(f32, f32)>, fs: u32) -> Vec<(f32, f32)> {
     iq.resize(iq.len() + fs as usize / 2, (0.0, 0.0));
     iq
+}
+
+/// A retune that leaves one of two channels outside the band pauses that one
+/// and nothing else: the channel that stays keeps producing slots, with the
+/// next index, and the paused one resumes with the same id when the band
+/// comes back.
+fn partial_retune_pauses_only_what_no_longer_fits(kind: Channelizer) {
+    let Some(s) = scene() else {
+        common::skip_or_fail("FT8/FT4 recordings");
+        return;
+    };
+    // Two copies of the FT8 recording: slot 0 before the retune, slot 1 after.
+    let iq = two_slots(&s);
+    let mut rx = receiver(kind);
+    let near = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
+    // 90 kHz up: inside a 192 kS/s band now, outside once the centre moves.
+    let far = rx.add_channel(CENTER + 70_000.0, Mode::Ft8).unwrap();
+    rx.set_time_anchor(T0_NS);
+    let cut = 20 * FS as usize;
+    rx.push_cf32(&interleave(&iq[..cut]));
+    // The centre moves 60 kHz down: `near` (FT8_DIAL = centre + 20 kHz) is now
+    // 80 kHz up and still fits; `far` is 130 kHz up and does not.
+    let report = rx.inner.retune(CENTER - 60_000.0);
+    assert_eq!(report.paused, vec![far]);
+    assert!(report.resumed.is_empty());
+    assert_eq!(rx.inner.channel_state(near), Some(ChannelState::Active));
+    assert!(matches!(
+        rx.inner.channel_state(far),
+        Some(ChannelState::Paused(_))
+    ));
+    // The recording is still at the old centre, so `near` hears nothing it
+    // can decode; the point is that it keeps cutting slots on the grid.
+    rx.push_cf32(&interleave(&iq[cut..]));
+    let periods: Vec<i64> = rx
+        .slots
+        .iter()
+        .filter(|s| s.channel == near)
+        .map(|s| s.period)
+        .collect();
+    assert!(
+        periods.windows(2).all(|w| w[1] == w[0] + 1),
+        "periods of the channel that stayed: {periods:?}"
+    );
+    // The paused channel cut nothing after the retune: at most slot 0 of the
+    // grid (UTC `T0_NS`), which had completed before it.
+    let first = T0_NS / 15_000_000_000;
+    assert!(
+        rx.slots
+            .iter()
+            .all(|s| s.channel != far || s.period == first)
+    );
+    // Back to the original centre: `far` resumes with its own id.
+    let report = rx.inner.retune(CENTER);
+    assert_eq!(report.resumed, vec![far]);
+    assert_eq!(rx.inner.channel_state(far), Some(ChannelState::Active));
+}
+
+/// The clock moves between two slots by a few milliseconds, as a drifting
+/// host clock does: both slots come back, consecutive, each decoding to the
+/// recording's messages.
+fn slewing_between_slots_loses_none(kind: Channelizer) {
+    let Some(s) = scene() else {
+        common::skip_or_fail("FT8/FT4 recordings");
+        return;
+    };
+    let iq = two_slots(&s);
+    let mut rx = receiver(kind);
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
+    rx.set_time_anchor(T0_NS);
+    // Half a second of samples at a time; every reading is 2 ms further off
+    // than the last, so the clock slews at its limit throughout.
+    let half = (FS as usize) / 2;
+    let mut at = 0u64;
+    for (n, chunk) in iq.chunks(half).enumerate() {
+        rx.push_cf32(&interleave(chunk));
+        at += chunk.len() as u64;
+        let utc = T0_NS + (at as i128 * 1_000_000_000 / FS as i128) as i64 + 2_000_000 * n as i64;
+        rx.inner.set_time(utc, at);
+    }
+    let periods: Vec<i64> = rx
+        .slots
+        .iter()
+        .filter(|s| s.channel == ch)
+        .map(|s| s.period)
+        .collect();
+    assert_eq!(periods.len(), 2, "{periods:?}");
+    assert_eq!(periods[1], periods[0] + 1);
+    let rows = rx.rows();
+    for p in &periods {
+        let slot: Vec<IqDecode> = rows
+            .iter()
+            .filter(|r| r.slot_start_utc_ns == Some(*p * 15_000_000_000))
+            .cloned()
+            .collect();
+        same(
+            &set_of(&slot, ch),
+            &s.ft8_ref,
+            "a slot while slewing",
+            &known_ft8(),
+        );
+    }
+}
+
+#[test]
+fn partial_retune_direct() {
+    partial_retune_pauses_only_what_no_longer_fits(Channelizer::Direct);
+}
+#[test]
+fn partial_retune_pfb() {
+    partial_retune_pauses_only_what_no_longer_fits(Channelizer::Pfb);
+}
+#[test]
+fn slewing_direct() {
+    slewing_between_slots_loses_none(Channelizer::Direct);
+}
+#[test]
+fn slewing_pfb() {
+    slewing_between_slots_loses_none(Channelizer::Pfb);
 }
 
 // Every scene above through both paths: same recordings, same expectations.

@@ -1,5 +1,4 @@
-//! #534: `IqReceiver` on the modes that are not `DecodeRequest`-generic —
-//! WSPR, JT9, JT65 and Q65 — each a real recording placed as IQ, on a UTC
+//! #534: `IqReceiver` on WSPR, JT9, JT65 and Q65, each a real recording placed as IQ, on a UTC
 //! grid anchored so the recording starts on its slot boundary, and pulled
 //! back out through the receiver. The contract is the WAV path's own: the
 //! same messages at the same audio frequency and DT, plus the absolute
@@ -12,12 +11,11 @@
     feature = "fft-rustfft"
 ))]
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
-
 use mfsk_core::Mode;
-use mfsk_core::iq::{Channelizer, IqDecode, IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::decoder::{AnyDecoder, SlotInput};
+use mfsk_core::iq::{Channelizer, CompletedSlot, IqReceiver, IqSampleFormat, IqStream};
 use mfsk_core::msg::decoded::Decoded;
+use std::collections::BTreeMap;
 
 #[allow(dead_code)]
 mod common;
@@ -39,7 +37,7 @@ fn set(rows: impl IntoIterator<Item = Decoded>) -> Set {
 
 /// `wav` (12 kHz f32, zero-padded to `slot_s`) as IQ through a receiver with
 /// one `mode` channel; the rows it delivers.
-fn through_iq(kind: Channelizer, mode: Mode, wav: &[f32], slot_s: usize) -> Vec<IqDecode> {
+fn through_iq(kind: Channelizer, mode: Mode, wav: &[f32], slot_s: usize) -> Vec<CompletedSlot> {
     let mut pcm: Vec<i16> = wav
         .iter()
         .map(|&v| (v * 32_768.0).round().clamp(-32_768.0, 32_767.0) as i16)
@@ -50,34 +48,19 @@ fn through_iq(kind: Channelizer, mode: Mode, wav: &[f32], slot_s: usize) -> Vec<
     // slot comes out a few filter lengths after the last IQ sample.
     iq.resize(iq.len() + FS as usize / 2, (0.0, 0.0));
 
-    let mut rx = IqReceiver::with_channelizer(
-        IqStream {
-            sample_rate: FS,
-            center_hz: CENTER,
-            format: IqSampleFormat::Cf32,
-            iq_swap: false,
-        },
-        kind,
-    )
-    .unwrap();
-    let rows = Arc::new(Mutex::new(Vec::new()));
-    let sink = rows.clone();
-    rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
+    let mut rx =
+        IqReceiver::with_channelizer(IqStream::new(FS, CENTER, IqSampleFormat::Cf32), kind)
+            .unwrap();
+    let mut slots = Vec::new();
     rx.add_channel(DIAL, mode).unwrap();
-    rx.set_time_anchor(T0_NS);
+    rx.set_time(T0_NS, 0);
     for chunk in interleave(&iq).chunks(2 * 65_536) {
-        rx.push_cf32(chunk);
+        rx.push_cf32(chunk, &mut slots);
     }
-    rows.lock().unwrap().clone()
+    slots
 }
 
-fn check(
-    kind: Channelizer,
-    mode: Mode,
-    path: &str,
-    slot_s: usize,
-    reference: impl Fn(&[f32]) -> Vec<Decoded>,
-) {
+fn check(kind: Channelizer, mode: Mode, path: &str, slot_s: usize) {
     let full = format!(
         "{}/../embedded-poc/assets/{path}",
         env!("CARGO_MANIFEST_DIR")
@@ -87,11 +70,20 @@ fn check(
         return;
     };
     let wav: Vec<f32> = wav.iter().map(|&s| s as f32 / 32_768.0).collect();
-    let want = set(reference(&wav));
+    let want = set(AnyDecoder::with_defaults(mode)
+        .decode(&SlotInput::f32(&wav))
+        .rows);
     assert!(!want.is_empty(), "{mode:?}: the WAV path decoded nothing");
 
-    let rows = through_iq(kind, mode, &wav, slot_s);
-    let got = set(rows.iter().map(|r| r.decoded.clone()));
+    let slots = through_iq(kind, mode, &wav, slot_s);
+    let mut decoder = AnyDecoder::with_defaults(mode);
+    let mut rows = Vec::new();
+    for slot in &slots {
+        for d in decoder.decode(&slot.input()).rows {
+            rows.push((slot.clone(), d));
+        }
+    }
+    let got = set(rows.iter().map(|(_, d)| d.clone()));
     let missing: Vec<_> = want.keys().filter(|k| !got.contains_key(*k)).collect();
     let extra: Vec<_> = got.keys().filter(|k| !want.contains_key(*k)).collect();
     println!(
@@ -114,63 +106,23 @@ fn check(
             assert!((dt - dt2).abs() < 0.1, "{mode:?}: dt {dt} vs {dt2}");
         }
     }
-    for r in &rows {
-        assert_eq!(r.mode, mode);
-        assert!((r.abs_freq_hz - (DIAL + r.decoded.freq_hz as f64)).abs() < 1e-6);
-        assert_eq!(r.slot_start_utc_ns, Some(T0_NS));
+    for (slot, d) in &rows {
+        assert_eq!(slot.mode, mode);
+        assert!((slot.abs_freq_hz(d.freq_hz) - (DIAL + d.freq_hz as f64)).abs() < 1e-6);
+        assert_eq!(slot.utc_ns, Some(T0_NS));
     }
 }
 
 fn wspr(kind: Channelizer) {
-    check(kind, Mode::Wspr, "golden/wspr/150426_0918.wav", 120, |a| {
-        mfsk_core::wspr::DecodeRequest::new(a, 12_000)
-            .nominal_start(12_000)
-            .decode()
-            .iter()
-            .map(|r| r.to_decoded())
-            .collect()
-    });
+    check(kind, Mode::Wspr, "golden/wspr/150426_0918.wav", 120);
 }
 
 fn jt9(kind: Channelizer) {
-    check(kind, Mode::Jt9, "130418_1742.wav", 60, |a| {
-        mfsk_core::jt9::DecodeRequest::new(a, 12_000)
-            .nominal_start(0)
-            .decode()
-            .iter()
-            .map(|r| r.to_decoded())
-            .collect()
-    });
+    check(kind, Mode::Jt9, "130418_1742.wav", 60);
 }
 
 fn jt65(kind: Channelizer) {
-    check(
-        kind,
-        Mode::Jt65,
-        "golden/jt65/jt65a_5sig_m18.wav",
-        60,
-        |a| {
-            mfsk_core::jt65::DecodeRequest::new(a, 12_000)
-                .nominal_start(0)
-                .decode()
-                .iter()
-                .map(|r| r.to_decoded())
-                .collect()
-        },
-    );
-}
-
-fn q65<P: mfsk_core::q65::Q65SubMode>(a: &[f32]) -> Vec<Decoded> {
-    mfsk_core::q65::DecodeRequest::<P>::new(
-        a,
-        12_000,
-        12_000,
-        mfsk_core::q65::search::default_search_params(),
-    )
-    .decode()
-    .iter()
-    .map(|r| r.to_decoded())
-    .collect()
+    check(kind, Mode::Jt65, "golden/jt65/jt65a_5sig_m18.wav", 60);
 }
 
 fn q65_120d(kind: Channelizer) {
@@ -179,7 +131,6 @@ fn q65_120d(kind: Channelizer) {
         Mode::Q65D120,
         "golden/q65/120D_Rainscatter_10_GHz/210117_0920.wav",
         120,
-        q65::<mfsk_core::q65::Q65d120>,
     );
 }
 
@@ -189,7 +140,6 @@ fn q65_300a(kind: Channelizer) {
         Mode::Q65A300,
         "golden/q65/300A_Optical_Scatter/201210_0505.wav",
         300,
-        q65::<mfsk_core::q65::Q65a300>,
     );
 }
 

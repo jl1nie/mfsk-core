@@ -87,7 +87,7 @@ pub mod receiver;
         feature = "q65"
     )
 ))]
-pub use receiver::{ChannelId, Channelizer, IqDecode, IqReceiver};
+pub use receiver::{ChannelId, ChannelState, Channelizer, CompletedSlot, IqReceiver, RetuneReport};
 
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser, kaiser_order};
 use crate::engine::dsp::polyphase::PolyphaseResampler;
@@ -129,6 +129,7 @@ const RENORM_EVERY: usize = 1_024;
 /// The typed pushes (`push_cf32`, `push_cs16`) take the two 4- and 8-byte
 /// forms already unpacked; the 8-bit and 24-bit ones exist as byte streams
 /// only, which is what their sources produce.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IqSampleFormat {
     /// `f32` I, `f32` Q: SDR#, libairspyhf, GNU Radio, SoapySDR.
@@ -196,6 +197,7 @@ impl IqSampleFormat {
 }
 
 /// What an IQ stream is: the receiver's tuning and the sample layout.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IqStream {
     /// Complex sample rate in Hz, any integer.
@@ -208,7 +210,27 @@ pub struct IqStream {
     pub iq_swap: bool,
 }
 
+impl IqStream {
+    /// A stream of `sample_rate` complex samples per second centred on
+    /// `center_hz`, in `format`, not I/Q-swapped.
+    pub const fn new(sample_rate: u32, center_hz: f64, format: IqSampleFormat) -> Self {
+        Self {
+            sample_rate,
+            center_hz,
+            format,
+            iq_swap: false,
+        }
+    }
+
+    /// Swap I and Q (sound-card IQ is often spectrally inverted).
+    pub const fn iq_swap(mut self, swap: bool) -> Self {
+        self.iq_swap = swap;
+        self
+    }
+}
+
 /// Why an [`IqToAudio`] could not be built.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IqError {
     /// `sample_rate` below 12 kHz.
