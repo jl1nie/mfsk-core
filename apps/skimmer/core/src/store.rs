@@ -16,7 +16,7 @@ use rusqlite::{Connection, OpenFlags, params};
 
 use crate::{Decode, geo, modes, spot};
 
-const SCHEMA: &str = "
+const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS decodes (
     id      INTEGER PRIMARY KEY,
     t       INTEGER NOT NULL,   -- slot start, UTC seconds
@@ -28,17 +28,26 @@ CREATE TABLE IF NOT EXISTS decodes (
     dt      REAL    NOT NULL,
     call    TEXT,               -- the sender, when the text names one
     grid    TEXT,               -- its locator, when the text carries one
+    server  TEXT    NOT NULL DEFAULT '',  -- which SpyServer heard it
     cq      TEXT,               -- NULL: not a CQ; '': plain CQ; else DX, POTA, NA...
     text    TEXT    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS decodes_t      ON decodes (t);
-CREATE INDEX IF NOT EXISTS decodes_band_t ON decodes (band, t);
-CREATE INDEX IF NOT EXISTS decodes_call_t ON decodes (call, t) WHERE call IS NOT NULL;
 CREATE TABLE IF NOT EXISTS stations (
     call TEXT PRIMARY KEY,
     grid TEXT NOT NULL,
     seen INTEGER NOT NULL       -- UTC seconds of the message that gave it
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS servers (
+    name TEXT PRIMARY KEY,
+    grid TEXT NOT NULL            -- where it is: the origin of bearing and distance
+) WITHOUT ROWID;
+";
+
+const INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS decodes_t      ON decodes (t);
+CREATE INDEX IF NOT EXISTS decodes_band_t ON decodes (band, t);
+CREATE INDEX IF NOT EXISTS decodes_call_t ON decodes (call, t) WHERE call IS NOT NULL;
+CREATE INDEX IF NOT EXISTS decodes_server_t ON decodes (server, t);
 ";
 
 /// The amateur band a dial frequency falls in, or `other`.
@@ -81,6 +90,7 @@ pub struct Writer {
 
 struct Row {
     t: i64,
+    server: String,
     mode: &'static str,
     band: &'static str,
     dial_hz: i64,
@@ -98,14 +108,31 @@ const FLUSH_EVERY: Duration = Duration::from_secs(2);
 const FLUSH_ROWS: usize = 200;
 
 impl Writer {
-    pub fn open(path: &Path) -> rusqlite::Result<Writer> {
+    /// `servers` are `(name, locator)`: where each SpyServer is, kept in the
+    /// file so a bearing is read from the place that heard the signal.
+    pub fn open(path: &Path, servers: &[(String, String)]) -> rusqlite::Result<Writer> {
         let conn = open(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(TABLES)?;
+        // A file from before there were several servers.
+        let has_server = conn
+            .prepare("SELECT 1 FROM pragma_table_info('decodes') WHERE name = 'server'")?
+            .exists([])?;
+        if !has_server {
+            conn.execute_batch("ALTER TABLE decodes ADD COLUMN server TEXT NOT NULL DEFAULT ''")?;
+        }
+        conn.execute_batch(INDEXES)?;
+        for (name, grid) in servers {
+            conn.execute(
+                "INSERT INTO servers (name, grid) VALUES (?1, ?2)
+                 ON CONFLICT(name) DO UPDATE SET grid = excluded.grid",
+                params![name, grid],
+            )?;
+        }
         Ok(Writer {
             conn,
             pending: Vec::new(),
@@ -113,10 +140,11 @@ impl Writer {
         })
     }
 
-    pub fn push(&mut self, d: &Decode) {
+    pub fn push(&mut self, server: &str, d: &Decode) {
         let name = modes::mode_name(d.mode);
         let (call, grid) = spot::sender(name, &d.text);
         self.pending.push(Row {
+            server: server.to_string(),
             t: d.slot_utc_ns.map_or(0, |ns| ns.div_euclid(1_000_000_000)),
             mode: name,
             band: band_of(d.dial_hz),
@@ -132,6 +160,11 @@ impl Writer {
         if self.pending.len() >= FLUSH_ROWS || self.since.elapsed() >= FLUSH_EVERY {
             self.flush();
         }
+    }
+
+    #[cfg(test)]
+    fn drop_flush(&mut self) {
+        self.flush();
     }
 
     /// Write what is buffered; call now and then so a quiet band does not
@@ -151,8 +184,8 @@ impl Writer {
         let tx = self.conn.transaction()?;
         {
             let mut ins = tx.prepare_cached(
-                "INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, call, grid, cq, text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, call, grid, cq, text, server)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             let mut st = tx.prepare_cached(
                 "INSERT INTO stations (call, grid, seen) VALUES (?1, ?2, ?3)
@@ -162,7 +195,7 @@ impl Writer {
             for r in rows {
                 ins.execute(params![
                     r.t, r.mode, r.band, r.dial_hz, r.freq_hz, r.snr, r.dt, r.call, r.grid, r.cq,
-                    r.text
+                    r.text, r.server
                 ])?;
                 if let (Some(c), Some(g)) = (&r.call, &r.grid) {
                     st.execute(params![c, g, r.t])?;
@@ -189,7 +222,8 @@ pub struct Query {
     /// UTC seconds, inclusive.
     pub since: i64,
     pub until: i64,
-    /// My locator: the origin of distance and bearing.
+    /// My locator: the origin of distance and bearing for what no server's
+    /// own locator covers.
     pub me: String,
     /// Regular expressions (case-insensitive, unanchored: write `^` and `$`)
     /// on the sender's call, its locator and the message text.
@@ -198,6 +232,8 @@ pub struct Query {
     pub text: String,
     pub bands: Vec<String>,
     pub modes: Vec<String>,
+    /// Only what these servers heard; empty is all.
+    pub servers: Vec<String>,
     pub snr_min: Option<i64>,
     pub snr_max: Option<i64>,
     pub km_min: Option<f64>,
@@ -213,7 +249,11 @@ pub struct Query {
 
 /// The locator of a row: its own, else the last one its sender sent.
 const GRID: &str = "COALESCE(d.grid, s.grid)";
-const FROM: &str = "decodes d LEFT JOIN stations s ON s.call = d.call";
+const FROM: &str = "decodes d LEFT JOIN stations s ON s.call = d.call
+                    LEFT JOIN servers v ON v.name = d.server";
+/// Where a row was heard from: its server's locator, else the one asked
+/// for (one `?`).
+const ORIGIN: &str = "COALESCE(NULLIF(v.grid, ''), ?)";
 
 impl Query {
     /// `WHERE` conditions and their parameters.
@@ -261,6 +301,13 @@ impl Query {
                 None => V::from(m.clone()),
             }));
         }
+        if !self.servers.is_empty() {
+            w.push(format!(
+                "d.server IN ({})",
+                vec!["?"; self.servers.len()].join(",")
+            ));
+            p.extend(self.servers.iter().map(|x| V::from(x.clone())));
+        }
         if let Some(x) = self.snr_min {
             w.push("d.snr >= ?".into());
             p.push(x.into());
@@ -272,16 +319,16 @@ impl Query {
         let me = self.me.trim();
         if self.km_min.is_some() || self.km_max.is_some() {
             if let Some(x) = self.km_min {
-                w.push(format!("dist_km(?, {GRID}) >= ?"));
+                w.push(format!("dist_km({ORIGIN}, {GRID}) >= ?"));
                 p.extend([me.to_string().into(), x.into()]);
             }
             if let Some(x) = self.km_max {
-                w.push(format!("dist_km(?, {GRID}) <= ?"));
+                w.push(format!("dist_km({ORIGIN}, {GRID}) <= ?"));
                 p.extend([me.to_string().into(), x.into()]);
             }
         }
         if let (Some(a), Some(b)) = (self.bearing_from, self.bearing_to) {
-            w.push(format!("in_sector(?, {GRID}, ?, ?)"));
+            w.push(format!("in_sector({ORIGIN}, {GRID}, ?, ?)"));
             p.extend([me.to_string().into(), a.into(), b.into()]);
         }
         match self.cq.as_deref() {
@@ -317,6 +364,8 @@ pub struct Station {
     pub grid: Option<String>,
     /// Comma-separated bands it was heard on.
     pub bands: String,
+    /// Comma-separated servers that heard it.
+    pub servers: String,
     pub count: i64,
     pub best_snr: i64,
     pub first: i64,
@@ -330,6 +379,7 @@ pub struct Station {
 #[serde(rename_all = "camelCase")]
 pub struct Spot {
     pub t: i64,
+    pub server: String,
     pub call: Option<String>,
     pub grid: Option<String>,
     pub band: String,
@@ -400,6 +450,11 @@ fn register(conn: &Connection) -> rusqlite::Result<()> {
             .zip(pt(ctx, 1))
             .map(|(a, b)| geo::bearing_distance(a, b).1))
     })?;
+    conn.create_scalar_function("bearing_deg", 2, det, |ctx| {
+        Ok(pt(ctx, 0)
+            .zip(pt(ctx, 1))
+            .map(|(a, b)| geo::bearing_distance(a, b).0))
+    })?;
     conn.create_scalar_function("in_sector", 4, det, |ctx| {
         let (from, to): (f64, f64) = (ctx.get(2)?, ctx.get(3)?);
         Ok(pt(ctx, 0).zip(pt(ctx, 1)).map(|(a, b)| {
@@ -455,12 +510,14 @@ impl Reader {
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
-    /// The senders found, the most heard first.
+    /// The senders found, the most heard first. Bearing and distance are read
+    /// from the first (by locator) of the servers that heard the sender, or
+    /// from `me` when none has a locator.
     pub fn stations(&self, q: &Query, limit: usize) -> Result<Vec<Station>, String> {
         let (w, p) = q.sql()?;
         let sql = format!(
             "SELECT d.call, MAX({GRID}), group_concat(DISTINCT d.band), COUNT(*), MAX(d.snr),
-                    MIN(d.t), MAX(d.t)
+                    MIN(d.t), MAX(d.t), group_concat(DISTINCT d.server), MIN(NULLIF(v.grid, ''))
              FROM {FROM} WHERE {w} AND d.call IS NOT NULL
              GROUP BY d.call ORDER BY 4 DESC LIMIT {limit}"
         );
@@ -468,11 +525,14 @@ impl Reader {
         let rows = st
             .query_map(rusqlite::params_from_iter(p), |r| {
                 let grid: Option<String> = r.get(1)?;
-                let (bearing, km) = Self::bearing_km(&q.me, grid.as_deref());
+                let from: Option<String> = r.get(8)?;
+                let (bearing, km) =
+                    Self::bearing_km(from.as_deref().unwrap_or(&q.me), grid.as_deref());
                 Ok(Station {
                     call: r.get(0)?,
                     grid,
                     bands: r.get(2)?,
+                    servers: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
                     count: r.get(3)?,
                     best_snr: r.get(4)?,
                     first: r.get(5)?,
@@ -485,22 +545,26 @@ impl Reader {
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
-    /// The decodes found, newest first.
+    /// The decodes found, newest first, with bearing and distance from the
+    /// server that heard each.
     pub fn decodes(&self, q: &Query, limit: usize) -> Result<Vec<Spot>, String> {
-        let (w, p) = q.sql()?;
+        let (w, mut wp) = q.sql()?;
+        let me = q.me.trim().to_string();
         let sql = format!(
-            "SELECT d.t, d.call, {GRID}, d.band, d.mode, d.freq_hz - d.dial_hz, d.snr, d.dt, d.cq, d.text
+            "SELECT d.t, d.call, {GRID}, d.band, d.mode, d.freq_hz - d.dial_hz, d.snr, d.dt, d.cq, d.text,
+                    d.server, bearing_deg({ORIGIN}, {GRID}), dist_km({ORIGIN}, {GRID})
              FROM {FROM} WHERE {w} ORDER BY d.t DESC LIMIT {limit}"
         );
+        // The two origins in the select list come before the WHERE's parameters.
+        let mut p: Vec<rusqlite::types::Value> = vec![me.clone().into(), me.into()];
+        p.append(&mut wp);
         let mut st = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = st
             .query_map(rusqlite::params_from_iter(p), |r| {
-                let grid: Option<String> = r.get(2)?;
-                let (bearing, km) = Self::bearing_km(&q.me, grid.as_deref());
                 Ok(Spot {
                     t: r.get(0)?,
                     call: r.get(1)?,
-                    grid,
+                    grid: r.get(2)?,
                     band: r.get(3)?,
                     mode: r.get(4)?,
                     audio_hz: r.get(5)?,
@@ -508,8 +572,9 @@ impl Reader {
                     dt: r.get(7)?,
                     cq: r.get(8)?,
                     text: r.get(9)?,
-                    bearing,
-                    km,
+                    server: r.get(10)?,
+                    bearing: r.get(11)?,
+                    km: r.get(12)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -687,12 +752,12 @@ mod tests {
     #[test]
     fn stored_and_queried_while_the_writer_is_open() {
         let p = db();
-        let mut w = Writer::open(&p).unwrap();
+        let mut w = Writer::open(&p, &[]).unwrap();
         let h = 1_700_000_000 / 3600 * 3600;
-        w.push(&decode(h, 14.074e6, -10.0, "CQ K1ABC FN42"));
-        w.push(&decode(h + 15, 14.074e6, -5.0, "JA1XYZ K1ABC -07"));
-        w.push(&decode(h + 3600, 14.074e6, -12.0, "CQ K1ABC"));
-        w.push(&decode(h + 30, 7.074e6, -20.0, "CQ DX W9XYZ EN34"));
+        w.push("", &decode(h, 14.074e6, -10.0, "CQ K1ABC FN42"));
+        w.push("", &decode(h + 15, 14.074e6, -5.0, "JA1XYZ K1ABC -07"));
+        w.push("", &decode(h + 3600, 14.074e6, -12.0, "CQ K1ABC"));
+        w.push("", &decode(h + 30, 7.074e6, -20.0, "CQ DX W9XYZ EN34"));
         w.flush();
         // The writer still holds the file open: WAL lets a reader in.
         let r = Reader::open(&p).unwrap();
@@ -795,8 +860,8 @@ mod tests {
     fn unflushed_rows_are_written_on_drop() {
         let p = db();
         {
-            let mut w = Writer::open(&p).unwrap();
-            w.push(&decode(1_700_000_000, 14.074e6, -10.0, "CQ K1ABC FN42"));
+            let mut w = Writer::open(&p, &[]).unwrap();
+            w.push("", &decode(1_700_000_000, 14.074e6, -10.0, "CQ K1ABC FN42"));
         }
         assert_eq!(Reader::open(&p).unwrap().span().unwrap().2, 1);
         let _ = std::fs::remove_file(&p);
@@ -813,5 +878,99 @@ mod tests {
         assert_eq!((q.snr_min, q.snr_max), (None, Some(-20)));
         assert_eq!((q.bearing_from, q.bearing_to), (Some(300.0), Some(60.0)));
         assert_eq!(q.modes, vec!["FT8".to_string()]);
+    }
+
+    /// Two servers in different places: a bearing is read from the place that
+    /// heard the signal, and a query can name the server.
+    #[test]
+    fn bearings_come_from_the_server_that_heard() {
+        let p = db();
+        let servers = [
+            ("tokyo".to_string(), "PM95".to_string()),
+            ("boston".to_string(), "FN42".to_string()),
+        ];
+        let mut w = Writer::open(&p, &servers).unwrap();
+        let h = 1_700_000_000 / 3600 * 3600;
+        // JA1XYZ (PM95) heard from both; from Tokyo it is local, from Boston
+        // it is to the north-west across the pole.
+        w.push("tokyo", &decode(h, 14.074e6, -5.0, "CQ JA1XYZ PM95"));
+        w.push("boston", &decode(h + 15, 14.074e6, -15.0, "CQ JA1XYZ PM95"));
+        w.drop_flush();
+        let r = Reader::open(&p).unwrap();
+        let q = |f: &dyn Fn(&mut Query)| {
+            let mut x = Query {
+                since: h,
+                until: h + 600,
+                ..Query::default()
+            };
+            f(&mut x);
+            r.summary(&x).unwrap().decodes
+        };
+        assert_eq!(q(&|_| {}), 2);
+        assert_eq!(q(&|x| x.servers = vec!["boston".into()]), 1);
+        // Within 500 km of where it was heard: only Tokyo's.
+        assert_eq!(q(&|x| x.km_max = Some(500.0)), 1);
+        assert_eq!(q(&|x| x.km_min = Some(5_000.0)), 1);
+        let spots = r
+            .decodes(
+                &Query {
+                    since: h,
+                    until: h + 600,
+                    ..Query::default()
+                },
+                10,
+            )
+            .unwrap();
+        let by = |name: &str| spots.iter().find(|s| s.server == name).unwrap();
+        assert!(by("tokyo").km.unwrap() < 100.0);
+        assert!(by("boston").km.unwrap() > 9_000.0);
+        let st = r
+            .stations(
+                &Query {
+                    since: h,
+                    until: h + 600,
+                    ..Query::default()
+                },
+                10,
+            )
+            .unwrap();
+        assert_eq!(st[0].servers.split(',').count(), 2);
+        drop(w);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A file written before there were several servers gains the column.
+    #[test]
+    fn an_old_file_is_upgraded() {
+        let p = db();
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE decodes (id INTEGER PRIMARY KEY, t INTEGER NOT NULL, mode TEXT NOT NULL,
+                  band TEXT NOT NULL, dial_hz INTEGER NOT NULL, freq_hz INTEGER NOT NULL, snr INTEGER NOT NULL,
+                  dt REAL NOT NULL, call TEXT, grid TEXT, cq TEXT, text TEXT NOT NULL);
+                 INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, text)
+                  VALUES (1700000000, 'FT8', '20m', 14074000, 14075500, -5, 0.1, 'CQ K1ABC FN42');",
+            )
+            .unwrap();
+        }
+        let mut w = Writer::open(&p, &[]).unwrap();
+        w.push("a", &decode(1_700_000_015, 14.074e6, -7.0, "CQ K1ABC FN42"));
+        w.drop_flush();
+        let r = Reader::open(&p).unwrap();
+        assert_eq!(r.span().unwrap().2, 2);
+        let q = Query {
+            since: 0,
+            until: 2_000_000_000,
+            servers: vec![String::new()],
+            ..Query::default()
+        };
+        assert_eq!(
+            r.summary(&q).unwrap().decodes,
+            1,
+            "the old row has no server"
+        );
+        drop(w);
+        let _ = std::fs::remove_file(&p);
     }
 }
