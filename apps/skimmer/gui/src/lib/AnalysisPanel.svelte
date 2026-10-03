@@ -6,15 +6,15 @@
   import QueryBar from './QueryBar.svelte';
   import MapView from './MapView.svelte';
   import ResultsView from './ResultsView.svelte';
-  import ClockView from './ClockView.svelte';
+  import DatabaseView from './DatabaseView.svelte';
 
   let { dir, me }: { dir: string; me: string } = $props();
 
-  type Tab = 'map' | 'results' | 'clock';
+  type Tab = 'map' | 'results' | 'database';
   const TABS: [Tab, string][] = [
     ['map', 'Map'],
     ['results', 'Results'],
-    ['clock', 'Clock'],
+    ['database', 'Database'],
   ];
   const KEY = 'skimmer.analysis';
 
@@ -144,7 +144,7 @@
     {:else if tab === 'results'}
       <ResultsView {dir} {q} {activity} {nowMs} me={mapMe} bind:picked />
     {:else}
-      <ClockView {dir} since={q.since} until={q.until} />
+      <DatabaseView {dir} {q} onchanged={apply} />
     {/if}
   </div>
 </section>

@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The main window: listen to the skimmer's events and call its commands, and pick the log folder.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-confirm"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-confirm", "dialog:allow-save"]
 }

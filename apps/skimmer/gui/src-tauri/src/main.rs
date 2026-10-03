@@ -843,6 +843,16 @@ fn set_server_enabled(state: State<'_, AppState>, server: usize, on: bool) {
     }
 }
 
+/// Move a server's rotation to the next (`1`) or the previous (`-1`) band now.
+#[tauri::command]
+fn rotate_band(state: State<'_, AppState>, server: usize, by: i32) {
+    if let Some(r) = state.running.lock().unwrap().as_ref()
+        && let Some(s) = r.server(server)
+    {
+        s.live.skip(by);
+    }
+}
+
 /// Hold a server's rotation on the band it is on (or let it go on).
 #[tauri::command]
 fn set_hold(state: State<'_, AppState>, server: usize, hold: bool) {
@@ -1103,9 +1113,50 @@ fn db_summary(dir: String, q: store::Query) -> Result<store::Summary, String> {
     reader(&dir)?.summary(&q)
 }
 
+fn db_file(dir: &str) -> PathBuf {
+    PathBuf::from(dir).join(DB_FILE)
+}
+
+/// What the database holds and how big it is.
 #[tauri::command]
-fn db_dt(dir: String, bucket_s: i64, since: i64, until: i64) -> Result<Vec<store::DtPoint>, String> {
-    reader(&dir)?.dt_median(bucket_s, since, until).map_err(|e| e.to_string())
+fn db_info(dir: String) -> Result<store::DbInfo, String> {
+    store::info(&db_file(&dir))
+}
+
+/// Decodes older than `before` (UTC seconds), of one server or all.
+#[tauri::command]
+fn db_count_before(dir: String, before: i64, server: Option<String>) -> Result<i64, String> {
+    store::count_before(&db_file(&dir), before, server.as_deref())
+}
+
+/// Delete decodes older than `before`; returns how many.
+#[tauri::command]
+async fn db_delete_before(dir: String, before: i64, server: Option<String>) -> Result<i64, String> {
+    store::delete_before(&db_file(&dir), before, server.as_deref())
+}
+
+/// Delete everything one server heard.
+#[tauri::command]
+async fn db_delete_server(dir: String, server: String) -> Result<i64, String> {
+    store::delete_server(&db_file(&dir), &server)
+}
+
+/// Give the free space back and compact the file. Async: it can take a while.
+#[tauri::command]
+async fn db_vacuum(dir: String) -> Result<(), String> {
+    store::vacuum(&db_file(&dir))
+}
+
+/// A compact copy of the database at `dest`, while it records.
+#[tauri::command]
+async fn db_backup(dir: String, dest: String) -> Result<(), String> {
+    store::backup(&db_file(&dir), &PathBuf::from(dest))
+}
+
+/// The decodes a query finds, as CSV at `dest`; returns the rows written.
+#[tauri::command]
+async fn db_export_csv(dir: String, q: store::Query, dest: String) -> Result<i64, String> {
+    store::export_csv(&db_file(&dir), &q, &PathBuf::from(dest))
 }
 
 /// First and last decode (UTC seconds) and the number of rows stored.
@@ -1135,6 +1186,7 @@ fn main() {
             set_station,
             set_network_delay,
             set_hold,
+            rotate_band,
             set_server_enabled,
             db_activity,
             db_stations,
@@ -1144,8 +1196,14 @@ fn main() {
             db_bands,
             db_servers,
             db_snr_hist,
-            db_dt,
             db_span,
+            db_info,
+            db_count_before,
+            db_delete_before,
+            db_delete_server,
+            db_vacuum,
+            db_backup,
+            db_export_csv,
             set_gain,
             radio_state,
             set_waterfall,

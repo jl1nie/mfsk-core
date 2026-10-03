@@ -728,6 +728,7 @@
         {sel}
         {rotationInfo}
         onhold={toggleHold}
+        onmove={(server, by) => api.rotateBand(server, by)}
         {modes}
         {slotS}
         {now}

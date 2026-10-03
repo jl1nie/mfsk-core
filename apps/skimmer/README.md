@@ -183,6 +183,8 @@ until one opens.
 Pressing a server's button (in the header, or its tab above the waterfall) while it
 is the chosen one **holds** its rotation on the band it is on, with no retune; press
 it again to let it go on, at the step the clock says. The button shows ⏸ while held.
+‹ and › beside it move to the previous or next band at once, even in the middle of a
+turn; the band moved to gets its whole turn from that moment.
 
 The database records which server heard each decode and where that server is,
 so Analysis can filter by server, centre the map on any of them, and measure

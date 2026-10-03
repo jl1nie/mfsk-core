@@ -119,6 +119,11 @@ pub struct LiveOptions {
     hold: std::sync::atomic::AtomicBool,
     /// The server is switched off ([`LiveOptions::set_enabled`]).
     disabled: std::sync::atomic::AtomicBool,
+    /// Moves of the rotation asked for and not yet made (`+1` next band,
+    /// `-1` the one before); see [`LiveOptions::skip`].
+    skip: std::sync::atomic::AtomicI32,
+    /// UTC second at which a forced move began the cycle (0: none).
+    forced_base: std::sync::atomic::AtomicI64,
     /// What a channel keeps while its band is not being listened to (a
     /// rotation): its decoder, with the callsign table.
     bank: std::sync::Mutex<Bank>,
@@ -207,6 +212,17 @@ impl LiveOptions {
 
     fn network_delay_ns(&self) -> i64 {
         self.network_delay_ns.load(Ordering::Acquire)
+    }
+
+    /// Move the rotation to the next band (`1`) or the one before (`-1`) now,
+    /// without waiting for the turn to end; the new band gets its whole turn
+    /// from this moment. Held, it stays held on the new band.
+    pub fn skip(&self, by: i32) {
+        self.skip.fetch_add(by, Ordering::AcqRel);
+    }
+
+    fn skip_pending(&self) -> bool {
+        self.skip.load(Ordering::Acquire) != 0
     }
 
     /// Switch this server off (`false`: its connection is closed and nothing is
@@ -531,6 +547,10 @@ impl Config {
         let total: i64 = within.iter().map(|&i| len(i)).sum();
         let origin = self.rotation_origin.unwrap_or(day);
         let base = last_edge.map_or(origin, |e| origin.max(e));
+        // A forced move began the cycle at a later time; the next change of
+        // hours begins it again.
+        let forced = self.live.forced_base.load(Ordering::Acquire);
+        let base = if forced > base { forced } else { base };
         // Before the base (a clock stepped back): the first step.
         let mut at = (utc_s - base).max(0) % total;
         for &i in &within {
@@ -540,6 +560,26 @@ impl Config {
             at -= len(i);
         }
         None
+    }
+
+    /// A forced move: the step `by` places from `from` among the steps that are
+    /// in now, and the base from which the cycle puts that step first, so that it
+    /// runs its whole turn from `utc_s`.
+    fn force_step(&self, utc_s: i64, from: Option<usize>, by: i32) -> Option<(usize, i64)> {
+        let sod = (utc_s.rem_euclid(86_400)) as u32;
+        let within: Vec<usize> = (0..self.steps.len())
+            .filter(|&i| self.steps[i].is_in(sod))
+            .collect();
+        if within.is_empty() {
+            return None;
+        }
+        let n = within.len() as i32;
+        let at = from
+            .and_then(|f| within.iter().position(|&i| i == f))
+            .unwrap_or(0) as i32;
+        let to = (at + by).rem_euclid(n) as usize;
+        let before: i64 = within[..to].iter().map(|&i| self.step_seconds(i)).sum();
+        Some((within[to], utc_s - before))
     }
 
     /// Which channels the rotation wants now, and the step (if any) and when it ends.
@@ -754,7 +794,7 @@ pub fn all_txt_line(d: &Decode) -> String {
 
 /// Days since 1970-01-01 to (year, month, day), proleptic Gregorian
 /// (Howard Hinnant's `civil_from_days`).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -953,6 +993,17 @@ fn session(
         // client without it cannot tune the device or write the gain.
         let tune = sync.can_control && (cfg.tune || !cfg.yield_control);
         let now_s = clock::now_ns().div_euclid(1_000_000_000);
+        // Moves asked for: the step that many places on, with its whole turn from now.
+        let moves = cfg.live.skip.swap(0, Ordering::AcqRel);
+        if moves != 0 && !cfg.steps.is_empty() {
+            let from = held_step.or(last_step).flatten();
+            if let Some((to, base)) = cfg.force_step(now_s, from, moves) {
+                cfg.live.forced_base.store(base, Ordering::Release);
+                if held_step.is_some() {
+                    held_step = Some(Some(to));
+                }
+            }
+        }
         // Held: stay on the step being heard, whatever the clock says.
         let held = cfg.live.held() && !cfg.steps.is_empty();
         if !held {
@@ -1435,6 +1486,10 @@ fn stream_inner(
             Err(e) if is_stop(&e) => return Ok(StreamEnd::Stopped),
             Err(e) => return Err(e),
         };
+        if !cfg.steps.is_empty() && cfg.live.skip_pending() {
+            settle(live, on_event);
+            return Ok(StreamEnd::StepDone);
+        }
         if !cfg.steps.is_empty() && cfg.live.held() != hold_seen {
             hold_seen = !hold_seen;
             if hold_seen {
@@ -1788,6 +1843,29 @@ mod tests {
         // The next change after 03:00-05:00 is 21:00; after 21:00-22:00, 03:00 next day.
         assert_eq!(c.step_at(DAY + 12 * H), Some((None, DAY + 21 * H)));
         assert_eq!(c.step_at(DAY + 22 * H), Some((None, DAY + 27 * H)));
+    }
+
+    /// A forced move puts the next (or previous) band first, for its whole turn
+    /// from now, whatever was left of the one before; the hours still end it.
+    #[test]
+    fn a_forced_move_restarts_the_timer_on_the_next_band() {
+        let c = rotating(); // 20 m, 40 m, 80 m: 10, 10, 5 minutes
+        let now = DAY + 3 * H + 2 * 60 + 17; // 03:02:17, in the first band's turn
+        let (to, base) = c.force_step(now, Some(0), 1).unwrap();
+        assert_eq!(to, 1);
+        c.live.forced_base.store(base, Ordering::Release);
+        // The second band now has its whole 10 minutes from this moment.
+        assert_eq!(c.step_at(now), Some((Some(1), now + 600)));
+        assert_eq!(c.step_at(now + 599), Some((Some(1), now + 600)));
+        assert_eq!(c.step_at(now + 600), Some((Some(2), now + 900)));
+        // Back, from the second: the first, whole again.
+        let (to, base) = c.force_step(now + 100, Some(1), -1).unwrap();
+        c.live.forced_base.store(base, Ordering::Release);
+        assert_eq!(to, 0);
+        assert_eq!(c.step_at(now + 100), Some((Some(0), now + 700)));
+        // Before the first, the last (wraps).
+        let (to, _) = c.force_step(now, Some(0), -1).unwrap();
+        assert_eq!(to, 2);
     }
 
     /// Nothing is in for a stretch: the rotation says so, and when it ends.

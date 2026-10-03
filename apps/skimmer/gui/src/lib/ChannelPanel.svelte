@@ -8,6 +8,7 @@
     sel,
     rotationInfo,
     onhold,
+    onmove,
     modes,
     slotS,
     now,
@@ -26,6 +27,8 @@
     rotationInfo: (server: number) => { band: string; left: string; held: boolean } | null;
     /** Hold (or release) a server's rotation. */
     onhold: (server: number) => void;
+    /** Move a server's rotation to the next (1) or the previous (-1) band now. */
+    onmove: (server: number, by: number) => void;
     modes: ModeInfo[];
     /** Slot length in seconds by mode name. */
     slotS: Record<string, number>;
@@ -161,12 +164,10 @@
     eError = '';
   }
 
+  /** The decodes of the latest slot this channel was heard in; kept, greyed, while it is not heard. */
   function channelState(i: number): string {
     if (active.length === 0) return '';
-    if (active[i]) return `${slotCounts[i] ?? 0}`;
-    // In a rotation a channel out of its step is waiting for it, not out of band.
-    const sv = servers[channels[i].server ?? 0];
-    return sv?.rotate && sv.rotation.length ? 'later' : 'paused';
+    return `${slotCounts[i] ?? 0}`;
   }
 
   /** Where the current slot of a mode is: fraction elapsed, seconds left, start (UTC hhmmss). */
@@ -302,6 +303,8 @@
           <h3 class="srvhead" class:sel={si === sel} class:off={!sv.enabled}>{sv.name}{sv.enabled ? '' : ' · off'}</h3>
         {/if}
         {#if rot}
+          <span class="rotgroup">
+          <button type="button" class="step" title="Previous band now (its whole turn starts)" aria-label="Previous band" onclick={() => onmove(si, -1)}>‹</button>
           <button
             type="button"
             class="rot"
@@ -315,6 +318,8 @@
             <b>{rot.band}</b>
             <span class="time">{rot.held ? 'held' : rot.left}</span>
           </button>
+          <button type="button" class="step" title="Next band now (its whole turn starts)" aria-label="Next band" onclick={() => onmove(si, 1)}>›</button>
+          </span>
         {/if}
       </div>
     {/if}
@@ -337,7 +342,7 @@
                 : `Slot ${s.start} UTC (${s.periodS} s slots): ${s.left} s to the next boundary, then this slot is decoded`}
             ></span>
           {/if}
-          <span class="count" title="Decodes in the latest slot; paused: outside the radio's band; later: heard when its band's turn in the rotation comes">{channelState(i)}</span>
+          <span class="count" title="Decodes in the latest slot it was heard in (grey: not heard now, outside the radio's band or out of its turn in the rotation)">{channelState(i)}</span>
           <button
             class="link gear"
             class:set={optionSummary(c) !== ''}

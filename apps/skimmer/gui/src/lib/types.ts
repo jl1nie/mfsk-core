@@ -262,8 +262,16 @@ export interface Summary {
   stations: number;
 }
 
-export interface DtPoint {
-  t: number;
-  medianS: number;
-  n: number;
+/** What the database holds and how big it is. */
+export interface DbInfo {
+  path: string;
+  bytes: number;
+  walBytes: number;
+  reclaimable: number;
+  decodes: number;
+  stations: number;
+  first: number | null;
+  last: number | null;
+  /** [server, decodes]; the legacy single server is "". */
+  servers: [string, number][];
 }

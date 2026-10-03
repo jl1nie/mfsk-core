@@ -407,15 +407,6 @@ pub struct Point {
     pub snr: i64,
 }
 
-/// The median DT of the strong stations in one bucket of time.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DtPoint {
-    pub t: i64,
-    pub median_s: f64,
-    pub n: i64,
-}
-
 /// What a query found, in numbers.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -638,52 +629,6 @@ impl Reader {
             .map_err(|e| e.to_string())
     }
 
-    /// Median DT per `bucket_s` of the stations at least `-12 dB` strong.
-    /// Every station's DT carries its own clock error, so the median of many
-    /// is the skimmer's: it moves when the clock or the network delay does.
-    pub fn dt_median(
-        &self,
-        bucket_s: i64,
-        since: i64,
-        until: i64,
-    ) -> rusqlite::Result<Vec<DtPoint>> {
-        let b = bucket_s.max(1);
-        let mut q = self.conn.prepare_cached(
-            "SELECT t / ?1, dt FROM decodes
-             WHERE t BETWEEN ?2 AND ?3 AND mode IN ('FT8', 'FT4') AND snr >= -12
-             ORDER BY t",
-        )?;
-        let mut out: Vec<DtPoint> = Vec::new();
-        let mut cur: Option<i64> = None;
-        let mut vals: Vec<f64> = Vec::new();
-        let flush = |k: i64, v: &mut Vec<f64>, out: &mut Vec<DtPoint>| {
-            if v.len() >= 5 {
-                v.sort_by(f64::total_cmp);
-                out.push(DtPoint {
-                    t: k * b,
-                    median_s: v[v.len() / 2],
-                    n: v.len() as i64,
-                });
-            }
-            v.clear();
-        };
-        let mut rows = q.query(params![b, since, until])?;
-        while let Some(r) = rows.next()? {
-            let (k, dt): (i64, f64) = (r.get(0)?, r.get(1)?);
-            if cur != Some(k) {
-                if let Some(c) = cur {
-                    flush(c, &mut vals, &mut out);
-                }
-                cur = Some(k);
-            }
-            vals.push(dt);
-        }
-        if let Some(c) = cur {
-            flush(c, &mut vals, &mut out);
-        }
-        Ok(out)
-    }
-
     /// The servers there are decodes from, with their locators (empty when
     /// the file has none): the legacy single server is named `""`.
     pub fn servers(&self) -> rusqlite::Result<Vec<(String, String)>> {
@@ -711,6 +656,218 @@ impl Reader {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Looking after the file: what is in it, clearing out, a copy, a CSV.
+// ---------------------------------------------------------------------------
+
+/// What the file holds and how big it is.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbInfo {
+    pub path: String,
+    /// The main file and its write-ahead log, bytes.
+    pub bytes: u64,
+    pub wal_bytes: u64,
+    /// Bytes the file could shrink by (free pages); `VACUUM` returns them.
+    pub reclaimable: u64,
+    pub decodes: i64,
+    pub stations: i64,
+    pub first: Option<i64>,
+    pub last: Option<i64>,
+    /// `(server, decodes)`; the legacy single server is `""`.
+    pub servers: Vec<(String, i64)>,
+}
+
+fn rw(path: &Path) -> Result<Connection, String> {
+    let c = open(path, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|e| e.to_string())?;
+    // The skimmer may be recording: wait for it rather than fail at once.
+    c.busy_timeout(Duration::from_secs(20))
+        .map_err(|e| e.to_string())?;
+    Ok(c)
+}
+
+pub fn info(path: &Path) -> Result<DbInfo, String> {
+    let c = open(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    let one = |sql: &str| -> rusqlite::Result<i64> { c.query_row(sql, [], |r| r.get(0)) };
+    let (first, last): (Option<i64>, Option<i64>) = c
+        .query_row("SELECT MIN(t), MAX(t) FROM decodes", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut q = c
+        .prepare("SELECT server, COUNT(*) FROM decodes GROUP BY server ORDER BY 2 DESC")
+        .map_err(|e| e.to_string())?;
+    let servers = q
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let page = one("PRAGMA page_size").map_err(|e| e.to_string())?;
+    let free = one("PRAGMA freelist_count").map_err(|e| e.to_string())?;
+    let wal = std::fs::metadata(format!("{}-wal", path.display())).map_or(0, |m| m.len());
+    Ok(DbInfo {
+        path: path.display().to_string(),
+        bytes: std::fs::metadata(path).map_or(0, |m| m.len()),
+        wal_bytes: wal,
+        reclaimable: (page * free) as u64,
+        decodes: one("SELECT COUNT(*) FROM decodes").map_err(|e| e.to_string())?,
+        stations: one("SELECT COUNT(*) FROM stations").map_err(|e| e.to_string())?,
+        first,
+        last,
+        servers,
+    })
+}
+
+/// How many decodes are older than `before` (UTC seconds), optionally of one server.
+pub fn count_before(path: &Path, before: i64, server: Option<&str>) -> Result<i64, String> {
+    let c = open(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    c.query_row(
+        "SELECT COUNT(*) FROM decodes WHERE t < ?1 AND (?2 IS NULL OR server = ?2)",
+        params![before, server],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Delete the decodes older than `before` (UTC seconds), optionally of one
+/// server only; the locators learned before then go too. Returns the number
+/// of decodes removed. The space is returned to the system by [`vacuum`].
+pub fn delete_before(path: &Path, before: i64, server: Option<&str>) -> Result<i64, String> {
+    let mut c = rw(path)?;
+    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let n = tx
+        .execute(
+            "DELETE FROM decodes WHERE t < ?1 AND (?2 IS NULL OR server = ?2)",
+            params![before, server],
+        )
+        .map_err(|e| e.to_string())?;
+    if server.is_none() {
+        tx.execute("DELETE FROM stations WHERE seen < ?1", params![before])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(n as i64)
+}
+
+/// Delete everything one server heard, and its entry.
+pub fn delete_server(path: &Path, server: &str) -> Result<i64, String> {
+    let mut c = rw(path)?;
+    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let n = tx
+        .execute("DELETE FROM decodes WHERE server = ?1", params![server])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM servers WHERE name = ?1", params![server])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(n as i64)
+}
+
+/// Return the free space to the system: the log is folded into the file and the
+/// file rewritten compactly. Needs the file to itself for a moment; with the
+/// skimmer recording it waits up to twenty seconds, then says so.
+pub fn vacuum(path: &Path) -> Result<(), String> {
+    let c = rw(path)?;
+    c.pragma_update(None, "wal_checkpoint", "TRUNCATE")
+        .map_err(|e| e.to_string())?;
+    c.execute_batch("VACUUM").map_err(|e| {
+        if e.to_string().contains("locked") || e.to_string().contains("busy") {
+            "the database is in use; disconnect the skimmer and try again".to_string()
+        } else {
+            e.to_string()
+        }
+    })
+}
+
+/// A compact, consistent copy of the whole file at `dest`, made while the
+/// skimmer records.
+pub fn backup(path: &Path, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        return Err(format!("{} exists already", dest.display()));
+    }
+    let c = open(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    c.execute("VACUUM INTO ?1", params![dest.display().to_string()])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// The decodes a query finds, as CSV at `dest`, oldest first. Returns the rows written.
+pub fn export_csv(path: &Path, q: &Query, dest: &Path) -> Result<i64, String> {
+    use std::io::Write;
+    let r = Reader::open(path).map_err(|e| e.to_string())?;
+    let (w, mut wp) = q.sql()?;
+    let me = q.me.trim().to_string();
+    let sql = format!(
+        "SELECT d.t, d.server, d.call, {GRID}, d.band, d.mode, d.dial_hz, d.freq_hz - d.dial_hz,
+                d.snr, d.dt, d.cq, d.text, bearing_deg({ORIGIN}, {GRID}), dist_km({ORIGIN}, {GRID})
+         FROM {FROM} WHERE {w} ORDER BY d.t"
+    );
+    let mut p: Vec<rusqlite::types::Value> = vec![me.clone().into(), me.into()];
+    p.append(&mut wp);
+    let mut st = r.conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut out = std::io::BufWriter::new(
+        std::fs::File::create(dest).map_err(|e| format!("{}: {e}", dest.display()))?,
+    );
+    writeln!(
+        out,
+        "utc,server,call,grid,band,mode,dial_hz,audio_hz,snr_db,dt_s,cq,message,bearing_deg,distance_km"
+    )
+    .map_err(|e| e.to_string())?;
+    let mut rows = st
+        .query(rusqlite::params_from_iter(p))
+        .map_err(|e| e.to_string())?;
+    let mut n = 0;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let t: i64 = row.get(0).map_err(|e| e.to_string())?;
+        let (days, sod) = (t.div_euclid(86_400), t.rem_euclid(86_400));
+        let (y, m, d) = crate::civil_from_days(days);
+        let text = |i: usize| -> String {
+            row.get::<_, Option<String>>(i)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        };
+        let num = |i: usize| -> String {
+            row.get::<_, Option<f64>>(i)
+                .ok()
+                .flatten()
+                .map_or(String::new(), |v| format!("{v:.1}"))
+        };
+        let int = |i: usize| -> i64 { row.get::<_, Option<i64>>(i).ok().flatten().unwrap_or(0) };
+        writeln!(
+            out,
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z,{},{},{},{},{},{},{},{},{:.1},{},{},{},{}",
+            sod / 3600,
+            sod / 60 % 60,
+            sod % 60,
+            csv_field(&text(1)),
+            csv_field(&text(2)),
+            csv_field(&text(3)),
+            csv_field(&text(4)),
+            csv_field(&text(5)),
+            int(6),
+            int(7),
+            int(8),
+            row.get::<_, f64>(9).unwrap_or(0.0),
+            csv_field(&text(10)),
+            csv_field(&text(11)),
+            num(12),
+            num(13)
+        )
+        .map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    out.flush().map_err(|e| e.to_string())?;
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -983,6 +1140,66 @@ mod tests {
             "the old row has no server"
         );
         drop(w);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn looking_after_the_file() {
+        let p = db();
+        let mut w = Writer::open(&p, &[("a".to_string(), "PM95".to_string())]).unwrap();
+        let h = 1_700_000_000 / 3600 * 3600;
+        w.push("a", &decode(h, 14.074e6, -5.0, "CQ K1ABC FN42"));
+        w.push("a", &decode(h + 7200, 14.074e6, -7.0, "CQ \"W9XYZ\", EN34"));
+        w.push("b", &decode(h + 7215, 14.074e6, -9.0, "CQ JA1XYZ PM95"));
+        w.flush();
+        drop(w);
+
+        let i = info(&p).unwrap();
+        assert_eq!(
+            (i.decodes, i.stations),
+            (3, 2),
+            "the quoted call is not a call"
+        );
+        assert_eq!(i.servers.len(), 2);
+        assert_eq!(count_before(&p, h + 3600, None).unwrap(), 1);
+        assert_eq!(count_before(&p, h + 3600, Some("b")).unwrap(), 0);
+
+        // A CSV of the query, with a comma and quotes in a message.
+        let dest = p.with_extension("csv");
+        let q = Query {
+            since: h,
+            until: h + 8000,
+            me: "PM95".into(),
+            ..Query::default()
+        };
+        assert_eq!(export_csv(&p, &q, &dest).unwrap(), 3);
+        let text = std::fs::read_to_string(&dest).unwrap();
+        assert!(text.starts_with("utc,server,call"), "{text}");
+        assert!(text.contains("\"CQ \"\"W9XYZ\"\", EN34\""), "{text}");
+        assert!(text.contains(",K1ABC,FN42,20m,FT8,"), "{text}");
+        let _ = std::fs::remove_file(&dest);
+
+        // A copy while the file is in use, then clearing out and compacting.
+        let copy = p.with_extension("copy.db");
+        let _ = std::fs::remove_file(&copy);
+        backup(&p, &copy).unwrap();
+        assert!(
+            backup(&p, &copy).is_err(),
+            "never over a file that is there"
+        );
+        assert_eq!(Reader::open(&copy).unwrap().span().unwrap().2, 3);
+        assert_eq!(delete_before(&p, h + 3600, None).unwrap(), 1);
+        assert_eq!(delete_server(&p, "b").unwrap(), 1);
+        vacuum(&p).unwrap();
+        assert_eq!(info(&p).unwrap().decodes, 1);
+        assert_eq!(
+            Reader::open(&copy).unwrap().span().unwrap().2,
+            3,
+            "the copy is untouched"
+        );
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", copy.display()));
+        }
         let _ = std::fs::remove_file(&p);
     }
 }

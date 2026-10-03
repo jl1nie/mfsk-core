@@ -669,3 +669,19 @@ button.danger {
   background: #d9822b;
   color: #fff;
 }
+
+.rotgroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.rotgroup .rot {
+  margin-left: 0;
+}
+.rotgroup .step {
+  padding: 0 7px;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 18px;
+}

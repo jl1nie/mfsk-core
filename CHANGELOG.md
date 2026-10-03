@@ -83,12 +83,14 @@
   band and call; ALL.TXT is off by default) records each decode with its sender, locator, CQ kind and the server that
   heard it. An Analysis view runs one query (UTC period, regexes on call, locator and text, band, mode, server, SNR,
   distance, bearing sector, CQ kind) over a great-circle or Mercator map that animates in a chosen window, the
-  openings of the bands, a per-station hours-on-the-air map, and the median DT (the skimmer's own clock error).
+  openings of the bands, a per-station hours-on-the-air map with a small map of the great circle, and a Database
+  tab (size, clearing out old decodes, compacting, a CSV of the query, a copy of the file).
 - **The skimmer runs up to four SpyServers, each in its own place, and can rotate bands.** A server has its own
   locator, network delay, gain and control; bearings are read from the server that heard the signal. A rotation gives
   each band of a server's channels a turn (at least five minutes, from the first band on Connect or on the UTC
   clock) and each band can be given the UTC hours it takes part in (day and night follow the server's local time);
-  a band's decoder and waterfall history wait for its next turn. Sixteen busy-band FT8 decoders ending together take
+  a band's decoder and waterfall history wait for its next turn. The rotation can be held on a band, or moved
+  to the next or previous band at once (its whole turn starts then). Sixteen busy-band FT8 decoders ending together take
   about 3 s on 8 threads (`tests/load.rs`).
 - **The skimmer's clock can follow NTP, and the delay to the server can be entered.** The PC clock is not touched;
   its measured offset (best of five SNTP queries, every ten minutes) is added, and a fixed network delay is taken off
