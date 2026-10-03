@@ -360,3 +360,53 @@ fn jt65_one_frame_is_one_row() {
         rows.iter().map(|r| &r.decoded.text).collect::<Vec<_>>()
     );
 }
+
+/// `q65_decode.f90`'s AP-list (q3) decode, against what the v3.2.0-rc1 `jt9`
+/// prints for the same recordings (`jt9 -3 -p 30 -b A -d 3 -f 1010 -F 10 -c K1JT
+/// -x K9AN`): `022800 -21 0.3 1010 K1JT K9AN R-16 q3` and `024000 -18 0.3 1010
+/// ... q3`. The 0.12 test's mid-period nominal start displaced the q3 grid and
+/// reported -19.4 dB for the first of them; with the period's own start the SNR
+/// and `dt` are `jt9`'s.
+#[test]
+fn q65_q3_snr_and_dt_are_jt9s() {
+    use mfsk_core::decoder::Q65Extras;
+    use mfsk_core::q65::{Q65a30, standard_qso_codewords};
+    let dir = common::corpus::golden_dir().join("q65/30A_Ionoscatter_6m");
+    let slots = [("201203_022800.wav", -21.0), ("201203_024000.wav", -18.0)];
+    for (file, want_snr) in slots {
+        let Some(a) = common::load_wav_f32_opt(dir.join(file).to_str().unwrap()) else {
+            common::skip_or_fail("Q65 30A recording");
+            return;
+        };
+        let mut d = Decoder::<Q65a30>::new(DecodeParams::for_band((200.0, 3000.0)).rx_freq(1010.0))
+            .with_extras(Q65Extras {
+                ap_list: standard_qso_codewords("K1JT", "K9AN", ""),
+                ..Default::default()
+            });
+        let rows = d.decode(&SlotInput::f32(&a)).rows;
+        let r = rows
+            .iter()
+            .find(|r| r.decoded.text == "K1JT K9AN R-16")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{file}: no q3 decode in {:?}",
+                    rows.iter().map(|r| &r.decoded.text).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            (r.decoded.snr_db - want_snr).abs() <= 0.5,
+            "{file}: SNR {} vs jt9 {want_snr}",
+            r.decoded.snr_db
+        );
+        assert!(
+            (r.decoded.dt_sec - 0.3).abs() <= 0.05,
+            "{file}: dt {} vs jt9 0.3",
+            r.decoded.dt_sec
+        );
+        assert!(
+            (r.decoded.freq_hz - 1010.0).abs() <= 1.0,
+            "{file}: f {}",
+            r.decoded.freq_hz
+        );
+    }
+}

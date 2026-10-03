@@ -874,13 +874,15 @@ mod via_decoder {
             // The AP-list (q3) decode places its `dt` on the grid from the
             // period's start. The 0.12 test passed a mid-period nominal, so
             // that start was 174000 samples late and its `dt` is off by up to
-            // one grid step (here 0.0375 s); text, frequency and SNR are
-            // unaffected and compared exactly. The q3 SNR is measured at the
-            // best grid point, so it moves with the grid: 1.7 dB here
-            // (-19.4 dB before, -21.1 dB now; real `jt9` reports -19). That
-            // is the one place this suite does not reproduce a 0.12 number
-            // bit for bit, and it is the 0.12 test's geometry that was off,
-            // not the decoder.
+            // one grid step (here 0.0375 s); text and frequency are unaffected
+            // and compared exactly. The q3 SNR is measured at the best grid
+            // point, so it moves with the grid: 1.7 dB here (-19.4 dB before,
+            // -21.1 dB now). The new value is the right one: real `jt9` prints
+            // -21 for this period (and -18 for the next q3 decode), `dt` 0.3 -
+            // `decoder_depth::q65_q3_snr_and_dt_are_jt9s` checks that. This is
+            // the one place this suite does not reproduce a 0.12 number bit
+            // for bit, and it is the 0.12 test's geometry that was off, not
+            // the decoder.
             for (case, ap, p, tol, snr_tol) in [
                 ("q65_30a_averaged", false, averaging.clone(), 1e-3, 0.0),
                 (
