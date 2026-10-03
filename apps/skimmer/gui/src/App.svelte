@@ -35,11 +35,14 @@
     health: Status | null;
     /** The rotation is held on the band being heard. */
     held: boolean;
+    /** The step in force (an index into the steps actually run) and when it ends (ms); null: none is in. */
+    stepIdx: number | null;
+    stepEnds: number;
     state: 'off' | 'connecting' | 'on' | 'waiting' | 'error';
   };
   const blankSrv = (): Srv => ({
     phase: 'Stopped', detail: '', step: '', maxGain: null, canControl: false, deviceGain: null,
-    gainSet: null, lastGainMove: 0, health: null, held: false, state: 'off',
+    gainSet: null, lastGainMove: 0, health: null, held: false, stepIdx: null, stepEnds: 0, state: 'off',
   });
   /** By index in `settings.servers`. */
   let srv = $state<Srv[]>([]);
@@ -129,6 +132,28 @@
   let autoPfb = $state(4);
   /** Host clock, ms; drives the slot bars. The skimmer's slot grid is anchored on the same clock. */
   let now = $state(Date.now());
+
+  /** The bands a server's rotation runs through, in order: those its channels are in. */
+  function stepBands(server: number): string[] {
+    const sv = settings?.servers[server];
+    if (!sv) return [];
+    const have = new Set(
+      (settings?.channels ?? []).filter((c) => (c.server ?? 0) === server).map((c) => bandOfHz(c.dialHz)),
+    );
+    return sv.rotation.filter((r) => have.has(r.band)).map((r) => r.band);
+  }
+
+  /** What the server's button says about its rotation: the band, and the time left or that it is held. */
+  function rotationText(server: number): string {
+    const s = srv[server];
+    const sv = settings?.servers[server];
+    if (!s || !sv?.rotate || !running || s.state === 'off') return '';
+    if (s.stepIdx === null) return s.stepEnds ? 'no band in' : '';
+    const band = stepBands(server)[s.stepIdx] ?? `step ${s.stepIdx + 1}`;
+    if (s.held) return `${band} held`;
+    const left = Math.max(0, Math.round((s.stepEnds - now) / 1000));
+    return `${band} ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+  }
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(3);
   const slotS = $derived(Object.fromEntries(modes.map((m) => [m.name, m.slotS])));
@@ -236,6 +261,8 @@
         {
           const until = new Date(e.endsUtcS * 1000).toISOString().slice(11, 16);
           s.held = e.held;
+          s.stepIdx = e.index;
+          s.stepEnds = e.endsUtcS * 1000;
           s.step = e.held
             ? `held on step ${(e.index ?? 0) + 1}/${e.of}`
             : e.index === null
@@ -466,7 +493,7 @@
             title={`${sv.address}${srv[i]?.step ? ' · ' + srv[i].step : ''}\n${srv[i]?.phase ?? ''}${sv.rotate && sel === i ? '\nPress again to ' + (srv[i]?.held ? 'resume the rotation' : 'hold the rotation on this band') : ''}`}
             onclick={() => selectServer(i)}
           >
-            <i class="dot {srv[i]?.state ?? 'off'}"></i>{srv[i]?.held ? '⏸ ' : ''}{sv.name}{srv[i]?.step ? ` · ${srv[i].step}` : ''}
+            <i class="dot {srv[i]?.state ?? 'off'}"></i>{srv[i]?.held ? '⏸ ' : ''}{sv.name}{rotationText(i) ? ` · ${rotationText(i)}` : ''}
           </button>
         {/each}
         {#if settings.servers.length < MAX_SERVERS}
@@ -716,7 +743,7 @@
           tick={wfTick}
           channels={settings.channels}
           server={sel}
-          servers={settings.servers.map((sv, i) => ({ name: sv.name, state: srv[i]?.state ?? 'off', step: srv[i]?.step ?? '', held: srv[i]?.held ?? false }))}
+          servers={settings.servers.map((sv, i) => ({ name: sv.name, state: srv[i]?.state ?? 'off', step: rotationText(i), held: srv[i]?.held ?? false }))}
           onserver={selectServer}
           focus={Math.min(wfFocus, Math.max(0, settings.channels.length - 1))}
           onfocus={(i) => {
