@@ -108,6 +108,7 @@ use crate::msg::Jt72Codec;
 // unconditional, the same split `wspr::mod` uses.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod averaging;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod chase;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 #[cfg(any(feature = "internal-testing", test))]
