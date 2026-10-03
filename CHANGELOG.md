@@ -75,6 +75,24 @@
   usual retry follows. With streaming off, while no channel fits the band, it pings every 5 s so the PONGs keep an idle
   connection from looking dead. The GUI also stops posting a notice for every lost IQ message: the health line counts
   them and the health log still records each one.
+- **WSPR: `Decoded::freq_hz` and the text report now match `wsprd`'s own numbers.** `freq_hz` carried tone 0, 2.197 Hz
+  below what `wsprd` reports — the centre of the four tones (`wsprd.c:1496`, `1500 + f1`) — so a caller comparing
+  against `wsprd`'s output saw every WSPR frequency low by 1.5 tone spacings (ND6P: 1444.04 Hz here, 1446 Hz in
+  `wsprd` on the WSJT-X golden). The power field also printed without `wsprd`'s `%2d` padding, dropping the leading
+  space on single-digit dBm values (`wsprd_utils.c:353,364,398`). The Type 1/2/3 power arithmetic itself was already
+  correct; only `freq_hz` and the two display fixes change. Snapshot fixtures move in their frequency bits only (36
+  rows for 36).
+- **Skimmer GUI: per-channel decode counts no longer disagree with the table, and the window keeps updating when
+  covered or minimised.** Counts were incremented on arrival while the table itself lagged a `requestAnimationFrame`
+  queue that macOS/browsers starve for a covered or minimised window — so a count could read higher than the rows the
+  table ever showed, and follow-scroll (keyed on the row count, which stops changing once the 5000-row cap is hit)
+  could stop following. Counts now come from the same batch the table applies, on a 100 ms timer instead of
+  `requestAnimationFrame`, and the health line gains a `window got N` figure — the raw count of decodes the window
+  received, to compare against what the table shows.
+- **`scripts/release-status.sh` reports a yanked published version.** A tagged version is not necessarily a live one:
+  this is exactly what happened to 0.12.0. The script now queries crates.io for the tag's published version and
+  prints `YANKED`, its `yank_message` if one was set (else a pointer at this CHANGELOG's own "is yanked" entry), or a
+  neutral "could not check" line when crates.io is unreachable — never a false `ok`.
 
 ## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY
 

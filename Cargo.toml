@@ -29,7 +29,7 @@ resolver = "2"
 # CHANGELOG). `release.yml`'s tag-vs-Cargo.toml check reads this
 # field directly.
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 
 # Minimum supported Rust version, and it is a measurement rather than a
 # guess: `cargo +1.85 check -p mfsk-core --features full` fails on the
