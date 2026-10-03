@@ -691,6 +691,8 @@
           tick={wfTick}
           channels={settings.channels}
           server={sel}
+          servers={settings.servers.map((sv, i) => ({ name: sv.name, state: srv[i]?.state ?? 'off', step: srv[i]?.step ?? '' }))}
+          onserver={selectServer}
           focus={Math.min(wfFocus, Math.max(0, settings.channels.length - 1))}
           onfocus={(i) => {
             focusChannel(i);

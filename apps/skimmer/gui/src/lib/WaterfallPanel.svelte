@@ -7,6 +7,8 @@
     tick,
     channels,
     server,
+    servers,
+    onserver,
     focus,
     onfocus,
     rows,
@@ -20,6 +22,9 @@
     channels: ChannelSetting[];
     /** The server whose channels are shown as thumbnails. */
     server: number;
+    /** Every server, for the tabs (shown when there are several). */
+    servers: { name: string; state: string; step: string }[];
+    onserver: (i: number) => void;
     focus: number;
     onfocus: (i: number) => void;
     rows: DecodeRow[];
@@ -177,6 +182,15 @@
     <button class="link" onclick={() => (open = !open)}>{open ? '▾' : '▸'} Waterfall</button>
   </header>
   {#if open}
+    {#if servers.length > 1}
+      <div class="tabs" role="tablist" aria-label="Servers">
+        {#each servers as sv, i (i)}
+          <button role="tab" class:on={server === i} aria-selected={server === i} onclick={() => onserver(i)} title={sv.step}>
+            <i class="dot {sv.state}"></i>{sv.name}{sv.step ? ` · ${sv.step}` : ''}
+          </button>
+        {/each}
+      </div>
+    {/if}
     <div class="thumbs">
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
         {#if (c.server ?? 0) === server}
@@ -201,6 +215,29 @@
 </section>
 
 <style>
+  .tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--line, #444);
+  }
+  .tabs button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    border-radius: 6px 6px 0 0;
+    background: transparent;
+    color: var(--muted);
+    padding: 4px 12px;
+    font-size: 12.5px;
+  }
+  .tabs button.on {
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
   .wf {
     border-bottom: 1px solid var(--line, #444);
     padding: 0.25rem 0.5rem 0.5rem;
