@@ -44,6 +44,45 @@ else
     warn "   CD runs on the tag push, so nothing has reached crates.io."
 fi
 
+
+# A tagged version is not necessarily a *live* one. v0.12.0 shipped,
+# then turned out to drop every other IqReceiver slot on a real-clock
+# anchor and never resolve hashed callsigns — unusable for live
+# reception — and was yanked the same day the fix (0.13.0, this
+# branch) started. Nothing above this point would have said so: the
+# version matches, the tag exists, "ok tagged" is true and misleading
+# at the same time. crates.io is the only source of truth for yanked;
+# query the published version (the tag's, not Cargo.toml's, since
+# those can differ on an unreleased branch).
+published_version="${last_tag#v}"
+if [[ -n "$published_version" ]] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    yank_json=$(curl -sS --max-time 5 -H 'User-Agent: mfsk-core release-status (scripts/release-status.sh)' \
+        "https://crates.io/api/v1/crates/mfsk-core/$published_version" 2>/dev/null)
+    yank_state=$(python3 -c "
+import json, sys
+try:
+    v = json.loads(sys.argv[1])['version']
+except (ValueError, KeyError, TypeError):
+    sys.exit(1)
+print('yanked' if v.get('yanked') else 'live')
+print(v.get('yank_message') or '')
+" "$yank_json" 2>/dev/null)
+    if [[ "$yank_state" == yanked* ]]; then
+        warn "mfsk-core $published_version is YANKED on crates.io."
+        yank_msg=$(tail -n +2 <<<"$yank_state")
+        if [[ -n "$yank_msg" ]]; then
+            warn "   $yank_msg"
+        else
+            warn "   No yank message was set; see CHANGELOG.md's own"
+            warn "   \"$published_version is yanked\" entry for why."
+        fi
+    elif [[ "$yank_state" == live* ]]; then
+        ok "crates.io: $published_version is not yanked"
+    else
+        echo "  crates.io: could not check whether $published_version is yanked (offline, or crates.io unreachable)"
+    fi
+fi
+
 changelog_top=$(grep -m1 '^## ' CHANGELOG.md | sed 's/^## //')
 echo "  CHANGELOG  : ${changelog_top:0:60}"
 case "$changelog_top" in
