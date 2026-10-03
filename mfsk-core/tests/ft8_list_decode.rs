@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::WsjtxDepth;
 use mfsk_core::ft8::list_decode::{PASS_ID_A7, PASS_ID_A8};
 use mfsk_core::msg::ap::ApHint;
 use mfsk_core::msg::decode_request::DecodeRequest;
@@ -15,8 +14,14 @@ use mfsk_core::msg::wsjt77::unpack77;
 mod common;
 use common::load_wav_i16;
 
+/// jt9 `-d3`'s shape (`Depth::Deep`): OSD, the checkpointed passes, and the
+/// AP hint when given.
 fn d3<'a>(audio: &'a [i16], ap: Option<&'a ApHint>) -> DecodeRequest<'a, Ft8> {
-    DecodeRequest::<Ft8>::wsjtx_depth(audio, 100.0, 3000.0, 1.3, 600, WsjtxDepth::D3, ap)
+    let req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 600).sic_early();
+    match ap {
+        Some(ap) => req.ap_hint(ap),
+        None => req,
+    }
 }
 
 /// `(found, found by the list decoder)` for `want` in one decode.

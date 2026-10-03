@@ -79,7 +79,7 @@ fn fits(c: &ChannelSpec, rate: u32, center_hz: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mfsk_core::iq::IqMode;
+    use mfsk_core::Mode;
 
     /// The Airspy HF+ these were measured on.
     fn hf_plus() -> Device {
@@ -94,7 +94,7 @@ mod tests {
 
     fn ft8(dial_hz: f64) -> ChannelSpec {
         ChannelSpec {
-            mode: IqMode::Ft8,
+            mode: Mode::Ft8,
             dial_hz,
         }
     }

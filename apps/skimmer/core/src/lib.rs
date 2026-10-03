@@ -27,7 +27,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub use mfsk_core::iq::{Channelizer, IqMode};
+pub use mfsk_core::Mode;
+pub use mfsk_core::iq::Channelizer;
 use mfsk_core::iq::{IqDecode, IqReceiver, IqSampleFormat, IqStream};
 
 use anchor::AnchorEstimate;
@@ -44,7 +45,7 @@ pub fn now_ns() -> i64 {
 /// One channel: a mode at a USB dial frequency.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChannelSpec {
-    pub mode: IqMode,
+    pub mode: Mode,
     pub dial_hz: f64,
 }
 
@@ -110,7 +111,7 @@ pub struct DeviceInfo {
 pub struct Decode {
     /// Index into [`Config::channels`].
     pub channel: usize,
-    pub mode: IqMode,
+    pub mode: Mode,
     /// UTC of the slot start, ns since the epoch.
     pub slot_utc_ns: Option<i64>,
     /// The channel's dial.
@@ -596,7 +597,7 @@ mod tests {
     fn all_txt_line_columns() {
         let d = Decode {
             channel: 0,
-            mode: IqMode::Ft8,
+            mode: Mode::Ft8,
             // 2026-10-03 04:42:15 UTC
             slot_utc_ns: Some(1_791_002_535 * 1_000_000_000),
             dial_hz: 7_041_000.0,

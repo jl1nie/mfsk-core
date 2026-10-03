@@ -22,27 +22,38 @@ pub mod decoded;
 // making every field dead code under `-D warnings` (e.g. a `jt65`-only
 // build: `fft-rustfft` is on via `jt65`'s own feature dependency, but
 // no protocol implements `FrameDecodable`).
+// The frame family's engine request. Since 0.13 the public decode API is
+// `crate::decoder`; this stays reachable only for `internal-testing`, like
+// the raw engine functions beneath it.
 #[cfg(all(
+    feature = "internal-testing",
     any(feature = "fft-rustfft", feature = "fft-extern"),
     any(feature = "ft8", feature = "ft4", feature = "fst4")
 ))]
 pub mod decode_request;
+#[cfg(all(
+    not(feature = "internal-testing"),
+    any(feature = "fft-rustfft", feature = "fft-extern"),
+    any(feature = "ft8", feature = "ft4", feature = "fst4")
+))]
+pub(crate) mod decode_request;
 pub mod hash_table;
 pub mod jt72;
 #[cfg(feature = "packet-bytes")]
 pub mod packet_bytes;
 // AP hypothesis generation for the protocols whose decoders take an
-// `ApHint`. Gated on the FFT meta-feature so embedded-rx (alloc +
-// microfft) gets it, and on `ft4`/`fst4` because they are its only
-// callers: FT8 builds its own pass list inline in
-// `ft8::decode_block::process_candidates`, so an `ft8`-only or
-// `jt9`-only build would compile these as dead code under
-// `-D warnings`. (It used to carry a whole parallel AP decode engine,
-// which is what made it reachable from everywhere; that was deleted
-// once AP became a rung on `engine::pipeline`'s own ladder.)
-#[cfg(all(
-    any(feature = "fft-rustfft", feature = "fft-extern"),
-    any(feature = "ft4", feature = "fst4")
+// `ApHint`: FT4 and FST4 on every FFT backend, and FT8 on the host one
+// (`ft8::decode_block::process_candidates` calls `ap_passes` under
+// `fft-rustfft` since #423 merged its inline copy; the embedded FT8 ladder
+// has no AP rung). (It used to carry a whole parallel AP decode engine;
+// that was deleted once AP became a rung on `engine::pipeline`'s own
+// ladder.)
+#[cfg(any(
+    all(
+        any(feature = "fft-rustfft", feature = "fft-extern"),
+        any(feature = "ft4", feature = "fst4")
+    ),
+    all(feature = "fft-rustfft", feature = "ft8")
 ))]
 pub mod pipeline_ap;
 #[cfg(feature = "q65")]

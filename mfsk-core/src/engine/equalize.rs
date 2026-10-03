@@ -28,9 +28,10 @@ use num_complex::Complex;
 /// payoff didn't justify the 2× per-candidate cost (issue #73).
 /// Callers that want the historical two-pass behaviour should
 /// invoke the decoder twice explicitly with `Local` then `Off`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EqMode {
     /// No equalisation (passthrough).
+    #[default]
     Off,
     /// Per-signal equalisation using local Costas pilot tones.
     Local,

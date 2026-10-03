@@ -20,7 +20,6 @@ use std::path::PathBuf;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::pipeline::{DecodeResult, DecodeStrictness};
 use mfsk_core::fst4::Fst4s60;
-use mfsk_core::ft8::decode::WsjtxDepth;
 use mfsk_core::msg::ApHint;
 use mfsk_core::msg::decode_request::{DecodeRequest, NoiseBlanker};
 use mfsk_core::msg::wsjt77::unpack77;
@@ -153,19 +152,10 @@ fn ft8_request_shapes() {
         &req().message_filter(|_| true).decode().results,
     );
     check("ft8_codec_filter", &req().codec_filter().decode().results);
-    check("ft8_known", &req().known(&default).decode().results);
     check(
         "ft8_previous_cycle",
         &req().previous_cycle(&default).decode().results,
     );
-    for (tier, name) in [
-        (WsjtxDepth::D1, "d1"),
-        (WsjtxDepth::D2, "d2"),
-        (WsjtxDepth::D3, "d3"),
-    ] {
-        let r = DecodeRequest::<Ft8>::wsjtx_depth(&a, lo, hi, sync, n, tier, Some(&hint));
-        check(&format!("ft8_wsjtx_{name}"), &r.decode().results);
-    }
     let sniper = DecodeRequest::<Ft8>::sniper(&a, 1_500.0, 50)
         .ap_hint(&hint)
         .decode();
@@ -444,7 +434,8 @@ fn q65_request_shapes() {
 #[test]
 fn iq_receiver_rows() {
     use common::iq::{add_into, interleave, synth_iq};
-    use mfsk_core::iq::{Channelizer, IqMode, IqReceiver, IqSampleFormat, IqStream};
+    use mfsk_core::Mode;
+    use mfsk_core::iq::{Channelizer, IqReceiver, IqSampleFormat, IqStream};
     use std::sync::{Arc, Mutex};
 
     const FS: u32 = 192_000;
@@ -468,8 +459,8 @@ fn iq_receiver_rows() {
         let rows = Arc::new(Mutex::new(Vec::new()));
         let sink = rows.clone();
         rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
-        let c8 = rx.add_channel(ft8_dial, IqMode::Ft8).unwrap();
-        let c4 = rx.add_channel(ft4_dial, IqMode::Ft4).unwrap();
+        let c8 = rx.add_channel(ft8_dial, Mode::Ft8).unwrap();
+        let c4 = rx.add_channel(ft4_dial, Mode::Ft4).unwrap();
         rx.set_time_anchor(1_700_000_010 * 1_000_000_000);
         for chunk in interleave(&iq).chunks(2 * 77_777) {
             rx.push_cf32(chunk);
@@ -483,5 +474,213 @@ fn iq_receiver_rows() {
             );
             check_text(&format!("iq_{name}_{mode}"), got);
         }
+    }
+}
+
+// ── The same shapes through `Decoder<P>` (0.13). Each must reproduce the
+// fixture its 0.12 request wrote. `known()` has no counterpart: a whole
+// period is decoded once.
+
+mod via_decoder {
+    use super::*;
+    use mfsk_core::decoder::{
+        ApMode, Contest, Decodable, DecodeParams, Decoder, Depth, Ft4Strategy, Ft8Strategy,
+        MessageFilter, SlotInput, Sniper, Tuning,
+    };
+
+    fn native<P: Decodable<Row = DecodeResult>>(
+        params: DecodeParams,
+        extras: P::Extras,
+        audio: &[i16],
+    ) -> Vec<DecodeResult> {
+        let mut d = Decoder::<P>::new(params).with_extras(extras);
+        d.decode(&SlotInput::i16(audio))
+            .rows
+            .into_iter()
+            .map(|r| r.native)
+            .collect()
+    }
+
+    fn block() -> DecodeParams {
+        DecodeParams::for_band((100.0, 3000.0))
+            .depth(Depth::Deep)
+            .ap(ApMode::Off)
+    }
+
+    fn t8(sync: f32, n: usize) -> Tuning<Ft8Strategy> {
+        Tuning {
+            sync_min: Some(sync),
+            max_cand: Some(n),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ft8() {
+        use mfsk_core::decoder::Ft8Extras;
+        let Some(a) = load(FT8_WAV) else { return };
+        let x = || Ft8Extras {
+            tuning: t8(1.0, 200),
+            ..Default::default()
+        };
+        let run = |p: DecodeParams, e: Ft8Extras| native::<Ft8>(p, e, &a);
+        let with = |f: fn(&mut Ft8Extras)| {
+            let mut e = x();
+            f(&mut e);
+            e
+        };
+        check("ft8_default", &run(block(), x()));
+        check(
+            "ft8_single_pass",
+            &run(
+                block(),
+                with(|e| e.tuning.strategy = Some(Ft8Strategy::SinglePass)),
+            ),
+        );
+        for k in 1..=3 {
+            let mut e = x();
+            e.tuning.strategy = Some(Ft8Strategy::SicRounds(k));
+            check(&format!("ft8_sic_rounds_{k}"), &run(block(), e));
+        }
+        check(
+            "ft8_sic_early",
+            &run(
+                block(),
+                with(|e| e.tuning.strategy = Some(Ft8Strategy::SicEarly)),
+            ),
+        );
+        check(
+            "ft8_ap_hint",
+            &run(
+                block(),
+                with(|e| e.ap_hint = Some(ApHint::new().with_call1("K1JT"))),
+            ),
+        );
+        check(
+            "ft8_osd_off",
+            &run(block(), with(|e| e.tuning.osd = Some(false))),
+        );
+        check(
+            "ft8_strict_deep",
+            &run(
+                block(),
+                with(|e| e.tuning.strictness = Some(DecodeStrictness::Deep)),
+            ),
+        );
+        check(
+            "ft8_eq_local",
+            &run(block(), with(|e| e.eq = EqMode::Local)),
+        );
+        check("ft8_freq_hint", &run(block().rx_freq(1_500.0), x()));
+        check("ft8_tx_freq", &run(block().tx_freq(1_200.0), x()));
+        check(
+            "ft8_contest",
+            &run(block().contest(Contest::GridExchange), x()),
+        );
+        check("ft8_eme_delay", &run(block().eme_delay(true), x()));
+        check(
+            "ft8_also_accept",
+            &run(
+                block(),
+                with(|e| e.filter = MessageFilter::AlsoAccept(|_| true)),
+            ),
+        );
+        check(
+            "ft8_message_filter",
+            &run(block(), with(|e| e.filter = MessageFilter::Only(|_| true))),
+        );
+        check(
+            "ft8_codec_filter",
+            &run(block(), with(|e| e.filter = MessageFilter::Codec)),
+        );
+        // a7: the decoder's own decodes of period n - 2.
+        let mut d = Decoder::<Ft8>::new(block()).with_extras(with(|e| e.a7 = true));
+        d.decode(&SlotInput::i16(&a).period(0));
+        let second: Vec<DecodeResult> = d
+            .decode(&SlotInput::i16(&a).period(2))
+            .rows
+            .into_iter()
+            .map(|r| r.native)
+            .collect();
+        check("ft8_previous_cycle", &second);
+        for (depth, name) in [
+            (Depth::Fast, "d1"),
+            (Depth::Normal, "d2"),
+            (Depth::Deep, "d3"),
+        ] {
+            let mut e = x();
+            if depth == Depth::Deep {
+                e.ap_hint = Some(ApHint::new().with_call1("K1JT"));
+            }
+            check(&format!("ft8_wsjtx_{name}"), &run(block().depth(depth), e));
+        }
+        let sniper = Ft8Extras {
+            tuning: t8(0.8, 50),
+            ap_hint: Some(ApHint::new().with_call1("K1JT")),
+            sniper: Some(Sniper::default()),
+            ..Default::default()
+        };
+        check("ft8_sniper_ap", &run(block().rx_freq(1_500.0), sniper));
+    }
+
+    #[test]
+    fn ft4() {
+        use mfsk_core::decoder::Ft4Extras;
+        let Some(a) = load(FT4_WAV) else { return };
+        let x = || Ft4Extras {
+            tuning: Tuning {
+                sync_min: Some(1.2),
+                max_cand: Some(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let run = |e: Ft4Extras| native::<Ft4>(block(), e, &a);
+        check("ft4_default", &run(x()));
+        let mut e = x();
+        e.tuning.strategy = Some(Ft4Strategy::SinglePass);
+        check("ft4_single_pass", &run(e));
+        for k in 1..=3 {
+            let mut e = x();
+            e.tuning.strategy = Some(Ft4Strategy::SicRounds(k));
+            check(&format!("ft4_sic_rounds_{k}"), &run(e));
+        }
+        let mut e = x();
+        e.ap_hint = Some(ApHint::new().with_call1("CQ"));
+        check("ft4_ap_hint", &run(e));
+        let mut e = x();
+        e.filter = MessageFilter::Codec;
+        check("ft4_codec_filter", &run(e));
+        let mut e = x();
+        e.eq = EqMode::Local;
+        check("ft4_eq_local", &run(e));
+    }
+
+    #[test]
+    fn fst4() {
+        use mfsk_core::decoder::Fst4Extras;
+        let Some(a) = load(FST4_WAV) else { return };
+        let x = || Fst4Extras {
+            tuning: Tuning {
+                sync_min: Some(1.2),
+                max_cand: Some(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let run = |e: Fst4Extras| native::<Fst4s60>(block(), e, &a);
+        check("fst4_60_default", &run(x()));
+        let mut e = x();
+        e.noise_blanker = Some(NoiseBlanker::Percent(5));
+        check("fst4_60_nb_percent", &run(e));
+        let mut e = x();
+        e.noise_blanker = Some(NoiseBlanker::Sweep {
+            step: 5,
+            ftol_hz: 50.0,
+        });
+        check("fst4_60_nb_sweep", &run(e));
+        let mut e = x();
+        e.ap_hint = Some(ApHint::new().with_call1("CQ"));
+        check("fst4_60_ap_hint", &run(e));
     }
 }

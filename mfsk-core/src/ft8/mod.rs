@@ -9,8 +9,8 @@
 //!
 //! The internal decode pipeline assumes **12 000 Hz** PCM input.
 //! For other sample rates (e.g. 44 100, 48 000 Hz), use
-//! [`resample::resample_to_12k`] to convert before decoding via
-//! [`crate::msg::decode_request::DecodeRequest`].
+//! [`resample::resample_to_12k`] to convert before decoding with
+//! [`crate::decoder::Decoder`].
 //!
 //! The WASM wrapper (`ft8-web`) accepts a `sample_rate` parameter
 //! on each decode function and handles this conversion automatically.

@@ -1,6 +1,6 @@
 //! `DecodeRequest`/`SniperRequest`-style builder for Q65 (issue #204).
 //!
-//! Mirrors the shape and philosophy of [`crate::msg::decode_request`]
+//! Mirrors the shape and philosophy of `crate::msg::decode_request`
 //! (issue #191) — a single builder per search shape instead of the
 //! pre-#191-style `_with_ap`/`_for`/`_with_ap_list_for` suffix
 //! explosion `q65::rx` used to expose as 15 separate public functions.
@@ -157,7 +157,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     }
 
     /// Single-target narrow-band request at a known alignment. Same
-    /// convention as [`crate::msg::decode_request::DecodeRequest::sniper`].
+    /// convention as `crate::msg::decode_request::DecodeRequest::sniper`.
     pub fn sniper(
         audio: &'a [f32],
         sample_rate: u32,
@@ -284,7 +284,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     /// (not instead of) `decode()`'s own returned `Vec` — purely
     /// additive streaming delivery alongside the existing batch
     /// result, same shape as
-    /// [`crate::msg::decode_request::DecodeRequest::on_result`] (see
+    /// `crate::msg::decode_request::DecodeRequest::on_result` (see
     /// that method's doc comment and `docs/reference/LIBRARY.md`'s
     /// "public decode entry point" section for the full portability
     /// rationale — synchronous callback, not async/channel, so

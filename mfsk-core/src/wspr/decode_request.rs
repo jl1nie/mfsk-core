@@ -13,7 +13,7 @@
 //!
 //! Same shape as [`crate::jt9::decode_request`] /
 //! [`crate::jt65::decode_request`], per-mode for the same reason: WSPR
-//! decodes `&[f32]` PCM, where [`crate::msg::decode_request`] takes
+//! decodes `&[f32]` PCM, where `crate::msg::decode_request` takes
 //! `&[i16]`.
 //!
 //! What stays public beside this: the embedded pass-2 stages
@@ -116,13 +116,13 @@ impl<'a> DecodeRequest<'a> {
 
     /// Fire `cb` once per candidate as it's accepted, *in addition to*
     /// (not instead of) `decode()`'s returned `Vec` — same shape as
-    /// [`crate::msg::decode_request::DecodeRequest::on_result`].
+    /// `crate::msg::decode_request::DecodeRequest::on_result`.
     ///
     /// **Delivery order/dedup contract — weaker than JT9's or JT65's**:
     /// both pass 1 and pass 2's per-candidate decode step run under
     /// `rayon::par_iter()` (feature `parallel`), so this carries the
     /// completion-order/possible-duplicate caveat documented on
-    /// [`crate::msg::decode_request::DecodeRequest::on_result`]'s
+    /// `crate::msg::decode_request::DecodeRequest::on_result`'s
     /// parallel single-pass strategy: `cb` fires from whichever thread
     /// decoded that candidate, in completion order, *before* the
     /// dedup-then-push step that decides what lands in the returned

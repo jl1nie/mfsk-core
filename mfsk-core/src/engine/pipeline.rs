@@ -70,10 +70,9 @@ fn stage_trace_enabled<P: Protocol>() -> bool {
 /// `num_complex::Complex` — a dependency's type, not this crate's own —
 /// into the public API. There's no public constructor and no way to
 /// inspect the contents; obtain one from a `decode_frame`-family return
-/// value / [`crate::msg::decode_request::DecodeOutcome::fft_cache`] and
-/// pass it straight back into
-/// [`crate::msg::decode_request::DecodeRequest::fft_cache`] or
-/// `decode_frame`'s `precomputed_fft` param.
+/// value (the engine request's `DecodeOutcome::fft_cache`) and pass it
+/// straight back into the request's `fft_cache` or `decode_frame`'s
+/// `precomputed_fft` param.
 #[derive(Clone)]
 pub struct FftCache(pub(crate) Vec<Complex<f32>>);
 
@@ -109,7 +108,7 @@ impl FftCache {
 /// never reads this field — only FT8's own `ft8::decode_block` engine has
 /// an actual `Minimal`/`Full` staircase. Kept on the shared type (rather
 /// than an FT8-local field) so [`DecodeDepth`] has one shape across every
-/// protocol using [`crate::msg::decode_request::DecodeRequest`] (issue #191).
+/// protocol using the engine's frame request (issue #191).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LlrEffort {
     /// Only the two cheap 1-symbol LLR estimates. ESP32 ship default — the

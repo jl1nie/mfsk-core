@@ -1853,72 +1853,6 @@ impl SupportsSicEarly for Ft8 {
     }
 }
 
-/// FT8 depth tiers mirroring real WSJT-X's `jt9 -d 1/2/3` CLI flag —
-/// for apples-to-apples benchmarking against a real `jt9` build.
-/// Unrelated to the crate's own `mfsk_core::jt9` (slow-mode JT9
-/// protocol) module.
-///
-/// | | jt9 `-d1` | jt9 `-d2` | jt9 `-d3` |
-/// |---|---|---|---|
-/// | this tier | `D1` | `D2` | `D3` |
-/// | OSD | off | on | on |
-/// | SIC | `.sic_rounds(2)` | `.sic_early()` | `.sic_early()` |
-/// | AP | — | — | `.ap_hint()` if supplied |
-///
-/// Measured on `qso3_busy.wav` (this host, real local `jt9 -8 -dN`
-/// build vs. this crate):
-///
-/// | | jt9 | mfsk-core |
-/// |---|---|---|
-/// | D1 | 14 decodes / 370ms | *(needs remeasurement — see below)* |
-/// | D2 | 19 decodes / 1040ms | 22 decodes / 1078ms |
-/// | D3 | 22 decodes / 2110ms | 22 decodes / 2991ms |
-///
-/// The mfsk-core D1 number above (`14 decodes / 237ms`, superseded)
-/// was measured before issue #218's `.sic_rounds(2)` fix — `D1`
-/// previously ran `.flat()`'s full 3 rounds (no round-count knob
-/// existed), not jt9 `-d1`'s actual `npass=2`. Re-measure against
-/// `qso3_busy.wav` once `.sic_rounds(2)` lands; expect fewer decodes
-/// and lower latency than the superseded number, not identical.
-///
-/// jt9 `-d1` runs SIC with `npass=2` (vs. 3 for `-d2`/`-d3`,
-/// `ft8_decode.f90:172-173`), and jt9's own `ndepth==1` branch skips
-/// the checkpoint-replay staging entirely (`ft8_decode.f90:97-103`) —
-/// structurally that's `.sic_rounds()` (single full-buffer SIC
-/// round-set), not `.sic_early()`. `D2`/`D3` both go through checkpoint
-/// staging in jt9 (`npass=3` either way), so both map to
-/// `.sic_early()`. `D1` uses `.sic_rounds(2)` to match jt9 `-d1`'s
-/// `npass=2` exactly (previously this crate had no round-count knob at
-/// all, so `D1` ran the full 3 rounds — see issue #218).
-///
-/// jt9 also varies `syncmin` per tier — through WSJT-X 2.7: 1.6 for
-/// d1/d2, 1.3 for d3, and 2.0 for the `nzhsym == 41` early pass
-/// (`ft8_decode.f90:176-178`); from 3.0: 2.1 for d1/d2, 1.3 for d3, and
-/// the early-pass override is gone (`v3.0.0`, `:181-183`) — and OSD *strength* is not just on/off in
-/// jt9 (`maxosd` 0 vs 2 are different algorithms — mfsk-core only
-/// implements the `maxosd>0` branch; see `osd_strategy` module's doc
-/// comment). `D2`'s OSD is therefore closer in kind to jt9 `-d3`'s
-/// than to `-d2`'s lighter `maxosd=0` branch — a likely contributor
-/// to `D2` already matching/exceeding jt9 `-d3`'s recall above.
-/// `sync_min` stays an explicit, caller-supplied parameter (pass
-/// 2.1/2.1/1.3 for closer parity with WSJT-X 3.x on that axis, or
-/// 1.6/1.6/1.3 for 2.7). On the busy-band corpus `sync_min` 1.3 is the
-/// value that keeps `.sic_early()`'s recall while cutting its unexpected
-/// decodes from 22 (0.8) to 6; 2.1 costs 3-4 points of recall and gains
-/// nothing more there (`docs/notes/BENCHMARKS.md`, "The busy-band corpus").
-///
-/// What `D1`/`D2` do beyond OSD and SIC: from WSJT-X 3.0, `ndepth <= 2`
-/// also raises the hard-sync (nsync) floor a candidate must clear from 6
-/// (7 in the passes with the squared metric) to 8, and this port applies
-/// that floor for these two tiers (#439). `D3`, and a request that does
-/// not go through [`DecodeRequest::wsjtx_depth`], keep 6/7.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WsjtxDepth {
-    D1,
-    D2,
-    D3,
-}
-
 /// The first pass's context for a request: its `jt9 -d1/-d2` tier and
 /// whether a contest is being worked.
 fn base_pass_of<Pol: MessagePolicy>(req: &DecodeRequest<'_, Ft8, Pol>) -> PassCtx {
@@ -1978,35 +1912,6 @@ impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
     pub fn eme_delay(mut self, on: bool) -> Self {
         self.eme_delay = on;
         self
-    }
-}
-
-impl<'a> DecodeRequest<'a, Ft8> {
-    /// Build a request whose (OSD, SIC strategy, AP) triple mirrors
-    /// real WSJT-X's `jt9 -d 1/2/3`. See [`WsjtxDepth`]. `ap` is only
-    /// consulted for `D3`; ignored (not an error) for `D1`/`D2`,
-    /// matching jt9's own depth/AP coupling.
-    pub fn wsjtx_depth(
-        audio: &'a [i16],
-        freq_min: f32,
-        freq_max: f32,
-        sync_min: f32,
-        max_cand: usize,
-        tier: WsjtxDepth,
-        ap: Option<&'a ApHint>,
-    ) -> Self {
-        let mut req = Self::new(audio, freq_min, freq_max, sync_min, max_cand)
-            .osd(!matches!(tier, WsjtxDepth::D1));
-        // `ndepth <= 2`: ft8b.f90's nsync floor is 8 (see `PassCtx::nsync_floor`).
-        req.wsjtx_low_depth = !matches!(tier, WsjtxDepth::D3);
-        req = match tier {
-            WsjtxDepth::D1 => req.sic_rounds(2),
-            WsjtxDepth::D2 | WsjtxDepth::D3 => req.sic_early(),
-        };
-        if let (WsjtxDepth::D3, Some(ap)) = (tier, ap) {
-            req = req.ap_hint(ap);
-        }
-        req
     }
 }
 

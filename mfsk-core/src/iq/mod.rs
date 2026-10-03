@@ -87,7 +87,7 @@ pub mod receiver;
         feature = "q65"
     )
 ))]
-pub use receiver::{ChannelId, Channelizer, IqDecode, IqMode, IqReceiver};
+pub use receiver::{ChannelId, Channelizer, IqDecode, IqReceiver};
 
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser, kaiser_order};
 use crate::engine::dsp::polyphase::PolyphaseResampler;

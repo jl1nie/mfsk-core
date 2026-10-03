@@ -13,10 +13,10 @@ use std::sync::{Arc, Mutex};
 
 use mfsk_core::engine::pipeline::DecodeResult;
 use mfsk_core::iq::{
-    ChannelId, Channelizer, IqDecode, IqError, IqMode, IqReceiver, IqSampleFormat, IqStream,
+    ChannelId, Channelizer, IqDecode, IqError, IqReceiver, IqSampleFormat, IqStream,
 };
 use mfsk_core::msg::decode_request::DecodeRequest;
-use mfsk_core::{Ft4, Ft8, by_name};
+use mfsk_core::{Ft4, Ft8, Mode, by_name};
 
 #[allow(dead_code)]
 mod common;
@@ -167,8 +167,8 @@ fn two_channels_one_stream(kind: Channelizer) {
     };
     let iq = wideband(&s);
     let (mut rx, rows) = receiver(kind);
-    let ft8 = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
-    let ft4 = rx.add_channel(FT4_DIAL, IqMode::Ft4).unwrap();
+    let ft8 = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
+    let ft4 = rx.add_channel(FT4_DIAL, Mode::Ft4).unwrap();
     rx.set_time_anchor(T0_NS);
     // Odd block sizes, so slot ends fall inside a push.
     for chunk in interleave(&iq).chunks(2 * 77_777) {
@@ -185,8 +185,8 @@ fn two_channels_one_stream(kind: Channelizer) {
         assert_eq!(r.slot_start_utc_ns, Some(T0_NS));
         assert_eq!(r.slot_start_sample, 0);
     }
-    assert!(rows.iter().any(|r| r.mode == IqMode::Ft8));
-    assert!(rows.iter().any(|r| r.mode == IqMode::Ft4));
+    assert!(rows.iter().any(|r| r.mode == Mode::Ft8));
+    assert!(rows.iter().any(|r| r.mode == Mode::Ft4));
 }
 
 fn stream_that_opens_mid_slot_decodes_the_next_whole_one(kind: Channelizer) {
@@ -200,7 +200,7 @@ fn stream_that_opens_mid_slot_decodes_the_next_whole_one(kind: Channelizer) {
     iq.extend(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
     let iq = pad(iq);
     let (mut rx, rows) = receiver(kind);
-    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS - 3_000_000_000);
     rx.push_cf32(&interleave(&iq));
     let rows = rows.lock().unwrap();
@@ -221,7 +221,7 @@ fn free_running_grid_without_an_anchor(kind: Channelizer) {
     };
     let iq = pad(synth_iq(&s.ft8, FS, CENTER, FT8_DIAL));
     let (mut rx, rows) = receiver(kind);
-    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.push_cf32(&interleave(&iq));
     let rows = rows.lock().unwrap();
     same(
@@ -249,7 +249,7 @@ fn retune_mid_slot_drops_that_slot_only(kind: Channelizer) {
     };
     let iq = two_slots(&s);
     let (mut rx, rows) = receiver(kind);
-    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     let cut = 7 * FS as usize;
     rx.push_cf32(&interleave(&iq[..cut]));
@@ -275,7 +275,7 @@ fn gap_mid_slot_drops_that_slot_only(kind: Channelizer) {
     };
     let iq = two_slots(&s);
     let (mut rx, rows) = receiver(kind);
-    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     let (cut, lost) = (5 * FS as usize, 1_000usize);
     rx.push_cf32(&interleave(&iq[..cut]));
@@ -307,7 +307,7 @@ fn off_grid_anchor_decodes_back_to_back_slots(kind: Channelizer) {
     };
     let iq = two_slots(&s);
     let (mut rx, rows) = receiver(kind);
-    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS + 40_000);
     rx.push_cf32(&interleave(&iq));
     let rows = rows.lock().unwrap();
@@ -330,15 +330,15 @@ fn placement_is_refused_and_a_bad_retune_changes_nothing(kind: Channelizer) {
     let mut rx = IqReceiver::with_channelizer(stream(), kind).unwrap();
     // DC inside the band.
     assert_eq!(
-        rx.add_channel(CENTER - 1_000.0, IqMode::Ft8),
+        rx.add_channel(CENTER - 1_000.0, Mode::Ft8),
         Err(IqError::TooCloseToDc)
     );
     // Past the band edge.
     assert_eq!(
-        rx.add_channel(CENTER + 95_000.0, IqMode::Ft8),
+        rx.add_channel(CENTER + 95_000.0, Mode::Ft8),
         Err(IqError::OutsideBand)
     );
-    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     // A retune that puts the channel outside is refused whole.
     assert_eq!(rx.retune(CENTER + 200_000.0), Err(IqError::OutsideBand));
     assert!(rx.remove_channel(ch));
@@ -356,7 +356,7 @@ fn byte_stream_matches_typed_push(kind: Channelizer) {
     let f = interleave(&iq);
     let bytes: Vec<u8> = f.iter().flat_map(|v| v.to_le_bytes()).collect();
     let (mut rx, rows) = receiver(kind);
-    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    let ch = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
     rx.set_time_anchor(T0_NS);
     // Split inside samples.
     for chunk in bytes.chunks(100_003) {
@@ -421,7 +421,7 @@ fn byte_formats_match_the_wav_path(kind: Channelizer) {
         let rows = Arc::new(Mutex::new(Vec::new()));
         let sink = rows.clone();
         rx.on_decode(move |r| sink.lock().unwrap().push(r.clone()));
-        let ch = rx.add_channel(dial, IqMode::Ft8).unwrap();
+        let ch = rx.add_channel(dial, Mode::Ft8).unwrap();
         rx.set_time_anchor(T0_NS);
         for chunk in bytes.chunks(100_003) {
             rx.push_bytes(chunk);

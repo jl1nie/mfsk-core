@@ -41,7 +41,7 @@ use crate::engine::pipeline::DecodeResult;
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 use crate::msg::decode_request::{DecodeRequest, FrameDecodable};
 use crate::msg::decoded::Decoded;
-use crate::registry::{self, ProtocolMeta};
+use crate::registry::{Mode, ProtocolMeta};
 
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
@@ -53,170 +53,76 @@ const BLOCK: usize = 8_192;
 const TARGET_RMS: f32 = 2_000.0;
 const NS: i128 = 1_000_000_000;
 
-/// The modes an [`IqReceiver`] channel can carry.
+/// Decode one whole slot of `mode`. `audio` is 12 kHz, scaled to the level
+/// the `i16` decoders take divided by 32768.
 ///
 /// FT8, FT4 and FST4 go through `msg::decode_request::DecodeRequest` with the
 /// registry's default search for the mode; WSPR, JT9, JT65 and Q65 through
 /// their own request types with their `default_search_params`, all with the
 /// nominal start the registry gives the mode so `dt` reads as it does on the
 /// WAV path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IqMode {
-    #[cfg(feature = "ft8")]
-    Ft8,
-    #[cfg(feature = "ft4")]
-    Ft4,
-    #[cfg(feature = "fst4")]
-    Fst4S15,
-    #[cfg(feature = "fst4")]
-    Fst4S30,
-    #[cfg(feature = "fst4")]
-    Fst4S60,
-    #[cfg(feature = "fst4")]
-    Fst4S120,
-    #[cfg(feature = "fst4")]
-    Fst4S300,
-    #[cfg(feature = "wspr")]
-    Wspr,
-    #[cfg(feature = "jt9")]
-    Jt9,
-    #[cfg(feature = "jt65")]
-    Jt65,
-    #[cfg(feature = "q65")]
-    Q65A15,
-    #[cfg(feature = "q65")]
-    Q65A30,
-    #[cfg(feature = "q65")]
-    Q65A60,
-    #[cfg(feature = "q65")]
-    Q65B60,
-    #[cfg(feature = "q65")]
-    Q65C60,
-    #[cfg(feature = "q65")]
-    Q65D60,
-    #[cfg(feature = "q65")]
-    Q65E60,
-    #[cfg(feature = "q65")]
-    Q65D120,
-    #[cfg(feature = "q65")]
-    Q65E120,
-    #[cfg(feature = "q65")]
-    Q65A300,
-}
-
-impl IqMode {
-    fn registry_name(self) -> &'static str {
-        match self {
-            #[cfg(feature = "ft8")]
-            IqMode::Ft8 => "FT8",
-            #[cfg(feature = "ft4")]
-            IqMode::Ft4 => "FT4",
-            #[cfg(feature = "fst4")]
-            IqMode::Fst4S15 => "FST4-15",
-            #[cfg(feature = "fst4")]
-            IqMode::Fst4S30 => "FST4-30",
-            #[cfg(feature = "fst4")]
-            IqMode::Fst4S60 => "FST4-60A",
-            #[cfg(feature = "fst4")]
-            IqMode::Fst4S120 => "FST4-120",
-            #[cfg(feature = "fst4")]
-            IqMode::Fst4S300 => "FST4-300",
-            #[cfg(feature = "wspr")]
-            IqMode::Wspr => "WSPR",
-            #[cfg(feature = "jt9")]
-            IqMode::Jt9 => "JT9",
-            #[cfg(feature = "jt65")]
-            IqMode::Jt65 => "JT65",
-            #[cfg(feature = "q65")]
-            IqMode::Q65A15 => "Q65-15A",
-            #[cfg(feature = "q65")]
-            IqMode::Q65A30 => "Q65-30A",
-            #[cfg(feature = "q65")]
-            IqMode::Q65A60 => "Q65-60A",
-            #[cfg(feature = "q65")]
-            IqMode::Q65B60 => "Q65-60B",
-            #[cfg(feature = "q65")]
-            IqMode::Q65C60 => "Q65-60C",
-            #[cfg(feature = "q65")]
-            IqMode::Q65D60 => "Q65-60D",
-            #[cfg(feature = "q65")]
-            IqMode::Q65E60 => "Q65-60E",
-            #[cfg(feature = "q65")]
-            IqMode::Q65D120 => "Q65-120D",
-            #[cfg(feature = "q65")]
-            IqMode::Q65E120 => "Q65-120E",
-            #[cfg(feature = "q65")]
-            IqMode::Q65A300 => "Q65-300A",
-        }
-    }
-
-    fn meta(self) -> &'static ProtocolMeta {
-        registry::by_name(self.registry_name()).expect("every IqMode variant is a registry entry")
-    }
-
-    /// Decode one whole slot. `audio` is 12 kHz, scaled to the level the
-    /// `i16` decoders take divided by 32768.
-    fn decode(self, audio: &[f32]) -> Vec<Decoded> {
-        let meta = self.meta();
+fn decode_slot(mode: Mode, audio: &[f32]) -> Vec<Decoded> {
+    {
+        let meta = mode.meta();
         // Samples from the slot start to the frame's `dt = 0`.
         #[allow(unused_variables)]
         let nominal = (meta.tx_start_offset_s * 12_000.0).round() as usize;
-        match self {
+        match mode {
             #[cfg(feature = "ft8")]
-            IqMode::Ft8 => frame_family::<crate::Ft8>(audio, meta),
+            Mode::Ft8 => frame_family::<crate::Ft8>(audio, meta),
             #[cfg(feature = "ft4")]
-            IqMode::Ft4 => frame_family::<crate::Ft4>(audio, meta),
+            Mode::Ft4 => frame_family::<crate::Ft4>(audio, meta),
             #[cfg(feature = "fst4")]
-            IqMode::Fst4S15 => frame_family::<crate::fst4::Fst4s15>(audio, meta),
+            Mode::Fst4S15 => frame_family::<crate::fst4::Fst4s15>(audio, meta),
             #[cfg(feature = "fst4")]
-            IqMode::Fst4S30 => frame_family::<crate::fst4::Fst4s30>(audio, meta),
+            Mode::Fst4S30 => frame_family::<crate::fst4::Fst4s30>(audio, meta),
             #[cfg(feature = "fst4")]
-            IqMode::Fst4S60 => frame_family::<crate::fst4::Fst4s60>(audio, meta),
+            Mode::Fst4S60 => frame_family::<crate::fst4::Fst4s60>(audio, meta),
             #[cfg(feature = "fst4")]
-            IqMode::Fst4S120 => frame_family::<crate::fst4::Fst4s120>(audio, meta),
+            Mode::Fst4S120 => frame_family::<crate::fst4::Fst4s120>(audio, meta),
             #[cfg(feature = "fst4")]
-            IqMode::Fst4S300 => frame_family::<crate::fst4::Fst4s300>(audio, meta),
+            Mode::Fst4S300 => frame_family::<crate::fst4::Fst4s300>(audio, meta),
             #[cfg(feature = "wspr")]
-            IqMode::Wspr => crate::wspr::DecodeRequest::new(audio, 12_000)
+            Mode::Wspr => crate::wspr::DecodeRequest::new(audio, 12_000)
                 .nominal_start(nominal)
                 .decode()
                 .iter()
                 .map(|r| r.to_decoded())
                 .collect(),
             #[cfg(feature = "jt9")]
-            IqMode::Jt9 => crate::jt9::DecodeRequest::new(audio, 12_000)
+            Mode::Jt9 => crate::jt9::DecodeRequest::new(audio, 12_000)
                 .nominal_start(nominal)
                 .decode()
                 .iter()
                 .map(|r| r.to_decoded())
                 .collect(),
             #[cfg(feature = "jt65")]
-            IqMode::Jt65 => crate::jt65::DecodeRequest::new(audio, 12_000)
+            Mode::Jt65 => crate::jt65::DecodeRequest::new(audio, 12_000)
                 .nominal_start(nominal)
                 .decode()
                 .iter()
                 .map(|r| r.to_decoded())
                 .collect(),
             #[cfg(feature = "q65")]
-            IqMode::Q65A15 => q65_with::<crate::q65::Q65a15>(audio, nominal),
+            Mode::Q65A15 => q65_with::<crate::q65::Q65a15>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65A30 => q65_with::<crate::q65::Q65a30>(audio, nominal),
+            Mode::Q65A30 => q65_with::<crate::q65::Q65a30>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65A60 => q65_with::<crate::q65::Q65a60>(audio, nominal),
+            Mode::Q65A60 => q65_with::<crate::q65::Q65a60>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65B60 => q65_with::<crate::q65::Q65b60>(audio, nominal),
+            Mode::Q65B60 => q65_with::<crate::q65::Q65b60>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65C60 => q65_with::<crate::q65::Q65c60>(audio, nominal),
+            Mode::Q65C60 => q65_with::<crate::q65::Q65c60>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65D60 => q65_with::<crate::q65::Q65d60>(audio, nominal),
+            Mode::Q65D60 => q65_with::<crate::q65::Q65d60>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65E60 => q65_with::<crate::q65::Q65e60>(audio, nominal),
+            Mode::Q65E60 => q65_with::<crate::q65::Q65e60>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65D120 => q65_with::<crate::q65::Q65d120>(audio, nominal),
+            Mode::Q65D120 => q65_with::<crate::q65::Q65d120>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65E120 => q65_with::<crate::q65::Q65e120>(audio, nominal),
+            Mode::Q65E120 => q65_with::<crate::q65::Q65e120>(audio, nominal),
             #[cfg(feature = "q65")]
-            IqMode::Q65A300 => q65_with::<crate::q65::Q65a300>(audio, nominal),
+            Mode::Q65A300 => q65_with::<crate::q65::Q65a300>(audio, nominal),
         }
     }
 }
@@ -291,7 +197,7 @@ pub struct ChannelId(pub usize);
 #[derive(Clone, Debug)]
 pub struct IqDecode {
     pub channel: ChannelId,
-    pub mode: IqMode,
+    pub mode: Mode,
     /// The cross-mode row: text, audio frequency, DT, SNR.
     pub decoded: Decoded,
     /// RF frequency of tone 0: the channel's dial plus the audio frequency.
@@ -311,7 +217,7 @@ struct OpenSlot {
 struct Channel {
     id: ChannelId,
     dial_hz: f64,
-    mode: IqMode,
+    mode: Mode,
     meta: &'static ProtocolMeta,
     /// `Some` on the `Direct` path; `None` when the shared bank feeds it.
     fe: Option<IqToAudio>,
@@ -408,7 +314,7 @@ impl Channel {
         let g = TARGET_RMS / 32_768.0 / rms;
         let audio: Vec<f32> = slot.buf.iter().map(|&v| v * g).collect();
         let start_sample = (slot.start_k as u128 * fs as u128 / 12_000) as u64;
-        for decoded in self.mode.decode(&audio) {
+        for decoded in decode_slot(self.mode, &audio) {
             rows.push(IqDecode {
                 channel: self.id,
                 mode: self.mode,
@@ -484,7 +390,7 @@ impl IqReceiver {
     /// [`IqToAudio::new`]: too close to DC, or a window outside `±Fs/2`.
     /// Added mid-stream, it starts with the next sample (on the `Pfb` path,
     /// the next sub-band sample that falls on a whole audio sample).
-    pub fn add_channel(&mut self, dial_hz: f64, mode: IqMode) -> Result<ChannelId, IqError> {
+    pub fn add_channel(&mut self, dial_hz: f64, mode: Mode) -> Result<ChannelId, IqError> {
         let (fe, bank_idx, k_next) = match self.bank.as_mut() {
             Some(bank) => {
                 let k = bank.next_audio_index();
@@ -734,47 +640,47 @@ mod tests {
     /// mode's period says.
     #[test]
     fn every_mode_is_a_registry_entry() {
-        let all: &[(IqMode, f32)] = &[
+        let all: &[(Mode, f32)] = &[
             #[cfg(feature = "ft8")]
-            (IqMode::Ft8, 15.0),
+            (Mode::Ft8, 15.0),
             #[cfg(feature = "ft4")]
-            (IqMode::Ft4, 7.5),
+            (Mode::Ft4, 7.5),
             #[cfg(feature = "fst4")]
-            (IqMode::Fst4S15, 15.0),
+            (Mode::Fst4S15, 15.0),
             #[cfg(feature = "fst4")]
-            (IqMode::Fst4S30, 30.0),
+            (Mode::Fst4S30, 30.0),
             #[cfg(feature = "fst4")]
-            (IqMode::Fst4S60, 60.0),
+            (Mode::Fst4S60, 60.0),
             #[cfg(feature = "fst4")]
-            (IqMode::Fst4S120, 120.0),
+            (Mode::Fst4S120, 120.0),
             #[cfg(feature = "fst4")]
-            (IqMode::Fst4S300, 300.0),
+            (Mode::Fst4S300, 300.0),
             #[cfg(feature = "wspr")]
-            (IqMode::Wspr, 120.0),
+            (Mode::Wspr, 120.0),
             #[cfg(feature = "jt9")]
-            (IqMode::Jt9, 60.0),
+            (Mode::Jt9, 60.0),
             #[cfg(feature = "jt65")]
-            (IqMode::Jt65, 60.0),
+            (Mode::Jt65, 60.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65A15, 15.0),
+            (Mode::Q65A15, 15.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65A30, 30.0),
+            (Mode::Q65A30, 30.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65A60, 60.0),
+            (Mode::Q65A60, 60.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65B60, 60.0),
+            (Mode::Q65B60, 60.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65C60, 60.0),
+            (Mode::Q65C60, 60.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65D60, 60.0),
+            (Mode::Q65D60, 60.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65E60, 60.0),
+            (Mode::Q65E60, 60.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65D120, 120.0),
+            (Mode::Q65D120, 120.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65E120, 120.0),
+            (Mode::Q65E120, 120.0),
             #[cfg(feature = "q65")]
-            (IqMode::Q65A300, 300.0),
+            (Mode::Q65A300, 300.0),
         ];
         for &(m, period) in all {
             let meta = m.meta();

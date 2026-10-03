@@ -4,17 +4,14 @@
 //! WSJT message payload, with 5 × 8-symbol Costas sync blocks. The
 //! generic pipeline handles all of that once we supply a
 //! [`DownsampleCfg`] tuned for the sub-mode's geometry — see the
-//! `FST4_*_DOWNSAMPLE` constants below. Exposed via the shared
-//! [`crate::msg::decode_request::DecodeRequest`] /
-//! [`crate::msg::decode_request::SniperRequest`] builders, generic over
-//! `P` (issue #191) — e.g. `DecodeRequest::<Fst4s120>::new(...)` with
-//! `req.audio`/etc, dispatching internally to the matching
-//! `FST4_*_DOWNSAMPLE` constant for that sub-mode.
+//! `FST4_*_DOWNSAMPLE` constants below. Exposed through
+//! [`crate::decoder::Decoder`], e.g. `Decoder::<Fst4s120>`, dispatching
+//! internally to the matching `FST4_*_DOWNSAMPLE` constant for that
+//! sub-mode.
 //!
 //! FST4 has no SIC (successive interference cancellation) path — no
-//! `SubtractCfg` exists for it, so
-//! [`SupportsSicRounds`](crate::msg::decode_request::SupportsSicRounds) is
-//! not implemented for any sub-mode (issue #193: new numerical work, not a
+//! `SubtractCfg` exists for it, so `SupportsSicRounds` is not implemented
+//! for any sub-mode (issue #193: new numerical work, not a
 //! refactor, kept out of this redesign's scope).
 
 use crate::engine::dsp::downsample::DownsampleCfg;

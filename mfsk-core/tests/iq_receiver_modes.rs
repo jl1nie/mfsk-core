@@ -15,7 +15,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use mfsk_core::iq::{Channelizer, IqDecode, IqMode, IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::Mode;
+use mfsk_core::iq::{Channelizer, IqDecode, IqReceiver, IqSampleFormat, IqStream};
 use mfsk_core::msg::decoded::Decoded;
 
 #[allow(dead_code)]
@@ -38,7 +39,7 @@ fn set(rows: impl IntoIterator<Item = Decoded>) -> Set {
 
 /// `wav` (12 kHz f32, zero-padded to `slot_s`) as IQ through a receiver with
 /// one `mode` channel; the rows it delivers.
-fn through_iq(kind: Channelizer, mode: IqMode, wav: &[f32], slot_s: usize) -> Vec<IqDecode> {
+fn through_iq(kind: Channelizer, mode: Mode, wav: &[f32], slot_s: usize) -> Vec<IqDecode> {
     let mut pcm: Vec<i16> = wav
         .iter()
         .map(|&v| (v * 32_768.0).round().clamp(-32_768.0, 32_767.0) as i16)
@@ -72,7 +73,7 @@ fn through_iq(kind: Channelizer, mode: IqMode, wav: &[f32], slot_s: usize) -> Ve
 
 fn check(
     kind: Channelizer,
-    mode: IqMode,
+    mode: Mode,
     path: &str,
     slot_s: usize,
     reference: impl Fn(&[f32]) -> Vec<Decoded>,
@@ -121,24 +122,18 @@ fn check(
 }
 
 fn wspr(kind: Channelizer) {
-    check(
-        kind,
-        IqMode::Wspr,
-        "golden/wspr/150426_0918.wav",
-        120,
-        |a| {
-            mfsk_core::wspr::DecodeRequest::new(a, 12_000)
-                .nominal_start(12_000)
-                .decode()
-                .iter()
-                .map(|r| r.to_decoded())
-                .collect()
-        },
-    );
+    check(kind, Mode::Wspr, "golden/wspr/150426_0918.wav", 120, |a| {
+        mfsk_core::wspr::DecodeRequest::new(a, 12_000)
+            .nominal_start(12_000)
+            .decode()
+            .iter()
+            .map(|r| r.to_decoded())
+            .collect()
+    });
 }
 
 fn jt9(kind: Channelizer) {
-    check(kind, IqMode::Jt9, "130418_1742.wav", 60, |a| {
+    check(kind, Mode::Jt9, "130418_1742.wav", 60, |a| {
         mfsk_core::jt9::DecodeRequest::new(a, 12_000)
             .nominal_start(0)
             .decode()
@@ -151,7 +146,7 @@ fn jt9(kind: Channelizer) {
 fn jt65(kind: Channelizer) {
     check(
         kind,
-        IqMode::Jt65,
+        Mode::Jt65,
         "golden/jt65/jt65a_5sig_m18.wav",
         60,
         |a| {
@@ -181,7 +176,7 @@ fn q65<P: mfsk_core::q65::Q65SubMode>(a: &[f32]) -> Vec<Decoded> {
 fn q65_120d(kind: Channelizer) {
     check(
         kind,
-        IqMode::Q65D120,
+        Mode::Q65D120,
         "golden/q65/120D_Rainscatter_10_GHz/210117_0920.wav",
         120,
         q65::<mfsk_core::q65::Q65d120>,
@@ -191,7 +186,7 @@ fn q65_120d(kind: Channelizer) {
 fn q65_300a(kind: Channelizer) {
     check(
         kind,
-        IqMode::Q65A300,
+        Mode::Q65A300,
         "golden/q65/300A_Optical_Scatter/201210_0505.wav",
         300,
         q65::<mfsk_core::q65::Q65a300>,

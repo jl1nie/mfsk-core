@@ -5747,10 +5747,10 @@ fn iq_inner<'a>(rx: *mut MfskIqReceiver) -> Option<&'a mut IqInner> {
     unsafe { (rx as *mut IqInner).as_mut() }
 }
 
-/// The `IqMode` a `MfskMode` addresses, or `None` for a mode the IQ receiver
+/// The `Mode` a `MfskMode` addresses, or `None` for a mode the IQ receiver
 /// does not carry (MSK144, JTTY, uvpacket) or a build without it.
-fn iq_mode_of(m: MfskMode) -> Option<mfsk_core::iq::IqMode> {
-    use mfsk_core::iq::IqMode as I;
+fn iq_mode_of(m: MfskMode) -> Option<mfsk_core::Mode> {
+    use mfsk_core::Mode as I;
     Some(match m {
         MfskMode::Ft8 => I::Ft8,
         MfskMode::Ft4 => I::Ft4,
@@ -5776,13 +5776,13 @@ fn iq_mode_of(m: MfskMode) -> Option<mfsk_core::iq::IqMode> {
     })
 }
 
-/// The `MfskMode` an `IqMode` came from: the inverse of [`iq_mode_of`], by
+/// The `MfskMode` an `Mode` came from: the inverse of [`iq_mode_of`], by
 /// search, so the two cannot disagree.
-fn mfsk_mode_of_iq(m: mfsk_core::iq::IqMode) -> MfskMode {
+fn mfsk_mode_of_iq(m: mfsk_core::Mode) -> MfskMode {
     (0u32..)
         .map_while(mode_of_index)
         .find(|x| iq_mode_of(*x) == Some(m))
-        .expect("every IqMode is some MfskMode's")
+        .expect("every Mode is some MfskMode's")
 }
 
 /// `MfskMode` by discriminant, for as long as there is one.

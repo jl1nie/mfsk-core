@@ -91,7 +91,7 @@ pub(in crate::ft8) fn stage_trace_enabled() -> bool {
 /// Embedded FT8 decode for one 15-s slot.
 ///
 /// Runs the same algorithm shape as the host
-/// [`DecodeRequest`](crate::msg::decode_request::DecodeRequest) single-pass
+/// [`Decoder`](crate::decoder::Decoder) single-pass
 /// path but talks only to power-of-two FFTs (via the
 /// [`crate::engine::fft::FftPlanner`] trait) and uses the min-sum LDPC
 /// kernel to skip per-iteration `tanh` / `atanh`. No

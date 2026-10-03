@@ -7,7 +7,7 @@
 //! which were two axes (chase or not, streaming or not) spelled out as a
 //! cross product. Same shape as [`crate::jt9::decode_request`] and
 //! [`crate::q65::decode_request`], and per-mode for the same reason: JT65
-//! decodes `&[f32]` PCM, where [`crate::msg::decode_request`] takes
+//! decodes `&[f32]` PCM, where `crate::msg::decode_request` takes
 //! `&[i16]`.
 
 use alloc::vec::Vec;
@@ -95,7 +95,7 @@ impl<'a> DecodeRequest<'a> {
 
     /// Fire `cb` once per candidate as it's accepted, *in addition to*
     /// (not instead of) `decode()`'s returned `Vec` — same shape as
-    /// [`crate::msg::decode_request::DecodeRequest::on_result`].
+    /// `crate::msg::decode_request::DecodeRequest::on_result`.
     ///
     /// **Delivery order/dedup contract**: the candidate loop is
     /// sequential with no early exit and no parallelism — `cb` fires

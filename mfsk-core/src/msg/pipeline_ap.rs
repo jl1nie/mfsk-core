@@ -36,6 +36,8 @@ use super::ap::{ApHint, WsjtApCompatible};
 /// Bound on [`WsjtApCompatible`] keeps callers honest: the hint encodes
 /// callsign / grid / report at fixed Wsjt77 bit positions and is meaningless
 /// for protocols whose info layout differs (e.g. byte-oriented codecs).
+// FT4 and FST4 build their AP bits here; FT8 only uses `ap_passes`.
+#[cfg_attr(not(any(feature = "ft4", feature = "fst4")), allow(dead_code))]
 pub(crate) fn ap_bits_for<P: Protocol>(hint: &ApHint) -> (Vec<u8>, Vec<u8>)
 where
     P::Msg: WsjtApCompatible,

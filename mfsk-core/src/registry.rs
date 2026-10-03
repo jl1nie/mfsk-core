@@ -654,6 +654,72 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     protocol_meta!("UvExpress", crate::UvExpress, UV_PROFILE),
 ];
 
+/// Declares [`Mode`]: one variant per slot-decoded registry entry, each
+/// gated on its protocol's feature, with its registry name.
+macro_rules! modes {
+    ($( $feat:literal $var:ident $name:literal ),* $(,)?) => {
+        /// A slot-decoded mode, chosen at run time: one variant per
+        /// [`PROTOCOLS`] entry of the WSJT family (the `uvpacket` entries are
+        /// packet modes with their own API and are not listed).
+        ///
+        /// It is the run-time counterpart of the protocol ZSTs: a UI, the C
+        /// ABI or an IQ channel names a mode with it, and
+        /// `AnyDecoder` builds the decoder.
+        #[non_exhaustive]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum Mode {
+            $( #[cfg(feature = $feat)] $var, )*
+        }
+
+        impl Mode {
+            /// Every mode this build supports, in registry order.
+            pub const ALL: &'static [Mode] = &[ $( #[cfg(feature = $feat)] Mode::$var, )* ];
+
+            /// The registry name (`"FT8"`, `"FST4-60A"`, `"Q65-30A"`, ...).
+            pub fn name(self) -> &'static str {
+                match self {
+                    $( #[cfg(feature = $feat)] Mode::$var => $name, )*
+                }
+            }
+        }
+    };
+}
+
+modes! {
+    "ft8" Ft8 "FT8",
+    "ft4" Ft4 "FT4",
+    "fst4" Fst4S15 "FST4-15",
+    "fst4" Fst4S30 "FST4-30",
+    "fst4" Fst4S60 "FST4-60A",
+    "fst4" Fst4S120 "FST4-120",
+    "fst4" Fst4S300 "FST4-300",
+    "wspr" Wspr "WSPR",
+    "jt9" Jt9 "JT9",
+    "jt65" Jt65 "JT65",
+    "q65" Q65A15 "Q65-15A",
+    "q65" Q65A30 "Q65-30A",
+    "q65" Q65A60 "Q65-60A",
+    "q65" Q65B60 "Q65-60B",
+    "q65" Q65C60 "Q65-60C",
+    "q65" Q65D60 "Q65-60D",
+    "q65" Q65E60 "Q65-60E",
+    "q65" Q65D120 "Q65-120D",
+    "q65" Q65E120 "Q65-120E",
+    "q65" Q65A300 "Q65-300A",
+}
+
+impl Mode {
+    /// This mode's registry entry.
+    pub fn meta(self) -> &'static ProtocolMeta {
+        by_name(self.name()).expect("every Mode variant is a registry entry")
+    }
+
+    /// The mode whose registry name is `name`, if this build has it.
+    pub fn from_name(name: &str) -> Option<Mode> {
+        Mode::ALL.iter().copied().find(|m| m.name() == name)
+    }
+}
+
 /// Iterator over every registry entry sharing `id`. For most
 /// protocols this yields exactly one entry; Q65 yields ten (one per
 /// sub-mode).
@@ -680,6 +746,20 @@ pub fn for_protocol_id(id: ProtocolId) -> Option<&'static ProtocolMeta> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_mode_is_a_registry_entry_and_round_trips() {
+        for &m in Mode::ALL {
+            assert_eq!(m.meta().name, m.name());
+            assert_eq!(Mode::from_name(m.name()), Some(m));
+        }
+        // Every WSJT-family registry entry has a mode.
+        let wsjt = PROTOCOLS
+            .iter()
+            .filter(|p| !p.name.starts_with("Uv"))
+            .count();
+        assert_eq!(Mode::ALL.len(), wsjt);
+    }
 
     #[test]
     fn registry_is_non_empty_in_default_build() {

@@ -2,8 +2,7 @@
 //!
 //! Drives the full generic pipeline (coarse sync → refine → LLR → BP/OSD →
 //! optional SIC multi-pass) specialised to the [`Ft4`] protocol, exposed
-//! via the shared [`crate::msg::decode_request::DecodeRequest`] /
-//! [`crate::msg::decode_request::SniperRequest`] builders (issue #191).
+//! through [`crate::decoder::Decoder`].
 
 use super::Ft4;
 use crate::engine::dsp::downsample::DownsampleCfg;

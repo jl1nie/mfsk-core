@@ -7,7 +7,7 @@
 //! [`Jt9Depth`] alone had to add both `_with_depth` and
 //! `_streaming_with_depth`. Same shape as
 //! [`crate::q65::decode_request`], and for the same reason it is a
-//! per-mode type rather than [`crate::msg::decode_request`]: JT9 decodes
+//! per-mode type rather than `crate::msg::decode_request`: JT9 decodes
 //! `&[f32]` PCM, where the generic builder is fixed to `&[i16]`.
 
 use alloc::vec::Vec;
@@ -90,7 +90,7 @@ impl<'a> DecodeRequest<'a> {
 
     /// Fire `cb` once per candidate as it's accepted, *in addition to*
     /// (not instead of) `decode()`'s returned `Vec` — same shape as
-    /// [`crate::msg::decode_request::DecodeRequest::on_result`].
+    /// `crate::msg::decode_request::DecodeRequest::on_result`.
     ///
     /// **Delivery order/dedup contract**: the candidate loop is
     /// sequential with no early exit and no parallelism — `cb` fires

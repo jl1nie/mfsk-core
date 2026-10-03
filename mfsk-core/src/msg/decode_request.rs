@@ -22,6 +22,17 @@
 //! builder method — `new`, `.sic_rounds()`, `.sic_early()` — was actually
 //! callable for this `P`, so an unsupported combination is a compile
 //! error, not a reachable runtime state).
+//!
+//! Since 0.13 this is the engine's request, not a public API:
+//! `crate::decoder` builds it, and only `internal-testing` reaches it from
+//! outside. Which builders and trait items a build reaches therefore depends
+//! on which of FT8, FT4 and FST4 it compiles (each is the only caller of
+//! some of them), so dead-code analysis is meaningful only with all three.
+
+#![cfg_attr(
+    not(all(feature = "ft8", feature = "ft4", feature = "fst4")),
+    allow(dead_code)
+)]
 
 use alloc::vec::Vec;
 
@@ -727,7 +738,7 @@ pub enum NoiseBlanker {
     /// Decode once per blanking level `0, step, 2*step, .. 20` percent
     /// (`nb = -1, -2, -3` for steps 5, 2, 1; the GUI offers -1 and -2).
     /// Every level above 0 tries only candidates within `ftol_hz` of
-    /// [`DecodeRequest::freq_hint`] — upstream's `ntol` around `nfqso`
+    /// the Rx frequency (`DecodeParams::rx_freq_hz`) — upstream's `ntol` around `nfqso`
     /// (`fst4_decode.f90:315-316`) — so without a hint only the 0 % pass
     /// runs. Costs up to 21 decodes.
     Sweep {
@@ -768,6 +779,9 @@ type OnResultCallback<'a, P> = &'a (dyn Fn(&<P as FrameDecodable>::DecodeResult)
 /// whether the caller wants it back).
 pub struct DecodeOutcome<P: FrameDecodable> {
     pub results: Vec<P::DecodeResult>,
+    /// Read only by `internal-testing` tests that feed it back through
+    /// [`DecodeRequest::fft_cache`].
+    #[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
     pub fft_cache: FftCache,
     /// What a [`DecodeRequest::budget`] cut short, if one was set.
     /// [`BudgetReport::default()`] when it wasn't.
@@ -813,7 +827,7 @@ pub struct DecodeRequest<'a, P: FrameDecodable, Pol: MessagePolicy = DefaultPoli
     pub(crate) sic_rounds: usize,
     /// FT8 only: WSJT-X's `ndepth <= 2` (`jt9 -d1/-d2`), which raises the
     /// hard-sync (nsync) floor from 6/7 to 8. Set by
-    /// `DecodeRequest::<Ft8>::wsjtx_depth` for `D1`/`D2`; there is no
+    /// `crate::decoder` for `Depth::Fast`/`Normal`; there is no
     /// builder for it, because a caller who wants a different floor has
     /// `sync_min`. See `ft8::decode_block::PassCtx::nsync_floor`.
     #[cfg_attr(not(feature = "ft8"), allow(dead_code))]
@@ -959,13 +973,17 @@ impl<'a, P: FrameDecodable, Pol: MessagePolicy> DecodeRequest<'a, P, Pol> {
         self
     }
     /// Messages already decoded in an earlier pass — skipped (and, for SIC
-    /// strategies, subtracted) rather than re-reported.
+    /// strategies, subtracted) rather than re-reported. Test hook only: a
+    /// `crate::decoder::Decoder` decodes a whole period once.
+    #[cfg(feature = "internal-testing")]
     pub fn known(mut self, k: &'a [P::DecodeResult]) -> Self {
         self.known = k;
         self
     }
     /// Reuse a previously-built [`FftCache`] (e.g. from an earlier
     /// [`DecodeOutcome::fft_cache`]) instead of rebuilding it from `audio`.
+    /// Test hook only, like [`Self::known`].
+    #[cfg(feature = "internal-testing")]
     pub fn fft_cache(mut self, c: FftCache) -> Self {
         self.fft_cache = Some(c);
         self

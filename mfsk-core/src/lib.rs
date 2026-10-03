@@ -365,6 +365,8 @@ extern crate alloc;
 /// override that didn't get re-fingerprinted).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod decoder;
 pub mod engine;
 pub mod fec;
 pub mod iq;
@@ -407,7 +409,7 @@ pub use crate::engine::{
     DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,
     ModulationParams, Protocol, ProtocolId, SAMPLE_RATE_HZ, SyncBlock, SyncMode,
 };
-pub use crate::registry::{PROTOCOLS, ProtocolMeta, by_id, by_name, for_protocol_id};
+pub use crate::registry::{Mode, PROTOCOLS, ProtocolMeta, by_id, by_name, for_protocol_id};
 
 #[cfg(feature = "fst4")]
 pub use crate::fst4::Fst4s60;

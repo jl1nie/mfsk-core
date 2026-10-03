@@ -150,42 +150,50 @@ fn task_t1_requested() -> bool {
 }
 
 fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
+    use mfsk_core::decoder::{
+        ApMode, DecodeParams, Decoder, Depth, Ft8Extras, Ft8Strategy, SlotInput, Tuning,
+    };
     use mfsk_core::ft8::Ft8;
 
-    use mfsk_core::msg::decode_request::DecodeRequest;
-    if task_t1_requested() {
-        use mfsk_core::ft8::decode::{ApHint, WsjtxDepth};
-        let cq = ApHint::new().with_call1("CQ");
-        let results = DecodeRequest::<Ft8>::wsjtx_depth(
-            audio,
-            200.0,
-            3000.0,
-            1.3,
-            1000,
-            WsjtxDepth::D3,
-            Some(&cq),
-        )
-        .decode()
-        .results;
-        return score_ft8(&results);
-    }
-    let hint = ap_hint_requested();
-    let mut req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 0.8, 50);
-    if let Some(f) = freq_hint_requested() {
-        req = req.freq_hint(f);
-    }
-    if let Some(h) = hint.as_ref() {
-        req = req.ap_hint(h);
-    }
-    if let Some(level) = strictness_from_env() {
-        req = req.strictness(level);
-    }
-    let results = match strategy_from_env() {
-        Strategy::Single => req.single_pass().decode().results,
-        Strategy::SicEarly => req.sic_early().decode().results,
-        Strategy::SicRounds => req.sic_rounds(3).decode().results,
+    let decode = |params: DecodeParams, extras: Ft8Extras| -> Vec<_> {
+        Decoder::<Ft8>::new(params)
+            .with_extras(extras)
+            .decode(&SlotInput::i16(audio))
+            .rows
+            .into_iter()
+            .map(|r| r.native)
+            .collect()
     };
-    score_ft8(&results)
+    if task_t1_requested() {
+        // `jt9 -8 -d 3 -L 200 -H 3000`: Deep's own search, AP on with no
+        // QSO context (the CQ hypothesis).
+        let params = DecodeParams::for_band((200.0, 3000.0))
+            .depth(Depth::Deep)
+            .ap(ApMode::Full);
+        return score_ft8(&decode(params, Ft8Extras::default()));
+    }
+    let mut params = DecodeParams::for_band((100.0, 3000.0))
+        .depth(Depth::Deep)
+        .ap(ApMode::Off);
+    if let Some(f) = freq_hint_requested() {
+        params = params.rx_freq(f);
+    }
+    let extras = Ft8Extras {
+        tuning: Tuning {
+            sync_min: Some(0.8),
+            max_cand: Some(50),
+            strictness: strictness_from_env(),
+            strategy: Some(match strategy_from_env() {
+                Strategy::Single => Ft8Strategy::SinglePass,
+                Strategy::SicEarly => Ft8Strategy::SicEarly,
+                Strategy::SicRounds => Ft8Strategy::SicRounds(3),
+            }),
+            ..Default::default()
+        },
+        ap_hint: ap_hint_requested(),
+        ..Default::default()
+    };
+    score_ft8(&decode(params, extras))
 }
 
 fn score_ft8(results: &[mfsk_core::ft8::decode::DecodeResult]) -> (bool, u32) {

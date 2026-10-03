@@ -715,7 +715,7 @@ pub trait MessageCodec: Default + 'static {
     /// mfsk-core's own, added because this crate's default search is
     /// deeper than upstream's and reaches candidates upstream never
     /// scores. Callers who disagree with the verdict override it per
-    /// request — see [`crate::msg::decode_request::MessagePolicy`].
+    /// decoder — see [`crate::decoder::MessageFilter`].
     ///
     /// Associated-function shape (no `&self`) for the same reason
     /// [`Self::verify_info`] has it: the verdict is a property of the
