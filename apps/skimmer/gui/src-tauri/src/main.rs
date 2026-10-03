@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Tauri shell for the SpyServer skimmer: `skimmer_core::run` on a thread,
+//! Tauri shell for the SpyServer skimmer: `skimmer_core::run_all` on a thread,
 //! its events forwarded to the window as `skimmer` events, settings kept as
 //! JSON in the app's config directory, decodes appended to an ALL.TXT-style
 //! log.
@@ -53,6 +53,10 @@ struct ChannelSetting {
     /// This channel's own call and locator; empty uses Settings'.
     my_call: Option<String>,
     my_grid: Option<String>,
+    /// Which server (an index into `Settings::servers`) listens to it.
+    server: usize,
+    /// Its step in that server's rotation (an index into `step_minutes`).
+    step: usize,
 }
 
 impl ChannelSetting {
@@ -117,24 +121,65 @@ impl ChannelSetting {
     }
 }
 
+/// One SpyServer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-struct Settings {
-    server: String,
-    channels: Vec<ChannelSetting>,
-    /// "float" or "int16".
-    format: String,
+struct ServerSetting {
+    /// Shown in the window and kept in the database; unique.
+    name: String,
+    address: String,
+    /// Where this server's antenna is (a locator): the origin of the bearings
+    /// of what it hears.
+    grid: String,
+    /// Fixed delay between the SDR and this PC taken off arrival times, ms.
+    network_delay_ms: f64,
+    /// Hold control and tune the radio even beside an operator's client.
     tune: bool,
     /// Leave control to an SDR# started later, instead of holding it.
     yield_control: bool,
+    /// A rotation: minutes of each step. A channel's `step` says which step it
+    /// is heard in. One entry or none: no rotation.
+    step_minutes: Vec<u32>,
+}
+
+impl Default for ServerSetting {
+    fn default() -> Self {
+        ServerSetting {
+            name: "SpyServer".into(),
+            address: "127.0.0.1:5555".into(),
+            grid: String::new(),
+            network_delay_ms: 0.0,
+            tune: false,
+            yield_control: false,
+            step_minutes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Settings {
+    servers: Vec<ServerSetting>,
+    /// Every channel of every server, in one list.
+    channels: Vec<ChannelSetting>,
+    /// From before there were several servers: read, moved into `servers`,
+    /// not written back.
+    #[serde(skip_serializing)]
+    server: String,
+    #[serde(skip_serializing)]
+    tune: bool,
+    #[serde(skip_serializing)]
+    yield_control: bool,
+    #[serde(skip_serializing)]
+    network_delay_ms: f64,
+    /// "float" or "int16".
+    format: String,
     /// Draw the channels' waterfalls, at 1.5 Hz per bin if `waterfall_fine`.
     waterfall: bool,
     waterfall_fine: bool,
     /// "system" (the PC clock) or "ntp" (the PC clock corrected against `ntp_server`).
     clock_source: String,
     ntp_server: String,
-    /// Fixed delay between the SDR and this PC taken off arrival times, ms.
-    network_delay_ms: f64,
     /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps) beside the ALL.TXT.
@@ -154,21 +199,50 @@ impl Settings {
             grid: self.my_grid.trim().to_ascii_uppercase(),
         }
     }
+
+    /// A settings file from one server's days becomes a list of one.
+    fn migrate(&mut self) {
+        if self.servers.is_empty() {
+            let mut s = ServerSetting::default();
+            if !self.server.trim().is_empty() {
+                s.address = self.server.trim().to_string();
+            }
+            s.tune = self.tune;
+            s.yield_control = self.yield_control;
+            s.network_delay_ms = self.network_delay_ms;
+            self.servers.push(s);
+        }
+        // Names are the database's key: unique, and never empty.
+        let mut seen = std::collections::HashSet::new();
+        for (i, s) in self.servers.iter_mut().enumerate() {
+            if s.name.trim().is_empty() {
+                s.name = if i == 0 { "SpyServer".into() } else { format!("Server {}", i + 1) };
+            }
+            while !seen.insert(s.name.clone()) {
+                s.name = format!("{} ({})", s.name, i + 1);
+            }
+        }
+        let n = self.servers.len();
+        for c in &mut self.channels {
+            c.server = c.server.min(n - 1);
+        }
+    }
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            server: "127.0.0.1:5555".into(),
+            servers: vec![ServerSetting::default()],
             channels: Vec::new(),
-            format: "float".into(),
+            server: String::new(),
             tune: false,
             yield_control: false,
+            network_delay_ms: 0.0,
+            format: "float".into(),
             waterfall: true,
             waterfall_fine: false,
             clock_source: "ntp".into(),
             ntp_server: "pool.ntp.org".into(),
-            network_delay_ms: 0.0,
             channelizer: "auto".into(),
             db_enabled: true,
             // ALL.TXT grows without bound; the database is the record now.
@@ -178,6 +252,15 @@ impl Default for Settings {
             my_grid: String::new(),
         }
     }
+}
+
+/// An event and the server (an index in `Settings::servers`) it came from.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tagged {
+    server: usize,
+    #[serde(flatten)]
+    event: UiEvent,
 }
 
 /// What the window receives, as `{ "type": "...", ...fields }`.
@@ -214,6 +297,8 @@ enum UiEvent {
         device_hz: f64,
     },
     Streaming {
+        /// The global index of each channel of this server, in its own order.
+        channels: Vec<usize>,
         rate: u32,
         decimation: u32,
         center_hz: f64,
@@ -246,6 +331,11 @@ enum UiEvent {
     Clock {
         text: String,
     },
+    Step {
+        index: usize,
+        of: usize,
+        ends_utc_s: i64,
+    },
     Status {
         streamed_s: f64,
         clock: String,
@@ -264,8 +354,11 @@ enum UiEvent {
     },
 }
 
-impl From<Event> for UiEvent {
-    fn from(e: Event) -> Self {
+impl UiEvent {
+    /// `map` turns the server's own channel numbers into the window's: the
+    /// channels of every server are one list there.
+    fn new(e: Event, map: &[usize]) -> Self {
+        let global = |c: usize| map.get(c).copied().unwrap_or(c);
         match e {
             Event::Connecting { server } => UiEvent::Connecting { server },
             Event::Connected {
@@ -287,7 +380,7 @@ impl From<Event> for UiEvent {
                 can_control: r.can_control,
             },
             Event::Waterfall(w) => UiEvent::Waterfall {
-                channel: w.channel,
+                channel: global(w.channel),
                 focus: w.focus,
                 utc_ms: w.row.utc_ns as f64 / 1e6,
                 f_lo_hz: w.row.f_lo_hz,
@@ -304,6 +397,7 @@ impl From<Event> for UiEvent {
                 active,
                 channelizer,
             } => UiEvent::Streaming {
+                channels: map.to_vec(),
                 rate,
                 decimation,
                 center_hz,
@@ -316,7 +410,7 @@ impl From<Event> for UiEvent {
             },
             Event::Moved { device_hz, iq_hz } => UiEvent::Moved { device_hz, iq_hz },
             Event::Decode(d) => UiEvent::Decode {
-                channel: d.channel,
+                channel: global(d.channel),
                 mode: mode_name(d.mode),
                 slot_utc_ms: d.slot_utc_ns.map(|ns| (ns / 1_000_000) as f64),
                 dial_hz: d.dial_hz,
@@ -328,6 +422,15 @@ impl From<Event> for UiEvent {
             Event::Gap { messages, at_s } => UiEvent::Gap { messages, at_s },
             Event::Reanchor { by_s } => UiEvent::Reanchor { by_s },
             Event::Clock(text) => UiEvent::Clock { text },
+            Event::Step {
+                index,
+                of,
+                ends_utc_s,
+            } => UiEvent::Step {
+                index,
+                of,
+                ends_utc_s,
+            },
             Event::Status(s) => UiEvent::Status {
                 clock: s.clock,
                 streamed_s: s.streamed_s,
@@ -346,16 +449,39 @@ impl From<Event> for UiEvent {
     }
 }
 
-struct Running {
+/// One server of the running skimmer.
+struct ServerRun {
+    /// Its index in `Settings::servers`.
+    server: usize,
     live: Arc<LiveOptions>,
+    /// The window's number of each of its channels, in its own order.
+    channels: Vec<usize>,
+}
+
+struct Running {
+    servers: Vec<ServerRun>,
     stop: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
+impl Running {
+    /// The server that listens to window channel `global`, and its own number.
+    fn channel(&self, global: usize) -> Option<(&ServerRun, usize)> {
+        self.servers
+            .iter()
+            .find_map(|r| r.channels.iter().position(|&g| g == global).map(|l| (r, l)))
+    }
+
+    fn server(&self, server: usize) -> Option<&ServerRun> {
+        self.servers.iter().find(|r| r.server == server)
+    }
+}
+
 #[derive(Default)]
 struct AppState {
-    /// The radio as the running skimmer last reported it; the window asks.
-    radio: Arc<Mutex<Option<RadioState>>>,
+    /// Each server's radio as the running skimmer last reported it (by index in
+    /// `Settings::servers`); the window asks.
+    radio: Arc<Mutex<Vec<Option<RadioState>>>>,
     running: Mutex<Option<Running>>,
 }
 
@@ -386,6 +512,7 @@ fn load_settings(app: AppHandle) -> Settings {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
+    s.migrate();
     if s.log_dir.is_empty() {
         s.log_dir = default_log_dir(&app);
     }
@@ -439,39 +566,91 @@ fn modes() -> Vec<ModeInfo> {
         .collect()
 }
 
-fn config(s: &Settings) -> Result<Config, String> {
-    let channels = s
-        .channels
-        .iter()
-        .map(|c| {
-            let mode = parse_mode(&c.mode).ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
-            let mut spec = ChannelSpec::new(mode, c.dial_hz);
-            spec.options = c.options()?;
-            Ok::<ChannelSpec, String>(spec)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if channels.is_empty() {
+/// A server's configuration and the window's number of each of its channels.
+struct Planned {
+    /// Index in `Settings::servers`.
+    server: usize,
+    cfg: Config,
+    channels: Vec<usize>,
+}
+
+/// One `Config` per server that has channels.
+fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
+    let mut out = Vec::new();
+    for (si, srv) in s.servers.iter().enumerate() {
+        let mine: Vec<(usize, &ChannelSetting)> = s
+            .channels
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.server == si)
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let channels = mine
+            .iter()
+            .map(|(_, c)| {
+                let mode =
+                    parse_mode(&c.mode).ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
+                let mut spec = ChannelSpec::new(mode, c.dial_hz);
+                spec.options = c.options()?;
+                Ok::<ChannelSpec, String>(spec)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut cfg = Config::new(srv.address.trim(), channels);
+        cfg.name = srv.name.clone();
+        cfg.live.set_station(s.station());
+        cfg.tune = srv.tune;
+        cfg.yield_control = srv.yield_control;
+        cfg.waterfall = s.waterfall;
+        cfg.ntp = (s.clock_source == "ntp" && !s.ntp_server.trim().is_empty())
+            .then(|| s.ntp_server.trim().to_string());
+        cfg.live.set_network_delay_ms(srv.network_delay_ms);
+        cfg.format = if s.format == "int16" {
+            WireFormat::Int16
+        } else {
+            WireFormat::Float
+        };
+        cfg.channelizer = match s.channelizer.as_str() {
+            "direct" => Some(Channelizer::Direct),
+            "pfb" => Some(Channelizer::Pfb),
+            _ => None,
+        };
+        // A rotation: the channels of each step, in turn. Steps nobody is in
+        // are left out; one step is no rotation.
+        if srv.step_minutes.len() > 1 {
+            let last = srv.step_minutes.len() - 1;
+            cfg.steps = srv
+                .step_minutes
+                .iter()
+                .enumerate()
+                .filter_map(|(k, &minutes)| {
+                    let chs: Vec<usize> = mine
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, c))| c.step.min(last) == k)
+                        .map(|(local, _)| local)
+                        .collect();
+                    (!chs.is_empty()).then_some(skimmer_core::Step {
+                        channels: chs,
+                        minutes,
+                    })
+                })
+                .collect();
+            if cfg.steps.len() < 2 {
+                cfg.steps.clear();
+            }
+        }
+        out.push(Planned {
+            server: si,
+            cfg,
+            channels: mine.iter().map(|(g, _)| *g).collect(),
+        });
+    }
+    if out.is_empty() {
         return Err("no channels".into());
     }
-    let mut cfg = Config::new(s.server.trim(), channels);
-    cfg.live.set_station(s.station());
-    cfg.tune = s.tune;
-    cfg.yield_control = s.yield_control;
-    cfg.waterfall = s.waterfall;
-    cfg.ntp = (s.clock_source == "ntp" && !s.ntp_server.trim().is_empty())
-        .then(|| s.ntp_server.trim().to_string());
-    cfg.live.set_network_delay_ms(s.network_delay_ms);
-    cfg.format = if s.format == "int16" {
-        WireFormat::Int16
-    } else {
-        WireFormat::Float
-    };
-    cfg.channelizer = match s.channelizer.as_str() {
-        "direct" => Some(Channelizer::Direct),
-        "pfb" => Some(Channelizer::Pfb),
-        _ => None,
-    };
-    Ok(cfg)
+    Ok(out)
 }
 
 fn open_log(dir: &str) -> Result<File, String> {
@@ -547,31 +726,37 @@ fn halt(state: &AppState) {
 #[tauri::command]
 fn set_station(state: State<'_, AppState>, my_call: String, my_grid: String) {
     if let Some(r) = state.running.lock().unwrap().as_ref() {
-        r.live.set_station(Station {
-            call: my_call.trim().to_ascii_uppercase(),
-            grid: my_grid.trim().to_ascii_uppercase(),
-        });
+        for s in &r.servers {
+            s.live.set_station(Station {
+                call: my_call.trim().to_ascii_uppercase(),
+                grid: my_grid.trim().to_ascii_uppercase(),
+            });
+        }
     }
 }
 
-/// Change the fixed network delay in a running skimmer, ms.
+/// Change a server's fixed network delay in a running skimmer, ms.
 #[tauri::command]
-fn set_network_delay(state: State<'_, AppState>, ms: f64) {
-    if let Some(r) = state.running.lock().unwrap().as_ref() {
-        r.live.set_network_delay_ms(ms);
+fn set_network_delay(state: State<'_, AppState>, server: usize, ms: f64) {
+    if let Some(r) = state.running.lock().unwrap().as_ref()
+        && let Some(s) = r.server(server)
+    {
+        s.live.set_network_delay_ms(ms);
     }
 }
 
-/// Change the device gain index in a running skimmer. Only the client with
-/// control can; as a guest the server ignores it, so nothing is sent.
+/// Change a server's device gain index in a running skimmer. Only the client
+/// with control can; as a guest the server ignores it, so nothing is sent.
 #[tauri::command]
-fn set_gain(state: State<'_, AppState>, gain: u32) {
-    if let Some(r) = state.running.lock().unwrap().as_ref() {
-        r.live.set_gain(gain);
+fn set_gain(state: State<'_, AppState>, server: usize, gain: u32) {
+    if let Some(r) = state.running.lock().unwrap().as_ref()
+        && let Some(s) = r.server(server)
+    {
+        s.live.set_gain(gain);
     }
     // Show it at once: the server's sync, which corrects this, may not come for
     // a write of ours.
-    if let Some(radio) = state.radio.lock().unwrap().as_mut()
+    if let Some(Some(radio)) = state.radio.lock().unwrap().get_mut(server)
         && radio.can_control
     {
         radio.gain = gain;
@@ -586,16 +771,23 @@ struct RadioDto {
     can_control: bool,
 }
 
-/// The radio's gain, its highest index and whether this client may write it,
-/// as the running skimmer last heard; `None` when not connected. The window
-/// polls this rather than relying on one event at connect.
+/// A server's radio: its gain, highest index and whether this client may write
+/// it, as the running skimmer last heard; `None` when not connected. The
+/// window polls this rather than relying on one event at connect.
 #[tauri::command]
-fn radio_state(state: State<'_, AppState>) -> Option<RadioDto> {
-    state.radio.lock().unwrap().map(|r| RadioDto {
-        gain: r.gain,
-        max_gain: r.max_gain,
-        can_control: r.can_control,
-    })
+fn radio_state(state: State<'_, AppState>, server: usize) -> Option<RadioDto> {
+    state
+        .radio
+        .lock()
+        .unwrap()
+        .get(server)
+        .copied()
+        .flatten()
+        .map(|r| RadioDto {
+            gain: r.gain,
+            max_gain: r.max_gain,
+            can_control: r.can_control,
+        })
 }
 
 /// Which channel's waterfall is sent whole (the rest send thumbnails), and at
@@ -603,8 +795,11 @@ fn radio_state(state: State<'_, AppState>) -> Option<RadioDto> {
 #[tauri::command]
 fn set_waterfall(state: State<'_, AppState>, focus: Option<usize>, fine: bool) {
     if let Some(r) = state.running.lock().unwrap().as_ref() {
-        r.live.set_waterfall_focus(focus);
-        r.live.set_waterfall_fine(fine);
+        for s in &r.servers {
+            let local = focus.and_then(|g| s.channels.iter().position(|&x| x == g));
+            s.live.set_waterfall_focus(local);
+            s.live.set_waterfall_fine(fine);
+        }
     }
 }
 
@@ -625,17 +820,20 @@ fn set_channel_options(
     channel: ChannelSetting,
 ) -> Result<(), String> {
     let options = channel.options()?;
-    if let Some(r) = state.running.lock().unwrap().as_ref() {
-        r.live.set(index, options);
+    if let Some(r) = state.running.lock().unwrap().as_ref()
+        && let Some((s, local)) = r.channel(index)
+    {
+        s.live.set(local, options);
     }
     Ok(())
 }
 
 /// Stops a running skimmer first. Async so the join never blocks the UI thread.
 #[tauri::command]
-async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Settings) -> Result<(), String> {
     halt(&state);
-    let cfg = config(&settings)?;
+    settings.migrate();
+    let planned = configs(&settings)?;
     let mut log = if settings.log_enabled {
         Some(open_log(&settings.log_dir)?)
     } else {
@@ -650,26 +848,49 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
         let dir = PathBuf::from(&settings.log_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let path = dir.join(DB_FILE);
-        Some(store::Writer::open(&path).map_err(|e| format!("{}: {e}", path.display()))?)
+        let places: Vec<(String, String)> = settings
+            .servers
+            .iter()
+            .map(|s| (s.name.clone(), s.grid.trim().to_ascii_uppercase()))
+            .collect();
+        Some(store::Writer::open(&path, &places).map_err(|e| format!("{}: {e}", path.display()))?)
     } else {
         None
     };
     let mut decodes = 0u64;
-    let live = cfg.live.clone();
     let radio = state.radio.clone();
-    *radio.lock().unwrap() = None;
+    *radio.lock().unwrap() = vec![None; settings.servers.len()];
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let emitter = app.clone();
+    let names: Vec<String> = settings.servers.iter().map(|s| s.name.clone()).collect();
+    let runs: Vec<ServerRun> = planned
+        .iter()
+        .map(|p| ServerRun {
+            server: p.server,
+            live: p.cfg.live.clone(),
+            channels: p.channels.clone(),
+        })
+        .collect();
+    let maps: Vec<(usize, Vec<usize>)> = planned.iter().map(|p| (p.server, p.channels.clone())).collect();
+    let cfgs: Vec<Config> = planned.into_iter().map(|p| p.cfg).collect();
     let thread = std::thread::spawn(move || {
-        skimmer_core::run(&cfg, &flag, |ev| {
+        skimmer_core::run_all(&cfgs, &flag, |i, ev| {
+            let (server, map) = &maps[i];
+            let name = &names[*server];
             if matches!(ev, Event::Decode(_)) {
                 decodes += 1;
             }
             match &ev {
-                Event::Radio(r) => *radio.lock().unwrap() = Some(*r),
+                Event::Radio(r) => {
+                    if let Some(slot) = radio.lock().unwrap().get_mut(*server) {
+                        *slot = Some(*r);
+                    }
+                }
                 Event::Disconnected { .. } | Event::Yielded | Event::Connecting { .. } => {
-                    *radio.lock().unwrap() = None
+                    if let Some(slot) = radio.lock().unwrap().get_mut(*server) {
+                        *slot = None;
+                    }
                 }
                 _ => {}
             }
@@ -679,11 +900,11 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
                 } else {
                     String::new()
                 };
-                let _ = writeln!(f, "{line}{extra}");
+                let _ = writeln!(f, "{name} {line}{extra}");
             }
             if let Some(w) = db.as_mut() {
                 match &ev {
-                    Event::Decode(d) => w.push(d),
+                    Event::Decode(d) => w.push(name, d),
                     // A quiet band must not leave the last decodes unwritten.
                     Event::Status(_) => w.flush(),
                     _ => {}
@@ -694,15 +915,28 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
             {
                 let _ = emitter.emit(
                     "skimmer",
-                    UiEvent::Disconnected {
-                        error: format!("log: {e}"),
+                    Tagged {
+                        server: *server,
+                        event: UiEvent::Disconnected {
+                            error: format!("log: {e}"),
+                        },
                     },
                 );
             }
-            let _ = emitter.emit("skimmer", UiEvent::from(ev));
+            let _ = emitter.emit(
+                "skimmer",
+                Tagged {
+                    server: *server,
+                    event: UiEvent::new(ev, map),
+                },
+            );
         });
     });
-    *state.running.lock().unwrap() = Some(Running { live, stop, thread });
+    *state.running.lock().unwrap() = Some(Running {
+        servers: runs,
+        stop,
+        thread,
+    });
     Ok(())
 }
 
