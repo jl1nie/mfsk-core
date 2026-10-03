@@ -58,6 +58,8 @@ pub enum WsprMessage {
     },
 }
 
+/// The power is two characters wide, as `wsprd` prints it (`wsprd_utils.c:353,
+/// 364,398`: `%2d`), so 0, 3 and 7 dBm carry a leading space: `K1ABC FN42  3`.
 impl fmt::Display for WsprMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -65,16 +67,16 @@ impl fmt::Display for WsprMessage {
                 callsign,
                 grid,
                 power_dbm,
-            } => write!(f, "{} {} {}", callsign, grid, power_dbm),
+            } => write!(f, "{} {} {:>2}", callsign, grid, power_dbm),
             WsprMessage::Type2 {
                 callsign,
                 power_dbm,
-            } => write!(f, "{} {}", callsign, power_dbm),
+            } => write!(f, "{} {:>2}", callsign, power_dbm),
             WsprMessage::Type3 {
                 callsign_hash,
                 grid6,
                 power_dbm,
-            } => write!(f, "<#{:05x}> {} {}", callsign_hash, grid6, power_dbm),
+            } => write!(f, "<#{:05x}> {} {:>2}", callsign_hash, grid6, power_dbm),
         }
     }
 }

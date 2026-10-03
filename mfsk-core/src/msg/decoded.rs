@@ -141,7 +141,11 @@ impl crate::wspr::WsprResult {
     pub fn to_decoded(&self) -> Decoded {
         Decoded {
             text: self.message.to_string(),
-            freq_hz: self.freq_hz,
+            // `wsprd` reports the centre of the four tones (`wsprd.c:1496`,
+            // `1500 + f1`; its tone 0 is `f1 - 1.5 df`), 2.197 Hz above the
+            // tone 0 `freq_hz` carries. Measured on the WSJT-X golden:
+            // ND6P 1446 Hz in `wsprd`, 1444.04 Hz here before this.
+            freq_hz: self.freq_hz + 1.5 * crate::wspr::demod::TONE_SPACING_HZ,
             dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Wspr,
@@ -281,7 +285,9 @@ mod tests {
 
         let d = r.to_decoded();
         assert_eq!(d.text, expected);
-        assert_eq!(d.freq_hz, 1400.0);
+        // The centre of the four tones, as `wsprd` reports (1.5 tone spacings
+        // above the tone 0 the result carries).
+        assert_eq!(d.freq_hz, 1400.0 + 1.5 * 12_000.0 / 8192.0);
         assert_eq!(d.dt_sec, 1.0);
         assert_eq!(d.protocol, ProtocolId::Wspr);
     }
