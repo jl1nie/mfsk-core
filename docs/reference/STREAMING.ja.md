@@ -3,13 +3,12 @@
 > **English:** [STREAMING.md](STREAMING.md)
 
 本ドキュメントは mfsk-core の**ストリーミング配信**インターフェイス
-を解説する: `DecodeRequest` / `SniperRequest` ファミリの
-`.on_result(cb)` コールバックとプロトコルごとの兄弟関数、その配信契約
+を解説する: `Decoder::decode_with` とその行コールバック、その配信契約
 が保証するもの、**なぜ `async fn` / `Future` / チャネルベースの API で
 はなく素の同期コールバックなのか**、そして Tokio 非同期クライアントへ
 橋渡しする完全な実例。
 
-ライブラリ全体（トレイト階層、DSP プリミティブ）は
+ライブラリ全体（`Decoder` モデル、トレイト階層、DSP プリミティブ）は
 [LIBRARY.ja.md](LIBRARY.ja.md)、C ABI は
 [BINDINGS.ja.md](BINDINGS.ja.md) を参照。本ドキュメントは
 LIBRARY.ja.md の §2.4「ストリーミング配信」を深掘りし、非同期橋渡しの
@@ -24,33 +23,33 @@ FT8 なら 15 秒、WSPR なら 110.6 秒、といった単位である。開き
 のソケット読み込みではない。したがって「ストリーミング」は*サンプルを
 逐次流し込む*という意味ではない（スロット全体を参照で渡す）。逆方向、
 つまり**結果が逐次流れ出す**ことを指す。スロット全体のデコードが完了
-してから単一の `Vec` として返すのではなく、デコーダがメッセージを見つ
+してから単一の `SlotResult` として返すのではなく、デコーダがメッセージを見つ
 けるたびに、受理された 1 件ごとにコールバックが 1 回発火する。
 
-バッチ API とストリーミング API は**同じ呼び出し**である。ストリーミ
+バッチ API とストリーミング API は**同じデコーダ**である。ストリーミ
 ングは純粋に加算的:
 
 ```rust
+use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::decode_request::DecodeRequest;
+use mfsk_core::ft8::decode::DecodeResult;
+
+let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3000.0)));
+let slot = SlotInput::i16(&audio);
 
 // バッチ: 最後にまとめて受け取る。
-let outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
-    .decode();
-for r in &outcome.results { /* ... */ }
+let result = decoder.decode(&slot);
+for row in &result.rows { /* ... */ }
 
-// ストリーミング: 同じデコードに、途中で結果ごとに発火するコールバック
-// を足すだけ。終了後も `outcome.results` はバッチ全体を保持している。
-let on_result = |r: &mfsk_core::ft8::decode::DecodeResult| {
-    // 候補が受理されるたびに発火
+// ストリーミング: 同じデコードに、途中で行ごとに発火するコールバック
+// を足すだけ。終了後も `result.rows` はバッチ全体を保持している。
+let on_row = |row: &Row<DecodeResult>| {
+    // 候補が受理されるたびに発火。row.decoded はモード共通の行
 };
-let outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
-    .on_result(&on_result)
-    .decode();
+let result = decoder.decode_with(&slot, &on_row);
 ```
 
-`.on_result()` を呼ばない呼び出し側にとっては、この機能が存在しなかっ
-た頃と挙動上の差はまったくない。
+`decode_with` を使わない呼び出し側にとっては、`decode` と挙動上の差はまったくない。
 
 ### なぜストリーミングするのか
 
@@ -66,39 +65,47 @@ let outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
 
 ## 2. プロトコルごとのエントリポイント
 
-プロトコル横断の**共有コールバック型は存在しない** —
-`DecodeResult`（FT8/FT4/FST4）、`Q65Result`、`WsprResult`、
-`Jt65Result`、`Jt9Result` は構造的に別物である。よってこれは 1 つのトレ
-イトで抽象化するものではなく、各プロトコル自身の API ファミリ内で同じ
-名前・同じ意味論に従う一貫した*パターン*である。
+行の型は `Row<R>` である: モード共通の `decoded: Decoded`（テキスト・周波数・dt・SNR・
+プロトコル）、`detail: RowDetail`、そしてモード固有の結果 `native: R` —— `DecodeResult`
+（FT8/FT4/FST4）、`Q65Result`、`WsprResult`、`Jt65Result`、`Jt9Result` は構造的に別物
+である。よってコールバック型は、モードごとの `R` を埋めた 1 つの汎用の形
+`&(dyn Fn(&Row<R>) + Sync)`（`decoder::OnRow`）である。
 
-| プロトコル           | エントリポイント                                                        | コールバック型                          |
-|----------------------|------------------------------------------------------------------------|-----------------------------------------|
-| FT8 / FT4 / FST4     | `DecodeRequest<P>` / `SniperRequest<P>` — `.on_result(cb)`             | `&(dyn Fn(&DecodeResult) + Sync)`       |
-| Q65                  | `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` — `.on_result(cb)` | `&(dyn Fn(&Q65Result) + Sync)`          |
-| WSPR                 | `wspr::DecodeRequest` — `.on_result(cb)`                               | `&(dyn Fn(&WsprResult) + Sync)`         |
-| JT65                 | `jt65::DecodeRequest` — `.on_result(cb)`                               | `&(dyn Fn(&Jt65Result) + Sync)`         |
-| JT9                  | `jt9::DecodeRequest` — `.on_result(cb)`                                | `&(dyn Fn(&Jt9Result) + Sync)`          |
-| FT8（`ft8::decode_block`） | `ft8::decode_block::decode_block_streaming`                      | `&mut dyn FnMut(&DecodeResult)`         |
+| プロトコル           | エントリポイント                                  | コールバック型                          |
+|----------------------|---------------------------------------------------|-----------------------------------------|
+| FT8 / FT4 / FST4     | `Decoder<P>::decode_with(&slot, on_row)`          | `&(dyn Fn(&Row<DecodeResult>) + Sync)`  |
+| Q65                  | `Decoder<Q65…>::decode_with`                      | `&(dyn Fn(&Row<Q65Result>) + Sync)`     |
+| WSPR                 | `Decoder<Wspr>::decode_with`                      | `&(dyn Fn(&Row<WsprResult>) + Sync)`    |
+| JT65                 | `Decoder<Jt65>::decode_with`                      | `&(dyn Fn(&Row<Jt65Result>) + Sync)`    |
+| JT9                  | `Decoder<Jt9>::decode_with`                       | `&(dyn Fn(&Row<Jt9Result>) + Sync)`     |
+| 実行時に選ぶ任意のモード | `AnyDecoder::decode_with`                      | `&(dyn Fn(&Decoded, &RowDetail) + Sync)` |
+| FT8（`ft8::decode_block`） | `ft8::decode_block::decode_block_streaming`  | `&mut dyn FnMut(&DecodeResult)`         |
+| JTTY                 | `jtty::rx::Stream::push(samples, &mut cb)`        | `&mut dyn FnMut(MessageUpdate)`         |
 
 補足:
 
-- **すべてのビルダ**は `.on_result(cb)` をもう 1 つの連鎖可能なメソッド
-  として持つ。返される `DecodeOutcome` / `Vec` は引き続きバッチ全体を
-  保持する。
+- **すべての `Decoder`** は `decode` の隣に `decode_with` を持つ。返される
+  `SlotResult` は引き続きバッチ全体を保持する。
+- **行は配信時に解決される。** コールバックが見る行のテキストは、周期の開始時点の
+  デコーダのコールサインハッシュ表で解決されたものである。`decode_with` が返す行は
+  同じ周期内で先に学習された呼出符号も見る（ハッシュは候補ループの後に、デコード順に
+  学習される）。そのため、ストリームされた行の `<...>` が、返された行では解決済みに
+  なることがある。ストリームされた行と返された行を対応づけるには、テキストではなく
+  メッセージのビット（フレーム系なら `row.native.message77()`）を比べること。ペイロードが
+  unpack できない候補は、どちらでも配信されない。
+- **平均を使う Q65**（`averaging` が有効で `SlotInput::period` あり）は 1 周期につき
+  高々 1 つの結果を出すので、コールバックは周期ごとに 1 回発火する。
 - **WSPR/JT65/JT9 にはかつてビルダがなく**、それぞれフリー関数の
   `decode_scan_streaming` *兄弟関数*を生やしていた —— 軸が 1 つ増える
   たびにこの形を繰り返した結果、3 モードで公開 `decode_*` 関数が 32 個に
-  なった。issue #403 でモードごとの `DecodeRequest` に置き換え、
-  ストリーミングは他と同じくメソッド 1 つになった。スキャン側だけが
-  `.on_result()` を持つ。各 `SniperRequest` は `Option` を 1 つ返すだけ
-  で、ストリーミングするものがない。
+  なった。issue #403 でモードごとのリクエスト型に置き換え、0.13 で
+  `Decoder<P>` に置き換えて、ストリーミングは他と同じくメソッド 1 つになった。
 - **`ft8::decode_block::decode_block_streaming`** は 2 つの feature 分岐
   版どちらでも `&dyn Fn + Sync` ではなく `&mut dyn FnMut` を取る:
   組込み（`not(fft-rustfft)`）の単一パスパイプラインは厳密に逐次
   （no_std では rayon なし）であり、ホスト（`fft-rustfft`）のマルチパス/
-  減算ドライバ（`decode_block_multipass`）も同様に常に逐次（`DecodeRequest`
-  の単一パス/sniper 戦略と異なり内部に rayon を持たない）なので、捕捉し
+  減算ドライバ（`decode_block_multipass`）も同様に常に逐次（単一パス/sniper
+  戦略と異なり内部に rayon を持たない）なので、捕捉し
   た状態を変更する `FnMut` クロージャはどちらでも安全であり、`Sync`
   境界はどちらにも不要。issue #243 以前はホスト版でここにコールバックを
   安全に出せなかった: `xsnr2` SNR 妥当性ゲート（`ft8b.f90:483`）が減算が
@@ -115,19 +122,23 @@ let outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
 ## 3. 配信契約
 
 契約はちょうど**2 種類**あり、戦略が逐次で走るか `rayon`
-（`feature = "parallel"`）下で走るかで決まる。正典は
-`DecodeRequest::on_result` の doc コメントで、ここではその要約を示す。
+（`feature = "parallel"`）下で走るかで決まる。正典はエンジンの行コールバックの
+doc コメント（`DecodeRequest::on_result`。今は crate 非公開で、`Decoder::decode_with` が
+それを包む）で、ここではその要約を示す。どの戦略が走るかは `Depth` が決める
+（[LIBRARY.ja.md](LIBRARY.ja.md) §2.2）ので、契約は depth に従う:
 
 ### 3a. 逐次 — 完全一致
 
-`cb` は**返される `Vec` に最終的に載る結果ごとに、同じ順序でちょうど
-1 回**発火する。ストリームした内容とバッチ返り値の間に乖離はゼロ。
+`cb` は**返される `SlotResult` に最終的に載る行ごとに、同じ順序でちょうど
+1 回**発火する。ストリームした内容とバッチ返り値の間に乖離はゼロ
+（§2 のハッシュ解決を除く: テキストではなくメッセージのビットで比べること）。
 
-対象: `.sic_rounds(n)` と `.sic_early()`（FT8/FT4 の SIC 戦略）、
+対象: FT8 の `SicRounds(n)` と `SicEarly`、FT4 の `SicRounds(n)` —— FT8 と FT4 で
+`Depth::Normal` と `Depth::Deep` が走らせるもので、既定ブロックの depth は `Deep`、
 `ft8::decode_block::decode_block_streaming`（issue #243 以降、組込み・
-ホスト `fft-rustfft` 両分岐とも）、JT65 と JT9 の `DecodeRequest`、
-Q65 の全ビルダ。Q65 の `MultiPeriodRequest` は逐次形の一
-変種で、候補ごとではなく受理デコードを生む**スロットごと**に 1 回発火
+ホスト `fft-rustfft` 両分岐とも）、JT65 と JT9 のデコーダ、Q65 のスキャン。
+`averaging` を有効にした Q65 は逐次形の一
+変種で、候補ごとではなく受理デコードを生む**周期ごと**に 1 回発火
 する（複数周期 EME / 電離層散乱の平均化における自然なストリーミング単
 位）。
 
@@ -135,16 +146,16 @@ Q65 の全ビルダ。Q65 の `MultiPeriodRequest` は逐次形の一
 
 `cb` は**その候補をデコードしたスレッドから、完了順**（候補探索順では
 ない）に、そして最終的なクロス候補デデュープパスの**前**に発火する。
-2 つの同期候補が同じメッセージに収束する稀なケースでは、`Vec` に残るの
+2 つの同期候補が同じメッセージに収束する稀なケースでは、返される行に残るの
 は 1 件だけでも `cb` は両方に対して発火しうる。バッチと厳密に一致させた
 い呼び出し側は自分の側で `.message77()` によるデデュープを行うこと —
 クレート自身のデデュープが使うのと同じキーである。
 
-対象: デフォルトの単一パス戦略と `SniperRequest`（FT8/FT4）、
-`wspr::DecodeRequest`（パス 1・パス 2 の候補ループが `rayon::par_iter()`
+対象: 単一パス戦略（FT4 の `Fast` depth である `SinglePass` と、FST4 の唯一の戦略）と
+FT8 の `sniper` モード、WSPR（パス 1・パス 2 の候補ループが `rayon::par_iter()`
 下で走る）。
 
-**これが並列パスのコールバックに `Sync` が必要な理由である** — 複数の
+**これがコールバックに `Sync` が必要な理由である** — 複数の
 rayon ワーカスレッドから並行して呼ばれうる。
 
 ### 配信順は強い信号を優先するか
@@ -174,20 +185,21 @@ BP/OSD コストの予測子ではない。よってスコアの高い候補が�
 食い違う。
 
 この形の不具合は実際に2回、FT8/FT4/FST4（`.known(...)` というフェー
-ズ横断dedupビルダメソッドを持つ唯一のプロトコル群——WSPR/Q65/JT65/JT9
+ズ横断dedupビルダメソッドを持っていた唯一のプロトコル群——WSPR/Q65/JT65/JT9
 にはこの概念自体が存在しないため、そもそも晒されようがなかった）で発生
-した:
+した。0.13 は `.known()` を公開 API から外した（その役目は今はデコーダの状態）ので、
+`Decoder` の呼び出し側にはこの組み合わせはもう存在しない。エンジンのリクエストは
+`internal-testing` の背後にこれを残しており、下の表が監査するのはその修正である:
 
 1. **FT8ホストのマルチパスドライバ**（issue #243）—— `xsnr2` SNR妥当
    性ゲートが、1パス全体（あるいは修正初期段階では3パス全体）が終
    わった後にバッチとして走っており、その時点ですでに候補に対して
    `on_result` が発火済みだった。候補ごとに、受理される前にインライ
    ンでゲートを走らせるよう修正した。
-2. **FT8の`.sic_early()`、FT4の`.sic_rounds()`/単一パス、FST4の単
+2. **FT8の`SicEarly`、FT4の`SicRounds`/単一パス、FST4の単
    一パス**—— `.known(...)` は入力オーディオから事前に減算されていた
    （これ自体は正しい）が、実際の候補ごとのdedupには一切組み込まれ
-   ておらず、呼び出し側レベルの事後フィルタ（FT8では
-   `results.retain(...)`、FT4/FST4では `dedup_known(...)`）が `known`
+   ておらず、呼び出し側レベルの事後フィルタが `known`
    に一致するものを黙って落としていた——`on_result` がすでに発火した
    後に。`known` による判定をコールバック発火点より前でアトミックに
    行うよう修正した（FT8: 既存の候補ごとdedupに `known` を組み込み;
@@ -211,24 +223,28 @@ cb(r); }` ループの直後に何も挟まず `all_results.extend(deduped)` が
 く形。どちらの形でも同じ保証が得られる: コールバックがすでに発火した値
 は、その後いかなる手段によっても集合から取り除かれえない。
 
-| 箇所 | 場所（行番号はコミット `1a4cbda` 時点。このファイルがそれ以降変化していたら要再確認） |
+0.13 の `Decoder` はそれらの箇所の上に 1 層を足すが、保証は保たれる: そのラッパは
+エンジンの結果を `Row` に変換し（ペイロードをハッシュ表で unpack する）、unpack できない
+結果を、コールバックからも返される行からも同様に落とす（`decoder/frame.rs` の
+`frame_decode`）。
+
+| 箇所（エンジン。行番号はコミット `1a4cbda` 時点。このファイルがそれ以降変化していたら要再確認） | 場所 |
 |---|---|
 | FT8 `decode_block_multipass`/`decode_block_streaming` | `ft8/decode_block/process_candidates.rs:486` |
-| FT8 `sic_inner_passes_with_cache`（`.sic_rounds()`/`.sic_early()` を担当） | `ft8/decode.rs:630` |
+| FT8 `sic_inner_passes_with_cache`（`SicRounds`/`SicEarly` を担当） | `ft8/decode.rs:630` |
 | FT8 `decode_frame_inner`（並列/逐次の単一パス） | `ft8/decode.rs:374,387` |
 | FT8 `decode_sniper_inner`（並列/逐次のsniper） | `ft8/decode.rs:996,1016` |
 | FT4/FST4 `decode_frame`（並列/逐次の単一パス、ジェネリックエンジン） | `engine/pipeline.rs:994,1014` |
-| FT4/FST4 `decode_frame_subtract`（`.sic_rounds()`、ジェネリックエンジン） | `engine/pipeline.rs:1239` |
-| WSPR `DecodeRequest`（`decode_scan_inner`、パス 1 / パス 2） | `wspr/decode.rs` |
-| Q65 `DecodeRequest`/`SniperRequest` | `q65/decode_request.rs:374` |
-| Q65 `MultiPeriodRequest`（`decode_multi_period_for`） | `q65/rx.rs:1345` |
+| FT4/FST4 `decode_frame_subtract`（`SicRounds`、ジェネリックエンジン） | `engine/pipeline.rs:1239` |
+| WSPR スキャン（`decode_scan_inner`、パス 1 / パス 2） | `wspr/decode.rs` |
+| Q65 スキャン | `q65/decode_request.rs:374` |
+| Q65 平均経路（`decode_multi_period_for`） | `q65/rx.rs:1345` |
 | Q65内部スキャンヘルパ（`decode_scan_fading_for`、`decode_scan_with_ap_list_for`、`decode_scan_inner`） | `q65/rx.rs:511,610,700` |
-| JT65 `DecodeRequest`（`decode_scan_inner`、#403 以降は通常と Chase で 1 本のループ） | `jt65/mod.rs` |
-| JT9 `DecodeRequest`（`decode_scan_inner`） | `jt9/mod.rs` |
+| JT65 スキャン（`decode_scan_inner`、#403 以降は通常と Chase で 1 本のループ） | `jt65/mod.rs` |
+| JT9 スキャン（`decode_scan_inner`） | `jt9/mod.rs` |
 
-新しく `_streaming` 兄弟関数や `.on_result(cb)` ビルダメソッドをあるプ
-ロトコルに追加する際、そのプロトコルが `.known(...)` のようなフェーズ
-横断dedupパラメータも持つ（または将来持つ）なら、その組み合わせこそ
+新しく `_streaming` 兄弟関数や行コールバックのフックをあるプロトコルに追加する際、
+そのプロトコルがフェーズ横断dedupパラメータも持つ（または将来持つ）なら、その組み合わせこそ
 がこのバグクラスの温床である——コールバックが、上記の全行がそうしてい
 るように、返すコレクションへのコミットと同じ分岐から発火しているか
 を確認すること。「戻り値だけをフィルタしているから無害」と決めつけて
@@ -288,7 +304,7 @@ async は**I/O バウンド**で中断点の多い処理 — ソケット・タ�
 素のコールバックのイディオムはすでにここにある:
 `process_candidates_with_ap` は充填クロージャ
 （`F: FnMut(&mut [[Cmplx<f32>;8];79], &SyncCandidate, SymMask)`）を取
-る。`.on_result()` は 2 つ目の async 風パターンを隣に導入するのではな
+る。``decode_with` の行コールバックは 2 つ目の async 風パターンを隣に導入するのではな
 く、同じ形に従う。
 
 ### 帰結
@@ -298,34 +314,36 @@ mfsk-core は*あなたが*供給するクロージャを通じて結果を配�
 乗せたい? クロージャに `Sender` を入れる。GUI スレッドに乗せたい? クロー
 ジャからイベントループへポストする。スロット跨ぎのバックグラウンド継続
 （WSJT-X「Fast」モード型 — 次スロットのキャプチャ開始後もデコードを続け
-る）が欲しい? `std::thread::spawn` してそこで `.decode()` を呼ぶ。どれ
-もコアライブラリの支援を要さず、すべてアプリケーションの端で組み上が
-る。
+る）が欲しい? `Decoder` を `std::thread::spawn` に move してそこで `decode()` を呼ぶ
+（`Decoder<P>` は `Send`）。どれもコアライブラリの支援を要さず、すべてアプリケーションの
+端で組み上がる。
 
 ---
 
 ## 5. 実例: Tokio 非同期クライアントから呼ぶ
 
-目標: 1 つの 15 秒 FT8 スロットを**非同期ランタイムをブロックせず**にデ
-コードし、各メッセージを最後にまとめてではなく**デコードされた瞬間に**
-`async` ループで受け取る。
+目標: FT8 スロットを**非同期ランタイムをブロックせず**にデコードし、各メッセージを
+スロット末尾でまとめてではなく**デコードされた瞬間に** `async` ループで受け取る。
 
-形を決めるのは 2 つの事実:
+形を決めるのは 3 つの事実:
 
 1. **デコードはブロッキングな CPU バウンド処理である。** Tokio のワーカ
    スレッド上で走らせてはならない（リアクタを止めてしまう）。
    `tokio::task::spawn_blocking` で走らせる。
-2. **コールバックが橋渡しである。** `tokio::sync::mpsc::Sender` を捕捉
-   し、借用された各 `DecodeResult` を所有権を持つ `Send` な値に変換して
-   送る。mfsk-core はチャネルもランタイムも `async` も一切見ない。
+2. **デコーダは状態を持つ。** `Decoder` はコールサインのハッシュ表（と FT8 の a7 リスト）を
+   スロットからスロットへ保持するので、1 つのブロッキングタスクがチャンネルの存続中 1 つの
+   デコーダを所有し、スロットを供給される。スロットごとに新しいデコーダを作ると、ハッシュ化
+   された呼出符号を全て忘れる。
+3. **コールバックが橋渡しである。** `tokio::sync::mpsc::Sender` を捕捉
+   し、借用された各行が持つ所有権付きの `Decoded` を clone して送る。
+   mfsk-core はチャネルもランタイムも `async` も一切見ない。
 
 ### `Cargo.toml`
 
 ```toml
 [dependencies]
-# `Decoded` + `to_decoded` は 0.9 で導入。デコード行を JSON 化したいなら
-# `features = ["serde"]` を足す。
-mfsk-core = "0.12"
+# デコード行を JSON 化したいなら `features = ["serde"]` を足す。
+mfsk-core = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # 任意、§5.3 の Stream アダプタ用のみ:
 tokio-stream = "0.1"
@@ -334,67 +352,69 @@ tokio-stream = "0.1"
 ### 5.1 橋渡し
 
 ```rust
-use mfsk_core::engine::protocol::ProtocolId;
+use mfsk_core::decoder::{DecodeParams, Decoder, Row, SlotInput};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::decoded::Decoded; // クレート提供の所有・Send な UI 行
 
 use tokio::sync::mpsc;
 
-/// 1 つの 15 秒 FT8 スロット（12 kHz モノラル i16 PCM）をブロッキングワーカ
-/// 上でデコードし、受理されたメッセージを届き次第 async 呼び出し側へ流す。
+/// 1 つの 15 秒 FT8 スロット（12 kHz モノラル i16 PCM）と、その UTC グリッド上の番号。
+pub struct Slot {
+    pub period: i64,
+    pub audio: Vec<i16>,
+}
+
+/// ブロッキングワーカ上で FT8 デコーダを起動する。スロットを送ると、受理された
+/// メッセージが届き次第、返されるチャネルから戻ってくる。
 ///
-/// チャネルの受信側を即座に返し、デコードは spawn_blocking 上で走る。
-/// デコード終了時にチャネルが閉じる。
-pub fn decode_slot_stream(audio: Vec<i16>) -> mpsc::Receiver<Decoded> {
+/// ワーカは `slots` が drop されるまで `Decoder`（とそのハッシュ表）を所有し、
+/// 終了すると返されるチャネルが閉じる。
+pub fn spawn_ft8_worker(
+    params: DecodeParams,
+) -> (std::sync::mpsc::Sender<Slot>, mpsc::Receiver<Decoded>) {
+    let (slot_tx, slot_rx) = std::sync::mpsc::channel::<Slot>();
     // 有界にして、遅いコンシューマに対しメモリを無限に伸ばす代わりに
     // バックプレッシャをかける。1 スロットが 64 件に届くことはまずないので、
     // ここで生産側がブロックすることは実際上ほぼない。
     let (tx, rx) = mpsc::channel::<Decoded>(64);
 
     tokio::task::spawn_blocking(move || {
-        // このクロージャが mfsk-core の同期世界と Tokio の async 世界を
-        // つなぐ橋渡しのすべて。`Fn`（`&self` メソッドの
-        // `Sender::blocking_send` のみ）かつ `Sync` で、`.on_result` の
-        // `&(dyn Fn(&DecodeResult) + Sync)` 境界を満たす —— FT8 の既定の
-        // 広帯域戦略が候補を rayon ワーカスレッドへ分配し、これを並行に
-        // 呼びうるため必須。
-        let on_result = move |r: &DecodeResult| {
-            // `DecodeResult::to_decoded` が 77 ビットペイロードを unpack し、
-            // 所有・Send な `Decoded` 行（text + freq + dt + snr + protocol）を返す
-            // —— まさにチャネル越しに move したいもの。`None` は unpack 不能を意味し、
-            // ゴミ行を送らずスキップする。（クレートが `Decoded` を出す前は、この
-            // クロージャは所有構造体を手組みし `unpack77` を自前で呼んでいた。今は1呼び出し。）
-            if let Some(d) = r.to_decoded(ProtocolId::Ft8, None) {
-                // ここでの `blocking_send` は正しい: これは spawn_blocking スレッド
-                // （並列戦略では rayon ワーカでもありうる）上で走り、Tokio ランタイム
-                // ワーカでは決してない —— よって async コンテキスト内で `blocking_send`
-                // が起こすようなパニックはしない。送信エラーは受信側が drop された
-                // ことを意味し、それ以上することはない。
-                let _ = tx.blocking_send(d);
-            }
-        };
-
-        // 広帯域探索 100–3000 Hz、sync_min 1.5、最大 100 候補。
-        // `.on_result` は加算的 —— 返る DecodeOutcome は引き続きバッチ全体を
-        // 保持するが、ここでは全件ストリームしたので破棄する。
-        let _outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
-            .on_result(&on_result)
-            .decode();
-        // タスク復帰時にここで `on_result`（と捕捉した `tx`）が drop され、
-        // チャネルが閉じてコンシューマのループが終わる。
+        let mut decoder = Decoder::<Ft8>::new(params);
+        while let Ok(slot) = slot_rx.recv() {
+            // このクロージャが mfsk-core の同期世界と Tokio の async 世界を
+            // つなぐ橋渡しのすべて。`Fn`（`&self` メソッドの
+            // `Sender::blocking_send` のみ）かつ `Sync` で、`decode_with` の
+            // `&(dyn Fn(&Row<_>) + Sync)` 境界を満たす —— 単一パス戦略が
+            // 候補を rayon ワーカスレッドへ分配し、これを並行に呼びうるため必須。
+            let on_row = |row: &Row<DecodeResult>| {
+                // `row.decoded` は既に所有・Send な `Decoded`（text、freq、dt、snr、
+                // protocol）で、このデコーダのコールサイン表で解決済み —— まさに
+                // チャネル越しに move したいもの。ここでの `blocking_send` は正しい:
+                // これは spawn_blocking スレッド（並列戦略では rayon ワーカでもありうる）
+                // 上で走り、Tokio ランタイムワーカでは決してない —— よって async
+                // コンテキスト内で `blocking_send` が起こすようなパニックはしない。
+                // 送信エラーは受信側が drop されたことを意味し、それ以上することはない。
+                let _ = tx.blocking_send(row.decoded.clone());
+            };
+            // `period` により a7 と平均が連続するスロットを見られる。返される
+            // `SlotResult` はストリームしたものの繰り返しなので捨てる。
+            let _ = decoder.decode_with(&SlotInput::i16(&slot.audio).period(slot.period), &on_row);
+        }
+        // タスク復帰時にここで `tx` が drop され、チャネルが閉じて
+        // コンシューマのループが終わる。
     });
 
-    rx
+    (slot_tx, rx)
 }
 ```
 
 > `Decoded`（`mfsk_core::msg::decoded::Decoded`）はクレートの統一・所有
 > デコード行 —— `text` / `freq_hz` / `dt_sec` / `snr_db` / `protocol`、
 > `Clone` + `Send`、`--features serde` で `Serialize`/`Deserialize`。
-> 各プロトコルのネイティブ結果に `to_decoded(..)` 変換があり
-> （WSPR/Q65/JT65/JT9 も）、同じ橋渡し形が全モードで使える。
+> 全ての `Row` がモードを問わず `.decoded` にこれを持つので、同じ橋渡し形が
+> どの `Decoder<P>` でも使える。`AnyDecoder` 上のワーカは、コールバックに
+> `Decoded` が直接渡される `AnyDecoder::decode_with` を使う。
 > [LIBRARY.ja.md](LIBRARY.ja.md) と `docs/notes/DECODED_ROW.md` を参照。
 
 ### 5.2 ストリームを消費する
@@ -402,14 +422,15 @@ pub fn decode_slot_stream(audio: Vec<i16>) -> mpsc::Receiver<Decoded> {
 ```rust
 #[tokio::main]
 async fn main() {
+    let (slots, mut rx) = spawn_ft8_worker(DecodeParams::for_band((200.0, 3000.0)));
+
     // あなたのキャプチャパイプラインが供給する: スロット境界に整列した
     // 12 kHz モノラル i16 PCM の 15 秒スロット 1 つ（約 180 000 サンプル）。
-    let audio: Vec<i16> = load_one_ft8_slot();
-
-    let mut rx = decode_slot_stream(audio);
+    slots.send(Slot { period: 0, audio: load_one_ft8_slot() }).unwrap();
+    drop(slots); // もうスロットは無い: ワーカが終わり、チャネルが閉じる
 
     // 各メッセージは、末尾でまとめてではなくデコーダが受理した瞬間にここへ
-    // 届く。デコードタスクが終わって Sender を drop するとループが抜ける。
+    // 届く。ワーカが終わって Sender を drop するとループが抜ける。
     while let Some(msg) = rx.recv().await {
         println!(
             "{:+5.1} dB  {:7.1} Hz  dt={:+.2}s  {}",
@@ -435,7 +456,8 @@ async fn main() {
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
-let stream = ReceiverStream::new(decode_slot_stream(audio));
+let (slots, rx) = spawn_ft8_worker(params);
+let stream = ReceiverStream::new(rx);
 tokio::pin!(stream);
 while let Some(msg) = stream.next().await {
     // §5.2 と同じ。ただし StreamExt のコンビネータと合成可能
@@ -451,36 +473,38 @@ while let Some(msg) = stream.next().await {
   まったコンシューマは代わりにバックプレッシャをかけてデコードを遅らせ
   る —— 正しさが重要な UI では通常こちらが望ましい。
 - **逐次・完全一致配信。** §3a のより強い契約（コールバック順 == バッチ
-  順、一時的重複なし）が欲しければ、既定の広帯域パスではなく逐次戦略 ——
-  例えば FT8 の `.sic_rounds(3)` や `.sic_early()` —— を使う。橋渡しコー
-  ドは同一で、変わるのはビルダのメソッドだけ。
-- **他プロトコル。** WSPR・JT65・JT9・Q65 はそれぞれ独自の
-  `DecodeRequest` を持つ（Q65 は `SniperRequest`/`MultiPeriodRequest`
-  も）。同じ `spawn_blocking` の殻の中で、上の FT8 とまったく同様に
-  `.on_result(&on_result)` を連鎖させればよい。クロージャは同じ
-  `Sender` を捕捉する。
+  順、一時的重複なし）が欲しければ、単一パスではなく逐次戦略 —— FT8 と FT4 の
+  `Depth::Normal` または `Deep`（既定ブロックは `Deep`）、あるいは
+  `Ft8Extras::tuning.strategy = Some(Ft8Strategy::SicRounds(3))` —— を使う。橋渡しコー
+  ドは同一で、変わるのはデコーダの設定だけ。
+- **他プロトコル。** どの `Decoder<P>`（WSPR・JT65・JT9・Q65・FT4・FST4）にも同じ
+  `decode_with` がある。同じ `spawn_blocking` の殻の中で、上の FT8 とまったく同様に
+  `Decoder::<P>::new(..)` を作ればよい。クロージャは同じ `Sender` を捕捉する。
+- **複数チャンネル。** チャンネルごとにワーカ 1 つ、`Decoder` 1 つ、ハッシュ表 1 つ —— IQ レシーバの
+  呼び出し側が `ChannelId` ごとに 1 つの `AnyDecoder` を持つのも同じである
+  （[LIBRARY.ja.md](LIBRARY.ja.md) §2.7）。
 - **キャンセル。** `Receiver` を drop すると、クロージャ内の次の
   `blocking_send` が `Err` を返すので早期に止められる —— ただしデコード
   自体に内部キャンセル点はないため、`spawn_blocking` タスクは何であれ完
-  了まで走る。ハードなキャンセルには、より短い単位（候補ごとの
-  `SniperRequest` 呼び出し）でデコードし、その間でフラグを確認する。
+  了まで走る。ハードなキャンセルには、`SlotInput::budget(..)` にフラグを読む述語を渡し
+  （FT8・FT4・FST4 は候補の間でそれを呼ぶ。[LIBRARY.ja.md](LIBRARY.ja.md)
+  §2.3）、より短い単位でデコードする。
 
 ---
 
 ## 6. 関連
 
 - [LIBRARY.ja.md](LIBRARY.ja.md) §2.4 —— ライブラリ API リファレンス内の
-  ストリーミング節、およびそれが属する `DecodeRequest` /
-  `SniperRequest` ビルダ面。
-- `DecodeRequest::on_result` の doc コメント
-  （`mfsk-core/src/msg/decode_request.rs`）—— 正典であり常に最新の配信
-  契約。
+  ストリーミング節、およびそれが属する `Decoder` / `DecodeParams` / extras の面。
+- `Decoder::decode_with` の doc コメント（`mfsk-core/src/decoder/mod.rs`）と、
+  エンジンの行コールバックの doc（`DecodeRequest::on_result`、
+  `mfsk-core/src/msg/decode_request.rs`）—— 正典であり常に最新の配信契約。
 - `mfsk-core/tests/ft8_decode_block_streaming.rs` —— 組込み
   `decode_block_streaming` の完全一致テスト。
 - `mfsk-core/tests/ft8_decode_block_streaming_host.rs` —— ホスト
   `fft-rustfft` 版 `decode_block_streaming` の完全一致テスト（issue #243）。
 - `mfsk-core/tests/wspr_wsjtx_samples.rs` —— 実信号に対する WSPR の
-  `DecodeRequest::on_result`。
+  行コールバック。
 - [BINDINGS.ja.md](BINDINGS.ja.md) —— C 境界越しの同じ考え方:
-  `mfsk_stream_*` のリングと `mfsk_session_set_on_decode`。同じ移植性の
+  `mfsk_decoder_set_on_decode` と `mfsk_stream_*` のリング。同じ移植性の
   理由からコールバックベースになっている。

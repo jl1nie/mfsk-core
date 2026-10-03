@@ -9,7 +9,9 @@ MSK144・JTTY — に加え、実験的で WSJT 由来ではない `uvpacket` �
 コーデック・メッセージコーデック・sync モードをそこへ挿す zero-sized
 type である。配線済みの全プロトコルが同じ受信フロー
 `coarse-sync → refine → LLR → FEC decode → message unpack` を通り、
-その上にプロトコル毎の戦略が重なる。MSK144 と JTTY はこのコアの中ではなく
+その上にプロトコル毎の戦略が重なり、WSJT-X 自身のモデルに沿った 1 つのデコード API が
+それを駆動する: モードごとに永続する `Decoder<P>` を、WSJT-X のパラメータブロックで
+設定する（[§2](#2-デコード-api)）。MSK144 と JTTY はこのコアの中ではなく
 横に置かれている。どちらもスロットを持たないので `Protocol` 型を持たない
 ([§3.1](#31-プロトコル毎の汎用-vs-専用))。
 
@@ -27,11 +29,11 @@ type である。配線済みの全プロトコルが同じ受信フロー
 
 - [1. クイックスタート](#1-クイックスタート)
 - [2. デコード API](#2-デコード-api)
-  - [2.1 `DecodeRequest<P>`](#21-decoderequestp)
-  - [2.2 `SniperRequest<P>`](#22-sniperrequestp)
+  - [2.1 `Decoder<P>`](#21-decoderp)
+  - [2.2 `DecodeParams` と `Depth`](#22-decodeparams-と-depth)
   - [2.3 計算予算](#23-計算予算)
   - [2.4 ストリーミング配信](#24-ストリーミング配信)
-  - [2.5 独自エントリポイントを持つプロトコル](#25-独自エントリポイントを持つプロトコル)
+  - [2.5 Extras と `Decoder` の外にあるプロトコル](#25-extras-と-decoder-の外にあるプロトコル)
   - [2.6 メッセージの受理](#26-メッセージの受理)
   - [2.7 広帯域 IQ 入力](#27-広帯域-iq-入力)
 - [3. プロトコル](#3-プロトコル)
@@ -52,7 +54,7 @@ type である。配線済みの全プロトコルが同じ受信フロー
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.12", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.13", features = ["ft8", "ft4", "wspr"] }
 ```
 
 必要なプロトコル feature だけを入れる。以下の例は説明のために複数を
@@ -61,10 +63,10 @@ mfsk-core = { version = "0.12", features = ["ft8", "ft4", "wspr"] }
 **FT8 スロットをデコードする。** フレームを合成してから復号する:
 
 ```rust
-use mfsk_core::ft8::Ft8;
+use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
 use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
-use mfsk_core::msg::decode_request::DecodeRequest;
-use mfsk_core::msg::wsjt77::{pack77, unpack77};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::msg::wsjt77::pack77;
 
 // 1. FT8 フレームを合成し、15 秒スロットに詰める。
 let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
@@ -77,231 +79,376 @@ for (i, &s) in frame.iter().enumerate() {
     if start + i < audio.len() { audio[start + i] = s; }
 }
 
-// 2. デコードする。new(audio, freq_min, freq_max, sync_min, max_cand)。
-// OSDはデフォルトでon。BP-onlyの軽量デコードにしたければ `.osd(false)`。
-let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3_000.0, 1.0, 50)
-    .decode()
-    .results;
-for r in &results {
-    if let Some(text) = unpack77(r.message77()) {
-        println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
-                 r.freq_hz, r.dt_sec, r.snr_db, text);
-    }
+// 2. デコードする。モードごとにデコーダを 1 つ持つ。パラメータブロックは
+// WSJT-X のもの（帯域・depth・自局…）。`Depth::Deep` が既定。
+let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+let result = decoder.decode(&SlotInput::i16(&audio));
+assert!(!result.rows.is_empty(), "roundtrip must decode");
+for row in &result.rows {
+    let d = &row.decoded;
+    println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
+             d.freq_hz, d.dt_sec, d.snr_db, d.text);
 }
 ```
 
-実音声は 12 kHz の 15 秒スロットとして届く。他のサンプルレートは
-`engine::dsp::resample` で変換する。`DecodeRequest` は `&[i16]` を取る。
+実音声は、名目開始位置から始まる 12 kHz の 1 周期として届く。他のサンプルレートは
+`engine::dsp::resample` で変換する。`SlotInput` は `&[i16]` と `&[f32]` を取る。
+`Decoder` は周期をまたいで持ち続けること。コールサインのハッシュ表はそこにある
+（[§2.1](#21-decoderp)）。`Decoder::<Ft8>::with_defaults()` は、帯域を自分で指定する
+代わりに WSJT-X の GUI が起動時に持つブロックから始める
+（[§2.2](#22-decodeparams-と-depth)）。
 
 ---
 
 ## 2. デコード API
 
-`mfsk_core::msg::decode_request` の `DecodeRequest` と `SniperRequest`
-が、FT8・FT4・FST4 全サブモード（`FrameDecodable` マーカトレイト）の
-**公開**デコードエントリポイントである。
+mfsk-core は WSJT-X と同じやり方でデコードする。WSJT-X はモードごとに 1 つのデコーダ
+（`jt9 -s`）を走らせ、GUI は周期ごとにパラメータブロック（`lib/jt9com.f90`）を埋めてから
+デコーダに読ませ、デコーダが周期をまたいで保持するのは SAVE 変数とモジュール変数に
+あるものだけである。`mfsk_core::decoder` がそのモデルである:
 
-その下にある engine 関数（`decode_frame`、`process_candidate_basic`、
-`GenericPipelineProtocol` トレイト）は issue #191/#203 以降
-`pub(crate)` で、下流がリクエスト型を迂回できないようにしてある。
-既定外の `internal-testing` feature がクレート自身の統合テスト向けに
-それを開ける。
+| WSJT-X | mfsk-core |
+|---|---|
+| 1 モード分のデコーダプロセス | `Decoder<P>` |
+| `params` ブロック（`nfa`、`nfb`、`nfqso`、`ndepth`、`mycall`、`hiscall`、`lft8apon`…） | `DecodeParams`。周期の合間に `params_mut()` で変える |
+| 1 周期分の音声（`id2`） | `SlotInput` |
+| SAVE 変数が保持するもの（ハッシュ表、a7、平均スペクトル） | `P::State`。デコーダごとに、初回使用時に確保 |
+| 無し: 本家にそのオプションは無い | `P::Extras`。モードごとに型付けされ、そのモードに無いオプションはコンパイルできない |
 
-Q65・WSPR・JT65・JT9・uvpacket・JTTY は独自のエントリポイントを持つ —
-[§2.5](#25-独自エントリポイントを持つプロトコル)
-(MSK144 のそれは `msk144::decode::decode_slot`)。
+リクエストごとのオプションオブジェクトも、その横の一発 API も無い。録音ファイルは
+`Decoder::<P>::new(params)` と `decode` 1 回である。その下の engine 関数
+（`decode_frame`、`process_candidate_basic`、`GenericPipelineProtocol` トレイト、
+ファミリ別の `DecodeRequest` 型）は `pub(crate)` で、下流がデコーダを迂回できない
+ようにしてある。既定外の `internal-testing` feature がクレート自身の統合テスト向けに
+それを開ける。`Decoder<P>` があるのは、スロットでデコードする 7 ファミリ（FT8・FT4・FST4・
+WSPR・JT9・JT65・Q65）である。uvpacket・MSK144・JTTY は独自のエントリポイントを持つ
+（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)）。
 
-### 2.1 `DecodeRequest<P>`
-
-`freq_min..freq_max` を広帯域探索する。構築し、連鎖し、デコードする:
+### 2.1 `Decoder<P>`
 
 ```text
-DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min, max_cand)
-    .osd(true)
-    .decode()          // -> DecodeOutcome<P>
+pub struct Decoder<P: Decodable> { params, extras, state }
 ```
 
-`DecodeOutcome<P>` は `.results: Vec<P::DecodeResult>`、後続呼び出し用の
-`.fft_cache`、`.budget: BudgetReport` を持つ。
+`Decodable` は、スロットでデコードする全 ZST が実装する。モード（`const MODE: Mode`）、
+`type State`（本家が周期をまたいで保持するもの）、`type Extras`（本ライブラリが足すもの）、
+`type Row`（そのモード固有の結果）を束ねる。
 
-| メソッド | 引数 | 既定 | 対応 | 効果 |
-|---|---|---|---|---|
-| `new` | `(audio, freq_min, freq_max, sync_min, max_cand)` | — | 全部 | 広帯域探索 |
-| `.freq_hint(hz)` | `f32` | 未設定 | 全部 | この周波数付近の候補を優先。**a-priori パスの QSO 周波数（`nfqso`）でもある:** `.ap_hint()` が両方の呼出符号を固定するとき、その仮説はこの周波数の 50 Hz 以内の候補にだけ試し、未設定なら一切試さない（`ft4_decode.f90` / `ft8b.f90` は常に `nfqso` を持つ）。FT4 はこの窓の候補を、OSD の 3 つ目のスナップショット（`maxosd = 3`）でも復号する。CQ と MyCall だけの仮説は、どこでも試す |
-| `.previous_cycle(&[..])` | 復号結果 | 空 | FT8 | 同じ系列の 1 周期前（30 秒前のスロット）の復号結果。WSJT-X の **a7** リスト復号を有効にする: その各組が次に送りうるメッセージを、前回の周波数と DT で照合する（pass id 30）。**a8** は呼び出し不要: `.ap_hint()` に MyCall、HisCall、HisGrid があり `.freq_hint()` があれば動く（pass id 31） |
-| `.tx_freq(hz)` | `f32` | 未設定 | FT8 | 送信周波数（`nftx`）: FT8 は両方の呼出符号を固定する仮説を、この周波数の 50 Hz 以内でも試す。他のモードは無視する（`ft4_decode.f90` に `nftx` はない） |
-| `.osd(bool)` | `bool` | `true` | 全部 | BP の階段が失敗したときの OSD フォールバック。ホストデコードでは `LlrEffort` は常に `Full` |
-| `.strictness(s)` | `DecodeStrictness` | `Normal` | 全部 | 採否閾値のプロファイル。どのノブがどのプロトコルに実際に届くかは [§6](#6-engine-プリミティブ) |
-| `.eq_mode(m)` | `EqMode` | `Off` | 全部 | `Off` / `Local`。**入力音声**の性質であって探索の性質ではない |
-| `.known(&[..])` | 復号済みの行 | 空 | 全部 | 前パスで見つかったメッセージをスキップまたは減算する |
-| `.fft_cache(c)` | 前回の `DecodeOutcome` のキャッシュ | 無し | 全部 | 同じ音声への前方 FFT を再利用 |
-| `.noise_blanker(nb)` | `NoiseBlanker` | オフ | `SupportsNoiseBlanker` — **FST4 の全サブモード** | WSJT-X の **NB**（`blanker.f90`）: スロット FFT の前に振幅の大きい標本を 0 にする。`Percent(n)` は `n` %（0..=25）を消す。`Sweep { step, ftol_hz }` は 0, step, … 20 % の各レベルでデコードし、0 より上のレベルは `.freq_hint()` の `ftol_hz` 以内だけを試す（最大 21 回のデコード）。既定はオフで、WSJT-X の既定 NB 0 % と同じ |
-| `.ap_hint(&ApHint)` | `&ApHint` | 無し | `SupportsWideBandAp` — **FT8・FT4・FST4 全サブモード** | 事前仮説からメッセージビットを固定 |
-| `.sic_rounds(n)` | `usize`、`1..=3` にクランプ | **FT4 の既定**（3） | `SupportsSicRounds` — **FT8, FT4** | 平坦な逐次干渉除去 |
-| `.sic_early()` | — | **FT8 の既定** | `SupportsSicEarly` — **FT8** | チェックポイント模倣の早期デコード（3 チェックポイント固定構造） |
-| `.single_pass()` | — | FST4 の既定 | 全プロトコル | プロトコルの既定の代わりに、減算なしの 1 パスで復号する。0.12.0 から、素の `.decode()` は FT8 と FT4 で減算する（WSJT-X の既定と同じ）。FT8 では単一パスの 2〜3 倍の時間がかかり、40 局の混雑帯域で recall が 60 % から 81 % になる。FT4 では信号 1 局のファイルの recall は変わらず、WSJT-X のサンプルは 11 件から 14 件になり、雑音のみのコストは変わらない |
-| `.also_accept(f)` | `Fn(&Wsjt77Fields) -> bool` | 無し | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | codec が通すもの **＋** `f` が通すもの — [§2.6](#26-メッセージの受理) |
-| `.message_filter(f)` | `Fn(&Wsjt77Fields) -> bool` | 無し | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | codec の判定を `f` で置き換える — [§2.6](#26-メッセージの受理) |
-| `.codec_filter()` | — | FT8 は on、他は off | `SupportsMessageFilter` — **FT8・FT4・FST4 全サブモード** | 既定で判定しないプロトコルで codec 自身の判定を適用する — [§2.6](#26-メッセージの受理) |
-| `.contest(on)` | `bool` | `false` | **FT8** | WSJT-X の `ncontest != 0`。FT8 が CRC 後に落とす `/R`・`TU; ` のメッセージを残す — [§2.6](#26-メッセージの受理) |
-| `.on_result(cb)` | `FnMut(&Row)` | 無し | 全部 | 見つかった順に行を配信 — [§2.4](#24-ストリーミング配信) |
-| `.budget(check)` | `FnMut() -> bool` | 無し | 全部 | 呼び出し側の締切述語 — [§2.3](#23-計算予算) |
-| `.sniper(...)` | `(audio, target_hz, max_cand)` | — | `SupportsSniper` — **FT8** | 代わりに `SniperRequest` を作る |
-| `.decode()` | — | — | 全部 | 実行 |
+| メソッド | 効果 |
+|---|---|
+| `Decoder::new(params)` | そのブロックを持つデコーダ。最初のデコードまで何も確保しない |
+| `Decoder::with_defaults()` | GUI でそのモードが持つブロック（[§2.2](#22-decodeparams-と-depth)） |
+| `params()` / `params_mut()` | ブロック。GUI が書き換えるのと同様、周期の合間に変える。状態は保たれる |
+| `extras()` / `extras_mut()` / `with_extras(e)` | そのモードのライブラリ独自オプション（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)） |
+| `decode(&SlotInput)` | 1 周期をデコード → `SlotResult<P::Row>` |
+| `decode_with(&SlotInput, on_row)` | 同じ。見つかるたびに各行を `on_row` へ渡す（[§2.4](#24-ストリーミング配信)） |
+| `unpack77(&[u8])` | パック済み 77 ビットメッセージをテキストにする。`<...>` は**このデコーダの**表で解決 |
+| `learn_callsign(&str)` | このデコーダの表にコールサインを教える（`save_hash_call`）。ハッシュ呼出符号を持たないモードでは `false` |
+| `clear()` | 周期をまたいで持っているものを全て忘れる（WSJT-X の "Clear Avg" と `ndepth & 128`） |
 
-**`DecodeRequest::<Ft8>::wsjtx_depth(audio, freq_min, freq_max, sync_min,
-max_cand, tier, ap)`** は 2 つ目の*コンストラクタ*（メソッドではない）で、
-FT8 専用、`ft8::decode` にある。(OSD, SIC 戦略, AP) の組が
-`jt9 -d1/-d2/-d3` と対応するリクエストを作る: `WsjtxDepth::D1` は OSD
-オフに `.sic_rounds(2)`、`D2` は OSD に `.sic_early()`、`D3` はさらに
-`.ap_hint(ap)` を加える（`ap: Option<&ApHint>` は `D3` でだけ読まれ、
-`D1`/`D2` では `jt9` 自身の depth と AP の結合どおり無視される）。`D1` と
-`D2` は、WSJT-X 3.0 の `ndepth <= 2` と同じく、候補が越えねばならない
-ハード sync (nsync) の下限も 6（二乗メトリックのパスでは 7）から 8 に
-引き上げる（#439）。`sync_min` は呼び出し側のもののままである:
-busy-band コーパスでは 1.3 が `.sic_early()` の recall を保ったまま
-想定外のデコードを 22 件（0.8 のとき）から 6 件に減らし、WSJT-X 3.x が
-`-d1/-d2` に使う 2.1 は、そこで recall を 3〜4 ポイント失う
-（[`BENCHMARKS.md`](../notes/BENCHMARKS.md) の "The busy-band corpus"）。
+`Decoder<P>` は `Send` である（`Sync` は要求されない）: ワーカースレッドへ移して使い、
+チャンネルごとに 1 つ持たせる。
 
-**戦略の拡張こそが phantom decode の出所である。** このスイートが
-出荷してしまった false-decode バグは2件とも減算パスにあった
-（`__staged_sic` の #243、`.sic_early()` の #253）。新しい戦略は
-同じ PR で精度ガードとともに出荷すること。
+**1 周期を入れて、行が出てくる。** `SlotInput` は、名目開始位置から始まる 1 周期分の
+音声である:
 
-### 2.2 `SniperRequest<P>`
+| フィールド / コンストラクタ | 意味 |
+|---|---|
+| `SlotInput::i16(&[i16])`、`SlotInput::f32(&[f32])` | 音声。`Audio::I16`（`jt9` が `id2` として読むもの）または `Audio::F32`。フレーム系（FT8・FT4・FST4）は WSJT-X と同じく 16 ビット音声を取るので、`F32` はまず固定 RMS（`decoder::F32_TO_I16_RMS`）に揃えられる。WSPR・JT9・JT65・Q65 は `f32` で動くので、`I16` は 32768 で割られる。呼び出し側がレベルを選ぶことはない |
+| `.period(n)` | 周期の UTC グリッド上の番号（`t / T`）。連続した周期を要する状態（FT8 の a7、Q65 の平均）は、これが分かっているときだけ使われる。無ければ、単発の録音はその状態に触れない |
+| `.budget(check)` | 締切の述語、[§2.3](#23-計算予算) |
 
-狭帯域・単一目標の探索。`SupportsSniper` で gate されており、
-**`Ft8` にのみ実装されている**。
+**段階的・早期デコードのエントリポイントは無い**: `SlotInput` は周期全体である。
+（WSJT-X の nzhsym 41/47/50 の早期デコードはこの API の一部ではない。ボードは
+低レベルの項目の上で独自の先頭部分パスを走らせる。）
+
+`SlotResult<R>` は `rows: Vec<Row<R>>`（見つかった順）と `budget: BudgetReport` である。
+`Row<R>` は 1 つのデコードの 3 つの見え方を持つ:
+
+| フィールド | 内容 |
+|---|---|
+| `decoded: Decoded` | モード共通の行: `text`（デコーダのハッシュ表で解決済み）、`freq_hz`、`dt_sec`、`snr_db`、`protocol` |
+| `detail: RowDetail` | それ以外でモード間に共通するもの: `sync_score`、`sync_cv`、`hard_errors`、`pass`、`info`、`hash_resolved`（`<...>` の解決に表が要った）、`copied_last_tx`（Q65 Pileup）。持たないモードは既定値のまま。WSPR・JT9・JT65 はどれも埋めない |
+| `native: R` | そのモード固有の結果: `DecodeResult`（FT8・FT4・FST4）、`WsprResult`、`Jt9Result`、`Jt65Result`、`Q65Result` |
+
+**デコーダが周期をまたいで持つもの**は、本家のデコーダが持つものだけである。デコーダごと
+であり、デコーダ間で共有されることはない（本家の表がプロセスごとなのと同じ）: 同じ
+モードの 2 チャンネルは 2 つの表を持つ。
+
+| モード | `State` | 本家 |
+|---|---|---|
+| FT8・FT4・FST4 | `FrameState`: コールサインのハッシュ表。`a7` extra を有効にした FT8 は直近 2 周期分の復号結果も | `packjt77`、`ft8_a7.f90` |
+| Q65 | `Q65State`: ハッシュ表、シンボルスペクトルの移動平均（`s1a`、`navg`）と直近の周期番号 | `packjt77`、`q65.f90` の SAVE |
+| WSPR | `WsprState`: OSD が、Fano が既に聞いた局を確認できるようにするコールサイン表（上限なし） | wsprd の `hashtable.txt` |
+| JT9・JT65 | `()` — 72 ビットメッセージはハッシュ呼出符号を運ばない | — |
+
+ハッシュは候補ループの**後**に、単一スレッドで、デコード順に解決・学習される
+（`unpack77_learn`）: メッセージは、自分が導入する呼出符号で自身のハッシュを解決
+しないし、周期 *n* で聞いた呼出符号は**同じ**デコーダの周期 *n*+1 の `<...>` を解決する。
+表は最初の挿入時に 1 ブロックとして遅延確保されるので、`Decoder::new` は組込みヒープ
+では何も消費しない。
 
 ```rust
+use mfsk_core::decoder::{DecodeParams, Decoder};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{EqMode, ApHint};
+use mfsk_core::msg::wsjt77::pack77_type4;
+
+// "<JA1ABC> JL1NIE/1 RR73": 標準コールサインは 12 ビットのハッシュで運ばれる。
+let msg77 = pack77_type4("JL1NIE/1", "JA1ABC", "RR73", false).unwrap();
+
+// 新しいデコーダには、そのハッシュが誰のものか分からない ...
+let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((200.0, 3_000.0)));
+let blind = decoder.unpack77(&msg77).unwrap();
+assert!(blind.contains("<...>"), "{blind}");
+
+// ... その呼出符号を聞いたデコーダには分かるが、別のデコーダには分からないまま。
+assert!(decoder.learn_callsign("JA1ABC"));
+assert!(decoder.unpack77(&msg77).unwrap().contains("<JA1ABC>"));
+let other = Decoder::<Ft8>::new(DecodeParams::for_band((200.0, 3_000.0)));
+assert!(other.unpack77(&msg77).unwrap().contains("<...>"));
+```
+
+**実行時にモードを選ぶ: `AnyDecoder`。** `AnyDecoder::new(Mode, DecodeParams)` は、
+このビルドが持つ `registry::Mode`（`Mode::ALL`、名前からの検索は `Mode::from_name`）ごとに
+1 つのバリアントを持つ enum で、`match` で振り分けられる: `Box<dyn>` も、デコード経路での
+確保も無い。モードをデータとして持つコード向けにある: IQ レシーバの呼び出し側
+（[§2.7](#27-広帯域-iq-入力)）、C ABI、GUI。メソッドは `Decoder` のものと対応し、結果は
+モード非依存の `AnySlotResult { rows: Vec<Decoded>, details: Vec<RowDetail>, budget }`
+（モード固有の結果が欲しいコードは型付きの `Decoder<P>` を持つ）。`extras_mut()` は
+`match` するための `AnyExtras` を返し、`set_ap_hint` は自由形式の AP ヒントを、それを取る
+モードに設定して、取らないモードでは `Err(Unsupported { mode, option })` を返す。
+`decode_i16(audio, period)` は短縮形である。`AnyDecoder` は、プロトコル feature が少なくとも
+1 つあるときだけ存在する。
+
+```rust
+# #[cfg(all(feature = "ft8", feature = "wspr"))] {
+use mfsk_core::Mode;
+use mfsk_core::decoder::{AnyDecoder, AnyExtras, DecodeParams};
+use mfsk_core::msg::ApHint;
+
+let mut dec = AnyDecoder::new(Mode::Ft8, DecodeParams::for_band((200.0, 3_000.0)));
+dec.set_ap_hint(Some(ApHint::new().with_call1("CQ").with_call2("JA1ABC"))).unwrap();
+if let AnyExtras::Ft8(e) = dec.extras_mut() {
+    e.a7 = true; // そのモード固有のオプション。型付き
+}
+assert_eq!(dec.mode(), Mode::Ft8);
+
+// WSPR に AP ヒントは無い: 不一致は no-op ではなくエラー値になる。
+let mut wspr = AnyDecoder::with_defaults(Mode::Wspr);
+assert!(wspr.set_ap_hint(None).is_err());
+# }
+```
+
+### 2.2 `DecodeParams` と `Depth`
+
+`DecodeParams` は `lib/jt9com.f90` の `params` ブロックである（`#[non_exhaustive]`。
+`DecodeParams::for_band((lo, hi))` とチェーンするセッターで作る）。**各モードは、自分の
+本家デコーダが読むものを読み、残りは無視する（`jt9` と同じ）**: フィールドがあるからと
+いって、そのモードにオプションが存在することにはならない。
+
+| フィールド | 本家 | 読むモード |
+|---|---|---|
+| `band_hz` | `nfa`、`nfb` | 全モード |
+| `rx_freq_hz` | `nfqso` | FT8（10 Hz 以内の候補を先にデコード、相手を名指す仮説はこの周波数の 50 Hz 以内だけ、a8、sniper の中心）、FT4 と FST4（同じ AP 規則）、JT9（Rx 周波数パス）、Q65（q3 リスト復号） |
+| `tol_hz` | `ntol` | JT9（既定 50 Hz）、Q65（F Tol、既定 10 Hz） |
+| `tx_freq_hz` | `nftx` | FT8: この周波数の 50 Hz 以内で両コールサインの仮説 |
+| `depth` | `ndepth & 7` | 全モード。下の表 |
+| `averaging` | `ndepth & 16` | Q65（`SlotInput::period` が要る）。JT65 はフィールドを持つがまだ読まない |
+| `deep_search` | `ndepth & 32` | JT65 の本家フラグ。まだ読まない |
+| `station` | `mycall`、`mygrid` | FT8・FT4・FST4（AP）、Q65（AP リスト） |
+| `qso` | `hiscall`、`hisgrid`、`nQSOProgress` | 同上 |
+| `ap` | `lft8apon`、`lapcqonly` | 同上: `ApMode::{Off, CqOnly, Full}` |
+| `contest` | `ncontest` | FT8（`/R` と `TU; ` のメッセージを残す、[§2.6](#26-メッセージの受理)。コンテストの `CQ` トークン。Fox）、FT4 と FST4（`CQ` トークン）、Q65（コーラーのリスト） |
+| `eme_delay` | `emedelay` | FT8（報告する `dt` が 2 秒遅くなる）、Q65（探索窓の遅い側の端が +5.5 s、Q65-15 では +4.0 s に動く） |
+
+**既定値は GUI に従う。** `Decoder::with_defaults()` と `decoder::default_params(mode)` は
+`Depth::Deep`（GUI の `NDepth` 既定）、**FT8 と JT65 は AP オフ**（"Enable AP" の
+チェックボックスが未チェックで始まる。他のモードにはボックスが無い）、GUI が暗に持つ帯域
+を返す: GUI 自身は帯域を持たない（`nfa` はウォーターフォールの左端、`nfb` は右端）ので、
+FT8 と FT4 は `jt9` のコマンドラインの 200〜4000 Hz、FST4 は GUI 自身の F Low / F High
+である 600〜1400 Hz、他のモードはレジストリの帯域になる。`DecodeParams::for_band` は素の
+ブロックである: `Deep`、AP は `Full`、自局も QSO も無し。自局のコールサインが無いと残るのは
+盲目の `CQ` 仮説だけなので、`ApMode::Off` である `default_params(Mode::Ft8)` とは同じ
+ではない。
+
+**`Depth` は、`ndepth` と同様に、探索設定の全てを決める。** `Fast`・`Normal`・`Deep` は
+`ndepth` の 1・2・3 で、モードごとに、そのモードの本家デコーダがそれらに対して設定する
+ものを、行単位で設定する（引用は各 `Decodable` 実装にある。出典は v3.2.0-rc1 の export で、
+2.7 のツリーではない）:
+
+| モード | Fast | Normal | Deep | 本家 |
+|---|---|---|---|---|
+| FT8 | sync 2.1、候補 1000、OSD なし、フラット SIC 2 ラウンド、nsync 下限 8 | sync 2.1、OSD、`SicEarly`、下限 8 | sync 1.3、OSD、`SicEarly`、下限 6 / 7 | `ft8_decode.f90:175-181`、`ft8b.f90:178-180,430-437` |
+| FT4 | sync 1.18、候補 200、1 パス、OSD なし、AP なし | 3 パス、OSD なし | 3 パス、OSD あり | `ft4_decode.f90:31,192-203,323-324` |
+| FST4 | minsync 1.20（FST4-15 は 1.15）、候補 200、OSD あり、`i0 ± 1` タイミング再試行なし、AP なし | + 再試行（`jittermax`） | 同じ | `fst4_decode.f90:53,234-248,308-309,421-423` |
+| WSPR | `wsprd -qB`: 2 パス、ジッタなし | `-C 500 -o 4`: 3 パス、OSD あり | `+ -d`: 候補が増える | `wsprd.c:819-900`、GUI の `mainwindow.cpp:2824-2826` |
+| JT9 | Fano limit 5000 | 10000 | 30000 | `jt9_decode.f90:83-100` |
+| JT65 | 2 パス、`nvec` 100 | 2 パス、1000 | 4 パス、1000 | `jt65_decode.f90:110-119` |
+| Q65 | `maxiters` 40、`(idf, idt, maxdist)` (1, 1, 4) | 60、(3, 3, 5) | 100、(5, 5, 5) | `q65_decode.f90:183-188`、`q65_loops.f90:27-40` |
+
+**QSO 文脈の AP（FT8・FT4・FST4）。** AP の仮説は、本家の `naptypes` 表
+（`ft8b.f90:55-70`、`ft4_decode.f90:132-137`、`fst4_decode.f90:133-138`）を通して
+`station`・`qso`・`ap` から導かれる。`station` が設定されていなければ何も走らない。
+`nQSOProgress` ごとに 1 周期で試される `iaptype`（1 = `CQ ??? ???`、
+2 = `MyCall ??? ???`、3 = `MyCall DxCall ???`、4 / 5 / 6 = タイプ 3 の末尾が
+`RRR` / `73` / `RR73`）:
+
+| `qso.progress` | FT8 | FT4、FST4 |
+|---|---|---|
+| `Calling` | 1, 2 | 1, 2 |
+| `Replying`、`Report` | 2, 3 | 2, 3 |
+| `RogerReport`、`Rogers` | 3, 4, 5, 6 | 3, 6 |
+| `Signoff` | 3, 1, 2 | 3, 1, 2 |
+
+`MyCall` を名指すタイプには標準の `station.call` が、`DxCall` を名指すタイプには標準の
+`qso.his_call` が要る（`PJ4/K1ABC` のような非標準の呼出符号は、それらのタイプを除外する）。
+タイプ 3 以上は、Rx または Tx 周波数の 50 Hz 以内でだけ走る。`ApMode::CqOnly` はタイプ 1 を
+残し、`Off` は何も残さない。FT4 と FST4 は `Fast` では AP を走らせず、Fox（と FT4 の Hound）
+も走らせない。盲目の `CQ` はコンテストのトークン（`CQ TEST`、`CQ FD`、`CQ RU`）を使う。
+Hound の「950 Hz 未満のみ」は適用していない。自由形式の `ap_hint` extra
+（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)）は、設定されるとこの導出を**置き換える**。
+Q65 は同じフィールドから代わりにコードワードのリストを導く（`standard_qso_codewords`、
+またはコンテスト用のリスト）。`rx_freq_hz` が設定されていれば、それが q3 リストとして使われる。
+FT8 の a8 は、ヒントが MyCall、DxCall、相手のグリッドを持ち、Rx 周波数があるときに走る。
+a7 は `a7` extra である。
+
+**戦略拡張はファントムデコードの出どころである。** この suite が出荷した偽デコードの
+バグ2件はどちらも減算経路にあった（#243 は `__staged_sic`、#253 は `.sic_early()`）。
+そのため新しい戦略は、同じ PR で精度ガードと一緒に出荷する。
+
+### 2.3 計算予算
+
+`SlotInput::budget(check)` は、候補の間で呼ばれる呼び出し側の述語
+（`&(dyn Fn() -> bool + Sync)`）を取る。**ライブラリは自前の時計を読まない** — 締切は
+述語が何と比較するかで決まり、これによって wasm や、スロットの途中で一時停止された
+プロセスからも使える。
+
+`SlotResult::budget` は `BudgetReport` で、打ち切りが何をやり残したかを伝える:
+スキップした候補数、実行したステージ数、スキップした最良候補の質。これにより呼び出し側は
+「何も無かった」と「有望な候補をキューに残したまま時間切れになった」を区別できる。
+
+FT8・FT4・全 FST4 サブモードが対応する（`MFSK_CAP_BUDGET` は同じ事実を C へ公開したもの）。
+WSPR・JT9・JT65・Q65 は周期全体をデコードし、空のレポートを返す。
+
+### 2.4 ストリーミング配信
+
+`Decoder::decode_with(&slot, &|row: &Row<_>| …)` は、見つかるたびに各行を、呼び出しが
+返す `SlotResult` とは別に配信する — 長いスロットが終わる前に何かを画面に出したい UI 向けである。
+`AnyDecoder::decode_with` は `&(dyn Fn(&Decoded, &RowDetail) + Sync)` を取る。
+
+配信順と重複排除の契約は**ここでは繰り返さない**: [`STREAMING.md`](STREAMING.ja.md) が
+正式な説明である。一行でいえば: 逐次戦略は呼び出しが返す行をそのまま同じ順序で
+配信し、並列戦略は完了順に配信し、返される行では既に重複排除済みの一時的な重複を
+見せることがある。コールバックに渡される行は、周期の開始時点のハッシュ表で解決されたもの
+で、返される行は同じ周期内で先に学習された呼出符号も見る。
+
+全モードが同じメソッドで同じ形を提供する。WSPR のそれは正確な契約ではなく並列の契約で
+ある — [`STREAMING.md`](STREAMING.ja.md) §3b を参照。JTTY には `Decoder` が無く、音声呼び出しの
+内側からコールバックで配信する: `jtty::rx::Stream::push(samples, &mut |update| …)`（と
+`finish`）が呼び出し側のスレッドでそれを呼ぶ —
+[§2.5](#25-extras-と-decoder-の外にあるプロトコル)。
+
+### 2.5 Extras と `Decoder` の外にあるプロトコル
+
+**Extras** は、本家に無く本ライブラリが足すものである。各モードの `Decodable::Extras` は、
+そのモードが持つオプションだけを保持するので、そのモードに無いオプションは、実行時の
+拒否ではなくコンパイルエラーになる（C ABI と `AnyExtras` は、同じ不一致を実行時に
+`Unsupported` で返す）。Extras は `Clone + Default` で、`extras_mut()` または
+`with_extras(..)` で設定し、周期の合間に変えてよい。
+
+*フレーム系*（`Ft8Extras`、`Ft4Extras`、`Fst4Extras`）は次を共有する:
+
+| フィールド | 型 | 既定 | 効果 |
+|---|---|---|---|
+| `tuning` | `Tuning<S>` | 全て `None` | ライブラリ独自の探索設定。`Depth` が決めたものを、**設定したときだけ**上書きする: `sync_min`、`max_cand`、`osd`、`strictness`（`DecodeStrictness`、[§6](#6-engine-プリミティブ)）、`strategy`。組込み（候補 15、1 パス）と tier-C スイープが使う |
+| `ap_hint` | `Option<ApHint>` | なし | 本家の QSO 文脈 AP とは別の、自由形式の a-priori ヒント: skimmer の「DX を 1 局狙う」場合で、本家は QSO 文脈でしか表現できない。設定すると導出されたヒントを置き換える。両コールサインを固定する仮説は `rx_freq_hz` の 50 Hz 以内の候補にだけ走る（`ft4_decode.f90` / `ft8b.f90` は常に `nfqso` を持つ） |
+| `eq` | `EqMode` | `Off` | `Off` / `Local`。探索ではなく**入力音声**の性質である |
+| `filter` | `MessageFilter` | `Default` | メッセージの受理、[§2.6](#26-メッセージの受理) |
+
+さらにモードごとに:
+
+| extra | 対象 | 効果 |
+|---|---|---|
+| `Tuning::strategy` | FT8: `Ft8Strategy::{SinglePass, SicRounds(n), SicEarly}`、FT4: `Ft4Strategy::{SinglePass, SicRounds(n)}`、FST4: `Fst4Strategy::SinglePass` | `match` で振り分け、モードごとに monomorphize される enum なので、選ばれない戦略はコストがゼロ。`SicRounds(n)` はフラットな逐次干渉除去（n は 1..=3 に丸める）、`SicEarly` はチェックポイントエミュレーション（`jt9 -d2/-d3`）で、3 チェックポイント固定の構造。FT4 に `SicEarly` は無く、FST4 に減算は無い（本家に無いことをそのまま写している） |
+| `a7` | FT8（`bool`、オフ） | WSJT-X の **a7** リスト復号（`ft8_a7.f90`）。このデコーダ自身の周期 *n* − 2（同じ系列の 1 周期前）の復号結果を入力にする（`SlotInput::period` が要る）。その各組が次に送りうるメッセージを、前回の周波数と DT で照合する（pass id 30） |
+| `sniper` | FT8（`Option<Sniper { search_hz }>`、250 Hz） | 下記の roofing filter モード。`rx_freq_hz` が要る |
+| `noise_blanker` | FST4（`Option<NoiseBlanker>`） | WSJT-X の **NB**（`blanker.f90`）: スロット FFT の前に最も大きいサンプルをゼロにする。`Percent(n)` は `n` % を消す（0..=25）。`Sweep { step, ftol_hz }` は 0、step、… 20 % でデコードし、0 より上のレベルは `rx_freq_hz` の `ftol_hz` 以内でだけ行う（最大 21 回のデコード）。WSJT-X の既定の NB 0 % と同じくオフ |
+
+**sniper モードを sniper モードにしているのはヒントではなく窓である。** `Sniper` は探索を
+`rx_freq_hz` の ±`search_hz` に絞る。これが存在するのは、オペレータが送受信機の
+*アナログ* roofing filter を絞り — Yaesu FTDX101MP と FTDX10 が約 500 Hz の代表例 — 搬送波
+が既知の局に向けたからである。届く音声は既に帯域制限されており、デコーダはハードウェアに
+合わせているだけである。`eq: EqMode::Local` は、そのフィルタのスカートが通過帯域に付ける
+傾きを平坦にする。**FT8 だけ**であり、汎用の「既知の 1 局を狙う」便宜機能ではない: それは
+広帯域経路の `ap_hint` で、FT8・FT4・全 FST4 サブモードが持つ。FT4 と FST4 の sniper
+エントリポイントは 2026-09-13 まで存在したが削除した: 広帯域経路がここでの全モードの
+主経路であり、sniper 無しで WSJT-X に忠実でないなら、それは広帯域経路のバグである。
+計測を含む全経緯は [`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md)。
+
+```rust
+use mfsk_core::decoder::{Decoder, DecodeParams, Sniper};
+use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
-use mfsk_core::msg::decode_request::SniperRequest;
-use mfsk_core::msg::wsjt77::{pack77, unpack77};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::msg::ApHint;
+use mfsk_core::msg::wsjt77::pack77;
 
 let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
 let tones = message_to_tones::<Ft8>(&msg77);
 let frame = synthesize_i16::<Ft8>(&tones, 12_000, /* freq */ 1000.0, /* amp */ 20_000);
-let mut audio = vec![0i16; 180_000]; // 15 秒 @ 12 kHz
+let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
 let start = (0.5 * 12_000.0) as usize;
 audio[start..start + frame.len()].copy_from_slice(&frame);
 
-let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
-let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand*/ 15)
-    .eq_mode(EqMode::Local)
-    .ap_hint(&ap)
-    .decode()
-    .results;
-assert!(!results.is_empty(), "ラウンドトリップは復号できるはず");
-for r in &results {
-    let text = unpack77(r.message77()).unwrap();
-    println!("{:7.1} Hz  {}", r.freq_hz, text);
+let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((200.0, 3_000.0)).rx_freq(1000.0));
+let extras = decoder.extras_mut();
+extras.sniper = Some(Sniper { search_hz: 250.0 });
+extras.eq = EqMode::Local;
+extras.ap_hint = Some(ApHint::new().with_call1("CQ").with_call2("JA1ABC"));
+
+let result = decoder.decode(&mfsk_core::decoder::SlotInput::i16(&audio));
+assert!(!result.rows.is_empty(), "roundtrip must decode");
+for row in &result.rows {
+    println!("{:7.1} Hz  {}", row.decoded.freq_hz, row.decoded.text);
 }
 ```
 
-| メソッド | 既定 | 効果 |
-|---|---|---|
-| `new(audio, target_hz, max_cand)` | — | `target_hz` の ±250 Hz |
-| `.search_hz(w)` | 250 Hz | 窓を広げる / 狭める |
-| `.sync_min(v)` | モード既定 | sync 閾値 |
-| `.osd(bool)` | `true` | `DecodeRequest` と同じ |
-| `.strictness(s)` | `Normal` | 同上 |
-| `.eq_mode(m)` | `Off` | 同上 |
-| `.ap_hint(&h)` | 無し | 同上 |
-| `.also_accept(f)` | 無し | 同上 |
-| `.message_filter(f)` | 無し | 同上 |
-| `.codec_filter()` | on（FT8） | 同上 |
-| `.on_result(cb)` | 無し | 同上 |
-| `.budget(check)` | 無し | 同上 |
-| `.decode()` | — | 同じ `DecodeOutcome<P>` |
+戦略拡張はファントムデコードの出どころである（[§2.2](#22-decodeparams-と-depth)）。
+`Tuning::strategy` と `a7` は既定外のコード経路である。
 
-SIC 版は無い — sniper 探索は本質的に単一候補である。
+*WSPR・JT9・JT65* は `WsprExtras`、`Jt9Extras`、`Jt65Extras` を取る。3 つとも
+`search: SearchTuning`（`time_tolerance_early_sec`、`time_tolerance_late_sec`、
+`score_threshold`、`max_candidates`。いずれも `Option` で、ブロックの帯域を載せた
+モードの `default_search_params()` の上に重なる）を持つ。WSPR は depth のものを上書きする
+`max_cycles_per_bit` を足す（10000 は `wsprd` 自身の既定で、GUI の Normal と Deep は速度の
+ため 500 に下げる。実測: WSJT-X の golden では 500 だと −23 dB の G8VDQ を失い、10000 だと
+復号する）。JT65 は `chase: Option<ChaseParams>` を足す（既定では Chase デコーダの試行回数は
+depth の `nvec`）。
 
-**これを sniper たらしめているのは窓であって、ヒントではない。**
-±250 Hz の探索が存在するのは、運用者がトランシーバの*アナログ*
-ルーフィングフィルタを絞った（~500 Hz を持つ機種として Yaesu FTDX101MP
-と FTDX10 が代表例）うえで、キャリア周波数が既知の局に向けているから
-である。届く音声は既に帯域制限されており、デコーダはハードウェアに
-合わせているだけである。「相手が分かっているときに使う便利機能」では
-**ない**。
-
-**`.ap_hint()` はここでも使える** — 上の表にあるとおりで、
-`SniperRequest` の `.decode()` はそれをデコーダまで渡す。ただし AP は
-窓と直交する機能であって、sniper が*何であるか*の一部ではない。同じ
-ヒントは広帯域の `DecodeRequest` にも、FT8・FT4・FST4 全サブモードに
-届く。かつて両者は結合していた — AP は候補ループを `if has_ap` で
-抜けるエンジン経由でしか使えず、*ヒントを持つこと*が探索を単一目標に
-していた — 取り除かれたのはその結合であって、ここでの AP の利用可否
-ではない。
-
-FT4 と FST4 の sniper エントリポイントは 2026-09-13 まで存在したが
-削除された。広帯域パスがこのクレートの全モードにとっての本線であり、
-sniper 無しで WSJT-X 忠実でないなら、それは広帯域パス側のバグである。
-測定を含む詳細は
-[`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md)。
-
-### 2.3 計算予算
-
-`.budget(check)` は候補の合間にポーリングされる述語を取る。
-**ライブラリ側は一切時計を読まない** — 締切は述語が何と比較するか次第で
-あり、これが wasm から、またスロット途中でサスペンドされたプロセスから
-使える理由になっている。
-
-`DecodeOutcome::budget` は `BudgetReport` で、打ち切りが何を残したかを
-告げる: スキップした候補数、実行したステージ数、そしてスキップした中で
-最良の候補がどれだけ良かったか — 「何も無かった」のか「有望な候補を
-残したまま時間切れになった」のかを呼び出し側が区別できる。
-
-FT8・FT4・FST4 全サブモードが対応する（C 側に公開されている
-`MFSK_CAP_BUDGET` と同じ事実）。
-
-### 2.4 ストリーミング配信
-
-`.on_result(cb)` は、呼び出しが返す `Vec` に加えて、見つかった順に各行を
-配信する — 長いスロットが終わる前に画面へ何か出したい UI 向け。
-
-配信順と重複除去の契約は**ここでは繰り返さない**。
-[`STREAMING.md`](STREAMING.ja.md) が正式な説明で、規範的なのは
-`DecodeRequest::on_result` 自身の doc comment である。一行で言えば:
-逐次デコードは呼び出しが返す行をその順で正確に配信し、並列デコードは
-完了順に配信するため、返り値の `Vec` では既に除去済みの重複が一時的に
-見えることがある。
-
-各プロトコルが同じ形を独自のエントリポイントで提供している:
-`wspr::DecodeRequest`・`jt9::DecodeRequest`・`jt65::DecodeRequest`・
-`q65::{DecodeRequest, SniperRequest, MultiPeriodRequest}` の
-`.on_result(cb)`。WSPR は完全一致ではなく並列側の契約になる ——
-[`STREAMING.ja.md`](STREAMING.ja.md) §3b を参照。JTTY にはリクエスト
-ビルダが無く、音声呼び出しの内側からコールバックで配信する:
-`jtty::rx::Stream::push(samples, &mut |update| …)`（および `finish`）が、
-呼び出し側のスレッドでそれを呼ぶ —
-[§2.5](#25-独自エントリポイントを持つプロトコル)。
-
-### 2.5 独自エントリポイントを持つプロトコル
-
-WSPR はスロットを wsprd と同じ 375 Hz ベースバンドにデシメートし、
-そこで wsprd 自身の粗探索と 3 回のデコードパスを走らせる。共有の FT 系
-パイプラインとはステージ構成が異なるため、`wspr` モジュールが独自の
-エントリポイント `wspr::DecodeRequest` / `wspr::SniperRequest`
-（issue #403、14 個のフリー関数を置き換えた）を用意している。ただし内部で使っている FEC (`ConvFano`) と
-メッセージコーデック (`Wspr50Message`) は `Wspr: Protocol` の
-関連型として宣言済みで、抽象の枠組みからは外れていない。
+**WSPR** はスロットを wsprd と同じ 375 Hz ベースバンドにデシメートし、そこで wsprd 自身の
+粗探索と 3 回のデコードパスを走らせる。共有の FT 系パイプラインとはステージ構成が異なる。
+ただし内部で使っている FEC (`ConvFano`) とメッセージコーデック (`Wspr50Message`) は
+`Wspr: Protocol` の関連型として宣言済みで、抽象の枠組みからは外れていない — スロット
+レベルのデコーダだけが違う。デコーダの表は、前のスロットの Fano 復号が確認した局を OSD が
+再び見つけられるようにする。これが `wsprd` が自身のサンプルファイルで −25 dB の W3BI に
+届く仕組みである。
 
 ```rust
 # #[cfg(feature = "wspr")] {
-use mfsk_core::wspr::DecodeRequest;
-use mfsk_core::wspr::tx::synthesize_type1;
+use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
 use mfsk_core::msg::WsprMessage;
+use mfsk_core::wspr::Wspr;
+use mfsk_core::wspr::tx::synthesize_type1;
 
-// WSPR Type 1 フレームを合成 (120 秒 @ 12 kHz スロット)。
+// WSPR Type 1 フレームを合成する（120 s @ 12 kHz スロット）。
 let samples_f32 = synthesize_type1("K1ABC", "FN42", 37, 12_000, 1500.0, 0.3)
     .expect("valid message");
 
-let decodes = DecodeRequest::new(&samples_f32, /*sample_rate*/ 12_000).decode();
-assert!(!decodes.is_empty(), "ラウンドトリップは復号できるはず");
-for d in decodes {
+let mut decoder = Decoder::<Wspr>::new(DecodeParams::for_band((1400.0, 1600.0)));
+let result = decoder.decode(&SlotInput::f32(&samples_f32));
+assert!(!result.rows.is_empty(), "roundtrip must decode");
+for row in result.rows {
+    let d = row.native; // WsprResult
     match d.message {
         WsprMessage::Type1 { callsign, grid, power_dbm } => {
             println!("{:7.2} Hz  {:+.0} dB  {} {} {}dBm", d.freq_hz, d.snr_db, callsign, grid, power_dbm);
@@ -318,123 +465,138 @@ for d in decodes {
 # }
 ```
 
-`DecodeRequest::new` が粗同期 (周波数×時刻×ドリフト探索) を込みで
-スロット全体をスキャンする。`.nominal_start()`・`.params()`・
-`.on_result()`・`.table(&mut WsprCallsignTable)` も取る。スロットを
-またいで持ち回したテーブルがあると、前のスロットの Fano デコードで
-確認済みの局を OSD が再発見できる —— wsprd が自身のサンプルファイルで
-W3BI を −25 dB で拾えるのはこの仕組みによる。
-
-周波数・開始サンプルが既知の場合は
-`DecodeRequest::sniper(samples, rate, start_sample, freq_hz).decode()`
-で粗同期を省略できる。`SniperRequest::baseband(idat, qdat, …)` は
-呼び出し側でデシメート済みのベースバンドに対して同じことを行い、
-`.drift()`・`.nblocks()`・`.confirmed()`・`.refine_drift()` ——
-スキャン自身の各パスが候補ごとに設定するつまみ —— を取る。CoreS3 の
-WSPR 受信機は自前の候補ループからこれを駆動している。
-
-
-
-**JT9** のビルダーは `jt9::DecodeRequest` ひとつ（issue #403）。形は
-下の Q65 と同じだが、JT9 はサブモードがひとつなのでジェネリックではない。
-`DecodeRequest::new(audio, sample_rate)` は
-`jt9::search::default_search_params()` でバッファ全体を探索し、
-`.nominal_start()`・`.params()`・`.depth(Jt9Depth)`・`.on_result()` で
-調整する。既知のアラインメントでの単点デコードは
-`DecodeRequest::sniper(audio, rate, start_sample, freq_hz).decode()`。
-こちらは `Jt72Message` だけを返す — この経路には同期探索・AFC・SNR 推定が
-なく、報告できるものがないため。置き換えられた `decode_scan*` /
-`decode_at` の 6 つのフリー関数は削除した。
+**JT9** と **JT65** は同じ形である: `Decoder::<Jt9>` と `Decoder::<Jt65>` に、60 秒周期の
+`SlotInput::f32`（または `i16`）を渡す。JT9 は `rx_freq_hz` があれば、本家の Rx 周波数パスも
+`tol_hz`（既定 50 Hz）の範囲で走らせる。どちらも 72 ビットメッセージをテキストで返す。
+0.13 以降、どちらも全ゼロの符号語（`000AAA 000AAA RA90`）を報告しない。これは無音を
+Reed-Solomon または Fano で復号すると出てくるものである。
 
 ```rust
-# #[cfg(feature = "jt9")] {
-use mfsk_core::jt9::{DecodeRequest, Jt9Depth};
-use mfsk_core::jt9::tx::synthesize_standard;
+# #[cfg(all(feature = "jt9", feature = "jt65"))] {
+use mfsk_core::decoder::{DecodeParams, Decoder, Depth, SlotInput};
+use mfsk_core::{Jt65, Jt9};
 
-let audio_f32 = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1500.0, 0.3)
+let jt9_audio = mfsk_core::jt9::tx::synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1500.0, 0.3)
     .expect("pack + synth");
-let decodes = DecodeRequest::new(&audio_f32, 12_000)
-    .depth(Jt9Depth::Deep)
-    .decode();
-assert!(!decodes.is_empty(), "ラウンドトリップは復号できるはず");
-# }
-```
+let mut jt9 = Decoder::<Jt9>::new(DecodeParams::for_band((200.0, 4_000.0)).depth(Depth::Deep));
+assert!(!jt9.decode(&SlotInput::f32(&jt9_audio)).rows.is_empty(), "roundtrip must decode");
 
-**JT65** も同じ組 `jt65::DecodeRequest` と `jt65::SniperRequest` を持ち
-（issue #403）、9 つのフリー関数を置き換えた。JT65 固有の軸は
-Reed-Solomon の走らせ方で、既定は硬判定、どちらのビルダーでも
-`.chase(ChaseParams)` で stochastic Chase 探索、sniper では
-`.erasures(&[0, 8, 16, 24, 32])` で決定的な消失ラダーになる。sniper で
-両方を呼んだ場合は後から呼んだ方が有効。
-
-```rust
-# #[cfg(feature = "jt65")] {
-use mfsk_core::jt65::DecodeRequest;
-use mfsk_core::jt65::tx::synthesize_standard;
-
-let audio_f32 = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3)
+let jt65_audio = mfsk_core::jt65::tx::synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3)
     .expect("pack + synth");
-let decodes = DecodeRequest::new(&audio_f32, 12_000).decode();
-assert!(!decodes.is_empty(), "ラウンドトリップは復号できるはず");
-for d in decodes {
-    println!("{:7.2} Hz  {:+.0} dB  {}", d.freq_hz, d.snr_db, d.message);
+let mut jt65 = Decoder::<Jt65>::new(DecodeParams::for_band((200.0, 4_000.0)));
+let result = jt65.decode(&SlotInput::f32(&jt65_audio));
+assert!(!result.rows.is_empty(), "roundtrip must decode");
+for row in result.rows {
+    println!("{:7.2} Hz  {:+.0} dB  {}", row.decoded.freq_hz, row.decoded.snr_db, row.decoded.text);
 }
 # }
 ```
 
-Chase 探索（`jt65::chase`、issue #169）は WSJT-X の stochastic Chase
-デコーダ `ftrsdap` の忠実な移植（マジックナンバーも含む）。AWGN スイープでは 50% 交差を −22.5 dB から
-−23.5 dB に下げ、その代わり即座に復号できない候補ごとに最大
-`ChaseParams::max_trials` 回の RS 試行を払う。
+JT65 の Chase 探索（`jt65::chase`、issue #169）は WSJT-X の stochastic Chase デコーダ `ftrsdap`
+の忠実な移植（マジックナンバーも含む）。AWGN スイープでは 50% 交差を −22.5 dB から −23.5 dB に
+下げ、その代わり即座に復号できない候補ごとに最大 `ChaseParams::max_trials` 回の RS 試行を払う。
 
-**Q65** は `mfsk_core::q65::decode_request` に3つの汎用ビルダを持ち、
-`msg::decode_request` と同じ形で、10 サブモード ZST すべてに実装された
-sealed な `Q65SubMode` マーカを介して汎用化されている:
-`DecodeRequest<P>`（広帯域スキャン）、`SniperRequest<P>`（既知の
-`(start_sample, base_freq_hz)`）、`MultiPeriodRequest<P>`（複数スロット
-平均）。`.ap_hint()`・`.ap_list()`・`.fading()` は capability gate された
-マーカトレイトではなく素の inherent メソッドである — Q65 は全サブモードが
-全機能を一様に持つため。下層の `q65::rx` 関数群は `pub(crate)`。どのビルダが
-どのメソッドを取るか（`q65/decode_request.rs`。ビルダに無いメソッドは、黙って
-何もしないのではなくコンパイルエラーになる）:
+**既知の位置でのデコード。** `wspr::SniperRequest`、`jt9::SniperRequest`、
+`jt65::SniperRequest`、`q65::SniperRequest` は公開のまま残る: 呼び出し側が既に持っている
+`(start_sample, frequency)` でのデコードは探索ではなく、WSPR ボード（`embedded-shared`）
+がその上に作られているからである。`SniperRequest::new(audio, rate, start_sample, freq_hz)`。
+WSPR の `::baseband(idat, qdat, …)` は、呼び出し側が既にデシメート済みのベースバンドで同じ
+ことをし、`.drift()`、`.nblocks()`、`.confirmed(&WsprCallsignTable)`、`.refine_drift()` を
+取る — スキャン自身のパスが候補ごとに設定するつまみである（CoreS3 の WSPR 受信機が自前の
+候補ループから駆動するのがこれ）。JT65 のそれは `.chase(..)` または
+`.erasures(&[0, 8, 16, 24, 32])` を取る（後から呼んだ方が勝つ）。
 
-| メソッド | `DecodeRequest` | `SniperRequest` | `MultiPeriodRequest` |
+**Q65** は 10 個のサブモード ZST で、それぞれ `Decoder<Q65a30>` などになり、最も豊富な
+extras（`Q65Extras`）を持つ:
+
+| フィールド | 既定 | 効果 |
+|---|---|---|
+| `search` | — | 上と同じ `SearchTuning` |
+| `ap_hint` | なし | フレーム系と同じ自由形式ヒント。**各候補をまず AP なしで試し**、次にヒント付きで試す。`q65_decode.f90` の `ipass` ループと同じ順で、1 回のヒント付き走査が、plain 走査とヒント付き走査を合わせた結果を返す（`Q65Result::ap` がどちらでデコードしたかを示す。#555 以降） |
+| `ap_list` | 空 | AP リスト復号のための候補コードワード（`Vec<[i32; 63]>`）。`station` と `qso` からデコーダが作るリストの代わりになる |
+| `callers` | なし | `Q65Callers`、聞こえたコンテスト局（`q65_hist2`）。`Contest::GridExchange` のときリストに加わる |
+| `pileup` | `false` | Q65 Pileup（WSJT-X 3.2）: Pileup モードの局は、相手の直前の送信を受信できたことを予備の 78 ビット目で知らせる。`Q65Result::copied_last_tx` がそれを報告し（WSJT-X は行に `#` を付ける）、`encode_channel_symbols_flagged` / `synthesize_standard_flagged_for` で送れる。`pileup` を有効にすると、両方の呼出符号を指定した `ap_hint` がこのビットを 0 に固定せず自由にするので、フラグ付きの応答にも一致する。`ap_list` のテンプレートは `q65_set_list.f90` と同じくビットを立てない |
+| `max_drift` | `0` | WSJT-X の Max Drift（0..50 ビン）。同期探索で、フレーム全体にわたる最大 `max_drift` ビンの直線的なトーンのドリフトを試し（`q65_ccf_22`）、グリッドデコードで見つかったドリフトを取り除く（`q65_loops` の `twkfreq`）。周波数ビンあたりの探索コストは通常の `2*max_drift+1` 倍。WSJT-X は有効な間、探索窓を Rx ± F Tol に絞るので、`band_hz` も同じように絞ること。通常と `ap_hint` のスキャンだけ |
+| `fading` | なし | `(FadingModel, b90_ts)`: 呼び出し側が選ぶモデルによる高速フェージング指標。ドップラー拡散チャネル（マイクロ波 EME、10 Hz 以上の拡散）向け |
+
+どのフロントエンドが走るか（`q65/decode_request.rs`。`.decode()` は
+`ap_list > fading (+ ap_hint) > ap_hint > plain` の順で解決し、`ap_list` と `fading` は
+エンジン内で排他）。Q65 の `Decoder` には、ブロックによって選ばれる 3 つの経路がある:
+
+| 状況 | 戦略 | 方法 | 閾値の利得 |
 |---|---|---|---|
-| `.ap_hint(&ApHint)` | yes | yes | no |
-| `.ap_list(&codewords)` | yes | yes | yes |
-| `.fading(model, b90_ts)` | yes | yes | no |
-| `.pileup(bool)` | yes | yes | no |
-| `.max_drift(bins)` | yes | no | no |
-| `.eme_delay(bool)` | yes | no | yes |
-| `.rx_freq(hz)` / `.ftol(hz)` | yes | no | yes（`.ap_list()` と併用で `iavg=1` の q3） |
-| `.hash_table(Arc<CallsignHashTable>)` | yes | yes | yes |
-| `.on_result(cb)` | yes | yes | yes |
-| `.decode()` の戻り値 | `Vec<Q65Result>` | `Option<Q65Result>` | `Vec<Q65Result>` |
+| 既定のスキャン | `(Δf,Δt,b90)` グリッド + Lorentzian フェージング BP、労力は [§2.2](#22-decodeparams-と-depth) の depth | 何も設定しない | WSJT-X 忠実な既定 |
+| コールサインやレポートが既知、地上波 | AP ヒント BP | `extras.ap_hint` | 約 2 dB |
+| ドップラー拡散チャネル | 高速フェージング指標 + BP | `extras.fading` | 拡散チャネルで 5–8 dB |
+| コールサイン対は既知、QSO 状態は無し | AP リストのテンプレート照合 | `extras.ap_list` | 約 3 dB |
+| コールサイン対と受信周波数が既知（WSJT-X の q3） | 受信周波数付近にあるリストの全メッセージの 85 シンボル sync を取り、そのあとリスト復号 | `station`（＋ `qso`）と `rx_freq_hz`（＋ `tol_hz`）、または `rx_freq_hz` と `extras.ap_list` | `q65sim` Q65-30A、−24 / −26 / −28 / −30 dB の各レベル 20 ファイル: 20 / 20 / 7 / 2、`jt9 -3 -d 1` も同じファイルで同じ |
+| 複数周期にまたがる微弱・電離層散乱信号 | シンボルスペクトルの移動平均（`averaging`） | `params.averaging = true` と連続する `SlotInput::period` | 単一周期のどの戦略でも取れない信号を拾う |
 
-**`DecodeRequest::ap_hint()` は各候補をまず AP なしで試し**、次にヒント付きで
-試す。`q65_decode.f90` の `ipass` ループと同じ順で、1 回のヒント付き走査が、
-従来の plain 走査とヒント付き走査を合わせた結果を返す。
-`Q65Result::ap` はどちらでデコードしたかを示す（WSJT-X の `q1`-`q3` と `q0`
-の区別。AP リストによるデコードも立てる）。#555 以降で、それ以前のヒント付き
-走査はヒントだけを試していた。`SniperRequest` と `.fading()` は、渡されたものだけを
-試すままである。
+**Q65 の平均**は、別個のリクエスト（0.12 の `MultiPeriodRequest`）ではなくデコーダの状態
+である: `averaging` を有効にすると、各周期が移動平均（`s1a`、重み `1/min(navg, 4)`、3 段
+カスケード。直近 `decoder::MAX_AVERAGED_PERIODS` = 8 周期を保持し、それより古いものの重みは
+`0.75^8` ≈ 10 % 以下）に加えられ、`period` に欠落があるか `None` だと平均はやり直しになる。
+1 周期につき結果は 1 つで、q3 が当たった周期ではラダーを飛ばす（本家は続けて候補ループに入る）。
+平均経路が取るのは探索チューニングと AP リスト / q3 で、`ap_hint`・`fading`・`pileup`・
+`max_drift` は取らない。
 
-`.hash_table()` は、`<...>` というハッシュ化コールサイン（Type 4）の
-プレースホルダを解決するセッションの `CallsignHashTable` である。未設定なら
-未解決のまま残る。`Arc` で共有されるので、セッション中の全 `decode()` に同じ
-テーブルを渡してもリファレンスカウントを増やすだけで済み、テーブルは呼び出し側が
-所有して育てる。
+**Q65 の q3 リスト復号。** `rx_freq_hz` とリスト（`station` と `qso` から作るか、
+`extras.ap_list`）があるとき、`tol_hz`（既定は `jt9` CLI と同じ 10 Hz）は WSJT-X の q3
+デコードである。受信周波数の F Tol 以内で、リストの各メッセージの 85 シンボル全部を使って
+同期を取り（`q65_ccf_85`）、高速フェージング指標で `b90` を掃引しながらリスト復号する
+（`q65_dec_q3`）。これを最初に実行し、その後で帯域の残りをスキャンする。`max_drift` 50 の
+ときは、受信周波数で何も復号できなければ、そこで見つかったドリフトを取り除いたスペクトル
+でもう一度実行する（"w3sz" の段階 5）。**`ap_list` が現れるすべての箇所が 1:1 移植というわけ
+ではない**（issue #522）: 本家のリスト復号は常に受信周波数を条件とする q3 としてしか動かない
+ので、`rx_freq_hz` を付けない `extras.ap_list` は crate 独自の候補ごとの AWGN 指標による
+テンプレート照合で、本家に対応物は無い — 意図的な拡張であり忠実性のギャップではない。
+
+`q65::Q65History` は WSJT-X の `q65_hist` で、アプリケーションが保持する。
+デコードのたびに `.record(&result)` で記録し（最新 100 件を保持）、
+`.lookup(rx_freq_hz)` は 10 Hz 以内の最新のデコードから DX コールを返す
+（メッセージにグリッドがあればグリッドも返す）。WSJT-X は DX コール未入力で
+手動の Decode Again を行ったときにこれを使い、オペレータがコールを入力しなくても
+フル AP リスト（`standard_qso_codewords`。`extras.ap_list` に渡す）を作る。
+`q65::Q65Callers` と `contest_codewords` はコンテストモード版である
+（`q65_hist2` / `q65_set_list2`）。グリッド付きで呼んできた局を最大 50 局、
+アプリケーションが保持する（`record(freq, msg, now)`、`expire(now)`）。
+そこから、各局について `MyCall Caller Grid` / `R Grid` / `RRR` / `RR73` /
+`73` を 78 ビット目なしとありの両方で作ったフル AP リストを作る。各フロントエンドが実際に何をして
+いるか、既定のスキャンがなぜ素の Bessel パスではないのかは
+[`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-q65s-decoder-strategies-and-what-each-is-for)。
+
+**Q65 の時間窓と EME 遅延。** `default_search_params()` は公称開始の
+-1.0 .. +1.0 s を探索する。WSJT-X の GUI と同じである（`q65.f90` の
+`lag1`/`lag2`）。`eme_delay` は "Decode at 52 s" の EME 遅延に当たり、月面反射の往復分
+として後ろ側の端を +5.5 s（Q65-15 は +4.0 s）に広げる。`dt_sec` は公称開始からの値である。
+
+```rust
+# #[cfg(feature = "q65")] {
+use mfsk_core::decoder::{DecodeParams, Decoder, Depth};
+use mfsk_core::q65::Q65a30;
+
+// QSO 中の Q65-30A 局: Rx 周波数と許容幅が q3 リスト復号の条件になり、
+// 平均は毎回の呼び出しで `SlotInput::period` を要する。
+let params = DecodeParams::for_band((200.0, 3_000.0))
+    .depth(Depth::Deep)
+    .rx_freq(1_000.0)
+    .tol(10.0)
+    .station("K1ABC", "FN42")
+    .qso("JA1XYZ", "PM95", mfsk_core::decoder::QsoProgress::Report)
+    .averaging(true);
+let mut decoder = Decoder::<Q65a30>::new(params);
+decoder.extras_mut().max_drift = 0;
+assert!(decoder.params().averaging);
+# }
+```
 
 **`dt_sec`、`SearchParams`、`SyncCandidate`。** WSPR・JT9・JT65・Q65 では、
-結果の `dt_sec` は**公称開始位置** — リクエストの `nominal_start` サンプル
+結果の `dt_sec` は**公称開始位置** — モードの `tx_start_offset_s`
 （WSPR は固定の 1.0 s `TX_START_OFFSET_S`） — から測り、符号付きなので、
 早く始まったフレームは負になる（#397。以前は Q65 と JT65 でバッファ先頭から
 測っており、0.5 s 早いフレームが −0.013 s と +0.442 s になっていた）。
-`Q65Result` / `Jt65Result` / `Jt9Result` の `to_decoded` はこのフィールドを読み、
-もはや `(sample_rate, nominal_start_sample)` を取らない。`Jt9Result` は
-`dt_sec` を得た。`msg::decoded::dt_from_samples` は無くなった。
-**0.12 での破壊的変更**で、残りは
-[0.12 での破壊的変更](#012-での破壊的変更)にある。スキャン系のモードは
+`Q65Result` / `Jt65Result` / `Jt9Result` の `to_decoded` はこのフィールドを読む。
+スキャン系のモードは
 `engine::search` にある 1 つの粗探索の語彙を共有する（#394）:
 `SearchParams { freq_min_hz, freq_max_hz, time_tolerance_early_sec,
 time_tolerance_late_sec, score_threshold, max_candidates }`（窓は Q65 のそれが
@@ -443,9 +605,17 @@ time_tolerance_late_sec, score_threshold, max_candidates }`（窓は Q65 のそ�
 freq_hz, score }`。`freq_hz` は tone 0 で、`.dt_sec(nominal, rate)` が
 変換する。`SearchParams::default()` は無い: 既定値はモード固有のデータなので、
 各モードが `search::default_search_params()` を持つ
-（Q65: 200-3000 Hz、±1.0 s、8 候補、threshold 0.1）。FT8・FT4・FST4 は、
+（Q65: 200-3000 Hz、±1.0 s、8 候補、threshold 0.1）— `SearchTuning` が上書きするのはこれである。
+FT8・FT4・FST4 は、
 `start_sample` の代わりに `dt_sec` を持つ `engine::sync::SyncCandidate` を
 意図的にそのまま使う。
+
+**uvpacket** は `Decoder` の外に独自の送信器と受信器（`uvpacket::tx`、`uvpacket::rx`）を
+持つ: FEC の母符号だけを再利用する、WSJT 由来ではない応用例である。詳細は
+[`UVPACKET.md`](UVPACKET.ja.md) にある。
+
+**MSK144** も設計上 `Decoder` の外にある: FSK ではなく、`msk144::decode::decode_slot` は
+`engine::pipeline` を迂回する。T/R 周期全体を走査してピングを探す。
 
 **JTTY**（WSJT-X 3.2.0-rc1 の微弱信号キーボードチャット用モード。`lib/jtty/` の
 移植で、#477 と `docs/notes/JTTY_UPSTREAM.md` で管理）は、ここで唯一 **スロットを持たない**
@@ -554,56 +724,63 @@ JT9 の多段 AGC/IFFT/コヒーレント加算パイプラインは単純な帯
 冗長性が皆無（ほぼ全ビット列が妥当な値）なので受理し、EU VHF contest は
 ハッシュ2つしか持たないので、どちらかが解決したときだけ受理する。
 
-ビルダーは3つ。いずれも `SupportsMessageFilter` 上にあり、対象は
-**`Ft8` / `Ft4` / 全 FST4 サブモード**である:
+extra は 1 つ、`Ft8Extras`・`Ft4Extras`・`Fst4Extras` の `filter: MessageFilter` — つまり
+**フレーム系の全モード** — で、値は 4 つある:
+
+| 値 | 判定 |
+|---|---|
+| `MessageFilter::Default` | プロトコルが既定で codec の判定を走らせるなら（FT8 と FT4。FST4 は走らせない）それ、走らせないなら判定なし |
+| `MessageFilter::Codec` | codec の判定のみ — 既定でオフのプロトコルで有効化する一行の手段 |
+| `MessageFilter::AlsoAccept(f)` | codec の判定 **＋** `f` が受理するもの。判定を広げるだけで、減らすことはない |
+| `MessageFilter::Only(f)` | 判定を `f` で丸ごと置き換える |
+
+`f` は `fn(&Wsjt77Fields) -> bool` — 関数ポインタなので、extras は `Clone` かつ `'static`
+のままである（何もキャプチャしないクロージャはこれに型強制される）。
 
 ```rust
+use mfsk_core::decoder::{DecodeParams, Decoder, MessageFilter, SlotInput};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::decode_request::DecodeRequest;
+use mfsk_core::msg::wsjt77::Wsjt77Fields;
 
-/// 配備先が知っていて ITU 許可リストが知らないもの。
-fn is_special_event_call(call: &str) -> bool {
-    call.starts_with("8J")
+/// 配備先が知っていて ITU 許可リストが知らないもの。メッセージは
+/// フィールドとして見え、`callsigns()` は厳密にコールサイン欄だけで
+/// あり、grid や report が紛れ込むことはない。
+fn special_event_only(m: &Wsjt77Fields) -> bool {
+    m.callsigns().all(|c| c.starts_with("8J"))
 }
 
 let audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
+let params = DecodeParams::for_band((200.0, 3_000.0));
 
-// codec の判定 ＋ それが知らないコールサイン。クロージャは復号済み
-// メッセージを受け取るので、`callsigns()` は厳密にコールサイン欄だけで
-// あり、grid や report が紛れ込むことはない。
-let widened = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, 1.5, 20)
-    .also_accept(|m| m.callsigns().all(is_special_event_call))
-    .decode();
+// codec の判定 ＋ それが知らないコールサイン。
+let mut widened = Decoder::<Ft8>::new(params.clone());
+widened.extras_mut().filter = MessageFilter::AlsoAccept(special_event_only);
 
 // 一切の判断をしない — CRC を通ったメッセージは全部、ファントム込みで。
 // これが本家の受理規則そのものである。
-let unfiltered = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, 1.5, 20)
-    .message_filter(|_| true)
-    .decode();
+let mut unfiltered = Decoder::<Ft8>::new(params);
+unfiltered.extras_mut().filter = MessageFilter::Only(|_| true);
 
 // 無音には実信号も CRC 生存者も無いので、フィルタ無しの方も空で返る。
-assert!(widened.results.is_empty());
-assert!(unfiltered.results.is_empty());
+assert!(widened.decode(&SlotInput::i16(&audio)).rows.is_empty());
+assert!(unfiltered.decode(&SlotInput::i16(&audio)).rows.is_empty());
 ```
 
-`.also_accept(f)` は判定を広げるだけで、減らすことはない。
-`.codec_filter()` は判定のみを適用する — 既定でオフのプロトコルで
-有効化する一行の手段である。`.message_filter(f)` は判定を丸ごと置き換え、
-置き換えられる側はそこに到達した CRC 生存者のおよそ 2/3 を落としている
-ので、緩い `f` はファントム行を表に出す。
+`MessageFilter::Only(f)` が置き換える側の判定は、そこに到達した CRC 生存者のおよそ 2/3 を
+落としているので、緩い `f` はファントム行を表に出す。
 
 **FT8 は、ポリシーに関わらず `/R` と `TU; ` のメッセージも落とす。** #439 以降、
 FT8 は `ft8b.f90`（WSJT-X 3.0 以降）が CRC の直後にすることと同じことをする:
 コンテスト中でなければ、`/R` を含む、または `TU; ` で始まる標準または RTTY
 Roundup のメッセージは捨てられ、そのパスは次へ進む。これはポリシーより前に
-あるので、`.message_filter(|_| true)` でもそれらの行は戻らない。戻すのは
-`.contest(true)` で、`CALL1/R CALL2` や `TU; CALL1 CALL2` が実トラフィック
+あるので、`MessageFilter::Only(|_| true)` でもそれらの行は戻らない。戻すのは
+ブロックの `contest` が `Contest::None` 以外であることで、`CALL1/R CALL2` や `TU; CALL1 CALL2` が実トラフィック
 になるコンテストではこれが正しい設定である。
 
 **既定でオンなのは FT8 と FT4。理由は減算である。** 受理したものを減算する
-経路では、誤ったデコードは表示上の問題では済まない。`.sic_rounds()` と
-`.sic_early()` は、次に探す前に復号した波形を音声から取り除く。
-`qso3_busy.wav` での実測では、判定を切ると `.sic_early()` がファントム
+経路では、誤ったデコードは表示上の問題では済まない。`SicRounds` と
+`SicEarly` は、次に探す前に復号した波形を音声から取り除く。
+`qso3_busy.wav` での実測では、判定を切ると `SicEarly` がファントム
 `CQ G47OXF RD84` を受理して減算し、その下にいた実信号 `CQ EA2BFM IN83` を
 失う — 18/18 が 17/18 になる。単一パス経路では、同じ判定が `max_cand = 200`
 で 2 行のゴミを落とし、**実機が使う深さでは 1 件も落とさない**。
@@ -614,18 +791,18 @@ FT4 も同じ CRC-14 と同じ SIC 経路を持つので、自前の実測が揃
 50% 交差 SNR は4チャネルとも **0.00 dB 変化なし**。動いた唯一の recall セルは
 *増える*向きで、拒否されても候補ラダーが止まらないため。このコーパスが
 試せないのは許可リスト自身のリスク（全スロットが同一コールサイン）なので、
-珍しいプレフィクスを受ける運用は `.also_accept()` で広げる。
+珍しいプレフィクスを受ける運用は `MessageFilter::AlsoAccept` で広げる。
 
 **FST4 はオフのまま。** 測っていないからではない: CRC-24 により偽陽性率が
 他の2つより 512 倍低く、判定が落とすものがほとんど無い一方、recall を失う
 可能性だけは同じだからである。
 
-**未使用時のコストはゼロ。** ポリシーは `.on_result()` / `.budget()` の
-ような `&dyn Fn` ではなく型パラメータである。3つとも呼ばない request は
-ゼロサイズ型 `DefaultPolicy` を持ち、既定でフィルタしないプロトコルでは
-**メッセージの復号すら行われない** — どちらの条件もコンパイル時定数である。
-前者2つのフックは*デコード*ごとに1回発火するが、こちらはメッセージ段に
-到達した候補ごとに発火する。型パラメータにする価値があるのはそのため。
+**未使用時のコストはゼロ。** ポリシーは行コールバックや予算のような `&dyn Fn` ではなく、
+エンジンの型パラメータである。`MessageFilter` の各バリアントがそれぞれ自前の monomorphize
+されたコピーを選び、`Default` はゼロサイズ型 `DefaultPolicy` を持ち、既定でフィルタしない
+プロトコルでは**メッセージの復号すら行われない** — どちらの条件もそのコピーの中ではコンパイル時
+定数である。行コールバックは*デコード*ごとに1回発火するが、こちらはメッセージ段に到達した
+候補ごとに発火する。型パラメータにする価値があるのはそのため。
 
 ---
 
@@ -634,7 +811,7 @@ FT4 も同じ CRC-14 と同じ SIC 経路を持つので、自前の実測が揃
 `mfsk_core::iq` は、これまでのデコーダが 12 kHz の実数音声を受け取るところへ、広帯域の複素 IQ
 ストリーム（SDR、IQ 録音）を受け取ります。ライブラリの範囲は DSP とデコードまでで、デバイス制御、
 UI、スポット送信は含みません。**信号を探すことはしません**。どのダイヤル周波数がどのモードかは
-呼び出し側が指定し、チャンネル内の音声 200〜3000 Hz はデコーダが自分で探索します。
+呼び出し側が指定し、チャンネル内の音声は、デコーダが自分の `DecodeParams` の帯域で探索します。
 
 **1 チャンネル: `IqToAudio`**。12 kHz 以上の任意の整数レートの IQ から、そのダイヤル周波数について
 送受信機の USB 出力が運んだはずの音声を作ります。
@@ -665,42 +842,88 @@ assert_eq!(IqToAudio::new(stream, 14_199_000.0).err(), Some(IqError::TooCloseToD
 フィルタもこの辺りから始まります。複素入力をデコーダへ直接渡す方式ならこの制約は無くなりますが、
 このフロントエンドよりはるかに大きな変更になります（issue #534）。
 
-**N チャンネル、UTC 基準: `IqReceiver`**（FFT バックエンドとプロトコル feature が必要）。
+**N チャンネル、UTC 基準: `IqReceiver`**（FFT バックエンドが必要）。チャネライズとスロット切り出し
+だけを行い、**何もデコードしない**。どのダイヤル周波数がどのモードかは呼び出し側が指定し、
+ストリームの UTC を伝え、完了したスロットを所有権付きの `CompletedSlot` として引き出す。
+デコードは呼び出し側の仕事で、チャンネルごとに 1 つの `AnyDecoder` を使う — チャンネルごとに
+独自のオプションと独自のコールサイン表を持ち、デコードは任意のスレッドで走らせられる
+（スロットは所有権付きで `Send`）。
 
-```rust,ignore
+```rust
+# #[cfg(all(feature = "ft8", feature = "ft4", feature = "fft-rustfft"))] {
+use std::collections::HashMap;
+use mfsk_core::Mode;
+use mfsk_core::decoder::AnyDecoder;
+use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+
 let mut rx = IqReceiver::new(IqStream::new(768_000, 14_200_000.0, IqSampleFormat::Cf32));
-rx.add_channel(14_074_000.0, IqMode::Ft8)?;         // 窓に DC が入る、または帯域外なら Err
-rx.add_channel(14_080_000.0, IqMode::Ft4)?;
+let ft8 = rx.add_channel(14_074_000.0, Mode::Ft8).unwrap(); // 窓に DC が入る、または帯域外なら Err
+let ft4 = rx.add_channel(14_080_000.0, Mode::Ft4).unwrap();
 // チャンネルが多いときは 1 つのポリフェーズフィルタバンクを共有する（下の「2 つのチャネライザ」）:
 //   IqReceiver::with_channelizer(stream, Channelizer::Pfb)?
-rx.set_time_anchor(utc_ns_at_sample_0);             // 無ければサンプル 0 から自走する
-rx.on_decode(|row: &IqDecode| { /* row.abs_freq_hz, row.decoded.text, row.slot_start_utc_ns */ });
-rx.push_cf32(&iq);                                  // 型付き。push_cs16 / push_bytes もある
-rx.retune(new_center_hz)?;                          // 開いているスロットを捨て、サンプル時計は続ける
-rx.gap(lost_samples);                               // 同上
+let mut decoders = HashMap::from([
+    (ft8, AnyDecoder::with_defaults(Mode::Ft8)), // チャンネルごと: 独自のオプションとハッシュ表
+    (ft4, AnyDecoder::with_defaults(Mode::Ft4)),
+]);
+
+// rx.set_time(utc_ns, at_sample);   // 時刻の読みが得られるたびに
+let mut slots = Vec::new();
+rx.push_cf32(&vec![0.0f32; 2 * 4096], &mut slots); // I/Q インターリーブ。push_cs16 / push_bytes もある
+for slot in slots {
+    let out = decoders.get_mut(&slot.channel).unwrap().decode(&slot.input());
+    for d in &out.rows {
+        println!("{:.1} Hz  {}", slot.abs_freq_hz(d.freq_hz), d.text);
+    }
+}
+let report = rx.retune(14_201_000.0); // RetuneReport { paused, resumed }
+assert!(report.paused.is_empty());
+rx.gap(1_000); // サンプルの欠落
+# }
 ```
 
-モード: `IqMode` は FT8、FT4、FST4 の 5 周期、WSPR、JT9、JT65、Q65 の 10 サブモードを扱います。
-FT8、FT4、FST4 はレジストリの既定の探索で `DecodeRequest` を通り、それ以外はそれぞれの要求型と
-その `default_search_params` を使います。いずれもレジストリが与える名目開始位置を使うので、`dt` は
-WAV のときと同じ読みになります。Q65 はここでは単一周期で、スロットをまたぐ平均は行いません。
+`Mode` は `registry::Mode`（0.12 の `iq::IqMode` を置き換える）で、そのビルドが持つ範囲の
+FT8、FT4、FST4 の 5 周期、WSPR、JT9、JT65、Q65 の 10 サブモードである。`CompletedSlot` は
+`channel`、`mode`、`dial_hz`、`period`（グリッド上のスロット番号）、`start_sample`、
+`utc_ns`（時計があるとき）、`audio: Vec<f32>` を持つ — スロットの名目開始位置からの 12 kHz
+音声なので、`dt` は WAV のときと同じ読みになる。`slot.input()` は `SlotInput`（音声と
+`period` で、平均と a7 が連続するスロットを見られる）、`slot.abs_freq_hz(audio_hz)` は
+ダイヤル + 音声周波数である。公開の IQ 型は `#[non_exhaustive]` である。
 
-*時間*: サンプル数が時計で、時刻源は読みません。チャンネルの音声インデックス `k` はサンプル 0 から
-`k/12000` 秒後で、周期 `T` のモードのスロット `j` は UTC の `[j·T, (j+1)·T)` を覆います（整数で計算）。
-スロットは全部届いてからデコードされ、ストリームが途中から始まったときの部分スロットはデコード
-されません。`retune`、`gap`、アンカーの再設定は、開いているスロットをすべて捨てます。中心の変更、
-サンプルの欠落、動いたグリッドをまたぐ音声はスロットではないからです。`retune` は全か無かで、
-チャンネルが収まらなくなるなら `Err` を返し、何も変えません。スロットの最後の音声サンプルは、それを
-運ぶ最後の IQ サンプルの数フィルタ長後に出てくるので、録音には、ライブのストリームと同じように、
-終端の後に少し余白が要ります。
+*時間*: サンプル数が時計で、与えない限り時刻源は読まない。チャンネルの音声インデックス `k` は
+サンプル 0 から `k/12000` 秒後で、周期 `T` のモードのスロット `j` は UTC の `[j·T, (j+1)·T)`
+を覆う（整数で計算）。`set_time(utc_ns, at_sample)` は時計の観測値（Unix エポックからの
+ナノ秒。`at_sample` は入力サンプル数で、`samples_in()` と同じ数え方）を受け取り、
+`slotgrid::SampleClock` を通じて上限付きの速度で追従するので、水晶やホストの時計がドリフト
+してもスロット境界はミリ秒単位で動くだけで、スロットは失われない。観測が引き起こした
+`ClockChange` を返す: `First`（時計が設定された）、`Slewed { by_ns }`（範囲内。前回の観測
+からの時間の最大 400 ppm、FT8 のスロット 1 つで 6 ms 動く）、`Stepped { by_ns }`（1 秒より
+離れている: ドリフトではなく時計が設定し直されたもの。開いているスロットはその跳びを
+またぐので捨てられる）。観測が無ければグリッドはサンプル 0 から自走し、録音の再生に向く。
+スロットは常に自身の境界から始まる: ストリームが時計よりわずかに速いときは、最初の数サンプルが
+前のスロットの最後のサンプルになる。スロットは全部届いてから完了し、ストリームが途中から
+始まったときの部分スロットは完了しない。スロットの最後の音声サンプルは、それを運ぶ最後の IQ
+サンプルの数フィルタ長後に出てくるので、録音には、ライブのストリームと同じように、終端の後に
+少し余白が要る。
 
-*行*: `IqDecode` は、モード共通の `Decoded` に、`abs_freq_hz`（ダイヤル + 音声周波数）、スロットが始まった
-IQ サンプル番号、アンカーがあればその UTC（ns）を加えたものです。
+`mfsk_core::slotgrid` はその算術だけを取り出したもので、整数のみ、`std`・確保・アトミック
+なしなので、組込みボードや C ABI の音声ストリームにも収まる: `SlotGrid::new(period_ns, rate_hz)`
+（`start_of`、`next_start`、`follow`）、`SampleClock`（`observe`、`utc_of`、
+`with_max_slew_ppm`、`with_step_ns`）、`SlotCutter<T>`（グリッドのレートでサンプルを
+与えると、時計のアンカーに追従しながら各スロットを自身の境界で返す）。+13 ppm で 1 日、観測
+値に 3〜11 ms のジッタを乗せたシミュレーションでも、スロットは 1 つも失われない
+（`slotgrid::tests`）。
 
-*スレッド*: 完了したスロットは、それを完了させた `push_*` 呼び出しの中でデコードされ（混んだ FT8 では
-数百ミリ秒）、その行はそのスレッドでコールバックに渡されます。ブロックできない呼び出し側は、ワーカー
-スレッドから push してください。各スロットはデコーダに渡す前に固定の RMS に揃えられます。デコーダは
-スケールに依存せず、IQ 自身のレベルを引き継ぐ理由がないためです。
+*再チューンと欠落*: `retune(center_hz)` は新しい中心周波数に収まるチャンネルをすべて動かし、
+収まらないものを**一時停止**して、`RetuneReport { paused, resumed }` を返す。一時停止した
+チャンネルはダイヤルを保ち、呼び出し側はデコーダとその表を保ち、後の再チューンでチャンネルが
+帯域内に戻れば再開する（`channel_state(id)`: `Active` または `Paused(IqError)`）。`retune` と
+`gap(lost)` はどちらも開いているスロットをすべて捨てる — 中心の変更やサンプルの欠落を
+またぐ音声はスロットではない — そしてサンプル時計は続く。
+
+*スレッド*: スロットはそれを完了させた `push_*` 呼び出しから返され、呼び出し側の好きな場所で
+デコードされる — 混んだ FT8 では数百ミリ秒かかるので、ブロックできない呼び出し側はワーカーに
+渡す。各スロットはデコーダに渡す前に固定の RMS に揃えられる。デコーダはスケールに依存せず、
+IQ 自身のレベルを引き継ぐ理由がないためで、無音または NaN のスロットは返されない。
 
 *形式*: `Cf32` と `Cs16` は型付きでもバイト列でも、`Cs8`（HackRF）、`Cu8`（RTL-SDR、128 = ゼロ）、
 `Cs24` は `push_bytes` のバイト列で受け取ります。呼び出しをまたいで分割されたサンプルは引き継がれます。
@@ -750,13 +973,13 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 
 | プロトコル | FEC コーデック | メッセージコーデック | Sync mode | デコード入口 |
 |-----------|---------------|--------------------|-----------|-------------|
-| **FT8**  | 汎用 `Ldpc174_91` | 汎用 `Wsjt77Message` (77 bit) | `Block` — 3×Costas-7 | 汎用 `DecodeRequest`、内部は FT8 専用 `ft8::decode_block` エンジン [^ft8] |
-| **FT4**  | 汎用 `Ldpc174_91` | 汎用 `Wsjt77Message` (77 bit) | `Block` — 4×Costas-4 | 汎用 `DecodeRequest` / `engine::pipeline` |
-| **FST4** | 汎用 `Ldpc240_101` | 汎用 `Wsjt77Message` (77 bit) | `Block` — 5×Costas-8 | 汎用 `DecodeRequest` / `engine::pipeline` |
-| **WSPR** | 専用 `ConvFano` (畳み込み r=½ K=32 + Fano) | 専用 `Wspr50Message` (50 bit) | 専用 `Interleaved` [^wspr] | 専用 `wspr::decode` |
-| **JT9**  | 専用 `ConvFano232` (畳み込み、206 bit 枠) | 汎用 `Jt72Codec` (72 bit) | `Block` (長さ 1 スロット) | 専用 `jt9` 入口 |
-| **JT65** | 専用 `Rs63_12` (RS GF(2⁶)、消失対応) | 汎用 `Jt72Codec` (72 bit) | `Block` (長さ 1 スロット) | 専用 `jt65` 入口 |
-| **Q65**  | 専用 `Q65Fec` + GF(64) 上の QRA コーデック [^q65] | 専用 `Q65Message` (77 bit) | `Block` | 専用 `q65::rx` + Q65 ローカル `DecodeRequest` |
+| **FT8**  | 汎用 `Ldpc174_91` | 汎用 `Wsjt77Message` (77 bit) | `Block` — 3×Costas-7 | `Decoder<Ft8>`、内部は FT8 専用 `ft8::decode_block` エンジン [^ft8] |
+| **FT4**  | 汎用 `Ldpc174_91` | 汎用 `Wsjt77Message` (77 bit) | `Block` — 4×Costas-4 | `Decoder<Ft4>`、汎用 `engine::pipeline` の上 |
+| **FST4** | 汎用 `Ldpc240_101` | 汎用 `Wsjt77Message` (77 bit) | `Block` — 5×Costas-8 | `Decoder<P>`、汎用 `engine::pipeline` の上 |
+| **WSPR** | 専用 `ConvFano` (畳み込み r=½ K=32 + Fano) | 専用 `Wspr50Message` (50 bit) | 専用 `Interleaved` [^wspr] | `Decoder<Wspr>`、専用 `wspr::decode` の上 |
+| **JT9**  | 専用 `ConvFano232` (畳み込み、206 bit 枠) | 汎用 `Jt72Codec` (72 bit) | `Block` (長さ 1 スロット) | `Decoder<Jt9>`、専用 `jt9` 入口の上 |
+| **JT65** | 専用 `Rs63_12` (RS GF(2⁶)、消失対応) | 汎用 `Jt72Codec` (72 bit) | `Block` (長さ 1 スロット) | `Decoder<Jt65>`、専用 `jt65` 入口の上 |
+| **Q65**  | 専用 `Q65Fec` + GF(64) 上の QRA コーデック [^q65] | 専用 `Q65Message` (77 bit) | `Block` | `Decoder<P>`、専用 `q65::rx` の上 |
 | **uvpacket** | 汎用 `Ldpc240_101` (punctured) | 専用 `UvPacketRawMessage` (バイトパイプ) | `Block` — Costas-4 [^uv] | 専用 `uvpacket::rx` |
 | **MSK144** | 汎用 `Ldpc128_90` + CRC-13 | 汎用 `msg::wsjt77` (77 bit) | **なし — `Protocol` を実装しない** [^msk] | 専用 `msk144::decode::decode_slot` |
 | **JTTY** | 専用 tail-biting 畳み込み r=½ K=10 (`jtty::tbcc`、list-WAVA は `jtty::trellis`) + CRC-12 | 専用 32 bit `jtty::source` 文法 (`Atom`)、1 メッセージが複数フレーム | **なし — `Protocol` を実装しない** [^jtty]、全フレームの先頭に 13 トーンの sync | 専用 `jtty::rx::{Receiver, Stream}` |
@@ -777,13 +1000,13 @@ Q65-120D と -300A について同じことを確認します。C ABI は
   FEC 層とメッセージ層は再利用する。
 - **JTTY** も外れ、DSP より上は何も共有しない: FEC・メッセージ文法・受信器は
   すべて独自（`jtty::*`）で、受信器が逐次入力なのはこのモードだけである —
-  [§2.5](#25-独自エントリポイントを持つプロトコル)。
+  [§2.5](#25-extras-と-decoder-の外にあるプロトコル)。
 
 > この表は `mfsk-core/tests/common_selftest.rs` のコード共有ラチェット、
 > `README.md` の共有率パラグラフ、`lib.rs` 自身のドキュメントが揃って
 > 辿り着く先の正本である。ここを変えるならそれらも変わる。
 
-[^ft8]: FT8 は FT4/FST4 と同じく汎用 `DecodeRequest` ビルダーを使うが、
+[^ft8]: FT8 は FT4/FST4 と同じ `Decoder<P>` で駆動されるが、
     内部では `engine::pipeline` ではなく手調整された専用エンジン
     `ft8::decode_block` (ホスト・組込み共用) を通る。
     [§6](#6-engine-プリミティブ) を参照。
@@ -866,8 +1089,8 @@ Q65-120D と -300A について同じことを確認します。C ABI は
   SNR の下限と `xsnr2` の打ち切りが **−25 dB**（`FT8_SNR_FLOOR_DB`、以前は −24）、
   `Ft8::AP_MAG_SCALE` が **1.1**（以前は 1.01）、`mlag` が **13**、3 パスで
   パス 2 と 3 は二乗した `|cs|²` メトリック、5 つ目の LLR 変種 `llre`、
-  nsync の下限（`> 6`、二乗メトリックのパスでは `> 7`、`WsjtxDepth::D1/D2` では
-  `> 8`）を持ち、コンテスト外では `/R` と `TU; ` のメッセージを捨てる
+  nsync の下限（`> 6`、二乗メトリックのパスでは `> 7`、`Depth::Fast` と `Depth::Normal` では、
+  `ndepth <= 2` と同様に `> 8`）を持ち、コンテスト外では `/R` と `TU; ` のメッセージを捨てる
   （#438、#439、§2.6）。FT4 の公開既定値は `sync_min` 1.18、`max_cand` 200
   （#440。`ft4_decode.f90` は 1.2 / 100 から移った）。メッセージパッカは
   `pack77_1` に従う: `RR73` はグリッド `RR73`（フィールド 32373、
@@ -880,7 +1103,7 @@ Q65-120D と -300A について同じことを確認します。C ABI は
   （`bp_llr_zsum_ap_with_scratch` 上の `osd_decode_npre1_masked`）。以前は生の
   LLR を探索して全候補で CRC を検査していた: iid ガウス LLR では `osd_depth` 2 の
   呼び出しの **22.6 %** が CRC を通り、`decode174_91` の 5.8e-5 とは桁違いだった
-  （修正後は 9.7e-5）。`.freq_hint()` の 50 Hz 以内では FT4 は 3 つ目の OSD
+  （修正後は 9.7e-5）。`rx_freq_hz` の 50 Hz 以内では FT4 は 3 つ目の OSD
   スナップショットも取る（`FecOpts::osd_snapshots`、`maxosd = 3`）: スイープ
   20 800 ファイルで 41 件増え、失ったものは無い。OSD 後の `osd_max_errors`
   ゲートは無くなった（[§6](#6-engine-プリミティブ)）。
@@ -906,7 +1129,7 @@ Q65-120D と -300A について同じことを確認します。C ABI は
   対する tier C、20 グループ: 交差は −0.07 dB（このクレートから `jt9` を引いた
   値。以前は +0.18）、想定外のデコードは 27 件（以前は 99 件、`jt9` は 7 件）
   （#456）。
-  `.noise_blanker()` は WSJT-X の **NB** である（[§2.1](#21-decoderequestp)）:
+  `noise_blanker` extra は WSJT-X の **NB** である（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)）:
   1 秒に 20 回のフルスケールのクリックを入れた FST4-15 の 50 スロットで、
   これ無しでは 0 件、ここでは 29 件、`jt9` は NB 2 % で 27 件（#469）。
 - **WSPR** — `ConvFano` は WSJT-X `lib/wsprd/fano.c` の移植、
@@ -927,7 +1150,7 @@ Q65-120D と -300A について同じことを確認します。C ABI は
   高かった）。またすべてのリスト復号は `q65_dec1` と同じく `plog > PLOG_MIN`
   （−242）と非ゼロのメッセージを要求する。
 - **JTTY** — [§3.1](#31-プロトコル毎の汎用-vs-専用) の脚注と
-  [§2.5](#25-独自エントリポイントを持つプロトコル) を参照。定数は trait 定数
+  [§2.5](#25-extras-と-decoder-の外にあるプロトコル) を参照。定数は trait 定数
   ではなく `jtty` にある（`NSPS`、`SYNC_SYMBOLS`、`FRAME_SYMBOLS`、
   `MAX_FRAMES` = 16）。GFSK パルスは `engine::dsp::gfsk` ではなく `jtty::tx` に
   ある独自の 1 始まりのものを持つ: このパルスは #482 まで 1 サンプル早く、
@@ -935,20 +1158,21 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 
 ### 3.4 デコード戦略
 
-どのプロトコルも同じ基本フローを走るが、その周りを包む*戦略*が異なる。
+どのプロトコルも同じ基本フローを走るが、その周りを包む*戦略*が異なり、`Depth`
+（[§2.2](#22-decodeparams-と-depth)）が `ndepth` と同様にそれを選ぶ。
 大半は単一パスである。1つの FEC フレームに対して複数の並列受信系を
 持つのは Q65 だけで、MSK144 はスロットモデル自体をバースト走査に
 置き換え、JTTY は逐次入力の受信器に置き換えている。
 
-| プロトコル | 既定の戦略 | 任意の戦略 |
+| プロトコル | `Depth` ごとの戦略 | 任意（extras とパラメータ） |
 |----------|-----------|-----------|
-| **FT8** | `.sic_early()`（0.12.0 から。1 パスは `.single_pass()`） | AP iaptype ループ (1–12)、SIC 1–3 ラウンド、単一パス、sniper、**a7 / a8 リストデコーダ**（pass id 30 / 31。FT8 の全戦略の最後に走る。a7 は `.previous_cycle()`、a8 は MyCall・HisCall・HisGrid を持つ `.ap_hint()` と `.freq_hint()`）、`wsjtx_depth(…)` プリセット |
-| **FT4** | `.sic_rounds(3)`（0.12.0 から。1 パスは `.single_pass()`） | SIC 1–2 ラウンド、単一パス、フルスロット・コヒーレント sync (`sync2d`) |
-| **FST4** | 単一パス BP + OSD | フルスロット2段コヒーレント sync 探索、ノイズブランカ（`.noise_blanker()`、固定 % またはスイープ） |
-| **WSPR** | 単一の専用パス（四半シンボル・スペクトログラム走査） | — |
-| **JT9** | 単一の専用パス | — |
-| **JT65** | 単一の専用パス | RS 消失復号、確率的 Chase デコーダ |
-| **Q65** | `(Δf,Δt,b90)` グリッド + Lorentzian フェージング BP（スキャン） | AP ヒント、明示的な高速フェージング、AP リスト、マルチ周期、**q3** リスト復号（`.ap_list().rx_freq()`）、Max Drift、Pileup、EME 遅延 |
+| **FT8** | `Fast` はフラット SIC 2 ラウンド・OSD なし、`Normal` / `Deep` は `SicEarly` | `Tuning::strategy`（`SinglePass`、`SicRounds(n)`、`SicEarly`）、QSO 文脈または `ap_hint` からの AP iaptype ループ (1–12)、**a7 / a8 リストデコーダ**（pass id 30 / 31。FT8 の全戦略の最後に走る。a7 は `a7` extra と `SlotInput::period`、a8 は MyCall・HisCall・HisGrid と `rx_freq_hz`）、`sniper` |
+| **FT4** | `Fast` は単一パス・OSD なし・AP なし、`Normal` は `SicRounds(3)`、`Deep` は OSD 付きの `SicRounds(3)` | `Tuning::strategy`（`SinglePass`、`SicRounds(n)`）、フルスロット・コヒーレント sync (`sync2d`) |
+| **FST4** | 全 depth で単一パス BP + OSD、`Normal` から `i0 ± 1` のタイミング再試行 | フルスロット2段コヒーレント sync 探索、`noise_blanker`（固定 % またはスイープ） |
+| **WSPR** | 四半シンボル・スペクトログラム走査の上で、wsprd の `-qB` / `-C 500 -o 4` / `+ -d` の各パス | `max_cycles_per_bit` |
+| **JT9** | 単一の専用パス、depth ごとの Fano limit。`rx_freq_hz` では Rx 周波数パス | — |
+| **JT65** | 減算付きの 2 / 2 / 4 パス。depth の `nvec` 回の試行を持つ確率的 Chase デコーダ | `chase`（RS 消失復号は `jt65::SniperRequest::erasures`） |
+| **Q65** | `(Δf,Δt,b90)` グリッド + Lorentzian フェージング BP（スキャン）、グリッドの労力は depth で決まる | AP ヒント、明示的な高速フェージング、AP リスト、平均、**q3** リスト復号、Max Drift、Pileup、EME 遅延（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)） |
 | **MSK144** | T/R 周期全体のバースト走査 | — |
 | **JTTY** | ストリーミング: sync サーフェス、候補、4 段の list-WAVA ラダー、ゲート。デコードしたフレームを減算し、遡及再スイープし、フレームをメッセージに組み立てる | `Params::subtract` をオフ（単一信号の受信器） |
 
@@ -959,89 +1183,9 @@ AP は候補ごとの ladder の最後の一段である — FT4 と FST4 全サ
 大半を失わせていた — 実測は
 [`DESIGN_RATIONALE.md`](../notes/DESIGN_RATIONALE.md) にある。
 
-**Q65 の戦略の選び方:**
-
-| 状況 | 戦略 | ビルダ呼び出し | 閾値の利得 |
-|---|---|---|---|
-| 候補1点が既知、内容は未知 | AWGN Bessel + BP（点デコードのみ） | `SniperRequest::<P>::new(...).decode()` | ベースライン |
-| 既定のスキャン — チャネルも内容も未知 | `(Δf,Δt,b90)` グリッド探索 + Lorentzian フェージング BP | `DecodeRequest::<P>::new(...).decode()` | WSJT-X 忠実な既定 |
-| コールサインやレポートが既知、地上波 | AP ヒント BP | どちらかのビルダで `.ap_hint(&ap)` | 約 2 dB |
-| ドップラー拡散、モデルを明示（マイクロ波 EME、10 Hz 以上の拡散） | 高速フェージング metric + BP、`(b90_ts, FadingModel)` は呼び出し側が指定 | どちらかのビルダで `.fading(model, b90_ts)` | 拡散チャネルで 5–8 dB |
-| コールサイン対は既知、QSO 状態は無し、地上波 | AP リストのテンプレート照合 | どちらかのビルダで `.ap_list(&candidates)` | 約 3 dB |
-| コールサイン対と受信周波数が既知（WSJT-X の q3） | 受信周波数付近にあるリストの全メッセージの 85 シンボル sync を取り、そのあとリスト復号 | `DecodeRequest` で `.ap_list(&codewords).rx_freq(hz)`（＋ `.ftol(hz)`） | `q65sim` Q65-30A、−24 / −26 / −28 / −30 dB の各レベル 20 ファイル: 20 / 20 / 7 / 2、`jt9 -3 -d 1` も同じファイルで同じ |
-| 複数 T/R 周期にまたがる微弱・電離層散乱信号 | マルチ周期 EMA 平均（3 段カスケード） | `MultiPeriodRequest::<P>::new(...).decode()` | 単一周期のどの戦略でも取れない信号を拾う |
-
-`.ap_list()` と `.fading()` は下層エンジンでは排他であり、`.decode()` は
-`ap_list > fading (+ ap_hint) > ap_hint > plain` の順で解決する。
-`q65::Q65History` は WSJT-X の `q65_hist` で、アプリケーションが保持する。
-デコードのたびに `.record(&result)` で記録し（最新 100 件を保持）、
-`.lookup(rx_freq_hz)` は 10 Hz 以内の最新のデコードから DX コールを返す
-（メッセージにグリッドがあればグリッドも返す）。WSJT-X は DX コール未入力で
-手動の Decode Again を行ったときにこれを使い、オペレータがコールを入力しなくても
-フル AP リスト（`standard_qso_codewords`）を作る。
-`q65::Q65Callers` と `contest_codewords` はコンテストモード版である
-（`q65_hist2` / `q65_set_list2`）。グリッド付きで呼んできた局を最大 50 局、
-アプリケーションが保持する（`record(freq, msg, now)`、`expire(now)`）。
-そこから、各局について `MyCall Caller Grid` / `R Grid` / `RRR` / `RR73` /
-`73` を 78 ビット目なしとありの両方で作ったフル AP リストを作り、
-`.ap_list()` に渡す。
-`MultiPeriodRequest` は T/R スロットごとに1本の `&[&[f32]]` を取り、
-Rust 専用である（C ABI には無い）。各フロントエンドが実際に何をして
-いるか、既定のスキャンがなぜ素の Bessel パスではないのかは
-[`DESIGN_RATIONALE.md` §4](../notes/DESIGN_RATIONALE.md#4-q65s-decoder-strategies-and-what-each-is-for)。
-
-**Q65 Pileup（WSJT-X 3.2）。** Pileup モードの局は、相手の直前の送信を
-受信できたことを Q65 の予備の 78 ビット目で知らせる。
-`Q65Result::copied_last_tx` がそれを報告し（WSJT-X は行に `#` を付ける）、
-`encode_channel_symbols_flagged` / `synthesize_standard_flagged_for` で送れる。
-どちらのビルダーでも `.pileup(true)` を指定すると上流のこのモードの AP 方針に
-なる: 両方の呼出符号だけを指定した `.ap_hint()` は、このビットを 0 に固定せず
-自由にするので、フラグ付きの応答にも一致する。指定しなければ、そのような
-ヒントはフラグ付きの応答を受け付けない。Pileup 以外の WSJT-X と同じである。
-`.ap_list()` のテンプレートは `q65_set_list.f90` と同じくビットを立てない。
-
-**Q65 Max Drift。** `q65::DecodeRequest` の `.max_drift(bins)` は
-WSJT-X の Max Drift 設定（0..50、既定はオフ）である。同期探索で、フレーム
-全体にわたる最大 `bins` ビン（1 ビン = 1 ボー）の直線的なトーンのドリフトを
-試し（`q65_ccf_22`）、グリッドデコードで見つかったドリフトを取り除く
-（`q65_loops` の `twkfreq`）。周波数ビンあたりの探索コストは通常の
-`2*bins+1` 倍になる。WSJT-X は有効な間、探索窓を受信周波数 ± F Tol に
-絞るので、`SearchParams` も同じように絞ること。通常のスキャンと
-`.ap_hint()` のスキャンに効く。
-
-**Q65 の時間窓と EME 遅延。** `default_search_params()` は公称開始の
--1.0 .. +1.0 s を探索する。WSJT-X の GUI と同じである（`q65.f90` の
-`lag1`/`lag2`）。`q65::DecodeRequest` と `MultiPeriodRequest` の
-`.eme_delay(true)` は "Decode at 52 s" の EME 遅延に当たり、月面反射の往復分
-として後ろ側の端を +5.5 s（Q65-15 は +4.0 s）に広げる。`dt_sec` はどちらの
-リクエストでも公称開始からの値である。公称開始を持たない `SniperRequest` は
-バッファ先頭からの値を返す。
-
-**Q65 の q3 リスト復号。** `.ap_list(&codewords).rx_freq(hz)`（`.ftol(hz)` 付き、
-既定は `jt9` CLI と同じ 10 Hz）は WSJT-X の q3 デコードである。受信周波数の
-F Tol 以内で、リストの各メッセージの 85 シンボル全部を使って同期を取り
-（`q65_ccf_85`）、高速フェージング指標で `b90` を掃引しながらリスト復号する
-（`q65_dec_q3`）。これを最初に実行し、その後で帯域の残りをスキャンする。
-`.max_drift(50)` のときは、受信周波数で何も復号できなければ、そこで見つかった
-ドリフトを取り除いたスペクトルでもう一度実行する（"w3sz" の段階 5）。
-`.rx_freq()` がない場合の `.ap_list()` は、スキャンの代わりに候補ごとに
-テンプレートを照合する crate 独自の方式である。
-
-`MultiPeriodRequest` では同じ組み合わせが `iavg=1` の q3 になる（issue #520）。
-2 スロット目以降、各スロットのシンボルスペクトルの移動平均（`s1a`、重み
-`1/min(navg, 4)`）に対して sync とリスト復号を行い、フェージング / plain の
-ラダーより先に実行する。1 スロットにつき結果は 1 つなので、q3 が当たった
-スロットではラダーを飛ばす（upstream は続けて候補ループに入る）。
-
-**`.ap_list()` のすべての箇所が 1:1 移植というわけではない**（issue #522）。
-upstream のリスト復号は常に受信周波数を条件とする q3 としてしか動かない。
-本 crate の 3 つの `.ap_list()` ビルダのうち 2 つは、条件とすべき受信周波数
-自体を持たないため、その q3 経路に決して到達できない —
-`SniperRequest::ap_list`（sniper 自体が crate 独自のモード。§2.2 参照）と、
-`.rx_freq()` を付けない `DecodeRequest::ap_list`（上の段落）である。
-どちらも常に crate 独自の AWGN 指標によるテンプレート照合を実行し、
-upstream に対応物はない。これは意図的な拡張であり忠実性のギャップではない —
-各メソッド自身の doc comment にもその旨が書かれている。
+**Q65 の戦略** — どのブロックでどれが走るか、q3 リスト復号、平均、Pileup、Max Drift、時間窓と
+EME 遅延、履歴とコーラーのヘルパ — は
+[§2.5](#25-extras-と-decoder-の外にあるプロトコル)にある。
 
 ---
 
@@ -1075,7 +1219,15 @@ mfsk_core
 │   │                   synthesize / synthesize_into / synthesize_i16 / synth_len
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) 内部実装 — 呼び出しは
-│                       msg::decode_request::DecodeRequest/SniperRequest 経由)
+│                       decoder::Decoder 経由)
+├── decoder/          公開デコード API — §2
+│   ├── mod.rs          Decoder<P> / Decodable / SlotInput / Audio / Row / RowDetail / SlotResult
+│   ├── params.rs       DecodeParams / Depth / Station / QsoContext / ApMode / Contest / SearchTuning
+│   ├── frame.rs        FT8 / FT4 / FST4: Ft8Extras · Ft4Extras · Fst4Extras、Tuning、戦略、QSO 文脈 AP
+│   ├── slow.rs         WSPR / JT9 / JT65: それぞれの extras と状態
+│   ├── q65.rs          Q65Extras / Q65State（平均）
+│   └── any.rs          AnyDecoder / AnyExtras / Unsupported
+├── slotgrid.rs       SlotGrid · SampleClock · ClockChange · SlotCutter — UTC スロット算術、整数のみ、no_std
 ├── fec/              FecCodec 実装群
 │   ├── ldpc/           LDPC(174, 91)  — FT8, FT4 (bp.rs / osd.rs / params.rs / tables.rs)
 │   ├── ldpc240_101/    LDPC(240, 101) — FST4、uvpacket (punctured)
@@ -1090,9 +1242,9 @@ mfsk_core
 │   │   ├── npfwht.rs      非二進 Walsh-Hadamard 変換ヘルパ
 │   │   └── pdmath.rs      確率領域 BP 数値計算ヘルパ
 │   └── qra15_65_64/    QRA15_65_64_IRR_E23 の符号インスタンス
-├── msg/              メッセージコーデックと公開デコード API
-│   ├── decode_request.rs DecodeRequest / SniperRequest — §2
-│   ├── decoded.rs      Decoded — 公開の出力行
+├── msg/              メッセージコーデックと公開の出力行
+│   ├── decode_request.rs フレーム系のリクエストビルダー — crate 非公開（`internal-testing` で開く）。`decoder` が駆動する
+│   ├── decoded.rs      Decoded — モード共通の出力行
 │   ├── wsjt77.rs       77 bit WSJT メッセージ — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50 bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72 bit JT メッセージ — JT9, JT65
@@ -1103,8 +1255,8 @@ mfsk_core
 │   ├── packet_bytes.rs PacketBytesMessage — バイトペイロード例示コーデック
 │   └── hash_table.rs   コールサインハッシュテーブル
 ├── registry.rs       PROTOCOLS 静的配列 + ProtocolMeta + by_id / by_name
-├── iq/               広帯域 IQ 入力 — §2.7: IqToAudio（1 チャンネル → 12 kHz USB 音声、120 dB）、IqReceiver（N チャンネル、
-│                     UTC スロット、`Channelizer::Direct` か `Pfb`）、PfbChannelizer（多チャンネル向けポリフェーズフィルタバンク）
+├── iq/               広帯域 IQ 入力 — §2.7: IqToAudio（1 チャンネル → 12 kHz USB 音声、120 dB）、IqReceiver（N チャンネルを
+│                     UTC の CompletedSlot に切る。デコードはしない。`Channelizer::Direct` か `Pfb`）、PfbChannelizer（ポリフェーズフィルタバンク）
 ├── ft8/              FT8 ZST + decode + decode_block + wave_gen
 │   ├── list_decode.rs  WSJT-X の a7 / a8 リストデコーダ (pass id 30 / 31)
 │   └── acquire.rs      実電波の音声からの cold スロット位相取得 (#356)
@@ -1114,7 +1266,7 @@ mfsk_core
 ├── jt9/              JT9 ZST + decode
 ├── jt65/             JT65 ZST + decode (+ 消失対応 RS、chase)
 ├── q65/              Q65 ファミリ — 10 sub-mode ZST + decode + synth
-│   ├── decode_request.rs DecodeRequest / SniperRequest / MultiPeriodRequest (§2.5)
+│   ├── decode_request.rs 広帯域・マルチ周期のリクエスト（crate 非公開）、SniperRequest（公開）— §2.5
 │   ├── search.rs       default_search_params、eme_delay_late_sec
 │   ├── ap_list.rs      full-AP 符号語リスト (`q65_set_list`)
 │   ├── hist.rs         Q65History (`q65_hist`)
@@ -1186,8 +1338,9 @@ trait API を満たすために `encode` の中で bit ↔ シンボル変換を
    プロトコルの定数を読むだけ。プロトコル毎の分岐は一切持たない。
 2. **`fec/`** — 前方誤り訂正コーデック群。それぞれ `FecCodec` の実装。
 3. **`msg/`** — メッセージコーデック群 (それぞれ `MessageCodec` の実装)
-   と、パイプライン全体を駆動する汎用 `DecodeRequest`/`SniperRequest`
-   ビルダー。
+   と、パイプラインを駆動する crate 非公開のリクエストビルダー。
+   **`decoder/`** はその上にある: `Decoder<P>`（§2）が WSJT-X のパラメータブロックを
+   それらのビルダーに対応づけ、周期をまたぐ状態を持つ。
 4. **プロトコル**は 3 つの合成可能な trait を実装する zero-sized type で、
    持つのは定数と 2 つの関連型の選択 — `type Fec` と `type Msg` — および
    `SYNC_MODE` だけである。プロトコルを追加するという行為はそれで全部である。
@@ -1282,6 +1435,25 @@ pub trait Protocol: ModulationParams + FrameLayout + 'static {
     const DECODE_FFT1_SIZE: u32 = 0; // forward-FFT length over the slot; 0 = no shared downsampler
 }
 ```
+
+### `Decodable`: プロトコルを `Decoder<P>` の背後に置く
+
+<!-- Not compiled: the decode hooks are `#[doc(hidden)]` and crate-internal. -->
+
+```rust,ignore
+pub trait Decodable: Sized {
+    const MODE: Mode;                        // the registry::Mode this ZST decodes
+    type State: Default + Send;              // what upstream keeps across periods
+    type Extras: Clone + Default + Send;     // what this library adds, typed per mode
+    type Row: Clone + Send;                  // the mode's native result
+    // plus hidden hooks: the decode itself, 77-bit unpack against State, learn
+}
+```
+
+スロットでデコードする全 ZST（20 の WSJT 系モード。`uvpacket`・MSK144・JTTY は含まない）が
+実装する。公開 API が汎用化されている対象はこれで、置き換えられた `FrameDecodable` と
+ファミリ別のリクエスト型は crate 非公開である。新しいモードは、ここへの impl、レジストリの
+`modes!` リストへの 1 行、`any.rs` の `any_decoder!` へのバリアント 1 つを加える。
 
 ### トレイト合成の実例
 
@@ -1439,7 +1611,7 @@ impl FskWaveform for Ft8 {
 
 | ケース | 作業 |
 |---|---|
-| 既存モードと同じ FEC とメッセージ（別の FST4 サブモード） | 数値定数だけが異なる新しい ZST。`Fec`/`Msg` は型エイリアス。`DecodeRequest::<P>` パイプライン全体がそのまま動く |
+| 既存モードと同じ FEC とメッセージ（別の FST4 サブモード） | 数値定数だけが異なる新しい ZST。`Fec`/`Msg` は型エイリアス。汎用パイプライン全体がそのまま動き、`Decodable` の実装（その `State`・`Extras`・`Row`）が `Decoder<P>` の背後に置く |
 | FEC が新しく、メッセージは同じ（別サイズの LDPC） | `fec/` にモジュールを追加し `FecCodec` を実装する。BP/OSD/systematic エンコードは LDPC のサイズをまたいで一般化されるので、実際の変更はテーブルと寸法である。`fec::ldpc240_101` が例 |
 | どちらも新しい（WSPR） | FEC を追加し、メッセージコーデックを追加し、sync 構造が本当に異なるなら `SyncMode` を拡張する |
 | 既存プロトコルのサブモード | `q65_submode!` / `fst4_submode!` マクロが、異なる定数から ZST とその 3 つの trait 実装を生成する。`tests/protocol_invariants.rs` に 1 行足せば拾われる |
@@ -1494,7 +1666,7 @@ FT8 / FT4 / FST4 はプロトコル毎の `GRAY_MAP` テーブルを使う。
 
 **FT8 は `ft8::decode_block::coarse_sync` のみを経由する。**
 `engine::sync::coarse_sync::<Ft8>` を直接呼ぶのは、手組みの非既定用途では
-今も正しい経路だが、`DecodeRequest::<Ft8>` と `SniperRequest::<Ft8>` は内部で
+今も正しい経路だが、`Decoder<Ft8>` は内部で
 `decode_block::coarse_sync` を経由する。そのため FT8 の coarse-sync の変更が
 FST4 の感度曲線を動かすことはない: FST4 は代わりに
 `engine::sync::coarse_sync` と `engine::sync2d::fst4_sync_search` を通って
@@ -1555,7 +1727,7 @@ short-time Costas グリッドしきい値を通るか、WSJT-X の
 dedupe)、`decode_frame_subtract::<P>` (SIC ドライバ)、
 `process_candidate_basic::<P>` (候補単体の BP+OSD) は engine の生関数
 である。これらは **`pub(crate)`** で、`pub` になるのは `internal-testing`
-の下だけ。`DecodeRequest`/`SniperRequest` を使うこと。
+の下だけ。`Decoder<P>` を使うこと。
 
 **`DecodeStrictness` (`Strict`/`Normal`/`Deep`) は全プロトコルに等しく
 届くわけではない** — `.strictness(...)` が呼び出しに何かをするかどうかを
@@ -1591,30 +1763,30 @@ FT8 には `ft8::list_decode`（a7 / a8 リストデコーダ。全戦略の最�
 持たない受信機のための cold スロット位相取得。より長い録音から 5 s 間隔の
 ±2.5 s 窓 3 つを取り、`circular_dt_medoid` で 1 つにまとめる; #356）もある。
 
-### 0.12 での破壊的変更
+### 0.13 での破壊的変更
 
-0.11 の呼び出し側が変更すべきこと（全文と移行表: `CHANGELOG.md` の
-`## 0.12.0`）。特記しない限り出力はビット単位で同一である。
+0.12 の呼び出し側が変更すべきこと（全文と移行表: `CHANGELOG.md` の
+`## 0.13.0`）。0.12.0 は yank 済みで、0.12.1 は無い。
 
-| 領域 | 0.11 | 0.12 |
+| 領域 | 0.12 | 0.13 |
 |---|---|---|
-| デコード入口、JT9 (#403) | `decode_scan*`、`decode_at`（6 関数） | `jt9::DecodeRequest::new(..).decode()`、`::sniper(..)` |
-| デコード入口、JT65 (#403) | `decode_scan*`、`decode_scan_chase*`、`decode_at*`、`chase::decode_at_with_chase`（9 個） | `jt65::DecodeRequest` / `SniperRequest`、`.chase(..)`、`.erasures(..)` |
-| デコード入口、WSPR (#403) | 14 関数、`decode_at_baseband_nblocks_gated_drift` とその仲間。`decode_scan_subtract*` は public | `wspr::DecodeRequest` / `SniperRequest`。SIC の組は `internal-testing` の背後だけ |
-| 合成 (#391) | `ft8::wave_gen::tones_to_*`、`ft4::encode::*`、`fst4::encode::*`、`wspr::tx::synthesize_audio`、`q65::synthesize_audio_for` … | `FskWaveform` 上の `engine::tx::synthesize::<P>` / `synthesize_into` / `synthesize_i16[_into]` / `synth_len` |
-| トーン (#391) | モード毎の `message_to_tones`、FT8 のものは `&[u8]` → `[u8; 79]` | `engine::tx::message_to_tones::<P>(&[u8; 77]) -> Vec<u8>`。`DecodeResult::message77()` は `&[u8; 77]` を返す（`*r.message77() == m77` で比較する） |
-| Gray code (#391) | `jt65::{gray6, inv_gray6}` | `engine::gray::{gray, inv_gray}(n, bits)`。`fst4::encode::append_crc24` → `fec::ldpc240_101::append_crc24` |
-| JT65 復調器 (#390) | タプルを返す 4 つの `demodulate_aligned*` 関数 | `jt65::demodulate_aligned(..)?` は `Jt65Demod`（`.symbols`、`.conf`、`.second_symbols`、`.rel`、`.raw_pwr`、`.snr_db`）を返す |
-| `dt_sec` (#397) | Q65 / JT65 はバッファ先頭から。JT9 には無かった | どこでも公称開始から。`to_decoded` は引数を取らない。`Jt9Result::dt_sec` が新設。`dt_from_samples` は無くなった |
-| 探索型 (#394) | 4 つの `SearchParams` / `SyncCandidate`、`SearchParams::default()`、`time_tolerance_sec`、WSPR の `time_tolerance_symbols` | `engine::search` の re-export。モード毎の `default_search_params()`。`time_tolerance_early_sec` / `_late_sec` は秒単位 |
-| Q65 の窓 | `default_search_params()` は −1.0 … +5.5 s | `q65.f90:127-130` と同じ −1.0 … +1.0 s。`.eme_delay(true)` で遅い側の到達範囲を復元する |
-| LDPC BP (#417) | `fec::ldpc::bp::bp_decode_nms`、`bp_decode_nms_q11`、`llr_f32_to_q11` | `bp_decode_nms_with_scratch`、または `bp_decode_generic_nms::<Ldpc174_91Params, T>`。`Q11i16::from_f32(x).0`。カーネルごとに本体は 1 つ |
-| `sync_cv` (#414) | FT8 のものは二乗和の平方根 | 全プロトコルで母集団の CV。したがって FT8 の値は以前の 1/√3 になる |
-| FST4 OSD (#456) | 101 ビット全部を探索した | `osd_decode_npre_generic(.., partial_crc: Option<PartialCrc>)`。FST4 は (240, 91) 部分符号を渡す |
-| 既定の挙動 | FT4 の `sync_min` 1.2 / `max_cand` 100。FT4 のメッセージポリシーはオフ | 1.18 / 200 (#440)。オン (#383) |
-| FT8 / FT4 の既定戦略 | `decode()` は 1 パスだった | WSJT-X と同じく FT8 は `.sic_early()`、FT4 は `.sic_rounds(3)`。従来の挙動は `.single_pass()`（C ABI は `MfskDecodeParams::single_pass`、Kotlin / Swift は `singlePass`）。ビット単位では同一でない: デコードが増え、FT8 は 2〜3 倍の時間がかかる |
-| FST4 の候補探索 (#554) | 汎用の Costas 探索。`sync_min` 0.8 / `max_cand` 50 | `get_candidates_fst4` の移植。ベースライン正規化尺度（`sync_scale` `BaselineNormalised`）で `sync_min` 1.20（FST4-15: 1.15）/ 200。0.8 / 50 を渡し続ける呼び出し側は 0.8 を超える全ピークを通し、50 で打ち切る |
-| `.ap_hint()` 付きの Q65 (#555) | ヒント付きのパスだけ | `q65_decode.f90` の `ipass` ループと同じく、各候補をまず AP なしで試す。どちらで復号したかは `Q65Result::ap`。BP の `maxiters` は 40。ビット単位では同一でない: スイープ 2 640 試行のうち 3 件を失い、そのいずれも `jt9` は復号しない |
+| デコード入口、FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` とそのビルダー | `Decoder::<P>::new(DecodeParams)` ＋ `decode(&SlotInput)`。オプションは `P::Extras`。リクエスト型は `pub(crate)`（`internal-testing` で開く） |
+| デコード入口、WSPR / JT9 / JT65 / Q65 | `wspr::`、`jt9::`、`jt65::`、`q65::DecodeRequest`。Q65 の `SniperRequest`、`MultiPeriodRequest` | 同じ `Decoder<P>`。広帯域リクエストは `pub(crate)`。`SniperRequest`（既知の位置でのデコード）は公開のまま。Q65 の平均は `averaging` ＋ `SlotInput::period` |
+| オプション | リクエストごとのビルダーメソッド（`.osd()`、`.strictness()`、`.eq_mode()`、`.ap_hint()`、`.sic_*()`、`.contest()`、`.tx_freq()`…） | `DecodeParams`（WSJT-X のブロック: 帯域、`rx_freq_hz`、`tx_freq_hz`、`depth`、`station`、`qso`、`ap`、`contest`、`eme_delay`…）とモード別の `Extras`（`Tuning`、`ap_hint`、`eq`、`filter`、`a7`、`sniper`、`noise_blanker`、Q65 のもの） |
+| 周期をまたぐ状態 | `.known()`、`.previous_cycle()`、`.hash_table(Arc)`、WSPR の `.table(&mut)` / `.confirmed()`、`MultiPeriodRequest` | デコーダの状態: `Decoder::clear()`、`learn_callsign`、`unpack77`。ハッシュ表はデコーダごとで、共有されない |
+| `wsjtx_depth` | `WsjtxDepth::{D1, D2, D3}` を取る FT8 のコンストラクタ | `DecodeParams::depth`、`Depth::{Fast, Normal, Deep}`: モードごとに、`ndepth` と同様に**探索設定の全てを決める** |
+| 既定値 | FT8 は sync 0.8 / 候補 60、ヒントがあれば AP オン、帯域 100〜3000 | depth のもの: `Deep`（FT8 は sync 1.3、候補 1000）、FT8 と JT65 は AP オフ、FT8 / FT4 は帯域 200〜4000、FST4 は 600〜1400（`default_params`） |
+| AP | 自由形式の `ApHint` だけ（QSO のコードワードを持つのは Q65 のみ） | FT8・FT4・FST4 は `station` ＋ `qso` ＋ `ap` と本家の `naptypes` による QSO 文脈 AP。`ApHint` は `ap_hint` extra として残る |
+| JT9 / JT65 | 全ゼロの符号語を報告していた | 報告しない |
+| 戻り値 | `DecodeOutcome { results, fft_cache, budget }` | `SlotResult { rows: Vec<Row { decoded, detail, native }>, budget }`。`fft_cache` は無い |
+| ストリーミング | 各リクエストの `.on_result(cb)` | `Decoder::decode_with(&slot, on_row)`。行はデコーダの表で解決済み |
+| 予算 | `.budget(check)` | `SlotInput::budget(check)` |
+| 音声 | `&[i16]`（フレーム系）、`&[f32]`（それ以外） | 全モードで `SlotInput::i16` / `SlotInput::f32` |
+| 実行時のモード | `iq::IqMode` | `registry::Mode` と `AnyDecoder` |
+| IQ | `IqReceiver` は凍結した既定値で `push_*` の中でデコードし、`on_decode`、`set_time_anchor`、`IqDecode` 行を持っていた | プル型: `push_*(.., &mut Vec<CompletedSlot>)`、`set_time(utc_ns, at_sample)` → `ClockChange`、`retune` → `RetuneReport`。デコードはチャンネルごとの `AnyDecoder` で行う |
+| 時刻 | 受信器ごとのスロット算術 | `slotgrid::{SlotGrid, SampleClock, SlotCutter}` |
+
+0.12 の合成 API（`engine::tx`）、公称開始位置からの `dt_sec`、`engine::search` は変わらない。
 
 ---
 
@@ -1727,8 +1899,12 @@ Q65: sync の電力を sync と雑音の和で割った 0‥1 の値で、既定
 `DEFAULT_SCORE_THRESHOLD` = 0.1）。`sniper_max_cand_cap` は sniper 経路が
 `max_cand` に黙って適用する上限である（FT4: 15）。
 
-`profile.defaults` は、自分で選ばない呼び出し側が得るもの
-（このクレートのホスト設定値で、C ABI の `mfsk_mode_defaults` も同じものを返す）:
+`profile.defaults` はレジストリが公開するホスト探索値で、C ABI の `mfsk_mode_defaults` が返すもの
+でもある。**`Decoder<P>` はこれを読まない**: `sync_min` と候補数は `Depth` が決め
+（[§2.2](#22-decodeparams-と-depth)）、帯域は `decoder::default_params(mode)` のものである。
+この表はレジストリ自身のデータ（UI が「このビルドの既定の探索は？」と尋ねるためのもの）で、
+スキャン系モードの時間窓・スコア閾値・候補数の上限は今も各自の `default_search_params()`
+から始まる:
 
 | エントリ | 帯域 (Hz) | `sync_min` | `max_cand` | 出所 |
 |---|---|---|---|---|

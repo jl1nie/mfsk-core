@@ -195,7 +195,7 @@ band, and FST4 narrows through its own DDC channelizer instead.
 passed to `decode_sniper_inner`. What follows is about where AP *came
 from*, not whether it is available there; an earlier phrasing here read
 as "AP is unavailable in sniper mode", which is false and contradicts
-`LIBRARY.md` §2.2's own method table.
+`LIBRARY.md` §2.5 (the per-mode extras).
 
 **A-priori decoding is a general option that got coupled to sniper by
 accident.** The AP engine broke out of its candidate loop on
