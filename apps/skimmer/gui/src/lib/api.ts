@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { ChannelSetting, ModeInfo, Settings, UiEvent } from './types';
+import type { ChannelSetting, ModeInfo, RadioState, Settings, UiEvent } from './types';
 
 export const loadSettings = () => invoke<Settings>('load_settings');
 export const saveSettings = (settings: Settings) => invoke<void>('save_settings', { settings });
@@ -21,3 +21,5 @@ export const setChannelOptions = (index: number, channel: ChannelSetting) =>
   invoke<void>('set_channel_options', { index, channel });
 export const autostartRequested = () => invoke<boolean>('autostart_requested');
 export const setStation = (myCall: string, myGrid: string) => invoke<void>('set_station', { myCall, myGrid });
+export const setGain = (gain: number) => invoke<void>('set_gain', { gain });
+export const radioState = () => invoke<RadioState | null>('radio_state');

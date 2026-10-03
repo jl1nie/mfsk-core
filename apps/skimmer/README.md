@@ -34,7 +34,8 @@ the channel's next slot, without a reconnect.
 
 Options: `--yield` (leave control to an SDR# started later), `--tune` (hold control
 and tune even with `--yield`), `--center HZ`,
-`--rate S/s`, `--gain N` (with `--tune`), `--format float|int16`
+`--rate S/s`, `--gain N` (the device gain index, when this client holds control;
+the GUI sets it live under Settings → Radio), `--format float|int16`
 (default float), `--pfb` (polyphase channelizer; cheaper from a handful of
 channels on), `--iq-swap`, `--reanchor-ms MS` (default 500). Modes:
 `FT8 FT4 FST4-15 FST4-30 FST4-60 FST4-120 FST4-300 WSPR JT9 JT65 Q65-15A
@@ -129,6 +130,15 @@ Observed with SDR# and an Airspy HF+ (2026-10-03):
   device outside its band (about 780 kHz on the HF+). SDR# can still tune
   anywhere inside that band, for example all of 40 m. **To change band, stop
   the skimmer, retune in SDR#, then start the skimmer again.**
+
+- The server counts a client until it hears the connection close. A laptop that
+  sleeps with the skimmer still connected can keep its slot (the network
+  hardware answers the server's keepalives), and SpyServer has no idle
+  timeout. **Disconnect before sleeping the machine** — with a limit of 2 and
+  SDR# connected, one sleeping skimmer leaves no room for another. The skimmer
+  reconnects by itself after a stall, so waking is not a problem; the slot held
+  while asleep is. A connection closed by the server at once reads
+  `closed by the server (client limit?)`.
 
 ## Time
 

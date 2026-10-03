@@ -99,6 +99,9 @@ pub struct ChannelOptions {
 pub struct LiveOptions {
     generation: std::sync::atomic::AtomicU64,
     state: std::sync::Mutex<LiveState>,
+    /// A gain set while running, stored as index + 1 (`0`: none): wins over
+    /// [`Config::gain`], also on a reconnect.
+    gain: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -131,6 +134,20 @@ impl LiveOptions {
 
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    /// Set the device gain index in a running skimmer. Takes effect on the next
+    /// IQ message if this client holds control; a guest's request is ignored by
+    /// the server, so it is not sent.
+    pub fn set_gain(&self, gain: u32) {
+        self.gain.store(u64::from(gain) + 1, Ordering::Release);
+    }
+
+    fn gain(&self) -> Option<u32> {
+        match self.gain.load(Ordering::Acquire) {
+            0 => None,
+            g => Some((g - 1) as u32),
+        }
     }
 
     fn get(&self, index: usize) -> Option<(ChannelOptions, Station)> {
@@ -321,6 +338,23 @@ pub struct DeviceInfo {
     pub kind: u32,
     pub max_rate: u32,
     pub bandwidth_hz: f64,
+    /// Highest gain index the device takes (`SET_GAIN`: 0 to this).
+    pub max_gain: u32,
+    /// Whether this client may change the gain: only the one with control.
+    pub can_control: bool,
+    /// The gain index the device has now (SDR# set it, or the server's default).
+    pub gain: u32,
+}
+
+/// What the radio reports about itself and this client's standing with it:
+/// the current gain index, the highest one, and whether this client may write
+/// it. Sent with [`Event::Radio`] when it connects and whenever the server's
+/// sync message changes either value (another client moved the gain).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RadioState {
+    pub gain: u32,
+    pub max_gain: u32,
+    pub can_control: bool,
 }
 
 /// One decoded message.
@@ -371,6 +405,8 @@ pub enum Event {
         control: bool,
         device_hz: f64,
     },
+    /// The radio's gain or this client's control changed (see [`RadioState`]).
+    Radio(RadioState),
     /// Got control with `yield_control` set: leaving it for the operator's client.
     Yielded,
     /// No channel fits the band around the device centre; waiting for it to move.
@@ -479,6 +515,21 @@ enum End {
     Yielded,
 }
 
+/// A connection failure in a few words. The OS texts are long, localised and
+/// say nothing about the cause that matters here: a SpyServer at its client
+/// limit (another client, or a machine that went to sleep with its connection
+/// open) accepts the socket and closes it at once.
+fn describe(e: &std::io::Error) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        UnexpectedEof => "closed by the server (client limit?)".into(),
+        ConnectionRefused => "refused (is the server running?)".into(),
+        TimedOut => "no reply".into(),
+        ConnectionReset | ConnectionAborted | BrokenPipe => "connection lost".into(),
+        _ => e.to_string(),
+    }
+}
+
 /// Run until `stop` is set: connect, stream, decode, reconnect on failure.
 pub fn run(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) {
     while !stop.load(Ordering::Relaxed) {
@@ -490,7 +541,7 @@ pub fn run(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) {
             Ok(End::Yielded) => on_event(Event::Yielded),
             Err(e) if is_stop(&e) => return,
             Err(e) => on_event(Event::Disconnected {
-                error: e.to_string(),
+                error: describe(&e),
             }),
         }
         let until = Instant::now() + cfg.retry;
@@ -528,10 +579,18 @@ fn session(
             kind: dev.kind,
             max_rate: dev.max_rate,
             bandwidth_hz: dev.bandwidth_hz,
+            max_gain: dev.max_gain,
+            can_control: sync.can_control,
+            gain: sync.gain,
         },
         control: sync.can_control,
         device_hz: sync.device_hz,
     });
+    on_event(Event::Radio(RadioState {
+        gain: sync.gain,
+        max_gain: dev.max_gain,
+        can_control: sync.can_control,
+    }));
     // Given control: hold it and tune, unless asked to leave it for an
     // operator's client started later (holding control would lock that client
     // out of tuning, and the protocol has no way to hand it on).
@@ -577,7 +636,7 @@ fn session(
             channelizer: channelizer_for(cfg, p.active.len()),
         });
         c.set(SET_STREAMING_ENABLED, 1)?;
-        match stream(&mut c, stop, cfg, &p, sync, on_event)? {
+        match stream(&mut c, stop, cfg, &dev, tune, &p, sync, on_event)? {
             None => return Ok(End::Stopped),
             Some(s) => {
                 on_event(Event::Moved {
@@ -611,7 +670,8 @@ fn apply(
         },
     )?;
     c.set(SET_IQ_FREQUENCY, p.center_hz as u32)?;
-    if tune && let Some(g) = cfg.gain {
+    let gain = cfg.live.gain().or(cfg.gain);
+    if tune && let Some(g) = gain {
         c.set(SET_GAIN, g)?;
     }
     let other = if p.decimation > dev.rates[0].0 {
@@ -624,13 +684,7 @@ fn apply(
     // As SDR++ does: 3 dB of digital gain per decimation stage keeps the
     // level in the integer formats (`computeDigitalGain`); the Airspy One
     // also makes up its device gain.
-    let digital = (p.decimation as f32 * 3.01) as u32
-        + if dev.kind == DEVICE_AIRSPY_ONE {
-            dev.max_gain.saturating_sub(cfg.gain.unwrap_or(0))
-        } else {
-            0
-        };
-    c.set(SET_IQ_DIGITAL_GAIN, digital)?;
+    c.set(SET_IQ_DIGITAL_GAIN, digital_gain(dev, p.decimation, gain))?;
     c.set(SET_STREAMING_MODE, STREAM_MODE_IQ_ONLY)?;
     c.command(CMD_PING, &[])?;
     let mut last = None;
@@ -694,6 +748,18 @@ struct Live {
     format: IqSampleFormat,
 }
 
+/// The IQ digital gain SDR++ sets (`computeDigitalGain`): 3 dB per decimation
+/// stage keeps the level in the integer formats, and the Airspy One also makes
+/// up its device gain.
+fn digital_gain(dev: &Device, decimation: u32, gain: Option<u32>) -> u32 {
+    (decimation as f32 * 3.01) as u32
+        + if dev.kind == DEVICE_AIRSPY_ONE {
+            dev.max_gain.saturating_sub(gain.unwrap_or(0))
+        } else {
+            0
+        }
+}
+
 /// A receiver for the plan's channels, built for the format the server sends.
 fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<Live> {
     let stream = IqStream::new(p.rate, p.center_hz, format).iq_swap(cfg.iq_swap);
@@ -738,10 +804,13 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
 
 /// Decode until stopped (`None`) or the server says the device or this
 /// client's IQ centre moved (`Some`).
+#[allow(clippy::too_many_arguments)]
 fn stream(
     c: &mut Conn,
     stop: &AtomicBool,
     cfg: &Config,
+    dev: &Device,
+    hold: bool,
     p: &Plan,
     sync: Sync,
     on_event: &mut impl FnMut(Event),
@@ -757,6 +826,12 @@ fn stream(
     let mut worst_push = Duration::ZERO;
     let mut dropped_slots = 0u64;
     let mut seen_generation = cfg.live.generation();
+    let mut applied_gain = cfg.live.gain().or(cfg.gain);
+    let mut radio = RadioState {
+        gain: sync.gain,
+        max_gain: dev.max_gain,
+        can_control: sync.can_control,
+    };
     loop {
         let m = match c.read(stop) {
             Ok(m) => m,
@@ -765,6 +840,15 @@ fn stream(
         };
         if m.kind == MSG_CLIENT_SYNC {
             let s = Sync::parse(&m.body);
+            let now = RadioState {
+                gain: s.gain,
+                max_gain: dev.max_gain,
+                can_control: s.can_control,
+            };
+            if now != radio {
+                radio = now;
+                on_event(Event::Radio(now));
+            }
             if s.device_hz != sync.device_hz || s.iq_hz != sync.iq_hz {
                 return Ok(Some(s));
             }
@@ -787,6 +871,18 @@ fn stream(
             longest_us,
             ..
         } = live.as_mut().unwrap();
+
+        // A gain changed while running (only the controlling client's request
+        // is honoured by the server). The Airspy One's digital gain makes up
+        // the device gain, so it follows.
+        if hold && let Some(g) = cfg.live.gain().filter(|g| Some(*g) != applied_gain) {
+            c.set(SET_GAIN, g)?;
+            c.set(
+                SET_IQ_DIGITAL_GAIN,
+                digital_gain(dev, p.decimation, Some(g)),
+            )?;
+            applied_gain = Some(g);
+        }
 
         // Options changed since the last message go to their channels; one
         // whose queue is full is tried again with the next message.
@@ -883,6 +979,25 @@ fn stream(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn connection_failures_read_in_a_few_words() {
+        use std::io::{Error, ErrorKind};
+        for (kind, want) in [
+            (
+                ErrorKind::UnexpectedEof,
+                "closed by the server (client limit?)",
+            ),
+            (
+                ErrorKind::ConnectionRefused,
+                "refused (is the server running?)",
+            ),
+            (ErrorKind::TimedOut, "no reply"),
+            (ErrorKind::ConnectionReset, "connection lost"),
+        ] {
+            assert_eq!(super::describe(&Error::from(kind)), want);
+        }
+    }
+
     use super::*;
 
     #[test]

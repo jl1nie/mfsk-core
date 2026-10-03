@@ -12,6 +12,14 @@
   let modes = $state<ModeInfo[]>([]);
   let running = $state(false);
   let phase = $state('Stopped');
+  /** From the connected device: the highest gain index, and whether this client can set it. */
+  let maxGain = $state<number | null>(null);
+  let canControl = $state(false);
+  /** The gain the radio had when we connected (SDR# had set it), and the one moved to since. */
+  let deviceGain = $state<number | null>(null);
+  let gainSet = $state<number | null>(null);
+  const gainShown = $derived(gainSet ?? deviceGain);
+  let lastGainMove = 0;
   let detail = $state('');
   let notice = $state('');
   let health = $state<Status | null>(null);
@@ -20,6 +28,15 @@
   // Raw, not a deep proxy: 5000 row objects are replaced wholesale, never mutated.
   let rows = $state.raw<DecodeRow[]>([]);
   let nextId = 0;
+  let gainTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The slider moves continuously; the radio gets the value once it rests for a moment. */
+  function gainChanged() {
+    clearTimeout(gainTimer);
+    gainTimer = setTimeout(() => {
+      if (running && gainSet !== null) api.setGain(gainSet);
+    }, 150);
+  }
+
   /** Decodes the window has received; compare with the table to see whether it dropped any. */
   let received = $state(0);
   let pending: DecodeRow[] = [];
@@ -38,6 +55,11 @@
   onMount(() => {
     let unlisten: (() => void) | undefined;
     const clock = setInterval(() => (now = Date.now()), 200);
+    // The window asks the backend for the radio's state, so a missed or reordered
+    // event (the autostart connects before the first paint) cannot leave it unread.
+    const radioPoll = setInterval(async () => {
+      if (running) takeRadio(await api.radioState().catch(() => null));
+    }, 1000);
     (async () => {
       settings = await api.loadSettings();
       modes = await api.modes();
@@ -47,6 +69,7 @@
     })();
     return () => {
       clearInterval(clock);
+      clearInterval(radioPoll);
       unlisten?.();
     };
   });
@@ -60,14 +83,36 @@
     saveTimer = setTimeout(() => api.saveSettings(snapshot).catch((e) => (notice = String(e))), 400);
   });
 
+  /** The radio's state as the backend last heard it (event or poll). A slider the user is
+   * dragging is left alone for a moment so a reading does not pull it back. */
+  function takeRadio(r: { gain: number; maxGain: number; canControl: boolean } | null) {
+    if (r === null) {
+      deviceGain = null;
+      gainSet = null;
+      canControl = false;
+      return;
+    }
+    maxGain = r.maxGain;
+    canControl = r.canControl;
+    deviceGain = r.gain;
+    if (Date.now() - lastGainMove > 1500) gainSet = null;
+  }
+
   function handle(e: UiEvent) {
     switch (e.type) {
       case 'connecting':
         phase = `Connecting to ${e.server}…`;
         break;
       case 'connected':
+        maxGain = e.maxGain;
+        deviceGain = e.gain;
+        gainSet = null;
+        canControl = e.control;
         phase = e.control ? 'Connected with control of the radio' : 'Connected as a guest';
         detail = `device centre ${mhz(e.deviceHz)} MHz, band ${(e.bandwidthHz / 1e3).toFixed(0)} kHz`;
+        break;
+      case 'radio':
+        takeRadio(e);
         break;
       case 'yielded':
         phase = 'Had control of the radio: leaving it for SDR# and retrying';
@@ -159,6 +204,7 @@
       phase = 'Stopped';
       detail = '';
       active = [];
+      takeRadio(null);
       return;
     }
     if (settings.channels.length === 0) {
@@ -235,6 +281,39 @@
               onchange={() => running && api.setStation(settings!.myCall, settings!.myGrid)}
             />
           </div>
+          <h3>Radio</h3>
+          <div
+            class="field slider"
+            title="The radio's own gain index (SpyServer; the HF+ steps its attenuator and LNA), as the radio reports it, also when SDR# moves it. Moving the slider writes it when this client has control and shows the value written; as a guest it cannot write, and the slider keeps showing the value read. Nothing is saved."
+          >
+            <span>Gain</span>
+            {#if gainShown !== null}
+              <input
+                type="range"
+                min="0"
+                max={maxGain ?? 20}
+                step="1"
+                value={gainShown}
+                oninput={(e) => {
+                  if (canControl) {
+                    gainSet = Number(e.currentTarget.value);
+                    lastGainMove = Date.now();
+                    gainChanged();
+                  } else {
+                    // A guest cannot write it: show what was read.
+                    e.currentTarget.value = String(gainShown);
+                  }
+                }}
+                aria-label="Gain index"
+              />
+              <output>{gainShown}{maxGain !== null ? ` / ${maxGain}` : ''}</output>
+            {:else}
+              <span class="hint">{running ? 'reading…' : 'read when connected'}</span>
+            {/if}
+          </div>
+          {#if running && !canControl}
+            <p class="hint">This client is a guest (SDR# has control): the gain is SDR#'s to set.</p>
+          {/if}
           <h3>Connection</h3>
           <div class="field">
             <span>IQ format</span>

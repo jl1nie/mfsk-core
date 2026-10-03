@@ -18,7 +18,7 @@ use skimmer_core::modes::{MODES, mode_name, parse_mode, slot_seconds};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::{
     ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
-    QsoContext, QsoProgress, Station, WireFormat, all_txt_line,
+    QsoContext, QsoProgress, RadioState, Station, WireFormat, all_txt_line,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -166,8 +166,15 @@ enum UiEvent {
         device_kind: u32,
         max_rate: u32,
         bandwidth_hz: f64,
+        max_gain: u32,
+        gain: u32,
         control: bool,
         device_hz: f64,
+    },
+    Radio {
+        gain: u32,
+        max_gain: u32,
+        can_control: bool,
     },
     Yielded,
     NoChannelFits {
@@ -232,8 +239,15 @@ impl From<Event> for UiEvent {
                 device_kind: device.kind,
                 max_rate: device.max_rate,
                 bandwidth_hz: device.bandwidth_hz,
+                max_gain: device.max_gain,
+                gain: device.gain,
                 control,
                 device_hz,
+            },
+            Event::Radio(r) => UiEvent::Radio {
+                gain: r.gain,
+                max_gain: r.max_gain,
+                can_control: r.can_control,
             },
             Event::Yielded => UiEvent::Yielded,
             Event::NoChannelFits { device_hz } => UiEvent::NoChannelFits { device_hz },
@@ -293,6 +307,8 @@ struct Running {
 
 #[derive(Default)]
 struct AppState {
+    /// The radio as the running skimmer last reported it; the window asks.
+    radio: Arc<Mutex<Option<RadioState>>>,
     running: Mutex<Option<Running>>,
 }
 
@@ -434,9 +450,18 @@ fn health_line(ev: &Event) -> Option<String> {
         Event::Reanchor { by_s } => format!("reanchor {by_s:+.3}s"),
         Event::Disconnected { error } => format!("disconnected {error}"),
         Event::Connecting { server } => format!("connecting {server}"),
-        Event::Connected { control, device_hz, .. } => {
-            format!("connected control={control} device {device_hz:.0} Hz")
-        }
+        Event::Connected {
+            control,
+            device_hz,
+            device,
+        } => format!(
+            "connected control={control} device {device_hz:.0} Hz gain {}/{}",
+            device.gain, device.max_gain
+        ),
+        Event::Radio(r) => format!(
+            "radio gain {}/{} control={}",
+            r.gain, r.max_gain, r.can_control
+        ),
         Event::Yielded => "yielded: got control, leaving it (yield_control is set)".to_string(),
         Event::Streaming { rate, active, .. } => format!("streaming {rate} S/s {active:?}"),
         Event::Moved { device_hz, iq_hz } => format!("moved device {device_hz:.0} iq {iq_hz:.0}"),
@@ -462,6 +487,42 @@ fn set_station(state: State<'_, AppState>, my_call: String, my_grid: String) {
             grid: my_grid.trim().to_ascii_uppercase(),
         });
     }
+}
+
+/// Change the device gain index in a running skimmer. Only the client with
+/// control can; as a guest the server ignores it, so nothing is sent.
+#[tauri::command]
+fn set_gain(state: State<'_, AppState>, gain: u32) {
+    if let Some(r) = state.running.lock().unwrap().as_ref() {
+        r.live.set_gain(gain);
+    }
+    // Show it at once: the server's sync, which corrects this, may not come for
+    // a write of ours.
+    if let Some(radio) = state.radio.lock().unwrap().as_mut()
+        && radio.can_control
+    {
+        radio.gain = gain;
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RadioDto {
+    gain: u32,
+    max_gain: u32,
+    can_control: bool,
+}
+
+/// The radio's gain, its highest index and whether this client may write it,
+/// as the running skimmer last heard; `None` when not connected. The window
+/// polls this rather than relying on one event at connect.
+#[tauri::command]
+fn radio_state(state: State<'_, AppState>) -> Option<RadioDto> {
+    state.radio.lock().unwrap().map(|r| RadioDto {
+        gain: r.gain,
+        max_gain: r.max_gain,
+        can_control: r.can_control,
+    })
 }
 
 /// `MFSK_SKIMMER_AUTOSTART=1` asks for an unattended run that only needs the
@@ -504,6 +565,8 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
     };
     let mut decodes = 0u64;
     let live = cfg.live.clone();
+    let radio = state.radio.clone();
+    *radio.lock().unwrap() = None;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let emitter = app.clone();
@@ -511,6 +574,13 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
         skimmer_core::run(&cfg, &flag, |ev| {
             if matches!(ev, Event::Decode(_)) {
                 decodes += 1;
+            }
+            match &ev {
+                Event::Radio(r) => *radio.lock().unwrap() = Some(*r),
+                Event::Disconnected { .. } | Event::Yielded | Event::Connecting { .. } => {
+                    *radio.lock().unwrap() = None
+                }
+                _ => {}
             }
             if let (Some(line), Some(f)) = (health_line(&ev), health.as_mut()) {
                 let extra = if matches!(ev, Event::Status(_)) {
@@ -556,6 +626,8 @@ fn main() {
             stop,
             set_channel_options,
             set_station,
+            set_gain,
+            radio_state,
             autostart_requested
         ])
         .on_window_event(|window, event| {

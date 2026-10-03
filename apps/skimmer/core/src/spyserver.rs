@@ -213,6 +213,8 @@ pub fn words(b: &[u8]) -> Vec<u32> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sync {
     pub can_control: bool,
+    /// The device's current gain index (the second word of `CLIENT_SYNC`).
+    pub gain: u32,
     pub device_hz: f64,
     pub iq_hz: f64,
 }
@@ -222,6 +224,7 @@ impl Sync {
         let w = words(body);
         Sync {
             can_control: w[0] != 0,
+            gain: w[1],
             device_hz: w[2] as f64,
             iq_hz: w[3] as f64,
         }

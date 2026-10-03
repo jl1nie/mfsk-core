@@ -404,3 +404,26 @@ tr.mine {
   padding: 24px;
   color: var(--muted);
 }
+
+.field.slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.field.slider input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.field.slider output {
+  min-width: 4.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.check.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

@@ -130,6 +130,7 @@ fn main() -> ExitCode {
              device centre {device_hz:.0} Hz",
             device.kind, device.max_rate, device.bandwidth_hz
         ),
+        Event::Radio(_) => {}
         Event::Yielded => eprintln!(
             "got control of the device; leaving it for the operator's client \
              (--yield is set; drop it to hold control and tune the radio)"

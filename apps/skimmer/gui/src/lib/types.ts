@@ -90,9 +90,12 @@ export type UiEvent =
       deviceKind: number;
       maxRate: number;
       bandwidthHz: number;
+      maxGain: number;
+      gain: number;
       control: boolean;
       deviceHz: number;
     }
+  | { type: 'radio'; gain: number; maxGain: number; canControl: boolean }
   | { type: 'yielded' }
   | { type: 'noChannelFits'; deviceHz: number }
   | {
@@ -110,3 +113,9 @@ export type UiEvent =
   | { type: 'reanchor'; byS: number }
   | ({ type: 'status' } & Status)
   | { type: 'disconnected'; error: string };
+
+export interface RadioState {
+  gain: number;
+  maxGain: number;
+  canControl: boolean;
+}
