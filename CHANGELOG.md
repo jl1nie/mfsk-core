@@ -29,7 +29,8 @@
 - **C ABI 3: one `mfsk_decoder_*` handle for every mode (breaking).** `MfskParams`/`MfskExtras` are size-versioned and
   initialised by `mfsk_params_init`/`mfsk_extras_init`; rows stream through a callback; an option a mode lacks is
   `MFSK_UNSUPPORTED`; `MfskStream` cuts slots on the UTC grid. The session handle and every `mfsk_*_decode*` function are
-  gone. cpp_smoke and Kotlin were ported and run; the Swift package was ported but not built (needs a Mac). Old→new table:
+  gone. cpp_smoke, Kotlin and the Swift package were ported and run; on macOS the Swift suite passes 98 of 98, after
+  one test was updated for `mfsk_stream_clear` now dropping the slot being cut as well. Old→new table:
   `docs/reference/BINDINGS.md`.
 - **Embedded:** the boards call the stage functions, which did not change; `cargo +esp check` passes on all four boards.
   New CI/pre-push rows build `Decoder`/`AnyDecoder` under `alloc` + `fft-extern` and the union of the board features.
