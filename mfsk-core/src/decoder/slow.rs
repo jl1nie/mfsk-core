@@ -16,7 +16,7 @@
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
 use alloc::vec::Vec;
 
-#[cfg(feature = "jt9")]
+#[cfg(any(feature = "jt9", feature = "wspr", feature = "jt65"))]
 use super::Depth;
 use super::{Audio, DecodeParams, SearchTuning};
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
@@ -56,6 +56,11 @@ mod wspr_impl {
     #[derive(Clone, Debug, Default)]
     pub struct WsprExtras {
         pub search: SearchTuning,
+        /// Fano's cycle budget per bit (`wsprd -C`), over the depth's:
+        /// 10000 is `wsprd`'s own default, which the GUI's Normal and Deep
+        /// lower to 500 for speed. Measured: on the WSJT-X golden 500 loses
+        /// G8VDQ (-23 dB), which 10000 decodes.
+        pub max_cycles_per_bit: Option<u64>,
     }
 
     /// WSPR's cross-period state: wsprd's callsign table.
@@ -67,6 +72,33 @@ mod wspr_impl {
     impl WsprState {
         pub fn table(&self) -> &WsprCallsignTable {
             &self.table
+        }
+    }
+
+    /// The arguments the WSJT-X GUI gives `wsprd` per decoding depth
+    /// (`widgets/mainwindow.cpp:2824-2826`, `wsprd.c:819-900`): Fast
+    /// `-qB`, Normal `-C 500 -o 4`, Deep `-C 500 -o 4 -d`. OSD (`-o`) is the
+    /// final pass's, gated on the decoder's callsign table, as in the
+    /// crate's scan; Fast has two passes and so none.
+    fn scan_depth(depth: Depth) -> crate::wspr::decode::ScanDepth {
+        use crate::wspr::decode::{Ladder, ScanDepth};
+        match depth {
+            Depth::Fast => ScanDepth {
+                passes: 2,
+                ladder: Ladder {
+                    jitter: false,
+                    ..Ladder::DEFAULT
+                },
+                more_candidates: false,
+            },
+            Depth::Normal | Depth::Deep => ScanDepth {
+                passes: 3,
+                ladder: Ladder {
+                    jitter: true,
+                    max_cycles_per_bit: 500,
+                },
+                more_candidates: depth == Depth::Deep,
+            },
         }
     }
 
@@ -99,6 +131,13 @@ mod wspr_impl {
             let mut req = DecodeRequest::new(audio, 12_000)
                 .nominal_start(nominal_start(crate::Mode::Wspr))
                 .params(search)
+                .scan_depth({
+                    let mut d = scan_depth(params.depth);
+                    if let Some(c) = extras.max_cycles_per_bit {
+                        d.ladder.max_cycles_per_bit = c;
+                    }
+                    d
+                })
                 .table(&mut state.table);
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);

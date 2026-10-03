@@ -320,6 +320,22 @@ pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
         // ntype is negative, this is (n2 + (-ntype) - 64) / 128; with
         // n2 raw, it equals n2 >> 7 exactly.
         let hash = n2 >> 7;
+        // `unpk_` (`wsprd_utils.c:372-404`) prints a Type 3 only if its power
+        // is one WSPR sends (0, 3, 7 mod 10), its locator starts with two
+        // letters and two digits, and it is not `ntype == -64` — which "show
+        // up as A000AA grids" and are what Fano's all-zero path decodes to.
+        let nu = power_dbm % 10;
+        let b = grid6.as_bytes();
+        let sane = matches!(nu, 0 | 3 | 7)
+            && b.len() >= 4
+            && b[0].is_ascii_alphabetic()
+            && b[1].is_ascii_alphabetic()
+            && b[2].is_ascii_digit()
+            && b[3].is_ascii_digit()
+            && t != -64;
+        if !sane {
+            return None;
+        }
         return Some(WsprMessage::Type3 {
             callsign_hash: hash,
             grid6,

@@ -217,7 +217,7 @@ fn build_spectro(idat: &[f32], qdat: &[f32]) -> Spectro {
 
 /// Local-maxima peak detection on `smspec`. Returns up to `max_peaks`
 /// peaks ranked by SNR in dB (descending). `(smspec_index, snr_db)`.
-fn find_peaks(spec: &Spectro, max_peaks: usize) -> Vec<(usize, f32)> {
+fn find_peaks(spec: &Spectro, max_peaks: usize, more: bool) -> Vec<(usize, f32)> {
     let mut peaks: Vec<(usize, f32)> = Vec::new();
     for j in 1..(WORKING_BINS - 1) {
         let v = spec.smspec[j];
@@ -229,6 +229,20 @@ fn find_peaks(spec: &Spectro, max_peaks: usize) -> Vec<(usize, f32)> {
     }
     peaks.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
     peaks.truncate(max_peaks);
+    if more {
+        // `wsprd -d` (`wsprd.c:1161-1169`): after the local maxima, every
+        // third bin whose smoothed power clears the floor, while there are
+        // fewer than `max_peaks` candidates.
+        for j in (0..WORKING_BINS).step_by(3) {
+            if peaks.len() >= max_peaks {
+                break;
+            }
+            let v = spec.smspec[j];
+            if v > MIN_SNR_LIN && !peaks.iter().any(|&(k, _)| k == j) {
+                peaks.push((j, 10.0 * v.max(1e-30).log10() - SNR_SCALING_DB));
+            }
+        }
+    }
     peaks
 }
 
@@ -355,6 +369,27 @@ pub fn coarse_baseband(
     max_peaks: usize,
     max_drift_hz: i32,
 ) -> Vec<BasebandCandidate> {
+    coarse_baseband_ext(
+        idat,
+        qdat,
+        pad_samples_audio,
+        max_peaks,
+        max_drift_hz,
+        false,
+    )
+}
+
+/// [`coarse_baseband`] with `wsprd -d` (`more_candidates`): after the local
+/// maxima, every third bin above the SNR floor is a candidate too
+/// (`wsprd.c:1161-1169`), while fewer than `max_peaks` are in.
+pub(super) fn coarse_baseband_ext(
+    idat: &[f32],
+    qdat: &[f32],
+    pad_samples_audio: usize,
+    max_peaks: usize,
+    max_drift_hz: i32,
+    more_candidates: bool,
+) -> Vec<BasebandCandidate> {
     // Split coarse into its two halves so the PSRAM-latency question
     // on `ps` can be asked at all — see `instrument::COARSE_SPECTRO_US`.
     #[cfg(feature = "std")]
@@ -368,7 +403,7 @@ pub fn coarse_baseband(
     if spec.n_time == 0 {
         return Vec::new();
     }
-    let peaks = find_peaks(&spec, max_peaks);
+    let peaks = find_peaks(&spec, max_peaks, more_candidates);
 
     let pad_baseband = (pad_samples_audio as f32 / 32.0).round() as i32;
 

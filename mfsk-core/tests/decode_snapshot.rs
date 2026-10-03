@@ -712,12 +712,15 @@ mod via_decoder {
         let Some(a) = common::load_wav_f32_opt(&path) else {
             return;
         };
-        let params = DecodeParams::for_band((1400.0, 1620.0)).depth(Depth::Deep);
+        // The 0.12 scan is wsprd's defaults: three passes with DT jitter and
+        // `-C 10000`. Normal is that, but for the GUI's `-C 500`.
+        let params = DecodeParams::for_band((1400.0, 1620.0)).depth(Depth::Normal);
         let extras = WsprExtras {
             search: SearchTuning {
                 max_candidates: Some(100),
                 ..Default::default()
             },
+            max_cycles_per_bit: Some(10_000),
         };
         // One decoder over two periods: the table is state.
         let mut d = Decoder::<Wspr>::new(params).with_extras(extras);

@@ -47,6 +47,7 @@ pub struct DecodeRequest<'a> {
     params: SearchParams,
     table: Option<&'a mut WsprCallsignTable>,
     on_result: Option<&'a (dyn Fn(&WsprResult) + Sync)>,
+    depth: super::decode::ScanDepth,
 }
 
 impl<'a> DecodeRequest<'a> {
@@ -60,6 +61,7 @@ impl<'a> DecodeRequest<'a> {
             params: default_search_params(),
             table: None,
             on_result: None,
+            depth: super::decode::ScanDepth::DEFAULT,
         }
     }
 
@@ -76,6 +78,12 @@ impl<'a> DecodeRequest<'a> {
     }
 
     /// Sample index where the slot nominally starts. Default 0.
+    /// What the scan does per `wsprd`'s arguments; the default is its own.
+    pub(crate) fn scan_depth(mut self, depth: super::decode::ScanDepth) -> Self {
+        self.depth = depth;
+        self
+    }
+
     pub fn nominal_start(mut self, sample: usize) -> Self {
         self.nominal_start_sample = sample;
         self
@@ -145,6 +153,7 @@ impl<'a> DecodeRequest<'a> {
             &self.params,
             self.on_result,
             self.table.as_deref_mut(),
+            self.depth,
         )
     }
 }
@@ -290,6 +299,7 @@ impl<'a> SniperRequest<'a> {
             self.nblocks,
             self.confirmed,
             self.refine_drift,
+            super::decode::Ladder::DEFAULT,
         )
     }
 }

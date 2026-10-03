@@ -402,6 +402,7 @@ pub(super) fn decode_at_baseband_inner(
     nblocks: &[usize],
     confirmed: Option<&WsprCallsignTable>,
     refine_drift: bool,
+    ladder: Ladder,
 ) -> Option<WsprResult> {
     // `freq_hz` follows our tone-0 convention (matches `engine::tx::synthesize`
     // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
@@ -445,6 +446,7 @@ pub(super) fn decode_at_baseband_inner(
         nblocks,
         confirmed,
         None,
+        ladder,
     )
 }
 
@@ -494,6 +496,7 @@ fn decode_from_refined(
     nblocks: &[usize],
     confirmed: Option<&WsprCallsignTable>,
     budget: Option<&(dyn Fn() -> bool + Sync)>,
+    ladder: Ladder,
 ) -> Option<WsprResult> {
     use crate::engine::{FecOpts, MessageCodec};
     let codec = crate::fec::ConvFano;
@@ -542,7 +545,7 @@ fn decode_from_refined(
     // `tone_amplitudes_into`'s doc comment.
     let mut jitter_isqs = super::demod::IsQs::zeroed();
     'rungs: for &nblock in nblocks {
-        for idt in 0..=N_JITTER {
+        for idt in 0..=if ladder.jitter { N_JITTER } else { 0 } {
             if let Some(check) = budget
                 && !check()
             {
@@ -660,12 +663,8 @@ fn decode_from_refined(
             // `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`); it
             // stays phantom-free, it just hears less. Same split shape
             // as `wspr-pass2-topn`.
-            #[cfg(not(feature = "wspr-fano-cap-fast"))]
-            const WSPR_FANO_CYCLE_BUDGET: u64 = 10_000;
-            #[cfg(feature = "wspr-fano-cap-fast")]
-            const WSPR_FANO_CYCLE_BUDGET: u64 = 5_000;
             let fec_opts = FecOpts {
-                max_cycles_per_bit: Some(WSPR_FANO_CYCLE_BUDGET),
+                max_cycles_per_bit: Some(ladder.max_cycles_per_bit),
                 ..FecOpts::default()
             };
             #[cfg(feature = "std")]
@@ -761,6 +760,54 @@ fn decode_from_refined(
     best_type1.map(|(_, d)| d).or(best_other.map(|(_, d)| d))
 }
 
+/// Fano's cycle budget per bit, `wsprd.c:819` `maxcycles = 10000` (the
+/// `-C` default). Embedded, `wspr-fano-cap-fast` halves it; see the comment
+/// at the Fano call below for what that costs.
+#[cfg(not(feature = "wspr-fano-cap-fast"))]
+pub(crate) const WSPR_FANO_CYCLE_BUDGET: u64 = 10_000;
+#[cfg(feature = "wspr-fano-cap-fast")]
+pub(crate) const WSPR_FANO_CYCLE_BUDGET: u64 = 5_000;
+
+/// What a candidate's decode ladder tries: `wsprd`'s `-q` (no DT
+/// peak-up jitter) and `-C` (Fano cycles per bit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Ladder {
+    /// Retry the demodulation at `shift ± 8k` baseband samples
+    /// (`wsprd.c:1366-1475`); `-q` (`quickmode`) tries position 0 only.
+    pub jitter: bool,
+    pub max_cycles_per_bit: u64,
+}
+
+impl Ladder {
+    pub(crate) const DEFAULT: Ladder = Ladder {
+        jitter: true,
+        max_cycles_per_bit: WSPR_FANO_CYCLE_BUDGET,
+    };
+}
+
+/// What a scan does, after the arguments the WSJT-X GUI gives `wsprd` per
+/// decoding depth (`mainwindow.cpp:2824-2826`): Fast `-qB`, Normal
+/// `-C 500 -o 4`, Deep `-C 500 -o 4 -d`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ScanDepth {
+    /// `npasses` (`wsprd.c:825`): 2 stops after the two early passes, 3
+    /// adds the final one with the coherent-block ladder and OSD.
+    pub passes: u8,
+    pub ladder: Ladder,
+    /// `-d`: also take every third spectrum bin above the SNR floor as a
+    /// candidate (`wsprd.c:1161-1169`).
+    pub more_candidates: bool,
+}
+
+impl ScanDepth {
+    /// The scan every 0.12 request ran: `wsprd`'s defaults.
+    pub(crate) const DEFAULT: ScanDepth = ScanDepth {
+        passes: 3,
+        ladder: Ladder::DEFAULT,
+        more_candidates: false,
+    };
+}
+
 /// Half-window (in seconds) of front-side zero padding added before
 /// the search runs. WSPR transmissions can start up to ~2 s **before**
 /// the nominal slot anchor (wsprd reports such cases as `dt < -1.0`);
@@ -781,6 +828,7 @@ fn decode_pass1_candidate(
     sample_rate: u32,
     pad: usize,
     c: &super::coarse_baseband::BasebandCandidate,
+    ladder: Ladder,
 ) -> Option<(WsprResult, usize)> {
     // wsprd's passes 0 and 1 hand `candidates[j].drift` — the value its
     // ±4 Hz coarse drift search picked — straight to the demodulator
@@ -797,6 +845,7 @@ fn decode_pass1_candidate(
         &[1],
         None,
         true,
+        ladder,
     )?;
     let start_refined = d.start_sample;
     d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32
@@ -820,6 +869,7 @@ fn decode_pass2_candidate(
     pad: usize,
     c: &super::coarse_baseband::BasebandCandidate,
     confirmed: &WsprCallsignTable,
+    ladder: Ladder,
 ) -> Option<WsprResult> {
     let mut d = decode_at_baseband_inner(
         idat,
@@ -832,6 +882,7 @@ fn decode_pass2_candidate(
         Some(confirmed),
         // wsprd's `ipass < 2` gate: the final pass does not refine drift.
         false,
+        ladder,
     )?;
     let start_refined = d.start_sample;
     d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32
@@ -1027,6 +1078,7 @@ pub fn deep_decode_pass2_candidate(
         &[1, 2, 3, 0],
         Some(confirmed),
         budget,
+        Ladder::DEFAULT,
     )?;
     let start_refined = d.start_sample;
     d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32
@@ -1107,7 +1159,9 @@ pub(super) fn decode_scan_inner(
     params: &SearchParams,
     on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
     carried: Option<&mut WsprCallsignTable>,
+    depth: ScanDepth,
 ) -> Vec<WsprResult> {
+    let ladder = depth.ladder;
     // Prepend zeros so signals that started before audio[0] (negative
     // dt) become reachable. Internal `start_sample`s are shifted by
     // `pad`; we subtract `pad` back out before returning so callers
@@ -1142,12 +1196,13 @@ pub(super) fn decode_scan_inner(
     // at the right (freq, dt) for weak signals next to strong ones
     // (W5BIT, W3BI). See `coarse_baseband.rs`.
     let max_drift = 4i32;
-    let bb_cands = super::coarse_baseband::coarse_baseband(
+    let bb_cands = super::coarse_baseband::coarse_baseband_ext(
         &idat,
         &qdat,
         pad,
         params.max_candidates,
         max_drift,
+        depth.more_candidates,
     );
     // Use the wsprd-equivalent coarse only. Legacy `coarse_search`
     // (12 kHz spectrogram) costs ~30 s of recall-test runtime on a
@@ -1248,12 +1303,13 @@ pub(super) fn decode_scan_inner(
         let pass_cands = if early_pass == 0 {
             core::mem::take(&mut cands)
         } else {
-            let mut c = super::coarse_baseband::coarse_baseband(
+            let mut c = super::coarse_baseband::coarse_baseband_ext(
                 &idat,
                 &qdat,
                 pad,
                 params.max_candidates,
                 max_drift,
+                depth.more_candidates,
             );
             c.truncate(params.max_candidates);
             c
@@ -1262,12 +1318,12 @@ pub(super) fn decode_scan_inner(
         #[cfg(feature = "parallel")]
         let raw: Vec<(WsprResult, usize)> = pass_cands
             .par_iter()
-            .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
+            .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c, ladder))
             .collect();
         #[cfg(not(feature = "parallel"))]
         let raw: Vec<(WsprResult, usize)> = pass_cands
             .iter()
-            .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
+            .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c, ladder))
             .collect();
 
         let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
@@ -1327,7 +1383,8 @@ pub(super) fn decode_scan_inner(
     // final pass's coherent-block ladder and zero-drift estimate. This
     // used to be gated on the early passes having produced something,
     // which cost every weak single-signal slot its best chance.
-    {
+    // `-B` (npasses = 2) stops after the two early passes.
+    if depth.passes >= 3 {
         // Re-run coarse on the cleaned baseband. Skip the legacy
         // 12 kHz coarse here — pass 2 runs against an already-decimated
         // residual buffer, and reconstructing 12 kHz from baseband is
@@ -1339,12 +1396,13 @@ pub(super) fn decode_scan_inner(
         // remaining weak ones are better served by a lower-variance
         // frequency estimate than by a wider search.
         const PASS2_MAX_DRIFT: i32 = 0;
-        let bb_cands2 = super::coarse_baseband::coarse_baseband(
+        let bb_cands2 = super::coarse_baseband::coarse_baseband_ext(
             &idat,
             &qdat,
             pad,
             params.max_candidates,
             PASS2_MAX_DRIFT,
+            depth.more_candidates,
         );
         // Pass 2 uses nblock = 1, 2, 3 (coherent block detection) for
         // the +3..+4.8 dB margin needed to decode signals like W3BI at
@@ -1370,13 +1428,17 @@ pub(super) fn decode_scan_inner(
         #[cfg(feature = "parallel")]
         let raw2: Vec<WsprResult> = bb_cands2
             .par_iter()
-            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c, &confirmed))
+            .filter_map(|c| {
+                decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c, &confirmed, ladder)
+            })
             .collect();
         #[cfg(not(feature = "wspr-pass2-topn"))]
         #[cfg(not(feature = "parallel"))]
         let raw2: Vec<WsprResult> = bb_cands2
             .iter()
-            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c, &confirmed))
+            .filter_map(|c| {
+                decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c, &confirmed, ladder)
+            })
             .collect();
 
         for d in raw2 {
@@ -1496,6 +1558,7 @@ pub fn decode_scan_subtract(
             params,
             None,
             None,
+            ScanDepth::DEFAULT,
         );
         if new_decodes.is_empty() {
             break;

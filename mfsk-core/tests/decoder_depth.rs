@@ -140,3 +140,48 @@ fn jt9_rx_frequency_pass_only_adds() {
         eprintln!("rx {rx}: wide {} narrow {}", wide.len(), narrow.len());
     }
 }
+
+/// `wsprd`'s arguments per GUI depth (`mainwindow.cpp:2824-2826`): Fast
+/// `-qB` (two passes, no DT jitter), Normal `-C 500 -o 4`, Deep adds `-d`.
+/// On the WSJT-X golden Normal and Deep must keep what Fast finds and
+/// Fast, with no final pass, finds the strong stations.
+#[test]
+fn wspr_depths_on_the_golden() {
+    use mfsk_core::Wspr;
+    use mfsk_core::decoder::{SearchTuning, WsprExtras};
+    let Some(path) = common::corpus::golden_path("wspr/150426_0918.wav") else {
+        common::skip_or_fail("WSPR golden");
+        return;
+    };
+    let a = common::load_wav_f32_opt(&path).unwrap();
+    let run = |depth| {
+        let t = std::time::Instant::now();
+        let mut d = Decoder::<Wspr>::new(DecodeParams::for_band((1400.0, 1620.0)).depth(depth))
+            .with_extras(WsprExtras {
+                search: SearchTuning {
+                    max_candidates: Some(100),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let r = d.decode(&SlotInput::f32(&a)).rows;
+        eprintln!("{depth:?}: {} in {:?}", r.len(), t.elapsed());
+        r.into_iter().map(|r| r.decoded.text).collect::<Vec<_>>()
+    };
+    let (fast, normal, deep) = (run(Depth::Fast), run(Depth::Normal), run(Depth::Deep));
+    assert!(fast.len() >= 5, "Fast: {fast:?}");
+    assert!(
+        normal.len() >= fast.len(),
+        "Normal {normal:?} vs Fast {fast:?}"
+    );
+    eprintln!(
+        "deep extra: {:?}",
+        deep.iter()
+            .filter(|m| !normal.contains(m))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        deep.len() >= normal.len(),
+        "Deep {deep:?} vs Normal {normal:?}"
+    );
+}
