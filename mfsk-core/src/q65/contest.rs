@@ -8,7 +8,7 @@
 //! rather than from the one DX call: every `MyCall Caller Grid`,
 //! `MyCall Caller R Grid`, `RRR`, `RR73` and `73`, each with the 78th bit
 //! both clear and set. That list is what lets several callers be decoded
-//! with q3 in one period ([`super::DecodeRequest::ap_list`] with an Rx
+//! with q3 in one period (`super::DecodeRequest::ap_list` with an Rx
 //! frequency).
 //!
 //! The list is the application's to keep, as `q65_decode.f90` keeps it

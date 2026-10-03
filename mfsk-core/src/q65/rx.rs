@@ -367,7 +367,7 @@ pub struct Q65Result {
     pub copied_last_tx: bool,
     /// A-priori information carried the decode: an AP hint's locked
     /// symbols, or an AP-list (q3) template. WSJT-X's `q1`-`q3` against
-    /// `q0` (`idec`). Since #555 an [`ap_hint`](super::DecodeRequest::ap_hint)
+    /// `q0` (`idec`). Since #555 an `ap_hint`
     /// scan tries every candidate without AP first, as `q65_decode.f90`'s
     /// `ipass` loop does, so one such scan reports both kinds.
     pub ap: bool,

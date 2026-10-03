@@ -50,7 +50,7 @@ pub struct WsprResult {
     /// decode — same `10·log10(smspec) − 26.3` formula wsprd itself
     /// reports next to a spot (`wsprd.c:1093`, see
     /// [`super::coarse_baseband::BasebandCandidate::snr_db`]). Set by
-    /// [`super::DecodeRequest`], which always goes through the coarse
+    /// `super::DecodeRequest`, which always goes through the coarse
     /// search; [`super::SniperRequest`] has no coarse candidate to
     /// derive it from and leaves this `0.0`.
     pub snr_db: f32,

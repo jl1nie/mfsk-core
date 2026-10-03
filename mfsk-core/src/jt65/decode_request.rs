@@ -10,6 +10,11 @@
 //! decodes `&[f32]` PCM, where `crate::msg::decode_request` takes
 //! `&[i16]`.
 
+// Since 0.13 the wide-band request is the engine's: `crate::decoder::Decoder` is
+// the decode API and this is reached only through `internal-testing`, so
+// its builders are dead in a build without it.
+#![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+
 use alloc::vec::Vec;
 
 use crate::msg::Jt72Message;
@@ -139,7 +144,7 @@ enum RsStrategy<'a> {
 }
 
 /// Single-target JT65 decode at a known `(start_sample, base_freq_hz)`.
-/// Construct with [`DecodeRequest::sniper`] or [`SniperRequest::new`].
+/// Construct with `DecodeRequest::sniper` or [`SniperRequest::new`].
 ///
 /// Returns the message alone, as the point decodes always have; it is
 /// what `mfsk-ffi`'s `mfsk_jt65_decode_at` wraps.

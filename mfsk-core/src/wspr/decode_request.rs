@@ -22,6 +22,11 @@
 //! pieces `embedded-shared` composes its own dual-core pipeline from —
 //! pipeline stages, not a cross product of conveniences.
 
+// Since 0.13 the wide-band request is the engine's: `crate::decoder::Decoder` is
+// the decode API and this is reached only through `internal-testing`, so
+// its builders are dead in a build without it.
+#![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+
 use alloc::vec::Vec;
 
 use super::decode::{WsprCallsignTable, WsprResult};
@@ -170,7 +175,7 @@ enum Source<'a> {
 /// Single-target WSPR decode at a known `(start_sample, freq_hz)`:
 /// wsprd's refine cascade, the `minsync2` gate, then Fano and (when
 /// [`Self::confirmed`] is given) OSD. Construct with
-/// [`DecodeRequest::sniper`] for 12 kHz audio or
+/// `DecodeRequest::sniper` for 12 kHz audio or
 /// [`SniperRequest::baseband`] for a pre-decimated one.
 ///
 /// `freq_hz` is the tone-0 frequency in audio Hz — this crate's coarse

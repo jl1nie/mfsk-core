@@ -10,6 +10,11 @@
 //! per-mode type rather than `crate::msg::decode_request`: JT9 decodes
 //! `&[f32]` PCM, where the generic builder is fixed to `&[i16]`.
 
+// Since 0.13 the wide-band request is the engine's: `crate::decoder::Decoder` is
+// the decode API and this is reached only through `internal-testing`, so
+// its builders are dead in a build without it.
+#![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+
 use alloc::vec::Vec;
 
 use crate::msg::Jt72Message;
@@ -128,7 +133,7 @@ impl<'a> DecodeRequest<'a> {
 }
 
 /// Single-target JT9 decode at a known `(start_sample, base_freq_hz)`.
-/// Construct with [`DecodeRequest::sniper`] or [`SniperRequest::new`].
+/// Construct with `DecodeRequest::sniper` or [`SniperRequest::new`].
 ///
 /// This is the plain aligned demodulator plus Fano at the default cycle
 /// budget, with no sync search, AFC or SNR estimate — which is why it

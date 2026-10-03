@@ -36,11 +36,11 @@
 //! sub-mode, ~-34 dB AWGN threshold).
 //! Generic `synthesize_standard_for<P>` picks up the right NSPS / tone
 //! spacing from the type parameter. Decoding goes through the
-//! [`DecodeRequest`]/[`SniperRequest`]/[`MultiPeriodRequest`] builders
+//! `DecodeRequest`/[`SniperRequest`]/`MultiPeriodRequest` builders
 //! (issue #204 — replaces the pre-#191-style `decode_at*`/
 //! `decode_scan*`/`decode_multi_period*` suffix explosion `q65::rx`
 //! used to expose as 15 separate public functions):
-//! - [`DecodeRequest::new`] — wide-band scan; [`DecodeRequest::sniper`]
+//! - `DecodeRequest::new` — wide-band scan; `DecodeRequest::sniper`
 //!   narrows to a single known `(start_sample, base_freq_hz)`
 //!   alignment ([`SniperRequest`]).
 //! - `.ap_hint(...)` biases the QRA decoder with a known call-sign /
@@ -56,7 +56,7 @@
 //!   [`standard_qso_codewords`]) instead of belief propagation — the
 //!   mfsk-core port of `q65_decode_fullaplist`. Useful when the
 //!   application has a known callsign pair but no QSO context.
-//! - [`MultiPeriodRequest`] averages energies across multiple T/R
+//! - `MultiPeriodRequest` averages energies across multiple T/R
 //!   slots for ionoscatter / weak-EME signals that no single-period
 //!   decode can recover.
 //!
@@ -74,7 +74,11 @@
 pub mod ap_list;
 pub mod contest;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(any(feature = "internal-testing", test))]
 pub mod decode_request;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(not(any(feature = "internal-testing", test)))]
+pub(crate) mod decode_request;
 pub mod hist;
 pub mod protocol;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -91,7 +95,15 @@ pub mod tx;
 pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
 pub use contest::{Caller, Q65Callers, contest_codewords};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub use decode_request::{DecodeRequest, MultiPeriodRequest, Q65SubMode, SniperRequest};
+pub use decode_request::{Q65SubMode, SniperRequest};
+// The wide-band requests are the engine's, reached through `internal-testing`
+// since 0.13: `crate::decoder::Decoder` is the decode API.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(not(any(feature = "internal-testing", test)))]
+pub(crate) use decode_request::DecodeRequest;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(any(feature = "internal-testing", test))]
+pub use decode_request::{DecodeRequest, MultiPeriodRequest};
 pub use hist::{DxFromHistory, Q65History};
 pub use protocol::{
     Q65Fec, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,

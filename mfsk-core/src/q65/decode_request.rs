@@ -37,6 +37,11 @@
 //! `.decode()` resolves precedence as ap_list > fading > ap_hint > plain,
 //! documented on each builder's `decode()`.
 
+// Since 0.13 the wide-band request is the engine's: `crate::decoder::Decoder` is
+// the decode API and this is reached only through `internal-testing`, so
+// its builders are dead in a build without it.
+#![cfg_attr(not(any(test, feature = "internal-testing")), allow(dead_code))]
+
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
 // needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
@@ -572,7 +577,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
 }
 
 /// Single-target Q65 decode request at a known `(start_sample,
-/// base_freq_hz)` alignment. Construct with [`DecodeRequest::sniper`]
+/// base_freq_hz)` alignment. Construct with `DecodeRequest::sniper`
 /// or [`SniperRequest::new`].
 ///
 /// Replaces `q65::rx`'s `decode_at`/`decode_at_for`/
@@ -618,13 +623,13 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
         }
     }
 
-    /// See [`DecodeRequest::ap_hint`].
+    /// See `DecodeRequest::ap_hint`.
     pub fn ap_hint(mut self, hint: &'a ApHint) -> Self {
         self.ap_hint = Some(hint);
         self
     }
 
-    /// See [`DecodeRequest::pileup`].
+    /// See `DecodeRequest::pileup`.
     pub fn pileup(mut self, on: bool) -> Self {
         self.pileup = on;
         self
@@ -642,8 +647,8 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
     ///
     /// **A crate-native extension, not a 1:1 port** (issue #522):
     /// upstream has no sniper mode at all, so there is no `q65_ccf_85`/q3
-    /// counterpart to run here — unlike [`DecodeRequest::ap_list`], which
-    /// *can* reach the real q3 decode via [`DecodeRequest::rx_freq`], this
+    /// counterpart to run here — unlike `DecodeRequest::ap_list`, which
+    /// *can* reach the real q3 decode via `DecodeRequest::rx_freq`, this
     /// method always runs the crate's own template matching (AWGN metric)
     /// at the target carrier. See that method's doc comment for the
     /// upstream/crate-native split it documents.
@@ -652,27 +657,27 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
         self
     }
 
-    /// See [`DecodeRequest::fading`].
+    /// See `DecodeRequest::fading`.
     pub fn fading(mut self, model: FadingModel, b90_ts: f32) -> Self {
         self.fading = Some((model, b90_ts));
         self
     }
 
-    /// See [`DecodeRequest::on_result`] and this struct's `on_result`
+    /// See `DecodeRequest::on_result` and this struct's `on_result`
     /// field doc comment for why this fires at most once here.
     pub fn on_result(mut self, cb: &'a (dyn Fn(&Q65Result) + Sync)) -> Self {
         self.on_result = Some(cb);
         self
     }
 
-    /// See [`DecodeRequest::hash_table`].
+    /// See `DecodeRequest::hash_table`.
     pub fn hash_table(mut self, ht: Arc<CallsignHashTable>) -> Self {
         self.hash_table = Some(ht);
         self
     }
 
     /// Precedence: ap_list > fading (+ ap_hint) > ap_hint > plain — see
-    /// [`DecodeRequest::decode`].
+    /// `DecodeRequest::decode`.
     pub fn decode(&self) -> Option<Q65Result> {
         let ctx = ctx_from_hash_table(self.hash_table.as_ref());
         let result = if let Some(candidates) = self.ap_list {

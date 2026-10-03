@@ -84,7 +84,7 @@ use super::rx;
 use crate::engine::gray::gray;
 
 /// Tunable parameters for the Chase search, passed to
-/// [`super::DecodeRequest::chase`] / [`super::SniperRequest::chase`].
+/// `super::DecodeRequest::chase` / [`super::SniperRequest::chase`].
 /// Plain public fields + `Default`, matching
 /// [`super::search::SearchParams`]'s shape. Defaults are WSJT-X's own
 /// literal constants (see module doc) — this is a faithful port, not

@@ -52,7 +52,11 @@ pub mod baseband;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(any(feature = "internal-testing", test))]
 pub mod decode_request;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(not(any(feature = "internal-testing", test)))]
+pub(crate) mod decode_request;
 pub mod interleave;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
@@ -68,7 +72,15 @@ pub mod tx;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode::Jt9Depth;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub use decode_request::{DecodeRequest, SniperRequest};
+pub use decode_request::SniperRequest;
+// The wide-band request is the engine's, reached through `internal-testing`
+// since 0.13: `crate::decoder::Decoder` is the decode API.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(any(feature = "internal-testing", test))]
+pub use decode_request::DecodeRequest;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(not(any(feature = "internal-testing", test)))]
+pub(crate) use decode_request::DecodeRequest;
 pub use interleave::{deinterleave, deinterleave_llrs, interleave};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use rx::demodulate_aligned;

@@ -59,7 +59,7 @@
 //! ## Stochastic Chase decode
 //!
 //! For signals still too weak for [`SniperRequest::erasures`]'s single
-//! deterministic ordering, [`DecodeRequest::chase`] /
+//! deterministic ordering, `DecodeRequest::chase` /
 //! [`SniperRequest::chase`] is a
 //! faithful port of WSJT-X's `ftrsdap` stochastic Chase decoder
 //! ([issue #169](https://github.com/jl1nie/mfsk-core/issues/169)) —
@@ -109,7 +109,11 @@ use crate::msg::Jt72Codec;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod chase;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(any(feature = "internal-testing", test))]
 pub mod decode_request;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(not(any(feature = "internal-testing", test)))]
+pub(crate) mod decode_request;
 pub mod interleave;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
@@ -123,7 +127,15 @@ pub mod tx;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use chase::ChaseParams;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub use decode_request::{DecodeRequest, SniperRequest};
+pub use decode_request::SniperRequest;
+// The wide-band request is the engine's, reached through `internal-testing`
+// since 0.13: `crate::decoder::Decoder` is the decode API.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(any(feature = "internal-testing", test))]
+pub use decode_request::DecodeRequest;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(not(any(feature = "internal-testing", test)))]
+pub(crate) use decode_request::DecodeRequest;
 pub use interleave::{deinterleave, interleave};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use rx::{Jt65Demod, demodulate_aligned};
@@ -250,7 +262,7 @@ pub struct Jt65Result {
     /// authoritative.
     pub start_sample: usize,
     /// Frame start in seconds from the nominal start
-    /// ([`DecodeRequest::nominal_start`]) — the signed form of
+    /// (`DecodeRequest::nominal_start`) — the signed form of
     /// [`Self::start_sample`], and the only field that can express a
     /// frame beginning *before* the buffer (issue #283), where
     /// `start_sample` saturates at 0. Comparable directly with a
