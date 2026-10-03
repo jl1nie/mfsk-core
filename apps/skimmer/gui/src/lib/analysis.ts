@@ -44,8 +44,14 @@ const utc = (s: string) => {
   const t = Date.parse(`${s}:00Z`);
   return Number.isFinite(t) ? Math.floor(t / 1000) : null;
 };
-const num = (s: string) => {
-  const v = s.trim() === '' ? NaN : Number(s);
+/** A number typed in a box; full-width digits and minus signs from a Japanese IME are read too. */
+const num = (s: string | number | null) => {
+  if (s === null || s === undefined) return null;
+  const t = String(s)
+    .replace(/[０-９．]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[－ー−‐]/g, '-')
+    .trim();
+  const v = t === '' ? NaN : Number(t);
   return Number.isFinite(v) ? v : null;
 };
 export const toLocalInput = (utcS: number) => new Date(utcS * 1000).toISOString().slice(0, 16);

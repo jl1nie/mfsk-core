@@ -78,13 +78,13 @@
         <label>To <input type="datetime-local" value={form.to} onchange={(e) => { form.to = e.currentTarget.value; onapply(); }} /></label>
       {/if}
       <label title="Regular expression, case-insensitive; ^JA matches calls starting JA, ^(JA|JH)\d, W[0-9]X">
-        Call (regex) <input bind:value={form.call} placeholder="^JA" spellcheck="false" />
+        Call (regex) <input value={form.call} onchange={(e) => { form.call = e.currentTarget.value; onapply(); }} placeholder="^JA" spellcheck="false" />
       </label>
       <label title="Regular expression on the locator: ^PM95, ^(PM|QM), ^[A-R][A-R]0">
-        Grid (regex) <input bind:value={form.grid} placeholder="^PM" spellcheck="false" />
+        Grid (regex) <input value={form.grid} onchange={(e) => { form.grid = e.currentTarget.value; onapply(); }} placeholder="^PM" spellcheck="false" />
       </label>
       <label title="Regular expression on the message text">
-        Text (regex) <input bind:value={form.text} placeholder="POTA" spellcheck="false" />
+        Text (regex) <input value={form.text} onchange={(e) => { form.text = e.currentTarget.value; onapply(); }} placeholder="POTA" spellcheck="false" />
       </label>
       <label>
         CQ
@@ -98,12 +98,12 @@
           <option value="TEST">CQ TEST</option>
         </select>
       </label>
-      <label>SNR dB <span class="range"><input class="n" bind:value={form.snrMin} placeholder="min" /> – <input class="n" bind:value={form.snrMax} placeholder="max" /></span></label>
+      <label>SNR dB <span class="range"><input class="n" value={form.snrMin} onchange={(e) => { form.snrMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" value={form.snrMax} onchange={(e) => { form.snrMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span></label>
       <label title="Great-circle distance from your grid (Settings > Station)">
-        Distance km <span class="range"><input class="n" bind:value={form.kmMin} placeholder="min" /> – <input class="n" bind:value={form.kmMax} placeholder="max" /></span>
+        Distance km <span class="range"><input class="n" value={form.kmMin} onchange={(e) => { form.kmMin = e.currentTarget.value; onapply(); }} placeholder="min" /> – <input class="n" value={form.kmMax} onchange={(e) => { form.kmMax = e.currentTarget.value; onapply(); }} placeholder="max" /></span>
       </label>
       <label title="Bearing from your grid, degrees clockwise from north. From greater than to wraps through north: 315 to 45 is the northern quarter.">
-        Bearing ° <span class="range"><input class="n" bind:value={form.bearingFrom} placeholder="from" /> – <input class="n" bind:value={form.bearingTo} placeholder="to" /></span>
+        Bearing ° <span class="range"><input class="n" value={form.bearingFrom} onchange={(e) => { form.bearingFrom = e.currentTarget.value; onapply(); }} placeholder="from" /> – <input class="n" value={form.bearingTo} onchange={(e) => { form.bearingTo = e.currentTarget.value; onapply(); }} placeholder="to" /></span>
       </label>
     </div>
     <div class="chips">

@@ -713,6 +713,8 @@ mod tests {
         assert_eq!(on(&|x| x.modes = vec!["FT8*".into()]), 4);
         assert_eq!(r.bands().unwrap().len(), 2);
         assert_eq!(on(&|x| x.snr_min = Some(-11)), 2);
+        assert_eq!(on(&|x| x.snr_max = Some(-12)), 2);
+        assert_eq!(on(&|x| (x.snr_min, x.snr_max) = (Some(-12), Some(-10))), 2);
         // CQ kinds.
         assert_eq!(on(&|x| x.cq = Some("*".into())), 3);
         assert_eq!(on(&|x| x.cq = Some("DX".into())), 1);
