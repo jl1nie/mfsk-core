@@ -48,7 +48,7 @@ public struct Message: Sendable, Equatable {
     /// the standard one.
     ///
     /// The hashed half decodes as `<...>` unless the receiving session
-    /// has seen that callsign — see ``DecodeSession/addCallsign(_:)``.
+    /// has seen that callsign — see ``Decoder/addCallsign(_:)``.
     public static func type4(
         nonStandardCall: String,
         standardCall: String,
@@ -60,16 +60,20 @@ public struct Message: Sendable, Equatable {
 
     /// Render as text.
     ///
-    /// Pass the session whose table should resolve hashed `<...>`
+    /// Pass the decoder whose table should resolve hashed `<...>`
     /// callsigns; without one they stay unresolved, which changes only
     /// how the text renders.
-    public func text(resolvedBy session: DecodeSession? = nil) throws -> String {
+    public func text(resolvedBy decoder: Decoder? = nil) throws -> String {
         var out = [CChar](repeating: 0, count: Int(MFSK_DECODE_TEXT_LEN))
         var written: UInt = 0
         let status = bits.withUnsafeBufferPointer { packed in
-            out.withUnsafeMutableBufferPointer { buffer in
-                mfsk_unpack77(session?.handle, packed.baseAddress,
-                              buffer.baseAddress, UInt(buffer.count), &written)
+            out.withUnsafeMutableBufferPointer { (buffer) -> MfskStatus in
+                if let decoder {
+                    return mfsk_decoder_unpack77(decoder.handle, packed.baseAddress,
+                                                 buffer.baseAddress, UInt(buffer.count), &written)
+                }
+                return mfsk_unpack77(packed.baseAddress, buffer.baseAddress,
+                                     UInt(buffer.count), &written)
             }
         }
         try check(status)
@@ -149,7 +153,7 @@ extension Mode {
     }
 
     /// All three stages: a message, placed in a full slot at this mode's
-    /// own TX offset, ready to hand to ``DecodeSession`` or to a sound
+    /// own TX offset, ready to hand to ``Decoder`` or to a sound
     /// card.
     ///
     /// The offset is ``ModeInfo/txStartOffsetSeconds`` — 0.5 s for FT8,

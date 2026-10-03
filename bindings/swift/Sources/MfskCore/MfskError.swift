@@ -56,8 +56,8 @@ public struct MfskError: Error, CustomStringConvertible, Sendable {
 ///
 /// Thread-local is the trap: a Swift `async` caller that hops executors
 /// between the failing call and this one reads nil. Prefer
-/// ``DecodeSession/lastError`` wherever a session is in hand — that one
-/// lives on the handle, which is why `mfsk_session_last_error` exists.
+/// ``Decoder/lastError`` wherever a decoder is in hand — that one lives on
+/// the handle, which is why `mfsk_decoder_last_error` exists.
 @inline(__always)
 func globalLastError() -> String? {
     guard let p = mfsk_last_error() else { return nil }
@@ -95,5 +95,14 @@ func setCArray<T>(_ destination: inout T, to value: String) -> Bool {
         let n = min(bytes.count, room)
         for i in 0..<n { raw[i] = bytes[i] }
         return n == bytes.count
+    }
+}
+
+/// ``setCArray(_:to:)``, but a value that does not fit is an error rather
+/// than a silent truncation: a callsign cut short is a different callsign.
+func setCArrayChecked<T>(_ destination: inout T, to value: String, field: String) throws {
+    guard setCArray(&destination, to: value) else {
+        throw MfskError(status: MFSK_STATUS_INVALID_ARG,
+                        detail: "\(field) '\(value)' does not fit the ABI's inline field")
     }
 }

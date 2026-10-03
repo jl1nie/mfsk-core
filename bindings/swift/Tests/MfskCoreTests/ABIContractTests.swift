@@ -98,17 +98,77 @@ final class ABIContractTests: XCTestCase {
         XCTAssertEqual(Int(MFSK_DECODE_TEXT_LEN), 64)
     }
 
+    func testParameterEnumsMatchTheHeader() {
+        // The raw values `DecodeParams` and `Extras` send across, against the
+        // header's own macros. A drift here would be a depth or a contest
+        // silently read as another.
+        XCTAssertEqual(Int32(DecodeParams.Depth.fast.rawValue), MFSK_DEPTH_FAST)
+        XCTAssertEqual(Int32(DecodeParams.Depth.normal.rawValue), MFSK_DEPTH_NORMAL)
+        XCTAssertEqual(Int32(DecodeParams.Depth.deep.rawValue), MFSK_DEPTH_DEEP)
+
+        XCTAssertEqual(Int32(DecodeParams.AP.off.rawValue), MFSK_AP_OFF)
+        XCTAssertEqual(Int32(DecodeParams.AP.cqOnly.rawValue), MFSK_AP_CQ_ONLY)
+        XCTAssertEqual(Int32(DecodeParams.AP.full.rawValue), MFSK_AP_FULL)
+
+        let contests: [(DecodeParams.Contest, Int32)] = [
+            (.none, MFSK_CONTEST_NONE), (.gridExchange, MFSK_CONTEST_GRID_EXCHANGE),
+            (.euVHF, MFSK_CONTEST_EU_VHF), (.fieldDay, MFSK_CONTEST_FIELD_DAY),
+            (.rttyRoundUp, MFSK_CONTEST_RTTY_ROUNDUP), (.fox, MFSK_CONTEST_FOX),
+            (.hound, MFSK_CONTEST_HOUND),
+        ]
+        for (swift, c) in contests { XCTAssertEqual(Int32(swift.rawValue), c, "\(swift)") }
+
+        let progress: [(DecodeParams.QSOProgress, Int32)] = [
+            (.calling, MFSK_QSO_CALLING), (.replying, MFSK_QSO_REPLYING),
+            (.report, MFSK_QSO_REPORT), (.rogerReport, MFSK_QSO_ROGER_REPORT),
+            (.rogers, MFSK_QSO_ROGERS), (.signoff, MFSK_QSO_SIGNOFF),
+        ]
+        for (swift, c) in progress { XCTAssertEqual(Int32(swift.rawValue), c, "\(swift)") }
+
+        XCTAssertEqual(MFSK_STRATEGY_DEFAULT, 0)
+        XCTAssertEqual(MFSK_STRATEGY_SINGLE_PASS, 1)
+        XCTAssertEqual(MFSK_STRATEGY_SIC_ROUNDS, 2)
+        XCTAssertEqual(MFSK_STRATEGY_SIC_EARLY, 3)
+    }
+
+    func testStreamAndIQConstantsMatchTheHeader() {
+        XCTAssertEqual(Int32(ClockChange.first.rawValue), MFSK_CLOCK_FIRST)
+        XCTAssertEqual(Int32(ClockChange.slewed.rawValue), MFSK_CLOCK_SLEWED)
+        XCTAssertEqual(Int32(ClockChange.stepped.rawValue), MFSK_CLOCK_STEPPED)
+
+        XCTAssertEqual(Int32(IQFormat.cf32.rawValue), MFSK_IQ_FORMAT_CF32)
+        XCTAssertEqual(Int32(IQFormat.cs16.rawValue), MFSK_IQ_FORMAT_CS16)
+        XCTAssertEqual(Int32(IQFormat.cs8.rawValue), MFSK_IQ_FORMAT_CS8)
+        XCTAssertEqual(Int32(IQFormat.cu8.rawValue), MFSK_IQ_FORMAT_CU8)
+        XCTAssertEqual(Int32(IQFormat.cs24.rawValue), MFSK_IQ_FORMAT_CS24)
+
+        XCTAssertEqual(Int32(IQChannelizer.direct.rawValue), MFSK_IQ_CHANNELIZER_DIRECT)
+        XCTAssertEqual(Int32(IQChannelizer.pfb.rawValue), MFSK_IQ_CHANNELIZER_PFB)
+
+        XCTAssertEqual(IQChannelState.active.rawValue, MFSK_IQ_CHANNEL_ACTIVE)
+        XCTAssertEqual(IQChannelState.paused.rawValue, MFSK_IQ_CHANNEL_PAUSED)
+    }
+
+    func testTheInlineFieldCapacitiesAreWhatTheBindingAssumes() {
+        // `setCArrayChecked` reads each capacity off the field itself, so
+        // these are not restated anywhere; this pins the ones the docs quote
+        // ("15 characters of call, 7 of grid").
+        XCTAssertEqual(MFSK_AP_FIELD_LEN, 16)
+        XCTAssertEqual(MemoryLayout.size(ofValue: MfskParams().mycall), 16)
+        XCTAssertEqual(MemoryLayout.size(ofValue: MfskParams().mygrid), 8)
+        XCTAssertEqual(MemoryLayout.size(ofValue: MfskExtras().ap_call1), Int(MFSK_AP_FIELD_LEN))
+    }
+
     func testSizeVersionedStructsAreWhatTheLibraryExpects() throws {
-        // Each of these is passed with `size = sizeof(...)`; if the
-        // header and the linked library ever disagreed, the library
-        // would write only the prefix the caller declared. Nothing here
-        // can detect that — but a mode's defaults coming back usable
-        // proves the round trip works at the size this binding sends.
+        // Each of these is passed with `size = sizeof(...)`; if the header
+        // and the linked library ever disagreed, the library would write
+        // only the prefix the caller declared. Nothing here can detect that
+        // — but a mode's defaults coming back usable proves the round trip
+        // works at the size this binding sends.
         let params = try DecodeParams(mode: .ft8)
-        XCTAssertGreaterThan(params.maxCandidates, 0)
-        XCTAssertGreaterThan(params.frequencyRangeHz.upperBound, params.frequencyRangeHz.lowerBound)
-        XCTAssertNil(params.frequencyHintHz, "the ABI's 'unset' hint is NaN, which must arrive as nil")
-        XCTAssertNil(params.transmitFrequencyHz, "an unset transmit frequency is NaN in C, nil here")
-        XCTAssertNil(params.noiseBlanker, "the blanker is off by default, as WSJT-X's NB 0 %")
+        XCTAssertGreaterThan(params.bandHz.upperBound, params.bandHz.lowerBound)
+        XCTAssertNil(params.rxFrequencyHz, "the ABI's 'unset' Rx frequency is NaN, which must arrive as nil")
+        XCTAssertNil(params.toleranceHz)
+        XCTAssertNil(params.txFrequencyHz, "an unset transmit frequency is NaN in C, nil here")
     }
 }

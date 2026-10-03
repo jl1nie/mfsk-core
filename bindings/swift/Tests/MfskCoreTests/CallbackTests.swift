@@ -1,31 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// `DecodeSession.onDecode` — rows delivered as they are found, on top
+// `Decoder.onDecode` — rows delivered as they are found, on top
 // of the array the call returns. The handler can fire from a rayon
 // worker on a `desktop` build, so everything these tests collect goes
 // through a lock.
 
 import XCTest
 @testable import MfskCore
-
-/// A thread-safe sink, because the contract this is testing explicitly
-/// allows concurrent delivery.
-private final class Collected {
-    private let lock = NSLock()
-    private var rows: [Decode] = []
-
-    func append(_ row: Decode) {
-        lock.lock()
-        defer { lock.unlock() }
-        rows.append(row)
-    }
-
-    var snapshot: [Decode] {
-        lock.lock()
-        defer { lock.unlock() }
-        return rows
-    }
-}
 
 final class CallbackTests: XCTestCase {
     private func ft8Slot(frequencyHz: Float = 1500) throws -> [Int16] {
@@ -37,10 +18,10 @@ final class CallbackTests: XCTestCase {
     func testTheHandlerSeesWhatTheReturnedArrayHolds() throws {
         let slot = try ft8Slot()
         let collected = Collected()
-        let session = try DecodeSession(mode: .ft8)
-        try session.onDecode { collected.append($0) }
+        let decoder = try Decoder(mode: .ft8)
+        try decoder.onDecode { collected.append($0) }
 
-        let returned = try session.decode(slot)
+        let returned = try decoder.decode(slot)
         XCTAssertTrue(returned.contains { $0.text.contains("JA1ABC") })
 
         // The array is the authoritative set; the callback is the same
@@ -54,44 +35,44 @@ final class CallbackTests: XCTestCase {
     }
 
     func testTheHandlerSurvivesTheCallThatSetIt() throws {
-        // The box lives on the session, not on the stack frame that
+        // The box lives on the decoder, not on the stack frame that
         // installed it — an easy thing to get wrong, and it would
         // present as a crash inside the decode rather than at the call
         // that set the handler.
         let slot = try ft8Slot()
-        let session = try DecodeSession(mode: .ft8)
+        let decoder = try Decoder(mode: .ft8)
         let collected = Collected()
         try autoreleasepool {
             let sink = collected           // captured, then this scope ends
-            try session.onDecode { sink.append($0) }
+            try decoder.onDecode { sink.append($0) }
         }
-        _ = try session.decode(slot)
+        _ = try decoder.decode(slot)
         XCTAssertFalse(collected.snapshot.isEmpty)
     }
 
     func testAHandlerAppliesToEverySubsequentDecode() throws {
         let slot = try ft8Slot()
         let collected = Collected()
-        let session = try DecodeSession(mode: .ft8)
-        try session.onDecode { collected.append($0) }
-        _ = try session.decode(slot)
+        let decoder = try Decoder(mode: .ft8)
+        try decoder.onDecode { collected.append($0) }
+        _ = try decoder.decode(slot)
         let afterFirst = collected.snapshot.count
-        _ = try session.decode(slot)
+        _ = try decoder.decode(slot)
         XCTAssertEqual(collected.snapshot.count, afterFirst * 2,
-                       "the handler is set on the session, not on one call")
+                       "the handler is set on the decoder, not on one call")
     }
 
     func testNilStopsDelivery() throws {
         let slot = try ft8Slot()
         let collected = Collected()
-        let session = try DecodeSession(mode: .ft8)
-        try session.onDecode { collected.append($0) }
-        _ = try session.decode(slot)
+        let decoder = try Decoder(mode: .ft8)
+        try decoder.onDecode { collected.append($0) }
+        _ = try decoder.decode(slot)
         let before = collected.snapshot.count
         XCTAssertGreaterThan(before, 0)
 
-        try session.onDecode(nil)
-        let returned = try session.decode(slot)
+        try decoder.onDecode(nil)
+        let returned = try decoder.decode(slot)
         XCTAssertEqual(collected.snapshot.count, before, "nil should stop delivery")
         XCTAssertFalse(returned.isEmpty, "and must not stop decoding")
     }
@@ -100,14 +81,32 @@ final class CallbackTests: XCTestCase {
         let slot = try ft8Slot()
         let first = Collected()
         let second = Collected()
-        let session = try DecodeSession(mode: .ft8)
-        try session.onDecode { first.append($0) }
-        _ = try session.decode(slot)
-        try session.onDecode { second.append($0) }
-        _ = try session.decode(slot)
+        let decoder = try Decoder(mode: .ft8)
+        try decoder.onDecode { first.append($0) }
+        _ = try decoder.decode(slot)
+        try decoder.onDecode { second.append($0) }
+        _ = try decoder.decode(slot)
 
         XCTAssertEqual(first.snapshot.count, second.snapshot.count,
                        "the first handler should have stopped where the second began")
+    }
+
+    func testAHandlerPassedToOneCallIsForThatCallOnly() throws {
+        let slot = try ft8Slot()
+        let persistent = Collected()
+        let once = Collected()
+        let decoder = try Decoder(mode: .ft8)
+        try decoder.onDecode { persistent.append($0) }
+
+        let returned = try decoder.decode(slot, handler: { once.append($0) })
+        XCTAssertEqual(once.snapshot.count, returned.count,
+                       "the per-call handler saw what the array holds")
+        XCTAssertEqual(persistent.snapshot.count, 0,
+                       "while it was in place it stood in for the persistent one")
+
+        _ = try decoder.decode(slot)
+        XCTAssertEqual(once.snapshot.count, returned.count, "and it did not outlive the call")
+        XCTAssertGreaterThan(persistent.snapshot.count, 0, "the persistent handler came back")
     }
 
     func testTheRowIsCopiedOutOfTheCallbackWindow() throws {
@@ -116,9 +115,9 @@ final class CallbackTests: XCTestCase {
         // which lives in a fixed-size array inside the row.
         let slot = try ft8Slot(frequencyHz: 1650)
         let collected = Collected()
-        let session = try DecodeSession(mode: .ft8)
-        try session.onDecode { collected.append($0) }
-        _ = try session.decode(slot)
+        let decoder = try Decoder(mode: .ft8)
+        try decoder.onDecode { collected.append($0) }
+        _ = try decoder.decode(slot)
 
         let kept = collected.snapshot
         XCTAssertFalse(kept.isEmpty)

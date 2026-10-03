@@ -6,7 +6,7 @@ import XCTest
 final class RuntimeTests: XCTestCase {
     func testVersionsAreReported() {
         XCTAssertGreaterThan(Runtime.libraryVersion, Runtime.Version(major: 0, minor: 0, patch: 0))
-        XCTAssertGreaterThanOrEqual(Runtime.abiVersion, 2)
+        XCTAssertGreaterThanOrEqual(Runtime.abiVersion, 3, "the one-decoder-handle surface is ABI 3")
     }
 
     func testThreadCountIsAtLeastOne() {

@@ -17,11 +17,11 @@ final class MessageTests: XCTestCase {
         XCTAssertTrue(try message.text().contains("HELLO WORLD"))
     }
 
-    func testAHashedCallsignResolvesOnlyOnceTheSessionKnowsIt() throws {
+    func testAHashedCallsignResolvesOnlyOnceTheDecoderKnowsIt() throws {
         guard (try? Mode.ft8.info) != nil else { throw XCTSkip("no FT8 in this build") }
         // Type 4 carries one non-standard call in full and a *hash* of
         // the standard one, so the text depends on what the receiving
-        // session has been taught.
+        // decoder has been taught.
         // The report is empty on purpose: type 4 spends its payload on
         // the non-standard call in full plus the hash, and
         // `mfsk_pack77_type4` refuses a signal report on top of that
@@ -31,9 +31,9 @@ final class MessageTests: XCTestCase {
         let unresolved = try message.text()
         XCTAssertTrue(unresolved.contains("<...>"), "got '\(unresolved)'")
 
-        let session = try DecodeSession(mode: .ft8)
-        try session.addCallsign("JL1NIE")
-        XCTAssertTrue(try message.text(resolvedBy: session).contains("JL1NIE"))
+        let decoder = try Decoder(mode: .ft8)
+        try decoder.addCallsign("JL1NIE")
+        XCTAssertTrue(try message.text(resolvedBy: decoder).contains("JL1NIE"))
     }
 
     func testAnInvalidCallsignFailsToPack() {

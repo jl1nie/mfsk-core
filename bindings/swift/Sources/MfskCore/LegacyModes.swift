@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// WSPR, JT9 and JT65: the modes without ``Capabilities/decodeHandle``.
-// They are not lesser, they are shaped differently — no candidate
-// search to parameterise, and a message codec that synthesises in one
-// step rather than through a tone stage. So they get their own small
-// namespaces rather than being forced through ``DecodeSession``, which
-// is the same call the C surface makes.
+// WSPR, JT9 and JT65: the transmit side. Their message codecs synthesise in
+// one step rather than through a tone stage, so each has an `encode` of its
+// own. They *decode* through ``Decoder`` like every other slot mode
+// (`Decoder(mode: .wspr)`), a 120 s, 60 s and 60 s period respectively.
 
 import CMfsk
 
@@ -23,15 +21,6 @@ public enum WSPR {
             mfsk_encode_wspr(call, grid, powerDBM, frequencyHz, out, capacity, written)
         }
     }
-
-    /// Scan a 120 s slot.
-    public static func decode(_ samples: [Int16], sampleRate: UInt32 = 12_000) throws -> [Decode] {
-        try samples.withUnsafeBufferPointer { audio in
-            try collectRows { out, capacity, found in
-                mfsk_wspr_decode(audio.baseAddress, UInt(audio.count), sampleRate, out, capacity, found)
-            }
-        }
-    }
 }
 
 /// JT9 — 60 s slot, 9-FSK.
@@ -46,22 +35,6 @@ public enum JT9 {
             mfsk_encode_jt9(call1, call2, gridOrReport, frequencyHz, out, capacity, written)
         }
     }
-
-    /// Decode a slot at a known audio frequency. JT9's sub-band is
-    /// narrow and the decoder is told where to look rather than
-    /// searching — which is why `frequencyHz` has no default here.
-    public static func decode(
-        _ samples: [Int16],
-        frequencyHz: Float,
-        sampleRate: UInt32 = 12_000
-    ) throws -> [Decode] {
-        try samples.withUnsafeBufferPointer { audio in
-            try collectRows { out, capacity, found in
-                mfsk_jt9_decode_at(audio.baseAddress, UInt(audio.count), sampleRate,
-                                   frequencyHz, out, capacity, found)
-            }
-        }
-    }
 }
 
 /// JT65 — 60 s slot, 65-FSK, Reed-Solomon(63,12).
@@ -74,20 +47,6 @@ public enum JT65 {
     ) throws -> [Float] {
         try encodeAudio { out, capacity, written in
             mfsk_encode_jt65(call1, call2, gridOrReport, frequencyHz, out, capacity, written)
-        }
-    }
-
-    /// Decode a slot at a known audio frequency; see ``JT9/decode(_:frequencyHz:sampleRate:)``.
-    public static func decode(
-        _ samples: [Int16],
-        frequencyHz: Float,
-        sampleRate: UInt32 = 12_000
-    ) throws -> [Decode] {
-        try samples.withUnsafeBufferPointer { audio in
-            try collectRows { out, capacity, found in
-                mfsk_jt65_decode_at(audio.baseAddress, UInt(audio.count), sampleRate,
-                                    frequencyHz, out, capacity, found)
-            }
         }
     }
 }
@@ -116,8 +75,7 @@ func encodeAudio(
 
 extension Array where Element == Float {
     /// Nominal `-1.0...1.0` float PCM as 16-bit, which is what the
-    /// `mfsk_encode_*` family produces and what ``WSPR/decode(_:sampleRate:)``
-    /// and friends take. Clamped, not wrapped: a sample at ±1.0 is
+    /// `mfsk_encode_*` family produces and what ``Decoder`` takes. Clamped, not wrapped: a sample at ±1.0 is
     /// full-scale, and anything past it is the caller's gain problem,
     /// not a sign flip in the middle of a transmission.
     public func asPCM16(scale: Float = 32767) -> [Int16] {

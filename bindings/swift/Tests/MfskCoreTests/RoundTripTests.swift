@@ -17,182 +17,176 @@ final class RoundTripTests: XCTestCase {
         try XCTUnwrap(try? mode.info, "this build has no \(mode.name); nothing to test")
     }
 
-    func testFT8SlotRoundTrips() throws {
+    private func ft8Slot() throws -> [Int16] {
         _ = try requireSupported(.ft8)
-        let slot = try Mode.ft8.synthesiseSlot(call1: call1, call2: call2, report: grid,
-                                               frequencyHz: 1500)
-        let session = try DecodeSession(mode: .ft8)
-        let rows = try session.decode(slot)
+        return try Mode.ft8.synthesiseSlot(call1: call1, call2: call2, report: grid, frequencyHz: 1500)
+    }
+
+    func testFT8SlotRoundTrips() throws {
+        let slot = try ft8Slot()
+        let decoder = try Decoder(mode: .ft8)
+        let rows = try decoder.decode(slot)
         XCTAssertTrue(rows.contains { $0.text.contains(call2) },
                       "expected \(call2) in \(rows.map(\.text))")
         for row in rows {
             XCTAssertEqual(row.mode, .ft8)
             XCTAssertEqual(row.frequencyHz, 1500, accuracy: 5)
         }
+        XCTAssertEqual(rows.first?.informationBitCount, 91)
     }
 
     func testFT4SlotRoundTrips() throws {
         _ = try requireSupported(.ft4)
         let slot = try Mode.ft4.synthesiseSlot(call1: call1, call2: call2, report: grid,
                                                frequencyHz: 1500)
-        let session = try DecodeSession(mode: .ft4)
-        XCTAssertTrue(try session.decode(slot).contains { $0.text.contains(call2) })
+        let decoder = try Decoder(mode: .ft4)
+        XCTAssertTrue(try decoder.decode(slot).contains { $0.text.contains(call2) })
     }
 
     func testFloatAndIntegerPathsAgree() throws {
-        _ = try requireSupported(.ft8)
-        let slot = try Mode.ft8.synthesiseSlot(call1: call1, call2: call2, report: grid,
-                                               frequencyHz: 1500)
+        let slot = try ft8Slot()
         let floats = slot.map { Float($0) / 32768.0 }
-        let session = try DecodeSession(mode: .ft8)
-        let fromInts = try session.decode(slot).map(\.text).sorted()
-        let fromFloats = try session.decode(floats).map(\.text).sorted()
+        let decoder = try Decoder(mode: .ft8)
+        let fromInts = try decoder.decode(slot).map(\.text).sorted()
+        let fromFloats = try decoder.decode(floats).map(\.text).sorted()
         XCTAssertEqual(fromInts, fromFloats,
                        "the f32 entry point is not a lossier wrapper; it should find the same rows")
     }
 
+    func testFloatAudioReachesTheEnginesAtAnyLevel() throws {
+        // A quiet float buffer, as a radio adapter at a low volume gives.
+        let quiet = try ft8Slot().map { Float($0) / 32768.0 * 0.002 }
+        let decoder = try Decoder(mode: .ft8)
+        XCTAssertTrue(try decoder.decode(quiet).contains { $0.text.contains(call2) })
+    }
+
     func testAFrequencyBandThatExcludesTheSignalFindsNothing() throws {
-        _ = try requireSupported(.ft8)
-        let slot = try Mode.ft8.synthesiseSlot(call1: call1, call2: call2, report: grid,
-                                               frequencyHz: 1500)
+        let slot = try ft8Slot()
         var params = try DecodeParams(mode: .ft8)
-        params.frequencyRangeHz = 2500...2900
-        let session = try DecodeSession(mode: .ft8)
-        let rows = try session.decode(slot, params: params)
-        XCTAssertFalse(rows.contains { $0.text.contains(call2) },
+        params.bandHz = 2500...2900
+        let decoder = try Decoder(mode: .ft8, params: params)
+        XCTAssertFalse(try decoder.decode(slot).contains { $0.text.contains(call2) },
                        "a 2500-2900 Hz search still found a 1500 Hz signal")
+    }
+
+    func testParametersChangeBetweenPeriods() throws {
+        let slot = try ft8Slot()
+        let decoder = try Decoder(mode: .ft8)
+        var params = try DecodeParams(mode: .ft8)
+        params.bandHz = 2500...2900
+        try decoder.setParams(params)
+        XCTAssertFalse(try decoder.decode(slot).contains { $0.text.contains(call2) })
+        try decoder.setParams(try DecodeParams(mode: .ft8))
+        XCTAssertTrue(try decoder.decode(slot).contains { $0.text.contains(call2) })
     }
 
     func testAnAPHintIsAcceptedWhereTheModeAdvertisesOne() throws {
         _ = try requireSupported(.ft8)
         XCTAssertTrue(Mode.ft8.capabilities.contains(.apWideband))
-        let slot = try Mode.ft8.synthesiseSlot(call1: call1, call2: call2, report: grid,
-                                               frequencyHz: 1500)
-        var params = try DecodeParams(mode: .ft8)
+        let slot = try ft8Slot()
         // Message-field order — `CQ JA1ABC PM95` means call1 is "CQ".
-        // FT8's AP is one rung of a ladder, so this decodes either way
-        // on a clean signal; Q65's does not, which is where the order
-        // is pinned.
-        params.apHint = DecodeParams.APHint(call1: call1, call2: call2, grid: grid)
-        params.frequencyHintHz = 1500
-        let session = try DecodeSession(mode: .ft8)
-        XCTAssertTrue(try session.decode(slot, params: params).contains { $0.text.contains(call2) })
+        // AP is one rung of FT8's ladder, so this decodes either way on a
+        // clean signal.
+        var extras = Extras()
+        extras.apHint = Extras.APHint(call1: call1, call2: call2, grid: grid)
+        var params = try DecodeParams(mode: .ft8)
+        params.rxFrequencyHz = 1500
+        let decoder = try Decoder(mode: .ft8, params: params, extras: extras)
+        XCTAssertTrue(try decoder.decode(slot).contains { $0.text.contains(call2) })
     }
 
-    func testAParameterTheModeCannotHonourFailsAtOpen() throws {
-        // "A parameter the mode does not support is an error here, not a
-        // field silently dropped at decode time" — so pick a mode
-        // without the capability and check it actually refuses.
-        guard let victim = Mode.supported.first(where: {
-            $0.capabilities.contains(.decodeHandle) && !$0.capabilities.contains(.sicEarly)
-        }) else {
-            throw XCTSkip("no handle-driven mode in this build lacks sicEarly")
+    func testAnOptionTheModeCannotHonourFailsAtOpenAsUnsupported() throws {
+        // `decoder_ffi.rs`'s `an_option_the_mode_lacks_is_unsupported`:
+        // FST4 has no subtraction, FT4 no a7, WSPR no AP, FT8 no blanker.
+        func code(_ mode: Mode, _ build: (inout Extras) -> Void) throws -> MfskError.Code? {
+            guard mode.isSupported else { throw XCTSkip("no \(mode.name) in this build") }
+            var extras = Extras()
+            build(&extras)
+            do {
+                _ = try Decoder(mode: mode, extras: extras)
+                return nil
+            } catch let error as MfskError {
+                XCTAssertFalse(error.detail.isEmpty, "the refusal should say why")
+                return error.code
+            }
         }
-        var params = try DecodeParams(mode: victim)
-        params.sicEarly = true
-        XCTAssertThrowsError(try DecodeSession(mode: victim, params: params)) { error in
-            guard let error = error as? MfskError else { return XCTFail("wrong error type") }
-            XCTAssertFalse(error.detail.isEmpty, "the refusal should say why")
+        XCTAssertNil(try code(.ft8) { $0.strategy = .sicRounds(2) })
+        XCTAssertEqual(try code(.fst4s60) { $0.strategy = .sicRounds(2) }, .unsupported)
+        XCTAssertEqual(try code(.wspr) { $0.strategy = .sicRounds(2) }, .unsupported)
+
+        XCTAssertNil(try code(.ft8) { $0.a7 = true })
+        XCTAssertEqual(try code(.ft4) { $0.a7 = true }, .unsupported)
+
+        XCTAssertNil(try code(.ft8) { $0.apHint = Extras.APHint(call1: "CQ") })
+        XCTAssertEqual(try code(.wspr) { $0.apHint = Extras.APHint(call1: "CQ") }, .unsupported)
+        XCTAssertEqual(try code(.jt9) { $0.apHint = Extras.APHint(call1: "CQ") }, .unsupported)
+
+        XCTAssertNil(try code(.fst4s60) { $0.noiseBlanker = .percent(5) })
+        XCTAssertEqual(try code(.ft8) { $0.noiseBlanker = .percent(5) }, .unsupported)
+
+        // An out-of-range value is the caller's mistake, not a missing option.
+        XCTAssertEqual(try code(.fst4s60) { $0.noiseBlanker = .percent(99) }, .invalidArgument)
+        XCTAssertEqual(try code(.fst4s60) { $0.noiseBlanker = .sweep(step: 3, toleranceHz: 20) },
+                       .invalidArgument)
+        XCTAssertEqual(try code(.fst4s60) { $0.noiseBlanker = .sweep(step: 5, toleranceHz: 0) },
+                       .invalidArgument)
+    }
+
+    func testAParameterBlockThatIsNotUsableIsRefusedNotClamped() throws {
+        _ = try requireSupported(.ft8)
+        var params = try DecodeParams(mode: .ft8)
+        params.bandHz = 1000...1000          // an empty band
+        XCTAssertThrowsError(try Decoder(mode: .ft8, params: params)) { error in
+            XCTAssertEqual((error as? MfskError)?.code, .invalidArgument)
+        }
+        params = try DecodeParams(mode: .ft8)
+        params.station.call = "A-CALLSIGN-THAT-IS-FAR-TOO-LONG"
+        XCTAssertThrowsError(try Decoder(mode: .ft8, params: params), "does not fit the field") { error in
+            XCTAssertEqual((error as? MfskError)?.code, .invalidArgument)
         }
     }
 
-    func testTheTransmitFrequencyIsFT8sAlone() throws {
+    func testTheTransmitFrequencyIsAcceptedByFT8() throws {
         _ = try requireSupported(.ft8)
         XCTAssertTrue(Mode.ft8.capabilities.contains(.transmitFrequency))
         var params = try DecodeParams(mode: .ft8)
-        params.transmitFrequencyHz = 1500
-        XCTAssertNoThrow(try DecodeSession(mode: .ft8, params: params))
-
-        // FT4 has no `nftx` to read — refused at open, not dropped.
-        guard (try? Mode.ft4.info) != nil else { throw XCTSkip("this build has no FT4") }
-        XCTAssertFalse(Mode.ft4.capabilities.contains(.transmitFrequency))
-        var ft4 = try DecodeParams(mode: .ft4)
-        ft4.transmitFrequencyHz = 1500
-        XCTAssertThrowsError(try DecodeSession(mode: .ft4, params: ft4))
-    }
-
-    func testTheNoiseBlankerIsFST4sAloneAndItsNumbersAreChecked() throws {
-        guard (try? Mode.fst4s15.info) != nil else { throw XCTSkip("this build has no FST4") }
-        XCTAssertTrue(Mode.fst4s15.capabilities.contains(.noiseBlanker))
-        XCTAssertFalse(Mode.ft8.capabilities.contains(.noiseBlanker))
-
-        var params = try DecodeParams(mode: .fst4s15)
-        params.noiseBlanker = .percent(2)
-        XCTAssertNoThrow(try DecodeSession(mode: .fst4s15, params: params))
-        params.noiseBlanker = .sweep(step: 5, toleranceHz: 20)
-        XCTAssertNoThrow(try DecodeSession(mode: .fst4s15, params: params))
-
-        // Past the GUI's range, a step the engine would quietly read as 5,
-        // and a sweep with no window are each an error rather than a guess.
-        for bad: DecodeParams.NoiseBlanker in [
-            .percent(26), .sweep(step: 3, toleranceHz: 20), .sweep(step: 5, toleranceHz: 0),
-        ] {
-            params.noiseBlanker = bad
-            XCTAssertThrowsError(try DecodeSession(mode: .fst4s15, params: params), "\(bad)")
-        }
-
-        // And the wrong mode.
-        var ft8 = try DecodeParams(mode: .ft8)
-        ft8.noiseBlanker = .percent(2)
-        XCTAssertThrowsError(try DecodeSession(mode: .ft8, params: ft8))
-    }
-
-    func testTooLittleAudioDecodesNothingRatherThanFailing() throws {
-        _ = try requireSupported(.ft8)
-        let session = try DecodeSession(mode: .ft8)
-        // `MfskStatus`' doc lists "an audio buffer too short for the
-        // protocol's slot length" under invalidArgument, but the session
-        // path does not length-check: 1000 samples of silence decode to
-        // nothing and report success. Pinned as it behaves, because a
-        // caller feeding a partial slot needs to know which of the two
-        // it gets.
-        XCTAssertEqual(try session.decode([Int16](repeating: 0, count: 1000)).count, 0)
-        XCTAssertNil(session.lastError)
+        params.txFrequencyHz = 1500
+        XCTAssertNoThrow(try Decoder(mode: .ft8, params: params))
     }
 
     func testAnEmptyBufferDecodesNothing() throws {
         _ = try requireSupported(.ft8)
-        let session = try DecodeSession(mode: .ft8)
-        // Not an error either — `n_samples == 0` is a legal call, and
-        // the null-pointer check it might have tripped does not fire
-        // because Swift hands an empty array a non-null address.
-        XCTAssertEqual(try session.decode([Int16]()).count, 0)
+        let decoder = try Decoder(mode: .ft8)
+        XCTAssertEqual(try decoder.decode([Int16]()).count, 0)
+        XCTAssertEqual(try decoder.decode([Float]()).count, 0)
     }
 
     func testInformationBitsOutsideTheLastDecodeAreRefused() throws {
         _ = try requireSupported(.ft8)
-        let session = try DecodeSession(mode: .ft8)
-        XCTAssertThrowsError(try session.informationBits(at: 99)) { error in
+        let decoder = try Decoder(mode: .ft8)
+        XCTAssertThrowsError(try decoder.informationBits(at: 99)) { error in
             guard let error = error as? MfskError else { return XCTFail("wrong error type") }
             XCTAssertEqual(error.code, .invalidArgument)
             XCTAssertTrue(error.detail.contains("index"), "got '\(error.detail)'")
         }
-        // And it is the *thread-local* slot that carries it: this one
-        // call takes the handle as `const*`, so it has nowhere to record
-        // a per-handle error. The binding falls back to the global for
-        // exactly this case.
-        XCTAssertNil(session.lastError)
-    }
-
-    func testAModeWithNoDecodeHandleCannotOpenASession() throws {
-        guard let victim = Mode.supported.first(where: {
-            !$0.capabilities.contains(.decodeHandle)
-        }) else { throw XCTSkip("every mode in this build drives the decode handle") }
-        XCTAssertThrowsError(try DecodeSession(mode: victim)) { error in
-            XCTAssertFalse((error as? MfskError)?.detail.isEmpty ?? true,
-                           "\(victim.name) should say why it has no session")
-        }
     }
 
     func testInformationBitsComeBackForTheRowsJustDecoded() throws {
-        _ = try requireSupported(.ft8)
-        let slot = try Mode.ft8.synthesiseSlot(call1: call1, call2: call2, report: grid,
-                                               frequencyHz: 1500)
-        let session = try DecodeSession(mode: .ft8)
-        let rows = try session.decode(slot)
+        let decoder = try Decoder(mode: .ft8)
+        let rows = try decoder.decode(try ft8Slot())
         let index = try XCTUnwrap(rows.firstIndex { $0.text.contains(call2) })
-        let bits = try session.informationBits(at: index)
+        let bits = try decoder.informationBits(at: index)
         XCTAssertEqual(bits.count, Int(rows[index].informationBitCount))
+        XCTAssertEqual(bits.count, 91)
         XCTAssertTrue(bits.allSatisfy { $0 <= 1 }, "these are bits, one per byte")
+    }
+
+    func testAModeWithNoSlotDecoderCannotBeOpened() throws {
+        for mode in [Mode.msk144, .jtty] {
+            XCTAssertThrowsError(try Decoder(mode: mode), mode.name) { error in
+                XCTAssertFalse((error as? MfskError)?.detail.isEmpty ?? true,
+                               "\(mode.name) should say why it has no decoder")
+            }
+        }
     }
 }

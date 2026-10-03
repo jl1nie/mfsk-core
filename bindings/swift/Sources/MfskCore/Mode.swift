@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Modes, and what each one can do. The point of the C surface's
-// introspection family (`mfsk_mode_count` / `_at` / `_info` / `_caps` /
-// `_defaults`) is that a consumer stops hardcoding a capability matrix,
+// introspection family (`mfsk_mode_count` / `_at` / `_info` / `_caps`) is that a consumer stops hardcoding a capability matrix,
 // so this file asks the library rather than restating it: the only
 // numbers written here are the `MfskMode` discriminants, which the ABI
 // pins and never reuses, and `ModeTests` checks each one against the
@@ -39,7 +38,7 @@ public enum Mode: UInt32, CaseIterable, Sendable {
     case uvUltraRobust = 23
     case uvExpress = 24
     /// WSJT-X 3.2's non-slotted keyboard mode. Received by ``JttyReceiver``,
-    /// not ``DecodeSession``; ``ModeInfo/slotSeconds`` is its frame period.
+    /// not ``Decoder``; ``ModeInfo/slotSeconds`` is its frame period.
     case jtty = 25
 
     /// The stable display name (`"FT8"`, `"FST4-120"`), which is also
@@ -97,18 +96,6 @@ public enum Mode: UInt32, CaseIterable, Sendable {
     public var capabilities: Capabilities {
         Capabilities(rawValue: mfsk_mode_caps(rawValue))
     }
-
-    /// The mode's published default search, or throws
-    /// ``MfskError/Code/unsupported`` for a mode with no wide-band
-    /// search to describe.
-    public var decodeDefaults: DecodeDefaults {
-        get throws {
-            var raw = MfskDecodeDefaults()
-            raw.size = UInt32(MemoryLayout<MfskDecodeDefaults>.size)
-            try check(mfsk_mode_defaults(rawValue, &raw))
-            return DecodeDefaults(raw)
-        }
-    }
 }
 
 /// What a mode supports, as reported by `mfsk_mode_caps`.
@@ -116,9 +103,11 @@ public struct Capabilities: OptionSet, Sendable {
     public let rawValue: UInt64
     public init(rawValue: UInt64) { self.rawValue = rawValue }
 
-    /// Drives the `DecodeRequest` builder, i.e. ``DecodeSession`` applies.
-    /// Modes without this decode through their own entry point — see
-    /// ``WSPR``, ``JT9``, ``JT65``.
+    /// Drives the `DecodeRequest` builder: the FT8, FT4 and FST4 family.
+    /// **Not the test for whether a ``Decoder`` opens** — WSPR, JT9, JT65 and
+    /// Q65 lack it and decode through the same ``Decoder``; ask
+    /// ``DecodeParams/init(mode:)`` (it throws for a mode with no slot
+    /// decoder) or compare the individual bits below.
     public static let decodeHandle = Capabilities(rawValue: 1 << 0)
     /// Narrow-band single-target search. FT8 only, by design: it is the
     /// receive half of narrowing a transceiver's analogue roofing filter.
@@ -155,45 +144,11 @@ public struct Capabilities: OptionSet, Sendable {
     /// rather than a slot decode — JTTY, see ``JttyReceiver``.
     public static let streamReceiver = Capabilities(rawValue: 1 << 15)
     /// WSJT-X's impulse-noise blanker reaches the decoder — see
-    /// ``DecodeParams/noiseBlanker``. Every FST4 sub-mode and no other.
+    /// ``Extras/noiseBlanker``. Every FST4 sub-mode and no other.
     public static let noiseBlanker = Capabilities(rawValue: 1 << 16)
     /// The operator's transmit frequency steers the a-priori search — see
-    /// ``DecodeParams/transmitFrequencyHz``. FT8 only.
+    /// ``DecodeParams/txFrequencyHz``. FT8 only.
     public static let transmitFrequency = Capabilities(rawValue: 1 << 17)
-}
-
-/// How a mode's sync threshold is measured — the trap
-/// ``DecodeDefaults/syncMin`` exists alongside.
-public enum SyncScale: UInt32, Sendable {
-    /// Absolute Costas correlation score; a threshold is empirical.
-    /// FT8.
-    case costasAbsolute = 0
-    /// The spectrum is divided by a fitted baseline first, so **noise
-    /// sits at ~1.0 by construction** and any threshold at or below
-    /// that admits every peak in the band. FT4, and FST4 since #554 —
-    /// which is why their defaults (FT4 1.18, FST4 1.20 or 1.15 for
-    /// FST4-15) are floors rather than preferences.
-    case baselineNormalised = 1
-    /// Sync power as a fraction of sync plus noise, so it lies in 0‥1:
-    /// noise scores near 0, a clean aligned frame near 1. WSPR, JT9,
-    /// JT65 and every Q65 sub-mode, whose shared default is 0.1.
-    case syncFraction = 2
-}
-
-/// A mode's published default search parameters.
-public struct DecodeDefaults: Sendable {
-    public let frequencyRangeHz: ClosedRange<Float>
-    /// **Read ``syncScale`` before copying this number anywhere.**
-    public let syncMin: Float
-    public let maxCandidates: UInt32
-    public let syncScale: SyncScale
-
-    init(_ raw: MfskDecodeDefaults) {
-        self.frequencyRangeHz = raw.freq_min_hz...max(raw.freq_min_hz, raw.freq_max_hz)
-        self.syncMin = raw.sync_min
-        self.maxCandidates = raw.max_cand
-        self.syncScale = SyncScale(rawValue: UInt32(raw.sync_scale.rawValue)) ?? .costasAbsolute
-    }
 }
 
 /// Geometry and capability for one mode.

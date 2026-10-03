@@ -12,8 +12,8 @@ final class ModeIntrospectionTests: XCTestCase {
     func testTheBuildDeclaresModes() throws {
         let modes = Mode.supported
         XCTAssertFalse(modes.isEmpty, "this build claims to support no modes at all")
-        XCTAssertGreaterThanOrEqual(Runtime.abiVersion, 2,
-                                    "the introspection surface landed in ABI v2")
+        XCTAssertGreaterThanOrEqual(Runtime.abiVersion, 3,
+                                    "the one-decoder-handle surface is ABI v3")
     }
 
     func testNamesRoundTrip() throws {
@@ -40,20 +40,44 @@ final class ModeIntrospectionTests: XCTestCase {
         }
     }
 
-    func testEveryHandleModePublishesAUsableSearch() throws {
-        for mode in Mode.supported where mode.capabilities.contains(.decodeHandle) {
-            let defaults = try mode.decodeDefaults
-            XCTAssertGreaterThan(defaults.frequencyRangeHz.upperBound,
-                                 defaults.frequencyRangeHz.lowerBound, "\(mode.name)")
-            XCTAssertGreaterThan(defaults.maxCandidates, 0, "\(mode.name)")
-            // The trap `syncScale` exists for: on a baseline-normalised
-            // scale, noise sits at ~1.0 by construction, so a threshold
-            // at or below that admits every peak in the band.
-            if defaults.syncScale == .baselineNormalised {
-                XCTAssertGreaterThan(defaults.syncMin, 1.0, "\(mode.name)")
+    func testEveryModeWithADecoderPublishesItsDefaults() throws {
+        for mode in Mode.supported {
+            // MSK144 and JTTY have no slot decoder; everything else that the
+            // build carries does, and says what it searches by default.
+            guard let params = try? DecodeParams(mode: mode) else { continue }
+            XCTAssertGreaterThan(params.bandHz.upperBound, params.bandHz.lowerBound, "\(mode.name)")
+            XCTAssertNoThrow(try Decoder(mode: mode, params: params), "\(mode.name)")
+            if mode.capabilities.contains(.decodeHandle) {
+                XCTAssertGreaterThan(try mode.info.decodeFFT1Size, 0,
+                                     "\(mode.name) drives the decode handle but reports no slot transform")
             }
-            XCTAssertGreaterThan(try mode.info.decodeFFT1Size, 0,
-                                 "\(mode.name) drives the decode handle but reports no slot transform")
+        }
+    }
+
+    func testTheDefaultsAreTheGUIsAndTheModesOwn() throws {
+        // Values the Rust side pins in `decoder_ffi.rs`.
+        guard Mode.ft8.isSupported else { throw XCTSkip("no FT8 in this build") }
+        let ft8 = try DecodeParams(mode: .ft8)
+        XCTAssertEqual(ft8.depth, .deep, "the GUI's default")
+        XCTAssertEqual(ft8.ap, .off, "FT8's Enable AP box starts unchecked")
+        XCTAssertEqual(ft8.bandHz, 200...4000)
+        XCTAssertNil(ft8.rxFrequencyHz)
+        XCTAssertNil(ft8.toleranceHz)
+        XCTAssertNil(ft8.txFrequencyHz)
+        if Mode.ft4.isSupported {
+            XCTAssertEqual(try DecodeParams(mode: .ft4).ap, .full)
+        }
+        if Mode.fst4s60.isSupported {
+            XCTAssertEqual(try DecodeParams(mode: .fst4s60).bandHz, 600...1400)
+        }
+    }
+
+    func testAModeWithNoSlotHasNoParameterBlock() throws {
+        // MSK144 is not decoded as a slot; JTTY has no slot at all.
+        for mode in [Mode.msk144, .jtty] {
+            XCTAssertThrowsError(try DecodeParams(mode: mode), mode.name) { error in
+                XCTAssertNotNil(error as? MfskError)
+            }
         }
     }
 

@@ -6,7 +6,7 @@
 // message is several of them, so the receiver keeps state (the search
 // window, the messages under assembly, the audio a re-sweep of earlier
 // windows still needs) and reports *updates*. That is why this is a
-// class of its own rather than a ``DecodeSession`` mode: the mode's
+// class of its own rather than a ``Decoder`` mode: the mode's
 // capabilities say ``Capabilities/streamReceiver``, not
 // ``Capabilities/decodeHandle``.
 
