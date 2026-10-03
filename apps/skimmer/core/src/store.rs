@@ -179,23 +179,105 @@ impl Drop for Writer {
     }
 }
 
-/// A station heard in a period.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Heard {
+/// What to look for. Every field narrows the result; an empty one does not.
+/// Time, band, mode, SNR, regexes and CQ kind are conditions of the SQL
+/// (indexed on time and band); distance and bearing are computed from
+/// the locators by functions registered on the connection.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Query {
+    /// UTC seconds, inclusive.
+    pub since: i64,
+    pub until: i64,
+    /// My locator: the origin of distance and bearing.
+    pub me: String,
+    /// Regular expressions (case-insensitive, unanchored: write `^` and `$`)
+    /// on the sender's call, its locator and the message text.
     pub call: String,
-    pub band: String,
     pub grid: String,
-    pub count: i64,
-    pub best_snr: i64,
-    pub last: i64,
-    /// Degrees from north and km, from the observer's locator; `None` when
-    /// none was given.
-    pub bearing: Option<f64>,
-    pub km: Option<f64>,
+    pub text: String,
+    pub bands: Vec<String>,
+    pub modes: Vec<String>,
+    pub snr_min: Option<i64>,
+    pub snr_max: Option<i64>,
+    pub km_min: Option<f64>,
+    pub km_max: Option<f64>,
+    /// Bearing sector, degrees clockwise from north; `from > to` wraps
+    /// through north (315 to 45 is the northern quarter).
+    pub bearing_from: Option<f64>,
+    pub bearing_to: Option<f64>,
+    /// `None`: any message; `Some("*")`: any CQ; `Some("")`: a plain CQ;
+    /// `Some("DX")`, `Some("POTA")`...: that modifier.
+    pub cq: Option<String>,
 }
 
-/// Decodes of one hour on one band.
+/// The locator of a row: its own, else the last one its sender sent.
+const GRID: &str = "COALESCE(d.grid, s.grid)";
+const FROM: &str = "decodes d LEFT JOIN stations s ON s.call = d.call";
+
+impl Query {
+    /// `WHERE` conditions and their parameters.
+    fn sql(&self) -> Result<(String, Vec<rusqlite::types::Value>), String> {
+        use rusqlite::types::Value as V;
+        let mut w = vec!["d.t BETWEEN ? AND ?".to_string()];
+        let mut p: Vec<V> = vec![self.since.into(), self.until.into()];
+        for (col, re) in [
+            ("d.call", &self.call),
+            (GRID, &self.grid),
+            ("d.text", &self.text),
+        ] {
+            let re = re.trim();
+            if re.is_empty() {
+                continue;
+            }
+            regex::Regex::new(&format!("(?i){re}")).map_err(|e| format!("{re}: {e}"))?;
+            w.push(format!("{col} REGEXP ?"));
+            p.push(re.to_string().into());
+        }
+        for (col, list) in [("d.band", &self.bands), ("d.mode", &self.modes)] {
+            if list.is_empty() {
+                continue;
+            }
+            w.push(format!("{col} IN ({})", vec!["?"; list.len()].join(",")));
+            p.extend(list.iter().map(|x| V::from(x.clone())));
+        }
+        if let Some(x) = self.snr_min {
+            w.push("d.snr >= ?".into());
+            p.push(x.into());
+        }
+        if let Some(x) = self.snr_max {
+            w.push("d.snr <= ?".into());
+            p.push(x.into());
+        }
+        let me = self.me.trim();
+        if self.km_min.is_some() || self.km_max.is_some() {
+            if let Some(x) = self.km_min {
+                w.push(format!("dist_km(?, {GRID}) >= ?"));
+                p.extend([me.to_string().into(), x.into()]);
+            }
+            if let Some(x) = self.km_max {
+                w.push(format!("dist_km(?, {GRID}) <= ?"));
+                p.extend([me.to_string().into(), x.into()]);
+            }
+        }
+        if let (Some(a), Some(b)) = (self.bearing_from, self.bearing_to) {
+            w.push(format!("in_sector(?, {GRID}, ?, ?)"));
+            p.extend([me.to_string().into(), a.into(), b.into()]);
+        }
+        match self.cq.as_deref() {
+            None => {}
+            Some("*") => w.push("d.cq IS NOT NULL".into()),
+            Some(k) => {
+                w.push("d.cq = ?".into());
+                p.push(k.to_string().into());
+            }
+        }
+        Ok((w.join(" AND "), p))
+    }
+}
+
+/// Distinct senders and decodes per hour and band: the band's state over
+/// time.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Activity {
@@ -204,31 +286,55 @@ pub struct Activity {
     pub band: String,
     pub stations: i64,
     pub decodes: i64,
-}
-
-/// A station's hours on the air.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Presence {
-    pub hour: i64,
-    pub band: String,
-    pub count: i64,
     pub best_snr: i64,
 }
 
-/// A CQ heard.
+/// One sender in a result.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Cq {
+pub struct Station {
+    pub call: String,
+    pub grid: Option<String>,
+    /// Comma-separated bands it was heard on.
+    pub bands: String,
+    pub count: i64,
+    pub best_snr: i64,
+    pub first: i64,
+    pub last: i64,
+    pub bearing: Option<f64>,
+    pub km: Option<f64>,
+}
+
+/// One decode in a result.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Spot {
     pub t: i64,
     pub call: Option<String>,
     pub grid: Option<String>,
-    pub kind: String,
     pub band: String,
     pub mode: String,
+    /// Audio offset of tone 0, Hz.
+    pub audio_hz: i64,
     pub snr: i64,
+    pub dt: f64,
+    /// `None`: not a CQ; `""`: plain; else DX, POTA...
+    pub cq: Option<String>,
+    pub text: String,
     pub bearing: Option<f64>,
     pub km: Option<f64>,
+}
+
+/// A sender heard in one slice of time: what the map animation draws.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Point {
+    /// Start of the slice, UTC seconds.
+    pub t: i64,
+    pub call: String,
+    pub grid: String,
+    pub band: String,
+    pub snr: i64,
 }
 
 /// The median DT of the strong stations in one bucket of time.
@@ -240,6 +346,54 @@ pub struct DtPoint {
     pub n: i64,
 }
 
+/// What a query found, in numbers.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub decodes: i64,
+    pub stations: i64,
+}
+
+fn register(conn: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags as F;
+    let det = F::SQLITE_UTF8 | F::SQLITE_DETERMINISTIC;
+    // X REGEXP Y calls regexp(Y, X); the pattern is compiled once per query.
+    conn.create_scalar_function("regexp", 2, det, |ctx| {
+        let re = ctx.get_or_create_aux(0, |vr| -> Result<_, regex::Error> {
+            regex::Regex::new(&format!("(?i){}", vr.as_str().unwrap_or("")))
+        })?;
+        Ok(match ctx.get_raw(1).as_str_or_null() {
+            Ok(Some(t)) => re.is_match(t),
+            _ => false,
+        })
+    })?;
+    // (lat, lon) of a locator argument, or None.
+    fn pt(ctx: &rusqlite::functions::Context<'_>, i: usize) -> Option<(f64, f64)> {
+        ctx.get_raw(i)
+            .as_str_or_null()
+            .ok()
+            .flatten()
+            .and_then(geo::grid_center)
+    }
+    conn.create_scalar_function("dist_km", 2, det, |ctx| {
+        Ok(pt(ctx, 0)
+            .zip(pt(ctx, 1))
+            .map(|(a, b)| geo::bearing_distance(a, b).1))
+    })?;
+    conn.create_scalar_function("in_sector", 4, det, |ctx| {
+        let (from, to): (f64, f64) = (ctx.get(2)?, ctx.get(3)?);
+        Ok(pt(ctx, 0).zip(pt(ctx, 1)).map(|(a, b)| {
+            let bearing = geo::bearing_distance(a, b).0;
+            if from <= to {
+                (from..=to).contains(&bearing)
+            } else {
+                bearing >= from || bearing <= to
+            }
+        }))
+    })?;
+    Ok(())
+}
+
 /// Read-only queries; any number may run beside the writer.
 pub struct Reader {
     conn: Connection,
@@ -247,156 +401,137 @@ pub struct Reader {
 
 impl Reader {
     pub fn open(path: &Path) -> rusqlite::Result<Reader> {
-        Ok(Reader {
-            conn: open(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
-        })
+        let conn = open(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        register(&conn)?;
+        Ok(Reader { conn })
     }
 
-    /// Stations heard in `[since, until]` (UTC seconds) on `band` (all when
-    /// `None`) with a known locator, with their bearing from `me`.
-    pub fn heard(
-        &self,
-        me: Option<&str>,
-        band: Option<&str>,
-        since: i64,
-        until: i64,
-    ) -> rusqlite::Result<Vec<Heard>> {
-        let mut q = self.conn.prepare_cached(
-            "SELECT d.call, d.band, s.grid, COUNT(*), MAX(d.snr), MAX(d.t)
-             FROM decodes d JOIN stations s ON s.call = d.call
-             WHERE d.t BETWEEN ?1 AND ?2 AND (?3 IS NULL OR d.band = ?3)
-             GROUP BY d.call, d.band",
-        )?;
-        let from = me.and_then(geo::grid_center);
-        let rows = q.query_map(params![since, until, band], |r| {
-            let grid: String = r.get(2)?;
-            let bd = from
-                .zip(geo::grid_center(&grid))
-                .map(|(a, b)| geo::bearing_distance(a, b));
-            Ok(Heard {
-                call: r.get(0)?,
-                band: r.get(1)?,
-                grid,
-                count: r.get(3)?,
-                best_snr: r.get(4)?,
-                last: r.get(5)?,
-                bearing: bd.map(|x| x.0),
-                km: bd.map(|x| x.1),
+    fn bearing_km(me: &str, grid: Option<&str>) -> (Option<f64>, Option<f64>) {
+        let bd = geo::grid_center(me)
+            .zip(grid.and_then(geo::grid_center))
+            .map(|(a, b)| geo::bearing_distance(a, b));
+        (bd.map(|x| x.0), bd.map(|x| x.1))
+    }
+
+    /// Senders and decodes per hour and band.
+    pub fn activity(&self, q: &Query) -> Result<Vec<Activity>, String> {
+        let (w, p) = q.sql()?;
+        let sql = format!(
+            "SELECT d.t / 3600, d.band, COUNT(DISTINCT d.call), COUNT(*), MAX(d.snr)
+             FROM {FROM} WHERE {w} GROUP BY d.t / 3600, d.band ORDER BY 1"
+        );
+        let mut st = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(p), |r| {
+                Ok(Activity {
+                    hour: r.get(0)?,
+                    band: r.get(1)?,
+                    stations: r.get(2)?,
+                    decodes: r.get(3)?,
+                    best_snr: r.get(4)?,
+                })
             })
-        })?;
-        rows.collect()
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
-    /// Distinct senders and decodes per hour and band: the band's state over
-    /// time.
-    pub fn activity(&self, since: i64, until: i64) -> rusqlite::Result<Vec<Activity>> {
-        let mut q = self.conn.prepare_cached(
-            "SELECT t / 3600, band, COUNT(DISTINCT call), COUNT(*)
-             FROM decodes WHERE t BETWEEN ?1 AND ?2
-             GROUP BY t / 3600, band ORDER BY 1",
-        )?;
-        let rows = q.query_map(params![since, until], |r| {
-            Ok(Activity {
-                hour: r.get(0)?,
-                band: r.get(1)?,
-                stations: r.get(2)?,
-                decodes: r.get(3)?,
+    /// The senders found, the most heard first.
+    pub fn stations(&self, q: &Query, limit: usize) -> Result<Vec<Station>, String> {
+        let (w, p) = q.sql()?;
+        let sql = format!(
+            "SELECT d.call, MAX({GRID}), group_concat(DISTINCT d.band), COUNT(*), MAX(d.snr),
+                    MIN(d.t), MAX(d.t)
+             FROM {FROM} WHERE {w} AND d.call IS NOT NULL
+             GROUP BY d.call ORDER BY 4 DESC LIMIT {limit}"
+        );
+        let mut st = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(p), |r| {
+                let grid: Option<String> = r.get(1)?;
+                let (bearing, km) = Self::bearing_km(&q.me, grid.as_deref());
+                Ok(Station {
+                    call: r.get(0)?,
+                    grid,
+                    bands: r.get(2)?,
+                    count: r.get(3)?,
+                    best_snr: r.get(4)?,
+                    first: r.get(5)?,
+                    last: r.get(6)?,
+                    bearing,
+                    km,
+                })
             })
-        })?;
-        rows.collect()
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
-    /// The hours `call` was heard in `[since, until]`.
-    pub fn presence(&self, call: &str, since: i64, until: i64) -> rusqlite::Result<Vec<Presence>> {
-        let mut q = self.conn.prepare_cached(
-            "SELECT t / 3600, band, COUNT(*), MAX(snr) FROM decodes
-             WHERE call = ?1 AND t BETWEEN ?2 AND ?3
-             GROUP BY t / 3600, band ORDER BY 1",
-        )?;
-        let rows = q.query_map(params![call, since, until], |r| {
-            Ok(Presence {
-                hour: r.get(0)?,
-                band: r.get(1)?,
-                count: r.get(2)?,
-                best_snr: r.get(3)?,
+    /// The decodes found, newest first.
+    pub fn decodes(&self, q: &Query, limit: usize) -> Result<Vec<Spot>, String> {
+        let (w, p) = q.sql()?;
+        let sql = format!(
+            "SELECT d.t, d.call, {GRID}, d.band, d.mode, d.freq_hz - d.dial_hz, d.snr, d.dt, d.cq, d.text
+             FROM {FROM} WHERE {w} ORDER BY d.t DESC LIMIT {limit}"
+        );
+        let mut st = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(p), |r| {
+                let grid: Option<String> = r.get(2)?;
+                let (bearing, km) = Self::bearing_km(&q.me, grid.as_deref());
+                Ok(Spot {
+                    t: r.get(0)?,
+                    call: r.get(1)?,
+                    grid,
+                    band: r.get(3)?,
+                    mode: r.get(4)?,
+                    audio_hz: r.get(5)?,
+                    snr: r.get(6)?,
+                    dt: r.get(7)?,
+                    cq: r.get(8)?,
+                    text: r.get(9)?,
+                    bearing,
+                    km,
+                })
             })
-        })?;
-        rows.collect()
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
-    /// Calls starting with `prefix`, the most heard first. A range scan on
-    /// the `(call, t)` index, so it stays fast on millions of rows.
-    pub fn calls(&self, prefix: &str, limit: usize) -> rusqlite::Result<Vec<(String, i64)>> {
-        let lo = prefix.to_ascii_uppercase();
-        let hi = format!("{lo}\u{10ffff}");
-        let mut q = self.conn.prepare_cached(
-            "SELECT call, COUNT(*) FROM decodes WHERE call >= ?1 AND call < ?2
-             GROUP BY call ORDER BY 2 DESC LIMIT ?3",
-        )?;
-        let rows = q.query_map(params![lo, hi, limit as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?;
-        rows.collect()
-    }
-
-    /// CQs in `[since, until]`, newest first. `kind` of `None` is every CQ;
-    /// `Some("DX")` only those with that modifier; `Some("")` plain ones.
-    pub fn cqs(
-        &self,
-        me: Option<&str>,
-        band: Option<&str>,
-        kind: Option<&str>,
-        since: i64,
-        until: i64,
-        limit: usize,
-    ) -> rusqlite::Result<Vec<Cq>> {
-        let mut q = self.conn.prepare_cached(
-            "SELECT d.t, d.call, COALESCE(d.grid, s.grid), d.cq, d.band, d.mode, d.snr
-             FROM decodes d LEFT JOIN stations s ON s.call = d.call
-             WHERE d.t BETWEEN ?1 AND ?2 AND d.cq IS NOT NULL
-               AND (?3 IS NULL OR d.band = ?3) AND (?4 IS NULL OR d.cq = ?4)
-             ORDER BY d.t DESC LIMIT ?5",
-        )?;
-        let from = me.and_then(geo::grid_center);
-        let rows = q.query_map(params![since, until, band, kind, limit as i64], |r| {
-            let grid: Option<String> = r.get(2)?;
-            let bd = from
-                .zip(grid.as_deref().and_then(geo::grid_center))
-                .map(|(a, b)| geo::bearing_distance(a, b));
-            Ok(Cq {
-                t: r.get(0)?,
-                call: r.get(1)?,
-                grid,
-                kind: r.get(3)?,
-                band: r.get(4)?,
-                mode: r.get(5)?,
-                snr: r.get(6)?,
-                bearing: bd.map(|x| x.0),
-                km: bd.map(|x| x.1),
+    /// Who was heard in each `slice_s` of the range, for the map and its
+    /// animation: one point per (slice, call, band) with a known locator.
+    pub fn points(&self, q: &Query, slice_s: i64, limit: usize) -> Result<Vec<Point>, String> {
+        let s = slice_s.max(60);
+        let (w, p) = q.sql()?;
+        let sql = format!(
+            "SELECT d.t / {s} * {s}, d.call, {GRID}, d.band, MAX(d.snr)
+             FROM {FROM} WHERE {w} AND d.call IS NOT NULL AND {GRID} IS NOT NULL
+             GROUP BY 1, d.call, d.band ORDER BY 1 LIMIT {limit}"
+        );
+        let mut st = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(p), |r| {
+                Ok(Point {
+                    t: r.get(0)?,
+                    call: r.get(1)?,
+                    grid: r.get(2)?,
+                    band: r.get(3)?,
+                    snr: r.get(4)?,
+                })
             })
-        })?;
-        rows.collect()
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
 
-    /// How busy each audio frequency was on `band` in `mode`: decodes per
-    /// `bin_hz` of audio offset. The gaps are where a transmission fits.
-    pub fn occupancy(
-        &self,
-        band: &str,
-        mode: &str,
-        bin_hz: i64,
-        since: i64,
-        until: i64,
-    ) -> rusqlite::Result<Vec<(i64, i64)>> {
-        let mut q = self.conn.prepare_cached(
-            "SELECT (freq_hz - dial_hz) / ?1, COUNT(*) FROM decodes
-             WHERE band = ?2 AND mode = ?3 AND t BETWEEN ?4 AND ?5
-             GROUP BY 1 ORDER BY 1",
-        )?;
-        let rows = q.query_map(params![bin_hz.max(1), band, mode, since, until], |r| {
-            Ok((r.get::<_, i64>(0)? * bin_hz.max(1), r.get(1)?))
-        })?;
-        rows.collect()
+    pub fn summary(&self, q: &Query) -> Result<Summary, String> {
+        let (w, p) = q.sql()?;
+        let sql = format!("SELECT COUNT(*), COUNT(DISTINCT d.call) FROM {FROM} WHERE {w}");
+        self.conn
+            .query_row(&sql, rusqlite::params_from_iter(p), |r| {
+                Ok(Summary {
+                    decodes: r.get(0)?,
+                    stations: r.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Median DT per `bucket_s` of the stations at least `-12 dB` strong.
@@ -492,6 +627,15 @@ mod tests {
         assert_eq!(band_of(9.0e6), "other");
     }
 
+    fn q(h: i64) -> Query {
+        Query {
+            since: h,
+            until: h + 7200,
+            me: "PM95".into(),
+            ..Query::default()
+        }
+    }
+
     #[test]
     fn stored_and_queried_while_the_writer_is_open() {
         let p = db();
@@ -500,43 +644,86 @@ mod tests {
         w.push(&decode(h, 14.074e6, -10.0, "CQ K1ABC FN42"));
         w.push(&decode(h + 15, 14.074e6, -5.0, "JA1XYZ K1ABC -07"));
         w.push(&decode(h + 3600, 14.074e6, -12.0, "CQ K1ABC"));
-        w.push(&decode(h + 30, 7.074e6, -20.0, "CQ W9XYZ EN34"));
+        w.push(&decode(h + 30, 7.074e6, -20.0, "CQ DX W9XYZ EN34"));
         w.flush();
         // The writer still holds the file open: WAL lets a reader in.
         let r = Reader::open(&p).unwrap();
         assert_eq!(r.span().unwrap().2, 4);
-
-        // From Tokyo: K1ABC (FN42) lies north-east, W9XYZ (EN34) too.
-        let heard = r.heard(Some("PM95"), Some("20m"), h, h + 7200).unwrap();
-        assert_eq!(heard.len(), 1);
-        let k = &heard[0];
         assert_eq!(
-            (k.call.as_str(), k.grid.as_str(), k.count, k.best_snr),
-            ("K1ABC", "FN42", 3, -5)
+            r.summary(&q(h)).unwrap(),
+            Summary {
+                decodes: 4,
+                stations: 2
+            }
         );
-        assert!((0.0..90.0).contains(&k.bearing.unwrap()), "{:?}", k.bearing);
-        assert_eq!(r.heard(None, None, h, h + 7200).unwrap().len(), 2);
 
-        // K1ABC's later message without a locator still counts, and shows
+        // K1ABC's later message without a locator still has FN42, and shows
         // in two separate hours.
-        let pr = r.presence("K1ABC", h, h + 7200).unwrap();
-        assert_eq!(pr.len(), 2);
-        assert_eq!(pr[0].count, 2);
+        let k = Query {
+            call: "^k1abc$".into(),
+            ..q(h)
+        };
+        let st = r.stations(&k, 10).unwrap();
+        assert_eq!((st.len(), st[0].count, st[0].best_snr), (1, 3, -5));
+        assert_eq!(st[0].grid.as_deref(), Some("FN42"));
+        assert!(
+            (0.0..90.0).contains(&st[0].bearing.unwrap()),
+            "{:?}",
+            st[0].bearing
+        );
+        assert_eq!(r.activity(&k).unwrap().len(), 2);
 
-        let act = r.activity(h, h + 7200).unwrap();
-        assert!(act.iter().any(|a| a.band == "40m" && a.stations == 1));
-        assert_eq!(r.calls("K1", 5).unwrap(), vec![("K1ABC".to_string(), 3)]);
-        let cqs = r.cqs(Some("PM95"), None, None, h, h + 7200, 10).unwrap();
-        assert_eq!(cqs.len(), 3);
-        assert_eq!(cqs[0].call.as_deref(), Some("K1ABC"));
+        // Band, mode, SNR.
+        let on = |f: &dyn Fn(&mut Query)| {
+            let mut x = q(h);
+            f(&mut x);
+            r.summary(&x).unwrap().decodes
+        };
+        assert_eq!(on(&|x| x.bands = vec!["40m".into()]), 1);
+        assert_eq!(on(&|x| x.modes = vec!["FT4".into()]), 0);
+        assert_eq!(on(&|x| x.snr_min = Some(-11)), 2);
+        // CQ kinds.
+        assert_eq!(on(&|x| x.cq = Some("*".into())), 3);
+        assert_eq!(on(&|x| x.cq = Some("DX".into())), 1);
+        assert_eq!(on(&|x| x.cq = Some(String::new())), 2);
+        // Locator and message regexes.
+        assert_eq!(on(&|x| x.grid = "^EN".into()), 1);
+        assert_eq!(on(&|x| x.text = "-07$".into()), 1);
+        // Distance: Tokyo to FN42 is far, to EN34 farther still.
+        let near = on(&|x| x.km_max = Some(9_000.0));
+        let far = on(&|x| x.km_min = Some(9_000.0));
+        assert!(near == 0 && far == 4, "{near} {far}");
+        // Bearing: both lie to the north-east (Tokyo -> USA); 315..45 wraps
+        // through north.
         assert_eq!(
-            r.cqs(None, None, Some("DX"), h, h + 7200, 10)
-                .unwrap()
-                .len(),
+            on(&|x| (x.bearing_from, x.bearing_to) = (Some(0.0), Some(90.0))),
+            4
+        );
+        assert_eq!(
+            on(&|x| (x.bearing_from, x.bearing_to) = (Some(180.0), Some(270.0))),
             0
         );
-        let occ = r.occupancy("20m", "FT8", 50, h, h + 7200).unwrap();
-        assert_eq!(occ, vec![(1500, 3)]);
+        assert_eq!(
+            on(&|x| (x.bearing_from, x.bearing_to) = (Some(300.0), Some(60.0))),
+            4
+        );
+        // A bad regex is an error that says which.
+        assert!(
+            r.summary(&Query {
+                call: "(".into(),
+                ..q(h)
+            })
+            .is_err()
+        );
+
+        let spots = r.decodes(&q(h), 10).unwrap();
+        assert_eq!(spots.len(), 4);
+        assert_eq!(spots[0].t, h + 3600);
+        assert_eq!(spots[0].audio_hz, 1500);
+
+        // Slices of 30 minutes: K1ABC twice (two hours), W9XYZ once.
+        let pts = r.points(&q(h), 1800, 100).unwrap();
+        assert_eq!(pts.len(), 3);
         drop(w);
         let _ = std::fs::remove_file(&p);
     }
