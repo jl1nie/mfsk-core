@@ -210,6 +210,8 @@ export interface StationRow {
   call: string;
   grid: string | null;
   bands: string;
+  /** Comma-separated servers that heard it. */
+  servers: string;
   count: number;
   bestSnr: number;
   first: number;
@@ -220,6 +222,7 @@ export interface StationRow {
 
 export interface Spot {
   t: number;
+  server: string;
   call: string | null;
   grid: string | null;
   band: string;

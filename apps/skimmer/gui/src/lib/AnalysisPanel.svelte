@@ -40,6 +40,10 @@
   let points = $state<MapPoint[]>([]);
   let summary = $state<Summary | null>(null);
   let snrHist = $state<[number, number][]>([]);
+  /** (name, locator) of each server there are decodes from. */
+  let servers = $state<[string, string][]>([]);
+  /** The map is centred on home or on a server. */
+  let centre = $state('');
   let span = $state<[number | null, number | null, number]>([null, null, 0]);
   let error = $state('');
 
@@ -65,17 +69,19 @@
       /* not essential */
     }
     try {
-      const [sp, bs, sm, sh] = await Promise.all([
+      const [sp, bs, sm, sh, sv] = await Promise.all([
         api.dbSpan(dir),
         api.dbBands(dir),
         api.dbSummary(dir, next),
         api.dbSnrHist(dir, next),
+        api.dbServers(dir),
       ]);
       if (mine !== seq) return;
       span = sp;
       bands = bs;
       summary = sm;
       snrHist = sh;
+      servers = sv;
       const act = tab === 'results' ? await api.dbActivity(dir, next) : null;
       const pts = tab === 'map' ? await api.dbPoints(dir, next, slice) : null;
       if (mine !== seq) return;
@@ -104,6 +110,7 @@
     return () => clearInterval(t);
   });
 
+  const mapMe = $derived(servers.find((x) => x[0] === centre)?.[1] || me);
   const line = $derived(
     summary
       ? `${summary.decodes.toLocaleString()} decodes · ${summary.stations.toLocaleString()} stations (of ${span[2].toLocaleString()} stored)${me ? '' : ' · no home grid: Settings > Station'}`
@@ -112,7 +119,7 @@
 </script>
 
 <section class="analysis">
-  <QueryBar bind:form {bands} onapply={apply} summary={line} {error} {snrHist} />
+  <QueryBar bind:form {bands} onapply={apply} summary={line} {error} {snrHist} servers={servers.map((x) => x[0])} />
   <nav>
     {#each TABS as [id, label] (id)}
       <button class:on={tab === id} onclick={() => (tab = id)}>{label}</button>
@@ -120,7 +127,18 @@
   </nav>
   <div class="body">
     {#if tab === 'map'}
-      <MapView {points} {me} since={q.since} until={q.until} bind:slice />
+      {#if servers.length > 1}
+        <label class="centre">
+          Centre the map on
+          <select bind:value={centre}>
+            <option value="">home ({me || 'no grid'})</option>
+            {#each servers as [name, grid] (name)}
+              <option value={name}>{name || '(unnamed)'}{grid ? ` (${grid})` : ''}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      <MapView {points} me={mapMe} since={q.since} until={q.until} bind:slice />
     {:else if tab === 'results'}
       <ResultsView {dir} {q} {activity} {nowMs} />
     {:else}
@@ -146,6 +164,12 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+  .centre {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 4px;
+    display: block;
   }
   nav {
     display: flex;

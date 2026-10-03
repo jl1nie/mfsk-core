@@ -40,3 +40,4 @@ export const dbDt = (dir: string, bucketS: number, since: number, until: number)
   invoke<DtPoint[]>('db_dt', { dir, bucketS, since, until });
 export const dbSpan = (dir: string) => invoke<[number | null, number | null, number]>('db_span', { dir });
 export const dbSnrHist = (dir: string, q: Query) => invoke<[number, number][]>('db_snr_hist', { dir, q });
+export const dbServers = (dir: string) => invoke<[string, string][]>('db_servers', { dir });

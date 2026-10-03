@@ -10,6 +10,7 @@
     summary,
     error,
     snrHist,
+    servers,
   }: {
     form: QueryForm;
     /** Bands there are decodes for. */
@@ -20,6 +21,8 @@
     error: string;
     /** Decodes per dB for the query without its SNR limits. */
     snrHist: [number, number][];
+    /** Names of the servers there are decodes from; the chips show when there is more than one. */
+    servers: string[];
   } = $props();
 
   let open = $state(true);
@@ -60,6 +63,7 @@
       PRESETS.find((p) => p.id === form.preset)?.label,
       form.bands.length ? form.bands.join(' ') : '',
       form.modes.length ? form.modes.join(' ') : '',
+      form.servers.length ? form.servers.join(' ') : '',
       form.call ? `call ${form.call}` : '',
       form.grid ? `grid ${form.grid}` : '',
       form.cq !== 'any' ? `CQ ${form.cq === '*' ? '' : form.cq === '' ? '(plain)' : form.cq}` : '',
@@ -163,6 +167,12 @@
       {#each sortBands(bands) as b (b)}
         <button type="button" class="chip" class:on={form.bands.includes(b)} onclick={() => { form.bands = toggle(form.bands, b); onapply(); }}>{b}</button>
       {/each}
+      {#if servers.length > 1}
+        <span class="lab">Server</span>
+        {#each servers as v (v)}
+          <button type="button" class="chip" class:on={form.servers.includes(v)} onclick={() => { form.servers = toggle(form.servers, v); onapply(); }}>{v || '(unnamed)'}</button>
+        {/each}
+      {/if}
       <span class="lab">Mode</span>
       {#each MODE_CHIPS as m (m)}
         <button type="button" class="chip" class:on={form.modes.includes(m)} onclick={() => { form.modes = toggle(form.modes, m); onapply(); }}>{m.replace('*', '')}</button>

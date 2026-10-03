@@ -36,6 +36,8 @@
     }
   }
 
+  /** More than one server heard anything: say which. */
+  const multi = $derived(activity.length > 0 && (stations.some((x) => x.servers.includes(',')) || new Set(decodes.map((d) => d.server)).size > 1 || new Set(stations.map((x) => x.servers)).size > 1));
   const km = (r: { km: number | null; bearing: number | null }) =>
     r.km != null ? `${Math.round(r.km).toLocaleString()} km @ ${Math.round(r.bearing ?? 0)}°` : '';
 </script>
@@ -59,7 +61,7 @@
     {#if view === 'stations'}
       <table>
         <thead>
-          <tr><th>Call</th><th>Grid</th><th>Bands</th><th>Heard</th><th>Best</th><th>Distance</th><th>First</th><th>Last</th></tr>
+          <tr><th>Call</th><th>Grid</th><th>Bands</th>{#if multi}<th>Servers</th>{/if}<th>Heard</th><th>Best</th><th>Distance</th><th>First</th><th>Last</th></tr>
         </thead>
         <tbody>
           {#each stations as s (s.call)}
@@ -67,6 +69,7 @@
               <td>{s.call}</td>
               <td>{s.grid ?? ''}</td>
               <td>{s.bands}</td>
+              {#if multi}<td>{s.servers}</td>{/if}
               <td>{s.count}</td>
               <td>{s.bestSnr} dB</td>
               <td>{km(s)}</td>
@@ -74,7 +77,7 @@
               <td>{stamp(s.last)}</td>
             </tr>
             {#if open === s.call}
-              <tr class="detail"><td colspan="8"><PresenceMap {dir} {q} call={s.call} /></td></tr>
+              <tr class="detail"><td colspan={multi ? 9 : 8}><PresenceMap {dir} {q} call={s.call} /></td></tr>
             {/if}
           {/each}
         </tbody>
@@ -82,12 +85,13 @@
     {:else}
       <table>
         <thead>
-          <tr><th>UTC</th><th>Call</th><th>Grid</th><th>Band</th><th>Mode</th><th>SNR</th><th>DT</th><th>Hz</th><th>Message</th><th>Distance</th></tr>
+          <tr><th>UTC</th>{#if multi}<th>Server</th>{/if}<th>Call</th><th>Grid</th><th>Band</th><th>Mode</th><th>SNR</th><th>DT</th><th>Hz</th><th>Message</th><th>Distance</th></tr>
         </thead>
         <tbody>
           {#each decodes as d, i (i)}
             <tr>
               <td>{stamp(d.t)}</td>
+              {#if multi}<td>{d.server}</td>{/if}
               <td>{d.call ?? ''}</td>
               <td>{d.grid ?? ''}</td>
               <td>{d.band}</td>

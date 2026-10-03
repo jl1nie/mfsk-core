@@ -684,6 +684,17 @@ impl Reader {
         Ok(out)
     }
 
+    /// The servers there are decodes from, with their locators (empty when
+    /// the file has none): the legacy single server is named `""`.
+    pub fn servers(&self) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut q = self.conn.prepare(
+            "SELECT d.server, COALESCE(v.grid, '') FROM (SELECT server FROM decodes GROUP BY server) d
+             LEFT JOIN servers v ON v.name = d.server ORDER BY 1",
+        )?;
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
     /// The bands anything was recorded on.
     pub fn bands(&self) -> rusqlite::Result<Vec<String>> {
         let mut q = self
@@ -796,6 +807,7 @@ mod tests {
         assert_eq!(on(&|x| x.modes = vec!["FT4".into()]), 0);
         assert_eq!(on(&|x| x.modes = vec!["FT8*".into()]), 4);
         assert_eq!(r.bands().unwrap().len(), 2);
+        assert_eq!(r.servers().unwrap(), vec![(String::new(), String::new())]);
         assert_eq!(on(&|x| x.snr_min = Some(-11)), 2);
         assert_eq!(on(&|x| x.snr_max = Some(-12)), 2);
         let hist = r
