@@ -112,17 +112,11 @@ pub fn demodulate_aligned(
     // power) — needed by `chase::decode_at_with_chase`'s soft-distance
     // candidate ranking (mirrors WSJT-X `ftrsdap`'s `nsoft`, which
     // checks whether a correction landed on the 2nd-best guess).
-    let mut symbols = [0u8; 63];
-    let mut conf = [0f32; 63];
-    let mut rel = [0f32; 63];
-    let mut second_tone_sym = [0u8; 63];
     // Raw un-thresholded power per (temporal position, tone) — kept in
     // WSJT-X's `s3a` order (temporal, i.e. *not* deinterleaved) since
     // that's the order `chase::getpp` re-projects a candidate codeword
     // into before looking values up. See `Jt65Demod::raw_pwr`.
     let mut raw_pwr = [[0f32; 64]; 63];
-    let mut xsig_sum = 0.0f32;
-    let mut xnoi_sum = 0.0f32;
     let mut k = 0usize;
 
     // Sub-bin frequency correction. `base_bin` is `base_freq_hz`
@@ -163,15 +157,39 @@ pub fn demodulate_aligned(
         if JT65_NPRC[sym_idx] == 1 {
             continue;
         }
+        for tone in 0u8..64 {
+            let bin = base_bin + 2 + tone as usize;
+            raw_pwr[k][tone as usize] = buf[bin].norm_sqr();
+        }
+        k += 1;
+    }
+    debug_assert_eq!(k, 63);
+    Some(from_pwr(&raw_pwr))
+}
+
+/// The demodulator's decisions from the 63 × 64 symbol powers in WSJT-X's
+/// `s3` order: hard symbols, runner-ups, `conf`, `rel` and the SNR estimate.
+///
+/// Split out of [`demodulate_aligned`] so powers *summed over several
+/// periods* (`jt65_decode.f90`'s `avg65`: `s3b = s3b + s3save(..,i)`) go
+/// through exactly the same decisions. `demod64a.f90` takes its
+/// probabilities as `s1/psum`, so the sum needs no rescaling by the number of
+/// periods (`nadd` only enters its unused `x`).
+pub(super) fn from_pwr(raw_pwr: &[[f32; 64]; 63]) -> Jt65Demod {
+    let mut symbols = [0u8; 63];
+    let mut conf = [0f32; 63];
+    let mut rel = [0f32; 63];
+    let mut second_tone_sym = [0u8; 63];
+    let mut xsig_sum = 0.0f32;
+    let mut xnoi_sum = 0.0f32;
+    for k in 0..63 {
+        let mut total_pwr = 0.0f32;
         let mut best_tone = 0u8;
         let mut best_pwr = f32::NEG_INFINITY;
         let mut second_tone = 0u8;
         let mut second_pwr = f32::NEG_INFINITY;
-        let mut total_pwr = 0.0f32;
         for tone in 0u8..64 {
-            let bin = base_bin + 2 + tone as usize;
-            let p = buf[bin].norm_sqr();
-            raw_pwr[k][tone as usize] = p;
+            let p = raw_pwr[k][tone as usize];
             total_pwr += p;
             if p > best_pwr {
                 second_pwr = best_pwr;
@@ -200,9 +218,7 @@ pub fn demodulate_aligned(
         };
         xsig_sum += best_pwr;
         xnoi_sum += (total_pwr - best_pwr) / 63.0;
-        k += 1;
     }
-    debug_assert_eq!(k, 63);
     deinterleave(&mut symbols);
     deinterleave(&mut second_tone_sym);
     // Apply the same permutation to confidence/reliability so
@@ -248,14 +264,14 @@ pub fn demodulate_aligned(
         SNR_CEIL_DB,
     );
 
-    Some(Jt65Demod {
+    Jt65Demod {
         symbols,
         conf: conf_perm,
         second_symbols: second_tone_sym,
         rel: rel_perm,
-        raw_pwr,
         snr_db,
-    })
+        raw_pwr: *raw_pwr,
+    }
 }
 
 #[cfg(test)]

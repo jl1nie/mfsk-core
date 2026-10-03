@@ -249,6 +249,7 @@ pub use jt9_impl::Jt9Extras;
 #[cfg(feature = "jt65")]
 mod jt65_impl {
     use super::*;
+    use crate::jt65::averaging::Averager;
     use crate::jt65::{ChaseParams, DecodeRequest, Jt65, Jt65Result};
 
     /// JT65's library options.
@@ -272,14 +273,14 @@ mod jt65_impl {
 
     impl Decodable for Jt65 {
         const MODE: crate::Mode = crate::Mode::Jt65;
-        type State = ();
+        type State = Averager;
         type Extras = Jt65Extras;
         type Row = Jt65Result;
 
         fn __decode(
             params: &DecodeParams,
             extras: &Jt65Extras,
-            _state: &mut (),
+            state: &mut Averager,
             slot: &SlotInput<'_>,
             on_row: Option<OnRow<'_, Jt65Result>>,
         ) -> SlotResult<Jt65Result> {
@@ -312,6 +313,13 @@ mod jt65_impl {
                 .params(search)
                 .chase(chase)
                 .passes(npass);
+            // `ndepth & 16`: needs the period index to know which saved periods
+            // share the parity and which are the same.
+            if params.averaging
+                && let Some(period) = slot.period
+            {
+                req = req.average(state, period, params.tol_hz.unwrap_or(50.0));
+            }
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);
             }

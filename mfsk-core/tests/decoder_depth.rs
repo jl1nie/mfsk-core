@@ -257,3 +257,106 @@ fn ft8_qso_context_ap_finds_the_weak_reply() {
     eprintln!("hits of 30: AP off {off_hits}, AP on {on_hits}");
     assert!(on_hits > off_hits, "AP on {on_hits} vs off {off_hits}");
 }
+
+/// Deterministic Gaussian noise (xorshift + Box–Muller), unit variance.
+fn noise(n: usize, seed: u64) -> Vec<f32> {
+    let mut s = seed | 1;
+    let mut next = move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    (0..n)
+        .map(|_| {
+            let (u, v) = (next(), next());
+            ((-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()) as f32
+        })
+        .collect()
+}
+
+/// A JT65 period: the frame at 1.0 s into a 60 s slot, `sigma` noise.
+fn jt65_period(sigma: f32, seed: u64) -> Vec<f32> {
+    let frame =
+        mfsk_core::jt65::synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1_500.0, 0.1).unwrap();
+    let mut a: Vec<f32> = noise(60 * 12_000, seed).iter().map(|n| n * sigma).collect();
+    for (i, v) in frame.iter().enumerate() {
+        if let Some(d) = a.get_mut(12_000 + i) {
+            *d += *v;
+        }
+    }
+    a
+}
+
+/// `jt65_decode.f90:236-262`, `avg65`: with `ndepth & 16` a candidate the
+/// single period fails on is saved and summed with the same-parity periods
+/// at the same DT and frequency. At a level where no single period decodes,
+/// the sum of four does — and without averaging nothing ever does.
+#[test]
+fn jt65_averaging_decodes_what_no_single_period_does() {
+    use mfsk_core::Jt65;
+    let sigma: f32 = std::env::var("JT65_AVG_SIGMA")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.0);
+    let periods: Vec<Vec<f32>> = (0..6).map(|i| jt65_period(sigma, 100 + i)).collect();
+    let run = |averaging: bool| {
+        let mut p = DecodeParams::for_band((300.0, 2700.0)).depth(Depth::Deep);
+        p.averaging = averaging;
+        let mut d = Decoder::<Jt65>::new(p);
+        periods
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                d.decode(&SlotInput::f32(a).period(10 + 2 * i as i64))
+                    .rows
+                    .into_iter()
+                    .map(|r| {
+                        if std::env::var_os("JT65_AVG_DEBUG").is_some() {
+                            eprintln!(
+                                "  p{i} {} f={:.1} dt={:.2}",
+                                r.decoded.text, r.decoded.freq_hz, r.decoded.dt_sec
+                            );
+                        }
+                        r.decoded.text
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let off = run(false);
+    let on = run(true);
+    eprintln!("sigma {sigma}: off {off:?}\n on {on:?}");
+    assert!(
+        off.iter().all(|r| r.is_empty()),
+        "single periods decoded: {off:?}"
+    );
+    assert!(on[0].is_empty(), "one period cannot average");
+    assert!(
+        on.iter()
+            .skip(1)
+            .any(|r| r.iter().any(|t| t == "CQ K1ABC FN42")),
+        "averaging decoded nothing: {on:?}"
+    );
+    assert!(
+        on.iter().all(|r| r.len() <= 1),
+        "a frame came back twice: {on:?}"
+    );
+}
+
+/// One strong frame is one row. The repeat test compared a saved result's
+/// unpadded start with a candidate's padded one, so it never matched and the
+/// same frame came back once per coarse candidate around it (8 rows).
+#[test]
+fn jt65_one_frame_is_one_row() {
+    use mfsk_core::Jt65;
+    let a = jt65_period(0.05, 7);
+    let mut d = Decoder::<Jt65>::new(DecodeParams::for_band((300.0, 2700.0)).depth(Depth::Deep));
+    let rows = d.decode(&SlotInput::f32(&a)).rows;
+    assert_eq!(
+        rows.len(),
+        1,
+        "{:?}",
+        rows.iter().map(|r| &r.decoded.text).collect::<Vec<_>>()
+    );
+}

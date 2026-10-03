@@ -51,6 +51,7 @@ pub struct DecodeRequest<'a> {
     params: SearchParams,
     chase: Option<ChaseParams>,
     npass: u8,
+    averager: Option<(&'a mut super::averaging::Averager, i64, f32)>,
     on_result: Option<&'a (dyn Fn(&Jt65Result) + Sync)>,
 }
 
@@ -65,6 +66,7 @@ impl<'a> DecodeRequest<'a> {
             params: default_search_params(),
             chase: None,
             npass: 1,
+            averager: None,
             on_result: None,
         }
     }
@@ -109,6 +111,19 @@ impl<'a> DecodeRequest<'a> {
         self
     }
 
+    /// Message averaging (`ndepth & 16`, [`super::averaging`]): a candidate the
+    /// single period fails on is saved under `period` and tried against the
+    /// saved periods within `ntol_hz` of its frequency.
+    pub fn average(
+        mut self,
+        averager: &'a mut super::averaging::Averager,
+        period: i64,
+        ntol_hz: f32,
+    ) -> Self {
+        self.averager = Some((averager, period, ntol_hz));
+        self
+    }
+
     /// Fire `cb` once per candidate as it's accepted, *in addition to*
     /// (not instead of) `decode()`'s returned `Vec` — same shape as
     /// `crate::msg::decode_request::DecodeRequest::on_result`.
@@ -122,7 +137,7 @@ impl<'a> DecodeRequest<'a> {
         self
     }
 
-    pub fn decode(&self) -> Vec<Jt65Result> {
+    pub fn decode(&mut self) -> Vec<Jt65Result> {
         super::decode_scan_inner(
             self.audio,
             self.sample_rate,
@@ -130,6 +145,7 @@ impl<'a> DecodeRequest<'a> {
             &self.params,
             self.chase.as_ref(),
             self.npass,
+            self.averager.as_mut().map(|(a, p, n)| (&mut **a, *p, *n)),
             self.on_result,
         )
     }

@@ -310,6 +310,18 @@ pub(super) fn decode_at_with_chase(
     base_freq_hz: f32,
     params: &ChaseParams,
 ) -> Option<(Jt72Message, f32, [u8; 12])> {
+    decode_demod_with_chase(
+        rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?,
+        params,
+    )
+}
+
+/// [`decode_at_with_chase`] from decisions already made: one period's, or the
+/// power sum of several (`avg65`, see [`super::averaging`]).
+pub(super) fn decode_demod_with_chase(
+    demod: rx::Jt65Demod,
+    params: &ChaseParams,
+) -> Option<(Jt72Message, f32, [u8; 12])> {
     let rx::Jt65Demod {
         symbols,
         conf,
@@ -317,7 +329,7 @@ pub(super) fn decode_at_with_chase(
         rel,
         raw_pwr,
         snr_db,
-    } = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?;
+    } = demod;
 
     let rs = Rs63_12::new();
 

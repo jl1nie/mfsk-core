@@ -107,6 +107,7 @@ use crate::msg::Jt72Codec;
 // `--features <mode>` alone still builds. TX and the const tables stay
 // unconditional, the same split `wspr::mod` uses.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod averaging;
 pub mod chase;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 #[cfg(any(feature = "internal-testing", test))]
@@ -337,6 +338,7 @@ fn decode_scan_inner(
     params: &search::SearchParams,
     chase: Option<&chase::ChaseParams>,
     npass: u8,
+    mut averager: Option<(&mut averaging::Averager, i64, f32)>,
     on_result: Option<&(dyn Fn(&Jt65Result) + Sync)>,
 ) -> Vec<Jt65Result> {
     use crate::engine::ModulationParams;
@@ -371,6 +373,22 @@ fn decode_scan_inner(
                 }
                 None => decode_at_with_snr(work, sample_rate, c.start_sample, c.freq_hz),
             };
+            // `jt65_decode.f90:236-262`: a candidate the single period does
+            // not decode is tried against the saved periods (`avg65`).
+            let decoded = decoded.or_else(|| {
+                let (av, period, ntol) = averager.as_mut()?;
+                let demod = rx::demodulate_aligned(work, sample_rate, c.start_sample, c.freq_hz)?;
+                let dt = (c.start_sample as f32 - nominal_start_sample as f32) / sample_rate as f32;
+                let default_chase = chase::ChaseParams::default();
+                av.try_average(
+                    *period,
+                    dt,
+                    c.freq_hz,
+                    *ntol,
+                    demod,
+                    chase.unwrap_or(&default_chase),
+                )
+            });
             let Some((msg, snr_db, info)) = decoded else {
                 continue;
             };
@@ -383,11 +401,21 @@ fn decode_scan_inner(
                 &(msg.clone(), c.freq_hz, c.start_sample as i64),
                 |r| &r.message,
                 |r| r.freq_hz,
-                |r| r.start_sample as i64,
+                // Saved results are in the caller's coordinates, candidates in the
+                // padded ones (`pad` front silence): compare in the padded ones.
+                // Without the `+ pad` no repeat ever matched and one strong frame
+                // came back once per candidate around it (8 rows, #283 onwards).
+                |r| (r.start_sample + pad) as i64,
                 |(m, _, _)| m,
                 |(_, f, _)| *f,
                 |(_, _, t)| *t,
-                2.0,
+                // A strong frame decodes from every coarse candidate around it
+                // (the Chase search tolerates a bin or two of misalignment): one
+                // frame returned the same row 8 times at ±2 Hz. Upstream drops a
+                // repeated text outright (`jt65_decode.f90:213-218`); 10 Hz keeps
+                // two stations of one text apart (the golden's five carriers are
+                // 400 Hz apart).
+                10.0,
                 nsps as i64,
             );
             if !dup {
