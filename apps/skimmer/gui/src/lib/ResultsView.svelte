@@ -19,11 +19,18 @@
     void load();
   });
 
+  let seq = 0;
   async function load() {
+    const mine = ++seq;
     try {
       error = '';
-      if (view === 'stations') stations = await api.dbStations(dir, q, LIMIT.stations);
-      else decodes = await api.dbDecodes(dir, q, LIMIT.decodes);
+      if (view === 'stations') {
+        const r = await api.dbStations(dir, q, LIMIT.stations);
+        if (mine === seq) stations = r;
+      } else {
+        const r = await api.dbDecodes(dir, q, LIMIT.decodes);
+        if (mine === seq) decodes = r;
+      }
     } catch (e) {
       error = String(e);
     }

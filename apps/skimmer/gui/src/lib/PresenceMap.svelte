@@ -18,10 +18,13 @@
     void load();
   });
 
+  let seq = 0;
   async function load() {
+    const mine = ++seq;
     try {
       error = '';
-      rows = await api.dbActivity(dir, { ...q, call: `^${escapeRe(call)}$` });
+      const r = await api.dbActivity(dir, { ...q, call: `^${escapeRe(call)}$` });
+      if (mine === seq) rows = r;
     } catch (e) {
       error = String(e);
     }

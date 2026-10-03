@@ -14,12 +14,15 @@
     void load();
   });
 
+  let seq = 0;
   async function load() {
+    const mine = ++seq;
     const span = until - Math.max(since, until - 90 * 86400);
     const bucket = Math.max(60, Math.round(span / 240 / 60) * 60);
     try {
       error = '';
-      pts = await api.dbDt(dir, bucket, Math.max(since, until - 90 * 86400), until);
+      const r = await api.dbDt(dir, bucket, Math.max(since, until - 90 * 86400), until);
+      if (mine === seq) pts = r;
     } catch (e) {
       error = String(e);
     }

@@ -771,4 +771,17 @@ mod tests {
         assert_eq!(Reader::open(&p).unwrap().span().unwrap().2, 1);
         let _ = std::fs::remove_file(&p);
     }
+
+    /// The JSON the GUI sends (camelCase, nulls for unset fields) is the query.
+    #[test]
+    fn query_from_the_gui_json() {
+        let q: Query = serde_json::from_str(
+            r#"{"since":0,"until":9,"me":"PM95","call":"","grid":"","text":"","bands":[],"modes":["FT8"],
+                "snrMin":null,"snrMax":-20,"kmMin":null,"kmMax":null,"bearingFrom":300,"bearingTo":60,"cq":null}"#,
+        )
+        .unwrap();
+        assert_eq!((q.snr_min, q.snr_max), (None, Some(-20)));
+        assert_eq!((q.bearing_from, q.bearing_to), (Some(300.0), Some(60.0)));
+        assert_eq!(q.modes, vec!["FT8".to_string()]);
+    }
 }

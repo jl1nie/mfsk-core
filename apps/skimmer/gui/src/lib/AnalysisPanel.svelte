@@ -49,7 +49,10 @@
     rev++;
   }
 
+  /** A read that is not the latest is dropped: a slow one must not overwrite a newer answer. */
+  let seq = 0;
   async function load() {
+    const mine = ++seq;
     nowMs = Date.now();
     const next = toQuery(form, me, nowMs);
     try {
@@ -60,12 +63,16 @@
     }
     try {
       const [sp, bs, sm] = await Promise.all([api.dbSpan(dir), api.dbBands(dir), api.dbSummary(dir, next)]);
+      if (mine !== seq) return;
       span = sp;
       bands = bs;
       summary = sm;
+      const act = tab === 'results' ? await api.dbActivity(dir, next) : null;
+      const pts = tab === 'map' ? await api.dbPoints(dir, next, slice) : null;
+      if (mine !== seq) return;
       q = next;
-      if (tab === 'results') activity = await api.dbActivity(dir, next);
-      if (tab === 'map') points = await api.dbPoints(dir, next, slice);
+      if (act) activity = act;
+      if (pts) points = pts;
     } catch (e) {
       const m = String(e);
       error = m.includes('unable to open')
