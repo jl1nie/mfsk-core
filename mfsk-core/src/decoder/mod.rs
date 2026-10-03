@@ -27,6 +27,19 @@
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 mod frame;
 mod params;
+#[cfg(feature = "q65")]
+mod q65;
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
+mod slow;
+
+#[cfg(feature = "q65")]
+pub use q65::{MAX_AVERAGED_PERIODS, Q65Extras, Q65State};
+#[cfg(feature = "jt9")]
+pub use slow::Jt9Extras;
+#[cfg(feature = "jt65")]
+pub use slow::Jt65Extras;
+#[cfg(feature = "wspr")]
+pub use slow::{WsprExtras, WsprState};
 
 #[cfg(feature = "fst4")]
 pub use crate::msg::decode_request::NoiseBlanker;
@@ -36,6 +49,8 @@ pub use frame::{
     MessageFilter, Sniper, Tuning,
 };
 
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
+pub use params::SearchTuning;
 pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, Station};
 
 use alloc::vec::Vec;

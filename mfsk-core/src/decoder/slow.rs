@@ -1,0 +1,268 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! [`Decodable`] for the modes whose engines work on `f32` audio and whose
+//! messages are not the 77-bit frame: WSPR, JT9 and JT65 (Q65 has its own
+//! module). Also the [`SearchTuning`] they share.
+//!
+//! What each keeps across periods is what its upstream decoder keeps:
+//! WSPR's callsign table (`wsprd`'s `hashtable`, which is what lets OSD
+//! confirm a station Fano has already heard), and nothing for JT9 and
+//! JT65 outside averaging, which JT65 gains with its depth port. Their
+//! 72-bit messages carry no hashed calls.
+//!
+//! [`Depth`] reaches each engine as far as the engine exposes it today; the
+//! rest of upstream's per-depth behaviour is ported mode by mode and
+//! recorded in that mode's module documentation as it lands.
+
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
+use alloc::vec::Vec;
+
+#[cfg(feature = "jt9")]
+use super::Depth;
+use super::{Audio, DecodeParams, SearchTuning};
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
+use super::{Decodable, OnRow, Row, SlotInput, SlotResult};
+
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
+/// `f32` audio at the level the engines take (full scale is 1.0): an `i16`
+/// period is divided by 32768, an `f32` one is used as is.
+fn f32_audio<'a>(audio: Audio<'a>, owned: &'a mut Vec<f32>) -> &'a [f32] {
+    match audio {
+        Audio::F32(a) => a,
+        Audio::I16(a) => {
+            owned.clear();
+            owned.extend(a.iter().map(|&v| f32::from(v) / 32_768.0));
+            owned
+        }
+    }
+}
+
+/// Samples from the period's start to the frame's `dt = 0`.
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
+fn nominal_start(mode: crate::Mode) -> usize {
+    #[cfg(not(feature = "std"))]
+    #[allow(unused_imports)]
+    use num_traits::Float;
+    (mode.meta().tx_start_offset_s * 12_000.0).round() as usize
+}
+
+// ── WSPR ─────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "wspr")]
+mod wspr_impl {
+    use super::*;
+    use crate::wspr::{DecodeRequest, Wspr, WsprCallsignTable, WsprResult};
+
+    /// WSPR's library options.
+    #[derive(Clone, Debug, Default)]
+    pub struct WsprExtras {
+        pub search: SearchTuning,
+    }
+
+    /// WSPR's cross-period state: wsprd's callsign table.
+    #[derive(Default)]
+    pub struct WsprState {
+        table: WsprCallsignTable,
+    }
+
+    impl WsprState {
+        pub fn table(&self) -> &WsprCallsignTable {
+            &self.table
+        }
+    }
+
+    impl Decodable for Wspr {
+        const MODE: crate::Mode = crate::Mode::Wspr;
+        type State = WsprState;
+        type Extras = WsprExtras;
+        type Row = WsprResult;
+
+        fn __decode(
+            params: &DecodeParams,
+            extras: &WsprExtras,
+            state: &mut WsprState,
+            slot: &SlotInput<'_>,
+            on_row: Option<OnRow<'_, WsprResult>>,
+        ) -> SlotResult<WsprResult> {
+            let mut owned = Vec::new();
+            let audio = f32_audio(slot.audio, &mut owned);
+            let search = extras
+                .search
+                .apply(crate::wspr::search::default_search_params(), params);
+            let cb = on_row.map(|f| {
+                move |r: &WsprResult| {
+                    f(&Row {
+                        decoded: r.to_decoded(),
+                        native: r.clone(),
+                    })
+                }
+            });
+            let mut req = DecodeRequest::new(audio, 12_000)
+                .nominal_start(nominal_start(crate::Mode::Wspr))
+                .params(search)
+                .table(&mut state.table);
+            if let Some(cb) = cb.as_ref() {
+                req = req.on_result(cb);
+            }
+            let rows = req
+                .decode()
+                .into_iter()
+                .map(|r| Row {
+                    decoded: r.to_decoded(),
+                    native: r,
+                })
+                .collect();
+            SlotResult {
+                rows,
+                budget: Default::default(),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "wspr")]
+pub use wspr_impl::{WsprExtras, WsprState};
+
+// ── JT9 ──────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "jt9")]
+mod jt9_impl {
+    use super::*;
+    use crate::jt9::{DecodeRequest, Jt9, Jt9Depth, Jt9Result};
+
+    /// JT9's library options.
+    #[derive(Clone, Debug, Default)]
+    pub struct Jt9Extras {
+        pub search: SearchTuning,
+    }
+
+    /// `jt9_decode.f90:83-100`: the Fano `limit` 5000 / 10000 / 30000 for
+    /// `ndepth` 1 / 2 / 3.
+    fn limit(depth: Depth) -> Jt9Depth {
+        match depth {
+            Depth::Fast => Jt9Depth::Fast,
+            Depth::Normal => Jt9Depth::Normal,
+            Depth::Deep => Jt9Depth::Deep,
+        }
+    }
+
+    impl Decodable for Jt9 {
+        const MODE: crate::Mode = crate::Mode::Jt9;
+        type State = ();
+        type Extras = Jt9Extras;
+        type Row = Jt9Result;
+
+        fn __decode(
+            params: &DecodeParams,
+            extras: &Jt9Extras,
+            _state: &mut (),
+            slot: &SlotInput<'_>,
+            on_row: Option<OnRow<'_, Jt9Result>>,
+        ) -> SlotResult<Jt9Result> {
+            let mut owned = Vec::new();
+            let audio = f32_audio(slot.audio, &mut owned);
+            let search = extras
+                .search
+                .apply(crate::jt9::search::default_search_params(), params);
+            let cb = on_row.map(|f| {
+                move |r: &Jt9Result| {
+                    f(&Row {
+                        decoded: r.to_decoded(),
+                        native: r.clone(),
+                    })
+                }
+            });
+            let mut req = DecodeRequest::new(audio, 12_000)
+                .nominal_start(nominal_start(crate::Mode::Jt9))
+                .params(search)
+                .depth(limit(params.depth));
+            if let Some(cb) = cb.as_ref() {
+                req = req.on_result(cb);
+            }
+            let rows = req
+                .decode()
+                .into_iter()
+                .map(|r| Row {
+                    decoded: r.to_decoded(),
+                    native: r,
+                })
+                .collect();
+            SlotResult {
+                rows,
+                budget: Default::default(),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "jt9")]
+pub use jt9_impl::Jt9Extras;
+
+// ── JT65 ─────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "jt65")]
+mod jt65_impl {
+    use super::*;
+    use crate::jt65::{ChaseParams, DecodeRequest, Jt65, Jt65Result};
+
+    /// JT65's library options.
+    #[derive(Clone, Debug, Default)]
+    pub struct Jt65Extras {
+        pub search: SearchTuning,
+        /// The stochastic Chase decoder after the hard-decision one
+        /// (`jt65_decode.f90`'s `nvec` trials); off by default.
+        pub chase: Option<ChaseParams>,
+    }
+
+    impl Decodable for Jt65 {
+        const MODE: crate::Mode = crate::Mode::Jt65;
+        type State = ();
+        type Extras = Jt65Extras;
+        type Row = Jt65Result;
+
+        fn __decode(
+            params: &DecodeParams,
+            extras: &Jt65Extras,
+            _state: &mut (),
+            slot: &SlotInput<'_>,
+            on_row: Option<OnRow<'_, Jt65Result>>,
+        ) -> SlotResult<Jt65Result> {
+            let mut owned = Vec::new();
+            let audio = f32_audio(slot.audio, &mut owned);
+            let search = extras
+                .search
+                .apply(crate::jt65::search::default_search_params(), params);
+            let cb = on_row.map(|f| {
+                move |r: &Jt65Result| {
+                    f(&Row {
+                        decoded: r.to_decoded(),
+                        native: r.clone(),
+                    })
+                }
+            });
+            let mut req = DecodeRequest::new(audio, 12_000)
+                .nominal_start(nominal_start(crate::Mode::Jt65))
+                .params(search);
+            if let Some(c) = extras.chase.clone() {
+                req = req.chase(c);
+            }
+            if let Some(cb) = cb.as_ref() {
+                req = req.on_result(cb);
+            }
+            let rows = req
+                .decode()
+                .into_iter()
+                .map(|r| Row {
+                    decoded: r.to_decoded(),
+                    native: r,
+                })
+                .collect();
+            SlotResult {
+                rows,
+                budget: Default::default(),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "jt65")]
+pub use jt65_impl::Jt65Extras;

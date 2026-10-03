@@ -1635,64 +1635,57 @@ fn decode_averaged_plain_for<P: ModulationParams>(
     )
 }
 
-/// Multi-period averaging Q65 decode for sub-mode `P`. Mirrors WSJT-X's
-/// `iavg=1`/`iavg=2` averaged-decode path from
-/// [`q65_decode.f90`](https://sourceforge.net/p/wsjt/wsjtx/ci/main/tree/lib/q65_decode.f90)
-/// — the strategy that lets ionoscatter and weak EME signals decode
-/// when single-period BP/fading cannot.
-///
-/// The function processes the slots in order, maintaining an
-/// **exponential moving average** of the per-slot spectrogram with
-/// time constant `min(navg, 4)` (`u = 1.0 / min(i+1, 4)`, matching the
-/// `lib/qra/q65/q65.f90:300-304` accumulator). At each slot the
-/// running-average spectrogram drives a coarse sync search, and for
-/// every surviving candidate a 3-stage decode ladder is tried
-/// against energies averaged across all slots seen so far:
-///
-/// 1. **AP-list** — when `ap_codewords.is_some()`. Mirrors `iavg=1`'s
-///    q3 path. Cheap relative to the rest, included when caller has a
-///    plausible call/grid pair (see [`super::ap_list::standard_qso_codewords`]).
-/// 2. **Fast-fading metric BP** — sweeps `b90·Ts ∈ {3, 8, 15}` ×
-///    `{Gaussian, Lorentzian}`. Covers the realistic ionoscatter +
-///    EME spread regimes.
-/// 3. **Plain Bessel BP** — last-resort AWGN-only fallback.
-///
-/// Returns at most one decode per slot (the first one that succeeds
-/// at any stage), deduped by `(message, ±4 Hz freq)` so a stable QSO
-/// call only counts once. Single-period decodes are *not* re-run
-/// inside this function — callers who want them should call
-/// [`decode_scan_for`] / [`decode_scan_fading_for`] separately.
-///
-/// Empty `audio_slots` returns an empty Vec.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_multi_period_for<P: ModulationParams>(
-    audio_slots: &[&[f32]],
-    sample_rate: u32,
-    nominal_start_sample: usize,
-    params: &super::search::SearchParams,
-    ap_codewords: Option<&[[i32; 63]]>,
-    q3: Option<super::q3::Q3Params>,
-    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
-    ctx: &DecodeContext,
-) -> Vec<Q65Result> {
-    use super::search::{build_spectrogram, coarse_search_on_spec_for};
+/// What a Q65 decoder keeps across periods to average them: the running
+/// exponential average of the symbol spectra (WSJT-X's `s1a`, weight
+/// `1 / min(navg, 4)`), the q3 averaged spectra, and the periods' audio
+/// (the narrow-band energies are re-extracted from all of them).
+#[derive(Default)]
+pub(crate) struct MultiPeriod {
+    ema_spec: Option<super::search::Spectrogram>,
+    q3_avg: Option<super::q3::AveragedSpectra>,
+    history: Vec<Vec<f32>>,
+}
 
-    let mut output: Vec<Q65Result> = Vec::new();
-    if audio_slots.is_empty() {
-        return output;
+impl MultiPeriod {
+    /// Drop the oldest periods' audio beyond `max`. Their weight in the
+    /// spectra average has long decayed (`0.75^k` after navg 4).
+    pub(crate) fn forget_beyond(&mut self, max: usize) {
+        let extra = self.history.len().saturating_sub(max);
+        self.history.drain(..extra);
     }
 
-    // Initialise EMA from slot 0.
-    let mut ema_spec = build_spectrogram::<P>(audio_slots[0], sample_rate);
-    if ema_spec.n_time == 0 {
-        return output;
-    }
+    /// One more period: update the averages and decode against them. At most
+    /// one decode, the first stage that succeeds, as the batch form returns
+    /// per period.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step<P: ModulationParams>(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        nominal_start_sample: usize,
+        params: &super::search::SearchParams,
+        ap_codewords: Option<&[[i32; 63]]>,
+        q3: Option<super::q3::Q3Params>,
+        ctx: &DecodeContext,
+    ) -> Option<Q65Result> {
+        use super::search::{build_spectrogram, coarse_search_on_spec_for};
 
-    let b90_ladder = [3.0_f32, 8.0, 15.0];
-    let fading_models = [FadingModel::Gaussian, FadingModel::Lorentzian];
-    let mut q3_avg = q3.map(|_| super::q3::AveragedSpectra::new());
+        let i = self.history.len();
+        if self.ema_spec.is_none() {
+            // Initialise the average from the first period.
+            let spec = build_spectrogram::<P>(audio, sample_rate);
+            if spec.n_time == 0 {
+                return None;
+            }
+            self.ema_spec = Some(spec);
+        }
+        let ema_spec = self.ema_spec.as_mut()?;
+        let b90_ladder = [3.0_f32, 8.0, 15.0];
+        let fading_models = [FadingModel::Gaussian, FadingModel::Lorentzian];
+        if q3.is_some() && self.q3_avg.is_none() {
+            self.q3_avg = Some(super::q3::AveragedSpectra::new());
+        }
 
-    for (i, &audio) in audio_slots.iter().enumerate() {
         if i > 0 {
             let slot_spec = build_spectrogram::<P>(audio, sample_rate);
             // EMA update: weight = 1 / min(navg, 4) — matches WSJT-X's
@@ -1719,7 +1712,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
         // q3 decode on the averaged `s1a` at the Rx frequency, before the
         // rest of the ladder. One result a slot, as everywhere below.
         let mut slot_decode: Option<Q65Result> = None;
-        if let (Some(codewords), Some(q3p), Some(avg)) = (ap_codewords, q3, q3_avg.as_mut()) {
+        if let (Some(codewords), Some(q3p), Some(avg)) = (ap_codewords, q3, self.q3_avg.as_mut()) {
             avg.push::<P>(audio, sample_rate, q3p.slot_start);
             slot_decode =
                 super::q3::decode_q3_averaged::<P>(avg, audio, sample_rate, q3p, codewords, ctx);
@@ -1728,10 +1721,12 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
         let candidates = if slot_decode.is_some() {
             Vec::new()
         } else {
-            coarse_search_on_spec_for::<P>(&ema_spec, sample_rate, nominal_start_sample, params)
+            coarse_search_on_spec_for::<P>(ema_spec, sample_rate, nominal_start_sample, params)
         };
 
-        let history = &audio_slots[..=i];
+        self.history.push(audio.to_vec());
+        let history_refs: Vec<&[f32]> = self.history.iter().map(Vec::as_slice).collect();
+        let history = history_refs.as_slice();
 
         'candidate_loop: for cand in candidates {
             // Narrow energies feed both Stage B and Stage C-plain below
@@ -1846,7 +1841,67 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
             }
         }
 
-        if let Some(d) = slot_decode {
+        slot_decode
+    }
+}
+
+/// Multi-period averaging Q65 decode for sub-mode `P`. Mirrors WSJT-X's
+/// `iavg=1`/`iavg=2` averaged-decode path from
+/// [`q65_decode.f90`](https://sourceforge.net/p/wsjt/wsjtx/ci/main/tree/lib/q65_decode.f90)
+/// — the strategy that lets ionoscatter and weak EME signals decode
+/// when single-period BP/fading cannot.
+///
+/// The function processes the slots in order, maintaining an
+/// **exponential moving average** of the per-slot spectrogram with
+/// time constant `min(navg, 4)` (`u = 1.0 / min(i+1, 4)`, matching the
+/// `lib/qra/q65/q65.f90:300-304` accumulator). At each slot the
+/// running-average spectrogram drives a coarse sync search, and for
+/// every surviving candidate a 3-stage decode ladder is tried
+/// against energies averaged across all slots seen so far:
+///
+/// 1. **AP-list** — when `ap_codewords.is_some()`. Mirrors `iavg=1`'s
+///    q3 path. Cheap relative to the rest, included when caller has a
+///    plausible call/grid pair (see [`super::ap_list::standard_qso_codewords`]).
+/// 2. **Fast-fading metric BP** — sweeps `b90·Ts ∈ {3, 8, 15}` ×
+///    `{Gaussian, Lorentzian}`. Covers the realistic ionoscatter +
+///    EME spread regimes.
+/// 3. **Plain Bessel BP** — last-resort AWGN-only fallback.
+///
+/// Returns at most one decode per slot (the first one that succeeds
+/// at any stage), deduped by `(message, ±4 Hz freq)` so a stable QSO
+/// call only counts once. Single-period decodes are *not* re-run
+/// inside this function — callers who want them should call
+/// [`decode_scan_for`] / [`decode_scan_fading_for`] separately.
+///
+/// Empty `audio_slots` returns an empty Vec.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_multi_period_for<P: ModulationParams>(
+    audio_slots: &[&[f32]],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &super::search::SearchParams,
+    ap_codewords: Option<&[[i32; 63]]>,
+    q3: Option<super::q3::Q3Params>,
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    ctx: &DecodeContext,
+) -> Vec<Q65Result> {
+    let mut output: Vec<Q65Result> = Vec::new();
+    let mut mp = MultiPeriod::default();
+    for &audio in audio_slots {
+        let step = mp.step::<P>(
+            audio,
+            sample_rate,
+            nominal_start_sample,
+            params,
+            ap_codewords,
+            q3,
+            ctx,
+        );
+        if mp.ema_spec.is_none() {
+            // The first period has no usable spectrogram: nothing to average.
+            break;
+        }
+        if let Some(d) = step {
             let dup = output
                 .iter()
                 .any(|prev| prev.message == d.message && (prev.freq_hz - d.freq_hz).abs() <= 4.0);
@@ -1858,7 +1913,6 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
             }
         }
     }
-
     output
 }
 

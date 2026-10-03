@@ -253,3 +253,40 @@ impl DecodeParams {
         self
     }
 }
+
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
+/// Search settings the library overrides on top of the parameter block's
+/// band. `None` keeps the mode's default.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SearchTuning {
+    pub time_tolerance_early_sec: Option<f32>,
+    pub time_tolerance_late_sec: Option<f32>,
+    pub score_threshold: Option<f32>,
+    pub max_candidates: Option<usize>,
+}
+
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
+impl SearchTuning {
+    /// `base` with the block's band and these overrides.
+    pub(crate) fn apply(
+        &self,
+        mut base: crate::engine::search::SearchParams,
+        params: &DecodeParams,
+    ) -> crate::engine::search::SearchParams {
+        base.freq_min_hz = params.band_hz.0;
+        base.freq_max_hz = params.band_hz.1;
+        if let Some(v) = self.time_tolerance_early_sec {
+            base.time_tolerance_early_sec = v;
+        }
+        if let Some(v) = self.time_tolerance_late_sec {
+            base.time_tolerance_late_sec = v;
+        }
+        if let Some(v) = self.score_threshold {
+            base.score_threshold = v;
+        }
+        if let Some(v) = self.max_candidates {
+            base.max_candidates = v;
+        }
+        base
+    }
+}

@@ -66,7 +66,7 @@ use crate::engine::{FrameLayout, ModulationParams};
 /// refcount bump regardless of how many entries the table holds, so
 /// this is cheap to call once per `decode()` even for a session-long
 /// table that's grown to hundreds of entries.
-fn ctx_from_hash_table(hash_table: Option<&Arc<CallsignHashTable>>) -> DecodeContext {
+pub(crate) fn ctx_from_hash_table(hash_table: Option<&Arc<CallsignHashTable>>) -> DecodeContext {
     DecodeContext {
         callsign_hash_table: hash_table
             .map(|ht| Arc::clone(ht) as Arc<dyn core::any::Any + Send + Sync>),

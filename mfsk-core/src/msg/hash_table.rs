@@ -331,6 +331,15 @@ impl CallsignHashTable {
         }
     }
 
+    /// Learn every callsign-like word of a decoded message's text, as
+    /// WSJT-X's `save_hash_call` does for the fields of each decode. Words
+    /// that are not callsigns (`CQ`, `RRR`, grids and reports shorter than a
+    /// call, `<...>`) are skipped by [`Self::insert`].
+    pub fn learn(&mut self, text: &str) {
+        for word in text.split_whitespace() {
+            self.insert(word);
+        }
+    }
     /// Look up a 10-bit hash. Returns the callsign if found.
     pub fn lookup10(&self, n10: u32) -> Option<&str> {
         #[cfg(not(feature = "hash-table-small"))]
