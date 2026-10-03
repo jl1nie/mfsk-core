@@ -9,7 +9,8 @@
 use alloc::vec::Vec;
 
 use super::{
-    Audio, BudgetReport, DecodeParams, Decoder, OnRow, Row, SlotInput, SlotResult, default_params,
+    Audio, BudgetReport, DecodeParams, Decoder, OnRow, Row, RowDetail, SlotInput, SlotResult,
+    default_params,
 };
 use crate::msg::{ApHint, Decoded};
 use crate::registry::Mode;
@@ -35,12 +36,21 @@ impl std::error::Error for Unsupported {}
 pub struct AnySlotResult {
     /// In the order they were found.
     pub rows: Vec<Decoded>,
+    /// What each row carries beyond the common one; same order and length
+    /// as [`Self::rows`].
+    pub details: Vec<RowDetail>,
     pub budget: BudgetReport,
 }
 
 fn erase<R>(r: SlotResult<R>) -> AnySlotResult {
+    let (rows, details) = r
+        .rows
+        .into_iter()
+        .map(|row| (row.decoded, row.detail))
+        .unzip();
     AnySlotResult {
-        rows: r.rows.into_iter().map(|row| row.decoded).collect(),
+        rows,
+        details,
         budget: r.budget,
     }
 }
@@ -120,14 +130,30 @@ macro_rules! any_decoder {
             pub fn decode_with(
                 &mut self,
                 slot: &SlotInput<'_>,
-                on_row: &(dyn Fn(&Decoded) + Sync),
+                on_row: &(dyn Fn(&Decoded, &RowDetail) + Sync),
             ) -> AnySlotResult {
                 match self {
                     $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => {
-                        let cb = |row: &Row<_>| on_row(&row.decoded);
+                        let cb = |row: &Row<_>| on_row(&row.decoded, &row.detail);
                         let cb: OnRow<'_, _> = &cb;
                         erase(d.decode_with(slot, cb))
                     } )*
+                }
+            }
+
+            /// A packed 77-bit message as text, `<...>` resolved against this
+            /// decoder's callsign table.
+            pub fn unpack77(&self, msg77: &[u8]) -> Option<alloc::string::String> {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => d.unpack77(msg77), )*
+                }
+            }
+
+            /// Teach the decoder's hash table a callsign; `false` if the mode
+            /// has no hashed calls to resolve.
+            pub fn learn_callsign(&mut self, call: &str) -> bool {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => d.learn_callsign(call), )*
                 }
             }
 

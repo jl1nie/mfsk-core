@@ -19,7 +19,7 @@
 //! `#![no_std]`, zero dependencies: this crate holds plain data
 //! definitions only, no allocation logic. Each consuming crate (which
 //! already has its own `alloc`/`std` capability) implements the
-//! `_new`/`_free` allocation logic for [`MfskDecodeOptions`] itself,
+//! `_new`/`_free` allocation logic for `MfskDecoder` itself,
 //! casting to/from a private inner struct — the same opaque-handle
 //! pattern `mfsk-ffi`'s own `MfskDecoder` already established.
 //!
@@ -34,7 +34,6 @@
 
 #![no_std]
 
-use core::ffi::c_char;
 use core::marker::PhantomData;
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -79,187 +78,6 @@ pub enum MfskStatus {
     /// are unchanged, so this is additive: a caller switching on the
     /// values it knows falls through to its default case.
     Unsupported = -6,
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Decode depth
-// ──────────────────────────────────────────────────────────────────────────
-
-/// Decode cost/recall tradeoff, shared across every protocol both FFI
-/// crates expose — mirrors `mfsk_core`'s generic
-/// `engine::pipeline::DecodeDepth` (`BP_ONLY` / `FULL`).
-///
-/// Discriminant `0` is intentionally unassigned — FT8's pre-0.7.0
-/// single-metric `Bp` rung was retired (issue #74); existing callers
-/// passing `1`/`2` remain valid.
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum MfskDecodeDepth {
-    /// Whatever the mode publishes as its default.
-    ///
-    /// Discriminant 0 used to be deliberately unassigned, which made a
-    /// `memset`-to-zero options struct carry an invalid discriminant —
-    /// harmless as a C int, undefined the moment Rust reads it as an
-    /// enum. Giving 0 a meaning removes that edge and makes the
-    /// obvious C idiom mean the obvious thing.
-    ModeDefault = 0,
-    /// Full LLR-variant staircase + BP, no OSD fallback.
-    BpAll = 1,
-    /// Above + OSD fallback (host-only; a no-op on protocols/builds
-    /// without an OSD path).
-    BpAllOsd = 2,
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Strictness / equalisation (FFI builder-parity pass, issue #162 follow-up)
-// ──────────────────────────────────────────────────────────────────────────
-
-/// Accept/reject threshold profile, mirrors `mfsk_core`'s
-/// `engine::pipeline::DecodeStrictness`. Applies to FT8/FT4/FST4-60A;
-/// ignored (accepted but unused) for protocols with no tunable
-/// threshold, same convention as [`MfskDecodeDepth`].
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
-pub enum MfskStrictness {
-    /// Tightest acceptance thresholds, fewest false-accepts.
-    Strict = 0,
-    /// Default — WSJT-X's own ceiling for FT8; independently-tuned
-    /// values for FT4/FST4.
-    #[default]
-    Normal = 1,
-    /// Loosest; deliberately exceeds WSJT-X's own FT8 ceiling
-    /// (mfsk-core-original extension, exploratory).
-    Deep = 2,
-}
-
-/// Equalisation mode, mirrors `mfsk_core`'s `engine::equalize::EqMode`.
-/// Applies to FT8/FT4/FST4-60A; ignored elsewhere.
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
-pub enum MfskEqMode {
-    /// No equalisation (passthrough).
-    #[default]
-    Off = 0,
-    /// Per-signal equalisation using local Costas pilot tones.
-    Local = 1,
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Result record + list
-// ──────────────────────────────────────────────────────────────────────────
-
-/// Max UTF-8 bytes (excluding the NUL terminator) in [`MfskResult::text`].
-///
-/// Every protocol's decoded text runs through the shared 77-/72-/50-bit
-/// WSJT message layer, whose longest producible string (the DXpedition
-/// `"CALL1 RR73; CALL2 <...> REPORT"` format) stays well under this —
-/// see `msg::wsjt77::unpack77`'s doc comment for the token grammar.
-pub const MFSK_TEXT_CAP: usize = 39;
-
-/// Size of [`MfskResult::text`] in bytes (`MFSK_TEXT_CAP` + 1 for the
-/// NUL terminator) — for Rust-side use (`write_text`/`empty_result`
-/// helpers in the consuming crates). **Not** used in the `text` field
-/// below: cbindgen's cross-crate handling of a `pub use`-re-exported
-/// struct (this one, re-exported by `mfsk-ffi`) can't
-/// turn a named `usize` constant defined in this crate into a C
-/// `#define` the *consuming* crate's header can reference — it
-/// resolves the array length internally (falling back to an opaque,
-/// field-less forward declaration if it can't, as a compound
-/// `MFSK_TEXT_CAP + 1` expression did during issue #205's header
-/// verification) but never emits the constant itself into the
-/// generated `mfsk.h`/`mfsk_ft8.h`. The field below therefore uses a
-/// bare literal; the `const _` assertion keeps it in sync with this
-/// constant at compile time.
-pub const MFSK_TEXT_BUF_LEN: usize = MFSK_TEXT_CAP + 1;
-const _: () = assert!(MFSK_TEXT_BUF_LEN == 40);
-
-/// One successfully decoded message, shared shape across every
-/// protocol both FFI crates expose.
-///
-/// `text` is a fixed inline buffer (not a heap pointer): the whole
-/// [`MfskResultList`] is one allocation, freed in one call, with no
-/// per-message ownership to track — the model `mfsk-ffi-ft8` had
-/// used, now shared by `mfsk-ffi` too (issue #205; previously
-/// `mfsk-ffi`'s `MfskMessage` held a heap `CString` pointer per
-/// message instead).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct MfskResult {
-    /// NUL-terminated UTF-8 decoded message text. ASCII in practice.
-    ///
-    /// Length is [`MFSK_TEXT_BUF_LEN`] (`40`); written as a bare
-    /// literal here rather than the constant — see
-    /// [`MFSK_TEXT_BUF_LEN`]'s doc comment for why.
-    pub text: [c_char; 40],
-    /// Carrier (tone-0) frequency in Hz.
-    pub freq_hz: f32,
-    /// Time offset in seconds from the protocol's nominal frame start.
-    pub dt_sec: f32,
-    /// WSJT-X-compatible SNR estimate, dB (2500 Hz reference bandwidth).
-    pub snr_db: f32,
-    /// Hard-decision errors corrected by the FEC (0 if not applicable).
-    pub hard_errors: u32,
-    /// Decode pass/stage identifier; meaning is protocol-specific.
-    pub pass: u8,
-    /// Padding to keep the struct's layout stable across compilers.
-    pub _pad: [u8; 3],
-}
-
-/// List of decoded messages, owned by the FFI side. Free with the
-/// crate's `_result_list_free` function.
-#[repr(C)]
-pub struct MfskResultList {
-    /// Pointer to the first result, or null if `len == 0`.
-    pub items: *mut MfskResult,
-    /// Number of valid entries.
-    pub len: usize,
-    /// Total allocation length (private — only the free function
-    /// needs this; may exceed `len`).
-    pub _capacity: usize,
-}
-
-impl MfskResultList {
-    /// A zero-length list — the value every decode entry point writes
-    /// to `*out` before attempting to decode, so a caller who bails
-    /// out early on an error status still sees a well-formed
-    /// (free-safe, no-op) list rather than uninitialised memory.
-    pub const fn empty() -> Self {
-        Self {
-            items: core::ptr::null_mut(),
-            len: 0,
-            _capacity: 0,
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Decode options (opaque handle)
-// ──────────────────────────────────────────────────────────────────────────
-
-/// Opaque decode-tuning-options handle (issue #205) — construct with
-/// each crate's own `_options_new(...)`, release with
-/// `_options_free`.
-///
-/// Both FFI crates used to hardcode (or take
-/// entirely positionally, with no room to add more later) every
-/// decode-tuning knob. Wrapping them behind an opaque handle now means
-/// a future knob is a new, optional setter function — the options
-/// constructor and every decode function's signature stay stable
-/// forever; only additive growth on the setter side.
-///
-/// Zero-sized marker type + phantom pointer, matching the established
-/// `MfskDecoder` opaque-handle shape in `mfsk-ffi` — each consuming
-/// crate `Box`es its own private options struct and casts the raw
-/// pointer to/from this type. Defined once here purely so both
-/// crates' generated headers agree on the type name / pointer shape.
-/// Emitted as an incomplete type (`struct X;`) rather than a struct with a
-/// zero-length array member: `uint8_t _priv[0]` is a GCC/Clang extension
-/// that ISO C rejects (`-Werror=pedantic`), and MSVC accepts only under a
-/// warning. A pointer to an incomplete type is exactly as opaque, is
-/// standard in both C and C++, and is what every consumer already treats
-/// this as. Binary-compatible: the handle only ever crosses as a pointer.
-pub struct MfskDecodeOptions {
-    _marker: PhantomData<*mut ()>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -350,27 +168,6 @@ pub enum MfskMode {
     Jtty = 25,
 }
 
-/// How a mode's `sync_min` is measured — the trap this table exists to
-/// defuse.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum MfskSyncScale {
-    /// Absolute Costas correlation score. Noise has no fixed value, so
-    /// a threshold is empirical. FT8.
-    CostasAbsolute = 0,
-    /// The spectrum is divided by a fitted baseline before scoring, so
-    /// **noise sits at ~1.0 by construction** and any threshold at or
-    /// below that admits every peak in the band. FT4, and FST4 since
-    /// #554 — which is why WSJT-X's own values (FT4 1.18,
-    /// `ft4_decode.f90:195`; FST4 1.20, or 1.15 for FST4-15,
-    /// `fst4_decode.f90:308-309`) are floors rather than preferences.
-    BaselineNormalised = 1,
-    /// Sync power as a fraction of sync plus noise, so it lies in 0‥1:
-    /// noise scores near 0, a clean aligned frame near 1. WSPR, JT9,
-    /// JT65 and every Q65 sub-mode, whose shared default is 0.1.
-    SyncFraction = 2,
-}
-
 /// Geometry and capability for one mode. **Size-versioned**: set
 /// `size = sizeof(MfskModeInfo)` before the call, or pass a zeroed
 /// struct and the library fills `size` in. A library newer than the
@@ -443,30 +240,6 @@ pub struct MfskModeInfo {
     pub caps: u64,
 }
 
-/// A mode's default search parameters, published per mode instead of
-/// hidden in three incompatible branches of one function.
-///
-/// Size-versioned on the same contract as [`MfskModeInfo`].
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct MfskDecodeDefaults {
-    /// `sizeof(MfskDecodeDefaults)` as the caller understands it.
-    pub size: u32,
-    /// Low edge of the default search band, Hz.
-    pub freq_min_hz: f32,
-    /// High edge of the default search band, Hz.
-    pub freq_max_hz: f32,
-    /// Default sync threshold — **read `sync_scale` before copying this
-    /// number anywhere.**
-    pub sync_min: f32,
-    /// Default candidate budget.
-    pub max_cand: u32,
-    /// What scale `sync_min` is measured on. FT4's is not comparable
-    /// with FT8's or FST4's, and a caller that copies one across modes
-    /// is wrong with nothing to tell it so.
-    pub sync_scale: MfskSyncScale,
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // Decode parameters and result rows (FFI v2 slice 3)
 // ──────────────────────────────────────────────────────────────────────────
@@ -478,106 +251,136 @@ pub const MFSK_AP_FIELD_LEN: usize = 16;
 
 /// Capacity of [`MfskDecode::text`], including the NUL.
 ///
-/// Widened from the 40 that [`MfskResult`] carries. That number was the
+/// Widened from the 40 that the old `MfskResult` carried. That number was the
 /// longest WSJT-77 message plus one, which is true and was still too
 /// tight the moment a hash-resolved `<...>` callsign expands in place.
 pub const MFSK_DECODE_TEXT_LEN: usize = 64;
 
-/// Everything a decode can be asked to do, as one size-versioned
-/// struct passed by `const*`.
+/// The per-period parameter block, after WSJT-X's `params` common block
+/// (`lib/jt9com.f90`) — what the GUI fills before each period and the
+/// decoder reads. **Size-versioned**: initialise with
+/// `mfsk_params_init(mode, &p)`, which writes the mode's defaults, then
+/// override what you want. Every field is a plain integer or float (no
+/// `enum` or `bool`), so a value from a config file or a newer header is a
+/// wrong answer this ABI can refuse, never an invalid Rust value.
 ///
-/// This replaces an opaque handle with eight setter functions. Three
-/// reasons, in order of how much they matter:
-///
-/// 1. **The handle was unsound.** Its accessor fabricated a
-///    `&'static mut` from a raw pointer with no synchronisation, which
-///    is UB under Stacked Borrows the moment two setters' borrows
-///    overlap — single-threaded, never mind concurrently. A plain
-///    `#[repr(C)]` struct the caller owns has no such question.
-/// 2. **Marshalling.** Kotlin and Swift wrappers copy one struct
-///    instead of sequencing eight fallible calls.
-/// 3. **Growth is still safe**, via `size` — see [`MfskModeInfo`].
-///
-/// Initialise with `mfsk_decode_params_init(mode, &params)`, which
-/// fills in that mode's published defaults; then override what you
-/// want. Zeroing the struct by hand is *not* equivalent: a zero
-/// `max_cand` or a zero frequency band decodes nothing.
+/// A mode reads what its upstream decoder reads and ignores the rest, as
+/// `jt9` does; `depth` decides every search setting the way `ndepth` does.
+/// The library's own options are in [`MfskExtras`].
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct MfskDecodeParams {
-    /// `sizeof(MfskDecodeParams)` as the caller understands it.
+pub struct MfskParams {
+    /// `sizeof(MfskParams)` as the caller understands it.
     pub size: u32,
-    /// Low edge of the search band, Hz.
-    pub freq_min_hz: f32,
-    /// High edge of the search band, Hz.
-    pub freq_max_hz: f32,
-    /// Sync threshold. **Not comparable across modes** — see
-    /// `MfskDecodeDefaults::sync_scale`.
-    pub sync_min: f32,
-    /// Candidate budget.
-    pub max_cand: u32,
-    /// Cost/recall rung.
-    pub depth: MfskDecodeDepth,
-    /// Accept/reject threshold profile.
-    pub strictness: MfskStrictness,
-    /// Equalisation. A property of the *input audio* — it flattens a
-    /// passband an analogue filter has tilted — not of the search, so
-    /// it belongs here rather than only on a narrow-band call.
-    pub eq_mode: MfskEqMode,
-    /// Prioritise candidates near this frequency. NaN means unset,
-    /// which is what `mfsk_decode_params_init` writes.
-    pub freq_hint_hz: f32,
-    /// Successive-interference-cancellation rounds, 0 for none.
-    /// Requires `MFSK_CAP_SIC_ROUNDS`.
-    pub sic_rounds: u8,
-    /// Checkpoint-emulation early decode. Requires `MFSK_CAP_SIC_EARLY`.
-    pub sic_early: bool,
-    /// Whether the three `ap_*` fields below carry a hint.
-    pub has_ap_hint: bool,
-    /// A-priori hint: the transmitting station, NUL-terminated, or
-    /// empty. Requires `MFSK_CAP_AP_WIDEBAND` (or `_AP_NARROW` on a
-    /// narrow-band call).
-    pub ap_call1: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// A-priori hint: the correspondent, or `"CQ"`.
-    pub ap_call2: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// A-priori hint: the grid square.
-    pub ap_grid: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// Half-width of a narrow-band search, Hz; 0 for the mode's
-    /// default. Only meaningful with `MFSK_CAP_SNIPER`.
-    pub search_hz: f32,
-    /// The operator's transmit frequency, Hz (WSJT-X's `nftx`). NaN means
-    /// unset, which is what `mfsk_decode_params_init` writes. FT8 tries an
-    /// a-priori hypothesis that locks both callsigns within 50 Hz of it as
-    /// well as of `freq_hint_hz`. Requires `MFSK_CAP_TX_FREQ` (FT8 alone),
-    /// and the wide-band search — a narrow-band call has no use for it.
+    /// `MFSK_DEPTH_*`: `ndepth & 7`. 0 is the default, Deep (the GUI's).
+    pub depth: u32,
+    /// `MFSK_PARAM_*` bits: averaging (`ndepth & 16`, JT65 and Q65), deep
+    /// search (`ndepth & 32`, JT65), EME delay (`emedelay`).
+    pub flags: u32,
+    /// `MFSK_AP_*`: AP off, CQ only (`lapcqonly`), or every hypothesis the
+    /// QSO context allows. `mfsk_params_init` writes the mode's own default
+    /// (off for FT8 and JT65, as the GUI's "Enable AP" boxes).
+    pub ap_mode: u32,
+    /// `MFSK_CONTEST_*`: `ncontest`.
+    pub contest: u32,
+    /// `nQSOProgress`, 0..=5: CALLING, REPLYING, REPORT, ROGER_REPORT,
+    /// ROGERS, SIGNOFF.
+    pub qso_progress: u32,
+    /// Low edge of the audio band searched, Hz (`nfa`).
+    pub band_lo_hz: f32,
+    /// High edge, Hz (`nfb`).
+    pub band_hi_hz: f32,
+    /// The Rx frequency, Hz (`nfqso`). NaN is unset.
+    pub rx_freq_hz: f32,
+    /// Tolerance around the Rx frequency, Hz (`ntol`). NaN is unset.
+    pub tol_hz: f32,
+    /// The Tx frequency, Hz (`nftx`). NaN is unset.
     pub tx_freq_hz: f32,
-    /// Half-width, Hz, of the window every blanked pass searches around
-    /// `freq_hint_hz` (WSJT-X's F Tol, `ntol`). Read only when
-    /// `nb_sweep_step` is non-zero, and then it must be positive: there is
-    /// no default to inherit, so `mfsk_decode_params_init` writes 0.
+    /// `mycall`, NUL-terminated, or empty.
+    pub mycall: [core::ffi::c_char; 16],
+    /// `mygrid`.
+    pub mygrid: [core::ffi::c_char; 8],
+    /// `hiscall`.
+    pub hiscall: [core::ffi::c_char; 16],
+    /// `hisgrid`.
+    pub hisgrid: [core::ffi::c_char; 8],
+}
+
+/// The library's options beyond the parameter block, per mode. **Size-
+/// versioned**; initialise with `mfsk_extras_init`, which writes "unset"
+/// everywhere (NaN for a float, 0 for a count, -1 for a choice that has a
+/// default), then set what you want. An option the mode does not have is
+/// refused with `MFSK_STATUS_UNSUPPORTED`, naming it, never dropped.
+/// `mfsk_decoder_set_extras` replaces the whole block, so what you leave
+/// unset goes back to the depth's value.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskExtras {
+    /// `sizeof(MfskExtras)` as the caller understands it.
+    pub size: u32,
+    /// Sync threshold over the depth's. NaN is the depth's. **Not
+    /// comparable across modes.**
+    pub sync_min: f32,
+    /// Candidate budget over the depth's. 0 is the depth's.
+    pub max_cand: u32,
+    /// OSD over the depth's: -1 the depth's, 0 off, 1 on.
+    pub osd: i32,
+    /// Accept/reject profile: -1 default, 0 strict, 1 normal, 2 deep.
+    pub strictness: i32,
+    /// `MFSK_STRATEGY_*`: 0 the depth's, 1 one pass, 2 `sic_rounds` rounds
+    /// of subtraction, 3 the checkpointed passes (FT8).
+    pub strategy: u32,
+    /// Rounds for `MFSK_STRATEGY_SIC_ROUNDS`.
+    pub sic_rounds: u32,
+    /// 0 off, 1 local per-signal equalisation. A property of the audio.
+    pub eq_mode: u32,
+    /// 0 the protocol's own message filter, 1 the codec's verdict alone.
+    pub message_filter: u32,
+    /// Non-zero turns on FT8's a7 list decoder (`ft8_a7.f90`), fed by the
+    /// decoder's own decodes two periods back. Needs a period index.
+    pub a7: u32,
+    /// Half-width of FT8's roofing-filter search around the Rx frequency,
+    /// Hz; 0 is the wide-band search.
+    pub sniper_hz: f32,
+    /// Non-zero when the four `ap_*` fields carry a free-form hint, beside
+    /// the QSO-context AP (it wins when given): the message's fields in
+    /// order, `ap_call1` being `"CQ"` for a CQ.
+    pub has_ap_hint: u32,
+    /// See `has_ap_hint`.
+    pub ap_call1: [core::ffi::c_char; 16],
+    /// See `has_ap_hint`.
+    pub ap_call2: [core::ffi::c_char; 16],
+    /// See `has_ap_hint`.
+    pub ap_grid: [core::ffi::c_char; 16],
+    /// See `has_ap_hint`: `"RRR"`, `"RR73"`, `"73"` or a report.
+    pub ap_report: [core::ffi::c_char; 16],
+    /// FST4 noise blanker, percent (`0..=25`); 0 off.
+    pub nb_percent: u32,
+    /// FST4: non-zero decodes once per blanking level; 5, 2 or 1.
+    pub nb_sweep_step: u32,
+    /// FST4: half-width of the blanked passes' window around the Rx
+    /// frequency, Hz. Needed with `nb_sweep_step`.
     pub nb_ftol_hz: f32,
-    /// Impulse-noise blanker, percent of the loudest samples blanked
-    /// (`0..=25`, the GUI's range; more is refused rather than clamped).
-    /// 0 — the default, as WSJT-X's — blanks nothing. Requires
-    /// `MFSK_CAP_NOISE_BLANKER` (every FST4 sub-mode) when non-zero.
-    pub nb_percent: u8,
-    /// Non-zero decodes once per blanking level `0, step, 2*step, .. 20`
-    /// percent instead of at one level: 5, 2 or 1 (the GUI offers 5 and 2).
-    /// Overrides `nb_percent`. Every level above 0 searches only within
-    /// `nb_ftol_hz` of `freq_hint_hz`, so without a hint only the 0 % pass
-    /// runs; up to 21 decodes. Requires `MFSK_CAP_NOISE_BLANKER`.
-    pub nb_sweep_step: u8,
-    /// One pass, no subtraction, in place of the mode's default strategy.
-    /// Since 0.12.0 FT8 subtracts by default (`sic_early`) and FT4 does too
-    /// (`sic_rounds` 3), as WSJT-X does. This asks for the single pass
-    /// instead. Refused together with `sic_rounds` or `sic_early`. On a mode
-    /// that already decodes in one pass it changes nothing. It takes one
-    /// byte of what was padding, so the struct's size and every other
-    /// offset are unchanged, and a caller that zeroed the padding gets the
-    /// default.
-    pub single_pass: bool,
-    /// Padding to keep the struct's layout stable across compilers.
-    pub _pad2: [u8; 1],
+    /// WSPR, JT9, JT65 and Q65: how far before the nominal start a frame may
+    /// begin, seconds. NaN is the mode's own.
+    pub t_early_s: f32,
+    /// As `t_early_s`, after the nominal start.
+    pub t_late_s: f32,
+    /// As `t_early_s`: coarse-sync acceptance, 0..1.
+    pub score_threshold: f32,
+    /// WSPR: Fano cycles per bit (`wsprd -C`); 0 is the depth's.
+    pub max_cycles_per_bit: u32,
+    /// JT65: Chase trials (`nvec`); 0 is the depth's.
+    pub chase_trials: u32,
+    /// Q65 Pileup: a reply carrying "copied last Tx" matches an AP hint.
+    pub pileup: u32,
+    /// Q65 Max Drift in spectrum bins (`0..=50`); 0 off.
+    pub max_drift: u32,
+    /// Q65 fast-fading metric: spread bandwidth times symbol period. NaN
+    /// is the plain metric.
+    pub fading_b90_ts: f32,
+    /// Q65: 0 Gaussian, 1 Lorentzian. Read only with `fading_b90_ts`.
+    pub fading_model: u32,
 }
 
 /// One decoded transmission, written into caller memory.
@@ -636,21 +439,15 @@ pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
 /// WSJT-X marks such a decode with `#`. Q65 rows only.
 pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
 
-/// Opaque decode-session handle (FFI v2).
+/// Opaque decoder handle: one persistent decoder of one mode, driven once
+/// per period like WSJT-X's own (`jt9 -s`).
 ///
-/// Deliberately **not** the same type as `MfskDecoder`, the pre-v2
-/// handle: the two own different Rust values, and a `MfskDecoder*` that
-/// wandered into `mfsk_session_close` (or the reverse) would be
-/// undefined behaviour that no compiler had any way to notice. Distinct
-/// incomplete types make that a C type error instead, which is what the
-/// legacy surface's own history argues for — it is being retired in
-/// part because a handle whose meaning depends on which function you
-/// pass it to is exactly the failure mode this redesign exists to end.
-///
-/// "Session" rather than "decoder" because it is the right word for
-/// what it owns: a callsign hash table and the previous slot's rows,
-/// both of which only mean anything across more than one call.
-pub struct MfskDecodeSession {
+/// It owns what upstream keeps across periods and nothing else: the
+/// callsign hash table (never shared with another decoder, as upstream's
+/// is not), FT8's a7 list, Q65's and JT65's averages, WSPR's call table.
+/// Emitted as an incomplete type, so a `MfskDecoder*` cannot wander into a
+/// call that wants another handle.
+pub struct MfskDecoder {
     _marker: PhantomData<*mut ()>,
 }
 
@@ -737,6 +534,9 @@ pub struct MfskIqDecode {
     pub has_utc: u32,
     /// RF frequency of tone 0, Hz: the channel's dial plus `freq_hz`.
     pub abs_freq_hz: f64,
+    /// The slot's index on the mode's UTC grid (UTC `period * T` with a
+    /// clock set, counted from sample 0 without one).
+    pub period: i64,
     /// Index (of the IQ stream, complex samples) the slot started at.
     pub slot_start_sample: u64,
     /// UTC of the slot start, ns since the Unix epoch, when `has_utc`.
@@ -760,7 +560,7 @@ pub struct MfskIqReceiver {
 
 /// The JTTY receiver handle.
 ///
-/// Emitted as an incomplete type, like [`MfskDecodeOptions`]; the receiver is
+/// Emitted as an incomplete type, like `MfskDecoder`; the receiver is
 /// what `mfsk_jtty_open` allocates.
 pub struct MfskJttyReceiver {
     _marker: PhantomData<*mut ()>,
@@ -769,94 +569,6 @@ pub struct MfskJttyReceiver {
 // ──────────────────────────────────────────────────────────────────────────
 // Q65 extended decode (#466)
 // ──────────────────────────────────────────────────────────────────────────
-
-/// Search and strategy settings for `mfsk_q65_decode_ex`. **Size-versioned**,
-/// like `MfskModeInfo`: call `mfsk_q65_params_init(mode, &p)` first, which
-/// fills in the library's own defaults, then override what you want.
-///
-/// Every flag is a `uint32_t` (non-zero is on) and every float that can be
-/// absent is NaN when it is, so an out-of-range value from C is a wrong
-/// answer this ABI can refuse rather than an invalid Rust `bool` or enum.
-/// A setting the request cannot honour together with the others is refused
-/// at the call, not dropped — see `mfsk_q65_decode_ex`.
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct MfskQ65Params {
-    /// `sizeof(MfskQ65Params)` as the caller understands it.
-    pub size: u32,
-    /// Low edge of the frequency search, Hz. Default 200.
-    pub freq_min_hz: f32,
-    /// High edge of the frequency search, Hz. Default 3000.
-    pub freq_max_hz: f32,
-    /// Where `dt = 0` is in the sample buffer, seconds: the nominal frame
-    /// start. `mfsk_q65_params_init` writes the mode's `tx_start_offset_s`
-    /// (0.5 s, or 1.0 s from Q65-120), which is right for a buffer that
-    /// begins at the slot boundary. It also places the period the Max Drift
-    /// search normalises over and the q3 decode's slot start, so it has to
-    /// be true and not merely convenient.
-    pub nominal_start_s: f32,
-    /// How far before `nominal_start_s` a frame may start, seconds.
-    /// Default 1.0, WSJT-X's own `lag1`.
-    pub t_early_s: f32,
-    /// How far after, seconds. Default 1.0 (`lag2`); `eme_delay` widens it.
-    pub t_late_s: f32,
-    /// Coarse-sync acceptance, as a fraction of sync plus noise (0..1).
-    /// Default 0.1.
-    pub score_threshold: f32,
-    /// Candidate budget. Default 8.
-    pub max_cand: u32,
-    /// Non-zero: WSJT-X 3.2's **Q65 Pileup** decode. An AP hint naming both
-    /// callsigns and nothing after them leaves the spare 78th bit free, so a
-    /// reply carrying the "copied last Tx" flag still matches it. Needs
-    /// `has_ap_hint`.
-    pub pileup: u32,
-    /// Non-zero: WSJT-X's **EME delay** ("Decode at 52 s"): the search
-    /// reaches +5.5 s past the nominal start (+4.0 s on Q65-15) instead of
-    /// `t_late_s`. Widens the late edge, never narrows it.
-    pub eme_delay: u32,
-    /// WSJT-X's **Max Drift** in spectrum bins (`0..=50`, upstream steps by
-    /// 5; 0 is off): search a linear tone drift across the frame at every
-    /// sync candidate and take it out before decoding. Costs `2*bins+1` times
-    /// the plain search, so narrow the frequency window to match. Applies to
-    /// the plain scan, the AP-hint scan and the q3 decode.
-    pub max_drift: u32,
-    /// The Rx frequency (tone 0), Hz — WSJT-X's `nfqso`: where the q3 list
-    /// decode looks. NaN is unset. Needs `ap_list`.
-    pub rx_freq_hz: f32,
-    /// WSJT-X's F Tol around `rx_freq_hz`, Hz. Default 10.
-    pub ftol_hz: f32,
-    /// Fast-fading metric: spread bandwidth times symbol period (typical
-    /// 0.05 near-AWGN, 1.0 moderate, 5+ severe). NaN, the default, is the
-    /// plain AWGN metric. Excludes `ap_list`.
-    pub fading_b90_ts: f32,
-    /// `MfskQ65FadingModel` as an integer: 0 Gaussian (libration-limited
-    /// EME, WSJT-X's default), 1 Lorentzian. Read only with `fading_b90_ts`.
-    pub fading_model: u32,
-    /// Full-AP list decoding: 0 none, 1 the standard QSO list for
-    /// `list_my_call` / `list_his_call` / `list_his_grid`, 2 the contest list
-    /// for `list_my_call` plus the `MfskQ65Callers` handle passed to the
-    /// call (and `list_his_*` if there is a DX station too). With
-    /// `rx_freq_hz` set it is WSJT-X's **q3** decode, run first at the Rx
-    /// frequency; without it, template matching at every coarse candidate.
-    pub ap_list: u32,
-    /// Non-zero when the four `ap_*` fields below carry a hint.
-    pub has_ap_hint: u32,
-    /// A-priori hint, as `MfskDecodeParams`'s: the message's fields in order,
-    /// `ap_call1` being `"CQ"` for a CQ and not the transmitting station.
-    pub ap_call1: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// See `ap_call1`.
-    pub ap_call2: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// See `ap_call1`.
-    pub ap_grid: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// The report the hint may carry, e.g. `"-15"`.
-    pub ap_report: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// Your call, for the `ap_list` lists.
-    pub list_my_call: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// The DX station's call, for the `ap_list` lists.
-    pub list_his_call: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-    /// The DX station's grid (may be empty), for the `ap_list` lists.
-    pub list_his_grid: [core::ffi::c_char; MFSK_AP_FIELD_LEN],
-}
 
 /// The DX station `mfsk_q65_history_lookup` found — `q65_hist`'s `dxcall` and
 /// `dxgrid`. **Size-versioned.**
@@ -892,7 +604,7 @@ pub struct MfskQ65Caller {
 
 /// The 100 most recent Q65 decodes and their frequencies — `q65_hist`. Used
 /// to find the DX call on a "Decode Again" with none entered. Emitted as an
-/// incomplete type, like [`MfskDecodeOptions`]. **Not thread-safe.**
+/// incomplete type, like `MfskDecoder`. **Not thread-safe.**
 pub struct MfskQ65History {
     _marker: PhantomData<*mut ()>,
 }

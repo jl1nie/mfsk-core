@@ -29,24 +29,32 @@ pub fn blank_row() -> MfskDecode {
     }
 }
 
-/// `mode`'s published defaults.
-pub fn params(mode: MfskMode) -> MfskDecodeParams {
-    let mut p = std::mem::MaybeUninit::<MfskDecodeParams>::zeroed();
+/// `mode`'s defaults.
+pub fn params(mode: MfskMode) -> MfskParams {
+    let mut p = std::mem::MaybeUninit::<MfskParams>::zeroed();
     assert_eq!(
-        unsafe { mfsk_decode_params_init(mode as u32, p.as_mut_ptr()) },
+        unsafe { mfsk_params_init(mode as u32, p.as_mut_ptr()) },
         MfskStatus::Ok,
         "{mode:?} has no defaults to initialise from"
     );
     unsafe { p.assume_init() }
 }
 
-/// Open a session, asserting it succeeded.
-pub fn open(mode: MfskMode, p: Option<&MfskDecodeParams>) -> *mut MfskDecodeSession {
+/// Every option unset.
+pub fn extras() -> MfskExtras {
+    let mut e = std::mem::MaybeUninit::<MfskExtras>::zeroed();
+    assert_eq!(unsafe { mfsk_extras_init(e.as_mut_ptr()) }, MfskStatus::Ok);
+    unsafe { e.assume_init() }
+}
+
+/// Open a decoder, asserting it succeeded.
+pub fn open(mode: MfskMode, p: Option<&MfskParams>, e: Option<&MfskExtras>) -> *mut MfskDecoder {
     let mut st = MfskStatus::Internal;
     let d = unsafe {
-        mfsk_session_open(
+        mfsk_decoder_open(
             mode as u32,
             p.map(|p| p as *const _).unwrap_or(std::ptr::null()),
+            e.map(|e| e as *const _).unwrap_or(std::ptr::null()),
             &mut st,
         )
     };
@@ -62,25 +70,21 @@ pub fn text_of(r: &MfskDecode) -> String {
     String::from_utf8_lossy(&b[..end]).into_owned()
 }
 
-/// Decode i16 PCM through a session, returning the rows.
-pub fn decode_i16(dec: *mut MfskDecodeSession, audio: &[i16]) -> Vec<MfskDecode> {
-    decode_i16_with(dec, audio, None)
+/// Decode one period of i16 PCM, returning the rows.
+pub fn decode_i16(dec: *mut MfskDecoder, audio: &[i16]) -> Vec<MfskDecode> {
+    decode_i16_at(dec, audio, MFSK_PERIOD_NONE)
 }
 
-pub fn decode_i16_with(
-    dec: *mut MfskDecodeSession,
-    audio: &[i16],
-    p: Option<&MfskDecodeParams>,
-) -> Vec<MfskDecode> {
+pub fn decode_i16_at(dec: *mut MfskDecoder, audio: &[i16], period: i64) -> Vec<MfskDecode> {
     let mut rows = vec![blank_row(); 64];
     let mut n = 0usize;
     let st = unsafe {
-        mfsk_session_decode_i16(
+        mfsk_decoder_decode_i16(
             dec,
             audio.as_ptr(),
             audio.len(),
             FS,
-            p.map(|p| p as *const _).unwrap_or(std::ptr::null()),
+            period,
             rows.as_mut_ptr(),
             rows.len(),
             &mut n,
@@ -91,16 +95,16 @@ pub fn decode_i16_with(
     rows
 }
 
-pub fn decode_f32(dec: *mut MfskDecodeSession, audio: &[f32]) -> Vec<MfskDecode> {
+pub fn decode_f32(dec: *mut MfskDecoder, audio: &[f32]) -> Vec<MfskDecode> {
     let mut rows = vec![blank_row(); 64];
     let mut n = 0usize;
     let st = unsafe {
-        mfsk_session_decode_f32(
+        mfsk_decoder_decode_f32(
             dec,
             audio.as_ptr(),
             audio.len(),
             FS,
-            std::ptr::null(),
+            MFSK_PERIOD_NONE,
             rows.as_mut_ptr(),
             rows.len(),
             &mut n,
@@ -119,20 +123,22 @@ pub fn any_contains(rows: &[MfskDecode], needle: &str) -> bool {
     rows.iter().any(|r| text_of(r).contains(needle))
 }
 
-/// Set an AP hint on a params struct.
-pub fn with_ap(p: &mut MfskDecodeParams, call1: &str, call2: &str, grid: &str) {
-    fn put(dst: &mut [std::ffi::c_char], s: &str) {
-        let b = s.as_bytes();
-        let n = b.len().min(dst.len() - 1);
-        for (d, &c) in dst.iter_mut().zip(&b[..n]) {
-            *d = c as std::ffi::c_char;
-        }
-        dst[n] = 0;
+/// Write a NUL-terminated string into a fixed C field.
+pub fn put(dst: &mut [std::ffi::c_char], s: &str) {
+    let b = s.as_bytes();
+    let n = b.len().min(dst.len() - 1);
+    for (d, &c) in dst.iter_mut().zip(&b[..n]) {
+        *d = c as std::ffi::c_char;
     }
-    p.has_ap_hint = true;
-    put(&mut p.ap_call1, call1);
-    put(&mut p.ap_call2, call2);
-    put(&mut p.ap_grid, grid);
+    dst[n] = 0;
+}
+
+/// Set a free-form AP hint on an extras struct.
+pub fn with_ap(e: &mut MfskExtras, call1: &str, call2: &str, grid: &str) {
+    e.has_ap_hint = 1;
+    put(&mut e.ap_call1, call1);
+    put(&mut e.ap_call2, call2);
+    put(&mut e.ap_grid, grid);
 }
 
 /// Synthesise a frame through the three-stage TX pipeline, as i16 PCM.

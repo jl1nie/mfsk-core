@@ -33,7 +33,8 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use super::{
-    Audio, Decodable, DecodeParams, Depth, F32_TO_I16_RMS, OnRow, Row, SlotInput, SlotResult,
+    Audio, Decodable, DecodeParams, Depth, F32_TO_I16_RMS, OnRow, Row, RowDetail, SlotInput,
+    SlotResult,
 };
 use crate::engine::equalize::EqMode;
 use crate::engine::pipeline::{DecodeResult, DecodeStrictness};
@@ -392,6 +393,20 @@ where
     req
 }
 
+/// The row detail of a frame-family result; `resolved` is whether its text
+/// needed the hash table.
+fn detail_of(r: &DecodeResult, resolved: bool) -> RowDetail {
+    RowDetail {
+        sync_score: r.sync_score,
+        sync_cv: r.sync_cv,
+        hard_errors: r.hard_errors,
+        pass: r.pass,
+        info: r.info.to_vec(),
+        hash_resolved: resolved,
+        copied_last_tx: false,
+    }
+}
+
 /// Turn the engine's results into rows: resolve each against the table,
 /// then learn from it, in decode order (`unpack77_learn`).
 fn rows<P: Protocol>(
@@ -401,7 +416,13 @@ fn rows<P: Protocol>(
     results
         .into_iter()
         .filter_map(|r| {
+            // Resolve before learning: a message must not resolve its own hash
+            // against a call it introduces (`unpack77_learn`). The plain text
+            // is what it would read with no table, so a difference means the
+            // table resolved a `<...>`.
+            let plain = crate::msg::wsjt77::unpack77(r.message77());
             let text = unpack77_learn(r.message77(), table)?;
+            let resolved = plain.as_deref() != Some(text.as_str());
             Some(Row {
                 decoded: Decoded {
                     text,
@@ -410,6 +431,7 @@ fn rows<P: Protocol>(
                     snr_db: r.snr_db,
                     protocol: P::ID,
                 },
+                detail: detail_of(&r, resolved),
                 native: r,
             })
         })
@@ -456,6 +478,8 @@ where
     let wrapped = on_row.map(|cb| {
         move |r: &DecodeResult| {
             if let Some(text) = unpack77_with_hash(r.message77(), table) {
+                let resolved =
+                    crate::msg::wsjt77::unpack77(r.message77()).as_deref() != Some(text.as_str());
                 cb(&Row {
                     decoded: Decoded {
                         text,
@@ -464,6 +488,7 @@ where
                         snr_db: r.snr_db,
                         protocol: P::ID,
                     },
+                    detail: detail_of(r, resolved),
                     native: r.clone(),
                 });
             }
@@ -528,6 +553,15 @@ impl Decodable for crate::Ft8 {
     type State = FrameState;
     type Extras = Ft8Extras;
     type Row = DecodeResult;
+
+    fn __learn(state: &mut FrameState, call: &str) -> bool {
+        state.table.insert(call);
+        true
+    }
+
+    fn __unpack77(state: &FrameState, msg77: &[u8]) -> Option<alloc::string::String> {
+        unpack77_with_hash(msg77, &state.table)
+    }
 
     fn __decode(
         params: &DecodeParams,
@@ -609,6 +643,15 @@ impl Decodable for crate::Ft4 {
     type Extras = Ft4Extras;
     type Row = DecodeResult;
 
+    fn __learn(state: &mut FrameState, call: &str) -> bool {
+        state.table.insert(call);
+        true
+    }
+
+    fn __unpack77(state: &FrameState, msg77: &[u8]) -> Option<alloc::string::String> {
+        unpack77_with_hash(msg77, &state.table)
+    }
+
     fn __decode(
         params: &DecodeParams,
         extras: &Ft4Extras,
@@ -649,6 +692,15 @@ macro_rules! fst4_decodable {
             type State = FrameState;
             type Extras = Fst4Extras;
             type Row = DecodeResult;
+
+            fn __learn(state: &mut FrameState, call: &str) -> bool {
+                state.table.insert(call);
+                true
+            }
+
+            fn __unpack77(state: &FrameState, msg77: &[u8]) -> Option<alloc::string::String> {
+                unpack77_with_hash(msg77, &state.table)
+            }
 
             fn __decode(
                 params: &DecodeParams,

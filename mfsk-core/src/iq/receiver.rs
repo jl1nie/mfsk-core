@@ -42,7 +42,7 @@ use alloc::vec::Vec;
 use super::{IqError, IqStream, IqToAudio, PfbChannelizer, check_placement};
 use crate::decoder::SlotInput;
 use crate::registry::{Mode, ProtocolMeta};
-use crate::slotgrid::{ClockChange, SampleClock, SlotGrid};
+use crate::slotgrid::{ClockChange, SampleClock, SlotCutter, SlotGrid};
 
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
@@ -52,9 +52,6 @@ use num_traits::Float;
 const BLOCK: usize = 8_192;
 /// RMS the slot is scaled to, in `i16` units.
 const TARGET_RMS: f32 = 2_000.0;
-/// Samples of each channel's audio kept so a slot can start before the
-/// previous one ended: 0.2 s, which covers 400 ppm of a 300 s slot.
-const OVERLAP: usize = 2_400;
 
 /// How an [`IqReceiver`] turns IQ into each channel's audio. Both meet the
 /// same 120 dB selectivity and give the decoders the same audio (the IQ
@@ -130,134 +127,59 @@ impl CompletedSlot {
     }
 }
 
-struct OpenSlot {
-    buf: Vec<f32>,
-    start_k: u64,
-    j: i64,
-    utc_ns: Option<i64>,
-}
-
 struct Channel {
     id: ChannelId,
     dial_hz: f64,
     mode: Mode,
     meta: &'static ProtocolMeta,
-    grid: SlotGrid,
+    cutter: SlotCutter<f32>,
     state: ChannelState,
     /// `Some` on the `Direct` path while active; `None` when the shared bank
     /// feeds it or it is paused.
     fe: Option<IqToAudio>,
     /// Its index in the shared bank, on the `Pfb` path while active.
     bank_idx: usize,
-    /// Audio index of the next sample this channel will emit.
-    k_next: u64,
-    slot: Option<OpenSlot>,
-    /// The last slot that ran to its end: its index and the sample after it.
-    last: Option<(i64, u64)>,
-    /// The last [`OVERLAP`] samples of this channel's audio.
-    hist: Vec<f32>,
     scratch: Vec<f32>,
 }
 
 impl Channel {
-    /// Feed `self.scratch` (the audio just produced); completed slots go to
-    /// `out`.
-    fn feed(&mut self, clock: &SampleClock, fs: u32, out: &mut Vec<CompletedSlot>) {
-        let audio = core::mem::take(&mut self.scratch);
-        let slot_len = self.meta.slot_samples_12k as usize;
-        let anchor = clock.anchor_ns();
-        let (mut pos, mut k) = (0usize, self.k_next);
-        let end_k = k + audio.len() as u64;
-        while pos < audio.len() {
-            match self.slot.as_mut() {
-                None => {
-                    let a = anchor.unwrap_or(0);
-                    let (j, mut start_k) = match self.last {
-                        Some((p, e)) => self
-                            .grid
-                            .follow(p, e, a, OVERLAP as u64)
-                            .unwrap_or_else(|| self.grid.next_start(k, a)),
-                        None => self.grid.next_start(k, a),
-                    };
-                    if start_k >= end_k {
-                        break;
-                    }
-                    let mut buf = Vec::with_capacity(slot_len);
-                    if start_k < k {
-                        // The slot starts in audio already consumed: take it
-                        // from the kept history, or from this block's head.
-                        let need = (k - start_k) as usize;
-                        let from_block = need.min(pos);
-                        let from_hist = need - from_block;
-                        if from_hist > self.hist.len() {
-                            start_k = k;
-                        } else {
-                            buf.extend_from_slice(&self.hist[self.hist.len() - from_hist..]);
-                            buf.extend_from_slice(&audio[pos - from_block..pos]);
-                        }
-                    } else {
-                        pos += (start_k - k) as usize;
-                        k = start_k;
-                    }
-                    self.slot = Some(OpenSlot {
-                        buf,
-                        start_k,
-                        j,
-                        utc_ns: anchor.map(|_| (j as i128 * self.grid_period_ns()) as i64),
-                    });
-                }
-                Some(s) => {
-                    let take = (slot_len - s.buf.len()).min(audio.len() - pos);
-                    s.buf.extend_from_slice(&audio[pos..pos + take]);
-                    pos += take;
-                    k += take as u64;
-                    if s.buf.len() == slot_len {
-                        let done = self.slot.take().expect("just matched");
-                        self.last = Some((done.j, done.start_k + slot_len as u64));
-                        self.complete(done, fs, out);
-                    }
-                }
-            }
-        }
-        // Keep the tail for the next block's overlap.
-        self.hist.extend_from_slice(&audio);
-        let extra = self.hist.len().saturating_sub(OVERLAP);
-        self.hist.drain(..extra);
-        self.k_next = end_k;
-        self.scratch = audio;
-        self.scratch.clear();
-    }
-
     fn grid_period_ns(&self) -> i128 {
         (self.meta.t_slot_s * 10.0).round() as i128 * 100_000_000
     }
 
-    fn complete(&self, slot: OpenSlot, fs: u32, out: &mut Vec<CompletedSlot>) {
-        let n = slot.buf.len() as f32;
-        let rms = (slot.buf.iter().map(|v| v * v).sum::<f32>() / n).sqrt();
-        // Silence, or NaN from a broken input: nothing to decode.
-        if rms.is_nan() || rms <= 0.0 {
-            return;
-        }
-        let g = TARGET_RMS / 32_768.0 / rms;
-        out.push(CompletedSlot {
-            channel: self.id,
-            mode: self.mode,
-            dial_hz: self.dial_hz,
-            period: slot.j,
-            start_sample: (slot.start_k as u128 * fs as u128 / 12_000) as u64,
-            utc_ns: slot.utc_ns,
-            audio: slot.buf.iter().map(|&v| v * g).collect(),
+    /// Feed `self.scratch` (the audio just produced); completed slots go to
+    /// `out`.
+    fn feed(&mut self, clock: &SampleClock, fs: u32, out: &mut Vec<CompletedSlot>) {
+        let audio = core::mem::take(&mut self.scratch);
+        let anchor = clock.anchor_ns();
+        let (id, mode, dial_hz) = (self.id, self.mode, self.dial_hz);
+        let period_ns = self.grid_period_ns();
+        self.cutter.feed(anchor, &audio, |j, start_k, buf| {
+            let n = buf.len() as f32;
+            let rms = (buf.iter().map(|v| v * v).sum::<f32>() / n).sqrt();
+            // Silence, or NaN from a broken input: nothing to decode.
+            if rms.is_nan() || rms <= 0.0 {
+                return;
+            }
+            let g = TARGET_RMS / 32_768.0 / rms;
+            out.push(CompletedSlot {
+                channel: id,
+                mode,
+                dial_hz,
+                period: j,
+                start_sample: (start_k as u128 * fs as u128 / 12_000) as u64,
+                utc_ns: anchor.map(|_| (j as i128 * period_ns) as i64),
+                audio: buf.iter().map(|&v| v * g).collect(),
+            });
         });
+        self.scratch = audio;
+        self.scratch.clear();
     }
 
     /// Forget the open slot and the continuity: the next slot is found from
     /// the clock again, at audio index `k`.
     fn restart(&mut self, k: u64) {
-        self.slot = None;
-        self.last = None;
-        self.hist.clear();
-        self.k_next = k;
+        self.cutter.restart(k);
     }
 }
 
@@ -339,14 +261,13 @@ impl IqReceiver {
             dial_hz,
             mode,
             meta,
-            grid: SlotGrid::new((meta.t_slot_s * 10.0).round() as i64 * 100_000_000, 12_000),
+            cutter: SlotCutter::new(
+                SlotGrid::new((meta.t_slot_s * 10.0).round() as i64 * 100_000_000, 12_000),
+                k_next,
+            ),
             state: ChannelState::Active,
             fe,
             bank_idx,
-            k_next,
-            slot: None,
-            last: None,
-            hist: Vec::new(),
             scratch: Vec::new(),
         });
         Ok(id)
@@ -401,8 +322,7 @@ impl IqReceiver {
         if matches!(change, ClockChange::First | ClockChange::Stepped { .. }) {
             // The grid jumped: audio spanning the jump is not a slot.
             for c in &mut self.channels {
-                c.slot = None;
-                c.last = None;
+                c.cutter.forget_slots();
             }
         }
         change

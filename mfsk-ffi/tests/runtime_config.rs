@@ -89,9 +89,9 @@ fn a_build_without_a_pool_says_so() {
 
     // The decode still works; it just does not use a pool.
     let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1500.0);
-    let dec = open(MfskMode::Ft8, None);
+    let dec = open(MfskMode::Ft8, None, None);
     let rows = decode_i16(dec, &slot);
-    unsafe { mfsk_session_close(dec) };
+    unsafe { mfsk_decoder_close(dec) };
     assert!(any_contains(&rows, "JA1ABC"), "{:?}", texts(&rows));
     assert_eq!(
         STARTS.load(Ordering::SeqCst),
@@ -139,9 +139,9 @@ fn the_configured_pool_is_the_one_decoding_runs_on() {
     // which is what says the hooks reach a JNI consumer's
     // AttachCurrentThread.
     let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1500.0);
-    let dec = open(MfskMode::Ft8, None);
+    let dec = open(MfskMode::Ft8, None, None);
     let rows = decode_i16(dec, &slot);
-    unsafe { mfsk_session_close(dec) };
+    unsafe { mfsk_decoder_close(dec) };
     assert!(any_contains(&rows, "JA1ABC"), "{:?}", texts(&rows));
 
     let started = STARTS.load(Ordering::SeqCst);

@@ -192,6 +192,133 @@ impl SampleClock {
     }
 }
 
+/// Samples kept so a slot can start before the previous one ended: 0.2 s of
+/// 12 kHz audio, which covers 400 ppm of a 300 s slot.
+pub const OVERLAP_SAMPLES: usize = 2_400;
+
+/// Cuts a continuous stream of samples (at the grid's rate) into the slots
+/// of a [`SlotGrid`], each on its own boundary, following a [`SampleClock`]'s
+/// anchor as it slews.
+///
+/// This is the one place that logic lives: the IQ receiver's channels and the
+/// C ABI's audio stream both cut with it, so a clock that is slewed, stepped
+/// or dropped means the same to both.
+pub struct SlotCutter<T> {
+    grid: SlotGrid,
+    slot_len: usize,
+    /// Index of the next sample [`Self::feed`] will be given.
+    k_next: u64,
+    open: Option<Open<T>>,
+    /// The last slot that ran to its end: its index and the sample after it.
+    last: Option<(i64, u64)>,
+    /// The last [`OVERLAP_SAMPLES`] samples fed.
+    hist: alloc::vec::Vec<T>,
+}
+
+struct Open<T> {
+    buf: alloc::vec::Vec<T>,
+    start_k: u64,
+    j: i64,
+}
+
+impl<T: Copy> SlotCutter<T> {
+    /// A cutter for `grid`, whose first sample is index `k`.
+    pub fn new(grid: SlotGrid, k: u64) -> Self {
+        Self {
+            slot_len: grid.slot_samples() as usize,
+            grid,
+            k_next: k,
+            open: None,
+            last: None,
+            hist: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// Forget the open slot and the continuity (a retune, a hole in the
+    /// samples, a clock that jumped); the next slot is found from the clock
+    /// again, at index `k`.
+    pub fn restart(&mut self, k: u64) {
+        self.open = None;
+        self.last = None;
+        self.hist.clear();
+        self.k_next = k;
+    }
+
+    /// Forget the open slot and the continuity, keeping the position.
+    pub fn forget_slots(&mut self) {
+        self.open = None;
+        self.last = None;
+    }
+
+    /// Index of the next sample to feed.
+    pub fn position(&self) -> u64 {
+        self.k_next
+    }
+
+    /// Feed the next samples. `anchor_ns` is the clock's UTC of sample 0
+    /// (`None`: the grid free-runs from sample 0). For each slot that
+    /// completes, `done(index, start_sample, samples)`.
+    pub fn feed(
+        &mut self,
+        anchor_ns: Option<i64>,
+        audio: &[T],
+        mut done: impl FnMut(i64, u64, alloc::vec::Vec<T>),
+    ) {
+        let (mut pos, mut k) = (0usize, self.k_next);
+        let end_k = k + audio.len() as u64;
+        let a = anchor_ns.unwrap_or(0);
+        while pos < audio.len() {
+            match self.open.as_mut() {
+                None => {
+                    let (j, mut start_k) = match self.last {
+                        Some((p, e)) => self
+                            .grid
+                            .follow(p, e, a, OVERLAP_SAMPLES as u64)
+                            .unwrap_or_else(|| self.grid.next_start(k, a)),
+                        None => self.grid.next_start(k, a),
+                    };
+                    if start_k >= end_k {
+                        break;
+                    }
+                    let mut buf = alloc::vec::Vec::with_capacity(self.slot_len);
+                    if start_k < k {
+                        // The slot starts in samples already consumed: take
+                        // them from the kept history, or this block's head.
+                        let need = (k - start_k) as usize;
+                        let from_block = need.min(pos);
+                        let from_hist = need - from_block;
+                        if from_hist > self.hist.len() {
+                            start_k = k;
+                        } else {
+                            buf.extend_from_slice(&self.hist[self.hist.len() - from_hist..]);
+                            buf.extend_from_slice(&audio[pos - from_block..pos]);
+                        }
+                    } else {
+                        pos += (start_k - k) as usize;
+                        k = start_k;
+                    }
+                    self.open = Some(Open { buf, start_k, j });
+                }
+                Some(o) => {
+                    let take = (self.slot_len - o.buf.len()).min(audio.len() - pos);
+                    o.buf.extend_from_slice(&audio[pos..pos + take]);
+                    pos += take;
+                    k += take as u64;
+                    if o.buf.len() == self.slot_len {
+                        let o = self.open.take().expect("just matched");
+                        self.last = Some((o.j, o.start_k + self.slot_len as u64));
+                        done(o.j, o.start_k, o.buf);
+                    }
+                }
+            }
+        }
+        self.hist.extend_from_slice(audio);
+        let extra = self.hist.len().saturating_sub(OVERLAP_SAMPLES);
+        self.hist.drain(..extra);
+        self.k_next = end_k;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,7 +10,9 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::{Audio, Decodable, DecodeParams, OnRow, Row, SearchTuning, SlotInput, SlotResult};
+use super::{
+    Audio, Decodable, DecodeParams, OnRow, Row, RowDetail, SearchTuning, SlotInput, SlotResult,
+};
 use crate::fec::qra::FadingModel;
 use crate::msg::ApHint;
 use crate::msg::hash_table::CallsignHashTable;
@@ -29,8 +31,13 @@ pub struct Q65Extras {
     pub search: SearchTuning,
     /// A free-form AP hint beside upstream's QSO-context AP.
     pub ap_hint: Option<ApHint>,
-    /// Candidate messages for the AP-list decode (`q65_ap`), 63 symbols each.
+    /// Candidate messages for the AP-list decode (`q65_ap`), 63 symbols each,
+    /// in place of the list the decoder builds from the station and QSO
+    /// (`q65_decode.f90:195-210`).
     pub ap_list: Vec<[i32; 63]>,
+    /// The contest callers heard (`q65_hist2`): with `Contest::GridExchange`
+    /// they join the list (`ncontest = 1`).
+    pub callers: Option<crate::q65::Q65Callers>,
     /// Q65 pileup mode (`nexp_decode` bit 128).
     pub pileup: bool,
     /// Frequency drift search, in bins (`max_drift`).
@@ -75,6 +82,10 @@ fn grid_depth(d: super::Depth) -> crate::q65::rx::GridDepth {
 fn row(r: Q65Result) -> Row<Q65Result> {
     Row {
         decoded: r.to_decoded(),
+        detail: RowDetail {
+            copied_last_tx: r.copied_last_tx,
+            ..RowDetail::default()
+        },
         native: r,
     }
 }
@@ -102,7 +113,31 @@ fn decode<P: Q65SubMode>(
         .apply(crate::q65::search::default_search_params(), params);
     let ftol = params.tol_hz.unwrap_or(DEFAULT_FTOL_HZ);
     let cb = on_row.map(|f| move |r: &Q65Result| f(&row(r.clone())));
-    let ap_list = (!extras.ap_list.is_empty()).then_some(extras.ap_list.as_slice());
+    // The full-AP list: the caller's own, else upstream's from MyCall and
+    // DxCall (`q65_decode.f90:195-210`, only where it is looked for: at the
+    // Rx frequency, or in a contest whose callers are known).
+    let built;
+    let ap_list: Option<&[[i32; 63]]> = if !extras.ap_list.is_empty() {
+        Some(extras.ap_list.as_slice())
+    } else if params.ap != super::ApMode::Off
+        && (params.rx_freq_hz.is_some() || params.contest == super::Contest::GridExchange)
+        && !params.station.call.is_empty()
+    {
+        let (me, him, grid) = (
+            params.station.call.as_str(),
+            params.qso.his_call.as_str(),
+            params.qso.his_grid.as_str(),
+        );
+        built = match (&extras.callers, params.contest) {
+            (Some(c), super::Contest::GridExchange) => {
+                crate::q65::contest_codewords(me, him, grid, c)
+            }
+            _ => crate::q65::standard_qso_codewords(me, him, grid),
+        };
+        (!built.is_empty()).then_some(built.as_slice())
+    } else {
+        None
+    };
 
     let results: Vec<Q65Result> = match (params.averaging, slot.period) {
         (true, Some(n)) => {
@@ -186,6 +221,15 @@ macro_rules! q65_decodable {
             type State = Q65State;
             type Extras = Q65Extras;
             type Row = Q65Result;
+
+            fn __learn(state: &mut Q65State, call: &str) -> bool {
+                Arc::make_mut(&mut state.table).insert(call);
+                true
+            }
+
+            fn __unpack77(state: &Q65State, msg77: &[u8]) -> Option<alloc::string::String> {
+                crate::msg::wsjt77::unpack77_with_hash(msg77, &state.table)
+            }
 
             fn __decode(
                 params: &DecodeParams,

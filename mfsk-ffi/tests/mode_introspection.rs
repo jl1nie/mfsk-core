@@ -61,10 +61,10 @@ fn abi_lengths_match_the_shared_definitions() {
         mfsk_ffi_abi::MFSK_DECODE_FLAG_HASH_RESOLVED
     );
     // And they are the sizes the structs actually carry.
-    let p = std::mem::MaybeUninit::<MfskDecodeParams>::zeroed();
-    let p = unsafe { p.assume_init() };
-    assert_eq!(p.ap_call1.len(), MFSK_AP_FIELD_LEN);
-    assert_eq!(p.ap_grid.len(), MFSK_AP_FIELD_LEN);
+    let e = std::mem::MaybeUninit::<MfskExtras>::zeroed();
+    let e = unsafe { e.assume_init() };
+    assert_eq!(e.ap_call1.len(), MFSK_AP_FIELD_LEN);
+    assert_eq!(e.ap_grid.len(), MFSK_AP_FIELD_LEN);
 }
 
 /// Enumeration must reach every mode this build has, and `mfsk_mode_at`
@@ -271,60 +271,6 @@ fn published_capabilities_match_the_traits() {
     );
 }
 
-/// Defaults are data, published per mode — and carry the scale that
-/// says whether two modes' numbers are comparable at all.
-#[test]
-fn defaults_are_published_with_their_scale() {
-    let d = |m| {
-        let mut x = std::mem::MaybeUninit::<MfskDecodeDefaults>::zeroed();
-        let st = unsafe { mfsk_mode_defaults(m as u32, x.as_mut_ptr()) };
-        assert_eq!(st, MfskStatus::Ok, "{m:?}");
-        unsafe { x.assume_init() }
-    };
-
-    let ft4 = d(MfskMode::Ft4);
-    assert_eq!(ft4.sync_scale, MfskSyncScale::BaselineNormalised);
-    assert_eq!(ft4.sync_min, 1.18, "WSJT-X ft4_decode.f90:195");
-    assert!(
-        ft4.sync_min > 1.0,
-        "on its own scale noise sits at 1.0, so anything below is meaningless"
-    );
-
-    let ft8 = d(MfskMode::Ft8);
-    assert_eq!(ft8.sync_scale, MfskSyncScale::CostasAbsolute);
-    assert_ne!(
-        ft8.sync_min, ft4.sync_min,
-        "the whole point of publishing the scale is that these two are not comparable"
-    );
-
-    // FST4 is on FT4's scale since #554 (`get_candidates_fst4`'s minsync).
-    assert_eq!(d(MfskMode::Fst4s15).sync_min, 1.15, "fst4_decode.f90:309");
-    assert_eq!(d(MfskMode::Fst4s300).sync_min, 1.20, "fst4_decode.f90:308");
-    for m in [MfskMode::Fst4s15, MfskMode::Fst4s300] {
-        assert_eq!(d(m).sync_scale, MfskSyncScale::BaselineNormalised);
-    }
-
-    // #413: the scan modes publish the library's own defaults, on a
-    // third scale (a 0..1 fraction), and are not comparable with FT8's.
-    for m in [
-        MfskMode::Wspr,
-        MfskMode::Jt9,
-        MfskMode::Jt65,
-        MfskMode::Q65a60,
-    ] {
-        let x = d(m);
-        assert_eq!(x.sync_scale, MfskSyncScale::SyncFraction, "{m:?}");
-        assert!(x.sync_min > 0.0 && x.sync_min < 1.0, "{m:?}");
-        assert!(x.freq_max_hz > x.freq_min_hz && x.max_cand > 0, "{m:?}");
-    }
-
-    assert!(ft8.freq_max_hz > ft8.freq_min_hz && ft8.max_cand > 0);
-    assert_eq!(
-        unsafe { mfsk_mode_defaults(MfskMode::Ft8 as u32, std::ptr::null_mut()) },
-        MfskStatus::InvalidArg
-    );
-}
-
 /// The size field is the growth contract: an older caller declaring a
 /// smaller struct must get only its prefix written, and must be told how
 /// much that was.
@@ -359,6 +305,6 @@ fn size_versioning_writes_only_the_declared_prefix() {
 /// reasons that have nothing to do with the boundary.
 #[test]
 fn abi_version_is_not_the_crate_version() {
-    assert_eq!(mfsk_abi_version(), 2);
+    assert_eq!(mfsk_abi_version(), 3);
     assert_ne!(mfsk_abi_version(), mfsk_version());
 }

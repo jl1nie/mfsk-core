@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 use super::Depth;
 use super::{Audio, DecodeParams, SearchTuning};
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
-use super::{Decodable, OnRow, Row, SlotInput, SlotResult};
+use super::{Decodable, OnRow, Row, RowDetail, SlotInput, SlotResult};
 
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
 /// `f32` audio at the level the engines take (full scale is 1.0): an `i16`
@@ -124,6 +124,7 @@ mod wspr_impl {
                 move |r: &WsprResult| {
                     f(&Row {
                         decoded: r.to_decoded(),
+                        detail: RowDetail::default(),
                         native: r.clone(),
                     })
                 }
@@ -147,6 +148,7 @@ mod wspr_impl {
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
+                    detail: RowDetail::default(),
                     native: r,
                 })
                 .collect();
@@ -206,6 +208,7 @@ mod jt9_impl {
                 move |r: &Jt9Result| {
                     f(&Row {
                         decoded: r.to_decoded(),
+                        detail: RowDetail::default(),
                         native: r.clone(),
                     })
                 }
@@ -226,6 +229,7 @@ mod jt9_impl {
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
+                    detail: RowDetail::default(),
                     native: r,
                 })
                 .collect();
@@ -298,6 +302,7 @@ mod jt65_impl {
                 move |r: &Jt65Result| {
                     f(&Row {
                         decoded: r.to_decoded(),
+                        detail: RowDetail::default(),
                         native: r.clone(),
                     })
                 }
@@ -315,6 +320,7 @@ mod jt65_impl {
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
+                    detail: RowDetail::default(),
                     native: r,
                 })
                 .collect();

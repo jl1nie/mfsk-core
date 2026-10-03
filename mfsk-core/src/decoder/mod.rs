@@ -137,11 +137,32 @@ impl<'a> SlotInput<'a> {
     }
 }
 
+/// What a row carries beyond the common [`Decoded`], in the shape every
+/// mode shares (a mode without a field leaves it at its default).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RowDetail {
+    /// Sync correlation score of the decode.
+    pub sync_score: f32,
+    /// Coefficient of variation of the per-block sync powers (fading).
+    pub sync_cv: f32,
+    /// Hard-decision errors the FEC corrected.
+    pub hard_errors: u32,
+    /// Which decode pass produced the row; private to the mode.
+    pub pass: u8,
+    /// The FEC information bits, empty for a mode that has none to give.
+    pub info: Vec<u8>,
+    /// The text needed the callsign hash table to resolve a `<...>`.
+    pub hash_resolved: bool,
+    /// Q65 Pileup's "copied last Tx" flag.
+    pub copied_last_tx: bool,
+}
+
 /// One decoded message: the common row, with its text resolved against
 /// the decoder's hash table, and the mode's native result.
 #[derive(Clone, Debug)]
 pub struct Row<R> {
     pub decoded: Decoded,
+    pub detail: RowDetail,
     pub native: R,
 }
 
@@ -166,6 +187,20 @@ pub trait Decodable: Sized {
     type Extras: Clone + Default + Send;
     /// The mode's native result.
     type Row: Clone + Send;
+
+    /// Teach the decoder's hash table a callsign (WSJT-X's `save_hash_call`).
+    /// `false` for a mode whose messages carry no hashed calls.
+    #[doc(hidden)]
+    fn __learn(_state: &mut Self::State, _call: &str) -> bool {
+        false
+    }
+
+    /// A packed 77-bit message as text, `<...>` resolved against this
+    /// decoder's table where it has one.
+    #[doc(hidden)]
+    fn __unpack77(_state: &Self::State, msg77: &[u8]) -> Option<alloc::string::String> {
+        crate::msg::wsjt77::unpack77(msg77)
+    }
 
     #[doc(hidden)]
     fn __decode(
@@ -243,6 +278,18 @@ impl<P: Decodable> Decoder<P> {
             slot,
             Some(on_row),
         )
+    }
+
+    /// A packed 77-bit message as text, resolved against this decoder's
+    /// callsign table.
+    pub fn unpack77(&self, msg77: &[u8]) -> Option<alloc::string::String> {
+        P::__unpack77(&self.state, msg77)
+    }
+
+    /// Teach the decoder's hash table a callsign; `false` if the mode has no
+    /// hashed calls to resolve.
+    pub fn learn_callsign(&mut self, call: &str) -> bool {
+        P::__learn(&mut self.state, call)
     }
 
     /// Forget everything carried across periods (WSJT-X's "Clear Avg" and

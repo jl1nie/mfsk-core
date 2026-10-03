@@ -130,11 +130,20 @@ fn every_format_through(channelizer: u32) {
         let rx = open_with(format, channelizer);
         let mut ch = u32::MAX;
         assert_eq!(
-            unsafe { mfsk_iq_add_channel(rx, DIAL, MfskMode::Ft8 as u32, &mut ch) },
+            unsafe {
+                mfsk_iq_add_channel(
+                    rx,
+                    DIAL,
+                    MfskMode::Ft8 as u32,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut ch,
+                )
+            },
             MfskStatus::Ok
         );
         assert_eq!(
-            unsafe { mfsk_iq_set_time_anchor(rx, T0_NS) },
+            unsafe { mfsk_iq_set_time(rx, T0_NS, 0, ptr::null_mut()) },
             MfskStatus::Ok
         );
         // Odd chunk sizes, so samples split across calls.
@@ -167,7 +176,16 @@ fn free_running_grid_reports_no_utc() {
     let iq = scene();
     let bytes = encode(&iq, MFSK_IQ_FORMAT_CF32);
     let rx = open(MFSK_IQ_FORMAT_CF32);
-    unsafe { mfsk_iq_add_channel(rx, DIAL, MfskMode::Ft8 as u32, ptr::null_mut()) };
+    unsafe {
+        mfsk_iq_add_channel(
+            rx,
+            DIAL,
+            MfskMode::Ft8 as u32,
+            ptr::null(),
+            ptr::null(),
+            ptr::null_mut(),
+        )
+    };
     unsafe { mfsk_iq_push(rx, bytes.as_ptr() as *const c_void, bytes.len()) };
     let rows = drain(rx);
     let hit = rows.iter().find(|d| text(d) == TEXT).expect("decoded");
@@ -184,11 +202,23 @@ fn retune_and_gap_drop_the_open_slot() {
 
     for act in ["retune", "gap"] {
         let rx = open(MFSK_IQ_FORMAT_CF32);
-        unsafe { mfsk_iq_add_channel(rx, DIAL, MfskMode::Ft8 as u32, ptr::null_mut()) };
-        unsafe { mfsk_iq_set_time_anchor(rx, T0_NS) };
+        unsafe {
+            mfsk_iq_add_channel(
+                rx,
+                DIAL,
+                MfskMode::Ft8 as u32,
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+            )
+        };
+        unsafe { mfsk_iq_set_time(rx, T0_NS, 0, ptr::null_mut()) };
         unsafe { mfsk_iq_push(rx, bytes.as_ptr() as *const c_void, cut) };
         match act {
-            "retune" => assert_eq!(unsafe { mfsk_iq_retune(rx, CENTER) }, MfskStatus::Ok),
+            "retune" => assert_eq!(
+                unsafe { mfsk_iq_retune(rx, CENTER, ptr::null_mut(), ptr::null_mut()) },
+                MfskStatus::Ok
+            ),
             _ => assert_eq!(unsafe { mfsk_iq_gap(rx, 100) }, MfskStatus::Ok),
         }
         let rest = &bytes[cut + if act == "gap" { 100 * w } else { 0 }..];
@@ -222,8 +252,9 @@ fn errors_are_statuses_not_crashes() {
     assert_eq!(st, MfskStatus::InvalidArg);
 
     let rx = open(MFSK_IQ_FORMAT_CF32);
-    let add =
-        |dial: f64, mode: u32| unsafe { mfsk_iq_add_channel(rx, dial, mode, ptr::null_mut()) };
+    let add = |dial: f64, mode: u32| unsafe {
+        mfsk_iq_add_channel(rx, dial, mode, ptr::null(), ptr::null(), ptr::null_mut())
+    };
     // DC inside the band, past the band edge, a mode the receiver does not
     // carry, a value that is not a mode at all, a non-finite dial.
     assert_eq!(
@@ -240,13 +271,38 @@ fn errors_are_statuses_not_crashes() {
 
     let mut ch = 0u32;
     assert_eq!(
-        unsafe { mfsk_iq_add_channel(rx, DIAL, MfskMode::Wspr as u32, &mut ch) },
+        unsafe {
+            mfsk_iq_add_channel(
+                rx,
+                DIAL,
+                MfskMode::Wspr as u32,
+                ptr::null(),
+                ptr::null(),
+                &mut ch,
+            )
+        },
         MfskStatus::Ok
     );
     // A retune that puts the channel outside pauses it; it is not an error.
+    let (mut paused, mut resumed) = (0u32, 0u32);
     assert_eq!(
-        unsafe { mfsk_iq_retune(rx, CENTER + 200_000.0) },
+        unsafe { mfsk_iq_retune(rx, CENTER + 200_000.0, &mut paused, &mut resumed) },
         MfskStatus::Ok
+    );
+    assert_eq!((paused, resumed), (1, 0));
+    assert_eq!(
+        unsafe { mfsk_iq_channel_state(rx, ch) },
+        MFSK_IQ_CHANNEL_PAUSED
+    );
+    let (mut paused, mut resumed) = (0u32, 0u32);
+    assert_eq!(
+        unsafe { mfsk_iq_retune(rx, CENTER, &mut paused, &mut resumed) },
+        MfskStatus::Ok
+    );
+    assert_eq!((paused, resumed), (0, 1));
+    assert_eq!(
+        unsafe { mfsk_iq_channel_state(rx, ch) },
+        MFSK_IQ_CHANNEL_ACTIVE
     );
     assert_eq!(unsafe { mfsk_iq_remove_channel(rx, ch) }, MfskStatus::Ok);
     assert_eq!(

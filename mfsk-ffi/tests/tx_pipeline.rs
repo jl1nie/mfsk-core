@@ -90,14 +90,14 @@ fn the_pipeline_round_trips() {
                 *d = d.saturating_add(*s);
             }
         }
-        let dec = open(mode, None);
+        let dec = open(mode, None, None);
         let rows = decode_i16(dec, &slot);
         assert!(
             any_contains(&rows, "JA1ABC"),
             "{mode:?} did not round-trip: {:?}",
             texts(&rows)
         );
-        unsafe { mfsk_session_close(dec) };
+        unsafe { mfsk_decoder_close(dec) };
     }
 }
 
@@ -154,10 +154,10 @@ fn fst4_round_trips() {
             *d = d.saturating_add(*s);
         }
     }
-    let dec = open(MfskMode::Fst4s60, None);
+    let dec = open(MfskMode::Fst4s60, None, None);
     let rows = decode_i16(dec, &slot);
     assert!(any_contains(&rows, "JA1ABC"), "{:?}", texts(&rows));
-    unsafe { mfsk_session_close(dec) };
+    unsafe { mfsk_decoder_close(dec) };
 }
 
 /// A mode without a tone stage says so rather than producing something.
@@ -255,10 +255,16 @@ fn a_wrong_tone_count_is_refused() {
 #[test]
 fn the_packers_cover_the_message_types() {
     let mut m = [0u8; 77];
-    let txt = |m: &[u8; 77], sess: *const MfskDecodeSession| -> String {
+    let txt = |m: &[u8; 77], dec: *const MfskDecoder| -> String {
         let mut buf = [0i8; 64];
         let mut n = 0usize;
-        let st = unsafe { mfsk_unpack77(sess, m.as_ptr(), buf.as_mut_ptr(), buf.len(), &mut n) };
+        let st = unsafe {
+            if dec.is_null() {
+                mfsk_unpack77(m.as_ptr(), buf.as_mut_ptr(), buf.len(), &mut n)
+            } else {
+                mfsk_decoder_unpack77(dec, m.as_ptr(), buf.as_mut_ptr(), buf.len(), &mut n)
+            }
+        };
         assert_eq!(st, MfskStatus::Ok);
         let b: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n - 1) };
         String::from_utf8_lossy(b).into_owned()
@@ -298,14 +304,14 @@ fn the_packers_cover_the_message_types() {
     );
     assert!(txt(&m, std::ptr::null()).contains("<...>"));
 
-    let dec = open(MfskMode::Ft8, None);
+    let dec = open(MfskMode::Ft8, None, None);
     let c = CString::new("VK3NV").unwrap();
-    unsafe { mfsk_session_add_callsign(dec, c.as_ptr()) };
+    unsafe { mfsk_decoder_add_callsign(dec, c.as_ptr()) };
     assert!(
         txt(&m, dec).contains("VK3NV"),
         "a session that knows the call should resolve the hash"
     );
-    unsafe { mfsk_session_close(dec) };
+    unsafe { mfsk_decoder_close(dec) };
 
     // A message that does not fit its format is refused.
     let bad = CString::new("XXX").unwrap();
