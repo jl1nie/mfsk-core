@@ -208,9 +208,19 @@ mod jt65_impl {
     #[derive(Clone, Debug, Default)]
     pub struct Jt65Extras {
         pub search: SearchTuning,
-        /// The stochastic Chase decoder after the hard-decision one
-        /// (`jt65_decode.f90`'s `nvec` trials); off by default.
+        /// Replace the Chase decoder's settings; by default its trial count
+        /// is the depth's `nvec` and the rest are `ftrsdap.c`'s.
         pub chase: Option<ChaseParams>,
+    }
+
+    /// `jt65_decode.f90:110-119` (non-VHF): `ndepth` 1 is 2 passes and
+    /// `nvec = 100`, 2 is 2 passes and 1000, 3 is 4 passes and 1000.
+    fn passes_and_nvec(depth: Depth) -> (u8, usize) {
+        match depth {
+            Depth::Fast => (2, 100),
+            Depth::Normal => (2, 1000),
+            Depth::Deep => (4, 1000),
+        }
     }
 
     impl Decodable for Jt65 {
@@ -228,9 +238,19 @@ mod jt65_impl {
         ) -> SlotResult<Jt65Result> {
             let mut owned = Vec::new();
             let audio = f32_audio(slot.audio, &mut owned);
+            // The crate's own candidate cap (8) bounds each pass. Upstream's
+            // 50 (`jt65_decode.f90:176`) is for its `sync65` list, whose
+            // `thresh0` leaves few noise candidates; with this crate's
+            // coarse search, 50 candidates under the Chase decoder produced
+            // 8 false decodes on the `jt65sim` golden, 0 with 8.
             let search = extras
                 .search
                 .apply(crate::jt65::search::default_search_params(), params);
+            let (npass, nvec) = passes_and_nvec(params.depth);
+            let chase = extras.chase.clone().unwrap_or_else(|| ChaseParams {
+                max_trials: nvec,
+                ..ChaseParams::default()
+            });
             let cb = on_row.map(|f| {
                 move |r: &Jt65Result| {
                     f(&Row {
@@ -241,10 +261,9 @@ mod jt65_impl {
             });
             let mut req = DecodeRequest::new(audio, 12_000)
                 .nominal_start(nominal_start(crate::Mode::Jt65))
-                .params(search);
-            if let Some(c) = extras.chase.clone() {
-                req = req.chase(c);
-            }
+                .params(search)
+                .chase(chase)
+                .passes(npass);
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);
             }

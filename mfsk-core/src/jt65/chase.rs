@@ -309,7 +309,7 @@ pub(super) fn decode_at_with_chase(
     start_sample: usize,
     base_freq_hz: f32,
     params: &ChaseParams,
-) -> Option<(Jt72Message, f32)> {
+) -> Option<(Jt72Message, f32, [u8; 12])> {
     let rx::Jt65Demod {
         symbols,
         conf,
@@ -327,7 +327,7 @@ pub(super) fn decode_at_with_chase(
     if let Some((info, _nerr)) = rs.decode_jt65_erasures(&symbols, &[])
         && let Some(msg) = unpack_jt72(&info)
     {
-        return Some((msg, snr_db));
+        return Some((msg, snr_db, info));
     }
 
     // `ftrsdap.c:149`: `if(nsum<=0) return;` — no usable reliability
@@ -422,7 +422,7 @@ pub(super) fn decode_at_with_chase(
         return None;
     }
     let msg = unpack_jt72(&best.info)?;
-    Some((msg, snr_db))
+    Some((msg, snr_db, best.info))
 }
 
 #[cfg(test)]
@@ -435,7 +435,7 @@ mod tests {
         let freq = 1270.0;
         let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("synth");
         let msg = decode_at_with_chase(&audio, 12_000, 0, freq, &ChaseParams::default())
-            .map(|(m, _)| m)
+            .map(|(m, ..)| m)
             .expect("chase decoder must decode clean synth via the fast zero-erasure path");
         assert!(matches!(
             msg,
@@ -494,7 +494,7 @@ mod tests {
             let mut audio = vec![0.0f32; NSAMPLES];
             rng.fill_noise(&mut audio, 0.3);
             let msg = decode_at_with_chase(&audio, 12_000, 0, 1270.0, &ChaseParams::default())
-                .map(|(m, _)| m);
+                .map(|(m, ..)| m);
             assert!(
                 msg.is_none(),
                 "chase decoder must not decode pure noise (seed={seed}), got {msg:?}"
@@ -527,7 +527,7 @@ mod tests {
                 *s += n;
             }
             let msg = decode_at_with_chase(&audio, 12_000, 0, freq, &ChaseParams::default())
-                .map(|(m, _)| m);
+                .map(|(m, ..)| m);
             assert!(
                 msg.is_none(),
                 "chase decoder must not decode a signal this deep below the floor (seed={seed}), got {msg:?}"

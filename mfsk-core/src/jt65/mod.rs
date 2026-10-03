@@ -115,6 +115,8 @@ pub mod interleave;
 pub mod rx;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod search;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+mod subtract;
 pub mod sync_pattern;
 pub mod tx;
 
@@ -137,7 +139,7 @@ fn decode_at_with_snr(
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
-) -> Option<(crate::msg::Jt72Message, f32)> {
+) -> Option<(crate::msg::Jt72Message, f32, [u8; 12])> {
     use crate::engine::{DecodeContext, MessageCodec};
 
     let demod = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?;
@@ -151,7 +153,7 @@ fn decode_at_with_snr(
         *bit = (word >> shift) & 1;
     }
     let msg = crate::msg::Jt72Codec::default().unpack(&payload, &DecodeContext::default())?;
-    Some((msg, snr_db))
+    Some((msg, snr_db, info))
 }
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -307,12 +309,22 @@ fn pad_for_early_frames(
 /// candidate in score order — hard-decision RS, or the stochastic
 /// Chase search when `chase` is set — collapsing duplicate decodes
 /// (same message ±2 Hz / ±1 symbol). Public through [`DecodeRequest`].
+///
+/// `npass > 1` is `jt65_decode.f90:110-145`'s pass loop: after each of the
+/// first three passes the signals found are subtracted from the audio
+/// ([`subtract::subtract65`]) and the next pass searches the residue, with
+/// at most `50 / ipass` candidates (`:176`). The last pass of four does not
+/// subtract (`nsubtract = 0`, `:138`). `npass == 1` is the single search the
+/// 0.12 request always ran. The crate's coarse search has its own score
+/// scale, so upstream's per-pass `thresh0` (2.5, 2.0, 2.0, 2.0) is not
+/// applied; the candidate cap is.
 fn decode_scan_inner(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &search::SearchParams,
     chase: Option<&chase::ChaseParams>,
+    npass: u8,
     on_result: Option<&(dyn Fn(&Jt65Result) + Sync)>,
 ) -> Vec<Jt65Result> {
     use crate::engine::ModulationParams;
@@ -328,50 +340,69 @@ fn decode_scan_inner(
         None => (audio, 0),
     };
     let nominal_start_sample = nominal_start_sample + pad;
-    let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, params);
+    // Passes that subtract work on a copy; one pass reads the input as is.
+    let mut residue: Option<Vec<f32>> = (npass > 1).then(|| audio.to_vec());
     let mut seen: Vec<Jt65Result> = Vec::new();
-    for c in cands {
-        let decoded = match chase {
-            Some(p) => {
-                chase::decode_at_with_chase(audio, sample_rate, c.start_sample, c.freq_hz, p)
-            }
-            None => decode_at_with_snr(audio, sample_rate, c.start_sample, c.freq_hz),
-        };
-        let Some((msg, snr_db)) = decoded else {
-            continue;
-        };
-        let dup = scan_dedup_match_cross(
-            &seen,
-            &(msg.clone(), c.freq_hz, c.start_sample as i64),
-            |r| &r.message,
-            |r| r.freq_hz,
-            |r| r.start_sample as i64,
-            |(m, _, _)| m,
-            |(_, f, _)| *f,
-            |(_, _, t)| *t,
-            2.0,
-            nsps as i64,
-        );
-        if !dup {
-            let result = Jt65Result {
-                message: msg,
-                freq_hz: c.freq_hz,
-                start_sample: c.start_sample.saturating_sub(pad),
-                // dt runs from the nominal start. `start_sample` is a
-                // `usize` and saturates at 0 for an early signal, so
-                // this field is the one that keeps the sign. Both terms
-                // are in padded coordinates — `nominal_start_sample` is
-                // shadowed with `+ pad` above — so the padding cancels
-                // and must not be subtracted again. It used to subtract
-                // `pad` alone and omit the nominal entirely, which was
-                // right only when the nominal was 0 (#397).
-                dt_sec: (c.start_sample as f32 - nominal_start_sample as f32) / sample_rate as f32,
-                snr_db,
+    for ipass in 1..=npass.max(1) {
+        let work: &[f32] = residue.as_deref().unwrap_or(audio);
+        let mut pass_params = *params;
+        if npass > 1 {
+            pass_params.max_candidates = params.max_candidates.min(50 / usize::from(ipass));
+        }
+        let cands = search::coarse_search(work, sample_rate, nominal_start_sample, &pass_params);
+        let subtract_after = npass > 1 && ipass < 4;
+        let mut found: Vec<(f32, usize, [u8; 12])> = Vec::new();
+        for c in cands {
+            let decoded = match chase {
+                Some(p) => {
+                    chase::decode_at_with_chase(work, sample_rate, c.start_sample, c.freq_hz, p)
+                }
+                None => decode_at_with_snr(work, sample_rate, c.start_sample, c.freq_hz),
             };
-            if let Some(cb) = on_result {
-                cb(&result);
+            let Some((msg, snr_db, info)) = decoded else {
+                continue;
+            };
+            let dup = scan_dedup_match_cross(
+                &seen,
+                &(msg.clone(), c.freq_hz, c.start_sample as i64),
+                |r| &r.message,
+                |r| r.freq_hz,
+                |r| r.start_sample as i64,
+                |(m, _, _)| m,
+                |(_, f, _)| *f,
+                |(_, _, t)| *t,
+                2.0,
+                nsps as i64,
+            );
+            if !dup {
+                let result = Jt65Result {
+                    message: msg,
+                    freq_hz: c.freq_hz,
+                    start_sample: c.start_sample.saturating_sub(pad),
+                    // dt runs from the nominal start. `start_sample` is a
+                    // `usize` and saturates at 0 for an early signal, so
+                    // this field is the one that keeps the sign. Both terms
+                    // are in padded coordinates — `nominal_start_sample` is
+                    // shadowed with `+ pad` above — so the padding cancels
+                    // and must not be subtracted again. It used to subtract
+                    // `pad` alone and omit the nominal entirely, which was
+                    // right only when the nominal was 0 (#397).
+                    dt_sec: (c.start_sample as f32 - nominal_start_sample as f32)
+                        / sample_rate as f32,
+                    snr_db,
+                };
+                if let Some(cb) = on_result {
+                    cb(&result);
+                }
+                seen.push(result);
+                found.push((c.freq_hz, c.start_sample, info));
             }
-            seen.push(result);
+        }
+        if subtract_after && let Some(res) = residue.as_mut() {
+            for (freq, start, info) in &found {
+                let tones = tx::encode_channel_symbols(info);
+                subtract::subtract65(res, *start, *freq, &tones, subtract::WSJTX);
+            }
         }
     }
     seen

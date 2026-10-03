@@ -74,3 +74,36 @@ fn q65_depth_only_adds_cells() {
     }
     assert!(!fast.is_empty());
 }
+
+/// `jt65_decode.f90:110-145`: 2 passes and `nvec = 100` at `ndepth` 1, 2 and
+/// 1000 at 2, 4 passes and 1000 at 3, the signals of each pass subtracted
+/// before the next (`subtract65.f90`). On the `jt65sim` golden (the one
+/// message at 700/1100/1500/1900/2300 Hz, -18 dB) every depth must find
+/// all five carriers and nothing else; the second pass is what finds the
+/// 1500 Hz copy the first misses (a single pass with the same candidates
+/// finds four).
+#[test]
+fn jt65_depths_find_every_carrier_and_no_phantom() {
+    use mfsk_core::Jt65;
+    let Some(path) = common::corpus::golden_path("jt65/jt65a_5sig_m18.wav") else {
+        common::skip_or_fail("JT65 golden");
+        return;
+    };
+    let a = common::load_wav_f32_opt(&path).unwrap();
+    for depth in [Depth::Fast, Depth::Normal, Depth::Deep] {
+        let mut d = Decoder::<Jt65>::new(DecodeParams::for_band((300.0, 2700.0)).depth(depth));
+        let rows = d.decode(&SlotInput::f32(&a)).rows;
+        assert!(
+            rows.iter().all(|r| r.decoded.text == "K1ABC W9XYZ EN37"),
+            "{depth:?}: phantom in {:?}",
+            rows.iter().map(|r| &r.decoded.text).collect::<Vec<_>>()
+        );
+        let mut carriers: Vec<i32> = rows
+            .iter()
+            .map(|r| (r.decoded.freq_hz / 100.0).round() as i32 * 100)
+            .collect();
+        carriers.sort();
+        carriers.dedup();
+        assert_eq!(carriers, [700, 1100, 1500, 1900, 2300], "{depth:?}");
+    }
+}

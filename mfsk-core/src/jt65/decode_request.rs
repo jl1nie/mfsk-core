@@ -45,6 +45,7 @@ pub struct DecodeRequest<'a> {
     nominal_start_sample: usize,
     params: SearchParams,
     chase: Option<ChaseParams>,
+    npass: u8,
     on_result: Option<&'a (dyn Fn(&Jt65Result) + Sync)>,
 }
 
@@ -58,6 +59,7 @@ impl<'a> DecodeRequest<'a> {
             nominal_start_sample: 0,
             params: default_search_params(),
             chase: None,
+            npass: 1,
             on_result: None,
         }
     }
@@ -93,6 +95,15 @@ impl<'a> DecodeRequest<'a> {
         self
     }
 
+    /// WSJT-X's pass count (`jt65_decode.f90:110-119`: 2 at `ndepth` 1 and
+    /// 2, 4 at 3). With more than one pass the signals found are
+    /// subtracted and the audio searched again; see `decode_scan_inner`.
+    /// Default 1, the single search the 0.12 request ran.
+    pub fn passes(mut self, npass: u8) -> Self {
+        self.npass = npass.clamp(1, 4);
+        self
+    }
+
     /// Fire `cb` once per candidate as it's accepted, *in addition to*
     /// (not instead of) `decode()`'s returned `Vec` — same shape as
     /// `crate::msg::decode_request::DecodeRequest::on_result`.
@@ -113,6 +124,7 @@ impl<'a> DecodeRequest<'a> {
             self.nominal_start_sample,
             &self.params,
             self.chase.as_ref(),
+            self.npass,
             self.on_result,
         )
     }
@@ -177,12 +189,15 @@ impl<'a> SniperRequest<'a> {
             self.base_freq_hz,
         );
         match &self.strategy {
-            RsStrategy::Hard => super::decode_at_with_snr(audio, rate, start, freq).map(|(m, _)| m),
+            RsStrategy::Hard => {
+                super::decode_at_with_snr(audio, rate, start, freq).map(|(m, ..)| m)
+            }
             RsStrategy::Erasures(attempts) => {
                 super::decode_at_with_erasures(audio, rate, start, freq, attempts)
             }
             RsStrategy::Chase(params) => {
-                super::chase::decode_at_with_chase(audio, rate, start, freq, params).map(|(m, _)| m)
+                super::chase::decode_at_with_chase(audio, rate, start, freq, params)
+                    .map(|(m, ..)| m)
             }
         }
     }

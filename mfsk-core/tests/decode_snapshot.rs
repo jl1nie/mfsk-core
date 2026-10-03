@@ -757,28 +757,6 @@ mod via_decoder {
         }
     }
 
-    #[test]
-    fn jt65() {
-        use mfsk_core::Jt65;
-        use mfsk_core::decoder::Jt65Extras;
-        use mfsk_core::jt65::ChaseParams;
-        let Some(path) = common::corpus::golden_path("jt65/jt65a_5sig_m18.wav") else {
-            common::skip_or_fail("JT65 golden");
-            return;
-        };
-        let Some(a) = common::load_wav_f32_opt(&path) else {
-            return;
-        };
-        let params = DecodeParams::for_band((300.0, 2700.0));
-        let mut d = Decoder::<Jt65>::new(params.clone());
-        check_text("jt65_default", f32_rows(d.decode(&SlotInput::f32(&a)).rows));
-        let mut d = Decoder::<Jt65>::new(params).with_extras(Jt65Extras {
-            chase: Some(ChaseParams::default()),
-            ..Default::default()
-        });
-        check_text("jt65_chase", f32_rows(d.decode(&SlotInput::f32(&a)).rows));
-    }
-
     /// Compare Q65 rows with a fixture whose request used another nominal
     /// start: `dt` is relative to it, so it moves by the difference; every
     /// other column is bit for bit.
