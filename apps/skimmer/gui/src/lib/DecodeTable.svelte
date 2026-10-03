@@ -7,15 +7,19 @@
     channels,
     slotS,
     onclear,
+    channel = $bindable(-1),
+    onpick,
   }: {
     rows: DecodeRow[];
     channels: ChannelSetting[];
     slotS: Record<string, number>;
     onclear: () => void;
+    channel?: number;
+    /** The user chose a channel (not All) in the selector. */
+    onpick?: (i: number) => void;
   } = $props();
 
   // One row shape for every mode: UTC, mode, frequency, SNR, DT, message.
-  let channel = $state(-1);
   let cqOnly = $state(false);
   let search = $state('');
   let follow = $state(true);
@@ -73,7 +77,7 @@
 
 <div class="decodes">
   <div class="toolbar">
-    <select bind:value={channel}>
+    <select bind:value={channel} onchange={() => channel >= 0 && onpick?.(channel)}>
       <option value={-1}>All channels</option>
       {#each channels as c, i (c.mode + c.dialHz)}
         <option value={i}>{c.mode} {(c.dialHz / 1000).toFixed(1)} kHz</option>

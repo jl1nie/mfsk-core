@@ -32,6 +32,8 @@
   const wfStore = new WaterfallStore();
   let wfTick = $state(0);
   let wfFocus = $state(0);
+  /** The table's channel selector (-1 = All); it and the large waterfall follow each other, except on All. */
+  let tableCh = $state(-1);
   let wfOpen = $state(true);
   let nextId = 0;
   let gainTimer: ReturnType<typeof setTimeout> | undefined;
@@ -415,13 +417,23 @@
           tick={wfTick}
           channels={settings.channels}
           focus={Math.min(wfFocus, Math.max(0, settings.channels.length - 1))}
-          onfocus={focusChannel}
+          onfocus={(i) => {
+            focusChannel(i);
+            tableCh = i;
+          }}
           {rows}
           {slotS}
           bind:open={wfOpen}
         />
       {/if}
-      <DecodeTable {rows} channels={settings.channels} {slotS} onclear={clearRows} />
+      <DecodeTable
+        {rows}
+        channels={settings.channels}
+        {slotS}
+        onclear={clearRows}
+        bind:channel={tableCh}
+        onpick={focusChannel}
+      />
     </div>
   </main>
 {:else}
