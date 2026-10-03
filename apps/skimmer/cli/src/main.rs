@@ -64,10 +64,7 @@ fn parse_args() -> Option<(Config, Option<String>)> {
                     eprintln!("unknown mode {m:?}");
                     return None;
                 };
-                cfg.channels.push(ChannelSpec {
-                    mode,
-                    dial_hz: f.parse().ok()?,
-                });
+                cfg.channels.push(ChannelSpec::new(mode, f.parse().ok()?));
             }
             _ => return None,
         }
@@ -165,12 +162,16 @@ fn main() -> ExitCode {
         Event::Reanchor { by_s } => eprintln!("re-anchor: {by_s:+.3} s"),
         Event::Status(s) => eprintln!(
             "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
-             queue {:.0} kB, {} gap(s), {} re-anchor(s)",
+             queue {:.0} kB, decode {:.0} ms, {} slot(s) queued, {} dropped, \
+             {} gap(s), {} re-anchor(s)",
             s.streamed_s,
             s.delay_ms,
             s.drift_ms,
             s.longest_push_ms,
             s.queued_bytes as f64 / 1e3,
+            s.longest_decode_ms,
+            s.queued_slots,
+            s.dropped_slots,
             s.gaps,
             s.reanchors
         ),

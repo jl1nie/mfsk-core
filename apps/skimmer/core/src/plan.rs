@@ -88,10 +88,7 @@ mod tests {
     }
 
     fn ft8(dial_hz: f64) -> ChannelSpec {
-        ChannelSpec {
-            mode: Mode::Ft8,
-            dial_hz,
-        }
+        ChannelSpec::new(Mode::Ft8, dial_hz)
     }
 
     /// What the live run chose beside SDR# at 7.1 MHz (2026-10-03):

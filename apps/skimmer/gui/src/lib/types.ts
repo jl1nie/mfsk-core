@@ -43,6 +43,9 @@ export interface Status {
   driftMs: number;
   longestPushMs: number;
   queuedBytes: number;
+  queuedSlots: number;
+  droppedSlots: number;
+  longestDecodeMs: number;
   gaps: number;
   reanchors: number;
 }

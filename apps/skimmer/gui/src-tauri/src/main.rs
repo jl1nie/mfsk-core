@@ -108,6 +108,9 @@ enum UiEvent {
         drift_ms: f64,
         longest_push_ms: f64,
         queued_bytes: usize,
+        queued_slots: usize,
+        dropped_slots: u64,
+        longest_decode_ms: f64,
         gaps: u64,
         reanchors: u64,
     },
@@ -170,6 +173,9 @@ impl From<Event> for UiEvent {
                 drift_ms: s.drift_ms,
                 longest_push_ms: s.longest_push_ms,
                 queued_bytes: s.queued_bytes,
+                queued_slots: s.queued_slots,
+                dropped_slots: s.dropped_slots,
+                longest_decode_ms: s.longest_decode_ms,
                 gaps: s.gaps,
                 reanchors: s.reanchors,
             },
@@ -258,10 +264,7 @@ fn config(s: &Settings) -> Result<Config, String> {
         .iter()
         .map(|c| {
             parse_mode(&c.mode)
-                .map(|mode| ChannelSpec {
-                    mode,
-                    dial_hz: c.dial_hz,
-                })
+                .map(|mode| ChannelSpec::new(mode, c.dial_hz))
                 .ok_or_else(|| format!("unknown mode {:?}", c.mode))
         })
         .collect::<Result<Vec<_>, _>>()?;

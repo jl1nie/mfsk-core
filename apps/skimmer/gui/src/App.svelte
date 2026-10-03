@@ -216,9 +216,10 @@
       <div class="detail">{detail}</div>
     </div>
     {#if health}
-      <div class="health" title="Arrival delay · anchor drift · longest decode · read queue · gaps · re-anchors">
+      <div class="health" title="Arrival delay · anchor drift · longest push · longest decode · read queue · slots queued/dropped · gaps · re-anchors">
         delay {health.delayMs.toFixed(0)} ms · drift {health.driftMs >= 0 ? '+' : ''}{health.driftMs.toFixed(0)} ms ·
-        decode {health.longestPushMs.toFixed(0)} ms · queue {(health.queuedBytes / 1e3).toFixed(0)} kB ·
+        push {health.longestPushMs.toFixed(0)} ms · decode {health.longestDecodeMs.toFixed(0)} ms · queue {(health.queuedBytes / 1e3).toFixed(0)} kB ·
+        slots {health.queuedSlots}/{health.droppedSlots} ·
         {health.gaps} gap · {health.reanchors} re-anchor
       </div>
     {/if}

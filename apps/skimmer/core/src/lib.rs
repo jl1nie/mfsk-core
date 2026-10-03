@@ -27,9 +27,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use mfsk_core::Mode;
-use mfsk_core::decoder::AnyDecoder;
+use mfsk_core::decoder::{AnyDecoder, default_params};
 pub use mfsk_core::iq::Channelizer;
+use mfsk_core::iq::CompletedSlot;
 use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::msg::ap::ApHint;
 use mfsk_core::slotgrid::ClockChange;
 
 use anchor::AnchorEstimate;
@@ -44,10 +46,112 @@ pub fn now_ns() -> i64 {
 }
 
 /// One channel: a mode at a USB dial frequency.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChannelSpec {
     pub mode: Mode,
     pub dial_hz: f64,
+    /// Audio band searched (`nfa`, `nfb`); `None` is the mode's default.
+    pub band_hz: Option<(f32, f32)>,
+    /// A station to hunt: its call is given to the decoder as an a-priori
+    /// hint (FT8, FT4, FST4, Q65; ignored by modes without AP).
+    pub dx_call: Option<String>,
+}
+
+impl ChannelSpec {
+    pub fn new(mode: Mode, dial_hz: f64) -> Self {
+        ChannelSpec {
+            mode,
+            dial_hz,
+            band_hz: None,
+            dx_call: None,
+        }
+    }
+
+    /// This channel's decoder, as configured.
+    fn decoder(&self) -> AnyDecoder {
+        let mut params = default_params(self.mode);
+        if let Some(b) = self.band_hz {
+            params.band_hz = b;
+        }
+        let mut d = AnyDecoder::new(self.mode, params);
+        if let Some(dx) = &self.dx_call {
+            let hint = ApHint {
+                call2: Some(dx.clone()),
+                ..ApHint::default()
+            };
+            // A mode without AP simply hunts nothing.
+            let _ = d.set_ap_hint(Some(hint));
+        }
+        d
+    }
+}
+
+/// What a channel's worker has to do.
+enum Job {
+    Slot(CompletedSlot),
+}
+
+/// One channel's decoder thread. The socket reader only cuts slots and
+/// queues them, so a slow decode (a busy FT8 band, FST4-300) delays that
+/// channel's rows and nothing else; a full queue drops the slot, counted.
+struct Worker {
+    tx: std::sync::mpsc::SyncSender<Job>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Slots a worker may have waiting. A slot decodes in a fraction of its
+/// period, so more than this means the channel cannot keep up.
+const WORKER_QUEUE: usize = 4;
+
+impl Worker {
+    fn spawn(
+        channel: usize,
+        dial_hz: f64,
+        mut decoder: AnyDecoder,
+        results: std::sync::mpsc::Sender<Decode>,
+        busy: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(WORKER_QUEUE);
+        let handle = std::thread::Builder::new()
+            .name(format!("decode-{channel}"))
+            .spawn(move || {
+                for job in rx {
+                    let Job::Slot(slot) = job;
+                    let t = Instant::now();
+                    for d in decoder.decode(&slot.input()).rows {
+                        let _ = results.send(Decode {
+                            channel,
+                            mode: slot.mode,
+                            slot_utc_ns: slot.utc_ns,
+                            dial_hz,
+                            freq_hz: slot.abs_freq_hz(d.freq_hz),
+                            snr_db: d.snr_db,
+                            dt_s: d.dt_sec,
+                            text: d.text,
+                        });
+                    }
+                    longest_us.fetch_max(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    busy.fetch_sub(1, Ordering::Relaxed);
+                }
+            })
+            .expect("spawn decoder thread");
+        Worker {
+            tx,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        // Closing the queue ends the thread after the slot in hand.
+        let (dead, _) = std::sync::mpsc::sync_channel(1);
+        drop(std::mem::replace(&mut self.tx, dead));
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 /// The IQ format asked of the server. Float needs no digital-gain guess to
@@ -131,10 +235,16 @@ pub struct Status {
     pub delay_ms: f64,
     /// How far the anchor estimate has moved from the anchor in use.
     pub drift_ms: f64,
-    /// Longest single push since the last status (a slot's decode runs in it).
+    /// Longest single push since the last status (cutting and channelizing; decoding runs on the workers).
     pub longest_push_ms: f64,
     /// Bytes read off the socket and not yet decoded.
     pub queued_bytes: usize,
+    /// Longest slot decode on a worker since the last status.
+    pub longest_decode_ms: f64,
+    /// Slots waiting for, or in, a decoder thread.
+    pub queued_slots: usize,
+    /// Slots dropped because a channel's decoder could not keep up.
+    pub dropped_slots: u64,
     pub gaps: u64,
     pub reanchors: u64,
 }
@@ -439,11 +549,15 @@ fn wait_for_move(c: &mut Conn, stop: &AtomicBool, was: Sync) -> std::io::Result<
 /// The receiver of one stream.
 struct Live {
     rx: IqReceiver,
-    /// By `ChannelId`: which configured channel, and its dial.
-    by_id: Vec<(usize, f64)>,
-    /// By `ChannelId`: the channel's decoder, which keeps its own callsign
-    /// table from slot to slot.
-    decoders: Vec<Option<AnyDecoder>>,
+    /// By `ChannelId`: the channel's decoder thread; its decoder keeps its
+    /// own callsign table from slot to slot.
+    workers: Vec<Option<Worker>>,
+    /// Rows the workers found, waiting to be reported.
+    results: std::sync::mpsc::Receiver<Decode>,
+    /// Slots queued or being decoded.
+    busy: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Longest slot decode since the last status, in µs.
+    longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
     format: IqSampleFormat,
 }
 
@@ -452,26 +566,33 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
     let stream = IqStream::new(p.rate, p.center_hz, format).iq_swap(cfg.iq_swap);
     let mut rx = IqReceiver::with_channelizer(stream, channelizer_for(cfg, p.active.len()))
         .map_err(|e| std::io::Error::other(format!("{} S/s: {e}", p.rate)))?;
-    let mut by_id = Vec::new();
-    let mut decoders: Vec<Option<AnyDecoder>> = Vec::new();
+    let (rtx, results) = std::sync::mpsc::channel();
+    let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut workers: Vec<Option<Worker>> = Vec::new();
     for &i in &p.active {
-        let ch = cfg.channels[i];
+        let ch = &cfg.channels[i];
         let id = rx
             .add_channel(ch.dial_hz, ch.mode)
             .map_err(|e| std::io::Error::other(format!("{}: {e}", ch.dial_hz)))?;
-        if by_id.len() <= id.0 {
-            by_id.resize(id.0 + 1, (usize::MAX, 0.0));
+        if workers.len() <= id.0 {
+            workers.resize_with(id.0 + 1, || None);
         }
-        by_id[id.0] = (i, ch.dial_hz);
-        if decoders.len() <= id.0 {
-            decoders.resize_with(id.0 + 1, || None);
-        }
-        decoders[id.0] = Some(AnyDecoder::with_defaults(ch.mode));
+        workers[id.0] = Some(Worker::spawn(
+            i,
+            ch.dial_hz,
+            ch.decoder(),
+            rtx.clone(),
+            busy.clone(),
+            longest_us.clone(),
+        ));
     }
     Ok(Live {
         rx,
-        by_id,
-        decoders,
+        workers,
+        results,
+        busy,
+        longest_us,
         format,
     })
 }
@@ -495,6 +616,7 @@ fn stream(
     let mut last_report = 0u64;
     let (mut gaps, mut reanchors) = (0u64, 0u64);
     let mut worst_push = Duration::ZERO;
+    let mut dropped_slots = 0u64;
     loop {
         let m = match c.read(stop) {
             Ok(m) => m,
@@ -518,8 +640,10 @@ fn stream(
         }
         let Live {
             rx,
-            by_id,
-            decoders,
+            workers,
+            results,
+            busy,
+            longest_us,
             ..
         } = live.as_mut().unwrap();
         let n = m.body.len() / format.bytes_per_sample();
@@ -542,23 +666,18 @@ fn stream(
         let t = Instant::now();
         let mut slots = Vec::new();
         rx.push_bytes(&m.body, &mut slots);
-        for slot in &slots {
-            let (channel, dial_hz) = by_id[slot.channel.0];
-            let Some(decoder) = decoders[slot.channel.0].as_mut() else {
+        for slot in slots {
+            let Some(w) = workers[slot.channel.0].as_ref() else {
                 continue;
             };
-            for d in decoder.decode(&slot.input()).rows {
-                on_event(Event::Decode(Decode {
-                    channel,
-                    mode: slot.mode,
-                    slot_utc_ns: slot.utc_ns,
-                    dial_hz,
-                    freq_hz: slot.abs_freq_hz(d.freq_hz),
-                    snr_db: d.snr_db,
-                    dt_s: d.dt_sec,
-                    text: d.text,
-                }));
+            busy.fetch_add(1, Ordering::Relaxed);
+            if w.tx.try_send(Job::Slot(slot)).is_err() {
+                busy.fetch_sub(1, Ordering::Relaxed);
+                dropped_slots += 1;
             }
+        }
+        while let Ok(d) = results.try_recv() {
+            on_event(Event::Decode(d));
         }
         worst_push = worst_push.max(t.elapsed());
 
@@ -592,6 +711,9 @@ fn stream(
                 drift_ms: (best - a) as f64 * 1e-6,
                 longest_push_ms: worst_push.as_secs_f64() * 1e3,
                 queued_bytes: c.queued_bytes(),
+                queued_slots: busy.load(Ordering::Relaxed),
+                longest_decode_ms: longest_us.swap(0, Ordering::Relaxed) as f64 * 1e-3,
+                dropped_slots,
                 gaps,
                 reanchors,
             }));
