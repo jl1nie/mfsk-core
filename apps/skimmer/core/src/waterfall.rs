@@ -6,7 +6,7 @@
 //! together stay apart. Rows come every `hop` samples (2048: 0.17 s).
 //!
 //! Each row is `u8`: dB above the row's own noise floor (its 30th percentile,
-//! as `wsprd` takes it), mapped over [`RANGE_DB`]. That keeps the background
+//! as `wsprd` takes it) plus a margin, mapped over [`RANGE_DB`]; noise is 0. That keeps the background
 //! the same grey as the band fills and empties and the AGC moves, and a row
 //! small enough to ship to a window six times a second.
 
@@ -15,10 +15,12 @@ use num_complex::Complex32;
 
 /// The audio rate of a channel.
 pub const RATE_HZ: f32 = 12_000.0;
-/// dB between the noise floor (level 0, a few dB under) and full scale (255).
-pub const RANGE_DB: f32 = 45.0;
-/// How far below the floor level 0 sits, so that noise is dark grey, not black.
-const FLOOR_MARGIN_DB: f32 = 4.0;
+/// dB between level 0 and full scale (255).
+pub const RANGE_DB: f32 = 42.0;
+/// Level 0 sits this far above the row's floor (its 30th percentile). Noise
+/// has a median 2-3 dB above that percentile, so the background is black and
+/// only what stands out of it takes a colour.
+const FLOOR_MARGIN_DB: f32 = 3.0;
 
 /// One spectrum row.
 #[derive(Clone, Debug)]
@@ -125,7 +127,7 @@ impl Waterfall {
                 .db
                 .iter()
                 .map(|&d| {
-                    (((d - floor + FLOOR_MARGIN_DB) / RANGE_DB) * 255.0).clamp(0.0, 255.0) as u8
+                    (((d - floor - FLOOR_MARGIN_DB) / RANGE_DB) * 255.0).clamp(0.0, 255.0) as u8
                 })
                 .collect();
             // The window's middle, in samples before the last pushed one.

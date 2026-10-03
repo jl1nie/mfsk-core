@@ -76,11 +76,11 @@ function add(s: Strip, row: Uint8Array, utc: number) {
   s.utc.length = n;
 }
 
-/** Black, blue, cyan, yellow, red: a level of 0-255 as RGBA. */
+/** Black, blue, cyan, yellow, red: a level of 0-255 as RGBA (0 is black). */
 export const PALETTE: Uint8ClampedArray = (() => {
   const stops: [number, [number, number, number]][] = [
-    [0, [0, 0, 24]],
-    [0.25, [0, 40, 200]],
+    [0, [0, 0, 0]],
+    [0.25, [0, 30, 170]],
     [0.5, [0, 200, 220]],
     [0.75, [240, 230, 60]],
     [1, [255, 60, 20]],
@@ -109,7 +109,8 @@ export function paint(img: ImageData, s: Strip, spanMs: number) {
   const w = img.width;
   const h = img.height;
   const d = img.data;
-  d.fill(0);
+  // Opaque black, also where there are no rows yet.
+  for (let o = 3; o < d.length; o += 4) d[o] = 255;
   if (s.rows.length === 0) return;
   const newest = s.utc[0];
   const per = spanMs / h;
