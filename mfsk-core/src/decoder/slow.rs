@@ -175,6 +175,10 @@ mod jt9_impl {
                 .nominal_start(nominal_start(crate::Mode::Jt9))
                 .params(search)
                 .depth(limit(params.depth));
+            if let Some(rx) = params.rx_freq_hz {
+                // The GUI's ntol (`sbFtol`) defaults to 50 Hz.
+                req = req.narrow(rx, params.tol_hz.unwrap_or(50.0));
+            }
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);
             }

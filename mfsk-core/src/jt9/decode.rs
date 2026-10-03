@@ -102,6 +102,39 @@ pub fn decode_at_baseband_with_fft_depth(
     freq_hz: f32,
     depth: Jt9Depth,
 ) -> Option<Jt9Result> {
+    decode_at_baseband_gated(big_fft, freq_hz, depth, Gates::WIDE)
+}
+
+/// The two sync gates a candidate must clear before Fano is run.
+#[derive(Clone, Copy, Debug)]
+pub struct Gates {
+    /// `sync = (syncpk + 1) / 4`, minimum.
+    pub sync_min: f32,
+    /// `schk`, minimum.
+    pub schk_min: f32,
+}
+
+impl Gates {
+    /// The wide scan (`nqd = 0`): `jt9_decode.f90:139`.
+    pub const WIDE: Gates = Gates {
+        sync_min: 1.0,
+        schk_min: 1.5,
+    };
+    /// The pass around the Rx frequency (`nqd = 1`): `sync >= 0.5` and
+    /// `schk >= 1.0` (`jt9_decode.f90:130`).
+    pub const NARROW: Gates = Gates {
+        sync_min: 0.5,
+        schk_min: 1.0,
+    };
+}
+
+/// [`decode_at_baseband_with_fft_depth`] with the sync gates given.
+pub fn decode_at_baseband_gated(
+    big_fft: &AudioFft,
+    freq_hz: f32,
+    depth: Jt9Depth,
+    gates: Gates,
+) -> Option<Jt9Result> {
     if freq_hz <= 0.0 {
         return None;
     }
@@ -124,11 +157,11 @@ pub fn decode_at_baseband_with_fft_depth(
     // sync power) must clear their thresholds before we spend Fano
     // cycles. Drops phantom convergences in busy bands.
     let sync = (afc.syncpk + 1.0) / 4.0;
-    if !sync.is_finite() || sync < 1.0 {
+    if !sync.is_finite() || sync < gates.sync_min {
         return None;
     }
     let (schk, llrs, snr_db) = llrs_from_c5(&c3);
-    if !schk.is_finite() || schk < 1.5 {
+    if !schk.is_finite() || schk < gates.schk_min {
         return None;
     }
     let opts = FecOpts {

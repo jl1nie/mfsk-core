@@ -139,6 +139,7 @@ fn decode_scan_inner(
     nominal_start_sample: usize,
     params: &search::SearchParams,
     depth: Jt9Depth,
+    narrow: Option<(f32, f32)>,
     on_result: Option<&(dyn Fn(&Jt9Result) + Sync)>,
 ) -> Vec<Jt9Result> {
     use crate::engine::ModulationParams;
@@ -171,8 +172,25 @@ fn decode_scan_inner(
 
     let mut seen: Vec<Jt9Result> = Vec::new();
     for c in cands {
-        let Some(mut d) = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth)
-        else {
+        let strict = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth);
+        // `jt9_decode.f90:81-135`: around the Rx frequency (`nfqso ± ntol`)
+        // upstream scans first (`nqd = 1`) at the deepest Fano limit with
+        // looser sync gates (sync 0.5, schk 1.0 against 1.0, 1.5), so a
+        // candidate the wide scan rejects is tried again there.
+        let relaxed = || {
+            let (f0, tol) = narrow?;
+            ((c.freq_hz - f0).abs() <= tol)
+                .then(|| {
+                    decode::decode_at_baseband_gated(
+                        &big_fft,
+                        c.freq_hz,
+                        Jt9Depth::Deep,
+                        decode::Gates::NARROW,
+                    )
+                })
+                .flatten()
+        };
+        let Some(mut d) = strict.or_else(relaxed) else {
             continue;
         };
         // The builder reports dt from the buffer origin; dt is defined

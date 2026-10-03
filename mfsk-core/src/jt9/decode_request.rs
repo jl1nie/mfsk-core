@@ -39,6 +39,7 @@ pub struct DecodeRequest<'a> {
     nominal_start_sample: usize,
     params: SearchParams,
     depth: Jt9Depth,
+    narrow: Option<(f32, f32)>,
     on_result: Option<&'a (dyn Fn(&Jt9Result) + Sync)>,
 }
 
@@ -52,6 +53,7 @@ impl<'a> DecodeRequest<'a> {
             nominal_start_sample: 0,
             params: default_search_params(),
             depth: Jt9Depth::default(),
+            narrow: None,
             on_result: None,
         }
     }
@@ -98,6 +100,15 @@ impl<'a> DecodeRequest<'a> {
     /// the same order. Candidates are tried in coarse-score-descending
     /// order, so `cb` tends to see stronger signals first; that is a
     /// correlation, not a guarantee.
+    /// WSJT-X's Rx frequency and tolerance (`nfqso`, `ntol`): candidates
+    /// within `tol_hz` of `rx_hz` that the wide scan's sync gates reject are
+    /// tried again with the looser ones and the deepest Fano limit, as
+    /// `jt9_decode.f90`'s `nqd = 1` pass does. Off by default.
+    pub fn narrow(mut self, rx_hz: f32, tol_hz: f32) -> Self {
+        self.narrow = Some((rx_hz, tol_hz));
+        self
+    }
+
     pub fn on_result(mut self, cb: &'a (dyn Fn(&Jt9Result) + Sync)) -> Self {
         self.on_result = Some(cb);
         self
@@ -110,6 +121,7 @@ impl<'a> DecodeRequest<'a> {
             self.nominal_start_sample,
             &self.params,
             self.depth,
+            self.narrow,
             self.on_result,
         )
     }

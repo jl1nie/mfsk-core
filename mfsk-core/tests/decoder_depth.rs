@@ -107,3 +107,36 @@ fn jt65_depths_find_every_carrier_and_no_phantom() {
         assert_eq!(carriers, [700, 1100, 1500, 1900, 2300], "{depth:?}");
     }
 }
+
+/// `jt9_decode.f90:81-135`: the pass around the Rx frequency (`nqd = 1`)
+/// only adds to the wide scan: what the wide scan decodes is still
+/// decoded, whichever frequency is the Rx frequency.
+#[test]
+fn jt9_rx_frequency_pass_only_adds() {
+    use mfsk_core::Jt9;
+    let Some(a) = common::load_wav_f32_opt(asset_path!("130418_1742.wav")) else {
+        common::skip_or_fail("JT9 recording");
+        return;
+    };
+    let run = |rx: Option<f32>| {
+        let mut p = DecodeParams::for_band((1050.0, 1550.0)).depth(Depth::Fast);
+        if let Some(f) = rx {
+            p = p.rx_freq(f);
+        }
+        let mut d = Decoder::<Jt9>::new(p);
+        d.decode(&SlotInput::f32(&a))
+            .rows
+            .into_iter()
+            .map(|r| r.decoded.text)
+            .collect::<Vec<_>>()
+    };
+    let wide = run(None);
+    assert!(!wide.is_empty());
+    for rx in [1100.0, 1300.0, 1500.0] {
+        let narrow = run(Some(rx));
+        for m in &wide {
+            assert!(narrow.contains(m), "rx {rx}: lost {m:?}");
+        }
+        eprintln!("rx {rx}: wide {} narrow {}", wide.len(), narrow.len());
+    }
+}
