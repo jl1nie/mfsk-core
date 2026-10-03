@@ -132,10 +132,13 @@ fn apply(server: &str, r: Result<Sample, String>) -> bool {
     match r {
         Ok(s) => {
             OFFSET_NS.store(s.offset_ns, Ordering::Relaxed);
+            let t = system_ns().div_euclid(1_000_000_000).rem_euclid(86_400);
             set_report(format!(
-                "NTP {:+.0} ms (round trip {:.0} ms)",
+                "NTP {:+.0} ms (round trip {:.0} ms, measured {:02}:{:02} UTC)",
                 s.offset_ns as f64 * 1e-6,
-                s.rtt_ns as f64 * 1e-6
+                s.rtt_ns as f64 * 1e-6,
+                t / 3600,
+                t / 60 % 60
             ));
             true
         }

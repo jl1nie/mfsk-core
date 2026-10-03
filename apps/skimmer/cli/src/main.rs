@@ -68,6 +68,7 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>)> {
                 cfg.steps.push(Step {
                     channels: Vec::new(),
                     minutes: it.next()?.parse().ok()?,
+                    hours: None,
                 });
             }
             "--log" => log = Some(it.next()?),
@@ -249,12 +250,13 @@ fn main() -> ExitCode {
                 index,
                 of,
                 ends_utc_s,
-            } => eprintln!(
-                "rotation step {}/{} until {} UTC",
-                index + 1,
-                of,
-                ends_utc_s % 86_400 / 3600 * 100 + ends_utc_s % 3600 / 60
-            ),
+            } => {
+                let until = ends_utc_s % 86_400 / 3600 * 100 + ends_utc_s % 3600 / 60;
+                match index {
+                    Some(i) => eprintln!("rotation step {}/{} until {until:04} UTC", i + 1, of),
+                    None => eprintln!("no band is in at this hour; waiting until {until:04} UTC"),
+                }
+            }
             Event::Status(s) => eprintln!(
                 "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
              queue {:.0} kB, decode {:.0} ms, {} slot(s) queued, {} dropped, \

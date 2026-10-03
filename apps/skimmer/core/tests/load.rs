@@ -92,6 +92,8 @@ fn gated(jobs: usize, k: usize, audio: &Arc<Vec<i16>>) -> f64 {
 #[ignore]
 fn forty_slots_with_a_gate() {
     let audio = Arc::new(recording());
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    println!("{cores} threads available");
     for k in [2usize, 3, 4, 6, 8, 12, 24, 40] {
         let _ = gated(k, k, &audio);
         let best = (0..2)

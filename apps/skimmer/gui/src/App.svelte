@@ -9,6 +9,9 @@
   import WaterfallPanel from './lib/WaterfallPanel.svelte';
   import { WaterfallStore } from './lib/waterfall';
 
+  /** Servers at once: four, which a normal PC's threads carry (measured: sixteen busy FT8 decoders at once take a few seconds on 8 threads). */
+  const MAX_SERVERS = 4;
+
   /** Rows kept in the table; older ones stay in the log file. */
   const MAX_ROWS = 5000;
 
@@ -227,7 +230,10 @@
         e.channels.forEach((c, k) => (active[c] = e.active[k]));
         break;
       case 'step':
-        s.step = `step ${e.index + 1}/${e.of} until ${new Date(e.endsUtcS * 1000).toISOString().slice(11, 16)} UTC`;
+        {
+          const until = new Date(e.endsUtcS * 1000).toISOString().slice(11, 16);
+          s.step = e.index === null ? `no band in until ${until} UTC` : `step ${e.index + 1}/${e.of} until ${until} UTC`;
+        }
         break;
       case 'moved':
         s.phase = `Radio moved to ${mhz(e.deviceHz)} MHz; planning again`;
@@ -368,7 +374,7 @@
   }
 
   function addServer() {
-    if (!settings || settings.servers.length >= 8) return;
+    if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
       name: `Server ${n}`, address: '', grid: '', networkDelayMs: 0, tune: false, yieldControl: false, rotate: false, rotation: [],
@@ -404,7 +410,7 @@
       (settings?.channels ?? []).filter((c) => (c.server ?? 0) === i).map((c) => bandOfHz(c.dialHz)),
     );
     const next = sv.rotation.filter((r) => bands.has(r.band));
-    for (const b of sortBands(bands)) if (!next.some((r) => r.band === b)) next.push({ band: b, minutes: 10 });
+    for (const b of sortBands(bands)) if (!next.some((r) => r.band === b)) next.push({ band: b, minutes: 10, from: '', to: '' });
     if (JSON.stringify(next) !== JSON.stringify(sv.rotation)) sv.rotation = next;
   }
 
@@ -447,7 +453,7 @@
             <i class="dot {srv[i]?.state ?? 'off'}"></i>{sv.name}{srv[i]?.step ? ` · ${srv[i].step}` : ''}
           </button>
         {/each}
-        {#if settings.servers.length < 8}
+        {#if settings.servers.length < MAX_SERVERS}
           <button class="srvchip add" title="Add a server" aria-label="Add a server" onclick={addServer}>+</button>
         {/if}
       </div>
@@ -495,20 +501,25 @@
               <span>Rotate through the bands of its channels</span>
             </label>
             {#if sv.rotate}
-              {#if sv.rotation.length < 2}
-                <p class="hint">Needs channels in two or more bands.</p>
+              {#if sv.rotation.length < 1}
+                <p class="hint">Needs channels.</p>
               {/if}
               {#each sv.rotation as r, k (r.band)}
-                <div class="field">
+                <div class="field rot">
                   <span>{r.band}</span>
-                  <input type="number" min="5" step="5" value={r.minutes}
+                  <input type="number" min="5" step="5" value={r.minutes} title="Minutes per turn"
                     onchange={(e) => { r.minutes = Math.max(5, Number(e.currentTarget.value) || 5); rotationChanged(); }} />
                   <span class="hint">min</span>
+                  <input type="time" value={r.from} title="From (UTC); empty both: all day"
+                    onchange={(e) => { r.from = e.currentTarget.value; rotationChanged(); }} />
+                  <span class="hint">–</span>
+                  <input type="time" value={r.to} title="To (UTC); earlier than From runs through midnight"
+                    onchange={(e) => { r.to = e.currentTarget.value; rotationChanged(); }} />
                   <button class="link" aria-label="Earlier" disabled={k === 0} onclick={() => moveStep(sel, k, -1)}>▲</button>
                   <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
                 </div>
               {/each}
-              <p class="hint">At least 5 minutes each (a retune costs a slot or two). Add or remove channels to change the bands.</p>
+              <p class="hint">At least 5 minutes each (a retune costs a slot or two). The times (UTC) are the hours a band takes part in; empty is all day, and 20:00–04:00 runs through midnight. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
             {/if}
           {/if}
           <h3>Radio · {settings.servers[sel]?.name}</h3>

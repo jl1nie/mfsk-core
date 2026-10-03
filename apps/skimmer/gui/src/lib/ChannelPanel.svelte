@@ -160,7 +160,7 @@
     if (active[i]) return `${slotCounts[i] ?? 0}`;
     // In a rotation a channel out of its step is waiting for it, not out of band.
     const sv = servers[channels[i].server ?? 0];
-    return sv?.rotate && sv.rotation.length > 1 ? 'later' : 'paused';
+    return sv?.rotate && sv.rotation.length ? 'later' : 'paused';
   }
 
   /** Where the current slot of a mode is: fraction elapsed, seconds left, start (UTC hhmmss). */
@@ -290,7 +290,7 @@
   <h2>Channels</h2>
   {#each servers as sv, si (si)}
     {#if servers.length > 1}
-      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.rotate && sv.rotation.length > 1 ? ` · rotating ${sv.rotation.map((r) => `${r.band} ${r.minutes}`).join(' / ')} min` : ''}</h3>
+      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.rotate && sv.rotation.length ? ` · rotating ${sv.rotation.map((r) => `${r.band} ${r.minutes}${r.from && r.to ? ` (${r.from}–${r.to})` : ''}`).join(' / ')}` : ''}</h3>
     {/if}
     <ul class="channels">
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}

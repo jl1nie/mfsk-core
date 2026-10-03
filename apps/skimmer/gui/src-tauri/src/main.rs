@@ -148,6 +148,10 @@ struct ServerSetting {
 struct RotationStep {
     band: String,
     minutes: u32,
+    /// The UTC hours this band takes part in, `HH:MM`; both empty: all day. From
+    /// later than to runs through midnight.
+    from: String,
+    to: String,
 }
 
 impl Default for RotationStep {
@@ -155,6 +159,33 @@ impl Default for RotationStep {
         RotationStep {
             band: String::new(),
             minutes: 10,
+            from: String::new(),
+            to: String::new(),
+        }
+    }
+}
+
+impl RotationStep {
+    /// The window as seconds of the UTC day; `None` is all day.
+    fn hours(&self) -> Result<Option<(u32, u32)>, String> {
+        let t = |s: &str| -> Result<u32, String> {
+            let (h, m) = s
+                .trim()
+                .split_once(':')
+                .ok_or_else(|| format!("{}: time {s:?} is not HH:MM", self.band))?;
+            let (h, m): (u32, u32) = (
+                h.parse().map_err(|_| format!("{}: bad hour {h:?}", self.band))?,
+                m.parse().map_err(|_| format!("{}: bad minute {m:?}", self.band))?,
+            );
+            if h > 24 || m > 59 || (h == 24 && m > 0) {
+                return Err(format!("{}: time {s:?} is out of range", self.band));
+            }
+            Ok(h * 3600 + m * 60)
+        };
+        match (self.from.trim(), self.to.trim()) {
+            ("", "") => Ok(None),
+            (f, to) if !f.is_empty() && !to.is_empty() => Ok(Some((t(f)?, t(to)?)).filter(|(a, b)| a != b)),
+            _ => Err(format!("{}: give both the start and the end, or neither", self.band)),
         }
     }
 }
@@ -355,7 +386,7 @@ enum UiEvent {
         text: String,
     },
     Step {
-        index: usize,
+        index: Option<usize>,
         of: usize,
         ends_utc_s: i64,
     },
@@ -646,24 +677,27 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         // A rotation: each band in turn, with the channels of that band
         // (their modes together). Bands nobody is in are left out; one band is
         // no rotation.
-        if srv.rotate && srv.rotation.len() > 1 {
-            cfg.steps = srv
-                .rotation
-                .iter()
-                .filter_map(|r| {
-                    let chs: Vec<usize> = mine
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (_, c))| store::band_of(c.dial_hz) == r.band)
-                        .map(|(local, _)| local)
-                        .collect();
-                    (!chs.is_empty()).then_some(skimmer_core::Step {
+        if srv.rotate && !srv.rotation.is_empty() {
+            let mut steps = Vec::new();
+            for r in &srv.rotation {
+                let hours = r.hours()?;
+                let chs: Vec<usize> = mine
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, c))| store::band_of(c.dial_hz) == r.band)
+                    .map(|(local, _)| local)
+                    .collect();
+                if !chs.is_empty() {
+                    steps.push(skimmer_core::Step {
                         channels: chs,
                         minutes: r.minutes,
-                    })
-                })
-                .collect();
-            if cfg.steps.len() < 2 {
+                        hours,
+                    });
+                }
+            }
+            cfg.steps = steps;
+            // One band with no hours is no rotation; with hours it is a schedule.
+            if cfg.steps.len() < 2 && cfg.steps.iter().all(|s| s.hours.is_none()) {
                 cfg.steps.clear();
             }
         }
@@ -703,7 +737,7 @@ fn health_line(ev: &Event) -> Option<String> {
     let body = match ev {
         Event::Status(s) => format!(
             "status streamed {:.0}s delay {:.0}ms drift {:+.0}ms push {:.0}ms decode {:.0}ms \
-             queue {:.0}kB slots {}/{} gaps {} reanchors {}",
+             queue {:.0}kB slots {}/{} gaps {} reanchors {} clock [{}]",
             s.streamed_s,
             s.delay_ms,
             s.drift_ms,
@@ -713,7 +747,8 @@ fn health_line(ev: &Event) -> Option<String> {
             s.queued_slots,
             s.dropped_slots,
             s.gaps,
-            s.reanchors
+            s.reanchors,
+            if s.clock.is_empty() { "PC clock" } else { &s.clock }
         ),
         Event::Gap { messages, at_s } => format!("gap {messages} msg at {at_s:.1}s"),
         Event::Reanchor { by_s } => format!("reanchor {by_s:+.3}s"),

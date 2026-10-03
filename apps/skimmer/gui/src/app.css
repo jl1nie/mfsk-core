@@ -542,3 +542,7 @@ button.danger {
   padding: 1px 9px;
   color: #d9822b;
 }
+
+.field.rot input[type='time'] {
+  width: 84px;
+}

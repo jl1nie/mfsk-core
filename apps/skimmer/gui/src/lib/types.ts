@@ -61,6 +61,9 @@ export interface ServerSetting {
 export interface RotationStep {
   band: string;
   minutes: number;
+  /** The UTC hours this band takes part in, `HH:MM`; both empty: all day. From later than to runs through midnight. */
+  from: string;
+  to: string;
 }
 
 export interface Settings {
@@ -168,7 +171,7 @@ export type UiEventBody =
   | { type: 'gap'; messages: number; atS: number }
   | { type: 'reanchor'; byS: number }
   | { type: 'clock'; text: string }
-  | { type: 'step'; index: number; of: number; endsUtcS: number }
+  | { type: 'step'; index: number | null; of: number; endsUtcS: number }
   | ({ type: 'status' } & Status)
   | { type: 'disconnected'; error: string };
 

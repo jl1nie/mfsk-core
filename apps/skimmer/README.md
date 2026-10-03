@@ -153,7 +153,7 @@ Observed with SDR# and an Airspy HF+ (2026-10-03):
 
 ## Several servers, and a rotation of bands
 
-Up to eight SpyServers at once, wherever they are. Each has a name, an address,
+Up to four SpyServers at once, wherever they are. Each has a name, an address,
 its own locator (the origin of the bearings of what it hears) and its own
 network delay, gain and control; the channels of each are listed under it.
 `Settings > Server` edits the one selected in the header; `+` adds another.
@@ -170,6 +170,12 @@ together, on an even minute); "Rotation follows the UTC clock" counts the cycle
 from UTC midnight instead, so a restart is at the same step at the same moment. The stream retunes at each step; the last slot of a step is
 decoded before leaving, and a channel's decoder (with its callsign table) and
 its waterfall history wait for the band's next turn.
+
+Each band can also be given the **UTC hours it takes part in** (empty is all
+day; `20:00`–`04:00` runs through midnight): 7 MHz all day, 14 MHz only by
+day, 3.5 MHz only by night. The cycle goes on among the bands that are in at
+that hour and starts again whenever the set changes; when none is in, nothing
+is heard until one opens.
 
 The database records which server heard each decode and where that server is,
 so Analysis can filter by server, centre the map on any of them, and measure

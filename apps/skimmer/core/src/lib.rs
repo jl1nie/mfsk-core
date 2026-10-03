@@ -406,6 +406,21 @@ pub struct Step {
     pub channels: Vec<usize>,
     /// Minutes this step lasts (at least [`MIN_STEP_MINUTES`]).
     pub minutes: u32,
+    /// The hours of the UTC day this step takes part in, as seconds of the
+    /// day `[from, to)`; `from > to` runs through midnight. `None`: all day.
+    /// Outside them the step is left out of the cycle, which goes on among
+    /// the steps that are in.
+    pub hours: Option<(u32, u32)>,
+}
+
+impl Step {
+    fn is_in(&self, second_of_day: u32) -> bool {
+        match self.hours {
+            None => true,
+            Some((from, to)) if from <= to => (from..to).contains(&second_of_day),
+            Some((from, to)) => second_of_day >= from || second_of_day < to,
+        }
+    }
 }
 
 /// Shorter than this a retune costs more than it listens: a slot or two is
@@ -413,47 +428,68 @@ pub struct Step {
 pub const MIN_STEP_MINUTES: u32 = 5;
 
 impl Config {
-    /// The step in force at `utc_s` and when it ends (UTC seconds). The cycle
-    /// counts from [`Self::rotation_origin`], else from UTC midnight. `None`
-    /// without a rotation.
-    pub fn step_at(&self, utc_s: i64) -> Option<(usize, i64)> {
-        let total: i64 = self
-            .steps
-            .iter()
-            .map(|s| i64::from(s.minutes.max(MIN_STEP_MINUTES)) * 60)
-            .sum();
-        if total == 0 {
+    /// What the rotation does at `utc_s` (UTC seconds): `None` without a
+    /// rotation; else the step in force (`None` inside it: no step is in at
+    /// this hour, so nothing is heard) and when it ends.
+    ///
+    /// The cycle runs among the steps whose hours are in, from
+    /// [`Self::rotation_origin`] (else UTC midnight), and starts again at each
+    /// time the set of steps in changes. A step's end is the end of its minutes
+    /// or the next such change, whichever comes first.
+    pub fn step_at(&self, utc_s: i64) -> Option<(Option<usize>, i64)> {
+        if self.steps.is_empty() {
             return None;
         }
-        let origin = self
-            .rotation_origin
-            .unwrap_or_else(|| utc_s.div_euclid(86_400) * 86_400);
-        // Before the origin (a clock stepped back): the first step.
-        let mut at = (utc_s - origin).max(0) % total;
-        for (i, s) in self.steps.iter().enumerate() {
-            let len = i64::from(s.minutes.max(MIN_STEP_MINUTES)) * 60;
-            if at < len {
-                return Some((i, utc_s + (len - at)));
+        let day = utc_s.div_euclid(86_400) * 86_400;
+        let sod = (utc_s - day) as u32;
+        // Where the set of steps in changes: every window edge of the days
+        // around this one.
+        let mut edges: Vec<i64> = Vec::new();
+        for d in [day - 86_400, day, day + 86_400, day + 2 * 86_400] {
+            for st in &self.steps {
+                if let Some((f, t)) = st.hours {
+                    edges.push(d + i64::from(f));
+                    edges.push(d + i64::from(t));
+                }
             }
-            at -= len;
+        }
+        let last_edge = edges.iter().copied().filter(|&e| e <= utc_s).max();
+        let next_edge = edges.iter().copied().filter(|&e| e > utc_s).min();
+        let cap = |end: i64| next_edge.map_or(end, |n| n.min(end));
+        let within: Vec<usize> = (0..self.steps.len())
+            .filter(|&i| self.steps[i].is_in(sod))
+            .collect();
+        if within.is_empty() {
+            // Nobody in until a window opens (there is one if any has hours).
+            return Some((None, next_edge.unwrap_or(utc_s + 60)));
+        }
+        let len = |i: usize| i64::from(self.steps[i].minutes.max(MIN_STEP_MINUTES)) * 60;
+        let total: i64 = within.iter().map(|&i| len(i)).sum();
+        let origin = self.rotation_origin.unwrap_or(day);
+        let base = last_edge.map_or(origin, |e| origin.max(e));
+        // Before the base (a clock stepped back): the first step.
+        let mut at = (utc_s - base).max(0) % total;
+        for &i in &within {
+            if at < len(i) {
+                return Some((Some(i), cap(utc_s + (len(i) - at))));
+            }
+            at -= len(i);
         }
         None
     }
 
-    /// Which channels the step in force wants.
-    fn mask_at(&self, utc_s: i64) -> (Vec<bool>, Option<(usize, i64)>) {
-        match self.step_at(utc_s) {
-            None => (vec![true; self.channels.len()], None),
-            Some((i, end)) => {
-                let mut m = vec![false; self.channels.len()];
-                for &c in &self.steps[i].channels {
-                    if let Some(x) = m.get_mut(c) {
-                        *x = true;
-                    }
+    /// Which channels the rotation wants now, and the step (if any) and when it ends.
+    fn mask_at(&self, utc_s: i64) -> (Vec<bool>, Option<(Option<usize>, i64)>) {
+        let at = self.step_at(utc_s);
+        let mut m = vec![at.is_none(); self.channels.len()];
+        if let Some((Some(i), _)) = at {
+            for &c in &self.steps[i].channels {
+                if let Some(x) = m.get_mut(c) {
+                    *x = true;
                 }
-                (m, Some((i, end)))
             }
         }
+        (m, at)
     }
 
     pub fn new(server: impl Into<String>, channels: Vec<ChannelSpec>) -> Self {
@@ -604,7 +640,8 @@ pub enum Event {
     /// A rotation step began: its index, how many there are, and when it
     /// ends (UTC seconds).
     Step {
-        index: usize,
+        /// `None`: no step is in at this hour; nothing is heard until `ends_utc_s`.
+        index: Option<usize>,
         of: usize,
         ends_utc_s: i64,
     },
@@ -810,7 +847,7 @@ fn session(
     // it over what that client has set.
     let mut gain_once = if hold { cfg.gain } else { None };
     let mut wf_bank = WfBank::new();
-    let mut last_step: Option<usize> = None;
+    let mut last_step: Option<Option<usize>> = None;
 
     loop {
         // Whether this client has control is the server's latest word, not what
@@ -830,6 +867,12 @@ fn session(
             });
         }
         let until_ns = step.map(|(_, end)| end * 1_000_000_000);
+        if let Some((None, _)) = step {
+            // No band is in at this hour: stream off, and wait for one.
+            c.set(SET_STREAMING_ENABLED, 0)?;
+            sync = wait_for_move(&mut c, stop, sync, until_ns)?;
+            continue;
+        }
         let Some(p) = plan::plan_of(
             &cfg.channels,
             &mask,
@@ -1500,50 +1543,44 @@ mod tests {
                 ChannelSpec::new(mfsk_core::Mode::Ft8, 3_573_000.0),
             ],
         );
-        c.steps = vec![
-            Step {
-                channels: vec![0],
-                minutes: 10,
-            },
-            Step {
-                channels: vec![1],
-                minutes: 10,
-            },
-            Step {
-                channels: vec![2],
-                minutes: 5,
-            },
-        ];
+        let step = |c: usize, minutes| Step {
+            channels: vec![c],
+            minutes,
+            hours: None,
+        };
+        c.steps = vec![step(0, 10), step(1, 10), step(2, 5)];
         c
     }
+
+    const DAY: i64 = 1_700_000_000 / 86_400 * 86_400;
+    const H: i64 = 3600;
 
     /// The cycle (25 min) counts from UTC midnight, so every server and
     /// every restart agrees on the step.
     #[test]
     fn rotation_steps_count_from_utc_midnight() {
         let mut c = rotating();
-        let day = 1_700_000_000 / 86_400 * 86_400;
-        assert_eq!(c.step_at(day), Some((0, day + 600)));
-        assert_eq!(c.step_at(day + 599), Some((0, day + 600)));
-        assert_eq!(c.step_at(day + 600), Some((1, day + 1200)));
-        assert_eq!(c.step_at(day + 1200), Some((2, day + 1500)));
-        assert_eq!(c.step_at(day + 1500), Some((0, day + 2100)));
-        assert_eq!(c.mask_at(day + 700).0, vec![false, true, false]);
+        let at = |c: &Config, t: i64| c.step_at(DAY + t);
+        assert_eq!(at(&c, 0), Some((Some(0), DAY + 600)));
+        assert_eq!(at(&c, 599), Some((Some(0), DAY + 600)));
+        assert_eq!(at(&c, 600), Some((Some(1), DAY + 1200)));
+        assert_eq!(at(&c, 1200), Some((Some(2), DAY + 1500)));
+        assert_eq!(at(&c, 1500), Some((Some(0), DAY + 2100)));
+        assert_eq!(c.mask_at(DAY + 700).0, vec![false, true, false]);
         // From a start time: the first step begins there.
-        c.rotation_origin = Some(day + 1000);
-        assert_eq!(c.step_at(day + 1000), Some((0, day + 1600)));
-        assert_eq!(c.step_at(day + 1600), Some((1, day + 2200)));
+        c.rotation_origin = Some(DAY + 1000);
+        assert_eq!(at(&c, 1000), Some((Some(0), DAY + 1600)));
+        assert_eq!(at(&c, 1600), Some((Some(1), DAY + 2200)));
         assert_eq!(
-            c.step_at(day + 900).map(|s| s.0),
-            Some(0),
+            at(&c, 900).map(|s| s.0),
+            Some(Some(0)),
             "before the origin is the first step"
         );
         c.rotation_origin = None;
         // No rotation: everything, always.
-        let mut c = rotating();
         c.steps.clear();
-        assert_eq!(c.step_at(day), None);
-        assert_eq!(c.mask_at(day).0, vec![true; 3]);
+        assert_eq!(c.step_at(DAY), None);
+        assert_eq!(c.mask_at(DAY).0, vec![true; 3]);
     }
 
     /// A step shorter than five minutes is five: a retune costs a slot or two.
@@ -1551,8 +1588,43 @@ mod tests {
     fn short_steps_are_lengthened() {
         let mut c = rotating();
         c.steps[0].minutes = 1;
-        let day = 1_700_000_000 / 86_400 * 86_400;
-        assert_eq!(c.step_at(day), Some((0, day + 300)));
+        assert_eq!(c.step_at(DAY), Some((Some(0), DAY + 300)));
+    }
+
+    /// 40 m all day; 20 m only 06:00-18:00 UTC; 80 m only through the night,
+    /// 18:00-06:00. The cycle runs among the bands that are in.
+    #[test]
+    fn bands_take_part_in_their_hours() {
+        let mut c = rotating();
+        c.steps[0].hours = Some((6 * 3600, 18 * 3600)); // 20 m, day
+        c.steps[2].hours = Some((18 * 3600, 6 * 3600)); // 80 m, night, through midnight
+        let band = |t: i64| c.step_at(DAY + t).and_then(|s| s.0);
+        // 03:00: night. 40 m (10 min) and 80 m (5 min) are in.
+        let ins: std::collections::HashSet<_> = (0..120).map(|m| band(3 * H + m * 60)).collect();
+        assert_eq!(ins, [Some(1), Some(2)].into_iter().collect());
+        // 12:00: day. 20 m and 40 m are in; 80 m is not.
+        let ins: std::collections::HashSet<_> = (0..300).map(|m| band(12 * H + m * 60)).collect();
+        assert_eq!(ins, [Some(0), Some(1)].into_iter().collect());
+        // The set changes at 06:00 and the cycle starts again there: 20 m
+        // (the first of the day's) begins at 06:00 sharp.
+        assert_eq!(band(6 * H), Some(0));
+        assert_eq!(c.step_at(DAY + 6 * H).map(|s| s.1), Some(DAY + 6 * H + 600));
+        // A step does not run past the end of its window.
+        let (_, end) = c.step_at(DAY + 5 * H + 58 * 60).unwrap();
+        assert!(end <= DAY + 6 * H, "{end}");
+    }
+
+    /// Nothing is in for a stretch: the rotation says so, and when it ends.
+    #[test]
+    fn a_gap_in_the_windows_is_idle() {
+        let mut c = rotating();
+        for s in &mut c.steps {
+            s.hours = Some((10 * 3600, 12 * 3600));
+        }
+        assert_eq!(c.step_at(DAY + 9 * H), Some((None, DAY + 10 * H)));
+        assert_eq!(c.mask_at(DAY + 9 * H).0, vec![false; 3]);
+        assert!(matches!(c.step_at(DAY + 10 * H), Some((Some(0), _))));
+        assert_eq!(c.step_at(DAY + 13 * H), Some((None, DAY + 34 * H)));
     }
 
     #[test]
