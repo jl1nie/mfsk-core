@@ -110,7 +110,7 @@ pub const MFSK_IQ_CHANNELIZER_DIRECT: u32 = 0;
 /// three direct channels, then about a quarter of one per channel.
 pub const MFSK_IQ_CHANNELIZER_PFB: u32 = 1;
 
-/// Inline capacity of each `MfskDecodeParams` a-priori field.
+/// Inline capacity of each a-priori callsign/grid field of `MfskExtras`.
 ///
 /// A literal here, not a re-export of `mfsk_ffi_abi`'s, for the same
 /// reason as the capability bits below: cbindgen writes the *name* into
@@ -125,7 +125,7 @@ pub const MFSK_AP_FIELD_LEN: usize = 16;
 /// [`MFSK_AP_FIELD_LEN`] for why it is a literal.
 pub const MFSK_DECODE_TEXT_LEN: usize = 64;
 
-/// `MfskDecode::flags` bit 0: the text needed the session's callsign
+/// `MfskDecode::flags` bit 0: the text needed the decoder's callsign
 /// hash table to resolve a `<...>` reference.
 ///
 /// A literal here for the same cbindgen reason as the capability bits —
@@ -214,8 +214,8 @@ pub const MFSK_CAP_TX_FREQ: u64 = 1 << 17;
 // Public C types
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Q65 sub-mode selector for the dedicated `mfsk_q65_*` function
-/// family. All sub-modes share the same FEC, sync layout and
+/// Q65 sub-mode selector (the `submode` argument of `mfsk_encode_q65*`).
+/// All sub-modes share the same FEC, sync layout and
 /// message format — only the T/R period and tone spacing change.
 ///
 /// Picked from the type-level `Q65a30 / Q65a60 / Q65b60 / Q65c60 /
@@ -254,7 +254,7 @@ pub enum MfskQ65SubMode {
     A300 = 9,
 }
 
-/// Channel-spread fading model used by `mfsk_q65_decode_fading`.
+/// Channel-spread fading model used through `MfskExtras::fading_model`.
 /// Matches the Gaussian / Lorentzian calibration tables shipped
 /// with WSJT-X.
 #[repr(C)]

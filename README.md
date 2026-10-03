@@ -155,9 +155,9 @@ Synthesise an FT8 frame and decode it back:
 
 ```rust
 use mfsk_core::ft8::Ft8;
+use mfsk_core::decoder::{Decoder, SlotInput};
 use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
-use mfsk_core::msg::decode_request::DecodeRequest;
-use mfsk_core::msg::wsjt77::{pack77, unpack77};
+use mfsk_core::msg::wsjt77::pack77;
 
 // 1. Synthesise an FT8 frame and pad it into a 15-second slot.
 let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
@@ -169,79 +169,61 @@ let start = (0.5 * 12_000.0) as usize;
 let end = (start + frame.len()).min(audio.len());
 audio[start..end].copy_from_slice(&frame[..end - start]);
 
-// 2. Decode it back.
-let results = DecodeRequest::<Ft8>::new(
-    &audio,
-    /* freq_min */ 100.0,
-    /* freq_max */ 3_000.0,
-    /* sync_min */ 1.0,
-    /* max_cand */ 50,
-)
-.decode()
-.results;
-for r in &results {
-    if let Some(text) = unpack77(r.message77()) {
-        println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
-                 r.freq_hz, r.dt_sec, r.snr_db, text);
-    }
+// 2. Decode it back. One Decoder per mode, as WSJT-X runs one `jt9 -s`
+//    per mode: it keeps the callsign table, a7 and the averages between
+//    periods; `with_defaults()` is the GUI's parameter block.
+let mut decoder = Decoder::<Ft8>::with_defaults();
+let slot = decoder.decode(&SlotInput::i16(&audio));
+for row in &slot.rows {
+    let d = &row.decoded;
+    println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}", d.freq_hz, d.dt_sec, d.snr_db, d.text);
 }
 ```
 
 That's the whole round trip: pack a message → synthesise 12 kHz PCM →
-decode it back. Each protocol module documents its own top-level entry
-points and carries its own Quick example:
+decode it back. Every slot mode decodes through the same `Decoder<P>`: build it
+from a `DecodeParams` (WSJT-X's per-period parameter block: depth, AP mode,
+band, Rx/Tx frequency, station and QSO), change `params_mut()` between periods,
+and give it each period as a `SlotInput` (`i16` or `f32` audio, the period's
+index on the UTC grid, an optional budget). The library's own options are the
+mode's `Extras` (`decoder.extras_mut()`), typed per mode, so an option a mode
+lacks does not compile. Each protocol module documents its own entry points and
+carries its own Quick example:
 
 - [`mfsk_core::ft8`](https://docs.rs/mfsk-core/latest/mfsk_core/ft8/)
-  — `DecodeRequest::<Ft8>` (wide-band) + `SniperRequest::<Ft8>`
-  (narrow-band "sniper" mode); `.previous_cycle(&[DecodeResult])` turns
-  on WSJT-X 3.2's a7 list decoder (a8 runs from `.ap_hint()` +
-  `.freq_hint()`), `.tx_freq(hz)` is `nftx` for the two-callsign AP
-  hypothesis, `.contest(true)` keeps the `/R` and `TU; ` messages FT8
-  otherwise drops
+  — `Decoder::<Ft8>`; `Ft8Extras` holds `a7` (WSJT-X 3.2's a7 list decoder,
+  fed by the decoder's own earlier periods), `sniper` (the roofing-filter
+  window), `ap_hint`, `tuning` (strategy, OSD, sync threshold) and `eq`;
+  `DecodeParams::tx_freq` is `nftx` for the two-callsign AP hypothesis and
+  `DecodeParams::contest` is `ncontest`
 - [`mfsk_core::ft4`](https://docs.rs/mfsk-core/latest/mfsk_core/ft4/)
-  — `DecodeRequest::<Ft4>`
+  — `Decoder::<Ft4>`
 - [`mfsk_core::fst4`](https://docs.rs/mfsk-core/latest/mfsk_core/fst4/)
-  — `DecodeRequest::<Fst4s60>` (FST4-60A); other sub-modes via
-  `DecodeRequest::<Fst4s120>` etc.; `.noise_blanker(NoiseBlanker)` is
-  WSJT-X's **NB** setting (a fixed level or a sweep)
+  — `Decoder::<Fst4s60>` (FST4-60A) and the other sub-modes;
+  `Fst4Extras::noise_blanker` is WSJT-X's **NB** setting (a fixed level or a sweep)
 - [`mfsk_core::wspr`](https://docs.rs/mfsk-core/latest/mfsk_core/wspr/)
-  — `DecodeRequest` (scan; `.table()` to carry confirmed callsigns
-  across slots) / `DecodeRequest::sniper` / `SniperRequest::baseband`
-  (known alignment)
+  — `Decoder::<Wspr>`; the call table that carries confirmed callsigns across
+  slots is the decoder's own state
 - [`mfsk_core::jt9`](https://docs.rs/mfsk-core/latest/mfsk_core/jt9/)
-  — `DecodeRequest` (scan; `.depth()` for the Fano budget) /
-  `DecodeRequest::sniper` (known alignment)
+  — `Decoder::<Jt9>`; `Depth` sets the Fano budget
 - [`mfsk_core::jt65`](https://docs.rs/mfsk-core/latest/mfsk_core/jt65/)
-  — `DecodeRequest` (scan; `.chase()` for low SNR) /
-  `DecodeRequest::sniper` (known alignment; `.erasures()` or `.chase()`)
+  — `Decoder::<Jt65>`; `Jt65Extras::chase` for the Chase decoder at low SNR
 - [`mfsk_core::q65`](https://docs.rs/mfsk-core/latest/mfsk_core/q65/)
-  — `DecodeRequest::<P>` (wide-band scan) / `SniperRequest::<P>`
-  (narrow-band, known alignment) for any wired sub-mode including the
-  Q65-60A‥E EME variants; `.ap_hint(...)` for AP-hint decoding (~2 dB
-  threshold gain when call signs are known); `.fading(model, b90_ts)`
-  for the fast-fading metric (Gaussian / Lorentzian channel models)
-  that recovers 5–8 dB on Doppler-spread channels — required for
-  microwave EME at 5.7 / 10 / 24 GHz; `.ap_list(candidates)` (paired
-  with `standard_qso_codewords`) for BP-free template matching against
-  the full WSJT-X "AP list" of standard exchanges (~3 dB threshold
-  gain when the callsign pair is known up-front); and
-  `MultiPeriodRequest::<P>` for averaged multi-slot decode
-  (ionoscatter / weak-EME signals no single-period decode recovers).
-  WSJT-X 3.2's Q65 settings: `.pileup(true)` (with an AP hint) and
-  `Q65Result::copied_last_tx` (send one with
-  `q65::encode_channel_symbols_flagged`), `.max_drift(bins)`,
-  `.eme_delay(true)`, and `.rx_freq(hz)` / `.ftol(hz)` with `.ap_list()`
-  for the q3 list decode, whose lists come from `standard_qso_codewords`
-  or, in contest mode, `contest_codewords` over a `Q65Callers` the
-  application keeps (`Q65History` is `q65_hist`, the DX station from
-  recent decodes). **Since 0.12.0 the default search window is ±1 s**
-  (WSJT-X's `lag1`/`lag2`; `.eme_delay(true)` restores the late reach)
-  and `dt_sec` is measured from the nominal start, not the start of the
-  buffer (#397) — both breaking.
-  Q65's own dedicated builders — unlike FT8/FT4/FST4's
-  `msg::decode_request::{DecodeRequest, SniperRequest}` — since every
-  `q65::rx` function operates on `&[f32]` audio, not `&[i16]` (issue
-  #204)
+  — `Decoder::<P>` for any wired sub-mode including the Q65-60A‥E EME
+  variants; `DecodeParams::averaging(true)` (with the period index) averages
+  consecutive periods (ionoscatter / weak-EME signals no single-period decode
+  recovers); `Q65Extras` holds the AP hint (~2 dB threshold gain when call signs
+  are known), the fast-fading metric (`fading`; recovers 5–8 dB on
+  Doppler-spread channels, required for microwave EME at 5.7 / 10 / 24 GHz) and
+  WSJT-X 3.2's Pileup and Max Drift. The AP list of standard exchanges (~3 dB
+  when the callsign pair is known) comes from the station and QSO in
+  `DecodeParams`; in contest mode the callers heard are a `Q65Callers` the
+  application keeps (`Q65History` is `q65_hist`, the DX station from recent
+  decodes). Send a Pileup reply with `q65::encode_channel_symbols_flagged` and
+  read `Q65Result::copied_last_tx`. The default search window is ±1 s
+  (WSJT-X's `lag1`/`lag2`; `DecodeParams::eme_delay(true)` restores the late
+  reach) and `dt_sec` is measured from the nominal start, not the start of the
+  buffer (#397)
 - [`mfsk_core::jtty`](https://docs.rs/mfsk-core/latest/mfsk_core/jtty/)
   — outside `Protocol`: `jtty::rx::Stream` (12 kHz audio in chunks,
   message updates through a callback; one `Arc<Receiver>` serves any
@@ -611,9 +593,8 @@ and per-mode performance characterisation.
   module exposes one ZST per wired sub-mode — `Q65a30` for
   terrestrial work, plus `Q65a60` / `Q65b60` / `Q65c60` / `Q65d60` /
   `Q65e60` for EME at 6 m through 10 GHz+ — with generic
-  `synthesize_standard_for<P>` helper plus the
-  `DecodeRequest<P>`/`SniperRequest<P>` builders that pick the right
-  NSPS and tone spacing from the type parameter.
+  `synthesize_standard_for<P>` helper plus the `Decoder<P>` that picks
+  the right NSPS and tone spacing from the type parameter.
 - `mfsk_core::msk144` — MSK144 (LDPC(128, 90), burst-scan sync, the
   sliding-window `decode::decode_slot` driver); outside `Protocol`.
 - `mfsk_core::jtty` — JTTY (WSJT-X 3.2): source grammar, CRC-12,
@@ -641,22 +622,27 @@ See `mfsk-ffi/examples/cpp_smoke/` for an end-to-end driver test
 (including multi-threaded usage) and `bindings/kotlin/` for the
 maintained Kotlin/JNI binding, built and run by CI on every change.
 `bindings/swift/` is a SwiftPM package over the same ABI for iOS/macOS —
-`import MfskCore`, then `DecodeSession(mode: .ft8)`; its README covers
-linking and what is not wrapped yet. Embedded targets (ESP32-S3, RP2350,
+`import MfskCore`, then `Decoder(mode: .ft8)`; its README covers
+linking and what is not wrapped yet. It has not been built since the
+single-decoder rewrite (no Swift toolchain on the machine that did it). Embedded targets (ESP32-S3, RP2350,
 Cortex-M) build `mfsk-core` directly with `alloc,ft8,fft-extern`; an
 ESP-IDF project needs a Rust staticlib shim for the FFT-planner symbol
 either way, so a C ABI in between adds nothing.
 
 All 26 `MfskMode`s (FT8 … Q65-300A, MSK144, uvpacket's four, JTTY) are
-reachable through the C ABI. JTTY has a receiver handle of its own
-(`mfsk_jtty_*`; `MfskJttyReceiver` in Kotlin, `JttyReceiver` in
-Swift). WSJT-X 3.2's Q65 settings go through `mfsk_q65_decode_ex`
-(with `MfskQ65History` / `MfskQ65Callers` handles and
-`mfsk_encode_q65_flagged`), and `MfskDecodeParams` carries the transmit
-frequency and FST4's noise blanker, gated by `MFSK_CAP_TX_FREQ` (bit
-17) and `MFSK_CAP_NOISE_BLANKER` (bit 16). Kotlin exposes
-`MfskDecodeParams` and Q65; FT8's `previous_cycle` is not exposed
-through the ABI (issue #496).
+addressable through the C ABI; the 20 slot modes (FT8, FT4, FST4 ×5, WSPR, JT9,
+JT65, Q65 ×10) decode through one handle, `mfsk_decoder_open`, which — like
+`Decoder<P>` — keeps the callsign table, a7 and the averages between periods and
+is driven once per period with `MfskParams` (WSJT-X's parameter block) and
+`MfskExtras` (the library's options; one the mode lacks is refused with
+`MFSK_STATUS_UNSUPPORTED`). `MfskStream` cuts slots on the UTC grid, and the
+wideband `mfsk_iq_*` receiver gives each channel a decoder of its own. JTTY has a
+receiver handle of its own (`mfsk_jtty_*`; `MfskJttyReceiver` in Kotlin,
+`JttyReceiver` in Swift). WSJT-X 3.2's Q65 settings are `MfskExtras` fields
+(`pileup`, `max_drift`, fading) with `MfskQ65History` / `MfskQ65Callers` handles
+and `mfsk_encode_q65_flagged`, and FT8's a7 is `MfskExtras::a7`. Kotlin and Swift
+wrap the same surface. The 0.12 session API is gone; the migration table is
+[`BINDINGS.md` §3](docs/reference/BINDINGS.md#3-porting-from-the-012-abi).
 
 ## Contributing
 

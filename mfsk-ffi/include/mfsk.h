@@ -65,7 +65,7 @@
 #define MFSK_IQ_CHANNELIZER_PFB 1
 
 /**
- * Inline capacity of each `MfskDecodeParams` a-priori field.
+ * Inline capacity of each a-priori callsign/grid field of `MfskExtras`.
  *
  * A literal here, not a re-export of `mfsk_ffi_abi`'s, for the same
  * reason as the capability bits below: cbindgen writes the *name* into
@@ -84,7 +84,7 @@
 #define MFSK_DECODE_TEXT_LEN 64
 
 /**
- * `MfskDecode::flags` bit 0: the text needed the session's callsign
+ * `MfskDecode::flags` bit 0: the text needed the decoder's callsign
  * hash table to resolve a `<...>` reference.
  *
  * A literal here for the same cbindgen reason as the capability bits —
@@ -562,8 +562,8 @@ typedef enum MfskMode {
 } MfskMode;
 
 /**
- * Q65 sub-mode selector for the dedicated `mfsk_q65_*` function
- * family. All sub-modes share the same FEC, sync layout and
+ * Q65 sub-mode selector (the `submode` argument of `mfsk_encode_q65*`).
+ * All sub-modes share the same FEC, sync layout and
  * message format — only the T/R period and tone spacing change.
  *
  * Picked from the type-level `Q65a30 / Q65a60 / Q65b60 / Q65c60 /
@@ -622,7 +622,7 @@ typedef enum MfskQ65SubMode {
 } MfskQ65SubMode;
 
 /**
- * Channel-spread fading model used by `mfsk_q65_decode_fading`.
+ * Channel-spread fading model used through `MfskExtras::fading_model`.
  * Matches the Gaussian / Lorentzian calibration tables shipped
  * with WSJT-X.
  */
@@ -690,7 +690,7 @@ typedef struct MfskStream MfskStream;
  * struct and the library fills `size` in. A library newer than the
  * header writes only the prefix the caller declared.
  *
- * `MfskResult` grew a field in 0.8.1 with nothing marking it; that
+ * An earlier result struct grew a field with nothing marking it; that
  * must not be repeatable.
  */
 typedef struct MfskModeInfo {

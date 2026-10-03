@@ -10,29 +10,33 @@ targets see [`EMBEDDED.md`](EMBEDDED.md).
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`, header `mfsk-ffi/include/mfsk.h` | CI `ffi` job — Rust tests under both feature sets plus `examples/cpp_smoke/`, a real C++ driver including a multi-thread stress |
 | **Kotlin / Android** | `bindings/kotlin/` (C shim + `Mfsk.kt`) | CI `kotlin` job, on a desktop JVM |
-| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 86 XCTest cases, plus the `aarch64-apple-ios` cross-build |
+| **Swift / Apple** | `bindings/swift/` (SwiftPM package `MfskCore`) | CI `swift` job on `macos-latest` — 98 XCTest cases plus the `aarch64-apple-ios` cross-build; **not built since the single-decoder rewrite** |
 
-All three sit on the same C ABI. `mfsk.h` is cbindgen-generated and
-committed, and its doc comments are the authoritative per-symbol
-reference — this document is the map, not a replacement for it.
+All three sit on the same C ABI (`mfsk_abi_version()` is 3). `mfsk.h` is
+cbindgen-generated and committed, and its doc comments are the
+authoritative per-symbol reference — this document is the map, not a
+replacement for it.
 
 ## Contents
 
 - [1. Artefacts and linking](#1-artefacts-and-linking)
 - [2. The C ABI](#2-the-c-abi)
-  - [2.1 Shape: sessions, and memory you own](#21-shape-sessions-and-memory-you-own)
-  - [2.2 Decoding a slot](#22-decoding-a-slot)
-  - [2.3 `MfskDecodeParams` — the search](#23-mfskdecodeparams--the-search)
+  - [2.1 Shape: decoders, and memory you own](#21-shape-decoders-and-memory-you-own)
+  - [2.2 Decoding a period](#22-decoding-a-period)
+  - [2.3 `MfskParams` — the parameter block](#23-mfskparams--the-parameter-block)
+    - [2.3.1 `MfskExtras` — the library's options](#231-mfskextras--the-librarys-options)
   - [2.4 `MfskDecode` — one result row](#24-mfskdecode--one-result-row)
   - [2.5 Streaming capture](#25-streaming-capture)
   - [2.6 Transmit](#26-transmit)
   - [2.7 Introspection](#27-introspection)
-  - [2.8 Modes with their own entry point](#28-modes-with-their-own-entry-point)
+  - [2.8 Q65: the lists and the sub-mode numbering](#28-q65-the-lists-and-the-sub-mode-numbering)
+    - [2.8.1 JTTY — a receiver handle instead of a slot call](#281-jtty--a-receiver-handle-instead-of-a-slot-call)
+    - [2.8.2 Wideband IQ — a receiver handle for an SDR stream](#282-wideband-iq--a-receiver-handle-for-an-sdr-stream)
   - [2.9 Messages](#29-messages)
   - [2.10 Threads and the runtime](#210-threads-and-the-runtime)
   - [2.11 Errors and memory rules](#211-errors-and-memory-rules)
   - [2.12 Symbol index](#212-symbol-index)
-- [3. Porting from the pre-v2 ABI](#3-porting-from-the-pre-v2-abi)
+- [3. Porting from the 0.12 ABI](#3-porting-from-the-012-abi)
 - [4. Kotlin / Android](#4-kotlin--android)
 - [5. Swift / Apple](#5-swift--apple)
 
@@ -84,28 +88,35 @@ workflow edit away from being silently dropped.
 
 ## 2. The C ABI
 
-### 2.1 Shape: sessions, and memory you own
+### 2.1 Shape: decoders, and memory you own
 
 Two rules cover most of the surface:
 
-1. **A session is the decode handle.** `mfsk_session_open` →
-   configure → decode one or more slots → `mfsk_session_close`. It owns
-   a callsign hash table and, optionally, the previous slot's results
-   and FFT — the things that only mean something across more than one
-   call.
+1. **A decoder is the decode handle, and it is WSJT-X's.** `jt9 -s` runs
+   one persistent decoder per mode and drives it once per period with a
+   parameter block; `mfsk_decoder_open` → decode one period per call →
+   `mfsk_decoder_close` is that model. The handle owns what upstream
+   keeps across periods and nothing else: the callsign hash table (never
+   shared with another decoder, as upstream's is not), FT8's a7 list,
+   Q65's and JT65's averages, WSPR's call table. `mfsk_decoder_clear` is
+   WSJT-X's "Clear Avg". One handle serves all 20 slot modes — FT8, FT4,
+   the five FST4 periods, WSPR, JT9, JT65 and the ten Q65 sub-modes; the
+   per-family decode functions of the 0.12 ABI are gone. MSK144, JTTY and
+   uvpacket have no decoder (`MFSK_STATUS_UNKNOWN_PROTOCOL` at open; JTTY
+   has its own receiver, §2.8.1).
 2. **Nothing crosses the boundary as an allocation.** Result rows,
    synthesised audio and unpacked text all go into buffers you sized
    and own. There is no pointer to free, which removes the category
    that makes wrappers leak when an exception unwinds between a call
    and its free.
 
-The only handles are `MfskDecodeSession*`, `MfskStream*` and
-`MfskCallsignHashTable*`, each with its own `_open`/`_new` and
-`_close`/`_free`. They are distinct incomplete types, so passing one
-where another is expected is a C type error rather than undefined
-behaviour.
+The handles are `MfskDecoder*`, `MfskStream*`, `MfskJttyReceiver*`,
+`MfskIqReceiver*`, `MfskQ65History*` and `MfskQ65Callers*`, each with
+its own `_open`/`_new` and `_close`/`_free`. They are distinct
+incomplete types, so passing one where another is expected is a C type
+error rather than undefined behaviour.
 
-### 2.2 Decoding a slot
+### 2.2 Decoding a period
 
 The minimal path — this is the shape `mfsk-ffi/examples/cpp_smoke/main.cpp`
 runs in CI:
@@ -113,106 +124,169 @@ runs in CI:
 ```c
 #include "mfsk.h"
 
+MfskParams p;
+memset(&p, 0, sizeof p);
+p.size = sizeof p;
+mfsk_params_init(MFSK_MODE_FT8, &p);        /* the mode's defaults; zeroing is not the same */
+p.band_hi_hz = 2600.0f;
+
 MfskStatus st = MFSK_STATUS_INTERNAL;
-MfskDecodeSession* s = mfsk_session_open(MFSK_MODE_FT8, NULL, &st);
-if (s == NULL) { /* mfsk_last_error() says why */ }
+MfskDecoder *d = mfsk_decoder_open(MFSK_MODE_FT8, &p, NULL, &st);   /* NULL extras: the depth's own */
+if (d == NULL) { /* mfsk_last_error() says why */ }
 
 MfskDecode rows[16];
+memset(rows, 0, sizeof rows);
+for (int i = 0; i < 16; ++i) rows[i].size = sizeof rows[i];
 size_t n = 0;
-if (mfsk_session_decode_i16(s, pcm, n_pcm, 12000, NULL,
+if (mfsk_decoder_decode_i16(d, pcm, n_pcm, 12000, MFSK_PERIOD_NONE,
                             rows, 16, &n) == MFSK_STATUS_OK) {
     for (size_t i = 0; i < n; ++i) {
         printf("%.1f Hz  %.0f dB  %s\n",
                rows[i].freq_hz, rows[i].snr_db, rows[i].text);
     }
+} else {
+    fprintf(stderr, "%s\n", mfsk_decoder_last_error(d));
 }
-mfsk_session_close(s);
+mfsk_decoder_close(d);
 ```
 
-`NULL` for the params means the mode's own defaults. `out_cap` bounds
-how many rows you are willing to receive; `out_len` says how many were
-written.
+`NULL` for `params` or `extras` at open means the mode's own defaults.
+`out_cap` bounds how many rows you are willing to receive and
+`*out_len` always receives how many were found, so a short array returns
+`MFSK_STATUS_INVALID_ARG` with the required count rather than a truncated
+answer you cannot detect. `sample_rate` other than 12 000 is resampled.
+`decode_f32` takes audio at any level: the engines that work in `float`
+(WSPR, JT9, JT65, Q65) see it as is, and FT8, FT4 and FST4, which take
+16-bit audio as WSJT-X does, get it scaled to a fixed level.
 
 ```c
-MfskDecodeSession *mfsk_session_open(uint32_t mode, const MfskDecodeParams *params,
-                                     MfskStatus *out_status);
-void               mfsk_session_close(MfskDecodeSession *s);
+MfskDecoder *mfsk_decoder_open(uint32_t mode, const MfskParams *params,
+                               const MfskExtras *extras, MfskStatus *out_status);
+void         mfsk_decoder_close(MfskDecoder *dec);
 
-MfskStatus mfsk_session_decode_i16(MfskDecodeSession *s, const int16_t *samples,
-                                   size_t n_samples, uint32_t sample_rate,
-                                   const MfskDecodeParams *params,
+MfskStatus mfsk_decoder_decode_i16(MfskDecoder *dec, const int16_t *samples,
+                                   size_t n_samples, uint32_t sample_rate, int64_t period,
                                    MfskDecode *out, size_t out_cap, size_t *out_len);
-MfskStatus mfsk_session_decode_f32(MfskDecodeSession *s, const float *samples, ...);
+MfskStatus mfsk_decoder_decode_f32(MfskDecoder *dec, const float *samples, ...);
 ```
 
-Per-session strategy, set once and applied to every later decode:
+**`period`** is the period's index on the UTC grid (`utc_seconds / T`), or
+`MFSK_PERIOD_NONE` (`INT64_MIN`) for a lone recording. The parts of the
+state that need consecutive periods — FT8's a7, JT65's and Q65's averaging
+— are used only when the index is given, and Q65's averaging also restarts
+on a gap in it.
+
+What else the handle does:
 
 | call | effect |
 |---|---|
-| `mfsk_session_set_on_decode(s, cb, user)` | deliver rows as they are found, on top of the array the call returns |
-| `mfsk_session_set_budget(s, check, user)` | poll a caller-supplied predicate; stop when it returns `false` |
-| `mfsk_session_last_budget(s, &report)` | what the cut left undone — candidates skipped, stages run, and how good the best skipped candidate was |
-| `mfsk_session_keep_known(s, true)` | carry this decode's results into the next as known signals |
-| `mfsk_session_known_count(s)` | how many are currently carried |
-| `mfsk_session_keep_fft_cache(s, true)` | reuse the slot transform for a second pass over the same audio |
-| `mfsk_session_add_callsign(s, "JL1NIE")` | seed the hash table so `<...>` references resolve |
-| `mfsk_session_copy_info(s, i, out, cap, &len)` | the FEC information bits behind row `i` |
+| `mfsk_decoder_set_params(d, &p)` | change the parameter block between periods, as the GUI rewrites it before each one; the state is kept |
+| `mfsk_decoder_set_extras(d, &e)` | replace the library's options. What the block leaves unset goes back to the depth's value; an option the mode lacks is `MFSK_STATUS_UNSUPPORTED` and nothing changes |
+| `mfsk_decoder_set_q65_callers(d, callers)` | Q65 only: the contest callers (§2.8), copied; with `MFSK_CONTEST_GRID_EXCHANGE` they join the full-AP list. NULL removes them. Survives `set_extras` |
+| `mfsk_decoder_set_on_decode(d, cb, user)` | deliver each row **as it is found**, on top of the array the call returns; NULL stops |
+| `mfsk_decoder_set_budget(d, check, user)` | poll a caller-supplied predicate once per candidate; stop when it returns `false`. Only modes with `MFSK_CAP_BUDGET` take one, `MFSK_STATUS_UNSUPPORTED` otherwise |
+| `mfsk_decoder_last_budget(d, &report)` | what the cut left undone — candidates skipped, stages run, and how good the best skipped candidate was; zeroed when no budget was set |
+| `mfsk_decoder_add_callsign(d, "JL1NIE")` | seed the hash table so a later `<...>` resolves. `MFSK_STATUS_UNSUPPORTED` for a mode whose messages carry no hashed calls |
+| `mfsk_decoder_copy_info(d, i, out, cap, &len)` | the FEC information bits behind row `i` of the last decode (`MfskDecode::info_bits` of them) |
+| `mfsk_decoder_unpack77(d, msg, out, cap, &len)` | `mfsk_unpack77` with `<...>` resolved against this decoder's table |
+| `mfsk_decoder_clear(d)` | forget everything carried between periods (WSJT-X's "Clear Avg", `ndepth & 128`) |
+| `mfsk_decoder_last_error(d)` | this handle's error slot; survives a thread hop, unlike the global |
 
 The budget predicate is polled per candidate and **the library reads no
 clock of its own** — the deadline is whatever your predicate compares
 against. That is what keeps it usable from wasm and from a phone that
-was backgrounded mid-slot.
+was backgrounded mid-slot. The callback and the predicate may both be
+called from rayon workers on a `desktop` build, possibly concurrently, in
+completion order; a `mobile` build calls them on the calling thread in
+candidate order. The returned array is authoritative either way.
 
-### 2.3 `MfskDecodeParams` — the search
+### 2.3 `MfskParams` — the parameter block
 
-Zero the struct, set `size`, then let the library fill in the mode's
-defaults before you override anything:
+`MfskParams` is WSJT-X's `params` common block (`lib/jt9com.f90`): what
+the GUI fills before each period and the decoder reads. A mode reads what
+its upstream decoder reads and ignores the rest, as `jt9` does. Let the
+library write the mode's defaults before you override anything:
 
 ```c
-MfskDecodeParams p;
+MfskParams p;
 memset(&p, 0, sizeof p);
 p.size = sizeof p;
-mfsk_decode_params_init(MFSK_MODE_FT8, &p);
-p.freq_max_hz = 2600.0f;
+mfsk_params_init(MFSK_MODE_FT8, &p);
+p.depth = MFSK_DEPTH_NORMAL;
+p.rx_freq_hz = 1500.0f;
 ```
 
 | field | meaning |
 |---|---|
-| `freq_min_hz` / `freq_max_hz` | search band edges |
-| `sync_min` | sync threshold — **not comparable across modes**, see `MfskDecodeDefaults::sync_scale` |
-| `max_cand` | candidate budget |
-| `depth` | `MfskDecodeDepth` — cost/recall rung |
-| `strictness` | `MfskStrictness` — accept/reject threshold profile |
-| `eq_mode` | `MfskEqMode`. A property of the *input audio* — it flattens a passband an analogue filter has tilted — not of the search |
-| `freq_hint_hz` | prioritise candidates near this frequency; `NaN` (what `_init` writes) means unset. It is also the QSO frequency for the a-priori passes: an AP hint that locks both callsigns (`ap_call1` and `ap_call2`) is tried only within 50 Hz of it, and not at all when it is unset. The transmit frequency is `tx_freq_hz` below |
-| `sic_rounds` | successive-interference-cancellation rounds, 0 for none. Requires `MFSK_CAP_SIC_ROUNDS` |
-| `sic_early` | checkpoint-emulation early decode. Requires `MFSK_CAP_SIC_EARLY` |
-| `single_pass` | one pass, no subtraction, in place of the mode's default. Since 0.12.0 FT8 and FT4 subtract when neither `sic_rounds` nor `sic_early` is set (FT8 as `sic_early`, FT4 as 3 rounds), as WSJT-X does by default. Refused together with `sic_rounds` or `sic_early`. It changes nothing on a mode that already decodes in one pass. It occupies a byte that was padding, so the struct's size and every other offset are unchanged. A budget (`mfsk_session_set_budget`) polls per candidate on the single pass and per stage on the subtracting defaults, so the report's `candidates_skipped` / `cut_at_sync` describe the single pass |
-| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | a-priori hint. Requires `MFSK_CAP_AP_WIDEBAND` (or `_AP_NARROW` on a narrow-band call) |
-| `search_hz` | half-width of a narrow-band search; 0 for the mode's default. Only meaningful with `MFSK_CAP_SNIPER` |
-| `tx_freq_hz` | the operator's transmit frequency (WSJT-X's `nftx`); `NaN` (what `_init` writes) means unset. FT8 also tries an AP hypothesis that locks both callsigns within 50 Hz of it, as well as of `freq_hint_hz` (`ft8b.f90`). Requires `MFSK_CAP_TX_FREQ` — **FT8 alone**, and not on a narrow-band call (`search_hz`), which never reads it. Any other mode refuses it at `mfsk_session_open` |
-| `nb_percent` | impulse-noise blanker: blank the loudest `n` percent of samples, `0..=25`, before the slot transform (WSJT-X's **NB** setting). 0, the default, blanks nothing. More than 25 is refused rather than clamped. Requires `MFSK_CAP_NOISE_BLANKER` when non-zero |
-| `nb_sweep_step` | non-zero decodes once per blanking level `0, step, 2*step, .. 20` percent (5, 2 or 1; the GUI offers 5 and 2) instead of at one. Overrides `nb_percent`. Every level above 0 searches only within `nb_ftol_hz` of `freq_hint_hz`, so **without a hint only the 0 % pass runs**; costs up to 21 decodes. Requires `MFSK_CAP_NOISE_BLANKER` |
-| `nb_ftol_hz` | the sweep's window half-width, Hz (WSJT-X's F Tol). Read only with `nb_sweep_step`, and then it must be positive — `_init` writes 0 because there is no default to inherit |
+| `size` | `sizeof(MfskParams)` as the caller understands it |
+| `depth` | `ndepth & 7`: `MFSK_DEPTH_FAST` 1, `_NORMAL` 2, `_DEEP` 3. 0 is Deep, the GUI's default. Decides every search setting the way `ndepth` does |
+| `flags` | `MFSK_PARAM_AVERAGING` (bit 0, `ndepth & 16`: JT65, Q65), `MFSK_PARAM_DEEP_SEARCH` (bit 1, `ndepth & 32`: JT65), `MFSK_PARAM_EME_DELAY` (bit 2, `emedelay`) |
+| `ap_mode` | `MFSK_AP_OFF` 0 (`lft8apon` off), `_CQ_ONLY` 1 (`lapcqonly`), `_FULL` 2 (every hypothesis the QSO context allows). `_init` writes the mode's own default: off for FT8 and JT65 (the GUI's "Enable AP" boxes), full for FT4 |
+| `contest` | `ncontest`: `MFSK_CONTEST_NONE` 0, `_GRID_EXCHANGE` 1 (NA VHF, WW Digi, ARRL Digi, Q65 pileup), `_EU_VHF` 2, `_FIELD_DAY` 3, `_RTTY_ROUNDUP` 4, `_FOX` 6, `_HOUND` 7 |
+| `qso_progress` | `nQSOProgress`: `MFSK_QSO_CALLING` 0, `_REPLYING` 1, `_REPORT` 2, `_ROGER_REPORT` 3, `_ROGERS` 4, `_SIGNOFF` 5 |
+| `band_lo_hz`, `band_hi_hz` | the audio band searched (`nfa`, `nfb`). `_init` writes 200–4000 Hz for FT8 and FT4 (`jt9`'s command line) and 600–1400 Hz for FST4 (the GUI's F Low / F High); the other modes keep their registry band |
+| `rx_freq_hz`, `tol_hz` | the Rx frequency and its tolerance (`nfqso`, `ntol`). NaN is unset — 0 Hz is a frequency |
+| `tx_freq_hz` | the Tx frequency (`nftx`). NaN is unset. It steers FT8's a-priori search (`MFSK_CAP_TX_FREQ`) |
+| `mycall`, `mygrid`, `hiscall`, `hisgrid` | the station and the QSO partner, NUL-terminated inline text (15 and 7 characters), empty when unknown. They build the AP hypotheses |
 
-`MfskDecodeParams` has grown since it was first published — `tx_freq_hz` and
-the three `nb_*` fields are the newest, appended after `search_hz`. A caller
-built against the older header passes the shorter `size`, and the library
-reads only that prefix, leaving the rest at their defaults (unset / off).
+Every field is a plain integer or float — no `enum` or `bool` — so a value
+from a config file or a newer header is a wrong answer the ABI can refuse,
+never an invalid Rust value. **A bad block is refused, not clamped**:
+`MFSK_STATUS_INVALID_ARG` for a depth, AP mode, contest or QSO progress
+outside the listed values, and for a band that is NaN or has `band_hi_hz <=
+band_lo_hz` (a caller that skipped `_init`).
 
-**FT8's `previous_cycle` (`DecodeRequest::<Ft8>::previous_cycle`, which turns on
-WSJT-X's a7 list decoder over the decodes of the slot 30 s earlier) is not
-exposed** through the C ABI, Kotlin or Swift; issue #496 tracks it. Which slot
-is "30 s earlier" is the application's knowledge, and a C row (`MfskDecode`)
-carries text, not the 77 message bits a7 reads, so it needs a design of its own
-rather than one more field.
+**The QSO context is the message's context, not the transmitter's.** AP
+hypotheses lock message bits rather than steer a search, so `hiscall` in
+the wrong place is a wrong hint: its AP pass cannot decode. Every mode tries
+a candidate without AP first (Q65 since #555), so what a wrong context
+costs is the AP gain, on exactly the weak signals it was for.
 
-**The AP fields are the message's fields in order** — `ap_call1` is
-`"CQ"` for a CQ, not the transmitting station. They lock message bits
-rather than steering a search, so a hint in the wrong order is a wrong
-hint: its AP pass cannot decode. Every mode tries a candidate without AP
-first (Q65 since #555), so what the wrong order costs is the AP gain, on
-exactly the weak signals the hint was for.
+### 2.3.1 `MfskExtras` — the library's options
+
+What the library adds beyond upstream, per mode. Initialise with
+`mfsk_extras_init`, which writes "unset" everywhere — NaN for a float, 0 for
+a count, -1 for a choice that has a default — **a zeroed struct is not the
+same** (0 `strictness` is Strict, 0 `osd` is off). `mfsk_decoder_open` and
+`mfsk_decoder_set_extras` take it; passing NULL at open is `_init`'s value.
+
+**An option the mode does not have is refused, never dropped:**
+`MFSK_STATUS_UNSUPPORTED` at `mfsk_decoder_open` or `set_extras`, with the
+option named in `mfsk_last_error()` (`mfsk_decoder_last_error` for
+`set_extras`), so a caller finds out before the first slot. A value out of
+range is `MFSK_STATUS_INVALID_ARG`: the caller's mistake rather than a
+missing option.
+
+| field | meaning | modes |
+|---|---|---|
+| `sync_min` | sync threshold over the depth's; NaN is the depth's. **Not comparable across modes** | FT8, FT4, FST4 |
+| `max_cand` | candidate budget over the depth's; 0 is the depth's | all |
+| `osd` | -1 the depth's, 0 off, 1 on | FT8, FT4, FST4 |
+| `strictness` | accept/reject profile: -1 default, 0 strict, 1 normal, 2 deep | FT8, FT4, FST4 |
+| `strategy`, `sic_rounds` | `MFSK_STRATEGY_DEFAULT` 0, `_SINGLE_PASS` 1 (one pass, no subtraction), `_SIC_ROUNDS` 2 (`sic_rounds` rounds), `_SIC_EARLY` 3 (checkpointed passes). FT8 and FT4 subtract by default, as WSJT-X does | FT8: 0–3; FT4: 0–2; FST4: 0–1 (upstream's `fst4_decode` has no subtraction) |
+| `eq_mode` | 0 off, 1 local per-signal equalisation. A property of the *input audio* — it flattens a passband an analogue filter has tilted — not of the search | FT8, FT4, FST4 |
+| `message_filter` | 0 the protocol's own message filter, 1 the codec's verdict alone | FT8, FT4, FST4 |
+| `a7` | non-zero turns on FT8's a7 list decoder (`ft8_a7.f90`), fed by the decoder's own decodes two periods back. Needs a `period` | FT8 |
+| `sniper_hz` | half-width of the roofing-filter search around `rx_freq_hz`, Hz; 0 is the wide-band search. **FT8 only, by design** — it matches an operator narrowing the transceiver's analogue filter | FT8 |
+| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` | a free-form a-priori hint beside the QSO-context AP (it wins when given): the message's fields in order, `ap_call1` being `"CQ"` for a CQ, `ap_report` `"RRR"`, `"RR73"`, `"73"` or a report | FT8, FT4, FST4, Q65 |
+| `nb_percent` | impulse-noise blanker (WSJT-X's **NB**): blank the loudest `n` percent of samples, 0..=25, before the slot transform; 0 blanks nothing | FST4 (`MFSK_CAP_NOISE_BLANKER`) |
+| `nb_sweep_step`, `nb_ftol_hz` | non-zero (5, 2 or 1) decodes once per blanking level `0, step, 2*step, .. 20` percent; `nb_ftol_hz` (positive, required with it) is the blanked passes' half-width around `rx_freq_hz`, so **without an Rx frequency only the 0 % pass runs**. Costs up to 21 decodes | FST4 |
+| `t_early_s`, `t_late_s`, `score_threshold` | how far before/after the nominal start a frame may begin, seconds, and the coarse-sync acceptance 0..1; NaN is the mode's own | WSPR, JT9, JT65, Q65 |
+| `max_cycles_per_bit` | Fano cycles per bit (`wsprd -C`); 0 is the depth's | WSPR |
+| `chase_trials` | Chase trials (`nvec`); 0 is the depth's | JT65 |
+| `pileup` | **Q65 Pileup**: an AP hint naming both callsigns and nothing after them leaves the spare 78th bit free, so a reply carrying the "copied last Tx" flag still matches. Needs an AP hint | Q65 |
+| `max_drift` | **Max Drift**, spectrum bins 0..=50: search a linear tone drift across the frame and take it out. Costs `2*bins+1` times the plain search; 0 is off | Q65 |
+| `fading_b90_ts`, `fading_model` | the fast-fading metric: spread bandwidth times symbol period (NaN is plain AWGN); model 0 Gaussian, 1 Lorentzian, read only with `fading_b90_ts` | Q65 |
+
+A Pileup reply comes back with `MFSK_DECODE_FLAG_COPIED_LAST_TX` in
+`MfskDecode::flags`, which WSJT-X shows as `#`; to send one,
+`mfsk_encode_q65_flagged` is `mfsk_encode_q65` with `copied_last_tx`.
+
+`mfsk_decoder_set_extras` replaces the whole block: what you leave unset goes
+back to the depth's value. The two structs have grown before and will again, so both are
+size-versioned: a caller built against an older header passes the shorter
+`size`, and the library reads only that prefix, leaving the rest at their
+defaults.
 
 ### 2.4 `MfskDecode` — one result row
 
@@ -222,48 +296,67 @@ Flat, fixed-size, written into your array. `text` is an inline
 | field | meaning |
 |---|---|
 | `size` | `sizeof(MfskDecode)` as the caller understands it |
-| `mode` | the **concrete sub-mode**, not the family — all five FST4 periods report distinctly |
-| `text` | decoded message |
-| `freq_hz`, `dt_sec`, `snr_db` | carrier, time offset from the slot's `dt = 0`, SNR in a 2500 Hz reference bandwidth |
+| `mode` | the **concrete sub-mode**, not the family — all five FST4 periods and all ten Q65 sub-modes report distinctly |
+| `text` | decoded message, `<...>` resolved against the decoder's table where it can |
+| `freq_hz`, `dt_sec`, `snr_db` | carrier, time offset from the slot's `dt = 0` reference, SNR in a 2500 Hz reference bandwidth |
 | `sync_score` | sync correlation for this decode |
 | `sync_cv` | coefficient of variation of the per-block sync powers — near 0 on a stable channel, elevated under QSB. The only fading indicator the row carries |
 | `hard_errors` | hard-decision errors the FEC corrected |
-| `info_bits` | width of the FEC information block, 91 (CRC-14) or 101 (CRC-24) |
+| `info_bits` | width of the FEC information block, 91 (CRC-14) or 101 (CRC-24); 0 for a mode that has none. `mfsk_decoder_copy_info` returns that many bits |
 | `pass` | which decode pass produced the row. **Protocol-private** — diagnostics, not logic |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`; the older `mfsk_q65_decode*` calls set it too) |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`) |
 
 ### 2.5 Streaming capture
 
-A one-slot ring you push audio into, sized from the mode's own
+A one-slot holder you push audio into, sized from the mode's own
 `slot_samples_12k` — so FST4-300's 3.6 M-sample slot works the same way
-FT4's 90 000-sample one does.
+FT4's 90 000-sample one does. It cuts slots on the mode's UTC grid from the
+sample count, the way the IQ receiver does (§2.8.2): with no clock set the
+grid free-runs from the first sample, which is exactly right for replaying a
+recording; with one, a slot starts on its own boundary. At most one completed
+slot waits, and a newer one replaces it (`mfsk_stream_dropped` counts them).
 
 ```c
 MfskStream *mfsk_stream_open(uint32_t mode, uint32_t sample_rate, MfskStatus *out);
 MfskStatus  mfsk_stream_push_i16(MfskStream *s, const int16_t *samples, size_t n);
 MfskStatus  mfsk_stream_push_f32(MfskStream *s, const float *samples, size_t n);
-void        mfsk_stream_set_epoch(MfskStream *s, double utc_seconds_of_next_sample);
+uint64_t    mfsk_stream_position(const MfskStream *s);     /* 12 kHz samples taken in: its clock */
+MfskStatus  mfsk_stream_set_time(MfskStream *s, int64_t utc_ns, uint64_t at_sample,
+                                 int32_t *out_change);     /* MFSK_CLOCK_* */
 bool        mfsk_stream_slot_ready(const MfskStream *s);
-size_t      mfsk_stream_buffered(const MfskStream *s);
+uint64_t    mfsk_stream_dropped(const MfskStream *s);
 size_t      mfsk_stream_take_slot_i16(MfskStream *s, int16_t *out, size_t cap,
-                                      double *out_slot_start_utc);
+                                      int64_t *out_period, int64_t *out_utc_ns);
 void        mfsk_stream_clear(MfskStream *s);
 void        mfsk_stream_close(MfskStream *s);
 
 /* fused: decode straight out of the ring */
-MfskStatus  mfsk_session_decode_stream(MfskDecodeSession *s, MfskStream *stream,
-                                       const MfskDecodeParams *params,
+MfskStatus  mfsk_decoder_decode_stream(MfskDecoder *dec, MfskStream *stream,
                                        MfskDecode *out, size_t out_cap, size_t *out_len,
-                                       double *out_slot_start_utc);
+                                       int64_t *out_period, int64_t *out_slot_start_utc_ns);
 ```
 
 **No `Instant`, no `SystemTime`, no clock of any kind.** The host says
-what UTC second the next sample belongs to and the grid does
-arithmetic. Without an epoch the grid free-runs from the first sample,
-which is exactly right for replaying a recording.
+that sample `at_sample` (counted by `mfsk_stream_position`) was at UTC
+`utc_ns`, as often as it has a reading; the stream follows the readings at
+up to 400 ppm, so noisy readings and a drifting clock move slot boundaries by
+milliseconds and lose no slot. `*out_change` receives `MFSK_CLOCK_FIRST` 0
+(anchored), `MFSK_CLOCK_SLEWED` 1 (moved by at most the slew limit; open
+slots are unaffected) or `MFSK_CLOCK_STEPPED` 2 (more than a second away: the
+clock re-anchored and the slot that straddled the jump is dropped).
 
-Prefer `mfsk_session_decode_stream` over take-then-decode: taking
-FST4-300's slot out and handing it back in moves 7 MB for nothing.
+Prefer `mfsk_decoder_decode_stream` over take-then-decode: taking
+FST4-300's slot out and handing it back in moves 7 MB for nothing. It uses
+the slot's own index as the period (so a7 and averaging see consecutive
+periods without the caller counting) and returns
+`MFSK_STATUS_UNSUPPORTED` with `*out_len = 0` when no slot is ready yet, so
+a caller can poll it instead of `mfsk_stream_slot_ready`. The stream and the
+decoder must be of the same mode (`MFSK_STATUS_INVALID_ARG` otherwise). A
+mode that is not cut into slots cannot open a stream (`UNSUPPORTED`).
+`mfsk_stream_take_slot_i16` copies the slot out for a caller that wants the
+samples: it returns the count written (0 if none is ready or `cap` is too
+small) and the slot's period and, with a clock, its UTC start
+(`*out_utc_ns` is 0 without one).
 
 ### 2.6 Transmit
 
@@ -301,7 +394,8 @@ const char *mfsk_mode_name(uint32_t mode);            /* static, do not free */
 MfskStatus  mfsk_mode_from_name(const char *name, MfskMode *out);
 MfskStatus  mfsk_mode_info(uint32_t mode, MfskModeInfo *out);
 uint64_t    mfsk_mode_caps(uint32_t mode);            /* MFSK_CAP_* bits */
-MfskStatus  mfsk_mode_defaults(uint32_t mode, MfskDecodeDefaults *out);
+MfskStatus  mfsk_params_init(uint32_t mode, MfskParams *out);
+MfskStatus  mfsk_extras_init(MfskExtras *out);
 uint32_t    mfsk_abi_version(void);
 uint32_t    mfsk_version(void);
 ```
@@ -313,26 +407,29 @@ feature-gated and a build without `q65` would shift every index after
 it. `mfsk_mode_count` / `mfsk_mode_at` say which of them this
 particular build has.
 
-**Capabilities are published, not inferred.**
-`MFSK_CAP_DECODE_HANDLE` is the load-bearing one: it says whether
-`mfsk_session_decode_i16` and friends apply at all. Q65 takes a nominal
-start sample and a time tolerance; WSPR / JT9 / JT65 have no builder.
-They are not lesser, they are shaped differently, and that is a bit a
-caller can read rather than a fact it has to know.
+**Capabilities are published, not inferred.** The word is
+`mfsk_mode_caps(mode)`, or `MfskModeInfo::caps`. Since the decoder handle
+serves all 20 slot modes, `MFSK_CAP_DECODE_HANDLE` no longer says whether a
+decoder opens; it says the mode belongs to the **77-bit-message slot family**
+(FT8, FT4, FST4), the one the QSO-context AP of `MfskParams`, a7 and the
+sniper window apply to. WSPR, JT9, JT65 and Q65 decode through the same
+handle with their own `MfskExtras` fields, and an option they lack is
+`MFSK_STATUS_UNSUPPORTED`. The other bits say which options a mode honours,
+so a caller can read them rather than know them:
 
 | bit | constant | meaning |
 |---|---|---|
-| 0 | `MFSK_CAP_DECODE_HANDLE` | the session decode calls apply |
-| 1 | `MFSK_CAP_SNIPER` | narrow-band single-target search. **FT8 only, by design** |
+| 0 | `MFSK_CAP_DECODE_HANDLE` | the 77-bit slot family: QSO-context AP, a7 and sniper apply |
+| 1 | `MFSK_CAP_SNIPER` | narrow-band single-target search (`sniper_hz`). **FT8 only, by design** |
 | 2 | `MFSK_CAP_AP_NARROW` | AP hint on a targeted search |
 | 3 | `MFSK_CAP_AP_WIDEBAND` | AP hint on the wide-band search |
-| 4 | `MFSK_CAP_SIC_ROUNDS` | flat successive-interference cancellation |
-| 5 | `MFSK_CAP_SIC_EARLY` | checkpoint-emulation early decode. FT8 only |
+| 4 | `MFSK_CAP_SIC_ROUNDS` | flat successive-interference cancellation (`MFSK_STRATEGY_SIC_ROUNDS`) |
+| 5 | `MFSK_CAP_SIC_EARLY` | checkpoint-emulation early decode (`MFSK_STRATEGY_SIC_EARLY`). FT8 only |
 | 6 | `MFSK_CAP_OSD` | the OSD *switch* is honoured. Absent means "cannot be turned off", not "does not have it" |
 | 7 | `MFSK_CAP_EQ_MODE` | equalisation reaches the decoder |
 | 8 | `MFSK_CAP_STRICTNESS` | the strictness profile is honoured rather than accepted and dropped |
-| 9 | `MFSK_CAP_BUDGET` | a caller-supplied budget predicate is polled |
-| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | see `mfsk.h` |
+| 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` is accepted |
+| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | see `mfsk.h`. `_KNOWN_FILTER`, `_KNOWN_SUBTRACT` and `_FFT_CACHE` describe the Rust API; the C ABI has no call for them since the 0.12 `keep_known` / `keep_fft_cache` went |
 | 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`). **Every FST4 sub-mode and no other** |
 | 17 | `MFSK_CAP_TX_FREQ` | the transmit frequency (`tx_freq_hz`) steers the a-priori search. **FT8 only** |
 
@@ -345,31 +442,13 @@ comparing each `MFSK_CAP_*` against the registry constant it mirrors.
 That chain exists because a hand-written capability table lies within
 two releases.
 
-**`mfsk_mode_defaults` removes the ABI's worst trap.** Defaults are
-data, and `MfskDecodeDefaults::sync_scale` says whether two modes'
-numbers are even comparable:
-
-```c
-MfskDecodeDefaults d = {0};
-d.size = sizeof d;
-mfsk_mode_defaults(MFSK_MODE_FT4, &d);
-/* d.sync_min == 1.18, d.sync_scale == MFSK_SYNC_SCALE_BASELINE_NORMALISED */
-```
-
-FT4's spectrum is divided by a fitted baseline before scoring, so noise
-sits at ~1.0 **by construction** and WSJT-X's own 1.18
-(`ft4_decode.f90:195`) is a floor rather than a preference. FT8's and
-FST4's are absolute Costas scores. WSPR, JT9, JT65 and Q65 score sync
-as a fraction of sync plus noise (`MFSK_SYNC_SCALE_SYNC_FRACTION`), 0‥1
-with a shared default of 0.1. Copying one across modes is wrong, and
-before this field nothing said so.
-
-Since #413 these are the library's own defaults for every mode that
-has a search, including those without `MFSK_CAP_DECODE_HANDLE`. JT9
-and JT65 therefore publish the band their Rust scan covers, even
-though their C entry points are point decodes at a known carrier, and
-Q65 publishes the library's default, which is narrower than the wide
-scan the `mfsk_q65_*` family runs.
+**There is no `mfsk_mode_defaults` any more.** Defaults are data and
+`mfsk_params_init` writes them; `MfskExtras` leaves the search settings
+at "the depth's own", so there is no per-mode `sync_min` to read and
+misapply across modes (FT4's baseline-normalised score, FT8's and FST4's
+absolute Costas scores and the 0‥1 sync fraction of WSPR, JT9, JT65 and
+Q65 are not comparable). `mfsk_params_init` is `MFSK_STATUS_UNKNOWN_PROTOCOL`
+for a mode with no decoder (MSK144, JTTY, uvpacket).
 
 **`MfskModeInfo::decode_fft1_size` is the field to read before
 budgeting.** It is the forward FFT the decoder takes over the whole
@@ -377,99 +456,43 @@ slot: FT4 92 160 points, FST4-300 **4 194 304** — a factor of 45 that
 no other field hints at, and the reason "one call shape for every mode"
 is wrong as a memory story on a phone.
 
-**Size versioning.** `MfskModeInfo`, `MfskDecodeDefaults`,
-`MfskDecodeParams` and `MfskDecode` all lead with `size`. Set it to
+**Size versioning.** `MfskModeInfo`, `MfskParams`, `MfskExtras`,
+`MfskDecode` and the other rows all lead with `size`. Set it to
 your `sizeof` (or zero the struct and the library fills it in); a
 library newer than your header writes only the prefix you declared and
-rewrites `size` to what it actually wrote.
+rewrites `size` to what it actually wrote, and reads only the prefix of an
+input struct you declared.
 
 `mfsk_abi_version()` is separate from `mfsk_version()` on purpose: the
 crate version moves for reasons that have nothing to do with the
 boundary.
 
-### 2.8 Modes with their own entry point
+### 2.8 Q65: the lists and the sub-mode numbering
 
-Modes without `MFSK_CAP_DECODE_HANDLE` are addressed directly:
+Q65 decodes through the ordinary handle (§2.2): Pileup, Max Drift and the
+fast-fading metric are `MfskExtras` (§2.3.1), the EME delay and averaging
+are `MfskParams::flags`, and the AP list is built from `mycall`, `hiscall`,
+`hisgrid`, `qso_progress` and `ap_mode`, as upstream builds it. A mode opens as
+a `MfskMode` (`MFSK_MODE_Q65A30`); `dt_sec` is measured from the mode's
+nominal start as WSJT-X's DT column is. What stays outside the handle is the
+two lists WSJT-X keeps, which are objects you own because the decoder is
+stateless about them and the application's clock is the only clock, and the
+sub-mode numbering that `mfsk_encode_q65*` still takes.
 
-```c
-MfskStatus mfsk_wspr_decode(const int16_t *samples, size_t n, uint32_t rate,
-                            MfskDecode *out, size_t cap, size_t *out_len);
-MfskStatus mfsk_jt9_decode_at (const int16_t *samples, size_t n, uint32_t rate,
-                               float freq_hz, MfskDecode *out, size_t cap, size_t *out_len);
-MfskStatus mfsk_jt65_decode_at(/* same shape as jt9 */);
-```
-
-Q65 carries a family of four, differing in what they are given to work
-with — all take a `submode` and an optional `MfskCallsignHashTable*`:
-
-| call | adds |
-|---|---|
-| `mfsk_q65_decode` | — |
-| `mfsk_q65_decode_with_ap` | `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` |
-| `mfsk_q65_decode_fading` | `b90_ts`, `fading_model` (`MfskQ65FadingModel`) |
-| `mfsk_q65_decode_with_ap_list` | `my_call`, `his_call`, `his_grid` — the QSO-state hypothesis list |
-
-`MfskQ65SubMode` has **its own numbering**, where `a15` is 6; bridge to
-`MfskMode` rather than assuming they agree.
-
-The hash table is the one handle the caller owns rather than the
-session: `mfsk_callsign_hash_table_new` / `_insert` / `_free`.
-
-**`mfsk_q65_decode_ex` is the one call for WSJT-X 3.2's Q65 settings.** The
-four above pick a strategy by name and scan a fixed, deliberately wide window;
-Pileup, Max Drift, the EME delay and the q3 list decode are combinations of
-them, so instead of one more positional function per combination there is one
-call and a size-versioned struct:
-
-```c
-MfskQ65Params p;
-memset(&p, 0, sizeof p);
-p.size = sizeof p;
-mfsk_q65_params_init(MFSK_MODE_Q65A30, &p);   // the library's defaults
-p.max_drift = 10;
-MfskStatus st = mfsk_q65_decode_ex(MFSK_MODE_Q65A30, pcm, n, 12000, &p,
-                                   /*callers*/ NULL, /*hash_table*/ NULL,
-                                   rows, cap, &n_rows);
-```
-
-It takes a **`MfskMode`** (a Q65 one), not `MfskQ65SubMode`, and reports `dt_sec`
-from `nominal_start_s` as WSJT-X's DT column does — the older functions report
-`start_sample / 12000`. `mfsk_q65_params_init` writes the library's own
-defaults (200–3000 Hz, ±1 s, threshold 0.1, 8 candidates), not the wide window
-those scan.
-
-| field | meaning |
-|---|---|
-| `nominal_start_s` | where `dt = 0` is in the buffer: the mode's `tx_start_offset_s` (0.5 s, 1.0 s from Q65-120), which is right for a buffer that begins at the slot boundary. It also places the period Max Drift normalises over and the q3 decode's slot start, so it has to be true |
-| `t_early_s`, `t_late_s` | how far before/after it a frame may start |
-| `pileup` | **Q65 Pileup**: an AP hint naming both callsigns and nothing after them leaves the spare 78th bit free, so a reply carrying the "copied last Tx" flag still matches. Needs `has_ap_hint` |
-| `eme_delay` | **EME delay** ("Decode at 52 s"): the late edge reaches +5.5 s (+4.0 s on Q65-15) |
-| `max_drift` | **Max Drift**, spectrum bins `0..=50`: search a linear tone drift across the frame and take it out. Costs `2*bins+1` times the plain search; narrow the band to `nfqso ± ntol` as upstream does |
-| `rx_freq_hz`, `ftol_hz` | the Rx frequency (NaN unset) and F Tol (default 10 Hz) the q3 decode looks around. Needs `ap_list` |
-| `ap_list` | 0 none; 1 the standard QSO list for `list_my_call` / `list_his_call` / `list_his_grid`; 2 the **contest list** for `list_my_call` plus the `MfskQ65Callers*` passed to the call. With `rx_freq_hz` it is WSJT-X's **q3** decode, run first at the Rx frequency; without it, template matching at every coarse candidate |
-| `fading_b90_ts`, `fading_model` | the fast-fading metric (NaN, the default, is plain AWGN); 0 Gaussian, 1 Lorentzian |
-| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` | the a-priori hint, the message's fields in order |
-
-Every flag is a `uint32_t` and every optional float is NaN when absent, so a
-wild value from C is a refusal and not an invalid Rust `bool`. **A combination
-the engine would quietly not honour is refused**, with the reason in
-`mfsk_last_error()`: `ap_list` with `fading_b90_ts` (no WSJT-X path combines
-them), `rx_freq_hz` without `ap_list`, `pileup` without an AP hint, `max_drift`
-with fading or with a list decode that has no Rx frequency. A Pileup reply
-comes back with `MFSK_DECODE_FLAG_COPIED_LAST_TX` (bit 1 of `MfskDecode::flags`),
-which WSJT-X shows as `#`; the older Q65 calls set it too. To send one,
-`mfsk_encode_q65_flagged` is `mfsk_encode_q65` with `copied_last_tx`.
-
-**The two lists WSJT-X keeps are handles you own**, because the decoder is
-stateless and the application's clock is the only clock: `MfskQ65History`
-(`q65_hist`, the 100 most recent decodes; `mfsk_q65_history_new` / `_free` /
-`_len` / `_push`, `mfsk_q65_history_record` for a whole row array,
-`mfsk_q65_history_lookup(rx_freq, &dx)` for the DX call and grid a "Decode
-Again" with none entered would read) and `MfskQ65Callers` (`q65_hist2`, up to 50
-stations that called with a grid; `mfsk_q65_callers_new` / `_free` / `_len` /
+`MfskQ65History` (`q65_hist`, the 100 most recent decodes): `mfsk_q65_history_new` /
+`_free` / `_len` / `_push(freq, text)`, `mfsk_q65_history_record(rows, n)` for a whole
+row array, and `mfsk_q65_history_lookup(rx_freq, &dx)` for the DX call and grid a
+"Decode Again" with none entered would read. `MfskQ65Callers` (`q65_hist2`, up to 50
+stations that called with a grid): `mfsk_q65_callers_new` / `_free` / `_len` /
 `_get`, `mfsk_q65_callers_record(freq, text, now)`, `mfsk_q65_callers_expire(now)`,
-`mfsk_q65_callers_remove(call)`). Times are Unix seconds you pass, since the
-library reads no clock. Neither is thread-safe.
+`mfsk_q65_callers_remove(call)`. Times are Unix seconds you pass, since the
+library reads no clock. Neither is thread-safe. The contest list reaches a
+decoder through `mfsk_decoder_set_q65_callers`, which copies it, so a list
+changed afterwards has to be set again.
+
+`MfskQ65SubMode` has **its own numbering**, where `a15` is 6. It is the
+`submode` argument of `mfsk_encode_q65` and `mfsk_encode_q65_flagged`; bridge it
+to `MfskMode` rather than assuming the two agree.
 
 ### 2.8.1 JTTY — a receiver handle instead of a slot call
 
@@ -554,7 +577,10 @@ wideband complex-IQ stream in, N channels out, each carrying a mode on a dial
 frequency, with the slots cut on UTC from the sample count. It is a handle of
 its own, like JTTY's, because the input is IQ rather than audio and the
 receiver carries state (per-channel filters, open slots, the sample clock). It
-finds nothing: you say which dial carries which mode.
+finds nothing: you say which dial carries which mode. **Each channel has a
+decoder of its own** — the §2.2 handle, with its own hash table, a7 list and
+averages — opened from the `MfskParams` and `MfskExtras` you give
+`mfsk_iq_add_channel` (NULL for the mode's defaults).
 
 ```c
 MfskStatus st;
@@ -563,10 +589,14 @@ MfskIqReceiver *rx = mfsk_iq_open(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, &s
 /* Many channels? Share one polyphase filter bank instead (see "Selectivity" below):
    mfsk_iq_open_with(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, MFSK_IQ_CHANNELIZER_PFB, &st); */
 
+MfskParams p;  memset(&p, 0, sizeof p);  p.size = sizeof p;
+mfsk_params_init(MFSK_MODE_FT8, &p);                        /* per-channel options, as for mfsk_decoder_open */
+strcpy(p.mycall, "JL1NIE");
+
 uint32_t ft8, ft4;
-mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &ft8);   /* INVALID_ARG: DC in its window, or out of band */
-mfsk_iq_add_channel(rx, 14080000.0, MFSK_MODE_FT4, &ft4);
-mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0);            /* without it the grid free-runs from sample 0 */
+mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &p, NULL, &ft8);  /* INVALID_ARG: DC in its window, or out of band */
+mfsk_iq_add_channel(rx, 14080000.0, MFSK_MODE_FT4, NULL, NULL, &ft4);
+mfsk_iq_set_time(rx, utc_ns_now, mfsk_iq_samples_in(rx), NULL);  /* no reading: the grid free-runs from sample 0 */
 
 for (each block from the SDR) {
     mfsk_iq_push(rx, bytes, n_bytes);                       /* decodes every slot this completes, then returns */
@@ -574,7 +604,7 @@ for (each block from the SDR) {
     while (mfsk_iq_poll(rx, &d) == 1)                       /* 1 = row written, 0 = none, <0 = MfskStatus */
         show(d.channel, d.text, d.abs_freq_hz, d.snr_db);
 }
-mfsk_iq_retune(rx, new_center_hz);                          /* the tuner moved */
+mfsk_iq_retune(rx, new_center_hz, &paused, &resumed);       /* the tuner moved */
 mfsk_iq_gap(rx, lost_samples);                              /* samples never arrived */
 mfsk_iq_close(rx);
 ```
@@ -587,25 +617,45 @@ integer rate of 12 000 or more whose ratio to 12 kHz is a small fraction is
 accepted; `mfsk_iq_open` returns NULL with `INVALID_ARG` for one that is not.
 
 A channel carries FT8, FT4, any of the five FST4 periods, WSPR, JT9, JT65 or a
-Q65 sub-mode (`MfskMode`); MSK144, JTTY and uvpacket are `INVALID_ARG`. **Usable
-audio starts near 200 Hz** (the front end must reject the sideband below the
-dial), and Q65 is single-period: nothing averages across slots.
+Q65 sub-mode (`MfskMode`); MSK144, JTTY and uvpacket are `INVALID_ARG`, an
+option the mode lacks is `UNSUPPORTED`, and a mode compiled out is
+`UNKNOWN_PROTOCOL`. **Usable audio starts near 200 Hz** (the front end must
+reject the sideband below the dial). Each slot is decoded with its period index,
+so a7 and averaging, where the channel's params switch them on, see consecutive
+periods; a slot lost to a gap or a retune breaks the run.
+
+**The channel's decoder is borrowed.** `mfsk_iq_channel_decoder(rx, ch)` returns
+it as an `MfskDecoder*` for the calls that configure one — `mfsk_decoder_set_params`,
+`_set_extras`, `_add_callsign`, `_unpack77`, `_last_error`, `_set_q65_callers`,
+`_clear` — which is how a skimmer changes the band, depth or DX call of a channel
+between slots. **Do not close it**: it lives until the channel is removed or the
+receiver closed, and the receiver decodes with it, so do not call its `decode_*`.
+`mfsk_iq_channel_state(rx, ch)` says `MFSK_IQ_CHANNEL_ACTIVE` 0,
+`MFSK_IQ_CHANNEL_PAUSED` 1 (see retune) or -1 for no such channel.
 
 `MfskIqDecode` is size-versioned like the other rows. It carries `channel`
 (what `add_channel` returned), the concrete `mode`, `text`, `freq_hz` (audio),
-`abs_freq_hz` (the dial plus that, `double`), `dt_sec`, `snr_db`,
+`abs_freq_hz` (the dial plus that, `double`), `dt_sec`, `snr_db`, `period` (the
+slot's index on the mode's UTC grid, counted from sample 0 without a clock),
 `slot_start_sample` (an index into the IQ stream) and `slot_start_utc_ns` with
-`has_utc` saying whether an anchor was set.
+`has_utc` saying whether a clock reading was set.
 
 **Time and discontinuities.** The sample count is the clock and the library
-reads none. A slot is decoded when all of it has arrived; the partial slot the
-stream opened in the middle of is not. `mfsk_iq_retune`, `mfsk_iq_gap` and
-`mfsk_iq_set_time_anchor` each drop every open slot (audio across a change of
-centre, a hole or a moved grid is not a slot) and keep the clock going;
-`retune` is all-or-nothing and returns `INVALID_ARG`, changing nothing, if a
-channel would no longer fit. A recording needs a moment of padding after its
-end, as a live stream has: a slot's last audio sample comes out a few filter
-lengths after the last IQ sample that carries it.
+reads none. `mfsk_iq_set_time(rx, utc_ns, at_sample, &change)` says that complex
+sample `at_sample` (the count `mfsk_iq_samples_in` returns) was at UTC `utc_ns`.
+Call it as often as you have a reading: the receiver follows the readings at up
+to 400 ppm, so a drifting crystal or host clock moves slot boundaries by
+milliseconds and loses no slot, and only a jump of more than a second (`change`
+is `MFSK_CLOCK_STEPPED`, as `MFSK_CLOCK_FIRST` / `_SLEWED` for the others) drops
+the slots that straddle it. A slot is decoded when all of it has arrived; the
+partial slot the stream opened in the middle of is not. `mfsk_iq_gap` drops
+every open slot (audio across a hole is not a slot) and keeps the clock going.
+`mfsk_iq_retune` drops them too; a channel whose audio window no longer fits the
+new band is **paused** rather than failing the call — it keeps its dial and its
+decoder and resumes when a later retune brings it back inside — and the call
+reports how many channels paused and resumed. A recording needs a moment of
+padding after its end, as a live stream has: a slot's last audio sample comes
+out a few filter lengths after the last IQ sample that carries it.
 
 **Threads.** Decoding runs inside `mfsk_iq_push` (hundreds of milliseconds for a
 busy FT8 slot), on the calling thread and on the pool `mfsk_runtime_configure`
@@ -635,15 +685,17 @@ MfskStatus mfsk_pack77_type1(const char *call1, const char *call2, const char *g
 MfskStatus mfsk_pack77_type4(const char *nonstd_call, const char *std_call,
                              const char *report, bool is_cq, uint8_t *out_message77);
 MfskStatus mfsk_pack77_free_text(const char *text, uint8_t *out_message77);
-MfskStatus mfsk_unpack77(const MfskDecodeSession *session, const uint8_t *message77,
-                         char *out, size_t cap, size_t *out_len);
+MfskStatus mfsk_unpack77(const uint8_t *message77, char *out, size_t cap, size_t *out_len);
+MfskStatus mfsk_decoder_unpack77(const MfskDecoder *dec, const uint8_t *message77,
+                                 char *out, size_t cap, size_t *out_len);
 ```
 
 `out_message77` is a caller-owned 77-byte buffer in every case; none of
 these allocate. `mfsk_pack77_free_text` packs **up to 13 characters of
-free text** — despite the name it frees nothing. `mfsk_unpack77` takes
-a session so `<...>` hash references resolve against its table; pass
-`NULL` if you have none.
+free text** — despite the name it frees nothing. `mfsk_unpack77` leaves
+`<...>` hash references unresolved; `mfsk_decoder_unpack77` resolves them
+against that decoder's own table, which is the one its decodes populated.
+Both report the size needed if `cap` is too small.
 
 ### 2.10 Threads and the runtime
 
@@ -652,9 +704,9 @@ MfskStatus mfsk_runtime_configure(const MfskRuntimeConfig *cfg);
 uint32_t   mfsk_runtime_thread_count(void);
 ```
 
-* **A session is single-threaded.** It mutates its hash table on every
-  decode. One per concurrent thread; concurrent decodes on separate
-  sessions are supported and cheap.
+* **A decoder is single-threaded.** It mutates its hash table and
+  averages on every decode. One per concurrent thread; concurrent decodes on
+  separate decoders are supported and cheap.
 * Even with `parallel` on, decoding otherwise uses rayon's **global**
   pool: `num_cpus` threads with 2 MiB stacks, spawned lazily on the
   first decode and never joined. On Android those threads are not
@@ -674,70 +726,81 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.11 Errors and memory rules
 
-1. **Handles**: `mfsk_session_open` / `mfsk_session_close`,
+1. **Handles**: `mfsk_decoder_open` / `mfsk_decoder_close`,
    `mfsk_stream_open` / `mfsk_stream_close`,
-   `mfsk_callsign_hash_table_new` / `_free`. Close and free are
-   idempotent on `NULL`.
+   `mfsk_jtty_open` / `_close`, `mfsk_iq_open` / `_close`,
+   `mfsk_q65_history_new` / `_free`, `mfsk_q65_callers_new` / `_free`.
+   Close and free are idempotent on `NULL`. A channel's decoder
+   (`mfsk_iq_channel_decoder`) is borrowed from its receiver and is not closed.
 2. **Result rows, audio and text** go into caller-owned buffers.
    Nothing returned needs freeing. The two functions returning a
-   `const char*` — `mfsk_last_error` and `mfsk_session_last_error` —
+   `const char*` — `mfsk_last_error` and `mfsk_decoder_last_error` —
    hand back a borrowed pointer, not an allocation; so does
-   `mfsk_mode_name`, whose string is static.
+   `mfsk_mode_name`, whose string is static. The row a decode callback
+   receives is valid for that call only; copy what you keep.
 3. **Errors**: on a non-`MFSK_STATUS_OK` return, call
-   `mfsk_session_last_error(s)` for a session call, or
-   `mfsk_last_error()` for a free function, on the **same thread**. The
-   returned pointer is valid until the next fallible call on that
-   thread.
+   `mfsk_decoder_last_error(d)` for a decoder call, or
+   `mfsk_last_error()` for a free function (and for a failed `_open`, which
+   has no handle yet), on the **same thread**. The global is thread-local:
+   a Kotlin coroutine or Swift `async` caller that hops threads between the
+   status and the message reads NULL from it, which is what the per-handle
+   slot is for. The returned pointer is valid until the next fallible call on
+   that thread, or on that handle.
 
 `MfskStatus`: `OK = 0`, `NULL_POINTER = -1`, `INVALID_ARG = -2`,
-`UNKNOWN_PROTOCOL = -3` (not in this build), `DECODE_FAILED = -4`,
-`INTERNAL = -5` (always a bug), `UNSUPPORTED = -6` (the mode is here
-but does not offer what was asked).
+`UNKNOWN_PROTOCOL = -3` (not in this build, or no decoder for that mode),
+`DECODE_FAILED = -4`, `INTERNAL = -5` (always a bug), `UNSUPPORTED = -6` (the
+mode is here but does not offer what was asked).
 
 ### 2.12 Symbol index
 
-105 exported functions, grouped:
+98 exported functions, grouped:
 
 | group | symbols |
 |---|---|
-| session (14) | `mfsk_session_open` `mfsk_session_close` `mfsk_session_decode_i16` `mfsk_session_decode_f32` `mfsk_session_decode_stream` `mfsk_session_set_on_decode` `mfsk_session_set_budget` `mfsk_session_last_budget` `mfsk_session_keep_known` `mfsk_session_known_count` `mfsk_session_keep_fft_cache` `mfsk_session_add_callsign` `mfsk_session_copy_info` `mfsk_session_last_error` |
-| streaming (9) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_buffered` `mfsk_stream_set_epoch` `mfsk_stream_slot_ready` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
-| introspection (10) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_mode_defaults` `mfsk_decode_params_init` `mfsk_abi_version` `mfsk_version` |
-| bespoke decode (9) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` `mfsk_q65_decode_ex` `mfsk_q65_params_init` |
-| transmit (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
-| Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
-| messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
+| decoder (18) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
+| streaming (10) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
+| introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
+| transmit (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
+| Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
+| messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (12) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
-| hash table (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
-| runtime (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
+| IQ (14) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| runtime (3) | `mfsk_last_error` `mfsk_runtime_configure` `mfsk_runtime_thread_count` |
 
 ---
 
-## 3. Porting from the pre-v2 ABI
+## 3. Porting from the 0.12 ABI
 
-0.11.0 replaced the C decode surface outright. `mfsk-ffi` is
-`publish = false` and its only exercised consumer was the in-repo C++
-driver, so the blast radius is smaller than the diff suggests — but a C
-consumer porting across will rewrite, not adjust.
+0.13.0 replaced the C decode surface (ABI version 2 → 3). `mfsk-ffi` is
+`publish = false`, and the in-repo C++ driver, the Kotlin binding and the Swift
+package moved with it, so a C consumer porting across rewrites its decode calls
+and keeps the rest (transmit, messages, streaming capture's push side, JTTY,
+the Q65 lists, the runtime).
 
-| pre-v2 | v2 |
+| 0.12 | 0.13 |
 |---|---|
-| `MfskProtocol` enum | `MfskMode` — one discriminant per registry entry, so all five FST4 sub-modes are addressable. Discover with `mfsk_mode_count` / `mfsk_mode_at` |
-| `mfsk_decoder_new` / `_free` | `mfsk_session_open` / `mfsk_session_close` |
-| `MfskDecodeOptions*` + eight `mfsk_decode_options_set_*` | `MfskDecodeParams`, a plain size-versioned struct. Fill via `mfsk_decode_params_init` |
-| `MfskResultList` + `mfsk_result_list_free` | `MfskDecode out[]`, an array you own. Nothing to free |
-| `MfskSamples` + `mfsk_samples_free` | caller buffers sized with `mfsk_symbol_count` / `mfsk_synth_output_len` |
-| `mfsk_decode_{i16,f32}_sniper` | `MfskDecodeParams::search_hz` on the ordinary decode, where `MFSK_CAP_SNIPER` is set (FT8 only) |
-| seven heap-returning `mfsk_encode_*` | same names, now writing into `out` / `cap` / `out_len` |
-| `mfsk_last_error()` for everything | `mfsk_session_last_error(s)` for session calls; `mfsk_last_error()` still covers free functions |
-| hardcoded per-mode geometry | `mfsk_mode_info` / `mfsk_mode_caps` / `mfsk_mode_defaults` |
-| `mfsk-ffi-ft8` (FT8-only embedded crate) | retired. Use `mfsk-ffi`, or call `mfsk-core` from a Rust staticlib shim — see [`EMBEDDED.md`](EMBEDDED.md) |
+| `MfskDecodeSession`, `mfsk_session_open` / `_close` | `MfskDecoder`, `mfsk_decoder_open` / `_close` — a different type on purpose, since the two own different Rust values |
+| `MfskDecodeParams` + `mfsk_decode_params_init` | two structs: `MfskParams` (WSJT-X's parameter block, `mfsk_params_init`) and `MfskExtras` (the library's options, `mfsk_extras_init`). `freq_min_hz` / `freq_max_hz` → `band_lo_hz` / `band_hi_hz`; `freq_hint_hz` → `rx_freq_hz` (+ `tol_hz`); `tx_freq_hz` stays; `depth` / `strictness` / `eq_mode` / `sync_min` / `max_cand` / `sic_*` / `single_pass` / `search_hz` → `depth` + the `MfskExtras` fields of the same names (`strategy`, `sniper_hz`); `has_ap_hint`, `ap_*` → `MfskExtras`; `nb_*` → `MfskExtras` |
+| `mfsk_session_decode_i16` / `_f32` with a per-call `params` | `mfsk_decoder_decode_i16` / `_f32` with a `period` instead; change the block with `mfsk_decoder_set_params` / `_set_extras` |
+| `mfsk_session_decode_stream(…, params, …, double *utc)` | `mfsk_decoder_decode_stream(…, int64_t *period, int64_t *utc_ns)` |
+| `mfsk_session_set_on_decode` / `_set_budget` / `_last_budget` / `_add_callsign` / `_copy_info` / `_last_error` | same names with `mfsk_decoder_` |
+| `mfsk_session_keep_known` / `_known_count` / `_keep_fft_cache` | gone; a decoder carries the state upstream carries. FT8's a7 (`MfskExtras::a7`, with a `period`) replaces carrying decodes forward |
+| `mfsk_stream_set_epoch(s, double utc_s)`, `_buffered`, `_take_slot_i16(…, double *utc)` | `mfsk_stream_set_time(s, utc_ns, at_sample, &change)` with `mfsk_stream_position`, `_dropped`; `_take_slot_i16(…, int64_t *period, int64_t *utc_ns)`. The stream follows the readings (400 ppm) instead of taking an epoch |
+| `mfsk_wspr_decode`, `mfsk_jt9_decode_at`, `mfsk_jt65_decode_at` | `mfsk_decoder_open(MFSK_MODE_WSPR / _JT9 / _JT65, …)` and `mfsk_decoder_decode_*`; the band is `band_lo_hz` / `band_hi_hz`, the frame window `t_early_s` / `t_late_s` |
+| `mfsk_q65_decode`, `_with_ap`, `_fading`, `_with_ap_list`, `_decode_ex`, `mfsk_q65_params_init`, `MfskQ65Params` | one Q65 decoder: `pileup`, `max_drift`, `fading_*`, the AP hint in `MfskExtras`; `eme_delay` and averaging in `MfskParams::flags`; the AP list from the QSO context; contest callers via `mfsk_decoder_set_q65_callers` |
+| `mfsk_callsign_hash_table_*`, the `MfskCallsignHashTable*` argument | gone; every decoder owns its table, `mfsk_decoder_add_callsign` seeds it |
+| `mfsk_mode_defaults`, `MfskDecodeDefaults` | gone; `mfsk_params_init` writes the defaults |
+| `mfsk_unpack77(session, …)` | `mfsk_unpack77(…)` and `mfsk_decoder_unpack77(dec, …)` |
+| `mfsk_iq_add_channel(rx, dial, mode, &ch)` | `mfsk_iq_add_channel(rx, dial, mode, params, extras, &ch)` (NULL, NULL for the old behaviour); `mfsk_iq_channel_decoder`, `mfsk_iq_channel_state` are new |
+| `mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0)` | `mfsk_iq_set_time(rx, utc_ns, at_sample, &change)`, repeatable |
+| `mfsk_iq_retune(rx, hz)` failing with `INVALID_ARG` | `mfsk_iq_retune(rx, hz, &paused, &resumed)` pauses a channel that no longer fits |
+| `MFSK_CAP_DECODE_HANDLE` as "a session opens" | "the 77-bit slot family"; every slot mode opens a decoder |
+| FT8's `previous_cycle` "not exposed" (#496) | `MfskExtras::a7` with the `period` argument |
 
-`MfskDecodeSession` is deliberately **not** the same type as the pre-v2
-`MfskDecoder`: the two own different Rust values, and a handle whose
-meaning depends on which function you pass it to is the failure mode
-this redesign exists to end.
+The checks that still matter: set `size` on every struct (or `_init` it), call
+`mfsk_params_init` before touching a block, and read `mfsk_decoder_last_error`
+rather than the global after a decoder call.
 
 ---
 
@@ -758,18 +821,18 @@ val ft8 = Mfsk.modes().first { Mfsk.modeName(it) == "FT8" }
 // On Android, call this once before the first decode — see below.
 Mfsk.configureRuntime(threads = 2)
 
-MfskSession.open(ft8).use { s ->
-    for (r in s.decode(pcm, sampleRate = 12_000)) {
+MfskDecoder.open(ft8).use { dec ->
+    for (r in dec.decode(pcm, period = periodIndex)) {
         Log.i("ft8", "${r.freqHz} Hz  ${r.snrDb} dB  ${r.text}")
     }
 }
 ```
 
-**Shape.** `Mfsk` holds introspection and transmit; `MfskSession` is
-the decode handle and is `AutoCloseable`, so `.use { }` releases it.
-`MfskDecode` is a `data class` — a value, not a handle, because the ABI
-writes rows into memory the caller owns. There is nothing to free and
-nothing that can outlive a session.
+**Shape.** `Mfsk` holds introspection and transmit; `MfskDecoder` is
+the one decode handle for every slot mode (§2.1) and is `AutoCloseable`, so
+`.use { }` releases it. `MfskDecode` is a `data class` — a value, not a
+handle, because the ABI writes rows into memory the caller owns. There is
+nothing to free and nothing that can outlive a decoder.
 
 **`Mfsk.configureRuntime` is the Android-specific part.** Without it
 the decode runs on rayon's global pool, whose threads are plain
@@ -786,75 +849,98 @@ wrong: a non-daemon attached thread keeps the JVM alive, and rayon's
 workers are never joined, so the ordinary `AttachCurrentThread` hangs
 the process on exit after everything has otherwise succeeded.
 
-**A session is single-threaded.** It owns a callsign hash table it
+**A decoder is single-threaded.** It owns a callsign hash table it
 mutates on every decode. One per thread; concurrent decodes on separate
-sessions are supported.
+decoders are supported.
 
-**Decode parameters are `MfskDecodeParams`, the data class.** Start from
-`Mfsk.defaultParams(mode)` and `copy` what differs — there is no
-constructor default, for the reason the ABI has an init call at all (zeroing
-is not the mode's defaults; a zero `maxCand` decodes nothing):
+**Parameters are two data classes.** `MfskParams` is the parameter block
+(§2.3) and `MfskExtras` the library's options (§2.3.1). Start from
+`Mfsk.defaultParams(mode)` and `copy` what differs — `MfskParams` has no
+constructor default for the band, for the reason the ABI has an init call at
+all (zeroing is not the mode's defaults; a zero band decodes nothing).
+`MfskExtras()` is what `mfsk_extras_init` writes, every option unset:
 
 ```kotlin
 val p = Mfsk.defaultParams(ft8).copy(
-    freqHintHz = 1500f,
+    rxFreqHz = 1500f,
     txFreqHz = 1500f,                       // FT8's nftx; needs CAP_TX_FREQ
+    station = MfskStation("JL1NIE", "PM95"),
+    qso = MfskQso("K1JT", "FN20", MfskQsoProgress.REPLYING),
+)
+val e = MfskExtras(
+    a7 = true,                              // FT8's a7; needs a period on each decode
     apHint = MfskApHint("K1JT", "HA0DU"),   // the message's fields in order
 )
-MfskSession.open(ft8, p).use { s -> s.decode(pcm) }
+MfskDecoder.open(ft8, p, e).use { dec -> dec.decode(pcm, period) }
 ```
 
-`freqHintHz` and `txFreqHz` are nullable (NaN in C, since 0 Hz is a
-frequency). `noiseBlanker` is `MfskNoiseBlanker.Percent(n)` or
-`.Sweep(step, toleranceHz)` (FST4, needs `CAP_NOISE_BLANKER`). As at the C
-level, a parameter the mode does not have **fails at `open`** with a message
-naming the field and the capability bit, rather than being dropped.
-`session.decode(pcm, params = …)` overrides for that call only. The
-parameters cross JNI as three flat arrays whose layout is documented at
-`read_params` in `mfsk_jni.c`; the JVM test sees every slot by the refusal
-that names it, and checks the AP hint, QSO frequency and transmit frequency
-end to end on a weak signal.
+`rxFreqHz`, `tolHz` and `txFreqHz` are nullable (NaN in C, since 0 Hz is a
+frequency). `depth` is `MfskDepth`, `averaging` / `deepSearch` / `emeDelay`
+the `flags`, `ap` an `MfskApMode`, `contest` an `MfskContest`. Among the
+extras, `strategy` is `MfskStrategy.SinglePass`, `.SicRounds(n)` or
+`.SicEarly`, `strictness` an `MfskStrictness`, `noiseBlanker` is
+`MfskNoiseBlanker.Percent(n)` or `.Sweep(step, toleranceHz)` (FST4), and
+`fading = MfskQ65Fading(b90Ts)` with `pileup` and `maxDrift` are Q65's. As at
+the C level, an option the mode does not have **fails when the extras are
+applied** — `MfskDecoder.open` or `setExtras` — with an
+`MfskUnsupportedException` naming the field, rather than being dropped; a
+value out of range is `MfskInvalidArgException`, a mode not in the build
+`MfskUnknownModeException`. `dec.setParams(…)` and `dec.setExtras(…)` change
+the block between periods, keeping the state; `dec.clear()` forgets it, and
+`dec.addCallsign("JL1NIE")` seeds the hash table. The parameters cross JNI as
+three flat arrays per struct whose layout is documented at `read_params` and
+`read_extras` in `mfsk_jni.c`; the JVM test sees every slot by the refusal
+that names it.
 
-**Q65 has no decode handle, so it is `Mfsk.decodeQ65`** — one call for WSJT-X
-3.2's settings, mirroring `mfsk_q65_decode_ex` (§2.8). `MfskQ65Params` is
-started from `Mfsk.q65DefaultParams(mode)` and `copy`'d, with `pileup`,
-`emeDelay`, `maxDrift`, `rxFreqHz` / `ftolHz`, `fading = MfskQ65Fading(…)`,
-`list = MfskQ65List.Standard(…)` or `.Contest(…)`, and `apHint`. Rows report `dtSec`
-from `nominalStartS` and `copiedLastTx`:
+**Decoding.** `dec.decode(pcm, period = …)` takes `ShortArray` or `FloatArray`
+(any level), `sampleRate` other than 12 000 is resampled, and `period` is the
+UTC-grid index or null. `dec.copyInfo(i)` is the FEC bits of row `i`. A
+stream cut on the UTC grid decodes without copying the slot out:
 
 ```kotlin
-val q65 = Mfsk.modes().first { Mfsk.modeName(it) == "Q65-30A" }
-val p = Mfsk.q65DefaultParams(q65).copy(
-    freqMinHz = 1450f, freqMaxHz = 1550f, maxDrift = 10,   // Max Drift, band narrowed to nfqso ± ntol
-)
-val rows = Mfsk.decodeQ65(q65, pcmFloat, p)
+MfskStream.open(ft8).use { s ->
+    s.push(chunk)                                   // any size
+    s.setTime(utcNs, atSample = s.position)         // as often as a reading arrives
+    dec.decodeStream(s)?.let { r -> show(r.period, r.slotStartUtcNs, r.rows) }  // null: no slot yet
+}
 ```
 
-`MfskQ65History` (`q65_hist`: `push`, `record(rows)`, `lookup(rxFreqHz)`) and
-`MfskQ65Callers` (`q65_hist2`: `record(freqHz, text, now)`, `expire(now)`,
-`remove(call)`, `callers`) are `AutoCloseable` handles you own; the contest list
-reads the callers passed to `decodeQ65`. `Mfsk.synthesizeQ65(…, copiedLastTx)`
-sends a Pileup reply. The JVM test decodes a frame 3 s late with the EME delay,
-a flagged reply under Pileup, and a list message in a window that holds nothing
-else with q3, and pins each slot of the array marshalling by the refusal that
-names it.
+`MfskStream.takeSlot()` copies the slot out instead, `slotReady` and `dropped`
+mirror the C calls, and `setTime` returns an `MfskClockChange`
+(`FIRST`, `SLEWED`, `STEPPED`).
 
-**`session.setBudget { … }`, `keepKnown`, `keepFftCache`** are the same
-three strategies, per session. The budget predicate crosses JNI once
-per candidate, so keep it to a `System.nanoTime()` comparison against a
-captured deadline — anything heavier belongs behind a boolean the JVM
-side already computed.
+**Q65 is the same decoder.** Open a Q65 mode and set `MfskParams.emeDelay` /
+`averaging`, and `MfskExtras.pileup`, `maxDrift`, `fading` — there is no
+`decodeQ65` any more. Rows report `copiedLastTx` (Pileup's `#`), and
+`Mfsk.synthesizeQ65(…, copiedLastTx)` sends one. `MfskQ65History` (`q65_hist`:
+`push`, `record(rows)`, `lookup(rxFreqHz)`) and `MfskQ65Callers` (`q65_hist2`:
+`record(freqHz, text, now)`, `expire(now)`, `remove(call)`, `callers`) are
+`AutoCloseable` handles you own; `dec.setQ65Callers(callers)` hands the
+contest list to a decoder.
 
-**`session.onDecode { row -> … }`** delivers rows as they are found, on
-top of the list `decode` returns — for a UI that wants something on
-screen before a long slot finishes. The listener is called from rayon
-workers, so it must be safe concurrently, and an Android one that
-touches views has to post to the main looper. It does **not** require
+**`dec.setBudget { … }`, `dec.lastBudget`** are the budget (§2.2; modes with
+`CAP_BUDGET` only). The predicate crosses JNI once per candidate, so keep it to
+a `System.nanoTime()` comparison against a captured deadline — anything heavier
+belongs behind a boolean the JVM side already computed.
+
+**`dec.onDecode { row -> … }`** delivers rows as they are found, on top of the
+list `decode` returns — for a UI that wants something on screen before a long
+slot finishes (`decode(…, onRow = …)` does it for one call). The listener is
+called from rayon workers, so it must be safe concurrently, and an Android one
+that touches views has to post to the main looper. It does **not** require
 `configureRuntime` first: the shim attaches the worker itself (as a
 daemon) if the VM has never seen it, and takes the listener's method ID
 from the *interface* rather than from a lambda's spun class. An
 exception it throws is printed and cleared — a rayon worker has nowhere
 to propagate one — and the decode continues.
+
+**IQ** is `MfskIqReceiver` (§2.8.2): `MfskIqReceiver.open(sampleRate, centerHz,
+format, iqSwap, channelizer)`, `addChannel(dialHz, mode, params, extras)`
+returning the channel id, `push(bytes)`, `poll()` returning the
+`MfskIqDecode`s, `setTime`, `retune` (returns the paused and resumed counts),
+`gap`, and `channelDecoder(ch)` for a **borrowed** `MfskDecoder` whose
+`setParams`, `setExtras` and `addCallsign` reconfigure a live channel. Call
+`push` off the UI thread.
 
 **JTTY** is `MfskJttyReceiver` (§2.8.1): `MfskJttyReceiver.open(sampleRate,
 MfskJttyParams())` and then `for (u in rx.push(chunk)) …` — `push` returns the
@@ -888,63 +974,75 @@ scaffold to copy, a package to depend on. Its module map includes
 `mfsk-ffi/include/mfsk.h` **in place**, so it follows the header rather
 than carrying a copy.
 
+**Unbuilt since the single-decoder rewrite.** The package was moved onto
+`mfsk_decoder_*` without a Swift toolchain on hand; nothing here has been
+compiled or run on Apple hardware, and the 98 XCTest cases (counted with
+`grep -rc 'func test' bindings/swift/Tests`) are written, not passing. Run
+`bindings/swift/scripts/test.sh` on a Mac before relying on any line below.
+
 ```swift
 import MfskCore
 
 let slot = try Mode.ft8.synthesiseSlot(call1: "CQ", call2: "JL1NIE", report: "PM95",
                                        frequencyHz: 1500)
-let session = try DecodeSession(mode: .ft8)
-for row in try session.decode(slot) {
+let decoder = try Decoder(mode: .ft8)
+for row in try decoder.decode(slot) {
     print(row.frequencyHz, row.snrDB, row.text)
 }
 ```
 
 * `Mode` / `ModeInfo` / `Capabilities` wrap the introspection family,
   so a picker is populated from the build rather than a hardcoded list.
-* `DecodeSession` covers every mode with `MFSK_CAP_DECODE_HANDLE`;
-  `WSPR`, `JT9` and `JT65` have their own entry points, as they do in C.
-* `CaptureStream` is the one-slot capture ring, and
-  `session.decode(stream)` is the fused decode that avoids copying a
-  slot out and back in.
-* `session.setBudget { … }` bounds the search with a predicate the
+* `Decoder` is the one decode handle (§2.1) for every slot mode, including
+  WSPR, JT9, JT65 and the ten Q65 sub-modes; `Decoder(mode:params:extras:)`.
+  `DecodeParams` is the parameter block (`try DecodeParams(mode: .ft8)` gives
+  the mode's defaults, then `bandHz`, `rxFrequencyHz`, `depth`, `ap`, `station`,
+  `qso`, …) and `Extras` the library's options (`strategy`, `apHint`, `a7`,
+  `sniperHalfWidthHz`, `noiseBlanker`, `pileup`, `maxDrift`, `fading`, …).
+  An option the mode lacks throws `MfskError` with code `.unsupported`
+  at `init` / `setExtras`, naming it. `setParams`, `setExtras`, `clear()` and
+  `addCallsign(_:)` act between periods; `decode(_:sampleRate:period:handler:)`
+  takes `[Int16]` or `[Float]` and a `period` (nil for a lone recording).
+* `CaptureStream` is the capture holder that cuts slots on the UTC grid
+  (`setTime(utcNanoseconds:)`, `position`, `isSlotReady`, `droppedSlots`,
+  `takeSlot()`), and `decoder.decode(stream)` is the fused decode that avoids
+  copying a slot out and back in; it returns nil while no slot is ready.
+* `decoder.setBudget { … }` bounds the search with a predicate the
   caller polls a clock in — the library reads none — and
-  `session.lastBudget` says what the cut left undone, including how
-  good the best skipped candidate was. `keepKnown(_:)` carries a
-  decode's results into the next as known signals; `keepFFTCache(_:)`
-  reuses the slot transform for a second pass over the same audio.
-* `session.onDecode { row in … }` streams rows as they are found,
+  `decoder.lastBudget` says what the cut left undone, including how
+  good the best skipped candidate was. Modes without `Capabilities.budget`
+  throw `.unsupported`.
+* `decoder.onDecode { row in … }` streams rows as they are found,
   alongside the array the call returns. On a `desktop` build the
   closure runs on rayon workers, possibly concurrently; on `mobile` it
   is one thread in candidate order. The closure is retained until
-  replaced or the session is released, and cleared before the handle
+  replaced or the decoder is released, and cleared before the handle
   closes.
 * Failures throw `MfskError`, which carries both the status code and
   the reason string — reading the handle's own error slot first and the
-  thread-local global second, because `mfsk_session_copy_info` takes
-  the handle as `const*` and can only write the latter.
-* `Q65` carries the whole family — all four decode strategies (plain,
-  a-priori, fast-fading, AP-list), `Q65SubMode` (**its own numbering**,
-  where `a15` is 6, bridged to `Mode` by `.mode`), `Q65FadingModel`,
-  and `CallsignHashTable`, the one handle the caller owns rather than
-  the session. The enums reach Swift because `cbindgen.toml` emits them
-  into `mfsk.h`; before that a wrapper would have had to hardcode 0…9.
-* An AP hint's fields are the **message's fields in order** — `call1`
-  is `"CQ"` for a CQ, not the transmitting station — and they lock
+  thread-local global second.
+* **Q65 is the same decoder.** Pileup, Max Drift and the fast-fading metric
+  are `Extras` (`pileup`, `maxDrift`, `fading = Extras.Fading(…)`), the EME delay
+  and averaging are `DecodeParams.emeDelay` / `averaging`, and
+  `Decode.copiedLastTx` is Pileup's `#`. `Q65` is the transmit side:
+  `Q65.encode(subMode:…)`, `Q65.encode(…, copiedLastTx:)`, with `Q65SubMode` (**its
+  own numbering**, where `a15` is 6, bridged to `Mode` by `.mode`) and
+  `Q65FadingModel`. `Q65History` (`q65_hist`) and `Q65Callers` (`q65_hist2`) are
+  the two lists WSJT-X keeps, as classes you own; `decoder.setQ65Callers(_:)` hands
+  the contest list over.
+* An AP hint's fields (`Extras.APHint`) are the **message's fields in order** —
+  `call1` is `"CQ"` for a CQ, not the transmitting station — and they lock
   message bits rather than steering a search, so a hint in the wrong
   order is a wrong hint. A decode still tries each candidate without AP
   first (since #555, as `jt9 -3` does), so a clean signal decodes either
-  way; a weak one that needed the hint is lost. Both directions are
-  pinned in `Q65Tests`.
-* **`Q65.decode(_:mode:params:callers:)`** is `mfsk_q65_decode_ex` (§2.8) — one
-  call for WSJT-X 3.2's Q65 settings. `try Q65.Params(mode: .q65a30)` gives the
-  defaults; then `pileup`, `emeDelay`, `maxDrift`, `rxFrequencyHz` / `ftolHz`,
-  `fading = Q65.Fading(…)`, `list = .standard(…)` or `.contest(…)` and `apHint`.
-  It takes a `Mode`, not a `Q65SubMode`, and `Decode.dtSeconds` is measured from
-  `nominalStartSeconds`; `Decode.copiedLastTx` is Pileup's `#`, and
-  `Q65.encode(…, copiedLastTx:)` sends one. `Q65History` (`q65_hist`) and
-  `Q65Callers` (`q65_hist2`) are the two lists WSJT-X keeps, as classes you own.
-  `Q65ExtendedTests` mirrors the C and Kotlin tests. **Written without a Swift
-  toolchain on hand — run `bindings/swift/scripts/test.sh` on a Mac.**
+  way; a weak one that needed the hint is lost.
+* `Message.text(resolvedBy: decoder)` renders a packed message with the
+  decoder's own hash table.
+* **`IQReceiver`** (§2.8.2): `IQReceiver(sampleRate:centerHz:format:iqSwap:channelizer:)`,
+  `addChannel(dialHz:mode:params:extras:)`, `push(_:)`, `poll()` / `drain()`
+  returning `IQDecode`s, `setTime(utcNanoseconds:atSample:)`, `retune`, `gap`,
+  `state(ofChannel:)`, and `decoder(forChannel:)` for a **borrowed** `Decoder`
+  that reconfigures a live channel and must not be asked to decode.
 
 **JTTY** is `JttyReceiver` (§2.8.1): `try JttyReceiver(sampleRate:params:)`,
 then `try receiver.push(samples)` returns the `[JttyUpdate]` it produced (one per
@@ -957,9 +1055,9 @@ thread at a time, and off the main actor — `push` decodes before it returns.
 `#filePath`) and a loopback of its own: `Jtty.tones(for:profile:)` (the text packer),
 `Jtty.synthesise(_:)` and `Jtty.audio(for:)` turn text into audio.
 
-`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the 86
-tests; `bindings/swift/README.md` covers linking from a real app,
-including why the `mobile` feature set is the one an iOS build wants.
+`bindings/swift/scripts/test.sh` builds `libmfsk` and runs the tests;
+`bindings/swift/README.md` covers linking from a real app, including why the
+`mobile` feature set is the one an iOS build wants.
 
 CI runs that same script on `macos-latest` (`Swift binding (macOS) +
 iOS build`), which is also where `aarch64-apple-ios` is cross-compiled:

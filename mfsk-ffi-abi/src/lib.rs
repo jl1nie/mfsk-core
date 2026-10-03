@@ -171,7 +171,7 @@ pub enum MfskMode {
 /// struct and the library fills `size` in. A library newer than the
 /// header writes only the prefix the caller declared.
 ///
-/// `MfskResult` grew a field in 0.8.1 with nothing marking it; that
+/// An earlier result struct grew a field with nothing marking it; that
 /// must not be repeatable.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]

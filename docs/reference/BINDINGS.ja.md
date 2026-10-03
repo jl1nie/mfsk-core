@@ -10,29 +10,32 @@ Rust 以外から mfsk-core を利用するための文書。Rust ホスト API 
 |---|---|---|
 | **C / C++** | `mfsk-ffi/`、ヘッダ `mfsk-ffi/include/mfsk.h` | CI `ffi` ジョブ — 両 feature セットでの Rust テストに加え、実在の C++ ドライバ `examples/cpp_smoke/`（マルチスレッド負荷試験を含む） |
 | **Kotlin / Android** | `bindings/kotlin/`（C シム + `Mfsk.kt`） | CI `kotlin` ジョブ、デスクトップ JVM 上 |
-| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 86件と `aarch64-apple-ios` クロスビルド |
+| **Swift / Apple** | `bindings/swift/`（SwiftPM パッケージ `MfskCore`） | CI `swift` ジョブ、`macos-latest` 上 — XCTest 98件と `aarch64-apple-ios` クロスビルド。**単一デコーダ化の書き換え以降ビルドされていない** |
 
-3つとも同一の C ABI の上に載っている。`mfsk.h` は cbindgen 生成でリポジトリに
-コミットされており、そのドキュメントコメントがシンボル単位の正本である。
-本書はその地図であって、置き換えではない。
+3つとも同一の C ABI（`mfsk_abi_version()` は 3）の上に載っている。`mfsk.h` は
+cbindgen 生成でリポジトリにコミットされており、そのドキュメントコメントが
+シンボル単位の正本である。本書はその地図であって、置き換えではない。
 
 ## 目次
 
 - [1. 生成物とリンク](#1-生成物とリンク)
 - [2. C ABI](#2-c-abi)
-  - [2.1 形: セッションと、呼び出し側が所有するメモリ](#21-形-セッションと呼び出し側が所有するメモリ)
-  - [2.2 スロットをデコードする](#22-スロットをデコードする)
-  - [2.3 `MfskDecodeParams` — 探索の指定](#23-mfskdecodeparams--探索の指定)
+  - [2.1 形: デコーダと、呼び出し側が所有するメモリ](#21-形-デコーダと呼び出し側が所有するメモリ)
+  - [2.2 1周期をデコードする](#22-1周期をデコードする)
+  - [2.3 `MfskParams` — パラメータブロック](#23-mfskparams--パラメータブロック)
+    - [2.3.1 `MfskExtras` — ライブラリ独自のオプション](#231-mfskextras--ライブラリ独自のオプション)
   - [2.4 `MfskDecode` — 結果1行](#24-mfskdecode--結果1行)
   - [2.5 ストリーミング取り込み](#25-ストリーミング取り込み)
   - [2.6 送信](#26-送信)
   - [2.7 イントロスペクション](#27-イントロスペクション)
-  - [2.8 独自エントリポイントを持つモード](#28-独自エントリポイントを持つモード)
+  - [2.8 Q65: リストとサブモード番号](#28-q65-リストとサブモード番号)
+    - [2.8.1 JTTY — スロット呼び出しではなく受信器ハンドル](#281-jtty--スロット呼び出しではなく受信器ハンドル)
+    - [2.8.2 広帯域 IQ — SDR ストリーム用の受信器ハンドル](#282-広帯域-iq--sdr-ストリーム用の受信器ハンドル)
   - [2.9 メッセージ](#29-メッセージ)
   - [2.10 スレッドとランタイム](#210-スレッドとランタイム)
   - [2.11 エラーとメモリ規則](#211-エラーとメモリ規則)
   - [2.12 シンボル索引](#212-シンボル索引)
-- [3. pre-v2 ABI からの移行](#3-pre-v2-abi-からの移行)
+- [3. 0.12 ABI からの移行](#3-012-abi-からの移行)
 - [4. Kotlin / Android](#4-kotlin--android)
 - [5. Swift / Apple](#5-swift--apple)
 
@@ -83,25 +86,33 @@ Rust 内部を含む非 static シンボルを全部エクスポートしてし�
 
 ## 2. C ABI
 
-### 2.1 形: セッションと、呼び出し側が所有するメモリ
+### 2.1 形: デコーダと、呼び出し側が所有するメモリ
 
 ほぼ全体を2つの規則が覆う。
 
-1. **セッションがデコードハンドルである。** `mfsk_session_open` → 設定 →
-   1つ以上のスロットをデコード → `mfsk_session_close`。セッションは
-   コールサインハッシュテーブルと、任意で前スロットの結果および FFT を
-   所有する — いずれも複数回の呼び出しをまたいで初めて意味を持つもの。
+1. **デコーダがデコードハンドルであり、それは WSJT-X のものである。**
+   `jt9 -s` はモードごとに常駐デコーダを1つ走らせ、周期ごとにパラメータ
+   ブロックを渡して駆動する。`mfsk_decoder_open` → 1周期ずつデコード →
+   `mfsk_decoder_close` はそのモデルそのものである。ハンドルが所有するのは
+   上流が周期をまたいで保持するものだけで、他には何も持たない:
+   コールサインハッシュテーブル（上流と同じく他のデコーダとは共有しない）、
+   FT8 の a7 リスト、Q65 と JT65 の平均、WSPR のコールテーブル。
+   `mfsk_decoder_clear` は WSJT-X の "Clear Avg" である。1つのハンドルが
+   スロット系の20モード — FT8、FT4、FST4 の5周期、WSPR、JT9、JT65、Q65 の
+   10サブモード — をすべて受け持ち、0.12 ABI のファミリごとのデコード関数は
+   なくなった。MSK144、JTTY、uvpacket にはデコーダがない（open が
+   `MFSK_STATUS_UNKNOWN_PROTOCOL`。JTTY は専用の受信器、§2.8.1）。
 2. **確保済みメモリは境界を越えない。** 結果行・合成音声・展開テキストは
    すべて呼び出し側がサイズを決めて所有するバッファに書かれる。解放すべき
    ポインタが存在しないので、呼び出しと解放の間で例外が巻き戻ったときに
    ラッパがリークする、というカテゴリ自体が消える。
 
-ハンドルは `MfskDecodeSession*`、`MfskStream*`、
-`MfskCallsignHashTable*` の3つだけで、それぞれに `_open`/`_new` と
-`_close`/`_free` がある。互いに別の不完全型なので、取り違えは未定義動作では
-なく C の型エラーになる。
+ハンドルは `MfskDecoder*`、`MfskStream*`、`MfskJttyReceiver*`、
+`MfskIqReceiver*`、`MfskQ65History*`、`MfskQ65Callers*` で、それぞれに
+`_open`/`_new` と `_close`/`_free` がある。互いに別の不完全型なので、取り違えは
+未定義動作ではなく C の型エラーになる。
 
-### 2.2 スロットをデコードする
+### 2.2 1周期をデコードする
 
 最小の流れ。これは `mfsk-ffi/examples/cpp_smoke/main.cpp` が CI で実際に
 走らせている形である:
@@ -109,153 +120,233 @@ Rust 内部を含む非 static シンボルを全部エクスポートしてし�
 ```c
 #include "mfsk.h"
 
+MfskParams p;
+memset(&p, 0, sizeof p);
+p.size = sizeof p;
+mfsk_params_init(MFSK_MODE_FT8, &p);        /* モードの既定値。ゼロ埋めでは同じにならない */
+p.band_hi_hz = 2600.0f;
+
 MfskStatus st = MFSK_STATUS_INTERNAL;
-MfskDecodeSession* s = mfsk_session_open(MFSK_MODE_FT8, NULL, &st);
-if (s == NULL) { /* 理由は mfsk_last_error() */ }
+MfskDecoder *d = mfsk_decoder_open(MFSK_MODE_FT8, &p, NULL, &st);   /* extras が NULL: depth 自身の値 */
+if (d == NULL) { /* 理由は mfsk_last_error() */ }
 
 MfskDecode rows[16];
+memset(rows, 0, sizeof rows);
+for (int i = 0; i < 16; ++i) rows[i].size = sizeof rows[i];
 size_t n = 0;
-if (mfsk_session_decode_i16(s, pcm, n_pcm, 12000, NULL,
+if (mfsk_decoder_decode_i16(d, pcm, n_pcm, 12000, MFSK_PERIOD_NONE,
                             rows, 16, &n) == MFSK_STATUS_OK) {
     for (size_t i = 0; i < n; ++i) {
         printf("%.1f Hz  %.0f dB  %s\n",
                rows[i].freq_hz, rows[i].snr_db, rows[i].text);
     }
+} else {
+    fprintf(stderr, "%s\n", mfsk_decoder_last_error(d));
 }
-mfsk_session_close(s);
+mfsk_decoder_close(d);
 ```
 
-params に `NULL` を渡すとそのモードの既定値が使われる。`out_cap` は
-受け取る意思のある行数の上限、`out_len` に実際に書かれた行数が返る。
+open の `params` / `extras` が `NULL` ならモード自身の既定値になる。
+`out_cap` は受け取ってよい行数の上限、`*out_len` には**常に**見つかった行数が
+入るので、配列が短いと、検出できない切り詰め結果ではなく、必要な件数つきの
+`MFSK_STATUS_INVALID_ARG` が返る。`sample_rate` が 12 000 以外ならリサンプル
+される。`decode_f32` はどんなレベルの音声も受け取る: `float` で動くエンジン
+（WSPR、JT9、JT65、Q65）はそのまま受け取り、WSJT-X と同じく 16 ビット音声を
+取る FT8、FT4、FST4 には固定レベルへ換算して渡す。
 
 ```c
-MfskDecodeSession *mfsk_session_open(uint32_t mode, const MfskDecodeParams *params,
-                                     MfskStatus *out_status);
-void               mfsk_session_close(MfskDecodeSession *s);
+MfskDecoder *mfsk_decoder_open(uint32_t mode, const MfskParams *params,
+                               const MfskExtras *extras, MfskStatus *out_status);
+void         mfsk_decoder_close(MfskDecoder *dec);
 
-MfskStatus mfsk_session_decode_i16(MfskDecodeSession *s, const int16_t *samples,
-                                   size_t n_samples, uint32_t sample_rate,
-                                   const MfskDecodeParams *params,
+MfskStatus mfsk_decoder_decode_i16(MfskDecoder *dec, const int16_t *samples,
+                                   size_t n_samples, uint32_t sample_rate, int64_t period,
                                    MfskDecode *out, size_t out_cap, size_t *out_len);
-MfskStatus mfsk_session_decode_f32(MfskDecodeSession *s, const float *samples, ...);
+MfskStatus mfsk_decoder_decode_f32(MfskDecoder *dec, const float *samples, ...);
 ```
 
-セッション単位の戦略設定。一度設定すれば以降の全デコードに効く:
+**`period`** は周期の UTC グリッド上の番号（`utc_seconds / T`）、単発の録音なら
+`MFSK_PERIOD_NONE`（`INT64_MIN`）。連続した周期を必要とする状態 — FT8 の a7、
+JT65 と Q65 の平均 — は番号が与えられたときだけ使われ、Q65 の平均は番号に
+欠番があると最初からやり直す。
+
+ハンドルが他にできること:
 
 | 呼び出し | 効果 |
 |---|---|
-| `mfsk_session_set_on_decode(s, cb, user)` | 見つかった順に行を配信する（戻り値の配列に加えて） |
-| `mfsk_session_set_budget(s, check, user)` | 呼び出し側の述語をポーリングし、`false` で打ち切る |
-| `mfsk_session_last_budget(s, &report)` | 打ち切りが何を残したか — スキップした候補数、実行したステージ数、スキップした中で最良の候補の質 |
-| `mfsk_session_keep_known(s, true)` | 今回の結果を既知信号として次回へ持ち越す |
-| `mfsk_session_known_count(s)` | 現在持ち越している数 |
-| `mfsk_session_keep_fft_cache(s, true)` | 同じ音声への2回目のパスでスロット変換を再利用 |
-| `mfsk_session_add_callsign(s, "JL1NIE")` | `<...>` 参照が解決できるようハッシュテーブルへ投入 |
-| `mfsk_session_copy_info(s, i, out, cap, &len)` | 行 `i` の背後にある FEC 情報ビット |
+| `mfsk_decoder_set_params(d, &p)` | GUI が周期ごとに書き換えるのと同じく、周期の間にパラメータブロックを変える。状態は保たれる |
+| `mfsk_decoder_set_extras(d, &e)` | ライブラリ独自のオプションを置き換える。ブロックで未設定のものは depth の値に戻る。モードに無いオプションは `MFSK_STATUS_UNSUPPORTED` で、何も変わらない |
+| `mfsk_decoder_set_q65_callers(d, callers)` | Q65 専用: コンテストの呼び出し局リスト（§2.8）をコピーして渡す。`MFSK_CONTEST_GRID_EXCHANGE` なら full-AP リストに加わる。NULL で外す。`set_extras` をまたいで残る |
+| `mfsk_decoder_set_on_decode(d, cb, user)` | 呼び出しが返す配列に加えて、各行を**見つかった時点で**渡す。NULL で停止 |
+| `mfsk_decoder_set_budget(d, check, user)` | 呼び出し側の述語を候補ごとに1回呼び、`false` が返ったら停止する。受け付けるのは `MFSK_CAP_BUDGET` を持つモードだけで、他は `MFSK_STATUS_UNSUPPORTED` |
+| `mfsk_decoder_last_budget(d, &report)` | 打ち切りで残ったもの — 飛ばした候補数、実行した段数、飛ばした最良候補がどれほど良かったか。予算未設定ならゼロ |
+| `mfsk_decoder_add_callsign(d, "JL1NIE")` | ハッシュテーブルに種を入れ、後の `<...>` を解決できるようにする。ハッシュ化コールを持たないメッセージのモードは `MFSK_STATUS_UNSUPPORTED` |
+| `mfsk_decoder_copy_info(d, i, out, cap, &len)` | 直近のデコードの行 `i` の背後にある FEC 情報ビット（`MfskDecode::info_bits` 個） |
+| `mfsk_decoder_unpack77(d, msg, out, cap, &len)` | `<...>` をこのデコーダのテーブルで解決する `mfsk_unpack77` |
+| `mfsk_decoder_clear(d)` | 周期をまたいで持っているものをすべて忘れる（WSJT-X の "Clear Avg"、`ndepth & 128`） |
+| `mfsk_decoder_last_error(d)` | このハンドルのエラー枠。グローバルと違い、スレッドを乗り換えても残る |
 
-budget 述語は候補ごとにポーリングされ、**ライブラリ側は一切時計を読まない** —
-期限は述語が何と比較するか次第である。これが wasm から、また
-スロット途中でバックグラウンドに回された端末から使える理由になっている。
+予算の述語は候補ごとに呼ばれ、**ライブラリは自前の時計を一切読まない** —
+締切は述語が何と比較するかで決まる。これが wasm や、スロット途中でバックグラ
+ウンドに回った携帯からでも使える理由である。コールバックと述語はどちらも
+`desktop` ビルドでは rayon のワーカーから、複数同時に、完了順に呼ばれうる。
+`mobile` ビルドでは呼び出しスレッド上で候補順に呼ばれる。どちらでも、返される
+配列が正本である。
 
-### 2.3 `MfskDecodeParams` — 探索の指定
+### 2.3 `MfskParams` — パラメータブロック
 
-構造体をゼロ埋めし `size` を設定したうえで、まずモードの既定値を
-ライブラリに埋めさせ、それから必要な項目だけ上書きする:
+`MfskParams` は WSJT-X の `params` common block（`lib/jt9com.f90`）、つまり
+GUI が周期ごとに埋め、デコーダが読むものである。モードは上流のデコーダが読む
+ものを読み、残りは `jt9` と同じく無視する。何かを上書きする前に、ライブラリに
+モードの既定値を書かせること:
 
 ```c
-MfskDecodeParams p;
+MfskParams p;
 memset(&p, 0, sizeof p);
 p.size = sizeof p;
-mfsk_decode_params_init(MFSK_MODE_FT8, &p);
-p.freq_max_hz = 2600.0f;
+mfsk_params_init(MFSK_MODE_FT8, &p);
+p.depth = MFSK_DEPTH_NORMAL;
+p.rx_freq_hz = 1500.0f;
 ```
 
 | フィールド | 意味 |
 |---|---|
-| `freq_min_hz` / `freq_max_hz` | 探索帯域の両端 |
-| `sync_min` | sync 閾値 — **モード間で比較不能**。`MfskDecodeDefaults::sync_scale` を見よ |
-| `max_cand` | 候補数の上限 |
-| `depth` | `MfskDecodeDepth` — コスト／再現率の段 |
-| `strictness` | `MfskStrictness` — 採否閾値のプロファイル |
-| `eq_mode` | `MfskEqMode`。**入力音声の性質**であって探索の性質ではない（アナログフィルタが傾けた通過帯域を平坦化する） |
-| `freq_hint_hz` | この周波数付近の候補を優先。`NaN`（`_init` が書く値）は未設定。a-priori パスの QSO 周波数でもある: 両方の呼出符号を固定する AP ヒント（`ap_call1` と `ap_call2`）は、この周波数の 50 Hz 以内にだけ試し、未設定なら一切試さない。送信周波数は下の `tx_freq_hz` |
-| `sic_rounds` | 逐次干渉除去の回数、0 で無効。`MFSK_CAP_SIC_ROUNDS` が必要 |
-| `sic_early` | チェックポイント模倣の早期デコード。`MFSK_CAP_SIC_EARLY` が必要 |
-| `single_pass` | モードの既定の代わりに、減算なしの 1 パスで復号する。0.12.0 から、`sic_rounds` も `sic_early` も指定しないとき、FT8 と FT4 は減算する（FT8 は `sic_early`、FT4 は 3 ラウンド。WSJT-X の既定と同じ）。`sic_rounds` / `sic_early` との同時指定は拒否される。もともと 1 パスで復号するモードでは何も変わらない。以前パディングだった 1 バイトを使うので、構造体のサイズとほかの項目のオフセットは変わらない。予算（`mfsk_session_set_budget`）は、単一パスでは候補ごとに、減算する既定では段階ごとに確認される。そのため報告の `candidates_skipped` / `cut_at_sync` が意味を持つのは単一パスのとき |
-| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid` | 事前情報ヒント。`MFSK_CAP_AP_WIDEBAND`（狭帯域呼び出しでは `_AP_NARROW`）が必要 |
-| `search_hz` | 狭帯域探索の半値幅。0 でモード既定。`MFSK_CAP_SNIPER` のときのみ意味を持つ |
-| `tx_freq_hz` | 運用者の送信周波数（WSJT-X の `nftx`）。`NaN`（`_init` が書く値）は未設定。FT8 は、両方の呼出符号を固定する AP 仮説を `freq_hint_hz` の 50 Hz 以内に加えて、この周波数の 50 Hz 以内でも試す（`ft8b.f90`）。`MFSK_CAP_TX_FREQ` が必要で、**FT8 のみ**。狭帯域呼び出し（`search_hz`）では読まれないので併用不可。他のモードは `mfsk_session_open` で拒否する |
-| `nb_percent` | インパルスノイズブランカ: スロット全体の変換の前に、大きい方から `n` パーセントのサンプルを消す（`0..=25`、WSJT-X の **NB** 設定）。既定の 0 は何も消さない。25 を超える値は丸めずに拒否する。0 以外のとき `MFSK_CAP_NOISE_BLANKER` が必要 |
-| `nb_sweep_step` | 0 以外なら、ブランキングを 1 段でなく `0, step, 2*step, .. 20` パーセントの各段で 1 回ずつデコードする（5・2・1。GUI が出すのは 5 と 2）。`nb_percent` より優先。0 より大きい各段は `freq_hint_hz` の `nb_ftol_hz` 以内だけを探すので、**ヒントが無ければ 0 % の段しか走らない**。最大 21 回のデコード。`MFSK_CAP_NOISE_BLANKER` が必要 |
-| `nb_ftol_hz` | スイープの探索窓の半値幅（Hz、WSJT-X の F Tol）。`nb_sweep_step` のときだけ読まれ、その場合は正の値が必要。引き継ぐ既定値が無いので `_init` は 0 を書く |
+| `size` | 呼び出し側が理解している `sizeof(MfskParams)` |
+| `depth` | `ndepth & 7`: `MFSK_DEPTH_FAST` 1、`_NORMAL` 2、`_DEEP` 3。0 は Deep（GUI の既定）。`ndepth` と同じく、探索設定のすべてを決める |
+| `flags` | `MFSK_PARAM_AVERAGING`（bit 0、`ndepth & 16`: JT65、Q65）、`MFSK_PARAM_DEEP_SEARCH`（bit 1、`ndepth & 32`: JT65）、`MFSK_PARAM_EME_DELAY`（bit 2、`emedelay`） |
+| `ap_mode` | `MFSK_AP_OFF` 0（`lft8apon` オフ）、`_CQ_ONLY` 1（`lapcqonly`）、`_FULL` 2（QSO 文脈が許すすべての仮説）。`_init` はモード自身の既定値を書く: FT8 と JT65 はオフ（GUI の "Enable AP" ボックス）、FT4 は full |
+| `contest` | `ncontest`: `MFSK_CONTEST_NONE` 0、`_GRID_EXCHANGE` 1（NA VHF、WW Digi、ARRL Digi、Q65 pileup）、`_EU_VHF` 2、`_FIELD_DAY` 3、`_RTTY_ROUNDUP` 4、`_FOX` 6、`_HOUND` 7 |
+| `qso_progress` | `nQSOProgress`: `MFSK_QSO_CALLING` 0、`_REPLYING` 1、`_REPORT` 2、`_ROGER_REPORT` 3、`_ROGERS` 4、`_SIGNOFF` 5 |
+| `band_lo_hz`, `band_hi_hz` | 探索する音声帯域（`nfa`、`nfb`）。`_init` は FT8 と FT4 に 200–4000 Hz（`jt9` のコマンドライン）、FST4 に 600–1400 Hz（GUI の F Low / F High）を書き、他のモードはレジストリの帯域を保つ |
+| `rx_freq_hz`, `tol_hz` | Rx 周波数とその許容幅（`nfqso`、`ntol`）。NaN は未設定 — 0 Hz は周波数である |
+| `tx_freq_hz` | Tx 周波数（`nftx`）。NaN は未設定。FT8 のアプリオリ探索を左右する（`MFSK_CAP_TX_FREQ`） |
+| `mycall`, `mygrid`, `hiscall`, `hisgrid` | 自局と QSO 相手。NUL 終端のインラインテキスト（15文字と7文字）、不明なら空。AP 仮説の材料になる |
 
-`MfskDecodeParams` は公開後も伸びてきた。`tx_freq_hz` と 3 つの `nb_*` が最新で、
-`search_hz` の後ろに追加している。古いヘッダでビルドした呼び出し側は短い `size` を
-渡し、ライブラリはその前半だけを読み、残りは既定値（未設定 / オフ）のままにする。
+どのフィールドも素の整数か浮動小数で、`enum` も `bool` も無い。設定ファイルや
+新しいヘッダから来た値は、不正な Rust 値になるのではなく、この ABI が拒否できる
+誤答になる。**不正なブロックは丸めず拒否する**: 列挙した値の外にある depth、
+AP モード、contest、QSO 進行度、および NaN の帯域や `band_hi_hz <= band_lo_hz`
+の帯域（`_init` を飛ばした呼び出し側）は `MFSK_STATUS_INVALID_ARG`。
 
-**FT8 の `previous_cycle`**（`DecodeRequest::<Ft8>::previous_cycle`。30 秒前のスロットの
-デコードに対して WSJT-X の a7 リストデコーダを有効にする）は C ABI・Kotlin・Swift の
-いずれからも**公開していない**。課題 #496 が追跡している。「30 秒前」がどのスロットかは
-アプリケーションだけが知っており、C の行（`MfskDecode`）が持つのはテキストで、a7 が読む
-77 ビットのメッセージではない。フィールドを 1 つ足せば済む話ではなく、設計が別に要る。
+**QSO 文脈は送信側の文脈ではなく、メッセージの文脈である。** AP 仮説は探索を
+誘導するのではなくメッセージのビットを固定するので、`hiscall` を置く場所を
+誤ればヒントが誤りになり、その AP パスはデコードできない。どのモードも AP なしの
+候補を先に試す（Q65 は #555 以降）ので、文脈を誤ったときの代償は、そのための
+弱い信号での AP 利得ということになる。
 
-**AP フィールドはメッセージのフィールドをその順に並べたもの**である —
-CQ の場合 `ap_call1` は `"CQ"` であって送信局ではない。これらは探索を
-誘導するのではなくメッセージのビットを固定するので、順序を誤った
-ヒントは誤ったヒントであり、その AP パスはデコードできない。どのモードも
-候補をまず AP なしで試す（Q65 は #555 以降）ので、順序の誤りで失うのは
-AP の利得、つまりヒントが本来対象とする弱い信号である。
+### 2.3.1 `MfskExtras` — ライブラリ独自のオプション
+
+上流に無い、ライブラリが足したもの（モード別）。`mfsk_extras_init` で初期化する。
+すべてを「未設定」にする — float は NaN、個数は 0、既定値のある選択肢は -1 —
+**ゼロ埋めでは同じにならない**（`strictness` の 0 は Strict、`osd` の 0 は
+オフ）。`mfsk_decoder_open` と `mfsk_decoder_set_extras` が受け取り、open に
+NULL を渡せば `_init` の値になる。
+
+**モードが持たないオプションは、捨てずに拒否する:** `mfsk_decoder_open` または
+`set_extras` が `MFSK_STATUS_UNSUPPORTED` を返し、オプション名は
+`mfsk_last_error()`（`set_extras` なら `mfsk_decoder_last_error`）に入る。
+呼び出し側は最初のスロットより前に知ることができる。範囲外の値は
+`MFSK_STATUS_INVALID_ARG` で、これは存在しないオプションではなく呼び出し側の誤り
+である。
+
+| フィールド | 意味 | モード |
+|---|---|---|
+| `sync_min` | depth の値に対する sync しきい値。NaN は depth の値。**モード間で比較できない** | FT8、FT4、FST4 |
+| `max_cand` | depth の値に対する候補数の上限。0 は depth の値 | 全モード |
+| `osd` | -1 は depth の値、0 オフ、1 オン | FT8、FT4、FST4 |
+| `strictness` | 受理/棄却プロファイル: -1 既定、0 strict、1 normal、2 deep | FT8、FT4、FST4 |
+| `strategy`, `sic_rounds` | `MFSK_STRATEGY_DEFAULT` 0、`_SINGLE_PASS` 1（1パス、減算なし）、`_SIC_ROUNDS` 2（`sic_rounds` ラウンド）、`_SIC_EARLY` 3（チェックポイント付きパス）。FT8 と FT4 は WSJT-X と同じく既定で減算する | FT8: 0–3、FT4: 0–2、FST4: 0–1（上流の `fst4_decode` に減算は無い） |
+| `eq_mode` | 0 オフ、1 局所の信号ごとの等化。探索ではなく*入力音声*の性質 — アナログフィルタが傾けた通過帯域を平坦にする | FT8、FT4、FST4 |
+| `message_filter` | 0 プロトコル自身のメッセージフィルタ、1 コーデックの判定のみ | FT8、FT4、FST4 |
+| `a7` | 0 以外で FT8 の a7 リストデコーダ（`ft8_a7.f90`）を有効にする。デコーダ自身の2周期前のデコード結果を使う。`period` が要る | FT8 |
+| `sniper_hz` | `rx_freq_hz` を中心とするルーフィングフィルタ探索の半幅、Hz。0 は広帯域探索。**設計上 FT8 のみ** — トランシーバのアナログフィルタを絞った運用に対応する | FT8 |
+| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` | QSO 文脈の AP とは別の自由形式のアプリオリヒント（指定されればそちらが勝つ）: メッセージのフィールドを順に。CQ なら `ap_call1` は `"CQ"`、`ap_report` は `"RRR"`、`"RR73"`、`"73"` か レポート | FT8、FT4、FST4、Q65 |
+| `nb_percent` | インパルスノイズブランカ（WSJT-X の **NB**）: スロット変換の前に、最も大きい `n` パーセントのサンプルを消す。0..=25、0 は何も消さない | FST4（`MFSK_CAP_NOISE_BLANKER`） |
+| `nb_sweep_step`, `nb_ftol_hz` | 0 以外（5、2、1）でブランキング水準 `0, step, 2*step, .. 20` パーセントごとに1回ずつデコードする。`nb_ftol_hz`（正の値、併用必須）はブランクしたパスの `rx_freq_hz` を中心とする半幅で、**Rx 周波数が無ければ 0 % のパスだけ**が走る。最大21回のデコード | FST4 |
+| `t_early_s`, `t_late_s`, `score_threshold` | 名目開始より何秒前/後からフレームが始まってよいか、および coarse-sync の受理値 0..1。NaN はモード自身の値 | WSPR、JT9、JT65、Q65 |
+| `max_cycles_per_bit` | ビットあたりの Fano サイクル数（`wsprd -C`）。0 は depth の値 | WSPR |
+| `chase_trials` | Chase の試行回数（`nvec`）。0 は depth の値 | JT65 |
+| `pileup` | **Q65 Pileup**: 両コールサインだけを指す AP ヒントは余りの78ビット目を空けておくので、"copied last Tx" フラグつきの返信もマッチする。AP ヒントが要る | Q65 |
+| `max_drift` | **Max Drift**、スペクトルビン 0..=50: フレーム全体にわたる線形のトーンドリフトを探して除去する。素の探索の `2*bins+1` 倍のコスト。0 はオフ | Q65 |
+| `fading_b90_ts`, `fading_model` | 高速フェージングのメトリック: 拡がり帯域幅×シンボル周期（NaN は素の AWGN）。モデル 0 Gaussian、1 Lorentzian（`fading_b90_ts` と併せてのみ読む） | Q65 |
+
+Pileup の返信は `MfskDecode::flags` に `MFSK_DECODE_FLAG_COPIED_LAST_TX` が
+立って返る。WSJT-X ではこれが `#` と表示される。送るには、
+`mfsk_encode_q65_flagged` が `copied_last_tx` つきの `mfsk_encode_q65` である。
+
+`mfsk_decoder_set_extras` はブロック全体を置き換える: 未設定のままのものは
+depth の値に戻る。2つの構造体はこれまでも伸びてきたし今後も伸びるので、どちらも
+size 版管理である: 古いヘッダでビルドした呼び出し側は短い `size` を渡し、
+ライブラリはその先頭部分だけを読み、残りは既定値のままにする。
 
 ### 2.4 `MfskDecode` — 結果1行
 
-平坦・固定長で、呼び出し側の配列に書かれる。`text` はインラインの
-`char[MFSK_DECODE_TEXT_LEN]`、NUL 終端。
+平坦で固定サイズ、あなたの配列に書かれる。`text` はインラインの
+`char[MFSK_DECODE_TEXT_LEN]` で、NUL 終端。
 
 | フィールド | 意味 |
 |---|---|
 | `size` | 呼び出し側が理解している `sizeof(MfskDecode)` |
-| `mode` | **具体的なサブモード**であってファミリではない。FST4 の5周期はそれぞれ別に報告される |
-| `text` | 復号メッセージ |
-| `freq_hz`, `dt_sec`, `snr_db` | キャリア、スロットの `dt = 0` からの時間オフセット、2500 Hz 基準帯域での SNR |
-| `sync_score` | この復号の sync 相関 |
-| `sync_cv` | ブロックごとの sync 電力の変動係数 — 安定なチャネルでは 0 近傍、QSB で上昇。この行が持つ唯一のフェージング指標 |
+| `mode` | ファミリではなく**具体的なサブモード** — FST4 の5周期も Q65 の10サブモードもそれぞれ別に報告される |
+| `text` | デコードされたメッセージ。`<...>` は可能ならデコーダのテーブルで解決済み |
+| `freq_hz`, `dt_sec`, `snr_db` | 搬送波、スロットの `dt = 0` 基準からの時間オフセット、2500 Hz 基準帯域での SNR |
+| `sync_score` | このデコードの sync 相関 |
+| `sync_cv` | ブロックごとの sync パワーの変動係数 — 安定したチャネルでは 0 近傍、QSB 下では高くなる。行が持つ唯一のフェージング指標 |
 | `hard_errors` | FEC が訂正した硬判定誤り数 |
-| `info_bits` | FEC 情報ブロック幅、91（CRC-14）または 101（CRC-24） |
-| `pass` | どのパスがこの行を生んだか。**プロトコル私的** — 診断用であってロジック用ではない |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`、`<...>` 参照の解決にハッシュテーブルを要した。bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`、Q65 Pileup の返信（WSJT-X の `#`。従来の `mfsk_q65_decode*` も立てる） |
+| `info_bits` | FEC 情報ブロックの幅。91（CRC-14）か 101（CRC-24）、持たないモードは 0。`mfsk_decoder_copy_info` はこの個数のビットを返す |
+| `pass` | どのデコードパスが行を作ったか。**プロトコル固有** — 診断用であってロジック用ではない |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`（テキストが `<...>` 参照の解決にハッシュテーブルを要した）、bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`（Q65 Pileup の返信。WSJT-X の `#`） |
 
 ### 2.5 ストリーミング取り込み
 
-音声を押し込む1スロット分のリング。モード自身の `slot_samples_12k` から
+音声を押し込む1スロット分の入れ物。モード自身の `slot_samples_12k` から
 サイズが決まるので、FST4-300 の 3.6 M サンプルのスロットも FT4 の
-90 000 サンプルのスロットと同じ扱いになる。
+90 000 サンプルのスロットと同じ扱いになる。IQ 受信器（§2.8.2）と同じく、
+サンプル数からモードの UTC グリッドにスロットを切り出す: 時計が無ければ
+グリッドは最初のサンプルから自走し — 録音を再生するならそれが正しい —、
+あれば、スロットは自分の境界で始まる。完成したスロットは最大1つが待ち、
+新しいものがそれを置き換える（`mfsk_stream_dropped` が数える）。
 
 ```c
 MfskStream *mfsk_stream_open(uint32_t mode, uint32_t sample_rate, MfskStatus *out);
 MfskStatus  mfsk_stream_push_i16(MfskStream *s, const int16_t *samples, size_t n);
 MfskStatus  mfsk_stream_push_f32(MfskStream *s, const float *samples, size_t n);
-void        mfsk_stream_set_epoch(MfskStream *s, double utc_seconds_of_next_sample);
+uint64_t    mfsk_stream_position(const MfskStream *s);     /* 取り込んだ 12 kHz サンプル数: 自身の時計 */
+MfskStatus  mfsk_stream_set_time(MfskStream *s, int64_t utc_ns, uint64_t at_sample,
+                                 int32_t *out_change);     /* MFSK_CLOCK_* */
 bool        mfsk_stream_slot_ready(const MfskStream *s);
-size_t      mfsk_stream_buffered(const MfskStream *s);
+uint64_t    mfsk_stream_dropped(const MfskStream *s);
 size_t      mfsk_stream_take_slot_i16(MfskStream *s, int16_t *out, size_t cap,
-                                      double *out_slot_start_utc);
+                                      int64_t *out_period, int64_t *out_utc_ns);
 void        mfsk_stream_clear(MfskStream *s);
 void        mfsk_stream_close(MfskStream *s);
 
 /* 融合版: リングから直接デコードする */
-MfskStatus  mfsk_session_decode_stream(MfskDecodeSession *s, MfskStream *stream,
-                                       const MfskDecodeParams *params,
+MfskStatus  mfsk_decoder_decode_stream(MfskDecoder *dec, MfskStream *stream,
                                        MfskDecode *out, size_t out_cap, size_t *out_len,
-                                       double *out_slot_start_utc);
+                                       int64_t *out_period, int64_t *out_slot_start_utc_ns);
 ```
 
-**`Instant` も `SystemTime` も、いかなる時計も使わない。** 次のサンプルが
-どの UTC 秒に属するかをホストが告げ、グリッドは算術をするだけである。
-epoch 未設定ならグリッドは最初のサンプルから自走する — 録音を再生する場合は
-それが正しい。
+**`Instant` も `SystemTime` も、いかなる時計も使わない。** ホストは、サンプル
+`at_sample`（`mfsk_stream_position` が数えるもの）が UTC の `utc_ns` だったと、
+読み取りを得るたびに伝える。ストリームは最大 400 ppm でその読み取りに追従する
+ので、ノイズのある読み取りや時計のドリフトはスロット境界をミリ秒単位で動かす
+だけで、何も失わない。`*out_change` には `MFSK_CLOCK_FIRST` 0（アンカー設定）、
+`MFSK_CLOCK_SLEWED` 1（スルー上限以内で移動。開いているスロットは影響なし）、
+`MFSK_CLOCK_STEPPED` 2（1秒超のずれ: 時計を再アンカーし、跳びをまたいだスロットは
+捨てる）のいずれかが入る。
 
-take してから decode するより `mfsk_session_decode_stream` を使うこと。
+take してから decode するより `mfsk_decoder_decode_stream` を使うこと。
 FST4-300 のスロットを取り出して渡し直すのは 7 MB を無駄に動かすだけである。
+これはスロット自身の番号を period として使い（呼び出し側が数えなくても a7 や
+平均が連続した周期を見る）、スロットがまだ無いときは `*out_len = 0` で
+`MFSK_STATUS_UNSUPPORTED` を返すので、呼び出し側は `mfsk_stream_slot_ready` の
+代わりにこれを poll できる。ストリームとデコーダは同じモードでなければならない
+（さもなくば `MFSK_STATUS_INVALID_ARG`）。スロットに切られないモードはストリームを
+開けない（`UNSUPPORTED`）。`mfsk_stream_take_slot_i16` はサンプルが欲しい呼び出し
+側のためにスロットをコピーして取り出す: 書いたサンプル数を返し（スロットが無い、
+または `cap` が小さいと 0）、スロットの period と、時計があれば UTC 開始時刻を
+返す（時計が無ければ `*out_utc_ns` は 0）。
 
 ### 2.6 送信
 
@@ -291,167 +382,97 @@ const char *mfsk_mode_name(uint32_t mode);            /* static、解放不要 *
 MfskStatus  mfsk_mode_from_name(const char *name, MfskMode *out);
 MfskStatus  mfsk_mode_info(uint32_t mode, MfskModeInfo *out);
 uint64_t    mfsk_mode_caps(uint32_t mode);            /* MFSK_CAP_* ビット */
-MfskStatus  mfsk_mode_defaults(uint32_t mode, MfskDecodeDefaults *out);
+MfskStatus  mfsk_params_init(uint32_t mode, MfskParams *out);
+MfskStatus  mfsk_extras_init(MfskExtras *out);
 uint32_t    mfsk_abi_version(void);
 uint32_t    mfsk_version(void);
 ```
 
 **`MfskMode` は全モードを指し、その discriminant は ABI である。**
 レジストリ項目ごとに1つ＋ MSK144 と JTTY で、一度割り当てたら並べ替えない —
-レジストリの登録は feature で変わるため、`q65` 無しのビルドではそれ以降の
-インデックスが全部ずれる。ゆえに意図的にレジストリのインデックスではない。
-このビルドに実際どれがあるかは `mfsk_mode_count` / `mfsk_mode_at` が答える。
+意図的にレジストリのインデックス*ではない*。レジストリへの収録は feature で
+決まるので、`q65` 無しのビルドでは以降のインデックスがすべてずれてしまう。
+このビルドにどれがあるかは `mfsk_mode_count` / `mfsk_mode_at` が答える。
 
-**ケーパビリティは推測ではなく公開される。** 要となるのは
-`MFSK_CAP_DECODE_HANDLE` で、`mfsk_session_decode_i16` 系がそもそも
-適用できるかを示す。Q65 は公称開始サンプルと時間許容量を取り、
-WSPR / JT9 / JT65 にはビルダが無い。劣っているのではなく形が違うのであり、
-それを呼び出し側が「知っていなければならない事実」ではなく
-「読めるビット」にしたのがこの surface である。
+**ケイパビリティは推測せず公開される。** 語は `mfsk_mode_caps(mode)` か
+`MfskModeInfo::caps`。デコーダハンドルが20のスロット系モードすべてを受け持つので、
+`MFSK_CAP_DECODE_HANDLE` はもうデコーダが開くかどうかを意味しない。そのモードが
+**77ビットメッセージのスロットファミリ**（FT8、FT4、FST4）に属することを意味し、
+`MfskParams` の QSO 文脈 AP、a7、スナイパー窓が当てはまるのはそれである。WSPR、
+JT9、JT65、Q65 も同じハンドルでデコードされ、固有の `MfskExtras` フィールドを持ち、
+持たないオプションは `MFSK_STATUS_UNSUPPORTED` になる。他のビットは、モードが
+どのオプションを尊重するかを示すので、呼び出し側は知っているべきことを読める:
 
-| bit | 定数 | 意味 |
+| ビット | 定数 | 意味 |
 |---|---|---|
-| 0 | `MFSK_CAP_DECODE_HANDLE` | セッションのデコード呼び出しが適用できる |
-| 1 | `MFSK_CAP_SNIPER` | 狭帯域単一目標探索。**設計上 FT8 のみ** |
+| 0 | `MFSK_CAP_DECODE_HANDLE` | 77ビットのスロットファミリ: QSO 文脈 AP、a7、スナイパーが当てはまる |
+| 1 | `MFSK_CAP_SNIPER` | 狭帯域の単一目標探索（`sniper_hz`）。**設計上 FT8 のみ** |
 | 2 | `MFSK_CAP_AP_NARROW` | 目標指定探索での AP ヒント |
 | 3 | `MFSK_CAP_AP_WIDEBAND` | 広帯域探索での AP ヒント |
-| 4 | `MFSK_CAP_SIC_ROUNDS` | 平坦な逐次干渉除去 |
-| 5 | `MFSK_CAP_SIC_EARLY` | チェックポイント模倣の早期デコード。FT8 のみ |
-| 6 | `MFSK_CAP_OSD` | OSD の*スイッチ*が効く。無い場合は「切れない」であって「無い」ではない |
-| 7 | `MFSK_CAP_EQ_MODE` | イコライズがデコーダまで届く |
-| 8 | `MFSK_CAP_STRICTNESS` | strictness プロファイルが受理して捨てられるのではなく効く |
-| 9 | `MFSK_CAP_BUDGET` | 呼び出し側の budget 述語がポーリングされる |
-| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | `mfsk.h` を参照 |
+| 4 | `MFSK_CAP_SIC_ROUNDS` | 平坦な逐次干渉除去（`MFSK_STRATEGY_SIC_ROUNDS`） |
+| 5 | `MFSK_CAP_SIC_EARLY` | チェックポイント模倣の早期デコード（`MFSK_STRATEGY_SIC_EARLY`）。FT8 のみ |
+| 6 | `MFSK_CAP_OSD` | OSD の*スイッチ*が尊重される。無いときは「切れない」であって「持たない」ではない |
+| 7 | `MFSK_CAP_EQ_MODE` | 等化がデコーダに届く |
+| 8 | `MFSK_CAP_STRICTNESS` | strictness プロファイルが受け付けて捨てられるのではなく尊重される |
+| 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` が受け付けられる |
+| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | `mfsk.h` を参照。`_KNOWN_FILTER`、`_KNOWN_SUBTRACT`、`_FFT_CACHE` は Rust API の記述で、0.12 の `keep_known` / `keep_fft_cache` が無くなって以来 C ABI にそれらの呼び出しは無い |
 | 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X のインパルスノイズブランカ（`nb_percent`、`nb_sweep_step`）。**FST4 の全サブモードのみ** |
-| 17 | `MFSK_CAP_TX_FREQ` | 送信周波数（`tx_freq_hz`）が a-priori 探索に効く。**FT8 のみ** |
+| 17 | `MFSK_CAP_TX_FREQ` | 送信周波数（`tx_freq_hz`）がアプリオリ探索を左右する。**FT8 のみ** |
 
-これらのビットは `mfsk_core::registry::caps` を写したもので、
-`mfsk-core/tests/registry_caps.rs` が双方向にトレイト実装と結び付けている —
-トレイトを持たないプロトコルを名指しすればそこで*コンパイル*エラーになり、
-実装してビットを立て忘れれば実行時に失敗する。最後の環は
-`mfsk-ffi/tests/mode_introspection.rs` が各 `MFSK_CAP_*` を対応する
-レジストリ定数と突き合わせて閉じている。手書きのケーパビリティ表は
-2リリース以内に嘘になるからである。
+ビットは `mfsk_core::registry::caps` を写したもので、
+`mfsk-core/tests/registry_caps.rs` が両方向でトレイト実装と結びつけている —
+トレイトを持たないプロトコルを挙げれば*コンパイル*エラー、トレイトを実装して
+ビットを立て忘れれば実行時失敗になる。`mfsk-ffi/tests/mode_introspection.rs` が
+最後の輪を閉じ、各 `MFSK_CAP_*` を写し元のレジストリ定数と比較する。この連鎖が
+あるのは、手書きのケイパビリティ表が2リリースで嘘になるからである。
 
-**`mfsk_mode_defaults` は この ABI 最悪の罠を取り除く。** 既定値はデータであり、
-`MfskDecodeDefaults::sync_scale` が「2つのモードの数値がそもそも比較可能か」を
-告げる:
+**`mfsk_mode_defaults` はもう無い。** 既定値はデータで、`mfsk_params_init` が
+書く。`MfskExtras` は探索設定を「depth 自身の値」のままにするので、モード間で
+読み違える per-mode の `sync_min` は存在しない（FT4 のベースライン正規化スコア、
+FT8 と FST4 の絶対 Costas スコア、WSPR・JT9・JT65・Q65 の 0‥1 の sync 比率は比較
+できない）。`mfsk_params_init` はデコーダを持たないモード（MSK144、JTTY、
+uvpacket）に対して `MFSK_STATUS_UNKNOWN_PROTOCOL` を返す。
 
-```c
-MfskDecodeDefaults d = {0};
-d.size = sizeof d;
-mfsk_mode_defaults(MFSK_MODE_FT4, &d);
-/* d.sync_min == 1.18, d.sync_scale == MFSK_SYNC_SCALE_BASELINE_NORMALISED */
-```
+**`MfskModeInfo::decode_fft1_size` は予算を立てる前に読むべきフィールドである。**
+デコーダがスロット全体にかける順方向 FFT の長さで、FT4 は 92 160 点、FST4-300 は
+**4 194 304** 点 — 45 倍の差があるのにほかのどのフィールドも示唆しておらず、
+「全モード同じ呼び出し形」がスマートフォンのメモリ事情として誤りである理由
+でもある。
 
-FT4 はスコアリング前にスペクトルをフィット済みベースラインで割るため、
-雑音は**構成上** 1.0 付近に来る。WSJT-X 自身の 1.18
-（`ft4_decode.f90:195`）は好みではなく下限である。FT8 と FST4 のそれは
-絶対的な Costas スコア。WSPR・JT9・JT65・Q65 は sync を「sync と雑音の和に
-対する sync の割合」で測り（`MFSK_SYNC_SCALE_SYNC_FRACTION`）、0‥1 の値で
-共通の既定値は 0.1。モードをまたいでコピーするのは誤りで、
-このフィールドが出来るまでそれを告げるものが無かった。
+**サイズ版管理。** `MfskModeInfo`、`MfskParams`、`MfskExtras`、`MfskDecode` ほか
+の行はすべて先頭に `size` を持つ。`sizeof` を設定する（または構造体をゼロ埋め
+するとライブラリが埋める）。ヘッダより新しいライブラリは宣言された先頭部分
+だけを書き、`size` を実際に書いた量に書き換え、入力の構造体も宣言された先頭
+部分だけを読む。
 
-#413 以降、これは探索を持つ全モードについてライブラリ自身の既定値であり、
-`MFSK_CAP_DECODE_HANDLE` を持たないモードも含む。そのため JT9 と JT65 は、
-C の入口が既知キャリアでの点デコードであるにもかかわらず Rust 側の走査帯域を
-公開し、Q65 は `mfsk_q65_*` 系が実際に行う広い走査より狭いライブラリ既定値を
-公開する。
+`mfsk_abi_version()` を `mfsk_version()` と別にしているのは意図的で、クレート
+バージョンは境界と無関係な理由でも動くからである。
 
-**`MfskModeInfo::decode_fft1_size` は見積り前に読むべきフィールド。**
-デコーダがスロット全体に対して取る前方 FFT のサイズで、FT4 は 92 160 点、
-FST4-300 は **4 194 304** 点 — 他のどのフィールドも示唆しない 45 倍差であり、
-「全モードで呼び出しの形は1つ」がメモリの話としては誤りである理由でもある。
+### 2.8 Q65: リストとサブモード番号
 
-**サイズバージョニング。** `MfskModeInfo`、`MfskDecodeDefaults`、
-`MfskDecodeParams`、`MfskDecode` はいずれも先頭が `size`。自分の `sizeof` を
-設定する（あるいは構造体をゼロ埋めすればライブラリが埋める）。ヘッダより
-新しいライブラリは、呼び出し側が宣言した前半部分だけを書き、`size` を
-実際に書いた量へ書き換える。
+Q65 は通常のハンドル（§2.2）でデコードされる: Pileup、Max Drift、高速フェージング
+のメトリックは `MfskExtras`（§2.3.1）、EME 遅延と平均は `MfskParams::flags`、AP
+リストは上流と同じく `mycall`、`hiscall`、`hisgrid`、`qso_progress`、`ap_mode` から
+作られる。モードは `MfskMode`（`MFSK_MODE_Q65A30`）で開き、`dt_sec` は WSJT-X の
+DT 列と同じくモードの名目開始から測る。ハンドルの外に残るのは、WSJT-X が持つ
+2つのリスト — デコーダはそれについて状態を持たず、アプリケーションの時計しか
+時計が無いので、あなたが所有するオブジェクトである — と、`mfsk_encode_q65*` が
+今も取るサブモード番号である。
 
-`mfsk_abi_version()` を `mfsk_version()` と分けてあるのは意図的である。
-クレートのバージョンは境界と無関係な理由で動くからである。
+`MfskQ65History`（`q65_hist`、直近100件のデコード）: `mfsk_q65_history_new` /
+`_free` / `_len` / `_push(freq, text)`、行配列をまるごと渡す
+`mfsk_q65_history_record(rows, n)`、DX を入力していない "Decode Again" が読む DX の
+コールとグリッドを返す `mfsk_q65_history_lookup(rx_freq, &dx)`。`MfskQ65Callers`
+（`q65_hist2`、グリッドつきで呼んだ局を最大50件）: `mfsk_q65_callers_new` /
+`_free` / `_len` / `_get`、`mfsk_q65_callers_record(freq, text, now)`、
+`mfsk_q65_callers_expire(now)`、`mfsk_q65_callers_remove(call)`。時刻は呼び出し側が
+渡す Unix 秒で、ライブラリは時計を読まない。どちらもスレッドセーフではない。
+コンテストのリストは `mfsk_decoder_set_q65_callers` でデコーダに渡り、これは
+コピーするので、後でリストを変えたら渡し直す必要がある。
 
-### 2.8 独自エントリポイントを持つモード
-
-`MFSK_CAP_DECODE_HANDLE` を持たないモードは直接呼ぶ:
-
-```c
-MfskStatus mfsk_wspr_decode(const int16_t *samples, size_t n, uint32_t rate,
-                            MfskDecode *out, size_t cap, size_t *out_len);
-MfskStatus mfsk_jt9_decode_at (const int16_t *samples, size_t n, uint32_t rate,
-                               float freq_hz, MfskDecode *out, size_t cap, size_t *out_len);
-MfskStatus mfsk_jt65_decode_at(/* jt9 と同形 */);
-```
-
-Q65 は「何を手掛かりとして与えるか」で分かれる4つの族を持つ。いずれも
-`submode` と任意の `MfskCallsignHashTable*` を取る:
-
-| 呼び出し | 追加で取るもの |
-|---|---|
-| `mfsk_q65_decode` | — |
-| `mfsk_q65_decode_with_ap` | `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` |
-| `mfsk_q65_decode_fading` | `b90_ts`, `fading_model`（`MfskQ65FadingModel`） |
-| `mfsk_q65_decode_with_ap_list` | `my_call`, `his_call`, `his_grid` — QSO 状態の仮説リスト |
-
-`MfskQ65SubMode` は**独自の番号体系**を持ち、`a15` は 6 である。
-一致を仮定せず `MfskMode` へ橋渡しすること。
-
-ハッシュテーブルはセッションではなく呼び出し側が所有する唯一のハンドル:
-`mfsk_callsign_hash_table_new` / `_insert` / `_free`。
-
-**WSJT-X 3.2 の Q65 設定は `mfsk_q65_decode_ex` 1 本で扱う。** 上の 4 つは
-戦略を名前で選び、決め打ちの広い窓を走査する。Pileup・Max Drift・EME delay・q3
-リストデコードはそれらの組み合わせなので、組み合わせごとに位置引数の関数を
-増やすのではなく、1 つの呼び出しとサイズバージョン付きの構造体にした:
-
-```c
-MfskQ65Params p;
-memset(&p, 0, sizeof p);
-p.size = sizeof p;
-mfsk_q65_params_init(MFSK_MODE_Q65A30, &p);   // ライブラリの既定値
-p.max_drift = 10;
-MfskStatus st = mfsk_q65_decode_ex(MFSK_MODE_Q65A30, pcm, n, 12000, &p,
-                                   /*callers*/ NULL, /*hash_table*/ NULL,
-                                   rows, cap, &n_rows);
-```
-
-`MfskQ65SubMode` ではなく **`MfskMode`**（Q65 のもの）を取り、`dt_sec` は WSJT-X の
-DT 列と同じく `nominal_start_s` からの値で返す（従来の関数は
-`start_sample / 12000` を返す）。`mfsk_q65_params_init` が書くのはライブラリ自身の
-既定値（200–3000 Hz、±1 s、しきい値 0.1、候補 8）で、従来の関数の広い窓ではない。
-
-| フィールド | 意味 |
-|---|---|
-| `nominal_start_s` | バッファ内で `dt = 0` の位置: モードの `tx_start_offset_s`（0.5 s、Q65-120 以降は 1.0 s）。スロット境界から始まるバッファならこれが正しい。Max Drift が正規化する周期と q3 の slot start もこれで決まるので、便宜ではなく正しい値が必要 |
-| `t_early_s`, `t_late_s` | フレーム開始がそこからどれだけ前後にずれてよいか |
-| `pileup` | **Q65 Pileup**: 両方の呼出符号だけを名指しする AP ヒントは予備の 78 ビット目を空けるので、「copied last Tx」フラグ付きの返信も一致する。`has_ap_hint` が必要 |
-| `eme_delay` | **EME delay**（「Decode at 52 s」）: 遅い側の端が +5.5 s（Q65-15 は +4.0 s）まで届く |
-| `max_drift` | **Max Drift**、スペクトルビン `0..=50`: フレーム全体での線形なトーンドリフトを探索して除く。通常探索の `2*bins+1` 倍のコスト。upstream と同様に帯域を `nfqso ± ntol` に絞ること |
-| `rx_freq_hz`, `ftol_hz` | q3 デコードが見る Rx 周波数（NaN で未設定）と F Tol（既定 10 Hz）。`ap_list` が必要 |
-| `ap_list` | 0 なし。1 は `list_my_call` / `list_his_call` / `list_his_grid` の標準 QSO リスト。2 は `list_my_call` と、呼び出しに渡す `MfskQ65Callers*` による**コンテストリスト**。`rx_freq_hz` があれば WSJT-X の **q3** デコードで Rx 周波数で最初に走り、無ければ粗い候補ごとのテンプレート照合 |
-| `fading_b90_ts`, `fading_model` | 高速フェージング用メトリック（NaN、既定は通常の AWGN）。0 は Gaussian、1 は Lorentzian |
-| `has_ap_hint`, `ap_call1`, `ap_call2`, `ap_grid`, `ap_report` | a-priori ヒント。メッセージのフィールド順 |
-
-フラグはすべて `uint32_t`、省略可能な float は不在なら NaN なので、C からの異常値は
-Rust の不正な `bool` ではなく拒否になる。**エンジンが黙って無視する組み合わせは
-拒否**し、理由を `mfsk_last_error()` に入れる: `ap_list` と `fading_b90_ts`（両者を
-組み合わせる WSJT-X の経路は無い）、`ap_list` の無い `rx_freq_hz`、AP ヒントの無い
-`pileup`、フェージング併用や Rx 周波数の無いリストデコードでの `max_drift`。Pileup の
-返信は `MFSK_DECODE_FLAG_COPIED_LAST_TX`（`MfskDecode::flags` のビット 1、WSJT-X では
-`#`）付きで返り、従来の Q65 呼び出しも立てる。送る側は `mfsk_encode_q65_flagged` が
-`copied_last_tx` 付きの `mfsk_encode_q65`。
-
-**WSJT-X が持つ 2 つのリストは、呼び出し側が所有するハンドル**にした。デコーダは
-状態を持たず、時計はアプリケーションのものだけだから。`MfskQ65History`
-（`q65_hist`、直近 100 件のデコード。`mfsk_q65_history_new` / `_free` / `_len` /
-`_push`、行配列をまとめて入れる `mfsk_q65_history_record`、DX 局が未入力のときの
-"Decode Again" が読む DX 呼出符号とグリッドを返す `mfsk_q65_history_lookup(rx_freq, &dx)`）
-と `MfskQ65Callers`（`q65_hist2`、グリッド付きで呼んできた最大 50 局。
-`mfsk_q65_callers_new` / `_free` / `_len` / `_get`、
-`mfsk_q65_callers_record(freq, text, now)`、`mfsk_q65_callers_expire(now)`、
-`mfsk_q65_callers_remove(call)`）。時刻は呼び出し側が渡す Unix 秒で、ライブラリは時計を読まない。どちらも
-スレッドセーフではない。
+`MfskQ65SubMode` は**独自の番号**を持ち、`a15` が 6 である。これは
+`mfsk_encode_q65` と `mfsk_encode_q65_flagged` の `submode` 引数であり、両者が
+一致すると思い込まず `MfskMode` に橋渡しすること。
 
 ### 2.8.1 JTTY — スロット呼び出しではなく受信器ハンドル
 
@@ -533,7 +554,9 @@ mfsk_jtty_tones_to_i16(tones, n, 1500.0f, 8000.0f, pcm, sizeof pcm / 2, &m);
 ストリームを 1 本入れると、ダイヤル周波数ごとにモードを載せた N チャンネルが出てきて、スロットは
 サンプル数を基準に UTC で切り出されます。入力が音声ではなく IQ で、受信器が状態（チャンネルごとの
 フィルタ、開いているスロット、サンプル時計）を持つので、JTTY と同じく専用のハンドルです。何も探しません。
-どのダイヤルがどのモードかは呼び出し側が指定します。
+どのダイヤルがどのモードかは呼び出し側が指定します。**各チャンネルは専用のデコーダ**（ハッシュテーブル、
+a7 リスト、平均もチャンネルごとの §2.2 のハンドル）を持ち、`mfsk_iq_add_channel` に渡した `MfskParams` と
+`MfskExtras` から開かれます（NULL ならモードの既定値）。
 
 ```c
 MfskStatus st;
@@ -542,10 +565,14 @@ MfskIqReceiver *rx = mfsk_iq_open(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, &s
 /* チャンネルが多いときは 1 つのポリフェーズフィルタバンクを共有する（下の「選択度」を参照）:
    mfsk_iq_open_with(768000, 14200000.0, MFSK_IQ_FORMAT_CF32, 0, MFSK_IQ_CHANNELIZER_PFB, &st); */
 
+MfskParams p;  memset(&p, 0, sizeof p);  p.size = sizeof p;
+mfsk_params_init(MFSK_MODE_FT8, &p);                        /* チャンネルごとのオプション。mfsk_decoder_open と同じ */
+strcpy(p.mycall, "JL1NIE");
+
 uint32_t ft8, ft4;
-mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &ft8);   /* INVALID_ARG: 窓に DC が入る、または帯域外 */
-mfsk_iq_add_channel(rx, 14080000.0, MFSK_MODE_FT4, &ft4);
-mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0);            /* 無ければサンプル 0 から自走する */
+mfsk_iq_add_channel(rx, 14074000.0, MFSK_MODE_FT8, &p, NULL, &ft8);  /* INVALID_ARG: 窓に DC が入る、または帯域外 */
+mfsk_iq_add_channel(rx, 14080000.0, MFSK_MODE_FT4, NULL, NULL, &ft4);
+mfsk_iq_set_time(rx, utc_ns_now, mfsk_iq_samples_in(rx), NULL);  /* 読み取り無し: グリッドはサンプル 0 から自走 */
 
 for (SDR からの各ブロック) {
     mfsk_iq_push(rx, bytes, n_bytes);                       /* 完了したスロットをデコードしてから返る */
@@ -553,7 +580,7 @@ for (SDR からの各ブロック) {
     while (mfsk_iq_poll(rx, &d) == 1)                       /* 1 = 行を書いた、0 = 無い、<0 = MfskStatus */
         show(d.channel, d.text, d.abs_freq_hz, d.snr_db);
 }
-mfsk_iq_retune(rx, new_center_hz);                          /* チューナが動いた */
+mfsk_iq_retune(rx, new_center_hz, &paused, &resumed);       /* チューナが動いた */
 mfsk_iq_gap(rx, lost_samples);                              /* サンプルが届かなかった */
 mfsk_iq_close(rx);
 ```
@@ -565,22 +592,38 @@ mfsk_iq_close(rx);
 整数レートを受け付け、そうでないものには `mfsk_iq_open` が `INVALID_ARG` の NULL を返します。
 
 チャンネルは FT8、FT4、FST4 の 5 周期のどれか、WSPR、JT9、JT65、Q65 のサブモード（`MfskMode`）を
-載せられます。MSK144、JTTY、uvpacket は `INVALID_ARG` です。**使える音声はおよそ 200 Hz から**
-（フロントエンドがダイヤルより下の側波帯を落とす必要があるため）で、Q65 は単一周期です。スロットをまたぐ
-平均は行いません。
+載せられます。MSK144、JTTY、uvpacket は `INVALID_ARG`、モードに無いオプションは `UNSUPPORTED`、
+コンパイルされていないモードは `UNKNOWN_PROTOCOL` です。**使える音声はおよそ 200 Hz から**
+（フロントエンドがダイヤルより下の側波帯を落とす必要があるため）です。各スロットは周期番号つきで
+デコードされるので、チャンネルの params が有効にしていれば a7 と平均は連続した周期を見ます。
+ギャップや再チューンで失われたスロットがあると、その連続は途切れます。
+
+**チャンネルのデコーダは借り物です。** `mfsk_iq_channel_decoder(rx, ch)` はそれを、デコーダを設定する
+呼び出し — `mfsk_decoder_set_params`、`_set_extras`、`_add_callsign`、`_unpack77`、`_last_error`、
+`_set_q65_callers`、`_clear` — 用の `MfskDecoder*` として返します。スキマーがスロットの合間にチャンネルの
+帯域、depth、DX コールを変えるのにこれを使います。**close してはいけません**: チャンネルが削除されるか
+受信器が閉じるまで生きていて、デコードは受信器が行うので、その `decode_*` は呼ばないでください。
+`mfsk_iq_channel_state(rx, ch)` は `MFSK_IQ_CHANNEL_ACTIVE` 0、`MFSK_IQ_CHANNEL_PAUSED` 1（retune を参照）、
+そのチャンネルが無ければ -1 を返します。
 
 `MfskIqDecode` は他の行と同じくサイズ版管理です。`channel`（`add_channel` が返した値）、具体的な
 `mode`、`text`、`freq_hz`（音声）、`abs_freq_hz`（ダイヤルにそれを足した値、`double`）、`dt_sec`、`snr_db`、
-`slot_start_sample`（IQ ストリームへのインデックス）、`slot_start_utc_ns` を持ち、`has_utc` がアンカーが
-設定されたかを示します。
+`period`（モードの UTC グリッド上でのスロット番号。時計が無ければサンプル 0 から数える）、
+`slot_start_sample`（IQ ストリームへのインデックス）、`slot_start_utc_ns` を持ち、`has_utc` が時計の
+読み取りが設定されたかを示します。
 
-**時間と不連続**: サンプル数が時計で、ライブラリは時刻源を読みません。スロットは全部届いてから
-デコードされ、ストリームが途中から始まったときの部分スロットはデコードされません。`mfsk_iq_retune`、
-`mfsk_iq_gap`、`mfsk_iq_set_time_anchor` は、それぞれ開いているスロットをすべて捨て（中心の変更、欠落、
-動いたグリッドをまたぐ音声はスロットではないため）、時計は進め続けます。`retune` は全か無かで、
-チャンネルが収まらなくなるなら何も変えずに `INVALID_ARG` を返します。録音には、ライブのストリームと
-同じように、終端の後に少し余白が要ります。スロットの最後の音声サンプルは、それを運ぶ最後の IQ サンプルの
-数フィルタ長後に出てくるからです。
+**時間と不連続**: サンプル数が時計で、ライブラリは時刻源を読みません。
+`mfsk_iq_set_time(rx, utc_ns, at_sample, &change)` は、複素サンプル `at_sample`（`mfsk_iq_samples_in` が返す
+カウント）が UTC の `utc_ns` だったと伝えます。読み取りを得るたびに呼んでください。受信器は最大 400 ppm
+でその読み取りに追従するので、水晶やホスト時計のドリフトはスロット境界をミリ秒単位で動かすだけで、
+スロットは失われません。1 秒を超える跳び（`change` が `MFSK_CLOCK_STEPPED`。他は `MFSK_CLOCK_FIRST` /
+`_SLEWED`）だけが、それをまたぐスロットを捨てます。スロットは全部届いてからデコードされ、ストリームが
+途中から始まったときの部分スロットはデコードされません。`mfsk_iq_gap` は開いているスロットをすべて
+捨て（欠落をまたぐ音声はスロットではないため）、時計は進め続けます。`mfsk_iq_retune` もそれらを捨てます。
+新しい帯域に音声窓が収まらなくなったチャンネルは、呼び出しを失敗させずに**一時停止**します — ダイヤルと
+デコーダは保たれ、後の retune で帯域内に戻れば再開します — 呼び出しは停止したチャンネル数と再開した
+チャンネル数を報告します。録音には、ライブのストリームと同じように、終端の後に少し余白が要ります。
+スロットの最後の音声サンプルは、それを運ぶ最後の IQ サンプルの数フィルタ長後に出てくるからです。
 
 **スレッド**: デコードは `mfsk_iq_push` の中で、呼び出しスレッド上、および `mfsk_runtime_configure` が
 設定したプール上で走ります（混んだ FT8 のスロットで数百ミリ秒）。UI スレッドや SDR 自身のコールバック
@@ -606,15 +649,17 @@ MfskStatus mfsk_pack77_type1(const char *call1, const char *call2, const char *g
 MfskStatus mfsk_pack77_type4(const char *nonstd_call, const char *std_call,
                              const char *report, bool is_cq, uint8_t *out_message77);
 MfskStatus mfsk_pack77_free_text(const char *text, uint8_t *out_message77);
-MfskStatus mfsk_unpack77(const MfskDecodeSession *session, const uint8_t *message77,
-                         char *out, size_t cap, size_t *out_len);
+MfskStatus mfsk_unpack77(const uint8_t *message77, char *out, size_t cap, size_t *out_len);
+MfskStatus mfsk_decoder_unpack77(const MfskDecoder *dec, const uint8_t *message77,
+                                 char *out, size_t cap, size_t *out_len);
 ```
 
 `out_message77` はいずれの場合も呼び出し側所有の 77 バイトバッファで、
 どれも確保を行わない。`mfsk_pack77_free_text` は名前に反して何も解放せず、
-**13文字までのフリーテキストを pack する**関数である。`mfsk_unpack77` が
-セッションを取るのは `<...>` ハッシュ参照をそのテーブルで解決するためで、
-持っていなければ `NULL` を渡す。
+**13文字までのフリーテキストを pack する**関数である。`mfsk_unpack77` は
+`<...>` ハッシュ参照を未解決のままにし、`mfsk_decoder_unpack77` はそれを、
+そのデコーダ自身のテーブル（デコードが埋めたもの）で解決する。どちらも
+`cap` が足りなければ必要なサイズを報告する。
 
 ### 2.10 スレッドとランタイム
 
@@ -623,8 +668,8 @@ MfskStatus mfsk_runtime_configure(const MfskRuntimeConfig *cfg);
 uint32_t   mfsk_runtime_thread_count(void);
 ```
 
-* **セッションはシングルスレッドである。** デコードのたびに自分のハッシュ
-  テーブルを変更する。同時実行するスレッドごとに1つ持つこと。別セッション
+* **デコーダはシングルスレッドである。** デコードのたびに自分のハッシュ
+  テーブルと平均を変更する。同時実行するスレッドごとに1つ持つこと。別デコーダ
   同士の並行デコードは支援されており、かつ安価である。
 * `parallel` が有効でも、それ以外のデコードは rayon の**グローバル**プールを
   使う — `num_cpus` 本・2 MiB スタックのスレッドが初回デコードで遅延生成され、
@@ -643,67 +688,80 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.11 エラーとメモリ規則
 
-1. **ハンドル**: `mfsk_session_open` / `mfsk_session_close`、
+1. **ハンドル**: `mfsk_decoder_open` / `mfsk_decoder_close`、
    `mfsk_stream_open` / `mfsk_stream_close`、
-   `mfsk_callsign_hash_table_new` / `_free`。close と free は `NULL` に対して
-   冪等である。
+   `mfsk_jtty_open` / `_close`、`mfsk_iq_open` / `_close`、
+   `mfsk_q65_history_new` / `_free`、`mfsk_q65_callers_new` / `_free`。
+   close と free は `NULL` に対して冪等である。チャンネルのデコーダ
+   （`mfsk_iq_channel_decoder`）は受信器から借りたもので、close しない。
 2. **結果行・音声・テキスト**は呼び出し側所有のバッファへ入る。返り値で
    解放が必要なものは無い。`const char*` を返す2つ
-   （`mfsk_last_error`、`mfsk_session_last_error`）は借用ポインタであって
-   確保ではなく、`mfsk_mode_name` の文字列は static である。
-3. **エラー**: `MFSK_STATUS_OK` 以外が返ったら、セッション呼び出しなら
-   `mfsk_session_last_error(s)`、自由関数なら `mfsk_last_error()` を
-   **同じスレッドで**呼ぶ。返るポインタはそのスレッドで次に失敗しうる
-   呼び出しを行うまで有効。
+   （`mfsk_last_error`、`mfsk_decoder_last_error`）は借用ポインタであって
+   確保ではなく、`mfsk_mode_name` の文字列は static である。デコード
+   コールバックが受け取る行はその呼び出しの間だけ有効で、残したいものは
+   コピーすること。
+3. **エラー**: `MFSK_STATUS_OK` 以外が返ったら、デコーダ呼び出しなら
+   `mfsk_decoder_last_error(d)`、自由関数なら（まだハンドルが無い、失敗した
+   `_open` も含めて）`mfsk_last_error()` を**同じスレッドで**呼ぶ。グローバルは
+   スレッドローカルなので、ステータスとメッセージの間にスレッドを乗り換える
+   Kotlin のコルーチンや Swift の `async` の呼び出し側は NULL を読む。ハンドルごとの
+   枠はそのためにある。返るポインタはそのスレッド（またはそのハンドル）で次に
+   失敗しうる呼び出しを行うまで有効。
 
 `MfskStatus`: `OK = 0`、`NULL_POINTER = -1`、`INVALID_ARG = -2`、
-`UNKNOWN_PROTOCOL = -3`（このビルドに無い）、`DECODE_FAILED = -4`、
-`INTERNAL = -5`（常にバグ）、`UNSUPPORTED = -6`（モードは在るが要求された
-ものを提供しない）。
+`UNKNOWN_PROTOCOL = -3`（このビルドに無い、またはそのモードにデコーダが無い）、
+`DECODE_FAILED = -4`、`INTERNAL = -5`（常にバグ）、`UNSUPPORTED = -6`（モードは
+在るが要求されたものを提供しない）。
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 105 個:
+エクスポートされる関数は 98 個:
 
 | 群 | シンボル |
 |---|---|
-| session (14) | `mfsk_session_open` `mfsk_session_close` `mfsk_session_decode_i16` `mfsk_session_decode_f32` `mfsk_session_decode_stream` `mfsk_session_set_on_decode` `mfsk_session_set_budget` `mfsk_session_last_budget` `mfsk_session_keep_known` `mfsk_session_known_count` `mfsk_session_keep_fft_cache` `mfsk_session_add_callsign` `mfsk_session_copy_info` `mfsk_session_last_error` |
-| streaming (9) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_buffered` `mfsk_stream_set_epoch` `mfsk_stream_slot_ready` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
-| introspection (10) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_mode_defaults` `mfsk_decode_params_init` `mfsk_abi_version` `mfsk_version` |
-| 専用デコード (9) | `mfsk_wspr_decode` `mfsk_jt9_decode_at` `mfsk_jt65_decode_at` `mfsk_q65_decode` `mfsk_q65_decode_with_ap` `mfsk_q65_decode_fading` `mfsk_q65_decode_with_ap_list` `mfsk_q65_decode_ex` `mfsk_q65_params_init` |
-| 送信 (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` `mfsk_symbol_count` `mfsk_synth_output_len` |
-| Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_len` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_len` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_get` |
-| メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_type4` `mfsk_pack77_free_text` `mfsk_unpack77` |
+| decoder (18) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
+| streaming (10) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
+| introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
+| 送信 (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
+| Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
+| メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (12) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_remove_channel` `mfsk_iq_set_time_anchor` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
-| ハッシュテーブル (3) | `mfsk_callsign_hash_table_new` `mfsk_callsign_hash_table_insert` `mfsk_callsign_hash_table_free` |
-| ランタイム (3) | `mfsk_runtime_configure` `mfsk_runtime_thread_count` `mfsk_last_error` |
+| IQ (14) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| ランタイム (3) | `mfsk_last_error` `mfsk_runtime_configure` `mfsk_runtime_thread_count` |
 
 ---
 
-## 3. pre-v2 ABI からの移行
+## 3. 0.12 ABI からの移行
 
-0.11.0 で C 側のデコード surface は丸ごと置き換わった。`mfsk-ffi` は
-`publish = false` で、実際に動いていた消費者はリポジトリ内の C++ ドライバ
-だけなので影響範囲は差分の見た目より小さい — ただし C の消費者は
-調整ではなく書き直しになる。
+0.13.0 で C 側のデコード surface が置き換わった（ABI バージョン 2 → 3）。
+`mfsk-ffi` は `publish = false` で、リポジトリ内の C++ ドライバ、Kotlin
+バインディング、Swift パッケージも一緒に移ったので、C の消費者はデコード
+呼び出しを書き直し、残り（送信、メッセージ、ストリーミング取り込みの push 側、
+JTTY、Q65 リスト、ランタイム）はそのまま使える。
 
-| pre-v2 | v2 |
+| 0.12 | 0.13 |
 |---|---|
-| `MfskProtocol` enum | `MfskMode` — レジストリ項目ごとに discriminant があり、FST4 の5サブモード全てを指せる。`mfsk_mode_count` / `mfsk_mode_at` で列挙 |
-| `mfsk_decoder_new` / `_free` | `mfsk_session_open` / `mfsk_session_close` |
-| `MfskDecodeOptions*` と8つの `mfsk_decode_options_set_*` | `MfskDecodeParams`、ただの size 付き構造体。`mfsk_decode_params_init` で初期化 |
-| `MfskResultList` と `mfsk_result_list_free` | `MfskDecode out[]`、呼び出し側所有の配列。解放不要 |
-| `MfskSamples` と `mfsk_samples_free` | `mfsk_symbol_count` / `mfsk_synth_output_len` でサイズを決めた呼び出し側バッファ |
-| `mfsk_decode_{i16,f32}_sniper` | 通常のデコードで `MfskDecodeParams::search_hz` を使う。`MFSK_CAP_SNIPER` があるモード（FT8 のみ） |
-| ヒープを返す7つの `mfsk_encode_*` | 同名のまま、`out` / `cap` / `out_len` に書く形へ |
-| 何でも `mfsk_last_error()` | セッション呼び出しは `mfsk_session_last_error(s)`。自由関数は引き続き `mfsk_last_error()` |
-| モード幾何のハードコード | `mfsk_mode_info` / `mfsk_mode_caps` / `mfsk_mode_defaults` |
-| `mfsk-ffi-ft8`（FT8 専用の組込クレート） | 退役。`mfsk-ffi` を使うか、Rust staticlib シムから `mfsk-core` を呼ぶ — [`EMBEDDED.md`](EMBEDDED.ja.md) 参照 |
+| `MfskDecodeSession`、`mfsk_session_open` / `_close` | `MfskDecoder`、`mfsk_decoder_open` / `_close` — 2つは別の Rust 値を所有するので意図的に別の型 |
+| `MfskDecodeParams` + `mfsk_decode_params_init` | 2つの構造体: `MfskParams`（WSJT-X のパラメータブロック、`mfsk_params_init`）と `MfskExtras`（ライブラリ独自のオプション、`mfsk_extras_init`）。`freq_min_hz` / `freq_max_hz` → `band_lo_hz` / `band_hi_hz`、`freq_hint_hz` → `rx_freq_hz`（+ `tol_hz`）、`tx_freq_hz` はそのまま、`depth` / `strictness` / `eq_mode` / `sync_min` / `max_cand` / `sic_*` / `single_pass` / `search_hz` → `depth` と `MfskExtras` の同名フィールド（`strategy`、`sniper_hz`）、`has_ap_hint`・`ap_*` → `MfskExtras`、`nb_*` → `MfskExtras` |
+| 呼び出しごとの `params` を取る `mfsk_session_decode_i16` / `_f32` | `period` を取る `mfsk_decoder_decode_i16` / `_f32`。ブロックの変更は `mfsk_decoder_set_params` / `_set_extras` |
+| `mfsk_session_decode_stream(…, params, …, double *utc)` | `mfsk_decoder_decode_stream(…, int64_t *period, int64_t *utc_ns)` |
+| `mfsk_session_set_on_decode` / `_set_budget` / `_last_budget` / `_add_callsign` / `_copy_info` / `_last_error` | 名前はそのまま、接頭辞が `mfsk_decoder_` |
+| `mfsk_session_keep_known` / `_known_count` / `_keep_fft_cache` | 廃止。デコーダは上流が持つ状態を持つ。結果を持ち越す代わりに FT8 の a7（`MfskExtras::a7`、`period` つき） |
+| `mfsk_stream_set_epoch(s, double utc_s)`、`_buffered`、`_take_slot_i16(…, double *utc)` | `mfsk_stream_set_time(s, utc_ns, at_sample, &change)` と `mfsk_stream_position`、`_dropped`、`_take_slot_i16(…, int64_t *period, int64_t *utc_ns)`。ストリームはエポックを受け取る代わりに読み取りに追従する（400 ppm） |
+| `mfsk_wspr_decode`、`mfsk_jt9_decode_at`、`mfsk_jt65_decode_at` | `mfsk_decoder_open(MFSK_MODE_WSPR / _JT9 / _JT65, …)` と `mfsk_decoder_decode_*`。帯域は `band_lo_hz` / `band_hi_hz`、フレーム窓は `t_early_s` / `t_late_s` |
+| `mfsk_q65_decode`、`_with_ap`、`_fading`、`_with_ap_list`、`_decode_ex`、`mfsk_q65_params_init`、`MfskQ65Params` | Q65 デコーダ1本: `pileup`、`max_drift`、`fading_*`、AP ヒントは `MfskExtras`。`eme_delay` と平均は `MfskParams::flags`。AP リストは QSO 文脈から。コンテストの呼び出し局は `mfsk_decoder_set_q65_callers` |
+| `mfsk_callsign_hash_table_*`、`MfskCallsignHashTable*` 引数 | 廃止。デコーダがそれぞれ自分のテーブルを持ち、`mfsk_decoder_add_callsign` で種を入れる |
+| `mfsk_mode_defaults`、`MfskDecodeDefaults` | 廃止。`mfsk_params_init` が既定値を書く |
+| `mfsk_unpack77(session, …)` | `mfsk_unpack77(…)` と `mfsk_decoder_unpack77(dec, …)` |
+| `mfsk_iq_add_channel(rx, dial, mode, &ch)` | `mfsk_iq_add_channel(rx, dial, mode, params, extras, &ch)`（従来の挙動なら NULL, NULL）。`mfsk_iq_channel_decoder`、`mfsk_iq_channel_state` は新規 |
+| `mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0)` | `mfsk_iq_set_time(rx, utc_ns, at_sample, &change)`、繰り返し呼べる |
+| `INVALID_ARG` で失敗する `mfsk_iq_retune(rx, hz)` | `mfsk_iq_retune(rx, hz, &paused, &resumed)` は収まらなくなったチャンネルを一時停止する |
+| 「セッションが開く」意味の `MFSK_CAP_DECODE_HANDLE` | 「77ビットのスロットファミリ」。スロット系のモードはすべてデコーダが開く |
+| FT8 の `previous_cycle` は「未公開」（#496） | `period` 引数つきの `MfskExtras::a7` |
 
-`MfskDecodeSession` を pre-v2 の `MfskDecoder` と**別の型**にしたのは意図的で
-ある。2つは別の Rust 値を所有しており、「どの関数に渡すかで意味が変わる
-ハンドル」こそがこの再設計の終わらせようとした失敗様式だからである。
+今も大事な点: すべての構造体に `size` を設定する（または `_init` する）こと、
+ブロックに触れる前に `mfsk_params_init` を呼ぶこと、デコーダ呼び出しの後は
+グローバルではなく `mfsk_decoder_last_error` を読むこと。
 
 ---
 
@@ -723,17 +781,17 @@ val ft8 = Mfsk.modes().first { Mfsk.modeName(it) == "FT8" }
 // Android では初回デコード前に一度呼ぶ — 下記参照。
 Mfsk.configureRuntime(threads = 2)
 
-MfskSession.open(ft8).use { s ->
-    for (r in s.decode(pcm, sampleRate = 12_000)) {
+MfskDecoder.open(ft8).use { dec ->
+    for (r in dec.decode(pcm, period = periodIndex)) {
         Log.i("ft8", "${r.freqHz} Hz  ${r.snrDb} dB  ${r.text}")
     }
 }
 ```
 
-**構成。** `Mfsk` がイントロスペクションと送信を持ち、`MfskSession` が
-デコードハンドルで `AutoCloseable` なので `.use { }` が解放する。
-`MfskDecode` は `data class` — ハンドルではなく値である。ABI が
-呼び出し側所有のメモリに行を書くからで、解放すべきものも、セッションより
+**構成。** `Mfsk` がイントロスペクションと送信を持ち、`MfskDecoder` が
+全スロットモード共通のデコードハンドル（§2.1）で `AutoCloseable` なので
+`.use { }` が解放する。`MfskDecode` は `data class` — ハンドルではなく値である。
+ABI が呼び出し側所有のメモリに行を書くからで、解放すべきものも、デコーダより
 長生きしうるものも無い。
 
 **`Mfsk.configureRuntime` が Android 固有の部分。** これが無いと
@@ -750,71 +808,93 @@ MfskSession.open(ft8).use { s ->
 通常の `AttachCurrentThread` では他が全部成功した後にプロセスが終了時に
 ハングする。
 
-**セッションはシングルスレッド。** デコードのたびに変更するコールサイン
-ハッシュテーブルを所有する。スレッドごとに1つ。別セッション同士の並行
+**デコーダはシングルスレッド。** デコードのたびに変更するコールサイン
+ハッシュテーブルを所有する。スレッドごとに1つ。別デコーダ同士の並行
 デコードは支援されている。
 
-**デコードのパラメータは data class の `MfskDecodeParams`。**
+**パラメータは2つの data class。** `MfskParams` がパラメータブロック（§2.3）、
+`MfskExtras` がライブラリ独自のオプション（§2.3.1）である。
 `Mfsk.defaultParams(mode)` から始めて、変えたい所だけ `copy` する。
-コンストラクタの既定値は意図的に無い — ABI に init 呼び出しがあるのと同じ
-理由で、0 埋めはモードの既定値と等価ではない（`maxCand` が 0 だと何もデコード
-しない）:
+`MfskParams` の帯域にコンストラクタの既定値は意図的に無い — ABI に init 呼び出しが
+あるのと同じ理由で、0 埋めはモードの既定値と等価ではない（帯域が 0 だと何も
+デコードしない）。`MfskExtras()` は `mfsk_extras_init` が書くもの、つまりすべての
+オプションが未設定の状態:
 
 ```kotlin
 val p = Mfsk.defaultParams(ft8).copy(
-    freqHintHz = 1500f,
+    rxFreqHz = 1500f,
     txFreqHz = 1500f,                       // FT8 の nftx。CAP_TX_FREQ が必要
+    station = MfskStation("JL1NIE", "PM95"),
+    qso = MfskQso("K1JT", "FN20", MfskQsoProgress.REPLYING),
+)
+val e = MfskExtras(
+    a7 = true,                              // FT8 の a7。デコードごとに period が要る
     apHint = MfskApHint("K1JT", "HA0DU"),   // メッセージのフィールド順
 )
-MfskSession.open(ft8, p).use { s -> s.decode(pcm) }
+MfskDecoder.open(ft8, p, e).use { dec -> dec.decode(pcm, period) }
 ```
 
-`freqHintHz` と `txFreqHz` は nullable（C では NaN。0 Hz も周波数なので）。
-`noiseBlanker` は `MfskNoiseBlanker.Percent(n)` か
-`.Sweep(step, toleranceHz)`（FST4、`CAP_NOISE_BLANKER` が必要）。C 層と同じく、
-モードが持たないパラメータは丸めずに **`open` で失敗し**、フィールド名と
-能力ビットを含むメッセージを返す。`session.decode(pcm, params = …)` はその
-呼び出しだけを上書きする。パラメータは3本のフラット配列で JNI を渡り、並びは
-`mfsk_jni.c` の `read_params` に書いてある。JVM テストは各スロットを、それを
-名指しする拒否メッセージで確かめ、AP ヒント・QSO 周波数・送信周波数は弱い
-信号で端から端まで確かめている。
+`rxFreqHz`・`tolHz`・`txFreqHz` は nullable（C では NaN。0 Hz も周波数なので）。
+`depth` は `MfskDepth`、`averaging` / `deepSearch` / `emeDelay` は `flags`、`ap` は
+`MfskApMode`、`contest` は `MfskContest`。extras のうち `strategy` は
+`MfskStrategy.SinglePass`・`.SicRounds(n)`・`.SicEarly`、`strictness` は
+`MfskStrictness`、`noiseBlanker` は `MfskNoiseBlanker.Percent(n)` か
+`.Sweep(step, toleranceHz)`（FST4）、`fading = MfskQ65Fading(b90Ts)` と `pileup`・
+`maxDrift` は Q65 のものである。C 層と同じく、モードが持たないオプションは丸めずに
+**extras を適用する時点で失敗する** — `MfskDecoder.open` か `setExtras` が、
+フィールド名を含む `MfskUnsupportedException` を投げる。範囲外の値は
+`MfskInvalidArgException`、ビルドに無いモードは `MfskUnknownModeException`。
+`dec.setParams(…)` と `dec.setExtras(…)` は周期の間にブロックを変え、状態は保つ。
+`dec.clear()` は状態を忘れ、`dec.addCallsign("JL1NIE")` はハッシュテーブルに種を
+入れる。パラメータは構造体ごとに3本のフラット配列で JNI を渡り、並びは
+`mfsk_jni.c` の `read_params` と `read_extras` に書いてある。JVM テストは各スロットを、
+それを名指しする拒否メッセージで確かめている。
 
-**Q65 にはデコードハンドルが無いので `Mfsk.decodeQ65`** — `mfsk_q65_decode_ex`（§2.8）
-に対応する、WSJT-X 3.2 の設定を扱う 1 本の呼び出し。`MfskQ65Params` は
-`Mfsk.q65DefaultParams(mode)` から始めて `copy` し、`pileup`・`emeDelay`・
-`maxDrift`・`rxFreqHz` / `ftolHz`・`fading = MfskQ65Fading(…)`・
-`list = MfskQ65List.Standard(…)` または `.Contest(…)`・`apHint` を持つ。行は
-`nominalStartS` からの `dtSec` と `copiedLastTx` を返す:
+**デコード。** `dec.decode(pcm, period = …)` は `ShortArray` か `FloatArray`（任意の
+レベル）を取り、`sampleRate` が 12 000 以外ならリサンプルされ、`period` は UTC
+グリッドの番号または null である。`dec.copyInfo(i)` は行 `i` の FEC ビット。UTC
+グリッドで切り出すストリームは、スロットをコピーして出し入れせずにデコードする:
 
 ```kotlin
-val q65 = Mfsk.modes().first { Mfsk.modeName(it) == "Q65-30A" }
-val p = Mfsk.q65DefaultParams(q65).copy(
-    freqMinHz = 1450f, freqMaxHz = 1550f, maxDrift = 10,   // Max Drift、帯域は nfqso ± ntol に絞る
-)
-val rows = Mfsk.decodeQ65(q65, pcmFloat, p)
+MfskStream.open(ft8).use { s ->
+    s.push(chunk)                                   // 任意のサイズ
+    s.setTime(utcNs, atSample = s.position)         // 読み取りを得るたびに
+    dec.decodeStream(s)?.let { r -> show(r.period, r.slotStartUtcNs, r.rows) }  // null: まだスロットが無い
+}
 ```
 
-`MfskQ65History`（`q65_hist`: `push`、`record(rows)`、`lookup(rxFreqHz)`）と
-`MfskQ65Callers`（`q65_hist2`: `record(freqHz, text, now)`、`expire(now)`、
-`remove(call)`、`callers`）は呼び出し側が所有する `AutoCloseable` のハンドルで、
-コンテストリストは `decodeQ65` に渡した callers を読む。`Mfsk.synthesizeQ65(…,
-copiedLastTx)` は Pileup の返信を送る。JVM テストは、EME delay で 3 秒遅れのフレーム、
-Pileup 下のフラグ付き返信、他に何も無い窓での q3 によるリストメッセージをデコードし、
-配列マーシャリングの各スロットを、それを名指しする拒否メッセージで確かめている。
+`MfskStream.takeSlot()` は代わりにスロットをコピーして取り出し、`slotReady` と
+`dropped` は C の呼び出しに対応し、`setTime` は `MfskClockChange`
+（`FIRST`、`SLEWED`、`STEPPED`）を返す。
 
-**`session.setBudget { … }`、`keepKnown`、`keepFftCache`** は同じ3戦略の
-セッション単位版。budget 述語は候補ごとに JNI を1往復するので、捕捉した
-デッドラインとの `System.nanoTime()` 比較程度に留めること。それより重い
-ものは JVM 側が既に計算した boolean の裏に置く。
+**Q65 も同じデコーダ。** Q65 のモードを開き、`MfskParams.emeDelay` / `averaging`
+と `MfskExtras.pileup`・`maxDrift`・`fading` を設定する — `decodeQ65` はもう無い。
+行は `copiedLastTx`（Pileup の `#`）を返し、`Mfsk.synthesizeQ65(…, copiedLastTx)` が
+1 つ送る。`MfskQ65History`（`q65_hist`: `push`、`record(rows)`、
+`lookup(rxFreqHz)`）と `MfskQ65Callers`（`q65_hist2`: `record(freqHz, text, now)`、
+`expire(now)`、`remove(call)`、`callers`）は呼び出し側が所有する `AutoCloseable` の
+ハンドルで、`dec.setQ65Callers(callers)` がコンテストリストをデコーダへ渡す。
 
-**`session.onDecode { row -> … }`** は `decode` が返すリストに加えて、
-見つかった順に行を配信する — 長いスロットが終わる前に画面に何か出したい
-UI 向け。リスナは rayon ワーカーから呼ばれるので並行安全である必要があり、
-Android でビューに触れるものはメインルーパへ post しなければならない。
-`configureRuntime` を先に呼ぶ必要は**無い** — シムは VM が見たことの無い
-ワーカーを自分で（デーモンとして）アタッチし、リスナのメソッド ID を
-ラムダの生成クラスではなく*インタフェース*から取る。リスナが投げた例外は
-表示のうえクリアされ（rayon ワーカーには伝播先が無い）、デコードは続行する。
+**`dec.setBudget { … }`、`dec.lastBudget`** は budget（§2.2。`CAP_BUDGET` を持つ
+モードのみ）。述語は候補ごとに JNI を1往復するので、捕捉したデッドラインとの
+`System.nanoTime()` 比較程度に留めること。それより重いものは JVM 側が既に
+計算した boolean の裏に置く。
+
+**`dec.onDecode { row -> … }`** は `decode` が返すリストに加えて、見つかった順に
+行を配信する — 長いスロットが終わる前に画面に何か出したい UI 向け
+（`decode(…, onRow = …)` なら1回の呼び出しだけ）。リスナは rayon ワーカーから
+呼ばれるので並行安全である必要があり、Android でビューに触れるものはメイン
+ルーパへ post しなければならない。`configureRuntime` を先に呼ぶ必要は**無い** —
+シムは VM が見たことの無いワーカーを自分で（デーモンとして）アタッチし、リスナの
+メソッド ID をラムダの生成クラスではなく*インタフェース*から取る。リスナが投げた
+例外は表示のうえクリアされ（rayon ワーカーには伝播先が無い）、デコードは続行する。
+
+**IQ** は `MfskIqReceiver`（§2.8.2）: `MfskIqReceiver.open(sampleRate, centerHz,
+format, iqSwap, channelizer)`、チャンネル ID を返す `addChannel(dialHz, mode, params,
+extras)`、`push(bytes)`、`MfskIqDecode` を返す `poll()`、`setTime`、`retune`（停止した
+チャンネル数と再開した数を返す）、`gap`、そして**借り物**の `MfskDecoder` を返す
+`channelDecoder(ch)` — その `setParams`・`setExtras`・`addCallsign` が動作中の
+チャンネルを再設定する。`push` は UI スレッドの外で呼ぶこと。
 
 **JTTY** は `MfskJttyReceiver`（§2.8.1）: `MfskJttyReceiver.open(sampleRate,
 MfskJttyParams())` のあと `for (u in rx.push(chunk)) …` — `push` は生じた更新
@@ -848,60 +928,72 @@ clang でシムをコンパイルする。`.cargo/config.toml` には Android 15
 `mfsk-ffi/include/mfsk.h` を**その場で** include するので、コピーを持たず
 ヘッダに追従する。
 
+**単一デコーダ化の書き換え以降ビルドされていない。** パッケージは Swift
+ツールチェーンの無い環境で `mfsk_decoder_*` に移された。ここにあるものは
+Apple のハードウェア上でコンパイルも実行もされておらず、98件の XCTest
+（`grep -rc 'func test' bindings/swift/Tests` で数えた件数）は書かれてはいるが
+通っていない。以下のどの行も、Mac で `bindings/swift/scripts/test.sh` を走らせて
+から頼ること。
+
 ```swift
 import MfskCore
 
 let slot = try Mode.ft8.synthesiseSlot(call1: "CQ", call2: "JL1NIE", report: "PM95",
                                        frequencyHz: 1500)
-let session = try DecodeSession(mode: .ft8)
-for row in try session.decode(slot) {
+let decoder = try Decoder(mode: .ft8)
+for row in try decoder.decode(slot) {
     print(row.frequencyHz, row.snrDB, row.text)
 }
 ```
 
 * `Mode` / `ModeInfo` / `Capabilities` がイントロスペクション族を包むので、
   ピッカーはハードコードした一覧ではなくビルドから埋まる。
-* `DecodeSession` は `MFSK_CAP_DECODE_HANDLE` を持つ全モードを覆う。
-  `WSPR`、`JT9`、`JT65` は C と同様それぞれ独自のエントリポイントを持つ。
-* `CaptureStream` が1スロット分の取り込みリングで、`session.decode(stream)` が
-  スロットを出し入れするコピーを避ける融合デコードである。
-* `session.setBudget { … }` は呼び出し側が時計を読む述語で探索を区切り
-  （ライブラリは読まない）、`session.lastBudget` が打ち切りの残した仕事を
-  — スキップした中で最良の候補の質も含めて — 告げる。`keepKnown(_:)` は
-  あるデコードの結果を次回へ既知信号として持ち越し、`keepFFTCache(_:)` は
-  同じ音声への2回目のパスでスロット変換を再利用する。
-* `session.onDecode { row in … }` は呼び出しが返す配列と並行して、
+* `Decoder` は全スロットモード共通のデコードハンドル（§2.1）で、WSPR、JT9、
+  JT65、Q65 の10サブモードも含む: `Decoder(mode:params:extras:)`。`DecodeParams` が
+  パラメータブロック（`try DecodeParams(mode: .ft8)` がモードの既定値を返し、
+  そこから `bandHz`・`rxFrequencyHz`・`depth`・`ap`・`station`・`qso` …）、
+  `Extras` がライブラリ独自のオプション（`strategy`・`apHint`・`a7`・
+  `sniperHalfWidthHz`・`noiseBlanker`・`pileup`・`maxDrift`・`fading` …）である。
+  モードが持たないオプションは `init` / `setExtras` で、名指しした `MfskError`
+  （コード `.unsupported`）を throw する。`setParams`・`setExtras`・`clear()`・
+  `addCallsign(_:)` は周期の間に作用し、`decode(_:sampleRate:period:handler:)` は
+  `[Int16]` か `[Float]` と `period`（単発の録音なら nil）を取る。
+* `CaptureStream` は UTC グリッドでスロットを切り出す取り込みの入れ物
+  （`setTime(utcNanoseconds:)`、`position`、`isSlotReady`、`droppedSlots`、
+  `takeSlot()`）で、`decoder.decode(stream)` がスロットを出し入れするコピーを
+  避ける融合デコードである。スロットがまだ無ければ nil を返す。
+* `decoder.setBudget { … }` は呼び出し側が時計を読む述語で探索を区切り
+  （ライブラリは読まない）、`decoder.lastBudget` が打ち切りの残した仕事を
+  — スキップした中で最良の候補の質も含めて — 告げる。`Capabilities.budget` を
+  持たないモードは `.unsupported` を throw する。
+* `decoder.onDecode { row in … }` は呼び出しが返す配列と並行して、
   見つかった順に行を流す。`desktop` ビルドではクロージャは rayon ワーカー上で
   （場合により並行に）走り、`mobile` では候補順に単一スレッドで走る。
-  クロージャは差し替えかセッション解放まで保持され、ハンドルを閉じる前に
+  クロージャは差し替えかデコーダ解放まで保持され、ハンドルを閉じる前に
   クリアされる。
 * 失敗は `MfskError` を throw する。ステータスコードと理由文字列の両方を
   持ち、ハンドル自身のエラースロットを先に、スレッドローカルのグローバルを
-  後に読む — `mfsk_session_copy_info` がハンドルを `const*` で取るため
-  後者しか書けないからである。
-* `Q65` は族全体を持つ — 4つのデコード戦略（通常、事前情報、高速フェージング、
-  AP リスト）、`Q65SubMode`（**独自の番号体系**で `a15` が 6、`.mode` で
-  `Mode` へ橋渡し）、`Q65FadingModel`、そしてセッションではなく呼び出し側が
-  所有する唯一のハンドル `CallsignHashTable`。これらの enum が Swift に
-  届くのは `cbindgen.toml` が `mfsk.h` へ出力するようになったからで、
-  それ以前はラッパ側が 0…9 をハードコードするしかなかった。
-* AP ヒントのフィールドは**メッセージのフィールドをその順に**並べたもので
-  — CQ なら `call1` は `"CQ"`、送信局ではない — 探索を誘導するのではなく
-  メッセージのビットを固定するため、順序を誤ったヒントは誤ったヒントになる。
-  デコードは各候補をまず AP なしで試す（#555 以降、`jt9 -3` と同じ）ので、
+  後に読む。
+* **Q65 も同じデコーダ。** Pileup、Max Drift、高速フェージングのメトリックは
+  `Extras`（`pileup`・`maxDrift`・`fading = Extras.Fading(…)`）、EME 遅延と平均は
+  `DecodeParams.emeDelay` / `averaging`、`Decode.copiedLastTx` は Pileup の `#`。
+  `Q65` は送信側: `Q65.encode(subMode:…)`、`Q65.encode(…, copiedLastTx:)`、
+  それに `Q65SubMode`（**独自の番号体系**で `a15` が 6、`.mode` で `Mode` へ橋渡し）
+  と `Q65FadingModel`。`Q65History`（`q65_hist`）と `Q65Callers`（`q65_hist2`）は
+  WSJT-X が持つ 2 つのリストで、呼び出し側が所有するクラス。コンテストリストは
+  `decoder.setQ65Callers(_:)` で渡す。
+* AP ヒント（`Extras.APHint`）のフィールドは**メッセージのフィールドをその順に**
+  並べたもので — CQ なら `call1` は `"CQ"`、送信局ではない — 探索を誘導するので
+  はなくメッセージのビットを固定するため、順序を誤ったヒントは誤ったヒントに
+  なる。デコードは各候補をまず AP なしで試す（#555 以降、`jt9 -3` と同じ）ので、
   きれいな信号はどちらでもデコードされ、ヒントを必要とした弱い信号は失われる。
-  両方向とも `Q65Tests` で固定されている。
-* **`Q65.decode(_:mode:params:callers:)`** は `mfsk_q65_decode_ex`（§2.8）— WSJT-X 3.2
-  の Q65 設定を扱う 1 本の呼び出し。`try Q65.Params(mode: .q65a30)` が既定値を
-  返し、そこから `pileup`・`emeDelay`・`maxDrift`・`rxFrequencyHz` / `ftolHz`・
-  `fading = Q65.Fading(…)`・`list = .standard(…)` または `.contest(…)`・`apHint` を
-  変える。`Q65SubMode` ではなく `Mode` を取り、`Decode.dtSeconds` は
-  `nominalStartSeconds` からの値。`Decode.copiedLastTx` は Pileup の `#`、
-  `Q65.encode(…, copiedLastTx:)` で送る。`Q65History`（`q65_hist`）と
-  `Q65Callers`（`q65_hist2`）は WSJT-X が持つ 2 つのリストで、呼び出し側が所有する
-  クラス。`Q65ExtendedTests` は C と Kotlin のテストに対応している。
-  **Swift ツールチェーンの無い環境で書いた — Mac で
-  `bindings/swift/scripts/test.sh` を走らせること。**
+* `Message.text(resolvedBy: decoder)` はパックされたメッセージを、そのデコーダ自身
+  のハッシュテーブルで展開する。
+* **`IQReceiver`**（§2.8.2）: `IQReceiver(sampleRate:centerHz:format:iqSwap:channelizer:)`、
+  `addChannel(dialHz:mode:params:extras:)`、`push(_:)`、`IQDecode` を返す `poll()` /
+  `drain()`、`setTime(utcNanoseconds:atSample:)`、`retune`、`gap`、
+  `state(ofChannel:)`、そして動作中のチャンネルを再設定できる**借り物**の `Decoder`
+  を返す `decoder(forChannel:)`（これにデコードさせてはならない）。
 
 **JTTY** は `JttyReceiver`（§2.8.1）: `try JttyReceiver(sampleRate:params:)` のあと
 `try receiver.push(samples)` が生じた `[JttyUpdate]`（メッセージごとに 1 件、最新の
@@ -913,9 +1005,9 @@ for row in try session.decode(slot) {
 録音（`#filePath` で位置を求める）と自前のループバックを流す。`Jtty.tones(for:profile:)`
 （テキストパッカー）、`Jtty.synthesise(_:)`、`Jtty.audio(for:)` がテキストを音声にする。
 
-`bindings/swift/scripts/test.sh` が `libmfsk` をビルドして 86 件のテストを
-走らせる。実アプリからのリンク（および iOS ビルドが `mobile` feature セットを
-選ぶべき理由）は `bindings/swift/README.md` が扱う。
+`bindings/swift/scripts/test.sh` が `libmfsk` をビルドしてテストを走らせる。
+実アプリからのリンク（および iOS ビルドが `mobile` feature セットを選ぶべき理由）は
+`bindings/swift/README.md` が扱う。
 
 CI は同じスクリプトを `macos-latest` 上で走らせ（`Swift binding (macOS) +
 iOS build`）、そこが `aarch64-apple-ios` のクロスコンパイル場所でもある。
