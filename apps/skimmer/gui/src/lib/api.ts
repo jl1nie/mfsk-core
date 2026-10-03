@@ -27,25 +27,15 @@ export const radioState = () => invoke<RadioState | null>('radio_state');
 export const setWaterfall = (focus: number | null, fine: boolean) =>
   invoke<void>('set_waterfall', { focus, fine });
 
-import type { Activity, Cq, DtPoint, Heard, Presence } from './types';
-export const dbHeard = (dir: string, me: string, band: string | null, since: number, until: number) =>
-  invoke<Heard[]>('db_heard', { dir, me, band, since, until });
-export const dbActivity = (dir: string, since: number, until: number) =>
-  invoke<Activity[]>('db_activity', { dir, since, until });
-export const dbPresence = (dir: string, call: string, since: number, until: number) =>
-  invoke<Presence[]>('db_presence', { dir, call, since, until });
-export const dbCalls = (dir: string, prefix: string) => invoke<[string, number][]>('db_calls', { dir, prefix });
-export const dbCqs = (
-  dir: string,
-  me: string,
-  band: string | null,
-  kind: string | null,
-  since: number,
-  until: number,
-  limit: number,
-) => invoke<Cq[]>('db_cqs', { dir, me, band, kind, since, until, limit });
-export const dbOccupancy = (dir: string, band: string, mode: string, binHz: number, since: number, until: number) =>
-  invoke<[number, number][]>('db_occupancy', { dir, band, mode, binHz, since, until });
+import type { Activity, DtPoint, MapPoint, Query, Spot, StationRow, Summary } from './types';
+export const dbActivity = (dir: string, q: Query) => invoke<Activity[]>('db_activity', { dir, q });
+export const dbStations = (dir: string, q: Query, limit: number) =>
+  invoke<StationRow[]>('db_stations', { dir, q, limit });
+export const dbDecodes = (dir: string, q: Query, limit: number) => invoke<Spot[]>('db_decodes', { dir, q, limit });
+export const dbPoints = (dir: string, q: Query, sliceS: number) =>
+  invoke<MapPoint[]>('db_points', { dir, q, sliceS });
+export const dbSummary = (dir: string, q: Query) => invoke<Summary>('db_summary', { dir, q });
+export const dbBands = (dir: string) => invoke<string[]>('db_bands', { dir });
 export const dbDt = (dir: string, bucketS: number, since: number, until: number) =>
   invoke<DtPoint[]>('db_dt', { dir, bucketS, since, until });
 export const dbSpan = (dir: string) => invoke<[number | null, number | null, number]>('db_span', { dir });

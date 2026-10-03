@@ -454,3 +454,22 @@ tr.mine {
 input.bad {
   outline: 1px solid var(--warn, #d9822b);
 }
+
+.views {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.views button {
+  border: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 16px;
+}
+.views button.on {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}

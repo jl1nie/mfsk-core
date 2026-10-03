@@ -2,10 +2,37 @@
   import { geoAzimuthalEquidistant, geoMercator, geoPath } from 'd3-geo';
   import { feature } from 'topojson-client';
   import land110 from 'world-atlas/land-110m.json';
-  import type { Heard } from './types';
-  import { gridLonLat, isDark, snrColour } from './analysis';
+  import type { MapPoint } from './types';
+  import { gridLonLat, isDark, snrColour, stamp } from './analysis';
 
-  let { heard, me }: { heard: Heard[]; me: string } = $props();
+  let {
+    points,
+    me,
+    since,
+    until,
+    slice = $bindable(300),
+  }: {
+    points: MapPoint[];
+    me: string;
+    since: number;
+    until: number;
+    /** Seconds per window of the animation; the parent re-reads the points at it. */
+    slice: number;
+  } = $props();
+
+  const WINDOWS = [
+    [60, '1 min'],
+    [300, '5 min'],
+    [900, '15 min'],
+    [1800, '30 min'],
+    [3600, '1 h'],
+  ] as const;
+
+  let anim = $state(false);
+  let playing = $state(false);
+  let fps = $state(4);
+  let trail = $state(true);
+  let cur = $state(0);
 
   type Proj = 'azimuthal' | 'mercator';
   let proj = $state<Proj>('azimuthal');
@@ -14,7 +41,64 @@
   let cv: HTMLCanvasElement | undefined = $state();
   let size = $state({ w: 600, h: 520 });
   let tip = $state<{ x: number; y: number; text: string } | null>(null);
-  let pts: { x: number; y: number; h: Heard }[] = [];
+  type Dot = { call: string; grid: string; band: string; snr: number; count: number };
+  let pts: { x: number; y: number; h: Dot }[] = [];
+
+  const first = $derived(points.length ? points[0].t : 0);
+  const t0 = $derived(Math.floor((since > 0 ? since : first) / slice) * slice);
+  const frames = $derived(Math.max(1, Math.ceil((Math.max(until, t0) - t0) / slice)));
+  const byT = $derived.by(() => {
+    const m = new Map<number, MapPoint[]>();
+    for (const p of points) (m.get(p.t) ?? m.set(p.t, []).get(p.t)!).push(p);
+    return m;
+  });
+  /** Whole range: each station on each band once, with how many slices it was heard in. */
+  const overall = $derived.by(() => {
+    const m = new Map<string, Dot>();
+    for (const p of points) {
+      const k = `${p.call}|${p.band}`;
+      const e = m.get(k);
+      if (e) {
+        e.count++;
+        e.snr = Math.max(e.snr, p.snr);
+      } else m.set(k, { call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1 });
+    }
+    return [...m.values()];
+  });
+  /** The window at `cur` and, faded, the three before it. */
+  const frame = $derived.by(() => {
+    const out: (Dot & { alpha: number })[] = [];
+    const seen = new Set<string>();
+    for (let k = 0; k <= (trail ? 3 : 0); k++) {
+      for (const p of byT.get(cur - k * slice) ?? []) {
+        const key = `${p.call}|${p.band}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1, alpha: 1 - k * 0.27 });
+      }
+    }
+    return out;
+  });
+  const shown = $derived(anim ? frame : overall.map((d) => ({ ...d, alpha: 1 })));
+
+  $effect(() => {
+    // A new range or window starts the animation again.
+    void t0;
+    void slice;
+    cur = t0;
+    playing = false;
+  });
+  $effect(() => {
+    if (!playing) return;
+    const id = setInterval(() => {
+      if (cur + slice >= t0 + frames * slice) {
+        playing = false;
+        return;
+      }
+      cur += slice;
+    }, 1000 / fps);
+    return () => clearInterval(id);
+  });
 
   const land = feature(land110, land110.objects.land);
   const mine = $derived(gridLonLat(me));
@@ -30,7 +114,7 @@
   });
 
   $effect(() => {
-    void heard;
+    void shown;
     void proj;
     void paths;
     void size;
@@ -104,28 +188,36 @@
     const me2 = mine ? p(mine) : null;
     if (paths && mine) {
       ctx.lineWidth = 0.6;
-      for (const s of heard) {
-        const g = gridLonLat(s.grid);
+      for (const d of shown) {
+        const g = gridLonLat(d.grid);
         if (!g) continue;
         ctx.beginPath();
         path({ type: 'LineString', coordinates: [mine, g] } as any);
-        ctx.strokeStyle = snrColour(s.bestSnr).replace(')', ' / 0.35)');
+        ctx.strokeStyle = snrColour(d.snr, 0.35 * d.alpha);
         ctx.stroke();
       }
     }
-    for (const s of [...heard].sort((a, b) => a.bestSnr - b.bestSnr)) {
-      const g = gridLonLat(s.grid);
+    for (const d of [...shown].sort((a, b) => a.snr - b.snr)) {
+      const g = gridLonLat(d.grid);
       const xy = g ? p(g) : null;
       if (!xy) continue;
-      const r = 2.5 + Math.min(4, Math.log10(1 + s.count) * 2);
+      const r = anim ? 4 : 2.5 + Math.min(4, Math.log10(1 + d.count) * 2);
       ctx.beginPath();
       ctx.arc(xy[0], xy[1], r, 0, 2 * Math.PI);
-      ctx.fillStyle = snrColour(s.bestSnr);
+      ctx.fillStyle = snrColour(d.snr, d.alpha);
       ctx.fill();
-      ctx.strokeStyle = dark ? '#000' : '#fff';
+      ctx.strokeStyle = dark ? `rgba(0,0,0,${d.alpha})` : `rgba(255,255,255,${d.alpha})`;
       ctx.lineWidth = 0.8;
       ctx.stroke();
-      pts.push({ x: xy[0], y: xy[1], h: s });
+      pts.push({ x: xy[0], y: xy[1], h: d });
+    }
+    if (anim) {
+      ctx.font = '12px sans-serif';
+      ctx.fillStyle = dark ? '#e4e7eb' : '#1c2026';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${stamp(cur)}–${new Date((cur + slice) * 1000).toISOString().slice(11, 16)} UTC · ${
+        frame.filter((d) => d.alpha === 1).length
+      } stations`, 8, h - 8);
     }
     if (me2) {
       ctx.beginPath();
@@ -156,9 +248,7 @@
       ? {
           x: x + 12,
           y: y + 12,
-          text: `${best.h.call} ${best.h.grid} · ${best.h.band} · ${best.h.count}× · best ${best.h.bestSnr} dB${
-            best.h.km != null ? ` · ${Math.round(best.h.km)} km @ ${Math.round(best.h.bearing ?? 0)}°` : ''
-          }`,
+          text: `${best.h.call} ${best.h.grid} · ${best.h.band} · ${best.h.snr} dB${anim ? '' : ` · ${best.h.count} slice${best.h.count > 1 ? 's' : ''}`}`,
         }
       : null;
   }
@@ -169,10 +259,38 @@
     <label><input type="radio" bind:group={proj} value="azimuthal" /> Great-circle (centred on home)</label>
     <label><input type="radio" bind:group={proj} value="mercator" /> Mercator</label>
     <label><input type="checkbox" bind:checked={paths} /> paths</label>
+    <label class="anim"><input type="checkbox" bind:checked={anim} /> Animate</label>
     <span class="legend"><i style="background:{snrColour(-24)}"></i>−24 dB <i style="background:{snrColour(-7)}"></i>−7 <i style="background:{snrColour(10)}"></i>+10 dB · size = decodes</span>
   </div>
   {#if proj === 'azimuthal' && !mine}
     <p class="hint">Enter your grid in Settings > Station for the great-circle map. Showing Mercator.</p>
+  {/if}
+  {#if anim}
+    <div class="bar">
+      <button type="button" onclick={() => (playing = !playing)}>{playing ? '⏸ Pause' : '▶ Play'}</button>
+      <label>
+        Window
+        <select bind:value={slice}>
+          {#each WINDOWS as [v, l] (v)}<option value={v}>{l}</option>{/each}
+        </select>
+      </label>
+      <label>
+        Speed
+        <select bind:value={fps}>
+          {#each [1, 2, 4, 8, 16] as f (f)}<option value={f}>{f} windows/s</option>{/each}
+        </select>
+      </label>
+      <label><input type="checkbox" bind:checked={trail} /> fading trail</label>
+      <input
+        class="seek"
+        type="range"
+        min={t0}
+        max={t0 + (frames - 1) * slice}
+        step={slice}
+        bind:value={cur}
+        oninput={() => (playing = false)}
+      />
+    </div>
   {/if}
   <div class="stage">
     <canvas bind:this={cv} onmousemove={move} onmouseleave={() => (tip = null)}></canvas>
@@ -191,6 +309,10 @@
     align-items: center;
     padding: 4px 0 8px;
     font-size: 12px;
+  }
+  .seek {
+    flex: 1;
+    min-width: 200px;
   }
   .legend {
     color: var(--muted);

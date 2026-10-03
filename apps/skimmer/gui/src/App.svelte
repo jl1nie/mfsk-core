@@ -330,11 +330,6 @@
         aria-label="Settings"
         onclick={() => (serverOpen = !serverOpen)}>⚙</button
       >
-      <button
-        class:on={view === 'analysis'}
-        title="Maps and statistics of everything recorded in the database"
-        onclick={() => (view = view === 'analysis' ? 'live' : 'analysis')}>Analysis</button
-      >
       {#if serverOpen}
         <div class="popover">
           <h2>Settings</h2>
@@ -506,6 +501,18 @@
     </aside>
 
     <div class="rightcol">
+      <div class="views" role="tablist">
+        <button role="tab" class:on={view === 'live'} aria-selected={view === 'live'} onclick={() => (view = 'live')}>
+          {settings.waterfall ? 'Waterfall' : 'Decodes'}
+        </button>
+        <button
+          role="tab"
+          class:on={view === 'analysis'}
+          aria-selected={view === 'analysis'}
+          title="Maps and statistics of everything recorded in the database"
+          onclick={() => (view = 'analysis')}>Analysis</button
+        >
+      </div>
       {#if view === 'analysis'}
         <AnalysisPanel dir={settings.logDir} me={settings.myGrid.trim()} />
       {/if}

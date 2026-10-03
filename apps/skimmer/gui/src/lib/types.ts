@@ -151,18 +151,25 @@ export interface RadioState {
   canControl: boolean;
 }
 
-/** A station heard in a period (Analysis). */
-export interface Heard {
+/** What to look for in the database; mirrors skimmer_core::store::Query. */
+export interface Query {
+  /** UTC seconds. */
+  since: number;
+  until: number;
+  me: string;
   call: string;
-  band: string;
   grid: string;
-  count: number;
-  bestSnr: number;
-  /** UTC seconds of the last decode. */
-  last: number;
-  /** Degrees from north and km from my grid; null without one. */
-  bearing: number | null;
-  km: number | null;
+  text: string;
+  bands: string[];
+  modes: string[];
+  snrMin: number | null;
+  snrMax: number | null;
+  kmMin: number | null;
+  kmMax: number | null;
+  bearingFrom: number | null;
+  bearingTo: number | null;
+  /** null: any message; '*': any CQ; '': plain CQ; 'DX', 'POTA'... */
+  cq: string | null;
 }
 
 export interface Activity {
@@ -171,26 +178,48 @@ export interface Activity {
   band: string;
   stations: number;
   decodes: number;
-}
-
-export interface Presence {
-  hour: number;
-  band: string;
-  count: number;
   bestSnr: number;
 }
 
-export interface Cq {
+export interface StationRow {
+  call: string;
+  grid: string | null;
+  bands: string;
+  count: number;
+  bestSnr: number;
+  first: number;
+  last: number;
+  bearing: number | null;
+  km: number | null;
+}
+
+export interface Spot {
   t: number;
   call: string | null;
   grid: string | null;
-  /** '' for a plain CQ, else DX, POTA, NA... */
-  kind: string;
   band: string;
   mode: string;
+  audioHz: number;
   snr: number;
+  dt: number;
+  cq: string | null;
+  text: string;
   bearing: number | null;
   km: number | null;
+}
+
+export interface MapPoint {
+  /** Start of the slice, UTC seconds. */
+  t: number;
+  call: string;
+  grid: string;
+  band: string;
+  snr: number;
+}
+
+export interface Summary {
+  decodes: number;
+  stations: number;
 }
 
 export interface DtPoint {

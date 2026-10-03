@@ -234,12 +234,32 @@ impl Query {
             w.push(format!("{col} REGEXP ?"));
             p.push(re.to_string().into());
         }
-        for (col, list) in [("d.band", &self.bands), ("d.mode", &self.modes)] {
-            if list.is_empty() {
-                continue;
-            }
-            w.push(format!("{col} IN ({})", vec!["?"; list.len()].join(",")));
-            p.extend(list.iter().map(|x| V::from(x.clone())));
+        if !self.bands.is_empty() {
+            w.push(format!(
+                "d.band IN ({})",
+                vec!["?"; self.bands.len()].join(",")
+            ));
+            p.extend(self.bands.iter().map(|x| V::from(x.clone())));
+        }
+        if !self.modes.is_empty() {
+            // `FST4*` is every FST4 sub-mode (`FST4-60`, ...).
+            let any = self
+                .modes
+                .iter()
+                .map(|m| {
+                    if m.ends_with('*') {
+                        "d.mode LIKE ?"
+                    } else {
+                        "d.mode = ?"
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            w.push(format!("({any})"));
+            p.extend(self.modes.iter().map(|m| match m.strip_suffix('*') {
+                Some(prefix) => V::from(format!("{prefix}%")),
+                None => V::from(m.clone()),
+            }));
         }
         if let Some(x) = self.snr_min {
             w.push("d.snr >= ?".into());
@@ -580,6 +600,15 @@ impl Reader {
         Ok(out)
     }
 
+    /// The bands anything was recorded on.
+    pub fn bands(&self) -> rusqlite::Result<Vec<String>> {
+        let mut q = self
+            .conn
+            .prepare("SELECT band FROM decodes GROUP BY band")?;
+        let rows = q.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+
     /// Time span and size of what is stored: first and last decode, rows.
     pub fn span(&self) -> rusqlite::Result<(Option<i64>, Option<i64>, i64)> {
         self.conn
@@ -681,6 +710,8 @@ mod tests {
         };
         assert_eq!(on(&|x| x.bands = vec!["40m".into()]), 1);
         assert_eq!(on(&|x| x.modes = vec!["FT4".into()]), 0);
+        assert_eq!(on(&|x| x.modes = vec!["FT8*".into()]), 4);
+        assert_eq!(r.bands().unwrap().len(), 2);
         assert_eq!(on(&|x| x.snr_min = Some(-11)), 2);
         // CQ kinds.
         assert_eq!(on(&|x| x.cq = Some("*".into())), 3);

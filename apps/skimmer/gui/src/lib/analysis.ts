@@ -1,19 +1,78 @@
-/** Shared by the Analysis views: periods, bands, colours. */
+/** Shared by the Analysis views: the query form, bands, colours. */
+import type { Query } from './types';
 
-export const PERIODS = [
-  { id: '6h', label: '6 h', s: 6 * 3600 },
-  { id: '24h', label: '24 h', s: 24 * 3600 },
-  { id: '7d', label: '7 days', s: 7 * 86400 },
-  { id: '30d', label: '30 days', s: 30 * 86400 },
-  { id: 'all', label: 'All', s: 0 },
+export const PRESETS = [
+  { id: '6h', label: 'Last 6 h', s: 6 * 3600 },
+  { id: '24h', label: 'Last 24 h', s: 24 * 3600 },
+  { id: '7d', label: 'Last 7 days', s: 7 * 86400 },
+  { id: '30d', label: 'Last 30 days', s: 30 * 86400 },
+  { id: 'all', label: 'Everything', s: 0 },
+  { id: 'custom', label: 'From – to', s: 0 },
 ] as const;
-export type PeriodId = (typeof PERIODS)[number]['id'];
+export type PresetId = (typeof PRESETS)[number]['id'];
 
-/** `[since, until]` in UTC seconds for a period ending now. */
-export function range(id: PeriodId, nowMs: number): [number, number] {
-  const until = Math.floor(nowMs / 1000);
-  const p = PERIODS.find((x) => x.id === id)!;
-  return [p.s === 0 ? 0 : until - p.s, until];
+/** The query form as typed: text boxes stay text until applied. */
+export interface QueryForm {
+  preset: PresetId;
+  /** `YYYY-MM-DDTHH:MM`, UTC (for 'custom'). */
+  from: string;
+  to: string;
+  call: string;
+  grid: string;
+  text: string;
+  bands: string[];
+  modes: string[];
+  snrMin: string;
+  snrMax: string;
+  kmMin: string;
+  kmMax: string;
+  bearingFrom: string;
+  bearingTo: string;
+  cq: string; // 'any' | '*' | '' | 'DX' ...
+}
+
+export const MODE_CHIPS = ['FT8', 'FT4', 'FST4*', 'Q65*', 'WSPR', 'JT9', 'JT65'];
+
+export function blankForm(): QueryForm {
+  return {
+    preset: '24h', from: '', to: '', call: '', grid: '', text: '', bands: [], modes: [],
+    snrMin: '', snrMax: '', kmMin: '', kmMax: '', bearingFrom: '', bearingTo: '', cq: 'any',
+  };
+}
+
+const utc = (s: string) => {
+  const t = Date.parse(`${s}:00Z`);
+  return Number.isFinite(t) ? Math.floor(t / 1000) : null;
+};
+const num = (s: string) => {
+  const v = s.trim() === '' ? NaN : Number(s);
+  return Number.isFinite(v) ? v : null;
+};
+export const toLocalInput = (utcS: number) => new Date(utcS * 1000).toISOString().slice(0, 16);
+
+/** The form as a query ending now (presets move with the clock). */
+export function toQuery(f: QueryForm, me: string, nowMs: number): Query {
+  const now = Math.floor(nowMs / 1000);
+  let since = 0;
+  let until = now;
+  const p = PRESETS.find((x) => x.id === f.preset)!;
+  if (f.preset === 'custom') {
+    since = utc(f.from) ?? 0;
+    until = utc(f.to) ?? now;
+  } else if (p.s > 0) {
+    since = now - p.s;
+  }
+  const bf = num(f.bearingFrom);
+  const bt = num(f.bearingTo);
+  return {
+    since, until, me,
+    call: f.call.trim(), grid: f.grid.trim(), text: f.text.trim(),
+    bands: f.bands, modes: f.modes,
+    snrMin: num(f.snrMin), snrMax: num(f.snrMax), kmMin: num(f.kmMin), kmMax: num(f.kmMax),
+    bearingFrom: bf !== null && bt !== null ? bf : null,
+    bearingTo: bf !== null && bt !== null ? bt : null,
+    cq: f.cq === 'any' ? null : f.cq,
+  };
 }
 
 export const BAND_ORDER = ['2200m', '630m', '160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m'];
@@ -23,10 +82,9 @@ export function sortBands(bands: Iterable<string>): string[] {
 }
 
 /** Blue (weak) to red (strong) over `-24..+10` dB. */
-export function snrColour(snr: number): string {
+export function snrColour(snr: number, alpha = 1): string {
   const t = Math.max(0, Math.min(1, (snr + 24) / 34));
-  const hue = 240 - 240 * t;
-  return `hsl(${hue} 80% 50%)`;
+  return `hsl(${240 - 240 * t} 80% 50% / ${alpha})`;
 }
 
 /** 0..1 to a light-to-dark ramp for counts. */
@@ -40,6 +98,7 @@ export const isDark = () => window.matchMedia('(prefers-color-scheme: dark)').ma
 
 export const hhmm = (utcS: number) => new Date(utcS * 1000).toISOString().slice(11, 16);
 export const ymd = (utcS: number) => new Date(utcS * 1000).toISOString().slice(0, 10);
+export const stamp = (utcS: number) => `${ymd(utcS)} ${hhmm(utcS)}`;
 
 /** Centre of a 4- or 6-character locator: [lon, lat], or null. */
 export function gridLonLat(g: string): [number, number] | null {

@@ -711,43 +711,34 @@ fn reader(dir: &str) -> Result<store::Reader, String> {
     store::Reader::open(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Stations heard in `[since, until]` (UTC seconds) with their bearing from
-/// `me`, per band.
 #[tauri::command]
-fn db_heard(dir: String, me: String, band: Option<String>, since: i64, until: i64) -> Result<Vec<store::Heard>, String> {
-    let me = Some(me.trim()).filter(|m| !m.is_empty());
-    reader(&dir)?.heard(me, band.as_deref(), since, until).map_err(|e| e.to_string())
+fn db_activity(dir: String, q: store::Query) -> Result<Vec<store::Activity>, String> {
+    reader(&dir)?.activity(&q)
 }
 
 #[tauri::command]
-fn db_activity(dir: String, since: i64, until: i64) -> Result<Vec<store::Activity>, String> {
-    reader(&dir)?.activity(since, until).map_err(|e| e.to_string())
+fn db_stations(dir: String, q: store::Query, limit: usize) -> Result<Vec<store::Station>, String> {
+    reader(&dir)?.stations(&q, limit)
 }
 
 #[tauri::command]
-fn db_presence(dir: String, call: String, since: i64, until: i64) -> Result<Vec<store::Presence>, String> {
-    reader(&dir)?
-        .presence(&call.trim().to_ascii_uppercase(), since, until)
-        .map_err(|e| e.to_string())
+fn db_decodes(dir: String, q: store::Query, limit: usize) -> Result<Vec<store::Spot>, String> {
+    reader(&dir)?.decodes(&q, limit)
 }
 
 #[tauri::command]
-fn db_calls(dir: String, prefix: String) -> Result<Vec<(String, i64)>, String> {
-    reader(&dir)?.calls(prefix.trim(), 12).map_err(|e| e.to_string())
+fn db_points(dir: String, q: store::Query, slice_s: i64) -> Result<Vec<store::Point>, String> {
+    reader(&dir)?.points(&q, slice_s, 300_000)
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-fn db_cqs(dir: String, me: String, band: Option<String>, kind: Option<String>, since: i64, until: i64, limit: usize) -> Result<Vec<store::Cq>, String> {
-    let me = Some(me.trim()).filter(|m| !m.is_empty());
-    reader(&dir)?
-        .cqs(me, band.as_deref(), kind.as_deref(), since, until, limit)
-        .map_err(|e| e.to_string())
+fn db_bands(dir: String) -> Result<Vec<String>, String> {
+    reader(&dir)?.bands().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_occupancy(dir: String, band: String, mode: String, bin_hz: i64, since: i64, until: i64) -> Result<Vec<(i64, i64)>, String> {
-    reader(&dir)?.occupancy(&band, &mode, bin_hz, since, until).map_err(|e| e.to_string())
+fn db_summary(dir: String, q: store::Query) -> Result<store::Summary, String> {
+    reader(&dir)?.summary(&q)
 }
 
 #[tauri::command]
@@ -781,12 +772,12 @@ fn main() {
             set_channel_options,
             set_station,
             set_network_delay,
-            db_heard,
             db_activity,
-            db_presence,
-            db_calls,
-            db_cqs,
-            db_occupancy,
+            db_stations,
+            db_decodes,
+            db_points,
+            db_summary,
+            db_bands,
             db_dt,
             db_span,
             set_gain,
