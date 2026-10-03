@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged by Tauri into the macOS bundle's Info.plist. Since macOS 15 an app
+  reaching a host on the local network must say why, or the connection is
+  refused without a prompt: the SpyServer at 192.168.1.26:5555 failed with
+  "No route to host" while `nc` from Terminal connected.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>mfsk skimmer connects to a SpyServer on your local network to receive IQ samples.</string>
+</dict>
+</plist>

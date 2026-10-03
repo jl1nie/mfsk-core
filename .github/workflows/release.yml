@@ -337,9 +337,13 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # `ffi-*` only: the skimmer installers are artifacts of this run
+      # too, and may already be uploaded; they are attached by their
+      # own job after this one.
       - name: Download FFI artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: ffi-*
           path: ffi-artifacts
           merge-multiple: true
 
@@ -439,3 +443,44 @@ jobs:
             and the Kotlin/JNI scaffold in
             [`bindings/kotlin/`](https://github.com/jl1nie/mfsk-core/blob/main/bindings/kotlin/)
             for the integration guide.
+
+  # ── Skimmer installers ────────────────────────────────────────────
+  # The SpyServer skimmer GUI as a Windows installer and a macOS disk
+  # image, built by `skimmer-installers.yml` and attached after the
+  # publish. Deliberately not a gate: the skimmer is a sample app, and a
+  # webview or bundler failure should not hold back the library. If the
+  # build fails, the release goes out without them and this job is red.
+  skimmer-installers:
+    name: Skimmer installers
+    needs: verify-tag
+    uses: ./.github/workflows/skimmer-installers.yml
+    with:
+      version: ${{ needs.verify-tag.outputs.version }}
+
+  attach-skimmer:
+    name: Attach skimmer installers to the release
+    runs-on: ubuntu-latest
+    needs: [publish, skimmer-installers]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: skimmer-*
+          path: skimmer
+          merge-multiple: true
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: skimmer/*
+          fail_on_unmatched_files: true
+          append_body: true
+          body: |
+
+            **mfsk skimmer** (the SpyServer skimmer sample app, see
+            [`apps/skimmer/`](https://github.com/jl1nie/mfsk-core/blob/main/apps/skimmer/README.md)):
+            `*-windows-x64-setup.exe` for Windows, `*-macos-arm64.dmg` for
+            Apple silicon Macs. The macOS build is not notarized: on first
+            open, right-click the app and choose Open, and allow local
+            network access when asked.

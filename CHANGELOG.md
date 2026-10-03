@@ -63,6 +63,12 @@
   imports it as `CMfsk`, the same name the SwiftPM package uses. Before it reports success, the script compiles and
   links a small Swift program against each slice. It is not run in CI, and `Package.swift` still links by `-L` rather
   than through the XCFramework.
+- **Skimmer installers for Windows and macOS, attached to each release.** `skimmer-installers.yml` builds the GUI into
+  `mfsk-skimmer-vX.Y.Z-windows-x64-setup.exe` (NSIS) and `mfsk-skimmer-vX.Y.Z-macos-arm64.dmg` (Apple silicon). The
+  release workflow attaches both after the crates.io publish without waiting on them, so a GUI build failure does not
+  hold the library back. Pull requests that touch `apps/skimmer/` run the same build. The macOS app is signed ad hoc
+  and not notarized. It carries `NSLocalNetworkUsageDescription`: without that entry, or with only the linker's
+  signature, macOS refused the SpyServer connection with `No route to host` and never asked for permission.
 
 ## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY
 

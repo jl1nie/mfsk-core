@@ -9,8 +9,8 @@ description  = "Sample app: Tauri GUI for the SpyServer skimmer (skimmer-core)."
 
 # Outside the host workspace (root Cargo.toml `exclude`): Tauri needs a
 # webview (WebView2 on Windows, webkit2gtk on Linux) and the front end
-# needs Node, neither of which host CI has. Build it on Windows; see
-# ../README.md.
+# needs Node, neither of which host CI has. Built on Windows and macOS
+# by .github/workflows/skimmer-installers.yml; see ../README.md.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

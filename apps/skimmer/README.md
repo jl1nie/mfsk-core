@@ -50,6 +50,21 @@ appended to an `ALL.TXT`. The presets come from WSJT-X's
 `default_frequency_list` (all-region and Region 3 entries), plus FT8 at
 7041 kHz for JA.
 
+### Installers
+
+Each release attaches a Windows installer (`mfsk-skimmer-vX.Y.Z-windows-x64-setup.exe`)
+and an Apple silicon disk image (`mfsk-skimmer-vX.Y.Z-macos-arm64.dmg`), built by
+`.github/workflows/skimmer-installers.yml`. The same workflow runs on pull
+requests that touch `apps/skimmer/`.
+
+The macOS app is signed ad hoc, not with a Developer ID, so it is not
+notarized. On first open, right-click it and choose *Open*. The first
+connection to a SpyServer on the LAN asks for local network access; allow it.
+If it was refused, turn it on under System Settings → Privacy & Security →
+Local Network. A refusal shows in the app as `No route to host (os error 65)`.
+
+### Building on Windows
+
 Build the front end on the WSL side, then the app on Windows (WebView2):
 
 ```sh
@@ -72,6 +87,26 @@ Verified on Windows against the SpyServer below, beside SDR#: 26 FT8
 decodes in one slot at 7041 kHz, CQ rows highlighted, and the log and the
 settings both written. `cargo tauri dev` against `npm run dev` on WSL has
 not been tried.
+
+### Building on macOS
+
+```sh
+cd apps/skimmer/gui
+npm ci && npm run check && npm run build
+npm run tauri -- build --bundles app,dmg   # under src-tauri/target/release/bundle
+```
+
+Run outside CI, the DMG step drives Finder over AppleScript to lay out the
+window and can fail when Terminal may not automate Finder; `CI=true` skips
+that step, and the `.app` under `bundle/macos` is complete either way.
+Settings go to `~/Library/Application Support/io.github.jl1nie.mfsk-skimmer/`.
+
+`src-tauri/Info.plist` carries `NSLocalNetworkUsageDescription`, and
+`tauri.conf.json` signs the bundle ad hoc (`signingIdentity: "-"`). Both are
+needed. Without the description, or with only the linker's signature (a random
+identifier, Info.plist not bound), macOS refuses the LAN connection with
+`No route to host` and never asks. Verified on an Apple silicon Mac against the
+SpyServer below: it connects once local network access is allowed.
 
 ## Sharing the radio with SDR#
 
