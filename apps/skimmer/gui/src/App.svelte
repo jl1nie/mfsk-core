@@ -378,6 +378,14 @@
     serverOpen = true;
   }
 
+  async function confirmRemove(i: number) {
+    const name = settings?.servers[i]?.name ?? 'this server';
+    const n = (settings?.channels ?? []).filter((c) => (c.server ?? 0) === i).length;
+    if (await api.ask(`Remove ${name}${n ? ` and its ${n} channel${n > 1 ? 's' : ''}` : ''}? Its decodes stay in the database.`)) {
+      await removeServer(i);
+    }
+  }
+
   async function removeServer(i: number) {
     if (!settings || settings.servers.length < 2) return;
     settings.channels = settings.channels
@@ -453,7 +461,15 @@
       {#if serverOpen}
         <div class="popover">
           <h2>Settings</h2>
-          <h3>Server · {settings.servers[sel]?.name}</h3>
+          <h3 class="serverhead">
+            Server · {settings.servers[sel]?.name}
+            <button
+              class="remove"
+              disabled={settings.servers.length < 2}
+              title={settings.servers.length < 2 ? 'At least one server stays' : 'Remove this server and its channels'}
+              onclick={() => confirmRemove(sel)}>Remove</button
+            >
+          </h3>
           {#if settings.servers[sel]}
             {@const sv = settings.servers[sel]}
             <div class="field"><span>Name</span><input bind:value={sv.name} disabled={running} spellcheck="false" /></div>
@@ -493,9 +509,6 @@
                 </div>
               {/each}
               <p class="hint">At least 5 minutes each (a retune costs a slot or two). Add or remove channels to change the bands.</p>
-            {/if}
-            {#if settings.servers.length > 1}
-              <button class="link danger" onclick={() => removeServer(sel)}>Remove this server and its channels</button>
             {/if}
           {/if}
           <h3>Radio · {settings.servers[sel]?.name}</h3>

@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { confirm, open } from '@tauri-apps/plugin-dialog';
 import type { ChannelSetting, ModeInfo, RadioState, Settings, UiEvent } from './types';
 
 export const loadSettings = () => invoke<Settings>('load_settings');
@@ -41,3 +41,6 @@ export const dbDt = (dir: string, bucketS: number, since: number, until: number)
 export const dbSpan = (dir: string) => invoke<[number | null, number | null, number]>('db_span', { dir });
 export const dbSnrHist = (dir: string, q: Query) => invoke<[number, number][]>('db_snr_hist', { dir, q });
 export const dbServers = (dir: string) => invoke<[string, string][]>('db_servers', { dir });
+
+/** A yes/no question in the system dialog. */
+export const ask = (message: string) => confirm(message, { title: 'Skimmer', kind: 'warning' });
