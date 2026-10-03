@@ -163,16 +163,22 @@
       </div>
     </div>
     <div class="chips">
+      <span class="lab">Server</span>
+      {#each servers as v (v)}
+        <button
+          type="button"
+          class="chip"
+          class:on={form.servers.includes(v)}
+          title={v ? '' : 'Decodes recorded before servers had names'}
+          onclick={() => { form.servers = toggle(form.servers, v); onapply(); }}
+        >{v || 'before names'}</button>
+      {:else}
+        <span class="none">none yet</span>
+      {/each}
       <span class="lab">Band</span>
       {#each sortBands(bands) as b (b)}
         <button type="button" class="chip" class:on={form.bands.includes(b)} onclick={() => { form.bands = toggle(form.bands, b); onapply(); }}>{b}</button>
       {/each}
-      {#if servers.length > 1}
-        <span class="lab">Server</span>
-        {#each servers as v (v)}
-          <button type="button" class="chip" class:on={form.servers.includes(v)} onclick={() => { form.servers = toggle(form.servers, v); onapply(); }}>{v || '(unnamed)'}</button>
-        {/each}
-      {/if}
       <span class="lab">Mode</span>
       {#each MODE_CHIPS as m (m)}
         <button type="button" class="chip" class:on={form.modes.includes(m)} onclick={() => { form.modes = toggle(form.modes, m); onapply(); }}>{m.replace('*', '')}</button>
@@ -259,6 +265,10 @@
     flex-wrap: wrap;
     gap: 5px;
     align-items: center;
+  }
+  .none {
+    font-size: 12px;
+    color: var(--muted);
   }
   .lab {
     font-size: 11.5px;

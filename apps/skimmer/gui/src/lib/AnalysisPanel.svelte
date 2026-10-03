@@ -133,7 +133,7 @@
           <select bind:value={centre}>
             <option value="">home ({me || 'no grid'})</option>
             {#each servers as [name, grid] (name)}
-              <option value={name}>{name || '(unnamed)'}{grid ? ` (${grid})` : ''}</option>
+              <option value={name}>{name || 'before names'}{grid ? ` (${grid})` : ''}</option>
             {/each}
           </select>
         </label>
