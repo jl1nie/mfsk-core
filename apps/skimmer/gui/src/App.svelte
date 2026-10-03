@@ -508,8 +508,8 @@
               {#each sv.rotation as r, k (r.band)}
                 <div class="field rot">
                   <span>{r.band}</span>
-                  <input type="number" min="5" step="5" value={r.minutes} title="Minutes per turn"
-                    onchange={(e) => { r.minutes = Math.max(5, Number(e.currentTarget.value) || 5); rotationChanged(); }} />
+                  <input type="number" min="4" step="2" value={r.minutes} title="Minutes per turn, rounded up to a whole number of the slots of its modes (WSPR: 2 min)"
+                    onchange={(e) => { r.minutes = Math.max(4, Number(e.currentTarget.value) || 6); rotationChanged(); }} />
                   <span class="hint">min</span>
                   <button class="link" aria-label="Earlier" disabled={k === 0} onclick={() => moveStep(sel, k, -1)}>▲</button>
                   <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
@@ -518,7 +518,7 @@
                   <HoursPicker from={r.from} to={r.to} grid={sv.grid} onchange={(a, b) => { r.from = a; r.to = b; rotationChanged(); }} />
                 </div>
               {/each}
-              <p class="hint">At least 5 minutes each (a retune costs a slot or two). Drag across the hours (UTC) a band takes part in, leftwards to run through midnight; or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
+              <p class="hint">At least 4 minutes each, rounded up to a whole number of the slots of the band's modes (WSPR's are 2 minutes, so 5 becomes 6); a retune costs a slot or two. Drag across the hours (UTC) a band takes part in, leftwards to run through midnight; or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
             {/if}
           {/if}
           <h3>Radio · {settings.servers[sel]?.name}</h3>

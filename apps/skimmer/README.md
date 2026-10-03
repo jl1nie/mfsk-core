@@ -162,8 +162,9 @@ more bands is more servers, or a rotation on one.
 
 A **rotation** gives each band of a server's channels its turn: one SDR holds
 one band at a time, and the modes of a band (FT8, FT4, WSPR...) are heard
-together. Each step is one band for at least five minutes (a retune costs a slot
-or two): `20m for 10 min, 40m for 10 min, 80m for 10 min, round again`. In the
+together. Each step is one band for at least four minutes, rounded up to a whole number of
+the slots of its modes (WSPR's are two minutes, so five becomes six; a retune
+costs a slot or two): `20m for 10 min, 40m for 10 min, 80m for 10 min, round again`. In the
 GUI the steps are the bands the server's channels are in; you set the minutes and
 the order. Connect begins with the first step (every server's cycle begins
 together, on an even minute); "Rotation follows the UTC clock" counts the cycle

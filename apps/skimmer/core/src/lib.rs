@@ -404,7 +404,9 @@ pub struct Config {
 pub struct Step {
     /// Indices into [`Config::channels`].
     pub channels: Vec<usize>,
-    /// Minutes this step lasts (at least [`MIN_STEP_MINUTES`]).
+    /// Minutes this step lasts: at least [`MIN_STEP_MINUTES`], and rounded up
+    /// to a whole number of slots of every mode in it (WSPR's two minutes, so
+    /// five is six), so a step ends between slots, not in the middle of one.
     pub minutes: u32,
     /// The hours of the UTC day this step takes part in, as seconds of the
     /// day `[from, to)`; `from > to` runs through midnight. `None`: all day.
@@ -425,9 +427,28 @@ impl Step {
 
 /// Shorter than this a retune costs more than it listens: a slot or two is
 /// lost at each change.
-pub const MIN_STEP_MINUTES: u32 = 5;
+pub const MIN_STEP_MINUTES: u32 = 4;
 
 impl Config {
+    /// How long step `i` lasts, in seconds: its minutes rounded up to a whole
+    /// number of the slots of the modes in it (their least common multiple).
+    fn step_seconds(&self, i: usize) -> i64 {
+        fn gcd(a: i64, b: i64) -> i64 {
+            if b == 0 { a } else { gcd(b, a % b) }
+        }
+        let st = &self.steps[i];
+        // In milliseconds: FT4's slot is 7.5 s.
+        let slot = st
+            .channels
+            .iter()
+            .filter_map(|&c| self.channels.get(c))
+            .map(|c| (modes::slot_seconds(c.mode) * 1000.0).round() as i64)
+            .filter(|&ms| ms > 0)
+            .fold(1_000, |a, b| a / gcd(a, b) * b);
+        let want = i64::from(st.minutes.max(MIN_STEP_MINUTES)) * 60_000;
+        (want + slot - 1) / slot * slot / 1000
+    }
+
     /// What the rotation does at `utc_s` (UTC seconds): `None` without a
     /// rotation; else the step in force (`None` inside it: no step is in at
     /// this hour, so nothing is heard) and when it ends.
@@ -463,7 +484,7 @@ impl Config {
             // Nobody in until a window opens (there is one if any has hours).
             return Some((None, next_edge.unwrap_or(utc_s + 60)));
         }
-        let len = |i: usize| i64::from(self.steps[i].minutes.max(MIN_STEP_MINUTES)) * 60;
+        let len = |i: usize| self.step_seconds(i);
         let total: i64 = within.iter().map(|&i| len(i)).sum();
         let origin = self.rotation_origin.unwrap_or(day);
         let base = last_edge.map_or(origin, |e| origin.max(e));
@@ -1583,12 +1604,37 @@ mod tests {
         assert_eq!(c.mask_at(DAY).0, vec![true; 3]);
     }
 
-    /// A step shorter than five minutes is five: a retune costs a slot or two.
+    /// A step shorter than four minutes is four: a retune costs a slot or two.
     #[test]
     fn short_steps_are_lengthened() {
         let mut c = rotating();
         c.steps[0].minutes = 1;
-        assert_eq!(c.step_at(DAY), Some((Some(0), DAY + 300)));
+        assert_eq!(c.step_at(DAY), Some((Some(0), DAY + 240)));
+    }
+
+    /// WSPR's slot is two minutes, so a step with WSPR in it lasts a whole
+    /// number of them: five minutes is six. FT8 and FT4 divide that.
+    #[test]
+    fn a_step_ends_between_slots() {
+        let mut c = Config::new(
+            "x",
+            vec![
+                ChannelSpec::new(mfsk_core::Mode::Ft8, 14_074_000.0),
+                ChannelSpec::new(mfsk_core::Mode::Ft4, 14_080_000.0),
+                ChannelSpec::new(mfsk_core::Mode::Wspr, 14_095_600.0),
+                ChannelSpec::new(mfsk_core::Mode::Ft8, 7_074_000.0),
+            ],
+        );
+        let step = |chs: Vec<usize>, minutes| Step {
+            channels: chs,
+            minutes,
+            hours: None,
+        };
+        c.steps = vec![step(vec![0, 1, 2], 5), step(vec![3], 5)];
+        assert_eq!(c.step_seconds(0), 360, "5 min with WSPR in it");
+        assert_eq!(c.step_seconds(1), 300, "FT8 alone: 15 s divides 5 min");
+        c.steps[0].minutes = 6;
+        assert_eq!(c.step_seconds(0), 360, "6 min is already whole");
     }
 
     /// 40 m all day; 20 m only 06:00-18:00 UTC; 80 m only through the night,
