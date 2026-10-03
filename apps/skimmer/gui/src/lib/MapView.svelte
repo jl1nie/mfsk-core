@@ -31,6 +31,7 @@
   let anim = $state(false);
   let playing = $state(false);
   let fps = $state(4);
+  let repeat = $state(true);
   let cur = $state(0);
 
   type Proj = 'azimuthal' | 'mercator';
@@ -81,7 +82,9 @@
     if (!playing) return;
     const id = setInterval(() => {
       if (cur + slice >= t0 + frames * slice) {
-        playing = false;
+        // The end: start again, or stop.
+        if (repeat) cur = t0;
+        else playing = false;
         return;
       }
       cur += slice;
@@ -269,6 +272,7 @@
           {#each [1, 2, 4, 8, 16] as f (f)}<option value={f}>{f} windows/s</option>{/each}
         </select>
       </label>
+      <label><input type="checkbox" bind:checked={repeat} /> repeat</label>
       <input
         class="seek"
         type="range"
