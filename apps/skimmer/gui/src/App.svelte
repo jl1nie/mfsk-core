@@ -4,6 +4,7 @@
   import type { DecodeRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
   import ChannelPanel from './lib/ChannelPanel.svelte';
   import DecodeTable from './lib/DecodeTable.svelte';
+  import AnalysisPanel from './lib/AnalysisPanel.svelte';
   import WaterfallPanel from './lib/WaterfallPanel.svelte';
   import { WaterfallStore } from './lib/waterfall';
 
@@ -32,6 +33,8 @@
   const wfStore = new WaterfallStore();
   let wfTick = $state(0);
   let wfFocus = $state(0);
+  /** The live view (waterfall + decodes) or the Analysis of the database. */
+  let view = $state<'live' | 'analysis'>('live');
   const gridOk = $derived(
     !settings?.myGrid.trim() || /^[A-R]{2}\d{2}([A-X]{2})?$/i.test(settings.myGrid.trim()),
   );
@@ -327,6 +330,11 @@
         aria-label="Settings"
         onclick={() => (serverOpen = !serverOpen)}>⚙</button
       >
+      <button
+        class:on={view === 'analysis'}
+        title="Maps and statistics of everything recorded in the database"
+        onclick={() => (view = view === 'analysis' ? 'live' : 'analysis')}>Analysis</button
+      >
       {#if serverOpen}
         <div class="popover">
           <h2>Settings</h2>
@@ -498,6 +506,11 @@
     </aside>
 
     <div class="rightcol">
+      {#if view === 'analysis'}
+        <AnalysisPanel dir={settings.logDir} me={settings.myGrid.trim()} />
+      {/if}
+      <!-- Kept mounted behind the Analysis view, so its filters and scroll survive. -->
+      <div class="live" style:display={view === 'analysis' ? 'none' : 'contents'}>
       {#if settings.waterfall}
         <WaterfallPanel
           store={wfStore}
@@ -522,6 +535,7 @@
         bind:channel={tableCh}
         onpick={focusChannel}
       />
+      </div>
     </div>
   </main>
 {:else}

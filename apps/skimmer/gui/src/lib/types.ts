@@ -150,3 +150,51 @@ export interface RadioState {
   maxGain: number;
   canControl: boolean;
 }
+
+/** A station heard in a period (Analysis). */
+export interface Heard {
+  call: string;
+  band: string;
+  grid: string;
+  count: number;
+  bestSnr: number;
+  /** UTC seconds of the last decode. */
+  last: number;
+  /** Degrees from north and km from my grid; null without one. */
+  bearing: number | null;
+  km: number | null;
+}
+
+export interface Activity {
+  /** UTC hour since the epoch. */
+  hour: number;
+  band: string;
+  stations: number;
+  decodes: number;
+}
+
+export interface Presence {
+  hour: number;
+  band: string;
+  count: number;
+  bestSnr: number;
+}
+
+export interface Cq {
+  t: number;
+  call: string | null;
+  grid: string | null;
+  /** '' for a plain CQ, else DX, POTA, NA... */
+  kind: string;
+  band: string;
+  mode: string;
+  snr: number;
+  bearing: number | null;
+  km: number | null;
+}
+
+export interface DtPoint {
+  t: number;
+  medianS: number;
+  n: number;
+}
