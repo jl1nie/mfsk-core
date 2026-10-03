@@ -157,7 +157,9 @@
 
   function channelState(i: number): string {
     if (active.length === 0) return '';
-    return active[i] ? `${slotCounts[i] ?? 0}` : 'paused';
+    if (active[i]) return `${slotCounts[i] ?? 0}`;
+    // In a rotation a channel out of its step is waiting for it, not out of band.
+    return (servers[channels[i].server ?? 0]?.stepMinutes.length ?? 0) > 1 ? `step ${(channels[i].step ?? 0) + 1}` : 'paused';
   }
 
   /** Where the current slot of a mode is: fraction elapsed, seconds left, start (UTC hhmmss). */
@@ -304,7 +306,7 @@
               title="Slot {s.start} UTC ({s.periodS} s slots): {s.left} s to the next boundary, then this slot is decoded"
             ></span>
           {/if}
-          <span class="count" title="Decodes in the latest slot, or paused: outside the radio's band">{channelState(i)}</span>
+          <span class="count" title="Decodes in the latest slot; paused: outside the radio's band; step N: heard when that step of the rotation comes">{channelState(i)}</span>
           {#if sv.stepMinutes.length > 1}
             <select
               class="step"

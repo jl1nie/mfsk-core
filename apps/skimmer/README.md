@@ -151,6 +151,35 @@ Observed with SDR# and an Airspy HF+ (2026-10-03):
   while asleep is. A connection closed by the server at once reads
   `closed by the server (client limit?)`.
 
+## Several servers, and a rotation of bands
+
+Up to eight SpyServers at once, wherever they are. Each has a name, an address,
+its own locator (the origin of the bearings of what it hears) and its own
+network delay, gain and control; the channels of each are listed under it.
+`Settings > Server` edits the one selected in the header; `+` adds another.
+One SpyServer is one SDR with one centre and one IQ rate, so the way to cover
+more bands is more servers, or a rotation on one.
+
+A **rotation** splits a server's channels into steps, each with a length of at
+least five minutes (a retune costs a slot or two): `20m for 10 min, 40m for
+10 min, 80m for 10 min, round again`. The cycle counts from UTC midnight, so a
+restart, or another server given the same steps, is at the same step at the
+same moment. The stream retunes at each step; the last slot of a step is
+decoded before leaving, and a channel's decoder (with its callsign table) and
+its waterfall history wait for the band's next turn.
+
+The database records which server heard each decode and where that server is,
+so Analysis can filter by server, centre the map on any of them, and measure
+bearing and distance from the place that heard the signal.
+
+On the command line: `--server NAME=HOST:PORT` starts a server (its options
+and `--ch` follow); `--step MINUTES` before the `--ch` heard in that step.
+
+```
+skimmer --server home=127.0.0.1:5555 --step 10 --ch FT8@14074000 --step 10 --ch FT8@7074000 \
+        --server shack=192.168.1.20:5555 --ch FT8@28074000 --ch FT4@28180000
+```
+
 ## Time
 
 SpyServer sends no timestamps. The slot grid is anchored on the host clock:

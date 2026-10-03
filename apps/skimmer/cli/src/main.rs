@@ -17,12 +17,13 @@ use std::time::Duration;
 
 use skimmer_core::Station;
 use skimmer_core::modes::{MODES, mode_name, parse_channel};
-use skimmer_core::{Channelizer, Config, Event, WireFormat, all_txt_line};
+use skimmer_core::{Channelizer, Config, Event, Step, WireFormat, all_txt_line};
 
 fn usage() -> ExitCode {
     let modes: Vec<&str> = MODES.iter().map(|m| m.0).collect();
     eprintln!(
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
+         \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS]\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
@@ -33,14 +34,42 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-fn parse_args() -> Option<(Config, Option<String>)> {
+/// The servers named on the command line, and the log file.
+///
+/// `--server [NAME=]HOST:PORT` starts a server; the options and `--ch` that
+/// follow belong to it. `--step MINUTES` starts a step of a rotation among that
+/// server's channels: the `--ch` after it are heard in that step.
+fn parse_args() -> Option<(Vec<Config>, Option<String>)> {
+    let mut cfgs: Vec<Config> = Vec::new();
     let mut cfg = Config::new("127.0.0.1:5555", Vec::new());
+    let mut started = false;
     let mut log = None;
     let (mut mycall, mut mygrid) = (String::new(), String::new());
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--server" => cfg.server = it.next()?,
+            "--server" => {
+                if started {
+                    cfgs.push(cfg);
+                    cfg = Config::new("127.0.0.1:5555", Vec::new());
+                }
+                started = true;
+                let v = it.next()?;
+                match v.split_once('=') {
+                    Some((name, addr)) => {
+                        cfg.name = name.to_string();
+                        cfg.server = addr.to_string();
+                    }
+                    None => cfg.server = v,
+                }
+            }
+            "--step" => {
+                started = true;
+                cfg.steps.push(Step {
+                    channels: Vec::new(),
+                    minutes: it.next()?.parse().ok()?,
+                });
+            }
             "--log" => log = Some(it.next()?),
             "--tune" => cfg.tune = true,
             "--yield" => cfg.yield_control = true,
@@ -65,7 +94,14 @@ fn parse_args() -> Option<(Config, Option<String>)> {
             "--mycall" => mycall = it.next()?.to_ascii_uppercase(),
             "--mygrid" => mygrid = it.next()?.to_ascii_uppercase(),
             "--ch" => match parse_channel(&it.next()?) {
-                Ok(ch) => cfg.channels.push(ch),
+                Ok(ch) => {
+                    started = true;
+                    cfg.channels.push(ch);
+                    let at = cfg.channels.len() - 1;
+                    if let Some(step) = cfg.steps.last_mut() {
+                        step.channels.push(at);
+                    }
+                }
                 Err(e) => {
                     eprintln!("{e}");
                     return None;
@@ -74,11 +110,40 @@ fn parse_args() -> Option<(Config, Option<String>)> {
             _ => return None,
         }
     }
-    cfg.live.set_station(Station {
-        call: mycall,
-        grid: mygrid,
-    });
-    (!cfg.channels.is_empty()).then_some((cfg, log))
+    cfgs.push(cfg);
+    for (i, c) in cfgs.iter_mut().enumerate() {
+        if c.name.is_empty() {
+            c.name = if i == 0 && c.server == "127.0.0.1:5555" {
+                String::new()
+            } else {
+                c.server.clone()
+            };
+        }
+        c.live.set_station(Station {
+            call: mycall.clone(),
+            grid: mygrid.clone(),
+        });
+        // Channels given before the first --step are heard in the first one.
+        if !c.steps.is_empty() {
+            let listed: std::collections::HashSet<usize> = c
+                .steps
+                .iter()
+                .flat_map(|s| s.channels.iter().copied())
+                .collect();
+            let loose: Vec<usize> = (0..c.channels.len())
+                .filter(|i| !listed.contains(i))
+                .collect();
+            c.steps[0].channels.extend(loose);
+            // A step nobody is in is no step.
+            c.steps.retain(|s| !s.channels.is_empty());
+            if c.steps.len() < 2 {
+                c.steps.clear();
+            }
+        }
+    }
+    cfgs.iter()
+        .all(|c| !c.channels.is_empty())
+        .then_some((cfgs, log))
 }
 
 fn hhmmss(ns: Option<i64>) -> String {
@@ -90,9 +155,10 @@ fn hhmmss(ns: Option<i64>) -> String {
 }
 
 fn main() -> ExitCode {
-    let Some((cfg, log)) = parse_args() else {
+    let Some((cfgs, log)) = parse_args() else {
         return usage();
     };
+    let many = cfgs.len() > 1;
     let mut log = match log {
         None => None,
         Some(path) => match OpenOptions::new().create(true).append(true).open(&path) {
@@ -105,98 +171,107 @@ fn main() -> ExitCode {
     };
     // Nothing sets it: the CLI runs until killed. The GUI owns its flag.
     let stop = AtomicBool::new(false);
-    skimmer_core::run(&cfg, &stop, |ev| match ev {
-        Event::Decode(d) => {
-            println!(
-                "{} {:<8} {:>10.0} {:>4.0} {:>5.1}  {}",
-                hhmmss(d.slot_utc_ns),
-                mode_name(d.mode),
-                d.freq_hz,
-                d.snr_db,
-                d.dt_s,
-                d.text
-            );
-            if let Some(f) = log.as_mut()
-                && let Err(e) = writeln!(f, "{}", all_txt_line(&d))
-            {
-                eprintln!("log: {e}");
+    skimmer_core::run_all(&cfgs, &stop, |server, ev| {
+        let cfg = &cfgs[server];
+        // Which server, when there is more than one.
+        let tag = if many {
+            format!("[{}] ", cfg.name)
+        } else {
+            String::new()
+        };
+        match ev {
+            Event::Decode(d) => {
+                println!(
+                    "{tag}{} {:<8} {:>10.0} {:>4.0} {:>5.1}  {}",
+                    hhmmss(d.slot_utc_ns),
+                    mode_name(d.mode),
+                    d.freq_hz,
+                    d.snr_db,
+                    d.dt_s,
+                    d.text
+                );
+                if let Some(f) = log.as_mut()
+                    && let Err(e) = writeln!(f, "{}", all_txt_line(&d))
+                {
+                    eprintln!("log: {e}");
+                }
             }
-        }
-        Event::Connecting { server } => eprintln!("connecting to {server}"),
-        Event::Connected {
-            device,
-            control,
-            device_hz,
-        } => eprintln!(
-            "connected: device type {}, {} S/s max, band {:.0} Hz, control {control}, \
+            Event::Connecting { server } => eprintln!("connecting to {server}"),
+            Event::Connected {
+                device,
+                control,
+                device_hz,
+            } => eprintln!(
+                "connected: device type {}, {} S/s max, band {:.0} Hz, control {control}, \
              device centre {device_hz:.0} Hz",
-            device.kind, device.max_rate, device.bandwidth_hz
-        ),
-        Event::Radio(_) | Event::Waterfall(_) => {}
-        Event::Yielded => eprintln!(
-            "got control of the device; leaving it for the operator's client \
+                device.kind, device.max_rate, device.bandwidth_hz
+            ),
+            Event::Radio(_) | Event::Waterfall(_) => {}
+            Event::Yielded => eprintln!(
+                "got control of the device; leaving it for the operator's client \
              (--yield is set; drop it to hold control and tune the radio)"
-        ),
-        Event::NoChannelFits { device_hz } => eprintln!(
-            "no channel fits the band around {device_hz:.0} Hz; waiting for the device to move"
-        ),
-        Event::Streaming {
-            rate,
-            decimation,
-            center_hz,
-            device_hz,
-            active,
-            channelizer,
-        } => {
-            eprintln!(
-                "IQ {rate} S/s (decimation {decimation}) centre {center_hz:.0} Hz, \
+            ),
+            Event::NoChannelFits { device_hz } => eprintln!(
+                "no channel fits the band around {device_hz:.0} Hz; waiting for the device to move"
+            ),
+            Event::Streaming {
+                rate,
+                decimation,
+                center_hz,
+                device_hz,
+                active,
+                channelizer,
+            } => {
+                eprintln!(
+                    "IQ {rate} S/s (decimation {decimation}) centre {center_hz:.0} Hz, \
                  span {:.0}..{:.0}; device centre {device_hz:.0}; {channelizer:?} channelizer",
-                center_hz - rate as f64 / 2.0,
-                center_hz + rate as f64 / 2.0
-            );
-            for (c, on) in cfg.channels.iter().zip(active) {
-                let state = if on {
-                    ""
-                } else {
-                    " (paused: outside the band)"
-                };
-                eprintln!("  channel {}@{:.0}{state}", mode_name(c.mode), c.dial_hz);
+                    center_hz - rate as f64 / 2.0,
+                    center_hz + rate as f64 / 2.0
+                );
+                for (c, on) in cfg.channels.iter().zip(active) {
+                    let state = if on {
+                        ""
+                    } else {
+                        " (paused: outside the band)"
+                    };
+                    eprintln!("  channel {}@{:.0}{state}", mode_name(c.mode), c.dial_hz);
+                }
             }
-        }
-        Event::Moved { device_hz, iq_hz } => {
-            eprintln!("moved: device centre {device_hz:.0} Hz, IQ centre {iq_hz:.0} Hz")
-        }
-        Event::Gap { messages, at_s } => {
-            eprintln!("gap: {messages} message(s) lost at {at_s:.1} s")
-        }
-        Event::Reanchor { by_s } => eprintln!("re-anchor: {by_s:+.3} s"),
-        Event::Clock(text) => eprintln!("{text}"),
-        Event::Step {
-            index,
-            of,
-            ends_utc_s,
-        } => eprintln!(
-            "rotation step {}/{} until {} UTC",
-            index + 1,
-            of,
-            ends_utc_s % 86_400 / 3600 * 100 + ends_utc_s % 3600 / 60
-        ),
-        Event::Status(s) => eprintln!(
-            "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
+            Event::Moved { device_hz, iq_hz } => {
+                eprintln!("moved: device centre {device_hz:.0} Hz, IQ centre {iq_hz:.0} Hz")
+            }
+            Event::Gap { messages, at_s } => {
+                eprintln!("gap: {messages} message(s) lost at {at_s:.1} s")
+            }
+            Event::Reanchor { by_s } => eprintln!("re-anchor: {by_s:+.3} s"),
+            Event::Clock(text) => eprintln!("{text}"),
+            Event::Step {
+                index,
+                of,
+                ends_utc_s,
+            } => eprintln!(
+                "rotation step {}/{} until {} UTC",
+                index + 1,
+                of,
+                ends_utc_s % 86_400 / 3600 * 100 + ends_utc_s % 3600 / 60
+            ),
+            Event::Status(s) => eprintln!(
+                "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
              queue {:.0} kB, decode {:.0} ms, {} slot(s) queued, {} dropped, \
              {} gap(s), {} re-anchor(s)",
-            s.streamed_s,
-            s.delay_ms,
-            s.drift_ms,
-            s.longest_push_ms,
-            s.queued_bytes as f64 / 1e3,
-            s.longest_decode_ms,
-            s.queued_slots,
-            s.dropped_slots,
-            s.gaps,
-            s.reanchors
-        ),
-        Event::Disconnected { error } => eprintln!("{}: {error}", cfg.server),
+                s.streamed_s,
+                s.delay_ms,
+                s.drift_ms,
+                s.longest_push_ms,
+                s.queued_bytes as f64 / 1e3,
+                s.longest_decode_ms,
+                s.queued_slots,
+                s.dropped_slots,
+                s.gaps,
+                s.reanchors
+            ),
+            Event::Disconnected { error } => eprintln!("{tag}{}: {error}", cfg.server),
+        }
     });
     ExitCode::SUCCESS
 }
