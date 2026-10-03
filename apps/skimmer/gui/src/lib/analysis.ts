@@ -109,6 +109,17 @@ export function toQuery(f: QueryForm, me: string, nowMs: number): Query {
   };
 }
 
+/** The amateur band a dial frequency falls in; as skimmer_core::store::band_of. */
+export function bandOfHz(hz: number): string {
+  const B: [string, number, number][] = [
+    ['2200m', 135.7e3, 137.8e3], ['630m', 472e3, 479e3], ['160m', 1.8e6, 2.0e6], ['80m', 3.5e6, 4.0e6],
+    ['60m', 5.25e6, 5.45e6], ['40m', 7.0e6, 7.3e6], ['30m', 10.1e6, 10.15e6], ['20m', 14.0e6, 14.35e6],
+    ['17m', 18.068e6, 18.168e6], ['15m', 21.0e6, 21.45e6], ['12m', 24.89e6, 24.99e6], ['10m', 28.0e6, 29.7e6],
+    ['6m', 50.0e6, 54.0e6], ['2m', 144.0e6, 148.0e6],
+  ];
+  return B.find(([, lo, hi]) => hz >= lo && hz <= hi)?.[0] ?? 'other';
+}
+
 export const BAND_ORDER = ['2200m', '630m', '160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m'];
 
 export function sortBands(bands: Iterable<string>): string[] {

@@ -55,8 +55,6 @@ struct ChannelSetting {
     my_grid: Option<String>,
     /// Which server (an index into `Settings::servers`) listens to it.
     server: usize,
-    /// Its step in that server's rotation (an index into `step_minutes`).
-    step: usize,
 }
 
 impl ChannelSetting {
@@ -137,9 +135,28 @@ struct ServerSetting {
     tune: bool,
     /// Leave control to an SDR# started later, instead of holding it.
     yield_control: bool,
-    /// A rotation: minutes of each step. A channel's `step` says which step it
-    /// is heard in. One entry or none: no rotation.
-    step_minutes: Vec<u32>,
+    /// Rotate through the bands of this server's channels: one step per band,
+    /// each for its minutes, in this order. One SDR holds one band at a time;
+    /// the modes of a band are heard together.
+    rotate: bool,
+    rotation: Vec<RotationStep>,
+}
+
+/// One band of a rotation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct RotationStep {
+    band: String,
+    minutes: u32,
+}
+
+impl Default for RotationStep {
+    fn default() -> Self {
+        RotationStep {
+            band: String::new(),
+            minutes: 10,
+        }
+    }
 }
 
 impl Default for ServerSetting {
@@ -151,7 +168,8 @@ impl Default for ServerSetting {
             network_delay_ms: 0.0,
             tune: false,
             yield_control: false,
-            step_minutes: Vec::new(),
+            rotate: false,
+            rotation: Vec::new(),
         }
     }
 }
@@ -616,24 +634,23 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             "pfb" => Some(Channelizer::Pfb),
             _ => None,
         };
-        // A rotation: the channels of each step, in turn. Steps nobody is in
-        // are left out; one step is no rotation.
-        if srv.step_minutes.len() > 1 {
-            let last = srv.step_minutes.len() - 1;
+        // A rotation: each band in turn, with the channels of that band
+        // (their modes together). Bands nobody is in are left out; one band is
+        // no rotation.
+        if srv.rotate && srv.rotation.len() > 1 {
             cfg.steps = srv
-                .step_minutes
+                .rotation
                 .iter()
-                .enumerate()
-                .filter_map(|(k, &minutes)| {
+                .filter_map(|r| {
                     let chs: Vec<usize> = mine
                         .iter()
                         .enumerate()
-                        .filter(|(_, (_, c))| c.step.min(last) == k)
+                        .filter(|(_, (_, c))| store::band_of(c.dial_hz) == r.band)
                         .map(|(local, _)| local)
                         .collect();
                     (!chs.is_empty()).then_some(skimmer_core::Step {
                         channels: chs,
-                        minutes,
+                        minutes: r.minutes,
                     })
                 })
                 .collect();

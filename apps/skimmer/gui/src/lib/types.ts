@@ -37,8 +37,6 @@ export interface ChannelSetting {
   emeDelay?: boolean;
   /** Which server (an index into `Settings.servers`) listens to it. */
   server?: number;
-  /** Its step in that server's rotation (an index into `stepMinutes`). */
-  step?: number;
 }
 
 /** One SpyServer. */
@@ -54,8 +52,15 @@ export interface ServerSetting {
   tune: boolean;
   /** Leave control to an SDR# started later, instead of holding it. */
   yieldControl: boolean;
-  /** A rotation: minutes of each step; a channel's `step` says which it is heard in. One or none: no rotation. */
-  stepMinutes: number[];
+  /** Rotate through the bands of this server's channels: one step per band, in this order. */
+  rotate: boolean;
+  rotation: RotationStep[];
+}
+
+/** One band of a rotation: the channels of the band (its modes together) are heard for `minutes`. */
+export interface RotationStep {
+  band: string;
+  minutes: number;
 }
 
 export interface Settings {

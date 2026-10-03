@@ -43,7 +43,7 @@
     (a.server ?? 0) === (b.server ?? 0) && a.mode === b.mode && a.dialHz === b.dialHz;
 
   function add(c: ChannelSetting) {
-    c = { ...c, server: sel, step: 0 };
+    c = { ...c, server: sel };
     if (channels.some((x) => same(x, c))) return;
     channels.push(c);
     onchange();
@@ -159,7 +159,8 @@
     if (active.length === 0) return '';
     if (active[i]) return `${slotCounts[i] ?? 0}`;
     // In a rotation a channel out of its step is waiting for it, not out of band.
-    return (servers[channels[i].server ?? 0]?.stepMinutes.length ?? 0) > 1 ? `step ${(channels[i].step ?? 0) + 1}` : 'paused';
+    const sv = servers[channels[i].server ?? 0];
+    return sv?.rotate && sv.rotation.length > 1 ? 'later' : 'paused';
   }
 
   /** Where the current slot of a mode is: fraction elapsed, seconds left, start (UTC hhmmss). */
@@ -289,7 +290,7 @@
   <h2>Channels</h2>
   {#each servers as sv, si (si)}
     {#if servers.length > 1}
-      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.stepMinutes.length > 1 ? ` · rotation ${sv.stepMinutes.join('/')} min` : ''}</h3>
+      <h3 class="srvhead" class:sel={si === sel}>{sv.name}{sv.rotate && sv.rotation.length > 1 ? ` · rotating ${sv.rotation.map((r) => `${r.band} ${r.minutes}`).join(' / ')} min` : ''}</h3>
     {/if}
     <ul class="channels">
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
@@ -306,17 +307,7 @@
               title="Slot {s.start} UTC ({s.periodS} s slots): {s.left} s to the next boundary, then this slot is decoded"
             ></span>
           {/if}
-          <span class="count" title="Decodes in the latest slot; paused: outside the radio's band; step N: heard when that step of the rotation comes">{channelState(i)}</span>
-          {#if sv.stepMinutes.length > 1}
-            <select
-              class="step"
-              title="Heard in this step of the rotation"
-              value={c.step ?? 0}
-              onchange={(e) => { c.step = Number(e.currentTarget.value); onchange(); }}
-            >
-              {#each sv.stepMinutes as m, k (k)}<option value={k}>{k + 1}</option>{/each}
-            </select>
-          {/if}
+          <span class="count" title="Decodes in the latest slot; paused: outside the radio's band; later: heard when its band's turn in the rotation comes">{channelState(i)}</span>
           <button
             class="link gear"
             class:set={optionSummary(c) !== ''}

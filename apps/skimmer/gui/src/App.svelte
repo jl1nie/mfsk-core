@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import * as api from './lib/api';
   import type { DecodeRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
+  import { bandOfHz, sortBands } from './lib/analysis';
   import ChannelPanel from './lib/ChannelPanel.svelte';
   import DecodeTable from './lib/DecodeTable.svelte';
   import AnalysisPanel from './lib/AnalysisPanel.svelte';
@@ -141,6 +142,7 @@
     (async () => {
       settings = await api.loadSettings();
       syncSrv();
+      settings.servers.forEach((_, i) => syncRotation(i));
       modes = await api.modes();
       autoPfb = await api.autoPfbChannels();
       unlisten = await api.onEvent(handle);
@@ -342,6 +344,7 @@
 
   /** A channel was added or removed: a running skimmer plans again from scratch. */
   async function channelsChanged() {
+    settings!.servers.forEach((_, i) => syncRotation(i));
     slotCounts = settings!.channels.map(() => 0);
     slotOf = [];
     active = [];
@@ -368,7 +371,7 @@
     if (!settings || settings.servers.length >= 8) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', grid: '', networkDelayMs: 0, tune: false, yieldControl: false, stepMinutes: [],
+      name: `Server ${n}`, address: '', grid: '', networkDelayMs: 0, tune: false, yieldControl: false, rotate: false, rotation: [],
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -385,26 +388,27 @@
     await channelsChanged();
   }
 
+  /** The rotation lists the bands the server's channels are in, in the order the user left them. */
+  function syncRotation(i: number) {
+    const sv = settings?.servers[i];
+    if (!sv) return;
+    const bands = new Set(
+      (settings?.channels ?? []).filter((c) => (c.server ?? 0) === i).map((c) => bandOfHz(c.dialHz)),
+    );
+    const next = sv.rotation.filter((r) => bands.has(r.band));
+    for (const b of sortBands(bands)) if (!next.some((r) => r.band === b)) next.push({ band: b, minutes: 10 });
+    if (JSON.stringify(next) !== JSON.stringify(sv.rotation)) sv.rotation = next;
+  }
+
   function toggleRotation(i: number, on: boolean) {
-    const sv = settings!.servers[i];
-    sv.stepMinutes = on ? [10, 10] : [];
-    if (!on) for (const c of settings!.channels) if ((c.server ?? 0) === i) c.step = 0;
+    settings!.servers[i].rotate = on;
+    syncRotation(i);
     rotationChanged();
   }
 
-  function addStep(i: number) {
-    settings!.servers[i].stepMinutes.push(10);
-    rotationChanged();
-  }
-
-  function removeStep(i: number, k: number) {
-    settings!.servers[i].stepMinutes.splice(k, 1);
-    // Its channels move to the step before it; later steps close up.
-    for (const c of settings!.channels) {
-      if ((c.server ?? 0) !== i) continue;
-      const st = c.step ?? 0;
-      c.step = st === k ? Math.max(0, k - 1) : st > k ? st - 1 : st;
-    }
+  function moveStep(i: number, k: number, by: number) {
+    const r = settings!.servers[i].rotation;
+    [r[k], r[k + by]] = [r[k + by], r[k]];
     rotationChanged();
   }
 
@@ -470,22 +474,25 @@
                 client the skimmer takes control and tunes the radio; beside a running SDR# it is a guest and never tunes.
               </span>
             </label>
-            <label class="check" title="Rotate through bands: each step lists the channels heard in it, and for how long. The cycle counts from UTC midnight, so servers and restarts agree.">
-              <input type="checkbox" checked={sv.stepMinutes.length > 1} onchange={(e) => toggleRotation(sel, e.currentTarget.checked)} />
-              <span>Rotate through bands</span>
+            <label class="check" title="One SDR holds one band at a time. Rotating gives each band of this server's channels its turn (the modes of a band are heard together). The cycle counts from UTC midnight, so servers and restarts agree.">
+              <input type="checkbox" checked={sv.rotate} onchange={(e) => toggleRotation(sel, e.currentTarget.checked)} />
+              <span>Rotate through the bands of its channels</span>
             </label>
-            {#if sv.stepMinutes.length > 1}
-              {#each sv.stepMinutes as m, k (k)}
+            {#if sv.rotate}
+              {#if sv.rotation.length < 2}
+                <p class="hint">Needs channels in two or more bands.</p>
+              {/if}
+              {#each sv.rotation as r, k (r.band)}
                 <div class="field">
-                  <span>Step {k + 1}</span>
-                  <input type="number" min="5" step="5" value={m}
-                    onchange={(e) => { sv.stepMinutes[k] = Math.max(5, Number(e.currentTarget.value) || 5); rotationChanged(); }} />
+                  <span>{r.band}</span>
+                  <input type="number" min="5" step="5" value={r.minutes}
+                    onchange={(e) => { r.minutes = Math.max(5, Number(e.currentTarget.value) || 5); rotationChanged(); }} />
                   <span class="hint">min</span>
-                  {#if sv.stepMinutes.length > 2}<button class="link" aria-label="Remove step" onclick={() => removeStep(sel, k)}>✕</button>{/if}
+                  <button class="link" aria-label="Earlier" disabled={k === 0} onclick={() => moveStep(sel, k, -1)}>▲</button>
+                  <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
                 </div>
               {/each}
-              <button onclick={() => addStep(sel)}>+ step</button>
-              <p class="hint">At least 5 minutes each (a retune costs a slot or two). Choose each channel's step in the channel list.</p>
+              <p class="hint">At least 5 minutes each (a retune costs a slot or two). Add or remove channels to change the bands.</p>
             {/if}
             {#if settings.servers.length > 1}
               <button class="link danger" onclick={() => removeServer(sel)}>Remove this server and its channels</button>
