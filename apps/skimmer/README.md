@@ -130,6 +130,12 @@ Observed with SDR# and an Airspy HF+ (2026-10-03):
   - `--yield` (GUI: *Give control back*) is the older behaviour: given control,
     leave and reconnect 10 s later. It woke the radio and dropped it on every
     retry, and is no longer needed to let SDR# in, so it is off by default.
+- **SDR# keeps its connection after *Stop*.** Once it has played, stopping the
+  radio leaves the SpyServer connection open until SDR# is closed or its
+  source is switched. It holds one of the server's slots, and control, all that
+  time. To let the skimmer write the gain, close SDR# (not just Stop); to adjust
+  the gain in SDR#, make sure the skimmer is a guest (its slider then shows
+  SDR#'s value).
 - While a second client is connected, the controlling client cannot move the
   device outside its band (about 780 kHz on the HF+). SDR# can still tune
   anywhere inside that band, for example all of 40 m. To change band while the
