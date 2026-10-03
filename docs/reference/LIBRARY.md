@@ -183,7 +183,8 @@ tables.
 | FT8, FT4, FST4 | `FrameState`: the callsign hash table; for FT8 with the `a7` extra, the decodes of the last two periods | `packjt77`; `ft8_a7.f90` |
 | Q65 | `Q65State`: the hash table, and the running average of the symbol spectra (`s1a`, `navg`) with the last period's index | `packjt77`; `q65.f90` SAVE |
 | WSPR | `WsprState`: the callsign table that lets OSD confirm a station Fano already heard (not capped) | wsprd `hashtable.txt` |
-| JT9, JT65 | `()` — their 72-bit messages carry no hashed calls | — |
+| JT9 | `()` — its 72-bit messages carry no hashed calls | — |
+| JT65 | `Averager`: the periods `avg65` sums (up to 64, each 63 × 64 symbol powers; 16 KB apiece, allocated as they come) | `jt65_decode.f90` `avg65` |
 
 Hashes are resolved and learned **after** the candidate loop, single
 threaded, in decode order (`unpack77_learn`): a message does not resolve its
@@ -259,7 +260,7 @@ does**; a field does not make an option exist for a mode.
 | `tol_hz` | `ntol` | JT9 (default 50 Hz), Q65 (F Tol, default 10 Hz) |
 | `tx_freq_hz` | `nftx` | FT8: both-callsign hypotheses within 50 Hz of it |
 | `depth` | `ndepth & 7` | every mode, table below |
-| `averaging` | `ndepth & 16` | Q65 (needs `SlotInput::period`). JT65 carries the field but does not yet read it |
+| `averaging` | `ndepth & 16` | Q65 and JT65 (both need `SlotInput::period`; JT65's is `jt65::averaging`, `avg65`) |
 | `deep_search` | `ndepth & 32` | JT65's upstream flag; not yet read |
 | `station` | `mycall`, `mygrid` | FT8, FT4, FST4 (AP), Q65 (AP list) |
 | `qso` | `hiscall`, `hisgrid`, `nQSOProgress` | the same |
@@ -522,6 +523,21 @@ WSJT-X's `ftrsdap` stochastic Chase decoder, magic numbers included. On the
 AWGN sweep it moves the 50% crossing from −22.5 to −23.5 dB, at the cost of
 up to `ChaseParams::max_trials` RS attempts per candidate that does not
 decode at once.
+
+**JT65 averaging** (`params.averaging`, `ndepth & 16`; `jt65::averaging`, a port
+of `avg65` in `jt65_decode.f90`). A candidate the single period fails on is
+kept: its period, DT, frequency and 63 × 64 symbol powers, up to 64 periods per
+decoder. The saved periods of the same parity, with a DT within 0.2 s and a
+frequency within `tol_hz` (default 50 Hz) of the new one, are summed, and with
+two or more the sum is decoded as one period would be (the Chase search; the
+probabilities are `s1/psum`, so the sum needs no rescaling). It needs
+`SlotInput::period` on every call (without it nothing is averaged), and
+`clear()` forgets the saved periods. On noise with σ = 2.0 no single period
+decodes and the sixth summed one does
+(`tests/decoder_depth.rs::jt65_averaging_decodes_what_no_single_period_does`).
+Not ported: the JT65B/C smoothing loop (`ismo`) and `nflip`. `deep_search`
+(`ndepth & 32`, the call-sign database correlation `hint65`) is carried and not
+read.
 
 **Decoding at a known alignment.** `wspr::SniperRequest`, `jt9::SniperRequest`,
 `jt65::SniperRequest` and `q65::SniperRequest` stay public: a decode at a

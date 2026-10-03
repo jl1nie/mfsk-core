@@ -30,6 +30,12 @@
   Reported frequency is the centre of the four tones, and the power prints two wide (` 3`, not `3`). The AWGN sweep:
   50 % crossing -31.40 dB (was -31.33), 1 phantom in 260 trials as before; 20 ms/file at low SNR (was 52). Detail in
   `docs/notes/WSPR_UPSTREAM.md`.
+- **JT65 message averaging (`ndepth & 16`), as `avg65`.** A candidate the single period fails on is kept (period, DT,
+  frequency, 63 × 64 symbol powers; up to 64 periods per decoder) and summed with the saved periods of the same parity
+  within 0.2 s of DT and `tol_hz` of frequency; two or more are decoded as one (the Chase search). Needs
+  `SlotInput::period`. On noise where no single period decodes, the sixth summed one does. A JT65 frame also came back
+  once per candidate around it (8 rows): the repeat test compared an unpadded start with a padded one since #283.
+  Not ported: the JT65B/C smoothing loop; `deep_search` (`hint65`) is carried and not read.
 - **JT9 and JT65 drop the all-zero codeword** (`000AAA 000AAA RA90`, `jt9fano.f90:88`, `decode65b.f90:27`): a noise-free JT9
   period returned the true message plus three of these.
 - **`IqReceiver` is a pull model on a clock that follows the host.** `push_*` yields owned `CompletedSlot`s; the caller

@@ -180,7 +180,8 @@ pub struct Decoder<P: Decodable> { params, extras, state }
 | FT8・FT4・FST4 | `FrameState`: コールサインのハッシュ表。`a7` extra を有効にした FT8 は直近 2 周期分の復号結果も | `packjt77`、`ft8_a7.f90` |
 | Q65 | `Q65State`: ハッシュ表、シンボルスペクトルの移動平均（`s1a`、`navg`）と直近の周期番号 | `packjt77`、`q65.f90` の SAVE |
 | WSPR | `WsprState`: OSD が、Fano が既に聞いた局を確認できるようにするコールサイン表（上限なし） | wsprd の `hashtable.txt` |
-| JT9・JT65 | `()` — 72 ビットメッセージはハッシュ呼出符号を運ばない | — |
+| JT9 | `()` — 72 ビットメッセージはハッシュ呼出符号を運ばない | — |
+| JT65 | `Averager`: `avg65` が合算する周期（最大 64、各 63 × 64 のシンボル電力。1 つ 16 KB で、来た分だけ確保） | `jt65_decode.f90` の `avg65` |
 
 ハッシュは候補ループの**後**に、単一スレッドで、デコード順に解決・学習される
 （`unpack77_learn`）: メッセージは、自分が導入する呼出符号で自身のハッシュを解決
@@ -253,7 +254,7 @@ assert!(wspr.set_ap_hint(None).is_err());
 | `tol_hz` | `ntol` | JT9（既定 50 Hz）、Q65（F Tol、既定 10 Hz） |
 | `tx_freq_hz` | `nftx` | FT8: この周波数の 50 Hz 以内で両コールサインの仮説 |
 | `depth` | `ndepth & 7` | 全モード。下の表 |
-| `averaging` | `ndepth & 16` | Q65（`SlotInput::period` が要る）。JT65 はフィールドを持つがまだ読まない |
+| `averaging` | `ndepth & 16` | Q65 と JT65（どちらも `SlotInput::period` が要る。JT65 のは `jt65::averaging`、`avg65`） |
 | `deep_search` | `ndepth & 32` | JT65 の本家フラグ。まだ読まない |
 | `station` | `mycall`、`mygrid` | FT8・FT4・FST4（AP）、Q65（AP リスト） |
 | `qso` | `hiscall`、`hisgrid`、`nQSOProgress` | 同上 |
@@ -495,6 +496,18 @@ for row in result.rows {
 JT65 の Chase 探索（`jt65::chase`、issue #169）は WSJT-X の stochastic Chase デコーダ `ftrsdap`
 の忠実な移植（マジックナンバーも含む）。AWGN スイープでは 50% 交差を −22.5 dB から −23.5 dB に
 下げ、その代わり即座に復号できない候補ごとに最大 `ChaseParams::max_trials` 回の RS 試行を払う。
+
+**JT65 の averaging**（`params.averaging`、`ndepth & 16`。`jt65::averaging`、
+`jt65_decode.f90` の `avg65` の移植）。単一周期で復号できなかった候補は保存される: 周期、DT、
+周波数、63 × 64 のシンボル電力を、デコーダごとに最大 64 周期。同じ偶奇の保存済み周期のうち、
+DT が 0.2 秒以内、周波数が `tol_hz`（既定 50 Hz）以内のものを合算し、2 周期以上あれば、
+その和を 1 周期の場合と同じに復号する（Chase 探索。確率は `s1/psum` なので、和を
+再スケールする必要はない）。毎回の呼び出しで `SlotInput::period` が要る（無ければ平均しない）。
+`clear()` で保存した周期を忘れる。σ = 2.0 の雑音では、単一周期はどれも復号できず、
+6 周期目の和が復号する
+（`tests/decoder_depth.rs::jt65_averaging_decodes_what_no_single_period_does`）。
+未移植: JT65B/C の平滑化ループ（`ismo`）と `nflip`。`deep_search`（`ndepth & 32`、
+呼出符号データベースとの相関 `hint65`）は保持するが読まない。
 
 **既知の位置でのデコード。** `wspr::SniperRequest`、`jt9::SniperRequest`、
 `jt65::SniperRequest`、`q65::SniperRequest` は公開のまま残る: 呼び出し側が既に持っている

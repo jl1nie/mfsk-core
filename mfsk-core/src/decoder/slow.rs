@@ -6,7 +6,7 @@
 //! What each keeps across periods is what its upstream decoder keeps:
 //! WSPR's callsign table (`wsprd`'s `hashtable`, which is what lets OSD
 //! confirm a station Fano has already heard), and nothing for JT9 and
-//! JT65 outside averaging, which JT65 gains with its depth port. Their
+//! JT65 outside averaging (`jt65::averaging`, `avg65`). Their
 //! 72-bit messages carry no hashed calls.
 //!
 //! [`Depth`] reaches each engine as far as the engine exposes it today; the
