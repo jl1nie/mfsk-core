@@ -157,13 +157,11 @@ pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
 // those to the trait impls in both directions.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Drives the `DecodeRequest` builder, i.e. `mfsk_decode_i16` and
-/// friends apply. Modes without this bit decode through their own
-/// entry point (Q65 takes a nominal start sample and a tolerance;
-/// WSPR/JT9/JT65 are reached through their own entry points, not
-/// through this session). They are not lesser, they
-/// are shaped differently — this is the bit that says which is
-/// which.
+/// The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
+/// QSO-context AP of the parameter block, a7 and the sniper window apply.
+/// Modes without this bit (WSPR, JT9, JT65, Q65) decode through the same
+/// `mfsk_decoder_*` handle, shaped differently — their `MfskExtras` fields
+/// differ and an option they lack is `MFSK_UNSUPPORTED`.
 pub const MFSK_CAP_DECODE_HANDLE: u64 = 1 << 0;
 /// Narrow-band single-target search. **FT8 only, by design**: it is
 /// the receive-side half of narrowing a transceiver's *analogue*
@@ -2978,7 +2976,7 @@ pub type MfskThreadHook = Option<unsafe extern "C" fn(index: u32, user_data: *mu
 /// Size-versioned like every other growable struct here: set
 /// `size = sizeof(MfskRuntimeConfig)`, or zero it and the library fills
 /// `size` in — a zeroed struct means "rayon's defaults, no hooks",
-/// which is the pre-v2 behaviour.
+/// which is rayon's own default.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct MfskRuntimeConfig {
@@ -3011,7 +3009,7 @@ unsafe impl Sync for HookUser {}
 static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
 
 /// Run the decode on the configured pool, or directly if none was
-/// configured — which keeps the pre-v2 behaviour exactly: rayon's
+/// configured — rayon's
 /// global pool, the right default for a desktop host and the wrong one
 /// for a phone.
 ///

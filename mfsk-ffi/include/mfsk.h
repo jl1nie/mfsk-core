@@ -103,13 +103,11 @@
 #define MFSK_DECODE_FLAG_COPIED_LAST_TX (1 << 1)
 
 /**
- * Drives the `DecodeRequest` builder, i.e. `mfsk_decode_i16` and
- * friends apply. Modes without this bit decode through their own
- * entry point (Q65 takes a nominal start sample and a tolerance;
- * WSPR/JT9/JT65 are reached through their own entry points, not
- * through this session). They are not lesser, they
- * are shaped differently — this is the bit that says which is
- * which.
+ * The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
+ * QSO-context AP of the parameter block, a7 and the sniper window apply.
+ * Modes without this bit (WSPR, JT9, JT65, Q65) decode through the same
+ * `mfsk_decoder_*` handle, shaped differently — their `MfskExtras` fields
+ * differ and an option they lack is `MFSK_UNSUPPORTED`.
  */
 #define MFSK_CAP_DECODE_HANDLE (1 << 0)
 
@@ -376,12 +374,11 @@
 #define MFSK_PERIOD_NONE INT64_MIN
 
 /**
- * Outcome of a fallible `mfsk_*` / `mfsk_ft8_*` call.
+ * Outcome of a fallible `mfsk_*` call.
  *
- * Zero is success; negative values are errors. Both crates additionally
- * expose a `_last_error()` function (`mfsk_last_error` /
- * `mfsk_ft8_last_error`) returning a human-readable string for the
- * specific failure reason — the numeric code stays a small, stable
+ * Zero is success; negative values are errors. `mfsk_last_error` (and
+ * `mfsk_decoder_last_error` per decoder handle) returns a human-readable
+ * string for the specific failure reason — the numeric code stays a small, stable
  * set; the string carries the detail (e.g. which buffer was too
  * short, which enum value was out of range).
  */
@@ -464,8 +461,7 @@ typedef enum MfskMode {
      */
     MFSK_MODE_FST4S30 = 3,
     /**
-     * FST4-60A — 60 s period. The only FST4 sub-mode the pre-v2 ABI
-     * could reach.
+     * FST4-60A — 60 s period.
      */
     MFSK_MODE_FST4S60 = 4,
     /**
@@ -1020,7 +1016,7 @@ typedef void (*MfskThreadHook)(uint32_t index,
  * Size-versioned like every other growable struct here: set
  * `size = sizeof(MfskRuntimeConfig)`, or zero it and the library fills
  * `size` in — a zeroed struct means "rayon's defaults, no hooks",
- * which is the pre-v2 behaviour.
+ * which is rayon's own default.
  */
 typedef struct MfskRuntimeConfig {
     /**

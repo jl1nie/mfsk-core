@@ -623,6 +623,9 @@ jobs:
           - "alloc jt9 fft-extern"   # #390: no longer pinned to rustfft/std
           - "alloc jt65 fft-extern"  # same
           - "alloc q65 fft-extern"   # same
+          - "alloc ft8 fft-extern fixed-point hash-table-small" # the shape the boards build (pre-push had it, CI did not)
+          - "alloc ft8 ft4 fst4 jt9 jt65 q65 fft-extern"        # 0.13: AnyDecoder / Decoder<P> under no_std, every mode that builds there
+          - "std fixed-point internal-testing profile-coarse hash-table-small ft8 ft4 fft-extern" # union of the board features
           - "wspr wspr-pass2-topn" # embedded WSPR pass-2 candidate-ladder truncation + budget
           - "full"
     steps:

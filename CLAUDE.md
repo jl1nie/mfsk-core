@@ -77,7 +77,7 @@ so the workspace never sees either of them:
   (`import MfskCore`). Its module map includes `mfsk-ffi/include/mfsk.h`
   **in place**, so it follows the header rather than carrying a copy,
   and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
-  XCTest suite (86 tests as counted by `grep -rc 'func test' bindings/swift/Tests`, ~10 s when it was 68 — XCTest needs Xcode, not just the
+  XCTest suite (98 tests as counted by `grep -rc 'func test' bindings/swift/Tests` — ported to the 0.13 decoder handle and not yet built; ~10 s when it was 68 — XCTest needs Xcode, not just the
   Command Line Tools, and the script points `DEVELOPER_DIR` at it when
   it has to). The `swift` CI job runs that same script on
   `macos-latest`, and is also where `aarch64-apple-ios` is built: both
@@ -137,7 +137,7 @@ shared code. `CONTRIBUTING.md` "Adding a new protocol" and
 | `fec/` | `ldpc/` (174,91), `ldpc240_101/`, `ldpc_128_90/` (MSK144), `conv/` (r=½ K=32 Fano), `rs/` (63,12 over GF(2⁶)), `qra/` + `qra15_65_64/` (Q65) |
 | `msg/` | message codecs — `wsjt77.rs`, `jt72.rs`, `wspr.rs`, `q65.rs`, `packet_bytes.rs`, `callsign28.rs`, `hash_table.rs` — plus `decode_request.rs` and `decoded.rs`, which are the public entry point and the public output row |
 | `ft8/ ft4/ fst4/ wspr/ jt9/ jt65/ q65/ msk144/ jtty/ uvpacket/` | per-protocol ZSTs (not for `msk144` / `jtty`, which have none), decoders, synthesisers; each feature-gated by its own name |
-| `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list. Since 0.12.0 each entry also carries `profile: DecodeProfile` (`caps`, `defaults: DecodeDefaults` — the search a `DecodeRequest` starts from, `sync_scale`), and `registry::caps` is the capability-bit table `mfsk-ffi` republishes (`tests/registry_caps.rs` ties it to the trait impls) |
+| `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list. Since 0.12.0 each entry also carries `profile: DecodeProfile` (`caps`, `defaults: DecodeDefaults` — the 0.12 request defaults; `decoder::default_params` is the 0.13 source of the starting block, `sync_scale`), and `registry::caps` is the capability-bit table `mfsk-ffi` republishes (`tests/registry_caps.rs` ties it to the trait impls) |
 
 **There is no `src/core/`. The shared module is `src/engine/`.**
 The source has zero `crate::core::` paths. The stale `core::` spellings
@@ -151,24 +151,23 @@ module.
 To check: `grep -rn 'core::pipeline\|core::fft\|core::scalar\|crate::core::'`
 — anything outside CHANGELOG/historical is a leftover.
 
-**`DecodeRequest` / `SniperRequest` (`msg::decode_request`) are the public
-decode API for FT8 / FT4 / FST4.** Builder-shaped: `.freq_hint()`, `.osd()`,
-`.strictness()`, `.eq_mode()`, `.known()`, `.fft_cache()`, `.on_result()`, then
-`.decode()`; trait-gated extras include FT8's `.previous_cycle()` (a7/a8),
-`.tx_freq()` and `.contest()`, and FST4's `.noise_blanker()`. Since 0.12.0
-WSPR, JT9, JT65 and Q65 have their own `DecodeRequest` / `SniperRequest`
-(`wspr::`, `jt9::`, `jt65::`, `q65::decode_request`; Q65 adds
-`MultiPeriodRequest`) with the same builder shape — they do not go through
-`msg::decode_request`.
-The raw engine functions underneath (`decode_frame`,
-`process_candidate_basic`, the `GenericPipelineProtocol` trait) are
-`pub(crate)` on purpose since #191 so downstream can't bypass the request
-types — `internal-testing` is what reopens them for integration tests, and
-it is deliberately not in `full`.
+**`Decoder<P>` (`mfsk-core/src/decoder/`) is the public decode API since 0.13.0.** One persistent decoder per mode,
+as `jt9` runs one: it owns what upstream keeps between periods (callsign hash table, FT8 a7 rows, Q65 averages, WSPR's
+call table) and takes `DecodeParams` (= `jt9com`'s block: band, `nfqso`, `ntol`, `nftx`, `Depth` = `ndepth`, station,
+QSO context, AP mode, contest, EME delay) plus a typed per-mode `Extras` for what the library adds (`strategy`,
+`ApHint`, `eq`, `filter`, sniper, noise blanker, Q65 pileup/drift…). `decode(&SlotInput)` takes a whole period
+(`Audio::I16`/`F32`, `period`, `Budget`) and streams rows through `on_row`. `AnyDecoder` picks the mode at run time
+(`registry::Mode`); an option the mode lacks is `Unsupported`. `Depth` decides every search setting, mapped per mode from
+v3.2.0-rc1 and cited in the code; defaults follow the WSJT-X GUI. The 0.12 per-family `DecodeRequest`/`SniperRequest`/
+`MultiPeriodRequest` are crate-private (`internal-testing` reopens them for tests; `SniperRequest` stays public for the
+WSPR boards). The raw engine functions (`decode_frame`, `process_candidate_basic`, `GenericPipelineProtocol`) are
+`pub(crate)` on purpose. Time is `slotgrid` (`SlotGrid`, `SampleClock`, `SlotCutter`), shared by `IqReceiver` (pull
+model: owned `CompletedSlot`s, one decoder per channel kept by the caller) and the C stream. The design, its
+embedded checks (E1–E11) and the open questions are in the plan `moonlit-mapping-hopcroft.md` and the memory note
+`project_v0130_redesign.md`.
 
-Strategy extensions are trait-gated per protocol:
-`.sic_rounds(n)` needs `SupportsSicRounds`, `.sic_early()` needs
-`SupportsSicEarly` — implemented for FT8/FT4 only, mirroring an upstream
+Strategy extensions exist per protocol in its `Extras`:
+`Ft8Strategy::SicRounds(n)` / `SicEarly` (FT4 has no `SicEarly`), FT8/FT4 only, mirroring an upstream
 absence. **The phantom-prone code lives in these non-default strategies**
 (both false-decode bugs this suite has shipped were in subtraction paths:
 #243 in `__staged_sic`, #253 in `.sic_early()`), so a new strategy ships

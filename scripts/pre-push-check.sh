@@ -63,6 +63,12 @@ FEATURE_MATRIX=(
   # it (host stays on upstream's three tables), which is exactly the
   # situation this matrix exists for.
   "alloc ft8 fft-extern fixed-point hash-table-small"
+  # 0.13: `AnyDecoder` and `Decoder<P>` under no_std for every mode that
+  # builds there (WSPR is host-only), and the union of what the boards
+  # enable (E8 of the 0.13 plan; `internal-testing` is what they call the
+  # stage functions through).
+  "alloc ft8 ft4 fst4 jt9 jt65 q65 fft-extern"
+  "std fixed-point internal-testing profile-coarse hash-table-small ft8 ft4 fft-extern"
   "full"
 )
 for features in "${FEATURE_MATRIX[@]}"; do

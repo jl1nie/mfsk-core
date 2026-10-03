@@ -1,6 +1,42 @@
 # Changelog
 
-## Unreleased — `IqReceiver` no longer drops every other slot on a real timestamp; a SpyServer skimmer sample app
+## Unreleased (0.13.0) — one persistent `Decoder<P>` per mode on the WSJT-X parameter block (breaking), `Depth` as `ndepth`, QSO-context AP for FT8/FT4/FST4, a pull `IqReceiver` with a clock that follows the host, one C decoder handle for every mode (breaking), per-channel decoder threads in the skimmer
+
+### 0.13.0 — decode API redesigned on the WSJT-X decoder model (breaking)
+
+- **`Decoder<P>`: one persistent decoder per mode, as `jt9` runs.** It owns what upstream keeps between periods (the
+  callsign hash table, FT8 a7 rows, Q65 period averages, WSPR's call table) and is driven per period by a
+  `DecodeParams` that is `jt9com`'s block (`nfa/nfb`, `nfqso`, `nftx`, `ntol`, `ndepth`, `mycall/mygrid`,
+  `hiscall/hisgrid`, `nQSOProgress`, `ncontest`, AP, `emedelay`). Library-only options are a typed `Extras` per mode, so an
+  option a mode lacks does not compile (`AnyDecoder` returns `Unsupported`). Rows stream through `on_row` as found.
+  Removed: every per-family `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` as public API (the wide-band ones are
+  crate-private; `SniperRequest` stays for the WSPR boards), `known()`, `previous_cycle()`, `hash_table(Arc)`,
+  WSPR `table()`, `wsjtx_depth`, `iq::IqMode` (now `registry::Mode`). Migration table: `docs/reference/LIBRARY.md`.
+- **`Depth` decides the search, as `ndepth` does (breaking behaviour).** Default is Deep and the defaults follow the
+  WSJT-X GUI (FT8/JT65 AP off, band 200–4000 Hz, FST4 600–1400 Hz). Ported per mode from v3.2.0-rc1: FT8 syncmin/passes/OSD and
+  nfqso-first candidate order, FT4 passes and OSD, FST4 OSD without the i0±1 jitter at Fast, Q65 maxiters 40/60/100 and
+  `q65_loops` windows, JT65 2/2/4 passes with `subtract65` and nvec 100/1000/1000, JT9 Fano limit and the nqd narrow
+  pass, WSPR `-qB` / `-C 500 -o 4` / `-d` with `unpk_`'s Type-3 sanity checks. Tests: `tests/decoder_depth.rs`.
+- **QSO-context AP for FT8, FT4 and FST4** from upstream's `naptypes` tables, derived from `station` + `qso` + `ap`
+  (`ApHint` stays as the library's "hunt one DX"). A weak-reply sweep on FT8: 0 of 30 decoded with AP off, 20 of 30 on.
+- **JT9 and JT65 drop the all-zero codeword** (`000AAA 000AAA RA90`, `jt9fano.f90:88`, `decode65b.f90:27`): a noise-free JT9
+  period returned the true message plus three of these.
+- **`IqReceiver` is a pull model on a clock that follows the host.** `push_*` yields owned `CompletedSlot`s; the caller
+  owns one decoder per channel, so per-channel options and hash tables follow. `SlotGrid`/`SampleClock`/`SlotCutter`
+  (integer arithmetic, no atomics) slew a drifting clock at up to 400 ppm and step past 1 s, starting each slot on its own
+  boundary with 0.2 s of overlap: a 24 h simulation at +13 ppm loses no slot (fixed-length slots slid off the UTC grid and lost one
+  at about 21 h). `retune()` reports which channels paused or resumed.
+- **C ABI 3: one `mfsk_decoder_*` handle for every mode (breaking).** `MfskParams`/`MfskExtras` are size-versioned and
+  initialised by `mfsk_params_init`/`mfsk_extras_init`; rows stream through a callback; an option a mode lacks is
+  `MFSK_UNSUPPORTED`; `MfskStream` cuts slots on the UTC grid. The session handle and every `mfsk_*_decode*` function are
+  gone. cpp_smoke and Kotlin were ported and run; the Swift package was ported but not built (needs a Mac). Old→new table:
+  `docs/reference/BINDINGS.md`.
+- **Embedded:** the boards call the stage functions, which did not change; `cargo +esp check` passes on all four boards.
+  New CI/pre-push rows build `Decoder`/`AnyDecoder` under `alloc` + `fft-extern` and the union of the board features.
+  `Decoder::new` allocates nothing.
+- **Skimmer sample app:** one decoder thread per channel behind a bounded queue (a slow decode no longer stalls the socket
+  reader or the clock), per-channel band / DX call / depth (CLI `:band=LO-HI:dx=CALL:depth=..`, GUI ⚙ dialog, applied to a
+  running skimmer at the channel's next slot), and a `STATUS.log` of push, decode, queue and drop figures for long runs.
 
 - **0.12.0 is yanked (2026-10-03).** Its `iq::IqReceiver` lost every other slot with a real-clock time anchor and
   never resolved hashed (`<...>`) callsigns, so it was unusable for live reception; the fix is an API redesign, which

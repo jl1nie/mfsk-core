@@ -40,12 +40,11 @@ use core::marker::PhantomData;
 // Status codes
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Outcome of a fallible `mfsk_*` / `mfsk_ft8_*` call.
+/// Outcome of a fallible `mfsk_*` call.
 ///
-/// Zero is success; negative values are errors. Both crates additionally
-/// expose a `_last_error()` function (`mfsk_last_error` /
-/// `mfsk_ft8_last_error`) returning a human-readable string for the
-/// specific failure reason — the numeric code stays a small, stable
+/// Zero is success; negative values are errors. `mfsk_last_error` (and
+/// `mfsk_decoder_last_error` per decoder handle) returns a human-readable
+/// string for the specific failure reason — the numeric code stays a small, stable
 /// set; the string carries the detail (e.g. which buffer was too
 /// short, which enum value was out of range).
 #[repr(C)]
@@ -110,8 +109,7 @@ pub enum MfskMode {
     Fst4s15 = 2,
     /// FST4-30 — 30 s period.
     Fst4s30 = 3,
-    /// FST4-60A — 60 s period. The only FST4 sub-mode the pre-v2 ABI
-    /// could reach.
+    /// FST4-60A — 60 s period.
     Fst4s60 = 4,
     /// FST4-120 — 120 s period.
     Fst4s120 = 5,
