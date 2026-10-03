@@ -634,15 +634,33 @@ fn apply(
 }
 
 /// Streaming off; block until a CLIENT_SYNC shows a different device centre.
+///
+/// With streaming off nothing arrives unprompted, so a PING every
+/// [`PING_EVERY`] keeps `Conn::read`'s stall check from taking an idle
+/// connection for a dead one, and finds a dead one.
 fn wait_for_move(c: &mut Conn, stop: &AtomicBool, was: Sync) -> std::io::Result<Sync> {
     c.set(SET_STREAMING_ENABLED, 0)?;
     loop {
-        let m = c.read(stop)?;
-        if m.kind == MSG_CLIENT_SYNC {
-            let s = Sync::parse(&m.body);
-            if s.device_hz != was.device_hz {
-                return Ok(s);
+        c.command(CMD_PING, &[])?;
+        loop {
+            let m = c.read(stop)?;
+            match m.kind {
+                MSG_CLIENT_SYNC => {
+                    let s = Sync::parse(&m.body);
+                    if s.device_hz != was.device_hz {
+                        return Ok(s);
+                    }
+                }
+                MSG_PONG => break,
+                _ => {}
             }
+        }
+        let until = Instant::now() + PING_EVERY;
+        while Instant::now() < until {
+            if stop.load(Ordering::Relaxed) {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 }

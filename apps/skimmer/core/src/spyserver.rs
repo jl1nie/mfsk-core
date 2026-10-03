@@ -9,7 +9,7 @@ use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mfsk_core::iq::IqSampleFormat;
 
@@ -85,7 +85,26 @@ pub struct Conn {
     msgs: mpsc::Receiver<std::io::Result<Message>>,
     /// Body bytes read but not yet taken by the decoder.
     queued: Arc<AtomicUsize>,
+    /// When [`Self::read`] last got a message, for the stall check.
+    last_rx: Instant,
+    stall: Duration,
 }
+
+/// Silence after which [`Conn::read`] takes the connection for dead.
+///
+/// A peer that goes away without a FIN or RST leaves the socket
+/// ESTABLISHED, and this client only writes when it changes a setting, so
+/// nothing ever fails: after a Mac slept for 32 s the skimmer sat
+/// "connected" with its byte count frozen at 2 180 884 016, never
+/// reconnecting. While streaming, IQ arrives many times a second; when
+/// streaming is off, [`PING_EVERY`] keeps PONGs coming. 15 s is well clear
+/// of both and still reconnects within half a minute. `Instant` does not
+/// advance while macOS sleeps, so the time asleep is not counted.
+pub const STALL: Duration = Duration::from_secs(15);
+
+/// How often a connection with streaming off is pinged, so that
+/// [`STALL`] holds there too.
+pub const PING_EVERY: Duration = Duration::from_secs(5);
 
 /// `Conn::read` gave up because the caller asked to stop.
 pub fn is_stop(e: &std::io::Error) -> bool {
@@ -116,7 +135,14 @@ impl Conn {
             w: sock,
             msgs,
             queued,
+            last_rx: Instant::now(),
+            stall: STALL,
         })
+    }
+
+    /// Replace [`STALL`] for this connection.
+    pub fn set_stall(&mut self, stall: Duration) {
+        self.stall = stall;
     }
 
     pub fn command(&mut self, cmd: u32, body: &[u8]) -> std::io::Result<()> {
@@ -134,7 +160,8 @@ impl Conn {
         self.command(CMD_SET_SETTING, &b)
     }
 
-    /// The next message; `Interrupted` (see [`is_stop`]) once `stop` is set.
+    /// The next message; `Interrupted` (see [`is_stop`]) once `stop` is set,
+    /// `TimedOut` once nothing has arrived for the stall time ([`STALL`]).
     pub fn read(&mut self, stop: &AtomicBool) -> std::io::Result<Message> {
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -144,9 +171,17 @@ impl Conn {
                 Ok(m) => {
                     let m = m?;
                     self.queued.fetch_sub(m.body.len(), Ordering::Relaxed);
+                    self.last_rx = Instant::now();
                     return Ok(m);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.last_rx.elapsed() >= self.stall {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("nothing from the server for {} s", self.stall.as_secs_f32()),
+                        ));
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(std::io::Error::other("reader thread ended"));
                 }
@@ -296,5 +331,51 @@ mod tests {
         assert_eq!(d.rates.first(), Some(&(6, 14_250)));
         assert_eq!(d.rates.last(), Some(&(0, 912_000)));
         assert_eq!(d.bandwidth_hz, 780_000.0);
+    }
+
+    /// A server that accepts and then goes quiet without closing, as one did
+    /// across a Mac's sleep: `read` must give up rather than wait forever.
+    #[test]
+    fn a_silent_peer_times_out() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || l.accept().unwrap().0);
+        let mut c = Conn::connect(&addr).unwrap();
+        let _held = server.join().unwrap();
+        c.set_stall(Duration::from_millis(400));
+        let t = Instant::now();
+        let Err(e) = c.read(&AtomicBool::new(false)) else {
+            panic!("a silent peer sent a message");
+        };
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() >= Duration::from_millis(400));
+        assert!(!is_stop(&e), "a stall must reconnect, not stop");
+    }
+
+    /// Messages spaced inside the stall time keep the connection alive,
+    /// however long it runs in total: the check is on the gap, not the age.
+    #[test]
+    fn messages_within_the_stall_time_keep_it_alive() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let mut s = l.accept().unwrap().0;
+            for _ in 0..4 {
+                std::thread::sleep(Duration::from_millis(150));
+                let mut m = Vec::new();
+                for v in [PROTOCOL_VERSION, MSG_PONG, 0, 0, 0] {
+                    m.extend_from_slice(&v.to_le_bytes());
+                }
+                s.write_all(&m).unwrap();
+            }
+            s
+        });
+        let mut c = Conn::connect(&addr).unwrap();
+        c.set_stall(Duration::from_millis(400));
+        let stop = AtomicBool::new(false);
+        for _ in 0..4 {
+            assert_eq!(c.read(&stop).unwrap().kind, MSG_PONG);
+        }
+        let _held = server.join().unwrap();
     }
 }

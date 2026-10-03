@@ -69,6 +69,12 @@
   hold the library back. Pull requests that touch `apps/skimmer/` run the same build. The macOS app is signed ad hoc
   and not notarized. It carries `NSLocalNetworkUsageDescription`: without that entry, or with only the linker's
   signature, macOS refused the SpyServer connection with `No route to host` and never asked for permission.
+- **The skimmer reconnects when the server goes quiet.** A SpyServer that dropped the client while a Mac slept left
+  the socket ESTABLISHED, and the skimmer, which only writes when it changes a setting, sat "connected" with no data
+  and never reconnected. `Conn::read` now takes 15 s with nothing from the server as a dropped connection, and the
+  usual retry follows. With streaming off, while no channel fits the band, it pings every 5 s so the PONGs keep an idle
+  connection from looking dead. The GUI also stops posting a notice for every lost IQ message: the health line counts
+  them and the health log still records each one.
 
 ## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY
 
