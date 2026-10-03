@@ -23,7 +23,7 @@ fn usage() -> ExitCode {
     let modes: Vec<&str> = MODES.iter().map(|m| m.0).collect();
     eprintln!(
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
-         \x20      [--tune] [--yield] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
+         \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS]\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
@@ -44,6 +44,8 @@ fn parse_args() -> Option<(Config, Option<String>)> {
             "--log" => log = Some(it.next()?),
             "--tune" => cfg.tune = true,
             "--yield" => cfg.yield_control = true,
+            "--ntp" => cfg.ntp = Some(it.next()?),
+            "--net-delay" => cfg.live.set_network_delay_ms(it.next()?.parse().ok()?),
             "--center" => cfg.center_hz = Some(it.next()?.parse().ok()?),
             "--rate" => cfg.rate = Some(it.next()?.parse().ok()?),
             "--gain" => cfg.gain = Some(it.next()?.parse().ok()?),
@@ -168,6 +170,7 @@ fn main() -> ExitCode {
             eprintln!("gap: {messages} message(s) lost at {at_s:.1} s")
         }
         Event::Reanchor { by_s } => eprintln!("re-anchor: {by_s:+.3} s"),
+        Event::Clock(text) => eprintln!("{text}"),
         Event::Status(s) => eprintln!(
             "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
              queue {:.0} kB, decode {:.0} ms, {} slot(s) queued, {} dropped, \

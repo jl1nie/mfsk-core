@@ -20,6 +20,7 @@ export async function pickFolder(defaultPath: string): Promise<string | null> {
 export const setChannelOptions = (index: number, channel: ChannelSetting) =>
   invoke<void>('set_channel_options', { index, channel });
 export const autostartRequested = () => invoke<boolean>('autostart_requested');
+export const setNetworkDelay = (ms: number) => invoke<void>('set_network_delay', { ms });
 export const setStation = (myCall: string, myGrid: string) => invoke<void>('set_station', { myCall, myGrid });
 export const setGain = (gain: number) => invoke<void>('set_gain', { gain });
 export const radioState = () => invoke<RadioState | null>('radio_state');

@@ -122,6 +122,11 @@ struct Settings {
     /// Draw the channels' waterfalls, at 1.5 Hz per bin if `waterfall_fine`.
     waterfall: bool,
     waterfall_fine: bool,
+    /// "system" (the PC clock) or "ntp" (the PC clock corrected against `ntp_server`).
+    clock_source: String,
+    ntp_server: String,
+    /// Fixed delay between the SDR and this PC taken off arrival times, ms.
+    network_delay_ms: f64,
     /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
     channelizer: String,
     log_enabled: bool,
@@ -151,6 +156,9 @@ impl Default for Settings {
             yield_control: false,
             waterfall: true,
             waterfall_fine: false,
+            clock_source: "ntp".into(),
+            ntp_server: "pool.ntp.org".into(),
+            network_delay_ms: 0.0,
             channelizer: "auto".into(),
             log_enabled: true,
             log_dir: String::new(),
@@ -223,8 +231,12 @@ enum UiEvent {
     Reanchor {
         by_s: f64,
     },
+    Clock {
+        text: String,
+    },
     Status {
         streamed_s: f64,
+        clock: String,
         delay_ms: f64,
         drift_ms: f64,
         longest_push_ms: f64,
@@ -303,7 +315,9 @@ impl From<Event> for UiEvent {
             },
             Event::Gap { messages, at_s } => UiEvent::Gap { messages, at_s },
             Event::Reanchor { by_s } => UiEvent::Reanchor { by_s },
+            Event::Clock(text) => UiEvent::Clock { text },
             Event::Status(s) => UiEvent::Status {
+                clock: s.clock,
                 streamed_s: s.streamed_s,
                 delay_ms: s.delay_ms,
                 drift_ms: s.drift_ms,
@@ -431,6 +445,9 @@ fn config(s: &Settings) -> Result<Config, String> {
     cfg.tune = s.tune;
     cfg.yield_control = s.yield_control;
     cfg.waterfall = s.waterfall;
+    cfg.ntp = (s.clock_source == "ntp" && !s.ntp_server.trim().is_empty())
+        .then(|| s.ntp_server.trim().to_string());
+    cfg.live.set_network_delay_ms(s.network_delay_ms);
     cfg.format = if s.format == "int16" {
         WireFormat::Int16
     } else {
@@ -482,6 +499,7 @@ fn health_line(ev: &Event) -> Option<String> {
         ),
         Event::Gap { messages, at_s } => format!("gap {messages} msg at {at_s:.1}s"),
         Event::Reanchor { by_s } => format!("reanchor {by_s:+.3}s"),
+        Event::Clock(text) => format!("clock {text}"),
         Event::Disconnected { error } => format!("disconnected {error}"),
         Event::Connecting { server } => format!("connecting {server}"),
         Event::Connected {
@@ -520,6 +538,14 @@ fn set_station(state: State<'_, AppState>, my_call: String, my_grid: String) {
             call: my_call.trim().to_ascii_uppercase(),
             grid: my_grid.trim().to_ascii_uppercase(),
         });
+    }
+}
+
+/// Change the fixed network delay in a running skimmer, ms.
+#[tauri::command]
+fn set_network_delay(state: State<'_, AppState>, ms: f64) {
+    if let Some(r) = state.running.lock().unwrap().as_ref() {
+        r.live.set_network_delay_ms(ms);
     }
 }
 
@@ -670,6 +696,7 @@ fn main() {
             stop,
             set_channel_options,
             set_station,
+            set_network_delay,
             set_gain,
             radio_state,
             set_waterfall,

@@ -32,6 +32,8 @@
   const wfStore = new WaterfallStore();
   let wfTick = $state(0);
   let wfFocus = $state(0);
+  /** The clock line from the core: NTP offset, or why NTP is not in use. */
+  let clockText = $state('');
   /** The table's channel selector (-1 = All); it and the large waterfall follow each other, except on All. */
   let tableCh = $state(-1);
   let wfOpen = $state(true);
@@ -157,9 +159,13 @@
       case 'reanchor':
         notice = `Time re-anchored by ${e.byS >= 0 ? '+' : ''}${e.byS.toFixed(3)} s`;
         break;
+      case 'clock':
+        clockText = e.text;
+        break;
       case 'status': {
         const { type: _, ...s } = e;
         health = s;
+        clockText = s.clock;
         break;
       }
       case 'disconnected':
@@ -360,6 +366,24 @@
             />
             <span>Fine (1.5 Hz per bin)</span>
           </label>
+          <div class="field" title="The skimmer stamps IQ with UTC. The PC clock is not changed: the offset to the NTP server is added.">
+            <span>Clock</span>
+            <select bind:value={settings.clockSource} disabled={running}>
+              <option value="system">PC clock</option>
+              <option value="ntp">NTP</option>
+            </select>
+            <input bind:value={settings.ntpServer} disabled={running || settings.clockSource !== 'ntp'} spellcheck="false" />
+          </div>
+          <div class="field" title="Fixed delay from the SDR to this PC (server buffer, path), taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here.">
+            <span>Network delay (ms)</span>
+            <input
+              type="number"
+              step="10"
+              min="0"
+              bind:value={settings.networkDelayMs}
+              onchange={() => running && api.setNetworkDelay(Number(settings!.networkDelayMs) || 0)}
+            />
+          </div>
           <label class="check">
             <input type="checkbox" bind:checked={settings.logEnabled} disabled={running} />
             <span>Write ALL.TXT</span>
@@ -382,7 +406,7 @@
         delay {health.delayMs.toFixed(0)} ms · drift {health.driftMs >= 0 ? '+' : ''}{health.driftMs.toFixed(0)} ms ·
         push {health.longestPushMs.toFixed(0)} ms · decode {health.longestDecodeMs.toFixed(0)} ms · queue {(health.queuedBytes / 1e3).toFixed(0)} kB ·
         slots {health.queuedSlots}/{health.droppedSlots} ·
-        {health.gaps} gap · {health.reanchors} re-anchor · window got {received}
+        {health.gaps} gap · {health.reanchors} re-anchor · window got {received}{clockText ? ` · ${clockText}` : ''}
       </div>
     {/if}
   </header>

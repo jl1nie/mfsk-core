@@ -44,6 +44,11 @@ export interface Settings {
   /** Draw the channels' waterfalls; fine is 1.5 Hz per bin instead of 2.9. */
   waterfall: boolean;
   waterfallFine: boolean;
+  /** The PC clock as it is, or corrected against an NTP server. */
+  clockSource: 'system' | 'ntp';
+  ntpServer: string;
+  /** Fixed delay between the SDR and this PC, taken off arrival times, ms. */
+  networkDelayMs: number;
   channelizer: 'auto' | 'direct' | 'pfb';
   logEnabled: boolean;
   /** Folder the ALL.TXT is written in. */
@@ -90,6 +95,8 @@ export interface Status {
   longestDecodeMs: number;
   gaps: number;
   reanchors: number;
+  /** The NTP line; empty on the PC clock. */
+  clock: string;
 }
 
 export type UiEvent =
@@ -129,6 +136,7 @@ export type UiEvent =
   | ({ type: 'decode' } & DecodeRow)
   | { type: 'gap'; messages: number; atS: number }
   | { type: 'reanchor'; byS: number }
+  | { type: 'clock'; text: string }
   | ({ type: 'status' } & Status)
   | { type: 'disconnected'; error: string };
 

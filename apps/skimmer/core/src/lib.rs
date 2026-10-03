@@ -25,13 +25,14 @@
 //! **Time.** SpyServer sends no timestamps; see [`anchor`].
 
 pub mod anchor;
+pub mod clock;
 pub mod modes;
 pub mod plan;
 pub mod spyserver;
 pub mod waterfall;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub use mfsk_core::Mode;
 use mfsk_core::decoder::{AnyDecoder, default_params};
@@ -46,12 +47,7 @@ use anchor::AnchorEstimate;
 use plan::{Plan, plan};
 use spyserver::*;
 
-pub fn now_ns() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as i64
-}
+pub use clock::now_ns;
 
 /// One channel: a mode at a USB dial frequency, and how it is decoded.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,6 +104,10 @@ pub struct LiveOptions {
     wf_focus: std::sync::atomic::AtomicU64,
     /// The focused channel's rows at 1.5 Hz per bin instead of 2.9.
     wf_fine: std::sync::atomic::AtomicBool,
+    /// Fixed delay between a sample and its message's arrival, ns: the
+    /// server's buffer and the path, which the minimum over the window does
+    /// not remove because it never varies.
+    network_delay_ns: std::sync::atomic::AtomicI64,
 }
 
 #[derive(Debug, Default)]
@@ -159,6 +159,18 @@ impl LiveOptions {
             0 => None,
             c => Some((c - 1) as usize),
         }
+    }
+
+    /// The fixed part of the delay from the SDR to this PC, ms, taken off
+    /// every arrival time. Zero on a LAN; on the internet tens to hundreds of
+    /// ms, which show up as a DT offset common to every station.
+    pub fn set_network_delay_ms(&self, ms: f64) {
+        self.network_delay_ns
+            .store((ms * 1e6) as i64, Ordering::Release);
+    }
+
+    fn network_delay_ns(&self) -> i64 {
+        self.network_delay_ns.load(Ordering::Acquire)
     }
 
     /// Set the device gain index in a running skimmer. Takes effect on the next
@@ -325,6 +337,9 @@ pub struct Config {
     /// (and reconnect after [`Self::retry`] as a guest) instead of holding it.
     /// Default `false`: take control and tune.
     pub yield_control: bool,
+    /// NTP server to keep the clock against (`host` or `host:port`); `None`
+    /// uses the PC clock as it is. See [`clock`].
+    pub ntp: Option<String>,
     /// Produce [`Event::Waterfall`] rows (a fine spectrum of each channel's
     /// audio). Off by default: the rows cost an FFT per channel per 0.17 s and a
     /// window to draw them.
@@ -349,6 +364,7 @@ impl Config {
             center_hz: None,
             rate: None,
             gain: None,
+            ntp: None,
             tune: false,
             yield_control: false,
             waterfall: false,
@@ -434,6 +450,8 @@ pub struct Status {
     pub dropped_slots: u64,
     pub gaps: u64,
     pub reanchors: u64,
+    /// The NTP line of [`clock::report`]; empty on the PC clock.
+    pub clock: String,
 }
 
 #[derive(Clone, Debug)]
@@ -479,6 +497,8 @@ pub enum Event {
     Reanchor {
         by_s: f64,
     },
+    /// The clock in use, once at the start: see [`clock::report`].
+    Clock(String),
     /// Once a minute of samples.
     Status(Status),
     /// The connection failed or dropped; retrying after `retry`.
@@ -575,6 +595,11 @@ fn describe(e: &std::io::Error) -> String {
 
 /// Run until `stop` is set: connect, stream, decode, reconnect on failure.
 pub fn run(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) {
+    // Held for the whole run: dropping it returns to the PC clock.
+    let _ntp = cfg.ntp.as_deref().map(clock::NtpSync::start);
+    if _ntp.is_some() {
+        on_event(Event::Clock(clock::report()));
+    }
     while !stop.load(Ordering::Relaxed) {
         on_event(Event::Connecting {
             server: cfg.server.clone(),
@@ -951,6 +976,7 @@ fn stream(
     let (mut gaps, mut reanchors) = (0u64, 0u64);
     let mut worst_push = Duration::ZERO;
     let mut dropped_slots = 0u64;
+    let mut delay_ns = cfg.live.network_delay_ns();
     let mut seen_generation = cfg.live.generation();
     let mut applied_gain = cfg.live.gain();
     // The (focus, fine) choice whose history has been sent.
@@ -1139,7 +1165,14 @@ fn stream(
         // follows it at a bounded rate, so a drifting host clock moves the
         // slot boundaries by milliseconds and loses no slot.
         let samples = rx.samples_in();
-        let best = est.push(samples, rate, m.arrival_ns);
+        // A changed delay restarts the minimum: candidates taken with the
+        // old one would hold the estimate until they left the window.
+        let d = cfg.live.network_delay_ns();
+        if d != delay_ns {
+            delay_ns = d;
+            est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
+        }
+        let best = est.push(samples, rate, m.arrival_ns - delay_ns);
         let warming_up = samples < 2 * rate as u64;
         // The first two seconds settle the minimum; no slot is complete yet.
         if !warming_up || anchor.is_none() {
@@ -1169,6 +1202,7 @@ fn stream(
                 dropped_slots,
                 gaps,
                 reanchors,
+                clock: clock::report(),
             }));
             worst_push = Duration::ZERO;
         }
