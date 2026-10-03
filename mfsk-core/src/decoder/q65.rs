@@ -62,6 +62,16 @@ impl Q65State {
     }
 }
 
+/// `q65_decode.f90:183-188` and `q65_loops.f90:27-40`: `ndepth & 3` 1 / 2 / 3.
+fn grid_depth(d: super::Depth) -> crate::q65::rx::GridDepth {
+    use crate::q65::rx::GridDepth;
+    match d {
+        super::Depth::Fast => GridDepth::Fast,
+        super::Depth::Normal => GridDepth::Normal,
+        super::Depth::Deep => GridDepth::Deep,
+    }
+}
+
 fn row(r: Q65Result) -> Row<Q65Result> {
     Row {
         decoded: r.to_decoded(),
@@ -136,6 +146,7 @@ fn decode<P: Q65SubMode>(
             let mut req = DecodeRequest::<P>::new(audio, 12_000, nominal, search)
                 .eme_delay(params.eme_delay)
                 .ftol(ftol)
+                .depth(grid_depth(params.depth))
                 .pileup(extras.pileup)
                 .max_drift(extras.max_drift)
                 .hash_table(Arc::clone(&state.table));

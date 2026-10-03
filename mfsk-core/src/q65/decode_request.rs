@@ -113,6 +113,8 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     /// Set via [`DecodeRequest::ftol`].
     ftol: f32,
     ap_hint: Option<&'a ApHint>,
+    /// Set via [`DecodeRequest::depth`].
+    depth: super::rx::GridDepth,
     /// Set via [`DecodeRequest::pileup`].
     pileup: bool,
     /// Set via [`DecodeRequest::max_drift`]; 0 is off.
@@ -146,6 +148,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             rx_freq: None,
             ftol: DEFAULT_FTOL_HZ,
             ap_hint: None,
+            depth: super::rx::GridDepth::Fast,
             pileup: false,
             max_drift: 0,
             ap_list: None,
@@ -181,6 +184,14 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     /// carrying the "copied last Tx" flag
     /// ([`Q65Result::copied_last_tx`]) still matches it (`q65_ap.f90`,
     /// iaptype 3). Off by default, as outside that mode.
+    /// WSJT-X's `ndepth & 3` for the `(Δf, Δt, b90)` grid search
+    /// (`q65_decode.f90:183-188`, `q65_loops.f90:27-40`). Default `Fast`,
+    /// the `jt9 -d 1` the 0.12 request always ran.
+    pub fn depth(mut self, depth: super::rx::GridDepth) -> Self {
+        self.depth = depth;
+        self
+    }
+
     pub fn pileup(mut self, on: bool) -> Self {
         self.pileup = on;
         self
@@ -540,6 +551,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 self.sample_rate,
                 nominal_start_sample,
                 &self.search_params(),
+                self.depth,
                 hint,
                 drift,
                 on_result,
@@ -550,6 +562,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 self.sample_rate,
                 nominal_start_sample,
                 &self.search_params(),
+                self.depth,
                 drift,
                 on_result,
                 ctx,

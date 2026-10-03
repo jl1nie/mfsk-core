@@ -1053,6 +1053,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
+    depth: GridDepth,
     drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
@@ -1062,6 +1063,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
         sample_rate,
         nominal_start_sample,
         params,
+        depth,
         None,
         drift,
         on_result,
@@ -1079,6 +1081,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
+    depth: GridDepth,
     ap_hint: Q65Ap<'_>,
     drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
@@ -1089,6 +1092,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
         sample_rate,
         nominal_start_sample,
         params,
+        depth,
         Some(ap_hint),
         drift,
         on_result,
@@ -1102,6 +1106,7 @@ fn decode_scan_inner<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
+    depth: GridDepth,
     ap_hint: Option<Q65Ap<'_>>,
     drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
@@ -1120,14 +1125,12 @@ fn decode_scan_inner<P: ModulationParams>(
                 centre: d.period_centre,
                 len: d.period_len,
             });
-            // `GridDepth::Fast`: WSJT-X's own automatic per-slot depth
-            // (`jt9`'s CLI default, `-d 1`).
             decode_at_grid_for::<P>(
                 audio,
                 sample_rate,
                 c.start_sample,
                 c.freq_hz,
-                GridDepth::Fast,
+                depth,
                 ap_hint,
                 chirp,
                 ctx,
@@ -1242,8 +1245,13 @@ fn decode_at_grid_for<P: ModulationParams>(
 
     let (idfmax, idtmax, maxdist) = depth.params();
     let submode = submode_index_from_params::<P>();
-    let ibwa = ibwa_for_submode(submode);
-    let ibwb = (ibwa + 6).min(15);
+    let mut ibwa = ibwa_for_submode(submode);
+    let mut ibwb = (ibwa + 6).min(15);
+    if depth == GridDepth::Deep {
+        // `q65_decode.f90:185-187`: Deep widens the b90 sweep by 2 each way.
+        ibwa = (ibwa - 2).max(1);
+        ibwb = (ibwb + 2).min(15);
+    }
     let ibw0 = (ibwa + ibwb) / 2;
 
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);

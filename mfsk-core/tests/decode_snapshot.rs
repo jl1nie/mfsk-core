@@ -833,7 +833,8 @@ mod via_decoder {
             score_threshold: Some(0.05),
             max_candidates: Some(n),
         };
-        let params = DecodeParams::for_band((200.0, 3000.0)).depth(Depth::Deep);
+        // The 0.12 request ran the grid search at its Fast depth.
+        let params = DecodeParams::for_band((200.0, 3000.0)).depth(Depth::Fast);
 
         // 60D EME, single period; the 0.12 request used nominal 0 and
         // +-6 s, the decoder's nominal is the frame's 1.0 s.
