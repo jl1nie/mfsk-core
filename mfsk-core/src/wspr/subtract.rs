@@ -104,55 +104,42 @@ pub fn subtract_signal_baseband(
     let nsig = N_SYMBOLS * NSPS_BASEBAND; // 162 · 256 = 41472
     let f0_baseband_hz = f0_audio_hz - CENTER_HZ;
 
-    // Build the reference signal r(t) = exp(j·φ(t)) at the per-symbol
-    // tone, with linear drift across the 162 symbols. Matches
-    // `wsprd.c:573-589`.
-    //
-    // Per-sample rotation recurrence (`c[j] = c[j-1]·cdφ − s[j-1]·sdφ`),
-    // not a fresh `.cos()`/`.sin()` call every sample: within one
-    // symbol `dphi` is constant, so the whole 256-sample run needs only
-    // one `cos`/`sin` pair (for `cdphi`/`sdphi`) instead of 512
-    // transcendental calls — the same technique
-    // `demod::tone_amplitudes_into` already uses for its own oscillator
-    // tables. 162 symbols × 2 transcendental calls = 324 total, not
-    // `nsig × 2` = 82 944.
-    //
-    // `(c, s)` persists *across* symbol boundaries (unlike
-    // `tone_amplitudes_into`'s per-symbol-fresh oscillators) — this
-    // reference needs one phase-continuous 41 472-sample waveform, not
-    // 162 independent per-symbol mixes. A pure multiply recurrence that
-    // long drifts off the unit circle (each step's rounding error
-    // compounds), so `(c, s)` is renormalised to unit magnitude once
-    // per symbol (at the point `cdphi`/`sdphi` are recomputed anyway) —
-    // bounds the drift to what one 256-sample run can accumulate,
-    // rather than letting 41 472 samples' worth compound unchecked.
+    // Reference signal r(t) = exp(j·φ(t)), `wsprd.c:560-584`, ported with its
+    // arithmetic rather than its mathematics. wsprd keeps the phase in a
+    // `float` and adds `dphi` to it once per sample (`phi = phi + dphi`), then
+    // takes `cos(phi)` / `sin(phi)` in double. φ grows to ~10⁴ rad over the
+    // 41 472 samples, where a `float` spaces values 1e-3 rad apart, so the
+    // reference's phase wanders by ~1e-2 rad inside the 360-tap filter window
+    // and the subtraction leaves the corresponding part of the signal behind.
+    // An exact rotation recurrence (as this was) removes a bit more than
+    // wsprd does; against wsprd's own residual that is a 3e-4 relative
+    // difference in the subtracted component and a 1.2 % one in the data
+    // the next pass sees, enough to move a Fano search from 8080 to 15266
+    // cycles/bit on G8VDQ. Differences between residuals decide marginal
+    // decodes, so the residual is made the same.
     let mut refi = vec![0.0f32; nsig];
     let mut refq = vec![0.0f32; nsig];
-    let dt = 1.0 / super::baseband::BASEBAND_RATE;
-    let twopidt = 2.0 * PI * dt;
-    let mut c = 1.0f32;
-    let mut s = 0.0f32;
+    // `float pi = 4.*atan(1.0)`, `float dt = 1.0/375.0`, `float twopidt =
+    // 2.0*pi*dt`, `float df = 375.0/256.0`: each stored as a float.
+    let pi_c = (4.0 * 1.0f64.atan()) as f32;
+    let dt_c = (1.0f64 / 375.0) as f32;
+    let twopidt = (2.0 * f64::from(pi_c) * f64::from(dt_c)) as f32;
+    let df_c = (375.0f64 / 256.0) as f32;
+    let nsym2 = N_SYMBOLS as f32 / 2.0;
+    let mut phi = 0.0f32;
     for i in 0..N_SYMBOLS {
-        let norm = (c * c + s * s).sqrt();
-        c /= norm;
-        s /= norm;
         let cs = channel_symbols[i] as f32;
-        // wsprd `wsprd.c:577-582`: per-symbol phase increment
-        // (cs - 1.5)·df = tone offset from carrier centre. Drift folds
-        // in linearly across the 162 symbols.
-        let dphi = twopidt
-            * (f0_baseband_hz
-                + (drift_hz / 2.0) * (i as f32 - N_SYMBOLS as f32 / 2.0)
-                    / (N_SYMBOLS as f32 / 2.0)
-                + (cs - 1.5) * TONE_SPACING_HZ);
-        let (sdphi, cdphi) = dphi.sin_cos();
+        // The whole bracket is double in the C (`2.0`, `81.0` are doubles).
+        let dphi = (f64::from(twopidt)
+            * (f64::from(f0_baseband_hz)
+                + (f64::from(drift_hz) / 2.0) * (f64::from(i as f32) - f64::from(nsym2))
+                    / f64::from(nsym2)
+                + (f64::from(cs) - 1.5) * f64::from(df_c))) as f32;
         for j in 0..NSPS_BASEBAND {
             let ii = NSPS_BASEBAND * i + j;
-            refi[ii] = c;
-            refq[ii] = s;
-            let (c_next, s_next) = (c * cdphi - s * sdphi, c * sdphi + s * cdphi);
-            c = c_next;
-            s = s_next;
+            refi[ii] = f64::from(phi).cos() as f32;
+            refq[ii] = f64::from(phi).sin() as f32;
+            phi += dphi;
         }
     }
 

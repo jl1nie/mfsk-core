@@ -221,20 +221,14 @@ fn wspr_golden_recall_and_precision() {
         &GoldenSet {
             name: "WSPR 150426_0918.wav",
             expected: Box::leak(expected.into_boxed_slice()),
-            // G8VDQ (-23 dB, dt 2.2 s) is the known gap. `wsprd` decodes it in
-            // pass 2 at shift1 + 16 with 8080 Fano cycles per bit (metric -187);
-            // this crate sees the same candidate, the same lags (the pad is a
-            // whole number of wsprd's 128-sample strides since 0.13), a soft
-            // symbol vector within 1.3 levels of 256 of wsprd's, and Fano needs
-            // 13318 cycles per bit on it. Fed wsprd's own 162 symbols the same
-            // Fano reproduces 8080 and -187 exactly, so Fano and the metric table
-            // are faithful and the difference is upstream of them. Cause found
-            // (not yet fixed): wsprd subtracts each decode from the data at
-            // once, so later candidates of the same pass see their neighbours
-            // removed; this crate decodes a pass in parallel and subtracts at the
-            // end (W5BIT, decoded before any subtraction, already differs by 2.6
-            // levels). The other eight must decode.
-            min_hits: GOLDEN.len() - 1,
+            // All nine, G8VDQ (-23 dB, dt 2.2 s) included. It decodes only if the
+            // data pass 2 sees is wsprd's to within float noise: the Fano search
+            // on it needs 8080 cycles/bit with wsprd's 162 soft symbols and 15266
+            // with ones that differ by 0.2 of 256 levels. That took four things
+            // ported literally: the 128-sample time lattice (the pad), candidates
+            // in SNR order, immediate subtraction of each decode, and wsprd's
+            // float-accumulated reference phase in the subtraction.
+            min_hits: GOLDEN.len(),
             max_extra: 0,
         },
         Tolerances {

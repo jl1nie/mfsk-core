@@ -320,16 +320,21 @@ fn refine_alignment_top_k(
                 }
                 // `spec.ps` already holds magnitudes — see its doc.
                 let row = &spec.ps[kindex as usize * NFFT..(kindex as usize + 1) * NFFT];
-                let kfrac = (k as f32 - 81.0) / 81.0;
                 let pr3 = WSPR_SYNC_VECTOR[k as usize] as f32;
                 let w = 2.0 * pr3 - 1.0;
                 for (di, idrift) in (-max_drift..=max_drift).enumerate() {
-                    let drift_offset = kfrac * (idrift as f32) / (2.0 * DF_BASEBAND);
-                    // C truncates float→int toward zero; Rust's `as i32`
-                    // does the same. Using `.round()` would shift `ifd`
-                    // by ±1 bin for nonzero drift in most symbols and
-                    // distort the score landscape vs wsprd.
-                    let ifd = ifr + drift_offset as i32;
+                    // `wsprd.c:1233`: `ifd = ifr + ((float)k-81.0)/81.0 *
+                    // (float)idrift / (2.0*df)`, in double, assigned to an
+                    // `int` — so the truncation toward zero is applied to
+                    // the *sum*, `ifr` plus the offset. For a negative offset
+                    // that is one bin down (249.66 -> 249), where truncating
+                    // the offset alone (-0.34 -> 0) gave the same bin as no
+                    // drift. That made `idrift` -1, 0 and +1 score alike, the
+                    // first of the tie (-1) won, and every candidate came out
+                    // with drift -1 where wsprd's is 0.
+                    let ifd = (ifr as f64
+                        + (k as f64 - 81.0) / 81.0 * (idrift as f64)
+                            / (2.0 * f64::from(DF_BASEBAND))) as i32;
                     if ifd - 3 < 0 || (ifd + 3) as usize >= NFFT {
                         continue;
                     }
@@ -452,12 +457,15 @@ pub(super) fn coarse_baseband_ext(
         }
     }
 
-    // Rank by sync score (the candidate-detection SNR is already
-    // baked into peak selection; sync is the alignment-quality metric
-    // that decode_at_baseband actually cares about).
-    out.sort_unstable_by(|a, b| {
-        b.sync
-            .partial_cmp(&a.sync)
+    // `wsprd.c:1186-1196`: a (stable) bubble sort on the candidate's SNR,
+    // strongest first, done before the coarse time/frequency/drift estimate and
+    // never redone. The order is not cosmetic: each accepted decode is
+    // subtracted before the next candidate is looked at (`decode::sic_pass`),
+    // so the strongest signal is removed first. This ranked by sync score, which
+    // took ND6P and WD4LHT ahead of NM7J, the -1 dB signal `wsprd` decodes first.
+    out.sort_by(|a, b| {
+        b.snr_db
+            .partial_cmp(&a.snr_db)
             .unwrap_or(core::cmp::Ordering::Equal)
     });
     out

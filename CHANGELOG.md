@@ -19,6 +19,17 @@
   pass, WSPR `-qB` / `-C 500 -o 4` / `-d` with `unpk_`'s Type-3 sanity checks. Tests: `tests/decoder_depth.rs`.
 - **QSO-context AP for FT8, FT4 and FST4** from upstream's `naptypes` tables, derived from `station` + `qso` + `ap`
   (`ApHint` stays as the library's "hunt one DX"). A weak-reply sweep on FT8: 0 of 30 decoded with AP off, 20 of 30 on.
+- **WSPR now reproduces `wsprd`, signal for signal, on the WSJT-X golden.** Compared against an instrumented
+  `wsprd` v3.2.0-rc1: SNR within 0.02 dB (it was 0.05-0.26 dB, and one signal rounded to a different integer), DT
+  equal to 3 decimals, frequency to 0.1 Hz, and G8VDQ (-23 dB), which this crate had needed a larger Fano budget for,
+  decodes at the default one. Causes, all ported literally from `wsprd.c`: the noise floor is `tmpsort[122]` not 123;
+  the sync window constant is 0.006147931; the front pad is a whole number of the 128-sample coarse strides, so every
+  lag tried is `wsprd`'s; the whole recording is read; the coarse drift bin truncates `ifr + offset`, not the offset
+  (every candidate came out with drift -1); candidates run strongest SNR first; and each decode is subtracted at once,
+  with `wsprd`'s float-accumulated reference phase, instead of decoding a pass in parallel and subtracting at its end.
+  Reported frequency is the centre of the four tones, and the power prints two wide (` 3`, not `3`). The AWGN sweep:
+  50 % crossing -31.40 dB (was -31.33), 1 phantom in 260 trials as before; 20 ms/file at low SNR (was 52). Detail in
+  `docs/notes/WSPR_UPSTREAM.md`.
 - **JT9 and JT65 drop the all-zero codeword** (`000AAA 000AAA RA90`, `jt9fano.f90:88`, `decode65b.f90:27`): a noise-free JT9
   period returned the true message plus three of these.
 - **`IqReceiver` is a pull model on a clock that follows the host.** `push_*` yields owned `CompletedSlot`s; the caller
