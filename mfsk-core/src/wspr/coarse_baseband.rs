@@ -35,7 +35,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::f32::consts::PI;
 use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
@@ -130,11 +129,15 @@ fn build_spectro(idat: &[f32], qdat: &[f32]) -> Spectro {
     // the 128-sample stride (stride = NFFT/4).
     let n_time = 4 * (np / NFFT) - 1;
 
-    // sin window: w[j] = sin(π · j / NFFT). Matches `wsprd.c:984`
-    // (`sin(0.006147931 * i)` where 0.006147931 ≈ π/512).
+    // `wsprd.c:1048`: `w[i] = sin(0.006147931 * i)` in double. That is not
+    // π/512 = 0.0061359: the constant is 0.2 % larger, so the window crosses
+    // zero a little before bin 512 and ends slightly negative. Ported as is
+    // (a faithful port, and the reported SNR depends on it): the exact π/512
+    // moved every candidate's SNR by 0.05-0.26 dB against `wsprd` on the
+    // WSJT-X golden and made ND6P round to -8 where `wsprd` prints -9.
     let mut window = [0.0f32; NFFT];
     for (j, w) in window.iter_mut().enumerate() {
-        *w = (PI * j as f32 / NFFT as f32).sin();
+        *w = (0.006_147_931_f64 * j as f64).sin() as f32;
     }
 
     let fft = with_default_planner(|planner| planner.plan_forward(NFFT));
@@ -192,11 +195,12 @@ fn build_spectro(idat: &[f32], qdat: &[f32]) -> Spectro {
         smspec[i] = acc;
     }
 
-    // Noise floor: 30 th-percentile of smspec. wsprd uses
-    // `tmpsort[122]/411` (= 122/411 ≈ 30 th percentile).
+    // Noise floor: `wsprd.c:1118`, `tmpsort[122]` (123 of 411 bins, the 30 th
+    // percentile). This read `411 * 30 / 100 = 123.3` truncated to 123, one
+    // sorted value above wsprd's, and moved the reported SNR by up to a dB.
     let mut sorted: Vec<f32> = smspec.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-    let noise_level = sorted[(WORKING_BINS as f32 * 30.0 / 100.0) as usize].max(1e-30);
+    let noise_level = sorted[122].max(1e-30);
 
     // Renormalise: smspec[j] = smspec[j]/noise_level - 1, clamped to
     // 0.1·min_snr if below min_snr. Matches `wsprd.c:1067-1071`.

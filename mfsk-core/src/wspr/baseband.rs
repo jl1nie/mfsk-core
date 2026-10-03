@@ -34,10 +34,28 @@ pub const NFFT1: usize = NFFT2 * 32; // 1_474_560
 /// dial-relative offset.
 pub const CENTER_HZ: f32 = 1500.0;
 
-/// Maximum input samples consumed. Matches wsprd `npoints = 114*12000`
-/// for the WSPR-2 / 120 s slot. Excess samples are ignored;
-/// shorter recordings get zero-padded up to `NFFT1`.
-pub const NPOINTS_MAX: usize = 114 * 12_000;
+/// Front padding of silence `decode_scan` prepends so that signals starting
+/// before the recording (negative dt) are reachable: **9 × 4096 samples**
+/// (3.072 s), i.e. 9 × 128 baseband samples, the stride of `wsprd`'s coarse
+/// time search (`shift = 128 * (k0 + 1)`, `wsprd.c:1250`).
+///
+/// A multiple of 128 baseband samples is the point. The pad was 3.0 s =
+/// 1125 baseband samples, 27 off the stride, so every lag this crate tried
+/// (coarse 128, then 64, then 16, then the +-8 jitter) sat on a lattice shifted
+/// 27 samples from `wsprd`'s, and the attempts differed from the reference's.
+/// On the WSJT-X golden `wsprd` decodes G8VDQ (-23 dB) at `shift1 = 1184`
+/// plus jitter 16 with 8080 Fano cycles per bit; this crate could not at
+/// 10 000 once the recording's tail was included.
+pub const NEGATIVE_DT_PAD: usize = 9 * 4096;
+
+/// Maximum input samples consumed: wsprd's `npoints = 114*12000` (the slot's
+/// first 114 s) after the [`NEGATIVE_DT_PAD`]. The buffer was cut at 114 s
+/// including the pad, which dropped the last 3 s of the recording: a nominal
+/// frame (1 s to 111.6 s) lost its last 0.6 s, and the coarse spectrum covered
+/// a different stretch than wsprd's, moving every reported SNR by 0.05-0.26 dB.
+/// Excess samples are ignored; shorter recordings get zero-padded up to
+/// `NFFT1`.
+pub const NPOINTS_MAX: usize = 114 * 12_000 + NEGATIVE_DT_PAD;
 
 /// Decimate 12 kHz f32 audio to 375 Hz complex baseband, centered on
 /// [`CENTER_HZ`]. Returns `(idat, qdat)` each of length [`NFFT2`].

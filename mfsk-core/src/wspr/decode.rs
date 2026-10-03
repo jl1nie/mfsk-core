@@ -31,7 +31,7 @@ pub struct WsprResult {
     /// wsprd-equivalent `dt`: signal-start offset in seconds, relative
     /// to the WSPR nominal anchor (slot start + 1 s). Positive values
     /// = signal arrived late, negative = arrived early. Range that
-    /// `decode_scan` can express: `−NEGATIVE_DT_PAD_SEC .. +∞`.
+    /// `decode_scan` can express: `−3.072 s (`baseband::NEGATIVE_DT_PAD`) .. +∞`.
     pub dt_sec: f32,
     /// Linear drift the successful demodulation ran at, in Hz across
     /// the 110.6 s frame — wsprd's `drift1`.
@@ -442,7 +442,7 @@ pub(super) fn decode_at_baseband_inner(
         best_freq,
         best_lag,
         best_drift,
-        &best_isqs,
+        Some(&best_isqs),
         nblocks,
         confirmed,
         None,
@@ -492,7 +492,7 @@ fn decode_from_refined(
     best_freq: f32,
     best_lag: i32,
     best_drift: f32,
-    best_isqs: &super::demod::IsQs,
+    best_isqs: Option<&super::demod::IsQs>,
     nblocks: &[usize],
     confirmed: Option<&WsprCallsignTable>,
     budget: Option<&(dyn Fn() -> bool + Sync)>,
@@ -560,8 +560,8 @@ fn decode_from_refined(
             let lag = best_lag + IIFAC * ii;
             // Position 0 is the refined alignment, whose `IsQs` the
             // cascade already built.
-            let isqs = if idt == 0 {
-                best_isqs
+            let isqs = if let (0, Some(champion)) = (idt, best_isqs) {
+                champion
             } else {
                 super::demod::tone_amplitudes_into(
                     idat,
@@ -808,15 +808,14 @@ impl ScanDepth {
     };
 }
 
-/// Half-window (in seconds) of front-side zero padding added before
-/// the search runs. WSPR transmissions can start up to ~2 s **before**
-/// the nominal slot anchor (wsprd reports such cases as `dt < -1.0`);
-/// the missing pre-roll samples are not in the recording, but with
-/// front padding the demodulator still aligns the rest of the frame
-/// and Fano can recover from ~1–2 missing leading symbols. Mirrors
-/// wsprd's `wspr_decode.f90` which prepends a configurable buffer
-/// for the same reason.
-const NEGATIVE_DT_PAD_SEC: f32 = 3.0;
+// Front-side zero padding (`baseband::NEGATIVE_DT_PAD`, 3.072 s) added before
+// the search runs. WSPR transmissions can start up to ~2 s **before**
+// the nominal slot anchor (wsprd reports such cases as `dt < -1.0`);
+// the missing pre-roll samples are not in the recording, but with
+// front padding the demodulator still aligns the rest of the frame
+// and Fano can recover from ~1–2 missing leading symbols. Mirrors
+// wsprd's `wspr_decode.f90` which prepends a configurable buffer
+// for the same reason.
 
 /// Per-candidate pass-1 decode step, factored out of [`decode_scan`]'s
 /// pass-1 loop so it can run under `par_iter()` (feature `parallel`)
@@ -1074,7 +1073,7 @@ pub fn deep_decode_pass2_candidate(
         r.freq,
         r.lag,
         r.drift,
-        &r.isqs,
+        Some(&r.isqs),
         &[1, 2, 3, 0],
         Some(confirmed),
         budget,
@@ -1166,7 +1165,10 @@ pub(super) fn decode_scan_inner(
     // dt) become reachable. Internal `start_sample`s are shifted by
     // `pad`; we subtract `pad` back out before returning so callers
     // see the original time base.
-    let pad = (NEGATIVE_DT_PAD_SEC * sample_rate as f32) as usize;
+    // 12 kHz is the only rate the baseband decimation takes; the pad is a whole
+    // number of `wsprd`'s 128-sample coarse strides (see `NEGATIVE_DT_PAD`).
+    let pad = super::baseband::NEGATIVE_DT_PAD;
+    let _ = sample_rate;
     let mut padded = alloc::vec![0f32; pad + audio.len()];
     padded[pad..].copy_from_slice(audio);
     let nominal_shifted = nominal_start_sample + pad;
