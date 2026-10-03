@@ -96,6 +96,14 @@ impl Waterfall {
         RATE_HZ / self.n as f32
     }
 
+    /// Forget the audio waiting for a row: the stream was away (a rotation) and
+    /// what follows is not its continuation. The rows already made stay with the
+    /// caller.
+    pub fn restart(&mut self) {
+        self.pending.clear();
+        self.start = self.pushed;
+    }
+
     /// Add audio; `end_utc_ns` is the UTC of its last sample, `None` while the
     /// clock is not set (the audio is dropped then, a row without a time is of
     /// no use). Complete rows go to `out`.

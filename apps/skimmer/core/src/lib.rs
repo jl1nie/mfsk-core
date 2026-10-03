@@ -47,7 +47,7 @@ use mfsk_core::msg::ap::ApHint;
 use mfsk_core::slotgrid::ClockChange;
 
 use anchor::AnchorEstimate;
-use plan::{Plan, plan};
+use plan::Plan;
 use spyserver::*;
 
 pub use clock::now_ns;
@@ -114,7 +114,32 @@ pub struct LiveOptions {
     /// server's buffer and the path, which the minimum over the window does
     /// not remove because it never varies.
     network_delay_ns: std::sync::atomic::AtomicI64,
+    /// What a channel keeps while its band is not being listened to (a
+    /// rotation): its decoder, with the callsign table.
+    bank: std::sync::Mutex<Bank>,
 }
+
+/// A channel across rotation steps: the mode and the dial.
+type BankKey = (&'static str, i64);
+
+fn bank_key(mode: Mode, dial_hz: f64) -> BankKey {
+    (modes::mode_name(mode), dial_hz.round() as i64)
+}
+
+#[derive(Default)]
+struct Bank {
+    decoders: std::collections::HashMap<BankKey, AnyDecoder>,
+}
+
+impl std::fmt::Debug for Bank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Bank({} decoders)", self.decoders.len())
+    }
+}
+
+/// The waterfalls of channels not being listened to, kept by the session (the
+/// FFT plans cannot cross threads) for the band's next turn.
+type WfBank = std::collections::HashMap<BankKey, ChannelWaterfall>;
 
 #[derive(Debug, Default)]
 struct LiveState {
@@ -210,13 +235,6 @@ impl ChannelSpec {
             options: ChannelOptions::default(),
         }
     }
-
-    /// This channel's decoder, as configured.
-    fn decoder(&self, station: &Station) -> AnyDecoder {
-        let mut d = AnyDecoder::with_defaults(self.mode);
-        apply_options(&mut d, &self.options, station);
-        d
-    }
 }
 
 /// Set `o` and the station on `d`: unset fields return to the mode's
@@ -271,6 +289,7 @@ impl Worker {
         channel: usize,
         dial_hz: f64,
         mut decoder: AnyDecoder,
+        keep: (BankKey, std::sync::Arc<LiveOptions>),
         results: std::sync::mpsc::Sender<Decode>,
         busy: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -303,6 +322,10 @@ impl Worker {
                     longest_us.fetch_max(t.elapsed().as_micros() as u64, Ordering::Relaxed);
                     busy.fetch_sub(1, Ordering::Relaxed);
                 }
+                // Out of slots: the band is left for now. The decoder (its
+                // callsign table) waits for the band's next turn.
+                let (key, live) = keep;
+                live.bank.lock().unwrap().decoders.insert(key, decoder);
             })
             .expect("spawn decoder thread");
         Worker {
@@ -334,8 +357,13 @@ pub enum WireFormat {
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// A short name for this server in events and the database.
+    pub name: String,
     pub server: String,
     pub channels: Vec<ChannelSpec>,
+    /// A rotation: which of [`Self::channels`] to listen to, for how long, in
+    /// turn, from UTC midnight. Empty: all of them, all the time.
+    pub steps: Vec<Step>,
     /// IQ centre; default 25 kHz below the lowest dial.
     pub center_hz: Option<f64>,
     /// IQ rate; default the lowest that holds the most channels.
@@ -367,11 +395,66 @@ pub struct Config {
     pub live: std::sync::Arc<LiveOptions>,
 }
 
+/// One stretch of a rotation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Step {
+    /// Indices into [`Config::channels`].
+    pub channels: Vec<usize>,
+    /// Minutes this step lasts (at least [`MIN_STEP_MINUTES`]).
+    pub minutes: u32,
+}
+
+/// Shorter than this a retune costs more than it listens: a slot or two is
+/// lost at each change.
+pub const MIN_STEP_MINUTES: u32 = 5;
+
 impl Config {
+    /// The step in force at `utc_s` and when it ends (UTC seconds), counting
+    /// the cycle from UTC midnight, so a restart or another server picks up
+    /// the same step. `None` without a rotation.
+    pub fn step_at(&self, utc_s: i64) -> Option<(usize, i64)> {
+        let total: i64 = self
+            .steps
+            .iter()
+            .map(|s| i64::from(s.minutes.max(MIN_STEP_MINUTES)) * 60)
+            .sum();
+        if total == 0 {
+            return None;
+        }
+        let day = utc_s.div_euclid(86_400) * 86_400;
+        let mut at = (utc_s - day) % total;
+        for (i, s) in self.steps.iter().enumerate() {
+            let len = i64::from(s.minutes.max(MIN_STEP_MINUTES)) * 60;
+            if at < len {
+                return Some((i, utc_s + (len - at)));
+            }
+            at -= len;
+        }
+        None
+    }
+
+    /// Which channels the step in force wants.
+    fn mask_at(&self, utc_s: i64) -> (Vec<bool>, Option<(usize, i64)>) {
+        match self.step_at(utc_s) {
+            None => (vec![true; self.channels.len()], None),
+            Some((i, end)) => {
+                let mut m = vec![false; self.channels.len()];
+                for &c in &self.steps[i].channels {
+                    if let Some(x) = m.get_mut(c) {
+                        *x = true;
+                    }
+                }
+                (m, Some((i, end)))
+            }
+        }
+    }
+
     pub fn new(server: impl Into<String>, channels: Vec<ChannelSpec>) -> Self {
         Config {
+            name: String::new(),
             server: server.into(),
             channels,
+            steps: Vec::new(),
             center_hz: None,
             rate: None,
             gain: None,
@@ -510,6 +593,13 @@ pub enum Event {
     },
     /// The clock in use, once at the start: see [`clock::report`].
     Clock(String),
+    /// A rotation step began: its index, how many there are, and when it
+    /// ends (UTC seconds).
+    Step {
+        index: usize,
+        of: usize,
+        ends_utc_s: i64,
+    },
     /// Once a minute of samples.
     Status(Status),
     /// The connection failed or dropped; retrying after `retry`.
@@ -611,6 +701,36 @@ pub fn run(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) {
     if _ntp.is_some() {
         on_event(Event::Clock(clock::report()));
     }
+    run_server(cfg, stop, on_event);
+}
+
+/// Several servers at once, each with its own connection, channels, rotation
+/// and options. Events come to `on_event` on the calling thread, with the
+/// index of the server in `cfgs`. The clock is one (the first NTP server asked
+/// for): the PC's clock is the same for every server.
+pub fn run_all(cfgs: &[Config], stop: &AtomicBool, mut on_event: impl FnMut(usize, Event)) {
+    let _ntp = cfgs
+        .iter()
+        .find_map(|c| c.ntp.as_deref())
+        .map(clock::NtpSync::start);
+    if _ntp.is_some() {
+        on_event(0, Event::Clock(clock::report()));
+    }
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel::<(usize, Event)>();
+        for (i, cfg) in cfgs.iter().enumerate() {
+            let tx = tx.clone();
+            scope.spawn(move || run_server(cfg, stop, |ev| drop(tx.send((i, ev)))));
+        }
+        drop(tx);
+        // Ends when every server's thread has finished and dropped its sender.
+        for (i, ev) in rx {
+            on_event(i, ev);
+        }
+    });
+}
+
+fn run_server(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) {
     while !stop.load(Ordering::Relaxed) {
         on_event(Event::Connecting {
             server: cfg.server.clone(),
@@ -681,14 +801,30 @@ fn session(
     // made again later (the operator's client moved the device) must not write
     // it over what that client has set.
     let mut gain_once = if hold { cfg.gain } else { None };
+    let mut wf_bank = WfBank::new();
+    let mut last_step: Option<usize> = None;
 
     loop {
         // Whether this client has control is the server's latest word, not what
         // it was when we connected: SDR# takes control when it connects, and a
         // client without it cannot tune the device or write the gain.
         let tune = sync.can_control && (cfg.tune || !cfg.yield_control);
-        let Some(p) = plan(
+        let now_s = clock::now_ns().div_euclid(1_000_000_000);
+        let (mask, step) = cfg.mask_at(now_s);
+        if let Some((i, end)) = step
+            && last_step != Some(i)
+        {
+            last_step = Some(i);
+            on_event(Event::Step {
+                index: i,
+                of: cfg.steps.len(),
+                ends_utc_s: end,
+            });
+        }
+        let until_ns = step.map(|(_, end)| end * 1_000_000_000);
+        let Some(p) = plan::plan_of(
             &cfg.channels,
+            &mask,
             cfg.center_hz,
             cfg.rate,
             &dev,
@@ -698,7 +834,7 @@ fn session(
             on_event(Event::NoChannelFits {
                 device_hz: sync.device_hz,
             });
-            sync = wait_for_move(&mut c, stop, sync)?;
+            sync = wait_for_move(&mut c, stop, sync, until_ns)?;
             continue;
         };
         let writes = Writes {
@@ -727,14 +863,28 @@ fn session(
             channelizer: channelizer_for(cfg, p.active.len()),
         });
         c.set(SET_STREAMING_ENABLED, 1)?;
-        match stream(&mut c, stop, cfg, &dev, &p, sync, on_event)? {
-            None => return Ok(End::Stopped),
-            Some(s) => {
+        match stream(
+            &mut c,
+            stop,
+            cfg,
+            &dev,
+            &p,
+            sync,
+            until_ns,
+            &mut wf_bank,
+            on_event,
+        )? {
+            StreamEnd::Stopped => return Ok(End::Stopped),
+            StreamEnd::Moved(s) => {
                 on_event(Event::Moved {
                     device_hz: s.device_hz,
                     iq_hz: s.iq_hz,
                 });
                 sync = s;
+            }
+            // The next step's channels: plan again, which retunes.
+            StreamEnd::StepDone => {
+                c.set(SET_STREAMING_ENABLED, 0)?;
             }
         }
     }
@@ -806,7 +956,12 @@ fn apply(
 /// With streaming off nothing arrives unprompted, so a PING every
 /// [`PING_EVERY`] keeps `Conn::read`'s stall check from taking an idle
 /// connection for a dead one, and finds a dead one.
-fn wait_for_move(c: &mut Conn, stop: &AtomicBool, was: Sync) -> std::io::Result<Sync> {
+fn wait_for_move(
+    c: &mut Conn,
+    stop: &AtomicBool,
+    was: Sync,
+    until_ns: Option<i64>,
+) -> std::io::Result<Sync> {
     c.set(SET_STREAMING_ENABLED, 0)?;
     loop {
         c.command(CMD_PING, &[])?;
@@ -827,6 +982,10 @@ fn wait_for_move(c: &mut Conn, stop: &AtomicBool, was: Sync) -> std::io::Result<
         while Instant::now() < until {
             if stop.load(Ordering::Relaxed) {
                 return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            // A rotation's step ended: the next may fit where this does not.
+            if until_ns.is_some_and(|u| clock::now_ns() >= u) {
+                return Ok(was);
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -849,6 +1008,8 @@ struct Live {
     longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// By `ChannelId`: the channel's waterfall, when `Config::waterfall`.
     wfs: Vec<Option<ChannelWaterfall>>,
+    /// By `ChannelId`: the key the channel's decoder and waterfall are kept under.
+    keys: Vec<BankKey>,
     format: IqSampleFormat,
 }
 
@@ -882,6 +1043,13 @@ fn remember(hist: &mut std::collections::VecDeque<waterfall::Row>, row: &waterfa
 const WF_BAND_HZ: (f32, f32) = (100.0, 3_100.0);
 
 impl ChannelWaterfall {
+    /// Back from a rotation step away: the audio held for the next row is not
+    /// this stream's continuation. The history stays.
+    fn restart(&mut self) {
+        self.coarse.restart();
+        self.fine.restart();
+    }
+
     fn new() -> Self {
         ChannelWaterfall {
             coarse: waterfall::Waterfall::new(4096, 2048, WF_BAND_HZ.0, WF_BAND_HZ.1),
@@ -916,7 +1084,12 @@ fn digital_gain(dev: &Device, decimation: u32, gain: Option<u32>) -> u32 {
 }
 
 /// A receiver for the plan's channels, built for the format the server sends.
-fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<Live> {
+fn receiver(
+    cfg: &Config,
+    p: &Plan,
+    format: IqSampleFormat,
+    wf_bank: &mut WfBank,
+) -> std::io::Result<Live> {
     let stream = IqStream::new(p.rate, p.center_hz, format).iq_swap(cfg.iq_swap);
     let mut rx = IqReceiver::with_channelizer(stream, channelizer_for(cfg, p.active.len()))
         .map_err(|e| std::io::Error::other(format!("{} S/s: {e}", p.rate)))?;
@@ -926,6 +1099,7 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
     let mut workers: Vec<Option<Worker>> = Vec::new();
     let mut cfg_index: Vec<usize> = Vec::new();
     let mut wfs: Vec<Option<ChannelWaterfall>> = Vec::new();
+    let mut keys: Vec<BankKey> = Vec::new();
     for &i in &p.active {
         let ch = &cfg.channels[i];
         let id = rx
@@ -938,17 +1112,37 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
             cfg_index.resize(id.0 + 1, usize::MAX);
         }
         cfg_index[id.0] = i;
+        let key = bank_key(ch.mode, ch.dial_hz);
+        if keys.len() <= id.0 {
+            keys.resize(id.0 + 1, ("", 0));
+        }
+        keys[id.0] = key;
         if cfg.waterfall {
             rx.tap_audio(id, true);
             if wfs.len() <= id.0 {
                 wfs.resize_with(id.0 + 1, || None);
             }
-            wfs[id.0] = Some(ChannelWaterfall::new());
+            let mut w = wf_bank.remove(&key).unwrap_or_else(ChannelWaterfall::new);
+            w.restart();
+            wfs[id.0] = Some(w);
         }
+        // This channel's decoder from its last turn, if it had one, with the
+        // options and station as they are now.
+        let (opts, station) = cfg
+            .live
+            .get(i)
+            .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
+        let decoder = {
+            let kept = cfg.live.bank.lock().unwrap().decoders.remove(&key);
+            let mut d = kept.unwrap_or_else(|| AnyDecoder::with_defaults(ch.mode));
+            apply_options(&mut d, &opts, &station);
+            d
+        };
         workers[id.0] = Some(Worker::spawn(
             i,
             ch.dial_hz,
-            ch.decoder(&cfg.live.station()),
+            decoder,
+            (key, cfg.live.clone()),
             rtx.clone(),
             busy.clone(),
             longest_us.clone(),
@@ -962,12 +1156,28 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
         busy,
         longest_us,
         wfs,
+        keys,
         format,
     })
 }
 
 /// Decode until stopped (`None`) or the server says the device or this
 /// client's IQ centre moved (`Some`).
+/// Why [`stream`] returned.
+enum StreamEnd {
+    Stopped,
+    /// The server says the device or this client's IQ centre moved.
+    Moved(Sync),
+    /// The rotation step is over.
+    StepDone,
+}
+
+/// How long after a step's end the stream is read on: the last slot of the
+/// step is complete when its last samples have arrived, and they arrive late.
+const STEP_GRACE_NS: i64 = 1_500_000_000;
+
+/// Decode until stopped, the server moves the device, or `until_ns` (UTC) passes.
+#[allow(clippy::too_many_arguments)]
 fn stream(
     c: &mut Conn,
     stop: &AtomicBool,
@@ -975,11 +1185,56 @@ fn stream(
     dev: &Device,
     p: &Plan,
     sync: Sync,
+    until_ns: Option<i64>,
+    wf_bank: &mut WfBank,
     on_event: &mut impl FnMut(Event),
-) -> std::io::Result<Option<Sync>> {
-    let rate = p.rate;
+) -> std::io::Result<StreamEnd> {
     // Built on the first IQ message, in the format the server actually sends.
     let mut live: Option<Live> = None;
+    let r = stream_inner(
+        c, stop, cfg, dev, p, sync, until_ns, &mut live, wf_bank, on_event,
+    );
+    // The waterfalls (and their history) wait for the band's next turn; the
+    // workers hand their decoders back as they finish.
+    if let Some(mut l) = live.take() {
+        for (id, w) in l.wfs.iter_mut().enumerate() {
+            if let (Some(w), Some(key)) = (w.take(), l.keys.get(id)) {
+                wf_bank.insert(*key, w);
+            }
+        }
+    }
+    r
+}
+
+/// Wait for the slots in the decoders and report their rows.
+fn settle(live: &mut Option<Live>, on_event: &mut impl FnMut(Event)) {
+    let Some(l) = live.as_mut() else { return };
+    let until = Instant::now() + Duration::from_secs(20);
+    while l.busy.load(Ordering::Relaxed) > 0 && Instant::now() < until {
+        while let Ok(d) = l.results.try_recv() {
+            on_event(Event::Decode(d));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    while let Ok(d) = l.results.try_recv() {
+        on_event(Event::Decode(d));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_inner(
+    c: &mut Conn,
+    stop: &AtomicBool,
+    cfg: &Config,
+    dev: &Device,
+    p: &Plan,
+    sync: Sync,
+    until_ns: Option<i64>,
+    live: &mut Option<Live>,
+    wf_bank: &mut WfBank,
+    on_event: &mut impl FnMut(Event),
+) -> std::io::Result<StreamEnd> {
+    let rate = p.rate;
     let mut est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
     let mut anchor: Option<i64> = None;
     let mut next_seq: Option<u32> = None;
@@ -1000,9 +1255,13 @@ fn stream(
     loop {
         let m = match c.read(stop) {
             Ok(m) => m,
-            Err(e) if is_stop(&e) => return Ok(None),
+            Err(e) if is_stop(&e) => return Ok(StreamEnd::Stopped),
             Err(e) => return Err(e),
         };
+        if until_ns.is_some_and(|u| clock::now_ns() >= u + STEP_GRACE_NS) {
+            settle(live, on_event);
+            return Ok(StreamEnd::StepDone);
+        }
         if m.kind == MSG_CLIENT_SYNC {
             let s = Sync::parse(&m.body);
             let now = RadioState {
@@ -1015,7 +1274,7 @@ fn stream(
                 on_event(Event::Radio(now));
             }
             if s.device_hz != sync.device_hz || s.iq_hz != sync.iq_hz {
-                return Ok(Some(s));
+                return Ok(StreamEnd::Moved(s));
             }
             continue;
         }
@@ -1023,7 +1282,7 @@ fn stream(
             continue;
         };
         if live.as_ref().is_none_or(|l| l.format != format) {
-            live = Some(receiver(cfg, p, format)?);
+            *live = Some(receiver(cfg, p, format, wf_bank)?);
             (anchor, next_seq) = (None, None);
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
         }
@@ -1222,6 +1481,62 @@ fn stream(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn rotating() -> Config {
+        let mut c = Config::new(
+            "x",
+            vec![
+                ChannelSpec::new(mfsk_core::Mode::Ft8, 14_074_000.0),
+                ChannelSpec::new(mfsk_core::Mode::Ft8, 7_074_000.0),
+                ChannelSpec::new(mfsk_core::Mode::Ft8, 3_573_000.0),
+            ],
+        );
+        c.steps = vec![
+            Step {
+                channels: vec![0],
+                minutes: 10,
+            },
+            Step {
+                channels: vec![1],
+                minutes: 10,
+            },
+            Step {
+                channels: vec![2],
+                minutes: 5,
+            },
+        ];
+        c
+    }
+
+    /// The cycle (25 min) counts from UTC midnight, so every server and
+    /// every restart agrees on the step.
+    #[test]
+    fn rotation_steps_count_from_utc_midnight() {
+        let c = rotating();
+        let day = 1_700_000_000 / 86_400 * 86_400;
+        assert_eq!(c.step_at(day), Some((0, day + 600)));
+        assert_eq!(c.step_at(day + 599), Some((0, day + 600)));
+        assert_eq!(c.step_at(day + 600), Some((1, day + 1200)));
+        assert_eq!(c.step_at(day + 1200), Some((2, day + 1500)));
+        assert_eq!(c.step_at(day + 1500), Some((0, day + 2100)));
+        assert_eq!(c.mask_at(day + 700).0, vec![false, true, false]);
+        // No rotation: everything, always.
+        let mut c = rotating();
+        c.steps.clear();
+        assert_eq!(c.step_at(day), None);
+        assert_eq!(c.mask_at(day).0, vec![true; 3]);
+    }
+
+    /// A step shorter than five minutes is five: a retune costs a slot or two.
+    #[test]
+    fn short_steps_are_lengthened() {
+        let mut c = rotating();
+        c.steps[0].minutes = 1;
+        let day = 1_700_000_000 / 86_400 * 86_400;
+        assert_eq!(c.step_at(day), Some((0, day + 300)));
+    }
+
     #[test]
     fn connection_failures_read_in_a_few_words() {
         use std::io::{Error, ErrorKind};
@@ -1240,8 +1555,6 @@ mod tests {
             assert_eq!(super::describe(&Error::from(kind)), want);
         }
     }
-
-    use super::*;
 
     #[test]
     fn all_txt_line_columns() {

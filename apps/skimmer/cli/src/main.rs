@@ -171,6 +171,16 @@ fn main() -> ExitCode {
         }
         Event::Reanchor { by_s } => eprintln!("re-anchor: {by_s:+.3} s"),
         Event::Clock(text) => eprintln!("{text}"),
+        Event::Step {
+            index,
+            of,
+            ends_utc_s,
+        } => eprintln!(
+            "rotation step {}/{} until {} UTC",
+            index + 1,
+            of,
+            ends_utc_s % 86_400 / 3600 * 100 + ends_utc_s % 3600 / 60
+        ),
         Event::Status(s) => eprintln!(
             "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
              queue {:.0} kB, decode {:.0} ms, {} slot(s) queued, {} dropped, \

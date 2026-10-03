@@ -30,7 +30,33 @@ pub fn plan(
     device_hz: f64,
     tune: bool,
 ) -> Option<Plan> {
-    let lowest = channels.iter().map(|c| c.dial_hz).fold(f64::MAX, f64::min);
+    plan_of(
+        channels,
+        &vec![true; channels.len()],
+        center_hz,
+        rate,
+        dev,
+        device_hz,
+        tune,
+    )
+}
+
+/// [`plan`] for the channels `wanted` marks: the others are not listened to now
+/// (the other steps of a rotation) but keep their index.
+pub fn plan_of(
+    channels: &[ChannelSpec],
+    wanted_mask: &[bool],
+    center_hz: Option<f64>,
+    rate: Option<u32>,
+    dev: &Device,
+    device_hz: f64,
+    tune: bool,
+) -> Option<Plan> {
+    let on = |i: usize| wanted_mask.get(i).copied().unwrap_or(false);
+    let lowest = (0..channels.len())
+        .filter(|&i| on(i))
+        .map(|i| channels[i].dial_hz)
+        .fold(f64::MAX, f64::min);
     let wanted = center_hz.unwrap_or((lowest - 25_000.0).round());
     let mut best: Option<Plan> = None;
     for &(decimation, r) in &dev.rates {
@@ -47,10 +73,10 @@ pub fn plan(
             wanted.clamp(device_hz - room, device_hz + room).round()
         };
         let active: Vec<usize> = (0..channels.len())
-            .filter(|&i| fits(&channels[i], r, center))
+            .filter(|&i| on(i) && fits(&channels[i], r, center))
             .collect();
         if best.as_ref().is_none_or(|b| active.len() > b.active.len()) {
-            let all = active.len() == channels.len();
+            let all = active.len() == (0..channels.len()).filter(|&i| on(i)).count();
             best = Some(Plan {
                 decimation,
                 rate: r,
