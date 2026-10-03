@@ -23,3 +23,5 @@ export const autostartRequested = () => invoke<boolean>('autostart_requested');
 export const setStation = (myCall: string, myGrid: string) => invoke<void>('set_station', { myCall, myGrid });
 export const setGain = (gain: number) => invoke<void>('set_gain', { gain });
 export const radioState = () => invoke<RadioState | null>('radio_state');
+export const setWaterfall = (focus: number | null, fine: boolean) =>
+  invoke<void>('set_waterfall', { focus, fine });

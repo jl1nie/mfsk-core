@@ -119,6 +119,9 @@ struct Settings {
     tune: bool,
     /// Leave control to an SDR# started later, instead of holding it.
     yield_control: bool,
+    /// Draw the channels' waterfalls, at 1.5 Hz per bin if `waterfall_fine`.
+    waterfall: bool,
+    waterfall_fine: bool,
     /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
     channelizer: String,
     log_enabled: bool,
@@ -146,6 +149,8 @@ impl Default for Settings {
             format: "float".into(),
             tune: false,
             yield_control: false,
+            waterfall: true,
+            waterfall_fine: false,
             channelizer: "auto".into(),
             log_enabled: true,
             log_dir: String::new(),
@@ -175,6 +180,14 @@ enum UiEvent {
         gain: u32,
         max_gain: u32,
         can_control: bool,
+    },
+    Waterfall {
+        channel: usize,
+        focus: bool,
+        utc_ms: f64,
+        f_lo_hz: f32,
+        bin_hz: f32,
+        levels: Vec<u8>,
     },
     Yielded,
     NoChannelFits {
@@ -248,6 +261,14 @@ impl From<Event> for UiEvent {
                 gain: r.gain,
                 max_gain: r.max_gain,
                 can_control: r.can_control,
+            },
+            Event::Waterfall(w) => UiEvent::Waterfall {
+                channel: w.channel,
+                focus: w.focus,
+                utc_ms: w.row.utc_ns as f64 / 1e6,
+                f_lo_hz: w.row.f_lo_hz,
+                bin_hz: w.row.bin_hz,
+                levels: w.row.levels,
             },
             Event::Yielded => UiEvent::Yielded,
             Event::NoChannelFits { device_hz } => UiEvent::NoChannelFits { device_hz },
@@ -397,6 +418,7 @@ fn config(s: &Settings) -> Result<Config, String> {
     cfg.live.set_station(s.station());
     cfg.tune = s.tune;
     cfg.yield_control = s.yield_control;
+    cfg.waterfall = s.waterfall;
     cfg.format = if s.format == "int16" {
         WireFormat::Int16
     } else {
@@ -525,6 +547,16 @@ fn radio_state(state: State<'_, AppState>) -> Option<RadioDto> {
     })
 }
 
+/// Which channel's waterfall is sent whole (the rest send thumbnails), and at
+/// which resolution.
+#[tauri::command]
+fn set_waterfall(state: State<'_, AppState>, focus: Option<usize>, fine: bool) {
+    if let Some(r) = state.running.lock().unwrap().as_ref() {
+        r.live.set_waterfall_focus(focus);
+        r.live.set_waterfall_fine(fine);
+    }
+}
+
 /// `MFSK_SKIMMER_AUTOSTART=1` asks for an unattended run that only needs the
 /// logs. The window asks once it is listening, so it sees the stream events
 /// and its Start button knows the skimmer is running.
@@ -628,6 +660,7 @@ fn main() {
             set_station,
             set_gain,
             radio_state,
+            set_waterfall,
             autostart_requested
         ])
         .on_window_event(|window, event| {

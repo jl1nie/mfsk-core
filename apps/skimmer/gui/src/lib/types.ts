@@ -41,6 +41,9 @@ export interface Settings {
   tune: boolean;
   /** Leave control to an SDR# started later, instead of holding it. */
   yieldControl: boolean;
+  /** Draw the channels' waterfalls; fine is 1.5 Hz per bin instead of 2.9. */
+  waterfall: boolean;
+  waterfallFine: boolean;
   channelizer: 'auto' | 'direct' | 'pfb';
   logEnabled: boolean;
   /** Folder the ALL.TXT is written in. */
@@ -96,6 +99,15 @@ export type UiEvent =
       deviceHz: number;
     }
   | { type: 'radio'; gain: number; maxGain: number; canControl: boolean }
+  | {
+      type: 'waterfall';
+      channel: number;
+      focus: boolean;
+      utcMs: number;
+      fLoHz: number;
+      binHz: number;
+      levels: number[];
+    }
   | { type: 'yielded' }
   | { type: 'noChannelFits'; deviceHz: number }
   | {

@@ -8,6 +8,7 @@ publish     = false
 description = "Sample app: decode FT8/FT4/WSPR/JT9/JT65/FST4/Q65 from a SpyServer through mfsk-core's IqReceiver, sharing the radio with SDR#. Shared by the skimmer CLI and the Tauri GUI."
 
 [dependencies]
+num-complex = "0.4"
 # No version requirement on the path dependency, as in mfsk-ffi: this
 # crate is `publish = false` and the workspace version is the only truth.
 mfsk-core = { path = "../../../mfsk-core", default-features = false, features = [

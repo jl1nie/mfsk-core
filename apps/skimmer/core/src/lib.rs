@@ -28,6 +28,7 @@ pub mod anchor;
 pub mod modes;
 pub mod plan;
 pub mod spyserver;
+pub mod waterfall;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -102,6 +103,11 @@ pub struct LiveOptions {
     /// A gain set while running, stored as index + 1 (`0`: none): wins over
     /// [`Config::gain`], also on a reconnect.
     gain: std::sync::atomic::AtomicU64,
+    /// The channel whose waterfall rows are sent whole, as index + 1 (`0`:
+    /// none); the others send a coarse thumbnail.
+    wf_focus: std::sync::atomic::AtomicU64,
+    /// The focused channel's rows at 1.5 Hz per bin instead of 2.9.
+    wf_fine: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -134,6 +140,25 @@ impl LiveOptions {
 
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    /// The channel (an index of `Config::channels`) whose waterfall is sent in
+    /// full; `None` sends thumbnails only.
+    pub fn set_waterfall_focus(&self, channel: Option<usize>) {
+        self.wf_focus
+            .store(channel.map_or(0, |c| c as u64 + 1), Ordering::Release);
+    }
+
+    /// 1.5 Hz bins (8192-point FFT) for the focused channel instead of 2.9 Hz.
+    pub fn set_waterfall_fine(&self, fine: bool) {
+        self.wf_fine.store(fine, Ordering::Release);
+    }
+
+    fn waterfall_focus(&self) -> Option<usize> {
+        match self.wf_focus.load(Ordering::Acquire) {
+            0 => None,
+            c => Some((c - 1) as usize),
+        }
     }
 
     /// Set the device gain index in a running skimmer. Takes effect on the next
@@ -300,6 +325,10 @@ pub struct Config {
     /// (and reconnect after [`Self::retry`] as a guest) instead of holding it.
     /// Default `false`: take control and tune.
     pub yield_control: bool,
+    /// Produce [`Event::Waterfall`] rows (a fine spectrum of each channel's
+    /// audio). Off by default: the rows cost an FFT per channel per 0.17 s and a
+    /// window to draw them.
+    pub waterfall: bool,
     pub format: WireFormat,
     /// `None` chooses by channel count: see [`AUTO_PFB_CHANNELS`].
     pub channelizer: Option<Channelizer>,
@@ -322,6 +351,7 @@ impl Config {
             gain: None,
             tune: false,
             yield_control: false,
+            waterfall: false,
             format: WireFormat::Float,
             channelizer: None,
             iq_swap: false,
@@ -355,6 +385,17 @@ pub struct RadioState {
     pub gain: u32,
     pub max_gain: u32,
     pub can_control: bool,
+}
+
+/// A [`waterfall::Row`] of one channel. `focus` rows are whole (the channel the
+/// window shows large); the others are pooled four bins to one and every other
+/// row, a thumbnail.
+#[derive(Clone, Debug)]
+pub struct WaterfallRow {
+    /// An index of `Config::channels`.
+    pub channel: usize,
+    pub focus: bool,
+    pub row: waterfall::Row,
 }
 
 /// One decoded message.
@@ -407,6 +448,8 @@ pub enum Event {
     },
     /// The radio's gain or this client's control changed (see [`RadioState`]).
     Radio(RadioState),
+    /// A spectrum row of one channel's audio (see [`waterfall`]).
+    Waterfall(WaterfallRow),
     /// Got control with `yield_control` set: leaving it for the operator's client.
     Yielded,
     /// No channel fits the band around the device centre; waiting for it to move.
@@ -768,7 +811,30 @@ struct Live {
     busy: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Longest slot decode since the last status, in µs.
     longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// By `ChannelId`: the channel's waterfall, when `Config::waterfall`.
+    wfs: Vec<Option<ChannelWaterfall>>,
     format: IqSampleFormat,
+}
+
+/// A channel's waterfall at both resolutions, and the row count that thins its
+/// thumbnail.
+struct ChannelWaterfall {
+    coarse: waterfall::Waterfall,
+    fine: waterfall::Waterfall,
+    ticks: u32,
+}
+
+/// The audio band a waterfall shows: the decoders' own bands lie inside it.
+const WF_BAND_HZ: (f32, f32) = (100.0, 3_100.0);
+
+impl ChannelWaterfall {
+    fn new() -> Self {
+        ChannelWaterfall {
+            coarse: waterfall::Waterfall::new(4096, 2048, WF_BAND_HZ.0, WF_BAND_HZ.1),
+            fine: waterfall::Waterfall::new(8192, 4096, WF_BAND_HZ.0, WF_BAND_HZ.1),
+            ticks: 0,
+        }
+    }
 }
 
 /// What [`apply`] may write to the device: only a client with control can.
@@ -803,6 +869,7 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
     let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut workers: Vec<Option<Worker>> = Vec::new();
     let mut cfg_index: Vec<usize> = Vec::new();
+    let mut wfs: Vec<Option<ChannelWaterfall>> = Vec::new();
     for &i in &p.active {
         let ch = &cfg.channels[i];
         let id = rx
@@ -815,6 +882,13 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
             cfg_index.resize(id.0 + 1, usize::MAX);
         }
         cfg_index[id.0] = i;
+        if cfg.waterfall {
+            rx.tap_audio(id, true);
+            if wfs.len() <= id.0 {
+                wfs.resize_with(id.0 + 1, || None);
+            }
+            wfs[id.0] = Some(ChannelWaterfall::new());
+        }
         workers[id.0] = Some(Worker::spawn(
             i,
             ch.dial_hz,
@@ -831,6 +905,7 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
         results,
         busy,
         longest_us,
+        wfs,
         format,
     })
 }
@@ -900,6 +975,7 @@ fn stream(
             results,
             busy,
             longest_us,
+            wfs,
             ..
         } = live.as_mut().unwrap();
 
@@ -954,6 +1030,48 @@ fn stream(
         let t = Instant::now();
         let mut slots = Vec::new();
         rx.push_bytes(&m.body, &mut slots);
+        if cfg.waterfall {
+            let focus = cfg.live.waterfall_focus();
+            let fine = cfg.live.wf_fine.load(Ordering::Acquire);
+            let end = rx.utc_of(rx.samples_in());
+            let mut audio = Vec::new();
+            let mut rows = Vec::new();
+            for (id, wf) in wfs.iter_mut().enumerate() {
+                let Some(wf) = wf else { continue };
+                audio.clear();
+                rx.take_audio(mfsk_core::iq::ChannelId(id), &mut audio);
+                let channel = cfg_index[id];
+                let is_focus = focus == Some(channel);
+                rows.clear();
+                // Both resolutions are fed so that switching loses nothing.
+                wf.coarse.push(&audio, end, &mut rows);
+                let mut fine_rows = Vec::new();
+                if is_focus && fine {
+                    wf.fine.push(&audio, end, &mut fine_rows);
+                }
+                let chosen = if is_focus && fine {
+                    fine_rows
+                } else {
+                    std::mem::take(&mut rows)
+                };
+                for row in chosen {
+                    wf.ticks = wf.ticks.wrapping_add(1);
+                    if is_focus {
+                        on_event(Event::Waterfall(WaterfallRow {
+                            channel,
+                            focus: true,
+                            row,
+                        }));
+                    } else if wf.ticks.is_multiple_of(2) {
+                        on_event(Event::Waterfall(WaterfallRow {
+                            channel,
+                            focus: false,
+                            row: row.pooled(4),
+                        }));
+                    }
+                }
+            }
+        }
         for slot in slots {
             let Some(w) = workers[slot.channel.0].as_ref() else {
                 continue;

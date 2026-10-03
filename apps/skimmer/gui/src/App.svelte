@@ -4,6 +4,8 @@
   import type { DecodeRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
   import ChannelPanel from './lib/ChannelPanel.svelte';
   import DecodeTable from './lib/DecodeTable.svelte';
+  import WaterfallPanel from './lib/WaterfallPanel.svelte';
+  import { WaterfallStore } from './lib/waterfall';
 
   /** Rows kept in the table; older ones stay in the log file. */
   const MAX_ROWS = 5000;
@@ -27,6 +29,10 @@
   let active = $state<boolean[]>([]);
   // Raw, not a deep proxy: 5000 row objects are replaced wholesale, never mutated.
   let rows = $state.raw<DecodeRow[]>([]);
+  const wfStore = new WaterfallStore();
+  let wfTick = $state(0);
+  let wfFocus = $state(0);
+  let wfOpen = $state(true);
   let nextId = 0;
   let gainTimer: ReturnType<typeof setTimeout> | undefined;
   /** The slider moves continuously; the radio gets the value once it rests for a moment. */
@@ -114,6 +120,10 @@
       case 'radio':
         takeRadio(e);
         break;
+      case 'waterfall':
+        wfStore.push(e);
+        wfTick++;
+        break;
       case 'yielded':
         phase = 'Had control of the radio: leaving it for SDR# and retrying';
         notice = 'Control was given back (Settings ⚙: "Give control back" is on). Turn it off to run alone.';
@@ -123,6 +133,7 @@
         active = active.map(() => false);
         break;
       case 'streaming':
+        if (settings?.waterfall) api.setWaterfall(wfFocus, settings.waterfallFine);
         phase = 'Decoding';
         detail = `IQ ${(e.rate / 1e3).toFixed(0)} kS/s at ${mhz(e.centerHz)} MHz · device ${mhz(e.deviceHz)} MHz · ${e.channelizer}`;
         active = e.active;
@@ -179,6 +190,15 @@
     rows = all.length > MAX_ROWS ? all.slice(-MAX_ROWS) : all;
   }
 
+  /** Show a channel's waterfall large; the backend sends whole rows only for it. */
+  function focusChannel(i: number) {
+    wfFocus = i;
+    wfStore.big.channel = -1;
+    wfStore.big.rows = [];
+    wfStore.big.utc = [];
+    if (running) api.setWaterfall(i, settings?.waterfallFine ?? false);
+  }
+
   function clearRows() {
     pending = [];
     rows = [];
@@ -214,9 +234,11 @@
     try {
       slotCounts = settings.channels.map(() => 0);
       slotOf = [];
+      wfStore.clear();
       health = null;
       await api.start($state.snapshot(settings));
       running = true;
+      if (settings.waterfall) api.setWaterfall(wfFocus, settings.waterfallFine);
     } catch (e) {
       notice = String(e);
     }
@@ -322,6 +344,19 @@
               client the skimmer takes control and tunes the radio; beside a running SDR# it is a guest and never tunes.
             </span>
           </label>
+          <label class="check" title="A fine spectrum of each channel's audio (2.9 Hz per bin) under the channel list, with the decodes marked on it">
+            <input type="checkbox" bind:checked={settings.waterfall} disabled={running} />
+            <span>Waterfall</span>
+          </label>
+          <label class="check" title="8192-point FFT for the channel shown large: 1.5 Hz per bin, 0.34 s per row">
+            <input
+              type="checkbox"
+              bind:checked={settings.waterfallFine}
+              disabled={!settings.waterfall}
+              onchange={() => running && api.setWaterfall(wfFocus, settings!.waterfallFine)}
+            />
+            <span>Fine (1.5 Hz per bin)</span>
+          </label>
           <label class="check">
             <input type="checkbox" bind:checked={settings.logEnabled} disabled={running} />
             <span>Write ALL.TXT</span>
@@ -373,7 +408,21 @@
 
     </aside>
 
-    <DecodeTable {rows} channels={settings.channels} {slotS} onclear={clearRows} />
+    <div class="rightcol">
+      {#if settings.waterfall}
+        <WaterfallPanel
+          store={wfStore}
+          tick={wfTick}
+          channels={settings.channels}
+          focus={Math.min(wfFocus, Math.max(0, settings.channels.length - 1))}
+          onfocus={focusChannel}
+          {rows}
+          {slotS}
+          bind:open={wfOpen}
+        />
+      {/if}
+      <DecodeTable {rows} channels={settings.channels} {slotS} onclear={clearRows} />
+    </div>
   </main>
 {:else}
   <p class="loading">Loading…</p>
