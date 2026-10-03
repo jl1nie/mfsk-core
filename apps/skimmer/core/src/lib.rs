@@ -26,9 +26,12 @@
 
 pub mod anchor;
 pub mod clock;
+pub mod geo;
 pub mod modes;
 pub mod plan;
+pub mod spot;
 pub mod spyserver;
+pub mod store;
 pub mod waterfall;
 
 use std::sync::atomic::{AtomicBool, Ordering};
