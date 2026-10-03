@@ -140,6 +140,9 @@ struct Channel {
     /// Its index in the shared bank, on the `Pfb` path while active.
     bank_idx: usize,
     scratch: Vec<f32>,
+    /// The channel's audio since the last [`IqReceiver::take_audio`], when
+    /// tapped (a waterfall wants the continuous audio, not the slots).
+    tap: Option<Vec<f32>>,
 }
 
 impl Channel {
@@ -151,6 +154,9 @@ impl Channel {
     /// `out`.
     fn feed(&mut self, clock: &SampleClock, fs: u32, out: &mut Vec<CompletedSlot>) {
         let audio = core::mem::take(&mut self.scratch);
+        if let Some(t) = self.tap.as_mut() {
+            t.extend_from_slice(&audio);
+        }
         let anchor = clock.anchor_ns();
         let (id, mode, dial_hz) = (self.id, self.mode, self.dial_hz);
         let period_ns = self.grid_period_ns();
@@ -269,6 +275,7 @@ impl IqReceiver {
             fe,
             bank_idx,
             scratch: Vec::new(),
+            tap: None,
         });
         Ok(id)
     }
@@ -294,6 +301,38 @@ impl IqReceiver {
     }
 
     /// Remove a channel; `false` if it was not there.
+    /// Start or stop keeping a channel's continuous 12 kHz audio for
+    /// [`Self::take_audio`] (a waterfall, a level meter). Off by default: a
+    /// tapped channel that is never drained grows without bound.
+    pub fn tap_audio(&mut self, id: ChannelId, on: bool) -> bool {
+        match self.channels.iter_mut().find(|c| c.id == id) {
+            Some(c) => {
+                c.tap = on.then(Vec::new);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Move the audio a tapped channel produced since the last call onto the end
+    /// of `out`, unscaled (the slots handed to a decoder are normalised, this
+    /// is the level that came out of the channel filter). A paused channel
+    /// produces none. `false` if the channel is unknown or not tapped.
+    pub fn take_audio(&mut self, id: ChannelId, out: &mut Vec<f32>) -> bool {
+        match self
+            .channels
+            .iter_mut()
+            .find(|c| c.id == id)
+            .and_then(|c| c.tap.as_mut())
+        {
+            Some(t) => {
+                out.append(t);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn remove_channel(&mut self, id: ChannelId) -> bool {
         let Some(at) = self.channels.iter().position(|c| c.id == id) else {
             return false;

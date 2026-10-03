@@ -673,3 +673,51 @@ fn byte_formats_match_the_wav_path_direct() {
 fn byte_formats_match_the_wav_path_pfb() {
     byte_formats_match_the_wav_path(Channelizer::Pfb);
 }
+
+/// `tap_audio` / `take_audio`: the channel's continuous 12 kHz audio, for a
+/// waterfall. A 1000 Hz tone 1 kHz above the dial comes out at 1000 Hz, at the
+/// 12 kHz rate, and a drained tap starts again from empty.
+fn tapped_audio_is_the_channel_audio(kind: Channelizer) {
+    let tone: Vec<i16> = (0..12_000 * 6)
+        .map(|n| (8_000.0 * (std::f64::consts::TAU * 1_000.0 * n as f64 / 12_000.0).sin()) as i16)
+        .collect();
+    let iq = synth_iq(&tone, FS, CENTER, FT8_DIAL);
+    let stream = IqStream::new(FS, CENTER, IqSampleFormat::Cf32);
+    let mut rx = IqReceiver::with_channelizer(stream, kind).unwrap();
+    let id = rx.add_channel(FT8_DIAL, Mode::Ft8).unwrap();
+    assert!(!rx.take_audio(id, &mut Vec::new()), "not tapped yet");
+    assert!(rx.tap_audio(id, true));
+    assert!(rx.tap_audio(id, false) && rx.tap_audio(id, true));
+    let mut slots = Vec::new();
+    let mut got = Vec::new();
+    for chunk in interleave(&iq).chunks(2 * 4096) {
+        rx.push_cf32(chunk, &mut slots);
+        assert!(rx.take_audio(id, &mut got));
+    }
+    // 6 s of audio, less the filter's startup.
+    assert!(
+        (got.len() as i64 - 72_000).abs() < 1_500,
+        "{} samples",
+        got.len()
+    );
+    // Zero-crossing rate of the second half: 1000 Hz.
+    let half = &got[got.len() / 2..];
+    let crossings = half
+        .windows(2)
+        .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+        .count();
+    let hz = crossings as f64 * 12_000.0 / half.len() as f64;
+    assert!((hz - 1_000.0).abs() < 10.0, "{hz} Hz");
+    let mut again = Vec::new();
+    assert!(rx.take_audio(id, &mut again) && again.is_empty());
+    assert!(!rx.tap_audio(ChannelId(99), true));
+}
+
+#[test]
+fn tapped_audio_direct() {
+    tapped_audio_is_the_channel_audio(Channelizer::Direct);
+}
+#[test]
+fn tapped_audio_pfb() {
+    tapped_audio_is_the_channel_audio(Channelizer::Pfb);
+}
