@@ -45,9 +45,51 @@ impl sealed::Sealed for super::Q65Message {}
 #[cfg(feature = "q65")]
 impl WsjtApCompatible for super::Q65Message {}
 
+/// Which a-priori hypotheses a decode may try, by the pass id each carries
+/// (5 `MyCall ??? ???`, 6 the hint as supplied, 7 `CQ DxCall`, 8 both calls,
+/// 9 / 10 / 11 both calls and `RRR` / `RR73` / `73`, 12 the blind `CQ`).
+///
+/// Upstream chooses its `iaptype`s from where the QSO stands
+/// (`naptypes(nQSOProgress, ...)`, `ft8b.f90:55-70`), so a hint can name
+/// both calls and still allow only some of what they would lock. The
+/// default allows everything, which is what a hint without a mask always
+/// meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApPassMask(u16);
+
+impl ApPassMask {
+    /// Every pass.
+    pub const ALL: ApPassMask = ApPassMask(u16::MAX);
+    /// No pass: AP off.
+    pub const NONE: ApPassMask = ApPassMask(0);
+
+    /// Only the passes in `ids`.
+    pub fn only(ids: &[u8]) -> Self {
+        ApPassMask(ids.iter().fold(0u16, |m, &i| m | (1 << (i & 15))))
+    }
+
+    pub fn allows(self, pass_id: u8) -> bool {
+        self.0 & (1 << (pass_id & 15)) != 0
+    }
+}
+
+impl Default for ApPassMask {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 /// A Priori information to bias decoding.
 #[derive(Debug, Clone, Default)]
 pub struct ApHint {
+    /// Which hypotheses may run; see [`ApPassMask`]. Default: all.
+    pub allow: ApPassMask,
+    /// The token of the blind `CQ` hypothesis (`CQ`, `CQ TEST`, `CQ FD`,
+    /// `CQ RU`, `CQ WW`: upstream's `mcq*` tables by contest). `None` is `CQ`.
+    pub cq: Option<String>,
+    /// The other station's locator, kept for FT8's a8 list decoder
+    /// (`ft8_a8d.f90`). Not locked: `iaptype` 3 locks 58 bits and no more.
+    pub his_grid: Option<String>,
     /// Known first callsign (e.g. "CQ", "JA1ABC"). Locks message bits 0–28.
     pub call1: Option<String>,
     /// Known second callsign (e.g. "3Y0Z"). Locks message bits 29–57.
@@ -77,6 +119,35 @@ impl ApHint {
     pub fn with_report(mut self, rpt: &str) -> Self {
         self.report = Some(rpt.to_string());
         self
+    }
+    pub fn with_allow(mut self, allow: ApPassMask) -> Self {
+        self.allow = allow;
+        self
+    }
+    pub fn with_cq(mut self, token: &str) -> Self {
+        self.cq = Some(token.to_string());
+        self
+    }
+    pub fn with_his_grid(mut self, grid: &str) -> Self {
+        self.his_grid = Some(grid.to_string());
+        self
+    }
+
+    /// AP off: a hint that allows no pass and locks nothing.
+    pub fn off() -> Self {
+        Self::default().with_allow(ApPassMask::NONE)
+    }
+
+    /// The blind-CQ hypothesis this hint allows, if any: a hint-less decode
+    /// (`None`) has always tried plain `CQ`; a hint says which token, or
+    /// that it may not.
+    pub fn blind_cq(hint: Option<&ApHint>) -> Option<ApHint> {
+        let token = match hint {
+            None => "CQ",
+            Some(h) if h.allow.allows(12) => h.cq.as_deref().unwrap_or("CQ"),
+            Some(_) => return None,
+        };
+        Some(ApHint::new().with_call1(token))
     }
 
     /// True if any AP field is populated.

@@ -38,13 +38,13 @@ use super::{
 use crate::engine::equalize::EqMode;
 use crate::engine::pipeline::{DecodeResult, DecodeStrictness};
 use crate::engine::protocol::Protocol;
-use crate::msg::ApHint;
 use crate::msg::decode_request::{
     DecodeOutcome, DecodeRequest, FrameDecodable, SupportsMessageFilter,
 };
 use crate::msg::decoded::Decoded;
 use crate::msg::hash_table::CallsignHashTable;
 use crate::msg::wsjt77::{Wsjt77Fields, unpack77_learn, unpack77_with_hash};
+use crate::msg::{ApHint, ApPassMask};
 
 /// Which messages a decode delivers beyond (or instead of) the codec's own
 /// verdict. `fn` pointers, so the extras stay `Clone` and `'static`; each
@@ -241,11 +241,108 @@ pub(crate) fn f32_gain(a: &[f32]) -> Option<f32> {
     Some(if (g - 1.0).abs() < 1e-3 { 1.0 } else { g })
 }
 
-/// The interim AP hint from the parameter block: with AP on and no QSO
-/// context, upstream's only hypothesis is CQ (`iaptype = 1`). The full
-/// QSO-context tables replace this.
-fn block_ap(params: &DecodeParams, allowed: bool) -> Option<ApHint> {
-    (allowed && params.ap != super::ApMode::Off).then(|| ApHint::new().with_call1("CQ"))
+/// Which a-priori tables a mode follows. FT8's differs from FT4's and
+/// FST4's at `nQSOProgress` 3 and 4, where it also tries `RRR` and `73`.
+// Each variant is built by only some of the protocol features.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum ApTable {
+    Ft8,
+    Ft4Fst4,
+}
+
+/// `naptypes(nQSOProgress, 1:4)` (`ft8b.f90:55-70`, `ft4_decode.f90:132-137`,
+/// `fst4_decode.f90:133-138`), the `iaptype`s tried in a period:
+/// 1 `CQ ??? ???`, 2 `MyCall ??? ???`, 3 `MyCall DxCall ???`, and
+/// 4 / 5 / 6 with `RRR` / `73` / `RR73`.
+fn iaptypes(table: ApTable, progress: super::QsoProgress) -> &'static [u8] {
+    use super::QsoProgress::*;
+    match (table, progress) {
+        (_, Calling) => &[1, 2],
+        (_, Replying | Report) => &[2, 3],
+        (ApTable::Ft8, RogerReport | Rogers) => &[3, 4, 5, 6],
+        (ApTable::Ft4Fst4, RogerReport | Rogers) => &[3, 6],
+        (_, Signoff) => &[3, 1, 2],
+    }
+}
+
+/// The pass id each `iaptype` carries in a [`ApHint`] (see [`ApPassMask`]).
+fn pass_of(iaptype: u8) -> u8 {
+    match iaptype {
+        1 => 12,
+        2 => 5,
+        3 => 8,
+        4 => 9,
+        5 => 11,
+        _ => 10, // 6, RR73
+    }
+}
+
+/// `DecodeParams` as the hint the engines take: upstream's QSO-context AP.
+///
+/// `MyCall` and `DxCall` become the hint's two calls; `ap` and
+/// `nQSOProgress` decide which `iaptype`s may run; a call that is not a
+/// standard one (`apbits(1) > 1`) rules out the types that need it. The
+/// engines' own rules complete it: types 3 and above only within 50 Hz of
+/// the Rx or Tx frequency (`ncontest <= 5 .and. iaptype >= 3 ...`).
+///
+/// `enabled` is the depth rule (FT4 and FST4 run no AP at `ndepth` 1); a
+/// Fox (`ncontest = 6`) never runs it. Hound's "below 950 Hz only" is not
+/// applied.
+fn qso_hint(params: &DecodeParams, table: ApTable, enabled: bool) -> ApHint {
+    use super::{ApMode, Contest};
+    use crate::msg::wsjt77::pack28;
+
+    if !enabled || params.ap == ApMode::Off || params.contest == Contest::Fox {
+        return ApHint::off();
+    }
+    let cq = match params.contest {
+        Contest::GridExchange | Contest::EuVhf => Some("CQ TEST"),
+        Contest::FieldDay => Some("CQ FD"),
+        Contest::RttyRoundup => Some("CQ RU"),
+        _ => None,
+    };
+    let standard = |c: &str| !c.is_empty() && pack28(c).is_some();
+    let (mycall, hiscall) = (&params.station.call, &params.qso.his_call);
+    let types: &[u8] = if params.ap == ApMode::CqOnly {
+        &[1]
+    } else {
+        iaptypes(table, params.qso.progress)
+    };
+    let ids: alloc::vec::Vec<u8> = types
+        .iter()
+        .copied()
+        .filter(|&t| t < 2 || standard(mycall))
+        .filter(|&t| t < 3 || standard(hiscall))
+        .map(pass_of)
+        .collect();
+    let mut hint = ApHint::new().with_allow(ApPassMask::only(&ids));
+    if let Some(cq) = cq {
+        hint = hint.with_cq(cq);
+    }
+    if standard(mycall) {
+        hint = hint.with_call1(mycall);
+        if standard(hiscall) {
+            hint = hint.with_call2(hiscall);
+        }
+    }
+    if !params.qso.his_grid.is_empty() {
+        hint = hint.with_his_grid(&params.qso.his_grid);
+    }
+    hint
+}
+
+/// The hint a decode uses: the library's free-form one when given
+/// (`extras.ap_hint`, hunting a DX), else the QSO-context one.
+fn ap_for(
+    params: &DecodeParams,
+    extras_hint: &Option<ApHint>,
+    table: ApTable,
+    enabled: bool,
+) -> ApHint {
+    extras_hint
+        .clone()
+        .unwrap_or_else(|| qso_hint(params, table, enabled))
 }
 
 fn run<P: SupportsMessageFilter>(
@@ -440,7 +537,7 @@ impl Decodable for crate::Ft8 {
         on_row: Option<OnRow<'_, DecodeResult>>,
     ) -> SlotResult<DecodeResult> {
         let (s, strictness) = ft8_search(params.depth).tuned(&extras.tuning);
-        let ap = extras.ap_hint.clone().or_else(|| block_ap(params, true));
+        let ap = ap_for(params, &extras.ap_hint, ApTable::Ft8, true);
         let (out, results) =
             frame_decode::<crate::Ft8, _>(state, slot, on_row, |pcm, cb, previous| {
                 if let (Some(sn), Some(target)) = (extras.sniper, params.rx_freq_hz) {
@@ -450,9 +547,7 @@ impl Decodable for crate::Ft8 {
                         .osd(s.osd)
                         .strictness(strictness)
                         .eq_mode(extras.eq);
-                    if let Some(ap) = ap.as_ref() {
-                        req = req.ap_hint(ap);
-                    }
+                    req = req.ap_hint(&ap);
                     if let Some(cb) = cb {
                         req = req.on_result(cb);
                     }
@@ -477,9 +572,7 @@ impl Decodable for crate::Ft8 {
                     Ft8Strategy::SicRounds(n) => req.sic_rounds(n),
                     Ft8Strategy::SicEarly => req.sic_early(),
                 };
-                if let Some(ap) = ap.as_ref() {
-                    req = req.ap_hint(ap);
-                }
+                req = req.ap_hint(&ap);
                 if extras.a7 {
                     req = req.previous_cycle(previous);
                 }
@@ -525,10 +618,14 @@ impl Decodable for crate::Ft4 {
     ) -> SlotResult<DecodeResult> {
         let (s, strictness) = ft4_search(params.depth).tuned(&extras.tuning);
         // `ft4_decode.f90:321-324`: no AP at depth 1.
-        let ap = extras
-            .ap_hint
-            .clone()
-            .or_else(|| block_ap(params, params.depth != Depth::Fast));
+        // `ft4_decode.f90:323-324`: no AP at `ndepth` 1, and none for Fox or
+        // Hound (`ncontest >= 6`).
+        let ap = ap_for(
+            params,
+            &extras.ap_hint,
+            ApTable::Ft4Fst4,
+            params.depth != Depth::Fast && params.contest.ncontest() < 6,
+        );
         frame_decode::<crate::Ft4, _>(state, slot, on_row, |pcm, cb, _| {
             let mut req = base_request::<crate::Ft4>(
                 pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
@@ -537,9 +634,7 @@ impl Decodable for crate::Ft4 {
                 Ft4Strategy::SinglePass => req.single_pass(),
                 Ft4Strategy::SicRounds(n) => req.sic_rounds(n),
             };
-            if let Some(ap) = ap.as_ref() {
-                req = req.ap_hint(ap);
-            }
+            req = req.ap_hint(&ap);
             run(req, extras.filter)
         })
         .0
@@ -572,10 +667,12 @@ macro_rules! fst4_decodable {
                     low_depth: false,
                 };
                 let (s, strictness) = search.tuned(&extras.tuning);
-                let ap = extras
-                    .ap_hint
-                    .clone()
-                    .or_else(|| block_ap(params, params.depth != Depth::Fast));
+                let ap = ap_for(
+                    params,
+                    &extras.ap_hint,
+                    ApTable::Ft4Fst4,
+                    params.depth != Depth::Fast,
+                );
                 frame_decode::<$ty, _>(state, slot, on_row, |pcm, cb, _| {
                     let mut req = base_request::<$ty>(
                         pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
@@ -584,9 +681,7 @@ macro_rules! fst4_decodable {
                     if let Some(nb) = extras.noise_blanker {
                         req = req.noise_blanker(nb);
                     }
-                    if let Some(ap) = ap.as_ref() {
-                        req = req.ap_hint(ap);
-                    }
+                    req = req.ap_hint(&ap);
                     run(req, extras.filter)
                 })
                 .0
@@ -605,3 +700,79 @@ fst4_decodable!(crate::fst4::Fst4s60, Fst4S60, 1.20);
 fst4_decodable!(crate::fst4::Fst4s120, Fst4S120, 1.20);
 #[cfg(feature = "fst4")]
 fst4_decodable!(crate::fst4::Fst4s300, Fst4S300, 1.20);
+
+#[cfg(test)]
+mod ap_tests {
+    use super::*;
+    use crate::decoder::{ApMode, Contest, QsoProgress};
+
+    fn block(progress: QsoProgress) -> DecodeParams {
+        DecodeParams::for_band((200.0, 4000.0))
+            .station("K1JT", "FN20")
+            .qso("HA0DU", "KN07", progress)
+            .ap(ApMode::Full)
+    }
+
+    fn passes(h: &ApHint) -> alloc::vec::Vec<u8> {
+        (0u8..16).filter(|&i| h.allow.allows(i)).collect()
+    }
+
+    /// `naptypes(nQSOProgress, ·)`: 1 CQ, 2 MyCall, 3 MyCall DxCall, 4/5/6
+    /// with RRR / 73 / RR73, as the pass ids 12, 5, 8, 9, 11, 10.
+    #[test]
+    fn progress_chooses_the_hypotheses_as_upstream() {
+        let h = |t, p| passes(&qso_hint(&block(p), t, true));
+        assert_eq!(h(ApTable::Ft8, QsoProgress::Calling), [5, 12]);
+        assert_eq!(h(ApTable::Ft8, QsoProgress::Replying), [5, 8]);
+        assert_eq!(h(ApTable::Ft8, QsoProgress::Report), [5, 8]);
+        assert_eq!(h(ApTable::Ft8, QsoProgress::RogerReport), [8, 9, 10, 11]);
+        assert_eq!(h(ApTable::Ft8, QsoProgress::Rogers), [8, 9, 10, 11]);
+        assert_eq!(h(ApTable::Ft8, QsoProgress::Signoff), [5, 8, 12]);
+        // FT4 and FST4 try RR73 only once the report is acknowledged.
+        assert_eq!(h(ApTable::Ft4Fst4, QsoProgress::RogerReport), [8, 10]);
+        assert_eq!(h(ApTable::Ft4Fst4, QsoProgress::Signoff), [5, 8, 12]);
+        // The calls are the station's and the partner's.
+        let hint = qso_hint(&block(QsoProgress::Replying), ApTable::Ft8, true);
+        assert_eq!(hint.call1.as_deref(), Some("K1JT"));
+        assert_eq!(hint.call2.as_deref(), Some("HA0DU"));
+        assert_eq!(hint.his_grid.as_deref(), Some("KN07"));
+    }
+
+    #[test]
+    fn what_cannot_run_is_not_offered() {
+        // No station call: nothing but the blind CQ.
+        let p = DecodeParams::for_band((200.0, 4000.0)).ap(ApMode::Full);
+        let h = qso_hint(&p, ApTable::Ft8, true);
+        assert_eq!(passes(&h), [12]);
+        assert!(h.call1.is_none());
+        // A station call but no partner: MyCall ??? and CQ, never type 3+.
+        let p = DecodeParams::for_band((200.0, 4000.0))
+            .station("K1JT", "")
+            .qso("", "", QsoProgress::RogerReport)
+            .ap(ApMode::Full);
+        assert_eq!(passes(&qso_hint(&p, ApTable::Ft8, true)), [] as [u8; 0]);
+        // A non-standard partner call rules out the types that need it.
+        let p = block(QsoProgress::Replying).qso("PJ4/K1ABC", "", QsoProgress::Replying);
+        assert_eq!(passes(&qso_hint(&p, ApTable::Ft8, true)), [5]);
+        // Off, Fox, and a depth that runs no AP.
+        let off = block(QsoProgress::Calling).ap(ApMode::Off);
+        assert_eq!(passes(&qso_hint(&off, ApTable::Ft8, true)), [] as [u8; 0]);
+        let fox = block(QsoProgress::Calling).contest(Contest::Fox);
+        assert_eq!(passes(&qso_hint(&fox, ApTable::Ft8, true)), [] as [u8; 0]);
+        assert_eq!(
+            passes(&qso_hint(
+                &block(QsoProgress::Calling),
+                ApTable::Ft4Fst4,
+                false
+            )),
+            [] as [u8; 0]
+        );
+        // CQ only (`lapcqonly`): the blind CQ, with the contest's token.
+        let cq = block(QsoProgress::Rogers)
+            .ap(ApMode::CqOnly)
+            .contest(Contest::RttyRoundup);
+        let h = qso_hint(&cq, ApTable::Ft8, true);
+        assert_eq!(passes(&h), [12]);
+        assert_eq!(h.cq.as_deref(), Some("CQ RU"));
+    }
+}

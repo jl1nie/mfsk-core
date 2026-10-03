@@ -61,7 +61,7 @@ pub mod q65;
 pub mod wsjt77;
 pub mod wspr;
 
-pub use ap::ApHint;
+pub use ap::{ApHint, ApPassMask};
 pub use decoded::Decoded;
 pub use hash_table::CallsignHashTable;
 pub use jt72::{Jt72Codec, Jt72Message};

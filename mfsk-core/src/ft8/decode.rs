@@ -1578,7 +1578,7 @@ fn a8_inputs<'a, Pol: MessagePolicy>(
     let ap = req.ap_hint?;
     let mycall = ap.call1.as_deref()?;
     let hiscall = ap.call2.as_deref()?;
-    let hisgrid = ap.grid.as_deref()?;
+    let hisgrid = ap.grid.as_deref().or(ap.his_grid.as_deref())?;
     if mycall == "CQ" {
         return None;
     }

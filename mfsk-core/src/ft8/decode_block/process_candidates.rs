@@ -2187,7 +2187,9 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
             && ap.has_info()
         {
             ap_passes = crate::msg::pipeline_ap::ap_passes(ap);
-            if let Some(ref c1) = ap.call1 {
+            if let Some(ref c1) = ap.call1
+                && ap.allow.allows(5)
+            {
                 ap_passes.push((ApHint::new().with_call1(c1), 5));
             }
         }
@@ -2196,8 +2198,10 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         // bound the cost of scanning it over every failing candidate
         // in a busy-band multipass decode (see `BLIND_CQ_MIN_NSYNC`'s
         // doc comment).
-        if q >= BLIND_CQ_MIN_NSYNC {
-            ap_passes.push((ApHint::new().with_call1("CQ"), 12));
+        if q >= BLIND_CQ_MIN_NSYNC
+            && let Some(cq) = ApHint::blind_cq(ap_hint)
+        {
+            ap_passes.push((cq, 12));
         }
 
         // `decode174_91`'s OSD input for the AP passes too: the BP sum after 1 and

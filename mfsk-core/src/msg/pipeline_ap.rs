@@ -101,5 +101,6 @@ pub(crate) fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
         passes.push((base.clone(), 8));
     }
     passes.push((base.clone(), 6));
+    passes.retain(|(_, pid)| base.allow.allows(*pid));
     passes
 }

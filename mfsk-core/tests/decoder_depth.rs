@@ -185,3 +185,75 @@ fn wspr_depths_on_the_golden() {
         "Deep {deep:?} vs Normal {normal:?}"
     );
 }
+
+/// Upstream's AP is derived from the QSO context (`ft8b.f90:55-70`). A reply
+/// to the operator (`K1JT HA0DU RR73`) at the edge of what a blind decode
+/// hears: with the QSO context the AP passes (MyCall DxCall RR73) find it
+/// more often than without, and never anything else.
+#[test]
+fn ft8_qso_context_ap_finds_the_weak_reply() {
+    use mfsk_core::Ft8;
+    use mfsk_core::decoder::{ApMode, Ft8Extras, QsoProgress, Tuning};
+    use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
+    use mfsk_core::msg::wsjt77::pack77;
+
+    const MSG: &str = "K1JT HA0DU RR73";
+    let bits = pack77("K1JT", "HA0DU", "RR73").unwrap();
+    let tones = message_to_tones::<Ft8>(&bits);
+    let amp = 6_000.0f32;
+    let clean = synthesize_i16::<Ft8>(&tones, 12_000, 1_500.0, amp as i16);
+
+    let decodes = |params: DecodeParams, snr_db: f32, seed: u64| {
+        let mut audio = vec![0f32; 180_000];
+        for (i, &v) in clean.iter().enumerate() {
+            if 6_000 + i < audio.len() {
+                audio[6_000 + i] = f32::from(v);
+            }
+        }
+        // SNR in 2500 Hz: (A^2 / 2) / (sigma^2 * 2500 / 6000).
+        let sigma = ((amp * amp / 2.0) / (10f32.powf(snr_db / 10.0) * 2500.0 / 6000.0)).sqrt();
+        let mut ch = common::channel::AwgnChannel::new(sigma, seed);
+        ch.apply(&mut audio);
+        let pcm: Vec<i16> = audio
+            .iter()
+            .map(|v| v.round().clamp(-32768.0, 32767.0) as i16)
+            .collect();
+        let mut d = Decoder::<Ft8>::new(params).with_extras(Ft8Extras {
+            tuning: Tuning {
+                sync_min: Some(1.3),
+                max_cand: Some(50),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        d.decode(&SlotInput::i16(&pcm))
+            .rows
+            .into_iter()
+            .map(|r| r.decoded.text)
+            .collect::<Vec<_>>()
+    };
+    let base = DecodeParams::for_band((200.0, 3000.0)).depth(Depth::Deep);
+    let (mut off_hits, mut on_hits) = (0, 0);
+    for snr in [-22.0f32, -23.0, -24.0] {
+        for seed in 1..=10u64 {
+            let off = decodes(base.clone().ap(ApMode::Off), snr, seed);
+            let on = decodes(
+                base.clone()
+                    .ap(ApMode::Full)
+                    .station("K1JT", "FN20")
+                    .qso("HA0DU", "KN07", QsoProgress::Rogers)
+                    .rx_freq(1_500.0),
+                snr,
+                seed,
+            );
+            assert!(
+                off.iter().chain(on.iter()).all(|m| m == MSG),
+                "phantom: {off:?} {on:?}"
+            );
+            off_hits += usize::from(!off.is_empty());
+            on_hits += usize::from(!on.is_empty());
+        }
+    }
+    eprintln!("hits of 30: AP off {off_hits}, AP on {on_hits}");
+    assert!(on_hits > off_hits, "AP on {on_hits} vs off {off_hits}");
+}

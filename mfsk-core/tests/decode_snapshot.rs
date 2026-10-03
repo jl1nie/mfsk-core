@@ -514,10 +514,12 @@ mod via_decoder {
             .collect()
     }
 
+    /// The 0.12 requests always tried the blind `CQ` pass: AP on, with no
+    /// station or QSO, which is exactly that and nothing else.
     fn block() -> DecodeParams {
         DecodeParams::for_band((100.0, 3000.0))
             .depth(Depth::Deep)
-            .ap(ApMode::Off)
+            .ap(ApMode::Full)
     }
 
     fn t8(sync: f32, n: usize) -> Tuning<Ft8Strategy> {

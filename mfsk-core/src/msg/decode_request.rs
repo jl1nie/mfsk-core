@@ -287,7 +287,18 @@ where
         .filter(|h| h.has_info())
         .map(super::pipeline_ap::ap_passes)
         .unwrap_or_default();
-    ap_hints.push((ApHint::new().with_call1("CQ"), 12));
+    // `iaptype` 2, `MyCall ??? ???`: FT8 has it as pass 5. When the hint
+    // names no second call, pass 6 is already the first call alone and the
+    // duplicate is dropped below.
+    if let Some(h) = ap_hint
+        && h.allow.allows(5)
+        && let Some(c1) = h.call1.as_deref()
+    {
+        ap_hints.push((ApHint::new().with_call1(c1), 5));
+    }
+    if let Some(cq) = ApHint::blind_cq(ap_hint) {
+        ap_hints.push((cq, 12));
+    }
     // A hint of `CQ` alone yields the blind CQ hypothesis a second time
     // (pass 6 from `ap_passes`, pass 12 here). The same bits locked twice
     // decode the same way twice, so the second copy only cost time: 868 ->
