@@ -369,6 +369,13 @@ realfft     = { version = "3.5.0", default-features = false, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 rustfft     = { version = "6", optional = true, features = ["wasm_simd"] }
 
+# Named here only for `required-features`: `cargo run --example` with a
+# feature set that lacks a mode would otherwise fail to compile instead of
+# saying so.
+[[example]]
+name = "iq_spyserver"
+required-features = ["ft8", "ft4", "fft-rustfft"]
+
 [dev-dependencies]
 # Only for tests/ft8_decode_block_streaming.rs, which exercises the
 # true no_std decode_block_multipass arm (needs `fft-extern`, not the

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `IqReceiver` no longer drops every other slot on a real timestamp
+## Unreleased — `IqReceiver` no longer drops every other slot on a real timestamp; decode straight from a SpyServer
 
 - **`IqReceiver` decodes every slot when its time anchor is off the 12 kHz grid (#534).** A slot starts at its
   boundary rounded up to a sample, so the sample after a slot can lie just past the next boundary, and
@@ -9,6 +9,10 @@
   wall clock decoded 2 slots of 4; it now decodes 4 of 4, 21 FT8 messages each. Every test had
   anchored on a whole second, which is on the grid. New tests cover arbitrary anchors for every slot period and two
   back-to-back slots anchored 40 µs off.
+- **Sample: decode straight from a SpyServer.** `iq_spyserver` speaks SpyServer's protocol (as SDR++ does), picks
+  the lowest IQ rate that holds every `--ch MODE@DIAL`, follows the server's retunes and dropped messages, and anchors
+  the slot grid on the minimum-delay arrival time, since SpyServer sends none. Against an Airspy HF+ on 40 m it
+  decoded 5-8 JA FT8 stations per slot at 7041 kHz, DT -0.8..+0.4 s, with no gap or re-anchor in two minutes.
 
 ## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY
 
