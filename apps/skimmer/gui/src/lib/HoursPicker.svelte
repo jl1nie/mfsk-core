@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * The hours of the UTC day a band takes part in: 24 dots, one click each.
+   * The hours of the UTC day a band takes part in: a strip of 24 hours, one click each.
    * Empty `hours` is the whole day.
    */
   import { gridLonLat } from './analysis';
@@ -74,18 +74,21 @@
 </script>
 
 <div class="hp">
-  <div class="dots" role="group" aria-label="UTC hours">
+  <div class="strip" role="group" aria-label="UTC hours">
     {#each Array.from({ length: 24 }, (_, i) => i) as h (h)}
       <button
         type="button"
-        class="dot"
+        class="cell"
         class:on={on(h)}
+        class:tick={h % 6 === 0}
         aria-pressed={on(h)}
+        aria-label={`${h}:00 UTC`}
         title={`${String(h).padStart(2, '0')}:00-${String((h + 1) % 24).padStart(2, '0')}:00 UTC: ${on(h) ? 'in the rotation' : 'out'}`}
-        onclick={() => toggle(h)}>{h}</button
-      >
+        onclick={() => toggle(h)}
+      ></button>
     {/each}
   </div>
+  <div class="scale"><span>0</span><span>6</span><span>12</span><span>18</span><span>24 UTC</span></div>
   <div class="pre">
     {#each presets as [name, v, tip] (name)}
       <button type="button" class="chip" class:on={name !== 'invert' && same(hours, v)} title={tip} onclick={() => onchange(v)}>{name}</button>
@@ -100,26 +103,32 @@
     flex-direction: column;
     gap: 4px;
   }
-  .dots {
+  .strip {
     display: grid;
-    grid-template-columns: repeat(12, 22px);
-    gap: 3px;
+    grid-template-columns: repeat(24, 1fr);
+    gap: 1px;
+    width: 264px;
   }
-  .dot {
-    width: 22px;
-    height: 22px;
+  .cell {
+    height: 16px;
     padding: 0;
     border: none;
-    border-radius: 50%;
+    border-radius: 2px;
     background: var(--line);
-    color: var(--muted);
-    font-size: 10px;
-    line-height: 22px;
     cursor: pointer;
   }
-  .dot.on {
+  .cell.on {
     background: var(--accent);
-    color: var(--accent-text);
+  }
+  .cell.tick {
+    box-shadow: -1px 0 0 var(--text);
+  }
+  .scale {
+    display: flex;
+    justify-content: space-between;
+    width: 264px;
+    font-size: 10px;
+    color: var(--muted);
   }
   .pre {
     display: flex;
