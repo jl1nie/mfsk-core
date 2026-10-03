@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — `IqReceiver` no longer drops every other slot on a real timestamp
+
+- **`IqReceiver` decodes every slot when its time anchor is off the 12 kHz grid (#534).** A slot starts at its
+  boundary rounded up to a sample, so the sample after a slot can lie just past the next boundary, and
+  `next_boundary` skipped to the boundary after that. With an anchor off the grid, which a wall-clock timestamp
+  nearly always is, the receiver decoded every other slot and could also lose the first one. A stream stamped from the
+  wall clock decoded 2 slots of 4; it now decodes 4 of 4, 21 FT8 messages each. Every test had
+  anchored on a whole second, which is on the grid. New tests cover arbitrary anchors for every slot period and two
+  back-to-back slots anchored 40 µs off.
+
 ## 0.12.0 — measured against WSJT-X 3.2.0-rc1 on defined tasks: behind on none but legacy JT65, faster on all but WSPR; FT8 and FT4 subtract by default (breaking); WSJT-X 3.2's JTTY and Q65 additions; wideband IQ input (#534); one decode entry shape for every mode and a transmit path generic over the protocol (breaking, #403 / #391), dt measured from the nominal start (breaking, #397), one `SyncCandidate` / `SearchParams` (breaking, #394); the CoreS3 receives FT8, FT4 and JTTY
 
 - **Breaking (behaviour): FT8 and FT4 subtract by default, as WSJT-X does.** A plain `DecodeRequest::new(..).decode()`

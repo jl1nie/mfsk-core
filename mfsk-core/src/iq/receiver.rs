@@ -327,19 +327,36 @@ fn ceil_div(a: i128, b: i128) -> i128 {
     a.div_euclid(b) + i128::from(a.rem_euclid(b) != 0)
 }
 
+/// First slot that starts at or after audio index `k`, for slots of
+/// `period_ns` on a grid anchored at `anchor_ns`: `(slot number, start
+/// index)`. Exact in integers: `k` is at UTC `anchor + k/12000`.
+///
+/// A slot starts at its boundary rounded *up* to a 12 kHz sample, so the
+/// sample after a slot's last one can lie up to a sample past the next
+/// boundary. Picking the boundary by time alone (`ceil` of `k`'s time) then
+/// skips that slot and opens the one after, losing every other slot of a
+/// continuous stream. That happened whenever the anchor was off the 12 kHz
+/// grid, which a real timestamp nearly always is: a stream stamped from
+/// the wall clock decoded 2 slots of 4, 4 of 4 with this. The candidate one
+/// slot earlier is taken when its rounded start is still at or after `k`.
+fn next_boundary(k: u64, anchor_ns: i64, period_ns: i128) -> (i128, u64) {
+    let (p, a) = (period_ns, anchor_ns as i128);
+    let start_of = |j: i128| ceil_div(j * p * 12_000 - a * 12_000, NS);
+    let mut j = ceil_div(a * 12_000 + k as i128 * NS, p * 12_000);
+    if start_of(j - 1) >= k as i128 {
+        j -= 1;
+    }
+    (j, start_of(j) as u64)
+}
+
 impl Channel {
     /// Slot period in ns (`t_slot_s` is a multiple of 0.1 s for every mode).
     fn period_ns(&self) -> i128 {
         (self.meta.t_slot_s * 10.0).round() as i128 * 100_000_000
     }
 
-    /// First slot start at or after audio index `k`: `(slot number, start
-    /// index)`. Exact in integers: `k` is at UTC `anchor + k/12000`.
     fn next_boundary(&self, k: u64, anchor_ns: i64) -> (i128, u64) {
-        let (p, a) = (self.period_ns(), anchor_ns as i128);
-        let j = ceil_div(a * 12_000 + k as i128 * NS, p * 12_000);
-        let start = ceil_div(j * p * 12_000 - a * 12_000, NS);
-        (j, start as u64)
+        next_boundary(k, anchor_ns, self.period_ns())
     }
 
     /// Feed `self.scratch` (the audio just produced); completed slots go to
@@ -683,6 +700,34 @@ mod tests {
         assert_send::<IqReceiver>();
         assert_send::<crate::iq::PfbChannelizer>();
         assert_send::<IqToAudio>();
+    }
+
+    /// Slots of a continuous stream follow one another with no slot
+    /// skipped and no sample between them, whatever the anchor's offset from
+    /// the 12 kHz grid (one sample is 83 333.3 ns), for every slot period.
+    #[test]
+    fn consecutive_slots_follow_on_any_anchor() {
+        for period_s in [7.5f64, 15.0, 30.0, 60.0, 120.0, 300.0] {
+            let p = (period_s * 1e9) as i128;
+            let slot_len = (period_s * 12_000.0) as u64;
+            for off in (0..250_000).step_by(997) {
+                let anchor = 1_700_000_010_000_000_000 + off;
+                let (j0, s0) = next_boundary(0, anchor, p);
+                let (j1, s1) = next_boundary(s0 + slot_len, anchor, p);
+                assert_eq!(
+                    (j1, s1),
+                    (j0 + 1, s0 + slot_len),
+                    "{period_s} s, anchor +{off} ns"
+                );
+                // A boundary is never earlier than the k asked for.
+                let (_, s) = next_boundary(s0 + 1, anchor, p);
+                assert_eq!(
+                    s,
+                    s0 + slot_len,
+                    "{period_s} s, anchor +{off} ns, k past a start"
+                );
+            }
+        }
     }
 
     /// Every variant this build has is a registry entry, with the slot the

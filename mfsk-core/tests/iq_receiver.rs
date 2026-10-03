@@ -295,6 +295,37 @@ fn gap_mid_slot_drops_that_slot_only(kind: Channelizer) {
     );
 }
 
+/// A real timestamp is almost never on the 12 kHz grid. Anchored 40 µs off
+/// it, two back-to-back slots must both decode: slot starts round up to a
+/// sample, and the second slot used to be skipped for the one after it
+/// (`next_boundary`). Every other test anchors on `T0_NS`, which is on the
+/// grid, and so never saw it.
+fn off_grid_anchor_decodes_back_to_back_slots(kind: Channelizer) {
+    let Some(s) = scene() else {
+        common::skip_or_fail("FT8/FT4 recordings");
+        return;
+    };
+    let iq = two_slots(&s);
+    let (mut rx, rows) = receiver(kind);
+    let ch = rx.add_channel(FT8_DIAL, IqMode::Ft8).unwrap();
+    rx.set_time_anchor(T0_NS + 40_000);
+    rx.push_cf32(&interleave(&iq));
+    let rows = rows.lock().unwrap();
+    for (n, start) in [T0_NS, T0_NS + 15_000_000_000].into_iter().enumerate() {
+        let slot: Vec<IqDecode> = rows
+            .iter()
+            .filter(|r| r.slot_start_utc_ns == Some(start))
+            .cloned()
+            .collect();
+        same(
+            &set_of(&slot, ch),
+            &s.ft8_ref,
+            &format!("slot {n} on an off-grid anchor"),
+            &known_ft8(),
+        );
+    }
+}
+
 fn placement_is_refused_and_a_bad_retune_changes_nothing(kind: Channelizer) {
     let mut rx = IqReceiver::with_channelizer(stream(), kind).unwrap();
     // DC inside the band.
@@ -449,6 +480,14 @@ fn gap_mid_slot_drops_that_slot_only_direct() {
 #[test]
 fn gap_mid_slot_drops_that_slot_only_pfb() {
     gap_mid_slot_drops_that_slot_only(Channelizer::Pfb);
+}
+#[test]
+fn off_grid_anchor_decodes_back_to_back_slots_direct() {
+    off_grid_anchor_decodes_back_to_back_slots(Channelizer::Direct);
+}
+#[test]
+fn off_grid_anchor_decodes_back_to_back_slots_pfb() {
+    off_grid_anchor_decodes_back_to_back_slots(Channelizer::Pfb);
 }
 #[test]
 fn placement_is_refused_and_a_bad_retune_changes_nothing_direct() {
