@@ -180,6 +180,10 @@ time zone), shown in UTC. The cycle goes on among the bands that are in at that
 hour and starts again whenever the set changes; when none is in, nothing is heard
 until one opens.
 
+Pressing a server's button (in the header, or its tab above the waterfall) while it
+is the chosen one **holds** its rotation on the band it is on, with no retune; press
+it again to let it go on, at the step the clock says. The button shows ⏸ while held.
+
 The database records which server heard each decode and where that server is,
 so Analysis can filter by server, centre the map on any of them, and measure
 bearing and distance from the place that heard the signal.

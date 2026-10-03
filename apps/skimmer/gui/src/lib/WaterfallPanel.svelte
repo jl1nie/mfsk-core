@@ -23,7 +23,7 @@
     /** The server whose channels are shown as thumbnails. */
     server: number;
     /** Every server, for the tabs (shown when there are several). */
-    servers: { name: string; state: string; step: string }[];
+    servers: { name: string; state: string; step: string; held: boolean }[];
     onserver: (i: number) => void;
     focus: number;
     onfocus: (i: number) => void;
@@ -186,7 +186,7 @@
       <div class="tabs" role="tablist" aria-label="Servers">
         {#each servers as sv, i (i)}
           <button role="tab" class:on={server === i} aria-selected={server === i} onclick={() => onserver(i)} title={sv.step}>
-            <i class="dot {sv.state}"></i>{sv.name}{sv.step ? ` · ${sv.step}` : ''}
+            <i class="dot {sv.state}"></i>{sv.held ? '⏸ ' : ''}{sv.name}{sv.step ? ` · ${sv.step}` : ''}
           </button>
         {/each}
       </div>

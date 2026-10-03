@@ -33,11 +33,13 @@
     gainSet: number | null;
     lastGainMove: number;
     health: Status | null;
+    /** The rotation is held on the band being heard. */
+    held: boolean;
     state: 'off' | 'connecting' | 'on' | 'waiting' | 'error';
   };
   const blankSrv = (): Srv => ({
     phase: 'Stopped', detail: '', step: '', maxGain: null, canControl: false, deviceGain: null,
-    gainSet: null, lastGainMove: 0, health: null, state: 'off',
+    gainSet: null, lastGainMove: 0, health: null, held: false, state: 'off',
   });
   /** By index in `settings.servers`. */
   let srv = $state<Srv[]>([]);
@@ -233,7 +235,12 @@
       case 'step':
         {
           const until = new Date(e.endsUtcS * 1000).toISOString().slice(11, 16);
-          s.step = e.index === null ? `no band in until ${until} UTC` : `step ${e.index + 1}/${e.of} until ${until} UTC`;
+          s.held = e.held;
+          s.step = e.held
+            ? `held on step ${(e.index ?? 0) + 1}/${e.of}`
+            : e.index === null
+              ? `no band in until ${until} UTC`
+              : `step ${e.index + 1}/${e.of} until ${until} UTC`;
         }
         break;
       case 'moved':
@@ -367,7 +374,15 @@
     await api.setChannelOptions(i, $state.snapshot(settings!.channels[i]));
   }
 
+  /** The server's button: choose it; pressed again while it is chosen, it holds (or releases) its rotation. */
   function selectServer(i: number) {
+    const rotating = !!settings?.servers[i]?.rotate && (settings?.servers[i]?.rotation.length ?? 0) > 0;
+    if (i === sel && running && rotating) {
+      const hold = !srv[i].held;
+      srv[i].held = hold;
+      void api.setHold(i, hold);
+      return;
+    }
     sel = i;
     // The large waterfall follows to a channel of the server shown.
     const mine = channelsOf(i);
@@ -448,10 +463,10 @@
             class="srvchip"
             class:on={sel === i}
             aria-selected={sel === i}
-            title={`${sv.address}${srv[i]?.step ? ' · ' + srv[i].step : ''}\n${srv[i]?.phase ?? ''}`}
+            title={`${sv.address}${srv[i]?.step ? ' · ' + srv[i].step : ''}\n${srv[i]?.phase ?? ''}${sv.rotate && sel === i ? '\nPress again to ' + (srv[i]?.held ? 'resume the rotation' : 'hold the rotation on this band') : ''}`}
             onclick={() => selectServer(i)}
           >
-            <i class="dot {srv[i]?.state ?? 'off'}"></i>{sv.name}{srv[i]?.step ? ` · ${srv[i].step}` : ''}
+            <i class="dot {srv[i]?.state ?? 'off'}"></i>{srv[i]?.held ? '⏸ ' : ''}{sv.name}{srv[i]?.step ? ` · ${srv[i].step}` : ''}
           </button>
         {/each}
         {#if settings.servers.length < MAX_SERVERS}
@@ -701,7 +716,7 @@
           tick={wfTick}
           channels={settings.channels}
           server={sel}
-          servers={settings.servers.map((sv, i) => ({ name: sv.name, state: srv[i]?.state ?? 'off', step: srv[i]?.step ?? '' }))}
+          servers={settings.servers.map((sv, i) => ({ name: sv.name, state: srv[i]?.state ?? 'off', step: srv[i]?.step ?? '', held: srv[i]?.held ?? false }))}
           onserver={selectServer}
           focus={Math.min(wfFocus, Math.max(0, settings.channels.length - 1))}
           onfocus={(i) => {

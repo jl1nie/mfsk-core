@@ -408,6 +408,7 @@ enum UiEvent {
         index: Option<usize>,
         of: usize,
         ends_utc_s: i64,
+        held: bool,
     },
     Status {
         streamed_s: f64,
@@ -499,10 +500,12 @@ impl UiEvent {
                 index,
                 of,
                 ends_utc_s,
+                held,
             } => UiEvent::Step {
                 index,
                 of,
                 ends_utc_s,
+                held,
             },
             Event::Status(s) => UiEvent::Status {
                 clock: s.clock,
@@ -815,6 +818,16 @@ fn set_station(state: State<'_, AppState>, my_call: String, my_grid: String) {
     }
 }
 
+/// Hold a server's rotation on the band it is on (or let it go on).
+#[tauri::command]
+fn set_hold(state: State<'_, AppState>, server: usize, hold: bool) {
+    if let Some(r) = state.running.lock().unwrap().as_ref()
+        && let Some(s) = r.server(server)
+    {
+        s.live.set_hold(hold);
+    }
+}
+
 /// Change a server's fixed network delay in a running skimmer, ms.
 #[tauri::command]
 fn set_network_delay(state: State<'_, AppState>, server: usize, ms: f64) {
@@ -1096,6 +1109,7 @@ fn main() {
             set_channel_options,
             set_station,
             set_network_delay,
+            set_hold,
             db_activity,
             db_stations,
             db_decodes,

@@ -250,9 +250,11 @@ fn main() -> ExitCode {
                 index,
                 of,
                 ends_utc_s,
+                held,
             } => {
                 let until = ends_utc_s % 86_400 / 3600 * 100 + ends_utc_s % 3600 / 60;
                 match index {
+                    Some(i) if held => eprintln!("rotation held on step {}/{}", i + 1, of),
                     Some(i) => eprintln!("rotation step {}/{} until {until:04} UTC", i + 1, of),
                     None => eprintln!("no band is in at this hour; waiting until {until:04} UTC"),
                 }

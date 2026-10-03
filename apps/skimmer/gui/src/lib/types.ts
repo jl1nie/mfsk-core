@@ -170,7 +170,7 @@ export type UiEventBody =
   | { type: 'gap'; messages: number; atS: number }
   | { type: 'reanchor'; byS: number }
   | { type: 'clock'; text: string }
-  | { type: 'step'; index: number | null; of: number; endsUtcS: number }
+  | { type: 'step'; index: number | null; of: number; endsUtcS: number; held: boolean }
   | ({ type: 'status' } & Status)
   | { type: 'disconnected'; error: string };
 

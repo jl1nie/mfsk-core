@@ -114,6 +114,9 @@ pub struct LiveOptions {
     /// server's buffer and the path, which the minimum over the window does
     /// not remove because it never varies.
     network_delay_ns: std::sync::atomic::AtomicI64,
+    /// Stay on the band being heard instead of rotating (see
+    /// [`LiveOptions::set_hold`]).
+    hold: std::sync::atomic::AtomicBool,
     /// What a channel keeps while its band is not being listened to (a
     /// rotation): its decoder, with the callsign table.
     bank: std::sync::Mutex<Bank>,
@@ -202,6 +205,17 @@ impl LiveOptions {
 
     fn network_delay_ns(&self) -> i64 {
         self.network_delay_ns.load(Ordering::Acquire)
+    }
+
+    /// Hold the rotation on the band being heard (`true`), or let it go on
+    /// (`false`). A held rotation stays where it is, with no retune; released,
+    /// it takes the step the clock says. No effect without a rotation.
+    pub fn set_hold(&self, hold: bool) {
+        self.hold.store(hold, Ordering::Release);
+    }
+
+    pub fn held(&self) -> bool {
+        self.hold.load(Ordering::Acquire)
     }
 
     /// Set the device gain index in a running skimmer. Takes effect on the next
@@ -682,6 +696,8 @@ pub enum Event {
         index: Option<usize>,
         of: usize,
         ends_utc_s: i64,
+        /// The rotation is held on this step ([`LiveOptions::set_hold`]).
+        held: bool,
     },
     /// Once a minute of samples.
     Status(Status),
@@ -886,6 +902,9 @@ fn session(
     let mut gain_once = if hold { cfg.gain } else { None };
     let mut wf_bank = WfBank::new();
     let mut last_step: Option<Option<usize>> = None;
+    // The step a held rotation stays on; `Some` while held.
+    let mut held_step: Option<Option<usize>> = None;
+    let mut last_held = false;
 
     loop {
         // Whether this client has control is the server's latest word, not what
@@ -893,18 +912,42 @@ fn session(
         // client without it cannot tune the device or write the gain.
         let tune = sync.can_control && (cfg.tune || !cfg.yield_control);
         let now_s = clock::now_ns().div_euclid(1_000_000_000);
-        let (mask, step) = cfg.mask_at(now_s);
+        // Held: stay on the step being heard, whatever the clock says.
+        let held = cfg.live.held() && !cfg.steps.is_empty();
+        if !held {
+            held_step = None;
+        } else if held_step.is_none() {
+            held_step = Some(last_step.flatten());
+        }
+        let (mask, step) = match held_step {
+            Some(Some(i)) => {
+                let mut m = vec![false; cfg.channels.len()];
+                for &c in &cfg.steps[i].channels {
+                    if let Some(x) = m.get_mut(c) {
+                        *x = true;
+                    }
+                }
+                // No end: a held step has none.
+                (m, Some((Some(i), i64::MAX / 2_000_000_000)))
+            }
+            _ => cfg.mask_at(now_s),
+        };
         if let Some((i, end)) = step
-            && last_step != Some(i)
+            && (last_step != Some(i) || held != last_held)
         {
             last_step = Some(i);
+            last_held = held;
             on_event(Event::Step {
                 index: i,
                 of: cfg.steps.len(),
                 ends_utc_s: end,
+                held,
             });
         }
-        let until_ns = step.map(|(_, end)| end * 1_000_000_000);
+        let until_ns = match (held, step) {
+            (true, _) | (_, None) => None,
+            (false, Some((_, end))) => Some(end * 1_000_000_000),
+        };
         if let Some((None, _)) = step {
             // No band is in at this hour: stream off, and wait for one.
             c.set(SET_STREAMING_ENABLED, 0)?;
@@ -1324,6 +1367,10 @@ fn stream_inner(
     on_event: &mut impl FnMut(Event),
 ) -> std::io::Result<StreamEnd> {
     let rate = p.rate;
+    // Holding the rotation while streaming takes the end from the step, with
+    // no retune; releasing it plans again.
+    let mut until_ns = until_ns;
+    let mut hold_seen = cfg.live.held();
     let mut est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
     let mut anchor: Option<i64> = None;
     let mut next_seq: Option<u32> = None;
@@ -1347,6 +1394,15 @@ fn stream_inner(
             Err(e) if is_stop(&e) => return Ok(StreamEnd::Stopped),
             Err(e) => return Err(e),
         };
+        if !cfg.steps.is_empty() && cfg.live.held() != hold_seen {
+            hold_seen = !hold_seen;
+            if hold_seen {
+                until_ns = None;
+            } else {
+                settle(live, on_event);
+                return Ok(StreamEnd::StepDone);
+            }
+        }
         if until_ns.is_some_and(|u| clock::now_ns() >= u + STEP_GRACE_NS) {
             settle(live, on_event);
             return Ok(StreamEnd::StepDone);
