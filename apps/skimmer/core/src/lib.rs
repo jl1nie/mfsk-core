@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use mfsk_core::Mode;
-use mfsk_core::decoder::{AnyDecoder, default_params};
+use mfsk_core::decoder::{AnyDecoder, Depth, default_params};
 pub use mfsk_core::iq::Channelizer;
 use mfsk_core::iq::CompletedSlot;
 use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
@@ -55,6 +55,45 @@ pub struct ChannelSpec {
     /// A station to hunt: its call is given to the decoder as an a-priori
     /// hint (FT8, FT4, FST4, Q65; ignored by modes without AP).
     pub dx_call: Option<String>,
+    /// Decoding depth; `None` is the library's default (Deep).
+    pub depth: Option<Depth>,
+}
+
+/// What can change on a running channel.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChannelOptions {
+    pub band_hz: Option<(f32, f32)>,
+    pub dx_call: Option<String>,
+    pub depth: Option<Depth>,
+}
+
+/// Options changed while the skimmer runs: [`LiveOptions::set`] from any
+/// thread, picked up by the stream loop between IQ messages and handed to
+/// the channel's decoder thread, which applies them before its next slot.
+#[derive(Debug, Default)]
+pub struct LiveOptions {
+    generation: std::sync::atomic::AtomicU64,
+    options: std::sync::Mutex<Vec<ChannelOptions>>,
+}
+
+impl LiveOptions {
+    /// Replace channel `index`'s options (an index of `Config::channels`).
+    pub fn set(&self, index: usize, options: ChannelOptions) {
+        let mut all = self.options.lock().unwrap();
+        if all.len() <= index {
+            all.resize(index + 1, ChannelOptions::default());
+        }
+        all[index] = options;
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    fn get(&self, index: usize) -> Option<ChannelOptions> {
+        self.options.lock().unwrap().get(index).cloned()
+    }
 }
 
 impl ChannelSpec {
@@ -64,31 +103,44 @@ impl ChannelSpec {
             dial_hz,
             band_hz: None,
             dx_call: None,
+            depth: None,
+        }
+    }
+
+    pub fn options(&self) -> ChannelOptions {
+        ChannelOptions {
+            band_hz: self.band_hz,
+            dx_call: self.dx_call.clone(),
+            depth: self.depth,
         }
     }
 
     /// This channel's decoder, as configured.
     fn decoder(&self) -> AnyDecoder {
-        let mut params = default_params(self.mode);
-        if let Some(b) = self.band_hz {
-            params.band_hz = b;
-        }
-        let mut d = AnyDecoder::new(self.mode, params);
-        if let Some(dx) = &self.dx_call {
-            let hint = ApHint {
-                call2: Some(dx.clone()),
-                ..ApHint::default()
-            };
-            // A mode without AP simply hunts nothing.
-            let _ = d.set_ap_hint(Some(hint));
-        }
+        let mut d = AnyDecoder::with_defaults(self.mode);
+        apply_options(&mut d, &self.options());
         d
     }
+}
+
+/// Set `o` on `d`: unset fields return to the mode's defaults. A mode
+/// without AP simply hunts nothing.
+fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions) {
+    let dflt = default_params(d.mode());
+    let p = d.params_mut();
+    p.band_hz = o.band_hz.unwrap_or(dflt.band_hz);
+    p.depth = o.depth.unwrap_or(dflt.depth);
+    let hint = o.dx_call.as_ref().map(|dx| ApHint {
+        call2: Some(dx.clone()),
+        ..ApHint::default()
+    });
+    let _ = d.set_ap_hint(hint);
 }
 
 /// What a channel's worker has to do.
 enum Job {
     Slot(CompletedSlot),
+    Options(ChannelOptions),
 }
 
 /// One channel's decoder thread. The socket reader only cuts slots and
@@ -117,7 +169,13 @@ impl Worker {
             .name(format!("decode-{channel}"))
             .spawn(move || {
                 for job in rx {
-                    let Job::Slot(slot) = job;
+                    let slot = match job {
+                        Job::Slot(slot) => slot,
+                        Job::Options(o) => {
+                            apply_options(&mut decoder, &o);
+                            continue;
+                        }
+                    };
                     let t = Instant::now();
                     for d in decoder.decode(&slot.input()).rows {
                         let _ = results.send(Decode {
@@ -183,6 +241,8 @@ pub struct Config {
     pub reanchor: Duration,
     /// Wait between a lost connection (or giving up control) and the next try.
     pub retry: Duration,
+    /// Per-channel options changed while running.
+    pub live: std::sync::Arc<LiveOptions>,
 }
 
 impl Config {
@@ -199,6 +259,7 @@ impl Config {
             iq_swap: false,
             reanchor: Duration::from_millis(500),
             retry: Duration::from_secs(10),
+            live: Default::default(),
         }
     }
 }
@@ -552,6 +613,8 @@ struct Live {
     /// By `ChannelId`: the channel's decoder thread; its decoder keeps its
     /// own callsign table from slot to slot.
     workers: Vec<Option<Worker>>,
+    /// By `ChannelId`: the index into `Config::channels`.
+    cfg_index: Vec<usize>,
     /// Rows the workers found, waiting to be reported.
     results: std::sync::mpsc::Receiver<Decode>,
     /// Slots queued or being decoded.
@@ -570,6 +633,7 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut workers: Vec<Option<Worker>> = Vec::new();
+    let mut cfg_index: Vec<usize> = Vec::new();
     for &i in &p.active {
         let ch = &cfg.channels[i];
         let id = rx
@@ -578,6 +642,10 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
         if workers.len() <= id.0 {
             workers.resize_with(id.0 + 1, || None);
         }
+        if cfg_index.len() <= id.0 {
+            cfg_index.resize(id.0 + 1, usize::MAX);
+        }
+        cfg_index[id.0] = i;
         workers[id.0] = Some(Worker::spawn(
             i,
             ch.dial_hz,
@@ -590,6 +658,7 @@ fn receiver(cfg: &Config, p: &Plan, format: IqSampleFormat) -> std::io::Result<L
     Ok(Live {
         rx,
         workers,
+        cfg_index,
         results,
         busy,
         longest_us,
@@ -617,6 +686,7 @@ fn stream(
     let (mut gaps, mut reanchors) = (0u64, 0u64);
     let mut worst_push = Duration::ZERO;
     let mut dropped_slots = 0u64;
+    let mut seen_generation = cfg.live.generation();
     loop {
         let m = match c.read(stop) {
             Ok(m) => m,
@@ -641,11 +711,30 @@ fn stream(
         let Live {
             rx,
             workers,
+            cfg_index,
             results,
             busy,
             longest_us,
             ..
         } = live.as_mut().unwrap();
+
+        // Options changed since the last message go to their channels; one
+        // whose queue is full is tried again with the next message.
+        let generation = cfg.live.generation();
+        if generation != seen_generation {
+            let mut all_sent = true;
+            for (id, w) in workers.iter().enumerate() {
+                let Some(w) = w else { continue };
+                if let Some(o) = cfg.live.get(cfg_index[id])
+                    && w.tx.try_send(Job::Options(o)).is_err()
+                {
+                    all_sent = false;
+                }
+            }
+            if all_sent {
+                seen_generation = generation;
+            }
+        }
         let n = m.body.len() / format.bytes_per_sample();
 
         // The sequence counts messages; a hole of d messages is taken to be

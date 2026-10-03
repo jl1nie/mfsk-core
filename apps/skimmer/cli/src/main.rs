@@ -15,13 +15,13 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use skimmer_core::modes::{MODES, mode_name, parse_mode};
-use skimmer_core::{ChannelSpec, Channelizer, Config, Event, WireFormat, all_txt_line};
+use skimmer_core::modes::{MODES, mode_name, parse_channel};
+use skimmer_core::{Channelizer, Config, Event, WireFormat, all_txt_line};
 
 fn usage() -> ExitCode {
     let modes: Vec<&str> = MODES.iter().map(|m| m.0).collect();
     eprintln!(
-        "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ [--ch ...] [--log FILE]\n\
+        "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--log FILE]\n\
          \x20      [--tune] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS]\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
@@ -57,15 +57,13 @@ fn parse_args() -> Option<(Config, Option<String>)> {
             "--reanchor-ms" => {
                 cfg.reanchor = Duration::from_millis(it.next()?.parse().ok()?);
             }
-            "--ch" => {
-                let spec = it.next()?;
-                let (m, f) = spec.split_once('@')?;
-                let Some(mode) = parse_mode(m) else {
-                    eprintln!("unknown mode {m:?}");
+            "--ch" => match parse_channel(&it.next()?) {
+                Ok(ch) => cfg.channels.push(ch),
+                Err(e) => {
+                    eprintln!("{e}");
                     return None;
-                };
-                cfg.channels.push(ChannelSpec::new(mode, f.parse().ok()?));
-            }
+                }
+            },
             _ => return None,
         }
     }

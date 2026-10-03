@@ -152,6 +152,12 @@
     running = true;
   }
 
+  /** Decode options only: no restart; the running skimmer's decoder takes them at its next slot. */
+  async function channelOptionsChanged(i: number) {
+    if (!running) return;
+    await api.setChannelOptions(i, $state.snapshot(settings!.channels[i]));
+  }
+
   async function chooseLogDir() {
     const dir = await api.pickFolder(settings!.logDir);
     if (dir) settings!.logDir = dir;
@@ -241,6 +247,7 @@
         {active}
         {slotCounts}
         onchange={channelsChanged}
+        onoptions={channelOptionsChanged}
       />
 
     </aside>

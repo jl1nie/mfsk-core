@@ -19,8 +19,15 @@ code.
 
 ```sh
 cargo run --release -p skimmer -- --server 192.168.1.26:5555 \
-    --ch FT8@7041000 --ch FT8@7074000 --ch FT4@7047500 --log ALL.TXT
+    --ch FT8@7041000 --ch FT8@7074000:band=300-3000:dx=JA1ABC:depth=normal \
+    --ch FT4@7047500 --log ALL.TXT
 ```
+
+Per-channel options follow the dial: `:band=LO-HI` (audio Hz searched),
+`:dx=CALL` (an a-priori hint for that station, FT8/FT4/FST4/Q65) and
+`:depth=fast|normal|deep` (WSJT-X's `ndepth`; default deep). In the GUI they
+are under each channel's *Decode options* and apply to a running skimmer at
+the channel's next slot, without a reconnect.
 
 Options: `--tune` (take control of the device and tune it), `--center HZ`,
 `--rate S/s`, `--gain N` (with `--tune`), `--format float|int16`

@@ -15,7 +15,10 @@ use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
 use skimmer_core::modes::{MODES, mode_name, parse_mode, slot_seconds};
-use skimmer_core::{ChannelSpec, Channelizer, Config, Event, WireFormat, all_txt_line};
+use skimmer_core::modes::parse_depth;
+use skimmer_core::{
+    ChannelOptions, ChannelSpec, Channelizer, Config, Event, LiveOptions, WireFormat, all_txt_line,
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -23,6 +26,38 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct ChannelSetting {
     mode: String,
     dial_hz: f64,
+    /// Audio band searched, Hz; both or neither.
+    band_lo: Option<f32>,
+    band_hi: Option<f32>,
+    /// A station to hunt (a-priori hint).
+    dx_call: Option<String>,
+    /// "fast", "normal" or "deep"; empty is the library default.
+    depth: Option<String>,
+}
+
+impl ChannelSetting {
+    fn options(&self) -> Result<ChannelOptions, String> {
+        let band_hz = match (self.band_lo, self.band_hi) {
+            (Some(lo), Some(hi)) if lo < hi && lo >= 0.0 => Some((lo, hi)),
+            (None, None) => None,
+            _ => return Err(format!("{}: band must be LO < HI", self.mode)),
+        };
+        let depth = match self.depth.as_deref() {
+            None | Some("") => None,
+            Some(d) => Some(parse_depth(d).ok_or_else(|| format!("unknown depth {d:?}"))?),
+        };
+        let dx_call = self
+            .dx_call
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_ascii_uppercase);
+        Ok(ChannelOptions {
+            band_hz,
+            dx_call,
+            depth,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -185,6 +220,7 @@ impl From<Event> for UiEvent {
 }
 
 struct Running {
+    live: Arc<LiveOptions>,
     stop: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
@@ -200,6 +236,9 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 const LOG_FILE: &str = "ALL.TXT";
+/// Beside ALL.TXT: one line per health event with the host's wall clock, so a
+/// long run can be read back (queue, push, decode, drift, drops).
+const HEALTH_FILE: &str = "STATUS.log";
 
 fn default_log_dir(app: &AppHandle) -> String {
     app.path()
@@ -263,9 +302,13 @@ fn config(s: &Settings) -> Result<Config, String> {
         .channels
         .iter()
         .map(|c| {
-            parse_mode(&c.mode)
-                .map(|mode| ChannelSpec::new(mode, c.dial_hz))
-                .ok_or_else(|| format!("unknown mode {:?}", c.mode))
+            let mode = parse_mode(&c.mode).ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
+            let o = c.options()?;
+            let mut spec = ChannelSpec::new(mode, c.dial_hz);
+            spec.band_hz = o.band_hz;
+            spec.dx_call = o.dx_call;
+            spec.depth = o.depth;
+            Ok::<ChannelSpec, String>(spec)
         })
         .collect::<Result<Vec<_>, _>>()?;
     if channels.is_empty() {
@@ -297,12 +340,62 @@ fn open_log(dir: &str) -> Result<File, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+fn open_health(dir: &str) -> Option<File> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(PathBuf::from(dir).join(HEALTH_FILE))
+        .ok()
+}
+
+fn health_line(ev: &Event) -> Option<String> {
+    let t = skimmer_core::now_ns() / 1_000_000;
+    let body = match ev {
+        Event::Status(s) => format!(
+            "status streamed {:.0}s delay {:.0}ms drift {:+.0}ms push {:.0}ms decode {:.0}ms \
+             queue {:.0}kB slots {}/{} gaps {} reanchors {}",
+            s.streamed_s,
+            s.delay_ms,
+            s.drift_ms,
+            s.longest_push_ms,
+            s.longest_decode_ms,
+            s.queued_bytes as f64 / 1e3,
+            s.queued_slots,
+            s.dropped_slots,
+            s.gaps,
+            s.reanchors
+        ),
+        Event::Gap { messages, at_s } => format!("gap {messages} msg at {at_s:.1}s"),
+        Event::Reanchor { by_s } => format!("reanchor {by_s:+.3}s"),
+        Event::Disconnected { error } => format!("disconnected {error}"),
+        Event::Streaming { rate, active, .. } => format!("streaming {rate} S/s {active:?}"),
+        Event::Moved { device_hz, iq_hz } => format!("moved device {device_hz:.0} iq {iq_hz:.0}"),
+        _ => return None,
+    };
+    Some(format!("{t} {body}"))
+}
+
 fn halt(state: &AppState) {
     let running = state.running.lock().unwrap().take();
     if let Some(r) = running {
         r.stop.store(true, Ordering::Relaxed);
         let _ = r.thread.join();
     }
+}
+
+/// Change channel `index`'s decode options in a running skimmer; the channel's
+/// decoder takes them before its next slot. No-op when nothing is running.
+#[tauri::command]
+fn set_channel_options(
+    state: State<'_, AppState>,
+    index: usize,
+    channel: ChannelSetting,
+) -> Result<(), String> {
+    let options = channel.options()?;
+    if let Some(r) = state.running.lock().unwrap().as_ref() {
+        r.live.set(index, options);
+    }
+    Ok(())
 }
 
 /// Stops a running skimmer first. Async so the join never blocks the UI thread.
@@ -315,11 +408,29 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
     } else {
         None
     };
+    let mut health = if settings.log_enabled {
+        open_health(&settings.log_dir)
+    } else {
+        None
+    };
+    let mut decodes = 0u64;
+    let live = cfg.live.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let emitter = app.clone();
     let thread = std::thread::spawn(move || {
         skimmer_core::run(&cfg, &flag, |ev| {
+            if matches!(ev, Event::Decode(_)) {
+                decodes += 1;
+            }
+            if let (Some(line), Some(f)) = (health_line(&ev), health.as_mut()) {
+                let extra = if matches!(ev, Event::Status(_)) {
+                    format!(" decodes {decodes}")
+                } else {
+                    String::new()
+                };
+                let _ = writeln!(f, "{line}{extra}");
+            }
             if let (Event::Decode(d), Some(f)) = (&ev, log.as_mut())
                 && let Err(e) = writeln!(f, "{}", all_txt_line(d))
             {
@@ -333,7 +444,7 @@ async fn start(app: AppHandle, state: State<'_, AppState>, settings: Settings) -
             let _ = emitter.emit("skimmer", UiEvent::from(ev));
         });
     });
-    *state.running.lock().unwrap() = Some(Running { stop, thread });
+    *state.running.lock().unwrap() = Some(Running { live, stop, thread });
     Ok(())
 }
 
@@ -353,7 +464,8 @@ fn main() {
             modes,
             auto_pfb_channels,
             start,
-            stop
+            stop,
+            set_channel_options
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

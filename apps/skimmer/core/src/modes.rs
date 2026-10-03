@@ -55,9 +55,79 @@ pub fn slot_seconds(m: Mode) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// `fast`, `normal` or `deep` (any case); WSJT-X's `ndepth` 1, 2, 3.
+pub fn parse_depth(s: &str) -> Option<mfsk_core::decoder::Depth> {
+    use mfsk_core::decoder::Depth;
+    match s.to_ascii_lowercase().as_str() {
+        "fast" | "1" => Some(Depth::Fast),
+        "normal" | "2" => Some(Depth::Normal),
+        "deep" | "3" => Some(Depth::Deep),
+        _ => None,
+    }
+}
+
+/// A channel written `MODE@DIAL_HZ` followed by any of `:band=LO-HI` (audio
+/// Hz), `:dx=CALL` and `:depth=fast|normal|deep`.
+pub fn parse_channel(spec: &str) -> Result<crate::ChannelSpec, String> {
+    let mut parts = spec.split(':');
+    let head = parts.next().unwrap_or("");
+    let (m, f) = head
+        .split_once('@')
+        .ok_or_else(|| format!("{spec:?}: expected MODE@DIAL_HZ"))?;
+    let mode = parse_mode(m).ok_or_else(|| format!("unknown mode {m:?}"))?;
+    let dial: f64 = f.parse().map_err(|_| format!("bad dial frequency {f:?}"))?;
+    let mut ch = crate::ChannelSpec::new(mode, dial);
+    for opt in parts {
+        let (k, v) = opt
+            .split_once('=')
+            .ok_or_else(|| format!("{opt:?}: expected key=value"))?;
+        match k {
+            "band" => {
+                let (lo, hi) = v
+                    .split_once('-')
+                    .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
+                    .filter(|(a, b): &(f32, f32)| a < b)
+                    .ok_or_else(|| format!("bad band {v:?}, expected LO-HI"))?;
+                ch.band_hz = Some((lo, hi));
+            }
+            "dx" => ch.dx_call = Some(v.to_ascii_uppercase()),
+            "depth" => {
+                ch.depth = Some(parse_depth(v).ok_or_else(|| format!("bad depth {v:?}"))?);
+            }
+            _ => return Err(format!("unknown option {k:?}")),
+        }
+    }
+    Ok(ch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_specs_parse_their_options() {
+        let c = parse_channel("ft8@7074000:band=300-3000:dx=ja1abc:depth=fast").unwrap();
+        assert_eq!(c.mode, Mode::Ft8);
+        assert_eq!(c.dial_hz, 7_074_000.0);
+        assert_eq!(c.band_hz, Some((300.0, 3000.0)));
+        assert_eq!(c.dx_call.as_deref(), Some("JA1ABC"));
+        assert_eq!(c.depth, Some(mfsk_core::decoder::Depth::Fast));
+        assert_eq!(
+            parse_channel("FT8@7074000").unwrap(),
+            crate::ChannelSpec::new(Mode::Ft8, 7_074_000.0)
+        );
+        for bad in [
+            "FT8",
+            "FT9@1",
+            "FT8@x",
+            "FT8@1:band=5-3",
+            "FT8@1:depth=max",
+            "FT8@1:foo=1",
+            "FT8@1:dx",
+        ] {
+            assert!(parse_channel(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn names_round_trip() {

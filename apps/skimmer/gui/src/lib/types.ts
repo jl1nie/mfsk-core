@@ -3,9 +3,18 @@
 
 export type WireFormat = 'float' | 'int16';
 
+export type DepthSetting = '' | 'fast' | 'normal' | 'deep';
+
 export interface ChannelSetting {
   mode: string;
   dialHz: number;
+  /** Audio band searched, Hz; both or neither. */
+  bandLo?: number | null;
+  bandHi?: number | null;
+  /** A station to hunt (a-priori hint). */
+  dxCall?: string | null;
+  /** Empty is the library default (deep). */
+  depth?: DepthSetting | null;
 }
 
 export interface Settings {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ChannelSetting, ModeInfo } from './types';
+  import type { ChannelSetting, DepthSetting, ModeInfo } from './types';
   import { BANDS, PRESETS } from './presets';
 
   let {
@@ -10,6 +10,7 @@
     active,
     slotCounts,
     onchange,
+    onoptions,
   }: {
     channels: ChannelSetting[];
     modes: ModeInfo[];
@@ -20,6 +21,8 @@
     active: boolean[];
     slotCounts: number[];
     onchange: () => void;
+    /** A channel's decode options changed; applied to a running skimmer. */
+    onoptions: (i: number) => void;
   } = $props();
 
   let band = $state('40m');
@@ -44,6 +47,19 @@
   function remove(i: number) {
     channels.splice(i, 1);
     onchange();
+  }
+
+  const num = (v: string): number | null => {
+    const n = Number(v);
+    return v.trim() !== '' && Number.isFinite(n) ? n : null;
+  };
+
+  function optionSummary(c: ChannelSetting): string {
+    const parts: string[] = [];
+    if (c.bandLo != null && c.bandHi != null) parts.push(`${c.bandLo}–${c.bandHi} Hz`);
+    if (c.dxCall) parts.push(`DX ${c.dxCall}`);
+    if (c.depth) parts.push(c.depth);
+    return parts.join(' · ');
   }
 
   function channelState(i: number): string {
@@ -86,6 +102,43 @@
           <span class="count" title="Decodes in the latest slot, or paused: outside the radio's band">{channelState(i)}</span>
           <button class="link" onclick={() => remove(i)} aria-label="Remove">✕</button>
         </div>
+        <details class="opts">
+          <summary>Decode options{optionSummary(c) ? ` — ${optionSummary(c)}` : ''}</summary>
+          <label title="Audio band searched. Empty: the mode's default">
+            Band
+            <input
+              value={c.bandLo ?? ''}
+              placeholder="lo"
+              inputmode="decimal"
+              onchange={(e) => { c.bandLo = num(e.currentTarget.value); onoptions(i); }}
+            />–<input
+              value={c.bandHi ?? ''}
+              placeholder="hi"
+              inputmode="decimal"
+              onchange={(e) => { c.bandHi = num(e.currentTarget.value); onoptions(i); }}
+            /> Hz
+          </label>
+          <label title="Hunt one station: its call is given to the decoder as an a-priori hint (FT8, FT4, FST4, Q65)">
+            DX call
+            <input
+              value={c.dxCall ?? ''}
+              placeholder="JA1ABC"
+              onchange={(e) => { c.dxCall = e.currentTarget.value.trim().toUpperCase() || null; onoptions(i); }}
+            />
+          </label>
+          <label title="WSJT-X decoding depth">
+            Depth
+            <select
+              value={c.depth ?? ''}
+              onchange={(e) => { c.depth = e.currentTarget.value as DepthSetting; onoptions(i); }}
+            >
+              <option value="">default (deep)</option>
+              <option value="fast">fast</option>
+              <option value="normal">normal</option>
+              <option value="deep">deep</option>
+            </select>
+          </label>
+        </details>
       </li>
     {:else}
       <li class="empty">No channels yet</li>
@@ -121,3 +174,20 @@
     {/each}
   </ul>
 </section>
+
+<style>
+  .opts {
+    margin: 0.25rem 0 0.5rem 0.5rem;
+    font-size: 0.85em;
+  }
+  .opts label {
+    display: block;
+    margin: 0.2rem 0;
+  }
+  .opts input {
+    width: 5em;
+  }
+  .opts input[placeholder='JA1ABC'] {
+    width: 8em;
+  }
+</style>
