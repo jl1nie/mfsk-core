@@ -74,6 +74,8 @@ export interface Settings {
   /** The PC clock as it is, or corrected against an NTP server. */
   clockSource: 'system' | 'ntp';
   ntpServer: string;
+  /** The rotation counts from UTC midnight instead of starting at the first band on Connect. */
+  rotationUtc: boolean;
   channelizer: 'auto' | 'direct' | 'pfb';
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;

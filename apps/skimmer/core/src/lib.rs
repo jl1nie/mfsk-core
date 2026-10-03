@@ -362,8 +362,12 @@ pub struct Config {
     pub server: String,
     pub channels: Vec<ChannelSpec>,
     /// A rotation: which of [`Self::channels`] to listen to, for how long, in
-    /// turn, from UTC midnight. Empty: all of them, all the time.
+    /// turn. Empty: all of them, all the time.
     pub steps: Vec<Step>,
+    /// When the first step began (UTC seconds). `None`: the cycle counts from
+    /// UTC midnight, so a restart, or another server with the same steps, is
+    /// at the same step at the same moment.
+    pub rotation_origin: Option<i64>,
     /// IQ centre; default 25 kHz below the lowest dial.
     pub center_hz: Option<f64>,
     /// IQ rate; default the lowest that holds the most channels.
@@ -409,9 +413,9 @@ pub struct Step {
 pub const MIN_STEP_MINUTES: u32 = 5;
 
 impl Config {
-    /// The step in force at `utc_s` and when it ends (UTC seconds), counting
-    /// the cycle from UTC midnight, so a restart or another server picks up
-    /// the same step. `None` without a rotation.
+    /// The step in force at `utc_s` and when it ends (UTC seconds). The cycle
+    /// counts from [`Self::rotation_origin`], else from UTC midnight. `None`
+    /// without a rotation.
     pub fn step_at(&self, utc_s: i64) -> Option<(usize, i64)> {
         let total: i64 = self
             .steps
@@ -421,8 +425,11 @@ impl Config {
         if total == 0 {
             return None;
         }
-        let day = utc_s.div_euclid(86_400) * 86_400;
-        let mut at = (utc_s - day) % total;
+        let origin = self
+            .rotation_origin
+            .unwrap_or_else(|| utc_s.div_euclid(86_400) * 86_400);
+        // Before the origin (a clock stepped back): the first step.
+        let mut at = (utc_s - origin).max(0) % total;
         for (i, s) in self.steps.iter().enumerate() {
             let len = i64::from(s.minutes.max(MIN_STEP_MINUTES)) * 60;
             if at < len {
@@ -455,6 +462,7 @@ impl Config {
             server: server.into(),
             channels,
             steps: Vec::new(),
+            rotation_origin: None,
             center_hz: None,
             rate: None,
             gain: None,
@@ -1513,7 +1521,7 @@ mod tests {
     /// every restart agrees on the step.
     #[test]
     fn rotation_steps_count_from_utc_midnight() {
-        let c = rotating();
+        let mut c = rotating();
         let day = 1_700_000_000 / 86_400 * 86_400;
         assert_eq!(c.step_at(day), Some((0, day + 600)));
         assert_eq!(c.step_at(day + 599), Some((0, day + 600)));
@@ -1521,6 +1529,16 @@ mod tests {
         assert_eq!(c.step_at(day + 1200), Some((2, day + 1500)));
         assert_eq!(c.step_at(day + 1500), Some((0, day + 2100)));
         assert_eq!(c.mask_at(day + 700).0, vec![false, true, false]);
+        // From a start time: the first step begins there.
+        c.rotation_origin = Some(day + 1000);
+        assert_eq!(c.step_at(day + 1000), Some((0, day + 1600)));
+        assert_eq!(c.step_at(day + 1600), Some((1, day + 2200)));
+        assert_eq!(
+            c.step_at(day + 900).map(|s| s.0),
+            Some(0),
+            "before the origin is the first step"
+        );
+        c.rotation_origin = None;
         // No rotation: everything, always.
         let mut c = rotating();
         c.steps.clear();

@@ -198,6 +198,10 @@ struct Settings {
     /// "system" (the PC clock) or "ntp" (the PC clock corrected against `ntp_server`).
     clock_source: String,
     ntp_server: String,
+    /// The rotation's cycle counts from UTC midnight (a restart, or another
+    /// server, is at the same step at the same moment) instead of beginning
+    /// with the first band when connecting.
+    rotation_utc: bool,
     /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps) beside the ALL.TXT.
@@ -261,6 +265,7 @@ impl Default for Settings {
             waterfall_fine: false,
             clock_source: "ntp".into(),
             ntp_server: "pool.ntp.org".into(),
+            rotation_utc: false,
             channelizer: "auto".into(),
             db_enabled: true,
             // ALL.TXT grows without bound; the database is the record now.
@@ -595,6 +600,9 @@ struct Planned {
 /// One `Config` per server that has channels.
 fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
     let mut out = Vec::new();
+    // When Connect was pressed, to the even minute below: every server's cycle
+    // begins together, on a minute that suits two-minute WSPR slots too.
+    let started = skimmer_core::now_ns().div_euclid(1_000_000_000) / 120 * 120;
     for (si, srv) in s.servers.iter().enumerate() {
         let mine: Vec<(usize, &ChannelSetting)> = s
             .channels
@@ -618,6 +626,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         let mut cfg = Config::new(srv.address.trim(), channels);
         cfg.name = srv.name.clone();
         cfg.live.set_station(s.station());
+        cfg.rotation_origin = (!s.rotation_utc).then_some(started);
         cfg.tune = srv.tune;
         cfg.yield_control = srv.yield_control;
         cfg.waterfall = s.waterfall;

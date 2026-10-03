@@ -490,7 +490,7 @@
                 client the skimmer takes control and tunes the radio; beside a running SDR# it is a guest and never tunes.
               </span>
             </label>
-            <label class="check" title="One SDR holds one band at a time. Rotating gives each band of this server's channels its turn (the modes of a band are heard together). The cycle counts from UTC midnight, so servers and restarts agree.">
+            <label class="check" title="One SDR holds one band at a time. Rotating gives each band of this server's channels its turn (the modes of a band are heard together). Connect begins with the first band (Settings > Rotation follows the UTC clock changes that).">
               <input type="checkbox" checked={sv.rotate} onchange={(e) => toggleRotation(sel, e.currentTarget.checked)} />
               <span>Rotate through the bands of its channels</span>
             </label>
@@ -586,6 +586,10 @@
             Auto uses the filter bank from {autoPfb} channels in the stream, direct below that: the measured break-even
             (direct costs about 0.9 % of a core per channel at 768 kS/s, the bank a fixed 2.4 % plus 0.25 % per channel).
           </p>
+          <label class="check" title="Off (default): Connect starts a rotation at its first band. On: the cycle counts from UTC midnight, so a restart, or another server with the same steps, is at the same step at the same moment.">
+            <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
+            <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
+          </label>
           <label class="check" title="A fine spectrum of each channel's audio (2.9 Hz per bin) under the channel list, with the decodes marked on it">
             <input type="checkbox" bind:checked={settings.waterfall} disabled={running} />
             <span>Waterfall</span>

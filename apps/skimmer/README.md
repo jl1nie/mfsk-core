@@ -165,9 +165,9 @@ one band at a time, and the modes of a band (FT8, FT4, WSPR...) are heard
 together. Each step is one band for at least five minutes (a retune costs a slot
 or two): `20m for 10 min, 40m for 10 min, 80m for 10 min, round again`. In the
 GUI the steps are the bands the server's channels are in; you set the minutes and
-the order. The cycle counts from UTC midnight, so a
-restart, or another server given the same steps, is at the same step at the
-same moment. The stream retunes at each step; the last slot of a step is
+the order. Connect begins with the first step (every server's cycle begins
+together, on an even minute); "Rotation follows the UTC clock" counts the cycle
+from UTC midnight instead, so a restart is at the same step at the same moment. The stream retunes at each step; the last slot of a step is
 decoded before leaving, and a channel's decoder (with its callsign table) and
 its waterfall history wait for the band's next turn.
 
