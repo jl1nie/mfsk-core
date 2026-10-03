@@ -105,9 +105,9 @@ protocol that actually flips into the integer path on the embedded
 build is FT8.**
 
 Two WSJT-X 3.2 additions to the host decode API do not reach the embedded
-path: FT8's `previous_cycle` (the a7 list decoder, fed by the previous
-slot's decodes; `ft8::decode` only, and nothing under `ft8::decode_block`
-reads it) and FST4's noise blanker (`DecodeRequest::noise_blanker`, off by
+path: FT8's a7 (`Ft8Extras::a7`, the list decoder, fed by the previous
+slot's decodes held in the decoder; `ft8::decode` only, and nothing under `ft8::decode_block`
+reads it) and FST4's noise blanker (`Fst4Extras::noise_blanker`, off by
 default). No embedded app sets either.
 
 **Flipping into the integer path is not what "runs on a chip" means.**

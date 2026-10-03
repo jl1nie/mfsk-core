@@ -101,9 +101,9 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 パスに切り替わるプロトコルは FT8 のみ。**
 
 WSJT-X 3.2 で host のデコード API に加わった 2 つは、組込パスには届かない:
-FT8 の `previous_cycle`（a7 リストデコーダ。直前スロットのデコードを入力に
+FT8 の a7（`Ft8Extras::a7`、リストデコーダ。デコーダが保持する直前スロットのデコードを入力に
 とる。`ft8::decode` だけが持ち、`ft8::decode_block` 以下には読む箇所が無い）
-と、FST4 のノイズブランカ（`DecodeRequest::noise_blanker`、既定はオフ）。
+と、FST4 のノイズブランカ（`Fst4Extras::noise_blanker`、既定はオフ）。
 組込アプリはどちらも設定しない。
 
 **整数パスに切り替わることは「チップ上で動く」の定義ではない。**
