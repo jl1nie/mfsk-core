@@ -544,3 +544,14 @@ fn a_stream_and_a_decoder_of_different_modes_do_not_mix() {
     let jt = unsafe { mfsk_stream_open(MfskMode::Jtty as u32, 12_000, &mut st) };
     assert!(jt.is_null());
 }
+
+/// `jt9fano.f90:88` blanks the all-zero codeword (`000AAA 000AAA RA90`), which
+/// Fano reached three times on the strong signal's sidelobes before the port.
+#[test]
+fn jt9_reports_the_signal_and_no_all_zero_codewords() {
+    let frame = pcm(mfsk_encode_jt9 as _, "CQ", "K1ABC", "FN42");
+    let dec = open(MfskMode::Jt9, None, None);
+    let rows = decode_f32(dec, &put_wav(&frame, 0.0, 60));
+    assert_eq!(texts(&rows), vec!["CQ K1ABC FN42".to_string()]);
+    unsafe { mfsk_decoder_close(dec) };
+}

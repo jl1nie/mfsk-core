@@ -65,6 +65,17 @@ pub enum Jt72Message {
     Unsupported { nc1: u32, nc2: u32, ng: u32 },
 }
 
+impl Jt72Message {
+    /// The all-zero codeword's text, `000AAA 000AAA RA90`. A decoder that
+    /// converged on it found nothing: `jt9fano.f90:88`
+    /// (`index(msg,'000AAA ')`), `extract4.f90:61` and `decode65b.f90:27`
+    /// all blank it. Measured: a noise-free JT9 period decoded the true
+    /// message plus three of these at 17, -10 and -15 dB.
+    pub fn is_all_zero_codeword(&self) -> bool {
+        matches!(self, Jt72Message::Standard { call1, .. } if call1 == "000AAA")
+    }
+}
+
 impl fmt::Display for Jt72Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

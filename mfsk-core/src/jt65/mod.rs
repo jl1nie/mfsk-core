@@ -374,6 +374,10 @@ fn decode_scan_inner(
             let Some((msg, snr_db, info)) = decoded else {
                 continue;
             };
+            // `decode65b.f90:27`: the all-zero codeword is "no decode".
+            if msg.is_all_zero_codeword() {
+                continue;
+            }
             let dup = scan_dedup_match_cross(
                 &seen,
                 &(msg.clone(), c.freq_hz, c.start_sample as i64),

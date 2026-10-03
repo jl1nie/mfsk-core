@@ -179,6 +179,9 @@ pub fn decode_at_baseband_gated(
         Jt72Message::Standard { .. } => {}
         _ => return None,
     }
+    if msg.is_all_zero_codeword() {
+        return None;
+    }
 
     // Translate (lagpk, df) back to audio-sample / Hz coordinates so
     // downstream consumers see a consistent timing/freq report.
