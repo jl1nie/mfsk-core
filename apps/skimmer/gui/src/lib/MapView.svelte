@@ -306,9 +306,9 @@
         </select>
       </label>
       <label>
-        Speed
-        <select bind:value={fps}>
-          {#each [1, 2, 4, 8, 16] as f (f)}<option value={f}>{f} windows/s</option>{/each}
+        <span title="Windows shown per second">Speed</span>
+        <select bind:value={fps} title="Windows shown per second">
+          {#each [1, 2, 4, 8, 16] as f (f)}<option value={f}>{f}</option>{/each}
         </select>
       </label>
       <label><input type="checkbox" bind:checked={repeat} /> repeat</label>
