@@ -1,12 +1,12 @@
 # 77-bit messages as WS (the former WSJT-X Improved, 3.1.0 build 260522 and 3.2.1) composes them for QSOs with non-standard,
-# compound and suffixed callsigns, and what WSJT-X decodes from them. Issue #568; report: docs/notes/WS_77BIT_EXTENSION.md.
+# compound and suffixed callsigns, and what WSJT-X v3.2.0-rc1 (the reference) decodes from them. Issue #568; report: docs/notes/WS_77BIT_EXTENSION.md.
 #
 # Every row is one message of one QSO step. `text` is what WS's genStdMsgs()/genCQMsg() builds for that step (77-bit modes, no special
 # operation, report -05, grid JO31, RR73 variant); the texts were produced by re-implementing those conditions, not by running WS's GUI.
-# `c77` is that text packed by WSJT-X 3.0.2's pack77 (WS's own packjt77.f90 gives identical bits for all 168 rows, and so does
-# WSJT-X v3.2.0-rc1's). The last two columns are WSJT-X 3.0.2's unpack77 output as the *receiver* (its own call set, hash tables empty
-# apart from that): `rx_fresh` with nothing heard, `rx_after_cq` after unpacking the sender's CQ row first. v3.2.0-rc1 gives the same 168
-# results for both. `<...>` is an unresolved hash. The bit strings are generated data; no WS or WSJT-X code is in this file.
+# `c77` is that text packed by WSJT-X v3.2.0-rc1's pack77 (WSJT-X 3.0.2 and WS's own packjt77.f90 give identical bits for all 168 rows).
+# The last two columns are rc1's unpack77 output as the *receiver* (its own call set, hash tables empty apart from that): `rx_fresh` with
+# nothing heard, `rx_after_cq` after unpacking the sender's CQ row first. 3.0.2 gives the same 168 results for both. `<...>` is an
+# unresolved hash. The bit strings are generated data; no WS or WSJT-X code is in this file.
 #
 # Columns: pattern	sender	receiver	rr73	slot	i3	n3	c77	cq_c77_of_sender	text	sender_roundtrip	rx_fresh	rx_after_cq
 nonstd/nonstd	DG123YCB	W250USA	1	CQ	4	0	01110110100100000000000000000110000000111010001000111000100011111101100001100	01110110100100000000000000000110000000111010001000111000100011111101100001100	CQ DG123YCB	CQ DG123YCB	CQ DG123YCB	CQ DG123YCB

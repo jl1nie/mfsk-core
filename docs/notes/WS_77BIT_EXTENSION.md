@@ -7,7 +7,8 @@ ports, so what follows about sequencing is context for the packing results, not 
 
 - **At the bit level the extension changes nothing.** WS 3.1.0 and 3.2.1 pack the same 77-bit layouts as WSJT-X; `packjt77.f90`
   differs from WSJT-X 3.0.2 only in declarations and in how the 22-bit hash multiplies (`mulmod64`). All 168 messages WS composes in the
-  announced QSO patterns pack to **identical bits in WSJT-X 3.0.2, v3.2.0-rc1 and WS**, and decode identically in all three. It uses
+  announced QSO patterns pack to **identical bits in WSJT-X v3.2.0-rc1 (the reference), in 3.0.2 (WS's base line) and in WS**, and decode
+  identically in all three. It uses
   types 1 and 4 only. In the issue's terms: **case C** (existing formats, new operating combinations); no unused code point is taken
   (0/2, 0/7+, i3 6-7 are untouched) and no existing field is reinterpreted *in the bits*.
 - **What did change is the text WS builds for each QSO step** (`MainWindow::genStdMsgs`, `widgets/mainwindow.cpp`). Where WSJT-X
@@ -21,12 +22,12 @@ ports, so what follows about sequencing is context for the packing results, not 
 - **The price is paid in the identity fields.** In 14 of the 24 report messages WS sends the *base* call where the station's call has
   a suffix (`<W1XYZ/YOTA> DG2YCB -05` from `DG2YCB/QRP`). A faithful receiver shows `DG2YCB`. Hashed forms also need prior knowledge:
   a bystander, or a station that has not yet seen the full call, shows `<...>`.
-- **Receivers are not harmed at the decode level.** WSJT-X 3.0.2 and rc1 decode every WS message as written, or as `<...>` when the hash
+- **Receivers are not harmed at the decode level.** WSJT-X v3.2.0-rc1 (and 3.0.2) decode every WS message as written, or as `<...>` when the hash
   is unknown; none decodes to a wrong call in the 168 cases. (A 22-bit or 12-bit hash can in principle collide with another stored
   call; see 5.3.)
 - **This crate does not crash or mis-decode, but it differs from WSJT-X in one place**: calls carrying `/P` or `/R` are saved in the
   hash table without the suffix, so a `<W1XYZ/P>` hash stays `<...>` where WSJT-X resolves it. 32 of the 336 receiver outcomes (168 messages x
-  2 table states) differ, all of that one kind. A patch is proposed (6); with it all 336 agree and the tier A+B gate passes (1072 passed,
+  2 table states) differ from v3.2.0-rc1's, all of that one kind. A patch is proposed (6); with it all 336 agree and the tier A+B gate passes (1072 passed,
   0 failed).
 - **The announced "endless Auto Seq loop" is not a change in WS's receive logic**: `processMessage`'s decision ladder and
   `DecodedText` are identical to WSJT-X 3.0.2 apart from FT2 additions. A desk trace of the 3.0.2/WS code (not executed; rc1's
@@ -48,28 +49,31 @@ SourceForge), WS 3.0.0 (251212), WS 3.2.0, WSJT-X 2.7.0, JTDX, MSHV. All WS sour
 
 ## 3. WSJT-X 77-bit message types
 
-From `lib/77bit/packjt77.f90` of WSJT-X 3.0.2 (`967c85a61`; the unpacker's dispatch is at lines 368-695). rc1 restructured the file
-(`packjt77_schema.f90`, `packjt77_grammar.f90`); this table was **not** re-derived from rc1's source, but all 168 test messages
-pack and unpack identically in rc1.
+From **v3.2.0-rc1**: the layouts are declared in `lib/77bit/packjt77_schema.f90` (the `PACK77_SCHEMA_*` constants, bit positions
+below are 1-based) and decoded by `unpack77_core` (`lib/77bit/packjt77.f90:1498-1531`). WSJT-X 3.0.2 (WS's base) has the same layouts
+in the older single-file form; the two agree on every message tested here.
 
-| i3.n3 | message | fields (bits) | notes |
+| i3.n3 | message | fields (bits) | rc1 reference |
 |---|---|---|---|
-| 0.0 | free text | 71 (13 characters) | `packjt77.f90:368` |
-| 0.1 | DXpedition `K1ABC RR73; W9XYZ <KH1/KH7Z> -11` | 28 28 10 5 | hash10 |
-| 0.2 | **unused** | | unpack fails (`:403`) |
-| 0.3, 0.4 | ARRL Field Day | 28 28 1 4 3 7 | |
-| 0.5 | telemetry | 71 | |
-| 0.6 | WSPR types 1-3 | by bits 48-50 | |
-| 0.7+ | **unused** | | unpack fails (`:530`) |
-| 1, 2 | standard (`/R` for 1, `/P` for 2) | 28 1 28 1 1 15 | c28 may be a **22-bit hash** token; the 15-bit field is grid4 or report |
-| 3 | ARRL RTTY Roundup | 1 28 28 1 3 13 | |
-| 4 | one non-standard call | 12 58 1 2 1 | **hash12** of the other call, the 58-bit call, `iflip`, `nrpt` (none/RRR/RR73/73), `icq`; **no report and no grid** |
-| 5 | EU VHF contest | 12 22 1 3 11 25 | |
-| 6, 7 | **undefined** | | `:695` |
+| 0.0 | free text | 71 (13 characters) | schema `:48` |
+| 0.1 | DXpedition `K1ABC RR73; W9XYZ <KH1/KH7Z> -11` | 28 28 10 5 | schema `:64`; hash10 |
+| 0.2 | **unused** | | `packjt77.f90:1594`: unpack fails |
+| 0.3, 0.4 | ARRL Field Day | 28 28 1 4 3 7 | schema `:74`, `:85` |
+| 0.5 | telemetry | 23 24 24 | schema `:55` |
+| 0.6 | WSPR types 1-3 | by bits 48-50 | schema `:96`, `:108`, `:120` |
+| 0.7 | **unused** | | `packjt77.f90:1709` (`n3 > 6`) |
+| 1, 2 | standard (`/R` for 1, `/P` for 2) | 28 1 28 1 1 15 | schema `:130`, `:141`; c28 may be a **22-bit hash** token; the 15-bit field is grid4 or report |
+| 3 | ARRL RTTY Roundup | 1 28 28 1 3 13 | schema `:152` |
+| 4 | one non-standard call | 12 58 1 2 1 | schema `:163`: **hash12** of the other call, the 58-bit call, `iflip`, `nrpt` (none/RRR/RR73/73), `icq`; **no report and no grid** |
+| 5 | EU VHF contest | 12 22 1 3 11 25 | schema `:173` |
+| 6, 7 | **undefined** | | `packjt77.f90:1524` |
 
-c28 space (`NTOKENS = 2063592`, `MAX22 = 4194304`): special tokens, then 22-bit hash tokens, then standard calls. The hash is
+rc1 also refuses, for every type, a `CQ` addressed to a hashed or non-standard call (`packjt77.f90:1531`). c28 space
+(`NTOKENS = 2063592`, `MAX22 = 4194304`): special tokens, then 22-bit hash tokens, then standard calls. The hash is
 `ihashcall(call, m)`: the top m bits of the low 64 bits of `47055833459 * n8`, where `n8` is the call read in base 38. A call is saved
-in the tables by `save_hash_call` (`:150-184`) **as written, including any `/P` or `/R`** (it removes only angle brackets).
+in the tables by `save_hash_call` (rc1 `packjt77.f90:356-390`) **as written, including any `/P` or `/R`**: it removes only angle brackets.
+On unpack, the `/R` (type 1) or `/P` (type 2) flag is appended to the call text first (`:1755-1765`), and the call is then staged
+(`stage_unpack_call`, `:1943-1959`) and saved (`apply_unpack77_effects`, `:1961-1989`).
 
 ## 4. What WS changed
 
@@ -131,7 +135,7 @@ What each step sends, as composed by WS for the first station of each announced 
 | std+suffix/std+suffix | DG2YCB/MM | tx4 | `<W1XYZ/P> DG2YCB/MM RR73` | 4 | `<W1XYZ/P> DG2YCB/MM RR73` | `<W1XYZ/P> DG2YCB/MM RR73` |
 | std+suffix/std+suffix | DG2YCB/MM | tx5 | `<W1XYZ/P> DG2YCB/MM 73` | 4 | `<W1XYZ/P> DG2YCB/MM 73` | `<W1XYZ/P> DG2YCB/MM 73` |
 
-Selected stock-versus-WS differences (WSJT-X 3.0.2 packing of the stock texts, `rt` = what its own unpacker returns):
+Selected stock-versus-WS differences (WSJT-X 3.0.2 packing of the stock texts, `rt` = what its own unpacker returns; v3.2.0-rc1 refuses to pack all four stock texts):
 
 | pattern | sender | step | stock text | stock `rt` | WS text | WS `rt` |
 |---|---|---|---|---|---|---|
@@ -187,7 +191,7 @@ receiver's own call set (as `jt9` does) and empty tables, or after unpacking the
 (Reading: a station that knows the sender's full call, learnt from the type-4 tx1 or CQ, shows every call; a bystander shows `<...>` for the
 hashed field. A call carrying `/P` hashes with the suffix, so `<W1XYZ/P>` resolves for the station whose own call it is.)
 
-In v3.2.0-rc1 the same 168 messages unpack identically in both table states (168/168).
+These are v3.2.0-rc1's outputs (the reference). WSJT-X 3.0.2 gives the same 168 of 168 in both table states.
 
 ### 5.2 Auto Seq (desk-checked, not executed)
 
@@ -218,7 +222,7 @@ sequence was not simulated.
 
 ### 5.3 Hash collisions (arithmetic, not measured)
 
-A hashed call resolves to whatever stored call has the same hash. WSJT-X 3.0.2 keeps up to 1000 22-bit entries (`MAXHASH`) and 4096 12-bit slots
+A hashed call resolves to whatever stored call has the same hash. WSJT-X (rc1 and 3.0.2 alike, `packjt77.f90:7, 13`) keeps up to 1000 22-bit entries (`MAXHASH`) and 4096 12-bit slots
 (`calls12`). For a hash the receiver has not learnt: about 1000 / 2^22 = 0.024% that a 22-bit hash hits a stored call; about 11% that a 12-bit
 type-4 hash hits when 500 distinct calls are stored (1 - (1 - 1/4096)^500). This is how type 4 and the hashed type-1 field work in WSJT-X itself;
 WS uses them in more of the steps of a QSO (the 12-bit form in tx4/tx5, the 22-bit form in tx2/tx3) where stock WSJT-X sent cut text or no report.
@@ -228,13 +232,13 @@ WS uses them in more of the steps of a QSO (the 12-bit form in tx4/tx5, the 22-b
 ### 6.1 Result
 
 `unpack77_with_hash` was run on all 168 messages, with the receiver's own call inserted into the table (empty table, and after
-`unpack77_learn` of the sender's CQ), and compared with WSJT-X 3.0.2. No panic, no `None`. 156 of 168 (empty table) and 148 of 168 (after
+`unpack77_learn` of the sender's CQ), and compared with WSJT-X v3.2.0-rc1 (3.0.2 gives identical results). No panic, no `None`. 156 of 168 (empty table) and 148 of 168 (after
 the CQ) agree; **all 32 differences are the same**: where WSJT-X prints `<W1XYZ/P>`, this crate prints `<...>`.
 
 Cause: `CallsignHashTable::insert` strips a trailing `/R` or `/P` before hashing (`mfsk-core/src/msg/hash_table.rs`, "Strip /R or /P suffix
 for hashing", present since the initial commit and pinned by the test `strip_suffix`), and `register_callsigns` (`wsjt77.rs`) reads the call of a
-type 1/2 message without its `/R`//`/P` flag. Upstream's `save_hash_call` strips only angle brackets, and `unpack77` appends `/R` or `/P`
-before saving (`packjt77.f90:548-559`). The failure is a missing resolution (`<...>`), never a wrong call, but it hits exactly the
+type 1/2 message without its `/R`//`/P` flag. Upstream's `save_hash_call` strips only angle brackets (rc1 `packjt77.f90:356-390`), and `unpack77` appends `/R` or `/P`
+before saving (`:1755-1765`). The failure is a missing resolution (`<...>`), never a wrong call, but it hits exactly the
 traffic of this report (a station with a `/P` call addressed by a hashed call) and also stock WSJT-X traffic to such a station.
 
 ### 6.2 Proposed patch (not applied)
@@ -265,7 +269,8 @@ JTDX and MSHV were not examined.
 2. The Auto Seq trace (5.2) is a reading of the 3.0.2 code, and rc1 was not traced. The stall was not reproduced by running either program.
 3. The introduction build of the extension (WS 3.1.0 beta, 2026-02-26) was not available; 3.1.0 (260522) and 3.2.1 are identical in all
    the places examined. WS 3.0.0 and 3.2.0 were not fetched.
-4. The type table (3) is from WSJT-X 3.0.2, not rc1's restructured source.
+4. The Auto Seq trace (5.2) and the stock-text comparison (4.2) use the 3.0.2 / WS code; rc1's `genStdMsgs` is functionally the same, but its restructured
+   `processMessage` was not read.
 5. A WS-to-WS sequence and a WS-to-JTDX/MSHV sequence were not examined.
 
 ## 9. Reproduction

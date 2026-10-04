@@ -1,5 +1,5 @@
 diff --git a/mfsk-core/src/msg/hash_table.rs b/mfsk-core/src/msg/hash_table.rs
-index 2616f23b..f748723c 100644
+index 2616f23b..eb1915d5 100644
 --- a/mfsk-core/src/msg/hash_table.rs
 +++ b/mfsk-core/src/msg/hash_table.rs
 @@ -230,12 +230,9 @@ impl CallsignHashTable {
@@ -13,7 +13,7 @@ index 2616f23b..f748723c 100644
 -            call
 -        };
 +        // Upstream's `save_hash_call` strips only the angle brackets: a call carrying
-+        // /R or /P hashes with the suffix (`packjt77.f90:150-184`).
++        // /R or /P hashes with the suffix (WSJT-X v3.2.0-rc1 `packjt77.f90:356-390`).
 +        let base = call;
  
          if base.len() < 2 || base == "..." || base.starts_with("CQ") {
@@ -25,7 +25,7 @@ index 2616f23b..f748723c 100644
 -    fn strip_suffix() {
 +    fn keeps_suffix() {
 +        // `save_hash_call` strips only the angle brackets, so a call with /P hashes with it
-+        // (`packjt77.f90:150-184`; checked against WSJT-X 3.0.2 and 3.2.0-rc1, #568).
++        // (rc1 `packjt77.f90:356-390`; checked against rc1 and 3.0.2, #568).
          let mut t = CallsignHashTable::new();
          t.insert("JA1ABC/P");
 -        let h22 = ihashcall("JA1ABC", 22);
@@ -35,7 +35,7 @@ index 2616f23b..f748723c 100644
      }
  }
 diff --git a/mfsk-core/src/msg/wsjt77.rs b/mfsk-core/src/msg/wsjt77.rs
-index ff8085cd..3c872ae4 100644
+index ff8085cd..2fee76b9 100644
 --- a/mfsk-core/src/msg/wsjt77.rs
 +++ b/mfsk-core/src/msg/wsjt77.rs
 @@ -550,8 +550,21 @@ pub fn register_callsigns(msg: &[u8], ht: &mut CallsignHashTable) {
@@ -45,7 +45,7 @@ index ff8085cd..3c872ae4 100644
 -            learn_std(read_bits(msg, 0, 28), ht);
 -            learn_std(read_bits(msg, 29, 28), ht);
 +            // The flag after each call is /R (type 1) or /P (type 2); upstream saves the call
-+            // with that suffix (`packjt77.f90:548-559`), and a later `<CALL/P>` hash names it.
++            // with that suffix (rc1 `packjt77.f90:1755-1765`), and a later `<CALL/P>` hash names it.
 +            let suffix = if i3 == 1 { "/R" } else { "/P" };
 +            let learn_with_flag = |n28: u32, flag_at: usize, ht: &mut CallsignHashTable| {
 +                let call = unpack28(n28);
