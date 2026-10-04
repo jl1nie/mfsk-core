@@ -187,6 +187,14 @@
     // (the Sun within 6 degrees of the horizon) is a grey, night darker still, and the line where the Sun is on
     // the horizon is drawn thin and light.
     if (greyline) {
+      ctx.save();
+      // The great-circle map is a disc: a night that takes in a pole is not closed by the projection and
+      // would be filled out over the square round it, so nothing is drawn outside the disc.
+      if (proj === 'azimuthal' && mine) {
+        ctx.beginPath();
+        ctx.arc(w / 2, h / 2, Math.min(w, h) / 2 - 8, 0, 2 * Math.PI);
+        ctx.clip();
+      }
       const sun = subsolarPoint(sunAt);
       const anti: [number, number] = [sun[0] + 180 > 180 ? sun[0] - 180 : sun[0] + 180, -sun[1]];
       const circle = geoCircle().center(anti);
@@ -214,6 +222,7 @@
       edge(96, 0.3, 0.7);
       edge(84, 0.3, 0.7);
       edge(90, 0.5, 1);
+      ctx.restore();
     }
 
     // Distance rings from home: straight great circles read directly.
