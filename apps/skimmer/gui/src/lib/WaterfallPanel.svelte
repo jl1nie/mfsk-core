@@ -37,7 +37,7 @@
   let big: HTMLCanvasElement | undefined = $state();
   let over: HTMLCanvasElement | undefined = $state();
   let hover = $state('');
-  let hoverAt = $state({ x: 0, y: 0 });
+  let hoverAt = $state({ x: 0, y: 0, w: 0, h: 0 });
   let scheduled = false;
   /** The large waterfall holds rows of the focused channel (re-read whenever rows arrive). */
   const ready = $derived(tick >= 0 && store.big.channel === focus && store.big.rows.length > 0);
@@ -173,7 +173,7 @@
     const y = e.clientY - r.top;
     const hit = boxes.find((bx) => x >= bx.x0 && x <= bx.x1 && y >= bx.y0 && y <= bx.y1);
     hover = hit?.text ?? '';
-    hoverAt = { x, y };
+    hoverAt = { x, y, w: r.width, h: r.height };
   }
 </script>
 
@@ -205,7 +205,15 @@
       <canvas class="big" bind:this={big} width="1024" height={BIG_PX}></canvas>
       <canvas class="over" bind:this={over} onmousemove={onmove} onmouseleave={() => (hover = '')}></canvas>
       {#if hover}
-        <div class="tip" style="left: {hoverAt.x + 10}px; top: {hoverAt.y + 10}px">{hover}</div>
+        <!-- Beside the pointer, but on its left near the right edge and above it near the bottom, where it would be cut off. -->
+        {@const flipX = hoverAt.x > hoverAt.w * 0.6}
+        {@const flipY = hoverAt.y > hoverAt.h - 40}
+        <div
+          class="tip"
+          style="left: {flipX ? hoverAt.x - 10 : hoverAt.x + 10}px; top: {flipY ? hoverAt.y - 10 : hoverAt.y + 10}px; transform: translate({flipX ? '-100%' : '0'}, {flipY ? '-100%' : '0'})"
+        >
+          {hover}
+        </div>
       {/if}
       {#if !ready}
         <div class="wait">waiting for {channels[focus] ? channels[focus].mode + ' ' + (channels[focus].dialHz / 1000).toFixed(1) : 'a channel'}…</div>

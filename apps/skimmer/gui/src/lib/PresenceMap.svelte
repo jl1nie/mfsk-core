@@ -132,7 +132,12 @@
   {#if usual}<p class="sum">Usually heard: {usual}</p>{/if}
   <div class="stage">
     <canvas bind:this={cv} onmousemove={move} onmouseleave={() => (tip = null)}></canvas>
-    {#if tip}<div class="tip" style="left:{tip.x}px;top:{tip.y}px">{tip.text}</div>{/if}
+    {#if tip}
+      <!-- Beside the pointer; on its left near the right edge and above it near the bottom, where it would be cut off. -->
+      {@const flipX = tip.x > (cv?.clientWidth ?? 600) * 0.6}
+      {@const flipY = tip.y > (cv?.clientHeight ?? 200) - 40}
+      <div class="tip" style="left:{flipX ? tip.x - 24 : tip.x}px;top:{flipY ? tip.y - 24 : tip.y}px;transform:translate({flipX ? '-100%' : '0'},{flipY ? '-100%' : '0'})">{tip.text}</div>
+    {/if}
   </div>
 </div>
 
