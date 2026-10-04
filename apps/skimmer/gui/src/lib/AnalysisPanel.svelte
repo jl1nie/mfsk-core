@@ -8,9 +8,31 @@
   import ResultsView from './ResultsView.svelte';
   import DatabaseView from './DatabaseView.svelte';
 
-  let { dir: recorded, me }: { dir: string; me: string } = $props();
+  let {
+    dbEnabled = $bindable(),
+    dbPath = $bindable(),
+    logDir = $bindable(),
+    running,
+    me,
+    chooseDb,
+    newDb,
+    chooseLogDir,
+  }: {
+    /** Keep decodes in the database (a setting of the skimmer, changed here while disconnected). */
+    dbEnabled: boolean;
+    /** The file recorded into; Analysis reads it unless another is opened. */
+    dbPath: string;
+    logDir: string;
+    running: boolean;
+    /** The locator of the chosen server: the map's "home". */
+    me: string;
+    chooseDb: () => void;
+    newDb: () => void;
+    chooseLogDir: () => void;
+  } = $props();
+  const recorded = $derived(dbPath);
   /** The database file read: the one recorded into, unless another is opened in the Database tab. */
-  let dir = $state(untrack(() => recorded));
+  let dir = $state(untrack(() => dbPath));
   $effect(() => {
     dir = recorded;
   });
@@ -120,7 +142,7 @@
   const mapMe = $derived(servers.find((x) => x[0] === centre)?.[1] || me);
   const line = $derived(
     summary
-      ? `${summary.decodes.toLocaleString()} decodes · ${summary.stations.toLocaleString()} stations (of ${span[2].toLocaleString()} stored)${me ? '' : ' · no home grid: Settings > Station'}`
+      ? `${summary.decodes.toLocaleString()} decodes · ${summary.stations.toLocaleString()} stations (of ${span[2].toLocaleString()} stored)${me ? '' : ' · no grid for this server: Settings > Server'}`
       : '',
   );
 </script>
@@ -138,7 +160,7 @@
         <label class="centre">
           Centre the map on
           <select bind:value={centre}>
-            <option value="">home ({me || 'no grid'})</option>
+            <option value="">this server ({me || 'no grid'})</option>
             {#each servers as [name, grid] (name)}
               <option value={name}>{name || 'before names'}{grid ? ` (${grid})` : ''}</option>
             {/each}
@@ -149,7 +171,7 @@
     {:else if tab === 'results'}
       <ResultsView {dir} {q} {activity} {nowMs} me={mapMe} bind:picked />
     {:else}
-      <DatabaseView {dir} {recorded} {q} onchanged={apply} onopen={(f) => (dir = f ?? recorded)} />
+      <DatabaseView bind:dbEnabled {logDir} {running} {chooseDb} {newDb} {chooseLogDir} {dir} {recorded} {q} onchanged={apply} onopen={(f) => (dir = f ?? recorded)} />
     {/if}
   </div>
 </section>

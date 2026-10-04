@@ -6,6 +6,12 @@
   let {
     dir,
     recorded,
+    dbEnabled = $bindable(),
+    logDir,
+    running,
+    chooseDb,
+    newDb,
+    chooseLogDir,
     q,
     onchanged,
     onopen,
@@ -13,6 +19,12 @@
     dir: string;
     /** The file being recorded into. */
     recorded: string;
+    dbEnabled: boolean;
+    logDir: string;
+    running: boolean;
+    chooseDb: () => void;
+    newDb: () => void;
+    chooseLogDir: () => void;
     q: Query;
     onchanged: () => void;
     /** Read another database file (null: back to the recording one). */
@@ -140,6 +152,23 @@
       {/if}
     </p>
     {#if dir !== recorded}<p class="hint">Reading another file; the skimmer records into {recorded}.</p>{/if}
+  </section>
+  <section>
+    <h3>Recording</h3>
+    <label class="check" title="Every decode in a database file, indexed, for this view.">
+      <input type="checkbox" bind:checked={dbEnabled} disabled={running} />
+      <span>Keep decodes in a database</span>
+    </label>
+    <p class="row" title="The file decodes are recorded into">
+      <span class="path" title={recorded}>{recorded}</span>
+      <button type="button" onclick={chooseDb} disabled={running || !dbEnabled}>Open…</button>
+      <button type="button" onclick={newDb} disabled={running || !dbEnabled}>New…</button>
+    </p>
+    <p class="row" title="Where STATUS.log is written (a line per health event, for a long run)">
+      <span class="path" title={logDir}>{logDir}</span>
+      <button type="button" onclick={chooseLogDir} disabled={running}>Choose…</button>
+    </p>
+    {#if running}<p class="hint">Disconnect to change these.</p>{/if}
   </section>
   {#if info}
     <section>

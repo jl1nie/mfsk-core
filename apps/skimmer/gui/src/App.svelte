@@ -69,22 +69,19 @@
   const SETTINGS_TABS = [
     ['server', 'Server', 'server'],
     ['rotation', 'Rotation', 'server'],
-    ['station', 'Station', 'all'],
-    ['receiver', 'Receiver', 'all'],
-    ['recording', 'Recording', 'all'],
+    ['general', 'General', 'all'],
   ] as const;
   let settingsTab = $state<(typeof SETTINGS_TABS)[number][0]>('server');
   /** The live view (waterfall + decodes) or the Analysis of the database. */
   let view = $state<'live' | 'analysis'>('live');
-  const gridOk = $derived(
-    !settings?.myGrid.trim() || /^[A-R]{2}\d{2}([A-X]{2})?$/i.test(settings.myGrid.trim()),
-  );
-  function stationChanged() {
-    if (!settings) return;
-    settings.myCall = settings.myCall.trim().toUpperCase();
-    const g = settings.myGrid.trim();
-    settings.myGrid = g.slice(0, 4).toUpperCase() + g.slice(4).toLowerCase();
-    if (running) api.setStation(settings.myCall, settings.myGrid);
+  /** A server's call or locator was edited: normalised, and handed to a running session of that server. */
+  function stationChanged(server: number) {
+    const sv = settings?.servers[server];
+    if (!sv) return;
+    sv.call = sv.call.trim().toUpperCase();
+    const g = sv.grid.trim();
+    sv.grid = g.slice(0, 4).toUpperCase() + g.slice(4).toLowerCase();
+    if (running) api.setStation(server, sv.call, sv.grid);
   }
   /** The clock line from the core: NTP offset, or why NTP is not in use. */
   let clockText = $state('');
@@ -457,7 +454,7 @@
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', grid: '', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [],
+      name: `Server ${n}`, address: '', grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [],
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -570,9 +567,6 @@
               <button type="button" role="tab" class:on={settingsTab === id} aria-selected={settingsTab === id} onclick={() => (settingsTab = id)}>{label}</button>
             {/each}
           </div>
-          {#if SETTINGS_TABS.find((t) => t[0] === settingsTab)?.[2] === 'all'}
-            <p class="hint">These apply to every server.</p>
-          {/if}
           {#if settingsTab === 'server'}
           <h3 class="serverhead">
             Server · {settings.servers[sel]?.name}
@@ -587,19 +581,42 @@
             {@const sv = settings.servers[sel]}
             <div class="field"><span>Name</span><input bind:value={sv.name} disabled={running} spellcheck="false" /></div>
             <div class="field"><span>Address</span><input bind:value={sv.address} disabled={running} placeholder="host:5555" spellcheck="false" /></div>
-            <div class="field" title="Where this server's antenna is. Bearings and distances of what it hears are measured from here.">
+            <div class="field" title="Your callsign at this server. Used for the QSO-context a-priori decoding. A channel can override it in its options.">
+              <span>My call</span>
+              <input class="call" bind:value={sv.call} placeholder="JL1NIE" spellcheck="false" onchange={() => stationChanged(sel)} />
+            </div>
+            <div class="field" title="Where this server's antenna is: your locator at this server. Bearings and distances of what it hears are measured from here, and the maps and the sunrise and sunset are for it.">
               <span>Grid</span>
-              <input class="grid" class:bad={!!sv.grid.trim() && !/^[A-R]{2}\d{2}([A-X]{2})?$/i.test(sv.grid.trim())} bind:value={sv.grid} placeholder={settings.myGrid || 'PM95'} spellcheck="false" disabled={running} />
+              <input class="grid" class:bad={!!sv.grid.trim() && !/^[A-R]{2}\d{2}([A-X]{2})?$/i.test(sv.grid.trim())} bind:value={sv.grid} placeholder="PM95" spellcheck="false" onchange={() => stationChanged(sel)} />
             </div>
             <div class="field" title="Sunrise and sunset today at the server's locator (the Sun's upper limb on the horizon, with refraction). Mean solar time for the local one.">
               <span>Sun today</span>
-              <span class="sun">{sunLine(sv.grid || settings.myGrid)}</span>
+              <span class="sun">{sunLine(sv.grid)}</span>
             </div>
             <div class="field" title="Fixed delay from the SDR to this PC (server buffer, path), taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here.">
               <span>Network delay (ms)</span>
               <input type="number" step="10" min="0" bind:value={sv.networkDelayMs}
                 onchange={() => running && api.setNetworkDelay(sel, Number(sv.networkDelayMs) || 0)} />
             </div>
+            <div class="field" title="float32 or int16 IQ. int16 halves the bytes: for a server across a slow link.">
+              <span>IQ format</span>
+              <select bind:value={sv.format} disabled={running}>
+                <option value="float">float32</option>
+                <option value="int16">int16</option>
+              </select>
+            </div>
+            <div class="field">
+              <span>Channelizer</span>
+              <select bind:value={sv.channelizer} disabled={running}>
+                <option value="auto">Auto</option>
+                <option value="direct">Direct</option>
+                <option value="pfb">Filter bank</option>
+              </select>
+            </div>
+            <p class="hint">
+              Auto uses the filter bank from {autoPfb} channels in the stream, direct below that (direct costs about 0.9 % of a core per
+              channel at 768 kS/s, the bank a fixed 2.4 % plus 0.25 % per channel).
+            </p>
             <label class="check">
               <input type="checkbox" bind:checked={sv.yieldControl} disabled={running} />
               <span>
@@ -667,7 +684,7 @@
                     hours={r.hours}
                     follow={r.follow ?? ''}
                     margin={r.marginHours ?? 1}
-                    grid={sv.grid || settings.myGrid}
+                    grid={sv.grid}
                     onchange={(v) => { r.hours = v.hours; r.follow = v.follow; r.marginHours = v.margin; rotationChanged(); }}
                   />
                 </div>
@@ -675,34 +692,8 @@
               <p class="hint">At least 4 minutes each, rounded up to a whole number of the slots of the band's modes (WSPR's are 2 minutes, so 5 becomes 6); a retune costs a slot or two. Click the hours (UTC) a band takes part in, one by one, or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
             {/if}
           {/if}
-          <label class="check" title="Off (default): Connect starts a rotation at its first band. On: the cycle counts from UTC midnight, so a restart, or another server with the same steps, is at the same step at the same moment.">
-            <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
-            <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
-          </label>
-          {:else if settingsTab === 'station'}
-          <h3>Station</h3>
-          <div class="field" title="Your callsign and locator. Used for the QSO-context a-priori decoding, and as the centre of the maps and the origin of every bearing. A channel can override them in its options.">
-            <span>My call</span>
-            <input
-              class="call"
-              bind:value={settings.myCall}
-              placeholder="JL1NIE"
-              spellcheck="false"
-              onchange={stationChanged}
-            />
-          </div>
-          <div class="field" title="4 or 6 characters, e.g. PM95 or PM95tl">
-            <span>My grid</span>
-            <input
-              class="grid"
-              class:bad={!gridOk}
-              bind:value={settings.myGrid}
-              placeholder="PM95"
-              spellcheck="false"
-              onchange={stationChanged}
-            />
-          </div>
-          <h3>Clock</h3>
+          {:else}
+          <p class="hint">These apply to every server. Where decodes are recorded is in Analysis > Database.</p>
           <div class="field" title="The skimmer stamps IQ with UTC. The PC clock is not changed: the offset to the NTP server is added.">
             <span>Clock</span>
             <select bind:value={settings.clockSource} disabled={running}>
@@ -711,27 +702,10 @@
             </select>
             <input bind:value={settings.ntpServer} disabled={running || settings.clockSource !== 'ntp'} spellcheck="false" />
           </div>
-          {:else if settingsTab === 'receiver'}
-          <h3>Connection</h3>
-          <div class="field">
-            <span>IQ format</span>
-            <select bind:value={settings.format} disabled={running}>
-              <option value="float">float32</option>
-              <option value="int16">int16</option>
-            </select>
-          </div>
-          <div class="field">
-            <span>Channelizer</span>
-            <select bind:value={settings.channelizer} disabled={running}>
-              <option value="auto">Auto</option>
-              <option value="direct">Direct</option>
-              <option value="pfb">Filter bank</option>
-            </select>
-          </div>
-          <p class="hint">
-            Auto uses the filter bank from {autoPfb} channels in the stream, direct below that: the measured break-even
-            (direct costs about 0.9 % of a core per channel at 768 kS/s, the bank a fixed 2.4 % plus 0.25 % per channel).
-          </p>
+          <label class="check" title="Off (default): Connect starts a rotation at its first band. On: the cycle counts from UTC midnight, so a restart, or another server with the same steps, is at the same step at the same moment.">
+            <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
+            <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
+          </label>
           <h3>Waterfall</h3>
           <label class="check" title="A fine spectrum of each channel's audio (2.9 Hz per bin) under the channel list, with the decodes marked on it">
             <input type="checkbox" bind:checked={settings.waterfall} disabled={running} />
@@ -746,21 +720,6 @@
             />
             <span>Fine (1.5 Hz per bin)</span>
           </label>
-          {:else}
-          <h3>Recording</h3>
-          <label class="check" title="Every decode in a database file, indexed, for the Analysis view.">
-            <input type="checkbox" bind:checked={settings.dbEnabled} disabled={running} />
-            <span>Keep decodes in a database</span>
-          </label>
-          <div class="folder" class:off={!settings.dbEnabled} title="The database file decodes are recorded into">
-            <span class="path" title={settings.dbPath}>{settings.dbPath}</span>
-            <button onclick={chooseDb} disabled={running || !settings.dbEnabled}>Open…</button>
-            <button onclick={newDb} disabled={running || !settings.dbEnabled}>New…</button>
-          </div>
-          <div class="folder" title="Where STATUS.log is written (a line per health event, for a long run)">
-            <span class="path" title={settings.logDir}>{settings.logDir}</span>
-            <button onclick={chooseLogDir} disabled={running}>Choose…</button>
-          </div>
           {/if}
           {#if running}<p class="hint">Disconnect to change these.</p>{/if}
         </div>
@@ -805,8 +764,6 @@
         {slotCounts}
         onchange={channelsChanged}
         onoptions={channelOptionsChanged}
-        stationCall={settings.myCall}
-        stationGrid={settings.myGrid}
       />
 
     </aside>
@@ -825,7 +782,16 @@
         >
       </div>
       {#if view === 'analysis'}
-        <AnalysisPanel dir={settings.dbPath} me={settings.myGrid.trim()} />
+        <AnalysisPanel
+          bind:dbEnabled={settings.dbEnabled}
+          bind:dbPath={settings.dbPath}
+          bind:logDir={settings.logDir}
+          {running}
+          me={settings.servers[sel]?.grid.trim() ?? ''}
+          {chooseDb}
+          {newDb}
+          {chooseLogDir}
+        />
       {/if}
       <!-- Kept mounted behind the Analysis view, so its filters and scroll survive. -->
       <div class="live" style:display={view === 'analysis' ? 'none' : 'contents'}>

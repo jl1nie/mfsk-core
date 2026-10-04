@@ -23,7 +23,7 @@ export interface ChannelSetting {
   ap?: ApSetting | null;
   /** A station to hunt (a-priori hint). */
   dxCall?: string | null;
-  /** This channel's own call and locator; empty uses Settings'. */
+  /** This channel's own call and locator; empty uses its server's. */
   myCall?: string | null;
   myGrid?: string | null;
   /** The QSO in progress; nQSOProgress as a name or 0-5. */
@@ -46,6 +46,12 @@ export interface ServerSetting {
   address: string;
   /** Where its antenna is (a locator): the origin of the bearings of what it hears. */
   grid: string;
+  /** Your callsign at this server (QSO-context AP); a channel can override it. */
+  call: string;
+  /** IQ sample format on the wire; int16 halves the bytes. */
+  format: WireFormat;
+  /** How the band is cut into channels. */
+  channelizer: 'auto' | 'direct' | 'pfb';
   /** Fixed delay between the SDR and this PC, taken off arrival times, ms. */
   networkDelayMs: number;
   /** Connected when Connect is pressed; off keeps its settings and channels but listens to nothing. */
@@ -75,7 +81,6 @@ export interface Settings {
   servers: ServerSetting[];
   /** The channels of every server, in one list. */
   channels: ChannelSetting[];
-  format: WireFormat;
   /** Draw the channels' waterfalls; fine is 1.5 Hz per bin instead of 2.9. */
   waterfall: boolean;
   waterfallFine: boolean;
@@ -84,16 +89,12 @@ export interface Settings {
   ntpServer: string;
   /** The rotation counts from UTC midnight instead of starting at the first band on Connect. */
   rotationUtc: boolean;
-  channelizer: 'auto' | 'direct' | 'pfb';
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */
   dbPath: string;
   /** Folder the health log STATUS.log is written in. */
   logDir: string;
-  /** The operator, for the QSO-context AP. */
-  myCall: string;
-  myGrid: string;
 }
 
 export interface ModeInfo {

@@ -24,7 +24,8 @@ export const setServerEnabled = (server: number, on: boolean) => invoke<void>('s
 export const rotateBand = (server: number, by: number) => invoke<void>('rotate_band', { server, by });
 export const setHold = (server: number, hold: boolean) => invoke<void>('set_hold', { server, hold });
 export const setNetworkDelay = (server: number, ms: number) => invoke<void>('set_network_delay', { server, ms });
-export const setStation = (myCall: string, myGrid: string) => invoke<void>('set_station', { myCall, myGrid });
+export const setStation = (server: number, myCall: string, myGrid: string) =>
+  invoke<void>('set_station', { server, myCall, myGrid });
 export const setGain = (server: number, gain: number) => invoke<void>('set_gain', { server, gain });
 export const radioState = (server: number) => invoke<RadioState | null>('radio_state', { server });
 export const setWaterfall = (focus: number | null, fine: boolean) =>

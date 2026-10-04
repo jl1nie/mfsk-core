@@ -125,6 +125,12 @@ struct ServerSetting {
     /// Shown in the window and kept in the database; unique.
     name: String,
     address: String,
+    /// The operator's callsign at this server (`mycall`, for the QSO-context a-priori decoding).
+    call: String,
+    /// "float" or "int16": the IQ the server sends (int16 halves the bytes, for a server across a slow link).
+    format: String,
+    /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
+    channelizer: String,
     /// Where this server's antenna is (a locator): the origin of the bearings
     /// of what it hears.
     grid: String,
@@ -217,6 +223,10 @@ impl Default for ServerSetting {
         ServerSetting {
             name: "SpyServer".into(),
             address: "127.0.0.1:5555".into(),
+            // Empty until migrated: a settings file from before these were per server hands its own down.
+            call: String::new(),
+            format: String::new(),
+            channelizer: String::new(),
             grid: String::new(),
             network_delay_ms: 0.0,
             enabled: true,
@@ -244,7 +254,8 @@ struct Settings {
     yield_control: bool,
     #[serde(skip_serializing)]
     network_delay_ms: f64,
-    /// "float" or "int16".
+    /// From before these were per server: read, handed to the servers, not written back.
+    #[serde(skip_serializing)]
     format: String,
     /// Draw the channels' waterfalls, at 1.5 Hz per bin if `waterfall_fine`.
     waterfall: bool,
@@ -256,7 +267,7 @@ struct Settings {
     /// server, is at the same step at the same moment) instead of beginning
     /// with the first band when connecting.
     rotation_utc: bool,
-    /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
+    #[serde(skip_serializing)]
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps).
     db_enabled: bool,
@@ -264,19 +275,14 @@ struct Settings {
     db_path: String,
     /// Folder the health log `STATUS.log` goes in.
     log_dir: String,
-    /// The operator (`mycall`, `mygrid`), for the QSO-context AP.
+    /// The operator's call and locator, from before they were per server.
+    #[serde(skip_serializing)]
     my_call: String,
+    #[serde(skip_serializing)]
     my_grid: String,
 }
 
 impl Settings {
-    fn station(&self) -> Station {
-        Station {
-            call: self.my_call.trim().to_ascii_uppercase(),
-            grid: self.my_grid.trim().to_ascii_uppercase(),
-        }
-    }
-
     /// A settings file from one server's days becomes a list of one.
     fn migrate(&mut self) {
         if self.servers.is_empty() {
@@ -292,6 +298,19 @@ impl Settings {
         for s in &mut self.servers {
             for r in &mut s.rotation {
                 r.migrate();
+            }
+            // From before the call, locator, IQ format and channelizer were each server's own.
+            if s.call.trim().is_empty() {
+                s.call = self.my_call.clone();
+            }
+            if s.grid.trim().is_empty() {
+                s.grid = self.my_grid.clone();
+            }
+            if s.format.is_empty() {
+                s.format = if self.format.is_empty() { "float".into() } else { self.format.clone() };
+            }
+            if s.channelizer.is_empty() {
+                s.channelizer = if self.channelizer.is_empty() { "auto".into() } else { self.channelizer.clone() };
             }
         }
         // Names are the database's key: unique, and never empty.
@@ -691,7 +710,10 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             .collect::<Result<Vec<_>, _>>()?;
         let mut cfg = Config::new(srv.address.trim(), channels);
         cfg.name = srv.name.clone();
-        cfg.live.set_station(s.station());
+        cfg.live.set_station(Station {
+            call: srv.call.trim().to_ascii_uppercase(),
+            grid: srv.grid.trim().to_ascii_uppercase(),
+        });
         cfg.live.set_enabled(srv.enabled);
         cfg.rotation_origin = (!s.rotation_utc).then_some(started);
         cfg.tune = srv.tune;
@@ -700,12 +722,12 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         cfg.ntp = (s.clock_source == "ntp" && !s.ntp_server.trim().is_empty())
             .then(|| s.ntp_server.trim().to_string());
         cfg.live.set_network_delay_ms(srv.network_delay_ms);
-        cfg.format = if s.format == "int16" {
+        cfg.format = if srv.format == "int16" {
             WireFormat::Int16
         } else {
             WireFormat::Float
         };
-        cfg.channelizer = match s.channelizer.as_str() {
+        cfg.channelizer = match srv.channelizer.as_str() {
             "direct" => Some(Channelizer::Direct),
             "pfb" => Some(Channelizer::Pfb),
             _ => None,
@@ -719,11 +741,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
                 let hours = r.mask();
                 // Following the Sun needs a place: the server's locator, else the operator's.
                 let follow = match r.follow.as_str() {
-                    "day" | "night" => skimmer_core::geo::grid_center(if srv.grid.trim().is_empty() {
-                        s.my_grid.trim()
-                    } else {
-                        srv.grid.trim()
-                    })
+                    "day" | "night" => skimmer_core::geo::grid_center(srv.grid.trim())
                     .map(|(lat, lon)| skimmer_core::Follow {
                         lon,
                         lat,
@@ -833,16 +851,16 @@ fn halt(state: &AppState) {
     }
 }
 
-/// Change the operator's station in a running skimmer, for every channel.
+/// Change a server's operator call and locator in a running skimmer, for its channels.
 #[tauri::command]
-fn set_station(state: State<'_, AppState>, my_call: String, my_grid: String) {
-    if let Some(r) = state.running.lock().unwrap().as_ref() {
-        for s in &r.servers {
-            s.live.set_station(Station {
-                call: my_call.trim().to_ascii_uppercase(),
-                grid: my_grid.trim().to_ascii_uppercase(),
-            });
-        }
+fn set_station(state: State<'_, AppState>, server: usize, my_call: String, my_grid: String) {
+    if let Some(r) = state.running.lock().unwrap().as_ref()
+        && let Some(s) = r.server(server)
+    {
+        s.live.set_station(Station {
+            call: my_call.trim().to_ascii_uppercase(),
+            grid: my_grid.trim().to_ascii_uppercase(),
+        });
     }
 }
 

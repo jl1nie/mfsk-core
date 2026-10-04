@@ -16,8 +16,6 @@
     slotCounts,
     onchange,
     onoptions,
-    stationCall,
-    stationGrid,
   }: {
     channels: ChannelSetting[];
     servers: ServerSetting[];
@@ -40,8 +38,6 @@
     /** A channel's decode options changed; applied to a running skimmer. */
     onoptions: (i: number) => void;
     /** The operator's call and locator from Settings: what a channel without its own uses. */
-    stationCall: string;
-    stationGrid: string;
   } = $props();
 
   let band = $state('40m');
@@ -90,6 +86,8 @@
   // The channel being edited, as strings until Apply.
   let dialog: HTMLDialogElement | undefined = $state();
   let editing = $state<number | null>(null);
+  /** The server of the channel being edited: its call and locator are what an empty field falls back to. */
+  const editServer = $derived(servers[(editing !== null ? channels[editing]?.server : 0) ?? 0]);
   type Form = {
     lo: string; hi: string; rx: string; tol: string; tx: string;
     depth: DepthSetting; ap: ApSetting; dx: string;
@@ -232,9 +230,9 @@
         <label title="Hunt one station: its call is given to the decoder as an a-priori hint (FT8, FT4, FST4, Q65)">
           DX call <input class="call" bind:value={f.dx} placeholder="JA1ABC" />
         </label>
-        <label title="This channel's own mycall / mygrid, if it differs from Settings' (a second callsign, a portable locator). With a QSO below, FT8, FT4 and FST4 derive upstream's QSO-context AP from them. Empty uses Settings'.">
-          My call <input class="call" bind:value={f.myCall} placeholder={stationCall || 'from Settings'} />
-          grid <input class="grid" bind:value={f.myGrid} placeholder={stationGrid || 'from Settings'} />
+        <label title="This channel's own mycall / mygrid, if it differs from its server's (a second callsign, a portable locator). With a QSO below, FT8, FT4 and FST4 derive upstream's QSO-context AP from them. Empty uses the server's.">
+          My call <input class="call" bind:value={f.myCall} placeholder={editServer?.call || 'from its server'} />
+          grid <input class="grid" bind:value={f.myGrid} placeholder={editServer?.grid || 'from its server'} />
         </label>
       </fieldset>
 
