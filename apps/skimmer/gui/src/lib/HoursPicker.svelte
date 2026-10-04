@@ -73,7 +73,6 @@
     sunHours
       ? ['night', sunHours.night, `Sunset ${clockOf(sun!.set!)} to sunrise ${clockOf(sun!.rise!)} UTC today at ${grid.toUpperCase()}, with an hour of grey line either side`]
       : ['night', inLocal(18, 6), `18:00-06:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off}); give the grid for today's sunrise and sunset`],
-    ['invert', all ? Array<boolean>(24).fill(false) : hours.map((x) => !x), 'The hours that are out come in, and the other way round'],
   ]);
   const same = (a: boolean[], b: boolean[]) =>
     (a.length === 0 ? Array<boolean>(24).fill(true) : a).every((x, i) => x === (b.length === 0 ? true : b[i]));
@@ -129,7 +128,7 @@
   <div class="scale"><span>0</span><span>6</span><span>12</span><span>18</span><span>24 UTC</span></div>
   <div class="pre">
     {#each presets as [name, v, tip] (name)}
-      <button type="button" class="chip" class:on={name !== 'invert' && same(hours, v)} title={tip} onclick={() => onchange(v)}>{name}</button>
+      <button type="button" class="chip" class:on={same(hours, v)} title={tip} onclick={() => onchange(v)}>{name}</button>
     {/each}
     <span class="hint" class:warn={none}>{label}{local}</span>
   </div>
