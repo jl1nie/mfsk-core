@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A hashed callsign with `/P` or `/R` now resolves, as in WSJT-X (#570).** `CallsignHashTable::insert` stripped the suffix and the
+  type 1/2 learner never read the `/R` / `/P` flag, so `<W1XYZ/P>` stayed `<...>` where WSJT-X v3.2.0-rc1 prints it (32 of 336 outcomes on the
+  WS fixtures of #568; no wrong call, a missing resolution). Both now follow `save_hash_call` and the unpacker (`packjt77.f90:356-390`,
+  `:1755-1765`). New test `ws_77bit_extension` checks 168 messages in two table states against rc1: 336 of 336.
+
 - **License identifier corrected to `GPL-3.0-only` (#569).** Up to 0.13.0 the crate, its README and the source headers said
   `GPL-3.0-or-later, matching upstream`. WSJT-X states "version 3" (README, About dialog, `COPYING`) and does not add "or later";
   this crate contains code derived from it. `license` in the `Cargo.toml` files, the `SPDX-License-Identifier` headers
