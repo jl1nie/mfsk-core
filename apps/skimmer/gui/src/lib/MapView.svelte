@@ -196,15 +196,22 @@
         ctx.fillStyle = `rgba(8, 14, 40, ${alpha})`;
         ctx.fill();
       };
-      shade(96, 0.14); // the Sun lower than 6 degrees above the horizon: the evening light begins
-      shade(90, 0.14); // below the horizon
-      shade(84, 0.2); // 6 degrees below: night
-      shade(78, 0.2); // 12 degrees below: dark night
-      ctx.beginPath();
-      path(circle.radius(90)() as any);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
+      // Three levels that read at a glance: day clear, the grey line a middle shade, night dark.
+      // Cumulative alpha: 0.18 up to 6 degrees above the horizon, 0.36 below it, 0.64 from 6 degrees below.
+      shade(96, 0.18);
+      shade(90, 0.22);
+      shade(84, 0.44);
+      // The band's two edges, thin and faint; the horizon itself, brighter.
+      const edge = (radius: number, alpha: number, width: number) => {
+        ctx.beginPath();
+        path(circle.radius(radius)() as any);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.lineWidth = width;
+        ctx.stroke();
+      };
+      edge(96, 0.4, 0.8);
+      edge(84, 0.4, 0.8);
+      edge(90, 0.9, 1.4);
     }
 
     // Distance rings from home: straight great circles read directly.
@@ -454,10 +461,10 @@
     background: #cfe0f0;
   }
   .sunkey i.d2 {
-    background: #9fb0c8;
+    background: #8b9db7;
   }
   .sunkey i.d3 {
-    background: #4a5873;
+    background: #3a4663;
   }
   .bandkey.off {
     visibility: hidden;
