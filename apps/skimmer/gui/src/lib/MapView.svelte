@@ -79,10 +79,9 @@
     (byT.get(cur) ?? []).map((p) => ({ call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1, alpha: 1 })),
   );
   const shown = $derived(anim ? frame : overall.map((d) => ({ ...d, alpha: 1 })));
-  /** The bands of the whole period (not of the window shown, which would change as it plays): with
-   * several, the paths are coloured by band and the key lists them; the dots stay by SNR. */
+  /** The bands of the whole period (not of the window shown, which would change as it plays): the
+   * paths are coloured by band and the key lists them; the dots are coloured by SNR. */
   const bandsShown = $derived(sortBands(points.map((p) => p.band)));
-  const byBand = $derived(bandsShown.length > 1);
 
   $effect(() => {
     // A new range or window starts the animation again.
@@ -125,7 +124,7 @@
     void picked;
     void proj;
     void paths;
-    void byBand;
+    void bandsShown;
     void size;
     void mine;
     draw();
@@ -196,13 +195,14 @@
     pts = [];
     const me2 = mine ? p(mine) : null;
     if (paths && mine) {
-      ctx.lineWidth = byBand ? 1 : 0.6;
+      ctx.lineWidth = 1;
       for (const d of shown) {
         const g = gridLonLat(d.grid);
         if (!g) continue;
         ctx.beginPath();
         path({ type: 'LineString', coordinates: [mine, g] } as any);
-        ctx.strokeStyle = byBand ? bandColour(d.band, 0.55 * d.alpha) : snrColour(d.snr, 0.35 * d.alpha);
+        // A path is always its band's colour (one meaning); the dots carry the SNR.
+        ctx.strokeStyle = bandColour(d.band, 0.55 * d.alpha);
         ctx.stroke();
       }
     }
@@ -331,8 +331,8 @@
   <!-- The key sits on its own row above the map and always takes its height: nothing below moves. -->
   <div class="key">
     <span class="snrkey"><i style="background:{snrColour(-24)}"></i>−24 dB <i style="background:{snrColour(-7)}"></i>−7 <i style="background:{snrColour(10)}"></i>+10 dB · size = decodes</span>
-    <span class="bandkey" class:off={!(paths && byBand)} title="Path colour by band">
-      {#if byBand}
+    <span class="bandkey" class:off={!paths || bandsShown.length === 0} title="Path colour by band">
+      {#if paths}
         {#each bandsShown as b (b)}<span class="bl"><i style="background:{bandColour(b)}"></i>{b}</span>{/each}
       {/if}
     </span>
