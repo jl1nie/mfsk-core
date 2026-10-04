@@ -202,9 +202,11 @@
       shade(90, 0.22);
       shade(84, 0.44);
       // The band's two edges, thin and faint; the horizon itself, brighter.
+      // Drawn as lines along the ring, not as the polygon: a night that takes in a pole is clipped by the
+      // frame of the map, and stroking the polygon would draw that frame.
       const edge = (radius: number, alpha: number, width: number) => {
         ctx.beginPath();
-        path(circle.radius(radius)() as any);
+        path({ type: 'MultiLineString', coordinates: circle.radius(radius)().coordinates } as any);
         ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
         ctx.lineWidth = width;
         ctx.stroke();
