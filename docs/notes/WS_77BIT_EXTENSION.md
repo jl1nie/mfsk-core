@@ -144,6 +144,10 @@ Selected stock-versus-WS differences (WSJT-X 3.0.2 packing of the stock texts, `
 | compound | DG2YCB/QRP | tx2 | `<W1XYZ/YOTA> DG2YCB/QRP -05` | `<W1XYZ/YOTA> DG2YCB/QRP` (report lost) | `<W1XYZ/YOTA> DG2YCB -05` | same (suffix not sent) |
 | nonstd/P | DG123YCB | tx2 | `W1XYZ/P <DG123YCB> -05` | `W1XYZ/P <DG123YCB>` (report lost) | `W1XYZ <DG123YCB> -05` | same (suffix not sent) |
 
+A QSO with a standard partner is not affected where the calls fit a standard message. Both programs pack `W9XYZ <PJ4/K1ABC> -11` as type 1 and `W1XYZ/P DG2YCB -05` as type 2
+(tested in rc1 and 3.0.2). The stock reports that are lost all involve a plain non-standard call, or a hash combined with a `/R` or `/P` call (`W1XYZ/P <DG2YCB/MM> -05`
+packs as type 4 in 3.0.2 and is refused by rc1). A type 1 message with *both* calls hashed packs in both (`<W250USA> <DG123YCB> -05`); stock WSJT-X just does not compose it.
+
 Counts over the 72 steps of the six announced patterns (the control pair of two standard calls is identical in both): 50 texts differ,
 40 pack to different bits; stock texts lose something in packing in 42, WS texts in 0. A control pair of plain standard calls
 (`DG2YCB` / `W1XYZ`) sends identical texts and bits in both.

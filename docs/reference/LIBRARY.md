@@ -1067,9 +1067,11 @@ non-standard, compound and suffixed calls, in two table states (`tests/ws_77bit_
 - **The call in a report may be the base call.** Some programs send `DG2YCB` in the report and R-report of a QSO with `DG2YCB/QRP`; the first
   message and the RR73/73 carry the full call. Nothing in a message says the two are one station. Match a partner by its base call, as WSJT-X
   does, and take the call you log from a message that carried it in full.
-- **Type 4 has no report and no grid.** A non-standard call can send `<HIS> MY`, `... RRR`, `... RR73` or `... 73`. WSJT-X cannot send a
-  report with a non-standard call (rc1 refuses to pack it); other programs get a report across as a type 1 message with hashed calls, such as
-  `<W250USA> <DG123YCB> -05`, which needs both calls to be known already.
+- **Type 4 has no report and no grid.** A message with a plain non-standard call can be `<HIS> MY`, `... RRR`, `... RR73` or `... 73`.
+  WSJT-X sends a report when the two calls fit a standard message: two standard calls (`W1XYZ/P DG2YCB -05` is type 2), or a standard call without a
+  suffix and the other call as a 22-bit hash (`W9XYZ <PJ4/K1ABC> -11`, type 1). It cannot when one call is plain non-standard, or when a hash is combined
+  with a `/R` or `/P` call (`W1XYZ/P <DG2YCB/MM> -05`): only type 4 holds those, type 4 has no report, and rc1 refuses to pack them. The format can carry such
+  a report as type 1 with both calls hashed (`<W250USA> <DG123YCB> -05`; rc1 packs and unpacks it) once both calls are known. WS composes such messages; WSJT-X does not.
 - **A hash resolves to whatever stored call has that hash.** A 12-bit hash (type 4) has 4,096 values, so a decoder that holds 500 distinct calls
   resolves about 11% of the unknown 12-bit hashes it meets to some stored call; a 22-bit hash with 1,000 stored calls, about 0.024% (arithmetic from
   the table sizes, not a measurement). Treat a resolved `<CALL>` as evidence; to log a contact, wait for the call in full.
