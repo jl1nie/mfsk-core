@@ -230,12 +230,9 @@ impl CallsignHashTable {
         // Strip angle brackets
         let call = call.strip_prefix('<').unwrap_or(call);
         let call = call.strip_suffix('>').unwrap_or(call);
-        // Strip /R or /P suffix for hashing
-        let base = if call.ends_with("/R") || call.ends_with("/P") {
-            &call[..call.len() - 2]
-        } else {
-            call
-        };
+        // Upstream's `save_hash_call` strips only the angle brackets: a call carrying
+        // /R or /P hashes with the suffix (WSJT-X v3.2.0-rc1 `packjt77.f90:356-390`).
+        let base = call;
 
         if base.len() < 2 || base == "..." || base.starts_with("CQ") {
             return;
@@ -722,10 +719,12 @@ mod tests {
     }
 
     #[test]
-    fn strip_suffix() {
+    fn keeps_suffix() {
+        // `save_hash_call` strips only the angle brackets, so a call with /P hashes with it
+        // (rc1 `packjt77.f90:356-390`; checked against rc1 and 3.0.2, #568).
         let mut t = CallsignHashTable::new();
         t.insert("JA1ABC/P");
-        let h22 = ihashcall("JA1ABC", 22);
-        assert_eq!(t.lookup22(h22), Some("JA1ABC"));
+        assert_eq!(t.lookup22(ihashcall("JA1ABC/P", 22)), Some("JA1ABC/P"));
+        assert_eq!(t.lookup22(ihashcall("JA1ABC", 22)), None);
     }
 }

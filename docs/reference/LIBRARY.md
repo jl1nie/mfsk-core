@@ -36,6 +36,7 @@ This document is the Rust host API. Other audiences:
   - [2.5 Extras, and the protocols outside `Decoder`](#25-extras-and-the-protocols-outside-decoder)
   - [2.6 Message acceptance](#26-message-acceptance)
   - [2.7 Wideband IQ input](#27-wideband-iq-input)
+  - [2.8 Non-standard, compound and suffixed callsigns](#28-non-standard-compound-and-suffixed-callsigns)
 - [3. Protocols](#3-protocols)
   - [3.1 Generic vs bespoke, per protocol](#31-generic-vs-bespoke-per-protocol)
   - [3.2 Geometry](#32-geometry)
@@ -1053,6 +1054,32 @@ require the WAV path's own decode set: 16/16 and 14/14 FT8, 11/11 FT4, with no
 phantoms, frequency within 2 Hz and DT within 0.05 s. `tests/iq_receiver_modes.rs`
 does the same for WSPR (9/9), JT9 (5/5), JT65 and Q65-120D / -300A. The C ABI is
 [`mfsk_iq_*`](BINDINGS.md#282-wideband-iq--a-receiver-handle-for-an-sdr-stream).
+
+### 2.8 Non-standard, compound and suffixed callsigns
+
+A 77-bit message holds at most one full non-standard callsign; the others travel as hashes. This crate unpacks every such message
+exactly as WSJT-X v3.2.0-rc1 does. Issue #568 checked that on the 168 messages that WS (the former WSJT-X Improved) composes for QSOs with
+non-standard, compound and suffixed calls, in two table states (`tests/ws_77bit_extension.rs`). What a caller should expect from this traffic:
+
+- **`<...>` means "a hash this decoder has not learnt", not an error.** A bystander shows it for the hashed field of a message, and a decoder shows
+  it before it has seen the call in full (a type 4 message, or a CQ). A row never carries a guess: `RowDetail::hash_resolved` is set when the text
+  needed the table. Keep one `Decoder` per mode for the whole session, so a call heard in one period resolves in the next.
+- **The call in a report may be the base call.** Some programs send `DG2YCB` in the report and R-report of a QSO with `DG2YCB/QRP`; the first
+  message and the RR73/73 carry the full call. Nothing in a message says the two are one station. Match a partner by its base call, as WSJT-X
+  does, and take the call you log from a message that carried it in full.
+- **Type 4 has no report and no grid.** A message with a plain non-standard call can be `<HIS> MY`, `... RRR`, `... RR73` or `... 73`.
+  WSJT-X sends a report when the two calls fit a standard message: two standard calls (`W1XYZ/P DG2YCB -05` is type 2), or a standard call without a
+  suffix and the other call as a 22-bit hash (`W9XYZ <PJ4/K1ABC> -11`, type 1). It cannot when one call is plain non-standard, or when a hash is combined
+  with a `/R` or `/P` call (`W1XYZ/P <DG2YCB/MM> -05`): only type 4 holds those, type 4 has no report, and rc1 refuses to pack them. The format can carry such
+  a report as type 1 with both calls hashed (`<W250USA> <DG123YCB> -05`; rc1 packs and unpacks it) once both calls are known. WS composes such messages; WSJT-X does not.
+- **A hash resolves to whatever stored call has that hash.** A 12-bit hash (type 4) has 4,096 values, so a decoder that holds 500 distinct calls
+  resolves about 11% of the unknown 12-bit hashes it meets to some stored call; a 22-bit hash with 1,000 stored calls, about 0.024% (arithmetic from
+  the table sizes, not a measurement). Treat a resolved `<CALL>` as evidence; to log a contact, wait for the call in full.
+- **`/P` and `/R` are part of the hashed call.** A call is hashed and learnt with its suffix, as in WSJT-X: `learn_callsign("W1XYZ/P")`, not `"W1XYZ"`.
+- **QSO sequencing is not in this crate.** WSJT-X's own handling of such messages (for instance, a message with no third word counting as a
+  report of 0) is application logic and is not ported.
+
+Details, tables and the evidence: [`docs/notes/WS_77BIT_EXTENSION.md`](../notes/WS_77BIT_EXTENSION.md).
 
 ## 3. Protocols
 

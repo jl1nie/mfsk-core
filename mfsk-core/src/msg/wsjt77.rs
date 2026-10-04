@@ -550,8 +550,21 @@ pub fn register_callsigns(msg: &[u8], ht: &mut CallsignHashTable) {
             _ => {}
         },
         1 | 2 => {
-            learn_std(read_bits(msg, 0, 28), ht);
-            learn_std(read_bits(msg, 29, 28), ht);
+            // The flag after each call is /R (type 1) or /P (type 2); upstream saves the call
+            // with that suffix (rc1 `packjt77.f90:1755-1765`), and a later `<CALL/P>` hash names it.
+            let suffix = if i3 == 1 { "/R" } else { "/P" };
+            let learn_with_flag = |n28: u32, flag_at: usize, ht: &mut CallsignHashTable| {
+                let call = unpack28(n28);
+                if is_standard_callsign(&call) {
+                    if read_bits(msg, flag_at, 1) == 1 {
+                        ht.insert(&format!("{call}{suffix}"));
+                    } else {
+                        ht.insert(&call);
+                    }
+                }
+            };
+            learn_with_flag(read_bits(msg, 0, 28), 28, ht);
+            learn_with_flag(read_bits(msg, 29, 28), 57, ht);
         }
         // ARRL RTTY Roundup: one bit of ITU flag first, so the fields
         // sit at 1 and 29 rather than 0 and 28.
