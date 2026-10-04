@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Phase B-C: equalised π/4-DQPSK with the long 127-chip preamble +
 //! adaptive LMS equaliser. Targets the harsh-channel scenarios that
 //! Phase B-A (π/4-DQPSK + AFC alone) cannot handle: multi-tap

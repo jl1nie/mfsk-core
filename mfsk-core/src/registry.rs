@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Compile-time registry of every protocol mfsk-core builds with.
 //!
 //! [`PROTOCOLS`] is a `&'static [ProtocolMeta]` populated by an

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! One boot sequence, for every receiver in this binary.
 //!
 //! ## Why this exists

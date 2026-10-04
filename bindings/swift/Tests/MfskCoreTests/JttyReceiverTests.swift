@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The JTTY receiver, fed upstream's own sample recording in chunks the
 // way an audio callback would. There is no JTTY transmit path in the

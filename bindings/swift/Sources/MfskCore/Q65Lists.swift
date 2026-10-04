@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The two lists WSJT-X keeps for Q65 (#466). The decoder is stateless about
 // them, so they are the application's: feed them each decode, ask them for

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The CoreS3 application's library half.
 //!
 //! Everything the binary is made of lives here so that **other bins in

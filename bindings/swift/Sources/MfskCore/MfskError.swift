@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Errors. Every fallible C entry point returns `MfskStatus` and records
 // a human-readable reason the caller fetches separately — a small

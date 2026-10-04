@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Modes, and what each one can do. The point of the C surface's
 // introspection family (`mfsk_mode_count` / `_at` / `_info` / `_caps`) is that a consumer stops hardcoding a capability matrix,

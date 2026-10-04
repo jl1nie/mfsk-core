@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! wsprd's empirical Fano branch-metric table.
 //!
 //! Verbatim row 2 of `lib/wsprd/metric_tables.c` — the row

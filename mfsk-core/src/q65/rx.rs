@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Q65 receiver: aligned audio → 64-tone energies per data symbol →
 //! intrinsic probability distributions → QRA belief propagation →
 //! 77-bit Wsjt77 message.

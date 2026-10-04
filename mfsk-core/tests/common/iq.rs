@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Synthetic wideband IQ from 12 kHz audio, shared by the `iq_*` tests.
 
 use mfsk_core::engine::dsp::polyphase::PolyphaseResampler;

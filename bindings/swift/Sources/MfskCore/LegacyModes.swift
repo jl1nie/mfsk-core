@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // WSPR, JT9 and JT65: the transmit side. Their message codecs synthesise in
 // one step rather than through a tone stage, so each has an `encode` of its

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Transmit, in the three stages the C surface exposes: pack a message
 // to 77 bits, turn those into channel symbols, render the symbols as

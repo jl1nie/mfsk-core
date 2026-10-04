@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Coarse (frequency × time) sync search for Q65.
 //!
 //! Q65's distributed sync (22 symbols all on tone 0) is the

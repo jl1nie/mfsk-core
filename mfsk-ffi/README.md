@@ -331,5 +331,5 @@ Non-12 kHz input is resampled internally (linear interpolation). Sample
 rates from 8 000 Hz up to at least 96 000 Hz work.
 ## License
 
-GPL-3.0-or-later, matching [`mfsk-core`](https://github.com/jl1nie/mfsk-core)
+GPL-3.0-only, matching [`mfsk-core`](https://github.com/jl1nie/mfsk-core)
 and [WSJT-X](https://sourceforge.net/projects/wsjt/) upstream.

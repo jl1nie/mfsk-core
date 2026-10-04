@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Generic complex digital down-converter: real PCM at an arbitrary
 //! centre frequency → complex baseband, streaming.
 //!

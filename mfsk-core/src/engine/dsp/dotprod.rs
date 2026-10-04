@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Real f32 dot product, with an optional caller-provided backend.
 //!
 //! The DSP hot loops in this crate reduce to `Σ a[k]·b[k]` over a

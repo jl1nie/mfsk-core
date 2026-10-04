@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Which IQ stream to ask the server for.
 
 use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};

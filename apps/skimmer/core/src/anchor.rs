@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The UTC of IQ sample 0, from arrival times alone.
 //!
 //! SpyServer sends no timestamps. Each IQ message gives a candidate,

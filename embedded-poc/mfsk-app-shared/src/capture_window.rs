@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! A capture window that opens on a UTC slot boundary.
 //!
 //! A receiver taking audio from a USB stream is handed samples in

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! JT65 golden-recording validation: recall, precision and SNR.
 //!
 //! JT65 was the only implemented protocol with **no golden decode test

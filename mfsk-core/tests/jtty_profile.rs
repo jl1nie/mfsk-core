@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! What a JTTY receive window costs, counted and timed (#499). Not an assertion suite: it prints.
 //!
 //! ```text

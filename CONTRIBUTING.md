@@ -215,5 +215,5 @@ SHA / file:line if you pulled an algorithmic change from there.
 
 ## License
 
-Contributions are GPL-3.0-or-later, matching the crate and WSJT-X
-upstream.
+Contributions are GPL-3.0-only (GPL version 3), matching the crate and WSJT-X
+upstream, which states "version 3" and not "or later" (#569).

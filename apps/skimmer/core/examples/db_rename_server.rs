@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Record what one server name heard under another: `db_rename_server DB FROM TO`
 //! (FROM may be `<none>` for the decodes made before servers had names). A compact copy of
 //! the file is made first, beside it, and the recording skimmer may keep running.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Tier-B golden assertions: recall **and** precision, together.
 //!
 //! ## Why these are one function and not two

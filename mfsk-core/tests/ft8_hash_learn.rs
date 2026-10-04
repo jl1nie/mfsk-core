@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! `<...>` resolves once the table has heard the callsign.
 //!
 //! The gap this pins: `unpack77_with_hash` existed and resolved

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The names a user types for each `Mode`, one table both ways, and each
 //! mode's slot length from the library's registry.
 

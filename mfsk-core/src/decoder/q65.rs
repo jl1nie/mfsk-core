@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! [`Decodable`] for the ten Q65 sub-modes.
 //!
 //! Across periods a Q65 decoder keeps what `q65_decode.f90` keeps: the

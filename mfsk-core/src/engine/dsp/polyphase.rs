@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Streaming rational (`L`/`M`) resampler over a complex (I, Q) history.
 //!
 //! [`FirStage`](super::fir_decimate::FirStage) only decimates by an

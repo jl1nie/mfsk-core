@@ -3,7 +3,7 @@ name        = "skimmer-core"
 version.workspace = true
 rust-version.workspace = true
 edition     = "2024"
-license     = "GPL-3.0-or-later"
+license     = "GPL-3.0-only"
 publish     = false
 description = "Sample app: decode FT8/FT4/WSPR/JT9/JT65/FST4/Q65 from a SpyServer through mfsk-core's IqReceiver, sharing the radio with SDR#. Shared by the skimmer CLI and the Tauri GUI."
 

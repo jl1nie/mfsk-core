@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FT4 per-candidate down-converter: the same complex baseband
 //! [`downsample_cached`] produces, built by mixing and filtering
 //! instead of by a 92 160-point FFT.

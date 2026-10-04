@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Speaker playback for the CoreS3 — I2S TX into the AW88298.
 //!
 //! Exists so `ft4-demo` can play the slot it is decoding, the way

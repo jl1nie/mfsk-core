@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! [`Decodable`] for the modes whose engines work on `f32` audio and whose
 //! messages are not the 77-bit frame: WSPR, JT9 and JT65 (Q65 has its own
 //! module). Also the [`SearchTuning`] they share.

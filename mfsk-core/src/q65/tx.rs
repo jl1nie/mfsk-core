@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Q65 transmitter: 77-bit WSJT message → 85 channel tones → audio.
 //!
 //! Mirrors WSJT-X `lib/qra/q65/genq65.f90` (encoder) +

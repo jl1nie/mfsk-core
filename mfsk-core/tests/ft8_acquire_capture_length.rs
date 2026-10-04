@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Can a cold acquisition find the grid from less than 25 s?
 //!
 //! The capture is the larger half of the ~40 s of dark band an

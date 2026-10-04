@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Q65 message codec.
 //!
 //! Q65 reuses the same 77-bit WSJT message format as FT8 / FT4 / FST4

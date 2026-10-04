@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Impulse-noise blanker — a port of WSJT-X's `lib/blanker.f90`, which
 //! `fst4_decode.f90` runs on the raw samples before its whole-slot FFT.
 //!

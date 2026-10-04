@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Can an FT4 receiver close its capture window when the *frame's*
 //! audio is complete, rather than when the slot is?
 //!

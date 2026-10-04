@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Every transmit path must ramp its burst envelope (issue #259).
 //!
 //! Without a ramp, the CPFSK synthesiser writes `amplitude · cos(phase)`

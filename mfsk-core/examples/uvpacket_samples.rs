@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Generate representative uvpacket WAV files for documentation /
 //! sanity-listening. Outputs to `audio_samples/uvpacket/` at the
 //! workspace root.

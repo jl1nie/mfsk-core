@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // `Decoder.onDecode` — rows delivered as they are found, on top
 // of the array the call returns. The handler can fire from a rayon

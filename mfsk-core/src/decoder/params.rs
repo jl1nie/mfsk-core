@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The per-period parameter block, after WSJT-X's `params` common block
 //! (`lib/jt9com.f90:9-49`), which the GUI fills before every decode and
 //! `jt9 -s` reads.

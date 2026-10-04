@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The numbers this binding restates, checked against the header that
 // owns them. `Mode`'s discriminants and `Capabilities`' bit positions

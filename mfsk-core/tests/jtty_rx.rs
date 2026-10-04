@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The JTTY frame decoder on WSJT-X's own recordings (tier B), phase P2.
 //!
 //! - the `sjtty` vectors (AWGN at −8 dB SNR in 2500 Hz): every message must come

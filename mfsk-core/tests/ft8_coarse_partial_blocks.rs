@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! What a spectrogram's unfilled tail actually does to coarse sync.
 //!
 //! **Runs on the embedded time grid only.** `nstep-half` (implied by

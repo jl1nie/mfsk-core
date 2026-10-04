@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Frame header + CRC-16 (CCITT-FALSE) for the redesigned uvpacket.
 //!
 //! ## On-the-wire frame layout (post 0.4.0 redesign)

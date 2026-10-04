@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! TX path: bytes → 12 kHz f32 PCM audio (post 0.4.0 redesign).
 //!
 //! ## Frame structure

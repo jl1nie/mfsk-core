@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Pluggable FFT backend for the decode pipeline.
 //!
 //! `mfsk-core`'s decode-side modules (sync correlation, LLR symbol

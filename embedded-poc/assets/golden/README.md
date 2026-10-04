@@ -66,5 +66,5 @@ multi-file directories cannot be trimmed to one recording.
 
 ## Licence
 
-WSJT-X is GPL-3.0-or-later, as is this crate, so redistributing these
+WSJT-X is licensed under GPL version 3, as is this crate (GPL-3.0-only), so redistributing these
 recordings here is compatible. Upstream: https://sourceforge.net/projects/wsjt/

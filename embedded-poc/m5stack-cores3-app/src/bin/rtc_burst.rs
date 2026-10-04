@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Does a five-minute RTC drift measurement work? (issue #354)
 //!
 //! This bin exists to validate an **estimator**, not to produce a

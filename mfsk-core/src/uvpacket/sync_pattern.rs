@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Frame-head preamble catalogue for the new uvpacket modem
 //! (post-redesign, 0.4.0).
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Q65's real *displayed* SNR — port of `q65_snr` (`q65.f90:744`,
 //! issue #255 §5).
 //!

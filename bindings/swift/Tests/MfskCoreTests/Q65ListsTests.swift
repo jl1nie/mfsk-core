@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The two lists WSJT-X keeps for Q65 (#466): the caller list (`q65_hist2`)
 // and the history (`q65_hist`). Both are the application's, not the

@@ -126,7 +126,7 @@
 //! K1JT et al.). Source files cite the corresponding upstream file
 //! they port (`lib/ft8/…`, `lib/ft4/…`, `lib/fst4/…`, `lib/wsprd/…`,
 //! `lib/jt65_*.f90`, `lib/jt9_*.f90`, `lib/packjt.f90`, etc.).
-//! Licensed GPL-3.0-or-later, matching upstream.
+//! Licensed GPL-3.0-only (GPL version 3), matching upstream WSJT-X.
 //!
 //! `mfsk-core` is **not** a replacement for WSJT-X. The goal is to
 //! broaden the set of platforms and applications that can host WSJT

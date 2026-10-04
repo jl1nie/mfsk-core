@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **License identifier corrected to `GPL-3.0-only` (#569).** Up to 0.13.0 the crate, its README and the source headers said
+  `GPL-3.0-or-later, matching upstream`. WSJT-X states "version 3" (README, About dialog, `COPYING`) and does not add "or later";
+  this crate contains code derived from it. `license` in the `Cargo.toml` files, the `SPDX-License-Identifier` headers
+  (Rust, Swift, Kotlin, C, C++), the READMEs, `CONTRIBUTING.md` and the reference docs now say GPL-3.0-only. Already published
+  versions keep their crates.io metadata; this takes effect with the next release. Whether files that are original work
+  (not derived from WSJT-X) should return to "or later" is left for a per-file decision.
+
 ## 0.13.0 — one persistent `Decoder<P>` per mode on the WSJT-X parameter block (breaking), `Depth` as `ndepth`, QSO-context AP for FT8/FT4/FST4, a pull `IqReceiver` with a clock that follows the host, one C decoder handle for every mode (breaking), per-channel decoder threads in the skimmer
 
 ### 0.13.0 — decode API redesigned on the WSJT-X decoder model (breaking)

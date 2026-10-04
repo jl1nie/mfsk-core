@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! SpyServer's wire protocol, client side, as SDR++ implements it
 //! (`source_modules/spyserver_source/src/spyserver_protocol.h`,
 //! `spyserver_client.cpp`): HELLO, then DEVICE_INFO and CLIENT_SYNC from the

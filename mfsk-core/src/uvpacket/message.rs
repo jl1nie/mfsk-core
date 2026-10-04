@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! `UvPacketRawMessage` — trait-required-only message codec.
 //!
 //! The new uvpacket bypasses [`MessageCodec`] entirely; encoding /

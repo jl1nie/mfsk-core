@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Protocol-agnostic channel models (AWGN, flat Rayleigh) and
 //! signal-power measurement, shared by every protocol's tests.
 //!

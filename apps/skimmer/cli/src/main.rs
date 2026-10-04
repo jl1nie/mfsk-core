@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! `skimmer`: decode from a SpyServer, one line per message.
 //!
 //! ```text

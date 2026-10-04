@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Multi-channel SSB receive + slot-survey tests for the
 //! 0.3.3 slotted-ALOHA design.
 

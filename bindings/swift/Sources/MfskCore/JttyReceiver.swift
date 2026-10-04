@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // JTTY — WSJT-X 3.2's non-slotted keyboard mode — `mfsk_jtty_*`.
 //

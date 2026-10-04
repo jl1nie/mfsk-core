@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Shared golden reference for `embedded-poc/assets/qso3_busy.wav`
 //! (= `samples/FT8/210703_133430.wav`), used by every FT8 test that
 //! checks recall/precision/SNR against this recording through

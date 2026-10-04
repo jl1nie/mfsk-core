@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! [`PfbChannelizer`]: many channels of one IQ stream through a shared
 //! polyphase filter bank (#534). The design, and every number it rests on,
 //! is `docs/notes/IQ_CHANNELIZER.md`.

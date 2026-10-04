@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Q65 a-priori candidate-codeword generator.
 //!
 //! Builds the same 206-codeword "full AP list" that

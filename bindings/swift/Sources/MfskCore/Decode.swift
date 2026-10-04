@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The decode row and the search parameters, both mirroring
 // size-versioned C structs. Rows go into memory this binding owns:

@@ -3,7 +3,7 @@ name        = "mfsk-ffi-abi"
 version.workspace = true
 rust-version.workspace = true
 edition     = "2024"
-license     = "GPL-3.0-or-later"
+license     = "GPL-3.0-only"
 publish     = false
 description = "Shared #[repr(C)] mode/status/params/row types for mfsk-ffi (issue #205) — not a standalone C ABI on its own; the consuming crate generates its own cbindgen header re-emitting these definitions."
 

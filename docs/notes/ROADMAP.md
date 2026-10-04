@@ -911,7 +911,7 @@ Closed 2026-08-19: **#125** — License (GPLv3 vs. a permissive
 license). Not a decision that was pending: it had been **answered in
 full on 2026-06-05** and then sat open for ~2.5 months looking like an
 unanswered outside question. GPL-3.0 is a requirement rather than a
-preference — mfsk-core derives directly from WSJT-X (GPL-3.0-or-later)
+preference — mfsk-core derives directly from WSJT-X (GPL-3.0-only)
 in algorithms, DSP pipeline structure and FEC logic, so relicensing
 would need permission from every upstream WSJT-X contributor. The
 alternative offered was a clean-room reimplementation, which cuts

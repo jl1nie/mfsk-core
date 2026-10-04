@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The skimmer's own UTC: the PC's clock plus an offset measured against an
 //! NTP server (SNTP, RFC 4330), or the PC's clock as it is.
 //!

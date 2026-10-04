@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! JTTY receiver, busy-band demo — the desk equivalent of a contest pileup on the air.
 //!
 //! Replays `mfsk_core::jtty::testsig::pileups`' `"band, 6 long messages"` scene (six

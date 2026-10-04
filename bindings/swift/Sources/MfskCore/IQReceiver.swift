@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The wideband IQ receiver — `mfsk_iq_*`. Bytes of IQ in, decodes out of
 // `poll`, one ``Decoder`` per channel: a channel is a dial frequency and a

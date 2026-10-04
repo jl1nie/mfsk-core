@@ -700,5 +700,5 @@ shoulder 付き。
 
 ## 8. ライセンス
 
-GPL-3.0-or-later、`mfsk-core` の他と同じ。LDPC 親コードは WSJT-X
+GPL-3.0-only、`mfsk-core` の他と同じ。LDPC 親コードは WSJT-X
 (`lib/fst4/`) からの派生。

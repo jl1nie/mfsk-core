@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! [`Decodable`] for the 77-bit frame family: FT8, FT4 and the five FST4
 //! T/R periods.
 //!

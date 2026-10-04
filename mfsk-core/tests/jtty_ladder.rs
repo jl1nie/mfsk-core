@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The JTTY decode ladder against WSJT-X's own (tier A/B): the decoder boundary.
 //!
 //! `embedded-poc/assets/golden/jtty/ladder_cases.txt` holds 33 generated frames'

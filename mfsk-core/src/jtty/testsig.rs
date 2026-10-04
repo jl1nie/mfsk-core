@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Test recordings made where they are used (#499): JTTY stations in Gaussian noise, with a
 //! carrier offset, a linear drift and Rayleigh fading, from a seed. The CoreS3 bench makes the
 //! same audio as a host test, so the board's decisions can be compared with the host's file for

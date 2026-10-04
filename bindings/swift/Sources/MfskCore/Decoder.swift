@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The decoder — `mfsk_decoder_*`. One handle for every slot mode: FT8, FT4,
 // the five FST4 periods, WSPR, JT9, JT65 and the ten Q65 sub-modes. What it

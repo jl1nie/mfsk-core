@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Synthesise a known message, hand the PCM back to the decoder, and
 // check the text survives the trip — the same end-to-end shape as

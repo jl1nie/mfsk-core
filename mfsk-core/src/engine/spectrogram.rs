@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Shared FFT-based spectrogram builder + tone-0 sync scorer, for
 //! protocols whose sync tone sits at a fixed set of symbol positions
 //! rather than a block-Costas pattern (JT9, JT65, Q65).

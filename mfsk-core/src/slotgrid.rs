@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Slot arithmetic on a sample clock: which sample opens which UTC slot, and
 //! how a clock that is observed to drift is followed without losing one.
 //!

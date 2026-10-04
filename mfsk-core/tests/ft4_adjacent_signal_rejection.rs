@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Can the FT4 receiver still hear its signal with a strong neighbour
 //! on the band? — the question none of the existing fixtures ask.
 //!

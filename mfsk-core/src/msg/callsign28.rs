@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Shared base-37/36/10/27³ callsign encoding — the scheme WSJT-X's
 //! `lib/packjt.f90::packcall`/`unpackcall` implements and which is
 //! called, per that file, from both `wqencode.f90`/`wqdecode.f90`

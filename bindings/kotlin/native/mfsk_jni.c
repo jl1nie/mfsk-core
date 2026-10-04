@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // JNI shim between the Kotlin binding and the mfsk-ffi C ABI.
 //

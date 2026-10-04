@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Frozen decode output of the 0.12 request API, so the 0.13.0 redesign
 //! (one persistent `Decoder<P>` per mode, upstream parameter block, every
 //! per-family request type deleted) can be proven to change nothing: every

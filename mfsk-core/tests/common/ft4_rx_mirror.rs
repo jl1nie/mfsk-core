@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The CoreS3 FT4 receiver's per-slot decode, reproduced call for call.
 //!
 //! `embedded-poc/embedded-shared/src/apps/ft4_rx.rs` is outside this

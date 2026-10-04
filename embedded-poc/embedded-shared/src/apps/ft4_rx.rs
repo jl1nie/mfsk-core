@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FT4 receive pipeline — board-agnostic half.
 //!
 //! The fourth receiver in this binary, and the first whose coarse stage

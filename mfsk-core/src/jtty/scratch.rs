@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Working memory made once and lent to one user at a time (#499).
 //!
 //! An embedded receiver builds its tables and buffers while allocations prefer internal DRAM

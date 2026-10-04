@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Where the Sun is, and when it rises and sets at a place: enough for "day" and
 //! "night" bands of a rotation that follow the calendar. The low-precision almanac
 //! formulas (a minute of arc for the position, a few minutes for the times), the

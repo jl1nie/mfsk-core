@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! `PacketBytesMessage` — variable-length byte-payload message codec.
 //!
 //! Worked example of a byte-oriented [`MessageCodec`]. Unlike the

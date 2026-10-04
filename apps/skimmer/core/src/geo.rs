@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Maidenhead locators to a point, and the bearing and distance between two.
 
 const R_KM: f64 = 6371.0;

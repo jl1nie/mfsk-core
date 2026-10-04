@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! How fast do this board's clocks drift? (issue #354)
 //!
 //! The operating model this measurement decides: **set the clock at

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Streaming digital down-converter: 12 kHz real audio → 375 Hz
 //! complex baseband, one chunk at a time.
 //!

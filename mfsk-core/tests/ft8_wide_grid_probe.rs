@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Does the wide grid probe find a grid that is off by more than the
 //! per-slot search can reach?
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! What a band scan beside channel 0 finds and costs (#499): single stations across the audio
 //! band at several SNRs and stretches of noise, made by `jtty::testsig`, through
 //! `Params::embedded()` with each `SideChannels` choice. Prints; not an assertion suite.

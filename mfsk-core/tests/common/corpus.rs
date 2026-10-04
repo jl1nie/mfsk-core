@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Corpus resolution for golden (tier-B) tests, and the mechanism that
 //! stops a missing corpus from passing as a green test.
 //!

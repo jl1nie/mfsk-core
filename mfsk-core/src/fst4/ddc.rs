@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FST4-60 coarse-sync DDC: `K`-selection and cascade decomposition.
 //!
 //! `docs/notes/FST4_DDC_DESIGN.md` §4.3, §7 stage 3. Scope matches the

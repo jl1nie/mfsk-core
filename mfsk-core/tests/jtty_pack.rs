@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The JTTY text packer against WSJT-X's own `pack_jtty` (tier B), phase P5.
 //!
 //! `embedded-poc/assets/golden/jtty/pack_cases.tsv` is what upstream's

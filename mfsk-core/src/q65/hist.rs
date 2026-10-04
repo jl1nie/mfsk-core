@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The DX station from recent decodes — a port of `q65_hist` in
 //! `lib/qra/q65/q65.f90`.
 //!

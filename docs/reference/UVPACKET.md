@@ -734,5 +734,5 @@ shoulders.
 
 ## 8. License
 
-GPL-3.0-or-later, matching the rest of `mfsk-core`. The LDPC mother
+GPL-3.0-only, matching the rest of `mfsk-core`. The LDPC mother
 code is derived from WSJT-X (`lib/fst4/`).

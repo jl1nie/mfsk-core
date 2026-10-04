@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! How long N FT8 decoders take when every slot ends at the same instant, as
 //! they do on a 15 s grid: `cargo test --release -p skimmer-core --test load -- --ignored --nocapture`.
 //! Measures the decode only (no IQ, no channelizer), on a busy-band recording.

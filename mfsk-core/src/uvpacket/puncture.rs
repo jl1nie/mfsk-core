@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Puncturing patterns for the four uvpacket modes.
 //!
 //! All four modes share `Ldpc240_101` as their FEC mother code:

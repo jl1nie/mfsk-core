@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! JTTY sensitivity sweep (tier C, `#[ignore]`d, never in CI).
 //!
 //! Reads the corpus `scripts/gen_jtty_sweep_wavs.sh` writes under

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // End-to-end C++ driver for the mfsk-ffi C ABI — encodes a known test
 // message for every supported protocol, feeds the synthesised PCM

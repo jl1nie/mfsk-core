@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Wideband complex-IQ front end: one channel out of an IQ stream as the
 //! 12 kHz real USB audio every decoder here takes (issue #534, phase 1).
 //!

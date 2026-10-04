@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Subtract a decoded JT65 signal from the audio so a weaker one under it
 //! can be found: a port of `lib/subtract65.f90` (WSJT-X v3.2.0-rc1).
 //!

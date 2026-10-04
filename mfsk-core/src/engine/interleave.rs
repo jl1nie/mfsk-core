@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Bit-reversal interleaver — the permutation WSJT-X uses for WSPR
 //! (`interleave9.f90`, `wsprsim_utils.c`'s `bit_reverse_8`) and JT9
 //! (`interleave9.f90` again — JT9 and WSPR share the identical FEC

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Phase A: confirm the SSB through-air channel sim reproduces the
 //! field failure of the current coherent-QPSK uvpacket.
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The capture ring, driven the way a USB-audio reader drives it: small
 // chunks in, one slot out, with the clock supplied rather than read. The

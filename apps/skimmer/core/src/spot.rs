@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The sending station and its locator, read from a decoded message's text.
 //!
 //! A heuristic over the standard message shapes, which is all a skimmer's

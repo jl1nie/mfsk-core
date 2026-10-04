@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Direct-LDPC characterisation: bypass the QPSK modem entirely
 //! and feed Gaussian-noise LLRs straight to Ldpc240_101 + puncture.
 //!

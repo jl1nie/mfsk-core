@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The decoder handle's own behaviour, ported from
 // `mfsk-ffi/tests/decoder_ffi.rs`: state kept between periods, the hash

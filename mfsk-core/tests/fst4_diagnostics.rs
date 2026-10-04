@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FST4 diagnostic probes — the investigations, not the gate.
 //!
 //! Every test here is `#[ignore]`d and was written to answer one

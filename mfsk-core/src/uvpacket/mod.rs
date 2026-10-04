@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! # `uvpacket` — applied example: a packet protocol for ham VHF / UHF
 //!
 //! **Scope note.** This module is **not** a member of the WSJT-X

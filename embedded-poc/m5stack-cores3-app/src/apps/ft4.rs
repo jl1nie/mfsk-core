@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FT4 receiver — the boot mode, taking audio from a radio.
 //!
 //! The decode side is `embedded_shared::apps::ft4_rx`, shared with the

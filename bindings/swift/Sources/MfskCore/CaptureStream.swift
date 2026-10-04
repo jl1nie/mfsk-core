@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Streaming capture — `mfsk_stream_*`. Audio goes in as it arrives, in chunks
 // of any size; slots come out cut on the mode's UTC grid. A completed slot

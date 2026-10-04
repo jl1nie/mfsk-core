@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Block-interleaver across multiple LDPC codewords.
 //!
 //! Spreads consecutive codeword bits across the entire multi-block

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The host's side of the CoreS3's pattern run (#499): the same `jtty::testsig::catalogue`
 //! recordings through the embedded receiver (`Params::embedded()`, `f32` metrics) in two halves,
 //! one `CASE` line each in the board's format, for `scripts/jtty_board_stats.py` to compare.

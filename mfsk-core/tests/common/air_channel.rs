@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Phase A "air channel" sim — SSB / FM compound channel models that
 //! capture the impairment stack actually seen on-air, going beyond
 //! the AWGN + flat-magnitude-Rayleigh that `channel.rs` covers.

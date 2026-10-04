@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Every decode in a SQLite file, for statistics instead of an ever-growing
 //! ALL.TXT.
 //!

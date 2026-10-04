@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The board UI modules that need a `crate::ui::...` path to resolve.
 //!
 //! A real directory rather than an inline `mod ui { .. }` in `lib.rs`:

@@ -55,4 +55,4 @@ WSPR 以外は 1 スレッドで 1.9〜17 倍高速です。レガシーの JT65
 
 すべてのアルゴリズムは、Joe Taylor K1JT らが開発した [WSJT-X](https://sourceforge.net/projects/wsjt/)
 を Rust で再実装したものです。WSJT-X が引き続きリファレンス実装です。
-ライセンスは GPL-3.0-or-later です。
+ライセンスは GPL-3.0-only（GPL バージョン 3）で、WSJT-X が「バージョン 3」としているのに合わせています。0.13.0 までは `GPL-3.0-or-later` として公開しました（#569）。

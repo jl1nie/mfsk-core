@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FT8 77-bit message decoder.
 //!
 //! Ported from WSJT-X `lib/77bit/packjt77.f90` (subroutines `unpack77`,

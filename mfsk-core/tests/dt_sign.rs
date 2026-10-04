@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! A signal that starts *before* the nominal position must report a
 //! negative dt, all the way out to [`Decoded`].
 //!

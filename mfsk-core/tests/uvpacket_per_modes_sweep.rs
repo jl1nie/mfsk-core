@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Comprehensive PER characterisation across all four [`Mode`]s
 //! and the channel models that ship in the in-tree air-channel
 //! sim. Each sweep is `#[ignore]` (slow); run individually with

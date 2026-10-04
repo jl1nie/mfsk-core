@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FT8 signal subtraction (successive interference cancellation).
 //!
 //! Thin FT8-tuned wrapper around the protocol-agnostic

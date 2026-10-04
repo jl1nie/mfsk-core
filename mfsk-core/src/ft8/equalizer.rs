@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Adaptive equaliser — thin wrapper over [`crate::engine::equalize`].
 //!
 //! Preserves the pre-refactor `equalize_local(&mut [[Complex;8];79])`

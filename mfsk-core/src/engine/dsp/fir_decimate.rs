@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Generic streaming real-tap FIR filter + decimate, over a complex
 //! (I, Q) history.
 //!

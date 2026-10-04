@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! JTTY wire level against WSJT-X's own `sjtty` / `rjtty` (tier A/B).
 //!
 //! The fixtures under `embedded-poc/assets/golden/jtty/sim/` come from

@@ -11,7 +11,7 @@
 [![CI](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml/badge.svg)](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/mfsk-core.svg)](https://crates.io/crates/mfsk-core)
 [![docs.rs](https://img.shields.io/docsrs/mfsk-core)](https://docs.rs/mfsk-core)
-[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
 
 日本語: [README.ja.md](README.ja.md)
 
@@ -525,7 +525,9 @@ changes follow cargo-style minor bumps (`0.x` line).
 
 ## License
 
-**GPL-3.0-or-later**, matching upstream WSJT-X. See [LICENSE](LICENSE).
+**GPL-3.0-only** (GNU General Public License version 3), matching upstream WSJT-X, which states
+"version 3" and does not add "or later". See [LICENSE](LICENSE). Versions up to and including 0.13.0
+were published as `GPL-3.0-or-later`; see #569.
 
 ------------------------------------------------------------------------
 
@@ -548,7 +550,7 @@ Rust re-implementation aimed at broadening the set of platforms
 **not** a replacement for WSJT-X itself, which remains the reference
 implementation.
 
-License matches upstream: **GPL-3.0-or-later**.
+License matches upstream: **GPL-3.0-only** (version 3).
 
 ## Protocol registry details
 

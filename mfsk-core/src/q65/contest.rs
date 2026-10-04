@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The NA VHF / WW Digi / ARRL Digi contest caller list — a port of
 //! `q65_hist2` (`lib/qra/q65/q65.f90`) and `q65_set_list2`
 //! (`lib/qra/q65/q65_set_list2.f90`).

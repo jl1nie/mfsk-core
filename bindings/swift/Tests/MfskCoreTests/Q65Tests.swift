@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Q65 through the decoder — and the one thing Q65 keeps of its own, the
 // sub-mode numbering. The point is not sensitivity (a clean signal decodes on

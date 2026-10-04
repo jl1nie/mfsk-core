@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Whether this boot brings WiFi up, from the two things that bear on it — the
 //! CONFIG page's `WIFI` row and its `TIME` row (#381).
 //!

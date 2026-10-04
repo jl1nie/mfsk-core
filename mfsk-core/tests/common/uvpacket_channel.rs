@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Eb/N0 helpers for the **uvpacket** tests.
 //!
 //! These moved out of `common/channel.rs` because they are not

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Q65 — decoded through ``Decoder`` like every other slot mode (open it with
 // a Q65 ``Mode``; Pileup, Max Drift, fading and the rest are ``Extras``,

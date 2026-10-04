@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! FT8's GFSK configuration — what `Ft8`'s
 //! [`crate::engine::tx::FskWaveform`] impl points at. The transmit chain
 //! itself is generic since #391 ([`crate::engine::tx::message_to_tones`],

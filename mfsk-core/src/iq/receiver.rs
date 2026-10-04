@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! [`IqReceiver`]: N channels of one wideband IQ stream, cut into slots on
 //! UTC from the sample count. It decodes nothing.
 //!

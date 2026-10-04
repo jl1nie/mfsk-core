@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Protocol markers + trait wiring for the four uvpacket modes.
 //!
 //! Phase 2 modulation pivot (see `docs/0.3.1_PLAN.md`): the modem

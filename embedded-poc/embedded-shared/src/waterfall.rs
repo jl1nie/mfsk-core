@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Waterfall rows from raw 12 kHz audio — one builder for every mode.
 //!
 //! The panel's waterfall is the same surface whatever the receiver

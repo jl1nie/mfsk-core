@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Host harness for the parts of `embedded-poc/mfsk-app-shared` that
 //! do not touch the ESP-IDF.
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The decode budget. (The known-signal carry and the slot-FFT cache of the
 // old decoder handle are gone from the ABI: the decoder keeps what WSJT-X

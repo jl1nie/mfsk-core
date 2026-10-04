@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The CoreS3 FT4 per-slot decode, reproduced call for call on the host.
 //!
 //! `ft4_ddc_equivalence` compares *front ends* — one candidate list, two

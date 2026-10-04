@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Calibrate / verify the per-mode SNR_2500Hz reporting.
 //!
 //! For each mode:

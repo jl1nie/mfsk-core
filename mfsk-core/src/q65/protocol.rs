@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Q65 protocol markers + trait wiring.
 //!
 //! Each Q65 sub-mode is exposed as its own zero-sized type. Sub-modes

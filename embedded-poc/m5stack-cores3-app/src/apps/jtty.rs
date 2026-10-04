@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! JTTY receiver — the boot mode (#499, E1 of `docs/notes/JTTY_CORES3_APP.md`).
 //!
 //! Receive only. What differs from every other mode here is that JTTY has no

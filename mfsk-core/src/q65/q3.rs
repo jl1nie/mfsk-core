@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! WSJT-X's **q3** decode: full-AP list decoding at the Rx frequency,
 //! synchronised on all 85 symbols of each candidate message — a port of
 //! `q65_dec0`'s list branch in `lib/qra/q65/q65.f90` (v3.2.0-rc1):

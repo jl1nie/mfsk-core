@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! The FT4 capture window's place on the slot grid — the arithmetic
 //! half of [`SlotAccum`](super::ft4_rx::SlotAccum), with no DSP and no
 //! ESP-IDF in it.

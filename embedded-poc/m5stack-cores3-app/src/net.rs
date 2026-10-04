@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Bringing the network up, once, for every receiver in this binary.
 //!
 //! ## Why this exists

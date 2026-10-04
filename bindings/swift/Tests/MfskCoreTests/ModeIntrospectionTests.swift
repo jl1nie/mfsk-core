@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Written the way a consumer would have to write it: enumerate what the
 // build has, ask each mode what it supports, and assert on the answer.

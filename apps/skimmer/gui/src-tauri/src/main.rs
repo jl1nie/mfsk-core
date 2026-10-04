@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Tauri shell for the SpyServer skimmer: `skimmer_core::run_all` on a thread,
 //! its events forwarded to the window as `skimmer` events, settings kept as
 //! JSON in the app's config directory, every decode in a SQLite database.

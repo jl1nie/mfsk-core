@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // JVM test for the Kotlin binding. Run by `bindings/kotlin/build.sh`,
 // which CI runs on every source change — about 70 seconds, against the

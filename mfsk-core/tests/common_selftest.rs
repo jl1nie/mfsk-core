@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! Self-tests for `tests/common/` — the shared test scaffolding.
 //!
 //! These live here rather than beside the code they cover, which is

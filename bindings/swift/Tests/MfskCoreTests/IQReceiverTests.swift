@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // The IQ receiver's control surface, from `mfsk-ffi/tests/iq_ffi.rs`'s
 // `errors_are_statuses_not_crashes`. The signal-in, decode-out path is not

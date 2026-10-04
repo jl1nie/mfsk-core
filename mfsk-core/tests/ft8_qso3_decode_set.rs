@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! What the FT8 ship config actually decodes, as a *set*.
 //!
 //! `ft8_qso3_apoff_recall`'s floor is 14 without `fixed-point` and 12

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 //! [`AnyDecoder`]: a [`Decoder`] whose mode is chosen at run time.
 //!
 //! An enum, not a trait object: one variant per [`Mode`] this build has,
