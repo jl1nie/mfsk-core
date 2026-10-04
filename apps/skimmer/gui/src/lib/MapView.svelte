@@ -79,8 +79,9 @@
     (byT.get(cur) ?? []).map((p) => ({ call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1, alpha: 1 })),
   );
   const shown = $derived(anim ? frame : overall.map((d) => ({ ...d, alpha: 1 })));
-  /** The bands on the map; with several, the paths are coloured by band (the dots stay by SNR). */
-  const bandsShown = $derived(sortBands(shown.map((d) => d.band)));
+  /** The bands of the whole period (not of the window shown, which would change as it plays): with
+   * several, the paths are coloured by band and the key lists them; the dots stay by SNR. */
+  const bandsShown = $derived(sortBands(points.map((p) => p.band)));
   const byBand = $derived(bandsShown.length > 1);
 
   $effect(() => {
@@ -291,16 +292,10 @@
     <label><input type="radio" bind:group={proj} value="azimuthal" /> Great-circle (centred on home)</label>
     <label><input type="radio" bind:group={proj} value="mercator" /> Mercator</label>
     <label><input type="checkbox" bind:checked={paths} /> paths</label>
-    {#if paths && byBand}
-      <span class="bands" title="Path colour by band">
-        {#each bandsShown as b (b)}<span class="bl"><i style="background:{bandColour(b)}"></i>{b}</span>{/each}
-      </span>
-    {/if}
     {#if picked}
       <button type="button" class="picked" title="Opened in Results; click to clear" onclick={() => onclear?.()}>Selected: {picked.call} ✕</button>
     {/if}
     <label class="anim"><input type="checkbox" bind:checked={anim} /> Animate</label>
-    <span class="legend"><i style="background:{snrColour(-24)}"></i>−24 dB <i style="background:{snrColour(-7)}"></i>−7 <i style="background:{snrColour(10)}"></i>+10 dB · size = decodes</span>
   </div>
   {#if proj === 'azimuthal' && !mine}
     <p class="hint">Enter your grid in Settings > Station for the great-circle map. Showing Mercator.</p>
@@ -333,6 +328,15 @@
       />
     </div>
   {/if}
+  <!-- The key sits on its own row above the map and always takes its height: nothing below moves. -->
+  <div class="key">
+    <span class="snrkey"><i style="background:{snrColour(-24)}"></i>−24 dB <i style="background:{snrColour(-7)}"></i>−7 <i style="background:{snrColour(10)}"></i>+10 dB · size = decodes</span>
+    <span class="bandkey" class:off={!(paths && byBand)} title="Path colour by band">
+      {#if byBand}
+        {#each bandsShown as b (b)}<span class="bl"><i style="background:{bandColour(b)}"></i>{b}</span>{/each}
+      {/if}
+    </span>
+  </div>
   <div class="stage">
     <canvas bind:this={cv} onmousemove={move} onmouseleave={() => (tip = null)}></canvas>
     {#if tip}<div class="tip" style="left:{tip.x}px;top:{tip.y}px">{tip.text}</div>{/if}
@@ -358,13 +362,6 @@
     background: #d9822b;
     color: #fff;
   }
-  .bands {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 2px 8px;
-    font-size: 11.5px;
-    color: var(--muted);
-  }
   .bl i {
     display: inline-block;
     width: 14px;
@@ -376,11 +373,28 @@
     flex: 1;
     min-width: 200px;
   }
-  .legend {
+  .key {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-height: 20px;
+    margin-bottom: 4px;
+    font-size: 11.5px;
     color: var(--muted);
-    margin-left: auto;
+    overflow: hidden;
+    white-space: nowrap;
   }
-  .legend i {
+  .bandkey {
+    display: inline-flex;
+    gap: 2px 10px;
+    min-width: 0;
+  }
+  .bandkey.off {
+    visibility: hidden;
+  }
+  .snrkey i {
     display: inline-block;
     width: 10px;
     height: 10px;
