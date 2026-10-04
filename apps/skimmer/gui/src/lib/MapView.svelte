@@ -183,18 +183,28 @@
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
-    // Day and night: the grey line is where the Sun is within 6 degrees of the horizon.
+    // Day and night as shade, not hue: the lower the Sun, the darker. Day is left as it is, the grey line
+    // (the Sun within 6 degrees of the horizon) is a grey, night darker still, and the line where the Sun is on
+    // the horizon is drawn thin and light.
     if (greyline) {
       const sun = subsolarPoint(sunAt);
       const anti: [number, number] = [sun[0] + 180 > 180 ? sun[0] - 180 : sun[0] + 180, -sun[1]];
-      const disc = (radius: number, fill: string) => {
+      const circle = geoCircle().center(anti);
+      const shade = (radius: number, alpha: number) => {
         ctx.beginPath();
-        path(geoCircle().center(anti).radius(radius)() as any);
-        ctx.fillStyle = fill;
+        path(circle.radius(radius)() as any);
+        ctx.fillStyle = `rgba(8, 14, 40, ${alpha})`;
         ctx.fill();
       };
-      disc(96, dark ? 'rgba(255,170,60,0.20)' : 'rgba(255,150,40,0.28)'); // Sun up to 6 degrees: the band
-      disc(84, dark ? 'rgba(0,0,0,0.38)' : 'rgba(10,20,60,0.30)'); // Sun more than 6 degrees down: night
+      shade(96, 0.14); // the Sun lower than 6 degrees above the horizon: the evening light begins
+      shade(90, 0.14); // below the horizon
+      shade(84, 0.2); // 6 degrees below: night
+      shade(78, 0.2); // 12 degrees below: dark night
+      ctx.beginPath();
+      path(circle.radius(90)() as any);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
     }
 
     // Distance rings from home: straight great circles read directly.
@@ -363,6 +373,9 @@
   <!-- The key sits on its own row above the map and always takes its height: nothing below moves. -->
   <div class="key">
     <span class="snrkey"><i style="background:{snrColour(-24)}"></i>−24 dB <i style="background:{snrColour(-7)}"></i>−7 <i style="background:{snrColour(10)}"></i>+10 dB · size = decodes</span>
+    <span class="sunkey" class:off={!greyline} title="Where the Sun is: up, within 6 degrees of the horizon, or lower">
+      <i class="d1"></i>day <i class="d2"></i>grey line <i class="d3"></i>night
+    </span>
     <span class="bandkey" class:off={!paths || !byBand} title="Path colour by band">
       {#if paths && byBand}
         {#each bandsShown as b (b)}<span class="bl"><i style="background:{bandColour(b)}"></i>{b}</span>{/each}
@@ -422,6 +435,29 @@
     display: inline-flex;
     gap: 2px 10px;
     min-width: 0;
+  }
+  .sunkey {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+  }
+  .sunkey.off {
+    visibility: hidden;
+  }
+  .sunkey i {
+    display: inline-block;
+    width: 16px;
+    height: 10px;
+    margin-left: 8px;
+    border: 1px solid var(--line);
+    background: #cfe0f0;
+  }
+  .sunkey i.d2 {
+    background: #9fb0c8;
+  }
+  .sunkey i.d3 {
+    background: #4a5873;
   }
   .bandkey.off {
     visibility: hidden;
