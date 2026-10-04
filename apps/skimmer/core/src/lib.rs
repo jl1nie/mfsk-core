@@ -122,7 +122,9 @@ pub struct LiveOptions {
     /// Moves of the rotation asked for and not yet made (`+1` next band,
     /// `-1` the one before); see [`LiveOptions::skip`].
     skip: std::sync::atomic::AtomicI32,
-    /// UTC second at which a forced move began the cycle (0: none).
+    /// A forced move: the UTC second it was made, and the second the cycle is
+    /// counted from so that the step moved to begins then (0: none).
+    forced_at: std::sync::atomic::AtomicI64,
     forced_base: std::sync::atomic::AtomicI64,
     /// What a channel keeps while its band is not being listened to (a
     /// rotation): its decoder, with the callsign table.
@@ -547,10 +549,15 @@ impl Config {
         let total: i64 = within.iter().map(|&i| len(i)).sum();
         let origin = self.rotation_origin.unwrap_or(day);
         let base = last_edge.map_or(origin, |e| origin.max(e));
-        // A forced move began the cycle at a later time; the next change of
-        // hours begins it again.
-        let forced = self.live.forced_base.load(Ordering::Acquire);
-        let base = if forced > base { forced } else { base };
+        // A forced move counts the cycle from the base it chose (which may be
+        // before the connection's start); the next change of hours, or a later
+        // start, begins it again.
+        let forced_at = self.live.forced_at.load(Ordering::Acquire);
+        let base = if forced_at > base && forced_at <= utc_s {
+            self.live.forced_base.load(Ordering::Acquire)
+        } else {
+            base
+        };
         // Before the base (a clock stepped back): the first step.
         let mut at = (utc_s - base).max(0) % total;
         for &i in &within {
@@ -999,6 +1006,7 @@ fn session(
             let from = held_step.or(last_step).flatten();
             if let Some((to, base)) = cfg.force_step(now_s, from, moves) {
                 cfg.live.forced_base.store(base, Ordering::Release);
+                cfg.live.forced_at.store(now_s, Ordering::Release);
                 if held_step.is_some() {
                     held_step = Some(Some(to));
                 }
@@ -1849,11 +1857,14 @@ mod tests {
     /// from now, whatever was left of the one before; the hours still end it.
     #[test]
     fn a_forced_move_restarts_the_timer_on_the_next_band() {
-        let c = rotating(); // 20 m, 40 m, 80 m: 10, 10, 5 minutes
+        let mut c = rotating(); // 20 m, 40 m, 80 m: 10, 10, 5 minutes
+        // As the app runs it: the cycle counted from when Connect was pressed.
+        c.rotation_origin = Some(DAY + 3 * H);
         let now = DAY + 3 * H + 2 * 60 + 17; // 03:02:17, in the first band's turn
         let (to, base) = c.force_step(now, Some(0), 1).unwrap();
         assert_eq!(to, 1);
         c.live.forced_base.store(base, Ordering::Release);
+        c.live.forced_at.store(now, Ordering::Release);
         // The second band now has its whole 10 minutes from this moment.
         assert_eq!(c.step_at(now), Some((Some(1), now + 600)));
         assert_eq!(c.step_at(now + 599), Some((Some(1), now + 600)));
@@ -1861,8 +1872,20 @@ mod tests {
         // Back, from the second: the first, whole again.
         let (to, base) = c.force_step(now + 100, Some(1), -1).unwrap();
         c.live.forced_base.store(base, Ordering::Release);
+        c.live.forced_at.store(now + 100, Ordering::Release);
         assert_eq!(to, 0);
         assert_eq!(c.step_at(now + 100), Some((Some(0), now + 700)));
+        // And on again, and again: every press moves one band, whatever came before.
+        let mut at = Some(0);
+        for (k, want) in [1, 2, 0, 1].into_iter().enumerate() {
+            let t = now + 200 + k as i64 * 10;
+            let (to, base) = c.force_step(t, at, 1).unwrap();
+            c.live.forced_base.store(base, Ordering::Release);
+            c.live.forced_at.store(t, Ordering::Release);
+            assert_eq!(to, want);
+            assert_eq!(c.step_at(t).map(|s| s.0), Some(Some(want)));
+            at = Some(to);
+        }
         // Before the first, the last (wraps).
         let (to, _) = c.force_step(now, Some(0), -1).unwrap();
         assert_eq!(to, 2);
