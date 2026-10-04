@@ -712,3 +712,18 @@ button.danger {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+.stabs .grp {
+  align-self: center;
+  margin-right: 2px;
+  padding: 0 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stabs .grp.sep {
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}

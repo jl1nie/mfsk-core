@@ -67,11 +67,11 @@
   let wfFocus = $state(0);
   /** The part of Settings shown. */
   const SETTINGS_TABS = [
-    ['server', 'Server'],
-    ['rotation', 'Rotation'],
-    ['station', 'Station'],
-    ['receiver', 'Receiver'],
-    ['recording', 'Recording'],
+    ['server', 'Server', 'server'],
+    ['rotation', 'Rotation', 'server'],
+    ['station', 'Station', 'all'],
+    ['receiver', 'Receiver', 'all'],
+    ['recording', 'Recording', 'all'],
   ] as const;
   let settingsTab = $state<(typeof SETTINGS_TABS)[number][0]>('server');
   /** The live view (waterfall + decodes) or the Analysis of the database. */
@@ -561,10 +561,18 @@
         <div class="popover">
           <h2>Settings</h2>
           <div class="stabs" role="tablist" aria-label="Settings">
-            {#each SETTINGS_TABS as [id, label] (id)}
+            <span class="grp" title="These are the chosen server's own">{settings.servers[sel]?.name ?? 'Server'}</span>
+            {#each SETTINGS_TABS.filter((t) => t[2] === 'server') as [id, label] (id)}
+              <button type="button" role="tab" class:on={settingsTab === id} aria-selected={settingsTab === id} onclick={() => (settingsTab = id)}>{label}</button>
+            {/each}
+            <span class="grp sep" title="These apply to every server">All servers</span>
+            {#each SETTINGS_TABS.filter((t) => t[2] === 'all') as [id, label] (id)}
               <button type="button" role="tab" class:on={settingsTab === id} aria-selected={settingsTab === id} onclick={() => (settingsTab = id)}>{label}</button>
             {/each}
           </div>
+          {#if SETTINGS_TABS.find((t) => t[0] === settingsTab)?.[2] === 'all'}
+            <p class="hint">These apply to every server.</p>
+          {/if}
           {#if settingsTab === 'server'}
           <h3 class="serverhead">
             Server · {settings.servers[sel]?.name}
