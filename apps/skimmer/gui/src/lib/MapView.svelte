@@ -13,6 +13,7 @@
     slice = $bindable(300),
     picked = null,
     onclear,
+    bandsChosen = [],
   }: {
     points: MapPoint[];
     me: string;
@@ -23,6 +24,8 @@
     /** The station opened in Results: ringed and named on the map. */
     picked?: { call: string; grid: string } | null;
     onclear?: () => void;
+    /** The bands chosen in the query: with two or more, the paths are coloured by band. */
+    bandsChosen?: string[];
   } = $props();
 
   const WINDOWS = [
@@ -79,9 +82,10 @@
     (byT.get(cur) ?? []).map((p) => ({ call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1, alpha: 1 })),
   );
   const shown = $derived(anim ? frame : overall.map((d) => ({ ...d, alpha: 1 })));
-  /** The bands of the whole period (not of the window shown, which would change as it plays): the
-   * paths are coloured by band and the key lists them; the dots are coloured by SNR. */
-  const bandsShown = $derived(sortBands(points.map((p) => p.band)));
+  /** Paths are coloured by band when two or more bands are chosen in the query, else by SNR like the
+   * dots. It follows the choice, not the data, so it cannot change as the animation plays. */
+  const bandsShown = $derived(sortBands(bandsChosen));
+  const byBand = $derived(bandsShown.length >= 2);
 
   $effect(() => {
     // A new range or window starts the animation again.
@@ -124,7 +128,7 @@
     void picked;
     void proj;
     void paths;
-    void bandsShown;
+    void byBand;
     void size;
     void mine;
     draw();
@@ -195,14 +199,13 @@
     pts = [];
     const me2 = mine ? p(mine) : null;
     if (paths && mine) {
-      ctx.lineWidth = 1;
+      ctx.lineWidth = byBand ? 1 : 0.6;
       for (const d of shown) {
         const g = gridLonLat(d.grid);
         if (!g) continue;
         ctx.beginPath();
         path({ type: 'LineString', coordinates: [mine, g] } as any);
-        // A path is always its band's colour (one meaning); the dots carry the SNR.
-        ctx.strokeStyle = bandColour(d.band, 0.55 * d.alpha);
+        ctx.strokeStyle = byBand ? bandColour(d.band, 0.55 * d.alpha) : snrColour(d.snr, 0.35 * d.alpha);
         ctx.stroke();
       }
     }
@@ -331,8 +334,8 @@
   <!-- The key sits on its own row above the map and always takes its height: nothing below moves. -->
   <div class="key">
     <span class="snrkey"><i style="background:{snrColour(-24)}"></i>−24 dB <i style="background:{snrColour(-7)}"></i>−7 <i style="background:{snrColour(10)}"></i>+10 dB · size = decodes</span>
-    <span class="bandkey" class:off={!paths || bandsShown.length === 0} title="Path colour by band">
-      {#if paths}
+    <span class="bandkey" class:off={!paths || !byBand} title="Path colour by band">
+      {#if paths && byBand}
         {#each bandsShown as b (b)}<span class="bl"><i style="background:{bandColour(b)}"></i>{b}</span>{/each}
       {/if}
     </span>

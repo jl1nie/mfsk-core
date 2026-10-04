@@ -145,7 +145,7 @@
           </select>
         </label>
       {/if}
-      <MapView {points} me={mapMe} since={q.since} until={q.until} bind:slice {picked} onclear={() => (picked = null)} />
+      <MapView {points} me={mapMe} since={q.since} until={q.until} bind:slice {picked} onclear={() => (picked = null)} bandsChosen={q.bands} />
     {:else if tab === 'results'}
       <ResultsView {dir} {q} {activity} {nowMs} me={mapMe} bind:picked />
     {:else}
