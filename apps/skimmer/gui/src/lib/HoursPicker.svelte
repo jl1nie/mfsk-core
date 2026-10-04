@@ -3,7 +3,7 @@
    * The hours of the UTC day a band takes part in: a strip of 24 hours, one click each.
    * Empty `hours` is the whole day.
    */
-  import { gridLonLat } from './analysis';
+  import { clockOf, gridLonLat, sunTimes } from './analysis';
 
   let {
     hours,
@@ -26,6 +26,21 @@
     onchange(next.every(Boolean) ? [] : next);
   }
 
+  /** Sunrise and sunset today at the server (minutes of the UTC day), when its locator is known. */
+  const sun = $derived.by(() => {
+    const g = gridLonLat(grid);
+    return g ? sunTimes(g, Date.now()) : null;
+  });
+  /** The hours that touch the hour either side of sunrise or sunset: the grey line. */
+  const greyHours = $derived.by(() => {
+    if (!sun || sun.rise === null || sun.set === null) return [] as boolean[];
+    const near = (h: number, m: number) => {
+      const d = Math.abs(((h * 60 + 30 - m + 1440 + 720) % 1440) - 720); // distance of the hour's middle
+      return d <= 60 + 30;
+    };
+    return Array.from({ length: 24 }, (_, h) => near(h, sun.rise!) || near(h, sun.set!));
+  });
+
   /** Hours from UTC to the server's local time: its longitude / 15 (mean solar time), else this PC's zone. */
   const place = $derived.by(() => {
     const g = gridLonLat(grid);
@@ -41,6 +56,7 @@
     ['all day', [], 'The whole UTC day'],
     ['day', inLocal(6, 18), `06:00-18:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off})`],
     ['night', inLocal(18, 6), `18:00-06:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off})`],
+    ...(sun && sun.rise !== null ? ([['grey line', greyHours, `The hour either side of sunrise (${clockOf(sun.rise)} UTC) and sunset (${clockOf(sun.set!)} UTC) today at ${grid.toUpperCase()}`]] as [string, boolean[], string][]) : []),
     ['invert', all ? Array<boolean>(24).fill(false) : hours.map((x) => !x), 'The hours that are out come in, and the other way round'],
   ]);
   const same = (a: boolean[], b: boolean[]) =>
@@ -88,6 +104,12 @@
       ></button>
     {/each}
   </div>
+  {#if sun && sun.rise !== null}
+    <div class="sunline" aria-hidden="true">
+      <i class="rise" style="left:{(sun.rise / 1440) * 100}%" title="Sunrise {clockOf(sun.rise)} UTC">↑</i>
+      <i class="set" style="left:{(sun.set! / 1440) * 100}%" title="Sunset {clockOf(sun.set!)} UTC">↓</i>
+    </div>
+  {/if}
   <div class="scale"><span>0</span><span>6</span><span>12</span><span>18</span><span>24 UTC</span></div>
   <div class="pre">
     {#each presets as [name, v, tip] (name)}
@@ -122,6 +144,25 @@
   }
   .cell.tick {
     box-shadow: -1px 0 0 var(--text);
+  }
+  .sunline {
+    position: relative;
+    height: 11px;
+    width: 264px;
+    font-size: 10px;
+    line-height: 11px;
+  }
+  .sunline i {
+    position: absolute;
+    transform: translateX(-50%);
+    font-style: normal;
+    font-weight: 700;
+  }
+  .sunline .rise {
+    color: #d9822b;
+  }
+  .sunline .set {
+    color: #7a5cc4;
   }
   .scale {
     display: flex;

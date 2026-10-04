@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import * as api from './lib/api';
   import type { DecodeRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
-  import { bandOfHz, sortBands } from './lib/analysis';
+  import { bandOfHz, clockOf, gridLonLat, sortBands, sunTimes } from './lib/analysis';
   import HoursPicker from './lib/HoursPicker.svelte';
   import ChannelPanel from './lib/ChannelPanel.svelte';
   import DecodeTable from './lib/DecodeTable.svelte';
@@ -150,6 +150,17 @@
       (settings?.channels ?? []).filter((c) => (c.server ?? 0) === server).map((c) => bandOfHz(c.dialHz)),
     );
     return sv.rotation.filter((r) => have.has(r.band)).map((r) => r.band);
+  }
+
+  /** Sunrise and sunset today at a server, for its Settings: UTC, and the local mean solar time. */
+  function sunLine(grid: string): string {
+    const g = gridLonLat(grid);
+    if (!g) return 'give the grid to see it';
+    const t = sunTimes(g, Date.now());
+    if (t.rise === null) return t.polar === 'day' ? 'the Sun does not set today' : 'the Sun does not rise today';
+    const off = Math.round(g[0] / 15);
+    const loc = (m: number) => clockOf((((m + off * 60) % 1440) + 1440) % 1440);
+    return `↑ ${clockOf(t.rise)} ↓ ${clockOf(t.set!)} UTC · local (UTC${off >= 0 ? '+' : ''}${off}) ${loc(t.rise)} / ${loc(t.set!)}`;
   }
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(3);
@@ -572,6 +583,10 @@
               <span>Grid</span>
               <input class="grid" class:bad={!!sv.grid.trim() && !/^[A-R]{2}\d{2}([A-X]{2})?$/i.test(sv.grid.trim())} bind:value={sv.grid} placeholder={settings.myGrid || 'PM95'} spellcheck="false" disabled={running} />
             </div>
+            <div class="field" title="Sunrise and sunset today at the server's locator (the Sun's upper limb on the horizon, with refraction). Mean solar time for the local one.">
+              <span>Sun today</span>
+              <span class="sun">{sunLine(sv.grid || settings.myGrid)}</span>
+            </div>
             <div class="field" title="Fixed delay from the SDR to this PC (server buffer, path), taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here.">
               <span>Network delay (ms)</span>
               <input type="number" step="10" min="0" bind:value={sv.networkDelayMs}
@@ -640,7 +655,7 @@
                   <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
                 </div>
                 <div class="rothours">
-                  <HoursPicker hours={r.hours} grid={sv.grid} onchange={(h) => { r.hours = h; rotationChanged(); }} />
+                  <HoursPicker hours={r.hours} grid={sv.grid || settings.myGrid} onchange={(h) => { r.hours = h; rotationChanged(); }} />
                 </div>
               {/each}
               <p class="hint">At least 4 minutes each, rounded up to a whole number of the slots of the band's modes (WSPR's are 2 minutes, so 5 becomes 6); a retune costs a slot or two. Click the hours (UTC) a band takes part in, one by one, or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>

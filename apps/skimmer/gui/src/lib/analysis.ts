@@ -190,3 +190,31 @@ export function subsolarPoint(tMs: number): [number, number] {
   if (lon < -180) lon += 360;
   return [lon, dec];
 }
+
+export interface SunTimes {
+  /** Minutes of the UTC day (0-1439) at which the Sun rises and sets at the place, on the day of `tMs`; null in polar day or night. */
+  rise: number | null;
+  set: number | null;
+  /** 'day' or 'night' for the whole day at the poles, else null. */
+  polar: 'day' | 'night' | null;
+}
+
+/** Sunrise and sunset (the Sun's upper limb on the horizon, with refraction: -0.833 degrees) at [lon, lat], for the UTC day of `tMs`. */
+export function sunTimes(lonLat: [number, number], tMs: number): SunTimes {
+  const rad = Math.PI / 180;
+  const [lon, lat] = lonLat;
+  const day = Math.floor(tMs / 86_400_000) * 86_400_000;
+  // Declination and the equation of time at noon UTC of the day: the subsolar longitude is minus the equation of time.
+  const [sunLon, dec] = subsolarPoint(day + 12 * 3_600_000);
+  const eotMin = -sunLon * 4;
+  const arg = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(dec * rad)) / (Math.cos(lat * rad) * Math.cos(dec * rad));
+  if (arg > 1) return { rise: null, set: null, polar: 'night' };
+  if (arg < -1) return { rise: null, set: null, polar: 'day' };
+  const h0 = Math.acos(arg) / rad; // degrees of hour angle
+  const noon = 720 - 4 * lon - eotMin; // minutes UTC
+  const wrap = (m: number) => ((Math.round(m) % 1440) + 1440) % 1440;
+  return { rise: wrap(noon - 4 * h0), set: wrap(noon + 4 * h0), polar: null };
+}
+
+/** `HH:MM` of minutes of the day. */
+export const clockOf = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
