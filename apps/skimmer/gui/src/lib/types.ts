@@ -89,8 +89,7 @@ export interface Settings {
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */
   dbPath: string;
-  logEnabled: boolean;
-  /** Folder the ALL.TXT is written in. */
+  /** Folder the health log STATUS.log is written in. */
   logDir: string;
   /** The operator, for the QSO-context AP. */
   myCall: string;

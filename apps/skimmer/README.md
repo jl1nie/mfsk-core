@@ -50,8 +50,7 @@ on/off dot and its name; the channel list has band presets; the right side is a
 an **Analysis** tab (below). The decode list uses one row format for every mode,
 highlights CQ and your own call, and can filter by channel, CQ or a search
 string. Settings are saved and restored. Every decode goes to the database
-`skimmer.db`; an `ALL.TXT` is written only if you turn it on (it grows without
-bound). The presets come from WSJT-X's `default_frequency_list` (all-region and
+`skimmer.db`. The presets come from WSJT-X's `default_frequency_list` (all-region and
 Region 3 entries), plus FT8 at 7041 kHz for JA.
 
 ### Installers
@@ -83,10 +82,9 @@ cargo tauri build      # app + NSIS installer under release\bundle\nsis
 ```
 
 The settings file is `%APPDATA%\io.github.jl1nie.mfsk-skimmer\settings.json`.
-The database (`skimmer.db`), the health log `STATUS.log` and, if turned on,
-`ALL.TXT` are in `Documents\mfsk-skimmer\`. The database file is chosen in Settings
+The database (`skimmer.db`) and the health log `STATUS.log` are in `Documents\mfsk-skimmer\`. The database file is chosen in Settings
 (**Open…** an existing one to add to it, **New…** for another), apart from the folder
-of `ALL.TXT` and `STATUS.log`; the Database tab can read any other file without
+of `STATUS.log`; the Database tab can read any other file without
 changing where the skimmer records. When Documents is redirected to
 OneDrive, they sync there; change the folder in Settings if that is not wanted
 (a database being written does not suit a synced folder well).

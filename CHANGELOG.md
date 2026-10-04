@@ -80,7 +80,7 @@
   (ccir_moderate -20.00 against -20.50 dB) and level with WSJT-X in paired counts (5 up-only against 3 crate-only, p =
   0.73); the AWGN crossing and every other protocol's are unchanged. AP is off by default.
 - **The skimmer keeps every decode in SQLite and answers questions about them.** `skimmer.db` (WAL, indexed on time,
-  band and call; ALL.TXT is off by default) records each decode with its sender, locator, CQ kind and the server that
+  band and call; the GUI no longer writes an ALL.TXT, the CLI's `--log` still does) records each decode with its sender, locator, CQ kind and the server that
   heard it. An Analysis view runs one query (UTC period, regexes on call, locator and text, band, mode, server, SNR,
   distance, bearing sector, CQ kind) over a great-circle or Mercator map that animates in a chosen window, the
   openings of the bands, a per-station hours-on-the-air map with a small map of the great circle, and a Database

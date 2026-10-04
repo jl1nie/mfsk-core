@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Tauri shell for the SpyServer skimmer: `skimmer_core::run_all` on a thread,
 //! its events forwarded to the window as `skimmer` events, settings kept as
-//! JSON in the app's config directory, decodes appended to an ALL.TXT-style
-//! log.
+//! JSON in the app's config directory, every decode in a SQLite database.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -19,7 +18,7 @@ use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_mode, slot_sec
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::{
     ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
-    QsoContext, QsoProgress, RadioState, Station, WireFormat, all_txt_line,
+    QsoContext, QsoProgress, RadioState, Station, WireFormat,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -259,12 +258,11 @@ struct Settings {
     rotation_utc: bool,
     /// "auto" (filter bank from `AUTO_PFB_CHANNELS` active channels), "direct" or "pfb".
     channelizer: String,
-    /// Every decode in a SQLite file (statistics, maps) beside the ALL.TXT.
+    /// Every decode in a SQLite file (statistics, maps).
     db_enabled: bool,
     /// The database file; empty is `skimmer.db` in `log_dir`.
     db_path: String,
-    log_enabled: bool,
-    /// Folder the ALL.TXT goes in.
+    /// Folder the health log `STATUS.log` goes in.
     log_dir: String,
     /// The operator (`mycall`, `mygrid`), for the QSO-context AP.
     my_call: String,
@@ -331,8 +329,6 @@ impl Default for Settings {
             channelizer: "auto".into(),
             db_enabled: true,
             db_path: String::new(),
-            // ALL.TXT grows without bound; the database is the record now.
-            log_enabled: false,
             log_dir: String::new(),
             my_call: String::new(),
             my_grid: String::new(),
@@ -581,9 +577,8 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
-const LOG_FILE: &str = "ALL.TXT";
 const DB_FILE: &str = "skimmer.db";
-/// Beside ALL.TXT: one line per health event with the host's wall clock, so a
+/// Beside the database: one line per health event with the host's wall clock, so a
 /// long run can be read back (queue, push, decode, drift, drops).
 const HEALTH_FILE: &str = "STATUS.log";
 
@@ -768,17 +763,6 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         return Err("no channels".into());
     }
     Ok(out)
-}
-
-fn open_log(dir: &str) -> Result<File, String> {
-    let dir = PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(LOG_FILE);
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn open_health(dir: &str) -> Option<File> {
@@ -991,12 +975,7 @@ async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Setting
     halt(&state);
     settings.migrate();
     let planned = configs(&settings)?;
-    let mut log = if settings.log_enabled {
-        Some(open_log(&settings.log_dir)?)
-    } else {
-        None
-    };
-    let mut health = if settings.log_enabled || settings.db_enabled {
+    let mut health = if settings.db_enabled {
         open_health(&settings.log_dir)
     } else {
         None
@@ -1071,19 +1050,6 @@ async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Setting
                     Event::Status(_) => w.flush(),
                     _ => {}
                 }
-            }
-            if let (Event::Decode(d), Some(f)) = (&ev, log.as_mut())
-                && let Err(e) = writeln!(f, "{}", all_txt_line(d))
-            {
-                let _ = emitter.emit(
-                    "skimmer",
-                    Tagged {
-                        server: *server,
-                        event: UiEvent::Disconnected {
-                            error: format!("log: {e}"),
-                        },
-                    },
-                );
             }
             let _ = emitter.emit(
                 "skimmer",

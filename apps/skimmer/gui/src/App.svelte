@@ -740,22 +740,18 @@
           </label>
           {:else}
           <h3>Recording</h3>
-          <label class="check" title="skimmer.db in the folder below: every decode, indexed, for the Analysis view. Far smaller than ALL.TXT for the same data.">
+          <label class="check" title="Every decode in a database file, indexed, for the Analysis view.">
             <input type="checkbox" bind:checked={settings.dbEnabled} disabled={running} />
             <span>Keep decodes in a database</span>
-          </label>
-          <label class="check">
-            <input type="checkbox" bind:checked={settings.logEnabled} disabled={running} />
-            <span>Write ALL.TXT</span>
           </label>
           <div class="folder" class:off={!settings.dbEnabled} title="The database file decodes are recorded into">
             <span class="path" title={settings.dbPath}>{settings.dbPath}</span>
             <button onclick={chooseDb} disabled={running || !settings.dbEnabled}>Open…</button>
             <button onclick={newDb} disabled={running || !settings.dbEnabled}>New…</button>
           </div>
-          <div class="folder" class:off={!settings.logEnabled} title="Where ALL.TXT and STATUS.log are written">
+          <div class="folder" title="Where STATUS.log is written (a line per health event, for a long run)">
             <span class="path" title={settings.logDir}>{settings.logDir}</span>
-            <button onclick={chooseLogDir} disabled={running || !settings.logEnabled}>Choose…</button>
+            <button onclick={chooseLogDir} disabled={running}>Choose…</button>
           </div>
           {/if}
           {#if running}<p class="hint">Disconnect to change these.</p>{/if}
