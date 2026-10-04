@@ -201,7 +201,7 @@
       shade(96, 0.18);
       shade(90, 0.22);
       shade(84, 0.44);
-      // The band's two edges, thin and faint; the horizon itself, brighter.
+      // The band's two edges, thin and faint; the horizon itself a little brighter, but not loud.
       // Drawn as lines along the ring, not as the polygon: a night that takes in a pole is clipped by the
       // frame of the map, and stroking the polygon would draw that frame.
       const edge = (radius: number, alpha: number, width: number) => {
@@ -211,9 +211,9 @@
         ctx.lineWidth = width;
         ctx.stroke();
       };
-      edge(96, 0.4, 0.8);
-      edge(84, 0.4, 0.8);
-      edge(90, 0.9, 1.4);
+      edge(96, 0.3, 0.7);
+      edge(84, 0.3, 0.7);
+      edge(90, 0.5, 1);
     }
 
     // Distance rings from home: straight great circles read directly.
