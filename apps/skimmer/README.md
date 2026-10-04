@@ -29,7 +29,7 @@ Per-channel options follow the dial (WSJT-X's parameter block, `--mycall`/`--myg
 (Hz), `:ap=off|cq|full`, `:hiscall=`/`:hisgrid=`/`:progress=0..5` (the QSO the
 QSO-context AP is derived from), `:contest=NAME`, `:avg=1`, `:deepsearch=1`,
 `:eme=1`. In the GUI they are under each channel's ⚙ dialog (search, a-priori,
-QSO in progress, other) and the operator's call and grid under Settings and apply to a running skimmer at
+QSO in progress, other) and the operator's call and grid under Settings > Server (per server) and apply to a running skimmer at
 the channel's next slot, without a reconnect.
 
 Options: `--yield` (leave control to an SDR# started later), `--tune` (hold control
@@ -82,11 +82,11 @@ cargo tauri build      # app + NSIS installer under release\bundle\nsis
 ```
 
 The settings file is `%APPDATA%\io.github.jl1nie.mfsk-skimmer\settings.json`.
-The database (`skimmer.db`) and the health log `STATUS.log` are in `Documents\mfsk-skimmer\`. The database file is chosen in Settings
+The database (`skimmer.db`) and the health log `STATUS.log` are in `Documents\mfsk-skimmer\`. The database file is chosen in Analysis > Database
 (**Open…** an existing one to add to it, **New…** for another), apart from the folder
-of `STATUS.log`; the Database tab can read any other file without
+of `STATUS.log`, which is chosen there too; the tab can also read any other file without
 changing where the skimmer records. When Documents is redirected to
-OneDrive, they sync there; change the folder in Settings if that is not wanted
+OneDrive, they sync there; change the folder in Analysis > Database if that is not wanted
 (a database being written does not suit a synced folder well).
 
 Verified on Windows against the SpyServer below, beside SDR#: 26 FT8
@@ -158,8 +158,8 @@ Observed with SDR# and an Airspy HF+ (2026-10-03):
 ## Several servers, and a rotation of bands
 
 Up to four SpyServers at once, wherever they are. Each has a name, an address,
-its own locator (the origin of the bearings of what it hears) and its own
-network delay, gain and control; the channels of each are listed under it.
+its own call and locator (the origin of the bearings of what it hears), IQ
+format, channelizer, network delay, gain and control; the channels of each are listed under it.
 `Settings > Server` edits the one selected in the header; `+` adds another.
 One SpyServer is one SDR with one centre and one IQ rate, so the way to cover
 more bands is more servers, or a rotation on one.
