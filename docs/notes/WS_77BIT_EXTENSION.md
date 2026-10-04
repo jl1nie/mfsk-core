@@ -242,7 +242,7 @@ traffic of this report (a station with a `/P` call addressed by a hashed call) a
 `docs/notes/ws77_hash_suffix.patch`: `insert` keeps the suffix, the learner appends the flag, the test is renamed `keeps_suffix`.
 Checked in an isolated worktree: the 168 messages then agree in both table states (336 of 336), `msg::` unit tests pass, and
 `MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing --release` gives 1072 passed, 0 failed, 211 ignored.
-The patch applies cleanly to `main` at `0a7fab35`. Tracked in a separate issue.
+The patch applies cleanly to `main` at `0a7fab35`. Tracked in #570.
 
 ### 6.3 Defensive handling
 
