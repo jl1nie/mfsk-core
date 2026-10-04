@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { geoAzimuthalEquidistant, geoMercator, geoPath } from 'd3-geo';
+  import { geoAzimuthalEquidistant, geoCircle, geoMercator, geoPath } from 'd3-geo';
   import { feature } from 'topojson-client';
   import land110 from 'world-atlas/land-110m.json';
   import type { MapPoint } from './types';
-  import { bandColour, gridLonLat, isDark, snrColour, sortBands, stamp } from './analysis';
+  import { bandColour, gridLonLat, isDark, snrColour, sortBands, stamp, subsolarPoint } from './analysis';
 
   let {
     points,
@@ -47,6 +47,8 @@
   type Proj = 'azimuthal' | 'mercator';
   let proj = $state<Proj>('azimuthal');
   let paths = $state(false);
+  /** Day, the grey line and night, as the Sun stands at the window playing (else at the end of the period). */
+  let greyline = $state(true);
   let box: HTMLDivElement | undefined = $state();
   let cv: HTMLCanvasElement | undefined = $state();
   let size = $state({ w: 600, h: 520 });
@@ -110,6 +112,9 @@
     return () => clearInterval(id);
   });
 
+  /** UTC ms at which the Sun is placed: the middle of the window playing, else the end of the period (not in the future). */
+  const sunAt = $derived(anim ? (cur + slice / 2) * 1000 : Math.min(until * 1000, Date.now()));
+
   const land = feature(land110, land110.objects.land);
   const mine = $derived(gridLonLat(me));
 
@@ -128,6 +133,8 @@
     void picked;
     void proj;
     void paths;
+    void greyline;
+    void sunAt;
     void byBand;
     void size;
     void mine;
@@ -176,6 +183,20 @@
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
+    // Day and night: the grey line is where the Sun is within 6 degrees of the horizon.
+    if (greyline) {
+      const sun = subsolarPoint(sunAt);
+      const anti: [number, number] = [sun[0] + 180 > 180 ? sun[0] - 180 : sun[0] + 180, -sun[1]];
+      const disc = (radius: number, fill: string) => {
+        ctx.beginPath();
+        path(geoCircle().center(anti).radius(radius)() as any);
+        ctx.fillStyle = fill;
+        ctx.fill();
+      };
+      disc(96, dark ? 'rgba(255,170,60,0.20)' : 'rgba(255,150,40,0.28)'); // Sun up to 6 degrees: the band
+      disc(84, dark ? 'rgba(0,0,0,0.38)' : 'rgba(10,20,60,0.30)'); // Sun more than 6 degrees down: night
+    }
+
     // Distance rings from home: straight great circles read directly.
     if (proj === 'azimuthal' && mine) {
       const s = (Math.min(w, h) / 2 - 8) / Math.PI;
@@ -222,6 +243,13 @@
       ctx.lineWidth = 0.8;
       ctx.stroke();
       pts.push({ x: xy[0], y: xy[1], h: d });
+    }
+    if (greyline && !anim) {
+      ctx.font = '11px sans-serif';
+      ctx.fillStyle = dark ? '#aab4bf' : '#55606b';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(`grey line at ${new Date(sunAt).toISOString().slice(11, 16)} UTC`, w - 8, h - 8);
     }
     if (anim) {
       ctx.font = '12px sans-serif';
@@ -295,6 +323,7 @@
     <label><input type="radio" bind:group={proj} value="azimuthal" /> Great-circle (centred on home)</label>
     <label><input type="radio" bind:group={proj} value="mercator" /> Mercator</label>
     <label><input type="checkbox" bind:checked={paths} /> paths</label>
+    <label title="Day, the grey line (Sun within 6 degrees of the horizon) and night, at the time shown"><input type="checkbox" bind:checked={greyline} /> grey line</label>
     {#if picked}
       <button type="button" class="picked" title="Opened in Results; click to clear" onclick={() => onclear?.()}>Selected: {picked.call} ✕</button>
     {/if}

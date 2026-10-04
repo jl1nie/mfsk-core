@@ -751,6 +751,32 @@ pub fn delete_before(path: &Path, before: i64, server: Option<&str>) -> Result<i
     Ok(n as i64)
 }
 
+/// Record everything `from` heard as heard by `to` (the legacy single server
+/// is `from = ""`), and make `to` a server of its own. Returns the number of
+/// decodes renamed.
+pub fn rename_server(path: &Path, from: &str, to: &str) -> Result<i64, String> {
+    let mut c = rw(path)?;
+    let tx = c.transaction().map_err(|e| e.to_string())?;
+    let n = tx
+        .execute(
+            "UPDATE decodes SET server = ?2 WHERE server = ?1",
+            params![from, to],
+        )
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO servers (name, grid) VALUES (?1, '') ON CONFLICT(name) DO NOTHING",
+        params![to],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM servers WHERE name = ?1 AND name != ?2",
+        params![from, to],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(n as i64)
+}
+
 /// Return the free space to the system: the log is folded into the file and the
 /// file rewritten compactly. Needs the file to itself for a moment; with the
 /// skimmer recording it waits up to twenty seconds, then says so.
@@ -1179,6 +1205,9 @@ mod tests {
         assert_eq!(delete_before(&p, h + 8000, Some("b")).unwrap(), 1);
         vacuum(&p).unwrap();
         assert_eq!(info(&p).unwrap().decodes, 1);
+        // Decodes with no server name become a named server's.
+        assert_eq!(rename_server(&p, "a", "x").unwrap(), 1);
+        assert_eq!(info(&p).unwrap().servers, vec![("x".to_string(), 1)]);
         assert_eq!(
             Reader::open(&copy).unwrap().span().unwrap().2,
             3,

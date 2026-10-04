@@ -170,3 +170,23 @@ export function gridLonLat(g: string): [number, number] | null {
   }
   return [lon, lat];
 }
+
+/**
+ * The point on the Earth where the Sun is overhead at `tMs` (UTC ms): [lon, lat] in degrees.
+ * The usual low-precision almanac formulas (a minute of arc), plenty for a map.
+ */
+export function subsolarPoint(tMs: number): [number, number] {
+  const rad = Math.PI / 180;
+  const d = tMs / 86_400_000 + 2_440_587.5 - 2_451_545.0; // days since J2000
+  const g = (357.529 + 0.98560028 * d) * rad;
+  const q = 280.459 + 0.98564736 * d;
+  const L = (q + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * rad;
+  const e = (23.439 - 0.00000036 * d) * rad;
+  const dec = Math.asin(Math.sin(e) * Math.sin(L)) / rad;
+  const ra = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)) / rad; // degrees
+  const gmst = (18.697374558 + 24.06570982441908 * d) * 15; // degrees
+  let lon = (ra - gmst) % 360;
+  if (lon > 180) lon -= 360;
+  if (lon < -180) lon += 360;
+  return [lon, dec];
+}
