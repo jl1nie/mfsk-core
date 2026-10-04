@@ -97,6 +97,8 @@
   in tabs. The map has a grey line (day, the band where the Sun is within 6 degrees of the horizon, night; sunrise and
   sunset per server are in its Settings), band-coloured paths when bands are chosen, and an Animate that can skip
   windows with no station. The installers can be built by hand (`workflow_dispatch`).
+  A band's hours can be "day" or "night" following the calendar: from an hour before sunrise to an hour after sunset
+  (or the night between), recomputed for each day at the server, with no moment of renewal.
 - **The skimmer's clock can follow NTP, and the delay to the server can be entered.** The PC clock is not touched;
   its measured offset (best of five SNTP queries, every ten minutes) is added, and a fixed network delay is taken off
   the arrival times, which the minimum-delay anchor cannot remove.

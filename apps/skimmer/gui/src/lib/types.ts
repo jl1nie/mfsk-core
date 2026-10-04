@@ -65,6 +65,10 @@ export interface RotationStep {
   minutes: number;
   /** The UTC hours this band takes part in: 24 flags, hour 0 first; empty is all day. */
   hours: boolean[];
+  /** "day" or "night": follows the Sun at the server day by day; empty: the fixed `hours`. */
+  follow?: '' | 'day' | 'night';
+  /** Hours of grey line either side of sunrise and sunset when following. */
+  marginHours?: number;
 }
 
 export interface Settings {

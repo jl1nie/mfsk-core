@@ -32,6 +32,7 @@ pub mod plan;
 pub mod spot;
 pub mod spyserver;
 pub mod store;
+pub mod sun;
 pub mod waterfall;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -457,6 +458,66 @@ pub struct Step {
     /// `None`: all day. Outside them the step is left out of the cycle, which
     /// goes on among the steps that are in.
     pub hours: Option<u32>,
+    /// Instead of fixed `hours`: the step takes part by day or by night at a place, as
+    /// the calendar has it (see [`Follow`]).
+    pub follow: Option<Follow>,
+}
+
+/// A band that follows the Sun: "day" runs from some time before sunrise at a place to
+/// some time after sunset, "night" from before sunset to after the next sunrise. The
+/// margin is the grey line, so the dawn and dusk hours are in both. The times are
+/// those of each calendar day, so the band's hours drift with the seasons; there is no
+/// moment at which they are renewed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Follow {
+    pub lon: f64,
+    pub lat: f64,
+    pub night: bool,
+    /// Seconds either side of sunrise and sunset.
+    pub margin_s: i64,
+}
+
+impl Follow {
+    /// The `[from, to)` stretches, in UTC seconds, in which the band is in around `utc_s`
+    /// (from two solar days before to two after).
+    fn intervals(&self, utc_s: i64) -> Vec<(i64, i64)> {
+        use sun::SolarDay::*;
+        let day0 = utc_s.div_euclid(86_400) * 86_400;
+        let days: Vec<(i64, sun::SolarDay)> = (-3..=3)
+            .map(|k| {
+                let d = day0 + k * 86_400;
+                (d, sun::solar_day(self.lon, self.lat, d))
+            })
+            .collect();
+        let m = self.margin_s;
+        let mut out = Vec::new();
+        for (j, &(d, today)) in days.iter().enumerate() {
+            match (today, self.night) {
+                (Normal { rise_s, set_s }, false) => out.push((rise_s - m, set_s + m)),
+                (PolarDay, false) | (PolarNight, true) => out.push((d, d + 86_400)),
+                (Normal { set_s, .. }, true) => {
+                    if let Some(&(_, Normal { rise_s, .. })) = days.get(j + 1) {
+                        out.push((set_s - m, rise_s + m));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn is_in(&self, utc_s: i64) -> bool {
+        self.intervals(utc_s)
+            .iter()
+            .any(|&(a, b)| a <= utc_s && utc_s < b)
+    }
+
+    fn edges(&self, utc_s: i64) -> Vec<i64> {
+        self.intervals(utc_s)
+            .into_iter()
+            .flat_map(|(a, b)| [a, b])
+            .collect()
+    }
 }
 
 /// Hours `from` up to (not including) `to` as a mask; `from > to` runs
@@ -474,18 +535,34 @@ pub fn hour_mask(from: u32, to: u32) -> u32 {
 }
 
 impl Step {
-    fn is_in(&self, second_of_day: u32) -> bool {
+    /// Whether the step takes part at `utc_s`.
+    fn is_in_at(&self, utc_s: i64) -> bool {
+        if let Some(f) = &self.follow {
+            return f.is_in(utc_s);
+        }
         self.hours
-            .is_none_or(|m| m >> (second_of_day / 3600) & 1 == 1)
+            .is_none_or(|m| m >> (utc_s.rem_euclid(86_400) / 3600) & 1 == 1)
     }
 
-    /// Seconds of the day at which this step comes in or goes out.
-    fn edges(&self) -> impl Iterator<Item = u32> + '_ {
-        (0..24u32).filter_map(move |h| {
-            let m = self.hours?;
-            let (now, before) = (m >> h & 1, m >> ((h + 23) % 24) & 1);
-            (now != before).then_some(h * 3600)
-        })
+    /// The UTC seconds around `utc_s` at which the step comes in or goes out.
+    fn edges_near(&self, utc_s: i64) -> Vec<i64> {
+        if let Some(f) = &self.follow {
+            return f.edges(utc_s);
+        }
+        let Some(m) = self.hours else {
+            return Vec::new();
+        };
+        let day = utc_s.div_euclid(86_400) * 86_400;
+        let mut out = Vec::new();
+        for d in [day - 86_400, day, day + 86_400, day + 2 * 86_400] {
+            for h in 0..24u32 {
+                let (now, before) = (m >> h & 1, m >> ((h + 23) % 24) & 1);
+                if now != before {
+                    out.push(d + i64::from(h) * 3600);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -526,20 +603,18 @@ impl Config {
             return None;
         }
         let day = utc_s.div_euclid(86_400) * 86_400;
-        let sod = (utc_s - day) as u32;
-        // Where the set of steps in changes: every window edge of the days
-        // around this one.
-        let mut edges: Vec<i64> = Vec::new();
-        for d in [day - 86_400, day, day + 86_400, day + 2 * 86_400] {
-            for st in &self.steps {
-                edges.extend(st.edges().map(|e| d + i64::from(e)));
-            }
-        }
+        // Where the set of steps in changes: every edge of every step's hours or
+        // sun times, a day or two either side.
+        let edges: Vec<i64> = self
+            .steps
+            .iter()
+            .flat_map(|st| st.edges_near(utc_s))
+            .collect();
         let last_edge = edges.iter().copied().filter(|&e| e <= utc_s).max();
         let next_edge = edges.iter().copied().filter(|&e| e > utc_s).min();
         let cap = |end: i64| next_edge.map_or(end, |n| n.min(end));
         let within: Vec<usize> = (0..self.steps.len())
-            .filter(|&i| self.steps[i].is_in(sod))
+            .filter(|&i| self.steps[i].is_in_at(utc_s))
             .collect();
         if within.is_empty() {
             // Nobody in until a window opens (there is one if any has hours).
@@ -573,9 +648,8 @@ impl Config {
     /// in now, and the base from which the cycle puts that step first, so that it
     /// runs its whole turn from `utc_s`.
     fn force_step(&self, utc_s: i64, from: Option<usize>, by: i32) -> Option<(usize, i64)> {
-        let sod = (utc_s.rem_euclid(86_400)) as u32;
         let within: Vec<usize> = (0..self.steps.len())
-            .filter(|&i| self.steps[i].is_in(sod))
+            .filter(|&i| self.steps[i].is_in_at(utc_s))
             .collect();
         if within.is_empty() {
             return None;
@@ -1745,6 +1819,7 @@ mod tests {
             channels: vec![c],
             minutes,
             hours: None,
+            follow: None,
         };
         c.steps = vec![step(0, 10), step(1, 10), step(2, 5)];
         c
@@ -1806,6 +1881,7 @@ mod tests {
             channels: chs,
             minutes,
             hours: None,
+            follow: None,
         };
         c.steps = vec![step(vec![0, 1, 2], 5), step(vec![3], 5)];
         assert_eq!(c.step_seconds(0), 360, "5 min with WSPR in it");
@@ -1835,6 +1911,61 @@ mod tests {
         // A step does not run past the end of its window.
         let (_, end) = c.step_at(DAY + 5 * H + 58 * 60).unwrap();
         assert!(end <= DAY + 6 * H, "{end}");
+    }
+
+    /// "Day" and "night" at PM95 follow the calendar: from an hour before sunrise to an
+    /// hour after sunset, and from an hour before sunset to an hour after sunrise; the
+    /// hour of dawn and dusk is in both; no moment of renewal, the edges just sit where
+    /// each day's Sun puts them.
+    #[test]
+    fn day_and_night_follow_the_sun() {
+        let mut c = rotating();
+        let tokyo = |night| Follow {
+            lon: 139.0,
+            lat: 35.5,
+            night,
+            margin_s: 3600,
+        };
+        c.steps.truncate(2);
+        c.steps[0].follow = Some(tokyo(false)); // day
+        c.steps[1].follow = Some(tokyo(true)); // night
+        // 2026-10-04: sunrise 20:41 UTC the evening before, sunset 08:24 UTC.
+        let o4 = DAY + 86_400 * ((1_790_985_600 - DAY) / 86_400 + 1); // 2026-10-04 00:00 UTC
+        let in_at = |t: i64| c.step_at(t).and_then(|s| s.0);
+        assert_eq!(in_at(o4 + 2 * H), Some(0), "02:00 UTC: day");
+        assert_eq!(
+            in_at(o4 - 4 * H - 10 * 60),
+            Some(0),
+            "19:50 the 3rd: an hour before sunrise, day"
+        );
+        // 12:00 UTC: after sunset + 1 h (09:24) and before sunrise - ... night only.
+        assert_eq!(in_at(o4 + 12 * H), Some(1), "12:00: night");
+        // Dawn: both are in (19:41-20:41 and onwards), so the cycle runs among two.
+        let both: std::collections::HashSet<_> = (0..40)
+            .map(|k| in_at(o4 + 19 * H + 45 * 60 + k * 60))
+            .collect();
+        assert_eq!(
+            both,
+            [Some(0), Some(1)].into_iter().collect(),
+            "the dawn hour is in both"
+        );
+        // A band that is out says when it comes in: night only, and its edge is a sunset - 1 h.
+        c.steps.truncate(2);
+        c.steps[0].follow = Some(tokyo(true));
+        c.steps[1].follow = Some(tokyo(true));
+        let (idle, next) = (
+            c.step_at(o4 + 2 * H).unwrap().0,
+            c.step_at(o4 + 2 * H).unwrap().1,
+        );
+        assert_eq!(
+            idle, None,
+            "night bands at 02:00 UTC (11:00 JST): none is in"
+        );
+        let want = o4 + 7 * H + 24 * 60; // sunset 08:24 minus an hour
+        assert!(
+            (next - want).abs() < 180,
+            "the next edge is at sunset - 1 h: {next} against {want}"
+        );
     }
 
     /// Hours need not be one stretch: 40 m at 03, 04 and 21 UTC only.

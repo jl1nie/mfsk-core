@@ -153,6 +153,11 @@ struct RotationStep {
     /// The UTC hours this band takes part in: 24 flags, hour 0 first. Empty:
     /// all day.
     hours: Vec<bool>,
+    /// "day" or "night": the band follows the Sun at the server (its locator, else yours) as the
+    /// calendar has it, from `margin_hours` before sunrise (sunset) to the same after sunset
+    /// (sunrise). Empty: the fixed `hours`, which are also used when there is no locator.
+    follow: String,
+    margin_hours: f64,
     /// From before hours were set one by one: a stretch `HH:MM`-`HH:MM`, read
     /// into `hours` and not written back.
     #[serde(skip_serializing)]
@@ -167,6 +172,8 @@ impl Default for RotationStep {
             band: String::new(),
             minutes: 6,
             hours: Vec::new(),
+            follow: String::new(),
+            margin_hours: 1.0,
             from: String::new(),
             to: String::new(),
         }
@@ -715,6 +722,21 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             let mut steps = Vec::new();
             for r in &srv.rotation {
                 let hours = r.mask();
+                // Following the Sun needs a place: the server's locator, else the operator's.
+                let follow = match r.follow.as_str() {
+                    "day" | "night" => skimmer_core::geo::grid_center(if srv.grid.trim().is_empty() {
+                        s.my_grid.trim()
+                    } else {
+                        srv.grid.trim()
+                    })
+                    .map(|(lat, lon)| skimmer_core::Follow {
+                        lon,
+                        lat,
+                        night: r.follow == "night",
+                        margin_s: (r.margin_hours.clamp(0.0, 6.0) * 3600.0).round() as i64,
+                    }),
+                    _ => None,
+                };
                 let chs: Vec<usize> = mine
                     .iter()
                     .enumerate()
@@ -725,13 +747,14 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
                     steps.push(skimmer_core::Step {
                         channels: chs,
                         minutes: r.minutes,
-                        hours,
+                        hours: if follow.is_some() { None } else { hours },
+                        follow,
                     });
                 }
             }
             cfg.steps = steps;
             // One band with no hours is no rotation; with hours it is a schedule.
-            if cfg.steps.len() < 2 && cfg.steps.iter().all(|s| s.hours.is_none()) {
+            if cfg.steps.len() < 2 && cfg.steps.iter().all(|s| s.hours.is_none() && s.follow.is_none()) {
                 cfg.steps.clear();
             }
         }

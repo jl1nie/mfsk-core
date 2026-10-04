@@ -183,7 +183,11 @@ Each band can also be given the **UTC hours it takes part in**, hour by hour
 only by night, or just 03, 04 and 21). In the GUI, "day" runs from an hour before today's sunrise at the server to an hour after its
 sunset, and "night" from an hour before sunset to an hour after sunrise, so the grey line (the
 hours of dawn and dusk) is in both; without the server's locator they are 06-18 and 18-06 local time.
-The sunrise and sunset are shown in Settings and marked on the hours strip. The cycle goes on among the bands that are in at that
+The sunrise and sunset are shown in Settings and marked on the hours strip. 
+"Follow the calendar" (offered once day or night is chosen, with the hours of grey line either side, 1 by
+default) makes the band follow each day's sunrise and sunset instead of today's hours: the rotation works
+them out as it goes, from the server's locator (else yours), so the edges move a minute or two a day and
+there is no moment at which they are renewed. The cycle goes on among the bands that are in at that
 hour and starts again whenever the set changes; when none is in, nothing is heard
 until one opens.
 

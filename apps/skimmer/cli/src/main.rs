@@ -69,6 +69,7 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>)> {
                     channels: Vec::new(),
                     minutes: it.next()?.parse().ok()?,
                     hours: None,
+                    follow: None,
                 });
             }
             "--log" => log = Some(it.next()?),
