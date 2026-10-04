@@ -83,6 +83,8 @@ export interface Settings {
   channelizer: 'auto' | 'direct' | 'pfb';
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
+  /** The database file recorded into (and read by Analysis unless another is opened). */
+  dbPath: string;
   logEnabled: boolean;
   /** Folder the ALL.TXT is written in. */
   logDir: string;

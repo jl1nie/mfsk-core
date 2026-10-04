@@ -3,7 +3,21 @@
   import type { DbInfo, Query } from './types';
   import { stamp, ymd } from './analysis';
 
-  let { dir, q, onchanged }: { dir: string; q: Query; onchanged: () => void } = $props();
+  let {
+    dir,
+    recorded,
+    q,
+    onchanged,
+    onopen,
+  }: {
+    dir: string;
+    /** The file being recorded into. */
+    recorded: string;
+    q: Query;
+    onchanged: () => void;
+    /** Read another database file (null: back to the recording one). */
+    onopen: (file: string | null) => void;
+  } = $props();
 
   let info = $state<DbInfo | null>(null);
   let message = $state('');
@@ -64,25 +78,45 @@
       return `Deleted ${done.toLocaleString()} decodes. The file keeps its size until it is compacted.`;
     });
 
-  const deleteServer = (name: string, n: number) =>
-    run('Delete', async () => {
-      if (!(await api.ask(`Delete all ${n.toLocaleString()} decodes of ${label(name)}? This cannot be undone.`)))
-        return 'Cancelled.';
-      const done = await api.dbDeleteServer(dir, name);
-      return `Deleted ${done.toLocaleString()} decodes of ${label(name)}.`;
-    });
-
   const compact = () =>
     run('Compact', async () => {
       await api.dbVacuum(dir);
       return 'Compacted: the free space is back with the system.';
     });
 
+  type Span = 'query' | '24h' | '7d' | '30d' | 'all' | 'custom';
+  let span = $state<Span>('query');
+  let cFrom = $state('');
+  let cTo = $state('');
+  const toLocal = (s: number) => new Date(s * 1000).toISOString().slice(0, 16);
+  $effect(() => {
+    if (span === 'custom' && !cFrom) {
+      cFrom = toLocal(q.since > 0 ? q.since : Date.now() / 1000 - 86400);
+      cTo = toLocal(q.until);
+    }
+  });
+  /** The period of the CSV; the query's filters (band, call, ...) apply to it. */
+  const csvQuery = (): Query => {
+    const now = Math.floor(Date.now() / 1000);
+    switch (span) {
+      case '24h': return { ...q, since: now - 86400, until: now };
+      case '7d': return { ...q, since: now - 7 * 86400, until: now };
+      case '30d': return { ...q, since: now - 30 * 86400, until: now };
+      case 'all': return { ...q, since: 0, until: now };
+      case 'custom': {
+        const f = Date.parse(`${cFrom}:00Z`) / 1000;
+        const t = Date.parse(`${cTo}:00Z`) / 1000;
+        return { ...q, since: Number.isFinite(f) ? f : 0, until: Number.isFinite(t) ? t : now };
+      }
+      default: return q;
+    }
+  };
+
   const exportCsv = () =>
     run('Export', async () => {
       const dest = await api.saveAs(`skimmer-decodes-${ymd(Date.now() / 1000).replaceAll('-', '')}.csv`, 'csv');
       if (!dest) return 'Cancelled.';
-      const n = await api.dbExportCsv(dir, q, dest);
+      const n = await api.dbExportCsv(dir, csvQuery(), dest);
       return `${n.toLocaleString()} decodes written to ${dest}`;
     });
 
@@ -96,10 +130,20 @@
 </script>
 
 <div class="dbv">
+  <section>
+    <h3>File</h3>
+    <p class="row">
+      <span class="path" title={dir}>{dir}</span>
+      <button type="button" disabled={!!busy} onclick={async () => { const f = await api.pickDb(dir); if (f) onopen(f); }}>Open another…</button>
+      {#if dir !== recorded}
+        <button type="button" onclick={() => onopen(null)}>Back to the recording file</button>
+      {/if}
+    </p>
+    {#if dir !== recorded}<p class="hint">Reading another file; the skimmer records into {recorded}.</p>{/if}
+  </section>
   {#if info}
     <section>
       <h3>The database</h3>
-      <p class="path" title={info.path}>{info.path}</p>
       <p>
         <b>{mb(info.bytes + info.walBytes)}</b> on disk ({mb(info.bytes)} file{info.walBytes ? `, ${mb(info.walBytes)} log` : ''}{info.reclaimable
           ? `, ${mb(info.reclaimable)} could be returned`
@@ -114,7 +158,6 @@
               <tr>
                 <td>{label(name)}</td>
                 <td class="num">{n.toLocaleString()} decodes</td>
-                <td><button type="button" class="link danger" disabled={!!busy} onclick={() => deleteServer(name, n)}>Delete…</button></td>
               </tr>
             {/each}
           </tbody>
@@ -144,8 +187,24 @@
     <section>
       <h3>Export</h3>
       <p class="row">
+        Period
+        <select bind:value={span}>
+          <option value="query">same as the query above</option>
+          <option value="24h">last 24 h</option>
+          <option value="7d">last 7 days</option>
+          <option value="30d">last 30 days</option>
+          <option value="all">everything</option>
+          <option value="custom">from – to (UTC)</option>
+        </select>
+        {#if span === 'custom'}
+          <input type="datetime-local" bind:value={cFrom} />
+          –
+          <input type="datetime-local" bind:value={cTo} />
+        {/if}
+      </p>
+      <p class="row">
         <button type="button" disabled={!!busy} onclick={exportCsv}>Decodes as CSV…</button>
-        <span class="hint">What the query above finds ({stamp(q.since)} – {stamp(q.until)} UTC, with its filters), with bearing and distance.</span>
+        <span class="hint">The decodes of that period with the query's filters (band, call, SNR…), with bearing and distance from the server that heard them.</span>
       </p>
       <p class="row">
         <button type="button" disabled={!!busy} onclick={backup}>Copy of the database…</button>
@@ -172,6 +231,8 @@
     margin: 4px 0;
   }
   .path {
+    flex: 1;
+    min-width: 0;
     color: var(--muted);
     font-size: 11.5px;
     overflow: hidden;
@@ -206,8 +267,5 @@
   .num {
     text-align: right;
     font-variant-numeric: tabular-nums;
-  }
-  .danger {
-    color: #d9822b;
   }
 </style>

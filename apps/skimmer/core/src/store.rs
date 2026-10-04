@@ -751,19 +751,6 @@ pub fn delete_before(path: &Path, before: i64, server: Option<&str>) -> Result<i
     Ok(n as i64)
 }
 
-/// Delete everything one server heard, and its entry.
-pub fn delete_server(path: &Path, server: &str) -> Result<i64, String> {
-    let mut c = rw(path)?;
-    let tx = c.transaction().map_err(|e| e.to_string())?;
-    let n = tx
-        .execute("DELETE FROM decodes WHERE server = ?1", params![server])
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM servers WHERE name = ?1", params![server])
-        .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(n as i64)
-}
-
 /// Return the free space to the system: the log is folded into the file and the
 /// file rewritten compactly. Needs the file to itself for a moment; with the
 /// skimmer recording it waits up to twenty seconds, then says so.
@@ -1189,7 +1176,7 @@ mod tests {
         );
         assert_eq!(Reader::open(&copy).unwrap().span().unwrap().2, 3);
         assert_eq!(delete_before(&p, h + 3600, None).unwrap(), 1);
-        assert_eq!(delete_server(&p, "b").unwrap(), 1);
+        assert_eq!(delete_before(&p, h + 8000, Some("b")).unwrap(), 1);
         vacuum(&p).unwrap();
         assert_eq!(info(&p).unwrap().decodes, 1);
         assert_eq!(

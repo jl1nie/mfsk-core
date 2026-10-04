@@ -491,6 +491,18 @@
     void channelsChanged();
   }
 
+  /** Record into a database file that exists (to add to it). */
+  async function chooseDb() {
+    const f = await api.pickDb(settings!.dbPath);
+    if (f) settings!.dbPath = f;
+  }
+
+  /** Record into a new database file (or one to be created). */
+  async function newDb() {
+    const f = await api.saveAs(settings!.dbPath || 'skimmer.db', 'db');
+    if (f) settings!.dbPath = f;
+  }
+
   async function chooseLogDir() {
     const dir = await api.pickFolder(settings!.logDir);
     if (dir) settings!.logDir = dir;
@@ -683,15 +695,20 @@
           </div>
           <label class="check" title="skimmer.db in the folder below: every decode, indexed, for the Analysis view. Far smaller than ALL.TXT for the same data.">
             <input type="checkbox" bind:checked={settings.dbEnabled} disabled={running} />
-            <span>Keep decodes in a database (skimmer.db)</span>
+            <span>Keep decodes in a database</span>
           </label>
           <label class="check">
             <input type="checkbox" bind:checked={settings.logEnabled} disabled={running} />
             <span>Write ALL.TXT</span>
           </label>
-          <div class="folder" class:off={!settings.logEnabled && !settings.dbEnabled}>
+          <div class="folder" class:off={!settings.dbEnabled} title="The database file decodes are recorded into">
+            <span class="path" title={settings.dbPath}>{settings.dbPath}</span>
+            <button onclick={chooseDb} disabled={running || !settings.dbEnabled}>Open…</button>
+            <button onclick={newDb} disabled={running || !settings.dbEnabled}>New…</button>
+          </div>
+          <div class="folder" class:off={!settings.logEnabled} title="Where ALL.TXT and STATUS.log are written">
             <span class="path" title={settings.logDir}>{settings.logDir}</span>
-            <button onclick={chooseLogDir} disabled={running || (!settings.logEnabled && !settings.dbEnabled)}>Choose…</button>
+            <button onclick={chooseLogDir} disabled={running || !settings.logEnabled}>Choose…</button>
           </div>
           {#if running}<p class="hint">Disconnect to change these.</p>{/if}
         </div>
@@ -756,7 +773,7 @@
         >
       </div>
       {#if view === 'analysis'}
-        <AnalysisPanel dir={settings.logDir} me={settings.myGrid.trim()} />
+        <AnalysisPanel dir={settings.dbPath} me={settings.myGrid.trim()} />
       {/if}
       <!-- Kept mounted behind the Analysis view, so its filters and scroll survive. -->
       <div class="live" style:display={view === 'analysis' ? 'none' : 'contents'}>

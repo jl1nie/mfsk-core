@@ -254,6 +254,8 @@ struct Settings {
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps) beside the ALL.TXT.
     db_enabled: bool,
+    /// The database file; empty is `skimmer.db` in `log_dir`.
+    db_path: String,
     log_enabled: bool,
     /// Folder the ALL.TXT goes in.
     log_dir: String,
@@ -321,6 +323,7 @@ impl Default for Settings {
             rotation_utc: false,
             channelizer: "auto".into(),
             db_enabled: true,
+            db_path: String::new(),
             // ALL.TXT grows without bound; the database is the record now.
             log_enabled: false,
             log_dir: String::new(),
@@ -596,6 +599,9 @@ fn load_settings(app: AppHandle) -> Settings {
     s.migrate();
     if s.log_dir.is_empty() {
         s.log_dir = default_log_dir(&app);
+    }
+    if s.db_path.trim().is_empty() {
+        s.db_path = PathBuf::from(&s.log_dir).join(DB_FILE).to_string_lossy().into_owned();
     }
     s
 }
@@ -973,9 +979,14 @@ async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Setting
         None
     };
     let mut db = if settings.db_enabled {
-        let dir = PathBuf::from(&settings.log_dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let path = dir.join(DB_FILE);
+        let path = if settings.db_path.trim().is_empty() {
+            PathBuf::from(&settings.log_dir).join(DB_FILE)
+        } else {
+            PathBuf::from(settings.db_path.trim())
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
         let places: Vec<(String, String)> = settings
             .servers
             .iter()
@@ -1068,101 +1079,95 @@ async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Setting
     Ok(())
 }
 
-fn reader(dir: &str) -> Result<store::Reader, String> {
-    let path = PathBuf::from(dir).join(DB_FILE);
+fn reader(db: &str) -> Result<store::Reader, String> {
+    let path = PathBuf::from(db);
     store::Reader::open(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[tauri::command]
-fn db_activity(dir: String, q: store::Query) -> Result<Vec<store::Activity>, String> {
-    reader(&dir)?.activity(&q)
+fn db_activity(db: String, q: store::Query) -> Result<Vec<store::Activity>, String> {
+    reader(&db)?.activity(&q)
 }
 
 #[tauri::command]
-fn db_stations(dir: String, q: store::Query, limit: usize) -> Result<Vec<store::Station>, String> {
-    reader(&dir)?.stations(&q, limit)
+fn db_stations(db: String, q: store::Query, limit: usize) -> Result<Vec<store::Station>, String> {
+    reader(&db)?.stations(&q, limit)
 }
 
 #[tauri::command]
-fn db_decodes(dir: String, q: store::Query, limit: usize) -> Result<Vec<store::Spot>, String> {
-    reader(&dir)?.decodes(&q, limit)
+fn db_decodes(db: String, q: store::Query, limit: usize) -> Result<Vec<store::Spot>, String> {
+    reader(&db)?.decodes(&q, limit)
 }
 
 #[tauri::command]
-fn db_points(dir: String, q: store::Query, slice_s: i64) -> Result<Vec<store::Point>, String> {
-    reader(&dir)?.points(&q, slice_s, 300_000)
+fn db_points(db: String, q: store::Query, slice_s: i64) -> Result<Vec<store::Point>, String> {
+    reader(&db)?.points(&q, slice_s, 300_000)
 }
 
 #[tauri::command]
-fn db_snr_hist(dir: String, q: store::Query) -> Result<Vec<(i64, i64)>, String> {
-    reader(&dir)?.snr_histogram(&q)
+fn db_snr_hist(db: String, q: store::Query) -> Result<Vec<(i64, i64)>, String> {
+    reader(&db)?.snr_histogram(&q)
 }
 
 #[tauri::command]
-fn db_servers(dir: String) -> Result<Vec<(String, String)>, String> {
-    reader(&dir)?.servers().map_err(|e| e.to_string())
+fn db_servers(db: String) -> Result<Vec<(String, String)>, String> {
+    reader(&db)?.servers().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_bands(dir: String) -> Result<Vec<String>, String> {
-    reader(&dir)?.bands().map_err(|e| e.to_string())
+fn db_bands(db: String) -> Result<Vec<String>, String> {
+    reader(&db)?.bands().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_summary(dir: String, q: store::Query) -> Result<store::Summary, String> {
-    reader(&dir)?.summary(&q)
+fn db_summary(db: String, q: store::Query) -> Result<store::Summary, String> {
+    reader(&db)?.summary(&q)
 }
 
-fn db_file(dir: &str) -> PathBuf {
-    PathBuf::from(dir).join(DB_FILE)
+fn db_file(db: &str) -> PathBuf {
+    PathBuf::from(db)
 }
 
 /// What the database holds and how big it is.
 #[tauri::command]
-fn db_info(dir: String) -> Result<store::DbInfo, String> {
-    store::info(&db_file(&dir))
+fn db_info(db: String) -> Result<store::DbInfo, String> {
+    store::info(&db_file(&db))
 }
 
 /// Decodes older than `before` (UTC seconds), of one server or all.
 #[tauri::command]
-fn db_count_before(dir: String, before: i64, server: Option<String>) -> Result<i64, String> {
-    store::count_before(&db_file(&dir), before, server.as_deref())
+fn db_count_before(db: String, before: i64, server: Option<String>) -> Result<i64, String> {
+    store::count_before(&db_file(&db), before, server.as_deref())
 }
 
 /// Delete decodes older than `before`; returns how many.
 #[tauri::command]
-async fn db_delete_before(dir: String, before: i64, server: Option<String>) -> Result<i64, String> {
-    store::delete_before(&db_file(&dir), before, server.as_deref())
-}
-
-/// Delete everything one server heard.
-#[tauri::command]
-async fn db_delete_server(dir: String, server: String) -> Result<i64, String> {
-    store::delete_server(&db_file(&dir), &server)
+async fn db_delete_before(db: String, before: i64, server: Option<String>) -> Result<i64, String> {
+    store::delete_before(&db_file(&db), before, server.as_deref())
 }
 
 /// Give the free space back and compact the file. Async: it can take a while.
 #[tauri::command]
-async fn db_vacuum(dir: String) -> Result<(), String> {
-    store::vacuum(&db_file(&dir))
+async fn db_vacuum(db: String) -> Result<(), String> {
+    store::vacuum(&db_file(&db))
 }
 
 /// A compact copy of the database at `dest`, while it records.
 #[tauri::command]
-async fn db_backup(dir: String, dest: String) -> Result<(), String> {
-    store::backup(&db_file(&dir), &PathBuf::from(dest))
+async fn db_backup(db: String, dest: String) -> Result<(), String> {
+    store::backup(&db_file(&db), &PathBuf::from(dest))
 }
 
 /// The decodes a query finds, as CSV at `dest`; returns the rows written.
 #[tauri::command]
-async fn db_export_csv(dir: String, q: store::Query, dest: String) -> Result<i64, String> {
-    store::export_csv(&db_file(&dir), &q, &PathBuf::from(dest))
+async fn db_export_csv(db: String, q: store::Query, dest: String) -> Result<i64, String> {
+    store::export_csv(&db_file(&db), &q, &PathBuf::from(dest))
 }
 
 /// First and last decode (UTC seconds) and the number of rows stored.
 #[tauri::command]
-fn db_span(dir: String) -> Result<(Option<i64>, Option<i64>, i64), String> {
-    reader(&dir)?.span().map_err(|e| e.to_string())
+fn db_span(db: String) -> Result<(Option<i64>, Option<i64>, i64), String> {
+    reader(&db)?.span().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1200,7 +1205,6 @@ fn main() {
             db_info,
             db_count_before,
             db_delete_before,
-            db_delete_server,
             db_vacuum,
             db_backup,
             db_export_csv,

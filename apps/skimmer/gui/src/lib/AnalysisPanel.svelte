@@ -8,7 +8,12 @@
   import ResultsView from './ResultsView.svelte';
   import DatabaseView from './DatabaseView.svelte';
 
-  let { dir, me }: { dir: string; me: string } = $props();
+  let { dir: recorded, me }: { dir: string; me: string } = $props();
+  /** The database file read: the one recorded into, unless another is opened in the Database tab. */
+  let dir = $state(untrack(() => recorded));
+  $effect(() => {
+    dir = recorded;
+  });
 
   type Tab = 'map' | 'results' | 'database';
   const TABS: [Tab, string][] = [
@@ -144,7 +149,7 @@
     {:else if tab === 'results'}
       <ResultsView {dir} {q} {activity} {nowMs} me={mapMe} bind:picked />
     {:else}
-      <DatabaseView {dir} {q} onchanged={apply} />
+      <DatabaseView {dir} {recorded} {q} onchanged={apply} onopen={(f) => (dir = f ?? recorded)} />
     {/if}
   </div>
 </section>

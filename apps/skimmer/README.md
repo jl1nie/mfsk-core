@@ -84,7 +84,10 @@ cargo tauri build      # app + NSIS installer under release\bundle\nsis
 
 The settings file is `%APPDATA%\io.github.jl1nie.mfsk-skimmer\settings.json`.
 The database (`skimmer.db`), the health log `STATUS.log` and, if turned on,
-`ALL.TXT` are in `Documents\mfsk-skimmer\`. When Documents is redirected to
+`ALL.TXT` are in `Documents\mfsk-skimmer\`. The database file is chosen in Settings
+(**Open…** an existing one to add to it, **New…** for another), apart from the folder
+of `ALL.TXT` and `STATUS.log`; the Database tab can read any other file without
+changing where the skimmer records. When Documents is redirected to
 OneDrive, they sync there; change the folder in Settings if that is not wanted
 (a database being written does not suit a synced folder well).
 
@@ -209,10 +212,11 @@ over four views:
 - **Results**: the bands' openings (hour by band) above a list of stations or of
   decodes; a station opened shows a small map of its great circle and the hours
   it was heard in, by day.
-- **Database**: the file's size and what is in it; clearing out decodes older than
-  N days (all servers or one) or one server's whole record; compacting the file
-  (deleting alone does not shrink it); the query's decodes as a CSV with bearing
-  and distance; a compact copy of the whole file, made while it records.
+- **Database**: the file read (another one can be opened here), its size and what is
+  in it; clearing out decodes older than N days (all servers or one); compacting the file
+  (deleting alone does not shrink it); a CSV of the decodes of a period you choose
+  (the query's, the last day, week or month, everything, or from – to), with the query's
+  filters, bearing and distance; a compact copy of the whole file, made while it records.
 
 On the command line: `--server NAME=HOST:PORT` starts a server (its options
 and `--ch` follow); `--step MINUTES` before the `--ch` heard in that step.
