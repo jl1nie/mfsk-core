@@ -8,6 +8,7 @@ name: Skimmer installers
 #     the results to the GitHub release after the crates.io publish.
 #     A failure here does not hold the library back: the skimmer is a
 #     sample app, so its job sits beside the publish, not in front of it.
+#   - By hand: `workflow_dispatch`, for the installers of a branch at any time.
 #   - A pull request that touches `apps/skimmer/**`. `ci.yml` excludes
 #     `apps/skimmer/gui/**` because it needs a webview and Node, so before
 #     this workflow the GUI was built only by hand, on Windows.
@@ -20,6 +21,14 @@ name: Skimmer installers
 # refused the SpyServer connection on the LAN with "No route to host"
 # without asking. The verify step below checks both.
 on:
+  # By hand (Actions > Skimmer installers > Run workflow): the installers of the branch chosen,
+  # without a release or a pull request. They are the run's artifacts.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version stamped on the installers (no leading v). Empty: tauri.conf.json's."
+        type: string
+        default: ""
   workflow_call:
     inputs:
       version:
