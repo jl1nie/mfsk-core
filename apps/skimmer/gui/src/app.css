@@ -722,7 +722,7 @@ button.danger {
   text-transform: uppercase;
   color: var(--muted);
 }
-.stabs .grp.sep {
+.stabs .sep {
   margin-left: 10px;
   padding-left: 12px;
   border-left: 1px solid var(--line);

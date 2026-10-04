@@ -69,7 +69,7 @@
   const SETTINGS_TABS = [
     ['server', 'Server', 'server'],
     ['rotation', 'Rotation', 'server'],
-    ['general', 'General', 'all'],
+    ['general', 'All servers', 'all'],
   ] as const;
   let settingsTab = $state<(typeof SETTINGS_TABS)[number][0]>('server');
   /** The live view (waterfall + decodes) or the Analysis of the database. */
@@ -562,9 +562,8 @@
             {#each SETTINGS_TABS.filter((t) => t[2] === 'server') as [id, label] (id)}
               <button type="button" role="tab" class:on={settingsTab === id} aria-selected={settingsTab === id} onclick={() => (settingsTab = id)}>{label}</button>
             {/each}
-            <span class="grp sep" title="These apply to every server">All servers</span>
             {#each SETTINGS_TABS.filter((t) => t[2] === 'all') as [id, label] (id)}
-              <button type="button" role="tab" class:on={settingsTab === id} aria-selected={settingsTab === id} onclick={() => (settingsTab = id)}>{label}</button>
+              <button type="button" role="tab" class="sep" title="Settings that apply to every server" class:on={settingsTab === id} aria-selected={settingsTab === id} onclick={() => (settingsTab = id)}>{label}</button>
             {/each}
           </div>
           {#if settingsTab === 'server'}
