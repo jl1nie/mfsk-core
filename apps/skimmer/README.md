@@ -15,7 +15,38 @@ This is sample code. It shows how to drive the library from a live source.
 It is not a supported application, and `mfsk-core` itself has no network
 code.
 
-## Run
+## Install (Windows and macOS)
+
+Download the installer from the
+[latest release](https://github.com/jl1nie/mfsk-core/releases/latest):
+
+| platform | file |
+|---|---|
+| Windows (x64) | `mfsk-skimmer-vX.Y.Z-windows-x64-setup.exe` |
+| macOS (Apple silicon) | `mfsk-skimmer-vX.Y.Z-macos-arm64.dmg` |
+
+- **Windows:** run the setup. It installs for the current user (no administrator
+  rights) under `%LOCALAPPDATA%\mfsk skimmer` and adds *mfsk skimmer* to the Start
+  menu. Settings and the database are in your user folders, not in the install
+  folder (paths below); uninstall from Windows' app list.
+- **macOS:** open the disk image and drag the app to Applications. The app is signed
+  ad hoc, not with a Developer ID, so it is not notarized: on first open,
+  right-click it and choose *Open*. The first connection to a SpyServer on the LAN
+  asks for local network access; allow it. If it was refused, turn it on under
+  System Settings → Privacy & Security → Local Network. A refusal shows in the app
+  as `No route to host (os error 65)`. (The macOS build is made by CI; it has not
+  been run on every Mac.)
+
+**First run:** open *Settings* (⚙), give the server's address (`host:5555`) and your
+locator, add channels from the presets (they come from WSJT-X's frequency list), and
+press *Connect*. Where decodes are recorded is under *Analysis > Database*. The
+sections below say how it works and how to build it yourself.
+
+The installers are built by `.github/workflows/skimmer-installers.yml` for every
+release and attached to it; the same workflow runs on pull requests that touch
+`apps/skimmer/` and by hand (*Run workflow*).
+
+## Command line (`cli/`)
 
 ```sh
 cargo run --release -p skimmer -- --server 192.168.1.26:5555 \
@@ -52,19 +83,6 @@ highlights CQ and your own call, and can filter by channel, CQ or a search
 string. Settings are saved and restored. Every decode goes to the database
 `skimmer.db`. The presets come from WSJT-X's `default_frequency_list` (all-region and
 Region 3 entries), plus FT8 at 7041 kHz for JA.
-
-### Installers
-
-Each release attaches a Windows installer (`mfsk-skimmer-vX.Y.Z-windows-x64-setup.exe`)
-and an Apple silicon disk image (`mfsk-skimmer-vX.Y.Z-macos-arm64.dmg`), built by
-`.github/workflows/skimmer-installers.yml`. The same workflow runs on pull
-requests that touch `apps/skimmer/`.
-
-The macOS app is signed ad hoc, not with a Developer ID, so it is not
-notarized. On first open, right-click it and choose *Open*. The first
-connection to a SpyServer on the LAN asks for local network access; allow it.
-If it was refused, turn it on under System Settings → Privacy & Security →
-Local Network. A refusal shows in the app as `No route to host (os error 65)`.
 
 ### Building on Windows
 
