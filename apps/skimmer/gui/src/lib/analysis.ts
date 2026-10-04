@@ -126,6 +126,14 @@ export function sortBands(bands: Iterable<string>): string[] {
   return [...new Set(bands)].sort((a, b) => BAND_ORDER.indexOf(a) - BAND_ORDER.indexOf(b));
 }
 
+/** A colour for a band, apart from its neighbours' (the paths of several bands on one map). */
+export function bandColour(band: string, alpha = 1): string {
+  const i = BAND_ORDER.indexOf(band);
+  if (i < 0) return `hsl(0 0% 55% / ${alpha})`;
+  // Golden-angle steps in hue keep adjacent bands (20 m, 17 m, 15 m) clearly different.
+  return `hsl(${(i * 137.5 + 20) % 360} 72% 48% / ${alpha})`;
+}
+
 /** Blue (weak) to red (strong) over `-24..+10` dB. */
 export function snrColour(snr: number, alpha = 1): string {
   const t = Math.max(0, Math.min(1, (snr + 24) / 34));

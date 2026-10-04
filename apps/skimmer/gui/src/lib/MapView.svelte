@@ -3,7 +3,7 @@
   import { feature } from 'topojson-client';
   import land110 from 'world-atlas/land-110m.json';
   import type { MapPoint } from './types';
-  import { gridLonLat, isDark, snrColour, stamp } from './analysis';
+  import { bandColour, gridLonLat, isDark, snrColour, sortBands, stamp } from './analysis';
 
   let {
     points,
@@ -79,6 +79,9 @@
     (byT.get(cur) ?? []).map((p) => ({ call: p.call, grid: p.grid, band: p.band, snr: p.snr, count: 1, alpha: 1 })),
   );
   const shown = $derived(anim ? frame : overall.map((d) => ({ ...d, alpha: 1 })));
+  /** The bands on the map; with several, the paths are coloured by band (the dots stay by SNR). */
+  const bandsShown = $derived(sortBands(shown.map((d) => d.band)));
+  const byBand = $derived(bandsShown.length > 1);
 
   $effect(() => {
     // A new range or window starts the animation again.
@@ -121,6 +124,7 @@
     void picked;
     void proj;
     void paths;
+    void byBand;
     void size;
     void mine;
     draw();
@@ -191,13 +195,13 @@
     pts = [];
     const me2 = mine ? p(mine) : null;
     if (paths && mine) {
-      ctx.lineWidth = 0.6;
+      ctx.lineWidth = byBand ? 1 : 0.6;
       for (const d of shown) {
         const g = gridLonLat(d.grid);
         if (!g) continue;
         ctx.beginPath();
         path({ type: 'LineString', coordinates: [mine, g] } as any);
-        ctx.strokeStyle = snrColour(d.snr, 0.35 * d.alpha);
+        ctx.strokeStyle = byBand ? bandColour(d.band, 0.55 * d.alpha) : snrColour(d.snr, 0.35 * d.alpha);
         ctx.stroke();
       }
     }
@@ -287,6 +291,11 @@
     <label><input type="radio" bind:group={proj} value="azimuthal" /> Great-circle (centred on home)</label>
     <label><input type="radio" bind:group={proj} value="mercator" /> Mercator</label>
     <label><input type="checkbox" bind:checked={paths} /> paths</label>
+    {#if paths && byBand}
+      <span class="bands" title="Path colour by band">
+        {#each bandsShown as b (b)}<span class="bl"><i style="background:{bandColour(b)}"></i>{b}</span>{/each}
+      </span>
+    {/if}
     {#if picked}
       <button type="button" class="picked" title="Opened in Results; click to clear" onclick={() => onclear?.()}>Selected: {picked.call} ✕</button>
     {/if}
@@ -348,6 +357,20 @@
     font-size: 12px;
     background: #d9822b;
     color: #fff;
+  }
+  .bands {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .bl i {
+    display: inline-block;
+    width: 14px;
+    height: 3px;
+    margin-right: 3px;
+    vertical-align: middle;
   }
   .seek {
     flex: 1;
