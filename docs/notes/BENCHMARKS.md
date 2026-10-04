@@ -10,18 +10,18 @@ reproduce this sweep myself", see the protocol-specific
 
 Each mode is run against WSJT-X `v3.2.0-rc1` on the same job (band, what the
 operator knows, decode depth) and the same recordings, file by file.
-Ryzen 9 9900X, one thread each side, 2026-10-01.
+Ryzen 9 9900X, one thread each side, 2026-10-04 (FT4, FST4 and JTTY: 2026-10-01).
 
 | mode | WSJT-X decoder | sensitivity against WSJT-X | speed |
 |---|---|---|---|
-| FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 2.0–2.3× faster |
+| FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 3.8–4.0× faster |
 | FT4 | `jt9 -5 -d 3` | the same (4 conditions) | 2.9–6.4× faster |
 | FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 1.9–2.4× faster |
-| Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.6–3.8× faster |
-| JT9 | `jt9 -9 -d 3` | the same | 5.5–5.9× faster |
+| Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.5–3.8× faster |
+| JT9 | `jt9 -9 -d 3` | the same | 5.2–5.4× faster |
 | JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
-| WSPR | `wsprd` | the same | 1.0–1.5× faster |
-| JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–17× faster |
+| WSPR | `wsprd` | the same | 0.8–4.1× (near threshold, 0.8×: slightly slower) |
+| JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–16× faster |
 
 "The same" means no condition (channel, sub-mode) differs by more than
 chance in a paired test; "better" and "behind" mean a condition that does.

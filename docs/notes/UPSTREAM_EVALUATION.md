@@ -35,44 +35,59 @@ Regenerate: `scripts/run-sensitivity-sweeps.sh <protocol>` prints this for
 every task of the protocols it sweeps; `scripts/upstream-baseline.py run
 <task> <dir>` does one task.
 
-## Accuracy, 2026-10-01
+## Accuracy, 2026-10-04
 
-Ryzen 9 9900X. `main` at `2e56279b` (FT8, FT4, FST4, Q65, JTTY) and
-`88bb1bf0` (WSPR, JT9, JT65). Upstream: WSJT-X `v3.2.0-rc1`
+Ryzen 9 9900X. `main` at `dbdf244c` (FT8, WSPR, JT65, JT9, Q65: the sweep before
+0.13.0, on the `Decoder<P>` API) and `2e56279b` (FT4, FST4, JTTY: 2026-10-01,
+not re-run, since their source changed in comments only). Upstream: WSJT-X `v3.2.0-rc1`
 (`scripts/build_jt9_upstream.sh`; `rjtty` from `gen_jtty_sweep_wavs.sh`).
 
 | task | upstream | groups | trials | both | upstream only | crate only | groups behind | groups ahead | crossing, crate − upstream | unexpected decodes, upstream / crate |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `ft8/t1` | `jt9 -8 -d 3` | 4 | 1 040 | 590 | 5 | 18 | 0 | 0 | −0.10 … −0.23 dB | 0 / 1 |
+| `ft8/t1` | `jt9 -8 -d 3` | 4 | 1 040 | 575 | 20 | 15 | 0 | 0 | +0.33 … −0.23 dB | 0 / 1 |
 | `ft4/t1` | `jt9 -5 -d 3` | 4 | 1 040 | 526 | 23 | 30 | 0 | 0 | +0.27 … −0.64 dB | 0 / 0 |
 | `fst4/t1` | `jt9 -7 -d 3` | 20 | 3 360 | 1 786 | 65 | 98 | 0 | 1 | +0.50 … −0.79 dB | 7 / 5 |
 | `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 20 | 2 640 | 1 021 | 8 | 147 | 0 | 9 | +0.33 … −2.31 dB | 0 / not counted |
 | `jt9/t1` | `jt9 -9 -d 3` | 1 | 300 | 240 | 6 | 3 | 0 | 0 | +0.09 dB | 0 / not counted |
 | `jtty/t1` | `rjtty 4.6 0 384 1500 50` | 2 | 360 | 160 | 0 | 0 | 0 | 0 | 0.00 dB | 0 / 0 |
-| `wspr/t1` | `wsprd` | 1 | 260 | 213 | 5 | 4 | 0 | 0 | +0.11 dB | 1 / not counted |
+| `wspr/t1` | `wsprd` | 1 | 260 | 217 | 1 | 0 | 0 | 0 | +0.04 dB | 1 / not counted |
 | `jt65/t1` | `jt9 -6 -d 3` | 1 | 300 | 280 | 15 | 0 | **1** | 0 | upstream never falls below 50 % on this grid | 9 / not counted |
 
 Groups ahead: FST4-15 CCIR moderate; Q65 A-15 plain, and B-, C-, D- and E-60
 both plain and with the CQ hint. JT65's gap is known and the protocol is
-legacy; it is recorded, not chased.
+legacy; it is recorded, not chased (15 upstream-only against 0, as on
+2026-10-01).
 
-## Time, 2026-10-01
+FT8 moved between the two runs: upstream-only 5 → 20 and crate-only 18 → 15 in
+the pooled counts, no group significant (the largest is 8 against 4, p = 0.39),
+and the crossing is level in every channel. The 0.12 task asked for the CQ hint
+as `ApHint::with_call1("CQ")`; the 0.13 task takes it from `Depth` and `ap`
+as `jt9` does, and the old hint on the new API reproduces the 0.12 crossings. WSPR
+is now 217 of 260 with one upstream-only and none crate-only (it was 5 and 4):
+after the `wsprd` port of this release (`WSPR_UPSTREAM.md`).
+
+## Time, 2026-10-04 (FT4, FST4, JTTY: 2026-10-01)
 
 Crate's time as a fraction of upstream's on the same files.
 
 | task | files a kind | noise | crossing |
 |---|---|---|---|
-| `ft8/t1` | 20 | 0.43 (272 / 639 ms) | 0.49 (310 / 635 ms) |
+| `ft8/t1` | 20 | 0.25 (161 / 654 ms) | 0.26 (170 / 645 ms) |
 | `ft4/t1` | 20 | 0.16 (2.4 / 15.4 ms) | 0.35 (7.7 / 22.2 ms) |
 | `fst4/t1` | 20 | 0.41 (100 / 242 ms) | 0.53 (150 / 280 ms) |
-| `q65/t1` | 20 | 0.28 (58 / 205 ms) | 0.26 (43 / 167 ms) |
-| `jt9/t1` | 10 | 0.17 (12.5 / 73.2 ms) | 0.18 (16.2 / 88.3 ms) |
+| `q65/t1` | 20 | 0.29 (60 / 211 ms) | 0.26 (46 / 174 ms) |
+| `jt9/t1` | 10 | 0.19 (15.1 / 77.9 ms) | 0.19 (17.9 / 96.2 ms) |
 | `jtty/t1` | 20 | 0.11 (14 / 127 ms) | 0.14 (19 / 132 ms) |
-| `wspr/t1` | 10 | 0.67 (51 / 77 ms) | 1.0 (166 / 169 ms) |
-| `jt65/t1` | 10 | 0.25 (182 / 741 ms) | 0.06 (48 / 804 ms) |
+| `wspr/t1` | 10 | 0.24 (19 / 79 ms) | 1.22 (208 / 170 ms) |
+| `jt65/t1` | 10 | 0.25 (193 / 784 ms) | 0.06 (53 / 855 ms) |
 
 Fewer than ten files a kind is too few: `wspr/t1` read anywhere from 0.60 to
-1.60 on two. Every task now times at least ten.
+1.60 on two. Every task now times at least ten. WSPR's crossing column is
+the one cell where the crate is slower than upstream (1.22 against 1.0 on
+2026-10-01); ten files, and this task has read 0.60 to 1.60 on two, so it is
+recorded and not read as a regression. The FT8 ratio
+fell from 0.43/0.49 to 0.25/0.26 with the move to `Decoder<P>`; the cause was
+not isolated.
 
 ## What moved these numbers
 
