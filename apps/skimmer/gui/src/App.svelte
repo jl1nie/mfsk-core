@@ -65,6 +65,15 @@
   const wfStore = new WaterfallStore();
   let wfTick = $state(0);
   let wfFocus = $state(0);
+  /** The part of Settings shown. */
+  const SETTINGS_TABS = [
+    ['server', 'Server'],
+    ['rotation', 'Rotation'],
+    ['station', 'Station'],
+    ['receiver', 'Receiver'],
+    ['recording', 'Recording'],
+  ] as const;
+  let settingsTab = $state<(typeof SETTINGS_TABS)[number][0]>('server');
   /** The live view (waterfall + decodes) or the Analysis of the database. */
   let view = $state<'live' | 'analysis'>('live');
   const gridOk = $derived(
@@ -540,6 +549,12 @@
       {#if serverOpen}
         <div class="popover">
           <h2>Settings</h2>
+          <div class="stabs" role="tablist" aria-label="Settings">
+            {#each SETTINGS_TABS as [id, label] (id)}
+              <button type="button" role="tab" class:on={settingsTab === id} aria-selected={settingsTab === id} onclick={() => (settingsTab = id)}>{label}</button>
+            {/each}
+          </div>
+          {#if settingsTab === 'server'}
           <h3 class="serverhead">
             Server · {settings.servers[sel]?.name}
             <button
@@ -569,30 +584,7 @@
                 client the skimmer takes control and tunes the radio; beside a running SDR# it is a guest and never tunes.
               </span>
             </label>
-            <label class="check" title="One SDR holds one band at a time. Rotating gives each band of this server's channels its turn (the modes of a band are heard together). Connect begins with the first band (Settings > Rotation follows the UTC clock changes that).">
-              <input type="checkbox" checked={sv.rotate} onchange={(e) => toggleRotation(sel, e.currentTarget.checked)} />
-              <span>Rotate through the bands of its channels</span>
-            </label>
-            {#if sv.rotate}
-              {#if sv.rotation.length < 1}
-                <p class="hint">Needs channels.</p>
-              {/if}
-              {#each sv.rotation as r, k (r.band)}
-                <div class="field rot">
-                  <span>{r.band}</span>
-                  <input type="number" min="4" step="2" value={r.minutes} title="Minutes per turn, rounded up to a whole number of the slots of its modes (WSPR: 2 min)"
-                    onchange={(e) => { r.minutes = Math.max(4, Number(e.currentTarget.value) || 6); rotationChanged(); }} />
-                  <span class="hint">min</span>
-                  <button class="link" aria-label="Earlier" disabled={k === 0} onclick={() => moveStep(sel, k, -1)}>▲</button>
-                  <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
-                </div>
-                <div class="rothours">
-                  <HoursPicker hours={r.hours} grid={sv.grid} onchange={(h) => { r.hours = h; rotationChanged(); }} />
-                </div>
-              {/each}
-              <p class="hint">At least 4 minutes each, rounded up to a whole number of the slots of the band's modes (WSPR's are 2 minutes, so 5 becomes 6); a retune costs a slot or two. Click the hours (UTC) a band takes part in, one by one, or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
             {/if}
-          {/if}
           <h3>Radio · {settings.servers[sel]?.name}</h3>
           <div
             class="field slider"
@@ -626,6 +618,39 @@
           {#if running && !cur.canControl}
             <p class="hint">This client is a guest (SDR# has control): the gain is SDR#'s to set.</p>
           {/if}
+          {:else if settingsTab === 'rotation'}
+          <h3>Rotation · {settings.servers[sel]?.name}</h3>
+          {#if settings.servers[sel]}
+            {@const sv = settings.servers[sel]}
+          <label class="check" title="One SDR holds one band at a time. Rotating gives each band of this server's channels its turn (the modes of a band are heard together). Connect begins with the first band (Settings > Rotation follows the UTC clock changes that).">
+              <input type="checkbox" checked={sv.rotate} onchange={(e) => toggleRotation(sel, e.currentTarget.checked)} />
+              <span>Rotate through the bands of its channels</span>
+            </label>
+            {#if sv.rotate}
+              {#if sv.rotation.length < 1}
+                <p class="hint">Needs channels.</p>
+              {/if}
+              {#each sv.rotation as r, k (r.band)}
+                <div class="field rot">
+                  <span>{r.band}</span>
+                  <input type="number" min="4" step="2" value={r.minutes} title="Minutes per turn, rounded up to a whole number of the slots of its modes (WSPR: 2 min)"
+                    onchange={(e) => { r.minutes = Math.max(4, Number(e.currentTarget.value) || 6); rotationChanged(); }} />
+                  <span class="hint">min</span>
+                  <button class="link" aria-label="Earlier" disabled={k === 0} onclick={() => moveStep(sel, k, -1)}>▲</button>
+                  <button class="link" aria-label="Later" disabled={k === sv.rotation.length - 1} onclick={() => moveStep(sel, k, 1)}>▼</button>
+                </div>
+                <div class="rothours">
+                  <HoursPicker hours={r.hours} grid={sv.grid} onchange={(h) => { r.hours = h; rotationChanged(); }} />
+                </div>
+              {/each}
+              <p class="hint">At least 4 minutes each, rounded up to a whole number of the slots of the band's modes (WSPR's are 2 minutes, so 5 becomes 6); a retune costs a slot or two. Click the hours (UTC) a band takes part in, one by one, or pick a preset. The cycle goes on among the bands that are in; when none is, nothing is heard. Add or remove channels to change the bands.</p>
+            {/if}
+          {/if}
+          <label class="check" title="Off (default): Connect starts a rotation at its first band. On: the cycle counts from UTC midnight, so a restart, or another server with the same steps, is at the same step at the same moment.">
+            <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
+            <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
+          </label>
+          {:else if settingsTab === 'station'}
           <h3>Station</h3>
           <div class="field" title="Your callsign and locator. Used for the QSO-context a-priori decoding, and as the centre of the maps and the origin of every bearing. A channel can override them in its options.">
             <span>My call</span>
@@ -648,6 +673,16 @@
               onchange={stationChanged}
             />
           </div>
+          <h3>Clock</h3>
+          <div class="field" title="The skimmer stamps IQ with UTC. The PC clock is not changed: the offset to the NTP server is added.">
+            <span>Clock</span>
+            <select bind:value={settings.clockSource} disabled={running}>
+              <option value="system">PC clock</option>
+              <option value="ntp">NTP</option>
+            </select>
+            <input bind:value={settings.ntpServer} disabled={running || settings.clockSource !== 'ntp'} spellcheck="false" />
+          </div>
+          {:else if settingsTab === 'receiver'}
           <h3>Connection</h3>
           <div class="field">
             <span>IQ format</span>
@@ -668,10 +703,7 @@
             Auto uses the filter bank from {autoPfb} channels in the stream, direct below that: the measured break-even
             (direct costs about 0.9 % of a core per channel at 768 kS/s, the bank a fixed 2.4 % plus 0.25 % per channel).
           </p>
-          <label class="check" title="Off (default): Connect starts a rotation at its first band. On: the cycle counts from UTC midnight, so a restart, or another server with the same steps, is at the same step at the same moment.">
-            <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
-            <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
-          </label>
+          <h3>Waterfall</h3>
           <label class="check" title="A fine spectrum of each channel's audio (2.9 Hz per bin) under the channel list, with the decodes marked on it">
             <input type="checkbox" bind:checked={settings.waterfall} disabled={running} />
             <span>Waterfall</span>
@@ -685,14 +717,8 @@
             />
             <span>Fine (1.5 Hz per bin)</span>
           </label>
-          <div class="field" title="The skimmer stamps IQ with UTC. The PC clock is not changed: the offset to the NTP server is added.">
-            <span>Clock</span>
-            <select bind:value={settings.clockSource} disabled={running}>
-              <option value="system">PC clock</option>
-              <option value="ntp">NTP</option>
-            </select>
-            <input bind:value={settings.ntpServer} disabled={running || settings.clockSource !== 'ntp'} spellcheck="false" />
-          </div>
+          {:else}
+          <h3>Recording</h3>
           <label class="check" title="skimmer.db in the folder below: every decode, indexed, for the Analysis view. Far smaller than ALL.TXT for the same data.">
             <input type="checkbox" bind:checked={settings.dbEnabled} disabled={running} />
             <span>Keep decodes in a database</span>
@@ -710,6 +736,7 @@
             <span class="path" title={settings.logDir}>{settings.logDir}</span>
             <button onclick={chooseLogDir} disabled={running || !settings.logEnabled}>Choose…</button>
           </div>
+          {/if}
           {#if running}<p class="hint">Disconnect to change these.</p>{/if}
         </div>
       {/if}

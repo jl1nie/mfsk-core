@@ -37,6 +37,8 @@
   let playing = $state(false);
   let fps = $state(4);
   let repeat = $state(true);
+  /** Play on past windows with no station in them. */
+  let skipEmpty = $state(true);
   let cur = $state(0);
 
   type Proj = 'azimuthal' | 'mercator';
@@ -57,6 +59,8 @@
     for (const p of points) (m.get(p.t) ?? m.set(p.t, []).get(p.t)!).push(p);
     return m;
   });
+  /** The windows with a station in them, in order. */
+  const times = $derived([...byT.keys()].sort((a, b) => a - b));
   /** Whole range: each station on each band once, with how many slices it was heard in. */
   const overall = $derived.by(() => {
     const m = new Map<string, Dot>();
@@ -86,13 +90,15 @@
   $effect(() => {
     if (!playing) return;
     const id = setInterval(() => {
-      if (cur + slice >= t0 + frames * slice) {
+      // The next window: the next with a station in it, or simply the next.
+      const next = skipEmpty ? times.find((x) => x > cur) : cur + slice < t0 + frames * slice ? cur + slice : undefined;
+      if (next === undefined) {
         // The end: start again, or stop.
-        if (repeat) cur = t0;
+        if (repeat) cur = skipEmpty ? (times[0] ?? t0) : t0;
         else playing = false;
         return;
       }
-      cur += slice;
+      cur = next;
     }, 1000 / fps);
     return () => clearInterval(id);
   });
@@ -306,6 +312,7 @@
         </select>
       </label>
       <label><input type="checkbox" bind:checked={repeat} /> repeat</label>
+      <label title="Play on past the windows in which no station was heard"><input type="checkbox" bind:checked={skipEmpty} /> skip empty windows</label>
       <input
         class="seek"
         type="range"
