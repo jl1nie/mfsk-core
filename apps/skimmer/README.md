@@ -180,9 +180,10 @@ its waterfall history wait for the band's next turn.
 
 Each band can also be given the **UTC hours it takes part in**, hour by hour
 (24 dots to click, any set of hours: 7 MHz all day, 14 MHz only by day, 3.5 MHz
-only by night, or just 03, 04 and 21). In the GUI, "day" and "night" are 06-18 and
-18-06 of the local time of the server (from its locator's longitude, else this PC's
-time zone), shown in UTC. The cycle goes on among the bands that are in at that
+only by night, or just 03, 04 and 21). In the GUI, "day" runs from an hour before today's sunrise at the server to an hour after its
+sunset, and "night" from an hour before sunset to an hour after sunrise, so the grey line (the
+hours of dawn and dusk) is in both; without the server's locator they are 06-18 and 18-06 local time.
+The sunrise and sunset are shown in Settings and marked on the hours strip. The cycle goes on among the bands that are in at that
 hour and starts again whenever the set changes; when none is in, nothing is heard
 until one opens.
 

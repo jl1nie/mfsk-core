@@ -31,14 +31,27 @@
     const g = gridLonLat(grid);
     return g ? sunTimes(g, Date.now()) : null;
   });
-  /** The hours that touch the hour either side of sunrise or sunset: the grey line. */
-  const greyHours = $derived.by(() => {
-    if (!sun || sun.rise === null || sun.set === null) return [] as boolean[];
-    const near = (h: number, m: number) => {
-      const d = Math.abs(((h * 60 + 30 - m + 1440 + 720) % 1440) - 720); // distance of the hour's middle
-      return d <= 60 + 30;
+  /**
+   * "Day" and "night" from today's sunrise and sunset at the server, each with an hour of grey line either side:
+   * day runs from an hour before sunrise to an hour after sunset, night from an hour before sunset to an hour after
+   * sunrise, so the hours of dawn and dusk (when the DX opens) are in both. An hour is in if any part of it is.
+   */
+  const MARGIN = 60;
+  const sunHours = $derived.by(() => {
+    if (!sun || sun.rise === null || sun.set === null) return null;
+    const wrap = (m: number) => ((m % 1440) + 1440) % 1440;
+    const inArc = (m: number, from: number, to: number) => {
+      const f = wrap(from);
+      const t = wrap(to);
+      const x = wrap(m);
+      return f <= t ? x >= f && x <= t : x >= f || x <= t;
     };
-    return Array.from({ length: 24 }, (_, h) => near(h, sun.rise!) || near(h, sun.set!));
+    const hours = (from: number, to: number) =>
+      Array.from({ length: 24 }, (_, h) => [0, 10, 20, 30, 40, 50, 59].some((k) => inArc(h * 60 + k, from, to)));
+    return {
+      day: hours(sun.rise - MARGIN, sun.set + MARGIN),
+      night: hours(sun.set - MARGIN, sun.rise + MARGIN),
+    };
   });
 
   /** Hours from UTC to the server's local time: its longitude / 15 (mean solar time), else this PC's zone. */
@@ -54,9 +67,12 @@
     });
   const presets = $derived<[string, boolean[], string][]>([
     ['all day', [], 'The whole UTC day'],
-    ['day', inLocal(6, 18), `06:00-18:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off})`],
-    ['night', inLocal(18, 6), `18:00-06:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off})`],
-    ...(sun && sun.rise !== null ? ([['grey line', greyHours, `The hour either side of sunrise (${clockOf(sun.rise)} UTC) and sunset (${clockOf(sun.set!)} UTC) today at ${grid.toUpperCase()}`]] as [string, boolean[], string][]) : []),
+    sunHours
+      ? ['day', sunHours.day, `Sunrise ${clockOf(sun!.rise!)} to sunset ${clockOf(sun!.set!)} UTC today at ${grid.toUpperCase()}, with an hour of grey line either side`]
+      : ['day', inLocal(6, 18), `06:00-18:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off}); give the grid for today's sunrise and sunset`],
+    sunHours
+      ? ['night', sunHours.night, `Sunset ${clockOf(sun!.set!)} to sunrise ${clockOf(sun!.rise!)} UTC today at ${grid.toUpperCase()}, with an hour of grey line either side`]
+      : ['night', inLocal(18, 6), `18:00-06:00 local time ${place.name} (UTC${place.off >= 0 ? '+' : ''}${place.off}); give the grid for today's sunrise and sunset`],
     ['invert', all ? Array<boolean>(24).fill(false) : hours.map((x) => !x), 'The hours that are out come in, and the other way round'],
   ]);
   const same = (a: boolean[], b: boolean[]) =>
