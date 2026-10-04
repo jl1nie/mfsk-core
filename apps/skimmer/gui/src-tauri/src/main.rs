@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
-use skimmer_core::store;
 use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_mode, slot_seconds};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
+use skimmer_core::store;
 use skimmer_core::{
     ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
     QsoContext, QsoProgress, RadioState, Station, WireFormat,
@@ -191,12 +191,23 @@ impl RotationStep {
         if !self.hours.is_empty() || self.from.trim().is_empty() || self.to.trim().is_empty() {
             return;
         }
-        let hour = |s: &str| s.trim().split(':').next().and_then(|h| h.parse::<u32>().ok());
+        let hour = |s: &str| {
+            s.trim()
+                .split(':')
+                .next()
+                .and_then(|h| h.parse::<u32>().ok())
+        };
         if let (Some(f), Some(t)) = (hour(&self.from), hour(&self.to)) {
             let (f, t) = (f % 24, t % 24);
             if f != t {
                 self.hours = (0..24)
-                    .map(|h| if f < t { h >= f && h < t } else { h >= f || h < t })
+                    .map(|h| {
+                        if f < t {
+                            h >= f && h < t
+                        } else {
+                            h >= f || h < t
+                        }
+                    })
                     .collect();
             }
         }
@@ -307,17 +318,29 @@ impl Settings {
                 s.grid = self.my_grid.clone();
             }
             if s.format.is_empty() {
-                s.format = if self.format.is_empty() { "float".into() } else { self.format.clone() };
+                s.format = if self.format.is_empty() {
+                    "float".into()
+                } else {
+                    self.format.clone()
+                };
             }
             if s.channelizer.is_empty() {
-                s.channelizer = if self.channelizer.is_empty() { "auto".into() } else { self.channelizer.clone() };
+                s.channelizer = if self.channelizer.is_empty() {
+                    "auto".into()
+                } else {
+                    self.channelizer.clone()
+                };
             }
         }
         // Names are the database's key: unique, and never empty.
         let mut seen = std::collections::HashSet::new();
         for (i, s) in self.servers.iter_mut().enumerate() {
             if s.name.trim().is_empty() {
-                s.name = if i == 0 { "SpyServer".into() } else { format!("Server {}", i + 1) };
+                s.name = if i == 0 {
+                    "SpyServer".into()
+                } else {
+                    format!("Server {}", i + 1)
+                };
             }
             while !seen.insert(s.name.clone()) {
                 s.name = format!("{} ({})", s.name, i + 1);
@@ -366,7 +389,11 @@ struct Tagged {
 
 /// What the window receives, as `{ "type": "...", ...fields }`.
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum UiEvent {
     Connecting {
         address: String,
@@ -622,7 +649,10 @@ fn load_settings(app: AppHandle) -> Settings {
         s.log_dir = default_log_dir(&app);
     }
     if s.db_path.trim().is_empty() {
-        s.db_path = PathBuf::from(&s.log_dir).join(DB_FILE).to_string_lossy().into_owned();
+        s.db_path = PathBuf::from(&s.log_dir)
+            .join(DB_FILE)
+            .to_string_lossy()
+            .into_owned();
     }
     s
 }
@@ -741,13 +771,16 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
                 let hours = r.mask();
                 // Following the Sun needs a place: the server's locator, else the operator's.
                 let follow = match r.follow.as_str() {
-                    "day" | "night" => skimmer_core::geo::grid_center(srv.grid.trim())
-                    .map(|(lat, lon)| skimmer_core::Follow {
-                        lon,
-                        lat,
-                        night: r.follow == "night",
-                        margin_s: (r.margin_hours.clamp(0.0, 6.0) * 3600.0).round() as i64,
-                    }),
+                    "day" | "night" => {
+                        skimmer_core::geo::grid_center(srv.grid.trim()).map(|(lat, lon)| {
+                            skimmer_core::Follow {
+                                lon,
+                                lat,
+                                night: r.follow == "night",
+                                margin_s: (r.margin_hours.clamp(0.0, 6.0) * 3600.0).round() as i64,
+                            }
+                        })
+                    }
                     _ => None,
                 };
                 let chs: Vec<usize> = mine
@@ -767,7 +800,12 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             }
             cfg.steps = steps;
             // One band with no hours is no rotation; with hours it is a schedule.
-            if cfg.steps.len() < 2 && cfg.steps.iter().all(|s| s.hours.is_none() && s.follow.is_none()) {
+            if cfg.steps.len() < 2
+                && cfg
+                    .steps
+                    .iter()
+                    .all(|s| s.hours.is_none() && s.follow.is_none())
+            {
                 cfg.steps.clear();
             }
         }
@@ -783,16 +821,116 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
     Ok(out)
 }
 
-fn open_health(dir: &str) -> Option<File> {
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(PathBuf::from(dir).join(HEALTH_FILE))
-        .ok()
+/// STATUS.log is rolled to `STATUS.log.1` (one generation) past this size, so the two files together
+/// stay under twice it. A server that is down costs about 1 MB a day unthrottled (a connect and a
+/// disconnect line every 10 s), a healthy one 0.2 MB a day (a status line a minute).
+const HEALTH_MAX_BYTES: u64 = 5_000_000;
+
+/// The health log: size-capped, and a server that keeps failing the same way is one line plus a count
+/// instead of two lines every retry.
+struct HealthLog {
+    path: PathBuf,
+    /// None only inside `roll`, while the file is renamed (Windows will not rename an open one).
+    file: Option<File>,
+    size: u64,
+    /// Per server name: the error it keeps failing with, and how many repeats were left out.
+    failing: std::collections::HashMap<String, (String, u64, i64)>,
 }
 
+impl HealthLog {
+    fn open(dir: &str) -> Option<HealthLog> {
+        let path = PathBuf::from(dir).join(HEALTH_FILE);
+        let mut log = HealthLog {
+            file: Some(Self::append(&path)?),
+            size: 0,
+            path,
+            failing: Default::default(),
+        };
+        log.size = log
+            .file
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .map_or(0, |m| m.len());
+        log.roll();
+        Some(log)
+    }
+
+    fn append(path: &std::path::Path) -> Option<File> {
+        OpenOptions::new().create(true).append(true).open(path).ok()
+    }
+
+    /// Past the cap: the file becomes `.1` (the older one is dropped) and a new one starts.
+    fn roll(&mut self) {
+        if self.size <= HEALTH_MAX_BYTES {
+            return;
+        }
+        let old = self.path.with_extension("log.1");
+        self.file = None;
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::rename(&self.path, &old);
+        // Whether or not the rename worked, go on writing: a log that cannot roll must not stop.
+        self.file = Self::append(&self.path);
+        self.size = self
+            .file
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .map_or(0, |m| m.len());
+    }
+
+    fn put(&mut self, line: &str) {
+        if let Some(f) = self.file.as_mut()
+            && writeln!(f, "{line}").is_ok()
+        {
+            self.size += line.len() as u64 + 1;
+        }
+        self.roll();
+    }
+
+    /// The lines to write for one event of server `name`, at `t` ms since the epoch.
+    fn lines(&mut self, name: &str, ev: &Event, t: i64, body: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let flush = |failing: &mut std::collections::HashMap<String, (String, u64, i64)>,
+                     out: &mut Vec<String>| {
+            if let Some((err, n, last)) = failing.remove(name)
+                && n > 0
+            {
+                out.push(format!(
+                    "{name} {last} disconnected {err} (and {n} more times the same way)"
+                ));
+            }
+        };
+        match ev {
+            Event::Disconnected { error } => {
+                if let Some(f) = self.failing.get_mut(name)
+                    && f.0 == *error
+                {
+                    f.1 += 1;
+                    f.2 = t;
+                    return out;
+                }
+                flush(&mut self.failing, &mut out);
+                self.failing.insert(name.to_string(), (error.clone(), 0, t));
+            }
+            // The retry of a server that keeps failing: its connect line says nothing new.
+            Event::Connecting { .. } if self.failing.contains_key(name) => return out,
+            Event::Status(_) | Event::Clock(_) | Event::Gap { .. } | Event::Reanchor { .. } => {}
+            _ => flush(&mut self.failing, &mut out),
+        }
+        out.push(format!("{name} {t} {body}"));
+        out
+    }
+
+    fn record(&mut self, name: &str, ev: &Event, extra: &str) {
+        let Some(body) = health_line(ev) else { return };
+        let t = (skimmer_core::now_ns() / 1_000_000) as i64;
+        for line in self.lines(name, ev, t, &format!("{body}{extra}")) {
+            self.put(&line);
+        }
+    }
+}
+
+/// The text of a health event, without the server name and time (`HealthLog` adds those).
 fn health_line(ev: &Event) -> Option<String> {
-    let t = skimmer_core::now_ns() / 1_000_000;
     let body = match ev {
         Event::Status(s) => format!(
             "status streamed {:.0}s delay {:.0}ms drift {:+.0}ms push {:.0}ms decode {:.0}ms \
@@ -807,7 +945,11 @@ fn health_line(ev: &Event) -> Option<String> {
             s.dropped_slots,
             s.gaps,
             s.reanchors,
-            if s.clock.is_empty() { "PC clock" } else { &s.clock }
+            if s.clock.is_empty() {
+                "PC clock"
+            } else {
+                &s.clock
+            }
         ),
         Event::Gap { messages, at_s } => format!("gap {messages} msg at {at_s:.1}s"),
         Event::Reanchor { by_s } => format!("reanchor {by_s:+.3}s"),
@@ -840,7 +982,7 @@ fn health_line(ev: &Event) -> Option<String> {
         Event::Moved { device_hz, iq_hz } => format!("moved device {device_hz:.0} iq {iq_hz:.0}"),
         _ => return None,
     };
-    Some(format!("{t} {body}"))
+    Some(body)
 }
 
 fn halt(state: &AppState) {
@@ -989,12 +1131,16 @@ fn set_channel_options(
 
 /// Stops a running skimmer first. Async so the join never blocks the UI thread.
 #[tauri::command]
-async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Settings) -> Result<(), String> {
+async fn start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mut settings: Settings,
+) -> Result<(), String> {
     halt(&state);
     settings.migrate();
     let planned = configs(&settings)?;
     let mut health = if settings.db_enabled {
-        open_health(&settings.log_dir)
+        HealthLog::open(&settings.log_dir)
     } else {
         None
     };
@@ -1031,7 +1177,10 @@ async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Setting
             channels: p.channels.clone(),
         })
         .collect();
-    let maps: Vec<(usize, Vec<usize>)> = planned.iter().map(|p| (p.server, p.channels.clone())).collect();
+    let maps: Vec<(usize, Vec<usize>)> = planned
+        .iter()
+        .map(|p| (p.server, p.channels.clone()))
+        .collect();
     let cfgs: Vec<Config> = planned.into_iter().map(|p| p.cfg).collect();
     let thread = std::thread::spawn(move || {
         skimmer_core::run_all(&cfgs, &flag, |i, ev| {
@@ -1046,20 +1195,23 @@ async fn start(app: AppHandle, state: State<'_, AppState>, mut settings: Setting
                         *slot = Some(*r);
                     }
                 }
-                Event::Disconnected { .. } | Event::Off | Event::Yielded | Event::Connecting { .. } => {
+                Event::Disconnected { .. }
+                | Event::Off
+                | Event::Yielded
+                | Event::Connecting { .. } => {
                     if let Some(slot) = radio.lock().unwrap().get_mut(*server) {
                         *slot = None;
                     }
                 }
                 _ => {}
             }
-            if let (Some(line), Some(f)) = (health_line(&ev), health.as_mut()) {
+            if let Some(h) = health.as_mut() {
                 let extra = if matches!(ev, Event::Status(_)) {
                     format!(" decodes {decodes}")
                 } else {
                     String::new()
                 };
-                let _ = writeln!(f, "{name} {line}{extra}");
+                h.record(name, &ev, &extra);
             }
             if let Some(w) = db.as_mut() {
                 match &ev {
@@ -1227,4 +1379,74 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running the skimmer");
+}
+
+#[cfg(test)]
+mod health_log_tests {
+    use super::*;
+
+    fn log(dir: &std::path::Path) -> HealthLog {
+        HealthLog::open(dir.to_str().unwrap()).unwrap()
+    }
+    fn gone(e: &str) -> Event {
+        Event::Disconnected { error: e.into() }
+    }
+
+    #[test]
+    fn a_server_failing_the_same_way_is_one_line_and_a_count() {
+        let d = tempfile_dir("repeat");
+        let mut h = log(&d);
+        let mut out = Vec::new();
+        for t in 0..5 {
+            out.extend(h.lines(
+                "A",
+                &Event::Connecting { server: "x".into() },
+                t * 10,
+                "connecting x",
+            ));
+            out.extend(h.lines("A", &gone("refused"), t * 10 + 1, "disconnected refused"));
+        }
+        // First connect, first failure; nothing else yet.
+        assert_eq!(out.len(), 2, "{out:?}");
+        // It comes back: the count is written before the new state.
+        let back = h.lines("A", &Event::Yielded, 100, "yielded");
+        assert_eq!(back.len(), 2, "{back:?}");
+        assert!(back[0].contains("and 4 more times"), "{back:?}");
+        assert!(
+            back[0].starts_with("A 41 "),
+            "the time of the last repeat: {back:?}"
+        );
+    }
+
+    #[test]
+    fn another_server_and_another_error_are_not_folded() {
+        let d = tempfile_dir("other");
+        let mut h = log(&d);
+        assert_eq!(h.lines("A", &gone("refused"), 1, "d").len(), 1);
+        assert_eq!(h.lines("B", &gone("refused"), 2, "d").len(), 1);
+        assert_eq!(h.lines("A", &gone("refused"), 3, "d").len(), 0);
+        let a = h.lines("A", &gone("timeout"), 4, "d");
+        assert_eq!(a.len(), 2, "{a:?}");
+    }
+
+    #[test]
+    fn past_the_cap_it_rolls_to_one_older_file() {
+        let d = tempfile_dir("roll");
+        let mut h = log(&d);
+        let line = "x".repeat(1000);
+        for _ in 0..(HEALTH_MAX_BYTES / 1000 + 10) {
+            h.put(&line);
+        }
+        assert!(d.join("STATUS.log.1").exists());
+        assert!(std::fs::metadata(d.join("STATUS.log")).unwrap().len() < 100_000);
+        let big = std::fs::metadata(d.join("STATUS.log.1")).unwrap().len();
+        assert!(big > HEALTH_MAX_BYTES);
+    }
+
+    fn tempfile_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("skimmer-health-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
 }

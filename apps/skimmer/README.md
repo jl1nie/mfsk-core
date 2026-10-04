@@ -88,6 +88,7 @@ of `STATUS.log`, which is chosen there too; the tab can also read any other file
 changing where the skimmer records. When Documents is redirected to
 OneDrive, they sync there; change the folder in Analysis > Database if that is not wanted
 (a database being written does not suit a synced folder well).
+`STATUS.log` is capped: past 5 MB it becomes `STATUS.log.1` (one older generation, so at most about 10 MB in all), and a server that keeps failing the same way is one line and a count, not two lines every 10 s retry.
 
 Verified on Windows against the SpyServer below, beside SDR#: 26 FT8
 decodes in one slot at 7041 kHz, CQ rows highlighted, and the log and the

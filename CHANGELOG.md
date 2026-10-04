@@ -54,7 +54,7 @@
   `Decoder::new` allocates nothing.
 - **Skimmer sample app:** one decoder thread per channel behind a bounded queue (a slow decode no longer stalls the socket
   reader or the clock), per-channel band / DX call / depth (CLI `:band=LO-HI:dx=CALL:depth=..`, GUI ⚙ dialog, applied to a
-  running skimmer at the channel's next slot), and a `STATUS.log` of push, decode, queue and drop figures for long runs.
+  running skimmer at the channel's next slot), and a `STATUS.log` of push, decode, queue and drop figures for long runs (rolled to `STATUS.log.1` past 5 MB; a server failing the same way repeatedly is one line and a count).
 
 - **0.12.0 is yanked (2026-10-03).** Its `iq::IqReceiver` lost every other slot with a real-clock time anchor and
   never resolved hashed (`<...>`) callsigns, so it was unusable for live reception; the fix is an API redesign, which
