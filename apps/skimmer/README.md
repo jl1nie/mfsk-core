@@ -44,13 +44,15 @@ Q65-30A Q65-60A … Q65-300A`.
 ## GUI (`gui/`)
 
 The GUI is a Tauri 2 shell (`gui/src-tauri`) around `skimmer-core` with a
-Svelte 5 front end (`gui/src`). It has a connection bar, a channel list with
-band presets, and a decode list. The decode list uses one row format for
-every mode, highlights CQ and your own call, and can filter by channel, CQ
-or a search string. Settings are saved and restored, and decodes are
-appended to an `ALL.TXT`. The presets come from WSJT-X's
-`default_frequency_list` (all-region and Region 3 entries), plus FT8 at
-7041 kHz for JA.
+Svelte 5 front end (`gui/src`). A server's button in the header holds its
+on/off dot and its name; the channel list has band presets; the right side is a
+**Waterfall** tab (a thumbnail per channel, one large, the decodes under it) and
+an **Analysis** tab (below). The decode list uses one row format for every mode,
+highlights CQ and your own call, and can filter by channel, CQ or a search
+string. Settings are saved and restored. Every decode goes to the database
+`skimmer.db`; an `ALL.TXT` is written only if you turn it on (it grows without
+bound). The presets come from WSJT-X's `default_frequency_list` (all-region and
+Region 3 entries), plus FT8 at 7041 kHz for JA.
 
 ### Installers
 
@@ -81,9 +83,10 @@ cargo tauri build      # app + NSIS installer under release\bundle\nsis
 ```
 
 The settings file is `%APPDATA%\io.github.jl1nie.mfsk-skimmer\settings.json`.
-The default log path is `Documents\mfsk-skimmer\ALL.TXT`. When Documents is
-redirected to OneDrive, the log syncs there; change the path in Settings if
-that is not wanted.
+The database (`skimmer.db`), the health log `STATUS.log` and, if turned on,
+`ALL.TXT` are in `Documents\mfsk-skimmer\`. When Documents is redirected to
+OneDrive, they sync there; change the folder in Settings if that is not wanted
+(a database being written does not suit a synced folder well).
 
 Verified on Windows against the SpyServer below, beside SDR#: 26 FT8
 decodes in one slot at 7041 kHz, CQ rows highlighted, and the log and the
@@ -180,15 +183,36 @@ time zone), shown in UTC. The cycle goes on among the bands that are in at that
 hour and starts again whenever the set changes; when none is in, nothing is heard
 until one opens.
 
-Pressing a server's button (in the header, or its tab above the waterfall) while it
-is the chosen one **holds** its rotation on the band it is on, with no retune; press
-it again to let it go on, at the step the clock says. The button shows ⏸ while held.
-‹ and › beside it move to the previous or next band at once, even in the middle of a
-turn; the band moved to gets its whole turn from that moment.
+**On the screen.** A server's dot in the header switches that server on or off
+(off closes its connection and keeps its settings and channels; the dot is hollow
+when off). Beside a rotating server's channels the current band and the time left
+are shown, `⟳ 20m 3:21`; pressing it **holds** the rotation on that band with no
+retune (`⏸ 20m held`), and again lets it go on at the step the clock says. `‹` and
+`›` on either side move to the previous or next band at once, even in the middle
+of a turn; the band moved to gets its whole turn from that moment (held, it stays
+held on the new band). A channel that is not being heard keeps, greyed, the number
+of decodes of the last slot it was heard in.
 
 The database records which server heard each decode and where that server is,
 so Analysis can filter by server, centre the map on any of them, and measure
 bearing and distance from the place that heard the signal.
+
+## Analysis
+
+One query (UTC period, regular expressions on call, locator and text, band, mode,
+server, SNR, distance and bearing sector from the server that heard it, CQ kind)
+over four views:
+
+- **Map**: a great-circle map centred on home or on any server, or a Mercator one;
+  stations coloured by SNR; "Animate" plays the period in windows of 1 to 60
+  minutes, repeating. A station opened in Results is ringed.
+- **Results**: the bands' openings (hour by band) above a list of stations or of
+  decodes; a station opened shows a small map of its great circle and the hours
+  it was heard in, by day.
+- **Database**: the file's size and what is in it; clearing out decodes older than
+  N days (all servers or one) or one server's whole record; compacting the file
+  (deleting alone does not shrink it); the query's decodes as a CSV with bearing
+  and distance; a compact copy of the whole file, made while it records.
 
 On the command line: `--server NAME=HOST:PORT` starts a server (its options
 and `--ch` follow); `--step MINUTES` before the `--ch` heard in that step.
