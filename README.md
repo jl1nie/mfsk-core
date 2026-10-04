@@ -139,7 +139,7 @@ runtime `register_protocol()`.
 ```toml
 # Cargo.toml
 [dependencies]
-mfsk-core = { version = "0.12", features = ["ft8", "ft4"] }
+mfsk-core = { version = "0.13", features = ["ft8", "ft4"] }
 ```
 
 New features and fixes land on `main` immediately as PRs merge, but

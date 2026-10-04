@@ -6,7 +6,7 @@
 one-off. `CHANGELOG.md` keeps the unreleased section and the two latest
 minor series. The release PR of each new minor moves the oldest series here
 (`CLAUDE.md`, "Releases"). Full detail preserved verbatim, just relocated.
-See [`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.11.0 onward,
+See [`CHANGELOG-0.11.md`](CHANGELOG-0.11.md) for 0.11.0 and [`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.12.0 onward,
 [`CHANGELOG-0.6-0.7.md`](CHANGELOG-0.6-0.7.md) for 0.6.0 – 0.7.4 and
 [`CHANGELOG-0.x.md`](CHANGELOG-0.x.md) for 0.1.0 – 0.5.12.
 
