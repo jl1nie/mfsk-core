@@ -7,6 +7,7 @@ the last bits of the float columns are not. These files record how far.
 | file | machine | rustc | fixtures differing | worst `snr_db` | worst `sync_score` (rel) | `hard_errors` |
 |---|---|---|---|---|---|---|
 | `aarch64-apple-m5-rustc1.98.1.txt` | Apple M5, macOS 27.2 | 1.98.1 (1.99.0 identical) | 50 of 53 | 0.038 dB | 1.9e-4 | +-1 in one FT8 row |
+| `x86_64-ryzen7-3700x-rustc1.98.1.txt` | AMD Ryzen 7 3700X, WSL2 | 1.98.1 | 0 of 53 | 0 | 0 | 0 |
 
 ## Measure another machine
 

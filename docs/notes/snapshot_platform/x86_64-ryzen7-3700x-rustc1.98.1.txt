@@ -1,0 +1,6 @@
+# decode_snapshot vs the fixtures, one machine (#579). No `SNAPDIFF` block: every case matched the fixtures bit for bit.
+# machine : AMD Ryzen 7 3700X (x86_64, Zen 2), WSL2 Linux 6.6
+# rustc   : 1.98.1 (the pin)
+# commit  : 5ee4883a (investigate/579-snapshot-platform-diff, on v0.13.1)
+# result  : MFSK_SNAPSHOT_REPORT=1 ... --test decode_snapshot: 14 passed, 0 SNAPDIFF
+# cpu flags: avx2 yes, avx512 NO (Zen 2). The issue reports a Ryzen 5 failing too, so AVX-512 dispatch (rustfft/realfft) is the suspect; this machine cannot test it.
