@@ -1,0 +1,13 @@
+# libm_probe (scripts/libm_probe.rs), one machine (#579)
+# rustc   : 1.98.1, rustc --edition 2021 -O
+# machine : Apple M5, macOS 27.2 (Apple libm)
+# commit  : 6504673c
+machine aarch64 macos
+log10   5358d512684bbae2  first c0bd7273 c01a4735 c02e0bd3
+powf10  5156f6eac26cd59c  first 3e4522bd 3f096a18 3fe4843f
+ln      6fac9fc84ab2e65d  first c15a1be8 c0b19e8a c0c860ca
+exp     24e0c3407f6292b3  first 32924678 3a98acd4 440726e6
+sin     cd2802d5271bb017  first bf4e106e 3f7fcfe9 3eea5458
+cos     214c85848a841b92  first bf17e65a 3d1ce267 3f639d59
+atan2   e2af300ace732610  first bff5521c bfd9992c 3f56e855
+sqrt    2db63f0174b37525  first 3a8fae58 3d7f4e76 3d32e7d9
