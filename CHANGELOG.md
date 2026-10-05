@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`engine::dsp::subtract`: the LPF subtract no longer panics on a slot buffer shorter than the frame (#567).** `apply_at_offset` sized
+  the FFT from `audio.len()`, where `subtractft8.f90` fixes `NFFT = NMAX = 15*12000` (v3.2.0-rc1, lines 10-11) — always at least
+  `NFRAME = 1920*79`, so a short `dd` is simply zero-filled. On a shorter buffer `cfilt` was shorter than `nframe`, and both the
+  camp build (`cfilt[i]`) and the end correction (`cfilt[nframe-1-d]`) indexed past its end. With end correction on — the FT8
+  subtract's own setting — that panicked at *any* `dt`, not only a negative one, and on the `sic_early`/`__staged_sic` paths it
+  takes the decode worker thread down with it. `nfft` is now `audio.len().max(nframe)`, which restores the reference's invariant;
+  the existing clamps and the end correction are then correct as written. A full slot is unaffected (`audio.len() > nframe`
+  already, so `nfft` does not move) and its output stays bit-identical. `residual_band_power` takes the same `nfft` so the
+  `sqf` trial search scores on the grid the subtract actually used. New test `subtract_short_buffer`.
+
 - **A hashed callsign with `/P` or `/R` now resolves, as in WSJT-X (#570).** `CallsignHashTable::insert` stripped the suffix and the
   type 1/2 learner never read the `/R` / `/P` flag, so `<W1XYZ/P>` stayed `<...>` where WSJT-X v3.2.0-rc1 prints it (32 of 336 outcomes on the
   WS fixtures of #568; no wrong call, a missing resolution). Both now follow `save_hash_call` and the unpacker (`packjt77.f90:356-390`,
