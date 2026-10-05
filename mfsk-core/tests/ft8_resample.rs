@@ -133,3 +133,66 @@ fn resample_decode_44100_weak_signal() {
     );
     assert_eq!(*results[0].message77(), msg);
 }
+
+/// #576. The tests above build the signal and the noise at 12 kHz and only
+/// then raise the rate, so the input has nothing above 6 kHz to fold, and
+/// they passed while 48 kHz → 12 kHz was a plain decimation by 4. Here the
+/// noise is white over the whole 48 kHz band, as from a microphone or a
+/// sound card, at -19 dB in 2500 Hz. Measured over 16 trials a cell, the
+/// unfiltered decimation decoded 0 of 16 at -19 dB (50 % at -15.3 dB) and
+/// `fil4` 16 of 16 (50 % at -21.1 dB; -21.0 dB with signal and noise
+/// generated at 12 kHz).
+#[test]
+fn resample_48k_full_band_noise_does_not_fold_into_the_band() {
+    use mfsk_core::decoder::{Decoder, SlotInput};
+    use mfsk_core::engine::tx::{message_to_tones, synthesize};
+
+    struct Rng(u64);
+    impl Rng {
+        fn u(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            ((self.0 >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+        fn gauss(&mut self) -> f64 {
+            let (a, b) = (self.u(), self.u());
+            (-2.0 * a.ln()).sqrt() * (2.0 * std::f64::consts::PI * b).cos()
+        }
+    }
+
+    let msg = test_msg();
+    let tones = message_to_tones::<Ft8>(&msg);
+    let want = mfsk_core::msg::wsjt77::unpack77(&msg).unwrap();
+    // White noise of std `sigma` over 0..24 kHz puts sigma^2 * 2500/24000 in
+    // 2500 Hz; a constant-envelope frame of amplitude `amp` carries amp^2/2.
+    let sigma = 1_000.0f64;
+    let snr_db = -19.0f64;
+    let amp = (2.0 * sigma * sigma * 2_500.0 / 24_000.0 * 10f64.powf(snr_db / 10.0)).sqrt();
+
+    let trials = 4;
+    let mut decoded = 0;
+    for t in 0..trials {
+        let f0 = 1_000.0 + 61.0 * t as f32;
+        let frame = synthesize::<Ft8>(&tones, 48_000, f0, amp as f32);
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ (t as u64 + 1));
+        let x48: Vec<i16> = (0..48_000usize * 15)
+            .map(|i| {
+                let s = i
+                    .checked_sub(24_000)
+                    .and_then(|j| frame.get(j))
+                    .map_or(0.0, |&v| v as f64);
+                (s + sigma * rng.gauss()).round().clamp(-32_768.0, 32_767.0) as i16
+            })
+            .collect();
+        let audio = resample_to_12k(&x48, 48_000);
+        let rows = Decoder::<Ft8>::with_defaults()
+            .decode(&SlotInput::i16(&audio))
+            .rows;
+        decoded += rows.iter().any(|r| r.decoded.text == want) as u32;
+    }
+    assert!(
+        decoded >= 3,
+        "{decoded} of {trials} decoded at {snr_db} dB with full-band noise at 48 kHz"
+    );
+}
