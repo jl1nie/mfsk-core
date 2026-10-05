@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **docs: the 0.13 decoder by use case, why it is shaped like WSJT-X's, and how to move to it.** `LIBRARY.md` §1.1 (and
+  `.ja.md`) is new: a decoder is something you keep, shown on the common jobs (a live receiver numbering its periods, a
+  QSO's context, one decoder per channel, a deadline, streaming rows, a non-GUI search, other sample rates), each with
+  the reason for its shape and each a doctest; it also says `resample_to_12k` has no low-pass, where WSJT-X filters with
+  `fil4`. `LIBRARY.md` §1.2 (and
+  `.ja.md`) gathers the migration from 0.12 that sat at the end of §6, adds what changes in results with the
+  defaults (FT8 search, band, AP, JT9/JT65, WSPR, with the measurements behind them) and what replaces each removed option;
+  §2 opens with the six rules the API follows. `DESIGN_RATIONALE.md` §6 records what went wrong in 0.12, the
+  decision, what it cost and what it bought. `ft4::subtract_signal_lpf`'s doc no longer claims a short buffer is
+  a no-op (#574).
+
 - **`engine::dsp::subtract`: the LPF subtract no longer panics on a slot buffer shorter than the frame (#567).** `apply_at_offset` sized
   the FFT from `audio.len()`, where `subtractft8.f90` fixes `NFFT = NMAX = 15*12000` (v3.2.0-rc1, lines 10-11) — always at least
   `NFRAME = 1920*79`, so a short `dd` is simply zero-filled. On a shorter buffer `cfilt` was shorter than `nframe`, and both the
@@ -10,7 +21,12 @@
   takes the decode worker thread down with it. `nfft` is now `audio.len().max(nframe)`, which restores the reference's invariant;
   the existing clamps and the end correction are then correct as written. A full slot is unaffected (`audio.len() > nframe`
   already, so `nfft` does not move) and its output stays bit-identical. `residual_band_power` takes the same `nfft` so the
-  `sqf` trial search scores on the grid the subtract actually used. New test `subtract_short_buffer`.
+  `sqf` trial search scores on the grid the subtract actually used. New tests: `subtract_short_buffer`, and
+  `decoder_input_length`, which runs every mode through `AnyDecoder` on a real frame cut to 0 … 1.5 periods from either end
+  (on noise alone no decode happens and nothing after it runs, so it did not catch #567 until it carried a signal).
+  **Affected:** every release since the FFT subtract (`28a38e7a`, 2026-07-20): 0.8.0 through 0.13.0. On an
+  older version, pad the slot with zeros to its full length (FT8 180 000 samples, FT4 90 000) before decoding: the FFT is then
+  at least a frame long and the panic cannot occur. Older versions are not yanked; 0.13.1 is the fixed one.
 
 - **A hashed callsign with `/P` or `/R` now resolves, as in WSJT-X (#570).** `CallsignHashTable::insert` stripped the suffix and the
   type 1/2 learner never read the `/R` / `/P` flag, so `<W1XYZ/P>` stayed `<...>` where WSJT-X v3.2.0-rc1 prints it (32 of 336 outcomes on the
