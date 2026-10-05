@@ -28,7 +28,8 @@ This document is the Rust host API. Other audiences:
 ## Contents
 
 - [1. Quick start](#1-quick-start)
-  - [1.1 Coming from 0.12](#11-coming-from-012)
+  - [1.1 Use cases: a decoder is something you keep](#11-use-cases-a-decoder-is-something-you-keep)
+  - [1.2 Coming from 0.12](#12-coming-from-012)
 - [2. The decode API](#2-the-decode-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` and `Depth`](#22-decodeparams-and-depth)
@@ -100,7 +101,225 @@ callsign hash table lives ([§2.1](#21-decoderp)). `Decoder::<Ft8>::with_default
 starts from the block the WSJT-X GUI starts from instead of a band you name
 ([§2.2](#22-decodeparams-and-depth)).
 
-### 1.1 Coming from 0.12
+### 1.1 Use cases: a decoder is something you keep
+
+Before 0.13 a decode was a function call: audio in, rows out, and whatever
+had to survive from one period to the next (the callsign hash table, the
+previous cycle's decodes, Q65's averages) was the caller's to carry and hand
+back. In 0.13 a decoder is an object you create once and keep, the way
+WSJT-X keeps one decoder per mode running for the whole session. You change
+its settings between periods, as the WSJT-X GUI does, and it remembers what
+WSJT-X remembers. The examples below are the common jobs, each with the
+reason the API is shaped that way. The rules they follow are listed at the
+top of [§2](#2-the-decode-api).
+
+**A live receiver: keep the decoder, number the periods.** This is the
+use the API is built around. Create the decoder once, give it each
+period as it completes, and number the periods on the UTC grid
+(`t / T`). The number tells the decoder which periods are consecutive,
+which FT8's a7 and Q65's averaging need. The callsign table lives in the
+decoder, so a call heard in one period resolves a hashed `<...>` in the
+next:
+
+```rust
+use mfsk_core::decoder::{Decoder, SlotInput};
+use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::msg::wsjt77::{pack77, pack77_type4};
+
+/// One 15 s period holding one FT8 frame, as a receiver hands it over.
+fn period(msg77: &[u8; 77]) -> Vec<i16> {
+    let tones = message_to_tones::<Ft8>(msg77);
+    let frame = synthesize_i16::<Ft8>(&tones, 12_000, 1_500.0, 20_000);
+    let mut audio = vec![0i16; 180_000];
+    audio[6_000..6_000 + frame.len()].copy_from_slice(&frame);
+    audio
+}
+
+// Created once, kept for the whole session.
+let mut rx = Decoder::<Ft8>::with_defaults();
+
+// Period 0: JA1ABC calls CQ. The decoder learns the call.
+let p0 = period(&pack77("CQ", "JA1ABC", "PM95").unwrap());
+rx.decode(&SlotInput::i16(&p0).period(0));
+
+// Period 1: a reply that names JA1ABC only by a 12-bit hash.
+let p1 = period(&pack77_type4("JL1NIE/1", "JA1ABC", "RR73", false).unwrap());
+let heard = rx.decode(&SlotInput::i16(&p1).period(1)).rows;
+assert!(heard.iter().any(|r| r.decoded.text.contains("<JA1ABC>")));
+
+// The same audio through a decoder that did not hear period 0.
+let mut fresh = Decoder::<Ft8>::with_defaults();
+let blind = fresh.decode(&SlotInput::i16(&p1).period(1)).rows;
+assert!(blind.iter().all(|r| !r.decoded.text.contains("<JA1ABC>")));
+```
+
+*Why:* this is what a `jt9` process does, and keeping the state where
+upstream keeps it means a caller cannot lose it or mix it up. In 0.12 every
+caller carried the table, and the crate's own IQ receiver never resolved a
+`<...>` (0.12.0 was yanked for it).
+
+**Working a QSO: tell the decoder what the operator knows.** Your call, the
+station you are working and how far the QSO has got go into the parameter
+block, as the GUI fills them in. The decoder derives its a-priori
+hypotheses from them, with upstream's tables: `MyCall DxCall ???` while you
+wait for a report, `... RRR` / `73` / `RR73` once you have sent one. Update
+them between periods with `params_mut()`; the decoder keeps everything else.
+
+```rust
+use mfsk_core::decoder::{
+    ApMode, DecodeParams, Decoder, QsoContext, QsoProgress, SlotInput,
+};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::new(
+    DecodeParams::for_band((200.0, 4_000.0))
+        .station("JL1NIE", "PM95") // MyCall, MyGrid
+        .rx_freq(1_500.0)          // where the DX is
+        .tx_freq(1_500.0)          // where you transmit
+        .ap(ApMode::Full),         // "Enable AP"
+);
+let period = vec![0i16; 180_000]; // one period from the radio
+
+// You answered JA1ABC's CQ.
+rx.params_mut().qso = QsoContext {
+    his_call: "JA1ABC".into(),
+    his_grid: "PM95".into(),
+    progress: QsoProgress::Replying,
+};
+rx.decode(&SlotInput::i16(&period).period(100));
+
+// Next period: you have sent the report, so expect RRR / 73 / RR73.
+rx.params_mut().qso.progress = QsoProgress::RogerReport;
+rx.decode(&SlotInput::i16(&period).period(101));
+```
+
+*Why:* this is how WSJT-X finds the weak reply it is waiting for. With
+the QSO context set, a weak FT8 reply decoded in 20 of 30 trials, against
+0 of 30 without AP. Nothing runs until `station` is set, and FT8's default
+has AP off, as the GUI's "Enable AP" box starts.
+
+**Several bands or modes at once: one decoder each.** A skimmer, or a
+receiver watching FT8 and FT4 together, holds one decoder per channel.
+`AnyDecoder` picks the mode at run time, and a decoder is `Send`, so each
+can run on its own thread:
+
+```rust
+use mfsk_core::Mode;
+use mfsk_core::decoder::AnyDecoder;
+
+let channels = [Mode::Ft8, Mode::Ft4];
+let workers: Vec<_> = channels
+    .into_iter()
+    .map(|mode| {
+        std::thread::spawn(move || {
+            let mut rx = AnyDecoder::with_defaults(mode);
+            let slot = vec![0i16; mode.meta().slot_samples_12k as usize];
+            rx.decode_i16(&slot, Some(0)).rows.len()
+        })
+    })
+    .collect();
+for w in workers {
+    w.join().unwrap();
+}
+```
+
+*Why:* two WSJT-X instances keep two tables, and so do two decoders. A
+call heard on 20 m does not resolve a hash on 40 m, and two threads never
+contend for one table. To give a new channel a head start, call
+`learn_callsign` on it.
+
+**A deadline: decode what fits in the time you have.** The library reads no
+clock. You pass a predicate, and it is asked between candidates whether to
+go on. The report says whether the deadline cut the search short:
+
+```rust
+use std::time::{Duration, Instant};
+use mfsk_core::decoder::{Decoder, SlotInput};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::with_defaults();
+let period = vec![0i16; 180_000];
+let deadline = Instant::now() + Duration::from_millis(500);
+let keep_going = || Instant::now() < deadline;
+
+let result = rx.decode(&SlotInput::i16(&period).budget(&keep_going));
+if result.budget.exhausted {
+    println!("cut short: {} candidates skipped", result.budget.candidates_skipped);
+}
+```
+
+*Why:* the same code runs on a desktop, in wasm and on an MCU, which have
+three different clocks, and a process can be suspended mid-slot. Honoured by
+FT8, FT4 and FST4 ([§2.3](#23-compute-budget)).
+
+**Rows on screen as they are found.** `decode_with` hands each row to a
+callback as soon as it is decoded, and still returns them all at the end:
+
+```rust
+use mfsk_core::decoder::{Decoder, SlotInput};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::with_defaults();
+let period = vec![0i16; 180_000];
+let all = rx.decode_with(&SlotInput::i16(&period).period(7), &|row| {
+    println!("{:+.1} s {:6.0} Hz  {}", row.decoded.dt_sec, row.decoded.freq_hz, row.decoded.text);
+});
+println!("{} rows in the period", all.rows.len());
+```
+
+*Why:* a deep FT8 search runs for a while, and a GUI should not wait for
+all of it. The order and de-duplication contract is in
+[`STREAMING.md`](STREAMING.md).
+
+**A search other than the GUI's.** `Depth` gives what WSJT-X's Fast, Normal
+and Deep give. For anything else (a microcontroller's budget, a sweep that
+pins one knob, or 0.12's search), set the mode's `Tuning` extra. It
+overrides only the fields you set:
+
+```rust
+use mfsk_core::decoder::{Decoder, Ft8Strategy};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::with_defaults();
+let tuning = &mut rx.extras_mut().tuning;
+tuning.sync_min = Some(0.8); // 0.12's FT8 search: a lower sync floor,
+tuning.max_cand = Some(60); // fewer candidates,
+tuning.strategy = Some(Ft8Strategy::SinglePass); // one pass, no subtraction
+```
+
+*Why:* what WSJT-X does lives in `DecodeParams`, and what this crate adds
+lives in `Extras`, so a setting that is not WSJT-X's is visible as such in
+your code.
+
+**Audio at another rate.** The decoders take 12 kHz audio, as `jt9` does.
+`engine::dsp::resample::resample_to_12k` converts other rates by linear
+interpolation, **without a low-pass filter**. Give it audio that is already
+band-limited below 6 kHz (a receiver's audio output usually is), or filter
+it first. WSJT-X itself takes 48 kHz from the sound card and decimates by 4
+through a 49-tap FIR (`Detector.cpp` calling `lib/fil4.f90`), which this crate
+does not port.
+
+```rust
+use mfsk_core::engine::dsp::resample::resample_to_12k;
+
+let at_48k = vec![0i16; 48_000 * 15]; // 15 s from a 48 kHz sound card
+let at_12k = resample_to_12k(&at_48k, 48_000);
+assert_eq!(at_12k.len(), 180_000);
+```
+
+**One recording: one decoder, one call.** A file is the degenerate case of
+a live receiver: `Decoder::new(params)` and one `decode`, as in the quick
+start above. There is no separate one-shot API, because there is nothing a
+one-shot call could do differently.
+
+A period is the whole period from its nominal start. Shorter and longer
+buffers are accepted (`tests/decoder_input_length.rs` drives every mode from
+an empty buffer to one and a half periods); a shorter one yields only what it
+holds. Up to 0.13.0 a buffer shorter than an FT8 or FT4 frame could panic
+(#567).
+
+### 1.2 Coming from 0.12
 
 0.13 replaced the decode API rather than extending it: the per-family
 request builders are gone, and one decoder per mode, driven by WSJT-X's own

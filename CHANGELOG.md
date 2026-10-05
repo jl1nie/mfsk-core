@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- **docs: why the 0.13 decode API is shaped like WSJT-X's decoder, and how to move to it.** `LIBRARY.md` §1.1 (and
+- **docs: the 0.13 decoder by use case, why it is shaped like WSJT-X's, and how to move to it.** `LIBRARY.md` §1.1 (and
+  `.ja.md`) is new: a decoder is something you keep, shown on the common jobs (a live receiver numbering its periods, a
+  QSO's context, one decoder per channel, a deadline, streaming rows, a non-GUI search, other sample rates), each with
+  the reason for its shape and each a doctest; it also says `resample_to_12k` has no low-pass, where WSJT-X filters with
+  `fil4`. `LIBRARY.md` §1.2 (and
   `.ja.md`) gathers the migration from 0.12 that sat at the end of §6, adds what changes in results with the
   defaults (FT8 search, band, AP, JT9/JT65, WSPR, with the measurements behind them) and what replaces each removed option;
   §2 opens with the six rules the API follows. `DESIGN_RATIONALE.md` §6 records what went wrong in 0.12, the

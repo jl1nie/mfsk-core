@@ -321,7 +321,7 @@ turnaround.
 
 0.13 replaced the decode API with one modelled on how WSJT-X runs its
 decoders: a `Decoder<P>` per mode, driven by `jt9com`'s parameter block.
-`LIBRARY.md` §2 says what the API is and §1.1 how to move to it; this
+`LIBRARY.md` §2 says what the API is and §1.1 how to use it by use case, §1.2 how to move to it; this
 section is why.
 
 ### What 0.12 looked like, and what went wrong
