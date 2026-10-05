@@ -205,3 +205,55 @@ fn every_mode_survives_every_input_length() {
         failures.join("\n  ")
     );
 }
+
+/// The geometry #567 was reported from, through the decoder: a receiver
+/// that attached late, so the buffer is shorter than the frame **and** the
+/// frame started before it (`dt < 0`). The test above never produces it on
+/// the SIC modes: a frame missing more than a few percent of its start does
+/// not decode, so nothing is subtracted. Here the frame ends just before the
+/// period does, and the cut keeps all but its first 1000 or 3000 samples, so
+/// it still decodes and the subtract runs on a buffer shorter than the frame
+/// with a negative start. FT8 and FT4 are the modes whose default search
+/// subtracts with the engine's LPF subtract (WSPR and JT65 have their own,
+/// FST4, JT9 and Q65 none). The cut period must decode, or the subtract was
+/// never reached and the case proves nothing.
+#[test]
+fn late_attach_shorter_than_the_frame_decodes_and_subtracts() {
+    fn run<P>(mode: Mode, freq_hz: f32) -> Vec<String>
+    where
+        P: Protocol + FskWaveform,
+    {
+        let slot = mode.meta().slot_samples_12k as usize;
+        let msg = pack77("CQ", "JA1ABC", "PM95").expect("pack77");
+        let wave = synthesize::<P>(&message_to_tones::<P>(&msg), FS, freq_hz, 1.0);
+        let nframe = wave.len();
+        let start = slot - nframe - 500;
+        let mut period = vec![0.0f32; slot];
+        period[start..start + nframe].copy_from_slice(&wave);
+        let full = with_noise(&period, 11);
+
+        let mut out = Vec::new();
+        for missing in [1_000usize, 3_000] {
+            // Keep the frame minus its first `missing` samples, and the 500
+            // after it: the buffer is `nframe - missing + 500` long.
+            let len = nframe - missing + 500;
+            assert!(len < nframe);
+            let audio = &full[slot - len..];
+            let mut dec = AnyDecoder::with_defaults(mode);
+            match catch_unwind(AssertUnwindSafe(|| dec.decode_i16(audio, None).rows.len())) {
+                Err(_) => out.push(format!("{} missing={missing}: panicked", mode.name())),
+                Ok(0) => out.push(format!(
+                    "{} missing={missing}: decoded nothing, so nothing was subtracted",
+                    mode.name()
+                )),
+                Ok(_) => {}
+            }
+        }
+        out
+    }
+
+    let mut failures = Vec::new();
+    failures.extend(run::<mfsk_core::Ft8>(Mode::Ft8, 1_500.0));
+    failures.extend(run::<mfsk_core::Ft4>(Mode::Ft4, 1_500.0));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
