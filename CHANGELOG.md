@@ -17,7 +17,9 @@
   takes the decode worker thread down with it. `nfft` is now `audio.len().max(nframe)`, which restores the reference's invariant;
   the existing clamps and the end correction are then correct as written. A full slot is unaffected (`audio.len() > nframe`
   already, so `nfft` does not move) and its output stays bit-identical. `residual_band_power` takes the same `nfft` so the
-  `sqf` trial search scores on the grid the subtract actually used. New test `subtract_short_buffer`.
+  `sqf` trial search scores on the grid the subtract actually used. New tests: `subtract_short_buffer`, and
+  `decoder_input_length`, which runs every mode through `AnyDecoder` on a real frame cut to 0 … 1.5 periods from either end
+  (on noise alone no decode happens and nothing after it runs, so it did not catch #567 until it carried a signal).
   **Affected:** every release since the FFT subtract (`28a38e7a`, 2026-07-20): 0.8.0 through 0.13.0. On an
   older version, pad the slot with zeros to its full length (FT8 180 000 samples, FT4 90 000) before decoding: the FFT is then
   at least a frame long and the panic cannot occur. Older versions are not yanked; 0.13.1 is the fixed one.
