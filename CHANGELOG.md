@@ -18,6 +18,9 @@
   the existing clamps and the end correction are then correct as written. A full slot is unaffected (`audio.len() > nframe`
   already, so `nfft` does not move) and its output stays bit-identical. `residual_band_power` takes the same `nfft` so the
   `sqf` trial search scores on the grid the subtract actually used. New test `subtract_short_buffer`.
+  **Affected:** every release since the FFT subtract (`28a38e7a`, 2026-07-20): 0.8.0 through 0.13.0. On an
+  older version, pad the slot with zeros to its full length (FT8 180 000 samples, FT4 90 000) before decoding: the FFT is then
+  at least a frame long and the panic cannot occur. Older versions are not yanked; 0.13.1 is the fixed one.
 
 - **A hashed callsign with `/P` or `/R` now resolves, as in WSJT-X (#570).** `CallsignHashTable::insert` stripped the suffix and the
   type 1/2 learner never read the `/R` / `/P` flag, so `<W1XYZ/P>` stayed `<...>` where WSJT-X v3.2.0-rc1 prints it (32 of 336 outcomes on the
