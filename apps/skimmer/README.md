@@ -17,34 +17,66 @@ code.
 
 ## Install (Windows and macOS)
 
-Download the installer from the
-[latest release](https://github.com/jl1nie/mfsk-core/releases/latest):
+**You need:** a SpyServer you can reach from this PC (an Airspy HF+, Airspy or
+RTL-SDR behind [SpyServer](https://airspy.com/download/), on this LAN or
+elsewhere), and a PC clock that is right to about a second, since every mode
+decodes in time slots. The skimmer receives; it never transmits.
+
+**1. Download** the installer for your system from the
+[latest release](https://github.com/jl1nie/mfsk-core/releases/latest) (under
+*Assets*; `X.Y.Z` is the release's version):
 
 | platform | file |
 |---|---|
-| Windows (x64) | `mfsk-skimmer-vX.Y.Z-windows-x64-setup.exe` |
+| Windows 10/11 (x64) | `mfsk-skimmer-vX.Y.Z-windows-x64-setup.exe` |
 | macOS (Apple silicon) | `mfsk-skimmer-vX.Y.Z-macos-arm64.dmg` |
 
-- **Windows:** run the setup. It installs for the current user (no administrator
-  rights) under `%LOCALAPPDATA%\mfsk skimmer` and adds *mfsk skimmer* to the Start
-  menu. Settings and the database are in your user folders, not in the install
-  folder (paths below); uninstall from Windows' app list.
-- **macOS:** open the disk image and drag the app to Applications. The app is signed
-  ad hoc, not with a Developer ID, so it is not notarized: on first open,
-  right-click it and choose *Open*. The first connection to a SpyServer on the LAN
-  asks for local network access; allow it. If it was refused, turn it on under
-  System Settings → Privacy & Security → Local Network. A refusal shows in the app
-  as `No route to host (os error 65)`. (The macOS build is made by CI; it has not
-  been run on every Mac.)
+There is no Intel Mac or Linux build. On those, build the command line version
+below.
 
-**First run:** open *Settings* (⚙), give the server's address (`host:5555`) and your
-locator, add channels from the presets (they come from WSJT-X's frequency list), and
-press *Connect*. Where decodes are recorded is under *Analysis > Database*. The
-sections below say how it works and how to build it yourself.
+**2. Install.** Neither installer is signed with a publisher certificate, so each
+system warns once.
+
+- **Windows:** run the setup. If *Windows protected your PC* (SmartScreen)
+  appears, choose *More info*, then *Run anyway*. It installs for the current user
+  (no administrator rights) under `%LOCALAPPDATA%\mfsk skimmer` and adds *mfsk
+  skimmer* to the Start menu. Settings and the database are in your user folders,
+  not in the install folder (paths below). Uninstall from Windows' app list; your
+  settings and database stay.
+- **macOS:** open the disk image and drag the app to *Applications*. The app is
+  signed ad hoc, not with a Developer ID, so it is not notarized and Gatekeeper
+  stops the first launch.
+  - macOS 14 and earlier: right-click the app and choose *Open*.
+  - macOS 15 and later: open the app once (it is refused), then System Settings →
+    Privacy & Security → scroll to *"mfsk skimmer" was blocked* → *Open Anyway*.
+  - Either way, from a terminal:
+    `xattr -dr com.apple.quarantine "/Applications/mfsk skimmer.app"`.
+
+  The first connection to a SpyServer on the LAN asks for local network access;
+  allow it. If it was refused, turn it on under System Settings → Privacy &
+  Security → Local Network. A refusal shows in the app as `No route to host (os
+  error 65)`. (The macOS build is made by CI; it has not been run on every Mac.)
+
+**3. First run.** Open *Settings* (⚙), give the server's address (`host:5555`) and
+your locator, add channels from the presets (they come from WSJT-X's frequency
+list), and press *Connect*. Decodes appear in the list within the next slot (FT8
+every 15 s; WSPR every 2 minutes). Where they are recorded is under *Analysis >
+Database*.
+
+**If it does not connect:** `No route to host` on macOS is the local network
+permission above. `closed by the server (client limit?)` means the server's client
+slots are taken (see *Sharing the radio with SDR#*). On a LAN, check that the
+address and port are the ones SDR# uses.
+
+**Updating:** run the newer installer over the old one; settings and the database
+are kept. Each release carries the library fixes of its version, so the release
+notes' *Fixed* items apply to the skimmer too.
 
 The installers are built by `.github/workflows/skimmer-installers.yml` for every
 release and attached to it; the same workflow runs on pull requests that touch
-`apps/skimmer/` and by hand (*Run workflow*).
+`apps/skimmer/` and by hand (*Run workflow*, which gives a branch's installers as
+the run's artifacts). The sections below say how it works and how to build it
+yourself.
 
 ## Command line (`cli/`)
 

@@ -460,7 +460,7 @@ jobs:
   attach-skimmer:
     name: Attach skimmer installers to the release
     runs-on: ubuntu-latest
-    needs: [publish, skimmer-installers]
+    needs: [verify-tag, publish, skimmer-installers]
     permissions:
       contents: write
     steps:
@@ -478,9 +478,28 @@ jobs:
           append_body: true
           body: |
 
-            **mfsk skimmer** (the SpyServer skimmer sample app, see
-            [`apps/skimmer/`](https://github.com/jl1nie/mfsk-core/blob/main/apps/skimmer/README.md)):
-            `*-windows-x64-setup.exe` for Windows, `*-macos-arm64.dmg` for
-            Apple silicon Macs. The macOS build is not notarized: on first
-            open, right-click the app and choose Open, and allow local
-            network access when asked.
+            ## mfsk skimmer (sample app)
+
+            Decodes FT8, FT4, FST4, WSPR, JT9, JT65 and Q65 from a SpyServer
+            (Airspy HF+, Airspy, RTL-SDR). It receives only. This build carries
+            the library fixes of this release.
+
+            | platform | file |
+            |---|---|
+            | Windows 10/11 (x64) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-windows-x64-setup.exe` |
+            | macOS (Apple silicon) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-macos-arm64.dmg` |
+
+            Install: neither is signed with a publisher certificate, so each
+            system warns once.
+            - **Windows:** run the setup; on *Windows protected your PC* choose
+              *More info*, then *Run anyway*. No administrator rights needed.
+            - **macOS:** drag the app to Applications. macOS 14 and earlier:
+              right-click, *Open*. macOS 15 and later: open it once, then System
+              Settings → Privacy & Security → *Open Anyway*. Allow local network
+              access when asked, or the connection fails with `No route to host`.
+
+            First run: *Settings* → the SpyServer's `host:5555` and your locator →
+            add channels from the presets → *Connect*. Updating: run the newer
+            installer over the old one. Full guide, troubleshooting and the
+            command line version:
+            [`apps/skimmer/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/apps/skimmer/README.md).
