@@ -701,7 +701,28 @@ mod fft_lpf {
         idt_offset: i64,
     ) {
         let nframe = tones.len() * cfg.samples_per_symbol;
-        let nfft = audio.len();
+        // `subtractft8.f90`'s `NFFT = NMAX = 15*12000` (v3.2.0-rc1, lines
+        // 10-11) is a *constant*, chosen to be at least `NFRAME`, so
+        // `camp`/`cfilt` are always long enough to hold the whole frame and
+        // a short `dd` is simply zero-filled. Sizing the FFT from
+        // `audio.len()` instead holds that invariant only for a full slot:
+        // on a shorter buffer `cfilt` is shorter than `nframe`, and both the
+        // camp build (`cfilt[i]`) and the end correction
+        // (`cfilt[nframe-1-d]`) then index past its end — which panicked
+        // for any `dt` at all on the end-correction path, and for
+        // `signed_start < 0` on the camp path (#567).
+        //
+        // Restoring the invariant also keeps the *values* right, which
+        // bounding the loops alone does not. Clamping `i_hi` to the buffer
+        // stops the panic but leaves the last `|signed_start|` samples of a
+        // late-attached buffer with no subtraction at all, and an FFT
+        // shorter than the frame wraps the LPF around its own ends. With
+        // `nfft >= nframe` the frame always fits, the circular convolution
+        // has room for the kernel, and the existing clamps below are
+        // correct exactly as written. A full slot is unaffected: there
+        // `audio.len() > nframe` already, so `nfft` does not move and the
+        // output stays bit-identical (`full_slot_output_is_pinned`).
+        let nfft = audio.len().max(nframe);
         if nframe == 0 || nfft == 0 || lpf_half == 0 {
             return;
         }
@@ -776,13 +797,20 @@ mod fft_lpf {
     /// offsets against each other, so the missing real-FFT packing is
     /// immaterial (both sides of that symmetric band are scaled
     /// identically for every trial).
+    ///
+    /// `nframe` is passed rather than derived so this scores on the same
+    /// grid [`apply_at_offset`] subtracted on: `sqf` runs inside the same
+    /// fixed-`NFFT` call as the subtract it is scoring, and the bin edges
+    /// below (`df = sample_rate / nfft`) would otherwise land differently
+    /// from the FFT that produced the residual being measured.
     fn residual_band_power(
         audio: &[i16],
+        nframe: usize,
         freq_hz: f32,
         tone_spacing_hz: f32,
         sample_rate: f32,
     ) -> f32 {
-        let nfft = audio.len();
+        let nfft = audio.len().max(nframe);
         if nfft == 0 {
             return 0.0;
         }
@@ -790,6 +818,7 @@ mod fft_lpf {
             .iter()
             .map(|&s| Complex32::new(s as f32, 0.0))
             .collect();
+        buf.resize(nfft, Complex32::new(0.0, 0.0));
         let (forward, _) = cached_plans(nfft);
         forward.process(&mut buf);
 
@@ -855,9 +884,27 @@ mod fft_lpf {
         let cand_p = trial(SEARCH_SAMPLES);
         let cand_0 = trial(0);
 
-        let sq_m = residual_band_power(&cand_m, freq_hz, cfg.tone_spacing_hz, cfg.sample_rate);
-        let sq_p = residual_band_power(&cand_p, freq_hz, cfg.tone_spacing_hz, cfg.sample_rate);
-        let sq_0 = residual_band_power(&cand_0, freq_hz, cfg.tone_spacing_hz, cfg.sample_rate);
+        let sq_m = residual_band_power(
+            &cand_m,
+            tones.len() * cfg.samples_per_symbol,
+            freq_hz,
+            cfg.tone_spacing_hz,
+            cfg.sample_rate,
+        );
+        let sq_p = residual_band_power(
+            &cand_p,
+            tones.len() * cfg.samples_per_symbol,
+            freq_hz,
+            cfg.tone_spacing_hz,
+            cfg.sample_rate,
+        );
+        let sq_0 = residual_band_power(
+            &cand_0,
+            tones.len() * cfg.samples_per_symbol,
+            freq_hz,
+            cfg.tone_spacing_hz,
+            cfg.sample_rate,
+        );
 
         // peakup.f90: b=(yp-ym)/2; c=(yp+ym-2*y0)/2; dx=-b/(2*c).
         let b = (sq_p - sq_m) / 2.0;
