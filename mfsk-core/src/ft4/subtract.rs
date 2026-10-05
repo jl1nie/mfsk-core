@@ -95,8 +95,9 @@ pub fn subtract_signal_weighted(audio: &mut [i16], result: &DecodeResult, gain: 
 /// `lpf_half = 2000` was based on confusing FT8's NFILT with FT4's.
 ///
 /// Use this on real-WAV decodes after [`refine_signal_freq`] to get
-/// near-clean signal removal. Falls back to a no-op when audio is
-/// shorter than the FT4 frame.
+/// near-clean signal removal. A buffer shorter than the FT4 frame is not
+/// a special case: the part of the frame it holds is subtracted, as in a
+/// full slot (#567).
 pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
     let tones = match get_tones(result) {
         Some(t) => t,

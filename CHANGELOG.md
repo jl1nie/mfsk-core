@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **docs: why the 0.13 decode API is shaped like WSJT-X's decoder, and how to move to it.** `LIBRARY.md` §1.1 (and
+  `.ja.md`) gathers the migration from 0.12 that sat at the end of §6, adds what changes in results with the
+  defaults (FT8 search, band, AP, JT9/JT65, WSPR, with the measurements behind them) and what replaces each removed option;
+  §2 opens with the six rules the API follows. `DESIGN_RATIONALE.md` §6 records what went wrong in 0.12, the
+  decision, what it cost and what it bought. `ft4::subtract_signal_lpf`'s doc no longer claims a short buffer is
+  a no-op (#574).
+
 - **`engine::dsp::subtract`: the LPF subtract no longer panics on a slot buffer shorter than the frame (#567).** `apply_at_offset` sized
   the FFT from `audio.len()`, where `subtractft8.f90` fixes `NFFT = NMAX = 15*12000` (v3.2.0-rc1, lines 10-11) — always at least
   `NFRAME = 1920*79`, so a short `dd` is simply zero-filled. On a shorter buffer `cfilt` was shorter than `nframe`, and both the

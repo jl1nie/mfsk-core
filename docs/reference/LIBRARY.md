@@ -28,6 +28,7 @@ This document is the Rust host API. Other audiences:
 ## Contents
 
 - [1. Quick start](#1-quick-start)
+  - [1.1 Coming from 0.12](#11-coming-from-012)
 - [2. The decode API](#2-the-decode-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` and `Depth`](#22-decodeparams-and-depth)
@@ -99,6 +100,65 @@ callsign hash table lives ([§2.1](#21-decoderp)). `Decoder::<Ft8>::with_default
 starts from the block the WSJT-X GUI starts from instead of a band you name
 ([§2.2](#22-decodeparams-and-depth)).
 
+### 1.1 Coming from 0.12
+
+0.13 replaced the decode API rather than extending it: the per-family
+request builders are gone, and one decoder per mode, driven by WSJT-X's own
+parameter block, took their place ([§2](#2-the-decode-api)). 0.12.0 is
+yanked and there is no 0.12.1. Why the API went this way, and what it gave
+up to get there, is [`DESIGN_RATIONALE.md` §6](../notes/DESIGN_RATIONALE.md#6-the-decode-api-follows-wsjt-xs-decoder-013).
+
+**What changes in your results, not only in your code.** The defaults are
+now the WSJT-X GUI's ([§2.2](#22-decodeparams-and-depth)), so the same audio
+with no options set does not come back the same:
+
+| | 0.12 | 0.13 | measured |
+|---|---|---|---|
+| FT8 search | sync 0.8, 60 candidates | `Depth::Deep`: sync 1.3, 1000 candidates, `SicEarly` | on `qso3_busy.wav` the same 21 messages as `jt9 -8 -d 3`; 3.8–4.0× `jt9`'s speed in the upstream comparison ([`BENCHMARKS.md`](../notes/BENCHMARKS.md)) |
+| band | 100–3000 Hz | FT8 / FT4 200–4000 Hz, FST4 600–1400 Hz | — |
+| AP | on whenever a hint was given | FT8 and JT65 off, as their "Enable AP" boxes start; QSO-context AP once `station` is set | weak replies on FT8: 0 of 30 decoded with AP off, 20 of 30 on |
+| JT9 / JT65 | the all-zero codeword (`000AAA 000AAA RA90`) came back from silence | dropped, as upstream does | — |
+| WSPR | close to `wsprd` | `wsprd`'s own numbers | on the WSJT-X golden, SNR within 0.02 dB of an instrumented `wsprd` and DT equal to 3 decimals |
+
+To keep a 0.12 search, set the frame family's `Tuning` extra
+([§2.5](#25-extras-and-the-protocols-outside-decoder)); to get AP without a
+QSO, set `station`, or the `ap_hint` extra.
+
+**Code.** What a 0.12 caller has to change (the full list is `CHANGELOG.md`,
+`## 0.13.0`):
+
+| area | 0.12 | 0.13 |
+|---|---|---|
+| decode entry, FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` and their builders | `Decoder::<P>::new(DecodeParams)` + `decode(&SlotInput)`; options in `P::Extras`. The request types are `pub(crate)` (`internal-testing` reopens them) |
+| decode entry, WSPR / JT9 / JT65 / Q65 | `wspr::`, `jt9::`, `jt65::`, `q65::DecodeRequest`; Q65 `SniperRequest`, `MultiPeriodRequest` | the same `Decoder<P>`; the wide-band requests are `pub(crate)`. `SniperRequest` (decode at a known alignment) stays public. Q65 averaging is `averaging` + `SlotInput::period` |
+| options | builder methods per request (`.osd()`, `.strictness()`, `.eq_mode()`, `.ap_hint()`, `.sic_*()`, `.contest()`, `.tx_freq()`, …) | `DecodeParams` (WSJT-X's block: band, `rx_freq_hz`, `tx_freq_hz`, `depth`, `station`, `qso`, `ap`, `contest`, `eme_delay`, …) and per-mode `Extras` (`Tuning`, `ap_hint`, `eq`, `filter`, `a7`, `sniper`, `noise_blanker`, Q65's) |
+| cross-period state | `.previous_cycle()`, `.hash_table(Arc)`, WSPR `.table(&mut)` / `.confirmed()`, `MultiPeriodRequest` | decoder state: `Decoder::clear()`, `learn_callsign`, `unpack77`; hash tables per decoder, never shared |
+| `wsjtx_depth` | FT8 constructor with `WsjtxDepth::{D1, D2, D3}` | `DecodeParams::depth`, `Depth::{Fast, Normal, Deep}`: **decides every search setting**, per mode, as `ndepth` |
+| defaults | FT8 sync 0.8 / 60 candidates; AP on when hinted; band 100-3000 | the depth's: `Deep` (FT8 sync 1.3, 1000 candidates); FT8 and JT65 AP off; FT8 / FT4 band 200–4000, FST4 600–1400 (`default_params`) |
+| AP | a free-form `ApHint` only (Q65 alone had QSO codewords) | QSO-context AP for FT8, FT4, FST4 from `station` + `qso` + `ap` and upstream's `naptypes`; `ApHint` stays as the `ap_hint` extra |
+| JT9 / JT65 | reported the all-zero codeword | do not |
+| return | `DecodeOutcome { results, fft_cache, budget }` | `SlotResult { rows: Vec<Row { decoded, detail, native }>, budget }`; no `fft_cache` |
+| streaming | `.on_result(cb)` on each request | `Decoder::decode_with(&slot, on_row)`; rows resolved against the decoder's table |
+| budget | `.budget(check)` | `SlotInput::budget(check)` |
+| audio | `&[i16]` (frame family), `&[f32]` (others) | `SlotInput::i16` / `SlotInput::f32` for every mode |
+| runtime mode | `iq::IqMode` | `registry::Mode` and `AnyDecoder` |
+| IQ | `IqReceiver` decoded inside `push_*` with frozen defaults, `on_decode`, `set_time_anchor`, `IqDecode` rows | pull: `push_*(.., &mut Vec<CompletedSlot>)`, `set_time(utc_ns, at_sample)` → `ClockChange`, `retune` → `RetuneReport`; decode with one `AnyDecoder` per channel |
+| time | per-receiver slot arithmetic | `slotgrid::{SlotGrid, SampleClock, SlotCutter}` |
+
+**Removed, and what to do instead.**
+
+| 0.12 | instead |
+|---|---|
+| `.hash_table(Arc)` — one table shared by several requests | each decoder keeps its own, as each upstream process does. Two channels of one mode learn separately; seed one with `learn_callsign` |
+| `.previous_cycle()`, `MultiPeriodRequest` — state passed in per call | the decoder keeps it. Number the periods with `SlotInput::period` so it knows which are consecutive |
+| `.known(list)` — signals an earlier pass already decoded, subtracted before searching | no counterpart: a second pass over a slot already decoded once (WebFT8's two-phase decode) is not part of the API. Its upstream form is the early decode, [#572](https://github.com/jl1nie/mfsk-core/issues/572) |
+| `.message_filter(closure)` / `.also_accept(closure)` | `MessageFilter::Only(f)` / `AlsoAccept(f)` with `f` a function pointer, so the extras stay `Clone + 'static`. A closure that captures nothing coerces; a predicate that needs data reads it from a `static` ([§2.6](#26-message-acceptance)) |
+| `.fft_cache()` / the outcome's `fft_cache` — the slot FFT handed to a second pass | no counterpart, for the same reason as `.known()` |
+| `wsjtx_depth(WsjtxDepth::D1…D3)` | `Depth::Fast` / `Normal` / `Deep` in `DecodeParams`, now for every mode |
+
+The synthesis API (`engine::tx`), `dt_sec` from the nominal start and
+`engine::search` of 0.12 are unchanged.
+
 ---
 
 ## 2. The decode API
@@ -125,6 +185,28 @@ functions underneath (`decode_frame`, `process_candidate_basic`, the
 tests. `Decoder<P>` exists for the seven slot-decoded families (FT8, FT4,
 FST4, WSPR, JT9, JT65, Q65). uvpacket, MSK144 and JTTY keep their own entry
 points ([§2.5](#25-extras-and-the-protocols-outside-decoder)).
+
+**The rules the API follows.** Each one is upstream's behaviour, kept on
+purpose; knowing them predicts most of what follows.
+
+1. **One decoder per mode, and it keeps what upstream keeps.** Hash tables,
+   FT8's a7 rows, Q65 and JT65 averages live in the `Decoder`, are never
+   shared between decoders, and survive until `clear()` ([§2.1](#21-decoderp)).
+2. **The parameter block is WSJT-X's, and each mode reads only what its
+   upstream decoder reads.** A field a mode does not read is ignored, as
+   `jt9` ignores it, not rejected: check the "read by" column of
+   [§2.2](#22-decodeparams-and-depth).
+3. **`Depth` sets the search, as `ndepth` does.** The library's own knobs
+   (`Tuning`) override a setting only when you set them
+   ([§2.5](#25-extras-and-the-protocols-outside-decoder)).
+4. **What upstream does not have is an `Extras` field, typed per mode.** An
+   option a mode lacks does not compile; through `AnyDecoder` or the C ABI it
+   is an `Unsupported` error, never a silent no-op.
+5. **The defaults are the WSJT-X GUI's**, so an unconfigured decoder does
+   what an unconfigured WSJT-X does.
+6. **There is no way around the decoder.** The engine underneath is
+   `pub(crate)`, so every caller gets the same state handling and the same
+   defaults.
 
 ### 2.1 `Decoder<P>`
 
@@ -280,7 +362,8 @@ own F Low / F High 600–1400 Hz, and the other modes their registry band.
 QSO. With no station call that leaves only the blind `CQ` hypothesis, so it
 is not the same as `default_params(Mode::Ft8)`, which is `ApMode::Off`.
 
-**`Depth` decides every search setting, as `ndepth` does.** `Fast`,
+**`Depth` decides every search setting, as `ndepth` does**, unless the
+mode's `Tuning` extra sets one ([§2.5](#25-extras-and-the-protocols-outside-decoder)). `Fast`,
 `Normal` and `Deep` are `ndepth` 1 / 2 / 3, and per mode they set what the
 mode's upstream decoder sets for them, line by line (the citations are on
 each `Decodable` impl; the source is the `v3.2.0-rc1` export, not the 2.7
@@ -1893,32 +1976,6 @@ of every strategy — [§3.4](#34-decoder-strategies)) and `ft8::acquire`
 (`acquire_slot_phase`: cold slot-phase acquisition for a receiver with no
 clock, three ±2.5 s windows of a longer capture 5 s apart, reduced with
 `circular_dt_medoid`; #356).
-
-### 0.13 breaking changes
-
-What a 0.12 caller has to change (full text and migration tables:
-`CHANGELOG.md`, `## 0.13.0`). 0.12.0 is yanked; there is no 0.12.1.
-
-| area | 0.12 | 0.13 |
-|---|---|---|
-| decode entry, FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` and their builders | `Decoder::<P>::new(DecodeParams)` + `decode(&SlotInput)`; options in `P::Extras`. The request types are `pub(crate)` (`internal-testing` reopens them) |
-| decode entry, WSPR / JT9 / JT65 / Q65 | `wspr::`, `jt9::`, `jt65::`, `q65::DecodeRequest`; Q65 `SniperRequest`, `MultiPeriodRequest` | the same `Decoder<P>`; the wide-band requests are `pub(crate)`. `SniperRequest` (decode at a known alignment) stays public. Q65 averaging is `averaging` + `SlotInput::period` |
-| options | builder methods per request (`.osd()`, `.strictness()`, `.eq_mode()`, `.ap_hint()`, `.sic_*()`, `.contest()`, `.tx_freq()`, …) | `DecodeParams` (WSJT-X's block: band, `rx_freq_hz`, `tx_freq_hz`, `depth`, `station`, `qso`, `ap`, `contest`, `eme_delay`, …) and per-mode `Extras` (`Tuning`, `ap_hint`, `eq`, `filter`, `a7`, `sniper`, `noise_blanker`, Q65's) |
-| cross-period state | `.known()`, `.previous_cycle()`, `.hash_table(Arc)`, WSPR `.table(&mut)` / `.confirmed()`, `MultiPeriodRequest` | decoder state: `Decoder::clear()`, `learn_callsign`, `unpack77`; hash tables per decoder, never shared |
-| `wsjtx_depth` | FT8 constructor with `WsjtxDepth::{D1, D2, D3}` | `DecodeParams::depth`, `Depth::{Fast, Normal, Deep}`: **decides every search setting**, per mode, as `ndepth` |
-| defaults | FT8 sync 0.8 / 60 candidates; AP on when hinted; band 100-3000 | the depth's: `Deep` (FT8 sync 1.3, 1000 candidates); FT8 and JT65 AP off; FT8 / FT4 band 200–4000, FST4 600–1400 (`default_params`) |
-| AP | a free-form `ApHint` only (Q65 alone had QSO codewords) | QSO-context AP for FT8, FT4, FST4 from `station` + `qso` + `ap` and upstream's `naptypes`; `ApHint` stays as the `ap_hint` extra |
-| JT9 / JT65 | reported the all-zero codeword | do not |
-| return | `DecodeOutcome { results, fft_cache, budget }` | `SlotResult { rows: Vec<Row { decoded, detail, native }>, budget }`; no `fft_cache` |
-| streaming | `.on_result(cb)` on each request | `Decoder::decode_with(&slot, on_row)`; rows resolved against the decoder's table |
-| budget | `.budget(check)` | `SlotInput::budget(check)` |
-| audio | `&[i16]` (frame family), `&[f32]` (others) | `SlotInput::i16` / `SlotInput::f32` for every mode |
-| runtime mode | `iq::IqMode` | `registry::Mode` and `AnyDecoder` |
-| IQ | `IqReceiver` decoded inside `push_*` with frozen defaults, `on_decode`, `set_time_anchor`, `IqDecode` rows | pull: `push_*(.., &mut Vec<CompletedSlot>)`, `set_time(utc_ns, at_sample)` → `ClockChange`, `retune` → `RetuneReport`; decode with one `AnyDecoder` per channel |
-| time | per-receiver slot arithmetic | `slotgrid::{SlotGrid, SampleClock, SlotCutter}` |
-
-The synthesis API (`engine::tx`), `dt_sec` from the nominal start and
-`engine::search` of 0.12 are unchanged.
 
 ---
 

@@ -19,6 +19,7 @@ for a decision someone might otherwise make again.
 - [3. A-priori decoding was coupled to the sniper by accident](#3-a-priori-decoding-was-coupled-to-the-sniper-by-accident)
 - [4. Q65's decoder strategies, and what each is for](#4-q65s-decoder-strategies-and-what-each-is-for)
 - [5. Why the embedded path doesn't widen PASS1 or enable OSD](#5-why-the-embedded-path-doesnt-widen-pass1-or-enable-osd)
+- [6. The decode API follows WSJT-X's decoder (0.13)](#6-the-decode-api-follows-wsjt-xs-decoder-013)
 
 ---
 
@@ -313,3 +314,88 @@ subtraction to the embedded path (open question on cost — see
 `ROADMAP.md`, "Embedded fine_refine attempt postmortem") or accepting
 late-arrival "spotter mode" decodes that land too late for QSO
 turnaround.
+
+---
+
+## 6. The decode API follows WSJT-X's decoder (0.13)
+
+0.13 replaced the decode API with one modelled on how WSJT-X runs its
+decoders: a `Decoder<P>` per mode, driven by `jt9com`'s parameter block.
+`LIBRARY.md` §2 says what the API is and §1.1 how to move to it; this
+section is why.
+
+### What 0.12 looked like, and what went wrong
+
+- **Four families of request builders** (`msg::decode_request` for FT8 /
+  FT4 / FST4, and one each under `wspr::`, `jt9::`, `jt65::`, `q65::`), each
+  with its own option methods (#419 counts the duplication).
+- **The caller carried what upstream keeps between periods**: the hash table
+  (`.hash_table(Arc)`), FT8's previous cycle (`.previous_cycle()`), WSPR's
+  call table (`.table(&mut)`), Q65 averaging (`MultiPeriodRequest`). Getting
+  that right was each caller's job, and the crate's own `IqReceiver` got it
+  wrong: it never resolved a hashed (`<...>`) callsign, and with a real-clock
+  time anchor it lost every other slot. That is why 0.12.0 was yanked
+  (CHANGELOG, 0.13.0).
+- **The defaults were this crate's own** (FT8: sync 0.8, 60 candidates,
+  100–3000 Hz, AP on whenever a hint was given), so "the same as WSJT-X"
+  meant translating every knob first. The first Q65 comparisons against
+  `jt9` differed in band, Rx frequency and AP sequencing, and measured
+  nothing (`CLAUDE.md`, tier C).
+- **AP was a free-form hint only.** WSJT-X derives its hypotheses from the
+  QSO in progress (`naptypes`); a caller had to reproduce that by hand.
+
+### The decision
+
+Copy `jt9`'s shape, one to one:
+
+| WSJT-X | 0.13 |
+|---|---|
+| one decoder process per mode | `Decoder<P>` |
+| the `params` block the GUI fills before each period | `DecodeParams` |
+| SAVE and module variables | `P::State`, owned by the decoder |
+| `ndepth` | `Depth`, deciding every search setting per mode, with the upstream lines cited |
+| — | `P::Extras`: what this crate adds, typed per mode |
+
+Three things follow from it, and they are the reason:
+
+1. **Comparing against upstream becomes a definition, not a translation.** A
+   task in `scripts/upstream_tasks.json` is the same parameter block on both
+   sides, which is what lets `UPSTREAM_EVALUATION.md` pair trials one to one.
+2. **State is correct by construction.** It lives where upstream keeps it,
+   one table per decoder as one table per process, so a multi-channel caller
+   cannot mix two channels' tables or forget to pass one.
+3. **Divergence is visible in the types.** Everything upstream has is in
+   `DecodeParams`; everything this crate adds is in `Extras`, so the house
+   rule that a deliberate divergence must be called out holds by
+   construction, and an option a mode lacks does not compile.
+
+### What it cost, accepted
+
+- **A field a mode does not read is ignored, not rejected**, as `jt9`
+  ignores it (`tol_hz` on FT8). The "read by" column of `LIBRARY.md` §2.2 is
+  the only guard.
+- **The public block follows upstream's.** `averaging` and `deep_search` are
+  `ndepth & 16` and `& 32`; `deep_search` is carried and not yet read. A
+  change to `jt9com` upstream is a reason to change this API.
+- **No table shared between decoders.** Two channels of one mode learn
+  callsigns separately, as two WSJT-X instances do.
+- **`MessageFilter` takes a function pointer, not a closure**, so the extras
+  stay `Clone + 'static`; a predicate that needs data reads a `static`.
+- **No early decode and no second pass over a decoded slot.** `SlotInput` is
+  a whole period; `.known()` and `.fft_cache()` went with the old requests.
+  WSJT-X's own form of this is the nzhsym 41/47 early decode, now #572.
+- **Heavier defaults** (FT8 `Deep`: sync 1.3, 1000 candidates). Measured,
+  this costs nothing that matters: at `Deep` the crate is 3.8–4.0× `jt9 -8
+  -d 3`'s speed on the same files, and decodes the same 21 messages on
+  `qso3_busy.wav` (`BENCHMARKS.md`).
+
+### What it bought, measured
+
+- QSO-context AP for FT8, FT4 and FST4 from `naptypes`: weak replies on FT8,
+  0 of 30 decoded with AP off and 20 of 30 on.
+- Sensitivity "the same" as WSJT-X v3.2.0-rc1 on every mode but legacy JT65,
+  on tasks defined identically on both sides (`BENCHMARKS.md`, 2026-10-04).
+- One C handle for every mode (`mfsk_decoder_*`) in place of a session
+  handle and per-family functions, because the Rust side now has one shape
+  to expose.
+
