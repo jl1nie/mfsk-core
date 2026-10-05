@@ -1,0 +1,13 @@
+# libm_probe (scripts/libm_probe.rs), one machine (#579)
+# rustc   : 1.98.1, rustc --edition 2021 -O
+# machine : AMD Ryzen 7 3700X (Zen 2, no AVX-512), WSL2 Ubuntu 22.04, glibc 2.35-0ubuntu3.15
+# commit  : fe6d5c6f
+machine x86_64 linux
+log10   138bbc1d3d21839f  first c0bd7273 c01a4735 c02e0bd3
+powf10  46d6ce25f017fc58  first 3e4522bd 3f096a18 3fe4843f
+ln      0c6fbcd339130beb  first c15a1be8 c0b19e8a c0c860ca
+exp     e1268fb20bbe1a00  first 32924678 3a98acd4 440726e6
+sin     9df798d1a56348e7  first bf4e106e 3f7fcfe9 3eea5458
+cos     1327fcad60ee2162  first bf17e65a 3d1ce267 3f639d59
+atan2   2343efce098e85ef  first bff5521b bfd9992c 3f56e855
+sqrt    2db63f0174b37525  first 3a8fae58 3d7f4e76 3d32e7d9
