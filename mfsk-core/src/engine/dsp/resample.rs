@@ -28,6 +28,8 @@ const TARGET_RATE: f64 = 12_000.0;
 /// for 48 kHz: 49 taps, fc 4500 Hz, stop 6000 Hz, 1 dB ripple, 40 dB.
 /// Computed from these taps: +0.5 dB at DC (the gain sums to 1.056, kept
 /// as upstream has it), -0.5 dB at 3–4.5 kHz, <= -40 dB from 6 kHz up.
+/// Spelled as in the Fortran, hence the precision allow.
+#[allow(clippy::excessive_precision)]
 const FIL4: [f32; 49] = [
     0.000861074040,
     0.010051920210,
