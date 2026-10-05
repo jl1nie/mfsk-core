@@ -73,3 +73,26 @@ Where to set the tolerance: on Apple silicon, where the difference exists and ca
 on. x86_64 with this glibc needs none (0 differing fixtures). Suggested starting point from the
 M5 numbers, to be checked there: messages and order exact, `freq_hz` / `dt_sec` exact,
 `snr_db` <= 0.05 dB, `sync_score` <= 5e-4 relative, `hard_errors` +-1, `pass` exact.
+
+### How much the libm differs: `cmp` of the two dumps (Apple M5 vs Ryzen 7 3700X, glibc 2.35)
+
+`libm_probe cmp`, 1,000,000 values per function (the Ryzen dump was copied to the Mac):
+
+| function | values that differ | largest gap |
+|---|---|---|
+| `log10` | 58,623 (5.9 %) | 2 ULP |
+| `powf10` | 6,167 (0.6 %) | 1 ULP |
+| `ln` | 959 (0.1 %) | 1 ULP |
+| `exp` | 6,202 (0.6 %) | 1 ULP |
+| `sin` | 145,079 (14.5 %) | 1 ULP |
+| `cos` | 672 (0.07 %) | 1 ULP |
+| `atan2` | 212,579 (21.3 %) | 2 ULP |
+| `sqrt` (control) | 0 | 0 |
+
+So the all-different hashes above are a few percent of the values off by one or two ULP, not a
+wide gap. The SNR path's `log10` is off for 5.9 % of inputs; the reporter's two rows in 21
+(about 10 %), each one ULP in `snr_db`, fit that, though the reporter's own glibc has not been
+probed. The M5's `snr_db` of 0.038 dB (about 0.9 % in the power ratio) and its many differing
+`sync_score` values are far larger than a libm ULP can give, so aarch64 has at least one more
+source (the NEON FFT kernel is the likely one). Neither is chased further: the tolerance below
+is set from the measured size of the differences, not from their cause.
