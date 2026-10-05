@@ -293,12 +293,14 @@ lives in `Extras`, so a setting that is not WSJT-X's is visible as such in
 your code.
 
 **Audio at another rate.** The decoders take 12 kHz audio, as `jt9` does.
-`engine::dsp::resample::resample_to_12k` converts other rates by linear
-interpolation, **without a low-pass filter**. Give it audio that is already
-band-limited below 6 kHz (a receiver's audio output usually is), or filter
-it first. WSJT-X itself takes 48 kHz from the sound card and decimates by 4
-through a 49-tap FIR (`Detector.cpp` calling `lib/fil4.f90`), which this crate
-does not port.
+`engine::dsp::resample::resample_to_12k` (and its `f32` and streaming
+forms) converts other rates. Above 12 kHz it first low-passes at the source
+rate so nothing above 6 kHz folds into the band: at 48 kHz with WSJT-X's own
+filter, the 49-tap `fil4` that `Detector.cpp` runs on the sound card's
+audio, and at other rates with a low-pass built to the same specification.
+Then it interpolates linearly. Up to 0.13.0 there was no filter: 48 kHz
+went down by plain decimation, and full-band noise (a microphone, a noisy
+sound card) cost FT8 about 6 dB (#576).
 
 ```rust
 use mfsk_core::engine::dsp::resample::resample_to_12k;

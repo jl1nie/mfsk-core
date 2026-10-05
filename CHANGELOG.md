@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+- **48 kHz (and any rate above 12 kHz) is low-passed before going down to 12 kHz, as WSJT-X does (#576).**
+  `engine::dsp::resample` had no anti-alias filter: 48 kHz → 12 kHz was a plain decimation by 4, so 6–24 kHz folded into
+  the band. It runs in the C ABI's decode and stream entry points at any rate other than 12 kHz, on the boards' USB audio
+  and microphone, and in wasm capture. On white noise over the full 48 kHz band FT8's 50 % crossing was -15.3 dB; with
+  `fil4` (`lib/fil4.f90`, the 49-tap FIR `Detector.cpp` applies) it is -21.1 dB, against -21.0 dB for the same signal and
+  noise generated at 12 kHz. `fil4` is now the filter at 48 kHz, in the batch functions and in `LinearResamplerI16To12k`
+  (Q15, FPU-free); other rates get a Kaiser low-pass to its specification. Tests: a 9 kHz tone comes out ≥ 30 dB down
+  (it was 0 dB), and FT8 at -19 dB in full-band 48 kHz noise decodes (0 of 4 before).
+
 - **docs: the 0.13 decoder by use case, why it is shaped like WSJT-X's, and how to move to it.** `LIBRARY.md` §1.1 (and
   `.ja.md`) is new: a decoder is something you keep, shown on the common jobs (a live receiver numbering its periods, a
   QSO's context, one decoder per channel, a deadline, streaming rows, a non-GUI search, other sample rates), each with
-  the reason for its shape and each a doctest; it also says `resample_to_12k` has no low-pass, where WSJT-X filters with
-  `fil4`. `LIBRARY.md` §1.2 (and
+  the reason for its shape and each a doctest. `LIBRARY.md` §1.2 (and
   `.ja.md`) gathers the migration from 0.12 that sat at the end of §6, adds what changes in results with the
   defaults (FT8 search, band, AP, JT9/JT65, WSPR, with the measurements behind them) and what replaces each removed option;
   §2 opens with the six rules the API follows. `DESIGN_RATIONALE.md` §6 records what went wrong in 0.12, the

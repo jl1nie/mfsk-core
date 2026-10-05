@@ -1,7 +1,19 @@
-//! Linear-interpolation resampler: arbitrary input rate → 12 000 Hz.
+//! Resampler: arbitrary input rate → 12 000 Hz.
 //!
 //! Used at the decode entry point so the rest of the pipeline can
-//! assume a fixed 12 000 Hz sample rate.
+//! assume a fixed 12 000 Hz sample rate. Above 12 kHz the input first
+//! goes through an anti-alias low-pass at its own rate, then linear
+//! interpolation picks the 12 kHz samples; at or below 12 kHz there is
+//! nothing to fold and only the interpolation runs.
+//!
+//! The low-pass is WSJT-X's own at 48 kHz: `Detector.cpp` runs the sound
+//! card's 48 kHz through `fil4_state` (`lib/fil4.f90`, v3.2.0-rc1) — 49
+//! taps, pass to 4500 Hz, stop from 6000 Hz, 40 dB — before decimating by
+//! 4. Other rates get a Kaiser low-pass to the same specification. Before
+//! #576 there was no filter at all: 48 kHz → 12 kHz was a plain
+//! decimation by 4 that folded 6–24 kHz into the band, and on full-band
+//! white noise FT8's 50 % crossing sat at -15.3 dB against -21.1 dB with
+//! `fil4` (-21.0 dB for the same signal and noise generated at 12 kHz).
 
 use alloc::vec::Vec;
 
@@ -12,34 +24,142 @@ use num_traits::Float;
 
 const TARGET_RATE: f64 = 12_000.0;
 
-/// Resample `samples` from `src_rate` Hz to 12 000 Hz using linear interpolation.
-///
-/// Returns the resampled buffer.  If `src_rate` is already 12 000, the
-/// input is returned as-is (zero-copy via `Cow` semantics at the call site).
-pub fn resample_to_12k(samples: &[i16], src_rate: u32) -> Vec<i16> {
-    let ratio = TARGET_RATE / src_rate as f64;
-    let out_len = (samples.len() as f64 * ratio).ceil() as usize;
-    let mut out = Vec::with_capacity(out_len);
+/// `fil4`'s taps (`lib/fil4.f90`, WSJT-X v3.2.0-rc1), designed with ScopeFIR
+/// for 48 kHz: 49 taps, fc 4500 Hz, stop 6000 Hz, 1 dB ripple, 40 dB.
+/// Computed from these taps: +0.5 dB at DC (the gain sums to 1.056, kept
+/// as upstream has it), -0.5 dB at 3–4.5 kHz, <= -40 dB from 6 kHz up.
+/// Spelled as in the Fortran, hence the precision allow.
+#[allow(clippy::excessive_precision)]
+const FIL4: [f32; 49] = [
+    0.000861074040,
+    0.010051920210,
+    0.010161983649,
+    0.011363155076,
+    0.008706594219,
+    0.002613872664,
+    -0.005202883094,
+    -0.011720748164,
+    -0.013752163325,
+    -0.009431602741,
+    0.000539063909,
+    0.012636767098,
+    0.021494659597,
+    0.021951235065,
+    0.011564169382,
+    -0.007656470131,
+    -0.028965787341,
+    -0.042637874109,
+    -0.039203309748,
+    -0.013153301537,
+    0.034320769178,
+    0.094717832646,
+    0.154224604789,
+    0.197758325022,
+    0.213715139513,
+    0.197758325022,
+    0.154224604789,
+    0.094717832646,
+    0.034320769178,
+    -0.013153301537,
+    -0.039203309748,
+    -0.042637874109,
+    -0.028965787341,
+    -0.007656470131,
+    0.011564169382,
+    0.021951235065,
+    0.021494659597,
+    0.012636767098,
+    0.000539063909,
+    -0.009431602741,
+    -0.013752163325,
+    -0.011720748164,
+    -0.005202883094,
+    0.002613872664,
+    0.008706594219,
+    0.011363155076,
+    0.010161983649,
+    0.010051920210,
+    0.000861074040,
+];
 
+/// The anti-alias low-pass applied at `src_rate` before going down to
+/// 12 kHz: `fil4` at 48 kHz, a Kaiser low-pass to `fil4`'s specification
+/// (pass 4500 Hz, stop 6000 Hz, 40 dB) at any other rate above 12 kHz, and
+/// `None` at or below 12 kHz, where nothing can fold. Causal, like
+/// `fil4_state`: the output lags by `(taps - 1) / 2` source samples
+/// (0.5 ms at 48 kHz, as in WSJT-X).
+fn antialias_taps(src_rate: u32) -> Option<Vec<f32>> {
+    if src_rate <= 12_000 {
+        return None;
+    }
+    if src_rate == 48_000 {
+        return Some(FIL4.to_vec());
+    }
+    let fs = src_rate as f64;
+    let (ntaps, beta) = super::fir_decimate::kaiser_order(40.0, 1_500.0 / fs);
+    Some(super::fir_decimate::design_lowpass_kaiser(
+        ntaps,
+        5_250.0 / fs,
+        beta,
+    ))
+}
+
+/// Linear interpolation of `len` source samples at `src_rate` onto the
+/// 12 kHz grid, reading source sample `n` through `x(n)`. The right-hand
+/// sample is read only when the output falls between two inputs, so an
+/// integer ratio (48 kHz) reads one filtered sample per output.
+fn interp_to_12k(len: usize, src_rate: u32, x: impl Fn(usize) -> f64) -> Vec<f64> {
+    let ratio = TARGET_RATE / src_rate as f64;
+    let out_len = (len as f64 * ratio).ceil() as usize;
+    let mut out = Vec::with_capacity(out_len);
     for i in 0..out_len {
         let src_pos = i as f64 / ratio;
         let idx = src_pos as usize;
         let frac = src_pos - idx as f64;
-
-        if idx + 1 < samples.len() {
-            let a = samples[idx] as f64;
-            let b = samples[idx + 1] as f64;
-            let v = a + (b - a) * frac;
-            out.push(v.round() as i16);
-        } else if idx < samples.len() {
-            out.push(samples[idx]);
+        if idx + 1 < len {
+            let a = x(idx);
+            out.push(if frac == 0.0 {
+                a
+            } else {
+                a + (x(idx + 1) - a) * frac
+            });
+        } else if idx < len {
+            out.push(x(idx));
         }
     }
-
     out
 }
 
-/// f32 → 12 000 Hz i16 in a single pass (linear interpolation + scaling).
+/// `interp_to_12k` over `raw`, through the anti-alias low-pass when
+/// `src_rate` needs one. The filter is evaluated only at the source
+/// samples the interpolation reads.
+fn to_12k(len: usize, src_rate: u32, raw: impl Fn(usize) -> f64) -> Vec<f64> {
+    match antialias_taps(src_rate) {
+        None => interp_to_12k(len, src_rate, raw),
+        Some(h) => interp_to_12k(len, src_rate, |n| {
+            h.iter()
+                .take(n + 1)
+                .enumerate()
+                .map(|(k, &w)| w as f64 * raw(n - k))
+                .sum()
+        }),
+    }
+}
+
+/// Resample `samples` from `src_rate` Hz to 12 000 Hz: the anti-alias
+/// low-pass above 12 kHz (`fil4` at 48 kHz), then linear interpolation.
+///
+/// Returns the resampled buffer.  If `src_rate` is already 12 000, the
+/// input is returned as-is (zero-copy via `Cow` semantics at the call site).
+pub fn resample_to_12k(samples: &[i16], src_rate: u32) -> Vec<i16> {
+    to_12k(samples.len(), src_rate, |n| samples[n] as f64)
+        .into_iter()
+        .map(|v| v.round().clamp(-32_768.0, 32_767.0) as i16)
+        .collect()
+}
+
+/// f32 → 12 000 Hz i16 in a single pass (anti-alias low-pass, linear
+/// interpolation, scaling).
 ///
 /// Used by the WASM live-capture path so the JS side can hand a Float32Array
 /// straight from the AudioWorklet without an intermediate i16 conversion loop.
@@ -66,33 +186,13 @@ pub fn resample_f32_to_12k(samples: &[f32], src_rate: u32) -> Vec<i16> {
         1.0
     };
 
-    let ratio = TARGET_RATE / src_rate as f64;
-    let out_len = (samples.len() as f64 * ratio).ceil() as usize;
-    let mut out = Vec::with_capacity(out_len);
-
-    for i in 0..out_len {
-        let src_pos = i as f64 / ratio;
-        let idx = src_pos as usize;
-        let frac = src_pos - idx as f64;
-
-        let v = if idx + 1 < samples.len() {
-            let a = samples[idx] as f64;
-            let b = samples[idx + 1] as f64;
-            a + (b - a) * frac
-        } else if idx < samples.len() {
-            samples[idx] as f64
-        } else {
-            continue;
-        };
-
-        let scaled = (v * scale * 32767.0).clamp(-32768.0, 32767.0);
-        out.push(scaled.round() as i16);
-    }
-
-    out
+    to_12k(samples.len(), src_rate, |n| samples[n] as f64)
+        .into_iter()
+        .map(|v| (v * scale * 32767.0).clamp(-32768.0, 32767.0).round() as i16)
+        .collect()
 }
 
-/// f32 → 12 000 Hz f32, linear interpolation, **no normalisation**.
+/// f32 → 12 000 Hz f32, anti-aliased as above, **no normalisation**.
 ///
 /// Preserves absolute amplitude — use this from decoders whose LLR
 /// scaling depends on the raw signal/noise ratio (WSPR's noncoherent
@@ -102,25 +202,10 @@ pub fn resample_f32_to_12k_f32(samples: &[f32], src_rate: u32) -> Vec<f32> {
     if src_rate == 12_000 {
         return samples.to_vec();
     }
-    let ratio = TARGET_RATE / src_rate as f64;
-    let out_len = (samples.len() as f64 * ratio).ceil() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let src_pos = i as f64 / ratio;
-        let idx = src_pos as usize;
-        let frac = src_pos - idx as f64;
-        let v = if idx + 1 < samples.len() {
-            let a = samples[idx] as f64;
-            let b = samples[idx + 1] as f64;
-            a + (b - a) * frac
-        } else if idx < samples.len() {
-            samples[idx] as f64
-        } else {
-            continue;
-        };
-        out.push(v as f32);
-    }
-    out
+    to_12k(samples.len(), src_rate, |n| samples[n] as f64)
+        .into_iter()
+        .map(|v| v as f32)
+        .collect()
 }
 
 /// i16 → 12 000 Hz f32. Thin wrapper: resample as i16, convert to f32
@@ -145,12 +230,16 @@ pub fn resample_i16_to_12k_f32(samples: &[i16], src_rate: u32) -> Vec<f32> {
 /// resampler to carry interpolation state across calls so the chunk
 /// boundary doesn't introduce a discontinuity.
 ///
-/// `LinearResamplerI16To12k` is that streaming variant: same
-/// linear-interpolation math as the batch path, plus a fixed-point
-/// `phase_q32` (Q32 fractional source position) and a `last_in`
-/// carry-over sample. Output is written into a caller-provided
-/// buffer — no per-call heap allocation. Pure scalar i64 arithmetic;
-/// runs on FPU-less MCUs.
+/// `LinearResamplerI16To12k` is that streaming variant: the same
+/// anti-alias low-pass as the batch path (`fil4` at 48 kHz, #576) in Q15
+/// integer taps with the filter history carried across calls, then the
+/// same linear interpolation, with a fixed-point `phase_q32` (Q32
+/// fractional source position) and a `last_in` carry-over sample. Output
+/// is written into a caller-provided buffer — no per-call heap
+/// allocation. Pure scalar i64 arithmetic; runs on FPU-less MCUs. The
+/// filter is evaluated only where an output needs it — once per output at
+/// 48 kHz, 49 MACs, about 0.6 M MAC/s — and the history is a ring, so an
+/// input sample costs one store.
 ///
 /// **Paired with** `MfskFt8Stream` in `mfsk-ffi-ft8`, which held one
 /// of these plus a 12 kHz ring buffer for the FT8 decode entry. That
@@ -174,6 +263,12 @@ pub struct LinearResamplerI16To12k {
     /// to prime; from then on the resampler can produce one output
     /// per `step_q32` worth of phase.
     primed: bool,
+    /// The anti-alias taps in Q15, empty at or below 12 kHz.
+    taps_q15: Vec<i32>,
+    /// The last `taps_q15.len()` raw input samples, a ring: the newest is
+    /// at `hist_pos - 1`. `last_in` is the newest one when filtering.
+    hist: Vec<i16>,
+    hist_pos: usize,
 }
 
 impl LinearResamplerI16To12k {
@@ -182,13 +277,56 @@ impl LinearResamplerI16To12k {
     pub fn new(src_rate_hz: u32) -> Self {
         assert!(src_rate_hz > 0, "src_rate_hz must be > 0");
         let step_q32 = ((src_rate_hz as u64) << 32) / 12_000;
+        let taps_q15: Vec<i32> = antialias_taps(src_rate_hz)
+            .unwrap_or_default()
+            .iter()
+            .map(|&h| (h as f64 * 32_768.0).round() as i32)
+            .collect();
+        let hist = alloc::vec![0i16; taps_q15.len()];
         Self {
             src_rate: src_rate_hz,
             step_q32,
             phase_q32: 0,
             last_in: 0,
             primed: false,
+            taps_q15,
+            hist,
+            hist_pos: 0,
         }
+    }
+
+    /// Take `x` as the newest input.
+    fn absorb(&mut self, x: i16) {
+        self.last_in = x;
+        if !self.hist.is_empty() {
+            self.hist[self.hist_pos] = x;
+            self.hist_pos = (self.hist_pos + 1) % self.hist.len();
+        }
+    }
+
+    /// The low-pass output at the newest input, or with `next` appended
+    /// first (without taking it). Without a filter, the raw sample.
+    fn filtered(&self, next: Option<i16>) -> i16 {
+        let n = self.hist.len();
+        if n == 0 {
+            return next.unwrap_or(self.last_in);
+        }
+        // `k` steps back from the sample being filtered: with `next`, step 0
+        // is `next` and step k is the ring's (k-1)-th newest.
+        let back = |k: usize| -> i16 {
+            match (next, k) {
+                (Some(x), 0) => x,
+                (Some(_), k) => self.hist[(self.hist_pos + n - k) % n],
+                (None, k) => self.hist[(self.hist_pos + n - 1 - k) % n],
+            }
+        };
+        let acc: i64 = self
+            .taps_q15
+            .iter()
+            .enumerate()
+            .map(|(k, &h)| h as i64 * back(k) as i64)
+            .sum();
+        ((acc + (1 << 14)) >> 15).clamp(i16::MIN as i64, i16::MAX as i64) as i16
     }
 
     /// Source rate this resampler was constructed with.
@@ -217,7 +355,7 @@ impl LinearResamplerI16To12k {
             if src.is_empty() {
                 return (0, 0);
             }
-            self.last_in = src[0];
+            self.absorb(src[0]);
             src = &src[1..];
             consumed += 1;
             self.primed = true;
@@ -233,7 +371,7 @@ impl LinearResamplerI16To12k {
                 if src.is_empty() {
                     return (consumed, produced);
                 }
-                self.last_in = src[0];
+                self.absorb(src[0]);
                 src = &src[1..];
                 consumed += 1;
                 self.phase_q32 -= 1u64 << 32;
@@ -243,14 +381,14 @@ impl LinearResamplerI16To12k {
             // `last_in` itself (no interpolation needed, no src lookup
             // required — important for the tail of a finite stream).
             let out = if self.phase_q32 == 0 {
-                self.last_in
+                self.filtered(None)
             } else {
                 // Need src[0] as the right endpoint.
                 if src.is_empty() {
                     return (consumed, produced);
                 }
-                let a = self.last_in as i64;
-                let b = src[0] as i64;
+                let a = self.filtered(None) as i64;
+                let b = self.filtered(Some(src[0])) as i64;
                 let frac = self.phase_q32 as i64; // < 2^32
                 // (b - a) ∈ [-65535, 65535]; * frac ∈ [-2^48, 2^48]; fits i64.
                 let interp = a + (((b - a) * frac + (1 << 31)) >> 32);
@@ -323,18 +461,71 @@ mod tests {
 
     #[test]
     fn streaming_downsample_48k_to_12k() {
-        // 48k → 12k = factor 4. step_q32 = 4 * 2^32.
-        let input: Vec<i16> = (0..400).map(|i| (i * 100) as i16).collect();
+        // 48k → 12k = factor 4. step_q32 = 4 * 2^32: one output per four
+        // inputs, each the fil4 output at that input.
+        let input = vec![1_000i16; 400];
         let mut r = LinearResamplerI16To12k::new(48_000);
         let mut out = vec![0i16; 100];
         let (cons, prod) = r.process(&input, &mut out);
         assert_eq!(prod, 100);
-        // Output[0] = src[0], Output[1] = src[4], Output[2] = src[8], …
-        // (phase exactly 0 at every emission since the ratio is integer).
-        assert_eq!(out[0], 0);
-        assert_eq!(out[1], 400);
-        assert_eq!(out[2], 800);
         assert_eq!(cons, 397); // 1 prime + 99 post-prime × 4 = 397
+        // Once the 49-tap history is full, a constant comes out at fil4's
+        // DC gain (1.056).
+        for &y in &out[13..] {
+            assert!((1_053..=1_059).contains(&y), "{y}");
+        }
+    }
+
+    /// Output power of a tone at `f_hz` through the resampler, relative to
+    /// the input's, in dB — measured after the filter has settled.
+    fn tone_gain_db(src_rate: u32, f_hz: f64, streaming: bool) -> f64 {
+        let n = src_rate as usize; // one second
+        let amp = 10_000.0;
+        let x: Vec<i16> = (0..n)
+            .map(|i| {
+                (amp * (2.0 * core::f64::consts::PI * f_hz * i as f64 / src_rate as f64).sin())
+                    as i16
+            })
+            .collect();
+        let y = if streaming {
+            let mut r = LinearResamplerI16To12k::new(src_rate);
+            let mut out = vec![0i16; r.max_output_for(n)];
+            let (_c, p) = r.process(&x, &mut out);
+            out.truncate(p);
+            out
+        } else {
+            resample_to_12k(&x, src_rate)
+        };
+        let tail = &y[1_000..y.len() - 10];
+        let p_out = tail.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / tail.len() as f64;
+        10.0 * (p_out / (amp * amp / 2.0)).log10()
+    }
+
+    /// #576: above 12 kHz the input must not fold into the band. A tone at
+    /// 9 kHz lands on 3 kHz if it is decimated without a filter, which is
+    /// what both paths did; it must now come out at least 30 dB down, and a
+    /// tone in the band must keep its level.
+    #[test]
+    fn rates_above_12k_reject_what_would_alias() {
+        for &(rate, streaming) in &[
+            (48_000, false),
+            (48_000, true),
+            (44_100, false),
+            (44_100, true),
+            (96_000, false),
+            (24_000, false),
+        ] {
+            let alias = tone_gain_db(rate, 9_000.0, streaming);
+            let band = tone_gain_db(rate, 1_500.0, streaming);
+            assert!(
+                alias < -30.0,
+                "{rate} Hz (streaming {streaming}): 9 kHz at {alias:.1} dB"
+            );
+            assert!(
+                band.abs() < 1.0,
+                "{rate} Hz (streaming {streaming}): 1.5 kHz at {band:.2} dB"
+            );
+        }
     }
 
     #[test]
