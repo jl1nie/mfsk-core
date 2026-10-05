@@ -2,8 +2,11 @@
 //! Frozen decode output of the 0.12 request API, so the 0.13.0 redesign
 //! (one persistent `Decoder<P>` per mode, upstream parameter block, every
 //! per-family request type deleted) can be proven to change nothing: every
-//! request shape below is decoded on the golden recordings and compared,
-//! bit for bit, with `tests/fixtures/decode_snapshot/<case>.txt`.
+//! request shape below is decoded on the golden recordings and compared
+//! with `tests/fixtures/decode_snapshot/<case>.txt`: the messages, their order,
+//! `pass` exactly, the float columns within [`Tol`] (below), because the
+//! fixtures hold f32 bit patterns and the last bits belong to the machine
+//! (#579). `MFSK_SNAPSHOT_STRICT=1` asks for the bits again.
 //!
 //! The fixtures were written by the 0.12 API before the redesign
 //! (`MFSK_WRITE_SNAPSHOT=1`); after it, only the calls change. A
@@ -34,6 +37,108 @@ const FST4_WAV: &str = asset_path!("golden/fst4/210115_0058.wav");
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/decode_snapshot")
+}
+
+/// How far a row may sit from its fixture on a machine other than the one that wrote it (#579).
+///
+/// The fixtures pin f32 bit patterns written on x86_64 Linux (glibc 2.35, rustfft's AVX2
+/// kernel). The same decode on Apple M5 (aarch64: rustfft's NEON kernel, Apple's libm) has the
+/// same messages in the same order in all 53 cases, and 50 of them differ in the last bits:
+/// `freq_hz` by up to 1.2e-3 Hz (FT4), `dt_sec` by 0, `snr_db` by up to 0.038 dB (the IQ
+/// path; 0.036 on `ft8_wsjtx_d2`, 1.5e-3 elsewhere), `sync_score` by up to 1.9e-4 relative,
+/// `hard_errors` by 1 in one FT8 row. A Zen 2 Ryzen on that glibc matches all 53 bit for bit;
+/// a Zen 3+ Ryzen on a newer glibc differs by one ULP in `snr_db` on 2 of 21 rows (the
+/// platform's `log10f` differs from glibc 2.35's for 5.9 % of inputs, by 1-2 ULP). Data, probe
+/// and the account: `docs/notes/snapshot_platform/`. Each limit below is 2.5-5 times the
+/// largest measured gap; a changed message, a moved row or a different `pass` is still a failure.
+struct Tol {
+    freq_hz: f32,
+    dt_sec: f32,
+    snr_db: f32,
+    /// Relative: `sync_score` runs from 1e4 to 1e8.
+    sync_score: f32,
+    hard_errors: u32,
+}
+
+impl Tol {
+    const PLATFORM: Tol = Tol {
+        freq_hz: 5e-3,
+        dt_sec: 1e-5,
+        snr_db: 0.1,
+        sync_score: 1e-3,
+        hard_errors: 2,
+    };
+    const EXACT: Tol = Tol {
+        freq_hz: 0.0,
+        dt_sec: 0.0,
+        snr_db: 0.0,
+        sync_score: 0.0,
+        hard_errors: 0,
+    };
+}
+
+fn tol() -> &'static Tol {
+    if std::env::var_os("MFSK_SNAPSHOT_STRICT").is_some() {
+        &Tol::EXACT
+    } else {
+        &Tol::PLATFORM
+    }
+}
+
+fn near(a: f32, b: f32, abs: f32, rel: f32) -> bool {
+    a.to_bits() == b.to_bits() || (a - b).abs() <= abs + rel * a.abs().max(b.abs())
+}
+
+/// Compare two row texts (the format of `rows()` / `decoded_rows()`): `Err` says which row
+/// and which column.
+fn within_tolerance(want: &str, got: &str) -> Result<(), String> {
+    let (w, g): (Vec<&str>, Vec<&str>) = (want.lines().collect(), got.lines().collect());
+    if w.len() != g.len() {
+        return Err(format!("row count {} vs {}", w.len(), g.len()));
+    }
+    let t = tol();
+    let bits = |s: &str| u32::from_str_radix(s, 16).map(f32::from_bits);
+    for (i, (w, g)) in w.iter().zip(&g).enumerate() {
+        let (wf, gf): (Vec<&str>, Vec<&str>) = (w.split('\t').collect(), g.split('\t').collect());
+        if wf.len() != gf.len() || !(wf.len() == 4 || wf.len() == 7) {
+            if w != g {
+                return Err(format!("row {i}: {w:?} vs {g:?}"));
+            }
+            continue;
+        }
+        if wf[0] != gf[0] {
+            return Err(format!("row {i}: message {:?} vs {:?}", wf[0], gf[0]));
+        }
+        // 1 freq_hz, 2 dt_sec, 3 snr_db, then 4 sync_score (frame families only).
+        let columns: [(&str, usize, f32, f32); 4] = [
+            ("freq_hz", 1, t.freq_hz, 0.0),
+            ("dt_sec", 2, t.dt_sec, 0.0),
+            ("snr_db", 3, t.snr_db, 0.0),
+            ("sync_score", 4, 0.0, t.sync_score),
+        ];
+        for (name, c, abs, rel) in columns.into_iter().take(if wf.len() == 7 { 4 } else { 3 }) {
+            let (a, b) = (
+                bits(wf[c]).map_err(|e| format!("row {i}: {name}: {e}"))?,
+                bits(gf[c]).map_err(|e| format!("row {i}: {name}: {e}"))?,
+            );
+            if !near(a, b, abs, rel) {
+                return Err(format!("row {i} ({}): {name} {a} vs {b}", wf[0]));
+            }
+        }
+        if wf.len() == 7 {
+            let (a, b): (u32, u32) = (
+                wf[5].parse().unwrap_or(u32::MAX),
+                gf[5].parse().unwrap_or(0),
+            );
+            if a.abs_diff(b) > t.hard_errors {
+                return Err(format!("row {i} ({}): hard_errors {a} vs {b}", wf[0]));
+            }
+            if wf[6] != gf[6] {
+                return Err(format!("row {i} ({}): pass {} vs {}", wf[0], wf[6], gf[6]));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn rows(results: &[DecodeResult]) -> String {
@@ -101,10 +206,9 @@ fn check_text(case: &str, got: String) {
         eprintln!("SNAPDIFF {case}\n--- fixture\n{want}--- now\n{got}SNAPEND");
         return;
     }
-    assert!(
-        got == want,
-        "{case}: decode output changed\n--- fixture\n{want}--- now\n{got}"
-    );
+    if let Err(why) = within_tolerance(&want, &got) {
+        panic!("{case}: decode output changed ({why})\n--- fixture\n{want}--- now\n{got}");
+    }
 }
 
 fn load(path: &str) -> Option<Vec<i16>> {
@@ -772,7 +876,7 @@ mod via_decoder {
 
     /// Compare Q65 rows with a fixture whose request used another nominal
     /// start: `dt` is relative to it, so it moves by the difference; every
-    /// other column is bit for bit.
+    /// other column is within [`Tol`].
     fn check_q65(
         case: &str,
         rows: Vec<mfsk_core::decoder::Row<mfsk_core::q65::Q65Result>>,
@@ -795,7 +899,12 @@ mod via_decoder {
         for (g, w) in got.iter().zip(lines) {
             let f: Vec<&str> = w.split('\t').collect();
             assert_eq!(g.0, f[0], "{case}: text");
-            assert_eq!(format!("{:08x}", g.1), f[1], "{case}: freq");
+            let old_freq = f32::from_bits(u32::from_str_radix(f[1], 16).unwrap());
+            assert!(
+                near(f32::from_bits(g.1), old_freq, tol().freq_hz, 0.0),
+                "{case}: freq {} vs {old_freq}",
+                f32::from_bits(g.1)
+            );
             let old_dt = f32::from_bits(u32::from_str_radix(f[2], 16).unwrap());
             assert!(
                 (g.2 - (old_dt + dt_shift)).abs() < dt_tol,
@@ -806,7 +915,7 @@ mod via_decoder {
             let old_snr = f32::from_bits(u32::from_str_radix(f[3], 16).unwrap());
             let snr = f32::from_bits(g.3);
             assert!(
-                (snr - old_snr).abs() <= snr_tol_db,
+                near(snr, old_snr, snr_tol_db.max(tol().snr_db), 0.0),
                 "{case}: snr {snr} vs {old_snr}"
             );
         }
@@ -920,4 +1029,40 @@ mod via_decoder {
             }
         }
     }
+}
+
+/// The comparator accepts the platform's last-bit noise and refuses a changed decode (#579).
+#[test]
+fn tolerance_accepts_last_bits_and_refuses_a_changed_decode() {
+    let row = |text: &str, snr: f32, sync: f32, he: u32, pass: u32| {
+        format!(
+            "{text}\t{:08x}\t{:08x}\t{:08x}\t{:08x}\t{he}\t{pass}\n",
+            1500.0f32.to_bits(),
+            0.25f32.to_bits(),
+            snr.to_bits(),
+            sync.to_bits()
+        )
+    };
+    let base = row("CQ K1ABC FN42", -9.148_531, 5.0e7, 27, 15);
+    let ulp = |x: f32| f32::from_bits(x.to_bits() + 1);
+    if std::env::var_os("MFSK_SNAPSHOT_STRICT").is_none() {
+        assert!(within_tolerance(&base, &base).is_ok());
+        assert!(
+            within_tolerance(&base, &row("CQ K1ABC FN42", ulp(-9.148_531), 5.0e7, 27, 15)).is_ok()
+        );
+        assert!(
+            within_tolerance(
+                &base,
+                &row("CQ K1ABC FN42", -9.148_531 + 0.04, 5.0e7 * 1.0002, 26, 15)
+            )
+            .is_ok()
+        );
+    }
+    // Always refused, strict or not.
+    assert!(within_tolerance(&base, &row("CQ K1ABC FN43", -9.148_531, 5.0e7, 27, 15)).is_err());
+    assert!(within_tolerance(&base, &row("CQ K1ABC FN42", -8.5, 5.0e7, 27, 15)).is_err());
+    assert!(within_tolerance(&base, &row("CQ K1ABC FN42", -9.148_531, 5.1e7, 27, 15)).is_err());
+    assert!(within_tolerance(&base, &row("CQ K1ABC FN42", -9.148_531, 5.0e7, 30, 15)).is_err());
+    assert!(within_tolerance(&base, &row("CQ K1ABC FN42", -9.148_531, 5.0e7, 27, 14)).is_err());
+    assert!(within_tolerance(&base, &format!("{base}{base}")).is_err());
 }
