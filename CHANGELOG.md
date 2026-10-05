@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.1 — the LPF subtract no longer panics on a slot shorter than the frame (#567, #574), 48 kHz input is low-passed before 12 kHz (#576), hashed calls keep /P and /R (#570), the licence is GPL-3.0-only (#569), the skimmer installers say how to install them
 
 - **48 kHz (and any rate above 12 kHz) is low-passed before going down to 12 kHz, as WSJT-X does (#576).**
   `engine::dsp::resample` had no anti-alias filter: 48 kHz → 12 kHz was a plain decimation by 4, so 6–24 kHz folded into
