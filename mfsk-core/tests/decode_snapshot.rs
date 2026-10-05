@@ -93,6 +93,14 @@ fn check_text(case: &str, got: String) {
             path.display()
         )
     });
+    // `MFSK_SNAPSHOT_REPORT=1`: print each mismatch as a `SNAPDIFF` block and carry on,
+    // so one run measures how far this machine is from the fixtures in every case
+    // instead of stopping at the first (#579; `scripts/snapshot-diff-stats.py` reads it).
+    // Unset, a mismatch fails as before.
+    if got != want && std::env::var_os("MFSK_SNAPSHOT_REPORT").is_some() {
+        eprintln!("SNAPDIFF {case}\n--- fixture\n{want}--- now\n{got}SNAPEND");
+        return;
+    }
     assert!(
         got == want,
         "{case}: decode output changed\n--- fixture\n{want}--- now\n{got}"
