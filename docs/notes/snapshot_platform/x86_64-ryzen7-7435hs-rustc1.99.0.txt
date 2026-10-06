@@ -1,0 +1,10 @@
+# decode_snapshot vs the fixtures, one machine (#579), measured by the reporter.
+# machine : AMD Ryzen 7 7435HS (x86_64), CachyOS, glibc 2.44
+# rustc   : 1.99.0 (Arch's rustc, no rustup: the 1.98.1 pin is not honoured)
+# commit  : f6323dca (main)
+# result  : with Tol, 15 passed and MFSK_SNAPSHOT_REPORT=1 prints nothing (every case inside Tol).
+#           MFSK_SNAPSHOT_STRICT=1: 8 passed, 7 failed, from these four rows (the SNAPDIFF blocks were not sent):
+# ft8_default       row 4  K1BZM DK8NE -10  snr_db   c1126062 -> c1126064 (-9.148531 -> -9.148533, 2 ULP)
+# ft4_default       row 5                   freq_hz  1909.7092 -> 1909.7094
+# q65_30a_averaged  row 0                   snr_db   -20.01653 -> -20.016531 (1 ULP)
+# iq_direct_ft8     row 14                  snr_db   -0.09790039 -> -0.097904205
