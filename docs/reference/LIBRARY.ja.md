@@ -360,9 +360,9 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 |---|---|
 | `.hash_table(Arc)` — 複数のリクエストで共有する 1 つの表 | デコーダごとに自分の表を持つ（本家のプロセスごとと同じ）。同じモードの 2 チャンネルは別々に学習する。`learn_callsign` で種を入れられる |
 | `.previous_cycle()`、`MultiPeriodRequest` — 呼び出しごとに渡す状態 | デコーダが保持する。どれが連続した周期かが分かるよう、`SlotInput::period` で周期に番号を付ける |
-| `.known(list)` — 前のパスで既にデコードした信号を、探索の前に引き算する | まだ対応するものは無い。早期デコード設計（[#572](https://github.com/jl1nie/mfsk-core/issues/572)）がこれを覆う: 一度デコードしたスロットへの再探索（WebFT8 の 2 段デコード、[#587](https://github.com/jl1nie/mfsk-core/issues/587)）は、同一の完全な周期に対して `Early`/`Final` を呼ぶことに当たり、2 回目の探索の前に `Early` の行を引き算する |
+| `.known(list)` — 前のパスで既にデコードした信号を、探索の前に引き算する | 対応するものは無い。一度デコードしたスロットへの 2 回目のパス（WebFT8 の 2 段デコード）は API に含まれない。本家での形は早期デコードで、[#572](https://github.com/jl1nie/mfsk-core/issues/572) |
 | `.message_filter(closure)` / `.also_accept(closure)` | `MessageFilter::Only(f)` / `AlsoAccept(f)`。`f` は関数ポインタで、extras が `Clone + 'static` のままでいられるようにしている。何も取り込まないクロージャは変換される。データが要る判定は `static` から読む（[§2.6](#26-メッセージの受理)） |
-| `.fft_cache()` / 結果の `fft_cache` — 2 回目のパスに渡すスロットの FFT | 対応するものは無く、#572 が復元するものでもない: このキャッシュが省くのは各ラウンドの `build_fft_cache`(前方FFT)だけで、重い部分の `compute_spectrogram`/`coarse_sync` は対象外なので、#587 が計測した重さは直せなかった。#572 の `Early`/`Final` は、キャッシュではなく「再探索しない」ことで解決する |
+| `.fft_cache()` / 結果の `fft_cache` — 2 回目のパスに渡すスロットの FFT | 対応するものは無い。理由は `.known()` と同じ |
 | `wsjtx_depth(WsjtxDepth::D1…D3)` | `DecodeParams` の `Depth::Fast` / `Normal` / `Deep`。全モードに効く |
 
 0.12 の合成 API（`engine::tx`）、公称開始位置からの `dt_sec`、`engine::search` は変わらない。
