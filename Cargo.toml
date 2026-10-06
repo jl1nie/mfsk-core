@@ -16,9 +16,13 @@ members  = [
 # meant to build under a normal host `cargo build`/`cargo test` — see
 # bench/wasm/README.md.
 #
+# `wasm-smoke` is excluded for the same reason, but unlike `bench/wasm` it is
+# CI-gated: the `wasm` job runs one decode per mode in Node (issue #585, after
+# the `Instant::now()` panic of #583).
+#
 # `apps/skimmer/gui` is the Tauri app: it needs a webview (WebView2 /
 # webkit2gtk) and Node for its front end, which host CI does not have.
-exclude  = ["embedded-poc", "bench/wasm", "apps/skimmer/gui"]
+exclude  = ["embedded-poc", "bench/wasm", "wasm-smoke", "apps/skimmer/gui"]
 resolver = "2"
 
 # Single source of truth for the crate version. `mfsk-core`,

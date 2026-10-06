@@ -1,0 +1,28 @@
+[package]
+name = "mfsk-wasm-smoke"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Not part of the mfsk-core workspace (root Cargo.toml `exclude`). Runs one decode per mode on wasm32-unknown-unknown under Node, so a std::time or other run-time panic on that target fails CI (issue #585, after #583). See README.md."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+# Everything that is not host-only: `parallel` (rayon) and `serde` are left
+# out, `jtty` is not slot-decoded. `std` is on because `fft-rustfft` needs it,
+# which is exactly the combination #583 broke.
+mfsk-core = { path = "../mfsk-core", default-features = false, features = [
+    "std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "msk144",
+] }
+
+[profile.release]
+opt-level = 1
+
+# wasm-pack would otherwise download binaryen for a smoke test that does not
+# care about size.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[workspace]
