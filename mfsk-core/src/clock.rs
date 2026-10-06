@@ -12,12 +12,17 @@
 //! Every `Instant::now()` that is not behind a trace flag or in a test goes
 //! through [`Tick`]; `grep -rn 'Instant::now' src/` should show nothing else
 //! on a decode path.
+//!
+//! `elapsed_micros` (WSPR) and `elapsed_nanos` (MSK144) are each used by one
+//! feature only, so `dead_code` is allowed on the impls: which one is
+//! reachable depends on the feature set, and `-D warnings` runs the matrix.
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 #[derive(Clone, Copy)]
 pub(crate) struct Tick(std::time::Instant);
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[allow(dead_code)]
 impl Tick {
     #[inline]
     pub(crate) fn now() -> Self {
@@ -39,6 +44,7 @@ impl Tick {
 pub(crate) struct Tick;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[allow(dead_code)]
 impl Tick {
     #[inline]
     pub(crate) fn now() -> Self {
