@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **CI: a `wasm` job decodes one slot of every mode on `wasm32-unknown-unknown`, in Node (#585).** The #583 panic shipped for
+  five releases because nothing ran that target. `wasm-smoke/` (outside the workspace) fails naming the modes that panic;
+  against the tree before #584 it fails for WSPR and MSK144 and for no other of the 21. Not a timing or SIMD check: that is `bench/wasm`.
 - **`Decoder<Wspr>` and the MSK144 decoder no longer panic on `wasm32-unknown-unknown` (#583).** Their stage timers called
   `std::time::Instant::now()` whenever `std` was on, and on that target std has no clock: `time not implemented on this
   platform`, on any input, even silence. `fft-rustfft` requires `std`, so every browser build of WSPR or MSK144 was affected

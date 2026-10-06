@@ -52,6 +52,8 @@ build` would try to compile them with the stable toolchain and fail:
   "Embedded targets" below.
 - `bench/wasm/` — a wasm-bindgen harness for `wasm32-unknown-unknown`
   (issue #208); a manual/periodic tool, not CI-gated.
+- `wasm-smoke/` — one decode per mode on `wasm32-unknown-unknown`, run in Node by CI's `wasm` job (issue #585). Excluded from
+  the workspace like `bench/wasm`, but unlike it, gated: `std` does not imply a clock on that target (#583).
 - `apps/skimmer/gui/` — the skimmer's Tauri + Svelte GUI over
   `skimmer-core`; needs a webview (WebView2 / webkit2gtk) and Node, which
   host CI lacks. `skimmer-installers.yml` builds it on Windows and macOS

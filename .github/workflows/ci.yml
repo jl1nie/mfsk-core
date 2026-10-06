@@ -135,6 +135,7 @@ jobs:
               - 'mfsk-ffi/**'
               - 'apps/skimmer/core/**'
               - 'apps/skimmer/cli/**'
+              - 'wasm-smoke/**'
             # Tier A+B is the only job that reads the recordings, so a
             # change to one runs that job and not `src`'s others
             # (feature matrix, ffi, cross, bindings), none of which
@@ -1053,6 +1054,49 @@ jobs:
   # (missing metadata, path deps without version, oversized
   # tarball) before the real publish workflow tries to upload.
   # ───────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────
+  # One decode per mode on wasm32-unknown-unknown, run in Node (issue #585).
+  #
+  # `std` does not imply a clock there: `Instant::now()` panics. #583 was
+  # exactly that, in WSPR's and MSK144's stage timers, and it shipped from
+  # 0.10.1 to 0.13.1 because nothing built or ran this target — and a
+  # compile check would not have seen it, since it is a run-time panic.
+  # `wasm-smoke/` decodes one silent slot of every mode and fails naming the
+  # ones that panicked. Silence is enough: the panic was in code every decode
+  # runs. Against the tree before #584 it fails for WSPR and MSK144 only.
+  #
+  # Not the same as `bench/wasm`, which measures SIMD speed by hand and is
+  # excluded from this workflow's path filter.
+  # ───────────────────────────────────────────────────────────────
+  wasm:
+    name: wasm32 decode smoke (Node)
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wasm-smoke
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install wasm-pack
+        run: curl -fsSL https://drager.github.io/wasm-pack/installer/init.sh | sh
+
+      - name: Build for wasm32-unknown-unknown
+        working-directory: wasm-smoke
+        run: wasm-pack build --target nodejs --release
+
+      - name: Decode one slot of every mode in Node
+        working-directory: wasm-smoke
+        run: node run.mjs
+
   publish-dry-run:
     name: cargo publish --dry-run
     runs-on: ubuntu-latest
