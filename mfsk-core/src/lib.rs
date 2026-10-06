@@ -365,6 +365,8 @@ extern crate alloc;
 /// override that didn't get re-fingerprinted).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[cfg(feature = "std")]
+pub(crate) mod clock;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decoder;
 pub mod engine;

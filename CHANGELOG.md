@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`Decoder<Wspr>` and the MSK144 decoder no longer panic on `wasm32-unknown-unknown` (#583).** Their stage timers called
+  `std::time::Instant::now()` whenever `std` was on, and on that target std has no clock: `time not implemented on this
+  platform`, on any input, even silence. `fft-rustfft` requires `std`, so every browser build of WSPR or MSK144 was affected
+  (since 0.10.1 at least). The timers now go through one `Tick` (`src/clock.rs`) that reads zero without a clock; the values
+  only feed the benchmark counters (`wspr::instrument`, MSK144 trace), so no decode changes. Measured under Node with a
+  wasm-bindgen probe: both panicked before (`RuntimeError: unreachable`), both run after. No CI job covers it yet.
 - **`decode_snapshot` compares within a tolerance instead of bit for bit (#579).** Its fixtures pin f32 bit patterns, so the
   last bits of a decode belong to the machine: on a Ryzen 7 with glibc 2.44 four rows in four fixtures are 1-2 ULP off
   (three `snr_db`, one FT4 `freq_hz`; its `log10f` and `atan2f` differ from glibc 2.35's), and on Apple M5 (NEON FFT kernel, Apple's libm) 50 of 53 fixtures

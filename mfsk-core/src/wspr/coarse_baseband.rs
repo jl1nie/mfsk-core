@@ -402,12 +402,12 @@ pub(super) fn coarse_baseband_ext(
     // Split coarse into its two halves so the PSRAM-latency question
     // on `ps` can be asked at all — see `instrument::COARSE_SPECTRO_US`.
     #[cfg(feature = "std")]
-    let t_spectro = std::time::Instant::now();
+    let t_spectro = crate::clock::Tick::now();
     let spec = build_spectro(idat, qdat);
     #[cfg(feature = "std")]
     super::instrument::add_us(
         &super::instrument::COARSE_SPECTRO_US,
-        t_spectro.elapsed().as_micros() as u32,
+        t_spectro.elapsed_micros() as u32,
     );
     if spec.n_time == 0 {
         return Vec::new();
@@ -430,12 +430,12 @@ pub(super) fn coarse_baseband_ext(
     for (j, snr_db) in peaks {
         let bin0 = smspec_to_bin(j);
         #[cfg(feature = "std")]
-        let t_refine = std::time::Instant::now();
+        let t_refine = crate::clock::Tick::now();
         let cells = refine_alignment_top_k(&spec, bin0, max_drift_hz, TOP_K_PER_PEAK);
         #[cfg(feature = "std")]
         super::instrument::add_us(
             &super::instrument::COARSE_REFINE_US,
-            t_refine.elapsed().as_micros() as u32,
+            t_refine.elapsed_micros() as u32,
         );
         for (shift_baseband, dfreq, idrift, sync) in cells {
             if !sync.is_finite() {

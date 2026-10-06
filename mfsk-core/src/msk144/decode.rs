@@ -196,11 +196,11 @@ fn decode_block(
 
     // Stage A: short-ping decoder.
     #[cfg(feature = "std")]
-    let __trace_ta = std::time::Instant::now();
+    let __trace_ta = crate::clock::Tick::now();
     let stage_a = short_ping_decode(cbig, fc, ntol, ctx);
     #[cfg(feature = "std")]
     TRACE_STAGE_A_NANOS.fetch_add(
-        __trace_ta.elapsed().as_nanos() as u64,
+        __trace_ta.elapsed_nanos(),
         core::sync::atomic::Ordering::Relaxed,
     );
     if let Some(spd) = stage_a {
@@ -211,7 +211,7 @@ fn decode_block(
 
     // Stage B: longer frame-averaging fallback.
     #[cfg(feature = "std")]
-    let __trace_tb = std::time::Instant::now();
+    let __trace_tb = crate::clock::Tick::now();
     let tframe = NSPM as f32 / 12_000.0;
     for iavg in 0..depth.npat() {
         let navmask = IAVPATTERNS[iavg];
@@ -243,7 +243,7 @@ fn decode_block(
                         TRACE_STAGE_B_BP_SUCCESS
                             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                         TRACE_STAGE_B_NANOS.fetch_add(
-                            __trace_tb.elapsed().as_nanos() as u64,
+                            __trace_tb.elapsed_nanos(),
                             core::sync::atomic::Ordering::Relaxed,
                         );
                     }
@@ -255,7 +255,7 @@ fn decode_block(
     }
     #[cfg(feature = "std")]
     TRACE_STAGE_B_NANOS.fetch_add(
-        __trace_tb.elapsed().as_nanos() as u64,
+        __trace_tb.elapsed_nanos(),
         core::sync::atomic::Ordering::Relaxed,
     );
 
