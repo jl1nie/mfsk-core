@@ -1374,6 +1374,13 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
         return (r, audio_clean);
     }
 
+    // A budget spent during checkpoint A leaves B and C nothing to do: C's
+    // search would be refused at its first poll, so B's subtractions would
+    // be paid for a residual nobody searches (#587).
+    if !budget.allows(None, None) {
+        return (early_results, audio_clean);
+    }
+
     // ---- Checkpoint B (nearly=47): subtract-prep only, no search.
     // Full-length buffer again (see checkpoint A comment above), content
     // zeroed past `b_len`. Only signals whose full NN-symbol message
@@ -1399,6 +1406,15 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     let mut deferred: Vec<DecodeResult> = Vec::new();
     for r in &early_results {
         if r.dt_sec < dt_fit_limit_b {
+            // Polled per row, like the candidate loop (#587): one
+            // `subtract_signal_lpf_refine_dt` measured 60-150 ms on the
+            // #587 recordings (native and wasm32), and the unpolled loop
+            // kept a 300 ms budget running up to 0.95 s past its first
+            // `false`. A row not subtracted here is not deferred either:
+            // C cannot run once the budget is spent.
+            if !budget.allows(None, None) {
+                break;
+            }
             subtract_signal_lpf_refine_dt(&mut buf_b, r);
         } else {
             deferred.push(r.clone());
@@ -1418,6 +1434,9 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     // `ft8_decode.f90:158` — same `lrefinedt=.true.` re-search as
     // checkpoint B above, for the late-`dt` decodes deferred to here.
     for r in &deferred {
+        if !budget.allows(None, None) {
+            break;
+        }
         subtract_signal_lpf_refine_dt(&mut buf_c, r);
     }
 
@@ -2014,6 +2033,55 @@ mod tests {
                 .map(|c| i16::from_le_bytes([c[0], c[1]]))
                 .collect(),
         )
+    }
+
+    /// #587: a budget that runs out during checkpoint A must not pay for
+    /// B's and C's subtractions. The budget here allows candidates until A
+    /// has delivered its first row, so the cut lands inside A whatever the
+    /// machine's speed. The residual coming back unchanged is what shows
+    /// no subtraction ran: B/C would have zeroed the tail past `C_SAMPLES`
+    /// and subtracted A's rows.
+    #[test]
+    fn staged_sic_skips_b_and_c_when_a_spends_the_budget() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+        assert!(audio.len() > staged_checkpoint::C_SAMPLES);
+
+        let found = AtomicUsize::new(0);
+        let on_result = |_: &DecodeResult| {
+            found.fetch_add(1, Ordering::SeqCst);
+        };
+        let check = || found.load(Ordering::SeqCst) == 0;
+        let mut budget = BudgetState::new(Some(&check));
+        let (results, residual) = decode_frame_subtract_staged_with_ap_inner(
+            &audio,
+            100.0,
+            3000.0,
+            1.0,
+            crate::engine::pipeline::QsoFreqs::rx(None),
+            DecodeDepth::FULL,
+            200,
+            DecodeStrictness::Deep,
+            EqMode::Off,
+            None,
+            &[],
+            Some(&on_result),
+            &mut budget,
+            &crate::msg::decode_request::DefaultPolicy,
+            PassCtx::FIRST,
+            false,
+        );
+
+        assert!(budget.report.exhausted, "the budget never ran out");
+        assert!(!results.is_empty(), "checkpoint A delivered nothing");
+        assert_eq!(results.len(), found.load(Ordering::SeqCst));
+        assert!(
+            residual == audio,
+            "the residual differs from the input: B/C subtracted after the budget ran out"
+        );
     }
 
     /// `DecodeRequest::ap_hint` round-trips a clean self-synthesised
