@@ -372,9 +372,9 @@ QSO, set `station`, or the `ap_hint` extra.
 |---|---|
 | `.hash_table(Arc)` — one table shared by several requests | each decoder keeps its own, as each upstream process does. Two channels of one mode learn separately; seed one with `learn_callsign` |
 | `.previous_cycle()`, `MultiPeriodRequest` — state passed in per call | the decoder keeps it. Number the periods with `SlotInput::period` so it knows which are consecutive |
-| `.known(list)` — signals an earlier pass already decoded, subtracted before searching | no counterpart: a second pass over a slot already decoded once (WebFT8's two-phase decode) is not part of the API. Its upstream form is the early decode, [#572](https://github.com/jl1nie/mfsk-core/issues/572) |
+| `.known(list)` — signals an earlier pass already decoded, subtracted before searching | no counterpart yet. The early-decode design ([#572](https://github.com/jl1nie/mfsk-core/issues/572)) covers it: a caller re-searching a slot already decoded once (WebFT8's two-phase decode, [#587](https://github.com/jl1nie/mfsk-core/issues/587)) is its `Early`/`Final` called over the same complete period, which subtracts `Early`'s rows before the second search |
 | `.message_filter(closure)` / `.also_accept(closure)` | `MessageFilter::Only(f)` / `AlsoAccept(f)` with `f` a function pointer, so the extras stay `Clone + 'static`. A closure that captures nothing coerces; a predicate that needs data reads it from a `static` ([§2.6](#26-message-acceptance)) |
-| `.fft_cache()` / the outcome's `fft_cache` — the slot FFT handed to a second pass | no counterpart, for the same reason as `.known()` |
+| `.fft_cache()` / the outcome's `fft_cache` — the slot FFT handed to a second pass | no counterpart, and not restored by #572: the cache only ever skipped `build_fft_cache`'s per-round forward FFT, not `compute_spectrogram`/`coarse_sync` (the expensive part), so it would not have fixed what #587 measured. #572's `Early`/`Final` fixes that by not re-searching, not by caching |
 | `wsjtx_depth(WsjtxDepth::D1…D3)` | `Depth::Fast` / `Normal` / `Deep` in `DecodeParams`, now for every mode |
 
 The synthesis API (`engine::tx`), `dt_sec` from the nominal start and
