@@ -3,8 +3,8 @@
 ## Unreleased
 
 - **`decode_snapshot` compares within a tolerance instead of bit for bit (#579).** Its fixtures pin f32 bit patterns, so the
-  last bits of a decode belong to the machine: on a Ryzen 7 with a newer glibc two `snr_db` values are one ULP off
-  (`log10f` differs from glibc 2.35's for 5.9 % of inputs), and on Apple M5 (NEON FFT kernel, Apple's libm) 50 of 53 fixtures
+  last bits of a decode belong to the machine: on a Ryzen 7 with glibc 2.44 four rows in four fixtures are 1-2 ULP off
+  (three `snr_db`, one FT4 `freq_hz`; its `log10f` and `atan2f` differ from glibc 2.35's), and on Apple M5 (NEON FFT kernel, Apple's libm) 50 of 53 fixtures
   differ in the last bits (`snr_db` up to 0.038 dB, `sync_score` 1.9e-4 relative, `hard_errors` +-1 once) with the same
   messages in the same order. Messages, order and `pass` are still exact; the float columns have limits 2.5-5 times the
   measured gaps (`Tol` in the test); `MFSK_SNAPSHOT_STRICT=1` asks for the bits again, as on the reference machine. A guard

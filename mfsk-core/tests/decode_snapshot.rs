@@ -47,9 +47,9 @@ fn fixture_dir() -> PathBuf {
 /// `freq_hz` by up to 1.2e-3 Hz (FT4), `dt_sec` by 0, `snr_db` by up to 0.038 dB (the IQ
 /// path; 0.036 on `ft8_wsjtx_d2`, 1.5e-3 elsewhere), `sync_score` by up to 1.9e-4 relative,
 /// `hard_errors` by 1 in one FT8 row. A Zen 2 Ryzen on that glibc matches all 53 bit for bit;
-/// a Zen 3+ Ryzen on a newer glibc differs by one ULP in `snr_db` on 2 of 21 rows (the
-/// platform's `log10f` differs from glibc 2.35's for 5.9 % of inputs, by 1-2 ULP). Data, probe
-/// and the account: `docs/notes/snapshot_platform/`. Each limit below is 2.5-5 times the
+/// a Ryzen 7 7435HS on glibc 2.44 differs in 4 rows of 4 fixtures, `snr_db` by 1-2 ULP in three
+/// and `freq_hz` by 1.9e-4 Hz in `ft4_default` (its `log10f` and `atan2f` return other bits than
+/// glibc 2.35's). Data, probe and the account: `docs/notes/snapshot_platform/`. Each limit below is 2.5-5 times the
 /// largest measured gap; a changed message, a moved row or a different `pass` is still a failure.
 struct Tol {
     freq_hz: f32,
