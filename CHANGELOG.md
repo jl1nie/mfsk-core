@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **FT8 `SicEarly` stops when its budget does (#587).** The subtractions between checkpoints A, B and C had no budget
+  poll, so a budget spent during A still paid for every A row's `subtract_signal_lpf_refine_dt` (60-150 ms each) before a
+  C search that was then refused. Native, `qso3_busy.wav`, sync 1.0, 200 candidates: a 300 ms budget ran 641 ms, 340 ms
+  past its first `false`; it now runs 304 ms, 1-2 ms past (100 ms: 334 → 102 ms). The budget is now polled after A and
+  before each row's subtraction. Without a budget, or with one that lasts into C, nothing changes.
 - **CI: a `wasm` job decodes one slot of every mode on `wasm32-unknown-unknown`, in Node (#585).** The #583 panic shipped for
   five releases because nothing ran that target. `wasm-smoke/` (outside the workspace) fails naming the modes that panic;
   against the tree before #584 it fails for WSPR and MSK144 and for no other of the 21. Not a timing or SIMD check: that is `bench/wasm`.
