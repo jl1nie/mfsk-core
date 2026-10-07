@@ -30,6 +30,7 @@ type である。配線済みの全プロトコルが同じ受信フロー
 - [1. クイックスタート](#1-クイックスタート)
   - [1.1 使い方の場面ごとに: デコーダは持ち続けるもの](#11-使い方の場面ごとに-デコーダは持ち続けるもの)
   - [1.2 0.12 からの移行](#12-012-からの移行)
+  - [1.3 0.13 からの移行: `#[non_exhaustive]`](#13-013-からの移行-non_exhaustive)
 - [2. デコード API](#2-デコード-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` と `Depth`](#22-decodeparams-と-depth)
@@ -177,11 +178,7 @@ let mut rx = Decoder::<Ft8>::new(
 let period = vec![0i16; 180_000]; // 無線機からの 1 周期
 
 // JA1ABC の CQ に応答した。
-rx.params_mut().qso = QsoContext {
-    his_call: "JA1ABC".into(),
-    his_grid: "PM95".into(),
-    progress: QsoProgress::Replying,
-};
+rx.params_mut().qso = QsoContext::new("JA1ABC", "PM95", QsoProgress::Replying);
 rx.decode(&SlotInput::i16(&period).period(100));
 
 // 次の周期: レポートを送ったので、RRR / 73 / RR73 を待つ。
@@ -366,6 +363,56 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `wsjtx_depth(WsjtxDepth::D1…D3)` | `DecodeParams` の `Depth::Fast` / `Normal` / `Deep`。全モードに効く |
 
 0.12 の合成 API（`engine::tx`）、公称開始位置からの `dt_sec`、`engine::search` は変わらない。
+
+---
+
+### 1.3 0.13 からの移行: `#[non_exhaustive]`
+
+0.14 は、今後増えることが分かっている公開型に `#[non_exhaustive]` を付けた
+（[#573](https://github.com/jl1nie/mfsk-core/issues/573)）。
+破壊的変更を一度だけ入れることで、**増えること自体が破壊的変更でなくなる**。
+本クレートの慣例では新プロトコルの追加はパッチレベルだが、それは `ProtocolId` に
+variant を足すので、厳密にはこれまで毎回が破壊的変更だった。出力行や
+`ProtocolMeta`、各モードの `Extras` にフィールドを足す場合も同じである。
+とくに `Extras` は、WSJT-X のパラメータブロックの上に本ライブラリが足したものなので、
+最も増えやすい。
+
+呼び出し側への影響は 3 つある。
+
+- **enum では** `match` に `_` の腕が必要になる。
+- **struct では** リテラルで構築できなくなる（`..Default::default()` と、
+  更新構文 `Foo { a, ..base }` を含む）。
+- **struct では** 分割代入のパターンの末尾に `..` が要る:
+  `let Row { decoded, detail, native } = row;` はコンパイルできなくなり、
+  `let Row { decoded, .. } = row;` は通る。
+
+フィールドの読み出しと、フィールドへの代入は従来どおり使える。
+
+| 旧 | 新 |
+|---|---|
+| `Ft8Extras { tuning: t, ap_hint: h, ..Default::default() }` | `let mut e = Ft8Extras::default(); e.tuning = t; e.ap_hint = h;` |
+| `Tuning { sync_min: Some(1.3), max_cand: Some(50), ..Default::default() }` | extras 経由で代入する: `e.tuning.sync_min = Some(1.3); e.tuning.max_cand = Some(50);` |
+| `SearchTuning { max_candidates: Some(100), ..Default::default() }` | `e.search.max_candidates = Some(100);` |
+| `Sniper { search_hz: 250.0 }` | `Sniper::new(250.0)` |
+| `Station { call, grid }` | `Station::new("JL1NIE", "PM95")` |
+| `QsoContext { his_call, his_grid, progress }` | `QsoContext::new("JA1ABC", "PM95", QsoProgress::Replying)` |
+| `ApHint { call2: Some(dx), ..Default::default() }` | `ApHint::new().with_call2(dx)` — ビルダーは元からある |
+| `ProtocolId`・`Contest`・`MessageFilter`・`Ft8Strategy`・`EqMode`・`DecodeStrictness`・`SyncScale`・`NoiseBlanker`・`Wsjt77Fields`・`Audio` の網羅 `match` | `_` の腕を足す |
+
+付いた型は、出力行（`Decoded`、`Row`、`RowDetail`、`SlotResult`、
+`AnySlotResult`、`Unsupported`、`BudgetReport`、各モードのネイティブ結果）、
+レジストリのメタデータ（`ProtocolMeta`、`DecodeProfile`、`DecodeDefaults`）、
+探索のつまみ（`Tuning`、`SearchTuning`、`Sniper`、各 `*Extras`）、
+パラメータブロックの `Station` / `QsoContext` / `Contest`、
+および上に挙げたオプション enum である。
+
+**網羅のままにした型と、その理由。** `ApMode`・`Depth`・`QsoProgress` は
+`lft8apon` / `lapcqonly`、`ndepth`、`nQSOProgress` を写したもので、本家で
+固定の集合である。しかも `mfsk-ffi` は `ApMode` を Rust → C に網羅 `match` で
+写しており、これは「全 variant に C の値がある」というコンパイル時の保証になる。
+variant を足せる自由より、そちらの方が価値が高い。`engine` と `fec` の
+プリミティブ（`SubtractCfg`、`GfskParams` ほか）は、呼び出し側がリテラルで
+組み立てる前提の部品であり、デコード API の一部ではない。
 
 ---
 
@@ -696,7 +743,7 @@ audio[start..start + frame.len()].copy_from_slice(&frame);
 
 let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((200.0, 3_000.0)).rx_freq(1000.0));
 let extras = decoder.extras_mut();
-extras.sniper = Some(Sniper { search_hz: 250.0 });
+extras.sniper = Some(Sniper::new(250.0));
 extras.eq = EqMode::Local;
 extras.ap_hint = Some(ApHint::new().with_call1("CQ").with_call2("JA1ABC"));
 
