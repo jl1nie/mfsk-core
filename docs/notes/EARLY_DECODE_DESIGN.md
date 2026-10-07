@@ -27,7 +27,7 @@ FT8 rows should reach a live caller at about 11.8 s into the period, as WSJT-X d
 | U3 | browser PWA, one worker, cannot block | AudioWorklet blocks | **yes** |
 | U6 | research / validation | a recording, replayed at `jt9`'s counts | **yes** |
 | U8 | a host short on CPU, or a busy band | any | **yes** — `Budget` and the strategy |
-| U4 | skimmer over `IqReceiver` | wideband IQ, N channels | §10: a follow-up |
+| U4 | skimmer over `IqReceiver` | wideband IQ, N channels | §10; the receiver half is `IQ_PREFIX_DESIGN.md` (#600) |
 | U5 | C / Kotlin / Swift app | `mfsk_stream_push_*` | §10: a follow-up |
 
 ## 1. What upstream does (v3.2.0-rc1, `567ad29ce`)
@@ -348,7 +348,9 @@ Where it departs from §4 and §5, each a simplification that keeps "the final c
    checkpoints, so they return nothing before the whole period, as `ndepth == 1` runs nothing before 50.
 8. **The C ABI half of §10 is done** (`mfsk_decoder_decode_prefix_i16` / `_f32`, `MfskDecode::stage`, `MFSK_STAGE_*`;
    Kotlin and Swift `decodePrefix`). A prefix call refused for a short output buffer has run its stage, so the
-   retry the ABI asks for is answered from the held rows. `IqReceiver` driver support is still a follow-up.
+   retry the ABI asks for is answered from the held rows. `IqReceiver` driver support followed in #600
+   ([`IQ_PREFIX_DESIGN.md`](IQ_PREFIX_DESIGN.md)), which brings back a `prefix_points()` §9 had dropped, on the
+   decoder, for the consumer that needs it.
 
 The pinned settings are the period's search (strategy, sync, candidates, OSD, strictness) and the `f32` gain. The
 callsign table is not taught before the final call: an early row is resolved against a copy of it, and the final

@@ -96,7 +96,9 @@ pub struct RetuneReport {
     pub resumed: Vec<ChannelId>,
 }
 
-/// One slot of one channel, complete.
+/// One slot of one channel: complete, or, on a channel with prefix points
+/// ([`IqReceiver::set_prefix_points`]), the slot so far
+/// ([`CompletedSlot::is_whole`]).
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct CompletedSlot {
@@ -134,6 +136,13 @@ impl CompletedSlot {
         }
     }
 
+    /// Whether this is the whole slot rather than a prefix of it. Only a
+    /// channel with prefix points delivers prefixes; decode each delivery of
+    /// such a channel, this one included, with `decode_prefix`.
+    pub fn is_whole(&self) -> bool {
+        self.audio.len() >= self.mode.meta().slot_samples_12k as usize
+    }
+
     /// The slot as a decoder takes it.
     pub fn input(&self) -> SlotInput<'_> {
         SlotInput::f32(&self.audio).period(self.period)
@@ -161,6 +170,24 @@ struct Channel {
     /// The channel's audio since the last [`IqReceiver::take_audio`], when
     /// tapped (a waterfall wants the continuous audio, not the slots).
     tap: Option<Vec<f32>>,
+    /// Prefix points are set ([`IqReceiver::set_prefix_points`]).
+    prefixes: bool,
+    /// The open slot's gain, pinned at its first prefix: its period index
+    /// and the gain.
+    pin: Option<(i64, f32)>,
+    /// The last period index delivered, prefix or whole.
+    last_j: Option<i64>,
+}
+
+/// The gain taking `buf` to [`TARGET_RMS`], or `None` for silence or NaN.
+fn slot_gain(buf: &[f32]) -> Option<f32> {
+    let n = buf.len() as f32;
+    let rms = (buf.iter().map(|v| v * v).sum::<f32>() / n).sqrt();
+    // Silence, or NaN from a broken input: nothing to decode.
+    if rms.is_nan() || rms <= 0.0 {
+        return None;
+    }
+    Some(TARGET_RMS / 32_768.0 / rms)
 }
 
 impl Channel {
@@ -178,24 +205,65 @@ impl Channel {
         let anchor = clock.anchor_ns();
         let (id, mode, dial_hz) = (self.id, self.mode, self.dial_hz);
         let period_ns = self.grid_period_ns();
-        self.cutter.feed(anchor, &audio, |j, start_k, buf| {
-            let n = buf.len() as f32;
-            let rms = (buf.iter().map(|v| v * v).sum::<f32>() / n).sqrt();
-            // Silence, or NaN from a broken input: nothing to decode.
-            if rms.is_nan() || rms <= 0.0 {
-                return;
-            }
-            let g = TARGET_RMS / 32_768.0 / rms;
-            out.push(CompletedSlot {
-                channel: id,
-                mode,
-                dial_hz,
-                period: j,
-                start_sample: (start_k as u128 * fs as u128 / 12_000) as u64,
-                utc_ns: anchor.map(|_| (j as i128 * period_ns) as i64),
-                audio: buf.iter().map(|&v| v * g).collect(),
-            });
-        });
+        let slot = |j: i64, start_k: u64, audio: Vec<f32>| CompletedSlot {
+            channel: id,
+            mode,
+            dial_hz,
+            period: j,
+            start_sample: (start_k as u128 * fs as u128 / 12_000) as u64,
+            utc_ns: anchor.map(|_| (j as i128 * period_ns) as i64),
+            audio,
+        };
+        let (prefixes, pin, last_j) = (self.prefixes, &mut self.pin, &mut self.last_j);
+        // A period this channel already delivered part of, opened again (a
+        // clock stepped back): its audio is another recording, and a decoder
+        // continuing that period's prefix sequence would splice the two
+        // (`IQ_PREFIX_DESIGN.md` §5). Only a channel with prefixes refuses it.
+        let reopened = |j: i64, pin: &Option<(i64, f32)>, last_j: &Option<i64>| {
+            prefixes && pin.is_none_or(|(p, _)| p != j) && last_j.is_some_and(|l| j <= l)
+        };
+        // Both callbacks push to `out`; one at a time, through a cell.
+        let out = core::cell::RefCell::new(out);
+        let state = core::cell::RefCell::new((pin, last_j));
+        self.cutter.feed_parts(
+            anchor,
+            &audio,
+            |j, start_k, buf| {
+                let mut st = state.borrow_mut();
+                let (pin, last_j) = &mut *st;
+                if reopened(j, pin, last_j) {
+                    return;
+                }
+                // The slot's level is set by its first delivery and kept
+                // (`IQ_PREFIX_DESIGN.md` §3).
+                let g = match **pin {
+                    Some((p, g)) if p == j => g,
+                    _ => match slot_gain(buf) {
+                        Some(g) => g,
+                        None => return,
+                    },
+                };
+                **pin = Some((j, g));
+                **last_j = Some(j);
+                let audio = buf.iter().map(|&v| v * g).collect();
+                out.borrow_mut().push(slot(j, start_k, audio));
+            },
+            |j, start_k, buf| {
+                let mut st = state.borrow_mut();
+                let (pin, last_j) = &mut *st;
+                if reopened(j, pin, last_j) {
+                    return;
+                }
+                let g = match pin.take() {
+                    Some((p, g)) if p == j => Some(g),
+                    _ => slot_gain(&buf),
+                };
+                let Some(g) = g else { return };
+                **last_j = Some(j);
+                out.borrow_mut()
+                    .push(slot(j, start_k, buf.iter().map(|&v| v * g).collect()));
+            },
+        );
         self.scratch = audio;
         self.scratch.clear();
     }
@@ -204,6 +272,13 @@ impl Channel {
     /// the clock again, at audio index `k`.
     fn restart(&mut self, k: u64) {
         self.cutter.restart(k);
+        self.pin = None;
+    }
+
+    /// Forget the open slot and the continuity, keeping the position.
+    fn forget_slots(&mut self) {
+        self.cutter.forget_slots();
+        self.pin = None;
     }
 }
 
@@ -294,8 +369,36 @@ impl IqReceiver {
             bank_idx,
             scratch: Vec::new(),
             tap: None,
+            prefixes: false,
+            pin: None,
+            last_j: None,
         });
         Ok(id)
+    }
+
+    /// Deliver this channel's slots also as prefixes of these lengths, in
+    /// 12 kHz samples: each slot that opens from now on goes out through
+    /// `push_*` first cut at each point, then whole. Pass the channel's
+    /// decoder's [`AnyDecoder::prefix_points`](crate::decoder::AnyDecoder::prefix_points)
+    /// and decode **every** delivery of the channel with `decode_prefix`, the
+    /// whole slot included. Empty (the default) delivers whole slots only.
+    /// `false` if the channel is unknown.
+    ///
+    /// On a channel with points, a slot's level is measured on its first
+    /// prefix and kept for its later prefixes and its whole, so a decoder sees
+    /// one period at one level; and a period index the channel already
+    /// delivered part of is not delivered again (a clock stepped back). A slot
+    /// dropped by a retune, a gap or a clock step keeps the prefixes it already
+    /// delivered and has no whole. Design: `docs/notes/IQ_PREFIX_DESIGN.md`.
+    pub fn set_prefix_points(&mut self, id: ChannelId, points: &[usize]) -> bool {
+        match self.channels.iter_mut().find(|c| c.id == id) {
+            Some(c) => {
+                c.cutter.set_points(points);
+                c.prefixes = c.cutter.has_points();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Place a dial in the current stream: its front end (`Direct`) or its
@@ -379,7 +482,7 @@ impl IqReceiver {
         if matches!(change, ClockChange::First | ClockChange::Stepped { .. }) {
             // The grid jumped: audio spanning the jump is not a slot.
             for c in &mut self.channels {
-                c.cutter.forget_slots();
+                c.forget_slots();
             }
         }
         change

@@ -213,12 +213,18 @@ pub struct SlotCutter<T> {
     last: Option<(i64, u64)>,
     /// The last [`OVERLAP_SAMPLES`] samples fed.
     hist: alloc::vec::Vec<T>,
+    /// Prefix lengths [`Self::feed_parts`] reports for each slot that opens
+    /// from now on: increasing, each inside `1..slot_len`.
+    points: alloc::vec::Vec<usize>,
 }
 
 struct Open<T> {
     buf: alloc::vec::Vec<T>,
     start_k: u64,
     j: i64,
+    /// The points this slot opened with, and the next one not yet reached.
+    points: alloc::vec::Vec<usize>,
+    next_pt: usize,
 }
 
 impl<T: Copy> SlotCutter<T> {
@@ -231,7 +237,31 @@ impl<T: Copy> SlotCutter<T> {
             open: None,
             last: None,
             hist: alloc::vec::Vec::new(),
+            points: alloc::vec::Vec::new(),
         }
+    }
+
+    /// Report each slot's prefixes of these lengths through
+    /// [`Self::feed_parts`], from the next slot that opens (an open slot keeps
+    /// the points it opened with). Sorted and de-duplicated here; a length of
+    /// 0, or of a whole slot or more, is not a prefix and is dropped.
+    // Only `iq::receiver` sets points, and it needs an FFT backend.
+    #[allow(dead_code)]
+    pub(crate) fn set_points(&mut self, points: &[usize]) {
+        let mut p: alloc::vec::Vec<usize> = points
+            .iter()
+            .copied()
+            .filter(|&n| n > 0 && n < self.slot_len)
+            .collect();
+        p.sort_unstable();
+        p.dedup();
+        self.points = p;
+    }
+
+    /// Whether [`Self::set_points`] left any.
+    #[allow(dead_code)]
+    pub(crate) fn has_points(&self) -> bool {
+        !self.points.is_empty()
     }
 
     /// Forget the open slot and the continuity (a retune, a hole in the
@@ -262,6 +292,20 @@ impl<T: Copy> SlotCutter<T> {
         &mut self,
         anchor_ns: Option<i64>,
         audio: &[T],
+        done: impl FnMut(i64, u64, alloc::vec::Vec<T>),
+    ) {
+        self.feed_parts(anchor_ns, audio, |_, _, _| {}, done);
+    }
+
+    /// [`Self::feed`], also calling `prefix(index, start_sample, samples)`
+    /// when an open slot reaches one of its points ([`Self::set_points`]),
+    /// with exactly that many samples, however the feed is split. A slot's
+    /// prefixes come before its `done`, in order.
+    pub(crate) fn feed_parts(
+        &mut self,
+        anchor_ns: Option<i64>,
+        audio: &[T],
+        mut prefix: impl FnMut(i64, u64, &[T]),
         mut done: impl FnMut(i64, u64, alloc::vec::Vec<T>),
     ) {
         let (mut pos, mut k) = (0usize, self.k_next);
@@ -297,13 +341,27 @@ impl<T: Copy> SlotCutter<T> {
                         pos += (start_k - k) as usize;
                         k = start_k;
                     }
-                    self.open = Some(Open { buf, start_k, j });
+                    // A point already inside the history the slot opened
+                    // with is not reached at its length: skip it.
+                    let next_pt = self.points.partition_point(|&p| p <= buf.len());
+                    self.open = Some(Open {
+                        buf,
+                        start_k,
+                        j,
+                        points: self.points.clone(),
+                        next_pt,
+                    });
                 }
                 Some(o) => {
-                    let take = (self.slot_len - o.buf.len()).min(audio.len() - pos);
+                    let upto = o.points.get(o.next_pt).copied().unwrap_or(self.slot_len);
+                    let take = (upto - o.buf.len()).min(audio.len() - pos);
                     o.buf.extend_from_slice(&audio[pos..pos + take]);
                     pos += take;
                     k += take as u64;
+                    if o.buf.len() == upto && upto < self.slot_len {
+                        prefix(o.j, o.start_k, &o.buf);
+                        o.next_pt += 1;
+                    }
                     if o.buf.len() == self.slot_len {
                         let o = self.open.take().expect("just matched");
                         self.last = Some((o.j, o.start_k + self.slot_len as u64));

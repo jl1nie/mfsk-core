@@ -1144,13 +1144,17 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
 /// samples/symbol, used unmodified for every mode jt9 supports. Kept as
 /// literal sample counts (not re-derived from FT8's own `NSPS`) to stay
 /// byte-faithful to the reference values `41×3456`/`47×3456`/`50×3456`.
-mod staged_checkpoint {
+pub(crate) mod staged_checkpoint {
     /// Checkpoint A ("early pass"): jt9.f90 `nearly=41` — ~11.8 s.
     pub const A_SAMPLES: usize = 141_696;
     /// Checkpoint B (subtract-prep only, no search): jt9.f90 `nearly=47` — ~13.5 s.
     pub const B_SAMPLES: usize = 162_432;
     /// Checkpoint C (final full pass): jt9.f90 `nzhsym=50` — ~14.4 s.
     pub const C_SAMPLES: usize = 172_800;
+    /// The prefix lengths a `decode_prefix` sequence acts on before the
+    /// whole period (`Decoder::prefix_points`): A and B. C is not one: the
+    /// final call is the whole period (`EARLY_DECODE_DESIGN.md` §12.1).
+    pub const PREFIX_POINTS: &[usize] = &[A_SAMPLES, B_SAMPLES];
 }
 
 /// Test-only variant that also returns checkpoint C's residual buffer

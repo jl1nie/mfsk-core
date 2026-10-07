@@ -139,6 +139,16 @@ macro_rules! any_decoder {
                 }
             }
 
+            /// The prefix lengths, in 12 kHz samples, at which
+            /// `decode_prefix` does work before the whole period under the
+            /// current settings; empty when it does none. See
+            /// [`Decoder::prefix_points`].
+            pub fn prefix_points(&self) -> &'static [usize] {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => d.prefix_points(), )*
+                }
+            }
+
             /// Decode one period, handing each row to `on_row` as it is found.
             pub fn decode_with(
                 &mut self,
