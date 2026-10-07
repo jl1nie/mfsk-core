@@ -485,9 +485,8 @@ impl Worker {
                         }
                     };
                     let t = Instant::now();
-                    // A share of the period from now, on the modes that poll it.
+                    // A share of the period from now.
                     let deadline = slot_budget
-                        .filter(|_| honours_budget(slot.mode))
                         .map(|f| t + Duration::from_secs_f32(modes::slot_seconds(slot.mode) * f));
                     let within = move || deadline.is_none_or(|d| Instant::now() < d);
                     let input = match deadline {
@@ -590,8 +589,7 @@ pub struct Config {
     /// Per-channel options changed while running.
     pub live: std::sync::Arc<LiveOptions>,
     /// A slot's decode may run this share of its period, then it stops and
-    /// reports what it has (`SlotInput::budget`); `None` has no limit. Only the
-    /// modes that honour a budget are cut (see [`honours_budget`]).
+    /// reports what it has (`SlotInput::budget`); `None` has no limit.
     pub slot_budget: Option<f32>,
 }
 
@@ -599,14 +597,6 @@ pub struct Config {
 /// period (FT8's busy slot takes 1.8 s of 15), so this only fires when a
 /// channel cannot keep up, which is when the next slot would be dropped.
 pub const DEFAULT_SLOT_BUDGET: f32 = 0.8;
-
-/// Whether `SlotInput::budget` does anything for `mode`. FT8, FT4 and FST4 poll
-/// it; WSPR, JT9, JT65 and Q65 do not yet (jl1nie/mfsk-core#593), so a budget
-/// set on them would be silently ignored and report "not reached".
-pub fn honours_budget(mode: Mode) -> bool {
-    let n = mode.name();
-    n == "FT8" || n == "FT4" || n.starts_with("FST4")
-}
 
 /// One stretch of a rotation.
 #[derive(Clone, Debug, PartialEq)]
@@ -2333,16 +2323,6 @@ mod tests {
         );
         assert!(report.exhausted, "{report:?}");
         assert_eq!(rows.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn only_the_modes_that_poll_a_budget_are_cut() {
-        for m in [Mode::Ft8, Mode::Ft4, Mode::Fst4S60] {
-            assert!(honours_budget(m), "{}", m.name());
-        }
-        for m in [Mode::Wspr, Mode::Jt9, Mode::Jt65, Mode::Q65A60] {
-            assert!(!honours_budget(m), "{}", m.name());
-        }
     }
 
     /// The text a row was streamed with is what an `update` is compared to.

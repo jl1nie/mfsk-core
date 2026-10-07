@@ -739,7 +739,7 @@
             <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
             <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
           </label>
-          <div class="field" title="A slot's decode may run this share of its period, then it stops and reports what it has (the rest of its candidates are left undone). 0 has no limit. Only FT8, FT4 and FST4 poll it; WSPR, JT9, JT65 and Q65 always finish (jl1nie/mfsk-core#593). Slots it cuts are counted in the status line.">
+          <div class="field" title="A slot's decode may run this share of its period, then it stops and reports what it has (the rest of its candidates are left undone). 0 has no limit. Slots it cuts are counted in the status line.">
             <span>Time budget</span>
             <input type="number" min="0" max="100" step="5" bind:value={settings.slotBudgetPct} disabled={running} />
             <span>% of a slot's period (0: no limit)</span>

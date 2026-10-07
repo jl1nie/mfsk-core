@@ -159,8 +159,11 @@ mod wspr_impl {
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);
             }
-            let rows = req
-                .decode()
+            if let Some(b) = slot.budget {
+                req = req.budget(b);
+            }
+            let (found, exhausted) = req.decode_reported();
+            let rows = found
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
@@ -170,7 +173,10 @@ mod wspr_impl {
                 .collect();
             SlotResult {
                 rows,
-                budget: Default::default(),
+                budget: crate::decoder::BudgetReport {
+                    exhausted,
+                    ..Default::default()
+                },
             }
         }
     }
@@ -241,8 +247,11 @@ mod jt9_impl {
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);
             }
-            let rows = req
-                .decode()
+            if let Some(b) = slot.budget {
+                req = req.budget(b);
+            }
+            let (found, exhausted) = req.decode_reported();
+            let rows = found
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
@@ -252,7 +261,10 @@ mod jt9_impl {
                 .collect();
             SlotResult {
                 rows,
-                budget: Default::default(),
+                budget: crate::decoder::BudgetReport {
+                    exhausted,
+                    ..Default::default()
+                },
             }
         }
     }
@@ -341,8 +353,11 @@ mod jt65_impl {
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);
             }
-            let rows = req
-                .decode()
+            if let Some(b) = slot.budget {
+                req = req.budget(b);
+            }
+            let (found, exhausted) = req.decode_reported();
+            let rows = found
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
@@ -352,7 +367,10 @@ mod jt65_impl {
                 .collect();
             SlotResult {
                 rows,
-                budget: Default::default(),
+                budget: crate::decoder::BudgetReport {
+                    exhausted,
+                    ..Default::default()
+                },
             }
         }
     }

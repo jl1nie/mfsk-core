@@ -124,7 +124,9 @@ pub struct SlotInput<'a> {
     pub period: Option<i64>,
     /// Checked once per candidate before it is claimed; `false` stops the
     /// search and the rest is reported in [`SlotResult::budget`]. A
-    /// candidate already running finishes.
+    /// candidate already running finishes, and the coarse search is not cut.
+    /// Every mode polls it (WSPR, JT9, JT65 and Q65 since #593), except Q65's
+    /// averaged decode, whose unit is a whole period.
     pub budget: Option<BudgetCheck<'a>>,
 }
 

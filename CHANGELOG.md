@@ -2,13 +2,22 @@
 
 ## Unreleased
 
+- **`SlotInput::budget` is honoured by every mode (#593).** Through `Decoder<P>` only FT8, FT4 and FST4 polled it; WSPR, JT9,
+  JT65 and Q65 ran the whole decode and returned an all-zero `BudgetReport`, which reads as "no budget, or never reached". Each
+  now polls it once per candidate before the candidate is tried (WSPR in every pass, and between a candidate's ladder
+  positions as its engine already did; JT65 in every pass; Q65 in both syncs' candidate lists), skips the passes after a spent
+  budget, and sets `BudgetReport::exhausted`. A candidate already running finishes, and the coarse search is not cut. Q65's
+  averaged decode, whose unit is a whole period, is not cut. The four `DecodeRequest`s gain `.budget(check)` and
+  `.decode_reported() -> (rows, exhausted)`. New `tests/decoder_budget.rs` runs each mode with a budget that never stops, one
+  spent from the start, and one that stops after one poll (fewer rows than the full decode). The skimmer's time budget now
+  applies to every mode.
 - **skimmer: row detail, resolved rows and a per-slot time budget, on the 0.13 decoder API (#592, #593).** `Decode` carries the
   row's key, sync score, FEC-corrected errors, `hash_resolved` and Q65's copied-last-Tx. A streamed row is resolved against the
   callsign table as it stood when the period began, so the worker now says a row again (`update`) when the returned one reads
   better; the GUI replaces the row in place (marked ✓), the database updates it, and the CLI prints it again, not into `ALL.TXT`.
   The database gains `msg_key`, `sync`, `hard_errors` and `resolved` (older files are upgraded; Analysis and the CSV show them,
   blank for older rows). `Config::slot_budget` (default 0.8 of the period; `--slot-budget`, GUI *Time budget*) stops a slot's decode and
-  counts it in `Status::budget_cut_slots`, for FT8, FT4 and FST4 only: WSPR, JT9, JT65 and Q65 ignore `SlotInput::budget` (#593).
+  counts it in `Status::budget_cut_slots`.
   Tested on the library side (57 `skimmer-core` tests, `svelte-check` clean); the window itself has not been run with these changes.
 - **Every decoded row has an identity key: `RowDetail::info` is filled for WSPR (50 bits), JT9 and JT65 (72) and Q65 (77),
   not just FT8, FT4 and FST4 (#592).** Through `AnyDecoder` and the C ABI a row had text and nothing else to be compared

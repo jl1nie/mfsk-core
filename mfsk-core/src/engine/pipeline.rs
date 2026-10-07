@@ -151,6 +151,47 @@ pub enum LlrEffort {
 /// `performance.now()`, embedded `esp_timer_get_time`.
 pub type BudgetCheck<'a> = &'a (dyn Fn() -> bool + Sync);
 
+/// A [`BudgetCheck`] that remembers whether it ever said stop: what a mode's
+/// sequential candidate loop polls, and what its [`BudgetReport::exhausted`]
+/// is read from afterwards (#593). `Cell`, not an atomic: it is only ever
+/// polled from the one thread that runs the loop. (WSPR's loops run under
+/// `rayon` and carry the same bit in an `AtomicBool` instead.)
+#[cfg(any(feature = "jt9", feature = "jt65", feature = "q65"))]
+pub(crate) struct BudgetGate<'a> {
+    check: Option<BudgetCheck<'a>>,
+    hit: core::cell::Cell<bool>,
+}
+
+#[cfg(any(feature = "jt9", feature = "jt65", feature = "q65"))]
+impl<'a> BudgetGate<'a> {
+    pub(crate) fn new(check: Option<BudgetCheck<'a>>) -> Self {
+        Self {
+            check,
+            hit: core::cell::Cell::new(false),
+        }
+    }
+
+    /// `true` to go on with the next unit of work (a candidate); `false`
+    /// once the budget is spent, and from then on.
+    pub(crate) fn proceed(&self) -> bool {
+        if self.hit.get() {
+            return false;
+        }
+        if let Some(check) = self.check
+            && !check()
+        {
+            self.hit.set(true);
+            return false;
+        }
+        true
+    }
+
+    /// The budget said stop at least once.
+    pub(crate) fn exhausted(&self) -> bool {
+        self.hit.get()
+    }
+}
+
 /// What a budgeted decode left undone. All-zero (`Default`) means no
 /// budget was set, or it was never reached.
 ///

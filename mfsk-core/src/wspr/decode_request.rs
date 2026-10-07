@@ -31,6 +31,7 @@ use alloc::vec::Vec;
 
 use super::decode::{WsprCallsignTable, WsprResult};
 use super::search::{SearchParams, default_search_params};
+use crate::engine::pipeline::BudgetCheck;
 
 /// Wide-band WSPR decode request: wsprd's coarse search on the 375 Hz
 /// baseband, then its three decode passes (Fano, then the Fano + OSD
@@ -53,6 +54,7 @@ pub struct DecodeRequest<'a> {
     table: Option<&'a mut WsprCallsignTable>,
     on_result: Option<&'a (dyn Fn(&WsprResult) + Sync)>,
     depth: super::decode::ScanDepth,
+    budget: Option<BudgetCheck<'a>>,
 }
 
 impl<'a> DecodeRequest<'a> {
@@ -67,6 +69,7 @@ impl<'a> DecodeRequest<'a> {
             table: None,
             on_result: None,
             depth: super::decode::ScanDepth::DEFAULT,
+            budget: None,
         }
     }
 
@@ -151,6 +154,22 @@ impl<'a> DecodeRequest<'a> {
     /// on a temporary like any other builder:
     /// `DecodeRequest::new(&a, 12_000).table(&mut t).decode()`.
     pub fn decode(&mut self) -> Vec<WsprResult> {
+        self.decode_reported().0
+    }
+
+    /// Stop the scan when `check` returns `false`: it is polled once per
+    /// candidate before the candidate is decoded, in every pass, and between a
+    /// candidate's ladder positions. A candidate already running finishes (bar
+    /// that poll), the coarse search and the per-pass refinement are not cut,
+    /// and the passes after a spent budget are skipped.
+    pub fn budget(mut self, check: BudgetCheck<'a>) -> Self {
+        self.budget = Some(check);
+        self
+    }
+
+    /// [`Self::decode`], and whether the budget ([`Self::budget`]) said stop at
+    /// least once. `false` without a budget.
+    pub fn decode_reported(&mut self) -> (Vec<WsprResult>, bool) {
         super::decode::decode_scan_inner(
             self.audio,
             self.sample_rate,
@@ -159,6 +178,7 @@ impl<'a> DecodeRequest<'a> {
             self.on_result,
             self.table.as_deref_mut(),
             self.depth,
+            self.budget,
         )
     }
 }

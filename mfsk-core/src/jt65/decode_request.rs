@@ -53,6 +53,7 @@ pub struct DecodeRequest<'a> {
     npass: u8,
     averager: Option<(&'a mut super::averaging::Averager, i64, f32)>,
     on_result: Option<&'a (dyn Fn(&Jt65Result) + Sync)>,
+    budget: Option<crate::engine::pipeline::BudgetCheck<'a>>,
 }
 
 impl<'a> DecodeRequest<'a> {
@@ -68,6 +69,7 @@ impl<'a> DecodeRequest<'a> {
             npass: 1,
             averager: None,
             on_result: None,
+            budget: None,
         }
     }
 
@@ -137,8 +139,24 @@ impl<'a> DecodeRequest<'a> {
         self
     }
 
+    /// Stop the scan when `check` returns `false`: polled once per candidate
+    /// before it is tried, in every pass; the passes after a spent budget are
+    /// skipped. A candidate already running finishes, and the coarse search is
+    /// not cut.
+    pub fn budget(mut self, check: crate::engine::pipeline::BudgetCheck<'a>) -> Self {
+        self.budget = Some(check);
+        self
+    }
+
     pub fn decode(&mut self) -> Vec<Jt65Result> {
-        super::decode_scan_inner(
+        self.decode_reported().0
+    }
+
+    /// [`Self::decode`], and whether the budget ([`Self::budget`]) said stop
+    /// at least once. `false` without a budget.
+    pub fn decode_reported(&mut self) -> (Vec<Jt65Result>, bool) {
+        let gate = crate::engine::pipeline::BudgetGate::new(self.budget);
+        let rows = super::decode_scan_inner(
             self.audio,
             self.sample_rate,
             self.nominal_start_sample,
@@ -147,7 +165,9 @@ impl<'a> DecodeRequest<'a> {
             self.npass,
             self.averager.as_mut().map(|(a, p, n)| (&mut **a, *p, *n)),
             self.on_result,
-        )
+            &gate,
+        );
+        (rows, gate.exhausted())
     }
 }
 
