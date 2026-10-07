@@ -31,6 +31,7 @@ This document is the Rust host API. Other audiences:
   - [1.1 Use cases: a decoder is something you keep](#11-use-cases-a-decoder-is-something-you-keep)
   - [1.2 Coming from 0.12](#12-coming-from-012)
   - [1.3 Coming from 0.13: `#[non_exhaustive]`](#13-coming-from-013-non_exhaustive)
+  - [1.4 Coming from 0.13: a row says what was measured, and which delivery it was](#14-coming-from-013-a-row-says-what-was-measured-and-which-delivery-it-was)
 - [2. The decode API](#2-the-decode-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` and `Depth`](#22-decodeparams-and-depth)
@@ -248,7 +249,7 @@ if result.budget.exhausted {
 
 *Why:* the same code runs on a desktop, in wasm and on an MCU, which have
 three different clocks, and a process can be suspended mid-slot. Honoured by
-FT8, FT4 and FST4 ([§2.3](#23-compute-budget)).
+every mode ([§2.3](#23-compute-budget)).
 
 **Rows on screen as they are found.** `decode_with` hands each row to a
 callback as soon as it is decoded, and still returns them all at the end:
@@ -267,7 +268,8 @@ println!("{} rows in the period", all.rows.len());
 
 *Why:* a deep FT8 search runs for a while, and a GUI should not wait for
 all of it. The order and de-duplication contract is in
-[`STREAMING.md`](STREAMING.md).
+[`STREAMING.md`](STREAMING.md); `row.detail.delivery` says which returned
+row a streamed one became ([§1.4](#14-coming-from-013-a-row-says-what-was-measured-and-which-delivery-it-was)).
 
 **A search other than the GUI's.** `Depth` gives what WSJT-X's Fast, Normal
 and Deep give. For anything else (a microcontroller's budget, a sweep that
@@ -427,6 +429,128 @@ worth more than the freedom to add one. The `engine` and `fec`
 primitives (`SubtractCfg`, `GfskParams`, …) are building blocks that
 callers are meant to build by literal, not part of the decode API.
 
+### 1.4 Coming from 0.13: a row says what was measured, and which delivery it was
+
+Three changes after #573 alter what a caller reads, not only how it
+builds things ([#592](https://github.com/jl1nie/mfsk-core/issues/592),
+[#593](https://github.com/jl1nie/mfsk-core/issues/593),
+[#594](https://github.com/jl1nie/mfsk-core/issues/594)). They come from
+one principle, and it is the same as rule 4 of [§2](#2-the-decode-api):
+**the API must not give an answer it does not have.** Each of the three
+was a place where it did: a zero that was not measured, a budget that was
+accepted and ignored, and a pairing the caller had to guess at although
+the library knew it.
+
+**A number the mode did not measure is `None`, not `0`.**
+`RowDetail::sync_score`, `sync_cv` and `hard_errors` are `Option`s.
+WSPR, JT9, JT65 and Q65 have no such numbers (their upstream decoders
+report none), and FT8's a7 and a8 list decodes do not go through a sync
+search, yet every one of those rows said `0.0` / `0`. A zero is a
+measurement: a sync-score filter dropped them all, and a database could
+not tell "clean decode, 0 errors" from "not counted". `Some(0)` now means
+a clean decode and `None` means the mode has no count. The same reasoning
+says what `sync_score` is *not*: it is on the scale of the mode's own
+search (FT8's coarse candidate score, FT4's and FST4's refined ones), so
+two modes' scores are not comparable and the field's doc says per mode
+which scale it is.
+
+| mode | `sync_score`, `sync_cv` | `hard_errors` |
+|---|---|---|
+| FT8 (searched), FT4, FST4 | `Some` | `Some` |
+| FT8 a7 / a8 list decodes | `None` | `Some` |
+| WSPR, JT9, JT65, Q65 | `None` | `None` |
+
+**The library pairs a streamed row with its returned row, because only it
+knows they are the same.** `decode_with` hands each row to the callback and
+returns them all again, and the two can differ: a `<...>` the period
+teaches reads resolved only in the returned row ([§2.4](#24-streaming-delivery)).
+A caller used to pair them by position (wrong under a parallel strategy), by
+text (wrong when the text resolves), or by a key it built from the message
+bits and a frequency rounded to the Hz (wrong for one message heard twice
+close together). The library holds both values and compares them exactly,
+so it says the answer: `RowDetail::delivery` is a streamed row's position
+among the period's deliveries (0, 1, 2…), and on a returned row the
+position of the delivery it was. `None` on a row the callback never saw, on
+every row of a plain `decode`, and on returned rows in a build without
+`std` (the list of deliveries needs a `Mutex`). A parallel strategy's
+repeat delivery is a position no returned row points at.
+
+```rust
+use std::sync::Mutex;
+use mfsk_core::decoder::{Decoder, SlotInput};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::with_defaults();
+let period = vec![0i16; 180_000];
+let shown: Mutex<Vec<String>> = Mutex::new(Vec::new()); // one line per delivery
+let all = rx.decode_with(&SlotInput::i16(&period), &|row| {
+    let mut shown = shown.lock().unwrap();
+    let at = row.detail.delivery.unwrap() as usize; // always Some on a streamed row
+    if shown.len() <= at {
+        shown.resize(at + 1, String::new());
+    }
+    shown[at] = row.decoded.text.clone();
+});
+// The returned rows may read better (a `<...>` resolved): replace in place.
+let mut shown = shown.into_inner().unwrap();
+for row in &all.rows {
+    if let Some(at) = row.detail.delivery {
+        shown[at as usize] = row.decoded.text.clone();
+    }
+}
+```
+
+To compare rows **across** decoders or periods, `delivery` does not help
+(it is per call); compare `RowDetail::info`, the message bits, which every
+mode now fills ([`STREAMING.md`](STREAMING.md) §2).
+
+**An option the API accepts does something on every mode.**
+`SlotInput::budget` was accepted by every `Decoder<P>`, but only FT8, FT4
+and FST4 polled it; the other four decoded the whole period and returned an
+all-zero `BudgetReport`, which reads as "the deadline was never reached".
+Now WSPR, JT9, JT65 and Q65 poll it too, at the same unit, once per
+candidate before the candidate is tried ([§2.3](#23-compute-budget)). A
+caller that set a budget on those modes can now get fewer rows than before,
+with `budget.exhausted` set.
+
+**`Decoded::new` exists because `#[non_exhaustive]` closed the struct
+literal.** The decoders make their own rows, but a consumer's own tests, a
+replay of a recorded row, or a bridge from another source need to build
+one, and after §1.3 nothing outside the crate could.
+`Decoded::new(text, freq_hz, dt_sec, snr_db, protocol)` takes the five
+fields; a field added later gets a value inside the constructor, so the
+call keeps compiling.
+
+| was | now |
+|---|---|
+| `let s: f32 = row.detail.sync_score;` | `match row.detail.sync_score { Some(s) => …, None => /* the mode has none */ }` |
+| `if row.detail.hard_errors == 0` | `if row.detail.hard_errors == Some(0)` — `None` is "not counted", not clean |
+| `rows.sort_by(…sync_score…)` across modes | compare within a mode only; the scales differ |
+| pairing streamed and returned rows by position, text or a rounded-frequency key | `row.detail.delivery` |
+| a test building `Decoded { text, freq_hz, … }` (closed since #573) | `Decoded::new("CQ JL1NIE PM95", 1500.0, 0.2, -12.0, ProtocolId::Ft8)` |
+| a budget on WSPR, JT9, JT65 or Q65, ignored | honoured; read `budget.exhausted` |
+
+```rust
+use mfsk_core::ProtocolId;
+use mfsk_core::msg::Decoded;
+
+let row = Decoded::new("CQ JL1NIE PM95", 1500.0, 0.2, -12.0, ProtocolId::Ft8);
+assert_eq!(row.freq_hz, 1500.0);
+```
+
+**In C.** The row's layout does not change, so a missing number cannot be
+`NULL`: `MfskDecode::flags` gains bits 2–4
+(`MFSK_DECODE_FLAG_HAS_SYNC_SCORE`, `_HAS_SYNC_CV`, `_HAS_HARD_ERRORS`),
+set where the number is real and clear where the field holds a placeholder
+`0`. The size-versioned row gains, appended, `key_bits` / `key` (the
+message's 77, 72 or 50 bits packed into 10 bytes) and `delivery` (`-1` for
+`None`) — [`BINDINGS.md`](BINDINGS.md) §2.4. The Kotlin and Swift rows still
+show plain numbers. **The C budget has not followed #593 yet:**
+`MFSK_CAP_BUDGET` is still published for FT8, FT4 and FST4 only, so
+`mfsk_decoder_set_budget` on WSPR, JT9, JT65 or Q65 returns
+`MFSK_STATUS_UNSUPPORTED` although the Rust decoder underneath would honour
+it.
+
 ---
 
 ## 2. The decode API
@@ -520,8 +644,8 @@ A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found, and
 
 | field | what |
 |---|---|
-| `decoded: Decoded` | the cross-mode row: `text` (resolved against the decoder's hash table), `freq_hz`, `dt_sec`, `snr_db`, `protocol` |
-| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `pass`, `info`, `hash_resolved` (the text needed the table for a `<...>`), `copied_last_tx` (Q65 Pileup). A mode without a field leaves it at its default; WSPR, JT9 and JT65 fill none of them |
+| `decoded: Decoded` | the cross-mode row: `text` (resolved against the decoder's hash table), `freq_hz`, `dt_sec`, `snr_db`, `protocol`. `Decoded::new` builds one outside the decoder (a test, a replay) |
+| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors` (each `None` where the mode measures none: WSPR, JT9, JT65, Q65, and for sync FT8's a7 / a8; `sync_score` is on the mode's own scale), `pass`, `info` (the message bits, every mode), `hash_resolved` (the text needed the table for a `<...>`), `delivery` (which `decode_with` delivery this row is or was), `copied_last_tx` (Q65 Pileup). Why `None` and not `0`: [§1.4](#14-coming-from-013-a-row-says-what-was-measured-and-which-delivery-it-was) |
 | `native: R` | the mode's own result: `DecodeResult` (FT8, FT4, FST4), `WsprResult`, `Jt9Result`, `Jt65Result`, `Q65Result` |
 
 **What a decoder keeps across periods** is what its upstream decoder keeps,
@@ -682,7 +806,8 @@ ships with its precision guard in the same PR.
 ### 2.3 Compute budget
 
 `SlotInput::budget(check)` takes a caller-supplied predicate
-(`&(dyn Fn() -> bool + Sync)`) polled between candidates. **The library
+(`&(dyn Fn() -> bool + Sync)`) polled once per candidate, before the
+candidate is tried. **The library
 reads no clock of its own** — the deadline is whatever your predicate
 compares against, which is what keeps it usable from wasm and from a
 process that was suspended mid-slot.
@@ -697,9 +822,31 @@ the row count, with `exhausted` set, the cut came while cleaning up
 rather than while looking — the fields above cannot say so, because a row
 being subtracted carries no candidate ranking.
 
-Honoured by FT8, FT4 and every FST4 sub-mode
-(`MFSK_CAP_BUDGET` is the same fact published to C). WSPR, JT9, JT65 and Q65
-decode the whole period and return an empty report.
+**Every mode honours it** (WSPR, JT9, JT65 and Q65 since #593; before
+that they accepted it, ignored it and returned an all-zero report, which
+said "never reached" when the truth was "never asked" —
+[§1.4](#14-coming-from-013-a-row-says-what-was-measured-and-which-delivery-it-was)).
+The unit is the same everywhere, a candidate, and three things are
+deliberately not cut:
+
+- **A candidate already running finishes.** Its FEC work is what the
+  budget was spent on; abandoning it half way would pay the cost and
+  throw the answer away.
+- **The coarse search is not cut.** It is what ranks the candidates, so
+  the budget can only take the weakest ones if the search has run.
+- **Q65's averaged decode is not cut.** Its unit of work is a whole
+  period's spectra, not a candidate.
+
+What the report says differs by mode. FT8, FT4 and FST4 fill every field
+above. WSPR, JT9, JT65 and Q65 set `exhausted` only: the counts stay `0`
+and the cut-at fields `None`, so on those modes `candidates_skipped == 0`
+does not mean nothing was skipped. WSPR polls in every pass (its scan runs
+under rayon, so the stop is an `AtomicBool`), JT65 in every pass, Q65 in
+both syncs' candidate lists, and a spent budget skips the passes after it.
+
+In C, `MFSK_CAP_BUDGET` is still published for FT8, FT4 and FST4 only, so
+`mfsk_decoder_set_budget` refuses the other four with
+`MFSK_STATUS_UNSUPPORTED` ([`BINDINGS.md`](BINDINGS.md) §2.2).
 
 ### 2.4 Streaming delivery
 
@@ -715,7 +862,10 @@ returns, in the same order; a parallel one delivers in completion order and
 may show a transient duplicate that the returned rows have already deduped.
 A row handed to the callback is resolved against the hash table as it stood
 when the period began; the returned rows also see calls learned earlier in
-the same period.
+the same period. So the two can differ, and `RowDetail::delivery` pairs
+them: the callback's row carries its delivery position, the returned row the
+position of the delivery it was. `delivery_is_exact()` says which contract
+the current mode, depth and extras run.
 
 Every mode offers the same shape through the same method. WSPR's is the
 parallel contract, not the exact one — see [`STREAMING.md`](STREAMING.md)

@@ -31,6 +31,7 @@ type である。配線済みの全プロトコルが同じ受信フロー
   - [1.1 使い方の場面ごとに: デコーダは持ち続けるもの](#11-使い方の場面ごとに-デコーダは持ち続けるもの)
   - [1.2 0.12 からの移行](#12-012-からの移行)
   - [1.3 0.13 からの移行: `#[non_exhaustive]`](#13-013-からの移行-non_exhaustive)
+  - [1.4 0.13 からの移行: 測っていない値は返さない](#14-013-からの移行-測っていない値は返さない)
 - [2. デコード API](#2-デコード-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` と `Depth`](#22-decodeparams-と-depth)
@@ -240,7 +241,7 @@ if result.budget.exhausted {
 ```
 
 *理由:* 同じコードがデスクトップ、wasm、MCU で動き、その 3 つは時計が違う。また
-プロセスがスロットの途中で止められることもある。FT8・FT4・FST4 が対応している
+プロセスがスロットの途中で止められることもある。全モードが対応している
 （[§2.3](#23-計算予算)）。
 
 **見つかった行をすぐ画面に出す。** `decode_with` は、行がデコードされるたびにすぐ
@@ -259,7 +260,8 @@ println!("この周期で {} 行", all.rows.len());
 ```
 
 *理由:* FT8 の深い探索には時間がかかり、GUI はその全部を待つべきではない。配信の順序と
-重複除去の約束は [`STREAMING.md`](STREAMING.md) にある。
+重複除去の約束は [`STREAMING.md`](STREAMING.ja.md) にある。ストリームで出した行が返却のどの行に
+なったかは `row.detail.delivery` が言う（[§1.4](#14-013-からの移行-測っていない値は返さない)）。
 
 **GUI と違う探索をする。** `Depth` は、WSJT-X の Fast・Normal・Deep と同じ探索を与える。
 それ以外（マイコンの計算量に合わせる、計測で 1 つのつまみを固定する、0.12 の探索に
@@ -414,6 +416,113 @@ variant を足せる自由より、そちらの方が価値が高い。`engine` 
 プリミティブ（`SubtractCfg`、`GfskParams` ほか）は、呼び出し側がリテラルで
 組み立てる前提の部品であり、デコード API の一部ではない。
 
+### 1.4 0.13 からの移行: 測っていない値は返さない
+
+#573 の後の 3 つの変更は、組み立て方だけでなく、呼び出し側が**読むもの**を変えた
+（[#592](https://github.com/jl1nie/mfsk-core/issues/592)、
+[#593](https://github.com/jl1nie/mfsk-core/issues/593)、
+[#594](https://github.com/jl1nie/mfsk-core/issues/594)）。元は一つの原則で、
+[§2](#2-デコード-api) の規則 4 と同じものである: **API は持っていない答えを返してはならない。**
+3 つはどれも、それを返していた場所だった — 測っていないゼロ、受け取って無視していた予算、
+ライブラリは知っているのに呼び出し側が推測するしかなかった対応付け。
+
+**モードが測っていない数は `0` ではなく `None`。** `RowDetail::sync_score`、`sync_cv`、
+`hard_errors` は `Option` になった。WSPR・JT9・JT65・Q65 にはこれらの数が無く（本家の
+デコーダも報告しない）、FT8 の a7 / a8 のリストデコードは同期探索を通らない。それなのに、
+これらの行はどれも `0.0` / `0` を出していた。ゼロは測定値である: 同期スコアで絞り込むと全部
+落ち、データベースは「誤り 0 のきれいなデコード」と「数えていない」を区別できなかった。
+今は `Some(0)` がきれいなデコード、`None` がそのモードに数が無いことを意味する。同じ理由で、
+`sync_score` が何で**ない**かも言っておく: これはモード自身の探索の尺度（FT8 は粗い候補
+スコア、FT4 と FST4 は精密化したスコア）なので、モード間では比べられない。どの尺度かは
+フィールドの doc にモードごとに書いてある。
+
+| モード | `sync_score`、`sync_cv` | `hard_errors` |
+|---|---|---|
+| FT8（探索によるもの）、FT4、FST4 | `Some` | `Some` |
+| FT8 の a7 / a8 リストデコード | `None` | `Some` |
+| WSPR、JT9、JT65、Q65 | `None` | `None` |
+
+**ストリームで出した行と返された行の対応は、ライブラリが付ける。両者が同じだと知って
+いるのはライブラリだけだからである。** `decode_with` は各行をコールバックに渡し、最後に
+全部を返す。この 2 つは違いうる: その周期で学習した `<...>` は、返された行でだけ解決して
+読める（[§2.4](#24-ストリーミング配信)）。呼び出し側はこれまで、位置で（並列戦略では
+誤り）、テキストで（解決すると誤り）、あるいはメッセージのビットと Hz に丸めた周波数から
+自分で作ったキーで（同じメッセージが近くで 2 回聞こえると誤り）対応付けていた。
+ライブラリは両方の値を持っていて正確に比べられるので、答えを言う: `RowDetail::delivery` は、
+ストリームの行ではその周期の配信の中での位置（0, 1, 2…）、返された行ではそれが**どの配信
+だったか**の位置である。コールバックが見なかった行、通常の `decode` の全行、`std` の無い
+ビルドの返された行（配信のリストに `Mutex` が要る）では `None`。並列戦略の重複配信は、
+どの返された行も指さない位置になる。
+
+```rust
+use std::sync::Mutex;
+use mfsk_core::decoder::{Decoder, SlotInput};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::with_defaults();
+let period = vec![0i16; 180_000];
+let shown: Mutex<Vec<String>> = Mutex::new(Vec::new()); // 配信ごとに 1 行
+let all = rx.decode_with(&SlotInput::i16(&period), &|row| {
+    let mut shown = shown.lock().unwrap();
+    let at = row.detail.delivery.unwrap() as usize; // ストリームの行では常に Some
+    if shown.len() <= at {
+        shown.resize(at + 1, String::new());
+    }
+    shown[at] = row.decoded.text.clone();
+});
+// 返された行の方が読みやすいことがある（`<...>` が解決した）: その場で置き換える。
+let mut shown = shown.into_inner().unwrap();
+for row in &all.rows {
+    if let Some(at) = row.detail.delivery {
+        shown[at as usize] = row.decoded.text.clone();
+    }
+}
+```
+
+デコーダや周期を**またいで**行を比べるには `delivery` は役に立たない（呼び出しごとの番号
+である）。全モードが埋めるようになったメッセージのビット `RowDetail::info` で比べる
+（[`STREAMING.md`](STREAMING.ja.md) §2）。
+
+**API が受け取るオプションは、全モードで効く。** `SlotInput::budget` はどの `Decoder<P>` も
+受け取ったが、問い合わせていたのは FT8・FT4・FST4 だけで、残る 4 モードは周期全体をデコード
+して全ゼロの `BudgetReport` を返していた。それは「締切に達しなかった」と読める。今は WSPR・
+JT9・JT65・Q65 も同じ単位、候補を試す前に候補ごとに 1 回、問い合わせる
+（[§2.3](#23-計算予算)）。これらのモードに予算を設定していた呼び出し側は、以前より少ない行と
+`budget.exhausted` を受け取りうる。
+
+**`Decoded::new` があるのは、`#[non_exhaustive]` が構造体リテラルを閉じたからである。**
+行はデコーダが作るが、利用側のテスト、記録した行の再生、別の出所からの橋渡しでは自分で
+作る必要があり、§1.3 の後はクレートの外から作る手段が無かった。
+`Decoded::new(text, freq_hz, dt_sec, snr_db, protocol)` は 5 つのフィールドを取る。後で
+フィールドが増えてもその値はコンストラクタの中で決まるので、呼び出しはコンパイルし続ける。
+
+| 旧 | 新 |
+|---|---|
+| `let s: f32 = row.detail.sync_score;` | `match row.detail.sync_score { Some(s) => …, None => /* そのモードには無い */ }` |
+| `if row.detail.hard_errors == 0` | `if row.detail.hard_errors == Some(0)` — `None` は「数えていない」で、きれいなデコードではない |
+| モードをまたいだ `rows.sort_by(…sync_score…)` | 比べるのは同じモードの中だけ。尺度が違う |
+| ストリームの行と返された行を位置・テキスト・丸めた周波数のキーで対応付ける | `row.detail.delivery` |
+| テストで `Decoded { text, freq_hz, … }` を作る（#573 から不可） | `Decoded::new("CQ JL1NIE PM95", 1500.0, 0.2, -12.0, ProtocolId::Ft8)` |
+| WSPR・JT9・JT65・Q65 への予算（無視されていた） | 従う。`budget.exhausted` を読む |
+
+```rust
+use mfsk_core::ProtocolId;
+use mfsk_core::msg::Decoded;
+
+let row = Decoded::new("CQ JL1NIE PM95", 1500.0, 0.2, -12.0, ProtocolId::Ft8);
+assert_eq!(row.freq_hz, 1500.0);
+```
+
+**C では。** 行のレイアウトは変えないので、無い数を `NULL` にはできない:
+`MfskDecode::flags` にビット 2–4（`MFSK_DECODE_FLAG_HAS_SYNC_SCORE`、`_HAS_SYNC_CV`、
+`_HAS_HARD_ERRORS`）が加わり、数が本物なら立ち、フィールドがプレースホルダの `0` なら
+落ちている。サイズでバージョン管理される行の末尾には `key_bits` / `key`（メッセージの 77、72、
+50 ビットを 10 バイトに詰めたもの）と `delivery`（`None` は `-1`）が加わった —
+[`BINDINGS.md`](BINDINGS.ja.md) §2.4。Kotlin と Swift の行は今も素の数を見せる。
+**C の予算はまだ #593 に追いついていない:** `MFSK_CAP_BUDGET` は今も FT8・FT4・FST4 にしか
+公開されておらず、WSPR・JT9・JT65・Q65 への `mfsk_decoder_set_budget` は、下の Rust
+デコーダなら従うにもかかわらず `MFSK_STATUS_UNSUPPORTED` を返す。
+
 ---
 
 ## 2. デコード API
@@ -502,8 +611,8 @@ pub struct Decoder<P: Decodable> { params, extras, state }
 
 | フィールド | 内容 |
 |---|---|
-| `decoded: Decoded` | モード共通の行: `text`（デコーダのハッシュ表で解決済み）、`freq_hz`、`dt_sec`、`snr_db`、`protocol` |
-| `detail: RowDetail` | それ以外でモード間に共通するもの: `sync_score`、`sync_cv`、`hard_errors`、`pass`、`info`、`hash_resolved`（`<...>` の解決に表が要った）、`copied_last_tx`（Q65 Pileup）。持たないモードは既定値のまま。WSPR・JT9・JT65 はどれも埋めない |
+| `decoded: Decoded` | モード共通の行: `text`（デコーダのハッシュ表で解決済み）、`freq_hz`、`dt_sec`、`snr_db`、`protocol`。デコーダの外で作るには `Decoded::new`（テスト、再生） |
+| `detail: RowDetail` | それ以外でモード間に共通するもの: `sync_score`、`sync_cv`、`hard_errors`（モードが測らないものは `None`: WSPR・JT9・JT65・Q65、sync については FT8 の a7 / a8 も。`sync_score` はモード自身の尺度）、`pass`、`info`（メッセージのビット、全モード）、`hash_resolved`（`<...>` の解決に表が要った）、`delivery`（`decode_with` の何番目の配信か、だったか）、`copied_last_tx`（Q65 Pileup）。`0` でなく `None` にした理由は [§1.4](#14-013-からの移行-測っていない値は返さない) |
 | `native: R` | そのモード固有の結果: `DecodeResult`（FT8・FT4・FST4）、`WsprResult`、`Jt9Result`、`Jt65Result`、`Q65Result` |
 
 **デコーダが周期をまたいで持つもの**は、本家のデコーダが持つものだけである。デコーダごと
@@ -656,7 +765,7 @@ a7 は `a7` extra である。
 ### 2.3 計算予算
 
 `SlotInput::budget(check)` は、候補の間で呼ばれる呼び出し側の述語
-（`&(dyn Fn() -> bool + Sync)`）を取る。**ライブラリは自前の時計を読まない** — 締切は
+（`&(dyn Fn() -> bool + Sync)`）を取る。候補を試す前に、候補ごとに 1 回呼ばれる。**ライブラリは自前の時計を読まない** — 締切は
 述語が何と比較するかで決まり、これによって wasm や、スロットの途中で一時停止された
 プロセスからも使える。
 
@@ -668,8 +777,25 @@ a7 は `a7` extra である。
 打ち切りは探索中ではなく後片付けの最中に起きた。減算される行には候補のランキングが
 付かないので、上の各フィールドではそれを言えない。
 
-FT8・FT4・全 FST4 サブモードが対応する（`MFSK_CAP_BUDGET` は同じ事実を C へ公開したもの）。
-WSPR・JT9・JT65・Q65 は周期全体をデコードし、空のレポートを返す。
+**全モードが従う**（WSPR・JT9・JT65・Q65 は #593 から。それ以前は受け取って無視し、全ゼロの
+レポートを返していた。それは「締切に達しなかった」と読めるが、実際は「訊かれなかった」だった —
+[§1.4](#14-013-からの移行-測っていない値は返さない)）。単位はどこでも同じく候補 1 つで、次の 3 つは意図して打ち切らない:
+
+- **実行中の候補は最後まで走る。** 予算はその FEC 処理に払ったのであり、途中で捨てれば
+  コストを払って答えを捨てることになる。
+- **粗い探索は打ち切らない。** 候補を順位付けるのはこの探索なので、予算が最も弱い候補から
+  削れるのは探索が済んでいるからである。
+- **Q65 の平均化デコードは打ち切らない。** その仕事の単位は候補ではなく 1 周期分のスペクトルである。
+
+レポートの中身はモードで違う。FT8・FT4・FST4 は上の全フィールドを埋める。WSPR・JT9・JT65・Q65
+が立てるのは `exhausted` だけで、件数は `0`、cut-at のフィールドは `None` のままなので、これらの
+モードでは `candidates_skipped == 0` が「何もスキップしなかった」を意味しない。WSPR は全パスで
+（走査が rayon 上なので停止は `AtomicBool`）、JT65 は全パスで、Q65 は両方の同期の候補リストで
+問い合わせ、予算が尽きればそれ以降のパスを飛ばす。
+
+C では `MFSK_CAP_BUDGET` がまだ FT8・FT4・FST4 にしか公開されていないため、
+`mfsk_decoder_set_budget` は残る 4 モードを `MFSK_STATUS_UNSUPPORTED` で拒む
+（[`BINDINGS.md`](BINDINGS.ja.md) §2.2）。
 
 ### 2.4 ストリーミング配信
 
@@ -681,7 +807,10 @@ WSPR・JT9・JT65・Q65 は周期全体をデコードし、空のレポート�
 正式な説明である。一行でいえば: 逐次戦略は呼び出しが返す行をそのまま同じ順序で
 配信し、並列戦略は完了順に配信し、返される行では既に重複排除済みの一時的な重複を
 見せることがある。コールバックに渡される行は、周期の開始時点のハッシュ表で解決されたもの
-で、返される行は同じ周期内で先に学習された呼出符号も見る。
+で、返される行は同じ周期内で先に学習された呼出符号も見る。だから両者は違いうるので、
+`RowDetail::delivery` で対にする: コールバックの行は自分の配信位置を、返される行は自分が
+どの配信だったかの位置を持つ。`delivery_is_exact()` は、今のモード・depth・extras がどちらの
+契約で動くかを言う。
 
 全モードが同じメソッドで同じ形を提供する。WSPR のそれは正確な契約ではなく並列の契約で
 ある — [`STREAMING.md`](STREAMING.ja.md) §3b を参照。JTTY には `Decoder` が無く、音声呼び出しの

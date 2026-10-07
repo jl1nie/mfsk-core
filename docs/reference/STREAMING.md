@@ -528,7 +528,7 @@ while let Some(msg) = stream.next().await {
   early — but note the decode itself has no interior cancellation point,
   so a `spawn_blocking` task runs to completion regardless. For hard
   cancellation, give `SlotInput::budget(..)` a predicate that reads a flag
-  (FT8, FT4 and FST4 poll it between candidates, [LIBRARY.md](LIBRARY.md)
+  (every mode polls it once per candidate, [LIBRARY.md](LIBRARY.md)
   §2.3) and decode in shorter units.
 
 ---

@@ -499,7 +499,7 @@ while let Some(msg) = stream.next().await {
   `blocking_send` が `Err` を返すので早期に止められる —— ただしデコード
   自体に内部キャンセル点はないため、`spawn_blocking` タスクは何であれ完
   了まで走る。ハードなキャンセルには、`SlotInput::budget(..)` にフラグを読む述語を渡し
-  （FT8・FT4・FST4 は候補の間でそれを呼ぶ。[LIBRARY.ja.md](LIBRARY.ja.md)
+  （全モードが候補ごとに 1 回それを呼ぶ。[LIBRARY.ja.md](LIBRARY.ja.md)
   §2.3）、より短い単位でデコードする。
 
 ---
