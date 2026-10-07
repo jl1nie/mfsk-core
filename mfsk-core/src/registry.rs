@@ -194,6 +194,7 @@ pub mod caps {
 /// nothing saying they are incomparable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum SyncScale {
     /// FT8's `sync8` score: the Costas correlation ratio, normalised so the
     /// 40th percentile of the candidates is 1 (`sync8.f90:129-135`), the same
@@ -225,6 +226,7 @@ pub enum SyncScale {
 /// invented three different sets. These are this crate's own
 /// host-configuration values, with the provenance recorded per entry.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct DecodeDefaults {
     pub freq_min_hz: f32,
     pub freq_max_hz: f32,
@@ -234,6 +236,7 @@ pub struct DecodeDefaults {
 
 /// Capability and default-search description for one registry entry.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct DecodeProfile {
     /// Bitwise OR of [`caps`] constants.
     pub caps: u32,
@@ -253,6 +256,7 @@ pub struct DecodeProfile {
 /// look like" display: identity → modulation → frame → FEC →
 /// payload.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct ProtocolMeta {
     /// Family-level protocol id used at the FFI boundary. Multiple
     /// `ProtocolMeta` entries may share an id (e.g. all ten Q65

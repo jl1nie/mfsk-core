@@ -159,6 +159,7 @@ pub type BudgetCheck<'a> = &'a (dyn Fn() -> bool + Sync);
 /// what a caller adapting to a deadline needs, and a process-global one
 /// cannot give it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
 pub struct BudgetReport {
     /// The predicate returned `false` at least once — work was left
     /// undone.
@@ -492,6 +493,7 @@ fn osd_escalation_gates_impl<P: Protocol>() -> (u32, u32) {
 /// kept for the API shape; their numbers are the original FT8-copied
 /// values, unverified for FT4.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum DecodeStrictness {
     Strict,
     #[default]
@@ -625,6 +627,7 @@ impl DecodeStrictness {
 /// The pipeline is agnostic to the layout; `MessageCodec::unpack` /
 /// `MessageCodec::verify_info` interpret it per-protocol.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DecodeResult {
     /// FEC-decoded information bits; length = `<P::Fec as FecCodec>::K`.
     pub info: Box<[u8]>,

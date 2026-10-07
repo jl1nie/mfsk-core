@@ -17,6 +17,7 @@ use crate::registry::Mode;
 
 /// An option the mode does not have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Unsupported {
     pub mode: Mode,
     pub option: &'static str,
@@ -33,6 +34,7 @@ impl std::error::Error for Unsupported {}
 
 /// What one period of an [`AnyDecoder`] produced.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AnySlotResult {
     /// In the order they were found.
     pub rows: Vec<Decoded>,

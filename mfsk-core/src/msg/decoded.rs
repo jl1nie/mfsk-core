@@ -73,6 +73,7 @@ use crate::engine::protocol::ProtocolId;
 /// conversions that produce it.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct Decoded {
     /// Human-readable message text, already resolved (unpacked / formatted).
     pub text: String,

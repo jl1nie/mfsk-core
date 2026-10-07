@@ -30,6 +30,16 @@
   `Depth::Fast`, FST4, WSPR) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits and
   frequency to the Hz are seen. A streamed row is resolved against the callsign table as it stood when
   the period began, so a `<...>` that the same period teaches stays `<...>`.
+- **`#[non_exhaustive]` on the public types that are expected to grow (#573).** One break, taken once, so that the
+  growth itself stops being one: a new protocol is patch-level by this crate's convention, but it adds a `ProtocolId`
+  variant, so each one had technically been breaking — as is any field added to an output row, to `ProtocolMeta`, or to
+  a mode's `Extras`. 40 types gain the attribute (53 now carry it): the output rows and each mode's native result, the
+  registry metadata, the search knobs (`Tuning`, `SearchTuning`, `Sniper`, every `*Extras`), the parameter block's
+  `Station` / `QsoContext` / `Contest`, and the option enums. A caller pays a `_` arm on a `match`, and `Default` plus
+  field assignment where it used to write a struct literal; `Station::new`, `QsoContext::new` and `Sniper::new` are new
+  for the three with no builder. `ApMode`, `Depth`, `QsoProgress` and the `engine` / `fec` primitives stay exhaustive —
+  `mfsk-ffi` maps `ApMode` Rust → C with an exhaustive match, which is worth more than the freedom to add a variant.
+  No behaviour changes. Before/after table and the full list: `LIBRARY.md` §1.3 (and `.ja.md`).
 - **FT8 `SicEarly` stops when its budget does (#587).** The subtractions between checkpoints A, B and C had no budget
   poll, so a budget spent during A still paid for every A row's `subtract_signal_lpf_refine_dt` (60-150 ms each) before a
   C search that was then refused. Native, `qso3_busy.wav`, sync 1.0, 200 candidates: a 300 ms budget ran 641 ms, 340 ms

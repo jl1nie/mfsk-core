@@ -27,7 +27,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mfsk_core::decoder::{ApMode, DecodeParams, Decoder, Depth, Ft8Extras, SlotInput, Tuning};
+use mfsk_core::decoder::{ApMode, DecodeParams, Decoder, Depth, Ft8Extras, SlotInput};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::msg::ApHint;
 
@@ -55,15 +55,10 @@ fn run_tier(slot: &[i16], depth: Depth, ap: &ApHint) -> (usize, f64, Vec<String>
     let params = DecodeParams::for_band((100.0, 3000.0))
         .depth(depth)
         .ap(ApMode::Off);
-    let extras = Ft8Extras {
-        tuning: Tuning {
-            sync_min: Some(1.3),
-            max_cand: Some(50),
-            ..Default::default()
-        },
-        ap_hint: (depth == Depth::Deep).then(|| ap.clone()),
-        ..Default::default()
-    };
+    let mut extras = Ft8Extras::default();
+    extras.tuning.sync_min = Some(1.3);
+    extras.tuning.max_cand = Some(50);
+    extras.ap_hint = (depth == Depth::Deep).then(|| ap.clone());
     let t0 = Instant::now();
     let rows = Decoder::<Ft8>::new(params)
         .with_extras(extras)

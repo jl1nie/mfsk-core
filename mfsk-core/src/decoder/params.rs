@@ -46,6 +46,7 @@ impl Depth {
 /// (`widgets/mainwindow.cpp:3509-3512`); they are one variant here for the
 /// same reason.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Contest {
     /// No activity, `ncontest = 0`.
     #[default]
@@ -98,20 +99,54 @@ pub enum ApMode {
 /// The operator: `mycall`, `mygrid`. Empty strings mean unknown, as in the
 /// params block.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Station {
     pub call: String,
     pub grid: String,
 }
 
+impl Station {
+    /// The operator's callsign and grid. `""` for either means unknown,
+    /// as in the params block.
+    ///
+    /// `Station` is `#[non_exhaustive]` (issue #573), so this — or
+    /// [`Default`] plus field assignment — is how a caller outside the
+    /// crate builds one.
+    pub fn new(call: &str, grid: &str) -> Self {
+        Self {
+            call: call.into(),
+            grid: grid.into(),
+        }
+    }
+}
+
 /// Where the QSO stands: `hiscall`, `hisgrid`, `nQSOProgress`. Empty
 /// strings mean no QSO in progress.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct QsoContext {
     pub his_call: String,
     pub his_grid: String,
     /// `nQSOProgress`: 0 CALLING, 1 REPLYING, 2 REPORT, 3 ROGER_REPORT,
     /// 4 ROGERS, 5 SIGNOFF (`widgets/mainwindow.h`).
     pub progress: QsoProgress,
+}
+
+impl QsoContext {
+    /// Who is being worked, and where the QSO stands. `""` for either
+    /// callsign field means no QSO in progress.
+    ///
+    /// `QsoContext` is `#[non_exhaustive]` (issue #573), so this — or
+    /// [`Default`] plus field assignment — is how a caller outside the
+    /// crate builds one. The argument order is
+    /// [`DecodeParams::qso`]'s.
+    pub fn new(his_call: &str, his_grid: &str, progress: QsoProgress) -> Self {
+        Self {
+            his_call: his_call.into(),
+            his_grid: his_grid.into(),
+            progress,
+        }
+    }
 }
 
 /// `nQSOProgress` (`MainWindow::QSOProgress`).
@@ -222,19 +257,12 @@ impl DecodeParams {
     }
 
     pub fn station(mut self, call: &str, grid: &str) -> Self {
-        self.station = Station {
-            call: call.into(),
-            grid: grid.into(),
-        };
+        self.station = Station::new(call, grid);
         self
     }
 
     pub fn qso(mut self, his_call: &str, his_grid: &str, progress: QsoProgress) -> Self {
-        self.qso = QsoContext {
-            his_call: his_call.into(),
-            his_grid: his_grid.into(),
-            progress,
-        };
+        self.qso = QsoContext::new(his_call, his_grid, progress);
         self
     }
 
@@ -258,6 +286,7 @@ impl DecodeParams {
 /// Search settings the library overrides on top of the parameter block's
 /// band. `None` keeps the mode's default.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct SearchTuning {
     pub time_tolerance_early_sec: Option<f32>,
     pub time_tolerance_late_sec: Option<f32>,

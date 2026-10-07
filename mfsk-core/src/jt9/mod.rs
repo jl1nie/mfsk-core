@@ -112,6 +112,7 @@ fn decode_at_inner(
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// One successful JT9 decode with its alignment info.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Jt9Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,

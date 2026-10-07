@@ -30,6 +30,7 @@ This document is the Rust host API. Other audiences:
 - [1. Quick start](#1-quick-start)
   - [1.1 Use cases: a decoder is something you keep](#11-use-cases-a-decoder-is-something-you-keep)
   - [1.2 Coming from 0.12](#12-coming-from-012)
+  - [1.3 Coming from 0.13: `#[non_exhaustive]`](#13-coming-from-013-non_exhaustive)
 - [2. The decode API](#2-the-decode-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` and `Depth`](#22-decodeparams-and-depth)
@@ -182,11 +183,7 @@ let mut rx = Decoder::<Ft8>::new(
 let period = vec![0i16; 180_000]; // one period from the radio
 
 // You answered JA1ABC's CQ.
-rx.params_mut().qso = QsoContext {
-    his_call: "JA1ABC".into(),
-    his_grid: "PM95".into(),
-    progress: QsoProgress::Replying,
-};
+rx.params_mut().qso = QsoContext::new("JA1ABC", "PM95", QsoProgress::Replying);
 rx.decode(&SlotInput::i16(&period).period(100));
 
 // Next period: you have sent the report, so expect RRR / 73 / RR73.
@@ -379,6 +376,56 @@ QSO, set `station`, or the `ap_hint` extra.
 
 The synthesis API (`engine::tx`), `dt_sec` from the nominal start and
 `engine::search` of 0.12 are unchanged.
+
+---
+
+### 1.3 Coming from 0.13: `#[non_exhaustive]`
+
+0.14 marks the public types that are expected to grow
+`#[non_exhaustive]` ([#573](https://github.com/jl1nie/mfsk-core/issues/573)).
+It is one break, taken once, so that the growth itself stops being one: a
+new protocol is patch-level by this crate's convention, but it adds a
+`ProtocolId` variant, and every such addition had technically been
+breaking. The same goes for a field on an output row, on `ProtocolMeta`,
+or on a mode's `Extras` — the Extras being the likeliest of all to grow,
+since they are what this library adds on top of WSJT-X's parameter block.
+
+What it costs a caller is three things:
+
+- **On an enum**, a `match` needs a `_` arm.
+- **On a struct**, it can no longer be built by literal, which includes
+  `..Default::default()` and the update form `Foo { a, ..base }`.
+- **On a struct**, a destructuring pattern needs a trailing `..`:
+  `let Row { decoded, detail, native } = row;` stops compiling,
+  `let Row { decoded, .. } = row;` does not.
+
+Reading a field and assigning to a field work as before.
+
+| was | now |
+|---|---|
+| `Ft8Extras { tuning: t, ap_hint: h, ..Default::default() }` | `let mut e = Ft8Extras::default(); e.tuning = t; e.ap_hint = h;` |
+| `Tuning { sync_min: Some(1.3), max_cand: Some(50), ..Default::default() }` | assign through the extras: `e.tuning.sync_min = Some(1.3); e.tuning.max_cand = Some(50);` |
+| `SearchTuning { max_candidates: Some(100), ..Default::default() }` | `e.search.max_candidates = Some(100);` |
+| `Sniper { search_hz: 250.0 }` | `Sniper::new(250.0)` |
+| `Station { call, grid }` | `Station::new("JL1NIE", "PM95")` |
+| `QsoContext { his_call, his_grid, progress }` | `QsoContext::new("JA1ABC", "PM95", QsoProgress::Replying)` |
+| `ApHint { call2: Some(dx), ..Default::default() }` | `ApHint::new().with_call2(dx)` — the builder was already there |
+| an exhaustive `match` on `ProtocolId`, `Contest`, `MessageFilter`, `Ft8Strategy`, `EqMode`, `DecodeStrictness`, `SyncScale`, `NoiseBlanker`, `Wsjt77Fields`, `Audio` | add a `_` arm |
+
+The types carrying it are the output rows (`Decoded`, `Row`, `RowDetail`,
+`SlotResult`, `AnySlotResult`, `Unsupported`, `BudgetReport`, and each
+mode's native result), the registry's metadata (`ProtocolMeta`,
+`DecodeProfile`, `DecodeDefaults`), the search knobs (`Tuning`,
+`SearchTuning`, `Sniper`, every `*Extras`), the parameter block's
+`Station` / `QsoContext` / `Contest`, and the option enums listed above.
+
+**What stayed exhaustive, and why.** `ApMode`, `Depth` and `QsoProgress`
+mirror `lft8apon` / `lapcqonly`, `ndepth` and `nQSOProgress`: fixed sets
+upstream, and `mfsk-ffi` maps `ApMode` Rust → C with an exhaustive match,
+which is a compile-time guarantee that every variant has a C value —
+worth more than the freedom to add one. The `engine` and `fec`
+primitives (`SubtractCfg`, `GfskParams`, …) are building blocks that
+callers are meant to build by literal, not part of the decode API.
 
 ---
 
@@ -735,7 +782,7 @@ audio[start..start + frame.len()].copy_from_slice(&frame);
 
 let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((200.0, 3_000.0)).rx_freq(1000.0));
 let extras = decoder.extras_mut();
-extras.sniper = Some(Sniper { search_hz: 250.0 });
+extras.sniper = Some(Sniper::new(250.0));
 extras.eq = EqMode::Local;
 extras.ap_hint = Some(ApHint::new().with_call1("CQ").with_call2("JA1ABC"));
 

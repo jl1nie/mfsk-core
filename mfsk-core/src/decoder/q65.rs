@@ -27,6 +27,7 @@ pub const MAX_AVERAGED_PERIODS: usize = 8;
 
 /// Q65's library options.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct Q65Extras {
     pub search: SearchTuning,
     /// A free-form AP hint beside upstream's QSO-context AP.

@@ -299,16 +299,11 @@ fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions, station: &Station) {
     p.eme_delay = o.eme_delay;
     // A channel's own call or locator wins; an empty one is the operator's.
     let pick = |own: &str, all: &str| if own.is_empty() { all } else { own }.to_string();
-    p.station = Station {
-        call: pick(&o.station.call, &station.call),
-        grid: pick(&o.station.grid, &station.grid),
-    };
+    p.station.call = pick(&o.station.call, &station.call);
+    p.station.grid = pick(&o.station.grid, &station.grid);
     p.qso = o.qso.clone();
     p.contest = o.contest;
-    let hint = o.dx_call.as_ref().map(|dx| ApHint {
-        call2: Some(dx.clone()),
-        ..ApHint::default()
-    });
+    let hint = o.dx_call.as_deref().map(|dx| ApHint::new().with_call2(dx));
     let _ = d.set_ap_hint(hint);
 }
 
@@ -350,23 +345,24 @@ enum Job {
 struct Delivered(std::sync::Mutex<std::collections::HashMap<(bool, Vec<u8>), String>>);
 
 impl Delivered {
-    fn key(row: &Decoded, detail: &RowDetail) -> (bool, Vec<u8>) {
-        let (has_bits, mut k) = if detail.info.is_empty() {
-            (false, row.text.clone().into_bytes())
+    /// A row's key: its message bits and frequency to the Hz; with no bits, its text.
+    fn key(text: &str, freq_hz: f32, info: &[u8]) -> (bool, Vec<u8>) {
+        let (has_bits, mut k) = if info.is_empty() {
+            (false, text.as_bytes().to_vec())
         } else {
-            (true, detail.info.clone())
+            (true, info.to_vec())
         };
-        k.extend_from_slice(&(row.freq_hz.round() as i32).to_le_bytes());
+        k.extend_from_slice(&(freq_hz.round() as i32).to_le_bytes());
         (has_bits, k)
     }
 
     /// `true` the first time this row is offered; its text is kept for
     /// [`Self::text_of`].
-    fn first_time(&self, row: &Decoded, detail: &RowDetail) -> bool {
+    fn first_time(&self, text: &str, freq_hz: f32, info: &[u8]) -> bool {
         use std::collections::hash_map::Entry;
-        match self.0.lock().unwrap().entry(Self::key(row, detail)) {
+        match self.0.lock().unwrap().entry(Self::key(text, freq_hz, info)) {
             Entry::Vacant(v) => {
-                v.insert(row.text.clone());
+                v.insert(text.to_string());
                 true
             }
             Entry::Occupied(_) => false,
@@ -374,8 +370,12 @@ impl Delivered {
     }
 
     /// The text this row was delivered with, if it was.
-    fn text_of(&self, row: &Decoded, detail: &RowDetail) -> Option<String> {
-        self.0.lock().unwrap().get(&Self::key(row, detail)).cloned()
+    fn text_of(&self, text: &str, freq_hz: f32, info: &[u8]) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(&Self::key(text, freq_hz, info))
+            .cloned()
     }
 }
 
@@ -430,16 +430,16 @@ fn decode_streaming(
     }
     let delivered = Delivered::default();
     let out = decoder.decode_with(slot, &|row, detail| {
-        if delivered.first_time(row, detail) {
+        if delivered.first_time(&row.text, row.freq_hz, &detail.info) {
             emit(row, detail, false);
         }
     });
     for (row, detail) in out.rows.iter().zip(&out.details) {
-        match delivered.text_of(row, detail) {
+        match delivered.text_of(&row.text, row.freq_hz, &detail.info) {
             Some(t) if t == row.text => {}
             Some(_) => emit(row, detail, true),
             None => {
-                delivered.first_time(row, detail);
+                delivered.first_time(&row.text, row.freq_hz, &detail.info);
                 emit(row, detail, false);
             }
         }
@@ -2348,62 +2348,37 @@ mod tests {
     /// The text a row was streamed with is what an `update` is compared to.
     #[test]
     fn a_resolved_text_is_told_from_the_one_streamed() {
-        let row = |text: &str| Decoded {
-            text: text.into(),
-            freq_hz: 1_000.0,
-            dt_sec: 0.0,
-            snr_db: -10.0,
-            protocol: mfsk_core::ProtocolId::Ft8,
-        };
-        let detail = RowDetail {
-            info: vec![1, 0, 1],
-            ..RowDetail::default()
-        };
+        let info = [1, 0, 1];
         let d = Delivered::default();
-        assert_eq!(d.text_of(&row("CQ <...> PM95"), &detail), None);
-        assert!(d.first_time(&row("CQ <...> PM95"), &detail));
+        assert_eq!(d.text_of("CQ <...> PM95", 1_000.0, &info), None);
+        assert!(d.first_time("CQ <...> PM95", 1_000.0, &info));
         // The returned row: the same bits, resolved.
         assert_eq!(
-            d.text_of(&row("CQ <JA1ABC> PM95"), &detail).as_deref(),
+            d.text_of("CQ <JA1ABC> PM95", 1_000.0, &info).as_deref(),
             Some("CQ <...> PM95")
         );
     }
 
     #[test]
     fn a_row_offered_twice_is_delivered_once() {
-        let row = |text: &str| Decoded {
-            text: text.into(),
-            freq_hz: 1_000.0,
-            dt_sec: 0.0,
-            snr_db: -10.0,
-            protocol: mfsk_core::ProtocolId::Wspr,
-        };
-        let with_info = |info: &[u8]| RowDetail {
-            info: info.to_vec(),
-            ..RowDetail::default()
-        };
         let d = Delivered::default();
         // The key and the frequency to the Hz: the same bits at two
         // frequencies are two transmissions (the JT65 golden has
         // `K1ABC W9XYZ EN37` three times, one key).
-        let k1abc = with_info(&[0, 1, 1, 0]);
-        let at = |text: &str, hz: f32| Decoded {
-            freq_hz: hz,
-            ..row(text)
-        };
+        let k1abc = [0, 1, 1, 0];
         for hz in [1100.3, 1500.1, 1899.7] {
-            assert!(d.first_time(&at("K1ABC W9XYZ EN37", hz), &k1abc));
+            assert!(d.first_time("K1ABC W9XYZ EN37", hz, &k1abc));
         }
-        assert!(!d.first_time(&at("K1ABC W9XYZ EN37", 1500.1), &k1abc));
-        assert!(d.first_time(&row("W9XYZ EN34 30"), &with_info(&[1, 1, 1, 1])));
+        assert!(!d.first_time("K1ABC W9XYZ EN37", 1500.1, &k1abc));
+        assert!(d.first_time("W9XYZ EN34 30", 1_000.0, &[1, 1, 1, 1]));
         // The same bits resolved to another text (a hashed call learned later
         // in the period) are the same row.
-        assert!(d.first_time(&row("CQ <...> PM95"), &with_info(&[1, 2, 3])));
-        assert!(!d.first_time(&row("CQ <JA1ABC> PM95"), &with_info(&[1, 2, 3])));
-        assert!(d.first_time(&row("CQ <...> PM95"), &with_info(&[1, 2, 4])));
+        assert!(d.first_time("CQ <...> PM95", 1_000.0, &[1, 2, 3]));
+        assert!(!d.first_time("CQ <JA1ABC> PM95", 1_000.0, &[1, 2, 3]));
+        assert!(d.first_time("CQ <...> PM95", 1_000.0, &[1, 2, 4]));
         // No key at all: the text decides.
-        assert!(d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
-        assert!(!d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
+        assert!(d.first_time("K1ABC FN42 37", 1_000.0, &[]));
+        assert!(!d.first_time("K1ABC FN42 37", 1_000.0, &[]));
     }
 
     #[test]

@@ -145,24 +145,20 @@ fn jt65_rows_carry_their_72_bits_and_the_repeated_message_is_three_rows() {
 /// default block most recordings decode nothing.
 #[test]
 fn q65_rows_carry_their_77_bits() {
-    use mfsk_core::decoder::{DecodeParams, Decoder, Q65Extras, SearchTuning};
+    use mfsk_core::decoder::{DecodeParams, Decoder, Q65Extras};
     use mfsk_core::q65::Q65d60;
     let Some(path) = common::corpus::golden_path("q65/60D_EME_10GHz/201212_1838.wav") else {
         common::skip_or_fail("Q65 60D golden");
         return;
     };
     let a = common::load_wav_f32_opt(&path).unwrap();
-    let mut d =
-        Decoder::<Q65d60>::new(DecodeParams::for_band((200.0, 3000.0))).with_extras(Q65Extras {
-            search: SearchTuning {
-                time_tolerance_early_sec: Some(7.0),
-                time_tolerance_late_sec: Some(5.0),
-                score_threshold: Some(0.05),
-                max_candidates: Some(8),
-            },
-            fading: Some((mfsk_core::fec::qra::FadingModel::Gaussian, 10.0)),
-            ..Default::default()
-        });
+    let mut e = Q65Extras::default();
+    e.search.time_tolerance_early_sec = Some(7.0);
+    e.search.time_tolerance_late_sec = Some(5.0);
+    e.search.score_threshold = Some(0.05);
+    e.search.max_candidates = Some(8);
+    e.fading = Some((mfsk_core::fec::qra::FadingModel::Gaussian, 10.0));
+    let mut d = Decoder::<Q65d60>::new(DecodeParams::for_band((200.0, 3000.0))).with_extras(e);
     let streamed = Mutex::new(Vec::<Vec<u8>>::new());
     let out = d.decode_with(&SlotInput::f32(&a), &|row| {
         streamed.lock().unwrap().push(row.detail.info.clone());

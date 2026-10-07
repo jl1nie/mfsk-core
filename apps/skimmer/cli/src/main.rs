@@ -131,10 +131,7 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>, bool)> {
                 c.server.clone()
             };
         }
-        c.live.set_station(Station {
-            call: mycall.clone(),
-            grid: mygrid.clone(),
-        });
+        c.live.set_station(Station::new(&mycall, &mygrid));
         // Channels given before the first --step are heard in the first one.
         if !c.steps.is_empty() {
             let listed: std::collections::HashSet<usize> = c

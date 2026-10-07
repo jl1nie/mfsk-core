@@ -29,6 +29,7 @@ use num_complex::Complex;
 /// Callers that want the historical two-pass behaviour should
 /// invoke the decoder twice explicitly with `Local` then `Off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum EqMode {
     /// No equalisation (passthrough).
     #[default]

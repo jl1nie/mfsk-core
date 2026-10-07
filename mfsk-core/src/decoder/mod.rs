@@ -88,6 +88,7 @@ use crate::registry::Mode;
 /// scaled to a fixed RMS ([`F32_TO_I16_RMS`]) first, so a caller never picks
 /// a level.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Audio<'a> {
     I16(&'a [i16]),
     F32(&'a [f32]),
@@ -158,6 +159,7 @@ impl<'a> SlotInput<'a> {
 /// What a row carries beyond the common [`Decoded`], in the shape every
 /// mode shares (a mode without a field leaves it at its default).
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct RowDetail {
     /// Sync correlation score of the decode.
     pub sync_score: f32,
@@ -185,6 +187,7 @@ pub struct RowDetail {
 /// One decoded message: the common row, with its text resolved against
 /// the decoder's hash table, and the mode's native result.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Row<R> {
     pub decoded: Decoded,
     pub detail: RowDetail,
@@ -193,6 +196,7 @@ pub struct Row<R> {
 
 /// What one period produced.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SlotResult<R> {
     /// In the order they were found.
     pub rows: Vec<Row<R>>,

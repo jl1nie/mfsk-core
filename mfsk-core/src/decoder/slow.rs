@@ -64,6 +64,7 @@ mod wspr_impl {
 
     /// WSPR's library options.
     #[derive(Clone, Debug, Default)]
+    #[non_exhaustive]
     pub struct WsprExtras {
         pub search: SearchTuning,
         /// Fano's cycle budget per bit (`wsprd -C`), over the depth's:
@@ -187,6 +188,7 @@ mod jt9_impl {
 
     /// JT9's library options.
     #[derive(Clone, Debug, Default)]
+    #[non_exhaustive]
     pub struct Jt9Extras {
         pub search: SearchTuning,
     }
@@ -269,6 +271,7 @@ mod jt65_impl {
 
     /// JT65's library options.
     #[derive(Clone, Debug, Default)]
+    #[non_exhaustive]
     pub struct Jt65Extras {
         pub search: SearchTuning,
         /// Replace the Chase decoder's settings; by default its trial count

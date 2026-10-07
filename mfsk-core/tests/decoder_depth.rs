@@ -43,7 +43,7 @@ fn fst4_fast_is_osd_without_the_timing_retry() {
 /// Fast decodes Normal and Deep decode too.
 #[test]
 fn q65_depth_only_adds_cells() {
-    use mfsk_core::decoder::{Q65Extras, SearchTuning};
+    use mfsk_core::decoder::Q65Extras;
     use mfsk_core::q65::Q65d60;
     let Some(path) = common::corpus::golden_path("q65/60D_EME_10GHz/201212_1838.wav") else {
         common::skip_or_fail("Q65 60D golden");
@@ -51,17 +51,14 @@ fn q65_depth_only_adds_cells() {
     };
     let a = common::load_wav_f32_opt(&path).unwrap();
     let run = |depth| {
+        let mut e = Q65Extras::default();
+        e.search.time_tolerance_early_sec = Some(7.0);
+        e.search.time_tolerance_late_sec = Some(5.0);
+        e.search.score_threshold = Some(0.05);
+        e.search.max_candidates = Some(8);
+        e.fading = Some((mfsk_core::fec::qra::FadingModel::Gaussian, 10.0));
         let mut d = Decoder::<Q65d60>::new(DecodeParams::for_band((200.0, 3000.0)).depth(depth))
-            .with_extras(Q65Extras {
-                search: SearchTuning {
-                    time_tolerance_early_sec: Some(7.0),
-                    time_tolerance_late_sec: Some(5.0),
-                    score_threshold: Some(0.05),
-                    max_candidates: Some(8),
-                },
-                fading: Some((mfsk_core::fec::qra::FadingModel::Gaussian, 10.0)),
-                ..Default::default()
-            });
+            .with_extras(e);
         d.decode(&SlotInput::f32(&a))
             .rows
             .into_iter()
@@ -148,7 +145,7 @@ fn jt9_rx_frequency_pass_only_adds() {
 #[test]
 fn wspr_depths_on_the_golden() {
     use mfsk_core::Wspr;
-    use mfsk_core::decoder::{SearchTuning, WsprExtras};
+    use mfsk_core::decoder::WsprExtras;
     let Some(path) = common::corpus::golden_path("wspr/150426_0918.wav") else {
         common::skip_or_fail("WSPR golden");
         return;
@@ -156,14 +153,10 @@ fn wspr_depths_on_the_golden() {
     let a = common::load_wav_f32_opt(&path).unwrap();
     let run = |depth| {
         let t = std::time::Instant::now();
+        let mut e = WsprExtras::default();
+        e.search.max_candidates = Some(100);
         let mut d = Decoder::<Wspr>::new(DecodeParams::for_band((1400.0, 1620.0)).depth(depth))
-            .with_extras(WsprExtras {
-                search: SearchTuning {
-                    max_candidates: Some(100),
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
+            .with_extras(e);
         let r = d.decode(&SlotInput::f32(&a)).rows;
         eprintln!("{depth:?}: {} in {:?}", r.len(), t.elapsed());
         r.into_iter().map(|r| r.decoded.text).collect::<Vec<_>>()
@@ -193,7 +186,7 @@ fn wspr_depths_on_the_golden() {
 #[test]
 fn ft8_qso_context_ap_finds_the_weak_reply() {
     use mfsk_core::Ft8;
-    use mfsk_core::decoder::{ApMode, Ft8Extras, QsoProgress, Tuning};
+    use mfsk_core::decoder::{ApMode, Ft8Extras, QsoProgress};
     use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
     use mfsk_core::msg::wsjt77::pack77;
 
@@ -218,14 +211,10 @@ fn ft8_qso_context_ap_finds_the_weak_reply() {
             .iter()
             .map(|v| v.round().clamp(-32768.0, 32767.0) as i16)
             .collect();
-        let mut d = Decoder::<Ft8>::new(params).with_extras(Ft8Extras {
-            tuning: Tuning {
-                sync_min: Some(1.3),
-                max_cand: Some(50),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
+        let mut e = Ft8Extras::default();
+        e.tuning.sync_min = Some(1.3);
+        e.tuning.max_cand = Some(50);
+        let mut d = Decoder::<Ft8>::new(params).with_extras(e);
         d.decode(&SlotInput::i16(&pcm))
             .rows
             .into_iter()
@@ -378,11 +367,10 @@ fn q65_q3_snr_and_dt_are_jt9s() {
             common::skip_or_fail("Q65 30A recording");
             return;
         };
+        let mut e = Q65Extras::default();
+        e.ap_list = standard_qso_codewords("K1JT", "K9AN", "");
         let mut d = Decoder::<Q65a30>::new(DecodeParams::for_band((200.0, 3000.0)).rx_freq(1010.0))
-            .with_extras(Q65Extras {
-                ap_list: standard_qso_codewords("K1JT", "K9AN", ""),
-                ..Default::default()
-            });
+            .with_extras(e);
         let rows = d.decode(&SlotInput::f32(&a)).rows;
         let r = rows
             .iter()
