@@ -269,14 +269,108 @@ fn a_budget_that_refuses_everything_returns_nothing_and_says_so() {
         MfskStatus::Ok
     );
     assert!(rep.exhausted);
-    // And a mode that publishes no budget refuses one.
-    let w = open(MfskMode::Wspr, None, None);
-    assert_eq!(
-        unsafe { mfsk_decoder_set_budget(w, Some(never), std::ptr::null_mut()) },
-        MfskStatus::Unsupported
-    );
-    unsafe { mfsk_decoder_close(w) };
     unsafe { mfsk_decoder_close(dec) };
+}
+
+/// Every mode with a decoder takes a budget and publishes `MFSK_CAP_BUDGET`
+/// (#593: WSPR, JT9, JT65 and Q65 poll it too). Each mode's behaviour under
+/// one is `mfsk-core/tests/decoder_budget.rs`; this pins the C gate.
+#[test]
+fn every_mode_with_a_decoder_takes_a_budget() {
+    extern "C" fn always(_: *mut c_void) -> bool {
+        true
+    }
+    let mut opened = 0;
+    for i in 0..mfsk_mode_count() {
+        let mut m = MfskMode::Ft8;
+        assert_eq!(unsafe { mfsk_mode_at(i, &mut m) }, MfskStatus::Ok);
+        let m = m as u32;
+        let mut st = MfskStatus::Ok;
+        let d = unsafe { mfsk_decoder_open(m, std::ptr::null(), std::ptr::null(), &mut st) };
+        if d.is_null() {
+            continue; // uvpacket, MSK144, JTTY: no slot decoder
+        }
+        opened += 1;
+        assert_ne!(mfsk_mode_caps(m) & MFSK_CAP_BUDGET, 0, "mode {m}");
+        assert_eq!(
+            unsafe { mfsk_decoder_set_budget(d, Some(always), std::ptr::null_mut()) },
+            MfskStatus::Ok,
+            "mode {m}"
+        );
+        unsafe { mfsk_decoder_close(d) };
+    }
+    assert!(opened >= 20, "{opened} decoders opened");
+}
+
+/// `rows_subtracted` reaches C: FT8's default (`SicEarly`) subtracts the
+/// checkpoint-A row at B, and a budget that never says stop leaves it there.
+#[test]
+fn the_budget_report_counts_sic_early_subtractions() {
+    extern "C" fn always(_: *mut c_void) -> bool {
+        true
+    }
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    let dec = open(MfskMode::Ft8, None, None);
+    assert!(
+        unsafe { mfsk_decoder_set_budget(dec, Some(always), std::ptr::null_mut()) }
+            == MfskStatus::Ok
+    );
+    let rows = decode_i16(dec, &slot);
+    assert_eq!(rows.len(), 1);
+    let mut rep = unsafe { std::mem::zeroed::<MfskBudgetReport>() };
+    assert_eq!(
+        unsafe { mfsk_decoder_last_budget(dec, &mut rep) },
+        MfskStatus::Ok
+    );
+    assert!(!rep.exhausted);
+    assert_eq!(rep.rows_subtracted, 1);
+    assert_eq!(rep.size as usize, std::mem::size_of::<MfskBudgetReport>());
+    unsafe { mfsk_decoder_close(dec) };
+}
+
+/// `mfsk_decoder_delivery_is_exact` is `AnyDecoder::delivery_is_exact`: it
+/// follows the mode, the depth and the strategy (`STREAMING.md` §3).
+#[test]
+fn delivery_is_exact_follows_mode_depth_and_strategy() {
+    let ft8 = open(MfskMode::Ft8, None, None);
+    assert!(
+        unsafe { mfsk_decoder_delivery_is_exact(ft8) },
+        "FT8 SicEarly is exact"
+    );
+    let mut e = extras();
+    e.strategy = MFSK_STRATEGY_SINGLE_PASS;
+    assert_eq!(unsafe { mfsk_decoder_set_extras(ft8, &e) }, MfskStatus::Ok);
+    assert!(
+        !unsafe { mfsk_decoder_delivery_is_exact(ft8) },
+        "FT8 single pass is not"
+    );
+    unsafe { mfsk_decoder_close(ft8) };
+
+    let mut p = params(MfskMode::Ft4);
+    p.depth = MFSK_DEPTH_FAST;
+    let ft4 = open(MfskMode::Ft4, Some(&p), None);
+    assert!(
+        !unsafe { mfsk_decoder_delivery_is_exact(ft4) },
+        "FT4 Fast is single pass"
+    );
+    p.depth = MFSK_DEPTH_DEEP;
+    assert_eq!(unsafe { mfsk_decoder_set_params(ft4, &p) }, MfskStatus::Ok);
+    assert!(
+        unsafe { mfsk_decoder_delivery_is_exact(ft4) },
+        "FT4 Deep is SicRounds"
+    );
+    unsafe { mfsk_decoder_close(ft4) };
+
+    for (m, exact) in [
+        (MfskMode::Wspr, false),
+        (MfskMode::Jt9, true),
+        (MfskMode::Jt65, true),
+    ] {
+        let d = open(m, None, None);
+        assert_eq!(unsafe { mfsk_decoder_delivery_is_exact(d) }, exact, "{m:?}");
+        unsafe { mfsk_decoder_close(d) };
+    }
+    assert!(!unsafe { mfsk_decoder_delivery_is_exact(std::ptr::null()) });
 }
 
 /// The decoder's callsign table is its own and outlives the period: a

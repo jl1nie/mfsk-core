@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The C ABI and the Kotlin and Swift bindings catch up with #592, #593 and #594.** `MFSK_CAP_BUDGET` is published for
+  WSPR, JT9, JT65 and Q65 too, so `mfsk_decoder_set_budget` no longer refuses the four modes that have polled the budget
+  since #593 (`registry_caps.rs` now ties the bit to "every mode with a `Decoder`"). `MfskBudgetReport` gains
+  `rows_subtracted`, and `mfsk_decoder_delivery_is_exact` is new. `MfskIqDecode` carried no detail at all (no key, no
+  flags, no sync); it now appends `MfskDecode`'s. All appended to size-versioned structs; ABI stays 3. Kotlin and Swift:
+  `syncScore` / `syncCv` / `hardErrors` are nullable (null where C's `HAS_*` bit is clear), and rows gain `key`,
+  `keyBits` and `delivery`, the IQ row the same, the report `rowsSubtracted`, the decoder `deliveryIsExact`. Kotlin's
+  JVM test passes; the Swift suite (four new tests) has not been built here. `CompletedSlot::new` closes #592's last
+  item: a consumer's tests can build a slot. Docs: `BINDINGS.md`, `STREAMING.md`, `LIBRARY.md` §2.3 (and `.ja`).
 - **docs: `LIBRARY.md` §2.3 (and `.ja.md`) is now "Early decode and the compute budget", written from the design.**
   Why both follow from "a `SlotInput` is the whole period" and "the library reads no clock"; upstream's 41/47/50 checkpoints
   and what `SicEarly` keeps of them; that today's early decode buys order, not time, and the `decode_prefix` design (#572,

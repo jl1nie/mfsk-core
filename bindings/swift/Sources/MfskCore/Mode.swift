@@ -127,7 +127,8 @@ public struct Capabilities: OptionSet, Sendable {
     public static let equalisation = Capabilities(rawValue: 1 << 7)
     /// The strictness profile is honoured rather than accepted and dropped.
     public static let strictness = Capabilities(rawValue: 1 << 8)
-    /// A caller-supplied budget predicate is polled.
+    /// A caller-supplied budget predicate is polled: every mode with a
+    /// decoder.
     public static let budget = Capabilities(rawValue: 1 << 9)
     /// Known signals can be excluded from the reported results.
     public static let knownFilter = Capabilities(rawValue: 1 << 10)

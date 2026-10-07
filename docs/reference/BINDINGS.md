@@ -184,8 +184,9 @@ What else the handle does:
 | `mfsk_decoder_set_extras(d, &e)` | replace the library's options. What the block leaves unset goes back to the depth's value; an option the mode lacks is `MFSK_STATUS_UNSUPPORTED` and nothing changes |
 | `mfsk_decoder_set_q65_callers(d, callers)` | Q65 only: the contest callers (§2.8), copied; with `MFSK_CONTEST_GRID_EXCHANGE` they join the full-AP list. NULL removes them. Survives `set_extras` |
 | `mfsk_decoder_set_on_decode(d, cb, user)` | deliver each row **as it is found**, on top of the array the call returns; NULL stops |
-| `mfsk_decoder_set_budget(d, check, user)` | poll a caller-supplied predicate once per candidate; stop when it returns `false`. Only modes with `MFSK_CAP_BUDGET` take one, `MFSK_STATUS_UNSUPPORTED` otherwise |
-| `mfsk_decoder_last_budget(d, &report)` | what the cut left undone — candidates skipped, stages run, and how good the best skipped candidate was; zeroed when no budget was set |
+| `mfsk_decoder_set_budget(d, check, user)` | poll a caller-supplied predicate once per candidate; stop when it returns `false`. Every mode with a decoder publishes `MFSK_CAP_BUDGET` and takes one; a mode without the bit would get `MFSK_STATUS_UNSUPPORTED` |
+| `mfsk_decoder_last_budget(d, &report)` | what the cut left undone — candidates skipped, stages run, how good the best skipped candidate was, and `rows_subtracted` (FT8 `SIC_EARLY`'s checkpoint-B and -C subtractions, appended to the size-versioned struct); zeroed when no budget was set. WSPR, JT9, JT65 and Q65 set `exhausted` only, so their counts stay 0 |
+| `mfsk_decoder_delivery_is_exact(d)` | whether the callback sees exactly the rows the call returns, once each and in order, under the current mode, depth and extras (`STREAMING.md` §3a). `false` for FT8's single pass and sniper, FT4 at `MFSK_DEPTH_FAST`, FST4 and WSPR: pair by `MfskDecode::delivery` there. Ask again after `set_params` / `set_extras` |
 | `mfsk_decoder_add_callsign(d, "JL1NIE")` | seed the hash table so a later `<...>` resolves. `MFSK_STATUS_UNSUPPORTED` for a mode whose messages carry no hashed calls |
 | `mfsk_decoder_copy_info(d, i, out, cap, &len)` | the FEC information bits behind row `i` of the last decode (`MfskDecode::info_bits` of them) |
 | `mfsk_decoder_unpack77(d, msg, out, cap, &len)` | `mfsk_unpack77` with `<...>` resolved against this decoder's table |
@@ -302,7 +303,7 @@ Flat, fixed-size, written into your array. `text` is an inline
 | `sync_score` | sync score of this decode, on the scale of the mode's own search (not comparable between modes). `0.0` with `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` clear for WSPR, JT9, JT65, Q65 and FT8's a7/a8 list decodes |
 | `sync_cv` | coefficient of variation of the per-block sync powers — near 0 on a stable channel, elevated under QSB. The only fading indicator the row carries; `0.0` with `MFSK_DECODE_FLAG_HAS_SYNC_CV` clear where `sync_score` is absent |
 | `hard_errors` | hard-decision errors the FEC corrected; `0` with `MFSK_DECODE_FLAG_HAS_HARD_ERRORS` clear for WSPR, JT9, JT65 and Q65, which report no count (a clean decode is `0` with the flag set) |
-| `info_bits` | width of the FEC information block, 91 (CRC-14) or 101 (CRC-24); 0 for a mode that has none. `mfsk_decoder_copy_info` returns that many bits |
+| `info_bits` | width of the information block `mfsk_decoder_copy_info` returns: 91 for FT8 and FT4, 101 for FST4, 50 for WSPR, 72 for JT9 and JT65, 77 for Q65 |
 | `pass` | which decode pass produced the row. **Protocol-private** — diagnostics, not logic |
 | `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`); bits 2-4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`, the three numbers above are the mode's own and not the `0` of a mode that reports none |
 | `key_bits`, `key` | the message's identity key: `key_bits` bits (77 for FT8, FT4, FST4 and Q65; 72 for JT9 and JT65; 50 for WSPR; 0: none), packed most significant bit first into the 10 bytes of `key`, zero-padded. The same message in two decoders has one key even when its text differs (a `<...>` resolved in one only); one message at two frequencies has one key too. For the 77-bit modes it is the first 77 bits of `mfsk_decoder_copy_info`'s block |
@@ -430,7 +431,7 @@ so a caller can read them rather than know them:
 | 6 | `MFSK_CAP_OSD` | the OSD *switch* is honoured. Absent means "cannot be turned off", not "does not have it" |
 | 7 | `MFSK_CAP_EQ_MODE` | equalisation reaches the decoder |
 | 8 | `MFSK_CAP_STRICTNESS` | the strictness profile is honoured rather than accepted and dropped |
-| 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` is accepted |
+| 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` is accepted: every mode with a decoder |
 | 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | see `mfsk.h`. `_KNOWN_FILTER`, `_KNOWN_SUBTRACT` and `_FFT_CACHE` describe the Rust API; the C ABI has no call for them since the 0.12 `keep_known` / `keep_fft_cache` went |
 | 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`). **Every FST4 sub-mode and no other** |
 | 17 | `MFSK_CAP_TX_FREQ` | the transmit frequency (`tx_freq_hz`) steers the a-priori search. **FT8 only** |
@@ -640,7 +641,11 @@ receiver closed, and the receiver decodes with it, so do not call its `decode_*`
 `abs_freq_hz` (the dial plus that, `double`), `dt_sec`, `snr_db`, `period` (the
 slot's index on the mode's UTC grid, counted from sample 0 without a clock),
 `slot_start_sample` (an index into the IQ stream) and `slot_start_utc_ns` with
-`has_utc` saying whether a clock reading was set.
+`has_utc` saying whether a clock reading was set. Appended after `text`, the
+row's detail as `MfskDecode` gives it (§2.4), same names and meanings:
+`sync_score`, `sync_cv`, `hard_errors` (each valid when its
+`MFSK_DECODE_FLAG_HAS_*` bit is set), `delivery`, `pass`, `flags`, `key_bits`
+and `key`. Compare IQ rows by `key` and `freq_hz`, not by text.
 
 **Time and discontinuities.** The sample count is the clock and the library
 reads none. `mfsk_iq_set_time(rx, utc_ns, at_sample, &change)` says that complex
@@ -760,7 +765,7 @@ mode is here but does not offer what was asked).
 
 | group | symbols |
 |---|---|
-| decoder (18) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
+| decoder (19) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
 | streaming (10) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
 | transmit (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
@@ -920,10 +925,16 @@ mirror the C calls, and `setTime` returns an `MfskClockChange`
 `AutoCloseable` handles you own; `dec.setQ65Callers(callers)` hands the
 contest list to a decoder.
 
-**`dec.setBudget { … }`, `dec.lastBudget`** are the budget (§2.2; modes with
-`CAP_BUDGET` only). The predicate crosses JNI once per candidate, so keep it to
+**`dec.setBudget { … }`, `dec.lastBudget`** are the budget (§2.2; every mode
+with a decoder, `lastBudget.rowsSubtracted` included). The predicate crosses JNI once per candidate, so keep it to
 a `System.nanoTime()` comparison against a captured deadline — anything heavier
 belongs behind a boolean the JVM side already computed.
+
+**Rows** are `MfskDecode`. `syncScore`, `syncCv` and `hardErrors` are
+nullable, null where the mode reports none (the C row's clear
+`MFSK_DECODE_FLAG_HAS_*` bit); `key` is the packed message key as hex, with
+`keyBits`; `delivery` is the C row's, null for `-1`. `MfskIqDecode` carries
+the same detail.
 
 **`dec.onDecode { row -> … }`** delivers rows as they are found, on top of the
 list `decode` returns — for a UI that wants something on screen before a long
@@ -934,7 +945,9 @@ that touches views has to post to the main looper. It does **not** require
 daemon) if the VM has never seen it, and takes the listener's method ID
 from the *interface* rather than from a lambda's spun class. An
 exception it throws is printed and cleared — a rayon worker has nowhere
-to propagate one — and the decode continues.
+to propagate one — and the decode continues. `dec.deliveryIsExact` says
+whether those rows are exactly the returned ones, in order; pair a streamed
+row with its returned form by `delivery` either way.
 
 **IQ** is `MfskIqReceiver` (§2.8.2): `MfskIqReceiver.open(sampleRate, centerHz,
 format, iqSwap, channelizer)`, `addChannel(dialHz, mode, params, extras)`
@@ -1012,8 +1025,13 @@ for row in try decoder.decode(slot) {
 * `decoder.setBudget { … }` bounds the search with a predicate the
   caller polls a clock in — the library reads none — and
   `decoder.lastBudget` says what the cut left undone, including how
-  good the best skipped candidate was. Modes without `Capabilities.budget`
-  throw `.unsupported`.
+  good the best skipped candidate was, and `rowsSubtracted`. Every mode with
+  a decoder has `Capabilities.budget`.
+* `Decode.syncScore`, `syncCV` and `hardErrors` are optionals, nil where the
+  mode reports none; `key` / `keyBits` are the message key and `delivery`
+  pairs a row given to `onDecode` with its returned form
+  (`decoder.deliveryIsExact` says whether the two are the same list).
+  `IQDecode` carries the same detail.
 * `decoder.onDecode { row in … }` streams rows as they are found,
   alongside the array the call returns. On a `desktop` build the
   closure runs on rayon workers, possibly concurrently; on `mobile` it

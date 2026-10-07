@@ -178,8 +178,9 @@ JT65 と Q65 の平均 — は番号が与えられたときだけ使われ、Q6
 | `mfsk_decoder_set_extras(d, &e)` | ライブラリ独自のオプションを置き換える。ブロックで未設定のものは depth の値に戻る。モードに無いオプションは `MFSK_STATUS_UNSUPPORTED` で、何も変わらない |
 | `mfsk_decoder_set_q65_callers(d, callers)` | Q65 専用: コンテストの呼び出し局リスト（§2.8）をコピーして渡す。`MFSK_CONTEST_GRID_EXCHANGE` なら full-AP リストに加わる。NULL で外す。`set_extras` をまたいで残る |
 | `mfsk_decoder_set_on_decode(d, cb, user)` | 呼び出しが返す配列に加えて、各行を**見つかった時点で**渡す。NULL で停止 |
-| `mfsk_decoder_set_budget(d, check, user)` | 呼び出し側の述語を候補ごとに1回呼び、`false` が返ったら停止する。受け付けるのは `MFSK_CAP_BUDGET` を持つモードだけで、他は `MFSK_STATUS_UNSUPPORTED` |
-| `mfsk_decoder_last_budget(d, &report)` | 打ち切りで残ったもの — 飛ばした候補数、実行した段数、飛ばした最良候補がどれほど良かったか。予算未設定ならゼロ |
+| `mfsk_decoder_set_budget(d, check, user)` | 呼び出し側の述語を候補ごとに1回呼び、`false` が返ったら停止する。デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開して受け付ける。ビットの無いモードなら `MFSK_STATUS_UNSUPPORTED` |
+| `mfsk_decoder_last_budget(d, &report)` | 打ち切りで残ったもの — 飛ばした候補数、実行した段数、飛ばした最良候補がどれほど良かったか、`rows_subtracted`（FT8 `SIC_EARLY` のチェックポイント B・C での引き算。サイズ版管理の構造体の末尾に追加）。予算未設定ならゼロ。WSPR・JT9・JT65・Q65 が立てるのは `exhausted` だけで、件数は 0 のまま |
+| `mfsk_decoder_delivery_is_exact(d)` | 今のモード・depth・extras で、コールバックが呼び出しの返す行をちょうどそのまま、1 回ずつ同じ順で見るか（`STREAMING.md` §3a）。FT8 の single pass と sniper、`MFSK_DEPTH_FAST` の FT4、FST4、WSPR は `false` で、そこでは `MfskDecode::delivery` で対にする。`set_params` / `set_extras` の後は問い直す |
 | `mfsk_decoder_add_callsign(d, "JL1NIE")` | ハッシュテーブルに種を入れ、後の `<...>` を解決できるようにする。ハッシュ化コールを持たないメッセージのモードは `MFSK_STATUS_UNSUPPORTED` |
 | `mfsk_decoder_copy_info(d, i, out, cap, &len)` | 直近のデコードの行 `i` の背後にある FEC 情報ビット（`MfskDecode::info_bits` 個） |
 | `mfsk_decoder_unpack77(d, msg, out, cap, &len)` | `<...>` をこのデコーダのテーブルで解決する `mfsk_unpack77` |
@@ -293,7 +294,7 @@ size 版管理である: 古いヘッダでビルドした呼び出し側は短�
 | `sync_score` | このデコードの sync スコア。そのモード自身の探索の尺度で、モード間では比較できない。WSPR・JT9・JT65・Q65 と FT8 の a7/a8 リストデコードでは `0.0` で、`MFSK_DECODE_FLAG_HAS_SYNC_SCORE` が立たない |
 | `sync_cv` | ブロックごとの sync パワーの変動係数 — 安定したチャネルでは 0 近傍、QSB 下では高くなる。行が持つ唯一のフェージング指標。`sync_score` が無い行では `0.0` で、`MFSK_DECODE_FLAG_HAS_SYNC_CV` が立たない |
 | `hard_errors` | FEC が訂正した硬判定誤り数。数を報告しない WSPR・JT9・JT65・Q65 では `0` で、`MFSK_DECODE_FLAG_HAS_HARD_ERRORS` が立たない（クリーンなデコードは、フラグが立った `0`） |
-| `info_bits` | FEC 情報ブロックの幅。91（CRC-14）か 101（CRC-24）、持たないモードは 0。`mfsk_decoder_copy_info` はこの個数のビットを返す |
+| `info_bits` | `mfsk_decoder_copy_info` が返す情報ブロックの幅: FT8 と FT4 は 91、FST4 は 101、WSPR は 50、JT9 と JT65 は 72、Q65 は 77 |
 | `pass` | どのデコードパスが行を作ったか。**プロトコル固有** — 診断用であってロジック用ではない |
 | `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`（テキストが `<...>` 参照の解決にハッシュテーブルを要した）、bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`（Q65 Pileup の返信。WSJT-X の `#`）、bit 2–4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`（上の3つの数値が、報告しないモードの `0` ではなくそのモード自身の値） |
 | `key_bits`, `key` | メッセージの識別キー。`key_bits` ビット（FT8・FT4・FST4・Q65 は 77、JT9・JT65 は 72、WSPR は 50、キー無しは 0）を、最上位ビットから `key` の 10 バイトに詰め、残りは 0。同じメッセージは、テキストが違っても（片方だけ `<...>` が解決した場合）2 つのデコーダで同じキーになる。1 つのメッセージが 2 つの周波数にあってもキーは 1 つ。77 ビット系のモードでは `mfsk_decoder_copy_info` のブロックの先頭 77 ビット |
@@ -416,7 +417,7 @@ JT9、JT65、Q65 も同じハンドルでデコードされ、固有の `MfskExt
 | 6 | `MFSK_CAP_OSD` | OSD の*スイッチ*が尊重される。無いときは「切れない」であって「持たない」ではない |
 | 7 | `MFSK_CAP_EQ_MODE` | 等化がデコーダに届く |
 | 8 | `MFSK_CAP_STRICTNESS` | strictness プロファイルが受け付けて捨てられるのではなく尊重される |
-| 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` が受け付けられる |
+| 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` が受け付けられる: デコーダを持つ全モード |
 | 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | `mfsk.h` を参照。`_KNOWN_FILTER`、`_KNOWN_SUBTRACT`、`_FFT_CACHE` は Rust API の記述で、0.12 の `keep_known` / `keep_fft_cache` が無くなって以来 C ABI にそれらの呼び出しは無い |
 | 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X のインパルスノイズブランカ（`nb_percent`、`nb_sweep_step`）。**FST4 の全サブモードのみ** |
 | 17 | `MFSK_CAP_TX_FREQ` | 送信周波数（`tx_freq_hz`）がアプリオリ探索を左右する。**FT8 のみ** |
@@ -612,7 +613,10 @@ mfsk_iq_close(rx);
 `mode`、`text`、`freq_hz`（音声）、`abs_freq_hz`（ダイヤルにそれを足した値、`double`）、`dt_sec`、`snr_db`、
 `period`（モードの UTC グリッド上でのスロット番号。時計が無ければサンプル 0 から数える）、
 `slot_start_sample`（IQ ストリームへのインデックス）、`slot_start_utc_ns` を持ち、`has_utc` が時計の
-読み取りが設定されたかを示します。
+読み取りが設定されたかを示します。`text` の後ろには、`MfskDecode`（§2.4）と同じ名前・同じ意味で
+行の詳細が追加されています: `sync_score`、`sync_cv`、`hard_errors`（それぞれ対応する
+`MFSK_DECODE_FLAG_HAS_*` ビットが立っているときに有効）、`delivery`、`pass`、`flags`、`key_bits`、`key`。
+IQ の行はテキストではなく `key` と `freq_hz` で比べてください。
 
 **時間と不連続**: サンプル数が時計で、ライブラリは時刻源を読みません。
 `mfsk_iq_set_time(rx, utc_ns, at_sample, &change)` は、複素サンプル `at_sample`（`mfsk_iq_samples_in` が返す
@@ -721,7 +725,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 | 群 | シンボル |
 |---|---|
-| decoder (18) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
+| decoder (19) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
 | streaming (10) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
 | 送信 (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
@@ -877,10 +881,15 @@ MfskStream.open(ft8).use { s ->
 `expire(now)`、`remove(call)`、`callers`）は呼び出し側が所有する `AutoCloseable` の
 ハンドルで、`dec.setQ65Callers(callers)` がコンテストリストをデコーダへ渡す。
 
-**`dec.setBudget { … }`、`dec.lastBudget`** は budget（§2.2。`CAP_BUDGET` を持つ
-モードのみ）。述語は候補ごとに JNI を1往復するので、捕捉したデッドラインとの
+**`dec.setBudget { … }`、`dec.lastBudget`** は budget（§2.2。デコーダを持つ全モード、
+`lastBudget.rowsSubtracted` も含む）。述語は候補ごとに JNI を1往復するので、捕捉したデッドラインとの
 `System.nanoTime()` 比較程度に留めること。それより重いものは JVM 側が既に
 計算した boolean の裏に置く。
+
+**行**は `MfskDecode` である。`syncScore`、`syncCv`、`hardErrors` は nullable で、モードが
+報告しないもの（C の行で `MFSK_DECODE_FLAG_HAS_*` ビットが落ちているもの）は null。`key` は
+詰めたメッセージキーの16進文字列で `keyBits` と組、`delivery` は C の行のもので `-1` は null。
+`MfskIqDecode` も同じ詳細を持つ。
 
 **`dec.onDecode { row -> … }`** は `decode` が返すリストに加えて、見つかった順に
 行を配信する — 長いスロットが終わる前に画面に何か出したい UI 向け
@@ -890,6 +899,8 @@ MfskStream.open(ft8).use { s ->
 シムは VM が見たことの無いワーカーを自分で（デーモンとして）アタッチし、リスナの
 メソッド ID をラムダの生成クラスではなく*インタフェース*から取る。リスナが投げた
 例外は表示のうえクリアされ（rayon ワーカーには伝播先が無い）、デコードは続行する。
+`dec.deliveryIsExact` は、それらの行が返される行とちょうど同じ順で一致するかを言う。どちらの
+場合も、ストリームの行と返された形は `delivery` で対にする。
 
 **IQ** は `MfskIqReceiver`（§2.8.2）: `MfskIqReceiver.open(sampleRate, centerHz,
 format, iqSwap, channelizer)`、チャンネル ID を返す `addChannel(dialHz, mode, params,
@@ -966,8 +977,11 @@ for row in try decoder.decode(slot) {
   避ける融合デコードである。スロットがまだ無ければ nil を返す。
 * `decoder.setBudget { … }` は呼び出し側が時計を読む述語で探索を区切り
   （ライブラリは読まない）、`decoder.lastBudget` が打ち切りの残した仕事を
-  — スキップした中で最良の候補の質も含めて — 告げる。`Capabilities.budget` を
-  持たないモードは `.unsupported` を throw する。
+  — スキップした中で最良の候補の質と `rowsSubtracted` も含めて — 告げる。
+  デコーダを持つ全モードが `Capabilities.budget` を持つ。
+* `Decode.syncScore`、`syncCV`、`hardErrors` は Optional で、モードが報告しないものは nil。
+  `key` / `keyBits` はメッセージキー、`delivery` は `onDecode` に渡った行と返された形を
+  対にする（`decoder.deliveryIsExact` は両者が同じリストかを言う）。`IQDecode` も同じ詳細を持つ。
 * `decoder.onDecode { row in … }` は呼び出しが返す配列と並行して、
   見つかった順に行を流す。`desktop` ビルドではクロージャは rayon ワーカー上で
   （場合により並行に）走り、`mobile` では候補順に単一スレッドで走る。

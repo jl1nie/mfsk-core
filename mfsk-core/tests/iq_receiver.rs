@@ -721,3 +721,15 @@ fn tapped_audio_direct() {
 fn tapped_audio_pfb() {
     tapped_audio_is_the_channel_audio(Channelizer::Pfb);
 }
+
+/// A consumer can build a slot for its own tests (#592), and the decoder
+/// takes it as it takes one the receiver cut.
+#[test]
+fn a_slot_built_outside_the_receiver_decodes_like_one_it_cut() {
+    let mut slot = CompletedSlot::new(ChannelId(3), Mode::Ft8, 42, vec![0.0; 180_000]);
+    slot.dial_hz = 14_074_000.0;
+    assert_eq!(slot.input().period, Some(42));
+    assert_eq!(slot.abs_freq_hz(1_500.0), 14_075_500.0);
+    let out = AnyDecoder::with_defaults(slot.mode).decode(&slot.input());
+    assert!(out.rows.is_empty());
+}

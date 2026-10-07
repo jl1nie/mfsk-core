@@ -3238,6 +3238,7 @@ struct IqRow {
     channel: mfsk_core::iq::ChannelId,
     mode: mfsk_core::Mode,
     decoded: mfsk_core::msg::Decoded,
+    detail: mfsk_core::decoder::RowDetail,
     abs_freq_hz: f64,
     period: i64,
     slot_start_sample: u64,
@@ -3666,7 +3667,7 @@ pub unsafe extern "C" fn mfsk_iq_push(
                 continue;
             };
             d.decode_slot(&slot.audio, slot.period);
-            for (decoded, _) in d.rows() {
+            for (decoded, detail) in d.rows() {
                 if r.queue.len() >= IQ_QUEUE_MAX {
                     r.queue.pop_front();
                 }
@@ -3678,6 +3679,7 @@ pub unsafe extern "C" fn mfsk_iq_push(
                     slot_start_sample: slot.start_sample,
                     slot_start_utc_ns: slot.utc_ns,
                     decoded: decoded.clone(),
+                    detail: detail.clone(),
                 });
             }
         }
@@ -3743,7 +3745,25 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
         dt_sec: d.decoded.dt_sec,
         snr_db: d.decoded.snr_db,
         text: [0; mfsk_ffi_abi::MFSK_DECODE_TEXT_LEN],
+        sync_score: 0.0,
+        sync_cv: 0.0,
+        hard_errors: 0,
+        delivery: -1,
+        pass: 0,
+        flags: 0,
+        key_bits: 0,
+        key: [0; mfsk_ffi_abi::MFSK_DECODE_KEY_LEN],
     };
+    // The detail exactly as the channel decoder's own row gives it.
+    let row = decoder::row_of(v.mode, &d.decoded, &d.detail);
+    v.sync_score = row.sync_score;
+    v.sync_cv = row.sync_cv;
+    v.hard_errors = row.hard_errors;
+    v.delivery = row.delivery;
+    v.pass = row.pass;
+    v.flags = row.flags;
+    v.key_bits = row.key_bits;
+    v.key = row.key;
     let mut end = d.decoded.text.len().min(v.text.len() - 1);
     while !d.decoded.text.is_char_boundary(end) {
         end -= 1;

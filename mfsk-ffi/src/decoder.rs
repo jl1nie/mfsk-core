@@ -116,6 +116,13 @@ pub struct MfskBudgetReport {
     pub cut_at_sync: i32,
     /// Sync score of the best skipped candidate, or NaN when there was none.
     pub cut_at_score: f32,
+    /// Rows subtracted from the residual before a later search saw it: FT8
+    /// `MFSK_STRATEGY_SIC_EARLY`'s checkpoint-B and -C loops, which poll the
+    /// budget before each row (#589). Fewer than the rows returned, with
+    /// `exhausted` set, means the cut came while cleaning up rather than
+    /// while searching. 0 on every other strategy and mode. Appended; a
+    /// caller built against the shorter struct does not see it.
+    pub rows_subtracted: u32,
 }
 
 /// Called once per decode, as it is found. The row pointer is valid only
@@ -131,6 +138,7 @@ fn budget_report(r: &mfsk_core::decoder::BudgetReport) -> MfskBudgetReport {
         stages_run: r.stages_run,
         cut_at_sync: r.cut_at_sync.map(|v| v as i32).unwrap_or(-1),
         cut_at_score: r.cut_at_score.unwrap_or(f32::NAN),
+        rows_subtracted: r.rows_subtracted,
     }
 }
 
@@ -784,6 +792,28 @@ pub unsafe extern "C" fn mfsk_decoder_close(dec: *mut MfskDecoder) {
     }
 }
 
+/// Whether a decode with the current mode, depth and extras runs the exact
+/// delivery contract (`STREAMING.md` §3a): the callback of
+/// `mfsk_decoder_set_on_decode` sees exactly the rows the call returns, once
+/// each, in the same order. `false` is §3b — completion order, a transient
+/// duplicate possible (FT8's `MFSK_STRATEGY_SINGLE_PASS` and sniper, FT4 at
+/// `MFSK_DEPTH_FAST`, FST4, WSPR) — so a caller keeps its guard, pairing by
+/// `MfskDecode::delivery`. Ask again after `mfsk_decoder_set_params` or
+/// `mfsk_decoder_set_extras`. `false` for a null handle.
+///
+/// # Safety
+/// `dec` must be a live handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decoder_delivery_is_exact(dec: *const MfskDecoder) -> bool {
+    match handle_ref(dec) {
+        Some(d) => d.any.delivery_is_exact(),
+        None => {
+            set_error("mfsk_decoder_delivery_is_exact: null decoder handle");
+            false
+        }
+    }
+}
+
 /// The last error recorded **on this handle**, or NULL. Prefer it to
 /// `mfsk_last_error()` whenever you have a handle: the global one is a
 /// `thread_local!`, which a Kotlin coroutine or a Swift `async` caller reads
@@ -1040,7 +1070,7 @@ pub unsafe extern "C" fn mfsk_decoder_last_budget(
 
 // ── Decoding ──────────────────────────────────────────────────────────────
 
-fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
+pub(crate) fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
     let mut r = MfskDecode {
         size: core::mem::size_of::<MfskDecode>() as u32,
         mode,

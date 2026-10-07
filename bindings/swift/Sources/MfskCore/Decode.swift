@@ -20,15 +20,21 @@ public struct Decode: Sendable, Equatable {
     public let dtSeconds: Float
     /// Estimated SNR in a 2500 Hz reference bandwidth, dB.
     public let snrDB: Float
-    public let syncScore: Float
+    /// Sync score on the scale of the mode's own search, so **not
+    /// comparable between modes**. nil where the mode reports none: WSPR,
+    /// JT9, JT65, Q65, and FT8's a7 / a8 list decodes, which run no sync
+    /// search (`MFSK_DECODE_FLAG_HAS_SYNC_SCORE` clear).
+    public let syncScore: Float?
     /// Coefficient of variation of the per-block sync powers — near 0
     /// on a stable channel, elevated under QSB. The only fading
-    /// indicator the row carries.
-    public let syncCV: Float
-    /// Hard-decision errors the FEC had to correct.
-    public let hardErrors: UInt32
-    /// Width of the FEC information block — 91 (CRC-14) or 101 (CRC-24).
-    /// Says how many bits ``Decoder/informationBits(at:)`` returns.
+    /// indicator the row carries. nil wherever ``syncScore`` is.
+    public let syncCV: Float?
+    /// Hard-decision errors the FEC had to correct; 0 is a clean decode.
+    /// nil for WSPR, JT9, JT65 and Q65, whose decoders report no count.
+    public let hardErrors: UInt32?
+    /// Width of the information block ``Decoder/informationBits(at:)``
+    /// returns — 91 for FT8 and FT4, 101 for FST4, 50 for WSPR, 72 for JT9
+    /// and JT65, 77 for Q65.
     public let informationBitCount: UInt16
     /// Which decode pass produced this row. **Protocol-private**: the
     /// numbers mean different things per mode, and are for diagnostics,
@@ -43,6 +49,19 @@ public struct Decode: Sendable, Equatable {
     /// spare 78th payload bit — `MFSK_DECODE_FLAG_COPIED_LAST_TX`. WSJT-X
     /// marks such a decode with `#`. Q65 rows only; false elsewhere.
     public let copiedLastTx: Bool
+    /// The message's identity key: ``keyBits`` bits (77 for FT8, FT4, FST4
+    /// and Q65; 72 for JT9 and JT65; 50 for WSPR), packed most significant
+    /// bit first. The same message in two decoders has one key even when its
+    /// text differs; one message at two frequencies has one key too, so add
+    /// ``frequencyHz`` to tell signals apart.
+    public let key: [UInt8]
+    public let keyBits: UInt8
+    /// Which delivery of the period this row is, or came from: a row handed
+    /// to ``Decoder/onDecode(_:)`` carries its position (0, 1, 2...), a
+    /// returned row the position of the delivery it was, so the two pair
+    /// exactly. nil for a returned row the handler never saw, and with no
+    /// handler.
+    public let delivery: UInt32?
 
     init(_ raw: MfskDecode) {
         self.mode = Mode(rawValue: UInt32(raw.mode.rawValue)) ?? .ft8
@@ -50,13 +69,45 @@ public struct Decode: Sendable, Equatable {
         self.frequencyHz = raw.freq_hz
         self.dtSeconds = raw.dt_sec
         self.snrDB = raw.snr_db
-        self.syncScore = raw.sync_score
-        self.syncCV = raw.sync_cv
-        self.hardErrors = raw.hard_errors
+        let detail = RowDetail(flags: raw.flags, syncScore: raw.sync_score, syncCV: raw.sync_cv,
+                               hardErrors: raw.hard_errors, keyBits: raw.key_bits, key: raw.key,
+                               delivery: raw.delivery)
+        self.syncScore = detail.syncScore
+        self.syncCV = detail.syncCV
+        self.hardErrors = detail.hardErrors
         self.informationBitCount = raw.info_bits
         self.pass = raw.pass
-        self.usedHashTable = raw.flags & UInt8(MFSK_DECODE_FLAG_HASH_RESOLVED) != 0
-        self.copiedLastTx = raw.flags & UInt8(MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0
+        self.usedHashTable = detail.usedHashTable
+        self.copiedLastTx = detail.copiedLastTx
+        self.key = detail.key
+        self.keyBits = raw.key_bits
+        self.delivery = detail.delivery
+    }
+}
+
+/// The detail fields `MfskDecode` and `MfskIqDecode` share, unpacked once:
+/// a number whose `MFSK_DECODE_FLAG_HAS_*` bit is clear is nil, as it is
+/// `None` in Rust (#594).
+struct RowDetail {
+    let syncScore: Float?
+    let syncCV: Float?
+    let hardErrors: UInt32?
+    let usedHashTable: Bool
+    let copiedLastTx: Bool
+    let key: [UInt8]
+    let delivery: UInt32?
+
+    init<K>(flags: UInt8, syncScore: Float, syncCV: Float, hardErrors: UInt32,
+            keyBits: UInt8, key: K, delivery: Int32) {
+        func has(_ bit: Int32) -> Bool { flags & UInt8(bit) != 0 }
+        self.syncScore = has(MFSK_DECODE_FLAG_HAS_SYNC_SCORE) ? syncScore : nil
+        self.syncCV = has(MFSK_DECODE_FLAG_HAS_SYNC_CV) ? syncCV : nil
+        self.hardErrors = has(MFSK_DECODE_FLAG_HAS_HARD_ERRORS) ? hardErrors : nil
+        self.usedHashTable = has(MFSK_DECODE_FLAG_HASH_RESOLVED)
+        self.copiedLastTx = has(MFSK_DECODE_FLAG_COPIED_LAST_TX)
+        let bytes = (Int(keyBits) + 7) / 8
+        self.key = withUnsafeBytes(of: key) { Array($0.prefix(bytes)) }
+        self.delivery = delivery >= 0 ? UInt32(delivery) : nil
     }
 }
 

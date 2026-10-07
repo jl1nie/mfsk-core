@@ -116,6 +116,24 @@ pub struct CompletedSlot {
 }
 
 impl CompletedSlot {
+    /// A slot from its channel, mode, period index and audio, with
+    /// `dial_hz` 0, `start_sample` 0 and no `utc_ns`; assign those fields
+    /// when they matter. The receiver makes its own slots; this is for a
+    /// consumer that builds one: a test of code that takes a slot, or a
+    /// replay of a recorded one (`CompletedSlot` is `#[non_exhaustive]`, so
+    /// a struct expression is closed to it, #592).
+    pub fn new(channel: ChannelId, mode: Mode, period: i64, audio: Vec<f32>) -> Self {
+        CompletedSlot {
+            channel,
+            mode,
+            dial_hz: 0.0,
+            period,
+            start_sample: 0,
+            utc_ns: None,
+            audio,
+        }
+    }
+
     /// The slot as a decoder takes it.
     pub fn input(&self) -> SlotInput<'_> {
         SlotInput::f32(&self.audio).period(self.period)

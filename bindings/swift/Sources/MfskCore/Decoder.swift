@@ -376,6 +376,11 @@ public struct BudgetReport: Sendable, Equatable {
     /// Sync score of the best skipped candidate, on that protocol's own
     /// scale. nil when there was no such candidate.
     public let cutAtScore: Float?
+    /// Rows subtracted before a later search saw them: FT8
+    /// ``Extras/Strategy/sicEarly``'s checkpoint-B and -C loops. Fewer than
+    /// the rows returned, with ``exhausted`` set, means the cut came while
+    /// cleaning up rather than while searching. 0 everywhere else.
+    public let rowsSubtracted: UInt32
 
     init(_ raw: MfskBudgetReport) {
         self.exhausted = raw.exhausted
@@ -383,6 +388,7 @@ public struct BudgetReport: Sendable, Equatable {
         self.stagesRun = raw.stages_run
         self.cutAtSync = raw.cut_at_sync >= 0 ? UInt32(raw.cut_at_sync) : nil
         self.cutAtScore = raw.cut_at_score.isNaN ? nil : raw.cut_at_score
+        self.rowsSubtracted = raw.rows_subtracted
     }
 }
 
@@ -405,8 +411,8 @@ extension Decoder {
     /// must be safe to call concurrently — a captured deadline compared
     /// against a clock is, which is the shape this is for.
     ///
-    /// Throws ``MfskError/Code/unsupported`` for a mode without
-    /// ``Capabilities/budget``.
+    /// Every mode with a decoder takes one (``Capabilities/budget``); WSPR,
+    /// JT9, JT65 and Q65 report only ``BudgetReport/exhausted``.
     public func setBudget(_ check: (() -> Bool)?) throws {
         guard let check else {
             try self.check(mfsk_decoder_set_budget(handle, nil, nil))
@@ -420,6 +426,16 @@ extension Decoder {
             throw MfskError(status: status, detail: failureDetail())
         }
         budgetBox = box
+    }
+
+    /// Whether a decode with the current mode, depth and extras hands
+    /// ``onDecode(_:)`` exactly the rows it returns, once each and in order
+    /// (`STREAMING.md` §3a). false is completion order with a transient
+    /// duplicate possible (§3b): FT8's single pass and sniper, FT4 at
+    /// ``DecodeParams/Depth/fast``, FST4, WSPR. Pair by ``Decode/delivery``
+    /// either way. Ask again after changing the parameters or the extras.
+    public var deliveryIsExact: Bool {
+        mfsk_decoder_delivery_is_exact(handle)
     }
 
     /// What the budget cut short on the **last** decode.

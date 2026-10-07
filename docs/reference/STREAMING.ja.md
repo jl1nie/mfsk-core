@@ -158,7 +158,7 @@ doc コメント（`DecodeRequest::on_result`。今は crate 非公開で、`Dec
 型付きの行なら `.message77()`、`AnyDecoder` や C ABI の行なら `RowDetail::info`。
 クレート自身のデデュープが使うのと同じキーである。
 
-`AnyDecoder::delivery_is_exact()`（と `Decoder::delivery_is_exact()`）で、現在の
+`AnyDecoder::delivery_is_exact()`（と `Decoder::delivery_is_exact()`、C の `mfsk_decoder_delivery_is_exact`、Kotlin と Swift の `deliveryIsExact`）で、現在の
 モード・depth・extras がどちらの契約で動くか分かる。`true` なら §3a、`false` は
 「§3b、保証なし」で、`true` が返る呼び出し側はガードを省略できる。depth や extras を
 変えたら問い直すこと。

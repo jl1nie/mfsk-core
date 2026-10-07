@@ -809,8 +809,8 @@ fixed 192 000 points, whatever the audio length. To fit a deadline every time, c
 the depth or strategy; a budget is for the period that runs long anyway,
 and it keeps what was found.
 
-In C, `mfsk_decoder_set_budget` is accepted where the mode publishes
-`MFSK_CAP_BUDGET`, which today is FT8, FT4 and FST4
+In C, every mode with a decoder publishes `MFSK_CAP_BUDGET` and takes
+`mfsk_decoder_set_budget`; `rows_subtracted` is in `MfskBudgetReport`
 ([`BINDINGS.md`](BINDINGS.md) §2.2).
 
 ### 2.4 Streaming delivery

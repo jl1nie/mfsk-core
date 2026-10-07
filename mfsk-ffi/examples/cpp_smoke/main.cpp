@@ -717,11 +717,17 @@ void test_budget() {
     mfsk_decoder_set_budget(s, nullptr, nullptr);
     mfsk_decoder_close(s);
 
-    // A mode that publishes no budget refuses one.
+    // Every mode with a decoder takes one (#593), and publishes the bit.
     MfskDecoder* w = open_dec("budget", MFSK_MODE_WSPR);
     if (w != nullptr) {
-        if (mfsk_decoder_set_budget(w, budget_refuse_everything, nullptr) != MFSK_STATUS_UNSUPPORTED) {
-            fail("budget", "WSPR has no budget and should refuse one");
+        if ((mfsk_mode_caps(MFSK_MODE_WSPR) & MFSK_CAP_BUDGET) == 0) {
+            fail("budget", "WSPR polls the budget but does not publish MFSK_CAP_BUDGET");
+        }
+        if (mfsk_decoder_set_budget(w, budget_refuse_everything, nullptr) != MFSK_STATUS_OK) {
+            fail("budget", mfsk_decoder_last_error(w));
+        }
+        if (mfsk_decoder_delivery_is_exact(w)) {
+            fail("budget", "WSPR's delivery is the parallel contract, not the exact one");
         }
         mfsk_decoder_close(w);
     }

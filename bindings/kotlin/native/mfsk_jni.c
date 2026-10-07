@@ -203,7 +203,49 @@ Java_io_github_mfskcore_Mfsk_nativeThreadCount(JNIEnv* env, jclass cls) {
 /// that fails at run time rather than compile time when a field is
 /// added on the Kotlin side and forgotten here.
 static jmethodID row_ctor(JNIEnv* env, jclass rowCls) {
-    return (*env)->GetMethodID(env, rowCls, "<init>", "(ILjava/lang/String;FFFFFIIIZZ)V");
+    return (*env)->GetMethodID(
+        env, rowCls, "<init>",
+        "(ILjava/lang/String;FFFLjava/lang/Float;Ljava/lang/Float;Ljava/lang/Integer;"
+        "IIZZLjava/lang/String;ILjava/lang/Integer;)V");
+}
+
+/// A `Float?`: the boxed value when `has`, null otherwise. A number the
+/// mode does not report is null on the Kotlin side, as it is `None` in Rust
+/// and a clear `MFSK_DECODE_FLAG_HAS_*` bit in C (#594).
+static jobject box_float(JNIEnv* env, bool has, float v) {
+    if (!has) return NULL;
+    jclass c = (*env)->FindClass(env, "java/lang/Float");
+    if (c == NULL) return NULL;
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "valueOf", "(F)Ljava/lang/Float;");
+    jobject o = m == NULL ? NULL : (*env)->CallStaticObjectMethod(env, c, m, (jfloat)v);
+    (*env)->DeleteLocalRef(env, c);
+    return o;
+}
+
+/// An `Int?`, as `box_float`.
+static jobject box_int(JNIEnv* env, bool has, int32_t v) {
+    if (!has) return NULL;
+    jclass c = (*env)->FindClass(env, "java/lang/Integer");
+    if (c == NULL) return NULL;
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "valueOf", "(I)Ljava/lang/Integer;");
+    jobject o = m == NULL ? NULL : (*env)->CallStaticObjectMethod(env, c, m, (jint)v);
+    (*env)->DeleteLocalRef(env, c);
+    return o;
+}
+
+/// The packed message key as lower-case hex, `ceil(key_bits / 8)` bytes:
+/// compared by value, unlike a `ByteArray` in a data class.
+static jstring key_hex(JNIEnv* env, uint8_t key_bits, const uint8_t* key) {
+    char buf[2 * MFSK_DECODE_KEY_LEN + 1];
+    static const char hex[] = "0123456789abcdef";
+    size_t n = ((size_t)key_bits + 7) / 8;
+    if (n > MFSK_DECODE_KEY_LEN) n = MFSK_DECODE_KEY_LEN;
+    for (size_t i = 0; i < n; ++i) {
+        buf[2 * i] = hex[key[i] >> 4];
+        buf[2 * i + 1] = hex[key[i] & 15];
+    }
+    buf[2 * n] = 0;
+    return (*env)->NewStringUTF(env, buf);
 }
 
 /// One C row as one Kotlin `MfskDecode`. Every field is copied — the
@@ -211,21 +253,35 @@ static jmethodID row_ctor(JNIEnv* env, jclass rowCls) {
 static jobject make_row(JNIEnv* env, jclass rowCls, jmethodID ctor, const MfskDecode* r) {
     jstring text = (*env)->NewStringUTF(env, r->text);
     if (text == NULL) return NULL;
+    jstring key = key_hex(env, r->key_bits, r->key);
+    if (key == NULL) return NULL;
+    jobject sync = box_float(env, (r->flags & MFSK_DECODE_FLAG_HAS_SYNC_SCORE) != 0, r->sync_score);
+    jobject cv = box_float(env, (r->flags & MFSK_DECODE_FLAG_HAS_SYNC_CV) != 0, r->sync_cv);
+    jobject hard = box_int(env, (r->flags & MFSK_DECODE_FLAG_HAS_HARD_ERRORS) != 0,
+                           (int32_t)r->hard_errors);
+    jobject delivery = box_int(env, r->delivery >= 0, r->delivery);
+    if ((*env)->ExceptionCheck(env)) return NULL;
     jobject obj = (*env)->NewObject(
         env, rowCls, ctor,
         (jint)r->mode, text,
         (jfloat)r->freq_hz, (jfloat)r->dt_sec, (jfloat)r->snr_db,
-        (jfloat)r->sync_score, (jfloat)r->sync_cv,
-        (jint)r->hard_errors, (jint)r->info_bits, (jint)r->pass,
+        sync, cv, hard,
+        (jint)r->info_bits, (jint)r->pass,
         (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
-        (jboolean)((r->flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0));
+        (jboolean)((r->flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0),
+        key, (jint)r->key_bits, delivery);
     (*env)->DeleteLocalRef(env, text);
+    (*env)->DeleteLocalRef(env, key);
+    if (sync) (*env)->DeleteLocalRef(env, sync);
+    if (cv) (*env)->DeleteLocalRef(env, cv);
+    if (hard) (*env)->DeleteLocalRef(env, hard);
+    if (delivery) (*env)->DeleteLocalRef(env, delivery);
     return obj;
 }
 
 // ── Decode callback ─────────────────────────────────────────────────
 //
-// `mfsk_session_set_on_decode` delivers rows as they are found, on top
+// `mfsk_decoder_set_on_decode` delivers rows as they are found, on top
 // of the array written at the end of the call. Two JNI hazards, both
 // load-bearing:
 //
@@ -270,7 +326,7 @@ static void on_decode(const struct MfskDecode* row, void* user) {
     }
 
     /* The worker has no Java frame, so nothing pops local refs for us. */
-    if ((*env)->PushLocalFrame(env, 4) != 0) return;
+    if ((*env)->PushLocalFrame(env, 16) != 0) return;
     jobject obj = make_row(env, ctx->rowCls, ctx->rowCtor, row);
     if (obj != NULL) {
         (*env)->CallVoidMethod(env, ctx->listener, ctx->onDecode, obj);
@@ -733,6 +789,15 @@ Java_io_github_mfskcore_MfskDecoder_nativeSetBudget(
 /// skipped, ran, cut_at_sync (-1 for absent), cut_at_score in
 /// millionths (INT_MIN for absent, since an int array cannot carry a
 /// NaN).
+/// `mfsk_decoder_delivery_is_exact`.
+JNIEXPORT jboolean JNICALL
+Java_io_github_mfskcore_MfskDecoder_nativeDeliveryIsExact(
+        JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    return mfsk_decoder_delivery_is_exact((const MfskDecoder*)(intptr_t)handle) ? JNI_TRUE
+                                                                               : JNI_FALSE;
+}
+
 JNIEXPORT jintArray JNICALL
 Java_io_github_mfskcore_MfskDecoder_nativeLastBudget(
         JNIEnv* env, jclass cls, jlong handle) {
@@ -746,7 +811,7 @@ Java_io_github_mfskcore_MfskDecoder_nativeLastBudget(
         throw_from_decoder(env, d, st, "last_budget failed");
         return NULL;
     }
-    jint vals[5] = {
+    jint vals[6] = {
         (jint)(rep.exhausted ? 1 : 0),
         (jint)rep.candidates_skipped,
         (jint)rep.stages_run,
@@ -754,10 +819,11 @@ Java_io_github_mfskcore_MfskDecoder_nativeLastBudget(
         rep.cut_at_score == rep.cut_at_score /* not NaN */
             ? (jint)(rep.cut_at_score * 1000000.0f)
             : (jint)0x80000000,
+        (jint)rep.rows_subtracted,
     };
-    jintArray out = (*env)->NewIntArray(env, 5);
+    jintArray out = (*env)->NewIntArray(env, 6);
     if (out == NULL) return NULL;
-    (*env)->SetIntArrayRegion(env, out, 0, 5, vals);
+    (*env)->SetIntArrayRegion(env, out, 0, 6, vals);
     return out;
 }
 
@@ -1561,8 +1627,10 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
     MfskIqReceiver* rx = (MfskIqReceiver*)(intptr_t)h;
     jclass rowCls = (*env)->FindClass(env, CLS "MfskIqDecode");
     if (rowCls == NULL) return NULL;
-    jmethodID ctor = (*env)->GetMethodID(env, rowCls, "<init>",
-                                         "(IILjava/lang/String;DFFFJJZJ)V");
+    jmethodID ctor = (*env)->GetMethodID(
+        env, rowCls, "<init>",
+        "(IILjava/lang/String;DFFFJJZJLjava/lang/Float;Ljava/lang/Float;Ljava/lang/Integer;"
+        "IZZLjava/lang/String;ILjava/lang/Integer;)V");
     if (ctor == NULL) return NULL;
     const size_t n = mfsk_iq_pending(rx);
     jobjectArray out = (*env)->NewObjectArray(env, (jsize)n, rowCls, NULL);
@@ -1574,12 +1642,28 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
         if (mfsk_iq_poll(rx, &r) != 1) break;
         jstring text = (*env)->NewStringUTF(env, r.text);
         if (text == NULL) return NULL;
+        jstring key = key_hex(env, r.key_bits, r.key);
+        if (key == NULL) return NULL;
+        jobject sync = box_float(env, (r.flags & MFSK_DECODE_FLAG_HAS_SYNC_SCORE) != 0, r.sync_score);
+        jobject cv = box_float(env, (r.flags & MFSK_DECODE_FLAG_HAS_SYNC_CV) != 0, r.sync_cv);
+        jobject hard = box_int(env, (r.flags & MFSK_DECODE_FLAG_HAS_HARD_ERRORS) != 0,
+                               (int32_t)r.hard_errors);
+        jobject delivery = box_int(env, r.delivery >= 0, r.delivery);
+        if ((*env)->ExceptionCheck(env)) return NULL;
         jobject obj = (*env)->NewObject(
             env, rowCls, ctor, (jint)r.channel, (jint)r.mode, text, (jdouble)r.abs_freq_hz,
             (jfloat)r.freq_hz, (jfloat)r.dt_sec, (jfloat)r.snr_db, (jlong)r.period,
             (jlong)r.slot_start_sample, r.has_utc ? JNI_TRUE : JNI_FALSE,
-            (jlong)r.slot_start_utc_ns);
+            (jlong)r.slot_start_utc_ns, sync, cv, hard, (jint)r.pass,
+            (jboolean)((r.flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
+            (jboolean)((r.flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0),
+            key, (jint)r.key_bits, delivery);
         (*env)->DeleteLocalRef(env, text);
+        (*env)->DeleteLocalRef(env, key);
+        if (sync) (*env)->DeleteLocalRef(env, sync);
+        if (cv) (*env)->DeleteLocalRef(env, cv);
+        if (hard) (*env)->DeleteLocalRef(env, hard);
+        if (delivery) (*env)->DeleteLocalRef(env, delivery);
         if (obj == NULL) return NULL;
         (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
         (*env)->DeleteLocalRef(env, obj);

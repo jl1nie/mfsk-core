@@ -762,8 +762,8 @@ WSPR・JT9・JT65・Q65 で意味があるのは `exhausted` だけである: �
 固定の 15 s、スロット FFT は固定の 192 000 点で、音声の長さによらない。毎回締切に収めたいなら
 depth か戦略を選ぶ。予算は、それでも長引いた周期のためのもので、見つけたものは残る。
 
-C では、`mfsk_decoder_set_budget` はモードが `MFSK_CAP_BUDGET` を公開しているときに受け付け
-られ、それは今は FT8・FT4・FST4 である（[`BINDINGS.md`](BINDINGS.ja.md) §2.2）。
+C では、デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開し、`mfsk_decoder_set_budget` を
+受け付ける。`rows_subtracted` は `MfskBudgetReport` にある（[`BINDINGS.md`](BINDINGS.ja.md) §2.2）。
 
 ### 2.4 ストリーミング配信
 

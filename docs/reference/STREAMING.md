@@ -170,7 +170,8 @@ parity should dedup by the message bits on their side — `.message77()` on a
 typed row, `RowDetail::info` through `AnyDecoder` or the C ABI's row — the
 same key the crate's own dedup uses.
 
-`AnyDecoder::delivery_is_exact()` (and `Decoder::delivery_is_exact()`) says
+`AnyDecoder::delivery_is_exact()` (and `Decoder::delivery_is_exact()`, C's
+`mfsk_decoder_delivery_is_exact`, Kotlin's and Swift's `deliveryIsExact`) says
 which contract the current mode, depth and extras run: `true` is §3a, `false`
 is "§3b, not promised" — a caller that gets `true` can skip its guard. Ask again
 after changing the depth or the extras.

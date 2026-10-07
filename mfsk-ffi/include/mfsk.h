@@ -1374,6 +1374,44 @@ typedef struct MfskIqDecode {
      * Decoded message text, NUL-terminated.
      */
     char text[MFSK_DECODE_TEXT_LEN];
+    /**
+     * As `MfskDecode::sync_score`: valid when `flags` has
+     * `MFSK_DECODE_FLAG_HAS_SYNC_SCORE`.
+     */
+    float sync_score;
+    /**
+     * As `MfskDecode::sync_cv`: valid when `flags` has
+     * `MFSK_DECODE_FLAG_HAS_SYNC_CV`.
+     */
+    float sync_cv;
+    /**
+     * As `MfskDecode::hard_errors`: valid when `flags` has
+     * `MFSK_DECODE_FLAG_HAS_HARD_ERRORS`.
+     */
+    uint32_t hard_errors;
+    /**
+     * As `MfskDecode::delivery`: which delivery of the channel decoder's
+     * callback (`mfsk_iq_channel_decoder` + `mfsk_decoder_set_on_decode`)
+     * this row was, so the two pair exactly; -1 when it had none.
+     */
+    int32_t delivery;
+    /**
+     * As `MfskDecode::pass`. Protocol-private.
+     */
+    uint8_t pass;
+    /**
+     * `MFSK_DECODE_FLAG_*`, as on `MfskDecode`.
+     */
+    uint8_t flags;
+    /**
+     * As `MfskDecode::key_bits`.
+     */
+    uint8_t key_bits;
+    /**
+     * As `MfskDecode::key`: the message bits, packed. Compare rows by this,
+     * with the frequency, not by text.
+     */
+    uint8_t key[MFSK_DECODE_KEY_LEN];
 } MfskIqDecode;
 
 /**
@@ -1424,6 +1462,15 @@ typedef struct MfskBudgetReport {
      * Sync score of the best skipped candidate, or NaN when there was none.
      */
     float cut_at_score;
+    /**
+     * Rows subtracted from the residual before a later search saw it: FT8
+     * `MFSK_STRATEGY_SIC_EARLY`'s checkpoint-B and -C loops, which poll the
+     * budget before each row (#589). Fewer than the rows returned, with
+     * `exhausted` set, means the cut came while cleaning up rather than
+     * while searching. 0 on every other strategy and mode. Appended; a
+     * caller built against the shorter struct does not see it.
+     */
+    uint32_t rows_subtracted;
 } MfskBudgetReport;
 
 #ifdef __cplusplus
@@ -2559,6 +2606,22 @@ struct MfskDecoder *mfsk_decoder_open(uint32_t mode,
  */
 MFSK_API
 void mfsk_decoder_close(struct MfskDecoder *dec);
+
+/**
+ * Whether a decode with the current mode, depth and extras runs the exact
+ * delivery contract (`STREAMING.md` §3a): the callback of
+ * `mfsk_decoder_set_on_decode` sees exactly the rows the call returns, once
+ * each, in the same order. `false` is §3b — completion order, a transient
+ * duplicate possible (FT8's `MFSK_STRATEGY_SINGLE_PASS` and sniper, FT4 at
+ * `MFSK_DEPTH_FAST`, FST4, WSPR) — so a caller keeps its guard, pairing by
+ * `MfskDecode::delivery`. Ask again after `mfsk_decoder_set_params` or
+ * `mfsk_decoder_set_extras`. `false` for a null handle.
+ *
+ * # Safety
+ * `dec` must be a live handle or null.
+ */
+MFSK_API
+bool mfsk_decoder_delivery_is_exact(const struct MfskDecoder *dec);
 
 /**
  * The last error recorded **on this handle**, or NULL. Prefer it to
