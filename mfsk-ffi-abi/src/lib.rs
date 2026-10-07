@@ -254,6 +254,9 @@ pub const MFSK_AP_FIELD_LEN: usize = 16;
 /// tight the moment a hash-resolved `<...>` callsign expands in place.
 pub const MFSK_DECODE_TEXT_LEN: usize = 64;
 
+/// Bytes of [`MfskDecode::key`]: the 77 message bits of a 77-bit mode, packed (10 bytes).
+pub const MFSK_DECODE_KEY_LEN: usize = 10;
+
 /// The per-period parameter block, after WSJT-X's `params` common block
 /// (`lib/jt9com.f90`) — what the GUI fills before each period and the
 /// decoder reads. **Size-versioned**: initialise with
@@ -435,6 +438,22 @@ pub struct MfskDecode {
     /// real values and not the `0` of a mode that reports none. Other bits
     /// reserved, currently zero.
     pub flags: u8,
+    /// How many bits of [`Self::key`] are the message's: 77 for FT8, FT4, FST4 and
+    /// Q65, 72 for JT9 and JT65, 50 for WSPR. `0`: no key.
+    pub key_bits: u8,
+    /// The message's identity key, `key_bits` bits packed most significant bit
+    /// first, zero-padded: the same message heard on two channels or in two decoders
+    /// has the same key, which the text may not (a `<...>` resolves in one and not
+    /// the other), and a row can be matched by it. One message at two frequencies
+    /// has one key. For the 77-bit modes it is the first 77 bits of
+    /// `mfsk_decoder_copy_info`'s block (the rest is the CRC, a function of them).
+    pub key: [u8; MFSK_DECODE_KEY_LEN],
+    /// Which delivery of the period this row is, or came from (`RowDetail::delivery`,
+    /// #592): a row handed to the callback carries its position (0, 1, 2...), a
+    /// returned row the position of the delivery it was, so the two are paired
+    /// exactly. `-1`: none (a returned row the callback never saw, or any row of a
+    /// call with no callback).
+    pub delivery: i32,
 }
 
 /// [`MfskDecode::flags`] bit 0.

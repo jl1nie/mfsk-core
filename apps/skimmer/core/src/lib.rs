@@ -313,36 +313,20 @@ enum Job {
     Options(ChannelOptions, Station),
 }
 
-/// Which rows of one slot have been handed on.
+/// Which rows of one slot a parallel strategy has handed on.
 ///
-/// A row is the same row when its identity key (`RowDetail::info`, which
-/// every mode fills since #592) matches **and** it is at the same frequency,
-/// to the Hz: one message at two frequencies is two transmissions, and
-/// `jt65sim`'s own five-signal recording decodes `K1ABC W9XYZ EN37` three
-/// times, at 1100, 1500 and 1900 Hz, with one key. A key on the message alone
-/// would drop two of those three. The bits, not the text, because the text
-/// of a streamed row can differ from the returned one (a `<...>` the period
-/// then resolves).
-///
-/// The cost of the frequency is that a duplicate whose two copies differ by
-/// more than rounding is let through. That is the right way round: a row
-/// shown twice is noise, a row dropped is a lost spot. An empty key (a mode
-/// that gave none) falls back to the text, which no mode in this build needs.
-///
-/// It is only used when `AnyDecoder::delivery_is_exact` is `false`: it is needed
-/// because `decode_with` has two delivery contracts
-/// (`docs/reference/STREAMING.md` §3). A sequential strategy (FT8 and FT4 at
-/// `Depth::Normal`/`Deep`, JT65, JT9, Q65) delivers exactly the rows it
-/// returns. A parallel one (FT4 at `Depth::Fast`, FST4, FT8's sniper, WSPR)
-/// delivers in completion order and may show a transient duplicate that the
-/// returned rows have already removed.
-/// None was seen on any of the repository's recordings (19 recording x depth
-/// configurations, two periods each, over FT8, FT4, FST4-60A, WSPR, JT9, JT65
-/// and Q65; `callbacks == returned` in all, though Q65 gave rows on only two
-/// of its seven files), so this is a guard on a documented contract rather
-/// than a fix for an observed fault. The survey is jl1nie/mfsk-core#592.
+/// `decode_with` has two delivery contracts (`docs/reference/STREAMING.md`
+/// §3). A sequential strategy delivers exactly the rows it returns, once each
+/// (`AnyDecoder::delivery_is_exact`). A parallel one (FT4 at `Depth::Fast`, FST4,
+/// FT8's sniper, WSPR) delivers in completion order and may deliver a row twice,
+/// which the returned rows have already collapsed. This drops the second sight
+/// of a row: the same message bits at the same frequency to the Hz (one message
+/// at two frequencies is two transmissions: `jt65sim`'s five-signal recording
+/// decodes `K1ABC W9XYZ EN37` three times, with one key). The cost of the Hz is
+/// that a repeat whose copies differ by more than rounding gets through, which is
+/// the right way round: a row shown twice is noise, a row dropped is a lost spot.
 #[derive(Default)]
-struct Delivered(std::sync::Mutex<std::collections::HashMap<(bool, Vec<u8>), String>>);
+struct Delivered(std::sync::Mutex<std::collections::HashSet<(bool, Vec<u8>)>>);
 
 impl Delivered {
     /// A row's key: its message bits and frequency to the Hz; with no bits, its text.
@@ -356,26 +340,12 @@ impl Delivered {
         (has_bits, k)
     }
 
-    /// `true` the first time this row is offered; its text is kept for
-    /// [`Self::text_of`].
+    /// `true` the first time this row is offered.
     fn first_time(&self, text: &str, freq_hz: f32, info: &[u8]) -> bool {
-        use std::collections::hash_map::Entry;
-        match self.0.lock().unwrap().entry(Self::key(text, freq_hz, info)) {
-            Entry::Vacant(v) => {
-                v.insert(text.to_string());
-                true
-            }
-            Entry::Occupied(_) => false,
-        }
-    }
-
-    /// The text this row was delivered with, if it was.
-    fn text_of(&self, text: &str, freq_hz: f32, info: &[u8]) -> Option<String> {
         self.0
             .lock()
             .unwrap()
-            .get(&Self::key(text, freq_hz, info))
-            .cloned()
+            .insert(Self::key(text, freq_hz, info))
     }
 }
 
@@ -394,16 +364,11 @@ impl Delivered {
 /// A streamed row is resolved against the callsign hash table as it stood when
 /// the period began (`STREAMING.md` §2): a `<...>` whose call the same period
 /// then teaches the decoder stays `<...>` there, where the returned row has it
-/// resolved. The returned rows are walked afterwards. One that was delivered
-/// with another text is delivered again with `update` set, so a consumer can
-/// replace the row it shows (same `detail.key` and frequency); one the
-/// callback never delivered is delivered as new, so none is lost.
-///
-/// Two ways to pair the returned row with the streamed one, by what the
-/// decoder promises (`AnyDecoder::delivery_is_exact`, #592). Exactly the rows
-/// returned, once each and in order: by position, with nothing to guard
-/// against. Otherwise (parallel strategies: completion order, a row may repeat):
-/// by key and frequency, the first sight of a row winning.
+/// resolved. The returned rows are walked afterwards and paired with what was
+/// streamed by `RowDetail::delivery`, which names the delivery a returned row
+/// was (#592): one whose text differs is delivered again with `update` set, so a
+/// consumer can replace the row it shows; one that was never delivered is
+/// delivered as new, so none is lost.
 ///
 /// Returns what the budget cut, when `slot` carried one.
 fn decode_streaming(
@@ -412,36 +377,28 @@ fn decode_streaming(
     // Spelled out: `spyserver::*` brings a `Sync` of its own into scope.
     emit: &(dyn Fn(&Decoded, &RowDetail, bool) + std::marker::Sync),
 ) -> mfsk_core::decoder::BudgetReport {
-    if decoder.delivery_is_exact() {
-        let streamed = std::sync::Mutex::new(Vec::<String>::new());
-        let out = decoder.decode_with(slot, &|row, detail| {
-            streamed.lock().unwrap().push(row.text.clone());
-            emit(row, detail, false);
-        });
-        let streamed = streamed.into_inner().unwrap();
-        for (i, (row, detail)) in out.rows.iter().zip(&out.details).enumerate() {
-            match streamed.get(i) {
-                Some(t) if *t == row.text => {}
-                Some(_) => emit(row, detail, true),
-                None => emit(row, detail, false),
-            }
-        }
-        return out.budget;
-    }
-    let delivered = Delivered::default();
+    // Only a parallel strategy can repeat a row.
+    let guard = (!decoder.delivery_is_exact()).then(Delivered::default);
+    // The text each delivery went out with, by its position.
+    let sent = std::sync::Mutex::new(std::collections::HashMap::<u32, String>::new());
     let out = decoder.decode_with(slot, &|row, detail| {
-        if delivered.first_time(&row.text, row.freq_hz, &detail.info) {
-            emit(row, detail, false);
+        if let Some(g) = &guard
+            && !g.first_time(&row.text, row.freq_hz, &detail.info)
+        {
+            return;
         }
+        if let Some(i) = detail.delivery {
+            sent.lock().unwrap().insert(i, row.text.clone());
+        }
+        emit(row, detail, false);
     });
+    let sent = sent.into_inner().unwrap();
     for (row, detail) in out.rows.iter().zip(&out.details) {
-        match delivered.text_of(&row.text, row.freq_hz, &detail.info) {
-            Some(t) if t == row.text => {}
+        match detail.delivery.and_then(|i| sent.get(&i)) {
+            Some(t) if *t == row.text => {}
             Some(_) => emit(row, detail, true),
-            None => {
-                delivered.first_time(&row.text, row.freq_hz, &detail.info);
-                emit(row, detail, false);
-            }
+            // Never delivered (or its delivery was the repeat the guard dropped).
+            None => emit(row, detail, false),
         }
     }
     out.budget
@@ -2463,20 +2420,6 @@ mod tests {
         );
         assert!(report.exhausted, "{report:?}");
         assert_eq!(rows.load(Ordering::Relaxed), 0);
-    }
-
-    /// The text a row was streamed with is what an `update` is compared to.
-    #[test]
-    fn a_resolved_text_is_told_from_the_one_streamed() {
-        let info = [1, 0, 1];
-        let d = Delivered::default();
-        assert_eq!(d.text_of("CQ <...> PM95", 1_000.0, &info), None);
-        assert!(d.first_time("CQ <...> PM95", 1_000.0, &info));
-        // The returned row: the same bits, resolved.
-        assert_eq!(
-            d.text_of("CQ <JA1ABC> PM95", 1_000.0, &info).as_deref(),
-            Some("CQ <...> PM95")
-        );
     }
 
     #[test]

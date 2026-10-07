@@ -94,10 +94,15 @@ Notes:
   period began; the rows `decode_with` returns also see calls learned earlier
   in the same period (hashes are learned after the candidate loop, in decode
   order). A `<...>` in a streamed row can therefore read resolved in the
-  returned one. To pair a streamed row with a returned one, compare the
-  message bits, not the text: `row.native.message77()` on a typed row, and
-  `RowDetail::info` on any row (every mode fills it, #592). One message at
-  two frequencies has one key, so pair on the key and the frequency.
+  returned one. To pair a streamed row with a returned one, use
+  `RowDetail::delivery` (#592): a streamed row carries its position among the
+  period's deliveries, and a returned row the position of the delivery it was
+  (the first with the same bits, frequency and time, compared exactly), so the
+  pairing needs no key and no rounding. `None` on a returned row the callback
+  never saw, and in a build without `std`. To compare rows across decoders or
+  periods instead, compare the message bits, not the text: `row.native.message77()`
+  on a typed row, and `RowDetail::info` on any row (every mode fills it). One
+  message at two frequencies has one key, so add the frequency.
   A candidate whose payload does not unpack is delivered by neither.
 - **Averaged Q65** (`averaging` on, with `SlotInput::period`) yields at most one
   result a period, so its callback fires once per period.

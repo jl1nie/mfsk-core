@@ -1054,8 +1054,18 @@ fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
         info_bits: detail.info.len() as u16,
         pass: detail.pass,
         flags: 0,
+        key_bits: 0,
+        key: [0; MFSK_DECODE_KEY_LEN],
+        delivery: detail.delivery.map_or(-1, |d| d as i32),
     };
     write_field(&mut r.text, &decoded.text);
+    // The message bits: the first 77 of the information block, packed.
+    let bits = &detail.info[..detail.info.len().min(8 * MFSK_DECODE_KEY_LEN)];
+    let bits = &bits[..bits.len().min(77)];
+    r.key_bits = bits.len() as u8;
+    for (i, &b) in bits.iter().enumerate() {
+        r.key[i / 8] |= (b & 1) << (7 - i % 8);
+    }
     if detail.hash_resolved {
         r.flags |= MFSK_DECODE_FLAG_HASH_RESOLVED;
     }

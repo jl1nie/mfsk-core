@@ -386,3 +386,113 @@ fn q65_rows_report_no_sync_or_error_count() {
         );
     }
 }
+
+// ── pairing a streamed row with its returned form (#592) ────────────────────
+
+/// `RowDetail::delivery` pairs the two exactly: a streamed row carries its
+/// position, and a returned row the position of the delivery it was. Checked
+/// for sequential strategies and for the parallel ones, where a repeat may
+/// exist (a position no returned row points at).
+fn check_delivery(mode: Mode, depth: Depth, path: &str, exact_expected: bool) {
+    let Some(a) = common::load_wav_f32_opt(path) else {
+        common::skip_or_fail(path);
+        return;
+    };
+    let name = mode.name();
+    let mut d = AnyDecoder::with_defaults(mode);
+    d.params_mut().depth = depth;
+    assert_eq!(d.delivery_is_exact(), exact_expected, "{name} {depth:?}");
+
+    let streamed = Mutex::new(Vec::<(Option<u32>, String, Vec<u8>, u32)>::new());
+    let out = d.decode_with(&SlotInput::f32(&a).period(100), &|row, det| {
+        streamed.lock().unwrap().push((
+            det.delivery,
+            row.text.clone(),
+            det.info.clone(),
+            row.freq_hz.to_bits(),
+        ));
+    });
+    let streamed = streamed.into_inner().unwrap();
+    assert!(!out.rows.is_empty(), "{name}: nothing decoded");
+
+    // The positions are the order of delivery, each once.
+    let mut positions: Vec<u32> = streamed
+        .iter()
+        .map(|s| s.0.expect("a streamed row has one"))
+        .collect();
+    positions.sort_unstable();
+    assert_eq!(
+        positions,
+        (0..streamed.len() as u32).collect::<Vec<_>>(),
+        "{name}"
+    );
+
+    // Every returned row names a delivery with the same content.
+    for (row, det) in out.rows.iter().zip(&out.details) {
+        let i = det
+            .delivery
+            .unwrap_or_else(|| panic!("{name}: {:?} was streamed but names no delivery", row.text));
+        let s = streamed
+            .iter()
+            .find(|s| s.0 == Some(i))
+            .unwrap_or_else(|| panic!("{name}: delivery {i} was never made"));
+        assert_eq!(
+            (&s.2, s.3),
+            (&det.info, row.freq_hz.to_bits()),
+            "{name}: delivery {i} is not {:?}",
+            row.text
+        );
+    }
+    // Two returned rows never share a delivery.
+    let mut named: Vec<u32> = out.details.iter().filter_map(|d| d.delivery).collect();
+    named.sort_unstable();
+    named.dedup();
+    assert_eq!(named.len(), out.rows.len(), "{name}: rows share a delivery");
+    if exact_expected {
+        assert_eq!(
+            streamed.len(),
+            out.rows.len(),
+            "{name}: exact delivery is one per row"
+        );
+    } else {
+        assert!(streamed.len() >= out.rows.len(), "{name}");
+    }
+
+    // A plain decode has no deliveries to name.
+    let plain = AnyDecoder::with_defaults(mode).decode(&SlotInput::f32(&a).period(100));
+    assert!(plain.details.iter().all(|d| d.delivery.is_none()), "{name}");
+}
+
+#[test]
+fn a_returned_row_names_the_delivery_it_was_sequential() {
+    check_delivery(Mode::Ft8, Depth::Deep, asset_path!("qso3_busy.wav"), true);
+    check_delivery(
+        Mode::Jt65,
+        Depth::Deep,
+        asset_path!("golden/jt65/jt65a_5sig_m18.wav"),
+        true,
+    );
+    check_delivery(Mode::Jt9, Depth::Deep, asset_path!("130418_1742.wav"), true);
+}
+
+#[test]
+fn a_returned_row_names_the_delivery_it_was_parallel() {
+    check_delivery(
+        Mode::Ft4,
+        Depth::Fast,
+        asset_path!("golden/ft4/000000_000002.wav"),
+        false,
+    );
+    check_delivery(
+        Mode::Fst4S60,
+        Depth::Deep,
+        asset_path!("golden/fst4/210115_0058.wav"),
+        false,
+    );
+    check_delivery(
+        Mode::Wspr,
+        Depth::Deep,
+        asset_path!("golden/wspr/150426_0918.wav"),
+        false,
+    );
+}

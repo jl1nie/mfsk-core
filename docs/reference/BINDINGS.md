@@ -305,6 +305,8 @@ Flat, fixed-size, written into your array. `text` is an inline
 | `info_bits` | width of the FEC information block, 91 (CRC-14) or 101 (CRC-24); 0 for a mode that has none. `mfsk_decoder_copy_info` returns that many bits |
 | `pass` | which decode pass produced the row. **Protocol-private** — diagnostics, not logic |
 | `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`); bits 2-4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`, the three numbers above are the mode's own and not the `0` of a mode that reports none |
+| `key_bits`, `key` | the message's identity key: `key_bits` bits (77 for FT8, FT4, FST4 and Q65; 72 for JT9 and JT65; 50 for WSPR; 0: none), packed most significant bit first into the 10 bytes of `key`, zero-padded. The same message in two decoders has one key even when its text differs (a `<...>` resolved in one only); one message at two frequencies has one key too. For the 77-bit modes it is the first 77 bits of `mfsk_decoder_copy_info`'s block |
+| `delivery` | which delivery of the period this row is, or came from: a row given to the callback carries its position (0, 1, 2...), a returned row the position of the delivery it was, so the two pair exactly. `-1` for a returned row the callback never saw, and for every row of a call with no callback |
 
 ### 2.5 Streaming capture
 

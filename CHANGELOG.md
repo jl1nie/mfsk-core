@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A returned row names the delivery it was, and the C row carries the message key (#592).** `decode_with` handed its callback
+  each row and returned them all again, and a caller had to pair the two by position or by a key it built, with a frequency
+  rounded to the Hz (one message at two frequencies has one key) and no way to see which returned row a streamed one became.
+  `RowDetail::delivery` is the answer: a streamed row carries its position among the period's deliveries, and a returned row the
+  position of the delivery it was (the first with the same bits, frequency and time, compared exactly). No rounding, no key to
+  build; `None` for a row the callback never saw and in a build without `std`. A parallel strategy's repeat is a position no
+  returned row points at. The C row (`MfskDecode`, size-versioned, appended) gains `key_bits` and `key` (the message's 77, 72
+  or 50 bits packed into 10 bytes: the same message in two decoders has one key whatever its text) and `delivery` (-1: none).
+  `STREAMING.md` and `BINDINGS.md` (and the `.ja` twins) say so. The skimmer pairs by `delivery` now, not by position or key.
 - **`RowDetail` says what the mode reports: `sync_score`, `sync_cv` and `hard_errors` are `Option`s, and `Decoded::new` exists (#594).**
   WSPR, JT9, JT65 and Q65 gave `0.0` / `0` for all three on every row, and FT8's a7 and a8 list decodes a placeholder
   `0.0` sync score, so a consumer could not tell a measured zero from a number the mode does not have, and the docs did not

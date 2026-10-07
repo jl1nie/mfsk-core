@@ -84,6 +84,12 @@
 #define MFSK_DECODE_TEXT_LEN 64
 
 /**
+ * Bytes of `MfskDecode::key`. A literal here for the same cbindgen reason as the
+ * constants below.
+ */
+#define MFSK_DECODE_KEY_LEN 10
+
+/**
  * `MfskDecode::flags` bit 0: the text needed the decoder's callsign
  * hash table to resolve a `<...>` reference.
  *
@@ -894,6 +900,28 @@ typedef struct MfskDecode {
      * reserved, currently zero.
      */
     uint8_t flags;
+    /**
+     * How many bits of [`Self::key`] are the message's: 77 for FT8, FT4, FST4 and
+     * Q65, 72 for JT9 and JT65, 50 for WSPR. `0`: no key.
+     */
+    uint8_t key_bits;
+    /**
+     * The message's identity key, `key_bits` bits packed most significant bit
+     * first, zero-padded: the same message heard on two channels or in two decoders
+     * has the same key, which the text may not (a `<...>` resolves in one and not
+     * the other), and a row can be matched by it. One message at two frequencies
+     * has one key. For the 77-bit modes it is the first 77 bits of
+     * `mfsk_decoder_copy_info`'s block (the rest is the CRC, a function of them).
+     */
+    uint8_t key[MFSK_DECODE_KEY_LEN];
+    /**
+     * Which delivery of the period this row is, or came from (`RowDetail::delivery`,
+     * #592): a row handed to the callback carries its position (0, 1, 2...), a
+     * returned row the position of the delivery it was, so the two are paired
+     * exactly. `-1`: none (a returned row the callback never saw, or any row of a
+     * call with no callback).
+     */
+    int32_t delivery;
 } MfskDecode;
 
 /**

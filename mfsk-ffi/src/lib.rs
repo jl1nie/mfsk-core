@@ -124,6 +124,9 @@ pub const MFSK_AP_FIELD_LEN: usize = 16;
 /// Capacity of `MfskDecode::text`, including the NUL. See
 /// [`MFSK_AP_FIELD_LEN`] for why it is a literal.
 pub const MFSK_DECODE_TEXT_LEN: usize = 64;
+/// Bytes of `MfskDecode::key`. A literal here for the same cbindgen reason as the
+/// constants below.
+pub const MFSK_DECODE_KEY_LEN: usize = 10;
 
 /// `MfskDecode::flags` bit 0: the text needed the decoder's callsign
 /// hash table to resolve a `<...>` reference.

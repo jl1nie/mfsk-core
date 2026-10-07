@@ -434,6 +434,7 @@ fn detail_of(r: &DecodeResult, resolved: bool) -> RowDetail {
         info: r.info.to_vec(),
         hash_resolved: resolved,
         copied_last_tx: false,
+        delivery: None,
     }
 }
 
