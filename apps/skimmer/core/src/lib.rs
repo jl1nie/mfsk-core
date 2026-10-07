@@ -351,7 +351,9 @@ impl Delivered {
 ///
 /// A busy FT8 slot is about 1.8 s of decoding, most of it spent on the last
 /// few rows: on `qso3_busy.wav` (21 rows, `Depth::Deep`) 13-14 rows had been
-/// found by 0.36 s and the last at 1.45 s (native, one thread, i16 audio).
+/// found by 0.36 s and the last at 1.45 s (native, one thread, i16 audio); as IQ
+/// out of an `IqReceiver` (f32, `Direct` and `Pfb`) the same 21 rows, the last at
+/// 1.56-1.71 s.
 /// Waiting for the whole call, as `decode` does, delays all of them to the end.
 /// The total work is the same; only when a row can be shown changes.
 ///

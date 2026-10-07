@@ -5,7 +5,10 @@
 - **skimmer: a channel's rows go out as the decoder finds them, not when the slot is done.** The worker called
   `decode`, which returns after the whole slot, so every row of a busy slot waited for its slowest. It now calls
   `decode_with` and hands each row on at once. `qso3_busy.wav` (21 rows, `Depth::Deep`; native, one thread, i16
-  audio, not measured through `IqReceiver`): 13-14 rows are found by 0.36 s and the last at 1.45 s, of a 1.8 s decode.
+  audio): 13-14 rows are found by 0.36 s and the last at 1.45 s, of a 1.8 s decode. Placed as IQ and pulled out of a
+  real `IqReceiver` (f32 audio, `Direct` and `Pfb`) the same 21 rows come back, `decode_with` delivering exactly the
+  rows `decode` returns, the first at 30 ms, the median at 160-180 ms and the last at 1.56-1.71 s of 1.9-2.0 s. Not run
+  against a live SpyServer or through the GUI.
   Total work and `dropped_slots` are unchanged; only when a row can be shown moves. The parallel strategies (WSPR, JT9,
   JT65, Q65) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits (or,
   for a mode without them, its text) are seen. A streamed row is resolved against the callsign table as it stood when
