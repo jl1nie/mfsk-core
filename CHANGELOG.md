@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **skimmer: a channel's rows go out as the decoder finds them, not when the slot is done.** The worker called
+  `decode`, which returns after the whole slot, so every row of a busy slot waited for its slowest. It now calls
+  `decode_with` and hands each row on at once. `qso3_busy.wav` (21 rows, `Depth::Deep`; native, one thread, i16
+  audio, not measured through `IqReceiver`): 13-14 rows are found by 0.36 s and the last at 1.45 s, of a 1.8 s decode.
+  Total work and `dropped_slots` are unchanged; only when a row can be shown moves. The parallel strategies (WSPR, JT9,
+  JT65, Q65) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits (or,
+  for a mode without them, its text) are seen. A streamed row is resolved against the callsign table as it stood when
+  the period began, so a `<...>` that the same period teaches stays `<...>`.
 - **FT8 `SicEarly` stops when its budget does (#587).** The subtractions between checkpoints A, B and C had no budget
   poll, so a budget spent during A still paid for every A row's `subtract_signal_lpf_refine_dt` (60-150 ms each) before a
   C search that was then refused. Native, `qso3_busy.wav`, sync 1.0, 200 candidates: a 300 ms budget ran 641 ms, 340 ms

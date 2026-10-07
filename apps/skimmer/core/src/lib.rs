@@ -39,11 +39,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub use mfsk_core::Mode;
-use mfsk_core::decoder::{AnyDecoder, default_params};
+use mfsk_core::decoder::{AnyDecoder, RowDetail, SlotInput, default_params};
 pub use mfsk_core::decoder::{ApMode, Contest, Depth, QsoContext, QsoProgress, Station};
 pub use mfsk_core::iq::Channelizer;
 use mfsk_core::iq::CompletedSlot;
 use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::msg::Decoded;
 use mfsk_core::msg::ap::ApHint;
 use mfsk_core::slotgrid::ClockChange;
 
@@ -317,6 +318,68 @@ enum Job {
     Options(ChannelOptions, Station),
 }
 
+/// Which rows of one slot have been handed on.
+///
+/// A row is the same row when its FEC information bits match (the frame
+/// modes) or, for a mode that has none to give, its text. That is the
+/// granularity the decoder's own cross-candidate de-duplication works at
+/// (`message77`), so a second delivery of a row the decoder already counts
+/// once is dropped here, and nothing else is.
+///
+/// It is needed because `decode_with` has two delivery contracts
+/// (`docs/reference/STREAMING.md` §3): a sequential strategy (FT8 and FT4 at
+/// `Depth::Normal`/`Deep`, FST4) delivers exactly the rows it returns, but a
+/// parallel one (WSPR, JT9, JT65, Q65) delivers in completion order and may
+/// show a transient duplicate that the returned rows have already removed.
+#[derive(Default)]
+struct Delivered(std::sync::Mutex<std::collections::HashSet<(bool, Vec<u8>)>>);
+
+impl Delivered {
+    /// `true` the first time this row is offered.
+    fn first_time(&self, row: &Decoded, detail: &RowDetail) -> bool {
+        let key = if detail.info.is_empty() {
+            (false, row.text.clone().into_bytes())
+        } else {
+            (true, detail.info.clone())
+        };
+        self.0.lock().unwrap().insert(key)
+    }
+}
+
+/// Decode one slot, handing each row to `emit` once, **as the decoder finds
+/// it** rather than when the slot is done.
+///
+/// A busy FT8 slot is about 1.8 s of decoding, most of it spent on the last
+/// few rows: on `qso3_busy.wav` (21 rows, `Depth::Deep`) 13-14 rows had been
+/// found by 0.36 s and the last at 1.45 s (native, one thread, i16 audio).
+/// Waiting for the whole call, as `decode` does, delays all of them to the end.
+/// The total work is the same; only when a row can be shown changes.
+///
+/// What a streamed row does not get is the callsign hash table as it stands
+/// at the end of the period: it is resolved against the table as it was when
+/// the period began. A `<...>` whose call the same period then teaches the
+/// decoder stays `<...>` here, where the returned row would have it resolved.
+/// The returned rows are still walked afterwards, so a row the callback did
+/// not deliver is not lost, but one already delivered is not repeated in its
+/// better-resolved form.
+fn decode_streaming(
+    decoder: &mut AnyDecoder,
+    slot: &SlotInput<'_>,
+    // Spelled out: `spyserver::*` brings a `Sync` of its own into scope.
+    emit: &(dyn Fn(&Decoded) + std::marker::Sync),
+) {
+    let delivered = Delivered::default();
+    let offer = |row: &Decoded, detail: &RowDetail| {
+        if delivered.first_time(row, detail) {
+            emit(row);
+        }
+    };
+    let out = decoder.decode_with(slot, &offer);
+    for (row, detail) in out.rows.iter().zip(&out.details) {
+        offer(row, detail);
+    }
+}
+
 /// One channel's decoder thread. The socket reader only cuts slots and
 /// queues them, so a slow decode (a busy FT8 band, FST4-300) delays that
 /// channel's rows and nothing else; a full queue drops the slot, counted.
@@ -352,7 +415,7 @@ impl Worker {
                         }
                     };
                     let t = Instant::now();
-                    for d in decoder.decode(&slot.input()).rows {
+                    decode_streaming(&mut decoder, &slot.input(), &|d| {
                         let _ = results.send(Decode {
                             channel,
                             mode: slot.mode,
@@ -361,9 +424,9 @@ impl Worker {
                             freq_hz: slot.abs_freq_hz(d.freq_hz),
                             snr_db: d.snr_db,
                             dt_s: d.dt_sec,
-                            text: d.text,
+                            text: d.text.clone(),
                         });
-                    }
+                    });
                     longest_us.fetch_max(t.elapsed().as_micros() as u64, Ordering::Relaxed);
                     busy.fetch_sub(1, Ordering::Relaxed);
                 }
@@ -2052,6 +2115,70 @@ mod tests {
         ] {
             assert_eq!(super::describe(&Error::from(kind)), want);
         }
+    }
+
+    /// An FT8 slot with the given messages at 1000 Hz, 1500 Hz, ... from 0.5 s.
+    fn ft8_slot(messages: &[(&str, &str, &str)]) -> Vec<i16> {
+        use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
+        use mfsk_core::ft8::Ft8;
+        use mfsk_core::msg::wsjt77::pack77;
+        let mut audio = vec![0i16; 180_000];
+        for (i, (a, b, c)) in messages.iter().enumerate() {
+            let tones = message_to_tones::<Ft8>(&pack77(a, b, c).unwrap());
+            let frame = synthesize_i16::<Ft8>(&tones, 12_000, 1_000.0 + 500.0 * i as f32, 8_000);
+            let start = (0.5 * 12_000.0) as usize;
+            for (o, v) in audio[start..start + frame.len()].iter_mut().zip(&frame) {
+                *o = o.saturating_add(*v);
+            }
+        }
+        audio
+    }
+
+    #[test]
+    fn streamed_rows_are_the_rows_the_slot_returns_each_once() {
+        let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
+        let slot = SlotInput::i16(&audio);
+
+        let want: Vec<String> = AnyDecoder::with_defaults(Mode::Ft8)
+            .decode(&slot)
+            .rows
+            .into_iter()
+            .map(|d| d.text)
+            .collect();
+        assert!(want.len() >= 2, "the slot must decode: {want:?}");
+
+        let got = std::sync::Mutex::new(Vec::new());
+        decode_streaming(&mut AnyDecoder::with_defaults(Mode::Ft8), &slot, &|d| {
+            got.lock().unwrap().push(d.text.clone());
+        });
+        // FT8 at the default depth is a sequential strategy: the callback
+        // delivers exactly the returned rows, in the same order.
+        assert_eq!(got.into_inner().unwrap(), want);
+    }
+
+    #[test]
+    fn a_row_offered_twice_is_delivered_once() {
+        let row = |text: &str| Decoded {
+            text: text.into(),
+            freq_hz: 1_000.0,
+            dt_sec: 0.0,
+            snr_db: -10.0,
+            protocol: mfsk_core::ProtocolId::Wspr,
+        };
+        let with_info = |info: &[u8]| RowDetail {
+            info: info.to_vec(),
+            ..RowDetail::default()
+        };
+        let d = Delivered::default();
+        // A mode with no information bits is told apart by its text.
+        assert!(d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
+        assert!(!d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
+        assert!(d.first_time(&row("W9XYZ EN34 30"), &with_info(&[])));
+        // One that has them, by those: the same bits resolved to another text
+        // (a hashed call learned later in the period) are the same row.
+        assert!(d.first_time(&row("CQ <...> PM95"), &with_info(&[1, 2, 3])));
+        assert!(!d.first_time(&row("CQ <JA1ABC> PM95"), &with_info(&[1, 2, 3])));
+        assert!(d.first_time(&row("CQ <...> PM95"), &with_info(&[1, 2, 4])));
     }
 
     #[test]
