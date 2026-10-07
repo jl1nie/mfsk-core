@@ -126,7 +126,7 @@
             <td class="num mono">{r.snrDb.toFixed(0)}</td>
             <td class="num mono">{r.dtS.toFixed(1)}</td>
             {#if detail}<td class="num mono">{r.syncScore === null ? '–' : r.syncScore.toFixed(1)}</td><td class="num mono">{r.hardErrors ?? '–'}</td>{/if}
-            <td class="mono msg">{r.text}{#if r.hashResolved}<span class="resolved" title="A &lt;...&gt; in this row was resolved from the callsign table"> ✓</span>{/if}</td>
+            <td class="mono msg">{r.text}{#if r.hashResolved}<span class="resolved" title="A &lt;...&gt; in this row was resolved from the callsign table"> ✓</span>{/if}{#if r.early}<span class="early" title="Decoded early, at ~11.8 s into the slot, before the slot ended"> ⏱</span>{/if}</td>
           </tr>
         {/each}
       </tbody>
