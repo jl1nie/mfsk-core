@@ -154,6 +154,32 @@ macro_rules! any_decoder {
                 }
             }
 
+            /// Decode the period so far, keeping what this period has
+            /// already found: [`Decoder::decode_prefix`]. A mode with no
+            /// early decode returns nothing until the audio is the whole
+            /// period, so a mode-generic caller needs no capability check.
+            pub fn decode_prefix(&mut self, slot: &SlotInput<'_>) -> AnySlotResult {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => erase(d.decode_prefix(slot)), )*
+                }
+            }
+
+            /// [`AnyDecoder::decode_prefix`], handing each row to `on_row`
+            /// once, as it is found: [`Decoder::decode_prefix_with`].
+            pub fn decode_prefix_with(
+                &mut self,
+                slot: &SlotInput<'_>,
+                on_row: &(dyn Fn(&Decoded, &RowDetail) + Sync),
+            ) -> AnySlotResult {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => {
+                        let cb = |row: &Row<_>| on_row(&row.decoded, &row.detail);
+                        let cb: OnRow<'_, _> = &cb;
+                        erase(d.decode_prefix_with(slot, cb))
+                    } )*
+                }
+            }
+
             /// A packed 77-bit message as text, `<...>` resolved against this
             /// decoder's callsign table.
             pub fn unpack77(&self, msg77: &[u8]) -> Option<alloc::string::String> {

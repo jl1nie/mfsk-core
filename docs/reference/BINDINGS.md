@@ -186,6 +186,7 @@ What else the handle does:
 | `mfsk_decoder_set_on_decode(d, cb, user)` | deliver each row **as it is found**, on top of the array the call returns; NULL stops |
 | `mfsk_decoder_set_budget(d, check, user)` | poll a caller-supplied predicate once per candidate; stop when it returns `false`. Every mode with a decoder publishes `MFSK_CAP_BUDGET` and takes one; a mode without the bit would get `MFSK_STATUS_UNSUPPORTED` |
 | `mfsk_decoder_last_budget(d, &report)` | what the cut left undone — candidates skipped, stages run, how good the best skipped candidate was, and `rows_subtracted` (FT8 `SIC_EARLY`'s checkpoint-B and -C subtractions, appended to the size-versioned struct); zeroed when no budget was set. WSPR, JT9, JT65 and Q65 set `exhausted` only, so their counts stay 0 |
+| `mfsk_decoder_decode_prefix_i16` / `_f32(d, pcm, n, rate, period, out, cap, &len)` | the early decode (#572): call as audio arrives, with **every sample of the period so far** and `period` set. FT8 returns checkpoint A's rows at 141 696 samples (~11.8 s, `stage == MFSK_STAGE_EARLY`), none at 162 432, and at the whole period (180 000) the complete set, the rows `decode_i16` gives for the same audio. Other calls, and every call of a mode with no early decode until the whole period, return none. The callback sees each row once across the period; `delivery` counts across its calls. A retry after a short-buffer refusal gets the held rows. `MFSK_PERIOD_NONE` makes it a plain decode |
 | `mfsk_decoder_delivery_is_exact(d)` | whether the callback sees exactly the rows the call returns, once each and in order, under the current mode, depth and extras (`STREAMING.md` §3a). `false` for FT8's single pass and sniper, FT4 at `MFSK_DEPTH_FAST`, FST4 and WSPR: pair by `MfskDecode::delivery` there. Ask again after `set_params` / `set_extras` |
 | `mfsk_decoder_add_callsign(d, "JL1NIE")` | seed the hash table so a later `<...>` resolves. `MFSK_STATUS_UNSUPPORTED` for a mode whose messages carry no hashed calls |
 | `mfsk_decoder_copy_info(d, i, out, cap, &len)` | the FEC information bits behind row `i` of the last decode (`MfskDecode::info_bits` of them) |
@@ -308,6 +309,7 @@ Flat, fixed-size, written into your array. `text` is an inline
 | `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`); bits 2-4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`, the three numbers above are the mode's own and not the `0` of a mode that reports none |
 | `key_bits`, `key` | the message's identity key: `key_bits` bits (77 for FT8, FT4, FST4 and Q65; 72 for JT9 and JT65; 50 for WSPR; 0: none), packed most significant bit first into the 10 bytes of `key`, zero-padded. The same message in two decoders has one key even when its text differs (a `<...>` resolved in one only); one message at two frequencies has one key too. For the 77-bit modes it is the first 77 bits of `mfsk_decoder_copy_info`'s block |
 | `delivery` | which delivery of the period this row is, or came from: a row given to the callback carries its position (0, 1, 2...), a returned row the position of the delivery it was, so the two pair exactly. `-1` for a returned row the callback never saw, and for every row of a call with no callback |
+| `stage` | when a `mfsk_decoder_decode_prefix_*` sequence found the row: `MFSK_STAGE_EARLY` (a call before the period ended — FT8's checkpoint A, ~11.8 s, in time to answer in the next period), `MFSK_STAGE_FINAL` (the call whose audio was the whole period), `MFSK_STAGE_NONE` from a plain decode. Appended |
 
 ### 2.5 Streaming capture
 
@@ -765,7 +767,7 @@ mode is here but does not offer what was asked).
 
 | group | symbols |
 |---|---|
-| decoder (19) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
+| decoder (21) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
 | streaming (10) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
 | transmit (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
@@ -930,6 +932,11 @@ with a decoder, `lastBudget.rowsSubtracted` included). The predicate crosses JNI
 a `System.nanoTime()` comparison against a captured deadline — anything heavier
 belongs behind a boolean the JVM side already computed.
 
+**`dec.decodePrefix(pcm, period)`** is the early decode (§2.2, #572): call it as
+audio arrives with everything of the period so far. FT8 returns checkpoint A's
+rows at 141 696 samples, with `stage == MfskStage.EARLY`, and the complete set
+at the whole period.
+
 **Rows** are `MfskDecode`. `syncScore`, `syncCv` and `hardErrors` are
 nullable, null where the mode reports none (the C row's clear
 `MFSK_DECODE_FLAG_HAS_*` bit); `key` is the packed message key as hex, with
@@ -1032,6 +1039,10 @@ for row in try decoder.decode(slot) {
   pairs a row given to `onDecode` with its returned form
   (`decoder.deliveryIsExact` says whether the two are the same list).
   `IQDecode` carries the same detail.
+* `decoder.decodePrefix(pcm, period:)` is the early decode (§2.2, #572):
+  every sample of the period so far. FT8 returns checkpoint A's rows at
+  141 696 samples (`stage == .early`) and the complete set at the whole
+  period.
 * `decoder.onDecode { row in … }` streams rows as they are found,
   alongside the array the call returns. On a `desktop` build the
   closure runs on rayon workers, possibly concurrently; on `mobile` it

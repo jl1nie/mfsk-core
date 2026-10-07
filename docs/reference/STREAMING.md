@@ -87,6 +87,11 @@ generic shape, `&(dyn Fn(&Row<R>) + Sync)` (`decoder::OnRow`), with the mode's
 
 Notes:
 
+- **Rows during the period, not after it:** `decode_prefix_with` (#572,
+  [LIBRARY.md](LIBRARY.md) §2.3) takes the period so far, and FT8 delivers
+  checkpoint A's rows at about 11.8 s. Each row is delivered once across
+  the period's calls, and `RowDetail::delivery` counts across them; the
+  contract per call is the one below.
 - **Every `Decoder`** has `decode_with` beside `decode`; the returned
   `SlotResult` still holds the full batch.
 - **A row is resolved when it is delivered.** The callback sees the row's text

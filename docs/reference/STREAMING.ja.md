@@ -84,6 +84,10 @@ let result = decoder.decode_with(&slot, &on_row);
 
 補足:
 
+- **周期の後ではなく周期の途中で行を出す:** `decode_prefix_with`（#572、
+  [LIBRARY.ja.md](LIBRARY.ja.md) §2.3）はその周期でここまでの分を取り、FT8 は約 11.8 s で
+  チェックポイント A の行を配信する。各行はその周期の呼び出しを通じて 1 回配信され、
+  `RowDetail::delivery` はそれらの呼び出し全体で数える。呼び出しごとの契約は下のとおり。
 - **すべての `Decoder`** は `decode` の隣に `decode_with` を持つ。返される
   `SlotResult` は引き続きバッチ全体を保持する。
 - **行は配信時に解決される。** コールバックが見る行のテキストは、周期の開始時点の

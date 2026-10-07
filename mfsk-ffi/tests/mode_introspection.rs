@@ -73,6 +73,9 @@ fn abi_lengths_match_the_shared_definitions() {
         MFSK_DECODE_FLAG_HAS_HARD_ERRORS,
         mfsk_ffi_abi::MFSK_DECODE_FLAG_HAS_HARD_ERRORS
     );
+    assert_eq!(MFSK_STAGE_NONE, mfsk_ffi_abi::MFSK_STAGE_NONE);
+    assert_eq!(MFSK_STAGE_EARLY, mfsk_ffi_abi::MFSK_STAGE_EARLY);
+    assert_eq!(MFSK_STAGE_FINAL, mfsk_ffi_abi::MFSK_STAGE_FINAL);
     // And they are the sizes the structs actually carry.
     let e = std::mem::MaybeUninit::<MfskExtras>::zeroed();
     let e = unsafe { e.assume_init() };

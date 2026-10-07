@@ -151,6 +151,16 @@ pub const MFSK_DECODE_FLAG_HAS_SYNC_CV: u8 = 1 << 3;
 /// clean decode is `0` with the flag set; WSPR, JT9, JT65 and Q65 never set it).
 pub const MFSK_DECODE_FLAG_HAS_HARD_ERRORS: u8 = 1 << 4;
 
+/// `MfskDecode::stage`: not from a `mfsk_decoder_decode_prefix_*` sequence.
+/// A literal here for the same cbindgen reason as the constants above.
+pub const MFSK_STAGE_NONE: u8 = 0;
+/// `MfskDecode::stage`: found by a prefix call made before the period ended
+/// (FT8's checkpoint A, ~11.8 s in), in time to answer in the next period.
+pub const MFSK_STAGE_EARLY: u8 = 1;
+/// `MfskDecode::stage`: found by the prefix call whose audio was the whole
+/// period.
+pub const MFSK_STAGE_FINAL: u8 = 2;
+
 // ──────────────────────────────────────────────────────────────────────────
 // Capability bits
 //

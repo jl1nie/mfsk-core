@@ -62,6 +62,18 @@ public struct Decode: Sendable, Equatable {
     /// exactly. nil for a returned row the handler never saw, and with no
     /// handler.
     public let delivery: UInt32?
+    /// When a ``Decoder/decodePrefix(_:sampleRate:period:handler:)`` sequence
+    /// found the row; nil from a plain decode.
+    public let stage: Stage?
+
+    /// When in a period a prefix sequence found a row (`MFSK_STAGE_*`, #572).
+    public enum Stage: Sendable, Equatable {
+        /// Before the period ended — FT8's checkpoint A, ~11.8 s in — in time
+        /// to answer the station in the next period.
+        case early
+        /// By the call whose audio was the whole period.
+        case final
+    }
 
     init(_ raw: MfskDecode) {
         self.mode = Mode(rawValue: UInt32(raw.mode.rawValue)) ?? .ft8
@@ -82,6 +94,11 @@ public struct Decode: Sendable, Equatable {
         self.key = detail.key
         self.keyBits = raw.key_bits
         self.delivery = detail.delivery
+        switch Int32(raw.stage) {
+        case MFSK_STAGE_EARLY: self.stage = .early
+        case MFSK_STAGE_FINAL: self.stage = .final
+        default: self.stage = nil
+        }
     }
 }
 

@@ -454,7 +454,21 @@ pub struct MfskDecode {
     /// exactly. `-1`: none (a returned row the callback never saw, or any row of a
     /// call with no callback).
     pub delivery: i32,
+    /// When a `mfsk_decoder_decode_prefix_*` sequence found the row
+    /// (`RowDetail::stage`, #572): [`MFSK_STAGE_EARLY`] for a call made
+    /// before the period ended (FT8's checkpoint A, ~11.8 s in),
+    /// [`MFSK_STAGE_FINAL`] for the call whose audio was the whole period,
+    /// [`MFSK_STAGE_NONE`] from a plain decode. Appended.
+    pub stage: u8,
 }
+
+/// [`MfskDecode::stage`]: not from a prefix sequence.
+pub const MFSK_STAGE_NONE: u8 = 0;
+/// [`MfskDecode::stage`]: found before the period ended, in time to answer
+/// the station in the next one.
+pub const MFSK_STAGE_EARLY: u8 = 1;
+/// [`MfskDecode::stage`]: found by the call whose audio was the whole period.
+pub const MFSK_STAGE_FINAL: u8 = 2;
 
 /// [`MfskDecode::flags`] bit 0.
 pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;

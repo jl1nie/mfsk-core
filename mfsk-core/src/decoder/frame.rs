@@ -192,6 +192,21 @@ pub struct Fst4Extras {
 pub struct FrameState {
     table: CallsignHashTable,
     recent: Vec<(i64, Vec<DecodeResult>)>,
+    /// The period an FT8 prefix sequence is in (#572), until its final call.
+    #[cfg(feature = "ft8")]
+    prefix: Option<Ft8Prefix>,
+}
+
+/// What an FT8 prefix sequence pins at the period's first call and keeps
+/// until its last: the period, the search and strictness, the `f32` gain
+/// (trap 1 of `EARLY_DECODE_DESIGN.md`: the RMS moves from one prefix to
+/// the next), and the checkpoints' state.
+#[cfg(feature = "ft8")]
+struct Ft8Prefix {
+    period: i64,
+    search: (Search<Ft8Strategy>, DecodeStrictness),
+    gain: Option<f32>,
+    staged: crate::ft8::decode::Staged,
 }
 
 impl FrameState {
@@ -201,6 +216,7 @@ impl FrameState {
 }
 
 /// The search a depth sets, before [`Tuning`].
+#[derive(Clone, Copy)]
 struct Search<S> {
     sync_min: f32,
     max_cand: usize,
@@ -231,11 +247,14 @@ impl<S: Copy> Search<S> {
 
 /// The 16-bit audio the frame engines take. `F32` is scaled to
 /// [`F32_TO_I16_RMS`]; silence or NaN gives `None`.
-fn pcm<'a>(audio: Audio<'a>, owned: &'a mut Vec<i16>) -> Option<&'a [i16]> {
+fn pcm<'a>(audio: Audio<'a>, owned: &'a mut Vec<i16>, gain: Option<f32>) -> Option<&'a [i16]> {
     match audio {
         Audio::I16(a) => Some(a),
         Audio::F32(a) => {
-            let g = f32_gain(a)?;
+            let g = match gain {
+                Some(g) => g,
+                None => f32_gain(a)?,
+            };
             // Two steps, as the IQ path has always scaled: to the `f32`
             // level the other engines take, then to 16 bits.
             owned.clear();
@@ -435,6 +454,7 @@ fn detail_of(r: &DecodeResult, resolved: bool) -> RowDetail {
         hash_resolved: resolved,
         copied_last_tx: false,
         delivery: None,
+        stage: None,
     }
 }
 
@@ -471,10 +491,17 @@ fn rows<P: Protocol>(
 
 /// Run one frame-family decode: convert the audio, wrap `on_row` so it
 /// sees resolved rows, call `go`, then turn the results into rows.
+///
+/// `gain` replaces the `f32` audio's own (a prefix sequence pins it), and
+/// `learn: false` resolves the rows against a copy of the table, so a prefix
+/// call before the end leaves the table as the period found it: the final
+/// call then resolves the whole set in decode order, as `decode` does.
 fn frame_decode<P, F>(
     state: &mut FrameState,
     slot: &SlotInput<'_>,
     on_row: Option<OnRow<'_, DecodeResult>>,
+    gain: Option<f32>,
+    learn: bool,
     go: F,
 ) -> (SlotResult<DecodeResult>, Vec<DecodeResult>)
 where
@@ -487,7 +514,7 @@ where
     P: FrameDecodable<DecodeResult = DecodeResult>,
 {
     let mut owned = Vec::new();
-    let Some(audio) = pcm(slot.audio, &mut owned) else {
+    let Some(audio) = pcm(slot.audio, &mut owned, gain) else {
         return (
             SlotResult {
                 rows: Vec::new(),
@@ -533,9 +560,14 @@ where
         previous,
     );
     let results = out.results.clone();
+    let rows = if learn {
+        rows::<P>(out.results, &mut state.table)
+    } else {
+        rows::<P>(out.results, &mut state.table.clone())
+    };
     (
         SlotResult {
-            rows: rows::<P>(out.results, &mut state.table),
+            rows,
             budget: out.budget,
         },
         results,
@@ -609,52 +641,194 @@ impl Decodable for crate::Ft8 {
         slot: &SlotInput<'_>,
         on_row: Option<OnRow<'_, DecodeResult>>,
     ) -> SlotResult<DecodeResult> {
-        let (s, strictness) = ft8_search(params.depth).tuned(&extras.tuning);
-        let ap = ap_for(params, &extras.ap_hint, ApTable::Ft8, true);
-        let (out, results) =
-            frame_decode::<crate::Ft8, _>(state, slot, on_row, |pcm, cb, previous| {
-                if let (Some(sn), Some(target)) = (extras.sniper, params.rx_freq_hz) {
-                    let mut req = DecodeRequest::<crate::Ft8>::sniper(pcm, target, s.max_cand)
-                        .search_hz(sn.search_hz)
-                        .sync_min(s.sync_min)
-                        .osd(s.osd)
-                        .strictness(strictness)
-                        .eq_mode(extras.eq);
-                    req = req.ap_hint(&ap);
-                    if let Some(cb) = cb {
-                        req = req.on_result(cb);
-                    }
-                    if let Some(b) = slot.budget {
-                        req = req.budget(b);
-                    }
-                    return match extras.filter {
-                        MessageFilter::Default => req.decode(),
-                        MessageFilter::Codec => req.codec_filter().decode(),
-                        MessageFilter::AlsoAccept(f) => req.also_accept(f).decode(),
-                        MessageFilter::Only(f) => req.message_filter(f).decode(),
-                    };
-                }
-                let mut req = base_request::<crate::Ft8>(
-                    pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
-                )
-                .contest(params.contest != super::Contest::None)
-                .eme_delay(params.eme_delay);
-                req.wsjtx_low_depth = s.low_depth;
-                req = match s.strategy {
-                    Ft8Strategy::SinglePass => req.single_pass(),
-                    Ft8Strategy::SicRounds(n) => req.sic_rounds(n),
-                    Ft8Strategy::SicEarly => req.sic_early(),
-                };
-                req = req.ap_hint(&ap);
-                if extras.a7 {
-                    req = req.previous_cycle(previous);
-                }
-                run(req, extras.filter)
+        let search = ft8_search(params.depth).tuned(&extras.tuning);
+        ft8_decode(params, extras, search, None, state, slot, on_row, None)
+    }
+
+    /// The prefix sequence (#572): checkpoint A at 141 696 samples, B at
+    /// 162 432, the rest at the full period, over the state the period's
+    /// first call pinned. A strategy other than `SicEarly`, and the sniper,
+    /// have no checkpoints: nothing before the end, as upstream's
+    /// `ndepth == 1` runs nothing before `nzhsym == 50`.
+    fn __decode_prefix(
+        params: &DecodeParams,
+        extras: &Ft8Extras,
+        state: &mut FrameState,
+        slot: &SlotInput<'_>,
+        on_row: Option<OnRow<'_, DecodeResult>>,
+        full: bool,
+    ) -> SlotResult<DecodeResult> {
+        use crate::ft8::decode::{Staged, StagedStep, staged_step_for};
+        let period = slot.period.expect("Decoder::decode_prefix passes a period");
+        if state.prefix.as_ref().map(|p| p.period) != Some(period) {
+            state.prefix = Some(Ft8Prefix {
+                period,
+                search: ft8_search(params.depth).tuned(&extras.tuning),
+                gain: match slot.audio {
+                    Audio::F32(a) => f32_gain(a),
+                    Audio::I16(_) => None,
+                },
+                staged: Staged::default(),
             });
-        if extras.a7 {
-            remember(state, slot.period, results);
+        }
+        let mut pre = state.prefix.take().expect("set above");
+        let nothing = || SlotResult {
+            rows: Vec::new(),
+            budget: Default::default(),
+        };
+        let len = match slot.audio {
+            Audio::I16(a) => a.len(),
+            Audio::F32(a) => a.len(),
+        };
+        let staged = matches!(pre.search.0.strategy, Ft8Strategy::SicEarly)
+            && !(extras.sniper.is_some() && params.rx_freq_hz.is_some());
+        let step = if staged {
+            staged_step_for(len, full)
+        } else {
+            full.then_some(StagedStep::Final)
+        };
+        let Some(step) = step else {
+            state.prefix = Some(pre);
+            return nothing();
+        };
+        if !staged {
+            // The whole period, under the pinned search.
+            return ft8_decode(
+                params, extras, pre.search, pre.gain, state, slot, on_row, None,
+            );
+        }
+        let early_before = pre.staged.early().to_vec();
+        let mut out = ft8_decode(
+            params,
+            extras,
+            pre.search,
+            pre.gain,
+            state,
+            slot,
+            on_row,
+            Some((&mut pre.staged, step)),
+        );
+        if step == StagedStep::Final {
+            // Checkpoint A's rows that an earlier call already returned keep
+            // their stage in the complete set.
+            for row in &mut out.rows {
+                let n = &row.native;
+                if early_before.iter().any(|e| {
+                    e.message77() == n.message77()
+                        && e.freq_hz.to_bits() == n.freq_hz.to_bits()
+                        && e.dt_sec.to_bits() == n.dt_sec.to_bits()
+                }) {
+                    row.detail.stage = Some(super::Stage::Early);
+                }
+            }
+        } else {
+            state.prefix = Some(pre);
         }
         out
+    }
+}
+
+/// One FT8 decode under `search`. `staged` runs the `SicEarly` checkpoints
+/// over a prefix sequence's state as far as its step; before the final
+/// step the audio is padded to the full period (trap 2: a frame found near
+/// the edge needs room to be subtracted), the table is not taught, and no
+/// a7 state is kept.
+#[cfg(feature = "ft8")]
+#[allow(clippy::too_many_arguments)]
+fn ft8_decode(
+    params: &DecodeParams,
+    extras: &Ft8Extras,
+    (s, strictness): (Search<Ft8Strategy>, DecodeStrictness),
+    gain: Option<f32>,
+    state: &mut FrameState,
+    slot: &SlotInput<'_>,
+    on_row: Option<OnRow<'_, DecodeResult>>,
+    staged: Option<(
+        &mut crate::ft8::decode::Staged,
+        crate::ft8::decode::StagedStep,
+    )>,
+) -> SlotResult<DecodeResult> {
+    use crate::ft8::decode::StagedStep;
+    let last = staged
+        .as_ref()
+        .is_none_or(|(_, step)| *step == StagedStep::Final);
+    let staged = core::cell::RefCell::new(staged);
+    let ap = ap_for(params, &extras.ap_hint, ApTable::Ft8, true);
+    let (out, results) =
+        frame_decode::<crate::Ft8, _>(state, slot, on_row, gain, last, |pcm, cb, previous| {
+            if let (Some(sn), Some(target)) = (extras.sniper, params.rx_freq_hz) {
+                let mut req = DecodeRequest::<crate::Ft8>::sniper(pcm, target, s.max_cand)
+                    .search_hz(sn.search_hz)
+                    .sync_min(s.sync_min)
+                    .osd(s.osd)
+                    .strictness(strictness)
+                    .eq_mode(extras.eq);
+                req = req.ap_hint(&ap);
+                if let Some(cb) = cb {
+                    req = req.on_result(cb);
+                }
+                if let Some(b) = slot.budget {
+                    req = req.budget(b);
+                }
+                return match extras.filter {
+                    MessageFilter::Default => req.decode(),
+                    MessageFilter::Codec => req.codec_filter().decode(),
+                    MessageFilter::AlsoAccept(f) => req.also_accept(f).decode(),
+                    MessageFilter::Only(f) => req.message_filter(f).decode(),
+                };
+            }
+            let padded: Vec<i16>;
+            let full_len = super::period_samples(crate::Mode::Ft8);
+            let pcm = if !last && pcm.len() < full_len {
+                let mut v = alloc::vec![0i16; full_len];
+                v[..pcm.len()].copy_from_slice(pcm);
+                padded = v;
+                &padded[..]
+            } else {
+                pcm
+            };
+            let mut req = base_request::<crate::Ft8>(
+                pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
+            )
+            .contest(params.contest != super::Contest::None)
+            .eme_delay(params.eme_delay);
+            req.wsjtx_low_depth = s.low_depth;
+            req = match s.strategy {
+                Ft8Strategy::SinglePass => req.single_pass(),
+                Ft8Strategy::SicRounds(n) => req.sic_rounds(n),
+                Ft8Strategy::SicEarly => req.sic_early(),
+            };
+            req = req.ap_hint(&ap);
+            // a7 and a8 run at `nzhsym == 50` only, so only the last call
+            // reads the earlier periods.
+            if extras.a7 && last {
+                req = req.previous_cycle(previous);
+            }
+            match staged.borrow_mut().as_mut() {
+                Some((st, step)) => run_staged(req, extras.filter, st, *step),
+                None => run(req, extras.filter),
+            }
+        });
+    // A period that never reaches its last call remembers nothing.
+    if extras.a7 && last {
+        remember(state, slot.period, results);
+    }
+    out
+}
+
+#[cfg(feature = "ft8")]
+/// [`run`] for one step of a prefix sequence.
+fn run_staged(
+    req: DecodeRequest<'_, crate::Ft8>,
+    filter: MessageFilter,
+    st: &mut crate::ft8::decode::Staged,
+    step: crate::ft8::decode::StagedStep,
+) -> DecodeOutcome<crate::Ft8> {
+    match filter {
+        MessageFilter::Default => req.decode_staged(st, step),
+        MessageFilter::Codec => req.codec_filter().decode_staged(st, step),
+        MessageFilter::AlsoAccept(f) => req.also_accept(f).decode_staged(st, step),
+        MessageFilter::Only(f) => req.message_filter(f).decode_staged(st, step),
     }
 }
 
@@ -713,7 +887,7 @@ impl Decodable for crate::Ft4 {
             ApTable::Ft4Fst4,
             params.depth != Depth::Fast && params.contest.ncontest() < 6,
         );
-        frame_decode::<crate::Ft4, _>(state, slot, on_row, |pcm, cb, _| {
+        frame_decode::<crate::Ft4, _>(state, slot, on_row, None, true, |pcm, cb, _| {
             let mut req = base_request::<crate::Ft4>(
                 pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
             );
@@ -774,7 +948,7 @@ macro_rules! fst4_decodable {
                     ApTable::Ft4Fst4,
                     params.depth != Depth::Fast,
                 );
-                frame_decode::<$ty, _>(state, slot, on_row, |pcm, cb, _| {
+                frame_decode::<$ty, _>(state, slot, on_row, None, true, |pcm, cb, _| {
                     let mut req = base_request::<$ty>(
                         pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
                     );

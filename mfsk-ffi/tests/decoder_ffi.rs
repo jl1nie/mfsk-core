@@ -679,3 +679,101 @@ fn jt9_reports_the_signal_and_no_all_zero_codewords() {
     assert_eq!(texts(&rows), vec!["CQ K1ABC FN42".to_string()]);
     unsafe { mfsk_decoder_close(dec) };
 }
+
+/// `mfsk_decoder_decode_prefix_i16` (#572): FT8's checkpoint A returns its
+/// rows early, B returns none, the whole period returns the same rows a
+/// whole-period decode does, and the callback sees each row once.
+#[test]
+fn prefix_calls_deliver_early_and_end_where_decode_does() {
+    extern "C" fn count(_: *const MfskDecode, user: *mut c_void) {
+        unsafe { *(user as *mut usize) += 1 };
+    }
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    assert_eq!(slot.len(), 180_000);
+    let whole = {
+        let d = open(MfskMode::Ft8, None, None);
+        let r = decode_i16_at(d, &slot, 7);
+        unsafe { mfsk_decoder_close(d) };
+        r
+    };
+    assert_eq!(whole.len(), 1);
+    assert_eq!(whole[0].stage, MFSK_STAGE_NONE);
+
+    let d = open(MfskMode::Ft8, None, None);
+    let mut seen = 0usize;
+    assert_eq!(
+        unsafe {
+            mfsk_decoder_set_on_decode(d, Some(count), &mut seen as *mut usize as *mut c_void)
+        },
+        MfskStatus::Ok
+    );
+    let prefix = |len: usize| {
+        let mut rows = vec![blank_row(); 16];
+        let mut n = 0usize;
+        let st = unsafe {
+            mfsk_decoder_decode_prefix_i16(
+                d,
+                slot.as_ptr(),
+                len,
+                12_000,
+                7,
+                rows.as_mut_ptr(),
+                rows.len(),
+                &mut n,
+            )
+        };
+        assert_eq!(st, MfskStatus::Ok);
+        rows.truncate(n);
+        rows
+    };
+    let a = prefix(141_696);
+    assert_eq!(a.len(), 1, "checkpoint A finds the one station");
+    assert_eq!(a[0].stage, MFSK_STAGE_EARLY);
+    assert!(prefix(162_432).is_empty());
+    let end = prefix(180_000);
+    assert_eq!(end.len(), 1);
+    assert_eq!(end[0].text, whole[0].text);
+    assert_eq!(end[0].freq_hz.to_bits(), whole[0].freq_hz.to_bits());
+    assert_eq!(end[0].stage, MFSK_STAGE_EARLY, "it was returned early");
+    assert_eq!(end[0].delivery, 0, "and pairs with the early delivery");
+    assert_eq!(seen, 1, "delivered once across the period");
+    unsafe { mfsk_decoder_close(d) };
+}
+
+/// A prefix call refused for a short buffer has run its stage; the retry the
+/// ABI asks for gets the rows, not an empty answer.
+#[test]
+fn a_prefix_call_retried_for_a_short_buffer_keeps_its_rows() {
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    let d = open(MfskMode::Ft8, None, None);
+    let mut n = 0usize;
+    let st = unsafe {
+        mfsk_decoder_decode_prefix_i16(
+            d,
+            slot.as_ptr(),
+            141_696,
+            12_000,
+            3,
+            std::ptr::null_mut(),
+            0,
+            &mut n,
+        )
+    };
+    assert_eq!((st, n), (MfskStatus::InvalidArg, 1));
+    let mut rows = vec![blank_row(); n];
+    let st = unsafe {
+        mfsk_decoder_decode_prefix_i16(
+            d,
+            slot.as_ptr(),
+            141_696,
+            12_000,
+            3,
+            rows.as_mut_ptr(),
+            n,
+            &mut n,
+        )
+    };
+    assert_eq!((st, n), (MfskStatus::Ok, 1));
+    assert_eq!(rows[0].stage, MFSK_STAGE_EARLY);
+    unsafe { mfsk_decoder_close(d) };
+}

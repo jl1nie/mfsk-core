@@ -54,4 +54,17 @@ final class RowDetailTests: XCTestCase {
         XCTAssertFalse(decoder.lastBudget.exhausted)
         XCTAssertEqual(Int(decoder.lastBudget.rowsSubtracted), rows.count)
     }
+
+    func testPrefixCallsDeliverEarlyAndEndWhereDecodeDoes() throws {
+        let slot = try ft8Slot()
+        let whole = try Decoder(mode: .ft8).decode(slot, period: 7)
+        XCTAssertNil(whole.first?.stage)
+        let decoder = try Decoder(mode: .ft8)
+        let early = try decoder.decodePrefix(Array(slot.prefix(141_696)), period: 7)
+        XCTAssertEqual(early.map(\.stage), [.early])
+        XCTAssertTrue(try decoder.decodePrefix(Array(slot.prefix(162_432)), period: 7).isEmpty)
+        let end = try decoder.decodePrefix(slot, period: 7)
+        XCTAssertEqual(end.map(\.text), whole.map(\.text))
+        XCTAssertEqual(end.map(\.stage), [.early], "the row was returned early")
+    }
 }

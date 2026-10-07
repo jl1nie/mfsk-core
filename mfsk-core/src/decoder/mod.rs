@@ -18,8 +18,9 @@
 //! - [`Decodable::Extras`] holds what the library adds beyond upstream,
 //!   typed per mode, so an option a mode lacks does not compile.
 //! - [`SlotInput`] is one whole period of 12 kHz audio, as `i16` (`jt9`'s
-//!   `id2`) or as `f32` at any level. There is no staged or early-decode
-//!   entry point.
+//!   `id2`) or as `f32` at any level, for [`Decoder::decode`].
+//!   [`Decoder::decode_prefix`] takes the period so far instead, for FT8's
+//!   early decode at `nzhsym` 41 (#572); the decoder infers the stage.
 //!
 //! A one-shot decode of a recording is `Decoder::<P>::new(params)` and one
 //! call.
@@ -203,6 +204,55 @@ pub struct RowDetail {
     pub delivery: Option<u32>,
     /// Q65 Pileup's "copied last Tx" flag.
     pub copied_last_tx: bool,
+    /// When a [`Decoder::decode_prefix`] sequence found the row: early
+    /// enough to answer in this period, or at its end (#572). `None` from
+    /// `decode` and `decode_with`, and from a prefix call with no
+    /// `SlotInput::period`.
+    pub stage: Option<Stage>,
+}
+
+/// When in a period a [`Decoder::decode_prefix`] sequence found a row
+/// (#572). Read on a row, never passed in: the decoder infers the stage
+/// from how much of the period it has been given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Stage {
+    /// Found by a call made before the period ended: FT8's checkpoint A,
+    /// `ft8_decode.f90` at `nzhsym == 41`, about 11.8 s in. Soon enough to
+    /// answer the station in the next period.
+    Early,
+    /// Found by the call whose audio was the whole period.
+    Final,
+}
+
+/// What a [`Decoder`] keeps for the [`Decoder::decode_prefix`] sequence of
+/// the current period, beside the mode's own state: which period it is,
+/// its deliveries (so a returned row pairs with one streamed by an earlier
+/// call of the period), and the complete result once the final call has
+/// made it.
+struct PrefixBook<R> {
+    period: Option<i64>,
+    deliveries: Deliveries,
+    done: Option<SlotResult<R>>,
+}
+
+impl<R> Default for PrefixBook<R> {
+    fn default() -> Self {
+        Self {
+            period: None,
+            deliveries: Deliveries::default(),
+            done: None,
+        }
+    }
+}
+
+/// The samples of one period at 12 kHz: `t_slot_s · 12 000` (180 000 for
+/// FT8). A prefix call whose audio is this long is the period's last.
+fn period_samples(mode: Mode) -> usize {
+    #[cfg(not(feature = "std"))]
+    #[allow(unused_imports)]
+    use num_traits::Float;
+    (mode.meta().t_slot_s * 12_000.0).round() as usize
 }
 
 /// One decoded message: the common row, with its text resolved against
@@ -321,6 +371,29 @@ pub trait Decodable: Sized {
         slot: &SlotInput<'_>,
         on_row: Option<OnRow<'_, Self::Row>>,
     ) -> SlotResult<Self::Row>;
+
+    /// One call of a prefix sequence for `slot.period` (always `Some`
+    /// here). `full` is whether `slot.audio` is the whole period. A mode
+    /// with no early decode keeps the default: nothing before the end, and
+    /// the end is `__decode`.
+    #[doc(hidden)]
+    fn __decode_prefix(
+        params: &DecodeParams,
+        extras: &Self::Extras,
+        state: &mut Self::State,
+        slot: &SlotInput<'_>,
+        on_row: Option<OnRow<'_, Self::Row>>,
+        full: bool,
+    ) -> SlotResult<Self::Row> {
+        if full {
+            Self::__decode(params, extras, state, slot, on_row)
+        } else {
+            SlotResult {
+                rows: Vec::new(),
+                budget: BudgetReport::default(),
+            }
+        }
+    }
 }
 
 /// The decoder of one mode. See the module documentation.
@@ -328,6 +401,7 @@ pub struct Decoder<P: Decodable> {
     params: DecodeParams,
     extras: P::Extras,
     state: P::State,
+    prefix: PrefixBook<P::Row>,
 }
 
 impl<P: Decodable> Decoder<P> {
@@ -337,6 +411,7 @@ impl<P: Decodable> Decoder<P> {
             params,
             extras: P::Extras::default(),
             state: P::State::default(),
+            prefix: PrefixBook::default(),
         }
     }
 
@@ -433,6 +508,105 @@ impl<P: Decodable> Decoder<P> {
     /// `ndepth & 128` auto-clear).
     pub fn clear(&mut self) {
         self.state = P::State::default();
+        self.prefix = PrefixBook::default();
+    }
+
+    /// Decode the period so far, keeping what this period has already
+    /// found (#572, `docs/notes/EARLY_DECODE_DESIGN.md`).
+    ///
+    /// Call it as audio arrives, with **everything of the period received up
+    /// to now** and `slot.period` set. The decoder infers the stage from the
+    /// audio length and what it holds for that period, so the caller tracks
+    /// nothing. FT8 acts at 141 696 samples (checkpoint A, `nzhsym` 41,
+    /// ~11.8 s: its rows are returned and marked [`Stage::Early`]), at
+    /// 162 432 (checkpoint B: the A rows that fit are subtracted, nothing is
+    /// returned) and at the period's full length, 180 000 samples (the rest
+    /// of the search, then a7 / a8). A call between those returns at once
+    /// with no rows; so does every call of a mode with no early decode until
+    /// the full length. Calls may be skipped or repeated: the final call's
+    /// rows are always the period's complete set, the same rows a whole-period
+    /// [`Decoder::decode`] returns for the same 16-bit audio, in the same
+    /// order. A call for the same period after that returns the complete set
+    /// again without decoding.
+    ///
+    /// A call for another period discards what the last one held. With no
+    /// `period` this is a one-shot [`Decoder::decode`] of the audio given,
+    /// keeping nothing. Mixing in `decode` midway through a period's sequence
+    /// is unspecified (duplicate rows at worst). Settings are pinned at the
+    /// period's first call: FT8's strategy and search, and the gain of `f32`
+    /// audio, which is measured on that first prefix.
+    ///
+    /// Synchronous and CPU-bound: it holds the calling thread for the
+    /// stage's work. Bound it with `SlotInput::budget`.
+    pub fn decode_prefix(&mut self, slot: &SlotInput<'_>) -> SlotResult<P::Row> {
+        self.prefix_call(slot, None)
+    }
+
+    /// [`Decoder::decode_prefix`], handing each row to `on_row` once, as it
+    /// is found. A row's [`RowDetail::delivery`] counts across the whole
+    /// period's calls, so the final call's rows pair with rows an earlier call
+    /// streamed.
+    pub fn decode_prefix_with(
+        &mut self,
+        slot: &SlotInput<'_>,
+        on_row: OnRow<'_, P::Row>,
+    ) -> SlotResult<P::Row> {
+        self.prefix_call(slot, Some(on_row))
+    }
+
+    fn prefix_call(
+        &mut self,
+        slot: &SlotInput<'_>,
+        on_row: Option<OnRow<'_, P::Row>>,
+    ) -> SlotResult<P::Row> {
+        let Some(period) = slot.period else {
+            return match on_row {
+                Some(cb) => self.decode_with(slot, cb),
+                None => self.decode(slot),
+            };
+        };
+        if self.prefix.period != Some(period) {
+            self.prefix = PrefixBook {
+                period: Some(period),
+                ..PrefixBook::default()
+            };
+        }
+        if let Some(done) = &self.prefix.done {
+            return done.clone();
+        }
+        let len = match slot.audio {
+            Audio::I16(a) => a.len(),
+            Audio::F32(a) => a.len(),
+        };
+        let full = len >= period_samples(P::MODE);
+        let stage = if full { Stage::Final } else { Stage::Early };
+        let deliveries = &self.prefix.deliveries;
+        let wrapped = |row: &Row<P::Row>| {
+            let mut r = row.clone();
+            r.detail.stage.get_or_insert(stage);
+            r.detail.delivery = Some(deliveries.record(&r.decoded, &r.detail));
+            if let Some(cb) = on_row {
+                cb(&r);
+            }
+        };
+        let mut out = P::__decode_prefix(
+            &self.params,
+            &self.extras,
+            &mut self.state,
+            slot,
+            on_row.map(|_| &wrapped as OnRow<'_, P::Row>),
+            full,
+        );
+        for row in &mut out.rows {
+            row.detail.stage.get_or_insert(stage);
+            if on_row.is_some() || full {
+                row.detail.delivery = self.prefix.deliveries.find(&row.decoded, &row.detail);
+            }
+        }
+        if full {
+            self.prefix.done = Some(out.clone());
+        }
+        out
     }
 }
 

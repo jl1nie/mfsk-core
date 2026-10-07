@@ -1201,8 +1201,112 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
 /// this axis has no `.sic_rounds()`-style knob.
 const CHECKPOINT_SIC_ROUNDS: usize = 3;
 
+/// What `ft8_decode.f90` keeps between its `nzhsym` 41, 47 and 50 calls
+/// (`ndec_early`, `itone_save`, `f1_save`, `xdt_save`, and `dd` after the
+/// 47 subtraction): checkpoint A's rows, then checkpoint B's cleaned buffer
+/// with the A rows B could not subtract yet (#572). A whole-period
+/// `SicEarly` runs all three steps over a fresh one in one call; the
+/// prefix decode keeps one across the calls of a period.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Staged {
+    /// Checkpoint A's rows, once A has run.
+    early: Option<Vec<DecodeResult>>,
+    /// Checkpoint B's buffer (cleaned through `B_SAMPLES`, zero past it)
+    /// and the A rows whose frame did not fit before B's count.
+    cleaned: Option<(Vec<i16>, Vec<DecodeResult>)>,
+}
+
+impl Staged {
+    /// Checkpoint A's rows, empty before A has run.
+    pub(crate) fn early(&self) -> &[DecodeResult] {
+        self.early.as_deref().unwrap_or(&[])
+    }
+
+    /// Whether checkpoint A has run.
+    pub(crate) fn has_early(&self) -> bool {
+        self.early.is_some()
+    }
+}
+
+/// How far a call takes [`Staged`]: checkpoint A, B, or the end (C, or the
+/// flat fallback).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StagedStep {
+    A,
+    B,
+    Final,
+}
+
+/// The audio a step needs: A reads up to 141 696 samples, B up to
+/// 162 432, the final step the whole period.
+pub(crate) fn staged_step_for(prefix_len: usize, full: bool) -> Option<StagedStep> {
+    use staged_checkpoint::{A_SAMPLES, B_SAMPLES};
+    if full {
+        Some(StagedStep::Final)
+    } else if prefix_len >= B_SAMPLES {
+        Some(StagedStep::B)
+    } else if prefix_len >= A_SAMPLES {
+        Some(StagedStep::A)
+    } else {
+        None
+    }
+}
+
+/// The whole-period `SicEarly` in one call: [`staged_steps`] over a fresh
+/// state to the end. The tests' entry; production goes through
+/// [`DecodeRequest::decode_staged`].
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    qso_freqs: crate::engine::pipeline::QsoFreqs,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    eq_mode: EqMode,
+    ap_hint: Option<&ApHint>,
+    outer_known: &[DecodeResult],
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
+    budget: &mut BudgetState<'_>,
+    policy: &Pol,
+    base_pass: PassCtx,
+    eme_delay: bool,
+) -> (Vec<DecodeResult>, Vec<i16>) {
+    staged_steps(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        qso_freqs,
+        depth,
+        max_cand,
+        strictness,
+        eq_mode,
+        ap_hint,
+        outer_known,
+        on_result,
+        budget,
+        policy,
+        base_pass,
+        eme_delay,
+        &mut Staged::default(),
+        StagedStep::Final,
+    )
+    .expect("the final step always finishes")
+}
+
+/// The checkpoints A, B and C over `st`, as far as `step`. `audio` is
+/// full length (content zeroed past what has arrived, trap 2 of
+/// `EARLY_DECODE_DESIGN.md`); only the final step reads past B's count.
+/// `Some((rows, residual))` from the final step, `None` from the others.
+/// A step already taken is not repeated, so the final step after A and B
+/// continues from them, and with a fresh `st` it is the whole-period
+/// `SicEarly` exactly.
+#[allow(clippy::too_many_arguments)]
+fn staged_steps<Pol: MessagePolicy>(
     audio: &[i16],
     freq_min: f32,
     freq_max: f32,
@@ -1235,8 +1339,11 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     policy: &Pol,
     base_pass: PassCtx,
     eme_delay: bool,
-) -> (Vec<DecodeResult>, Vec<i16>) {
+    st: &mut Staged,
+    step: StagedStep,
+) -> Option<(Vec<DecodeResult>, Vec<i16>)> {
     use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
+    let last = step == StagedStep::Final;
 
     // `outer_known` pre-subtracted once, up front — used everywhere
     // *except* checkpoint A below (2026-08-10, issue #253). A real
@@ -1272,7 +1379,10 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     // checkpoint A's truncation-boundary exposure, so `audio_clean` is
     // fine here.
 
-    if audio.len() < A_SAMPLES {
+    if st.early.is_none() && audio.len() < A_SAMPLES {
+        if !last {
+            return None;
+        }
         let (r, _) = flat_sic_inner(
             &audio_clean,
             freq_min,
@@ -1293,7 +1403,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             qso_freqs,
             eme_delay,
         );
-        return (r, audio_clean);
+        return Some((r, audio_clean));
     }
 
     // ---- Checkpoint A (nearly=41): early pass on a full-length buffer
@@ -1312,34 +1422,44 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     // to match; v3.0.0 commented that line out (`!  if(nzhsym.eq.41)
     // syncmin=2.0`), so the early pass runs at the same `syncmin` as the
     // final one and so does this (#452).
-    let mut residual_a = vec![0i16; audio.len()];
-    residual_a[..A_SAMPLES].copy_from_slice(&audio[..A_SAMPLES]);
-    let early_results = sic_inner_passes(
-        &mut residual_a,
-        freq_min,
-        freq_max,
-        sync_min,
-        depth,
-        max_cand,
-        strictness,
-        outer_known,
-        eq_mode,
-        ap_hint,
-        CHECKPOINT_SIC_ROUNDS,
-        on_result,
-        budget,
-        policy,
-        // `ft8_decode.f90` runs no AP pass while `nzhsym < 50` (npasses=5).
-        base_pass.without_ap(),
-        qso_freqs,
-        eme_delay,
-    );
-    // Checkpoint A's own residual is not carried forward — only its
-    // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
-    // checkpoint B rather than reusing checkpoint A's `dd`).
-    drop(residual_a);
+    if st.early.is_none() {
+        let mut residual_a = vec![0i16; audio.len()];
+        residual_a[..A_SAMPLES].copy_from_slice(&audio[..A_SAMPLES]);
+        let early_results = sic_inner_passes(
+            &mut residual_a,
+            freq_min,
+            freq_max,
+            sync_min,
+            depth,
+            max_cand,
+            strictness,
+            outer_known,
+            eq_mode,
+            ap_hint,
+            CHECKPOINT_SIC_ROUNDS,
+            on_result,
+            budget,
+            policy,
+            // `ft8_decode.f90` runs no AP pass while `nzhsym < 50` (npasses=5).
+            base_pass.without_ap(),
+            qso_freqs,
+            eme_delay,
+        );
+        // Checkpoint A's own residual is not carried forward — only its
+        // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
+        // checkpoint B rather than reusing checkpoint A's `dd`).
+        drop(residual_a);
+        st.early = Some(early_results);
+    }
+    if step == StagedStep::A {
+        return None;
+    }
+    let early_results = st.early.clone().unwrap_or_default();
 
     if early_results.is_empty() {
+        if !last {
+            return None;
+        }
         // WSJT-X: `nzhsym=47 .and. ndec_early.eq.0` skips checkpoint B's
         // search entirely, and checkpoint C's "combine cleaned head +
         // raw tail" step is itself gated on `ndec_early.ge.1` — with
@@ -1371,56 +1491,73 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             qso_freqs,
             eme_delay,
         );
-        return (r, audio_clean);
+        return Some((r, audio_clean));
     }
 
-    // A budget spent during checkpoint A leaves B and C nothing to do: C's
-    // search would be refused at its first poll, so B's subtractions would
-    // be paid for a residual nobody searches (#587).
-    if !budget.allows(None, None) {
-        return (early_results, audio_clean);
-    }
-
-    // ---- Checkpoint B (nearly=47): subtract-prep only, no search.
-    // Full-length buffer again (see checkpoint A comment above), content
-    // zeroed past `b_len`. Only signals whose full NN-symbol message
-    // fits inside this checkpoint's *real-content* window are subtracted
-    // now — subtracting against the zeroed tail would fit the reference
-    // waveform to silence there — late-`dt` signals are deferred to
-    // checkpoint C, where the raw tail is available.
-    let b_len = B_SAMPLES.min(audio.len());
-    let mut buf_b = vec![0i16; audio.len()];
-    buf_b[..b_len].copy_from_slice(&audio_clean[..b_len]);
-    // Message duration (`params::NZ` samples at 12 kHz) plus the 0.5 s
-    // frame-start offset must fit before the checkpoint-B buffer's real
-    // content ends. Mirrors `ft8_decode.f90`'s `xdt_save(i)-0.5 < 0.396`
-    // gate, generalised via the message duration instead of the magic
-    // constant (which is this formula evaluated at FT8's own
-    // NN=79/NSPS=1920 — see `params.rs`).
-    let message_dur_s = params::NZ as f32 / 12_000.0;
-    let dt_fit_limit_b = b_len as f32 / 12_000.0 - message_dur_s - 0.5;
-    // `ft8_decode.f90:132` subtracts these checkpoint-A decodes with
-    // `lrefinedt=.true.` — their `dt` came from an early, still-coarse
-    // pass, not a final decode, so WSJT-X re-searches ±90 samples for
-    // the best-cancelling alignment before subtracting (issue #180).
-    let mut deferred: Vec<DecodeResult> = Vec::new();
-    for r in &early_results {
-        if r.dt_sec < dt_fit_limit_b {
-            // Polled per row, like the candidate loop (#587): one
-            // `subtract_signal_lpf_refine_dt` measured 60-150 ms on the
-            // #587 recordings (native and wasm32), and the unpolled loop
-            // kept a 300 ms budget running up to 0.95 s past its first
-            // `false`. A row not subtracted here is not deferred either:
-            // C cannot run once the budget is spent.
-            if !budget.allows(None, None) {
-                break;
-            }
-            subtract_signal_lpf_refine_dt(&mut buf_b, r);
-            budget.report.rows_subtracted += 1;
-        } else {
-            deferred.push(r.clone());
+    if st.cleaned.is_none() {
+        // A budget spent during checkpoint A leaves B and C nothing to do: C's
+        // search would be refused at its first poll, so B's subtractions would
+        // be paid for a residual nobody searches (#587). In a prefix call
+        // before the end, B is left for a later call with its own budget.
+        if !budget.allows(None, None) {
+            return last.then_some((early_results, audio_clean));
         }
+
+        // ---- Checkpoint B (nearly=47): subtract-prep only, no search.
+        // Full-length buffer again (see checkpoint A comment above), content
+        // zeroed past `b_len`. Only signals whose full NN-symbol message
+        // fits inside this checkpoint's *real-content* window are subtracted
+        // now — subtracting against the zeroed tail would fit the reference
+        // waveform to silence there — late-`dt` signals are deferred to
+        // checkpoint C, where the raw tail is available.
+        let b_len = B_SAMPLES.min(audio.len());
+        let mut buf_b = vec![0i16; audio.len()];
+        buf_b[..b_len].copy_from_slice(&audio_clean[..b_len]);
+        // Message duration (`params::NZ` samples at 12 kHz) plus the 0.5 s
+        // frame-start offset must fit before the checkpoint-B buffer's real
+        // content ends. Mirrors `ft8_decode.f90`'s `xdt_save(i)-0.5 < 0.396`
+        // gate, generalised via the message duration instead of the magic
+        // constant (which is this formula evaluated at FT8's own
+        // NN=79/NSPS=1920 — see `params.rs`).
+        let message_dur_s = params::NZ as f32 / 12_000.0;
+        let dt_fit_limit_b = b_len as f32 / 12_000.0 - message_dur_s - 0.5;
+        // `ft8_decode.f90:132` subtracts these checkpoint-A decodes with
+        // `lrefinedt=.true.` — their `dt` came from an early, still-coarse
+        // pass, not a final decode, so WSJT-X re-searches ±90 samples for
+        // the best-cancelling alignment before subtracting (issue #180).
+        let mut deferred: Vec<DecodeResult> = Vec::new();
+        let mut cut = false;
+        for r in &early_results {
+            if r.dt_sec < dt_fit_limit_b {
+                // Polled per row, like the candidate loop (#587): one
+                // `subtract_signal_lpf_refine_dt` measured 60-150 ms on the
+                // #587 recordings (native and wasm32), and the unpolled loop
+                // kept a 300 ms budget running up to 0.95 s past its first
+                // `false`. A row not subtracted here is not deferred either:
+                // C cannot run once the budget is spent.
+                if !budget.allows(None, None) {
+                    cut = true;
+                    break;
+                }
+                subtract_signal_lpf_refine_dt(&mut buf_b, r);
+                budget.report.rows_subtracted += 1;
+            } else {
+                deferred.push(r.clone());
+            }
+        }
+        // A prefix call cut inside B keeps nothing: a half-cleaned buffer with
+        // the rest neither subtracted nor deferred would cost the final step
+        // those rows' subtraction. The final step does B again in full.
+        if cut && !last {
+            return None;
+        }
+        st.cleaned = Some((buf_b, deferred));
     }
+    if step == StagedStep::B {
+        return None;
+    }
+    let (buf_b, deferred) = st.cleaned.as_ref().expect("B has run");
+    let b_len = B_SAMPLES.min(audio.len());
 
     // ---- Checkpoint C (nzhsym=50): cleaned head (checkpoint B's
     // residual, samples 0..b_len) + fresh raw tail (b_len..c_len),
@@ -1434,7 +1571,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
     buf_c[b_len..c_len].copy_from_slice(&audio_clean[b_len..c_len]);
     // `ft8_decode.f90:158` — same `lrefinedt=.true.` re-search as
     // checkpoint B above, for the late-`dt` decodes deferred to here.
-    for r in &deferred {
+    for r in deferred {
         if !budget.allows(None, None) {
             break;
         }
@@ -1476,7 +1613,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
 
     let mut all_results = early_results;
     all_results.extend(new_results);
-    (all_results, buf_c)
+    Some((all_results, buf_c))
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1849,8 +1986,22 @@ impl SupportsSicEarly for Ft8 {
         // which is exactly that hazard: it ran *after*
         // `decode_frame_subtract_staged_with_ap_inner` had already
         // fired `on_result` for every checkpoint's raw candidates.
+        req.decode_staged(&mut Staged::default(), StagedStep::Final)
+    }
+}
+
+impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
+    /// `SicEarly` as far as `step`, over `st` (#572). The final step is
+    /// [`SupportsSicEarly::__staged_sic`] continuing from whatever `st`
+    /// already holds, with the a7 / a8 list decoders after it, as
+    /// `ft8_decode.f90` runs them at `nzhsym == 50` only. An earlier step
+    /// returns the rows it found (checkpoint A's, delivered through
+    /// `on_result` as they are found) or none (B searches nothing).
+    pub(crate) fn decode_staged(&self, st: &mut Staged, step: StagedStep) -> DecodeOutcome<Ft8> {
+        let req = self;
+        let had_early = st.has_early();
         let mut budget = BudgetState::new(req.budget);
-        let (results, residual) = decode_frame_subtract_staged_with_ap_inner(
+        let done = staged_steps(
             req.audio,
             req.freq_min,
             req.freq_max,
@@ -1870,7 +2021,21 @@ impl SupportsSicEarly for Ft8 {
             &req.policy,
             base_pass_of(req),
             req.eme_delay,
+            st,
+            step,
         );
+        let Some((results, residual)) = done else {
+            let results = if had_early {
+                Vec::new()
+            } else {
+                st.early().to_vec()
+            };
+            return DecodeOutcome {
+                results,
+                fft_cache: FftCache(Vec::new()),
+                budget: budget.report,
+            };
+        };
         let fft_cache = FftCache(build_fft_cache(&residual));
         // On the residual, as `ft8_decode.f90` runs a7/a8 on `dd` after the
         // passes' subtractions.

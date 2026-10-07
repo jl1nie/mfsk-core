@@ -84,8 +84,21 @@ data class MfskDecode(
     /// the position of the delivery it was, so the two pair exactly. Null for a
     /// returned row the listener never saw, and with no listener.
     val delivery: Int? = null,
+    /// When a [MfskDecoder.decodePrefix] sequence found the row; null from a
+    /// plain [MfskDecoder.decode].
+    val stage: MfskStage? = null,
 ) {
     val modeName: String get() = Mfsk.modeName(mode)
+}
+
+/// When in a period a [MfskDecoder.decodePrefix] sequence found a row
+/// (`MFSK_STAGE_*`, #572).
+enum class MfskStage {
+    /// Before the period ended — FT8's checkpoint A, ~11.8 s in — in time to
+    /// answer the station in the next period.
+    EARLY,
+    /// By the call whose audio was the whole period.
+    FINAL,
 }
 
 /// Rows delivered as they are found, for a host that wants to show
@@ -922,6 +935,12 @@ class MfskDecoder private constructor(
         ): Long
         @JvmStatic private external fun nativeLastBudget(handle: Long): IntArray
         @JvmStatic private external fun nativeDeliveryIsExact(handle: Long): Boolean
+        @JvmStatic private external fun nativeDecodePrefixI16(
+            handle: Long, samples: ShortArray, sampleRate: Int, period: Long,
+        ): Array<MfskDecode>
+        @JvmStatic private external fun nativeDecodePrefixF32(
+            handle: Long, samples: FloatArray, sampleRate: Int, period: Long,
+        ): Array<MfskDecode>
         @JvmStatic private external fun nativeDecodeI16(
             handle: Long, samples: ShortArray, sampleRate: Int, period: Long,
         ): Array<MfskDecode>
@@ -1014,6 +1033,35 @@ class MfskDecoder private constructor(
         onRow: MfskDecodeListener? = null,
     ): List<MfskDecode> = withRowListener(onRow) {
         nativeDecodeF32(owner("decode"), samples, sampleRate, period ?: PERIOD_NONE).toList()
+    }
+
+    /// Decode the period so far, keeping what this period has already found
+    /// (#572). Call it as audio arrives with **every sample of the period
+    /// received up to now** and the period's index; the decoder infers the
+    /// stage from the length. FT8 returns checkpoint A's rows at 141 696
+    /// samples (~11.8 s, [MfskStage.EARLY]), nothing at 162 432, and the
+    /// period's complete set at 180 000 — the rows [decode] gives for the same
+    /// audio. Other calls, and every call of a mode with no early decode before
+    /// the whole period, return nothing. [onDecode] sees each row once across
+    /// the period. A null period makes it a plain [decode].
+    fun decodePrefix(
+        samples: ShortArray,
+        period: Long?,
+        sampleRate: Int = 12_000,
+        onRow: MfskDecodeListener? = null,
+    ): List<MfskDecode> = withRowListener(onRow) {
+        nativeDecodePrefixI16(owner("decodePrefix"), samples, sampleRate, period ?: PERIOD_NONE).toList()
+    }
+
+    /// [decodePrefix] for float PCM at any level; the first prefix of a period
+    /// sets the gain for the rest of it.
+    fun decodePrefix(
+        samples: FloatArray,
+        period: Long?,
+        sampleRate: Int = 12_000,
+        onRow: MfskDecodeListener? = null,
+    ): List<MfskDecode> = withRowListener(onRow) {
+        nativeDecodePrefixF32(owner("decodePrefix"), samples, sampleRate, period ?: PERIOD_NONE).toList()
     }
 
     private inline fun <T> withRowListener(l: MfskDecodeListener?, body: () -> T): T {

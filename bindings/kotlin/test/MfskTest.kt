@@ -244,6 +244,23 @@ fun main() {
         w.setBudget(null) // removing one is always fine
         check("WSPR delivers in completion order", !w.deliveryIsExact)
     }
+    // decodePrefix (#572): checkpoint A's row comes back early, B returns
+    // nothing, the whole period returns what decode does, delivered once.
+    MfskDecoder.open(ft8).use { dec ->
+        val whole = MfskDecoder.open(ft8).use { it.decode(slot, period = 7L) }
+        val seen = java.util.Collections.synchronizedList(mutableListOf<MfskDecode>())
+        dec.onDecode { seen.add(it) }
+        val a = dec.decodePrefix(slot.copyOf(141_696), 7L)
+        check("checkpoint A returns the station early",
+              a.size == 1 && a[0].stage == MfskStage.EARLY)
+        check("checkpoint B returns nothing", dec.decodePrefix(slot.copyOf(162_432), 7L).isEmpty())
+        val end = dec.decodePrefix(slot, 7L)
+        check("the whole period gives decode's rows",
+              end.map { it.text } == whole.map { it.text } && end.all { it.stage != null })
+        checkEq("each row delivered once across the period", seen.size, end.size)
+        checkEq("a plain decode has no stage", whole.firstOrNull()?.stage, null)
+        dec.onDecode(null)
+    }
     // FT8's default subtracts the checkpoint-A row at B, and says so.
     MfskDecoder.open(ft8).use { dec ->
         dec.setBudget { true }

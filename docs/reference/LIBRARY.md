@@ -495,6 +495,7 @@ result).
 | `extras()` / `extras_mut()` / `with_extras(e)` | the mode's library options ([§2.5](#25-extras-and-the-protocols-outside-decoder)) |
 | `decode(&SlotInput)` | decode one period → `SlotResult<P::Row>` |
 | `decode_with(&SlotInput, on_row)` | the same, handing each row to `on_row` as it is found ([§2.4](#24-streaming-delivery)) |
+| `decode_prefix(&SlotInput)`, `decode_prefix_with(&SlotInput, on_row)` | the period so far, with its `period`: FT8's checkpoint A returns rows at ~11.8 s, the whole period returns the complete set ([§2.3](#23-early-decode-and-the-compute-budget)) |
 | `unpack77(&[u8])` | a packed 77-bit message as text, `<...>` resolved against **this** decoder's table |
 | `learn_callsign(&str)` | teach this decoder's table a callsign (`save_hash_call`); `false` for a mode with no hashed calls |
 | `clear()` | forget everything carried across periods (WSJT-X's "Clear Avg" and `ndepth & 128`) |
@@ -511,10 +512,9 @@ its nominal start:
 | `.period(n)` | the period's index on the UTC grid (`t / T`). State that needs consecutive periods (FT8 a7, Q65 averaging) is used only when it is known; without it a lone recording leaves that state untouched |
 | `.budget(check)` | a deadline predicate, [§2.3](#23-early-decode-and-the-compute-budget) |
 
-There is **no prefix entry point**: a `SlotInput` is the whole period.
-FT8's early decode (WSJT-X's nzhsym 41/47/50) runs *inside* that one call,
-and a prefix API is designed but not implemented; both are
-[§2.3](#23-early-decode-and-the-compute-budget).
+For `decode`, a `SlotInput` is the whole period. `decode_prefix` takes the
+period so far instead, for FT8's early decode (WSJT-X's nzhsym 41/47/50,
+[§2.3](#23-early-decode-and-the-compute-budget)).
 
 A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found, and
 `budget: BudgetReport`. A `Row<R>` carries three views of one decode:
@@ -522,7 +522,7 @@ A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found, and
 | field | what |
 |---|---|
 | `decoded: Decoded` | the cross-mode row: `text` (resolved against the decoder's hash table), `freq_hz`, `dt_sec`, `snr_db`, `protocol` |
-| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `pass`, `info` (the message bits, every mode), `hash_resolved` (the text needed the table for a `<...>`), `delivery` (which `decode_with` delivery the row is, or was: [§2.4](#24-streaming-delivery)), `copied_last_tx` (Q65 Pileup). The three numbers are `Option`s, `None` where the mode measures none: WSPR, JT9, JT65 and Q65, and for the sync pair FT8's a7 / a8 list decodes. `sync_score` is on the mode's own search scale, not comparable between modes |
+| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `pass`, `info` (the message bits, every mode), `hash_resolved` (the text needed the table for a `<...>`), `delivery` (which `decode_with` delivery the row is, or was: [§2.4](#24-streaming-delivery)), `stage` (`Early` / `Final` from a `decode_prefix` sequence, else `None`), `copied_last_tx` (Q65 Pileup). The three numbers are `Option`s, `None` where the mode measures none: WSPR, JT9, JT65 and Q65, and for the sync pair FT8's a7 / a8 list decodes. `sync_score` is on the mode's own search scale, not comparable between modes |
 | `native: R` | the mode's own result: `DecodeResult` (FT8, FT4, FST4), `WsprResult`, `Jt9Result`, `Jt65Result`, `Q65Result` |
 
 **What a decoder keeps across periods** is what its upstream decoder keeps,
@@ -689,13 +689,16 @@ on growing prefixes of the period, and the second by bailing out on its own
 wall clock. mfsk-core keeps the first as upstream's algorithm and changes
 the second's mechanism, and both follow from two rules of this API:
 
-- **A `SlotInput` is the whole period.** The decoder sees audio once, so
-  everything a period needs between its stages is local to that call.
-- **The library reads no clock.** A deadline is the caller's predicate.
-  The same code runs on a desktop, in wasm and on an MCU, with three
-  different clocks, and a process can be suspended mid-slot.
+- **What a period needs between its stages lives in the `Decoder`**, where
+  `ft8_decode.f90` keeps its SAVE variables and where 0.13 already keeps
+  everything held across periods. The caller hands audio; it does not carry
+  the decoder's progress.
+- **The library reads no clock.** Time is the sample count, and a deadline
+  is the caller's predicate. The same code runs on a desktop, in wasm and on
+  an MCU, with three different clocks, and a process can be suspended
+  mid-slot.
 
-#### Early decode: upstream's three checkpoints, inside one call
+#### Early decode: upstream's three checkpoints
 
 `ft8_decode.f90` (v3.2.0-rc1) runs at three sample counts. The unit is
 3456 samples, `jt9`'s streaming block (JT9's half-symbol), not an FT8
@@ -707,8 +710,7 @@ symbol, which is why the counts look arbitrary:
 | B | 47 | 162 432 | 13.5 s | **no search**: subtract the A rows whose frame fits inside the prefix |
 | C | 50 | 172 800 | 14.4 s | B's cleaned head + fresh raw tail; subtract the A rows deferred from B; three passes with AP; a7 and a8 |
 
-`Ft8Strategy::SicEarly` is that algorithm, run over a period already in
-hand. It is the strategy `Depth::Normal` and `Deep` select; `Fast` runs two
+`Ft8Strategy::SicEarly` is that algorithm. It is the strategy `Depth::Normal` and `Deep` select; `Fast` runs two
 flat SIC rounds instead, as `ndepth == 1` runs nothing before 50. What is
 kept on purpose:
 
@@ -729,28 +731,77 @@ kept on purpose:
   `ndec_early >= 1`). A flat pass over the whole buffer finds as much or
   more, never less.
 
-**What a caller gets from it today is order, not time.** Under
-`decode_with`, A's rows reach the callback first, before B and C have
-run, but the call itself starts only once the period is complete. It
-makes a busy period's rows appear sooner after the period ends; it does
-not put a row on screen at 11.8 s into it.
+**Two ways to run it.** `decode` / `decode_with` take the whole period
+and run A, B and C in one call: under `decode_with` A's rows reach the
+callback first, but only once the period has ended. **`decode_prefix` /
+`decode_prefix_with` run each checkpoint when its audio has arrived**
+([#572](https://github.com/jl1nie/mfsk-core/issues/572)), so A's rows reach
+a live caller at about 11.8 s, in time to answer in the next period:
 
-**Rows at 11.8 s need a prefix entry point, which is designed and not
-implemented** ([#572](https://github.com/jl1nie/mfsk-core/issues/572),
-[`EARLY_DECODE_DESIGN.md`](../notes/EARLY_DECODE_DESIGN.md)). Its shape
-follows from where `SicEarly`'s state lives: A's rows, B's cleaned buffer
-and the deferred list are locals today, and a prefix call has to keep them
-in the `Decoder` between calls, where 0.13 already keeps everything held
-across periods. The design is one method pair, `decode_prefix` /
-`decode_prefix_with`, called with everything of the period received so far;
-**the decoder infers the stage from the audio length and its own state**, so
-the caller tracks nothing, a call between checkpoints returns at once, a
-skipped middle call is not a special case, and a mode with no early decode
-simply acts at the full length. The only new type is an output,
-`RowDetail::stage`, telling a caller that a row came early enough to answer
-in this period. Until it lands, the boards keep their own prefix path on
-the low-level items; they are out of the design's scope for good, not
-deferred.
+```rust
+use mfsk_core::decoder::{Decoder, SlotInput, Stage};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::with_defaults();
+let period = vec![0i16; 180_000]; // one period, arriving in blocks
+let mut buf: Vec<i16> = Vec::new();
+for block in period.chunks(4_800) {
+    buf.extend_from_slice(block);
+    let out = rx.decode_prefix_with(&SlotInput::i16(&buf).period(42), &|row| {
+        if row.detail.stage == Some(Stage::Early) {
+            // early enough to reply to this station in the next period
+        }
+    });
+    if buf.len() == 180_000 {
+        println!("{} rows in the period", out.rows.len()); // the complete set
+    }
+}
+```
+
+What the design settles, and why:
+
+- **The decoder infers the stage; the caller passes everything received so
+  far, with the period.** Every shape that had the caller name the stage
+  also had it keep a copy of the decoder's progress. FT8 acts at 141 696
+  samples (A: its rows return, marked `Stage::Early`), at 162 432 (B: the A
+  rows that fit are subtracted; nothing returns) and at the whole period,
+  180 000 samples (the rest, then a7 and a8, which upstream runs at
+  `nzhsym == 50` only). A call between those returns at once. A shorter
+  prefix is not a cheaper call (the spectrogram and the slot FFT are fixed
+  size), so what a caller chooses is *when* it can call.
+- **Every sequence is defined, and ends where `decode` ends.** Calls may be
+  skipped or repeated; the final call's rows are the period's complete set,
+  the same rows, in the same order, as a whole-period `decode` of the same
+  16-bit audio (`tests/decoder_prefix.rs`, under `fixed-point` too). A
+  skipped B is done by the final call, exactly as `decode` does it. A call
+  for the same period after the final one returns the set again without
+  decoding; a call for another period discards what the last one held.
+- **A row is delivered once across the period.** `RowDetail::delivery`
+  counts across the period's calls, so the final set pairs with rows an
+  earlier call streamed, and its A rows keep `Stage::Early`. Rows are
+  resolved against the callsign table as the period found it; the final
+  call resolves the whole set in decode order, as `decode` does.
+- **What the period's first call sees is pinned for the period**: the
+  strategy and search, and the gain of `f32` audio (its RMS changes from one
+  prefix to the next). So `f32` input finds the same messages as `i16`, but
+  is not byte-equal to a whole-period decode, whose gain sees the whole
+  period.
+- **No period, no state.** Without `SlotInput::period` a prefix call is a
+  one-shot `decode` of what it is given. A period that never reaches its
+  final call leaves no a7 state.
+- **A mode with no early decode needs no capability check.** It returns
+  nothing until the audio is the whole period, then decodes. That covers
+  FT8 at `Depth::Fast`, its single pass and its sniper, as `ndepth == 1`
+  runs nothing before 50 upstream.
+
+`decode_prefix` is synchronous and CPU-bound, like `decode`: it holds the
+calling thread for the stage's work, so capture should not share that
+thread, and `SlotInput::budget` bounds it. The C ABI has the same pair
+(`mfsk_decoder_decode_prefix_i16` / `_f32`, [`BINDINGS.md`](BINDINGS.md)
+§2.2), and the Kotlin and Swift decoders `decodePrefix`. `IqReceiver` still
+hands over whole slots only. The boards keep their own prefix path on the
+low-level items, by decision. Design and measurements:
+[`EARLY_DECODE_DESIGN.md`](../notes/EARLY_DECODE_DESIGN.md).
 
 **FT4 has no `SicEarly`, and it is not missing.** Half the period suggests
 less time to decide a reply, but the slack between the end of the signal

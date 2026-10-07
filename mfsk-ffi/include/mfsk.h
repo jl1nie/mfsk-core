@@ -127,6 +127,24 @@
 #define MFSK_DECODE_FLAG_HAS_HARD_ERRORS (1 << 4)
 
 /**
+ * `MfskDecode::stage`: not from a `mfsk_decoder_decode_prefix_*` sequence.
+ * A literal here for the same cbindgen reason as the constants above.
+ */
+#define MFSK_STAGE_NONE 0
+
+/**
+ * `MfskDecode::stage`: found by a prefix call made before the period ended
+ * (FT8's checkpoint A, ~11.8 s in), in time to answer in the next period.
+ */
+#define MFSK_STAGE_EARLY 1
+
+/**
+ * `MfskDecode::stage`: found by the prefix call whose audio was the whole
+ * period.
+ */
+#define MFSK_STAGE_FINAL 2
+
+/**
  * The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
  * QSO-context AP of the parameter block, a7 and the sniper window apply.
  * Modes without this bit (WSPR, JT9, JT65, Q65) decode through the same
@@ -922,6 +940,14 @@ typedef struct MfskDecode {
      * call with no callback).
      */
     int32_t delivery;
+    /**
+     * When a `mfsk_decoder_decode_prefix_*` sequence found the row
+     * (`RowDetail::stage`, #572): [`MFSK_STAGE_EARLY`] for a call made
+     * before the period ended (FT8's checkpoint A, ~11.8 s in),
+     * [`MFSK_STAGE_FINAL`] for the call whose audio was the whole period,
+     * [`MFSK_STAGE_NONE`] from a plain decode. Appended.
+     */
+    uint8_t stage;
 } MfskDecode;
 
 /**
@@ -2764,6 +2790,38 @@ enum MfskStatus mfsk_decoder_decode_i16(struct MfskDecoder *dec,
                                         uintptr_t *out_len);
 
 /**
+ * Decode the period so far, keeping what this period has already found
+ * (#572): call it as audio arrives, with **every sample of the period
+ * received up to now**, and `period` set. The decoder infers the stage from
+ * how much audio it is given. FT8 acts at 141 696 samples (checkpoint A,
+ * `nzhsym` 41, ~11.8 s: its rows come back with
+ * `MfskDecode::stage == MFSK_STAGE_EARLY`), at 162 432 (subtraction only;
+ * no rows) and at the whole period, 180 000 samples, whose call returns the
+ * period's complete set, the rows `mfsk_decoder_decode_i16` returns for the
+ * same audio. Any other call returns no rows, as does every call of a mode
+ * with no early decode until the whole period. A call for the same period
+ * after the whole one returns the complete set again without decoding; a
+ * call for another period starts afresh. With `MFSK_PERIOD_NONE` it is
+ * `mfsk_decoder_decode_i16`. The callback set with
+ * `mfsk_decoder_set_on_decode` sees each row once across the period's
+ * calls, and `delivery` counts across them. At a rate other than 12 kHz each
+ * prefix is resampled on its own, so the result is close to, not
+ * byte-equal to, the whole-period decode.
+ *
+ * # Safety
+ * As [`mfsk_decoder_decode_i16`].
+ */
+MFSK_API
+enum MfskStatus mfsk_decoder_decode_prefix_i16(struct MfskDecoder *dec,
+                                               const int16_t *samples,
+                                               uintptr_t n_samples,
+                                               uint32_t sample_rate,
+                                               int64_t period,
+                                               struct MfskDecode *out,
+                                               uintptr_t out_cap,
+                                               uintptr_t *out_len);
+
+/**
  * Decode one period of 32-bit float PCM, any level. At 12 kHz the float
  * goes to the decoder as it is: the modes whose engines work in `float`
  * (WSPR, JT9, JT65, Q65) never see 16 bits, and FT8, FT4 and FST4, which
@@ -2783,6 +2841,23 @@ enum MfskStatus mfsk_decoder_decode_f32(struct MfskDecoder *dec,
                                         struct MfskDecode *out,
                                         uintptr_t out_cap,
                                         uintptr_t *out_len);
+
+/**
+ * [`mfsk_decoder_decode_prefix_i16`] for `float` audio. The level of the
+ * period's first prefix sets the gain for the rest of its calls.
+ *
+ * # Safety
+ * As [`mfsk_decoder_decode_f32`].
+ */
+MFSK_API
+enum MfskStatus mfsk_decoder_decode_prefix_f32(struct MfskDecoder *dec,
+                                               const float *samples,
+                                               uintptr_t n_samples,
+                                               uint32_t sample_rate,
+                                               int64_t period,
+                                               struct MfskDecode *out,
+                                               uintptr_t out_cap,
+                                               uintptr_t *out_len);
 
 /**
  * FEC information bits for the `index`-th row of the last decode. The raw
