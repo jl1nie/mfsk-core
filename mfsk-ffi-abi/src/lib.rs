@@ -623,6 +623,11 @@ pub struct MfskIqDecode {
     /// As `MfskDecode::key`: the message bits, packed. Compare rows by this,
     /// with the frequency, not by text.
     pub key: [u8; MFSK_DECODE_KEY_LEN],
+    /// As `MfskDecode::stage`: [`MFSK_STAGE_EARLY`] for a row found before
+    /// the slot was whole (FT8's checkpoint A, ~11.8 s; the receiver decodes
+    /// early unless `mfsk_iq_set_early` turned it off for the channel),
+    /// [`MFSK_STAGE_FINAL`] for one found by the whole slot. Appended (#601).
+    pub stage: u8,
 }
 
 /// The wideband IQ receiver handle.

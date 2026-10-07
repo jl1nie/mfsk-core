@@ -70,8 +70,26 @@ public final class CaptureStream {
     /// as `atSample` to ``setTime(utcNanoseconds:atSample:)``.
     public var position: UInt64 { mfsk_stream_position(handle) }
 
-    /// Whether a completed slot is waiting.
+    /// Whether a slot is waiting: a completed one, or with
+    /// ``setPrefixPoints(_:)`` the slot so far.
     public var isSlotReady: Bool { mfsk_stream_slot_ready(handle) }
+
+    /// Whether the waiting slot is whole rather than a prefix; false when
+    /// none is waiting.
+    public var isSlotWhole: Bool { mfsk_stream_slot_is_whole(handle) }
+
+    /// Early decode (#601), off by default: from the next slot, the stream
+    /// also makes the slot so far ready at each of these 12 kHz sample
+    /// counts, then the whole slot. Pass ``Decoder/prefixPoints`` and decode
+    /// every slot with the decoder's stream decode. An empty array turns it
+    /// off. Opt-in because a ``takeSlot()`` caller would otherwise get short
+    /// slots.
+    public func setPrefixPoints(_ points: [Int]) throws {
+        let pts = points.map { UInt(max(0, $0)) }
+        try pts.withUnsafeBufferPointer { buffer in
+            try check(mfsk_stream_set_prefix_points(handle, buffer.baseAddress, UInt(buffer.count)))
+        }
+    }
 
     /// Completed slots a newer one replaced before they were taken.
     public var droppedSlots: UInt64 { mfsk_stream_dropped(handle) }

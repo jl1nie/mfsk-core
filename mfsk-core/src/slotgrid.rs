@@ -245,9 +245,7 @@ impl<T: Copy> SlotCutter<T> {
     /// [`Self::feed_parts`], from the next slot that opens (an open slot keeps
     /// the points it opened with). Sorted and de-duplicated here; a length of
     /// 0, or of a whole slot or more, is not a prefix and is dropped.
-    // Only `iq::receiver` sets points, and it needs an FFT backend.
-    #[allow(dead_code)]
-    pub(crate) fn set_points(&mut self, points: &[usize]) {
+    pub fn set_points(&mut self, points: &[usize]) {
         let mut p: alloc::vec::Vec<usize> = points
             .iter()
             .copied()
@@ -259,8 +257,7 @@ impl<T: Copy> SlotCutter<T> {
     }
 
     /// Whether [`Self::set_points`] left any.
-    #[allow(dead_code)]
-    pub(crate) fn has_points(&self) -> bool {
+    pub fn has_points(&self) -> bool {
         !self.points.is_empty()
     }
 
@@ -300,8 +297,10 @@ impl<T: Copy> SlotCutter<T> {
     /// [`Self::feed`], also calling `prefix(index, start_sample, samples)`
     /// when an open slot reaches one of its points ([`Self::set_points`]),
     /// with exactly that many samples, however the feed is split. A slot's
-    /// prefixes come before its `done`, in order.
-    pub(crate) fn feed_parts(
+    /// prefixes come before its `done`, in order. For early decode
+    /// (`Decoder::decode_prefix`): the C ABI's audio stream cuts with it, as
+    /// `IqReceiver` does (`docs/notes/IQ_PREFIX_DESIGN.md`).
+    pub fn feed_parts(
         &mut self,
         anchor_ns: Option<i64>,
         audio: &[T],

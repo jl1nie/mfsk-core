@@ -800,7 +800,9 @@ thread, and `SlotInput::budget` bounds it. The C ABI has the same pair
 (`mfsk_decoder_decode_prefix_i16` / `_f32`, [`BINDINGS.md`](BINDINGS.md)
 §2.2), and the Kotlin and Swift decoders `decodePrefix`. `IqReceiver`
 delivers the prefixes when a channel asks for them (§2.7, *Early decode over
-IQ*). The boards keep their own prefix path on the
+IQ*), and the C ABI's push handles decode early too: `mfsk_iq_push` by
+default, `mfsk_stream_*` when given the decoder's points (`BINDINGS.md` §2.5,
+§2.8.2). The boards keep their own prefix path on the
 low-level items, by decision. Design and measurements:
 [`EARLY_DECODE_DESIGN.md`](../notes/EARLY_DECODE_DESIGN.md).
 

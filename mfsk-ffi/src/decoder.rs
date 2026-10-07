@@ -169,8 +169,16 @@ pub(crate) struct FfiDecoder {
 
 impl FfiDecoder {
     /// Decode one slot of 12 kHz audio at `period`, rows left on the handle.
-    pub(crate) fn decode_slot(&mut self, audio: &[f32], period: i64) {
-        let _ = run(self, Audio::F32(audio), period, false);
+    /// Decode one slot of 12 kHz audio at `period`, rows left on the handle;
+    /// with `prefix`, as one call of the period's `decode_prefix` sequence
+    /// (the slot so far, or the whole slot after its prefixes).
+    pub(crate) fn decode_slot(&mut self, audio: &[f32], period: i64, prefix: bool) {
+        let _ = run(self, Audio::F32(audio), period, prefix);
+    }
+
+    /// `AnyDecoder::prefix_points` under the handle's current settings.
+    pub(crate) fn prefix_points(&self) -> &'static [usize] {
+        self.any.prefix_points()
     }
 
     pub(crate) fn rows(&self) -> impl Iterator<Item = (&Decoded, &RowDetail)> {
@@ -1478,6 +1486,13 @@ pub unsafe extern "C" fn mfsk_decoder_copy_info(
 /// ready yet, so a caller can poll this instead of
 /// [`mfsk_stream_slot_ready`].
 ///
+/// On a stream with prefix points (`mfsk_stream_set_prefix_points`) a ready
+/// prefix is decoded as `mfsk_decoder_decode_prefix_i16` would, and so is the
+/// whole slot of a period whose prefixes this call decoded: checkpoint A's
+/// rows come back (and reach the `mfsk_decoder_set_on_decode` callback) at
+/// ~11.8 s with `stage == MFSK_STAGE_EARLY`, and the whole slot's call
+/// returns the period's complete set.
+///
 /// # Safety
 /// As [`mfsk_decoder_decode_i16`], plus `stream` must be a live stream
 /// opened for the same mode as `dec`; `out_period` and `out_slot_start_utc_ns`
@@ -1512,19 +1527,57 @@ pub unsafe extern "C" fn mfsk_decoder_decode_stream(
         unsafe { *out_len = 0 };
     }
     let Some(slot) = st.ready.take() else {
-        set_error("mfsk_decoder_decode_stream: no whole slot ready yet");
+        set_error("mfsk_decoder_decode_stream: no slot ready yet");
         return MfskStatus::Unsupported;
     };
+    let prefix = !slot.whole || st.decoding == Some(slot.period);
+    st.decoding = (!slot.whole).then_some(slot.period);
     if !out_period.is_null() {
         unsafe { *out_period = slot.period };
     }
     if !out_slot_start_utc_ns.is_null() {
         unsafe { *out_slot_start_utc_ns = slot.utc_ns.unwrap_or(0) };
     }
-    if let Err(e) = in_pool_mut(|| run(d, Audio::I16(&slot.audio), slot.period, false)) {
+    if let Err(e) = in_pool_mut(|| run(d, Audio::I16(&slot.audio), slot.period, prefix)) {
         return d.fail(MfskStatus::InvalidArg, e);
     }
     unsafe { emit(d, out, out_cap, out_len) }
+}
+
+/// The prefix lengths, in 12 kHz samples, at which a `decode_prefix` call
+/// does work before the whole period, under the decoder's current settings
+/// (#601): `141696, 162432` for FT8 at Normal or Deep depth (its `SicEarly`
+/// strategy), none for every other mode and setting. Hand them to
+/// `mfsk_stream_set_prefix_points`; ask again after changing the params or
+/// extras. `*out_len` receives the count; `MFSK_STATUS_INVALID_ARG` when it
+/// is more than `cap`.
+///
+/// # Safety
+/// `out` must be `cap` writable `size_t` (or null when `cap` is 0);
+/// `out_len` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decoder_prefix_points(
+    dec: *const MfskDecoder,
+    out: *mut usize,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    let Some(d) = handle_ref(dec) else {
+        set_error("mfsk_decoder_prefix_points: null decoder handle");
+        return MfskStatus::NullPointer;
+    };
+    let pts = d.prefix_points();
+    if !out_len.is_null() {
+        unsafe { *out_len = pts.len() };
+    }
+    if pts.len() > cap || (out.is_null() && !pts.is_empty()) {
+        set_error("mfsk_decoder_prefix_points: buffer too small; *out_len is the count");
+        return MfskStatus::InvalidArg;
+    }
+    if !pts.is_empty() {
+        unsafe { ptr::copy_nonoverlapping(pts.as_ptr(), out, pts.len()) };
+    }
+    MfskStatus::Ok
 }
 
 /// As [`mfsk_unpack77`], resolving `<...>` callsigns against the decoder's

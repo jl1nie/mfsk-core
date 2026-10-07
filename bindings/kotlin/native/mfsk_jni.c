@@ -814,6 +814,25 @@ Java_io_github_mfskcore_MfskDecoder_nativeDeliveryIsExact(
 }
 
 JNIEXPORT jintArray JNICALL
+Java_io_github_mfskcore_MfskDecoder_nativePrefixPoints(
+        JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    const MfskDecoder* d = (const MfskDecoder*)(intptr_t)handle;
+    size_t pts[16];
+    size_t n = 0;
+    const MfskStatus st = mfsk_decoder_prefix_points(d, pts, 16, &n);
+    if (st != MFSK_STATUS_OK) {
+        throw_last(env, st, "prefix_points failed");
+        return NULL;
+    }
+    jint v[16];
+    for (size_t i = 0; i < n; ++i) v[i] = (jint)pts[i];
+    jintArray out = (*env)->NewIntArray(env, (jsize)n);
+    if (out != NULL && n > 0) (*env)->SetIntArrayRegion(env, out, 0, (jsize)n, v);
+    return out;
+}
+
+JNIEXPORT jintArray JNICALL
 Java_io_github_mfskcore_MfskDecoder_nativeLastBudget(
         JNIEnv* env, jclass cls, jlong handle) {
     (void)cls;
@@ -1492,6 +1511,38 @@ Java_io_github_mfskcore_MfskStream_nativeSlotReady(JNIEnv* env, jclass cls, jlon
     return mfsk_stream_slot_ready((const MfskStream*)(intptr_t)h) ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_io_github_mfskcore_MfskStream_nativeSlotIsWhole(JNIEnv* env, jclass cls, jlong h) {
+    (void)env; (void)cls;
+    return mfsk_stream_slot_is_whole((const MfskStream*)(intptr_t)h) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskStream_nativeSetPrefixPoints(
+        JNIEnv* env, jclass cls, jlong h, jintArray points) {
+    (void)cls;
+    const jsize n = points == NULL ? 0 : (*env)->GetArrayLength(env, points);
+    size_t buf[16];
+    if (n > 16) {
+        throw_status(env, MFSK_STATUS_INVALID_ARG, "more than 16 prefix points");
+        return;
+    }
+    if (n > 0) {
+        jint v[16];
+        (*env)->GetIntArrayRegion(env, points, 0, n, v);
+        for (jsize i = 0; i < n; ++i) {
+            if (v[i] < 0) {
+                throw_status(env, MFSK_STATUS_INVALID_ARG, "a prefix point is negative");
+                return;
+            }
+            buf[i] = (size_t)v[i];
+        }
+    }
+    const MfskStatus st =
+        mfsk_stream_set_prefix_points((MfskStream*)(intptr_t)h, n > 0 ? buf : NULL, (size_t)n);
+    if (st != MFSK_STATUS_OK) throw_last(env, st, "set_prefix_points failed");
+}
+
 JNIEXPORT jlong JNICALL
 Java_io_github_mfskcore_MfskStream_nativeDropped(JNIEnv* env, jclass cls, jlong h) {
     (void)env; (void)cls;
@@ -1619,6 +1670,15 @@ Java_io_github_mfskcore_MfskIqReceiver_nativeRetune(
 }
 
 JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskIqReceiver_nativeSetEarly(
+        JNIEnv* env, jclass cls, jlong h, jint channel, jboolean on) {
+    (void)cls;
+    const MfskStatus st = mfsk_iq_set_early((MfskIqReceiver*)(intptr_t)h, (uint32_t)channel,
+                                           on == JNI_TRUE);
+    if (st != MFSK_STATUS_OK) throw_last(env, st, "set_early failed");
+}
+
+JNIEXPORT void JNICALL
 Java_io_github_mfskcore_MfskIqReceiver_nativeGap(
         JNIEnv* env, jclass cls, jlong h, jlong lost) {
     (void)cls;
@@ -1663,7 +1723,7 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
     jmethodID ctor = (*env)->GetMethodID(
         env, rowCls, "<init>",
         "(IILjava/lang/String;DFFFJJZJLjava/lang/Float;Ljava/lang/Float;Ljava/lang/Integer;"
-        "IZZLjava/lang/String;ILjava/lang/Integer;)V");
+        "IZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;)V");
     if (ctor == NULL) return NULL;
     const size_t n = mfsk_iq_pending(rx);
     jobjectArray out = (*env)->NewObjectArray(env, (jsize)n, rowCls, NULL);
@@ -1682,6 +1742,7 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
         jobject hard = box_int(env, (r.flags & MFSK_DECODE_FLAG_HAS_HARD_ERRORS) != 0,
                                (int32_t)r.hard_errors);
         jobject delivery = box_int(env, r.delivery >= 0, r.delivery);
+        jobject stage = stage_of(env, r.stage);
         if ((*env)->ExceptionCheck(env)) return NULL;
         jobject obj = (*env)->NewObject(
             env, rowCls, ctor, (jint)r.channel, (jint)r.mode, text, (jdouble)r.abs_freq_hz,
@@ -1690,13 +1751,14 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
             (jlong)r.slot_start_utc_ns, sync, cv, hard, (jint)r.pass,
             (jboolean)((r.flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
             (jboolean)((r.flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0),
-            key, (jint)r.key_bits, delivery);
+            key, (jint)r.key_bits, delivery, stage);
         (*env)->DeleteLocalRef(env, text);
         (*env)->DeleteLocalRef(env, key);
         if (sync) (*env)->DeleteLocalRef(env, sync);
         if (cv) (*env)->DeleteLocalRef(env, cv);
         if (hard) (*env)->DeleteLocalRef(env, hard);
         if (delivery) (*env)->DeleteLocalRef(env, delivery);
+        if (stage) (*env)->DeleteLocalRef(env, stage);
         if (obj == NULL) return NULL;
         (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
         (*env)->DeleteLocalRef(env, obj);

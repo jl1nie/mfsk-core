@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Early rows through the C ABI's push handles, and Kotlin and Swift over them (#601).** `mfsk_iq_push` decodes an FT8
+  channel early by default (its decoder's points, read on every push): checkpoint A's rows reach the channel decoder's
+  callback and `mfsk_iq_poll` at ~11.8 s with `MfskIqDecode::stage` (appended) `MFSK_STAGE_EARLY`, and the whole slot
+  queues the rest without repeating them; `mfsk_iq_set_early(rx, ch, false)` restores whole slots. The stream is opt-in,
+  since a `take_slot_i16` caller would otherwise get short slots: `mfsk_decoder_prefix_points` into
+  `mfsk_stream_set_prefix_points`, then `mfsk_decoder_decode_stream` on each ready slot (`mfsk_stream_slot_is_whole`).
+  `SlotCutter::set_points` / `feed_parts` are public for it. Kotlin (`setEarly`, `prefixPoints`, `setPrefixPoints`,
+  `slotIsWhole`, `stage`) and Swift likewise. `BINDINGS.md` §2.5, §2.8.2 (and `.ja`).
 - **skimmer: FT8 rows from ~11.8 s into the slot, as WSJT-X shows them (#600).** Each channel tells the receiver its
   decoder's `prefix_points()` (again when its options change), and a lane decodes every delivery of a period with
   `decode_prefix_with`: checkpoint A's rows go out at the first prefix, marked early (`DecodeDetail::early`, the GUI's
