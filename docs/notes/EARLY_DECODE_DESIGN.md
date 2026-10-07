@@ -27,8 +27,8 @@ FT8 rows should reach a live caller at about 11.8 s into the period, as WSJT-X d
 | U3 | browser PWA, one worker, cannot block | AudioWorklet blocks | **yes** |
 | U6 | research / validation | a recording, replayed at `jt9`'s counts | **yes** |
 | U8 | a host short on CPU, or a busy band | any | **yes** — `Budget` and the strategy |
-| U4 | skimmer over `IqReceiver` | wideband IQ, N channels | §9: a follow-up |
-| U5 | C / Kotlin / Swift app | `mfsk_stream_push_*` | §9: a follow-up |
+| U4 | skimmer over `IqReceiver` | wideband IQ, N channels | §10: a follow-up |
+| U5 | C / Kotlin / Swift app | `mfsk_stream_push_*` | §10: a follow-up |
 
 ## 1. What upstream does (v3.2.0-rc1, `567ad29ce`)
 
@@ -256,14 +256,16 @@ validation 1's equivalence claim ill-formed.
    behaviour change; validations 1, 5 and 6 prove it. #589's budget polls move with the loops.
 3. `decode_prefix` / `decode_prefix_with` on `Decoder` and `AnyDecoder`, `RowDetail::stage`, and the pins (gain,
    strategy). Validations 2-4, 7-10.
-4. The boards' own prefix path is a separate decision; they have no `Decoder` today.
+4. **The boards are out of scope.** They do not go through `Decoder`, they run `embedded-shared`'s own prefix path,
+   and that path has already diverged from the host's. It is maintained on its own terms; nothing here is meant to
+   reach it, and this design does not count it as a consumer.
 
 ## 8. Open questions
 
 - **`Depth::Fast`.** Upstream runs nothing before 50 at `ndepth==1`, so a prefix call would return nothing. Follow it,
   or run a single pass for a caller that asked for prefixes anyway?
-- **FT4, where the intuition points the wrong way on the host and the right way on a board.** It looks like the
-  tighter case — half the period — and it is not. The deadline is what matters, and it is the same within 0.1 s:
+- **FT4 looks like the tighter case and is not.** Half the period suggests less time to decide a reply; the deadline
+  is what matters, and the two are the same within 0.1 s:
 
   | | signal | period | TX starts | slack to key-up | buffer searched |
   |---|---|---|---|---|---|
@@ -279,11 +281,9 @@ validation 1's equivalence claim ill-formed.
   (`early_results`, `buf_b`, `deferred`); for FT4 it would mean writing the A/B/C algorithm and recording a deliberate
   divergence from WSJT-X, not adding an entry point.
 
-  **On a board it is a different question, and there the consumer is real.** FT4's embedded receiver is already being
-  cut by its budget often enough to be worth showing an operator — `BudgetReport::cut_at_score`'s own doc is named
-  after its `SlotOutcome::cut_at_score`. So prefix decoding would buy something there. But the boards do not go through
-  `Decoder` at all; they run `embedded-shared`'s own prefix path, so that is the §7 step 4 decision and not this API's.
-  Not in this design either way.
+  Not in this design. (The boards' own FT4 receiver does get cut by its budget — `BudgetReport::cut_at_score`'s doc is
+  named after its `SlotOutcome::cut_at_score` — but the boards are out of scope per §7 step 4, so that is not an
+  argument for this API.)
 - **ft8md (#463)** has its own stages. If ported, it should reuse `Stage` rather than add a second vocabulary.
 
 ## 9. Considered and dropped
@@ -310,7 +310,9 @@ validation 1's equivalence claim ill-formed.
 
 ## 10. Follow-ups, deliberately not here
 
-#572 asks how the C ABI and the boards would reach this, as questions. They are answerable once the method pair exists,
-and each is its own issue: driver support in `IqReceiver` (opt-in per channel, owned `Send` prefix copies of ~1.2 MB per
-channel-slot), the C ABI entries and `MfskRow`'s stage field (and Kotlin/Swift over them), and whether the boards'
-`embedded-shared` prefix path moves onto the same method.
+#572 asks how the C ABI would reach this, as a question. It is answerable once the method pair exists, and each half is
+its own issue: driver support in `IqReceiver` (opt-in per channel, owned `Send` prefix copies of ~1.2 MB per
+channel-slot), and the C ABI entries with `MfskRow`'s stage field (and Kotlin/Swift over them).
+
+#572 also asks whether the boards could move onto the same API. The answer is no, and it is settled rather than
+deferred: see §7 step 4.
