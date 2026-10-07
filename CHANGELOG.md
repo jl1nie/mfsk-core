@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **A returned row names the delivery it was, and the C row carries the message key (#592).** `decode_with` handed its callback
+  each row and returned them all again, and a caller had to pair the two by position or by a key it built, with a frequency
+  rounded to the Hz (one message at two frequencies has one key) and no way to see which returned row a streamed one became.
+  `RowDetail::delivery` is the answer: a streamed row carries its position among the period's deliveries, and a returned row the
+  position of the delivery it was (the first with the same bits, frequency and time, compared exactly). No rounding, no key to
+  build; `None` for a row the callback never saw and in a build without `std`. A parallel strategy's repeat is a position no
+  returned row points at. The C row (`MfskDecode`, size-versioned, appended) gains `key_bits` and `key` (the message's 77, 72
+  or 50 bits packed into 10 bytes: the same message in two decoders has one key whatever its text) and `delivery` (-1: none).
+  `STREAMING.md` and `BINDINGS.md` (and the `.ja` twins) say so. The skimmer pairs by `delivery` now, not by position or key.
+- **`RowDetail` says what the mode reports: `sync_score`, `sync_cv` and `hard_errors` are `Option`s, and `Decoded::new` exists (#594).**
+  WSPR, JT9, JT65 and Q65 gave `0.0` / `0` for all three on every row, and FT8's a7 and a8 list decodes a placeholder
+  `0.0` sync score, so a consumer could not tell a measured zero from a number the mode does not have, and the docs did not
+  say which scale `sync_score` is on (FT8's coarse candidate score, FT4's and FST4's refined ones: not comparable). They are
+  now `None` there, `Some` for FT8, FT4 and FST4 searched decodes, and the doc says per mode. **Breaking** for a reader of
+  those fields (`RowDetail` is `#[non_exhaustive]`, so adding the fields later is not). The C row keeps its layout and gains
+  `flags` bits 2-4 (`MFSK_DECODE_FLAG_HAS_SYNC_SCORE`, `_HAS_SYNC_CV`, `_HAS_HARD_ERRORS`), clear where the number is absent;
+  the Kotlin and Swift rows still show plain numbers. `Decoded` had no constructor and, being `#[non_exhaustive]`, could not be
+  built outside the crate, which closed it to a consumer's own tests: `Decoded::new(text, freq_hz, dt_sec, snr_db, protocol)`.
+  The skimmer stores NULL, and shows `-`, where there is none.
+- **skimmer: every slot is decoded, and the next slot does not wait for the last (default time budget off, four decoder threads per channel).**
+  A channel had one decoder thread with a queue of four, so a decode that outlasted its slot held up the next slot, and a long
+  enough one dropped slots. Each channel now has `Config::decode_lanes` threads (`--lanes`, GUI *Decode threads*; 4 by default)
+  and a slot goes to the one with the least waiting, so it starts at once while the last is still being decoded; it is dropped
+  only when every lane's queue is full. The per-slot time budget (`Config::slot_budget`, `--slot-budget`, GUI *Time budget*) is
+  off by default, so every slot is decoded to the end. A lane has its own decoder, so a callsign one lane has learned does not
+  resolve a `<...>` in another (the first lane still carries its decoder across rotation turns); a channel with averaging uses
+  its first lane only, since averaging and FT8's a7 want consecutive periods in one decoder.
 - **`SlotInput::budget` is honoured by every mode (#593).** Through `Decoder<P>` only FT8, FT4 and FST4 polled it; WSPR, JT9,
   JT65 and Q65 ran the whole decode and returned an all-zero `BudgetReport`, which reads as "no budget, or never reached". Each
   now polls it once per candidate before the candidate is tried (WSPR in every pass, and between a candidate's ladder

@@ -313,36 +313,20 @@ enum Job {
     Options(ChannelOptions, Station),
 }
 
-/// Which rows of one slot have been handed on.
+/// Which rows of one slot a parallel strategy has handed on.
 ///
-/// A row is the same row when its identity key (`RowDetail::info`, which
-/// every mode fills since #592) matches **and** it is at the same frequency,
-/// to the Hz: one message at two frequencies is two transmissions, and
-/// `jt65sim`'s own five-signal recording decodes `K1ABC W9XYZ EN37` three
-/// times, at 1100, 1500 and 1900 Hz, with one key. A key on the message alone
-/// would drop two of those three. The bits, not the text, because the text
-/// of a streamed row can differ from the returned one (a `<...>` the period
-/// then resolves).
-///
-/// The cost of the frequency is that a duplicate whose two copies differ by
-/// more than rounding is let through. That is the right way round: a row
-/// shown twice is noise, a row dropped is a lost spot. An empty key (a mode
-/// that gave none) falls back to the text, which no mode in this build needs.
-///
-/// It is only used when `AnyDecoder::delivery_is_exact` is `false`: it is needed
-/// because `decode_with` has two delivery contracts
-/// (`docs/reference/STREAMING.md` §3). A sequential strategy (FT8 and FT4 at
-/// `Depth::Normal`/`Deep`, JT65, JT9, Q65) delivers exactly the rows it
-/// returns. A parallel one (FT4 at `Depth::Fast`, FST4, FT8's sniper, WSPR)
-/// delivers in completion order and may show a transient duplicate that the
-/// returned rows have already removed.
-/// None was seen on any of the repository's recordings (19 recording x depth
-/// configurations, two periods each, over FT8, FT4, FST4-60A, WSPR, JT9, JT65
-/// and Q65; `callbacks == returned` in all, though Q65 gave rows on only two
-/// of its seven files), so this is a guard on a documented contract rather
-/// than a fix for an observed fault. The survey is jl1nie/mfsk-core#592.
+/// `decode_with` has two delivery contracts (`docs/reference/STREAMING.md`
+/// §3). A sequential strategy delivers exactly the rows it returns, once each
+/// (`AnyDecoder::delivery_is_exact`). A parallel one (FT4 at `Depth::Fast`, FST4,
+/// FT8's sniper, WSPR) delivers in completion order and may deliver a row twice,
+/// which the returned rows have already collapsed. This drops the second sight
+/// of a row: the same message bits at the same frequency to the Hz (one message
+/// at two frequencies is two transmissions: `jt65sim`'s five-signal recording
+/// decodes `K1ABC W9XYZ EN37` three times, with one key). The cost of the Hz is
+/// that a repeat whose copies differ by more than rounding gets through, which is
+/// the right way round: a row shown twice is noise, a row dropped is a lost spot.
 #[derive(Default)]
-struct Delivered(std::sync::Mutex<std::collections::HashMap<(bool, Vec<u8>), String>>);
+struct Delivered(std::sync::Mutex<std::collections::HashSet<(bool, Vec<u8>)>>);
 
 impl Delivered {
     /// A row's key: its message bits and frequency to the Hz; with no bits, its text.
@@ -356,26 +340,12 @@ impl Delivered {
         (has_bits, k)
     }
 
-    /// `true` the first time this row is offered; its text is kept for
-    /// [`Self::text_of`].
+    /// `true` the first time this row is offered.
     fn first_time(&self, text: &str, freq_hz: f32, info: &[u8]) -> bool {
-        use std::collections::hash_map::Entry;
-        match self.0.lock().unwrap().entry(Self::key(text, freq_hz, info)) {
-            Entry::Vacant(v) => {
-                v.insert(text.to_string());
-                true
-            }
-            Entry::Occupied(_) => false,
-        }
-    }
-
-    /// The text this row was delivered with, if it was.
-    fn text_of(&self, text: &str, freq_hz: f32, info: &[u8]) -> Option<String> {
         self.0
             .lock()
             .unwrap()
-            .get(&Self::key(text, freq_hz, info))
-            .cloned()
+            .insert(Self::key(text, freq_hz, info))
     }
 }
 
@@ -394,16 +364,11 @@ impl Delivered {
 /// A streamed row is resolved against the callsign hash table as it stood when
 /// the period began (`STREAMING.md` §2): a `<...>` whose call the same period
 /// then teaches the decoder stays `<...>` there, where the returned row has it
-/// resolved. The returned rows are walked afterwards. One that was delivered
-/// with another text is delivered again with `update` set, so a consumer can
-/// replace the row it shows (same `detail.key` and frequency); one the
-/// callback never delivered is delivered as new, so none is lost.
-///
-/// Two ways to pair the returned row with the streamed one, by what the
-/// decoder promises (`AnyDecoder::delivery_is_exact`, #592). Exactly the rows
-/// returned, once each and in order: by position, with nothing to guard
-/// against. Otherwise (parallel strategies: completion order, a row may repeat):
-/// by key and frequency, the first sight of a row winning.
+/// resolved. The returned rows are walked afterwards and paired with what was
+/// streamed by `RowDetail::delivery`, which names the delivery a returned row
+/// was (#592): one whose text differs is delivered again with `update` set, so a
+/// consumer can replace the row it shows; one that was never delivered is
+/// delivered as new, so none is lost.
 ///
 /// Returns what the budget cut, when `slot` carried one.
 fn decode_streaming(
@@ -412,36 +377,28 @@ fn decode_streaming(
     // Spelled out: `spyserver::*` brings a `Sync` of its own into scope.
     emit: &(dyn Fn(&Decoded, &RowDetail, bool) + std::marker::Sync),
 ) -> mfsk_core::decoder::BudgetReport {
-    if decoder.delivery_is_exact() {
-        let streamed = std::sync::Mutex::new(Vec::<String>::new());
-        let out = decoder.decode_with(slot, &|row, detail| {
-            streamed.lock().unwrap().push(row.text.clone());
-            emit(row, detail, false);
-        });
-        let streamed = streamed.into_inner().unwrap();
-        for (i, (row, detail)) in out.rows.iter().zip(&out.details).enumerate() {
-            match streamed.get(i) {
-                Some(t) if *t == row.text => {}
-                Some(_) => emit(row, detail, true),
-                None => emit(row, detail, false),
-            }
-        }
-        return out.budget;
-    }
-    let delivered = Delivered::default();
+    // Only a parallel strategy can repeat a row.
+    let guard = (!decoder.delivery_is_exact()).then(Delivered::default);
+    // The text each delivery went out with, by its position.
+    let sent = std::sync::Mutex::new(std::collections::HashMap::<u32, String>::new());
     let out = decoder.decode_with(slot, &|row, detail| {
-        if delivered.first_time(&row.text, row.freq_hz, &detail.info) {
-            emit(row, detail, false);
+        if let Some(g) = &guard
+            && !g.first_time(&row.text, row.freq_hz, &detail.info)
+        {
+            return;
         }
+        if let Some(i) = detail.delivery {
+            sent.lock().unwrap().insert(i, row.text.clone());
+        }
+        emit(row, detail, false);
     });
+    let sent = sent.into_inner().unwrap();
     for (row, detail) in out.rows.iter().zip(&out.details) {
-        match delivered.text_of(&row.text, row.freq_hz, &detail.info) {
-            Some(t) if t == row.text => {}
+        match detail.delivery.and_then(|i| sent.get(&i)) {
+            Some(t) if *t == row.text => {}
             Some(_) => emit(row, detail, true),
-            None => {
-                delivered.first_time(&row.text, row.freq_hz, &detail.info);
-                emit(row, detail, false);
-            }
+            // Never delivered (or its delivery was the repeat the guard dropped).
+            None => emit(row, detail, false),
         }
     }
     out.budget
@@ -465,7 +422,8 @@ impl Worker {
         channel: usize,
         dial_hz: f64,
         mut decoder: AnyDecoder,
-        keep: (BankKey, std::sync::Arc<LiveOptions>),
+        keep: Option<(BankKey, std::sync::Arc<LiveOptions>)>,
+        pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         results: std::sync::mpsc::Sender<Decode>,
         busy: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -511,12 +469,14 @@ impl Worker {
                         cut_slots.fetch_add(1, Ordering::Relaxed);
                     }
                     longest_us.fetch_max(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    pending.fetch_sub(1, Ordering::Relaxed);
                     busy.fetch_sub(1, Ordering::Relaxed);
                 }
-                // Out of slots: the band is left for now. The decoder (its
-                // callsign table) waits for the band's next turn.
-                let (key, live) = keep;
-                live.bank.lock().unwrap().decoders.insert(key, decoder);
+                // Out of slots: the band is left for now. The first lane's
+                // decoder (its callsign table) waits for the band's next turn.
+                if let Some((key, live)) = keep {
+                    live.bank.lock().unwrap().decoders.insert(key, decoder);
+                }
             })
             .expect("spawn decoder thread");
         Worker {
@@ -534,6 +494,81 @@ impl Drop for Worker {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+/// One decoder thread of a channel, and the slots handed to it that have not
+/// finished (queued, or being decoded).
+struct Lane {
+    worker: Worker,
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// A channel's decoder threads, its **lanes**. A slot goes to the lane with the
+/// least waiting, so a slot that is still being decoded when the next one
+/// arrives (a busy FT8 band, FST4-300 on a slow machine) no longer holds it up:
+/// the next slot starts at once on another thread, and a slot is dropped only
+/// when every lane's queue is full.
+///
+/// Each lane owns its decoder, and nothing learned crosses lanes: a callsign
+/// the first lane has seen resolves a `<...>` there and not in another lane
+/// (`Decode::update` repairs the row in the lane that learns it, not across).
+/// FT8's a7 list decoder (the period before last) and the multi-period
+/// averaging of JT65 and Q65 want consecutive periods in one decoder, so a
+/// channel with `averaging` uses its first lane only.
+struct Channel {
+    lanes: Vec<Lane>,
+    /// Use the first lane only (the options ask for averaging).
+    serial: bool,
+}
+
+/// Which lane takes the next slot: the one with the fewest pending, the first
+/// of those on a tie; the first alone when `serial`.
+fn pick_lane(pending: &[usize], serial: bool) -> usize {
+    if serial {
+        return 0;
+    }
+    pending
+        .iter()
+        .enumerate()
+        .min_by_key(|&(i, &p)| (p, i))
+        .map_or(0, |(i, _)| i)
+}
+
+impl Channel {
+    /// Hand `slot` to a lane. `false`: its queue is full (every lane's, when not
+    /// `serial`): the slot is dropped, and the caller counts it.
+    fn dispatch(&self, slot: CompletedSlot) -> bool {
+        let pending: Vec<usize> = self
+            .lanes
+            .iter()
+            .map(|l| l.pending.load(Ordering::Relaxed))
+            .collect();
+        let lane = &self.lanes[pick_lane(&pending, self.serial)];
+        lane.pending.fetch_add(1, Ordering::Relaxed);
+        if lane.worker.tx.try_send(Job::Slot(slot)).is_err() {
+            lane.pending.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    /// Give every lane the new options. `false`: a lane's queue was full; try
+    /// again with the next message (a lane that has them applies them again, which
+    /// changes nothing).
+    fn set_options(&mut self, o: &ChannelOptions, station: &Station) -> bool {
+        self.serial = o.averaging;
+        let mut all = true;
+        for l in &self.lanes {
+            if l.worker
+                .tx
+                .try_send(Job::Options(o.clone(), station.clone()))
+                .is_err()
+            {
+                all = false;
+            }
+        }
+        all
     }
 }
 
@@ -589,14 +624,26 @@ pub struct Config {
     /// Per-channel options changed while running.
     pub live: std::sync::Arc<LiveOptions>,
     /// A slot's decode may run this share of its period, then it stops and
-    /// reports what it has (`SlotInput::budget`); `None` has no limit.
+    /// reports what it has (`SlotInput::budget`). `None` (the default) decodes
+    /// every slot to the end, which is what a skimmer wants: a late row is still
+    /// a spot; the next slot has its own lane.
     pub slot_budget: Option<f32>,
+    /// Decoder threads per channel. A slot goes to the lane with the least
+    /// waiting, so the next slot is decoded on another thread while the last is
+    /// still being decoded, even when that outlasts its slot, and none is
+    /// dropped while a lane is free. `1` is the
+    /// old one-thread channel. A channel with `averaging` uses one lane. See
+    /// [`DEFAULT_DECODE_LANES`] for the trade.
+    pub decode_lanes: usize,
 }
 
-/// Default for [`Config::slot_budget`]: a slot is decoded well inside its
-/// period (FT8's busy slot takes 1.8 s of 15), so this only fires when a
-/// channel cannot keep up, which is when the next slot would be dropped.
-pub const DEFAULT_SLOT_BUDGET: f32 = 0.8;
+/// Default for [`Config::decode_lanes`]: four, so a slot starts at once even when
+/// the last three are still being decoded (a decode that outlasts its slot is
+/// the case this is for). Past that a slot waits in its lane's queue and is
+/// dropped only when every queue is full. An idle lane is a blocked thread and
+/// an empty decoder. Each lane has its own callsign table, so a `<...>` resolves
+/// from what that lane has seen; one lane keeps every table in one place.
+pub const DEFAULT_DECODE_LANES: usize = 4;
 
 /// One stretch of a rotation.
 #[derive(Clone, Debug, PartialEq)]
@@ -851,7 +898,8 @@ impl Config {
             reanchor: Duration::from_millis(500),
             retry: Duration::from_secs(10),
             live: Default::default(),
-            slot_budget: Some(DEFAULT_SLOT_BUDGET),
+            slot_budget: None,
+            decode_lanes: DEFAULT_DECODE_LANES,
         }
     }
 }
@@ -924,10 +972,11 @@ pub struct DecodeDetail {
     /// The identity key (`RowDetail::info`, one bit per byte): the message's
     /// bits. The same message heard on two channels or servers has one key.
     pub key: Vec<u8>,
-    /// Sync correlation score of the decode.
-    pub sync_score: f32,
-    /// Hard-decision errors the FEC corrected.
-    pub hard_errors: u32,
+    /// Sync score of the decode, on the scale of the mode's own search; `None`
+    /// where the mode reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8 decodes).
+    pub sync_score: Option<f32>,
+    /// Hard-decision errors the FEC corrected; `None` where the mode reports no count.
+    pub hard_errors: Option<u32>,
     /// The text needed the callsign hash table to resolve a `<...>`.
     pub hash_resolved: bool,
     /// Q65 Pileup's "copied last Tx" flag.
@@ -1498,7 +1547,7 @@ struct Live {
     rx: IqReceiver,
     /// By `ChannelId`: the channel's decoder thread; its decoder keeps its
     /// own callsign table from slot to slot.
-    workers: Vec<Option<Worker>>,
+    workers: Vec<Option<Channel>>,
     /// By `ChannelId`: the index into `Config::channels`.
     cfg_index: Vec<usize>,
     /// Rows the workers found, waiting to be reported.
@@ -1600,7 +1649,7 @@ fn receiver(
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let cut_slots = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut workers: Vec<Option<Worker>> = Vec::new();
+    let mut workers: Vec<Option<Channel>> = Vec::new();
     let mut cfg_index: Vec<usize> = Vec::new();
     let mut wfs: Vec<Option<ChannelWaterfall>> = Vec::new();
     let mut keys: Vec<BankKey> = Vec::new();
@@ -1642,17 +1691,35 @@ fn receiver(
             apply_options(&mut d, &opts, &station);
             d
         };
-        workers[id.0] = Some(Worker::spawn(
-            i,
-            ch.dial_hz,
-            decoder,
-            (key, cfg.live.clone()),
-            rtx.clone(),
-            busy.clone(),
-            longest_us.clone(),
-            cut_slots.clone(),
-            cfg.slot_budget,
-        ));
+        // The first lane carries the channel's decoder across rotation turns;
+        // the others start from the mode's defaults, with the same options.
+        let mut first = Some(decoder);
+        let mut lanes = Vec::new();
+        for lane in 0..cfg.decode_lanes.max(1) {
+            let d = first.take().unwrap_or_else(|| {
+                let mut d = AnyDecoder::with_defaults(ch.mode);
+                apply_options(&mut d, &opts, &station);
+                d
+            });
+            let pending = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let worker = Worker::spawn(
+                i,
+                ch.dial_hz,
+                d,
+                (lane == 0).then(|| (key, cfg.live.clone())),
+                pending.clone(),
+                rtx.clone(),
+                busy.clone(),
+                longest_us.clone(),
+                cut_slots.clone(),
+                cfg.slot_budget,
+            );
+            lanes.push(Lane { worker, pending });
+        }
+        workers[id.0] = Some(Channel {
+            lanes,
+            serial: opts.averaging,
+        });
     }
     Ok(Live {
         rx,
@@ -1841,10 +1908,10 @@ fn stream_inner(
         let generation = cfg.live.generation();
         if generation != seen_generation {
             let mut all_sent = true;
-            for (id, w) in workers.iter().enumerate() {
+            for (id, w) in workers.iter_mut().enumerate() {
                 let Some(w) = w else { continue };
                 if let Some((o, station)) = cfg.live.get(cfg_index[id])
-                    && w.tx.try_send(Job::Options(o, station)).is_err()
+                    && !w.set_options(&o, &station)
                 {
                     all_sent = false;
                 }
@@ -1945,7 +2012,7 @@ fn stream_inner(
                 continue;
             };
             busy.fetch_add(1, Ordering::Relaxed);
-            if w.tx.try_send(Job::Slot(slot)).is_err() {
+            if !w.dispatch(slot) {
                 busy.fetch_sub(1, Ordering::Relaxed);
                 dropped_slots += 1;
             }
@@ -2308,6 +2375,36 @@ mod tests {
 
     /// A budget that is already spent stops an FT8 slot, and says so: the
     /// count `Status::budget_cut_slots` is made of.
+    /// The next slot goes to a lane that is free, and to the first one on a tie;
+    /// a channel that averages keeps to its first lane whatever it has waiting.
+    #[test]
+    fn the_next_slot_goes_to_the_lane_with_the_least_waiting() {
+        assert_eq!(pick_lane(&[0, 0], false), 0);
+        assert_eq!(pick_lane(&[1, 0], false), 1, "lane 0 is still decoding");
+        assert_eq!(pick_lane(&[2, 1, 1], false), 1, "the first of the least");
+        assert_eq!(
+            pick_lane(&[3, 3], false),
+            0,
+            "all busy: the first, whose queue may be full"
+        );
+        assert_eq!(
+            pick_lane(&[5, 0], true),
+            0,
+            "averaging needs consecutive periods in one decoder"
+        );
+        assert_eq!(pick_lane(&[], false), 0);
+    }
+
+    #[test]
+    fn a_config_decodes_every_slot_on_four_lanes_by_default() {
+        let c = Config::new("x", Vec::new());
+        assert_eq!(
+            c.slot_budget, None,
+            "a skimmer decodes every slot to the end"
+        );
+        assert_eq!(c.decode_lanes, 4);
+    }
+
     #[test]
     fn a_spent_budget_cuts_the_slot_and_is_reported() {
         let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
@@ -2323,20 +2420,6 @@ mod tests {
         );
         assert!(report.exhausted, "{report:?}");
         assert_eq!(rows.load(Ordering::Relaxed), 0);
-    }
-
-    /// The text a row was streamed with is what an `update` is compared to.
-    #[test]
-    fn a_resolved_text_is_told_from_the_one_streamed() {
-        let info = [1, 0, 1];
-        let d = Delivered::default();
-        assert_eq!(d.text_of("CQ <...> PM95", 1_000.0, &info), None);
-        assert!(d.first_time("CQ <...> PM95", 1_000.0, &info));
-        // The returned row: the same bits, resolved.
-        assert_eq!(
-            d.text_of("CQ <JA1ABC> PM95", 1_000.0, &info).as_deref(),
-            Some("CQ <...> PM95")
-        );
     }
 
     #[test]

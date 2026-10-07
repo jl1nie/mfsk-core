@@ -163,12 +163,19 @@ impl<'a> SlotInput<'a> {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct RowDetail {
-    /// Sync correlation score of the decode.
-    pub sync_score: f32,
-    /// Coefficient of variation of the per-block sync powers (fading).
-    pub sync_cv: f32,
-    /// Hard-decision errors the FEC corrected.
-    pub hard_errors: u32,
+    /// Sync score of the decode, on the scale of the mode's own search, so not
+    /// comparable between modes: FT8's is the coarse candidate score (WSJT-X's
+    /// `sync` column, against `sync_min` 1.3 / 2.1); FT4's and FST4's the refined
+    /// one, FT4's on its own `sync_min` scale and FST4's on `fst4_sync_search`'s.
+    /// `None` where the mode reports none: WSPR, JT9, JT65 and Q65, and FT8's a7
+    /// and a8 list decodes, which do not go through a sync search (#594).
+    pub sync_score: Option<f32>,
+    /// Coefficient of variation of the per-block sync powers (fading). `None`
+    /// wherever `sync_score` is.
+    pub sync_cv: Option<f32>,
+    /// Hard-decision errors the FEC corrected. `None` for WSPR, JT9, JT65 and
+    /// Q65, whose decoders report no such count; `Some(0)` is a clean decode.
+    pub hard_errors: Option<u32>,
     /// Which decode pass produced the row; private to the mode.
     pub pass: u8,
     /// The message's identity key, one bit per byte: what two rows are
@@ -182,6 +189,18 @@ pub struct RowDetail {
     pub info: Vec<u8>,
     /// The text needed the callsign hash table to resolve a `<...>`.
     pub hash_resolved: bool,
+    /// Which delivery of [`Decoder::decode_with`] this row is, or came from
+    /// (#592). A row handed to the callback carries its own position in the
+    /// period's deliveries (0, 1, 2...); a returned row carries the position of
+    /// the delivery it was, the first one with the same bits, frequency and time,
+    /// so a caller pairs the two **exactly**, with no rounding and no key to
+    /// build. `None` on a returned row the callback never saw, on every row of a
+    /// plain `decode`, and on returned rows in a build without `std` (which cannot
+    /// keep the list; the callback's own rows still count).
+    ///
+    /// A parallel strategy (`delivery_is_exact` false) can deliver one row twice:
+    /// the second delivery is a position no returned row points at.
+    pub delivery: Option<u32>,
     /// Q65 Pileup's "copied last Tx" flag.
     pub copied_last_tx: bool,
 }
@@ -207,6 +226,58 @@ pub struct SlotResult<R> {
 
 /// The callback [`Decoder::decode_with`] hands each row to as it is found.
 pub type OnRow<'a, R> = &'a (dyn Fn(&Row<R>) + Sync);
+
+/// What `Decoder::decode_with` hands its callback, by position, so a returned
+/// row can say which delivery it was (`RowDetail::delivery`, #592).
+#[derive(Default)]
+struct Deliveries {
+    next: core::sync::atomic::AtomicU32,
+    /// `(position, bits, freq_hz bits, dt_sec bits)` of each delivery. Exact
+    /// float bits: the callback's row and the returned one are the same value.
+    #[cfg(feature = "std")]
+    seen: std::sync::Mutex<alloc::vec::Vec<Delivery>>,
+}
+
+/// One delivery: its position, and the bits, `freq_hz` bits and `dt_sec` bits it had.
+#[cfg(feature = "std")]
+type Delivery = (u32, alloc::vec::Vec<u8>, u32, u32);
+
+impl Deliveries {
+    fn record(&self, d: &Decoded, det: &RowDetail) -> u32 {
+        let i = self
+            .next
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        #[cfg(feature = "std")]
+        self.seen.lock().unwrap().push((
+            i,
+            det.info.clone(),
+            d.freq_hz.to_bits(),
+            d.dt_sec.to_bits(),
+        ));
+        #[cfg(not(feature = "std"))]
+        let _ = (d, det);
+        i
+    }
+
+    fn find(&self, d: &Decoded, det: &RowDetail) -> Option<u32> {
+        #[cfg(feature = "std")]
+        {
+            let (f, t) = (d.freq_hz.to_bits(), d.dt_sec.to_bits());
+            return self
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(_, info, sf, st)| *info == det.info && *sf == f && *st == t)
+                .map(|(i, ..)| *i);
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = (d, det);
+            None
+        }
+    }
+}
 
 /// A mode a [`Decoder`] can run. Implemented by every slot-decoded protocol
 /// ZST.
@@ -327,13 +398,23 @@ impl<P: Decodable> Decoder<P> {
         slot: &SlotInput<'_>,
         on_row: OnRow<'_, P::Row>,
     ) -> SlotResult<P::Row> {
-        P::__decode(
+        let deliveries = Deliveries::default();
+        let wrapped = |row: &Row<P::Row>| {
+            let mut r = row.clone();
+            r.detail.delivery = Some(deliveries.record(&r.decoded, &r.detail));
+            on_row(&r);
+        };
+        let mut out = P::__decode(
             &self.params,
             &self.extras,
             &mut self.state,
             slot,
-            Some(on_row),
-        )
+            Some(&wrapped),
+        );
+        for row in &mut out.rows {
+            row.detail.delivery = deliveries.find(&row.decoded, &row.detail);
+        }
+        out
     }
 
     /// A packed 77-bit message as text, resolved against this decoder's

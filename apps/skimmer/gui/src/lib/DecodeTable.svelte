@@ -34,7 +34,8 @@
   const isCq = (t: string) => t.startsWith('CQ ');
   /** The hover text of a row: sync score, errors the FEC corrected, and the key that identifies the message. */
   const tip = (r: DecodeRow) =>
-    `sync ${r.syncScore.toFixed(1)} · ${r.hardErrors} error${r.hardErrors === 1 ? '' : 's'} corrected` +
+    (r.syncScore === null ? 'no sync score' : `sync ${r.syncScore.toFixed(1)}`) +
+    (r.hardErrors === null ? '' : ` · ${r.hardErrors} error${r.hardErrors === 1 ? '' : 's'} corrected`) +
     (r.hashResolved ? ' · a <...> resolved from the callsign table' : '') +
     (r.copiedLastTx ? ' · copied last Tx' : '') +
     (r.key ? ` · key ${r.key}` : '');
@@ -123,7 +124,7 @@
             <td class="num mono">{(r.freqHz / 1e6).toFixed(4)}</td>
             <td class="num mono">{r.snrDb.toFixed(0)}</td>
             <td class="num mono">{r.dtS.toFixed(1)}</td>
-            {#if detail}<td class="num mono">{r.syncScore.toFixed(1)}</td><td class="num mono">{r.hardErrors}</td>{/if}
+            {#if detail}<td class="num mono">{r.syncScore === null ? '–' : r.syncScore.toFixed(1)}</td><td class="num mono">{r.hardErrors ?? '–'}</td>{/if}
             <td class="mono msg">{r.text}{#if r.hashResolved}<span class="resolved" title="A &lt;...&gt; in this row was resolved from the callsign table"> ✓</span>{/if}</td>
           </tr>
         {/each}

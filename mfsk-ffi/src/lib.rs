@@ -124,6 +124,9 @@ pub const MFSK_AP_FIELD_LEN: usize = 16;
 /// Capacity of `MfskDecode::text`, including the NUL. See
 /// [`MFSK_AP_FIELD_LEN`] for why it is a literal.
 pub const MFSK_DECODE_TEXT_LEN: usize = 64;
+/// Bytes of `MfskDecode::key`. A literal here for the same cbindgen reason as the
+/// constants below.
+pub const MFSK_DECODE_KEY_LEN: usize = 10;
 
 /// `MfskDecode::flags` bit 0: the text needed the decoder's callsign
 /// hash table to resolve a `<...>` reference.
@@ -138,6 +141,15 @@ pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
 /// "copied last Tx" flag. Q65 rows only. A literal here for the same
 /// reason as the constant above.
 pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
+/// `MfskDecode::flags` bit 2: `sync_score` is a value the mode reported, not
+/// the `0.0` of a mode that reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8). A
+/// literal here for the same reason as the constants above.
+pub const MFSK_DECODE_FLAG_HAS_SYNC_SCORE: u8 = 1 << 2;
+/// `MfskDecode::flags` bit 3: `sync_cv` is a value the mode reported.
+pub const MFSK_DECODE_FLAG_HAS_SYNC_CV: u8 = 1 << 3;
+/// `MfskDecode::flags` bit 4: `hard_errors` is a count the mode reported (a
+/// clean decode is `0` with the flag set; WSPR, JT9, JT65 and Q65 never set it).
+pub const MFSK_DECODE_FLAG_HAS_HARD_ERRORS: u8 = 1 << 4;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Capability bits

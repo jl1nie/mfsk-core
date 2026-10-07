@@ -154,6 +154,11 @@ fn ft8_decodes_a_period_and_reports_its_detail() {
     assert_eq!(r.mode, MfskMode::Ft8);
     assert!((r.freq_hz - 1_500.0).abs() < 2.0);
     assert_eq!(r.info_bits, 91);
+    // FT8 reports its sync score, fading measure and error count (#594).
+    let all = MFSK_DECODE_FLAG_HAS_SYNC_SCORE
+        | MFSK_DECODE_FLAG_HAS_SYNC_CV
+        | MFSK_DECODE_FLAG_HAS_HARD_ERRORS;
+    assert_eq!(r.flags & all, all, "flags {:#x}", r.flags);
     let mut bits = [0u8; 128];
     let mut n = 0usize;
     assert_eq!(
@@ -161,6 +166,17 @@ fn ft8_decodes_a_period_and_reports_its_detail() {
         MfskStatus::Ok
     );
     assert_eq!(n, 91);
+    // The row's key is the first 77 bits of that block, packed (#592).
+    assert_eq!(r.key_bits, 77);
+    let mut packed = [0u8; MFSK_DECODE_KEY_LEN];
+    for (i, b) in bits[..77].iter().enumerate() {
+        packed[i / 8] |= (b & 1) << (7 - i % 8);
+    }
+    assert_eq!(r.key, packed);
+    assert_eq!(
+        r.delivery, -1,
+        "no callback was set, so no delivery to name"
+    );
     assert_eq!(
         unsafe { mfsk_decoder_copy_info(dec, 9, bits.as_mut_ptr(), bits.len(), &mut n) },
         MfskStatus::InvalidArg
@@ -203,12 +219,13 @@ fn f32_audio_reaches_the_engines_at_any_level() {
 #[test]
 fn rows_arrive_through_the_callback_as_they_are_found() {
     extern "C" fn on_row(row: *const MfskDecode, user: *mut c_void) {
-        let seen = unsafe { &mut *(user as *mut Vec<String>) };
-        seen.push(text_of(unsafe { &*row }));
+        let seen = unsafe { &mut *(user as *mut Vec<(String, i32)>) };
+        let row = unsafe { &*row };
+        seen.push((text_of(row), row.delivery));
     }
     let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
     let dec = open(MfskMode::Ft8, None, None);
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: Vec<(String, i32)> = Vec::new();
     assert_eq!(
         unsafe {
             mfsk_decoder_set_on_decode(dec, Some(on_row), &mut seen as *mut _ as *mut c_void)
@@ -216,8 +233,21 @@ fn rows_arrive_through_the_callback_as_they_are_found() {
         MfskStatus::Ok
     );
     let rows = decode_i16(dec, &slot);
-    assert_eq!(seen, texts(&rows), "the callback saw what the array holds");
+    let seen_texts: Vec<String> = seen.iter().map(|s| s.0.clone()).collect();
+    assert_eq!(
+        seen_texts,
+        texts(&rows),
+        "the callback saw what the array holds"
+    );
     assert!(!seen.is_empty());
+    // The callback's rows carry their position; each returned row names the
+    // delivery it was (#592).
+    for (i, s) in seen.iter().enumerate() {
+        assert_eq!(s.1, i as i32);
+    }
+    for (i, r) in rows.iter().enumerate() {
+        assert_eq!(r.delivery, i as i32, "{}", text_of(r));
+    }
     unsafe { mfsk_decoder_close(dec) };
 }
 

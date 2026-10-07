@@ -279,8 +279,11 @@ struct Settings {
     /// with the first band when connecting.
     rotation_utc: bool,
     /// A slot's decode may run this percent of its period, then it stops and
-    /// reports what it has; 0 has no limit. Only FT8, FT4 and FST4 poll it.
+    /// reports what it has; 0 (the default) decodes every slot to the end.
     slot_budget_pct: u32,
+    /// Decoder threads per channel: the next slot is decoded on another thread
+    /// while the last is still being decoded. 1 is one thread per channel.
+    decode_lanes: u32,
     #[serde(skip_serializing)]
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps).
@@ -371,7 +374,8 @@ impl Default for Settings {
             clock_source: "ntp".into(),
             ntp_server: "pool.ntp.org".into(),
             rotation_utc: false,
-            slot_budget_pct: 80,
+            slot_budget_pct: 0,
+            decode_lanes: 4,
             channelizer: "auto".into(),
             db_enabled: true,
             db_path: String::new(),
@@ -455,8 +459,9 @@ enum UiEvent {
         /// The message's bits as hex: the same message heard on two channels or
         /// servers has one key. Empty for a mode that gave none.
         key: String,
-        sync_score: f32,
-        hard_errors: u32,
+        /// `None` where the mode reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8).
+        sync_score: Option<f32>,
+        hard_errors: Option<u32>,
         /// The text needed the callsign table (a `<...>` was resolved).
         hash_resolved: bool,
         copied_last_tx: bool,
@@ -782,6 +787,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         cfg.live.set_enabled(srv.enabled);
         cfg.rotation_origin = (!s.rotation_utc).then_some(started);
         cfg.slot_budget = (s.slot_budget_pct > 0).then(|| s.slot_budget_pct as f32 / 100.0);
+        cfg.decode_lanes = s.decode_lanes.clamp(1, 8) as usize;
         cfg.tune = srv.tune;
         cfg.yield_control = srv.yield_control;
         cfg.waterfall = s.waterfall;

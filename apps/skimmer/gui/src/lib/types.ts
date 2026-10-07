@@ -91,6 +91,8 @@ export interface Settings {
   rotationUtc: boolean;
   /** Percent of a slot's period its decode may run before it stops; 0 is no limit. */
   slotBudgetPct: number;
+  /** Decoder threads per channel (1-8): the next slot is decoded on another thread while the last is still being decoded. */
+  decodeLanes: number;
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */
@@ -125,9 +127,10 @@ export interface DecodeRow {
   text: string;
   /** The message's bits, hex: one message heard on two channels or servers has one key. */
   key: string;
-  syncScore: number;
-  /** Hard-decision errors the FEC corrected. */
-  hardErrors: number;
+  /** On the scale of the mode's own search; null where the mode reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8). */
+  syncScore: number | null;
+  /** Hard-decision errors the FEC corrected; null where the mode reports no count. */
+  hardErrors: number | null;
   /** The text needed the callsign table: a `<...>` was resolved. */
   hashResolved: boolean;
   copiedLastTx: boolean;

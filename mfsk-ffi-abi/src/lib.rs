@@ -254,6 +254,9 @@ pub const MFSK_AP_FIELD_LEN: usize = 16;
 /// tight the moment a hash-resolved `<...>` callsign expands in place.
 pub const MFSK_DECODE_TEXT_LEN: usize = 64;
 
+/// Bytes of [`MfskDecode::key`]: the 77 message bits of a 77-bit mode, packed (10 bytes).
+pub const MFSK_DECODE_KEY_LEN: usize = 10;
+
 /// The per-period parameter block, after WSJT-X's `params` common block
 /// (`lib/jt9com.f90`) — what the GUI fills before each period and the
 /// decoder reads. **Size-versioned**: initialise with
@@ -408,13 +411,19 @@ pub struct MfskDecode {
     pub dt_sec: f32,
     /// Estimated SNR in a 2500 Hz reference bandwidth, dB.
     pub snr_db: f32,
-    /// Sync correlation score for this decode.
+    /// Sync score for this decode, on the scale of the mode's own search (not
+    /// comparable between modes). `0.0` and [`MFSK_DECODE_FLAG_HAS_SYNC_SCORE`]
+    /// clear where the mode reports none: WSPR, JT9, JT65, Q65, and FT8's a7 and
+    /// a8 list decodes.
     pub sync_score: f32,
     /// Coefficient of variation of the per-block sync powers — near 0
     /// on a stable channel, elevated under QSB or fading. Free to
-    /// report, and the only fading indicator the row carries.
+    /// report, and the only fading indicator the row carries. `0.0` and
+    /// [`MFSK_DECODE_FLAG_HAS_SYNC_CV`] clear where `sync_score` is absent.
     pub sync_cv: f32,
-    /// Hard-decision errors the FEC had to correct.
+    /// Hard-decision errors the FEC had to correct. `0` and
+    /// [`MFSK_DECODE_FLAG_HAS_HARD_ERRORS`] clear for WSPR, JT9, JT65 and Q65,
+    /// whose decoders report no such count (a clean decode is `0` with the flag set).
     pub hard_errors: u32,
     /// Width of the FEC information block — 91 (CRC-14) or 101
     /// (CRC-24). Says how many bits `mfsk_decoder_copy_info` returns.
@@ -425,8 +434,26 @@ pub struct MfskDecode {
     pub pass: u8,
     /// Bit 0: the text required the callsign hash table to resolve a
     /// `<...>` reference. Bit 1: the sender set Q65 Pileup's "copied last
-    /// Tx" flag. Other bits reserved, currently zero.
+    /// Tx" flag. Bits 2-4: `sync_score`, `sync_cv` and `hard_errors` are
+    /// real values and not the `0` of a mode that reports none. Other bits
+    /// reserved, currently zero.
     pub flags: u8,
+    /// How many bits of [`Self::key`] are the message's: 77 for FT8, FT4, FST4 and
+    /// Q65, 72 for JT9 and JT65, 50 for WSPR. `0`: no key.
+    pub key_bits: u8,
+    /// The message's identity key, `key_bits` bits packed most significant bit
+    /// first, zero-padded: the same message heard on two channels or in two decoders
+    /// has the same key, which the text may not (a `<...>` resolves in one and not
+    /// the other), and a row can be matched by it. One message at two frequencies
+    /// has one key. For the 77-bit modes it is the first 77 bits of
+    /// `mfsk_decoder_copy_info`'s block (the rest is the CRC, a function of them).
+    pub key: [u8; MFSK_DECODE_KEY_LEN],
+    /// Which delivery of the period this row is, or came from (`RowDetail::delivery`,
+    /// #592): a row handed to the callback carries its position (0, 1, 2...), a
+    /// returned row the position of the delivery it was, so the two are paired
+    /// exactly. `-1`: none (a returned row the callback never saw, or any row of a
+    /// call with no callback).
+    pub delivery: i32,
 }
 
 /// [`MfskDecode::flags`] bit 0.
@@ -436,6 +463,15 @@ pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
 /// "copied last Tx" flag, the spare 78th payload bit (`genq65.f90`'s `iflag`).
 /// WSJT-X marks such a decode with `#`. Q65 rows only.
 pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
+
+/// [`MfskDecode::flags`] bit 2: `sync_score` is a value the mode reported.
+pub const MFSK_DECODE_FLAG_HAS_SYNC_SCORE: u8 = 1 << 2;
+
+/// [`MfskDecode::flags`] bit 3: `sync_cv` is a value the mode reported.
+pub const MFSK_DECODE_FLAG_HAS_SYNC_CV: u8 = 1 << 3;
+
+/// [`MfskDecode::flags`] bit 4: `hard_errors` is a count the mode reported.
+pub const MFSK_DECODE_FLAG_HAS_HARD_ERRORS: u8 = 1 << 4;
 
 /// Opaque decoder handle: one persistent decoder of one mode, driven once
 /// per period like WSJT-X's own (`jt9 -s`).

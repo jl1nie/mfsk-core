@@ -290,12 +290,14 @@ size 版管理である: 古いヘッダでビルドした呼び出し側は短�
 | `mode` | ファミリではなく**具体的なサブモード** — FST4 の5周期も Q65 の10サブモードもそれぞれ別に報告される |
 | `text` | デコードされたメッセージ。`<...>` は可能ならデコーダのテーブルで解決済み |
 | `freq_hz`, `dt_sec`, `snr_db` | 搬送波、スロットの `dt = 0` 基準からの時間オフセット、2500 Hz 基準帯域での SNR |
-| `sync_score` | このデコードの sync 相関 |
-| `sync_cv` | ブロックごとの sync パワーの変動係数 — 安定したチャネルでは 0 近傍、QSB 下では高くなる。行が持つ唯一のフェージング指標 |
-| `hard_errors` | FEC が訂正した硬判定誤り数 |
+| `sync_score` | このデコードの sync スコア。そのモード自身の探索の尺度で、モード間では比較できない。WSPR・JT9・JT65・Q65 と FT8 の a7/a8 リストデコードでは `0.0` で、`MFSK_DECODE_FLAG_HAS_SYNC_SCORE` が立たない |
+| `sync_cv` | ブロックごとの sync パワーの変動係数 — 安定したチャネルでは 0 近傍、QSB 下では高くなる。行が持つ唯一のフェージング指標。`sync_score` が無い行では `0.0` で、`MFSK_DECODE_FLAG_HAS_SYNC_CV` が立たない |
+| `hard_errors` | FEC が訂正した硬判定誤り数。数を報告しない WSPR・JT9・JT65・Q65 では `0` で、`MFSK_DECODE_FLAG_HAS_HARD_ERRORS` が立たない（クリーンなデコードは、フラグが立った `0`） |
 | `info_bits` | FEC 情報ブロックの幅。91（CRC-14）か 101（CRC-24）、持たないモードは 0。`mfsk_decoder_copy_info` はこの個数のビットを返す |
 | `pass` | どのデコードパスが行を作ったか。**プロトコル固有** — 診断用であってロジック用ではない |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`（テキストが `<...>` 参照の解決にハッシュテーブルを要した）、bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`（Q65 Pileup の返信。WSJT-X の `#`） |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`（テキストが `<...>` 参照の解決にハッシュテーブルを要した）、bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`（Q65 Pileup の返信。WSJT-X の `#`）、bit 2–4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`（上の3つの数値が、報告しないモードの `0` ではなくそのモード自身の値） |
+| `key_bits`, `key` | メッセージの識別キー。`key_bits` ビット（FT8・FT4・FST4・Q65 は 77、JT9・JT65 は 72、WSPR は 50、キー無しは 0）を、最上位ビットから `key` の 10 バイトに詰め、残りは 0。同じメッセージは、テキストが違っても（片方だけ `<...>` が解決した場合）2 つのデコーダで同じキーになる。1 つのメッセージが 2 つの周波数にあってもキーは 1 つ。77 ビット系のモードでは `mfsk_decoder_copy_info` のブロックの先頭 77 ビット |
+| `delivery` | この行がその周期の何番目の配信か、または何番目の配信だったか。コールバックに渡す行は自分の位置（0, 1, 2…）を持ち、返却される行は自分だった配信の位置を持つので、両者を厳密に対応づけられる。コールバックが見なかった返却行と、コールバックなしの呼び出しの全行は `-1` |
 
 ### 2.5 ストリーミング取り込み
 

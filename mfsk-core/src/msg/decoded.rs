@@ -93,6 +93,28 @@ pub struct Decoded {
     pub protocol: ProtocolId,
 }
 
+impl Decoded {
+    /// A row from its five fields. The decoders make their own; this is for a
+    /// consumer that builds one itself: a test of code that takes a row, a replay
+    /// of a recorded one, a bridge from another source (`Decoded` is
+    /// `#[non_exhaustive]`, so a struct expression is closed to it, #573).
+    pub fn new(
+        text: impl Into<String>,
+        freq_hz: f32,
+        dt_sec: f32,
+        snr_db: f32,
+        protocol: ProtocolId,
+    ) -> Self {
+        Decoded {
+            text: text.into(),
+            freq_hz,
+            dt_sec,
+            snr_db,
+            protocol,
+        }
+    }
+}
+
 // ── FT8 / FT4 / FST4 ─────────────────────────────────────────────────────────
 //
 // These three share `engine::pipeline::DecodeResult`. The impl lives in `msg`

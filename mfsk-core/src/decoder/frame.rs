@@ -417,14 +417,24 @@ where
 /// The row detail of a frame-family result; `resolved` is whether its text
 /// needed the hash table.
 fn detail_of(r: &DecodeResult, resolved: bool) -> RowDetail {
+    // FT8's a7 and a8 list decodes carry a placeholder sync score and `sync_cv`
+    // (`ft8::list_decode::result_of` writes 0.0): they come from no sync search.
+    #[cfg(feature = "ft8")]
+    let searched = !matches!(
+        r.pass,
+        crate::ft8::list_decode::PASS_ID_A7 | crate::ft8::list_decode::PASS_ID_A8
+    );
+    #[cfg(not(feature = "ft8"))]
+    let searched = true;
     RowDetail {
-        sync_score: r.sync_score,
-        sync_cv: r.sync_cv,
-        hard_errors: r.hard_errors,
+        sync_score: searched.then_some(r.sync_score),
+        sync_cv: searched.then_some(r.sync_cv),
+        hard_errors: Some(r.hard_errors),
         pass: r.pass,
         info: r.info.to_vec(),
         hash_resolved: resolved,
         copied_last_tx: false,
+        delivery: None,
     }
 }
 
@@ -865,5 +875,41 @@ mod ap_tests {
         let h = qso_hint(&cq, ApTable::Ft8, true);
         assert_eq!(passes(&h), [12]);
         assert_eq!(h.cq.as_deref(), Some("CQ RU"));
+    }
+}
+
+#[cfg(all(test, feature = "ft8"))]
+mod detail_tests {
+    use super::*;
+    use crate::ft8::list_decode::{PASS_ID_A7, PASS_ID_A8};
+
+    fn result(pass: u8) -> DecodeResult {
+        DecodeResult {
+            info: alloc::vec![0u8; 91].into_boxed_slice(),
+            freq_hz: 1_500.0,
+            dt_sec: 0.1,
+            hard_errors: 4,
+            sync_score: 0.0,
+            pass,
+            sync_cv: 0.0,
+            snr_db: -10.0,
+        }
+    }
+
+    /// FT8's a7 and a8 list decodes come from no sync search, so the 0.0 they
+    /// carry is a placeholder: no sync score, but the error count is real (#594).
+    #[test]
+    fn a_list_decode_has_no_sync_score_but_has_its_error_count() {
+        for pass in [PASS_ID_A7, PASS_ID_A8] {
+            let d = detail_of(&result(pass), false);
+            assert_eq!((d.sync_score, d.sync_cv), (None, None), "pass {pass}");
+            assert_eq!(d.hard_errors, Some(4));
+        }
+        // A searched decode keeps its numbers, a score of 0.0 included.
+        let d = detail_of(&result(0), false);
+        assert_eq!(
+            (d.sync_score, d.sync_cv, d.hard_errors),
+            (Some(0.0), Some(0.0), Some(4))
+        );
     }
 }

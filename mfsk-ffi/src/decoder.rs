@@ -1048,19 +1048,39 @@ fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
         freq_hz: decoded.freq_hz,
         dt_sec: decoded.dt_sec,
         snr_db: decoded.snr_db,
-        sync_score: detail.sync_score,
-        sync_cv: detail.sync_cv,
-        hard_errors: detail.hard_errors,
+        sync_score: detail.sync_score.unwrap_or(0.0),
+        sync_cv: detail.sync_cv.unwrap_or(0.0),
+        hard_errors: detail.hard_errors.unwrap_or(0),
         info_bits: detail.info.len() as u16,
         pass: detail.pass,
         flags: 0,
+        key_bits: 0,
+        key: [0; MFSK_DECODE_KEY_LEN],
+        delivery: detail.delivery.map_or(-1, |d| d as i32),
     };
     write_field(&mut r.text, &decoded.text);
+    // The message bits: the first 77 of the information block, packed.
+    let bits = &detail.info[..detail.info.len().min(8 * MFSK_DECODE_KEY_LEN)];
+    let bits = &bits[..bits.len().min(77)];
+    r.key_bits = bits.len() as u8;
+    for (i, &b) in bits.iter().enumerate() {
+        r.key[i / 8] |= (b & 1) << (7 - i % 8);
+    }
     if detail.hash_resolved {
         r.flags |= MFSK_DECODE_FLAG_HASH_RESOLVED;
     }
     if detail.copied_last_tx {
         r.flags |= MFSK_DECODE_FLAG_COPIED_LAST_TX;
+    }
+    // Which of the three numbers above are the mode's own (#594).
+    if detail.sync_score.is_some() {
+        r.flags |= MFSK_DECODE_FLAG_HAS_SYNC_SCORE;
+    }
+    if detail.sync_cv.is_some() {
+        r.flags |= MFSK_DECODE_FLAG_HAS_SYNC_CV;
+    }
+    if detail.hard_errors.is_some() {
+        r.flags |= MFSK_DECODE_FLAG_HAS_HARD_ERRORS;
     }
     r
 }
@@ -1326,5 +1346,48 @@ pub unsafe extern "C" fn mfsk_decoder_unpack77(
             cap,
             out_len,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mfsk_core::ProtocolId;
+
+    const ALL: u8 = MFSK_DECODE_FLAG_HAS_SYNC_SCORE
+        | MFSK_DECODE_FLAG_HAS_SYNC_CV
+        | MFSK_DECODE_FLAG_HAS_HARD_ERRORS;
+
+    /// A mode that reports none of the three numbers leaves their flags clear,
+    /// so the `0` in the row is told from a measured `0` (#594).
+    #[test]
+    fn a_row_says_which_of_its_numbers_the_mode_reported() {
+        let decoded = Decoded::new("K1ABC W9XYZ EN37", 1_100.0, 0.1, -12.0, ProtocolId::Jt65);
+
+        // WSPR, JT9, JT65, Q65: nothing reported.
+        let none = row_of(MfskMode::Jt65, &decoded, &RowDetail::default());
+        assert_eq!(none.flags & ALL, 0, "flags {:#x}", none.flags);
+        assert_eq!(
+            (none.sync_score, none.sync_cv, none.hard_errors),
+            (0.0, 0.0, 0)
+        );
+
+        // FT8: all three, and a clean decode is a real zero.
+        let mut d = RowDetail::default();
+        d.sync_score = Some(2.5);
+        d.sync_cv = Some(0.1);
+        d.hard_errors = Some(0);
+        let all = row_of(MfskMode::Ft8, &decoded, &d);
+        assert_eq!(all.flags & ALL, ALL);
+        assert_eq!(
+            (all.sync_score, all.sync_cv, all.hard_errors),
+            (2.5, 0.1, 0)
+        );
+
+        // An a7 row: the error count, and no sync.
+        let mut a7 = RowDetail::default();
+        a7.hard_errors = Some(4);
+        let r = row_of(MfskMode::Ft8, &decoded, &a7);
+        assert_eq!(r.flags & ALL, MFSK_DECODE_FLAG_HAS_HARD_ERRORS);
     }
 }
