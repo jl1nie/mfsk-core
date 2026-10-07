@@ -154,6 +154,7 @@ fn decode_scan_inner(
     depth: Jt9Depth,
     narrow: Option<(f32, f32)>,
     on_result: Option<&(dyn Fn(&Jt9Result) + Sync)>,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Jt9Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
@@ -185,6 +186,10 @@ fn decode_scan_inner(
 
     let mut seen: Vec<Jt9Result> = Vec::new();
     for c in cands {
+        // The caller's budget, once per candidate before it is tried (#593).
+        if !gate.proceed() {
+            break;
+        }
         let strict = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth);
         // `jt9_decode.f90:81-135`: around the Rx frequency (`nfqso ± ntol`)
         // upstream scans first (`nqd = 1`) at the deepest Fano limit with

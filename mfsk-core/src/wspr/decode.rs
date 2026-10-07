@@ -1158,6 +1158,7 @@ fn sic_pass(
     confirmed: &mut WsprCallsignTable,
     ladder: Ladder,
     seen: &mut Vec<WsprResult>,
+    budget: Option<&(dyn Fn() -> bool + Sync)>,
     on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
 ) -> usize {
     const MINSYNC2_EARLY: f32 = 0.12;
@@ -1187,6 +1188,14 @@ fn sic_pass(
     let mut ndecodes = 0usize;
     let surv = survivors(refined, minsync2);
     for r in surv {
+        // The caller's budget, once per candidate before it is claimed (the
+        // refine above is not cut); a candidate already running finishes, bar
+        // the ladder's own poll between its positions.
+        if let Some(check) = budget
+            && !check()
+        {
+            break;
+        }
         let osd = pass.use_osd.then_some(&*confirmed);
         let Some(mut d) = decode_from_refined(
             idat,
@@ -1198,7 +1207,7 @@ fn sic_pass(
             None,
             pass.nblocks,
             osd,
-            None,
+            budget,
             ladder,
         ) else {
             continue;
@@ -1241,8 +1250,27 @@ pub(super) fn decode_scan_inner(
     on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
     carried: Option<&mut WsprCallsignTable>,
     depth: ScanDepth,
-) -> Vec<WsprResult> {
+    budget: Option<&(dyn Fn() -> bool + Sync)>,
+) -> (Vec<WsprResult>, bool) {
     let ladder = depth.ladder;
+    // The caller's budget, remembering whether it ever said stop: what a
+    // `BudgetReport::exhausted` is made of. Polled per survivor in every pass
+    // and between a candidate's ladder positions; a spent budget skips the
+    // passes after it.
+    let hit = core::sync::atomic::AtomicBool::new(false);
+    let hit_ref = &hit;
+    let tracked = budget.map(|b| {
+        move || {
+            let ok = b();
+            if !ok {
+                hit_ref.store(true, core::sync::atomic::Ordering::Relaxed);
+            }
+            ok
+        }
+    });
+    let budget: Option<&(dyn Fn() -> bool + Sync)> =
+        tracked.as_ref().map(|c| c as &(dyn Fn() -> bool + Sync));
+    let spent = || hit.load(core::sync::atomic::Ordering::Relaxed);
     // Prepend zeros so signals that started before audio[0] (negative
     // dt) become reachable. Internal `start_sample`s are shifted by
     // `pad`; we subtract `pad` back out before returning so callers
@@ -1402,6 +1430,9 @@ pub(super) fn decode_scan_inner(
         if early_pass == 1 && ndecodes_pass0 == 0 {
             break;
         }
+        if spent() {
+            break;
+        }
         // Pass 0 works on the coarse candidates computed above; pass 1
         // re-runs the coarse over the residual left by pass 0's
         // subtraction.
@@ -1433,6 +1464,7 @@ pub(super) fn decode_scan_inner(
             &mut confirmed,
             ladder,
             &mut seen,
+            budget,
             on_result,
         );
         if early_pass == 0 {
@@ -1449,7 +1481,7 @@ pub(super) fn decode_scan_inner(
     // early passes found nothing is exactly the one that most needs the
     // final pass's coherent-block ladder and zero-drift estimate.
     // `-B` (npasses = 2) stops after the two early passes.
-    if depth.passes >= 3 {
+    if depth.passes >= 3 && !spent() {
         // wsprd's pass 2 sets `maxdrift = 0` — "no drift for smaller
         // frequency estimator variance" (`wsprd.c:1070-1073`). Passes 0
         // and 1 search ±4; the final pass deliberately does not, because
@@ -1476,8 +1508,15 @@ pub(super) fn decode_scan_inner(
         // by refined sync, in parallel; it does not subtract inside the pass.
         #[cfg(feature = "wspr-pass2-topn")]
         {
-            let raw2: Vec<WsprResult> =
-                decode_pass2_top_n(&idat, &qdat, sample_rate, pad, &bb_cands2, &confirmed, None);
+            let raw2: Vec<WsprResult> = decode_pass2_top_n(
+                &idat,
+                &qdat,
+                sample_rate,
+                pad,
+                &bb_cands2,
+                &confirmed,
+                budget,
+            );
             for d in raw2 {
                 push_unique(&mut seen, d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES, on_result);
             }
@@ -1498,6 +1537,7 @@ pub(super) fn decode_scan_inner(
                 &mut confirmed,
                 ladder,
                 &mut seen,
+                budget,
                 on_result,
             );
         }
@@ -1516,7 +1556,7 @@ pub(super) fn decode_scan_inner(
         }
     }
 
-    seen
+    (seen, spent())
 }
 
 #[cfg(feature = "internal-testing")]
@@ -1616,7 +1656,9 @@ pub fn decode_scan_subtract(
             None,
             None,
             ScanDepth::DEFAULT,
-        );
+            None,
+        )
+        .0;
         if new_decodes.is_empty() {
             break;
         }

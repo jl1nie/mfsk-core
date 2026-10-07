@@ -141,7 +141,7 @@ fn decode<P: Q65SubMode>(
         None
     };
 
-    let results: Vec<Q65Result> = match (params.averaging, slot.period) {
+    let (results, exhausted): (Vec<Q65Result>, bool) = match (params.averaging, slot.period) {
         (true, Some(n)) => {
             // Consecutive periods only: anything else restarts the average.
             if state.last_period.is_none_or(|p| p + 1 != n) {
@@ -175,7 +175,8 @@ fn decode<P: Q65SubMode>(
                     cb(d);
                 }
             }
-            d.into_iter().collect()
+            // One decode per period, whose unit is a whole period: not cut by a budget.
+            (d.into_iter().collect(), false)
         }
         _ => {
             state.avg = MultiPeriod::default();
@@ -202,7 +203,10 @@ fn decode<P: Q65SubMode>(
             if let Some(cb) = cb.as_ref() {
                 req = req.on_result(cb);
             }
-            req.decode()
+            if let Some(b) = slot.budget {
+                req = req.budget(b);
+            }
+            req.decode_reported()
         }
     };
     let rows: Vec<Row<Q65Result>> = results.into_iter().map(row).collect();
@@ -212,7 +216,10 @@ fn decode<P: Q65SubMode>(
     }
     SlotResult {
         rows,
-        budget: Default::default(),
+        budget: crate::decoder::BudgetReport {
+            exhausted,
+            ..Default::default()
+        },
     }
 }
 

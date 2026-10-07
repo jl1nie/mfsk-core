@@ -134,6 +134,8 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     /// default: `<...>` stays unresolved, matching every `q65::rx`
     /// entry point's pre-existing behavior.
     hash_table: Option<Arc<CallsignHashTable>>,
+    /// Set via [`DecodeRequest::budget`].
+    budget: Option<crate::engine::pipeline::BudgetCheck<'a>>,
     _marker: PhantomData<P>,
 }
 
@@ -160,6 +162,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             fading: None,
             on_result: None,
             hash_table: None,
+            budget: None,
             _marker: PhantomData,
         }
     }
@@ -336,6 +339,21 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     /// `decode_scan_with_ap_for`/`decode_scan_for` depending on
     /// [`Self::ap_hint`].
     pub fn decode(&self) -> Vec<Q65Result> {
+        self.decode_reported().0
+    }
+
+    /// Stop the scan when `check` returns `false`: polled once per candidate
+    /// before it is tried, in either sync's candidate list. A candidate already
+    /// running finishes, and the coarse search is not cut (#593).
+    pub fn budget(mut self, check: crate::engine::pipeline::BudgetCheck<'a>) -> Self {
+        self.budget = Some(check);
+        self
+    }
+
+    /// [`Self::decode`], and whether the budget ([`Self::budget`]) said stop at
+    /// least once. `false` without a budget.
+    pub fn decode_reported(&self) -> (Vec<Q65Result>, bool) {
+        let gate = crate::engine::pipeline::BudgetGate::new(self.budget);
         let ctx = ctx_from_hash_table(self.hash_table.as_ref());
 
         // Front-pad with silence so a frame starting up to
@@ -410,11 +428,11 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             None => None,
         };
 
-        let mut out = self.decode_dispatch(audio, nominal, on_result, &ctx);
+        let mut out = self.decode_dispatch(audio, nominal, on_result, &ctx, &gate);
         for r in &mut out {
             untranslate(r);
         }
-        out
+        (out, gate.exhausted())
     }
 
     fn decode_dispatch(
@@ -423,6 +441,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         nominal_start_sample: usize,
         on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
         ctx: &DecodeContext,
+        gate: &crate::engine::pipeline::BudgetGate<'_>,
     ) -> Vec<Q65Result> {
         // The T/R period `twkfreq` normalises the drift over
         // (`npts=ntrperiod*12000`, centred at `x0=0.5*(npts+1)`), placed
@@ -458,7 +477,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             if let (Some(r), Some(cb)) = (&q3, on_result) {
                 cb(r);
             }
-            let rest = self.scan(audio, nominal_start_sample, drift, on_result, ctx);
+            let rest = self.scan(audio, nominal_start_sample, drift, on_result, ctx, gate);
             // The "w3sz" stage 5 (`q65_decode.f90:296-307`, `q65.f90:211-250`):
             // at Max Drift 50, when nothing decoded at the Rx frequency, the
             // q3 decode again on spectra with the drift `q65_ccf_22` found
@@ -523,9 +542,10 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 candidates,
                 on_result,
                 ctx,
+                gate,
             );
         }
-        self.scan(audio, nominal_start_sample, drift, on_result, ctx)
+        self.scan(audio, nominal_start_sample, drift, on_result, ctx, gate)
     }
 
     /// The per-candidate scan: fading, AP hint or plain.
@@ -536,6 +556,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         drift: Option<MaxDrift>,
         on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
         ctx: &DecodeContext,
+        gate: &crate::engine::pipeline::BudgetGate<'_>,
     ) -> Vec<Q65Result> {
         if let Some((model, b90_ts)) = self.fading {
             return super::rx::decode_scan_fading_for::<P>(
@@ -548,6 +569,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 self.ap(),
                 on_result,
                 ctx,
+                gate,
             );
         }
         match self.ap() {
@@ -561,6 +583,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 drift,
                 on_result,
                 ctx,
+                gate,
             ),
             None => super::rx::decode_scan_for::<P>(
                 audio,
@@ -571,6 +594,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 drift,
                 on_result,
                 ctx,
+                gate,
             ),
         }
     }

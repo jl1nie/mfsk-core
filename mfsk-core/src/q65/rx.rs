@@ -755,6 +755,7 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     ap_hint: Option<Q65Ap<'_>>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Q65Result> {
     scan_with::<P>(
         audio,
@@ -763,6 +764,7 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
         params,
         0,
         on_result,
+        gate,
         |c, _| {
             decode_at_fading_for::<P>(
                 audio,
@@ -864,6 +866,7 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     candidates: &[[i32; 63]],
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Q65Result> {
     if candidates.is_empty() {
         return Vec::new();
@@ -875,6 +878,7 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
         params,
         0,
         on_result,
+        gate,
         |c, _| {
             decode_at_with_ap_list_for::<P>(
                 audio,
@@ -936,6 +940,7 @@ fn scan_with<P: ModulationParams>(
     params: &super::search::SearchParams,
     max_drift: u32,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
     mut decode: impl FnMut(&super::search::SyncCandidate, f32) -> Option<Q65Result>,
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
@@ -964,6 +969,10 @@ fn scan_with<P: ModulationParams>(
         })
     };
     for &(c, idrift) in &cands {
+        // The caller's budget, once per candidate before it is tried (#593).
+        if !gate.proceed() {
+            return seen;
+        }
         if inside_decoded(&seen, c.freq_hz) {
             continue;
         }
@@ -1021,6 +1030,9 @@ fn scan_with<P: ModulationParams>(
     );
     let tol = dedup_freq_tol_hz::<P>();
     for (c, idrift) in cands2 {
+        if !gate.proceed() {
+            break;
+        }
         let same_cell = cands
             .iter()
             .any(|(r, _)| r.start_sample == c.start_sample && r.freq_hz == c.freq_hz);
@@ -1062,6 +1074,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
     drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Q65Result> {
     decode_scan_inner::<P>(
         audio,
@@ -1073,6 +1086,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
         drift,
         on_result,
         ctx,
+        gate,
     )
 }
 
@@ -1091,6 +1105,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Q65Result> {
     decode_scan_inner::<P>(
         audio,
@@ -1102,6 +1117,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
         drift,
         on_result,
         ctx,
+        gate,
     )
 }
 
@@ -1116,6 +1132,7 @@ fn decode_scan_inner<P: ModulationParams>(
     drift: Option<MaxDrift>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Q65Result> {
     scan_with::<P>(
         audio,
@@ -1124,6 +1141,7 @@ fn decode_scan_inner<P: ModulationParams>(
         params,
         drift.map_or(0, |d| d.max_bins),
         on_result,
+        gate,
         |c, drift_hz| {
             let chirp = drift.filter(|_| drift_hz != 0.0).map(|d| Chirp {
                 hz: drift_hz,

@@ -342,6 +342,7 @@ fn decode_scan_inner(
     npass: u8,
     mut averager: Option<(&mut averaging::Averager, i64, f32)>,
     on_result: Option<&(dyn Fn(&Jt65Result) + Sync)>,
+    gate: &crate::engine::pipeline::BudgetGate<'_>,
 ) -> Vec<Jt65Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
@@ -360,6 +361,10 @@ fn decode_scan_inner(
     let mut residue: Option<Vec<f32>> = (npass > 1).then(|| audio.to_vec());
     let mut seen: Vec<Jt65Result> = Vec::new();
     for ipass in 1..=npass.max(1) {
+        // A spent budget (#593) skips the passes after it.
+        if gate.exhausted() {
+            break;
+        }
         let work: &[f32] = residue.as_deref().unwrap_or(audio);
         let mut pass_params = *params;
         if npass > 1 {
@@ -369,6 +374,10 @@ fn decode_scan_inner(
         let subtract_after = npass > 1 && ipass < 4;
         let mut found: Vec<(f32, usize, [u8; 12])> = Vec::new();
         for c in cands {
+            // The caller's budget, once per candidate before it is tried.
+            if !gate.proceed() {
+                break;
+            }
             let decoded = match chase {
                 Some(p) => {
                     chase::decode_at_with_chase(work, sample_rate, c.start_sample, c.freq_hz, p)
