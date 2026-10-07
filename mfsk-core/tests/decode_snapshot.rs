@@ -635,20 +635,20 @@ mod via_decoder {
     }
 
     fn t8(sync: f32, n: usize) -> Tuning<Ft8Strategy> {
-        Tuning {
-            sync_min: Some(sync),
-            max_cand: Some(n),
-            ..Default::default()
-        }
+        let mut t = Tuning::default();
+        t.sync_min = Some(sync);
+        t.max_cand = Some(n);
+        t
     }
 
     #[test]
     fn ft8() {
         use mfsk_core::decoder::Ft8Extras;
         let Some(a) = load(FT8_WAV) else { return };
-        let x = || Ft8Extras {
-            tuning: t8(1.0, 200),
-            ..Default::default()
+        let x = || {
+            let mut e = Ft8Extras::default();
+            e.tuning = t8(1.0, 200);
+            e
         };
         let run = |p: DecodeParams, e: Ft8Extras| native::<Ft8>(p, e, &a);
         let with = |f: fn(&mut Ft8Extras)| {
@@ -741,12 +741,10 @@ mod via_decoder {
             }
             check(&format!("ft8_wsjtx_{name}"), &run(block().depth(depth), e));
         }
-        let sniper = Ft8Extras {
-            tuning: t8(0.8, 50),
-            ap_hint: Some(ApHint::new().with_call1("K1JT")),
-            sniper: Some(Sniper::default()),
-            ..Default::default()
-        };
+        let mut sniper = Ft8Extras::default();
+        sniper.tuning = t8(0.8, 50);
+        sniper.ap_hint = Some(ApHint::new().with_call1("K1JT"));
+        sniper.sniper = Some(Sniper::default());
         check("ft8_sniper_ap", &run(block().rx_freq(1_500.0), sniper));
     }
 
@@ -754,13 +752,11 @@ mod via_decoder {
     fn ft4() {
         use mfsk_core::decoder::Ft4Extras;
         let Some(a) = load(FT4_WAV) else { return };
-        let x = || Ft4Extras {
-            tuning: Tuning {
-                sync_min: Some(1.2),
-                max_cand: Some(200),
-                ..Default::default()
-            },
-            ..Default::default()
+        let x = || {
+            let mut e = Ft4Extras::default();
+            e.tuning.sync_min = Some(1.2);
+            e.tuning.max_cand = Some(200);
+            e
         };
         let run = |e: Ft4Extras| native::<Ft4>(block(), e, &a);
         check("ft4_default", &run(x()));
@@ -787,13 +783,11 @@ mod via_decoder {
     fn fst4() {
         use mfsk_core::decoder::Fst4Extras;
         let Some(a) = load(FST4_WAV) else { return };
-        let x = || Fst4Extras {
-            tuning: Tuning {
-                sync_min: Some(1.2),
-                max_cand: Some(200),
-                ..Default::default()
-            },
-            ..Default::default()
+        let x = || {
+            let mut e = Fst4Extras::default();
+            e.tuning.sync_min = Some(1.2);
+            e.tuning.max_cand = Some(200);
+            e
         };
         let run = |e: Fst4Extras| native::<Fst4s60>(block(), e, &a);
         check("fst4_60_default", &run(x()));
@@ -818,7 +812,7 @@ mod via_decoder {
     #[test]
     fn wspr() {
         use mfsk_core::Wspr;
-        use mfsk_core::decoder::{SearchTuning, WsprExtras};
+        use mfsk_core::decoder::WsprExtras;
         let Some(path) = common::corpus::golden_path("wspr/150426_0918.wav") else {
             common::skip_or_fail("WSPR golden");
             return;
@@ -829,13 +823,9 @@ mod via_decoder {
         // The 0.12 scan is wsprd's defaults: three passes with DT jitter and
         // `-C 10000`. Normal is that, but for the GUI's `-C 500`.
         let params = DecodeParams::for_band((1400.0, 1620.0)).depth(Depth::Normal);
-        let extras = WsprExtras {
-            search: SearchTuning {
-                max_candidates: Some(100),
-                ..Default::default()
-            },
-            max_cycles_per_bit: Some(10_000),
-        };
+        let mut extras = WsprExtras::default();
+        extras.search.max_candidates = Some(100);
+        extras.max_cycles_per_bit = Some(10_000);
         // One decoder over two periods: the table is state.
         let mut d = Decoder::<Wspr>::new(params).with_extras(extras);
         let first = d.decode(&SlotInput::f32(&a)).rows;
@@ -848,20 +838,17 @@ mod via_decoder {
     #[test]
     fn jt9() {
         use mfsk_core::Jt9;
-        use mfsk_core::decoder::{Jt9Extras, SearchTuning};
+        use mfsk_core::decoder::Jt9Extras;
         let Some(a) = common::load_wav_f32_opt(asset_path!("130418_1742.wav")) else {
             common::skip_or_fail("JT9 recording");
             return;
         };
         let params = DecodeParams::for_band((1050.0, 1550.0));
-        let extras = Jt9Extras {
-            search: SearchTuning {
-                time_tolerance_early_sec: Some(1.728),
-                time_tolerance_late_sec: Some(1.728),
-                score_threshold: Some(0.05),
-                max_candidates: Some(200),
-            },
-        };
+        let mut extras = Jt9Extras::default();
+        extras.search.time_tolerance_early_sec = Some(1.728);
+        extras.search.time_tolerance_late_sec = Some(1.728);
+        extras.search.score_threshold = Some(0.05);
+        extras.search.max_candidates = Some(200);
         for (depth, name) in [
             (Depth::Fast, "fast"),
             (Depth::Normal, "normal"),
@@ -927,11 +914,13 @@ mod via_decoder {
         use mfsk_core::fec::qra::FadingModel;
         use mfsk_core::q65::{Q65a30, Q65a60, Q65d60, standard_qso_codewords};
 
-        let tune = |early: f32, late: f32, n: usize| SearchTuning {
-            time_tolerance_early_sec: Some(early),
-            time_tolerance_late_sec: Some(late),
-            score_threshold: Some(0.05),
-            max_candidates: Some(n),
+        let tune = |early: f32, late: f32, n: usize| {
+            let mut t = SearchTuning::default();
+            t.time_tolerance_early_sec = Some(early);
+            t.time_tolerance_late_sec = Some(late);
+            t.score_threshold = Some(0.05);
+            t.max_candidates = Some(n);
+            t
         };
         // The 0.12 request ran the grid search at its Fast depth.
         let params = DecodeParams::for_band((200.0, 3000.0)).depth(Depth::Fast);
@@ -940,10 +929,11 @@ mod via_decoder {
         // +-6 s, the decoder's nominal is the frame's 1.0 s.
         if let Some(path) = common::corpus::golden_path("q65/60D_EME_10GHz/201212_1838.wav") {
             let a = common::load_wav_f32_opt(&path).unwrap();
-            let x = |fading| Q65Extras {
-                search: tune(7.0, 5.0, 8),
-                fading,
-                ..Default::default()
+            let x = |fading| {
+                let mut e = Q65Extras::default();
+                e.search = tune(7.0, 5.0, 8);
+                e.fading = fading;
+                e
             };
             let rows = Decoder::<Q65d60>::new(params.clone())
                 .with_extras(x(None))
@@ -962,11 +952,9 @@ mod via_decoder {
         // 60A EME with an AP hint; old nominal 30 s +-30 s, now 1.0 s.
         let eme = wavs_in("q65/60A_EME_6m");
         if let Some(a) = eme.first() {
-            let extras = Q65Extras {
-                search: tune(1.0, 59.0, 16),
-                ap_hint: Some(ApHint::new().with_call1("W7GJ")),
-                ..Default::default()
-            };
+            let mut extras = Q65Extras::default();
+            extras.search = tune(1.0, 59.0, 16);
+            extras.ap_hint = Some(ApHint::new().with_call1("W7GJ"));
             let rows = Decoder::<Q65a60>::new(params.clone())
                 .with_extras(extras)
                 .decode(&SlotInput::f32(a))
@@ -979,14 +967,15 @@ mod via_decoder {
         let slots = wavs_in("q65/30A_Ionoscatter_6m");
         if !slots.is_empty() {
             let averaging = params.clone().averaging(true);
-            let x = |ap: bool| Q65Extras {
-                search: tune(0.5, 29.5, 8),
-                ap_list: if ap {
+            let x = |ap: bool| {
+                let mut e = Q65Extras::default();
+                e.search = tune(0.5, 29.5, 8);
+                e.ap_list = if ap {
                     standard_qso_codewords("K1JT", "K9AN", "")
                 } else {
                     Vec::new()
-                },
-                ..Default::default()
+                };
+                e
             };
             // The AP-list (q3) decode places its `dt` on the grid from the
             // period's start. The 0.12 test passed a mid-period nominal, so

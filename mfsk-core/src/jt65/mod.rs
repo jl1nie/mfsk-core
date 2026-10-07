@@ -250,6 +250,7 @@ fn decode_at_with_erasures(
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 /// One successful JT65 decode with its alignment info.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Jt65Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,

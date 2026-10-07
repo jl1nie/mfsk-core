@@ -89,6 +89,7 @@ use alloc::vec::Vec;
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum ProtocolId {
     /// FT8 — 15 s slot, 8-FSK, LDPC(174,91), 77-bit message.
     Ft8 = 0,
@@ -851,5 +852,56 @@ impl SyncPhasors for () {
 
     fn table_for(&self, _df: f32) -> Option<&[num_complex::Complex<f32>]> {
         None
+    }
+}
+
+#[cfg(test)]
+mod protocol_id_tests {
+    use super::ProtocolId;
+
+    /// `ProtocolId` is `#[non_exhaustive]` since issue #573, so
+    /// `tests/protocol_invariants.rs` — another crate as far as the
+    /// compiler is concerned — can no longer match it exhaustively. The
+    /// "added a variant and forgot the rest of the wiring" tripwire that
+    /// match carried lives here instead, inside the crate, where
+    /// exhaustiveness still binds. It fires at compile time, not at run
+    /// time: adding a variant without a line here fails to build under
+    /// `--all-targets`.
+    ///
+    /// When it does fire: add the arm, then check the protocol is in
+    /// `registry::PROTOCOLS` and in the `expected_distinct` tally in
+    /// `tests/protocol_invariants.rs::every_wired_protocol_has_a_unique_protocol_id`.
+    #[test]
+    fn every_variant_is_accounted_for() {
+        fn tag(id: ProtocolId) -> &'static str {
+            match id {
+                ProtocolId::Ft8 => "Ft8",
+                ProtocolId::Ft4 => "Ft4",
+                ProtocolId::Ft2 => "Ft2",
+                ProtocolId::Fst4 => "Fst4",
+                ProtocolId::Jt65 => "Jt65",
+                ProtocolId::Jt9 => "Jt9",
+                ProtocolId::Wspr => "Wspr",
+                ProtocolId::Q65 => "Q65",
+                ProtocolId::UvPacket => "UvPacket",
+            }
+        }
+
+        // The discriminants are the C ABI's wire values, so pin them here
+        // too: a reordering that kept every variant would otherwise pass.
+        for (id, want_tag, want_discriminant) in [
+            (ProtocolId::Ft8, "Ft8", 0u8),
+            (ProtocolId::Ft4, "Ft4", 1),
+            (ProtocolId::Ft2, "Ft2", 2),
+            (ProtocolId::Fst4, "Fst4", 3),
+            (ProtocolId::Jt65, "Jt65", 4),
+            (ProtocolId::Jt9, "Jt9", 5),
+            (ProtocolId::Wspr, "Wspr", 6),
+            (ProtocolId::Q65, "Q65", 7),
+            (ProtocolId::UvPacket, "UvPacket", 8),
+        ] {
+            assert_eq!(tag(id), want_tag);
+            assert_eq!(id as u8, want_discriminant, "{want_tag} discriminant");
+        }
     }
 }

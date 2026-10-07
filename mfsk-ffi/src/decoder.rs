@@ -433,12 +433,14 @@ fn hint_of(e: &MfskExtras) -> Option<ApHint> {
 
 fn search_tuning(e: &MfskExtras) -> mfsk_core::decoder::SearchTuning {
     let f = |v: f32| v.is_finite().then_some(v);
-    mfsk_core::decoder::SearchTuning {
-        time_tolerance_early_sec: f(e.t_early_s),
-        time_tolerance_late_sec: f(e.t_late_s),
-        score_threshold: f(e.score_threshold),
-        max_candidates: (e.max_cand > 0).then_some(e.max_cand as usize),
-    }
+    // `SearchTuning` is `#[non_exhaustive]` (issue #573), so it is built
+    // from `Default` and assigned field by field rather than by literal.
+    let mut t = mfsk_core::decoder::SearchTuning::default();
+    t.time_tolerance_early_sec = f(e.t_early_s);
+    t.time_tolerance_late_sec = f(e.t_late_s);
+    t.score_threshold = f(e.score_threshold);
+    t.max_candidates = (e.max_cand > 0).then_some(e.max_cand as usize);
+    t
 }
 
 /// Apply `e` to `any`, replacing its extras block. An option the mode does
@@ -449,9 +451,7 @@ fn apply_extras(
     e: &MfskExtras,
     q65_callers: &Option<mfsk_core::q65::Q65Callers>,
 ) -> Result<(), (MfskStatus, String)> {
-    use mfsk_core::decoder::{
-        Fst4Strategy, Ft4Strategy, Ft8Strategy, MessageFilter, Sniper, Tuning,
-    };
+    use mfsk_core::decoder::{Fst4Strategy, Ft4Strategy, Ft8Strategy, MessageFilter, Sniper};
     use mfsk_core::engine::equalize::EqMode;
 
     let eq = match e.eq_mode {
@@ -512,25 +512,21 @@ fn apply_extras(
             refuse(e.max_cycles_per_bit != 0, "Fano cycle budget")?;
             refuse(e.chase_trials != 0, "Chase decoder")?;
             *x = Default::default();
-            x.tuning = Tuning {
-                sync_min,
-                max_cand,
-                osd,
-                strictness,
-                strategy: match e.strategy {
-                    MFSK_STRATEGY_SINGLE_PASS => Some(Ft8Strategy::SinglePass),
-                    MFSK_STRATEGY_SIC_ROUNDS => Some(Ft8Strategy::SicRounds(e.sic_rounds as usize)),
-                    MFSK_STRATEGY_SIC_EARLY => Some(Ft8Strategy::SicEarly),
-                    _ => None,
-                },
+            x.tuning.sync_min = sync_min;
+            x.tuning.max_cand = max_cand;
+            x.tuning.osd = osd;
+            x.tuning.strictness = strictness;
+            x.tuning.strategy = match e.strategy {
+                MFSK_STRATEGY_SINGLE_PASS => Some(Ft8Strategy::SinglePass),
+                MFSK_STRATEGY_SIC_ROUNDS => Some(Ft8Strategy::SicRounds(e.sic_rounds as usize)),
+                MFSK_STRATEGY_SIC_EARLY => Some(Ft8Strategy::SicEarly),
+                _ => None,
             };
             x.eq = eq;
             x.filter = filter;
             x.a7 = e.a7 != 0;
             x.ap_hint = hint;
-            x.sniper = (e.sniper_hz > 0.0).then_some(Sniper {
-                search_hz: e.sniper_hz,
-            });
+            x.sniper = (e.sniper_hz > 0.0).then(|| Sniper::new(e.sniper_hz));
         }
         #[cfg(feature = "protocols")]
         AnyExtras::Ft4(x) => {
@@ -546,16 +542,14 @@ fn apply_extras(
             refuse(e.sniper_hz > 0.0, "roofing-filter (sniper) search")?;
             refuse(e.strategy == MFSK_STRATEGY_SIC_EARLY, "checkpointed passes")?;
             *x = Default::default();
-            x.tuning = Tuning {
-                sync_min,
-                max_cand,
-                osd,
-                strictness,
-                strategy: match e.strategy {
-                    MFSK_STRATEGY_SINGLE_PASS => Some(Ft4Strategy::SinglePass),
-                    MFSK_STRATEGY_SIC_ROUNDS => Some(Ft4Strategy::SicRounds(e.sic_rounds as usize)),
-                    _ => None,
-                },
+            x.tuning.sync_min = sync_min;
+            x.tuning.max_cand = max_cand;
+            x.tuning.osd = osd;
+            x.tuning.strictness = strictness;
+            x.tuning.strategy = match e.strategy {
+                MFSK_STRATEGY_SINGLE_PASS => Some(Ft4Strategy::SinglePass),
+                MFSK_STRATEGY_SIC_ROUNDS => Some(Ft4Strategy::SicRounds(e.sic_rounds as usize)),
+                _ => None,
             };
             x.eq = eq;
             x.filter = filter;
@@ -603,14 +597,12 @@ fn apply_extras(
                 None
             };
             *x = Default::default();
-            x.tuning = Tuning {
-                sync_min,
-                max_cand,
-                osd,
-                strictness,
-                strategy: (e.strategy == MFSK_STRATEGY_SINGLE_PASS)
-                    .then_some(Fst4Strategy::SinglePass),
-            };
+            x.tuning.sync_min = sync_min;
+            x.tuning.max_cand = max_cand;
+            x.tuning.osd = osd;
+            x.tuning.strictness = strictness;
+            x.tuning.strategy =
+                (e.strategy == MFSK_STRATEGY_SINGLE_PASS).then_some(Fst4Strategy::SinglePass);
             x.eq = eq;
             x.filter = filter;
             x.ap_hint = hint;

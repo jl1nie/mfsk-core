@@ -333,6 +333,7 @@ pub(crate) fn submode_index_from_params<P: ModulationParams>() -> u8 {
 
 /// One successful Q65 decode with its alignment metadata.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Q65Result {
     /// Decoded human-readable Wsjt77 message.
     pub message: String,

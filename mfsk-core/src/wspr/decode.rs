@@ -18,6 +18,7 @@ use super::search::coarse_search;
 
 /// One successful WSPR decode.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct WsprResult {
     /// Recovered message payload.
     pub message: WsprMessage,

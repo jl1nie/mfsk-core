@@ -640,6 +640,7 @@ pub fn is_plausible_call(field: &str) -> bool {
 /// question left for a consumer is whether the *callsigns* are
 /// plausible, which is what [`Wsjt77Fields::callsigns`] is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Wsjt77Fields {
     /// `i3=0, n3=0` — 13 characters from a 42-symbol alphabet. Nearly
     /// every bit pattern is one, so there is nothing here to check.
