@@ -345,3 +345,107 @@ fn errors_are_statuses_not_crashes() {
     unsafe { mfsk_iq_close(ptr::null_mut()) };
     unsafe { mfsk_iq_close(rx) };
 }
+
+/// Rows the channel decoder's callback saw, with their stage.
+extern "C" fn seen_row(row: *const MfskDecode, user: *mut c_void) {
+    let seen = unsafe { &mut *(user as *mut Vec<(String, u8)>) };
+    let row = unsafe { &*row };
+    let t = unsafe { CStr::from_ptr(row.text.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    seen.push((t, row.stage));
+}
+
+/// #601: an FT8 channel decodes early by default. Checkpoint A's row reaches
+/// the channel decoder's callback and `mfsk_iq_poll` before the slot is
+/// whole, marked `MFSK_STAGE_EARLY`; the whole slot queues no second copy,
+/// and the callback sees the row once. `mfsk_iq_set_early(.., false)` gives
+/// whole slots only, as before.
+#[test]
+fn an_early_row_arrives_before_the_slot_is_whole() {
+    let iq = scene();
+    let bytes = encode(&iq, MFSK_IQ_FORMAT_CF32);
+    // 13 s of IQ: past checkpoint A (11.8 s), short of the whole 15 s slot.
+    let split = 13 * FS as usize * 8;
+    for early in [true, false] {
+        let rx = open(MFSK_IQ_FORMAT_CF32);
+        let mut ch = u32::MAX;
+        assert_eq!(
+            unsafe {
+                mfsk_iq_add_channel(
+                    rx,
+                    DIAL,
+                    MfskMode::Ft8 as u32,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut ch,
+                )
+            },
+            MfskStatus::Ok
+        );
+        if !early {
+            assert_eq!(unsafe { mfsk_iq_set_early(rx, ch, false) }, MfskStatus::Ok);
+        }
+        let mut seen: Vec<(String, u8)> = Vec::new();
+        let dec = unsafe { mfsk_iq_channel_decoder(rx, ch) };
+        assert_eq!(
+            unsafe {
+                mfsk_decoder_set_on_decode(dec, Some(seen_row), &mut seen as *mut _ as *mut c_void)
+            },
+            MfskStatus::Ok
+        );
+        unsafe { mfsk_iq_set_time(rx, T0_NS, 0, ptr::null_mut()) };
+        unsafe { mfsk_iq_push(rx, bytes.as_ptr() as *const c_void, split) };
+        let before = drain(rx);
+        if early {
+            let hit = before
+                .iter()
+                .find(|d| text(d) == TEXT)
+                .unwrap_or_else(|| panic!("{TEXT} not decoded early: {}", before.len()));
+            assert_eq!(hit.stage, MFSK_STAGE_EARLY);
+            assert!(hit.delivery >= 0, "a callback was set");
+            assert_eq!(seen, vec![(TEXT.to_string(), MFSK_STAGE_EARLY)]);
+        } else {
+            assert!(before.is_empty(), "early decode is off");
+            assert!(seen.is_empty());
+        }
+        unsafe {
+            mfsk_iq_push(
+                rx,
+                bytes[split..].as_ptr() as *const c_void,
+                bytes.len() - split,
+            )
+        };
+        let after = drain(rx);
+        let all: Vec<_> = before
+            .iter()
+            .chain(&after)
+            .filter(|d| text(d) == TEXT)
+            .collect();
+        assert_eq!(all.len(), 1, "early {early}: the row once in the queue");
+        assert_eq!(
+            seen.iter().filter(|(t, _)| t == TEXT).count(),
+            1,
+            "early {early}: the row once through the callback: {seen:?}"
+        );
+        if !early {
+            assert_eq!(all[0].stage, MFSK_STAGE_NONE, "a plain decode");
+        }
+        unsafe { mfsk_iq_close(rx) };
+    }
+}
+
+/// `mfsk_iq_set_early` on a channel that does not exist is an error.
+#[test]
+fn set_early_needs_a_channel() {
+    let rx = open(MFSK_IQ_FORMAT_CF32);
+    assert_eq!(
+        unsafe { mfsk_iq_set_early(rx, 9, true) },
+        MfskStatus::InvalidArg
+    );
+    assert_eq!(
+        unsafe { mfsk_iq_set_early(ptr::null_mut(), 0, true) },
+        MfskStatus::NullPointer
+    );
+    unsafe { mfsk_iq_close(rx) };
+}

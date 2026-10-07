@@ -1438,6 +1438,13 @@ typedef struct MfskIqDecode {
      * with the frequency, not by text.
      */
     uint8_t key[MFSK_DECODE_KEY_LEN];
+    /**
+     * As `MfskDecode::stage`: [`MFSK_STAGE_EARLY`] for a row found before
+     * the slot was whole (FT8's checkpoint A, ~11.8 s; the receiver decodes
+     * early unless `mfsk_iq_set_early` turned it off for the channel),
+     * [`MFSK_STAGE_FINAL`] for one found by the whole slot. Appended (#601).
+     */
+    uint8_t stage;
 } MfskIqDecode;
 
 /**
@@ -2106,10 +2113,42 @@ enum MfskStatus mfsk_stream_set_time(struct MfskStream *s,
                                      int32_t *out_change);
 
 /**
- * Whether a completed slot is waiting.
+ * Whether a slot is waiting: a completed one, or with prefix points
+ * ([`mfsk_stream_set_prefix_points`]) the slot so far.
  */
 MFSK_API
 bool mfsk_stream_slot_ready(const struct MfskStream *s);
+
+/**
+ * Whether the waiting slot is whole rather than a prefix of it; `false`
+ * when none is waiting. A stream without prefix points only has whole
+ * slots.
+ */
+MFSK_API
+bool mfsk_stream_slot_is_whole(const struct MfskStream *s);
+
+/**
+ * Early decode on a stream (#601), off by default: from the next slot that
+ * opens, the stream also makes the slot so far ready at each of these
+ * 12 kHz sample counts, then the whole slot. Pass the decoder's
+ * `mfsk_decoder_prefix_points`, and decode every slot the stream makes ready
+ * with `mfsk_decoder_decode_stream` (or, after
+ * `mfsk_stream_take_slot_i16`, with `mfsk_decoder_decode_prefix_i16`, the
+ * whole slot included): checkpoint A's rows then arrive at ~11.8 s with
+ * `stage == MFSK_STAGE_EARLY`. A newer delivery of the same period replaces
+ * an untaken prefix without counting in [`mfsk_stream_dropped`]. A period
+ * the stream already delivered part of is not delivered again (a clock
+ * stepped back). `n == 0` turns it off. Off by default because a caller of
+ * `mfsk_stream_take_slot_i16` would otherwise get short slots it did not
+ * ask for.
+ *
+ * # Safety
+ * `points` must be `n` readable `size_t` (or null when `n` is 0).
+ */
+MFSK_API
+enum MfskStatus mfsk_stream_set_prefix_points(struct MfskStream *s,
+                                              const uintptr_t *points,
+                                              uintptr_t n);
 
 /**
  * Completed slots a newer one replaced before they were taken.
@@ -2122,7 +2161,9 @@ uint64_t mfsk_stream_dropped(const struct MfskStream *s);
  * and, when a clock is set, its UTC start.
  *
  * Returns the number of samples written, or 0 if no slot is ready or `cap`
- * is too small — size from `MfskModeInfo::slot_samples_12k`.
+ * is too small — size from `MfskModeInfo::slot_samples_12k`. With prefix
+ * points the slot may be a prefix: fewer samples, and
+ * [`mfsk_stream_slot_is_whole`] false before the take.
  *
  * # Safety
  * `out` must be `cap` writable `int16_t`; `out_period` and `out_utc_ns` may
@@ -2466,6 +2507,26 @@ int32_t mfsk_iq_channel_state(struct MfskIqReceiver *rx,
                               uint32_t channel);
 
 /**
+ * Decode a channel early, or not (#601). On (the default for every
+ * channel): when the channel decoder has checkpoints — FT8 at Normal or
+ * Deep depth, whose `SicEarly` strategy acts at ~11.8 s — the receiver hands
+ * it the slot so far at each one, so its rows reach the decoder's
+ * `mfsk_decoder_set_on_decode` callback and [`mfsk_iq_poll`] before the slot
+ * is whole, with `stage == MFSK_STAGE_EARLY`, as WSJT-X shows them; the
+ * whole slot then adds the rest, and a row already queued early is not
+ * queued again. Every other mode and depth decodes the whole slot either
+ * way. Off: whole slots only, as before. Takes effect from the next slot
+ * that opens. `MFSK_STATUS_INVALID_ARG` if there is no such channel.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_iq_set_early(struct MfskIqReceiver *rx,
+                                  uint32_t channel,
+                                  bool on);
+
+/**
  * Remove a channel. `MFSK_STATUS_INVALID_ARG` if there is no such channel.
  *
  * # Safety
@@ -2524,8 +2585,10 @@ enum MfskStatus mfsk_iq_gap(struct MfskIqReceiver *rx,
 /**
  * Push `n_bytes` of IQ in the format the receiver was opened with,
  * little-endian, I then Q; a sample split across calls is carried over. Every
- * slot this completes is decoded before the call returns; what it found waits
- * for [`mfsk_iq_poll`].
+ * slot this completes is decoded before the call returns, and so is every
+ * early checkpoint it reaches on a channel that decodes early
+ * ([`mfsk_iq_set_early`]); what they found goes to the channel decoder's
+ * callback as it is found and waits for [`mfsk_iq_poll`].
  *
  * # Safety
  * `data` must be `n_bytes` readable bytes (or null when `n_bytes` is 0).
@@ -2882,6 +2945,13 @@ enum MfskStatus mfsk_decoder_copy_info(const struct MfskDecoder *dec,
  * ready yet, so a caller can poll this instead of
  * [`mfsk_stream_slot_ready`].
  *
+ * On a stream with prefix points (`mfsk_stream_set_prefix_points`) a ready
+ * prefix is decoded as `mfsk_decoder_decode_prefix_i16` would, and so is the
+ * whole slot of a period whose prefixes this call decoded: checkpoint A's
+ * rows come back (and reach the `mfsk_decoder_set_on_decode` callback) at
+ * ~11.8 s with `stage == MFSK_STAGE_EARLY`, and the whole slot's call
+ * returns the period's complete set.
+ *
  * # Safety
  * As [`mfsk_decoder_decode_i16`], plus `stream` must be a live stream
  * opened for the same mode as `dec`; `out_period` and `out_slot_start_utc_ns`
@@ -2895,6 +2965,25 @@ enum MfskStatus mfsk_decoder_decode_stream(struct MfskDecoder *dec,
                                            uintptr_t *out_len,
                                            int64_t *out_period,
                                            int64_t *out_slot_start_utc_ns);
+
+/**
+ * The prefix lengths, in 12 kHz samples, at which a `decode_prefix` call
+ * does work before the whole period, under the decoder's current settings
+ * (#601): `141696, 162432` for FT8 at Normal or Deep depth (its `SicEarly`
+ * strategy), none for every other mode and setting. Hand them to
+ * `mfsk_stream_set_prefix_points`; ask again after changing the params or
+ * extras. `*out_len` receives the count; `MFSK_STATUS_INVALID_ARG` when it
+ * is more than `cap`.
+ *
+ * # Safety
+ * `out` must be `cap` writable `size_t` (or null when `cap` is 0);
+ * `out_len` may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_decoder_prefix_points(const struct MfskDecoder *dec,
+                                           uintptr_t *out,
+                                           uintptr_t cap,
+                                           uintptr_t *out_len);
 
 /**
  * As [`mfsk_unpack77`], resolving `<...>` callsigns against the decoder's

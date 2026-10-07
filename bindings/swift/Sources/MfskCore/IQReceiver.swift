@@ -81,6 +81,11 @@ public struct IQDecode: Sendable, Equatable {
     public let keyBits: UInt8
     /// As ``Decode/delivery``, for a handler set on the channel's decoder.
     public let delivery: UInt32?
+    /// ``Decode/Stage/early`` for a row found before the slot was whole
+    /// (FT8's checkpoint A, ~11.8 s; see ``IQReceiver/setEarly(_:forChannel:)``),
+    /// ``Decode/Stage/final`` for one the whole slot found, nil from a plain
+    /// decode (early decode off).
+    public let stage: Decode.Stage?
 
     init(_ raw: MfskIqDecode) {
         self.channel = raw.channel
@@ -105,6 +110,11 @@ public struct IQDecode: Sendable, Equatable {
         self.key = detail.key
         self.keyBits = raw.key_bits
         self.delivery = detail.delivery
+        switch Int32(raw.stage) {
+        case MFSK_STAGE_EARLY: self.stage = .early
+        case MFSK_STAGE_FINAL: self.stage = .final
+        default: self.stage = nil
+        }
     }
 }
 
@@ -207,6 +217,17 @@ public final class IQReceiver {
         modes[channel] = nil
     }
 
+    /// Decode a channel early, or not (#601). On (the default): an FT8
+    /// channel at normal or deep depth also decodes the slot so far at
+    /// ~11.8 s, so those rows reach the channel decoder's handler and
+    /// ``poll()`` before the slot is whole, with ``Decode/Stage/early``; the
+    /// whole slot adds the rest without repeating them. Other modes and
+    /// depths decode the whole slot either way. Throws
+    /// ``MfskError/Code/invalidArgument`` if there is no such channel.
+    public func setEarly(_ on: Bool, forChannel channel: UInt32) throws {
+        try check(mfsk_iq_set_early(handle, channel, on))
+    }
+
     // MARK: Time
 
     /// The stream's complex sample `atSample` (as ``samplesIn`` counts) was
@@ -246,9 +267,10 @@ public final class IQReceiver {
 
     /// Push IQ bytes in the format the receiver was opened with,
     /// little-endian, I then Q; a sample split across calls is carried over.
-    /// Every slot this completes is decoded before the call returns; what it
-    /// found waits for ``poll()``. A call can therefore take as long as a
-    /// decode.
+    /// Every slot this completes is decoded before the call returns, and so
+    /// is every early checkpoint it reaches (``setEarly(_:forChannel:)``);
+    /// what they found waits for ``poll()``. A call can therefore take as
+    /// long as a decode.
     public func push(_ bytes: [UInt8]) throws {
         guard !bytes.isEmpty else { return }
         try bytes.withUnsafeBytes { raw in

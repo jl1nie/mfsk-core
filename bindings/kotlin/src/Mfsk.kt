@@ -935,6 +935,7 @@ class MfskDecoder private constructor(
         ): Long
         @JvmStatic private external fun nativeLastBudget(handle: Long): IntArray
         @JvmStatic private external fun nativeDeliveryIsExact(handle: Long): Boolean
+        @JvmStatic private external fun nativePrefixPoints(handle: Long): IntArray
         @JvmStatic private external fun nativeDecodePrefixI16(
             handle: Long, samples: ShortArray, sampleRate: Int, period: Long,
         ): Array<MfskDecode>
@@ -1081,10 +1082,19 @@ class MfskDecoder private constructor(
     /// Throws [MfskInvalidArgException] past the last row.
     fun copyInfo(index: Int): ByteArray = nativeCopyInfo(owner("copyInfo"), index)
 
+    /// The prefix lengths, in 12 kHz samples, at which [decodePrefix] does
+    /// work before the whole period under the current settings:
+    /// `[141696, 162432]` for FT8 at Normal or Deep depth, empty otherwise.
+    /// Hand them to [MfskStream.setPrefixPoints]; ask again after changing
+    /// the params or extras.
+    val prefixPoints: IntArray get() = nativePrefixPoints(live())
+
     /// Decode the stream's ready slot, with the slot's own index as the
-    /// period, or return null when no whole slot is ready yet — so this can be
+    /// period, or return null when no slot is ready yet — so this can be
     /// polled in place of [MfskStream.slotReady]. The stream has to be for the
-    /// same mode.
+    /// same mode. On a stream with [MfskStream.setPrefixPoints] a prefix is
+    /// decoded as [decodePrefix] would: checkpoint A's rows come back at
+    /// ~11.8 s with [MfskStage.EARLY].
     fun decodeStream(stream: MfskStream): MfskSlotDecode? {
         val meta = LongArray(2)
         val rows = nativeDecodeStream(owner("decodeStream"), stream.raw, meta) ?: return null
@@ -1223,6 +1233,8 @@ class MfskStream private constructor(private var handle: Long, val mode: Int) : 
         @JvmStatic private external fun nativePosition(handle: Long): Long
         @JvmStatic private external fun nativeSetTime(handle: Long, utcNs: Long, atSample: Long): Int
         @JvmStatic private external fun nativeSlotReady(handle: Long): Boolean
+        @JvmStatic private external fun nativeSlotIsWhole(handle: Long): Boolean
+        @JvmStatic private external fun nativeSetPrefixPoints(handle: Long, points: IntArray)
         @JvmStatic private external fun nativeDropped(handle: Long): Long
         @JvmStatic private external fun nativeTakeSlot(handle: Long, cap: Int, meta: LongArray): ShortArray?
         @JvmStatic private external fun nativeClear(handle: Long)
@@ -1251,8 +1263,20 @@ class MfskStream private constructor(private var handle: Long, val mode: Int) : 
     fun setTime(utcNs: Long, atSample: Long): MfskClockChange =
         MfskClockChange.of(nativeSetTime(raw, utcNs, atSample))
 
-    /// Whether a completed slot is waiting.
+    /// Whether a slot is waiting: a completed one, or with [setPrefixPoints]
+    /// the slot so far.
     val slotReady: Boolean get() = nativeSlotReady(raw)
+
+    /// Whether the waiting slot is whole rather than a prefix; false when none
+    /// is waiting.
+    val slotIsWhole: Boolean get() = nativeSlotIsWhole(raw)
+
+    /// Early decode, off by default: from the next slot, the stream also makes
+    /// the slot so far ready at each of these 12 kHz sample counts, then the
+    /// whole slot. Pass [MfskDecoder.prefixPoints] and decode every slot with
+    /// [MfskDecoder.decodeStream]. An empty array turns it off. Opt-in because
+    /// a [takeSlot] caller would otherwise get short slots.
+    fun setPrefixPoints(points: IntArray) = nativeSetPrefixPoints(raw, points)
 
     /// Completed slots a newer one replaced before they were taken.
     val dropped: Long get() = nativeDropped(raw)
@@ -1340,6 +1364,11 @@ class MfskIqDecode internal constructor(
     val keyBits: Int,
     /// As [MfskDecode.delivery], for a listener set on the channel's decoder.
     val delivery: Int?,
+    /// [MfskStage.EARLY] for a row found before the slot was whole (FT8's
+    /// checkpoint A, ~11.8 s; see [MfskIqReceiver.setEarly]),
+    /// [MfskStage.FINAL] for one the whole slot found, null from a plain
+    /// decode (early decode off).
+    val stage: MfskStage? = null,
 ) {
     /// UTC of the slot start, ns since the Unix epoch, or null on a
     /// free-running grid.
@@ -1389,6 +1418,7 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
         @JvmStatic private external fun nativeSetTime(handle: Long, utcNs: Long, atSample: Long): Int
         @JvmStatic private external fun nativeRetune(handle: Long, centerHz: Double): IntArray
         @JvmStatic private external fun nativeGap(handle: Long, lost: Long)
+        @JvmStatic private external fun nativeSetEarly(handle: Long, channel: Int, on: Boolean)
         @JvmStatic private external fun nativePush(handle: Long, data: ByteArray, length: Int)
         @JvmStatic private external fun nativeSamplesIn(handle: Long): Long
         @JvmStatic private external fun nativePending(handle: Long): Int
@@ -1466,9 +1496,16 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
     /// slots are dropped.
     fun gap(lost: Long) = nativeGap(live(), lost)
 
+    /// Decode a channel early, or not. On (the default): an FT8 channel at
+    /// Normal or Deep depth also decodes the slot so far at ~11.8 s, so those
+    /// rows reach the channel decoder's listener and [poll] before the slot is
+    /// whole, with [MfskStage.EARLY]; the whole slot adds the rest without
+    /// repeating them. Other modes and depths decode the whole slot either way.
+    fun setEarly(channel: Int, on: Boolean) = nativeSetEarly(live(), channel, on)
+
     /// Push IQ in the format the receiver was opened with, little-endian, I
     /// then Q; a sample split across calls is carried over. Decodes every slot
-    /// this completes before returning.
+    /// this completes, and every early checkpoint it reaches, before returning.
     fun push(data: ByteArray, length: Int = data.size) = nativePush(live(), data, length)
 
     /// Complex samples consumed so far, gaps included: the stream's clock.
