@@ -9,7 +9,7 @@ use std::io::{BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use mfsk_core::iq::IqSampleFormat;
 
@@ -88,6 +88,22 @@ pub struct Conn {
     /// When [`Self::read`] last got a message, for the stall check.
     last_rx: Instant,
     stall: Duration,
+    /// Both clocks at the previous pass of [`Self::read`]'s loop, for the sleep check.
+    tick: (Instant, SystemTime),
+}
+
+/// How much more the wall clock may advance than `Instant` between two passes of
+/// [`Conn::read`] (one every 200 ms at most) before the machine is taken to have slept.
+/// macOS stops `Instant` while asleep and not the wall clock; an NTP step that large is rare
+/// and costs one reconnect.
+const SLEEP_JUMP: Duration = Duration::from_secs(3);
+
+/// Text of the error [`Conn::read`] returns on waking, which `describe` in lib.rs recognises.
+pub const SLEPT: &str = "the machine slept";
+
+/// Whether `wall` advanced `SLEEP_JUMP` more than `mono` since the last pass.
+fn slept(mono: Duration, wall: Option<Duration>) -> bool {
+    wall.is_some_and(|w| w.saturating_sub(mono) >= SLEEP_JUMP)
 }
 
 /// Silence after which [`Conn::read`] takes the connection for dead.
@@ -137,6 +153,7 @@ impl Conn {
             queued,
             last_rx: Instant::now(),
             stall: STALL,
+            tick: (Instant::now(), SystemTime::now()),
         })
     }
 
@@ -166,6 +183,18 @@ impl Conn {
         loop {
             if stop.load(Ordering::Relaxed) {
                 return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            // A connection that crossed a sleep is dead whatever the socket says: the server
+            // has long given up on it, or holds a stale slot (client limit) until its own
+            // timeout. Reconnect now rather than after STALL more seconds awake.
+            let (now, wall) = (Instant::now(), SystemTime::now());
+            let gone = slept(
+                now.duration_since(self.tick.0),
+                wall.duration_since(self.tick.1).ok(),
+            );
+            self.tick = (now, wall);
+            if gone {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, SLEPT));
             }
             match self.msgs.recv_timeout(Duration::from_millis(200)) {
                 Ok(m) => {
@@ -380,5 +409,15 @@ mod tests {
             assert_eq!(c.read(&stop).unwrap().kind, MSG_PONG);
         }
         let _held = server.join().unwrap();
+    }
+
+    #[test]
+    fn a_wall_clock_jump_is_a_sleep() {
+        let ms = Duration::from_millis;
+        assert!(slept(ms(200), Some(Duration::from_secs(40))));
+        assert!(!slept(ms(200), Some(ms(210))));
+        // Clock stepped back, or unreadable: not a sleep.
+        assert!(!slept(ms(200), None));
+        assert!(!slept(Duration::from_secs(5), Some(ms(100))));
     }
 }

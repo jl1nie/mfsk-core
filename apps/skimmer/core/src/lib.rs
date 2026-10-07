@@ -1163,6 +1163,11 @@ enum End {
 /// open) accepts the socket and closes it at once.
 fn describe(e: &std::io::Error) -> String {
     use std::io::ErrorKind::*;
+    if e.get_ref()
+        .is_some_and(|i| i.to_string() == spyserver::SLEPT)
+    {
+        return "woke from sleep, reconnecting".into();
+    }
     match e.kind() {
         UnexpectedEof => "closed by the server (client limit?)".into(),
         ConnectionRefused => "refused (is the server running?)".into(),
