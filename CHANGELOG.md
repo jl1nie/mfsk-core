@@ -7,6 +7,12 @@
   C search that was then refused. Native, `qso3_busy.wav`, sync 1.0, 200 candidates: a 300 ms budget ran 641 ms, 340 ms
   past its first `false`; it now runs 304 ms, 1-2 ms past (100 ms: 334 → 102 ms). The budget is now polled after A and
   before each row's subtraction. Without a budget, or with one that lasts into C, nothing changes.
+  Its first test only covered the guard after A, so both per-row polls could be deleted with it still green; a second
+  test now bisects the poll sequence to stop *inside* the loops, and fails if either `break` goes. `BudgetReport` gains
+  **`rows_subtracted`** for it, which is also what lets a caller tell a cut taken while cleaning up from one taken while
+  searching — `cut_at_sync`/`cut_at_score` are `None` for both, since a row being subtracted carries no candidate
+  ranking. Not mirrored in `MfskBudgetReport` yet; that struct is size-versioned, so adding it later costs a C caller
+  nothing.
 - **CI: a `wasm` job decodes one slot of every mode on `wasm32-unknown-unknown`, in Node (#585).** The #583 panic shipped for
   five releases because nothing ran that target. `wasm-smoke/` (outside the workspace) fails naming the modes that panic;
   against the tree before #584 it fails for WSPR and MSK144 and for no other of the 21. Not a timing or SIMD check: that is `bench/wasm`.
