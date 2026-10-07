@@ -9,8 +9,8 @@
   real `IqReceiver` (f32 audio, `Direct` and `Pfb`) the same 21 rows come back, `decode_with` delivering exactly the
   rows `decode` returns, the first at 30 ms, the median at 160-180 ms and the last at 1.56-1.71 s of 1.9-2.0 s. Not run
   against a live SpyServer or through the GUI.
-  Total work and `dropped_slots` are unchanged; only when a row can be shown moves. The parallel strategies (WSPR, JT9,
-  JT65, Q65) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits (or,
+  Total work and `dropped_slots` are unchanged; only when a row can be shown moves. The parallel strategies (FT4 at
+  `Depth::Fast`, FST4, WSPR) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits (or,
   for a mode without them, its text and frequency to the Hz) are seen. A streamed row is resolved against the callsign table as it stood when
   the period began, so a `<...>` that the same period teaches stays `<...>`.
 - **FT8 `SicEarly` stops when its budget does (#587).** The subtractions between checkpoints A, B and C had no budget

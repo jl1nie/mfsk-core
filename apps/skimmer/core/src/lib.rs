@@ -332,10 +332,13 @@ enum Job {
 /// twice is noise, a row dropped is a lost spot.
 ///
 /// It is needed because `decode_with` has two delivery contracts
-/// (`docs/reference/STREAMING.md` §3): a sequential strategy (FT8 and FT4 at
-/// `Depth::Normal`/`Deep`, FST4) delivers exactly the rows it returns, but a
-/// parallel one (WSPR, JT9, JT65, Q65) delivers in completion order and may
-/// show a transient duplicate that the returned rows have already removed.
+/// (`docs/reference/STREAMING.md` §3). A sequential strategy (FT8 and FT4 at
+/// `Depth::Normal`/`Deep`, JT65, JT9, Q65) delivers exactly the rows it
+/// returns. A parallel one (FT4 at `Depth::Fast`, FST4, FT8's sniper, WSPR)
+/// delivers in completion order and may show a transient duplicate that the
+/// returned rows have already removed. Of those, WSPR is the one with no
+/// information bits to key on, so it is the one that relies on the text and
+/// frequency key.
 /// None was seen on any of the repository's recordings (19 decodes across
 /// every mode, `callbacks == returned` in all), so this is a guard on a
 /// documented contract rather than a fix for an observed fault.
