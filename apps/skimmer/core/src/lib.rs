@@ -339,9 +339,11 @@ enum Job {
 /// returned rows have already removed. Of those, WSPR is the one with no
 /// information bits to key on, so it is the one that relies on the text and
 /// frequency key.
-/// None was seen on any of the repository's recordings (19 decodes across
-/// every mode, `callbacks == returned` in all), so this is a guard on a
-/// documented contract rather than a fix for an observed fault.
+/// None was seen on any of the repository's recordings (19 recording x depth
+/// configurations, two periods each, over FT8, FT4, FST4-60A, WSPR, JT9, JT65
+/// and Q65; `callbacks == returned` in all, though Q65 gave rows on only two
+/// of its seven files), so this is a guard on a documented contract rather
+/// than a fix for an observed fault. The survey is jl1nie/mfsk-core#592.
 #[derive(Default)]
 struct Delivered(std::sync::Mutex<std::collections::HashSet<(bool, Vec<u8>)>>);
 
