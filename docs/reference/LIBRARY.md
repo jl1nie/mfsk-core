@@ -643,7 +643,12 @@ process that was suspended mid-slot.
 `SlotResult::budget` is a `BudgetReport` saying what the cut left
 undone: candidates skipped, stages run, and how good the best skipped
 candidate was — so a caller can tell "nothing was there" from "we ran
-out of time with a promising candidate still queued".
+out of time with a promising candidate still queued". `rows_subtracted`
+covers the one place the budget is spent on something other than a
+candidate: FT8 `SicEarly`'s checkpoint-B and -C subtraction loops. Below
+the row count, with `exhausted` set, the cut came while cleaning up
+rather than while looking — the fields above cannot say so, because a row
+being subtracted carries no candidate ranking.
 
 Honoured by FT8, FT4 and every FST4 sub-mode
 (`MFSK_CAP_BUDGET` is the same fact published to C). WSPR, JT9, JT65 and Q65

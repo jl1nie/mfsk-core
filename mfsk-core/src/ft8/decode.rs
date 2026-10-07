@@ -1416,6 +1416,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
                 break;
             }
             subtract_signal_lpf_refine_dt(&mut buf_b, r);
+            budget.report.rows_subtracted += 1;
         } else {
             deferred.push(r.clone());
         }
@@ -1438,6 +1439,7 @@ fn decode_frame_subtract_staged_with_ap_inner<Pol: MessagePolicy>(
             break;
         }
         subtract_signal_lpf_refine_dt(&mut buf_c, r);
+        budget.report.rows_subtracted += 1;
     }
 
     // Combine `outer_known` (the caller's earlier-phase results) with
@@ -2081,6 +2083,151 @@ mod tests {
         assert!(
             residual == audio,
             "the residual differs from the input: B/C subtracted after the budget ran out"
+        );
+    }
+
+    /// #589's own test covers only the guard *after* checkpoint A: its cut
+    /// lands inside A, so B and C are skipped whole and both per-row
+    /// `break`s could be deleted with it still green. This one lands the cut
+    /// inside the subtraction loops themselves.
+    ///
+    /// The budget predicate takes no arguments, so it cannot tell where it is
+    /// called from — but it can count, and the count is deterministic:
+    /// `BudgetState::allows` calls the predicate only while `!exhausted`, and
+    /// `exhausted` latches, so denying on the `k`-th call depends on the
+    /// fixture and the settings, never on the machine's speed.
+    /// `BudgetReport::rows_subtracted` is then what says where the cut landed.
+    ///
+    /// Poll order is `[A's candidates …, the post-A guard at g, row 1 at
+    /// g+1, row 2 at g+2, …]` — B's rows then C's deferred ones, contiguous,
+    /// with no poll between the two loops. Denying at `k` lets polls
+    /// `1..k-1` through, so `rows_subtracted == min(total, k-g-1)`, which is
+    /// monotonic in `k` and is what the search below bisects on.
+    ///
+    /// `max_cand` is 30 rather than 200 to keep A's poll count (and so the
+    /// search) small; `qso3_busy` still gives checkpoint A several rows.
+    #[test]
+    fn staged_sic_stops_inside_the_subtraction_loops() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        const MAX_CAND: usize = 30;
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        // `None` runs unbudgeted; `Some(k)` denies on the k-th poll. The
+        // count comes back so the search below needs no magic bound.
+        let run = |deny_at: Option<usize>| {
+            let calls = AtomicUsize::new(0);
+            let check = || {
+                let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                deny_at.is_none_or(|k| n < k)
+            };
+            let mut budget = BudgetState::new(Some(&check));
+            let (results, residual) = decode_frame_subtract_staged_with_ap_inner(
+                &audio,
+                100.0,
+                3000.0,
+                1.0,
+                crate::engine::pipeline::QsoFreqs::rx(None),
+                DecodeDepth::FULL,
+                MAX_CAND,
+                DecodeStrictness::Deep,
+                EqMode::Off,
+                None,
+                &[],
+                None,
+                &mut budget,
+                &crate::msg::decode_request::DefaultPolicy,
+                PassCtx::FIRST,
+                false,
+            );
+            (
+                results,
+                residual,
+                budget.report,
+                calls.load(Ordering::SeqCst),
+            )
+        };
+
+        let (rows_full, residual_full, report_full, polls) = run(None);
+        let total = report_full.rows_subtracted as usize;
+        assert!(!report_full.exhausted, "the unbudgeted run reported a cut");
+        assert!(
+            total >= 2,
+            "need at least two subtractions to stop between them, got {total}"
+        );
+        assert_ne!(
+            residual_full, audio,
+            "the unbudgeted run subtracted nothing"
+        );
+
+        // Smallest k whose cut leaves at least one row subtracted, i.e. g+2.
+        // The range is the unbudgeted run's own poll count, measured rather
+        // than assumed: A polls more than once per candidate, so a bound of
+        // `CHECKPOINT_SIC_ROUNDS * MAX_CAND` lands inside A and the search
+        // never reaches the subtraction sequence at all.
+        let (mut lo, mut hi) = (1usize, polls + 1);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if run(Some(mid)).2.rows_subtracted >= 1 {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let first = lo;
+
+        // One poll earlier is the guard: nothing subtracted, residual intact.
+        let (_, residual_guard, report_guard, _) = run(Some(first - 1));
+        assert!(report_guard.exhausted);
+        assert_eq!(
+            report_guard.rows_subtracted, 0,
+            "a row was subtracted at or before the guard"
+        );
+        assert!(
+            report_guard.cut_at_score.is_none(),
+            "the cut carried a candidate score, so it was still inside A"
+        );
+        assert_eq!(
+            residual_guard, audio,
+            "the guard's run subtracted something"
+        );
+
+        // Cut after the first row: exactly one subtraction, and a residual
+        // that is neither the input nor the fully-subtracted one.
+        let (_, residual_one, report_one, _) = run(Some(first));
+        assert_eq!(report_one.rows_subtracted, 1);
+        assert_ne!(residual_one, audio, "the first row was not subtracted");
+        assert_ne!(
+            residual_one, residual_full,
+            "the loop ran to the end after the budget was spent"
+        );
+
+        // Cut before the last row: every poll but the final one honoured.
+        // With deferred rows present this lands in checkpoint C's loop; on a
+        // fixture where none are deferred it is still B's last row.
+        let (_, residual_last, report_last, _) = run(Some(first + total - 2));
+        assert_eq!(
+            report_last.rows_subtracted as usize,
+            total - 1,
+            "the last row's poll was not honoured"
+        );
+        assert_ne!(
+            residual_last, residual_full,
+            "the last row was subtracted after the budget was spent"
+        );
+
+        // And checkpoint C's search, which follows the subtractions, never
+        // ran: it is where `CQ DX DL8YHR JO41` comes from on this fixture.
+        let (rows_one, _, _, _) = run(Some(first));
+        assert!(
+            rows_one.len() < rows_full.len(),
+            "a cut inside the subtraction loops still produced C's rows: \
+             {} against the unbudgeted {}",
+            rows_one.len(),
+            rows_full.len()
         );
     }
 

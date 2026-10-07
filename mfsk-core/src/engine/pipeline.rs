@@ -187,6 +187,22 @@ pub struct BudgetReport {
     /// ranking key. On FT8 it does not — there `cut_at_sync` is the key
     /// and this is supplementary.
     pub cut_at_score: Option<f32>,
+    /// Rows subtracted from the residual before a later search sees it.
+    /// **FT8 `SicEarly` only** — the checkpoint-B and -C subtraction
+    /// loops, which are the only place this crate spends a budget on
+    /// something other than a candidate.
+    ///
+    /// It is here because a cut inside those loops is a different event
+    /// from a cut during a search, and the fields above cannot tell them
+    /// apart: both report `cut_at_sync`/`cut_at_score` as `None`, since a
+    /// row being subtracted has no candidate ranking attached (#589).
+    /// A caller that sees `exhausted` with this below the row count ran
+    /// out while cleaning up, not while looking.
+    ///
+    /// One `subtract_signal_lpf_refine_dt` measured 60-150 ms on the #587
+    /// recordings, so this is also the coarsest granularity the budget has
+    /// anywhere: between two increments the check cannot fire.
+    pub rows_subtracted: u32,
 }
 
 /// Decode cost/recall configuration: [`LlrEffort`] plus whether to escalate
