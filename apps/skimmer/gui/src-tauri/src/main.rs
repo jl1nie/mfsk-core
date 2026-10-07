@@ -284,6 +284,9 @@ struct Settings {
     /// Decoder threads per channel: the next slot is decoded on another thread
     /// while the last is still being decoded. 1 is one thread per channel.
     decode_lanes: u32,
+    /// FT8 rows from ~11.8 s into the slot, the rest at its end, as WSJT-X
+    /// shows them; off waits for the end.
+    early_decode: bool,
     #[serde(skip_serializing)]
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps).
@@ -376,6 +379,7 @@ impl Default for Settings {
             rotation_utc: false,
             slot_budget_pct: 0,
             decode_lanes: 4,
+            early_decode: true,
             channelizer: "auto".into(),
             db_enabled: true,
             db_path: String::new(),
@@ -465,6 +469,8 @@ enum UiEvent {
         /// The text needed the callsign table (a `<...>` was resolved).
         hash_resolved: bool,
         copied_last_tx: bool,
+        /// Found at FT8's early checkpoint (~11.8 s), before the slot ended.
+        early: bool,
         /// Replaces the row of this channel and slot with the same `key` and
         /// frequency: its `<...>` now reads resolved.
         update: bool,
@@ -586,6 +592,7 @@ impl UiEvent {
                 hard_errors: d.detail.hard_errors,
                 hash_resolved: d.detail.hash_resolved,
                 copied_last_tx: d.detail.copied_last_tx,
+                early: d.detail.early,
                 update: d.update,
             },
             Event::Gap { messages, at_s } => UiEvent::Gap { messages, at_s },
@@ -788,6 +795,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         cfg.rotation_origin = (!s.rotation_utc).then_some(started);
         cfg.slot_budget = (s.slot_budget_pct > 0).then(|| s.slot_budget_pct as f32 / 100.0);
         cfg.decode_lanes = s.decode_lanes.clamp(1, 8) as usize;
+        cfg.early_decode = s.early_decode;
         cfg.tune = srv.tune;
         cfg.yield_control = srv.yield_control;
         cfg.waterfall = s.waterfall;

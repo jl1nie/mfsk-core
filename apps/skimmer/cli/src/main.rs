@@ -25,7 +25,7 @@ fn usage() -> ExitCode {
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
-         \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--detail]\n\
+         \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
         skimmer_core::AUTO_PFB_CHANNELS,
@@ -105,6 +105,8 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>, bool)> {
             // Decoder threads per channel (4 by default): the next slot is
             // decoded on another thread while the last is still being decoded.
             "--lanes" => cfg.decode_lanes = it.next()?.parse::<usize>().ok().filter(|n| *n > 0)?,
+            // FT8 rows at the end of the slot only, not from ~11.8 s on.
+            "--no-early" => cfg.early_decode = false,
             "--detail" => detail = true,
             "--mycall" => mycall = it.next()?.to_ascii_uppercase(),
             "--mygrid" => mygrid = it.next()?.to_ascii_uppercase(),
@@ -182,7 +184,7 @@ fn detail_text(d: &skimmer_core::Decode) -> String {
         .collect();
     let key = if key.is_empty() { "-".into() } else { key };
     format!(
-        "  [sync {} err {}{} key {key}]",
+        "  [sync {} err {}{}{} key {key}]",
         k.sync_score.map_or("-".to_string(), |v| format!("{v:.1}")),
         k.hard_errors.map_or("-".to_string(), |v| v.to_string()),
         if k.copied_last_tx {
@@ -190,6 +192,7 @@ fn detail_text(d: &skimmer_core::Decode) -> String {
         } else {
             ""
         },
+        if k.early { " early" } else { "" },
     )
 }
 

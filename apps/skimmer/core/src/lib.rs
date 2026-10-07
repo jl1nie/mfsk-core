@@ -39,11 +39,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub use mfsk_core::Mode;
-use mfsk_core::decoder::{AnyDecoder, RowDetail, SlotInput, default_params};
+use mfsk_core::decoder::{AnyDecoder, RowDetail, SlotInput, Stage, default_params};
 pub use mfsk_core::decoder::{ApMode, Contest, Depth, QsoContext, QsoProgress, Station};
 pub use mfsk_core::iq::Channelizer;
 use mfsk_core::iq::CompletedSlot;
-use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::iq::{ChannelId, IqReceiver, IqSampleFormat, IqStream};
 use mfsk_core::msg::Decoded;
 use mfsk_core::msg::ap::ApHint;
 use mfsk_core::slotgrid::ClockChange;
@@ -370,34 +370,58 @@ impl Delivered {
 /// consumer can replace the row it shows; one that was never delivered is
 /// delivered as new, so none is lost.
 ///
+/// **Early decode** (#600): with `prefix`, the call is one of a period's
+/// `decode_prefix` sequence (the receiver delivers the slot at FT8's
+/// checkpoints, then whole). Checkpoint A's rows go out at ~11.8 s; the final
+/// call's rows pair with them by `RowDetail::delivery`, which counts across the
+/// period's calls, through `sent`, which the caller keeps from one call of the
+/// period to the next: an A row reads the same at the end and is not said
+/// again, or reads better (`update`).
+///
 /// Returns what the budget cut, when `slot` carried one.
 fn decode_streaming(
     decoder: &mut AnyDecoder,
     slot: &SlotInput<'_>,
+    prefix: bool,
+    // The text each delivery of the period went out with, by its position.
+    sent: &mut std::collections::HashMap<u32, String>,
     // Spelled out: `spyserver::*` brings a `Sync` of its own into scope.
     emit: &(dyn Fn(&Decoded, &RowDetail, bool) + std::marker::Sync),
 ) -> mfsk_core::decoder::BudgetReport {
     // Only a parallel strategy can repeat a row.
     let guard = (!decoder.delivery_is_exact()).then(Delivered::default);
-    // The text each delivery went out with, by its position.
-    let sent = std::sync::Mutex::new(std::collections::HashMap::<u32, String>::new());
-    let out = decoder.decode_with(slot, &|row, detail| {
+    let streamed = std::sync::Mutex::new(std::mem::take(sent));
+    let on_row = |row: &Decoded, detail: &RowDetail| {
         if let Some(g) = &guard
             && !g.first_time(&row.text, row.freq_hz, &detail.info)
         {
             return;
         }
         if let Some(i) = detail.delivery {
-            sent.lock().unwrap().insert(i, row.text.clone());
+            streamed.lock().unwrap().insert(i, row.text.clone());
         }
         emit(row, detail, false);
-    });
-    let sent = sent.into_inner().unwrap();
+    };
+    let out = if prefix {
+        decoder.decode_prefix_with(slot, &on_row)
+    } else {
+        decoder.decode_with(slot, &on_row)
+    };
+    *sent = streamed.into_inner().unwrap();
     for (row, detail) in out.rows.iter().zip(&out.details) {
-        match detail.delivery.and_then(|i| sent.get(&i)) {
-            Some(t) if *t == row.text => {}
-            Some(_) => emit(row, detail, true),
-            // Never delivered (or its delivery was the repeat the guard dropped).
+        match detail.delivery {
+            Some(i) => match sent.get(&i) {
+                Some(t) if *t == row.text => {}
+                Some(_) => {
+                    sent.insert(i, row.text.clone());
+                    emit(row, detail, true);
+                }
+                // Never delivered (or its delivery was the repeat the guard dropped).
+                None => {
+                    sent.insert(i, row.text.clone());
+                    emit(row, detail, false);
+                }
+            },
             None => emit(row, detail, false),
         }
     }
@@ -434,6 +458,9 @@ impl Worker {
         let handle = std::thread::Builder::new()
             .name(format!("decode-{channel}"))
             .spawn(move || {
+                // The period a `decode_prefix` sequence is open for on this
+                // lane, and what it has said so far (`decode_streaming`).
+                let mut open: Option<(i64, std::collections::HashMap<u32, String>)> = None;
                 for job in rx {
                     let slot = match job {
                         Job::Slot(slot) => slot,
@@ -451,20 +478,40 @@ impl Worker {
                         Some(_) => slot.input().budget(&within),
                         None => slot.input(),
                     };
-                    let report = decode_streaming(&mut decoder, &input, &|d, detail, update| {
-                        let _ = results.send(Decode {
-                            channel,
-                            mode: slot.mode,
-                            slot_utc_ns: slot.utc_ns,
-                            dial_hz,
-                            freq_hz: slot.abs_freq_hz(d.freq_hz),
-                            snr_db: d.snr_db,
-                            dt_s: d.dt_sec,
-                            text: d.text.clone(),
-                            detail: detail.into(),
-                            update,
-                        });
-                    });
+                    // A prefix, or the whole of a period whose prefixes this
+                    // lane decoded: the same sequence. A whole slot with none
+                    // before it (no points, or its prefixes were dropped) is a
+                    // plain decode.
+                    let whole = slot.is_whole();
+                    let continues = open.as_ref().is_some_and(|(p, _)| *p == slot.period);
+                    let prefix = !whole || continues;
+                    let mut sent = match open.take() {
+                        Some((p, s)) if p == slot.period => s,
+                        _ => Default::default(),
+                    };
+                    let report = decode_streaming(
+                        &mut decoder,
+                        &input,
+                        prefix,
+                        &mut sent,
+                        &|d, detail, update| {
+                            let _ = results.send(Decode {
+                                channel,
+                                mode: slot.mode,
+                                slot_utc_ns: slot.utc_ns,
+                                dial_hz,
+                                freq_hz: slot.abs_freq_hz(d.freq_hz),
+                                snr_db: d.snr_db,
+                                dt_s: d.dt_sec,
+                                text: d.text.clone(),
+                                detail: detail.into(),
+                                update,
+                            });
+                        },
+                    );
+                    if !whole {
+                        open = Some((slot.period, sent));
+                    }
                     if report.exhausted {
                         cut_slots.fetch_add(1, Ordering::Relaxed);
                     }
@@ -520,6 +567,31 @@ struct Channel {
     lanes: Vec<Lane>,
     /// Use the first lane only (the options ask for averaging).
     serial: bool,
+    /// The period whose prefixes went to a lane, and that lane: the rest of
+    /// the period goes there too, since its decoder holds the period's
+    /// `decode_prefix` state.
+    lane_of: Option<(i64, usize)>,
+    mode: Mode,
+    /// Early decode is on ([`Config::early_decode`]): the receiver is told
+    /// this channel's decoder's prefix points, again when the options change.
+    early: bool,
+}
+
+/// Which lane takes a delivery of `period`: the one its earlier deliveries went
+/// to, or else [`pick_lane`]'s.
+fn lane_for(lane_of: Option<(i64, usize)>, period: i64, pending: &[usize], serial: bool) -> usize {
+    match lane_of {
+        Some((p, l)) if p == period => l,
+        _ => pick_lane(pending, serial),
+    }
+}
+
+/// The prefix points a channel's decoder will have under these options:
+/// `AnyDecoder::prefix_points`, which follows the depth and the strategy.
+fn prefix_points(mode: Mode, o: &ChannelOptions, station: &Station) -> &'static [usize] {
+    let mut d = AnyDecoder::with_defaults(mode);
+    apply_options(&mut d, o, station);
+    d.prefix_points()
 }
 
 /// Which lane takes the next slot: the one with the fewest pending, the first
@@ -536,20 +608,25 @@ fn pick_lane(pending: &[usize], serial: bool) -> usize {
 }
 
 impl Channel {
-    /// Hand `slot` to a lane. `false`: its queue is full (every lane's, when not
-    /// `serial`): the slot is dropped, and the caller counts it.
-    fn dispatch(&self, slot: CompletedSlot) -> bool {
+    /// Hand `slot` to a lane: a prefix, and the rest of its period after it,
+    /// to the lane the period's first delivery went to. `false`: its queue is
+    /// full (every lane's, when not `serial`): the slot is dropped, and the
+    /// caller counts it if it was whole.
+    fn dispatch(&mut self, slot: CompletedSlot) -> bool {
         let pending: Vec<usize> = self
             .lanes
             .iter()
             .map(|l| l.pending.load(Ordering::Relaxed))
             .collect();
-        let lane = &self.lanes[pick_lane(&pending, self.serial)];
+        let (period, whole) = (slot.period, slot.is_whole());
+        let i = lane_for(self.lane_of, period, &pending, self.serial);
+        let lane = &self.lanes[i];
         lane.pending.fetch_add(1, Ordering::Relaxed);
         if lane.worker.tx.try_send(Job::Slot(slot)).is_err() {
             lane.pending.fetch_sub(1, Ordering::Relaxed);
             return false;
         }
+        self.lane_of = (!whole).then_some((period, i));
         true
     }
 
@@ -635,6 +712,13 @@ pub struct Config {
     /// old one-thread channel. A channel with `averaging` uses one lane. See
     /// [`DEFAULT_DECODE_LANES`] for the trade.
     pub decode_lanes: usize,
+    /// Decode FT8 early, as WSJT-X does: a slot's rows found by ~11.8 s are
+    /// reported then (`DecodeDetail::early`), the rest at the end, where an
+    /// early row is reported again only if it reads better. On by default.
+    /// Only a channel whose decoder has checkpoints is affected: FT8 at
+    /// `Depth::Normal` or `Deep` (its `SicEarly` strategy); every other mode
+    /// and depth decodes the whole slot as before (#600).
+    pub early_decode: bool,
 }
 
 /// Default for [`Config::decode_lanes`]: four, so a slot starts at once even when
@@ -900,6 +984,7 @@ impl Config {
             live: Default::default(),
             slot_budget: None,
             decode_lanes: DEFAULT_DECODE_LANES,
+            early_decode: true,
         }
     }
 }
@@ -981,6 +1066,9 @@ pub struct DecodeDetail {
     pub hash_resolved: bool,
     /// Q65 Pileup's "copied last Tx" flag.
     pub copied_last_tx: bool,
+    /// Found before the period ended, at FT8's checkpoint A (~11.8 s), and
+    /// reported then ([`Config::early_decode`]).
+    pub early: bool,
 }
 
 impl From<&RowDetail> for DecodeDetail {
@@ -991,6 +1079,7 @@ impl From<&RowDetail> for DecodeDetail {
             hard_errors: d.hard_errors,
             hash_resolved: d.hash_resolved,
             copied_last_tx: d.copied_last_tx,
+            early: d.stage == Some(Stage::Early),
         }
     }
 }
@@ -1696,6 +1785,9 @@ fn receiver(
             apply_options(&mut d, &opts, &station);
             d
         };
+        if cfg.early_decode {
+            rx.set_prefix_points(id, decoder.prefix_points());
+        }
         // The first lane carries the channel's decoder across rotation turns;
         // the others start from the mode's defaults, with the same options.
         let mut first = Some(decoder);
@@ -1724,6 +1816,9 @@ fn receiver(
         workers[id.0] = Some(Channel {
             lanes,
             serial: opts.averaging,
+            lane_of: None,
+            mode: ch.mode,
+            early: cfg.early_decode,
         });
     }
     Ok(Live {
@@ -1915,10 +2010,16 @@ fn stream_inner(
             let mut all_sent = true;
             for (id, w) in workers.iter_mut().enumerate() {
                 let Some(w) = w else { continue };
-                if let Some((o, station)) = cfg.live.get(cfg_index[id])
-                    && !w.set_options(&o, &station)
-                {
+                let Some((o, station)) = cfg.live.get(cfg_index[id]) else {
+                    continue;
+                };
+                if !w.set_options(&o, &station) {
                     all_sent = false;
+                }
+                // The depth or strategy decides whether the channel has
+                // checkpoints; from the next slot that opens.
+                if w.early {
+                    rx.set_prefix_points(ChannelId(id), prefix_points(w.mode, &o, &station));
                 }
             }
             if all_sent {
@@ -2013,13 +2114,18 @@ fn stream_inner(
             }
         }
         for slot in slots {
-            let Some(w) = workers[slot.channel.0].as_ref() else {
+            let Some(w) = workers[slot.channel.0].as_mut() else {
                 continue;
             };
+            let whole = slot.is_whole();
             busy.fetch_add(1, Ordering::Relaxed);
             if !w.dispatch(slot) {
                 busy.fetch_sub(1, Ordering::Relaxed);
-                dropped_slots += 1;
+                // A dropped prefix costs the early rows only: the whole slot
+                // still comes, and decodes on its own.
+                if whole {
+                    dropped_slots += 1;
+                }
             }
         }
         while let Ok(d) = results.try_recv() {
@@ -2363,6 +2469,8 @@ mod tests {
         let report = decode_streaming(
             &mut AnyDecoder::with_defaults(Mode::Ft8),
             &slot,
+            false,
+            &mut Default::default(),
             &|d, detail, update| {
                 got.lock()
                     .unwrap()
@@ -2376,6 +2484,63 @@ mod tests {
         assert_eq!(got.iter().map(|g| g.0.clone()).collect::<Vec<_>>(), want);
         assert!(got.iter().all(|g| g.1 == 91 && !g.2), "{got:?}");
         assert!(!report.exhausted, "no budget was set");
+    }
+
+    /// Early decode (#600): the period's prefixes and its whole, as the
+    /// receiver delivers them, report every row of the whole-slot decode once:
+    /// the ones checkpoint A finds at the first prefix, marked early, the rest
+    /// at the end; none twice.
+    #[test]
+    fn early_rows_go_out_at_the_first_prefix_and_none_twice() {
+        let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
+        let mut want: Vec<String> = AnyDecoder::with_defaults(Mode::Ft8)
+            .decode(&SlotInput::i16(&audio))
+            .rows
+            .into_iter()
+            .map(|d| d.text)
+            .collect();
+        want.sort();
+        assert!(want.len() >= 2, "{want:?}");
+
+        let mut d = AnyDecoder::with_defaults(Mode::Ft8);
+        let points = d.prefix_points();
+        assert_eq!(points, &[141_696, 162_432]);
+        let mut sent = Default::default();
+        let mut calls = Vec::new();
+        for len in [points[0], points[1], audio.len()] {
+            let got = std::sync::Mutex::new(Vec::new());
+            decode_streaming(
+                &mut d,
+                &SlotInput::i16(&audio[..len]).period(7),
+                true,
+                &mut sent,
+                &|d, detail, update| {
+                    got.lock().unwrap().push((
+                        d.text.clone(),
+                        DecodeDetail::from(detail).early,
+                        update,
+                    ));
+                },
+            );
+            calls.push(got.into_inner().unwrap());
+        }
+        // Both signals end by 13.1 s, so checkpoint A has them all.
+        assert!(!calls[0].is_empty(), "nothing at checkpoint A");
+        assert!(calls[0].iter().all(|r| r.1 && !r.2), "{:?}", calls[0]);
+        assert!(calls[1].is_empty(), "B reports nothing: {:?}", calls[1]);
+        let mut all: Vec<String> = calls.iter().flatten().map(|r| r.0.clone()).collect();
+        all.sort();
+        assert_eq!(all, want, "each row once: {calls:?}");
+    }
+
+    /// A period's deliveries stay on the lane its first one went to, so the
+    /// decoder holding its prefix state finishes it; another period picks
+    /// afresh.
+    #[test]
+    fn a_periods_deliveries_keep_to_one_lane() {
+        assert_eq!(lane_for(Some((7, 2)), 7, &[0, 0, 5], false), 2);
+        assert_eq!(lane_for(Some((7, 2)), 8, &[0, 0, 5], false), 0);
+        assert_eq!(lane_for(None, 8, &[1, 0, 0], false), 1);
     }
 
     /// A budget that is already spent stops an FT8 slot, and says so: the
@@ -2408,6 +2573,7 @@ mod tests {
             "a skimmer decodes every slot to the end"
         );
         assert_eq!(c.decode_lanes, 4);
+        assert!(c.early_decode, "FT8 rows at ~11.8 s, as WSJT-X shows them");
     }
 
     #[test]
@@ -2419,6 +2585,8 @@ mod tests {
         let report = decode_streaming(
             &mut AnyDecoder::with_defaults(Mode::Ft8),
             &slot,
+            false,
+            &mut Default::default(),
             &|_, _, _| {
                 rows.fetch_add(1, Ordering::Relaxed);
             },

@@ -38,6 +38,7 @@
     (r.hardErrors === null ? '' : ` · ${r.hardErrors} error${r.hardErrors === 1 ? '' : 's'} corrected`) +
     (r.hashResolved ? ' · a <...> resolved from the callsign table' : '') +
     (r.copiedLastTx ? ' · copied last Tx' : '') +
+    (r.early ? ' · decoded early, at ~11.8 s' : '') +
     (r.key ? ` · key ${r.key}` : '');
 
   const shown = $derived(

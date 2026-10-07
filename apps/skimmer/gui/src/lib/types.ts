@@ -93,6 +93,8 @@ export interface Settings {
   slotBudgetPct: number;
   /** Decoder threads per channel (1-8): the next slot is decoded on another thread while the last is still being decoded. */
   decodeLanes: number;
+  /** FT8 rows from ~11.8 s into the slot, the rest at its end, as WSJT-X shows them. */
+  earlyDecode: boolean;
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */
@@ -134,6 +136,8 @@ export interface DecodeRow {
   /** The text needed the callsign table: a `<...>` was resolved. */
   hashResolved: boolean;
   copiedLastTx: boolean;
+  /** Found at FT8's early checkpoint (~11.8 s), before the slot ended. */
+  early: boolean;
   /** Replaces the row of this channel and slot with the same key and frequency (its `<...>` now reads resolved). */
   update: boolean;
 }

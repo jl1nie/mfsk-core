@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **skimmer: FT8 rows from ~11.8 s into the slot, as WSJT-X shows them (#600).** Each channel tells the receiver its
+  decoder's `prefix_points()` (again when its options change), and a lane decodes every delivery of a period with
+  `decode_prefix_with`: checkpoint A's rows go out at the first prefix, marked early (`DecodeDetail::early`, the GUI's
+  hover text, `--detail`), the rest at the end, where an early row is said again only if it reads better (`update`). A
+  period's deliveries stay on the lane its first went to, since that decoder holds the period's state; a dropped prefix
+  costs only the early rows. On by default (`Config::early_decode`, `--no-early`, GUI *Early decode*); FT8 at `Fast`
+  depth and every other mode decode the whole slot as before. Tested in `skimmer-core` (60 tests) and `svelte-check`;
+  the window has not been run against a server with this change.
 - **`IqReceiver` delivers prefixes, so early decode reaches wideband IQ (#600).** `IqReceiver::set_prefix_points(id,
   points)` (off by default) makes a channel deliver each slot cut at exactly those 12 kHz sample counts, then whole,
   through the same `push_*` (`CompletedSlot::is_whole()`); the points come from the channel's own decoder,
