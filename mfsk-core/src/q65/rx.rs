@@ -365,6 +365,9 @@ pub struct Q65Result {
     /// `q65_decode.f90:321` does (`iflagdec=iand(dat4(13),1)`); WSJT-X
     /// marks such a decode with `#` (`decoder_callbacks.f90:677`).
     pub copied_last_tx: bool,
+    /// The 77 message bits, one per byte: what `message` was unpacked from,
+    /// and the identity key a decoded row carries in `RowDetail::info` (#592).
+    pub bits77: [u8; 77],
     /// A-priori information carried the decode: an AP hint's locked
     /// symbols, or an AP-list (q3) template. WSJT-X's `q1`-`q3` against
     /// `q0` (`idec`). Since #555 an `ap_hint`
@@ -572,6 +575,7 @@ pub(crate) fn finish<P: ModulationParams>(
 
     Some(Q65Result {
         copied_last_tx: unpack_flag(info_syms),
+        bits77,
         message: text,
         freq_hz: base_freq_hz,
         start_sample,

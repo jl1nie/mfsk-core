@@ -320,25 +320,27 @@ enum Job {
 
 /// Which rows of one slot have been handed on.
 ///
-/// A row is the same row when its FEC information bits match, which only
-/// the frame modes (FT8, FT4, FST4) give. A mode that has none (WSPR, JT9,
-/// JT65, Q65) is told apart by its text **and its frequency, to the Hz**:
-/// the same text at two frequencies is two transmissions, and `jt65sim`'s
-/// own five-signal recording decodes `K1ABC W9XYZ EN37` three times, at 1100,
-/// 1500 and 1900 Hz. A key on the text alone would drop two of those three.
+/// A row is the same row when its identity key (`RowDetail::info`, which
+/// every mode fills since #592) matches **and** it is at the same frequency,
+/// to the Hz: one message at two frequencies is two transmissions, and
+/// `jt65sim`'s own five-signal recording decodes `K1ABC W9XYZ EN37` three
+/// times, at 1100, 1500 and 1900 Hz, with one key. A key on the message alone
+/// would drop two of those three. The bits, not the text, because the text
+/// of a streamed row can differ from the returned one (a `<...>` the period
+/// then resolves).
 ///
-/// The cost of that key is that a duplicate whose two copies differ by more
-/// than rounding is let through. That is the right way round: a row shown
-/// twice is noise, a row dropped is a lost spot.
+/// The cost of the frequency is that a duplicate whose two copies differ by
+/// more than rounding is let through. That is the right way round: a row
+/// shown twice is noise, a row dropped is a lost spot. An empty key (a mode
+/// that gave none) falls back to the text, which no mode in this build needs.
 ///
-/// It is needed because `decode_with` has two delivery contracts
+/// It is only used when `AnyDecoder::delivery_is_exact` is `false`: it is needed
+/// because `decode_with` has two delivery contracts
 /// (`docs/reference/STREAMING.md` §3). A sequential strategy (FT8 and FT4 at
 /// `Depth::Normal`/`Deep`, JT65, JT9, Q65) delivers exactly the rows it
 /// returns. A parallel one (FT4 at `Depth::Fast`, FST4, FT8's sniper, WSPR)
 /// delivers in completion order and may show a transient duplicate that the
-/// returned rows have already removed. Of those, WSPR is the one with no
-/// information bits to key on, so it is the one that relies on the text and
-/// frequency key.
+/// returned rows have already removed.
 /// None was seen on any of the repository's recordings (19 recording x depth
 /// configurations, two periods each, over FT8, FT4, FST4-60A, WSPR, JT9, JT65
 /// and Q65; `callbacks == returned` in all, though Q65 gave rows on only two
@@ -350,13 +352,13 @@ struct Delivered(std::sync::Mutex<std::collections::HashSet<(bool, Vec<u8>)>>);
 impl Delivered {
     /// `true` the first time this row is offered.
     fn first_time(&self, row: &Decoded, detail: &RowDetail) -> bool {
-        let key = if detail.info.is_empty() {
-            let mut k = row.text.clone().into_bytes();
-            k.extend_from_slice(&(row.freq_hz.round() as i32).to_le_bytes());
-            (false, k)
+        let (has_bits, mut k) = if detail.info.is_empty() {
+            (false, row.text.clone().into_bytes())
         } else {
             (true, detail.info.clone())
         };
+        k.extend_from_slice(&(row.freq_hz.round() as i32).to_le_bytes());
+        let key = (has_bits, k);
         self.0.lock().unwrap().insert(key)
     }
 }
@@ -385,6 +387,13 @@ fn decode_streaming(
     // Spelled out: `spyserver::*` brings a `Sync` of its own into scope.
     emit: &(dyn Fn(&Decoded) + std::marker::Sync),
 ) {
+    // Sequential strategies deliver exactly the rows they return, once each
+    // and in order (`AnyDecoder::delivery_is_exact`, #592): nothing to guard
+    // against and nothing left for the walk below to find.
+    if decoder.delivery_is_exact() {
+        decoder.decode_with(slot, &|row, _| emit(row));
+        return;
+    }
     let delivered = Delivered::default();
     let offer = |row: &Decoded, detail: &RowDetail| {
         if delivered.first_time(row, detail) {
@@ -2187,25 +2196,27 @@ mod tests {
             ..RowDetail::default()
         };
         let d = Delivered::default();
-        // A mode with no information bits is told apart by its text and its
-        // frequency to the Hz: the same text at two frequencies is two
-        // transmissions (the JT65 golden has `K1ABC W9XYZ EN37` three times).
-        assert!(d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
-        assert!(!d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
+        // The key and the frequency to the Hz: the same bits at two
+        // frequencies are two transmissions (the JT65 golden has
+        // `K1ABC W9XYZ EN37` three times, one key).
+        let k1abc = with_info(&[0, 1, 1, 0]);
         let at = |text: &str, hz: f32| Decoded {
             freq_hz: hz,
             ..row(text)
         };
         for hz in [1100.3, 1500.1, 1899.7] {
-            assert!(d.first_time(&at("K1ABC W9XYZ EN37", hz), &with_info(&[])));
+            assert!(d.first_time(&at("K1ABC W9XYZ EN37", hz), &k1abc));
         }
-        assert!(!d.first_time(&at("K1ABC W9XYZ EN37", 1500.1), &with_info(&[])));
-        assert!(d.first_time(&row("W9XYZ EN34 30"), &with_info(&[])));
-        // One that has them, by those: the same bits resolved to another text
-        // (a hashed call learned later in the period) are the same row.
+        assert!(!d.first_time(&at("K1ABC W9XYZ EN37", 1500.1), &k1abc));
+        assert!(d.first_time(&row("W9XYZ EN34 30"), &with_info(&[1, 1, 1, 1])));
+        // The same bits resolved to another text (a hashed call learned later
+        // in the period) are the same row.
         assert!(d.first_time(&row("CQ <...> PM95"), &with_info(&[1, 2, 3])));
         assert!(!d.first_time(&row("CQ <JA1ABC> PM95"), &with_info(&[1, 2, 3])));
         assert!(d.first_time(&row("CQ <...> PM95"), &with_info(&[1, 2, 4])));
+        // No key at all: the text decides.
+        assert!(d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
+        assert!(!d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
     }
 
     #[test]

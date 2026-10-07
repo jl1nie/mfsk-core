@@ -84,6 +84,7 @@ fn row(r: Q65Result) -> Row<Q65Result> {
         decoded: r.to_decoded(),
         detail: RowDetail {
             copied_last_tx: r.copied_last_tx,
+            info: r.bits77.to_vec(),
             ..RowDetail::default()
         },
         native: r,

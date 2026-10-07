@@ -126,6 +126,17 @@ macro_rules! any_decoder {
                 }
             }
 
+            /// Whether `decode_with` with the current mode, depth and extras
+            /// delivers exactly the rows it returns, once each and in order
+            /// (`STREAMING.md` §3a). `false` is "not promised", the parallel
+            /// contract of §3b: ask again after changing the settings. See
+            /// [`Decoder::delivery_is_exact`].
+            pub fn delivery_is_exact(&self) -> bool {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => d.delivery_is_exact(), )*
+                }
+            }
+
             /// Decode one period, handing each row to `on_row` as it is found.
             pub fn decode_with(
                 &mut self,

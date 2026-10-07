@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Every decoded row has an identity key: `RowDetail::info` is filled for WSPR (50 bits), JT9 and JT65 (72) and Q65 (77),
+  not just FT8, FT4 and FST4 (#592).** Through `AnyDecoder` and the C ABI a row had text and nothing else to be compared
+  by, so a caller pairing a streamed row with a returned one keyed those four modes by text, which drops two of the JT65
+  golden's three `K1ABC W9XYZ EN37` rows. `Q65Result` gains `bits77`; `Jt72Message::bits72()` re-packs the fields JT9
+  and JT65 de-duplicate by. New `tests/decoder_row_key.rs` drives every mode through `decode_with` and checks length and
+  that streamed rows cover the returned ones. The skimmer's guard now keys on the bits for every mode. `AnyDecoder::delivery_is_exact()` (also on `Decoder<P>`) says whether
+  `decode_with` runs the exact contract (§3a) or the parallel one (§3b), from the mode, depth and extras: FT8's
+  `SinglePass` and sniper, FT4 `Fast`, FST4 and WSPR are `false`. The skimmer skips its guard when it is `true`. Not
+  done from #592: the C row's packed key.
 - **skimmer: a channel's rows go out as the decoder finds them, not when the slot is done.** The worker called
   `decode`, which returns after the whole slot, so every row of a busy slot waited for its slowest. It now calls
   `decode_with` and hands each row on at once. `qso3_busy.wav` (21 rows, `Depth::Deep`; native, one thread, i16
@@ -10,8 +19,8 @@
   rows `decode` returns, the first at 30 ms, the median at 160-180 ms and the last at 1.56-1.71 s of 1.9-2.0 s. Not run
   against a live SpyServer or through the GUI.
   Total work and `dropped_slots` are unchanged; only when a row can be shown moves. The parallel strategies (FT4 at
-  `Depth::Fast`, FST4, WSPR) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits (or,
-  for a mode without them, its text and frequency to the Hz) are seen. A streamed row is resolved against the callsign table as it stood when
+  `Depth::Fast`, FST4, WSPR) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits and
+  frequency to the Hz are seen. A streamed row is resolved against the callsign table as it stood when
   the period began, so a `<...>` that the same period teaches stays `<...>`.
 - **FT8 `SicEarly` stops when its budget does (#587).** The subtractions between checkpoints A, B and C had no budget
   poll, so a budget spent during A still paid for every A row's `subtract_signal_lpf_refine_dt` (60-150 ms each) before a

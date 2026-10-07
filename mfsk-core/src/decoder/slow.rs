@@ -37,6 +37,16 @@ fn f32_audio<'a>(audio: Audio<'a>, owned: &'a mut Vec<f32>) -> &'a [f32] {
 }
 
 /// Samples from the period's start to the frame's `dt = 0`.
+/// A row detail carrying only the identity key (`RowDetail::info`, #592):
+/// these modes have no sync score or hard-error count to report.
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
+fn info_detail(info: Vec<u8>) -> RowDetail {
+    RowDetail {
+        info,
+        ..RowDetail::default()
+    }
+}
+
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65"))]
 fn nominal_start(mode: crate::Mode) -> usize {
     #[cfg(not(feature = "std"))]
@@ -108,6 +118,11 @@ mod wspr_impl {
         type Extras = WsprExtras;
         type Row = WsprResult;
 
+        /// Its candidate loops are the parallel contract (`STREAMING.md` §3b).
+        fn __delivery_is_exact(_params: &DecodeParams, _extras: &WsprExtras) -> bool {
+            false
+        }
+
         fn __decode(
             params: &DecodeParams,
             extras: &WsprExtras,
@@ -124,7 +139,7 @@ mod wspr_impl {
                 move |r: &WsprResult| {
                     f(&Row {
                         decoded: r.to_decoded(),
-                        detail: RowDetail::default(),
+                        detail: info_detail(r.info_bits.to_vec()),
                         native: r.clone(),
                     })
                 }
@@ -148,7 +163,7 @@ mod wspr_impl {
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
-                    detail: RowDetail::default(),
+                    detail: info_detail(r.info_bits.to_vec()),
                     native: r,
                 })
                 .collect();
@@ -208,7 +223,7 @@ mod jt9_impl {
                 move |r: &Jt9Result| {
                     f(&Row {
                         decoded: r.to_decoded(),
-                        detail: RowDetail::default(),
+                        detail: info_detail(r.message.bits72().unwrap_or_default()),
                         native: r.clone(),
                     })
                 }
@@ -229,7 +244,7 @@ mod jt9_impl {
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
-                    detail: RowDetail::default(),
+                    detail: info_detail(r.message.bits72().unwrap_or_default()),
                     native: r,
                 })
                 .collect();
@@ -303,7 +318,7 @@ mod jt65_impl {
                 move |r: &Jt65Result| {
                     f(&Row {
                         decoded: r.to_decoded(),
-                        detail: RowDetail::default(),
+                        detail: info_detail(r.message.bits72().unwrap_or_default()),
                         native: r.clone(),
                     })
                 }
@@ -328,7 +343,7 @@ mod jt65_impl {
                 .into_iter()
                 .map(|r| Row {
                     decoded: r.to_decoded(),
-                    detail: RowDetail::default(),
+                    detail: info_detail(r.message.bits72().unwrap_or_default()),
                     native: r,
                 })
                 .collect();

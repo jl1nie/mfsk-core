@@ -95,7 +95,9 @@ Notes:
   in the same period (hashes are learned after the candidate loop, in decode
   order). A `<...>` in a streamed row can therefore read resolved in the
   returned one. To pair a streamed row with a returned one, compare the
-  message bits (`row.native.message77()` for the frame family), not the text.
+  message bits, not the text: `row.native.message77()` on a typed row, and
+  `RowDetail::info` on any row (every mode fills it, #592). One message at
+  two frequencies has one key, so pair on the key and the frequency.
   A candidate whose payload does not unpack is delivered by neither.
 - **Averaged Q65** (`averaging` on, with `SlotInput::period`) yields at most one
   result a period, so its callback fires once per period.
@@ -159,8 +161,14 @@ completion order** (not candidate-exploration order), and **before**
 the final cross-candidate dedup pass. On the rare occasion two sync
 candidates converge on the same message, `cb` may fire for both even
 though only one survives into the returned rows. Callers wanting exact
-parity should dedup by `.message77()` on their side — the same key the
-crate's own dedup uses.
+parity should dedup by the message bits on their side — `.message77()` on a
+typed row, `RowDetail::info` through `AnyDecoder` or the C ABI's row — the
+same key the crate's own dedup uses.
+
+`AnyDecoder::delivery_is_exact()` (and `Decoder::delivery_is_exact()`) says
+which contract the current mode, depth and extras run: `true` is §3a, `false`
+is "§3b, not promised" — a caller that gets `true` can skip its guard. Ask again
+after changing the depth or the extras.
 
 Covers: the single-pass strategies (`SinglePass`, which is FT4's `Fast`
 depth, and FST4's only strategy) and FT8's `sniper` mode; WSPR (its pass-1 and

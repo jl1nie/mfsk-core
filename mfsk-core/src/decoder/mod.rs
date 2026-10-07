@@ -167,7 +167,14 @@ pub struct RowDetail {
     pub hard_errors: u32,
     /// Which decode pass produced the row; private to the mode.
     pub pass: u8,
-    /// The FEC information bits, empty for a mode that has none to give.
+    /// The message's identity key, one bit per byte: what two rows are
+    /// compared by, and what the crate's own de-duplication uses. FT8 and
+    /// FT4 give their 91 FEC information bits and FST4 its 101 (the first 77
+    /// the message); WSPR its 50; JT9 and JT65 the 72 bits of the
+    /// message fields; Q65 its 77 (#592). A row from a mode-generic caller's
+    /// side is compared by this, never by `text`, which differs between a
+    /// streamed row and the returned one when a `<...>` resolves, and which
+    /// two distinct signals can share.
     pub info: Vec<u8>,
     /// The text needed the callsign hash table to resolve a `<...>`.
     pub hash_resolved: bool,
@@ -218,6 +225,15 @@ pub trait Decodable: Sized {
     #[doc(hidden)]
     fn __unpack77(_state: &Self::State, msg77: &[u8]) -> Option<alloc::string::String> {
         crate::msg::wsjt77::unpack77(msg77)
+    }
+
+    /// Whether `decode_with` under these settings delivers exactly the rows
+    /// it returns, once each and in order (`STREAMING.md` §3a). `false` is
+    /// the parallel contract (§3b): completion order, and a row may arrive
+    /// twice. A mode that is always sequential keeps the default.
+    #[doc(hidden)]
+    fn __delivery_is_exact(_params: &DecodeParams, _extras: &Self::Extras) -> bool {
+        true
     }
 
     #[doc(hidden)]
@@ -278,6 +294,22 @@ impl<P: Decodable> Decoder<P> {
     /// Decode one period.
     pub fn decode(&mut self, slot: &SlotInput<'_>) -> SlotResult<P::Row> {
         P::__decode(&self.params, &self.extras, &mut self.state, slot, None)
+    }
+
+    /// Whether [`Decoder::decode_with`] with the current settings delivers
+    /// exactly the rows it returns, once each and in the same order
+    /// (`STREAMING.md` §3a), so a caller needs no guard against a repeat.
+    ///
+    /// `false` means only that this is not promised: the parallel contract
+    /// (§3b) delivers in completion order and may repeat a row. That is FT8's
+    /// sniper and `SinglePass`, FT4's `SinglePass` (its `Fast` depth), every
+    /// FST4 mode and WSPR, whether or not the `parallel` feature is on. It
+    /// follows the mode, the depth and the [`Extras`](Decodable::Extras), so
+    /// ask again after changing them. Either way a row's text can still differ
+    /// between the streamed and the returned form (§2); compare
+    /// [`RowDetail::info`].
+    pub fn delivery_is_exact(&self) -> bool {
+        P::__delivery_is_exact(&self.params, &self.extras)
     }
 
     /// Decode one period, handing each row to `on_row` as it is found.

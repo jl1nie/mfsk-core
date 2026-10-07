@@ -563,6 +563,14 @@ impl Decodable for crate::Ft8 {
         unpack77_with_hash(msg77, &state.table)
     }
 
+    fn __delivery_is_exact(params: &DecodeParams, extras: &Ft8Extras) -> bool {
+        // The sniper path runs when it is asked for and has a target, as in
+        // `__decode`; it is the parallel contract.
+        let sniping = extras.sniper.is_some() && params.rx_freq_hz.is_some();
+        let (s, _) = ft8_search(params.depth).tuned(&extras.tuning);
+        !sniping && !matches!(s.strategy, Ft8Strategy::SinglePass)
+    }
+
     fn __decode(
         params: &DecodeParams,
         extras: &Ft8Extras,
@@ -652,6 +660,11 @@ impl Decodable for crate::Ft4 {
         unpack77_with_hash(msg77, &state.table)
     }
 
+    fn __delivery_is_exact(params: &DecodeParams, extras: &Ft4Extras) -> bool {
+        let (s, _) = ft4_search(params.depth).tuned(&extras.tuning);
+        !matches!(s.strategy, Ft4Strategy::SinglePass)
+    }
+
     fn __decode(
         params: &DecodeParams,
         extras: &Ft4Extras,
@@ -700,6 +713,11 @@ macro_rules! fst4_decodable {
 
             fn __unpack77(state: &FrameState, msg77: &[u8]) -> Option<alloc::string::String> {
                 unpack77_with_hash(msg77, &state.table)
+            }
+
+            /// FST4 has the one strategy, `SinglePass`: the parallel contract.
+            fn __delivery_is_exact(_params: &DecodeParams, _extras: &Fst4Extras) -> bool {
+                false
             }
 
             fn __decode(
