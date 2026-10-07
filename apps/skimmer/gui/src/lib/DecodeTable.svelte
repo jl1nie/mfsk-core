@@ -38,6 +38,7 @@
     (r.hardErrors === null ? '' : ` · ${r.hardErrors} error${r.hardErrors === 1 ? '' : 's'} corrected`) +
     (r.hashResolved ? ' · a <...> resolved from the callsign table' : '') +
     (r.copiedLastTx ? ' · copied last Tx' : '') +
+    (r.early ? ' · decoded early, at ~11.8 s' : '') +
     (r.key ? ` · key ${r.key}` : '');
 
   const shown = $derived(
@@ -96,7 +97,7 @@
       {/each}
     </select>
     <label class="check"><input type="checkbox" bind:checked={cqOnly} /> CQ only</label>
-    <label class="check" title="Show the sync score and the errors the FEC corrected for each row"><input type="checkbox" bind:checked={detail} /> Detail</label>
+    <label class="check" title="Show the sync score and the errors the FEC corrected for each row, and ⏱ on a row decoded early (~11.8 s into the slot)"><input type="checkbox" bind:checked={detail} /> Detail</label>
     <input class="search" bind:value={search} placeholder="Search call or text" spellcheck="false" />
     <span class="count">{shown.length} rows</span>
     <button class="link" onclick={onclear} title="Clear the table (ALL.TXT keeps every decode)">Clear</button>
@@ -125,7 +126,7 @@
             <td class="num mono">{r.snrDb.toFixed(0)}</td>
             <td class="num mono">{r.dtS.toFixed(1)}</td>
             {#if detail}<td class="num mono">{r.syncScore === null ? '–' : r.syncScore.toFixed(1)}</td><td class="num mono">{r.hardErrors ?? '–'}</td>{/if}
-            <td class="mono msg">{r.text}{#if r.hashResolved}<span class="resolved" title="A &lt;...&gt; in this row was resolved from the callsign table"> ✓</span>{/if}</td>
+            <td class="mono msg">{r.text}{#if r.hashResolved}<span class="resolved" title="A &lt;...&gt; in this row was resolved from the callsign table"> ✓</span>{/if}{#if detail && r.early}<span class="early" title="Decoded early, at ~11.8 s into the slot, before the slot ended"> ⏱</span>{/if}</td>
           </tr>
         {/each}
       </tbody>

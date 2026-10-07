@@ -751,6 +751,10 @@
             <input type="number" min="1" max="8" step="1" bind:value={settings.decodeLanes} disabled={running} />
             <span>per channel</span>
           </div>
+          <label class="check" title="On (default): an FT8 slot's rows found by ~11.8 s are shown then, as WSJT-X shows them, and the rest when the slot ends; an early row that reads better at the end is replaced. Only FT8 at Normal or Deep depth decodes early; other modes and depths wait for the end either way.">
+            <input type="checkbox" bind:checked={settings.earlyDecode} disabled={running} />
+            <span>Early decode (FT8 rows from ~11.8 s)</span>
+          </label>
           <div class="field" title="A slot's decode may run this share of its period, then it stops and reports what it has (the rest of its candidates are left undone). 0, the default, decodes every slot to the end. Slots it cuts are counted in the status line.">
             <span>Time budget</span>
             <input type="number" min="0" max="100" step="5" bind:value={settings.slotBudgetPct} disabled={running} />

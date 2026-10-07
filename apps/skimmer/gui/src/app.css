@@ -733,3 +733,7 @@ button.danger {
   color: var(--accent);
   cursor: help;
 }
+.decodes .early {
+  color: var(--muted);
+  cursor: help;
+}

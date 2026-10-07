@@ -1306,6 +1306,7 @@ mod tests {
             hard_errors: Some(3),
             hash_resolved: update,
             copied_last_tx: false,
+            early: false,
         };
         d.update = update;
         d

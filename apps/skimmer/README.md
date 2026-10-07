@@ -97,7 +97,7 @@ the channel's next slot, without a reconnect.
 
 Options: `--yield` (leave control to an SDR# started later), `--tune` (hold control
 and tune even with `--yield`), `--center HZ`,
-`--slot-budget SHARE|off` (a slot's decode may run this share of its period, 0.8 by default, then stops and reports what it has; the status line counts the slots it cut), `--lanes N` (decoder threads per channel, 4 by default: the next slot is decoded on another thread while the last is still being decoded, even if that outlasts its slot; each thread has its own callsign table, and a channel with averaging uses one), `--detail` (each row's sync score, the errors the FEC corrected and its message key),
+`--slot-budget SHARE|off` (a slot's decode may run this share of its period, then stops and reports what it has; off by default; the status line counts the slots it cut), `--lanes N` (decoder threads per channel, 4 by default: the next slot is decoded on another thread while the last is still being decoded, even if that outlasts its slot; each thread has its own callsign table, and a channel with averaging uses one), `--no-early` (FT8 rows only when the slot ends; by default the rows found by ~11.8 s are printed then, as WSJT-X shows them, and the rest at the end), `--detail` (each row's sync score, the errors the FEC corrected and its message key),
 `--rate S/s`, `--gain N` (the device gain index, when this client holds control;
 the GUI sets it live under Settings → Radio), `--format float|int16`
 (default float), `--pfb` (polyphase channelizer; cheaper from a handful of
