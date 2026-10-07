@@ -26,10 +26,18 @@
   let cqOnly = $state(false);
   let search = $state('');
   let follow = $state(true);
+  /** Extra columns: what the decoder knew of each row. */
+  let detail = $state(false);
   let box: HTMLDivElement | undefined = $state();
 
   const needle = $derived(search.trim().toUpperCase());
   const isCq = (t: string) => t.startsWith('CQ ');
+  /** The hover text of a row: sync score, errors the FEC corrected, and the key that identifies the message. */
+  const tip = (r: DecodeRow) =>
+    `sync ${r.syncScore.toFixed(1)} · ${r.hardErrors} error${r.hardErrors === 1 ? '' : 's'} corrected` +
+    (r.hashResolved ? ' · a <...> resolved from the callsign table' : '') +
+    (r.copiedLastTx ? ' · copied last Tx' : '') +
+    (r.key ? ` · key ${r.key}` : '');
 
   const shown = $derived(
     rows.filter(
@@ -87,6 +95,7 @@
       {/each}
     </select>
     <label class="check"><input type="checkbox" bind:checked={cqOnly} /> CQ only</label>
+    <label class="check" title="Show the sync score and the errors the FEC corrected for each row"><input type="checkbox" bind:checked={detail} /> Detail</label>
     <input class="search" bind:value={search} placeholder="Search call or text" spellcheck="false" />
     <span class="count">{shown.length} rows</span>
     <button class="link" onclick={onclear} title="Clear the table (ALL.TXT keeps every decode)">Clear</button>
@@ -98,23 +107,24 @@
   <div class="table" bind:this={box} {onscroll}>
     <table>
       <thead>
-        <tr><th>UTC</th>{#if serverNames.length > 1}<th>Server</th>{/if}<th>Mode</th><th class="num">MHz</th><th class="num">dB</th><th class="num">DT</th><th>Message</th></tr>
+        <tr><th>UTC</th>{#if serverNames.length > 1}<th>Server</th>{/if}<th>Mode</th><th class="num">MHz</th><th class="num">dB</th><th class="num">DT</th>{#if detail}<th class="num">Sync</th><th class="num">Err</th>{/if}<th>Message</th></tr>
       </thead>
       <tbody>
         {#each shown as r, i (r.id)}
           {#if heading(i)}
             <tr class="slot" class:alt={bandOf(r) === 1}>
-              <td colspan={serverNames.length > 1 ? 7 : 6}>{serverNames.length > 1 ? `${serverNames[channels[r.channel]?.server ?? 0]} · ` : ''}{r.mode} {(r.dialHz / 1000).toFixed(1)} kHz · slot {hhmmss(r.slotUtcMs)} UTC</td>
+              <td colspan={(serverNames.length > 1 ? 7 : 6) + (detail ? 2 : 0)}>{serverNames.length > 1 ? `${serverNames[channels[r.channel]?.server ?? 0]} · ` : ''}{r.mode} {(r.dialHz / 1000).toFixed(1)} kHz · slot {hhmmss(r.slotUtcMs)} UTC</td>
             </tr>
           {/if}
-          <tr class:alt={bandOf(r) === 1} class:cq={isCq(r.text)}>
+          <tr class:alt={bandOf(r) === 1} class:cq={isCq(r.text)} title={tip(r)}>
             <td class="mono">{hhmmss(r.slotUtcMs)}</td>
             {#if serverNames.length > 1}<td>{serverNames[channels[r.channel]?.server ?? 0] ?? ''}</td>{/if}
             <td>{r.mode}</td>
             <td class="num mono">{(r.freqHz / 1e6).toFixed(4)}</td>
             <td class="num mono">{r.snrDb.toFixed(0)}</td>
             <td class="num mono">{r.dtS.toFixed(1)}</td>
-            <td class="mono msg">{r.text}</td>
+            {#if detail}<td class="num mono">{r.syncScore.toFixed(1)}</td><td class="num mono">{r.hardErrors}</td>{/if}
+            <td class="mono msg">{r.text}{#if r.hashResolved}<span class="resolved" title="A &lt;...&gt; in this row was resolved from the callsign table"> ✓</span>{/if}</td>
           </tr>
         {/each}
       </tbody>

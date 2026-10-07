@@ -727,3 +727,9 @@ button.danger {
   padding-left: 12px;
   border-left: 1px solid var(--line);
 }
+
+/* A row whose <...> was resolved from the callsign table after it was first shown. */
+.decodes .resolved {
+  color: var(--accent);
+  cursor: help;
+}

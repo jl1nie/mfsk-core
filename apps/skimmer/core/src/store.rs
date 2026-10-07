@@ -30,7 +30,11 @@ CREATE TABLE IF NOT EXISTS decodes (
     grid    TEXT,               -- its locator, when the text carries one
     server  TEXT    NOT NULL DEFAULT '',  -- which SpyServer heard it
     cq      TEXT,               -- NULL: not a CQ; '': plain CQ; else DX, POTA, NA...
-    text    TEXT    NOT NULL
+    text    TEXT    NOT NULL,
+    msg_key BLOB,               -- the message's bits, packed: the same message heard twice has one
+    sync    REAL,               -- sync correlation score of the decode
+    hard_errors INTEGER,        -- hard-decision errors the FEC corrected
+    resolved INTEGER            -- 1: the text needed the callsign table (a <...> resolved)
 );
 CREATE TABLE IF NOT EXISTS stations (
     call TEXT PRIMARY KEY,
@@ -42,6 +46,53 @@ CREATE TABLE IF NOT EXISTS servers (
     grid TEXT NOT NULL            -- where it is: the origin of bearing and distance
 ) WITHOUT ROWID;
 ";
+
+/// The columns that carry a row's `RowDetail` (since #592), added to older files.
+const DETAIL_COLUMNS: [(&str, &str); 4] = [
+    ("msg_key", "BLOB"),
+    ("sync", "REAL"),
+    ("hard_errors", "INTEGER"),
+    ("resolved", "INTEGER"),
+];
+
+/// `d.sync`, `d.hard_errors`, `d.resolved` for a select list, or `NULL` where the
+/// file has no such column.
+fn detail_select(conn: &Connection) -> [&'static str; 3] {
+    let pick = |name: &str, col: &'static str| {
+        if has_column(conn, name).unwrap_or(false) {
+            col
+        } else {
+            "NULL"
+        }
+    };
+    [
+        pick("sync", "d.sync"),
+        pick("hard_errors", "d.hard_errors"),
+        pick("resolved", "d.resolved"),
+    ]
+}
+
+fn has_column(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.prepare("SELECT 1 FROM pragma_table_info('decodes') WHERE name = ?1")?
+        .exists([name])
+}
+
+/// A message key (one bit per byte) packed into bytes, most significant bit
+/// first, so a 91-bit FT8 key is 12 bytes in the file. Empty: no key.
+pub fn pack_key(bits: &[u8]) -> Option<Vec<u8>> {
+    if bits.is_empty() {
+        return None;
+    }
+    Some(
+        bits.chunks(8)
+            .map(|c| {
+                c.iter()
+                    .enumerate()
+                    .fold(0u8, |b, (i, &bit)| b | (bit & 1) << (7 - i))
+            })
+            .collect(),
+    )
+}
 
 const INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS decodes_t      ON decodes (t);
@@ -101,6 +152,13 @@ struct Row {
     grid: Option<String>,
     cq: Option<String>,
     text: String,
+    msg_key: Option<Vec<u8>>,
+    sync: f64,
+    hard_errors: i64,
+    resolved: bool,
+    /// Not a new row: the text of the one already written (or still waiting
+    /// here) with this server, slot, channel, frequency and key, now resolved.
+    update: bool,
 }
 
 /// Rows buffered at most this long, or this many, before a transaction.
@@ -125,6 +183,12 @@ impl Writer {
         if !has_server {
             conn.execute_batch("ALTER TABLE decodes ADD COLUMN server TEXT NOT NULL DEFAULT ''")?;
         }
+        // A file from before the decoder's row detail was kept (NULL there).
+        for (col, ty) in DETAIL_COLUMNS {
+            if !has_column(&conn, col)? {
+                conn.execute_batch(&format!("ALTER TABLE decodes ADD COLUMN {col} {ty}"))?;
+            }
+        }
         conn.execute_batch(INDEXES)?;
         for (name, grid) in servers {
             conn.execute(
@@ -143,7 +207,7 @@ impl Writer {
     pub fn push(&mut self, server: &str, d: &Decode) {
         let name = modes::mode_name(d.mode);
         let (call, grid) = spot::sender(name, &d.text);
-        self.pending.push(Row {
+        let row = Row {
             server: server.to_string(),
             t: d.slot_utc_ns.map_or(0, |ns| ns.div_euclid(1_000_000_000)),
             mode: name,
@@ -156,7 +220,33 @@ impl Writer {
             grid,
             cq: spot::cq_kind(&d.text),
             text: d.text.clone(),
+            msg_key: pack_key(&d.detail.key),
+            sync: f64::from(d.detail.sync_score),
+            hard_errors: i64::from(d.detail.hard_errors),
+            resolved: d.detail.hash_resolved,
+            update: d.update,
+        };
+        // An update of a row still waiting is made in place.
+        let waiting = row.update.then(|| {
+            self.pending.iter_mut().find(|p| {
+                !p.update
+                    && p.server == row.server
+                    && p.t == row.t
+                    && p.dial_hz == row.dial_hz
+                    && p.freq_hz == row.freq_hz
+                    && p.msg_key == row.msg_key
+            })
         });
+        match waiting.flatten() {
+            Some(p) => {
+                p.call = row.call;
+                p.grid = row.grid;
+                p.cq = row.cq;
+                p.text = row.text;
+                p.resolved = row.resolved;
+            }
+            None => self.pending.push(row),
+        }
         if self.pending.len() >= FLUSH_ROWS || self.since.elapsed() >= FLUSH_EVERY {
             self.flush();
         }
@@ -184,8 +274,16 @@ impl Writer {
         let tx = self.conn.transaction()?;
         {
             let mut ins = tx.prepare_cached(
-                "INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, call, grid, cq, text, server)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, call, grid, cq, text, server,
+                                      msg_key, sync, hard_errors, resolved)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            )?;
+            // An update finds the row by what identifies it; a file with no key
+            // (a mode that gave none) is matched by its old text's place alone.
+            let mut upd = tx.prepare_cached(
+                "UPDATE decodes SET call = ?1, grid = ?2, cq = ?3, text = ?4, resolved = ?5
+                 WHERE server = ?6 AND t = ?7 AND dial_hz = ?8 AND freq_hz = ?9
+                   AND msg_key IS ?10",
             )?;
             let mut st = tx.prepare_cached(
                 "INSERT INTO stations (call, grid, seen) VALUES (?1, ?2, ?3)
@@ -193,10 +291,31 @@ impl Writer {
                  WHERE excluded.seen >= seen",
             )?;
             for r in rows {
-                ins.execute(params![
-                    r.t, r.mode, r.band, r.dial_hz, r.freq_hz, r.snr, r.dt, r.call, r.grid, r.cq,
-                    r.text, r.server
-                ])?;
+                if r.update {
+                    upd.execute(params![
+                        r.call, r.grid, r.cq, r.text, r.resolved, r.server, r.t, r.dial_hz,
+                        r.freq_hz, r.msg_key
+                    ])?;
+                } else {
+                    ins.execute(params![
+                        r.t,
+                        r.mode,
+                        r.band,
+                        r.dial_hz,
+                        r.freq_hz,
+                        r.snr,
+                        r.dt,
+                        r.call,
+                        r.grid,
+                        r.cq,
+                        r.text,
+                        r.server,
+                        r.msg_key,
+                        r.sync,
+                        r.hard_errors,
+                        r.resolved
+                    ])?;
+                }
                 if let (Some(c), Some(g)) = (&r.call, &r.grid) {
                     st.execute(params![c, g, r.t])?;
                 }
@@ -393,6 +512,11 @@ pub struct Spot {
     pub text: String,
     pub bearing: Option<f64>,
     pub km: Option<f64>,
+    /// What the decoder knew of the row (`None`: a file from before it was kept).
+    pub sync: Option<f64>,
+    pub hard_errors: Option<i64>,
+    /// The text needed the callsign table: a `<...>` was resolved.
+    pub resolved: Option<bool>,
 }
 
 /// A sender heard in one slice of time: what the map animation draws.
@@ -541,9 +665,11 @@ impl Reader {
     pub fn decodes(&self, q: &Query, limit: usize) -> Result<Vec<Spot>, String> {
         let (w, mut wp) = q.sql()?;
         let me = q.me.trim().to_string();
+        let [sync, hard, resolved] = detail_select(&self.conn);
         let sql = format!(
             "SELECT d.t, d.call, {GRID}, d.band, d.mode, d.freq_hz - d.dial_hz, d.snr, d.dt, d.cq, d.text,
-                    d.server, bearing_deg({ORIGIN}, {GRID}), dist_km({ORIGIN}, {GRID})
+                    d.server, bearing_deg({ORIGIN}, {GRID}), dist_km({ORIGIN}, {GRID}),
+                    {sync}, {hard}, {resolved}
              FROM {FROM} WHERE {w} ORDER BY d.t DESC LIMIT {limit}"
         );
         // The two origins in the select list come before the WHERE's parameters.
@@ -566,6 +692,9 @@ impl Reader {
                     server: r.get(10)?,
                     bearing: r.get(11)?,
                     km: r.get(12)?,
+                    sync: r.get(13)?,
+                    hard_errors: r.get(14)?,
+                    resolved: r.get::<_, Option<i64>>(15)?.map(|v| v != 0),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -819,9 +948,11 @@ pub fn export_csv(path: &Path, q: &Query, dest: &Path) -> Result<i64, String> {
     let r = Reader::open(path).map_err(|e| e.to_string())?;
     let (w, mut wp) = q.sql()?;
     let me = q.me.trim().to_string();
+    let [sync, hard, resolved] = detail_select(&r.conn);
     let sql = format!(
         "SELECT d.t, d.server, d.call, {GRID}, d.band, d.mode, d.dial_hz, d.freq_hz - d.dial_hz,
-                d.snr, d.dt, d.cq, d.text, bearing_deg({ORIGIN}, {GRID}), dist_km({ORIGIN}, {GRID})
+                d.snr, d.dt, d.cq, d.text, bearing_deg({ORIGIN}, {GRID}), dist_km({ORIGIN}, {GRID}),
+                {sync}, {hard}, {resolved}
          FROM {FROM} WHERE {w} ORDER BY d.t"
     );
     let mut p: Vec<rusqlite::types::Value> = vec![me.clone().into(), me.into()];
@@ -832,7 +963,7 @@ pub fn export_csv(path: &Path, q: &Query, dest: &Path) -> Result<i64, String> {
     );
     writeln!(
         out,
-        "utc,server,call,grid,band,mode,dial_hz,audio_hz,snr_db,dt_s,cq,message,bearing_deg,distance_km"
+        "utc,server,call,grid,band,mode,dial_hz,audio_hz,snr_db,dt_s,cq,message,bearing_deg,distance_km,sync,hard_errors,resolved"
     )
     .map_err(|e| e.to_string())?;
     let mut rows = st
@@ -856,9 +987,16 @@ pub fn export_csv(path: &Path, q: &Query, dest: &Path) -> Result<i64, String> {
                 .map_or(String::new(), |v| format!("{v:.1}"))
         };
         let int = |i: usize| -> i64 { row.get::<_, Option<i64>>(i).ok().flatten().unwrap_or(0) };
+        // Blank where the file has none (an older one, or a mode with no value).
+        let opt_int = |i: usize| -> String {
+            row.get::<_, Option<i64>>(i)
+                .ok()
+                .flatten()
+                .map_or(String::new(), |v| v.to_string())
+        };
         writeln!(
             out,
-            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z,{},{},{},{},{},{},{},{},{:.1},{},{},{},{}",
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z,{},{},{},{},{},{},{},{},{:.1},{},{},{},{},{},{},{}",
             sod / 3600,
             sod / 60 % 60,
             sod % 60,
@@ -874,7 +1012,10 @@ pub fn export_csv(path: &Path, q: &Query, dest: &Path) -> Result<i64, String> {
             csv_field(&text(10)),
             csv_field(&text(11)),
             num(12),
-            num(13)
+            num(13),
+            num(14),
+            opt_int(15),
+            opt_int(16)
         )
         .map_err(|e| e.to_string())?;
         n += 1;
@@ -898,6 +1039,8 @@ mod tests {
             snr_db: snr,
             dt_s: 0.1,
             text: text.into(),
+            detail: crate::DecodeDetail::default(),
+            update: false,
         }
     }
 
@@ -1153,6 +1296,134 @@ mod tests {
             "the old row has no server"
         );
         drop(w);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    fn with_detail(mut d: Decode, key: &[u8], update: bool) -> Decode {
+        d.detail = crate::DecodeDetail {
+            key: key.to_vec(),
+            sync_score: 2.5,
+            hard_errors: 3,
+            hash_resolved: update,
+            copied_last_tx: false,
+        };
+        d.update = update;
+        d
+    }
+
+    #[test]
+    fn a_key_is_packed_most_significant_bit_first() {
+        assert_eq!(pack_key(&[]), None);
+        assert_eq!(pack_key(&[1, 0, 1]), Some(vec![0b1010_0000]));
+        // 91 bits is 12 bytes; the last has 3 bits in it.
+        let k: Vec<u8> = (0..91).map(|i| (i % 2) as u8).collect();
+        let p = pack_key(&k).unwrap();
+        assert_eq!(p.len(), 12);
+        assert_eq!(p[0], 0b0101_0101);
+        assert_eq!(p[11], 0b0100_0000);
+    }
+
+    #[test]
+    fn the_rows_detail_is_stored_and_read_back() {
+        let p = db();
+        let mut w = Writer::open(&p, &[]).unwrap();
+        let h = 1_700_000_000 / 3600 * 3600;
+        w.push(
+            "",
+            &with_detail(
+                decode(h, 14.074e6, -10.0, "CQ K1ABC FN42"),
+                &[1, 0, 1],
+                false,
+            ),
+        );
+        w.push("", &decode(h + 15, 14.074e6, -5.0, "CQ W9XYZ EN34"));
+        w.flush();
+        let r = Reader::open(&p).unwrap();
+        let spots = r.decodes(&q(h), 10).unwrap();
+        let k = spots.iter().find(|s| s.text.contains("K1ABC")).unwrap();
+        assert_eq!(
+            (k.sync, k.hard_errors, k.resolved),
+            (Some(2.5), Some(3), Some(false))
+        );
+        // A row given no detail has the defaults, not NULL.
+        let w9 = spots.iter().find(|s| s.text.contains("W9XYZ")).unwrap();
+        assert_eq!((w9.sync, w9.hard_errors), (Some(0.0), Some(0)));
+        drop(w);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A row delivered as `<...>` and then resolved is one row in the file, with
+    /// the resolved text, whether the update arrives before the first write or after.
+    #[test]
+    fn an_update_replaces_the_row_it_names() {
+        let p = db();
+        let mut w = Writer::open(&p, &[]).unwrap();
+        let h = 1_700_000_000 / 3600 * 3600;
+        let first = |t: &str, key: &[u8]| with_detail(decode(h, 14.074e6, -10.0, t), key, false);
+        let better = |t: &str, key: &[u8]| with_detail(decode(h, 14.074e6, -10.0, t), key, true);
+
+        // Written already.
+        w.push("", &first("CQ <...> PM95", &[1, 0, 1]));
+        w.flush();
+        w.push("", &better("CQ <JA1ABC> PM95", &[1, 0, 1]));
+        // Still waiting.
+        w.push("", &first("K1ABC <...> -07", &[0, 1, 1]));
+        w.push("", &better("K1ABC <W9XYZ> -07", &[0, 1, 1]));
+        // Another message at the same place is not touched.
+        w.push("", &first("CQ <...> FN42", &[1, 1, 1]));
+        w.flush();
+
+        let r = Reader::open(&p).unwrap();
+        let mut texts: Vec<_> = r
+            .decodes(&q(h), 10)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.text, s.resolved))
+            .collect();
+        texts.sort();
+        assert_eq!(
+            texts,
+            vec![
+                ("CQ <...> FN42".to_string(), Some(false)),
+                ("CQ <JA1ABC> PM95".to_string(), Some(true)),
+                ("K1ABC <W9XYZ> -07".to_string(), Some(true)),
+            ]
+        );
+        drop(w);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// An analysis opened on a file from before the detail was kept still reads
+    /// it, with nothing for the new columns.
+    #[test]
+    fn a_file_without_the_detail_columns_is_read() {
+        let p = db();
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(
+                "CREATE TABLE decodes (id INTEGER PRIMARY KEY, t INTEGER NOT NULL, mode TEXT NOT NULL,
+                  band TEXT NOT NULL, dial_hz INTEGER NOT NULL, freq_hz INTEGER NOT NULL, snr INTEGER NOT NULL,
+                  dt REAL NOT NULL, call TEXT, grid TEXT, cq TEXT, text TEXT NOT NULL,
+                  server TEXT NOT NULL DEFAULT '');
+                 CREATE TABLE stations (call TEXT PRIMARY KEY, grid TEXT NOT NULL, seen INTEGER NOT NULL);
+                 CREATE TABLE servers (name TEXT PRIMARY KEY, grid TEXT NOT NULL);
+                 INSERT INTO decodes (t, mode, band, dial_hz, freq_hz, snr, dt, text)
+                  VALUES (1700000000, 'FT8', '20m', 14074000, 14075500, -5, 0.1, 'CQ K1ABC FN42');",
+            )
+            .unwrap();
+        }
+        let r = Reader::open(&p).unwrap();
+        let q = Query {
+            since: 0,
+            until: 2_000_000_000,
+            ..Query::default()
+        };
+        let spots = r.decodes(&q, 10).unwrap();
+        assert_eq!(spots.len(), 1);
+        assert_eq!(
+            (spots[0].sync, spots[0].hard_errors, spots[0].resolved),
+            (None, None, None)
+        );
         let _ = std::fs::remove_file(&p);
     }
 

@@ -97,6 +97,7 @@ the channel's next slot, without a reconnect.
 
 Options: `--yield` (leave control to an SDR# started later), `--tune` (hold control
 and tune even with `--yield`), `--center HZ`,
+`--slot-budget SHARE|off` (a slot's decode may run this share of its period, 0.8 by default, then stops and reports what it has; FT8, FT4 and FST4 only, see #593; the status line counts the slots it cut), `--detail` (each row's sync score, the errors the FEC corrected and its message key),
 `--rate S/s`, `--gain N` (the device gain index, when this client holds control;
 the GUI sets it live under Settings → Radio), `--format float|int16`
 (default float), `--pfb` (polyphase channelizer; cheaper from a handful of
@@ -112,7 +113,7 @@ on/off dot and its name; the channel list has band presets; the right side is a
 **Waterfall** tab (a thumbnail per channel, one large, the decodes under it) and
 an **Analysis** tab (below). The decode list uses one row format for every mode,
 highlights CQ and your own call, and can filter by channel, CQ or a search
-string. Settings are saved and restored. Every decode goes to the database
+string. A row whose `<...>` the same period then resolved (a call learned from a later message) is replaced in place and marked ✓; *Detail* adds the sync score and the errors the FEC corrected, and hovering a row gives the message key. Settings are saved and restored. Every decode goes to the database
 `skimmer.db`. The presets come from WSJT-X's `default_frequency_list` (all-region and
 Region 3 entries), plus FT8 at 7041 kHz for JA.
 
@@ -256,6 +257,7 @@ bearing and distance from the place that heard the signal.
 
 ## Analysis
 
+Each decode is stored with the decoder's own view of it: the message's bits (the key, so the same message heard on two servers can be matched), the sync score, the errors the FEC corrected, and whether a `<...>` was resolved. Files from before have none of these (blank in the CSV).
 One query (UTC period, regular expressions on call, locator and text, band, mode,
 server, SNR, distance and bearing sector from the server that heard it, CQ kind)
 over four views:

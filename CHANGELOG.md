@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **skimmer: row detail, resolved rows and a per-slot time budget, on the 0.13 decoder API (#592, #593).** `Decode` carries the
+  row's key, sync score, FEC-corrected errors, `hash_resolved` and Q65's copied-last-Tx. A streamed row is resolved against the
+  callsign table as it stood when the period began, so the worker now says a row again (`update`) when the returned one reads
+  better; the GUI replaces the row in place (marked ✓), the database updates it, and the CLI prints it again, not into `ALL.TXT`.
+  The database gains `msg_key`, `sync`, `hard_errors` and `resolved` (older files are upgraded; Analysis and the CSV show them,
+  blank for older rows). `Config::slot_budget` (default 0.8 of the period; `--slot-budget`, GUI *Time budget*) stops a slot's decode and
+  counts it in `Status::budget_cut_slots`, for FT8, FT4 and FST4 only: WSPR, JT9, JT65 and Q65 ignore `SlotInput::budget` (#593).
+  Tested on the library side (57 `skimmer-core` tests, `svelte-check` clean); the window itself has not been run with these changes.
 - **Every decoded row has an identity key: `RowDetail::info` is filled for WSPR (50 bits), JT9 and JT65 (72) and Q65 (77),
   not just FT8, FT4 and FST4 (#592).** Through `AnyDecoder` and the C ABI a row had text and nothing else to be compared
   by, so a caller pairing a streamed row with a returned one keyed those four modes by text, which drops two of the JT65

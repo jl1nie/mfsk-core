@@ -278,6 +278,9 @@ struct Settings {
     /// server, is at the same step at the same moment) instead of beginning
     /// with the first band when connecting.
     rotation_utc: bool,
+    /// A slot's decode may run this percent of its period, then it stops and
+    /// reports what it has; 0 has no limit. Only FT8, FT4 and FST4 poll it.
+    slot_budget_pct: u32,
     #[serde(skip_serializing)]
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps).
@@ -368,6 +371,7 @@ impl Default for Settings {
             clock_source: "ntp".into(),
             ntp_server: "pool.ntp.org".into(),
             rotation_utc: false,
+            slot_budget_pct: 80,
             channelizer: "auto".into(),
             db_enabled: true,
             db_path: String::new(),
@@ -448,6 +452,17 @@ enum UiEvent {
         snr_db: f32,
         dt_s: f32,
         text: String,
+        /// The message's bits as hex: the same message heard on two channels or
+        /// servers has one key. Empty for a mode that gave none.
+        key: String,
+        sync_score: f32,
+        hard_errors: u32,
+        /// The text needed the callsign table (a `<...>` was resolved).
+        hash_resolved: bool,
+        copied_last_tx: bool,
+        /// Replaces the row of this channel and slot with the same `key` and
+        /// frequency: its `<...>` now reads resolved.
+        update: bool,
     },
     Gap {
         messages: u32,
@@ -474,6 +489,8 @@ enum UiEvent {
         queued_bytes: usize,
         queued_slots: usize,
         dropped_slots: u64,
+        /// Slots whose decode the slot budget stopped, since the start.
+        budget_cut_slots: u64,
         longest_decode_ms: f64,
         gaps: u64,
         reanchors: u64,
@@ -482,6 +499,17 @@ enum UiEvent {
     Disconnected {
         error: String,
     },
+}
+
+/// A message key (one bit per byte) as hex, four bits a digit; `-` when a mode
+/// gave none. The window shows it and compares rows by it.
+fn key_hex(bits: &[u8]) -> String {
+    bits.chunks(4)
+        .map(|c| {
+            let n = c.iter().fold(0u8, |a, &b| a << 1 | (b & 1)) << (4 - c.len());
+            char::from_digit(u32::from(n), 16).unwrap_or('0')
+        })
+        .collect()
 }
 
 impl UiEvent {
@@ -548,6 +576,12 @@ impl UiEvent {
                 snr_db: d.snr_db,
                 dt_s: d.dt_s,
                 text: d.text,
+                key: key_hex(&d.detail.key),
+                sync_score: d.detail.sync_score,
+                hard_errors: d.detail.hard_errors,
+                hash_resolved: d.detail.hash_resolved,
+                copied_last_tx: d.detail.copied_last_tx,
+                update: d.update,
             },
             Event::Gap { messages, at_s } => UiEvent::Gap { messages, at_s },
             Event::Reanchor { by_s } => UiEvent::Reanchor { by_s },
@@ -572,6 +606,7 @@ impl UiEvent {
                 queued_bytes: s.queued_bytes,
                 queued_slots: s.queued_slots,
                 dropped_slots: s.dropped_slots,
+                budget_cut_slots: s.budget_cut_slots,
                 longest_decode_ms: s.longest_decode_ms,
                 gaps: s.gaps,
                 reanchors: s.reanchors,
@@ -746,6 +781,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         });
         cfg.live.set_enabled(srv.enabled);
         cfg.rotation_origin = (!s.rotation_utc).then_some(started);
+        cfg.slot_budget = (s.slot_budget_pct > 0).then(|| s.slot_budget_pct as f32 / 100.0);
         cfg.tune = srv.tune;
         cfg.yield_control = srv.yield_control;
         cfg.waterfall = s.waterfall;
@@ -934,7 +970,7 @@ fn health_line(ev: &Event) -> Option<String> {
     let body = match ev {
         Event::Status(s) => format!(
             "status streamed {:.0}s delay {:.0}ms drift {:+.0}ms push {:.0}ms decode {:.0}ms \
-             queue {:.0}kB slots {}/{} gaps {} reanchors {} clock [{}]",
+             queue {:.0}kB slots {}/{} budget-cut {} gaps {} reanchors {} clock [{}]",
             s.streamed_s,
             s.delay_ms,
             s.drift_ms,
@@ -943,6 +979,7 @@ fn health_line(ev: &Event) -> Option<String> {
             s.queued_bytes as f64 / 1e3,
             s.queued_slots,
             s.dropped_slots,
+            s.budget_cut_slots,
             s.gaps,
             s.reanchors,
             if s.clock.is_empty() {
@@ -1186,7 +1223,8 @@ async fn start(
         skimmer_core::run_all(&cfgs, &flag, |i, ev| {
             let (server, map) = &maps[i];
             let name = &names[*server];
-            if matches!(ev, Event::Decode(_)) {
+            // An update is a row already counted, said again.
+            if matches!(&ev, Event::Decode(d) if !d.update) {
                 decodes += 1;
             }
             match &ev {
