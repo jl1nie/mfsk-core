@@ -1,424 +1,295 @@
 # Early decode for live use — design (#572)
 
-Status: **draft for review, revised 2026-10-06.** Nothing here is implemented. Target: 0.14; breaking changes are
+Status: **draft for review, revised 2026-10-07.** Nothing here is implemented. Target: 0.14; breaking changes are
 allowed, but #573 (`#[non_exhaustive]`) lands first.
 
-This is the second revision. The first folded #587 (WebFT8's two-phase decode, and a budget overshooting its deadline)
-into this design. #587 was then closed by **#589**, which polls the budget after checkpoint A and before each row's
-subtraction in the B and C loops, with no new API — and WebFT8 measured the fix under `wasm32` and kept its own
-two-phase arrangement. So this design is back to #572 alone: an early-decode entry point, judged on whether it delivers
-checkpoint A's rows at 11.8 s, not on anything #587 needed.
+Third revision. The first folded in #587, which **#589** then closed on its own (the budget is polled after checkpoint A
+and before each row's subtraction in the B and C loops) with no new API, so that material is gone. The second answered
+five open questions but grew the public surface to a `Stage` input enum, a `StageKind` for the registry table,
+`prefix_points()`, `open_prefix()`, `CAP_EARLY` and `abandon_period`. Writing the caller samples killed most of that:
+the stage is something the decoder can infer from what it already holds, and the published-positions table turned out
+to be bookkeeping the caller was keeping *for* the library. What is left is one method pair.
+
+| | |
+|---|---|
+| **added** | `Decoder::decode_prefix` / `decode_prefix_with`, the same pair on `AnyDecoder`, `RowDetail::stage` |
+| **new types** | `Stage` — **output only**, matched on a row, never passed in |
+| **unchanged** | `decode` / `decode_with`, `SlotInput`, every existing contract |
 
 ## 0. Goal and use cases
 
-FT8 rows should reach a live caller at about 11.8 s into the period, as WSJT-X delivers them, and the caller should decide
-how much of the machinery it wants. The design has to serve every caller below without a special path for any of them:
+FT8 rows should reach a live caller at about 11.8 s into the period, as WSJT-X delivers them.
 
-| | caller | how audio arrives | threads | what it wants |
-|---|---|---|---|---|
-| U1 | offline decode of a recording | the whole period at once | any | today's `decode`, unchanged |
-| U2 | desktop GUI, native | pushed in blocks | one per channel | rows at 11.8 s, the rest at the end |
-| U3 | browser PWA | AudioWorklet blocks into one worker | one, cannot block | same as U2, never blocking |
-| U4 | skimmer over `IqReceiver` | wideband IQ, N channels | a pool | early rows on some channels only |
-| U5 | C / Kotlin / Swift app | `mfsk_stream_push_*` | the app's | the same through the C ABI |
-| U6 | research / validation | a recording | any | `jt9`'s exact 41 / 47 / 50 calls |
-| U7 | a caller with its own clock and buffers | its own | its own | to choose *when* to call, with no cutter |
-| U8 | a host short on CPU, or on a busy band | any | any | to skip a stage, cap redecode cost, or go deep, period by period |
+| | caller | how audio arrives | in scope |
+|---|---|---|---|
+| U1 | offline decode of a recording | the whole period at once | yes — `decode`, untouched |
+| U2 | desktop GUI, native | pushed in blocks | **yes** |
+| U3 | browser PWA, one worker, cannot block | AudioWorklet blocks | **yes** |
+| U6 | research / validation | a recording, replayed at `jt9`'s counts | **yes** |
+| U8 | a host short on CPU, or a busy band | any | **yes** — `Budget` and the strategy |
+| U4 | skimmer over `IqReceiver` | wideband IQ, N channels | §9: a follow-up |
+| U5 | C / Kotlin / Swift app | `mfsk_stream_push_*` | §9: a follow-up |
 
 ## 1. What upstream does (v3.2.0-rc1, `567ad29ce`)
 
-FT8 is decoded three times per period, on growing prefixes of the same audio. One `hsym` is 3456 samples, 0.288 s.
+FT8 is decoded three times per period, on growing prefixes of the same audio. The unit is 3456 samples — **`jt9`'s own
+streaming block, which is JT9's half-symbol** (`NSPS` 6912/2, `jt9/baseband.rs:19`), not FT8's symbol and not this
+crate's spectrogram step. None of the three divides the others: 141 696/1920 = 73.8 symbols, and /480 = 295.2 steps
+(`NSTEP`, or 960 under `nstep-half`). A caller cannot derive these counts, which is why §4 publishes them in prose and
+the decoder acts on them itself.
 
 | call | `nzhsym` | samples | time | `ft8_decode.f90` |
 |---|---|---|---|---|
-| A | 41 | 0..141 696 | 11.8 s | Zero the tail and run three sync+decode passes. Keep the decodes (`ndec_early`, `itone_save`/`f1_save`/`xdt_save`, SAVE). |
-| B | 47 (46 in ft8md "very early") | 0..162 432 | 13.5 s | **No search.** Subtract the A decodes whose frame fits (`xdt-0.5 < 0.396`), then `go to 900`. |
-| C | 50 | 0..172 800 | 14.4 s | Head is B's cleaned buffer, tail is fresh audio. Subtract the A decodes not yet subtracted, then run three passes. |
+| A | 41 | 0..141 696 | 11.8 s | Zero the tail and run three sync+decode passes. Keep the decodes (SAVE). |
+| B | 47 | 0..162 432 | 13.5 s | **No search.** Subtract the A decodes whose frame fits, then `go to 900`. |
+| C | 50 | 0..172 800 | 14.4 s | Head is B's cleaned buffer, tail is fresh audio. Subtract what is left, run three passes. |
 
 - A starts the period: `nzhsym==41` or a new `nutc` resets the a7 table. With `ndepth==1`, nothing runs before 50.
-- In 3.2.0-rc1, `syncmin=2.0` at 41 is commented out. mfsk-core already follows this (#452).
-- **No AP pass runs while `nzhsym < 50`** (`npasses=5`). mfsk-core already follows this, with the citation at
-  `ft8/decode.rs:1332-1333`.
-- **a7 and a8 run only at `nzhsym == 50`**, after the candidate loop, with AP on. Sourced here from this crate's own
-  port header (`ft8/list_decode.rs:3-5`, which cites `ft8_decode.f90:250-305` / `ft8_a7.f90` / `ft8_a8d.f90`) rather
-  than from the Fortran directly — the WSJT-X tree is not in this container, so the line range is quoted at second hand
-  and should be re-read against it before the implementation relies on it.
-- The live GUI bails out on wall-clock time (`tseq >= 13.4 s` in A, `14.3 s` in B's subtraction). `jt9` replays 41/47/50 on
-  a file (`jt9.f90:340-354`).
-- ft8md (#463) is opt-in: `m_multithreadFT8` defaults to `false` (`mainwindow.cpp:619`). So the A/B/C path above is what a
-  default user runs.
-- WSJT-X's own extra suppression from multiple SIC rounds (~17.65 dB against ~6.6 dB for one subtraction) comes from "the
-  *outer* `do ipass=1,npass` loop re-detecting the same residual signal as a fresh candidate in a later pass" — a real
-  station is meant to be redecoded, not just subtracted once. mfsk-core's own code comments cite this directly
-  (`ft8/decode.rs`, issues #177/#179).
+- **No AP pass runs while `nzhsym < 50`** (`npasses=5`); already followed, cited at `ft8/decode.rs:1332-1333`.
+- **a7 and a8 run only at `nzhsym == 50`**, with AP on. Sourced from this crate's port header
+  (`ft8/list_decode.rs:3-5`, citing `ft8_decode.f90:250-305`) rather than the Fortran, which is not in this container —
+  validation 2 is where that gets checked against it.
+- In 3.2.0-rc1, `syncmin=2.0` at 41 is commented out; mfsk-core follows (#452). The live GUI bails out on wall clock
+  (`tseq`); `jt9` replays 41/47/50 on a file (`jt9.f90:340-354`). ft8md (#463) is opt-in and off by default.
 
 ## 2. What mfsk-core has
 
-- `Ft8Strategy::SicEarly` already runs A, B and C over a whole-slot buffer (`ft8/decode.rs`,
-  `decode_frame_subtract_staged_with_ap_inner`, #180). Its rows stream as A finds them, but the call cannot start until
-  the period is complete.
-- What upstream keeps between the calls (`early_results`, `buf_b`, `deferred`) is local to that one function.
-- The function is already length-generic: B's fit limit is computed from `b_len`, not hard-coded at 47, so stages at other
-  sample counts need no new algorithm.
-- Checkpoint A itself runs `CHECKPOINT_SIC_ROUNDS = 3` internal SIC rounds over its prefix, and checkpoint C runs 3 more —
-  up to 6 rounds total, each up to `max_cand` candidates, each candidate re-triaged and (if it survives) fully redecoded.
-- **Two internal flat fallbacks already exist, and §4 depends on both being understood as internal:**
-  - `audio.len() < A_SAMPLES` → a flat `SicRounds(3)` pass over the whole (short) buffer. It must be the flat inner and
-    not `.sic_early()`, which dispatches back into this function and would recurse (`decode.rs:1275-1297`, guarded by
-    `sic_early_with_ap_silence_shape`).
-  - checkpoint A found nothing (`early_results.is_empty()`) → the same flat pass over the full audio, because
-    upstream's B search and C's "cleaned head + raw tail" step are both gated on `ndec_early >= 1`
-    (`decode.rs:1342-1374`).
-- The budget is polled after checkpoint A and before each row's subtraction in the B and C loops (**#589**). The
-  subtraction itself is unchanged, following `subtractft8.f90`'s `lrefinedt` path, and
-  `staged_sic_skips_b_and_c_when_a_spends_the_budget` (`ft8/decode.rs:2045`) guards the fix.
+- `Ft8Strategy::SicEarly` already runs A, B and C over a whole-slot buffer (`decode_frame_subtract_staged_with_ap_inner`,
+  #180). Its rows stream as A finds them, but the call cannot start until the period is complete.
+- **A short buffer already works.** `audio.len() < A_SAMPLES` → a flat pass (`decode.rs:1275-1297`); above it, the staged
+  path runs with `b_len`/`c_len` = `*_SAMPLES.min(audio.len())`. What is missing is only that nothing is *kept* between
+  calls — `early_results`, `buf_b` and `deferred` are locals.
+- A second flat fallback: checkpoint A found nothing (`early_results.is_empty()`), because upstream gates B's search and
+  C's splice on `ndec_early >= 1` (`decode.rs:1342-1374`). Both fallbacks are **internal branches** of the staged path.
+- The budget is polled after A and before each row's subtraction in B and C (#589), guarded by
+  `staged_sic_skips_b_and_c_when_a_spends_the_budget` (`decode.rs:2045`).
 - a7's cross-period state is written by `remember(state, slot.period, results)` (`decoder/frame.rs:616`), once per
-  `decode` call, only when `extras.a7` is set, and it returns immediately when `slot.period` is `None`
-  (`frame.rs:516-520`). It keeps the two latest periods, replacing any entry for the same index.
-- `SlotInput` is one whole period and is already `#[non_exhaustive]`. Its `period` is `Option<i64>`, documented as
-  "`None` (a lone recording) leaves it untouched" — **unknown**, not "the current one" (`decoder/mod.rs:118-128`).
-- `IqReceiver` and the C stream cut whole slots with `SlotCutter`. The boards run their own prefix path
-  (`embedded-shared`).
+  `decode`, only with `extras.a7`, and it returns immediately when `period` is `None` (`frame.rs:517`).
+- `SlotInput::period` is `Option<i64>`, documented as "`None` (a lone recording) leaves it untouched" — **unknown**, not
+  "the current one" (`decoder/mod.rs:121-123`).
+- `Decoder` offers `decode` and `decode_with` (`decoder/mod.rs:279`, `:287`); `AnyDecoder` mirrors them. The new pair
+  follows that convention.
 
 ## 3. Principles
 
-1. **One primitive, many drivers.** The decoder gets one new entry point. Everything that decides *when* to call it is a
-   separate, optional layer, so a caller can take the layer that fits or none at all (U7).
-2. **The audio length is the checkpoint.** The caller says *which kind* of stage to run and passes the period so far. How
-   many samples that is, is up to the caller. Upstream's counts are a published default, not a rule (the ft8md 46, U7).
-   This does **not** mean a shorter prefix is cheaper to process — see trap 6:
-   `compute_spectrogram`/`coarse_sync`/`build_fft_cache` cost is fixed regardless of prefix length. What a caller
-   actually controls by choosing a shorter prefix is *when* it can call (how much real audio exists yet), not the cost of
-   any one call.
-3. **Every sequence is valid.** Calls may be skipped, repeated or out of order. Each case has a defined result, and the
-   worst case is today's whole-period decode. Nothing errors except a mode that has no stages (U8), and `Early`/`Prepare`
-   without a period index (§4).
+1. **The decoder infers the stage.** It holds the period's state and is handed the audio; which checkpoint a call is, is
+   a function of those two. The caller names a period and hands audio, nothing else. (The samples are what settled this:
+   every shape that made the caller name the stage also made it keep a copy of the decoder's own progress.)
+2. **The audio length is the checkpoint.** Upstream's counts are what the decoder acts on; a prefix between them does
+   nothing but return. A shorter prefix is **not** cheaper (trap 5) — what a caller buys by choosing one is *when* it
+   can call, not the cost of the call.
+3. **Every sequence is defined, and nothing errors.** Calls may be skipped or repeated. The worst case is today's
+   whole-period decode.
 4. **The state lives in the `Decoder`**, where `ft8_decode.f90` keeps its SAVE variables, as 0.13 already does for
    everything kept between periods.
-5. **No clock, and no waiting.** Time is the sample count, not a wall clock. `decode_stage` never waits on a lock, a
-   clock, a channel or I/O — but it is **synchronous and CPU-bound**, so it occupies the calling thread until its work is
-   done. "Non-blocking" would be the wrong word: on a single browser worker (U3) the thread cannot service messages for
-   the duration of the call. What the library owes the caller is therefore a *bounded* occupancy, not a short one, and
-   `Budget` is that bound (§4, "Budget"). What the caller owes itself is that audio capture does not share the thread
-   that decodes — see §5.4.
+5. **No clock, and no waiting.** Time is the sample count. `decode_prefix` never waits on a lock, clock, channel or I/O —
+   but it is **synchronous and CPU-bound** and holds the calling thread until its work is done. "Non-blocking" would be
+   wrong: a single browser worker cannot service messages during the call. What the library owes is a *bounded*
+   occupancy, and `Budget` is that bound; what the caller owes itself is that capture does not share the thread (§4).
 
-## 4. Layer 1: the decoder entry point
+## 4. The entry point
 
 ```rust
-pub enum Stage {
-    /// Search the period so far; stream what is found. Starts period `period`'s stage state.
-    Early { period: i64 },
-    /// Subtract what `Early` found from a longer prefix. No search, no rows.
-    Prepare { period: i64 },
-    /// The whole period: search what is left; stream only what `Early` did not.
-    /// Takes its period from the stage state, or from `SlotInput::period`.
-    Final,
-}
+impl Decoder<P> {
+    /// Decode the period so far, keeping what this period has already found.
+    ///
+    /// Call it as audio arrives, with everything of the period received up to
+    /// now and `slot.period` set. FT8 acts at 141 696 and 162 432 samples and
+    /// at the period's full length; a call between those returns at once.
+    /// The call whose audio is the whole period returns the period's complete
+    /// row set and ends the sequence. Finish a period with this method:
+    /// mixing in `decode` midway is unspecified (§4, "Mixing the two").
+    pub fn decode_prefix(&mut self, slot: &SlotInput<'_>) -> SlotResult<P::Row>;
 
-impl Decoder<Ft8> {
-    pub fn decode_stage(&mut self, slot: &SlotInput<'_>, stage: Stage, on_row: Option<OnRow<'_, Ft8Row>>)
-        -> SlotResult<Ft8Row>;
-}
-impl AnyDecoder {
-    pub fn decode_stage(&mut self, slot: &SlotInput<'_>, stage: Stage, ...) -> Result<AnySlotResult, Unsupported>;
+    /// [`Decoder::decode_prefix`], handing each row to `on_row` as it is found.
+    pub fn decode_prefix_with(&mut self, slot: &SlotInput<'_>, on_row: OnRow<'_, P::Row>)
+        -> SlotResult<P::Row>;
 }
 ```
 
-`decode(slot)` remains, and is exactly `decode_stage(slot, Final)` with no stage before it. U1 sees no change.
+The same pair on `AnyDecoder`, returning `AnySlotResult`. A mode with no early decode acts only at the full length, so
+the call is correct there and simply does nothing earlier — a mode-generic caller needs no capability check.
 
-**`Early`'s prefix does not have to be upstream's.** Principle 2 means a caller may pass any prefix to `Early`,
-including one shorter than checkpoint A, and including the whole period. Nothing downstream is defined in terms of
-`Early`'s length: `Prepare` subtracts against its own prefix and `Final` splices at whatever has actually been cleaned,
-so a whole-period `Early` simply leaves `Final` no raw tail to add.
+**The caller.** This is the whole of U2/U3:
 
-**The splice boundary is the end of the cleaned region, not `Early`'s prefix.** An earlier revision said `Final`'s
-fresh tail runs "from `Early`'s prefix to the period's end", which is wrong and would throw work away: with `Early` at
-141 696 and `Prepare` at 162 432, a tail starting at 141 696 overwrites the 141 696..162 432 samples `Prepare` had just
-cleaned with raw audio again. Upstream splices at **B's** length, and so does this crate today:
+```rust
+buf.extend_from_slice(block);
+let out = decoder.decode_prefix_with(&SlotInput::i16(&buf).period(period), &|row| {
+    if row.detail.stage == Stage::Early { reply_this_period(row) } else { log(row) }
+});
+if buf.len() >= SLOT_SAMPLES { publish(out.rows); buf.clear(); period += 1; }
+```
+
+No progress tracking: the decoder knows what this period has had. U6 is the same loop over
+`[141_696, 162_432, 172_800]`; U8 adds `.budget(…)` to the `SlotInput`, as `decode` already takes.
+
+**Rows.** `on_row` sees each row once, when first found. The final call returns the period's **complete** set in
+discovery order — the same list a whole-period `SicEarly` returns, which is what makes equivalence testable. A row is
+never retracted (the dedup runs before delivery, #243), and the final search must take the earlier rows as `known` for
+its own dedup, not only subtract them: an imperfectly-subtracted residual can re-decode the same message weakly, and a
+harness that only compares texts will count it as new (#243-class).
+
+`RowDetail::stage` is the one new public type, `Stage::{Early, Prepare, Final}`, **read on a row and never passed in**.
+A caller answering a CQ needs to know a row arrived early enough to act on this period; that is #572's entire point.
+
+**The splice boundary is the end of the cleaned region.** An earlier revision said the final call's fresh tail runs
+"from `Early`'s prefix to the period's end", which would overwrite the samples the 162 432 call had just cleaned with
+raw audio. Upstream splices at **B's** length, and so does this crate:
 
 ```rust
 buf_c[..b_len].copy_from_slice(&buf_b[..b_len]);                  // cleaned head
 buf_c[b_len..c_len].copy_from_slice(&audio_clean[b_len..c_len]);  // raw tail
 ```
 
-(`decode.rs:1432-1433`.) So the state carries a sample count, `cleaned_through`, and the rule is:
+(`decode.rs:1432-1433`.) So the state carries `cleaned_through`, a sample count:
 
-- `Prepare(prefix)` subtracts the rows whose whole message fits inside `prefix` — the `dt_fit_limit` gate, which is
-  already computed from `b_len` rather than hard-coded (`decode.rs:1400-1401`) — and then sets
-  `cleaned_through = prefix`. The rows that did not fit stay unsubtracted, as upstream's `deferred` list does
-  (`decode.rs:1406-1422`); subtracting them against a zeroed tail would fit the reference waveform to silence.
-- A second `Prepare` with a **longer** prefix advances `cleaned_through` and subtracts whatever now fits. One with a
-  prefix **at or below** `cleaned_through` is a no-op: splicing raw audio back over a cleaned region is exactly the bug
-  above.
-- `Final` splices at `cleaned_through`, whatever it is, then subtracts every row still unsubtracted against the complete
-  buffer. **`Prepare` skipped** is therefore not a special case: `cleaned_through` is 0, the whole buffer is raw, and all
-  of `Early`'s rows are subtracted at `Final` — which is what checkpoint C already does for its deferred rows, against a
-  complete buffer, so nothing is subtracted against silence.
+- The 162 432-sample call subtracts the rows whose whole message fits inside that prefix — the `dt_fit_limit` gate,
+  already computed from `b_len` rather than hard-coded (`decode.rs:1400-1401`) — and sets `cleaned_through`. Rows that
+  did not fit stay unsubtracted, as upstream's `deferred` list does (`decode.rs:1406-1422`): subtracting them against a
+  zeroed tail would fit the reference waveform to silence.
+- A later prefix call with a **longer** prefix advances `cleaned_through` and subtracts what now fits. One at or below it
+  is a no-op — splicing raw audio back over a cleaned region is exactly the bug above.
+- The final call splices at `cleaned_through`, then subtracts every row still unsubtracted against the complete buffer.
+  **A skipped middle call is therefore not a special case**: `cleaned_through` is 0, the whole buffer is raw, and every
+  early row is subtracted at the end against complete audio, which is what checkpoint C already does for its deferred
+  rows.
 
-Two things this makes explicit that the old wording hid: `Early` cleans nothing (its own residual is dropped —
-`decode.rs:1337-1339`, because `ft8_decode.f90` reloads `dd=iwave` fresh at B), and "already subtracted" is tracked per
-row, not per region.
+Two things this makes explicit: the first call cleans nothing (its residual is dropped, `decode.rs:1337-1339`, because
+`ft8_decode.f90` reloads `dd=iwave` fresh at B), and "already subtracted" is tracked **per row**, not per region.
 
-Note the `A_SAMPLES` floor in §2 does **not** apply to `Early`. That floor exists only to stop `SicEarly` recursing into
-its own internal checkpoint structure on a buffer too short to have one. `Early` *is* the checkpoint, so it has nothing
-to recurse into: on a short prefix it runs its strategy over that prefix and keeps the rows as the period's early rows.
+**The state**, per decoder and so per channel: the early rows, each flagged subtracted or not; the cleaned buffer (one
+`i16` buffer of period length, 360 KB) and `cleaned_through`; the pinned gain (trap 1); the pinned strategy (trap 6);
+the period index. Allocated at the first prefix call, never for a caller that does not use them.
 
-**Rows.**
-- `on_row` sees each row of the period **once**, when it is first found.
-- `Final` returns the period's **complete** set (`Early`'s rows and its own), in the order of discovery. That is the same
-  list a whole-period `SicEarly` returns, which is what makes equivalence testable.
-- A row is never retracted: the dedup runs before delivery (#243).
-- `RowDetail` gains `stage: Stage`, so a caller replying to a CQ can tell an early row from a final one. This field is why
-  #573 comes first.
-- `Final` must pass `Early`'s rows as `known` to its own internal dedup, not only subtract them from the buffer. An
-  imperfectly-subtracted residual can still re-decode the same message weakly (the #243-class hazard); a harness or
-  implementation that only subtracts and then compares output texts will double-count it as new.
+**Division of labour.** `decode_prefix` holds its thread (principle 5), so capture and decode cannot be the same thread
+unless capture is buffered ahead. Native (U2): capture on one thread, decode on another; `Decoder` is `Send`. One
+browser worker (U3): either the worklet writes a `SharedArrayBuffer` ring the worker drains (needs COOP/COEP), or blocks
+queue as worker messages and the worker is unresponsive for the call — viable, and the condition to size for is that
+**the input buffer covers the longest call the caller allows**, which is what it set as `Budget`. This is a property of
+a synchronous decoder, not of the stages: today's `decode` has it too. The stages change the arithmetic in the caller's
+favour, because a bounded early call returns rows at 11.8 s instead of holding one longer call until the period is over.
 
-**Every sequence.** `p` is `slot.period`.
-
-| call | state before | result |
-|---|---|---|
-| `Early` | any | Discard any earlier state and start period `p`. Search the prefix and keep its rows. A second `Early` in the same period starts over: its rows are deduplicated against those already delivered. |
-| `Prepare` | `Early` of `p` | Subtract the early rows whose frame fits this prefix. Rows: none. |
-| `Prepare` | none, or another period | No-op. |
-| `Final` | `Early` of `p` (± `Prepare`) | Cleaned head `0..cleaned_through` plus a raw tail `cleaned_through..end` (see "The splice boundary" below). Subtract the rows not yet subtracted, search, then run a7/a8. Clear the state. |
-| `Final` | none, or another period | **Exactly `decode(slot)` as it behaves today**: the full staged path, which internally falls back to a flat pass only on its own two conditions (§2). Clear the state. |
-
-`Early` and `Prepare` carry their period in the variant, so `SlotInput::period` is not consulted for them and a missing
-one cannot be passed at all. `Final` reads `SlotInput::period`: state for that index continues the sequence, anything
-else (including `None`) discards it and runs as `decode(slot)` — which is how `decode()` behaves today, so U1 and U6 are
-untouched.
+**Mixing the two.** `decode` keeps its contract — one period, one shot, nothing kept. Calling it midway through a
+prefix sequence is **unspecified**: the rows are whatever falls out, most likely the earlier ones again. Unspecified,
+not undefined — no `unsafe` is involved and there is no soundness question; the worst case is duplicates the caller
+must drop. Not designed for and not tested. The one invariant that holds regardless is trap 4: state for an abandoned
+period never reaches a different one, because the next prefix call for a new period discards it.
 
 ### What this revision settles
 
-Five things the previous revision left open. Each is resolved against the source rather than by preference.
+**1. The last call is the whole period, and with no earlier call it is `decode`.** An earlier revision said "today's
+whole-period decode (the flat fallback)", naming two different things as one: the flat path is reached only when
+checkpoint A finds nothing or the buffer is shorter than A (§2), and taking it as the contract would lose the rows only
+checkpoint C finds — on `qso3_busy`, `CQ DX DL8YHR JO41`.
 
-**1. `Final` with no prior stage is `decode(slot)`, not the flat fallback.** The previous revision's table said "today's
-whole-period decode (the flat fallback `SicEarly` already uses when A found nothing)", which named two different things
-as one. The flat fallback is reached only when checkpoint A finds nothing (`decode.rs:1342`) or the buffer is shorter
-than A (`:1275`); it is an *internal branch* of the staged path, not a synonym for it. Taking the flat path as the
-contract would lose rows that only checkpoint C finds — on `qso3_busy` a flat `SicRounds(3)` without the subtraction
-step misses `CQ DX DL8YHR JO41`. So `Final` with no state runs the whole staged decode, the flat branches included
-where they already apply, and `decode(slot)` needs no change at all.
+**2. `period: None` keeps no state.** Not an error and not a new type: the existing convention already covers it.
+`SlotInput::period`'s own doc calls `None` "a lone recording", and `remember()` returns immediately on it for a7
+(`frame.rs:517`). A prefix call without a period is therefore a one-shot search of that prefix — the same thing a7
+already does in the same situation. An earlier revision made it a runtime rejection, which the typed `SlotResult` could
+not report, and then a `Stage::Early { period }` variant to make it a compile error, which forced a second `StageKind`
+for the registry table. Inferring the stage removes the question entirely.
 
-**2. `Early` and `Prepare` carry the period in the variant, so a missing one is unrepresentable.**
-`SlotInput::period` is `Option<i64>` and `None` already means *unknown* — "a lone recording" in its own doc comment
-(`decoder/mod.rs:121-123`) — not "the current period". Stage state spans calls, so principle 3's "a stale state can
-never reach the wrong period" is only enforceable with an identity to compare.
+**3. a7 and a8 run on the final call only**, and `remember()` with them, because upstream runs both at `nzhsym == 50`
+(§1). A period that ends without a final call remembers nothing, which is the `period: None` case again. Remembering at
+an early call would store a partial row set under that period's index and quietly weaken a7 two periods later.
 
-A first attempt made `Early`/`Prepare` with `period: None` a runtime rejection, which was a real hole: the typed
-`Decoder<Ft8>::decode_stage` returns `SlotResult`, so a rejected call and a period that genuinely decoded nothing are
-the same value. Rather than widen the return type, `Stage::Early { period }` / `Prepare { period }` make the bad call
-not compile — the same compile-time-gate convention as `SupportsSniper`. `Final` keeps reading `SlotInput::period`, so
-U1 and U6 are untouched, and principle 3's "nothing errors except a mode with no stages" survives intact.
-*Considered instead:* fingerprinting the state from the prefix. Rejected — it costs a hash over 141 696 samples on every
-call and still cannot separate two periods whose audio is identical, where the index the caller already has costs
-nothing.
+**4. No AP pass before the final call**, keeping checkpoint A's rule, already implemented and cited
+(`decode.rs:1332-1333`).
 
-**3. a7 and a8 run in `Final`, and only there.** Upstream runs both at `nzhsym == 50` with AP on
-(`ft8/list_decode.rs:3-5`, citing `ft8_decode.f90:250-305`; second-hand, see §1). `Early` is 41 and `Prepare` is 47, so
-neither runs them, and `Prepare` searches nothing in any case. `remember()` likewise runs only at `Final`: a7 needs the
-period's *complete* row set, and only `Final` has it. A period that ends without `Final` therefore remembers nothing —
-the same state a7 is in for a lone recording today, since `remember` already returns early on `period: None`
-(`frame.rs:517`). Calling it at `Early` would store a partial set under that period's index and quietly weaken a7 two
-periods later.
+**5. The strategy is pinned at the first prefix call.** It is read per call today (`frame.rs:604-608`), and letting it
+change mid-period leaves the later calls subtracting rows a different search found — trap 6, and it would make
+validation 1's equivalence claim ill-formed.
 
-**4. `Early` runs no AP pass.** It keeps checkpoint A's rule, which this crate already implements and cites:
-`base_pass.without_ap()`, with the comment "`ft8_decode.f90` runs no AP pass while `nzhsym < 50` (npasses=5)"
-(`decode.rs:1332-1333`). `Final` runs with AP, as checkpoint C does. `Prepare` does not search, so it does not arise.
+## 5. Traps
 
-**5. The strategy is pinned at `Early`.** Today the strategy is read on every `decode` call, from that call's depth and
-`Ft8Extras::tuning` (`frame.rs:604-608`). For stages that is not safe: `Early` under `SinglePass` leaves a different
-residual than under `SicRounds(3)`, and `Prepare`/`Final` are defined relative to *what `Early` actually removed*. So
-the strategy is captured into the stage state at `Early`, beside the pinned gain, and a later `Prepare`/`Final` in the
-same period uses the pinned one; a caller that passes a different strategy mid-period is ignored rather than obeyed, and
-the pinning is a trap in its own right (trap 7). Without this, validation 1's equivalence claim is not even well-formed.
-
-**The options a caller has.**
-- **Strategy.** Stages exist for `Ft8Strategy::SicEarly`, the `Normal`/`Deep` default. With `SinglePass` or `SicRounds(n)`,
-  `Early` searches the prefix with that strategy, `Prepare` is a no-op, and `Final` runs the strategy on the residual.
-  This is the real lever for a tight budget or a busy band (trap 6): `SinglePass`/`SicRounds(1)` bound how many times a
-  real signal gets redecoded (1-2 rounds) where `SicEarly`/`SicRounds(3)` allows up to 6 (checkpoints A and C, 3 rounds
-  each). A caller on a hard deadline should pick a cheaper strategy, not a shorter prefix (principle 2). Whichever it
-  picks is pinned for the period (settled point 5).
-- **Depth.** With `Depth::Fast` (`ndepth==1`), `Early` and `Prepare` return nothing, as upstream does. A caller that wants
-  early rows anyway sets a strategy in `Ft8Extras` explicitly. That is a library extension, written down as one.
-- **Budget.** Each call takes `slot.budget`, and gets the poll points #589 added: after `Early`'s search, and before each
-  row's subtraction in `Prepare` and `Final`. Those are the same loops, so the stages inherit the fix rather than needing
-  their own.
-- **Abandoning a period.** `Decoder::abandon_period()` is for a gap or a retune. Nothing needs it, because the next
-  `Early` resets anyway, but it frees the buffers.
-
-**Modes without stages.** `AnyDecoder::decode_stage` returns `Unsupported` for `Early` and `Prepare`, and `Final` works
-for every mode. `registry::caps` gains `CAP_EARLY`, so a driver asks instead of guessing. FT4 has no early decode
-upstream. JT9, JT65, Q65, WSPR and FST4 decode at the period's end.
-
-**What the state holds.** Per decoder, so per channel: the early rows, each flagged subtracted or not; the cleaned
-buffer (one `i16` buffer of period length, 360 KB) and `cleaned_through`, the sample count it is clean to; the pinned
-gain (trap 1); the pinned strategy (trap 7); the period index. Allocated at the first `Early`, never for a caller that
-does not use stages.
-
-## 5. Layer 2: drivers (optional; take one, or none)
-
-**5.1 What the core publishes.**
-- `ProtocolMeta::early_points: &'static [(u32, StageKind)]` holds upstream's default schedule. FT8 is
-  `[(141_696, Early), (162_432, Prepare)]`, and every other mode has an empty slice. `Final` is the slot length, which
-  the registry already gives. `ProtocolMeta` is not `#[non_exhaustive]` today, so this field is one of the reasons it is
-  on #573's list A.
-
-  `StageKind` is `Stage` without the period — a static table cannot carry a period index, which only exists at run time
-  (settled point 2). A driver turns one into the other at the call site (`kind.at(period)`). The cost is two closely
-  related types in the public API; whether that is the right trade against a runtime rejection is left open in §9.
-- `SlotCutter::open_prefix() -> Option<(period, &[T])>` lets a caller look at the slot being cut. The cutter holds that
-  buffer already, so nothing new is stored. It yields the period index too, which `Early` now requires (settled point 2).
-
-**5.2 `IqReceiver` (U4).**
-- Early decode is opt-in per channel: `set_early(channel, true)`.
-- An opted-in channel yields `StagePoint { channel, period, stage, audio }` events beside its `CompletedSlot`s, through
-  the same `push_*` → `out` pull. A channel without the option costs nothing.
-- `audio` is an owned `Send` copy, so the decode can run on any thread. The f32 prefixes at A and B are 567 KB and 650 KB,
-  about 1.2 MB per channel-slot.
-- The receiver scales an opted-in channel's slot by the gain of its first stage point, not by the RMS of the whole slot
-  (trap 1).
-
-**5.3 The C ABI stream (U5, and Kotlin/Swift through it).**
-- `mfsk_stream_set_early(s, on)` enables it.
-- `mfsk_stream_stage_ready(s)` and `mfsk_stream_take_stage_i16(s, out, cap, &stage, &period, &utc)` take a stage point.
-- `mfsk_decoder_decode_stage_i16(dec, samples, n, stage, period)` decodes it. Rows go through the existing
-  `set_on_decode` callback, and `MfskRow` gains the stage.
-- Queue rule: like a slot, one stage point waits at a time. A newer one replaces it, so a slow consumer skips a stage
-  rather than piling them up, and the table in §4 says what a skipped stage means.
-
-**5.4 Your own loop (U2, U3, U7).** A caller can skip all of the above: push blocks into its own buffer, and when the
-buffer passes `early_points`, call `decode_stage` with the period index it is already tracking.
-
-**The division of labour this requires, stated rather than implied.** `decode_stage` holds its thread for the whole
-call (principle 5), so capture and decode cannot be the same thread unless the capture is buffered ahead of it:
-
-- **U2 (native).** Capture on one thread, decode on another; the decoder is `Send` and one is kept per channel. Nothing
-  further is needed.
-- **U3 (one browser worker).** The AudioWorklet runs on the audio thread either way; what matters is where its blocks
-  land while the worker is inside `decode_stage`. Either the worklet writes into a `SharedArrayBuffer` ring the worker
-  drains afterwards (which needs COOP/COEP), or the blocks queue as worker messages and the worker is simply
-  unresponsive for the call's duration. The second is viable, and it is the condition to size for: **the input buffer
-  must cover the longest call the caller allows**, which is what it set as `Budget`. Bound the budget, and the required
-  buffer is bounded with it; leave the budget unset and the buffer has to cover an unbounded decode.
-- **U7.** The same rule with its own numbers.
-
-This is a property of a synchronous decoder, not of the stages — today's whole-period `decode` has it too. The stages
-change the arithmetic in the caller's favour, because a bounded `Early` can return rows at 11.8 s instead of holding
-one longer call until the period is over.
-
-**5.5 `jt9` replay (U6).** Call `decode_stage` on `&audio[..141_696]`, `&audio[..162_432]` and the whole slot, numbering
-the period. Alternatively, feed the recording through the stream with no clock set: the grid free-runs, and the stage
-points land on exactly those counts.
-
-**Latency.** Through a driver, a stage point is seen by the `push` that crosses its count, so latency equals the push
-block size.
-
-## 6. Traps, and where each is handled
-
-1. **f32 gain.** `frame.rs::f32_gain` scales by the audio's own RMS. On a prefix, that RMS changes from one stage to the
-   next, so the same signal would reach the level-sensitive 16-bit engine at three levels. The fix: the gain is pinned at
-   the period's first stage, kept in the state, and reused. `i16` audio has no gain (it is `jt9`'s `id2`).
+1. **f32 gain.** `frame.rs::f32_gain` scales by the audio's own RMS, which changes from one prefix to the next, so the
+   same signal would reach the level-sensitive 16-bit engine at three levels. Pinned at the period's first prefix call
+   and reused. `i16` audio has no gain (it is `jt9`'s `id2`).
 2. **The zero tail is part of the algorithm.** Buffers stay full length with the content zeroed past the prefix, so
    `subtract_signal_lpf` has room for a frame near the edge. A short `SlotInput` never becomes a short buffer. The
-   current code already works this way; keep it.
-3. **Hash table timing.** `Early`'s calls are learned before `Final` searches, as upstream learns at each decode.
-   `on_row` resolves against the table as it stood when the stage began. The returned rows also see what was learned
+   current code already works this way.
+3. **Hash table timing.** Calls learned early are visible to the final search, as upstream learns at each decode.
+   `on_row` resolves against the table as it stood when the call began; the returned rows also see what was learned
    earlier in the period.
-4. **Period identity.** Covered by the rule table in §4 and settled point 2: `Early`/`Prepare` carry the index in the
-   variant, so a stale state can never reach the wrong period and a missing index is a compile error, not a runtime one.
-5. **Wall clock.** Upstream's `tseq` bail-outs are not ported, because this crate has no clock. `Budget` serves that
-   purpose.
-6. **A shorter prefix does not make a call cheaper.** `compute_spectrogram`/`coarse_sync`/`build_fft_cache` cost is flat
-   regardless of prefix length — `compute_spectrogram`'s time dimension is the hard-coded `NMAX = 15*12000`
-   (`ft8/params.rs:16`), not `audio.len()`, and FT8's `build_fft_cache` (`ft8/downsample.rs:44`) transforms
-   `FT8_CFG.fft1_size`, a hard-coded 192 000 (`ft8/downsample.rs:17`), the same way. This matters to #572 because it means principle 2's freedom is about *when*
-   a caller can call, not about buying a cheaper call; a caller on a deadline picks a cheaper strategy instead (§4,
-   "Strategy"). The budget gap that used to be described here — the unpolled subtraction loops between checkpoints — was
-   fixed in **#589**; `Prepare` and `Final` reuse those same loops and so must keep the same per-row poll.
-7. **Strategy drift across stages.** Settled point 5: the strategy is pinned at `Early` and reused, like the gain. A
-   period whose stages ran under different strategies has no defined residual, so the equivalence in validation 1 would
-   not be testable and the subtraction in `Prepare`/`Final` would be removing rows that a different search found.
+4. **Period identity.** The decoder compares `slot.period` against its state; a mismatch discards. No stale state can
+   reach the wrong period, whatever order the calls come in.
+5. **A shorter prefix does not make a call cheaper.** `compute_spectrogram`'s time dimension is the hard-coded
+   `NMAX = 15*12000` (`ft8/params.rs:16`), not `audio.len()`, and FT8's `build_fft_cache` (`ft8/downsample.rs:44`)
+   transforms `FT8_CFG.fft1_size`, a hard-coded 192 000 (`ft8/downsample.rs:17`). So principle 2's freedom is about
+   *when* a caller can call. A caller on a deadline picks a cheaper strategy, or a `Budget`.
+6. **Strategy drift across calls.** Settled point 5: pinned at the first prefix call, like the gain.
+7. **The `A_SAMPLES` floor is not a floor on prefix calls.** `audio.len() < A_SAMPLES` falls back to a flat pass today
+   (§2) to stop `SicEarly` recursing into its own checkpoint structure. A prefix call below that length is still the
+   period's first stage: it runs the strategy over that prefix and keeps the rows.
 
-## 7. Validation
+## 6. Validation
 
-1. **Equivalence.** `Early` on the A prefix, `Prepare` on the B prefix, then `Final` on the whole slot gives the same
-   rows, in the same order, as `SicEarly` on the whole period. Covered by the FT8 goldens
-   (`ft8_qso3_staged_sic_check`, `ft8_qso3_full_parity_recall`) and a test of its own. Run it under `fixed-point` too.
-   **For `i16` input**: with `f32` the pinned gain (trap 1) makes the stages see a different level from a whole-period
-   call, which is what validation 4 covers instead.
-2. **Against upstream.** The rows at each stage equal what an instrumented `jt9` reports at `nzhsym` 41, 47 and 50 on the
-   same recording. This is also where §1's second-hand a7/a8 citation gets checked against the Fortran.
-3. **Precision.** This is the path where phantom decodes have come from (#243, #253). Required: zero extra decodes
-   against the 20-entry `qso3_busy` union, and an unchanged FT8 unexpected-decode count in `sweep-baseline.json`.
+1. **Equivalence.** Prefix calls at 141 696 and 162 432, then the whole slot, give the same rows in the same order as
+   `SicEarly` on the whole period. Covered by the FT8 goldens (`ft8_qso3_staged_sic_check`,
+   `ft8_qso3_full_parity_recall`) and a test of its own; run under `fixed-point` too. **For `i16` input** — with `f32`
+   the pinned gain makes the prefixes see a different level from a whole-period call, which validation 4 covers.
+2. **Against upstream.** The rows at each count equal what an instrumented `jt9` reports at `nzhsym` 41, 47 and 50 on
+   the same recording. Also where §1's second-hand a7/a8 citation gets checked against the Fortran.
+3. **Precision.** This is where phantom decodes have come from (#243, #253): zero extra decodes against the 20-entry
+   `qso3_busy` union, and an unchanged FT8 unexpected-decode count in `sweep-baseline.json`.
 4. **Level.** `f32` input gives the same rows as the same audio as `i16` at the pinned gain.
-5. **Every row of the §4 table**, as a test. Also: a prefix shorter than A (which must stage, not hit the `A_SAMPLES`
-   flat floor — §4), `Early` called twice, and a period change between stages. `Early`/`Prepare` without a period needs
-   no test: settled point 2 makes it not compile.
-6. **The splice boundary** (§4, "The splice boundary"), which is where the first revision was wrong and so is the item
-   most worth writing first. Four cases, all against the goldens:
-   - `Early` → `Prepare` → `Final`: no sample in `0..cleaned_through` differs from what `Prepare` left there. A raw-audio
-     comparison, not a row comparison — the row set can come out right while the buffer has been quietly re-dirtied, and
-     then the bug only shows as a sensitivity loss on a corpus.
-   - `Early` → `Final`, `Prepare` skipped: `cleaned_through` is 0, every `Early` row is subtracted at `Final`, and the
-     rows match the `Early`/`Prepare`/`Final` sequence.
-   - `Prepare` twice with a growing prefix: `cleaned_through` advances and no row is subtracted twice.
-   - `Prepare` with a prefix at or below `cleaned_through`: a no-op, and the buffer is byte-identical afterwards.
-7. **`Final` with no prior stage is byte-for-byte `decode(slot)`** (settled point 1) — the same rows in the same order
-   on the goldens, including the rows only checkpoint C finds. A regression here would silently downgrade every U1
-   caller to the flat path.
-8. **a7 across a stage boundary** (settled point 3). With `a7` on: a period decoded as `Early` + `Final` leaves the same
-   a7 state as the same period decoded in one `decode` call, and a period that ends after `Early` with no `Final`
-   leaves no entry for that index at all.
-9. **Strategy pinning** (trap 7). `Early` under one strategy followed by `Final` under another gives the same rows as
-   `Final` under `Early`'s strategy — the second one is ignored, not obeyed.
-10. **Drivers.** A recording through `IqReceiver` and through the C stream yields stage points at the published
-    counts and the same rows as test 1.
-11. **Prefix-independence of the per-round fixed cost** (trap 6). A round's
-    `compute_spectrogram`/`coarse_sync` cost should not vary (beyond noise) across prefixes from a small fraction of
-    the period to the whole period. A regression would show as cost growing with prefix length, which would also
-    silently invalidate principle 2.
+5. **The splice boundary** (§4) — where the first revision was wrong, so the item to write first. No sample in
+   `0..cleaned_through` differs from what the middle call left there: a **raw-audio** comparison, not a row comparison,
+   because the row set can come out right while the buffer has been quietly re-dirtied and the bug then shows only as a
+   sensitivity loss. Plus: middle call skipped; two middle calls with a growing prefix (no row subtracted twice); a
+   middle call at or below `cleaned_through` leaving the buffer byte-identical.
+6. **A final call with no earlier one is byte-for-byte `decode`** (settled point 1), on the goldens, including the rows
+   only checkpoint C finds.
+7. **a7 across the boundary** (settled point 3). With `a7` on: a period decoded as two prefix calls leaves the same a7
+   state as one `decode`, and a period that ends without a final call leaves no entry for that index.
+8. **Strategy pinning** (trap 6). A first call under one strategy and a final call under another gives the same rows as
+   the final call under the first one's.
+9. **`period: None`** (settled point 2) keeps no state: two such calls in a row are independent one-shots.
+10. **Prefix-independence of the per-round fixed cost** (trap 5) — cost should not vary beyond noise across prefixes
+    from a small fraction of the period to the whole of it.
 
-## 8. Order of work
+## 7. Order of work
 
-1. #573: `#[non_exhaustive]` on `RowDetail`, `ProtocolMeta`, `SlotResult` and the rest.
+1. #573: `#[non_exhaustive]` on `RowDetail`, `SlotResult` and the rest.
 2. Move `early_results`, `buf_b` and `deferred` out of the function into a state type — `cleaned_through` and the
-   per-row subtracted flag included (§4, "The splice boundary") — so `SicEarly` is three stage calls in a row. No
-   behaviour change; validations 1, 6 and 7 prove it. #589's budget polls move with the loops.
-3. `decode_stage`, `Stage` / `StageKind`, `RowDetail::stage`, `CAP_EARLY`, `abandon_period`, and the pins (gain,
-   strategy). Validations 2-9.
-4. `early_points` and `open_prefix`. Then `IqReceiver::set_early` and stage points. Then the C entries, then Kotlin and
-   Swift. Validation 10.
-5. Moving the boards' prefix path onto the same stages is a separate decision. The boards have no `Decoder` today.
+   per-row subtracted flag included — so the whole-period `SicEarly` is three internal stages over that state. No
+   behaviour change; validations 1, 5 and 6 prove it. #589's budget polls move with the loops.
+3. `decode_prefix` / `decode_prefix_with` on `Decoder` and `AnyDecoder`, `RowDetail::stage`, and the pins (gain,
+   strategy). Validations 2-4, 7-10.
+4. The boards' own prefix path is a separate decision; they have no `Decoder` today.
 
-## 9. Open questions
+## 8. Open questions
 
-- **Should `Prepare` be public?** It produces no rows. In its favour: it matches `jt9`, and it lets a caller use the
-  1.7 s between A and C. Against it: one more case in the table. Recommended: keep it, so drivers can call it and a
-  caller can skip it.
-- **`Early` with `Depth::Fast`.** Should it follow upstream and do nothing, as proposed, or should it run a single
-  pass? The first keeps parity; the second is friendlier to U8.
-- **`Stage` plus `StageKind`, or one type and a runtime rejection?** Settled point 2 makes a missing period a compile
-  error by putting it in the variant, which costs a second type for the static `early_points` table (§5.1). The
-  alternative is one dataless `Stage` and a widened return (`Result<SlotResult<_>, StageError>` on the typed call, to
-  match `AnyDecoder`'s existing `Result`), which is one type and one more error path. Recommended as written —
-  unrepresentable beats unreported — but it is a public-API shape, so worth a second opinion before #573 freezes it.
-- **Should stages be offered for FT4?** Upstream has none, so it would be a library extension. Not in this design.
-- **ft8md (#463)** has its own stages. If it is ported, it should reuse `Stage` rather than add a second vocabulary.
+- **`Depth::Fast`.** Upstream runs nothing before 50 at `ndepth==1`, so a prefix call would return nothing. Follow it,
+  or run a single pass for a caller that asked for prefixes anyway?
+- **FT4.** Upstream has no early decode, so offering one would be a library extension. Not in this design.
+- **ft8md (#463)** has its own stages. If ported, it should reuse `Stage` rather than add a second vocabulary.
 
-## 10. Considered and dropped
+## 9. Considered and dropped
 
-- **A `Checkpoint::{A, B, C}` enum tied to upstream's counts.** It names a moment rather than what the stage does, so it
-  cannot express ft8md's 46 or a caller's own counts. `Stage` plus "the audio length is the checkpoint" can.
+- **`Stage` as an input.** The caller naming the stage made it keep an index into the published counts, i.e. a copy of
+  the decoder's own progress; the decoder can infer the stage from (state, audio length). `Stage` survives as an output
+  on the row.
+- **`prefix_points()` / `ProtocolMeta::early_points`.** Published so a caller would know where to call. The samples
+  showed the mode-generic caller — its last justification — does not need it either, once a call with no work to do
+  simply returns. The counts are in `decode_prefix`'s doc, and §1 says what grid they are on.
+- **`StageKind`.** Existed only to type a `&'static` table that no longer exists.
+- **`SlotCutter::open_prefix()`.** A caller already feeding a cutter knows the period boundary; this only saved it a
+  buffer copy. Convenience, not contract.
+- **`CAP_EARLY`** (a mode with no early decode is handled by the call doing nothing) and **`abandon_period`** (the next
+  prefix call for a new period already discards).
+- **Defining what happens when `decode` and `decode_prefix` are mixed.** Unspecified instead (§4).
+- **A `Checkpoint::{A,B,C}` enum tied to upstream's counts.** Names a moment rather than what the stage does, so it
+  cannot express ft8md's 46 or a caller's own counts.
 - **A per-period session object holding `&mut Decoder`.** A borrow that lasts 15 s fits no threading model here.
-  Keeping the state in the `Decoder` gives the same result with no borrow.
-- **One blocking call over an audio source.** It holds the decoder for about 14 s and cannot work in a single-threaded
-  worker (U3) without SharedArrayBuffer, Atomics and COOP/COEP. A native caller can write it in ten lines over §5.4, so
-  it is not needed in the library.
-- **A resumable decode job polled in steps.** The decode is CPU-bound and already takes a `Budget`, which #589 now polls
-  at the row granularity the subtraction loops needed.
-- **A stage field on `SlotInput`.** It would make `decode` mode-dependent in a way it cannot report. The convention in
-  `AnyDecoder` is that an option a mode lacks is `Unsupported`.
-- **Fingerprinting the stage state instead of requiring `period`.** Settled point 2.
+- **One blocking call over an audio source.** Holds the decoder ~14 s and cannot work in a single-threaded worker
+  without SharedArrayBuffer, Atomics and COOP/COEP. A native caller writes it in ten lines over §4.
+- **Letting `decode` continue a prefix sequence.** It is the same silent contract change as folding prefixes into
+  `decode` outright, narrowed; a separate method with its own doc is what makes the feature discoverable at all.
+
+## 10. Follow-ups, deliberately not here
+
+#572 asks how the C ABI and the boards would reach this, as questions. They are answerable once the method pair exists,
+and each is its own issue: driver support in `IqReceiver` (opt-in per channel, owned `Send` prefix copies of ~1.2 MB per
+channel-slot), the C ABI entries and `MfskRow`'s stage field (and Kotlin/Swift over them), and whether the boards'
+`embedded-shared` prefix path moves onto the same method.
