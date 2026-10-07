@@ -91,6 +91,8 @@ export interface Settings {
   rotationUtc: boolean;
   /** Percent of a slot's period its decode may run before it stops; 0 is no limit. */
   slotBudgetPct: number;
+  /** Decoder threads per channel (1-8): the next slot is decoded on another thread while the last is still being decoded. */
+  decodeLanes: number;
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */

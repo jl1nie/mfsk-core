@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **skimmer: every slot is decoded, and the next slot does not wait for the last (default time budget off, four decoder threads per channel).**
+  A channel had one decoder thread with a queue of four, so a decode that outlasted its slot held up the next slot, and a long
+  enough one dropped slots. Each channel now has `Config::decode_lanes` threads (`--lanes`, GUI *Decode threads*; 4 by default)
+  and a slot goes to the one with the least waiting, so it starts at once while the last is still being decoded; it is dropped
+  only when every lane's queue is full. The per-slot time budget (`Config::slot_budget`, `--slot-budget`, GUI *Time budget*) is
+  off by default, so every slot is decoded to the end. A lane has its own decoder, so a callsign one lane has learned does not
+  resolve a `<...>` in another (the first lane still carries its decoder across rotation turns); a channel with averaging uses
+  its first lane only, since averaging and FT8's a7 want consecutive periods in one decoder.
 - **`SlotInput::budget` is honoured by every mode (#593).** Through `Decoder<P>` only FT8, FT4 and FST4 polled it; WSPR, JT9,
   JT65 and Q65 ran the whole decode and returned an all-zero `BudgetReport`, which reads as "no budget, or never reached". Each
   now polls it once per candidate before the candidate is tried (WSPR in every pass, and between a candidate's ladder

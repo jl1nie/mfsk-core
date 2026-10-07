@@ -465,7 +465,8 @@ impl Worker {
         channel: usize,
         dial_hz: f64,
         mut decoder: AnyDecoder,
-        keep: (BankKey, std::sync::Arc<LiveOptions>),
+        keep: Option<(BankKey, std::sync::Arc<LiveOptions>)>,
+        pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         results: std::sync::mpsc::Sender<Decode>,
         busy: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -511,12 +512,14 @@ impl Worker {
                         cut_slots.fetch_add(1, Ordering::Relaxed);
                     }
                     longest_us.fetch_max(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    pending.fetch_sub(1, Ordering::Relaxed);
                     busy.fetch_sub(1, Ordering::Relaxed);
                 }
-                // Out of slots: the band is left for now. The decoder (its
-                // callsign table) waits for the band's next turn.
-                let (key, live) = keep;
-                live.bank.lock().unwrap().decoders.insert(key, decoder);
+                // Out of slots: the band is left for now. The first lane's
+                // decoder (its callsign table) waits for the band's next turn.
+                if let Some((key, live)) = keep {
+                    live.bank.lock().unwrap().decoders.insert(key, decoder);
+                }
             })
             .expect("spawn decoder thread");
         Worker {
@@ -534,6 +537,81 @@ impl Drop for Worker {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+/// One decoder thread of a channel, and the slots handed to it that have not
+/// finished (queued, or being decoded).
+struct Lane {
+    worker: Worker,
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// A channel's decoder threads, its **lanes**. A slot goes to the lane with the
+/// least waiting, so a slot that is still being decoded when the next one
+/// arrives (a busy FT8 band, FST4-300 on a slow machine) no longer holds it up:
+/// the next slot starts at once on another thread, and a slot is dropped only
+/// when every lane's queue is full.
+///
+/// Each lane owns its decoder, and nothing learned crosses lanes: a callsign
+/// the first lane has seen resolves a `<...>` there and not in another lane
+/// (`Decode::update` repairs the row in the lane that learns it, not across).
+/// FT8's a7 list decoder (the period before last) and the multi-period
+/// averaging of JT65 and Q65 want consecutive periods in one decoder, so a
+/// channel with `averaging` uses its first lane only.
+struct Channel {
+    lanes: Vec<Lane>,
+    /// Use the first lane only (the options ask for averaging).
+    serial: bool,
+}
+
+/// Which lane takes the next slot: the one with the fewest pending, the first
+/// of those on a tie; the first alone when `serial`.
+fn pick_lane(pending: &[usize], serial: bool) -> usize {
+    if serial {
+        return 0;
+    }
+    pending
+        .iter()
+        .enumerate()
+        .min_by_key(|&(i, &p)| (p, i))
+        .map_or(0, |(i, _)| i)
+}
+
+impl Channel {
+    /// Hand `slot` to a lane. `false`: its queue is full (every lane's, when not
+    /// `serial`): the slot is dropped, and the caller counts it.
+    fn dispatch(&self, slot: CompletedSlot) -> bool {
+        let pending: Vec<usize> = self
+            .lanes
+            .iter()
+            .map(|l| l.pending.load(Ordering::Relaxed))
+            .collect();
+        let lane = &self.lanes[pick_lane(&pending, self.serial)];
+        lane.pending.fetch_add(1, Ordering::Relaxed);
+        if lane.worker.tx.try_send(Job::Slot(slot)).is_err() {
+            lane.pending.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+
+    /// Give every lane the new options. `false`: a lane's queue was full; try
+    /// again with the next message (a lane that has them applies them again, which
+    /// changes nothing).
+    fn set_options(&mut self, o: &ChannelOptions, station: &Station) -> bool {
+        self.serial = o.averaging;
+        let mut all = true;
+        for l in &self.lanes {
+            if l.worker
+                .tx
+                .try_send(Job::Options(o.clone(), station.clone()))
+                .is_err()
+            {
+                all = false;
+            }
+        }
+        all
     }
 }
 
@@ -589,14 +667,26 @@ pub struct Config {
     /// Per-channel options changed while running.
     pub live: std::sync::Arc<LiveOptions>,
     /// A slot's decode may run this share of its period, then it stops and
-    /// reports what it has (`SlotInput::budget`); `None` has no limit.
+    /// reports what it has (`SlotInput::budget`). `None` (the default) decodes
+    /// every slot to the end, which is what a skimmer wants: a late row is still
+    /// a spot; the next slot has its own lane.
     pub slot_budget: Option<f32>,
+    /// Decoder threads per channel. A slot goes to the lane with the least
+    /// waiting, so the next slot is decoded on another thread while the last is
+    /// still being decoded, even when that outlasts its slot, and none is
+    /// dropped while a lane is free. `1` is the
+    /// old one-thread channel. A channel with `averaging` uses one lane. See
+    /// [`DEFAULT_DECODE_LANES`] for the trade.
+    pub decode_lanes: usize,
 }
 
-/// Default for [`Config::slot_budget`]: a slot is decoded well inside its
-/// period (FT8's busy slot takes 1.8 s of 15), so this only fires when a
-/// channel cannot keep up, which is when the next slot would be dropped.
-pub const DEFAULT_SLOT_BUDGET: f32 = 0.8;
+/// Default for [`Config::decode_lanes`]: four, so a slot starts at once even when
+/// the last three are still being decoded (a decode that outlasts its slot is
+/// the case this is for). Past that a slot waits in its lane's queue and is
+/// dropped only when every queue is full. An idle lane is a blocked thread and
+/// an empty decoder. Each lane has its own callsign table, so a `<...>` resolves
+/// from what that lane has seen; one lane keeps every table in one place.
+pub const DEFAULT_DECODE_LANES: usize = 4;
 
 /// One stretch of a rotation.
 #[derive(Clone, Debug, PartialEq)]
@@ -851,7 +941,8 @@ impl Config {
             reanchor: Duration::from_millis(500),
             retry: Duration::from_secs(10),
             live: Default::default(),
-            slot_budget: Some(DEFAULT_SLOT_BUDGET),
+            slot_budget: None,
+            decode_lanes: DEFAULT_DECODE_LANES,
         }
     }
 }
@@ -1498,7 +1589,7 @@ struct Live {
     rx: IqReceiver,
     /// By `ChannelId`: the channel's decoder thread; its decoder keeps its
     /// own callsign table from slot to slot.
-    workers: Vec<Option<Worker>>,
+    workers: Vec<Option<Channel>>,
     /// By `ChannelId`: the index into `Config::channels`.
     cfg_index: Vec<usize>,
     /// Rows the workers found, waiting to be reported.
@@ -1600,7 +1691,7 @@ fn receiver(
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let cut_slots = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut workers: Vec<Option<Worker>> = Vec::new();
+    let mut workers: Vec<Option<Channel>> = Vec::new();
     let mut cfg_index: Vec<usize> = Vec::new();
     let mut wfs: Vec<Option<ChannelWaterfall>> = Vec::new();
     let mut keys: Vec<BankKey> = Vec::new();
@@ -1642,17 +1733,35 @@ fn receiver(
             apply_options(&mut d, &opts, &station);
             d
         };
-        workers[id.0] = Some(Worker::spawn(
-            i,
-            ch.dial_hz,
-            decoder,
-            (key, cfg.live.clone()),
-            rtx.clone(),
-            busy.clone(),
-            longest_us.clone(),
-            cut_slots.clone(),
-            cfg.slot_budget,
-        ));
+        // The first lane carries the channel's decoder across rotation turns;
+        // the others start from the mode's defaults, with the same options.
+        let mut first = Some(decoder);
+        let mut lanes = Vec::new();
+        for lane in 0..cfg.decode_lanes.max(1) {
+            let d = first.take().unwrap_or_else(|| {
+                let mut d = AnyDecoder::with_defaults(ch.mode);
+                apply_options(&mut d, &opts, &station);
+                d
+            });
+            let pending = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let worker = Worker::spawn(
+                i,
+                ch.dial_hz,
+                d,
+                (lane == 0).then(|| (key, cfg.live.clone())),
+                pending.clone(),
+                rtx.clone(),
+                busy.clone(),
+                longest_us.clone(),
+                cut_slots.clone(),
+                cfg.slot_budget,
+            );
+            lanes.push(Lane { worker, pending });
+        }
+        workers[id.0] = Some(Channel {
+            lanes,
+            serial: opts.averaging,
+        });
     }
     Ok(Live {
         rx,
@@ -1841,10 +1950,10 @@ fn stream_inner(
         let generation = cfg.live.generation();
         if generation != seen_generation {
             let mut all_sent = true;
-            for (id, w) in workers.iter().enumerate() {
+            for (id, w) in workers.iter_mut().enumerate() {
                 let Some(w) = w else { continue };
                 if let Some((o, station)) = cfg.live.get(cfg_index[id])
-                    && w.tx.try_send(Job::Options(o, station)).is_err()
+                    && !w.set_options(&o, &station)
                 {
                     all_sent = false;
                 }
@@ -1945,7 +2054,7 @@ fn stream_inner(
                 continue;
             };
             busy.fetch_add(1, Ordering::Relaxed);
-            if w.tx.try_send(Job::Slot(slot)).is_err() {
+            if !w.dispatch(slot) {
                 busy.fetch_sub(1, Ordering::Relaxed);
                 dropped_slots += 1;
             }
@@ -2308,6 +2417,36 @@ mod tests {
 
     /// A budget that is already spent stops an FT8 slot, and says so: the
     /// count `Status::budget_cut_slots` is made of.
+    /// The next slot goes to a lane that is free, and to the first one on a tie;
+    /// a channel that averages keeps to its first lane whatever it has waiting.
+    #[test]
+    fn the_next_slot_goes_to_the_lane_with_the_least_waiting() {
+        assert_eq!(pick_lane(&[0, 0], false), 0);
+        assert_eq!(pick_lane(&[1, 0], false), 1, "lane 0 is still decoding");
+        assert_eq!(pick_lane(&[2, 1, 1], false), 1, "the first of the least");
+        assert_eq!(
+            pick_lane(&[3, 3], false),
+            0,
+            "all busy: the first, whose queue may be full"
+        );
+        assert_eq!(
+            pick_lane(&[5, 0], true),
+            0,
+            "averaging needs consecutive periods in one decoder"
+        );
+        assert_eq!(pick_lane(&[], false), 0);
+    }
+
+    #[test]
+    fn a_config_decodes_every_slot_on_four_lanes_by_default() {
+        let c = Config::new("x", Vec::new());
+        assert_eq!(
+            c.slot_budget, None,
+            "a skimmer decodes every slot to the end"
+        );
+        assert_eq!(c.decode_lanes, 4);
+    }
+
     #[test]
     fn a_spent_budget_cuts_the_slot_and_is_reported() {
         let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);

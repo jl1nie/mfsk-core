@@ -739,7 +739,12 @@
             <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
             <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
           </label>
-          <div class="field" title="A slot's decode may run this share of its period, then it stops and reports what it has (the rest of its candidates are left undone). 0 has no limit. Slots it cuts are counted in the status line.">
+          <div class="field" title="Decoder threads per channel. The next slot is decoded on another thread while the last is still being decoded, even when that outlasts its slot, so a slow slot does not hold up the next and none is dropped while a thread is free (4 by default: a slot starts at once unless the last three are still running). Each thread has its own callsign table (a <...> resolves from what that thread has seen); 1 keeps one table. A channel with averaging uses one thread.">
+            <span>Decode threads</span>
+            <input type="number" min="1" max="8" step="1" bind:value={settings.decodeLanes} disabled={running} />
+            <span>per channel</span>
+          </div>
+          <div class="field" title="A slot's decode may run this share of its period, then it stops and reports what it has (the rest of its candidates are left undone). 0, the default, decodes every slot to the end. Slots it cuts are counted in the status line.">
             <span>Time budget</span>
             <input type="number" min="0" max="100" step="5" bind:value={settings.slotBudgetPct} disabled={running} />
             <span>% of a slot's period (0: no limit)</span>
