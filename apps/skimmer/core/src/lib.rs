@@ -1015,10 +1015,11 @@ pub struct DecodeDetail {
     /// The identity key (`RowDetail::info`, one bit per byte): the message's
     /// bits. The same message heard on two channels or servers has one key.
     pub key: Vec<u8>,
-    /// Sync correlation score of the decode.
-    pub sync_score: f32,
-    /// Hard-decision errors the FEC corrected.
-    pub hard_errors: u32,
+    /// Sync score of the decode, on the scale of the mode's own search; `None`
+    /// where the mode reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8 decodes).
+    pub sync_score: Option<f32>,
+    /// Hard-decision errors the FEC corrected; `None` where the mode reports no count.
+    pub hard_errors: Option<u32>,
     /// The text needed the callsign hash table to resolve a `<...>`.
     pub hash_resolved: bool,
     /// Q65 Pileup's "copied last Tx" flag.

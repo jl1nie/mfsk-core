@@ -103,6 +103,24 @@
 #define MFSK_DECODE_FLAG_COPIED_LAST_TX (1 << 1)
 
 /**
+ * `MfskDecode::flags` bit 2: `sync_score` is a value the mode reported, not
+ * the `0.0` of a mode that reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8). A
+ * literal here for the same reason as the constants above.
+ */
+#define MFSK_DECODE_FLAG_HAS_SYNC_SCORE (1 << 2)
+
+/**
+ * `MfskDecode::flags` bit 3: `sync_cv` is a value the mode reported.
+ */
+#define MFSK_DECODE_FLAG_HAS_SYNC_CV (1 << 3)
+
+/**
+ * `MfskDecode::flags` bit 4: `hard_errors` is a count the mode reported (a
+ * clean decode is `0` with the flag set; WSPR, JT9, JT65 and Q65 never set it).
+ */
+#define MFSK_DECODE_FLAG_HAS_HARD_ERRORS (1 << 4)
+
+/**
  * The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
  * QSO-context AP of the parameter block, a7 and the sniper window apply.
  * Modes without this bit (WSPR, JT9, JT65, Q65) decode through the same
@@ -838,17 +856,23 @@ typedef struct MfskDecode {
      */
     float snr_db;
     /**
-     * Sync correlation score for this decode.
+     * Sync score for this decode, on the scale of the mode's own search (not
+     * comparable between modes). `0.0` and [`MFSK_DECODE_FLAG_HAS_SYNC_SCORE`]
+     * clear where the mode reports none: WSPR, JT9, JT65, Q65, and FT8's a7 and
+     * a8 list decodes.
      */
     float sync_score;
     /**
      * Coefficient of variation of the per-block sync powers — near 0
      * on a stable channel, elevated under QSB or fading. Free to
-     * report, and the only fading indicator the row carries.
+     * report, and the only fading indicator the row carries. `0.0` and
+     * [`MFSK_DECODE_FLAG_HAS_SYNC_CV`] clear where `sync_score` is absent.
      */
     float sync_cv;
     /**
-     * Hard-decision errors the FEC had to correct.
+     * Hard-decision errors the FEC had to correct. `0` and
+     * [`MFSK_DECODE_FLAG_HAS_HARD_ERRORS`] clear for WSPR, JT9, JT65 and Q65,
+     * whose decoders report no such count (a clean decode is `0` with the flag set).
      */
     uint32_t hard_errors;
     /**
@@ -865,7 +889,9 @@ typedef struct MfskDecode {
     /**
      * Bit 0: the text required the callsign hash table to resolve a
      * `<...>` reference. Bit 1: the sender set Q65 Pileup's "copied last
-     * Tx" flag. Other bits reserved, currently zero.
+     * Tx" flag. Bits 2-4: `sync_score`, `sync_cv` and `hard_errors` are
+     * real values and not the `0` of a mode that reports none. Other bits
+     * reserved, currently zero.
      */
     uint8_t flags;
 } MfskDecode;

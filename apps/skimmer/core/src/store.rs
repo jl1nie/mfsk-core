@@ -153,8 +153,8 @@ struct Row {
     cq: Option<String>,
     text: String,
     msg_key: Option<Vec<u8>>,
-    sync: f64,
-    hard_errors: i64,
+    sync: Option<f64>,
+    hard_errors: Option<i64>,
     resolved: bool,
     /// Not a new row: the text of the one already written (or still waiting
     /// here) with this server, slot, channel, frequency and key, now resolved.
@@ -221,8 +221,8 @@ impl Writer {
             cq: spot::cq_kind(&d.text),
             text: d.text.clone(),
             msg_key: pack_key(&d.detail.key),
-            sync: f64::from(d.detail.sync_score),
-            hard_errors: i64::from(d.detail.hard_errors),
+            sync: d.detail.sync_score.map(f64::from),
+            hard_errors: d.detail.hard_errors.map(i64::from),
             resolved: d.detail.hash_resolved,
             update: d.update,
         };
@@ -1302,8 +1302,8 @@ mod tests {
     fn with_detail(mut d: Decode, key: &[u8], update: bool) -> Decode {
         d.detail = crate::DecodeDetail {
             key: key.to_vec(),
-            sync_score: 2.5,
-            hard_errors: 3,
+            sync_score: Some(2.5),
+            hard_errors: Some(3),
             hash_resolved: update,
             copied_last_tx: false,
         };
@@ -1345,9 +1345,9 @@ mod tests {
             (k.sync, k.hard_errors, k.resolved),
             (Some(2.5), Some(3), Some(false))
         );
-        // A row given no detail has the defaults, not NULL.
+        // A row whose mode reported neither has NULL, not a measured zero (#594).
         let w9 = spots.iter().find(|s| s.text.contains("W9XYZ")).unwrap();
-        assert_eq!((w9.sync, w9.hard_errors), (Some(0.0), Some(0)));
+        assert_eq!((w9.sync, w9.hard_errors), (None, None));
         drop(w);
         let _ = std::fs::remove_file(&p);
     }

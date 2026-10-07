@@ -182,9 +182,9 @@ fn detail_text(d: &skimmer_core::Decode) -> String {
         .collect();
     let key = if key.is_empty() { "-".into() } else { key };
     format!(
-        "  [sync {:.1} err {}{} key {key}]",
-        k.sync_score,
-        k.hard_errors,
+        "  [sync {} err {}{} key {key}]",
+        k.sync_score.map_or("-".to_string(), |v| format!("{v:.1}")),
+        k.hard_errors.map_or("-".to_string(), |v| v.to_string()),
         if k.copied_last_tx {
             " copied-last-tx"
         } else {

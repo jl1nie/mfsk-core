@@ -459,8 +459,9 @@ enum UiEvent {
         /// The message's bits as hex: the same message heard on two channels or
         /// servers has one key. Empty for a mode that gave none.
         key: String,
-        sync_score: f32,
-        hard_errors: u32,
+        /// `None` where the mode reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8).
+        sync_score: Option<f32>,
+        hard_errors: Option<u32>,
         /// The text needed the callsign table (a `<...>` was resolved).
         hash_resolved: bool,
         copied_last_tx: bool,

@@ -408,13 +408,19 @@ pub struct MfskDecode {
     pub dt_sec: f32,
     /// Estimated SNR in a 2500 Hz reference bandwidth, dB.
     pub snr_db: f32,
-    /// Sync correlation score for this decode.
+    /// Sync score for this decode, on the scale of the mode's own search (not
+    /// comparable between modes). `0.0` and [`MFSK_DECODE_FLAG_HAS_SYNC_SCORE`]
+    /// clear where the mode reports none: WSPR, JT9, JT65, Q65, and FT8's a7 and
+    /// a8 list decodes.
     pub sync_score: f32,
     /// Coefficient of variation of the per-block sync powers — near 0
     /// on a stable channel, elevated under QSB or fading. Free to
-    /// report, and the only fading indicator the row carries.
+    /// report, and the only fading indicator the row carries. `0.0` and
+    /// [`MFSK_DECODE_FLAG_HAS_SYNC_CV`] clear where `sync_score` is absent.
     pub sync_cv: f32,
-    /// Hard-decision errors the FEC had to correct.
+    /// Hard-decision errors the FEC had to correct. `0` and
+    /// [`MFSK_DECODE_FLAG_HAS_HARD_ERRORS`] clear for WSPR, JT9, JT65 and Q65,
+    /// whose decoders report no such count (a clean decode is `0` with the flag set).
     pub hard_errors: u32,
     /// Width of the FEC information block — 91 (CRC-14) or 101
     /// (CRC-24). Says how many bits `mfsk_decoder_copy_info` returns.
@@ -425,7 +431,9 @@ pub struct MfskDecode {
     pub pass: u8,
     /// Bit 0: the text required the callsign hash table to resolve a
     /// `<...>` reference. Bit 1: the sender set Q65 Pileup's "copied last
-    /// Tx" flag. Other bits reserved, currently zero.
+    /// Tx" flag. Bits 2-4: `sync_score`, `sync_cv` and `hard_errors` are
+    /// real values and not the `0` of a mode that reports none. Other bits
+    /// reserved, currently zero.
     pub flags: u8,
 }
 
@@ -436,6 +444,15 @@ pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
 /// "copied last Tx" flag, the spare 78th payload bit (`genq65.f90`'s `iflag`).
 /// WSJT-X marks such a decode with `#`. Q65 rows only.
 pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
+
+/// [`MfskDecode::flags`] bit 2: `sync_score` is a value the mode reported.
+pub const MFSK_DECODE_FLAG_HAS_SYNC_SCORE: u8 = 1 << 2;
+
+/// [`MfskDecode::flags`] bit 3: `sync_cv` is a value the mode reported.
+pub const MFSK_DECODE_FLAG_HAS_SYNC_CV: u8 = 1 << 3;
+
+/// [`MfskDecode::flags`] bit 4: `hard_errors` is a count the mode reported.
+pub const MFSK_DECODE_FLAG_HAS_HARD_ERRORS: u8 = 1 << 4;
 
 /// Opaque decoder handle: one persistent decoder of one mode, driven once
 /// per period like WSJT-X's own (`jt9 -s`).

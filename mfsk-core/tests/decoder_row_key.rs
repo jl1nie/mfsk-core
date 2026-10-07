@@ -292,3 +292,97 @@ fn when_delivery_is_exact_the_stream_is_the_returned_rows_in_order() {
         );
     }
 }
+
+// ── what a row reports (#594) ───────────────────────────────────────────────
+
+/// `(sync_score, sync_cv, hard_errors)` present, of every returned row.
+fn provided(mode: Mode, path: &str) -> Option<Vec<(bool, bool, bool)>> {
+    let a = common::load_wav_f32_opt(path)?;
+    let out = AnyDecoder::with_defaults(mode).decode(&SlotInput::f32(&a).period(100));
+    assert!(!out.details.is_empty(), "{}: nothing decoded", mode.name());
+    Some(
+        out.details
+            .iter()
+            .map(|d| {
+                (
+                    d.sync_score.is_some(),
+                    d.sync_cv.is_some(),
+                    d.hard_errors.is_some(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// FT8, FT4 and FST4 report all three; WSPR, JT9 and JT65 report none, so a
+/// consumer can tell a measured `0` from a mode that has no such number.
+#[test]
+fn a_row_says_which_of_its_numbers_the_mode_reports() {
+    let cases = [
+        (Mode::Ft8, asset_path!("qso3_busy.wav"), (true, true, true)),
+        (
+            Mode::Ft4,
+            asset_path!("golden/ft4/000000_000002.wav"),
+            (true, true, true),
+        ),
+        (
+            Mode::Fst4S60,
+            asset_path!("golden/fst4/210115_0058.wav"),
+            (true, true, true),
+        ),
+        (
+            Mode::Wspr,
+            asset_path!("golden/wspr/150426_0918.wav"),
+            (false, false, false),
+        ),
+        (
+            Mode::Jt9,
+            asset_path!("130418_1742.wav"),
+            (false, false, false),
+        ),
+        (
+            Mode::Jt65,
+            asset_path!("golden/jt65/jt65a_5sig_m18.wav"),
+            (false, false, false),
+        ),
+    ];
+    for (mode, path, want) in cases {
+        let Some(rows) = provided(mode, path) else {
+            common::skip_or_fail(path);
+            continue;
+        };
+        // FT8's a7 rows (no sync search) are the one exception inside a mode.
+        let searched: Vec<_> = rows.iter().filter(|r| r.0 == want.0).collect();
+        assert!(!searched.is_empty(), "{}: {rows:?}", mode.name());
+        for r in &rows {
+            assert_eq!(r.2, want.2, "{}: hard_errors {rows:?}", mode.name());
+        }
+    }
+}
+
+#[test]
+fn q65_rows_report_no_sync_or_error_count() {
+    use mfsk_core::decoder::{DecodeParams, Decoder, Q65Extras};
+    use mfsk_core::q65::Q65d60;
+    let Some(path) = common::corpus::golden_path("q65/60D_EME_10GHz/201212_1838.wav") else {
+        common::skip_or_fail("Q65 60D golden");
+        return;
+    };
+    let a = common::load_wav_f32_opt(&path).unwrap();
+    let mut e = Q65Extras::default();
+    e.search.time_tolerance_early_sec = Some(7.0);
+    e.search.time_tolerance_late_sec = Some(5.0);
+    e.search.score_threshold = Some(0.05);
+    e.search.max_candidates = Some(8);
+    e.fading = Some((mfsk_core::fec::qra::FadingModel::Gaussian, 10.0));
+    let out = Decoder::<Q65d60>::new(DecodeParams::for_band((200.0, 3000.0)))
+        .with_extras(e)
+        .decode(&SlotInput::f32(&a));
+    assert!(!out.rows.is_empty());
+    for r in &out.rows {
+        assert_eq!(
+            (r.detail.sync_score, r.detail.sync_cv, r.detail.hard_errors),
+            (None, None, None)
+        );
+    }
+}

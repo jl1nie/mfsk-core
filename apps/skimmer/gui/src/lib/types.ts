@@ -127,9 +127,10 @@ export interface DecodeRow {
   text: string;
   /** The message's bits, hex: one message heard on two channels or servers has one key. */
   key: string;
-  syncScore: number;
-  /** Hard-decision errors the FEC corrected. */
-  hardErrors: number;
+  /** On the scale of the mode's own search; null where the mode reports none (WSPR, JT9, JT65, Q65, FT8's a7/a8). */
+  syncScore: number | null;
+  /** Hard-decision errors the FEC corrected; null where the mode reports no count. */
+  hardErrors: number | null;
   /** The text needed the callsign table: a `<...>` was resolved. */
   hashResolved: boolean;
   copiedLastTx: boolean;

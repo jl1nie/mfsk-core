@@ -154,6 +154,11 @@ fn ft8_decodes_a_period_and_reports_its_detail() {
     assert_eq!(r.mode, MfskMode::Ft8);
     assert!((r.freq_hz - 1_500.0).abs() < 2.0);
     assert_eq!(r.info_bits, 91);
+    // FT8 reports its sync score, fading measure and error count (#594).
+    let all = MFSK_DECODE_FLAG_HAS_SYNC_SCORE
+        | MFSK_DECODE_FLAG_HAS_SYNC_CV
+        | MFSK_DECODE_FLAG_HAS_HARD_ERRORS;
+    assert_eq!(r.flags & all, all, "flags {:#x}", r.flags);
     let mut bits = [0u8; 128];
     let mut n = 0usize;
     assert_eq!(

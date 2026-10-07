@@ -163,12 +163,19 @@ impl<'a> SlotInput<'a> {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct RowDetail {
-    /// Sync correlation score of the decode.
-    pub sync_score: f32,
-    /// Coefficient of variation of the per-block sync powers (fading).
-    pub sync_cv: f32,
-    /// Hard-decision errors the FEC corrected.
-    pub hard_errors: u32,
+    /// Sync score of the decode, on the scale of the mode's own search, so not
+    /// comparable between modes: FT8's is the coarse candidate score (WSJT-X's
+    /// `sync` column, against `sync_min` 1.3 / 2.1); FT4's and FST4's the refined
+    /// one, FT4's on its own `sync_min` scale and FST4's on `fst4_sync_search`'s.
+    /// `None` where the mode reports none: WSPR, JT9, JT65 and Q65, and FT8's a7
+    /// and a8 list decodes, which do not go through a sync search (#594).
+    pub sync_score: Option<f32>,
+    /// Coefficient of variation of the per-block sync powers (fading). `None`
+    /// wherever `sync_score` is.
+    pub sync_cv: Option<f32>,
+    /// Hard-decision errors the FEC corrected. `None` for WSPR, JT9, JT65 and
+    /// Q65, whose decoders report no such count; `Some(0)` is a clean decode.
+    pub hard_errors: Option<u32>,
     /// Which decode pass produced the row; private to the mode.
     pub pass: u8,
     /// The message's identity key, one bit per byte: what two rows are

@@ -299,12 +299,12 @@ Flat, fixed-size, written into your array. `text` is an inline
 | `mode` | the **concrete sub-mode**, not the family — all five FST4 periods and all ten Q65 sub-modes report distinctly |
 | `text` | decoded message, `<...>` resolved against the decoder's table where it can |
 | `freq_hz`, `dt_sec`, `snr_db` | carrier, time offset from the slot's `dt = 0` reference, SNR in a 2500 Hz reference bandwidth |
-| `sync_score` | sync correlation for this decode |
-| `sync_cv` | coefficient of variation of the per-block sync powers — near 0 on a stable channel, elevated under QSB. The only fading indicator the row carries |
-| `hard_errors` | hard-decision errors the FEC corrected |
+| `sync_score` | sync score of this decode, on the scale of the mode's own search (not comparable between modes). `0.0` with `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` clear for WSPR, JT9, JT65, Q65 and FT8's a7/a8 list decodes |
+| `sync_cv` | coefficient of variation of the per-block sync powers — near 0 on a stable channel, elevated under QSB. The only fading indicator the row carries; `0.0` with `MFSK_DECODE_FLAG_HAS_SYNC_CV` clear where `sync_score` is absent |
+| `hard_errors` | hard-decision errors the FEC corrected; `0` with `MFSK_DECODE_FLAG_HAS_HARD_ERRORS` clear for WSPR, JT9, JT65 and Q65, which report no count (a clean decode is `0` with the flag set) |
 | `info_bits` | width of the FEC information block, 91 (CRC-14) or 101 (CRC-24); 0 for a mode that has none. `mfsk_decoder_copy_info` returns that many bits |
 | `pass` | which decode pass produced the row. **Protocol-private** — diagnostics, not logic |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`) |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`); bits 2-4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`, the three numbers above are the mode's own and not the `0` of a mode that reports none |
 
 ### 2.5 Streaming capture
 

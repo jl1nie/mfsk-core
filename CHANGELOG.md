@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`RowDetail` says what the mode reports: `sync_score`, `sync_cv` and `hard_errors` are `Option`s, and `Decoded::new` exists (#594).**
+  WSPR, JT9, JT65 and Q65 gave `0.0` / `0` for all three on every row, and FT8's a7 and a8 list decodes a placeholder
+  `0.0` sync score, so a consumer could not tell a measured zero from a number the mode does not have, and the docs did not
+  say which scale `sync_score` is on (FT8's coarse candidate score, FT4's and FST4's refined ones: not comparable). They are
+  now `None` there, `Some` for FT8, FT4 and FST4 searched decodes, and the doc says per mode. **Breaking** for a reader of
+  those fields (`RowDetail` is `#[non_exhaustive]`, so adding the fields later is not). The C row keeps its layout and gains
+  `flags` bits 2-4 (`MFSK_DECODE_FLAG_HAS_SYNC_SCORE`, `_HAS_SYNC_CV`, `_HAS_HARD_ERRORS`), clear where the number is absent;
+  the Kotlin and Swift rows still show plain numbers. `Decoded` had no constructor and, being `#[non_exhaustive]`, could not be
+  built outside the crate, which closed it to a consumer's own tests: `Decoded::new(text, freq_hz, dt_sec, snr_db, protocol)`.
+  The skimmer stores NULL, and shows `-`, where there is none.
 - **skimmer: every slot is decoded, and the next slot does not wait for the last (default time budget off, four decoder threads per channel).**
   A channel had one decoder thread with a queue of four, so a decode that outlasted its slot held up the next slot, and a long
   enough one dropped slots. Each channel now has `Config::decode_lanes` threads (`--lanes`, GUI *Decode threads*; 4 by default)
