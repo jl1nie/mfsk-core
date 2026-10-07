@@ -89,6 +89,8 @@ export interface Settings {
   ntpServer: string;
   /** The rotation counts from UTC midnight instead of starting at the first band on Connect. */
   rotationUtc: boolean;
+  /** Percent of a slot's period its decode may run before it stops; 0 is no limit. */
+  slotBudgetPct: number;
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */
@@ -121,6 +123,16 @@ export interface DecodeRow {
   snrDb: number;
   dtS: number;
   text: string;
+  /** The message's bits, hex: one message heard on two channels or servers has one key. */
+  key: string;
+  syncScore: number;
+  /** Hard-decision errors the FEC corrected. */
+  hardErrors: number;
+  /** The text needed the callsign table: a `<...>` was resolved. */
+  hashResolved: boolean;
+  copiedLastTx: boolean;
+  /** Replaces the row of this channel and slot with the same key and frequency (its `<...>` now reads resolved). */
+  update: boolean;
 }
 
 export interface Status {
@@ -131,6 +143,8 @@ export interface Status {
   queuedBytes: number;
   queuedSlots: number;
   droppedSlots: number;
+  /** Slots the slot budget stopped, since connecting. */
+  budgetCutSlots: number;
   longestDecodeMs: number;
   gaps: number;
   reanchors: number;
@@ -252,6 +266,10 @@ export interface Spot {
   text: string;
   bearing: number | null;
   km: number | null;
+  /** What the decoder knew of the row; null for a file from before it was kept. */
+  sync: number | null;
+  hardErrors: number | null;
+  resolved: boolean | null;
 }
 
 export interface MapPoint {

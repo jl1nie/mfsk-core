@@ -74,6 +74,30 @@ impl Jt72Message {
     pub fn is_all_zero_codeword(&self) -> bool {
         matches!(self, Jt72Message::Standard { call1, .. } if call1 == "000AAA")
     }
+
+    /// The message's 72 bits, one per byte, most significant first: the
+    /// identity key a decoded row carries in `RowDetail::info` (#592).
+    ///
+    /// Re-packed from the fields rather than kept from the decode, because
+    /// the fields are the granularity the JT9 and JT65 de-duplication works
+    /// at (`Jt72Message` equality). `None` only for a `Standard` message
+    /// whose text does not pack, which a decoded one always does.
+    pub fn bits72(&self) -> Option<Vec<u8>> {
+        let words = match self {
+            Jt72Message::Standard {
+                call1,
+                call2,
+                grid_or_report,
+            } => pack_standard(call1, call2, grid_or_report)?,
+            Jt72Message::Unsupported { nc1, nc2, ng } => pack_words(*nc1, *nc2, *ng),
+        };
+        Some(
+            words
+                .iter()
+                .flat_map(|w| (0..6).rev().map(move |b| (w >> b) & 1))
+                .collect(),
+        )
+    }
 }
 
 impl fmt::Display for Jt72Message {

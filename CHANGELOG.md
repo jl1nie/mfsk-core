@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **skimmer: row detail, resolved rows and a per-slot time budget, on the 0.13 decoder API (#592, #593).** `Decode` carries the
+  row's key, sync score, FEC-corrected errors, `hash_resolved` and Q65's copied-last-Tx. A streamed row is resolved against the
+  callsign table as it stood when the period began, so the worker now says a row again (`update`) when the returned one reads
+  better; the GUI replaces the row in place (marked ✓), the database updates it, and the CLI prints it again, not into `ALL.TXT`.
+  The database gains `msg_key`, `sync`, `hard_errors` and `resolved` (older files are upgraded; Analysis and the CSV show them,
+  blank for older rows). `Config::slot_budget` (default 0.8 of the period; `--slot-budget`, GUI *Time budget*) stops a slot's decode and
+  counts it in `Status::budget_cut_slots`, for FT8, FT4 and FST4 only: WSPR, JT9, JT65 and Q65 ignore `SlotInput::budget` (#593).
+  Tested on the library side (57 `skimmer-core` tests, `svelte-check` clean); the window itself has not been run with these changes.
+- **Every decoded row has an identity key: `RowDetail::info` is filled for WSPR (50 bits), JT9 and JT65 (72) and Q65 (77),
+  not just FT8, FT4 and FST4 (#592).** Through `AnyDecoder` and the C ABI a row had text and nothing else to be compared
+  by, so a caller pairing a streamed row with a returned one keyed those four modes by text, which drops two of the JT65
+  golden's three `K1ABC W9XYZ EN37` rows. `Q65Result` gains `bits77`; `Jt72Message::bits72()` re-packs the fields JT9
+  and JT65 de-duplicate by. New `tests/decoder_row_key.rs` drives every mode through `decode_with` and checks length and
+  that streamed rows cover the returned ones. The skimmer's guard now keys on the bits for every mode. `AnyDecoder::delivery_is_exact()` (also on `Decoder<P>`) says whether
+  `decode_with` runs the exact contract (§3a) or the parallel one (§3b), from the mode, depth and extras: FT8's
+  `SinglePass` and sniper, FT4 `Fast`, FST4 and WSPR are `false`. The skimmer skips its guard when it is `true`. Not
+  done from #592: the C row's packed key.
+- **skimmer: a channel's rows go out as the decoder finds them, not when the slot is done.** The worker called
+  `decode`, which returns after the whole slot, so every row of a busy slot waited for its slowest. It now calls
+  `decode_with` and hands each row on at once. `qso3_busy.wav` (21 rows, `Depth::Deep`; native, one thread, i16
+  audio): 13-14 rows are found by 0.36 s and the last at 1.45 s, of a 1.8 s decode. Placed as IQ and pulled out of a
+  real `IqReceiver` (f32 audio, `Direct` and `Pfb`) the same 21 rows come back, `decode_with` delivering exactly the
+  rows `decode` returns, the first at 30 ms, the median at 160-180 ms and the last at 1.56-1.71 s of 1.9-2.0 s. Not run
+  against a live SpyServer or through the GUI.
+  Total work and `dropped_slots` are unchanged; only when a row can be shown moves. The parallel strategies (FT4 at
+  `Depth::Fast`, FST4, WSPR) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits and
+  frequency to the Hz are seen. A streamed row is resolved against the callsign table as it stood when
+  the period began, so a `<...>` that the same period teaches stays `<...>`.
 - **`#[non_exhaustive]` on the public types that are expected to grow (#573).** One break, taken once, so that the
   growth itself stops being one: a new protocol is patch-level by this crate's convention, but it adds a `ProtocolId`
   variant, so each one had technically been breaking — as is any field added to an output row, to `ProtocolMeta`, or to

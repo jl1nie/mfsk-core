@@ -134,7 +134,12 @@
               <td>{d.snr}</td>
               <td>{d.dt.toFixed(1)}</td>
               <td>{d.audioHz}</td>
-              <td class="msg">{d.text}</td>
+              <td
+                class="msg"
+                title={d.sync === null
+                  ? ''
+                  : `sync ${d.sync.toFixed(1)} · ${d.hardErrors ?? 0} errors corrected${d.resolved ? ' · a <...> resolved' : ''}`}
+                >{d.text}</td>
               <td>{km(d)}</td>
             </tr>
           {/each}

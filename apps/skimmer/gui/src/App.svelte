@@ -111,6 +111,8 @@
     if (!h) return [];
     const p: string[] = [];
     if (h.droppedSlots > 0) p.push(`${h.droppedSlots} slot${h.droppedSlots > 1 ? 's' : ''} dropped`);
+    if (h.budgetCutSlots > 0)
+      p.push(`${h.budgetCutSlots} slot${h.budgetCutSlots > 1 ? 's' : ''} cut by the time budget`);
     if (h.gaps > 0) p.push(`${h.gaps} gap${h.gaps > 1 ? 's' : ''}`);
     if (h.reanchors > 0) p.push(`${h.reanchors} re-anchor${h.reanchors > 1 ? 's' : ''}`);
     if (h.queuedBytes > 500_000 || h.queuedSlots > 2)
@@ -123,7 +125,7 @@
           clockText || 'PC clock',
           `arrival delay past the anchor estimate ${health.delayMs.toFixed(0)} ms, anchor drift ${health.driftMs.toFixed(0)} ms`,
           `longest push ${health.longestPushMs.toFixed(0)} ms, longest decode ${health.longestDecodeMs.toFixed(0)} ms`,
-          `read queue ${(health.queuedBytes / 1e3).toFixed(0)} kB, slots queued ${health.queuedSlots} / dropped ${health.droppedSlots}`,
+          `read queue ${(health.queuedBytes / 1e3).toFixed(0)} kB, slots queued ${health.queuedSlots} / dropped ${health.droppedSlots} / cut by the budget ${health.budgetCutSlots}`,
           `gaps ${health.gaps}, re-anchors ${health.reanchors}`,
           `decodes the window received ${received}`,
         ].join('\n')
@@ -281,7 +283,8 @@
         break;
       case 'decode': {
         const { type: _, server: __, ...row } = e;
-        received += 1;
+        // An update says a row already received again, its <...> resolved.
+        if (!row.update) received += 1;
         addRow({ ...row, id: nextId++ });
         break;
       }
@@ -329,15 +332,46 @@
     if (pending.length === 0) return;
     const batch = pending;
     pending = [];
+    // An update replaces the row it names (same channel, slot, key and
+    // frequency), in this batch or among the latest rows; one that is gone (the
+    // table was cleared, or the row scrolled out) is dropped, not shown again.
+    const same = (a: DecodeRow, b: DecodeRow) =>
+      a.channel === b.channel &&
+      a.slotUtcMs === b.slotUtcMs &&
+      a.key === b.key &&
+      Math.round(a.freqHz) === Math.round(b.freqHz);
+    const fresh: DecodeRow[] = [];
+    let base = rows;
+    let copied = false;
     for (const r of batch) {
+      if (r.update) {
+        let i = fresh.length - 1;
+        while (i >= 0 && !same(fresh[i], r)) i--;
+        if (i >= 0) {
+          fresh[i] = { ...r, id: fresh[i].id, update: false };
+          continue;
+        }
+        for (let j = base.length - 1; j >= Math.max(0, base.length - 600); j--) {
+          if (same(base[j], r)) {
+            if (!copied) {
+              base = base.slice();
+              copied = true;
+            }
+            base[j] = { ...r, id: base[j].id, update: false };
+            break;
+          }
+        }
+        continue;
+      }
       while (slotCounts.length <= r.channel) slotCounts.push(0);
       if (slotOf[r.channel] !== r.slotUtcMs) {
         slotOf[r.channel] = r.slotUtcMs;
         slotCounts[r.channel] = 0;
       }
       slotCounts[r.channel] += 1;
+      fresh.push(r);
     }
-    const all = rows.concat(batch);
+    const all = base.concat(fresh);
     rows = all.length > MAX_ROWS ? all.slice(-MAX_ROWS) : all;
   }
 
@@ -705,6 +739,11 @@
             <input type="checkbox" bind:checked={settings.rotationUtc} disabled={running} />
             <span>Rotation follows the UTC clock (otherwise it begins with the first band)</span>
           </label>
+          <div class="field" title="A slot's decode may run this share of its period, then it stops and reports what it has (the rest of its candidates are left undone). 0 has no limit. Only FT8, FT4 and FST4 poll it; WSPR, JT9, JT65 and Q65 always finish (jl1nie/mfsk-core#593). Slots it cuts are counted in the status line.">
+            <span>Time budget</span>
+            <input type="number" min="0" max="100" step="5" bind:value={settings.slotBudgetPct} disabled={running} />
+            <span>% of a slot's period (0: no limit)</span>
+          </div>
           <h3>Waterfall</h3>
           <label class="check" title="A fine spectrum of each channel's audio (2.9 Hz per bin) under the channel list, with the decodes marked on it">
             <input type="checkbox" bind:checked={settings.waterfall} disabled={running} />

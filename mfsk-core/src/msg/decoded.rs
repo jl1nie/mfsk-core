@@ -306,6 +306,7 @@ mod tests {
             iterations: 3,
             snr_db: -24.0,
             copied_last_tx: false,
+            bits77: [0; 77],
             ap: false,
         };
 
@@ -331,6 +332,7 @@ mod tests {
             iterations: 3,
             snr_db: -24.0,
             copied_last_tx: false,
+            bits77: [0; 77],
             ap: false,
         };
 

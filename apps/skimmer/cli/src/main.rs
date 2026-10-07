@@ -25,7 +25,7 @@ fn usage() -> ExitCode {
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
-         \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS]\n\
+         \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--detail]\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
         skimmer_core::AUTO_PFB_CHANNELS,
@@ -39,11 +39,12 @@ fn usage() -> ExitCode {
 /// `--server [NAME=]HOST:PORT` starts a server; the options and `--ch` that
 /// follow belong to it. `--step MINUTES` starts a step of a rotation among that
 /// server's channels: the `--ch` after it are heard in that step.
-fn parse_args() -> Option<(Vec<Config>, Option<String>)> {
+fn parse_args() -> Option<(Vec<Config>, Option<String>, bool)> {
     let mut cfgs: Vec<Config> = Vec::new();
     let mut cfg = Config::new("127.0.0.1:5555", Vec::new());
     let mut started = false;
     let mut log = None;
+    let mut detail = false;
     let (mut mycall, mut mygrid) = (String::new(), String::new());
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -93,6 +94,15 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>)> {
             "--reanchor-ms" => {
                 cfg.reanchor = Duration::from_millis(it.next()?.parse().ok()?);
             }
+            // A slot may decode this share of its period (0.8 by default), then
+            // stops and reports what it has; `off` has no limit.
+            "--slot-budget" => {
+                cfg.slot_budget = match it.next()?.as_str() {
+                    "off" => None,
+                    v => Some(v.parse::<f32>().ok().filter(|x| *x > 0.0)?),
+                }
+            }
+            "--detail" => detail = true,
             "--mycall" => mycall = it.next()?.to_ascii_uppercase(),
             "--mygrid" => mygrid = it.next()?.to_ascii_uppercase(),
             "--ch" => match parse_channel(&it.next()?) {
@@ -142,7 +152,7 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>)> {
     }
     cfgs.iter()
         .all(|c| !c.channels.is_empty())
-        .then_some((cfgs, log))
+        .then_some((cfgs, log, detail))
 }
 
 fn hhmmss(ns: Option<i64>) -> String {
@@ -153,8 +163,35 @@ fn hhmmss(ns: Option<i64>) -> String {
     .unwrap_or_else(|| "------".into())
 }
 
+/// What the decoder knew of a row, for `--detail`: sync score, the errors the
+/// FEC corrected, and the message key (the bits, hex) that identifies it.
+fn detail_text(d: &skimmer_core::Decode) -> String {
+    let k = &d.detail;
+    let key: String = k
+        .key
+        .chunks(4)
+        .map(|c| {
+            format!(
+                "{:x}",
+                c.iter().fold(0u8, |a, &b| a << 1 | (b & 1)) << (4 - c.len())
+            )
+        })
+        .collect();
+    let key = if key.is_empty() { "-".into() } else { key };
+    format!(
+        "  [sync {:.1} err {}{} key {key}]",
+        k.sync_score,
+        k.hard_errors,
+        if k.copied_last_tx {
+            " copied-last-tx"
+        } else {
+            ""
+        },
+    )
+}
+
 fn main() -> ExitCode {
-    let Some((cfgs, log)) = parse_args() else {
+    let Some((cfgs, log, detail)) = parse_args() else {
         return usage();
     };
     let many = cfgs.len() > 1;
@@ -181,15 +218,25 @@ fn main() -> ExitCode {
         match ev {
             Event::Decode(d) => {
                 println!(
-                    "{tag}{} {:<8} {:>10.0} {:>4.0} {:>5.1}  {}",
+                    "{tag}{} {:<8} {:>10.0} {:>4.0} {:>5.1}  {}{}{}",
                     hhmmss(d.slot_utc_ns),
                     mode_name(d.mode),
                     d.freq_hz,
                     d.snr_db,
                     d.dt_s,
-                    d.text
+                    d.text,
+                    // The same row again, its `<...>` resolved.
+                    if d.update { "  (resolved)" } else { "" },
+                    if detail {
+                        detail_text(&d)
+                    } else {
+                        String::new()
+                    }
                 );
-                if let Some(f) = log.as_mut()
+                // ALL.TXT has each message once, as it was first heard: the
+                // resolved form of a row already written is not a new line.
+                if !d.update
+                    && let Some(f) = log.as_mut()
                     && let Err(e) = writeln!(f, "{}", all_txt_line(&d))
                 {
                     eprintln!("log: {e}");
@@ -260,7 +307,7 @@ fn main() -> ExitCode {
             Event::Status(s) => eprintln!(
                 "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
              queue {:.0} kB, decode {:.0} ms, {} slot(s) queued, {} dropped, \
-             {} gap(s), {} re-anchor(s)",
+             {} over budget, {} gap(s), {} re-anchor(s)",
                 s.streamed_s,
                 s.delay_ms,
                 s.drift_ms,
@@ -269,6 +316,7 @@ fn main() -> ExitCode {
                 s.longest_decode_ms,
                 s.queued_slots,
                 s.dropped_slots,
+                s.budget_cut_slots,
                 s.gaps,
                 s.reanchors
             ),
