@@ -2,12 +2,12 @@
 
 ## Unreleased
 
-- **docs: `LIBRARY.md` §1.4 (and `.ja.md`), the migration for #592, #593 and #594, from the principle behind them** — the API
-  does not give an answer it does not have: a zero nobody measured is `None`, a budget the API accepts is polled by every
-  mode, and the library pairs a streamed row with its returned one because only it knows they are the same. A before/after
-  row per idiom, which modes give which numbers, and doctests for `delivery` pairing and `Decoded::new`. §2.1, §2.3 (what is
-  deliberately not cut, and that the four slow modes report `exhausted` alone) and §2.4 updated; `STREAMING.md` §5.4's
-  "FT8, FT4 and FST4 poll it" corrected. The C budget still refuses WSPR, JT9, JT65 and Q65 (`MFSK_CAP_BUDGET`), said so.
+- **docs: `LIBRARY.md` §2.3 (and `.ja.md`) is now "Early decode and the compute budget", written from the design.**
+  Why both follow from "a `SlotInput` is the whole period" and "the library reads no clock"; upstream's 41/47/50 checkpoints
+  and what `SicEarly` keeps of them; that today's early decode buys order, not time, and the `decode_prefix` design (#572,
+  `EARLY_DECODE_DESIGN.md`) that would buy time; why FT4 has none. The budget: the candidate as unit, what is deliberately
+  not cut, how it follows the checkpoints (#589), which `BudgetReport` fields each mode fills (every mode polls, #593), and
+  budget against strategy. §2.1 and §2.4 say `RowDetail`'s `Option`s and `delivery` (#592, #594).
 - **A returned row names the delivery it was, and the C row carries the message key (#592).** `decode_with` handed its callback
   each row and returned them all again, and a caller had to pair the two by position or by a key it built, with a frequency
   rounded to the Hz (one message at two frequencies has one key) and no way to see which returned row a streamed one became.
