@@ -11,7 +11,7 @@
   against a live SpyServer or through the GUI.
   Total work and `dropped_slots` are unchanged; only when a row can be shown moves. The parallel strategies (WSPR, JT9,
   JT65, Q65) may deliver a row twice (`STREAMING.md` §3b), so a row is dropped the second time its message bits (or,
-  for a mode without them, its text) are seen. A streamed row is resolved against the callsign table as it stood when
+  for a mode without them, its text and frequency to the Hz) are seen. A streamed row is resolved against the callsign table as it stood when
   the period began, so a `<...>` that the same period teaches stays `<...>`.
 - **FT8 `SicEarly` stops when its budget does (#587).** The subtractions between checkpoints A, B and C had no budget
   poll, so a budget spent during A still paid for every A row's `subtract_signal_lpf_refine_dt` (60-150 ms each) before a

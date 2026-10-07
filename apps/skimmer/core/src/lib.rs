@@ -320,17 +320,25 @@ enum Job {
 
 /// Which rows of one slot have been handed on.
 ///
-/// A row is the same row when its FEC information bits match (the frame
-/// modes) or, for a mode that has none to give, its text. That is the
-/// granularity the decoder's own cross-candidate de-duplication works at
-/// (`message77`), so a second delivery of a row the decoder already counts
-/// once is dropped here, and nothing else is.
+/// A row is the same row when its FEC information bits match, which only
+/// the frame modes (FT8, FT4, FST4) give. A mode that has none (WSPR, JT9,
+/// JT65, Q65) is told apart by its text **and its frequency, to the Hz**:
+/// the same text at two frequencies is two transmissions, and `jt65sim`'s
+/// own five-signal recording decodes `K1ABC W9XYZ EN37` three times, at 1100,
+/// 1500 and 1900 Hz. A key on the text alone would drop two of those three.
+///
+/// The cost of that key is that a duplicate whose two copies differ by more
+/// than rounding is let through. That is the right way round: a row shown
+/// twice is noise, a row dropped is a lost spot.
 ///
 /// It is needed because `decode_with` has two delivery contracts
 /// (`docs/reference/STREAMING.md` §3): a sequential strategy (FT8 and FT4 at
 /// `Depth::Normal`/`Deep`, FST4) delivers exactly the rows it returns, but a
 /// parallel one (WSPR, JT9, JT65, Q65) delivers in completion order and may
 /// show a transient duplicate that the returned rows have already removed.
+/// None was seen on any of the repository's recordings (19 decodes across
+/// every mode, `callbacks == returned` in all), so this is a guard on a
+/// documented contract rather than a fix for an observed fault.
 #[derive(Default)]
 struct Delivered(std::sync::Mutex<std::collections::HashSet<(bool, Vec<u8>)>>);
 
@@ -338,7 +346,9 @@ impl Delivered {
     /// `true` the first time this row is offered.
     fn first_time(&self, row: &Decoded, detail: &RowDetail) -> bool {
         let key = if detail.info.is_empty() {
-            (false, row.text.clone().into_bytes())
+            let mut k = row.text.clone().into_bytes();
+            k.extend_from_slice(&(row.freq_hz.round() as i32).to_le_bytes());
+            (false, k)
         } else {
             (true, detail.info.clone())
         };
@@ -2172,9 +2182,19 @@ mod tests {
             ..RowDetail::default()
         };
         let d = Delivered::default();
-        // A mode with no information bits is told apart by its text.
+        // A mode with no information bits is told apart by its text and its
+        // frequency to the Hz: the same text at two frequencies is two
+        // transmissions (the JT65 golden has `K1ABC W9XYZ EN37` three times).
         assert!(d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
         assert!(!d.first_time(&row("K1ABC FN42 37"), &with_info(&[])));
+        let at = |text: &str, hz: f32| Decoded {
+            freq_hz: hz,
+            ..row(text)
+        };
+        for hz in [1100.3, 1500.1, 1899.7] {
+            assert!(d.first_time(&at("K1ABC W9XYZ EN37", hz), &with_info(&[])));
+        }
+        assert!(!d.first_time(&at("K1ABC W9XYZ EN37", 1500.1), &with_info(&[])));
         assert!(d.first_time(&row("W9XYZ EN34 30"), &with_info(&[])));
         // One that has them, by those: the same bits resolved to another text
         // (a hashed call learned later in the period) are the same row.
