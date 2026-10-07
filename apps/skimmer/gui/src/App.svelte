@@ -340,39 +340,46 @@
       a.slotUtcMs === b.slotUtcMs &&
       a.key === b.key &&
       Math.round(a.freqHz) === Math.round(b.freqHz);
-    const fresh: DecodeRow[] = [];
-    let base = rows;
-    let copied = false;
+    // A row belongs to its slot: one that arrives after the next slot has begun
+    // (a decode that outlasts its slot; the channel's other decoder threads are
+    // already on the next one) goes at the end of its own slot's rows, under its
+    // own heading, not at the bottom under the newer slot's. A slot with no rows
+    // yet starts a group at the end.
+    const SCAN = 2000;
+    const out = rows.slice();
+    const groupEnd = (r: DecodeRow): number => {
+      for (let j = out.length - 1; j >= Math.max(0, out.length - SCAN); j--) {
+        if (out[j].channel === r.channel && out[j].slotUtcMs === r.slotUtcMs) return j + 1;
+      }
+      return -1;
+    };
     for (const r of batch) {
       if (r.update) {
-        let i = fresh.length - 1;
-        while (i >= 0 && !same(fresh[i], r)) i--;
-        if (i >= 0) {
-          fresh[i] = { ...r, id: fresh[i].id, update: false };
-          continue;
-        }
-        for (let j = base.length - 1; j >= Math.max(0, base.length - 600); j--) {
-          if (same(base[j], r)) {
-            if (!copied) {
-              base = base.slice();
-              copied = true;
-            }
-            base[j] = { ...r, id: base[j].id, update: false };
+        for (let j = out.length - 1; j >= Math.max(0, out.length - SCAN); j--) {
+          if (same(out[j], r)) {
+            out[j] = { ...r, id: out[j].id, update: false };
             break;
           }
         }
         continue;
       }
-      while (slotCounts.length <= r.channel) slotCounts.push(0);
-      if (slotOf[r.channel] !== r.slotUtcMs) {
-        slotOf[r.channel] = r.slotUtcMs;
-        slotCounts[r.channel] = 0;
+      // The count is of the channel's latest slot: a late row of an older one is
+      // not part of it, and must not start it over.
+      const last = slotOf[r.channel];
+      const older = last != null && r.slotUtcMs !== null && r.slotUtcMs < last;
+      if (!older) {
+        while (slotCounts.length <= r.channel) slotCounts.push(0);
+        if (last !== r.slotUtcMs) {
+          slotOf[r.channel] = r.slotUtcMs;
+          slotCounts[r.channel] = 0;
+        }
+        slotCounts[r.channel] += 1;
       }
-      slotCounts[r.channel] += 1;
-      fresh.push(r);
+      const at = groupEnd(r);
+      if (at < 0) out.push(r);
+      else out.splice(at, 0, r);
     }
-    const all = base.concat(fresh);
-    rows = all.length > MAX_ROWS ? all.slice(-MAX_ROWS) : all;
+    rows = out.length > MAX_ROWS ? out.slice(-MAX_ROWS) : out;
   }
 
   /** Show a channel's waterfall large; the backend sends whole rows only for it. */
