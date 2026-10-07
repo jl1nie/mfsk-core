@@ -152,7 +152,9 @@ pub mod caps {
     /// `fst4_decode.f90` has no hard-error ceiling, so FST4 accepts on
     /// the CRC-24 and a successful unpack alone (`REQUIRES_UNPACK`).
     pub const STRICTNESS: u32 = 1 << 8;
-    /// `.budget()` — the caller-supplied wall-clock predicate.
+    /// `SlotInput::budget` — the caller-supplied wall-clock predicate —
+    /// is polled, once per candidate. Every mode with a `Decoder` (WSPR,
+    /// JT9, JT65 and Q65 since #593); not uvpacket, which has none.
     pub const BUDGET: u32 = 1 << 9;
     /// `.known()` is honoured as a post-filter: already-decoded
     /// messages are not re-reported, but the work of re-decoding them
@@ -534,8 +536,9 @@ macro_rules! scan_defaults {
 
 /// Q65. Not `FrameDecodable`: its own builder family takes search
 /// parameters with a time tolerance and a nominal start-sample anchor,
-/// and reports `start_sample` rather than a `dt`. It has streaming and
-/// a callsign hash table, and neither `known` nor a budget.
+/// and reports `start_sample` rather than a `dt`. It has streaming, a
+/// callsign hash table and a budget (polled in both syncs' candidate lists,
+/// #593; the averaged decode is not cut), and no `known`.
 ///
 /// Defaults are `q65::search::default_search_params()`. `mfsk-ffi`'s
 /// `mfsk_q65_*` family deliberately scans wider than this (it takes no
@@ -543,7 +546,7 @@ macro_rules! scan_defaults {
 /// says so where it builds its own parameters.
 #[cfg(feature = "q65")]
 const Q65_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::AP_NARROW | caps::ON_RESULT | caps::ENCODE,
+    caps: caps::AP_NARROW | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(q65),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
@@ -554,7 +557,7 @@ const Q65_PROFILE: DecodeProfile = DecodeProfile {
 /// `mfsk_wspr_decode` scans with.
 #[cfg(feature = "wspr")]
 const WSPR_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::ON_RESULT | caps::ENCODE,
+    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(wspr),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
@@ -566,7 +569,7 @@ const WSPR_PROFILE: DecodeProfile = DecodeProfile {
 /// exposes (`mfsk_jt9_decode_at`).
 #[cfg(feature = "jt9")]
 const JT9_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::ON_RESULT | caps::ENCODE,
+    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(jt9),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
@@ -575,7 +578,7 @@ const JT9_PROFILE: DecodeProfile = DecodeProfile {
 /// JT65. As JT9, with `jt65::search::default_search_params()`.
 #[cfg(feature = "jt65")]
 const JT65_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::ON_RESULT | caps::ENCODE,
+    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(jt65),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,

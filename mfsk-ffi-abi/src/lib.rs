@@ -454,7 +454,21 @@ pub struct MfskDecode {
     /// exactly. `-1`: none (a returned row the callback never saw, or any row of a
     /// call with no callback).
     pub delivery: i32,
+    /// When a `mfsk_decoder_decode_prefix_*` sequence found the row
+    /// (`RowDetail::stage`, #572): [`MFSK_STAGE_EARLY`] for a call made
+    /// before the period ended (FT8's checkpoint A, ~11.8 s in),
+    /// [`MFSK_STAGE_FINAL`] for the call whose audio was the whole period,
+    /// [`MFSK_STAGE_NONE`] from a plain decode. Appended.
+    pub stage: u8,
 }
+
+/// [`MfskDecode::stage`]: not from a prefix sequence.
+pub const MFSK_STAGE_NONE: u8 = 0;
+/// [`MfskDecode::stage`]: found before the period ended, in time to answer
+/// the station in the next one.
+pub const MFSK_STAGE_EARLY: u8 = 1;
+/// [`MfskDecode::stage`]: found by the call whose audio was the whole period.
+pub const MFSK_STAGE_FINAL: u8 = 2;
 
 /// [`MfskDecode::flags`] bit 0.
 pub const MFSK_DECODE_FLAG_HASH_RESOLVED: u8 = 1 << 0;
@@ -583,6 +597,32 @@ pub struct MfskIqDecode {
     pub snr_db: f32,
     /// Decoded message text, NUL-terminated.
     pub text: [core::ffi::c_char; MFSK_DECODE_TEXT_LEN],
+    // ── Appended: the row's detail, as `MfskDecode` carries it ───────────
+    // A caller built against the shorter struct sets the shorter `size` and
+    // never sees these. Each has the meaning of the `MfskDecode` field of the
+    // same name.
+    /// As `MfskDecode::sync_score`: valid when `flags` has
+    /// `MFSK_DECODE_FLAG_HAS_SYNC_SCORE`.
+    pub sync_score: f32,
+    /// As `MfskDecode::sync_cv`: valid when `flags` has
+    /// `MFSK_DECODE_FLAG_HAS_SYNC_CV`.
+    pub sync_cv: f32,
+    /// As `MfskDecode::hard_errors`: valid when `flags` has
+    /// `MFSK_DECODE_FLAG_HAS_HARD_ERRORS`.
+    pub hard_errors: u32,
+    /// As `MfskDecode::delivery`: which delivery of the channel decoder's
+    /// callback (`mfsk_iq_channel_decoder` + `mfsk_decoder_set_on_decode`)
+    /// this row was, so the two pair exactly; -1 when it had none.
+    pub delivery: i32,
+    /// As `MfskDecode::pass`. Protocol-private.
+    pub pass: u8,
+    /// `MFSK_DECODE_FLAG_*`, as on `MfskDecode`.
+    pub flags: u8,
+    /// As `MfskDecode::key_bits`.
+    pub key_bits: u8,
+    /// As `MfskDecode::key`: the message bits, packed. Compare rows by this,
+    /// with the frequency, not by text.
+    pub key: [u8; MFSK_DECODE_KEY_LEN],
 }
 
 /// The wideband IQ receiver handle.

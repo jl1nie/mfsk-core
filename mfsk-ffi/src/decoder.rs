@@ -116,6 +116,13 @@ pub struct MfskBudgetReport {
     pub cut_at_sync: i32,
     /// Sync score of the best skipped candidate, or NaN when there was none.
     pub cut_at_score: f32,
+    /// Rows subtracted from the residual before a later search saw it: FT8
+    /// `MFSK_STRATEGY_SIC_EARLY`'s checkpoint-B and -C loops, which poll the
+    /// budget before each row (#589). Fewer than the rows returned, with
+    /// `exhausted` set, means the cut came while cleaning up rather than
+    /// while searching. 0 on every other strategy and mode. Appended; a
+    /// caller built against the shorter struct does not see it.
+    pub rows_subtracted: u32,
 }
 
 /// Called once per decode, as it is found. The row pointer is valid only
@@ -131,6 +138,7 @@ fn budget_report(r: &mfsk_core::decoder::BudgetReport) -> MfskBudgetReport {
         stages_run: r.stages_run,
         cut_at_sync: r.cut_at_sync.map(|v| v as i32).unwrap_or(-1),
         cut_at_score: r.cut_at_score.unwrap_or(f32::NAN),
+        rows_subtracted: r.rows_subtracted,
     }
 }
 
@@ -141,6 +149,10 @@ pub(crate) struct FfiDecoder {
     any: AnyDecoder,
     /// The last decode's rows, for `copy_info`.
     last: Vec<(Decoded, RowDetail)>,
+    /// `(period, samples)` of a prefix call refused for a short output
+    /// buffer. Its stage has run and will not run again, so the retry the
+    /// ABI asks for (same call, a bigger buffer) is answered from `last`.
+    short_prefix: Option<(i64, usize)>,
     on_decode: MfskDecodeCallback,
     on_decode_user: SyncUserData,
     budget: MfskBudgetCheck,
@@ -158,7 +170,7 @@ pub(crate) struct FfiDecoder {
 impl FfiDecoder {
     /// Decode one slot of 12 kHz audio at `period`, rows left on the handle.
     pub(crate) fn decode_slot(&mut self, audio: &[f32], period: i64) {
-        let _ = run(self, Audio::F32(audio), period);
+        let _ = run(self, Audio::F32(audio), period, false);
     }
 
     pub(crate) fn rows(&self) -> impl Iterator<Item = (&Decoded, &RowDetail)> {
@@ -728,6 +740,7 @@ pub(crate) unsafe fn open_decoder(
         mode: m,
         any,
         last: Vec::new(),
+        short_prefix: None,
         on_decode: None,
         on_decode_user: SyncUserData(ptr::null_mut()),
         budget: None,
@@ -781,6 +794,28 @@ pub unsafe extern "C" fn mfsk_decoder_open(
 pub unsafe extern "C" fn mfsk_decoder_close(dec: *mut MfskDecoder) {
     if !dec.is_null() {
         drop(unsafe { Box::from_raw(dec as *mut FfiDecoder) });
+    }
+}
+
+/// Whether a decode with the current mode, depth and extras runs the exact
+/// delivery contract (`STREAMING.md` §3a): the callback of
+/// `mfsk_decoder_set_on_decode` sees exactly the rows the call returns, once
+/// each, in the same order. `false` is §3b — completion order, a transient
+/// duplicate possible (FT8's `MFSK_STRATEGY_SINGLE_PASS` and sniper, FT4 at
+/// `MFSK_DEPTH_FAST`, FST4, WSPR) — so a caller keeps its guard, pairing by
+/// `MfskDecode::delivery`. Ask again after `mfsk_decoder_set_params` or
+/// `mfsk_decoder_set_extras`. `false` for a null handle.
+///
+/// # Safety
+/// `dec` must be a live handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decoder_delivery_is_exact(dec: *const MfskDecoder) -> bool {
+    match handle_ref(dec) {
+        Some(d) => d.any.delivery_is_exact(),
+        None => {
+            set_error("mfsk_decoder_delivery_is_exact: null decoder handle");
+            false
+        }
     }
 }
 
@@ -1040,7 +1075,7 @@ pub unsafe extern "C" fn mfsk_decoder_last_budget(
 
 // ── Decoding ──────────────────────────────────────────────────────────────
 
-fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
+pub(crate) fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
     let mut r = MfskDecode {
         size: core::mem::size_of::<MfskDecode>() as u32,
         mode,
@@ -1057,6 +1092,11 @@ fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
         key_bits: 0,
         key: [0; MFSK_DECODE_KEY_LEN],
         delivery: detail.delivery.map_or(-1, |d| d as i32),
+        stage: match detail.stage {
+            Some(mfsk_core::decoder::Stage::Early) => MFSK_STAGE_EARLY,
+            Some(_) => MFSK_STAGE_FINAL,
+            None => MFSK_STAGE_NONE,
+        },
     };
     write_field(&mut r.text, &decoded.text);
     // The message bits: the first 77 of the information block, packed.
@@ -1086,7 +1126,9 @@ fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> MfskDecode {
 }
 
 /// Decode one period of `slot` and store the rows on the handle.
-fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64) -> Result<(), String> {
+/// `prefix`: a `decode_prefix` call (#572) rather than a whole-period one.
+fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64, prefix: bool) -> Result<(), String> {
+    d.short_prefix = None;
     let mut slot = SlotInput::new(audio);
     if period != MFSK_PERIOD_NONE {
         slot = slot.period(period);
@@ -1099,14 +1141,17 @@ fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64) -> Result<(), String> 
     }
     let mode = d.mode;
     let (cb, cb_user) = (d.on_decode, d.on_decode_user);
-    let result = match cb {
-        Some(cb) => d
-            .any
-            .decode_with(&slot, &move |dec: &Decoded, det: &RowDetail| {
-                let row = row_of(mode, dec, det);
-                unsafe { cb(&row, cb_user.ptr()) };
-            }),
-        None => d.any.decode(&slot),
+    let deliver = move |dec: &Decoded, det: &RowDetail| {
+        let row = row_of(mode, dec, det);
+        if let Some(cb) = cb {
+            unsafe { cb(&row, cb_user.ptr()) };
+        }
+    };
+    let result = match (cb.is_some(), prefix) {
+        (true, false) => d.any.decode_with(&slot, &deliver),
+        (false, false) => d.any.decode(&slot),
+        (true, true) => d.any.decode_prefix_with(&slot, &deliver),
+        (false, true) => d.any.decode_prefix(&slot),
     };
     d.last_budget = budget_report(&result.budget);
     d.last = result.rows.into_iter().zip(result.details).collect();
@@ -1117,6 +1162,21 @@ fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64) -> Result<(), String> 
 ///
 /// # Safety
 /// `out` must be `cap` writable [`MfskDecode`], or null when `cap` is 0.
+/// [`emit`], remembering a prefix call it refused for a short buffer.
+unsafe fn emit_prefix(
+    d: &mut FfiDecoder,
+    out: *mut MfskDecode,
+    cap: usize,
+    out_len: *mut usize,
+    prefix: Option<(i64, usize)>,
+) -> MfskStatus {
+    let st = unsafe { emit(d, out, cap, out_len) };
+    if st == MfskStatus::InvalidArg {
+        d.short_prefix = prefix;
+    }
+    st
+}
+
 unsafe fn emit(
     d: &mut FfiDecoder,
     out: *mut MfskDecode,
@@ -1160,6 +1220,79 @@ pub unsafe extern "C" fn mfsk_decoder_decode_i16(
     out_cap: usize,
     out_len: *mut usize,
 ) -> MfskStatus {
+    unsafe {
+        decode_i16_impl(
+            dec,
+            samples,
+            n_samples,
+            sample_rate,
+            period,
+            out,
+            out_cap,
+            out_len,
+            false,
+        )
+    }
+}
+
+/// Decode the period so far, keeping what this period has already found
+/// (#572): call it as audio arrives, with **every sample of the period
+/// received up to now**, and `period` set. The decoder infers the stage from
+/// how much audio it is given. FT8 acts at 141 696 samples (checkpoint A,
+/// `nzhsym` 41, ~11.8 s: its rows come back with
+/// `MfskDecode::stage == MFSK_STAGE_EARLY`), at 162 432 (subtraction only;
+/// no rows) and at the whole period, 180 000 samples, whose call returns the
+/// period's complete set, the rows `mfsk_decoder_decode_i16` returns for the
+/// same audio. Any other call returns no rows, as does every call of a mode
+/// with no early decode until the whole period. A call for the same period
+/// after the whole one returns the complete set again without decoding; a
+/// call for another period starts afresh. With `MFSK_PERIOD_NONE` it is
+/// `mfsk_decoder_decode_i16`. The callback set with
+/// `mfsk_decoder_set_on_decode` sees each row once across the period's
+/// calls, and `delivery` counts across them. At a rate other than 12 kHz each
+/// prefix is resampled on its own, so the result is close to, not
+/// byte-equal to, the whole-period decode.
+///
+/// # Safety
+/// As [`mfsk_decoder_decode_i16`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decoder_decode_prefix_i16(
+    dec: *mut MfskDecoder,
+    samples: *const i16,
+    n_samples: usize,
+    sample_rate: u32,
+    period: i64,
+    out: *mut MfskDecode,
+    out_cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    unsafe {
+        decode_i16_impl(
+            dec,
+            samples,
+            n_samples,
+            sample_rate,
+            period,
+            out,
+            out_cap,
+            out_len,
+            true,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn decode_i16_impl(
+    dec: *mut MfskDecoder,
+    samples: *const i16,
+    n_samples: usize,
+    sample_rate: u32,
+    period: i64,
+    out: *mut MfskDecode,
+    out_cap: usize,
+    out_len: *mut usize,
+    prefix: bool,
+) -> MfskStatus {
     let Some(d) = handle(dec) else {
         set_error("mfsk_decoder_decode_i16: null decoder handle");
         return MfskStatus::NullPointer;
@@ -1178,10 +1311,19 @@ pub unsafe extern "C" fn mfsk_decoder_decode_i16(
         resampled = mfsk_core::engine::dsp::resample::resample_to_12k(pcm, sample_rate);
         &resampled
     };
-    if let Err(e) = in_pool_mut(|| run(d, Audio::I16(audio), period)) {
+    let retry = prefix && d.short_prefix.take() == Some((period, n_samples));
+    if !retry && let Err(e) = in_pool_mut(|| run(d, Audio::I16(audio), period, prefix)) {
         return d.fail(MfskStatus::InvalidArg, e);
     }
-    unsafe { emit(d, out, out_cap, out_len) }
+    unsafe {
+        emit_prefix(
+            d,
+            out,
+            out_cap,
+            out_len,
+            prefix.then_some((period, n_samples)),
+        )
+    }
 }
 
 /// Decode one period of 32-bit float PCM, any level. At 12 kHz the float
@@ -1204,6 +1346,64 @@ pub unsafe extern "C" fn mfsk_decoder_decode_f32(
     out_cap: usize,
     out_len: *mut usize,
 ) -> MfskStatus {
+    unsafe {
+        decode_f32_impl(
+            dec,
+            samples,
+            n_samples,
+            sample_rate,
+            period,
+            out,
+            out_cap,
+            out_len,
+            false,
+        )
+    }
+}
+
+/// [`mfsk_decoder_decode_prefix_i16`] for `float` audio. The level of the
+/// period's first prefix sets the gain for the rest of its calls.
+///
+/// # Safety
+/// As [`mfsk_decoder_decode_f32`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decoder_decode_prefix_f32(
+    dec: *mut MfskDecoder,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    period: i64,
+    out: *mut MfskDecode,
+    out_cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    unsafe {
+        decode_f32_impl(
+            dec,
+            samples,
+            n_samples,
+            sample_rate,
+            period,
+            out,
+            out_cap,
+            out_len,
+            true,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn decode_f32_impl(
+    dec: *mut MfskDecoder,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    period: i64,
+    out: *mut MfskDecode,
+    out_cap: usize,
+    out_len: *mut usize,
+    prefix: bool,
+) -> MfskStatus {
     let Some(d) = handle(dec) else {
         set_error("mfsk_decoder_decode_f32: null decoder handle");
         return MfskStatus::NullPointer;
@@ -1215,16 +1415,27 @@ pub unsafe extern "C" fn mfsk_decoder_decode_f32(
         );
     }
     let pcm = unsafe { slice::from_raw_parts(samples, n_samples) };
+    if prefix && d.short_prefix.take() == Some((period, n_samples)) {
+        return unsafe { emit_prefix(d, out, out_cap, out_len, Some((period, n_samples))) };
+    }
     let r = if sample_rate == 12_000 {
-        in_pool_mut(|| run(d, Audio::F32(pcm), period))
+        in_pool_mut(|| run(d, Audio::F32(pcm), period, prefix))
     } else {
         let audio = mfsk_core::engine::dsp::resample::resample_f32_to_12k(pcm, sample_rate);
-        in_pool_mut(|| run(d, Audio::I16(&audio), period))
+        in_pool_mut(|| run(d, Audio::I16(&audio), period, prefix))
     };
     if let Err(e) = r {
         return d.fail(MfskStatus::InvalidArg, e);
     }
-    unsafe { emit(d, out, out_cap, out_len) }
+    unsafe {
+        emit_prefix(
+            d,
+            out,
+            out_cap,
+            out_len,
+            prefix.then_some((period, n_samples)),
+        )
+    }
 }
 
 /// FEC information bits for the `index`-th row of the last decode. The raw
@@ -1310,7 +1521,7 @@ pub unsafe extern "C" fn mfsk_decoder_decode_stream(
     if !out_slot_start_utc_ns.is_null() {
         unsafe { *out_slot_start_utc_ns = slot.utc_ns.unwrap_or(0) };
     }
-    if let Err(e) = in_pool_mut(|| run(d, Audio::I16(&slot.audio), slot.period)) {
+    if let Err(e) = in_pool_mut(|| run(d, Audio::I16(&slot.audio), slot.period, false)) {
         return d.fail(MfskStatus::InvalidArg, e);
     }
     unsafe { emit(d, out, out_cap, out_len) }

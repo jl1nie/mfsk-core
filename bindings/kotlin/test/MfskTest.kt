@@ -126,7 +126,12 @@ fun main() {
             checkEq("row reports FT8", r.mode, ft8)
             checkEq("row reports FT8's info width", r.infoBits, 91)
             check("row frequency is near 1500 Hz", Math.abs(r.freqHz - 1500.0f) < 10.0f)
-            check("sync score is populated", r.syncScore > 0.0f)
+            check("sync score is populated", (r.syncScore ?: 0f) > 0.0f)
+            check("FT8 reports its numbers, so none is null",
+                  r.syncCv != null && r.hardErrors != null)
+            checkEq("the key is the 77-bit message", r.keyBits, 77)
+            checkEq("packed into ten bytes of hex", r.key.length, 20)
+            checkEq("and no listener means no delivery", r.delivery, null)
             check("nothing needed the hash table here", !r.hashResolved)
             val bits = dec.copyInfo(rows.indexOf(r))
             checkEq("the FEC information bits come back", bits.size, 91)
@@ -156,6 +161,11 @@ fun main() {
               streamed.map { it.text }.toSet() == rows.map { it.text }.toSet())
         check("a streamed row carries its fields",
               streamed.all { it.mode == ft8 && Math.abs(it.freqHz - 1500.0f) < 10.0f })
+        check("FT8's default delivers exactly what it returns", dec.deliveryIsExact)
+        check("each streamed row knows its delivery",
+              streamed.map { it.delivery }.toSet() == streamed.indices.toSet())
+        check("and each returned row names the streamed one it was",
+              rows.all { r -> r.delivery != null && streamed[r.delivery!!].key == r.key })
 
         val afterFirst = streamed.size
         dec.onDecode(null)
@@ -226,9 +236,38 @@ fun main() {
         dec.setBudget(null)
         checkEq("removing the budget restores the search", dec.decode(busy).size, full.size)
     }
+    // Every mode with a decoder takes a budget (#593); WSPR's report says
+    // `exhausted` and nothing more.
     MfskDecoder.open(wspr).use { w ->
-        refused<MfskUnsupportedException>("a budget on WSPR", "MFSK_CAP_BUDGET") { w.setBudget { true } }
+        check("WSPR publishes CAP_BUDGET", (Mfsk.caps(wspr) and Mfsk.CAP_BUDGET) != 0L)
+        w.setBudget { true }
         w.setBudget(null) // removing one is always fine
+        check("WSPR delivers in completion order", !w.deliveryIsExact)
+    }
+    // decodePrefix (#572): checkpoint A's row comes back early, B returns
+    // nothing, the whole period returns what decode does, delivered once.
+    MfskDecoder.open(ft8).use { dec ->
+        val whole = MfskDecoder.open(ft8).use { it.decode(slot, period = 7L) }
+        val seen = java.util.Collections.synchronizedList(mutableListOf<MfskDecode>())
+        dec.onDecode { seen.add(it) }
+        val a = dec.decodePrefix(slot.copyOf(141_696), 7L)
+        check("checkpoint A returns the station early",
+              a.size == 1 && a[0].stage == MfskStage.EARLY)
+        check("checkpoint B returns nothing", dec.decodePrefix(slot.copyOf(162_432), 7L).isEmpty())
+        val end = dec.decodePrefix(slot, 7L)
+        check("the whole period gives decode's rows",
+              end.map { it.text } == whole.map { it.text } && end.all { it.stage != null })
+        checkEq("each row delivered once across the period", seen.size, end.size)
+        checkEq("a plain decode has no stage", whole.firstOrNull()?.stage, null)
+        dec.onDecode(null)
+    }
+    // FT8's default subtracts the checkpoint-A row at B, and says so.
+    MfskDecoder.open(ft8).use { dec ->
+        dec.setBudget { true }
+        val rows = dec.decode(slot)
+        val rep = dec.lastBudget
+        check("a budget that never stops cuts nothing", !rep.exhausted)
+        checkEq("SicEarly's subtraction is counted", rep.rowsSubtracted, rows.size)
     }
 
     // ── Typed refusals ──────────────────────────────────────────────
@@ -745,6 +784,8 @@ fun main() {
                     check("and the dial plus that as RF", Math.abs(hit.absFreqHz - (dial + hit.freqHz)) < 1e-3)
                     checkEq("on the anchored grid", hit.slotStartUtcNs, t0)
                     checkEq("from sample 0", hit.slotStartSample, 0L)
+                    checkEq("the IQ row carries the message key", hit.keyBits, 77)
+                    check("and FT8's numbers", hit.syncScore != null && hit.hardErrors != null)
                 }
                 // The channel's decoder is borrowed for configuration.
                 val cd = rx.channelDecoder(ch)!!

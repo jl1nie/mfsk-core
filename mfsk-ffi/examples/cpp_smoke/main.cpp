@@ -670,6 +670,43 @@ std::vector<int16_t> two_stations() {
     return a;
 }
 
+// Early decode (#572): prefixes of one period, checkpoint A's rows first.
+void test_prefix() {
+    std::printf("\n— decode_prefix: checkpoint A early, the whole period as decode gives it\n");
+    const std::vector<int16_t> audio = two_stations();
+    MfskDecoder* whole = open_dec("prefix", MFSK_MODE_FT8);
+    MfskDecoder* d = open_dec("prefix", MFSK_MODE_FT8);
+    if (whole == nullptr || d == nullptr) return;
+    Rows want;
+    if (mfsk_decoder_decode_i16(whole, audio.data(), audio.size(), 12000, 7, want.items, 16,
+                                &want.len) != MFSK_STATUS_OK) {
+        fail("prefix", "whole-period decode failed");
+    }
+    const size_t cuts[3] = {141696, 162432, audio.size()};
+    Rows got[3];
+    for (int i = 0; i < 3; ++i) {
+        if (mfsk_decoder_decode_prefix_i16(d, audio.data(), cuts[i], 12000, 7, got[i].items, 16,
+                                           &got[i].len) != MFSK_STATUS_OK) {
+            fail("prefix", mfsk_decoder_last_error(d));
+        }
+    }
+    std::printf("  A: %zu row(s), B: %zu, end: %zu (decode: %zu)\n", got[0].len, got[1].len,
+                got[2].len, want.len);
+    if (got[0].len == 0) fail("prefix", "checkpoint A returned nothing");
+    for (size_t i = 0; i < got[0].len; ++i) {
+        if (got[0].items[i].stage != MFSK_STAGE_EARLY) fail("prefix", "an A row is not EARLY");
+    }
+    if (got[1].len != 0) fail("prefix", "checkpoint B returned rows");
+    if (got[2].len != want.len) fail("prefix", "the whole period differs from decode");
+    for (size_t i = 0; i < got[2].len && i < want.len; ++i) {
+        if (std::strcmp(got[2].items[i].text, want.items[i].text) != 0) {
+            fail("prefix", "the whole period's rows are not decode's");
+        }
+    }
+    mfsk_decoder_close(d);
+    mfsk_decoder_close(whole);
+}
+
 void test_budget() {
     std::printf("\n— budget: the caller's predicate cuts the search and the report says so\n");
     const std::vector<int16_t> audio = two_stations();
@@ -717,11 +754,17 @@ void test_budget() {
     mfsk_decoder_set_budget(s, nullptr, nullptr);
     mfsk_decoder_close(s);
 
-    // A mode that publishes no budget refuses one.
+    // Every mode with a decoder takes one (#593), and publishes the bit.
     MfskDecoder* w = open_dec("budget", MFSK_MODE_WSPR);
     if (w != nullptr) {
-        if (mfsk_decoder_set_budget(w, budget_refuse_everything, nullptr) != MFSK_STATUS_UNSUPPORTED) {
-            fail("budget", "WSPR has no budget and should refuse one");
+        if ((mfsk_mode_caps(MFSK_MODE_WSPR) & MFSK_CAP_BUDGET) == 0) {
+            fail("budget", "WSPR polls the budget but does not publish MFSK_CAP_BUDGET");
+        }
+        if (mfsk_decoder_set_budget(w, budget_refuse_everything, nullptr) != MFSK_STATUS_OK) {
+            fail("budget", mfsk_decoder_last_error(w));
+        }
+        if (mfsk_decoder_delivery_is_exact(w)) {
+            fail("budget", "WSPR's delivery is the parallel contract, not the exact one");
         }
         mfsk_decoder_close(w);
     }
@@ -1478,6 +1521,7 @@ int main() {
     test_wspr();
     test_jt9_jt65();
     test_q65();
+    test_prefix();
     test_budget();
     test_hash_resolution();
     test_threads_one_decoder_per_thread();

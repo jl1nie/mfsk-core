@@ -81,7 +81,7 @@ so the workspace never sees either of them:
   (`import MfskCore`). Its module map includes `mfsk-ffi/include/mfsk.h`
   **in place**, so it follows the header rather than carrying a copy,
   and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
-  XCTest suite (98 tests as counted by `grep -rc 'func test' bindings/swift/Tests` — ported to the 0.13 decoder handle and not yet built; ~10 s when it was 68 — XCTest needs Xcode, not just the
+  XCTest suite (103 tests as counted by `grep -rc 'func test' bindings/swift/Tests` — ported to the 0.13 decoder handle and not yet built; ~10 s when it was 68 — XCTest needs Xcode, not just the
   Command Line Tools, and the script points `DEVELOPER_DIR` at it when
   it has to). The `swift` CI job runs that same script on
   `macos-latest`, and is also where `aarch64-apple-ios` is built: both
@@ -160,7 +160,9 @@ as `jt9` runs one: it owns what upstream keeps between periods (callsign hash ta
 call table) and takes `DecodeParams` (= `jt9com`'s block: band, `nfqso`, `ntol`, `nftx`, `Depth` = `ndepth`, station,
 QSO context, AP mode, contest, EME delay) plus a typed per-mode `Extras` for what the library adds (`strategy`,
 `ApHint`, `eq`, `filter`, sniper, noise blanker, Q65 pileup/drift…). `decode(&SlotInput)` takes a whole period
-(`Audio::I16`/`F32`, `period`, `Budget`) and streams rows through `on_row`. `AnyDecoder` picks the mode at run time
+(`Audio::I16`/`F32`, `period`, `Budget`) and streams rows through `on_row`. `decode_prefix` takes the period so far
+instead (#572): FT8's checkpoint-A rows at ~11.8 s, and a final call equal to `decode`; the decoder infers the stage
+(where it departs from the design: `docs/notes/EARLY_DECODE_DESIGN.md` §12). `AnyDecoder` picks the mode at run time
 (`registry::Mode`); an option the mode lacks is `Unsupported`. `Depth` decides every search setting, mapped per mode from
 v3.2.0-rc1 and cited in the code; defaults follow the WSJT-X GUI. The 0.12 per-family `DecodeRequest`/`SniperRequest`/
 `MultiPeriodRequest` are crate-private (`internal-testing` reopens them for tests; `SniperRequest` stays public for the

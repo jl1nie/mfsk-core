@@ -87,6 +87,11 @@ generic shape, `&(dyn Fn(&Row<R>) + Sync)` (`decoder::OnRow`), with the mode's
 
 Notes:
 
+- **Rows during the period, not after it:** `decode_prefix_with` (#572,
+  [LIBRARY.md](LIBRARY.md) §2.3) takes the period so far, and FT8 delivers
+  checkpoint A's rows at about 11.8 s. Each row is delivered once across
+  the period's calls, and `RowDetail::delivery` counts across them; the
+  contract per call is the one below.
 - **Every `Decoder`** has `decode_with` beside `decode`; the returned
   `SlotResult` still holds the full batch.
 - **A row is resolved when it is delivered.** The callback sees the row's text
@@ -170,7 +175,8 @@ parity should dedup by the message bits on their side — `.message77()` on a
 typed row, `RowDetail::info` through `AnyDecoder` or the C ABI's row — the
 same key the crate's own dedup uses.
 
-`AnyDecoder::delivery_is_exact()` (and `Decoder::delivery_is_exact()`) says
+`AnyDecoder::delivery_is_exact()` (and `Decoder::delivery_is_exact()`, C's
+`mfsk_decoder_delivery_is_exact`, Kotlin's and Swift's `deliveryIsExact`) says
 which contract the current mode, depth and extras run: `true` is §3a, `false`
 is "§3b, not promised" — a caller that gets `true` can skip its guard. Ask again
 after changing the depth or the extras.
@@ -528,7 +534,7 @@ while let Some(msg) = stream.next().await {
   early — but note the decode itself has no interior cancellation point,
   so a `spawn_blocking` task runs to completion regardless. For hard
   cancellation, give `SlotInput::budget(..)` a predicate that reads a flag
-  (FT8, FT4 and FST4 poll it between candidates, [LIBRARY.md](LIBRARY.md)
+  (every mode polls it once per candidate, [LIBRARY.md](LIBRARY.md)
   §2.3) and decode in shorter units.
 
 ---

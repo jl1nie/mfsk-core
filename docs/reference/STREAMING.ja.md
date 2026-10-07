@@ -84,6 +84,10 @@ let result = decoder.decode_with(&slot, &on_row);
 
 補足:
 
+- **周期の後ではなく周期の途中で行を出す:** `decode_prefix_with`（#572、
+  [LIBRARY.ja.md](LIBRARY.ja.md) §2.3）はその周期でここまでの分を取り、FT8 は約 11.8 s で
+  チェックポイント A の行を配信する。各行はその周期の呼び出しを通じて 1 回配信され、
+  `RowDetail::delivery` はそれらの呼び出し全体で数える。呼び出しごとの契約は下のとおり。
 - **すべての `Decoder`** は `decode` の隣に `decode_with` を持つ。返される
   `SlotResult` は引き続きバッチ全体を保持する。
 - **行は配信時に解決される。** コールバックが見る行のテキストは、周期の開始時点の
@@ -158,7 +162,7 @@ doc コメント（`DecodeRequest::on_result`。今は crate 非公開で、`Dec
 型付きの行なら `.message77()`、`AnyDecoder` や C ABI の行なら `RowDetail::info`。
 クレート自身のデデュープが使うのと同じキーである。
 
-`AnyDecoder::delivery_is_exact()`（と `Decoder::delivery_is_exact()`）で、現在の
+`AnyDecoder::delivery_is_exact()`（と `Decoder::delivery_is_exact()`、C の `mfsk_decoder_delivery_is_exact`、Kotlin と Swift の `deliveryIsExact`）で、現在の
 モード・depth・extras がどちらの契約で動くか分かる。`true` なら §3a、`false` は
 「§3b、保証なし」で、`true` が返る呼び出し側はガードを省略できる。depth や extras を
 変えたら問い直すこと。
@@ -499,7 +503,7 @@ while let Some(msg) = stream.next().await {
   `blocking_send` が `Err` を返すので早期に止められる —— ただしデコード
   自体に内部キャンセル点はないため、`spawn_blocking` タスクは何であれ完
   了まで走る。ハードなキャンセルには、`SlotInput::budget(..)` にフラグを読む述語を渡し
-  （FT8・FT4・FST4 は候補の間でそれを呼ぶ。[LIBRARY.ja.md](LIBRARY.ja.md)
+  （全モードが候補ごとに 1 回それを呼ぶ。[LIBRARY.ja.md](LIBRARY.ja.md)
   §2.3）、より短い単位でデコードする。
 
 ---

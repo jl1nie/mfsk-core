@@ -63,6 +63,24 @@ public struct IQDecode: Sendable, Equatable {
     public let dtSeconds: Float
     public let snrDB: Float
     public let text: String
+    /// As ``Decode/syncScore``: nil where the mode reports none.
+    public let syncScore: Float?
+    /// As ``Decode/syncCV``.
+    public let syncCV: Float?
+    /// As ``Decode/hardErrors``.
+    public let hardErrors: UInt32?
+    /// As ``Decode/pass``. Protocol-private.
+    public let pass: UInt8
+    /// As ``Decode/usedHashTable``.
+    public let usedHashTable: Bool
+    /// As ``Decode/copiedLastTx``.
+    public let copiedLastTx: Bool
+    /// As ``Decode/key``: compare rows by this and ``frequencyHz``, not by
+    /// text.
+    public let key: [UInt8]
+    public let keyBits: UInt8
+    /// As ``Decode/delivery``, for a handler set on the channel's decoder.
+    public let delivery: UInt32?
 
     init(_ raw: MfskIqDecode) {
         self.channel = raw.channel
@@ -75,6 +93,18 @@ public struct IQDecode: Sendable, Equatable {
         self.dtSeconds = raw.dt_sec
         self.snrDB = raw.snr_db
         self.text = stringFromCArray(raw.text)
+        let detail = RowDetail(flags: raw.flags, syncScore: raw.sync_score, syncCV: raw.sync_cv,
+                               hardErrors: raw.hard_errors, keyBits: raw.key_bits, key: raw.key,
+                               delivery: raw.delivery)
+        self.syncScore = detail.syncScore
+        self.syncCV = detail.syncCV
+        self.hardErrors = detail.hardErrors
+        self.pass = raw.pass
+        self.usedHashTable = detail.usedHashTable
+        self.copiedLastTx = detail.copiedLastTx
+        self.key = detail.key
+        self.keyBits = raw.key_bits
+        self.delivery = detail.delivery
     }
 }
 

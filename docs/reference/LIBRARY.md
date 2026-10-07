@@ -34,7 +34,7 @@ This document is the Rust host API. Other audiences:
 - [2. The decode API](#2-the-decode-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` and `Depth`](#22-decodeparams-and-depth)
-  - [2.3 Compute budget](#23-compute-budget)
+  - [2.3 Early decode and the compute budget](#23-early-decode-and-the-compute-budget)
   - [2.4 Streaming delivery](#24-streaming-delivery)
   - [2.5 Extras, and the protocols outside `Decoder`](#25-extras-and-the-protocols-outside-decoder)
   - [2.6 Message acceptance](#26-message-acceptance)
@@ -247,8 +247,8 @@ if result.budget.exhausted {
 ```
 
 *Why:* the same code runs on a desktop, in wasm and on an MCU, which have
-three different clocks, and a process can be suspended mid-slot. Honoured by
-FT8, FT4 and FST4 ([§2.3](#23-compute-budget)).
+three different clocks, and a process can be suspended mid-slot. Every mode
+polls it, once per candidate ([§2.3](#23-early-decode-and-the-compute-budget)).
 
 **Rows on screen as they are found.** `decode_with` hands each row to a
 callback as soon as it is decoded, and still returns them all at the end:
@@ -495,6 +495,7 @@ result).
 | `extras()` / `extras_mut()` / `with_extras(e)` | the mode's library options ([§2.5](#25-extras-and-the-protocols-outside-decoder)) |
 | `decode(&SlotInput)` | decode one period → `SlotResult<P::Row>` |
 | `decode_with(&SlotInput, on_row)` | the same, handing each row to `on_row` as it is found ([§2.4](#24-streaming-delivery)) |
+| `decode_prefix(&SlotInput)`, `decode_prefix_with(&SlotInput, on_row)` | the period so far, with its `period`: FT8's checkpoint A returns rows at ~11.8 s, the whole period returns the complete set ([§2.3](#23-early-decode-and-the-compute-budget)) |
 | `unpack77(&[u8])` | a packed 77-bit message as text, `<...>` resolved against **this** decoder's table |
 | `learn_callsign(&str)` | teach this decoder's table a callsign (`save_hash_call`); `false` for a mode with no hashed calls |
 | `clear()` | forget everything carried across periods (WSJT-X's "Clear Avg" and `ndepth & 128`) |
@@ -509,11 +510,11 @@ its nominal start:
 |---|---|
 | `SlotInput::i16(&[i16])`, `SlotInput::f32(&[f32])` | the audio, `Audio::I16` (what `jt9` reads as `id2`) or `Audio::F32`. The frame family (FT8, FT4, FST4) takes 16-bit audio as WSJT-X does, so `F32` is scaled to a fixed RMS (`decoder::F32_TO_I16_RMS`) first; WSPR, JT9, JT65 and Q65 work in `f32`, so `I16` is divided by 32768. A caller never picks a level |
 | `.period(n)` | the period's index on the UTC grid (`t / T`). State that needs consecutive periods (FT8 a7, Q65 averaging) is used only when it is known; without it a lone recording leaves that state untouched |
-| `.budget(check)` | a deadline predicate, [§2.3](#23-compute-budget) |
+| `.budget(check)` | a deadline predicate, [§2.3](#23-early-decode-and-the-compute-budget) |
 
-There is **no staged or early-decode entry point**: a `SlotInput` is the
-whole period. (WSJT-X's nzhsym 41/47/50 early decode is not part of this
-API; the boards run their own prefix path on the low-level items.)
+For `decode`, a `SlotInput` is the whole period. `decode_prefix` takes the
+period so far instead, for FT8's early decode (WSJT-X's nzhsym 41/47/50,
+[§2.3](#23-early-decode-and-the-compute-budget)).
 
 A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found, and
 `budget: BudgetReport`. A `Row<R>` carries three views of one decode:
@@ -521,7 +522,7 @@ A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found, and
 | field | what |
 |---|---|
 | `decoded: Decoded` | the cross-mode row: `text` (resolved against the decoder's hash table), `freq_hz`, `dt_sec`, `snr_db`, `protocol` |
-| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `pass`, `info`, `hash_resolved` (the text needed the table for a `<...>`), `copied_last_tx` (Q65 Pileup). A mode without a field leaves it at its default; WSPR, JT9 and JT65 fill none of them |
+| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `pass`, `info` (the message bits, every mode), `hash_resolved` (the text needed the table for a `<...>`), `delivery` (which `decode_with` delivery the row is, or was: [§2.4](#24-streaming-delivery)), `stage` (`Early` / `Final` from a `decode_prefix` sequence, else `None`), `copied_last_tx` (Q65 Pileup). The three numbers are `Option`s, `None` where the mode measures none: WSPR, JT9, JT65 and Q65, and for the sync pair FT8's a7 / a8 list decodes. `sync_score` is on the mode's own search scale, not comparable between modes |
 | `native: R` | the mode's own result: `DecodeResult` (FT8, FT4, FST4), `WsprResult`, `Jt9Result`, `Jt65Result`, `Q65Result` |
 
 **What a decoder keeps across periods** is what its upstream decoder keeps,
@@ -679,27 +680,189 @@ false-decode bugs this suite has shipped were in subtraction paths
 (#243 in `__staged_sic`, #253 in `.sic_early()`), so a new strategy
 ships with its precision guard in the same PR.
 
-### 2.3 Compute budget
+### 2.3 Early decode and the compute budget
+
+Live use asks two things of a decoder that a recording does not: rows early
+enough to answer a station **in this period**, and a decode that ends when
+the caller's time does. WSJT-X answers the first by decoding FT8 three times
+on growing prefixes of the period, and the second by bailing out on its own
+wall clock. mfsk-core keeps the first as upstream's algorithm and changes
+the second's mechanism, and both follow from two rules of this API:
+
+- **What a period needs between its stages lives in the `Decoder`**, where
+  `ft8_decode.f90` keeps its SAVE variables and where 0.13 already keeps
+  everything held across periods. The caller hands audio; it does not carry
+  the decoder's progress.
+- **The library reads no clock.** Time is the sample count, and a deadline
+  is the caller's predicate. The same code runs on a desktop, in wasm and on
+  an MCU, with three different clocks, and a process can be suspended
+  mid-slot.
+
+#### Early decode: upstream's three checkpoints
+
+`ft8_decode.f90` (v3.2.0-rc1) runs at three sample counts. The unit is
+3456 samples, `jt9`'s streaming block (JT9's half-symbol), not an FT8
+symbol, which is why the counts look arbitrary:
+
+| | `nzhsym` | samples | time | what it does |
+|---|---|---|---|---|
+| A | 41 | 141 696 | 11.8 s | zero the tail, three sync + decode passes, **no AP**; keep the rows |
+| B | 47 | 162 432 | 13.5 s | **no search**: subtract the A rows whose frame fits inside the prefix |
+| C | 50 | 172 800 | 14.4 s | B's cleaned head + fresh raw tail; subtract the A rows deferred from B; three passes with AP; a7 and a8 |
+
+`Ft8Strategy::SicEarly` is that algorithm. It is the strategy `Depth::Normal` and `Deep` select; `Fast` runs two
+flat SIC rounds instead, as `ndepth == 1` runs nothing before 50. What is
+kept on purpose:
+
+- **Each checkpoint sees a full-length buffer whose content is zeroed past
+  its count**, not a shorter one: a frame found near the edge still needs
+  room for its reference waveform to be subtracted. WSJT-X's `dd` / `id2a`
+  are fixed `15*12000` arrays for the same reason.
+- **B subtracts only what fits.** A row whose 12.64 s frame ends past B's
+  count would be fitted to the zeroed tail, so it is deferred to C, where
+  the raw tail is there. Both re-search the row's `dt` ±90 samples before
+  subtracting, as upstream's `lrefinedt` does: A's `dt` came from a coarse,
+  early pass.
+- **C splices at B's count**: the cleaned head is B's residual, the tail
+  from there on is raw audio. A's own residual is dropped, as upstream
+  reloads `dd = iwave` at B.
+- **Two fallbacks to one flat pass**: audio shorter than A's count, and A
+  finding nothing (upstream gates B's search and C's splice on
+  `ndec_early >= 1`). A flat pass over the whole buffer finds as much or
+  more, never less.
+
+**Two ways to run it.** `decode` / `decode_with` take the whole period
+and run A, B and C in one call: under `decode_with` A's rows reach the
+callback first, but only once the period has ended. **`decode_prefix` /
+`decode_prefix_with` run each checkpoint when its audio has arrived**
+([#572](https://github.com/jl1nie/mfsk-core/issues/572)), so A's rows reach
+a live caller at about 11.8 s, in time to answer in the next period:
+
+```rust
+use mfsk_core::decoder::{Decoder, SlotInput, Stage};
+use mfsk_core::ft8::Ft8;
+
+let mut rx = Decoder::<Ft8>::with_defaults();
+let period = vec![0i16; 180_000]; // one period, arriving in blocks
+let mut buf: Vec<i16> = Vec::new();
+for block in period.chunks(4_800) {
+    buf.extend_from_slice(block);
+    let out = rx.decode_prefix_with(&SlotInput::i16(&buf).period(42), &|row| {
+        if row.detail.stage == Some(Stage::Early) {
+            // early enough to reply to this station in the next period
+        }
+    });
+    if buf.len() == 180_000 {
+        println!("{} rows in the period", out.rows.len()); // the complete set
+    }
+}
+```
+
+What the design settles, and why:
+
+- **The decoder infers the stage; the caller passes everything received so
+  far, with the period.** Every shape that had the caller name the stage
+  also had it keep a copy of the decoder's progress. FT8 acts at 141 696
+  samples (A: its rows return, marked `Stage::Early`), at 162 432 (B: the A
+  rows that fit are subtracted; nothing returns) and at the whole period,
+  180 000 samples (the rest, then a7 and a8, which upstream runs at
+  `nzhsym == 50` only). A call between those returns at once. A shorter
+  prefix is not a cheaper call (the spectrogram and the slot FFT are fixed
+  size), so what a caller chooses is *when* it can call.
+- **Every sequence is defined, and ends where `decode` ends.** Calls may be
+  skipped or repeated; the final call's rows are the period's complete set,
+  the same rows, in the same order, as a whole-period `decode` of the same
+  16-bit audio (`tests/decoder_prefix.rs`, under `fixed-point` too). A
+  skipped B is done by the final call, exactly as `decode` does it. A call
+  for the same period after the final one returns the set again without
+  decoding; a call for another period discards what the last one held.
+- **A row is delivered once across the period.** `RowDetail::delivery`
+  counts across the period's calls, so the final set pairs with rows an
+  earlier call streamed, and its A rows keep `Stage::Early`. Rows are
+  resolved against the callsign table as the period found it; the final
+  call resolves the whole set in decode order, as `decode` does.
+- **What the period's first call sees is pinned for the period**: the
+  strategy and search, and the gain of `f32` audio (its RMS changes from one
+  prefix to the next). So `f32` input finds the same messages as `i16`, but
+  is not byte-equal to a whole-period decode, whose gain sees the whole
+  period.
+- **No period, no state.** Without `SlotInput::period` a prefix call is a
+  one-shot `decode` of what it is given. A period that never reaches its
+  final call leaves no a7 state.
+- **A mode with no early decode needs no capability check.** It returns
+  nothing until the audio is the whole period, then decodes. That covers
+  FT8 at `Depth::Fast`, its single pass and its sniper, as `ndepth == 1`
+  runs nothing before 50 upstream.
+
+`decode_prefix` is synchronous and CPU-bound, like `decode`: it holds the
+calling thread for the stage's work, so capture should not share that
+thread, and `SlotInput::budget` bounds it. The C ABI has the same pair
+(`mfsk_decoder_decode_prefix_i16` / `_f32`, [`BINDINGS.md`](BINDINGS.md)
+§2.2), and the Kotlin and Swift decoders `decodePrefix`. `IqReceiver` still
+hands over whole slots only. The boards keep their own prefix path on the
+low-level items, by decision. Design and measurements:
+[`EARLY_DECODE_DESIGN.md`](../notes/EARLY_DECODE_DESIGN.md).
+
+**FT4 has no `SicEarly`, and it is not missing.** Half the period suggests
+less time to decide a reply, but the slack between the end of the signal
+and key-up is what matters, and FT4's is *larger*: 1.96 s against FT8's
+1.86 s (105 × 576 samples of a 7.5 s period against 79 × 1920 of 15 s),
+with half the buffer to search in it. Upstream never needed checkpoints
+there, and adding them would be a divergence from WSJT-X, not a port.
+
+#### The compute budget
 
 `SlotInput::budget(check)` takes a caller-supplied predicate
-(`&(dyn Fn() -> bool + Sync)`) polled between candidates. **The library
-reads no clock of its own** — the deadline is whatever your predicate
-compares against, which is what keeps it usable from wasm and from a
-process that was suspended mid-slot.
+(`&(dyn Fn() -> bool + Sync)`). **The unit is a candidate**: every mode asks
+the predicate once per candidate, before trying it, and a `false` stops the
+search there. Three things are deliberately not cut:
 
-`SlotResult::budget` is a `BudgetReport` saying what the cut left
-undone: candidates skipped, stages run, and how good the best skipped
-candidate was — so a caller can tell "nothing was there" from "we ran
-out of time with a promising candidate still queued". `rows_subtracted`
-covers the one place the budget is spent on something other than a
-candidate: FT8 `SicEarly`'s checkpoint-B and -C subtraction loops. Below
-the row count, with `exhausted` set, the cut came while cleaning up
-rather than while looking — the fields above cannot say so, because a row
-being subtracted carries no candidate ranking.
+- **A candidate already running finishes.** The budget has been spent on
+  its FEC work; abandoning it half way would pay the cost and throw the
+  answer away.
+- **The coarse search is not cut.** It is what ranks the candidates, and
+  the ranking is what lets a cut take the weakest ones first.
+- **Q65's averaged decode is not cut.** Its unit of work is a whole
+  period's spectra, not a candidate.
 
-Honoured by FT8, FT4 and every FST4 sub-mode
-(`MFSK_CAP_BUDGET` is the same fact published to C). WSPR, JT9, JT65 and Q65
-decode the whole period and return an empty report.
+**Under `SicEarly` the budget follows the checkpoints.** Besides the
+per-candidate polls of A's and C's searches, it is asked once after A and
+before each row's subtraction in B and C. One
+`subtract_signal_lpf_refine_dt` costs 60–150 ms (measured native and on
+wasm32, #587), so an unpolled loop let a 300 ms budget run on to 0.95 s.
+A budget spent during A skips B and C outright: C's search would be refused
+at its first poll, so B's subtractions would clean a residual nobody
+searches. What a cut leaves is therefore A's rows, already delivered — the
+early decode doubles as the graceful degradation.
+
+**What the cut left undone** is `SlotResult::budget`, a `BudgetReport`, so
+a caller can tell "nothing was there" from "we ran out of time with a
+promising candidate still queued":
+
+| field | meaning | filled by |
+|---|---|---|
+| `exhausted` | the predicate said stop at least once | every mode |
+| `candidates_skipped`, `stages_run` | units declined and run: a candidate, or a whole SIC round on FT4's `SicRounds(n)`, which subtracts a round as one batch | FT8, FT4, FST4 |
+| `cut_at_sync` | Costas sync quality of the best skipped candidate, the key FT8's scheduler orders by | FT8 |
+| `cut_at_score` | its sync score, on the mode's own search scale | FT8, FT4, FST4 |
+| `rows_subtracted` | rows subtracted in B and C. Below the row count with `exhausted` set, the cut came while cleaning up rather than while looking | FT8 `SicEarly` |
+
+On WSPR, JT9, JT65 and Q65 only `exhausted` is meaningful: the counts stay
+`0` there, so `candidates_skipped == 0` does not mean nothing was skipped.
+Where each polls: WSPR per survivor in every pass, and between a
+candidate's ladder rungs (its scan runs under rayon, so the stop is an
+`AtomicBool`); JT9 per candidate; JT65 per candidate in every pass; Q65 in
+both syncs' candidate lists. A spent budget skips the passes after it.
+
+**A budget and a strategy are different knobs.** A shorter period is not a
+cheaper one: FT8's spectrogram spans a fixed 15 s and its slot FFT is a
+fixed 192 000 points, whatever the audio length. To fit a deadline every time, choose
+the depth or strategy; a budget is for the period that runs long anyway,
+and it keeps what was found.
+
+In C, every mode with a decoder publishes `MFSK_CAP_BUDGET` and takes
+`mfsk_decoder_set_budget`; `rows_subtracted` is in `MfskBudgetReport`
+([`BINDINGS.md`](BINDINGS.md) §2.2).
 
 ### 2.4 Streaming delivery
 
@@ -715,7 +878,11 @@ returns, in the same order; a parallel one delivers in completion order and
 may show a transient duplicate that the returned rows have already deduped.
 A row handed to the callback is resolved against the hash table as it stood
 when the period began; the returned rows also see calls learned earlier in
-the same period.
+the same period. The two can therefore differ, and `RowDetail::delivery`
+pairs them exactly: the callback's row carries its position among the
+period's deliveries, the returned row the position of the delivery it was.
+Under FT8's `SicEarly` the deliveries come in checkpoint order, A's first
+([§2.3](#23-early-decode-and-the-compute-budget)).
 
 Every mode offers the same shape through the same method. WSPR's is the
 parallel contract, not the exact one — see [`STREAMING.md`](STREAMING.md)

@@ -209,6 +209,17 @@ fn claimed_capabilities_are_implemented() {
         handles,
         "FrameDecodable is FT8 + FT4 + every FST4 sub-mode"
     );
+
+    // No marker trait here either: every `Decodable` mode takes
+    // `SlotInput::budget` (#593), so the claim is exactly the set of modes
+    // with a `Decoder`. `tests/decoder_budget.rs` pins the behaviour.
+    let decoders: BTreeSet<&'static str> =
+        mfsk_core::Mode::ALL.iter().map(|m| m.meta().name).collect();
+    assert_eq!(
+        claims(caps::BUDGET),
+        decoders,
+        "every mode with a Decoder polls the budget once per candidate"
+    );
 }
 
 /// Every bit must be claimed by at least one entry, so a constant that

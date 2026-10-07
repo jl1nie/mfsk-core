@@ -47,12 +47,20 @@ data class MfskDecode(
     val freqHz: Float,
     val dtSec: Float,
     val snrDb: Float,
-    val syncScore: Float,
+    /// Sync score on the scale of the mode's own search, so **not comparable
+    /// between modes**. Null where the mode reports none: WSPR, JT9, JT65,
+    /// Q65, and FT8's a7 / a8 list decodes, which run no sync search.
+    val syncScore: Float?,
     /// Coefficient of variation of the per-block sync powers: near 0 on
-    /// a stable channel, elevated under QSB or fading.
-    val syncCv: Float,
-    val hardErrors: Int,
-    /// FEC information bits — 91 (CRC-14) or 101 (CRC-24).
+    /// a stable channel, elevated under QSB or fading. Null wherever
+    /// [syncScore] is.
+    val syncCv: Float?,
+    /// Hard-decision errors the FEC corrected; 0 is a clean decode. Null for
+    /// WSPR, JT9, JT65 and Q65, whose decoders report no such count.
+    val hardErrors: Int?,
+    /// Length of the information block [MfskDecoder.copyInfo] returns —
+    /// 91 for FT8 and FT4, 101 for FST4, 50 for WSPR, 72 for JT9 and JT65,
+    /// 77 for Q65.
     val infoBits: Int,
     /// Which decode pass produced this row. **Protocol-private**: the
     /// numbers mean different things per mode, and are diagnostics, not
@@ -64,8 +72,33 @@ data class MfskDecode(
     /// The sender set WSJT-X 3.2's **Q65 Pileup** "copied last Tx" flag, the
     /// spare 78th payload bit; WSJT-X marks such a decode with `#`. Q65 only.
     val copiedLastTx: Boolean = false,
+    /// The message's identity key: its [keyBits] bits (77 for FT8, FT4, FST4
+    /// and Q65; 72 for JT9 and JT65; 50 for WSPR), packed most significant bit
+    /// first, as lower-case hex. The same message in two decoders has one key
+    /// even when its text differs (a `<...>` resolved in one only). One message
+    /// at two frequencies has one key too, so add [freqHz] to tell signals apart.
+    val key: String = "",
+    val keyBits: Int = 0,
+    /// Which delivery of the period this row is, or came from: a row handed to
+    /// [MfskDecoder.onDecode] carries its position (0, 1, 2...), a returned row
+    /// the position of the delivery it was, so the two pair exactly. Null for a
+    /// returned row the listener never saw, and with no listener.
+    val delivery: Int? = null,
+    /// When a [MfskDecoder.decodePrefix] sequence found the row; null from a
+    /// plain [MfskDecoder.decode].
+    val stage: MfskStage? = null,
 ) {
     val modeName: String get() = Mfsk.modeName(mode)
+}
+
+/// When in a period a [MfskDecoder.decodePrefix] sequence found a row
+/// (`MFSK_STAGE_*`, #572).
+enum class MfskStage {
+    /// Before the period ended — FT8's checkpoint A, ~11.8 s in — in time to
+    /// answer the station in the next period.
+    EARLY,
+    /// By the call whose audio was the whole period.
+    FINAL,
 }
 
 /// Rows delivered as they are found, for a host that wants to show
@@ -110,6 +143,11 @@ data class MfskBudgetReport(
     /// Sync score of the best skipped candidate on that protocol's own
     /// scale, or null when there was none.
     val cutAtScore: Float?,
+    /// Rows subtracted before a later search saw them: FT8
+    /// [MfskStrategy.SicEarly]'s checkpoint-B and -C loops. Fewer than the
+    /// rows returned, with [exhausted] set, means the cut came while
+    /// cleaning up rather than while searching. 0 everywhere else.
+    val rowsSubtracted: Int = 0,
 )
 
 // ── The parameter block ─────────────────────────────────────────────
@@ -609,7 +647,7 @@ object Mfsk {
     const val CAP_OSD = 1L shl 6
     const val CAP_EQ_MODE = 1L shl 7
     const val CAP_STRICTNESS = 1L shl 8
-    /// [MfskDecoder.setBudget] is honoured.
+    /// [MfskDecoder.setBudget] is honoured: every mode with a decoder.
     const val CAP_BUDGET = 1L shl 9
     const val CAP_KNOWN_FILTER = 1L shl 10
     const val CAP_KNOWN_SUBTRACT = 1L shl 11
@@ -896,6 +934,13 @@ class MfskDecoder private constructor(
             handle: Long, check: MfskBudgetCheck?, oldCtx: Long,
         ): Long
         @JvmStatic private external fun nativeLastBudget(handle: Long): IntArray
+        @JvmStatic private external fun nativeDeliveryIsExact(handle: Long): Boolean
+        @JvmStatic private external fun nativeDecodePrefixI16(
+            handle: Long, samples: ShortArray, sampleRate: Int, period: Long,
+        ): Array<MfskDecode>
+        @JvmStatic private external fun nativeDecodePrefixF32(
+            handle: Long, samples: FloatArray, sampleRate: Int, period: Long,
+        ): Array<MfskDecode>
         @JvmStatic private external fun nativeDecodeI16(
             handle: Long, samples: ShortArray, sampleRate: Int, period: Long,
         ): Array<MfskDecode>
@@ -990,6 +1035,35 @@ class MfskDecoder private constructor(
         nativeDecodeF32(owner("decode"), samples, sampleRate, period ?: PERIOD_NONE).toList()
     }
 
+    /// Decode the period so far, keeping what this period has already found
+    /// (#572). Call it as audio arrives with **every sample of the period
+    /// received up to now** and the period's index; the decoder infers the
+    /// stage from the length. FT8 returns checkpoint A's rows at 141 696
+    /// samples (~11.8 s, [MfskStage.EARLY]), nothing at 162 432, and the
+    /// period's complete set at 180 000 — the rows [decode] gives for the same
+    /// audio. Other calls, and every call of a mode with no early decode before
+    /// the whole period, return nothing. [onDecode] sees each row once across
+    /// the period. A null period makes it a plain [decode].
+    fun decodePrefix(
+        samples: ShortArray,
+        period: Long?,
+        sampleRate: Int = 12_000,
+        onRow: MfskDecodeListener? = null,
+    ): List<MfskDecode> = withRowListener(onRow) {
+        nativeDecodePrefixI16(owner("decodePrefix"), samples, sampleRate, period ?: PERIOD_NONE).toList()
+    }
+
+    /// [decodePrefix] for float PCM at any level; the first prefix of a period
+    /// sets the gain for the rest of it.
+    fun decodePrefix(
+        samples: FloatArray,
+        period: Long?,
+        sampleRate: Int = 12_000,
+        onRow: MfskDecodeListener? = null,
+    ): List<MfskDecode> = withRowListener(onRow) {
+        nativeDecodePrefixF32(owner("decodePrefix"), samples, sampleRate, period ?: PERIOD_NONE).toList()
+    }
+
     private inline fun <T> withRowListener(l: MfskDecodeListener?, body: () -> T): T {
         if (l == null) return body()
         val previous = listener
@@ -1063,8 +1137,8 @@ class MfskDecoder private constructor(
     /// Measured at ~13 ms of a ~28 ms FT8 decode. `maxCand` is the knob
     /// that moves the floor.
     ///
-    /// Throws [MfskUnsupportedException] if the mode does not publish
-    /// [Mfsk.CAP_BUDGET].
+    /// Every mode with a decoder takes one ([Mfsk.CAP_BUDGET]); WSPR, JT9,
+    /// JT65 and Q65 report only [MfskBudgetReport.exhausted].
     fun setBudget(check: MfskBudgetCheck?) {
         budgetCtx = nativeSetBudget(owner("setBudget"), check, budgetCtx)
     }
@@ -1081,8 +1155,18 @@ class MfskDecoder private constructor(
                 // Int.MIN_VALUE is the "absent" spelling: an int array
                 // cannot carry the NaN the C struct uses.
                 cutAtScore = if (v[4] != Int.MIN_VALUE) v[4] / 1_000_000.0f else null,
+                rowsSubtracted = v[5],
             )
         }
+
+    /// Whether a decode with the current mode, depth and extras delivers
+    /// exactly the rows it returns, once each and in order, to
+    /// [onDecode] (`STREAMING.md` §3a). False is completion order with a
+    /// transient duplicate possible (§3b): FT8's single pass and sniper, FT4
+    /// at [MfskDepth.FAST], FST4, WSPR. Pair by [MfskDecode.delivery] either
+    /// way. Ask again after changing the parameters or the extras.
+    val deliveryIsExact: Boolean
+        get() = nativeDeliveryIsExact(live())
 
     override fun close() {
         if (handle != 0L) {
@@ -1239,6 +1323,23 @@ class MfskIqDecode internal constructor(
     val slotStartSample: Long,
     hasUtc: Boolean,
     utcNs: Long,
+    /// As [MfskDecode.syncScore]: null where the mode reports none.
+    val syncScore: Float?,
+    /// As [MfskDecode.syncCv].
+    val syncCv: Float?,
+    /// As [MfskDecode.hardErrors].
+    val hardErrors: Int?,
+    /// As [MfskDecode.pass]. Protocol-private.
+    val pass: Int,
+    /// As [MfskDecode.hashResolved].
+    val hashResolved: Boolean,
+    /// As [MfskDecode.copiedLastTx].
+    val copiedLastTx: Boolean,
+    /// As [MfskDecode.key]: compare rows by this and [freqHz], not by text.
+    val key: String,
+    val keyBits: Int,
+    /// As [MfskDecode.delivery], for a listener set on the channel's decoder.
+    val delivery: Int?,
 ) {
     /// UTC of the slot start, ns since the Unix epoch, or null on a
     /// free-running grid.

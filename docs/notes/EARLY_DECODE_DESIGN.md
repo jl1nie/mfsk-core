@@ -1,7 +1,7 @@
 # Early decode for live use — design (#572)
 
-Status: **draft for review, revised 2026-10-07.** Nothing here is implemented. Target: 0.14; breaking changes are
-allowed, but #573 (`#[non_exhaustive]`) lands first.
+Status: **implemented 2026-10-07** (§7 steps 2 and 3, plus the C ABI half of §10). The design below is kept as
+written; where the implementation departs from it, §12 says how and why. Target: 0.14.
 
 Third revision. The first folded in #587, which **#589** then closed on its own (the budget is polled after checkpoint A
 and before each row's subtraction in the B and C loops) with no new API, so that material is gone. The second answered
@@ -316,3 +316,41 @@ channel-slot), and the C ABI entries with `MfskRow`'s stage field (and Kotlin/Sw
 
 #572 also asks whether the boards could move onto the same API. The answer is no, and it is settled rather than
 deferred: see §7 step 4.
+
+## 12. As implemented
+
+Step 2 is `ft8::decode::{Staged, StagedStep, staged_steps}`: the whole-period `SicEarly` is `staged_steps` over a fresh
+`Staged` to `Final`, and every FT8 golden and staged test passed unchanged before step 3 was written. Step 3 is
+`Decoder::decode_prefix` / `decode_prefix_with`, the same pair on `AnyDecoder`, `RowDetail::stage` and
+`decoder::Stage`. Validations 1, 5, 6, 7, 8 and 9 are `tests/decoder_prefix.rs` (also run under `fixed-point`); 4 is
+weakened to "the same messages" (below); 2 (against an instrumented `jt9`) and 10 (cost per prefix) are not done.
+
+Where it departs from §4 and §5, each a simplification that keeps "the final call is `decode`":
+
+1. **The final call is the whole period, 180 000 samples, not 172 800.** `decode` reads past C's count where checkpoint
+   A finds nothing (the flat fallback runs over the whole buffer), so a final call at 172 800 would not equal it.
+   Replaying `jt9`'s counts is therefore `[141_696, 162_432, 180_000]`.
+2. **B runs once, at 162 432; a skipped B is done by the final call exactly as `decode` does it**, rather than every A
+   row being subtracted against the complete audio. `cleaned_through` is B's count or nothing, and a later middle call
+   does nothing, so "no row subtracted twice" and "a middle call at or below it leaves the buffer as it was" hold by
+   construction. A prefix call whose budget runs out inside B keeps nothing of B, so the final call does it whole.
+3. **A call below 141 696 samples returns nothing** (principle 2), not a first stage over that prefix (trap 7). The
+   two were in conflict; the principle won because a caller calling on every block would otherwise trigger a search
+   on every block below A.
+4. **`Stage` has `Early` and `Final`.** `Prepare` would mark rows B finds, and B searches nothing. The enum is
+   `#[non_exhaustive]`, so ft8md's stages (§8) can add variants.
+5. **Equivalence is for audio exactly one period long.** A prefix is padded to 180 000 samples (trap 2), and a longer
+   whole-period buffer (`qso3_busy.wav` is 180 101) reaches `build_fft_cache`'s 192 000-point window with samples no
+   prefix had. The tests cut the recording to 180 000.
+6. **`f32` (validation 4).** The pinned gain is measured on the first prefix; a whole-period decode measures it on the
+   whole period, so the two are not byte-equal. The test asks for the same messages.
+7. **`Depth::Fast` (§8's open question) follows upstream**: FT8's single pass, its SIC rounds and its sniper have no
+   checkpoints, so they return nothing before the whole period, as `ndepth == 1` runs nothing before 50.
+8. **The C ABI half of §10 is done** (`mfsk_decoder_decode_prefix_i16` / `_f32`, `MfskDecode::stage`, `MFSK_STAGE_*`;
+   Kotlin and Swift `decodePrefix`). A prefix call refused for a short output buffer has run its stage, so the
+   retry the ABI asks for is answered from the held rows. `IqReceiver` driver support is still a follow-up.
+
+The pinned settings are the period's search (strategy, sync, candidates, OSD, strictness) and the `f32` gain. The
+callsign table is not taught before the final call: an early row is resolved against a copy of it, and the final
+call resolves the whole set in decode order, which is what makes its text equal `decode`'s.
+

@@ -167,6 +167,23 @@ fn every_format_through(channelizer: u32) {
         assert_eq!(hit.has_utc, 1);
         assert_eq!(hit.slot_start_utc_ns, T0_NS);
         assert_eq!(hit.slot_start_sample, 0);
+        // The row's detail travels with it, as on `MfskDecode`: the key is
+        // the packed 77-bit message, and FT8's numbers are flagged real.
+        let msg = mfsk_core::msg::wsjt77::pack77("CQ", "JA1ABC", "PM95").unwrap();
+        let mut key = [0u8; MFSK_DECODE_KEY_LEN];
+        for (i, &b) in msg.iter().enumerate() {
+            key[i / 8] |= (b & 1) << (7 - i % 8);
+        }
+        assert_eq!((hit.key_bits, hit.key), (77, key), "format {format}");
+        let real = MFSK_DECODE_FLAG_HAS_SYNC_SCORE
+            | MFSK_DECODE_FLAG_HAS_SYNC_CV
+            | MFSK_DECODE_FLAG_HAS_HARD_ERRORS;
+        assert_eq!(hit.flags & real, real, "format {format}");
+        assert!(hit.sync_score > 0.0);
+        assert_eq!(
+            hit.delivery, -1,
+            "no callback was set on the channel decoder"
+        );
         unsafe { mfsk_iq_close(rx) };
     }
 }

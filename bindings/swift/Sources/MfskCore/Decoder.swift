@@ -261,6 +261,54 @@ public final class Decoder {
         }
     }
 
+    /// Decode the period so far, keeping what this period has already found
+    /// (#572). Call it as audio arrives with **every sample of the period
+    /// received up to now** and the period's index; the decoder infers the
+    /// stage from the length. FT8 returns checkpoint A's rows at 141 696
+    /// samples (~11.8 s, ``Decode/Stage/early``), nothing at 162 432, and the
+    /// period's complete set at 180 000 — the rows ``decode(_:sampleRate:period:handler:)``
+    /// gives for the same audio. Other calls, and every call of a mode with no
+    /// early decode before the whole period, return nothing. ``onDecode(_:)``
+    /// sees each row once across the period. A nil period makes it a plain
+    /// decode.
+    public func decodePrefix(
+        _ samples: [Int16],
+        sampleRate: UInt32 = 12_000,
+        period: Int64?,
+        handler: ((Decode) -> Void)? = nil
+    ) throws -> [Decode] {
+        guard !samples.isEmpty else { return [] }
+        return try withHandler(handler) {
+            try samples.withUnsafeBufferPointer { audio in
+                try collectRows(errorDetail: { self.failureDetail() }) { out, capacity, found in
+                    mfsk_decoder_decode_prefix_i16(handle, audio.baseAddress, UInt(audio.count),
+                                                   sampleRate, period ?? Decoder.periodNone,
+                                                   out, capacity, found)
+                }
+            }
+        }
+    }
+
+    /// ``decodePrefix(_:sampleRate:period:handler:)`` for float PCM at any
+    /// level; the first prefix of a period sets the gain for the rest of it.
+    public func decodePrefix(
+        _ samples: [Float],
+        sampleRate: UInt32 = 12_000,
+        period: Int64?,
+        handler: ((Decode) -> Void)? = nil
+    ) throws -> [Decode] {
+        guard !samples.isEmpty else { return [] }
+        return try withHandler(handler) {
+            try samples.withUnsafeBufferPointer { audio in
+                try collectRows(errorDetail: { self.failureDetail() }) { out, capacity, found in
+                    mfsk_decoder_decode_prefix_f32(handle, audio.baseAddress, UInt(audio.count),
+                                                   sampleRate, period ?? Decoder.periodNone,
+                                                   out, capacity, found)
+                }
+            }
+        }
+    }
+
     /// What the stream decode found, and which slot it
     /// was.
     public struct SlotDecode: Sendable, Equatable {
@@ -376,6 +424,11 @@ public struct BudgetReport: Sendable, Equatable {
     /// Sync score of the best skipped candidate, on that protocol's own
     /// scale. nil when there was no such candidate.
     public let cutAtScore: Float?
+    /// Rows subtracted before a later search saw them: FT8
+    /// ``Extras/Strategy/sicEarly``'s checkpoint-B and -C loops. Fewer than
+    /// the rows returned, with ``exhausted`` set, means the cut came while
+    /// cleaning up rather than while searching. 0 everywhere else.
+    public let rowsSubtracted: UInt32
 
     init(_ raw: MfskBudgetReport) {
         self.exhausted = raw.exhausted
@@ -383,6 +436,7 @@ public struct BudgetReport: Sendable, Equatable {
         self.stagesRun = raw.stages_run
         self.cutAtSync = raw.cut_at_sync >= 0 ? UInt32(raw.cut_at_sync) : nil
         self.cutAtScore = raw.cut_at_score.isNaN ? nil : raw.cut_at_score
+        self.rowsSubtracted = raw.rows_subtracted
     }
 }
 
@@ -405,8 +459,8 @@ extension Decoder {
     /// must be safe to call concurrently — a captured deadline compared
     /// against a clock is, which is the shape this is for.
     ///
-    /// Throws ``MfskError/Code/unsupported`` for a mode without
-    /// ``Capabilities/budget``.
+    /// Every mode with a decoder takes one (``Capabilities/budget``); WSPR,
+    /// JT9, JT65 and Q65 report only ``BudgetReport/exhausted``.
     public func setBudget(_ check: (() -> Bool)?) throws {
         guard let check else {
             try self.check(mfsk_decoder_set_budget(handle, nil, nil))
@@ -420,6 +474,16 @@ extension Decoder {
             throw MfskError(status: status, detail: failureDetail())
         }
         budgetBox = box
+    }
+
+    /// Whether a decode with the current mode, depth and extras hands
+    /// ``onDecode(_:)`` exactly the rows it returns, once each and in order
+    /// (`STREAMING.md` §3a). false is completion order with a transient
+    /// duplicate possible (§3b): FT8's single pass and sniper, FT4 at
+    /// ``DecodeParams/Depth/fast``, FST4, WSPR. Pair by ``Decode/delivery``
+    /// either way. Ask again after changing the parameters or the extras.
+    public var deliveryIsExact: Bool {
+        mfsk_decoder_delivery_is_exact(handle)
     }
 
     /// What the budget cut short on the **last** decode.
