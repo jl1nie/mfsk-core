@@ -262,7 +262,28 @@ validation 1's equivalence claim ill-formed.
 
 - **`Depth::Fast`.** Upstream runs nothing before 50 at `ndepth==1`, so a prefix call would return nothing. Follow it,
   or run a single pass for a caller that asked for prefixes anyway?
-- **FT4.** Upstream has no early decode, so offering one would be a library extension. Not in this design.
+- **FT4, where the intuition points the wrong way on the host and the right way on a board.** It looks like the
+  tighter case — half the period — and it is not. The deadline is what matters, and it is the same within 0.1 s:
+
+  | | signal | period | TX starts | slack to key-up | buffer searched |
+  |---|---|---|---|---|---|
+  | FT8 | 79 × 1920 = 12.64 s | 15.0 s | 0.5 s | **1.86 s** | 180 000 |
+  | FT4 | 105 × 576 = 5.04 s | 7.5 s | 0.5 s | **1.96 s** | 90 000 |
+
+  (`ft4/mod.rs:77,116,119,120`, `ft8/params.rs`; 103 active symbols plus 2 ramp.) FT4 has *more* slack than FT8 and
+  half the buffer to search in it, which is the likeliest reason upstream never needed checkpoints there — the decode
+  fits between the period's end and key-up.
+
+  The mechanical obstacle is larger than the motivation anyway: `Ft4Strategy` is `SinglePass | SicRounds(n)` with **no
+  `SicEarly`** (`decoder/frame.rs:106-110`). This design is a public entry onto machinery FT8 already has
+  (`early_results`, `buf_b`, `deferred`); for FT4 it would mean writing the A/B/C algorithm and recording a deliberate
+  divergence from WSJT-X, not adding an entry point.
+
+  **On a board it is a different question, and there the consumer is real.** FT4's embedded receiver is already being
+  cut by its budget often enough to be worth showing an operator — `BudgetReport::cut_at_score`'s own doc is named
+  after its `SlotOutcome::cut_at_score`. So prefix decoding would buy something there. But the boards do not go through
+  `Decoder` at all; they run `embedded-shared`'s own prefix path, so that is the §7 step 4 decision and not this API's.
+  Not in this design either way.
 - **ft8md (#463)** has its own stages. If ported, it should reuse `Stage` rather than add a second vocabulary.
 
 ## 9. Considered and dropped
