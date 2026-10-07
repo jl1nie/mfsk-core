@@ -1963,6 +1963,8 @@ struct ReadySlot {
     period: i64,
     utc_ns: Option<i64>,
     audio: Vec<i16>,
+    /// The whole slot, not a prefix of it.
+    whole: bool,
 }
 
 struct StreamInner {
@@ -1977,6 +1979,13 @@ struct StreamInner {
     /// wants the latest, and `dropped` counts what it replaced.
     ready: Option<ReadySlot>,
     dropped: u64,
+    /// The period the stream delivered a prefix of and not yet its whole.
+    open: Option<i64>,
+    /// The last period delivered, prefix or whole.
+    last: Option<i64>,
+    /// The period whose prefixes a decoder took through
+    /// `mfsk_decoder_decode_stream`, so its whole slot ends that sequence.
+    pub(crate) decoding: Option<i64>,
 }
 
 fn stream_inner(s: *mut MfskStream) -> Option<&'static mut StreamInner> {
@@ -2044,6 +2053,9 @@ pub unsafe extern "C" fn mfsk_stream_open(
         clock: mfsk_core::slotgrid::SampleClock::new(12_000),
         ready: None,
         dropped: 0,
+        open: None,
+        last: None,
+        decoding: None,
     })) as *mut MfskStream
 }
 
@@ -2060,20 +2072,38 @@ pub unsafe extern "C" fn mfsk_stream_close(s: *mut MfskStream) {
 
 fn stream_feed(st: &mut StreamInner, src: &[i16]) {
     let anchor = st.clock.anchor_ns();
-    let mut done: Vec<(i64, Vec<i16>)> = Vec::new();
-    st.cutter
-        .feed(anchor, src, |j, _start, buf| done.push((j, buf)));
+    // Prefixes and wholes in the order they were cut.
+    let mut done: Vec<(i64, Vec<i16>, bool)> = Vec::new();
+    {
+        let done = core::cell::RefCell::new(&mut done);
+        st.cutter.feed_parts(
+            anchor,
+            src,
+            |j, _start, buf| done.borrow_mut().push((j, buf.to_vec(), false)),
+            |j, _start, buf| done.borrow_mut().push((j, buf, true)),
+        );
+    }
     let period_ns = (st.cutter_period_ns()) as i128;
-    for (j, audio) in done {
-        if st
-            .ready
-            .replace(ReadySlot {
-                period: j,
-                utc_ns: anchor.map(|_| (j as i128 * period_ns) as i64),
-                audio,
-            })
-            .is_some()
-        {
+    let prefixes = st.cutter.has_points();
+    for (j, audio, whole) in done {
+        // A period already partly delivered, opened again (a clock stepped
+        // back): its audio is another recording, and a decoder continuing
+        // that period's prefix sequence would splice the two
+        // (`IQ_PREFIX_DESIGN.md` §5). Only a stream with points refuses it.
+        if prefixes && st.open != Some(j) && st.last.is_some_and(|l| j <= l) {
+            continue;
+        }
+        st.open = (!whole).then_some(j);
+        st.last = Some(j);
+        let replaced = st.ready.replace(ReadySlot {
+            period: j,
+            utc_ns: anchor.map(|_| (j as i128 * period_ns) as i64),
+            audio,
+            whole,
+        });
+        // A later delivery of the same period supersedes its prefix: only a
+        // slot of another period is lost.
+        if replaced.is_some_and(|r| r.period != j) {
             st.dropped += 1;
         }
     }
@@ -2201,6 +2231,7 @@ pub unsafe extern "C" fn mfsk_stream_set_time(
     if !matches!(change, ClockChange::Slewed { .. }) {
         // The grid jumped: audio spanning the jump is not a slot.
         st.cutter.forget_slots();
+        st.open = None;
     }
     if !out_change.is_null() {
         unsafe { *out_change = code };
@@ -2208,10 +2239,60 @@ pub unsafe extern "C" fn mfsk_stream_set_time(
     MfskStatus::Ok
 }
 
-/// Whether a completed slot is waiting.
+/// Whether a slot is waiting: a completed one, or with prefix points
+/// ([`mfsk_stream_set_prefix_points`]) the slot so far.
 #[unsafe(no_mangle)]
 pub extern "C" fn mfsk_stream_slot_ready(s: *const MfskStream) -> bool {
     stream_ref(s).map(|st| st.ready.is_some()).unwrap_or(false)
+}
+
+/// Whether the waiting slot is whole rather than a prefix of it; `false`
+/// when none is waiting. A stream without prefix points only has whole
+/// slots.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_stream_slot_is_whole(s: *const MfskStream) -> bool {
+    stream_ref(s)
+        .and_then(|st| st.ready.as_ref())
+        .is_some_and(|r| r.whole)
+}
+
+/// Early decode on a stream (#601), off by default: from the next slot that
+/// opens, the stream also makes the slot so far ready at each of these
+/// 12 kHz sample counts, then the whole slot. Pass the decoder's
+/// `mfsk_decoder_prefix_points`, and decode every slot the stream makes ready
+/// with `mfsk_decoder_decode_stream` (or, after
+/// `mfsk_stream_take_slot_i16`, with `mfsk_decoder_decode_prefix_i16`, the
+/// whole slot included): checkpoint A's rows then arrive at ~11.8 s with
+/// `stage == MFSK_STAGE_EARLY`. A newer delivery of the same period replaces
+/// an untaken prefix without counting in [`mfsk_stream_dropped`]. A period
+/// the stream already delivered part of is not delivered again (a clock
+/// stepped back). `n == 0` turns it off. Off by default because a caller of
+/// `mfsk_stream_take_slot_i16` would otherwise get short slots it did not
+/// ask for.
+///
+/// # Safety
+/// `points` must be `n` readable `size_t` (or null when `n` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_stream_set_prefix_points(
+    s: *mut MfskStream,
+    points: *const usize,
+    n: usize,
+) -> MfskStatus {
+    let Some(st) = stream_inner(s) else {
+        set_error("mfsk_stream_set_prefix_points: null stream");
+        return MfskStatus::NullPointer;
+    };
+    if points.is_null() && n != 0 {
+        set_error("mfsk_stream_set_prefix_points: points is NULL");
+        return MfskStatus::NullPointer;
+    }
+    let pts = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { slice::from_raw_parts(points, n) }
+    };
+    st.cutter.set_points(pts);
+    MfskStatus::Ok
 }
 
 /// Completed slots a newer one replaced before they were taken.
@@ -2224,7 +2305,9 @@ pub extern "C" fn mfsk_stream_dropped(s: *const MfskStream) -> u64 {
 /// and, when a clock is set, its UTC start.
 ///
 /// Returns the number of samples written, or 0 if no slot is ready or `cap`
-/// is too small — size from `MfskModeInfo::slot_samples_12k`.
+/// is too small — size from `MfskModeInfo::slot_samples_12k`. With prefix
+/// points the slot may be a prefix: fewer samples, and
+/// [`mfsk_stream_slot_is_whole`] false before the take.
 ///
 /// # Safety
 /// `out` must be `cap` writable `int16_t`; `out_period` and `out_utc_ns` may
@@ -2266,6 +2349,7 @@ pub unsafe extern "C" fn mfsk_stream_clear(s: *mut MfskStream) {
     if let Some(st) = stream_inner(s) {
         st.ready = None;
         st.cutter.forget_slots();
+        st.open = None;
     }
 }
 
@@ -3263,6 +3347,13 @@ struct IqInner {
     rx: mfsk_core::iq::IqReceiver,
     decoders: std::collections::HashMap<usize, Box<decoder::FfiDecoder>>,
     queue: std::collections::VecDeque<IqRow>,
+    /// Channels [`mfsk_iq_set_early`] turned early decode off for.
+    early_off: std::collections::HashSet<usize>,
+    /// The prefix points last handed to the receiver, by channel.
+    points: std::collections::HashMap<usize, &'static [usize]>,
+    /// By channel, the period whose prefixes its decoder has decoded and
+    /// whose whole slot has not come yet.
+    open: std::collections::HashMap<usize, i64>,
 }
 
 fn iq_inner<'a>(rx: *mut MfskIqReceiver) -> Option<&'a mut IqInner> {
@@ -3411,6 +3502,9 @@ pub unsafe extern "C" fn mfsk_iq_open_with(
     Box::into_raw(Box::new(IqInner {
         rx,
         decoders: Default::default(),
+        early_off: Default::default(),
+        points: Default::default(),
+        open: Default::default(),
         queue: Default::default(),
     })) as *mut MfskIqReceiver
 }
@@ -3538,6 +3632,42 @@ pub unsafe extern "C" fn mfsk_iq_channel_state(rx: *mut MfskIqReceiver, channel:
     }
 }
 
+/// Decode a channel early, or not (#601). On (the default for every
+/// channel): when the channel decoder has checkpoints — FT8 at Normal or
+/// Deep depth, whose `SicEarly` strategy acts at ~11.8 s — the receiver hands
+/// it the slot so far at each one, so its rows reach the decoder's
+/// `mfsk_decoder_set_on_decode` callback and [`mfsk_iq_poll`] before the slot
+/// is whole, with `stage == MFSK_STAGE_EARLY`, as WSJT-X shows them; the
+/// whole slot then adds the rest, and a row already queued early is not
+/// queued again. Every other mode and depth decodes the whole slot either
+/// way. Off: whole slots only, as before. Takes effect from the next slot
+/// that opens. `MFSK_STATUS_INVALID_ARG` if there is no such channel.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_set_early(
+    rx: *mut MfskIqReceiver,
+    channel: u32,
+    on: bool,
+) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_set_early: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    let id = channel as usize;
+    if !r.decoders.contains_key(&id) {
+        set_error("mfsk_iq_set_early: no such channel");
+        return MfskStatus::InvalidArg;
+    }
+    if on {
+        r.early_off.remove(&id);
+    } else {
+        r.early_off.insert(id);
+    }
+    MfskStatus::Ok
+}
+
 /// Remove a channel. `MFSK_STATUS_INVALID_ARG` if there is no such channel.
 ///
 /// # Safety
@@ -3554,7 +3684,11 @@ pub unsafe extern "C" fn mfsk_iq_remove_channel(
     if r.rx
         .remove_channel(mfsk_core::iq::ChannelId(channel as usize))
     {
-        r.decoders.remove(&(channel as usize));
+        let id = channel as usize;
+        r.decoders.remove(&id);
+        r.early_off.remove(&id);
+        r.points.remove(&id);
+        r.open.remove(&id);
         MfskStatus::Ok
     } else {
         set_error("mfsk_iq_remove_channel: no such channel");
@@ -3646,8 +3780,10 @@ pub unsafe extern "C" fn mfsk_iq_gap(rx: *mut MfskIqReceiver, lost: u64) -> Mfsk
 
 /// Push `n_bytes` of IQ in the format the receiver was opened with,
 /// little-endian, I then Q; a sample split across calls is carried over. Every
-/// slot this completes is decoded before the call returns; what it found waits
-/// for [`mfsk_iq_poll`].
+/// slot this completes is decoded before the call returns, and so is every
+/// early checkpoint it reaches on a channel that decodes early
+/// ([`mfsk_iq_set_early`]); what they found goes to the channel decoder's
+/// callback as it is found and waits for [`mfsk_iq_poll`].
 ///
 /// # Safety
 /// `data` must be `n_bytes` readable bytes (or null when `n_bytes` is 0).
@@ -3669,15 +3805,45 @@ pub unsafe extern "C" fn mfsk_iq_push(
         return MfskStatus::NullPointer;
     }
     let bytes = unsafe { slice::from_raw_parts(data as *const u8, n_bytes) };
+    // Each channel's points from its decoder as it is now: the caller sets
+    // the depth or strategy on the borrowed decoder, which has no hook back
+    // here, so this is where a change is seen (from the next slot that opens).
+    for (&id, d) in &r.decoders {
+        let want: &'static [usize] = if r.early_off.contains(&id) {
+            &[]
+        } else {
+            d.prefix_points()
+        };
+        if r.points.get(&id) != Some(&want) {
+            r.rx.set_prefix_points(mfsk_core::iq::ChannelId(id), want);
+            r.points.insert(id, want);
+        }
+    }
     in_pool_mut(|| {
         let mut slots = Vec::new();
         r.rx.push_bytes(bytes, &mut slots);
         for slot in &slots {
-            let Some(d) = r.decoders.get_mut(&slot.channel.0) else {
+            let id = slot.channel.0;
+            let Some(d) = r.decoders.get_mut(&id) else {
                 continue;
             };
-            d.decode_slot(&slot.audio, slot.period);
+            // A prefix, or the whole slot of a period whose prefixes this
+            // decoder took: one `decode_prefix` sequence. A whole slot with
+            // none before it is a plain decode.
+            let whole = slot.is_whole();
+            let prefix = !whole || r.open.get(&id) == Some(&slot.period);
+            d.decode_slot(&slot.audio, slot.period, prefix);
+            if whole {
+                r.open.remove(&id);
+            } else {
+                r.open.insert(id, slot.period);
+            }
             for (decoded, detail) in d.rows() {
+                // The final call returns the period's whole set; its early
+                // rows were queued by the prefix call that found them.
+                if prefix && whole && detail.stage == Some(mfsk_core::decoder::Stage::Early) {
+                    continue;
+                }
                 if r.queue.len() >= IQ_QUEUE_MAX {
                     r.queue.pop_front();
                 }
@@ -3763,6 +3929,7 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
         flags: 0,
         key_bits: 0,
         key: [0; mfsk_ffi_abi::MFSK_DECODE_KEY_LEN],
+        stage: 0,
     };
     // The detail exactly as the channel decoder's own row gives it.
     let row = decoder::row_of(v.mode, &d.decoded, &d.detail);
@@ -3774,6 +3941,7 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
     v.flags = row.flags;
     v.key_bits = row.key_bits;
     v.key = row.key;
+    v.stage = row.stage;
     let mut end = d.decoded.text.len().min(v.text.len() - 1);
     while !d.decoded.text.is_char_boundary(end) {
         end -= 1;

@@ -28,7 +28,7 @@ FT8 rows should reach a live caller at about 11.8 s into the period, as WSJT-X d
 | U6 | research / validation | a recording, replayed at `jt9`'s counts | **yes** |
 | U8 | a host short on CPU, or a busy band | any | **yes** — `Budget` and the strategy |
 | U4 | skimmer over `IqReceiver` | wideband IQ, N channels | §10; the receiver half is `IQ_PREFIX_DESIGN.md` (#600) |
-| U5 | C / Kotlin / Swift app | `mfsk_stream_push_*` | §10: a follow-up |
+| U5 | C / Kotlin / Swift app | `mfsk_stream_push_*`, `mfsk_iq_push` | §10; done in #601 (`BINDINGS.md` §2.5, §2.8.2) |
 
 ## 1. What upstream does (v3.2.0-rc1, `567ad29ce`)
 

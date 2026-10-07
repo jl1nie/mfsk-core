@@ -1372,6 +1372,40 @@ void test_iq() {
             }
         }
 
+      if (fmt == MFSK_IQ_FORMAT_CF32) {
+        // #601: an FT8 channel decodes early by default. 13 s of IQ (past
+        // checkpoint A at 11.8 s, short of the 15 s slot) already gives the
+        // row, marked early; the rest of the slot does not queue it again.
+        MfskStatus st = MFSK_STATUS_INTERNAL;
+        MfskIqReceiver* rx = mfsk_iq_open(fs, center, fmt, 0, &st);
+        uint32_t ch = 0;
+        if (rx == nullptr || mfsk_iq_add_channel(rx, dial, MFSK_MODE_FT8, nullptr, nullptr, &ch) != MFSK_STATUS_OK) {
+            fail("iq", "early: open"); if (rx) mfsk_iq_close(rx); return;
+        }
+        mfsk_iq_set_time(rx, t0_ns, 0, nullptr);
+        const size_t split = static_cast<size_t>(13) * fs * 8;
+        mfsk_iq_push(rx, bytes.data(), split);
+        int early = 0, later = 0;
+        MfskIqDecode d;
+        std::memset(&d, 0, sizeof d);
+        d.size = sizeof d;
+        while (mfsk_iq_poll(rx, &d) == 1) {
+            if (std::strstr(d.text, "CQ JA1ABC PM95") == nullptr) continue;
+            ++early;
+            if (d.stage != MFSK_STAGE_EARLY) fail("iq", "early: the row is not marked MFSK_STAGE_EARLY");
+        }
+        mfsk_iq_push(rx, bytes.data() + split, bytes.size() - split);
+        while (mfsk_iq_poll(rx, &d) == 1) {
+            if (std::strstr(d.text, "CQ JA1ABC PM95") != nullptr) ++later;
+        }
+        if (early != 1 || later != 0) {
+            char what[80];
+            std::snprintf(what, sizeof what, "early: %d before the slot ended, %d after (want 1, 0)", early, later);
+            fail("iq", what);
+        }
+        mfsk_iq_close(rx);
+      }
+
       for (uint32_t chz : {MFSK_IQ_CHANNELIZER_DIRECT, MFSK_IQ_CHANNELIZER_PFB}) {
         MfskStatus st = MFSK_STATUS_INTERNAL;
         MfskIqReceiver* rx = mfsk_iq_open_with(fs, center, fmt, 0, chz, &st);
@@ -1430,7 +1464,7 @@ void test_iq() {
     if (mfsk_iq_poll(rx, &d) != 0) fail("iq", "poll on an empty queue should be 0");
     mfsk_iq_close(rx);
     mfsk_iq_close(nullptr);  // a no-op, like every free here
-    std::printf("  [iq] all five formats decode through both channelizers, refusals are statuses\n");
+    std::printf("  [iq] all five formats decode through both channelizers, an FT8 row arrives early, refusals are statuses\n");
 }
 
 void test_null_handling() {

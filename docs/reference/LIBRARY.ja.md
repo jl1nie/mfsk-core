@@ -755,7 +755,8 @@ for block in period.chunks(4_800) {
 占有する。取り込みをそのスレッドと共有せず、`SlotInput::budget` で上限を付ける。C ABI にも
 同じ組（`mfsk_decoder_decode_prefix_i16` / `_f32`、[`BINDINGS.md`](BINDINGS.ja.md) §2.2）が
 あり、Kotlin と Swift のデコーダには `decodePrefix` がある。`IqReceiver` は、チャンネルが
-求めれば先頭部分も渡す（§2.7「IQ での早期デコード」）。ボードは方針として低レベルの項目の上で独自の先頭部分パスを保つ。設計と
+求めれば先頭部分も渡す（§2.7「IQ での早期デコード」）。C ABI の push 型ハンドルも早期デコードする:
+`mfsk_iq_push` は既定で、`mfsk_stream_*` はデコーダのポイントを渡したとき（`BINDINGS.md` §2.5、§2.8.2）。ボードは方針として低レベルの項目の上で独自の先頭部分パスを保つ。設計と
 測定: [`EARLY_DECODE_DESIGN.md`](../notes/EARLY_DECODE_DESIGN.md)。
 
 **FT4 に `SicEarly` が無いのは欠落ではない。** 周期が半分なので応答を決める時間も短そうに
