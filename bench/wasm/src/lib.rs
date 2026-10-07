@@ -4,7 +4,7 @@
 
 use mfsk_core::decoder::{
     ApMode, BudgetReport, DecodeParams, Decoder, Depth, Ft8Extras, Ft8Strategy, Row, SlotInput,
-    SlotResult, Tuning,
+    SlotResult,
 };
 use mfsk_core::engine::pipeline::DecodeResult;
 use mfsk_core::ft8::Ft8;
@@ -18,14 +18,12 @@ fn decoder(strategy: Ft8Strategy) -> Decoder<Ft8> {
             .depth(Depth::Deep)
             .ap(ApMode::Off),
     )
-    .with_extras(Ft8Extras {
-        tuning: Tuning {
-            sync_min: Some(0.8),
-            max_cand: Some(50),
-            strategy: Some(strategy),
-            ..Default::default()
-        },
-        ..Default::default()
+    .with_extras({
+        let mut e = Ft8Extras::default();
+        e.tuning.sync_min = Some(0.8);
+        e.tuning.max_cand = Some(50);
+        e.tuning.strategy = Some(strategy);
+        e
     })
 }
 

@@ -81,6 +81,7 @@ impl Default for ApPassMask {
 
 /// A Priori information to bias decoding.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ApHint {
     /// Which hypotheses may run; see [`ApPassMask`]. Default: all.
     pub allow: ApPassMask,

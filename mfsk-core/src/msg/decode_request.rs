@@ -741,6 +741,7 @@ pub trait SupportsNoiseBlanker: FrameDecodable {
 /// WSJT-X's **NB** setting for FST4 (`mainwindow.cpp:5282`,
 /// `nexp_decode += 256*(sbNB+3)`; `fst4_decode.f90:253-267`).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum NoiseBlanker {
     /// Blank the loudest `n` percent of samples (`0..=25`; the GUI's
     /// range, and larger values are clamped to it). `Percent(0)` is

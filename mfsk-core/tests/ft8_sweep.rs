@@ -151,7 +151,7 @@ fn task_t1_requested() -> bool {
 
 fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
     use mfsk_core::decoder::{
-        ApMode, DecodeParams, Decoder, Depth, Ft8Extras, Ft8Strategy, SlotInput, Tuning,
+        ApMode, DecodeParams, Decoder, Depth, Ft8Extras, Ft8Strategy, SlotInput,
     };
     use mfsk_core::ft8::Ft8;
 
@@ -178,21 +178,16 @@ fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
     if let Some(f) = freq_hint_requested() {
         params = params.rx_freq(f);
     }
-    let extras = Ft8Extras {
-        tuning: Tuning {
-            sync_min: Some(0.8),
-            max_cand: Some(50),
-            strictness: strictness_from_env(),
-            strategy: Some(match strategy_from_env() {
-                Strategy::Single => Ft8Strategy::SinglePass,
-                Strategy::SicEarly => Ft8Strategy::SicEarly,
-                Strategy::SicRounds => Ft8Strategy::SicRounds(3),
-            }),
-            ..Default::default()
-        },
-        ap_hint: ap_hint_requested(),
-        ..Default::default()
-    };
+    let mut extras = Ft8Extras::default();
+    extras.tuning.sync_min = Some(0.8);
+    extras.tuning.max_cand = Some(50);
+    extras.tuning.strictness = strictness_from_env();
+    extras.tuning.strategy = Some(match strategy_from_env() {
+        Strategy::Single => Ft8Strategy::SinglePass,
+        Strategy::SicEarly => Ft8Strategy::SicEarly,
+        Strategy::SicRounds => Ft8Strategy::SicRounds(3),
+    });
+    extras.ap_hint = ap_hint_requested();
     score_ft8(&decode(params, extras))
 }
 

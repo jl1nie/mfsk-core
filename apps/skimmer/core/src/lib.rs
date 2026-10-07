@@ -298,16 +298,11 @@ fn apply_options(d: &mut AnyDecoder, o: &ChannelOptions, station: &Station) {
     p.eme_delay = o.eme_delay;
     // A channel's own call or locator wins; an empty one is the operator's.
     let pick = |own: &str, all: &str| if own.is_empty() { all } else { own }.to_string();
-    p.station = Station {
-        call: pick(&o.station.call, &station.call),
-        grid: pick(&o.station.grid, &station.grid),
-    };
+    p.station.call = pick(&o.station.call, &station.call);
+    p.station.grid = pick(&o.station.grid, &station.grid);
     p.qso = o.qso.clone();
     p.contest = o.contest;
-    let hint = o.dx_call.as_ref().map(|dx| ApHint {
-        call2: Some(dx.clone()),
-        ..ApHint::default()
-    });
+    let hint = o.dx_call.as_deref().map(|dx| ApHint::new().with_call2(dx));
     let _ = d.set_ap_hint(hint);
 }
 

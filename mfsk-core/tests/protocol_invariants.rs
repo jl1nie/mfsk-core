@@ -691,21 +691,12 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
         unique,
     );
 
-    // Each ID is a known variant (this is a static guarantee from the enum,
-    // but match-exhaustively to surface "added a variant but forgot to update
-    // this test" right here in CI).
-    for (name, id) in &ids {
-        match id {
-            ProtocolId::Ft8
-            | ProtocolId::Ft4
-            | ProtocolId::Ft2
-            | ProtocolId::Fst4
-            | ProtocolId::Jt65
-            | ProtocolId::Jt9
-            | ProtocolId::Wspr
-            | ProtocolId::Q65
-            | ProtocolId::UvPacket => {}
-        }
-        let _ = name;
-    }
+    // There used to be an exhaustive `match` over every variant here, as
+    // a tripwire for "added a variant but forgot the rest of the wiring".
+    // `ProtocolId` is `#[non_exhaustive]` since issue #573 and this file
+    // is another crate, so that match would now need a `_` arm and would
+    // guarantee nothing. The tripwire moved inside the crate, to
+    // `engine::protocol::protocol_id_tests::every_variant_is_accounted_for`,
+    // where exhaustiveness still binds; it points back here for the
+    // `expected_distinct` tally above.
 }

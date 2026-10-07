@@ -52,6 +52,7 @@ use crate::msg::{ApHint, ApPassMask};
 /// variant runs its own monomorphised copy of the engine, and `Default`
 /// costs nothing.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub enum MessageFilter {
     /// The codec's verdict, with the protocol's own default filter.
     #[default]
@@ -69,6 +70,7 @@ pub enum MessageFilter {
 /// embedded budget (few candidates, one pass), or a measurement that pins
 /// one knob.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Tuning<S> {
     pub sync_min: Option<f32>,
     pub max_cand: Option<usize>,
@@ -91,6 +93,7 @@ impl<S> Default for Tuning<S> {
 
 /// FT8's search strategies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Ft8Strategy {
     /// One pass, no subtraction.
     SinglePass,
@@ -103,6 +106,7 @@ pub enum Ft8Strategy {
 
 /// FT4's search strategies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Ft4Strategy {
     SinglePass,
     /// `n` passes, subtracting each pass's decodes (`nsp`).
@@ -111,6 +115,7 @@ pub enum Ft4Strategy {
 
 /// FST4 has one strategy; `fst4_decode.f90` has no subtraction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Fst4Strategy {
     SinglePass,
 }
@@ -119,18 +124,32 @@ pub enum Fst4Strategy {
 /// analogue filter around [`DecodeParams::rx_freq_hz`], and the search is
 /// confined to `± search_hz` of it.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Sniper {
     pub search_hz: f32,
 }
 
+impl Sniper {
+    /// A roofing-filter search `± search_hz` of
+    /// [`DecodeParams::rx_freq_hz`](crate::decoder::DecodeParams::rx_freq_hz).
+    ///
+    /// `Sniper` is `#[non_exhaustive]` (issue #573), so this — or
+    /// [`Default`] plus field assignment — is how a caller outside the
+    /// crate builds one.
+    pub fn new(search_hz: f32) -> Self {
+        Self { search_hz }
+    }
+}
+
 impl Default for Sniper {
     fn default() -> Self {
-        Self { search_hz: 250.0 }
+        Self::new(250.0)
     }
 }
 
 /// FT8's library options.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct Ft8Extras {
     pub tuning: Tuning<Ft8Strategy>,
     /// A free-form AP hint beside upstream's QSO-context AP.
@@ -146,6 +165,7 @@ pub struct Ft8Extras {
 
 /// FT4's library options.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct Ft4Extras {
     pub tuning: Tuning<Ft4Strategy>,
     pub ap_hint: Option<ApHint>,
@@ -155,6 +175,7 @@ pub struct Ft4Extras {
 
 /// FST4's library options.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct Fst4Extras {
     pub tuning: Tuning<Fst4Strategy>,
     pub ap_hint: Option<ApHint>,

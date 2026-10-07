@@ -103,17 +103,17 @@ impl ChannelSetting {
             averaging: self.averaging,
             deep_search: self.deep_search,
             eme_delay: self.eme_delay,
-            qso: QsoContext {
-                his_call: text(&self.his_call).unwrap_or_default(),
-                his_grid: text(&self.his_grid).unwrap_or_default(),
+            qso: QsoContext::new(
+                &text(&self.his_call).unwrap_or_default(),
+                &text(&self.his_grid).unwrap_or_default(),
                 progress,
-            },
+            ),
             contest,
             dx_call: text(&self.dx_call),
-            station: Station {
-                call: text(&self.my_call).unwrap_or_default(),
-                grid: text(&self.my_grid).unwrap_or_default(),
-            },
+            station: Station::new(
+                &text(&self.my_call).unwrap_or_default(),
+                &text(&self.my_grid).unwrap_or_default(),
+            ),
         })
     }
 }
@@ -740,10 +740,10 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             .collect::<Result<Vec<_>, _>>()?;
         let mut cfg = Config::new(srv.address.trim(), channels);
         cfg.name = srv.name.clone();
-        cfg.live.set_station(Station {
-            call: srv.call.trim().to_ascii_uppercase(),
-            grid: srv.grid.trim().to_ascii_uppercase(),
-        });
+        cfg.live.set_station(Station::new(
+            &srv.call.trim().to_ascii_uppercase(),
+            &srv.grid.trim().to_ascii_uppercase(),
+        ));
         cfg.live.set_enabled(srv.enabled);
         cfg.rotation_origin = (!s.rotation_utc).then_some(started);
         cfg.tune = srv.tune;
@@ -999,10 +999,10 @@ fn set_station(state: State<'_, AppState>, server: usize, my_call: String, my_gr
     if let Some(r) = state.running.lock().unwrap().as_ref()
         && let Some(s) = r.server(server)
     {
-        s.live.set_station(Station {
-            call: my_call.trim().to_ascii_uppercase(),
-            grid: my_grid.trim().to_ascii_uppercase(),
-        });
+        s.live.set_station(Station::new(
+            &my_call.trim().to_ascii_uppercase(),
+            &my_grid.trim().to_ascii_uppercase(),
+        ));
     }
 }
 
