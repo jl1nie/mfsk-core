@@ -798,8 +798,9 @@ What the design settles, and why:
 calling thread for the stage's work, so capture should not share that
 thread, and `SlotInput::budget` bounds it. The C ABI has the same pair
 (`mfsk_decoder_decode_prefix_i16` / `_f32`, [`BINDINGS.md`](BINDINGS.md)
-§2.2), and the Kotlin and Swift decoders `decodePrefix`. `IqReceiver` still
-hands over whole slots only. The boards keep their own prefix path on the
+§2.2), and the Kotlin and Swift decoders `decodePrefix`. `IqReceiver`
+delivers the prefixes when a channel asks for them (§2.7, *Early decode over
+IQ*). The boards keep their own prefix path on the
 low-level items, by decision. Design and measurements:
 [`EARLY_DECODE_DESIGN.md`](../notes/EARLY_DECODE_DESIGN.md).
 
@@ -1508,6 +1509,21 @@ completed once all of it has arrived; the partial slot the stream opened in
 the middle of is not. A slot's last audio sample comes out a few filter
 lengths after the last IQ sample that carries it, so a recording needs a
 moment of padding after its end, as a live stream has.
+
+*Early decode over IQ.* A channel can also be delivered as prefixes, for
+`decode_prefix` (§2.3): `rx.set_prefix_points(id, decoder.prefix_points())`,
+and from the next slot that opens, `push_*` hands over the slot cut at
+exactly each point, then whole, in that order, through the same
+`Vec<CompletedSlot>` (`slot.is_whole()` tells them apart). Decode every
+delivery of such a channel with `decode_prefix`, the whole included.
+`prefix_points()` comes from the decoder because it follows its settings,
+not the mode: FT8 under `SicEarly` gives `[141_696, 162_432]`, everything
+else none, so ask again after changing the options. The slot's level is
+measured on its first prefix and kept for the rest of it, so the decoder sees
+the period at one level; a period the channel already delivered part of is
+not delivered again (a clock stepped back), so no decode splices two
+recordings. Points are off by default, and a channel without them gets
+exactly the slots it got before. Design: `docs/notes/IQ_PREFIX_DESIGN.md`.
 
 `mfsk_core::slotgrid` is that arithmetic on its own, in integers with no
 `std`, allocation or atomics, so it also fits an embedded board and the C

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`IqReceiver` delivers prefixes, so early decode reaches wideband IQ (#600).** `IqReceiver::set_prefix_points(id,
+  points)` (off by default) makes a channel deliver each slot cut at exactly those 12 kHz sample counts, then whole,
+  through the same `push_*` (`CompletedSlot::is_whole()`); the points come from the channel's own decoder,
+  `Decoder::prefix_points()` / `AnyDecoder::prefix_points()` (`[141_696, 162_432]` for FT8 under `SicEarly`, empty
+  otherwise), since they follow its settings, not the mode. The slot's level is pinned at its first prefix, and a period
+  a clock step reopens is not delivered again. A channel without points gets the same slots as before. Through IQ,
+  `qso3_busy` gives 15 rows at 11.8 s and the same 21 at the end as `decode` (`tests/iq_prefix.rs`).
+  Design: `docs/notes/IQ_PREFIX_DESIGN.md`.
 - **Early decode for live use: `Decoder::decode_prefix` / `decode_prefix_with` (#572).** Call it as audio arrives,
   with the period so far and `SlotInput::period`; the decoder infers the stage from the length. FT8 returns checkpoint
   A's rows at 141 696 samples (~11.8 s, `RowDetail::stage == Some(Stage::Early)`), subtracts at 162 432, and at the

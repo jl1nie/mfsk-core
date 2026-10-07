@@ -634,6 +634,18 @@ impl Decodable for crate::Ft8 {
         !sniping && !matches!(s.strategy, Ft8Strategy::SinglePass)
     }
 
+    fn __prefix_points(params: &DecodeParams, extras: &Ft8Extras) -> &'static [usize] {
+        // As `__decode_prefix` decides `staged`: `SicEarly` with no sniper
+        // target, under the search the period's first call would pin.
+        let sniping = extras.sniper.is_some() && params.rx_freq_hz.is_some();
+        let (s, _) = ft8_search(params.depth).tuned(&extras.tuning);
+        if matches!(s.strategy, Ft8Strategy::SicEarly) && !sniping {
+            crate::ft8::decode::staged_checkpoint::PREFIX_POINTS
+        } else {
+            &[]
+        }
+    }
+
     fn __decode(
         params: &DecodeParams,
         extras: &Ft8Extras,

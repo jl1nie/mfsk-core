@@ -363,6 +363,14 @@ pub trait Decodable: Sized {
         true
     }
 
+    /// The prefix lengths `__decode_prefix` does work at before the whole
+    /// period, under these settings. A mode with no early decode keeps the
+    /// default: none.
+    #[doc(hidden)]
+    fn __prefix_points(_params: &DecodeParams, _extras: &Self::Extras) -> &'static [usize] {
+        &[]
+    }
+
     #[doc(hidden)]
     fn __decode(
         params: &DecodeParams,
@@ -462,6 +470,22 @@ impl<P: Decodable> Decoder<P> {
     /// [`RowDetail::info`].
     pub fn delivery_is_exact(&self) -> bool {
         P::__delivery_is_exact(&self.params, &self.extras)
+    }
+
+    /// The prefix lengths, in 12 kHz samples, at which
+    /// [`Decoder::decode_prefix`] does work before the whole period, in
+    /// increasing order: FT8 under `SicEarly` gives checkpoints A and B,
+    /// `[141_696, 162_432]`; every other setting and mode gives none, and a
+    /// prefix call then returns nothing until the whole period. The whole
+    /// period is not listed: it is always the last call.
+    ///
+    /// For a caller that cuts the prefixes itself and wants to know when to:
+    /// [`IqReceiver::set_prefix_points`](crate::iq::IqReceiver::set_prefix_points)
+    /// takes this list per channel. It follows the depth and the
+    /// [`Extras`](Decodable::Extras), so ask again after changing them
+    /// (`docs/notes/IQ_PREFIX_DESIGN.md` §2).
+    pub fn prefix_points(&self) -> &'static [usize] {
+        P::__prefix_points(&self.params, &self.extras)
     }
 
     /// Decode one period, handing each row to `on_row` as it is found.

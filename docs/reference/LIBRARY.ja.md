@@ -754,8 +754,8 @@ for block in period.chunks(4_800) {
 `decode_prefix` は `decode` と同じく同期で CPU を使い、段階の処理の間は呼び出しスレッドを
 占有する。取り込みをそのスレッドと共有せず、`SlotInput::budget` で上限を付ける。C ABI にも
 同じ組（`mfsk_decoder_decode_prefix_i16` / `_f32`、[`BINDINGS.md`](BINDINGS.ja.md) §2.2）が
-あり、Kotlin と Swift のデコーダには `decodePrefix` がある。`IqReceiver` は今も完成した
-スロットだけを渡す。ボードは方針として低レベルの項目の上で独自の先頭部分パスを保つ。設計と
+あり、Kotlin と Swift のデコーダには `decodePrefix` がある。`IqReceiver` は、チャンネルが
+求めれば先頭部分も渡す（§2.7「IQ での早期デコード」）。ボードは方針として低レベルの項目の上で独自の先頭部分パスを保つ。設計と
 測定: [`EARLY_DECODE_DESIGN.md`](../notes/EARLY_DECODE_DESIGN.md)。
 
 **FT4 に `SicEarly` が無いのは欠落ではない。** 周期が半分なので応答を決める時間も短そうに
@@ -1398,6 +1398,17 @@ FT8、FT4、FST4 の 5 周期、WSPR、JT9、JT65、Q65 の 10 サブモード�
 始まったときの部分スロットは完了しない。スロットの最後の音声サンプルは、それを運ぶ最後の IQ
 サンプルの数フィルタ長後に出てくるので、録音には、ライブのストリームと同じように、終端の後に
 少し余白が要る。
+
+*IQ での早期デコード*: チャンネルは `decode_prefix`（§2.3）のために先頭部分でも渡せる。
+`rx.set_prefix_points(id, decoder.prefix_points())` とすると、次に開くスロットから、`push_*` は
+各ポイントでちょうど切った先頭部分、続いてスロット全体を、この順で同じ `Vec<CompletedSlot>` に
+渡す（区別は `slot.is_whole()`）。そのチャンネルの配信は、全体も含めすべて `decode_prefix` で
+デコードする。`prefix_points()` をデコーダから取るのは、モードではなく設定に従うからで、FT8 の
+`SicEarly` なら `[141_696, 162_432]`、それ以外はすべて空。オプションを変えたら取り直す。
+スロットのレベルは最初の先頭部分で測り、そのスロットの残りにも使うので、デコーダは 1 周期を
+1 つのレベルで見る。チャンネルが一部を渡し済みの周期は再び渡さない（時計が後ろへ跳んだ場合）
+ので、2 つの録音を継ぎ合わせたデコードは起きない。ポイントは既定で無効で、設定しない
+チャンネルは以前とまったく同じスロットを受け取る。設計: `docs/notes/IQ_PREFIX_DESIGN.md`。
 
 `mfsk_core::slotgrid` はその算術だけを取り出したもので、整数のみ、`std`・確保・アトミック
 なしなので、組込みボードや C ABI の音声ストリームにも収まる: `SlotGrid::new(period_ns, rate_hz)`
