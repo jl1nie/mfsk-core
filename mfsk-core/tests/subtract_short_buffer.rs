@@ -285,10 +285,16 @@ fn full_slot_output_is_pinned() {
         .filter(|&(_, d)| d != 0)
         .collect();
     let worst = diffs.iter().map(|&(_, d)| d).max().unwrap_or(0);
-    eprintln!(
-        "{} samples differ from the pin, by at most {worst}",
-        diffs.len()
-    );
+    // Written past the harness's capture, so a passing run on CI still says
+    // how far this platform sits from the pin.
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "full_slot_output_is_pinned: {} samples differ from the pin, by at most {worst}",
+            diffs.len()
+        );
+    }
     assert!(
         worst <= MAX_SAMPLE_DIFF,
         "full-slot subtract output changed: a sample moved by {worst} (first at {:?})",
