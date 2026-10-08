@@ -1761,8 +1761,9 @@ neither the registry nor `tests/protocol_invariants.rs`.
   **OSD runs the way `decode174_91` runs it (#456).** For FT4 (and FT8's
   AP rung) that is BP, then OSD on the BP sum after 1 and after 2
   iterations, a test pattern that flips a locked bit skipped, the CRC
-  checked once on the winner (`osd_decode_npre1_masked` on
-  `bp_llr_zsum_ap_with_scratch`). Before, the raw LLR was searched with
+  checked once on the winner (`osd174_91` on
+  `bp_llr_zsum_ap_with_scratch`; since #417 it is `osd174_91.f90` line for line,
+  basis choice included, and agrees with it on every recorded input). Before, the raw LLR was searched with
   the CRC on every candidate: on iid Gaussian LLRs **22.6 %** of
   `osd_depth` 2 calls passed the CRC against `decode174_91`'s 5.8e-5
   (9.7e-5 after). Within 50 Hz of `rx_freq_hz` FT4 also takes a third

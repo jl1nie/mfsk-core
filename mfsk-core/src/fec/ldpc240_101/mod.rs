@@ -20,9 +20,8 @@ use crate::engine::{FecCodec, FecOpts, FecResult};
 use crate::fec::ldpc::bp::{
     BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_ap_with_scratch,
 };
-use crate::fec::ldpc::osd::{
-    OsdResult, PartialCrc, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic,
-};
+use crate::fec::ldpc::osd::{OsdResult, PartialCrc, ldpc_encode_generic, osd_decode_generic};
+use crate::fec::ldpc::osd_npre::{NpreDepth, osd_npre};
 use crate::fec::ldpc::params::Ldpc240_101Params;
 
 pub const LDPC_N: usize = 240;
@@ -115,8 +114,7 @@ pub fn check_crc24(decoded: &[u8]) -> bool {
 //
 // `osd240_101.f90`'s ndeep table (see the module's issue #198 cross-
 // reference): ndeep=2 is `nord=1, npre1=1, npre2=0, ntheta=12`; ndeep=3
-// adds `npre2=1, ntau=14`. Both share `nt=40` with
-// `osd::NPRE1_PARITY_WINDOW`. `Ldpc240_101`'s own callers below only
+// adds `npre2=1, ntau=14`. Both share `nt=40` (`osd_npre`'s `NT`). `Ldpc240_101`'s own callers below only
 // ever request `osd_depth` 2 or 3 (`opts.osd_depth.min(3)` — order-4 was
 // already unreachable in the previous dispatch too), so `ndeep<2` is a
 // dead branch kept only for defensiveness; if hit, it falls back to the
@@ -216,20 +214,13 @@ fn fst4_osd_decode_dispatch(
         return osd_decode_generic::<Ldpc240_101Params>(llr, ndeep, LDPC_K, verify, false);
     }
     match ndeep {
-        2 => osd_decode_npre_generic::<Ldpc240_101Params>(
+        2 | 3 => osd_npre::<Ldpc240_101Params>(
             llr,
-            FST4_NPRE_NTHETA,
-            0,
-            false,
-            Some(FST4_PARTIAL_CRC),
-            ap_mask,
-            verify,
-        ),
-        3 => osd_decode_npre_generic::<Ldpc240_101Params>(
-            llr,
-            FST4_NPRE_NTHETA,
-            FST4_NPRE_NTAU,
-            true,
+            NpreDepth {
+                ntheta: FST4_NPRE_NTHETA,
+                npre2: ndeep == 3,
+                ntau: FST4_NPRE_NTAU,
+            },
             Some(FST4_PARTIAL_CRC),
             ap_mask,
             verify,

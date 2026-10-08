@@ -39,7 +39,7 @@ use crate::engine::scalar::{Cmplx, ComplexSpec};
 use crate::engine::sync::SyncCandidate;
 use crate::fec::ldpc::bp::check_crc14;
 #[cfg(feature = "fft-rustfft")]
-use crate::fec::ldpc::osd::osd_decode_npre1_masked;
+use crate::fec::ldpc::osd_npre::{NDEEP2_174_91, osd174_91};
 use crate::msg::decode_request::{DefaultPolicy, MessagePolicy};
 use crate::msg::hash_table::CallsignHashTable;
 use crate::msg::wsjt77::Wsjt77Fields;
@@ -2309,7 +2309,7 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
                         );
                         let mut z = [0f32; LDPC_N];
                         z.copy_from_slice(zsum);
-                        if let Some(osd) = osd_decode_npre1_masked(&z, Some(&ap_mask))
+                        if let Some(osd) = osd174_91(&z, NDEEP2_174_91, Some(&ap_mask))
                             && validate(osd.message77, osd.hard_errors)
                         {
                             found = Some(osd);

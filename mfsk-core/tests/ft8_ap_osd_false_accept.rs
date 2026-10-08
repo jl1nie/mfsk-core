@@ -28,7 +28,7 @@
 
 use mfsk_core::fec::ldpc::bp::{BpScratch, bp_decode, bp_llr_zsum_ap_with_scratch};
 use mfsk_core::fec::ldpc::check_crc14;
-use mfsk_core::fec::ldpc::osd::{osd_decode_deep, osd_decode_npre1_masked};
+use mfsk_core::fec::ldpc::osd::osd_decode_generic;
 use mfsk_core::fec::ldpc::params::Ldpc174_91Params;
 
 struct Rng(u64);
@@ -100,7 +100,15 @@ fn crc_valid_decodes(rung: Rung, draws_per_thread: usize, n_msg: usize, cq: bool
                             continue;
                         }
                         let found = match rung {
-                            Rung::Before => osd_decode_deep(&llr, 2, Some(check_crc14)).is_some(),
+                            // `osd_decode_deep(llr, 2, ..)`, since removed, was this call.
+                            Rung::Before => osd_decode_generic::<Ldpc174_91Params>(
+                                &llr,
+                                2,
+                                91,
+                                Some(check_crc14),
+                                false,
+                            )
+                            .is_some(),
                             Rung::After => [1u32, 2].into_iter().any(|n_iter| {
                                 let z = bp_llr_zsum_ap_with_scratch::<Ldpc174_91Params>(
                                     &mut scratch,
@@ -110,7 +118,12 @@ fn crc_valid_decodes(rung: Rung, draws_per_thread: usize, n_msg: usize, cq: bool
                                 );
                                 let mut zz = [0f32; 174];
                                 zz.copy_from_slice(z);
-                                osd_decode_npre1_masked(&zz, Some(&mask)).is_some()
+                                mfsk_core::fec::ldpc::osd_npre::osd174_91(
+                                    &zz,
+                                    mfsk_core::fec::ldpc::osd_npre::NDEEP2_174_91,
+                                    Some(&mask),
+                                )
+                                .is_some()
                             }),
                         };
                         if found {

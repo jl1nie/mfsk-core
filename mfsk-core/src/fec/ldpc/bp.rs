@@ -508,7 +508,7 @@ pub fn bp_llr_zsum<P: LdpcParams>(llr: &[f32], n_iter: u32) -> Vec<f32> {
 /// [`crate::fec::ldpc::osd::osd_decode_generic`] (FST4's call site)
 /// already takes `&[f32]`, so the borrow passes straight through with
 /// zero copies. FT8's call site needs a fixed-size array
-/// (`osd_decode_npre1`/`osd_decode_npre1_npre2`) and still
+/// ([`crate::fec::ldpc::osd174_91`]) and still
 /// `copy_from_slice`s, but from this borrow instead of from a
 /// freshly-heap-allocated `Vec` — 4 of the original 5 allocations
 /// still go away there.

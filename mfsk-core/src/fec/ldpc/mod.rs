@@ -11,28 +11,31 @@
 //! |---------------|---------------------------------------------------|
 //! | [`tables`]    | Parity-check matrix (MN / NM / NRW) — static data |
 //! | [`bp`]        | Belief-propagation soft-decision decoder          |
-//! | [`osd`]       | Ordered-statistics decoder (order 0..4) fallback  |
+//! | [`osd_npre`]  | Ordered-statistics decoder, as WSJT-X runs it     |
+//! | [`osd`]       | Encoder, and the combinatorial OSD (MSK144)       |
 //!
 //! ## Public surface
 //!
 //! - [`Ldpc174_91`] — zero-sized type implementing [`crate::engine::FecCodec`].
-//! - [`bp::bp_decode`] / [`osd::osd_decode_deep`] / [`osd::ldpc_encode`] — raw
+//! - [`bp::bp_decode`] / [`osd_npre::osd174_91`] / [`osd::ldpc_encode`] — raw
 //!   functions kept stable for the existing ft8-core callers that integrate
 //!   CRC checks and AP hints directly.
 
 pub mod bp;
 pub mod osd;
+pub mod osd_npre;
 pub mod params;
 pub mod tables;
 
 pub use bp::{BpResult, append_crc14, bp_decode, bp_decode_kind, check_crc14, crc14};
-pub use osd::{OsdResult, ldpc_encode, osd_decode, osd_decode_deep, osd_decode_deep4};
+pub use osd::{OsdResult, ldpc_encode};
+pub use osd_npre::osd174_91;
 pub use params::{Ldpc174_91Params, Ldpc240_101Params, LdpcParams};
 
 use crate::engine::protocol::BpPooledFec;
 use crate::engine::{FecCodec, FecOpts, FecResult};
 use bp::{BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_ap_with_scratch};
-use osd::osd_decode_npre1_masked;
+use osd_npre::NDEEP2_174_91;
 
 /// Codeword length of the WSJT LDPC code.
 pub const LDPC_N: usize = 174;
@@ -120,7 +123,7 @@ impl BpPooledFec for Ldpc174_91 {
             );
             let mut z = [0f32; LDPC_N];
             z.copy_from_slice(zsum);
-            if let Some(r) = osd_decode_npre1_masked(&z, ap_mask.as_ref())
+            if let Some(r) = osd174_91(&z, NDEEP2_174_91, ap_mask.as_ref())
                 && opts.verify_info.is_none_or(|f| f(&r.info))
             {
                 return Some(FecResult {
