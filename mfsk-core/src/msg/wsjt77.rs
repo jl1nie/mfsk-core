@@ -1500,10 +1500,23 @@ fn has_plausible_prefix(s: &str) -> bool {
     // 2-char prefix in practice). Q especially is reserved for
     // Q-codes — common landing spot for CRC false positives.
     if prefix.len() == 1 && prefix[0].is_ascii_uppercase() {
-        return matches!(
+        if matches!(
             prefix[0],
             b'F' | b'G' | b'I' | b'K' | b'M' | b'N' | b'R' | b'W'
-        );
+        ) {
+            return true;
+        }
+        // The split digit may be the prefix's own second character:
+        // a call like "A5A" (Bhutan) parses here as a 1-char "A"
+        // prefix, but "A5" is a real ITU letter+digit allocation.
+        // Before rejecting, retry the 2-char letter+digit prefix
+        // formed by this letter and the split digit (same for
+        // "T6A", "P5A", ...). Keeps the false-positive catch
+        // ("Q4A", "Z7A", ...) while admitting real short calls.
+        if b.len() >= 2 && b[0].is_ascii_uppercase() && b[1].is_ascii_digit() {
+            return is_known_letter_digit_prefix(&b[..2]);
+        }
+        return false;
     }
     // Letter+digit 2-char prefix: must be in the ITU allowlist
     // (the other gap-prone shape that catches CRC false-positives).
@@ -1974,6 +1987,36 @@ mod tests {
         // Compound with one Z7-prefix base + valid mod token — reject
         // (mod alone can't make Z74QTJ plausible).
         assert!(!is_plausible_callsign("Z74QTJ/R"));
+    }
+
+    /// Regression: 3-char letter-digit-letter calls split at the digit
+    /// into a 1-char prefix, which the standalone allowlist rejected —
+    /// so every real "A5A" (Bhutan) transmission was discarded by the
+    /// decode-path plausibility filter even after a clean CRC pass
+    /// (11 lost decodes on a real 2019-02-28 A5A-pileup recording).
+    /// The 1-char rejection must fall back to the 2-char letter+digit
+    /// prefix formed with the split digit.
+    #[test]
+    fn plausible_callsign_accepts_short_letter_digit_letter_calls() {
+        // Real ITU letter+digit allocations as 3-char calls:
+        // A5 Bhutan, T6 Tajikistan, P5 DPRK.
+        for c in ["A5A", "T6A", "P5A"] {
+            assert!(is_plausible_callsign(c), "should accept {c}");
+        }
+        let a5a = pack77_type1("A5A", "JE1MGE", "PM96").expect("pack A5A message");
+        assert!(
+            is_plausible_payload(&a5a),
+            "A5A pileup message should pass the plausibility filter"
+        );
+        // 1-char prefixes with no letter+digit rescue stay rejected —
+        // the false-positive catch must not regress.
+        assert!(!is_plausible_callsign("Q4A"), "Q is reserved");
+        assert!(!is_plausible_callsign("Z7A"), "Z7 unallocated");
+        let q4 = pack77_type1("Q4A", "JA1XYZ", "PM95").expect("pack Q4A message");
+        assert!(
+            !is_plausible_payload(&q4),
+            "Q4A garbage should still fail the plausibility filter"
+        );
     }
 
     /// Regression: `n28` in the extended CQ-XXXX region (3..NTOKENS) could
