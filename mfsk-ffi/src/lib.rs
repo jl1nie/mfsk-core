@@ -1139,6 +1139,50 @@ unsafe fn write_size_versioned<T: Copy>(out: *mut T, value: &T) {
     }
 }
 
+/// The stride of a caller's array of size-versioned `T` (#607): the `size`
+/// its first element declares, which is `sizeof(T)` as the caller's header
+/// has it, larger or smaller than this library's. Zero is "the header you
+/// have": this library's `sizeof(T)`, safe only when the two match, which is
+/// why an array sets its first `size`. `None` for a value that cannot be a
+/// struct size: below the `size` field itself, or not a multiple of 4 (every
+/// version of these structs is made of 4-byte fields and byte arrays padded
+/// to them).
+///
+/// Every row of an array then steps by this stride. Stepping by this
+/// library's own `sizeof(T)` put row 1 onward at the wrong place in an older
+/// caller's array, read each row's `size` from inside the previous one, and
+/// ran past the end of it.
+///
+/// # Safety
+/// `first` must point to at least 4 readable bytes.
+unsafe fn array_stride<T>(first: *const T) -> Option<usize> {
+    let declared = unsafe { core::ptr::read_unaligned(first as *const u32) } as usize;
+    match declared {
+        0 => Some(core::mem::size_of::<T>()),
+        d if d >= 4 && d % 4 == 0 => Some(d),
+        _ => None,
+    }
+}
+
+/// Write `rows` into a caller's array whose elements are `stride` bytes
+/// apart ([`array_stride`]): `min(stride, sizeof(T))` bytes of each, with
+/// each row's `size` rewritten to what was written. A caller's longer
+/// struct keeps its tail as it was.
+///
+/// # Safety
+/// `out` must point to `rows.len() * stride` writable bytes, and `T` must
+/// be `#[repr(C)]` with `size: u32` first.
+unsafe fn write_rows<T: Copy>(out: *mut T, stride: usize, rows: impl Iterator<Item = T>) {
+    let n = stride.min(core::mem::size_of::<T>());
+    for (i, v) in rows.enumerate() {
+        unsafe {
+            let dst = (out as *mut u8).add(i * stride);
+            core::ptr::copy_nonoverlapping(&v as *const T as *const u8, dst, n);
+            core::ptr::write_unaligned(dst as *mut u32, n as u32);
+        }
+    }
+}
+
 /// As [`mode_of`], for the Q65 sub-mode tag. Same reason: a C caller can put
 /// any integer in an `enum` parameter, and matching an out-of-range one as a
 /// Rust enum is undefined behaviour.
@@ -1227,11 +1271,14 @@ pub unsafe extern "C" fn mfsk_q65_history_push(
 }
 
 /// Remember every row of a decode, as `q65_decode.f90` calls `q65_hist` after
-/// each one. `rows` is an array of `n` [`MfskDecode`] as this library wrote
-/// them (their own stride), e.g. straight from `mfsk_decoder_decode_f32`.
+/// each one. `rows` is an array of `n` [`MfskDecode`], e.g. straight from
+/// `mfsk_decoder_decode_f32`, `rows[0].size` apart (`sizeof(MfskDecode)` as
+/// the caller's header has it, which the decode wrote back; 0 is this
+/// header's, #607). `MFSK_STATUS_INVALID_ARG` for a `size` that is not one,
+/// or that stops before `text`.
 ///
 /// # Safety
-/// `h` must be live; `rows` must point to `n` valid rows.
+/// `h` must be live; `rows` must point to `n` rows `rows[0].size` apart.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_q65_history_record(
     h: *mut MfskQ65History,
@@ -1246,7 +1293,30 @@ pub unsafe extern "C" fn mfsk_q65_history_record(
         set_error("mfsk_q65_history_record: rows is NULL");
         return MfskStatus::NullPointer;
     }
-    for r in (0..n).map(|i| unsafe { &*rows.add(i) }) {
+    if n == 0 {
+        return MfskStatus::Ok;
+    }
+    // Each row at the caller's stride (#607), read up to what it has.
+    let Some(stride) = (unsafe { array_stride(rows) }) else {
+        set_error("mfsk_q65_history_record: rows[0].size is not a struct size");
+        return MfskStatus::InvalidArg;
+    };
+    let full = core::mem::size_of::<MfskDecode>();
+    let need = (core::mem::offset_of!(MfskDecode, text) + MFSK_DECODE_TEXT_LEN)
+        .max(core::mem::offset_of!(MfskDecode, freq_hz) + 4);
+    if stride.min(full) < need {
+        set_error("mfsk_q65_history_record: rows[0].size stops before the text");
+        return MfskStatus::InvalidArg;
+    }
+    for i in 0..n {
+        let mut r: MfskDecode = unsafe { core::mem::zeroed() };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (rows as *const u8).add(i * stride),
+                &mut r as *mut MfskDecode as *mut u8,
+                stride.min(full),
+            )
+        };
         h.push(r.freq_hz, cstr_field(&r.text));
     }
     MfskStatus::Ok

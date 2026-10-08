@@ -1169,7 +1169,8 @@ fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64, prefix: bool) -> Resul
 /// Copy the last decode's rows into the caller's array.
 ///
 /// # Safety
-/// `out` must be `cap` writable [`MfskDecode`], or null when `cap` is 0.
+/// `out` must be `cap` writable rows `out[0].size` apart, or null when `cap`
+/// is 0.
 /// [`emit`], remembering a prefix call it refused for a short buffer.
 unsafe fn emit_prefix(
     d: &mut FfiDecoder,
@@ -1200,9 +1201,24 @@ unsafe fn emit(
             "decode: output buffer too small; *out_len is the count needed",
         );
     }
-    for (i, (dec, det)) in d.last.iter().enumerate() {
-        unsafe { write_size_versioned(out.add(i), &row_of(d.mode, dec, det)) };
+    if d.last.is_empty() {
+        return MfskStatus::Ok;
     }
+    // The caller's stride, not this library's `sizeof` (#607).
+    let Some(stride) = (unsafe { array_stride(out) }) else {
+        return d.fail(
+            MfskStatus::InvalidArg,
+            "decode: out[0].size is not a struct size; set it to sizeof(MfskDecode)",
+        );
+    };
+    let mode = d.mode;
+    unsafe {
+        write_rows(
+            out,
+            stride,
+            d.last.iter().map(|(dec, det)| row_of(mode, dec, det)),
+        )
+    };
     MfskStatus::Ok
 }
 
@@ -1211,12 +1227,15 @@ unsafe fn emit(
 ///
 /// Rows go into `out[0..out_cap]`; `*out_len` always receives the number
 /// found, so a short buffer returns `MFSK_STATUS_INVALID_ARG` with the
-/// required count rather than a truncated answer you cannot detect.
+/// required count rather than a truncated answer you cannot detect. Set
+/// `out[0].size` to `sizeof(MfskDecode)`: the rows are written that many
+/// bytes apart, so a caller built against an older or newer header gets its
+/// own layout (#607); 0 means this header's.
 /// `period` is the period's index on the UTC grid, or `MFSK_PERIOD_NONE`.
 ///
 /// # Safety
 /// `samples` must be `n_samples` readable `int16_t`; `out` must be
-/// `out_cap` writable [`MfskDecode`].
+/// `out_cap` writable rows, `out[0].size` bytes apart.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_decoder_decode_i16(
     dec: *mut MfskDecoder,

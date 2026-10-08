@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **C ABI: an array of `MfskDecode` is stepped by the caller's stride, not the library's (#607).** Each row carries
+  `size`, but the decode wrote row `i` at the library's own `sizeof(MfskDecode)` apart, so a program built against an
+  older header (a shorter struct) got row 1 onward in the wrong place and writes past its buffer. A zeroed array did the
+  same at full size. The stride is now `out[0].size`, applied to every row, and `min(size, sizeof)` bytes are written
+  each; a newer caller's longer rows keep their tails; `0` stays "this header's"; a `size` that cannot be a struct size
+  is refused with nothing written. `mfsk_q65_history_record` reads by the same rule. `tests/row_stride.rs` (shorter,
+  longer and zero strides with guard bytes, checked by reverting the fix); `BINDINGS.md` §2.4 (and `.ja`).
 - **Early rows through the C ABI's push handles, and Kotlin and Swift over them (#601).** `mfsk_iq_push` decodes an FT8
   channel early by default (its decoder's points, read on every push): checkpoint A's rows reach the channel decoder's
   callback and `mfsk_iq_poll` at ~11.8 s with `MfskIqDecode::stage` (appended) `MFSK_STAGE_EARLY`, and the whole slot
