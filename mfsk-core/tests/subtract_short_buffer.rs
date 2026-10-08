@@ -16,15 +16,18 @@
 //!   signal everywhere the buffer holds it. Clamping the loop range to the
 //!   buffer stops the panic but leaves the last `|signed_start|` samples
 //!   untouched; this geometry puts 2.6 s of signal there.
-//! - `full_slot_output_is_pinned`: a full-length slot comes out
-//!   bit-identical to before the fix, which is the decode path every
-//!   golden test runs.
+//! - `full_slot_output_is_pinned`: a full-length slot comes out as it did
+//!   before the fix, which is the decode path every golden test runs —
+//!   within the last bit a platform's FFT kernel and libm leave (#579).
 
 use mfsk_core::engine::dsp::subtract::{
     GfskParams, SubtractCfg, subtract_tones_lpf, subtract_tones_lpf_refine_dt,
 };
 use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 use mfsk_core::ft8::Ft8;
+
+#[allow(dead_code)]
+mod common;
 
 const FS: f32 = 12_000.0;
 /// FT8 slot as the decoder normally receives it: 15 s at 12 kHz (`NMAX`).
@@ -221,20 +224,37 @@ fn late_attach_subtracts_the_whole_overlap() {
     );
 }
 
-/// FNV-1a over the samples, so a pin is one number.
-fn fnv1a(audio: &[i16]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &s in audio {
-        for b in s.to_le_bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    h
-}
+/// The full-slot subtract's output, `i16` little-endian, recorded on Apple M5
+/// from `main` and from the commit before #567's fix (148a9e85), which agree
+/// bit for bit there.
+const PINNED_FULL_SLOT: &str = asset_path!("ft8_subtract_full_slot.bin");
+
+/// How far a platform may sit from the pin (#579's rule: a few times the
+/// largest gap measured). The output is `i16` after f32 work whose last bit
+/// depends on rustfft's kernel (AVX2 on x86_64, NEON on aarch64, scalar
+/// elsewhere) and on the libm, and a last bit on the wrong side of a
+/// rounding edge moves a sample by 1. Measured against the pin: x86_64 Linux
+/// on CI (AVX2, glibc), 36 of the 180 000 samples, each by 1; Apple M5 with
+/// rustfft's scalar kernel instead of NEON, 27.
+/// Shortening the LPF by one tap (`lpf_half` 1999), the smallest real change
+/// tried, moves 263, also by 1 — so the count is the check, and the bound sits
+/// between the two. The pin used to be a hash of every sample, written on
+/// x86_64 Linux, which a single such sample breaks: it failed on Apple M5.
+const MAX_SAMPLE_DIFF: i32 = 2;
+const MAX_SAMPLES_DIFFERING: usize = 100;
 
 #[test]
 fn full_slot_output_is_pinned() {
+    let Ok(bytes) = std::fs::read(PINNED_FULL_SLOT) else {
+        common::skip_or_fail("ft8_subtract_full_slot.bin");
+        return;
+    };
+    let pinned: Vec<i16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&b| i16::from_le_bytes(b))
+        .collect();
     let tones = ft8_tones();
     let wave = synthesize_i16::<Ft8>(&tones, FS as u32, 1500.0, 3000);
     // dt = -0.3: the frame starts 0.2 s into the slot and ends inside it.
@@ -257,12 +277,33 @@ fn full_slot_output_is_pinned() {
         FT8_LPF_HALF,
         true,
     );
-    // Recorded on `main` before #567's fix (148a9e85).
-    assert_eq!(
-        fnv1a(&audio),
-        PINNED_FULL_SLOT,
-        "full-slot subtract output changed"
+    assert_eq!(audio.len(), pinned.len());
+    let diffs: Vec<(usize, i32)> = audio
+        .iter()
+        .zip(&pinned)
+        .enumerate()
+        .map(|(i, (&g, &w))| (i, (g as i32 - w as i32).abs()))
+        .filter(|&(_, d)| d != 0)
+        .collect();
+    let worst = diffs.iter().map(|&(_, d)| d).max().unwrap_or(0);
+    // Written past the harness's capture, so a passing run on CI still says
+    // how far this platform sits from the pin.
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "full_slot_output_is_pinned: {} samples differ from the pin, by at most {worst}",
+            diffs.len()
+        );
+    }
+    assert!(
+        worst <= MAX_SAMPLE_DIFF,
+        "full-slot subtract output changed: a sample moved by {worst} (first at {:?})",
+        diffs.iter().find(|&&(_, d)| d == worst).map(|&(i, _)| i)
+    );
+    assert!(
+        diffs.len() <= MAX_SAMPLES_DIFFERING,
+        "full-slot subtract output changed: {} samples differ from the pin",
+        diffs.len()
     );
 }
-
-const PINNED_FULL_SLOT: u64 = 7_538_743_243_027_470_047;
