@@ -2838,12 +2838,15 @@ enum MfskStatus mfsk_decoder_last_budget(const struct MfskDecoder *dec,
  *
  * Rows go into `out[0..out_cap]`; `*out_len` always receives the number
  * found, so a short buffer returns `MFSK_STATUS_INVALID_ARG` with the
- * required count rather than a truncated answer you cannot detect.
+ * required count rather than a truncated answer you cannot detect. Set
+ * `out[0].size` to `sizeof(MfskDecode)`: the rows are written that many
+ * bytes apart, so a caller built against an older or newer header gets its
+ * own layout (#607); 0 means this header's.
  * `period` is the period's index on the UTC grid, or `MFSK_PERIOD_NONE`.
  *
  * # Safety
  * `samples` must be `n_samples` readable `int16_t`; `out` must be
- * `out_cap` writable [`MfskDecode`].
+ * `out_cap` writable rows, `out[0].size` bytes apart.
  */
 MFSK_API
 enum MfskStatus mfsk_decoder_decode_i16(struct MfskDecoder *dec,
