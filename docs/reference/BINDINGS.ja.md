@@ -320,6 +320,8 @@ uint64_t    mfsk_stream_position(const MfskStream *s);     /* 取り込んだ 12
 MfskStatus  mfsk_stream_set_time(MfskStream *s, int64_t utc_ns, uint64_t at_sample,
                                  int32_t *out_change);     /* MFSK_CLOCK_* */
 bool        mfsk_stream_slot_ready(const MfskStream *s);
+bool        mfsk_stream_slot_is_whole(const MfskStream *s);
+MfskStatus  mfsk_stream_set_prefix_points(MfskStream *s, const size_t *points, size_t n);
 uint64_t    mfsk_stream_dropped(const MfskStream *s);
 size_t      mfsk_stream_take_slot_i16(MfskStream *s, int16_t *out, size_t cap,
                                       int64_t *out_period, int64_t *out_utc_ns);
@@ -330,6 +332,8 @@ void        mfsk_stream_close(MfskStream *s);
 MfskStatus  mfsk_decoder_decode_stream(MfskDecoder *dec, MfskStream *stream,
                                        MfskDecode *out, size_t out_cap, size_t *out_len,
                                        int64_t *out_period, int64_t *out_slot_start_utc_ns);
+MfskStatus  mfsk_decoder_prefix_points(const MfskDecoder *dec, size_t *out, size_t cap,
+                                       size_t *out_len);
 ```
 
 **`Instant` も `SystemTime` も、いかなる時計も使わない。** ホストは、サンプル
@@ -352,6 +356,20 @@ FST4-300 のスロットを取り出して渡し直すのは 7 MB を無駄に�
 側のためにスロットをコピーして取り出す: 書いたサンプル数を返し（スロットが無い、
 または `cap` が小さいと 0）、スロットの period と、時計があれば UTC 開始時刻を
 返す（時計が無ければ `*out_utc_ns` は 0）。
+
+**ストリームの早期デコードはオプトイン（#601）**: `mfsk_decoder_prefix_points` は、デコーダの
+`decode_prefix` の一連の呼び出しが周期全体より前に処理を行う位置を返す。FT8 の Normal または
+Deep（`SicEarly` 戦略）なら `141696, 162432`、それ以外のモードと設定では無し。params や extras を
+変えたら取り直す。それを `mfsk_stream_set_prefix_points` に渡すと、次に開くスロットから、
+ストリームは各ポイントで**それまでのスロット**を用意し、その後スロット全体を用意する。
+`mfsk_decoder_decode_stream` は用意された先頭部分を `decode_prefix` と同じようにデコードするので、
+チェックポイント A の行は約 11.8 s で `stage == MFSK_STAGE_EARLY` 付きで返り、`on_decode`
+コールバックにも届く。スロット全体の呼び出しは周期の完全な集合を返し、その中の早期の行は早期の
+印を保つ。先頭部分とスロット全体の区別は `mfsk_stream_slot_is_whole` で、
+`mfsk_stream_take_slot_i16` は先頭部分なら短い長さを返す。取られていない先頭部分は同じ周期の
+新しい配信に置き換えられ、`mfsk_stream_dropped` には数えない。時計が後ろへ跳んだ後、一部を渡し済みの
+周期は再び渡さないので、2 つの録音を継ぎ合わせたデコードは起きない。オプトインなのは、既存の
+`take_slot_i16` の呼び出し側に突然短いスロットが渡らないようにするため。`n == 0` で無効になる。
 
 ### 2.6 送信
 
@@ -633,6 +651,18 @@ IQ の行はテキストではなく `key` と `freq_hz` で比べてくださ�
 チャンネル数を報告します。録音には、ライブのストリームと同じように、終端の後に少し余白が要ります。
 スロットの最後の音声サンプルは、それを運ぶ最後の IQ サンプルの数フィルタ長後に出てくるからです。
 
+**早期デコードは既定で有効（#601）**: デコーダにチェックポイントがあるチャンネル（FT8 の Normal
+または Deep）は、`mfsk_iq_push` の中で約 11.8 s の時点でもデコードされます。その行はスロットが
+揃う前に、チャンネルのデコーダの `mfsk_decoder_set_on_decode` コールバックと `mfsk_iq_poll` に
+`stage == MFSK_STAGE_EARLY`（`MfskIqDecode::stage`、末尾に追加）付きで届きます。スロット全体の
+デコードは残りの行を積み、早期の行は再び積みません。コールバックも各行を 1 回だけ受け取ります。
+代わりに、周期の後半で `<...>` が解決された早期の行は、キューでは未解決のまま残ります。解決済みの
+テキストが要るときは `delivery` で対にしてください。デコーダはハンドルが持っているので、変わるのは
+行が届く*時刻*だけで、WSJT-X がチェックポイント A の行を表示するのと同じです。ポイントは push の
+たびにチャンネルのデコーダの設定から読むので、借り物のデコーダへの `mfsk_decoder_set_params` は
+次のスロットから効きます。`mfsk_iq_set_early(rx, channel, false)` でチャンネルごとに無効にでき、
+その場合は以前どおりスロット全体だけで、行は `MFSK_STAGE_NONE` です。
+
 **スレッド**: デコードは `mfsk_iq_push` の中で、呼び出しスレッド上、および `mfsk_runtime_configure` が
 設定したプール上で走ります（混んだ FT8 のスロットで数百ミリ秒）。UI スレッドや SDR 自身のコールバック
 スレッドではなく、ワーカーから push してください。行はハンドル内のキューで待ち、`mfsk_iq_poll` が
@@ -727,14 +757,14 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 | 群 | シンボル |
 |---|---|
-| decoder (21) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
-| streaming (10) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
+| decoder (22) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_prefix_points` `mfsk_decoder_unpack77` |
+| streaming (12) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_slot_is_whole` `mfsk_stream_set_prefix_points` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
 | 送信 (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
 | Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (14) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| IQ (15) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_set_early` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
 | ランタイム (3) | `mfsk_last_error` `mfsk_runtime_configure` `mfsk_runtime_thread_count` |
 
 ---
@@ -890,7 +920,10 @@ MfskStream.open(ft8).use { s ->
 
 **`dec.decodePrefix(pcm, period)`** は早期デコード（§2.2、#572）で、音声が届くたびに
 その周期でここまでの全部を渡して呼ぶ。FT8 は 141 696 サンプルでチェックポイント A の行を
-`stage == MfskStage.EARLY` 付きで返し、周期全体で完全な集合を返す。
+`stage == MfskStage.EARLY` 付きで返し、周期全体で完全な集合を返す。ストリームでは
+`stream.setPrefixPoints(dec.prefixPoints)` の後、用意されたスロットごとに
+`dec.decodeStream(stream)` を呼ぶ（区別は `stream.slotIsWhole`）。IQ では既定で有効で、
+`MfskIqDecode.stage` で早期の行が分かり、`rx.setEarly(ch, false)` で無効にできる（#601）。
 
 **行**は `MfskDecode` である。`syncScore`、`syncCv`、`hardErrors` は nullable で、モードが
 報告しないもの（C の行で `MFSK_DECODE_FLAG_HAS_*` ビットが落ちているもの）は null。`key` は
@@ -913,7 +946,9 @@ format, iqSwap, channelizer)`、チャンネル ID を返す `addChannel(dialHz,
 extras)`、`push(bytes)`、`MfskIqDecode` を返す `poll()`、`setTime`、`retune`（停止した
 チャンネル数と再開した数を返す）、`gap`、そして**借り物**の `MfskDecoder` を返す
 `channelDecoder(ch)` — その `setParams`・`setExtras`・`addCallsign` が動作中の
-チャンネルを再設定する。`push` は UI スレッドの外で呼ぶこと。
+チャンネルを再設定し、`onDecode` と `setBudget` は `push` が行うデコード（早期の行を含む）を
+受け取り、上限を付ける（チャンネルごとに同じオブジェクトで、受信器はチャンネルを解放する前に
+リスナーを外す）。`push` は UI スレッドの外で呼ぶこと。
 
 **JTTY** は `MfskJttyReceiver`（§2.8.1）: `MfskJttyReceiver.open(sampleRate,
 MfskJttyParams())` のあと `for (u in rx.push(chunk)) …` — `push` は生じた更新
@@ -990,7 +1025,10 @@ for row in try decoder.decode(slot) {
   対にする（`decoder.deliveryIsExact` は両者が同じリストかを言う）。`IQDecode` も同じ詳細を持つ。
 * `decoder.decodePrefix(pcm, period:)` は早期デコード（§2.2、#572）で、その周期で
   ここまでの全サンプルを渡す。FT8 は 141 696 サンプルでチェックポイント A の行
-  （`stage == .early`）を、周期全体で完全な集合を返す。
+  （`stage == .early`）を、周期全体で完全な集合を返す。`CaptureStream` では
+  `try stream.setPrefixPoints(decoder.prefixPoints)` の後、用意されたスロットごとに
+  `decoder.decode(stream)` を呼ぶ（区別は `stream.isSlotWhole`）。IQ では既定で有効で、
+  `IQDecode.stage` で分かり、`rx.setEarly(false, forChannel:)` で無効にできる（#601）。
 * `decoder.onDecode { row in … }` は呼び出しが返す配列と並行して、
   見つかった順に行を流す。`desktop` ビルドではクロージャは rayon ワーカー上で
   （場合により並行に）走り、`mobile` では候補順に単一スレッドで走る。

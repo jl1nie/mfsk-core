@@ -724,6 +724,34 @@ fun main() {
         MfskStream.open(modes.first { Mfsk.modeName(it) == "JTTY" })
     }
 
+    // Early decode through the stream (#601): opt-in, with the decoder's points.
+    MfskDecoder.open(ft8).use { dec ->
+        checkEq("FT8's prefix points", dec.prefixPoints.toList(), listOf(141_696, 162_432))
+        MfskDecoder.open(ft4).use { checkEq("FT4 has none", it.prefixPoints.size, 0) }
+        MfskStream.open(ft8).use { s ->
+            s.setPrefixPoints(dec.prefixPoints)
+            val got = mutableListOf<Pair<Boolean, MfskSlotDecode>>()
+            val audio = slot + ShortArray(12_000)
+            var pos = 0
+            while (pos < audio.size) {
+                val end = minOf(pos + 4_801, audio.size)
+                s.push(audio.copyOfRange(pos, end))
+                pos = end
+                while (s.slotReady) {
+                    val whole = s.slotIsWhole
+                    got += whole to dec.decodeStream(s)!!
+                }
+            }
+            checkEq("the stream decodes at A, B and the whole slot", got.map { it.first }, listOf(false, false, true))
+            val a = got.first().second.rows
+            check("checkpoint A's row comes back early (${a.texts()})",
+                  a.any { it.text == "CQ JA1ABC PM95" && it.stage == MfskStage.EARLY })
+            checkEq("the whole slot has it once",
+                    got.last().second.rows.count { it.text == "CQ JA1ABC PM95" }, 1)
+            checkEq("no slot was dropped", s.dropped, 0L)
+        }
+    }
+
     // ── Wideband IQ ─────────────────────────────────────────────────
     //
     // One FT8 signal (CQ JA1ABC PM95 at audio 1500 Hz, 0.5 s into the slot)
@@ -801,6 +829,44 @@ fun main() {
                 check("which reads as paused", rx.isActive(ch) == false)
                 rx.removeChannel(ch)
                 refused<MfskInvalidArgException>("removing it twice", "channel") { rx.removeChannel(ch) }
+            }
+        }
+        // Early decode through IQ (#601): on by default, off per channel.
+        for (early in listOf(true, false)) {
+            MfskIqReceiver.open(fs, center, MfskIqFormat.CF32).use { rx ->
+                val ch = rx.addChannel(dial, ft8, Mfsk.defaultParams(ft8))
+                if (!early) rx.setEarly(ch, false)
+                // A listener and a budget on the decoder the channel lends.
+                val heard = java.util.concurrent.ConcurrentLinkedQueue<MfskDecode>()
+                val cd = rx.channelDecoder(ch)!!
+                check("the channel lends the same decoder each time", rx.channelDecoder(ch) === cd)
+                cd.onDecode { heard.add(it) }
+                cd.setBudget { true }
+                rx.setTime(t0, 0L)
+                val bytes = cf32.array()
+                val split = 13 * fs * 8 // 13 s: past checkpoint A, short of the slot
+                rx.push(bytes.copyOfRange(0, split))
+                val heardEarly = heard.count { it.text == "CQ JA1ABC PM95" }
+                val before = rx.poll().filter { it.text == "CQ JA1ABC PM95" }
+                rx.push(bytes.copyOfRange(split, bytes.size))
+                val after = rx.poll().filter { it.text == "CQ JA1ABC PM95" }
+                checkEq("the lent decoder's listener heard the row once in all",
+                        heard.count { it.text == "CQ JA1ABC PM95" }, 1)
+                if (early) {
+                    check("IQ: the row arrives before the slot is whole",
+                          before.size == 1 && before[0].stage == MfskStage.EARLY)
+                    checkEq("and reaches the listener before it too", heardEarly, 1)
+                    checkEq("and is not queued again", after.size, 0)
+                } else {
+                    checkEq("IQ with early off: nothing before the slot is whole", before.size, 0)
+                    checkEq("nor to the listener", heardEarly, 0)
+                    check("and a plain row after it", after.size == 1 && after[0].stage == null)
+                }
+            }
+        }
+        MfskIqReceiver.open(fs, center, MfskIqFormat.CF32).use { rx ->
+            refused<MfskInvalidArgException>("setEarly on a channel that does not exist", "channel") {
+                rx.setEarly(3, true)
             }
         }
         MfskIqReceiver.open(fs, center, MfskIqFormat.CF32).use { rx ->

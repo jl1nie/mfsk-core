@@ -935,6 +935,7 @@ class MfskDecoder private constructor(
         ): Long
         @JvmStatic private external fun nativeLastBudget(handle: Long): IntArray
         @JvmStatic private external fun nativeDeliveryIsExact(handle: Long): Boolean
+        @JvmStatic private external fun nativePrefixPoints(handle: Long): IntArray
         @JvmStatic private external fun nativeDecodePrefixI16(
             handle: Long, samples: ShortArray, sampleRate: Int, period: Long,
         ): Array<MfskDecode>
@@ -1081,10 +1082,19 @@ class MfskDecoder private constructor(
     /// Throws [MfskInvalidArgException] past the last row.
     fun copyInfo(index: Int): ByteArray = nativeCopyInfo(owner("copyInfo"), index)
 
+    /// The prefix lengths, in 12 kHz samples, at which [decodePrefix] does
+    /// work before the whole period under the current settings:
+    /// `[141696, 162432]` for FT8 at Normal or Deep depth, empty otherwise.
+    /// Hand them to [MfskStream.setPrefixPoints]; ask again after changing
+    /// the params or extras.
+    val prefixPoints: IntArray get() = nativePrefixPoints(live())
+
     /// Decode the stream's ready slot, with the slot's own index as the
-    /// period, or return null when no whole slot is ready yet — so this can be
+    /// period, or return null when no slot is ready yet — so this can be
     /// polled in place of [MfskStream.slotReady]. The stream has to be for the
-    /// same mode.
+    /// same mode. On a stream with [MfskStream.setPrefixPoints] a prefix is
+    /// decoded as [decodePrefix] would: checkpoint A's rows come back at
+    /// ~11.8 s with [MfskStage.EARLY].
     fun decodeStream(stream: MfskStream): MfskSlotDecode? {
         val meta = LongArray(2)
         val rows = nativeDecodeStream(owner("decodeStream"), stream.raw, meta) ?: return null
@@ -1122,7 +1132,9 @@ class MfskDecoder private constructor(
     /// rayon worker: it is printed and swallowed, and the decode
     /// continues.
     fun onDecode(listener: MfskDecodeListener?) {
-        callbackCtx = nativeSetOnDecode(owner("onDecode"), listener, callbackCtx)
+        // Allowed on a decoder an IQ receiver lends too: its rows, early ones
+        // included, reach the listener while the receiver's `push` runs.
+        callbackCtx = nativeSetOnDecode(live(), listener, callbackCtx)
         this.listener = listener
     }
 
@@ -1140,7 +1152,7 @@ class MfskDecoder private constructor(
     /// Every mode with a decoder takes one ([Mfsk.CAP_BUDGET]); WSPR, JT9,
     /// JT65 and Q65 report only [MfskBudgetReport.exhausted].
     fun setBudget(check: MfskBudgetCheck?) {
-        budgetCtx = nativeSetBudget(owner("setBudget"), check, budgetCtx)
+        budgetCtx = nativeSetBudget(live(), check, budgetCtx)
     }
 
     /// What the budget cut short on the **last** decode.
@@ -1169,17 +1181,31 @@ class MfskDecoder private constructor(
         get() = nativeDeliveryIsExact(live())
 
     override fun close() {
-        if (handle != 0L) {
-            if (owned) {
-                // The native side clears the callback and the budget before
-                // closing and then frees their contexts: the decoder holds
-                // raw pointers to them, so the order is not decorative.
-                nativeClose(handle, callbackCtx, budgetCtx)
-            }
+        // A decoder an IQ receiver lends is the receiver's to close: closing
+        // it here does nothing, and its listener and budget stay installed
+        // until the channel is removed (`releaseLent`).
+        if (handle != 0L && owned) {
+            // The native side clears the callback and the budget before
+            // closing and then frees their contexts: the decoder holds raw
+            // pointers to them, so the order is not decorative.
+            nativeClose(handle, callbackCtx, budgetCtx)
             callbackCtx = 0L
             budgetCtx = 0L
             handle = 0L
         }
+    }
+
+    /// For [MfskIqReceiver], before it frees the C decoder this lends: take
+    /// the listener and the budget off it and free their contexts, then
+    /// refuse further use.
+    internal fun releaseLent() {
+        if (handle == 0L || owned) return
+        if (callbackCtx != 0L) nativeSetOnDecode(handle, null, callbackCtx)
+        if (budgetCtx != 0L) nativeSetBudget(handle, null, budgetCtx)
+        listener = null
+        callbackCtx = 0L
+        budgetCtx = 0L
+        handle = 0L
     }
 
     /// Opaque pointer to the shim's per-decoder callback state — the
@@ -1223,6 +1249,8 @@ class MfskStream private constructor(private var handle: Long, val mode: Int) : 
         @JvmStatic private external fun nativePosition(handle: Long): Long
         @JvmStatic private external fun nativeSetTime(handle: Long, utcNs: Long, atSample: Long): Int
         @JvmStatic private external fun nativeSlotReady(handle: Long): Boolean
+        @JvmStatic private external fun nativeSlotIsWhole(handle: Long): Boolean
+        @JvmStatic private external fun nativeSetPrefixPoints(handle: Long, points: IntArray)
         @JvmStatic private external fun nativeDropped(handle: Long): Long
         @JvmStatic private external fun nativeTakeSlot(handle: Long, cap: Int, meta: LongArray): ShortArray?
         @JvmStatic private external fun nativeClear(handle: Long)
@@ -1251,8 +1279,20 @@ class MfskStream private constructor(private var handle: Long, val mode: Int) : 
     fun setTime(utcNs: Long, atSample: Long): MfskClockChange =
         MfskClockChange.of(nativeSetTime(raw, utcNs, atSample))
 
-    /// Whether a completed slot is waiting.
+    /// Whether a slot is waiting: a completed one, or with [setPrefixPoints]
+    /// the slot so far.
     val slotReady: Boolean get() = nativeSlotReady(raw)
+
+    /// Whether the waiting slot is whole rather than a prefix; false when none
+    /// is waiting.
+    val slotIsWhole: Boolean get() = nativeSlotIsWhole(raw)
+
+    /// Early decode, off by default: from the next slot, the stream also makes
+    /// the slot so far ready at each of these 12 kHz sample counts, then the
+    /// whole slot. Pass [MfskDecoder.prefixPoints] and decode every slot with
+    /// [MfskDecoder.decodeStream]. An empty array turns it off. Opt-in because
+    /// a [takeSlot] caller would otherwise get short slots.
+    fun setPrefixPoints(points: IntArray) = nativeSetPrefixPoints(raw, points)
 
     /// Completed slots a newer one replaced before they were taken.
     val dropped: Long get() = nativeDropped(raw)
@@ -1340,6 +1380,11 @@ class MfskIqDecode internal constructor(
     val keyBits: Int,
     /// As [MfskDecode.delivery], for a listener set on the channel's decoder.
     val delivery: Int?,
+    /// [MfskStage.EARLY] for a row found before the slot was whole (FT8's
+    /// checkpoint A, ~11.8 s; see [MfskIqReceiver.setEarly]),
+    /// [MfskStage.FINAL] for one the whole slot found, null from a plain
+    /// decode (early decode off).
+    val stage: MfskStage? = null,
 ) {
     /// UTC of the slot start, ns since the Unix epoch, or null on a
     /// free-running grid.
@@ -1389,6 +1434,7 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
         @JvmStatic private external fun nativeSetTime(handle: Long, utcNs: Long, atSample: Long): Int
         @JvmStatic private external fun nativeRetune(handle: Long, centerHz: Double): IntArray
         @JvmStatic private external fun nativeGap(handle: Long, lost: Long)
+        @JvmStatic private external fun nativeSetEarly(handle: Long, channel: Int, on: Boolean)
         @JvmStatic private external fun nativePush(handle: Long, data: ByteArray, length: Int)
         @JvmStatic private external fun nativeSamplesIn(handle: Long): Long
         @JvmStatic private external fun nativePending(handle: Long): Int
@@ -1421,14 +1467,23 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
 
     /// The channel's decoder, for the calls that configure one: [MfskDecoder.setParams],
     /// [MfskDecoder.setExtras], [MfskDecoder.addCallsign], [MfskDecoder.unpack77],
-    /// [MfskDecoder.setQ65Callers], [MfskDecoder.clear]. **Borrowed**: closing
-    /// it does nothing, it dies with the channel (or the receiver), and it
-    /// refuses to decode — the receiver does. Null if there is no such channel.
+    /// [MfskDecoder.setQ65Callers], [MfskDecoder.clear], and
+    /// [MfskDecoder.onDecode] / [MfskDecoder.setBudget]: the listener sees the
+    /// channel's rows as [push] finds them, early ones included, and the
+    /// budget bounds each decode [push] runs. **Borrowed**: closing it does
+    /// nothing, it dies with the channel (or the receiver), and it refuses to
+    /// decode — the receiver does. The same object each time for a channel.
+    /// Null if there is no such channel.
     fun channelDecoder(channel: Int): MfskDecoder? {
+        lent[channel]?.let { return it }
         val h = nativeChannelDecoder(live(), channel)
         if (h == 0L) return null
-        return MfskDecoder.borrowed(h, channelMode(channel))
+        return MfskDecoder.borrowed(h, channelMode(channel)).also { lent[channel] = it }
     }
+
+    /// The decoders [channelDecoder] handed out, one per channel, so a
+    /// listener or budget set on one is released before the C decoder goes.
+    private val lent = HashMap<Int, MfskDecoder>()
 
     private val modes = HashMap<Int, Int>()
     private fun channelMode(channel: Int) = modes[channel] ?: -1
@@ -1444,7 +1499,10 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
     }
 
     fun removeChannel(channel: Int) {
-        nativeRemoveChannel(live(), channel)
+        val h = live()
+        // The listener's context is freed only once the C side cannot call it.
+        lent.remove(channel)?.releaseLent()
+        nativeRemoveChannel(h, channel)
         modes.remove(channel)
     }
 
@@ -1466,9 +1524,16 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
     /// slots are dropped.
     fun gap(lost: Long) = nativeGap(live(), lost)
 
+    /// Decode a channel early, or not. On (the default): an FT8 channel at
+    /// Normal or Deep depth also decodes the slot so far at ~11.8 s, so those
+    /// rows reach the channel decoder's listener and [poll] before the slot is
+    /// whole, with [MfskStage.EARLY]; the whole slot adds the rest without
+    /// repeating them. Other modes and depths decode the whole slot either way.
+    fun setEarly(channel: Int, on: Boolean) = nativeSetEarly(live(), channel, on)
+
     /// Push IQ in the format the receiver was opened with, little-endian, I
     /// then Q; a sample split across calls is carried over. Decodes every slot
-    /// this completes before returning.
+    /// this completes, and every early checkpoint it reaches, before returning.
     fun push(data: ByteArray, length: Int = data.size) = nativePush(live(), data, length)
 
     /// Complex samples consumed so far, gaps included: the stream's clock.
@@ -1482,6 +1547,8 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
 
     override fun close() {
         if (handle != 0L) {
+            for (d in lent.values) d.releaseLent()
+            lent.clear()
             nativeClose(handle)
             handle = 0L
         }

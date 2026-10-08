@@ -329,6 +329,8 @@ uint64_t    mfsk_stream_position(const MfskStream *s);     /* 12 kHz samples tak
 MfskStatus  mfsk_stream_set_time(MfskStream *s, int64_t utc_ns, uint64_t at_sample,
                                  int32_t *out_change);     /* MFSK_CLOCK_* */
 bool        mfsk_stream_slot_ready(const MfskStream *s);
+bool        mfsk_stream_slot_is_whole(const MfskStream *s);
+MfskStatus  mfsk_stream_set_prefix_points(MfskStream *s, const size_t *points, size_t n);
 uint64_t    mfsk_stream_dropped(const MfskStream *s);
 size_t      mfsk_stream_take_slot_i16(MfskStream *s, int16_t *out, size_t cap,
                                       int64_t *out_period, int64_t *out_utc_ns);
@@ -339,6 +341,8 @@ void        mfsk_stream_close(MfskStream *s);
 MfskStatus  mfsk_decoder_decode_stream(MfskDecoder *dec, MfskStream *stream,
                                        MfskDecode *out, size_t out_cap, size_t *out_len,
                                        int64_t *out_period, int64_t *out_slot_start_utc_ns);
+MfskStatus  mfsk_decoder_prefix_points(const MfskDecoder *dec, size_t *out, size_t cap,
+                                       size_t *out_len);
 ```
 
 **No `Instant`, no `SystemTime`, no clock of any kind.** The host says
@@ -362,6 +366,24 @@ mode that is not cut into slots cannot open a stream (`UNSUPPORTED`).
 samples: it returns the count written (0 if none is ready or `cap` is too
 small) and the slot's period and, with a clock, its UTC start
 (`*out_utc_ns` is 0 without one).
+
+**Early decode on a stream is opt-in (#601).** `mfsk_decoder_prefix_points`
+reports where a decoder's `decode_prefix` sequence does work before the whole
+period: `141696, 162432` for FT8 at Normal or Deep depth (its `SicEarly`
+strategy), none for every other mode and setting; ask again after changing
+the params or extras. Hand them to `mfsk_stream_set_prefix_points`, and from
+the next slot that opens the stream also makes **the slot so far** ready at
+each point, then the whole slot. `mfsk_decoder_decode_stream` decodes a
+ready prefix as `decode_prefix` would, so checkpoint A's rows come back, and
+reach the `on_decode` callback, at ~11.8 s with `stage == MFSK_STAGE_EARLY`;
+the whole slot's call returns the period's complete set, the early rows in it
+still marked early. `mfsk_stream_slot_is_whole` tells a prefix from a whole
+slot, and `mfsk_stream_take_slot_i16` returns a prefix's shorter length. A
+newer delivery of the same period replaces an untaken prefix without counting
+in `mfsk_stream_dropped`; a period the stream already delivered part of is
+not delivered again after a clock steps back, so no decode splices two
+recordings. It is opt-in because an existing caller of `take_slot_i16` would
+otherwise start receiving short slots. `n == 0` turns it off.
 
 ### 2.6 Transmit
 
@@ -666,6 +688,21 @@ reports how many channels paused and resumed. A recording needs a moment of
 padding after its end, as a live stream has: a slot's last audio sample comes
 out a few filter lengths after the last IQ sample that carries it.
 
+**Early decode is on by default (#601).** A channel whose decoder has
+checkpoints (FT8 at Normal or Deep depth) is also decoded at ~11.8 s inside
+`mfsk_iq_push`: those rows reach the channel decoder's
+`mfsk_decoder_set_on_decode` callback and `mfsk_iq_poll` before the slot is
+whole, with `stage == MFSK_STAGE_EARLY` (`MfskIqDecode::stage`, appended).
+The whole slot then queues the rest and not the early rows again; the
+callback, too, sees each row once. The trade: an early row whose `<...>` the
+period later resolves stays unresolved in the queue; pair by `delivery` for
+the resolved text. The handle owns the decoder, so only *when* a row arrives
+changes, as WSJT-X shows checkpoint A's rows. The points follow the channel
+decoder's settings, read on every push, so `mfsk_decoder_set_params` on the
+borrowed decoder takes effect from the next slot. `mfsk_iq_set_early(rx,
+channel, false)` turns it off for a channel: whole slots only, rows with
+`MFSK_STAGE_NONE`, as before.
+
 **Threads.** Decoding runs inside `mfsk_iq_push` (hundreds of milliseconds for a
 busy FT8 slot), on the calling thread and on the pool `mfsk_runtime_configure`
 installed. Push from a worker, not the UI or the SDR's own callback thread. The
@@ -767,14 +804,14 @@ mode is here but does not offer what was asked).
 
 | group | symbols |
 |---|---|
-| decoder (21) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_unpack77` |
-| streaming (10) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
+| decoder (22) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_prefix_points` `mfsk_decoder_unpack77` |
+| streaming (12) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_slot_is_whole` `mfsk_stream_set_prefix_points` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
 | transmit (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
 | Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (14) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (14) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| IQ (15) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_set_early` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
 | runtime (3) | `mfsk_last_error` `mfsk_runtime_configure` `mfsk_runtime_thread_count` |
 
 ---
@@ -935,7 +972,10 @@ belongs behind a boolean the JVM side already computed.
 **`dec.decodePrefix(pcm, period)`** is the early decode (§2.2, #572): call it as
 audio arrives with everything of the period so far. FT8 returns checkpoint A's
 rows at 141 696 samples, with `stage == MfskStage.EARLY`, and the complete set
-at the whole period.
+at the whole period. Over a stream: `stream.setPrefixPoints(dec.prefixPoints)`,
+then `dec.decodeStream(stream)` on every ready slot (`stream.slotIsWhole`
+tells them apart). Over IQ it is on by default: `MfskIqDecode.stage` says
+which rows came early, and `rx.setEarly(ch, false)` turns it off (#601).
 
 **Rows** are `MfskDecode`. `syncScore`, `syncCv` and `hardErrors` are
 nullable, null where the mode reports none (the C row's clear
@@ -961,7 +1001,10 @@ format, iqSwap, channelizer)`, `addChannel(dialHz, mode, params, extras)`
 returning the channel id, `push(bytes)`, `poll()` returning the
 `MfskIqDecode`s, `setTime`, `retune` (returns the paused and resumed counts),
 `gap`, and `channelDecoder(ch)` for a **borrowed** `MfskDecoder` whose
-`setParams`, `setExtras` and `addCallsign` reconfigure a live channel. Call
+`setParams`, `setExtras` and `addCallsign` reconfigure a live channel, and
+whose `onDecode` and `setBudget` see and bound the decodes `push` runs, early
+rows included (the same object each time; the receiver takes the listener off
+before it frees the channel). Call
 `push` off the UI thread.
 
 **JTTY** is `MfskJttyReceiver` (§2.8.1): `MfskJttyReceiver.open(sampleRate,
@@ -1042,7 +1085,10 @@ for row in try decoder.decode(slot) {
 * `decoder.decodePrefix(pcm, period:)` is the early decode (§2.2, #572):
   every sample of the period so far. FT8 returns checkpoint A's rows at
   141 696 samples (`stage == .early`) and the complete set at the whole
-  period.
+  period. Over a `CaptureStream`: `try stream.setPrefixPoints(decoder.prefixPoints)`,
+  then `decoder.decode(stream)` on every ready slot (`stream.isSlotWhole`).
+  Over IQ it is on by default: `IQDecode.stage`, and
+  `rx.setEarly(false, forChannel:)` turns it off (#601).
 * `decoder.onDecode { row in … }` streams rows as they are found,
   alongside the array the call returns. On a `desktop` build the
   closure runs on rayon workers, possibly concurrently; on `mobile` it

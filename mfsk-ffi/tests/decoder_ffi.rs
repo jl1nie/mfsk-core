@@ -777,3 +777,202 @@ fn a_prefix_call_retried_for_a_short_buffer_keeps_its_rows() {
     assert_eq!(rows[0].stage, MFSK_STAGE_EARLY);
     unsafe { mfsk_decoder_close(d) };
 }
+
+// ── Early decode through the stream (#601) ───────────────────────────────
+
+/// `mfsk_decoder_decode_stream` on whatever the stream has ready, after each
+/// push: `(slot length, rows)` per decode.
+fn stream_decodes(
+    s: *mut MfskStream,
+    dec: *mut MfskDecoder,
+    audio: &[i16],
+    chunk: usize,
+) -> Vec<(usize, Vec<MfskDecode>)> {
+    let mut out = Vec::new();
+    for c in audio.chunks(chunk) {
+        unsafe { mfsk_stream_push_i16(s, c.as_ptr(), c.len()) };
+        while mfsk_stream_slot_ready(s) {
+            let len = if mfsk_stream_slot_is_whole(s) {
+                180_000
+            } else {
+                0
+            };
+            let mut rows = vec![blank_row(); 64];
+            let mut n = 0usize;
+            assert_eq!(
+                unsafe {
+                    mfsk_decoder_decode_stream(
+                        dec,
+                        s,
+                        rows.as_mut_ptr(),
+                        rows.len(),
+                        &mut n,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    )
+                },
+                MfskStatus::Ok
+            );
+            rows.truncate(n);
+            out.push((len, rows));
+        }
+    }
+    out
+}
+
+/// A stream given the decoder's prefix points makes the slot ready at ~11.8 s
+/// and decodes it there: checkpoint A's row comes back early, B returns
+/// nothing, and the whole slot returns the period's complete set, the early
+/// row kept as early, with no copy of it.
+#[test]
+fn a_stream_with_prefix_points_decodes_early() {
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    let dec = open(MfskMode::Ft8, None, None);
+    let mut pts = [0usize; 4];
+    let mut n = 0usize;
+    assert_eq!(
+        unsafe { mfsk_decoder_prefix_points(dec, pts.as_mut_ptr(), pts.len(), &mut n) },
+        MfskStatus::Ok
+    );
+    assert_eq!(&pts[..n], &[141_696, 162_432]);
+
+    let mut st = MfskStatus::Internal;
+    let s = unsafe { mfsk_stream_open(MfskMode::Ft8 as u32, 12_000, &mut st) };
+    assert_eq!(
+        unsafe { mfsk_stream_set_prefix_points(s, pts.as_ptr(), n) },
+        MfskStatus::Ok
+    );
+    let mut audio = slot.clone();
+    audio.extend(std::iter::repeat_n(0i16, 12_000));
+    let calls = stream_decodes(s, dec, &audio, 4_801);
+    assert_eq!(calls.len(), 3, "A, B and the whole slot");
+    assert_eq!(calls[0].0, 0, "a prefix first");
+    let early: Vec<_> = calls[0]
+        .1
+        .iter()
+        .filter(|r| r.stage == MFSK_STAGE_EARLY)
+        .collect();
+    assert!(
+        any_contains(&calls[0].1, "CQ JA1ABC PM95"),
+        "{:?}",
+        texts(&calls[0].1)
+    );
+    assert_eq!(early.len(), calls[0].1.len(), "every row at A is early");
+    assert!(calls[1].1.is_empty(), "B returns nothing");
+    assert_eq!(calls[2].0, 180_000);
+    let whole = &calls[2].1;
+    let cq: Vec<_> = whole
+        .iter()
+        .filter(|r| texts(std::slice::from_ref(*r))[0] == "CQ JA1ABC PM95")
+        .collect();
+    assert_eq!(cq.len(), 1, "{:?}", texts(whole));
+    assert_eq!(cq[0].stage, MFSK_STAGE_EARLY, "the A row keeps its stage");
+    assert_eq!(mfsk_stream_dropped(s), 0);
+    unsafe { mfsk_stream_close(s) };
+    unsafe { mfsk_decoder_close(dec) };
+}
+
+/// A prefix nobody took is replaced by the next delivery of its period, not
+/// counted as dropped; without points every slot is whole, as before; and
+/// the points a decoder reports follow its mode.
+#[test]
+fn an_untaken_prefix_is_superseded_and_points_are_opt_in() {
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    let mut audio = slot.clone();
+    audio.extend(std::iter::repeat_n(0i16, 12_000));
+    for with_points in [true, false] {
+        let mut st = MfskStatus::Internal;
+        let s = unsafe { mfsk_stream_open(MfskMode::Ft8 as u32, 12_000, &mut st) };
+        if with_points {
+            let pts = [141_696usize, 162_432];
+            unsafe { mfsk_stream_set_prefix_points(s, pts.as_ptr(), pts.len()) };
+        }
+        unsafe { mfsk_stream_push_i16(s, audio.as_ptr(), audio.len()) };
+        assert!(mfsk_stream_slot_ready(s));
+        assert!(mfsk_stream_slot_is_whole(s), "with points {with_points}");
+        assert_eq!(mfsk_stream_dropped(s), 0, "with points {with_points}");
+        let mut buf = vec![0i16; 180_000];
+        let got = unsafe {
+            mfsk_stream_take_slot_i16(
+                s,
+                buf.as_mut_ptr(),
+                buf.len(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(got, 180_000);
+        assert!(!mfsk_stream_slot_is_whole(s), "nothing waiting");
+        unsafe { mfsk_stream_close(s) };
+    }
+
+    let ft4 = open(MfskMode::Ft4, None, None);
+    let mut n = 9usize;
+    assert_eq!(
+        unsafe { mfsk_decoder_prefix_points(ft4, std::ptr::null_mut(), 0, &mut n) },
+        MfskStatus::Ok
+    );
+    assert_eq!(n, 0, "FT4 has no checkpoints");
+    let ft8 = open(MfskMode::Ft8, None, None);
+    assert_eq!(
+        unsafe { mfsk_decoder_prefix_points(ft8, std::ptr::null_mut(), 0, &mut n) },
+        MfskStatus::InvalidArg,
+        "a buffer too small says how many"
+    );
+    assert_eq!(n, 2);
+    unsafe { mfsk_decoder_close(ft4) };
+    unsafe { mfsk_decoder_close(ft8) };
+}
+
+/// A clock stepped back reopens a period the stream already delivered a
+/// prefix of; a stream with points does not deliver it again, so a decoder
+/// never continues that period over other audio.
+#[test]
+fn a_stream_with_points_does_not_reopen_a_period() {
+    let t0: i64 = 1_700_000_010 * 1_000_000_000;
+    let noise: Vec<i16> = (0..45 * 12_000u32)
+        .map(|i| ((i.wrapping_mul(2_654_435_761) >> 20) as i16) - 2_048)
+        .collect();
+    let mut st = MfskStatus::Internal;
+    let s = unsafe { mfsk_stream_open(MfskMode::Ft8 as u32, 12_000, &mut st) };
+    let pts = [141_696usize, 162_432];
+    unsafe { mfsk_stream_set_prefix_points(s, pts.as_ptr(), pts.len()) };
+    unsafe { mfsk_stream_set_time(s, t0, 0, std::ptr::null_mut()) };
+    let take = |s| {
+        let mut buf = vec![0i16; 180_000];
+        let mut period = 0i64;
+        let n = unsafe {
+            mfsk_stream_take_slot_i16(
+                s,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut period,
+                std::ptr::null_mut(),
+            )
+        };
+        (period, n)
+    };
+    let split = 150_000; // 12.5 s: past A, before B
+    unsafe { mfsk_stream_push_i16(s, noise.as_ptr(), split) };
+    let first = t0 / 15_000_000_000;
+    assert_eq!(take(s), (first, 141_696));
+    // The clock now says the period begins a second from here.
+    unsafe { mfsk_stream_set_time(s, t0 - 1_000_000_000, split as u64, std::ptr::null_mut()) };
+    let mut got = Vec::new();
+    for c in noise[split..].chunks(1_000) {
+        unsafe { mfsk_stream_push_i16(s, c.as_ptr(), c.len()) };
+        if mfsk_stream_slot_ready(s) {
+            got.push(take(s));
+        }
+    }
+    assert_eq!(
+        got,
+        vec![
+            (first + 1, 141_696),
+            (first + 1, 162_432),
+            (first + 1, 180_000)
+        ],
+        "the reopened period went out"
+    );
+    unsafe { mfsk_stream_close(s) };
+}

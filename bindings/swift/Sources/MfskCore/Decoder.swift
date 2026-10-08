@@ -334,6 +334,10 @@ public final class Decoder {
     /// out only to hand it back moves 7 MB for nothing. The slot's own index
     /// is the period. The stream must have been opened for this decoder's
     /// mode; otherwise ``MfskError/Code/invalidArgument``.
+    ///
+    /// On a stream with ``CaptureStream/setPrefixPoints(_:)`` a prefix is
+    /// decoded as ``decodePrefix(_:sampleRate:period:handler:)`` would:
+    /// checkpoint A's rows come back at ~11.8 s with ``Decode/Stage/early``.
     public func decode(
         _ stream: CaptureStream,
         handler: ((Decode) -> Void)? = nil
@@ -484,6 +488,22 @@ extension Decoder {
     /// either way. Ask again after changing the parameters or the extras.
     public var deliveryIsExact: Bool {
         mfsk_decoder_delivery_is_exact(handle)
+    }
+
+    /// The prefix lengths, in 12 kHz samples, at which
+    /// ``decodePrefix(_:sampleRate:period:handler:)`` does work before the
+    /// whole period under the current settings: `[141_696, 162_432]` for FT8
+    /// at normal or deep depth, empty otherwise. Hand them to
+    /// ``CaptureStream/setPrefixPoints(_:)``; ask again after changing the
+    /// parameters or the extras.
+    public var prefixPoints: [Int] {
+        var buffer = [UInt](repeating: 0, count: 16)
+        var count: UInt = 0
+        let status = buffer.withUnsafeMutableBufferPointer {
+            mfsk_decoder_prefix_points(handle, $0.baseAddress, UInt($0.count), &count)
+        }
+        guard status == MFSK_STATUS_OK else { return [] }
+        return buffer.prefix(Int(count)).map { Int($0) }
     }
 
     /// What the budget cut short on the **last** decode.

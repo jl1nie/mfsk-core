@@ -2,14 +2,23 @@
 
 ## Unreleased
 
+- **Early rows through the C ABI's push handles, and Kotlin and Swift over them (#601).** `mfsk_iq_push` decodes an FT8
+  channel early by default (its decoder's points, read on every push): checkpoint A's rows reach the channel decoder's
+  callback and `mfsk_iq_poll` at ~11.8 s with `MfskIqDecode::stage` (appended) `MFSK_STAGE_EARLY`, and the whole slot
+  queues the rest without repeating them; `mfsk_iq_set_early(rx, ch, false)` restores whole slots. The stream is opt-in,
+  since a `take_slot_i16` caller would otherwise get short slots: `mfsk_decoder_prefix_points` into
+  `mfsk_stream_set_prefix_points`, then `mfsk_decoder_decode_stream` on each ready slot (`mfsk_stream_slot_is_whole`).
+  `SlotCutter::set_points` / `feed_parts` are public for it. Kotlin (`setEarly`, `prefixPoints`, `setPrefixPoints`,
+  `slotIsWhole`, `stage`) and Swift likewise; Kotlin's lent channel decoder now takes `onDecode` and `setBudget`
+  (it refused both, so a Kotlin IQ consumer could not receive the early rows by callback). `BINDINGS.md` §2.5, §2.8.2 (and `.ja`).
 - **skimmer: FT8 rows from ~11.8 s into the slot, as WSJT-X shows them (#600).** Each channel tells the receiver its
   decoder's `prefix_points()` (again when its options change), and a lane decodes every delivery of a period with
-  `decode_prefix_with`: checkpoint A's rows go out at the first prefix, marked early (`DecodeDetail::early`, the GUI's
-  hover text, `--detail`), the rest at the end, where an early row is said again only if it reads better (`update`). A
+  `decode_prefix_with`: checkpoint A's rows go out at the first prefix, marked early (`DecodeDetail::early`, the GUI's ⏱ under
+  Detail, `--detail`), the rest at the end, where an early row is said again only if it reads better (`update`). A
   period's deliveries stay on the lane its first went to, since that decoder holds the period's state; a dropped prefix
   costs only the early rows. On by default (`Config::early_decode`, `--no-early`, GUI *Early decode*); FT8 at `Fast`
-  depth and every other mode decode the whole slot as before. Tested in `skimmer-core` (60 tests) and `svelte-check`;
-  the window has not been run against a server with this change.
+  depth and every other mode decode the whole slot as before. Tested in `skimmer-core` (60 tests) and `svelte-check`,
+  and in the window against a SpyServer on 40 m (2026-10-08): most strong stations arrive early.
 - **`IqReceiver` delivers prefixes, so early decode reaches wideband IQ (#600).** `IqReceiver::set_prefix_points(id,
   points)` (off by default) makes a channel deliver each slot cut at exactly those 12 kHz sample counts, then whole,
   through the same `push_*` (`CompletedSlot::is_whole()`); the points come from the channel's own decoder,
