@@ -946,7 +946,9 @@ format, iqSwap, channelizer)`、チャンネル ID を返す `addChannel(dialHz,
 extras)`、`push(bytes)`、`MfskIqDecode` を返す `poll()`、`setTime`、`retune`（停止した
 チャンネル数と再開した数を返す）、`gap`、そして**借り物**の `MfskDecoder` を返す
 `channelDecoder(ch)` — その `setParams`・`setExtras`・`addCallsign` が動作中の
-チャンネルを再設定する。`push` は UI スレッドの外で呼ぶこと。
+チャンネルを再設定し、`onDecode` と `setBudget` は `push` が行うデコード（早期の行を含む）を
+受け取り、上限を付ける（チャンネルごとに同じオブジェクトで、受信器はチャンネルを解放する前に
+リスナーを外す）。`push` は UI スレッドの外で呼ぶこと。
 
 **JTTY** は `MfskJttyReceiver`（§2.8.1）: `MfskJttyReceiver.open(sampleRate,
 MfskJttyParams())` のあと `for (u in rx.push(chunk)) …` — `push` は生じた更新

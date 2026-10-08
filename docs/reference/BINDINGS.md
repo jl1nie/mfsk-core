@@ -1001,7 +1001,10 @@ format, iqSwap, channelizer)`, `addChannel(dialHz, mode, params, extras)`
 returning the channel id, `push(bytes)`, `poll()` returning the
 `MfskIqDecode`s, `setTime`, `retune` (returns the paused and resumed counts),
 `gap`, and `channelDecoder(ch)` for a **borrowed** `MfskDecoder` whose
-`setParams`, `setExtras` and `addCallsign` reconfigure a live channel. Call
+`setParams`, `setExtras` and `addCallsign` reconfigure a live channel, and
+whose `onDecode` and `setBudget` see and bound the decodes `push` runs, early
+rows included (the same object each time; the receiver takes the listener off
+before it frees the channel). Call
 `push` off the UI thread.
 
 **JTTY** is `MfskJttyReceiver` (§2.8.1): `MfskJttyReceiver.open(sampleRate,

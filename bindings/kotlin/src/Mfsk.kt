@@ -1132,7 +1132,9 @@ class MfskDecoder private constructor(
     /// rayon worker: it is printed and swallowed, and the decode
     /// continues.
     fun onDecode(listener: MfskDecodeListener?) {
-        callbackCtx = nativeSetOnDecode(owner("onDecode"), listener, callbackCtx)
+        // Allowed on a decoder an IQ receiver lends too: its rows, early ones
+        // included, reach the listener while the receiver's `push` runs.
+        callbackCtx = nativeSetOnDecode(live(), listener, callbackCtx)
         this.listener = listener
     }
 
@@ -1150,7 +1152,7 @@ class MfskDecoder private constructor(
     /// Every mode with a decoder takes one ([Mfsk.CAP_BUDGET]); WSPR, JT9,
     /// JT65 and Q65 report only [MfskBudgetReport.exhausted].
     fun setBudget(check: MfskBudgetCheck?) {
-        budgetCtx = nativeSetBudget(owner("setBudget"), check, budgetCtx)
+        budgetCtx = nativeSetBudget(live(), check, budgetCtx)
     }
 
     /// What the budget cut short on the **last** decode.
@@ -1179,17 +1181,31 @@ class MfskDecoder private constructor(
         get() = nativeDeliveryIsExact(live())
 
     override fun close() {
-        if (handle != 0L) {
-            if (owned) {
-                // The native side clears the callback and the budget before
-                // closing and then frees their contexts: the decoder holds
-                // raw pointers to them, so the order is not decorative.
-                nativeClose(handle, callbackCtx, budgetCtx)
-            }
+        // A decoder an IQ receiver lends is the receiver's to close: closing
+        // it here does nothing, and its listener and budget stay installed
+        // until the channel is removed (`releaseLent`).
+        if (handle != 0L && owned) {
+            // The native side clears the callback and the budget before
+            // closing and then frees their contexts: the decoder holds raw
+            // pointers to them, so the order is not decorative.
+            nativeClose(handle, callbackCtx, budgetCtx)
             callbackCtx = 0L
             budgetCtx = 0L
             handle = 0L
         }
+    }
+
+    /// For [MfskIqReceiver], before it frees the C decoder this lends: take
+    /// the listener and the budget off it and free their contexts, then
+    /// refuse further use.
+    internal fun releaseLent() {
+        if (handle == 0L || owned) return
+        if (callbackCtx != 0L) nativeSetOnDecode(handle, null, callbackCtx)
+        if (budgetCtx != 0L) nativeSetBudget(handle, null, budgetCtx)
+        listener = null
+        callbackCtx = 0L
+        budgetCtx = 0L
+        handle = 0L
     }
 
     /// Opaque pointer to the shim's per-decoder callback state — the
@@ -1451,14 +1467,23 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
 
     /// The channel's decoder, for the calls that configure one: [MfskDecoder.setParams],
     /// [MfskDecoder.setExtras], [MfskDecoder.addCallsign], [MfskDecoder.unpack77],
-    /// [MfskDecoder.setQ65Callers], [MfskDecoder.clear]. **Borrowed**: closing
-    /// it does nothing, it dies with the channel (or the receiver), and it
-    /// refuses to decode — the receiver does. Null if there is no such channel.
+    /// [MfskDecoder.setQ65Callers], [MfskDecoder.clear], and
+    /// [MfskDecoder.onDecode] / [MfskDecoder.setBudget]: the listener sees the
+    /// channel's rows as [push] finds them, early ones included, and the
+    /// budget bounds each decode [push] runs. **Borrowed**: closing it does
+    /// nothing, it dies with the channel (or the receiver), and it refuses to
+    /// decode — the receiver does. The same object each time for a channel.
+    /// Null if there is no such channel.
     fun channelDecoder(channel: Int): MfskDecoder? {
+        lent[channel]?.let { return it }
         val h = nativeChannelDecoder(live(), channel)
         if (h == 0L) return null
-        return MfskDecoder.borrowed(h, channelMode(channel))
+        return MfskDecoder.borrowed(h, channelMode(channel)).also { lent[channel] = it }
     }
+
+    /// The decoders [channelDecoder] handed out, one per channel, so a
+    /// listener or budget set on one is released before the C decoder goes.
+    private val lent = HashMap<Int, MfskDecoder>()
 
     private val modes = HashMap<Int, Int>()
     private fun channelMode(channel: Int) = modes[channel] ?: -1
@@ -1474,7 +1499,10 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
     }
 
     fun removeChannel(channel: Int) {
-        nativeRemoveChannel(live(), channel)
+        val h = live()
+        // The listener's context is freed only once the C side cannot call it.
+        lent.remove(channel)?.releaseLent()
+        nativeRemoveChannel(h, channel)
         modes.remove(channel)
     }
 
@@ -1519,6 +1547,8 @@ class MfskIqReceiver private constructor(private var handle: Long) : AutoCloseab
 
     override fun close() {
         if (handle != 0L) {
+            for (d in lent.values) d.releaseLent()
+            lent.clear()
             nativeClose(handle)
             handle = 0L
         }
