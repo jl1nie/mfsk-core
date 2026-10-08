@@ -233,8 +233,9 @@ const PINNED_FULL_SLOT: &str = asset_path!("ft8_subtract_full_slot.bin");
 /// largest gap measured). The output is `i16` after f32 work whose last bit
 /// depends on rustfft's kernel (AVX2 on x86_64, NEON on aarch64, scalar
 /// elsewhere) and on the libm, and a last bit on the wrong side of a
-/// rounding edge moves a sample by 1. Measured on Apple M5, NEON against
-/// rustfft's scalar kernel: 27 of the 180 000 samples differ, each by 1.
+/// rounding edge moves a sample by 1. Measured against the pin: x86_64 Linux
+/// on CI (AVX2, glibc), 36 of the 180 000 samples, each by 1; Apple M5 with
+/// rustfft's scalar kernel instead of NEON, 27.
 /// Shortening the LPF by one tap (`lpf_half` 1999), the smallest real change
 /// tried, moves 263, also by 1 — so the count is the check, and the bound sits
 /// between the two. The pin used to be a hash of every sample, written on

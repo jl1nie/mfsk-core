@@ -5,8 +5,8 @@
 - **test: the full-slot subtract pin compares within a tolerance, not by a hash (#579's rule).** `subtract_short_buffer`'s
   `full_slot_output_is_pinned` hashed every output sample, written on x86_64 Linux; on Apple M5 it failed for `main` and
   for the commit before #567's fix alike, which agree bit for bit there. rustfft's kernel (AVX2, NEON, scalar) and the
-  libm move a sample by 1 where the last f32 bit crosses a rounding edge: 27 of 180 000 between NEON and scalar. The pin
-  is now the output itself (`embedded-poc/assets/ft8_subtract_full_slot.bin`), allowing 2 per sample and 100 samples;
+  libm move a sample by 1 where the last f32 bit crosses a rounding edge: 36 of 180 000 on x86_64 Linux (CI), 27 with the
+  scalar kernel on Apple M5. The pin is now the output itself (`embedded-poc/assets/ft8_subtract_full_slot.bin`), allowing 2 per sample and 100 samples;
   shortening the LPF by one tap moves 263 and still fails.
 - **C ABI: an array of `MfskDecode` is stepped by the caller's stride, not the library's (#607).** Each row carries
   `size`, but the decode wrote row `i` at the library's own `sizeof(MfskDecode)` apart, so a program built against an
