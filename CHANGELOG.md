@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **msg: a 3-character call like `A5A` is no longer discarded after a clean CRC (#611, thanks BG7JAF).** The
+  crate-side plausibility filter split `A5A` at its digit into a 1-letter prefix `A`, which the standalone-letter list
+  rejects, so every real Bhutan `A5A` transmission was dropped: 11 decodes on a 2019-02-28 A5A-pileup recording that
+  ft8mon and JTDX both decode. A rejected 1-letter prefix now falls back to the letter+digit pair (`A5`, `T6`, `P5`)
+  checked against the same ITU table, so `Q4A` and `Z7A` are still refused. WSJT-X has no such filter at all; auditing
+  the whole filter against upstream is #612.
 - **test: the full-slot subtract pin compares within a tolerance, not by a hash (#579's rule).** `subtract_short_buffer`'s
   `full_slot_output_is_pinned` hashed every output sample, written on x86_64 Linux; on Apple M5 it failed for `main` and
   for the commit before #567's fix alike, which agree bit for bit there. rustfft's kernel (AVX2, NEON, scalar) and the
