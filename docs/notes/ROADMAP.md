@@ -256,9 +256,15 @@ read from the tracker, not from memory.
   frame decoder, subtraction and assembly, streaming receiver, C ABI /
   Kotlin / Swift, text packer. Follow-ups #487 (false decodes) and #488
   (drift) are closed. P6 (embedded) is a separate decision and open.
+- **ft8md (#463, closed 2026-10-08): not ported.** WSJT-X's opt-in second
+  FT8 decoder (`lib/ft8var`) depends on QSO state, a shipped callsign list
+  (`ALLCALL7.TXT`), FEC-less hint matching and its own threading, all of
+  which the application owns. The library stays faithful to the default
+  `ft8_decode` / `ft8b` and stateless, with QSO context passed in as
+  arguments (as a7/a8, #464, already are); an application building an
+  ft8md-style decoder on top can ask for primitives then.
 - **Open:** #465 (FST4's AP rung: OSD does not skip locked bits nor run on
-  the AP-held BP sums), #463 (decide whether to port `lib/ft8var`,
-  "ft8md", a second QSO-state-dependent FT8 decoder), #467 (record which
+  the AP-held BP sums), #467 (record which
   WSJT-X tree the `lib/*.f90:line` citations were checked against),
   #496 (expose FT8's `previous_cycle` through `mfsk-ffi`; design first).
 - **Q65 leftovers:** the averaged q3 on
