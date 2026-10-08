@@ -284,7 +284,8 @@ validation 1's equivalence claim ill-formed.
   Not in this design. (The boards' own FT4 receiver does get cut by its budget — `BudgetReport::cut_at_score`'s doc is
   named after its `SlotOutcome::cut_at_score` — but the boards are out of scope per §7 step 4, so that is not an
   argument for this API.)
-- **ft8md (#463)** has its own stages. If ported, it should reuse `Stage` rather than add a second vocabulary.
+- **ft8md (#463)** has its own stages. It is not ported (#463, decided 2026-10-08: application-layer work); an
+  application that builds an ft8md-style decoder on top reuses `Stage` rather than add a second vocabulary.
 
 ## 9. Considered and dropped
 
