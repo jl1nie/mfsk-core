@@ -295,6 +295,18 @@ defaults.
 Flat, fixed-size, written into your array. `text` is an inline
 `char[MFSK_DECODE_TEXT_LEN]`, NUL-terminated.
 
+**Set `out[0].size = sizeof(MfskDecode)` before a decode.** The library steps
+through your array by that stride, not by its own `sizeof`. A program built
+against an older header (a shorter struct) gets each row where its array has
+it, with the fields it knows, and nothing written past `out_cap` of its rows.
+One built against a newer header keeps each row's tail as it was. Each row's
+`size` comes back as the bytes written. `0` means "this header's struct", which
+is right only when the header and the library are the same version.
+A `size` below 4 or not a multiple of 4 is `MFSK_STATUS_INVALID_ARG`, and
+nothing is written. Before #607 the stride was the library's own, so an older
+caller's rows after the first landed in the wrong place.
+`mfsk_q65_history_record` reads an array by the same rule.
+
 | field | meaning |
 |---|---|
 | `size` | `sizeof(MfskDecode)` as the caller understands it |

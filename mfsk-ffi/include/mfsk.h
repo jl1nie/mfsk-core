@@ -1781,11 +1781,14 @@ enum MfskStatus mfsk_q65_history_push(struct MfskQ65History *h,
 
 /**
  * Remember every row of a decode, as `q65_decode.f90` calls `q65_hist` after
- * each one. `rows` is an array of `n` [`MfskDecode`] as this library wrote
- * them (their own stride), e.g. straight from `mfsk_decoder_decode_f32`.
+ * each one. `rows` is an array of `n` [`MfskDecode`], e.g. straight from
+ * `mfsk_decoder_decode_f32`, `rows[0].size` apart (`sizeof(MfskDecode)` as
+ * the caller's header has it, which the decode wrote back; 0 is this
+ * header's, #607). `MFSK_STATUS_INVALID_ARG` for a `size` that is not one,
+ * or that stops before `text`.
  *
  * # Safety
- * `h` must be live; `rows` must point to `n` valid rows.
+ * `h` must be live; `rows` must point to `n` rows `rows[0].size` apart.
  */
 MFSK_API
 enum MfskStatus mfsk_q65_history_record(struct MfskQ65History *h,
