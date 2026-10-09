@@ -484,6 +484,17 @@ impl<P: Decodable> Decoder<P> {
     /// takes this list per channel. It follows the depth and the
     /// [`Extras`](Decodable::Extras), so ask again after changing them
     /// (`docs/notes/IQ_PREFIX_DESIGN.md` §2).
+    ///
+    /// It describes the **next period to start**, from the settings as they
+    /// are now, not a period already under way: that one keeps the settings
+    /// its first call pinned ([`Decoder::decode_prefix`]), and on an
+    /// `IqReceiver` the points its slot opened with, since `set_prefix_points`
+    /// applies from the next slot that opens. So a change midway reaches the
+    /// cutter and the decoder at the same period. A caller that cuts the
+    /// prefixes itself and asks again midway may then skip a point the
+    /// running period would have used, or add one it has no work at; neither
+    /// changes the final call's rows (calls may be skipped or repeated), only
+    /// when work is done (#631).
     pub fn prefix_points(&self) -> &'static [usize] {
         P::__prefix_points(&self.params, &self.extras)
     }
