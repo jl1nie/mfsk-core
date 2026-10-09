@@ -48,8 +48,6 @@ use crate::msg::Jt72Codec;
 // `--features <mode>` alone still builds. TX and the const tables stay
 // unconditional, the same split `wspr::mod` uses.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub mod baseband;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 #[cfg(any(feature = "internal-testing", test))]

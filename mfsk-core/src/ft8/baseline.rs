@@ -84,17 +84,14 @@ pub fn compute_baseline_spectrum(audio: &[i16]) -> Vec<f32> {
     const NST: usize = NFFT_SPEC / 2;
     let n_out = NFFT_SPEC / 2; // NH1, matches get_spectrum_baseline.f90
 
-    let mut window = vec![0.0f32; NFFT_SPEC];
-    let (a0, a1, a2, a3) = (0.3635819f32, -0.4891775f32, 0.1365995f32, -0.0106411f32);
+    // Periodic, as `get_spectrum_baseline.f90` requires (the symmetric form is
+    // `engine::sync`'s); bit-identical to the loop this replaces.
+    let mut window = crate::engine::dsp::window::cosine_sum(
+        NFFT_SPEC,
+        &crate::engine::dsp::window::NUTTALL4,
+        crate::engine::dsp::window::Form::Periodic,
+    );
     let n = NFFT_SPEC as f32;
-    let two_pi = core::f32::consts::PI * 2.0;
-    for (i, w) in window.iter_mut().enumerate() {
-        let x = i as f32;
-        *w = a0
-            + a1 * (two_pi * x / n).cos()
-            + a2 * (2.0 * two_pi * x / n).cos()
-            + a3 * (3.0 * two_pi * x / n).cos();
-    }
     let wsum: f32 = window.iter().sum();
     let norm = n / wsum / 300.0;
     for w in window.iter_mut() {

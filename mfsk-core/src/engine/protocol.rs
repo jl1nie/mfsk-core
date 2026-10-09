@@ -50,7 +50,7 @@
 ///   is the same WSJT-X convention seen from the other side.
 /// - **Raw-PCM ingest grid.** Sample-count↔seconds conversions and
 ///   mixer phase increments — `ft8::refine_fine`'s `0.5 * 12_000`,
-///   `ft8::decode`'s `dt_fit_limit_b`, `jt9::baseband`,
+///   `ft8::decode`'s `dt_fit_limit_b`,
 ///   `msk144::{sync, decode, spd}`. Correct only while ingest is
 ///   12 kHz, which `engine::dsp::resample::resample_to_12k` guarantees
 ///   at the decode entry point. That guarantee has one owner, which is

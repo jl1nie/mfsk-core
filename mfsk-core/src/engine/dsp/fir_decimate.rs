@@ -36,6 +36,7 @@ pub fn design_lowpass(ntaps: usize, fc_norm: f32) -> Vec<f32> {
         } else {
             (2.0 * core::f32::consts::PI * fc_norm * x).sin() / (core::f32::consts::PI * x)
         };
+        // (Stays local: `engine::dsp::window` says why.)
         // Blackman: better stopband than Hamming (~-74 dB vs -53 dB),
         // which is the half that matters here — the passband is
         // oversized on purpose.

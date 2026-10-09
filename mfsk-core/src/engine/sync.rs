@@ -680,25 +680,11 @@ impl Spectrogram {
 /// `Protocol::SPECTRUM_WINDOW`-gated `NSPS` length this module applies
 /// internally.
 pub(crate) fn nuttall_window(n: usize) -> Vec<f32> {
-    const A0: f32 = 0.3635819;
-    const A1: f32 = 0.4891775;
-    const A2: f32 = 0.1365995;
-    const A3: f32 = 0.0106411;
-    let mut w = vec![0.0f32; n];
-    if n < 2 {
-        if n == 1 {
-            w[0] = 1.0;
-        }
-        return w;
-    }
-    let two_pi = 2.0 * PI;
-    let denom = (n - 1) as f32;
-    for (k, slot) in w.iter_mut().enumerate() {
-        let x = k as f32 / denom;
-        *slot = A0 - A1 * (two_pi * x).cos() + A2 * (2.0 * two_pi * x).cos()
-            - A3 * (3.0 * two_pi * x).cos();
-    }
-    w
+    super::dsp::window::cosine_sum(
+        n,
+        &super::dsp::window::NUTTALL4,
+        super::dsp::window::Form::Symmetric,
+    )
 }
 
 /// Compute per-time-step power spectra from raw 12 kHz PCM.

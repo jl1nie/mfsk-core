@@ -421,6 +421,7 @@ pub(crate) fn fst4_ddc_snr_db<P: crate::engine::SyncFrontEnd>(
     let mut planner = crate::engine::fft::default_planner();
     let fft = planner.plan_forward(WELCH_N);
 
+    // (Stays local: `engine::dsp::window` says why.)
     // Blackman-Harris, not the rectangular window a plain slice
     // implies. A rectangular window's sidelobes fall off as 1/f² from
     // -13 dB,
