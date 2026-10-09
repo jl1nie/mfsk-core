@@ -285,6 +285,14 @@ button {
   padding: 4px 6px;
 }
 
+/* An example, not a value: the browser's default grey read as a call or a
+   grid already entered. */
+input::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+  font-style: italic;
+}
+
 button {
   cursor: pointer;
 }

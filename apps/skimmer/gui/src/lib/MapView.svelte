@@ -45,7 +45,8 @@
   let cur = $state(0);
 
   type Proj = 'azimuthal' | 'mercator';
-  let proj = $state<Proj>('azimuthal');
+  /** The projection chosen; the great-circle one needs home (`mine`), and Mercator stands in until there is one. */
+  let chosen = $state<Proj>('azimuthal');
   let paths = $state(false);
   /** Day, the grey line and night, as the Sun stands at the window playing (else at the end of the period). */
   let greyline = $state(true);
@@ -117,6 +118,8 @@
 
   const land = feature(land110, land110.objects.land);
   const mine = $derived(gridLonLat(me));
+  /** The projection drawn, which the buttons show. */
+  const proj = $derived<Proj>(mine ? chosen : 'mercator');
 
   $effect(() => {
     if (!box) return;
@@ -348,8 +351,8 @@
 
 <div class="map" bind:this={box}>
   <div class="bar">
-    <label><input type="radio" bind:group={proj} value="azimuthal" /> Great-circle (centred on home)</label>
-    <label><input type="radio" bind:group={proj} value="mercator" /> Mercator</label>
+    <label class:off={!mine} title={mine ? '' : 'Needs your grid: Settings > Station'}><input type="radio" checked={proj === 'azimuthal'} disabled={!mine} onchange={() => (chosen = 'azimuthal')} /> Great-circle (centred on home)</label>
+    <label><input type="radio" checked={proj === 'mercator'} onchange={() => (chosen = 'mercator')} /> Mercator</label>
     <label><input type="checkbox" bind:checked={paths} /> paths</label>
     <label title="Day, the grey line (Sun within 6 degrees of the horizon) and night, at the time shown"><input type="checkbox" bind:checked={greyline} /> grey line</label>
     {#if picked}
@@ -357,8 +360,8 @@
     {/if}
     <label class="anim"><input type="checkbox" bind:checked={anim} /> Animate</label>
   </div>
-  {#if proj === 'azimuthal' && !mine}
-    <p class="hint">Enter your grid in Settings > Station for the great-circle map. Showing Mercator.</p>
+  {#if !mine}
+    <p class="nogrid">No home grid, so no great-circle map: enter your locator (e.g. PM95) in Settings &gt; Station. Showing Mercator.</p>
   {/if}
   {#if anim}
     <div class="bar">
@@ -510,9 +513,14 @@
     white-space: nowrap;
     border-radius: 4px;
   }
-  .hint {
-    color: var(--muted);
+  .nogrid {
     margin: 0 0 6px;
-    font-size: 12px;
+    padding: 6px 10px;
+    background: var(--notice);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  label.off {
+    color: var(--muted);
   }
 </style>
