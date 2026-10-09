@@ -152,8 +152,7 @@ impl MessagePolicy for CodecVerdict {
 /// the caller's predicate accepts.
 ///
 /// For messages the shipped filter is too strict about — a callsign
-/// whose prefix the ITU allowlist does not carry, a local contest
-/// exchange — without giving up the filter for everything else. Set by
+/// the grammar refuses, a local contest exchange — without giving up the filter for everything else. Set by
 /// [`DecodeRequest::also_accept`].
 ///
 /// Note what this implies for a protocol whose call site does *not*
@@ -175,7 +174,7 @@ impl<F: Fn(&Wsjt77Fields) -> bool + Sync> MessagePolicy for AlsoAccept<F> {
 ///
 /// The escape hatch for a caller who knows their band better than the
 /// crate does — a closed network, a test harness that wants every
-/// CRC-passing string, a mode whose traffic the ITU allowlist has no
+/// CRC-passing string, a mode whose traffic the callsign grammar has no
 /// opinion about. Set by [`DecodeRequest::message_filter`].
 ///
 /// This can *lose* nothing and *gain* phantoms: the filter it replaces
@@ -586,6 +585,17 @@ pub trait FrameDecodable: SyncFrontEnd {
     /// 1 phantom with it and 2 without, 3 000 FT4 slots (`(0.05, 100)`) 3 and 4. The WSJT-X
     /// recordings decode the same with it on and off (FT8 `qso3_busy` at three request
     /// shapes, the FT4 golden at two). It removes a few phantoms and no measured decode.
+    ///
+    /// Re-measured again on 2026-10-09 (#612), this time part by part. The verdict
+    /// used to check each callsign's prefix against an ITU table as well as its
+    /// grammar. Switched off alone, that table changed nothing: tier C for FT8 and
+    /// FT4 (every crossing +0.00 dB, unexpected decodes unchanged), the busy-band
+    /// corpus (hits and extras identical, 200 noise-only files included), `qso3_busy`
+    /// and the FT4 golden, and 3 000 FT4 noise slots (6 phantoms with it, 6 without,
+    /// 7 with the whole verdict off). It did refuse 13 of the 100 303 callsigns spotted
+    /// on PSK Reporter in FT4/FT8 since 2024-06-20, all special-event stations, and
+    /// lacked 57 of the 138 letter+digit prefixes in `cty.dat`. It was removed; the
+    /// grammar check is what removes phantoms.
     ///
     /// `false` for FST4. The argument that stood here — CRC-24 puts its
     /// false-positive rate 512x below FT8's and FT4's — described the
@@ -1145,10 +1155,9 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
     /// for why the others cannot take one yet.
     ///
     /// For traffic the shipped filter is too strict about. It refuses a
-    /// callsign whose prefix the ITU allowlist does not carry, which is
-    /// the right default against CRC survivors and the wrong one on a
-    /// band carrying special-event or experimental calls the list has
-    /// no entry for:
+    /// callsign the grammar (`wsjt77::is_valid_callsign`) does not accept, which
+    /// is the right default against CRC survivors and the wrong one on a
+    /// band carrying experimental calls that do not follow it:
     ///
     /// ```ignore
     /// DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, 1.5, 200)
@@ -1191,9 +1200,9 @@ impl<'a, P: SupportsMessageFilter, Pol: MessagePolicy> DecodeRequest<'a, P, Pol>
     ///
     /// The default accepts every codeword the FEC and CRC verified,
     /// which is what WSJT-X does; this is the stricter behaviour this
-    /// crate used to impose on everyone. For `Wsjt77Message` it is an
-    /// ITU-prefix allowlist over the callsign tokens plus structural
-    /// checks for the types whose exchange fields are not callsigns.
+    /// crate used to impose on everyone. For `Wsjt77Message` it is the
+    /// callsign grammar over the callsign fields plus structural checks
+    /// for the types whose exchange fields are not callsigns.
     ///
     /// On a crowded FT8 slot at `max_cand = 200` it removes about two
     /// rows; at the depth that ships on embedded hardware it removes

@@ -1332,7 +1332,7 @@ use mfsk_core::decoder::{DecodeParams, Decoder, MessageFilter, SlotInput};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::msg::wsjt77::Wsjt77Fields;
 
-/// Whatever the deployment knows and the ITU allowlist does not. The
+/// Whatever the deployment knows and the callsign grammar does not. The
 /// message is seen as fields, so `callsigns()` is exactly the callsign
 /// fields — never a grid or a report.
 fn special_event_only(m: &Wsjt77Fields) -> bool {
@@ -1385,9 +1385,15 @@ window (−21..−13 dB, four ITU-R channels): phantom rows **7 → 2**,
 golden rows **353 → 354**, and all four 50 %-crossing SNRs unchanged
 to 0.00 dB. The one recall cell that moves moves *up*, because a
 rejection lets the candidate ladder keep going. What that corpus
-cannot test is the allowlist's own risk — every slot in it carries the
-same callsign — so a deployment seeing unusual prefixes widens it with
-`MessageFilter::AlsoAccept`.
+cannot test is the verdict's risk to unusual callsigns — every slot in it
+carries the same one. That risk was real while the verdict also judged
+prefixes against an ITU table: it refused 13 of 100 303 callsigns spotted
+on PSK Reporter in FT4/FT8 (special-event stations), and the table lacked 57
+of the 138 letter+digit prefixes in `cty.dat`. Switching the table off
+changed nothing that was measured (tier C for FT8 and FT4, the busy-band
+corpus, the goldens, 3 000 FT4 noise slots), so #612 removed it; what remains
+is the callsign grammar, and `MessageFilter::AlsoAccept` is still how a
+deployment widens that.
 
 **FST4 leaves it off**, and not for want of measuring: CRC-24 puts its
 false-positive rate 512x below the other two, so there is little for

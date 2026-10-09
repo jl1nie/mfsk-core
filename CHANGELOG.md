@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The plausibility verdict no longer checks callsign prefixes (#612).** FT8 and FT4 refused a callsign whose
+  one-letter prefix was not F G I K M N R W or whose letter+digit prefix was not in an 82-entry ITU table. On the 100 303
+  callsigns spotted on PSK Reporter in FT4/FT8 since 2024-06-20 that refused 13 (0.013 %), all special-event stations
+  (`J42A`, `L22D`, `U1BD`, `U5WAR`, …), and the table lacked 57 of the 138 letter+digit prefixes `cty.dat` lists. With it
+  off, nothing else measured moved: tier C for FT8 and FT4, the busy-band corpus (200 noise-only files included),
+  `qso3_busy`, the FT4 golden, 3 000 FT4 noise slots. The grammar check stays; it is what removes phantoms.
+  `is_plausible_callsign` is now `is_valid_callsign`. Audit and numbers on #612.
 - **Derived constants are derived, and the coarse-sync geometry belongs to the modes that use it (#419, breaking).**
   `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL` and `NDOWN` move from `ModulationParams` to a new `SyncFrontEnd: Protocol`,
   implemented by the 7 types that decode through the shared front end (FT8, FT4, FST4 ×5); the other 17 carried values
@@ -23,8 +30,8 @@
   crate-side plausibility filter split `A5A` at its digit into a 1-letter prefix `A`, which the standalone-letter list
   rejects, so every real Bhutan `A5A` transmission was dropped: 11 decodes on a 2019-02-28 A5A-pileup recording that
   ft8mon and JTDX both decode. A rejected 1-letter prefix now falls back to the letter+digit pair (`A5`, `T6`, `P5`)
-  checked against the same ITU table, so `Q4A` and `Z7A` are still refused. WSJT-X has no such filter at all; auditing
-  the whole filter against upstream is #612.
+  checked against the same ITU table, so `Q4A` and `Z7A` are still refused. WSJT-X has no such filter at all; the audit
+  of it (#612) removed the prefix check altogether, so this fix is now subsumed.
 - **test: the full-slot subtract pin compares within a tolerance, not by a hash (#579's rule).** `subtract_short_buffer`'s
   `full_slot_output_is_pinned` hashed every output sample, written on x86_64 Linux; on Apple M5 it failed for `main` and
   for the commit before #567's fix alike, which agree bit for bit there. rustfft's kernel (AVX2, NEON, scalar) and the
