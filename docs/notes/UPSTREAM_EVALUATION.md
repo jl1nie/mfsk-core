@@ -35,18 +35,19 @@ Regenerate: `scripts/run-sensitivity-sweeps.sh <protocol>` prints this for
 every task of the protocols it sweeps; `scripts/upstream-baseline.py run
 <task> <dir>` does one task.
 
-## Accuracy, 2026-10-04
+## Accuracy, 2026-10-09 (WSPR, JT65, JT9, Q65: 2026-10-04; JTTY: 2026-10-01)
 
-Ryzen 9 9900X. `main` at `dbdf244c` (FT8, WSPR, JT65, JT9, Q65: the sweep before
-0.13.0, on the `Decoder<P>` API) and `2e56279b` (FT4, FST4, JTTY: 2026-10-01,
-not re-run, since their source changed in comments only). Upstream: WSJT-X `v3.2.0-rc1`
+Ryzen 9 9900X. `main` at `2cd38b8e` (FT8, FT4, FST4: the sweep after the OSD
+rewrite, #613; the swept commit has the same tree), `dbdf244c` (WSPR, JT65, JT9, Q65: the sweep before 0.13.0, on the
+`Decoder<P>` API) and `2e56279b` (JTTY: 2026-10-01, not re-run, since its source
+changed in comments only). Upstream: WSJT-X `v3.2.0-rc1`
 (`scripts/build_jt9_upstream.sh`; `rjtty` from `gen_jtty_sweep_wavs.sh`).
 
 | task | upstream | groups | trials | both | upstream only | crate only | groups behind | groups ahead | crossing, crate − upstream | unexpected decodes, upstream / crate |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `ft8/t1` | `jt9 -8 -d 3` | 4 | 1 040 | 575 | 20 | 15 | 0 | 0 | +0.33 … −0.23 dB | 0 / 1 |
-| `ft4/t1` | `jt9 -5 -d 3` | 4 | 1 040 | 526 | 23 | 30 | 0 | 0 | +0.27 … −0.64 dB | 0 / 0 |
-| `fst4/t1` | `jt9 -7 -d 3` | 20 | 3 360 | 1 786 | 65 | 98 | 0 | 1 | +0.50 … −0.79 dB | 7 / 5 |
+| `ft8/t1` | `jt9 -8 -d 3` | 4 | 1 040 | 576 | 19 | 16 | 0 | 0 | +0.33 … −0.24 dB | 0 / 0 |
+| `ft4/t1` | `jt9 -5 -d 3` | 4 | 1 040 | 528 | 21 | 27 | 0 | 0 | +0.17 … −0.50 dB | 0 / 0 |
+| `fst4/t1` | `jt9 -7 -d 3` | 20 | 3 360 | 1 782 | 69 | 99 | 0 | 1 | +0.50 … −0.79 dB | 7 / 4 |
 | `q65/t1` | `jt9 -3 -d 1 -f 1500 -F 20` | 20 | 2 640 | 1 021 | 8 | 147 | 0 | 9 | +0.33 … −2.31 dB | 0 / not counted |
 | `jt9/t1` | `jt9 -9 -d 3` | 1 | 300 | 240 | 6 | 3 | 0 | 0 | +0.09 dB | 0 / not counted |
 | `jtty/t1` | `rjtty 4.6 0 384 1500 50` | 2 | 360 | 160 | 0 | 0 | 0 | 0 | 0.00 dB | 0 / 0 |
@@ -58,7 +59,14 @@ both plain and with the CQ hint. JT65's gap is known and the protocol is
 legacy; it is recorded, not chased (15 upstream-only against 0, as on
 2026-10-01).
 
-FT8 moved between the two runs: upstream-only 5 → 20 and crate-only 18 → 15 in
+The 2026-10-09 run followed #613 (one OSD, line for line with `osd174_91.f90` /
+`osd240_101.f90`). Against the 2026-10-04 / 2026-10-01 rows it moved FT8 by one
+decode in either direction, FT4 by two fewer upstream-only and three fewer
+crate-only, and FST4 by four more upstream-only and one more crate-only; no
+group changed its verdict, and every 50 % crossing of the crate's own sweep is
+within 0.2 dB of its baseline (`sweep-baseline.json`).
+
+FT8 moved between the 2026-10-04 run and the one before it: upstream-only 5 → 20 and crate-only 18 → 15 in
 the pooled counts, no group significant (the largest is 8 against 4, p = 0.39),
 and the crossing is level in every channel. The 0.12 task asked for the CQ hint
 as `ApHint::with_call1("CQ")`; the 0.13 task takes it from `Depth` and `ap`
@@ -66,15 +74,15 @@ as `jt9` does, and the old hint on the new API reproduces the 0.12 crossings. WS
 is now 217 of 260 with one upstream-only and none crate-only (it was 5 and 4):
 after the `wsprd` port of this release (`WSPR_UPSTREAM.md`).
 
-## Time, 2026-10-04 (FT4, FST4, JTTY: 2026-10-01)
+## Time, 2026-10-09 (WSPR, JT65, JT9, Q65: 2026-10-04; JTTY: 2026-10-01)
 
 Crate's time as a fraction of upstream's on the same files.
 
 | task | files a kind | noise | crossing |
 |---|---|---|---|
-| `ft8/t1` | 20 | 0.25 (161 / 654 ms) | 0.26 (170 / 645 ms) |
-| `ft4/t1` | 20 | 0.16 (2.4 / 15.4 ms) | 0.35 (7.7 / 22.2 ms) |
-| `fst4/t1` | 20 | 0.41 (100 / 242 ms) | 0.53 (150 / 280 ms) |
+| `ft8/t1` | 20 | 0.20 (125 / 638 ms) | 0.21 (134 / 636 ms) |
+| `ft4/t1` | 20 | 0.15 (2.3 / 15.8 ms) | 0.30 (6.9 / 22.8 ms) |
+| `fst4/t1` | 20 | 0.19 (47 / 241 ms) | 0.22 (61 / 278 ms) |
 | `q65/t1` | 20 | 0.29 (60 / 211 ms) | 0.26 (46 / 174 ms) |
 | `jt9/t1` | 10 | 0.19 (15.1 / 77.9 ms) | 0.19 (17.9 / 96.2 ms) |
 | `jtty/t1` | 20 | 0.11 (14 / 127 ms) | 0.14 (19 / 132 ms) |
@@ -87,7 +95,12 @@ the one cell where the crate is slower than upstream (1.22 against 1.0 on
 2026-10-01); ten files, and this task has read 0.60 to 1.60 on two, so it is
 recorded and not read as a regression. The FT8 ratio
 fell from 0.43/0.49 to 0.25/0.26 with the move to `Decoder<P>`; the cause was
-not isolated.
+not isolated. It fell again, to 0.20/0.21 for FT8 and from 0.41/0.53 to
+0.19/0.22 for FST4, after #613. The OSD rewrite accounts for part of that: a
+single-thread A/B of `main` before and after it gave `qso3_busy` at `Depth::Deep`
+570 → 504 ms and the FST4-60 golden 951 → 597 ms, and one OSD call on FT8's
+LLRs 57 → 24 µs (upstream's own Fortran: 198 µs). How much of the rest came from
+the other commits since 2026-10-01 was not isolated.
 
 ## What moved these numbers
 
