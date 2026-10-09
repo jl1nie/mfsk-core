@@ -328,3 +328,41 @@ fn any_decoder_runs_the_same_sequence() {
         assert!(got.details.iter().all(|d| d.stage.is_some()));
     }
 }
+
+/// #628: the sniper is pinned with the rest of the period's settings. Turned
+/// on after checkpoint A, with a target that excludes an early row, it would
+/// replace the staged sequence with one sniper decode and the final set would
+/// lose a row already returned; pinned, the final call is the whole-period
+/// decode under the settings the period started with, and the sniper takes
+/// effect at the next period.
+#[test]
+fn a_sniper_turned_on_midway_waits_for_the_next_period() {
+    use mfsk_core::decoder::Sniper;
+    let Some(audio) = period() else { return };
+    let whole = key(&Decoder::<Ft8>::with_defaults().decode(&SlotInput::i16(&audio).period(5)));
+
+    let mut d = Decoder::<Ft8>::with_defaults();
+    let early = d.decode_prefix(&SlotInput::i16(&audio[..A]).period(5));
+    assert!(!early.rows.is_empty(), "checkpoint A found nothing");
+    // A target as far as the band allows from the first early row.
+    let f0 = early.rows[0].decoded.freq_hz;
+    let target = if f0 < 1500.0 { 2900.0 } else { 300.0 };
+    d.extras_mut().sniper = Some(Sniper::new(100.0));
+    d.params_mut().rx_freq_hz = Some(target);
+    let last = d.decode_prefix(&SlotInput::i16(&audio).period(5));
+    assert_eq!(
+        key(&last),
+        whole,
+        "the final call kept the period's settings"
+    );
+
+    // The next period runs the sniper: nothing outside its window.
+    let next = d.decode_prefix(&SlotInput::i16(&audio).period(6));
+    assert!(
+        next.rows
+            .iter()
+            .all(|r| (r.decoded.freq_hz - target).abs() <= 100.0 + 50.0),
+        "the next period is a sniper decode"
+    );
+    assert!(next.rows.len() < whole.len());
+}

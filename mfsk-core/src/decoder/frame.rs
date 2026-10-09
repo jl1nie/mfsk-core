@@ -206,6 +206,9 @@ struct Ft8Prefix {
     period: i64,
     search: (Search<Ft8Strategy>, DecodeStrictness),
     gain: Option<f32>,
+    /// The sniper and its target as the first call found them: they choose
+    /// between the staged sequence and one sniper decode at the end (#628).
+    sniper: Option<(Sniper, f32)>,
     staged: crate::ft8::decode::Staged,
 }
 
@@ -654,7 +657,10 @@ impl Decodable for crate::Ft8 {
         on_row: Option<OnRow<'_, DecodeResult>>,
     ) -> SlotResult<DecodeResult> {
         let search = ft8_search(params.depth).tuned(&extras.tuning);
-        ft8_decode(params, extras, search, None, state, slot, on_row, None)
+        let sniper = extras.sniper.zip(params.rx_freq_hz);
+        ft8_decode(
+            params, extras, search, sniper, None, state, slot, on_row, None,
+        )
     }
 
     /// The prefix sequence (#572): checkpoint A at 141 696 samples, B at
@@ -680,6 +686,7 @@ impl Decodable for crate::Ft8 {
                     Audio::F32(a) => f32_gain(a),
                     Audio::I16(_) => None,
                 },
+                sniper: extras.sniper.zip(params.rx_freq_hz),
                 staged: Staged::default(),
             });
         }
@@ -692,8 +699,7 @@ impl Decodable for crate::Ft8 {
             Audio::I16(a) => a.len(),
             Audio::F32(a) => a.len(),
         };
-        let staged = matches!(pre.search.0.strategy, Ft8Strategy::SicEarly)
-            && !(extras.sniper.is_some() && params.rx_freq_hz.is_some());
+        let staged = matches!(pre.search.0.strategy, Ft8Strategy::SicEarly) && pre.sniper.is_none();
         let step = if staged {
             staged_step_for(len, full)
         } else {
@@ -706,7 +712,7 @@ impl Decodable for crate::Ft8 {
         if !staged {
             // The whole period, under the pinned search.
             return ft8_decode(
-                params, extras, pre.search, pre.gain, state, slot, on_row, None,
+                params, extras, pre.search, pre.sniper, pre.gain, state, slot, on_row, None,
             );
         }
         let early_before = pre.staged.early().to_vec();
@@ -714,6 +720,7 @@ impl Decodable for crate::Ft8 {
             params,
             extras,
             pre.search,
+            None,
             pre.gain,
             state,
             slot,
@@ -740,7 +747,9 @@ impl Decodable for crate::Ft8 {
     }
 }
 
-/// One FT8 decode under `search`. `staged` runs the `SicEarly` checkpoints
+/// One FT8 decode under `search`; `sniper` (the sniper and its target) picks
+/// the roofing-filter path, and is passed in rather than read from `extras`
+/// so a prefix sequence can pin it (#628). `staged` runs the `SicEarly` checkpoints
 /// over a prefix sequence's state as far as its step; before the final
 /// step the audio is padded to the full period (trap 2: a frame found near
 /// the edge needs room to be subtracted), the table is not taught, and no
@@ -751,6 +760,7 @@ fn ft8_decode(
     params: &DecodeParams,
     extras: &Ft8Extras,
     (s, strictness): (Search<Ft8Strategy>, DecodeStrictness),
+    sniper: Option<(Sniper, f32)>,
     gain: Option<f32>,
     state: &mut FrameState,
     slot: &SlotInput<'_>,
@@ -768,7 +778,7 @@ fn ft8_decode(
     let ap = ap_for(params, &extras.ap_hint, ApTable::Ft8, true);
     let (out, results) =
         frame_decode::<crate::Ft8, _>(state, slot, on_row, gain, last, |pcm, cb, previous| {
-            if let (Some(sn), Some(target)) = (extras.sniper, params.rx_freq_hz) {
+            if let Some((sn, target)) = sniper {
                 let mut req = DecodeRequest::<crate::Ft8>::sniper(pcm, target, s.max_cand)
                     .search_hz(sn.search_hz)
                     .sync_min(s.sync_min)
