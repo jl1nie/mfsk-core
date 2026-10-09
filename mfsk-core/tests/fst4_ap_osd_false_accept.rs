@@ -6,7 +6,7 @@
 //! 1 and after 2 iterations (never the raw LLR), a test pattern that flips a
 //! locked bit is skipped (`osd240_101.f90:192`/`:263`), and the CRC is
 //! checked on the winner. Before #465, FST4's AP rung ran
-//! `osd_decode_npre_generic` unmasked on the raw LLR — a test pattern could
+//! `osd_npre` unmasked on the raw LLR — a test pattern could
 //! flip a locked bit, and there was no BP-sum feed under AP at all.
 //!
 //! Measured on iid Gaussian LLRs with a CQ-style lock (29 message-word bits
@@ -20,7 +20,7 @@
 use mfsk_core::fec::ldpc::bp::{
     BpKind, BpScratch, bp_decode_generic_kind_with_scratch, bp_llr_zsum_ap_with_scratch,
 };
-use mfsk_core::fec::ldpc::osd::{PartialCrc, osd_decode_npre_generic};
+use mfsk_core::fec::ldpc::osd::PartialCrc;
 use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
 use mfsk_core::fec::ldpc240_101::{append_crc24, check_crc24};
 
@@ -66,7 +66,7 @@ fn lock(noise: &[f32; N]) -> ([bool; N], [f32; N]) {
 #[derive(Clone, Copy)]
 enum Rung {
     /// What the AP rung ran before #465: BP with the mask, then
-    /// `osd_decode_npre_generic` unmasked on the raw LLR.
+    /// `osd_npre` unmasked on the raw LLR.
     Before,
     /// `decode240_101.f90`'s way: BP with the mask, then OSD on the BP sum
     /// after 1 and 2 iterations, masked `npre1`, CRC on the winner.
@@ -106,16 +106,20 @@ fn crc_valid_decodes(rung: Rung, draws_per_thread: usize) -> u64 {
                             continue;
                         }
                         let found = match rung {
-                            Rung::Before => osd_decode_npre_generic::<Ldpc240_101Params>(
-                                &llr,
-                                12,
-                                0,
-                                false,
-                                Some(partial_crc),
-                                None,
-                                Some(check_crc24),
-                            )
-                            .is_some(),
+                            Rung::Before => {
+                                mfsk_core::fec::ldpc::osd_npre::osd_npre::<Ldpc240_101Params>(
+                                    &llr,
+                                    mfsk_core::fec::ldpc::osd_npre::NpreDepth {
+                                        ntheta: 12,
+                                        npre2: false,
+                                        ntau: 0,
+                                    },
+                                    Some(partial_crc),
+                                    None,
+                                    Some(check_crc24),
+                                )
+                                .is_some()
+                            }
                             Rung::After => [1u32, 2].into_iter().any(|n_iter| {
                                 let z = bp_llr_zsum_ap_with_scratch::<Ldpc240_101Params>(
                                     &mut scratch,
@@ -123,11 +127,13 @@ fn crc_valid_decodes(rung: Rung, draws_per_thread: usize) -> u64 {
                                     Some(&mask),
                                     n_iter,
                                 );
-                                osd_decode_npre_generic::<Ldpc240_101Params>(
+                                mfsk_core::fec::ldpc::osd_npre::osd_npre::<Ldpc240_101Params>(
                                     z,
-                                    12,
-                                    0,
-                                    false,
+                                    mfsk_core::fec::ldpc::osd_npre::NpreDepth {
+                                        ntheta: 12,
+                                        npre2: false,
+                                        ntau: 0,
+                                    },
                                     Some(partial_crc),
                                     Some(&mask),
                                     Some(check_crc24),
@@ -157,7 +163,7 @@ fn crc_valid_decodes(rung: Rung, draws_per_thread: usize) -> u64 {
 /// FT8/FT4 rung ran a combinatorial order-2 search over every bit —
 /// `osd_decode_deep`, not this crate's already-pruned `npre1` — so its
 /// "before" was a real bug, not a fair baseline to expect this fix to beat).
-/// FST4's "before" here (`osd_decode_npre_generic` unmasked, same pruned
+/// FST4's "before" here (`osd_npre` unmasked, same pruned
 /// `npre1` search minus the mask) was never that badly broken, so there is
 /// no large regression to fix — both rates are low (≈3.3e-5 / ≈1.1e-4).
 /// A plausible reading: holding locked bits at their AP value across a

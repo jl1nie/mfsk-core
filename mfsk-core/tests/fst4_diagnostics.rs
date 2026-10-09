@@ -2988,7 +2988,7 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{MessageCodec, Protocol};
-    use mfsk_core::fec::ldpc::osd::{osd_decode_generic, osd_decode_npre_generic};
+    use mfsk_core::fec::ldpc::osd::osd_decode_generic;
     use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -3039,20 +3039,24 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
             let ord1 = osd_decode_generic::<Ldpc240_101Params>(llr, 1, 101, verify_info, false);
             let ord2 = osd_decode_generic::<Ldpc240_101Params>(llr, 2, 101, verify_info, false);
             let ord3 = osd_decode_generic::<Ldpc240_101Params>(llr, 3, 101, verify_info, false);
-            let npre1 = osd_decode_npre_generic::<Ldpc240_101Params>(
+            let npre1 = mfsk_core::fec::ldpc::osd_npre::osd_npre::<Ldpc240_101Params>(
                 llr,
-                12,
-                0,
-                false,
+                mfsk_core::fec::ldpc::osd_npre::NpreDepth {
+                    ntheta: 12,
+                    npre2: false,
+                    ntau: 0,
+                },
                 None,
                 None,
                 verify_info,
             );
-            let npre12 = osd_decode_npre_generic::<Ldpc240_101Params>(
+            let npre12 = mfsk_core::fec::ldpc::osd_npre::osd_npre::<Ldpc240_101Params>(
                 llr,
-                12,
-                14,
-                true,
+                mfsk_core::fec::ldpc::osd_npre::NpreDepth {
+                    ntheta: 12,
+                    npre2: true,
+                    ntau: 14,
+                },
                 None,
                 None,
                 verify_info,

@@ -3023,7 +3023,9 @@ mod tests {
     fn issue_180_dl8yhr_staged_checkpoint_c_probe() {
         use crate::engine::sync::{SyncCandidate, refine_candidate};
         use crate::fec::ldpc::bp::bp_decode;
-        use crate::fec::ldpc::osd::{osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2};
+        use crate::fec::ldpc::osd::osd_decode_generic;
+        use crate::fec::ldpc::osd_npre::{NDEEP2_174_91, NDEEP3_174_91, osd174_91};
+        use crate::fec::ldpc::params::Ldpc174_91Params;
         use crate::ft8::Ft8;
         use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
         use crate::ft8::downsample::downsample;
@@ -3107,9 +3109,9 @@ mod tests {
                         }
                     }
                     let osd = if q >= 18 {
-                        osd_decode_npre1_npre2(llr)
+                        osd174_91(llr, NDEEP3_174_91, None)
                     } else {
-                        osd_decode_npre1(llr)
+                        osd174_91(llr, NDEEP2_174_91, None)
                     };
                     if let Some(o) = osd {
                         let text = unpack77(&o.message77).unwrap_or_default();
@@ -3121,7 +3123,8 @@ mod tests {
                             any_hit = true;
                         }
                     }
-                    if let Some(o) = osd_decode_deep4(llr, 30, None) {
+                    if let Some(o) = osd_decode_generic::<Ldpc174_91Params>(llr, 4, 30, None, false)
+                    {
                         let text = unpack77(&o.message77).unwrap_or_default();
                         if text == target {
                             println!(
@@ -3525,9 +3528,9 @@ mod tests {
                 // Full BP/OSD decode on this residual — does the
                 // message actually come out, not just the sync count?
                 use crate::fec::ldpc::bp::bp_decode;
-                use crate::fec::ldpc::osd::{
-                    osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2,
-                };
+                use crate::fec::ldpc::osd::osd_decode_generic;
+                use crate::fec::ldpc::osd_npre::{NDEEP2_174_91, NDEEP3_174_91, osd174_91};
+                use crate::fec::ldpc::params::Ldpc174_91Params;
                 use crate::ft8::llr::compute_llr;
                 use crate::msg::wsjt77::unpack77;
 
@@ -3550,16 +3553,17 @@ mod tests {
                     }
                     if decoded_msg.is_none() {
                         let osd = if total_jt9 >= 18 {
-                            osd_decode_npre1_npre2(llr)
+                            osd174_91(llr, NDEEP3_174_91, None)
                         } else {
-                            osd_decode_npre1(llr)
+                            osd174_91(llr, NDEEP2_174_91, None)
                         };
                         if let Some(o) = osd {
                             decoded_msg = unpack77(&o.message77);
                         }
                     }
                     if decoded_msg.is_none()
-                        && let Some(o) = osd_decode_deep4(llr, 30, None)
+                        && let Some(o) =
+                            osd_decode_generic::<Ldpc174_91Params>(llr, 4, 30, None, false)
                     {
                         decoded_msg = unpack77(&o.message77);
                     }
@@ -3662,7 +3666,9 @@ mod tests {
         // decode on this same residual to see how close (hard_errors)
         // it gets, even if it doesn't fully converge.
         use crate::fec::ldpc::bp::bp_decode;
-        use crate::fec::ldpc::osd::{osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2};
+        use crate::fec::ldpc::osd::osd_decode_generic;
+        use crate::fec::ldpc::osd_npre::{NDEEP2_174_91, NDEEP3_174_91, osd174_91};
+        use crate::fec::ldpc::params::Ldpc174_91Params;
         use crate::ft8::llr::compute_llr;
         let llr_set = compute_llr::<f32>(&cs);
         let target = "K1BZM DK8NE -10";
@@ -3678,13 +3684,13 @@ mod tests {
             } else {
                 println!("  BP({name}) -> no convergence");
             }
-            if let Some(o) = osd_decode_npre1_npre2(llr) {
+            if let Some(o) = osd174_91(llr, NDEEP3_174_91, None) {
                 println!(
                     "  OSD-npre1npre2({name}) -> {:?} hard_errors={}",
                     unpack77(&o.message77).unwrap_or_default(),
                     o.hard_errors
                 );
-            } else if let Some(o) = osd_decode_npre1(llr) {
+            } else if let Some(o) = osd174_91(llr, NDEEP2_174_91, None) {
                 println!(
                     "  OSD-npre1({name}) -> {:?} hard_errors={}",
                     unpack77(&o.message77).unwrap_or_default(),
@@ -3693,7 +3699,7 @@ mod tests {
             } else {
                 println!("  OSD-npre1(npre2)({name}) -> no candidate");
             }
-            if let Some(o) = osd_decode_deep4(llr, 30, None) {
+            if let Some(o) = osd_decode_generic::<Ldpc174_91Params>(llr, 4, 30, None, false) {
                 println!(
                     "  OSD-deep4({name}) -> {:?} hard_errors={}",
                     unpack77(&o.message77).unwrap_or_default(),
@@ -3968,125 +3974,6 @@ mod tests {
             println!(
                 "llr({name}): hard_disagree={hard_disagree}/{LDPC_N}  top-{BASIS_SIZE}-overlap={overlap}/{BASIS_SIZE}  basis_hard_disagree={basis_hard_disagree}"
             );
-        }
-    }
-
-    /// Throwaway probe (issue #182) — NOT for commit. Tests the leading
-    /// hypothesis for `osd_decode_npre1`'s DK8NE fidelity gap: WSJT-X's
-    /// real Gaussian elimination (`osd174_91.f90:86-107`) bounds its
-    /// pivot search to `id..k+20` with column swaps ("ad hoc... beware"
-    /// per its own comment), while `osd_setup_ldpc174_91` scans the
-    /// full N=174 column range — a more complete elimination that can
-    /// select a genuinely different set of MRB (most-reliable-basis)
-    /// physical bit positions. Since `osd_npre1_pass` only explores
-    /// flips *within* whichever basis got selected, a different basis
-    /// changes which codewords are reachable at all. Runs
-    /// `osd_decode_npre1_fortran_pivot` (same npre1 search, WSJT-X's
-    /// bounded-window pivot construction) against
-    /// `osd_decode_npre1`'s own construction, on the identical LLR, to
-    /// see whether the bounded pivot window is what recovers DK8NE.
-    #[test]
-    #[ignore = "manual diagnostic — issue #182 Fortran-pivot-window OSD basis probe"]
-    fn issue_182_dk8ne_osd_fortran_pivot_probe() {
-        use crate::engine::sync::refine_candidate;
-        use crate::fec::ldpc::bp::bp_llr_zsum;
-        use crate::fec::ldpc::osd::{
-            osd_debug_basis_sets, osd_decode, osd_decode_npre1, osd_decode_npre1_fortran_pivot,
-        };
-        use crate::fec::ldpc::params::Ldpc174_91Params;
-        use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
-        use crate::ft8::downsample::downsample;
-        use crate::ft8::llr::compute_llr;
-        use crate::msg::wsjt77::unpack77;
-
-        let manifest = env!("CARGO_MANIFEST_DIR");
-        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
-        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
-
-        let (_results, mfsk_residual) = decode_frame_subtract_staged_with_ap_debug_residual(
-            &audio,
-            100.0,
-            3000.0,
-            0.8,
-            None,
-            DecodeDepth::FULL,
-            200,
-            DecodeStrictness::Normal,
-            None,
-        );
-
-        let freq = 244.2f32;
-        let dt = 0.505f32;
-        let cand = crate::engine::sync::SyncCandidate {
-            freq_hz: freq,
-            dt_sec: dt,
-            score: 0.0,
-        };
-        let (cd0, _cache) = downsample(&mfsk_residual, cand.freq_hz, None);
-        let refined = refine_candidate::<crate::ft8::Ft8>(&cd0, &cand, 10);
-        let mut cs = symbol_spectra_direct::<i16>(
-            &mfsk_residual,
-            cand.freq_hz,
-            refined.dt_sec,
-            SymMask::SyncOnly,
-            None,
-        );
-        fill_symbol_spectra(
-            &mut cs,
-            &mfsk_residual,
-            cand.freq_hz,
-            refined.dt_sec,
-            SymMask::DataOnly,
-            None,
-        );
-        let llr_set = compute_llr::<f32>(&cs);
-
-        let target = "K1BZM DK8NE -10";
-        for (name, llr) in [
-            ("a", &llr_set.llra),
-            ("b", &llr_set.llrb),
-            ("c", &llr_set.llrc),
-            ("d", &llr_set.llrd),
-        ] {
-            let current = osd_decode_npre1(llr)
-                .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
-            let fortran_pivot = osd_decode_npre1_fortran_pivot(llr)
-                .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
-            let (basis_current, basis_fortran) = osd_debug_basis_sets(llr);
-            let set_current: std::collections::HashSet<usize> =
-                basis_current.iter().copied().collect();
-            let set_fortran: std::collections::HashSet<usize> =
-                basis_fortran.iter().copied().collect();
-            let basis_overlap = set_current.intersection(&set_fortran).count();
-            let exhaustive = osd_decode(llr)
-                .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
-            println!(
-                "llr({name}): current_basis={current:?}  fortran_pivot_basis={fortran_pivot:?}  basis_position_overlap={basis_overlap}/{}  exhaustive_order2={exhaustive:?}",
-                set_current.len()
-            );
-
-            // WSJT-X's real decode174_91.f90 driver never feeds osd174_91
-            // the raw channel LLR when maxosd>0 (FT8 ndepth=3 always sets
-            // maxosd=2) -- it feeds `zsave(:,i)`, the running sum of the
-            // BP variable-node soft estimate `zn` across the first `i`
-            // BP iterations (i=1,2 for maxosd=2), trying i=1 then i=2.
-            // `bp_llr_zsum` already exists and is wired for FST4-120
-            // (Ldpc240_101) but was never wired into FT8's osd_strategy.rs
-            // dispatch at all -- FT8's OSD has only ever seen the raw
-            // channel LLR variants (a/b/c/d), never a BP-refined one.
-            for n_iter in [1u32, 2u32] {
-                let zsum_vec = bp_llr_zsum::<Ldpc174_91Params>(llr, n_iter);
-                let mut zsum = [0f32; crate::ft8::params::LDPC_N];
-                zsum.copy_from_slice(&zsum_vec);
-                let via_zsum = osd_decode_npre1(&zsum)
-                    .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
-                println!("  bp_llr_zsum(llr, {n_iter}) -> osd_decode_npre1: {via_zsum:?}");
-            }
-            if let Some((msg, _)) = &fortran_pivot
-                && msg == target
-            {
-                println!("  -> fortran_pivot_basis RECOVERS {target} on llr variant {name}!");
-            }
         }
     }
 

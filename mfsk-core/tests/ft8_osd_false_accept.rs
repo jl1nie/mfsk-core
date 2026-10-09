@@ -20,7 +20,7 @@
 #![cfg(feature = "fft-rustfft")]
 
 use mfsk_core::fec::ldpc::bp::{BpScratch, bp_llr_zsum_with_scratch};
-use mfsk_core::fec::ldpc::osd::osd_decode_npre1;
+use mfsk_core::fec::ldpc::osd_npre::{NDEEP2_174_91, osd174_91};
 use mfsk_core::fec::ldpc::params::Ldpc174_91Params;
 
 struct Rng(u64);
@@ -64,7 +64,7 @@ fn osd_on_noise_returns_wrong_codewords_at_the_reference_rate() {
                             );
                             let mut zz = [0f32; 174];
                             zz.copy_from_slice(z);
-                            if osd_decode_npre1(&zz).is_some() {
+                            if osd174_91(&zz, NDEEP2_174_91, None).is_some() {
                                 hits += 1;
                                 break;
                             }

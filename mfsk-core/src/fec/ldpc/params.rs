@@ -75,7 +75,37 @@ pub trait LdpcParams: sealed::Sealed + Copy + Default + 'static {
     /// `row ∈ 0..M`, `col ∈ 0..K`. Used by the systematic encoder
     /// and OSD's permuted-generator construction.
     fn gen_parity(row: usize, col: usize) -> u8;
+
+    /// The generator's parity rows packed: bit `q` of entry `row` is
+    /// `gen_parity(row, q)`. Built at compile time from the same table;
+    /// what the ordered-statistics decoder (`osd_npre`) assembles its
+    /// generator from, a column at a time.
+    const GEN_PARITY_PACKED: &'static [u128];
 }
+
+/// Packs a `M × K` 0/1 generator-parity table into one `u128` per row
+/// (`K ≤ 128`).
+const fn pack_gen_parity<const K: usize, const M: usize>(t: &[[u8; K]; M]) -> [u128; M] {
+    assert!(K <= 128);
+    let mut out = [0u128; M];
+    let mut r = 0;
+    while r < M {
+        let mut q = 0;
+        while q < K {
+            if t[r][q] != 0 {
+                out[r] |= 1 << q;
+            }
+            q += 1;
+        }
+        r += 1;
+    }
+    out
+}
+
+const GEN_PARITY_174_91: [u128; 83] = pack_gen_parity(&super::osd::GEN_PARITY);
+const GEN_PARITY_240_101: [u128; 139] =
+    pack_gen_parity(&crate::fec::ldpc240_101::tables::GEN_PARITY);
+const GEN_PARITY_128_90: [u128; 38] = pack_gen_parity(&crate::fec::ldpc_128_90::tables::GEN_PARITY);
 
 // ────────────────────────────────────────────────────────────────────
 // LDPC(174, 91) — FT8 / FT4 / FT2
@@ -94,6 +124,7 @@ impl LdpcParams for Ldpc174_91Params {
     const K: usize = 91;
     const M: usize = 83;
     const MAX_ROW: usize = 7;
+    const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_174_91;
 
     #[inline]
     fn mn(bit: usize) -> [u8; 3] {
@@ -132,6 +163,7 @@ impl LdpcParams for Ldpc240_101Params {
     const K: usize = 101;
     const M: usize = 139;
     const MAX_ROW: usize = 6;
+    const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_240_101;
 
     #[inline]
     fn mn(bit: usize) -> [u8; 3] {
@@ -170,6 +202,7 @@ impl LdpcParams for Ldpc128_90Params {
     const K: usize = 90;
     const M: usize = 38;
     const MAX_ROW: usize = 11;
+    const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_128_90;
 
     #[inline]
     fn mn(bit: usize) -> [u8; 3] {

@@ -7,7 +7,7 @@
 //! regardless of the embedded fixed-point `LlrT`), and for each of
 //! the five LLR variants (a/b/c/d/e, matching `ft8b.f90`'s `ipass=1..5`
 //! `llra/b/c/d/e`), tries the WSJT-X-faithful OSD entry
-//! ([`osd_decode_npre1`], `ndeep=2`, for every candidate) seeded with `bp_llr_zsum(llr, 1)`
+//! ([`osd174_91`] at `ndeep=2`, for every candidate) seeded with `bp_llr_zsum(llr, 1)`
 //! then `bp_llr_zsum(llr, 2)` — mirroring `decode174_91.f90`'s own
 //! `do i=1,nosd` loop over its `zsave(:,i)` snapshots — and applies
 //! the `nharderrors > 36` cycle gate to weed out high-error CRC-luck
@@ -16,11 +16,10 @@
 //! ε.6 of the `docs/CLEANUP_2026_05.md` `decode_block` split. As of
 //! issue **#63** this module hosts the WSJT-X-faithful OSD dispatch
 //! (`osd174_91.f90`'s ndeep=2/3 dispatch table). It kept a q-conditional
-//! split until #452: `ndeep=3` ([`osd_decode_npre1_npre2`]) for `q >= 18`.
+//! split until #452: `ndeep=3` (then `osd_decode_npre1_npre2`) for `q >= 18`.
 //! `ft8b.f90` v3.0.0 calls `decode174_91` with `norder=2` for every
 //! candidate and has no such split, so neither does this now. The split was
-//! covering for the OSD's CRC-on-every-candidate search (see
-//! [`crate::fec::ldpc::osd`]'s `OsdBest`): with the CRC on the winner only,
+//! covering for the OSD's CRC-on-every-candidate search (#452): with the CRC on the winner only,
 //! as upstream, `ndeep=2` decodes `CQ EA2BFM IN83` on `qso3_busy` too, which
 //! it did not before (#453). As of issue **#182** the OSD *input* is also WSJT-X-faithful: earlier
 //! versions fed `osd_decode_npre1`/`_npre2` the raw channel LLR
@@ -51,7 +50,8 @@ use super::super::decode::{DecodeDepth, DecodeStrictness};
 use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::LDPC_N;
 use crate::fec::ldpc::bp::{BpResult, BpScratch, bp_llr_zsum_with_scratch};
-use crate::fec::ldpc::osd::{OsdResult, osd_decode_npre1};
+use crate::fec::ldpc::osd::OsdResult;
+use crate::fec::ldpc::osd_npre::{NDEEP2_174_91, osd174_91};
 use crate::fec::ldpc::params::Ldpc174_91Params;
 
 // OSD `nharderrors` ceiling — now [`DecodeStrictness::ft8_nharderrors_max`]
@@ -170,7 +170,7 @@ pub(super) fn try_fallback(
     // The entry checks `check_crc14` on its winner, as `osd174_91`'s
     // `nbadcrc` does, so no `Some(check_crc14)` argument.
     let dispatch = |llr: &[f32; LDPC_N]| -> Option<OsdResult> {
-        let osd = osd_decode_npre1(llr);
+        let osd = osd174_91(llr, NDEEP2_174_91, None);
         // WSJT-X-faithful ceiling (Normal) — see
         // `DecodeStrictness::ft8_nharderrors_max`'s docstring.
         osd.filter(|o| o.hard_errors <= strictness.ft8_nharderrors_max())
@@ -211,8 +211,9 @@ pub(super) fn try_fallback(
     // channel-LLR-selected MRB basis at all. Feeding
     // `bp_llr_zsum(llrd, 2)` into the *same*, unmodified
     // `osd_decode_npre1` decodes it outright at `hard_errors=17`
-    // (better than jt9's own real `hard_errors=18` on this exact
-    // candidate). The mechanism (`bp_llr_zsum`) already existed and is
+    // (jt9's own real value on this exact candidate is 18). Since #417
+    // the OSD chooses its basis as `osd174_91.f90` does, and the decode
+    // here comes one snapshot earlier, at 18 — jt9's value. The mechanism (`bp_llr_zsum`) already existed and is
     // wired for FST4-120 (`Ldpc240_101`, issue #146) but was never
     // ported to FT8 before now.
     //
