@@ -71,7 +71,7 @@ use num_traits::Float;
 
 use super::assemble::{Assembler, FRAME_PERIOD_S, MessageUpdate};
 use super::correlate::ToneRefs;
-use super::dsp::{self, FS6, NSS, db};
+use super::dsp::{self, BAUD, FS6, NSS, db};
 use super::ladder::{Ladder, Rungs};
 use super::source::{self, Atom};
 use super::subtract::subtract_frame;
@@ -119,6 +119,9 @@ const OTHER_CANDIDATES: usize = 2;
 const CH0_MIN_SYNC: usize = 7;
 const OTHER_MIN_SYNC: usize = 9;
 const OTHER_MIN_SNR_DB: f32 = 5.0;
+/// `SNR_FLOOR_DB` in `jtty_mdecode.f90` (v3.3.0-beta1): "weaker than the weakest
+/// sometimes-decodable JTTY signal".
+pub const SNR_FLOOR_DB: f32 = -17.0;
 /// Two frames with the same text closer than this (seconds) are one.
 const DUPE_TIME_S: f32 = 0.032;
 /// Channel-1/2 candidates this close (Hz, seconds) to a channel-0 success are it.
@@ -329,8 +332,11 @@ pub struct FrameDecode {
     pub xdt_s: f32,
     /// Start of the frame, seconds from the start of the audio.
     pub tsync_s: f32,
-    /// Signal-to-noise estimate from the sync and data tones (`snrdb`); upstream
-    /// displays `round(snr_db − 20)`.
+    /// Signal-to-noise ratio in 2 500 Hz from the sync and data tones (`snrdb`), floored at
+    /// [`SNR_FLOOR_DB`]: `db((pt − pn) / pn) − db(2500 / baud)`, as WSJT-X v3.3.0-beta1 computes
+    /// and reports it (`round(snr_db)`). Through rc1 this was `db(pt / pn)`, a ratio in the
+    /// tone bandwidth that upstream displayed as `round(snr_db − 20)`; the sync gate still
+    /// uses that older ratio, from the sync tones alone.
     pub snr_db: f32,
     /// Sync tones received correctly, of 13.
     pub nsync: usize,
@@ -1297,7 +1303,13 @@ impl Receiver {
             pa += pow.iter().sum::<f32>();
         }
         let pn = (pa - pt) / 3.0;
-        let snr_db = if pn > 0.0 { db(pt / pn) } else { snr };
+        // `snrdb=max(db((pt-pn)/pn) - db(2500.0/baud), SNR_FLOOR_DB)` when `pn > 0`; otherwise
+        // the sync-gate value stands (`cand(ncand)%snrdb` is only overwritten then).
+        let snr_db = if pn > 0.0 {
+            (db((pt - pn) / pn) - db(2500.0 / BAUD)).max(SNR_FLOOR_DB)
+        } else {
+            snr
+        };
         debug_assert_eq!(tones.len(), INFO_BITS);
 
         let text = atom.render();

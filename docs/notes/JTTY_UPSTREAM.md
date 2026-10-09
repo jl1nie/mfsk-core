@@ -748,13 +748,17 @@ The FFI and bindings (P4b) are separate.
   compositions of the tokens the packer treats specially, random text) and vendors
   the answers as `golden/jtty/pack_cases.tsv` (270 KB). `tests/jtty_pack.rs` requires the
   identical frames, or the identical refusal. Frame counts in the corpus run 0 to 16.
-- **What the oracle found.** One upstream quirk, in the *first* run: `1F DX` came out as
+- **What the oracle found.** One upstream quirk, in the *first* run (v3.2.0-rc1): `1F DX` came out as
   TEXT5 upstream and as a class/section atom here. `pack77_arrl_section_index` returns
-  -1 for an argument shorter than three characters and `pack_jtty` hands it `trim(word)`,
-  so a two-letter section (`DX`, `AB`, `MB`, `PE`, …) is never packed as a class/section
-  atom; a longer word matches on its first three characters (which `offer`'s
-  round-trip then rejects). Reproduced and documented in `pack.rs`. Whether it is
-  intended is not knowable from the source; the receiver still decodes such an atom.
+  -1 for an argument shorter than three characters and `pack_jtty` handed it `trim(word)`,
+  so a two-letter section (`DX`, `AB`, `MB`, `PE`, …) was never packed as a class/section
+  atom; a longer word matched on its first three characters (which `offer`'s round-trip
+  then rejects). It was reproduced here. **v3.3.0-beta1 removed it** (`jtty_mod.f90`
+  `try_compact` passes the blank-padded `words(2)`, #642): `10A CT`, `1F DX`, `2A CT`, `32F DX` are
+  one frame, `1D EMAX` still two. `pack.rs` follows, and `pack_cases.tsv` was regenerated from a
+  beta1 build (`JTTY_TAG=v3.3.0-beta1 scripts/build_jttysim.sh ../WSJT-X target/jttysim-beta1`):
+  3 525 cases, 11 lines differ from the rc1 file, all of them this change (one of them 7 frames
+  to 6), and the six `jtty_pack` tests pass against it.
 - **Deliberate differences.** More than 80 characters is `PackError::TooLong` (upstream's
   `character*80` truncates silently at the caller); a non-ASCII character is one `#`, not
   one per byte. Neither is reachable from an ASCII message of at most 80 characters.

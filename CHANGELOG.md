@@ -100,6 +100,16 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   expires before recording, and lists the DX station as the 51st beside 50 callers (`1 + 10 * 51` = 511 codewords, was 411). The
   tier-C Q65 sweep is unchanged to 0.00 dB in all 20 groups: it does not run q3, drift or the caller list, so it shows no
   regression and nothing more; `q65_max_drift` and `q65_q3` still pass.
+- **JTTY packs a two-letter section after a class token as an atom, as WSJT-X v3.3.0-beta1 does (#642).** `10A CT` and `1F DX`
+  are now one frame; through rc1 upstream's lookup rejected a word shorter than three characters, so they went out as TEXT5
+  (two frames), and this crate reproduced that. A transmitted message changes on the wire for these inputs; a receiver decoded
+  both. `pack_cases.tsv` is regenerated from a beta1 build: 11 of 3 525 lines change, all this, and `jtty_pack` passes.
+- **JTTY reports an SNR a user can read, as WSJT-X v3.3.0-beta1 does (#642).** `FrameDecode::snr_db` is now
+  `db((pt − pn) / pn) − db(2500 / baud)` floored at −17 dB (`SNR_FLOOR_DB`), an SNR in 2 500 Hz; through rc1 it was `db(pt / pn)`,
+  a tone-bandwidth ratio that upstream showed as `round(snr_db − 20)`. `MessageUpdate::snr_db` is the first frame's, never
+  reassigned, appended to `MfskJttyUpdate` (ABI stays 3) and to the Kotlin and Swift updates (`snrDb`). Against a v3.3.0-beta1 `rjtty` on
+  `sjtty` files, true −10 / 0 / 10 / 20 / 30 dB read −9 / 0 / 7 / 10 / 11 there and −9.4 / −0.2 / 7.5 / 10.5 / 11.0 here: a strong signal
+  reads low, upstream's own limit. The sync gate still uses the old ratio, as upstream does.
 
 ### Internals
 

@@ -560,6 +560,11 @@ pub struct MfskJttyUpdate {
     /// The text so far, NUL-terminated UTF-8. Frames that were never heard
     /// show as ` ... `; TEXT5 spaces as `~`, as upstream shows them.
     pub text: [core::ffi::c_char; 128],
+    /// SNR of the message's first frame, dB in 2 500 Hz, floored at -17: the
+    /// value WSJT-X v3.3.0-beta1 reports (`start_snrdb`, shown as `round()`).
+    /// Appended after `text`; a caller that passed a smaller `size` does not
+    /// receive it. Through v0.13 rows had no SNR.
+    pub snr_db: f32,
 }
 const _: () = assert!(MFSK_JTTY_TEXT_BUF_LEN == 128);
 

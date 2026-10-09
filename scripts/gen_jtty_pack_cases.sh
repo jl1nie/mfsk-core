@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Golden cases for the JTTY text packer: a deterministic set of messages, each
-# run through WSJT-X's own `pack_jtty` (v3.2.0-rc1, via jtty_pack_oracle).
+# run through WSJT-X's own `pack_jtty` (JTTY_TAG, default v3.3.0-beta1, via jtty_pack_oracle).
 #
 #   scripts/gen_jtty_pack_cases.sh [tools-dir] [out-file]
 #
-#   tools-dir  target/jttysim/build (scripts/build_jttysim.sh builds it)
+#   tools-dir  target/jttysim/build (scripts/build_jttysim.sh builds it; for the golden,
+#              JTTY_TAG=v3.3.0-beta1 scripts/build_jttysim.sh ../WSJT-X target/jttysim-beta1
+#              and pass target/jttysim-beta1/build). JTTY_TAG here only labels the file header:
+#              set it to the tag the tools were built from.
 #   out-file   embedded-poc/assets/golden/jtty/pack_cases.tsv
 #
 # The cases are curated ones (every atom kind, every profile difference, the
@@ -20,10 +23,10 @@ OUT="${2:-$REPO_ROOT/embedded-poc/assets/golden/jtty/pack_cases.tsv}"
 ORACLE="$TOOLS/jtty_pack_oracle"
 [ -x "$ORACLE" ] || { echo "no $ORACLE — run scripts/build_jttysim.sh first" >&2; exit 1; }
 
-python3 - "$ORACLE" "$OUT" <<'PY'
+python3 - "$ORACLE" "$OUT" "${JTTY_TAG:-v3.3.0-beta1}" <<'PY'
 import random, subprocess, sys
 
-oracle, out = sys.argv[1:3]
+oracle, out, tag = sys.argv[1:4]
 rnd = random.Random(477)
 
 calls = ["K1ABC", "JA1XYZ", "W9XYZ", "DL1ABC", "3DA0RS", "VK3NV", "9A1A", "N0CALL", "HB9XYZ",
@@ -104,7 +107,7 @@ for l in lines:
     f = l.split("\t")
     counts[f[2]] = counts.get(f[2], 0) + 1
 with open(out, "w") as fh:
-    fh.write("# WSJT-X v3.2.0-rc1 pack_jtty over scripts/gen_jtty_pack_cases.sh's messages\n")
+    fh.write("# WSJT-X " + tag + " pack_jtty over scripts/gen_jtty_pack_cases.sh's messages\n")
     fh.write("# profile (0 unknown, 1 Field Day, 2 RTTY Roundup)\tmessage\tnframes (-1 rejected)\tframes: 34-bit payloads, 9 hex digits each\n")
     fh.write(res.stdout)
 print(f"{len(lines)} cases; nframes histogram: " + " ".join(f"{k}:{counts[k]}" for k in sorted(counts, key=int)))

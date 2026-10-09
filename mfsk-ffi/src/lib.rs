@@ -2877,6 +2877,7 @@ pub unsafe extern "C" fn mfsk_jtty_poll(
             f1_hz: u.f1_hz,
             start_s: u.start_s,
             text: [0; 128],
+            snr_db: u.snr_db,
         };
         // Truncate on a character boundary, leaving room for the NUL.
         let mut end = u.text.len().min(v.text.len() - 1);

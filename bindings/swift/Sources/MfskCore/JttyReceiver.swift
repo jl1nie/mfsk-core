@@ -58,6 +58,9 @@ public struct JttyUpdate: Sendable, Equatable {
     /// Start of the first frame, seconds from the first sample pushed
     /// since the receiver was created or reset.
     public let startSeconds: Float
+    /// SNR of the message's first frame, dB in 2 500 Hz, floored at -17, as
+    /// WSJT-X v3.3.0-beta1 reports it (show it rounded).
+    public let snrDb: Float
 
     init(_ raw: MfskJttyUpdate) {
         self.id = raw.id
@@ -65,6 +68,7 @@ public struct JttyUpdate: Sendable, Equatable {
         self.isComplete = raw.complete != 0
         self.frequencyHz = raw.f1_hz
         self.startSeconds = raw.start_s
+        self.snrDb = raw.snr_db
     }
 }
 

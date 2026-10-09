@@ -25,11 +25,13 @@
 //!    `100·kind + 2·subtype + role` key.
 //! 4. The result must fit in [`MAX_FRAMES`] frames.
 //!
-//! # Upstream quirks kept
+//! # Upstream history
 //!
-//! A two-letter ARRL/RAC section (`DX`, `AB`, `MB`, `PE` …) after a class token is
-//! never packed as a class/section atom, only as text: upstream's section lookup
-//! rejects an argument shorter than three characters and is handed a trimmed word.
+//! Through v3.2.0-rc1 a two-letter ARRL/RAC section (`DX`, `AB`, `MB`, `PE` …) after
+//! a class token was never packed as a class/section atom, only as text: the section
+//! lookup rejects an argument shorter than three characters and was handed a trimmed
+//! word. v3.3.0-beta1 hands it the blank-padded word (`jtty_mod.f90` `try_compact`),
+//! so `10A CT` and `1F DX` are one frame; this follows beta1 (#642).
 //!
 //! # Where it differs from upstream
 //!
@@ -349,17 +351,14 @@ impl Plan<'_> {
             return;
         }
         let (count, class) = w1.split_at(w1.len() - 1);
-        // Upstream's `pack77_arrl_section_index` returns -1 for an argument shorter than
-        // three characters, and `pack_jtty` hands it `trim(word)`: a two-letter section
-        // (`DX`, `AB`, `MB` …) is therefore never a class/section atom there, and it
-        // matches on the first three characters of a longer word. Reproduced as it is
-        // (the golden file has `1F DX`, which upstream sends as TEXT5).
+        // v3.3.0-beta1 `pack77_arrl_section_index(words(2))`: the word arrives blank-padded
+        // and is compared on its first three characters, so a two-letter section (`DX`,
+        // `CT` …) matches. rc1 passed `trim(words(2))`, whose length under three made the
+        // lookup return -1; a longer word still matches on its first three characters
+        // (`EMAX` is `EMA`), which `offer`'s round-trip then rejects.
         let name = words[1];
-        let section = if name.len() >= 3 {
-            section_index(&text(&name[..3]))
-        } else {
-            None
-        };
+        let key = if name.len() >= 3 { &name[..3] } else { name };
+        let section = section_index(&text(key));
         if let (Some(count), Some(section)) = (decimal_value(count), section) {
             // 1..=32 are the only counts an atom can carry
             if let Ok(count) = u8::try_from(count) {

@@ -1573,6 +1573,9 @@ data class MfskJttyUpdate(
     /// Start of the first frame, seconds from the first sample pushed
     /// since the receiver was opened or reset.
     val startSeconds: Float,
+    /// SNR of the message's first frame, dB in 2 500 Hz, floored at -17, as
+    /// WSJT-X v3.3.0-beta1 reports it (show it rounded).
+    val snrDb: Float,
 )
 
 /// What a JTTY receiver looks for. The defaults are `rjtty`'s.
