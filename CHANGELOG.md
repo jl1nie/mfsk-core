@@ -146,6 +146,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   (`DecodeDetail::early`, the GUI's ⏱, `--detail`), the rest at the end, where an early row is said again only if it reads better. A period's
   deliveries stay on the lane its first went to. On by default (`Config::early_decode`, `--no-early`, GUI *Early decode*); FT8 at `Fast` depth
   and every other mode decode the whole slot as before. Tried in the window against a SpyServer on 40 m (2026-10-08): most strong stations arrive early.
+- **With early decode, `slot_budget` is a period's, not each call's (#626, #627).** FT8's A, B and final calls of one period each got
+  a fresh full allowance, so a period could spend three times its share, and each call that ran out added one to
+  `Status::budget_cut_slots`. The calls now share the allowance (each gets what the earlier ones left; waiting for audio between
+  them is not counted), and a cut period counts once. A's rows stay in the complete set even when B and the end have nothing left
+  (checked on `qso3_busy`: 15 of 15).
 
 ### CI, tests and docs
 

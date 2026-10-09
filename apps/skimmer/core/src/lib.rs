@@ -436,6 +436,46 @@ struct Worker {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+/// A period a lane's `decode_prefix` sequence is open for: what it has said
+/// so far (`decode_streaming`), and what its calls have cost. The period's
+/// deliveries (FT8's A, B and the end) share one [`Config::slot_budget`]
+/// allowance between them (#626), and a cut period is counted once in
+/// `Status::budget_cut_slots` however many of its calls ran out (#627).
+#[derive(Debug, Default)]
+struct OpenPeriod {
+    period: i64,
+    sent: std::collections::HashMap<u32, String>,
+    /// Decoding time the period's calls have used. The time between calls,
+    /// waiting for audio, is not decoding and is not counted.
+    spent: Duration,
+    /// Already counted as cut.
+    counted: bool,
+}
+
+impl OpenPeriod {
+    fn new(period: i64) -> Self {
+        Self {
+            period,
+            ..Default::default()
+        }
+    }
+
+    /// The deadline for a call starting at `start`: what is left of
+    /// `allowance` after the period's earlier calls.
+    fn deadline(&self, start: Instant, allowance: Option<Duration>) -> Option<Instant> {
+        allowance.map(|a| start + a.saturating_sub(self.spent))
+    }
+
+    /// Book a call that took `took`; `true` when it is the period's first
+    /// to run out of budget, the one to count.
+    fn finish(&mut self, took: Duration, exhausted: bool) -> bool {
+        self.spent += took;
+        let first = exhausted && !self.counted;
+        self.counted |= exhausted;
+        first
+    }
+}
+
 /// Slots a worker may have waiting. A slot decodes in a fraction of its
 /// period, so more than this means the channel cannot keep up.
 const WORKER_QUEUE: usize = 4;
@@ -458,9 +498,8 @@ impl Worker {
         let handle = std::thread::Builder::new()
             .name(format!("decode-{channel}"))
             .spawn(move || {
-                // The period a `decode_prefix` sequence is open for on this
-                // lane, and what it has said so far (`decode_streaming`).
-                let mut open: Option<(i64, std::collections::HashMap<u32, String>)> = None;
+                // The period a `decode_prefix` sequence is open for on this lane.
+                let mut open: Option<OpenPeriod> = None;
                 for job in rx {
                     let slot = match job {
                         Job::Slot(slot) => slot,
@@ -470,30 +509,32 @@ impl Worker {
                         }
                     };
                     let t = Instant::now();
-                    // A share of the period from now.
-                    let deadline = slot_budget
-                        .map(|f| t + Duration::from_secs_f32(modes::slot_seconds(slot.mode) * f));
-                    let within = move || deadline.is_none_or(|d| Instant::now() < d);
-                    let input = match deadline {
-                        Some(_) => slot.input().budget(&within),
-                        None => slot.input(),
-                    };
                     // A prefix, or the whole of a period whose prefixes this
                     // lane decoded: the same sequence. A whole slot with none
                     // before it (no points, or its prefixes were dropped) is a
                     // plain decode.
                     let whole = slot.is_whole();
-                    let continues = open.as_ref().is_some_and(|(p, _)| *p == slot.period);
+                    let (mut cur, continues) = match open.take() {
+                        Some(o) if o.period == slot.period => (o, true),
+                        _ => (OpenPeriod::new(slot.period), false),
+                    };
                     let prefix = !whole || continues;
-                    let mut sent = match open.take() {
-                        Some((p, s)) if p == slot.period => s,
-                        _ => Default::default(),
+                    // A share of the period, less what its earlier calls used.
+                    let deadline = cur.deadline(
+                        t,
+                        slot_budget
+                            .map(|f| Duration::from_secs_f32(modes::slot_seconds(slot.mode) * f)),
+                    );
+                    let within = move || deadline.is_none_or(|d| Instant::now() < d);
+                    let input = match deadline {
+                        Some(_) => slot.input().budget(&within),
+                        None => slot.input(),
                     };
                     let report = decode_streaming(
                         &mut decoder,
                         &input,
                         prefix,
-                        &mut sent,
+                        &mut cur.sent,
                         &|d, detail, update| {
                             let _ = results.send(Decode {
                                 channel,
@@ -509,11 +550,11 @@ impl Worker {
                             });
                         },
                     );
-                    if !whole {
-                        open = Some((slot.period, sent));
-                    }
-                    if report.exhausted {
+                    if cur.finish(t.elapsed(), report.exhausted) {
                         cut_slots.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if !whole {
+                        open = Some(cur);
                     }
                     longest_us.fetch_max(t.elapsed().as_micros() as u64, Ordering::Relaxed);
                     pending.fetch_sub(1, Ordering::Relaxed);
@@ -704,6 +745,9 @@ pub struct Config {
     /// reports what it has (`SlotInput::budget`). `None` (the default) decodes
     /// every slot to the end, which is what a skimmer wants: a late row is still
     /// a spot; the next slot has its own lane.
+    /// With [`Config::early_decode`] the share is the period's, split over its
+    /// calls: each gets what the earlier ones left, and the wait for audio
+    /// between them is not counted (#626).
     pub slot_budget: Option<f32>,
     /// Decoder threads per channel. A slot goes to the lane with the least
     /// waiting, so the next slot is decoded on another thread while the last is
@@ -1103,6 +1147,8 @@ pub struct Status {
     pub dropped_slots: u64,
     /// Slots whose decode was stopped by [`Config::slot_budget`] since the
     /// start: the rest of their candidates were left undone.
+    /// A period counts once, however many of its early-decode calls ran out
+    /// (#627).
     pub budget_cut_slots: u64,
     pub gaps: u64,
     pub reanchors: u64,
@@ -2543,8 +2589,6 @@ mod tests {
         assert_eq!(lane_for(None, 8, &[1, 0, 0], false), 1);
     }
 
-    /// A budget that is already spent stops an FT8 slot, and says so: the
-    /// count `Status::budget_cut_slots` is made of.
     /// The next slot goes to a lane that is free, and to the first one on a tie;
     /// a channel that averages keeps to its first lane whatever it has waiting.
     #[test]
@@ -2576,6 +2620,8 @@ mod tests {
         assert!(c.early_decode, "FT8 rows at ~11.8 s, as WSJT-X shows them");
     }
 
+    /// A budget that is already spent stops an FT8 slot, and says so: the
+    /// count `Status::budget_cut_slots` is made of.
     #[test]
     fn a_spent_budget_cuts_the_slot_and_is_reported() {
         let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
@@ -2593,6 +2639,53 @@ mod tests {
         );
         assert!(report.exhausted, "{report:?}");
         assert_eq!(rows.load(Ordering::Relaxed), 0);
+    }
+
+    /// #626: a period's calls share one allowance. Each call gets what the
+    /// earlier ones left, the time between calls costs nothing, and a period
+    /// that has used it all starts its next call already out of time.
+    #[test]
+    fn a_periods_calls_share_one_budget() {
+        let ms = Duration::from_millis;
+        let allowance = Some(ms(300));
+        let t0 = Instant::now();
+        let mut p = OpenPeriod::new(7);
+        assert_eq!(
+            p.deadline(t0, allowance),
+            Some(t0 + ms(300)),
+            "A: the whole share"
+        );
+        p.finish(ms(120), false);
+        // B starts 1.7 s later (waiting for audio): 180 ms left, from then.
+        let tb = t0 + ms(1_700);
+        assert_eq!(p.deadline(tb, allowance), Some(tb + ms(180)));
+        p.finish(ms(200), true);
+        let tf = tb + ms(1_500);
+        assert_eq!(p.deadline(tf, allowance), Some(tf), "the end: nothing left");
+        assert_eq!(p.deadline(tf, None), None, "no budget, no deadline");
+    }
+
+    /// #627: a period whose A, B and final calls all run out of budget is one
+    /// cut slot; a second period is a second; a period cut at a prefix and
+    /// never finished was counted when it was cut.
+    #[test]
+    fn a_cut_period_is_counted_once() {
+        let ms = Duration::from_millis;
+        let mut count = 0;
+        let mut p = OpenPeriod::new(7);
+        for _ in 0..3 {
+            count += usize::from(p.finish(ms(100), true));
+        }
+        assert_eq!(count, 1);
+        let mut q = OpenPeriod::new(8);
+        count += usize::from(q.finish(ms(100), false));
+        count += usize::from(q.finish(ms(100), true));
+        assert_eq!(count, 2);
+        // Abandoned after a cut A: already counted, nothing more to do.
+        let mut r = OpenPeriod::new(9);
+        count += usize::from(r.finish(ms(100), true));
+        drop(r);
+        assert_eq!(count, 3);
     }
 
     #[test]
