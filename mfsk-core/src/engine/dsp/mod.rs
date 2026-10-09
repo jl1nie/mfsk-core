@@ -31,6 +31,7 @@ pub mod resample;
 pub mod subtract;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod symbol_fft;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod window;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
