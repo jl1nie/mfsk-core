@@ -11,9 +11,14 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 - **`ModulationParams`**: `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL` and `NDOWN` move to the new `SyncFrontEnd`; `SYMBOL_DT`,
   `N_SYMBOLS` and `LdpcParams::M` are defaulted; `TONE_SPACING_HZ` is written `tone_spacing_hz(GFSK_HMOD, NSPS)` (#419).
 - **Removed**: `osd_decode`, `osd_decode_deep(4)`, `osd_decode_npre1` (`_masked`, `_npre2`) and `osd_decode_npre_generic`, for
-  `osd174_91` / `osd_npre` (#417); `jt9::baseband` (#425); `is_plausible_callsign` is now `is_valid_callsign` (#612).
+  `osd174_91` / `osd_npre` (#417); `jt9::baseband` (#425). `is_plausible_callsign` stays and now behaves as `is_valid_callsign` (#612).
 - **Types**: 40 public types are `#[non_exhaustive]` (#573); `RowDetail::{sync_score, sync_cv, hard_errors}` are `Option`s (#594).
-- **C ABI**: appended fields only, ABI stays 3; `MFSK_CAP_BUDGET` is now published for four more modes (#592, #593, #601, #607).
+- **C ABI**: appended fields only, ABI stays 3, but behaviour moves: rows are `out[0].size` apart and keep that `size` (#607, #635), a
+  retry after a short buffer is answered without decoding again (#633), `float` at other rates keeps its level (#634), and
+  `mfsk_iq_push` decodes FT8 early by default (#601). `MFSK_CAP_BUDGET` is published for four more modes (#593).
+- **Kotlin / Swift**: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable (#594).
+- **Migration**: `LIBRARY.md` §1.3 (Rust: what changes in results, in code, what was removed) and `BINDINGS.md` §3.1 (C, Kotlin,
+  Swift), each with its `.ja.md`.
 
 ### Public API
 
@@ -79,13 +84,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   `std::time::Instant::now()` whenever `std` was on, and on that target std has no clock: `time not implemented on this platform`,
   on any input (every browser build of WSPR or MSK144 since 0.10.1 at least). The timers go through one `Tick` (`src/clock.rs`) that
   reads zero without a clock; the values only feed benchmark counters, so no decode changes.
-
 - **FT8's symbol scaling and `nsync` gate follow `ft8b.f90` (#423).** `cs = csymb / 1e3` is a true division again (a scratch gfortran
   oracle: `z/1e3` matches componentwise division on 2M of 2M samples, `* (1/1000)` differs on 81%), and the `nsync <= 10 && xsnr < -25`
   gate reads the Costas count of the candidate's refined symbol spectra (`ft8b.f90:164-177`) instead of recounting on the coarse
   spectrogram after decoding. On the goldens and the FT8 sweep (T1, 1 040 trials) no group moves; the gate flips for one candidate
   in the whole tier-A/B suite.
-
 - **An FT8 `decode_prefix` sequence pins the sniper with the rest of its settings (#628).** Turning the sniper on after checkpoint A
   made the final call run one sniper decode instead of finishing the staged sequence, so early rows already returned were missing
   from the "complete" set (21 rows down to 2 on `qso3_busy`). Whether the period runs the sniper, and on which frequency, is now
@@ -124,8 +127,8 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   Q65, so `mfsk_decoder_set_budget` no longer refuses them (`registry_caps.rs` ties the bit to "every mode with a `Decoder`").
   `MfskBudgetReport` gains `rows_subtracted`, `mfsk_decoder_delivery_is_exact` is new, and `MfskIqDecode` appends `MfskDecode`'s detail
   (key, flags, sync) and `key_bits` / `key` / `delivery`. All appended to size-versioned structs; ABI stays 3. Kotlin and Swift:
-  `syncScore` / `syncCv` / `hardErrors` are nullable, rows gain `key`, `keyBits` and `delivery`. Kotlin's JVM test passes; the Swift
-  suite (four new tests) has not been built here. `CompletedSlot::new` lets a consumer's tests build a slot. Docs: `BINDINGS.md`, `STREAMING.md`.
+  `syncScore` / `syncCv` / `hardErrors` are nullable, rows gain `key`, `keyBits` and `delivery`. Kotlin's JVM test and the Swift
+  suite (four new tests) pass in CI. `CompletedSlot::new` lets a consumer's tests build a slot. Docs: `BINDINGS.md`, `STREAMING.md`.
 - **A short output buffer no longer loses the call's result (#633).** `mfsk_decoder_decode_stream` took the stream's ready slot before it
   checked the buffer, so the retry the ABI asks for found no slot (`UNSUPPORTED`): Swift's `decode(CaptureStream)` returned `nil` and
   the Kotlin shim threw. The other `decode_*` calls re-decoded on retry, which fired the callback twice and stepped a Q65 average twice.

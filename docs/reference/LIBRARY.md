@@ -30,7 +30,7 @@ This document is the Rust host API. Other audiences:
 - [1. Quick start](#1-quick-start)
   - [1.1 Use cases: a decoder is something you keep](#11-use-cases-a-decoder-is-something-you-keep)
   - [1.2 Coming from 0.12](#12-coming-from-012)
-  - [1.3 Coming from 0.13: `#[non_exhaustive]`](#13-coming-from-013-non_exhaustive)
+  - [1.3 Coming from 0.13](#13-coming-from-013)
 - [2. The decode API](#2-the-decode-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` and `Depth`](#22-decodeparams-and-depth)
@@ -379,9 +379,51 @@ The synthesis API (`engine::tx`), `dt_sec` from the nominal start and
 
 ---
 
-### 1.3 Coming from 0.13: `#[non_exhaustive]`
+### 1.3 Coming from 0.13
 
-0.14 marks the public types that are expected to grow
+0.14 keeps 0.13's decode API: `Decoder<P>`, `DecodeParams`, the per-mode
+`Extras` and `SlotInput` are where they were, and a caller that builds them
+with `Default` and assigns fields mostly recompiles. What breaks is narrower:
+types marked `#[non_exhaustive]` (most callers meet this), three `RowDetail`
+fields that became `Option`s, the traits a protocol implementer writes, and
+a few low-level `fec` and `jt9` functions. The full list is `CHANGELOG.md`,
+`## 0.14.0`.
+
+**What changes in your results.** None of these needs a code change:
+
+| | 0.13 | 0.14 | measured |
+|---|---|---|---|
+| FT8 / FT4 plausibility verdict | refused a callsign whose prefix was not in an 82-entry ITU table, and `A5A` (Bhutan) outright | the grammar check only, as `ft8b.f90` | it had refused 13 of the 100 303 callsigns spotted on PSK Reporter in FT4/FT8 since 2024-06-20, all special-event (`J42A`, `U5WAR`, …); nothing else moved (tier C, the busy-band corpus, 3 000 FT4 noise slots) ([#612](https://github.com/jl1nie/mfsk-core/issues/612)) |
+| OSD (FT8, FT4, FST4) | two ports that did not match `osd174_91.f90` / `osd240_101.f90` | one, line for line | the same rows; FT8's `hard_errors` and `pass` move (`K1BZM DK8NE` now has `jt9`'s 18 hard errors); tier C within ±0.2 dB; `qso3_busy` at `Deep` 570 → 504 ms, the FST4-60 golden 951 → 597 ms ([#417](https://github.com/jl1nie/mfsk-core/issues/417)) |
+| JT9 at a known carrier (`jt9::SniperRequest`) | no sub-bin correction | corrected through `SymbolFft::mixed` | up to ~3.9 dB had been lost for a carrier half a bin off; JT65 and WSPR move by one part in a million (tier C +0.00 dB) ([#424](https://github.com/jl1nie/mfsk-core/issues/424)) |
+| `SlotInput::budget` | honoured by FT8, FT4 and FST4 only; FT8 `SicEarly` polled nothing between checkpoints | every mode polls once per candidate and sets `exhausted`; `SicEarly` polls per row | a 300 ms budget on `SicEarly` ran 641 ms, now 304 ms ([#593](https://github.com/jl1nie/mfsk-core/issues/593), [#587](https://github.com/jl1nie/mfsk-core/issues/587)) |
+| `RowDetail::sync_score` / `sync_cv` / `hard_errors` | `0` from WSPR, JT9, JT65 and Q65, a placeholder from FT8's a7 / a8 | `None` there, `Some` where the mode measures it | — ([#594](https://github.com/jl1nie/mfsk-core/issues/594)) |
+| `RowDetail::info` | FT8, FT4, FST4 only | every mode (WSPR 50 bits, JT9 / JT65 72, Q65 77) | two JT65 rows with the same text are no longer one ([#592](https://github.com/jl1nie/mfsk-core/issues/592)) |
+| `Decoder<Wspr>` and MSK144 on `wasm32-unknown-unknown` | panicked on any input (`Instant::now`) | decode | CI now decodes every mode on that target ([#583](https://github.com/jl1nie/mfsk-core/issues/583)) |
+| FT8 symbol scaling and `nsync` gate | `* (1/1000)`; `nsync` recounted on the coarse spectrogram | `/ 1e3` and the refined spectra, as `ft8b.f90` | no group moved; the gate flips for one candidate in the tier-A/B suite ([#423](https://github.com/jl1nie/mfsk-core/issues/423)) |
+
+**Code.**
+
+| area | 0.13 | 0.14 |
+|---|---|---|
+| building a public struct or matching a public enum | struct literals, `..Default::default()`, exhaustive `match` | `#[non_exhaustive]`: `Default` and assignment, the new constructors, a `_` arm (below) |
+| `RowDetail::{sync_score, sync_cv, hard_errors}` | `f32`, `f32`, `u32` | `Option<…>`; `detail.sync_score.unwrap_or(0.0)` keeps the old reading, but a `None` now means "the mode has no such number" |
+| early rows | none; `decode` returns at the end of the period | `Decoder::decode_prefix` / `decode_prefix_with` with the period so far ([§2.3](#23-early-decode-and-the-compute-budget)); `Decoder::prefix_points()` says when, `IqReceiver::set_prefix_points` cuts there |
+| pairing a returned row with a streamed one | by text and frequency | `RowDetail::delivery`; `AnyDecoder::delivery_is_exact()` says which contract a decoder runs ([§2.4](#24-streaming-delivery)) |
+| implementing `ModulationParams` | `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL`, `NDOWN`, `SYMBOL_DT`, `N_SYMBOLS` and `TONE_SPACING_HZ` all written out | the first three move to `SyncFrontEnd: Protocol`, which only a protocol decoding through `engine::sync` or the generic pipeline implements (a compile error otherwise); `SYMBOL_DT` and `N_SYMBOLS` default; `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)` for a mode whose tones sit at the modulation index ([§5](#5-the-protocol-trait-hierarchy)) |
+| `msg::wsjt77::is_plausible_callsign` | checked the ITU prefix table | kept, and now the same as `is_valid_callsign` (no code change; see the results table) |
+
+**Removed, and what to do instead.**
+
+| 0.13 | instead |
+|---|---|
+| `fec::ldpc::osd_decode(llr)`, `osd_decode_npre1(llr)`, `osd_decode_npre1_masked(llr, mask)` | `fec::ldpc::osd174_91(llr, NDEEP2_174_91, mask)`, the depth from `fec::ldpc::osd_npre`; upstream's `ndeep = 2` |
+| `osd_decode_npre1_npre2(llr)` | `osd174_91(llr, NDEEP3_174_91, mask)`; `ndeep = 3` |
+| `osd_decode_deep(llr, ndeep, verify)`, `osd_decode_npre_generic::<P>(…)` | `fec::ldpc::osd_npre::osd_npre::<P>(llr, depth, partial_crc, ap_mask, verify)`. The results differ from the removed ports by design: those were the ones that did not match upstream |
+| `osd_decode_deep4` | no counterpart: upstream's deeper settings (`nord = 2`) are not ported |
+| `jt9::baseband` (`mix_to_baseband`, `NSPS_BB`) | none: nothing called it, and it did not do what `downsam9.f90` does. `jt9::softsym` is the port |
+
+**`#[non_exhaustive]`.** 0.14 marks the public types that are expected to grow
 `#[non_exhaustive]` ([#573](https://github.com/jl1nie/mfsk-core/issues/573)).
 It is one break, taken once, so that the growth itself stops being one: a
 new protocol is patch-level by this crate's convention, but it adds a
