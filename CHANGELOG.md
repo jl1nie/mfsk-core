@@ -146,12 +146,13 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Skimmer
 
-- **skimmer: Connect no longer waits 10 s on a dead NTP server.** The first clock measurement ran five queries at 2 s each
-  against the first address only, so a pool member that did not answer held Connect for 10.6 s before falling back to the
-  PC clock (`pool.ntp.org`, 2026-10-09, while `ntp.nict.jp` answered in 38 ms). A query now waits 1 s (a later reply is
-  over the 1 s round-trip limit and discarded anyway), and an address that does not answer is passed over for the next of
-  the ones the name resolves to, up to three: the same pool now measures in 1.9 s, and nobody answering costs 3 s.
-- **skimmer GUI: an unset grid is visible.** With no home grid the map's *Great-circle* button is disabled and a notice
+- **Connect no longer waits 10 s on a dead NTP server (#640).** The first clock measurement ran five queries at 2 s each against the
+  first address only, so a pool member that did not answer held Connect for 10.6 s before falling back to the PC clock
+  (`pool.ntp.org`, 2026-10-09, while `ntp.nict.jp` answered in 38 ms). A query now waits 1 s (a later reply is over the 1 s
+  round-trip limit and discarded anyway), and an address that has not answered is passed over for the next of the ones the name
+  resolves to, up to three: the same pool now measures in 1.9 s, and nobody answering costs 3 s. An address that has answered keeps
+  being asked, and a name that resolves to one address gets one retry, so a single lost packet does not end the measurement.
+- **The skimmer GUI makes an unset grid visible (#640).** With no home grid the map's *Great-circle* button is disabled and a notice
   says why, where a small grey hint used to say it beside a map drawn in Mercator anyway; and the settings' example values
   (placeholders) are light italic, not the browser's dark grey that read as a value already entered.
 - **Every slot is decoded, and the next slot does not wait for the last (default time budget off, four decoder threads per channel).**
