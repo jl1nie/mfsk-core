@@ -16,6 +16,11 @@
   off, nothing else measured moved: tier C for FT8 and FT4, the busy-band corpus (200 noise-only files included),
   `qso3_busy`, the FT4 golden, 3 000 FT4 noise slots. The grammar check stays; it is what removes phantoms.
   `is_plausible_callsign` is now `is_valid_callsign`. Audit and numbers on #612.
+- **uvpacket mixes its carrier with the crate's mixer, not an f32 phase (#425).** `downconvert_and_matched_filter` took
+  `sin_cos(step · n as f32)` per sample; at 60 s and 1500 Hz that argument is ~565 000 rad, which an f32 resolves to ~0.06
+  rad, and the carrier sat 0.016 rad (0.9°) off the tone's over the last 4 000 samples (`tests::downconversion_keeps_its_phase`
+  pins old against new). Packets are short, so nothing visible changed; a whole-slot `decode_multichannel` would have
+  drifted. `engine::dsp::ddc::Mixer`'s doc now maps the crate's other oscillators and says why each stays.
 - **Derived constants are derived, and the coarse-sync geometry belongs to the modes that use it (#419, breaking).**
   `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL` and `NDOWN` move from `ModulationParams` to a new `SyncFrontEnd: Protocol`,
   implemented by the 7 types that decode through the shared front end (FT8, FT4, FST4 ×5); the other 17 carried values

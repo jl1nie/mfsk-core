@@ -42,6 +42,25 @@ const RENORM_PERIOD: u32 = 4096;
 
 /// Streaming complex mixer, `exp(-j2π·center_hz·n/Fs)`.
 ///
+/// **This is the crate's general mixer, and not the only oscillator on
+/// purpose** (#425). The others, and why each stays:
+///
+/// - `msk144::sync::tweak1` and `jt9::softsym::twkfreq_poly` are literal ports
+///   of `tweak1.f90` and `afc9.f90`: the first steps its phasor *before* the
+///   first multiply and never renormalises, the second is a polynomial chirp.
+///   Their last bits are what the Fortran produces, and they are cross-checked
+///   against it.
+/// - `jt65::rx`, `ft8::refine_fine`, `engine::dsp::subtract` and
+///   `ft8::decode_block::fine_sync_12k` evaluate `cos`/`sin` of a wrapped or
+///   `k·Δφ` phase per sample. That costs more than this and is also *more*
+///   accurate, since nothing accumulates; the first three are the decode path's
+///   reference arithmetic and the last is the shipped embedded path, so a change
+///   there is a decode-output change to measure, not a tidy-up.
+/// - `wspr::ddc` is a period-8 table, exact because its centre is `Fs/8`.
+/// - The one that was *less* accurate, `uvpacket::rx`'s `sin_cos(step · n as f32)`
+///   (an f32 phase argument loses the fraction of a cycle once `n` is in the
+///   hundred thousands), now uses this.
+///
 /// A rotating-phasor NCO (`cur *= step` each sample) rather than a
 /// per-sample `sin`/`cos` call — `wspr::ddc`'s own mixer avoids that
 /// too, but does it with a period-8 lookup table because its centre
