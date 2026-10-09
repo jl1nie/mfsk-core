@@ -8,7 +8,7 @@
 //! every channel's DT; a query is 48 bytes and its error is bounded by half
 //! the round trip.
 
-use std::net::{ToSocketAddrs, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,6 +20,15 @@ const NTP_UNIX: i64 = 2_208_988_800;
 const QUERIES: usize = 5;
 /// A round trip longer than this says nothing about the offset.
 const MAX_RTT_NS: i64 = 1_000_000_000;
+/// How long a query waits for its reply: a later one would be over
+/// [`MAX_RTT_NS`] and thrown away anyway.
+const REPLY_WAIT: Duration = Duration::from_secs(1);
+/// Addresses tried before giving up. A pool name resolves to several servers,
+/// and one that does not answer is passed over for the next rather than asked
+/// again: with five queries at 2 s each, a dead pool member held Connect for
+/// 10.6 s before the PC clock was used (2026-10-09, `pool.ntp.org` while
+/// `ntp.nict.jp` answered in 38 ms). Three at [`REPLY_WAIT`] bounds that at 3 s.
+const MAX_ADDRESSES: usize = 3;
 /// Between measurements while they work, and after one failed.
 const REFRESH: Duration = Duration::from_secs(600);
 const RETRY: Duration = Duration::from_secs(60);
@@ -73,19 +82,29 @@ pub fn offset_of(t1: i64, t2: i64, t3: i64, t4: i64) -> Sample {
     }
 }
 
-fn query(server: &str) -> Result<Sample, String> {
+/// The IPv4 addresses `server` (`host` or `host:port`) resolves to, in the
+/// resolver's order.
+fn resolve(server: &str) -> Result<Vec<SocketAddr>, String> {
     let addr = if server.contains(':') {
         server.to_string()
     } else {
         format!("{server}:123")
     };
-    let target = addr
+    let all: Vec<SocketAddr> = addr
         .to_socket_addrs()
         .map_err(|e| format!("{server}: {e}"))?
-        .find(|a| a.is_ipv4())
-        .ok_or_else(|| format!("{server}: no IPv4 address"))?;
+        .filter(|a| a.is_ipv4())
+        .collect();
+    if all.is_empty() {
+        return Err(format!("{server}: no IPv4 address"));
+    }
+    Ok(all)
+}
+
+/// One request/reply with the server at `target`.
+fn query(target: SocketAddr) -> Result<Sample, String> {
     let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
-    sock.set_read_timeout(Some(Duration::from_secs(2)))
+    sock.set_read_timeout(Some(REPLY_WAIT))
         .map_err(|e| e.to_string())?;
     sock.connect(target).map_err(|e| e.to_string())?;
     let mut req = [0u8; 48];
@@ -99,7 +118,7 @@ fn query(server: &str) -> Result<Sample, String> {
     })?;
     let t4 = system_ns();
     if n < 48 || rep[0] & 7 != 4 || rep[1] == 0 {
-        return Err(format!("{server}: not a time reply"));
+        return Err("not a time reply".into());
     }
     Ok(offset_of(
         t1,
@@ -111,21 +130,45 @@ fn query(server: &str) -> Result<Sample, String> {
 
 /// The best of a few queries.
 pub fn measure(server: &str) -> Result<Sample, String> {
+    measure_at(&resolve(server)?)
+}
+
+/// The best of [`QUERIES`] queries, starting with the first address and
+/// moving to the next when one does not answer, up to [`MAX_ADDRESSES`] of
+/// them.
+fn measure_at(addrs: &[SocketAddr]) -> Result<Sample, String> {
     let mut best: Option<Sample> = None;
     let mut err = String::new();
-    for i in 0..QUERIES {
-        if i > 0 {
+    let mut at = addrs.iter().take(MAX_ADDRESSES);
+    let mut target = at.next();
+    let (mut asked, mut tried) = (0, usize::from(target.is_some()));
+    while let Some(&t) = target
+        && asked < QUERIES
+    {
+        if asked > 0 {
             std::thread::sleep(Duration::from_millis(150));
         }
-        match query(server) {
-            Ok(s) if s.rtt_ns <= MAX_RTT_NS && best.is_none_or(|b| s.rtt_ns < b.rtt_ns) => {
-                best = Some(s)
+        match query(t) {
+            Ok(s) => {
+                asked += 1;
+                if s.rtt_ns > MAX_RTT_NS {
+                    err = "round trip over 1 s".into();
+                } else if best.is_none_or(|b| s.rtt_ns < b.rtt_ns) {
+                    best = Some(s);
+                }
             }
-            Ok(_) => err = "round trip over 1 s".into(),
-            Err(e) => err = e,
+            // This server is not answering: the next one, not this again.
+            Err(e) => {
+                err = e;
+                target = at.next();
+                tried += usize::from(target.is_some());
+            }
         }
     }
-    best.ok_or(err)
+    best.ok_or_else(|| match tried {
+        1 => err,
+        n => format!("{err} from {n} addresses"),
+    })
 }
 
 fn apply(server: &str, r: Result<Sample, String>) -> bool {
@@ -225,6 +268,78 @@ mod tests {
             s.rtt_ns as f64 * 1e-6
         );
         assert!(s.rtt_ns > 0);
+    }
+
+    /// A local socket that never answers.
+    fn dead() -> (UdpSocket, SocketAddr) {
+        let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let a = s.local_addr().unwrap();
+        (s, a)
+    }
+
+    /// A local server that answers every request with the PC's time.
+    fn alive() -> SocketAddr {
+        let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let a = s.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut b = [0u8; 48];
+            while let Ok((_, from)) = s.recv_from(&mut b) {
+                let ns = system_ns() as i128 + NTP_UNIX as i128 * 1_000_000_000;
+                let stamp = (
+                    (ns / 1_000_000_000) as u32,
+                    (((ns % 1_000_000_000) << 32) / 1_000_000_000) as u32,
+                );
+                let mut r = [0u8; 48];
+                r[0] = 0x24; // version 4, mode 4 (server)
+                r[1] = 1; // stratum 1
+                for off in [32, 40] {
+                    r[off..off + 4].copy_from_slice(&stamp.0.to_be_bytes());
+                    r[off + 4..off + 8].copy_from_slice(&stamp.1.to_be_bytes());
+                }
+                let _ = s.send_to(&r, from);
+            }
+        });
+        a
+    }
+
+    /// A pool member that does not answer is passed over for the next one
+    /// after one wait, not asked again: the time comes from the second.
+    #[test]
+    fn a_dead_address_is_passed_over_for_the_next() {
+        let (_keep, d) = dead();
+        let t = std::time::Instant::now();
+        let s = measure_at(&[d, alive()]).unwrap();
+        let took = t.elapsed();
+        assert!(s.rtt_ns < 50_000_000, "{s:?}");
+        assert!(took < Duration::from_millis(2_500), "took {took:?}");
+    }
+
+    /// Nobody answering costs [`MAX_ADDRESSES`] waits and no more: the fourth
+    /// address, alive, is not reached, and the error says how many were tried.
+    #[test]
+    fn nobody_answering_gives_up_after_three_addresses() {
+        let socks: Vec<_> = (0..3).map(|_| dead()).collect();
+        let mut addrs: Vec<SocketAddr> = socks.iter().map(|s| s.1).collect();
+        addrs.push(alive());
+        let t = std::time::Instant::now();
+        let e = measure_at(&addrs).unwrap_err();
+        let took = t.elapsed();
+        assert_eq!(e, "no reply from 3 addresses");
+        assert!(
+            took >= Duration::from_millis(2_900) && took < Duration::from_millis(3_800),
+            "took {took:?}"
+        );
+    }
+
+    #[test]
+    fn a_live_server_answers_at_once() {
+        let t = std::time::Instant::now();
+        assert!(measure_at(&[alive()]).is_ok());
+        assert!(
+            t.elapsed() < Duration::from_millis(1_000),
+            "took {:?}",
+            t.elapsed()
+        );
     }
 
     #[test]
