@@ -833,8 +833,13 @@ than default to whichever bump feels more exciting.
 
 WSJT-X is the reference, and it keeps moving, so we follow it on a
 cadence instead of when someone happens to remember. **Run
-`scripts/upstream-diff.sh` at every scheduled release cut (the biweekly
-one above) and whenever a new upstream tag appears.** It fetches, prints
+`scripts/upstream-diff.sh` at the midpoint of the biweekly release cycle
+(about day 7 after the last tag), and whenever a new upstream tag
+appears.** Not at the cut: a change found then cannot be ported, measured
+(tier C) and merged before the tag, so it slips a whole cycle. At the
+midpoint the second week is the porting window and the cut ships what was
+found. At the cut itself, only check that the Issue from the midpoint run
+has no open A/B items left. It fetches, prints
 the tags and branches by date, and lists the changed upstream files that
 `mfsk-core` cites, with the Rust files that cite them. Read-only apart
 from the fetch.
