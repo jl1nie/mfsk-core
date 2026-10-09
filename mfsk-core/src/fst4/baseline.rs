@@ -281,7 +281,7 @@ fn fst4_xsig(cs: &[Complex<f32>], itone: &[u8], ntones: usize) -> f32 {
 /// out to be what closed this module's real residual gap — that was a
 /// separate downsample-scale-convention mismatch, see the module doc
 /// comment.
-fn fst4_raw_cs<P: crate::engine::Protocol>(
+fn fst4_raw_cs<P: crate::engine::SyncFrontEnd>(
     fft_cache: &[Complex<f32>],
     ds_cfg: &DownsampleCfg,
     cand_freq_hz: f32,
@@ -327,7 +327,7 @@ fn fst4_raw_cs<P: crate::engine::Protocol>(
 /// this function's own `NDOWN`-in-power downsample-scale correction
 /// on `xsig` below.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn fst4_snr_db<P: crate::engine::Protocol>(
+pub(crate) fn fst4_snr_db<P: crate::engine::SyncFrontEnd>(
     itone: &[u8],
     cand_freq_hz: f32,
     refined_freq_hz: f32,
@@ -411,7 +411,7 @@ const WELCH_N: usize = 512;
 ///   `10*log10(111.111 / 2500)`.
 ///
 /// Returns `None` when the band looks like noise alone.
-pub(crate) fn fst4_ddc_snr_db<P: crate::engine::Protocol>(
+pub(crate) fn fst4_ddc_snr_db<P: crate::engine::SyncFrontEnd>(
     cd0: &[Complex<f32>],
     ds_rate_hz: f32,
 ) -> Option<f32> {

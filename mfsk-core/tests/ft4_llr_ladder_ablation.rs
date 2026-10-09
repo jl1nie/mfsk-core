@@ -356,7 +356,7 @@ fn ft4_llr_ladder_ablation_across_the_crossing() {
             };
             let cands = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
             let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
-            let ds_rate = 12_000.0 / <Ft4 as mfsk_core::ModulationParams>::NDOWN as f32;
+            let ds_rate = 12_000.0 / <Ft4 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
             let mut totals = vec![(false, 0.0f64); CONFIGS.len()];
             for c in cands
@@ -495,7 +495,7 @@ fn ft4_llr_ladder_ablation_on_the_golden() {
     // The bench search (`bench_assets`), i.e. what a board would run.
     let cands = ft4_coarse_sync(&audio, FREQ_MIN_HZ, 2700.0, SYNC_MIN, None, 100);
     let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
-    let ds_rate = 12_000.0 / <Ft4 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Ft4 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
     let mut per_config: Vec<Vec<String>> = vec![Vec::new(); CONFIGS.len()];
     for c in &cands {

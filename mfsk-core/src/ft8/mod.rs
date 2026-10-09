@@ -100,11 +100,13 @@ impl ModulationParams for Ft8 {
     const NTONES: u32 = params::NTONES as u32;
     const BITS_PER_SYMBOL: u32 = 3;
     const NSPS: u32 = params::NSPS as u32;
-    const SYMBOL_DT: f32 = params::SYMBOL_DT;
-    const TONE_SPACING_HZ: f32 = 6.25;
+    const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS);
     const GRAY_MAP: &'static [u8] = &FT8_GRAY_MAP;
     const GFSK_BT: f32 = 2.0;
     const GFSK_HMOD: f32 = 1.0;
+}
+
+impl crate::engine::SyncFrontEnd for Ft8 {
     const NFFT_PER_SYMBOL_FACTOR: u32 = 2; // NFFT1 = 2 × NSPS = 3840
     const NSTEP_PER_SYMBOL: u32 = 4; // quarter-symbol coarse-sync step
     const NDOWN: u32 = 60; // 12 000 / 60 = 200 Hz baseband
@@ -118,7 +120,6 @@ impl crate::engine::tx::FskWaveform for Ft8 {
 impl FrameLayout for Ft8 {
     const N_DATA: u32 = params::ND as u32;
     const N_SYNC: u32 = params::NS as u32;
-    const N_SYMBOLS: u32 = params::NN as u32;
     const N_RAMP: u32 = 0; // ramp is internal to gfsk::synth
     const SYNC_MODE: SyncMode = SyncMode::Block(&FT8_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 15.0;

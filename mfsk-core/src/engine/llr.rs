@@ -3,7 +3,7 @@
 //! Extracts complex tone spectra for each data symbol, then computes four
 //! log-likelihood ratio variants (llra/b/c/d) matching WSJT-X `ft8b.f90`
 //! convention — three `nsym = 1, 2, 3` grouping schemes plus a bit-by-bit
-//! normalised variant. Parameterised over any [`Protocol`]: NTONES,
+//! normalised variant. Parameterised over any [`SyncFrontEnd`]: NTONES,
 //! BITS_PER_SYMBOL, and the SYNC_BLOCKS layout drive the inner loops.
 
 use alloc::vec;
@@ -15,7 +15,7 @@ use num_complex::Complex;
 // needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
-use super::Protocol;
+use super::SyncFrontEnd;
 use crate::engine::dsp::downsample::with_default_planner;
 use crate::engine::scalar::{Cmplx, ComplexSpec, LlrScalar, SpecScalar};
 
@@ -94,7 +94,7 @@ pub fn descramble_info<P: super::Protocol>(info: &mut [u8]) {
 /// would fall outside `cd0`, that symbol's window is zero-filled (rather
 /// than partially read). Per-element bounds checking lets edge symbols pull
 /// extra signal energy and shifts the LLR sign pattern away from WSJT-X.
-pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Cmplx<f32>> {
+pub fn symbol_spectra<P: SyncFrontEnd>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Cmplx<f32>> {
     let ntones = P::NTONES as usize;
     let n_sym = P::N_SYMBOLS as usize;
     let ds_spb = (P::NSPS / P::NDOWN) as usize;
@@ -179,7 +179,7 @@ fn normalize_bmet(bmet: &mut [f32]) {
 /// the generic `compute_llr_generic` — use the generic form when
 /// the caller already holds [`Cmplx<S>`] storage for some other
 /// `S: SpecScalar` (e.g. `Q14i16` on the embedded fixed-point path).
-pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
+pub fn compute_llr<P: SyncFrontEnd, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
     let mut set = compute_llr_generic::<P, f32, T>(cs, P::LLR_NSYM_MAX as usize);
     if let Some(mid) = P::LLR_NSYM_MID {
         let mut bmete = vec![0.0f32; codeword_bit_len::<P>()];
@@ -193,7 +193,7 @@ pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
 /// back zero-filled. Use when the caller will only ever read
 /// `llra` (or `llrd`), e.g. Step 1 of the BP staircase. ~5× faster
 /// than the full computation.
-pub fn compute_llr_fast<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
+pub fn compute_llr_fast<P: SyncFrontEnd, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
     compute_llr_generic::<P, f32, T>(cs, 1)
 }
 
@@ -312,7 +312,7 @@ fn group_scratch_len(span: usize, ntones: usize) -> usize {
 /// metric is a power difference rather than an amplitude difference. The
 /// `llrd` denominator is built from the same `s2`, so it follows. `false`
 /// is the metric every other caller uses, unchanged.
-fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
+fn fill_bmet_for_nsym<P: SyncFrontEnd, S: SpecScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
     bmet_primary: &mut [f32],
@@ -498,7 +498,7 @@ fn scale_bmet<T: LlrScalar>(mut v: Vec<f32>, scale: f32) -> Vec<T> {
 }
 
 #[inline]
-fn codeword_bit_len<P: Protocol>() -> usize {
+fn codeword_bit_len<P: SyncFrontEnd>() -> usize {
     let bps = P::BITS_PER_SYMBOL as usize;
     data_chunks::<P>().iter().map(|&(_, l)| l).sum::<usize>() * bps
 }
@@ -508,7 +508,7 @@ fn codeword_bit_len<P: Protocol>() -> usize {
 /// awkward to quantise mid-stream) — `S` only changes how we read
 /// each cs entry (`S::to_f32` per component). Final scale-and-round
 /// to `T` happens at the bundle boundary.
-pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
+pub fn compute_llr_generic<P: SyncFrontEnd, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     max_nsym: usize,
 ) -> LlrSet<T> {
@@ -517,7 +517,7 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
 
 /// [`compute_llr_generic`] with the choice of metric: `squared` is FT8's
 /// `imetric` 2 (`s2` squared before the per-bit max; `ft8b.f90` v3.0.0).
-pub fn compute_llr_generic_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
+pub fn compute_llr_generic_metric<P: SyncFrontEnd, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     max_nsym: usize,
     squared: bool,
@@ -582,7 +582,7 @@ pub fn compute_llr_generic_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
 /// It needs the raw metrics, which the normalised `llra/llrb/llrc` of
 /// [`compute_llr_generic_metric`] no longer are, so this recomputes them:
 /// about the cost of one full [`compute_llr_generic_metric`].
-pub fn compute_llre_best_of<P: Protocol, S: SpecScalar, T: LlrScalar>(
+pub fn compute_llre_best_of<P: SyncFrontEnd, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     max_nsym: usize,
     squared: bool,
@@ -619,7 +619,7 @@ pub fn compute_llre_best_of<P: Protocol, S: SpecScalar, T: LlrScalar>(
 /// stage-3 BP staircase (`nsym` up to `LLR_NSYM_MAX=3`) and the generic
 /// `engine::pipeline` engine's own lazy variant loop (FST4's `nsym` up to
 /// `LLR_NSYM_MAX=8`, plus `LLR_NSYM_MID=4`).
-pub fn compute_llr_partial<P: Protocol, S: SpecScalar, T: LlrScalar>(
+pub fn compute_llr_partial<P: SyncFrontEnd, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
 ) -> Vec<T> {
@@ -628,7 +628,7 @@ pub fn compute_llr_partial<P: Protocol, S: SpecScalar, T: LlrScalar>(
 
 /// [`compute_llr_partial`] with the choice of metric (see
 /// [`compute_llr_generic_metric`]).
-pub fn compute_llr_partial_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
+pub fn compute_llr_partial_metric<P: SyncFrontEnd, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
     squared: bool,
@@ -650,7 +650,7 @@ pub fn compute_llr_partial_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
 /// NTONES/2) mod NTONES]|²` (tone on the "opposite side" of the comb).
 /// SNR_dB = `10·log10(sig/noi − 1) − 27` clamped to −24 dB floor (WSJT-X
 /// convention, applied per-tone bandwidth → 2500 Hz reference).
-pub fn compute_snr_db<P: Protocol>(cs: &[Cmplx<f32>], itone: &[u8]) -> f32 {
+pub fn compute_snr_db<P: SyncFrontEnd>(cs: &[Cmplx<f32>], itone: &[u8]) -> f32 {
     compute_snr_db_generic::<P, f32>(cs, itone)
 }
 
@@ -692,7 +692,10 @@ pub(crate) fn snr_db_from_sig_noi(
 /// type. The signal/noise sums use `S::Wide` accumulator and convert
 /// to f32 at the boundary, so a `Cmplx<Q14i16>` cs gives a sane SNR
 /// without intermediate f32 quantisation.
-pub fn compute_snr_db_generic<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone: &[u8]) -> f32 {
+pub fn compute_snr_db_generic<P: SyncFrontEnd, S: SpecScalar>(
+    cs: &[Cmplx<S>],
+    itone: &[u8],
+) -> f32 {
     match snr_ratio::<P, S>(cs, itone) {
         Some(ratio) => (10.0 * ratio.log10() - 27.0_f32).max(-24.0),
         None => -24.0,
@@ -713,7 +716,7 @@ pub fn compute_snr_db_generic<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone
 /// Being scale-free is the property that matters for a receiver
 /// without a whole-slot FFT: every term comes from the same `cs`, so
 /// any normalisation applied to the baseband upstream cancels.
-pub fn snr_ratio<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone: &[u8]) -> Option<f32> {
+pub fn snr_ratio<P: SyncFrontEnd, S: SpecScalar>(cs: &[Cmplx<S>], itone: &[u8]) -> Option<f32> {
     let ntones = P::NTONES as usize;
     let n_sym = P::N_SYMBOLS as usize;
     let mut xsig = 0.0f32;
@@ -734,7 +737,7 @@ pub fn snr_ratio<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone: &[u8]) -> O
 /// Hard-decision sync quality — count sync symbols whose dominant tone
 /// matches the protocol's Costas pattern. Range is 0..N_SYNC; callers
 /// typically threshold on this.
-pub fn sync_quality<P: Protocol>(cs: &[Cmplx<f32>]) -> u32 {
+pub fn sync_quality<P: SyncFrontEnd>(cs: &[Cmplx<f32>]) -> u32 {
     sync_quality_generic::<P, f32>(cs)
 }
 
@@ -742,7 +745,7 @@ pub fn sync_quality<P: Protocol>(cs: &[Cmplx<f32>]) -> u32 {
 /// slice; the per-tone "is this the dominant magnitude?" comparison
 /// uses `S::Wide` (i32 for Q14i16) so no f32 round-trip is needed
 /// on the embedded fixed-point path.
-pub fn sync_quality_generic<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>]) -> u32
+pub fn sync_quality_generic<P: SyncFrontEnd, S: SpecScalar>(cs: &[Cmplx<S>]) -> u32
 where
     S::Wide: PartialOrd,
 {
@@ -775,7 +778,7 @@ where
 /// Number of known sync symbols `sync_quality_generic` inspects — the
 /// buffer length [`sync_quality_soft_generic`] wants. 40 for FST4
 /// (5 Costas blocks x 8), 21 for FT8, and so on.
-pub fn sync_symbol_count<P: Protocol>() -> usize {
+pub fn sync_symbol_count<P: SyncFrontEnd>() -> usize {
     P::SYNC_MODE.blocks().iter().map(|b| b.pattern.len()).sum()
 }
 
@@ -816,7 +819,7 @@ pub fn sync_symbol_count<P: Protocol>() -> usize {
 /// from decode-bearing candidates any better than raw `nsync` is the
 /// open question (#310) — see
 /// `tests/fst4_sweep.rs::fst4_60_diag_soft_costas_margin_separation`.
-pub fn sync_quality_soft_generic<P: Protocol, S: SpecScalar>(
+pub fn sync_quality_soft_generic<P: SyncFrontEnd, S: SpecScalar>(
     cs: &[Cmplx<S>],
     out: &mut [(f32, f32)],
 ) -> u32

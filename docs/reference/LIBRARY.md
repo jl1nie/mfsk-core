@@ -2053,14 +2053,11 @@ pub trait ModulationParams: Copy + Default + 'static {
     const NTONES: u32;
     const BITS_PER_SYMBOL: u32;
     const NSPS: u32;              // samples/symbol @ 12 kHz
-    const SYMBOL_DT: f32;
-    const TONE_SPACING_HZ: f32;
+    const SYMBOL_DT: f32 = Self::NSPS as f32 / 12_000.0;   // derived; nothing overrides it
+    const TONE_SPACING_HZ: f32;   // required: tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS), times Q65's 2^(letter-1)
     const GRAY_MAP: &'static [u8];
     const GFSK_BT: f32;
     const GFSK_HMOD: f32;
-    const NFFT_PER_SYMBOL_FACTOR: u32;
-    const NSTEP_PER_SYMBOL: u32;
-    const NDOWN: u32;
     // Defaulted knobs — a protocol overrides only what its WSJT-X
     // counterpart does differently (`engine/protocol.rs`):
     const LLR_SCALE: f32 = 2.83;
@@ -2070,10 +2067,17 @@ pub trait ModulationParams: Copy + Default + 'static {
     const SPECTRUM_WINDOW: SpectrumWindow = SpectrumWindow::Rectangular;  // FT4 Nuttall4
 }
 
+// The coarse-sync front end's geometry; only FT8, FT4 and FST4 implement it.
+pub trait SyncFrontEnd: Protocol {
+    const NFFT_PER_SYMBOL_FACTOR: u32;
+    const NSTEP_PER_SYMBOL: u32;
+    const NDOWN: u32;
+}
+
 pub trait FrameLayout: Copy + Default + 'static {
     const N_DATA: u32;
     const N_SYNC: u32;
-    const N_SYMBOLS: u32;
+    const N_SYMBOLS: u32 = Self::N_DATA + Self::N_SYNC;   // derived
     const N_RAMP: u32;
     const SYNC_MODE: SyncMode;  // Block(&[SyncBlock]) or Interleaved { .. }
     const T_SLOT_S: f32;
@@ -2135,7 +2139,8 @@ message codec with FT8:
 
 ```rust
 use mfsk_core::engine::{
-    FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode,
+    FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncFrontEnd, SyncMode,
+    tone_spacing_hz,
 };
 use mfsk_core::fec::Ldpc174_91; // re-exported from fec::ldpc
 use mfsk_core::msg::Wsjt77Message;
@@ -2147,22 +2152,26 @@ impl ModulationParams for Ft4 {
     const NTONES: u32 = 4;
     const BITS_PER_SYMBOL: u32 = 2;
     const NSPS: u32 = 576;          // 48 ms @ 12 kHz
-    const SYMBOL_DT: f32 = 0.048;
-    const TONE_SPACING_HZ: f32 = 20.833;
+    // SYMBOL_DT is derived from NSPS; the spacing is h / T.
+    const TONE_SPACING_HZ: f32 = tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS);
     const GRAY_MAP: &'static [u8] = &[0, 1, 3, 2];
     const GFSK_BT: f32 = 1.0;
     const GFSK_HMOD: f32 = 1.0;
-    const NFFT_PER_SYMBOL_FACTOR: u32 = 4;
-    const NSTEP_PER_SYMBOL: u32 = 2;
-    const NDOWN: u32 = 18;
     // (LLR_NSYM_MAX/INFO_SCRAMBLE_RVEC etc. are recall-tuning knobs
     // with defaults — see the real `ft4::Ft4` for FT4's overrides.)
 }
 
+// Only a protocol that decodes through the shared coarse-sync front end
+// implements this; it needs `Protocol`, which is implemented below.
+impl SyncFrontEnd for Ft4 {
+    const NFFT_PER_SYMBOL_FACTOR: u32 = 4;
+    const NSTEP_PER_SYMBOL: u32 = 2;
+    const NDOWN: u32 = 18;
+}
+
 impl FrameLayout for Ft4 {
     const N_DATA: u32 = 87;
-    const N_SYNC: u32 = 16;
-    const N_SYMBOLS: u32 = 103;
+    const N_SYNC: u32 = 16;            // N_SYMBOLS = 87 + 16 = 103 is derived
     const N_RAMP: u32 = 2;
     const SYNC_MODE: SyncMode = SyncMode::Block(&FT4_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 7.5;
@@ -2192,7 +2201,9 @@ const FT4_SYNC_BLOCKS: [SyncBlock; 4] = [
 via `SyncMode::Interleaved`:
 
 ```rust
-use mfsk_core::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
+use mfsk_core::engine::{
+    FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode, tone_spacing_hz,
+};
 use mfsk_core::fec::conv::ConvFano;
 use mfsk_core::msg::wspr::Wspr50Message;
 
@@ -2203,20 +2214,15 @@ impl ModulationParams for Wspr {
     const NTONES: u32 = 4;
     const BITS_PER_SYMBOL: u32 = 2;
     const NSPS: u32 = 8192;                  // ~683 ms @ 12 kHz
-    const SYMBOL_DT: f32 = 8192.0 / 12_000.0;
-    const TONE_SPACING_HZ: f32 = 12_000.0 / 8192.0;  // ≈ 1.4648
+    const TONE_SPACING_HZ: f32 = tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS);  // ≈ 1.4648
     const GRAY_MAP: &'static [u8] = &[0, 1, 2, 3];
     const GFSK_BT: f32 = 1.0;
     const GFSK_HMOD: f32 = 1.0;
-    const NFFT_PER_SYMBOL_FACTOR: u32 = 1;
-    const NSTEP_PER_SYMBOL: u32 = 16;
-    const NDOWN: u32 = 32;
 }
 
 impl FrameLayout for Wspr {
     const N_DATA: u32 = 162;
     const N_SYNC: u32 = 0;                   // sync is embedded in data symbols
-    const N_SYMBOLS: u32 = 162;
     const N_RAMP: u32 = 0;
     const SYNC_MODE: SyncMode = SyncMode::Interleaved {
         sync_bit_pos: 0,                     // LSB of the tone index

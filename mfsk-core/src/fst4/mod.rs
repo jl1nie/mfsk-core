@@ -163,21 +163,13 @@ macro_rules! fst4_submode {
             const NTONES: u32 = 4;
             const BITS_PER_SYMBOL: u32 = 2;
             const NSPS: u32 = $nsps;
-            const SYMBOL_DT: f32 = ($nsps as f32) / 12_000.0;
-            const TONE_SPACING_HZ: f32 = 12_000.0 / ($nsps as f32);
+            const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS);
             const GRAY_MAP: &'static [u8] = &[0, 1, 3, 2];
             /// BT=2.0 for every FST4 sub-mode (`gen_fst4wave.f90:37`
             /// `gfsk_pulse(2.0,tt)`, unconditional on T/R period) —
             /// matches FT8's `GFSK_BT`, not FT4's 1.0.
             const GFSK_BT: f32 = 2.0;
             const GFSK_HMOD: f32 = 1.0;
-            // NFFT window = 2 × NSPS (same convention as FT8) — longer
-            // windows don't help FST4 because the channel is assumed
-            // quasi-static across the slot.
-            const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
-            // Half-symbol coarse grid (matches FT4 practice).
-            const NSTEP_PER_SYMBOL: u32 = 2;
-            const NDOWN: u32 = $ndown;
             const INFO_SCRAMBLE_RVEC: Option<&'static [u8]> = Some(&FST4_RVEC);
             /// Matches WSJT-X `get_fst4_bitmetrics.f90`'s 1/2/4/8-symbol
             /// correlation ladder (issue #146) — was silently inheriting
@@ -189,6 +181,16 @@ macro_rules! fst4_submode {
             const LLR_NSYM_MID: Option<u32> = Some(4);
         }
 
+        impl crate::engine::SyncFrontEnd for $name {
+            // NFFT window = 2 × NSPS (same convention as FT8) — longer
+            // windows don't help FST4 because the channel is assumed
+            // quasi-static across the slot.
+            const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
+            // Half-symbol coarse grid (matches FT4 practice).
+            const NSTEP_PER_SYMBOL: u32 = 2;
+            const NDOWN: u32 = $ndown;
+        }
+
         impl crate::engine::tx::FskWaveform for $name {
             const WAVEFORM: crate::engine::tx::Waveform = crate::engine::tx::Waveform::Gfsk($gfsk);
         }
@@ -196,7 +198,6 @@ macro_rules! fst4_submode {
         impl FrameLayout for $name {
             const N_DATA: u32 = 120;
             const N_SYNC: u32 = 40; // 5 × 8
-            const N_SYMBOLS: u32 = 160;
             const N_RAMP: u32 = 0; // GFSK synth handles ramp internally
             const SYNC_MODE: SyncMode = SyncMode::Block(&FST4_SYNC_BLOCKS);
             const T_SLOT_S: f32 = $period as f32;
@@ -297,7 +298,7 @@ fst4_submode! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::FecCodec;
+    use crate::engine::{FecCodec, SyncFrontEnd};
 
     #[test]
     fn fst4s60_trait_surface() {
@@ -326,7 +327,7 @@ mod tests {
     /// downsampled-samples-per-symbol ratio).
     #[test]
     fn all_submodes_match_wsjtx_fst4_decode_f90() {
-        fn check<P: ModulationParams + FrameLayout>(
+        fn check<P: SyncFrontEnd>(
             name: &str,
             nsps: u32,
             ndown: u32,
@@ -402,7 +403,7 @@ mod tests {
         use crate::engine::dsp::downsample::DownsampleCfg;
         use crate::engine::dsp::gfsk::GfskCfg;
 
-        fn check_downsample<P: ModulationParams + FrameLayout>(name: &str, cfg: &DownsampleCfg) {
+        fn check_downsample<P: SyncFrontEnd>(name: &str, cfg: &DownsampleCfg) {
             let ndown = P::NDOWN as usize;
             assert_eq!(
                 cfg.fft1_size % ndown,

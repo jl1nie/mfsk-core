@@ -48,8 +48,8 @@ pub trait LdpcParams: sealed::Sealed + Copy + Default + 'static {
     const N: usize;
     /// Information length in bits (systematic prefix).
     const K: usize;
-    /// Number of parity checks (= `N - K`).
-    const M: usize;
+    /// Number of parity checks (= `N - K`; every code here is full rank).
+    const M: usize = Self::N - Self::K;
     /// Maximum row weight across the parity-check matrix. Column
     /// weight (`MN`) is uniform at 3 for both codes; row weight
     /// varies (Ldpc174_91 has 6 or 7 entries per row, Ldpc240_101
@@ -122,7 +122,6 @@ impl sealed::Sealed for Ldpc174_91Params {}
 impl LdpcParams for Ldpc174_91Params {
     const N: usize = 174;
     const K: usize = 91;
-    const M: usize = 83;
     const MAX_ROW: usize = 7;
     const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_174_91;
 
@@ -161,7 +160,6 @@ impl sealed::Sealed for Ldpc240_101Params {}
 impl LdpcParams for Ldpc240_101Params {
     const N: usize = 240;
     const K: usize = 101;
-    const M: usize = 139;
     const MAX_ROW: usize = 6;
     const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_240_101;
 
@@ -200,7 +198,6 @@ impl sealed::Sealed for Ldpc128_90Params {}
 impl LdpcParams for Ldpc128_90Params {
     const N: usize = 128;
     const K: usize = 90;
-    const M: usize = 38;
     const MAX_ROW: usize = 11;
     const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_128_90;
 

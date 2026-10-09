@@ -459,7 +459,7 @@ fn ft4_strictness_probe() {
 #[test]
 #[ignore = "manual diagnostic — AWGN sensitivity gap stage attribution (issue #72)"]
 fn ft4_diag_weak_trials() {
-    use mfsk_core::ModulationParams;
+    use mfsk_core::SyncFrontEnd;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
@@ -594,7 +594,7 @@ fn ft4_diag_weak_trials() {
 #[test]
 #[ignore = "manual diagnostic — k4_limit reliability direction (issue #306 follow-up, revisits FT4_BENCHMARK.md section 10)"]
 fn ft4_diag_k4_tail_direction() {
-    use mfsk_core::ModulationParams;
+    use mfsk_core::SyncFrontEnd;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, descramble_info, symbol_spectra, sync_quality};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
@@ -926,7 +926,7 @@ fn ft4_diag_segment_retry() {
                 }
                 candidates_checked += 1;
 
-                let ds_rate = 12_000.0 / <Ft4 as mfsk_core::ModulationParams>::NDOWN as f32;
+                let ds_rate = 12_000.0 / <Ft4 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
                 let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FT4_DOWNSAMPLE);
                 let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
                 if sum2 > f32::EPSILON {
@@ -1077,7 +1077,7 @@ fn ft4_diag_candidate_cost_split() {
         };
 
         let fft_cache = build_fft_cache(audio, &FT4_DOWNSAMPLE);
-        let ds_rate = 12_000.0 / <Ft4 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let ds_rate = 12_000.0 / <Ft4 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
         for c in &cands {
             let t0 = Instant::now();

@@ -39,7 +39,7 @@ use alloc::vec::Vec;
 use crate::engine::equalize::EqMode;
 pub use crate::engine::pipeline::{BudgetCheck, BudgetReport};
 use crate::engine::pipeline::{DecodeDepth, DecodeStrictness, FftCache, LlrEffort};
-use crate::engine::protocol::Protocol;
+use crate::engine::protocol::SyncFrontEnd;
 
 use super::ap::ApHint;
 use super::wsjt77::Wsjt77Fields;
@@ -280,7 +280,7 @@ where
 /// lost 0.5-1.4 dB to its own single pass.
 pub(crate) fn wsjt_ap_list<P>(ap_hint: Option<&ApHint>) -> Vec<(Vec<u8>, Vec<u8>, u8)>
 where
-    P: Protocol,
+    P: crate::engine::protocol::Protocol,
     P::Msg: super::ap::WsjtApCompatible,
 {
     let mut ap_hints: Vec<(ApHint, u8)> = ap_hint
@@ -536,7 +536,7 @@ pub enum StrategyTag {
 /// sub-mode; intentionally not implemented for protocols with their own
 /// bespoke decode API shape (Q65, WSPR, JT65, JT9, uvpacket) — those keep
 /// their existing entry points untouched by this redesign.
-pub trait FrameDecodable: Protocol {
+pub trait FrameDecodable: SyncFrontEnd {
     /// Result type this protocol's decode engine produces.
     ///
     /// **The same concrete type for all three**, since 0.8.0:

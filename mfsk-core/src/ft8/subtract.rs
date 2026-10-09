@@ -21,7 +21,7 @@ use crate::engine::dsp::subtract::{
 /// with GFSK. See test `tests/ft8_subtract_self_test.rs`.
 const FT8_CFG: SubtractCfg = SubtractCfg {
     sample_rate: 12_000.0,
-    tone_spacing_hz: 6.25,
+    tone_spacing_hz: <super::Ft8 as crate::engine::ModulationParams>::TONE_SPACING_HZ,
     samples_per_symbol: 1920,
     base_offset_s: 0.5,
     gfsk: Some(GfskParams {

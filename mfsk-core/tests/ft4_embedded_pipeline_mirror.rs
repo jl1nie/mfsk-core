@@ -350,7 +350,7 @@ fn mirror_tail_allocation_breakdown() {
     use mfsk_core::engine::llr::symbol_spectra;
     use mfsk_core::engine::sync::fine_sync_power_per_block;
     use mfsk_core::engine::sync2d::freq_shift_cd0_into;
-    use mfsk_core::engine::{FrameLayout, ModulationParams};
+    use mfsk_core::engine::{FrameLayout, ModulationParams, SyncFrontEnd};
 
     let Some(audio) = slot_audio() else {
         assert!(
@@ -884,7 +884,7 @@ fn what_the_pipelined_receiver_asks_of_internal_dram() {
 /// them against the crate-side facts they are derived from instead.
 #[test]
 fn mirror_constants_match_the_receiver() {
-    use mfsk_core::engine::{FrameLayout, ModulationParams};
+    use mfsk_core::engine::{FrameLayout, ModulationParams, SyncFrontEnd};
 
     // 7.5 s at 12 kHz.
     assert_eq!(rx::SLOT_SAMPLES, 90_000);

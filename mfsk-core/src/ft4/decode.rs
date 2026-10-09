@@ -18,7 +18,7 @@ use crate::msg::decode_request::{
 };
 
 /// FT4 downsample configuration: 12 kHz → ~666.7 Hz baseband, covering four
-/// tones spaced 20.833 Hz apart plus headroom.
+/// tones spaced `Ft4::TONE_SPACING_HZ` (20.8333 Hz) apart plus headroom.
 ///
 /// `fft1_size` is chosen as 92 160 = 2^12 · 3² · 5 (highly-composite, ≥ slot
 /// audio length 7.5 s × 12 kHz = 90 000). `fft2_size` = fft1 / NDOWN = 5120
@@ -27,7 +27,7 @@ pub const FT4_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
     input_rate: 12_000,
     fft1_size: 92_160,
     fft2_size: 5_120,
-    tone_spacing_hz: 20.833,
+    tone_spacing_hz: <Ft4 as crate::engine::ModulationParams>::TONE_SPACING_HZ,
     leading_pad_tones: 1.5,
     trailing_pad_tones: 1.5,
     ntones: 4,
@@ -39,7 +39,7 @@ pub const FT4_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
 /// `bt=1.0`; `lib/ft4/gen_ft4wave.f90` calls `gfsk_pulse(1.0, tt)`).
 pub const FT4_SUBTRACT: SubtractCfg = SubtractCfg {
     sample_rate: 12_000.0,
-    tone_spacing_hz: 20.833,
+    tone_spacing_hz: <Ft4 as crate::engine::ModulationParams>::TONE_SPACING_HZ,
     samples_per_symbol: 576,
     base_offset_s: 0.5,
     gfsk: Some(crate::engine::dsp::subtract::GfskParams {

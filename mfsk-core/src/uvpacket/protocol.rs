@@ -28,7 +28,9 @@
 //! for this module: they exist solely to satisfy the trait signature
 //! and the `protocol_invariants` test. They are **not** consulted
 //! by [`crate::uvpacket::tx::encode`] or
-//! [`crate::uvpacket::rx::decode_known_layout`].
+//! [`crate::uvpacket::rx::decode_known_layout`]. Since #419 uvpacket does
+//! not implement `SyncFrontEnd` at all; its `NFFT_PER_SYMBOL_FACTOR`,
+//! `NSTEP_PER_SYMBOL` and `NDOWN` were placeholders nothing read.
 //!
 //! See [`crate::uvpacket`]'s module docs for the full scope-note
 //! table and the rationale for keeping uvpacket in-tree as an
@@ -99,17 +101,11 @@ macro_rules! uvpacket_submode {
             const BITS_PER_SYMBOL: u32 = 2;
             /// 1200 baud at 12 kHz sample rate → 10 samples / symbol.
             const NSPS: u32 = 10;
-            const SYMBOL_DT: f32 = 1.0 / 1200.0;
             /// h = 0.5 → tone spacing = baud × h = 600 Hz.
-            const TONE_SPACING_HZ: f32 = 600.0;
+            const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS);
             const GRAY_MAP: &'static [u8] = &GRAY_4;
             const GFSK_BT: f32 = 0.5;
             const GFSK_HMOD: f32 = 0.5;
-            const NFFT_PER_SYMBOL_FACTOR: u32 = 4;
-            const NSTEP_PER_SYMBOL: u32 = 2;
-            /// 12000 / 4 = 3000 Hz baseband window — clears the
-            /// 800–2600 Hz tone span with margin.
-            const NDOWN: u32 = 4;
         }
 
         impl FrameLayout for $name {
@@ -120,7 +116,6 @@ macro_rules! uvpacket_submode {
             const N_DATA: u32 = 120;
             /// One Costas-4 at the head of each LDPC block.
             const N_SYNC: u32 = 4;
-            const N_SYMBOLS: u32 = 124;
             const N_RAMP: u32 = 0;
             const SYNC_MODE: SyncMode = SyncMode::Block(&UVPACKET_SYNC_BLOCKS);
             /// uvpacket frames are not slot-aligned — value is

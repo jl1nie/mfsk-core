@@ -160,7 +160,7 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
             RxGrid::real(12_000.0),
         );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
         let verify_info =
             Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -361,7 +361,7 @@ fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str,
             RxGrid::real(12_000.0),
         );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
         let verify_info =
             Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -637,7 +637,7 @@ fn stage_ablation_i0_offsets_for_channel(channel: &str) {
             RxGrid::real(12_000.0),
         );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
         let verify_info =
             Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -799,7 +799,7 @@ fn stage_ablation_for_channel(channel: &str) {
             RxGrid::real(12_000.0),
         );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
         let verify_info =
             Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -940,7 +940,7 @@ fn prepare_fst4_60_cell(
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
     let dir = sweep_dir();
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
     let mut prepared = Vec::new();
 
     for trial in 1..=max_trial {
@@ -1276,7 +1276,7 @@ fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
     // Production npre path throughout.
     fst4_osd_diag_force_old(false);
@@ -1683,7 +1683,7 @@ fn fst4_diag_zsum_osd() {
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
-    use mfsk_core::engine::{MessageCodec, ModulationParams, Protocol};
+    use mfsk_core::engine::{MessageCodec, Protocol, SyncFrontEnd};
     use mfsk_core::fec::ldpc::bp::{bp_decode_generic, bp_llr_zsum};
     use mfsk_core::fec::ldpc::osd::osd_decode_generic;
     use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
@@ -2215,7 +2215,7 @@ fn fst4_60_diag_osd_escalation() {
         RxGrid::real(12_000.0),
     );
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -2386,7 +2386,7 @@ fn fst4_60_diag_npre1_pattern_counts() {
         RxGrid::real(12_000.0),
     );
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -2513,7 +2513,7 @@ fn fst4_60_diag_osd_depth34_nsync_floor() {
             RxGrid::real(12_000.0),
         );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
         let verify_info =
             Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -3007,7 +3007,7 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
         RxGrid::real(12_000.0),
     );
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
 
@@ -3302,7 +3302,7 @@ fn fst4_60_diag_rung_major_scheduling() {
         raw_candidates.len(),
         cands.len()
     );
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -4220,7 +4220,7 @@ fn fst4_60_diag_i0_retry_ccir_old_only() {
             RxGrid::real(12_000.0),
         );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
         let mut recovered = false;
         let mut best_nsync_by_offset = [0u32; 3];
@@ -4401,7 +4401,7 @@ fn fst4_60_diag_i0_offset_host_timing() {
     }
     survivors.sort_unstable();
 
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -5980,7 +5980,7 @@ fn fst4_60_diag_soft_margin_escalation_priority() {
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
     // (nsync, mean_margin, mean_logratio, eventually_decodes)
     let mut pooled: Vec<(f64, f64, f64, bool)> = Vec::new();
@@ -6338,7 +6338,7 @@ fn fst4_60_diag_soft_margin_conditional_value() {
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
     // (features, nsync, eventually_decodes)
     let mut rows: Vec<([f64; NF], f64, bool)> = Vec::new();
@@ -6671,7 +6671,7 @@ fn fst4_60_diag_escalation_budget_curve() {
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
 
     for &(channel, snr_tag) in CELLS {
         for trial in 1..=100u32 {
@@ -6979,7 +6979,7 @@ fn fst4_60_diag_budget_curve_breadth_vs_depth() {
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::SyncFrontEnd>::NDOWN as f32;
     let mut all: Vec<Cand> = Vec::new();
 
     for &(channel, snr_tag) in CELLS {

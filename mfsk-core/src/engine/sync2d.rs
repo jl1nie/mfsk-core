@@ -34,7 +34,7 @@ use num_complex::Complex;
 // needed with no std in the graph; a dep linking std (the dev-only rustfft) makes f32's own methods shadow it
 use num_traits::Float;
 
-use crate::engine::Protocol;
+use crate::engine::SyncFrontEnd;
 use crate::engine::dsp::dotprod::{AlignedF32, dot_f32};
 use crate::engine::sync::{SyncCandidate, SyncDims};
 
@@ -405,7 +405,7 @@ fn score_flat_coherent(cd0: &[Complex<f32>], flat_ref: &FlatRef, cd0_start: i32)
 ///
 /// **Fine pass**: ±7 × 0.02·baud Hz × ±4 samples around coarse winner,
 /// step 1.  `sbest` reset to 0.0 before fine pass (WSJT-X convention).
-pub fn fst4_sync_search<P: Protocol>(
+pub fn fst4_sync_search<P: SyncFrontEnd>(
     cd0: &[Complex<f32>],
     candidate: &SyncCandidate,
 ) -> Sync2dResult {
@@ -556,7 +556,7 @@ pub fn fst4_sync_search<P: Protocol>(
 ///
 /// **Fine pass**: ±4 Hz / 1 Hz × ±5 samples step 1 around the coarse
 /// winner (`ft4_decode.f90` isync=2).
-pub fn ft4_sync_search<P: Protocol>(
+pub fn ft4_sync_search<P: SyncFrontEnd>(
     cd0: &[Complex<f32>],
     candidate: &SyncCandidate,
 ) -> Sync2dResult {
@@ -629,7 +629,7 @@ impl SyncPhasors for Ft4CoarsePhasors {
 
 impl Ft4CoarsePhasors {
     /// Build the nine coarse-sweep phasor tables for `P`.
-    pub fn new<P: Protocol>() -> Self {
+    pub fn new<P: SyncFrontEnd>() -> Self {
         let d = SyncDims::of::<P>(12_000.0);
         // Every Costas block is `nsym · ds_spb` samples and they are
         // all the same length, so one table covers all four.
@@ -707,7 +707,7 @@ const COARSE_DF_STEP: i32 = 3;
 /// Returns a value derived from the result so the work cannot be
 /// optimised away.
 #[cfg(feature = "internal-testing")]
-pub fn ft4_sync_ref_prep_bench<P: Protocol>(fills: usize) -> f32 {
+pub fn ft4_sync_ref_prep_bench<P: SyncFrontEnd>(fills: usize) -> f32 {
     let d = SyncDims::of::<P>(12_000.0);
     let flat_blocks: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
         .blocks()
@@ -750,7 +750,7 @@ pub fn ft4_aligned_cd0_bench(cd0: &[Complex<f32>]) -> f32 {
 /// collapsed single-pass search in [`ft4_sync_search`] ever misses a
 /// position that a per-segment search plus a per-segment decode attempt
 /// would have found.
-pub fn ft4_sync_search_window<P: Protocol>(
+pub fn ft4_sync_search_window<P: SyncFrontEnd>(
     cd0: &[Complex<f32>],
     candidate: &SyncCandidate,
     ib_min: i32,
@@ -813,12 +813,12 @@ fn twiddle_all<S: SyncPhasors>(
 /// per Costas block, because `fill` evaluates the phasor per sample
 /// and every block indexes it from zero.
 ///
-/// Now the tables are [`Protocol::SyncPhasors`], both passes ask the
+/// Now the tables are [`crate::engine::Protocol::SyncPhasors`], both passes ask the
 /// same way, and a `df` the set does not hold is built once into a
 /// scratch rather than four times into the blocks. `()` — every
 /// protocol but FT4 — holds nothing and takes that path for every
 /// `df`, which is what they all did before.
-pub fn ft4_sync_search_window_with<P: Protocol>(
+pub fn ft4_sync_search_window_with<P: SyncFrontEnd>(
     cd0: &[Complex<f32>],
     candidate: &SyncCandidate,
     ib_min: i32,
@@ -992,7 +992,7 @@ pub struct Ft4SweepScratch {
 }
 
 impl Ft4SweepScratch {
-    pub fn new<P: Protocol>() -> Self {
+    pub fn new<P: SyncFrontEnd>() -> Self {
         Self::new_with_min_alloc::<P>(0)
     }
 
@@ -1004,7 +1004,7 @@ impl Ft4SweepScratch {
     /// WiFi, whose floor at the slot boundary is ~16 KB. Past the
     /// threshold they go to PSRAM instead; ~9 KB a worker, read in a
     /// tight loop, which the data cache holds.
-    pub fn new_with_min_alloc<P: Protocol>(min_alloc_bytes: usize) -> Self {
+    pub fn new_with_min_alloc<P: SyncFrontEnd>(min_alloc_bytes: usize) -> Self {
         let d = SyncDims::of::<P>(12_000.0);
         let min_elems = min_alloc_bytes.div_ceil(core::mem::size_of::<Complex<f32>>());
         let flat_blocks: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
@@ -1118,7 +1118,7 @@ impl Ft4CoarseSweep {
     /// scored in this call (one block of one cell at one `df` each), so
     /// a caller can stay responsive; `usize::MAX` for no bound. Returns
     /// whether anything readable is still unscored.
-    pub fn advance<P: Protocol>(
+    pub fn advance<P: SyncFrontEnd>(
         &mut self,
         cd0: &[Complex<f32>],
         final_len: usize,
@@ -1215,7 +1215,7 @@ impl Ft4CoarseSweep {
 
     /// Score whatever is left against the whole raw `cd0` — the
     /// baseband including its flushed tail.
-    pub fn complete<P: Protocol>(
+    pub fn complete<P: SyncFrontEnd>(
         &mut self,
         cd0_raw: &[Complex<f32>],
         scratch: &mut Ft4SweepScratch,
@@ -1229,7 +1229,7 @@ impl Ft4CoarseSweep {
     /// fine pass on `cd0_normalised`. Call [`complete`](Self::complete)
     /// first; split from it so a caller can normalise its one `cd0` in
     /// place between the two rather than keep a copy.
-    pub fn fine<P: Protocol>(
+    pub fn fine<P: SyncFrontEnd>(
         self,
         cd0_normalised: &[Complex<f32>],
         candidate: &SyncCandidate,
@@ -1277,7 +1277,7 @@ impl Ft4CoarseSweep {
 }
 
 /// [`twiddle_all`] for one block.
-fn twiddle_one<P: Protocol>(
+fn twiddle_one<P: SyncFrontEnd>(
     scratch: &mut Ft4SweepScratch,
     k: usize,
     refs: &P::SyncPhasors,
@@ -1349,7 +1349,7 @@ fn twiddle_one<P: Protocol>(
 /// does. The refined position this returns is therefore produced by
 /// the same code either way; only which cell the fine pass is centred
 /// on can differ.
-pub fn ft4_sync_search_window_binned<P: Protocol>(
+pub fn ft4_sync_search_window_binned<P: SyncFrontEnd>(
     cd0: &[Complex<f32>],
     candidate: &SyncCandidate,
     ib_min: i32,
@@ -1503,7 +1503,7 @@ pub fn ft4_sync_search_window_binned<P: Protocol>(
 /// build would be four allocations and four trig sweeps per candidate
 /// on the board.
 #[allow(clippy::too_many_arguments)]
-fn ft4_fine_pass<P: Protocol>(
+fn ft4_fine_pass<P: SyncFrontEnd>(
     cd0: &[Complex<f32>],
     flat_blocks: &[(i32, Vec<Complex<f32>>)],
     twiddled: &mut [(i32, FlatRef)],

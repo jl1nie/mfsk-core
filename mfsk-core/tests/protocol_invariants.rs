@@ -34,7 +34,7 @@
 
 use mfsk_core::{
     FecCodec, FrameLayout, MessageCodec, ModulationParams, PROTOCOLS, Protocol, ProtocolId,
-    ProtocolMeta, SyncMode, by_name,
+    ProtocolMeta, SyncFrontEnd, SyncMode, by_name,
 };
 
 #[cfg(feature = "fst4")]
@@ -59,6 +59,55 @@ use mfsk_core::q65::{
 
 #[cfg(feature = "uvpacket")]
 use mfsk_core::{UvExpress, UvRobust, UvStandard, UvUltraRobust};
+
+/// `(SYMBOL_DT, TONE_SPACING_HZ)` of each protocol type; see the pin in
+/// [`assert_modulation_invariants`].
+fn expected_timing(name: &str) -> (f32, f32) {
+    match name {
+        "Fst4s15" => (6e-2, 1.6666666e1),
+        "Fst4s30" => (1.4e-1, 7.142857e0),
+        "Fst4s60" => (3.24e-1, 3.0864198e0),
+        "Fst4s120" => (6.8333334e-1, 1.4634147e0),
+        "Fst4s300" => (1.792e0, 5.5803573e-1),
+        "Ft4" => (4.8e-2, 2.0833334e1),
+        "Ft8" => (1.6e-1, 6.25e0),
+        "Jt9" => (5.76e-1, 1.7361112e0),
+        "Jt65" => (3.7166667e-1, 2.690583e0),
+        "Wspr" => (6.8266666e-1, 1.4648438e0),
+        "Q65a15" => (1.5e-1, 6.6666665e0),
+        "Q65a30" => (3e-1, 3.3333333e0),
+        "Q65a60" => (6e-1, 1.6666666e0),
+        "Q65b60" => (6e-1, 3.3333333e0),
+        "Q65c60" => (6e-1, 6.6666665e0),
+        "Q65d60" => (6e-1, 1.3333333e1),
+        "Q65e60" => (6e-1, 2.6666666e1),
+        "Q65d120" => (1.3333334e0, 6e0),
+        "Q65e120" => (1.3333334e0, 1.2e1),
+        "Q65a300" => (3.456e0, 2.8935185e-1),
+        "UvRobust" | "UvStandard" | "UvUltraRobust" | "UvExpress" => (8.3333335e-4, 6e2),
+        _ => panic!("{name}: add its (SYMBOL_DT, TONE_SPACING_HZ) to expected_timing"),
+    }
+}
+
+/// What the coarse-sync front end needs of a protocol that decodes through it
+/// (FT8, FT4, FST4): positive ratios, and a downsample factor that divides the
+/// symbol exactly, as `engine::llr::symbol_spectra` assumes.
+fn assert_front_end_invariants<P: SyncFrontEnd>(name: &str) {
+    assert!(P::NDOWN > 0, "{name}: NDOWN must be > 0");
+    assert!(
+        P::NSTEP_PER_SYMBOL > 0,
+        "{name}: NSTEP_PER_SYMBOL must be > 0"
+    );
+    assert!(
+        P::NFFT_PER_SYMBOL_FACTOR > 0,
+        "{name}: NFFT_PER_SYMBOL_FACTOR must be > 0"
+    );
+    assert_eq!(
+        P::NSPS % P::NDOWN,
+        0,
+        "{name}: NSPS must be a multiple of NDOWN"
+    );
+}
 
 /// Invariants that depend only on `<P as ModulationParams>`.
 fn assert_modulation_invariants<P: ModulationParams>(name: &str) {
@@ -91,14 +140,23 @@ fn assert_modulation_invariants<P: ModulationParams>(name: &str) {
         P::TONE_SPACING_HZ.is_finite(),
         "{name}: TONE_SPACING_HZ must be finite"
     );
-    assert!(P::NDOWN > 0, "{name}: NDOWN must be > 0");
+
+    // `SYMBOL_DT` and `TONE_SPACING_HZ`, pinned to the value each protocol had
+    // when #419 made them derived (`NSPS / 12 000` and `GFSK_HMOD · 12 000 /
+    // NSPS`, times Q65's `2^(letter − 1)`). The one change was FT4's
+    // `TONE_SPACING_HZ`: the hand-typed 20.833 became the derived 20.833334.
+    let (dt, tone) = expected_timing(name);
+    assert_eq!(P::SYMBOL_DT, dt, "{name}: SYMBOL_DT");
+    assert_eq!(P::TONE_SPACING_HZ, tone, "{name}: TONE_SPACING_HZ");
+    // And the spacing is the `h / T` base times a power of two (1 for every
+    // mode but Q65's wider sub-modes), whatever else a mode might write.
+    let base = mfsk_core::engine::tone_spacing_hz(P::GFSK_HMOD, P::NSPS);
+    let ratio = P::TONE_SPACING_HZ / base;
     assert!(
-        P::NSTEP_PER_SYMBOL > 0,
-        "{name}: NSTEP_PER_SYMBOL must be > 0"
-    );
-    assert!(
-        P::NFFT_PER_SYMBOL_FACTOR > 0,
-        "{name}: NFFT_PER_SYMBOL_FACTOR must be > 0"
+        [1.0f32, 2.0, 4.0, 8.0, 16.0]
+            .iter()
+            .any(|m| (ratio - m).abs() < 1e-5),
+        "{name}: TONE_SPACING_HZ is {ratio}× the h/T spacing, not a power of two up to 16"
     );
 
     // GFSK_BT == 0 means "plain FSK" (Q65, JT65, WSPR, JT9). FT8/FT4/FST4
@@ -260,18 +318,21 @@ fn assert_protocol_invariants<P: Protocol>(name: &str) {
 #[test]
 fn ft8_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Ft8>("Ft8");
+    assert_front_end_invariants::<Ft8>("Ft8");
 }
 
 #[cfg(feature = "ft4")]
 #[test]
 fn ft4_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Ft4>("Ft4");
+    assert_front_end_invariants::<Ft4>("Ft4");
 }
 
 #[cfg(feature = "fst4")]
 #[test]
 fn fst4s60_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Fst4s60>("Fst4s60");
+    assert_front_end_invariants::<Fst4s60>("Fst4s60");
 }
 
 #[cfg(feature = "fst4")]
@@ -284,9 +345,13 @@ fn fst4_other_submodes_satisfy_protocol_invariants() {
     // TX_START_OFFSET_S for FST4-15) don't accidentally break the
     // contract.
     assert_protocol_invariants::<Fst4s15>("Fst4s15");
+    assert_front_end_invariants::<Fst4s15>("Fst4s15");
     assert_protocol_invariants::<Fst4s30>("Fst4s30");
+    assert_front_end_invariants::<Fst4s30>("Fst4s30");
     assert_protocol_invariants::<Fst4s120>("Fst4s120");
+    assert_front_end_invariants::<Fst4s120>("Fst4s120");
     assert_protocol_invariants::<Fst4s300>("Fst4s300");
+    assert_front_end_invariants::<Fst4s300>("Fst4s300");
 }
 
 #[cfg(feature = "wspr")]

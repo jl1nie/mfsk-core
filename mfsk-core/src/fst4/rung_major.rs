@@ -120,7 +120,7 @@ use super::super::engine::llr::{
     compute_llr_fast, compute_llr_partial, descramble_info, symbol_spectra, sync_quality,
 };
 use super::super::engine::pipeline::{DecodeResult, osd_escalation_gates};
-use super::super::engine::protocol::{BpPooledFec, FecOpts, MessageCodec, Protocol};
+use super::super::engine::protocol::{BpPooledFec, FecOpts, MessageCodec, SyncFrontEnd};
 use super::super::engine::sync::SyncCandidate;
 
 /// One candidate ready for [`decode_rung_major`] — coarse sync position
@@ -209,7 +209,7 @@ pub fn decode_rung_major<P>(
     skip_llrc: bool,
 ) -> Vec<Option<DecodeResult>>
 where
-    P: Protocol,
+    P: SyncFrontEnd,
     P::Fec: BpPooledFec,
 {
     // 12 kHz: `candidates` here are always the canonical raw-ingest
@@ -253,7 +253,7 @@ pub fn decode_rung_major_timed<P>(
     sample_rate_hz: f32,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
-    P: Protocol,
+    P: SyncFrontEnd,
     P::Fec: BpPooledFec,
 {
     decode_scheduled::<P>(
@@ -295,7 +295,7 @@ pub fn decode_phase_split_timed<P>(
     sample_rate_hz: f32,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
-    P: Protocol,
+    P: SyncFrontEnd,
     P::Fec: BpPooledFec,
 {
     decode_scheduled::<P>(
@@ -336,7 +336,7 @@ fn decode_scheduled<P>(
     sample_rate_hz: f32,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
-    P: Protocol,
+    P: SyncFrontEnd,
     P::Fec: BpPooledFec,
 {
     assert!(
@@ -380,7 +380,7 @@ where
     // metadata needed to place it -- a free function, not a closure, so
     // it borrows only what's passed in and never conflicts with the
     // surrounding loop's mutable borrow of `st`.
-    fn build_result<P: Protocol>(
+    fn build_result<P: SyncFrontEnd>(
         mut r: crate::engine::protocol::FecResult,
         input: &RungMajorCandidate,
         i0: i32,
