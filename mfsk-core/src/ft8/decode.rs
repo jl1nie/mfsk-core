@@ -248,14 +248,18 @@ fn triage_candidate(
         score: refine_result.score,
     };
     if refine_result.delf_hz.abs() > f32::EPSILON {
-        // Apply the freq shift in place so symbol_spectra / BP see
-        // the refined baseband.
-        let dt2 = 1.0_f32 / 200.0;
-        for (k, c) in cd0.iter_mut().enumerate() {
-            let phi = -core::f32::consts::TAU * refine_result.delf_hz * (k as f32) * dt2;
-            let rot = num_complex::Complex::new(phi.cos(), phi.sin());
-            *c *= rot;
-        }
+        // Apply the freq shift so symbol_spectra / BP see the refined
+        // baseband: the crate's mixer, `exp(-j2π·Δf·k/200)`. This was a
+        // `cos`/`sin` of `-2π·Δf·k/200` per sample, the same transform
+        // `freq_shift_cd0_into` has run since the FT4 work (#423).
+        let mut shifted = Vec::new();
+        crate::engine::sync2d::freq_shift_cd0_into(
+            &cd0,
+            refine_result.delf_hz,
+            200.0,
+            &mut shifted,
+        );
+        cd0 = shifted;
     }
 
     // sync_cv from cd0 + i_start (Costas correlation power CV).
