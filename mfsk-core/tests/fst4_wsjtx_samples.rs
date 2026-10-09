@@ -153,7 +153,7 @@ fn fst4_60_diagnose_golden() {
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
-    use mfsk_core::engine::{FrameLayout, ModulationParams};
+    use mfsk_core::engine::{FrameLayout, SyncFrontEnd};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -163,7 +163,7 @@ fn fst4_60_diagnose_golden() {
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
     let golden = &GOLDEN[0];
-    let ds_rate = 12_000.0 / <Fst4s60 as ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Fst4s60 as SyncFrontEnd>::NDOWN as f32;
     let tx_start = <Fst4s60 as FrameLayout>::TX_START_OFFSET_S;
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 

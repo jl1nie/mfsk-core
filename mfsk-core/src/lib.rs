@@ -410,7 +410,7 @@ pub mod slotgrid;
 // Flatten commonly-used types to the crate root.
 pub use crate::engine::{
     DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,
-    ModulationParams, Protocol, ProtocolId, SAMPLE_RATE_HZ, SyncBlock, SyncMode,
+    ModulationParams, Protocol, ProtocolId, SAMPLE_RATE_HZ, SyncBlock, SyncFrontEnd, SyncMode,
 };
 pub use crate::registry::{Mode, PROTOCOLS, ProtocolMeta, by_id, by_name, for_protocol_id};
 

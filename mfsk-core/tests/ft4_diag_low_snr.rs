@@ -13,7 +13,7 @@ use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
 use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
 use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync, refine_candidate};
 use mfsk_core::engine::{
-    FecCodec, FecOpts, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol,
+    FecCodec, FecOpts, FrameLayout, MessageCodec, MessageFields, Protocol, SyncFrontEnd,
 };
 use mfsk_core::ft4::Ft4;
 
@@ -126,7 +126,7 @@ fn why_does_neg16db_fail() {
     }
     let (_, truth_cand) = truth.unwrap();
 
-    let ds_rate = 12_000.0 / <Ft4 as ModulationParams>::NDOWN as f32;
+    let ds_rate = 12_000.0 / <Ft4 as SyncFrontEnd>::NDOWN as f32;
     let fft_cache = build_fft_cache(&audio, &mfsk_core::ft4::decode::FT4_DOWNSAMPLE);
     let cd0 = downsample_cached(
         &fft_cache,

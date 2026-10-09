@@ -93,9 +93,9 @@ use alloc::vec::Vec;
 
 use num_complex::Complex;
 
-use crate::engine::ModulationParams;
 use crate::engine::dsp::ddc::Mixer;
 use crate::engine::dsp::fir_decimate::FirStage;
+use crate::engine::{ModulationParams, SyncFrontEnd};
 use crate::ft4::Ft4;
 
 /// Input sample rate this module is written for — the whole WSJT

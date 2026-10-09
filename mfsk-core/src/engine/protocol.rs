@@ -115,6 +115,15 @@ pub enum ProtocolId {
     UvPacket = 8,
 }
 
+/// Tone spacing for a modulation index `hmod` at `nsps` samples per symbol
+/// (12 kHz): `h / T` with `T = nsps / 12 000`. What
+/// [`ModulationParams::TONE_SPACING_HZ`] is for every mode whose tones are
+/// spaced at the modulation index; written as a function so that no
+/// implementation hand-types the number (FT4's `20.833` was one f32 step off).
+pub const fn tone_spacing_hz(hmod: f32, nsps: u32) -> f32 {
+    hmod * 12_000.0 / nsps as f32
+}
+
 /// Baseband modulation parameters (tones, symbol rate, Gray mapping, Gaussian
 /// shaping and the tunable DSP ratios the pipeline reads per protocol).
 ///
@@ -131,9 +140,19 @@ pub trait ModulationParams: Copy + Default + 'static {
     const NSPS: u32;
 
     /// Symbol duration in seconds (= NSPS / 12000).
-    const SYMBOL_DT: f32;
+    ///
+    /// Derived, and never overridden: across all 24 protocol types the
+    /// hand-written values were bit-identical to this (checked 2026-10-09,
+    /// #419).
+    const SYMBOL_DT: f32 = Self::NSPS as f32 / 12_000.0;
 
     /// Spacing between adjacent tones, in Hz.
+    ///
+    /// Required, with no default, so that a new mode cannot inherit a value
+    /// that is wrong for it: the spacing is `h / T` for most modes, but Q65's
+    /// sub-modes B…E space their tones `2^(letter − 1)` times wider. Write
+    /// `tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS)` for the `h / T` case,
+    /// and multiply it for the others.
     const TONE_SPACING_HZ: f32;
 
     /// Gray-code map: `GRAY_MAP[tone_index]` returns the NATURAL-bit pattern
@@ -156,16 +175,8 @@ pub trait ModulationParams: Copy + Default + 'static {
     const GFSK_HMOD: f32;
 
     // ── Per-protocol DSP ratios ─────────────────────────────────────────
-    /// Per-symbol FFT size = `NSPS * NFFT_PER_SYMBOL_FACTOR`.
-    /// FT8 = 2 (window is 2·NSPS), FT4 = 4 (window is 4·NSPS) — trade-off
-    /// between frequency resolution and time localisation.
-    const NFFT_PER_SYMBOL_FACTOR: u32;
-    /// Coarse-sync time-step = `NSPS / NSTEP_PER_SYMBOL`.
-    /// FT8 = 4 (quarter-symbol resolution), FT4 = 1 (symbol-granular).
-    const NSTEP_PER_SYMBOL: u32;
-    /// Downsample decimation factor: baseband rate = `12 000 / NDOWN` Hz.
-    /// FT8 = 60 (→200 Hz), FT4 = 18 (→667 Hz). Proportional to tone spacing.
-    const NDOWN: u32;
+    // (The coarse-sync front end's own three — `NFFT_PER_SYMBOL_FACTOR`,
+    // `NSTEP_PER_SYMBOL`, `NDOWN` — are on `SyncFrontEnd`.)
 
     /// LLR scale factor applied after standard-deviation normalisation.
     /// FT8 uses 2.83 (empirical, from WSJT-X ft8b.f90). Different
@@ -309,7 +320,7 @@ pub trait FrameLayout: Copy + Default + 'static {
 
     /// Total channel symbols per frame (= N_DATA + N_SYNC). Excludes any
     /// GFSK ramp-up / ramp-down symbols that are a shaping artifact.
-    const N_SYMBOLS: u32;
+    const N_SYMBOLS: u32 = Self::N_DATA + Self::N_SYNC;
 
     /// Extra symbol slots on each side of the frame reserved for amplitude
     /// ramp (FT4 has 1 each side = 2; FT8 has 0 — ramp absorbed into the
@@ -818,6 +829,32 @@ pub trait Protocol: ModulationParams + FrameLayout + 'static {
 
     /// Runtime tag used at FFI / WASM boundaries.
     const ID: ProtocolId;
+}
+
+/// The geometry of the shared coarse-sync front end (`engine::sync`,
+/// `engine::llr::symbol_spectra`, the generic decode pipeline): how long each
+/// per-symbol FFT is, how often it is taken, and how far the signal is
+/// downsampled before fine sync.
+///
+/// Implemented by the protocols that decode through that front end — FT8,
+/// FT4 and the five FST4 sub-modes. JT9, JT65, WSPR, Q65 and uvpacket have
+/// their own searches (`jt9/search.rs`, `q65/search.rs`, …) and do not
+/// implement it. Until 0.14.0 these three constants sat on
+/// [`ModulationParams`] with no default, so those 17 types carried values
+/// nothing read, and for JT9 the values contradicted the ones its search
+/// actually uses (`NSTEP_PER_SYMBOL` 2 against 4, `NDOWN` 8 against 432); see
+/// #419.
+pub trait SyncFrontEnd: Protocol {
+    /// Per-symbol FFT size = `NSPS * NFFT_PER_SYMBOL_FACTOR`.
+    /// FT8 = 2 (window is 2·NSPS), FT4 = 4 (window is 4·NSPS) — trade-off
+    /// between frequency resolution and time localisation.
+    const NFFT_PER_SYMBOL_FACTOR: u32;
+    /// Coarse-sync time-step = `NSPS / NSTEP_PER_SYMBOL`.
+    /// FT8 = 4 (quarter-symbol resolution), FT4 = 2 (half a symbol).
+    const NSTEP_PER_SYMBOL: u32;
+    /// Downsample decimation factor: baseband rate = `12 000 / NDOWN` Hz.
+    /// FT8 = 60 (→200 Hz), FT4 = 18 (→667 Hz). Proportional to tone spacing.
+    const NDOWN: u32;
 }
 
 /// Phasor tables a protocol's Δt search reuses instead of evaluating

@@ -125,8 +125,7 @@ impl ModulationParams for Wspr {
     /// 375 Hz after a 32× decimation (12000/32 = 375), where one symbol is
     /// 256 samples; we keep the pipeline-standard 12 kHz convention here.
     const NSPS: u32 = 8192;
-    const SYMBOL_DT: f32 = 8192.0 / 12_000.0;
-    const TONE_SPACING_HZ: f32 = 12_000.0 / 8192.0; // ≈ 1.4648
+    const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS); // ≈ 1.4648
     /// Gray map for 4-FSK. WSPR tones map naturally (no Gray conversion in
     /// the WSJT-X reference), so this is the identity — the data bit just
     /// picks the top bit of the tone index.
@@ -136,9 +135,6 @@ impl ModulationParams for Wspr {
     // rather than a Gaussian). BT=1.0 is a reasonable stand-in here.
     const GFSK_BT: f32 = 1.0;
     const GFSK_HMOD: f32 = 1.0;
-    const NFFT_PER_SYMBOL_FACTOR: u32 = 1; // sync correlation windows = 1 symbol
-    const NSTEP_PER_SYMBOL: u32 = 16; // WSJT-X scans 16 sub-symbol offsets
-    const NDOWN: u32 = 32; // 12000 / 32 = 375 Hz baseband
 }
 
 impl crate::engine::tx::FskWaveform for Wspr {
@@ -148,7 +144,6 @@ impl crate::engine::tx::FskWaveform for Wspr {
 impl FrameLayout for Wspr {
     const N_DATA: u32 = 162; // every symbol is both data and sync
     const N_SYNC: u32 = 0;
-    const N_SYMBOLS: u32 = 162;
     const N_RAMP: u32 = 0;
     const SYNC_MODE: SyncMode = SyncMode::Interleaved {
         sync_bit_pos: 0, // LSB of 4-FSK tone = sync bit, MSB = data bit

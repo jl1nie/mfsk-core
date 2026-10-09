@@ -21,7 +21,7 @@ use num_traits::Float;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use super::{Protocol, SpectrumWindow};
+use super::{SpectrumWindow, SyncFrontEnd};
 use crate::engine::fft::default_planner;
 
 /// One synchronisation candidate.
@@ -452,7 +452,7 @@ impl SyncDims {
     /// until a caller actually needs `downsample_cached` itself fed by
     /// something other than the canonical 12 kHz stream.
     #[inline]
-    pub fn of<P: Protocol>(sample_rate_hz: f32) -> Self {
+    pub fn of<P: SyncFrontEnd>(sample_rate_hz: f32) -> Self {
         // `SYMBOL_DT = NSPS / 12_000.0` (`fst4_submode!`) is the
         // protocol's physical symbol duration in seconds — rate
         // independent. At `sample_rate_hz == 12_000.0` (every caller
@@ -737,7 +737,7 @@ pub(crate) fn nuttall_window(n: usize) -> Vec<f32> {
 /// monotonic, which is the whole reason `coarse_sync`'s correlation
 /// loop needs no change to read either grid — see `RxGrid`'s own doc
 /// comment.
-pub fn compute_spectra<P: Protocol>(
+pub fn compute_spectra<P: SyncFrontEnd>(
     audio: AudioSource,
     bin_lo: usize,
     bin_hi_incl: usize,
@@ -864,7 +864,7 @@ pub struct SpectrogramBuilder {
 }
 
 impl SpectrogramBuilder {
-    pub fn new<P: Protocol>(bin_lo: usize, bin_hi_incl: usize, grid: RxGrid) -> Self {
+    pub fn new<P: SyncFrontEnd>(bin_lo: usize, bin_hi_incl: usize, grid: RxGrid) -> Self {
         let d = SyncDims::of::<P>(grid.sample_rate_hz);
         let window: Option<Vec<f32>> = match P::SPECTRUM_WINDOW {
             SpectrumWindow::Rectangular => None,
@@ -1025,7 +1025,7 @@ impl SpectrogramBuilder {
 /// either way, since [`compute_spectra`]'s complex path already
 /// stores its spectrogram on a monotonic bin axis (see that function's
 /// own doc comment).
-pub fn coarse_sync<P: Protocol>(
+pub fn coarse_sync<P: SyncFrontEnd>(
     audio: AudioSource,
     freq_min: f32,
     freq_max: f32,
@@ -1050,7 +1050,7 @@ pub fn coarse_sync<P: Protocol>(
 /// when the requested band is empty. Exposed so a caller building the
 /// spectrogram itself — incrementally, via [`SpectrogramBuilder`] —
 /// crops identically instead of re-deriving this and drifting.
-pub fn spectra_crop_for<P: Protocol>(
+pub fn spectra_crop_for<P: SyncFrontEnd>(
     freq_min: f32,
     freq_max: f32,
     grid: RxGrid,
@@ -1126,7 +1126,7 @@ impl Sync2dShape {
 /// grid the ranking stage will. Note this is the *candidate* bin range,
 /// narrower than the spectrogram crop [`spectra_crop_for`] returns by
 /// the `headroom` bins the reference tones read above `ib`.
-pub fn sync2d_shape<P: Protocol>(
+pub fn sync2d_shape<P: SyncFrontEnd>(
     freq_min: f32,
     freq_max: f32,
     grid: RxGrid,
@@ -1161,7 +1161,7 @@ pub fn sync2d_shape<P: Protocol>(
 /// the spectrogram, so rows may be filled in any order, concurrently,
 /// by any number of threads or cores.
 #[inline]
-pub fn fill_sync2d_row<P: Protocol>(
+pub fn fill_sync2d_row<P: SyncFrontEnd>(
     s: &Spectrogram,
     shape: &Sync2dShape,
     fi: usize,
@@ -1251,7 +1251,7 @@ pub fn fill_sync2d_row<P: Protocol>(
 /// [`coarse_sync_from_sync2d`] — split apart for callers that want to
 /// spread the fill across cores; see [`Sync2dShape`].
 #[allow(clippy::too_many_arguments)]
-pub fn coarse_sync_from_spectra<P: Protocol>(
+pub fn coarse_sync_from_spectra<P: SyncFrontEnd>(
     s: &Spectrogram,
     freq_min: f32,
     freq_max: f32,
@@ -1290,7 +1290,7 @@ pub fn coarse_sync_from_spectra<P: Protocol>(
 /// `shape.n_lag` — i.e. exactly what [`fill_sync2d_row`] writes, and
 /// `s`/`shape` must be the same pair those rows were filled from.
 #[allow(clippy::too_many_arguments)]
-pub fn coarse_sync_from_sync2d<P: Protocol>(
+pub fn coarse_sync_from_sync2d<P: SyncFrontEnd>(
     s: &Spectrogram,
     sync2d: &[f32],
     shape: &Sync2dShape,
@@ -1836,7 +1836,7 @@ pub fn score_costas_block(
 }
 
 /// Sum of Costas correlation powers across all sync blocks.
-pub fn fine_sync_power<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> f32 {
+pub fn fine_sync_power<P: SyncFrontEnd>(cd0: &[Complex<f32>], i0: i32) -> f32 {
     fine_sync_power_per_block::<P>(cd0, i0).into_iter().sum()
 }
 
@@ -1875,7 +1875,7 @@ pub fn sync_power_cv(per_block: &[f32]) -> f32 {
 /// different ones (`FT4_SYNC_BLOCKS`, upstream `icos4a..d`). Measured
 /// on the FT4 host mirror at **42 allocations per candidate**, from a
 /// function whose whole output is four floats.
-pub fn fine_sync_power_per_block<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> Vec<f32> {
+pub fn fine_sync_power_per_block<P: SyncFrontEnd>(cd0: &[Complex<f32>], i0: i32) -> Vec<f32> {
     // Only `d.ds_spb` is read below — a `SyncDims::of` field that
     // `downsample_cached`'s own rate governs, not the `sample_rate_hz`
     // parameter (see that doc comment), so the argument here is inert.
@@ -1966,7 +1966,7 @@ pub fn refine_freq_hz_log_power(
 /// fractional-sample refinement. The sub-sample shift is used to report a
 /// more accurate `dt_sec` but the returned score is the integer peak
 /// (interpolating correlation peaks biases small values downward).
-pub fn refine_candidate<P: Protocol>(
+pub fn refine_candidate<P: SyncFrontEnd>(
     cd0: &[Complex<f32>],
     candidate: &SyncCandidate,
     search_steps: i32,
@@ -1999,7 +1999,7 @@ pub fn refine_candidate<P: Protocol>(
 #[cfg(all(test, feature = "fst4", feature = "ft4"))]
 mod tests {
     use super::{
-        AudioSource, DEDUP_HZ, DEDUP_SEC, PI, Protocol, RxGrid, SyncCandidate, SyncDims,
+        AudioSource, DEDUP_HZ, DEDUP_SEC, PI, RxGrid, SyncCandidate, SyncDims, SyncFrontEnd,
         compute_spectra, dedup_suppress, make_costas_ref, make_costas_ref_flat, score_costas_block,
         score_costas_block_flat, sync_power_cv,
     };
@@ -2070,7 +2070,7 @@ mod tests {
     /// for every existing decode path.
     #[test]
     fn sync_dims_of_matches_nsps_at_12khz() {
-        fn check<P: Protocol + ModulationParams>(name: &str) {
+        fn check<P: SyncFrontEnd + ModulationParams>(name: &str) {
             let d = SyncDims::of::<P>(12_000.0);
             assert_eq!(
                 d.nsps,

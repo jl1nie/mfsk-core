@@ -482,8 +482,7 @@ impl ModulationParams for Jt65 {
     /// 11 025 / 4096 but the integer-sample convention in our
     /// pipeline is NSPS.
     const NSPS: u32 = 4460;
-    const SYMBOL_DT: f32 = 4460.0 / 12_000.0;
-    const TONE_SPACING_HZ: f32 = 12_000.0 / 4460.0; // ≈ 2.6906 Hz
+    const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS); // ≈ 2.6906 Hz
     /// No Gray map here — Gray is applied at the *symbol* level
     /// (6-bit) in [`crate::engine::gray::gray`], not at the FSK-tone level. A
     /// minimal identity map satisfies the trait's `GRAY_MAP.len()
@@ -491,10 +490,6 @@ impl ModulationParams for Jt65 {
     const GRAY_MAP: &'static [u8] = &IDENTITY_66;
     const GFSK_BT: f32 = 0.0; // plain FSK
     const GFSK_HMOD: f32 = 1.0;
-    const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
-    const NSTEP_PER_SYMBOL: u32 = 2;
-    /// 12 000 / 4 = 3000 Hz baseband (enough for the 65-tone span).
-    const NDOWN: u32 = 4;
 }
 
 impl crate::engine::tx::FskWaveform for Jt65 {
@@ -514,7 +509,6 @@ const IDENTITY_66: [u8; 66] = {
 impl FrameLayout for Jt65 {
     const N_DATA: u32 = 63;
     const N_SYNC: u32 = 63;
-    const N_SYMBOLS: u32 = 126;
     const N_RAMP: u32 = 0;
     const SYNC_MODE: SyncMode = SyncMode::Block(&JT65_SYNC_BLOCKS);
     /// 46.8-second frame, scheduled in 60-second slots with a few

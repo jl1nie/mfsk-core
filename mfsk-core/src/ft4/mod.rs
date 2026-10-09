@@ -75,14 +75,12 @@ impl ModulationParams for Ft4 {
     const NTONES: u32 = 4;
     const BITS_PER_SYMBOL: u32 = 2;
     const NSPS: u32 = 576; // 48 ms @ 12 kHz
-    const SYMBOL_DT: f32 = 0.048;
-    const TONE_SPACING_HZ: f32 = 20.833;
+    // 12 000 / 576 = 20.8333…; the literal 20.833 this replaces was one f32
+    // step below it (#419).
+    const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS);
     const GRAY_MAP: &'static [u8] = &[0, 1, 3, 2];
     const GFSK_BT: f32 = 1.0;
     const GFSK_HMOD: f32 = 1.0;
-    const NFFT_PER_SYMBOL_FACTOR: u32 = 4; // NFFT1 = 4 × NSPS = 2304
-    const NSTEP_PER_SYMBOL: u32 = 2; // half-symbol coarse-sync step (24 ms)
-    const NDOWN: u32 = 18; // 12 000 / 18 ≈ 666.7 Hz baseband
     // LLR_SCALE tuning (2.0 / 2.83 / 3.5) was measured to give identical
     // threshold curves — BP already converges within that range. Keeping
     // the WSJT-X default.
@@ -105,6 +103,12 @@ impl ModulationParams for Ft4 {
     const INFO_SCRAMBLE_RVEC: Option<&'static [u8]> = Some(&FT4_RVEC);
 }
 
+impl crate::engine::SyncFrontEnd for Ft4 {
+    const NFFT_PER_SYMBOL_FACTOR: u32 = 4; // NFFT1 = 4 × NSPS = 2304
+    const NSTEP_PER_SYMBOL: u32 = 2; // half-symbol coarse-sync step (24 ms)
+    const NDOWN: u32 = 18; // 12 000 / 18 ≈ 666.7 Hz baseband
+}
+
 impl crate::engine::tx::FskWaveform for Ft4 {
     const WAVEFORM: crate::engine::tx::Waveform =
         crate::engine::tx::Waveform::Gfsk(encode::FT4_GFSK);
@@ -113,7 +117,6 @@ impl crate::engine::tx::FskWaveform for Ft4 {
 impl FrameLayout for Ft4 {
     const N_DATA: u32 = 87;
     const N_SYNC: u32 = 16; // 4 × 4-symbol Costas
-    const N_SYMBOLS: u32 = 103; // active channel symbols (excludes 2 ramp symbols)
     const N_RAMP: u32 = 2; // 1 each side, NN2 = 105
     const SYNC_MODE: SyncMode = SyncMode::Block(&FT4_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 7.5;

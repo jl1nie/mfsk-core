@@ -244,8 +244,7 @@ impl ModulationParams for Jt9 {
     /// Samples per symbol at the 12 kHz pipeline rate. 6912 gives a
     /// baud rate of 12 000 / 6912 ≈ 1.736 Hz, matching WSJT-X.
     const NSPS: u32 = 6912;
-    const SYMBOL_DT: f32 = 6912.0 / 12_000.0;
-    const TONE_SPACING_HZ: f32 = 12_000.0 / 6912.0; // ≈ 1.736 Hz
+    const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS); // ≈ 1.736 Hz
     /// Data tones are 1..=8; Gray-map the 3 data bits within those
     /// eight tones. Tone 0 is reserved for sync and isn't part of
     /// the data constellation, so the Gray map has 8 entries, not 9.
@@ -254,13 +253,6 @@ impl ModulationParams for Jt9 {
     /// signals "no GFSK" to TX synthesisers that check the constant.
     const GFSK_BT: f32 = 0.0;
     const GFSK_HMOD: f32 = 1.0;
-    /// Two FFTs per symbol window — standard convention (same as FT8).
-    const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
-    /// Half-symbol coarse-sync step.
-    const NSTEP_PER_SYMBOL: u32 = 2;
-    /// 12 000 / 8 = 1500 Hz baseband. Adequate for the 9-tone
-    /// constellation (9 × 1.736 ≈ 15.6 Hz occupied) plus guard.
-    const NDOWN: u32 = 8;
 }
 
 impl crate::engine::tx::FskWaveform for Jt9 {
@@ -270,7 +262,6 @@ impl crate::engine::tx::FskWaveform for Jt9 {
 impl FrameLayout for Jt9 {
     const N_DATA: u32 = 69;
     const N_SYNC: u32 = 16;
-    const N_SYMBOLS: u32 = 85;
     const N_RAMP: u32 = 0;
     const SYNC_MODE: SyncMode = SyncMode::Block(&JT9_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 60.0;

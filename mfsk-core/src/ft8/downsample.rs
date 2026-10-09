@@ -16,7 +16,7 @@ pub const FT8_CFG: DownsampleCfg = DownsampleCfg {
     input_rate: 12_000,
     fft1_size: 192_000,
     fft2_size: 3_200,
-    tone_spacing_hz: 6.25,
+    tone_spacing_hz: <super::Ft8 as crate::engine::ModulationParams>::TONE_SPACING_HZ,
     leading_pad_tones: 1.5,
     trailing_pad_tones: 1.5,
     ntones: 8,

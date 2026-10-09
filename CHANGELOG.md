@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Derived constants are derived, and the coarse-sync geometry belongs to the modes that use it (#419, breaking).**
+  `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL` and `NDOWN` move from `ModulationParams` to a new `SyncFrontEnd: Protocol`,
+  implemented by the 7 types that decode through the shared front end (FT8, FT4, FST4 ×5); the other 17 carried values
+  nothing read, and for JT9 they contradicted its own search (`NSTEP` 2 against 4, `NDOWN` 8 against 432). A mode that
+  does not implement it cannot be passed to `engine::sync` or the generic pipeline: a compile error, not a placeholder.
+  `SYMBOL_DT`, `N_SYMBOLS` and `LdpcParams::M` default to their identities (`NSPS/12000`, `N_DATA + N_SYNC`, `N − K`);
+  `TONE_SPACING_HZ` stays required but is written `tone_spacing_hz(GFSK_HMOD, NSPS)`, so Q65's `2^(letter−1)` widening
+  is explicit and a forgotten value fails to compile. FT4's hand-typed `20.833` is now the derived `20.833334` (one f32
+  step); decode output is unchanged. `tests/protocol_invariants.rs` pins all 24 types' `(SYMBOL_DT, TONE_SPACING_HZ)`.
 - **OSD is `osd174_91.f90` / `osd240_101.f90` line for line, and 8× faster than upstream (#417).** FT8, FT4 and
   FST4 now share one OSD (`fec::ldpc::osd_npre`), replacing a (174,91)-pinned port and a generic one, neither of which
   matched upstream: both chose the basis as "first `k` independent columns", not upstream's `id..k+20` column swap, and

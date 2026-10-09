@@ -69,19 +69,12 @@ macro_rules! q65_submode {
             const NTONES: u32 = 65;
             const BITS_PER_SYMBOL: u32 = 6;
             const NSPS: u32 = $nsps;
-            const SYMBOL_DT: f32 = ($nsps as f32) / 12_000.0;
             /// Tone spacing = baud × multiplier where baud = 12000 / NSPS.
-            const TONE_SPACING_HZ: f32 = (12_000.0 / ($nsps as f32)) * ($mult as f32);
+            const TONE_SPACING_HZ: f32 = crate::engine::tone_spacing_hz(Self::GFSK_HMOD, Self::NSPS) * ($mult as f32);
             const GRAY_MAP: &'static [u8] = &IDENTITY_65;
             /// Plain FSK — Q65 does not Gaussian-shape its tones.
             const GFSK_BT: f32 = 0.0;
             const GFSK_HMOD: f32 = 1.0;
-            const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
-            const NSTEP_PER_SYMBOL: u32 = 2;
-            /// 4 kHz baseband (12000 / 3) — wider than every Q65
-            /// sub-mode's worst-case occupancy of 65 × 26.67 Hz =
-            /// 1733 Hz (Q65-?E).
-            const NDOWN: u32 = 3;
         }
 
         impl crate::engine::tx::FskWaveform for $name {
@@ -91,7 +84,6 @@ macro_rules! q65_submode {
         impl FrameLayout for $name {
             const N_DATA: u32 = 63;
             const N_SYNC: u32 = 22;
-            const N_SYMBOLS: u32 = 85;
             const N_RAMP: u32 = 0;
             const SYNC_MODE: SyncMode = SyncMode::Block(&Q65_SYNC_BLOCKS);
             const T_SLOT_S: f32 = $period as f32;

@@ -43,7 +43,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::dsp::downsample::DownsampleCfg;
-use super::protocol::Protocol;
+use super::protocol::SyncFrontEnd;
 use super::sync::SyncCandidate;
 
 /// Modulation index: 1 for every FST4 sub-mode this crate wires
@@ -124,7 +124,7 @@ fn fst4_baseline(s: &[f32], ia: usize, ib: usize, npct: usize, sbase: &mut [f32]
 /// Candidates come back in CLEAN order, strongest first, with `freq_hz`
 /// the tone-0 frequency (`fc - 1.5 baud`, this crate's convention),
 /// `dt_sec` 0, and `score` the normalised CCF peak (`candidates(i,2)`).
-pub fn fst4_coarse_sync<P: Protocol>(
+pub fn fst4_coarse_sync<P: SyncFrontEnd>(
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
     freq_min: f32,

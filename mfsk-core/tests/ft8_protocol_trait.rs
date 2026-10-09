@@ -4,7 +4,7 @@
 //! pipeline code is guaranteed to work when driven by `<P: Protocol>`.
 
 use mfsk_core::engine::{
-    FecCodec, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol,
+    FecCodec, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol, SyncFrontEnd,
 };
 use mfsk_core::ft8::Ft8;
 
@@ -23,9 +23,9 @@ fn ft8_associated_constants() {
     );
     assert_eq!(<Ft8 as ModulationParams>::GFSK_BT, 2.0);
     assert_eq!(<Ft8 as ModulationParams>::GFSK_HMOD, 1.0);
-    assert_eq!(<Ft8 as ModulationParams>::NFFT_PER_SYMBOL_FACTOR, 2);
-    assert_eq!(<Ft8 as ModulationParams>::NSTEP_PER_SYMBOL, 4);
-    assert_eq!(<Ft8 as ModulationParams>::NDOWN, 60);
+    assert_eq!(<Ft8 as SyncFrontEnd>::NFFT_PER_SYMBOL_FACTOR, 2);
+    assert_eq!(<Ft8 as SyncFrontEnd>::NSTEP_PER_SYMBOL, 4);
+    assert_eq!(<Ft8 as SyncFrontEnd>::NDOWN, 60);
 
     assert_eq!(<Ft8 as FrameLayout>::N_DATA, 58);
     assert_eq!(<Ft8 as FrameLayout>::N_SYNC, 21);

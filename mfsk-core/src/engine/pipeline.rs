@@ -29,7 +29,7 @@ use super::protocol::BpPooledFec;
 use super::sync::{
     AudioSource, RxGrid, SyncCandidate, coarse_sync, fine_sync_power_per_block, sync_power_cv,
 };
-use super::{FecOpts, MessageCodec, Protocol};
+use super::{FecOpts, MessageCodec, Protocol, SyncFrontEnd};
 
 // ── Stage-timing trace (host diagnostic only) ───────────────────────────────
 //
@@ -848,7 +848,7 @@ pub(crate) struct SnrCtx<'a> {
 /// `pub` only under the `internal-testing` feature (issue #203) — see
 /// [`decode_frame`]'s doc comment for the feature-gating rationale.
 #[cfg(feature = "internal-testing")]
-pub trait GenericPipelineProtocol: Protocol
+pub trait GenericPipelineProtocol: SyncFrontEnd
 where
     Self::Fec: BpPooledFec,
 {
@@ -864,7 +864,7 @@ where
     }
 }
 #[cfg(not(feature = "internal-testing"))]
-pub(crate) trait GenericPipelineProtocol: Protocol
+pub(crate) trait GenericPipelineProtocol: SyncFrontEnd
 where
     Self::Fec: BpPooledFec,
 {
