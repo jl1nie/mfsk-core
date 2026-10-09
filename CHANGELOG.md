@@ -94,6 +94,10 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   from the "complete" set (21 rows down to 2 on `qso3_busy`). Whether the period runs the sniper, and on which frequency, is now
   fixed by its first call like the strategy and search; a change applies from the next period. AP, QSO context and the message
   filter are still read at each call.
+- **JTTY packs a two-letter section after a class token as an atom, as WSJT-X v3.3.0-beta1 does (#642).** `10A CT` and `1F DX`
+  are now one frame; through rc1 upstream's lookup rejected a word shorter than three characters, so they went out as TEXT5
+  (two frames), and this crate reproduced that. A transmitted message changes on the wire for these inputs; a receiver decoded
+  both. `pack_cases.tsv` is regenerated from a beta1 build: 11 of 3 525 lines change, all this, and `jtty_pack` passes.
 
 ### Internals
 
