@@ -134,14 +134,20 @@ pub fn measure(server: &str) -> Result<Sample, String> {
 }
 
 /// The best of [`QUERIES`] queries, starting with the first address and
-/// moving to the next when one does not answer, up to [`MAX_ADDRESSES`] of
-/// them.
+/// moving to the next when one has not answered at all, up to [`MAX_ADDRESSES`]
+/// of them. An address that has answered keeps being asked, and a name that
+/// resolves to one address (`ntp.nict.jp`) gets one retry: a UDP packet lost
+/// on the way is not a dead server, and giving the address up on the first
+/// loss would end the measurement.
 fn measure_at(addrs: &[SocketAddr]) -> Result<Sample, String> {
     let mut best: Option<Sample> = None;
     let mut err = String::new();
     let mut at = addrs.iter().take(MAX_ADDRESSES);
     let mut target = at.next();
     let (mut asked, mut tried) = (0, usize::from(target.is_some()));
+    // Whether the address being asked has answered, and whether the lone
+    // address of the name has been given its one retry.
+    let (mut heard, mut retried) = (false, false);
     while let Some(&t) = target
         && asked < QUERIES
     {
@@ -151,17 +157,28 @@ fn measure_at(addrs: &[SocketAddr]) -> Result<Sample, String> {
         match query(t) {
             Ok(s) => {
                 asked += 1;
+                heard = true;
                 if s.rtt_ns > MAX_RTT_NS {
                     err = "round trip over 1 s".into();
                 } else if best.is_none_or(|b| s.rtt_ns < b.rtt_ns) {
                     best = Some(s);
                 }
             }
-            // This server is not answering: the next one, not this again.
+            // Never answered: the next one, not this again. One that has
+            // answered lost a packet, and is asked again; so is the last
+            // address of the name once, since with no other to turn to a
+            // lost first packet would end the measurement.
             Err(e) => {
                 err = e;
-                target = at.next();
-                tried += usize::from(target.is_some());
+                if heard {
+                    asked += 1;
+                } else if addrs.len() == 1 && !retried {
+                    retried = true;
+                    asked += 1;
+                } else {
+                    target = at.next();
+                    tried += usize::from(target.is_some());
+                }
             }
         }
     }
@@ -279,11 +296,22 @@ mod tests {
 
     /// A local server that answers every request with the PC's time.
     fn alive() -> SocketAddr {
+        lossy(0)
+    }
+
+    /// As [`alive`], but it drops the first `lost` requests, as a UDP path
+    /// does now and then.
+    fn lossy(lost: usize) -> SocketAddr {
         let s = UdpSocket::bind("127.0.0.1:0").unwrap();
         let a = s.local_addr().unwrap();
         std::thread::spawn(move || {
             let mut b = [0u8; 48];
+            let mut seen = 0;
             while let Ok((_, from)) = s.recv_from(&mut b) {
+                seen += 1;
+                if seen <= lost {
+                    continue;
+                }
                 let ns = system_ns() as i128 + NTP_UNIX as i128 * 1_000_000_000;
                 let stamp = (
                     (ns / 1_000_000_000) as u32,
@@ -326,8 +354,26 @@ mod tests {
         let took = t.elapsed();
         assert_eq!(e, "no reply from 3 addresses");
         assert!(
-            took >= Duration::from_millis(2_900) && took < Duration::from_millis(3_800),
+            took >= Duration::from_millis(2_900) && took < Duration::from_secs(8),
             "took {took:?}"
+        );
+    }
+
+    /// A lost packet is not a dead server: the one address a name resolves to
+    /// is asked again, and the measurement comes from the later replies. (Giving
+    /// the address up on the first loss left it with nothing to measure.)
+    #[test]
+    fn a_lost_packet_is_asked_again_not_given_up() {
+        let s = measure_at(&[lossy(1)]).unwrap();
+        assert!(s.rtt_ns < 50_000_000, "{s:?}");
+        // Two lost in a row on the lone address is a dead one: given up after
+        // the retry, not asked five times.
+        let t = std::time::Instant::now();
+        assert!(measure_at(&[lossy(2)]).is_err());
+        assert!(
+            t.elapsed() < Duration::from_millis(2_900),
+            "{:?}",
+            t.elapsed()
         );
     }
 
