@@ -61,6 +61,9 @@ pub struct MessageUpdate {
     pub f1_hz: f32,
     /// Start of the first frame, seconds from the start of the audio.
     pub start_s: f32,
+    /// SNR in 2 500 Hz of the message's **first** frame, dB, as upstream reports it
+    /// (`start_snrdb`, never reassigned): see [`FrameDecode::snr_db`].
+    pub snr_db: f32,
     /// The text so far, as upstream displays it (gaps as ` ... `).
     pub text: String,
     /// The end-of-message frame has arrived.
@@ -95,6 +98,8 @@ struct Active {
     f1: f32,
     tsync: f32,
     start: f32,
+    /// SNR of the first frame (`start_snrdb`)
+    snr_db: f32,
     /// upstream's character counter `k` (it does not count implicit separators)
     k: usize,
     decoded: String,
@@ -218,6 +223,7 @@ impl Assembler {
             id: a.id,
             f1_hz: a.f1,
             start_s: a.start,
+            snr_db: a.snr_db,
             text: display(&a.decoded),
             complete,
         }
@@ -275,7 +281,7 @@ impl Assembler {
         }
         match target {
             Some((i, gap)) => self.append(i, gap, f1, tsync, &text, sink),
-            None => self.start(f1, tsync, &text, sink),
+            None => self.start(f1, tsync, f.snr_db, &text, sink),
         }
     }
 
@@ -283,6 +289,7 @@ impl Assembler {
         &mut self,
         f1: f32,
         tsync: f32,
+        snr_db: f32,
         t: &FrameText,
         sink: &mut dyn FnMut(MessageUpdate),
     ) -> bool {
@@ -299,6 +306,7 @@ impl Assembler {
             f1,
             tsync,
             start: tsync,
+            snr_db,
             k: decoded.chars().count(),
             decoded,
             trailing_sep: t.trailing_sep,
@@ -403,6 +411,24 @@ mod tests {
             [false, false, true]
         );
         assert_eq!(u[2].start_s, 1.0);
+    }
+
+    /// `start_snrdb` is the first frame's, "never reassigned after" (v3.3.0-beta1): a
+    /// stronger or weaker continuation does not move it.
+    #[test]
+    fn a_message_keeps_the_snr_of_its_first_frame() {
+        let p = FRAME_PERIOD_S;
+        let mut f = [
+            frame(Atom::text5("HELLO"), 1500.0, 1.0, false),
+            frame(Atom::text5(" WORL"), 1500.5, 1.0 + p, false),
+            frame(Atom::text5("D 73 "), 1500.2, 1.0 + 2.0 * p, true),
+        ];
+        f[0].snr_db = -3.5;
+        f[1].snr_db = 12.0;
+        f[2].snr_db = -17.0;
+        let u = run(&f);
+        assert_eq!(u.len(), 3);
+        assert!(u.iter().all(|x| x.snr_db == -3.5), "{u:?}");
     }
 
     #[test]

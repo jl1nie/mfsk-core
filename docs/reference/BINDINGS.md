@@ -578,6 +578,12 @@ The handle is not thread-safe: one thread at a time, like `MfskStream`. A build
 without the `jtty` feature keeps the entry points and answers
 `MFSK_STATUS_UNKNOWN_PROTOCOL`.
 
+**SNR.** `MfskJttyUpdate::snr_db` (appended after `text`, so a caller that passed a smaller `size`
+does not get it) is the first frame's SNR in 2 500 Hz, floored at -17 dB, as WSJT-X
+v3.3.0-beta1 reports it: show it rounded. It is the simple estimate upstream settled on, so a
+strong signal reads low (a true +30 dB reads about +11; at 0 and below it is within a dB).
+Kotlin `MfskJttyUpdate.snrDb`, Swift `JttyUpdate.snrDb`.
+
 **Feeding a live source.** There is no slot to align to and no clock in the library:
 time is the number of samples pushed since `open` / `reset`, and `MfskJttyUpdate::start_s`
 is that count over the sample rate. Map it to UTC yourself if you need to (note the UTC

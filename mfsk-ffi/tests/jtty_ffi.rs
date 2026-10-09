@@ -49,6 +49,7 @@ fn drain(rx: *mut MfskJttyReceiver) -> Vec<(u64, String, bool, f32)> {
             f1_hz: 0.0,
             start_s: 0.0,
             text: [0; 128],
+            snr_db: 0.0,
         };
         match unsafe { mfsk_jtty_poll(rx, &mut u) } {
             1 => out.push((u.id, text(&u), u.complete != 0, u.f1_hz)),
@@ -429,4 +430,46 @@ fn the_transmit_calls_refuse_what_cannot_be_sent() {
     }
     assert_eq!(mfsk_jtty_synth_len(60), 0);
     assert_eq!(mfsk_jtty_synth_len(0), 0);
+}
+
+/// `snr_db` is appended after `text`: a row polled with the older, smaller `size` leaves it
+/// alone, and a full-size row carries the first frame's SNR, in 2 500 Hz and floored at -17.
+#[test]
+fn the_row_carries_an_snr_and_a_smaller_size_does_not_receive_it() {
+    let tones = encode("CQ K1ABC CQ", 0);
+    let mut pcm = vec![0i16; 12_000];
+    pcm.extend(synth(&tones, 1500.0));
+    pcm.extend(vec![0i16; 6 * 12_000]);
+    let poll_all = |size: u32| -> Vec<MfskJttyUpdate> {
+        let rx = open(12_000);
+        assert_eq!(
+            unsafe { mfsk_jtty_push_i16(rx, pcm.as_ptr(), pcm.len()) },
+            MfskStatus::Ok
+        );
+        let mut rows = Vec::new();
+        loop {
+            let mut u = unsafe { std::mem::zeroed::<MfskJttyUpdate>() };
+            u.size = size;
+            u.snr_db = 123.0; // a sentinel the library must not touch when `size` stops short
+            match unsafe { mfsk_jtty_poll(rx, &mut u) } {
+                1 => rows.push(u),
+                0 => break,
+                e => panic!("poll returned {e}"),
+            }
+        }
+        unsafe { mfsk_jtty_close(rx) };
+        rows
+    };
+    let full = poll_all(std::mem::size_of::<MfskJttyUpdate>() as u32);
+    let done = full
+        .iter()
+        .find(|u| u.complete != 0)
+        .expect("a complete row");
+    assert!(done.snr_db.is_finite() && done.snr_db >= -17.0 && done.snr_db != 123.0);
+    let old = poll_all(std::mem::offset_of!(MfskJttyUpdate, snr_db) as u32);
+    assert!(!old.is_empty());
+    assert!(
+        old.iter().all(|u| u.snr_db == 123.0),
+        "an older size must not receive snr_db"
+    );
 }

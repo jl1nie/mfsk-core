@@ -1208,3 +1208,43 @@ fn largest_first_build_decodes_bit_identically() {
         assert_eq!(scan(&largest_first), scan(&reference), "{name}, scan");
     }
 }
+
+/// The SNR a message update reports (`MessageUpdate::snr_db`, WSJT-X v3.3.0-beta1's
+/// `start_snrdb`) against `testsig`'s true level, which is in 2 500 Hz like the reported one.
+/// Upstream's own comment is that the estimate is simple: `pn` leaks some signal, so a strong
+/// signal reads low. This pins what we measured, not a claim of accuracy. Against upstream
+/// itself (2026-10-10, `sjtty "CQ K1ABC CQ" 1500 0 0.5 1 384 1 <snr>` decoded by a v3.3.0-beta1
+/// `rjtty`, which prints `nint(snrdb − 20)`): true -10 / 0 / 10 / 20 / 30 dB read
+/// -9 / 0 / 7 / 10 / 11 there and -9.4 / -0.2 / 7.5 / 10.5 / 11.0 here, i.e. the same to rounding.
+#[test]
+fn reported_snr_follows_the_true_level_and_is_floored() {
+    use mfsk_core::jtty::rx::SNR_FLOOR_DB;
+    use mfsk_core::jtty::testsig::{Station, render};
+    let mut rows = Vec::new();
+    for true_db in [-10.0f32, 0.0, 10.0, 20.0, 30.0] {
+        let st = Station {
+            text: "CQ K1ABC CQ",
+            f0_hz: 1500.0,
+            start_s: 1.0,
+            snr_db: true_db,
+            drift_hz_s: 0.0,
+            fading_hz: 0.0,
+        };
+        let audio = render(&[st], 24.0, 7).expect("renders");
+        let heard = Receiver::new().scan_messages(&audio, &Params::default());
+        let u = heard
+            .iter()
+            .find(|u| u.complete && u.text == "CQ K1ABC CQ")
+            .unwrap_or_else(|| panic!("{true_db} dB: {heard:?}"));
+        rows.push((true_db, u.snr_db));
+    }
+    eprintln!("true -> reported: {rows:?}");
+    for &(t, r) in &rows {
+        assert!(r >= SNR_FLOOR_DB, "{t}: {r} under the floor");
+    }
+    // Monotone in the true level, and within a few dB of it where the leakage is small.
+    assert!(rows.windows(2).all(|w| w[1].1 > w[0].1), "{rows:?}");
+    for &(t, r) in rows.iter().filter(|&&(t, _)| t <= 10.0) {
+        assert!((r - t).abs() <= 3.0, "true {t} dB read {r} dB");
+    }
+}

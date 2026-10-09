@@ -1078,6 +1078,13 @@ typedef struct MfskJttyUpdate {
      * show as ` ... `; TEXT5 spaces as `~`, as upstream shows them.
      */
     char text[128];
+    /**
+     * SNR of the message's first frame, dB in 2 500 Hz, floored at -17: the
+     * value WSJT-X v3.3.0-beta1 reports (`start_snrdb`, shown as `round()`).
+     * Appended after `text`; a caller that passed a smaller `size` does not
+     * receive it. Through v0.13 rows had no SNR.
+     */
+    float snr_db;
 } MfskJttyUpdate;
 
 /**

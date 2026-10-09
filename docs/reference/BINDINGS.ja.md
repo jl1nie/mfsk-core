@@ -550,6 +550,12 @@ UI スレッドではなくワーカーから呼ぶこと。更新はハンド�
 なく、`MfskStream` と同様に一度に 1 スレッドのみ。`jtty` フィーチャ無しのビルドでも
 関数は残り、`MFSK_STATUS_UNKNOWN_PROTOCOL` を返す。
 
+**SNR。** `MfskJttyUpdate::snr_db`（`text` の後ろに追加。小さい `size` を渡した呼び出し側には
+渡らない）は、そのメッセージの最初のフレームの SNR（2 500 Hz 基準、下限 -17 dB）で、
+WSJT-X v3.3.0-beta1 が報告する値と同じ。表示するときは四捨五入する。上流が落ち着いた単純な
+推定なので、強い信号は低く出る（真の +30 dB が約 +11、0 dB 以下では 1 dB 以内）。
+Kotlin は `MfskJttyUpdate.snrDb`、Swift は `JttyUpdate.snrDb`。
+
 **ライブ音声を流すとき。** 揃えるべきスロットは無く、ライブラリは時計を持たない。
 時刻は `open` / `reset` 以降に push したサンプル数で、`MfskJttyUpdate::start_s` はそれを
 サンプルレートで割ったもの。UTC が要るなら、最初のサンプルの UTC を控えて呼び出し側で
