@@ -16,7 +16,6 @@ use num_traits::Float;
 
 use crate::engine::ModulationParams;
 use crate::engine::dsp::symbol_fft::SymbolFft;
-use num_complex::Complex;
 
 use super::Jt65;
 use super::interleave::deinterleave;
@@ -130,30 +129,14 @@ pub fn demodulate_aligned(
     // `docs/notes/BENCHMARKS.md`'s JT65 section). WSJT-X avoids this
     // by correcting the residual on the *time-domain* signal before
     // any FFT (`twkfreq65.f90`, driven by `afc65b`'s continuous
-    // frequency fit) — this mirrors that, via a running-phase NCO
-    // applied while converting each real sample to complex, so the
-    // correction is phase-continuous across all 126 symbol windows
-    // (they tile the buffer with no gaps, so a per-sample running
-    // phase computed once here stays exact throughout — no need to
-    // reset or re-derive it per window). Same running-accumulator
-    // pattern as `engine::dsp::subtract`'s NCO loops.
+    // frequency fit) — this mirrors that, by mixing each symbol
+    // window ([`SymbolFft::mixed`]; the window's starting phase does not
+    // reach `|FFT|²`).
     let residual_hz = base_freq_hz - base_bin as f32 * (sample_rate as f32 / nsps as f32);
-    let dphi = -core::f32::consts::TAU * residual_hz / sample_rate as f32;
-    let mut phase = 0.0f32;
 
     for sym_idx in 0..126 {
         let sym_start = start_sample + sym_idx * nsps;
-        let buf = fft.with_input(|buf| {
-            for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-                *slot = Complex::new(s, 0.0) * Complex::new(phase.cos(), phase.sin());
-                phase += dphi;
-                if phase > core::f32::consts::PI {
-                    phase -= core::f32::consts::TAU;
-                } else if phase < -core::f32::consts::PI {
-                    phase += core::f32::consts::TAU;
-                }
-            }
-        });
+        let buf = fft.mixed(audio, sym_start, residual_hz, sample_rate as f32);
         if JT65_NPRC[sym_idx] == 1 {
             continue;
         }

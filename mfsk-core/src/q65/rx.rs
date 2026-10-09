@@ -83,6 +83,12 @@ fn extract_data_energies<P: ModulationParams>(
 ) -> Option<Vec<f32>> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
+    // The carrier is taken to the nearest bin and the residual is **not** mixed
+    // out, unlike JT65, WSPR and JT9's fixed-carrier path (`SymbolFft::mixed`).
+    // That is `q65_symspec`'s own behaviour (`q65.f90:265-307`: `nfft = nsps`, no
+    // time-domain frequency correction; the search and `i0 = nint(f0/df)`
+    // quantise to bins), so correcting here would be a deliberate divergence
+    // from WSJT-X, with nothing measured to pay for it (#424).
     let base_bin = (base_freq_hz / df).round() as usize;
     // Sub-mode tone-spacing multiplier in FFT bins. For sub-mode A
     // tone spacing == bin width so this is 1; for B/C/D/E it is

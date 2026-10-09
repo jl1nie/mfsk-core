@@ -72,6 +72,13 @@
   `SlotCutter::set_points` / `feed_parts` are public for it. Kotlin (`setEarly`, `prefixPoints`, `setPrefixPoints`,
   `slotIsWhole`, `stage`) and Swift likewise; Kotlin's lent channel decoder now takes `onDecode` and `setBudget`
   (it refused both, so a Kotlin IQ consumer could not receive the early rows by callback). `BINDINGS.md` §2.5, §2.8.2 (and `.ja`).
+- **JT65, WSPR and JT9 take a carrier's sub-bin offset out through one `SymbolFft::mixed` (#424).** JT65 corrected with `cos`/`sin`
+  of a wrapped f32 phase per sample, WSPR with `step · n` on the absolute sample index (f32 resolves that to ~0.1 rad by the end of
+  a slot), and JT9's fixed-carrier path (`SniperRequest`) did not correct at all, so a carrier half a bin off lost up to ~3.9 dB there.
+  All three now mix each symbol window with the crate's `Mixer`; a window's start phase does not reach `|FFT|²`, so each restarts at
+  0. JT65 and WSPR move by one part in a million (tier C: every crossing +0.00 dB for `jt65`, `jt65_chase`, `wspr`, `jt9`);
+  JT9's sniper path gains the correction. Q65 is left as it is on purpose: `q65_symspec` itself works on nearest-bin spectra
+  (`nfft = nsps`), so correcting there would diverge from WSJT-X with nothing measured to pay for it.
 - **skimmer: FT8 rows from ~11.8 s into the slot, as WSJT-X shows them (#600).** Each channel tells the receiver its
   decoder's `prefix_points()` (again when its options change), and a lane decodes every delivery of a period with
   `decode_prefix_with`: checkpoint A's rows go out at the first prefix, marked early (`DecodeDetail::early`, the GUI's ⏱ under
