@@ -1392,8 +1392,9 @@ unsafe fn decode_i16_impl(
 /// goes to the decoder as it is: the modes whose engines work in `float`
 /// (WSPR, JT9, JT65, Q65) never see 16 bits, and FT8, FT4 and FST4, which
 /// take 16-bit audio as WSJT-X does, get it scaled to a fixed level, so a
-/// caller never picks one. At another rate it is resampled and
-/// peak-normalised first.
+/// caller never picks one. At another rate it is resampled first, keeping
+/// the level, and then goes the same way (before #634 it was peak-normalised
+/// to 16 bits per call, so a prefix sequence's gain moved with each prefix).
 ///
 /// # Safety
 /// As [`mfsk_decoder_decode_i16`], with `samples` as `float`.
@@ -1490,8 +1491,12 @@ unsafe fn decode_f32_impl(
     let r = if sample_rate == 12_000 {
         in_pool_mut(|| run(d, Audio::F32(pcm), period, prefix))
     } else {
-        let audio = mfsk_core::engine::dsp::resample::resample_f32_to_12k(pcm, sample_rate);
-        in_pool_mut(|| run(d, Audio::I16(&audio), period, prefix))
+        // Resampled with the level kept (not peak-normalised per buffer), then
+        // handed over as at 12 kHz, so the decoder sets the gain: once for a
+        // prefix sequence's period, not afresh from each prefix's own peak
+        // (#634).
+        let audio = mfsk_core::engine::dsp::resample::resample_f32_to_12k_f32(pcm, sample_rate);
+        in_pool_mut(|| run(d, Audio::F32(&audio), period, prefix))
     };
     if let Err(e) = r {
         return d.fail(MfskStatus::InvalidArg, e);

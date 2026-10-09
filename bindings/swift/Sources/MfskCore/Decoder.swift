@@ -242,7 +242,7 @@ public final class Decoder {
     /// engines work in `float` (WSPR, JT9, JT65, Q65) never see 16 bits, and
     /// FT8, FT4 and FST4, which take 16-bit audio as WSJT-X does, get it
     /// scaled to a fixed level, so a caller never picks one. At another rate
-    /// it is resampled and peak-normalised first.
+    /// it is resampled first, keeping its level, and goes the same way.
     public func decode(
         _ samples: [Float],
         sampleRate: UInt32 = 12_000,
