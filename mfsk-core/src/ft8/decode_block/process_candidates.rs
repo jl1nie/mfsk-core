@@ -381,24 +381,16 @@ fn decode_block_multipass<S: AudioSample>(
         // (rectangular window) — see that function's doc comment for
         // why reusing `spec` under-reports SNR on busy/crowded bands
         // (issue #253 follow-up, 2026-08-10, verified against real
-        // `jt9` ground truth). `spec` (rectangular) is kept only for
-        // `recompute_nsync`'s sync-quality gate below — unrelated to
-        // the xsig/xbase scale calibration. `xsig` no longer comes
-        // from `spec` either (see the per-candidate block below) — it
-        // now reads the same WSJT-X `cd0`/per-symbol-FFT pipeline
+        // `jt9` ground truth). `xsig` and `nsync` do not come from
+        // `spec` either (see the per-candidate block below) — they read
+        // the same WSJT-X `cd0`/per-symbol-FFT pipeline
         // `fill_symbol_spectra` already computes for LLR, per
         // `compute_baseline_spectrum`'s doc comment on why the two
         // must be paired.
         #[cfg(not(feature = "fixed-point"))]
-        let sbase_and_spec: Option<(AllocVec<f32>, Spectrogram)> = {
+        let sbase: AllocVec<f32> = {
             let avg = crate::ft8::baseline::compute_baseline_spectrum(work.as_slice());
-            let sbase_v = crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1);
-            let spec_clone = Spectrogram {
-                n_freq: spec.n_freq,
-                n_time: spec.n_time,
-                data: spec.data.clone(),
-            };
-            Some((sbase_v, spec_clone))
+            crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
         };
         #[cfg(feature = "std")]
         let __trace_t0 = trace_stage.then(std::time::Instant::now);
@@ -504,7 +496,8 @@ fn decode_block_multipass<S: AudioSample>(
                 // why this needs the `cd0`/per-symbol-FFT pipeline rather
                 // than `compute_spectrogram`'s rectangular one.
                 #[cfg(not(feature = "fixed-point"))]
-                let xsig_wsjtx: f32 = compute_xsig_wsjtx(&r, work.as_slice(), fft_cache.as_deref());
+                let (xsig_wsjtx, nsync_wsjtx) =
+                    compute_xsig_wsjtx(&r, work.as_slice(), fft_cache.as_deref());
 
                 // WSJT-X `ft8b.f90:432-437` subtracts *before* its own
                 // xsnr2 gate check (below) runs — matched here too, not
@@ -537,9 +530,7 @@ fn decode_block_multipass<S: AudioSample>(
                 // on a sensible scale, so leave it untouched on the
                 // fixed-point path.
                 #[cfg(not(feature = "fixed-point"))]
-                if let Some((sbase, spec)) = &sbase_and_spec
-                    && !apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, sbase, spec)
-                {
+                if !apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, nsync_wsjtx, &sbase) {
                     continue;
                 }
 
@@ -563,58 +554,6 @@ fn decode_block_multipass<S: AudioSample>(
         }
     }
     all
-}
-
-/// Hard-decision sync count (= WSJT-X `ft8b.f90:164-177` nsync) read
-/// from the pass-1 spectrogram at the result's refined (freq, dt).
-/// 21-bit upper bound (3 sync blocks × 7 Costas positions).
-///
-/// Only the host f32 build calls this — `recompute_snr_xsnr2` /
-/// `recompute_nsync` use the `xsnr2/xbase` formulation which is
-/// f32-only (see the `#[cfg(not(feature = "fixed-point"))]` caller
-/// at line ~1877).
-#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
-fn recompute_nsync(
-    result: &DecodeResult,
-    spec: &Spectrogram,
-    df: f32,
-    tstep: f32,
-    nsps_steps: f32,
-) -> u32 {
-    use crate::ft8::params::COSTAS;
-    const NTONES: usize = 8;
-    let carrier_bin_f = result.freq_hz / df;
-    let tone_step = TONE_SPACING_HZ / df; // = 2.0 at NFFT=3840
-    let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
-    // Costas blocks at symbol indices 0, 36, 72 (each 7 symbols long).
-    let mut count = 0u32;
-    for &block_off in &[0_usize, 36, 72] {
-        for (sym_in_block, &expected) in COSTAS.iter().enumerate() {
-            let k = block_off + sym_in_block;
-            let m_bin = (t0 + (k as f32) * nsps_steps).round() as i32;
-            if m_bin < 0 || m_bin as usize >= spec.n_time {
-                continue;
-            }
-            let m_bin = m_bin as usize;
-            let mut best_t = 0;
-            let mut best_p = f32::MIN;
-            for t in 0..NTONES {
-                let f_bin = (carrier_bin_f + (t as f32) * tone_step).round() as i32;
-                if f_bin < 0 || f_bin as usize >= spec.n_freq {
-                    continue;
-                }
-                let p = spec.power_acc(f_bin as usize, m_bin);
-                if p > best_p {
-                    best_p = p;
-                    best_t = t;
-                }
-            }
-            if best_t == expected {
-                count += 1;
-            }
-        }
-    }
-    count
 }
 
 /// Slot-baseline xsnr2 SNR for any [`Spectrogram`] — `std`-free
@@ -817,7 +756,7 @@ pub(crate) fn compute_xsig_wsjtx(
     result: &DecodeResult,
     audio: &[i16],
     fft_cache: Option<&[Complex<f32>]>,
-) -> f32 {
+) -> (f32, u32) {
     let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(result.message77());
     let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
         .try_into()
@@ -830,6 +769,9 @@ pub(crate) fn compute_xsig_wsjtx(
         SymMask::SyncOnly,
         fft_cache,
     );
+    // `ft8b.f90:164-177`: hard-decision Costas matches over the refined
+    // symbol spectra, before any decoding.
+    let nsync = crate::ft8::llr::sync_quality(&cs);
     fill_symbol_spectra(
         &mut cs,
         audio,
@@ -840,7 +782,7 @@ pub(crate) fn compute_xsig_wsjtx(
     );
     let mut xsig = 0.0f32;
     for (k, tones) in cs.iter().enumerate() {
-        // Undo `fill_symbol_spectra`'s `CS_SCALE = 1/1000`
+        // Undo `fill_symbol_spectra`'s `CS_DIV = 1000`
         // (`ft8b.f90:159`'s `cs = csymb/1e3`) — `xsig` needs the raw,
         // unscaled `s8 = abs(csymb)`.
         let c = tones[itone[k] as usize];
@@ -848,16 +790,17 @@ pub(crate) fn compute_xsig_wsjtx(
         let im = c.im * 1000.0;
         xsig += re * re + im * im;
     }
-    xsig
+    (xsig, nsync)
 }
 
 /// Replaces `result.snr_db` with WSJT-X's `xsnr2` and applies its
 /// validity gate — the shared finishing step every FT8 entry point
 /// runs on an already-CRC-passed candidate. `xsig` must come from
 /// [`compute_xsig_wsjtx`] called *before* the candidate's own
-/// subtract; `sbase`/`spec` are this pass's already-captured baseline
-/// and coarse-sync spectrum (order-independent relative to the
-/// subtract — both are frozen snapshots by the time this runs).
+/// subtract, and `nsync` is that call's second value (`ft8b.f90:164-177`'s
+/// Costas count over the refined symbol spectra); `sbase` is this pass's
+/// already-captured baseline (a frozen snapshot, so order-independent
+/// relative to the subtract).
 ///
 /// Returns `false` if the candidate fails WSJT-X's `nsync <= 10 &&
 /// xsnr < -25.0 dB` bail-out (`ft8b.f90:483`; -24.0 at :456 through 2.7) — caller should drop it.
@@ -887,15 +830,12 @@ pub(crate) fn compute_xsig_wsjtx(
 pub(crate) fn apply_wsjtx_xsnr2(
     result: &mut DecodeResult,
     xsig: f32,
+    nsync: u32,
     sbase: &[f32],
-    spec: &Spectrogram,
 ) -> bool {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
-    let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
-    let nsps_steps = (NSPS / NSTEP) as f32;
 
     let raw_snr = recompute_snr_xsnr2(result.freq_hz, xsig, sbase, df);
-    let nsync = recompute_nsync(result, spec, df, tstep, nsps_steps);
     if nsync <= 10 && raw_snr < FT8_SNR_FLOOR_DB {
         return false;
     }

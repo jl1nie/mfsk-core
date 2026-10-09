@@ -80,6 +80,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   on any input (every browser build of WSPR or MSK144 since 0.10.1 at least). The timers go through one `Tick` (`src/clock.rs`) that
   reads zero without a clock; the values only feed benchmark counters, so no decode changes.
 
+- **FT8's symbol scaling and `nsync` gate follow `ft8b.f90` (#423).** `cs = csymb / 1e3` is a true division again (a scratch gfortran
+  oracle: `z/1e3` matches componentwise division on 2M of 2M samples, `* (1/1000)` differs on 81%), and the `nsync <= 10 && xsnr < -25`
+  gate reads the Costas count of the candidate's refined symbol spectra (`ft8b.f90:164-177`) instead of recounting on the coarse
+  spectrogram after decoding. On the goldens and the FT8 sweep (T1, 1 040 trials) no group moves; the gate flips for one candidate
+  in the whole tier-A/B suite.
+
 ### Internals
 
 - **DSP duplicates become one (#425).** `engine::dsp::window::cosine_sum` replaces the two Nuttall-4 loops (symmetric in
