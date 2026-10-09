@@ -126,6 +126,10 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   (key, flags, sync) and `key_bits` / `key` / `delivery`. All appended to size-versioned structs; ABI stays 3. Kotlin and Swift:
   `syncScore` / `syncCv` / `hardErrors` are nullable, rows gain `key`, `keyBits` and `delivery`. Kotlin's JVM test passes; the Swift
   suite (four new tests) has not been built here. `CompletedSlot::new` lets a consumer's tests build a slot. Docs: `BINDINGS.md`, `STREAMING.md`.
+- **A short output buffer no longer loses the call's result (#633).** `mfsk_decoder_decode_stream` took the stream's ready slot before it
+  checked the buffer, so the retry the ABI asks for found no slot (`UNSUPPORTED`): Swift's `decode(CaptureStream)` returned `nil` and
+  the Kotlin shim threw. The other `decode_*` calls re-decoded on retry, which fired the callback twice and stepped a Q65 average twice.
+  A refused call now keeps its rows (and a stream's period and time), and the retry is answered from them.
 
 ### Skimmer
 

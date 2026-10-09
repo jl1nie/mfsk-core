@@ -976,3 +976,125 @@ fn a_stream_with_points_does_not_reopen_a_period() {
     );
     unsafe { mfsk_stream_close(s) };
 }
+
+// ── A call refused for a short output buffer (#633) ───────────────────────
+
+/// The ABI says a short buffer returns `INVALID_ARG` with the count needed,
+/// and the retry is the same call with room. The retry is answered from the
+/// rows already found: no second decode, no second callback.
+#[test]
+fn a_short_buffer_retry_is_answered_without_decoding_again() {
+    extern "C" fn count(_: *const MfskDecode, user: *mut c_void) {
+        unsafe { *(user as *mut usize) += 1 };
+    }
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    let d = open(MfskMode::Ft8, None, None);
+    let mut seen = 0usize;
+    assert_eq!(
+        unsafe {
+            mfsk_decoder_set_on_decode(d, Some(count), &mut seen as *mut usize as *mut c_void)
+        },
+        MfskStatus::Ok
+    );
+    let call = |rows: *mut MfskDecode, cap: usize, n: &mut usize| unsafe {
+        mfsk_decoder_decode_i16(d, slot.as_ptr(), slot.len(), 12_000, 9, rows, cap, n)
+    };
+    let mut n = 0usize;
+    assert_eq!(
+        call(std::ptr::null_mut(), 0, &mut n),
+        MfskStatus::InvalidArg
+    );
+    assert_eq!(n, 1, "the count needed");
+    assert_eq!(seen, 1);
+    let mut rows = vec![blank_row(); n];
+    assert_eq!(call(rows.as_mut_ptr(), rows.len(), &mut n), MfskStatus::Ok);
+    assert_eq!(n, 1);
+    assert!(any_contains(&rows, "CQ JA1ABC PM95"));
+    assert_eq!(seen, 1, "the callback did not fire again");
+
+    // Other audio of the same length is a new call, not the refused one's retry.
+    let other = synth_slot_i16(MfskMode::Ft8, "CQ", "K1JT", "FN20", 1_500.0);
+    assert_eq!(other.len(), slot.len());
+    assert_eq!(
+        call(std::ptr::null_mut(), 0, &mut n),
+        MfskStatus::InvalidArg
+    );
+    let mut rows = vec![blank_row(); 4];
+    let mut n2 = 0usize;
+    assert_eq!(
+        unsafe {
+            mfsk_decoder_decode_i16(
+                d,
+                other.as_ptr(),
+                other.len(),
+                12_000,
+                9,
+                rows.as_mut_ptr(),
+                4,
+                &mut n2,
+            )
+        },
+        MfskStatus::Ok
+    );
+    assert!(
+        any_contains(&rows[..n2], "CQ K1JT FN20"),
+        "{:?}",
+        texts(&rows[..n2])
+    );
+    unsafe { mfsk_decoder_close(d) };
+}
+
+/// A stream's ready slot is taken by the call that refused for a short
+/// buffer; the retry gets that slot's rows and its period, and the next slot
+/// stays ready for the call after.
+#[test]
+fn a_short_buffer_does_not_lose_the_streams_slot() {
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    let d = open(MfskMode::Ft8, None, None);
+    let mut st = MfskStatus::Internal;
+    let s = unsafe { mfsk_stream_open(MfskMode::Ft8 as u32, 12_000, &mut st) };
+    let mut audio = slot.clone();
+    audio.extend(std::iter::repeat_n(0i16, 12_000));
+    for c in audio.chunks(7_777) {
+        unsafe { mfsk_stream_push_i16(s, c.as_ptr(), c.len()) };
+    }
+    assert!(mfsk_stream_slot_ready(s));
+    let (mut n, mut period, mut utc) = (0usize, -1i64, -1i64);
+    let st = unsafe {
+        mfsk_decoder_decode_stream(d, s, std::ptr::null_mut(), 0, &mut n, &mut period, &mut utc)
+    };
+    assert_eq!(st, MfskStatus::InvalidArg);
+    assert_eq!(n, 1);
+    assert!(!mfsk_stream_slot_ready(s), "the slot was taken");
+    let first_period = period;
+    let mut rows = vec![blank_row(); n];
+    let (mut period2, mut utc2) = (-1i64, -1i64);
+    let st = unsafe {
+        mfsk_decoder_decode_stream(
+            d,
+            s,
+            rows.as_mut_ptr(),
+            rows.len(),
+            &mut n,
+            &mut period2,
+            &mut utc2,
+        )
+    };
+    assert_eq!(st, MfskStatus::Ok, "the retry finds the slot's result");
+    assert!(any_contains(&rows[..n], "CQ JA1ABC PM95"));
+    assert_eq!((period2, utc2), (first_period, utc));
+    // And now that it is delivered, there is nothing more.
+    let st = unsafe {
+        mfsk_decoder_decode_stream(
+            d,
+            s,
+            rows.as_mut_ptr(),
+            rows.len(),
+            &mut n,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(st, MfskStatus::Unsupported);
+    unsafe { mfsk_decoder_close(d) };
+}

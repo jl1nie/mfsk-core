@@ -154,7 +154,10 @@ mfsk_decoder_close(d);
 `out_cap` bounds how many rows you are willing to receive and
 `*out_len` always receives how many were found, so a short array returns
 `MFSK_STATUS_INVALID_ARG` with the required count rather than a truncated
-answer you cannot detect. `sample_rate` other than 12 000 is resampled.
+answer you cannot detect. The retry is the same call again with room
+(for `mfsk_decoder_decode_stream`, the same stream): it is answered from the
+rows already found, without decoding again. `sample_rate` other than 12 000 is
+resampled.
 `decode_f32` takes audio at any level: the engines that work in `float`
 (WSPR, JT9, JT65, Q65) see it as is, and FT8, FT4 and FST4, which take
 16-bit audio as WSJT-X does, get it scaled to a fixed level.

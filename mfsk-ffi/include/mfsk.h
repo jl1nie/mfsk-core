@@ -2838,7 +2838,11 @@ enum MfskStatus mfsk_decoder_last_budget(const struct MfskDecoder *dec,
  *
  * Rows go into `out[0..out_cap]`; `*out_len` always receives the number
  * found, so a short buffer returns `MFSK_STATUS_INVALID_ARG` with the
- * required count rather than a truncated answer you cannot detect. Set
+ * required count rather than a truncated answer you cannot detect.
+ * The retry is the same call again with room (same period and samples; for
+ * `mfsk_decoder_decode_stream`, the same stream): it is answered from the
+ * rows the refused call found, without decoding again, so no callback fires
+ * twice and a Q65 average does not step twice (#633). Set
  * `out[0].size` to `sizeof(MfskDecode)`: the rows are written that many
  * bytes apart, so a caller built against an older or newer header gets its
  * own layout (#607); 0 means this header's.
