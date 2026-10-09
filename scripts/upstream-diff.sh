@@ -37,7 +37,7 @@ REPO=$PWD
 
 # The version the port currently tracks. Bump it when a port PR for a newer
 # upstream merges, together with the Issue that recorded the audit.
-DEFAULT_BASE=v3.2.0-rc1
+DEFAULT_BASE=v3.3.0-beta1
 REMOTE=upstream
 
 fetch=1; show_all=0; base=""; target=""
