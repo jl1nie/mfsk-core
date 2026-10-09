@@ -50,12 +50,13 @@ pub fn tweak1(input: &[Complex32], f0_hz: f32) -> Vec<Complex32> {
 /// of allocating one per trial. `out.len()` must equal `input.len()`.
 fn tweak1_into(out: &mut [Complex32], input: &[Complex32], f0_hz: f32) {
     debug_assert_eq!(out.len(), input.len());
-    let dphi = 2.0 * core::f32::consts::PI * f0_hz / 12_000.0;
-    let wstep = Complex32::new(dphi.cos(), dphi.sin());
-    let mut w = Complex32::new(1.0, 0.0);
+    // `w = w*wstep` before the multiply, never renormalised: the crate's mixer in
+    // `tweak1.f90`'s configuration, bit-identical to the loop this replaced
+    // (`tests::tweak1_is_bit_identical_to_the_loop_it_replaced`).
+    let mut w = crate::engine::dsp::ddc::Mixer::tweak1(f0_hz, 12_000.0);
     for (o, &x) in out.iter_mut().zip(input) {
-        w *= wstep;
-        *o = w * x;
+        let (re, im) = w.mix_complex(x.re, x.im);
+        *o = Complex32::new(re, im);
     }
 }
 
@@ -336,6 +337,46 @@ mod tests {
             let expected_phase = dphi * (k as f32 + 1.0);
             let expected = Complex32::new(expected_phase.cos(), expected_phase.sin());
             assert!((o - expected).norm() < 1e-4, "sample {k}");
+        }
+    }
+
+    /// `tweak1`'s oscillator was a hand-written recurrence; it is the crate's
+    /// `Mixer` now, and every output bit must be the old loop's. The input is
+    /// longer than the 4 096-sample renormalisation period, which this
+    /// configuration must not apply, and covers negative and fractional
+    /// frequencies.
+    #[test]
+    fn tweak1_is_bit_identical_to_the_loop_it_replaced() {
+        fn legacy(input: &[Complex32], f0_hz: f32) -> Vec<Complex32> {
+            let dphi = 2.0 * core::f32::consts::PI * f0_hz / 12_000.0;
+            let wstep = Complex32::new(dphi.cos(), dphi.sin());
+            let mut w = Complex32::new(1.0, 0.0);
+            input
+                .iter()
+                .map(|&x| {
+                    w *= wstep;
+                    w * x
+                })
+                .collect()
+        }
+        let mut seed = 0x1234_5678u32;
+        let input: Vec<Complex32> = (0..10_000)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let re = (seed >> 8) as f32 / 8_388_608.0 - 1.0;
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                Complex32::new(re, (seed >> 8) as f32 / 8_388_608.0 - 1.0)
+            })
+            .collect();
+        for f0 in [0.0f32, 100.0, 1500.0, -37.25, 1_499.7, -1_500.0] {
+            let new = tweak1(&input, f0);
+            let old = legacy(&input, f0);
+            assert!(
+                new.iter().zip(&old).all(|(a, b)| {
+                    a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits()
+                }),
+                "f0 = {f0}"
+            );
         }
     }
 

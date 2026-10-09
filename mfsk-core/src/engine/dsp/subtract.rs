@@ -75,20 +75,22 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
     }
     let mut w_cos = vec![0.0f32; n];
     let mut w_sin = vec![0.0f32; n];
-    let mut phase = 0.0f32;
-    for (sym, &tone) in tones.iter().enumerate() {
-        let freq = freq_hz + tone as f32 * cfg.tone_spacing_hz;
-        let dphi = 2.0 * PI * freq / cfg.sample_rate;
-        let base = sym * cfg.samples_per_symbol;
-        for j in 0..cfg.samples_per_symbol {
-            w_cos[base + j] = phase.cos();
-            w_sin[base + j] = phase.sin();
-            phase += dphi;
-            if phase > PI {
-                phase -= 2.0 * PI;
-            }
-        }
-    }
+    // The transmitter's own phase accumulator (`cpfsk`), so the waveform rebuilt
+    // here is the one `cpfsk::synth_f32_into` sent, not a second copy of its loop.
+    // That loop wraps at ±2π where this one wrapped at +π: the same angle, a
+    // different last bit of `cos`/`sin`, and only WSPR's `internal-testing` second
+    // SIC layer (`wspr::decode`) and tests reach this branch (#425).
+    crate::engine::dsp::cpfsk::for_each_phase(
+        tones,
+        cfg.samples_per_symbol,
+        freq_hz,
+        cfg.tone_spacing_hz,
+        cfg.sample_rate,
+        |i, phase| {
+            w_cos[i] = phase.cos();
+            w_sin[i] = phase.sin();
+        },
+    );
     (w_cos, w_sin)
 }
 

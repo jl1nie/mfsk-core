@@ -42,24 +42,25 @@ const RENORM_PERIOD: u32 = 4096;
 
 /// Streaming complex mixer, `exp(-j2π·center_hz·n/Fs)`.
 ///
-/// **This is the crate's general mixer, and not the only oscillator on
-/// purpose** (#425). The others, and why each stays:
+/// **This is the crate's mixer; the oscillators that are not it, and why**
+/// (#425):
 ///
-/// - `msk144::sync::tweak1` and `jt9::softsym::twkfreq_poly` are literal ports
-///   of `tweak1.f90` and `afc9.f90`: the first steps its phasor *before* the
-///   first multiply and never renormalises, the second is a polynomial chirp.
-///   Their last bits are what the Fortran produces, and they are cross-checked
-///   against it.
-/// - `jt65::rx`, `ft8::refine_fine`, `engine::dsp::subtract` and
-///   `ft8::decode_block::fine_sync_12k` evaluate `cos`/`sin` of a wrapped or
-///   `k·Δφ` phase per sample. That costs more than this and is also *more*
-///   accurate, since nothing accumulates; the first three are the decode path's
-///   reference arithmetic and the last is the shipped embedded path, so a change
-///   there is a decode-output change to measure, not a tidy-up.
+/// - `msk144::sync::tweak1` *is* this, as [`Mixer::tweak1`]: `tweak1.f90`'s
+///   step-before-multiply with no renormalisation, bit-identical to the loop it
+///   replaced.
+/// - `jt9::softsym::twkfreq_poly` ports `afc9.f90`'s polynomial chirp, whose
+///   phase increment changes every sample; no fixed `step` expresses that.
+/// - `ft8::refine_fine::build_tweak` (32 elements, deliberately exact) and
+///   `ft8::decode_block::fine_sync_12k` are on the CoreS3's decode path, whose
+///   architecture is its own (fixed-point spectra, `decode_block`), and are not
+///   unified with the host's.
+/// - `engine::dsp::cpfsk::for_each_phase` is the CPFSK transmitter's phase
+///   accumulator, which WSJT-X's `Modulator` defines as `cos` of an accumulated
+///   phase; `engine::dsp::subtract` rebuilds the same waveform through it
+///   rather than through this mixer.
 /// - `wspr::ddc` is a period-8 table, exact because its centre is `Fs/8`.
-/// - The one that was *less* accurate, `uvpacket::rx`'s `sin_cos(step · n as f32)`
-///   (an f32 phase argument loses the fraction of a cycle once `n` is in the
-///   hundred thousands), now uses this.
+/// - `uvpacket::rx` (an f32 `step · n` phase) and `jt65::rx` / `wspr::rx` (per-sample
+///   trigonometry) mix through this now, via `SymbolFft::mixed` for the last two.
 ///
 /// A rotating-phasor NCO (`cur *= step` each sample) rather than a
 /// per-sample `sin`/`cos` call — `wspr::ddc`'s own mixer avoids that
@@ -71,15 +72,41 @@ const RENORM_PERIOD: u32 = 4096;
 /// `cur` is renormalised to unit magnitude every [`RENORM_PERIOD`]
 /// samples — cheap (one `sqrt` per period) and bounds the drift a long
 /// FST4 slot (thousands of samples) would otherwise accumulate.
-pub(crate) struct Mixer {
+///
+/// **Two switches, both const generics so the default costs nothing.** `LEAD`
+/// moves the first output one step into the rotation (`tweak1.f90`'s
+/// `w = w*wstep` *before* the multiply, so `out[0]` carries `wstep¹`, not
+/// `wstep⁰`); `RENORM` turns the renormalisation off (that port has none).
+/// The default `Mixer` is `Mixer<false, true>`: every existing user compiles to
+/// the code it always did. [`Mixer::tweak1`] is the other instantiation (#425).
+pub(crate) struct Mixer<const LEAD: bool = false, const RENORM: bool = true> {
     step: Complex<f32>,
     cur: Complex<f32>,
     since_renorm: u32,
 }
 
-impl Mixer {
+impl Mixer<false, true> {
     pub(crate) fn new(center_hz: f32, sample_rate_hz: f32) -> Self {
         let dphi = -2.0 * core::f32::consts::PI * center_hz / sample_rate_hz;
+        Self::from_dphi(dphi)
+    }
+}
+
+// Only `msk144` asks for it.
+#[cfg(feature = "msk144")]
+impl Mixer<true, false> {
+    /// `msk144::sync::tweak1`'s oscillator, `tweak1.f90` as written:
+    /// `exp(+j2π·f0·(n+1)/Fs)`, one step in before the first sample and never
+    /// renormalised. Bit-identical to the loop it replaced (pinned in
+    /// `msk144::sync`'s tests, past the 4 096-sample renormalisation period).
+    pub(crate) fn tweak1(f0_hz: f32, sample_rate_hz: f32) -> Self {
+        let dphi = 2.0 * core::f32::consts::PI * f0_hz / sample_rate_hz;
+        Self::from_dphi(dphi)
+    }
+}
+
+impl<const LEAD: bool, const RENORM: bool> Mixer<LEAD, RENORM> {
+    fn from_dphi(dphi: f32) -> Self {
         Self {
             step: Complex::new(dphi.cos(), dphi.sin()),
             cur: Complex::new(1.0, 0.0),
@@ -92,22 +119,29 @@ impl Mixer {
     #[inline]
     fn advance(&mut self) {
         self.cur *= self.step;
-        self.since_renorm += 1;
-        if self.since_renorm >= RENORM_PERIOD {
-            let mag = (self.cur.re * self.cur.re + self.cur.im * self.cur.im).sqrt();
-            if mag > 0.0 {
-                self.cur.re /= mag;
-                self.cur.im /= mag;
+        if RENORM {
+            self.since_renorm += 1;
+            if self.since_renorm >= RENORM_PERIOD {
+                let mag = (self.cur.re * self.cur.re + self.cur.im * self.cur.im).sqrt();
+                if mag > 0.0 {
+                    self.cur.re /= mag;
+                    self.cur.im /= mag;
+                }
+                self.since_renorm = 0;
             }
-            self.since_renorm = 0;
         }
     }
 
     /// Mix one real input sample.
     #[inline]
     pub(crate) fn mix(&mut self, x: f32) -> (f32, f32) {
+        if LEAD {
+            self.advance();
+        }
         let out = (x * self.cur.re, x * self.cur.im);
-        self.advance();
+        if !LEAD {
+            self.advance();
+        }
         out
     }
 
@@ -120,11 +154,16 @@ impl Mixer {
     /// [`Self::mix`].
     #[inline]
     pub(crate) fn mix_complex(&mut self, i: f32, q: f32) -> (f32, f32) {
+        if LEAD {
+            self.advance();
+        }
         let out = (
             i * self.cur.re - q * self.cur.im,
             i * self.cur.im + q * self.cur.re,
         );
-        self.advance();
+        if !LEAD {
+            self.advance();
+        }
         out
     }
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`tweak1` and the CPFSK reconstruction share their generators (#425).** `Mixer` is a const-generic over `LEAD` (step before the multiply) and
+  `RENORM`; `Mixer::tweak1` is `tweak1.f90`'s configuration, bit-identical to the loop `msk144::sync` had (pinned past the 4 096-sample
+  renormalisation period, with negative and fractional frequencies). The default instantiation, which the CoreS3's FT4 DDC runs, compiles to what
+  it always did. `engine::dsp::cpfsk::for_each_phase` is the transmitter's phase accumulator, and `subtract`'s non-GFSK reconstruction
+  (WSPR's `internal-testing` second SIC layer) now walks it instead of keeping a second copy that wrapped at +π: the transmit waveform is bit-identical
+  (pinned against the old loop), the reconstruction differs in the last bit of `cos`/`sin`. Code on the CoreS3's decode path is left alone.
 - **One Nuttall window, and a dead module out (#425, breaking).** `engine::dsp::window::cosine_sum` replaces the two
   hand-written Nuttall-4 loops (`engine::sync`'s symmetric one, `ft8::baseline`'s periodic one), bit-identical to both at
   every length either uses (pinned against the old loops). Three more cosine-sum windows (FST4's Blackman-Harris, the
