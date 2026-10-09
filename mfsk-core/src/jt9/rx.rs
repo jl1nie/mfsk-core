@@ -48,6 +48,14 @@ pub fn demodulate_aligned(
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32; // = TONE_SPACING_HZ by construction
     let base_bin = (base_freq_hz / df).round() as usize;
+    // A caller's frequency is rarely on a bin. The leftover (at most half a
+    // bin) is mixed out of each window before its FFT: left in, a carrier a
+    // half bin off loses up to ~3.9 dB to scalloping, which JT65 and WSPR
+    // measured and have always corrected for. Upstream has no fixed-carrier
+    // entry to match — `jt9` finds the carrier itself (`downsam9`, `afc9`,
+    // the main scan in `softsym`) — so this path is the crate's own, and
+    // the correction is simply the one its two siblings make (#424).
+    let residual_hz = base_freq_hz - base_bin as f32 * df;
 
     // Guard — if the caller asked for a window that doesn't fit, return
     // zero LLRs (decode will fail gracefully via Fano non-convergence).
@@ -64,7 +72,12 @@ pub fn demodulate_aligned(
     let mut j = 0; // data-symbol index within the 69 data slots
 
     for sym_idx in 0..85 {
-        let buf = fft.real(audio, start_sample + sym_idx * nsps);
+        let buf = fft.mixed(
+            audio,
+            start_sample + sym_idx * nsps,
+            residual_hz,
+            sample_rate as f32,
+        );
 
         // Noise reference from bins just above the 9-tone passband.
         for k in 9..14 {

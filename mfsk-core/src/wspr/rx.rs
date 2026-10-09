@@ -25,16 +25,13 @@
 //! the nominal audio start index. A follow-up module will wrap this
 //! with a peak-search over the sync-vector correlation metric.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
-use core::f32::consts::PI;
-use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
 use crate::engine::ModulationParams;
-use crate::engine::fft::default_planner;
+use crate::engine::dsp::symbol_fft::SymbolFft;
 
 use super::{WSPR_SYNC_VECTOR, Wspr};
 
@@ -77,35 +74,19 @@ pub fn extract_tone_magnitudes(
         return None;
     }
 
-    let mut planner = default_planner();
-    let fft = planner.plan_forward(nsps);
-    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0.0f32, 0.0); nsps];
+    let mut fft = SymbolFft::new(nsps);
 
     let mut mags = Vec::with_capacity(162);
     let mut noise_acc = 0.0f32;
     let mut noise_count = 0u32;
 
-    let mix_w = -2.0 * PI * residual_hz / sample_rate as f32;
-
     for i in 0..162 {
         let sym_start = start_sample + i * nsps;
-        // Mix `audio[sym_start..]` by `exp(-j 2π residual t)` (absolute
-        // sample index `t` so phase is continuous across symbols).
-        if residual_hz.abs() > 1e-6 {
-            for k in 0..nsps {
-                let abs_n = sym_start + k;
-                let ph = mix_w * abs_n as f32;
-                let s = audio[abs_n];
-                buf[k] = Complex::new(s * ph.cos(), s * ph.sin());
-            }
-        } else {
-            for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-                *slot = Complex::new(s, 0.0);
-            }
-        }
-        // The trait does in-place; allocates its own scratch internally
-        // (rustfft) or operates true in-place (microfft).
-        fft.process(&mut buf);
+        // Mix the window by `exp(-j 2π residual t)`. This used to use the
+        // *absolute* sample index in an f32 phase, which at the end of a
+        // 114 s slot (1.3 M samples) is resolved to ~0.1 rad; the window's
+        // own start phase does not reach `|FFT|²`, so it restarts at 0.
+        let buf = fft.mixed(audio, sym_start, residual_hz, sample_rate as f32);
 
         mags.push([
             buf[base_bin].norm(),
