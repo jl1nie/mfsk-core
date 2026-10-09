@@ -33,7 +33,7 @@ FT8 rows should reach a live caller at about 11.8 s into the period, as WSJT-X d
 ## 1. What upstream does (v3.2.0-rc1, `567ad29ce`)
 
 FT8 is decoded three times per period, on growing prefixes of the same audio. The unit is 3456 samples — **`jt9`'s own
-streaming block, which is JT9's half-symbol** (`NSPS` 6912/2, `jt9/baseband.rs:19`), not FT8's symbol and not this
+streaming block, which is JT9's half-symbol** (`NSPS` 6912/2, `Jt9::NSPS`), not FT8's symbol and not this
 crate's spectrogram step. None of the three divides the others: 141 696/1920 = 73.8 symbols, and /480 = 295.2 steps
 (`NSTEP`, or 960 under `nstep-half`). A caller cannot derive these counts, which is why §4 publishes them in prose and
 the decoder acts on them itself.

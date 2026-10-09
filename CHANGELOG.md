@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **One Nuttall window, and a dead module out (#425, breaking).** `engine::dsp::window::cosine_sum` replaces the two
+  hand-written Nuttall-4 loops (`engine::sync`'s symmetric one, `ft8::baseline`'s periodic one), bit-identical to both at
+  every length either uses (pinned against the old loops). Three more cosine-sum windows (FST4's Blackman-Harris, the
+  Blackman in `fir_decimate`, the two raised-cosine edges) stay where they are: each lays its phase out a third way, and
+  moving them changes last bits (70 of 512 entries for the Blackman-Harris, up to 3e-7 for the filter taps); the module
+  doc says so. `jt9::baseband` is removed: `mix_to_baseband` and `NSPS_BB` had no callers outside their own tests, and its
+  doc claimed to mirror `downsam9.f90`, which it does not.
 - **The plausibility verdict no longer checks callsign prefixes (#612).** FT8 and FT4 refused a callsign whose
   one-letter prefix was not F G I K M N R W or whose letter+digit prefix was not in an 82-entry ITU table. On the 100 303
   callsigns spotted on PSK Reporter in FT4/FT8 since 2024-06-20 that refused 13 (0.013 %), all special-event stations
