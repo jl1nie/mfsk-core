@@ -85,6 +85,11 @@
   whole period. `SicEarly` now runs as resumable steps (`ft8::decode::Staged`), with no change to its rows. C:
   `mfsk_decoder_decode_prefix_i16` / `_f32`, `MfskDecode::stage` (appended); Kotlin and Swift `decodePrefix`.
   `IqReceiver` still delivers whole slots. Design, and where this departs from it: `EARLY_DECODE_DESIGN.md` §12.
+- **FT8's triage shifts the refined carrier with the crate's mixer (#423).** `triage_candidate` rotated `cd0` by `cos`/`sin` of
+  `-2π·Δf·k/200` per sample, the transform `engine::sync2d::freq_shift_cd0_into` has run since the FT4 work; it calls that now.
+  tier A+B unchanged (no snapshot rewritten); tier C for `ft8` (every crossing +0.00 dB) and the busy-band corpus (hits and
+  extras identical). The rest of #423 is dispositioned on the issue: the two SIC drivers stay separate, and two items that look
+  like refactors are fidelity changes.
 - **The C ABI and the Kotlin and Swift bindings catch up with #592, #593 and #594.** `MFSK_CAP_BUDGET` is published for
   WSPR, JT9, JT65 and Q65 too, so `mfsk_decoder_set_budget` no longer refuses the four modes that have polled the budget
   since #593 (`registry_caps.rs` now ties the bit to "every mode with a `Decoder`"). `MfskBudgetReport` gains
