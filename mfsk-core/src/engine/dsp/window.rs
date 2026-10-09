@@ -37,8 +37,10 @@ pub(crate) enum Form {
     /// First and last sample are the window's two zeros: `D = n − 1`.
     Symmetric,
     /// The window is one period of a longer sequence: `D = n`.
-    // Only `ft8::baseline` asks for it.
-    #[cfg_attr(not(feature = "ft8"), allow(dead_code))]
+    // Only `ft8::baseline` asks for it, and that is not compiled in every
+    // feature set that has this module (the matrix's `alloc ft8 fft-extern`
+    // row, for one).
+    #[allow(dead_code)]
     Periodic,
 }
 
