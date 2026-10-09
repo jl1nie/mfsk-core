@@ -94,6 +94,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   from the "complete" set (21 rows down to 2 on `qso3_busy`). Whether the period runs the sniper, and on which frequency, is now
   fixed by its first call like the strategy and search; a change applies from the next period. AP, QSO context and the message
   filter are still read at each call.
+- **Q65 follows WSJT-X v3.3.0-beta1 where its results move (#642).** The symbol-spectra horizon `jz` now covers every complete
+  window, `(period*12000-nsps)/istep+1` (60A: 743 columns, was ~693), and the `max_drift` divisor is the 85-symbol length rather
+  than `jz`, so the two change together. The contest caller list evicts the least recently heard rather than the first inserted,
+  expires before recording, and lists the DX station as the 51st beside 50 callers (`1 + 10 * 51` = 511 codewords, was 411). The
+  tier-C Q65 sweep is unchanged to 0.00 dB in all 20 groups: it does not run q3, drift or the caller list, so it shows no
+  regression and nothing more; `q65_max_drift` and `q65_q3` still pass.
 
 ### Internals
 

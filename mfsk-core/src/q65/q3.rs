@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 use num_traits::Float;
 
 use crate::engine::dsp::symbol_fft::SymbolFft;
-use crate::engine::{DecodeContext, ModulationParams};
+use crate::engine::{DecodeContext, FrameLayout, ModulationParams};
 use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 
@@ -91,18 +91,23 @@ pub(super) fn smo121(x: &mut [f32]) {
 }
 
 /// `q65_symspec` over the slot starting at `slot_start`.
-fn symspec<P: ModulationParams>(audio: &[f32], sample_rate: u32, slot_start: i64) -> S1 {
+fn symspec<P: ModulationParams + FrameLayout>(
+    audio: &[f32],
+    sample_rate: u32,
+    slot_start: i64,
+) -> S1 {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let istep = nsps / NSTEP;
     let df = sample_rate as f32 / nsps as f32;
     let mode_q65 = 1usize << submode_index_from_params::<P>();
     let iz = (5000.0 / df) as usize;
-    let txt = 85.0 * nsps as f32 / 12_000.0;
-    let jz = if nsps >= 6912 {
-        ((txt + 2.0) * 12_000.0 / istep as f32) as usize
-    } else {
-        ((txt + 1.0) * 12_000.0 / istep as f32) as usize
-    };
+    // v3.3.0-beta1 (`e0f89795d`, "cover complete input in symbol spectra"):
+    // `jz=(ntrperiod*12000-nsps)/istep + 1`, one column per complete symbol FFT
+    // window in the period. rc1 had `jz=(txt+1)*12000/istep` (`txt+2` for
+    // nsps>=6912) with `txt=85*nsps/12000`, which for 60A is ~693 columns
+    // against 743 now and stopped short of the end of the period.
+    let period_samples = (P::T_SLOT_S * sample_rate as f32).round() as usize;
+    let jz = (period_samples - nsps) / istep + 1;
     // `nsmo=int(0.5*mode_q65*mode_q65); if(nsmo.lt.1) nsmo=1`, then
     // `if(nsmo.le.1) nsmo=0` inside the loop.
     let mut nsmo = (0.5 * (mode_q65 * mode_q65) as f32) as usize;
@@ -284,7 +289,7 @@ fn s1_to_s3(s1: &S1, i0: i64, ipk: i64, jpk: i64, j0: i64, mode_q65: i64) -> Vec
 /// The q3 decode at `params.rx_freq_hz`. `None` when the 85-symbol sync
 /// does not single out a message, or no `b90` gets a list decode over
 /// the thresholds.
-pub(crate) fn decode_q3_for<P: ModulationParams>(
+pub(crate) fn decode_q3_for<P: ModulationParams + FrameLayout>(
     audio: &[f32],
     sample_rate: u32,
     params: Q3Params,
@@ -313,7 +318,7 @@ impl AveragedSpectra {
 
     /// `navg=navg+1; ntc=min(navg,4); u=1.0/ntc; s1a=u*s1+(1.0-u)*s1a`.
     /// The first period is `s1a` outright (`u = 1`).
-    pub(crate) fn push<P: ModulationParams>(
+    pub(crate) fn push<P: ModulationParams + FrameLayout>(
         &mut self,
         audio: &[f32],
         sample_rate: u32,
@@ -336,7 +341,7 @@ impl AveragedSpectra {
 /// `q65_dec0` with `iavg=1` (`q65.f90:148-154`): the q3 decode on the
 /// averaged spectra. Upstream runs it when `navg(iseq) >= 2`
 /// (`q65_decode.f90:259-263`); `None` before that.
-pub(crate) fn decode_q3_averaged<P: ModulationParams>(
+pub(crate) fn decode_q3_averaged<P: ModulationParams + FrameLayout>(
     avg: &AveragedSpectra,
     last_audio: &[f32],
     sample_rate: u32,
@@ -378,12 +383,12 @@ fn decode_q3_on_s1<P: ModulationParams>(
     let i0 = (params.rx_freq_hz / df).round() as i64;
 
     if params.drift_hz != 0.0 {
-        // `s1w(w3f,w3t)=s1(mm,w3t)`, `mm=w3f+nint(drift*w3t/(jz*df))`, where
+        // `s1w(w3f,w3t)=s1(mm,w3t)`, `mm=w3f+nint(drift*w3t/(85*NSTEP*df))`, where
         // `mm` is in range; `s1w=s1` elsewhere.
         let src = s1.data.clone();
         let (iz, jz) = (s1.iz, s1.jz);
         for w3t in 1..=jz {
-            let off = (params.drift_hz * w3t as f32 / (jz as f32 * df)).round() as i64;
+            let off = (params.drift_hz * w3t as f32 / ((85 * NSTEP) as f32 * df)).round() as i64;
             for w3f in 1..=iz {
                 let mm = w3f as i64 + off;
                 if mm >= 1 && mm <= iz as i64 {

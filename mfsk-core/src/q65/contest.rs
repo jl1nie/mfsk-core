@@ -28,11 +28,13 @@ use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::q65::{pack77_q65, pack77_to_symbols_flagged};
 
-/// `MAX_CALLERS` (`q65_hist2`, `q65_set_list2`, v3.2.0-rc1).
+/// `Q65_MAX_CALLERS` (`q65_limits.h` `Q65_CALLER_CAPACITY`, v3.3.0-beta1).
 pub const MAX_CALLERS: usize = 50;
-/// `MAX_NCW` in `q65_set_list2.f90`: one empty codeword, then 41 callers
-/// × 5 messages × 2 flags.
-pub const MAX_CONTEST_CODEWORDS: usize = 411;
+/// `Q65_AP_LIST_CAPACITY` in `q65_limits.h`: one empty codeword, then every
+/// caller **and** the current DX station × 5 messages × 2 flags,
+/// `1 + 10 * (50 + 1)`. rc1 had `MAX_NCW = 411` (41 callers) against a
+/// 50-caller list, which overflowed; v3.3.0-beta1 sizes it for the full list.
+pub const MAX_CONTEST_CODEWORDS: usize = 1 + 10 * (MAX_CALLERS + 1);
 /// `hours.gt.24.0`: a caller not heard for a day is dropped.
 pub const CALLER_TTL_SEC: u64 = 24 * 3600;
 
@@ -80,9 +82,14 @@ impl Q65Callers {
     /// A message with a `/` is ignored; ` R ` is taken out; the second word
     /// (six characters) is the caller and the next four characters its
     /// grid. A caller already listed has its time and frequency refreshed;
-    /// a new one is added only when it sent a grid, the oldest making room
-    /// once 50 are held.
+    /// a new one is added only when it sent a grid. Once 50 are held the
+    /// one **heard longest ago** makes room (`minloc(callers%nsec)`, the first
+    /// on a tie): v3.3.0-beta1 `q65_record_caller`. rc1 dropped index 1, the
+    /// oldest *inserted*, so a caller that kept calling was evicted anyway.
+    /// Callers older than a day are expired first, as upstream does before
+    /// recording.
     pub fn record(&mut self, freq_hz: f32, message: &str, now: u64) {
+        self.expire(now);
         if message.contains('/') {
             return;
         }
@@ -100,6 +107,11 @@ impl Q65Callers {
             Some(i1) if (3..=12).contains(&i1) => {
                 let rest = &m[i1 + 1..];
                 let i2 = i1 + 1 + rest.iter().position(|&c| c == b' ').unwrap_or(rest.len());
+                // `if(i2.le.i1+1 .or. i2+4.gt.len(text)) return` (1-based there):
+                // an empty second word, or a grid that would run past the 37 characters.
+                if i2 == i1 + 1 || i2 + 5 > 37 {
+                    return;
+                }
                 let call: String = m[i1 + 1..i2].iter().take(6).map(|&c| c as char).collect();
                 let g: Vec<u8> = (0..4)
                     .map(|k| m.get(i2 + 1 + k).copied().unwrap_or(b' '))
@@ -115,8 +127,16 @@ impl Q65Callers {
             return;
         }
         if isgrid(&g4) {
-            if self.callers.len() == MAX_CALLERS {
-                self.callers.remove(0);
+            if self.callers.len() == MAX_CALLERS
+                && let Some(oldest) = self
+                    .callers
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, c)| c.last_heard)
+                    .map(|(i, _)| i)
+            {
+                // `callers(oldest:count-1)=callers(oldest+1:count)`: order kept.
+                self.callers.remove(oldest);
             }
             self.callers.push(Caller {
                 call: c6,
@@ -168,7 +188,9 @@ pub fn contest_codewords(
         .iter()
         .map(|c| (c.call.clone(), c.grid.clone()))
         .collect();
-    if add_his && stations.len() < MAX_CALLERS {
+    // v3.3.0-beta1 `q65_set_list2`: `jmax=nhist2+1`, no longer clamped to 50,
+    // so the DX station is the 51st when 50 callers are held (rc1 left it out).
+    if add_his {
         stations.push((his6, his_grid.chars().take(4).collect()));
     }
     for (c6, g4) in &stations {
@@ -221,6 +243,54 @@ mod tests {
         }
         assert_eq!(h.callers().len(), MAX_CALLERS);
         assert_ne!(h.callers()[0].call, "JA1ABC");
+    }
+
+    /// v3.3.0-beta1 evicts the caller heard longest ago, not the first inserted.
+    #[test]
+    fn full_list_evicts_the_least_recently_heard() {
+        let mut h = Q65Callers::new();
+        for k in 0..MAX_CALLERS {
+            h.record(1500.0, &alloc::format!("K1ABC W{k}AB EN37"), 10 + k as u64);
+        }
+        // The first inserted calls again, so it is no longer the oldest.
+        h.record(1500.0, "K1ABC W0AB RR73", 1000);
+        h.record(1500.0, "K1ABC N0NEW EN37", 1001);
+        let calls: Vec<_> = h.callers().iter().map(|c| c.call.as_str()).collect();
+        assert_eq!(calls.len(), MAX_CALLERS);
+        assert!(calls.contains(&"W0AB"), "refreshed caller must survive");
+        assert!(!calls.contains(&"W1AB"), "least recently heard is evicted");
+        assert_eq!(calls.last(), Some(&"N0NEW"));
+        // Ties go to the first, as `minloc` does.
+        let mut t = Q65Callers::new();
+        for k in 0..MAX_CALLERS {
+            t.record(1500.0, &alloc::format!("K1ABC W{k}AB EN37"), 5);
+        }
+        t.record(1500.0, "K1ABC N0NEW EN37", 6);
+        assert!(!t.callers().iter().any(|c| c.call == "W0AB"));
+    }
+
+    /// `record` expires first, and an empty second word is ignored.
+    #[test]
+    fn record_expires_and_rejects_an_empty_call() {
+        let mut h = Q65Callers::new();
+        h.record(1500.0, "K1ABC W9XYZ EN37", 0);
+        h.record(1500.0, "K1ABC  EN37", CALLER_TTL_SEC + 5);
+        assert!(
+            h.callers().is_empty(),
+            "the stale caller goes on the next record"
+        );
+    }
+
+    /// With 50 callers held the DX station is the 51st: `1 + 10 * 51` codewords.
+    #[test]
+    fn dx_station_is_listed_beside_fifty_callers() {
+        let mut h = Q65Callers::new();
+        for k in 0..MAX_CALLERS {
+            h.record(1500.0, &alloc::format!("K1ABC W{k}AB EN37"), 1);
+        }
+        let cw = contest_codewords("K1ABC", "VK3ABC", "QF22", &h);
+        assert_eq!(cw.len(), MAX_CONTEST_CODEWORDS);
+        assert_eq!(MAX_CONTEST_CODEWORDS, 511);
     }
 
     #[test]

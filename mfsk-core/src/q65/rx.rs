@@ -36,7 +36,7 @@ use num_traits::Float;
 
 use crate::engine::dsp::symbol_fft::SymbolFft;
 use crate::engine::pipeline::{ScanRow, push_unique};
-use crate::engine::{DecodeContext, MessageCodec, ModulationParams};
+use crate::engine::{DecodeContext, FrameLayout, MessageCodec, ModulationParams};
 use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::ApHint;
@@ -1695,7 +1695,7 @@ impl MultiPeriod {
     /// one decode, the first stage that succeeds, as the batch form returns
     /// per period.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn step<P: ModulationParams>(
+    pub(crate) fn step<P: ModulationParams + FrameLayout>(
         &mut self,
         audio: &[f32],
         sample_rate: u32,
@@ -1912,7 +1912,7 @@ impl MultiPeriod {
 ///
 /// Empty `audio_slots` returns an empty Vec.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_multi_period_for<P: ModulationParams>(
+pub(crate) fn decode_multi_period_for<P: ModulationParams + FrameLayout>(
     audio_slots: &[&[f32]],
     sample_rate: u32,
     nominal_start_sample: usize,
