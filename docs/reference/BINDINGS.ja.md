@@ -149,8 +149,10 @@ mfsk_decoder_close(d);
 open の `params` / `extras` が `NULL` ならモード自身の既定値になる。
 `out_cap` は受け取ってよい行数の上限、`*out_len` には**常に**見つかった行数が
 入るので、配列が短いと、検出できない切り詰め結果ではなく、必要な件数つきの
-`MFSK_STATUS_INVALID_ARG` が返る。`sample_rate` が 12 000 以外ならリサンプル
-される。`decode_f32` はどんなレベルの音声も受け取る: `float` で動くエンジン
+`MFSK_STATUS_INVALID_ARG` が返る。再試行は余裕のあるバッファで同じ呼び出しを
+もう一度行うこと（`mfsk_decoder_decode_stream` なら同じストリームで）で、すでに
+見つかった行から答えるので、デコードはやり直されない。`sample_rate` が 12 000
+以外ならリサンプルされる。`decode_f32` はどんなレベルの音声も受け取る: `float` で動くエンジン
 （WSPR、JT9、JT65、Q65）はそのまま受け取り、WSJT-X と同じく 16 ビット音声を
 取る FT8、FT4、FST4 には固定レベルへ換算して渡す。
 

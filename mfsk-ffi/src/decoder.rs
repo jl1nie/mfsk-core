@@ -144,15 +144,47 @@ fn budget_report(r: &mfsk_core::decoder::BudgetReport) -> MfskBudgetReport {
 
 // ── The handle ────────────────────────────────────────────────────────────
 
+/// Which call [`FfiDecoder::short`] holds the answer to.
+#[derive(Clone, Copy, PartialEq)]
+enum Refused {
+    /// A `decode_*` call: its kind, period, rate, length and a fingerprint of
+    /// its samples, so a different call that happens to be as long is never
+    /// answered with the refused one's rows.
+    Call {
+        prefix: bool,
+        period: i64,
+        rate: u32,
+        n: usize,
+        fp: u64,
+    },
+    /// `mfsk_decoder_decode_stream` on this stream; the slot it took and its
+    /// metadata.
+    Stream {
+        stream: usize,
+        period: i64,
+        utc_ns: i64,
+    },
+}
+
+/// A fingerprint of `bytes`, to tell a retry of a refused call from another.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
 pub(crate) struct FfiDecoder {
     mode: MfskMode,
     any: AnyDecoder,
     /// The last decode's rows, for `copy_info`.
     last: Vec<(Decoded, RowDetail)>,
-    /// `(period, samples)` of a prefix call refused for a short output
-    /// buffer. Its stage has run and will not run again, so the retry the
-    /// ABI asks for (same call, a bigger buffer) is answered from `last`.
-    short_prefix: Option<(i64, usize)>,
+    /// The call refused for a short output buffer. It has run (a prefix
+    /// stage will not run again, a stream's slot is taken, a callback has
+    /// fired, Q65's average has stepped), so the retry the ABI asks for (the
+    /// same call, a bigger buffer) is answered from `last` and not decoded
+    /// again (#633).
+    short: Option<Refused>,
     on_decode: MfskDecodeCallback,
     on_decode_user: SyncUserData,
     budget: MfskBudgetCheck,
@@ -748,7 +780,7 @@ pub(crate) unsafe fn open_decoder(
         mode: m,
         any,
         last: Vec::new(),
-        short_prefix: None,
+        short: None,
         on_decode: None,
         on_decode_user: SyncUserData(ptr::null_mut()),
         budget: None,
@@ -1136,7 +1168,7 @@ pub(crate) fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> M
 /// Decode one period of `slot` and store the rows on the handle.
 /// `prefix`: a `decode_prefix` call (#572) rather than a whole-period one.
 fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64, prefix: bool) -> Result<(), String> {
-    d.short_prefix = None;
+    d.short = None;
     let mut slot = SlotInput::new(audio);
     if period != MFSK_PERIOD_NONE {
         slot = slot.period(period);
@@ -1171,17 +1203,17 @@ fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64, prefix: bool) -> Resul
 /// # Safety
 /// `out` must be `cap` writable rows `out[0].size` apart, or null when `cap`
 /// is 0.
-/// [`emit`], remembering a prefix call it refused for a short buffer.
-unsafe fn emit_prefix(
+/// [`emit`], remembering the call it refused for a short buffer.
+unsafe fn emit_or_hold(
     d: &mut FfiDecoder,
     out: *mut MfskDecode,
     cap: usize,
     out_len: *mut usize,
-    prefix: Option<(i64, usize)>,
+    call: Refused,
 ) -> MfskStatus {
     let st = unsafe { emit(d, out, cap, out_len) };
     if st == MfskStatus::InvalidArg {
-        d.short_prefix = prefix;
+        d.short = Some(call);
     }
     st
 }
@@ -1227,7 +1259,11 @@ unsafe fn emit(
 ///
 /// Rows go into `out[0..out_cap]`; `*out_len` always receives the number
 /// found, so a short buffer returns `MFSK_STATUS_INVALID_ARG` with the
-/// required count rather than a truncated answer you cannot detect. Set
+/// required count rather than a truncated answer you cannot detect.
+/// The retry is the same call again with room (same period and samples; for
+/// `mfsk_decoder_decode_stream`, the same stream): it is answered from the
+/// rows the refused call found, without decoding again, so no callback fires
+/// twice and a Q65 average does not step twice (#633). Set
 /// `out[0].size` to `sizeof(MfskDecode)`: the rows are written that many
 /// bytes apart, so a caller built against an older or newer header gets its
 /// own layout (#607); 0 means this header's.
@@ -1338,19 +1374,18 @@ unsafe fn decode_i16_impl(
         resampled = mfsk_core::engine::dsp::resample::resample_to_12k(pcm, sample_rate);
         &resampled
     };
-    let retry = prefix && d.short_prefix.take() == Some((period, n_samples));
+    let call = Refused::Call {
+        prefix,
+        period,
+        rate: sample_rate,
+        n: n_samples,
+        fp: fingerprint(unsafe { slice::from_raw_parts(samples as *const u8, n_samples * 2) }),
+    };
+    let retry = d.short.take() == Some(call);
     if !retry && let Err(e) = in_pool_mut(|| run(d, Audio::I16(audio), period, prefix)) {
         return d.fail(MfskStatus::InvalidArg, e);
     }
-    unsafe {
-        emit_prefix(
-            d,
-            out,
-            out_cap,
-            out_len,
-            prefix.then_some((period, n_samples)),
-        )
-    }
+    unsafe { emit_or_hold(d, out, out_cap, out_len, call) }
 }
 
 /// Decode one period of 32-bit float PCM, any level. At 12 kHz the float
@@ -1442,8 +1477,15 @@ unsafe fn decode_f32_impl(
         );
     }
     let pcm = unsafe { slice::from_raw_parts(samples, n_samples) };
-    if prefix && d.short_prefix.take() == Some((period, n_samples)) {
-        return unsafe { emit_prefix(d, out, out_cap, out_len, Some((period, n_samples))) };
+    let call = Refused::Call {
+        prefix,
+        period,
+        rate: sample_rate,
+        n: n_samples,
+        fp: fingerprint(unsafe { slice::from_raw_parts(samples as *const u8, n_samples * 4) }),
+    };
+    if d.short.take() == Some(call) {
+        return unsafe { emit_or_hold(d, out, out_cap, out_len, call) };
     }
     let r = if sample_rate == 12_000 {
         in_pool_mut(|| run(d, Audio::F32(pcm), period, prefix))
@@ -1454,15 +1496,7 @@ unsafe fn decode_f32_impl(
     if let Err(e) = r {
         return d.fail(MfskStatus::InvalidArg, e);
     }
-    unsafe {
-        emit_prefix(
-            d,
-            out,
-            out_cap,
-            out_len,
-            prefix.then_some((period, n_samples)),
-        )
-    }
+    unsafe { emit_or_hold(d, out, out_cap, out_len, call) }
 }
 
 /// FEC information bits for the `index`-th row of the last decode. The raw
@@ -1545,22 +1579,46 @@ pub unsafe extern "C" fn mfsk_decoder_decode_stream(
     if !out_len.is_null() {
         unsafe { *out_len = 0 };
     }
-    let Some(slot) = st.ready.take() else {
-        set_error("mfsk_decoder_decode_stream: no slot ready yet");
-        return MfskStatus::Unsupported;
+    let set_meta = |period: i64, utc_ns: i64| {
+        if !out_period.is_null() {
+            unsafe { *out_period = period };
+        }
+        if !out_slot_start_utc_ns.is_null() {
+            unsafe { *out_slot_start_utc_ns = utc_ns };
+        }
     };
-    let prefix = !slot.whole || st.decoding == Some(slot.period);
-    st.decoding = (!slot.whole).then_some(slot.period);
-    if !out_period.is_null() {
-        unsafe { *out_period = slot.period };
-    }
-    if !out_slot_start_utc_ns.is_null() {
-        unsafe { *out_slot_start_utc_ns = slot.utc_ns.unwrap_or(0) };
-    }
-    if let Err(e) = in_pool_mut(|| run(d, Audio::I16(&slot.audio), slot.period, prefix)) {
-        return d.fail(MfskStatus::InvalidArg, e);
-    }
-    unsafe { emit(d, out, out_cap, out_len) }
+    // The slot this call refused for a short buffer is not decoded again: its
+    // rows are on the handle (#633).
+    let (period, utc_ns) = match d.short.take() {
+        Some(Refused::Stream {
+            stream: s,
+            period,
+            utc_ns,
+        }) if s == stream as usize => {
+            set_meta(period, utc_ns);
+            (period, utc_ns)
+        }
+        _ => {
+            let Some(slot) = st.ready.take() else {
+                set_error("mfsk_decoder_decode_stream: no slot ready yet");
+                return MfskStatus::Unsupported;
+            };
+            let prefix = !slot.whole || st.decoding == Some(slot.period);
+            st.decoding = (!slot.whole).then_some(slot.period);
+            let utc_ns = slot.utc_ns.unwrap_or(0);
+            set_meta(slot.period, utc_ns);
+            if let Err(e) = in_pool_mut(|| run(d, Audio::I16(&slot.audio), slot.period, prefix)) {
+                return d.fail(MfskStatus::InvalidArg, e);
+            }
+            (slot.period, utc_ns)
+        }
+    };
+    let call = Refused::Stream {
+        stream: stream as usize,
+        period,
+        utc_ns,
+    };
+    unsafe { emit_or_hold(d, out, out_cap, out_len, call) }
 }
 
 /// The prefix lengths, in 12 kHz samples, at which a `decode_prefix` call
