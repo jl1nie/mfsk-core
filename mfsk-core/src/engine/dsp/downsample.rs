@@ -226,6 +226,7 @@ pub fn downsample_cached(
 /// rotates it, so the FT8-family path is left as it is.
 ///
 /// `scale == 1.0` is bit-exact: multiplying an `f32` by one returns it.
+#[cfg(any(feature = "wspr", feature = "jt9"))]
 pub(crate) fn repack_centered(
     spectrum: &[Complex<f32>],
     i0: i64,
@@ -255,7 +256,7 @@ pub(crate) fn repack_centered(
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "wspr", feature = "jt9")))]
 mod tests {
     use super::*;
 
