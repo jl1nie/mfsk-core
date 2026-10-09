@@ -829,6 +829,39 @@ changes — not simply "a release with new capability in it". When
 genuinely unsure which a given accumulated batch warrants, ask rather
 than default to whichever bump feels more exciting.
 
+## Following WSJT-X upstream — run `scripts/upstream-diff.sh` on a schedule
+
+WSJT-X is the reference, and it keeps moving, so we follow it on a
+cadence instead of when someone happens to remember. **Run
+`scripts/upstream-diff.sh` at every scheduled release cut (the biweekly
+one above) and whenever a new upstream tag appears.** It fetches, prints
+the tags and branches by date, and lists the changed upstream files that
+`mfsk-core` cites, with the Rust files that cite them. Read-only apart
+from the fetch.
+
+Facts that cost an hour each time they were re-derived (2026-10-10, #642):
+
+- **The live upstream is `WSJTX/wsjtx`, the `upstream` remote** of the
+  `../WSJT-X` clone. `origin` (saitohirga) stopped in 2024-03 and
+  `upstream/master` is the 3.0.x line; neither shows new algorithms. The
+  development line is `release/3.x` and its `v3.x.0-*` tags. We follow
+  that, not `master`.
+- **A tag is not necessarily an ancestor of a later tag.** v3.2.0-rc1 was
+  cut from the development line on 2026-09-18 and v3.3.0-beta1 descends from
+  the same line without containing it (merge-base `0b32aba69`). Commit
+  counts and `git log base..target` are meaningless across such a fork; the
+  **tree diff** is the comparison. The script says when this applies.
+- Most of a version's diff is refactor (3.3's PCM-engine move was the large
+  majority). Classify each change A (alters results), B (real bug fix) or C
+  (refactor/plumbing); only A and B are ported. The script finds the files,
+  it cannot classify them — read the diff it points at.
+
+Record the audit in an Issue (#435 for rc1, #642 for rc1→beta1) with the
+A/B/C table and what was **not** read. When the port PRs for a version have
+merged, bump `DEFAULT_BASE` in the script and say so in the Issue. A changed
+upstream file the script lists as uncited is either not ported or a missing
+citation; add the citation if it is ported (`q65_callers.F90` was).
+
 ## Branching — `main` is trunk, `devel` is for open-ended experiments
 
 Established 2026-07-25. Default workflow is unchanged: PRs land on
