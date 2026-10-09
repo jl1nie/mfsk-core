@@ -210,3 +210,154 @@ pub fn downsample_cached(
 
     c1
 }
+
+/// Pack `nfft2` bins of `spectrum` into FFT-shift order around `i0`, each
+/// multiplied by `scale`, ready for an inverse FFT of that size: bins
+/// `i0..=i0 + nfft2/2` go to `out[0..=nfft2/2]` and the `nfft2/2 − 1` bins
+/// below `i0` go to the top of `out`, so a band centred on bin `i0` comes out
+/// of the inverse transform as a complex baseband centred on DC. Bins outside
+/// `spectrum` (below 0, past its end) leave their slot zero.
+///
+/// This is the re-pack `wsprd`'s `readwavfile` (`wsprd.c:172-177`) and WSJT-X's
+/// `downsam9` both perform; they differ in what they scale by and in where `i0`
+/// comes from (rounded there, truncated here), which stay with their callers
+/// (#425). It is not [`downsample_cached`]'s layout, which copies a
+/// tone-spacing-sized window `ib..=it` with a raised-cosine taper and
+/// rotates it, so the FT8-family path is left as it is.
+///
+/// `scale == 1.0` is bit-exact: multiplying an `f32` by one returns it.
+#[cfg(any(feature = "wspr", feature = "jt9"))]
+pub(crate) fn repack_centered(
+    spectrum: &[Complex<f32>],
+    i0: i64,
+    nfft2: usize,
+    scale: f32,
+) -> Vec<Complex<f32>> {
+    let mut out = vec![Complex::new(0.0f32, 0.0); nfft2];
+    let nh2 = (nfft2 / 2) as i64;
+    let len = spectrum.len() as i64;
+    let nfft2 = nfft2 as i64;
+
+    // Piece 1: i in [0, nh2], j = i0 + i. Each piece is a contiguous run, so
+    // clamp its valid `i` range to `0 <= j < len` once instead of testing the
+    // bound on every one of the nfft2 iterations.
+    let p1_lo = (-i0).clamp(0, nh2 + 1);
+    let p1_hi = (len - i0).clamp(0, nh2 + 1);
+    for i in p1_lo..p1_hi {
+        out[i as usize] = spectrum[(i0 + i) as usize] * scale;
+    }
+
+    // Piece 2: i in (nh2, nfft2), j = i0 + i − nfft2.
+    let p2_lo = (nfft2 - i0).clamp(nh2 + 1, nfft2);
+    let p2_hi = (len - i0 + nfft2).clamp(nh2 + 1, nfft2);
+    for i in p2_lo..p2_hi {
+        out[i as usize] = spectrum[(i0 + i - nfft2) as usize] * scale;
+    }
+    out
+}
+
+#[cfg(all(test, any(feature = "wspr", feature = "jt9")))]
+mod tests {
+    use super::*;
+
+    /// `wspr::baseband::decimate_to_baseband`'s loop as it was.
+    fn wspr_loop(buf: &[Complex<f32>], i0: usize, nfft2: usize) -> Vec<Complex<f32>> {
+        let nh2 = nfft2 / 2;
+        let mut fftin = vec![Complex::new(0.0f32, 0.0); nfft2];
+        for i in 0..nfft2 {
+            let j = if i > nh2 {
+                i0.wrapping_add(i).wrapping_sub(nfft2)
+            } else {
+                i0 + i
+            };
+            if j < buf.len() {
+                fftin[i] = buf[j];
+            }
+        }
+        fftin
+    }
+
+    /// `jt9::softsym::AudioFft::downsam9`'s two clamped pieces as they were.
+    fn jt9_pieces(c1: &[Complex<f32>], i0: i64, nfft2: usize, fac: f32) -> Vec<Complex<f32>> {
+        let nh2 = (nfft2 / 2) as i64;
+        let mut c2 = vec![Complex::new(0.0f32, 0.0); nfft2];
+        let c1_len = c1.len() as i64;
+        let nfft2 = nfft2 as i64;
+        let p1_lo = (-i0).clamp(0, nh2 + 1);
+        let p1_hi = (c1_len - i0).clamp(0, nh2 + 1);
+        for i in p1_lo..p1_hi {
+            c2[i as usize] = c1[(i0 + i) as usize] * fac;
+        }
+        let p2_lo = (nfft2 - i0).clamp(nh2 + 1, nfft2);
+        let p2_hi = (c1_len - i0 + nfft2).clamp(nh2 + 1, nfft2);
+        for i in p2_lo..p2_hi {
+            c2[i as usize] = c1[(i0 + i - nfft2) as usize] * fac;
+        }
+        c2
+    }
+
+    fn spectrum(n: usize) -> Vec<Complex<f32>> {
+        let mut x = 0x2026_1009u32;
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let re = (x >> 8) as f32 / 8_388_608.0 - 1.0;
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                Complex::new(re, (x >> 8) as f32 / 8_388_608.0 - 1.0)
+            })
+            .collect()
+    }
+
+    fn bits(v: &[Complex<f32>]) -> Vec<(u32, u32)> {
+        v.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect()
+    }
+
+    /// Both users' loops, bit for bit, for `i0` inside the spectrum, at either
+    /// edge, and past either end.
+    #[test]
+    fn repack_is_bit_identical_to_both_loops_it_replaced() {
+        for (len, nfft2) in [(10_000usize, 512usize), (6_145, 1_512), (400, 64)] {
+            let sp = spectrum(len);
+            for i0 in [
+                -(nfft2 as i64),
+                -5,
+                0,
+                1,
+                (nfft2 / 2) as i64,
+                (len / 2) as i64,
+                len as i64 - nfft2 as i64,
+                len as i64 - 3,
+                len as i64,
+                len as i64 + 7,
+            ] {
+                let new = repack_centered(&sp, i0, nfft2, 1.0);
+                if i0 >= 0 {
+                    assert_eq!(
+                        bits(&new),
+                        bits(&wspr_loop(&sp, i0 as usize, nfft2)),
+                        "wspr loop, len {len}, nfft2 {nfft2}, i0 {i0}"
+                    );
+                }
+                let fac = 0.731_f32;
+                assert_eq!(
+                    bits(&repack_centered(&sp, i0, nfft2, fac)),
+                    bits(&jt9_pieces(&sp, i0, nfft2, fac)),
+                    "jt9 pieces, len {len}, nfft2 {nfft2}, i0 {i0}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_band_centred_on_i0_lands_on_dc_after_the_inverse() {
+        // A single bin at `i0` must come out as a constant (DC) baseband.
+        let nfft2 = 64;
+        let mut sp = vec![Complex::new(0.0f32, 0.0); 1_000];
+        sp[300] = Complex::new(1.0, 0.0);
+        let mut packed = repack_centered(&sp, 300, nfft2, 1.0);
+        with_default_planner(|p| p.plan_inverse(nfft2).process(&mut packed));
+        for c in &packed {
+            assert!((c.re - 1.0).abs() < 1e-6 && c.im.abs() < 1e-6, "{c}");
+        }
+    }
+}

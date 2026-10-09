@@ -81,25 +81,13 @@ pub fn decimate_to_baseband(audio: &[f32]) -> (Vec<f32>, Vec<f32>) {
     // exact quantity `wspr::ddc` exists to avoid computing, so it is
     // the WSPR site a rate-varying front end would have to reach.
     let df = 12_000.0 / NFFT1 as f32;
-    let i0 = (CENTER_HZ / df).round() as usize;
-    let nh2 = NFFT2 / 2;
+    let i0 = (CENTER_HZ / df).round() as i64;
 
-    let mut fftin: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); NFFT2];
-    for i in 0..NFFT2 {
-        // wsprd `wsprd.c:172-177`:
-        //   j = i0 + i; if i > nh2 then j -= nfft2;
-        // The wraparound puts negative-freq half of the WSPR band
-        // at the high end of `fftin`, which the inverse FFT then
-        // unwraps into a contiguous time-domain complex baseband.
-        let j = if i > nh2 {
-            i0.wrapping_add(i).wrapping_sub(NFFT2)
-        } else {
-            i0 + i
-        };
-        if j < buf.len() {
-            fftin[i] = buf[j];
-        }
-    }
+    // wsprd `wsprd.c:172-177`: `j = i0 + i; if i > nh2 then j -= nfft2`. The
+    // wraparound puts the negative-frequency half of the WSPR band at the high
+    // end of `fftin`, which the inverse FFT then unwraps into a contiguous
+    // time-domain complex baseband. Shared with JT9's `downsam9` (#425).
+    let mut fftin = crate::engine::dsp::downsample::repack_centered(&buf, i0, NFFT2, 1.0);
 
     with_default_planner(|planner| planner.plan_inverse(NFFT2)).process(&mut fftin);
 

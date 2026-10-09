@@ -44,6 +44,12 @@
   ft8mon and JTDX both decode. A rejected 1-letter prefix now falls back to the letter+digit pair (`A5`, `T6`, `P5`)
   checked against the same ITU table, so `Q4A` and `Z7A` are still refused. WSJT-X has no such filter at all; the audit
   of it (#612) removed the prefix check altogether, so this fix is now subsumed.
+- **WSPR and JT9 share one FFT-shift re-pack (#425).** `wspr::baseband::decimate_to_baseband` (`readwavfile`) and
+  `jt9::softsym::downsam9` each packed `nfft2` bins around the carrier into inverse-FFT order with their own loop;
+  `engine::dsp::downsample::repack_centered` is that loop once, bit-identical to both at every `i0` including past
+  either end of the spectrum (pinned against the two old loops). The scale (`1/1000` after the inverse in WSPR, a
+  per-candidate noise factor before it in JT9) and the choice of `i0` stay with the callers, as does `downsample_cached`'s
+  different layout (a tone-spacing window with a taper, rotated).
 - **test: the full-slot subtract pin compares within a tolerance, not by a hash (#579's rule).** `subtract_short_buffer`'s
   `full_slot_output_is_pinned` hashed every output sample, written on x86_64 Linux; on Apple M5 it failed for `main` and
   for the commit before #567's fix alike, which agree bit for bit there. rustfft's kernel (AVX2, NEON, scalar) and the
