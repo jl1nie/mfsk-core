@@ -1266,7 +1266,9 @@ unsafe fn emit(
 /// twice and a Q65 average does not step twice (#633). Set
 /// `out[0].size` to `sizeof(MfskDecode)`: the rows are written that many
 /// bytes apart, so a caller built against an older or newer header gets its
-/// own layout (#607); 0 means this header's.
+/// own layout (#607); 0 means this header's. Each row's `size` comes back as
+/// that stride, so the array can go straight to `mfsk_q65_history_record`
+/// (#635).
 /// `period` is the period's index on the UTC grid, or `MFSK_PERIOD_NONE`.
 ///
 /// # Safety

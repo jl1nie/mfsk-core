@@ -128,8 +128,8 @@ fn a_newer_callers_longer_rows_keep_their_tails() {
     for i in 0..n {
         assert_eq!(
             size_at(&buf, i * new),
-            FULL as u32,
-            "row {i}: what this library wrote"
+            new as u32,
+            "row {i}: the caller's stride, which the next reader of the array steps by (#635)"
         );
         assert!(
             buf[i * new + FULL..(i + 1) * new]
@@ -199,5 +199,48 @@ fn the_q65_history_reads_rows_at_the_callers_stride() {
         unsafe { mfsk_q65_history_record(h, short.as_ptr() as *const MfskDecode, n) },
         MfskStatus::InvalidArg
     );
+    unsafe { mfsk_q65_history_free(h) };
+}
+
+/// #635: rows decoded into a newer caller's longer array go straight to the
+/// history, which steps by `rows[0].size`: that is the caller's stride, not
+/// this library's `sizeof`, or row 1 would be read from inside row 0's tail.
+#[test]
+fn a_newer_callers_rows_go_straight_to_the_q65_history() {
+    let slot = slot_of([("K1JT", "JA1ABC", "PM95"), ("K1ABC", "W9XYZ", "EN37")]);
+    let want = reference(&slot);
+    assert_eq!(want.len(), 2, "{want:?}");
+    let new = FULL + 16;
+    let (st, n, buf) = decode_at(&slot, new, want.len(), new as u32);
+    assert_eq!(st, MfskStatus::Ok);
+    let before = buf.clone();
+    let h = mfsk_q65_history_new();
+    assert_eq!(
+        unsafe { mfsk_q65_history_record(h, buf.as_ptr() as *const MfskDecode, n) },
+        MfskStatus::Ok
+    );
+    assert_eq!(unsafe { mfsk_q65_history_len(h) }, n);
+    for (hz, call) in [(1_000.0f32, "JA1ABC"), (1_800.0, "W9XYZ")] {
+        let mut dx: MfskQ65Dx = unsafe { std::mem::zeroed() };
+        dx.size = size_of::<MfskQ65Dx>() as u32;
+        assert_eq!(
+            unsafe { mfsk_q65_history_lookup(h, hz, &mut dx) },
+            MfskStatus::Ok,
+            "{hz} Hz"
+        );
+        let got = unsafe { std::ffi::CStr::from_ptr(dx.call.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(got, call, "{hz} Hz");
+    }
+    assert_eq!(buf, before, "the history only reads");
+    for i in 0..n {
+        assert!(
+            buf[i * new + FULL..(i + 1) * new]
+                .iter()
+                .all(|&b| b == GUARD),
+            "row {i}'s tail is the caller's"
+        );
+    }
     unsafe { mfsk_q65_history_free(h) };
 }

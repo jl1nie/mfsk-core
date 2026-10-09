@@ -303,7 +303,10 @@ through your array by that stride, not by its own `sizeof`. A program built
 against an older header (a shorter struct) gets each row where its array has
 it, with the fields it knows, and nothing written past `out_cap` of its rows.
 One built against a newer header keeps each row's tail as it was. Each row's
-`size` comes back as the bytes written. `0` means "this header's struct", which
+`size` comes back as your stride, so the array can go straight to
+`mfsk_q65_history_record` or into another decode (before #635 it came back as
+the bytes written, which for a newer header shrank it to the library's own
+`sizeof`, and the history then read row 1 from inside row 0's tail). `0` means "this header's struct", which
 is right only when the header and the library are the same version.
 A `size` below 4 or not a multiple of 4 is `MFSK_STATUS_INVALID_ARG`, and
 nothing is written. Before #607 the stride was the library's own, so an older
@@ -502,8 +505,9 @@ is wrong as a memory story on a phone.
 `MfskDecode` and the other rows all lead with `size`. Set it to
 your `sizeof` (or zero the struct and the library fills it in); a
 library newer than your header writes only the prefix you declared and
-rewrites `size` to what it actually wrote, and reads only the prefix of an
-input struct you declared.
+rewrites `size` to what it actually wrote (for an array of `MfskDecode` rows, to
+your stride, so the array stays readable as it is), and reads only the prefix of
+an input struct you declared.
 
 `mfsk_abi_version()` is separate from `mfsk_version()` on purpose: the
 crate version moves for reasons that have nothing to do with the

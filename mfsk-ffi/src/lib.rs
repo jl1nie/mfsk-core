@@ -1166,8 +1166,14 @@ unsafe fn array_stride<T>(first: *const T) -> Option<usize> {
 
 /// Write `rows` into a caller's array whose elements are `stride` bytes
 /// apart ([`array_stride`]): `min(stride, sizeof(T))` bytes of each, with
-/// each row's `size` rewritten to what was written. A caller's longer
-/// struct keeps its tail as it was.
+/// each row's `size` set to `stride`. A caller's longer struct keeps its tail
+/// as it was.
+///
+/// `size` stays the array's stride, not the bytes written (#635): it is what
+/// the next reader of the same array (`mfsk_q65_history_record`, or another
+/// decode into it) steps by, and a newer caller's `size` shrunk to this
+/// library's `sizeof` would start its second row inside the first one's tail.
+/// A single struct ([`write_size_versioned`]) still says what was written.
 ///
 /// # Safety
 /// `out` must point to `rows.len() * stride` writable bytes, and `T` must
@@ -1178,7 +1184,7 @@ unsafe fn write_rows<T: Copy>(out: *mut T, stride: usize, rows: impl Iterator<It
         unsafe {
             let dst = (out as *mut u8).add(i * stride);
             core::ptr::copy_nonoverlapping(&v as *const T as *const u8, dst, n);
-            core::ptr::write_unaligned(dst as *mut u32, n as u32);
+            core::ptr::write_unaligned(dst as *mut u32, stride as u32);
         }
     }
 }

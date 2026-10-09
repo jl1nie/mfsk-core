@@ -135,6 +135,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   the float-engine modes (WSPR, JT9, JT65, Q65) were quantised. They now resample keeping the level and hand over `float`, so the
   decoder sets the gain once per period. No decode changed on a synthetic FT8 signal or `qso3_busy.wav` at 48 kHz (21 rows, with
   and without a loud click after B); this is consistency, not a measured recall gain.
+- **Rows decoded into a newer caller's array go straight to `mfsk_q65_history_record` (#635).** A decode rewrote every row's `size` to the
+  bytes it wrote, so a caller whose `MfskDecode` is longer than the library's saw `size` shrink to the library's `sizeof`, and the history
+  (which steps by `rows[0].size`) read row 1 from inside row 0's tail. `size` now comes back as the caller's stride. A single struct
+  (`MfskModeInfo`, `MfskParams`) still reports the bytes written. Appended-field callers who read the written length from a row
+  should use the header's `sizeof` instead.
 
 ### Skimmer
 
