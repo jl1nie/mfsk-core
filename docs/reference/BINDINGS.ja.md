@@ -35,7 +35,9 @@ cbindgen 生成でリポジトリにコミットされており、そのドキ�
   - [2.10 スレッドとランタイム](#210-スレッドとランタイム)
   - [2.11 エラーとメモリ規則](#211-エラーとメモリ規則)
   - [2.12 シンボル索引](#212-シンボル索引)
-- [3. 0.12 ABI からの移行](#3-012-abi-からの移行)
+- [3. 移行](#3-移行)
+  - [3.1 0.13 ABI から](#31-013-abi-から)
+  - [3.2 0.12 ABI から](#32-012-abi-から)
 - [4. Kotlin / Android](#4-kotlin--android)
 - [5. Swift / Apple](#5-swift--apple)
 
@@ -785,7 +787,45 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ---
 
-## 3. 0.12 ABI からの移行
+## 3. 移行
+
+### 3.1 0.13 ABI から
+
+0.14.0 は ABI バージョン 3 のままである。どの構造体も末尾にフィールドを足しただけで、
+シグネチャが変わった関数は無いので、0.13 のプログラムはそのままリンクして動く。
+C の呼び出し側が確認すべきなのは挙動である。
+
+| 領域 | 0.13 | 0.14 |
+|---|---|---|
+| 結果配列の間隔 | 行はライブラリ自身の `sizeof(MfskDecode)` 間隔で書かれた。古い短いヘッダでビルドしたプログラムでは 2 行目以降が誤った位置に入り、バッファの外にも書いていた | 行は呼び出し側の `out[0].size` 間隔。呼び出しの前に `sizeof(MfskDecode)`（このヘッダのものなら 0）を設定する。構造体の大きさになり得ない `size` は `MFSK_STATUS_INVALID_ARG` で、何も書かない（[#607](https://github.com/jl1nie/mfsk-core/issues/607)、§2.4） |
+| デコード後の各行の `size` | 書いたバイト数。新しいヘッダの配列ではライブラリの `sizeof` に縮んでいた | 呼び出し側の間隔。配列をそのまま `mfsk_q65_history_record` や次のデコードに渡せる。ライブラリが書いた量は行ではなくヘッダから読む（[#635](https://github.com/jl1nie/mfsk-core/issues/635)） |
+| `out` が短くて断られた呼び出しの再試行 | `mfsk_decoder_decode_stream` はスロットを既に取り出していたので、再試行は `MFSK_STATUS_UNSUPPORTED` になった。ほかの `decode_*` はデコードし直し、コールバックが 2 回届き、Q65 の平均が 2 回進んだ | 余裕のあるバッファでの同じ呼び出しには、すでに見つかった行から答え、デコードし直さない（[#633](https://github.com/jl1nie/mfsk-core/issues/633)） |
+| 12 kHz 以外のレートの `float` | 呼び出しごとにリサンプルし、16 ビットへピーク正規化していた | レベルを保ってリサンプルし、12 kHz と同じく渡す。ゲイン（RMS）はデコーダが周期ごとに 1 回決める（[#634](https://github.com/jl1nie/mfsk-core/issues/634)） |
+| `sync_score`、`sync_cv`、`hard_errors` | WSPR、JT9、JT65、Q65 では `0` | そこでは今も `0`。その行のモードがどれを測ったかは `flags` のビット 2〜4（`MFSK_DECODE_FLAG_HAS_*`）が示す（[#594](https://github.com/jl1nie/mfsk-core/issues/594)） |
+| `info_bits` / `mfsk_decoder_copy_info` | FT8、FT4、FST4 のみ | 全モード: WSPR 50 ビット、JT9 と JT65 72、Q65 77。行は `key` も持つ（[#592](https://github.com/jl1nie/mfsk-core/issues/592)） |
+| WSPR、JT9、JT65、Q65 での `mfsk_decoder_set_budget` | `MFSK_STATUS_UNSUPPORTED` | 受け付ける。`MFSK_CAP_BUDGET` を公開し、候補ごとに 1 回確認する（[#593](https://github.com/jl1nie/mfsk-core/issues/593)） |
+| `mfsk_iq_push` の FT8 チャンネル | スロット全体のみ | **既定で早期デコード**: チェックポイント A の行が約 11.8 s に `stage == MFSK_STAGE_EARLY` で届き、残りは終わりに、繰り返さずに届く。`mfsk_iq_set_early(rx, channel, false)` でスロット全体に戻る（[#601](https://github.com/jl1nie/mfsk-core/issues/601)、§2.8.2） |
+| `MfskStream` | スロット全体 | `mfsk_decoder_prefix_points` → `mfsk_stream_set_prefix_points` で選ばない限り変わらない。選んだら、すべての配信を `mfsk_decoder_decode_stream` でデコードする（§2.5） |
+
+新規（すべて追加のみ）: `mfsk_decoder_decode_prefix_i16` / `_f32`、
+`mfsk_decoder_prefix_points`、`mfsk_decoder_delivery_is_exact`、
+`mfsk_stream_set_prefix_points`、`mfsk_stream_slot_is_whole`、
+`mfsk_iq_set_early`。`MfskDecode` に `key_bits`、`key`、`delivery`、
+`stage`。`MfskIqDecode` に `MfskDecode` の詳細（`sync_score`、
+`sync_cv`、`hard_errors`、`pass`、`flags`、`key_bits`、`key`、`delivery`、
+`stage`）。`MfskBudgetReport` に `rows_subtracted`。デコード結果は
+`LIBRARY.md` §1.3 の一覧どおりに動く（コールサインのプレフィックスを検査しなくなった、
+OSD の行ごとの移植、JT9 のビン以下の補正）。
+
+**Kotlin と Swift** は同じ ABI に従い、行の型はソース互換でなくなる:
+`syncScore`、`syncCv` / `syncCV`、`hardErrors` は nullable になり（モードが測らない
+ところでは `null` / `nil`）、行に `key`、`keyBits`、`delivery`、`stage` が加わる。
+新規: `decodePrefix`、`prefixPoints`、`deliveryIsExact`、ストリームの
+`setPrefixPoints` と `slotIsWhole` / `isSlotWhole`、IQ 受信器の `setEarly`、
+予算レポートの `rowsSubtracted`。Kotlin の貸し出しチャンネルデコーダは `onDecode` と
+`setBudget` を受け付ける。C と同じく、IQ 受信器の FT8 チャンネルは既定で早期デコードする。
+
+### 3.2 0.12 ABI から
 
 0.13.0 で C 側のデコード surface が置き換わった（ABI バージョン 2 → 3）。
 `mfsk-ffi` は `publish = false` で、リポジトリ内の C++ ドライバ、Kotlin

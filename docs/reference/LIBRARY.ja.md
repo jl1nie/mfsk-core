@@ -30,7 +30,7 @@ type である。配線済みの全プロトコルが同じ受信フロー
 - [1. クイックスタート](#1-クイックスタート)
   - [1.1 使い方の場面ごとに: デコーダは持ち続けるもの](#11-使い方の場面ごとに-デコーダは持ち続けるもの)
   - [1.2 0.12 からの移行](#12-012-からの移行)
-  - [1.3 0.13 からの移行: `#[non_exhaustive]`](#13-013-からの移行-non_exhaustive)
+  - [1.3 0.13 からの移行](#13-013-からの移行)
 - [2. デコード API](#2-デコード-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` と `Depth`](#22-decodeparams-と-depth)
@@ -366,9 +366,50 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 
 ---
 
-### 1.3 0.13 からの移行: `#[non_exhaustive]`
+### 1.3 0.13 からの移行
 
-0.14 は、今後増えることが分かっている公開型に `#[non_exhaustive]` を付けた
+0.14 は 0.13 のデコード API をそのまま保つ。`Decoder<P>`、`DecodeParams`、モード別の
+`Extras`、`SlotInput` は同じ場所にあり、それらを `Default` とフィールド代入で組み立てる
+呼び出し側は、たいていそのまま再コンパイルできる。壊れるのはもっと狭い範囲で、
+`#[non_exhaustive]` が付いた型（ほとんどの呼び出し側が出会うのはこれ）、`Option` になった
+`RowDetail` の 3 フィールド、プロトコル実装者が書くトレイト、いくつかの低レベルな `fec` と
+`jt9` の関数である。全一覧は `CHANGELOG.md` の `## 0.14.0`。
+
+**結果が変わるもの。** どれもコードの変更は要らない:
+
+| | 0.13 | 0.14 | 測定 |
+|---|---|---|---|
+| FT8 / FT4 のもっともらしさ判定 | プレフィックスが 82 項目の ITU 表に無いコールサインと、`A5A`（ブータン）を無条件に拒否していた | 文法の検査だけ（`ft8b.f90` と同じ） | 2024-06-20 以降に PSK Reporter で FT4/FT8 として報告された 100 303 のコールサインのうち 13 を拒否していた。すべて特別局（`J42A`、`U5WAR`、…）。ほかに動いたものは無い（tier C、混雑バンドのコーパス、FT4 の雑音スロット 3 000）（[#612](https://github.com/jl1nie/mfsk-core/issues/612)） |
+| OSD（FT8、FT4、FST4） | `osd174_91.f90` / `osd240_101.f90` と一致しない 2 つの移植 | 1 つ、行ごとの移植 | 行は同じ。FT8 の `hard_errors` と `pass` が動く（`K1BZM DK8NE` は `jt9` と同じ 18 hard errors になった）。tier C は ±0.2 dB 以内。`Deep` の `qso3_busy` は 570 → 504 ms、FST4-60 のゴールデンは 951 → 597 ms（[#417](https://github.com/jl1nie/mfsk-core/issues/417)） |
+| 既知の搬送波での JT9（`jt9::SniperRequest`） | ビン以下のずれを補正しない | `SymbolFft::mixed` で補正する | ビンの半分ずれた搬送波で最大約 3.9 dB 失っていた。JT65 と WSPR の変化は 100 万分の 1（tier C は +0.00 dB）（[#424](https://github.com/jl1nie/mfsk-core/issues/424)） |
+| `SlotInput::budget` | FT8・FT4・FST4 だけが守っていた。FT8 の `SicEarly` はチェックポイントの間で何も確認しなかった | 全モードが候補ごとに 1 回確認し、`exhausted` を立てる。`SicEarly` は行ごとに確認する | `SicEarly` に 300 ms の予算を与えると 641 ms 走っていた。今は 304 ms（[#593](https://github.com/jl1nie/mfsk-core/issues/593)、[#587](https://github.com/jl1nie/mfsk-core/issues/587)） |
+| `RowDetail::sync_score` / `sync_cv` / `hard_errors` | WSPR、JT9、JT65、Q65 は `0`、FT8 の a7 / a8 は仮の値 | それらでは `None`、モードが測る場合は `Some` | —（[#594](https://github.com/jl1nie/mfsk-core/issues/594)） |
+| `RowDetail::info` | FT8、FT4、FST4 のみ | 全モード（WSPR 50 ビット、JT9 / JT65 72、Q65 77） | 同じ文面の JT65 の 2 行が 1 行扱いされなくなった（[#592](https://github.com/jl1nie/mfsk-core/issues/592)） |
+| `wasm32-unknown-unknown` での `Decoder<Wspr>` と MSK144 | どんな入力でも panic した（`Instant::now`） | デコードする | CI がこのターゲットで全モードをデコードするようになった（[#583](https://github.com/jl1nie/mfsk-core/issues/583)） |
+| FT8 のシンボルのスケーリングと `nsync` 判定 | `* (1/1000)`。`nsync` は粗いスペクトログラムで数え直していた | `/ 1e3` と精製後のスペクトル（`ft8b.f90` と同じ） | 動いた群は無い。判定が変わったのは tier-A/B 全体で 1 候補（[#423](https://github.com/jl1nie/mfsk-core/issues/423)） |
+
+**コード。**
+
+| 領域 | 0.13 | 0.14 |
+|---|---|---|
+| 公開 struct の構築、公開 enum の `match` | struct リテラル、`..Default::default()`、網羅的な `match` | `#[non_exhaustive]`: `Default` と代入、新しいコンストラクタ、`_` の腕（下記） |
+| `RowDetail::{sync_score, sync_cv, hard_errors}` | `f32`、`f32`、`u32` | `Option<…>`。`detail.sync_score.unwrap_or(0.0)` で従来どおり読めるが、`None` は「そのモードにはその値が無い」という意味になった |
+| 早期の行 | 無い。`decode` は周期の終わりに返る | その時点までの周期を渡す `Decoder::decode_prefix` / `decode_prefix_with`（[§2.3](#23-早期デコードと計算予算)）。いつ呼ぶかは `Decoder::prefix_points()`、そこで切るのは `IqReceiver::set_prefix_points` |
+| 返された行とストリームされた行の対応付け | 文面と周波数で | `RowDetail::delivery`。デコーダがどちらの契約で動くかは `AnyDecoder::delivery_is_exact()`（[§2.4](#24-ストリーミング配信)） |
+| `ModulationParams` の実装 | `NFFT_PER_SYMBOL_FACTOR`、`NSTEP_PER_SYMBOL`、`NDOWN`、`SYMBOL_DT`、`N_SYMBOLS`、`TONE_SPACING_HZ` をすべて書く | 最初の 3 つは `SyncFrontEnd: Protocol` に移った。これを実装するのは `engine::sync` か汎用パイプラインでデコードするプロトコルだけ（そうでなければコンパイルエラー）。`SYMBOL_DT` と `N_SYMBOLS` は既定値がある。トーンが変調指数の間隔で並ぶモードでは `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)`（[§5](#5-protocol-トレイト階層)） |
+| `msg::wsjt77::is_plausible_callsign` | ITU のプレフィックス表を見ていた | 残っており、`is_valid_callsign` と同じになった（コードの変更は不要。結果の表を参照） |
+
+**無くなったもの、と代わりの方法。**
+
+| 0.13 | 代わり |
+|---|---|
+| `fec::ldpc::osd_decode(llr)`、`osd_decode_npre1(llr)`、`osd_decode_npre1_masked(llr, mask)` | `fec::ldpc::osd174_91(llr, NDEEP2_174_91, mask)`。深さは `fec::ldpc::osd_npre` から。本家の `ndeep = 2` |
+| `osd_decode_npre1_npre2(llr)` | `osd174_91(llr, NDEEP3_174_91, mask)`。`ndeep = 3` |
+| `osd_decode_deep(llr, ndeep, verify)`、`osd_decode_npre_generic::<P>(…)` | `fec::ldpc::osd_npre::osd_npre::<P>(llr, depth, partial_crc, ap_mask, verify)`。結果は削除した移植と意図的に異なる。本家と一致しなかったのがそれらの方である |
+| `osd_decode_deep4` | 対応するものは無い。本家のより深い設定（`nord = 2`）は移植していない |
+| `jt9::baseband`（`mix_to_baseband`、`NSPS_BB`） | 無い。呼び出し元が無く、`downsam9.f90` がすることもしていなかった。移植は `jt9::softsym` |
+
+**`#[non_exhaustive]`。** 0.14 は、今後増えることが分かっている公開型に `#[non_exhaustive]` を付けた
 （[#573](https://github.com/jl1nie/mfsk-core/issues/573)）。
 破壊的変更を一度だけ入れることで、**増えること自体が破壊的変更でなくなる**。
 本クレートの慣例では新プロトコルの追加はパッチレベルだが、それは `ProtocolId` に

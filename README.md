@@ -644,7 +644,8 @@ receiver handle of its own (`mfsk_jtty_*`; `MfskJttyReceiver` in Kotlin,
 (`pileup`, `max_drift`, fading) with `MfskQ65History` / `MfskQ65Callers` handles
 and `mfsk_encode_q65_flagged`, and FT8's a7 is `MfskExtras::a7`. Kotlin and Swift
 wrap the same surface. The 0.12 session API is gone; the migration table is
-[`BINDINGS.md` §3](docs/reference/BINDINGS.md#3-porting-from-the-012-abi).
+[`BINDINGS.md` §3.2](docs/reference/BINDINGS.md#32-from-the-012-abi), and 0.14's
+changes (ABI 3 kept, behaviour only) are [§3.1](docs/reference/BINDINGS.md#31-from-the-013-abi).
 
 ## Contributing
 

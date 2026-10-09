@@ -36,7 +36,9 @@ replacement for it.
   - [2.10 Threads and the runtime](#210-threads-and-the-runtime)
   - [2.11 Errors and memory rules](#211-errors-and-memory-rules)
   - [2.12 Symbol index](#212-symbol-index)
-- [3. Porting from the 0.12 ABI](#3-porting-from-the-012-abi)
+- [3. Porting](#3-porting)
+  - [3.1 From the 0.13 ABI](#31-from-the-013-abi)
+  - [3.2 From the 0.12 ABI](#32-from-the-012-abi)
 - [4. Kotlin / Android](#4-kotlin--android)
 - [5. Swift / Apple](#5-swift--apple)
 
@@ -835,7 +837,46 @@ mode is here but does not offer what was asked).
 
 ---
 
-## 3. Porting from the 0.12 ABI
+## 3. Porting
+
+### 3.1 From the 0.13 ABI
+
+0.14.0 keeps ABI version 3: every struct grew by appended fields only, and no
+function changed its signature, so a 0.13 program links and runs. What a C
+caller has to look at is behaviour.
+
+| area | 0.13 | 0.14 |
+|---|---|---|
+| a result array's stride | rows written `sizeof(MfskDecode)` apart, the library's own: a program built against an older, shorter header got row 1 onward in the wrong place and wrote past its buffer | rows are `out[0].size` apart, the caller's; set it to `sizeof(MfskDecode)` (or 0 for this header's) before the call, and a `size` that cannot be a struct size is `MFSK_STATUS_INVALID_ARG` with nothing written ([#607](https://github.com/jl1nie/mfsk-core/issues/607), §2.4) |
+| each row's `size` after a decode | the bytes written, so a newer header's array came back saying the library's `sizeof` | your stride, so the array can go straight to `mfsk_q65_history_record` or the next decode; read what the library wrote from the header, not the row ([#635](https://github.com/jl1nie/mfsk-core/issues/635)) |
+| retrying a call refused for a short `out` | `mfsk_decoder_decode_stream` had already taken the slot, so the retry got `MFSK_STATUS_UNSUPPORTED`; the other `decode_*` calls decoded again, firing the callback twice and stepping a Q65 average twice | the same call with room is answered from the rows already found, without decoding ([#633](https://github.com/jl1nie/mfsk-core/issues/633)) |
+| `float` at a rate other than 12 kHz | resampled and peak-normalised to 16 bits per call | resampled keeping the level and handed over as at 12 kHz: the decoder sets the gain (RMS) once per period ([#634](https://github.com/jl1nie/mfsk-core/issues/634)) |
+| `sync_score`, `sync_cv`, `hard_errors` | `0` from WSPR, JT9, JT65 and Q65 | still `0` there; `flags` bits 2–4 (`MFSK_DECODE_FLAG_HAS_*`) say which the row's mode measured ([#594](https://github.com/jl1nie/mfsk-core/issues/594)) |
+| `info_bits` / `mfsk_decoder_copy_info` | FT8, FT4 and FST4 only | every mode: WSPR 50 bits, JT9 and JT65 72, Q65 77; rows also carry a `key` ([#592](https://github.com/jl1nie/mfsk-core/issues/592)) |
+| `mfsk_decoder_set_budget` on WSPR, JT9, JT65, Q65 | `MFSK_STATUS_UNSUPPORTED` | accepted: they publish `MFSK_CAP_BUDGET` and poll once per candidate ([#593](https://github.com/jl1nie/mfsk-core/issues/593)) |
+| `mfsk_iq_push`, an FT8 channel | whole slots only | **early by default**: checkpoint A's rows at ~11.8 s with `stage == MFSK_STAGE_EARLY`, the rest at the end without repeating them; `mfsk_iq_set_early(rx, channel, false)` restores whole slots ([#601](https://github.com/jl1nie/mfsk-core/issues/601), §2.8.2) |
+| `MfskStream` | whole slots | unchanged unless you opt in with `mfsk_decoder_prefix_points` → `mfsk_stream_set_prefix_points`, then decode every delivery with `mfsk_decoder_decode_stream` (§2.5) |
+
+New, all appended: `mfsk_decoder_decode_prefix_i16` / `_f32`,
+`mfsk_decoder_prefix_points`, `mfsk_decoder_delivery_is_exact`,
+`mfsk_stream_set_prefix_points`, `mfsk_stream_slot_is_whole`,
+`mfsk_iq_set_early`; `MfskDecode` gains `key_bits`, `key`, `delivery`,
+`stage`; `MfskIqDecode` gains `MfskDecode`'s detail (`sync_score`,
+`sync_cv`, `hard_errors`, `pass`, `flags`, `key_bits`, `key`, `delivery`,
+`stage`); `MfskBudgetReport` gains `rows_subtracted`. The decode results
+move as `LIBRARY.md` §1.3 lists (callsign prefixes no longer checked, the OSD
+ported line for line, JT9's sub-bin correction).
+
+**Kotlin and Swift** follow the same ABI, and their row types are source
+breaks: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable
+(`null` / `nil` where the mode does not measure them), and rows gain `key`,
+`keyBits`, `delivery` and `stage`. New: `decodePrefix`, `prefixPoints`,
+`deliveryIsExact`, a stream's `setPrefixPoints` and `slotIsWhole` /
+`isSlotWhole`, the IQ receiver's `setEarly`, and the budget report's
+`rowsSubtracted`. Kotlin's lent channel decoder takes `onDecode` and
+`setBudget`. As in C, an FT8 channel of the IQ receiver is early by default.
+
+### 3.2 From the 0.12 ABI
 
 0.13.0 replaced the C decode surface (ABI version 2 → 3). `mfsk-ffi` is
 `publish = false`, and the in-repo C++ driver, the Kotlin binding and the Swift
