@@ -1098,3 +1098,56 @@ fn a_short_buffer_does_not_lose_the_streams_slot() {
     assert_eq!(st, MfskStatus::Unsupported);
     unsafe { mfsk_decoder_close(d) };
 }
+
+/// #634: at a rate other than 12 kHz a float prefix sequence goes through the
+/// same path as at 12 kHz, so the decoder pins the level at the first prefix;
+/// a loud click after checkpoint B only clips. On this synthetic signal and on
+/// `qso3_busy.wav` (21 rows either way, measured with a probe) the old per-call
+/// peak normalisation did not change the rows, so this guards the path, not a
+/// measured loss.
+#[test]
+fn a_float_prefix_sequence_at_48k_decodes_early_and_to_the_end() {
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    // 12 kHz -> 48 kHz by repetition; the resampler's low-pass takes the images out.
+    let mut audio: Vec<f32> = slot
+        .iter()
+        .flat_map(|&s| std::iter::repeat_n(s as f32 / 32_768.0, 4))
+        .collect();
+    for (i, v) in audio.iter_mut().enumerate().skip(700_000).take(30) {
+        *v += if i % 2 == 0 { 3_000.0 } else { -3_000.0 };
+    }
+    let d = open(MfskMode::Ft8, None, None);
+    let prefix = |len: usize| {
+        let mut rows = vec![blank_row(); 32];
+        let mut n = 0usize;
+        let st = unsafe {
+            mfsk_decoder_decode_prefix_f32(
+                d,
+                audio.as_ptr(),
+                len,
+                48_000,
+                11,
+                rows.as_mut_ptr(),
+                rows.len(),
+                &mut n,
+            )
+        };
+        assert_eq!(st, MfskStatus::Ok);
+        rows.truncate(n);
+        rows
+    };
+    let early = prefix(141_696 * 4);
+    assert!(
+        any_contains(&early, "CQ JA1ABC PM95"),
+        "A: {:?}",
+        texts(&early)
+    );
+    assert!(prefix(162_432 * 4).is_empty());
+    let last = prefix(audio.len());
+    assert!(
+        any_contains(&last, "CQ JA1ABC PM95"),
+        "the final set keeps the early row: {:?}",
+        texts(&last)
+    );
+    unsafe { mfsk_decoder_close(d) };
+}

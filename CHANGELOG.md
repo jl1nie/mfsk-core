@@ -130,6 +130,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   checked the buffer, so the retry the ABI asks for found no slot (`UNSUPPORTED`): Swift's `decode(CaptureStream)` returned `nil` and
   the Kotlin shim threw. The other `decode_*` calls re-decoded on retry, which fired the callback twice and stepped a Q65 average twice.
   A refused call now keeps its rows (and a stream's period and time), and the retry is answered from them.
+- **Float audio at 44.1 / 48 kHz goes the same way as at 12 kHz (#634).** `mfsk_decoder_decode_f32` and `_prefix_f32` peak-normalised each
+  buffer to 16 bits when resampling, so a prefix sequence's level followed each prefix's peak instead of being pinned by the first, and
+  the float-engine modes (WSPR, JT9, JT65, Q65) were quantised. They now resample keeping the level and hand over `float`, so the
+  decoder sets the gain once per period. No decode changed on a synthetic FT8 signal or `qso3_busy.wav` at 48 kHz (21 rows, with
+  and without a loud click after B); this is consistency, not a measured recall gain.
 
 ### Skimmer
 

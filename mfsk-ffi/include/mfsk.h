@@ -2899,8 +2899,9 @@ enum MfskStatus mfsk_decoder_decode_prefix_i16(struct MfskDecoder *dec,
  * goes to the decoder as it is: the modes whose engines work in `float`
  * (WSPR, JT9, JT65, Q65) never see 16 bits, and FT8, FT4 and FST4, which
  * take 16-bit audio as WSJT-X does, get it scaled to a fixed level, so a
- * caller never picks one. At another rate it is resampled and
- * peak-normalised first.
+ * caller never picks one. At another rate it is resampled first, keeping
+ * the level, and then goes the same way (before #634 it was peak-normalised
+ * to 16 bits per call, so a prefix sequence's gain moved with each prefix).
  *
  * # Safety
  * As [`mfsk_decoder_decode_i16`], with `samples` as `float`.
