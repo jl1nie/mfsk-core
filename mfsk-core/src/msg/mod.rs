@@ -167,8 +167,8 @@ impl MessageCodec for Wsjt77Message {
         true
     }
 
-    /// [`wsjt77::Wsjt77Fields::is_plausible`] — the ITU-prefix
-    /// allowlist over the callsign *fields*, with free text and
+    /// [`wsjt77::Wsjt77Fields::is_plausible`] — the callsign grammar
+    /// over the callsign *fields*, with free text and
     /// telemetry exempt (nothing in them to check) and the EU VHF
     /// contest requiring a resolved hash (nothing else in it to check).
     fn is_plausible(message: &Self::Unpacked) -> bool {

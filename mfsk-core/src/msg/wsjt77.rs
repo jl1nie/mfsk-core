@@ -611,7 +611,7 @@ pub fn unpack77_with_hash(msg: &[u8], ht: &CallsignHashTable) -> Option<String> 
 ///   `CQ 123`) — `unpack28` renders the first three token codes and
 ///   the directed-CQ range as words;
 /// - a hashed callsign, `<CALL>` or the unresolved `<...>`;
-/// - an actual callsign, which goes to the ITU prefix allowlist.
+/// - an actual callsign, which goes to [`is_plausible_callsign`].
 pub fn is_plausible_call(field: &str) -> bool {
     if matches!(field, "CQ" | "DE" | "QRZ") || field.starts_with("CQ ") {
         return true;
@@ -1386,144 +1386,30 @@ pub fn is_valid_callsign(call: &str) -> bool {
     }
 }
 
-/// ITU-allocated **letter+digit** 2-char prefix list. The structural
-/// `is_valid_callsign` accepts any letter+digit pair (e.g. `Z7` from
-/// `Z74QTJ`), but real ITU amateur prefix series only allocate
-/// specific letter+digit blocks (mostly digits 2-9 for small countries).
-/// `Z7` and similar gaps are common landing spots for CRC-14
-/// false-positive bit patterns, so allow-listing the real entries
-/// catches garbage on the busy-band block-decode path without
-/// needing the full ITU table for the (numerous) letter+letter and
-/// digit+letter cases.
+/// Whether a callsign is grammatical enough to be one: [`is_valid_callsign`],
+/// which is what gates the crate's plausibility verdict on a decoded message.
 ///
-/// Source: ITU Radio Regulations Appendix 42 / DXCC entity prefixes,
-/// 2024 revision. Sorted for binary search.
-const VALID_LETTER_DIGIT_PREFIXES: &[&[u8; 2]] = &[
-    b"A2", b"A3", b"A4", b"A5", b"A6", b"A7", b"A8", b"A9", b"B0", b"B1", b"B2", b"B3", b"B4",
-    b"B5", b"B6", b"B7", b"B8", b"B9", b"C2", b"C3", b"C4", b"C5", b"C6", b"C7", b"C8", b"C9",
-    b"D2", b"D3", b"D4", b"D6", b"D7", b"D8", b"D9", b"E2", b"E3", b"E4", b"E5", b"E6", b"E7",
-    b"H2", b"H4", b"H6", b"H7", b"H8", b"H9", b"J2", b"J3", b"J5", b"J6", b"J7", b"J8", b"P2",
-    b"P3", b"P4", b"P5", b"P6", b"P7", b"P8", b"P9", b"S0", b"S2", b"S5", b"S7", b"S9", b"T2",
-    b"T3", b"T4", b"T5", b"T6", b"T7", b"T8", b"V2", b"V3", b"V4", b"V5", b"V6", b"V7", b"V8",
-    b"Z2", b"Z3", b"Z6", b"Z8",
-];
-
-#[inline]
-fn is_known_letter_digit_prefix(prefix: &[u8]) -> bool {
-    if prefix.len() != 2 {
-        return false;
-    }
-    let key: &[u8; 2] = match prefix.try_into() {
-        Ok(k) => k,
-        Err(_) => return false,
-    };
-    VALID_LETTER_DIGIT_PREFIXES.binary_search(&key).is_ok()
-}
-
-/// Stricter callsign validator than [`is_valid_callsign`] — gates the
-/// CRC-14 false-positive filter in the FT8 block decoder.
+/// Until #612 this also judged the **prefix**: a one-letter prefix had to be
+/// one of F G I K M N R W, and a letter+digit prefix had to be in an 82-entry
+/// ITU table. The table was added when `Z74QTJ/R` and `Q1FOO` came out of the
+/// `qso3_busy` busy-band decode, back when the OSD handed back a wrong
+/// codeword on 22 % of noise draws (#456). It is gone because, measured on
+/// 2026-10-09:
 ///
-/// The internal structural validator (`is_base_callsign`) accepts
-/// any alphanumeric prefix that has at least one letter, including
-/// letter+digit pairs the ITU never allocates for amateur use
-/// (e.g. `Z7`, `Q4`). Random codewords passing CRC-14 land in those
-/// gaps disproportionately often (`Z74QTJ/R`, `Q1FOO` — observed in
-/// the qso3 busy-band block-decode path before this filter).
+/// - it rejected 13 of 100 303 callsigns spotted on PSK Reporter in FT4/FT8
+///   (0.013 %), all special-event stations (`J42A`, `L22D`, `U1BD`, `U5WAR`,
+///   …), and the table lacked 57 of the 138 letter+digit prefixes `cty.dat`
+///   lists;
+/// - with it switched off nothing else moved: tier C for FT8 and FT4 (every
+///   crossing +0.00 dB, unexpected decodes unchanged), the busy-band corpus
+///   (identical hits and extras, noise-only files included), `qso3_busy` and
+///   the FT4 golden at every request shape, and 3 000 FT4 noise slots (6
+///   phantoms with it, 6 without; the whole verdict off gives 7). The phantoms
+///   the verdict does remove are removed by the grammar check.
 ///
-/// Compared to [`is_valid_callsign`]:
-/// - Accepts standard callsigns ([`is_standard_callsign`]) and
-///   letter+letter / digit+letter prefix base callsigns unchanged
-///   (~all ITU 2-char allocations are letter+letter blocks).
-/// - **Letter+digit 2-char prefixes** (the gap-prone case) must
-///   appear in an internal ITU Appendix-42 allowlist (~80 entries).
-/// - Compound `A/B`: at least one side must pass
-///   `is_plausible_callsign`; the modifier side stays as today.
+/// WSJT-X's `ft8b.f90` has no prefix check either.
 pub fn is_plausible_callsign(call: &str) -> bool {
-    if !is_valid_callsign(call) {
-        return false;
-    }
-    // Apply prefix allowlist on top of structural validation.
-    let parts: Vec<&str> = call.split('/').collect();
-    match parts.len() {
-        1 => has_plausible_prefix(parts[0]),
-        2 => {
-            // Compound — accept iff at least one side is a base
-            // callsign with a plausible ITU prefix. The modifier
-            // side ("R", "P", "QRP", etc.) is short by structure
-            // but doesn't qualify on its own; the base side carries
-            // the country.
-            let a_plausible = is_base_callsign(parts[0]) && has_plausible_prefix(parts[0]);
-            let b_plausible = is_base_callsign(parts[1]) && has_plausible_prefix(parts[1]);
-            a_plausible || b_plausible
-        }
-        _ => false,
-    }
-}
-
-/// Locate the prefix of a base callsign (or a /-side that looks like
-/// one) and check it against the letter+digit ITU allowlist. Other
-/// prefix shapes (1-char letter, letter+letter, digit+letter, 3-char)
-/// pass through — they cover ~all real ITU allocations.
-fn has_plausible_prefix(s: &str) -> bool {
-    let b = s.as_bytes();
-    if b.len() < 2 || b.len() > 7 {
-        // Short modifier or out-of-spec — defer to caller's compound
-        // logic; `is_valid_callsign` already validated shape.
-        return true;
-    }
-    // Strip trailing /R or /P (only meaningful on a full callsign,
-    // but harmless to apply here).
-    let b = if b.len() >= 2
-        && b[b.len() - 2] == b'/'
-        && (b[b.len() - 1] == b'R' || b[b.len() - 1] == b'P')
-    {
-        &b[..b.len() - 2]
-    } else {
-        b
-    };
-    // Find the rightmost digit followed by only letters → that's
-    // the separator between prefix and suffix.
-    let mut split = None;
-    for i in (0..b.len()).rev() {
-        if b[i].is_ascii_digit() && b[i + 1..].iter().all(|c| c.is_ascii_uppercase()) {
-            split = Some(i);
-            break;
-        }
-    }
-    let split = match split {
-        Some(s) => s,
-        None => return true, // no separator → caller already handles
-    };
-    let prefix = &b[..split];
-    // 1-char letter prefix: only F, G, I, K, M, N, R, W are
-    // assigned to amateur as standalone (everything else uses a
-    // 2-char prefix in practice). Q especially is reserved for
-    // Q-codes — common landing spot for CRC false positives.
-    if prefix.len() == 1 && prefix[0].is_ascii_uppercase() {
-        if matches!(
-            prefix[0],
-            b'F' | b'G' | b'I' | b'K' | b'M' | b'N' | b'R' | b'W'
-        ) {
-            return true;
-        }
-        // The split digit may be the prefix's own second character:
-        // a call like "A5A" (Bhutan) parses here as a 1-char "A"
-        // prefix, but "A5" is a real ITU letter+digit allocation.
-        // Before rejecting, retry the 2-char letter+digit prefix
-        // formed by this letter and the split digit (same for
-        // "T6A", "P5A", ...). Keeps the false-positive catch
-        // ("Q4A", "Z7A", ...) while admitting real short calls.
-        if b.len() >= 2 && b[0].is_ascii_uppercase() && b[1].is_ascii_digit() {
-            return is_known_letter_digit_prefix(&b[..2]);
-        }
-        return false;
-    }
-    // Letter+digit 2-char prefix: must be in the ITU allowlist
-    // (the other gap-prone shape that catches CRC false-positives).
-    if prefix.len() == 2 && prefix[0].is_ascii_uppercase() && prefix[1].is_ascii_digit() {
-        return is_known_letter_digit_prefix(prefix);
-    }
-    true
+    is_valid_callsign(call)
 }
 
 // ── Packing (encode) ────────────────────────────────────────────────────────
@@ -1959,48 +1845,17 @@ mod tests {
         }
     }
 
+    /// The 13 callsigns of 100 303 spotted on PSK Reporter in FT4/FT8 since
+    /// 2024-06-20 that the prefix allowlist refused (#612): special-event
+    /// stations of Greece (J4), Argentina (L2…L8), Russia (U1) and Ukraine
+    /// (U5). `A5A` (Bhutan), `T6A` and `P5A` are the 3-character shape #611
+    /// rescued.
     #[test]
-    fn plausible_callsign_rejects_letter_digit_gaps() {
-        // Prefixes outside the ITU letter+digit allowlist — common
-        // landing spots for CRC-14 false-positive bit patterns.
+    fn plausible_callsign_accepts_special_event_stations() {
         for c in [
-            "Z74QTJ", // observed qso3 garbage
-            "Q1ABC",  // Q reserved (no amateur)
-            "Q4ABCD", "X0FOO", // X+digit unassigned
-            "Y0ABC",
+            "J42A", "J45P", "J48FT", "J43POTA", "L22D", "L26M", "L65D", "L71D", "L75D", "L77C",
+            "L80M", "U1BD", "U5WAR", "A5A", "T6A", "P5A",
         ] {
-            assert!(
-                !is_plausible_callsign(c),
-                "should reject {c} (unallocated letter+digit prefix)"
-            );
-        }
-    }
-
-    #[test]
-    fn plausible_callsign_compound_garbage() {
-        // Compound where one side is garbage but the other passes —
-        // accept (mirrors WSJT-X's tolerance for portable modifiers).
-        assert!(is_plausible_callsign("JA1XYZ/P"));
-        // Compound where both sides have unallocated letter+digit
-        // prefixes — reject.
-        assert!(!is_plausible_callsign("Z74QTJ/Q4ABCD"));
-        // Compound with one Z7-prefix base + valid mod token — reject
-        // (mod alone can't make Z74QTJ plausible).
-        assert!(!is_plausible_callsign("Z74QTJ/R"));
-    }
-
-    /// Regression: 3-char letter-digit-letter calls split at the digit
-    /// into a 1-char prefix, which the standalone allowlist rejected —
-    /// so every real "A5A" (Bhutan) transmission was discarded by the
-    /// decode-path plausibility filter even after a clean CRC pass
-    /// (11 lost decodes on a real 2019-02-28 A5A-pileup recording).
-    /// The 1-char rejection must fall back to the 2-char letter+digit
-    /// prefix formed with the split digit.
-    #[test]
-    fn plausible_callsign_accepts_short_letter_digit_letter_calls() {
-        // Real ITU letter+digit allocations as 3-char calls:
-        // A5 Bhutan, T6 Tajikistan, P5 DPRK.
-        for c in ["A5A", "T6A", "P5A"] {
             assert!(is_plausible_callsign(c), "should accept {c}");
         }
         let a5a = pack77_type1("A5A", "JE1MGE", "PM96").expect("pack A5A message");
@@ -2008,15 +1863,26 @@ mod tests {
             is_plausible_payload(&a5a),
             "A5A pileup message should pass the plausibility filter"
         );
-        // 1-char prefixes with no letter+digit rescue stay rejected —
-        // the false-positive catch must not regress.
-        assert!(!is_plausible_callsign("Q4A"), "Q is reserved");
-        assert!(!is_plausible_callsign("Z7A"), "Z7 unallocated");
-        let q4 = pack77_type1("Q4A", "JA1XYZ", "PM95").expect("pack Q4A message");
-        assert!(
-            !is_plausible_payload(&q4),
-            "Q4A garbage should still fail the plausibility filter"
-        );
+    }
+
+    /// What the grammar still refuses: not a callsign at all.
+    #[test]
+    fn plausible_callsign_rejects_what_is_not_a_callsign() {
+        for c in [
+            "",
+            "A",
+            "123",
+            "ABC",
+            "CQ",
+            "W1AW/",
+            "/P",
+            "A/B/C",
+            "W1ABCDEFG",
+        ] {
+            assert!(!is_plausible_callsign(c), "should reject {c:?}");
+        }
+        // A compound needs a callsign on one side; two modifiers are not one.
+        assert!(!is_plausible_callsign("P/QRP"));
     }
 
     /// Regression: `n28` in the extended CQ-XXXX region (3..NTOKENS) could
@@ -2198,19 +2064,15 @@ mod tests {
         }
     }
 
-    /// The other half: fields that no allocation could produce. The
-    /// last three are CRC survivors observed on `qso3_busy.wav`.
+    /// The other half: fields that are not callsigns. The last two are CRC
+    /// survivors observed on `qso3_busy.wav`. A third, `G47OXF`, was refused
+    /// by the prefix allowlist (`G4` is not a prefix) until #612 removed it:
+    /// the grammar accepts it, and nothing in today's pipeline decodes it any
+    /// more (`qso3_busy` is unchanged with the allowlist off, at every request
+    /// shape, `.sic_early()` included).
     #[test]
     fn plausible_call_rejects_what_no_allocation_produces() {
-        for f in [
-            "",
-            "NFW/0811",
-            "ABCDEF",
-            "GHIJKL",
-            "294TOW/R",
-            "G47OXF",
-            "HVA1DPFV3L",
-        ] {
+        for f in ["", "NFW/0811", "ABCDEF", "GHIJKL", "294TOW/R", "HVA1DPFV3L"] {
             assert!(!is_plausible_call(f), "{f:?} must be refused");
         }
     }
