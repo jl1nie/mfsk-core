@@ -785,13 +785,21 @@ fn downconvert_and_matched_filter(
     audio_centre_hz: f32,
     nsps: usize,
 ) -> Vec<Complex32> {
-    let two_pi_fc_dt = 2.0 * PI * audio_centre_hz / SAMPLE_RATE_HZ;
-    let mut bb: Vec<Complex32> = Vec::with_capacity(audio.len());
-    for (n, &s) in audio.iter().enumerate() {
-        let phase = two_pi_fc_dt * n as f32;
-        let (sin, cos) = phase.sin_cos();
-        bb.push(Complex32::new(2.0 * s * cos, -2.0 * s * sin));
-    }
+    // The crate's mixer, `exp(-j2π·fc·n/Fs)` by a renormalised rotating phasor.
+    // This used to be `sin_cos(step · n as f32)` per sample, whose argument at
+    // n = 720 000 and fc = 1500 Hz is ~565 000 rad: an f32 resolves that to
+    // ~0.06 rad, so over the last 4 000 samples of a 60 s buffer the carrier it
+    // mixed with sat 0.016 rad (0.9°) off the tone's (#425,
+    // `tests::downconversion_keeps_its_phase`). Packets are short and never
+    // noticed; a long buffer, `decode_multichannel` on a whole slot, would.
+    let mut mixer = crate::engine::dsp::ddc::Mixer::new(audio_centre_hz, SAMPLE_RATE_HZ);
+    let bb: Vec<Complex32> = audio
+        .iter()
+        .map(|&s| {
+            let (re, im) = mixer.mix(2.0 * s);
+            Complex32::new(re, im)
+        })
+        .collect();
     let rrc = rrc_pulse(RRC_ALPHA, RRC_SPAN_SYMS, nsps);
     let n_out = bb.len() + rrc.len() - 1;
     let mut out = vec![Complex32::new(0.0, 0.0); n_out];
@@ -1229,4 +1237,75 @@ fn estimate_freq_offset_for_mode(
         0.0
     };
     (best_k as f32 + frac) * coarse_step_hz
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mixing stage as it was: `sin_cos(step · n)` with `n` an f32.
+    fn legacy_mix(audio: &[f32], centre_hz: f32) -> Vec<Complex32> {
+        let two_pi_fc_dt = 2.0 * PI * centre_hz / SAMPLE_RATE_HZ;
+        audio
+            .iter()
+            .enumerate()
+            .map(|(n, &s)| {
+                let (sin, cos) = (two_pi_fc_dt * n as f32).sin_cos();
+                Complex32::new(2.0 * s * cos, -2.0 * s * sin)
+            })
+            .collect()
+    }
+
+    fn new_mix(audio: &[f32], centre_hz: f32) -> Vec<Complex32> {
+        let mut m = crate::engine::dsp::ddc::Mixer::new(centre_hz, SAMPLE_RATE_HZ);
+        audio
+            .iter()
+            .map(|&s| {
+                let (re, im) = m.mix(2.0 * s);
+                Complex32::new(re, im)
+            })
+            .collect()
+    }
+
+    /// Mean phase of the block of `len` samples starting at `at`, against the
+    /// exact (f64) phase a tone at `centre_hz` would show: zero if the mixer's
+    /// carrier is the tone's.
+    fn block_phase_error(bb: &[Complex32], at: usize, len: usize) -> f64 {
+        // `audio[n] = cos(2π·fc·n/Fs)` mixed by `exp(-jθn)` is `½ + ½·exp(-j2θn)`;
+        // after `2·s` the DC term is 1. Averaging a block of whole 2θ periods
+        // (here a multiple of Fs/(2·fc) samples) leaves the DC term, whose
+        // phase is the carrier's phase error at that point.
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for c in &bb[at..at + len] {
+            re += c.re as f64;
+            im += c.im as f64;
+        }
+        im.atan2(re)
+    }
+
+    /// A tone at the centre frequency, 60 s at 12 kHz: the carrier the mixer
+    /// multiplies by must stay on the tone's phase to the end of the buffer.
+    /// The f32 phase argument it replaced could not (#425).
+    #[test]
+    fn downconversion_keeps_its_phase() {
+        let fc = 1500.0f32;
+        let n = 720_000usize;
+        let audio: Vec<f32> = (0..n)
+            .map(|k| (2.0 * core::f64::consts::PI * fc as f64 * k as f64 / 12_000.0).cos() as f32)
+            .collect();
+        // Fs / (2·fc) = 4 samples per period of the 2θ term; 4000 is whole periods.
+        let len = 4_000usize;
+        let at_end = n - len;
+        let old = block_phase_error(&legacy_mix(&audio, fc), at_end, len).abs();
+        let new = block_phase_error(&new_mix(&audio, fc), at_end, len).abs();
+        eprintln!("carrier phase error at the end of 60 s: old {old:.4} rad, new {new:.6} rad");
+        assert!(
+            old > 0.01,
+            "the legacy f32 phase should have drifted: {old}"
+        );
+        assert!(new < 0.002, "the mixer's carrier drifted: {new}");
+        // And the start agrees, so the comparison is about the end alone.
+        let new0 = block_phase_error(&new_mix(&audio, fc), 0, len).abs();
+        assert!(new0 < 0.002, "{new0}");
+    }
 }
