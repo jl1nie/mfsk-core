@@ -729,8 +729,9 @@ fn decode_frame_inner<Pol: MessagePolicy>(
         let mut r = r;
         #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
         {
-            let xsig = crate::ft8::decode_block::compute_xsig_wsjtx(&r, audio, Some(&fft_cache));
-            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
+            let (xsig, nsync) =
+                crate::ft8::decode_block::compute_xsig_wsjtx(&r, audio, Some(&fft_cache));
+            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, nsync, &sbase) {
                 return None;
             }
         }
@@ -1043,7 +1044,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
             // `xsig` for the xsnr2 gate below — must run *before* the
             // subtract (see `compute_xsig_wsjtx`'s doc comment).
             #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
-            let xsig_wsjtx: f32 =
+            let (xsig_wsjtx, nsync_wsjtx) =
                 crate::ft8::decode_block::compute_xsig_wsjtx(&r, residual, Some(&fft_cache));
             // Sequential subtract — clean residual for next candidate.
             // Use the WSJT-X-style channel-aware LPF subtract (matches
@@ -1086,7 +1087,8 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
             // same revoke-less-retract discipline `decode_block`'s own
             // driver already follows (issue #243).
             #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
-            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, &sbase, &spec) {
+            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, nsync_wsjtx, &sbase)
+            {
                 continue;
             }
             let r = deliver_result(r, eme_delay, on_result);
@@ -1700,9 +1702,9 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
         )?;
         #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
         {
-            let xsig =
+            let (xsig, nsync) =
                 crate::ft8::decode_block::compute_xsig_wsjtx(&r, audio, Some(fft_cache.as_slice()));
-            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
+            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, nsync, &sbase) {
                 return None;
             }
         }

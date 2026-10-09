@@ -270,10 +270,11 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
         .clone();
     let mut buf = [Complex::new(0.0_f32, 0.0); 32];
 
-    // WSJT-X scales `cs = csymb / 1e3` (ft8b.f90:159). The /1e3 is
-    // absorbed by `normalize_bmet` in the LLR pipeline, but we keep
-    // it for traceable parity with WSJT-X numerics.
-    const CS_SCALE: f32 = 1.0 / 1000.0;
+    // WSJT-X scales `cs = csymb / 1e3` (ft8b.f90:159). A true division,
+    // not `* (1/1000)`: gfortran -O2 and -O3 -funroll-loops (the release
+    // flags) divide componentwise, and the two differ in the last bit for
+    // 81% of 2M random samples (scratch oracle, 2026-10-09).
+    const CS_DIV: f32 = 1000.0;
 
     let np2 = cd0.len() as i32;
     for sym in 0..NN {
@@ -302,8 +303,8 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
         // csymb(1:8) (Fortran) = bins 0..7 (0-based) = tones 0..7.
         for tone in 0..NTONES {
             out[sym][tone] = Cmplx {
-                re: buf[tone].re * CS_SCALE,
-                im: buf[tone].im * CS_SCALE,
+                re: buf[tone].re / CS_DIV,
+                im: buf[tone].im / CS_DIV,
             };
         }
     }
