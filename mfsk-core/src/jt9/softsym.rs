@@ -126,7 +126,6 @@ impl AudioFft {
         // built on — `fpk` is in Hz, `i0` indexes that same grid.
         let df1 = 12_000.0 / NFFT1 as f32;
         let i0 = (fpk / df1) as i64;
-        let nh2 = (NFFT2 / 2) as i64;
 
         // 40th-percentile noise floor in a ±100 Hz window around fpk.
         let nf = fpk.round() as i64;
@@ -139,32 +138,9 @@ impl AudioFft {
         let fac = (1.0 / avenoise).sqrt();
 
         // Place selected bins into c2 with FFT-shift convention so that
-        // the IFFT yields a baseband centred at fpk. `i in 0..=nh2` maps
-        // to `j = i0+i` and `i in (nh2, NFFT2)` maps to `j = i0+i-NFFT2`
-        // — each piece is a separately-monotonic (contiguous) run, so
-        // clamp each piece's valid `i` range to `0 <= j < c1_len` once
-        // instead of re-checking the bound on every one of the NFFT2
-        // iterations. `i`s outside both ranges leave `c2[i]` at its
-        // zero-init value, matching the original per-element skip.
-        let mut c2 = vec![Complex::new(0.0, 0.0); NFFT2];
-        let c1_len = self.c1.len() as i64;
-        let nfft2 = NFFT2 as i64;
-
-        // Piece 1: i in [0, nh2], j = i0 + i.
-        let p1_lo = (-i0).clamp(0, nh2 + 1);
-        let p1_hi = (c1_len - i0).clamp(0, nh2 + 1);
-        for i in p1_lo..p1_hi {
-            let j = (i0 + i) as usize;
-            c2[i as usize] = self.c1[j] * fac;
-        }
-
-        // Piece 2: i in (nh2, NFFT2), j = i0 + i - NFFT2.
-        let p2_lo = (nfft2 - i0).clamp(nh2 + 1, nfft2);
-        let p2_hi = (c1_len - i0 + nfft2).clamp(nh2 + 1, nfft2);
-        for i in p2_lo..p2_hi {
-            let j = (i0 + i - nfft2) as usize;
-            c2[i as usize] = self.c1[j] * fac;
-        }
+        // the IFFT yields a baseband centred at fpk, scaled by `fac` on
+        // the way (shared with WSPR's `decimate_to_baseband`, #425).
+        let mut c2 = crate::engine::dsp::downsample::repack_centered(&self.c1, i0, NFFT2, fac);
 
         // IFFT to time domain.
         default_planner().plan_inverse(NFFT2).process(&mut c2);
