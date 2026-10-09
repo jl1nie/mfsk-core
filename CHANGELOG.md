@@ -86,6 +86,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   spectrogram after decoding. On the goldens and the FT8 sweep (T1, 1 040 trials) no group moves; the gate flips for one candidate
   in the whole tier-A/B suite.
 
+- **An FT8 `decode_prefix` sequence pins the sniper with the rest of its settings (#628).** Turning the sniper on after checkpoint A
+  made the final call run one sniper decode instead of finishing the staged sequence, so early rows already returned were missing
+  from the "complete" set (21 rows down to 2 on `qso3_busy`). Whether the period runs the sniper, and on which frequency, is now
+  fixed by its first call like the strategy and search; a change applies from the next period. AP, QSO context and the message
+  filter are still read at each call.
+
 ### Internals
 
 - **DSP duplicates become one (#425).** `engine::dsp::window::cosine_sum` replaces the two Nuttall-4 loops (symmetric in

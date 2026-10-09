@@ -557,8 +557,14 @@ impl<P: Decodable> Decoder<P> {
     /// `period` this is a one-shot [`Decoder::decode`] of the audio given,
     /// keeping nothing. Mixing in `decode` midway through a period's sequence
     /// is unspecified (duplicate rows at worst). Settings are pinned at the
-    /// period's first call: FT8's strategy and search, and the gain of `f32`
-    /// audio, which is measured on that first prefix.
+    /// period's first call: FT8's strategy and search, whether it runs the
+    /// sniper and on which frequency (#628: a sniper turned on midway would
+    /// otherwise replace the staged sequence, and drop early rows already
+    /// returned), and the gain of `f32` audio, which is measured on that
+    /// first prefix. A change to these takes effect at the next period; the
+    /// rest (a-priori hint and QSO context, message filter) is read at each
+    /// call, as upstream's GUI refills `dec_data.params` from its current
+    /// settings for each checkpoint (`widgets/mainwindow.cpp:2751`).
     ///
     /// Synchronous and CPU-bound: it holds the calling thread for the
     /// stage's work. Bound it with `SlotInput::budget`.
