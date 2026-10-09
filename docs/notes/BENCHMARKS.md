@@ -10,13 +10,13 @@ reproduce this sweep myself", see the protocol-specific
 
 Each mode is run against WSJT-X `v3.2.0-rc1` on the same job (band, what the
 operator knows, decode depth) and the same recordings, file by file.
-Ryzen 9 9900X, one thread each side, 2026-10-04 (FT4, FST4 and JTTY: 2026-10-01).
+Ryzen 9 9900X, one thread each side, 2026-10-04 (FT8, FT4 and FST4: 2026-10-09; JTTY: 2026-10-01).
 
 | mode | WSJT-X decoder | sensitivity against WSJT-X | speed |
 |---|---|---|---|
-| FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 3.8–4.0× faster |
-| FT4 | `jt9 -5 -d 3` | the same (4 conditions) | 2.9–6.4× faster |
-| FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 1.9–2.4× faster |
+| FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 4.8–5.0× faster |
+| FT4 | `jt9 -5 -d 3` | the same (4 conditions) | 3.3–6.7× faster |
+| FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 4.5–5.3× faster |
 | Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.5–3.8× faster |
 | JT9 | `jt9 -9 -d 3` | the same | 5.2–5.4× faster |
 | JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
