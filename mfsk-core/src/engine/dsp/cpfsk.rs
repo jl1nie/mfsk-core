@@ -30,6 +30,42 @@ pub fn nsps(sample_rate: u32, symbol_dt: f32) -> usize {
     (sample_rate as f32 * symbol_dt).round() as usize
 }
 
+/// Walk the accumulated phase of a continuous-phase FSK transmission,
+/// calling `f(sample_index, phase)` for every sample.
+///
+/// Symbol `k` runs at `f0_hz + tones[k] · tone_spacing_hz` for `nsps` samples
+/// and the phase carries across symbol boundaries, wrapped into `(−2π, 2π)` the
+/// way WSJT-X's `Modulator::modulate` leaves `m_phi`. This is the one place that
+/// arithmetic is written: [`synth_f32_into`] takes `cos` of it for the transmit
+/// waveform, and `engine::dsp::subtract` takes `cos` and `sin` of it to rebuild
+/// the same waveform on the receive side, so the two cannot drift apart (#425).
+#[inline]
+pub(crate) fn for_each_phase(
+    tones: &[u8],
+    nsps: usize,
+    f0_hz: f32,
+    tone_spacing_hz: f32,
+    sample_rate_hz: f32,
+    mut f: impl FnMut(usize, f32),
+) {
+    let mut phase = 0.0f32;
+    let mut idx = 0usize;
+    for &sym in tones {
+        let freq = f0_hz + sym as f32 * tone_spacing_hz;
+        let dphi = TAU * freq / sample_rate_hz;
+        for _ in 0..nsps {
+            f(idx, phase);
+            idx += 1;
+            phase += dphi;
+            if phase > TAU {
+                phase -= TAU;
+            } else if phase < -TAU {
+                phase += TAU;
+            }
+        }
+    }
+}
+
 /// Synthesise `tones` into `out` as continuous-phase FSK, then apply
 /// the transmit-envelope ramp ([`envelope::apply_ramp`]).
 ///
@@ -54,22 +90,14 @@ pub fn synth_f32_into(
         nsps * tones.len(),
         "cpfsk::synth_f32_into: out.len() must equal nsps * tones.len()"
     );
-    let mut phase = 0.0f32;
-    let mut idx = 0usize;
-    for &sym in tones {
-        let freq = f0_hz + sym as f32 * tone_spacing_hz;
-        let dphi = TAU * freq / sample_rate as f32;
-        for _ in 0..nsps {
-            out[idx] = amplitude * phase.cos();
-            idx += 1;
-            phase += dphi;
-            if phase > TAU {
-                phase -= TAU;
-            } else if phase < -TAU {
-                phase += TAU;
-            }
-        }
-    }
+    for_each_phase(
+        tones,
+        nsps,
+        f0_hz,
+        tone_spacing_hz,
+        sample_rate as f32,
+        |idx, phase| out[idx] = amplitude * phase.cos(),
+    );
 
     // Transmit-envelope ramp (issue #259). Without it the burst starts
     // and ends on a step discontinuity, a broadband click at both edges.
@@ -101,6 +129,50 @@ pub fn synth_f32(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The transmit waveform is what it was before its loop became
+    /// [`for_each_phase`]: every sample, bit for bit, for several tone
+    /// sequences, spacings and sample rates.
+    #[test]
+    fn synth_is_bit_identical_to_the_loop_it_replaced() {
+        fn legacy(tones: &[u8], nsps: usize, f0: f32, spacing: f32, fs: u32, amp: f32) -> Vec<f32> {
+            let mut out = vec![0.0f32; nsps * tones.len()];
+            let mut phase = 0.0f32;
+            let mut idx = 0usize;
+            for &sym in tones {
+                let freq = f0 + sym as f32 * spacing;
+                let dphi = TAU * freq / fs as f32;
+                for _ in 0..nsps {
+                    out[idx] = amp * phase.cos();
+                    idx += 1;
+                    phase += dphi;
+                    if phase > TAU {
+                        phase -= TAU;
+                    } else if phase < -TAU {
+                        phase += TAU;
+                    }
+                }
+            }
+            envelope::apply_ramp(&mut out, envelope::ramp_samples(fs, nsps));
+            out
+        }
+        let tones: Vec<u8> = (0..162).map(|k| ((k * 7 + 3) % 4) as u8).collect();
+        for (nsps, f0, spacing, fs) in [
+            (8192usize, 1500.0f32, 1.4648f32, 12_000u32),
+            (6912, 1200.3, 1.7361, 12_000),
+            (4460, 987.65, 2.6917, 12_000),
+            (1024, 2900.0, 5.859, 48_000),
+        ] {
+            let new = synth_f32(&tones, nsps, f0, spacing, fs, 0.8);
+            let old = legacy(&tones, nsps, f0, spacing, fs, 0.8);
+            assert!(
+                new.iter()
+                    .zip(&old)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "nsps {nsps}, f0 {f0}"
+            );
+        }
+    }
 
     #[test]
     fn length_and_ramped_edges() {
