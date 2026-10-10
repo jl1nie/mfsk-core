@@ -11,14 +11,15 @@
 //! The band carries a 48 s script on repeat (`skimmer_core::fake::Band::default`):
 //! a QSO on 1500 Hz (K1ABC and JA1ABC, a call, an answer, reports and a 73), another on
 //! 1350 Hz (W9XYZ and VK3NV, weaker) and DL1ABC calling CQ on 1650 Hz (weaker still), the
-//! two last on the side channels upstream looks at.
+//! two last on the side channels upstream looks at; all within a few dB of JTTY's decoding
+//! limit (SNR reported about -13 to -17 dB), and fading.
 //! Options: `--listen ADDR` (default `127.0.0.1:5555`), `--dial HZ` (the JTTY
 //! channel's dial, default 14090000), `--noise F` (per component, a fraction of full
-//! scale, default 0.02), `--amplitude F` (a level-1 signal's peak, default 0.3),
+//! scale, default 0.02), `--amplitude F` (a level-1 signal's peak, default 0.0012: 4 dB above the 50 % point),
 //! `--jitter SECONDS` (each message starts up to this much later than its time in the
 //! script, differently every cycle; default 1.5, 0 for the script's own times) and
 //! `--qsb F` (fading depth: a signal swings between full and `1 - F` of its level about
-//! every ten seconds, each station on its own phase; default 0.4, 0 for steady).
+//! every ten seconds, each station on its own phase; default 0.3, 0 for steady).
 
 use skimmer_core::fake::{Band, FakeServer};
 

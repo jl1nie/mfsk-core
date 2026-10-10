@@ -74,7 +74,7 @@
   ] as const;
   let settingsTab = $state<(typeof SETTINGS_TABS)[number][0]>('server');
   /** The live view (waterfall + decodes) or the Analysis of the database. */
-  let view = $state<'live' | 'jtty' | 'analysis'>('live');
+  let view = $state<'live' | 'analysis'>('live');
   /** JTTY messages, a row each, replaced in place as a message grows. */
   let jtty = $state.raw<JttyRow[]>([]);
   const JTTY_ROWS = 500;
@@ -838,15 +838,6 @@
         <button role="tab" class:on={view === 'live'} aria-selected={view === 'live'} onclick={() => (view = 'live')}>
           {settings.waterfall ? 'Waterfall' : 'Decodes'}
         </button>
-        {#if jtty.length > 0 || settings.channels.some((c) => c.mode === 'JTTY')}
-          <button
-            role="tab"
-            class:on={view === 'jtty'}
-            aria-selected={view === 'jtty'}
-            title="JTTY messages: one row each, growing while it is received"
-            onclick={() => (view = 'jtty')}>JTTY{jtty.length > 0 ? ` (${jtty.length})` : ''}</button
-          >
-        {/if}
         <button
           role="tab"
           class:on={view === 'analysis'}
@@ -867,11 +858,8 @@
           {chooseLogDir}
         />
       {/if}
-      {#if view === 'jtty'}
-        <JttyPanel rows={jtty} channels={settings.channels} onclear={() => (jtty = [])} />
-      {/if}
-      <!-- Kept mounted behind the other views, so its filters and scroll survive. -->
-      <div class="live" style:display={view === 'live' ? 'contents' : 'none'}>
+      <!-- Kept mounted behind the Analysis view, so its filters and scroll survive. -->
+      <div class="live" style:display={view === 'analysis' ? 'none' : 'contents'}>
       {#if settings.waterfall}
         <WaterfallPanel
           store={wfStore}
@@ -892,10 +880,18 @@
           bind:open={wfOpen}
         />
       {/if}
-      <!-- Under a JTTY channel's waterfall the messages it hears, so a QSO can be followed
-           while watching the band; under any other channel, the decode table. -->
-      {#if settings.waterfall && settings.channels[Math.min(wfFocus, Math.max(0, settings.channels.length - 1))]?.mode === 'JTTY'}
-        <JttyPanel rows={jtty} channels={settings.channels} onclear={() => (jtty = [])} />
+      <!-- What is heard follows the channel chosen: the slotted modes (WSJT-X's 77-bit
+           family) are decode rows, one per slot; JTTY is messages that grow while they are
+           received, so it has a list of its own, under the same selector. -->
+      {#if settings.channels[tableCh]?.mode === 'JTTY'}
+        <JttyPanel
+          rows={jtty}
+          channels={settings.channels}
+          serverNames={settings.servers.map((x) => x.name)}
+          onclear={() => (jtty = [])}
+          bind:channel={tableCh}
+          onpick={focusChannel}
+        />
       {:else}
         <DecodeTable
           {rows}

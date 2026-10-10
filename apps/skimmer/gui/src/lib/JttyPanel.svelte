@@ -5,11 +5,19 @@
   let {
     rows,
     channels,
+    serverNames,
     onclear,
+    channel = $bindable(-1),
+    onpick,
   }: {
     rows: JttyRow[];
     channels: ChannelSetting[];
+    /** Names of the servers, when there is more than one. */
+    serverNames: string[];
     onclear: () => void;
+    channel?: number;
+    /** The user chose a channel in the selector. */
+    onpick?: (i: number) => void;
   } = $props();
 
   let search = $state('');
@@ -18,7 +26,11 @@
 
   const needle = $derived(search.trim().toUpperCase());
   const shown = $derived(
-    rows.filter((r) => !needle || r.text.toUpperCase().includes(needle) || r.calls.some((c) => c.includes(needle))),
+    rows.filter(
+      (r) =>
+        (channel < 0 || r.channel === channel) &&
+        (!needle || r.text.toUpperCase().includes(needle) || r.calls.some((c) => c.includes(needle))),
+    ),
   );
 
   const hhmmss = (ms: number | null) => {
@@ -51,6 +63,13 @@
 
 <div class="decodes">
   <div class="toolbar">
+    <!-- The same selector as the decode table's: choosing a slotted channel goes back to it. -->
+    <select bind:value={channel} onchange={() => channel >= 0 && onpick?.(channel)}>
+      <option value={-1}>All channels</option>
+      {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
+        <option value={i}>{serverNames.length > 1 ? `${serverNames[c.server ?? 0]} · ` : ''}{c.mode} {(c.dialHz / 1000).toFixed(1)} kHz</option>
+      {/each}
+    </select>
     <input class="search" bind:value={search} placeholder="Search call or text" spellcheck="false" />
     <span class="count">{shown.length} messages</span>
     <button class="link" onclick={onclear} title="Clear the list (ALL.TXT keeps every finished message)">Clear</button>
@@ -65,7 +84,7 @@
         <tr><th>UTC</th><th class="num">MHz</th><th class="num">dB</th><th>Message</th></tr>
       </thead>
       <tbody>
-        {#if rows.length === 0}
+        {#if shown.length === 0}
           <tr class="waiting"><td colspan="4">No JTTY message yet. Waiting on {channels.filter((c) => c.mode === 'JTTY').map((c) => `${(c.dialHz / 1000).toFixed(1)} kHz`).join(', ') || 'a JTTY channel (add one in the channel list)'}: a message is shown as soon as its first frame is heard, and grows.</td></tr>
         {/if}
         {#each shown as r (r.channel + ':' + r.key)}

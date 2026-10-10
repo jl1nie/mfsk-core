@@ -87,6 +87,8 @@ fn a_qso_and_a_side_channel_come_out_of_the_stand_in_server() {
         // Steady, on the script's own times: the test asks for whole messages.
         jitter_s: 0.0,
         qsb: 0.0,
+        // Well above the decoding limit: the tests ask for whole messages.
+        amplitude: 0.01,
         ..Band::default()
     };
     let all = run_against(band, |m| {
@@ -134,6 +136,8 @@ fn a_jtty_channel_has_a_waterfall_and_still_decodes() {
         script: vec![line(1.0, 1500.0, 1.0, "CQ K1ABC CQ")],
         jitter_s: 0.0,
         qsb: 0.0,
+        // Well above the decoding limit: the tests ask for whole messages.
+        amplitude: 0.01,
         ..Band::default()
     };
     let (all, rows) = run_with(band, true, |m| done(m, "CQ K1ABC CQ").is_some());
