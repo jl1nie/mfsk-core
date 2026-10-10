@@ -116,6 +116,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   (`isbest<0`); rc1 scored the blocks past the end as 0 and let a partial score win. The FST4 tier-C sweep is unchanged in all 20
   groups (crossings +0.00 dB, unexpected decodes +0): its full-slot files never reach `last_start`, so this is a no-regression result, and
   the mechanism is pinned by a unit test.
+- **JTTY can send a message open, and says where each frame's text starts (#643).** WSJT-X v3.3.0-beta1's `pack_jtty(..., frame_starts,
+  is_final)`: `pack::pack_with_starts` returns the 1-indexed source column of each atom, `tx::payloads_with` / `tones_with` and
+  `pack::tones_with` take `is_final` (false: no end-of-message flag on the last frame, so a message typed in pieces can be
+  closed later), and the C ABI gains `mfsk_jtty_encode_tones_ex` (`mfsk_jtty_encode_tones` is `is_final` = 1). Checked against a
+  v3.3.0-beta1 `jtty_pack_oracle` on 4 025 cases (500 of them `is_final` = 0), frames and starts identical. Kotlin and Swift do not
+  expose it yet.
 
 ### Internals
 

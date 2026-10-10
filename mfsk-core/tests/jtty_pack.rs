@@ -2,11 +2,12 @@
 //! The JTTY text packer against WSJT-X's own `pack_jtty` (tier B), phase P5.
 //!
 //! `embedded-poc/assets/golden/jtty/pack_cases.tsv` is what upstream's
-//! `pack_jtty` (v3.2.0-rc1, through `scripts/jttysim/jtty_pack_oracle.f90`) makes of
+//! `pack_jtty` (v3.3.0-beta1, through `scripts/jttysim/jtty_pack_oracle.f90`) makes of
 //! 3 500 messages under each exchange profile: every atom kind, the profile
 //! differences, the grammar's edges, seeded random compositions and random text.
 //! Each must come out as the very same frames — same count, same words, same
-//! end-of-message flag — or as the same refusal.
+//! end-of-message flag, same `frame_starts` — or as the same refusal. A profile marked `n`
+//! is `is_final = 0` (500 of the cases): the same frames with no end-of-message flag.
 
 #![cfg(feature = "jtty")]
 
@@ -39,19 +40,30 @@ fn pack_matches_upstream_pack_jtty_on_every_case() {
     let mut refused = 0;
     for row in text.lines().filter(|l| !l.starts_with('#')) {
         let f: Vec<&str> = row.split('\t').collect();
-        let (prof, msg, nframes, frames) = (f[0].parse::<u8>().unwrap(), f[1], f[2], f[3]);
+        let (prof, is_final) = (
+            f[0].trim_end_matches('n').parse::<u8>().unwrap(),
+            !f[0].ends_with('n'),
+        );
+        let (msg, nframes, frames) = (f[1], f[2], f[3]);
+        let starts = f.get(4).copied().unwrap_or("");
         let want: i32 = nframes.parse().unwrap();
-        let got = pack::pack(msg, profile(prof));
+        let got = pack::pack_with_starts(msg, profile(prof));
         match (want, got) {
             (-1, Err(_)) => refused += 1,
             (-1, Ok(a)) => panic!("{prof} {msg:?}: upstream refuses, we pack {a:?}"),
             (_, Err(e)) => panic!("{prof} {msg:?}: upstream packs {nframes} frames, we: {e}"),
-            (0, Ok(atoms)) => assert!(atoms.is_empty(), "{prof} {msg:?}"),
-            (k, Ok(atoms)) => {
+            (0, Ok((atoms, st))) => assert!(atoms.is_empty() && st.is_empty(), "{prof} {msg:?}"),
+            (k, Ok((atoms, st))) => {
                 assert_eq!(atoms.len(), k as usize, "{prof} {msg:?}: {atoms:?}");
-                let payloads = tx::payloads(&atoms).expect("packed atoms encode");
+                let payloads = tx::payloads_with(&atoms, is_final).expect("packed atoms encode");
                 let ours: Vec<String> = payloads.iter().map(hex).collect();
-                assert_eq!(ours.join(" "), frames, "{prof} {msg:?}: {atoms:?}");
+                assert_eq!(
+                    ours.join(" "),
+                    frames,
+                    "{prof} {msg:?} final={is_final}: {atoms:?}"
+                );
+                let st: Vec<String> = st.iter().map(usize::to_string).collect();
+                assert_eq!(st.join(" "), starts, "{prof} {msg:?}: frame_starts");
             }
         }
         n += 1;

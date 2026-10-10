@@ -98,6 +98,10 @@ for c in cases:
     if c not in seen:
         seen.add(c); uniq.append(c)
 
+# is_final=0 (beta1): a seeded sample of the same messages, marked `n` after the profile
+partial = [(f"{p}n", m) for p, m in rnd.sample(uniq, 500)]
+uniq = uniq + partial
+
 inp = "".join(f"{p}\t{m}\n" for p, m in uniq)
 res = subprocess.run([oracle], input=inp, capture_output=True, text=True, check=True)
 lines = res.stdout.splitlines()
@@ -108,7 +112,7 @@ for l in lines:
     counts[f[2]] = counts.get(f[2], 0) + 1
 with open(out, "w") as fh:
     fh.write("# WSJT-X " + tag + " pack_jtty over scripts/gen_jtty_pack_cases.sh's messages\n")
-    fh.write("# profile (0 unknown, 1 Field Day, 2 RTTY Roundup)\tmessage\tnframes (-1 rejected)\tframes: 34-bit payloads, 9 hex digits each\n")
+    fh.write("# profile (0 unknown, 1 Field Day, 2 RTTY Roundup; `n` after it = is_final 0)\tmessage\tnframes (-1 rejected)\tframes: 34-bit payloads, 9 hex digits each\tframe_starts: 1-indexed source columns\n")
     fh.write(res.stdout)
 print(f"{len(lines)} cases; nframes histogram: " + " ".join(f"{k}:{counts[k]}" for k in sorted(counts, key=int)))
 PY

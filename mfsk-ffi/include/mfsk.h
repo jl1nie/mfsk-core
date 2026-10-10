@@ -2330,9 +2330,28 @@ int32_t mfsk_jtty_poll(struct MfskJttyReceiver *rx,
  * This is upstream's `pack_jtty` and `genjtty`; the F-key templates and N1MM tags
  * around them in WSJT-X are not part of this library.
  *
+ * `is_final` is WSJT-X v3.3.0-beta1's argument of the same name: non-zero (what
+ * `mfsk_jtty_encode_tones` passes) puts the end-of-message flag on the last frame;
+ * 0 leaves it off, so a message typed in pieces can be sent as it goes and closed by a
+ * later one.
+ *
  * # Safety
  * `text` must be a NUL-terminated string; `tones` must be `cap` writable bytes
  * (or null with `cap` 0); `out_len` may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_jtty_encode_tones_ex(const char *text,
+                                          uint32_t profile,
+                                          uint32_t is_final,
+                                          uint8_t *tones,
+                                          uintptr_t cap,
+                                          uintptr_t *out_len);
+
+/**
+ * [`mfsk_jtty_encode_tones_ex`] with `is_final` = 1: the whole message, closed.
+ *
+ * # Safety
+ * As [`mfsk_jtty_encode_tones_ex`].
  */
 MFSK_API
 enum MfskStatus mfsk_jtty_encode_tones(const char *text,

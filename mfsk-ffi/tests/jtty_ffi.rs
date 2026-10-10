@@ -473,3 +473,50 @@ fn the_row_carries_an_snr_and_a_smaller_size_does_not_receive_it() {
         "an older size must not receive snr_db"
     );
 }
+
+/// `mfsk_jtty_encode_tones_ex` with `is_final` = 0 leaves the end-of-message flag off the last
+/// frame (WSJT-X v3.3.0-beta1's `pack_jtty(..., is_final=0)`); non-zero is the plain call.
+#[test]
+fn encode_tones_ex_can_leave_the_message_open() {
+    let text = std::ffi::CString::new("CQ CQ CQ DE K1ABC K1ABC").unwrap();
+    let tones = |is_final: u32| -> Vec<u8> {
+        let mut need = 0usize;
+        assert_eq!(
+            unsafe {
+                mfsk_jtty_encode_tones_ex(text.as_ptr(), 0, is_final, ptr::null_mut(), 0, &mut need)
+            },
+            MfskStatus::Ok
+        );
+        let mut t = vec![0u8; need];
+        assert_eq!(
+            unsafe {
+                mfsk_jtty_encode_tones_ex(
+                    text.as_ptr(),
+                    0,
+                    is_final,
+                    t.as_mut_ptr(),
+                    need,
+                    &mut need,
+                )
+            },
+            MfskStatus::Ok
+        );
+        t
+    };
+    let closed = tones(1);
+    let open = tones(0);
+    assert_eq!(
+        closed,
+        encode("CQ CQ CQ DE K1ABC K1ABC", 0),
+        "is_final 1 is the plain call"
+    );
+    assert_eq!(closed.len(), open.len());
+    assert!(closed.len() >= 2 * 59);
+    let last = closed.len() - 59;
+    assert_eq!(closed[..last], open[..last], "only the last frame differs");
+    assert_ne!(
+        closed[last..],
+        open[last..],
+        "the end-of-message flag is in the last frame"
+    );
+}

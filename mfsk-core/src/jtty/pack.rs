@@ -381,6 +381,18 @@ impl Plan<'_> {
 /// The atoms are what [`tx::tones`] takes; the last carries the end-of-message flag
 /// when it is encoded.
 pub fn pack(text: &str, profile: ExchangeProfile) -> Result<Vec<Atom>, PackError> {
+    pack_with_starts(text, profile).map(|(atoms, _)| atoms)
+}
+
+/// [`pack`], and where each atom's source text starts: `frame_starts` of WSJT-X v3.3.0-beta1's
+/// `pack_jtty`, **1-indexed** columns in the normalised message ([`normalize`]; for an RTTY
+/// profile, after serials are zero-padded). A structured atom's span runs through its trailing
+/// separator space, so the next start is the first column after it. For an empty message both
+/// are empty.
+pub fn pack_with_starts(
+    text: &str,
+    profile: ExchangeProfile,
+) -> Result<(Vec<Atom>, Vec<usize>), PackError> {
     if text.chars().count() > MAX_MESSAGE_CHARS {
         return Err(PackError::TooLong);
     }
@@ -390,7 +402,7 @@ pub fn pack(text: &str, profile: ExchangeProfile) -> Result<Vec<Atom>, PackError
     }
     let n = msg.len();
     if n == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let mut plan = Plan {
         msg: msg.as_bytes(),
@@ -415,16 +427,28 @@ pub fn pack(text: &str, profile: ExchangeProfile) -> Result<Vec<Atom>, PackError
         return Err(PackError::TooManyFrames);
     }
     let mut atoms = Vec::new();
+    let mut starts = Vec::new();
     let mut ipos = 0;
     while ipos < n {
         atoms.push(plan.choice[ipos].take().expect("reachable"));
+        starts.push(ipos + 1);
         ipos = plan.successor[ipos];
     }
-    Ok(atoms)
+    Ok((atoms, starts))
 }
 
 /// [`pack`], then the channel tones of the message ([`tx::tones`]); `None` for an
 /// empty message (there is nothing to send).
 pub fn tones(text: &str, profile: ExchangeProfile) -> Result<Option<Vec<u8>>, PackError> {
-    Ok(super::tx::tones(&pack(text, profile)?))
+    tones_with(text, profile, true)
+}
+
+/// [`tones`] with `is_final`: `false` leaves the end-of-message flag off the last frame, as
+/// `pack_jtty(..., is_final=0)` does ([`super::tx::payloads_with`]).
+pub fn tones_with(
+    text: &str,
+    profile: ExchangeProfile,
+    is_final: bool,
+) -> Result<Option<Vec<u8>>, PackError> {
+    Ok(super::tx::tones_with(&pack(text, profile)?, is_final))
 }

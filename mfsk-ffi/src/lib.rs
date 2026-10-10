@@ -2906,28 +2906,34 @@ pub unsafe extern "C" fn mfsk_jtty_poll(
 /// This is upstream's `pack_jtty` and `genjtty`; the F-key templates and N1MM tags
 /// around them in WSJT-X are not part of this library.
 ///
+/// `is_final` is WSJT-X v3.3.0-beta1's argument of the same name: non-zero (what
+/// `mfsk_jtty_encode_tones` passes) puts the end-of-message flag on the last frame;
+/// 0 leaves it off, so a message typed in pieces can be sent as it goes and closed by a
+/// later one.
+///
 /// # Safety
 /// `text` must be a NUL-terminated string; `tones` must be `cap` writable bytes
 /// (or null with `cap` 0); `out_len` may be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mfsk_jtty_encode_tones(
+pub unsafe extern "C" fn mfsk_jtty_encode_tones_ex(
     text: *const c_char,
     profile: u32,
+    is_final: u32,
     tones: *mut u8,
     cap: usize,
     out_len: *mut usize,
 ) -> MfskStatus {
     #[cfg(not(feature = "jtty"))]
     {
-        let _ = (text, profile, tones, cap, out_len);
-        set_error("mfsk_jtty_encode_tones: this build was compiled without the jtty feature");
+        let _ = (text, profile, is_final, tones, cap, out_len);
+        set_error("mfsk_jtty_encode_tones_ex: this build was compiled without the jtty feature");
         MfskStatus::UnknownProtocol
     }
     #[cfg(feature = "jtty")]
     {
         use mfsk_core::jtty::pack::{self, ExchangeProfile};
         if text.is_null() {
-            set_error("mfsk_jtty_encode_tones: text is NULL");
+            set_error("mfsk_jtty_encode_tones_ex: text is NULL");
             return MfskStatus::NullPointer;
         }
         let profile = match profile {
@@ -2935,22 +2941,22 @@ pub unsafe extern "C" fn mfsk_jtty_encode_tones(
             1 => ExchangeProfile::FieldDay,
             2 => ExchangeProfile::RttyRoundup,
             _ => {
-                set_error("mfsk_jtty_encode_tones: profile must be 0, 1 or 2");
+                set_error("mfsk_jtty_encode_tones_ex: profile must be 0, 1 or 2");
                 return MfskStatus::InvalidArg;
             }
         };
         let Ok(text) = unsafe { CStr::from_ptr(text) }.to_str() else {
-            set_error("mfsk_jtty_encode_tones: text is not valid UTF-8");
+            set_error("mfsk_jtty_encode_tones_ex: text is not valid UTF-8");
             return MfskStatus::InvalidArg;
         };
         let atoms = match pack::pack(text, profile) {
             Ok(a) => a,
             Err(e) => {
-                set_error(format!("mfsk_jtty_encode_tones: {e}"));
+                set_error(format!("mfsk_jtty_encode_tones_ex: {e}"));
                 return MfskStatus::InvalidArg;
             }
         };
-        let t = mfsk_core::jtty::tx::tones(&atoms).unwrap_or_default();
+        let t = mfsk_core::jtty::tx::tones_with(&atoms, is_final != 0).unwrap_or_default();
         if !out_len.is_null() {
             unsafe { *out_len = t.len() };
         }
@@ -2961,12 +2967,27 @@ pub unsafe extern "C" fn mfsk_jtty_encode_tones(
             return MfskStatus::Ok; // a size query
         }
         if tones.is_null() || cap < t.len() {
-            set_error("mfsk_jtty_encode_tones: buffer too small; *out_len is the size needed");
+            set_error("mfsk_jtty_encode_tones_ex: buffer too small; *out_len is the size needed");
             return MfskStatus::InvalidArg;
         }
         unsafe { ptr::copy_nonoverlapping(t.as_ptr(), tones, t.len()) };
         MfskStatus::Ok
     }
+}
+
+/// [`mfsk_jtty_encode_tones_ex`] with `is_final` = 1: the whole message, closed.
+///
+/// # Safety
+/// As [`mfsk_jtty_encode_tones_ex`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_jtty_encode_tones(
+    text: *const c_char,
+    profile: u32,
+    tones: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    unsafe { mfsk_jtty_encode_tones_ex(text, profile, 1, tones, cap, out_len) }
 }
 
 /// Samples at 12 kHz that `n_tones` JTTY tones synthesise to (whole frames of

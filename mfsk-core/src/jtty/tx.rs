@@ -78,11 +78,19 @@ fn map_indexed<T: Sync, R: Send>(items: &[T], f: impl Fn(usize, &T) -> R + Sync 
 /// the last only. `None` for an empty message, more than [`MAX_FRAMES`] atoms,
 /// or an atom that cannot be encoded.
 pub fn payloads(atoms: &[Atom]) -> Option<Vec<Payload>> {
+    payloads_with(atoms, true)
+}
+
+/// [`payloads`], with the end-of-message flag on the last frame only if `is_final`. With
+/// `false` no frame carries it, so a message can be sent in pieces and closed by a later one:
+/// the `is_final` argument of WSJT-X v3.3.0-beta1's `pack_jtty` / `pack_jtty_atoms` (`0` there;
+/// absent means final, which is [`payloads`]).
+pub fn payloads_with(atoms: &[Atom], is_final: bool) -> Option<Vec<Payload>> {
     if atoms.is_empty() || atoms.len() > MAX_FRAMES {
         return None;
     }
     let last = atoms.len() - 1;
-    map_indexed(atoms, |i, a| a.encode(i == last))
+    map_indexed(atoms, |i, a| a.encode(is_final && i == last))
         .into_iter()
         .collect()
 }
@@ -103,7 +111,12 @@ pub fn frame_tones(payload: &Payload) -> [u8; FRAME_SYMBOLS] {
 /// The channel tones of a whole message (`59 × atoms.len()` of them), or `None`
 /// as for [`payloads`].
 pub fn tones(atoms: &[Atom]) -> Option<Vec<u8>> {
-    let payloads = payloads(atoms)?;
+    tones_with(atoms, true)
+}
+
+/// [`tones`] with [`payloads_with`]'s `is_final`.
+pub fn tones_with(atoms: &[Atom], is_final: bool) -> Option<Vec<u8>> {
+    let payloads = payloads_with(atoms, is_final)?;
     let frames = map_indexed(&payloads, |_, p| frame_tones(p));
     Some(frames.into_iter().flatten().collect())
 }

@@ -237,7 +237,7 @@ specification.
 | `mfsk_jtty_open` / `_close` / `_set_params` | The receiver handle at any input sample rate (resampled to 12 kHz); settings apply from the next window. |
 | `mfsk_jtty_push_i16` / `_push_f32` / `_finish` / `_reset` | Feed audio in any chunk size (decoding runs inside the push); `_finish` flushes messages still open at the end of a recording; `_reset` starts again at sample 0. |
 | `mfsk_jtty_pending` / `mfsk_jtty_poll` | The queue of `MfskJttyUpdate`s, coalesced per message between polls; `poll` returns 1 per update written, 0 when none is waiting. |
-| `mfsk_jtty_encode_tones` / `mfsk_jtty_synth_len` / `mfsk_jtty_tones_to_i16` / `_to_f32` | Transmit: text → tones (upstream's `pack_jtty` + `genjtty`, 59 tones per frame) → 12 kHz PCM. |
+| `mfsk_jtty_encode_tones` / `_ex` (adds `is_final`) / `mfsk_jtty_synth_len` / `mfsk_jtty_tones_to_i16` / `_to_f32` | Transmit: text → tones (upstream's `pack_jtty` + `genjtty`, 59 tones per frame) → 12 kHz PCM. |
 
 **Process-wide**
 
