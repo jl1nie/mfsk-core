@@ -224,11 +224,15 @@ fn ccf_85(
     let (ipk, jpk, imsg_best) = best_at?;
     best[imsg_best] = 0.0;
     let runner_up = best.iter().cloned().fold(0.0f32, f32::max);
-    Some(Ccf85 {
-        ipk,
-        jpk,
-        better: ccf_best / runner_up,
-    })
+    // v3.3.0-beta1: `if(maxval(best)>0.) better=ccf_best/maxval(best)`, else 0. rc1 divided
+    // unguarded, so a list with one codeword (or none that scored) got `inf` and passed the
+    // `better >= 1.10` test; now it reads 0 and does not.
+    let better = if runner_up > 0.0 {
+        ccf_best / runner_up
+    } else {
+        0.0
+    };
+    Some(Ccf85 { ipk, jpk, better })
 }
 
 /// `q65_bzap`: a bin that holds the peak of more than NBZAP symbols

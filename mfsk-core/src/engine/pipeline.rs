@@ -1684,6 +1684,12 @@ where
     // spread far below it, so there's no safe gap wide enough to filter
     // much without risking a real signal.
 
+    // `fst4_sync_search` found no start with a whole frame behind it (`isbest<0`): the
+    // candidate is skipped, as `decode_kernel` does.
+    if score == f32::NEG_INFINITY {
+        return None;
+    }
+
     let result = try_position(freq_hz, i0, score);
     if result.is_some() {
         return result;

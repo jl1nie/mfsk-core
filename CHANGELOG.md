@@ -110,6 +110,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   reassigned, appended to `MfskJttyUpdate` (ABI stays 3) and to the Kotlin and Swift updates (`snrDb`). Against a v3.3.0-beta1 `rjtty` on
   `sjtty` files, true −10 / 0 / 10 / 20 / 30 dB read −9 / 0 / 7 / 10 / 11 there and −9.4 / −0.2 / 7.5 / 10.5 / 11.0 here: a strong signal
   reads low, upstream's own limit. The sync gate still uses the old ratio, as upstream does.
+- **Degenerate inputs follow WSJT-X v3.3.0-beta1 (#642).** Q65's q3 `better` is 0, not `inf`, when the list has no runner-up, so a
+  one-codeword list is no longer accepted (rc1's unguarded divide passed `better >= 1.10`); silence and an empty list decode nothing.
+  FST4's sync search stops at `last_start`, the last start with a whole frame behind it, and skips a candidate when none fits
+  (`isbest<0`); rc1 scored the blocks past the end as 0 and let a partial score win. The FST4 tier-C sweep is unchanged in all 20
+  groups (crossings +0.00 dB, unexpected decodes +0): its full-slot files never reach `last_start`, so this is a no-regression result, and
+  the mechanism is pinned by a unit test.
 
 ### Internals
 

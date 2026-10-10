@@ -32,13 +32,17 @@ fn slot(msg: Option<(&str, &str, &str)>, sigma: f32, seed: u64) -> Vec<f32> {
 /// Messages from the q3 decode alone: the list at the Rx frequency, with a
 /// search window that holds nothing else.
 fn q3(audio: &[f32], list: &[[i32; 63]]) -> Vec<String> {
-    let mut params = default_search_params();
-    params.freq_min_hz = 3900.0;
-    params.freq_max_hz = 3950.0;
     let max_drift: u32 = std::env::var("MFSK_Q65_Q3_MAX_DRIFT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    q3_drift(audio, list, max_drift)
+}
+
+fn q3_drift(audio: &[f32], list: &[[i32; 63]], max_drift: u32) -> Vec<String> {
+    let mut params = default_search_params();
+    params.freq_min_hz = 3900.0;
+    params.freq_max_hz = 3950.0;
     DecodeRequest::<Q65a30>::new(audio, FS, NOMINAL, params)
         .ap_list(list)
         .rx_freq(RX)
@@ -62,6 +66,35 @@ fn q3_finds_nothing_in_noise() {
     for seed in 0..5 {
         assert!(q3(&slot(None, 1.0, seed), &list).is_empty(), "seed {seed}");
     }
+}
+
+/// WSJT-X v3.3.0-beta1 guards the degenerate inputs (`maxval(s3)<=0`, `ncw<=0`,
+/// `maxval(best)>0`): digital silence, an empty list and a one-codeword list return nothing
+/// and do not divide by zero. A one-codeword list has no runner-up, so `better` reads 0 where
+/// rc1's unguarded divide read `inf` and passed `better >= 1.10`.
+#[test]
+fn q3_degenerate_inputs_decode_nothing_and_do_not_panic() {
+    let list = standard_qso_codewords("K1ABC", "JA1ABC", "PM95");
+    let silence = vec![0f32; 30 * FS as usize];
+    assert!(q3(&silence, &list).is_empty(), "silence");
+    let a = slot(Some(("K1ABC", "JA1ABC", "-15")), 1.0, 1);
+    assert!(q3(&a, &[]).is_empty(), "no list");
+    assert!(q3(&silence, &[]).is_empty(), "silence and no list");
+    // with a drift search too
+    assert!(
+        q3_drift(&silence, &list, 50).is_empty(),
+        "silence, max_drift 50"
+    );
+    // One codeword at a time: the list message is among them, but with no runner-up to
+    // compare against `better` reads 0 and q3 does not accept it. (Zero-guard removed, the one
+    // that holds the message reads `inf` and decodes.)
+    let alone: Vec<_> = (0..list.len())
+        .filter(|&i| !q3(&a, &list[i..=i]).is_empty())
+        .collect();
+    assert!(
+        alone.is_empty(),
+        "single-codeword lists that decoded: {alone:?}"
+    );
 }
 
 /// Decode each WAV in `MFSK_Q65_Q3_WAVS` (Q65-30A, list for K1ABC /

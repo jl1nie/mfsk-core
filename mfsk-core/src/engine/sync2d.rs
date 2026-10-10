@@ -47,6 +47,9 @@ pub struct Sync2dResult {
     /// the frame nominally started before sample 0 of the baseband).
     pub i0: i32,
     /// Peak sync power summed across all Costas blocks at (Δf, Δt)_best.
+    ///
+    /// [`f32::NEG_INFINITY`] means no start fits ([`fst4_sync_search`] only): WSJT-X
+    /// v3.3.0-beta1's `isbest=-1`, which `decode_kernel` skips. `i0` is then the nominal one.
     pub score: f32,
 }
 
@@ -427,6 +430,10 @@ pub fn fst4_sync_search<P: SyncFrontEnd>(
 
     // WSJT-X: ishw = 1.5 * floor(fs2) samples.
     let ishw = (1.5 * ds_rate as f64).floor() as i32;
+    // v3.3.0-beta1 `last_start=nfft2-160*nss`: the last start at which a whole frame is still
+    // inside the baseband; both passes stop there (`min(is0+ishw,last_start)`). rc1 let a late
+    // start run on, scoring the blocks past the end as 0, so a partial score could win.
+    let last_start = cd0.len() as i32 - P::N_SYMBOLS as i32 * ds_spb as i32;
 
     // Pre-build flat phase-continuous references for each Costas block.
     // (start_sample_offset, flat_ref)
@@ -473,6 +480,9 @@ pub fn fst4_sync_search<P: SyncFrontEnd>(
         let mut di = -ishw;
         while di <= ishw {
             let i0 = init_i0 + di;
+            if i0 > last_start {
+                break;
+            }
             let s = score_flat(&twiddled, i0);
             if s > best_score {
                 best_score = s;
@@ -481,6 +491,15 @@ pub fn fst4_sync_search<P: SyncFrontEnd>(
             }
             di += 4;
         }
+    }
+
+    // No start fits (`if(min(is0+ishw,last_start)<max(1,is0-ishw)) return` with `isbest=-1`).
+    if best_score == f32::NEG_INFINITY {
+        return Sync2dResult {
+            freq_hz: candidate.freq_hz,
+            i0: init_i0,
+            score: f32::NEG_INFINITY,
+        };
     }
 
     // Fine pass: ±7×0.02·baud Hz × ±4 samples.  WSJT-X resets sbest=0.0.
@@ -494,6 +513,9 @@ pub fn fst4_sync_search<P: SyncFrontEnd>(
 
         for di in -4i32..=4 {
             let i0 = coarse_winner_i0 + di;
+            if i0 > last_start {
+                break;
+            }
             let s = score_flat(&twiddled, i0);
             if s > best_score {
                 best_score = s;
@@ -1752,5 +1774,35 @@ mod rotator_tests {
     fn a_zero_shift_is_a_copy() {
         let x = ramp(64);
         assert_eq!(freq_shift_cd0(&x, 0.0, 666.666_7), x);
+    }
+}
+
+#[cfg(all(test, feature = "fst4"))]
+mod fst4_last_start_tests {
+    use super::*;
+    use crate::fst4::Fst4s60;
+
+    /// WSJT-X v3.3.0-beta1 `last_start=nfft2-160*nss`, `isbest=-1`: a baseband too short to hold
+    /// a whole frame has no start to try, so the search says so (`NEG_INFINITY`) instead of
+    /// scoring the missing blocks as 0 and letting a partial score win, as rc1 did.
+    #[test]
+    fn a_baseband_shorter_than_a_frame_has_no_start() {
+        let d = SyncDims::of::<Fst4s60>(12_000.0);
+        let frame = <Fst4s60 as crate::engine::FrameLayout>::N_SYMBOLS as usize * d.ds_spb;
+        let cand = SyncCandidate {
+            freq_hz: 1500.0,
+            dt_sec: 0.5,
+            score: 1.0,
+        };
+        let short = vec![Complex::new(0.1f32, 0.0); frame - 1];
+        let r = fst4_sync_search::<Fst4s60>(&short, &cand);
+        assert_eq!(r.score, f32::NEG_INFINITY);
+        assert_eq!(r.freq_hz, 1500.0);
+
+        // Room for exactly one start: it is found, and every start scored lies at or before it.
+        let long = vec![Complex::new(0.1f32, 0.0); frame + 40];
+        let r = fst4_sync_search::<Fst4s60>(&long, &cand);
+        assert!(r.score.is_finite());
+        assert!(r.i0 <= 40, "i0 {} past the last start 40", r.i0);
     }
 }
