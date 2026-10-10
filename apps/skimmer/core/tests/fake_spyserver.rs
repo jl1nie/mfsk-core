@@ -68,6 +68,9 @@ fn a_qso_and_a_side_channel_come_out_of_the_stand_in_server() {
             line(7.0, 1500.0, 0.8, "K1ABC JA1ABC"),
             line(3.0, 1350.0, 0.5, "CQ W9XYZ EN34"),
         ],
+        // Steady, on the script's own times: the test asks for whole messages.
+        jitter_s: 0.0,
+        qsb: 0.0,
         ..Band::default()
     };
     let all = run_against(band, |m| {

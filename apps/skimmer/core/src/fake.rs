@@ -57,6 +57,14 @@ pub struct Band {
     /// wall clock.
     pub cycle_s: u64,
     pub script: Vec<Line>,
+    /// Each line starts up to this many seconds later than its time in the
+    /// script, a different amount every cycle: stations key when they like,
+    /// so the frames of a message do not sit at the same place against the
+    /// receiver's window grid every time.
+    pub jitter_s: f64,
+    /// Fading: a signal's level swings between full and `1 - qsb` of it, about
+    /// once in ten seconds, each station on its own phase. 0 is steady.
+    pub qsb: f32,
     /// White noise per component, as a fraction of full scale (1.0).
     pub noise: f32,
     /// A signal of level 1.0 peaks at this fraction of full scale.
@@ -89,6 +97,8 @@ impl Default for Band {
                 line(25.2, 1650.0, 0.4, "CQ DL1ABC JO31"),
                 line(41.3, 1650.0, 0.4, "CQ DL1ABC"),
             ],
+            jitter_s: 1.5,
+            qsb: 0.4,
             noise: 0.02,
             amplitude: 0.3,
         }
@@ -305,9 +315,11 @@ fn wall_s() -> f64 {
 struct Synth {
     dial_hz: f64,
     cycle_s: f64,
-    /// Each line's start (s into the cycle), 12 kHz audio (unit peak, times its
-    /// level) and its end.
+    /// Each line's start (s into the cycle) and 12 kHz audio (unit peak, times
+    /// its level).
     lines: Vec<(f64, Vec<f32>)>,
+    jitter_s: f64,
+    qsb: f32,
     amplitude: f32,
     noise: f32,
     rng: u32,
@@ -330,28 +342,54 @@ impl Synth {
             dial_hz: band.dial_hz,
             cycle_s: band.cycle_s.max(8) as f64,
             lines,
+            jitter_s: band.jitter_s.max(0.0),
+            qsb: band.qsb.clamp(0.0, 0.95),
             amplitude: band.amplitude,
             noise: band.noise,
             rng: 0x2545_f491,
         }
     }
 
+    /// A number in [0, 1) that is the same for the same `(cycle, line)` and
+    /// unlike its neighbours (an integer hash).
+    fn unit(cycle: i64, line: usize, salt: u64) -> f64 {
+        let mut x = (cycle as u64)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add((line as u64 + 1).wrapping_mul(0xbf58_476d_1ce4_e5b9))
+            .wrapping_add(salt.wrapping_mul(0x94d0_49bb_1331_11eb));
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x ^= x >> 27;
+        x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^= x >> 31;
+        (x >> 11) as f64 / (1u64 << 53) as f64
+    }
+
     /// The audio of every station at wall-clock time `t` (s): each line starts
-    /// at its time in the cycle.
+    /// at its time in the cycle, a little later by the cycle's jitter, and
+    /// fades on its own phase. A late line may run on into the next cycle.
     fn audio_at(&self, t: f64) -> f32 {
-        let into_cycle = t.rem_euclid(self.cycle_s);
+        let k = (t / self.cycle_s).floor() as i64;
         let mut sum = 0.0;
-        for (at, a) in &self.lines {
-            let x = (into_cycle - at) * 12_000.0;
-            if x < 0.0 {
-                continue;
+        for c in [k - 1, k] {
+            let into_cycle = t - c as f64 * self.cycle_s;
+            for (i, (at, a)) in self.lines.iter().enumerate() {
+                let start = at + self.jitter_s * Self::unit(c, i, 1);
+                let x = (into_cycle - start) * 12_000.0;
+                if x < 0.0 {
+                    continue;
+                }
+                let n = x as usize;
+                if n + 1 >= a.len() {
+                    continue;
+                }
+                // Linear interpolation between the 12 kHz samples.
+                let v = a[n] + (a[n + 1] - a[n]) * (x - n as f64) as f32;
+                // Fading, per station (its place in the script) and not per cycle.
+                let phase = Self::unit(0, i, 2) * std::f64::consts::TAU;
+                let swing = 0.5 + 0.5 * (std::f64::consts::TAU * 0.1 * t + phase).sin();
+                sum += v * (1.0 - self.qsb * swing as f32);
             }
-            let i = x as usize;
-            if i + 1 >= a.len() {
-                continue;
-            }
-            // Linear interpolation between the 12 kHz samples.
-            sum += a[i] + (a[i + 1] - a[i]) * (x - i as f64) as f32;
         }
         sum
     }
@@ -384,5 +422,92 @@ impl Synth {
             re * self.amplitude + self.noise() * self.noise,
             im * self.amplitude + self.noise() * self.noise,
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// When a line first sounds in a cycle, to the sample.
+    fn first_sound(s: &Synth, cycle: i64) -> f64 {
+        let t0 = cycle as f64 * s.cycle_s;
+        (0..(s.cycle_s * 12_000.0) as usize)
+            .map(|k| t0 + k as f64 / 12_000.0)
+            .find(|&t| s.audio_at(t) != 0.0)
+            .expect("the line sounds")
+    }
+
+    fn one_line() -> Band {
+        Band {
+            cycle_s: 20,
+            script: vec![line(2.0, 1500.0, 1.0, "CQ K1ABC")],
+            ..Band::default()
+        }
+    }
+
+    /// Jitter makes a station key at a different moment every cycle (so no
+    /// alignment against the receiver's windows repeats), within the bound; none
+    /// keeps the script's time.
+    #[test]
+    fn jitter_moves_the_start_within_its_bound_and_zero_keeps_the_script() {
+        let steady = Synth::new(&Band {
+            jitter_s: 0.0,
+            qsb: 0.0,
+            ..one_line()
+        });
+        for c in 0..4 {
+            let s = first_sound(&steady, c) - c as f64 * 20.0;
+            assert!((s - 2.0).abs() < 0.01, "cycle {c}: {s}");
+        }
+        let loose = Synth::new(&Band {
+            jitter_s: 1.5,
+            qsb: 0.0,
+            ..one_line()
+        });
+        let starts: Vec<f64> = (0..6)
+            .map(|c| first_sound(&loose, c) - c as f64 * 20.0)
+            .collect();
+        assert!(
+            starts.iter().all(|s| (2.0..=3.55).contains(s)),
+            "{starts:?}"
+        );
+        let distinct = starts
+            .windows(2)
+            .filter(|w| (w[0] - w[1]).abs() > 0.02)
+            .count();
+        assert!(
+            distinct >= 4,
+            "the start varies from cycle to cycle: {starts:?}"
+        );
+    }
+
+    /// Fading keeps a signal between full and `1 - qsb` of its level.
+    #[test]
+    fn fading_stays_between_full_and_the_floor() {
+        let mut steady = Synth::new(&Band {
+            jitter_s: 0.0,
+            qsb: 0.0,
+            ..one_line()
+        });
+        let mut fading = Synth::new(&Band {
+            jitter_s: 0.0,
+            qsb: 0.5,
+            ..one_line()
+        });
+        let mut ratios = Vec::new();
+        for k in 0..60_000 {
+            let t = 2.0 + k as f64 / 12_000.0;
+            let (a, b) = (steady.audio_at(t), fading.audio_at(t));
+            if a.abs() > 0.5 {
+                ratios.push(b / a);
+            }
+        }
+        let (lo, hi) = ratios
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(l, h), &r| (l.min(r), h.max(r)));
+        assert!(lo >= 0.49 && hi <= 1.001, "{lo} .. {hi}");
+        assert!(hi - lo > 0.1, "it does fade: {lo} .. {hi}");
+        let _ = (&mut steady, &mut fading);
     }
 }
