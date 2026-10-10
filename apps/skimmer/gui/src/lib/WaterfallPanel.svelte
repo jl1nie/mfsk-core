@@ -366,17 +366,19 @@
     display: flex;
     align-items: center;
   }
-  /* A thin bar to drag: a dotted line that darkens under the pointer. */
+  /* The bottom edge of a block is the handle: invisible, laid over the last few pixels, lit under the pointer. */
   .grip {
+    position: relative;
+    z-index: 2;
     height: 8px;
+    margin-top: -8px;
     cursor: ns-resize;
     touch-action: none;
-    background: radial-gradient(circle, var(--muted) 1px, transparent 1.5px) center / 8px 8px repeat-x;
-    opacity: 0.45;
+    box-shadow: inset 0 -2px 0 transparent;
   }
   .grip:hover,
   .grip:focus-visible {
-    opacity: 1;
+    box-shadow: inset 0 -2px 0 var(--accent, #4da3ff);
     outline: none;
   }
   .thumbs {
