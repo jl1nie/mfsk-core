@@ -57,8 +57,11 @@ build` would try to compile them with the stable toolchain and fail:
 - `apps/skimmer/gui/` — the skimmer's Tauri + Svelte GUI over
   `skimmer-core`; needs a webview (WebView2 / webkit2gtk) and Node, which
   host CI lacks. `skimmer-installers.yml` builds it on Windows and macOS
-  (PRs touching `apps/skimmer/**`, and every release, which attaches the
-  installers); locally, Windows or a Mac.
+  (PRs touching `apps/skimmer/**`, and `skimmer-vX.Y.Z` tags, whose
+  `skimmer-release.yml` makes a release of its own); locally, Windows or a
+  Mac. **The skimmer has its own version (1.0.0 on)**, not the workspace's:
+  four files carry it and that workflow checks them. The library's
+  `vX.Y.Z` releases no longer attach the installers (2026-10-11).
 
 `ci.yml`'s `paths` trigger excludes these trees, so a change confined to
 them runs no host CI at all. That is intentional, and it is also why "CI

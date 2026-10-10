@@ -1,0 +1,117 @@
+name: Skimmer release
+
+# The SpyServer skimmer (`apps/skimmer/`) is released on its own tags,
+# `skimmer-vX.Y.Z`, apart from the library's `vX.Y.Z` (`release.yml`):
+# it is a sample app with its own version, and an app fix should not wait
+# for the library's biweekly cut or publish anything to crates.io. The
+# library release no longer carries the installers (decided 2026-10-11).
+#
+# The version is the skimmer's own (1.0.0 onward), in four places that
+# must agree, and `verify-tag` checks all four against the tag:
+# `apps/skimmer/core/Cargo.toml`, `apps/skimmer/cli/Cargo.toml`,
+# `apps/skimmer/gui/src-tauri/Cargo.toml` and `tauri.conf.json`.
+# `skimmer-core`'s is what PSK Reporter receives as the software name.
+#
+# The release is not marked "latest": that stays the library's.
+
+on:
+  push:
+    tags: ['skimmer-v[0-9]+.[0-9]+.[0-9]+']
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  verify-tag:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag is reachable from main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=200 origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::Tag commit ${GITHUB_SHA} is not an ancestor of origin/main; refusing to release"
+            exit 1
+          fi
+
+      - name: Check tag matches the skimmer's version
+        id: version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/skimmer-v}"
+          cargo_v() { awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' "$1"; }
+          bad=0
+          for f in apps/skimmer/core/Cargo.toml apps/skimmer/cli/Cargo.toml apps/skimmer/gui/src-tauri/Cargo.toml; do
+            v=$(cargo_v "$f")
+            if [ "$v" != "$TAG" ]; then
+              echo "::error::$f says $v, the tag says $TAG"
+              bad=1
+            fi
+          done
+          v=$(jq -r .version apps/skimmer/gui/src-tauri/tauri.conf.json)
+          if [ "$v" != "$TAG" ]; then
+            echo "::error::tauri.conf.json says $v, the tag says $TAG"
+            bad=1
+          fi
+          [ "$bad" = 0 ]
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+
+  installers:
+    name: Skimmer installers
+    needs: verify-tag
+    uses: ./.github/workflows/skimmer-installers.yml
+    with:
+      version: ${{ needs.verify-tag.outputs.version }}
+
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    needs: [verify-tag, installers]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: skimmer-*
+          path: skimmer
+          merge-multiple: true
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: mfsk skimmer ${{ needs.verify-tag.outputs.version }}
+          make_latest: false
+          files: skimmer/*
+          fail_on_unmatched_files: true
+          body: |
+            ## mfsk skimmer ${{ needs.verify-tag.outputs.version }} (sample app)
+
+            Decodes FT8, FT4, FST4, FST4W, WSPR, JT9, JT65, Q65 and JTTY from a
+            SpyServer (Airspy HF+, Airspy, RTL-SDR), and can report spots to
+            PSK Reporter. It receives only. What changed: the skimmer entries in
+            [`CHANGELOG.md`](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md).
+
+            | platform | file |
+            |---|---|
+            | Windows 10/11 (x64) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-windows-x64-setup.exe` |
+            | macOS (Apple silicon) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-macos-arm64.dmg` |
+
+            Install: neither is signed with a publisher certificate, so each
+            system warns once.
+            - **Windows:** run the setup; on *Windows protected your PC* choose
+              *More info*, then *Run anyway*. No administrator rights needed.
+            - **macOS:** drag the app to Applications. macOS 14 and earlier:
+              right-click, *Open*. macOS 15 and later: open it once, then System
+              Settings → Privacy & Security → *Open Anyway*. Allow local network
+              access when asked, or the connection fails with `No route to host`.
+
+            First run: *Settings* → the SpyServer's `host:5555` and your locator →
+            add channels from the presets → *Connect*. Updating: run the newer
+            installer over the old one. Full guide, troubleshooting and the
+            command line version:
+            [`apps/skimmer/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/apps/skimmer/README.md).

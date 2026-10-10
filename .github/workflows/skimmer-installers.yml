@@ -4,10 +4,9 @@ name: Skimmer installers
 # Windows installer and a macOS disk image.
 #
 # Two callers:
-#   - `release.yml` calls this with the release version, then attaches
-#     the results to the GitHub release after the crates.io publish.
-#     A failure here does not hold the library back: the skimmer is a
-#     sample app, so its job sits beside the publish, not in front of it.
+#   - `skimmer-release.yml` calls this with the skimmer's version on a
+#     `skimmer-vX.Y.Z` tag and attaches the results to that release. The
+#     library's `release.yml` no longer does (2026-10-11).
 #   - By hand: `workflow_dispatch`, for the installers of a branch at any time.
 #   - A pull request that touches `apps/skimmer/**`. `ci.yml` excludes
 #     `apps/skimmer/gui/**` because it needs a webview and Node, so before

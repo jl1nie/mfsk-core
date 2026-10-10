@@ -1,6 +1,8 @@
 [package]
 name        = "skimmer-core"
-version.workspace = true
+# The skimmer's own version, not the library's: it is released on its own
+# `skimmer-v*` tags (`skimmer-release.yml`), and this is what PSK Reporter sees.
+version = "1.0.0"
 rust-version.workspace = true
 edition     = "2024"
 license     = "GPL-3.0-only"
