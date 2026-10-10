@@ -11,7 +11,8 @@
 //! | Family                   | Module          | Shared by               |
 //! |--------------------------|-----------------|-------------------------|
 //! | LDPC (174, 91) + CRC-14  | [`ldpc`]        | FT8, FT4                |
-//! | LDPC (240, 101) + CRC-24 | [`ldpc240_101`] | FST4, FST4W             |
+//! | LDPC (240, 101) + CRC-24 | [`ldpc240_101`] | FST4                    |
+//! | LDPC (240, 74) + CRC-24  | [`ldpc240_74`]  | FST4W                   |
 //! | LDPC (128, 90) + CRC-13  | [`ldpc_128_90`] | MSK144                  |
 //! | Convolutional r=1/2 K=32 | [`conv`]        | WSPR, JT9               |
 //! | Reed-Solomon (63, 12)    | [`rs`]          | JT65                    |
@@ -19,6 +20,7 @@
 pub mod conv;
 pub mod ldpc;
 pub mod ldpc240_101;
+pub mod ldpc240_74;
 pub mod ldpc_128_90;
 pub mod rs;
 
