@@ -53,6 +53,7 @@ Upstream: WSJT-X `v3.2.0-rc1`
 | `jt9/t1` | `jt9 -9 -d 3` | 1 | 300 | 240 | 6 | 3 | 0 | 0 | +0.09 dB | 0 / not counted |
 | `jtty/t1` | `rjtty 4.6 0 384 1500 50` | 2 | 360 | 160 | 0 | 0 | 0 | 0 | 0.00 dB | 0 / 0 |
 | `wspr/t1` | `wsprd` | 1 | 260 | 217 | 1 | 0 | 0 | 0 | +0.04 dB | 1 / not counted |
+| `fst4w/t1` | `jt9 -W -d 3 -f 1500 -F 100` (`v3.3.0-beta1`) | 8 | 1 760 | 927 | 20 | 16 | 0 | 0 | +0.17 … −0.17 dB | 0 / 0 |
 | `jt65/t1` | `jt9 -6 -d 3` | 1 | 300 | 280 | 15 | 0 | **1** | 0 | upstream never falls below 50 % on this grid | 9 / not counted |
 
 Groups ahead: FST4-15 CCIR moderate; Q65 A-15 plain, and B-, C-, D- and E-60
@@ -88,6 +89,7 @@ Crate's time as a fraction of upstream's on the same files.
 | `jt9/t1` | 10 | 0.19 (15.1 / 77.9 ms) | 0.19 (17.9 / 96.2 ms) |
 | `jtty/t1` | 20 | 0.11 (14 / 127 ms) | 0.14 (19 / 132 ms) |
 | `wspr/t1` | 10 | 0.24 (19 / 79 ms) | 1.22 (208 / 170 ms) |
+| `fst4w/t1` | 20 | 0.29 | **1.77** (306 / 173 ms) |
 | `jt65/t1` | 10 | 0.25 (193 / 784 ms) | 0.06 (53 / 855 ms) |
 
 Fewer than ten files a kind is too few: `wspr/t1` read anywhere from 0.60 to
@@ -102,6 +104,11 @@ single-thread A/B of `main` before and after it gave `qso3_busy` at `Depth::Deep
 570 → 504 ms and the FST4-60 golden 951 → 597 ms, and one OSD call on FT8's
 LLRs 57 → 24 µs (upstream's own Fortran: 198 µs). How much of the rest came from
 the other commits since 2026-10-01 was not isolated.
+
+FST4W (2026-10-11, added with #649) is the second cell where the crate is slower than upstream, and the first with twenty
+files a kind: 1.77 at the cell nearest upstream's crossing. Not yet profiled. The candidates are `fastosd240_74`'s
+`Vec<u8>` inner loops, the closure-based `mrbencode`, and the per-pattern partial syndromes; none is measured. FST4W is the
+one task whose upstream is `v3.3.0-beta1`, not `rc1`: rc1's Keff 50 matched blank known-call entries.
 
 ## What moved these numbers
 

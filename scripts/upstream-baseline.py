@@ -82,7 +82,7 @@ def out_path(task):
 
 
 def upstream_binary(t):
-    if "upstream_path" in t:  # built by its own script, e.g. rjtty by build_jttysim.sh
+    if "upstream_path" in t:  # built by its own script, e.g. rjtty by build_jttysim.sh; `upstream_tag` names its release
         return os.path.join(ROOT, t["upstream_path"])
     return os.path.join(ROOT, "target", "upstream", f"build-{UPSTREAM_TAG}", t["upstream_bin"])
 
@@ -204,7 +204,7 @@ def cmd_generate(task, jobs):
     cols = t["groups"] + (["mode"] if "modes" in t else [])
     with open(path, "w") as fh:
         fh.write(f"# task={task}\n")
-        fh.write(f"# upstream={t['upstream_bin']} {UPSTREAM_TAG} sha256={sha256(binary)}\n")
+        fh.write(f"# upstream={t['upstream_bin']} {t.get('upstream_tag', UPSTREAM_TAG)} sha256={sha256(binary)}\n")
         fh.write(f"# upstream_args={' '.join(t['upstream_args'])}\n")
         fh.write(f"# corpus={t['corpus']} seed={stamp.get('seed')} simulator_sha256={stamp.get('simulator_sha256')}"
                  f" stamp_commit={stamp.get('commit')}\n")

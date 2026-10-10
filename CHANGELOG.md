@@ -30,6 +30,8 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   `mfsk_decoder_get_wcalls` / `set_wcalls`; Kotlin and Swift follow (written without a JVM or a Mac: CI builds them first). Exact against
   upstream: 1 208 FEC inputs, 1 201 `genfst4` messages, `jt9 -W` / `-7` rows, and WSJT-X's own FST4W-1800 sample (`DL0HOT JO60 30`).
   Upstream bug found: `genfst4.f90:40-43` eats characters after two leading blanks (not reproduced). Detail: `LIBRARY.md` §3.3.
+  Tier C (`fst4w_sweep`, task `fst4w/t1`, 1 760 files): the same as `jt9 -W` in all 8 conditions (20 upstream-only, 16 crate-only,
+  crossings within ±0.17 dB, no extras either side), but 1.8× slower near the crossing (306 vs 173 ms; 0.29× on noise).
 
 - **`IqReceiver::add_audio_channel`, `take_audio_from` and `utc_of_audio`, for a receiver with no slot; JTTY's
   `MessageUpdate::calls` (#650).** An audio channel is placed as a slotted one but cuts nothing: it keeps its continuous
