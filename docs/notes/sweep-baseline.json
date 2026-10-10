@@ -32,11 +32,11 @@
         "groups": 10
       },
       "ft8_itu": {
-        "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "date": "2026-10-11",
+        "commit": "4942095d",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
-        "trials": 2720,
-        "groups": 8
+        "trials": 2040,
+        "groups": 6
       },
       "jt65": {
         "date": "2026-10-10",
@@ -221,13 +221,13 @@
   "ft8/ccir_moderate": -20.0,
   "ft8/ccir_poor": -19.583333333333332,
   "ft8_itu/itu_hm": -3.3333333333333335,
-  "ft8_itu/itu_hq": -20.166666666666668,
+  "ft8_itu/itu_hq": -19.0,
   "ft8_itu/itu_ld": -1.0000000000000009,
-  "ft8_itu/itu_lm": -19.714285714285715,
-  "ft8_itu/itu_lq": -20.0,
-  "ft8_itu/itu_md": -19.833333333333332,
-  "ft8_itu/itu_mm": -20.166666666666668,
-  "ft8_itu/itu_mq": -21.11111111111111,
+  "ft8_itu/itu_lm": -18.583333333333332,
+  "ft8_itu/itu_lq": -19.0,
+  "ft8_itu/itu_md": -18.875,
+  "ft8_itu/itu_mm": -19.0,
+  "ft8_itu/itu_mq": -20.125,
   "jt65/awgn": -22.5,
   "jt65_chase/awgn": -23.5,
   "jt9/awgn": -26.636363636363637,
