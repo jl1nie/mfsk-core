@@ -23,6 +23,14 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Public API
 
+- **FST4W, and FST4-900 / FST4-1800 (#649).** WSJT-X's WSPR-style beacon on FST4's modulation: `Fst4w120` / `300` / `900` / `1800`
+  (feature `fst4w`), LDPC(240,74) + CRC-24 over a 50-bit type-0.6 message, `Decoder<P>` with `wcalls()` / `set_wcalls()` for the Keff-50
+  known-call list, `Decoded::hash22` for an unresolved `<...>` row, `Mode::Fst4W*`, `pack77_wspr`. `Fst4s900` / `Fst4s1800` join FST4
+  (largest slot transform now 21 591 360 points). C ABI: `MfskMode` 26-31, `hash22` on both rows, `mfsk_fst4w_pack`,
+  `mfsk_decoder_get_wcalls` / `set_wcalls`; Kotlin and Swift follow (written without a JVM or a Mac: CI builds them first). Exact against
+  upstream: 1 208 FEC inputs, 1 201 `genfst4` messages, `jt9 -W` / `-7` rows, and WSJT-X's own FST4W-1800 sample (`DL0HOT JO60 30`).
+  Upstream bug found: `genfst4.f90:40-43` eats characters after two leading blanks (not reproduced). Detail: `LIBRARY.md` §3.3.
+
 - **`IqReceiver::add_audio_channel`, `take_audio_from` and `utc_of_audio`, for a receiver with no slot; JTTY's
   `MessageUpdate::calls` (#650).** An audio channel is placed as a slotted one but cuts nothing: it keeps its continuous
   12 kHz audio, which `take_audio_from` hands out up to the first break, with the audio index of its first sample, so a

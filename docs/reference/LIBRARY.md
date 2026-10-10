@@ -400,6 +400,7 @@ a few low-level `fec` and `jt9` functions. The full list is `CHANGELOG.md`,
 | `RowDetail::sync_score` / `sync_cv` / `hard_errors` | `0` from WSPR, JT9, JT65 and Q65, a placeholder from FT8's a7 / a8 | `None` there, `Some` where the mode measures it | — ([#594](https://github.com/jl1nie/mfsk-core/issues/594)) |
 | `RowDetail::info` | FT8, FT4, FST4 only | every mode (WSPR 50 bits, JT9 / JT65 72, Q65 77) | two JT65 rows with the same text are no longer one ([#592](https://github.com/jl1nie/mfsk-core/issues/592)) |
 | `Decoder<Wspr>` and MSK144 on `wasm32-unknown-unknown` | panicked on any input (`Instant::now`) | decode | CI now decodes every mode on that target ([#583](https://github.com/jl1nie/mfsk-core/issues/583)) |
+| BP check-node inverse (FT8, FT4, FST4, MSK144) | `atanh` clamped at ±4.6 | WSJT-X's piecewise-linear `platanh` (`lib/platanh.f90`, called by every WSJT-X BP) | FT8 at 100 trials a cell: 2561 vs 2559 decodes, crossings within 0.04 dB, no unexpected decode either way; the other suites ±noise; `hard_errors` and `pass` move in some rows (22 of 53 decode snapshots), messages and order do not ([#658](https://github.com/jl1nie/mfsk-core/issues/658)) |
 | FT8 symbol scaling and `nsync` gate | `* (1/1000)`; `nsync` recounted on the coarse spectrogram | `/ 1e3` and the refined spectra, as `ft8b.f90` | no group moved; the gate flips for one candidate in the tier-A/B suite ([#423](https://github.com/jl1nie/mfsk-core/issues/423)) |
 
 **Code.**
@@ -411,6 +412,7 @@ a few low-level `fec` and `jt9` functions. The full list is `CHANGELOG.md`,
 | early rows | none; `decode` returns at the end of the period | `Decoder::decode_prefix` / `decode_prefix_with` with the period so far ([§2.3](#23-early-decode-and-the-compute-budget)); `Decoder::prefix_points()` says when, `IqReceiver::set_prefix_points` cuts there |
 | pairing a returned row with a streamed one | by text and frequency | `RowDetail::delivery`; `AnyDecoder::delivery_is_exact()` says which contract a decoder runs ([§2.4](#24-streaming-delivery)) |
 | implementing `ModulationParams` | `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL`, `NDOWN`, `SYMBOL_DT`, `N_SYMBOLS` and `TONE_SPACING_HZ` all written out | the first three move to `SyncFrontEnd: Protocol`, which only a protocol decoding through `engine::sync` or the generic pipeline implements (a compile error otherwise); `SYMBOL_DT` and `N_SYMBOLS` default; `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)` for a mode whose tones sit at the modulation index ([§5](#5-the-protocol-trait-hierarchy)) |
+| a row's callsign hash | not carried | `Decoded::hash22: Option<u32>`, set on an FST4W `<...>` row; key de-duplication of FST4W rows on `(text, hash22)` ([§3.3](#33-per-protocol-notes)) |
 | `msg::wsjt77::is_plausible_callsign` | checked the ITU prefix table | kept, and now the same as `is_valid_callsign` (no code change; see the results table) |
 
 **Removed, and what to do instead.**
@@ -1778,7 +1780,7 @@ What the table makes visible:
 
 ### 3.2 Geometry
 
-24 wired ZSTs: 20 WSJT-family protocols and sub-modes plus 4
+30 wired ZSTs: 26 WSJT-family protocols and sub-modes plus 4
 `uvpacket` sub-modes. MSK144 and JTTY are listed last for reference but
 are **not** among them — neither implements `Protocol`, so they appear in
 neither the registry nor `tests/protocol_invariants.rs`.
@@ -1791,7 +1793,13 @@ neither the registry nor `tests/protocol_invariants.rs`.
 | FST4-30    | 30 s   | 4     | 160     | 7.143 Hz   | LDPC(240, 101)   | 77 b  | 5×Costas-8 | ≈−24.2 dB |
 | FST4-60A   | 60 s   | 4     | 160     | 3.0864 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | dominant terrestrial sub-mode, ≈−28.1 dB |
 | FST4-120   | 120 s  | 4     | 160     | 1.4634 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | ≈−31.3 dB |
-| FST4-300   | 300 s  | 4     | 160     | 0.5580 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | ≈−35.3 dB, deepest wired FST4 |
+| FST4-300   | 300 s  | 4     | 160     | 0.5580 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | ≈−35.3 dB |
+| FST4-900   | 900 s  | 4     | 160     | 0.1803 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | slot transform 10 782 720 points |
+| FST4-1800  | 1800 s | 4     | 160     | 0.0893 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | slot transform 21 591 360 points, the largest of any mode |
+| FST4W-120  | 120 s  | 4     | 160     | 1.4634 Hz  | LDPC(240, 74)    | 50 b  | 5×Costas-8 | WSPR-style beacon on FST4's modulation |
+| FST4W-300  | 300 s  | 4     | 160     | 0.5580 Hz  | LDPC(240, 74)    | 50 b  | 5×Costas-8 | (same) |
+| FST4W-900  | 900 s  | 4     | 160     | 0.1803 Hz  | LDPC(240, 74)    | 50 b  | 5×Costas-8 | (same) |
+| FST4W-1800 | 1800 s | 4     | 160     | 0.0893 Hz  | LDPC(240, 74)    | 50 b  | 5×Costas-8 | (same) |
 | WSPR       | 120 s  | 4     | 162     | 1.465 Hz   | conv r=½ K=32 + Fano | 50 b | per-symbol LSB (npr3) | |
 | JT9        | 60 s   | 9     | 85      | 1.736 Hz   | conv r=½ K=32 + Fano | 72 b  | 16 distributed | |
 | JT65       | 60 s   | 65    | 126     | 2.69 Hz    | RS(63, 12) GF(2⁶)     | 72 b  | 63 distributed | |
@@ -1835,16 +1843,52 @@ neither the registry nor `tests/protocol_invariants.rs`.
   OSD snapshot (`FecOpts::osd_snapshots`, `maxosd = 3`): 41 gained, none
   lost on 20 800 sweep files. The post-OSD `osd_max_errors` gate is gone
   ([§6](#6-engine-primitives)).
+- **FST4W** (`fst4w`, #649) — `Fst4w120` / `Fst4w300` / `Fst4w900` /
+  `Fst4w1800`, WSJT-X's WSPR-style beacon on FST4's modulation. WSJT-X has no
+  separate decoder for it: `fst4_decode.f90` runs with `iwspr=1`. Same 4-GFSK,
+  160 symbols, Gray map and sync blocks, and the same front end (whole-slot
+  FFT, `get_candidates_fst4` over `nfqso ± ntol`, `fst4_sync_search`, the four
+  bit-metric variants); different **FEC** (LDPC(240, 74), 50 payload bits + a
+  CRC-24 over 74, no scrambler: `fec::ldpc240_74`, with its own BP loop and
+  `fastosd240_74` ported line for line and checked against upstream's
+  `decode240_74_owned` on 1 208 recorded inputs, exact), **message** (pack77 type
+  0.6, `i3=0, n3=6`: `CALL GRID4 DBM`, `PFX/CALL DBM`, `CALL/SFX DBM`,
+  `<CALL> GRID6`; `msg::wsjt77::pack77_wspr`, exact against `genfst4` on 1 201
+  messages) and **ladder** (`fst4w::decode`): per LLR variant Keff 66
+  (`maxosd=2, norder=3`), then at `Depth::Deep` Keff 50 (`maxosd=1, norder=4`),
+  which has no CRC and so is accepted only if a **non-blank entry of the
+  known-call list is in the message** (beta1's fix; rc1 matched blank entries
+  too). A Keff-66 decode of a type-1 message adds its `CALL GRID` to that list
+  (100 entries, oldest shifted out). The list is state between candidates, so
+  FST4W walks them one at a time, where FST4 decodes them in parallel; keep it
+  between runs with `Decoder::wcalls()` / `set_wcalls()`, as WSJT-X keeps
+  `fst4w_calls.txt`. No a-priori decoding. Rows are de-duplicated on
+  `(text, hash22)`: two stations whose calls are unresolved both read
+  `<...> PM95AA`, and `Decoded::hash22` is what tells them apart.
+  `DecodeParams::rx_freq_hz` / `tol_hz` are the window (`nfqso`, `ntol`); the
+  registry publishes 1500 ± 100 Hz. `Depth` is `ndepth`: Deep adds Keff 50,
+  Normal keeps the `i0 ± 1` retry, Fast has neither. Evidence:
+  `tests/fst4w_decode.rs` — seven synthesised rows match `jt9 -W` (recall 7/7,
+  `max_extra` 0), and WSJT-X's own `201230_0300.wav` (FST4W-1800, 43 MB, not
+  vendored; `$WSJTX_SAMPLES_DIR`) gives `DL0HOT JO60 30` at 1433 Hz, dt 0.28
+  (`jt9` 0.3), SNR −43.9 (−44), in 3.0 s. Deliberate differences from
+  upstream, listed in `fst4w/decode.rs`: the FST4 pipeline's one-stricter
+  `nsync` gate (not yet measured for FST4W), hashes learned only from accepted
+  messages, which duplicate candidate survives; and `pack_text` strips leading
+  blanks properly where `genfst4.f90:40-43` eats characters after the second.
+  Not on embedded: a 1800 s slot needs a 21.6 M-point FFT.
 - **FST4** — LDPC(240, 101) + 24-bit CRC (`fec::ldpc240_101`); the
   BP/OSD code is the same across LDPC sizes, so the new material is
-  just the parity-check/generator tables and code dimensions. The five
-  wired sub-modes differ only in `NSPS` / `SYMBOL_DT` /
-  `TONE_SPACING_HZ` — plus `TX_START_OFFSET_S` for FST4-15 alone
-  (0.5 s rather than 1.0 s into the slot) — and are emitted by the
-  `fst4_submode!` macro. FST4-900 / FST4-1800 remain unwired (no user
-  demand). FST4W — the WSPR-style one-way 50-bit beacon variant,
-  LDPC(240, 74) — is a separate message format and out of scope
-  (issue #23). The **OSD searches the (240, 91) subcode**, as
+  just the parity-check/generator tables and code dimensions. The seven
+  wired sub-modes (15, 30, 60A, 120, 300, 900, 1800 s) differ only in
+  `NSPS` / `SYMBOL_DT` / `TONE_SPACING_HZ` — plus `TX_START_OFFSET_S` for
+  FST4-15 alone (0.5 s rather than 1.0 s into the slot) — and are emitted by
+  the `fst4_submode!` macro. FST4-900 and FST4-1800 take upstream's
+  `nfft1` (`6480·1664` and `6426·3360`), a symbol short of the slot, which
+  upstream drops as well. They have no sweep corpus (tens of GB): the
+  evidence is `tests/fst4_long_period.rs`, cases synthesised in the test and
+  `jt9 -7 -p T` run over the same samples, three rows kept (all three decode,
+  no extra; #649). The **OSD searches the (240, 91) subcode**, as
   `fst4_decode.f90:478` (`decode240_101(llr, Keff=91, …)`) does: only the
   message and the first 14 CRC bits are free, the last 10 CRC bits are
   cascaded into the code (`ldpc240_101::FST4_KEFF = 91`, `osd::PartialCrc`).
@@ -2187,7 +2231,7 @@ pub trait Decodable: Sized {
 }
 ```
 
-It is implemented for every slot-decoded ZST (the 20 WSJT-family modes; not
+It is implemented for every slot-decoded ZST (the 26 WSJT-family modes; not
 `uvpacket`, MSK144 or JTTY). It is what the public API is generic over;
 `FrameDecodable` and the per-family request types it replaced are
 crate-private. A new mode adds an impl here, a line in the
@@ -2524,7 +2568,8 @@ justified it. The summary here covers what a Rust host consumer needs;
 | `alloc` | — | `no_std` with an allocator |
 | `ft8` | on | FT8 ZST, decode, wave_gen |
 | `ft4` | on | FT4 ZST, decode |
-| `fst4` | off | FST4-15/30/60A/120/300 ZSTs, decode. **Not host-only** — routes entirely through the backend-agnostic engine and type-checks clean under `alloc,fst4,fft-extern` (issue #306) |
+| `fst4w` | off | FST4W-120/300/900/1800 ZSTs, `Fst4wMessage`, `Ldpc240_74`, decode. Implies `fst4`; in `full`. Rows in the feature matrix: `fst4w` and `alloc fst4w fft-extern` |
+| `fst4` | off | FST4-15/30/60A/120/300/900/1800 ZSTs, decode. **Not host-only** — routes entirely through the backend-agnostic engine and type-checks clean under `alloc,fst4,fft-extern` (issue #306) |
 | `wspr` | off | WSPR ZST, decode, synth, spectrogram search |
 | `jt9` / `jt65` / `q65` | off | **Not host-only since #390** — no forced backend, and each type-checks clean under `alloc,<mode>,fft-extern` with no `std`/`rustfft` pulled in (one feature-matrix row each, in `ci.yml` and `scripts/pre-push-check.sh`). Decoders only; no embedded app uses them yet |
 | `msk144` | off | MSK144 — no `Protocol` ZST; own top-level driver |
@@ -2596,7 +2641,7 @@ Beyond that geometry it publishes what a host cannot otherwise ask for:
 * `slot_samples_12k` — the slot in samples (FT4 90 000, FT8 180 000,
   FST4-300 3 600 000), and `decode_fft1_size` — the forward FFT the
   decoder takes over the whole slot (`Protocol::DECODE_FFT1_SIZE`; FT4
-  92 160, FT8 192 000, **FST4-300 4 194 304**, 0 for the modes with their
+  92 160, FT8 192 000, **FST4-300 4 194 304**, **FST4W-1800 21 591 360** (the largest), 0 for the modes with their
   own front end). The second is the number that makes "one call shape for
   every mode" wrong as a memory story.
 * `profile: DecodeProfile { caps, defaults, sync_scale, sniper_max_cand_cap }`.
@@ -2664,8 +2709,8 @@ its display name.
 ### 8.2 The generic trait-surface checker
 
 `tests/protocol_invariants.rs` runs one generic
-`assert_protocol_invariants::<P>` over every wired ZST — 24 of them:
-20 WSJT-family, plus `uvpacket`'s four — and pins ~25 trait-level
+`assert_protocol_invariants::<P>` over every wired ZST — 30 of them:
+26 WSJT-family, plus `uvpacket`'s four — and pins ~25 trait-level
 invariants, among them `FecCodec::N ≤ N_DATA × BITS_PER_SYMBOL` and the
 `GRAY_MAP` length contract `[2^BITS_PER_SYMBOL, NTONES]`.
 

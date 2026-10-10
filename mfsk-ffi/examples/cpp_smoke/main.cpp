@@ -297,12 +297,13 @@ void test_mode_introspection() {
         if (std::strncmp(name, "FST4-", 5) == 0) fst4_submodes++;
     }
 
-    if (fst4_submodes != 5) {
-        fail("introspect", "expected all five FST4 sub-modes to be addressable");
+    // FST4-15, -30, -60A, -120, -300, and -900 and -1800 since #649.
+    if (fst4_submodes != 7) {
+        fail("introspect", "expected all seven FST4 sub-modes to be addressable");
         return;
     }
     if (with_handle < 7) {
-        fail("introspect", "FT8 + FT4 + five FST4 should all drive the decoder");
+        fail("introspect", "FT8 + FT4 + seven FST4 should all drive the decoder");
         return;
     }
     if (snipers != 1) {
@@ -537,17 +538,108 @@ void test_fst4() {
         return;
     }
     // 1000 Hz: FST4's default band is 600-1400 Hz, not FT8's 200-4000.
-    std::printf("\n— FST4-60A roundtrip, and all five sub-modes addressable\n");
+    std::printf("\n— FST4-60A roundtrip, and all seven sub-modes addressable\n");
     decoder_roundtrip("FST4-60A", MFSK_MODE_FST4S60,
                       synth_slot(MFSK_MODE_FST4S60, "CQ", "JA1ABC", "PM95", 1000.0f), "JA1ABC");
 
-    const MfskMode others[] = {MFSK_MODE_FST4S15, MFSK_MODE_FST4S30,
-                               MFSK_MODE_FST4S120, MFSK_MODE_FST4S300};
+    const MfskMode others[] = {MFSK_MODE_FST4S15,  MFSK_MODE_FST4S30,  MFSK_MODE_FST4S120,
+                               MFSK_MODE_FST4S300, MFSK_MODE_FST4S900, MFSK_MODE_FST4S1800};
     for (MfskMode m : others) {
         MfskDecoder* d = open_dec(mfsk_mode_name(m), m);
         if (d != nullptr) mfsk_decoder_close(d);
     }
-    std::printf("  all five FST4 sub-modes open a decoder\n");
+    std::printf("  all seven FST4 sub-modes open a decoder\n");
+}
+
+// ── FST4W: pack, tones, PCM, decode; the hash and the known-call list ──
+//
+// All through the C calls: nothing here knows FST4W's layout. A WSPR-type
+// message packs to 77 bits (`mfsk_fst4w_pack`), and the ordinary tone and
+// synthesis stages take it from there.
+std::vector<int16_t> fst4w_slot(MfskMode mode, const char* text, float freq_hz) {
+    uint8_t msg[77];
+    if (mfsk_fst4w_pack(text, msg) != MFSK_STATUS_OK) {
+        fail("fst4w", mfsk_last_error());
+        return {};
+    }
+    std::vector<uint8_t> tones(mfsk_symbol_count(mode));
+    size_t n = 0;
+    if (mfsk_message_to_tones(mode, msg, tones.data(), tones.size(), &n) != MFSK_STATUS_OK) {
+        fail("fst4w", mfsk_last_error());
+        return {};
+    }
+    std::vector<int16_t> pcm(mfsk_synth_output_len(mode));
+    size_t w = 0;
+    if (mfsk_tones_to_i16(mode, tones.data(), tones.size(), freq_hz, 8000, pcm.data(), pcm.size(),
+                          &w) != MFSK_STATUS_OK) {
+        fail("fst4w", mfsk_last_error());
+        return {};
+    }
+    MfskModeInfo info{};
+    info.size = sizeof info;
+    mfsk_mode_info(mode, &info);
+    std::vector<int16_t> slot(info.slot_samples_12k, 0);
+    const size_t at = static_cast<size_t>(info.tx_start_offset_s * 12000.0f);
+    for (size_t i = 0; i < w && at + i < slot.size(); ++i) slot[at + i] = pcm[i];
+    return slot;
+}
+
+void test_fst4w() {
+    std::printf("\n— FST4W: pack, transmit, decode, hash22 and the known-call list\n");
+    const MfskMode mode = MFSK_MODE_FST4W120;
+    MfskDecoder* d = open_dec("FST4W-120", mode);
+    if (d == nullptr) return;
+
+    char calls[256] = {0};
+    size_t need = 0;
+    if (mfsk_decoder_get_wcalls(d, calls, sizeof calls, &need) != MFSK_STATUS_OK || need != 1) {
+        fail("fst4w", "a fresh decoder has an empty known-call list");
+    }
+    if (mfsk_decoder_set_wcalls(d, "JA1XYZ PM95\nVK3NV QF22\n") != MFSK_STATUS_OK) {
+        fail("fst4w", mfsk_last_error());
+    }
+    mfsk_decoder_get_wcalls(d, calls, sizeof calls, &need);
+    if (std::strcmp(calls, "JA1XYZ PM95\nVK3NV QF22") != 0) fail("fst4w", "the list reads back");
+    mfsk_decoder_set_wcalls(d, "");
+
+    Rows rows;
+    if (decode_i16(d, fst4w_slot(mode, "K1ABC FN42 37", 1500.0f), rows, "FST4W-120")) {
+        print_rows("FST4W-120", rows);
+        if (!rows.contains("K1ABC FN42 37")) fail("fst4w", "the round trip lost the message");
+        if (rows.len == 1) {
+            const MfskDecode& r = rows.items[0];
+            if (r.info_bits != 74 || r.key_bits != 50) fail("fst4w", "74 info bits, a 50-bit key");
+            if ((r.flags & MFSK_DECODE_FLAG_HAS_HASH22) != 0) fail("fst4w", "a resolved call has no hash22");
+        }
+    }
+    mfsk_decoder_get_wcalls(d, calls, sizeof calls, &need);
+    if (std::strcmp(calls, "K1ABC FN42") != 0) fail("fst4w", "a Keff-66 decode teaches the list");
+
+    Rows hashed;
+    MfskDecoder* d2 = open_dec("FST4W-120", mode);
+    if (d2 != nullptr) {
+        if (decode_i16(d2, fst4w_slot(mode, "<JA1XYZ> PM95AA", 1500.0f), hashed, "FST4W-120 hash")) {
+            if (!hashed.contains("<...> PM95AA")) fail("fst4w", "an unresolved call reads <...>");
+            if (hashed.len == 1 && (hashed.items[0].flags & MFSK_DECODE_FLAG_HAS_HASH22) == 0) {
+                fail("fst4w", "and carries its 22-bit hash");
+            }
+        }
+        mfsk_decoder_close(d2);
+    }
+
+    uint8_t msg[77];
+    if (mfsk_fst4w_pack("CQ K1ABC FN42", msg) != MFSK_STATUS_DECODE_FAILED) {
+        fail("fst4w", "a message FST4W cannot send is refused");
+    }
+    mfsk_decoder_close(d);
+
+    MfskDecoder* ft8 = open_dec("FT8", MFSK_MODE_FT8);
+    if (ft8 != nullptr) {
+        if (mfsk_decoder_get_wcalls(ft8, calls, sizeof calls, &need) != MFSK_STATUS_UNSUPPORTED) {
+            fail("fst4w", "other modes have no known-call list");
+        }
+        mfsk_decoder_close(ft8);
+    }
 }
 
 // ── The modes whose frames have no tone stage here ──────────────────
@@ -1552,6 +1644,7 @@ int main() {
     test_sniper();
     test_ft4();
     test_fst4();
+    test_fst4w();
     test_wspr();
     test_jt9_jt65();
     test_q65();

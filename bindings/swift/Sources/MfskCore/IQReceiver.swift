@@ -86,6 +86,8 @@ public struct IQDecode: Sendable, Equatable {
     /// ``Decode/Stage/final`` for one the whole slot found, nil from a plain
     /// decode (early decode off).
     public let stage: Decode.Stage?
+    /// As ``Decode/hash22``.
+    public let hash22: UInt32?
 
     init(_ raw: MfskIqDecode) {
         self.channel = raw.channel
@@ -100,7 +102,7 @@ public struct IQDecode: Sendable, Equatable {
         self.text = stringFromCArray(raw.text)
         let detail = RowDetail(flags: raw.flags, syncScore: raw.sync_score, syncCV: raw.sync_cv,
                                hardErrors: raw.hard_errors, keyBits: raw.key_bits, key: raw.key,
-                               delivery: raw.delivery)
+                               delivery: raw.delivery, hash22: raw.hash22)
         self.syncScore = detail.syncScore
         self.syncCV = detail.syncCV
         self.hardErrors = detail.hardErrors
@@ -110,6 +112,7 @@ public struct IQDecode: Sendable, Equatable {
         self.key = detail.key
         self.keyBits = raw.key_bits
         self.delivery = detail.delivery
+        self.hash22 = detail.hash22
         switch Int32(raw.stage) {
         case MFSK_STAGE_EARLY: self.stage = .early
         case MFSK_STAGE_FINAL: self.stage = .final

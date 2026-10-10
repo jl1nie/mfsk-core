@@ -206,7 +206,7 @@ static jmethodID row_ctor(JNIEnv* env, jclass rowCls) {
     return (*env)->GetMethodID(
         env, rowCls, "<init>",
         "(ILjava/lang/String;FFFLjava/lang/Float;Ljava/lang/Float;Ljava/lang/Integer;"
-        "IIZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;)V");
+        "IIZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;Ljava/lang/Long;)V");
 }
 
 /// `MfskStage?` from `MfskDecode::stage`: null for `MFSK_STAGE_NONE`.
@@ -246,6 +246,17 @@ static jobject box_int(JNIEnv* env, bool has, int32_t v) {
     return o;
 }
 
+/// A `Long?` from a `uint32_t`, as `box_float`: the unresolved callsign hash (FST4W).
+static jobject box_long(JNIEnv* env, bool has, uint32_t v) {
+    if (!has) return NULL;
+    jclass c = (*env)->FindClass(env, "java/lang/Long");
+    if (c == NULL) return NULL;
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "valueOf", "(J)Ljava/lang/Long;");
+    jobject o = m == NULL ? NULL : (*env)->CallStaticObjectMethod(env, c, m, (jlong)v);
+    (*env)->DeleteLocalRef(env, c);
+    return o;
+}
+
 /// The packed message key as lower-case hex, `ceil(key_bits / 8)` bytes:
 /// compared by value, unlike a `ByteArray` in a data class.
 static jstring key_hex(JNIEnv* env, uint8_t key_bits, const uint8_t* key) {
@@ -274,6 +285,7 @@ static jobject make_row(JNIEnv* env, jclass rowCls, jmethodID ctor, const MfskDe
                            (int32_t)r->hard_errors);
     jobject delivery = box_int(env, r->delivery >= 0, r->delivery);
     jobject stage = stage_of(env, r->stage);
+    jobject hash22 = box_long(env, (r->flags & MFSK_DECODE_FLAG_HAS_HASH22) != 0, r->hash22);
     if ((*env)->ExceptionCheck(env)) return NULL;
     jobject obj = (*env)->NewObject(
         env, rowCls, ctor,
@@ -283,9 +295,10 @@ static jobject make_row(JNIEnv* env, jclass rowCls, jmethodID ctor, const MfskDe
         (jint)r->info_bits, (jint)r->pass,
         (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
         (jboolean)((r->flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0),
-        key, (jint)r->key_bits, delivery, stage);
+        key, (jint)r->key_bits, delivery, stage, hash22);
     (*env)->DeleteLocalRef(env, text);
     if (stage) (*env)->DeleteLocalRef(env, stage);
+    if (hash22) (*env)->DeleteLocalRef(env, hash22);
     (*env)->DeleteLocalRef(env, key);
     if (sync) (*env)->DeleteLocalRef(env, sync);
     if (cv) (*env)->DeleteLocalRef(env, cv);
@@ -986,6 +999,39 @@ Java_io_github_mfskcore_MfskDecoder_nativeCopyInfo(
     return out;
 }
 
+/// FST4W's Keff-50 known-call list, one `CALL GRID` per line.
+JNIEXPORT jstring JNICALL
+Java_io_github_mfskcore_MfskDecoder_nativeGetWcalls(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    MfskDecoder* d = (MfskDecoder*)(intptr_t)handle;
+    size_t need = 0;
+    MfskStatus st = mfsk_decoder_get_wcalls(d, NULL, 0, &need);
+    if (st != MFSK_STATUS_OK && st != MFSK_STATUS_INVALID_ARG) {
+        throw_last(env, st, "get_wcalls failed");
+        return NULL;
+    }
+    char* buf = (char*)malloc(need + 1);
+    if (buf == NULL) { throw_status(env, MFSK_STATUS_INTERNAL, "out of memory"); return NULL; }
+    st = mfsk_decoder_get_wcalls(d, buf, need + 1, &need);
+    jstring out = NULL;
+    if (st == MFSK_STATUS_OK) out = (*env)->NewStringUTF(env, buf);
+    else throw_last(env, st, "get_wcalls failed");
+    free(buf);
+    return out;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskDecoder_nativeSetWcalls(
+        JNIEnv* env, jclass cls, jlong handle, jstring calls) {
+    (void)cls;
+    MfskDecoder* d = (MfskDecoder*)(intptr_t)handle;
+    const char* s = (*env)->GetStringUTFChars(env, calls, NULL);
+    if (s == NULL) return;
+    const MfskStatus st = mfsk_decoder_set_wcalls(d, s);
+    (*env)->ReleaseStringUTFChars(env, calls, s);
+    if (st != MFSK_STATUS_OK) throw_last(env, st, "set_wcalls failed");
+}
+
 /// Decode the stream's ready slot. Null (no exception) when none is ready;
 /// `meta[0]` receives the slot's period and `meta[1]` its UTC start in ns.
 JNIEXPORT jobjectArray JNICALL
@@ -1283,6 +1329,18 @@ Java_io_github_mfskcore_Mfsk_nativePack77(
     if (sb) (*env)->ReleaseStringUTFChars(env, b, sb);
     if (sc) (*env)->ReleaseStringUTFChars(env, c, sc);
     if (st != MFSK_STATUS_OK) { throw_last(env, st, "pack77 failed"); return NULL; }
+    return msg77_to_java(env, msg);
+}
+
+/// `mfsk_fst4w_pack`: a WSPR-type message as the 77 bits the FST4W modes send.
+JNIEXPORT jbyteArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativePackFst4w(JNIEnv* env, jclass cls, jstring text) {
+    (void)cls;
+    const char* s = (*env)->GetStringUTFChars(env, text, NULL);
+    uint8_t msg[77];
+    const MfskStatus st = s ? mfsk_fst4w_pack(s, msg) : MFSK_STATUS_INVALID_ARG;
+    if (s) (*env)->ReleaseStringUTFChars(env, text, s);
+    if (st != MFSK_STATUS_OK) { throw_last(env, st, "fst4w_pack failed"); return NULL; }
     return msg77_to_java(env, msg);
 }
 
@@ -1723,7 +1781,7 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
     jmethodID ctor = (*env)->GetMethodID(
         env, rowCls, "<init>",
         "(IILjava/lang/String;DFFFJJZJLjava/lang/Float;Ljava/lang/Float;Ljava/lang/Integer;"
-        "IZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;)V");
+        "IZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;Ljava/lang/Long;)V");
     if (ctor == NULL) return NULL;
     const size_t n = mfsk_iq_pending(rx);
     jobjectArray out = (*env)->NewObjectArray(env, (jsize)n, rowCls, NULL);
@@ -1743,6 +1801,7 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
                                (int32_t)r.hard_errors);
         jobject delivery = box_int(env, r.delivery >= 0, r.delivery);
         jobject stage = stage_of(env, r.stage);
+        jobject hash22 = box_long(env, (r.flags & MFSK_DECODE_FLAG_HAS_HASH22) != 0, r.hash22);
         if ((*env)->ExceptionCheck(env)) return NULL;
         jobject obj = (*env)->NewObject(
             env, rowCls, ctor, (jint)r.channel, (jint)r.mode, text, (jdouble)r.abs_freq_hz,
@@ -1751,9 +1810,10 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
             (jlong)r.slot_start_utc_ns, sync, cv, hard, (jint)r.pass,
             (jboolean)((r.flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
             (jboolean)((r.flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0),
-            key, (jint)r.key_bits, delivery, stage);
+            key, (jint)r.key_bits, delivery, stage, hash22);
         (*env)->DeleteLocalRef(env, text);
         (*env)->DeleteLocalRef(env, key);
+        if (hash22) (*env)->DeleteLocalRef(env, hash22);
         if (sync) (*env)->DeleteLocalRef(env, sync);
         if (cv) (*env)->DeleteLocalRef(env, cv);
         if (hard) (*env)->DeleteLocalRef(env, hard);

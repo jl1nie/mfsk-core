@@ -100,7 +100,7 @@ Rust 内部を含む非 static シンボルを全部エクスポートしてし�
    コールサインハッシュテーブル（上流と同じく他のデコーダとは共有しない）、
    FT8 の a7 リスト、Q65 と JT65 の平均、WSPR のコールテーブル。
    `mfsk_decoder_clear` は WSJT-X の "Clear Avg" である。1つのハンドルが
-   スロット系の20モード — FT8、FT4、FST4 の5周期、WSPR、JT9、JT65、Q65 の
+   スロット系の26モード — FT8、FT4、FST4 の7周期、FST4W の4周期、WSPR、JT9、JT65、Q65 の
    10サブモード — をすべて受け持ち、0.12 ABI のファミリごとのデコード関数は
    なくなった。MSK144、JTTY、uvpacket にはデコーダがない（open が
    `MFSK_STATUS_UNKNOWN_PROTOCOL`。JTTY は専用の受信器、§2.8.1）。
@@ -188,6 +188,7 @@ JT65 と Q65 の平均 — は番号が与えられたときだけ使われ、Q6
 | `mfsk_decoder_delivery_is_exact(d)` | 今のモード・depth・extras で、コールバックが呼び出しの返す行をちょうどそのまま、1 回ずつ同じ順で見るか（`STREAMING.md` §3a）。FT8 の single pass と sniper、`MFSK_DEPTH_FAST` の FT4、FST4、WSPR は `false` で、そこでは `MfskDecode::delivery` で対にする。`set_params` / `set_extras` の後は問い直す |
 | `mfsk_decoder_add_callsign(d, "JL1NIE")` | ハッシュテーブルに種を入れ、後の `<...>` を解決できるようにする。ハッシュ化コールを持たないメッセージのモードは `MFSK_STATUS_UNSUPPORTED` |
 | `mfsk_decoder_copy_info(d, i, out, cap, &len)` | 直近のデコードの行 `i` の背後にある FEC 情報ビット（`MfskDecode::info_bits` 個） |
+| `mfsk_decoder_get_wcalls(d, out, cap, &len)` / `mfsk_decoder_set_wcalls(d, text)` | **FST4W のみ**（#649）: Keff 50 の既知コール一覧。1行に1つの `CALL GRID`（`\n` 区切り）、古い順。Keff 66 がタイプ1メッセージを復号するとその `CALL GRID` が加わり、Keff 50 の語（CRC がない）はその文に空でない項目が含まれるときだけ受理される。WSJT-X が `fst4w_calls.txt` に保存するのと同じく、実行をまたいで保存すること。`get` は NUL 込みの長さを `len` に書き、短いバッファには `MFSK_STATUS_INVALID_ARG` を返すので、`out` が null で `cap` が 0 ならサイズ問い合わせになる。`set` は 20 文字の行を 100 行まで（超えると `MFSK_STATUS_INVALID_ARG`）、`""` で空になり、空行は何も保証しない項目になる。どちらも他のモードでは `MFSK_STATUS_UNSUPPORTED` |
 | `mfsk_decoder_unpack77(d, msg, out, cap, &len)` | `<...>` をこのデコーダのテーブルで解決する `mfsk_unpack77` |
 | `mfsk_decoder_clear(d)` | 周期をまたいで持っているものをすべて忘れる（WSJT-X の "Clear Avg"、`ndepth & 128`） |
 | `mfsk_decoder_last_error(d)` | このハンドルのエラー枠。グローバルと違い、スレッドを乗り換えても残る |
@@ -306,17 +307,18 @@ size 版管理である: 古いヘッダでビルドした呼び出し側は短�
 | フィールド | 意味 |
 |---|---|
 | `size` | 呼び出し側が理解している `sizeof(MfskDecode)` |
-| `mode` | ファミリではなく**具体的なサブモード** — FST4 の5周期も Q65 の10サブモードもそれぞれ別に報告される |
+| `mode` | ファミリではなく**具体的なサブモード** — FST4 の7周期も FST4W の4周期も Q65 の10サブモードもそれぞれ別に報告される |
 | `text` | デコードされたメッセージ。`<...>` は可能ならデコーダのテーブルで解決済み |
 | `freq_hz`, `dt_sec`, `snr_db` | 搬送波、スロットの `dt = 0` 基準からの時間オフセット、2500 Hz 基準帯域での SNR |
 | `sync_score` | このデコードの sync スコア。そのモード自身の探索の尺度で、モード間では比較できない。WSPR・JT9・JT65・Q65 と FT8 の a7/a8 リストデコードでは `0.0` で、`MFSK_DECODE_FLAG_HAS_SYNC_SCORE` が立たない |
 | `sync_cv` | ブロックごとの sync パワーの変動係数 — 安定したチャネルでは 0 近傍、QSB 下では高くなる。行が持つ唯一のフェージング指標。`sync_score` が無い行では `0.0` で、`MFSK_DECODE_FLAG_HAS_SYNC_CV` が立たない |
 | `hard_errors` | FEC が訂正した硬判定誤り数。数を報告しない WSPR・JT9・JT65・Q65 では `0` で、`MFSK_DECODE_FLAG_HAS_HARD_ERRORS` が立たない（クリーンなデコードは、フラグが立った `0`） |
-| `info_bits` | `mfsk_decoder_copy_info` が返す情報ブロックの幅: FT8 と FT4 は 91、FST4 は 101、WSPR は 50、JT9 と JT65 は 72、Q65 は 77 |
+| `info_bits` | `mfsk_decoder_copy_info` が返す情報ブロックの幅: FT8 と FT4 は 91、FST4 は 101、FST4W は 74（ペイロード 50 ビットと CRC-24）、WSPR は 50、JT9 と JT65 は 72、Q65 は 77 |
 | `pass` | どのデコードパスが行を作ったか。**プロトコル固有** — 診断用であってロジック用ではない |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`（テキストが `<...>` 参照の解決にハッシュテーブルを要した）、bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`（Q65 Pileup の返信。WSJT-X の `#`）、bit 2–4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`（上の3つの数値が、報告しないモードの `0` ではなくそのモード自身の値） |
-| `key_bits`, `key` | メッセージの識別キー。`key_bits` ビット（FT8・FT4・FST4・Q65 は 77、JT9・JT65 は 72、WSPR は 50、キー無しは 0）を、最上位ビットから `key` の 10 バイトに詰め、残りは 0。同じメッセージは、テキストが違っても（片方だけ `<...>` が解決した場合）2 つのデコーダで同じキーになる。1 つのメッセージが 2 つの周波数にあってもキーは 1 つ。77 ビット系のモードでは `mfsk_decoder_copy_info` のブロックの先頭 77 ビット |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`（テキストが `<...>` 参照の解決にハッシュテーブルを要した）、bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`（Q65 Pileup の返信。WSJT-X の `#`）、bit 2–4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`（上の3つの数値が、報告しないモードの `0` ではなくそのモード自身の値）、bit 5 = `MFSK_DECODE_FLAG_HAS_HASH22`（`hash22` が有効） |
+| `key_bits`, `key` | メッセージの識別キー。`key_bits` ビット（FT8・FT4・FST4・Q65 は 77、JT9・JT65 は 72、WSPR と FST4W は 50、キー無しは 0）を、最上位ビットから `key` の 10 バイトに詰め、残りは 0。同じメッセージは、テキストが違っても（片方だけ `<...>` が解決した場合）2 つのデコーダで同じキーになる。1 つのメッセージが 2 つの周波数にあってもキーは 1 つ。77 ビット系のモードでは `mfsk_decoder_copy_info` のブロックの先頭 77 ビット |
 | `delivery` | この行がその周期の何番目の配信か、または何番目の配信だったか。コールバックに渡す行は自分の位置（0, 1, 2…）を持ち、返却される行は自分だった配信の位置を持つので、両者を厳密に対応づけられる。コールバックが見なかった返却行と、コールバックなしの呼び出しの全行は `-1` |
+| `hash22` | **FST4W のみ**（#649）。`MFSK_DECODE_FLAG_HAS_HASH22` が立っているとき有効: `<...>` の行の、未解決の 22 ビット・コールサインハッシュ（上流の `result%hash22`）。コールが未解決の2局はどちらも `<...> PM95AA` と読めるので、ハッシュで区別する。FST4W の行はテキストとハッシュで重複排除すること。末尾に追加。`MfskIqDecode` にも加わる |
 | `stage` | `mfsk_decoder_decode_prefix_*` の呼び出し列がいつその行を見つけたか: `MFSK_STAGE_EARLY`（周期の終わる前の呼び出し — FT8 のチェックポイント A、約 11.8 s、次の周期で応答するのに間に合う）、`MFSK_STAGE_FINAL`（音声が周期全体だった呼び出し）、通常のデコードでは `MFSK_STAGE_NONE`。末尾に追加 |
 
 ### 2.5 ストリーミング取り込み
@@ -396,10 +398,17 @@ Deep（`SicEarly` 戦略）なら `141696, 162432`、それ以外のモードと
 mfsk_pack77*  →  mfsk_message_to_tones  →  mfsk_tones_to_i16 / _f32
 ```
 
+**FST4W**（`MFSK_MODE_FST4W120` … `FST4W1800`）も同じ3段階で、その前にもう1段ある:
+`mfsk_fst4w_pack(text, out_message77)` が WSPR 型のメッセージ（`CALL GRID4 DBM`、
+`PFX/CALL DBM`、`CALL/SFX DBM`、`<CALL> GRID6`。WSJT-X の `genfst4` が
+`*** bad message ***` とするものは `MFSK_STATUS_DECODE_FAILED`）を、
+`mfsk_message_to_tones` が受け取る 77 ビットに詰める。そのうち送られるのは 50 ビット。
+WSPR 型（`i3=0, n3=6`）でない 77 ビットのメッセージは、そこで `MFSK_STATUS_INVALID_ARG` になる。
+
 バッファは `mfsk_symbol_count(mode)` と `mfsk_synth_output_len(mode)` で
-サイズを決める。**定数を焼き込まずライブラリに訊くこと** — FST4 の5サブモードは
+サイズを決める。**定数を焼き込まずライブラリに訊くこと** — FST4 のサブモードは
 シンボルあたりサンプル数が 30 倍違う（720 → 21 504）ので、60A から取った定数は
-残り4つで静かに誤りになる。
+他のモードで静かに誤りになる（FST4-900 / -1800 と FST4W の各周期は 66 560 と 134 400 まで行く）。
 
 7つの `mfsk_encode_*` ヘルパは、よくある
 `call1 / call2 / report` メッセージ用のワンコール近道である:
@@ -435,7 +444,7 @@ uint32_t    mfsk_version(void);
 このビルドにどれがあるかは `mfsk_mode_count` / `mfsk_mode_at` が答える。
 
 **ケイパビリティは推測せず公開される。** 語は `mfsk_mode_caps(mode)` か
-`MfskModeInfo::caps`。デコーダハンドルが20のスロット系モードすべてを受け持つので、
+`MfskModeInfo::caps`。デコーダハンドルが26のスロット系モードすべてを受け持つので、
 `MFSK_CAP_DECODE_HANDLE` はもうデコーダが開くかどうかを意味しない。そのモードが
 **77ビットメッセージのスロットファミリ**（FT8、FT4、FST4）に属することを意味し、
 `MfskParams` の QSO 文脈 AP、a7、スナイパー窓が当てはまるのはそれである。WSPR、
@@ -651,7 +660,7 @@ mfsk_iq_close(rx);
 を入れ替えます（サウンドカードの IQ でしばしば必要）。12 000 以上で、12 kHz との比が小さな分数になる
 整数レートを受け付け、そうでないものには `mfsk_iq_open` が `INVALID_ARG` の NULL を返します。
 
-チャンネルは FT8、FT4、FST4 の 5 周期のどれか、WSPR、JT9、JT65、Q65 のサブモード（`MfskMode`）を
+チャンネルは FT8、FT4、FST4 の 7 周期か FST4W の 4 周期のどれか、WSPR、JT9、JT65、Q65 のサブモード（`MfskMode`）を
 載せられます。MSK144、JTTY、uvpacket は `INVALID_ARG`、モードに無いオプションは `UNSUPPORTED`、
 コンパイルされていないモードは `UNKNOWN_PROTOCOL` です。**使える音声はおよそ 200 Hz から**
 （フロントエンドがダイヤルより下の側波帯を落とす必要があるため）です。各スロットは周期番号つきで
@@ -844,6 +853,17 @@ OSD の行ごとの移植、JT9 のビン以下の補正）。
 予算レポートの `rowsSubtracted`。Kotlin の貸し出しチャンネルデコーダは `onDecode` と
 `setBudget` を受け付ける。C と同じく、IQ 受信器の FT8 チャンネルは既定で早期デコードする。
 
+**FST4W と長い FST4 周期（0.14、#649）。** `MfskMode` に `FST4S900` = 26、`FST4S1800` = 27、
+`FST4W120` = 28、`FST4W300` = 29、`FST4W900` = 30、`FST4W1800` = 31 が加わる。
+`MfskDecode` と `MfskIqDecode` に `hash22`（`MFSK_DECODE_FLAG_HAS_HASH22` のとき有効）が加わる。
+新しい関数: `mfsk_fst4w_pack`、`mfsk_decoder_get_wcalls`、`mfsk_decoder_set_wcalls`。
+名前の接頭辞で「FST4 の5サブモード」と数えていたプログラムは7つ見つけるようになり、
+`decode_fft1_size` は 21 591 360（FST4W-1800）に達する。Kotlin: `Mfsk.packFst4w`、
+`MfskDecoder.wcalls`、両方の行型に `hash22: Long?`。Swift: `Message.fst4w`、
+`Decoder.wcalls()` / `setWcalls(_:)`、`hash22: UInt32?`、`Mode` に6つのケース。
+バインディングのビルド: これらの Kotlin と Swift のソースは JVM も Mac もない環境で書いた。
+最初にビルドするのは CI の `kotlin` と `swift` ジョブである。
+
 ### 3.2 0.12 ABI から
 
 0.13.0 で C 側のデコード surface が置き換わった（ABI バージョン 2 → 3）。
@@ -1003,7 +1023,12 @@ MfskStream.open(ft8).use { s ->
 **行**は `MfskDecode` である。`syncScore`、`syncCv`、`hardErrors` は nullable で、モードが
 報告しないもの（C の行で `MFSK_DECODE_FLAG_HAS_*` ビットが落ちているもの）は null。`key` は
 詰めたメッセージキーの16進文字列で `keyBits` と組、`delivery` は C の行のもので `-1` は null。
-`MfskIqDecode` も同じ詳細を持つ。
+`MfskIqDecode` も同じ詳細を持つ。`hash22` は FST4W の `<...>` の行の未解決の 22 ビット・
+コールサインハッシュ（`Long`。他では null）: テキストが同じでハッシュが違う行は別の局である。
+
+**FST4W**（`Mfsk.packFst4w("K1ABC FN42 37")` の後 `Mfsk.synthesize(mode, bits, freqHz)`）も
+同じ `MfskDecoder` でデコードする。`dec.wcalls` はその Keff 50 の既知コール一覧で、
+読み書きできる `List<String>`（§2.2、`mfsk_decoder_get_wcalls`）。実行をまたいで保存すること。
 
 **`dec.onDecode { row -> … }`** は `decode` が返すリストに加えて、見つかった順に
 行を配信する — 長いスロットが終わる前に画面に何か出したい UI 向け
@@ -1104,6 +1129,10 @@ for row in try decoder.decode(slot) {
   `try stream.setPrefixPoints(decoder.prefixPoints)` の後、用意されたスロットごとに
   `decoder.decode(stream)` を呼ぶ（区別は `stream.isSlotWhole`）。IQ では既定で有効で、
   `IQDecode.stage` で分かり、`rx.setEarly(false, forChannel:)` で無効にできる（#601）。
+* FST4W: `Message.fst4w("K1ABC FN42 37")` の後、いつもの
+  `mode.synthesiseSlot(_:frequencyHz:)`。`Decode.hash22`（`UInt32?`）は `<...>` の行の
+  未解決のコールサインハッシュ、`decoder.wcalls()` / `decoder.setWcalls(_:)` は
+  Keff 50 の既知コール一覧（§2.2）で、実行をまたいで保存すること。
 * `decoder.onDecode { row in … }` は呼び出しが返す配列と並行して、
   見つかった順に行を流す。`desktop` ビルドではクロージャは rayon ワーカー上で
   （場合により並行に）走り、`mobile` では候補順に単一スレッドで走る。

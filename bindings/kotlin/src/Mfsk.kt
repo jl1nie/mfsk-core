@@ -87,6 +87,10 @@ data class MfskDecode(
     /// When a [MfskDecoder.decodePrefix] sequence found the row; null from a
     /// plain [MfskDecoder.decode].
     val stage: MfskStage? = null,
+    /// FST4W only: the unresolved 22-bit callsign hash of a `<...>` row, so two
+    /// stations that both read `<...> PM95AA` can be told apart (WSJT-X's
+    /// `result%hash22`). Null on every other row, and on a resolved one.
+    val hash22: Long? = null,
 ) {
     val modeName: String get() = Mfsk.modeName(mode)
 }
@@ -753,6 +757,15 @@ object Mfsk {
         return nativePack77Type4(nonstdCall, stdCall, report, isCq)
     }
 
+    /// Pack a WSPR-type message for **FST4W** into the 77 bits [synthesize] takes
+    /// for an FST4W mode: `CALL GRID4 DBM` (`K1ABC FN42 37`), `PFX/CALL DBM`,
+    /// `CALL/SFX DBM` or `<CALL> GRID6`. What WSJT-X's `genfst4` calls
+    /// `*** bad message ***` throws [MfskException].
+    fun packFst4w(text: String): ByteArray {
+        modes()
+        return nativePackFst4w(text)
+    }
+
     /// Unpack a 77-bit message to text. A `<...>` hash stays `<...>`; ask a
     /// [MfskDecoder.unpack77] that has heard the call to resolve it.
     fun unpack77(message77: ByteArray): String {
@@ -808,6 +821,7 @@ object Mfsk {
     @JvmStatic private external fun nativeConfigureRuntime(threads: Int, stackBytes: Int): Int
     @JvmStatic private external fun nativeThreadCount(): Int
     @JvmStatic private external fun nativePack77(a: String, b: String, c: String): ByteArray
+    @JvmStatic private external fun nativePackFst4w(text: String): ByteArray
     @JvmStatic private external fun nativePack77Type4(
         nonstd: String, std: String, report: String?, isCq: Boolean,
     ): ByteArray
@@ -949,6 +963,8 @@ class MfskDecoder private constructor(
             handle: Long, samples: FloatArray, sampleRate: Int, period: Long,
         ): Array<MfskDecode>
         @JvmStatic private external fun nativeCopyInfo(handle: Long, index: Int): ByteArray
+        @JvmStatic private external fun nativeGetWcalls(handle: Long): String
+        @JvmStatic private external fun nativeSetWcalls(handle: Long, calls: String)
         @JvmStatic private external fun nativeUnpack77(handle: Long, message77: ByteArray): String
         @JvmStatic private external fun nativeDecodeStream(
             handle: Long, stream: Long, meta: LongArray,
@@ -1081,6 +1097,16 @@ class MfskDecoder private constructor(
     /// because only a caller doing subtraction or persistence wants them.
     /// Throws [MfskInvalidArgException] past the last row.
     fun copyInfo(index: Int): ByteArray = nativeCopyInfo(owner("copyInfo"), index)
+
+    /// FST4W's Keff-50 known-call list, one `CALL GRID` per entry, oldest first.
+    /// A Keff-66 decode of a type-1 message adds its `CALL GRID`; a Keff-50 word
+    /// (it has no CRC) is accepted only if a non-blank entry is in its text. Keep it
+    /// between runs, as WSJT-X keeps `fst4w_calls.txt`. Setting more than 100
+    /// entries throws [MfskInvalidArgException]; any mode but FST4W throws
+    /// [MfskUnsupportedException]. Entries are cut to 20 characters.
+    var wcalls: List<String>
+        get() = nativeGetWcalls(owner("wcalls")).let { if (it.isEmpty()) emptyList() else it.split('\n') }
+        set(value) = nativeSetWcalls(owner("wcalls"), value.joinToString("\n"))
 
     /// The prefix lengths, in 12 kHz samples, at which [decodePrefix] does
     /// work before the whole period under the current settings:
@@ -1385,6 +1411,8 @@ class MfskIqDecode internal constructor(
     /// [MfskStage.FINAL] for one the whole slot found, null from a plain
     /// decode (early decode off).
     val stage: MfskStage? = null,
+    /// As [MfskDecode.hash22].
+    val hash22: Long? = null,
 ) {
     /// UTC of the slot start, ns since the Unix epoch, or null on a
     /// free-running grid.

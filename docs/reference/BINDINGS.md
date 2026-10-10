@@ -101,8 +101,8 @@ Two rules cover most of the surface:
    keeps across periods and nothing else: the callsign hash table (never
    shared with another decoder, as upstream's is not), FT8's a7 list,
    Q65's and JT65's averages, WSPR's call table. `mfsk_decoder_clear` is
-   WSJT-X's "Clear Avg". One handle serves all 20 slot modes — FT8, FT4,
-   the five FST4 periods, WSPR, JT9, JT65 and the ten Q65 sub-modes; the
+   WSJT-X's "Clear Avg". One handle serves all 26 slot modes — FT8, FT4,
+   the seven FST4 periods, the four FST4W periods, WSPR, JT9, JT65 and the ten Q65 sub-modes; the
    per-family decode functions of the 0.12 ABI are gone. MSK144, JTTY and
    uvpacket have no decoder (`MFSK_STATUS_UNKNOWN_PROTOCOL` at open; JTTY
    has its own receiver, §2.8.1).
@@ -195,6 +195,7 @@ What else the handle does:
 | `mfsk_decoder_delivery_is_exact(d)` | whether the callback sees exactly the rows the call returns, once each and in order, under the current mode, depth and extras (`STREAMING.md` §3a). `false` for FT8's single pass and sniper, FT4 at `MFSK_DEPTH_FAST`, FST4 and WSPR: pair by `MfskDecode::delivery` there. Ask again after `set_params` / `set_extras` |
 | `mfsk_decoder_add_callsign(d, "JL1NIE")` | seed the hash table so a later `<...>` resolves. `MFSK_STATUS_UNSUPPORTED` for a mode whose messages carry no hashed calls |
 | `mfsk_decoder_copy_info(d, i, out, cap, &len)` | the FEC information bits behind row `i` of the last decode (`MfskDecode::info_bits` of them) |
+| `mfsk_decoder_get_wcalls(d, out, cap, &len)` / `mfsk_decoder_set_wcalls(d, text)` | **FST4W only** (#649): the Keff-50 known-call list, one `CALL GRID` per line (`\n`), oldest first. A Keff-66 decode of a type-1 message adds its `CALL GRID`; a Keff-50 word (it has no CRC) is accepted only if a non-blank entry is in its text. Keep it between runs, as WSJT-X keeps `fst4w_calls.txt`. `get` writes `len` including the NUL and answers `MFSK_STATUS_INVALID_ARG` to a short buffer, so a null `out` with `cap` 0 is the size query. `set` takes at most 100 lines of 20 characters (`MFSK_STATUS_INVALID_ARG` beyond), `""` empties it, a blank line is an entry that vouches for nothing. Both answer `MFSK_STATUS_UNSUPPORTED` for any other mode |
 | `mfsk_decoder_unpack77(d, msg, out, cap, &len)` | `mfsk_unpack77` with `<...>` resolved against this decoder's table |
 | `mfsk_decoder_clear(d)` | forget everything carried between periods (WSJT-X's "Clear Avg", `ndepth & 128`) |
 | `mfsk_decoder_last_error(d)` | this handle's error slot; survives a thread hop, unlike the global |
@@ -318,17 +319,18 @@ caller's rows after the first landed in the wrong place.
 | field | meaning |
 |---|---|
 | `size` | `sizeof(MfskDecode)` as the caller understands it |
-| `mode` | the **concrete sub-mode**, not the family — all five FST4 periods and all ten Q65 sub-modes report distinctly |
+| `mode` | the **concrete sub-mode**, not the family — all seven FST4 periods, the four FST4W periods and all ten Q65 sub-modes report distinctly |
 | `text` | decoded message, `<...>` resolved against the decoder's table where it can |
 | `freq_hz`, `dt_sec`, `snr_db` | carrier, time offset from the slot's `dt = 0` reference, SNR in a 2500 Hz reference bandwidth |
 | `sync_score` | sync score of this decode, on the scale of the mode's own search (not comparable between modes). `0.0` with `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` clear for WSPR, JT9, JT65, Q65 and FT8's a7/a8 list decodes |
 | `sync_cv` | coefficient of variation of the per-block sync powers — near 0 on a stable channel, elevated under QSB. The only fading indicator the row carries; `0.0` with `MFSK_DECODE_FLAG_HAS_SYNC_CV` clear where `sync_score` is absent |
 | `hard_errors` | hard-decision errors the FEC corrected; `0` with `MFSK_DECODE_FLAG_HAS_HARD_ERRORS` clear for WSPR, JT9, JT65 and Q65, which report no count (a clean decode is `0` with the flag set) |
-| `info_bits` | width of the information block `mfsk_decoder_copy_info` returns: 91 for FT8 and FT4, 101 for FST4, 50 for WSPR, 72 for JT9 and JT65, 77 for Q65 |
+| `info_bits` | width of the information block `mfsk_decoder_copy_info` returns: 91 for FT8 and FT4, 101 for FST4, 74 for FST4W (50 payload bits and the CRC-24), 50 for WSPR, 72 for JT9 and JT65, 77 for Q65 |
 | `pass` | which decode pass produced the row. **Protocol-private** — diagnostics, not logic |
-| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`); bits 2-4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`, the three numbers above are the mode's own and not the `0` of a mode that reports none |
-| `key_bits`, `key` | the message's identity key: `key_bits` bits (77 for FT8, FT4, FST4 and Q65; 72 for JT9 and JT65; 50 for WSPR; 0: none), packed most significant bit first into the 10 bytes of `key`, zero-padded. The same message in two decoders has one key even when its text differs (a `<...>` resolved in one only); one message at two frequencies has one key too. For the 77-bit modes it is the first 77 bits of `mfsk_decoder_copy_info`'s block |
+| `flags` | bit 0 = `MFSK_DECODE_FLAG_HASH_RESOLVED`, the text needed the hash table to resolve a `<...>` reference; bit 1 = `MFSK_DECODE_FLAG_COPIED_LAST_TX`, a Q65 Pileup reply (WSJT-X's `#`); bits 2-4 = `MFSK_DECODE_FLAG_HAS_SYNC_SCORE` / `_HAS_SYNC_CV` / `_HAS_HARD_ERRORS`, the three numbers above are the mode's own and not the `0` of a mode that reports none; bit 5 = `MFSK_DECODE_FLAG_HAS_HASH22`, `hash22` is valid |
+| `key_bits`, `key` | the message's identity key: `key_bits` bits (77 for FT8, FT4, FST4 and Q65; 72 for JT9 and JT65; 50 for WSPR and FST4W; 0: none), packed most significant bit first into the 10 bytes of `key`, zero-padded. The same message in two decoders has one key even when its text differs (a `<...>` resolved in one only); one message at two frequencies has one key too. For the 77-bit modes it is the first 77 bits of `mfsk_decoder_copy_info`'s block |
 | `delivery` | which delivery of the period this row is, or came from: a row given to the callback carries its position (0, 1, 2...), a returned row the position of the delivery it was, so the two pair exactly. `-1` for a returned row the callback never saw, and for every row of a call with no callback |
+| `hash22` | **FST4W only** (#649), valid with `MFSK_DECODE_FLAG_HAS_HASH22`: the unresolved 22-bit callsign hash of a `<...>` row (`result%hash22` upstream). Two stations whose calls are unresolved both read `<...> PM95AA`; the hash tells them apart, so de-duplicate FST4W rows on text and hash. Appended; `MfskIqDecode` gains it too |
 | `stage` | when a `mfsk_decoder_decode_prefix_*` sequence found the row: `MFSK_STAGE_EARLY` (a call before the period ended — FT8's checkpoint A, ~11.8 s, in time to answer in the next period), `MFSK_STAGE_FINAL` (the call whose audio was the whole period), `MFSK_STAGE_NONE` from a plain decode. Appended |
 
 ### 2.5 Streaming capture
@@ -413,11 +415,20 @@ Three stages, each writing into a buffer you sized:
 mfsk_pack77*  →  mfsk_message_to_tones  →  mfsk_tones_to_i16 / _f32
 ```
 
+**FST4W** (`MFSK_MODE_FST4W120` … `FST4W1800`) has the same three stages, with
+one more in front: `mfsk_fst4w_pack(text, out_message77)` packs a WSPR-type
+message (`CALL GRID4 DBM`, `PFX/CALL DBM`, `CALL/SFX DBM`, `<CALL> GRID6`;
+what WSJT-X's `genfst4` calls `*** bad message ***` is
+`MFSK_STATUS_DECODE_FAILED`) into the 77 bits `mfsk_message_to_tones` takes,
+of which 50 are sent. A 77-bit message that is not WSPR-type
+(`i3=0, n3=6`) is `MFSK_STATUS_INVALID_ARG` there.
+
 Size the buffers with `mfsk_symbol_count(mode)` and
 `mfsk_synth_output_len(mode)`. **Ask for the size rather than baking
-it** — the five FST4 sub-modes differ by a factor of 30 in samples per
+it** — the FST4 sub-modes differ by a factor of 30 in samples per
 symbol (720 → 21 504), so a constant taken from 60A is silently wrong
-for the other four.
+for the other four (and FST4-900 / -1800 and the FST4W periods go to 66 560
+and 134 400).
 
 The seven `mfsk_encode_*` helpers are the one-call shortcut for the
 common `call1 / call2 / report` message:
@@ -456,7 +467,7 @@ particular build has.
 
 **Capabilities are published, not inferred.** The word is
 `mfsk_mode_caps(mode)`, or `MfskModeInfo::caps`. Since the decoder handle
-serves all 20 slot modes, `MFSK_CAP_DECODE_HANDLE` no longer says whether a
+serves all 26 slot modes, `MFSK_CAP_DECODE_HANDLE` no longer says whether a
 decoder opens; it says the mode belongs to the **77-bit-message slot family**
 (FT8, FT4, FST4), the one the QSO-context AP of `MfskParams`, a7 and the
 sniper window apply to. WSPR, JT9, JT65 and Q65 decode through the same
@@ -683,7 +694,7 @@ takes bytes in that format; a sample split across two calls is carried over.
 integer rate of 12 000 or more whose ratio to 12 kHz is a small fraction is
 accepted; `mfsk_iq_open` returns NULL with `INVALID_ARG` for one that is not.
 
-A channel carries FT8, FT4, any of the five FST4 periods, WSPR, JT9, JT65 or a
+A channel carries FT8, FT4, any of the seven FST4 or four FST4W periods, WSPR, JT9, JT65 or a
 Q65 sub-mode (`MfskMode`); MSK144, JTTY and uvpacket are `INVALID_ARG`, an
 option the mode lacks is `UNSUPPORTED`, and a mode compiled out is
 `UNKNOWN_PROTOCOL`. **Usable audio starts near 200 Hz** (the front end must
@@ -895,6 +906,19 @@ breaks: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable
 `rowsSubtracted`. Kotlin's lent channel decoder takes `onDecode` and
 `setBudget`. As in C, an FT8 channel of the IQ receiver is early by default.
 
+**FST4W and the long FST4 periods (0.14, #649).** `MfskMode` gains
+`FST4S900` = 26, `FST4S1800` = 27, `FST4W120` = 28, `FST4W300` = 29,
+`FST4W900` = 30 and `FST4W1800` = 31; `MfskDecode` and `MfskIqDecode` gain
+`hash22` (valid with `MFSK_DECODE_FLAG_HAS_HASH22`); new calls:
+`mfsk_fst4w_pack`, `mfsk_decoder_get_wcalls`, `mfsk_decoder_set_wcalls`. A
+program that counted "the five FST4 sub-modes" by name prefix now finds seven,
+and `decode_fft1_size` now reaches 21 591 360 (FST4W-1800). Kotlin: `Mfsk.packFst4w`,
+`MfskDecoder.wcalls`, `hash22: Long?` on both row types. Swift: `Message.fst4w`,
+`Decoder.wcalls()` / `setWcalls(_:)`, `hash22: UInt32?`, and `Mode` gains the six cases.
+Binding builds: the Kotlin and Swift sources for these were written without a
+JVM or a Mac to hand; the `kotlin` and `swift` CI jobs are the first to build
+them.
+
 ### 3.2 From the 0.12 ABI
 
 0.13.0 replaced the C decode surface (ABI version 2 → 3). `mfsk-ffi` is
@@ -1060,7 +1084,14 @@ which rows came early, and `rx.setEarly(ch, false)` turns it off (#601).
 nullable, null where the mode reports none (the C row's clear
 `MFSK_DECODE_FLAG_HAS_*` bit); `key` is the packed message key as hex, with
 `keyBits`; `delivery` is the C row's, null for `-1`. `MfskIqDecode` carries
-the same detail.
+the same detail. `hash22` is the unresolved 22-bit callsign hash of an FST4W
+`<...>` row (a `Long`, null elsewhere): rows with the same text and different
+hashes are different stations.
+
+**FST4W** (`Mfsk.packFst4w("K1ABC FN42 37")` then `Mfsk.synthesize(mode, bits,
+freqHz)`) decodes through the same `MfskDecoder`. `dec.wcalls` is its Keff-50
+known-call list, a `List<String>` you can read and assign (§2.2,
+`mfsk_decoder_get_wcalls`): save it between runs.
 
 **`dec.onDecode { row -> … }`** delivers rows as they are found, on top of the
 list `decode` returns — for a UI that wants something on screen before a long
@@ -1168,6 +1199,11 @@ for row in try decoder.decode(slot) {
   then `decoder.decode(stream)` on every ready slot (`stream.isSlotWhole`).
   Over IQ it is on by default: `IQDecode.stage`, and
   `rx.setEarly(false, forChannel:)` turns it off (#601).
+* FST4W: `Message.fst4w("K1ABC FN42 37")`, then the usual
+  `mode.synthesiseSlot(_:frequencyHz:)`; `Decode.hash22` (`UInt32?`) is the
+  unresolved callsign hash of a `<...>` row, and `decoder.wcalls()` /
+  `decoder.setWcalls(_:)` are the Keff-50 known-call list (§2.2): keep it between
+  runs.
 * `decoder.onDecode { row in … }` streams rows as they are found,
   alongside the array the call returns. On a `desktop` build the
   closure runs on rayon workers, possibly concurrently; on `mobile` it

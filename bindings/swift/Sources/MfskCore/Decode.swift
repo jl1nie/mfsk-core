@@ -65,6 +65,10 @@ public struct Decode: Sendable, Equatable {
     /// When a ``Decoder/decodePrefix(_:sampleRate:period:handler:)`` sequence
     /// found the row; nil from a plain decode.
     public let stage: Stage?
+    /// FST4W only: the unresolved 22-bit callsign hash of a `<...>` row, so two
+    /// stations that both read `<...> PM95AA` can be told apart (WSJT-X's
+    /// `result%hash22`). nil on every other row.
+    public let hash22: UInt32?
 
     /// When in a period a prefix sequence found a row (`MFSK_STAGE_*`, #572).
     public enum Stage: Sendable, Equatable {
@@ -83,7 +87,7 @@ public struct Decode: Sendable, Equatable {
         self.snrDB = raw.snr_db
         let detail = RowDetail(flags: raw.flags, syncScore: raw.sync_score, syncCV: raw.sync_cv,
                                hardErrors: raw.hard_errors, keyBits: raw.key_bits, key: raw.key,
-                               delivery: raw.delivery)
+                               delivery: raw.delivery, hash22: raw.hash22)
         self.syncScore = detail.syncScore
         self.syncCV = detail.syncCV
         self.hardErrors = detail.hardErrors
@@ -94,6 +98,7 @@ public struct Decode: Sendable, Equatable {
         self.key = detail.key
         self.keyBits = raw.key_bits
         self.delivery = detail.delivery
+        self.hash22 = detail.hash22
         switch Int32(raw.stage) {
         case MFSK_STAGE_EARLY: self.stage = .early
         case MFSK_STAGE_FINAL: self.stage = .final
@@ -113,9 +118,10 @@ struct RowDetail {
     let copiedLastTx: Bool
     let key: [UInt8]
     let delivery: UInt32?
+    let hash22: UInt32?
 
     init<K>(flags: UInt8, syncScore: Float, syncCV: Float, hardErrors: UInt32,
-            keyBits: UInt8, key: K, delivery: Int32) {
+            keyBits: UInt8, key: K, delivery: Int32, hash22: UInt32) {
         func has(_ bit: Int32) -> Bool { flags & UInt8(bit) != 0 }
         self.syncScore = has(MFSK_DECODE_FLAG_HAS_SYNC_SCORE) ? syncScore : nil
         self.syncCV = has(MFSK_DECODE_FLAG_HAS_SYNC_CV) ? syncCV : nil
@@ -125,6 +131,7 @@ struct RowDetail {
         let bytes = (Int(keyBits) + 7) / 8
         self.key = withUnsafeBytes(of: key) { Array($0.prefix(bytes)) }
         self.delivery = delivery >= 0 ? UInt32(delivery) : nil
+        self.hash22 = has(MFSK_DECODE_FLAG_HAS_HASH22) ? hash22 : nil
     }
 }
 

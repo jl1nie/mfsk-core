@@ -40,6 +40,22 @@ public enum Mode: UInt32, CaseIterable, Sendable {
     /// WSJT-X 3.2's non-slotted keyboard mode. Received by ``JttyReceiver``,
     /// not ``Decoder``; ``ModeInfo/slotSeconds`` is its frame period.
     case jtty = 25
+    /// FST4-900: 900 s period, and a 10 782 720-point slot transform.
+    case fst4s900 = 26
+    /// FST4-1800: 1800 s period; the largest slot transform of any mode,
+    /// 21 591 360 points.
+    case fst4s1800 = 27
+    /// FST4W-120: the WSPR-style beacon on FST4's modulation (LDPC(240,74) +
+    /// CRC-24, a 50-bit WSPR-type payload). Rows carry 74 information bits and
+    /// a 50-bit key; an unresolved `<...>` row carries ``Decode/hash22``.
+    /// ``Decoder/wcalls()`` is its Keff-50 known-call list.
+    case fst4w120 = 28
+    /// FST4W-300.
+    case fst4w300 = 29
+    /// FST4W-900.
+    case fst4w900 = 30
+    /// FST4W-1800.
+    case fst4w1800 = 31
 
     /// The stable display name (`"FT8"`, `"FST4-120"`), which is also
     /// the key ``init(name:)`` accepts — the two round-trip. Answers for

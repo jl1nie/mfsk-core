@@ -13,7 +13,7 @@ other platforms/ABIs (including Android) still need a local
 > project needs a Rust staticlib shim for the FFT-planner symbol either
 > way, and once that shim exists the C ABI adds nothing.
 > `mfsk-ffi` (this crate) is the desktop/mobile-focused C ABI covering every
-> `MfskMode` (26 of them: FT8, FT4, the five FST4 sub-modes, WSPR, JT9,
+> `MfskMode` (32 of them: FT8, FT4, the seven FST4 sub-modes, the four FST4W periods, WSPR, JT9,
 > JT65, the ten Q65 sub-modes, MSK144, JTTY and uvpacket's four
 > profiles); the FT8-only `mfsk-ffi-ft8` embedded crate that used to sit
 > beside it is retired.
@@ -172,7 +172,7 @@ specification.
 | `mfsk_mode_info` | Geometry: tones, symbols, slot samples, TX offset, slot-FFT size, capability word. Size-versioned. |
 | `mfsk_mode_caps` | Just the capability word — the `MFSK_CAP_*` bits. |
 
-**Decoder — one handle for every slot mode** (FT8, FT4, FST4 ×5, WSPR, JT9, JT65, Q65 ×10)
+**Decoder — one handle for every slot mode** (FT8, FT4, FST4 ×7, FST4W ×4, WSPR, JT9, JT65, Q65 ×10)
 
 | Function | Role |
 |---|---|
@@ -320,7 +320,7 @@ deliberately **not** registry indices: membership is feature-gated, so a
 build without `q65` would shift every index after it.
 
 Every slot mode opens a decoder through the same `mfsk_decoder_*` handle —
-FT8, FT4, the five FST4 sub-modes, WSPR, JT9, JT65 and the ten Q65 sub-modes —
+FT8, FT4, the seven FST4 sub-modes, the four FST4W periods, WSPR, JT9, JT65 and the ten Q65 sub-modes —
 and an option a mode lacks is refused at open with `MFSK_STATUS_UNSUPPORTED`
 rather than dropped. `MFSK_CAP_DECODE_HANDLE` no longer says whether a decoder
 opens; it marks the 77-bit-message family (FT8, FT4, FST4), the one the

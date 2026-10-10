@@ -117,6 +117,38 @@ public final class Decoder {
         try check(mfsk_decoder_add_callsign(handle, call), detail: failureDetail())
     }
 
+    // MARK: FST4W's known-call list
+
+    /// FST4W's Keff-50 known-call list, one `CALL GRID` per entry, oldest first.
+    ///
+    /// A Keff-66 decode of a type-1 message adds its `CALL GRID`; a Keff-50 word
+    /// (it has no CRC) is accepted only if a non-blank entry is in its text.
+    /// Keep it between runs, as WSJT-X keeps `fst4w_calls.txt`. Throws
+    /// ``MfskError/Code/unsupported`` for any mode but FST4W.
+    public func wcalls() throws -> [String] {
+        var needed: UInt = 0
+        let probe = mfsk_decoder_get_wcalls(handle, nil, 0, &needed)
+        if probe != MFSK_STATUS_OK && probe != MFSK_STATUS_INVALID_ARG {
+            try check(probe, detail: failureDetail())
+        }
+        var buffer = [CChar](repeating: 0, count: Int(needed) + 1)
+        var written: UInt = 0
+        let status = buffer.withUnsafeMutableBufferPointer {
+            mfsk_decoder_get_wcalls(handle, $0.baseAddress, UInt($0.count), &written)
+        }
+        try check(status, detail: failureDetail())
+        let text = String(cString: buffer)
+        return text.isEmpty ? [] : text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    /// Replace the list: at most 100 entries, each kept to 20 characters; a
+    /// blank entry vouches for nothing. Throws ``MfskError/Code/invalidArgument``
+    /// for more than 100 and ``MfskError/Code/unsupported`` for any mode but FST4W.
+    public func setWcalls(_ calls: [String]) throws {
+        try check(mfsk_decoder_set_wcalls(handle, calls.joined(separator: "\n")),
+                  detail: failureDetail())
+    }
+
     // MARK: Per-row delivery
 
     /// Deliver decodes through `handler` as they are found, **in addition

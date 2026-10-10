@@ -30,6 +30,7 @@ pub fn blank_row() -> MfskDecode {
         key: [0; MFSK_DECODE_KEY_LEN],
         delivery: -1,
         stage: MFSK_STAGE_NONE,
+        hash22: 0,
     }
 }
 
