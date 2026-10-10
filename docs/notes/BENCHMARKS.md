@@ -21,7 +21,7 @@ Ryzen 9 9900X, one thread each side, 2026-10-04 (FT8, FT4 and FST4: 2026-10-09; 
 | JT9 | `jt9 -9 -d 3` | the same | 5.2–5.4× faster |
 | JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
 | WSPR | `wsprd` | the same | 0.8–4.1× (near threshold, 0.8×: slightly slower) |
-| FST4W | `jt9 -W -d 3` (`v3.3.0-beta1`) | the same (8 conditions) | 0.29× on noise, **1.8× slower** near threshold |
+| FST4W | `jt9 -W -d 3` (`v3.3.0-beta1`) | the same (8 conditions) | 1.4–3.6× faster |
 | JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–16× faster |
 
 "The same" means no condition (channel, sub-mode) differs by more than
