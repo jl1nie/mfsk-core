@@ -152,7 +152,7 @@ fn sim_streams_looped_on_the_host() {
         let stream: Vec<i16> = (0..PASSES).flat_map(|_| one.iter().copied()).collect();
         let mut front = Front::new(rx.clone(), params).expect("embedded settings");
         let mut back = Back::new(rx.clone(), params);
-        let mut done: Vec<(f32, f32, String)> = Vec::new();
+        let mut done: Vec<(f64, f32, String)> = Vec::new();
         let mut on = |u: mfsk_core::jtty::assemble::MessageUpdate| {
             if u.complete {
                 done.push((u.start_s, u.f1_hz, u.text));

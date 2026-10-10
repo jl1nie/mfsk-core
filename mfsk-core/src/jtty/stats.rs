@@ -118,13 +118,13 @@ const N_STAGES: usize = 11;
 #[derive(Clone, Debug)]
 pub struct GatedCandidate {
     /// Start of the window, seconds.
-    pub window_s: f32,
+    pub window_s: f64,
     /// 0, 1 or 2.
     pub channel: u8,
     /// Frequency of the lowest tone after peak-up, Hz.
     pub f1_hz: f32,
     /// Start of the frame, seconds from the start of the audio.
-    pub tsync_s: f32,
+    pub tsync_s: f64,
     /// Sync tones right, of 13.
     pub nsync: usize,
     /// S/N of the sync tones, dB.

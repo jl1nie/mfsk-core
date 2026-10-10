@@ -1114,6 +1114,14 @@ typedef struct MfskJttyUpdate {
      * `mfsk_jtty_finish` both read `complete = 0`.
      */
     uint32_t kind;
+    /**
+     * [`Self::start_s`] in `f64`. `start_s` is an `f32` and keeps ~7 digits: 8 ms at 24 hours of
+     * audio since `mfsk_jtty_open` / `mfsk_jtty_reset`, a tenth of a second after about 12 days,
+     * which is a message-continuation tolerance. This is the same number without that loss
+     * (WSJT-X keeps absolute time in `real64`). Appended after `kind`; a caller that passed a
+     * smaller `size` does not receive it.
+     */
+    double start_time_s;
 } MfskJttyUpdate;
 
 /**

@@ -56,8 +56,9 @@ public struct JttyUpdate: Sendable, Equatable {
     /// Frequency of the latest frame, Hz.
     public let frequencyHz: Float
     /// Start of the first frame, seconds from the first sample pushed
-    /// since the receiver was created or reset.
-    public let startSeconds: Float
+    /// since the receiver was created or reset. A `Double`: a `Float` loses
+    /// 8 ms at 24 hours and a tenth of a second after about 12 days.
+    public let startSeconds: Double
     /// SNR of the message's first frame, dB in 2 500 Hz, floored at -17, as
     /// WSJT-X v3.3.0-beta1 reports it (show it rounded).
     public let snrDb: Float
@@ -82,7 +83,7 @@ public struct JttyUpdate: Sendable, Equatable {
         self.text = stringFromCArray(raw.text)
         self.isComplete = raw.complete != 0
         self.frequencyHz = raw.f1_hz
-        self.startSeconds = raw.start_s
+        self.startSeconds = raw.start_time_s
         self.snrDb = raw.snr_db
         self.kind = Kind(rawValue: raw.kind) ?? .growing
     }

@@ -1571,8 +1571,9 @@ data class MfskJttyUpdate(
     /// Frequency of the latest frame, Hz.
     val freqHz: Float,
     /// Start of the first frame, seconds from the first sample pushed
-    /// since the receiver was opened or reset.
-    val startSeconds: Float,
+    /// since the receiver was opened or reset. A `Double`: a `Float` loses
+    /// 8 ms at 24 hours and a tenth of a second after about 12 days.
+    val startSeconds: Double,
     /// SNR of the message's first frame, dB in 2 500 Hz, floored at -17, as
     /// WSJT-X v3.3.0-beta1 reports it (show it rounded).
     val snrDb: Float,

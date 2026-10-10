@@ -16,6 +16,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 - **C ABI**: appended fields only, ABI stays 3, but behaviour moves: rows are `out[0].size` apart and keep that `size` (#607, #635), a
   retry after a short buffer is answered without decoding again (#633), `float` at other rates keeps its level (#634), and
   `mfsk_iq_push` decodes FT8 early by default (#601). `MFSK_CAP_BUDGET` is published for four more modes (#593).
+- **JTTY times are `f64`**: `FrameDecode::tsync_s`, `MessageUpdate::start_s`, `assemble::FRAME_PERIOD_S`, `Assembler::{prune, continuations}` (#645).
 - **Kotlin / Swift**: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable (#594).
 - **Migration**: `LIBRARY.md` §1.3 (Rust: what changes in results, in code, what was removed) and `BINDINGS.md` §3.1 (C, Kotlin,
   Swift), each with its `.ja.md`.
@@ -127,6 +128,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   `ReceptionEnded`, where a message given up on is `Expired` and both used to be `complete = false`. Appended to `MfskJttyUpdate`
   (`kind`, with `MFSK_JTTY_UPDATE_*` in `mfsk.h`; ABI stays 3) and to the Kotlin (`kind`) and Swift (`kind`) updates, which are not
   built here.
+- **JTTY keeps absolute time in `f64`, as WSJT-X's `real64` (#645).** `FrameDecode::tsync_s`, `MessageUpdate::start_s`,
+  `assemble::FRAME_PERIOD_S` and the `Assembler`'s `prune` / `continuations` are `f64`; `Stream` derives window times in `f64`. An `f32` second is 8 ms
+  wide at 24 hours and 0.125 s after about 15 days, against 0.05 to 0.1 s continuation tolerances, so a stream left running
+  could stop joining frames. Per-column and per-sample loops stay `f32` (the ESP32-S3 has single-precision hardware only).
+  C ABI: `MfskJttyUpdate::start_time_s` (`f64`) appended after `kind`; `start_s` stays `f32`. Kotlin and Swift `startSeconds` are
+  `Double`. JTTY tier-C sweep and the `rjtty` frame-for-frame tests are unchanged. Breaking for Rust callers that read these as `f32`.
 
 ### Internals
 

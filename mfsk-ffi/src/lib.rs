@@ -2885,10 +2885,11 @@ pub unsafe extern "C" fn mfsk_jtty_poll(
             complete: u32::from(u.complete),
             id: u.id,
             f1_hz: u.f1_hz,
-            start_s: u.start_s,
+            start_s: u.start_s as f32,
             text: [0; 128],
             snr_db: u.snr_db,
             kind: u.kind as u32,
+            start_time_s: u.start_s,
         };
         // Truncate on a character boundary, leaving room for the NUL.
         let mut end = u.text.len().min(v.text.len() - 1);

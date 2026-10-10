@@ -1818,7 +1818,7 @@ Java_io_github_mfskcore_MfskJttyReceiver_nativeSetParams(
 static jobjectArray jtty_drain(JNIEnv* env, MfskJttyReceiver* rx) {
     jclass cls = (*env)->FindClass(env, CLS "MfskJttyUpdate");
     if (cls == NULL) return NULL;
-    jmethodID ctor = (*env)->GetMethodID(env, cls, "<init>", "(JLjava/lang/String;ZFFFI)V");
+    jmethodID ctor = (*env)->GetMethodID(env, cls, "<init>", "(JLjava/lang/String;ZFDFI)V");
     if (ctor == NULL) return NULL;
 
     const size_t n = mfsk_jtty_pending(rx);
@@ -1833,7 +1833,7 @@ static jobjectArray jtty_drain(JNIEnv* env, MfskJttyReceiver* rx) {
         if (text == NULL) return NULL;
         jobject obj = (*env)->NewObject(env, cls, ctor, (jlong)u.id, text,
                                         u.complete ? JNI_TRUE : JNI_FALSE,
-                                        (jfloat)u.f1_hz, (jfloat)u.start_s, (jfloat)u.snr_db,
+                                        (jfloat)u.f1_hz, (jdouble)u.start_time_s, (jfloat)u.snr_db,
                                         (jint)u.kind);
         (*env)->DeleteLocalRef(env, text);
         if (obj == NULL) return NULL;

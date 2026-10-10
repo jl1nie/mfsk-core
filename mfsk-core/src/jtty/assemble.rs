@@ -36,7 +36,7 @@ use super::source::Atom;
 use super::{FRAME_SYMBOLS, MAX_FRAMES};
 
 /// Frame period, seconds: 59 symbols of 192 samples at 6 kHz.
-pub const FRAME_PERIOD_S: f32 = (FRAME_SYMBOLS * NSS) as f32 / 6_000.0;
+pub const FRAME_PERIOD_S: f64 = (FRAME_SYMBOLS * NSS) as f64 / 6_000.0;
 /// Active messages kept at once.
 pub const MAX_ACTIVE: usize = 30;
 /// Frame periods a message may skip and still be continued.
@@ -45,9 +45,9 @@ pub const MAX_CONTINUATION_GAP: usize = 3;
 pub const MAX_RETRO_STEPS: usize = 3;
 /// Characters a message keeps.
 const MAX_CHARS: usize = 80;
-const FRAME_HISTORY_TIME_S: f32 = 0.05;
+const FRAME_HISTORY_TIME_S: f64 = 0.05;
 const NEAR_SIMULTANEOUS_HZ: f32 = 12.0;
-const CONTINUATION_TIME_S: f32 = 0.1;
+const CONTINUATION_TIME_S: f64 = 0.1;
 const _: () = assert!(MAX_MESSAGES_BOUND >= MAX_ACTIVE);
 const MAX_MESSAGES_BOUND: usize = MAX_ACTIVE * MAX_FRAMES;
 
@@ -76,7 +76,7 @@ pub struct MessageUpdate {
     /// Frequency of the latest frame, Hz.
     pub f1_hz: f32,
     /// Start of the first frame, seconds from the start of the audio.
-    pub start_s: f32,
+    pub start_s: f64,
     /// SNR in 2 500 Hz of the message's **first** frame, dB, as upstream reports it
     /// (`start_snrdb`, never reassigned): see [`FrameDecode::snr_db`].
     pub snr_db: f32,
@@ -121,8 +121,8 @@ fn frame_text(atom: &Atom, eom: bool) -> FrameText {
 struct Active {
     id: u64,
     f1: f32,
-    tsync: f32,
-    start: f32,
+    tsync: f64,
+    start: f64,
     /// SNR of the first frame (`start_snrdb`)
     snr_db: f32,
     /// upstream's character counter `k` (it does not count implicit separators)
@@ -133,7 +133,7 @@ struct Active {
 
 struct Recent {
     f1: f32,
-    tsync: f32,
+    tsync: f64,
 }
 
 /// How a candidate relates to an active message.
@@ -143,7 +143,7 @@ struct Classified {
     gap: usize,
 }
 
-fn classify(existing: &Active, f1: f32, tsync: f32) -> Classified {
+fn classify(existing: &Active, f1: f32, tsync: f64) -> Classified {
     let (df1, dtsync) = (f1 - existing.f1, tsync - existing.tsync);
     let nfp = (dtsync / FRAME_PERIOD_S).round();
     let fp_resid = (dtsync - FRAME_PERIOD_S * nfp).abs();
@@ -152,8 +152,8 @@ fn classify(existing: &Active, f1: f32, tsync: f32) -> Classified {
         window_dupe: false,
         gap: 1,
     };
-    if nfp >= 1.0 && nfp <= MAX_CONTINUATION_GAP as f32 && fp_resid < CONTINUATION_TIME_S {
-        let df_tol = 10.0 + 3.0 * (nfp - 1.0);
+    if nfp >= 1.0 && nfp <= MAX_CONTINUATION_GAP as f64 && fp_resid < CONTINUATION_TIME_S {
+        let df_tol = 10.0 + 3.0 * (nfp - 1.0) as f32;
         if df1.abs() < df_tol {
             c.is_match = true;
             c.gap = nfp as usize;
@@ -163,7 +163,7 @@ fn classify(existing: &Active, f1: f32, tsync: f32) -> Classified {
         let qstep = FRAME_PERIOD_S / 4.0;
         let nstep = (dtsync / qstep).round();
         let resid = (dtsync - qstep * nstep).abs();
-        if nstep.abs() <= MAX_RETRO_STEPS as f32
+        if nstep.abs() <= MAX_RETRO_STEPS as f64
             && df1.abs() < 10.0
             && resid < 0.003
             && !((nstep.abs() as usize).is_multiple_of(4) && nstep != 0.0)
@@ -194,7 +194,7 @@ pub struct Assembler {
     pub(super) carried: Vec<super::rx::Subtracted>,
     /// `(f1, tsync)` of frames decoded in earlier windows, whose own region later windows do
     /// not search (see [`super::rx::Params::skip_decoded_hz`]).
-    pub(super) decoded: Vec<(f32, f32)>,
+    pub(super) decoded: Vec<(f32, f64)>,
 }
 
 impl Assembler {
@@ -208,7 +208,7 @@ impl Assembler {
 
     /// `(frequency, start of last frame)` of every message that may still be
     /// continued — what a sticky-sync retry looks at.
-    pub fn continuations(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
+    pub fn continuations(&self) -> impl Iterator<Item = (f32, f64)> + '_ {
         self.active.iter().map(|a| (a.f1, a.tsync))
     }
 
@@ -216,7 +216,7 @@ impl Assembler {
     /// into the audio (`prune_receive_state`): frames older than the oldest window
     /// a retro re-sweep can revisit are forgotten, and messages with no
     /// continuation within three frame periods of that are reported incomplete.
-    pub fn prune(&mut self, forward_tsync: f32, sink: &mut dyn FnMut(MessageUpdate)) {
+    pub fn prune(&mut self, forward_tsync: f64, sink: &mut dyn FnMut(MessageUpdate)) {
         self.prune_as(forward_tsync, UpdateKind::Expired, sink);
     }
 
@@ -224,12 +224,12 @@ impl Assembler {
     /// [`UpdateKind::ReceptionEnded`] (`jtty_rx_end(handle, UPDATE_RECEPTION_ENDED)`). Through
     /// this crate's rc1 port this was a prune far in the future, reported as 'incomplete'.
     pub fn end(&mut self, sink: &mut dyn FnMut(MessageUpdate)) {
-        self.prune_as(f32::MAX / 4.0, UpdateKind::ReceptionEnded, sink);
+        self.prune_as(f64::MAX / 4.0, UpdateKind::ReceptionEnded, sink);
     }
 
     fn prune_as(
         &mut self,
-        forward_tsync: f32,
+        forward_tsync: f64,
         reason: UpdateKind,
         sink: &mut dyn FnMut(MessageUpdate),
     ) {
@@ -238,10 +238,10 @@ impl Assembler {
             .retain(|x| x.tsync_s + FRAME_PERIOD_S > forward_tsync);
         self.decoded
             .retain(|&(_, tsync)| tsync + FRAME_PERIOD_S > forward_tsync);
-        let oldest_revisit = forward_tsync - MAX_RETRO_STEPS as f32 * FRAME_PERIOD_S / 4.0;
+        let oldest_revisit = forward_tsync - MAX_RETRO_STEPS as f64 * FRAME_PERIOD_S / 4.0;
         self.recent
             .retain(|r| r.tsync >= oldest_revisit - FRAME_HISTORY_TIME_S);
-        let limit = MAX_CONTINUATION_GAP as f32 * FRAME_PERIOD_S + CONTINUATION_TIME_S;
+        let limit = MAX_CONTINUATION_GAP as f64 * FRAME_PERIOD_S + CONTINUATION_TIME_S;
         let mut i = 0;
         while i < self.active.len() {
             if oldest_revisit - self.active[i].tsync > limit {
@@ -271,14 +271,14 @@ impl Assembler {
         }
     }
 
-    fn is_recent(&self, f1: f32, tsync: f32) -> bool {
+    fn is_recent(&self, f1: f32, tsync: f64) -> bool {
         self.recent.iter().any(|r| {
             (f1 - r.f1).abs() < NEAR_SIMULTANEOUS_HZ
                 && (tsync - r.tsync).abs() < FRAME_HISTORY_TIME_S
         })
     }
 
-    fn remember(&mut self, f1: f32, tsync: f32) {
+    fn remember(&mut self, f1: f32, tsync: f64) {
         // upstream bounds the history; the oldest entry goes first
         if self.recent.len() >= MAX_MESSAGES_BOUND {
             self.recent.remove(0);
@@ -330,7 +330,7 @@ impl Assembler {
     fn start(
         &mut self,
         f1: f32,
-        tsync: f32,
+        tsync: f64,
         snr_db: f32,
         t: &FrameText,
         sink: &mut dyn FnMut(MessageUpdate),
@@ -368,7 +368,7 @@ impl Assembler {
         i: usize,
         gap: usize,
         f1: f32,
-        tsync: f32,
+        tsync: f64,
         t: &FrameText,
         sink: &mut dyn FnMut(MessageUpdate),
     ) -> bool {
@@ -408,7 +408,7 @@ mod tests {
     use super::*;
     use crate::jtty::source::{CallAction, NumberKind, Role};
 
-    fn frame(atom: Atom, f1: f32, tsync: f32, eom: bool) -> FrameDecode {
+    fn frame(atom: Atom, f1: f32, tsync: f64, eom: bool) -> FrameDecode {
         FrameDecode {
             channel: 0,
             f1_hz: f1,
@@ -453,6 +453,25 @@ mod tests {
             [false, false, true]
         );
         assert_eq!(u[2].start_s, 1.0);
+    }
+
+    /// Absolute time is `f64` (WSJT-X v3.3.0-beta1's `real64` `tsync`). After ~15 days of
+    /// audio an `f32` second is 0.125 s wide, so a frame time is off by up to 0.06 s and two of
+    /// them by up to 0.125 s, against a 0.1 s continuation tolerance: frames a period apart
+    /// could fail to join. In `f64` they join.
+    #[test]
+    fn a_stream_fifteen_days_old_still_joins_frames() {
+        let p = FRAME_PERIOD_S;
+        let t0 = 1_300_000.0_f64;
+        let u = run(&[
+            frame(Atom::text5("HELLO"), 1500.0, t0, false),
+            frame(Atom::text5(" WORL"), 1500.0, t0 + p, false),
+            frame(Atom::text5("D 73 "), 1500.0, t0 + 2.0 * p, true),
+        ]);
+        assert_eq!(u.len(), 3);
+        assert!(u.iter().all(|x| x.id == u[0].id), "{u:?}");
+        assert_eq!(u[2].text, "HELLO WORLD 73");
+        assert_eq!(u[0].start_s, t0);
     }
 
     /// `start_snrdb` is the first frame's, "never reassigned after" (v3.3.0-beta1): a
@@ -615,7 +634,7 @@ mod tests {
     fn text_is_capped_at_eighty_characters() {
         let p = FRAME_PERIOD_S;
         let frames: Vec<FrameDecode> = (0..16)
-            .map(|i| frame(Atom::text5("ABCDE"), 1500.0, 1.0 + i as f32 * p, i == 15))
+            .map(|i| frame(Atom::text5("ABCDE"), 1500.0, 1.0 + i as f64 * p, i == 15))
             .collect();
         assert_eq!(run(&frames).last().unwrap().text.len(), MAX_CHARS);
     }

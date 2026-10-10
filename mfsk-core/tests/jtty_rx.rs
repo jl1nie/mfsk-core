@@ -58,7 +58,7 @@ fn messages(frames: &[FrameDecode]) -> Vec<(String, FrameDecode)> {
 }
 
 /// `rjtty`'s ndebug=1 lines: `(f1, tsync, text-so-far)` per decode.
-fn expected_lines(rel: &str) -> Vec<(f32, f32, String)> {
+fn expected_lines(rel: &str) -> Vec<(f32, f64, String)> {
     let path = common::corpus::golden_path(rel).unwrap();
     std::fs::read_to_string(path)
         .unwrap()
@@ -99,7 +99,7 @@ fn sjtty_vectors_decode_exactly_and_only_them() {
             msgs.iter().map(|m| &m.0).collect::<Vec<_>>()
         );
         assert_eq!(msgs[0].0, f[11], "{}: text (rjtty says {:?})", f[0], f[11]);
-        let (f0, dt): (f32, f32) = (f[3].parse().unwrap(), f[4].parse().unwrap());
+        let (f0, dt): (f32, f64) = (f[3].parse().unwrap(), f[4].parse().unwrap());
         let first = &msgs[0].1;
         assert!(
             (first.f1_hz - f0).abs() < 2.0,

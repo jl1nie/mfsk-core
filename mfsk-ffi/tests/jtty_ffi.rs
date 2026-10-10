@@ -51,6 +51,7 @@ fn drain(rx: *mut MfskJttyReceiver) -> Vec<(u64, String, bool, f32)> {
             text: [0; 128],
             snr_db: 0.0,
             kind: 0,
+            start_time_s: 0.0,
         };
         match unsafe { mfsk_jtty_poll(rx, &mut u) } {
             1 => out.push((u.id, text(&u), u.complete != 0, u.f1_hz)),
@@ -467,6 +468,9 @@ fn the_row_carries_an_snr_and_a_smaller_size_does_not_receive_it() {
         .find(|u| u.complete != 0)
         .expect("a complete row");
     assert!(done.snr_db.is_finite() && done.snr_db >= -17.0 && done.snr_db != 123.0);
+    // `start_time_s` is `start_s` without the f32 rounding
+    assert!(done.start_time_s > 0.0);
+    assert_eq!(done.start_time_s as f32, done.start_s);
     let old = poll_all(std::mem::offset_of!(MfskJttyUpdate, snr_db) as u32);
     assert!(!old.is_empty());
     assert!(

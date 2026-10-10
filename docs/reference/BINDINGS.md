@@ -593,7 +593,9 @@ the reason for the latest update. Kotlin `MfskJttyUpdate.kind` (`MfskJttyUpdateK
 
 **Feeding a live source.** There is no slot to align to and no clock in the library:
 time is the number of samples pushed since `open` / `reset`, and `MfskJttyUpdate::start_s`
-is that count over the sample rate. Map it to UTC yourself if you need to (note the UTC
+is that count over the sample rate. `start_s` is an `f32`, which keeps 8 ms at 24 hours and only a
+tenth of a second after about 12 days, so read `start_time_s` (appended after `kind`, an `f64`,
+the same number): Kotlin's and Swift's `startSeconds` are now `Double` from it. Map it to UTC yourself if you need to (note the UTC
 of the first sample). The consequence for a live capture is that **the sample count must
 follow real time**. A frame continues a message only if it starts one to three frame
 periods (1.888 s, ±0.1 s) after the last, so:

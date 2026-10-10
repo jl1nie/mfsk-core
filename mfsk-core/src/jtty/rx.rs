@@ -331,7 +331,7 @@ pub struct FrameDecode {
     /// Start of the frame within its window, seconds.
     pub xdt_s: f32,
     /// Start of the frame, seconds from the start of the audio.
-    pub tsync_s: f32,
+    pub tsync_s: f64,
     /// Signal-to-noise ratio in 2 500 Hz from the sync and data tones (`snrdb`), floored at
     /// [`SNR_FLOOR_DB`]: `db((pt − pn) / pn) − db(2500 / baud)`, as WSJT-X v3.3.0-beta1 computes
     /// and reports it (`round(snr_db)`). Through rc1 this was `db(pt / pn)`, a ratio in the
@@ -662,7 +662,7 @@ impl Receiver {
     ///
     /// # Panics
     /// If `audio.len() != NCHUNK`.
-    pub fn decode_window(&self, audio: &[i16], t0_s: f32, p: &Params) -> Vec<FrameDecode> {
+    pub fn decode_window(&self, audio: &[i16], t0_s: f64, p: &Params) -> Vec<FrameDecode> {
         let mut asm = Assembler::new();
         let mut frames = Vec::new();
         self.analyze(
@@ -690,7 +690,7 @@ impl Receiver {
     fn analyze(
         &self,
         audio: &[i16],
-        t0_s: f32,
+        t0_s: f64,
         p: &Params,
         interferer: Option<&Subtracted>,
         carried: &[Subtracted],
@@ -726,7 +726,7 @@ impl Receiver {
                 if let Some(x) = interferer {
                     stat_add!(self, Subtractions, 1);
                     stat_time!(self, Subtract);
-                    subtract_frame(&mut c0, &x.tones(), x.f1_hz, x.tsync_s - t0_s);
+                    subtract_frame(&mut c0, &x.tones(), x.f1_hz, (x.tsync_s - t0_s) as f32);
                 }
                 (c0, None, None)
             }
@@ -734,7 +734,7 @@ impl Receiver {
         for x in carried {
             stat_add!(self, Subtractions, 1);
             stat_time!(self, Subtract);
-            subtract_frame(&mut c0, &x.tones(), x.f1_hz, x.tsync_s - t0_s);
+            subtract_frame(&mut c0, &x.tones(), x.f1_hz, (x.tsync_s - t0_s) as f32);
         }
         let mut w = Work {
             rx: self,
@@ -921,7 +921,7 @@ impl Receiver {
         &self,
         c0: &[Complex32],
         picks: &[Pick],
-        t0_s: f32,
+        t0_s: f64,
         p: &Params,
     ) -> Vec<Option<Outcome>> {
         let one = |pick: &Pick| self.process(c0, pick, t0_s, p, true);
@@ -1170,7 +1170,7 @@ impl Receiver {
         &self,
         c0: &[Complex32],
         pick: &Pick,
-        t0_s: f32,
+        t0_s: f64,
         p: &Params,
         peak: bool,
     ) -> Option<Outcome> {
@@ -1189,7 +1189,7 @@ impl Receiver {
         &self,
         c0: &[Complex32],
         pick: &Pick,
-        t0_s: f32,
+        t0_s: f64,
         p: &Params,
         peak: bool,
         refine: bool,
@@ -1204,7 +1204,7 @@ impl Receiver {
         &self,
         c0: &[Complex32],
         pick: &Pick,
-        t0_s: f32,
+        t0_s: f64,
         p: &Params,
         peak: bool,
         refine: bool,
@@ -1282,7 +1282,7 @@ impl Receiver {
             window_s: t0_s,
             channel: pick.channel,
             f1_hz: f1,
-            tsync_s: t0_s + xdt,
+            tsync_s: t0_s + f64::from(xdt),
             nsync: hits,
             snr_db: snr,
             accepted: accepted.is_some(),
@@ -1319,7 +1319,7 @@ impl Receiver {
                 channel: pick.channel,
                 f1_hz: f1,
                 xdt_s: xdt,
-                tsync_s: t0_s + xdt,
+                tsync_s: t0_s + f64::from(xdt),
                 snr_db,
                 nsync: hits,
                 nsymerrs: errs,
@@ -1417,14 +1417,14 @@ impl Receiver {
         sink: &mut dyn FnMut(MessageUpdate),
         frames: &mut Vec<FrameDecode>,
     ) {
-        let t_of = |k: usize| (k * STEP) as f32 / 12_000.0;
+        let t_of = |k: usize| (k * STEP) as f64 / 12_000.0;
         asm.prune(t_of(w), sink);
         // frames decoded earlier that still lie in window `k` (`Params::carry`)
         let carried_in = |asm: &Assembler, k: usize| -> Vec<Subtracted> {
             if !p.carry {
                 return Vec::new();
             }
-            let (a, b) = (t_of(k), t_of(k) + NCHUNK as f32 / 12_000.0);
+            let (a, b) = (t_of(k), t_of(k) + NCHUNK as f64 / 12_000.0);
             asm.carried
                 .iter()
                 .filter(|x| x.tsync_s < b && x.tsync_s + super::assemble::FRAME_PERIOD_S > a)
@@ -1810,7 +1810,7 @@ pub struct Subtracted {
     /// Frequency of the frame's lowest tone, Hz.
     pub f1_hz: f32,
     /// Start of the frame, seconds from the start of the audio.
-    pub tsync_s: f32,
+    pub tsync_s: f64,
     /// Its payload, from which the transmitted waveform is rebuilt.
     pub payload: Payload,
 }
@@ -1832,7 +1832,7 @@ const MAX_ROUNDS: usize = 3;
 struct Work<'a> {
     rx: &'a Receiver,
     p: &'a Params,
-    t0: f32,
+    t0: f64,
     c0: Vec<Complex32>,
     surface: Option<Surface>,
     lo: usize,
@@ -1841,9 +1841,9 @@ struct Work<'a> {
     side: Option<Surface>,
     side_range: Option<(usize, usize)>,
     /// text and start time of every frame decoded so far in this window
-    seen: Vec<(String, f32)>,
+    seen: Vec<(String, f64)>,
     /// `(f1, tsync)` of channel-0 successes, so channels 1 and 2 do not repeat them
-    ch0_ok: Vec<(f32, f32)>,
+    ch0_ok: Vec<(f32, f64)>,
     subtracted: Vec<Subtracted>,
     subtractions: usize,
     any_sub: bool,
@@ -1947,7 +1947,7 @@ impl Work<'_> {
             decoded |= self.settle(alloc::vec![outcome], ch);
         }
         if !decoded && self.ladder_left != Some(0) {
-            let due: Option<(f32, f32)> = self.asm.continuations().find(|&(f1, tsync)| {
+            let due: Option<(f32, f64)> = self.asm.continuations().find(|&(f1, tsync)| {
                 (f1 - fc).abs() <= fwid
                     && ((self.t0 - tsync) - FRAME_PERIOD_S).abs() <= 0.1
                     && tsync + FRAME_PERIOD_S - self.t0 >= 0.0
@@ -1958,7 +1958,7 @@ impl Work<'_> {
                 let pick = Pick {
                     channel: ch,
                     f_hz: f1,
-                    xdt_s: tsync + FRAME_PERIOD_S - self.t0,
+                    xdt_s: (tsync + FRAME_PERIOD_S - self.t0) as f32,
                 };
                 let outcome = self.rx.process(&self.c0, &pick, self.t0, self.p, false);
                 self.settle(alloc::vec![outcome], ch);
@@ -2023,9 +2023,12 @@ impl Work<'_> {
             if b0 > b1 {
                 continue;
             }
+            // Relative to the frame, in `f32`: one `f64` subtraction a region, not one a column
+            // (the ESP32-S3 has single-precision hardware only).
+            let rel = (t0 - tsync) as f32;
             for col in 0..NCOLS {
-                let start = t0 + (col * COL_STEP) as f32 / FS6;
-                if start >= tsync - 0.1 && start < tsync + FRAME_PERIOD_S - 0.1 {
+                let start = rel + (col * COL_STEP) as f32 / FS6;
+                if start >= -0.1 && start < FRAME_PERIOD_S as f32 - 0.1 {
                     for bin in b0..=b1 {
                         surface.set(col, bin, 0.0);
                     }
@@ -2143,7 +2146,7 @@ impl Work<'_> {
         if !decoded {
             // sticky-sync retry: an active message whose next frame is due to start
             // in this window, on this channel's frequencies — one attempt
-            let due: Option<(f32, f32)> = self.asm.continuations().find(|&(f1, tsync)| {
+            let due: Option<(f32, f64)> = self.asm.continuations().find(|&(f1, tsync)| {
                 (f1 - fc).abs() <= fwid
                     && ((self.t0 - tsync) - FRAME_PERIOD_S).abs() <= 0.1
                     && tsync + FRAME_PERIOD_S - self.t0 >= 0.0
@@ -2153,7 +2156,7 @@ impl Work<'_> {
                 let pick = Pick {
                     channel: ch,
                     f_hz: f1,
-                    xdt_s: tsync + FRAME_PERIOD_S - self.t0,
+                    xdt_s: (tsync + FRAME_PERIOD_S - self.t0) as f32,
                 };
                 let outcome = self.rx.process(&self.c0, &pick, self.t0, self.p, false);
                 decoded = self.settle(alloc::vec![outcome], ch);
@@ -2175,11 +2178,11 @@ impl Work<'_> {
             let dupe = self
                 .seen
                 .iter()
-                .any(|(t, ts)| *t == o.text && (ts - f.tsync_s).abs() < DUPE_TIME_S)
+                .any(|(t, ts)| *t == o.text && (ts - f.tsync_s).abs() < f64::from(DUPE_TIME_S))
                 || (ch != 0
                     && self.ch0_ok.iter().any(|&(f1, ts)| {
                         (f1 - f.f1_hz).abs() < SAME_FRAME_HZ
-                            && (ts - f.tsync_s).abs() < SAME_FRAME_S
+                            && (ts - f.tsync_s).abs() < f64::from(SAME_FRAME_S)
                     }));
             self.seen.push((o.text.clone(), f.tsync_s));
             if dupe {
