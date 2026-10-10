@@ -27,6 +27,7 @@
 pub mod anchor;
 pub mod clock;
 pub mod geo;
+pub mod jtty;
 pub mod modes;
 pub mod plan;
 pub mod spot;
@@ -54,10 +55,35 @@ use spyserver::*;
 
 pub use clock::now_ns;
 
+/// What a channel receives: a slotted mode, decoded a slot at a time, or JTTY,
+/// which has no slot: its frames start at any moment and a message grows while
+/// it is received (#650).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChannelMode {
+    Slot(Mode),
+    Jtty,
+}
+
+impl ChannelMode {
+    /// The slotted mode, or `None` for JTTY.
+    pub fn slot(self) -> Option<Mode> {
+        match self {
+            ChannelMode::Slot(m) => Some(m),
+            ChannelMode::Jtty => None,
+        }
+    }
+}
+
+impl From<Mode> for ChannelMode {
+    fn from(m: Mode) -> Self {
+        ChannelMode::Slot(m)
+    }
+}
+
 /// One channel: a mode at a USB dial frequency, and how it is decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelSpec {
-    pub mode: Mode,
+    pub mode: ChannelMode,
     pub dial_hz: f64,
     pub options: ChannelOptions,
 }
@@ -274,9 +300,9 @@ impl LiveOptions {
 }
 
 impl ChannelSpec {
-    pub fn new(mode: Mode, dial_hz: f64) -> Self {
+    pub fn new(mode: impl Into<ChannelMode>, dial_hz: f64) -> Self {
         ChannelSpec {
-            mode,
+            mode: mode.into(),
             dial_hz,
             options: ChannelOptions::default(),
         }
@@ -912,7 +938,7 @@ impl Config {
             .channels
             .iter()
             .filter_map(|&c| self.channels.get(c))
-            .map(|c| (modes::slot_seconds(c.mode) * 1000.0).round() as i64)
+            .map(|c| (modes::channel_slot_seconds(c.mode) * 1000.0).round() as i64)
             .filter(|&ms| ms > 0)
             .fold(1_000, |a, b| a / gcd(a, b) * b);
         let want = i64::from(st.minutes.max(MIN_STEP_MINUTES)) * 60_000;

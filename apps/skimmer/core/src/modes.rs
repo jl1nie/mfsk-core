@@ -45,6 +45,30 @@ pub fn mode_name(m: Mode) -> &'static str {
         .unwrap_or("?")
 }
 
+/// What a user types for a JTTY channel (#650); JTTY is not a registry mode.
+pub const JTTY_NAME: &str = "JTTY";
+
+/// A channel's mode by its name, case-insensitive: a slotted mode or JTTY.
+pub fn parse_channel_mode(s: &str) -> Option<crate::ChannelMode> {
+    if s.eq_ignore_ascii_case(JTTY_NAME) {
+        Some(crate::ChannelMode::Jtty)
+    } else {
+        parse_mode(s).map(crate::ChannelMode::Slot)
+    }
+}
+
+pub fn channel_mode_name(m: crate::ChannelMode) -> &'static str {
+    match m {
+        crate::ChannelMode::Slot(m) => mode_name(m),
+        crate::ChannelMode::Jtty => JTTY_NAME,
+    }
+}
+
+/// A channel's slot in seconds; 0 for JTTY, which has none.
+pub fn channel_slot_seconds(m: crate::ChannelMode) -> f32 {
+    m.slot().map_or(0.0, slot_seconds)
+}
+
 /// The mode's slot (T/R period) in seconds, as the registry has it; slots
 /// start on multiples of it from 00:00 UTC.
 pub fn slot_seconds(m: Mode) -> f32 {
@@ -135,7 +159,7 @@ pub fn parse_channel(spec: &str) -> Result<crate::ChannelSpec, String> {
     let (m, f) = head
         .split_once('@')
         .ok_or_else(|| format!("{spec:?}: expected MODE@DIAL_HZ"))?;
-    let mode = parse_mode(m).ok_or_else(|| format!("unknown mode {m:?}"))?;
+    let mode = parse_channel_mode(m).ok_or_else(|| format!("unknown mode {m:?}"))?;
     let dial: f64 = f.parse().map_err(|_| format!("bad dial frequency {f:?}"))?;
     let mut ch = crate::ChannelSpec::new(mode, dial);
     for opt in parts {
@@ -192,7 +216,7 @@ mod tests {
     #[test]
     fn channel_specs_parse_their_options() {
         let c = parse_channel("ft8@7074000:band=300-3000:dx=ja1abc:depth=fast").unwrap();
-        assert_eq!(c.mode, Mode::Ft8);
+        assert_eq!(c.mode, crate::ChannelMode::Slot(Mode::Ft8));
         assert_eq!(c.dial_hz, 7_074_000.0);
         assert_eq!(c.options.band_hz, Some((300.0, 3000.0)));
         assert_eq!(c.options.dx_call.as_deref(), Some("JA1ABC"));
