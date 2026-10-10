@@ -51,15 +51,20 @@ fn make_records() -> Vec<Rec> {
     let mut rng = Rng(0x0F57_4A11_0649_u64);
     let mut v = Vec::new();
     // (keff, maxosd, norder)
+    // Not (Keff 50, maxosd > 1): Keff 50 runs BP for one iteration, so `zsave(:,2)`
+    // is never written and upstream's OSD reads an uninitialised array (it gave
+    // ntype 3 on garbage where this crate's zeros give another word; found by the
+    // near-threshold inputs of #659). `fst4_decode.f90` calls it with maxosd 1.
     let settings = [
         (66, 2, 3),
         (50, 1, 4),
         (66, 0, 3),
         (66, 3, 2),
+        (66, 3, 1),
+        (66, 3, 0),
         (66, 1, 1),
         (66, -1, 3),
         (66, 2, 4),
-        (50, 2, 3),
         (74, 2, 3),
     ];
     let sigmas = [0.55f64, 0.65, 0.75, 0.82, 0.9, 0.98, 1.06, 1.2];
@@ -99,6 +104,32 @@ fn make_records() -> Vec<Rec> {
                 });
             }
         }
+        // Near the threshold, where BP's first snapshot fails and a later one is
+        // what OSD needs (#659): `zsave(:,2)` and `zsave(:,3)` only matter there.
+        if maxosd >= 2 {
+            for rep in 0..60 {
+                let sigma = 1.0 + 0.012 * (rep % 12) as f64;
+                let mut p = [0u8; 50];
+                for b in p.iter_mut() {
+                    *b = (rng.next() >> 40) as u8 & 1;
+                }
+                let cw = encode(&mfsk_core::fec::ldpc240_74::append_crc24_50(&p));
+                let llr: Vec<f32> = cw
+                    .iter()
+                    .map(|&b| {
+                        let y = if b == 1 { 1.0 } else { -1.0 } + sigma * rng.gauss();
+                        (2.0 * y / (sigma * sigma)) as f32
+                    })
+                    .collect();
+                v.push(Rec {
+                    keff,
+                    maxosd,
+                    norder,
+                    mask: vec![0; N],
+                    llr,
+                });
+            }
+        }
         // Pure noise: no codeword anywhere near.
         for _ in 0..6 {
             let llr = (0..N).map(|_| (3.0 * rng.gauss()) as f32).collect();
@@ -110,6 +141,41 @@ fn make_records() -> Vec<Rec> {
                 llr,
             });
         }
+    }
+    // Words only a later snapshot rescues (#659): keep the near-threshold draws
+    // that this crate's decoder says need `zsave(:,2)` or `zsave(:,3)`. Choosing
+    // inputs by our own answer is not circular: what is asserted is upstream's.
+    let mut work = Osd74Work::new();
+    let (mut got3, mut got4) = (0, 0);
+    for attempt in 0..20_000 {
+        if got3 >= 40 && got4 >= 12 {
+            break;
+        }
+        let sigma = 1.0 + 0.02 * (attempt % 15) as f64;
+        let mut p = [0u8; 50];
+        for b in p.iter_mut() {
+            *b = (rng.next() >> 40) as u8 & 1;
+        }
+        let cw = encode(&mfsk_core::fec::ldpc240_74::append_crc24_50(&p));
+        let llr: Vec<f32> = cw
+            .iter()
+            .map(|&b| {
+                let y = if b == 1 { 1.0 } else { -1.0 } + sigma * rng.gauss();
+                (2.0 * y / (sigma * sigma)) as f32
+            })
+            .collect();
+        match decode240_74(&mut work, &llr, 66, 3, 0, None).map(|d| d.ntype) {
+            Some(3) if got3 < 40 => got3 += 1,
+            Some(4) if got4 < 12 => got4 += 1,
+            _ => continue,
+        }
+        v.push(Rec {
+            keff: 66,
+            maxosd: 3,
+            norder: 0,
+            mask: vec![0; N],
+            llr,
+        });
     }
     v
 }
@@ -208,5 +274,10 @@ fn decode240_74_matches_upstream() {
     }
     // The fixture must exercise BP, both OSD snapshots, and failure.
     eprintln!("ntype histogram (0=fail,1=BP,2..4=OSD i): {by_ntype:?}");
-    assert!(by_ntype[0] > 0 && by_ntype[1] > 0 && by_ntype[2] > 0 && by_ntype[3] > 0);
+    assert!(by_ntype[0] > 0 && by_ntype[1] > 0 && by_ntype[2] > 0);
+    // #659: the second and third BP snapshots must be exercised, not just present.
+    assert!(
+        by_ntype[3] >= 20 && by_ntype[4] >= 5,
+        "snapshot coverage {by_ntype:?}"
+    );
 }
