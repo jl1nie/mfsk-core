@@ -137,7 +137,8 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 - **The CoreS3 JTTY app and demo show the message's SNR (#646).** `MessageUpdate::snr_db` goes to the row (it was `NAN`, drawn `+0`, and
   `0` in the demo) and to `ALL.TXT`, whose JTTY line now carries the S/N column (`all_txt::message_line` takes `snr_db`; the DT column
   stays blank, a message has no slot). Host-tested in `hosttest/mfsk-app-shared`; `cargo check` of the crate with the `esp` toolchain
-  passes. Not flashed: the value is upstream's simple estimate, so a strong signal reads low (a true +30 dB reads about +11).
+  passes. Flashed (`jtty-demo`, the busy-band scene, 2026-10-10): the four messages that complete read -10 / -5 / -4 / -4 dB against true
+  -9.6 / -5.3 / -2.8 / -4.7 dB; the value is upstream's simple estimate, so a strong signal reads low (a true +30 dB reads about +11).
 
 ### Internals
 

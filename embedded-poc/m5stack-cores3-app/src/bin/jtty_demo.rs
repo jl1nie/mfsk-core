@@ -326,9 +326,10 @@ fn log_waterfall_peaks(stations: &[mfsk_core::jtty::testsig::Station<'static>]) 
 fn on_update(n_complete: &mut u32, u: mfsk_core::jtty::assemble::MessageUpdate) {
     if !QUIET_UPDATES {
         log::info!(
-        "jtty-demo: {:>7.1} Hz {:>6.2} s {} \"{}\"",
+        "jtty-demo: {:>7.1} Hz {:>6.2} s {:>4.0} dB {} \"{}\"",
         u.f1_hz,
         u.start_s,
+        u.snr_db,
         if u.complete { "done " } else { "     " },
         u.text
         );

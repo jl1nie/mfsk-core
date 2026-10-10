@@ -173,6 +173,8 @@ No new screen, no new renderer. What the shared code does today, and what JTTY n
   (#646, 2026-10-10): `MessageUpdate` carries the S/N** — `MessageUpdate::snr_db`, the *first* frame's SNR in 2 500 Hz floored
   at -17 dB, which is what WSJT-X v3.3.0-beta1 reports (`start_snrdb`; the draft said "last frame's", upstream settled on the
   first). The app passes it to the row and to `ALL.TXT`; a message still has no DT (no slot), so that column stays blank.
+  On the board (`jtty-demo`, busy-band scene of six stations, 4 of 6 complete, 2026-10-10, log
+  `logs/jtty_demo_snr646b_2026-10-10.log`): 331 Hz -10 dB (true -9.6), 1523 Hz -5 (-5.3), 1969 Hz -4 (-2.8), 2361 Hz -4 (-4.7).
 - **Slot period**: `slot_period_ms` cannot be 0 — `decoded_slot_unix(0)` divides by zero, no row is ever green, and the
   ALL.TXT flush treats every moment as quiet. JTTY needs the three uses split: the green-row age (a few seconds), the
   waterfall rules (none — the waterfall already handles a period of 0), and the flush policy (below).
