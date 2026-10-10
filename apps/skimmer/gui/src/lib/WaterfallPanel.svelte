@@ -205,6 +205,51 @@
     schedule();
   });
 
+  const BIG_RANGE = [100, 700] as const;
+  const THUMB_RANGE = [24, 200] as const;
+  const BIG_DEFAULT = 220;
+  const THUMB_DEFAULT = 54;
+
+  /**
+   * Drag the grip under a block to change its height: the thumbnails' or the large
+   * waterfall's. The pointer is captured, so the drag goes on outside the grip.
+   */
+  function grab(e: PointerEvent, which: 'big' | 'thumb') {
+    const grip = e.currentTarget as HTMLElement;
+    const [lo, hi] = which === 'big' ? BIG_RANGE : THUMB_RANGE;
+    const y0 = e.clientY;
+    const h0 = which === 'big' ? bigPx : thumbPx;
+    grip.setPointerCapture(e.pointerId);
+    const move = (m: PointerEvent) => {
+      const h = Math.round(Math.min(hi, Math.max(lo, h0 + m.clientY - y0)));
+      if (which === 'big') bigPx = h;
+      else thumbPx = h;
+    };
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+    e.preventDefault();
+  }
+
+  /** A double click puts the height back; the arrow keys nudge it. */
+  function reset(which: 'big' | 'thumb') {
+    if (which === 'big') bigPx = BIG_DEFAULT;
+    else thumbPx = THUMB_DEFAULT;
+  }
+  function nudge(e: KeyboardEvent, which: 'big' | 'thumb') {
+    const d = e.key === 'ArrowDown' ? 10 : e.key === 'ArrowUp' ? -10 : 0;
+    if (!d) return;
+    const [lo, hi] = which === 'big' ? BIG_RANGE : THUMB_RANGE;
+    if (which === 'big') bigPx = Math.min(hi, Math.max(lo, bigPx + d));
+    else thumbPx = Math.min(hi, Math.max(lo, thumbPx + d));
+    e.preventDefault();
+  }
+
   function onmove(e: MouseEvent) {
     const r = over?.getBoundingClientRect();
     if (!r) return;
@@ -219,19 +264,6 @@
 <section class="wf">
   <header>
     <button class="link" onclick={() => (open = !open)}>{open ? '▾' : '▸'} Waterfall</button>
-    {#if open}
-      <!-- How tall each is. The same stretch of time is drawn finer in a taller one. -->
-      <label class="size" title="Height of the large waterfall">
-        large
-        <input type="range" min="100" max="700" step="10" bind:value={bigPx} />
-        <span>{bigPx}</span>
-      </label>
-      <label class="size" title="Height of the thumbnails">
-        thumbnails
-        <input type="range" min="24" max="200" step="2" bind:value={thumbPx} />
-        <span>{thumbPx}</span>
-      </label>
-    {/if}
   </header>
   {#if open}
     {#if servers.length > 1}
@@ -253,6 +285,20 @@
         {/if}
       {/each}
     </div>
+    <div
+      class="grip"
+      role="slider"
+      aria-orientation="vertical"
+      aria-label="Thumbnail height"
+      aria-valuemin={THUMB_RANGE[0]}
+      aria-valuemax={THUMB_RANGE[1]}
+      aria-valuenow={thumbPx}
+      tabindex="0"
+      title="Drag to change the thumbnails' height; double-click for the usual one"
+      onpointerdown={(e) => grab(e, 'thumb')}
+      ondblclick={() => reset('thumb')}
+      onkeydown={(e) => nudge(e, 'thumb')}
+    ></div>
     <div class="bigbox">
       <canvas class="big" bind:this={big} width="1024" height={bigPx} style="height: {bigPx}px"></canvas>
       <canvas class="over" bind:this={over} onmousemove={onmove} onmouseleave={() => (hover = '')} style="height: {bigPx}px"></canvas>
@@ -271,6 +317,20 @@
         <div class="wait">waiting for {channels[focus] ? channels[focus].mode + ' ' + (channels[focus].dialHz / 1000).toFixed(1) : 'a channel'}…</div>
       {/if}
     </div>
+    <div
+      class="grip"
+      role="slider"
+      aria-orientation="vertical"
+      aria-label="Waterfall height"
+      aria-valuemin={BIG_RANGE[0]}
+      aria-valuemax={BIG_RANGE[1]}
+      aria-valuenow={bigPx}
+      tabindex="0"
+      title="Drag to change the waterfall's height; double-click for the usual one"
+      onpointerdown={(e) => grab(e, 'big')}
+      ondblclick={() => reset('big')}
+      onkeydown={(e) => nudge(e, 'big')}
+    ></div>
   {/if}
 </section>
 
@@ -305,23 +365,19 @@
   header {
     display: flex;
     align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
   }
-  .size {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--muted);
+  /* A thin bar to drag: a dotted line that darkens under the pointer. */
+  .grip {
+    height: 8px;
+    cursor: ns-resize;
+    touch-action: none;
+    background: radial-gradient(circle, var(--muted) 1px, transparent 1.5px) center / 8px 8px repeat-x;
+    opacity: 0.45;
   }
-  .size input {
-    width: 90px;
-    padding: 0;
-  }
-  .size span {
-    min-width: 2.5em;
-    font-variant-numeric: tabular-nums;
+  .grip:hover,
+  .grip:focus-visible {
+    opacity: 1;
+    outline: none;
   }
   .thumbs {
     display: flex;
