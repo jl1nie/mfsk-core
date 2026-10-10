@@ -5,28 +5,28 @@
     "protocols": {
       "fst4": {
         "date": "2026-10-10",
-        "commit": "787e0cbd",
+        "commit": "6cb9ed95-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 3360,
         "groups": 20
       },
       "ft4": {
         "date": "2026-10-10",
-        "commit": "787e0cbd",
+        "commit": "6cb9ed95-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8": {
         "date": "2026-10-10",
-        "commit": "787e0cbd",
+        "commit": "6cb9ed95-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8_busy": {
-        "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "date": "2026-10-10",
+        "commit": "6cb9ed95-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 840,
         "groups": 10
@@ -68,7 +68,7 @@
       },
       "msk144": {
         "date": "2026-10-10",
-        "commit": "787e0cbd",
+        "commit": "6cb9ed95-dirty",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 280,
         "groups": 2
@@ -139,14 +139,14 @@
       "ft8_busy/busy10/single": {
         "files": 40,
         "truth": 400,
-        "hits": 316,
-        "extra": 1
+        "hits": 315,
+        "extra": 0
       },
       "ft8_busy/busy20/sic_early": {
         "files": 40,
         "truth": 800,
         "hits": 649,
-        "extra": 1
+        "extra": 0
       },
       "ft8_busy/busy20/single": {
         "files": 40,
@@ -158,12 +158,12 @@
         "files": 40,
         "truth": 1600,
         "hits": 1299,
-        "extra": 0
+        "extra": 1
       },
       "ft8_busy/busy40/single": {
         "files": 40,
         "truth": 1600,
-        "hits": 1055,
+        "hits": 1058,
         "extra": 0
       },
       "ft8_busy/dt1/sic_early": {
@@ -182,7 +182,7 @@
         "files": 200,
         "truth": 0,
         "hits": 0,
-        "extra": 0
+        "extra": 1
       },
       "ft8_busy/noise/single": {
         "files": 200,
@@ -196,30 +196,30 @@
   "fst4/120/ccir_good": -30.142857142857142,
   "fst4/120/ccir_moderate": -28.0,
   "fst4/120/ccir_poor": -26.636363636363637,
-  "fst4/15/awgn": -21.666666666666668,
-  "fst4/15/ccir_good": -21.5,
-  "fst4/15/ccir_moderate": -20.5,
+  "fst4/15/awgn": -21.625,
+  "fst4/15/ccir_good": -21.46153846153846,
+  "fst4/15/ccir_moderate": -20.4,
   "fst4/15/ccir_poor": -19.8,
   "fst4/30/awgn": -25.0,
-  "fst4/30/ccir_good": -24.77777777777778,
+  "fst4/30/ccir_good": -24.8,
   "fst4/30/ccir_moderate": -24.0,
   "fst4/30/ccir_poor": -23.0,
   "fst4/300/awgn": -36.142857142857146,
   "fst4/300/ccir_good": -33.666666666666664,
-  "fst4/300/ccir_moderate": -30.333333333333332,
-  "fst4/300/ccir_poor": -26.5,
-  "fst4/60/awgn": -29.0,
+  "fst4/300/ccir_moderate": -30.25,
+  "fst4/300/ccir_poor": -26.142857142857142,
+  "fst4/60/awgn": -28.875,
   "fst4/60/ccir_good": -27.25,
   "fst4/60/ccir_moderate": -26.0,
-  "fst4/60/ccir_poor": -25.0,
+  "fst4/60/ccir_poor": -25.11111111111111,
   "ft4/awgn": -18.0,
-  "ft4/ccir_good": -18.25,
+  "ft4/ccir_good": -18.285714285714285,
   "ft4/ccir_moderate": -17.0,
-  "ft4/ccir_poor": -16.75,
-  "ft8/awgn": -21.90909090909091,
+  "ft4/ccir_poor": -16.8,
+  "ft8/awgn": -21.9,
   "ft8/ccir_good": -21.615384615384617,
   "ft8/ccir_moderate": -20.0,
-  "ft8/ccir_poor": -19.615384615384617,
+  "ft8/ccir_poor": -19.583333333333332,
   "ft8_itu/itu_hm": -3.3333333333333335,
   "ft8_itu/itu_hq": -20.166666666666668,
   "ft8_itu/itu_ld": -1.0000000000000009,
