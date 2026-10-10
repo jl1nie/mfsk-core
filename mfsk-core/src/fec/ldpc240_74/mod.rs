@@ -21,6 +21,11 @@
 pub mod fastosd;
 pub mod tables;
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// needed with no std in the graph; a dep linking std makes f32's own methods shadow it
+use num_traits::Float;
+
 use crate::fec::ldpc::osd::ldpc_encode_generic;
 use crate::fec::ldpc::params::{Ldpc240_74Params, LdpcParams};
 
