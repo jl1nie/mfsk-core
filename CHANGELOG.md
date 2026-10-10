@@ -197,6 +197,16 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Skimmer
 
+- **skimmer: JTTY (#650).** JTTY has no slot (frames start at any moment and a message grows while it is received), so a JTTY
+  channel is not decoded a slot at a time: the receiver keeps its continuous audio (`IqReceiver::add_audio_channel`), a thread
+  per channel runs upstream's receiver over it at a slow AGC (`jtty::rx::Stream`; Rx frequency and tolerance are the channel's
+  `rx` and `tol`, 1500 ± 50 Hz as upstream, plus the fixed side channels), and a break in the audio (a retune, a gap, the clock
+  re-anchored) ends the reception, so a half-heard message is reported cut off and never joined to the next. `Event::Jtty`
+  reports a message as it grows and when it is over. The CLI prints it and writes ALL.TXT in WSJT-X's format when it is over;
+  the database stores it as a `decodes` row of mode `JTTY` with the sender and locator by WSJT-X's spotting rule, so Analysis,
+  the map and the station list take it; the window has a JTTY tab where a message is updated in place; presets carry upstream's
+  JTTY frequencies. As upstream: no full-band search, and no drift search. No waterfall for a JTTY channel yet. Tested through IQ,
+  both channelizers, and across a gap (`jtty::tests`, `store::tests`).
 - **Connect no longer waits 10 s on a dead NTP server (#640).** The first clock measurement ran five queries at 2 s each against the
   first address only, so a pool member that did not answer held Connect for 10.6 s before falling back to the PC clock
   (`pool.ntp.org`, 2026-10-09, while `ntp.nict.jp` answered in 38 ms). A query now waits 1 s (a later reply is over the 1 s

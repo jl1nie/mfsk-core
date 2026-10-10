@@ -213,6 +213,18 @@ pub fn parse_channel(spec: &str) -> Result<crate::ChannelSpec, String> {
 mod tests {
     use super::*;
 
+    /// JTTY is a channel mode of its own (#650): not a registry mode, no slot.
+    #[test]
+    fn jtty_is_a_channel_with_no_slot() {
+        let c = parse_channel("jtty@14090000:rx=1700:tol=80").unwrap();
+        assert_eq!(c.mode, crate::ChannelMode::Jtty);
+        assert_eq!(c.options.rx_freq_hz, Some(1700.0));
+        assert_eq!(c.options.tol_hz, Some(80.0));
+        assert_eq!(channel_mode_name(c.mode), "JTTY");
+        assert_eq!(channel_slot_seconds(c.mode), 0.0);
+        assert!(parse_mode("JTTY").is_none(), "not a slotted mode");
+    }
+
     #[test]
     fn channel_specs_parse_their_options() {
         let c = parse_channel("ft8@7074000:band=300-3000:dx=ja1abc:depth=fast").unwrap();

@@ -248,6 +248,29 @@ fn main() -> ExitCode {
                     eprintln!("log: {e}");
                 }
             }
+            // A JTTY message is printed when it is over (it grows while it is
+            // received), and written to ALL.TXT as WSJT-X does.
+            Event::Jtty(m) => {
+                if m.is_final() {
+                    println!(
+                        "{tag}{} JTTY     {:>10.0} {:>4.0}        {}{}",
+                        hhmmss(m.start_utc_ns),
+                        m.freq_hz,
+                        m.snr_db,
+                        m.text,
+                        match m.kind {
+                            skimmer_core::jtty::UpdateKind::Complete => "",
+                            skimmer_core::jtty::UpdateKind::Expired => "  (no continuation)",
+                            _ => "  (cut off)",
+                        }
+                    );
+                    if let Some(f) = log.as_mut()
+                        && let Err(e) = writeln!(f, "{}", skimmer_core::jtty::all_txt_line(&m))
+                    {
+                        eprintln!("log: {e}");
+                    }
+                }
+            }
             Event::Connecting { server } => eprintln!("connecting to {server}"),
             Event::Connected {
                 device,
@@ -286,7 +309,11 @@ fn main() -> ExitCode {
                     } else {
                         " (paused: outside the band)"
                     };
-                    eprintln!("  channel {}@{:.0}{state}", mode_name(c.mode), c.dial_hz);
+                    eprintln!(
+                        "  channel {}@{:.0}{state}",
+                        skimmer_core::modes::channel_mode_name(c.mode),
+                        c.dial_hz
+                    );
                 }
             }
             Event::Moved { device_hz, iq_hz } => {

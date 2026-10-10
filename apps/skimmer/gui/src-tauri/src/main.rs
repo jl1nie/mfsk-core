@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
-use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_mode, slot_seconds};
+use skimmer_core::modes::{
+    MODES, frame_geometry, mode_name, parse_channel_mode, slot_seconds,
+};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::store;
 use skimmer_core::{
@@ -475,6 +477,23 @@ enum UiEvent {
         /// frequency: its `<...>` now reads resolved.
         update: bool,
     },
+    /// A JTTY message as far as it is known: the row `key` of this channel is
+    /// replaced in place as it grows, and is over when `final` (#650).
+    Jtty {
+        channel: usize,
+        key: String,
+        /// ms, not ns: a JavaScript number holds it exactly.
+        start_utc_ms: Option<f64>,
+        dial_hz: f64,
+        freq_hz: f64,
+        snr_db: f32,
+        text: String,
+        calls: Vec<String>,
+        /// "growing", "complete", "expired" or "ended".
+        kind: &'static str,
+        #[serde(rename = "final")]
+        is_final: bool,
+    },
     Gap {
         messages: u32,
         at_s: f64,
@@ -594,6 +613,24 @@ impl UiEvent {
                 copied_last_tx: d.detail.copied_last_tx,
                 early: d.detail.early,
                 update: d.update,
+            },
+            Event::Jtty(m) => UiEvent::Jtty {
+                channel: global(m.channel),
+                // A string: a JavaScript number holds 2^53, and the key is 64 bits.
+                key: m.key.to_string(),
+                start_utc_ms: m.start_utc_ns.map(|ns| (ns / 1_000_000) as f64),
+                dial_hz: m.dial_hz,
+                freq_hz: m.freq_hz,
+                snr_db: m.snr_db,
+                is_final: m.is_final(),
+                kind: match m.kind {
+                    skimmer_core::jtty::UpdateKind::Growing => "growing",
+                    skimmer_core::jtty::UpdateKind::Complete => "complete",
+                    skimmer_core::jtty::UpdateKind::Expired => "expired",
+                    _ => "ended",
+                },
+                text: m.text,
+                calls: m.calls,
             },
             Event::Gap { messages, at_s } => UiEvent::Gap { messages, at_s },
             Event::Reanchor { by_s } => UiEvent::Reanchor { by_s },
@@ -736,7 +773,7 @@ fn auto_pfb_channels() -> usize {
 
 #[tauri::command]
 fn modes() -> Vec<ModeInfo> {
-    MODES
+    let mut v: Vec<ModeInfo> = MODES
         .iter()
         .map(|&(name, m, _)| {
             let (offset_s, frame_s, width_hz) = frame_geometry(m);
@@ -748,7 +785,17 @@ fn modes() -> Vec<ModeInfo> {
                 width_hz,
             }
         })
-        .collect()
+        .collect();
+    // JTTY has no slot: its frame period stands in, and a frame is 4 tones
+    // 31.25 Hz apart, 1.888 s long (#650).
+    v.push(ModeInfo {
+        name: skimmer_core::modes::JTTY_NAME,
+        slot_s: 1.888,
+        offset_s: 0.0,
+        frame_s: 1.888,
+        width_hz: 125.0,
+    });
+    v
 }
 
 /// A server's configuration and the window's number of each of its channels.
@@ -778,8 +825,8 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         let channels = mine
             .iter()
             .map(|(_, c)| {
-                let mode =
-                    parse_mode(&c.mode).ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
+                let mode = parse_channel_mode(&c.mode)
+                    .ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
                 let mut spec = ChannelSpec::new(mode, c.dial_hz);
                 spec.options = c.options()?;
                 Ok::<ChannelSpec, String>(spec)
@@ -1268,6 +1315,7 @@ async fn start(
             if let Some(w) = db.as_mut() {
                 match &ev {
                     Event::Decode(d) => w.push(name, d),
+                    Event::Jtty(m) => w.push_jtty(name, m),
                     // A quiet band must not leave the last decodes unwritten.
                     Event::Status(_) => w.flush(),
                     _ => {}

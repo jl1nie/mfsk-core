@@ -162,8 +162,8 @@ pub struct LiveOptions {
 /// A channel across rotation steps: the mode and the dial.
 type BankKey = (&'static str, i64);
 
-fn bank_key(mode: Mode, dial_hz: f64) -> BankKey {
-    (modes::mode_name(mode), dial_hz.round() as i64)
+fn bank_key(mode: ChannelMode, dial_hz: f64) -> BankKey {
+    (modes::channel_mode_name(mode), dial_hz.round() as i64)
 }
 
 #[derive(Default)]
@@ -1217,6 +1217,9 @@ pub enum Event {
         iq_hz: f64,
     },
     Decode(Decode),
+    /// A JTTY message, as far as it is known; reported again as it grows
+    /// and once more when it is over (see [`jtty::JttyMessage`]).
+    Jtty(jtty::JttyMessage),
     /// The server dropped IQ messages; slots spanning the hole are lost.
     Gap {
         messages: u32,
@@ -1728,6 +1731,10 @@ struct Live {
     wfs: Vec<Option<ChannelWaterfall>>,
     /// By `ChannelId`: the key the channel's decoder and waterfall are kept under.
     keys: Vec<BankKey>,
+    /// By `ChannelId`: a JTTY channel's receiver thread (#650).
+    jtty: Vec<Option<jtty::Worker>>,
+    /// Messages the JTTY threads reported, waiting to be passed on.
+    jtty_results: std::sync::mpsc::Receiver<jtty::JttyMessage>,
     format: IqSampleFormat,
 }
 
@@ -1819,11 +1826,16 @@ fn receiver(
     let mut cfg_index: Vec<usize> = Vec::new();
     let mut wfs: Vec<Option<ChannelWaterfall>> = Vec::new();
     let mut keys: Vec<BankKey> = Vec::new();
+    let mut jttys: Vec<Option<jtty::Worker>> = Vec::new();
+    let (jtx, jtty_results) = std::sync::mpsc::channel();
+    let jtty_rx = std::sync::Arc::new(mfsk_core::jtty::rx::Receiver::new());
     for &i in &p.active {
         let ch = &cfg.channels[i];
-        let id = rx
-            .add_channel(ch.dial_hz, ch.mode)
-            .map_err(|e| std::io::Error::other(format!("{}: {e}", ch.dial_hz)))?;
+        let id = match ch.mode {
+            ChannelMode::Slot(m) => rx.add_channel(ch.dial_hz, m),
+            ChannelMode::Jtty => rx.add_audio_channel(ch.dial_hz),
+        }
+        .map_err(|e| std::io::Error::other(format!("{}: {e}", ch.dial_hz)))?;
         if workers.len() <= id.0 {
             workers.resize_with(id.0 + 1, || None);
         }
@@ -1836,6 +1848,25 @@ fn receiver(
             keys.resize(id.0 + 1, ("", 0));
         }
         keys[id.0] = key;
+        // A JTTY channel has no slot and no decoder: a receiver thread over
+        // its continuous audio. No waterfall yet: it would drain the same audio.
+        let Some(mode) = ch.mode.slot() else {
+            let (opts, _) = cfg
+                .live
+                .get(i)
+                .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
+            if jttys.len() <= id.0 {
+                jttys.resize_with(id.0 + 1, || None);
+            }
+            jttys[id.0] = Some(jtty::Worker::spawn(
+                i,
+                ch.dial_hz,
+                &opts,
+                jtty_rx.clone(),
+                jtx.clone(),
+            ));
+            continue;
+        };
         if cfg.waterfall {
             rx.tap_audio(id, true);
             if wfs.len() <= id.0 {
@@ -1853,7 +1884,7 @@ fn receiver(
             .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
         let decoder = {
             let kept = cfg.live.bank.lock().unwrap().decoders.remove(&key);
-            let mut d = kept.unwrap_or_else(|| AnyDecoder::with_defaults(ch.mode));
+            let mut d = kept.unwrap_or_else(|| AnyDecoder::with_defaults(mode));
             apply_options(&mut d, &opts, &station);
             d
         };
@@ -1866,7 +1897,7 @@ fn receiver(
         let mut lanes = Vec::new();
         for lane in 0..cfg.decode_lanes.max(1) {
             let d = first.take().unwrap_or_else(|| {
-                let mut d = AnyDecoder::with_defaults(ch.mode);
+                let mut d = AnyDecoder::with_defaults(mode);
                 apply_options(&mut d, &opts, &station);
                 d
             });
@@ -1889,7 +1920,7 @@ fn receiver(
             lanes,
             serial: opts.averaging,
             lane_of: None,
-            mode: ch.mode,
+            mode,
             early: cfg.early_decode,
         });
     }
@@ -1903,6 +1934,8 @@ fn receiver(
         cut_slots,
         wfs,
         keys,
+        jtty: jttys,
+        jtty_results,
         format,
     })
 }
@@ -1948,6 +1981,12 @@ fn stream(
                 wf_bank.insert(*key, w);
             }
         }
+        // The JTTY threads end their receptions as they stop: the messages still
+        // open are reported cut off, before the queue goes.
+        l.jtty.clear();
+        while let Ok(m) = l.jtty_results.try_recv() {
+            on_event(Event::Jtty(m));
+        }
     }
     r
 }
@@ -1964,6 +2003,9 @@ fn settle(live: &mut Option<Live>, on_event: &mut impl FnMut(Event)) {
     }
     while let Ok(d) = l.results.try_recv() {
         on_event(Event::Decode(d));
+    }
+    while let Ok(m) = l.jtty_results.try_recv() {
+        on_event(Event::Jtty(m));
     }
 }
 
@@ -2058,6 +2100,8 @@ fn stream_inner(
             longest_us,
             cut_slots,
             wfs,
+            jtty,
+            jtty_results,
             ..
         } = live.as_mut().unwrap();
 
@@ -2092,6 +2136,14 @@ fn stream_inner(
                 // checkpoints; from the next slot that opens.
                 if w.early {
                     rx.set_prefix_points(ChannelId(id), prefix_points(w.mode, &o, &station));
+                }
+            }
+            // A JTTY channel's Rx frequency and tolerance apply to its next window.
+            for (id, w) in jtty.iter().enumerate() {
+                if let Some(w) = w
+                    && let Some((o, _)) = cfg.live.get(cfg_index[id])
+                {
+                    w.send(jtty::Job::Options(o));
                 }
             }
             if all_sent {
@@ -2184,6 +2236,12 @@ fn stream_inner(
                     }
                 }
             }
+        }
+        // JTTY channels: the audio since the last message, run by run (a break in
+        // the audio ends a reception in the thread).
+        jtty::feed(rx, jtty);
+        while let Ok(m) = jtty_results.try_recv() {
+            on_event(Event::Jtty(m));
         }
         for slot in slots {
             let Some(w) = workers[slot.channel.0].as_mut() else {

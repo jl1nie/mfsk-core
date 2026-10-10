@@ -115,6 +115,25 @@ export interface ModeInfo {
   widthHz: number;
 }
 
+/** One JTTY message: it grows while it is received, so the row of its `key` on its channel is replaced in place. */
+export interface JttyRow {
+  channel: number;
+  /** Stable for the life of the message; a string, since it is 64 bits. */
+  key: string;
+  /** UTC of the start of its first frame, ms since the epoch. */
+  startUtcMs: number | null;
+  dialHz: number;
+  /** RF frequency of the lowest tone of its latest frame. */
+  freqHz: number;
+  /** SNR in 2 500 Hz of its first frame. */
+  snrDb: number;
+  text: string;
+  /** The callsigns of its call atoms, in order, each once. */
+  calls: string[];
+  kind: 'growing' | 'complete' | 'expired' | 'ended';
+  final: boolean;
+}
+
 export interface DecodeRow {
   /** Unique and increasing, assigned on arrival: the table's key. */
   id: number;
@@ -196,6 +215,7 @@ export type UiEventBody =
     }
   | { type: 'moved'; deviceHz: number; iqHz: number }
   | ({ type: 'decode' } & DecodeRow)
+  | ({ type: 'jtty' } & JttyRow)
   | { type: 'gap'; messages: number; atS: number }
   | { type: 'reanchor'; byS: number }
   | { type: 'clock'; text: string }

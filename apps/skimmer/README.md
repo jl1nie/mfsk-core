@@ -1,6 +1,6 @@
 # SpyServer skimmer — sample app
 
-Decodes FT8, FT4, FST4, WSPR, JT9, JT65 and Q65 from a
+Decodes FT8, FT4, FST4, WSPR, JT9, JT65, Q65 and JTTY from a
 [SpyServer](https://airspy.com/download/) (Airspy HF+, Airspy, RTL-SDR)
 through `mfsk_core::iq::IqReceiver`. Every channel is a mode at a USB dial
 frequency, and all channels in the IQ span are decoded from one stream.
@@ -103,7 +103,11 @@ the GUI sets it live under Settings → Radio), `--format float|int16`
 (default float), `--pfb` (polyphase channelizer; cheaper from a handful of
 channels on), `--iq-swap`, `--reanchor-ms MS` (default 500). Modes:
 `FT8 FT4 FST4-15 FST4-30 FST4-60 FST4-120 FST4-300 WSPR JT9 JT65 Q65-15A
-Q65-30A Q65-60A … Q65-300A`.
+Q65-30A Q65-60A … Q65-300A JTTY`. JTTY has no slot: a message grows while it is
+received, so it is printed (and written to ALL.TXT, as WSJT-X does) when it is over, its Rx
+frequency and tolerance are `:rx=` and `:tol=` (1500 and 50 Hz, as upstream), and in the window it
+has a panel of its own where a message is updated in place. Its sender and locator go into the
+database and the station list; the calls are read by WSJT-X's own spotting rule.
 
 ## GUI (`gui/`)
 

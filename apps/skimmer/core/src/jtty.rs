@@ -114,10 +114,11 @@ fn is_grid(s: &str) -> bool {
 /// The receive settings for a channel's options: upstream's, with the Rx
 /// frequency and tolerance the channel sets.
 pub fn params_for(o: &ChannelOptions) -> Params {
-    let mut p = Params::default();
-    p.f0_hz = o.rx_freq_hz.unwrap_or(DEFAULT_RX_HZ);
-    p.ftol_hz = o.tol_hz.unwrap_or(DEFAULT_FTOL_HZ);
-    p
+    Params {
+        f0_hz: o.rx_freq_hz.unwrap_or(DEFAULT_RX_HZ),
+        ftol_hz: o.tol_hz.unwrap_or(DEFAULT_FTOL_HZ),
+        ..Params::default()
+    }
 }
 
 /// The level JTTY's receiver is fed at: the slot channels' (`TARGET_RMS` in the
@@ -215,6 +216,26 @@ impl Drop for Worker {
         drop(self.tx.take());
         if let Some(h) = self.handle.take() {
             let _ = h.join();
+        }
+    }
+}
+
+/// Hand every JTTY channel's audio since the last call to its thread, run by
+/// run with its audio index and UTC (a break in the audio ends a reception
+/// there). `workers` is by `ChannelId`.
+pub(crate) fn feed(rx: &mut mfsk_core::iq::IqReceiver, workers: &[Option<Worker>]) {
+    for (id, w) in workers.iter().enumerate() {
+        let Some(w) = w else { continue };
+        loop {
+            let mut samples = Vec::new();
+            let Some(k) = rx.take_audio_from(mfsk_core::iq::ChannelId(id), &mut samples) else {
+                break;
+            };
+            w.send(Job::Audio {
+                k,
+                utc_ns: rx.utc_of_audio(k),
+                samples,
+            });
         }
     }
 }
@@ -367,6 +388,273 @@ mod tests {
                 (tail.iter().map(|&v| (v as f32).powi(2)).sum::<f32>() / tail.len() as f32).sqrt();
             assert!((rms - TARGET_RMS).abs() < 50.0, "scale {scale}: rms {rms}");
         }
+    }
+
+    /// 1500 Hz audio of a transmission, 12 kHz `f32`, with a second of lead-in
+    /// and room to finish, as the receiver's audio channel hands it out.
+    fn audio_of(atoms: &[mfsk_core::jtty::source::Atom]) -> Vec<f32> {
+        let tones = mfsk_core::jtty::tx::tones(atoms).unwrap();
+        let mut a = vec![0.0f32; 12_000];
+        a.extend(
+            mfsk_core::jtty::tx::synth_f32(&tones, 1500.0, 3000.0)
+                .iter()
+                .map(|&x| x / 32_768.0),
+        );
+        a.extend(std::iter::repeat_n(0.0, 4 * 12_000));
+        a
+    }
+
+    fn worker() -> (Worker, mpsc::Receiver<JttyMessage>) {
+        let (tx, rx) = mpsc::channel();
+        let w = Worker::spawn(
+            3,
+            7_078_000.0,
+            &ChannelOptions::default(),
+            Arc::new(Receiver::new()),
+            tx,
+        );
+        (w, rx)
+    }
+
+    /// The thread's whole path: audio runs in, a message grows, completes with its
+    /// callsigns, at the dial plus the audio frequency and the UTC of its start.
+    #[test]
+    fn a_worker_turns_audio_into_messages_with_their_calls() {
+        use mfsk_core::jtty::source::{Atom, CallAction};
+        let audio = audio_of(&[
+            Atom::call(CallAction::Call, "JA1ABC"),
+            Atom::call(CallAction::Call, "K1ABC"),
+        ]);
+        let (w, rx) = worker();
+        let utc0 = 1_791_002_535_000_000_000i64;
+        let mut k = 0u64;
+        for c in audio.chunks(8_000) {
+            w.send(Job::Audio {
+                k,
+                utc_ns: Some(utc0 + (k as i64) * 1_000_000_000 / 12_000),
+                samples: c.to_vec(),
+            });
+            k += c.len() as u64;
+        }
+        drop(w); // ends the reception and joins
+        let all: Vec<JttyMessage> = rx.try_iter().collect();
+        let done = all
+            .iter()
+            .find(|m| m.kind == UpdateKind::Complete)
+            .unwrap_or_else(|| panic!("no complete message: {all:?}"));
+        assert_eq!(done.channel, 3);
+        assert_eq!(done.calls, ["JA1ABC", "K1ABC"], "{:?}", done.text);
+        assert!((done.freq_hz - 7_079_500.0).abs() < 3.0, "{}", done.freq_hz);
+        // The first frame starts 1 s into the audio.
+        let t = done.start_utc_ns.unwrap() - utc0;
+        assert!((t - 1_000_000_000).abs() < 150_000_000, "{t}");
+        let sender = done.sender();
+        assert_eq!(sender.map(|s| s.0), Some("K1ABC".to_string()));
+        // Every report of the message has its key.
+        assert!(
+            all.iter()
+                .filter(|m| m.text.contains("JA1ABC"))
+                .all(|m| m.key == done.key)
+        );
+    }
+
+    /// A jump in the audio index ends the reception: a message cut off by it is
+    /// reported so, and the audio after it starts another with its own keys.
+    #[test]
+    fn a_break_in_the_audio_ends_the_reception() {
+        use mfsk_core::jtty::source::{Atom, CallAction};
+        // Two frames; the audio stops after the first and resumes elsewhere.
+        let full = audio_of(&[
+            Atom::call(CallAction::Cq, "K1ABC"),
+            Atom::call(CallAction::Call, "JA1ABC"),
+        ]);
+        let cut = 12_000 + 1_888 * 12 + 2 * 12_000; // after the first frame
+        let (w, rx) = worker();
+        w.send(Job::Audio {
+            k: 0,
+            utc_ns: None,
+            samples: full[..cut].to_vec(),
+        });
+        // The same transmission again, after a gap in the index.
+        w.send(Job::Audio {
+            k: 10_000_000,
+            utc_ns: None,
+            samples: full.clone(),
+        });
+        drop(w);
+        let all: Vec<JttyMessage> = rx.try_iter().collect();
+        let first = all
+            .iter()
+            .find(|m| m.text.contains("K1ABC"))
+            .expect("first");
+        let ended = all.iter().any(|m| m.key == first.key && m.is_final());
+        assert!(ended, "the cut message is reported over: {all:?}");
+        let keys: std::collections::HashSet<u64> = all.iter().map(|m| m.key).collect();
+        assert!(
+            keys.len() >= 2,
+            "the second reception has other keys: {all:?}"
+        );
+    }
+
+    /// A JTTY transmission as double-sideband IQ at 48 kS/s: 12 kHz audio
+    /// up to 48 kHz by linear interpolation (the channel's filter removes the
+    /// images), mixed up by the dial's offset from the centre.
+    fn iq_of(audio: &[i16], offset_hz: f64) -> Vec<f32> {
+        const FS: usize = 48_000;
+        let n = audio.len() * 4;
+        let w = std::f64::consts::TAU * offset_hz / FS as f64;
+        let mut out = Vec::with_capacity(2 * n);
+        let mut peak = 0f32;
+        for i in 0..n {
+            let x = i as f64 / 4.0;
+            let k = x as usize;
+            let a = f64::from(audio[k]);
+            let b = f64::from(*audio.get(k + 1).unwrap_or(&0));
+            let v = a + (b - a) * (x - k as f64);
+            let (re, im) = (
+                (v * (w * i as f64).cos()) as f32,
+                (v * (w * i as f64).sin()) as f32,
+            );
+            peak = peak.max(re.abs()).max(im.abs());
+            out.extend([re, im]);
+        }
+        for v in &mut out {
+            *v = *v * 0.7 / peak;
+        }
+        out
+    }
+
+    /// The skimmer's whole JTTY path short of the network: a transmission as IQ
+    /// into an `IqReceiver`, its audio channel's runs to the thread by `feed`,
+    /// the message and its callsigns out. Through both channelizers.
+    fn through_iq(channelizer: mfsk_core::iq::Channelizer) -> Vec<JttyMessage> {
+        use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+        use mfsk_core::jtty::source::{Atom, CallAction};
+        const CENTER: f64 = 7_070_000.0;
+        const DIAL: f64 = 7_078_000.0;
+        let tones = mfsk_core::jtty::tx::tones(&[
+            Atom::call(CallAction::Call, "JA1ABC"),
+            Atom::call(CallAction::Call, "K1ABC"),
+        ])
+        .unwrap();
+        let mut audio: Vec<i16> = vec![0; 2 * 12_000];
+        audio.extend(
+            mfsk_core::jtty::tx::synth_f32(&tones, 1500.0, 3000.0)
+                .iter()
+                .map(|&x| x as i16),
+        );
+        audio.extend(std::iter::repeat_n(0, 4 * 12_000));
+        let mut iq = iq_of(&audio, DIAL - CENTER);
+        // A little noise under it, so the level is the band's, not the signal's.
+        let mut x: u32 = 0x1357_9bdf;
+        for v in &mut iq {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *v += ((x >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.02;
+        }
+
+        let stream = IqStream::new(48_000, CENTER, IqSampleFormat::Cf32);
+        let mut rx = IqReceiver::with_channelizer(stream, channelizer).unwrap();
+        let id = rx.add_audio_channel(DIAL).unwrap();
+        rx.set_time(1_791_002_535_000_000_000, 0);
+        let (tx, results) = mpsc::channel();
+        let mut workers: Vec<Option<Worker>> = (0..=id.0).map(|_| None).collect();
+        workers[id.0] = Some(Worker::spawn(
+            7,
+            DIAL,
+            &ChannelOptions::default(),
+            Arc::new(Receiver::new()),
+            tx,
+        ));
+        let mut slots = Vec::new();
+        // The stream loop's rhythm: a message of IQ, then the audio it made.
+        for c in iq.chunks(2 * 4_096) {
+            rx.push_cf32(c, &mut slots);
+            feed(&mut rx, &workers);
+        }
+        assert!(slots.is_empty(), "an audio channel cuts no slots");
+        drop(workers); // ends the reception and joins
+        results.try_iter().collect()
+    }
+
+    fn check(all: &[JttyMessage]) {
+        let done = all
+            .iter()
+            .find(|m| m.kind == UpdateKind::Complete)
+            .unwrap_or_else(|| panic!("no complete message: {all:?}"));
+        assert_eq!(done.channel, 7);
+        assert_eq!(done.calls, ["JA1ABC", "K1ABC"], "{:?}", done.text);
+        assert_eq!(done.sender().map(|s| s.0), Some("K1ABC".to_string()));
+        assert!((done.freq_hz - 7_079_500.0).abs() < 3.0, "{}", done.freq_hz);
+        // The audio started at the clock's anchor and the frame 2 s in.
+        let t = done.start_utc_ns.unwrap() - 1_791_002_535_000_000_000;
+        assert!(
+            (t - 2_000_000_000).abs() < 200_000_000,
+            "start {t} ns after the anchor"
+        );
+        assert!(done.snr_db > -20.0 && done.snr_db < 40.0, "{}", done.snr_db);
+    }
+
+    #[test]
+    fn jtty_through_iq_direct() {
+        check(&through_iq(mfsk_core::iq::Channelizer::Direct));
+    }
+
+    #[test]
+    fn jtty_through_iq_pfb() {
+        check(&through_iq(mfsk_core::iq::Channelizer::Pfb));
+    }
+
+    /// A hole in the IQ ends the reception mid-message: the half-heard message is
+    /// reported cut off (not lost, and not joined to what comes after).
+    #[test]
+    fn a_gap_in_the_iq_cuts_the_message_off() {
+        use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+        use mfsk_core::jtty::source::{Atom, CallAction};
+        const CENTER: f64 = 7_070_000.0;
+        const DIAL: f64 = 7_078_000.0;
+        let tones = mfsk_core::jtty::tx::tones(&[
+            Atom::call(CallAction::Cq, "K1ABC"),
+            Atom::call(CallAction::Call, "JA1ABC"),
+        ])
+        .unwrap();
+        let mut audio: Vec<i16> = vec![0; 12_000];
+        audio.extend(
+            mfsk_core::jtty::tx::synth_f32(&tones, 1500.0, 3000.0)
+                .iter()
+                .map(|&x| x as i16),
+        );
+        audio.extend(std::iter::repeat_n(0, 4 * 12_000));
+        let iq = iq_of(&audio, DIAL - CENTER);
+        let mut rx = IqReceiver::new(IqStream::new(48_000, CENTER, IqSampleFormat::Cf32));
+        let id = rx.add_audio_channel(DIAL).unwrap();
+        let (tx, results) = mpsc::channel();
+        let mut workers: Vec<Option<Worker>> = (0..=id.0).map(|_| None).collect();
+        workers[id.0] = Some(Worker::spawn(
+            1,
+            DIAL,
+            &ChannelOptions::default(),
+            Arc::new(Receiver::new()),
+            tx,
+        ));
+        let mut slots = Vec::new();
+        // Through the first frame and a little of the second, then a lost second.
+        let cut = 2 * (48_000 * 3 + 48_000 / 2);
+        rx.push_cf32(&iq[..cut], &mut slots);
+        feed(&mut rx, &workers);
+        rx.gap(48_000);
+        rx.push_cf32(&iq[cut..], &mut slots);
+        feed(&mut rx, &workers);
+        drop(workers);
+        let all: Vec<JttyMessage> = results.try_iter().collect();
+        let first = all
+            .iter()
+            .find(|m| m.text.contains("K1ABC"))
+            .unwrap_or_else(|| panic!("the first frame was not heard: {all:?}"));
+        assert!(
+            all.iter()
+                .any(|m| m.key == first.key && m.is_final() && m.kind != UpdateKind::Complete),
+            "the half-heard message ends cut off: {all:?}"
+        );
     }
 
     #[test]
