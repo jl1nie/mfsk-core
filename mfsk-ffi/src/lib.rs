@@ -147,6 +147,10 @@ pub const MFSK_DECODE_FLAG_COPIED_LAST_TX: u8 = 1 << 1;
 pub const MFSK_DECODE_FLAG_HAS_SYNC_SCORE: u8 = 1 << 2;
 /// `MfskDecode::flags` bit 3: `sync_cv` is a value the mode reported.
 pub const MFSK_DECODE_FLAG_HAS_SYNC_CV: u8 = 1 << 3;
+/// `MfskDecode::flags` bit 5: `MfskDecode::hash22` is the unresolved 22-bit
+/// callsign hash of this row (FST4W's `<...>`). A literal here for the same reason
+/// as the constants above.
+pub const MFSK_DECODE_FLAG_HAS_HASH22: u8 = 1 << 5;
 /// `MfskDecode::flags` bit 4: `hard_errors` is a count the mode reported (a
 /// clean decode is `0` with the flag set; WSPR, JT9, JT65 and Q65 never set it).
 pub const MFSK_DECODE_FLAG_HAS_HARD_ERRORS: u8 = 1 << 4;
@@ -761,6 +765,12 @@ const MODE_TABLE: &[(MfskMode, &str, bool)] = &[
     (MfskMode::UvUltraRobust, "UvUltraRobust\0", true),
     (MfskMode::UvExpress, "UvExpress\0", true),
     (MfskMode::Jtty, "JTTY\0", false),
+    (MfskMode::Fst4s900, "FST4-900\0", true),
+    (MfskMode::Fst4s1800, "FST4-1800\0", true),
+    (MfskMode::Fst4w120, "FST4W-120\0", true),
+    (MfskMode::Fst4w300, "FST4W-300\0", true),
+    (MfskMode::Fst4w900, "FST4W-900\0", true),
+    (MfskMode::Fst4w1800, "FST4W-1800\0", true),
 ];
 
 /// MSK144's geometry, which no registry entry carries. Reported rather
@@ -828,6 +838,14 @@ fn mode_of(raw: u32) -> Option<MfskMode> {
         .iter()
         .map(|(m, _, _)| *m)
         .find(|m| *m as u32 == raw)
+}
+
+/// The four FST4W periods: their rows carry 74 information bits and a 50-bit key.
+pub(crate) fn mode_is_fst4w(mode: MfskMode) -> bool {
+    matches!(
+        mode,
+        MfskMode::Fst4w120 | MfskMode::Fst4w300 | MfskMode::Fst4w900 | MfskMode::Fst4w1800
+    )
 }
 
 fn mode_index(mode: MfskMode) -> Option<usize> {
@@ -1540,7 +1558,7 @@ pub unsafe extern "C" fn mfsk_q65_callers_get(
 /// stage (FT8, FT4, every FST4 sub-mode) only; anything else is `$none`.
 macro_rules! with_tone_mode {
     ($mode:expr, $P:ident => $body:expr, else $none:expr) => {{
-        use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
+        use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300, Fst4s900, Fst4s1800};
         match $mode {
             MfskMode::Ft8 => {
                 type $P = mfsk_core::ft8::Ft8;
@@ -1568,6 +1586,30 @@ macro_rules! with_tone_mode {
             }
             MfskMode::Fst4s300 => {
                 type $P = Fst4s300;
+                $body
+            }
+            MfskMode::Fst4s900 => {
+                type $P = Fst4s900;
+                $body
+            }
+            MfskMode::Fst4s1800 => {
+                type $P = Fst4s1800;
+                $body
+            }
+            MfskMode::Fst4w120 => {
+                type $P = mfsk_core::fst4w::Fst4w120;
+                $body
+            }
+            MfskMode::Fst4w300 => {
+                type $P = mfsk_core::fst4w::Fst4w300;
+                $body
+            }
+            MfskMode::Fst4w900 => {
+                type $P = mfsk_core::fst4w::Fst4w900;
+                $body
+            }
+            MfskMode::Fst4w1800 => {
+                type $P = mfsk_core::fst4w::Fst4w1800;
                 $body
             }
             _ => $none,
@@ -1602,6 +1644,12 @@ fn mode_has_tone_stage(mode: MfskMode) -> bool {
             | MfskMode::Fst4s60
             | MfskMode::Fst4s120
             | MfskMode::Fst4s300
+            | MfskMode::Fst4s900
+            | MfskMode::Fst4s1800
+            | MfskMode::Fst4w120
+            | MfskMode::Fst4w300
+            | MfskMode::Fst4w900
+            | MfskMode::Fst4w1800
     )
 }
 
@@ -1896,6 +1944,18 @@ pub unsafe extern "C" fn mfsk_message_to_tones(
     let tones: Vec<u8> = match m {
         MfskMode::Ft8 => message_to_tones::<mfsk_core::ft8::Ft8>(&msg),
         MfskMode::Ft4 => message_to_tones::<mfsk_core::ft4::Ft4>(&msg),
+        // FST4W sends the first 50 bits of an `i3=0, n3=6` message; the other 27
+        // are fixed (`mfsk_fst4w_pack` makes them). Anything else is not one.
+        MfskMode::Fst4w120 | MfskMode::Fst4w300 | MfskMode::Fst4w900 | MfskMode::Fst4w1800 => {
+            if msg[50..] != mfsk_core::fst4w::PAYLOAD_SUFFIX {
+                set_error(
+                    "mfsk_message_to_tones: not a WSPR-type message (i3=0, n3=6) - see mfsk_fst4w_pack",
+                );
+                return MfskStatus::InvalidArg;
+            }
+            let payload: [u8; 50] = msg[..50].try_into().expect("50 of 77");
+            mfsk_core::fst4w::encode::payload_to_tones::<mfsk_core::fst4w::Fst4w120>(&payload)
+        }
         // Every FST4 sub-mode shares one 160-symbol layout.
         _ => message_to_tones::<mfsk_core::fst4::Fst4s60>(&msg),
     };
@@ -1944,6 +2004,39 @@ fn synth_check(mode: u32, n_tones: usize, cap: usize, what: &str) -> Result<usiz
         return Err(MfskStatus::InvalidArg);
     }
     Ok(need)
+}
+
+/// Stage 1 for FST4W: pack a WSPR-type message into the 77 bits
+/// [`mfsk_message_to_tones`] takes for the FST4W modes (`i3=0, n3=6`, of which the
+/// first 50 are sent). The forms are `CALL GRID4 DBM`, `PFX/CALL DBM`,
+/// `CALL/SFX DBM` and `<CALL> GRID6`; anything else is what WSJT-X's `genfst4`
+/// calls `*** bad message ***` and returns `MFSK_STATUS_DECODE_FAILED`.
+///
+/// # Safety
+/// `text` must be a NUL-terminated string; `out_message77` 77 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_fst4w_pack(
+    text: *const c_char,
+    out_message77: *mut u8,
+) -> MfskStatus {
+    let text = match unsafe { arg_str(text, "mfsk_fst4w_pack: text") } {
+        Ok(t) => t,
+        Err(s) => return s,
+    };
+    if out_message77.is_null() {
+        set_error("mfsk_fst4w_pack: out_message77 is NULL");
+        return MfskStatus::InvalidArg;
+    }
+    match mfsk_core::msg::wsjt77::pack77_wspr(text, true) {
+        Some(bits) => {
+            unsafe { put_message77(&bits, out_message77) };
+            MfskStatus::Ok
+        }
+        None => {
+            set_error("mfsk_fst4w_pack: not a message FST4W can send (*** bad message ***)");
+            MfskStatus::DecodeFailed
+        }
+    }
 }
 
 /// Stage 3: channel symbols become 16-bit PCM at 12 kHz.
@@ -3495,6 +3588,12 @@ fn iq_mode_of(m: MfskMode) -> Option<mfsk_core::Mode> {
         MfskMode::Q65d120 => I::Q65D120,
         MfskMode::Q65e120 => I::Q65E120,
         MfskMode::Q65a300 => I::Q65A300,
+        MfskMode::Fst4s900 => I::Fst4S900,
+        MfskMode::Fst4s1800 => I::Fst4S1800,
+        MfskMode::Fst4w120 => I::Fst4W120,
+        MfskMode::Fst4w300 => I::Fst4W300,
+        MfskMode::Fst4w900 => I::Fst4W900,
+        MfskMode::Fst4w1800 => I::Fst4W1800,
         _ => return None,
     })
 }
@@ -4040,6 +4139,7 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
         key_bits: 0,
         key: [0; mfsk_ffi_abi::MFSK_DECODE_KEY_LEN],
         stage: 0,
+        hash22: 0,
     };
     // The detail exactly as the channel decoder's own row gives it.
     let row = decoder::row_of(v.mode, &d.decoded, &d.detail);
@@ -4052,6 +4152,7 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
     v.key_bits = row.key_bits;
     v.key = row.key;
     v.stage = row.stage;
+    v.hash22 = row.hash22;
     let mut end = d.decoded.text.len().min(v.text.len() - 1);
     while !d.decoded.text.is_char_boundary(end) {
         end -= 1;

@@ -39,6 +39,15 @@ public struct Message: Sendable, Equatable {
         try packed { mfsk_pack77_type1(call1, call2, grid, $0) }
     }
 
+    /// A WSPR-type message for **FST4W** (`i3 = 0, n3 = 6`, of which 50 bits
+    /// are sent): `CALL GRID4 DBM` (`K1ABC FN42 37`), `PFX/CALL DBM`,
+    /// `CALL/SFX DBM` or `<CALL> GRID6`. What WSJT-X's `genfst4` calls
+    /// `*** bad message ***` throws ``MfskError/Code/decodeFailed``. Its
+    /// ``tones(for:)`` are defined for the FST4W modes.
+    public static func fst4w(_ text: String) throws -> Message {
+        try packed { mfsk_fst4w_pack(text, $0) }
+    }
+
     /// Up to 13 characters of free text.
     public static func freeText(_ text: String) throws -> Message {
         try packed { mfsk_pack77_free_text(text, $0) }

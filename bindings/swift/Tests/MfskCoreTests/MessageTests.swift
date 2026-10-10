@@ -49,8 +49,11 @@ final class MessageTests: XCTestCase {
 
     func testToneCountMatchesWhatTheModePublishes() throws {
         let message = try Message.standard(call1: "CQ", call2: "JA1ABC", report: "PM95")
+        // FST4W takes a WSPR-type message only (`mfsk_fst4w_pack`).
+        let wspr = try Message.fst4w("JL1NIE PM95 37")
+        let fst4w: [Mode] = [.fst4w120, .fst4w300, .fst4w900, .fst4w1800]
         for mode in Mode.supported where mode.symbolCount > 0 {
-            let tones = try message.tones(for: mode)
+            let tones = try (fst4w.contains(mode) ? wspr : message).tones(for: mode)
             XCTAssertEqual(tones.count, mode.symbolCount, "\(mode.name)")
             let info = try mode.info
             XCTAssertTrue(tones.allSatisfy { UInt32($0) < info.toneCount },

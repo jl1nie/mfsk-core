@@ -27,6 +27,9 @@ final class ABIContractTests: XCTestCase {
             (.uvRobust, MFSK_MODE_UV_ROBUST), (.uvStandard, MFSK_MODE_UV_STANDARD),
             (.uvUltraRobust, MFSK_MODE_UV_ULTRA_ROBUST), (.uvExpress, MFSK_MODE_UV_EXPRESS),
             (.jtty, MFSK_MODE_JTTY),
+            (.fst4s900, MFSK_MODE_FST4S900), (.fst4s1800, MFSK_MODE_FST4S1800),
+            (.fst4w120, MFSK_MODE_FST4W120), (.fst4w300, MFSK_MODE_FST4W300),
+            (.fst4w900, MFSK_MODE_FST4W900), (.fst4w1800, MFSK_MODE_FST4W1800),
         ]
         // Every case, not a sample: a mode missing from this list is a
         // mode nothing checks.

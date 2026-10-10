@@ -60,7 +60,7 @@ fun main() {
     if (ft8 == null) { System.exit(1); return }
 
     val fst4 = modes.filter { Mfsk.modeName(it).startsWith("FST4-") }
-    checkEq("all five FST4 sub-modes are addressable", fst4.size, 5)
+    checkEq("all seven FST4 sub-modes are addressable", fst4.size, 7)
 
     // The capability bits must cross intact. Pinning known answers
     // rather than "some bit is set" — the latter passes on garbage.
@@ -990,6 +990,44 @@ fun main() {
             threwRx = true
         }
         check("a closed receiver refuses audio", threwRx)
+    }
+
+    // ── FST4W (#649) ────────────────────────────────────────────────
+    run {
+        val w120 = modes.firstOrNull { Mfsk.modeName(it) == "FST4W-120" }
+        check("FST4W-120 is addressable", w120 != null)
+        if (w120 == null) return@run
+        val winfo = Mfsk.modeInfo(w120)
+        fun wslot(text: String): ShortArray {
+            val pcm = Mfsk.synthesize(w120, Mfsk.packFst4w(text), 1500.0f)
+            val s = ShortArray(winfo.slotSamples12k)
+            for (i in pcm.indices) if (12_000 + i < s.size) s[12_000 + i] = pcm[i]
+            return s
+        }
+        MfskDecoder.open(w120).use { dec ->
+            checkEq("no known calls to begin with", dec.wcalls, emptyList<String>())
+            dec.wcalls = listOf("JA1XYZ PM95", "VK3NV QF22")
+            checkEq("the list reads back", dec.wcalls, listOf("JA1XYZ PM95", "VK3NV QF22"))
+            refused<MfskInvalidArgException>("101 known calls", "100") {
+                dec.wcalls = (0..100).map { "C$it" }
+            }
+            dec.wcalls = emptyList()
+            val rows = dec.decode(wslot("K1ABC FN42 37"))
+            checkEq("an FST4W slot round-trips", rows.texts(), listOf("K1ABC FN42 37"))
+            checkEq("FST4W rows carry 74 information bits", rows.firstOrNull()?.infoBits, 74)
+            checkEq("and a 50-bit key", rows.firstOrNull()?.keyBits, 50)
+            check("a resolved call has no hash22", rows.firstOrNull()?.hash22 == null)
+            checkEq("a Keff-66 decode teaches the list", dec.wcalls, listOf("K1ABC FN42"))
+        }
+        MfskDecoder.open(w120).use { dec ->
+            val rows = dec.decode(wslot("<JA1XYZ> PM95AA"))
+            checkEq("an unresolved call reads <...>", rows.texts(), listOf("<...> PM95AA"))
+            check("and carries its 22-bit hash", (rows.firstOrNull()?.hash22 ?: 0L) > 0L)
+        }
+        refused<MfskException>("a message FST4W cannot send", "") { Mfsk.packFst4w("CQ K1ABC FN42") }
+        MfskDecoder.open(ft8).use { dec ->
+            refused<MfskUnsupportedException>("a known-call list on FT8", "known") { dec.wcalls }
+        }
     }
 
     if (failures == 0) {

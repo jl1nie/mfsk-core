@@ -164,6 +164,23 @@ pub enum MfskMode {
     /// which is what `MFSK_CAP_STREAM_RECEIVER` says. `mfsk_mode_info`
     /// describes one frame: `t_slot_s` is the frame period, not a slot.
     Jtty = 25,
+    /// FST4-900 — 900 s period. Its slot transform is 10 782 720 points.
+    Fst4s900 = 26,
+    /// FST4-1800 — 1800 s period. Its slot transform is 21 591 360 points,
+    /// the largest of any mode.
+    Fst4s1800 = 27,
+    /// FST4W-120 — the WSPR-style beacon on FST4's modulation: LDPC(240,74) with
+    /// a CRC-24, a 50-bit WSPR-type payload, a 120 s period. Rows carry
+    /// `info_bits = 74` and a 50-bit key; an unresolved `<...>` row carries
+    /// `hash22` (`MFSK_DECODE_FLAG_HAS_HASH22`). The Keff-50 known-call list is
+    /// `mfsk_decoder_get_wcalls` / `mfsk_decoder_set_wcalls`.
+    Fst4w120 = 28,
+    /// FST4W-300.
+    Fst4w300 = 29,
+    /// FST4W-900.
+    Fst4w900 = 30,
+    /// FST4W-1800.
+    Fst4w1800 = 31,
 }
 
 /// Geometry and capability for one mode. **Size-versioned**: set
@@ -460,6 +477,11 @@ pub struct MfskDecode {
     /// [`MFSK_STAGE_FINAL`] for the call whose audio was the whole period,
     /// [`MFSK_STAGE_NONE`] from a plain decode. Appended.
     pub stage: u8,
+    /// FST4W only: the unresolved 22-bit callsign hash of a `<...>` row, valid
+    /// when `MFSK_DECODE_FLAG_HAS_HASH22` is set, else `0`. Two rows with the
+    /// same text and different hashes are two stations (`result%hash22`).
+    /// Appended.
+    pub hash22: u32,
 }
 
 /// [`MfskDecode::stage`]: not from a prefix sequence.
@@ -646,6 +668,9 @@ pub struct MfskIqDecode {
     /// early unless `mfsk_iq_set_early` turned it off for the channel),
     /// [`MFSK_STAGE_FINAL`] for one found by the whole slot. Appended (#601).
     pub stage: u8,
+    /// As `MfskDecode::hash22`: valid when `flags` has
+    /// `MFSK_DECODE_FLAG_HAS_HASH22`. Appended.
+    pub hash22: u32,
 }
 
 /// The wideband IQ receiver handle.

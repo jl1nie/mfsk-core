@@ -1137,11 +1137,17 @@ pub(crate) fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> M
             Some(_) => MFSK_STAGE_FINAL,
             None => MFSK_STAGE_NONE,
         },
+        hash22: decoded.hash22.unwrap_or(0),
     };
+    if decoded.hash22.is_some() {
+        r.flags |= MFSK_DECODE_FLAG_HAS_HASH22;
+    }
     write_field(&mut r.text, &decoded.text);
     // The message bits: the first 77 of the information block, packed.
     let bits = &detail.info[..detail.info.len().min(8 * MFSK_DECODE_KEY_LEN)];
-    let bits = &bits[..bits.len().min(77)];
+    // 77 for the 77-bit modes; FST4W's 74 information bits start with its 50 payload bits.
+    let key_len = if mode_is_fst4w(mode) { 50 } else { 77 };
+    let bits = &bits[..bits.len().min(key_len)];
     r.key_bits = bits.len() as u8;
     for (i, &b) in bits.iter().enumerate() {
         r.key[i / 8] |= (b & 1) << (7 - i % 8);
@@ -1538,6 +1544,80 @@ pub unsafe extern "C" fn mfsk_decoder_copy_info(
     }
     unsafe { ptr::copy_nonoverlapping(det.info.as_ptr(), out, det.info.len()) };
     MfskStatus::Ok
+}
+
+/// FST4W's Keff-50 known-call list, one `CALL GRID` per line (`\n`), oldest
+/// first, NUL-terminated: `get_known_calls`. A Keff-66 decode of a type-1
+/// message adds its `CALL GRID`; a Keff-50 word (no CRC) is accepted only if a
+/// non-blank entry is in its text. Save it between runs, as WSJT-X keeps
+/// `fst4w_calls.txt`. `*out_len` is the size needed, NUL included.
+/// `MFSK_STATUS_UNSUPPORTED` for any other mode.
+///
+/// # Safety
+/// `out` must be `cap` writable bytes; `out_len` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decoder_get_wcalls(
+    dec: *mut MfskDecoder,
+    out: *mut c_char,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    let Some(d) = handle(dec) else {
+        set_error("mfsk_decoder_get_wcalls: null decoder handle");
+        return MfskStatus::NullPointer;
+    };
+    match d.any.wcalls() {
+        Ok(calls) => unsafe {
+            put_text(
+                Some(calls.join("\n")),
+                "mfsk_decoder_get_wcalls",
+                out,
+                cap,
+                out_len,
+            )
+        },
+        Err(e) => d.fail(MfskStatus::Unsupported, e.to_string()),
+    }
+}
+
+/// Replace FST4W's known-call list (`set_known_calls`): `CALL GRID` lines
+/// separated by `\n`, at most 100, each kept to 20 characters; a blank line is
+/// an entry that vouches for nothing. `""` empties the list.
+/// `MFSK_STATUS_INVALID_ARG` for more than 100 lines,
+/// `MFSK_STATUS_UNSUPPORTED` for any other mode.
+///
+/// # Safety
+/// `calls` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decoder_set_wcalls(
+    dec: *mut MfskDecoder,
+    calls: *const c_char,
+) -> MfskStatus {
+    let Some(d) = handle(dec) else {
+        set_error("mfsk_decoder_set_wcalls: null decoder handle");
+        return MfskStatus::NullPointer;
+    };
+    let text = match unsafe { arg_str(calls, "mfsk_decoder_set_wcalls: calls") } {
+        Ok(t) => t,
+        Err(s) => return s,
+    };
+    let mut list: Vec<String> = text
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
+    if text.is_empty() || text.ends_with('\n') {
+        list.pop();
+    }
+    if list.len() > 100 {
+        return d.fail(
+            MfskStatus::InvalidArg,
+            "mfsk_decoder_set_wcalls: at most 100 entries",
+        );
+    }
+    match d.any.set_wcalls(&list) {
+        Ok(()) => MfskStatus::Ok,
+        Err(e) => d.fail(MfskStatus::Unsupported, e.to_string()),
+    }
 }
 
 /// Decode the stream's ready slot directly, without copying it out and back

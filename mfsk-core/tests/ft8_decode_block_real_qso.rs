@@ -141,8 +141,12 @@ const ENTRIES: &[Entry] = &[
         #[cfg(feature = "nstep-half")]
         min_hit: 10,
         // `K1BZM EA3CJ JN01` and `KD2UGC F6GCP R-23` — same two extras
-        // under both grids.
-        max_extra: 2,
+        // under both grids. A third, `WA2FZW DL5AXX RR73` @ 2546 Hz, since
+        // the BP took WSJT-X's `platanh` (#658): not a phantom, a real signal
+        // that `jt9 -d3` decodes on this WAV (BENCHMARKS.md, issue #180), and
+        // the one the SIC-capable paths already reach. It is an extra only
+        // because this list was frozen before the embedded pipeline got there.
+        max_extra: 3,
     },
 ];
 

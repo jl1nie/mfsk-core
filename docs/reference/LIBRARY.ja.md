@@ -386,6 +386,7 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `RowDetail::sync_score` / `sync_cv` / `hard_errors` | WSPR、JT9、JT65、Q65 は `0`、FT8 の a7 / a8 は仮の値 | それらでは `None`、モードが測る場合は `Some` | —（[#594](https://github.com/jl1nie/mfsk-core/issues/594)） |
 | `RowDetail::info` | FT8、FT4、FST4 のみ | 全モード（WSPR 50 ビット、JT9 / JT65 72、Q65 77） | 同じ文面の JT65 の 2 行が 1 行扱いされなくなった（[#592](https://github.com/jl1nie/mfsk-core/issues/592)） |
 | `wasm32-unknown-unknown` での `Decoder<Wspr>` と MSK144 | どんな入力でも panic した（`Instant::now`） | デコードする | CI がこのターゲットで全モードをデコードするようになった（[#583](https://github.com/jl1nie/mfsk-core/issues/583)） |
+| BP のチェックノード逆関数（FT8、FT4、FST4、MSK144） | `atanh` を ±4.6 で打ち切り | WSJT-X の区分線形 `platanh`（`lib/platanh.f90`。WSJT-X の BP はすべてこれを呼ぶ） | FT8 を 1 セル 100 試行で: 2561 対 2559 復号、交点は 0.04 dB 以内、どちらも余分な復号なし。他のスイートは雑音の範囲。一部の行で `hard_errors` と `pass` が動く（53 のデコードスナップショットのうち 22）が、メッセージとその順序は動かない（[#658](https://github.com/jl1nie/mfsk-core/issues/658)） |
 | FT8 のシンボルのスケーリングと `nsync` 判定 | `* (1/1000)`。`nsync` は粗いスペクトログラムで数え直していた | `/ 1e3` と精製後のスペクトル（`ft8b.f90` と同じ） | 動いた群は無い。判定が変わったのは tier-A/B 全体で 1 候補（[#423](https://github.com/jl1nie/mfsk-core/issues/423)） |
 
 **コード。**
@@ -397,6 +398,7 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | 早期の行 | 無い。`decode` は周期の終わりに返る | その時点までの周期を渡す `Decoder::decode_prefix` / `decode_prefix_with`（[§2.3](#23-早期デコードと計算予算)）。いつ呼ぶかは `Decoder::prefix_points()`、そこで切るのは `IqReceiver::set_prefix_points` |
 | 返された行とストリームされた行の対応付け | 文面と周波数で | `RowDetail::delivery`。デコーダがどちらの契約で動くかは `AnyDecoder::delivery_is_exact()`（[§2.4](#24-ストリーミング配信)） |
 | `ModulationParams` の実装 | `NFFT_PER_SYMBOL_FACTOR`、`NSTEP_PER_SYMBOL`、`NDOWN`、`SYMBOL_DT`、`N_SYMBOLS`、`TONE_SPACING_HZ` をすべて書く | 最初の 3 つは `SyncFrontEnd: Protocol` に移った。これを実装するのは `engine::sync` か汎用パイプラインでデコードするプロトコルだけ（そうでなければコンパイルエラー）。`SYMBOL_DT` と `N_SYMBOLS` は既定値がある。トーンが変調指数の間隔で並ぶモードでは `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)`（[§5](#5-protocol-トレイト階層)） |
+| 行のコールサインハッシュ | 持たない | `Decoded::hash22: Option<u32>`。FST4W の `<...>` の行に設定される。FST4W の行は `(text, hash22)` で重複排除（[§3.3](#33-プロトコルごとの注記)） |
 | `msg::wsjt77::is_plausible_callsign` | ITU のプレフィックス表を見ていた | 残っており、`is_valid_callsign` と同じになった（コードの変更は不要。結果の表を参照） |
 
 **無くなったもの、と代わりの方法。**
@@ -1642,9 +1644,9 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 
 ### 3.2 諸元
 
-配線済み ZST は 24 個 — WSJT 系のプロトコルとサブモードが 20、
+配線済み ZST は 30 個 — WSJT 系のプロトコルとサブモードが 26、
 `uvpacket` のサブモードが 4。MSK144 と JTTY は参考として最終行に挙げてあるが
-この 24 には**含まれない** — どちらも `Protocol` を実装しないため、レジストリ
+この 30 には**含まれない** — どちらも `Protocol` を実装しないため、レジストリ
 にも `tests/protocol_invariants.rs` にも現れない。
 
 | プロトコル       | スロット   | トーン | シンボル | トーン Δf  | FEC                   | Msg   | Sync          | 備考 |
@@ -1655,7 +1657,13 @@ Q65-120D と -300A について同じことを確認します。C ABI は
 | FST4-30          | 30 s       | 4      | 160      | 7.143 Hz   | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 閾値約-24.2dB |
 | FST4-60A         | 60 s       | 4      | 160      | 3.0864 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 地上波主力サブモード、閾値約-28.1dB |
 | FST4-120         | 120 s      | 4      | 160      | 1.4634 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 閾値約-31.3dB |
-| FST4-300         | 300 s      | 4      | 160      | 0.5580 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 閾値約-35.3dB、実装済み中最深 |
+| FST4-300         | 300 s      | 4      | 160      | 0.5580 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 閾値約-35.3dB |
+| FST4-900         | 900 s      | 4      | 160      | 0.1803 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | スロット変換 10 782 720 点 |
+| FST4-1800        | 1800 s     | 4      | 160      | 0.0893 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | スロット変換 21 591 360 点、全モード中最大 |
+| FST4W-120        | 120 s      | 4      | 160      | 1.4634 Hz  | LDPC(240, 74)         | 50 b  | 5×Costas-8    | FST4 の変調上の WSPR 型ビーコン |
+| FST4W-300        | 300 s      | 4      | 160      | 0.5580 Hz  | LDPC(240, 74)         | 50 b  | 5×Costas-8    | (同上) |
+| FST4W-900        | 900 s      | 4      | 160      | 0.1803 Hz  | LDPC(240, 74)         | 50 b  | 5×Costas-8    | (同上) |
+| FST4W-1800       | 1800 s     | 4      | 160      | 0.0893 Hz  | LDPC(240, 74)         | 50 b  | 5×Costas-8    | (同上) |
 | WSPR             | 120 s      | 4      | 162      | 1.465 Hz   | conv r=½ K=32 + Fano  | 50 b  | シンボル毎 LSB (npr3) | |
 | JT9              | 60 s       | 9      | 85       | 1.736 Hz   | conv r=½ K=32 + Fano  | 72 b  | 16 分散位置   | |
 | JT65             | 60 s       | 65     | 126      | 2.69 Hz    | RS(63, 12) GF(2⁶)     | 72 b  | 63 分散位置   | |
@@ -1697,15 +1705,45 @@ Q65-120D と -300A について同じことを確認します。C ABI は
   スナップショットも取る（`FecOpts::osd_snapshots`、`maxosd = 3`）: スイープ
   20 800 ファイルで 41 件増え、失ったものは無い。OSD 後の `osd_max_errors`
   ゲートは無くなった（[§6](#6-engine-プリミティブ)）。
+- **FST4W** (`fst4w`、#649) — `Fst4w120` / `Fst4w300` / `Fst4w900` /
+  `Fst4w1800`。FST4 の変調上の WSJT-X の WSPR 型ビーコン。WSJT-X に専用のデコーダはなく、
+  `fst4_decode.f90` が `iwspr=1` で動く。4-GFSK、160 シンボル、Gray 写像、同期ブロックは同じで、
+  フロントエンド（スロット全体の FFT、`nfqso ± ntol` に対する `get_candidates_fst4`、
+  `fst4_sync_search`、4 つのビットメトリック変種）も同じ。違うのは **FEC**
+  (LDPC(240, 74)、ペイロード 50 ビットと 74 ビットに対する CRC-24、スクランブラなし:
+  `fec::ldpc240_74`。専用の BP ループと、行単位で移植した `fastosd240_74` を、
+  上流の `decode240_74_owned` に対して記録した 1 208 入力で確認し、完全一致)、**メッセージ**
+  (pack77 のタイプ 0.6、`i3=0, n3=6`: `CALL GRID4 DBM`、`PFX/CALL DBM`、`CALL/SFX DBM`、
+  `<CALL> GRID6`。`msg::wsjt77::pack77_wspr`。`genfst4` に対して 1 201 メッセージで完全一致)、
+  **ラダー** (`fst4w::decode`): LLR 変種ごとに Keff 66 (`maxosd=2, norder=3`)、
+  `Depth::Deep` ではその後 Keff 50 (`maxosd=1, norder=4`)。Keff 50 には CRC がないので、
+  **既知コール一覧の空でない項目がメッセージに含まれる**ときだけ受理する
+  (beta1 の修正。rc1 は空の項目にも一致した)。Keff 66 がタイプ1メッセージを復号すると、
+  その `CALL GRID` が一覧に加わる (100 項目、古いものから押し出す)。一覧は候補間の状態なので、
+  FST4W は候補を1つずつ処理する (FST4 は並列)。実行をまたぐ保持は
+  `Decoder::wcalls()` / `set_wcalls()` で、WSJT-X が `fst4w_calls.txt` に保存するのと同じ。
+  a-priori デコードはない。行は `(text, hash22)` で重複排除する: コールが未解決の2局は
+  どちらも `<...> PM95AA` と読め、区別するのが `Decoded::hash22`。
+  `DecodeParams::rx_freq_hz` / `tol_hz` が窓 (`nfqso`、`ntol`)、レジストリは 1500 ± 100 Hz を公開する。
+  `Depth` は `ndepth`: Deep で Keff 50 が加わり、Normal は `i0 ± 1` の再試行を保ち、
+  Fast はどちらもない。根拠: `tests/fst4w_decode.rs` — 合成した 7 行が `jt9 -W` と一致
+  (再現率 7/7、`max_extra` 0)。WSJT-X 付属の `201230_0300.wav` (FST4W-1800、43 MB、
+  同梱せず、`$WSJTX_SAMPLES_DIR`) は 1433 Hz に `DL0HOT JO60 30`、dt 0.28 (`jt9` は 0.3)、
+  SNR −43.9 (−44) を 3.0 秒で出す。上流との意図的な差は `fst4w/decode.rs` に列挙してある:
+  FST4 パイプラインの 1 つ厳しい `nsync` 判定 (FST4W では未測定)、ハッシュは受理した
+  メッセージからのみ学習すること、重複候補のどれが残るか。さらに `pack_text` は
+  先頭の空白を正しく取り除く (`genfst4.f90:40-43` は 2 つ目以降で文字を食う)。
+  組込みは対象外: 1800 s のスロットは 2160 万点の FFT が要る。
 - **FST4** — LDPC(240, 101) + 24 bit CRC (`fec::ldpc240_101`)。BP/OSD
   のコードは LDPC サイズが変わっても同じなので、新規なのはパリティ
-  検査行列・生成行列と符号寸法だけ。実装済みの 5 sub-mode
-  (FST4-15/30/60A/120/300) は `NSPS` / `SYMBOL_DT` / `TONE_SPACING_HZ`
+  検査行列・生成行列と符号寸法だけ。実装済みの 7 sub-mode
+  (15, 30, 60A, 120, 300, 900, 1800 s) は `NSPS` / `SYMBOL_DT` / `TONE_SPACING_HZ`
   のみが異なり (FST4-15 だけ `TX_START_OFFSET_S` も 1.0 s ではなく 0.5 s)、
-  `fst4_submode!` マクロが生成する。
-  FST4-900 / FST4-1800 は未実装 (需要なし)。FST4W (WSPR 型片方向
-  50 bit ビーコン、LDPC(240, 74)) は別の
-  メッセージ形式で対象外 — issue #23 参照。**OSD は (240, 91) 部分符号を
+  `fst4_submode!` マクロが生成する。FST4-900 と FST4-1800 は上流の `nfft1`
+  (`6480·1664` と `6426·3360`) を使う。スロットより 1 シンボル弱短く、上流も末尾を捨てる。
+  sweep コーパスはない (数十 GB になる)。根拠は `tests/fst4_long_period.rs`:
+  テスト内で合成したケースに、同じサンプルで `jt9 -7 -p T` を走らせ、3 行を残した
+  (3 行とも復号し、余分なし。#649)。**OSD は (240, 91) 部分符号を
   探索する**。`fst4_decode.f90:478`（`decode240_101(llr, Keff=91, …)`）と同じで、
   メッセージと先頭 14 個の CRC ビットだけが自由で、最後の 10 個の CRC ビットは
   符号にカスケードされる（`ldpc240_101::FST4_KEFF = 91`、`osd::PartialCrc`）。
@@ -2044,7 +2082,7 @@ pub trait Decodable: Sized {
 }
 ```
 
-スロットでデコードする全 ZST（20 の WSJT 系モード。`uvpacket`・MSK144・JTTY は含まない）が
+スロットでデコードする全 ZST（26 の WSJT 系モード。`uvpacket`・MSK144・JTTY は含まない）が
 実装する。公開 API が汎用化されている対象はこれで、置き換えられた `FrameDecodable` と
 ファミリ別のリクエスト型は crate 非公開である。新しいモードは、ここへの impl、レジストリの
 `modes!` リストへの 1 行、`any.rs` の `any_decoder!` へのバリアント 1 つを加える。
@@ -2376,7 +2414,8 @@ Rust ホスト消費者に関係する分だけをまとめる。`no_std` と固
 | `alloc` | — | アロケータ付き `no_std` |
 | `ft8` | on | FT8 の ZST・decode・wave_gen |
 | `ft4` | on | FT4 の ZST・decode |
-| `fst4` | off | FST4-15/30/60A/120/300 の ZST・decode。**ホスト専用ではない** — backend 非依存の engine を完全に通り、`alloc,fst4,fft-extern` で型検査が通る（issue #306） |
+| `fst4w` | off | FST4W-120/300/900/1800 の ZST、`Fst4wMessage`、`Ldpc240_74`、decode。`fst4` を含意し、`full` に入る。feature matrix の行は `fst4w` と `alloc fst4w fft-extern` |
+| `fst4` | off | FST4-15/30/60A/120/300/900/1800 の ZST・decode。**ホスト専用ではない** — backend 非依存の engine を完全に通り、`alloc,fst4,fft-extern` で型検査が通る（issue #306） |
 | `wspr` | off | WSPR の ZST・decode・synth・スペクトログラム探索 |
 | `jt9` / `jt65` / `q65` | off | **#390 以降ホスト専用ではない** — バックエンドを強制せず、`alloc,<mode>,fft-extern` で `std`/`rustfft` を一切引かずに型検査が通る（`ci.yml` と `scripts/pre-push-check.sh` の feature matrix に 1 行ずつ）。デコーダのみで、組込アプリからの利用はまだ無い |
 | `msk144` | off | MSK144 — `Protocol` の ZST は無く、独自のトップレベルドライバを持つ |
@@ -2447,7 +2486,7 @@ for p in PROTOCOLS {
 * `slot_samples_12k` — サンプル数で表したスロット（FT4 90 000、FT8 180 000、
   FST4-300 3 600 000）と、`decode_fft1_size` — デコーダがスロット全体に
   かける前方 FFT（`Protocol::DECODE_FFT1_SIZE`。FT4 92 160、FT8 192 000、
-  **FST4-300 4 194 304**、独自のフロントエンドを持つモードは 0）。後者は、
+  **FST4-300 4 194 304**、**FST4W-1800 21 591 360**（最大）、独自のフロントエンドを持つモードは 0）。後者は、
   「どのモードでも呼び出しの形は 1 つ」がメモリの話としては間違いになる数字である。
 * `profile: DecodeProfile { caps, defaults, sync_scale, sniper_max_cand_cap }`。
 
@@ -2514,7 +2553,7 @@ ZST + 表示名で 1 行ずつ。
 
 `tests/protocol_invariants.rs` は 1 つの汎用
 `assert_protocol_invariants::<P>` を配線済みの全 ZST に対して実行する —
-24 個: WSJT 系 20 に加えて `uvpacket` の 4 つ — そして ~25 個の trait レベルの
+30 個: WSJT 系 26 に加えて `uvpacket` の 4 つ — そして ~25 個の trait レベルの
 不変条件を pin する。その中に `FecCodec::N ≤ N_DATA × BITS_PER_SYMBOL` と
 `GRAY_MAP` の長さの契約 `[2^BITS_PER_SYMBOL, NTONES]` がある。
 

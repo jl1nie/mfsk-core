@@ -280,6 +280,48 @@ impl AnyDecoder {
         }
     }
 
+    /// FST4W's Keff-50 known-call list (`get_known_calls`), oldest first.
+    /// `Unsupported` for every other mode.
+    pub fn wcalls(&self) -> Result<alloc::vec::Vec<alloc::string::String>, Unsupported> {
+        match self {
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W120(d) => Ok(d.wcalls().to_vec()),
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W300(d) => Ok(d.wcalls().to_vec()),
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W900(d) => Ok(d.wcalls().to_vec()),
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W1800(d) => Ok(d.wcalls().to_vec()),
+            _ => Err(Unsupported {
+                mode: self.mode(),
+                option: "known-call list",
+            }),
+        }
+    }
+
+    /// Replace FST4W's known-call list (`set_known_calls`): at most 100
+    /// entries of 20 characters. `Unsupported` for every other mode, and for
+    /// a longer list.
+    #[cfg_attr(not(feature = "fst4w"), allow(unused_variables))]
+    pub fn set_wcalls(&mut self, calls: &[alloc::string::String]) -> Result<(), Unsupported> {
+        let mode = self.mode();
+        let refused = Unsupported {
+            mode,
+            option: "known-call list",
+        };
+        match self {
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W120(d) => d.set_wcalls(calls).map_err(|_| refused),
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W300(d) => d.set_wcalls(calls).map_err(|_| refused),
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W900(d) => d.set_wcalls(calls).map_err(|_| refused),
+            #[cfg(feature = "fst4w")]
+            AnyDecoder::Fst4W1800(d) => d.set_wcalls(calls).map_err(|_| refused),
+            _ => Err(refused),
+        }
+    }
+
     /// Decode one period of `i16` audio.
     pub fn decode_i16(&mut self, audio: &[i16], period: Option<i64>) -> AnySlotResult {
         let mut slot = SlotInput::new(Audio::I16(audio));

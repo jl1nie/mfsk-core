@@ -126,6 +126,15 @@ Everything else:
 
 ## `mfsk-core` internals — the map before you edit
 
+**FST4W** (#649; WSJT-X's WSPR-style beacon, 120/300/900/1800 s) is FST4's modulation
+and front end with LDPC(240,74), a 50-bit message and a Keff 66 → Keff 50 ladder
+(`fst4w::decode`); the Keff-50 word has no CRC and is accepted only through a
+known-call list that is state between candidates, so candidates run one at a
+time. Its oracles run upstream: `scripts/osd-upstream/run.sh 74` (FEC),
+`scripts/fst4w/build_oracle.sh` (`genfst4`), `scripts/fst4w/gen_decode_vectors.sh`
+and `gen_fst4_long_vectors.sh` (`jt9`). Build them from `git archive` of the tag,
+never the working tree.
+
 A protocol is a **zero-sized type** implementing `ModulationParams`
 (tones, symbol rate, Gray map, GFSK shaping), `FrameLayout` (symbol
 counts, slot length, sync blocks), and `Protocol` (which binds
@@ -138,9 +147,9 @@ shared code. `CONTRIBUTING.md` "Adding a new protocol" and
 | module | contents |
 |---|---|
 | `engine/` | the shared core: `protocol.rs` (the traits), `pipeline.rs`, `sync.rs` / `sync2d.rs`, `spectrogram.rs`, `llr.rs`, `equalize.rs`, `scalar.rs` (Q-format types), `fft.rs` (the `FftPlanner` trait + extern factory), `tx.rs`, and `dsp/` (resample, downsample, GFSK, envelope, subtract, DDC, FIR/polyphase, dotprod, the fixed-point FFT kernels) |
-| `fec/` | `ldpc/` (174,91), `ldpc240_101/`, `ldpc_128_90/` (MSK144), `conv/` (r=½ K=32 Fano), `rs/` (63,12 over GF(2⁶)), `qra/` + `qra15_65_64/` (Q65) |
+| `fec/` | `ldpc/` (174,91), `ldpc240_101/`, `ldpc240_74/` (FST4W: its own BP loop and `fastosd240_74`), `ldpc_128_90/` (MSK144), `conv/` (r=½ K=32 Fano), `rs/` (63,12 over GF(2⁶)), `qra/` + `qra15_65_64/` (Q65) |
 | `msg/` | message codecs — `wsjt77.rs`, `jt72.rs`, `wspr.rs`, `q65.rs`, `packet_bytes.rs`, `callsign28.rs`, `hash_table.rs` — plus `decode_request.rs` and `decoded.rs`, which are the public entry point and the public output row |
-| `ft8/ ft4/ fst4/ wspr/ jt9/ jt65/ q65/ msk144/ jtty/ uvpacket/` | per-protocol ZSTs (not for `msk144` / `jtty`, which have none), decoders, synthesisers; each feature-gated by its own name |
+| `ft8/ ft4/ fst4/ fst4w/ wspr/ jt9/ jt65/ q65/ msk144/ jtty/ uvpacket/` | per-protocol ZSTs (not for `msk144` / `jtty`, which have none), decoders, synthesisers; each feature-gated by its own name. `fst4w/` reuses `fst4/`'s modulation and front end (feature `fst4w` implies `fst4`) and adds `Ldpc240_74`, the 50-bit type-0.6 message and its own candidate ladder |
 | `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list. Since 0.12.0 each entry also carries `profile: DecodeProfile` (`caps`, `defaults: DecodeDefaults` — the 0.12 request defaults; `decoder::default_params` is the 0.13 source of the starting block, `sync_scale`), and `registry::caps` is the capability-bit table `mfsk-ffi` republishes (`tests/registry_caps.rs` ties it to the trait impls) |
 
 **There is no `src/core/`. The shared module is `src/engine/`.**
@@ -233,13 +242,13 @@ It therefore doesn't appear in `PROTOCOLS` or `protocol_invariants.rs`.
 That is an architectural decision, not a gap to close.
 
 `tests/protocol_invariants.rs` runs one generic
-`assert_protocol_invariants::<P>` over every wired ZST — **24 of them**:
-20 WSJT-family, plus `uvpacket`'s four — and pins ~25 trait-level
+`assert_protocol_invariants::<P>` over every wired ZST — **30 of them**:
+26 WSJT-family (FST4 now has seven periods and FST4W four), plus `uvpacket`'s four — and pins ~25 trait-level
 invariants. A new protocol gets one line there.
 
 (This used to say "11 with `full`; uvpacket adds four more". Those are
 the **`#[test]` function** counts, not ZSTs — the file has 15 test
-functions driving 24 `assert_protocol_invariants::<P>` calls. Stated as
+functions driving 24 `assert_protocol_invariants::<P>` calls (30 since FST4-900/-1800 and FST4W, #649). Stated as
 ZSTs it was wrong, and it was copied into `LIBRARY.md` §8.2 verbatim
 before a review caught it. Corrected in PR #378; count with
 `grep -c 'assert_protocol_invariants::<' mfsk-core/tests/protocol_invariants.rs`.)

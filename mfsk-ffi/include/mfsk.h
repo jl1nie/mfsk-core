@@ -121,6 +121,13 @@
 #define MFSK_DECODE_FLAG_HAS_SYNC_CV (1 << 3)
 
 /**
+ * `MfskDecode::flags` bit 5: `MfskDecode::hash22` is the unresolved 22-bit
+ * callsign hash of this row (FST4W's `<...>`). A literal here for the same reason
+ * as the constants above.
+ */
+#define MFSK_DECODE_FLAG_HAS_HASH22 (1 << 5)
+
+/**
  * `MfskDecode::flags` bit 4: `hard_errors` is a count the mode reported (a
  * clean decode is `0` with the flag set; WSPR, JT9, JT65 and Q65 never set it).
  */
@@ -621,6 +628,35 @@ typedef enum MfskMode {
      * describes one frame: `t_slot_s` is the frame period, not a slot.
      */
     MFSK_MODE_JTTY = 25,
+    /**
+     * FST4-900 — 900 s period. Its slot transform is 10 782 720 points.
+     */
+    MFSK_MODE_FST4S900 = 26,
+    /**
+     * FST4-1800 — 1800 s period. Its slot transform is 21 591 360 points,
+     * the largest of any mode.
+     */
+    MFSK_MODE_FST4S1800 = 27,
+    /**
+     * FST4W-120 — the WSPR-style beacon on FST4's modulation: LDPC(240,74) with
+     * a CRC-24, a 50-bit WSPR-type payload, a 120 s period. Rows carry
+     * `info_bits = 74` and a 50-bit key; an unresolved `<...>` row carries
+     * `hash22` (`MFSK_DECODE_FLAG_HAS_HASH22`). The Keff-50 known-call list is
+     * `mfsk_decoder_get_wcalls` / `mfsk_decoder_set_wcalls`.
+     */
+    MFSK_MODE_FST4W120 = 28,
+    /**
+     * FST4W-300.
+     */
+    MFSK_MODE_FST4W300 = 29,
+    /**
+     * FST4W-900.
+     */
+    MFSK_MODE_FST4W900 = 30,
+    /**
+     * FST4W-1800.
+     */
+    MFSK_MODE_FST4W1800 = 31,
 } MfskMode;
 
 /**
@@ -968,6 +1004,13 @@ typedef struct MfskDecode {
      * [`MFSK_STAGE_NONE`] from a plain decode. Appended.
      */
     uint8_t stage;
+    /**
+     * FST4W only: the unresolved 22-bit callsign hash of a `<...>` row, valid
+     * when `MFSK_DECODE_FLAG_HAS_HASH22` is set, else `0`. Two rows with the
+     * same text and different hashes are two stations (`result%hash22`).
+     * Appended.
+     */
+    uint32_t hash22;
 } MfskDecode;
 
 /**
@@ -1489,6 +1532,11 @@ typedef struct MfskIqDecode {
      * [`MFSK_STAGE_FINAL`] for one found by the whole slot. Appended (#601).
      */
     uint8_t stage;
+    /**
+     * As `MfskDecode::hash22`: valid when `flags` has
+     * `MFSK_DECODE_FLAG_HAS_HASH22`. Appended.
+     */
+    uint32_t hash22;
 } MfskIqDecode;
 
 /**
@@ -2047,6 +2095,20 @@ enum MfskStatus mfsk_message_to_tones(uint32_t mode,
                                       uint8_t *out_itone,
                                       uintptr_t cap,
                                       uintptr_t *out_len);
+
+/**
+ * Stage 1 for FST4W: pack a WSPR-type message into the 77 bits
+ * [`mfsk_message_to_tones`] takes for the FST4W modes (`i3=0, n3=6`, of which the
+ * first 50 are sent). The forms are `CALL GRID4 DBM`, `PFX/CALL DBM`,
+ * `CALL/SFX DBM` and `<CALL> GRID6`; anything else is what WSJT-X's `genfst4`
+ * calls `*** bad message ***` and returns `MFSK_STATUS_DECODE_FAILED`.
+ *
+ * # Safety
+ * `text` must be a NUL-terminated string; `out_message77` 77 writable bytes.
+ */
+MFSK_API
+enum MfskStatus mfsk_fst4w_pack(const char *text,
+                                uint8_t *out_message77);
 
 /**
  * Stage 3: channel symbols become 16-bit PCM at 12 kHz.
@@ -3013,6 +3075,37 @@ enum MfskStatus mfsk_decoder_copy_info(const struct MfskDecoder *dec,
                                        uint8_t *out,
                                        uintptr_t cap,
                                        uintptr_t *out_len);
+
+/**
+ * FST4W's Keff-50 known-call list, one `CALL GRID` per line (`\n`), oldest
+ * first, NUL-terminated: `get_known_calls`. A Keff-66 decode of a type-1
+ * message adds its `CALL GRID`; a Keff-50 word (no CRC) is accepted only if a
+ * non-blank entry is in its text. Save it between runs, as WSJT-X keeps
+ * `fst4w_calls.txt`. `*out_len` is the size needed, NUL included.
+ * `MFSK_STATUS_UNSUPPORTED` for any other mode.
+ *
+ * # Safety
+ * `out` must be `cap` writable bytes; `out_len` may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_decoder_get_wcalls(struct MfskDecoder *dec,
+                                        char *out,
+                                        uintptr_t cap,
+                                        uintptr_t *out_len);
+
+/**
+ * Replace FST4W's known-call list (`set_known_calls`): `CALL GRID` lines
+ * separated by `\n`, at most 100, each kept to 20 characters; a blank line is
+ * an entry that vouches for nothing. `""` empties the list.
+ * `MFSK_STATUS_INVALID_ARG` for more than 100 lines,
+ * `MFSK_STATUS_UNSUPPORTED` for any other mode.
+ *
+ * # Safety
+ * `calls` must be a NUL-terminated string.
+ */
+MFSK_API
+enum MfskStatus mfsk_decoder_set_wcalls(struct MfskDecoder *dec,
+                                        const char *calls);
 
 /**
  * Decode the stream's ready slot directly, without copying it out and back
