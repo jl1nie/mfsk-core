@@ -257,7 +257,8 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   requires the same caller list after every step and the same codewords in every list, including DX as the 51st beside 50 callers. It
   fails on the pre-beta1 code (first difference: the first-inserted caller is evicted instead of the least recently heard).
   `build_jt9_upstream.sh` builds v3.3.0-beta1, and with `JT9_ORACLE_MAX_DRIFT=1` a `jt9` whose Q65 `max_drift` comes from the
-  environment (stage 5 is otherwise unreachable from the command line); that comparison found #654.
+  environment (stage 5 is otherwise unreachable from the command line). With the Rx tolerance matched (`jt9 -F 20` and
+  `.ftol(20.0)`), 160 drifting Q65-60A files give the same hit on 159: Max Drift stage 5 agrees with upstream up to 48 Hz/min.
 - **CI: a `wasm` job decodes one slot of every mode on `wasm32-unknown-unknown`, in Node (#585).** The #583 panic shipped for five releases
   because nothing ran that target. `wasm-smoke/` (outside the workspace) fails naming the modes that panic; against the tree before #584 it
   fails for WSPR and MSK144 and for no other of the 21. Not a timing or SIMD check: that is `bench/wasm`.
