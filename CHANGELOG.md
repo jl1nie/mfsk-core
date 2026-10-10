@@ -153,6 +153,13 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   (`PJ4/K1ABC`); upstream packs it as free text cut to 13 characters (`*** bad message ***` as codewords of -1 when those are not
   free-text characters) and asks only whether the DX call is standard. `pack77_q65_list_message` is that packer; a negative symbol
   scores as never matching in `check_codeword_llh`. `tests/q65_callers_oracle.rs` covers all of it against a beta1 build.
+- **The BP uses WSJT-X's `platanh` (#658).** Every WSJT-X belief-propagation decoder calls `lib/platanh.f90`, a piecewise-linear `atanh`
+  (one definition, duplicated unchanged in `bpdecode144.f90`; `atanh` is only in comments). This crate's generic BP called `atanh`
+  clamped at ±4.6. Same corpora, one binary switched by an environment variable: FT8 -2 net decodes of 592, FT4 +4 of 555, FST4 -1 of
+  1881, FT8 busy 0 of 4441 (one more unexpected decode), MSK144 identical; no 50 % crossing moved by 0.5 dB (largest 0.36 dB,
+  FST4-300 CCIR-poor); the six suites ran in 139 s against 167 s. FT8 again at 100 trials a cell: 2561 vs 2559 decodes (12 gained, 14 lost, p = 0.85), crossings within 0.04 dB. Messages and their order are unchanged in all 53 decode snapshots;
+  `hard_errors` moves by up to 11 and `pass` in 88 rows, so the 22 snapshots where one of them changed were rewritten (the other 31 are untouched).
+  `tests/decode_snapshot.rs`'s note that a difference is never a reason to rewrite a fixture was about the 0.13 redesign.
 
 ### Internals
 

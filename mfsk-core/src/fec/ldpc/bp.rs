@@ -28,14 +28,39 @@ pub use crate::engine::BpKind;
 /// crate are uniform with `NCW = 3`.
 const NCW: usize = 3;
 
-/// Clamped atanh to avoid ±∞ near the boundaries.
-/// Equivalent to WSJT-X `platanh`.
+/// `lib/platanh.f90` at v3.3.0-beta1, in `f32`: the piecewise-linear `atanh`
+/// every WSJT-X BP calls (`decode174_91`, `decode240_101`, `decode240_74`,
+/// `bpdecode128_90`, ...). Slopes 1/0.83, 1/0.322, 1/0.0524, 1/0.0012, then
+/// clamped at ±7.
+///
+/// This was `x.atanh()` clamped at ±4.6 until #658. Swapping it moved nothing
+/// measurable (tier C, same corpora, six suites, one binary switched by an
+/// environment variable: FT8 -2 net decodes of 592, FT4 +4 of 555, FST4 -1 of
+/// 1881, FT8 ITU 0 of 1314, FT8 busy 0 of 4441 with one more unexpected decode,
+/// MSK144 identical; no 50 % crossing moved by 0.5 dB, the largest by 0.36 dB, in
+/// FST4-300 CCIR-poor, where a cell holds 20 trials). The six suites
+/// took 139 s against 167 s (one run each, not a controlled timing); the
+/// piecewise form needs no `atanh`. FT8 again with 100 trials a cell (5200 files,
+/// seeded `ft8sim`): 2561 against 2559 decodes, 12 gained and 14 lost (sign test
+/// p = 0.85), no unexpected decode either way, every crossing within 0.04 dB.
 #[inline]
-fn platanh(x: f32) -> f32 {
-    if x.abs() > 0.999_999_9 {
-        x.signum() * 4.6
+pub(crate) fn platanh(x: f32) -> f32 {
+    let mut isign = 1.0f32;
+    let mut z = x;
+    if x < 0.0 {
+        isign = -1.0;
+        z = x.abs();
+    }
+    if z <= 0.664 {
+        x / 0.83
+    } else if z <= 0.9217 {
+        (isign * (z - 0.4064)) / 0.322
+    } else if z <= 0.9951 {
+        (isign * (z - 0.8378)) / 0.0524
+    } else if z <= 0.9998 {
+        (isign * (z - 0.9914)) / 0.0012
     } else {
-        x.atanh()
+        isign * 7.0
     }
 }
 
