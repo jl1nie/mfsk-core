@@ -1485,6 +1485,37 @@ fn main() {
 mod health_log_tests {
     use super::*;
 
+    /// What the window receives for a JTTY message (#650): the TypeScript side
+    /// reads `type: "jtty"`, `key` (a string), `startUtcMs`, `final`, ...
+    #[test]
+    fn a_jtty_message_reaches_the_window_as_the_front_end_reads_it() {
+        use skimmer_core::jtty::{JttyMessage, UpdateKind};
+        let m = JttyMessage {
+            channel: 0,
+            key: (3u64 << 32) | 7,
+            start_utc_ns: Some(1_791_002_535_000_000_000),
+            dial_hz: 14_090_000.0,
+            freq_hz: 14_091_500.0,
+            snr_db: -9.0,
+            text: "CQ K1ABC".into(),
+            calls: vec!["K1ABC".into()],
+            kind: UpdateKind::Complete,
+        };
+        let e = Tagged {
+            server: 1,
+            event: UiEvent::new(Event::Jtty(m), &[5]),
+        };
+        let v = serde_json::to_value(&e).expect("serializes");
+        assert_eq!(v["type"], "jtty");
+        assert_eq!(v["server"], 1);
+        assert_eq!(v["channel"], 5, "the window's channel number");
+        assert_eq!(v["key"], "12884901895");
+        assert_eq!(v["startUtcMs"], 1_791_002_535_000.0);
+        assert_eq!(v["final"], true);
+        assert_eq!(v["kind"], "complete");
+        assert_eq!(v["calls"][0], "K1ABC");
+    }
+
     fn log(dir: &std::path::Path) -> HealthLog {
         HealthLog::open(dir.to_str().unwrap()).unwrap()
     }

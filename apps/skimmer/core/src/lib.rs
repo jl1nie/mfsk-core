@@ -26,6 +26,7 @@
 
 pub mod anchor;
 pub mod clock;
+pub mod fake;
 pub mod geo;
 pub mod jtty;
 pub mod modes;

@@ -206,7 +206,10 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   the database stores it as a `decodes` row of mode `JTTY` with the sender and locator by WSJT-X's spotting rule, so Analysis,
   the map and the station list take it; the window has a JTTY tab where a message is updated in place; presets carry upstream's
   JTTY frequencies. As upstream: no full-band search, and no drift search. No waterfall for a JTTY channel yet. Tested through IQ,
-  both channelizers, and across a gap (`jtty::tests`, `store::tests`).
+  both channelizers, and across a gap (`jtty::tests`, `store::tests`). A stand-in SpyServer (`skimmer_core::fake`,
+  `cargo run -p skimmer-core --release --example fake_spyserver`) speaks the protocol and plays a 48 s script of two QSOs and a CQ
+  caller at 1500, 1350 and 1650 Hz, for trying the CLI or the window without a radio; `tests/fake_spyserver.rs` runs the whole
+  skimmer against it over a socket.
 - **Connect no longer waits 10 s on a dead NTP server (#640).** The first clock measurement ran five queries at 2 s each against the
   first address only, so a pool member that did not answer held Connect for 10.6 s before falling back to the PC clock
   (`pool.ntp.org`, 2026-10-09, while `ntp.nict.jp` answered in 38 ms). A query now waits 1 s (a later reply is over the 1 s

@@ -844,7 +844,7 @@
             class:on={view === 'jtty'}
             aria-selected={view === 'jtty'}
             title="JTTY messages: one row each, growing while it is received"
-            onclick={() => (view = 'jtty')}>JTTY</button
+            onclick={() => (view = 'jtty')}>JTTY{jtty.length > 0 ? ` (${jtty.length})` : ''}</button
           >
         {/if}
         <button

@@ -253,11 +253,19 @@ fn run(
     let mut stream = Stream::new(rx, params);
     let mut agc = Agc::default();
     let mut pcm = Vec::new();
-    // Where the current reception began (audio index, UTC) and where the next
-    // run should start; a message's key carries the reception's number.
-    let mut origin: Option<Option<i64>> = None;
+    // The audio index the current reception began at (`None` between
+    // receptions), and where the next run should start. A message's key
+    // carries the reception's number.
+    let mut base_k: Option<u64> = None;
     let mut next_k: Option<u64> = None;
     let mut reception: u64 = 0;
+    // The latest audio index with a known UTC. The clock is set a little after
+    // the first IQ arrives, so the first run of a reception often has none; a
+    // later one does, and the UTC of an earlier index follows from it (12 kHz).
+    let mut anchor: Option<(u64, i64)> = None;
+    let utc_at = |anchor: Option<(u64, i64)>, k: u64| {
+        anchor.map(|(ak, au)| au + (k as i64 - ak as i64) * 1_000_000_000 / 12_000)
+    };
     let emit = |u: MessageUpdate, utc0: Option<i64>, reception: u64| {
         let _ = results.send(JttyMessage {
             channel,
@@ -275,16 +283,21 @@ fn run(
         match job {
             Job::Options(o) => stream.set_params(params_for(&o)),
             Job::Audio { k, utc_ns, samples } => {
-                if let Some(utc0) = origin
+                if let Some(utc) = utc_ns {
+                    anchor = Some((k, utc));
+                }
+                if let Some(b) = base_k
                     && next_k != Some(k)
                 {
                     // Not one recording any more: end this reception.
+                    let utc0 = utc_at(anchor, b);
                     stream.finish(&mut |u| emit(u, utc0, reception));
                     stream.reset();
-                    origin = None;
+                    base_k = None;
                     reception += 1;
                 }
-                let utc0 = *origin.get_or_insert(utc_ns);
+                let b = *base_k.get_or_insert(k);
+                let utc0 = utc_at(anchor, b);
                 pcm.clear();
                 agc.process(&samples, &mut pcm);
                 stream.push(&pcm, &mut |u| emit(u, utc0, reception));
@@ -292,7 +305,8 @@ fn run(
             }
         }
     }
-    if let Some(utc0) = origin {
+    if let Some(b) = base_k {
+        let utc0 = utc_at(anchor, b);
         stream.finish(&mut |u| emit(u, utc0, reception));
     }
 }
@@ -456,6 +470,37 @@ mod tests {
                 .filter(|m| m.text.contains("JA1ABC"))
                 .all(|m| m.key == done.key)
         );
+    }
+
+    /// The clock is set a little after the audio starts (the anchor estimate needs
+    /// a window of IQ), so a reception's first run has no UTC: its messages still
+    /// get one, from the first run that has.
+    #[test]
+    fn a_message_gets_its_utc_from_a_later_run_when_the_first_has_none() {
+        use mfsk_core::jtty::source::{Atom, CallAction};
+        let audio = audio_of(&[Atom::call(CallAction::Cq, "K1ABC")]);
+        let (w, rx) = worker();
+        let utc0 = 1_791_002_535_000_000_000i64;
+        let mut k = 0u64;
+        for (i, c) in audio.chunks(8_000).enumerate() {
+            // The first two runs: no clock yet.
+            let utc = (i >= 2).then(|| utc0 + (k as i64) * 1_000_000_000 / 12_000);
+            w.send(Job::Audio {
+                k,
+                utc_ns: utc,
+                samples: c.to_vec(),
+            });
+            k += c.len() as u64;
+        }
+        drop(w);
+        let all: Vec<JttyMessage> = rx.try_iter().collect();
+        let done = all
+            .iter()
+            .find(|m| m.kind == UpdateKind::Complete)
+            .unwrap_or_else(|| panic!("{all:?}"));
+        let t = done.start_utc_ns.expect("a UTC from a later run") - utc0;
+        // The frame starts 1 s into the audio.
+        assert!((t - 1_000_000_000).abs() < 150_000_000, "{t}");
     }
 
     /// A jump in the audio index ends the reception: a message cut off by it is

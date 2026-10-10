@@ -65,6 +65,9 @@
         <tr><th>UTC</th><th class="num">MHz</th><th class="num">dB</th><th>Message</th></tr>
       </thead>
       <tbody>
+        {#if rows.length === 0}
+          <tr class="waiting"><td colspan="4">No JTTY message yet. Waiting on {channels.filter((c) => c.mode === 'JTTY').map((c) => `${(c.dialHz / 1000).toFixed(1)} kHz`).join(', ') || 'a JTTY channel (add one in the channel list)'}: a message is shown as soon as its first frame is heard, and grows.</td></tr>
+        {/if}
         {#each shown as r (r.channel + ':' + r.key)}
           <tr class:cq={r.text.startsWith('CQ ')} class:growing={r.kind === 'growing'} title={channels[r.channel] ? `${channels[r.channel].mode} ${(channels[r.channel].dialHz / 1000).toFixed(1)} kHz` : ''}>
             <td class="mono">{hhmmss(r.startUtcMs)}</td>
@@ -82,6 +85,10 @@
   .jstate {
     color: var(--muted);
     cursor: help;
+  }
+  tr.waiting td {
+    color: var(--muted);
+    padding: 12px 8px;
   }
   tr.growing .msg {
     color: var(--muted);
