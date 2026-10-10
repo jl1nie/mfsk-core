@@ -20,7 +20,13 @@
 //! mode"). The generator is cached per `k` in [`Osd74Work`], as upstream's
 //! `work%generator(k)`.
 //!
-//! What differs from the Fortran, deliberately: nothing in the arithmetic.
+//! What differs from the Fortran, deliberately: nothing in the arithmetic. The
+//! per-pattern bookkeeping is restructured (#670): the partial syndrome is the
+//! xor of packed `u32` columns of the pattern's set bits, the pattern is a
+//! position list, and the candidate codeword is the codeword of `m0` xor the
+//! (4 x `u64`) rows of those bits, its distance summed over the differing
+//! positions in ascending order and abandoned once it reaches `dmin`; all give
+//! the same values, in the same order.
 //! `apmask` is not a parameter because upstream only permutes it
 //! (`apmaskr`) and never reads the result.
 
@@ -329,59 +335,99 @@ pub fn fastosd240_74(work: &mut Osd74Work, llr: &[f32], k: usize, ndeep: i32) ->
             }
             let rho = s1 / (s1 + xlambda * s2);
             let mut rhodmin = rho * dmin;
-            let mut mi = vec![0u8; k];
-            let mut me = vec![0u8; k];
-            for iorder in 1..=nord {
-                for x in mi[..k - iorder].iter_mut() {
-                    *x = 0;
+            // The partial syndrome of `me = m0 ^ mi` is linear in `me`, so it is
+            // the one of `m0` xor the columns of the (at most `nord`) set bits
+            // of `mi`: packed as `u32`, 32 columns of rows K..K+NP-1 at a time.
+            // Same value as `partial_syndrome`, without its O(k*NP) loop
+            // per pattern (#670).
+            let col32: Vec<u32> = (0..k)
+                .map(|i| {
+                    let mut w = 0u32;
+                    for p in 0..NP {
+                        w |= (gm[i * N + (k - 1) + p] as u32) << p;
+                    }
+                    w
+                })
+                .collect();
+            let mut hd32 = 0u32;
+            for p in 0..NP {
+                hd32 |= (hdec[(k - 1) + p] as u32) << p;
+            }
+            let mut sp0 = 0u32;
+            for i in 0..k {
+                if m0[i] == 1 {
+                    sp0 ^= col32[i];
                 }
-                for x in mi[k - iorder..].iter_mut() {
-                    *x = 1;
+            }
+            // The test pattern `mi` is held as the ascending positions of its
+            // `iorder` ones, which is all `nextpat74` ever manipulates.
+            let pack = |v: &[u8]| {
+                let mut w = [0u64; 4];
+                for (i, &b) in v.iter().enumerate() {
+                    w[i / 64] |= (b as u64) << (i % 64);
+                }
+                w
+            };
+            let rowb: Vec<[u64; 4]> = (0..k).map(|i| pack(&gm[i * N..(i + 1) * N])).collect();
+            let hdb = pack(&hdec);
+            let c0b = pack(&c0);
+            let mut pos = [0usize; 4];
+            for iorder in 1..=nord {
+                for (j, p) in pos[..iorder].iter_mut().enumerate() {
+                    *p = k - iorder + j;
                 }
                 let mut iflag = (k - iorder + 1) as i32;
                 while iflag >= 0 {
-                    for i in 0..k {
-                        me[i] = m0[i] ^ mi[i];
-                    }
+                    // Set bits of `mi`, ascending: the Fortran's
+                    // `sum(mi(i)*absrx(i))` adds exact zeros for the rest.
                     let mut d1 = 0f32;
-                    for i in 0..k {
-                        d1 += mi[i] as f32 * absrx[i];
+                    let mut sp = sp0;
+                    for &p in &pos[..iorder] {
+                        d1 += absrx[p];
+                        sp ^= col32[p];
                     }
                     if d1 > rhodmin {
                         break;
                     }
-                    // partial_syndrome: rows K..K+NP-1 (1-based) of g2(:,i)
-                    let mut sp = [0u8; NP];
-                    for i in 0..k {
-                        if me[i] == 1 {
-                            for (p, s) in sp.iter_mut().enumerate() {
-                                *s ^= gm[i * N + (k - 1) + p];
+                    let nwhsp = (sp ^ hd32).count_ones();
+                    if nwhsp <= nsyndmax {
+                        // `mrbencode(me)` is linear: the codeword of `m0 ^ mi` is
+                        // the one of `m0` xor the rows of `mi`'s set bits. Packed
+                        // 4 x u64, the distance walks the differing positions in
+                        // ascending order, as the Fortran's sum does (the zero
+                        // terms it adds are exact).
+                        let mut cb = c0b;
+                        for &p in &pos[..iorder] {
+                            for w in 0..4 {
+                                cb[w] ^= rowb[p][w];
                             }
                         }
-                    }
-                    let mut nwhsp = 0u32;
-                    for p in 0..NP {
-                        nwhsp += (sp[p] ^ hdec[(k - 1) + p]) as u32;
-                    }
-                    if nwhsp <= nsyndmax {
-                        let mut ce = [0u8; N];
-                        mrbencode(&me, &mut ce);
-                        let mut dd = 0f32;
                         let mut nh = 0i32;
-                        for i in 0..N {
-                            let x = ce[i] ^ hdec[i];
-                            nxor[i] = x;
-                            nh += x as i32;
-                            dd += x as f32 * absrx[i];
+                        for w in 0..4 {
+                            nh += (cb[w] ^ hdb[w]).count_ones() as i32;
+                        }
+                        let mut dd = 0f32;
+                        'dist: for w in 0..4 {
+                            let mut x = cb[w] ^ hdb[w];
+                            while x != 0 {
+                                dd += absrx[w * 64 + x.trailing_zeros() as usize];
+                                // `absrx` is not negative, so `dd` never falls again
+                                if dd >= dmin {
+                                    break 'dist;
+                                }
+                                x &= x - 1;
+                            }
                         }
                         if dd < dmin {
                             dmin = dd;
                             rhodmin = rho * dmin;
-                            cw = ce;
+                            for i in 0..N {
+                                cw[i] = ((cb[i / 64] >> (i % 64)) & 1) as u8;
+                            }
                             nhardmin = nh;
                         }
                     }
-                    iflag = nextpat74(&mut mi, k, iorder);
+                    iflag = nextpat74(&mut pos, k, iorder);
                 }
             }
         }
@@ -405,37 +451,27 @@ pub fn fastosd240_74(work: &mut Osd74Work, llr: &[f32], k: usize, ndeep: i32) ->
     out
 }
 
-/// `nextpat74`: the next test error pattern of weight `iorder`. Returns
-/// `iflag` — the 1-based position of the lowest-index 1 in `mi`, or -1 when
-/// the last pattern has been generated.
-fn nextpat74(mi: &mut [u8], k: usize, iorder: usize) -> i32 {
-    let mut ind: i32 = -1;
-    for i in 1..k {
-        if mi[i - 1] == 0 && mi[i] == 1 {
-            ind = i as i32;
+/// `nextpat74`: the next test error pattern of weight `iorder`, with the
+/// pattern held as the ascending positions `pos[..iorder]` of its ones instead
+/// of as a 0/1 vector (#670). The Fortran moves the rightmost 1 that has a 0
+/// on its left one place left and repacks the 1s that followed it at the end of
+/// the vector; both are the same operation on the positions. Returns `iflag`
+/// — the 1-based position of the lowest-index 1, or -1 when the last pattern
+/// has been generated. `fec/ldpc240_74` is checked against the Fortran's own
+/// output (`tests/fst4w_fec_upstream.rs`), which pins the order.
+fn nextpat74(pos: &mut [usize; 4], k: usize, iorder: usize) -> i32 {
+    let mut j = iorder;
+    while j > 0 {
+        j -= 1;
+        // `mi(i-1) == 0 .and. mi(i) == 1`
+        if pos[j] > 0 && (j == 0 || pos[j - 1] + 1 < pos[j]) {
+            pos[j] -= 1;
+            let nz = iorder - (j + 1);
+            for (t, p) in pos[j + 1..iorder].iter_mut().enumerate() {
+                *p = k - nz + t;
+            }
+            return (pos[0] + 1) as i32;
         }
     }
-    if ind < 0 {
-        return ind;
-    }
-    let ind = ind as usize;
-    let mut ms = [0u8; 101];
-    ms[..ind - 1].copy_from_slice(&mi[..ind - 1]);
-    ms[ind - 1] = 1;
-    ms[ind] = 0;
-    if ind + 1 < k {
-        let sum: usize = ms.iter().map(|&x| x as usize).sum();
-        let nz = iorder - sum;
-        for x in ms[k - nz..k].iter_mut() {
-            *x = 1;
-        }
-    }
-    mi[..k].copy_from_slice(&ms[..k]);
-    for i in 0..k {
-        if mi[i] == 1 {
-            return (i + 1) as i32;
-        }
-    }
-    // Fortran leaves iflag unchanged here; unreachable with iorder >= 1.
-    unreachable!()
+    -1
 }
