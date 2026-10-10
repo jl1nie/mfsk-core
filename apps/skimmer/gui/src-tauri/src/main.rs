@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_channel_mode, slot_seconds};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::pskreporter::{
-    Endpoint, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
+    APP_ENDPOINT, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
 };
 use skimmer_core::store;
 use skimmer_core::{
@@ -1288,8 +1288,7 @@ async fn start(
         }
         let mut c = PskConfig::new(&sv.call, &sv.grid);
         c.antenna = sv.psk_antenna.trim().to_string();
-        // PSK Reporter itself: its author agreed to skimmers (#655).
-        c.endpoint = Endpoint::Production;
+        c.endpoint = APP_ENDPOINT;
         let endpoint = c.endpoint.address();
         let (call, grid) = (c.callsign.clone(), c.locator.clone());
         let r = PskReporter::start(c)

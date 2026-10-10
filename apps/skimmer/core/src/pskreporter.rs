@@ -325,15 +325,19 @@ pub const MAX_PENDING_SPOTS: usize = 2048;
 const DESCRIPTOR_SENDS: u32 = 3;
 const DESCRIPTOR_PERIOD: Duration = Duration::from_secs(3600);
 
+/// Where the CLI and the GUI send: the one switch between the test listener and PSK Reporter
+/// itself, set in code rather than offered to the user. [`Endpoint::Test`] until PSK Reporter's
+/// author has said yes to the skimmer going to production (#655); then [`Endpoint::Production`].
+pub const APP_ENDPOINT: Endpoint = Endpoint::Test;
+
 /// Where the datagrams go.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Endpoint {
     /// `pskreporter.info:14739`, the page's test listener: it analyses what it receives
     /// (`/cgi-bin/psk-analysis.pl`) and records nothing. The default of [`PskConfig::new`], so
-    /// that a library user has to ask for production; the CLI and the GUI do.
+    /// that a library user has to ask for production.
     Test,
-    /// `report.pskreporter.info:4739`. The `report.` host name is required. PSK Reporter's author
-    /// has been asked about skimmers and agreed (#655).
+    /// `report.pskreporter.info:4739`. The `report.` host name is required.
     Production,
     /// `host:port`, for a test listener of one's own.
     Custom(String),

@@ -30,8 +30,8 @@ fn usage() -> ExitCode {
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
          \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT]]\n\
-         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter\n\
-         \x20      (report.pskreporter.info:4739), or to --psk-to, a listener of your own.\n\
+         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter's\n\
+         \x20      test listener (pskreporter.info:14739, which records nothing), or to --psk-to, a listener of your own.\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
         skimmer_core::AUTO_PFB_CHANNELS,
@@ -124,8 +124,6 @@ fn parse_args() -> Option<Parsed> {
             "--psk-grid" => psk_grid = it.next()?,
             "--psk-ant" => psk_ant = it.next()?,
             "--psk-rig" => psk_rig = it.next()?,
-            // The default since PSK Reporter's author answered (#655); kept so old command lines work.
-            "--psk-production" => {}
             // A collector of one's own (a UDP listener), to look at what would be sent.
             "--psk-to" => psk_to = Some(it.next()?),
             "--psk-interval" => psk_interval = Some(it.next()?.parse::<u64>().ok()?),
@@ -191,7 +189,7 @@ fn parse_args() -> Option<Parsed> {
         c.endpoint = if let Some(to) = psk_to {
             Endpoint::Custom(to)
         } else {
-            Endpoint::Production
+            skimmer_core::pskreporter::APP_ENDPOINT
         };
         if let Some(s) = psk_interval {
             c.interval = Duration::from_secs(s);
