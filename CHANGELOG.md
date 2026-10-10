@@ -244,6 +244,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### CI, tests and docs
 
+- **Q65's caller list is checked against WSJT-X v3.3.0-beta1 itself (#642).** `scripts/jttysim/q65_callers_oracle.f90` links upstream's
+  `q65_callers` and `q65_set_list2`; `tests/q65_callers_oracle.rs` replays a 300-operation script (records, expiry, removal, lists) and
+  requires the same caller list after every step and the same codewords in every list, including DX as the 51st beside 50 callers. It
+  fails on the pre-beta1 code (first difference: the first-inserted caller is evicted instead of the least recently heard).
+  `build_jt9_upstream.sh` builds v3.3.0-beta1, and with `JT9_ORACLE_MAX_DRIFT=1` a `jt9` whose Q65 `max_drift` comes from the
+  environment (stage 5 is otherwise unreachable from the command line); that comparison found #654.
 - **CI: a `wasm` job decodes one slot of every mode on `wasm32-unknown-unknown`, in Node (#585).** The #583 panic shipped for five releases
   because nothing ran that target. `wasm-smoke/` (outside the workspace) fails naming the modes that panic; against the tree before #584 it
   fails for WSPR and MSK144 and for no other of the 21. Not a timing or SIMD check: that is `bench/wasm`.

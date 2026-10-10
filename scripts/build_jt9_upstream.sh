@@ -6,6 +6,12 @@
 #   scripts/build_jt9_upstream.sh [WSJT-X-repo] [tag]
 #     WSJT-X-repo  a clone that has the tag   (default ../WSJT-X)
 #     tag          the release to build       (default v3.2.0-rc1)
+#   JT9_ORACLE_MAX_DRIFT=1 scripts/build_jt9_upstream.sh ../WSJT-X v3.3.0-beta1
+#     builds into build-<tag>-maxdrift with ONE added line: the Q65 `max_drift` that
+#     jt9 takes from `params%max_drift` (always 0 on the command line, so Q65's stage 5,
+#     the w3sz drift compensation, never runs) is overridden by the environment variable
+#     MFSK_ORACLE_MAX_DRIFT when it is set. Nothing in the decoder changes; it is the only
+#     way to drive stage 5 from jt9, for comparing mfsk-core's `max_drift` with upstream's.
 #
 # Output: target/upstream/build-<tag>/{jt9,wsprd}, and their sha256 on stdout.
 # The source is exported with `git archive`, so the clone is not touched.
@@ -38,8 +44,9 @@ WSJTX="${1:-$REPO_ROOT/../WSJT-X}"
 TAG="${2:-v3.2.0-rc1}"
 
 OUT="$REPO_ROOT/target/upstream"
-SRC="$OUT/wsjtx-$TAG"
-BUILD="$OUT/build-$TAG"
+LABEL="$TAG${JT9_ORACLE_MAX_DRIFT:+-maxdrift}"
+SRC="$OUT/wsjtx-$LABEL"
+BUILD="$OUT/build-$LABEL"
 mkdir -p "$OUT"
 rm -rf "$SRC" "$BUILD"
 mkdir -p "$SRC" "$BUILD"
@@ -47,15 +54,38 @@ mkdir -p "$SRC" "$BUILD"
 git -C "$WSJTX" archive "$TAG" | tar -x -C "$SRC"
 echo "source: $TAG = $(git -C "$WSJTX" rev-parse "$TAG^{commit}")"
 
+if [ -n "${JT9_ORACLE_MAX_DRIFT:-}" ]; then
+python3 - "$SRC" <<'PY'
+import sys
+path = sys.argv[1] + "/lib/decoder_engine.f90"
+s = open(path).read()
+old = "request%q65%max_drift_symbol_rates=params%max_drift"
+if s.count(old) != 1:
+    sys.exit(f"{path}: expected exactly one '{old}'")
+new = (old + "\n"
+       "    block\n"
+       "      character(len=16) :: oracle_v\n"
+       "      integer :: oracle_st, oracle_md\n"
+       "      call get_environment_variable('MFSK_ORACLE_MAX_DRIFT', oracle_v, status=oracle_st)\n"
+       "      if (oracle_st == 0) then\n"
+       "         read(oracle_v, *, iostat=oracle_st) oracle_md\n"
+       "         if (oracle_st == 0) request%q65%max_drift_symbol_rates = oracle_md\n"
+       "      end if\n"
+       "    end block")
+open(path, "w").write(s.replace(old, new, 1))
+PY
+fi
+
 sed -i 's/ Qt5::WebSockets//' "$SRC/CMakeLists.txt"
-sed -i 's/ LinguistTools WebSockets REQUIRED/ LinguistTools REQUIRED/' "$SRC/CMake/Dependencies.cmake"
+# v3.2.0-rc1 lists `... LinguistTools WebSockets REQUIRED`; v3.3.0-beta1 `... LinguistTools WebSockets Concurrent REQUIRED`
+sed -i 's/ LinguistTools WebSockets / LinguistTools /' "$SRC/CMake/Dependencies.cmake"
 python3 - "$SRC" <<'PY'
 import sys
 src = sys.argv[1]
 def patch(path, old, new):
     s = open(path).read()
     if old not in s:
-        sys.exit(f"{path}: expected text not found; this script targets v3.2.0-rc1")
+        sys.exit(f"{path}: expected text not found; this script targets v3.2.0-rc1 and v3.3.0-beta1")
     open(path, "w").write(s.replace(old, new, 1))
 patch(f"{src}/CMakeLists.txt",
       "find_package (Portaudio REQUIRED)\nadd_subdirectory (map65)",
