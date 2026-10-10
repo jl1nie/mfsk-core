@@ -63,6 +63,10 @@ export interface ServerSetting {
   /** Rotate through the bands of this server's channels: one step per band, in this order. */
   rotate: boolean;
   rotation: RotationStep[];
+  /** Send what this server hears to PSK Reporter as spots, under `call` at `grid`. Off by default. */
+  pskReporter?: boolean;
+  /** Free text for the receiver record. */
+  pskAntenna?: string;
 }
 
 /** One band of a rotation: the channels of the band (its modes together) are heard for `minutes` per turn. */
@@ -98,6 +102,8 @@ export interface Settings {
   decodeLanes: number;
   /** FT8 rows from ~11.8 s into the slot, the rest at its end, as WSJT-X shows them. */
   earlyDecode: boolean;
+  /** Where PSK Reporter spots go: its test listener (nothing recorded), or production (not offered yet). */
+  pskEndpoint?: 'test' | 'production';
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */
@@ -183,8 +189,24 @@ export interface Status {
   clock: string;
 }
 
+/** What a server's PSK Reporter sender has done. */
+export interface PskStatus {
+  offered: number;
+  duplicates: number;
+  overflowed: number;
+  spotsSent: number;
+  datagramsSent: number;
+  pending: number;
+  /** ms since the epoch of the last datagram, or null. */
+  lastSendMs: number | null;
+  error: string | null;
+  /** Where the datagrams go, `host:port`. */
+  endpoint: string;
+}
+
 export type UiEventBody =
   | { type: 'connecting'; address: string }
+  | ({ type: 'psk' } & PskStatus)
   | {
       type: 'connected';
       deviceKind: number;

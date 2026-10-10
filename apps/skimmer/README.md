@@ -134,6 +134,11 @@ skimmers (#655). `--psk-to HOST:PORT` sends to a listener of your own, to look a
   datagrams and every hour; one UDP socket, one source port. Spots pending when the program stops are not
   sent.
 
+In the GUI the same switch is under each server (Settings > Server > PSK Reporter): it reports under the server's
+**My call** at its **Grid**, which is the locator of that server's antenna, so each server is its own receiver on PSK
+Reporter. The destination is the test listener until PSK Reporter's author has been asked (#655); the production
+address is listed and greyed out. The header shows what was sent and the last error; hover for the counts.
+
 ## GUI (`gui/`)
 
 The GUI is a Tauri 2 shell (`gui/src-tauri`) around `skimmer-core` with a

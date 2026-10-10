@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as api from './lib/api';
-  import type { DecodeRow, JttyRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
+  import type { DecodeRow, JttyRow, ModeInfo, PskStatus, Settings, Status, UiEvent } from './lib/types';
   import JttyPanel from './lib/JttyPanel.svelte';
   import { bandOfHz, clockOf, gridLonLat, sortBands, sunTimes } from './lib/analysis';
   import HoursPicker from './lib/HoursPicker.svelte';
@@ -34,6 +34,8 @@
     gainSet: number | null;
     lastGainMove: number;
     health: Status | null;
+    /** The PSK Reporter sender, when this server has one running. */
+    psk: PskStatus | null;
     /** The rotation is held on the band being heard. */
     held: boolean;
     /** The step in force (an index into the steps actually run) and when it ends (ms); null: none is in. */
@@ -43,7 +45,7 @@
   };
   const blankSrv = (): Srv => ({
     phase: 'Stopped', detail: '', step: '', maxGain: null, canControl: false, deviceGain: null,
-    gainSet: null, lastGainMove: 0, health: null, held: false, stepIdx: null, stepEnds: 0, state: 'off',
+    gainSet: null, lastGainMove: 0, health: null, psk: null, held: false, stepIdx: null, stepEnds: 0, state: 'off',
   });
   /** By index in `settings.servers`. */
   let srv = $state<Srv[]>([]);
@@ -123,6 +125,16 @@
       p.push(`backlog ${(h.queuedBytes / 1e3).toFixed(0)} kB, ${h.queuedSlots} slots`);
     return p;
   });
+  /** The PSK Reporter sender's counts, for a tooltip. */
+  function pskDetail(p: PskStatus): string {
+    const last = p.lastSendMs ? new Date(p.lastSendMs).toISOString().slice(11, 19) + ' UTC' : 'nothing sent yet';
+    return [
+      `to ${p.endpoint}`,
+      `${p.offered} spots offered, ${p.duplicates} already reported on that band within five minutes, ${p.overflowed} dropped from a full queue`,
+      `${p.spotsSent} sent in ${p.datagramsSent} datagram(s), ${p.pending} waiting for the next one (at most one every five minutes)`,
+      `last datagram: ${last}`,
+    ].join('\n');
+  }
   const healthDetail = $derived(
     health
       ? [
@@ -315,7 +327,13 @@
         clockText = st.clock;
         break;
       }
+      case 'psk': {
+        const { type: _, server: __, ...st } = e;
+        s.psk = st;
+        break;
+      }
       case 'off':
+        s.psk = null;
         s.phase = 'Off';
         s.state = 'off';
         s.detail = '';
@@ -324,6 +342,7 @@
         for (const c of channelsOf(e.server)) active[c] = false;
         break;
       case 'disconnected':
+        s.psk = null;
         s.phase = `Disconnected (${e.error}); retrying`;
         s.state = 'error';
         for (const c of channelsOf(e.server)) active[c] = false;
@@ -506,7 +525,7 @@
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [],
+      name: `Server ${n}`, address: '', grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -668,6 +687,34 @@
               Auto uses the filter bank from {autoPfb} channels in the stream, direct below that (direct costs about 0.9 % of a core per
               channel at 768 kS/s, the bank a fixed 2.4 % plus 0.25 % per channel).
             </p>
+            <h3>PSK Reporter</h3>
+            <label class="check" title="Spots are sent under My call, at Grid: the locator of this server's antenna, which is where the signals were heard.">
+              <input type="checkbox" bind:checked={sv.pskReporter} disabled={running} />
+              <span>
+                Send what this server hears to PSK Reporter as spots (FT8, FT4, FST4, JT9, JT65, Q65 and JTTY; not WSPR). Off by default.
+                Needs My call and a Grid of at least four characters.
+              </span>
+            </label>
+            {#if sv.pskReporter}
+              {#if !sv.call.trim() || sv.grid.trim().length < 4}
+                <p class="hint bad">PSK Reporter needs My call and a Grid (the antenna's locator) above.</p>
+              {/if}
+              <div class="field" title="Free text in the receiver record, e.g. the antenna.">
+                <span>Antenna</span>
+                <input bind:value={sv.pskAntenna} disabled={running} placeholder="3-el yagi" spellcheck="false" />
+              </div>
+              <div class="field" title="Where the datagrams go. The test listener analyses them and records nothing.">
+                <span>Send to</span>
+                <select bind:value={settings.pskEndpoint} disabled={running}>
+                  <option value="test">PSK Reporter test listener (nothing is recorded)</option>
+                  <option value="production" disabled>report.pskreporter.info (not yet: PSK Reporter's author is to be asked about skimmers)</option>
+                </select>
+              </div>
+              <p class="hint">
+                One datagram at most every five minutes, a callsign once per band per five minutes, as pskreporter.info/pskdev.html asks.
+                Spots still waiting when you disconnect are not sent.
+              </p>
+            {/if}
             <label class="check">
               <input type="checkbox" bind:checked={sv.yieldControl} disabled={running} />
               <span>
@@ -794,6 +841,11 @@
     <div class="state">
       <div class="phase">
         <span class="ph">{cur.phase}</span>
+        {#if cur.psk}
+          <span class="health psk" class:warn={!!cur.psk.error} title={pskDetail(cur.psk)}>
+            <span>PSK Reporter: {cur.psk.spotsSent} sent{cur.psk.error ? ` · ${cur.psk.error}` : ''}</span>
+          </span>
+        {/if}
         {#if health}
           <span class="health" title={healthDetail}>
             <span class:warn={clockBad}>{clockShort}</span>

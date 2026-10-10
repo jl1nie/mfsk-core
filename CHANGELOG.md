@@ -218,6 +218,10 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   listener** (`pskreporter.info:14739`, nothing recorded) unless `--psk-production`, which waits for PSK Reporter's author (#655);
   `--psk-to HOST:PORT` is a listener of one's own. Checked on a live SpyServer against a local listener: 36 FT8 rows offered, 8 duplicates,
   28 sent in 3 datagrams from one port, with the receiver record and the templates.
+- **The skimmer GUI has the PSK Reporter switch (#655, stage 3 of 4).** Per server, under Settings > Server: report under the server's My call
+  at its Grid (the antenna's locator), with a free-text antenna; a server missing either stops Connect with the reason. The destination is
+  the test listener (`pskEndpoint: "test"`); production is listed greyed out until PSK Reporter's author has been asked. The header shows
+  `PSK Reporter: N sent` (red on an error) with the counts in its tooltip. Settings from before read as off.
 - **skimmer: JTTY (#650).** JTTY has no slot (frames start at any moment and a message grows while it is received), so a JTTY
   channel is not decoded a slot at a time: the receiver keeps its continuous audio (`IqReceiver::add_audio_channel`), a thread
   per channel runs upstream's receiver over it at a slow AGC (`jtty::rx::Stream`; Rx frequency and tolerance are the channel's

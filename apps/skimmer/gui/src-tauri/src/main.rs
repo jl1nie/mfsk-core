@@ -13,10 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
-use skimmer_core::modes::{
-    MODES, frame_geometry, mode_name, parse_channel_mode, slot_seconds,
-};
+use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_channel_mode, slot_seconds};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
+use skimmer_core::pskreporter::{
+    Endpoint, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
+};
 use skimmer_core::store;
 use skimmer_core::{
     ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
@@ -149,6 +150,11 @@ struct ServerSetting {
     /// the modes of a band are heard together.
     rotate: bool,
     rotation: Vec<RotationStep>,
+    /// Send what this server hears to PSK Reporter as spots, under `call` at `grid` (the
+    /// antenna's locator). Off by default. Needs both.
+    psk_reporter: bool,
+    /// Free text for the receiver record: the antenna.
+    psk_antenna: String,
 }
 
 /// One band of a rotation.
@@ -247,6 +253,8 @@ impl Default for ServerSetting {
             yield_control: false,
             rotate: false,
             rotation: Vec::new(),
+            psk_reporter: false,
+            psk_antenna: String::new(),
         }
     }
 }
@@ -292,6 +300,10 @@ struct Settings {
     /// FT8 rows from ~11.8 s into the slot, the rest at its end, as WSJT-X
     /// shows them; off waits for the end.
     early_decode: bool,
+    /// Where PSK Reporter spots go: "test" (its test listener, `pskreporter.info:14739`, which
+    /// records nothing; the default) or "production" (`report.pskreporter.info:4739`, not
+    /// offered in the window until PSK Reporter's author has been asked about skimmers, #655).
+    psk_endpoint: String,
     #[serde(skip_serializing)]
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps).
@@ -387,6 +399,7 @@ impl Default for Settings {
             slot_budget_pct: 0,
             decode_lanes: 4,
             early_decode: true,
+            psk_endpoint: "test".into(),
             channelizer: "auto".into(),
             db_enabled: true,
             db_path: String::new(),
@@ -416,6 +429,19 @@ struct Tagged {
 enum UiEvent {
     Connecting {
         address: String,
+    },
+    /// What the PSK Reporter sender of this server has done, with each status line.
+    Psk {
+        offered: u64,
+        duplicates: u64,
+        overflowed: u64,
+        spots_sent: u64,
+        datagrams_sent: u64,
+        pending: usize,
+        last_send_ms: Option<i64>,
+        error: Option<String>,
+        /// Where the datagrams go.
+        endpoint: String,
     },
     Connected {
         device_kind: u32,
@@ -681,6 +707,15 @@ struct ServerRun {
     live: Arc<LiveOptions>,
     /// The window's number of each of its channels, in its own order.
     channels: Vec<usize>,
+}
+
+/// A server's PSK Reporter sender, with the call and locator it reports under (the spot rules
+/// need them) and where it sends.
+struct PskSender {
+    reporter: PskReporter,
+    call: String,
+    grid: String,
+    endpoint: String,
 }
 
 struct Running {
@@ -1245,6 +1280,32 @@ async fn start(
     halt(&state);
     settings.migrate();
     let planned = configs(&settings)?;
+    // One PSK Reporter sender for each running server that asks for one: under its callsign, at
+    // its antenna's locator. A server that cannot (no call or locator) stops the start with the
+    // reason, rather than quietly not reporting.
+    let mut reporters: Vec<Option<PskSender>> = (0..settings.servers.len()).map(|_| None).collect();
+    for p in &planned {
+        let sv = &settings.servers[p.server];
+        if !sv.psk_reporter {
+            continue;
+        }
+        let mut c = PskConfig::new(&sv.call, &sv.grid);
+        c.antenna = sv.psk_antenna.trim().to_string();
+        c.endpoint = match settings.psk_endpoint.as_str() {
+            "production" => Endpoint::Production,
+            _ => Endpoint::Test,
+        };
+        let endpoint = c.endpoint.address();
+        let (call, grid) = (c.callsign.clone(), c.locator.clone());
+        let r = PskReporter::start(c)
+            .map_err(|why| format!("{}: PSK Reporter: {why} (My call and Grid)", sv.name))?;
+        reporters[p.server] = Some(PskSender {
+            reporter: r,
+            call,
+            grid,
+            endpoint,
+        });
+    }
     let mut health = if settings.db_enabled {
         HealthLog::open(&settings.log_dir)
     } else {
@@ -1292,6 +1353,41 @@ async fn start(
         skimmer_core::run_all(&cfgs, &flag, |i, ev| {
             let (server, map) = &maps[i];
             let name = &names[*server];
+            if let Some(Some(p)) = reporters.get(*server) {
+                match &ev {
+                    Event::Decode(d) => {
+                        if let Some(sp) = spot_from_decode(d, &p.call, &p.grid) {
+                            p.reporter.spot(sp);
+                        }
+                    }
+                    Event::Jtty(m) if m.is_final() => {
+                        if let Some(sp) = spot_from_jtty(m, &p.call) {
+                            p.reporter.spot(sp);
+                        }
+                    }
+                    Event::Status(_) => {
+                        let st = p.reporter.stats();
+                        let _ = emitter.emit(
+                            "skimmer",
+                            Tagged {
+                                server: *server,
+                                event: UiEvent::Psk {
+                                    offered: st.offered,
+                                    duplicates: st.duplicates,
+                                    overflowed: st.overflowed,
+                                    spots_sent: st.spots_sent,
+                                    datagrams_sent: st.datagrams_sent,
+                                    pending: st.pending,
+                                    last_send_ms: st.last_send_unix.map(|t| t * 1000),
+                                    error: st.last_error,
+                                    endpoint: p.endpoint.clone(),
+                                },
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+            }
             // An update is a row already counted, said again.
             if matches!(&ev, Event::Decode(d) if !d.update) {
                 decodes += 1;
@@ -1337,6 +1433,10 @@ async fn start(
                 },
             );
         });
+        // Spots still waiting are not sent: five minutes between datagrams is the limit even now.
+        for p in reporters.into_iter().flatten() {
+            p.reporter.stop();
+        }
     });
     *state.running.lock().unwrap() = Some(Running {
         servers: runs,
@@ -1499,8 +1599,56 @@ mod health_log_tests {
     fn an_older_settings_file_gets_the_default_waterfall_height() {
         let s: Settings = serde_json::from_str(r#"{"waterfall": true}"#).expect("loads");
         assert_eq!((s.wf_height, s.wf_thumb_height), (220, 54));
-        let s: Settings = serde_json::from_str(r#"{"wfHeight": 400, "wfThumbHeight": 80}"#).unwrap();
+        let s: Settings =
+            serde_json::from_str(r#"{"wfHeight": 400, "wfThumbHeight": 80}"#).unwrap();
         assert_eq!((s.wf_height, s.wf_thumb_height), (400, 80));
+    }
+
+    /// PSK Reporter is off for a server that never asked, and goes to the test listener: an
+    /// older settings file gets neither a reporter nor the production endpoint.
+    #[test]
+    fn psk_reporter_is_off_and_points_at_the_test_listener_by_default() {
+        let s: Settings =
+            serde_json::from_str(r#"{"servers": [{"name": "A", "address": "h:5555"}]}"#).unwrap();
+        assert!(!s.servers[0].psk_reporter);
+        assert_eq!(s.psk_endpoint, "test");
+        assert_eq!(Settings::default().psk_endpoint, "test");
+        let s: Settings = serde_json::from_str(
+            r#"{"pskEndpoint": "production", "servers": [{"pskReporter": true, "pskAntenna": "3-el yagi"}]}"#,
+        )
+        .unwrap();
+        assert!(s.servers[0].psk_reporter);
+        assert_eq!(s.servers[0].psk_antenna, "3-el yagi");
+        // and what is written reads back the same
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(back.servers[0].psk_reporter && back.psk_endpoint == "production");
+    }
+
+    /// What the window reads for the sender's status line: `type: "psk"` and camelCase counts.
+    #[test]
+    fn the_psk_status_reaches_the_window_as_the_front_end_reads_it() {
+        let e = Tagged {
+            server: 1,
+            event: UiEvent::Psk {
+                offered: 36,
+                duplicates: 8,
+                overflowed: 0,
+                spots_sent: 28,
+                datagrams_sent: 3,
+                pending: 2,
+                last_send_ms: Some(1_791_627_375_000),
+                error: None,
+                endpoint: "pskreporter.info:14739".into(),
+            },
+        };
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["type"], "psk");
+        assert_eq!(v["server"], 1);
+        assert_eq!(v["spotsSent"], 28);
+        assert_eq!(v["datagramsSent"], 3);
+        assert_eq!(v["lastSendMs"], 1_791_627_375_000_i64);
+        assert!(v["error"].is_null());
+        assert_eq!(v["endpoint"], "pskreporter.info:14739");
     }
 
     /// What the window receives for a JTTY message (#650): the TypeScript side
