@@ -67,6 +67,8 @@ pub enum AnyExtras<'a> {
     Ft4(&'a mut super::Ft4Extras),
     #[cfg(feature = "fst4")]
     Fst4(&'a mut super::Fst4Extras),
+    #[cfg(feature = "fst4w")]
+    Fst4w(&'a mut super::Fst4wExtras),
     #[cfg(feature = "wspr")]
     Wspr(&'a mut super::WsprExtras),
     #[cfg(feature = "jt9")]
@@ -224,6 +226,10 @@ any_decoder! {
     "fst4" Fst4S60 crate::fst4::Fst4s60 => Fst4,
     "fst4" Fst4S120 crate::fst4::Fst4s120 => Fst4,
     "fst4" Fst4S300 crate::fst4::Fst4s300 => Fst4,
+    "fst4w" Fst4W120 crate::fst4w::Fst4w120 => Fst4w,
+    "fst4w" Fst4W300 crate::fst4w::Fst4w300 => Fst4w,
+    "fst4w" Fst4W900 crate::fst4w::Fst4w900 => Fst4w,
+    "fst4w" Fst4W1800 crate::fst4w::Fst4w1800 => Fst4w,
     "wspr" Wspr crate::Wspr => Wspr,
     "jt9" Jt9 crate::Jt9 => Jt9,
     "jt65" Jt65 crate::Jt65 => Jt65,

@@ -35,8 +35,16 @@ pub struct Decoded {
     pub dt_sec: f32,
     pub snr_db: f32,
     pub protocol: ProtocolId,
+    pub hash22: Option<u32>, // added 0.14, FST4W only
 }
 ```
+
+`hash22` (0.14, #649) is the one field a mode added after the 0.9 intersection
+was fixed. An FST4W row whose callsign is a hash this decoder cannot resolve
+reads `<...> PM95AA`, and two stations read the same; WSJT-X tells them apart by
+the 22-bit hash (`result%hash22`, `has_hash22`, `fst4_decode.f90:814-823`), so
+the row carries it. `None` on every other row. A consumer that de-duplicates
+by text must key on `(text, hash22)` for this mode.
 
 Locked choices (from the 0.9 planning thread):
 

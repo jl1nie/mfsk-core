@@ -37,6 +37,11 @@
 mod any;
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 mod frame;
+#[cfg(all(
+    feature = "fst4w",
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
+mod fst4w;
 mod params;
 #[cfg(feature = "q65")]
 mod q65;
@@ -52,6 +57,11 @@ pub use slow::Jt65Extras;
 #[cfg(feature = "wspr")]
 pub use slow::{WsprExtras, WsprState};
 
+#[cfg(all(
+    feature = "fst4w",
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
+pub use crate::fst4w::decode::{Fst4wResult, Fst4wState, TooManyCalls};
 #[cfg(feature = "fst4")]
 pub use crate::msg::decode_request::NoiseBlanker;
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
@@ -59,6 +69,11 @@ pub use frame::{
     FrameState, Fst4Extras, Fst4Strategy, Ft4Extras, Ft4Strategy, Ft8Extras, Ft8Strategy,
     MessageFilter, Sniper, Tuning,
 };
+#[cfg(all(
+    feature = "fst4w",
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
+pub use fst4w::Fst4wExtras;
 
 #[cfg(any(
     feature = "ft8",

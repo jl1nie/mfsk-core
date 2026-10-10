@@ -35,6 +35,8 @@ use crate::fst4::encode as fst4_encode;
 use crate::msg::hash_table::CallsignHashTable;
 use crate::msg::wsjt77::{self, Wsjt77Fields};
 
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod decode;
 pub mod encode;
 
 /// The 27 bits `fst4_decode.f90:744-746` appends to a 50-bit payload before

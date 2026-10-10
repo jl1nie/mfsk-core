@@ -300,6 +300,22 @@ impl FecCodec for Ldpc240_74 {
     }
 }
 
+impl crate::engine::protocol::BpPooledFec for Ldpc240_74 {
+    /// No BP scratch: [`decode240_74`] keeps its messages on the stack, and the
+    /// generator cache it does reuse belongs to the decoder
+    /// ([`Osd74Work`]), not to a call.
+    type Scratch = ();
+
+    fn decode_soft_pooled(
+        &self,
+        llr: &[f32],
+        opts: &FecOpts<'_>,
+        _scratch: &mut Self::Scratch,
+    ) -> Option<FecResult> {
+        self.decode_soft(llr, opts)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

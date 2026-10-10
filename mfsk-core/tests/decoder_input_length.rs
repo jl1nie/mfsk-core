@@ -63,11 +63,19 @@ fn place<P: FrameLayout>(wave: Vec<f32>, slot: usize) -> Vec<f32> {
 /// only, and the test says so).
 fn period_with_signal(mode: Mode, slot: usize) -> Option<Vec<f32>> {
     use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
+    use mfsk_core::fst4w::encode::message_to_tones as w_tones;
+    use mfsk_core::fst4w::{Fst4w120, Fst4w300, Fst4w900, Fst4w1800};
     use mfsk_core::q65::tx::synthesize_standard_for;
     use mfsk_core::q65::{
         Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
     };
     use mfsk_core::{Jt9, Jt65, Wspr};
+
+    /// One FST4W frame; the default window is 1400-1600 Hz.
+    fn w<P: Protocol + FskWaveform>(slot: usize) -> Vec<f32> {
+        let tones = w_tones::<P>("K1ABC FN42 37").expect("FST4W message");
+        place::<P>(synthesize::<P>(&tones, FS, 1_500.0, 1.0), slot)
+    }
 
     fn q65<P: FrameLayout + FskWaveform>(slot: usize) -> Option<Vec<f32>> {
         let w = synthesize_standard_for::<P>("CQ", "JA1ABC", "PM95", FS, 1_500.0, 1.0)?;
@@ -83,6 +91,10 @@ fn period_with_signal(mode: Mode, slot: usize) -> Option<Vec<f32>> {
         "FST4-60A" => frame77::<Fst4s60>(slot, 1_000.0),
         "FST4-120" => frame77::<Fst4s120>(slot, 1_000.0),
         "FST4-300" => frame77::<Fst4s300>(slot, 1_000.0),
+        "FST4W-120" => w::<Fst4w120>(slot),
+        "FST4W-300" => w::<Fst4w300>(slot),
+        "FST4W-900" => w::<Fst4w900>(slot),
+        "FST4W-1800" => w::<Fst4w1800>(slot),
         "WSPR" => place::<Wspr>(
             mfsk_core::wspr::synthesize_type1("JA1ABC", "PM95", 37, FS, 1_500.0, 1.0)?,
             slot,
