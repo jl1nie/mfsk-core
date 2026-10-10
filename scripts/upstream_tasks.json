@@ -107,6 +107,23 @@
     "sweep_env": {},
     "sweep_csv_env": "MFSK_WSPR_SWEEP_SUMMARY_CSV", "sweep_dir_env": "MFSK_WSPR_SWEEP_DIR"
   },
+  "fst4w/t1": {
+    "runner_csv": "fst4w.csv",
+    "task": "FST4W with no known calls, as the GUI runs it: the Rx frequency 1500 Hz and a 100 Hz tolerance, ndepth 3 (Keff 66, then Keff 50 against an empty known-call list), no AP. Defined on both sides: fst4_decode with iwspr=1 against Decoder::<Fst4wN> with rx_freq_hz 1500, tol_hz 100, Depth::Deep. Upstream is v3.3.0-beta1: rc1's Keff 50 matched blank list entries.",
+    "upstream_bin": "jt9",
+    "upstream_path": "target/upstream/build-v3.3.0-beta1/jt9",
+    "upstream_tag": "v3.3.0-beta1",
+    "upstream_args": ["-W", "-p", "{mode}", "-d", "3", "-f", "1500", "-F", "100"],
+    "crate": "Decoder::<Fst4w120/300>::new(DecodeParams::for_band((1400, 1600)).rx_freq(1500).tol(100)), Depth::Deep",
+    "score": {"msg": "JL1NIE PM95 37", "freq": 1500, "freq_tol": 5, "dt_tol": 0.6},
+    "corpus": "fst4w_sweep",
+    "file_re": "^fst4w_(?P<mode>\\d+)_(?P<channel>awgn|ccir_\\w+?)_(?P<tag>[mp]\\d+)_(?P<trial>\\d+)\\.wav$",
+    "groups": ["mode", "channel"],
+    "time_per_cell": 1,
+    "sweep_test": "fst4w_sweep", "sweep_filter": "fst4w_snr_sweep",
+    "sweep_env": {},
+    "sweep_csv_env": "MFSK_FST4W_SWEEP_CSV", "sweep_dir_env": "MFSK_FST4W_SWEEP_DIR"
+  },
   "jtty/t1": {
     "runner_csv": "jtty.csv",
     "task": "The rjtty command-line decode of one recording: Rx channel 1500 Hz ± 50 Hz plus the fixed side channels over 200-2800 Hz, smin 4.6 dB. That is Params::default(), and upstream's own defaults.",

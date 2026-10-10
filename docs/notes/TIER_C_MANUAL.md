@@ -573,6 +573,7 @@ wisdom warm. The ratio is machine-independent enough to track.
 | `ft8_sweep` | `MFSK_FT8_SWEEP_DIR` | `MFSK_FT8_SWEEP_CSV` | `MFSK_FT8_SWEEP_TASK=t1` |
 | `ft4_sweep` | `MFSK_FT4_SWEEP_DIR` | `MFSK_FT4_SWEEP_CSV` | `MFSK_FT4_SWEEP_TASK=t1` |
 | `fst4_sweep` | `MFSK_FST4_SWEEP_DIR` | `MFSK_FST4_SWEEP_CSV` | `MFSK_FST4_SWEEP_TASK=t1`; also `_MODES`, `_CHANNELS`, `_SNR_MIN`, `_SNR_MAX` |
+| `fst4w_sweep` | `MFSK_FST4W_SWEEP_DIR` | `MFSK_FST4W_SWEEP_CSV` | (one task, `fst4w/t1`); also `_MODES` |
 | `q65_sim_sweep` | `MFSK_Q65_SWEEP_DIR` | `MFSK_Q65_SWEEP_SUMMARY_CSV` | (the sweep is the task) |
 | `jt9_sweep` | `MFSK_JT9_SWEEP_DIR` | `MFSK_JT9_SWEEP_SUMMARY_CSV` | (the sweep is the task) |
 | `jt65_sweep` | `MFSK_JT65_SWEEP_DIR` | `MFSK_JT65_SWEEP_SUMMARY_CSV`, `MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV` | (the Chase sweep is the task) |

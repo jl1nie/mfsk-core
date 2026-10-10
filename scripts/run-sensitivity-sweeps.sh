@@ -95,6 +95,10 @@ declare -A SUITES=(
   [ft8_busy]="ft8_busy_sweep:ft8_busy_sweep"
   [ft4]="ft4_sweep:ft4_snr_sweep ft4_snr_sweep ft4_diag_low_snr ft4_timing_budget"
   [fst4]="fst4_sweep:fst4_snr_sweep fst4_sim_roundtrip"
+  # fst4w: FST4W-120 and -300 over the `fst4w_sweep` corpus (gen_fst4w_sweep_wavs.sh,
+  # fst4sim's W=T). Groups `fst4w/<period>/<channel>`. 900 and 1800 s have no corpus
+  # (tens of GB), and no narrowing: the grid is short.
+  [fst4w]="fst4w_sweep:fst4w_snr_sweep"
   [wspr]="wspr_sweep"
   [jt65]="jt65_sweep"
   [jt9]="jt9_sweep"
@@ -114,7 +118,7 @@ want=("$@")
 # Corpora these need, so a missing one is reported up front rather
 # than as a wall of silent skips.
 declare -A CORPUS=(
-  [ft8]=ft8_sweep [ft8_itu]=ft8_itu_sweep [ft8_itu_ap]=ft8_itu_sweep [ft8_busy]=ft8_busy_sweep [ft4]=ft4_sweep [fst4]=fst4_sweep [wspr]=wspr_sweep
+  [ft8]=ft8_sweep [ft8_itu]=ft8_itu_sweep [ft8_itu_ap]=ft8_itu_sweep [ft8_busy]=ft8_busy_sweep [ft4]=ft4_sweep [fst4]=fst4_sweep [fst4w]=fst4w_sweep [wspr]=wspr_sweep
   [jt65]=jt65_sweep [jt9]=jt9_sweep [jtty]=jtty_sweep [q65]=q65_sweep [bench]=fst4_sweep
 )
 
@@ -153,7 +157,7 @@ source "$REPO_ROOT/scripts/lib/corpus-stamp.sh"
 declare -A CORPUS_RNG=(
   [ft8_sweep]=seeded [ft8_itu_sweep]=seeded [ft8_busy_sweep]=seeded [ft4_sweep]=seeded
   [wspr_sweep]=seeded [jt65_sweep]=seeded [jt9_sweep]=seeded
-  [fst4_sweep]=deterministic [q65_sweep]=deterministic [jtty_sweep]=deterministic
+  [fst4_sweep]=deterministic [fst4w_sweep]=deterministic [q65_sweep]=deterministic [jtty_sweep]=deterministic
 )
 stale=()
 declare -A seen_corpus=()
@@ -247,7 +251,7 @@ for k in "${want[@]}"; do
 
     unset MFSK_FT8_SWEEP_TASK MFSK_FT4_SWEEP_TASK MFSK_FST4_SWEEP_TASK \
           MFSK_FT8_SWEEP_STRATEGY MFSK_FT8_SWEEP_STRICTNESS MFSK_FT8_SWEEP_AP MFSK_FT8_BUSY_CSV \
-          MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV \
+          MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV MFSK_FST4W_SWEEP_CSV \
           MFSK_WSPR_SWEEP_SUMMARY_CSV MFSK_JT65_SWEEP_SUMMARY_CSV \
           MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV MFSK_JT9_SWEEP_SUMMARY_CSV \
           MFSK_Q65_SWEEP_SUMMARY_CSV MFSK_MSK144_SWEEP_SUMMARY_CSV MFSK_JTTY_SWEEP_CSV
@@ -263,6 +267,7 @@ for k in "${want[@]}"; do
         ;;
       ft4_sweep:ft4_snr_sweep) export MFSK_FT4_SWEEP_CSV="$CSV_DIR/ft4.csv" MFSK_FT4_SWEEP_TASK=t1 ;;
       fst4_sweep:fst4_snr_sweep) export MFSK_FST4_SWEEP_CSV="$CSV_DIR/fst4.csv" MFSK_FST4_SWEEP_TASK=t1 ;;
+      fst4w_sweep:fst4w_snr_sweep) export MFSK_FST4W_SWEEP_CSV="$CSV_DIR/fst4w.csv" ;;
       wspr_sweep:) export MFSK_WSPR_SWEEP_SUMMARY_CSV="$CSV_DIR/wspr.csv" ;;
       jt65_sweep:)
         export MFSK_JT65_SWEEP_SUMMARY_CSV="$CSV_DIR/jt65.csv"
