@@ -17,6 +17,9 @@ use std::time::Duration;
 
 use skimmer_core::Station;
 use skimmer_core::modes::{MODES, mode_name, parse_channel};
+use skimmer_core::pskreporter::{
+    Endpoint, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
+};
 use skimmer_core::{Channelizer, Config, Event, Step, WireFormat, all_txt_line};
 
 fn usage() -> ExitCode {
@@ -26,6 +29,9 @@ fn usage() -> ExitCode {
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
+         \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT | --psk-production]]\n\
+         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter's test listener\n\
+         \x20      (pskreporter.info:14739, which records nothing) unless --psk-production; see #655 before using that.\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
         skimmer_core::AUTO_PFB_CHANNELS,
@@ -39,13 +45,19 @@ fn usage() -> ExitCode {
 /// `--server [NAME=]HOST:PORT` starts a server; the options and `--ch` that
 /// follow belong to it. `--step MINUTES` starts a step of a rotation among that
 /// server's channels: the `--ch` after it are heard in that step.
-fn parse_args() -> Option<(Vec<Config>, Option<String>, bool)> {
+/// What the command line asked for: the servers, the log file, `--detail`, and PSK Reporter.
+type Parsed = (Vec<Config>, Option<String>, bool, Option<PskConfig>);
+
+fn parse_args() -> Option<Parsed> {
     let mut cfgs: Vec<Config> = Vec::new();
     let mut cfg = Config::new("127.0.0.1:5555", Vec::new());
     let mut started = false;
     let mut log = None;
     let mut detail = false;
     let (mut mycall, mut mygrid) = (String::new(), String::new());
+    let (mut psk, mut psk_grid, mut psk_ant, mut psk_rig) =
+        (false, String::new(), String::new(), String::new());
+    let (mut psk_production, mut psk_interval, mut psk_to) = (false, None, None::<String>);
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -108,6 +120,14 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>, bool)> {
             // FT8 rows at the end of the slot only, not from ~11.8 s on.
             "--no-early" => cfg.early_decode = false,
             "--detail" => detail = true,
+            "--psk-reporter" => psk = true,
+            "--psk-grid" => psk_grid = it.next()?,
+            "--psk-ant" => psk_ant = it.next()?,
+            "--psk-rig" => psk_rig = it.next()?,
+            "--psk-production" => psk_production = true,
+            // A collector of one's own (a UDP listener), to look at what would be sent.
+            "--psk-to" => psk_to = Some(it.next()?),
+            "--psk-interval" => psk_interval = Some(it.next()?.parse::<u64>().ok()?),
             "--mycall" => mycall = it.next()?.to_ascii_uppercase(),
             "--mygrid" => mygrid = it.next()?.to_ascii_uppercase(),
             "--ch" => match parse_channel(&it.next()?) {
@@ -155,9 +175,35 @@ fn parse_args() -> Option<(Vec<Config>, Option<String>, bool)> {
             }
         }
     }
-    cfgs.iter()
-        .all(|c| !c.channels.is_empty())
-        .then_some((cfgs, log, detail))
+    if !cfgs.iter().all(|c| !c.channels.is_empty()) {
+        return None;
+    }
+    let psk = if psk {
+        let locator = if psk_grid.is_empty() {
+            &mygrid
+        } else {
+            &psk_grid
+        };
+        let mut c = PskConfig::new(&mycall, locator);
+        c.antenna = psk_ant;
+        c.rig_information = psk_rig;
+        if psk_production {
+            c.endpoint = Endpoint::Production;
+        } else if let Some(to) = psk_to {
+            c.endpoint = Endpoint::Custom(to);
+        }
+        if let Some(s) = psk_interval {
+            c.interval = Duration::from_secs(s);
+        }
+        if let Some(why) = c.problem() {
+            eprintln!("--psk-reporter: {why} (--mycall, --psk-grid or --mygrid)");
+            return None;
+        }
+        Some(c)
+    } else {
+        None
+    };
+    Some((cfgs, log, detail, psk))
 }
 
 fn hhmmss(ns: Option<i64>) -> String {
@@ -197,9 +243,40 @@ fn detail_text(d: &skimmer_core::Decode) -> String {
 }
 
 fn main() -> ExitCode {
-    let Some((cfgs, log, detail)) = parse_args() else {
+    let Some((cfgs, log, detail, psk_cfg)) = parse_args() else {
         return usage();
     };
+    // Our own call and the receiver's locator, for what is not a spot.
+    let psk_station = psk_cfg
+        .as_ref()
+        .map(|c| (c.callsign.clone(), c.locator.clone()));
+    let psk = match psk_cfg {
+        None => None,
+        Some(c) => {
+            eprintln!(
+                "PSK Reporter: {} as {} ({}), a datagram about every {} s{}",
+                c.endpoint.address(),
+                c.callsign,
+                c.locator,
+                c.interval.as_secs(),
+                match c.endpoint {
+                    Endpoint::Production => {
+                        "  -- PRODUCTION: not until PSK Reporter's author has been asked about skimmers (#655)"
+                    }
+                    Endpoint::Test => "  (the test listener: nothing is recorded)",
+                    Endpoint::Custom(_) => "  (a listener of your own)",
+                }
+            );
+            match PskReporter::start(c) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    eprintln!("PSK Reporter: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
+    let mut psk_reported = 0u64;
     let many = cfgs.len() > 1;
     let mut log = match log {
         None => None,
@@ -239,6 +316,11 @@ fn main() -> ExitCode {
                         String::new()
                     }
                 );
+                if let (Some(r), Some((call, grid))) = (&psk, &psk_station)
+                    && let Some(s) = spot_from_decode(&d, call, grid)
+                {
+                    r.spot(s);
+                }
                 // ALL.TXT has each message once, as it was first heard: the
                 // resolved form of a row already written is not a new line.
                 if !d.update
@@ -252,6 +334,11 @@ fn main() -> ExitCode {
             // received), and written to ALL.TXT as WSJT-X does.
             Event::Jtty(m) => {
                 if m.is_final() {
+                    if let (Some(r), Some((call, _))) = (&psk, &psk_station)
+                        && let Some(s) = spot_from_jtty(&m, call)
+                    {
+                        r.spot(s);
+                    }
                     println!(
                         "{tag}{} JTTY     {:>10.0} {:>4.0}        {}{}",
                         hhmmss(m.start_utc_ns),
@@ -337,22 +424,40 @@ fn main() -> ExitCode {
                     None => eprintln!("no band is in at this hour; waiting until {until:04} UTC"),
                 }
             }
-            Event::Status(s) => eprintln!(
-                "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
+            Event::Status(s) => {
+                if let Some(r) = &psk {
+                    let st = r.stats();
+                    if st.spots_sent != psk_reported || st.last_error.is_some() {
+                        psk_reported = st.spots_sent;
+                        eprintln!(
+                            "psk: {} offered, {} duplicate, {} sent in {} datagram(s), {} pending{}",
+                            st.offered,
+                            st.duplicates,
+                            st.spots_sent,
+                            st.datagrams_sent,
+                            st.pending,
+                            st.last_error
+                                .map_or(String::new(), |e| format!(", last error: {e}"))
+                        );
+                    }
+                }
+                eprintln!(
+                    "status: {:.0} s streamed, delay {:.0} ms, drift {:+.0} ms, longest push {:.0} ms, \
              queue {:.0} kB, decode {:.0} ms, {} slot(s) queued, {} dropped, \
              {} over budget, {} gap(s), {} re-anchor(s)",
-                s.streamed_s,
-                s.delay_ms,
-                s.drift_ms,
-                s.longest_push_ms,
-                s.queued_bytes as f64 / 1e3,
-                s.longest_decode_ms,
-                s.queued_slots,
-                s.dropped_slots,
-                s.budget_cut_slots,
-                s.gaps,
-                s.reanchors
-            ),
+                    s.streamed_s,
+                    s.delay_ms,
+                    s.drift_ms,
+                    s.longest_push_ms,
+                    s.queued_bytes as f64 / 1e3,
+                    s.longest_decode_ms,
+                    s.queued_slots,
+                    s.dropped_slots,
+                    s.budget_cut_slots,
+                    s.gaps,
+                    s.reanchors
+                )
+            }
             Event::Off => eprintln!("{tag}{}: off", cfg.server),
             Event::Disconnected { error } => eprintln!("{tag}{}: {error}", cfg.server),
         }

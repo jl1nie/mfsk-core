@@ -109,6 +109,31 @@ frequency and tolerance are `:rx=` and `:tol=` (1500 and 50 Hz, as upstream), an
 has a panel of its own where a message is updated in place. Its sender and locator go into the
 database and the station list; the calls are read by WSJT-X's own spotting rule.
 
+### PSK Reporter (`--psk-reporter`, off by default)
+
+```sh
+skimmer --server HOST:5555 --ch FT8@14074000 --mycall CALL --mygrid GRID \
+    --psk-reporter --psk-grid RXLOCATOR --psk-ant "3-el yagi"
+```
+
+Sends what it decodes as spots to [PSK Reporter](https://pskreporter.info/), by the protocol on
+[its developer page](https://pskreporter.info/pskdev.html) (IPFIX over UDP; the packets are
+byte-for-byte WSJT-X's, `skimmer_core::pskreporter`). **By default the datagrams go to PSK Reporter's
+test listener (`pskreporter.info:14739`), which analyses them and records nothing.** `--psk-production`
+sends to `report.pskreporter.info:4739` and should wait until PSK Reporter's author has been asked about
+skimmers (#655). `--psk-to HOST:PORT` sends to a listener of your own, to look at the datagrams.
+
+- The receiver is `--mycall` at `--psk-grid` (else `--mygrid`). **The locator is the antenna's**: for a
+  SpyServer somewhere else it is not where you sit. `--psk-ant` and `--psk-rig` are free text.
+- What is a spot is WSJT-X's rule: a standard message whose sender the text names (a `<...>` that was not
+  resolved is none) with a locator or a CQ; not low-confidence (`?`), not your own call, not your own
+  transmission heard again; WSPR is not sent (that is WSPRnet's). JTTY: a completed message, by WSJT-X's
+  JTTY rule. A spot needs a time, so none are sent before the clock is known.
+- One datagram at most every five minutes, with a random addition (`--psk-interval SECS` only for the test
+  listener or your own); a callsign once per band per five minutes; the templates in the first three
+  datagrams and every hour; one UDP socket, one source port. Spots pending when the program stops are not
+  sent.
+
 ## GUI (`gui/`)
 
 The GUI is a Tauri 2 shell (`gui/src-tauri`) around `skimmer-core` with a

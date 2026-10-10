@@ -211,6 +211,13 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   frequency, a wrapping SNR). `scripts/pskreporter/ipfix_oracle.cpp` links that file against Qt5Core; `tests/pskreporter_ipfix.rs` requires
   the same bytes on 58 datagrams of 32 builds. Nothing sends yet: the sender, the five-minute batching the protocol page asks for, the
   dedupe and the opt-in setting are the next stages, and nothing goes to PSK Reporter until its author has been asked about skimmers.
+- **The skimmer CLI can send spots to PSK Reporter (#655, stage 2 of 4; `--psk-reporter`, off by default).** `PskReporter` batches on a
+  thread of its own and sends on one UDP socket, as the protocol page asks: a datagram at most every five minutes plus a random addition,
+  a callsign once per band per five minutes, templates in the first three datagrams and hourly, `informationSource` 1. `spot_from_decode`
+  and `spot_from_jtty` are WSJT-X's rules (no WSPR, no low-confidence, no own call, a locator or a CQ). It goes to PSK Reporter's **test
+  listener** (`pskreporter.info:14739`, nothing recorded) unless `--psk-production`, which waits for PSK Reporter's author (#655);
+  `--psk-to HOST:PORT` is a listener of one's own. Checked on a live SpyServer against a local listener: 36 FT8 rows offered, 8 duplicates,
+  28 sent in 3 datagrams from one port, with the receiver record and the templates.
 - **skimmer: JTTY (#650).** JTTY has no slot (frames start at any moment and a message grows while it is received), so a JTTY
   channel is not decoded a slot at a time: the receiver keeps its continuous audio (`IqReceiver::add_audio_channel`), a thread
   per channel runs upstream's receiver over it at a slow AGC (`jtty::rx::Stream`; Rx frequency and tolerance are the channel's
