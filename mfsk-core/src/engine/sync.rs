@@ -1990,7 +1990,7 @@ mod tests {
         score_costas_block_flat, sync_power_cv,
     };
     use crate::engine::protocol::{FrameLayout, ModulationParams};
-    use crate::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
+    use crate::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300, Fst4s900, Fst4s1800};
     use crate::ft4::Ft4;
     use alloc::vec::Vec;
 
@@ -2069,6 +2069,8 @@ mod tests {
         check::<Fst4s60>("Fst4s60");
         check::<Fst4s120>("Fst4s120");
         check::<Fst4s300>("Fst4s300");
+        check::<Fst4s900>("Fst4s900");
+        check::<Fst4s1800>("Fst4s1800");
         check::<Ft4>("Ft4");
     }
 

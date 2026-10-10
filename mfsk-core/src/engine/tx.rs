@@ -359,6 +359,8 @@ mod waveform_tests {
         gfsk_matches_trait::<crate::fst4::Fst4s60>();
         gfsk_matches_trait::<crate::fst4::Fst4s120>();
         gfsk_matches_trait::<crate::fst4::Fst4s300>();
+        gfsk_matches_trait::<crate::fst4::Fst4s900>();
+        gfsk_matches_trait::<crate::fst4::Fst4s1800>();
     }
 
     /// GFSK away from 12 kHz: the symbol grid scales like CPFSK's, and

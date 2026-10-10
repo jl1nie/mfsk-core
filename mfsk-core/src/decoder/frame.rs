@@ -1003,6 +1003,10 @@ fst4_decodable!(crate::fst4::Fst4s60, Fst4S60, 1.20);
 fst4_decodable!(crate::fst4::Fst4s120, Fst4S120, 1.20);
 #[cfg(feature = "fst4")]
 fst4_decodable!(crate::fst4::Fst4s300, Fst4S300, 1.20);
+#[cfg(feature = "fst4")]
+fst4_decodable!(crate::fst4::Fst4s900, Fst4S900, 1.20);
+#[cfg(feature = "fst4")]
+fst4_decodable!(crate::fst4::Fst4s1800, Fst4S1800, 1.20);
 
 #[cfg(test)]
 mod ap_tests {

@@ -648,6 +648,10 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     protocol_meta!("FST4-120", crate::fst4::Fst4s120, FST4_PROFILE),
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-300", crate::fst4::Fst4s300, FST4_PROFILE),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-900", crate::fst4::Fst4s900, FST4_PROFILE),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-1800", crate::fst4::Fst4s1800, FST4_PROFILE),
     #[cfg(feature = "fst4w")]
     protocol_meta!("FST4W-120", crate::fst4w::Fst4w120, FST4W_PROFILE),
     #[cfg(feature = "fst4w")]
@@ -731,6 +735,8 @@ modes! {
     "fst4" Fst4S60 "FST4-60A",
     "fst4" Fst4S120 "FST4-120",
     "fst4" Fst4S300 "FST4-300",
+    "fst4" Fst4S900 "FST4-900",
+    "fst4" Fst4S1800 "FST4-1800",
     "fst4w" Fst4W120 "FST4W-120",
     "fst4w" Fst4W300 "FST4W-300",
     "fst4w" Fst4W900 "FST4W-900",
@@ -882,17 +888,25 @@ mod tests {
 
     #[cfg(feature = "fst4")]
     #[test]
-    fn fst4_id_yields_all_five_submodes() {
+    fn fst4_id_yields_all_seven_submodes() {
         let fst4_entries: Vec<&ProtocolMeta> = by_id(ProtocolId::Fst4).collect();
         assert_eq!(
             fst4_entries.len(),
-            5,
-            "expected five FST4 sub-modes in the registry, got {}: {:?}",
+            7,
+            "expected seven FST4 sub-modes in the registry, got {}: {:?}",
             fst4_entries.len(),
             fst4_entries.iter().map(|p| p.name).collect::<Vec<_>>()
         );
         let names: Vec<&str> = fst4_entries.iter().map(|p| p.name).collect();
-        for expected in &["FST4-15", "FST4-30", "FST4-60A", "FST4-120", "FST4-300"] {
+        for expected in &[
+            "FST4-15",
+            "FST4-30",
+            "FST4-60A",
+            "FST4-120",
+            "FST4-300",
+            "FST4-900",
+            "FST4-1800",
+        ] {
             assert!(
                 names.contains(expected),
                 "FST4 registry missing sub-mode {expected}; have {names:?}"

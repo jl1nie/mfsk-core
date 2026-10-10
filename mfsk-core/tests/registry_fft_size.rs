@@ -25,17 +25,16 @@
 ))]
 
 use mfsk_core::engine::protocol::Protocol;
-use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
+use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300, Fst4s900, Fst4s1800};
 use mfsk_core::{Ft4, Ft8, PROTOCOLS};
 
 #[test]
 fn the_literal_matches_the_downsample_config() {
     use mfsk_core::fst4::decode as f;
 
-    use mfsk_core::fst4w::decode as w;
     use mfsk_core::fst4w::{Fst4w120, Fst4w300, Fst4w900, Fst4w1800};
 
-    let pairs: [(&str, u32, usize); 11] = [
+    let pairs: [(&str, u32, usize); 13] = [
         (
             "FT8",
             Ft8::DECODE_FFT1_SIZE,
@@ -72,6 +71,16 @@ fn the_literal_matches_the_downsample_config() {
             f::FST4_300_DOWNSAMPLE.fft1_size,
         ),
         (
+            "FST4-900",
+            Fst4s900::DECODE_FFT1_SIZE,
+            f::FST4_900_DOWNSAMPLE.fft1_size,
+        ),
+        (
+            "FST4-1800",
+            Fst4s1800::DECODE_FFT1_SIZE,
+            f::FST4_1800_DOWNSAMPLE.fft1_size,
+        ),
+        (
             "FST4W-120",
             Fst4w120::DECODE_FFT1_SIZE,
             f::FST4_120_DOWNSAMPLE.fft1_size,
@@ -84,12 +93,12 @@ fn the_literal_matches_the_downsample_config() {
         (
             "FST4W-900",
             Fst4w900::DECODE_FFT1_SIZE,
-            w::FST4W_900_DOWNSAMPLE.fft1_size,
+            f::FST4_900_DOWNSAMPLE.fft1_size,
         ),
         (
             "FST4W-1800",
             Fst4w1800::DECODE_FFT1_SIZE,
-            w::FST4W_1800_DOWNSAMPLE.fft1_size,
+            f::FST4_1800_DOWNSAMPLE.fft1_size,
         ),
     ];
 
