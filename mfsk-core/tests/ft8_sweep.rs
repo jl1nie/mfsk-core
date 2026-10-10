@@ -125,6 +125,20 @@ fn ap_hint_requested() -> Option<mfsk_core::msg::ap::ApHint> {
     Some(h)
 }
 
+/// `MFSK_FT8_SWEEP_AP=full` runs the sweep with `ApMode::Full` (the GUI's "Enable AP"
+/// checked) instead of the sweep's `ApMode::Off`. With no QSO context only the blind
+/// CQ hypothesis runs, and the corpus message is `CQ JL1NIE PM95`, so this measures
+/// what that rung is worth: about 1 dB on the ITU channels (#665). Anything else
+/// than `full` or unset is refused.
+fn ap_mode_requested() -> mfsk_core::decoder::ApMode {
+    use mfsk_core::decoder::ApMode;
+    match std::env::var("MFSK_FT8_SWEEP_AP").as_deref() {
+        Ok("full") => ApMode::Full,
+        Err(_) => ApMode::Off,
+        Ok(other) => panic!("MFSK_FT8_SWEEP_AP={other}: expected full"),
+    }
+}
+
 /// `MFSK_FT8_SWEEP_FREQ_HINT=<Hz>` passes that frequency as the request's `freq_hint`, the
 /// operator's QSO frequency. Every signal in this corpus is at 1500 Hz, so `1500` is at it
 /// and anything 50 Hz or more away (say `900`) is not: `ft8b.f90` tries the heavy AP
@@ -174,7 +188,7 @@ fn decode_wav_ft8(audio: &[i16]) -> (bool, u32) {
     }
     let mut params = DecodeParams::for_band((100.0, 3000.0))
         .depth(Depth::Deep)
-        .ap(ApMode::Off);
+        .ap(ap_mode_requested());
     if let Some(f) = freq_hint_requested() {
         params = params.rx_freq(f);
     }
