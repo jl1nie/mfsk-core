@@ -1006,7 +1006,7 @@ typedef struct MfskDecode {
     uint8_t stage;
     /**
      * FST4W only: the unresolved 22-bit callsign hash of a `<...>` row, valid
-     * when [`MFSK_DECODE_FLAG_HAS_HASH22`] is set, else `0`. Two rows with the
+     * when `MFSK_DECODE_FLAG_HAS_HASH22` is set, else `0`. Two rows with the
      * same text and different hashes are two stations (`result%hash22`).
      * Appended.
      */
