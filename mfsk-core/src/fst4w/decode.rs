@@ -34,6 +34,7 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::engine::Protocol;
 use crate::engine::dsp::downsample::DownsampleCfg;
 use crate::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
 use crate::engine::pipeline::{
@@ -42,10 +43,11 @@ use crate::engine::pipeline::{
 use crate::engine::sync::{fine_sync_power_per_block, sync_power_cv};
 use crate::engine::sync2d::freq_shift_cd0_into;
 use crate::engine::tx::info_to_tones;
-use crate::engine::{ModulationParams, Protocol};
 use crate::fec::Ldpc240_74;
 use crate::fec::ldpc240_74::{Decoded74, Osd74Work, decode240_74};
-use crate::fst4::decode::{FST4_120_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
+use crate::fst4::decode::{
+    FST4_120_DOWNSAMPLE, FST4_300_DOWNSAMPLE, FST4_900_DOWNSAMPLE, FST4_1800_DOWNSAMPLE,
+};
 use crate::msg::hash_table::CallsignHashTable;
 use crate::msg::wsjt77::{register_callsigns, unpack77_with_hash};
 
@@ -63,33 +65,6 @@ const SYNC_Q_MIN: u32 = 16;
 pub const MAX_WCALLS: usize = 100;
 /// `character(len=20) :: wcalls(100)`.
 const WCALL_LEN: usize = 20;
-
-/// FST4W-900 downsampling: 12 kHz → 7.21 Hz baseband (`ndown=1664`).
-/// `fft1_size` is upstream's `nfft1=6480*1664` (`fst4_decode.f90:418`), 17 280
-/// samples short of the 900 s slot, which upstream drops as well.
-pub const FST4W_900_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
-    input_rate: 12_000,
-    fft1_size: 10_782_720,
-    fft2_size: 6_480,
-    tone_spacing_hz: <Fst4w900 as ModulationParams>::TONE_SPACING_HZ,
-    leading_pad_tones: 1.5,
-    trailing_pad_tones: 1.5,
-    ntones: 4,
-    edge_taper_bins: 101,
-};
-
-/// FST4W-1800 downsampling: `ndown=3360`, `nfft1=6426*3360`
-/// (`fst4_decode.f90:422`), 8 640 samples short of the slot.
-pub const FST4W_1800_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
-    input_rate: 12_000,
-    fft1_size: 21_591_360,
-    fft2_size: 6_426,
-    tone_spacing_hz: <Fst4w1800 as ModulationParams>::TONE_SPACING_HZ,
-    leading_pad_tones: 1.5,
-    trailing_pad_tones: 1.5,
-    ntones: 4,
-    edge_taper_bins: 101,
-};
 
 /// `fst4_decode.f90:592-621`, as FST4's: see `fst4::baseline`.
 macro_rules! snr_via_fst4_baseline {
@@ -122,10 +97,10 @@ impl Fst4wPeriod for Fst4w300 {
     const DOWNSAMPLE: DownsampleCfg = FST4_300_DOWNSAMPLE;
 }
 impl Fst4wPeriod for Fst4w900 {
-    const DOWNSAMPLE: DownsampleCfg = FST4W_900_DOWNSAMPLE;
+    const DOWNSAMPLE: DownsampleCfg = FST4_900_DOWNSAMPLE;
 }
 impl Fst4wPeriod for Fst4w1800 {
-    const DOWNSAMPLE: DownsampleCfg = FST4W_1800_DOWNSAMPLE;
+    const DOWNSAMPLE: DownsampleCfg = FST4_1800_DOWNSAMPLE;
 }
 
 /// What FST4W keeps between periods: the callsign hash table and the Keff-50

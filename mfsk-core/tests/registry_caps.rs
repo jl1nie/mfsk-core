@@ -98,7 +98,15 @@ fn check_decode_handle<P: FrameDecodable>(name: &str) {
     );
 }
 
-const FST4_MODES: [&str; 5] = ["FST4-15", "FST4-30", "FST4-60A", "FST4-120", "FST4-300"];
+const FST4_MODES: [&str; 7] = [
+    "FST4-15",
+    "FST4-30",
+    "FST4-60A",
+    "FST4-120",
+    "FST4-300",
+    "FST4-900",
+    "FST4-1800",
+];
 
 #[test]
 fn implemented_capabilities_are_claimed() {

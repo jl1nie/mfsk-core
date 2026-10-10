@@ -684,9 +684,13 @@ pub fn default_params(mode: Mode) -> DecodeParams {
         #[cfg(feature = "ft4")]
         Mode::Ft4 => (200.0, 4000.0),
         #[cfg(feature = "fst4")]
-        Mode::Fst4S15 | Mode::Fst4S30 | Mode::Fst4S60 | Mode::Fst4S120 | Mode::Fst4S300 => {
-            (600.0, 1400.0)
-        }
+        Mode::Fst4S15
+        | Mode::Fst4S30
+        | Mode::Fst4S60
+        | Mode::Fst4S120
+        | Mode::Fst4S300
+        | Mode::Fst4S900
+        | Mode::Fst4S1800 => (600.0, 1400.0),
         _ => (d.freq_min_hz, d.freq_max_hz),
     };
     let p = DecodeParams::for_band(band);

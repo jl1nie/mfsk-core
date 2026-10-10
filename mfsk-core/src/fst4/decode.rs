@@ -108,6 +108,33 @@ pub const FST4_300_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
     edge_taper_bins: 101,
 };
 
+/// FST4-900 downsample configuration: 12 kHz → 7.21 Hz baseband (NDOWN = 1664).
+/// `fft1_size` = `nfft1` of `fst4_decode.f90:418`, `6480*1664` = 10 782 720, 17 280
+/// samples short of the 900 s slot, which upstream drops as well.
+pub const FST4_900_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
+    input_rate: 12_000,
+    fft1_size: 10_782_720,
+    fft2_size: 6_480,
+    tone_spacing_hz: <super::Fst4s900 as crate::engine::ModulationParams>::TONE_SPACING_HZ,
+    leading_pad_tones: 1.5,
+    trailing_pad_tones: 1.5,
+    ntones: 4,
+    edge_taper_bins: 101,
+};
+
+/// FST4-1800 downsample configuration: NDOWN = 3360, `nfft1 = 6426*3360` =
+/// 21 591 360 (`fst4_decode.f90:422`), 8 640 samples short of the slot.
+pub const FST4_1800_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
+    input_rate: 12_000,
+    fft1_size: 21_591_360,
+    fft2_size: 6_426,
+    tone_spacing_hz: <super::Fst4s1800 as crate::engine::ModulationParams>::TONE_SPACING_HZ,
+    leading_pad_tones: 1.5,
+    trailing_pad_tones: 1.5,
+    ntones: 4,
+    edge_taper_bins: 101,
+};
+
 /// FST4 has 40 sync symbols (5 × 8). Stands for WSJT-X's pre-ladder gate
 /// (`get_fst4_bitmetrics.f90`: `if(nsync .lt. 16) badsync=.true.; return`
 /// — bails before the expensive nsym=1/2/4/8 correlation ladder,
@@ -226,6 +253,9 @@ impl_frame_decodable!(super::Fst4s30, FST4_30_DOWNSAMPLE, 359_856);
 impl_frame_decodable!(super::Fst4s60, FST4_60A_DOWNSAMPLE, 720_000);
 impl_frame_decodable!(super::Fst4s120, FST4_120_DOWNSAMPLE, 1_440_000);
 impl_frame_decodable!(super::Fst4s300, FST4_300_DOWNSAMPLE, 3_594_240);
+// 900 s and 1800 s: `nfft1` is the whole transform (`fst4_decode.f90:418,422`).
+impl_frame_decodable!(super::Fst4s900, FST4_900_DOWNSAMPLE, 10_782_720);
+impl_frame_decodable!(super::Fst4s1800, FST4_1800_DOWNSAMPLE, 21_591_360);
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,5 @@
+# WSJT-X v3.3.0-beta1 (57ba9337fa020065dc0ceee2c4ef85e433ea32d4) jt9 -7 -d 3 -L 600 -H 1400 over mfsk-core/tests/fst4_long_period.rs's cases
+# case	message	freq Hz	dt s	snr dB
+fst4_1800	CQ JL1NIE PM95	1000	0.0	-33
+fst4_900	CQ JL1NIE PM95	1000	0.3	-30
+fst4_900	K1ABC W9XYZ EN50	1100	-0.3	-32

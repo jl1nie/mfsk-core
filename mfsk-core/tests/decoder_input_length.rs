@@ -91,6 +91,8 @@ fn period_with_signal(mode: Mode, slot: usize) -> Option<Vec<f32>> {
         "FST4-60A" => frame77::<Fst4s60>(slot, 1_000.0),
         "FST4-120" => frame77::<Fst4s120>(slot, 1_000.0),
         "FST4-300" => frame77::<Fst4s300>(slot, 1_000.0),
+        "FST4-900" => frame77::<mfsk_core::fst4::Fst4s900>(slot, 1_000.0),
+        "FST4-1800" => frame77::<mfsk_core::fst4::Fst4s1800>(slot, 1_000.0),
         "FST4W-120" => w::<Fst4w120>(slot),
         "FST4W-300" => w::<Fst4w300>(slot),
         "FST4W-900" => w::<Fst4w900>(slot),

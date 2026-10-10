@@ -50,7 +50,7 @@ use mfsk_core::Jt65;
 #[cfg(feature = "wspr")]
 use mfsk_core::Wspr;
 #[cfg(feature = "fst4")]
-use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s120, Fst4s300};
+use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s120, Fst4s300, Fst4s900, Fst4s1800};
 
 #[cfg(feature = "q65")]
 use mfsk_core::q65::{
@@ -69,6 +69,8 @@ fn expected_timing(name: &str) -> (f32, f32) {
         "Fst4s60" => (3.24e-1, 3.0864198e0),
         "Fst4s120" => (6.8333334e-1, 1.4634147e0),
         "Fst4s300" => (1.792e0, 5.5803573e-1),
+        "Fst4s900" => (5.5466666e0, 1.8028846e-1),
+        "Fst4s1800" => (1.12e1, 8.928572e-2),
         "Fst4w120" => (6.8333334e-1, 1.4634147e0),
         "Fst4w300" => (1.792e0, 5.5803573e-1),
         "Fst4w900" => (5.5466666e0, 1.8028846e-1),
@@ -356,6 +358,10 @@ fn fst4_other_submodes_satisfy_protocol_invariants() {
     assert_front_end_invariants::<Fst4s120>("Fst4s120");
     assert_protocol_invariants::<Fst4s300>("Fst4s300");
     assert_front_end_invariants::<Fst4s300>("Fst4s300");
+    assert_protocol_invariants::<Fst4s900>("Fst4s900");
+    assert_front_end_invariants::<Fst4s900>("Fst4s900");
+    assert_protocol_invariants::<Fst4s1800>("Fst4s1800");
+    assert_front_end_invariants::<Fst4s1800>("Fst4s1800");
 }
 
 #[cfg(feature = "wspr")]
@@ -566,6 +572,8 @@ fn registry_entries_match_zst_trait_constants() {
         check!("FST4-30", Fst4s30);
         check!("FST4-120", Fst4s120);
         check!("FST4-300", Fst4s300);
+        check!("FST4-900", Fst4s900);
+        check!("FST4-1800", Fst4s1800);
     }
     #[cfg(feature = "fst4w")]
     {
@@ -627,7 +635,7 @@ fn registry_size_matches_wired_protocols() {
     }
     #[cfg(feature = "fst4")]
     {
-        expected += 5;
+        expected += 7;
     }
     #[cfg(feature = "fst4w")]
     {
@@ -692,6 +700,8 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
         ids.push(("Fst4s30", <Fst4s30 as Protocol>::ID));
         ids.push(("Fst4s120", <Fst4s120 as Protocol>::ID));
         ids.push(("Fst4s300", <Fst4s300 as Protocol>::ID));
+        ids.push(("Fst4s900", <Fst4s900 as Protocol>::ID));
+        ids.push(("Fst4s1800", <Fst4s1800 as Protocol>::ID));
     }
     #[cfg(feature = "fst4w")]
     {
