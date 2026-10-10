@@ -10,8 +10,8 @@
 use std::sync::Arc;
 use std::sync::mpsc;
 
-pub use mfsk_core::jtty::assemble::UpdateKind;
 use mfsk_core::jtty::assemble::MessageUpdate;
+pub use mfsk_core::jtty::assemble::UpdateKind;
 use mfsk_core::jtty::rx::{Params, Receiver, Stream};
 
 use crate::ChannelOptions;
@@ -70,7 +70,10 @@ impl JttyMessage {
         if !first_ok || !is_standard_call(f[1]) {
             return None;
         }
-        let grid = f.get(2).filter(|g| is_grid(g)).map(|g| g.to_ascii_uppercase());
+        let grid = f
+            .get(2)
+            .filter(|g| is_grid(g))
+            .map(|g| g.to_ascii_uppercase());
         Some((f[1].to_ascii_uppercase(), grid))
     }
 }
@@ -88,7 +91,9 @@ fn is_standard_call(s: &str) -> bool {
         return false;
     };
     let tail = &b[d + 1..];
-    (1..=2).contains(&d) && (1..=3).contains(&tail.len()) && tail.iter().all(u8::is_ascii_alphabetic)
+    (1..=2).contains(&d)
+        && (1..=3).contains(&tail.len())
+        && tail.iter().all(u8::is_ascii_alphabetic)
 }
 
 /// A four- or six-character Maidenhead locator.
@@ -318,10 +323,17 @@ mod tests {
     #[test]
     fn the_sender_is_upstreams_second_word() {
         let s = |t: &str| msg(t, UpdateKind::Complete).sender();
-        assert_eq!(s("CQ K1ABC FN42"), Some(("K1ABC".into(), Some("FN42".into()))));
+        assert_eq!(
+            s("CQ K1ABC FN42"),
+            Some(("K1ABC".into(), Some("FN42".into())))
+        );
         assert_eq!(s("JA1ABC K1ABC 599"), Some(("K1ABC".into(), None)));
         assert_eq!(s("DE JA1ABC"), Some(("JA1ABC".into(), None)));
-        assert_eq!(s("HELLO K1ABC"), None, "first word neither CQ, DE nor a call");
+        assert_eq!(
+            s("HELLO K1ABC"),
+            None,
+            "first word neither CQ, DE nor a call"
+        );
         assert_eq!(s("CQ TEST"), None, "second word not a call");
         assert_eq!(msg("CQ K1ABC", UpdateKind::Growing).sender(), None);
         assert_eq!(msg("CQ K1ABC", UpdateKind::Expired).sender(), None);
@@ -351,7 +363,8 @@ mod tests {
                 agc.process(c, &mut out);
             }
             let tail = &out[out.len() - 12_000..];
-            let rms = (tail.iter().map(|&v| (v as f32).powi(2)).sum::<f32>() / tail.len() as f32).sqrt();
+            let rms =
+                (tail.iter().map(|&v| (v as f32).powi(2)).sum::<f32>() / tail.len() as f32).sqrt();
             assert!((rms - TARGET_RMS).abs() < 50.0, "scale {scale}: rms {rms}");
         }
     }
