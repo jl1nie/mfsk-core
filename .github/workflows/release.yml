@@ -337,9 +337,6 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # `ffi-*` only: the skimmer installers are artifacts of this run
-      # too, and may already be uploaded; they are attached by their
-      # own job after this one.
       - name: Download FFI artifacts
         uses: actions/download-artifact@v4
         with:
@@ -443,63 +440,3 @@ jobs:
             and the Kotlin/JNI scaffold in
             [`bindings/kotlin/`](https://github.com/jl1nie/mfsk-core/blob/main/bindings/kotlin/)
             for the integration guide.
-
-  # ── Skimmer installers ────────────────────────────────────────────
-  # The SpyServer skimmer GUI as a Windows installer and a macOS disk
-  # image, built by `skimmer-installers.yml` and attached after the
-  # publish. Deliberately not a gate: the skimmer is a sample app, and a
-  # webview or bundler failure should not hold back the library. If the
-  # build fails, the release goes out without them and this job is red.
-  skimmer-installers:
-    name: Skimmer installers
-    needs: verify-tag
-    uses: ./.github/workflows/skimmer-installers.yml
-    with:
-      version: ${{ needs.verify-tag.outputs.version }}
-
-  attach-skimmer:
-    name: Attach skimmer installers to the release
-    runs-on: ubuntu-latest
-    needs: [verify-tag, publish, skimmer-installers]
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: skimmer-*
-          path: skimmer
-          merge-multiple: true
-
-      - name: Attach to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: skimmer/*
-          fail_on_unmatched_files: true
-          append_body: true
-          body: |
-
-            ## mfsk skimmer (sample app)
-
-            Decodes FT8, FT4, FST4, WSPR, JT9, JT65 and Q65 from a SpyServer
-            (Airspy HF+, Airspy, RTL-SDR). It receives only. This build carries
-            the library fixes of this release.
-
-            | platform | file |
-            |---|---|
-            | Windows 10/11 (x64) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-windows-x64-setup.exe` |
-            | macOS (Apple silicon) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-macos-arm64.dmg` |
-
-            Install: neither is signed with a publisher certificate, so each
-            system warns once.
-            - **Windows:** run the setup; on *Windows protected your PC* choose
-              *More info*, then *Run anyway*. No administrator rights needed.
-            - **macOS:** drag the app to Applications. macOS 14 and earlier:
-              right-click, *Open*. macOS 15 and later: open it once, then System
-              Settings → Privacy & Security → *Open Anyway*. Allow local network
-              access when asked, or the connection fails with `No route to host`.
-
-            First run: *Settings* → the SpyServer's `host:5555` and your locator →
-            add channels from the presets → *Connect*. Updating: run the newer
-            installer over the old one. Full guide, troubleshooting and the
-            command line version:
-            [`apps/skimmer/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/apps/skimmer/README.md).

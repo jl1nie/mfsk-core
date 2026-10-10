@@ -22,9 +22,10 @@ RTL-SDR behind [SpyServer](https://airspy.com/download/), on this LAN or
 elsewhere), and a PC clock that is right to about a second, since every mode
 decodes in time slots. The skimmer receives; it never transmits.
 
-**1. Download** the installer for your system from the
-[latest release](https://github.com/jl1nie/mfsk-core/releases/latest) (under
-*Assets*; `X.Y.Z` is the release's version):
+**1. Download** the installer for your system from the newest
+[*mfsk skimmer* release](https://github.com/jl1nie/mfsk-core/releases?q=skimmer) (tag `skimmer-vX.Y.Z`,
+under *Assets*). The skimmer has its own version, from 1.0.0; the library's `vX.Y.Z` releases do not
+carry it.
 
 | platform | file |
 |---|---|
@@ -69,11 +70,13 @@ slots are taken (see *Sharing the radio with SDR#*). On a LAN, check that the
 address and port are the ones SDR# uses.
 
 **Updating:** run the newer installer over the old one; settings and the database
-are kept. Each release carries the library fixes of its version, so the release
-notes' *Fixed* items apply to the skimmer too.
+are kept. A skimmer release is built from `main`, so it carries every library fix merged
+by then, released to crates.io or not.
 
-The installers are built by `.github/workflows/skimmer-installers.yml` for every
-release and attached to it; the same workflow runs on pull requests that touch
+The installers are built by `.github/workflows/skimmer-installers.yml`; a `skimmer-vX.Y.Z` tag
+runs `skimmer-release.yml`, which checks the tag against the skimmer's version (in
+`core/Cargo.toml`, `cli/Cargo.toml`, `gui/src-tauri/Cargo.toml` and `tauri.conf.json`, all four),
+builds them and makes the release, without touching crates.io; the same workflow runs on pull requests that touch
 `apps/skimmer/` and by hand (*Run workflow*, which gives a branch's installers as
 the run's artifacts). The sections below say how it works and how to build it
 yourself.

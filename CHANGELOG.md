@@ -245,6 +245,9 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   (`FULL_UDP_PAYLOAD_BYTES`; `build_packets` and the WSJT-X byte-for-byte tests keep 952) and a spot that would overfill the queue sends it first.
   The destination is one constant, `pskreporter::APP_ENDPOINT`, for the CLI and the GUI: the test listener until the author says yes to
   production. The GUI's "Send to" choice and the CLI's `--psk-production` are gone (`pskEndpoint` in an old settings file is ignored); `--psk-to` stays.
+- **The skimmer is released on its own (`skimmer-vX.Y.Z` tags, version 1.0.0 on).** `skimmer-release.yml` checks the tag against the skimmer's
+  version (four files), builds the installers and makes a release not marked latest, without crates.io; the library's `release.yml` no longer
+  attaches them. An app fix no longer waits for the library's biweekly cut. PSK Reporter now sees `mfsk-skimmer 1.0.0`.
 - **PSK Reporter spot rules are WSJT-X's, checked against WSJT-X (#655, stage 4 of 4).** `scripts/pskreporter/spot_oracle.cpp` runs upstream's
   `tokens_re` / `deCallAndGrid`, `Radio::is_standard_callsign`, `decoded_grid_pattern` and the real Fortran `stdmsg_`; the answers for 1 537
   words and 68 messages are vendored and `tests/pskreporter_spot_rules.rs` requires them (143 real decodes off the air agreed too). The
