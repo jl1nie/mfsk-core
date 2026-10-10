@@ -29,9 +29,9 @@ fn usage() -> ExitCode {
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
-         \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT | --psk-test]]\n\
-         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter (report.pskreporter.info:4739)\n\
-         \x20      unless --psk-test (its test listener, pskreporter.info:14739, which records nothing) or --psk-to.\n\
+         \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT]]\n\
+         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter\n\
+         \x20      (report.pskreporter.info:4739), or to --psk-to, a listener of your own.\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
         skimmer_core::AUTO_PFB_CHANNELS,
@@ -57,7 +57,7 @@ fn parse_args() -> Option<Parsed> {
     let (mut mycall, mut mygrid) = (String::new(), String::new());
     let (mut psk, mut psk_grid, mut psk_ant, mut psk_rig) =
         (false, String::new(), String::new(), String::new());
-    let (mut psk_test, mut psk_interval, mut psk_to) = (false, None, None::<String>);
+    let (mut psk_interval, mut psk_to) = (None, None::<String>);
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -124,8 +124,6 @@ fn parse_args() -> Option<Parsed> {
             "--psk-grid" => psk_grid = it.next()?,
             "--psk-ant" => psk_ant = it.next()?,
             "--psk-rig" => psk_rig = it.next()?,
-            // The test listener, which analyses the datagrams and records nothing.
-            "--psk-test" => psk_test = true,
             // The default since PSK Reporter's author answered (#655); kept so old command lines work.
             "--psk-production" => {}
             // A collector of one's own (a UDP listener), to look at what would be sent.
@@ -192,8 +190,6 @@ fn parse_args() -> Option<Parsed> {
         c.rig_information = psk_rig;
         c.endpoint = if let Some(to) = psk_to {
             Endpoint::Custom(to)
-        } else if psk_test {
-            Endpoint::Test
         } else {
             Endpoint::Production
         };

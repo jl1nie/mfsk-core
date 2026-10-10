@@ -102,8 +102,6 @@ export interface Settings {
   decodeLanes: number;
   /** FT8 rows from ~11.8 s into the slot, the rest at its end, as WSJT-X shows them. */
   earlyDecode: boolean;
-  /** Where PSK Reporter spots go: PSK Reporter itself (production, the default), or its test listener (nothing recorded). */
-  pskEndpoint?: 'test' | 'production';
   /** Every decode in a SQLite file, for the Analysis view. */
   dbEnabled: boolean;
   /** The database file recorded into (and read by Analysis unless another is opened). */
