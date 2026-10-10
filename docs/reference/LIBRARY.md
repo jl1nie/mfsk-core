@@ -1273,6 +1273,11 @@ assert!(updates.iter().any(|u| u.text.contains("CQ K1ABC")));
 # }
 ```
 
+An update also carries `calls`: the callsigns of the message's call atoms,
+in the order they arrived and each once (`["K1ABC"]` above), for a station
+list or a map that should not parse the text (#650). A call typed as free text
+is not a call atom and is not there. Upstream's update has no such field.
+
 **Sending** starts from text. `jtty::pack::pack(text, profile)` is upstream's `pack_jtty`:
 it normalises the text (upper case, `~` and NUL are spaces, spaces collapse, anything
 outside the 64-character alphabet becomes `#`) and picks the **fewest frames** with a
@@ -1574,6 +1579,18 @@ the period at one level; a period the channel already delivered part of is
 not delivered again (a clock stepped back), so no decode splices two
 recordings. Points are off by default, and a channel without them gets
 exactly the slots it got before. Design: `docs/notes/IQ_PREFIX_DESIGN.md`.
+
+*A channel with no slot.* `rx.add_audio_channel(dial_hz)` places a channel
+as `add_channel` does but cuts nothing: it keeps its continuous 12 kHz audio
+for a receiver that has no slot of its own, JTTY's `jtty::rx::Stream` (#650).
+`rx.take_audio_from(id, &mut buf)` moves that audio out up to the first break
+in it and returns the audio index of its first sample; call it until it
+returns `None`. A retune or a gap starts a new run at a later index, and a
+clock re-anchoring starts one at the same index, since the UTC jumped: an
+index other than the one expected next means the audio before and after are
+not one recording (finish the receiver, reset it). `rx.utc_of_audio(k)` is
+the UTC of index `k`. The audio is unscaled, as `take_audio`'s is (that call
+now joins the runs, as before), so scale it to `i16` before `Stream::push`.
 
 `mfsk_core::slotgrid` is that arithmetic on its own, in integers with no
 `std`, allocation or atomics, so it also fits an embedded board and the C
