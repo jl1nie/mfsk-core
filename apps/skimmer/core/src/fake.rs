@@ -80,22 +80,25 @@ impl Default for Band {
             dial_hz: 14_090_000.0,
             cycle_s: 48,
             script: vec![
+                // Texts are in the forms WSJT-X packs into structured frames: a CQ
+                // is `CQ <call> CQ` (one call atom; `CQ K1ABC` or `CQ K1ABC FN42`
+                // is typed text in five-character frames, `CQ K1`, `ABC F`, ...).
                 // Starts are not whole seconds: a station keys when it likes, and
                 // a script of whole seconds puts every frame of a message at the
                 // same place against the receiver's window grid, which is not
                 // what the air does.
-                line(1.2, 1500.0, 1.0, "CQ K1ABC FN42"),
+                line(1.2, 1500.0, 1.0, "CQ K1ABC CQ FN42"),
                 line(9.4, 1500.0, 0.8, "K1ABC JA1ABC"),
                 line(17.1, 1500.0, 1.0, "JA1ABC K1ABC 599"),
                 line(26.3, 1500.0, 0.8, "K1ABC JA1ABC 599"),
                 line(35.2, 1500.0, 1.0, "JA1ABC TU 73 K1ABC"),
-                line(3.3, 1350.0, 0.6, "CQ W9XYZ EN34"),
+                line(3.3, 1350.0, 0.6, "CQ W9XYZ CQ EN34"),
                 line(12.2, 1350.0, 0.5, "W9XYZ VK3NV"),
                 line(21.4, 1350.0, 0.6, "VK3NV W9XYZ 599"),
                 line(30.1, 1350.0, 0.5, "W9XYZ VK3NV 599 73"),
-                line(5.45, 1650.0, 0.4, "CQ DL1ABC JO31"),
-                line(25.2, 1650.0, 0.4, "CQ DL1ABC JO31"),
-                line(41.3, 1650.0, 0.4, "CQ DL1ABC"),
+                line(5.45, 1650.0, 0.4, "CQ DL1ABC CQ JO31"),
+                line(25.2, 1650.0, 0.4, "CQ DL1ABC CQ JO31"),
+                line(41.3, 1650.0, 0.4, "CQ DL1ABC CQ"),
             ],
             jitter_s: 1.5,
             qsb: 0.4,

@@ -64,9 +64,9 @@ fn a_qso_and_a_side_channel_come_out_of_the_stand_in_server() {
     let band = Band {
         cycle_s: 16,
         script: vec![
-            line(1.0, 1500.0, 1.0, "CQ K1ABC FN42"),
+            line(1.0, 1500.0, 1.0, "CQ K1ABC CQ FN42"),
             line(7.0, 1500.0, 0.8, "K1ABC JA1ABC"),
-            line(3.0, 1350.0, 0.5, "CQ W9XYZ EN34"),
+            line(3.0, 1350.0, 0.5, "CQ W9XYZ CQ EN34"),
         ],
         // Steady, on the script's own times: the test asks for whole messages.
         jitter_s: 0.0,
@@ -74,18 +74,20 @@ fn a_qso_and_a_side_channel_come_out_of_the_stand_in_server() {
         ..Band::default()
     };
     let all = run_against(band, |m| {
-        done(m, "CQ K1ABC FN42").is_some()
+        done(m, "CQ K1ABC CQ FN42").is_some()
             && done(m, "K1ABC JA1ABC").is_some()
-            && done(m, "CQ W9XYZ EN34").is_some()
+            && done(m, "CQ W9XYZ CQ EN34").is_some()
     });
-    let cq = done(&all, "CQ K1ABC FN42").unwrap_or_else(|| panic!("{all:?}"));
+    let cq = done(&all, "CQ K1ABC CQ FN42").unwrap_or_else(|| panic!("{all:?}"));
     assert!((cq.freq_hz - 14_091_500.0).abs() < 4.0, "{}", cq.freq_hz);
-    assert_eq!(cq.sender(), Some(("K1ABC".into(), Some("FN42".into()))));
-    // Typed text packs into 5-character frames, not call atoms: `calls` is for the
-    // structured ones, and the sender is read from the text by WSJT-X's rule.
+    // A CQ is one call atom (and a grid): its call is in `calls`, and the sender is
+    // the second word by WSJT-X's spotting rule (which finds no grid after `CQ`).
+    assert_eq!(cq.calls, ["K1ABC"]);
+    assert_eq!(cq.sender(), Some(("K1ABC".into(), None)));
     let ans = done(&all, "K1ABC JA1ABC").unwrap_or_else(|| panic!("{all:?}"));
+    assert_eq!(ans.calls, ["K1ABC", "JA1ABC"]);
     assert_eq!(ans.sender().map(|s| s.0), Some("JA1ABC".to_string()));
-    let side = done(&all, "CQ W9XYZ EN34").unwrap_or_else(|| panic!("{all:?}"));
+    let side = done(&all, "CQ W9XYZ CQ EN34").unwrap_or_else(|| panic!("{all:?}"));
     assert!(
         (side.freq_hz - 14_091_350.0).abs() < 6.0,
         "{}",
