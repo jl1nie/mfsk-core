@@ -1477,7 +1477,13 @@ pub fn pack28(call: &str) -> Option<u32> {
             buf[i] = b.to_ascii_uppercase();
         }
     } else if bytes.len() >= 2 && bytes[1].is_ascii_digit() {
-        // Digit at position 2 — shift right by 1 so digit lands at position 3
+        // Digit at position 2 — shift right by 1 so digit lands at position 3. A sixth
+        // character would fall off the end (`W1ABCD` became `W1ABC`, and `K1ABCD` `K1ABC`):
+        // a one-letter prefix leaves room for a three-letter suffix at most, so it is not a
+        // standard callsign.
+        if bytes.len() > 5 {
+            return None;
+        }
         buf[0] = b' ';
         for (i, &b) in bytes.iter().enumerate() {
             if i + 1 < 6 {
@@ -1582,7 +1588,7 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
     let (base1, ipa, p1) = split_rp_suffix(call1);
     let (base2, ipb, p2) = split_rp_suffix(call2);
     let n28a = pack28(base1)?;
-    let n28b = pack28(base2)?;
+    let n28b = pack28(base2).filter(|&n| n >= NTOKENS)?; // DE / QRZ / CQ … are call-1 only
     let i3 = if p1 || p2 { 2 } else { 1 };
 
     let report = report.trim();
@@ -1740,15 +1746,21 @@ pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> 
 /// ```
 pub fn pack77_free_text(text: &str) -> Option<[u8; 77]> {
     let text = text.to_ascii_uppercase();
-    let bytes = text.as_bytes();
+    // `adjustr` moves trailing blanks to the front, so they are padding, not text.
+    let bytes = text.trim_end_matches(' ').as_bytes();
     if bytes.is_empty() || bytes.len() > 13 {
         return None;
     }
 
-    // Pad to 13 characters with trailing spaces
+    // Right-justified in 13 characters, leading spaces: `packtext77` (`packjt77.f90`) does
+    // `w=adjustr(c13)`. Trailing spaces gave a different 71-bit number than WSJT-X's for the same
+    // text. A receiver trims both (`unpack_free_text`; upstream `adjustl`), so the text read
+    // back was the same, which is how this went unnoticed; a *list* of exact codewords, as
+    // Q65's full-AP list is, or a comparison with upstream's bits, sees the difference.
     let mut padded = [b' '; 13];
+    let lead = 13 - bytes.len();
     for (i, &b) in bytes.iter().enumerate() {
-        padded[i] = b;
+        padded[lead + i] = b;
     }
 
     // Encode as base-42 number (fits in 71 bits: 42^13 ≈ 2^71.4)
@@ -3050,5 +3062,58 @@ mod tests {
             "CQ <...> must be refused; got {:?}",
             unpack77(&m)
         );
+    }
+}
+
+#[cfg(test)]
+mod upstream_packer_fidelity_tests {
+    use super::*;
+    use crate::msg::q65::{pack77_q65_list_message, pack77_to_symbols};
+
+    /// `packtext77` right-justifies (`w=adjustr(c13)`): the 13 info symbols of `K1ABC TNEW R `
+    /// from a WSJT-X v3.3.0-beta1 `q65_set_list2` (`scripts/jttysim/q65_callers_oracle.f90`).
+    /// Trailing blanks are padding, so with or without them it is the same message.
+    #[test]
+    fn free_text_is_right_justified_like_packtext77() {
+        let want = [0, 26, 12, 52, 47, 1, 53, 44, 7, 55, 26, 48, 0];
+        for text in ["K1ABC TNEW R", "K1ABC TNEW R "] {
+            let bits = pack77_free_text(text).unwrap();
+            assert_eq!(pack77_to_symbols(&bits), want, "{text:?}");
+        }
+        assert_eq!(
+            unpack77(&pack77_free_text("JA/TK-001").unwrap()).unwrap(),
+            "JA/TK-001"
+        );
+    }
+
+    /// A one-letter prefix leaves room for a three-letter suffix at most. `W1ABCD` and `K1ABCD`
+    /// used to lose their last letter and pack as `W1ABC` / `K1ABC`.
+    #[test]
+    fn a_sixth_character_is_not_dropped_from_a_one_letter_prefix_call() {
+        assert_eq!(pack28("W1ABCD"), None);
+        assert_eq!(pack28("K1ABCD"), None);
+        assert!(pack28("W1ABC").is_some());
+        assert!(
+            pack28("KH6WAB").is_some(),
+            "a two-letter prefix keeps all six"
+        );
+    }
+
+    /// `CQ`, `DE` and `QRZ` are call-1 words; the second call is a callsign.
+    #[test]
+    fn cq_de_qrz_are_not_a_second_call() {
+        assert!(pack77("CQ", "K1ABC", "FN42").is_some());
+        for call2 in ["CQ", "DE", "QRZ"] {
+            assert_eq!(pack77("K1ABC", call2, "FN42"), None, "{call2}");
+        }
+    }
+
+    /// `genq65` for a list message that is not a standard one: free text cut to 13
+    /// characters, or `None` (`*** bad message ***`) when those are not all free-text characters.
+    #[test]
+    fn a_list_message_that_is_not_standard_is_truncated_free_text() {
+        let bits = pack77_q65_list_message("K1ABC", "TNEW", "FN42").unwrap();
+        assert_eq!(unpack77(&bits).unwrap(), "K1ABC TNEW FN");
+        assert!(pack77_q65_list_message("K1ABC", "<JA1AB", "FN42").is_none());
     }
 }

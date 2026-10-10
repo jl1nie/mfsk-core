@@ -11,12 +11,10 @@
 //! codeword. The script covers the cases the beta1 audit (#642) turned on: eviction of the
 //! least recently heard with ties, a refreshed caller surviving, expiry before recording,
 //! compound calls, an empty second word, a grid past the 37 characters, ` R ` forms, and
-//! the DX station as the 51st beside 50 callers (511 codewords).
+//! the DX station as the 51st beside 50 callers (511 codewords), caller tokens that are not
+//! callsigns (`K1ABC TNEW FN42`, upstream's truncated free text, or `*** bad message ***`
+//! as codewords of -1), and own calls that are not plain (`PJ4/K1ABC`, `W1AW/P`).
 //!
-//! **Not covered, on purpose:** a caller token that is not a callsign (`K1ABC TNEW FN42`).
-//! Upstream's `genq65` packs that message as truncated free text and lists codewords for it;
-//! `contest_codewords` skips a message that will not pack. A real decoded caller is a
-//! callsign, so the script keeps to callsigns.
 
 #![cfg(feature = "q65")]
 
@@ -89,6 +87,10 @@ fn caller_list_matches_upstream_beta1_operation_by_operation() {
         .map(|l| format!("{l}\n"))
         .collect();
     let got = replay(&script);
+    // MFSK_CALLERS_OUT=<file>: keep what we made, to diff against the golden when it fails.
+    if let Ok(path) = std::env::var("MFSK_CALLERS_OUT") {
+        std::fs::write(path, &got).unwrap();
+    }
     if got != want {
         let (g, w): (Vec<&str>, Vec<&str>) = (got.lines().collect(), want.lines().collect());
         let at = g

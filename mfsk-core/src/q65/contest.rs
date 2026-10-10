@@ -26,7 +26,7 @@ use num_traits::Float;
 
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
-use crate::msg::q65::{pack77_q65, pack77_to_symbols_flagged};
+use crate::msg::q65::{pack77_q65_list_message, pack77_to_symbols_flagged};
 
 /// `Q65_MAX_CALLERS` (`q65_limits.h` `Q65_CALLER_CAPACITY`, v3.3.0-beta1).
 pub const MAX_CALLERS: usize = 50;
@@ -169,7 +169,8 @@ impl Q65Callers {
 /// then, for every caller — and the current DX station too, when it has a
 /// standard call and a grid and is not already listed — `MyCall Caller
 /// Grid`, `… R Grid`, `… RRR`, `… RR73` and `… 73`, each encoded with the
-/// 78th bit clear and set. A message that will not pack is skipped.
+/// 78th bit clear and set. A message that packs neither as a standard one nor as free text
+/// (`genq65`'s `*** bad message ***`) still takes its two slots, as codewords of -1.
 pub fn contest_codewords(
     my_call: &str,
     his_call: &str,
@@ -180,7 +181,10 @@ pub fn contest_codewords(
     let mut out: Vec<[i32; 63]> = Vec::with_capacity(MAX_CONTEST_CODEWORDS);
     out.push([0; 63]);
     let his6: String = his_call.trim().chars().take(6).collect();
-    let add_his = crate::msg::wsjt77::pack77(my_call, his_call, "").is_some()
+    // `call stdcall(hiscall,std)` and `isgrid(hisgrid(1:4))` in `q65_set_list2`: only the DX
+    // call has to be standard. (This asked whether `my_call his_call` packs, which a
+    // nonstandard own call such as `PJ4/K1ABC` fails, and left the DX station out.)
+    let add_his = crate::msg::wsjt77::is_standard_callsign(his_call.trim())
         && isgrid(his_grid.as_bytes())
         && !callers.callers.iter().any(|c| c.call == his6);
     let mut stations: Vec<(String, String)> = callers
@@ -196,11 +200,16 @@ pub fn contest_codewords(
     for (c6, g4) in &stations {
         let r_grid = alloc::format!("R {g4}");
         for tail in [g4.as_str(), r_grid.as_str(), "RRR", "RR73", "73"] {
-            let Some(bits) = pack77_q65(my_call, c6, tail) else {
-                continue;
-            };
+            // `genq65` always makes a codeword per flag: a message that packs neither as a
+            // standard one nor as free text is `*** bad message ***`, `itone` 0, and
+            // `codewords = itone - 1` = -1 throughout, which no received word matches.
+            let bits = pack77_q65_list_message(my_call, c6, tail);
             for flag in [false, true] {
-                let info = pack77_to_symbols_flagged(&bits, flag);
+                let Some(bits) = &bits else {
+                    out.push([-1; 63]);
+                    continue;
+                };
+                let info = pack77_to_symbols_flagged(bits, flag);
                 let mut cw = [0_i32; 63];
                 codec.encode(&info, &mut cw);
                 out.push(cw);

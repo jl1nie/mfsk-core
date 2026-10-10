@@ -66,6 +66,49 @@ pub fn pack77_q65(call1: &str, call2: &str, grid_or_report: &str) -> Option<[u8;
     Some(bits)
 }
 
+/// What `genq65.f90` makes of the message `"<call1> <call2> <tail>"` — the shape of every
+/// message in Q65's full-AP list (`q65_set_list2`): `pack77_legacy_truncating_fallback`, then
+/// the `RR73` rewrite of [`q65_rr73_fixup`].
+///
+/// - a standard message (types 1 and 2) packs as [`pack77_q65`] does;
+/// - otherwise the normalised message (upper case, blanks collapsed) is free text, **cut to its
+///   first 13 characters** when longer (`pack77_legacy_truncating_result`), if those characters
+///   are all in the free-text alphabet;
+/// - otherwise `None`: `genq65`'s `*** bad message ***`, whose `itone` is 0 and whose list
+///   codewords are all -1.
+///
+/// Only the families a bare `call call tail` message can reach are tried. Types 0.1, 0.3-0.6,
+/// 3, 4 and 5 need a `;`, a field-day or contest exchange, or `<hashed>` calls, none of which
+/// the list's tails (`grid`, `R grid`, `RRR`, `RR73`, `73`) carry.
+pub fn pack77_q65_list_message(call1: &str, call2: &str, tail: &str) -> Option<[u8; 77]> {
+    if let Some(bits) = pack77_q65(call1, call2, tail) {
+        return Some(bits);
+    }
+    // `pack77_normalized_message`: upper case, runs of blanks collapsed, 37 characters at most.
+    let mut msg = String::new();
+    let mut prev_blank = true;
+    for c in [call1, " ", call2, " ", tail].concat().chars().take(37) {
+        let c = if c == '\0' {
+            ' '
+        } else {
+            c.to_ascii_uppercase()
+        };
+        if c == ' ' && prev_blank {
+            continue;
+        }
+        msg.push(c);
+        prev_blank = c == ' ';
+    }
+    let msg = msg.trim_end();
+    if msg.is_empty() {
+        return None;
+    }
+    let payload: String = msg.chars().take(13).collect();
+    let mut bits = wsjt77::pack77_free_text(&payload)?;
+    q65_rr73_fixup(&mut bits);
+    Some(bits)
+}
+
 /// Pack a 77-bit WSJT message (LSB / MSB convention matching
 /// [`super::wsjt77`]: each byte holds one bit in its LSB) into the
 /// 13-GF(64)-symbol vector that feeds Q65's QRA encoder.

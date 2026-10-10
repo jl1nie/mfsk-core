@@ -145,6 +145,14 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   stays blank, a message has no slot). Host-tested in `hosttest/mfsk-app-shared`; `cargo check` of the crate with the `esp` toolchain
   passes. Flashed (`jtty-demo`, the busy-band scene, 2026-10-10): the four messages that complete read -10 / -5 / -4 / -4 dB against true
   -9.6 / -5.3 / -2.8 / -4.7 dB; the value is upstream's simple estimate, so a strong signal reads low (a true +30 dB reads about +11).
+- **Four packing bugs found by comparing Q65's caller list with WSJT-X v3.3.0-beta1 (#642).** (1) `pack77_free_text` padded on the right;
+  `packtext77` right-justifies (`adjustr`), so free text had other bits than WSJT-X's for the same words (read back the same, which hid it;
+  FT8/FT4/Q65 free-text transmit and any exact-codeword comparison). (2) `pack28` dropped the sixth character of a one-letter-prefix call:
+  `W1ABCD` and `K1ABCD` packed as `W1ABC` / `K1ABC`, now not standard. (3) `pack77` took `CQ`, `DE`, `QRZ` as the second call. (4) The
+  full-AP list skipped a caller whose message would not pack and left out the DX station when the own call was nonstandard
+  (`PJ4/K1ABC`); upstream packs it as free text cut to 13 characters (`*** bad message ***` as codewords of -1 when those are not
+  free-text characters) and asks only whether the DX call is standard. `pack77_q65_list_message` is that packer; a negative symbol
+  scores as never matching in `check_codeword_llh`. `tests/q65_callers_oracle.rs` covers all of it against a beta1 build.
 
 ### Internals
 

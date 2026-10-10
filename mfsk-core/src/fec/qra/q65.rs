@@ -351,9 +351,17 @@ impl Q65Codec {
 
         let mut t = 0.0_f32;
         for k in 0..n_chan {
-            let sym = codeword[k] as usize;
-            debug_assert!(sym < big_m, "codeword[{k}] = {sym} out of range");
-            let mut x = intrinsics[big_m * k + sym];
+            // A negative symbol is the list's `*** bad message ***` entry
+            // (`q65_set_list2`: `codewords = itone - 1` with `itone` 0): it matches no
+            // received word, so it takes the floor probability at every position. Upstream
+            // reads one element before the row for it, which is not a likelihood of anything.
+            let mut x = match usize::try_from(codeword[k]) {
+                Ok(sym) => {
+                    debug_assert!(sym < big_m, "codeword[{k}] = {sym} out of range");
+                    intrinsics[big_m * k + sym]
+                }
+                Err(_) => 0.0,
+            };
             if x < 1.0e-36 {
                 x = 1.0e-36;
             }
