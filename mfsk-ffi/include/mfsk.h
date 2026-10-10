@@ -239,6 +239,26 @@
 #define MFSK_CAP_STREAM_RECEIVER (1 << 15)
 
 /**
+ * `MfskJttyUpdate::kind`: the message grew and is still open.
+ */
+#define MFSK_JTTY_UPDATE_GROWING 0
+
+/**
+ * `MfskJttyUpdate::kind`: the end-of-message frame has arrived (`complete` is non-zero).
+ */
+#define MFSK_JTTY_UPDATE_COMPLETE 1
+
+/**
+ * `MfskJttyUpdate::kind`: no continuation came within three frame periods; given up on.
+ */
+#define MFSK_JTTY_UPDATE_EXPIRED 2
+
+/**
+ * `MfskJttyUpdate::kind`: `mfsk_jtty_finish` ended the reception with the message open.
+ */
+#define MFSK_JTTY_UPDATE_RECEPTION_ENDED 3
+
+/**
  * WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`).
  * Every FST4 sub-mode and no other mode.
  */
@@ -1085,6 +1105,15 @@ typedef struct MfskJttyUpdate {
      * receive it. Through v0.13 rows had no SNR.
      */
     float snr_db;
+    /**
+     * Why this row was emitted: one of `MFSK_JTTY_UPDATE_*` (in `mfsk.h`; WSJT-X v3.3.0-beta1's
+     * `UPDATE_GROWING` .. `UPDATE_RECEPTION_ENDED`, the same values). Updates are coalesced per
+     * message between polls, so this is the reason for the *latest* one. Appended after
+     * `snr_db`; a caller that passed a smaller `size` does not receive it. Before it,
+     * `complete` was the only distinction, and a message given up on and one cut off by
+     * `mfsk_jtty_finish` both read `complete = 0`.
+     */
+    uint32_t kind;
 } MfskJttyUpdate;
 
 /**

@@ -556,6 +556,13 @@ WSJT-X v3.3.0-beta1 が報告する値と同じ。表示するときは四捨五
 推定なので、強い信号は低く出る（真の +30 dB が約 +11、0 dB 以下では 1 dB 以内）。
 Kotlin は `MfskJttyUpdate.snrDb`、Swift は `JttyUpdate.snrDb`。
 
+**行が出た理由。** `MfskJttyUpdate::kind`（`snr_db` の後ろに追加）は `MFSK_JTTY_UPDATE_GROWING`（0）、
+`_COMPLETE`（1）、`_EXPIRED`（2: 3 フレーム周期以内に続きが来なかった）、`_RECEPTION_ENDED`（3:
+`mfsk_jtty_finish` が途中で打ち切った）のいずれかで、WSJT-X v3.3.0-beta1 の `UPDATE_*` と同じ。
+後ろの 2 つは `complete` だけでは区別できなかった。行はメッセージごとにまとめられるので、最後の更新の
+理由になる。Kotlin は `MfskJttyUpdate.kind`（`MfskJttyUpdateKind`）、Swift は `JttyUpdate.kind`
+（`JttyUpdate.Kind`）。
+
 **ライブ音声を流すとき。** 揃えるべきスロットは無く、ライブラリは時計を持たない。
 時刻は `open` / `reset` 以降に push したサンプル数で、`MfskJttyUpdate::start_s` はそれを
 サンプルレートで割ったもの。UTC が要るなら、最初のサンプルの UTC を控えて呼び出し側で

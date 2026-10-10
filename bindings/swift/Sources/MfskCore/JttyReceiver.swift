@@ -61,6 +61,21 @@ public struct JttyUpdate: Sendable, Equatable {
     /// SNR of the message's first frame, dB in 2 500 Hz, floored at -17, as
     /// WSJT-X v3.3.0-beta1 reports it (show it rounded).
     public let snrDb: Float
+    /// Why this update was emitted (the latest of the message's updates between two polls).
+    public let kind: Kind
+
+    /// What a ``JttyUpdate`` reports: WSJT-X v3.3.0-beta1's `UPDATE_GROWING` ..
+    /// `UPDATE_RECEPTION_ENDED`.
+    public enum Kind: UInt32, Sendable {
+        /// The message grew and is still open.
+        case growing = 0
+        /// The end-of-message frame has arrived.
+        case complete = 1
+        /// No continuation came within three frame periods; given up on.
+        case expired = 2
+        /// ``JttyReceiver/finish()`` ended the reception with the message open.
+        case receptionEnded = 3
+    }
 
     init(_ raw: MfskJttyUpdate) {
         self.id = raw.id
@@ -69,6 +84,7 @@ public struct JttyUpdate: Sendable, Equatable {
         self.frequencyHz = raw.f1_hz
         self.startSeconds = raw.start_s
         self.snrDb = raw.snr_db
+        self.kind = Kind(rawValue: raw.kind) ?? .growing
     }
 }
 

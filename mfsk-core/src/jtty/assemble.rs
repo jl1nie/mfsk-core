@@ -51,6 +51,22 @@ const CONTINUATION_TIME_S: f32 = 0.1;
 const _: () = assert!(MAX_MESSAGES_BOUND >= MAX_ACTIVE);
 const MAX_MESSAGES_BOUND: usize = MAX_ACTIVE * MAX_FRAMES;
 
+/// Why a [`MessageUpdate`] was emitted: `UPDATE_GROWING` .. `UPDATE_RECEPTION_ENDED` in
+/// WSJT-X v3.3.0-beta1's `jtty_mdecode.f90`, with the same values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum UpdateKind {
+    /// The message grew (a frame was added) and is still open.
+    Growing = 0,
+    /// The end-of-message frame has arrived.
+    Complete = 1,
+    /// No continuation came within three frame periods: given up on.
+    Expired = 2,
+    /// The reception ended ([`Assembler::end`], a stream's `finish`) with the message open.
+    ReceptionEnded = 3,
+}
+
 /// A message as far as it is known; one is emitted every time it grows, and once
 /// more when it completes or is given up on.
 #[derive(Clone, Debug, PartialEq)]
@@ -66,12 +82,21 @@ pub struct MessageUpdate {
     pub snr_db: f32,
     /// The text so far, as upstream displays it (gaps as ` ... `).
     pub text: String,
-    /// The end-of-message frame has arrived.
+    /// The end-of-message frame has arrived (`kind` is [`UpdateKind::Complete`]).
     pub complete: bool,
+    /// Why this update was emitted: it grew, it completed, it was given up on, or the
+    /// reception ended.
+    pub kind: UpdateKind,
 }
 
 /// A frame as text: `decoded` (`~` for TEXT5 spaces), whether a structured atom's
 /// implicit separator follows, and the EOM flag.
+impl UpdateKind {
+    fn from_last(last: bool) -> Self {
+        if last { Self::Complete } else { Self::Growing }
+    }
+}
+
 struct FrameText {
     decoded: String,
     trailing_sep: bool,
@@ -192,6 +217,22 @@ impl Assembler {
     /// a retro re-sweep can revisit are forgotten, and messages with no
     /// continuation within three frame periods of that are reported incomplete.
     pub fn prune(&mut self, forward_tsync: f32, sink: &mut dyn FnMut(MessageUpdate)) {
+        self.prune_as(forward_tsync, UpdateKind::Expired, sink);
+    }
+
+    /// The reception is over: forget every frame and report each message still open as
+    /// [`UpdateKind::ReceptionEnded`] (`jtty_rx_end(handle, UPDATE_RECEPTION_ENDED)`). Through
+    /// this crate's rc1 port this was a prune far in the future, reported as 'incomplete'.
+    pub fn end(&mut self, sink: &mut dyn FnMut(MessageUpdate)) {
+        self.prune_as(f32::MAX / 4.0, UpdateKind::ReceptionEnded, sink);
+    }
+
+    fn prune_as(
+        &mut self,
+        forward_tsync: f32,
+        reason: UpdateKind,
+        sink: &mut dyn FnMut(MessageUpdate),
+    ) {
         // a decoded frame can still lie in a later window while its end is after that window's start
         self.carried
             .retain(|x| x.tsync_s + FRAME_PERIOD_S > forward_tsync);
@@ -204,7 +245,7 @@ impl Assembler {
         let mut i = 0;
         while i < self.active.len() {
             if oldest_revisit - self.active[i].tsync > limit {
-                sink(self.update(i, false));
+                sink(self.update(i, reason));
                 self.remove(i);
             } else {
                 i += 1;
@@ -217,7 +258,7 @@ impl Assembler {
         self.active.swap_remove(i);
     }
 
-    fn update(&self, i: usize, complete: bool) -> MessageUpdate {
+    fn update(&self, i: usize, kind: UpdateKind) -> MessageUpdate {
         let a = &self.active[i];
         MessageUpdate {
             id: a.id,
@@ -225,7 +266,8 @@ impl Assembler {
             start_s: a.start,
             snr_db: a.snr_db,
             text: display(&a.decoded),
-            complete,
+            complete: kind == UpdateKind::Complete,
+            kind,
         }
     }
 
@@ -314,7 +356,7 @@ impl Assembler {
         self.next_id += 1;
         self.active.push(msg);
         let i = self.active.len() - 1;
-        sink(self.update(i, t.last));
+        sink(self.update(i, UpdateKind::from_last(t.last)));
         if t.last {
             self.remove(i);
         }
@@ -353,7 +395,7 @@ impl Assembler {
         a.trailing_sep = t.trailing_sep;
         a.f1 = f1;
         a.tsync = tsync;
-        sink(self.update(i, t.last));
+        sink(self.update(i, UpdateKind::from_last(t.last)));
         if t.last {
             self.remove(i);
         }
@@ -506,8 +548,52 @@ mod tests {
         asm.prune(1.0 + 4.5 * p, &mut |u| out.push(u));
         assert_eq!(out.len(), 2);
         assert!(!out[1].complete);
+        assert_eq!(out[1].kind, UpdateKind::Expired);
         assert_eq!(out[1].text, "LOST");
         assert_eq!(asm.continuations().count(), 0);
+    }
+
+    /// Growing, complete, expired and reception-ended are the four reasons of WSJT-X
+    /// v3.3.0-beta1's `UPDATE_*`; `end` is what a stream's `finish` calls.
+    #[test]
+    fn every_update_says_why_it_was_emitted() {
+        let p = FRAME_PERIOD_S;
+        let kinds = |u: &[MessageUpdate]| u.iter().map(|x| x.kind).collect::<Vec<_>>();
+        let u = run(&[
+            frame(Atom::text5("HELLO"), 1500.0, 1.0, false),
+            frame(Atom::text5(" WORL"), 1500.0, 1.0 + p, false),
+            frame(Atom::text5("D 73 "), 1500.0, 1.0 + 2.0 * p, true),
+        ]);
+        assert_eq!(
+            kinds(&u),
+            [
+                UpdateKind::Growing,
+                UpdateKind::Growing,
+                UpdateKind::Complete
+            ]
+        );
+        assert!(
+            u.iter()
+                .all(|x| x.complete == (x.kind == UpdateKind::Complete))
+        );
+
+        // an open message when the reception ends is `ReceptionEnded`, not `Expired`
+        let mut asm = Assembler::new();
+        let mut out = Vec::new();
+        asm.push_frame(&frame(Atom::text5("CUT  "), 1500.0, 1.0, false), &mut |x| {
+            out.push(x)
+        });
+        asm.end(&mut |x| out.push(x));
+        assert_eq!(
+            kinds(&out),
+            [UpdateKind::Growing, UpdateKind::ReceptionEnded]
+        );
+        assert!(!out[1].complete);
+        assert_eq!(asm.continuations().count(), 0);
+        // and a second `end` has nothing left to report
+        let n = out.len();
+        asm.end(&mut |x| out.push(x));
+        assert_eq!(out.len(), n);
     }
 
     #[test]

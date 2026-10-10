@@ -1576,7 +1576,31 @@ data class MfskJttyUpdate(
     /// SNR of the message's first frame, dB in 2 500 Hz, floored at -17, as
     /// WSJT-X v3.3.0-beta1 reports it (show it rounded).
     val snrDb: Float,
-)
+    /// [kind]'s ABI value (`MFSK_JTTY_UPDATE_*`); the JNI shim builds the row with it.
+    internal val kindCode: Int,
+) {
+    /// Why this update was emitted: it grew, it completed, it was given up on, or the
+    /// reception was ended with the message open ([MfskJttyReceiver.finish]).
+    val kind: MfskJttyUpdateKind get() = MfskJttyUpdateKind.of(kindCode)
+}
+
+/// What an [MfskJttyUpdate] reports (WSJT-X v3.3.0-beta1's `UPDATE_GROWING` ..
+/// `UPDATE_RECEPTION_ENDED`). The latest of a message's updates between two polls.
+enum class MfskJttyUpdateKind(internal val code: Int) {
+    /// The message grew and is still open.
+    GROWING(0),
+    /// The end-of-message frame has arrived.
+    COMPLETE(1),
+    /// No continuation came within three frame periods; given up on.
+    EXPIRED(2),
+    /// The reception was ended with the message open.
+    RECEPTION_ENDED(3);
+
+    internal companion object {
+        fun of(code: Int): MfskJttyUpdateKind =
+            entries.firstOrNull { it.code == code } ?: GROWING
+    }
+}
 
 /// What a JTTY receiver looks for. The defaults are `rjtty`'s.
 data class MfskJttyParams(

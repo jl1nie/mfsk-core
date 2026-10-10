@@ -565,6 +565,13 @@ pub struct MfskJttyUpdate {
     /// Appended after `text`; a caller that passed a smaller `size` does not
     /// receive it. Through v0.13 rows had no SNR.
     pub snr_db: f32,
+    /// Why this row was emitted: one of `MFSK_JTTY_UPDATE_*` (in `mfsk.h`; WSJT-X v3.3.0-beta1's
+    /// `UPDATE_GROWING` .. `UPDATE_RECEPTION_ENDED`, the same values). Updates are coalesced per
+    /// message between polls, so this is the reason for the *latest* one. Appended after
+    /// `snr_db`; a caller that passed a smaller `size` does not receive it. Before it,
+    /// `complete` was the only distinction, and a message given up on and one cut off by
+    /// `mfsk_jtty_finish` both read `complete = 0`.
+    pub kind: u32,
 }
 const _: () = assert!(MFSK_JTTY_TEXT_BUF_LEN == 128);
 

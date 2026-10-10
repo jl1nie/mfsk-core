@@ -584,6 +584,13 @@ v3.3.0-beta1 reports it: show it rounded. It is the simple estimate upstream set
 strong signal reads low (a true +30 dB reads about +11; at 0 and below it is within a dB).
 Kotlin `MfskJttyUpdate.snrDb`, Swift `JttyUpdate.snrDb`.
 
+**Why a row was emitted.** `MfskJttyUpdate::kind` (appended after `snr_db`) is one of
+`MFSK_JTTY_UPDATE_GROWING` (0), `_COMPLETE` (1), `_EXPIRED` (2: no continuation within three frame
+periods) and `_RECEPTION_ENDED` (3: `mfsk_jtty_finish` cut the message off), WSJT-X v3.3.0-beta1's
+`UPDATE_*`. `complete` alone cannot tell the last two apart. Rows are coalesced per message, so it is
+the reason for the latest update. Kotlin `MfskJttyUpdate.kind` (`MfskJttyUpdateKind`), Swift
+`JttyUpdate.kind` (`JttyUpdate.Kind`).
+
 **Feeding a live source.** There is no slot to align to and no clock in the library:
 time is the number of samples pushed since `open` / `reset`, and `MfskJttyUpdate::start_s`
 is that count over the sample rate. Map it to UTC yourself if you need to (note the UTC

@@ -225,6 +225,16 @@ pub const MFSK_CAP_ENCODE: u64 = 1 << 14;
 /// frames have no slot. Audio goes in with `mfsk_jtty_push_*` and message
 /// updates come out of `mfsk_jtty_poll`.
 pub const MFSK_CAP_STREAM_RECEIVER: u64 = 1 << 15;
+
+/// `MfskJttyUpdate::kind`: the message grew and is still open.
+pub const MFSK_JTTY_UPDATE_GROWING: u32 = 0;
+/// `MfskJttyUpdate::kind`: the end-of-message frame has arrived (`complete` is non-zero).
+pub const MFSK_JTTY_UPDATE_COMPLETE: u32 = 1;
+/// `MfskJttyUpdate::kind`: no continuation came within three frame periods; given up on.
+pub const MFSK_JTTY_UPDATE_EXPIRED: u32 = 2;
+/// `MfskJttyUpdate::kind`: `mfsk_jtty_finish` ended the reception with the message open.
+pub const MFSK_JTTY_UPDATE_RECEPTION_ENDED: u32 = 3;
+
 /// WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`).
 /// Every FST4 sub-mode and no other mode.
 pub const MFSK_CAP_NOISE_BLANKER: u64 = 1 << 16;
@@ -2878,6 +2888,7 @@ pub unsafe extern "C" fn mfsk_jtty_poll(
             start_s: u.start_s,
             text: [0; 128],
             snr_db: u.snr_db,
+            kind: u.kind as u32,
         };
         // Truncate on a character boundary, leaving room for the NUL.
         let mut end = u.text.len().min(v.text.len() - 1);

@@ -122,6 +122,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   closed later), and the C ABI gains `mfsk_jtty_encode_tones_ex` (`mfsk_jtty_encode_tones` is `is_final` = 1). Checked against a
   v3.3.0-beta1 `jtty_pack_oracle` on 4 025 cases (500 of them `is_final` = 0), frames and starts identical. Kotlin and Swift do not
   expose it yet.
+- **A JTTY update says why it was emitted (#644).** `MessageUpdate::kind` is `UpdateKind::{Growing, Complete, Expired, ReceptionEnded}`,
+  WSJT-X v3.3.0-beta1's `UPDATE_*` with the same values; `Assembler::end` (what a stream's `finish` calls) reports open messages as
+  `ReceptionEnded`, where a message given up on is `Expired` and both used to be `complete = false`. Appended to `MfskJttyUpdate`
+  (`kind`, with `MFSK_JTTY_UPDATE_*` in `mfsk.h`; ABI stays 3) and to the Kotlin (`kind`) and Swift (`kind`) updates, which are not
+  built here.
 
 ### Internals
 

@@ -1611,7 +1611,7 @@ impl Stream {
     /// The stream has ended: report every message still waiting for a
     /// continuation as incomplete (an [`Assembler::prune`] far in the future).
     pub fn finish(&mut self, on_update: &mut dyn FnMut(MessageUpdate)) {
-        self.asm.prune(f32::MAX / 4.0, on_update);
+        self.asm.end(on_update);
     }
 
     /// Forget everything and start again at sample 0.
@@ -1799,7 +1799,7 @@ impl Back {
 
     /// The stream has ended (as [`Stream::finish`]).
     pub fn finish(&mut self, on_update: &mut dyn FnMut(MessageUpdate)) {
-        self.asm.prune(f32::MAX / 4.0, on_update);
+        self.asm.end(on_update);
     }
 }
 

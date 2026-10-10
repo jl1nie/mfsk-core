@@ -50,6 +50,7 @@ fn drain(rx: *mut MfskJttyReceiver) -> Vec<(u64, String, bool, f32)> {
             start_s: 0.0,
             text: [0; 128],
             snr_db: 0.0,
+            kind: 0,
         };
         match unsafe { mfsk_jtty_poll(rx, &mut u) } {
             1 => out.push((u.id, text(&u), u.complete != 0, u.f1_hz)),
@@ -519,4 +520,70 @@ fn encode_tones_ex_can_leave_the_message_open() {
         open[last..],
         "the end-of-message flag is in the last frame"
     );
+}
+
+/// `kind` is appended after `snr_db`; a finished message reads `complete`, one cut off by
+/// `mfsk_jtty_finish` reads `reception ended` (not `expired`), and a smaller `size` does not
+/// receive it.
+#[test]
+fn the_row_says_why_it_was_emitted() {
+    let pcm = sample();
+    let poll_rows = |rx: *mut MfskJttyReceiver, size: u32| -> Vec<MfskJttyUpdate> {
+        let mut rows = Vec::new();
+        loop {
+            let mut u = unsafe { std::mem::zeroed::<MfskJttyUpdate>() };
+            u.size = size;
+            u.kind = 99; // untouched when `size` stops short
+            match unsafe { mfsk_jtty_poll(rx, &mut u) } {
+                1 => rows.push(u),
+                0 => return rows,
+                e => panic!("poll returned {e}"),
+            }
+        }
+    };
+    let full = std::mem::size_of::<MfskJttyUpdate>() as u32;
+
+    // the whole recording: the message completes
+    let rx = open(12_000);
+    assert_eq!(
+        unsafe { mfsk_jtty_push_i16(rx, pcm.as_ptr(), pcm.len()) },
+        MfskStatus::Ok
+    );
+    let rows = poll_rows(rx, full);
+    let done = rows
+        .iter()
+        .find(|u| u.complete != 0)
+        .expect("a complete row");
+    assert_eq!(done.kind, MFSK_JTTY_UPDATE_COMPLETE);
+    assert!(
+        rows.iter()
+            .all(|u| u.complete != 0 || u.kind == MFSK_JTTY_UPDATE_GROWING)
+    );
+    unsafe { mfsk_jtty_close(rx) };
+
+    // 12 s of 22: finish() cuts it off
+    let rx = open(12_000);
+    assert_eq!(
+        unsafe { mfsk_jtty_push_i16(rx, pcm.as_ptr(), 12 * 12_000) },
+        MfskStatus::Ok
+    );
+    let _ = poll_rows(rx, full);
+    assert_eq!(unsafe { mfsk_jtty_finish(rx) }, MfskStatus::Ok);
+    let rows = poll_rows(rx, full);
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter()
+            .all(|u| u.complete == 0 && u.kind == MFSK_JTTY_UPDATE_RECEPTION_ENDED)
+    );
+    unsafe { mfsk_jtty_close(rx) };
+
+    // an older, smaller row does not receive `kind`
+    let rx = open(12_000);
+    assert_eq!(
+        unsafe { mfsk_jtty_push_i16(rx, pcm.as_ptr(), pcm.len()) },
+        MfskStatus::Ok
+    );
+    let old = poll_rows(rx, std::mem::offset_of!(MfskJttyUpdate, kind) as u32);
+    assert!(!old.is_empty() && old.iter().all(|u| u.kind == 99));
+    unsafe { mfsk_jtty_close(rx) };
 }
