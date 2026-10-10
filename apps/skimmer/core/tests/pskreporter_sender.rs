@@ -201,3 +201,40 @@ fn a_reporter_that_may_not_send_does_not_start() {
     c.interval = Duration::from_secs(1);
     assert!(PskReporter::start(c).is_err());
 }
+
+#[test]
+fn a_retune_drops_what_began_before_it() {
+    let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+    listener
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    let mut cfg = PskConfig::new("K1ABC", "FN20");
+    cfg.endpoint = Endpoint::Custom(listener.local_addr().unwrap().to_string());
+    cfg.interval = Duration::from_millis(200);
+    let rep = PskReporter::start(cfg).unwrap();
+    rep.retuned(1_778_068_800);
+    let mut before = spot("W1AW", 14_074_000);
+    before.time_unix = 1_778_068_785; // a slot that began 15 s before the retune
+    let mut after = spot("JA1XYZ", 14_074_000);
+    after.time_unix = 1_778_068_815;
+    rep.spot(before);
+    rep.spot(after);
+    let mut buf = [0u8; 2048];
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let Ok((n, _)) = listener.recv_from(&mut buf) else {
+            break;
+        };
+        for (id, body) in sets(&buf[..n]) {
+            if id == 0x50e3 {
+                seen.extend(spots_of(body).into_iter().map(|s| s.0));
+            }
+        }
+        if !seen.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(seen, ["JA1XYZ"]);
+    assert_eq!(rep.stats().stale, 1);
+    rep.stop();
+}

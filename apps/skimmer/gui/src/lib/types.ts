@@ -194,6 +194,8 @@ export interface PskStatus {
   offered: number;
   duplicates: number;
   overflowed: number;
+  /** Not spots: they began before the radio was retuned. */
+  stale: number;
   spotsSent: number;
   datagramsSent: number;
   pending: number;

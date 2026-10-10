@@ -384,6 +384,10 @@ fn main() -> ExitCode {
                 active,
                 channelizer,
             } => {
+                // A new plan: what began before it may hold another band's samples.
+                if let Some(r) = &psk {
+                    r.retuned(skimmer_core::now_ns().div_euclid(1_000_000_000));
+                }
                 eprintln!(
                     "IQ {rate} S/s (decimation {decimation}) centre {center_hz:.0} Hz, \
                  span {:.0}..{:.0}; device centre {device_hz:.0}; {channelizer:?} channelizer",
@@ -404,6 +408,9 @@ fn main() -> ExitCode {
                 }
             }
             Event::Moved { device_hz, iq_hz } => {
+                if let Some(r) = &psk {
+                    r.retuned(skimmer_core::now_ns().div_euclid(1_000_000_000));
+                }
                 eprintln!("moved: device centre {device_hz:.0} Hz, IQ centre {iq_hz:.0} Hz")
             }
             Event::Gap { messages, at_s } => {
@@ -430,9 +437,10 @@ fn main() -> ExitCode {
                     if st.spots_sent != psk_reported || st.last_error.is_some() {
                         psk_reported = st.spots_sent;
                         eprintln!(
-                            "psk: {} offered, {} duplicate, {} sent in {} datagram(s), {} pending{}",
+                            "psk: {} offered, {} duplicate, {} before a retune, {} sent in {} datagram(s), {} pending{}",
                             st.offered,
                             st.duplicates,
+                            st.stale,
                             st.spots_sent,
                             st.datagrams_sent,
                             st.pending,

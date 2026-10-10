@@ -125,10 +125,15 @@ skimmers (#655). `--psk-to HOST:PORT` sends to a listener of your own, to look a
 
 - The receiver is `--mycall` at `--psk-grid` (else `--mygrid`). **The locator is the antenna's**: for a
   SpyServer somewhere else it is not where you sit. `--psk-ant` and `--psk-rig` are free text.
-- What is a spot is WSJT-X's rule: a standard message whose sender the text names (a `<...>` that was not
-  resolved is none) with a locator or a CQ; not low-confidence (`?`), not your own call, not your own
-  transmission heard again; WSPR is not sent (that is WSPRnet's). JTTY: a completed message, by WSJT-X's
-  JTTY rule. A spot needs a time, so none are sent before the clock is known.
+- What is a spot is WSJT-X's rule, checked against WSJT-X's own code (`tests/pskreporter_spot_rules.rs`):
+  a structured message (not free text: `i3 > 0 or n3 > 0` of the decoded bits, as `stdmsg`), the sender and
+  locator by `DecodedText::deCallAndGrid` (so `K1ABC W9XYZ R EN37` is W9XYZ at EN37), a locator or a CQ; not
+  low-confidence (`?`), not your own call, not your own transmission heard again; WSPR is not sent (that is
+  WSPRnet's). JTTY: a completed message by WSJT-X's JTTY rule (`Radio::is_standard_callsign`, `/P` and `/R`
+  included). A spot needs a time, so none are sent before the clock is known.
+- A slot that began before the radio was last retuned (a rotation step, a move of the device) may hold the
+  old band's samples and is not reported (WSJT-X waits four fifths of a period after a band change; this is
+  exact, by the slot's own start).
 - One datagram at most every five minutes, with a random addition (`--psk-interval SECS` only for the test
   listener or your own); a callsign once per band per five minutes; the templates in the first three
   datagrams and every hour; one UDP socket, one source port. Spots pending when the program stops are not

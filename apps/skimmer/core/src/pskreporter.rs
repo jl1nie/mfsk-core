@@ -303,8 +303,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::Decode;
 use crate::jtty::JttyMessage;
-use crate::{Decode, spot};
 
 /// The shortest interval between two timed sends the protocol page allows
 /// (<https://pskreporter.info/pskdev.html>: "no more than one every five minutes (unless the
@@ -421,25 +421,108 @@ fn is_ours(text: &str, my_call: &str, my_grid: &str) -> bool {
     !call.is_empty() && my_grid.len() >= 4 && text.contains(call) && text.contains(&my_grid[..4])
 }
 
-/// The spot a decoded row makes, by WSJT-X's rules: a real decode with a clock (a spot needs a
-/// time), not low-confidence (a text ending in `?`), not our own, from a sender the text names
-/// (a hashed `<...>` call is not one), and with a locator or a CQ.
+/// `DecodedText`'s `tokens_re` (`Decoder/decodedtext.cpp`), without its `(?!RR73)`: the regex
+/// crate has no look-ahead, so a `word4` of `RR73` is dropped after the match, which is what the
+/// look-ahead's failure to match amounts to.
+fn tokens_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r"^(?:(?P<dual>[A-Z0-9/]+)\sRR73;\s)?(?:(?P<word1>(?:CQ|DE|QRZ)(?:\s?DX|\s(?:[A-Z]{1,4}|\d{3}))|[A-Z0-9/]+|\.{3})\s)(?:(?P<word2>[A-Z0-9/]+)(?:\s(?P<word3>[-+A-Z0-9]+)(?:\s(?P<word4>OOO|[A-R]{2}[0-9]{2}|5[0-9]{5})(?:\s(?P<word5>[A-R]{2}[0-9]{2}[A-X]{2}))?)?)?)?",
+        )
+        .expect("tokens_re")
+    })
+}
+
+/// `DecodedText::deCallAndGrid`: the second word is the sender, the third a locator, or the
+/// fourth after an `R`. (The text first loses its `<` `>`, and anything up to a `"; "`.)
+pub fn de_call_and_grid(text: &str) -> (String, String) {
+    let msg: String = text.chars().filter(|&c| c != '<' && c != '>').collect();
+    let msg = msg.trim();
+    let msg = msg.split_once("; ").map_or(msg, |(_, rest)| rest);
+    let Some(m) = tokens_re().captures(msg) else {
+        return (String::new(), String::new());
+    };
+    let get = |n: &str| m.name(n).map_or("", |x| x.as_str());
+    let call = get("word2").to_string();
+    let mut grid = get("word3");
+    if grid == "R" {
+        grid = get("word4");
+        if grid == "RR73" {
+            grid = "";
+        }
+    }
+    (call, grid.to_string())
+}
+
+/// `Radio::is_standard_callsign` (`Radio.cpp`): one or two letters, or a letter and a digit, or a
+/// digit and a letter; then a digit and up to three letters; then an optional `/R` or `/P`.
+pub fn is_standard_callsign(call: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    call.is_ascii()
+        && RE
+            .get_or_init(|| {
+                regex::Regex::new(
+                    r"(?i)^\s*([A-Z]{0,2}|[A-Z][0-9]|[0-9][A-Z])([0-9][A-Z]{0,3})(/R|/P)?\s*$",
+                )
+                .expect("is_standard_callsign")
+            })
+            .is_match(call)
+}
+
+/// `Radio::decoded_grid_pattern()`: four or six characters, not `RR73`.
+pub fn is_decoded_grid(g: &str) -> bool {
+    let b = g.as_bytes();
+    let letters = |x: &[u8], hi: u8| {
+        x.iter()
+            .all(|c| (b'A'..=hi).contains(&c.to_ascii_uppercase()))
+    };
+    let digits = |x: &[u8]| x.iter().all(u8::is_ascii_digit);
+    (b.len() == 4 || b.len() == 6)
+        && letters(&b[..2], b'R')
+        && digits(&b[2..4])
+        && (b.len() == 4 || letters(&b[4..], b'X'))
+        && !g.eq_ignore_ascii_case("RR73")
+}
+
+/// `stdMsg` (`stdmsg`, `lib/stdmsg.f90`): the message packs as a structured type, `i3 > 0` or
+/// `n3 > 0`; free text (`0.0`) does not. Read off the decoded bits, 77 of them in the key. The
+/// 72-bit JT modes have no such bits to read here; their text has to name a sender.
+fn is_standard(d: &Decode) -> bool {
+    let k = &d.detail.key;
+    if k.len() >= 77 {
+        let bit = |i: usize| u32::from(k[i] & 1);
+        let n3 = bit(71) << 2 | bit(72) << 1 | bit(73);
+        let i3 = bit(74) << 2 | bit(75) << 1 | bit(76);
+        return i3 > 0 || n3 > 0;
+    }
+    true
+}
+
+/// The spot a decoded row makes, by WSJT-X's rules (`MainWindow::pskPost` and the checks before
+/// it): a standard (non-free-text) message, a real decode with a clock (a spot needs a time),
+/// not low-confidence (a text ending in `?`), not our own call or our own transmission heard
+/// again, the sender and locator by `deCallAndGrid`, and a locator or a CQ.
 pub fn spot_from_decode(d: &Decode, my_call: &str, my_grid: &str) -> Option<Spot> {
     let mode = adif_mode(crate::modes::mode_name(d.mode))?;
-    if d.text.trim_end().ends_with('?') || is_ours(&d.text, my_call, my_grid) {
+    if !is_standard(d) || d.text.trim_end().ends_with('?') || is_ours(&d.text, my_call, my_grid) {
         return None;
     }
-    let (call, grid) = spot::sender(crate::modes::mode_name(d.mode), &d.text);
-    let call = call?;
-    if base_call(&call).eq_ignore_ascii_case(base_call(my_call)) {
+    let (call, grid) = de_call_and_grid(&d.text);
+    if call.is_empty() || base_call(&call).eq_ignore_ascii_case(base_call(my_call)) {
         return None;
     }
-    if grid.is_none() && !d.text.starts_with("CQ ") {
+    let cq = d.text.starts_with("CQ ") || d.text.contains(" CQ ");
+    if !is_decoded_grid(&grid) && !cq {
         return None;
     }
     Some(Spot {
         callsign: call,
-        locator: grid.unwrap_or_default(),
+        locator: if is_decoded_grid(&grid) {
+            grid
+        } else {
+            String::new()
+        },
         snr: d.snr_db.round() as i32,
         frequency: d.freq_hz.round().max(0.0) as u64,
         mode: mode.to_string(),
@@ -560,6 +643,9 @@ pub struct PskStats {
     pub duplicates: u64,
     /// Dropped from a full queue.
     pub overflowed: u64,
+    /// Dropped for having begun before the radio was last retuned: the slot may hold the old
+    /// band's samples ([`PskReporter::retuned`]).
+    pub stale: u64,
     pub spots_sent: u64,
     pub datagrams_sent: u64,
     /// Unix seconds of the last datagram sent.
@@ -570,6 +656,8 @@ pub struct PskStats {
 
 enum Msg {
     Spot(Spot),
+    /// Nothing that began before this UTC second is a spot.
+    NotBefore(i64),
     Stop,
 }
 
@@ -606,6 +694,14 @@ impl PskReporter {
     /// inside the repeat.
     pub fn spot(&self, spot: Spot) {
         let _ = self.tx.send(Msg::Spot(spot));
+    }
+
+    /// The radio was (re)tuned at `utc_unix`: a slot or message that began before then may hold
+    /// samples of the old band, and is not reported as a spot of the new one. WSJT-X waits
+    /// four fifths of a period after a band change for the same reason (`okToPost`); this is
+    /// exact, by the slot's own start.
+    pub fn retuned(&self, utc_unix: i64) {
+        let _ = self.tx.send(Msg::NotBefore(utc_unix));
     }
 
     pub fn stats(&self) -> PskStats {
@@ -671,6 +767,7 @@ fn run(cfg: PskConfig, rx: mpsc::Receiver<Msg>, stats: Arc<Mutex<PskStats>>) {
     let mut dedupe = Dedupe::new(cfg.repeat);
     let mut queue: VecDeque<Spot> = VecDeque::new();
     let mut sequence: u32 = 0;
+    let mut not_before = i64::MIN;
     let mut descriptors_left = DESCRIPTOR_SENDS;
     let started = Instant::now();
     let jitter = |rng: &mut Rng| rng.up_to(cfg.interval / 5 + Duration::from_millis(1));
@@ -680,10 +777,15 @@ fn run(cfg: PskConfig, rx: mpsc::Receiver<Msg>, stats: Arc<Mutex<PskStats>>) {
     loop {
         let wait = next_flush.saturating_duration_since(Instant::now());
         match rx.recv_timeout(wait) {
+            Ok(Msg::NotBefore(t)) => not_before = not_before.max(t),
             Ok(Msg::Spot(s)) => {
                 let now = Instant::now();
                 let mut st = stats.lock().unwrap();
                 st.offered += 1;
+                if s.time_unix < not_before {
+                    st.stale += 1;
+                    continue;
+                }
                 if !dedupe.admit(&s, now) {
                     st.duplicates += 1;
                     continue;
@@ -790,6 +892,40 @@ mod spot_rule_tests {
     fn a_cq_without_a_grid_is_a_spot_without_a_locator() {
         let s = spot_from_decode(&decode(Mode::Ft8, "CQ DX BG1SUD"), "K1ABC", "FN20").unwrap();
         assert_eq!((s.callsign.as_str(), s.locator.as_str()), ("BG1SUD", ""));
+    }
+
+    /// `stdMsg` is `i3 > 0 || n3 > 0` of the 77 bits: free text (0.0) is not a message about a
+    /// station, a structured type is.
+    #[test]
+    fn the_message_bits_tell_a_standard_message_from_free_text() {
+        use mfsk_core::msg::wsjt77::{pack77, pack77_free_text};
+        let with_key = |bits: [u8; 77], text: &str| {
+            let mut d = decode(Mode::Ft8, text);
+            d.detail.key = bits.to_vec();
+            d
+        };
+        let std = with_key(
+            pack77("RA0ANO", "UA0LQE", "PN53").unwrap(),
+            "RA0ANO UA0LQE PN53",
+        );
+        assert!(spot_from_decode(&std, "K1ABC", "FN20").is_some());
+        // free text that reads like a message is still free text
+        let free = with_key(
+            pack77_free_text("RA0ANO UA0LQE").unwrap(),
+            "RA0ANO UA0LQE PN53",
+        );
+        assert!(spot_from_decode(&free, "K1ABC", "FN20").is_none());
+    }
+
+    #[test]
+    fn an_r_before_the_locator_is_still_the_locator() {
+        let s =
+            spot_from_decode(&decode(Mode::Ft8, "K1ABC W9XYZ R EN37"), "N0CALL", "AA00").unwrap();
+        assert_eq!((s.callsign.as_str(), s.locator.as_str()), ("W9XYZ", "EN37"));
+        // `RR73` has a grid's shape and is not one
+        assert!(
+            spot_from_decode(&decode(Mode::Ft8, "K1ABC W9XYZ RR73"), "N0CALL", "AA00").is_none()
+        );
     }
 
     #[test]

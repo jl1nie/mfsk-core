@@ -80,37 +80,15 @@ impl JttyMessage {
     }
 }
 
-/// A standard callsign as WSJT-X's `Radio::is_standard_callsign` has it: an
-/// optional prefix letter, then a 1-2 character prefix with a digit, then 1-3
-/// letters; no portable suffix.
+/// A standard callsign as WSJT-X's `Radio::is_standard_callsign` has it, with its optional `/R`
+/// or `/P` (the same expression: `pskreporter::is_standard_callsign`).
 fn is_standard_call(s: &str) -> bool {
-    let b = s.as_bytes();
-    if !(3..=6).contains(&b.len()) || !b.iter().all(u8::is_ascii_alphanumeric) {
-        return false;
-    }
-    // The area digit is the last digit; letters follow it, 1-3 of them.
-    let Some(d) = b.iter().rposition(u8::is_ascii_digit) else {
-        return false;
-    };
-    let tail = &b[d + 1..];
-    (1..=2).contains(&d)
-        && (1..=3).contains(&tail.len())
-        && tail.iter().all(u8::is_ascii_alphabetic)
+    crate::pskreporter::is_standard_callsign(s)
 }
 
-/// A four- or six-character Maidenhead locator.
+/// A four- or six-character Maidenhead locator that is not `RR73` (`Radio::decoded_grid_pattern`).
 fn is_grid(s: &str) -> bool {
-    let b = s.to_ascii_uppercase().into_bytes();
-    let four = b.len() >= 4
-        && (b'A'..=b'R').contains(&b[0])
-        && (b'A'..=b'R').contains(&b[1])
-        && b[2].is_ascii_digit()
-        && b[3].is_ascii_digit();
-    match b.len() {
-        4 => four,
-        6 => four && (b'A'..=b'X').contains(&b[4]) && (b'A'..=b'X').contains(&b[5]),
-        _ => false,
-    }
+    crate::pskreporter::is_decoded_grid(s)
 }
 
 /// The receive settings for a channel's options: upstream's, with the Rx
@@ -393,13 +371,19 @@ mod tests {
 
     #[test]
     fn standard_calls_and_grids() {
-        for c in ["K1ABC", "JA1ABC", "W9XYZ", "G4ABC", "3D2AB", "VK3NV"] {
+        // `Radio::is_standard_callsign` takes `/R` and `/P`: this said it did not until the
+        // answers of WSJT-X's own regex were compared (`tests/pskreporter_spot_rules.rs`)
+        for c in [
+            "K1ABC", "JA1ABC", "W9XYZ", "G4ABC", "3D2AB", "VK3NV", "K1ABC/P", "K1ABC/R",
+        ] {
             assert!(is_standard_call(c), "{c}");
         }
-        for c in ["CQ", "TEST", "K1ABC/P", "1234", "ABCDEFG"] {
+        for c in ["CQ", "TEST", "K1ABC/M", "K1ABC/QRP", "1234", "ABCDEFG"] {
             assert!(!is_standard_call(c), "{c}");
         }
+        // and `RR73` has a grid's shape but is not one
         assert!(is_grid("PM95") && is_grid("pm95xx") && !is_grid("PM9") && !is_grid("599"));
+        assert!(!is_grid("RR73") && !is_grid("rr73"));
     }
 
     /// The level settles on `TARGET_RMS` whatever the input's scale.

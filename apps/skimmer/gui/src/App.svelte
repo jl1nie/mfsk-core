@@ -130,7 +130,7 @@
     const last = p.lastSendMs ? new Date(p.lastSendMs).toISOString().slice(11, 19) + ' UTC' : 'nothing sent yet';
     return [
       `to ${p.endpoint}`,
-      `${p.offered} spots offered, ${p.duplicates} already reported on that band within five minutes, ${p.overflowed} dropped from a full queue`,
+      `${p.offered} spots offered, ${p.duplicates} already reported on that band within five minutes, ${p.overflowed} dropped from a full queue, ${p.stale} begun before the radio was retuned`,
       `${p.spotsSent} sent in ${p.datagramsSent} datagram(s), ${p.pending} waiting for the next one (at most one every five minutes)`,
       `last datagram: ${last}`,
     ].join('\n');

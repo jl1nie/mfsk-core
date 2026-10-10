@@ -222,6 +222,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   at its Grid (the antenna's locator), with a free-text antenna; a server missing either stops Connect with the reason. The destination is
   the test listener (`pskEndpoint: "test"`); production is listed greyed out until PSK Reporter's author has been asked. The header shows
   `PSK Reporter: N sent` (red on an error) with the counts in its tooltip. Settings from before read as off.
+- **PSK Reporter spot rules are WSJT-X's, checked against WSJT-X (#655, stage 4 of 4).** `scripts/pskreporter/spot_oracle.cpp` runs upstream's
+  `tokens_re` / `deCallAndGrid`, `Radio::is_standard_callsign`, `decoded_grid_pattern` and the real Fortran `stdmsg_`; the answers for 1 537
+  words and 68 messages are vendored and `tests/pskreporter_spot_rules.rs` requires them (143 real decodes off the air agreed too). The
+  check found that the skimmer's own heuristic missed `K1ABC W9XYZ R EN37`, took messages upstream calls free text, and that the JTTY
+  sender rule refused `/P` and `/R` calls and took `RR73` for a locator; PSK Reporter now uses upstream's rules, and so does the JTTY
+  one (`JttyMessage::sender`, which the station list reads too). A slot that began before the radio was last retuned is not reported.
 - **skimmer: JTTY (#650).** JTTY has no slot (frames start at any moment and a message grows while it is received), so a JTTY
   channel is not decoded a slot at a time: the receiver keeps its continuous audio (`IqReceiver::add_audio_channel`), a thread
   per channel runs upstream's receiver over it at a slow AGC (`jtty::rx::Stream`; Rx frequency and tolerance are the channel's

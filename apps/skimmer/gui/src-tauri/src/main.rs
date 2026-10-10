@@ -435,6 +435,8 @@ enum UiEvent {
         offered: u64,
         duplicates: u64,
         overflowed: u64,
+        /// Not spots: they began before the radio was retuned.
+        stale: u64,
         spots_sent: u64,
         datagrams_sent: u64,
         pending: usize,
@@ -1365,6 +1367,12 @@ async fn start(
                             p.reporter.spot(sp);
                         }
                     }
+                    // A new plan or a move of the device: a slot that began before it may hold
+                    // another band's samples, and is not a spot of this one.
+                    Event::Streaming { .. } | Event::Moved { .. } => {
+                        p.reporter
+                            .retuned(skimmer_core::now_ns().div_euclid(1_000_000_000));
+                    }
                     Event::Status(_) => {
                         let st = p.reporter.stats();
                         let _ = emitter.emit(
@@ -1375,6 +1383,7 @@ async fn start(
                                     offered: st.offered,
                                     duplicates: st.duplicates,
                                     overflowed: st.overflowed,
+                                    stale: st.stale,
                                     spots_sent: st.spots_sent,
                                     datagrams_sent: st.datagrams_sent,
                                     pending: st.pending,
@@ -1633,6 +1642,7 @@ mod health_log_tests {
                 offered: 36,
                 duplicates: 8,
                 overflowed: 0,
+                stale: 0,
                 spots_sent: 28,
                 datagrams_sent: 3,
                 pending: 2,
