@@ -89,7 +89,7 @@ Crate's time as a fraction of upstream's on the same files.
 | `jt9/t1` | 10 | 0.19 (15.1 / 77.9 ms) | 0.19 (17.9 / 96.2 ms) |
 | `jtty/t1` | 20 | 0.11 (14 / 127 ms) | 0.14 (19 / 132 ms) |
 | `wspr/t1` | 10 | 0.24 (19 / 79 ms) | 1.22 (208 / 170 ms) |
-| `fst4w/t1` | 8 | 0.28 (28 / 101 ms) | 0.73 (127 / 174 ms) |
+| `fst4w/t1` | 8 | 0.28 (29 / 103 ms) | 0.30 (53 / 176 ms) |
 | `jt65/t1` | 10 | 0.25 (193 / 784 ms) | 0.06 (53 / 855 ms) |
 
 Fewer than ten files a kind is too few: `wspr/t1` read anywhere from 0.60 to
@@ -108,7 +108,9 @@ the other commits since 2026-10-01 was not isolated.
 FST4W (2026-10-11, #649, #670) first read 1.77 at the crossing cell (311 / 175 ms, same machine, same files). Timing the
 stages put 99 % of the decode in `fastosd240_74`; the per-pattern work (a 32-row partial syndrome rebuilt from 66 bytes,
 and `nextpat74` over a 0/1 vector) became a `u32` syndrome xor over the pattern's at most four set bits and a position
-list. Bit-identical: the 1 208 upstream FEC records and all 1 760 sweep trials are unchanged. The only task whose upstream
+list (311 → 127 ms); the candidate codeword of a passing pattern, which was 6.1 M of 17.6 M patterns on 20 files and the
+rest of the time, became the codeword of `m0` xor four packed rows, its distance summed over the differing bits and
+abandoned at `dmin` (127 → 53 ms). Bit-identical: the 1 208 upstream FEC records and all 1 760 sweep trials are unchanged. The only task whose upstream
 is `v3.3.0-beta1`, not `rc1`: rc1's Keff 50 matched blank known-call entries. Eight files a kind here.
 
 ## What moved these numbers

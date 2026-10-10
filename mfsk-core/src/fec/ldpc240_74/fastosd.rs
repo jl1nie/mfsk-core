@@ -22,8 +22,11 @@
 //!
 //! What differs from the Fortran, deliberately: nothing in the arithmetic. The
 //! per-pattern bookkeeping is restructured (#670): the partial syndrome is the
-//! xor of packed `u32` columns of the pattern's set bits, and the pattern is a
-//! position list; both give the same values, in the same order.
+//! xor of packed `u32` columns of the pattern's set bits, the pattern is a
+//! position list, and the candidate codeword is the codeword of `m0` xor the
+//! (4 x `u64`) rows of those bits, its distance summed over the differing
+//! positions in ascending order and abandoned once it reaches `dmin`; all give
+//! the same values, in the same order.
 //! `apmask` is not a parameter because upstream only permutes it
 //! (`apmaskr`) and never reads the result.
 
@@ -332,7 +335,6 @@ pub fn fastosd240_74(work: &mut Osd74Work, llr: &[f32], k: usize, ndeep: i32) ->
             }
             let rho = s1 / (s1 + xlambda * s2);
             let mut rhodmin = rho * dmin;
-            let mut me = vec![0u8; k];
             // The partial syndrome of `me = m0 ^ mi` is linear in `me`, so it is
             // the one of `m0` xor the columns of the (at most `nord`) set bits
             // of `mi`: packed as `u32`, 32 columns of rows K..K+NP-1 at a time.
@@ -359,6 +361,16 @@ pub fn fastosd240_74(work: &mut Osd74Work, llr: &[f32], k: usize, ndeep: i32) ->
             }
             // The test pattern `mi` is held as the ascending positions of its
             // `iorder` ones, which is all `nextpat74` ever manipulates.
+            let pack = |v: &[u8]| {
+                let mut w = [0u64; 4];
+                for (i, &b) in v.iter().enumerate() {
+                    w[i / 64] |= (b as u64) << (i % 64);
+                }
+                w
+            };
+            let rowb: Vec<[u64; 4]> = (0..k).map(|i| pack(&gm[i * N..(i + 1) * N])).collect();
+            let hdb = pack(&hdec);
+            let c0b = pack(&c0);
             let mut pos = [0usize; 4];
             for iorder in 1..=nord {
                 for (j, p) in pos[..iorder].iter_mut().enumerate() {
@@ -379,24 +391,39 @@ pub fn fastosd240_74(work: &mut Osd74Work, llr: &[f32], k: usize, ndeep: i32) ->
                     }
                     let nwhsp = (sp ^ hd32).count_ones();
                     if nwhsp <= nsyndmax {
-                        me.copy_from_slice(&m0);
+                        // `mrbencode(me)` is linear: the codeword of `m0 ^ mi` is
+                        // the one of `m0` xor the rows of `mi`'s set bits. Packed
+                        // 4 x u64, the distance walks the differing positions in
+                        // ascending order, as the Fortran's sum does (the zero
+                        // terms it adds are exact).
+                        let mut cb = c0b;
                         for &p in &pos[..iorder] {
-                            me[p] ^= 1;
+                            for w in 0..4 {
+                                cb[w] ^= rowb[p][w];
+                            }
                         }
-                        let mut ce = [0u8; N];
-                        mrbencode(&me, &mut ce);
-                        let mut dd = 0f32;
                         let mut nh = 0i32;
-                        for i in 0..N {
-                            let x = ce[i] ^ hdec[i];
-                            nxor[i] = x;
-                            nh += x as i32;
-                            dd += x as f32 * absrx[i];
+                        for w in 0..4 {
+                            nh += (cb[w] ^ hdb[w]).count_ones() as i32;
+                        }
+                        let mut dd = 0f32;
+                        'dist: for w in 0..4 {
+                            let mut x = cb[w] ^ hdb[w];
+                            while x != 0 {
+                                dd += absrx[w * 64 + x.trailing_zeros() as usize];
+                                // `absrx` is not negative, so `dd` never falls again
+                                if dd >= dmin {
+                                    break 'dist;
+                                }
+                                x &= x - 1;
+                            }
                         }
                         if dd < dmin {
                             dmin = dd;
                             rhodmin = rho * dmin;
-                            cw = ce;
+                            for i in 0..N {
+                                cw[i] = ((cb[i / 64] >> (i % 64)) & 1) as u8;
+                            }
                             nhardmin = nh;
                         }
                     }

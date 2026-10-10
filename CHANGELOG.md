@@ -31,7 +31,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   upstream: 1 208 FEC inputs, 1 201 `genfst4` messages, `jt9 -W` / `-7` rows, and WSJT-X's own FST4W-1800 sample (`DL0HOT JO60 30`).
   Upstream bug found: `genfst4.f90:40-43` eats characters after two leading blanks (not reproduced). Detail: `LIBRARY.md` §3.3.
   Tier C (`fst4w_sweep`, task `fst4w/t1`, 1 760 files): the same as `jt9 -W` in all 8 conditions (20 upstream-only, 16 crate-only,
-  crossings within ±0.17 dB, no extras either side), and 0.73× of upstream's time near the crossing (127 vs 174 ms; first measured 1.77×, #670: OSD pattern loop).
+  crossings within ±0.17 dB, no extras either side), and 0.30× of upstream's time near the crossing (53 vs 176 ms; first measured 1.77×, #670: OSD pattern loop).
 
 - **`IqReceiver::add_audio_channel`, `take_audio_from` and `utc_of_audio`, for a receiver with no slot; JTTY's
   `MessageUpdate::calls` (#650).** An audio channel is placed as a slotted one but cuts nothing: it keeps its continuous
