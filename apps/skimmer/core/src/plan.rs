@@ -92,9 +92,11 @@ pub fn plan_of(
 }
 
 fn fits(c: &ChannelSpec, rate: u32, center_hz: f64) -> bool {
-    IqReceiver::new(IqStream::new(rate, center_hz, IqSampleFormat::Cf32))
-        .add_channel(c.dial_hz, c.mode)
-        .is_ok()
+    let mut rx = IqReceiver::new(IqStream::new(rate, center_hz, IqSampleFormat::Cf32));
+    match c.mode.slot() {
+        Some(m) => rx.add_channel(c.dial_hz, m).is_ok(),
+        None => rx.add_audio_channel(c.dial_hz).is_ok(),
+    }
 }
 
 #[cfg(test)]

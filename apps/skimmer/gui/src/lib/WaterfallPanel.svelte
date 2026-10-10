@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ChannelSetting, DecodeRow, ModeInfo } from './types';
-  import { BIG_PX, THUMB_PX, paint, spanMs, type WaterfallStore } from './waterfall';
+  import type { ChannelSetting, DecodeRow, JttyRow, ModeInfo } from './types';
+  import { paint, spanMs, type WaterfallStore } from './waterfall';
 
   let {
     store,
@@ -12,8 +12,11 @@
     focus,
     onfocus,
     rows,
+    jtty = [],
     slotS,
     geom,
+    bigPx = $bindable(220),
+    thumbPx = $bindable(54),
     open = $bindable(true),
   }: {
     store: WaterfallStore;
@@ -28,8 +31,14 @@
     focus: number;
     onfocus: (i: number) => void;
     rows: DecodeRow[];
+    /** JTTY messages, drawn on a JTTY channel's waterfall where they were heard. */
+    jtty?: JttyRow[];
     slotS: Record<string, number>;
     geom: Record<string, ModeInfo>;
+    /** Height of the large waterfall and of a thumbnail, in pixels: also how many
+     * rows of time each shows, so a taller one shows the same time more finely. */
+    bigPx?: number;
+    thumbPx?: number;
     open: boolean;
   } = $props();
 
@@ -45,6 +54,14 @@
   /** A decode's box on the large waterfall, in canvas pixels. */
   type Box = { x0: number; x1: number; y0: number; y1: number; text: string };
   let boxes: Box[] = [];
+
+  /** A JTTY frame is 4 tones 31.25 Hz apart. */
+  const JTTY_WIDTH_HZ = 125;
+  /** JTTY has no slot to scroll by: a screen of it covers this long, with a tick every 10 s. */
+  const JTTY_SPAN_MS = 40_000;
+  /** The time one screen of a channel's waterfall covers. */
+  const spanOf = (c: ChannelSetting | undefined) =>
+    c?.mode === 'JTTY' ? JTTY_SPAN_MS : spanMs(slotS[c?.mode ?? ''] ?? 15);
 
   const hhmmss = (ms: number) => {
     const d = new Date(ms);
@@ -62,25 +79,25 @@
       if (!cv || !s || s.rows.length === 0) return;
       const w = s.rows[0].length;
       if (cv.width !== w) cv.width = w;
-      if (cv.height !== THUMB_PX) cv.height = THUMB_PX;
+      if (cv.height !== thumbPx) cv.height = thumbPx;
       const ctx = cv.getContext('2d');
       if (!ctx) return;
-      const img = ctx.createImageData(w, THUMB_PX);
-      paint(img, s, spanMs(slotS[channels[i].mode] ?? 15));
+      const img = ctx.createImageData(w, thumbPx);
+      paint(img, s, spanOf(channels[i]));
       ctx.putImageData(img, 0, 0);
     });
     // The large one.
     const b = store.big;
     if (big && b.channel === focus && b.rows.length > 0) {
       const w = b.rows[0].length;
-      if (big.width !== w || big.height !== BIG_PX) {
+      if (big.width !== w || big.height !== bigPx) {
         big.width = w;
-        big.height = BIG_PX;
+        big.height = bigPx;
       }
       const ctx = big.getContext('2d');
       if (ctx) {
-        const img = ctx.createImageData(w, BIG_PX);
-        paint(img, b, spanMs(slotS[channels[focus]?.mode ?? ''] ?? 15));
+        const img = ctx.createImageData(w, bigPx);
+        paint(img, b, spanOf(channels[focus]));
         ctx.putImageData(img, 0, 0);
       }
     }
@@ -104,7 +121,7 @@
     const xOf = (hz: number) => ((hz - b.fLo) / hzSpan) * W;
     const n = b.rows.length;
     const newest = b.utc[0];
-    const span = spanMs(slotS[channels[focus]?.mode ?? ''] ?? 15);
+    const span = spanOf(channels[focus]);
     const yOf = (utc: number) => ((newest - utc) / span) * H;
     ctx.font = '10px sans-serif';
     ctx.textBaseline = 'top';
@@ -119,9 +136,9 @@
       ctx.stroke();
       ctx.fillText(String(f), x + 2, 1);
     }
-    // Slot boundaries.
+    // Slot boundaries (JTTY: a tick every 10 s, since it has no slots).
     const c = channels[focus];
-    const T = (slotS[c?.mode ?? ''] ?? 15) * 1000;
+    const T = c?.mode === 'JTTY' ? 10_000 : (slotS[c?.mode ?? ''] ?? 15) * 1000;
     ctx.strokeStyle = 'rgba(255,255,255,0.45)';
     for (let t = Math.floor(newest / T) * T; t > newest - span; t -= T) {
       const y = yOf(t);
@@ -130,6 +147,25 @@
       ctx.lineTo(W, y);
       ctx.stroke();
       ctx.fillText(hhmmss(t), 2, y + 1);
+    }
+    // A JTTY channel's messages, from where they began to where they have got
+    // (a message still growing is dashed), so a free frequency shows between them.
+    if (c?.mode === 'JTTY') {
+      for (const m of jtty) {
+        if (m.channel !== focus || m.startUtcMs === null) continue;
+        const end = m.endUtcMs ?? m.startUtcMs + 1888;
+        const yLow = yOf(m.startUtcMs);
+        const yHigh = yOf(end);
+        if (yLow < 0 || yHigh > H) continue;
+        const x0 = xOf(m.freqHz - c.dialHz);
+        const x1 = xOf(m.freqHz - c.dialHz + JTTY_WIDTH_HZ);
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.setLineDash(m.final ? [] : [4, 3]);
+        ctx.strokeRect(x0, yHigh, x1 - x0, yLow - yHigh);
+        ctx.setLineDash([]);
+        boxes.push({ x0, x1, y0: yHigh, y1: yLow, text: `${m.text}  ${m.snrDb.toFixed(0)} dB` });
+      }
+      return;
     }
     // The decodes of this channel, over the slot they came from.
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
@@ -162,9 +198,57 @@
     void tick;
     void focus;
     void rows.length;
+    void jtty;
+    void bigPx;
+    void thumbPx;
     void open;
     schedule();
   });
+
+  const BIG_RANGE = [100, 700] as const;
+  const THUMB_RANGE = [24, 200] as const;
+  const BIG_DEFAULT = 220;
+  const THUMB_DEFAULT = 54;
+
+  /**
+   * Drag the grip under a block to change its height: the thumbnails' or the large
+   * waterfall's. The pointer is captured, so the drag goes on outside the grip.
+   */
+  function grab(e: PointerEvent, which: 'big' | 'thumb') {
+    const grip = e.currentTarget as HTMLElement;
+    const [lo, hi] = which === 'big' ? BIG_RANGE : THUMB_RANGE;
+    const y0 = e.clientY;
+    const h0 = which === 'big' ? bigPx : thumbPx;
+    grip.setPointerCapture(e.pointerId);
+    const move = (m: PointerEvent) => {
+      const h = Math.round(Math.min(hi, Math.max(lo, h0 + m.clientY - y0)));
+      if (which === 'big') bigPx = h;
+      else thumbPx = h;
+    };
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+    e.preventDefault();
+  }
+
+  /** A double click puts the height back; the arrow keys nudge it. */
+  function reset(which: 'big' | 'thumb') {
+    if (which === 'big') bigPx = BIG_DEFAULT;
+    else thumbPx = THUMB_DEFAULT;
+  }
+  function nudge(e: KeyboardEvent, which: 'big' | 'thumb') {
+    const d = e.key === 'ArrowDown' ? 10 : e.key === 'ArrowUp' ? -10 : 0;
+    if (!d) return;
+    const [lo, hi] = which === 'big' ? BIG_RANGE : THUMB_RANGE;
+    if (which === 'big') bigPx = Math.min(hi, Math.max(lo, bigPx + d));
+    else thumbPx = Math.min(hi, Math.max(lo, thumbPx + d));
+    e.preventDefault();
+  }
 
   function onmove(e: MouseEvent) {
     const r = over?.getBoundingClientRect();
@@ -195,15 +279,29 @@
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
         {#if (c.server ?? 0) === server}
           <button class="thumb" class:on={i === focus} onclick={() => onfocus(i)} title="Show this channel large">
-            <canvas bind:this={thumbs[i]} width="256" height="60"></canvas>
+            <canvas bind:this={thumbs[i]} width="256" height={thumbPx} style="height: {thumbPx}px"></canvas>
             <span>{c.mode} {(c.dialHz / 1000).toFixed(1)}</span>
           </button>
         {/if}
       {/each}
     </div>
+    <div
+      class="grip"
+      role="slider"
+      aria-orientation="vertical"
+      aria-label="Thumbnail height"
+      aria-valuemin={THUMB_RANGE[0]}
+      aria-valuemax={THUMB_RANGE[1]}
+      aria-valuenow={thumbPx}
+      tabindex="0"
+      title="Drag to change the thumbnails' height; double-click for the usual one"
+      onpointerdown={(e) => grab(e, 'thumb')}
+      ondblclick={() => reset('thumb')}
+      onkeydown={(e) => nudge(e, 'thumb')}
+    ></div>
     <div class="bigbox">
-      <canvas class="big" bind:this={big} width="1024" height={BIG_PX}></canvas>
-      <canvas class="over" bind:this={over} onmousemove={onmove} onmouseleave={() => (hover = '')}></canvas>
+      <canvas class="big" bind:this={big} width="1024" height={bigPx} style="height: {bigPx}px"></canvas>
+      <canvas class="over" bind:this={over} onmousemove={onmove} onmouseleave={() => (hover = '')} style="height: {bigPx}px"></canvas>
       {#if hover}
         <!-- Beside the pointer, but on its left near the right edge and above it near the bottom, where it would be cut off. -->
         {@const flipX = hoverAt.x > hoverAt.w * 0.6}
@@ -219,6 +317,20 @@
         <div class="wait">waiting for {channels[focus] ? channels[focus].mode + ' ' + (channels[focus].dialHz / 1000).toFixed(1) : 'a channel'}…</div>
       {/if}
     </div>
+    <div
+      class="grip"
+      role="slider"
+      aria-orientation="vertical"
+      aria-label="Waterfall height"
+      aria-valuemin={BIG_RANGE[0]}
+      aria-valuemax={BIG_RANGE[1]}
+      aria-valuenow={bigPx}
+      tabindex="0"
+      title="Drag to change the waterfall's height; double-click for the usual one"
+      onpointerdown={(e) => grab(e, 'big')}
+      ondblclick={() => reset('big')}
+      onkeydown={(e) => nudge(e, 'big')}
+    ></div>
   {/if}
 </section>
 
@@ -254,6 +366,21 @@
     display: flex;
     align-items: center;
   }
+  /* The bottom edge of a block is the handle: invisible, laid over the last few pixels, lit under the pointer. */
+  .grip {
+    position: relative;
+    z-index: 2;
+    height: 8px;
+    margin-top: -8px;
+    cursor: ns-resize;
+    touch-action: none;
+    box-shadow: inset 0 -2px 0 transparent;
+  }
+  .grip:hover,
+  .grip:focus-visible {
+    box-shadow: inset 0 -2px 0 var(--accent, #4da3ff);
+    outline: none;
+  }
   .thumbs {
     display: flex;
     gap: 6px;
@@ -273,7 +400,6 @@
   }
   .thumb canvas {
     width: 100%;
-    height: 54px;
     image-rendering: auto;
     background: #000;
   }
@@ -287,7 +413,6 @@
   .big,
   .over {
     width: 100%;
-    height: 220px;
     display: block;
     background: #000;
   }

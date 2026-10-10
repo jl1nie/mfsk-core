@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as api from './lib/api';
-  import type { DecodeRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
+  import type { DecodeRow, JttyRow, ModeInfo, Settings, Status, UiEvent } from './lib/types';
+  import JttyPanel from './lib/JttyPanel.svelte';
   import { bandOfHz, clockOf, gridLonLat, sortBands, sunTimes } from './lib/analysis';
   import HoursPicker from './lib/HoursPicker.svelte';
   import ChannelPanel from './lib/ChannelPanel.svelte';
@@ -74,6 +75,9 @@
   let settingsTab = $state<(typeof SETTINGS_TABS)[number][0]>('server');
   /** The live view (waterfall + decodes) or the Analysis of the database. */
   let view = $state<'live' | 'analysis'>('live');
+  /** JTTY messages, a row each, replaced in place as a message grows. */
+  let jtty = $state.raw<JttyRow[]>([]);
+  const JTTY_ROWS = 500;
   /** A server's call or locator was edited: normalised, and handed to a running session of that server. */
   function stationChanged(server: number) {
     const sv = settings?.servers[server];
@@ -286,6 +290,13 @@
         // An update says a row already received again, its <...> resolved.
         if (!row.update) received += 1;
         addRow({ ...row, id: nextId++ });
+        break;
+      }
+      case 'jtty': {
+        const { type: _, server: __, ...row } = e;
+        const at = jtty.findIndex((r) => r.channel === row.channel && r.key === row.key);
+        const next = at < 0 ? [...jtty, row] : jtty.map((r, i) => (i === at ? row : r));
+        jtty = next.length > JTTY_ROWS ? next.slice(next.length - JTTY_ROWS) : next;
         break;
       }
       case 'gap':
@@ -863,20 +874,37 @@
             tableCh = i;
           }}
           {rows}
+          {jtty}
           {slotS}
           {geom}
+          bind:bigPx={settings.wfHeight}
+          bind:thumbPx={settings.wfThumbHeight}
           bind:open={wfOpen}
         />
       {/if}
-      <DecodeTable
-        {rows}
-        channels={settings.channels}
-        serverNames={settings.servers.map((x) => x.name)}
-        {slotS}
-        onclear={clearRows}
-        bind:channel={tableCh}
-        onpick={focusChannel}
-      />
+      <!-- What is heard follows the channel chosen: the slotted modes (WSJT-X's 77-bit
+           family) are decode rows, one per slot; JTTY is messages that grow while they are
+           received, so it has a list of its own, under the same selector. -->
+      {#if settings.channels[tableCh]?.mode === 'JTTY'}
+        <JttyPanel
+          rows={jtty}
+          channels={settings.channels}
+          serverNames={settings.servers.map((x) => x.name)}
+          onclear={() => (jtty = [])}
+          bind:channel={tableCh}
+          onpick={focusChannel}
+        />
+      {:else}
+        <DecodeTable
+          {rows}
+          channels={settings.channels}
+          serverNames={settings.servers.map((x) => x.name)}
+          {slotS}
+          onclear={clearRows}
+          bind:channel={tableCh}
+          onpick={focusChannel}
+        />
+      {/if}
       </div>
     </div>
   </main>

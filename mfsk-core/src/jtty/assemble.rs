@@ -79,6 +79,9 @@ pub struct MessageUpdate {
     pub f1_hz: f32,
     /// Start of the first frame, seconds from the start of the audio.
     pub start_s: f64,
+    /// End of the latest frame, seconds from the start of the audio: where a
+    /// message that is still growing has got to. Not part of upstream's update (#650).
+    pub end_s: f64,
     /// SNR in 2 500 Hz of the message's **first** frame, dB, as upstream reports it
     /// (`start_snrdb`, never reassigned): see [`FrameDecode::snr_db`].
     pub snr_db: f32,
@@ -290,6 +293,7 @@ impl Assembler {
             id: a.id,
             f1_hz: a.f1,
             start_s: a.start,
+            end_s: a.tsync + FRAME_PERIOD_S,
             snr_db: a.snr_db,
             text: display(&a.decoded),
             complete: kind == UpdateKind::Complete,

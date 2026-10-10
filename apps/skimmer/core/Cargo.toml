@@ -18,7 +18,7 @@ regex = "1"
 # crate is `publish = false` and the workspace version is the only truth.
 mfsk-core = { path = "../../../mfsk-core", default-features = false, features = [
     "std", "parallel", "fft-rustfft",
-    "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65",
+    "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "jtty",
 ] }
 
 [dev-dependencies]

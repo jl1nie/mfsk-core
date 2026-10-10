@@ -26,7 +26,9 @@
 
 pub mod anchor;
 pub mod clock;
+pub mod fake;
 pub mod geo;
+pub mod jtty;
 pub mod modes;
 pub mod plan;
 pub mod spot;
@@ -54,10 +56,35 @@ use spyserver::*;
 
 pub use clock::now_ns;
 
+/// What a channel receives: a slotted mode, decoded a slot at a time, or JTTY,
+/// which has no slot: its frames start at any moment and a message grows while
+/// it is received (#650).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChannelMode {
+    Slot(Mode),
+    Jtty,
+}
+
+impl ChannelMode {
+    /// The slotted mode, or `None` for JTTY.
+    pub fn slot(self) -> Option<Mode> {
+        match self {
+            ChannelMode::Slot(m) => Some(m),
+            ChannelMode::Jtty => None,
+        }
+    }
+}
+
+impl From<Mode> for ChannelMode {
+    fn from(m: Mode) -> Self {
+        ChannelMode::Slot(m)
+    }
+}
+
 /// One channel: a mode at a USB dial frequency, and how it is decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelSpec {
-    pub mode: Mode,
+    pub mode: ChannelMode,
     pub dial_hz: f64,
     pub options: ChannelOptions,
 }
@@ -136,8 +163,8 @@ pub struct LiveOptions {
 /// A channel across rotation steps: the mode and the dial.
 type BankKey = (&'static str, i64);
 
-fn bank_key(mode: Mode, dial_hz: f64) -> BankKey {
-    (modes::mode_name(mode), dial_hz.round() as i64)
+fn bank_key(mode: ChannelMode, dial_hz: f64) -> BankKey {
+    (modes::channel_mode_name(mode), dial_hz.round() as i64)
 }
 
 #[derive(Default)]
@@ -274,9 +301,9 @@ impl LiveOptions {
 }
 
 impl ChannelSpec {
-    pub fn new(mode: Mode, dial_hz: f64) -> Self {
+    pub fn new(mode: impl Into<ChannelMode>, dial_hz: f64) -> Self {
         ChannelSpec {
-            mode,
+            mode: mode.into(),
             dial_hz,
             options: ChannelOptions::default(),
         }
@@ -912,7 +939,7 @@ impl Config {
             .channels
             .iter()
             .filter_map(|&c| self.channels.get(c))
-            .map(|c| (modes::slot_seconds(c.mode) * 1000.0).round() as i64)
+            .map(|c| (modes::channel_slot_seconds(c.mode) * 1000.0).round() as i64)
             .filter(|&ms| ms > 0)
             .fold(1_000, |a, b| a / gcd(a, b) * b);
         let want = i64::from(st.minutes.max(MIN_STEP_MINUTES)) * 60_000;
@@ -1191,6 +1218,9 @@ pub enum Event {
         iq_hz: f64,
     },
     Decode(Decode),
+    /// A JTTY message, as far as it is known; reported again as it grows
+    /// and once more when it is over (see [`jtty::JttyMessage`]).
+    Jtty(jtty::JttyMessage),
     /// The server dropped IQ messages; slots spanning the hole are lost.
     Gap {
         messages: u32,
@@ -1702,6 +1732,10 @@ struct Live {
     wfs: Vec<Option<ChannelWaterfall>>,
     /// By `ChannelId`: the key the channel's decoder and waterfall are kept under.
     keys: Vec<BankKey>,
+    /// By `ChannelId`: a JTTY channel's receiver thread (#650).
+    jtty: Vec<Option<jtty::Worker>>,
+    /// Messages the JTTY threads reported, waiting to be passed on.
+    jtty_results: std::sync::mpsc::Receiver<jtty::JttyMessage>,
     format: IqSampleFormat,
 }
 
@@ -1793,11 +1827,16 @@ fn receiver(
     let mut cfg_index: Vec<usize> = Vec::new();
     let mut wfs: Vec<Option<ChannelWaterfall>> = Vec::new();
     let mut keys: Vec<BankKey> = Vec::new();
+    let mut jttys: Vec<Option<jtty::Worker>> = Vec::new();
+    let (jtx, jtty_results) = std::sync::mpsc::channel();
+    let jtty_rx = std::sync::Arc::new(mfsk_core::jtty::rx::Receiver::new());
     for &i in &p.active {
         let ch = &cfg.channels[i];
-        let id = rx
-            .add_channel(ch.dial_hz, ch.mode)
-            .map_err(|e| std::io::Error::other(format!("{}: {e}", ch.dial_hz)))?;
+        let id = match ch.mode {
+            ChannelMode::Slot(m) => rx.add_channel(ch.dial_hz, m),
+            ChannelMode::Jtty => rx.add_audio_channel(ch.dial_hz),
+        }
+        .map_err(|e| std::io::Error::other(format!("{}: {e}", ch.dial_hz)))?;
         if workers.len() <= id.0 {
             workers.resize_with(id.0 + 1, || None);
         }
@@ -1810,8 +1849,13 @@ fn receiver(
             keys.resize(id.0 + 1, ("", 0));
         }
         keys[id.0] = key;
+        // A slotted channel's audio is kept for its waterfall; a JTTY channel's
+        // always is (it is what the receiver thread reads), and the stream loop
+        // hands the same audio to both.
         if cfg.waterfall {
-            rx.tap_audio(id, true);
+            if ch.mode.slot().is_some() {
+                rx.tap_audio(id, true);
+            }
             if wfs.len() <= id.0 {
                 wfs.resize_with(id.0 + 1, || None);
             }
@@ -1819,6 +1863,25 @@ fn receiver(
             w.restart();
             wfs[id.0] = Some(w);
         }
+        // A JTTY channel has no slot and no decoder: a receiver thread over
+        // its continuous audio.
+        let Some(mode) = ch.mode.slot() else {
+            let (opts, _) = cfg
+                .live
+                .get(i)
+                .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
+            if jttys.len() <= id.0 {
+                jttys.resize_with(id.0 + 1, || None);
+            }
+            jttys[id.0] = Some(jtty::Worker::spawn(
+                i,
+                ch.dial_hz,
+                &opts,
+                jtty_rx.clone(),
+                jtx.clone(),
+            ));
+            continue;
+        };
         // This channel's decoder from its last turn, if it had one, with the
         // options and station as they are now.
         let (opts, station) = cfg
@@ -1827,7 +1890,7 @@ fn receiver(
             .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
         let decoder = {
             let kept = cfg.live.bank.lock().unwrap().decoders.remove(&key);
-            let mut d = kept.unwrap_or_else(|| AnyDecoder::with_defaults(ch.mode));
+            let mut d = kept.unwrap_or_else(|| AnyDecoder::with_defaults(mode));
             apply_options(&mut d, &opts, &station);
             d
         };
@@ -1840,7 +1903,7 @@ fn receiver(
         let mut lanes = Vec::new();
         for lane in 0..cfg.decode_lanes.max(1) {
             let d = first.take().unwrap_or_else(|| {
-                let mut d = AnyDecoder::with_defaults(ch.mode);
+                let mut d = AnyDecoder::with_defaults(mode);
                 apply_options(&mut d, &opts, &station);
                 d
             });
@@ -1863,7 +1926,7 @@ fn receiver(
             lanes,
             serial: opts.averaging,
             lane_of: None,
-            mode: ch.mode,
+            mode,
             early: cfg.early_decode,
         });
     }
@@ -1877,6 +1940,8 @@ fn receiver(
         cut_slots,
         wfs,
         keys,
+        jtty: jttys,
+        jtty_results,
         format,
     })
 }
@@ -1922,6 +1987,12 @@ fn stream(
                 wf_bank.insert(*key, w);
             }
         }
+        // The JTTY threads end their receptions as they stop: the messages still
+        // open are reported cut off, before the queue goes.
+        l.jtty.clear();
+        while let Ok(m) = l.jtty_results.try_recv() {
+            on_event(Event::Jtty(m));
+        }
     }
     r
 }
@@ -1938,6 +2009,9 @@ fn settle(live: &mut Option<Live>, on_event: &mut impl FnMut(Event)) {
     }
     while let Ok(d) = l.results.try_recv() {
         on_event(Event::Decode(d));
+    }
+    while let Ok(m) = l.jtty_results.try_recv() {
+        on_event(Event::Jtty(m));
     }
 }
 
@@ -2032,6 +2106,8 @@ fn stream_inner(
             longest_us,
             cut_slots,
             wfs,
+            jtty,
+            jtty_results,
             ..
         } = live.as_mut().unwrap();
 
@@ -2068,6 +2144,14 @@ fn stream_inner(
                     rx.set_prefix_points(ChannelId(id), prefix_points(w.mode, &o, &station));
                 }
             }
+            // A JTTY channel's Rx frequency and tolerance apply to its next window.
+            for (id, w) in jtty.iter().enumerate() {
+                if let Some(w) = w
+                    && let Some((o, _)) = cfg.live.get(cfg_index[id])
+                {
+                    w.send(jtty::Job::Options(o));
+                }
+            }
             if all_sent {
                 seen_generation = generation;
             }
@@ -2092,6 +2176,10 @@ fn stream_inner(
         let t = Instant::now();
         let mut slots = Vec::new();
         rx.push_bytes(&m.body, &mut slots);
+        // JTTY channels: the audio since the last message, run by run (a break in
+        // the audio ends a reception in the thread); the waterfall below gets a
+        // copy of what the thread was given.
+        let jtty_audio = jtty::feed(rx, jtty, cfg.waterfall);
         if cfg.waterfall {
             let focus = cfg.live.waterfall_focus();
             let fine = cfg.live.wf_fine.load(Ordering::Acquire);
@@ -2119,7 +2207,13 @@ fn stream_inner(
             for (id, wf) in wfs.iter_mut().enumerate() {
                 let Some(wf) = wf else { continue };
                 audio.clear();
-                rx.take_audio(mfsk_core::iq::ChannelId(id), &mut audio);
+                if jtty.get(id).is_some_and(Option::is_some) {
+                    if let Some((_, a)) = jtty_audio.iter().find(|(i, _)| *i == id) {
+                        audio.extend_from_slice(a);
+                    }
+                } else {
+                    rx.take_audio(mfsk_core::iq::ChannelId(id), &mut audio);
+                }
                 let channel = cfg_index[id];
                 let is_focus = focus == Some(channel);
                 coarse_rows.clear();
@@ -2158,6 +2252,9 @@ fn stream_inner(
                     }
                 }
             }
+        }
+        while let Ok(m) = jtty_results.try_recv() {
+            on_event(Event::Jtty(m));
         }
         for slot in slots {
             let Some(w) = workers[slot.channel.0].as_mut() else {

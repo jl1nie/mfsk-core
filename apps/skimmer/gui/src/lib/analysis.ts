@@ -32,7 +32,7 @@ export interface QueryForm {
   servers: string[];
 }
 
-export const MODE_CHIPS = ['FT8', 'FT4', 'FST4*', 'Q65*', 'WSPR', 'JT9', 'JT65'];
+export const MODE_CHIPS = ['FT8', 'FT4', 'FST4*', 'Q65*', 'WSPR', 'JT9', 'JT65', 'JTTY'];
 
 export function blankForm(): QueryForm {
   return {

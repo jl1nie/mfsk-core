@@ -252,6 +252,41 @@ impl Writer {
         }
     }
 
+    /// A JTTY message that is over (#650), as a row of `decodes` with mode
+    /// `JTTY`, so Analysis, the map and the station list take it like any other:
+    /// `t` is the start of its first frame, `snr` that frame's, `freq_hz` the
+    /// latest frame's tone 0, `call` and `grid` the sender by WSJT-X's own
+    /// spotting rule, and `dt` 0 (a message has no slot to be late in).
+    /// A message still growing is not stored.
+    pub fn push_jtty(&mut self, server: &str, m: &crate::jtty::JttyMessage) {
+        if !m.is_final() {
+            return;
+        }
+        let (call, grid) = m.sender().map_or((None, None), |(c, g)| (Some(c), g));
+        self.pending.push(Row {
+            server: server.to_string(),
+            t: m.start_utc_ns.map_or(0, |ns| ns.div_euclid(1_000_000_000)),
+            mode: modes::JTTY_NAME,
+            band: band_of(m.dial_hz),
+            dial_hz: m.dial_hz.round() as i64,
+            freq_hz: m.freq_hz.round() as i64,
+            snr: m.snr_db.round() as i64,
+            dt: 0.0,
+            call,
+            grid,
+            cq: spot::cq_kind(&m.text),
+            text: m.text.clone(),
+            msg_key: None,
+            sync: None,
+            hard_errors: None,
+            resolved: false,
+            update: false,
+        });
+        if self.pending.len() >= FLUSH_ROWS || self.since.elapsed() >= FLUSH_EVERY {
+            self.flush();
+        }
+    }
+
     #[cfg(test)]
     fn drop_flush(&mut self) {
         self.flush();
@@ -1071,6 +1106,52 @@ mod tests {
             me: "PM95".into(),
             ..Query::default()
         }
+    }
+
+    /// A JTTY message that is over is a row like any other (#650): its sender
+    /// and locator in the station list, its mode searchable; one still growing,
+    /// or without a sender, adds no station.
+    #[test]
+    fn a_finished_jtty_message_is_a_row_and_a_growing_one_is_not() {
+        use crate::jtty::{JttyMessage, UpdateKind};
+        let m = |text: &str, kind| JttyMessage {
+            channel: 0,
+            key: 1,
+            start_utc_ns: Some(1_700_000_100 * 1_000_000_000),
+            end_utc_ns: Some(1_700_000_102 * 1_000_000_000),
+            dial_hz: 14_090_000.0,
+            freq_hz: 14_091_500.0,
+            snr_db: -9.0,
+            text: text.into(),
+            calls: Vec::new(),
+            kind,
+        };
+        let p = db();
+        let mut w = Writer::open(&p, &[]).unwrap();
+        w.push_jtty("", &m("CQ K1ABC FN42", UpdateKind::Growing));
+        w.push_jtty("", &m("CQ K1ABC FN42", UpdateKind::Complete));
+        w.push_jtty("", &m("HELLO WORLD", UpdateKind::Complete));
+        w.flush();
+        let r = Reader::open(&p).unwrap();
+        assert_eq!(r.span().unwrap().2, 2, "the growing one is not stored");
+        let h = 1_700_000_100 / 3600 * 3600;
+        assert_eq!(
+            r.summary(&q(h)).unwrap().stations,
+            1,
+            "only the one with a sender"
+        );
+        let st = r
+            .stations(
+                &Query {
+                    modes: vec!["JTTY".into()],
+                    ..q(h)
+                },
+                10,
+            )
+            .unwrap();
+        assert_eq!(st.len(), 1);
+        assert_eq!(st[0].call, "K1ABC");
+        assert_eq!(st[0].grid.as_deref(), Some("FN42"));
     }
 
     #[test]

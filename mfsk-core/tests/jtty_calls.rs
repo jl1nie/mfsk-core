@@ -40,6 +40,20 @@ fn a_message_carries_its_call_atoms_once_each_in_order() {
         .find(|u| u.kind == UpdateKind::Complete)
         .unwrap_or_else(|| panic!("no complete message: {ups:?}"));
     assert_eq!(done.calls, ["JA1ABC", "K1ABC"], "{:?}", done.text);
+    // It ends where its last frame ends (two frames of 1.888 s), and a growing
+    // update ends where the frames so far end.
+    let frame = mfsk_core::jtty::assemble::FRAME_PERIOD_S;
+    assert!(
+        (done.end_s - done.start_s - 3.0 * frame).abs() < 0.05,
+        "{} .. {}",
+        done.start_s,
+        done.end_s
+    );
+    let first = ups.iter().find(|u| u.id == done.id).unwrap();
+    assert!(
+        (first.end_s - first.start_s - frame).abs() < 0.05,
+        "{first:?}"
+    );
     // Each growing update has the calls arrived so far, never more.
     for u in ups.iter().filter(|u| u.id == done.id) {
         assert!(done.calls.starts_with(&u.calls), "{u:?}");

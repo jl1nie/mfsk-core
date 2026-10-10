@@ -84,6 +84,9 @@ export interface Settings {
   /** Draw the channels' waterfalls; fine is 1.5 Hz per bin instead of 2.9. */
   waterfall: boolean;
   waterfallFine: boolean;
+  /** Height of the large waterfall and of a thumbnail, in pixels. */
+  wfHeight: number;
+  wfThumbHeight: number;
   /** The PC clock as it is, or corrected against an NTP server. */
   clockSource: 'system' | 'ntp';
   ntpServer: string;
@@ -113,6 +116,27 @@ export interface ModeInfo {
   frameS: number;
   /** Width of a frame on the band, Hz. */
   widthHz: number;
+}
+
+/** One JTTY message: it grows while it is received, so the row of its `key` on its channel is replaced in place. */
+export interface JttyRow {
+  channel: number;
+  /** Stable for the life of the message; a string, since it is 64 bits. */
+  key: string;
+  /** UTC of the start of its first frame, ms since the epoch. */
+  startUtcMs: number | null;
+  /** Where its latest frame ends: how far it has got. */
+  endUtcMs: number | null;
+  dialHz: number;
+  /** RF frequency of the lowest tone of its latest frame. */
+  freqHz: number;
+  /** SNR in 2 500 Hz of its first frame. */
+  snrDb: number;
+  text: string;
+  /** The callsigns of its call atoms, in order, each once. */
+  calls: string[];
+  kind: 'growing' | 'complete' | 'expired' | 'ended';
+  final: boolean;
 }
 
 export interface DecodeRow {
@@ -196,6 +220,7 @@ export type UiEventBody =
     }
   | { type: 'moved'; deviceHz: number; iqHz: number }
   | ({ type: 'decode' } & DecodeRow)
+  | ({ type: 'jtty' } & JttyRow)
   | { type: 'gap'; messages: number; atS: number }
   | { type: 'reanchor'; byS: number }
   | { type: 'clock'; text: string }

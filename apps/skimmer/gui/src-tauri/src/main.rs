@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
-use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_mode, slot_seconds};
+use skimmer_core::modes::{
+    MODES, frame_geometry, mode_name, parse_channel_mode, slot_seconds,
+};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::store;
 use skimmer_core::{
@@ -271,6 +273,9 @@ struct Settings {
     /// Draw the channels' waterfalls, at 1.5 Hz per bin if `waterfall_fine`.
     waterfall: bool,
     waterfall_fine: bool,
+    /// Height of the large waterfall and of a thumbnail, in pixels.
+    wf_height: u32,
+    wf_thumb_height: u32,
     /// "system" (the PC clock) or "ntp" (the PC clock corrected against `ntp_server`).
     clock_source: String,
     ntp_server: String,
@@ -374,6 +379,8 @@ impl Default for Settings {
             format: "float".into(),
             waterfall: true,
             waterfall_fine: false,
+            wf_height: 220,
+            wf_thumb_height: 54,
             clock_source: "ntp".into(),
             ntp_server: "pool.ntp.org".into(),
             rotation_utc: false,
@@ -474,6 +481,25 @@ enum UiEvent {
         /// Replaces the row of this channel and slot with the same `key` and
         /// frequency: its `<...>` now reads resolved.
         update: bool,
+    },
+    /// A JTTY message as far as it is known: the row `key` of this channel is
+    /// replaced in place as it grows, and is over when `final` (#650).
+    Jtty {
+        channel: usize,
+        key: String,
+        /// ms, not ns: a JavaScript number holds it exactly.
+        start_utc_ms: Option<f64>,
+        /// Where the latest frame ends: how far the message has got.
+        end_utc_ms: Option<f64>,
+        dial_hz: f64,
+        freq_hz: f64,
+        snr_db: f32,
+        text: String,
+        calls: Vec<String>,
+        /// "growing", "complete", "expired" or "ended".
+        kind: &'static str,
+        #[serde(rename = "final")]
+        is_final: bool,
     },
     Gap {
         messages: u32,
@@ -594,6 +620,25 @@ impl UiEvent {
                 copied_last_tx: d.detail.copied_last_tx,
                 early: d.detail.early,
                 update: d.update,
+            },
+            Event::Jtty(m) => UiEvent::Jtty {
+                channel: global(m.channel),
+                // A string: a JavaScript number holds 2^53, and the key is 64 bits.
+                key: m.key.to_string(),
+                start_utc_ms: m.start_utc_ns.map(|ns| (ns / 1_000_000) as f64),
+                end_utc_ms: m.end_utc_ns.map(|ns| (ns / 1_000_000) as f64),
+                dial_hz: m.dial_hz,
+                freq_hz: m.freq_hz,
+                snr_db: m.snr_db,
+                is_final: m.is_final(),
+                kind: match m.kind {
+                    skimmer_core::jtty::UpdateKind::Growing => "growing",
+                    skimmer_core::jtty::UpdateKind::Complete => "complete",
+                    skimmer_core::jtty::UpdateKind::Expired => "expired",
+                    _ => "ended",
+                },
+                text: m.text,
+                calls: m.calls,
             },
             Event::Gap { messages, at_s } => UiEvent::Gap { messages, at_s },
             Event::Reanchor { by_s } => UiEvent::Reanchor { by_s },
@@ -736,7 +781,7 @@ fn auto_pfb_channels() -> usize {
 
 #[tauri::command]
 fn modes() -> Vec<ModeInfo> {
-    MODES
+    let mut v: Vec<ModeInfo> = MODES
         .iter()
         .map(|&(name, m, _)| {
             let (offset_s, frame_s, width_hz) = frame_geometry(m);
@@ -748,7 +793,17 @@ fn modes() -> Vec<ModeInfo> {
                 width_hz,
             }
         })
-        .collect()
+        .collect();
+    // JTTY has no slot: its frame period stands in, and a frame is 4 tones
+    // 31.25 Hz apart, 1.888 s long (#650).
+    v.push(ModeInfo {
+        name: skimmer_core::modes::JTTY_NAME,
+        slot_s: 1.888,
+        offset_s: 0.0,
+        frame_s: 1.888,
+        width_hz: 125.0,
+    });
+    v
 }
 
 /// A server's configuration and the window's number of each of its channels.
@@ -778,8 +833,8 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
         let channels = mine
             .iter()
             .map(|(_, c)| {
-                let mode =
-                    parse_mode(&c.mode).ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
+                let mode = parse_channel_mode(&c.mode)
+                    .ok_or_else(|| format!("unknown mode {:?}", c.mode))?;
                 let mut spec = ChannelSpec::new(mode, c.dial_hz);
                 spec.options = c.options()?;
                 Ok::<ChannelSpec, String>(spec)
@@ -1268,6 +1323,7 @@ async fn start(
             if let Some(w) = db.as_mut() {
                 match &ev {
                     Event::Decode(d) => w.push(name, d),
+                    Event::Jtty(m) => w.push_jtty(name, m),
                     // A quiet band must not leave the last decodes unwritten.
                     Event::Status(_) => w.flush(),
                     _ => {}
@@ -1436,6 +1492,49 @@ fn main() {
 #[cfg(test)]
 mod health_log_tests {
     use super::*;
+
+    /// A settings file from before the waterfall's height was a setting still loads,
+    /// with the sizes the panel always had.
+    #[test]
+    fn an_older_settings_file_gets_the_default_waterfall_height() {
+        let s: Settings = serde_json::from_str(r#"{"waterfall": true}"#).expect("loads");
+        assert_eq!((s.wf_height, s.wf_thumb_height), (220, 54));
+        let s: Settings = serde_json::from_str(r#"{"wfHeight": 400, "wfThumbHeight": 80}"#).unwrap();
+        assert_eq!((s.wf_height, s.wf_thumb_height), (400, 80));
+    }
+
+    /// What the window receives for a JTTY message (#650): the TypeScript side
+    /// reads `type: "jtty"`, `key` (a string), `startUtcMs`, `final`, ...
+    #[test]
+    fn a_jtty_message_reaches_the_window_as_the_front_end_reads_it() {
+        use skimmer_core::jtty::{JttyMessage, UpdateKind};
+        let m = JttyMessage {
+            channel: 0,
+            key: (3u64 << 32) | 7,
+            start_utc_ns: Some(1_791_002_535_000_000_000),
+            end_utc_ns: Some(1_791_002_538_000_000_000),
+            dial_hz: 14_090_000.0,
+            freq_hz: 14_091_500.0,
+            snr_db: -9.0,
+            text: "CQ K1ABC".into(),
+            calls: vec!["K1ABC".into()],
+            kind: UpdateKind::Complete,
+        };
+        let e = Tagged {
+            server: 1,
+            event: UiEvent::new(Event::Jtty(m), &[5]),
+        };
+        let v = serde_json::to_value(&e).expect("serializes");
+        assert_eq!(v["type"], "jtty");
+        assert_eq!(v["server"], 1);
+        assert_eq!(v["channel"], 5, "the window's channel number");
+        assert_eq!(v["key"], "12884901895");
+        assert_eq!(v["startUtcMs"], 1_791_002_535_000.0);
+        assert_eq!(v["endUtcMs"], 1_791_002_538_000.0);
+        assert_eq!(v["final"], true);
+        assert_eq!(v["kind"], "complete");
+        assert_eq!(v["calls"][0], "K1ABC");
+    }
 
     fn log(dir: &std::path::Path) -> HealthLog {
         HealthLog::open(dir.to_str().unwrap()).unwrap()
