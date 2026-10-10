@@ -82,6 +82,11 @@ declare -A SUITES=(
   # comment in gen_ft8_sweep_wavs.sh for why the two sets are not the same
   # channel. Override the directory with MFSK_FT8_ITU_SWEEP_DIR.
   [ft8_itu]="ft8_sweep:ft8_snr_sweep"
+  # ft8_itu_ap: the same corpus with ApMode::Full (MFSK_FT8_SWEEP_AP=full), CSV
+  # `ft8_itu_ap.csv`, groups `ft8_itu_ap/itu_<lat><cond>`. ft8_itu is AP off,
+  # the sweep's own configuration; this one tracks what the blind-CQ rung is
+  # worth and whether it lets phantoms through, which ft8_itu cannot see (#665).
+  [ft8_itu_ap]="ft8_sweep:ft8_snr_sweep"
   # ft8_busy: several signals per file, DT scattered, plus noise-only files
   # (busy_sweep corpus, `scripts/gen_ft8_busy_wavs.py`). It has no SNR ladder to
   # interpolate, so it writes the aggregate CSV shape (`...,trial,truth,hits,extra`):
@@ -109,7 +114,7 @@ want=("$@")
 # Corpora these need, so a missing one is reported up front rather
 # than as a wall of silent skips.
 declare -A CORPUS=(
-  [ft8]=ft8_sweep [ft8_itu]=ft8_itu_sweep [ft8_busy]=ft8_busy_sweep [ft4]=ft4_sweep [fst4]=fst4_sweep [wspr]=wspr_sweep
+  [ft8]=ft8_sweep [ft8_itu]=ft8_itu_sweep [ft8_itu_ap]=ft8_itu_sweep [ft8_busy]=ft8_busy_sweep [ft4]=ft4_sweep [fst4]=fst4_sweep [wspr]=wspr_sweep
   [jt65]=jt65_sweep [jt9]=jt9_sweep [jtty]=jtty_sweep [q65]=q65_sweep [bench]=fst4_sweep
 )
 
@@ -119,7 +124,7 @@ for k in "${want[@]}"; do
   c="${CORPUS[$k]:-}"
   [ -z "$c" ] && continue
   cdir="embedded-poc/assets/$c"
-  [ "$k" = ft8_itu ] && cdir="${MFSK_FT8_ITU_SWEEP_DIR:-$cdir}"
+  { [ "$k" = ft8_itu ] || [ "$k" = ft8_itu_ap ]; } && cdir="${MFSK_FT8_ITU_SWEEP_DIR:-$cdir}"
   [ "$k" = ft8_busy ] && cdir="${MFSK_FT8_BUSY_DIR:-$cdir}"
   if ! compgen -G "$cdir/*.wav" >/dev/null 2>&1; then
     missing+=("$k (embedded-poc/assets/$c — scripts/gen_${c%_sweep}_sweep_wavs.sh)")
@@ -156,7 +161,7 @@ for k in "${want[@]}"; do
   c="${CORPUS[$k]:-}"
   [ -z "$c" ] && continue
   cdir="embedded-poc/assets/$c"
-  [ "$k" = ft8_itu ] && cdir="${MFSK_FT8_ITU_SWEEP_DIR:-$cdir}"
+  { [ "$k" = ft8_itu ] || [ "$k" = ft8_itu_ap ]; } && cdir="${MFSK_FT8_ITU_SWEEP_DIR:-$cdir}"
   [ "$k" = ft8_busy ] && cdir="${MFSK_FT8_BUSY_DIR:-$cdir}"
   [ -n "${seen_corpus[$cdir]:-}" ] && continue
   seen_corpus[$cdir]=1
@@ -241,7 +246,7 @@ for k in "${want[@]}"; do
     else export MFSK_FT8_SWEEP_DIR="$ORIG_FT8_DIR"; fi
 
     unset MFSK_FT8_SWEEP_TASK MFSK_FT4_SWEEP_TASK MFSK_FST4_SWEEP_TASK \
-          MFSK_FT8_SWEEP_STRATEGY MFSK_FT8_SWEEP_STRICTNESS MFSK_FT8_BUSY_CSV \
+          MFSK_FT8_SWEEP_STRATEGY MFSK_FT8_SWEEP_STRICTNESS MFSK_FT8_SWEEP_AP MFSK_FT8_BUSY_CSV \
           MFSK_FT8_SWEEP_CSV MFSK_FT4_SWEEP_CSV MFSK_FST4_SWEEP_CSV \
           MFSK_WSPR_SWEEP_SUMMARY_CSV MFSK_JT65_SWEEP_SUMMARY_CSV \
           MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV MFSK_JT9_SWEEP_SUMMARY_CSV \
@@ -269,9 +274,10 @@ for k in "${want[@]}"; do
       jtty_sweep:jtty_snr_sweep) export MFSK_JTTY_SWEEP_CSV="$CSV_DIR/jtty.csv" ;;
       ft8_busy_sweep:ft8_busy_sweep) export MFSK_FT8_BUSY_CSV="$CSV_DIR/ft8_busy.csv" ;;
     esac
-    if [ "$k" = ft8_itu ]; then
+    if [ "$k" = ft8_itu ] || [ "$k" = ft8_itu_ap ]; then
       export MFSK_FT8_SWEEP_DIR="${MFSK_FT8_ITU_SWEEP_DIR:-$REPO_ROOT/embedded-poc/assets/ft8_itu_sweep}"
-      export MFSK_FT8_SWEEP_CSV="$CSV_DIR/ft8_itu.csv"
+      export MFSK_FT8_SWEEP_CSV="$CSV_DIR/$k.csv"
+      [ "$k" = ft8_itu_ap ] && export MFSK_FT8_SWEEP_AP=full
     fi
 
     echo

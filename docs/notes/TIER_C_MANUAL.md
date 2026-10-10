@@ -408,7 +408,9 @@ corpus on disk. All eight tasks take about 5 minutes on 24 threads, FST4 the lon
    one run serves both checks. FST4 is narrowed to ±3 dB around each
    stored crossing (`scripts/sweep-narrow-plan.py`). `ft8_itu` and
    `ft8_busy` keep the library's default request, which keeps `decode()`'s
-   single-pass path under a baseline. Per-trial CSVs go to
+   single-pass path under a baseline. `ft8_itu` is AP off; `ft8_itu_ap` is
+   the same corpus with `ApMode::Full` (the blind-CQ rung), a baseline of its
+   own, because the two differ by about 1 dB and only the second runs the AP code. Per-trial CSVs go to
    `target/sweep-csv/`.
 3. **Against its own past.** `scripts/sweep-regression-check.py` prints
    each group's 50 % crossing against `sweep-baseline.json`, flagging
