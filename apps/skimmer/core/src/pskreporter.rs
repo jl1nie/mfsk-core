@@ -329,10 +329,11 @@ const DESCRIPTOR_PERIOD: Duration = Duration::from_secs(3600);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Endpoint {
     /// `pskreporter.info:14739`, the page's test listener: it analyses what it receives
-    /// (`/cgi-bin/psk-analysis.pl`) and records nothing. The default.
+    /// (`/cgi-bin/psk-analysis.pl`) and records nothing. The default of [`PskConfig::new`], so
+    /// that a library user has to ask for production; the CLI and the GUI do.
     Test,
-    /// `report.pskreporter.info:4739`. The `report.` host name is required. **Not for use until
-    /// PSK Reporter's author has been asked about skimmers** (#655).
+    /// `report.pskreporter.info:4739`. The `report.` host name is required. PSK Reporter's author
+    /// has been asked about skimmers and agreed (#655).
     Production,
     /// `host:port`, for a test listener of one's own.
     Custom(String),

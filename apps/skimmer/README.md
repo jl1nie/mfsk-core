@@ -118,10 +118,10 @@ skimmer --server HOST:5555 --ch FT8@14074000 --mycall CALL --mygrid GRID \
 
 Sends what it decodes as spots to [PSK Reporter](https://pskreporter.info/), by the protocol on
 [its developer page](https://pskreporter.info/pskdev.html) (IPFIX over UDP; the packets are
-byte-for-byte WSJT-X's, `skimmer_core::pskreporter`). **By default the datagrams go to PSK Reporter's
-test listener (`pskreporter.info:14739`), which analyses them and records nothing.** `--psk-production`
-sends to `report.pskreporter.info:4739` and should wait until PSK Reporter's author has been asked about
-skimmers (#655). `--psk-to HOST:PORT` sends to a listener of your own, to look at the datagrams.
+byte-for-byte WSJT-X's, `skimmer_core::pskreporter`). **The datagrams go to `report.pskreporter.info:4739`**:
+PSK Reporter's author was asked about skimmers and agreed (#655). `--psk-test` sends to the page's test
+listener (`pskreporter.info:14739`), which analyses them and records nothing; `--psk-to HOST:PORT` to a
+listener of your own, to look at the datagrams. (`--psk-production` is still accepted and does nothing.)
 
 - The receiver is `--mycall` at `--psk-grid` (else `--mygrid`). **The locator is the antenna's**: for a
   SpyServer somewhere else it is not where you sit. `--psk-ant` and `--psk-rig` are free text.
@@ -143,8 +143,8 @@ skimmers (#655). `--psk-to HOST:PORT` sends to a listener of your own, to look a
 
 In the GUI the same switch is under each server (Settings > Server > PSK Reporter): it reports under the server's
 **My call** at its **Grid**, which is the locator of that server's antenna, so each server is its own receiver on PSK
-Reporter (PSK Reporter's author: one callsign per antenna location, and the locator is the antenna's, as here). The destination is the test listener until PSK Reporter's author has been asked (#655); the production
-address is listed and greyed out. The header shows what was sent and the last error; hover for the counts.
+Reporter (PSK Reporter's author: one callsign per antenna location, and the locator is the antenna's, as here). The destination is PSK Reporter itself, with the test listener one choice away (a settings file saved
+with "test" keeps it). The header shows what was sent and the last error; hover for the counts.
 
 ## GUI (`gui/`)
 

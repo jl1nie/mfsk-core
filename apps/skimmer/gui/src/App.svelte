@@ -706,12 +706,12 @@
               <div class="field" title="Where the datagrams go. The test listener analyses them and records nothing.">
                 <span>Send to</span>
                 <select bind:value={settings.pskEndpoint} disabled={running}>
+                  <option value="production">PSK Reporter (report.pskreporter.info)</option>
                   <option value="test">PSK Reporter test listener (nothing is recorded)</option>
-                  <option value="production" disabled>report.pskreporter.info (not yet: PSK Reporter's author is to be asked about skimmers)</option>
                 </select>
               </div>
               <p class="hint">
-                One datagram at most every five minutes, a callsign once per band per five minutes, as pskreporter.info/pskdev.html asks.
+                One timed datagram at most every five minutes (earlier only when one is full), a callsign once per band per five minutes, as pskreporter.info/pskdev.html asks.
                 Spots still waiting when you disconnect are not sent.
               </p>
             {/if}

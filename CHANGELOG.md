@@ -241,7 +241,8 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   five minutes is fine once a datagram is full (1200 bytes or more), larger datagrams are fine, `mfsk-skimmer <version>` is the software name, and one
   callsign per antenna location with that antenna's locator (already so, per server in the GUI). The sender's datagram limit goes from 952 to 1200 bytes
   (`FULL_UDP_PAYLOAD_BYTES`; `build_packets` and the WSJT-X byte-for-byte tests keep 952) and a spot that would overfill the queue sends it first.
-  Production stays off by default.
+  **Production is now the default** for the CLI (`--psk-test` for the test listener; `--psk-production` is a no-op) and the GUI (its
+  Settings choice is no longer greyed out; a settings file that saved "test" keeps it). Reporting itself stays per-server opt-in.
 - **PSK Reporter spot rules are WSJT-X's, checked against WSJT-X (#655, stage 4 of 4).** `scripts/pskreporter/spot_oracle.cpp` runs upstream's
   `tokens_re` / `deCallAndGrid`, `Radio::is_standard_callsign`, `decoded_grid_pattern` and the real Fortran `stdmsg_`; the answers for 1 537
   words and 68 messages are vendored and `tests/pskreporter_spot_rules.rs` requires them (143 real decodes off the air agreed too). The
