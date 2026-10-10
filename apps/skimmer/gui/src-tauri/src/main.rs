@@ -273,6 +273,9 @@ struct Settings {
     /// Draw the channels' waterfalls, at 1.5 Hz per bin if `waterfall_fine`.
     waterfall: bool,
     waterfall_fine: bool,
+    /// Height of the large waterfall and of a thumbnail, in pixels.
+    wf_height: u32,
+    wf_thumb_height: u32,
     /// "system" (the PC clock) or "ntp" (the PC clock corrected against `ntp_server`).
     clock_source: String,
     ntp_server: String,
@@ -376,6 +379,8 @@ impl Default for Settings {
             format: "float".into(),
             waterfall: true,
             waterfall_fine: false,
+            wf_height: 220,
+            wf_thumb_height: 54,
             clock_source: "ntp".into(),
             ntp_server: "pool.ntp.org".into(),
             rotation_utc: false,
@@ -1487,6 +1492,16 @@ fn main() {
 #[cfg(test)]
 mod health_log_tests {
     use super::*;
+
+    /// A settings file from before the waterfall's height was a setting still loads,
+    /// with the sizes the panel always had.
+    #[test]
+    fn an_older_settings_file_gets_the_default_waterfall_height() {
+        let s: Settings = serde_json::from_str(r#"{"waterfall": true}"#).expect("loads");
+        assert_eq!((s.wf_height, s.wf_thumb_height), (220, 54));
+        let s: Settings = serde_json::from_str(r#"{"wfHeight": 400, "wfThumbHeight": 80}"#).unwrap();
+        assert_eq!((s.wf_height, s.wf_thumb_height), (400, 80));
+    }
 
     /// What the window receives for a JTTY message (#650): the TypeScript side
     /// reads `type: "jtty"`, `key` (a string), `startUtcMs`, `final`, ...

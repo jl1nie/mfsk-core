@@ -74,7 +74,8 @@ pub struct Band {
     /// 0.02 per component, 20 trials per level, 2026-10-10), the message decodes in
     /// 0 of 20 at a peak of 0.0006, 11 of 20 at 0.00075 (reported SNR -16 dB),
     /// 17 of 20 at 0.0009 (-14.5 dB) and 20 of 20 from 0.00105 (-13 dB). The
-    /// default 0.0012 is 4 dB above the 50 % point.
+    /// default 0.0017 is 7 dB above the 50 % point (reported SNR about -9 dB for
+    /// the strongest station; the others are a few dB below it).
     pub amplitude: f32,
 }
 
@@ -112,7 +113,7 @@ impl Default for Band {
             jitter_s: 1.5,
             qsb: 0.3,
             noise: 0.02,
-            amplitude: 0.0012,
+            amplitude: 0.0017,
         }
     }
 }
@@ -406,14 +407,18 @@ impl Synth {
         sum
     }
 
+    /// One draw of white Gaussian noise (Box-Muller), of standard deviation 0.5
+    /// (what the calibration of [`Band::amplitude`] was measured with); scaled
+    /// by [`Band::noise`] where it is used. The band's noise is additive white
+    /// Gaussian noise on each of I and Q.
     fn noise(&mut self) -> f32 {
-        // Sum of four uniforms: close enough to Gaussian for a noise floor.
-        let mut s = 0.0;
-        for _ in 0..4 {
+        let mut uniform = || {
             self.rng = self.rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            s += (self.rng >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
-        }
-        s * 0.866
+            // (0, 1]: never 0, for the logarithm.
+            ((self.rng >> 8) as f32 + 1.0) / (1u32 << 24) as f32
+        };
+        let (u1, u2) = (uniform(), uniform());
+        0.5 * (-2.0 * u1.ln()).sqrt() * (std::f32::consts::TAU * u2).cos()
     }
 
     /// One complex baseband sample at wall-clock time `t`, for an IQ centre
@@ -521,5 +526,29 @@ mod tests {
         assert!(lo >= 0.49 && hi <= 1.001, "{lo} .. {hi}");
         assert!(hi - lo > 0.1, "it does fade: {lo} .. {hi}");
         let _ = (&mut steady, &mut fading);
+    }
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::*;
+
+    /// The band's noise is white Gaussian: zero mean, standard deviation 0.5
+    /// before it is scaled, and the tails of a Gaussian (a sum of a few uniforms
+    /// has none).
+    #[test]
+    fn the_noise_is_gaussian_with_the_calibrated_deviation() {
+        let mut s = Synth::new(&Band::default());
+        let v: Vec<f32> = (0..400_000).map(|_| s.noise()).collect();
+        let n = v.len() as f32;
+        let mean = v.iter().sum::<f32>() / n;
+        let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n;
+        assert!(mean.abs() < 0.005, "mean {mean}");
+        assert!((var.sqrt() - 0.5).abs() < 0.01, "std {}", var.sqrt());
+        // 4 sigma is 2.0: a Gaussian leaves 6.3e-5 beyond it on both sides.
+        let tail = v.iter().filter(|x| x.abs() > 2.0).count() as f32 / n;
+        assert!((2e-5..2e-4).contains(&tail), "{tail} beyond 4 sigma");
+        let kurtosis = v.iter().map(|x| (x - mean).powi(4)).sum::<f32>() / n / var.powi(2);
+        assert!((kurtosis - 3.0).abs() < 0.15, "kurtosis {kurtosis}");
     }
 }

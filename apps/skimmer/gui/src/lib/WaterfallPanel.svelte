@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ChannelSetting, DecodeRow, JttyRow, ModeInfo } from './types';
-  import { BIG_PX, THUMB_PX, paint, spanMs, type WaterfallStore } from './waterfall';
+  import { paint, spanMs, type WaterfallStore } from './waterfall';
 
   let {
     store,
@@ -15,6 +15,8 @@
     jtty = [],
     slotS,
     geom,
+    bigPx = $bindable(220),
+    thumbPx = $bindable(54),
     open = $bindable(true),
   }: {
     store: WaterfallStore;
@@ -33,6 +35,10 @@
     jtty?: JttyRow[];
     slotS: Record<string, number>;
     geom: Record<string, ModeInfo>;
+    /** Height of the large waterfall and of a thumbnail, in pixels: also how many
+     * rows of time each shows, so a taller one shows the same time more finely. */
+    bigPx?: number;
+    thumbPx?: number;
     open: boolean;
   } = $props();
 
@@ -73,10 +79,10 @@
       if (!cv || !s || s.rows.length === 0) return;
       const w = s.rows[0].length;
       if (cv.width !== w) cv.width = w;
-      if (cv.height !== THUMB_PX) cv.height = THUMB_PX;
+      if (cv.height !== thumbPx) cv.height = thumbPx;
       const ctx = cv.getContext('2d');
       if (!ctx) return;
-      const img = ctx.createImageData(w, THUMB_PX);
+      const img = ctx.createImageData(w, thumbPx);
       paint(img, s, spanOf(channels[i]));
       ctx.putImageData(img, 0, 0);
     });
@@ -84,13 +90,13 @@
     const b = store.big;
     if (big && b.channel === focus && b.rows.length > 0) {
       const w = b.rows[0].length;
-      if (big.width !== w || big.height !== BIG_PX) {
+      if (big.width !== w || big.height !== bigPx) {
         big.width = w;
-        big.height = BIG_PX;
+        big.height = bigPx;
       }
       const ctx = big.getContext('2d');
       if (ctx) {
-        const img = ctx.createImageData(w, BIG_PX);
+        const img = ctx.createImageData(w, bigPx);
         paint(img, b, spanOf(channels[focus]));
         ctx.putImageData(img, 0, 0);
       }
@@ -193,6 +199,8 @@
     void focus;
     void rows.length;
     void jtty;
+    void bigPx;
+    void thumbPx;
     void open;
     schedule();
   });
@@ -211,6 +219,19 @@
 <section class="wf">
   <header>
     <button class="link" onclick={() => (open = !open)}>{open ? '▾' : '▸'} Waterfall</button>
+    {#if open}
+      <!-- How tall each is. The same stretch of time is drawn finer in a taller one. -->
+      <label class="size" title="Height of the large waterfall">
+        large
+        <input type="range" min="100" max="700" step="10" bind:value={bigPx} />
+        <span>{bigPx}</span>
+      </label>
+      <label class="size" title="Height of the thumbnails">
+        thumbnails
+        <input type="range" min="24" max="200" step="2" bind:value={thumbPx} />
+        <span>{thumbPx}</span>
+      </label>
+    {/if}
   </header>
   {#if open}
     {#if servers.length > 1}
@@ -226,15 +247,15 @@
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
         {#if (c.server ?? 0) === server}
           <button class="thumb" class:on={i === focus} onclick={() => onfocus(i)} title="Show this channel large">
-            <canvas bind:this={thumbs[i]} width="256" height="60"></canvas>
+            <canvas bind:this={thumbs[i]} width="256" height={thumbPx} style="height: {thumbPx}px"></canvas>
             <span>{c.mode} {(c.dialHz / 1000).toFixed(1)}</span>
           </button>
         {/if}
       {/each}
     </div>
     <div class="bigbox">
-      <canvas class="big" bind:this={big} width="1024" height={BIG_PX}></canvas>
-      <canvas class="over" bind:this={over} onmousemove={onmove} onmouseleave={() => (hover = '')}></canvas>
+      <canvas class="big" bind:this={big} width="1024" height={bigPx} style="height: {bigPx}px"></canvas>
+      <canvas class="over" bind:this={over} onmousemove={onmove} onmouseleave={() => (hover = '')} style="height: {bigPx}px"></canvas>
       {#if hover}
         <!-- Beside the pointer, but on its left near the right edge and above it near the bottom, where it would be cut off. -->
         {@const flipX = hoverAt.x > hoverAt.w * 0.6}
@@ -284,6 +305,23 @@
   header {
     display: flex;
     align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .size {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .size input {
+    width: 90px;
+    padding: 0;
+  }
+  .size span {
+    min-width: 2.5em;
+    font-variant-numeric: tabular-nums;
   }
   .thumbs {
     display: flex;
@@ -304,7 +342,6 @@
   }
   .thumb canvas {
     width: 100%;
-    height: 54px;
     image-rendering: auto;
     background: #000;
   }
@@ -318,7 +355,6 @@
   .big,
   .over {
     width: 100%;
-    height: 220px;
     display: block;
     background: #000;
   }

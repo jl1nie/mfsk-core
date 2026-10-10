@@ -84,6 +84,9 @@ export interface Settings {
   /** Draw the channels' waterfalls; fine is 1.5 Hz per bin instead of 2.9. */
   waterfall: boolean;
   waterfallFine: boolean;
+  /** Height of the large waterfall and of a thumbnail, in pixels. */
+  wfHeight: number;
+  wfThumbHeight: number;
   /** The PC clock as it is, or corrected against an NTP server. */
   clockSource: 'system' | 'ntp';
   ntpServer: string;

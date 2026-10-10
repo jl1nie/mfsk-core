@@ -877,6 +877,8 @@
           {jtty}
           {slotS}
           {geom}
+          bind:bigPx={settings.wfHeight}
+          bind:thumbPx={settings.wfThumbHeight}
           bind:open={wfOpen}
         />
       {/if}

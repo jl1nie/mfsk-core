@@ -16,9 +16,8 @@ export interface Strip {
 /** Rows older than this are dropped: the longest span any mode shows. */
 const KEEP_MS = 135_000;
 
-/** Pixel rows of the large waterfall and of a thumbnail. */
-export const BIG_PX = 220;
-export const THUMB_PX = 60;
+// The height of the large waterfall and of a thumbnail is a setting
+// (`Settings::wf_height`, `wf_thumb_height`), chosen in the panel's header.
 
 /**
  * The time one screen of a channel's waterfall covers: whole slots, at least
