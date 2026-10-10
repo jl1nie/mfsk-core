@@ -134,6 +134,10 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   could stop joining frames. Per-column and per-sample loops stay `f32` (the ESP32-S3 has single-precision hardware only).
   C ABI: `MfskJttyUpdate::start_time_s` (`f64`) appended after `kind`; `start_s` stays `f32`. Kotlin and Swift `startSeconds` are
   `Double`. JTTY tier-C sweep and the `rjtty` frame-for-frame tests are unchanged. Breaking for Rust callers that read these as `f32`.
+- **The CoreS3 JTTY app and demo show the message's SNR (#646).** `MessageUpdate::snr_db` goes to the row (it was `NAN`, drawn `+0`, and
+  `0` in the demo) and to `ALL.TXT`, whose JTTY line now carries the S/N column (`all_txt::message_line` takes `snr_db`; the DT column
+  stays blank, a message has no slot). Host-tested in `hosttest/mfsk-app-shared`; `cargo check` of the crate with the `esp` toolchain
+  passes. Not flashed: the value is upstream's simple estimate, so a strong signal reads low (a true +30 dB reads about +11).
 
 ### Internals
 

@@ -169,9 +169,10 @@ No new screen, no new renderer. What the shared code does today, and what JTTY n
   refresh: it moves to the top. Hosttested in `hosttest/mfsk-app-shared`.
 - **Text**: the row shows the **head** of the message (`msg` is `String<22>`; the row has room for 25). The calls are at
   the head, and `selected_decode_msg` hands the row text to `qso::call_station` — a tail would lose them.
-- **SNR / DT**: the renderer prints a non-finite SNR as `+0` and DT as `+0.0`, which would be fabricated values. Either
-  `MessageUpdate` carries the last frame's S/N (a small library + FFI change, preferred) or the shared renderer learns a
-  blank field — decided in E2.
+- **SNR / DT**: the renderer prints a non-finite SNR as `+0` and DT as `+0.0`, which would be fabricated values. **Decided
+  (#646, 2026-10-10): `MessageUpdate` carries the S/N** — `MessageUpdate::snr_db`, the *first* frame's SNR in 2 500 Hz floored
+  at -17 dB, which is what WSJT-X v3.3.0-beta1 reports (`start_snrdb`; the draft said "last frame's", upstream settled on the
+  first). The app passes it to the row and to `ALL.TXT`; a message still has no DT (no slot), so that column stays blank.
 - **Slot period**: `slot_period_ms` cannot be 0 — `decoded_slot_unix(0)` divides by zero, no row is ever green, and the
   ALL.TXT flush treats every moment as quiet. JTTY needs the three uses split: the green-row age (a few seconds), the
   waterfall rules (none — the waterfall already handles a period of 0), and the flush policy (below).
@@ -227,7 +228,7 @@ the receiver every transmission — to check first in T0.
   full queue. Decides the configuration of §3, or opens the trellis-memory library work.
 - **E1** mode skeleton, sink with gap markers, clock reconciliation, generations, the two tasks, panel priority, publish
   on `complete` with the slot-period split and the UTC anchor; SIM verification.
-- **E2** live-updating rows (`publish_update`), SNR in `MessageUpdate`, flush policy; hosttests.
+- **E2** live-updating rows (`publish_update`), SNR in `MessageUpdate` (done, #646), flush policy; hosttests.
 - **E3** on the air with the IC-705.
 - **E4** transmit (separate design).
 
@@ -235,7 +236,7 @@ the receiver every transmission — to check first in T0.
 
 1. Is a ladder with its survivors in PSRAM good enough (E0), or does the trellis working set have to shrink?
 2. Band scan by default, given it costs ~48 KB internal and ~426 KB of PSRAM per queued window?
-3. SNR: into `MessageUpdate`, or a blank field in the shared renderer?
+3. ~~SNR: into `MessageUpdate`, or a blank field in the shared renderer?~~ Into `MessageUpdate` (#646).
 
 ## 11. Review of draft 1 (2026-09-27), what changed
 
@@ -248,7 +249,7 @@ the receiver every transmission — to check first in T0.
 - Silent sample loss (reader timeouts, dropped isochronous frames, flash stalls) needs clock reconciliation; overflow needs
   a positioned gap marker, not a counter (§4).
 - The panel must be above Back, not below (§4).
-- `slot_period_ms = 0` panics in `decoded_slot_unix`; NaN SNR renders as `+0`; showing the tail would break
+- `slot_period_ms = 0` panics in `decoded_slot_unix`; NaN SNR renders as `+0` (JTTY now passes `MessageUpdate::snr_db`, #646); showing the tail would break
   `qso::call_station`; refreshed rows move to the top (§5).
 - The SIM feed cannot measure memory (the board stays a USB peripheral) and cuts a looped stream at slot boundaries (§7).
 - Also: prewarm FFT tables before WiFi, `m5stack-s3-app`'s `BootMode` match, feature unification with `jtty-stats`, UDP log

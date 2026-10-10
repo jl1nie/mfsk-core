@@ -15,9 +15,8 @@
 //! uses, per `ft4_demo.rs`'s own precedent. JTTY has no slot, so `DecodedRow` is a loose
 //! fit: a row is pushed once, when a message completes (`MessageUpdate::complete`), not
 //! updated live while it grows — that live-update wiring is `docs/notes/JTTY_CORES3_APP.md`
-//! §9's E2, not this. `snr_db`/`hard_errors`/`dt_ds` have no JTTY equivalent yet
-//! (`MessageUpdate` carries none of them — see that design doc's §11, still open) and are
-//! zeroed rather than guessed.
+//! §9's E2, not this. `snr_db` is the message's own (`MessageUpdate::snr_db`, #646);
+//! `hard_errors`/`dt_ds` have no JTTY equivalent and are zeroed rather than guessed.
 //!
 //! **This is a separate bin rather than a boot mode**, exactly for `ft4_demo.rs`'s reason:
 //! it brings up no USB host, so it can be reflashed freely and the serial console stays
@@ -346,7 +345,7 @@ fn on_update(n_complete: &mut u32, u: mfsk_core::jtty::assemble::MessageUpdate) 
     let seq = (u.id & 0xffff_ffff) as u32;
     ui.push_decode(DecodedRow {
         df_hz: u.f1_hz.round().clamp(0.0, 65_535.0) as u16,
-        snr_db: 0,
+        snr_db: u.snr_db.round().clamp(-128.0, 127.0) as i8,
         hard_errors: 0,
         dt_ds: 0,
         msg,

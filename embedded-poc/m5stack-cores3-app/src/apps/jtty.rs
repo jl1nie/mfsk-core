@@ -520,8 +520,9 @@ fn on_update(u: MessageUpdate, open: &mut Vec<u64>, rep: &mut Report) {
     // stream reset even though message ids restart at 1.
     ui.publish_slot([SlotDecode {
         freq_hz: u.f1_hz,
-        // No S/N yet (E2): non-finite draws `+0`, as for any mode without one.
-        snr_db: f32::NAN,
+        // The first frame's S/N in 2 500 Hz, floored at -17 dB: what WSJT-X v3.3.0-beta1
+        // reports for a message (`MessageUpdate::snr_db`, #646).
+        snr_db: u.snr_db,
         dt_sec: 0.0,
         text: &u.text,
         hard_errors: 0,
@@ -536,6 +537,7 @@ fn on_update(u: MessageUpdate, open: &mut Vec<u64>, rep: &mut Report) {
             unix,
             dial_hz,
             "JTTY",
+            u.snr_db.round() as i32,
             u.f1_hz.round() as i32,
             &u.text,
         ));

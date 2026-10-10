@@ -439,16 +439,18 @@ mod jtty_all_txt_tests {
     use super::all_txt::message_line;
 
     #[test]
-    fn a_jtty_line_leaves_snr_and_dt_blank_in_their_columns() {
+    fn a_jtty_line_has_an_snr_and_leaves_dt_blank_in_its_column() {
         // 2026-09-22 10:15:07 UTC
-        let l = message_line(1_790_072_107, None, "JTTY", 1506, "CQ JA1ABC CQ");
+        let l = message_line(1_790_072_107, None, "JTTY", -12, 1506, "CQ JA1ABC CQ");
         assert_eq!(
             l,
-            "260922_101507     0.000 Rx JTTY            1506 CQ JA1ABC CQ\n"
+            "260922_101507     0.000 Rx JTTY   -12      1506 CQ JA1ABC CQ\n"
         );
         // the frequency column sits where rx_line puts it
         let r =
             super::all_txt::rx_line(1_790_072_107, None, "JTTY", -12, 0.3, 1506, "CQ JA1ABC CQ");
         assert_eq!(l.find("1506"), r.find("1506"));
+        // and so does the S/N
+        assert_eq!(l.find("-12"), r.find("-12"));
     }
 }
