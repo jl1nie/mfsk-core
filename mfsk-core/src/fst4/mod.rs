@@ -95,7 +95,7 @@ const FST4_RVEC: [u8; 77] = [
 const FST4_SYNC_A: [u8; 8] = [0, 1, 3, 2, 1, 0, 2, 3];
 const FST4_SYNC_B: [u8; 8] = [2, 3, 1, 0, 3, 2, 0, 1];
 
-const FST4_SYNC_BLOCKS: [SyncBlock; 5] = [
+pub(crate) const FST4_SYNC_BLOCKS: [SyncBlock; 5] = [
     SyncBlock {
         start_symbol: 0,
         pattern: &FST4_SYNC_A,

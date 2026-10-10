@@ -1778,6 +1778,427 @@ pub fn pack77_free_text(text: &str) -> Option<[u8; 77]> {
     Some(msg)
 }
 
+// ── WSPR-type messages (i3=0, n3=6): the transmit side ──────────────────────
+//
+// FST4W sends the 50-bit prefix of a 77-bit `i3=0, n3=6` message
+// (`genfst4.f90:49-51,66-71`). Ported from `lib/77bit/packjt77.f90` at
+// `v3.3.0-beta1` (`pack77_06_candidate`, `take_candidate`'s round-trip gate,
+// `pack77_failed_preferred_wspr_shape`), `packjt77_grammar.f90`
+// (`pack77_parse_wspr_source`, `pack77_wspr_affix_index`, `pack77_grid6_wspr_index`)
+// and `packjt77_schema.f90` (`encode_pack77_wspr_type{1,2,3}`).
+//
+// What the upstream encoder tries before `pack77_06_candidate` (DXpedition 0.1,
+// Field Day 0.3/0.4, telemetry 0.5) needs a `;`, four or five words, or a single
+// word, so none of them can claim a message of the two or three words a WSPR
+// type has; and a message this does not accept is, for `genfst4`, a bad message
+// whichever other type would have taken it (`genfst4.f90:62-65`). So only the
+// 0.6 family is ported here.
+
+/// `PACK77_BASE36` (`packjt77_grammar.f90:15`).
+const BASE36: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+/// `PACK77_WSPR_NZZZ` (`packjt77_grammar.f90:9`): type-2 affixes at or above this
+/// are suffixes.
+const WSPR_NZZZ: u32 = 46_656;
+
+/// `pack77_split_source_tokens`: upper-cases, collapses blanks (and NULs), and
+/// splits into at most `max_words` words of at most 13 characters.
+fn split_source_tokens(msg: &str, max_words: usize) -> Option<Vec<String>> {
+    let mut words: Vec<String> = Vec::new();
+    let mut prev_blank = true;
+    for c in msg.bytes() {
+        let c = if c == 0 { b' ' } else { c.to_ascii_uppercase() };
+        if c == b' ' {
+            prev_blank = true;
+            continue;
+        }
+        if prev_blank {
+            if words.len() == max_words {
+                return None;
+            }
+            words.push(String::new());
+        }
+        prev_blank = false;
+        let w = words.last_mut()?;
+        if w.len() == 13 {
+            return None;
+        }
+        w.push(c as char);
+    }
+    Some(words)
+}
+
+/// `pack77_c28_standard_shape` (`packjt77_grammar.f90:743`).
+fn c28_standard_shape(tok: &str) -> bool {
+    let b = tok.as_bytes();
+    let n = b.len();
+    if !(3..=6).contains(&n) {
+        return false;
+    }
+    if !b
+        .iter()
+        .all(|&c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return false;
+    }
+    // iarea: the last digit at 1-based position >= 2
+    let Some(iarea) = (2..=n).rev().find(|&i| b[i - 1].is_ascii_digit()) else {
+        return false;
+    };
+    if iarea != 2 && iarea != 3 {
+        return false;
+    }
+    let npdig = b[..iarea - 1].iter().filter(|c| c.is_ascii_digit()).count();
+    let nplet = b[..iarea - 1]
+        .iter()
+        .filter(|c| c.is_ascii_uppercase())
+        .count();
+    if nplet == 0 || npdig >= iarea - 1 {
+        return false;
+    }
+    let tail = &b[iarea..];
+    tail.iter().all(|c| c.is_ascii_uppercase()) && tail.len() <= 3
+}
+
+/// `pack77_type12_standard_call`: the standard shape, and not a Q prefix.
+fn type12_standard_call(tok: &str) -> bool {
+    c28_standard_shape(tok) && !tok.starts_with('Q')
+}
+
+fn all_digits(tok: &str) -> bool {
+    !tok.is_empty() && tok.bytes().all(|c| c.is_ascii_digit())
+}
+
+/// `pack77_is_grid4`: `[A-R][A-R][0-9][0-9]`.
+fn is_grid4(g: &str) -> bool {
+    let b = g.as_bytes();
+    b.len() == 4
+        && (b'A'..=b'R').contains(&b[0])
+        && (b'A'..=b'R').contains(&b[1])
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit()
+}
+
+/// `pack77_is_grid6(grid6, allow_grid4=.true.)`: a grid4, or a grid4 plus two
+/// letters `A`..`X`.
+fn is_grid6_or_4(g: &str) -> bool {
+    let b = g.as_bytes();
+    match b.len() {
+        4 => is_grid4(g),
+        6 => is_grid4(&g[..4]) && b[4..].iter().all(|c| (b'A'..=b'X').contains(c)),
+        _ => false,
+    }
+}
+
+/// `pack77_valid_hash_call_token`: `<...>` of 5 to 13 characters with no inner
+/// bracket.
+fn valid_hash_call_token(tok: &str) -> bool {
+    let b = tok.as_bytes();
+    let n = b.len();
+    (5..=13).contains(&n)
+        && b[0] == b'<'
+        && b[n - 1] == b'>'
+        && !b[1..n - 1].iter().any(|&c| c == b'<' || c == b'>')
+}
+
+/// Round to nearest, halves away from zero, on an `f32` (Fortran `nint`).
+/// Integer-based because `f32::round` is `std`-only and this file builds
+/// without `std`.
+fn nint_f32(x: f32) -> i32 {
+    let t = x as i32;
+    let frac = x - t as f32;
+    if x >= 0.0 {
+        if frac >= 0.5 { t + 1 } else { t }
+    } else if frac <= -0.5 {
+        t - 1
+    } else {
+        t
+    }
+}
+
+/// `pack77_parse_wspr_dbm`: a power in whole dBm that survives the 5-bit
+/// `nint(0.3·dBm)` round trip (0, 3, 7, 10, 13, 17, … 60), as `idbm`.
+fn parse_wspr_dbm(tok: &str) -> Option<u32> {
+    if !all_digits(tok) || (tok.len() > 1 && tok.starts_with('0')) {
+        return None;
+    }
+    let dbm: i32 = tok.parse().ok()?;
+    if !(0..=60).contains(&dbm) {
+        return None;
+    }
+    let idbm = nint_f32(0.3f32 * dbm as f32);
+    (nint_f32(idbm as f32 * 10.0 / 3.0) == dbm).then_some(idbm as u32)
+}
+
+/// `pack77_wspr_affix_index`: the 16-bit add-on of a type-2 message, for a
+/// token `PFX/CALL` (slash at 1-based `slash`, at most 4) or `CALL/SFX`.
+fn wspr_affix_index(tok: &[u8], slash: usize) -> Option<u32> {
+    let n = tok.len();
+    if slash <= 4 && n - slash < 3 {
+        return None;
+    }
+    if slash > 4 && n - slash > 3 {
+        return None;
+    }
+    let idx = |c: u8| BASE36.iter().position(|&x| x == c).map(|p| p as u32);
+    let mut chars = tok[..slash - 1].iter().chain(&tok[slash..]);
+    if !chars.all(|&c| idx(c).is_some()) {
+        return None;
+    }
+    if slash <= 4 {
+        let mut npfx = idx(tok[0])?;
+        if slash >= 3 {
+            npfx = 36 * npfx + idx(tok[1])?;
+        }
+        if slash == 4 {
+            npfx = 36 * npfx + idx(tok[2])?;
+        }
+        Some(npfx)
+    } else {
+        let s = &tok[slash..];
+        let npfx = match s.len() {
+            1 => idx(s[0])?,
+            2 => 36 * idx(s[0])? + idx(s[1])?,
+            3 => {
+                if !s[2].is_ascii_digit() {
+                    return None;
+                }
+                360 * idx(s[0])? + 10 * idx(s[1])? + idx(s[2])?
+            }
+            _ => 0,
+        };
+        Some(npfx + WSPR_NZZZ)
+    }
+}
+
+/// `pack77_wspr_affix_text`: the affix a 16-bit add-on stands for, and whether it
+/// is a prefix. Leading zeros do not survive it.
+fn wspr_affix_text(npfx: u32) -> Option<(String, bool)> {
+    let ch = |i: u32| BASE36[i as usize] as char;
+    if npfx < WSPR_NZZZ {
+        let mut n = npfx;
+        let mut digits: Vec<char> = Vec::new();
+        for _ in 0..3 {
+            digits.push(ch(n % 36));
+            n /= 36;
+            if n == 0 {
+                break;
+            }
+        }
+        return Some((digits.into_iter().rev().collect(), true));
+    }
+    let n = npfx - WSPR_NZZZ;
+    let text: String = if n <= 35 {
+        [ch(n)].into_iter().collect()
+    } else if n <= 1295 {
+        [ch(n / 36), ch(n % 36)].into_iter().collect()
+    } else if n <= 12_959 {
+        [ch(n / 360), ch((n / 10) % 36), ch(n % 10)]
+            .into_iter()
+            .collect()
+    } else {
+        return None;
+    };
+    Some((text, false))
+}
+
+/// `ihashcall(c13, m)` of `packjt77.f90:491`. Not [`ihashcall`]: that maps a
+/// character outside the base-38 alphabet to index 0, upstream's `index(...)-1`
+/// gives -1, and a hashed token may contain one (`<K1ABC-1>`).
+fn ihashcall_upstream(call: &str, m: u32) -> u32 {
+    const C38: &[u8] = b" 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/";
+    let b = call.as_bytes();
+    let mut n8: u64 = 0;
+    for i in 0..11 {
+        let c = b.get(i).copied().unwrap_or(b' ');
+        let j: i64 = C38.iter().position(|&x| x == c).map_or(-1, |p| p as i64);
+        n8 = n8.wrapping_mul(38).wrapping_add(j as u64);
+    }
+    (n8.wrapping_mul(47_055_833_459) >> (64 - m)) as u32
+}
+
+/// `normalize_hash_call` + `pack77_hash_index`: the 22-bit hash of the call in a
+/// `<CALL>` token, and the call itself (the staged call the round-trip gate
+/// matches an unresolved `<...>` against). `None` for `<...>` or a call shorter
+/// than 3 characters.
+fn hash_call_index(tok: &str, nbits: u32) -> Option<(u32, String)> {
+    if tok.starts_with("<...>") || !valid_hash_call_token(tok) {
+        return None;
+    }
+    let call = &tok[1..tok.len() - 1];
+    if call.len() < 3 {
+        return None;
+    }
+    Some((ihashcall_upstream(call, nbits), call.to_string()))
+}
+
+/// Write `value` MSB first into the 1-based bit range `start..start+width`.
+fn put_bits(bits: &mut [u8; 77], start: usize, width: usize, value: u64) {
+    for i in 0..width {
+        bits[start - 1 + i] = ((value >> (width - 1 - i)) & 1) as u8;
+    }
+}
+
+/// `pack77_grid6_wspr_index`: base 25 for the subsquare letters, 24·25+24 for a
+/// four-character grid.
+fn grid6_wspr_index(g: &str) -> u32 {
+    let b = g.as_bytes();
+    let g4 = pack_grid4(&g[..4]).unwrap_or(0);
+    let sub = if b.len() == 4 {
+        24 * 25 + 24
+    } else {
+        (b[4] - b'A') as u32 * 25 + (b[5] - b'A') as u32
+    };
+    g4 * 25 * 25 + sub
+}
+
+/// The `i3=0, n3=6` tail of the 77 bits: 21 zero bits, `n3 = 6`, `i3 = 0`.
+fn put_wspr_tail(bits: &mut [u8; 77]) {
+    put_bits(bits, 72, 3, 6);
+    put_bits(bits, 75, 3, 0);
+}
+
+/// The round-trip gate `take_candidate` applies
+/// (`pack77_gate_message_checks`, `packjt77_grammar.f90:641`): the 77 bits must
+/// unpack, with an empty hash table, to the words that were asked for — a hashed
+/// call may come back as `<...>` when the staged call is the one asked for.
+fn wspr_round_trips(input: &str, bits: &[u8; 77], staged: Option<&str>) -> bool {
+    let Some(decoded) = unpack77(bits) else {
+        return false;
+    };
+    let (Some(iw), Some(dw)) = (
+        split_source_tokens(input, 19),
+        split_source_tokens(&decoded, 19),
+    ) else {
+        return false;
+    };
+    if iw.len() != dw.len() {
+        return false;
+    }
+    let mut nrender = 0usize;
+    for (i, (a, d)) in iw.iter().zip(&dw).enumerate() {
+        if i > 0 {
+            nrender += 1;
+        }
+        if a == d {
+            nrender += d.len();
+        } else if *d == "<...>" {
+            let body = if a.len() >= 2 && a.starts_with('<') && a.ends_with('>') {
+                if a.len() > 2 { &a[1..a.len() - 1] } else { "" }
+            } else {
+                a.as_str()
+            };
+            if staged != Some(body) || body.len() > 11 {
+                return false;
+            }
+            nrender += body.len() + 2;
+        } else if d.as_str() == alloc::format!("<{a}>") {
+            nrender += d.len();
+        } else {
+            return false;
+        }
+        if nrender > 37 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Pack a WSPR-type message (`CALL GRID4 DBM`, `PFX/CALL DBM`, `CALL/SFX DBM`,
+/// and with `prefer_50bit` also `<CALL> GRID6`) into the 77 bits `genfst4` builds
+/// for FST4W: `i3 = 0, n3 = 6`, of which the first 50 are transmitted.
+///
+/// `None` is a message `genfst4` calls bad: it is not one of those forms, a
+/// field is out of range, or the bits do not unpack to what was asked for.
+/// `pack77_06_candidate` of WSJT-X v3.3.0-beta1; the type-3 form needs
+/// `prefer_50bit` because only FST4W wants `n3 = 6` for it
+/// (`packjt77.f90:2593`).
+pub fn pack77_wspr(text: &str, prefer_50bit: bool) -> Option<[u8; 77]> {
+    // `character*37` in `genfst4`
+    let text = text.get(..text.len().min(37)).unwrap_or(text);
+    if !text.is_ascii() {
+        return None;
+    }
+    let w = split_source_tokens(text, 3)?;
+    let mut bits = [0u8; 77];
+    let mut staged: Option<String> = None;
+    match w.len() {
+        3 => {
+            // Type 1: CALL GRID4 DBM
+            if !type12_standard_call(&w[0]) || !is_grid4(&w[1]) {
+                return None;
+            }
+            let idbm = parse_wspr_dbm(&w[2])?;
+            put_bits(&mut bits, 1, 28, pack28(&w[0])? as u64);
+            put_bits(&mut bits, 29, 15, pack_grid4(&w[1])? as u64);
+            put_bits(&mut bits, 44, 5, idbm as u64);
+        }
+        2 => {
+            let (m1, m2) = (w[0].len(), w[1].len());
+            let mut done = false;
+            if (5..=10).contains(&m1) && m2 <= 2 {
+                let t = w[0].as_bytes();
+                if let Some(slash) = w[0].find('/').map(|p| p + 1)
+                    && slash >= 2
+                    && slash < m1
+                    && !w[0][slash..].contains('/')
+                {
+                    let base = if slash <= 4 {
+                        &w[0][slash..]
+                    } else {
+                        &w[0][..slash - 1]
+                    };
+                    if type12_standard_call(base) {
+                        // Type 2: PFX/CALL DBM or CALL/SFX DBM
+                        let idbm = parse_wspr_dbm(&w[1])?;
+                        let npfx = wspr_affix_index(t, slash)?;
+                        // `pack77_wspr_affix_text` must give the affix back
+                        // (so `0K/K1ABC`, whose leading zero it drops, is refused)
+                        let (text, is_prefix) = wspr_affix_text(npfx)?;
+                        let affix = if slash <= 4 {
+                            if !is_prefix {
+                                return None;
+                            }
+                            &w[0][..slash - 1]
+                        } else {
+                            if is_prefix {
+                                return None;
+                            }
+                            &w[0][slash..]
+                        };
+                        if text != affix {
+                            return None;
+                        }
+                        put_bits(&mut bits, 1, 28, pack28(base)? as u64);
+                        put_bits(&mut bits, 29, 16, npfx as u64);
+                        put_bits(&mut bits, 45, 5, idbm as u64);
+                        put_bits(&mut bits, 50, 1, 1);
+                        done = true;
+                    }
+                }
+            }
+            if !done {
+                // Type 3: <CALL> GRID6 (m1 5..12, m2 <= 6)
+                if !prefer_50bit
+                    || !(5..=12).contains(&m1)
+                    || m2 > 6
+                    || !valid_hash_call_token(&w[0])
+                    || !is_grid6_or_4(&w[1])
+                {
+                    return None;
+                }
+                let (n22, call) = hash_call_index(&w[0], 22)?;
+                put_bits(&mut bits, 1, 22, n22 as u64);
+                put_bits(&mut bits, 23, 25, grid6_wspr_index(&w[1]) as u64);
+                put_bits(&mut bits, 48, 3, 2);
+                staged = Some(call);
+            }
+        }
+        _ => return None,
+    }
+    put_wspr_tail(&mut bits);
+    wspr_round_trips(text, &bits, staged.as_deref()).then_some(bits)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
