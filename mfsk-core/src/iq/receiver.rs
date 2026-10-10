@@ -157,9 +157,9 @@ impl CompletedSlot {
 struct Channel {
     id: ChannelId,
     dial_hz: f64,
-    mode: Mode,
-    meta: &'static ProtocolMeta,
-    cutter: SlotCutter<f32>,
+    /// What cuts this channel's audio into slots; `None` on a channel that only
+    /// keeps its audio ([`IqReceiver::add_audio_channel`]).
+    slots: Option<Slots>,
     state: ChannelState,
     /// `Some` on the `Direct` path while active; `None` when the shared bank
     /// feeds it or it is paused.
@@ -167,9 +167,19 @@ struct Channel {
     /// Its index in the shared bank, on the `Pfb` path while active.
     bank_idx: usize,
     scratch: Vec<f32>,
+    /// The audio index (12 kHz, on the receiver's clock) of the next sample
+    /// this channel produces.
+    k_next: u64,
     /// The channel's audio since the last [`IqReceiver::take_audio`], when
-    /// tapped (a waterfall wants the continuous audio, not the slots).
-    tap: Option<Vec<f32>>,
+    /// kept (a waterfall, or a receiver with no slot such as JTTY).
+    tap: Option<Tap>,
+}
+
+/// A slotted channel's mode and slot cutting.
+struct Slots {
+    mode: Mode,
+    meta: &'static ProtocolMeta,
+    cutter: SlotCutter<f32>,
     /// Prefix points are set ([`IqReceiver::set_prefix_points`]).
     prefixes: bool,
     /// The open slot's gain, pinned at its first prefix: its period index
@@ -177,6 +187,33 @@ struct Channel {
     pin: Option<(i64, f32)>,
     /// The last period index delivered, prefix or whole.
     last_j: Option<i64>,
+}
+
+/// A channel's kept audio, as runs of contiguous samples: a retune, a gap or
+/// a clock re-anchoring starts a new run, so a caller reading with
+/// [`IqReceiver::take_audio_from`] sees where the audio broke.
+#[derive(Default)]
+struct Tap {
+    /// Each run's first audio index and its samples, oldest first.
+    runs: alloc::collections::VecDeque<(u64, Vec<f32>)>,
+    /// The next samples start a new run even if they follow on: the clock was
+    /// re-anchored, so the audio's index still runs on but its UTC jumped.
+    broken: bool,
+}
+
+impl Tap {
+    fn push(&mut self, k: u64, audio: &[f32]) {
+        if audio.is_empty() {
+            return;
+        }
+        match self.runs.back_mut() {
+            Some((start, run)) if !self.broken && *start + run.len() as u64 == k => {
+                run.extend_from_slice(audio)
+            }
+            _ => self.runs.push_back((k, audio.to_vec())),
+        }
+        self.broken = false;
+    }
 }
 
 /// The gain taking `buf` to [`TARGET_RMS`], or `None` for silence or NaN.
@@ -190,20 +227,23 @@ fn slot_gain(buf: &[f32]) -> Option<f32> {
     Some(TARGET_RMS / 32_768.0 / rms)
 }
 
-impl Channel {
+impl Slots {
     fn grid_period_ns(&self) -> i128 {
         (self.meta.t_slot_s * 10.0).round() as i128 * 100_000_000
     }
 
-    /// Feed `self.scratch` (the audio just produced); completed slots go to
-    /// `out`.
-    fn feed(&mut self, clock: &SampleClock, fs: u32, out: &mut Vec<CompletedSlot>) {
-        let audio = core::mem::take(&mut self.scratch);
-        if let Some(t) = self.tap.as_mut() {
-            t.extend_from_slice(&audio);
-        }
+    /// Cut `audio` (the samples just produced); completed slots go to `out`.
+    fn feed(
+        &mut self,
+        id: ChannelId,
+        dial_hz: f64,
+        clock: &SampleClock,
+        fs: u32,
+        audio: &[f32],
+        out: &mut Vec<CompletedSlot>,
+    ) {
         let anchor = clock.anchor_ns();
-        let (id, mode, dial_hz) = (self.id, self.mode, self.dial_hz);
+        let mode = self.mode;
         let period_ns = self.grid_period_ns();
         let slot = |j: i64, start_k: u64, audio: Vec<f32>| CompletedSlot {
             channel: id,
@@ -227,7 +267,7 @@ impl Channel {
         let state = core::cell::RefCell::new((pin, last_j));
         self.cutter.feed_parts(
             anchor,
-            &audio,
+            audio,
             |j, start_k, buf| {
                 let mut st = state.borrow_mut();
                 let (pin, last_j) = &mut *st;
@@ -264,6 +304,21 @@ impl Channel {
                     .push(slot(j, start_k, buf.iter().map(|&v| v * g).collect()));
             },
         );
+    }
+}
+
+impl Channel {
+    /// Feed `self.scratch` (the audio just produced): kept when tapped, and
+    /// cut into slots on a slotted channel, completed ones going to `out`.
+    fn feed(&mut self, clock: &SampleClock, fs: u32, out: &mut Vec<CompletedSlot>) {
+        let audio = core::mem::take(&mut self.scratch);
+        if let Some(t) = self.tap.as_mut() {
+            t.push(self.k_next, &audio);
+        }
+        if let Some(s) = self.slots.as_mut() {
+            s.feed(self.id, self.dial_hz, clock, fs, &audio, out);
+        }
+        self.k_next += audio.len() as u64;
         self.scratch = audio;
         self.scratch.clear();
     }
@@ -271,14 +326,23 @@ impl Channel {
     /// Forget the open slot and the continuity: the next slot is found from
     /// the clock again, at audio index `k`.
     fn restart(&mut self, k: u64) {
-        self.cutter.restart(k);
-        self.pin = None;
+        self.k_next = k;
+        if let Some(s) = self.slots.as_mut() {
+            s.cutter.restart(k);
+            s.pin = None;
+        }
     }
 
-    /// Forget the open slot and the continuity, keeping the position.
+    /// Forget the open slot and the continuity, keeping the position (the
+    /// clock was re-anchored): kept audio starts a new run.
     fn forget_slots(&mut self) {
-        self.cutter.forget_slots();
-        self.pin = None;
+        if let Some(s) = self.slots.as_mut() {
+            s.cutter.forget_slots();
+            s.pin = None;
+        }
+        if let Some(t) = self.tap.as_mut() {
+            t.broken = true;
+        }
     }
 }
 
@@ -358,20 +422,47 @@ impl IqReceiver {
         self.channels.push(Channel {
             id,
             dial_hz,
-            mode,
-            meta,
-            cutter: SlotCutter::new(
-                SlotGrid::new((meta.t_slot_s * 10.0).round() as i64 * 100_000_000, 12_000),
-                k_next,
-            ),
+            slots: Some(Slots {
+                mode,
+                meta,
+                cutter: SlotCutter::new(
+                    SlotGrid::new((meta.t_slot_s * 10.0).round() as i64 * 100_000_000, 12_000),
+                    k_next,
+                ),
+                prefixes: false,
+                pin: None,
+                last_j: None,
+            }),
             state: ChannelState::Active,
             fe,
             bank_idx,
             scratch: Vec::new(),
+            k_next,
             tap: None,
-            prefixes: false,
-            pin: None,
-            last_j: None,
+        });
+        Ok(id)
+    }
+
+    /// Add a channel that cuts no slots and keeps its continuous 12 kHz audio
+    /// for [`Self::take_audio_from`]: for a receiver with no slot of its own,
+    /// JTTY's (`jtty::rx::Stream`), whose frames start at any moment. Placed
+    /// as [`Self::add_channel`] places a slotted one, with the same errors; a
+    /// retune pauses and resumes it the same way. Its audio is unscaled, as
+    /// [`Self::take_audio`]'s is. Keep draining it: it grows until taken.
+    pub fn add_audio_channel(&mut self, dial_hz: f64) -> Result<ChannelId, IqError> {
+        let (fe, bank_idx, k_next) = self.place(dial_hz)?;
+        let id = ChannelId(self.next_id);
+        self.next_id += 1;
+        self.channels.push(Channel {
+            id,
+            dial_hz,
+            slots: None,
+            state: ChannelState::Active,
+            fe,
+            bank_idx,
+            scratch: Vec::new(),
+            k_next,
+            tap: Some(Tap::default()),
         });
         Ok(id)
     }
@@ -391,10 +482,15 @@ impl IqReceiver {
     /// dropped by a retune, a gap or a clock step keeps the prefixes it already
     /// delivered and has no whole. Design: `docs/notes/IQ_PREFIX_DESIGN.md`.
     pub fn set_prefix_points(&mut self, id: ChannelId, points: &[usize]) -> bool {
-        match self.channels.iter_mut().find(|c| c.id == id) {
-            Some(c) => {
-                c.cutter.set_points(points);
-                c.prefixes = c.cutter.has_points();
+        match self
+            .channels
+            .iter_mut()
+            .find(|c| c.id == id)
+            .and_then(|c| c.slots.as_mut())
+        {
+            Some(s) => {
+                s.cutter.set_points(points);
+                s.prefixes = s.cutter.has_points();
                 true
             }
             None => false,
@@ -421,14 +517,15 @@ impl IqReceiver {
         })
     }
 
-    /// Remove a channel; `false` if it was not there.
     /// Start or stop keeping a channel's continuous 12 kHz audio for
-    /// [`Self::take_audio`] (a waterfall, a level meter). Off by default: a
-    /// tapped channel that is never drained grows without bound.
+    /// [`Self::take_audio`] (a waterfall, a level meter). Off by default on a
+    /// slotted channel, on from the start on an audio channel
+    /// ([`Self::add_audio_channel`]): a tapped channel that is never drained
+    /// grows without bound.
     pub fn tap_audio(&mut self, id: ChannelId, on: bool) -> bool {
         match self.channels.iter_mut().find(|c| c.id == id) {
             Some(c) => {
-                c.tap = on.then(Vec::new);
+                c.tap = on.then(Tap::default);
                 true
             }
             None => false,
@@ -437,8 +534,9 @@ impl IqReceiver {
 
     /// Move the audio a tapped channel produced since the last call onto the end
     /// of `out`, unscaled (the slots handed to a decoder are normalised, this
-    /// is the level that came out of the channel filter). A paused channel
-    /// produces none. `false` if the channel is unknown or not tapped.
+    /// is the level that came out of the channel filter), across any break in
+    /// it (a waterfall does not mind one). A paused channel produces none.
+    /// `false` if the channel is unknown or not tapped.
     pub fn take_audio(&mut self, id: ChannelId, out: &mut Vec<f32>) -> bool {
         match self
             .channels
@@ -447,13 +545,44 @@ impl IqReceiver {
             .and_then(|c| c.tap.as_mut())
         {
             Some(t) => {
-                out.append(t);
+                for (_, mut run) in t.runs.drain(..) {
+                    out.append(&mut run);
+                }
                 true
             }
             None => false,
         }
     }
 
+    /// As [`Self::take_audio`], up to the first break in the audio: a retune,
+    /// a gap, or the clock re-anchored. Returns the audio index (12 kHz, as
+    /// [`Self::utc_of_audio`] takes it) of the first sample appended, or `None`
+    /// when nothing is waiting or the channel is unknown or not tapped. A
+    /// caller that keeps state across samples (JTTY's receiver) calls it until
+    /// `None`, and treats an index other than the one it expected next as a
+    /// break: the audio before and after it are not one recording.
+    pub fn take_audio_from(&mut self, id: ChannelId, out: &mut Vec<f32>) -> Option<u64> {
+        let (k, mut run) = self
+            .channels
+            .iter_mut()
+            .find(|c| c.id == id)?
+            .tap
+            .as_mut()?
+            .runs
+            .pop_front()?;
+        out.append(&mut run);
+        Some(k)
+    }
+
+    /// The UTC (ns since the Unix epoch) of audio index `k` on the receiver's
+    /// 12 kHz clock, once a clock is set ([`Self::set_time`]).
+    pub fn utc_of_audio(&self, k: u64) -> Option<i64> {
+        self.clock
+            .anchor_ns()
+            .map(|a| a + (k as i128 * 1_000_000_000 / 12_000) as i64)
+    }
+
+    /// Remove a channel; `false` if it was not there.
     pub fn remove_channel(&mut self, id: ChannelId) -> bool {
         let Some(at) = self.channels.iter().position(|c| c.id == id) else {
             return false;

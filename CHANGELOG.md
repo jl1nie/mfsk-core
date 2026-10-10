@@ -23,6 +23,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Public API
 
+- **`IqReceiver::add_audio_channel`, `take_audio_from` and `utc_of_audio`, for a receiver with no slot; JTTY's
+  `MessageUpdate::calls` (#650).** An audio channel is placed as a slotted one but cuts nothing: it keeps its continuous
+  12 kHz audio, which `take_audio_from` hands out up to the first break, with the audio index of its first sample, so a
+  retune, a gap or a clock re-anchoring is seen and JTTY's `Stream` can be finished and reset there. `take_audio` joins the
+  runs as before. `MessageUpdate` gains `calls` (the call atoms' callsigns, in order, each once) and is now
+  `#[non_exhaustive]`. For the skimmer's JTTY channels; `tests/iq_audio_channel.rs` runs JTTY through IQ to its calls.
 - **`#[non_exhaustive]` on the public types that are expected to grow (#573).** One break, taken once, so that the growth
   itself stops being one: a new protocol is patch-level by this crate's convention, but it adds a `ProtocolId` variant, so each
   had technically been breaking, as is any field added to an output row, `ProtocolMeta` or a mode's `Extras`. 40 types gain it

@@ -68,8 +68,10 @@ pub enum UpdateKind {
 }
 
 /// A message as far as it is known; one is emitted every time it grows, and once
-/// more when it completes or is given up on.
+/// more when it completes or is given up on. It has grown fields before
+/// (`snr_db`, `kind`, `calls`), so it is `#[non_exhaustive]` (#573's rule).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct MessageUpdate {
     /// Stable for the life of the message.
     pub id: u64,
@@ -87,6 +89,11 @@ pub struct MessageUpdate {
     /// Why this update was emitted: it grew, it completed, it was given up on, or the
     /// reception ended.
     pub kind: UpdateKind,
+    /// The callsigns the message's call atoms ([`Atom::Call`]) carry, in the order they
+    /// first arrived, each once: what a station list or a map takes from it, without
+    /// parsing `text` (where a call in free text is not a call atom and is not here).
+    /// Not part of upstream's update, which carries the text alone (#650).
+    pub calls: Vec<String>,
 }
 
 /// A frame as text: `decoded` (`~` for TEXT5 spaces), whether a structured atom's
@@ -101,6 +108,8 @@ struct FrameText {
     decoded: String,
     trailing_sep: bool,
     last: bool,
+    /// The callsign of a call atom.
+    call: Option<String>,
 }
 
 fn frame_text(atom: &Atom, eom: bool) -> FrameText {
@@ -109,11 +118,16 @@ fn frame_text(atom: &Atom, eom: bool) -> FrameText {
             decoded: t.chars().map(|c| if c == ' ' { '~' } else { c }).collect(),
             trailing_sep: false,
             last: eom,
+            call: None,
         },
         other => FrameText {
             decoded: other.render(),
             trailing_sep: true,
             last: eom,
+            call: match other {
+                Atom::Call { call, .. } => Some(call.clone()),
+                _ => None,
+            },
         },
     }
 }
@@ -129,6 +143,18 @@ struct Active {
     k: usize,
     decoded: String,
     trailing_sep: bool,
+    /// [`MessageUpdate::calls`]
+    calls: Vec<String>,
+}
+
+impl Active {
+    fn note_call(&mut self, t: &FrameText) {
+        if let Some(c) = &t.call
+            && !self.calls.contains(c)
+        {
+            self.calls.push(c.clone());
+        }
+    }
 }
 
 struct Recent {
@@ -268,6 +294,7 @@ impl Assembler {
             text: display(&a.decoded),
             complete: kind == UpdateKind::Complete,
             kind,
+            calls: a.calls.clone(),
         }
     }
 
@@ -343,7 +370,7 @@ impl Assembler {
         if decoded.starts_with("599 ") {
             decoded.insert(0, '~');
         }
-        let msg = Active {
+        let mut msg = Active {
             id: self.next_id,
             f1,
             tsync,
@@ -352,7 +379,9 @@ impl Assembler {
             k: decoded.chars().count(),
             decoded,
             trailing_sep: t.trailing_sep,
+            calls: Vec::new(),
         };
+        msg.note_call(t);
         self.next_id += 1;
         self.active.push(msg);
         let i = self.active.len() - 1;
@@ -393,6 +422,7 @@ impl Assembler {
             a.k = kz;
         }
         a.trailing_sep = t.trailing_sep;
+        a.note_call(t);
         a.f1 = f1;
         a.tsync = tsync;
         sink(self.update(i, UpdateKind::from_last(t.last)));
