@@ -105,6 +105,7 @@ const fn pack_gen_parity<const K: usize, const M: usize>(t: &[[u8; K]; M]) -> [u
 const GEN_PARITY_174_91: [u128; 83] = pack_gen_parity(&super::osd::GEN_PARITY);
 const GEN_PARITY_240_101: [u128; 139] =
     pack_gen_parity(&crate::fec::ldpc240_101::tables::GEN_PARITY);
+const GEN_PARITY_240_74: [u128; 166] = pack_gen_parity(&crate::fec::ldpc240_74::tables::GEN_PARITY);
 const GEN_PARITY_128_90: [u128; 38] = pack_gen_parity(&crate::fec::ldpc_128_90::tables::GEN_PARITY);
 
 // ────────────────────────────────────────────────────────────────────
@@ -181,6 +182,45 @@ impl LdpcParams for Ldpc240_101Params {
     #[inline]
     fn gen_parity(row: usize, col: usize) -> u8 {
         crate::fec::ldpc240_101::tables::GEN_PARITY[row][col]
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// LDPC(240, 74) — FST4W
+// ────────────────────────────────────────────────────────────────────
+
+/// Parameters for the WSJT LDPC(240, 74) code (FST4W: 50 message bits +
+/// CRC-24). Tables come from [`crate::fec::ldpc240_74::tables`], generated
+/// from `lib/fst4/ldpc_240_74_{parity,generator}.f90` at `v3.3.0-beta1`.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Ldpc240_74Params;
+
+impl sealed::Sealed for Ldpc240_74Params {}
+
+impl LdpcParams for Ldpc240_74Params {
+    const N: usize = 240;
+    const K: usize = 74;
+    const MAX_ROW: usize = 5;
+    const GEN_PARITY_PACKED: &'static [u128] = &GEN_PARITY_240_74;
+
+    #[inline]
+    fn mn(bit: usize) -> [u8; 3] {
+        crate::fec::ldpc240_74::tables::MN[bit]
+    }
+
+    #[inline]
+    fn nm(check: usize, slot: usize) -> u8 {
+        crate::fec::ldpc240_74::tables::NM[check][slot]
+    }
+
+    #[inline]
+    fn nrw(check: usize) -> u8 {
+        crate::fec::ldpc240_74::tables::NRW[check]
+    }
+
+    #[inline]
+    fn gen_parity(row: usize, col: usize) -> u8 {
+        crate::fec::ldpc240_74::tables::GEN_PARITY[row][col]
     }
 }
 
