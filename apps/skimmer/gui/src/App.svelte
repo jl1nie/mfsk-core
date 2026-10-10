@@ -886,20 +886,27 @@
             tableCh = i;
           }}
           {rows}
+          {jtty}
           {slotS}
           {geom}
           bind:open={wfOpen}
         />
       {/if}
-      <DecodeTable
-        {rows}
-        channels={settings.channels}
-        serverNames={settings.servers.map((x) => x.name)}
-        {slotS}
-        onclear={clearRows}
-        bind:channel={tableCh}
-        onpick={focusChannel}
-      />
+      <!-- Under a JTTY channel's waterfall the messages it hears, so a QSO can be followed
+           while watching the band; under any other channel, the decode table. -->
+      {#if settings.waterfall && settings.channels[Math.min(wfFocus, Math.max(0, settings.channels.length - 1))]?.mode === 'JTTY'}
+        <JttyPanel rows={jtty} channels={settings.channels} onclear={() => (jtty = [])} />
+      {:else}
+        <DecodeTable
+          {rows}
+          channels={settings.channels}
+          serverNames={settings.servers.map((x) => x.name)}
+          {slotS}
+          onclear={clearRows}
+          bind:channel={tableCh}
+          onpick={focusChannel}
+        />
+      {/if}
       </div>
     </div>
   </main>

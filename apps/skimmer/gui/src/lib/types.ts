@@ -122,6 +122,8 @@ export interface JttyRow {
   key: string;
   /** UTC of the start of its first frame, ms since the epoch. */
   startUtcMs: number | null;
+  /** Where its latest frame ends: how far it has got. */
+  endUtcMs: number | null;
   dialHz: number;
   /** RF frequency of the lowest tone of its latest frame. */
   freqHz: number;

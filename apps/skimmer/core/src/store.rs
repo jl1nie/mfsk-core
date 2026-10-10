@@ -1118,6 +1118,7 @@ mod tests {
             channel: 0,
             key: 1,
             start_utc_ns: Some(1_700_000_100 * 1_000_000_000),
+            end_utc_ns: Some(1_700_000_102 * 1_000_000_000),
             dial_hz: 14_090_000.0,
             freq_hz: 14_091_500.0,
             snr_db: -9.0,

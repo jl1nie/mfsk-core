@@ -50,7 +50,7 @@
 </script>
 
 <div class="decodes">
-  <div class="bar">
+  <div class="toolbar">
     <input class="search" bind:value={search} placeholder="Search call or text" spellcheck="false" />
     <span class="count">{shown.length} messages</span>
     <button class="link" onclick={onclear} title="Clear the list (ALL.TXT keeps every finished message)">Clear</button>

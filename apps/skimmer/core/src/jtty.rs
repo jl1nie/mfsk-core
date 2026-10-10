@@ -32,6 +32,8 @@ pub struct JttyMessage {
     pub key: u64,
     /// UTC of the start of its first frame, ns, when the clock is known.
     pub start_utc_ns: Option<i64>,
+    /// UTC of the end of its latest frame: how far it has got.
+    pub end_utc_ns: Option<i64>,
     /// The channel's dial.
     pub dial_hz: f64,
     /// RF frequency of the lowest tone of its latest frame.
@@ -284,6 +286,7 @@ fn run(
             channel,
             key: reception << 32 | (u.id & 0xffff_ffff),
             start_utc_ns: utc0.map(|t| t + (u.start_s * 1e9).round() as i64),
+            end_utc_ns: utc0.map(|t| t + (u.end_s * 1e9).round() as i64),
             dial_hz,
             freq_hz: dial_hz + u.f1_hz as f64,
             snr_db: u.snr_db,
@@ -357,6 +360,7 @@ mod tests {
             channel: 0,
             key: 1,
             start_utc_ns: Some(1_791_002_535 * 1_000_000_000),
+            end_utc_ns: Some(1_791_002_537 * 1_000_000_000),
             dial_hz: 7_078_000.0,
             freq_hz: 7_079_500.0,
             snr_db: -7.0,

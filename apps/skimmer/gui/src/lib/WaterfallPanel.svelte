@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ChannelSetting, DecodeRow, ModeInfo } from './types';
+  import type { ChannelSetting, DecodeRow, JttyRow, ModeInfo } from './types';
   import { BIG_PX, THUMB_PX, paint, spanMs, type WaterfallStore } from './waterfall';
 
   let {
@@ -12,6 +12,7 @@
     focus,
     onfocus,
     rows,
+    jtty = [],
     slotS,
     geom,
     open = $bindable(true),
@@ -28,6 +29,8 @@
     focus: number;
     onfocus: (i: number) => void;
     rows: DecodeRow[];
+    /** JTTY messages, drawn on a JTTY channel's waterfall where they were heard. */
+    jtty?: JttyRow[];
     slotS: Record<string, number>;
     geom: Record<string, ModeInfo>;
     open: boolean;
@@ -45,6 +48,14 @@
   /** A decode's box on the large waterfall, in canvas pixels. */
   type Box = { x0: number; x1: number; y0: number; y1: number; text: string };
   let boxes: Box[] = [];
+
+  /** A JTTY frame is 4 tones 31.25 Hz apart. */
+  const JTTY_WIDTH_HZ = 125;
+  /** JTTY has no slot to scroll by: a screen of it covers this long, with a tick every 10 s. */
+  const JTTY_SPAN_MS = 40_000;
+  /** The time one screen of a channel's waterfall covers. */
+  const spanOf = (c: ChannelSetting | undefined) =>
+    c?.mode === 'JTTY' ? JTTY_SPAN_MS : spanMs(slotS[c?.mode ?? ''] ?? 15);
 
   const hhmmss = (ms: number) => {
     const d = new Date(ms);
@@ -66,7 +77,7 @@
       const ctx = cv.getContext('2d');
       if (!ctx) return;
       const img = ctx.createImageData(w, THUMB_PX);
-      paint(img, s, spanMs(slotS[channels[i].mode] ?? 15));
+      paint(img, s, spanOf(channels[i]));
       ctx.putImageData(img, 0, 0);
     });
     // The large one.
@@ -80,7 +91,7 @@
       const ctx = big.getContext('2d');
       if (ctx) {
         const img = ctx.createImageData(w, BIG_PX);
-        paint(img, b, spanMs(slotS[channels[focus]?.mode ?? ''] ?? 15));
+        paint(img, b, spanOf(channels[focus]));
         ctx.putImageData(img, 0, 0);
       }
     }
@@ -104,7 +115,7 @@
     const xOf = (hz: number) => ((hz - b.fLo) / hzSpan) * W;
     const n = b.rows.length;
     const newest = b.utc[0];
-    const span = spanMs(slotS[channels[focus]?.mode ?? ''] ?? 15);
+    const span = spanOf(channels[focus]);
     const yOf = (utc: number) => ((newest - utc) / span) * H;
     ctx.font = '10px sans-serif';
     ctx.textBaseline = 'top';
@@ -119,9 +130,9 @@
       ctx.stroke();
       ctx.fillText(String(f), x + 2, 1);
     }
-    // Slot boundaries.
+    // Slot boundaries (JTTY: a tick every 10 s, since it has no slots).
     const c = channels[focus];
-    const T = (slotS[c?.mode ?? ''] ?? 15) * 1000;
+    const T = c?.mode === 'JTTY' ? 10_000 : (slotS[c?.mode ?? ''] ?? 15) * 1000;
     ctx.strokeStyle = 'rgba(255,255,255,0.45)';
     for (let t = Math.floor(newest / T) * T; t > newest - span; t -= T) {
       const y = yOf(t);
@@ -130,6 +141,25 @@
       ctx.lineTo(W, y);
       ctx.stroke();
       ctx.fillText(hhmmss(t), 2, y + 1);
+    }
+    // A JTTY channel's messages, from where they began to where they have got
+    // (a message still growing is dashed), so a free frequency shows between them.
+    if (c?.mode === 'JTTY') {
+      for (const m of jtty) {
+        if (m.channel !== focus || m.startUtcMs === null) continue;
+        const end = m.endUtcMs ?? m.startUtcMs + 1888;
+        const yLow = yOf(m.startUtcMs);
+        const yHigh = yOf(end);
+        if (yLow < 0 || yHigh > H) continue;
+        const x0 = xOf(m.freqHz - c.dialHz);
+        const x1 = xOf(m.freqHz - c.dialHz + JTTY_WIDTH_HZ);
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.setLineDash(m.final ? [] : [4, 3]);
+        ctx.strokeRect(x0, yHigh, x1 - x0, yLow - yHigh);
+        ctx.setLineDash([]);
+        boxes.push({ x0, x1, y0: yHigh, y1: yLow, text: `${m.text}  ${m.snrDb.toFixed(0)} dB` });
+      }
+      return;
     }
     // The decodes of this channel, over the slot they came from.
     ctx.strokeStyle = 'rgba(255,255,255,0.9)';
@@ -162,6 +192,7 @@
     void tick;
     void focus;
     void rows.length;
+    void jtty;
     void open;
     schedule();
   });

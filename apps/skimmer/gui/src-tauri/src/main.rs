@@ -484,6 +484,8 @@ enum UiEvent {
         key: String,
         /// ms, not ns: a JavaScript number holds it exactly.
         start_utc_ms: Option<f64>,
+        /// Where the latest frame ends: how far the message has got.
+        end_utc_ms: Option<f64>,
         dial_hz: f64,
         freq_hz: f64,
         snr_db: f32,
@@ -619,6 +621,7 @@ impl UiEvent {
                 // A string: a JavaScript number holds 2^53, and the key is 64 bits.
                 key: m.key.to_string(),
                 start_utc_ms: m.start_utc_ns.map(|ns| (ns / 1_000_000) as f64),
+                end_utc_ms: m.end_utc_ns.map(|ns| (ns / 1_000_000) as f64),
                 dial_hz: m.dial_hz,
                 freq_hz: m.freq_hz,
                 snr_db: m.snr_db,
@@ -1494,6 +1497,7 @@ mod health_log_tests {
             channel: 0,
             key: (3u64 << 32) | 7,
             start_utc_ns: Some(1_791_002_535_000_000_000),
+            end_utc_ns: Some(1_791_002_538_000_000_000),
             dial_hz: 14_090_000.0,
             freq_hz: 14_091_500.0,
             snr_db: -9.0,
@@ -1511,6 +1515,7 @@ mod health_log_tests {
         assert_eq!(v["channel"], 5, "the window's channel number");
         assert_eq!(v["key"], "12884901895");
         assert_eq!(v["startUtcMs"], 1_791_002_535_000.0);
+        assert_eq!(v["endUtcMs"], 1_791_002_538_000.0);
         assert_eq!(v["final"], true);
         assert_eq!(v["kind"], "complete");
         assert_eq!(v["calls"][0], "K1ABC");
