@@ -35,12 +35,13 @@ Regenerate: `scripts/run-sensitivity-sweeps.sh <protocol>` prints this for
 every task of the protocols it sweeps; `scripts/upstream-baseline.py run
 <task> <dir>` does one task.
 
-## Accuracy, 2026-10-09 (WSPR, JT65, JT9, Q65: 2026-10-04; JTTY: 2026-10-01)
+## Accuracy, 2026-10-10 (every task)
 
-Ryzen 9 9900X. `main` at `2cd38b8e` (FT8, FT4, FST4: the sweep after the OSD
-rewrite, #613; the swept commit has the same tree), `dbdf244c` (WSPR, JT65, JT9, Q65: the sweep before 0.13.0, on the
-`Decoder<P>` API) and `2e56279b` (JTTY: 2026-10-01, not re-run, since its source
-changed in comments only). Upstream: WSJT-X `v3.2.0-rc1`
+Ryzen 9 9900X. `main` at `787e0cbd`, all nine protocols re-swept on 2026-10-10 after the WSJT-X v3.3.0-beta1 ports
+(#642-#646: Q65 `jz` / caller list, JTTY packing / SNR / time, packer fixes); every 50 %-crossing, every unexpected-decode
+count and every paired count below is identical to the sweeps of 2026-10-09 (FT8, FT4, FST4; `2cd38b8e`, after the OSD
+rewrite, #613), 2026-10-04 (WSPR, JT65, JT9, Q65; `dbdf244c`) and 2026-10-01 (JTTY; `2e56279b`), so the tables stand.
+Upstream: WSJT-X `v3.2.0-rc1`
 (`scripts/build_jt9_upstream.sh`; `rjtty` from `gen_jtty_sweep_wavs.sh`).
 
 | task | upstream | groups | trials | both | upstream only | crate only | groups behind | groups ahead | crossing, crate − upstream | unexpected decodes, upstream / crate |

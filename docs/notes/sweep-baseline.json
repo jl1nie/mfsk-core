@@ -4,22 +4,22 @@
     "note": "Provenance for the 50%-recall crossing SNRs below. Written and read by scripts/sweep-regression-check.py; scripts/release-status.sh uses each protocol's own date to decide what a release actually needs re-swept. Entries stamped c757d32 were seeded before this block existed and carry no trial count \u2014 the CSVs were not kept. Every later entry is written by --update-baseline from the run itself. Each crossing is one corpus at MFSK_SIM_SEED=1 (the generators are deterministic since 2026-09-23 -- scripts/sim_sgran_stub.c), and that is deliberate: against a fixed corpus a code change shows up exactly, which is what this file is for. It is NOT an accurate absolute threshold -- one draw is worth up to ~1.1 dB on a fading channel (FT8 ccir_poor ranged -18.90..-20.00 over eight seeds). Quote docs/notes/BENCHMARKS.md for absolute figures, not this file; it carries multi-seed means and the paired comparison against real jt9 on the same corpus.",
     "protocols": {
       "fst4": {
-        "date": "2026-10-09",
-        "commit": "7e0ef4af",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 3360,
         "groups": 20
       },
       "ft4": {
-        "date": "2026-10-09",
-        "commit": "7e0ef4af",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
       },
       "ft8": {
-        "date": "2026-10-09",
-        "commit": "7e0ef4af",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 1040,
         "groups": 4
@@ -39,50 +39,50 @@
         "groups": 8
       },
       "jt65": {
-        "date": "2026-10-04",
-        "commit": "dbdf244c",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt65_chase": {
-        "date": "2026-10-04",
-        "commit": "dbdf244c",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt9": {
-        "date": "2026-10-04",
-        "commit": "dbdf244c",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jtty": {
-        "date": "2026-10-01",
-        "commit": "2e56279b",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 360,
         "groups": 2
       },
       "msk144": {
-        "date": "2026-10-01",
-        "commit": "6ca5510b-dirty",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 280,
         "groups": 2
       },
       "q65": {
-        "date": "2026-10-04",
-        "commit": "dbdf244c",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 2640,
         "groups": 20
       },
       "wspr": {
-        "date": "2026-10-04",
-        "commit": "dbdf244c",
+        "date": "2026-10-10",
+        "commit": "787e0cbd",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 260,
         "groups": 1
