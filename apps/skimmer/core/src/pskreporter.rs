@@ -15,6 +15,11 @@
 /// The largest IPFIX message that fits one UDP datagram on a 1000-byte IPv6 path:
 /// `1000 - 40 (IPv6) - 8 (UDP)`.
 pub const MAX_UDP_IPFIX_PAYLOAD_BYTES: usize = 1000 - 40 - 8;
+/// What the sender packs into one datagram, and the size at which one counts as full. PSK Reporter's
+/// author (#655): "You can send datagrams more often than once every five minutes if they become
+/// 'full' — i.e. 1200 bytes or more. You can send much larger datagrams, but sending more often
+/// is also acceptable." 1200 plus the IPv4 and UDP headers is inside a 1500-byte path.
+pub const FULL_UDP_PAYLOAD_BYTES: usize = 1200;
 /// The largest message a TCP connection carries (the length field is 16 bits).
 pub const MAX_TCP_IPFIX_PAYLOAD_BYTES: usize = 0xffff;
 
@@ -752,6 +757,79 @@ fn now_unix() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// Everything the sender's thread keeps between messages.
+struct Batch {
+    receiver: Receiver,
+    address: String,
+    socket: Option<UdpSocket>,
+    queue: VecDeque<Spot>,
+    /// Bytes of the queued spots' records (`spot_record`), for telling when a datagram is full.
+    queued_bytes: usize,
+    sequence: u32,
+    observation_id: u32,
+    descriptors_left: u32,
+}
+
+impl Batch {
+    /// Would the queue, with `extra` more record bytes, no longer fit one datagram? The first
+    /// datagrams after a start also carry the templates.
+    fn full_with(&self, extra: usize) -> bool {
+        let mut base = receiver_set(&self.receiver).len();
+        if self.descriptors_left > 0 {
+            base += descriptor_sets().len();
+        }
+        message_length(base + sender_set_length(self.queued_bytes + extra)) > FULL_UDP_PAYLOAD_BYTES
+    }
+
+    /// Send what is queued (and the templates, while they are due) now.
+    fn flush(&mut self, stats: &Mutex<PskStats>) {
+        if self.queue.is_empty() && self.descriptors_left == 0 {
+            return;
+        }
+        if self.socket.is_none() {
+            match open(&self.address) {
+                Ok(s) => self.socket = Some(s),
+                Err(e) => {
+                    stats.lock().unwrap().last_error = Some(e);
+                    return;
+                }
+            }
+        }
+        let spots: Vec<Spot> = self.queue.drain(..).collect();
+        self.queued_bytes = 0;
+        let packets = build_packets(
+            &self.receiver,
+            &spots,
+            self.descriptors_left > 0,
+            self.sequence,
+            self.observation_id,
+            now_unix() as u32,
+            FULL_UDP_PAYLOAD_BYTES,
+        );
+        self.descriptors_left = self.descriptors_left.saturating_sub(1);
+        let sock = self.socket.as_ref().unwrap();
+        let mut st = stats.lock().unwrap();
+        for p in &packets {
+            match sock.send(&p.payload) {
+                Ok(_) => {
+                    self.sequence = self.sequence.wrapping_add(p.spot_count as u32);
+                    st.spots_sent += p.spot_count as u64;
+                    st.datagrams_sent += 1;
+                    st.last_send_unix = Some(now_unix());
+                    st.last_error = None;
+                }
+                Err(e) => {
+                    // Start from a fresh lookup next time.
+                    st.last_error = Some(e.to_string());
+                    self.socket = None;
+                    break;
+                }
+            }
+        }
+        st.pending = 0;
+    }
+}
+
 fn run(cfg: PskConfig, rx: mpsc::Receiver<Msg>, stats: Arc<Mutex<PskStats>>) {
     let mut rng = Rng::new();
     let receiver = Receiver {
@@ -761,14 +839,18 @@ fn run(cfg: PskConfig, rx: mpsc::Receiver<Msg>, stats: Arc<Mutex<PskStats>>) {
         antenna: cfg.antenna.clone(),
         rig_information: cfg.rig_information.clone(),
     };
-    let observation_id = rng.next() as u32;
-    let address = cfg.endpoint.address();
-    let mut socket: Option<UdpSocket> = None;
+    let mut out = Batch {
+        receiver,
+        address: cfg.endpoint.address(),
+        socket: None,
+        queue: VecDeque::new(),
+        queued_bytes: 0,
+        sequence: 0,
+        observation_id: rng.next() as u32,
+        descriptors_left: DESCRIPTOR_SENDS,
+    };
     let mut dedupe = Dedupe::new(cfg.repeat);
-    let mut queue: VecDeque<Spot> = VecDeque::new();
-    let mut sequence: u32 = 0;
     let mut not_before = i64::MIN;
-    let mut descriptors_left = DESCRIPTOR_SENDS;
     let started = Instant::now();
     let jitter = |rng: &mut Rng| rng.up_to(cfg.interval / 5 + Duration::from_millis(1));
     let mut next_flush = started + cfg.interval + jitter(&mut rng);
@@ -780,75 +862,46 @@ fn run(cfg: PskConfig, rx: mpsc::Receiver<Msg>, stats: Arc<Mutex<PskStats>>) {
             Ok(Msg::NotBefore(t)) => not_before = not_before.max(t),
             Ok(Msg::Spot(s)) => {
                 let now = Instant::now();
+                {
+                    let mut st = stats.lock().unwrap();
+                    st.offered += 1;
+                    if s.time_unix < not_before {
+                        st.stale += 1;
+                        continue;
+                    }
+                    if !dedupe.admit(&s, now) {
+                        st.duplicates += 1;
+                        continue;
+                    }
+                }
+                // A datagram that this spot would overfill goes first, as full: the page allows
+                // sending before the interval for that (#655). The timed send restarts from it.
+                let record = spot_record(&s).len();
+                if !out.queue.is_empty() && out.full_with(record) {
+                    out.flush(&stats);
+                    next_flush = now + cfg.interval + jitter(&mut rng);
+                }
                 let mut st = stats.lock().unwrap();
-                st.offered += 1;
-                if s.time_unix < not_before {
-                    st.stale += 1;
-                    continue;
-                }
-                if !dedupe.admit(&s, now) {
-                    st.duplicates += 1;
-                    continue;
-                }
-                queue.push_back(s);
-                while queue.len() > MAX_PENDING_SPOTS {
-                    queue.pop_front();
+                out.queued_bytes += record;
+                out.queue.push_back(s);
+                while out.queue.len() > MAX_PENDING_SPOTS {
+                    if let Some(old) = out.queue.pop_front() {
+                        out.queued_bytes -= spot_record(&old).len();
+                    }
                     st.overflowed += 1;
                 }
-                st.pending = queue.len();
+                st.pending = out.queue.len();
             }
             Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
                 if now >= next_descriptors {
-                    descriptors_left = DESCRIPTOR_SENDS;
+                    out.descriptors_left = DESCRIPTOR_SENDS;
                     next_descriptors = now + DESCRIPTOR_PERIOD;
                 }
                 dedupe.prune(now);
                 next_flush = now + cfg.interval + jitter(&mut rng);
-                if queue.is_empty() && descriptors_left == 0 {
-                    continue;
-                }
-                if socket.is_none() {
-                    match open(&address) {
-                        Ok(s) => socket = Some(s),
-                        Err(e) => {
-                            stats.lock().unwrap().last_error = Some(e);
-                            continue;
-                        }
-                    }
-                }
-                let spots: Vec<Spot> = queue.drain(..).collect();
-                let packets = build_packets(
-                    &receiver,
-                    &spots,
-                    descriptors_left > 0,
-                    sequence,
-                    observation_id,
-                    now_unix() as u32,
-                    MAX_UDP_IPFIX_PAYLOAD_BYTES,
-                );
-                descriptors_left = descriptors_left.saturating_sub(1);
-                let sock = socket.as_ref().unwrap();
-                let mut st = stats.lock().unwrap();
-                for p in &packets {
-                    match sock.send(&p.payload) {
-                        Ok(_) => {
-                            sequence = sequence.wrapping_add(p.spot_count as u32);
-                            st.spots_sent += p.spot_count as u64;
-                            st.datagrams_sent += 1;
-                            st.last_send_unix = Some(now_unix());
-                            st.last_error = None;
-                        }
-                        Err(e) => {
-                            // Start from a fresh lookup next time.
-                            st.last_error = Some(e.to_string());
-                            socket = None;
-                            break;
-                        }
-                    }
-                }
-                st.pending = 0;
+                out.flush(&stats);
             }
         }
     }
