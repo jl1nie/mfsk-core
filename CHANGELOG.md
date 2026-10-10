@@ -205,6 +205,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Skimmer
 
+- **PSK Reporter's IPFIX packets, byte for byte (#655, stage 1 of 4).** `skimmer_core::pskreporter::build_packets` builds the receiver
+  record, the spots and the two templates exactly as WSJT-X v3.3.0-beta1's `PSKReporterIPFIX.cpp` does (UDP 952-byte and TCP limits, the
+  receiver record in every datagram, templates in the first only, a sequence that counts spots, UTF-8 cut at its limits, a five-byte
+  frequency, a wrapping SNR). `scripts/pskreporter/ipfix_oracle.cpp` links that file against Qt5Core; `tests/pskreporter_ipfix.rs` requires
+  the same bytes on 58 datagrams of 32 builds. Nothing sends yet: the sender, the five-minute batching the protocol page asks for, the
+  dedupe and the opt-in setting are the next stages, and nothing goes to PSK Reporter until its author has been asked about skimmers.
 - **skimmer: JTTY (#650).** JTTY has no slot (frames start at any moment and a message grows while it is received), so a JTTY
   channel is not decoded a slot at a time: the receiver keeps its continuous audio (`IqReceiver::add_audio_channel`), a thread
   per channel runs upstream's receiver over it at a slow AGC (`jtty::rx::Stream`; Rx frequency and tolerance are the channel's

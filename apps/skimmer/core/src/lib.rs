@@ -31,6 +31,7 @@ pub mod geo;
 pub mod jtty;
 pub mod modes;
 pub mod plan;
+pub mod pskreporter;
 pub mod spot;
 pub mod spyserver;
 pub mod store;
