@@ -1849,8 +1849,22 @@ fn receiver(
             keys.resize(id.0 + 1, ("", 0));
         }
         keys[id.0] = key;
+        // A slotted channel's audio is kept for its waterfall; a JTTY channel's
+        // always is (it is what the receiver thread reads), and the stream loop
+        // hands the same audio to both.
+        if cfg.waterfall {
+            if ch.mode.slot().is_some() {
+                rx.tap_audio(id, true);
+            }
+            if wfs.len() <= id.0 {
+                wfs.resize_with(id.0 + 1, || None);
+            }
+            let mut w = wf_bank.remove(&key).unwrap_or_else(ChannelWaterfall::new);
+            w.restart();
+            wfs[id.0] = Some(w);
+        }
         // A JTTY channel has no slot and no decoder: a receiver thread over
-        // its continuous audio. No waterfall yet: it would drain the same audio.
+        // its continuous audio.
         let Some(mode) = ch.mode.slot() else {
             let (opts, _) = cfg
                 .live
@@ -1868,15 +1882,6 @@ fn receiver(
             ));
             continue;
         };
-        if cfg.waterfall {
-            rx.tap_audio(id, true);
-            if wfs.len() <= id.0 {
-                wfs.resize_with(id.0 + 1, || None);
-            }
-            let mut w = wf_bank.remove(&key).unwrap_or_else(ChannelWaterfall::new);
-            w.restart();
-            wfs[id.0] = Some(w);
-        }
         // This channel's decoder from its last turn, if it had one, with the
         // options and station as they are now.
         let (opts, station) = cfg
@@ -2171,6 +2176,10 @@ fn stream_inner(
         let t = Instant::now();
         let mut slots = Vec::new();
         rx.push_bytes(&m.body, &mut slots);
+        // JTTY channels: the audio since the last message, run by run (a break in
+        // the audio ends a reception in the thread); the waterfall below gets a
+        // copy of what the thread was given.
+        let jtty_audio = jtty::feed(rx, jtty, cfg.waterfall);
         if cfg.waterfall {
             let focus = cfg.live.waterfall_focus();
             let fine = cfg.live.wf_fine.load(Ordering::Acquire);
@@ -2198,7 +2207,13 @@ fn stream_inner(
             for (id, wf) in wfs.iter_mut().enumerate() {
                 let Some(wf) = wf else { continue };
                 audio.clear();
-                rx.take_audio(mfsk_core::iq::ChannelId(id), &mut audio);
+                if jtty.get(id).is_some_and(Option::is_some) {
+                    if let Some((_, a)) = jtty_audio.iter().find(|(i, _)| *i == id) {
+                        audio.extend_from_slice(a);
+                    }
+                } else {
+                    rx.take_audio(mfsk_core::iq::ChannelId(id), &mut audio);
+                }
                 let channel = cfg_index[id];
                 let is_focus = focus == Some(channel);
                 coarse_rows.clear();
@@ -2238,9 +2253,6 @@ fn stream_inner(
                 }
             }
         }
-        // JTTY channels: the audio since the last message, run by run (a break in
-        // the audio ends a reception in the thread).
-        jtty::feed(rx, jtty);
         while let Ok(m) = jtty_results.try_recv() {
             on_event(Event::Jtty(m));
         }

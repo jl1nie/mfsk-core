@@ -205,7 +205,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   reports a message as it grows and when it is over. The CLI prints it and writes ALL.TXT in WSJT-X's format when it is over;
   the database stores it as a `decodes` row of mode `JTTY` with the sender and locator by WSJT-X's spotting rule, so Analysis,
   the map and the station list take it; the window has a JTTY tab where a message is updated in place; presets carry upstream's
-  JTTY frequencies. As upstream: no full-band search, and no drift search. No waterfall for a JTTY channel yet. Tested through IQ,
+  JTTY frequencies; a JTTY channel has a waterfall like the others, drawn from the audio its thread reads. As upstream: no full-band search, and no drift search. Tested through IQ,
   both channelizers, and across a gap (`jtty::tests`, `store::tests`). A stand-in SpyServer (`skimmer_core::fake`,
   `cargo run -p skimmer-core --release --example fake_spyserver`) speaks the protocol and plays a 48 s script of two QSOs and a CQ
   caller at 1500, 1350 and 1650 Hz, for trying the CLI or the window without a radio; `tests/fake_spyserver.rs` runs the whole

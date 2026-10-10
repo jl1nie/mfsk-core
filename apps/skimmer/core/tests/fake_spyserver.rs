@@ -22,19 +22,34 @@ fn line(at_s: f64, hz: f32, level: f32, text: &str) -> Line {
 /// Run the skimmer against `band` until `want` holds of the finished messages,
 /// or 40 s pass; returns every JTTY message reported.
 fn run_against(band: Band, want: impl Fn(&[JttyMessage]) -> bool) -> Vec<JttyMessage> {
+    run_with(band, false, want).0
+}
+
+/// [`run_against`], with the waterfall on or off, and how many waterfall rows
+/// the JTTY channel (channel 0) produced.
+fn run_with(
+    band: Band,
+    waterfall: bool,
+    want: impl Fn(&[JttyMessage]) -> bool,
+) -> (Vec<JttyMessage>, usize) {
     let server = FakeServer::start("127.0.0.1:0", band).expect("listen");
-    let cfg = Config::new(
+    let mut cfg = Config::new(
         server.addr.to_string(),
         vec![ChannelSpec::new(ChannelMode::Jtty, 14_090_000.0)],
     );
+    cfg.waterfall = waterfall;
+    let rows = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = rows.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let got: Arc<Mutex<Vec<JttyMessage>>> = Arc::default();
     let (flag, sink) = (stop.clone(), got.clone());
     let t = std::thread::spawn(move || {
-        skimmer_core::run(&cfg, &flag, |ev| {
-            if let Event::Jtty(m) = ev {
-                sink.lock().unwrap().push(m);
+        skimmer_core::run(&cfg, &flag, |ev| match ev {
+            Event::Jtty(m) => sink.lock().unwrap().push(m),
+            Event::Waterfall(w) if w.channel == 0 => {
+                counted.fetch_add(1, Ordering::Relaxed);
             }
+            _ => {}
         });
     });
     let until = Instant::now() + Duration::from_secs(40);
@@ -48,7 +63,8 @@ fn run_against(band: Band, want: impl Fn(&[JttyMessage]) -> bool) -> Vec<JttyMes
     t.join().unwrap();
     drop(server);
     // The thread has ended and dropped its sink: this is the only owner.
-    Arc::try_unwrap(got).unwrap().into_inner().unwrap()
+    let all = Arc::try_unwrap(got).unwrap().into_inner().unwrap();
+    (all, rows.load(Ordering::Relaxed))
 }
 
 fn done<'a>(all: &'a [JttyMessage], text: &str) -> Option<&'a JttyMessage> {
@@ -107,4 +123,21 @@ fn a_qso_and_a_side_channel_come_out_of_the_stand_in_server() {
         "{} s ago",
         (now - t) / 1_000_000_000
     );
+}
+
+/// A JTTY channel has a waterfall too (#650): the audio the receiver thread
+/// reads is drawn as well, and neither takes it from the other.
+#[test]
+fn a_jtty_channel_has_a_waterfall_and_still_decodes() {
+    let band = Band {
+        cycle_s: 12,
+        script: vec![line(1.0, 1500.0, 1.0, "CQ K1ABC CQ")],
+        jitter_s: 0.0,
+        qsb: 0.0,
+        ..Band::default()
+    };
+    let (all, rows) = run_with(band, true, |m| done(m, "CQ K1ABC CQ").is_some());
+    assert!(done(&all, "CQ K1ABC CQ").is_some(), "{all:?}");
+    // About six rows a second reach the window; a few seconds of them is plenty.
+    assert!(rows >= 10, "{rows} waterfall rows");
 }

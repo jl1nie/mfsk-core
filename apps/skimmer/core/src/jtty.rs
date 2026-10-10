@@ -222,8 +222,14 @@ impl Drop for Worker {
 
 /// Hand every JTTY channel's audio since the last call to its thread, run by
 /// run with its audio index and UTC (a break in the audio ends a reception
-/// there). `workers` is by `ChannelId`.
-pub(crate) fn feed(rx: &mut mfsk_core::iq::IqReceiver, workers: &[Option<Worker>]) {
+/// there). `workers` is by `ChannelId`. With `keep`, also returns each channel's
+/// audio as given (a waterfall draws the same audio the thread reads).
+pub(crate) fn feed(
+    rx: &mut mfsk_core::iq::IqReceiver,
+    workers: &[Option<Worker>],
+    keep: bool,
+) -> Vec<(usize, Vec<f32>)> {
+    let mut kept: Vec<(usize, Vec<f32>)> = Vec::new();
     for (id, w) in workers.iter().enumerate() {
         let Some(w) = w else { continue };
         loop {
@@ -231,6 +237,12 @@ pub(crate) fn feed(rx: &mut mfsk_core::iq::IqReceiver, workers: &[Option<Worker>
             let Some(k) = rx.take_audio_from(mfsk_core::iq::ChannelId(id), &mut samples) else {
                 break;
             };
+            if keep {
+                match kept.iter_mut().find(|(i, _)| *i == id) {
+                    Some((_, a)) => a.extend_from_slice(&samples),
+                    None => kept.push((id, samples.clone())),
+                }
+            }
             w.send(Job::Audio {
                 k,
                 utc_ns: rx.utc_of_audio(k),
@@ -238,6 +250,7 @@ pub(crate) fn feed(rx: &mut mfsk_core::iq::IqReceiver, workers: &[Option<Worker>
             });
         }
     }
+    kept
 }
 
 /// The worker's loop: audio runs into the stream, a break between runs (a
@@ -614,7 +627,7 @@ mod tests {
         // The stream loop's rhythm: a message of IQ, then the audio it made.
         for c in iq.chunks(2 * 4_096) {
             rx.push_cf32(c, &mut slots);
-            feed(&mut rx, &workers);
+            feed(&mut rx, &workers, false);
         }
         assert!(slots.is_empty(), "an audio channel cuts no slots");
         drop(workers); // ends the reception and joins
@@ -685,10 +698,10 @@ mod tests {
         // Through the first frame and a little of the second, then a lost second.
         let cut = 2 * (48_000 * 3 + 48_000 / 2);
         rx.push_cf32(&iq[..cut], &mut slots);
-        feed(&mut rx, &workers);
+        feed(&mut rx, &workers, false);
         rx.gap(48_000);
         rx.push_cf32(&iq[cut..], &mut slots);
-        feed(&mut rx, &workers);
+        feed(&mut rx, &workers, false);
         drop(workers);
         let all: Vec<JttyMessage> = results.try_iter().collect();
         let first = all
