@@ -113,6 +113,10 @@ pub enum ProtocolId {
     /// at U/VHF (Rayleigh-fading-tolerant). 4 sub-modes share this
     /// family ID; the protocol-layer ZST disambiguates.
     UvPacket = 8,
+    /// FST4W — WSPR-style beacon on FST4's modulation: 4-GFSK, LDPC(240,74) +
+    /// CRC-24, a 50-bit WSPR-type payload. Four T/R periods (120, 300, 900,
+    /// 1800 s) share this family ID; the protocol-layer ZST disambiguates.
+    Fst4w = 9,
 }
 
 /// Tone spacing for a modulation index `hmod` at `nsps` samples per symbol
@@ -921,6 +925,7 @@ mod protocol_id_tests {
                 ProtocolId::Wspr => "Wspr",
                 ProtocolId::Q65 => "Q65",
                 ProtocolId::UvPacket => "UvPacket",
+                ProtocolId::Fst4w => "Fst4w",
             }
         }
 
@@ -936,6 +941,7 @@ mod protocol_id_tests {
             (ProtocolId::Wspr, "Wspr", 6),
             (ProtocolId::Q65, "Q65", 7),
             (ProtocolId::UvPacket, "UvPacket", 8),
+            (ProtocolId::Fst4w, "Fst4w", 9),
         ] {
             assert_eq!(tag(id), want_tag);
             assert_eq!(id as u8, want_discriminant, "{want_tag} discriminant");

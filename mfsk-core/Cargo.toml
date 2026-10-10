@@ -27,7 +27,7 @@ std          = ["alloc"]
 alloc        = []
 
 # Aggregate features.
-full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "msk144", "jtty", "packet-bytes", "uvpacket", "parallel", "serde"]
+full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "fst4w", "wspr", "jt9", "jt65", "q65", "msk144", "jtty", "packet-bytes", "uvpacket", "parallel", "serde"]
 
 # Optional derive of `serde::{Serialize, Deserialize}` on the host-facing
 # `msg::decoded::Decoded` UI row and `engine::protocol::ProtocolId`. Off by
@@ -279,6 +279,11 @@ msk144       = []
 # match `ft8`/`ft4`/`wspr` above — a caller wanting the host default
 # still gets `fft-rustfft` via `full`/`default`, unaffected.
 fst4         = []
+# FST4W (WSJT-X 3.3): the WSPR-style beacon on FST4's modulation and front end,
+# LDPC(240,74) + CRC-24, 120/300/900/1800 s. Shares FST4's sync blocks, GFSK and
+# downsampler, so it needs `fst4`; its own parts are the codec, the 50-bit
+# message and the decoder ladder.
+fst4w        = ["fst4"]
 # JTTY (WSJT-X 3.2.0): a non-slotted 4-GFSK mode, so like `msk144` it has no
 # `Protocol` ZST and is not in `registry::PROTOCOLS`. The wire level (source
 # grammar, CRC-12, tail-biting convolutional encoder, transmit waveform, text

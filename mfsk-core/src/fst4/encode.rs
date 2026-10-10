@@ -64,3 +64,25 @@ pub const FST4_300_GFSK: GfskCfg = GfskCfg {
     hmod: 1.0,
     ramp_samples: 21_504 / 8,
 };
+
+/// FST4-900 / FST4W-900 GFSK configuration: 12 kHz, 66560 samples/symbol,
+/// BT=2.0, hmod=1.0, NSPS/8-sample cosine ramp (`fst4_decode.f90:420`
+/// `nsps=66560`; `gen_fst4wave.f90` has no period branch).
+pub const FST4_900_GFSK: GfskCfg = GfskCfg {
+    sample_rate: 12_000.0,
+    samples_per_symbol: 66_560,
+    bt: 2.0,
+    hmod: 1.0,
+    ramp_samples: 66_560 / 8,
+};
+
+/// FST4-1800 / FST4W-1800 GFSK configuration: 12 kHz, 134400 samples/symbol,
+/// BT=2.0, hmod=1.0, NSPS/8-sample cosine ramp (`fst4_decode.f90:426`
+/// `nsps=134400`).
+pub const FST4_1800_GFSK: GfskCfg = GfskCfg {
+    sample_rate: 12_000.0,
+    samples_per_symbol: 134_400,
+    bt: 2.0,
+    hmod: 1.0,
+    ramp_samples: 134_400 / 8,
+};

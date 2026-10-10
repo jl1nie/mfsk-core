@@ -383,6 +383,9 @@ pub mod ft4;
 #[cfg(feature = "fst4")]
 pub mod fst4;
 
+#[cfg(feature = "fst4w")]
+pub mod fst4w;
+
 #[cfg(feature = "wspr")]
 pub mod wspr;
 

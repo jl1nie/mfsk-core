@@ -33,6 +33,7 @@ FEATURE_MATRIX=(
   "ft8"
   "ft4"
   "fst4"
+  "fst4w"
   "wspr"
   "jt9"
   "jt65"
@@ -50,6 +51,7 @@ FEATURE_MATRIX=(
   # is what caught `fst4::ddc`'s bare `f32::ceil`, which built everywhere
   # except here (issue: none was filed; found while adding another row).
   "alloc fst4 fft-extern"
+  "alloc fst4w fft-extern"
   # #390 removed jt9/jt65/q65's forced `fft-rustfft` (and with it
   # `std`). These three are what keeps that true: they are the only
   # build that fails if a `std::` path or a bare `f32` method comes

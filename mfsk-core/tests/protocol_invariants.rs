@@ -69,6 +69,10 @@ fn expected_timing(name: &str) -> (f32, f32) {
         "Fst4s60" => (3.24e-1, 3.0864198e0),
         "Fst4s120" => (6.8333334e-1, 1.4634147e0),
         "Fst4s300" => (1.792e0, 5.5803573e-1),
+        "Fst4w120" => (6.8333334e-1, 1.4634147e0),
+        "Fst4w300" => (1.792e0, 5.5803573e-1),
+        "Fst4w900" => (5.5466666e0, 1.8028846e-1),
+        "Fst4w1800" => (1.12e1, 8.928572e-2),
         "Ft4" => (4.8e-2, 2.0833334e1),
         "Ft8" => (1.6e-1, 6.25e0),
         "Jt9" => (5.76e-1, 1.7361112e0),
@@ -378,6 +382,18 @@ fn q65a15_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Q65a15>("Q65a15");
 }
 
+#[cfg(feature = "fst4w")]
+#[test]
+fn fst4w_periods_satisfy_protocol_invariants() {
+    // Not in `registry::PROTOCOLS` yet (it follows the receiver), so
+    // `registry_size_matches_wired_protocols` does not count them.
+    use mfsk_core::fst4w::{Fst4w120, Fst4w300, Fst4w900, Fst4w1800};
+    assert_protocol_invariants::<Fst4w120>("Fst4w120");
+    assert_protocol_invariants::<Fst4w300>("Fst4w300");
+    assert_protocol_invariants::<Fst4w900>("Fst4w900");
+    assert_protocol_invariants::<Fst4w1800>("Fst4w1800");
+}
+
 #[cfg(feature = "q65")]
 #[test]
 fn q65a30_satisfies_protocol_invariants() {
@@ -668,6 +684,14 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
         ids.push(("Fst4s120", <Fst4s120 as Protocol>::ID));
         ids.push(("Fst4s300", <Fst4s300 as Protocol>::ID));
     }
+    #[cfg(feature = "fst4w")]
+    {
+        // Every FST4W period shares ProtocolId::Fst4w, as FST4's do.
+        ids.push(("Fst4w120", <mfsk_core::fst4w::Fst4w120 as Protocol>::ID));
+        ids.push(("Fst4w300", <mfsk_core::fst4w::Fst4w300 as Protocol>::ID));
+        ids.push(("Fst4w900", <mfsk_core::fst4w::Fst4w900 as Protocol>::ID));
+        ids.push(("Fst4w1800", <mfsk_core::fst4w::Fst4w1800 as Protocol>::ID));
+    }
     #[cfg(feature = "wspr")]
     ids.push(("Wspr", <Wspr as Protocol>::ID));
     #[cfg(feature = "jt9")]
@@ -724,6 +748,10 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
         expected_distinct += 1;
     }
     #[cfg(feature = "fst4")]
+    {
+        expected_distinct += 1;
+    }
+    #[cfg(feature = "fst4w")]
     {
         expected_distinct += 1;
     }

@@ -32,6 +32,7 @@ pub mod qra15_65_64;
 pub use conv::{ConvFano, ConvFano232};
 pub use ldpc::Ldpc174_91;
 pub use ldpc_128_90::Ldpc128_90;
+pub use ldpc240_74::Ldpc240_74;
 pub use ldpc240_101::Ldpc240_101;
 pub use rs::Rs63_12;
 

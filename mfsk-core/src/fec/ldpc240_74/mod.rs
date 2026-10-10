@@ -29,7 +29,9 @@ use num_traits::Float;
 use crate::fec::ldpc::osd::ldpc_encode_generic;
 use crate::fec::ldpc::params::{Ldpc240_74Params, LdpcParams};
 
+use crate::engine::{FecCodec, FecOpts, FecResult};
 pub use crate::fec::ldpc240_101::crc24;
+use alloc::vec::Vec;
 pub use fastosd::{FastOsd74, Osd74Work, fastosd240_74};
 
 pub const LDPC_N: usize = 240;
@@ -265,6 +267,37 @@ pub fn decode240_74(
         }
     }
     None
+}
+
+/// Zero-sized LDPC(240, 74) codec for [`crate::engine::Protocol::Fec`].
+///
+/// `decode_soft` is `decode240_74(Keff = 66, maxosd = 2, norder = 3)` — the first
+/// rung of `fst4_decode.f90:740`'s ladder — with a fresh generator cache per
+/// call. FST4W's own decoder (`fst4w::decode`) keeps the cache and runs both
+/// rungs; this exists so the trait surface is complete.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Ldpc240_74;
+
+impl crate::engine::protocol::sealed::Sealed for Ldpc240_74 {}
+impl FecCodec for Ldpc240_74 {
+    const N: usize = LDPC_N;
+    const K: usize = LDPC_K;
+
+    fn encode(&self, info: &[u8], codeword: &mut [u8]) {
+        assert_eq!(info.len(), LDPC_K, "info must be {} bits", LDPC_K);
+        assert_eq!(codeword.len(), LDPC_N, "codeword must be {} bits", LDPC_N);
+        ldpc_encode_generic::<Ldpc240_74Params>(info, codeword);
+    }
+
+    fn decode_soft(&self, llr: &[f32], _opts: &FecOpts<'_>) -> Option<FecResult> {
+        let mut work = Osd74Work::new();
+        let r = decode240_74(&mut work, llr, 66, 2, 3, None)?;
+        Some(FecResult {
+            info: Vec::from(r.message74),
+            hard_errors: r.nharderror,
+            iterations: 0,
+        })
+    }
 }
 
 #[cfg(test)]
