@@ -239,6 +239,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   at its Grid (the antenna's locator), with a free-text antenna; a server missing either stops Connect with the reason. The destination is
   the test listener (`pskEndpoint: "test"`); production is listed greyed out until PSK Reporter's author has been asked. The header shows
   `PSK Reporter: N sent` (red on an error) with the counts in its tooltip. Settings from before read as off.
+- **The PSK Reporter sender packs 1200-byte datagrams and sends a full one early (#655).** PSK Reporter's author answered: more often than every
+  five minutes is fine once a datagram is full (1200 bytes or more), larger datagrams are fine, `mfsk-skimmer <version>` is the software name, and one
+  callsign per antenna location with that antenna's locator (already so, per server in the GUI). The sender's datagram limit goes from 952 to 1200 bytes
+  (`FULL_UDP_PAYLOAD_BYTES`; `build_packets` and the WSJT-X byte-for-byte tests keep 952) and a spot that would overfill the queue sends it first.
+  The destination is one constant, `pskreporter::APP_ENDPOINT`, for the CLI and the GUI: the test listener until the author says yes to
+  production. The GUI's "Send to" choice and the CLI's `--psk-production` are gone (`pskEndpoint` in an old settings file is ignored); `--psk-to` stays.
 - **PSK Reporter spot rules are WSJT-X's, checked against WSJT-X (#655, stage 4 of 4).** `scripts/pskreporter/spot_oracle.cpp` runs upstream's
   `tokens_re` / `deCallAndGrid`, `Radio::is_standard_callsign`, `decoded_grid_pattern` and the real Fortran `stdmsg_`; the answers for 1 537
   words and 68 messages are vendored and `tests/pskreporter_spot_rules.rs` requires them (143 real decodes off the air agreed too). The

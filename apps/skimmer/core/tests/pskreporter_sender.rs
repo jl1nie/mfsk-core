@@ -238,3 +238,47 @@ fn a_retune_drops_what_began_before_it() {
     assert_eq!(rep.stats().stale, 1);
     rep.stop();
 }
+
+/// PSK Reporter's author (#655): a datagram that has become full (1200 bytes or more) may go
+/// before the interval. With the interval an hour, only fullness can send these.
+#[test]
+fn a_full_datagram_goes_before_the_interval_and_none_is_longer_than_it() {
+    let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+    listener
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    let mut cfg = PskConfig::new("K1ABC", "FN20");
+    cfg.endpoint = Endpoint::Custom(listener.local_addr().unwrap().to_string());
+    cfg.interval = Duration::from_secs(3600);
+    let rep = PskReporter::start(cfg).unwrap();
+    // 120 callsigns: well over what one datagram holds (a record is ~30 bytes)
+    for i in 0..120u32 {
+        rep.spot(spot(
+            &format!("JA{}XY{}", i % 10, (b'A' + (i / 10) as u8) as char),
+            14_074_000 + u64::from(i),
+        ));
+    }
+    let mut buf = [0u8; 4096];
+    let mut counted = 0usize;
+    let mut sizes = Vec::new();
+    while let Ok((n, _)) = listener.recv_from(&mut buf) {
+        sizes.push(n);
+        for (id, body) in sets(&buf[..n]) {
+            if id == 0x50e3 {
+                counted += spots_of(body).len();
+            }
+        }
+    }
+    assert!(
+        !sizes.is_empty(),
+        "no datagram before the interval, though they were full"
+    );
+    assert!(sizes.iter().all(|&n| n <= 1200), "{sizes:?}");
+    // the full ones went; the last, part-filled one waits for the interval
+    assert!(counted > 0 && counted < 120, "{counted} spots sent early");
+    assert!(
+        sizes.iter().all(|&n| n > 1000),
+        "a datagram sent early was not full: {sizes:?}"
+    );
+    rep.stop();
+}

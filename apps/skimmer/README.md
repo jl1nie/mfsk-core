@@ -118,10 +118,11 @@ skimmer --server HOST:5555 --ch FT8@14074000 --mycall CALL --mygrid GRID \
 
 Sends what it decodes as spots to [PSK Reporter](https://pskreporter.info/), by the protocol on
 [its developer page](https://pskreporter.info/pskdev.html) (IPFIX over UDP; the packets are
-byte-for-byte WSJT-X's, `skimmer_core::pskreporter`). **By default the datagrams go to PSK Reporter's
-test listener (`pskreporter.info:14739`), which analyses them and records nothing.** `--psk-production`
-sends to `report.pskreporter.info:4739` and should wait until PSK Reporter's author has been asked about
-skimmers (#655). `--psk-to HOST:PORT` sends to a listener of your own, to look at the datagrams.
+byte-for-byte WSJT-X's, `skimmer_core::pskreporter`). **The datagrams go to PSK Reporter's test listener
+(`pskreporter.info:14739`), which analyses them and records nothing**, until PSK Reporter's author has said yes
+to production (#655). There is no option for it: `APP_ENDPOINT` in `skimmer_core::pskreporter` is the one
+switch, for the CLI and the GUI both. `--psk-to HOST:PORT` sends to a listener of your own, to look at the
+datagrams.
 
 - The receiver is `--mycall` at `--psk-grid` (else `--mygrid`). **The locator is the antenna's**: for a
   SpyServer somewhere else it is not where you sit. `--psk-ant` and `--psk-rig` are free text.
@@ -134,15 +135,16 @@ skimmers (#655). `--psk-to HOST:PORT` sends to a listener of your own, to look a
 - A slot that began before the radio was last retuned (a rotation step, a move of the device) may hold the
   old band's samples and is not reported (WSJT-X waits four fifths of a period after a band change; this is
   exact, by the slot's own start).
-- One datagram at most every five minutes, with a random addition (`--psk-interval SECS` only for the test
-  listener or your own); a callsign once per band per five minutes; the templates in the first three
+- One timed datagram at most every five minutes, with a random addition (`--psk-interval SECS` only for the test
+  listener or your own), and earlier only when a datagram has become full: PSK Reporter's author, asked in
+  #655, says 1200 bytes or more counts as full, so datagrams are packed to 1200 bytes and the one that the
+  next spot would overfill is sent at once; a callsign once per band per five minutes; the templates in the first three
   datagrams and every hour; one UDP socket, one source port. Spots pending when the program stops are not
   sent.
 
 In the GUI the same switch is under each server (Settings > Server > PSK Reporter): it reports under the server's
 **My call** at its **Grid**, which is the locator of that server's antenna, so each server is its own receiver on PSK
-Reporter. The destination is the test listener until PSK Reporter's author has been asked (#655); the production
-address is listed and greyed out. The header shows what was sent and the last error; hover for the counts.
+Reporter (PSK Reporter's author: one callsign per antenna location, and the locator is the antenna's, as here). The destination is `APP_ENDPOINT`, as for the CLI; there is no choice to make. The header shows what was sent and the last error; hover for the counts.
 
 ## GUI (`gui/`)
 

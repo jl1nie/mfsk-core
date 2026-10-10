@@ -29,9 +29,9 @@ fn usage() -> ExitCode {
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
-         \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT | --psk-production]]\n\
-         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter's test listener\n\
-         \x20      (pskreporter.info:14739, which records nothing) unless --psk-production; see #655 before using that.\n\
+         \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT]]\n\
+         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter's\n\
+         \x20      test listener (pskreporter.info:14739, which records nothing), or to --psk-to, a listener of your own.\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
         skimmer_core::AUTO_PFB_CHANNELS,
@@ -57,7 +57,7 @@ fn parse_args() -> Option<Parsed> {
     let (mut mycall, mut mygrid) = (String::new(), String::new());
     let (mut psk, mut psk_grid, mut psk_ant, mut psk_rig) =
         (false, String::new(), String::new(), String::new());
-    let (mut psk_production, mut psk_interval, mut psk_to) = (false, None, None::<String>);
+    let (mut psk_interval, mut psk_to) = (None, None::<String>);
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -124,7 +124,6 @@ fn parse_args() -> Option<Parsed> {
             "--psk-grid" => psk_grid = it.next()?,
             "--psk-ant" => psk_ant = it.next()?,
             "--psk-rig" => psk_rig = it.next()?,
-            "--psk-production" => psk_production = true,
             // A collector of one's own (a UDP listener), to look at what would be sent.
             "--psk-to" => psk_to = Some(it.next()?),
             "--psk-interval" => psk_interval = Some(it.next()?.parse::<u64>().ok()?),
@@ -187,11 +186,11 @@ fn parse_args() -> Option<Parsed> {
         let mut c = PskConfig::new(&mycall, locator);
         c.antenna = psk_ant;
         c.rig_information = psk_rig;
-        if psk_production {
-            c.endpoint = Endpoint::Production;
-        } else if let Some(to) = psk_to {
-            c.endpoint = Endpoint::Custom(to);
-        }
+        c.endpoint = if let Some(to) = psk_to {
+            Endpoint::Custom(to)
+        } else {
+            skimmer_core::pskreporter::APP_ENDPOINT
+        };
         if let Some(s) = psk_interval {
             c.interval = Duration::from_secs(s);
         }
@@ -260,9 +259,7 @@ fn main() -> ExitCode {
                 c.locator,
                 c.interval.as_secs(),
                 match c.endpoint {
-                    Endpoint::Production => {
-                        "  -- PRODUCTION: not until PSK Reporter's author has been asked about skimmers (#655)"
-                    }
+                    Endpoint::Production => "  (PSK Reporter)",
                     Endpoint::Test => "  (the test listener: nothing is recorded)",
                     Endpoint::Custom(_) => "  (a listener of your own)",
                 }

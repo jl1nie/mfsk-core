@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use skimmer_core::modes::{MODES, frame_geometry, mode_name, parse_channel_mode, slot_seconds};
 use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::pskreporter::{
-    Endpoint, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
+    APP_ENDPOINT, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
 };
 use skimmer_core::store;
 use skimmer_core::{
@@ -300,10 +300,6 @@ struct Settings {
     /// FT8 rows from ~11.8 s into the slot, the rest at its end, as WSJT-X
     /// shows them; off waits for the end.
     early_decode: bool,
-    /// Where PSK Reporter spots go: "test" (its test listener, `pskreporter.info:14739`, which
-    /// records nothing; the default) or "production" (`report.pskreporter.info:4739`, not
-    /// offered in the window until PSK Reporter's author has been asked about skimmers, #655).
-    psk_endpoint: String,
     #[serde(skip_serializing)]
     channelizer: String,
     /// Every decode in a SQLite file (statistics, maps).
@@ -399,7 +395,6 @@ impl Default for Settings {
             slot_budget_pct: 0,
             decode_lanes: 4,
             early_decode: true,
-            psk_endpoint: "test".into(),
             channelizer: "auto".into(),
             db_enabled: true,
             db_path: String::new(),
@@ -1293,10 +1288,7 @@ async fn start(
         }
         let mut c = PskConfig::new(&sv.call, &sv.grid);
         c.antenna = sv.psk_antenna.trim().to_string();
-        c.endpoint = match settings.psk_endpoint.as_str() {
-            "production" => Endpoint::Production,
-            _ => Endpoint::Test,
-        };
+        c.endpoint = APP_ENDPOINT;
         let endpoint = c.endpoint.address();
         let (call, grid) = (c.callsign.clone(), c.locator.clone());
         let r = PskReporter::start(c)
@@ -1613,24 +1605,22 @@ mod health_log_tests {
         assert_eq!((s.wf_height, s.wf_thumb_height), (400, 80));
     }
 
-    /// PSK Reporter is off for a server that never asked, and goes to the test listener: an
-    /// older settings file gets neither a reporter nor the production endpoint.
+    /// PSK Reporter is off for a server that never asked: an older settings file gets no
+    /// reporter, and one that still carries the removed `pskEndpoint` reads without it.
     #[test]
-    fn psk_reporter_is_off_and_points_at_the_test_listener_by_default() {
+    fn psk_reporter_is_off_for_a_server_that_never_asked() {
         let s: Settings =
             serde_json::from_str(r#"{"servers": [{"name": "A", "address": "h:5555"}]}"#).unwrap();
         assert!(!s.servers[0].psk_reporter);
-        assert_eq!(s.psk_endpoint, "test");
-        assert_eq!(Settings::default().psk_endpoint, "test");
         let s: Settings = serde_json::from_str(
-            r#"{"pskEndpoint": "production", "servers": [{"pskReporter": true, "pskAntenna": "3-el yagi"}]}"#,
+            r#"{"pskEndpoint": "test", "servers": [{"pskReporter": true, "pskAntenna": "3-el yagi"}]}"#,
         )
         .unwrap();
         assert!(s.servers[0].psk_reporter);
         assert_eq!(s.servers[0].psk_antenna, "3-el yagi");
         // and what is written reads back the same
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert!(back.servers[0].psk_reporter && back.psk_endpoint == "production");
+        assert!(back.servers[0].psk_reporter);
     }
 
     /// What the window reads for the sender's status line: `type: "psk"` and camelCase counts.
