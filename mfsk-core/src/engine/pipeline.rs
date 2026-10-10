@@ -2204,7 +2204,7 @@ where
 /// `process_candidate_basic_impl`'s `precomputed_refine` parameter, so
 /// it's never recomputed for anything this function already computed
 /// it for.
-type RefinedSurvivor = (SyncCandidate, Vec<Complex<f32>>, f32, i32, f32);
+pub(crate) type RefinedSurvivor = (SyncCandidate, Vec<Complex<f32>>, f32, i32, f32);
 
 fn dedup_refined_candidates<P: GenericPipelineProtocol>(
     candidates: Vec<SyncCandidate>,
@@ -2255,6 +2255,34 @@ where
         .zip(keep)
         .filter_map(|((c, (cd0, f, i0, s)), k)| if k { Some((c, cd0, f, i0, s)) } else { None })
         .collect()
+}
+
+/// FST4's candidate stage without its per-candidate ladder, for a decoder that
+/// runs its own (FST4W's Keff 66 → 50 ladder, `fst4w::decode`): the whole-slot
+/// FFT, `get_candidates_fst4` over `freq_min..freq_max`
+/// ([`super::fst4_coarse::fst4_coarse_sync`]), then each candidate refined by
+/// `fst4_sync_search` and the near-duplicates dropped. Survivors come back in
+/// the coarse search's order (strongest first), which is the order a ladder
+/// with state between candidates must walk them in. The FFT cache is returned
+/// for the SNR estimate.
+#[cfg_attr(not(feature = "fst4w"), allow(dead_code))]
+pub(crate) fn fst4_refined_candidates<P: GenericPipelineProtocol>(
+    audio: &[i16],
+    cfg: &DownsampleCfg,
+    freq_min: f32,
+    freq_max: f32,
+    minsync: f32,
+    max_cand: usize,
+) -> (Vec<RefinedSurvivor>, Vec<Complex<f32>>)
+where
+    P::Fec: BpPooledFec,
+{
+    let cache = build_fft_cache(audio, cfg);
+    let candidates = super::fst4_coarse::fst4_coarse_sync::<P>(
+        &cache, cfg, freq_min, freq_max, minsync, max_cand,
+    );
+    let survivors = dedup_refined_candidates::<P>(candidates, &cache, cfg);
+    (survivors, cache)
 }
 
 #[allow(clippy::too_many_arguments)]

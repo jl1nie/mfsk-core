@@ -250,7 +250,11 @@ impl<S: Copy> Search<S> {
 
 /// The 16-bit audio the frame engines take. `F32` is scaled to
 /// [`F32_TO_I16_RMS`]; silence or NaN gives `None`.
-fn pcm<'a>(audio: Audio<'a>, owned: &'a mut Vec<i16>, gain: Option<f32>) -> Option<&'a [i16]> {
+pub(super) fn pcm<'a>(
+    audio: Audio<'a>,
+    owned: &'a mut Vec<i16>,
+    gain: Option<f32>,
+) -> Option<&'a [i16]> {
     match audio {
         Audio::I16(a) => Some(a),
         Audio::F32(a) => {
@@ -484,6 +488,7 @@ fn rows<P: Protocol>(
                     dt_sec: r.dt_sec,
                     snr_db: r.snr_db,
                     protocol: P::ID,
+                    hash22: None,
                 },
                 detail: detail_of(&r, resolved),
                 native: r,
@@ -548,6 +553,7 @@ where
                         dt_sec: r.dt_sec,
                         snr_db: r.snr_db,
                         protocol: P::ID,
+                        hash22: None,
                     },
                     detail: detail_of(r, resolved),
                     native: r.clone(),

@@ -385,8 +385,6 @@ fn q65a15_satisfies_protocol_invariants() {
 #[cfg(feature = "fst4w")]
 #[test]
 fn fst4w_periods_satisfy_protocol_invariants() {
-    // Not in `registry::PROTOCOLS` yet (it follows the receiver), so
-    // `registry_size_matches_wired_protocols` does not count them.
     use mfsk_core::fst4w::{Fst4w120, Fst4w300, Fst4w900, Fst4w1800};
     assert_protocol_invariants::<Fst4w120>("Fst4w120");
     assert_protocol_invariants::<Fst4w300>("Fst4w300");
@@ -569,6 +567,13 @@ fn registry_entries_match_zst_trait_constants() {
         check!("FST4-120", Fst4s120);
         check!("FST4-300", Fst4s300);
     }
+    #[cfg(feature = "fst4w")]
+    {
+        check!("FST4W-120", mfsk_core::fst4w::Fst4w120);
+        check!("FST4W-300", mfsk_core::fst4w::Fst4w300);
+        check!("FST4W-900", mfsk_core::fst4w::Fst4w900);
+        check!("FST4W-1800", mfsk_core::fst4w::Fst4w1800);
+    }
     #[cfg(feature = "wspr")]
     check!("WSPR", Wspr);
     #[cfg(feature = "jt9")]
@@ -623,6 +628,10 @@ fn registry_size_matches_wired_protocols() {
     #[cfg(feature = "fst4")]
     {
         expected += 5;
+    }
+    #[cfg(feature = "fst4w")]
+    {
+        expected += 4;
     }
     #[cfg(feature = "wspr")]
     {

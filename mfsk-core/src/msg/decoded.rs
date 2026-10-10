@@ -91,6 +91,11 @@ pub struct Decoded {
     /// Which protocol produced this decode (UI mode column). Q65 sub-modes and
     /// uvpacket sub-modes collapse onto their family tag here.
     pub protocol: ProtocolId,
+    /// FST4W only: the unresolved 22-bit callsign hash of a `<...>` row
+    /// (`result%hash22`, `has_hash22` upstream). Two rows with the same text
+    /// and different hashes are two stations. `None` on every other row, and
+    /// on an FST4W row whose call was resolved.
+    pub hash22: Option<u32>,
 }
 
 impl Decoded {
@@ -111,7 +116,14 @@ impl Decoded {
             dt_sec,
             snr_db,
             protocol,
+            hash22: None,
         }
+    }
+
+    /// This row with its unresolved 22-bit callsign hash set ([`Self::hash22`]).
+    pub fn with_hash22(mut self, hash22: Option<u32>) -> Self {
+        self.hash22 = hash22;
+        self
     }
 }
 
@@ -152,6 +164,7 @@ impl crate::engine::pipeline::DecodeResult {
             dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol,
+            hash22: None,
         })
     }
 }
@@ -172,6 +185,7 @@ impl crate::wspr::WsprResult {
             dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Wspr,
+            hash22: None,
         }
     }
 }
@@ -192,6 +206,7 @@ impl crate::q65::Q65Result {
             dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Q65,
+            hash22: None,
         }
     }
 }
@@ -209,6 +224,7 @@ impl crate::jt65::Jt65Result {
             dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Jt65,
+            hash22: None,
         }
     }
 }
@@ -229,6 +245,7 @@ impl crate::jt9::Jt9Result {
             dt_sec: self.dt_sec,
             snr_db: self.snr_db,
             protocol: ProtocolId::Jt9,
+            hash22: None,
         }
     }
 }

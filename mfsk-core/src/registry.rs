@@ -489,6 +489,25 @@ const FST4_15_PROFILE: DecodeProfile = DecodeProfile {
     sniper_max_cand_cap: None,
 };
 
+/// Every FST4W period. The decode is the FST4 front end and a ladder of its
+/// own (`fst4w::decode`): no AP, no OSD choice, no noise blanker, no equaliser,
+/// and the search window is `nfqso ± ntol`, not a band. The published band is
+/// `jt9 -W`'s defaults (`-f 1500 -F 100`); `sync_min` is
+/// `get_candidates_fst4`'s `minsync` (`fst4_decode.f90:308`) and `max_cand`
+/// the size of upstream's candidate array (`:270`).
+#[allow(dead_code)]
+const FST4W_PROFILE: DecodeProfile = DecodeProfile {
+    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
+    defaults: DecodeDefaults {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1600.0,
+        sync_min: 1.20,
+        max_cand: 100,
+    },
+    sync_scale: SyncScale::BaselineNormalised,
+    sniper_max_cand_cap: None,
+};
+
 /// A mode's own [`SearchParams`](crate::engine::search::SearchParams)
 /// default, as the registry publishes it.
 ///
@@ -629,6 +648,14 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     protocol_meta!("FST4-120", crate::fst4::Fst4s120, FST4_PROFILE),
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-300", crate::fst4::Fst4s300, FST4_PROFILE),
+    #[cfg(feature = "fst4w")]
+    protocol_meta!("FST4W-120", crate::fst4w::Fst4w120, FST4W_PROFILE),
+    #[cfg(feature = "fst4w")]
+    protocol_meta!("FST4W-300", crate::fst4w::Fst4w300, FST4W_PROFILE),
+    #[cfg(feature = "fst4w")]
+    protocol_meta!("FST4W-900", crate::fst4w::Fst4w900, FST4W_PROFILE),
+    #[cfg(feature = "fst4w")]
+    protocol_meta!("FST4W-1800", crate::fst4w::Fst4w1800, FST4W_PROFILE),
     #[cfg(feature = "wspr")]
     protocol_meta!("WSPR", crate::Wspr, WSPR_PROFILE),
     #[cfg(feature = "jt9")]
@@ -704,6 +731,10 @@ modes! {
     "fst4" Fst4S60 "FST4-60A",
     "fst4" Fst4S120 "FST4-120",
     "fst4" Fst4S300 "FST4-300",
+    "fst4w" Fst4W120 "FST4W-120",
+    "fst4w" Fst4W300 "FST4W-300",
+    "fst4w" Fst4W900 "FST4W-900",
+    "fst4w" Fst4W1800 "FST4W-1800",
     "wspr" Wspr "WSPR",
     "jt9" Jt9 "JT9",
     "jt65" Jt65 "JT65",

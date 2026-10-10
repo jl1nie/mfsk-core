@@ -32,7 +32,10 @@ use mfsk_core::{Ft4, Ft8, PROTOCOLS};
 fn the_literal_matches_the_downsample_config() {
     use mfsk_core::fst4::decode as f;
 
-    let pairs: [(&str, u32, usize); 7] = [
+    use mfsk_core::fst4w::decode as w;
+    use mfsk_core::fst4w::{Fst4w120, Fst4w300, Fst4w900, Fst4w1800};
+
+    let pairs: [(&str, u32, usize); 11] = [
         (
             "FT8",
             Ft8::DECODE_FFT1_SIZE,
@@ -68,6 +71,26 @@ fn the_literal_matches_the_downsample_config() {
             Fst4s300::DECODE_FFT1_SIZE,
             f::FST4_300_DOWNSAMPLE.fft1_size,
         ),
+        (
+            "FST4W-120",
+            Fst4w120::DECODE_FFT1_SIZE,
+            f::FST4_120_DOWNSAMPLE.fft1_size,
+        ),
+        (
+            "FST4W-300",
+            Fst4w300::DECODE_FFT1_SIZE,
+            f::FST4_300_DOWNSAMPLE.fft1_size,
+        ),
+        (
+            "FST4W-900",
+            Fst4w900::DECODE_FFT1_SIZE,
+            w::FST4W_900_DOWNSAMPLE.fft1_size,
+        ),
+        (
+            "FST4W-1800",
+            Fst4w1800::DECODE_FFT1_SIZE,
+            w::FST4W_1800_DOWNSAMPLE.fft1_size,
+        ),
     ];
 
     for (name, declared, actual) in pairs {
@@ -87,7 +110,10 @@ fn the_registry_publishes_it_exactly_where_it_applies() {
     use mfsk_core::registry::caps;
 
     for p in PROTOCOLS {
-        let drives_handle = p.profile.caps & caps::DECODE_HANDLE != 0;
+        // FST4W has its own ladder but FST4's whole-slot transform, so it
+        // publishes the size too.
+        let drives_handle =
+            p.profile.caps & caps::DECODE_HANDLE != 0 || p.name.starts_with("FST4W-");
         if drives_handle {
             assert!(
                 p.decode_fft1_size > 0,
@@ -106,7 +132,7 @@ fn the_registry_publishes_it_exactly_where_it_applies() {
 }
 
 /// The spread is the point — a caller that budgets for FT4 and then
-/// runs FST4-300 is off by a factor of 45.
+/// runs FST4-300 is off by a factor of 45, and FST4W-1800 by 234.
 #[test]
 fn the_spread_across_modes_is_published() {
     let sizes: Vec<u32> = PROTOCOLS
@@ -119,6 +145,9 @@ fn the_spread_across_modes_is_published() {
         *sizes.iter().max().expect("some mode decodes"),
     );
     assert_eq!(min, 92_160, "FT4 is the cheapest slot transform");
-    assert_eq!(max, 4_194_304, "FST4-300 is the most expensive");
-    assert!(max / min >= 45);
+    assert_eq!(
+        max, 21_591_360,
+        "FST4W-1800 is the most expensive (6426 x 3360, upstream's nfft1)"
+    );
+    assert!(max / min >= 234);
 }

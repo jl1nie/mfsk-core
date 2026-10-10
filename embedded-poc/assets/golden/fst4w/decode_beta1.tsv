@@ -1,0 +1,9 @@
+# WSJT-X v3.3.0-beta1 (57ba9337fa020065dc0ceee2c4ef85e433ea32d4) jt9 -W -d 3 -f 1500 -F 100 over mfsk-core/tests/fst4w_decode.rs's cases
+# case	message	freq Hz	dt s	snr dB
+w120_strong_pair	W9XYZ EN50 23	1470	0.0	-18
+w120_strong_pair	VK3NV QF22 13	1510	0.4	-20
+w120_three	K1ABC FN42 37	1440	0.2	-24
+w120_three	<...> PM95AA	1560	0.1	-26
+w120_three	PJ4/K1ABC 37	1500	-0.3	-26
+w300_two	DL1ABC JO62 30	1455	0.3	-30
+w300_two	K9AN/P 37	1545	-0.2	-31
