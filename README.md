@@ -748,6 +748,12 @@ reference:
   apples-to-apples verification against a real WSJT-X `jt9` build
   (building `jt9`/`msk144sim`/Hamlib from source, `msk144sim`'s SNR
   convention, and the measured baseline results).
+- **SpyServer skimmer manual** (Windows and macOS app, beta):
+  [English `docs/reference/MANUAL_SKIMMER.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.md)
+  / [日本語 `docs/reference/MANUAL_SKIMMER.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.ja.md)
+  — decode many channels at once from a SpyServer, the waterfall, the
+  database and map, sharing the radio with SDR#, a rotation of bands.
+  Installers: [skimmer releases](https://github.com/jl1nie/mfsk-core/releases?q=skimmer).
 - **M5Stack CoreS3 receiver manual:**
   [English `docs/reference/MANUAL_M5STACK_CORES3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.md)
   / [日本語 `docs/reference/MANUAL_M5STACK_CORES3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.ja.md)

@@ -1,5 +1,10 @@
 # SpyServer skimmer — sample app
 
+**Using the app (Windows, macOS)?** The user manual is
+[`docs/reference/MANUAL_SKIMMER.md`](../../docs/reference/MANUAL_SKIMMER.md)
+([日本語](../../docs/reference/MANUAL_SKIMMER.ja.md)). This README is the developer's side: the
+command line, how it works, how to build it.
+
 Decodes FT8, FT4, FST4, WSPR, JT9, JT65, Q65 and JTTY from a
 [SpyServer](https://airspy.com/download/) (Airspy HF+, Airspy, RTL-SDR)
 through `mfsk_core::iq::IqReceiver`. Every channel is a mode at a USB dial
@@ -24,7 +29,7 @@ decodes in time slots. The skimmer receives; it never transmits.
 
 **1. Download** the installer for your system from the newest
 [*mfsk skimmer* release](https://github.com/jl1nie/mfsk-core/releases?q=skimmer) (tag `skimmer-vX.Y.Z`,
-under *Assets*). The skimmer has its own version, from 1.0.0; the library's `vX.Y.Z` releases do not
+under *Assets*). The skimmer has its own version (0.9.x is the beta; 1.0.0 will be the first with PSK Reporter in production); the library's `vX.Y.Z` releases do not
 carry it.
 
 | platform | file |

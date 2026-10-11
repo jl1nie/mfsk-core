@@ -100,7 +100,7 @@
     <label class="check" title="Show the sync score and the errors the FEC corrected for each row, and ⏱ on a row decoded early (~11.8 s into the slot)"><input type="checkbox" bind:checked={detail} /> Detail</label>
     <input class="search" bind:value={search} placeholder="Search call or text" spellcheck="false" />
     <span class="count">{shown.length} rows</span>
-    <button class="link" onclick={onclear} title="Clear the table (ALL.TXT keeps every decode)">Clear</button>
+    <button class="link" onclick={onclear} title="Clear the table (the database keeps every decode)">Clear</button>
     {#if !follow}
       <button class="link" onclick={() => (follow = true)}>Follow ↓</button>
     {/if}

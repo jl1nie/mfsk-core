@@ -59,7 +59,7 @@ build` would try to compile them with the stable toolchain and fail:
   host CI lacks. `skimmer-installers.yml` builds it on Windows and macOS
   (PRs touching `apps/skimmer/**`, and `skimmer-vX.Y.Z` tags, whose
   `skimmer-release.yml` makes a release of its own); locally, Windows or a
-  Mac. **The skimmer has its own version (1.0.0 on)**, not the workspace's:
+  Mac. **The skimmer has its own version (0.9.x is the beta; 1.0.0 is the first with PSK Reporter in production)**, not the workspace's:
   four files carry it and that workflow checks them. The library's
   `vX.Y.Z` releases no longer attach the installers (2026-10-11).
 
@@ -103,7 +103,7 @@ Everything else:
   Kotlin and Swift), `EMBEDDED.md` (fixed-point architecture, FFT
   extern contract, Q-format, per-protocol embedded status),
   `STREAMING.md`, `UVPACKET.md`, and the two operator manuals
-  `MANUAL_M5STACK_CORES3.md` / `MANUAL_M5STICKS3.md`. **Every file here
+  `MANUAL_M5STACK_CORES3.md` / `MANUAL_M5STICKS3.md` / `MANUAL_SKIMMER.md`. **Every file here
   has a `.ja.md` twin** — if you edit one, edit both, or say plainly that
   you didn't.
 - `docs/notes/` — `ROADMAP.md` (phase status; the "Quick file-path index"
