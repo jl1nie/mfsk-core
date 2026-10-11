@@ -1,0 +1,210 @@
+name: FFI binaries
+
+# The prebuilt `mfsk-ffi` library for the platforms the C ABI, Kotlin and Swift
+# name (#368), beside the linux-x86_64 one `release.yml` builds itself:
+#
+#   windows-x86_64 (MinGW)   desktop features, DLL + import library + static library
+#   android-arm64-v8a        `mobile` features, a jniLibs tree, 16 KB aligned
+#   ios                      `mobile` features, an XCFramework (device + simulator)
+#
+# These are the builds `ci.yml` already makes per PR (its `cross` and `swift`
+# jobs) and throws away after checking them; this keeps them. The checks come
+# along, so an artifact that would not load is not attached.
+#
+# Called by `release.yml` on a tag. It also runs by hand (Actions > FFI
+# binaries > Run workflow) and on a PR that edits this file, so the release
+# path is exercised before a tag has to prove it: the artifacts of such a run
+# are named for the branch (`mfsk-ffi-main-...`) and are never attached to
+# anything.
+#
+# Artifact names start with `ffi-`: `release.yml`'s publish job downloads that
+# pattern.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ffi-binaries.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  windows-x86_64:
+    name: mfsk-ffi — windows-x86_64 (MinGW)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+
+      # As ci.yml's `cross` job installs it, and for the reason it gives: the
+      # download is what costs, so the .debs are cached; the win32 threading
+      # variant is the one the DLL is linked with.
+      - name: Restore the MinGW packages
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-mingw
+          key: apt-mingw-win32-${{ runner.os }}-noble-v1
+      - name: Install the MinGW linker
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          mkdir -p ~/apt-mingw/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            -o Dir::Cache::archives="$HOME/apt-mingw" \
+            -o Acquire::Retries=3 \
+            gcc-mingw-w64-x86-64-win32 binutils-mingw-w64-x86-64
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-mingw
+          rm -rf ~/apt-mingw/partial ~/apt-mingw/lock
+
+      - name: Build
+        run: cargo build -p mfsk-ffi --release --target x86_64-pc-windows-gnu
+
+      - name: The DLL exports the ABI
+        run: |
+          set -euo pipefail
+          DLL=target/x86_64-pc-windows-gnu/release/mfsk.dll
+          test -f "$DLL" || { echo "::error::no DLL produced"; exit 1; }
+          for sym in mfsk_abi_version mfsk_decoder_open mfsk_decoder_decode_i16 \
+                     mfsk_mode_count mfsk_pack77 mfsk_stream_open \
+                     mfsk_jtty_open mfsk_msk144_open mfsk_iq_open; do
+            x86_64-w64-mingw32-nm -g --defined-only "$DLL" | grep -q " $sym\$" \
+              || { echo "::error::$sym is not exported from the DLL"; exit 1; }
+          done
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          NAME=${GITHUB_REF_NAME//\//-}   # a PR run is "677/merge"
+          PKG=mfsk-ffi-${NAME}-windows-x86_64
+          T=target/x86_64-pc-windows-gnu/release
+          mkdir -p "$PKG"/{bin,lib,include}
+          cp "$T/mfsk.dll"        "$PKG"/bin/
+          IMP=$(ls "$T"/*mfsk*.dll.a 2>/dev/null | head -1)
+          test -n "$IMP" || { echo "::error::no import library in $T"; ls "$T"; exit 1; }
+          cp "$IMP" "$PKG"/lib/
+          cp "$T/libmfsk.a"       "$PKG"/lib/
+          cp mfsk-ffi/include/mfsk.h "$PKG"/include/
+          cp mfsk-ffi/README.md      "$PKG"/
+          cat > "$PKG"/WINDOWS.txt <<'EOF'
+          Built with MinGW-w64 (x86_64-pc-windows-gnu), the desktop feature set.
+          bin/mfsk.dll       the library
+          lib/*.dll.a        its import library, for MinGW / MSYS2 (-lmfsk)
+          lib/libmfsk.a      the static library (MinGW; define MFSK_STATIC)
+          An MSVC import library is not provided yet (#368): from MSVC, load the DLL
+          with LoadLibrary / GetProcAddress, or generate a .lib from its exports.
+          EOF
+          zip -r "$PKG".zip "$PKG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffi-windows-x86_64
+          path: mfsk-ffi-*-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  android-arm64:
+    name: mfsk-ffi — android-arm64-v8a
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      # The `mobile` features drop rayon (see mfsk-ffi/Cargo.toml). The 16 KB
+      # page flag is repeated here as ci.yml's `cross` job repeats it: an
+      # environment RUSTFLAGS overrides `target.*.rustflags` rather than merging.
+      - name: Build
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
+        run: |
+          cargo ndk -t arm64-v8a -o jniLibs build -p mfsk-ffi --release \
+            --no-default-features --features mobile
+
+      # Android 15 devices with a 16 KB kernel page do not load a library linked
+      # for 4 KB, and say so as a silent UnsatisfiedLinkError.
+      - name: The .so is 16 KB aligned
+        run: |
+          set -euo pipefail
+          SO=jniLibs/arm64-v8a/libmfsk.so
+          test -f "$SO" || { echo "::error::no .so produced"; exit 1; }
+          ALIGN=$(readelf -lW "$SO" | awk '$1 == "LOAD" { print $NF; exit }')
+          [ "$ALIGN" = "0x4000" ] \
+            || { echo "::error::expected 0x4000 (16 KB), got $ALIGN"; exit 1; }
+      - name: The mobile build really has no rayon
+        run: |
+          set -euo pipefail
+          if cargo tree -p mfsk-ffi --no-default-features --features mobile -e normal | grep -q rayon; then
+            echo "::error::the mobile feature still pulls rayon"; exit 1
+          fi
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          NAME=${GITHUB_REF_NAME//\//-}
+          PKG=mfsk-ffi-${NAME}-android-arm64-v8a
+          mkdir -p "$PKG"/include
+          cp -r jniLibs "$PKG"/
+          cp mfsk-ffi/include/mfsk.h "$PKG"/include/
+          cp mfsk-ffi/README.md      "$PKG"/
+          printf '%s\n' \
+            'The `mobile` feature set (no rayon), arm64-v8a only, 16 KB page aligned.' \
+            'jniLibs/arm64-v8a/libmfsk.so goes under src/main/jniLibs/ of an app module;' \
+            'the Kotlin binding (bindings/kotlin) loads it as "mfsk". Other ABIs: build them' \
+            'with cargo-ndk (see mfsk-ffi/README.md); this one is the only one CI checks (#368).' \
+            > "$PKG"/ANDROID.txt
+          tar -czvf "$PKG".tar.gz "$PKG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffi-android-arm64
+          path: mfsk-ffi-*-android-arm64-v8a.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    name: mfsk-ffi — iOS XCFramework
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+
+      # Builds both slices with the `mobile` features, packages them, and links a
+      # two-line Swift program against each (bindings/swift/scripts/build-xcframework.sh).
+      - name: Build the XCFramework
+        run: bindings/swift/scripts/build-xcframework.sh target/xcframework
+
+      # What a Package.swift `.binaryTarget(url:checksum:)` asks for: a zip, and the
+      # SHA-256 of that zip.
+      - name: Package
+        run: |
+          set -euo pipefail
+          NAME=${GITHUB_REF_NAME//\//-}
+          ZIP="$PWD/mfsk-ffi-${NAME}-ios.xcframework.zip"
+          (cd target/xcframework && ditto -c -k --sequesterRsrc --keepParent Mfsk.xcframework "$ZIP")
+          shasum -a 256 "$ZIP" | awk '{print $1}' > "$ZIP".sha256
+          echo "checksum: $(cat "$ZIP".sha256)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffi-ios
+          path: |
+            mfsk-ffi-*-ios.xcframework.zip
+            mfsk-ffi-*-ios.xcframework.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

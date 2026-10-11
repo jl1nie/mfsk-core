@@ -54,10 +54,10 @@ replacement for it.
 * `mfsk-ffi/include/mfsk.h` (cbindgen-generated, committed)
 
 Every tagged release also attaches a prebuilt `linux-x86_64` tarball to
-the GitHub Release — see `mfsk-ffi/README.md`. Other platforms need a
-local build; CI cross-compiles Windows-GNU and Android arm64 on every
-source change, so they are build-verified even though no binary is
-published for them.
+the GitHub Release, and from 0.14.0 `windows-x86_64` (MinGW), `android-arm64-v8a`
+and an iOS XCFramework (with its SHA-256) — see `mfsk-ffi/README.md`. Other
+platforms (an MSVC import library, the other Android ABIs, macOS) need a local
+build; CI cross-compiles Windows-GNU and Android arm64 on every source change.
 
 **`MFSK_API`** is emitted on every declaration. Define `MFSK_STATIC`
 when linking `libmfsk.a`, `MFSK_BUILDING` when building the DLL itself,

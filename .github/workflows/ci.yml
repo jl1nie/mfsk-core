@@ -272,7 +272,7 @@ jobs:
         run: |
           pin=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
           msrv=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
-          bad=$(grep -nE 'uses: *dtolnay/rust-toolchain@' .github/workflows/ci.yml .github/workflows/release.yml \
+          bad=$(grep -nE 'uses: *dtolnay/rust-toolchain@' .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/ffi-binaries.yml \
                 | grep -vE "@(${pin}|${msrv}\.0)\$" || true)
           if [ -n "$bad" ]; then
             echo "::error::toolchain pins that are neither ${pin} (rust-toolchain.toml) nor ${msrv}.0 (MSRV):"
