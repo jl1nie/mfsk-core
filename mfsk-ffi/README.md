@@ -4,9 +4,12 @@ C ABI wrapper around [`mfsk-core`](https://crates.io/crates/mfsk-core) that
 exposes the WSJT-family decoders and synthesisers to C, C++, and JNI
 (Android) consumers. Not published to crates.io, but every tagged release
 attaches a prebuilt `linux-x86_64` tarball (library + `mfsk.h`) on the
-[GitHub Releases](https://github.com/jl1nie/mfsk-core/releases) page —
-other platforms/ABIs (including Android) still need a local
-`cargo build -p mfsk-ffi`.
+[GitHub Releases](https://github.com/jl1nie/mfsk-core/releases) page; from
+0.14.0 it also attaches `windows-x86_64` (MinGW: DLL, import library, static
+library), `android-arm64-v8a` (a jniLibs tree, `mobile` features, 16 KB
+aligned) and `ios.xcframework.zip` with its SHA-256 (`mobile` features, for a
+SwiftPM `.binaryTarget`). Other platforms/ABIs (an MSVC import library, the other
+Android ABIs, macOS) still need a local `cargo build -p mfsk-ffi` (#368).
 
 > **Embedded (no_std + alloc) targets — ESP32-S3, RP2350, Cortex-M:**
 > build `mfsk-core` directly with `alloc,ft8,fft-extern` — an ESP-IDF
