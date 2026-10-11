@@ -1,15 +1,39 @@
-//! MSK144 TX synthesis: a 128-bit LDPC(128,90) codeword -> 144-bit
-//! channel bit sequence -> 864-sample complex baseband frame.
+//! MSK144 transmit: a 77-bit message to 144 channel tones to audio, as
+//! WSJT-X sends it (#497).
 //!
-//! Ported from WSJT-X `genmsk_128_90.f90`. Message packing
-//! (`pack77`/CRC-13) and LDPC encoding are the caller's job — see
-//! [`crate::msg::wsjt77`] and [`crate::fec::Ldpc128_90`] — this module
-//! covers only the MSK144-specific channel framing, delegating the
-//! OQPSK waveform math to [`crate::engine::dsp::msk`].
+//! - [`message_tones`] ports `genmsk_128_90.f90`: CRC-13 and LDPC(128,90)
+//!   over the 77 message bits, the 144-bit channel vector (8-bit sync, 48
+//!   bits, 8-bit sync, 80 bits), and the MSK-to-tone mapping that makes the
+//!   offset-QPSK signal a binary CPFSK one (`:109-118`, polarity flipped).
+//! - [`synthesize`] is what WSJT-X's modulator does with those tones in
+//!   MSK144 mode (`mainwindow.cpp`, `m_mode == "MSK144"`; `Modulator.cpp`):
+//!   6 samples a tone at 12 kHz (2000 baud), tone 0 at `f0` and tone 1 at
+//!   `f0 + 1000` Hz with `f0 = 1000`, so the signal is centred on 1500 Hz
+//!   whatever the Tx frequency; the frame repeated, phase-continuous, for the
+//!   T/R period less 0.5 s, the last 816 samples at 48 kHz (204 at 12 kHz)
+//!   faded by 0.98 a sample.
+//! - [`synth_codeword_frame`] is the complex-baseband form of one frame, which
+//!   the decoder's own tests use.
+//!
+//! The short `<CALL1 CALL2> RPT` form (MSK40, `genmsk40`) is not ported,
+//! as on the receive side (#25).
 
+use alloc::vec::Vec;
 use num_complex::Complex32;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
+use crate::engine::FecCodec;
 use crate::engine::dsp::msk::{NSPM, build_bitseq, synth_frame};
+use crate::fec::Ldpc128_90;
+
+/// Samples per tone at 12 kHz (`m_nsps = 6`).
+pub const SAMPLES_PER_TONE: usize = 6;
+/// Tones per frame.
+pub const FRAME_TONES: usize = 144;
+/// Centre of the transmitted signal, Hz: WSJT-X's MSK144 modulator uses
+/// `f0 = 1000` and a 1000 Hz tone spacing regardless of the Tx frequency.
+pub const CENTER_HZ: f32 = 1500.0;
 
 /// Synthesise the 864-sample complex baseband frame for a 128-bit
 /// LDPC(128,90) codeword (already produced by
@@ -18,6 +42,89 @@ use crate::engine::dsp::msk::{NSPM, build_bitseq, synth_frame};
 pub fn synth_codeword_frame(codeword: &[u8; 128]) -> [Complex32; NSPM] {
     let bitseq = build_bitseq(codeword);
     synth_frame(&bitseq)
+}
+
+/// The 128-bit codeword for a 77-bit message: CRC-13 appended
+/// (`encode_128_90`), then LDPC(128,90).
+pub fn codeword(msg77: &[u8; 77]) -> [u8; 128] {
+    let mut info = [0u8; 90];
+    info[..77].copy_from_slice(msg77);
+    let mut bytes = [0u8; 12];
+    for (i, &b) in msg77.iter().enumerate() {
+        bytes[i / 8] |= (b & 1) << (7 - (i % 8));
+    }
+    let crc = crate::fec::ldpc_128_90::crc13(&bytes);
+    for i in 0..13 {
+        info[77 + i] = ((crc >> (12 - i)) & 1) as u8;
+    }
+    let mut cw = [0u8; 128];
+    Ldpc128_90.encode(&info, &mut cw);
+    cw
+}
+
+/// The 144 audio tones (0 or 1) for a 77-bit message, `genmsk_128_90.f90`'s
+/// `i4tone`.
+pub fn message_tones(msg77: &[u8; 77]) -> [u8; FRAME_TONES] {
+    let bitseq = build_bitseq(&codeword(msg77));
+    let b = |i: usize| 2 * i32::from(bitseq[i]) - 1;
+    let mut tones = [0u8; FRAME_TONES];
+    for i in 1..=72usize {
+        // `i4tone(2i-1) = (b(2i) b(2i-1) + 1)/2`,
+        // `i4tone(2i) = -(b(2i) b(mod(2i,144)+1) - 1)/2`, then `1 - i4tone`.
+        let t1 = (b(2 * i - 1) * b(2 * i - 2) + 1) / 2;
+        let t2 = -(b(2 * i - 1) * b((2 * i) % 144) - 1) / 2;
+        tones[2 * i - 2] = (1 - t1) as u8;
+        tones[2 * i - 1] = (1 - t2) as u8;
+    }
+    tones
+}
+
+/// Samples [`synthesize`] makes for a T/R period of `period_s` seconds:
+/// the period less 0.5 s (`i1 = TRperiod*48000 - 24000` at 48 kHz).
+pub fn transmission_len(period_s: u32) -> usize {
+    (period_s as usize * 12_000).saturating_sub(6_000)
+}
+
+/// 12 kHz audio for one transmission: `tones` repeated for
+/// [`transmission_len`]`(period_s)` samples, peak `amplitude`, as WSJT-X's
+/// modulator plays MSK144. The signal sits at [`CENTER_HZ`] ± 500 Hz.
+pub fn synthesize(tones: &[u8; FRAME_TONES], period_s: u32, amplitude: f32) -> Vec<f32> {
+    let n = transmission_len(period_s);
+    let twopi = 2.0 * core::f64::consts::PI;
+    let f0 = f64::from(CENTER_HZ) - 500.0;
+    let mut out = Vec::with_capacity(n);
+    let mut phi = 0.0f64;
+    // `Modulator.cpp` fades over its last 816 samples at 48 kHz, 0.98 a
+    // sample: 204 samples at 12 kHz, 0.98^4 each.
+    let fade_from = n.saturating_sub(204);
+    let mut amp = f64::from(amplitude);
+    for k in 0..n {
+        let tone = tones[(k / SAMPLES_PER_TONE) % FRAME_TONES];
+        let dphi = twopi * (f0 + 1000.0 * f64::from(tone)) / 12_000.0;
+        phi += dphi;
+        if phi > twopi {
+            phi -= twopi;
+        }
+        if k >= fade_from {
+            amp *= 0.98f64.powi(4);
+        }
+        out.push((amp * phi.sin()) as f32);
+    }
+    out
+}
+
+/// [`message_tones`] then [`synthesize`] for a standard message
+/// (`CALL1 CALL2 REPORT`, as [`crate::msg::wsjt77::pack77`] takes it).
+/// `None` if the message does not pack.
+pub fn synthesize_standard(
+    call1: &str,
+    call2: &str,
+    report: &str,
+    period_s: u32,
+    amplitude: f32,
+) -> Option<Vec<f32>> {
+    let msg77 = crate::msg::wsjt77::pack77(call1, call2, report)?;
+    Some(synthesize(&message_tones(&msg77), period_s, amplitude))
 }
 
 #[cfg(test)]
@@ -180,5 +287,36 @@ mod tests {
             .decode_soft(&llr, &opts)
             .expect("BP converges under mild perturbation");
         assert_eq!(&r.info[..77], &info[..77]);
+    }
+
+    /// The production tone map against the decoder tests' own copy of
+    /// `genmsk_128_90.f90:109-118` (`test_util::build_i4tone`).
+    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+    #[test]
+    fn message_tones_match_the_test_oracle() {
+        let msg77 = crate::msg::wsjt77::pack77("K1ABC", "W9XYZ", "EN37").unwrap();
+        let oracle = super::super::test_util::build_i4tone(&build_bitseq(&codeword(&msg77)));
+        assert_eq!(message_tones(&msg77), oracle);
+    }
+
+    /// One transmission decodes back to its message through the real-time
+    /// receiver, at the time and frequency it was sent.
+    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+    #[test]
+    fn a_transmission_decodes_back() {
+        let audio = synthesize_standard("K1ABC", "W9XYZ", "R-07", 15, 0.3).unwrap();
+        assert_eq!(audio.len(), 15 * 12_000 - 6_000);
+        let pcm: Vec<i16> = audio.iter().map(|&x| (x * 32767.0) as i16).collect();
+        let got = crate::msk144::decode::decode_slot(
+            &pcm,
+            1500.0,
+            100.0,
+            crate::msk144::decode::Depth::Deep,
+        );
+        assert!(
+            got.iter()
+                .any(|d| d.message == "K1ABC W9XYZ R-07" && (d.freq_hz - CENTER_HZ).abs() < 5.0),
+            "{got:?}"
+        );
     }
 }

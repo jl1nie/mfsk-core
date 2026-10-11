@@ -239,9 +239,10 @@
 
 /**
  * The mode is received by a stateful, continuously fed receiver handle
- * with its own entry points rather than by a slot decode — JTTY, whose
- * frames have no slot. Audio goes in with `mfsk_jtty_push_*` and message
- * updates come out of `mfsk_jtty_poll`.
+ * with its own entry points rather than by a slot decode. JTTY, whose
+ * frames have no slot: audio goes in with `mfsk_jtty_push_*` and message
+ * updates come out of `mfsk_jtty_poll`. MSK144, whose pings are decoded as
+ * they arrive: `mfsk_msk144_push_*` and `mfsk_msk144_poll` (#497).
  */
 #define MFSK_CAP_STREAM_RECEIVER (1 << 15)
 
@@ -293,6 +294,12 @@
  * slot that straddled the jump is dropped.
  */
 #define MFSK_CLOCK_STEPPED 2
+
+/**
+ * Bytes in `MfskMsk144Decode::text`, including the NUL. A literal for the
+ * cbindgen reason [`MFSK_AP_FIELD_LEN`] gives; `mfsk-ffi-abi` asserts the same.
+ */
+#define MFSK_MSK144_TEXT_BUF_LEN 64
 
 /**
  * `mfsk_iq_channel_state`: being received.
@@ -765,6 +772,13 @@ typedef struct MfskIqReceiver MfskIqReceiver;
 typedef struct MfskJttyReceiver MfskJttyReceiver;
 
 /**
+ * The MSK144 receiver handle.
+ *
+ * Emitted as an incomplete type; what `mfsk_msk144_open` allocates.
+ */
+typedef struct MfskMsk144Receiver MfskMsk144Receiver;
+
+/**
  * The contest caller list, up to 50 stations that called with a grid —
  * `q65_hist2`. Emitted as an incomplete type. **Not thread-safe.**
  */
@@ -1166,6 +1180,42 @@ typedef struct MfskJttyUpdate {
      */
     double start_time_s;
 } MfskJttyUpdate;
+
+/**
+ * One decode out of `mfsk_msk144_poll`. **Size-versioned**: set
+ * `size = sizeof(MfskMsk144Decode)`, or 0 for the whole struct.
+ *
+ * Every ping is its own row; nothing is coalesced. A repeat of the last
+ * message at no better SNR is dropped by the receiver itself until the next
+ * `mfsk_msk144_new_period` (`mskrtd.f90`'s dupe check).
+ */
+typedef struct MfskMsk144Decode {
+    /**
+     * `sizeof(MfskMsk144Decode)` as the caller understands it.
+     */
+    uint32_t size;
+    /**
+     * SNR, dB, clamped to `-8..=24` (`mskrtd.f90:185`).
+     */
+    int32_t snr_db;
+    /**
+     * Refined frequency, Hz.
+     */
+    float freq_hz;
+    /**
+     * Zero; keeps `t_s` 8-aligned in every compiler's layout.
+     */
+    uint32_t reserved;
+    /**
+     * Decode time, seconds from the first sample pushed since
+     * `mfsk_msk144_open` / `mfsk_msk144_reset`.
+     */
+    double t_s;
+    /**
+     * The message, NUL-terminated UTF-8.
+     */
+    char text[64];
+} MfskMsk144Decode;
 
 /**
  * Called on each worker thread as it starts and as it exits.
@@ -2501,6 +2551,136 @@ enum MfskStatus mfsk_jtty_tones_to_f32(const uint8_t *tones,
                                        float *out,
                                        uintptr_t cap,
                                        uintptr_t *out_len);
+
+/**
+ * Open an MSK144 receiver: WSJT-X's real-time `mskrtd`, fed as audio arrives.
+ *
+ * `sample_rate`: any rate; anything but 12 000 Hz is resampled, linearly.
+ * `rx_freq_hz` and `tol_hz`: the search centre and half-width (`nrxfreq`,
+ * `ntol`; WSJT-X's defaults are 1500 and 100). `depth`: `ndepth`, 1 (the
+ * short-ping decoder only), 2 or 3 (frame averaging over 2 or 4 patterns).
+ *
+ * Returns NULL and writes the reason to `out_status` on failure
+ * (`MFSK_STATUS_INVALID_ARG` for a zero rate, a depth outside 1..=3, or a
+ * frequency that is not finite or a negative tolerance).
+ *
+ * Hashed callsigns (`<...>`) are not resolved through this handle.
+ *
+ * # Safety
+ * `out_status` may be null.
+ */
+MFSK_API
+struct MfskMsk144Receiver *mfsk_msk144_open(uint32_t sample_rate,
+                                            float rx_freq_hz,
+                                            float tol_hz,
+                                            uint32_t depth,
+                                            enum MfskStatus *out_status);
+
+/**
+ * Release a receiver. Null is a no-op.
+ *
+ * # Safety
+ * `rx` must be a handle from [`mfsk_msk144_open`], released once.
+ */
+MFSK_API
+void mfsk_msk144_close(struct MfskMsk144Receiver *rx);
+
+/**
+ * Feed 16-bit mono PCM at the rate the receiver was opened with, any number of
+ * samples per call (including none). Every 0.3 s of audio completes a 0.6 s
+ * window, which is decoded before the call returns; decodes wait in the queue
+ * for [`mfsk_msk144_poll`].
+ *
+ * # Safety
+ * `samples` must be `n` readable `int16_t` (or null when `n` is 0).
+ */
+MFSK_API
+enum MfskStatus mfsk_msk144_push_i16(struct MfskMsk144Receiver *rx,
+                                     const int16_t *samples,
+                                     uintptr_t n);
+
+/**
+ * [`mfsk_msk144_push_i16`] for 32-bit float PCM, nominally `-1.0..=1.0`.
+ *
+ * # Safety
+ * `samples` must be `n` readable `float` (or null when `n` is 0).
+ */
+MFSK_API
+enum MfskStatus mfsk_msk144_push_f32(struct MfskMsk144Receiver *rx,
+                                     const float *samples,
+                                     uintptr_t n);
+
+/**
+ * A new T/R period begins: a repeat of the last message is reported again
+ * (`mskrtd.f90:88`). The noise floor and the audio are kept. Call it at each
+ * period boundary the host keeps (every 15 s, or 30 s).
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_msk144_new_period(struct MfskMsk144Receiver *rx);
+
+/**
+ * Forget everything — audio, noise floor, dupe check, the queue, the
+ * resampler's state — and start again at sample 0 with the same settings.
+ *
+ * # Safety
+ * `rx` must be a live handle.
+ */
+MFSK_API
+enum MfskStatus mfsk_msk144_reset(struct MfskMsk144Receiver *rx);
+
+/**
+ * How many decodes are waiting.
+ */
+MFSK_API
+uintptr_t mfsk_msk144_pending(struct MfskMsk144Receiver *rx);
+
+/**
+ * Take the oldest waiting decode into `out` (size-versioned: set
+ * `out->size = sizeof(MfskMsk144Decode)`, or 0 for the whole struct).
+ *
+ * Returns 1 when a decode was written, 0 when none is waiting, and a negative
+ * `MfskStatus` for a null handle or `out`. Call it until it returns 0 after
+ * every push:
+ *
+ * ```c
+ * MfskMsk144Decode d = {0};
+ * while (mfsk_msk144_poll(rx, &d) == 1) show(d.t_s, d.snr_db, d.text);
+ * ```
+ *
+ * # Safety
+ * `out` must point to at least `out->size` writable bytes.
+ */
+MFSK_API
+int32_t mfsk_msk144_poll(struct MfskMsk144Receiver *rx,
+                         struct MfskMsk144Decode *out);
+
+/**
+ * Synthesise one MSK144 transmission of a standard message ("CALL1 CALL2
+ * REPORT") as WSJT-X sends it: the 72 ms frame repeated for the T/R period
+ * less 0.5 s, 12 kHz f32 PCM, peak 1.0. `period_s` is the T/R period
+ * (WSJT-X offers 5, 10, 15 and 30 s); 1..=30 is accepted.
+ *
+ * There is no frequency argument: WSJT-X's MSK144 modulator puts the signal
+ * at 1500 ± 500 Hz whatever the Tx frequency (`mainwindow.cpp`, `f0=1000`).
+ * The short `<CALL1 CALL2> RPT` form is not supported.
+ *
+ * # Safety
+ *
+ * `call1`/`call2`/`report` must be NUL-terminated UTF-8 strings.
+ * `out` must be `cap` writable `f32`; `*out_len` receives the
+ * sample count (or the count needed, if `cap` was too small).
+ */
+MFSK_API
+enum MfskStatus mfsk_encode_msk144(const char *call1,
+                                   const char *call2,
+                                   const char *report,
+                                   uint32_t period_s,
+                                   float *out,
+                                   uintptr_t cap,
+                                   uintptr_t *out_len);
 
 /**
  * Configure the thread pool every subsequent decode runs on.

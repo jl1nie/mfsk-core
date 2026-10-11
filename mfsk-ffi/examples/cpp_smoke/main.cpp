@@ -1393,6 +1393,80 @@ void test_jtty() {
     }
 }
 
+// ── MSK144: the real-time receiver, fed a recording in chunks (#497) ─
+
+// WSJT-X's own sample (12 kHz mono 16-bit), `build.sh` bakes its path in.
+// WSJT-X decodes two pings from it: CQ W4IMD EM84 and CQ KD9VV EN71.
+void test_msk144() {
+    std::printf("\n— MSK144 receiver\n");
+
+    const uint64_t caps = mfsk_mode_caps(MFSK_MODE_MSK144);
+    if ((caps & MFSK_CAP_STREAM_RECEIVER) == 0 || (caps & MFSK_CAP_DECODE_HANDLE) != 0) {
+        fail("msk144", "MSK144 must be a stream receiver with no slot decode handle");
+    }
+    const std::vector<int16_t> pcm = load_wav_i16(MFSK_MSK144_WAV);
+    if (pcm.empty()) {
+        fail("msk144", "could not read the golden recording (MFSK_MSK144_WAV)");
+        return;
+    }
+    MfskStatus st = MFSK_STATUS_INTERNAL;
+    MfskMsk144Receiver* rx = mfsk_msk144_open(12000, 1477.0f, 60.0f, 3, &st);
+    if (rx == nullptr || st != MFSK_STATUS_OK) {
+        fail("msk144", "mfsk_msk144_open");
+        return;
+    }
+    bool w4imd = false, kd9vv = false;
+    for (size_t pos = 0; pos < pcm.size(); pos += 1000) {
+        const size_t n = std::min<size_t>(1000, pcm.size() - pos);
+        if (mfsk_msk144_push_i16(rx, pcm.data() + pos, n) != MFSK_STATUS_OK) {
+            fail("msk144", "push_i16");
+            break;
+        }
+        MfskMsk144Decode d;
+        std::memset(&d, 0, sizeof d);
+        d.size = sizeof d;
+        while (mfsk_msk144_poll(rx, &d) == 1) {
+            std::printf("  %6.2f s  %+3d dB  %7.1f Hz  %s\n", d.t_s, d.snr_db, d.freq_hz, d.text);
+            if (std::strcmp(d.text, "CQ W4IMD EM84") == 0) w4imd = true;
+            if (std::strcmp(d.text, "CQ KD9VV EN71") == 0) kd9vv = true;
+        }
+    }
+    if (!w4imd || !kd9vv) fail("msk144", "the recording's two pings did not both come out");
+    if (mfsk_msk144_pending(rx) != 0) fail("msk144", "queue should be drained");
+    if (mfsk_msk144_new_period(rx) != MFSK_STATUS_OK) fail("msk144", "new_period");
+    if (mfsk_msk144_reset(rx) != MFSK_STATUS_OK) fail("msk144", "reset");
+    if (mfsk_msk144_open(12000, 1500.0f, 100.0f, 9, &st) != nullptr || st != MFSK_STATUS_INVALID_ARG) {
+        fail("msk144", "depth 9 should be INVALID_ARG");
+    }
+    mfsk_msk144_close(rx);
+    mfsk_msk144_close(nullptr);
+
+    // Transmit, then receive what was sent.
+    size_t need = 0;
+    (void)mfsk_encode_msk144("JA1ABC", "K1JT", "PM95", 15, nullptr, 0, &need);
+    if (need != 15 * 12000 - 6000) {
+        fail("msk144", "a transmission should be the period less 0.5 s");
+        return;
+    }
+    std::vector<float> tx(need);
+    if (mfsk_encode_msk144("JA1ABC", "K1JT", "PM95", 15, tx.data(), tx.size(), &need) != MFSK_STATUS_OK) {
+        fail("msk144", "mfsk_encode_msk144");
+        return;
+    }
+    for (float& x : tx) x *= 0.3f;
+    MfskMsk144Receiver* loop = mfsk_msk144_open(12000, 1500.0f, 100.0f, 3, nullptr);
+    mfsk_msk144_push_f32(loop, tx.data(), tx.size());
+    bool heard = false;
+    MfskMsk144Decode d;
+    std::memset(&d, 0, sizeof d);
+    d.size = sizeof d;
+    while (mfsk_msk144_poll(loop, &d) == 1) {
+        if (std::strcmp(d.text, "JA1ABC K1JT PM95") == 0) heard = true;
+    }
+    mfsk_msk144_close(loop);
+    if (!heard) fail("msk144", "the transmitted message did not come back through the receiver");
+}
+
 // ── Wideband IQ receiver (mfsk_iq_*, #534) ──────────────────────────
 //
 // An FT8 slot made by the library's own synthesiser, placed as
@@ -1654,6 +1728,7 @@ int main() {
     test_threads_one_decoder_per_thread();
     test_threads_mixed_modes();
     test_jtty();
+    test_msk144();
     test_iq();
     test_null_handling();
 

@@ -1249,7 +1249,10 @@ decode comes back as soon as its 0.6 s window is complete, with `t_s` (`f64`)
 counted from the first sample. The noise floor carries over the session;
 `new_period()` resets only the dupe check, as `mskrtd.f90:88` does at a new
 period; `reset()` forgets everything. Fed a slot in any chunk size it gives
-exactly what `decode_slot` gives (`tests/msk144_stream.rs`).
+exactly what `decode_slot` gives (`tests/msk144_stream.rs`). Transmit is
+`msk144::tx`: `message_tones` (`genmsk_128_90.f90`) and `synthesize`, which plays
+the frame as WSJT-X's modulator does, repeated for the period less 0.5 s at
+1500 ± 500 Hz.
 
 **JTTY** (WSJT-X 3.2.0-rc1's mode for weak-signal keyboard chat; a port of
 `lib/jtty/`, tracked in #477 and `docs/notes/JTTY_UPSTREAM.md`) is the one

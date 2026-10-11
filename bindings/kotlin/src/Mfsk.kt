@@ -658,8 +658,8 @@ object Mfsk {
     const val CAP_FFT_CACHE = 1L shl 12
     const val CAP_ON_RESULT = 1L shl 13
     const val CAP_ENCODE = 1L shl 14
-    /// Received by a stateful receiver handle rather than a slot decode
-    /// (JTTY): see [MfskJttyReceiver].
+    /// Received by a stateful receiver handle rather than a slot decode:
+    /// JTTY ([MfskJttyReceiver]) and MSK144 ([MfskMsk144Receiver]).
     const val CAP_STREAM_RECEIVER = 1L shl 15
     /// WSJT-X's impulse-noise blanker reaches the decoder: every FST4
     /// sub-mode, no other. See [MfskExtras.noiseBlanker].
@@ -800,6 +800,12 @@ object Mfsk {
     fun synthesizeJt(mode: Int, call1: String, call2: String, gridOrReport: String, freqHz: Float)
         : FloatArray = nativeSynthesizeJt(mode, call1, call2, gridOrReport, freqHz)
 
+    /// One MSK144 transmission of a standard message (`call1 call2 report`):
+    /// the frame repeated for the T/R period less 0.5 s, as f32 PCM at 12 kHz,
+    /// centred on 1500 Hz as WSJT-X sends it. `periodS` is 1..30.
+    fun synthesizeMsk144(call1: String, call2: String, report: String, periodS: Int = 15)
+        : FloatArray = nativeSynthesizeMsk144(call1, call2, report, periodS)
+
     /// A Type-1 WSPR message (`call grid power_dbm`) as f32 PCM at 12 kHz.
     fun synthesizeWspr(call: String, grid: String, powerDbm: Int, freqHz: Float): FloatArray {
         modes()
@@ -834,6 +840,9 @@ object Mfsk {
     ): FloatArray
     @JvmStatic private external fun nativeSynthesizeJt(
         mode: Int, a: String, b: String, c: String, freqHz: Float,
+    ): FloatArray
+    @JvmStatic private external fun nativeSynthesizeMsk144(
+        a: String, b: String, c: String, periodS: Int,
     ): FloatArray
     @JvmStatic private external fun nativeSynthesizeWspr(
         call: String, grid: String, powerDbm: Int, freqHz: Float,
@@ -1729,6 +1738,85 @@ class MfskJttyReceiver private constructor(private var handle: Long) : AutoClose
             handle, params.f0Hz, params.ftolHz, params.sminDb,
             params.nfaHz, params.nfbHz, params.subtract,
         )
+    }
+
+    /// Forget everything and start again at sample 0.
+    fun reset() {
+        check(handle != 0L) { "receiver is closed" }
+        nativeReset(handle)
+    }
+
+    override fun close() {
+        if (handle != 0L) {
+            nativeClose(handle)
+            handle = 0L
+        }
+    }
+}
+
+/// One MSK144 decode: a meteor ping, reported as soon as the 0.6 s window
+/// that holds it is complete.
+data class MfskMsk144Decode(
+    val text: String,
+    /// dB, clamped to -8..24 (`mskrtd.f90`).
+    val snrDb: Int,
+    val freqHz: Float,
+    /// Seconds from the first sample pushed since [MfskMsk144Receiver.open]
+    /// or [MfskMsk144Receiver.reset].
+    val timeS: Double,
+)
+
+/// An MSK144 receiver: WSJT-X's real-time `mskrtd`. Audio goes in as it
+/// arrives, in chunks of any size; each ping comes out as soon as its window
+/// is complete (#497).
+///
+/// The noise floor carries over the session. Call [newPeriod] at every T/R
+/// period boundary the host keeps (15 s or 30 s): a repeat of the last message
+/// is reported again after it, as upstream does.
+///
+/// **Single-threaded**: one thread at a time, like [MfskDecoder].
+///
+/// ```kotlin
+/// MfskMsk144Receiver.open(48_000).use { rx ->
+///     for (chunk in audioChunks) for (d in rx.push(chunk)) show(d.timeS, d.text)
+/// }
+/// ```
+class MfskMsk144Receiver private constructor(private var handle: Long) : AutoCloseable {
+
+    companion object {
+        /// Open a receiver taking 16-bit mono PCM at `sampleRate` (anything but
+        /// 12 000 Hz is resampled, linearly). `rxFreqHz` and `tolHz` are the
+        /// search centre and half-width; `depth` is `ndepth`, 1 to 3. Throws on
+        /// an invalid argument.
+        @JvmStatic
+        fun open(
+            sampleRate: Int = 12_000,
+            rxFreqHz: Float = 1500f,
+            tolHz: Float = 100f,
+            depth: Int = 3,
+        ) = MfskMsk144Receiver(nativeOpen(sampleRate, rxFreqHz, tolHz, depth))
+
+        @JvmStatic private external fun nativeOpen(
+            sampleRate: Int, rxFreqHz: Float, tolHz: Float, depth: Int,
+        ): Long
+        @JvmStatic private external fun nativeClose(handle: Long)
+        @JvmStatic private external fun nativePush(
+            handle: Long, samples: ShortArray,
+        ): Array<MfskMsk144Decode>
+        @JvmStatic private external fun nativeNewPeriod(handle: Long)
+        @JvmStatic private external fun nativeReset(handle: Long)
+    }
+
+    /// Feed audio and return the decodes it produced, oldest first.
+    fun push(samples: ShortArray): List<MfskMsk144Decode> {
+        check(handle != 0L) { "receiver is closed" }
+        return nativePush(handle, samples).toList()
+    }
+
+    /// A new T/R period begins: a repeat of the last message is reported again.
+    fun newPeriod() {
+        check(handle != 0L) { "receiver is closed" }
+        nativeNewPeriod(handle)
     }
 
     /// Forget everything and start again at sample 0.

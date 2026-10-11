@@ -158,7 +158,8 @@ public struct Capabilities: OptionSet, Sendable {
     /// The mode can synthesise as well as decode.
     public static let encode = Capabilities(rawValue: 1 << 14)
     /// Received by a stateful receiver handle with its own entry points
-    /// rather than a slot decode — JTTY, see ``JttyReceiver``.
+    /// rather than a slot decode: JTTY (``JttyReceiver``) and MSK144
+    /// (``Msk144Receiver``).
     public static let streamReceiver = Capabilities(rawValue: 1 << 15)
     /// WSJT-X's impulse-noise blanker reaches the decoder — see
     /// ``Extras/noiseBlanker``. Every FST4 sub-mode and no other.

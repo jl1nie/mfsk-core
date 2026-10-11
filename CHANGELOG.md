@@ -198,6 +198,14 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### C ABI and bindings
 
+- **MSK144 receiver handle (#497).** `mfsk_msk144_open` / `push_i16` / `push_f32` / `poll` / `pending` / `new_period` / `reset` /
+  `close` over `msk144::decode::Stream`, rows in `MfskMsk144Decode` (size-versioned, `t_s` a `double`); MSK144 now publishes
+  `MFSK_CAP_STREAM_RECEIVER`, and `mfsk-ffi` compiles the MSK144 decoder in (`protocols`). Kotlin `MfskMsk144Receiver`, Swift
+  `Msk144Receiver`; the C++ driver, Kotlin and Swift each decode the golden recording's two pings in chunks. `BINDINGS.md` §2.8.3.
+- **MSK144 transmit (#497).** `MFSK_CAP_ENCODE` was set for MSK144 with no entry point behind it. `msk144::tx::message_tones` ports
+  `genmsk_128_90.f90` and `synthesize` plays the tones as WSJT-X's modulator does (6 samples a tone, 1000/2000 Hz, the frame
+  repeated for the period less 0.5 s, its end fade); `mfsk_encode_msk144`, Kotlin `Mfsk.synthesizeMsk144`, Swift `MSK144.encode`.
+  Each binding's test sends a message and decodes it back through the receiver handle.
 - **An array of `MfskDecode` is stepped by the caller's stride, not the library's (#607).** The decode wrote row `i` at the library's own
   `sizeof(MfskDecode)`, so a program built against an older, shorter header got row 1 onward in the wrong place and wrote past its
   buffer. The stride is now `out[0].size`, applied to every row, with `min(size, sizeof)` bytes written each; a `size` that cannot be a

@@ -680,6 +680,42 @@ pub struct MfskIqReceiver {
     _marker: PhantomData<*mut ()>,
 }
 
+/// Bytes in [`MfskMsk144Decode::text`], including the NUL. An MSK144 message
+/// is at most 37 characters (`mskrtd.f90`'s `character*37`).
+pub const MFSK_MSK144_TEXT_BUF_LEN: usize = 64;
+
+/// One decode out of `mfsk_msk144_poll`. **Size-versioned**: set
+/// `size = sizeof(MfskMsk144Decode)`, or 0 for the whole struct.
+///
+/// Every ping is its own row; nothing is coalesced. A repeat of the last
+/// message at no better SNR is dropped by the receiver itself until the next
+/// `mfsk_msk144_new_period` (`mskrtd.f90`'s dupe check).
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct MfskMsk144Decode {
+    /// `sizeof(MfskMsk144Decode)` as the caller understands it.
+    pub size: u32,
+    /// SNR, dB, clamped to `-8..=24` (`mskrtd.f90:185`).
+    pub snr_db: i32,
+    /// Refined frequency, Hz.
+    pub freq_hz: f32,
+    /// Zero; keeps `t_s` 8-aligned in every compiler's layout.
+    pub reserved: u32,
+    /// Decode time, seconds from the first sample pushed since
+    /// `mfsk_msk144_open` / `mfsk_msk144_reset`.
+    pub t_s: f64,
+    /// The message, NUL-terminated UTF-8.
+    pub text: [core::ffi::c_char; 64],
+}
+const _: () = assert!(MFSK_MSK144_TEXT_BUF_LEN == 64);
+
+/// The MSK144 receiver handle.
+///
+/// Emitted as an incomplete type; what `mfsk_msk144_open` allocates.
+pub struct MfskMsk144Receiver {
+    _marker: PhantomData<*mut ()>,
+}
+
 /// The JTTY receiver handle.
 ///
 /// Emitted as an incomplete type, like `MfskDecoder`; the receiver is

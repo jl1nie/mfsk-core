@@ -992,6 +992,64 @@ fun main() {
         check("a closed receiver refuses audio", threwRx)
     }
 
+    // ── MSK144: the real-time receiver, fed a recording in chunks (#497) ─
+    run {
+        val msk = modes.firstOrNull { Mfsk.modeName(it) == "MSK144" }
+        check("MSK144 is addressable", msk != null)
+        if (msk == null) return@run
+        check("MSK144 is a stream receiver", Mfsk.supports(msk, Mfsk.CAP_STREAM_RECEIVER))
+        check("MSK144 has no slot decode handle", !Mfsk.supports(msk, Mfsk.CAP_DECODE_HANDLE))
+        val wavPath = System.getProperty("mfsk.msk144.wav")
+        check("the golden MSK144 recording path is set (-Dmfsk.msk144.wav)", wavPath != null)
+        if (wavPath == null) return@run
+        val bytes = java.io.File(wavPath).readBytes()
+        var at = -1
+        for (i in 0 until bytes.size - 8) {
+            if (bytes[i] == 'd'.code.toByte() && bytes[i + 1] == 'a'.code.toByte() &&
+                bytes[i + 2] == 't'.code.toByte() && bytes[i + 3] == 'a'.code.toByte()) {
+                at = i + 8
+                break
+            }
+        }
+        check("the MSK144 recording has a data chunk", at > 0)
+        if (at < 0) return@run
+        val pcm = ShortArray((bytes.size - at) / 2) { i ->
+            val lo = bytes[at + 2 * i].toInt() and 0xff
+            val hi = bytes[at + 2 * i + 1].toInt()
+            ((hi shl 8) or lo).toShort()
+        }
+        val got = ArrayList<MfskMsk144Decode>()
+        MfskMsk144Receiver.open(12_000, 1477f, 60f, 3).use { rx ->
+            var pos = 0
+            while (pos < pcm.size) {
+                val end = minOf(pos + 1000, pcm.size)
+                got += rx.push(pcm.copyOfRange(pos, end))
+                pos = end
+            }
+            rx.newPeriod()
+            rx.reset()
+        }
+        println("  MSK144: " + got.joinToString { "%.2f s %+d dB %s".format(it.timeS, it.snrDb, it.text) })
+        check("MSK144 decodes CQ W4IMD EM84", got.any { it.text == "CQ W4IMD EM84" })
+        check("MSK144 decodes CQ KD9VV EN71", got.any { it.text == "CQ KD9VV EN71" })
+        var threwDepth = false
+        try {
+            MfskMsk144Receiver.open(depth = 9).close()
+        } catch (e: IllegalStateException) {
+            threwDepth = true
+        }
+        check("MSK144 depth 9 is refused", threwDepth)
+
+        // Transmit then receive.
+        val tx = Mfsk.synthesizeMsk144("JA1ABC", "K1JT", "PM95", 15)
+        checkEq("an MSK144 transmission is the period less 0.5 s", tx.size, 15 * 12_000 - 6_000)
+        val txPcm = ShortArray(tx.size) { (tx[it] * 0.3f * 32767f).toInt().toShort() }
+        MfskMsk144Receiver.open().use { rx ->
+            check("the MSK144 transmission comes back",
+                  rx.push(txPcm).any { it.text == "JA1ABC K1JT PM95" })
+        }
+    }
+
     // ── FST4W (#649) ────────────────────────────────────────────────
     run {
         val w120 = modes.firstOrNull { Mfsk.modeName(it) == "FST4W-120" }
