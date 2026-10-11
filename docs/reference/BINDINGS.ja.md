@@ -53,10 +53,11 @@ cbindgen 生成でリポジトリにコミットされており、そのドキ�
 * `mfsk-ffi/include/mfsk.h`（cbindgen 生成、コミット済み）
 
 タグ付きリリースには `linux-x86_64` のビルド済み tarball が GitHub Release に
-添付され、0.14.0 からは `windows-x86_64`（MinGW）、`android-arm64-v8a`、iOS の
-XCFramework（SHA-256 付き）も添付される（`mfsk-ffi/README.md` 参照）。他プラット
-フォーム（MSVC のインポートライブラリ、他の Android ABI、macOS）はローカルビルドが
-必要。CI はソース変更のたびに Windows-GNU と Android arm64 をクロスコンパイルしている。
+添付され、0.14.0 からは `windows-x86_64-msvc`（VC++ 再頒布パッケージ不要）と `-gnu`（MinGW）、
+`android-arm64-v8a`、iOS の XCFramework（SHA-256 付き）も添付される
+（`mfsk-ffi/README.md` 参照）。C++ ドライバは添付前に Windows 上で両方の DLL に対して
+実行される。他プラットフォーム（他の Android ABI、macOS、MSVC の静的ライブラリ）は
+ローカルビルドが必要。CI はソース変更のたびに Windows-GNU と Android arm64 をクロスコンパイルしている。
 
 **`MFSK_API`** は全宣言に付与される。`libmfsk.a` をリンクするときは
 `MFSK_STATIC`、DLL 自体をビルドするときは `MFSK_BUILDING` を定義し、

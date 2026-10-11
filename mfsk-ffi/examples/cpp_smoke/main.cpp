@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <cstddef>
@@ -28,7 +29,22 @@
 #include <fstream>
 #include <iterator>
 
+// The golden recordings. `build.sh` bakes their paths in as macros; where a
+// build cannot quote a path into a macro (MSVC's `cl` from a batch file), the
+// environment names them instead, and wins when set.
+#ifndef MFSK_JTTY_WAV
+#define MFSK_JTTY_WAV ""
+#endif
+#ifndef MFSK_MSK144_WAV
+#define MFSK_MSK144_WAV ""
+#endif
+
 namespace {
+
+const char* wav_path(const char* env_name, const char* baked) {
+    const char* e = std::getenv(env_name);
+    return (e != nullptr && *e != '\0') ? e : baked;
+}
 
 // Tally of failed sub-tests — reported at the end so one broken
 // protocol doesn't hide the status of the others.
@@ -1280,7 +1296,7 @@ void test_jtty() {
         fail("jtty", "JTTY frame geometry is wrong");
     }
 
-    const std::vector<int16_t> pcm = load_wav_i16(MFSK_JTTY_WAV);
+    const std::vector<int16_t> pcm = load_wav_i16(wav_path("MFSK_JTTY_WAV", MFSK_JTTY_WAV));
     if (pcm.size() < 12000) {
         fail("jtty", "could not read the golden recording (MFSK_JTTY_WAV)");
         return;
@@ -1404,7 +1420,7 @@ void test_msk144() {
     if ((caps & MFSK_CAP_STREAM_RECEIVER) == 0 || (caps & MFSK_CAP_DECODE_HANDLE) != 0) {
         fail("msk144", "MSK144 must be a stream receiver with no slot decode handle");
     }
-    const std::vector<int16_t> pcm = load_wav_i16(MFSK_MSK144_WAV);
+    const std::vector<int16_t> pcm = load_wav_i16(wav_path("MFSK_MSK144_WAV", MFSK_MSK144_WAV));
     if (pcm.empty()) {
         fail("msk144", "could not read the golden recording (MFSK_MSK144_WAV)");
         return;

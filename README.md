@@ -614,7 +614,7 @@ The `mfsk-ffi` sibling crate in this repository builds a
 same decoder and synthesiser surface through an opaque-handle C ABI.
 `mfsk-ffi` is not published to crates.io, but every tagged release
 attaches a prebuilt `linux-x86_64` tarball to the GitHub Release (from 0.14.0
-also `windows-x86_64`, `android-arm64-v8a` and an iOS XCFramework); other
+also `windows-x86_64-msvc` and `-gnu`, `android-arm64-v8a` and an iOS XCFramework); other
 platforms/ABIs build locally:
 
 ```sh
@@ -690,7 +690,7 @@ strictness controls, and the FT8 wide-band AP path. The local-fence
   reachable from `main` triggers `release.yml`, which publishes
   `mfsk-core` to crates.io and cuts a GitHub release with
   auto-generated notes. Prebuilt `mfsk-ffi` binaries (linux-x86_64, and from
-  0.14.0 windows-x86_64, android-arm64-v8a and iOS) follow on the same tag.
+  0.14.0 windows-x86_64 (MSVC and MinGW), android-arm64-v8a and iOS) follow on the same tag.
 
 For non-trivial changes, please open an issue first so the
 WSJT-X-source-faithfulness lineage of any DSP or FEC change is
