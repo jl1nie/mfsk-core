@@ -80,6 +80,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Decoding
 
+- **JT65 deep search (`hint65`) is ported (#648).** `DecodeParams::deep_search` (`ndepth & 32`) was carried and ignored; it now matches
+  a candidate Chase fails on against a bank of known calls (`Jt65Extras::known_calls`, WSJT-X's `CALL3.TXT` that beta1 made a
+  caller-supplied list) plus the DX station's reports, from v3.3.0-beta1's `hint65.f90`. On the `jt65sim` corpus -25 dB goes from 0/20 to
+  20/20; 0 phantoms on 300 files and on 200 noise periods at 1 000 calls (1 at 10 000). Standard messages only, single periods only;
+  `docs/notes/BENCHMARKS.md`. The C ABI does not carry the call list yet.
 - **OSD is `osd174_91.f90` / `osd240_101.f90` line for line, and 8× faster than upstream (#417).** FT8, FT4 and FST4 share one
   (`fec::ldpc::osd_npre`), replacing a (174,91)-pinned port and a generic one that matched upstream in neither: both picked the basis
   as "first `k` independent columns" rather than the `id..k+20` column swap, and the pinned one mis-scored candidates when the pivots

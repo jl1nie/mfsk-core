@@ -1485,9 +1485,9 @@ candidate cost). Golden-WAV `decode_scan` wall time
     literal build this crate's JT65 numbers are benchmarked against —
     via `decoder.f90`'s `nranera=6 → ntrials=10**(6/2)=1000` formula
     (previously guessed at `2000` with no real derivation).
-  Not ported: AP-hint passes and the `hint65` correlation fallback
-  (`extract.f90`'s remaining machinery) — out of scope, no request for
-  them yet. Two always-run false-decode-rate tests
+  Not ported: AP-hint passes (`extract.f90`'s remaining machinery) —
+  out of scope, no request for them yet. The `hint65` correlation fallback
+  is ported behind `deep_search` (#648, below). Two always-run false-decode-rate tests
   (`jt65::chase::tests::chase_never_false_decodes_*`, 20 seeds each of
   pure noise and a signal synthesized far below the measured floor)
   re-verify the ported acceptance gate still rejects spurious RS
@@ -1657,6 +1657,26 @@ same phase-by-phase methodology that closed issue #169 originally
 `ftrsdap.c` against this crate's `rx.rs`/`chase.rs` port stage by
 stage. Not attempted this session — task #26 tracks it, correctly
 re-scoped away from the AP theory above.
+
+## JT65 deep search (`hint65`) (2026-10-11, issue #648)
+
+Ported from v3.3.0-beta1 `hint65.f90` behind `DecodeParams::deep_search`; off by default, so the Chase rows above are unchanged.
+`jt65_sweep.rs`, Chase plus `.hint()` with the golden station among 10 000 known calls (`jt65_hint_awgn_snr_sweep`), 20 trials a cell:
+
+| SNR | Chase | Chase + deep search |
+|---:|---:|---:|
+| -25 dB | 0/20 | 20/20 |
+| -22 dB … +10 dB | 20/20 | 20/20 |
+
+The corpus ends at -25 dB, so the new crossing is not located. Precision, the part that needs a guard:
+
+- `jt65_hint_phantoms`: a 10 000-call bank without the station, all 300 corpus files: 0 messages that plain Chase did not return.
+- `jt65_hint_noise_phantom_rate`: pure noise, 200 periods, `aggressiveness` 0 (margin 2.0): 0 rows at 100 and 1 000 calls, 1 at
+  10 000 (`CQ A00AMD BP57`, -23.3 dB). The rate scales with the bank, as it does upstream. `jt65_hint_noise_has_no_phantoms` (1 000
+  calls, 40 periods) is the always-run guard.
+
+Not compared with `jt9` on the same bank (the tier-C upstream pairing needs a `CALL3.TXT`-equivalent task defined on both sides). Differences from
+upstream are listed at the top of `jt65/hint.rs`: standard messages only, single periods only, `mrs` recomputed without `chkhist`.
 
 ## Q65
 

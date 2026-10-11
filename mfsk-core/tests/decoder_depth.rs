@@ -333,6 +333,46 @@ fn jt65_averaging_decodes_what_no_single_period_does() {
     );
 }
 
+/// `extract.f90:182-196`, `hint65`: with `ndepth & 32` a candidate Chase
+/// fails on is matched against the known calls. At a level where no period
+/// decodes on its own, the listed station does; an unlisted one does not.
+#[test]
+fn jt65_deep_search_decodes_a_listed_call_below_chase() {
+    use mfsk_core::Jt65;
+    use mfsk_core::decoder::{Jt65Extras, Station};
+    let sigma: f32 = std::env::var("JT65_HINT_SIGMA")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.4);
+    let periods: Vec<Vec<f32>> = (0..6).map(|i| jt65_period(sigma, 200 + i)).collect();
+    let run = |deep: bool, calls: &[(&str, &str)]| -> usize {
+        let mut p = DecodeParams::for_band((300.0, 2700.0)).depth(Depth::Deep);
+        p.deep_search = deep;
+        p.station = Station::new("JA1ZZZ", "PM95");
+        let mut x = Jt65Extras::default();
+        x.known_calls = calls
+            .iter()
+            .map(|(c, g)| (c.to_string(), g.to_string()))
+            .collect();
+        let mut d = Decoder::<Jt65>::new(p).with_extras(x);
+        periods
+            .iter()
+            .filter(|a| {
+                d.decode(&SlotInput::f32(a))
+                    .rows
+                    .iter()
+                    .any(|r| r.decoded.text == "CQ K1ABC FN42")
+            })
+            .count()
+    };
+    let off = run(false, &[("K1ABC", "FN42")]);
+    let listed = run(true, &[("K1ABC", "FN42"), ("DL1XYZ", "JO31")]);
+    let unlisted = run(true, &[("W9ZZZ", "EN52")]);
+    eprintln!("sigma {sigma}: off {off}, listed {listed}, unlisted {unlisted} of 6");
+    assert!(listed > off, "deep search added nothing: {off} -> {listed}");
+    assert_eq!(unlisted, off, "an unlisted call decoded");
+}
+
 /// One strong frame is one row. The repeat test compared a saved result's
 /// unpadded start with a candidate's padded one, so it never matched and the
 /// same frame came back once per coarse candidate around it (8 rows).

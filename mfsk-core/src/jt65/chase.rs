@@ -44,9 +44,9 @@
 //!   `nranera=6 → ntrials=10**(6/2)=1000` formula.
 //!
 //! Not ported: WSJT-X's AP-hint passes (`extract.f90`'s `ipass` loop,
-//! reusing `ftrsdap` with pinned symbols) and the `hint65` correlation
-//! fallback — out of scope for this pass, tracked as possible future
-//! work if requested. The measured effect of this port on JT65
+//! reusing `ftrsdap` with pinned symbols) — out of scope for this pass,
+//! tracked as possible future work if requested. The `hint65` correlation
+//! fallback is [`super::hint`] (#648). The measured effect of this port on JT65
 //! sensitivity is reported honestly in `docs/notes/BENCHMARKS.md`,
 //! whatever it turns out to be — this doc comment describes the
 //! *algorithm* being ported, not a promised outcome.
