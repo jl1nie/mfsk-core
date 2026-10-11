@@ -98,3 +98,20 @@ public final class Msk144Receiver {
         }
     }
 }
+
+/// MSK144 transmit.
+public enum MSK144 {
+    /// One transmission of a standard message (`call1 call2 report`): the
+    /// 72 ms frame repeated for the T/R period less 0.5 s, 12 kHz, centred on
+    /// 1500 Hz as WSJT-X sends it. `periodSeconds` is 1...30.
+    public static func encode(
+        call1: String,
+        call2: String,
+        report: String,
+        periodSeconds: UInt32 = 15
+    ) throws -> [Float] {
+        try encodeAudio { out, capacity, written in
+            mfsk_encode_msk144(call1, call2, report, periodSeconds, out, capacity, written)
+        }
+    }
+}

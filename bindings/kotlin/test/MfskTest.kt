@@ -1039,6 +1039,15 @@ fun main() {
             threwDepth = true
         }
         check("MSK144 depth 9 is refused", threwDepth)
+
+        // Transmit then receive.
+        val tx = Mfsk.synthesizeMsk144("JA1ABC", "K1JT", "PM95", 15)
+        checkEq("an MSK144 transmission is the period less 0.5 s", tx.size, 15 * 12_000 - 6_000)
+        val txPcm = ShortArray(tx.size) { (tx[it] * 0.3f * 32767f).toInt().toShort() }
+        MfskMsk144Receiver.open().use { rx ->
+            check("the MSK144 transmission comes back",
+                  rx.push(txPcm).any { it.text == "JA1ABC K1JT PM95" })
+        }
     }
 
     // ── FST4W (#649) ────────────────────────────────────────────────

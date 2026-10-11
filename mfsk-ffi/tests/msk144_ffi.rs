@@ -208,3 +208,91 @@ fn bad_arguments() {
     unsafe { mfsk_msk144_close(rx) };
     unsafe { mfsk_msk144_close(ptr::null_mut()) };
 }
+
+/// Transmit then receive: `mfsk_encode_msk144`'s audio through the handle.
+#[test]
+fn a_transmission_comes_back_through_the_receiver() {
+    let c = |s: &str| std::ffi::CString::new(s).unwrap();
+    let (c1, c2, rep) = (c("JA1ABC"), c("K1JT"), c("PM95"));
+    let mut need = 0usize;
+    assert_eq!(
+        unsafe {
+            mfsk_encode_msk144(
+                c1.as_ptr(),
+                c2.as_ptr(),
+                rep.as_ptr(),
+                15,
+                ptr::null_mut(),
+                0,
+                &mut need,
+            )
+        },
+        MfskStatus::InvalidArg,
+        "a size query reports the length through out_len"
+    );
+    assert_eq!(need, 15 * 12_000 - 6_000);
+    let mut pcm = vec![0f32; need];
+    let mut n = 0usize;
+    assert_eq!(
+        unsafe {
+            mfsk_encode_msk144(
+                c1.as_ptr(),
+                c2.as_ptr(),
+                rep.as_ptr(),
+                15,
+                pcm.as_mut_ptr(),
+                pcm.len(),
+                &mut n,
+            )
+        },
+        MfskStatus::Ok
+    );
+    for x in &mut pcm {
+        *x *= 0.3;
+    }
+    let mut st = MfskStatus::Internal;
+    let rx = unsafe { mfsk_msk144_open(12_000, 1500.0, 100.0, 3, &mut st) };
+    assert_eq!(
+        unsafe { mfsk_msk144_push_f32(rx, pcm.as_ptr(), pcm.len()) },
+        MfskStatus::Ok
+    );
+    let got = drain(rx);
+    unsafe { mfsk_msk144_close(rx) };
+    assert!(
+        got.iter()
+            .any(|d| d.0 == "JA1ABC K1JT PM95" && (d.2 - 1500.0).abs() < 5.0),
+        "{got:?}"
+    );
+
+    assert_eq!(
+        unsafe {
+            mfsk_encode_msk144(
+                c1.as_ptr(),
+                c2.as_ptr(),
+                rep.as_ptr(),
+                0,
+                pcm.as_mut_ptr(),
+                pcm.len(),
+                &mut n,
+            )
+        },
+        MfskStatus::InvalidArg,
+        "period 0"
+    );
+    let bad = c("NOT A CALL");
+    assert_eq!(
+        unsafe {
+            mfsk_encode_msk144(
+                bad.as_ptr(),
+                c2.as_ptr(),
+                rep.as_ptr(),
+                15,
+                pcm.as_mut_ptr(),
+                pcm.len(),
+                &mut n,
+            )
+        },
+        MfskStatus::InvalidArg,
+        "a message that does not pack"
+    );
+}

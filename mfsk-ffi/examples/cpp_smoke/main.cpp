@@ -1440,6 +1440,31 @@ void test_msk144() {
     }
     mfsk_msk144_close(rx);
     mfsk_msk144_close(nullptr);
+
+    // Transmit, then receive what was sent.
+    size_t need = 0;
+    (void)mfsk_encode_msk144("JA1ABC", "K1JT", "PM95", 15, nullptr, 0, &need);
+    if (need != 15 * 12000 - 6000) {
+        fail("msk144", "a transmission should be the period less 0.5 s");
+        return;
+    }
+    std::vector<float> tx(need);
+    if (mfsk_encode_msk144("JA1ABC", "K1JT", "PM95", 15, tx.data(), tx.size(), &need) != MFSK_STATUS_OK) {
+        fail("msk144", "mfsk_encode_msk144");
+        return;
+    }
+    for (float& x : tx) x *= 0.3f;
+    MfskMsk144Receiver* loop = mfsk_msk144_open(12000, 1500.0f, 100.0f, 3, nullptr);
+    mfsk_msk144_push_f32(loop, tx.data(), tx.size());
+    bool heard = false;
+    MfskMsk144Decode d;
+    std::memset(&d, 0, sizeof d);
+    d.size = sizeof d;
+    while (mfsk_msk144_poll(loop, &d) == 1) {
+        if (std::strcmp(d.text, "JA1ABC K1JT PM95") == 0) heard = true;
+    }
+    mfsk_msk144_close(loop);
+    if (!heard) fail("msk144", "the transmitted message did not come back through the receiver");
 }
 
 // ── Wideband IQ receiver (mfsk_iq_*, #534) ──────────────────────────

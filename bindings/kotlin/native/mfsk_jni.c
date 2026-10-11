@@ -1471,6 +1471,39 @@ Java_io_github_mfskcore_Mfsk_nativeSynthesizeJt(
     return out;
 }
 
+/// `mfsk_encode_msk144` into a fresh `float[]`.
+JNIEXPORT jfloatArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativeSynthesizeMsk144(
+        JNIEnv* env, jclass cls, jstring a, jstring b, jstring c, jint periodS) {
+    (void)cls;
+    const char* sa = (*env)->GetStringUTFChars(env, a, NULL);
+    const char* sb = (*env)->GetStringUTFChars(env, b, NULL);
+    const char* sc = (*env)->GetStringUTFChars(env, c, NULL);
+    jfloatArray out = NULL;
+    if (sa && sb && sc) {
+        size_t need = 0;
+        /* A zero-capacity call reports the size it needs. */
+        (void)mfsk_encode_msk144(sa, sb, sc, (uint32_t)periodS, NULL, 0, &need);
+        float* buf = need ? (float*)malloc(need * sizeof(float)) : NULL;
+        size_t got = 0;
+        const MfskStatus st = buf ? mfsk_encode_msk144(sa, sb, sc, (uint32_t)periodS, buf, need, &got)
+                                  : MFSK_STATUS_INVALID_ARG;
+        if (st != MFSK_STATUS_OK) {
+            throw_last(env, st, "encode failed");
+        } else {
+            out = (*env)->NewFloatArray(env, (jsize)got);
+            if (out != NULL) (*env)->SetFloatArrayRegion(env, out, 0, (jsize)got, buf);
+        }
+        free(buf);
+    } else {
+        throw_ise(env, "could not read the message strings");
+    }
+    if (sa) (*env)->ReleaseStringUTFChars(env, a, sa);
+    if (sb) (*env)->ReleaseStringUTFChars(env, b, sb);
+    if (sc) (*env)->ReleaseStringUTFChars(env, c, sc);
+    return out;
+}
+
 /// `mfsk_encode_wspr` into a fresh `float[]`.
 JNIEXPORT jfloatArray JNICALL
 Java_io_github_mfskcore_Mfsk_nativeSynthesizeWspr(

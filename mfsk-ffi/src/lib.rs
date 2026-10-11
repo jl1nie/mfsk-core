@@ -3519,6 +3519,52 @@ pub unsafe extern "C" fn mfsk_msk144_poll(
     1
 }
 
+/// Synthesise one MSK144 transmission of a standard message ("CALL1 CALL2
+/// REPORT") as WSJT-X sends it: the 72 ms frame repeated for the T/R period
+/// less 0.5 s, 12 kHz f32 PCM, peak 1.0. `period_s` is the T/R period
+/// (WSJT-X offers 5, 10, 15 and 30 s); 1..=30 is accepted.
+///
+/// There is no frequency argument: WSJT-X's MSK144 modulator puts the signal
+/// at 1500 ± 500 Hz whatever the Tx frequency (`mainwindow.cpp`, `f0=1000`).
+/// The short `<CALL1 CALL2> RPT` form is not supported.
+///
+/// # Safety
+///
+/// `call1`/`call2`/`report` must be NUL-terminated UTF-8 strings.
+/// `out` must be `cap` writable `f32`; `*out_len` receives the
+/// sample count (or the count needed, if `cap` was too small).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_encode_msk144(
+    call1: *const c_char,
+    call2: *const c_char,
+    report: *const c_char,
+    period_s: u32,
+    out: *mut f32,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    let Ok(c1) = cstr_to_str(call1) else {
+        return MfskStatus::InvalidArg;
+    };
+    let Ok(c2) = cstr_to_str(call2) else {
+        return MfskStatus::InvalidArg;
+    };
+    let Ok(rep) = cstr_to_str(report) else {
+        return MfskStatus::InvalidArg;
+    };
+    if !(1..=30).contains(&period_s) {
+        set_error(format!(
+            "mfsk_encode_msk144: period_s {period_s} is not 1..=30"
+        ));
+        return MfskStatus::InvalidArg;
+    }
+    let Some(pcm) = mfsk_core::msk144::tx::synthesize_standard(c1, c2, rep, period_s, 1.0) else {
+        set_error("MSK144 pack77 failed");
+        return MfskStatus::InvalidArg;
+    };
+    unsafe { emit_pcm(&pcm, out, cap, out_len, "encode") }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Runtime configuration (FFI v2 slice 6)
 //

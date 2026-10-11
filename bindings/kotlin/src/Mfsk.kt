@@ -800,6 +800,12 @@ object Mfsk {
     fun synthesizeJt(mode: Int, call1: String, call2: String, gridOrReport: String, freqHz: Float)
         : FloatArray = nativeSynthesizeJt(mode, call1, call2, gridOrReport, freqHz)
 
+    /// One MSK144 transmission of a standard message (`call1 call2 report`):
+    /// the frame repeated for the T/R period less 0.5 s, as f32 PCM at 12 kHz,
+    /// centred on 1500 Hz as WSJT-X sends it. `periodS` is 1..30.
+    fun synthesizeMsk144(call1: String, call2: String, report: String, periodS: Int = 15)
+        : FloatArray = nativeSynthesizeMsk144(call1, call2, report, periodS)
+
     /// A Type-1 WSPR message (`call grid power_dbm`) as f32 PCM at 12 kHz.
     fun synthesizeWspr(call: String, grid: String, powerDbm: Int, freqHz: Float): FloatArray {
         modes()
@@ -834,6 +840,9 @@ object Mfsk {
     ): FloatArray
     @JvmStatic private external fun nativeSynthesizeJt(
         mode: Int, a: String, b: String, c: String, freqHz: Float,
+    ): FloatArray
+    @JvmStatic private external fun nativeSynthesizeMsk144(
+        a: String, b: String, c: String, periodS: Int,
     ): FloatArray
     @JvmStatic private external fun nativeSynthesizeWspr(
         call: String, grid: String, powerDbm: Int, freqHz: Float,

@@ -755,8 +755,11 @@ mfsk_msk144_close(rx);
   失う。`t_s`（`double`）は `open` / `reset` 以降の最初のサンプルから数えるので、§2.8.1 と同じく
   サンプル数は実時間に従っている必要がある。
 - **ハッシュ化コールサイン**（`<...>`）はこのハンドルでは解決しない。
-- **送信**はまだ ABI に無い: MSK144 には `MFSK_CAP_ENCODE` が立っているが、符号化の
-  エントリポイントは存在しない（#497）。
+- **送信**: `mfsk_encode_msk144(call1, call2, report, period_s, out, cap, &n)` は WSJT-X が
+  送るとおりの 1 送信分、つまり 72 ms のフレームを T/R 周期から 0.5 秒引いた長さだけ繰り返したもの
+  （`period_s` は 1..=30）を、12 kHz の f32 PCM で書く。周波数の引数は無い: WSJT-X の MSK144 変調器は
+  Tx 周波数に関係なく信号を 1500 ± 500 Hz に置く。短縮形 `<CALL1 CALL2> RPT` には対応しない。Kotlin は
+  `Mfsk.synthesizeMsk144`、Swift は `MSK144.encode`。
 - Kotlin: `MfskMsk144Receiver.open(sampleRate, rxFreqHz, tolHz, depth)`、`MfskMsk144Decode` を返す
   `push(samples)`、`newPeriod()`、`reset()`、`close()`。Swift:
   `Msk144Receiver(sampleRate:frequencyHz:toleranceHz:depth:)`、`Msk144Decode` を返す `push(_:)`、

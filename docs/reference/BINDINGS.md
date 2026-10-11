@@ -805,8 +805,12 @@ mfsk_msk144_close(rx);
   never polls loses the oldest. `t_s` (`double`) counts from the first sample since
   `open` / `reset`, so the sample count must follow real time, as in §2.8.1.
 - **Hashed callsigns** (`<...>`) are not resolved through this handle.
-- **Transmit** is not in the ABI yet: `MFSK_CAP_ENCODE` is set for MSK144 but no
-  encode entry point exists (#497).
+- **Transmit**: `mfsk_encode_msk144(call1, call2, report, period_s, out, cap, &n)`
+  writes one transmission as WSJT-X sends it, the 72 ms frame repeated for the T/R
+  period less 0.5 s (`period_s` 1..=30), 12 kHz f32 PCM. There is no frequency
+  argument: WSJT-X's MSK144 modulator puts the signal at 1500 ± 500 Hz whatever the
+  Tx frequency. The short `<CALL1 CALL2> RPT` form is not supported. Kotlin
+  `Mfsk.synthesizeMsk144`, Swift `MSK144.encode`.
 - Kotlin: `MfskMsk144Receiver.open(sampleRate, rxFreqHz, tolHz, depth)`, `push(samples)`
   returning `MfskMsk144Decode`s, `newPeriod()`, `reset()`, `close()`. Swift:
   `Msk144Receiver(sampleRate:frequencyHz:toleranceHz:depth:)`, `push(_:)` returning

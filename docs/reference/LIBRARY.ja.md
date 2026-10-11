@@ -1166,7 +1166,8 @@ FT8・FT4・FST4 は、
 0.6 秒の窓が揃い次第その窓のデコードが返り、`t_s`（`f64`）は最初のサンプルから数える。雑音レベルはセッションを
 通じて持ち越し、`new_period()` は `mskrtd.f90:88` が新しい周期でするように重複チェックだけをリセットし、
 `reset()` はすべてを忘れる。1 スロットをどんな区切り方で与えても `decode_slot` と同じ結果になる
-（`tests/msk144_stream.rs`）。
+（`tests/msk144_stream.rs`）。送信は `msk144::tx` の `message_tones`（`genmsk_128_90.f90`）と
+`synthesize` で、WSJT-X の変調器と同じく、フレームを周期から 0.5 秒引いた長さだけ 1500 ± 500 Hz で繰り返す。
 
 **JTTY**（WSJT-X 3.2.0-rc1 の微弱信号キーボードチャット用モード。`lib/jtty/` の
 移植で、#477 と `docs/notes/JTTY_UPSTREAM.md` で管理）は、ここで唯一 **スロットを持たない**

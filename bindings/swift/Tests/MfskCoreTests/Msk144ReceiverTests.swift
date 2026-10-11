@@ -51,6 +51,15 @@ final class Msk144ReceiverTests: XCTestCase {
         try receiver.reset()
     }
 
+    func testATransmissionComesBackThroughTheReceiver() throws {
+        try requireMsk144()
+        let audio = try MSK144.encode(call1: "JA1ABC", call2: "K1JT", report: "PM95")
+        XCTAssertEqual(audio.count, 15 * 12_000 - 6_000)
+        let receiver = try Msk144Receiver()
+        let got = try receiver.push(audio.map { $0 * 0.3 })
+        XCTAssertTrue(got.contains { $0.text == "JA1ABC K1JT PM95" }, "got \(got.map(\.text))")
+    }
+
     func testABadDepthIsRefused() throws {
         try requireMsk144()
         XCTAssertThrowsError(try Msk144Receiver(depth: 9)) { error in

@@ -2658,6 +2658,31 @@ int32_t mfsk_msk144_poll(struct MfskMsk144Receiver *rx,
                          struct MfskMsk144Decode *out);
 
 /**
+ * Synthesise one MSK144 transmission of a standard message ("CALL1 CALL2
+ * REPORT") as WSJT-X sends it: the 72 ms frame repeated for the T/R period
+ * less 0.5 s, 12 kHz f32 PCM, peak 1.0. `period_s` is the T/R period
+ * (WSJT-X offers 5, 10, 15 and 30 s); 1..=30 is accepted.
+ *
+ * There is no frequency argument: WSJT-X's MSK144 modulator puts the signal
+ * at 1500 ± 500 Hz whatever the Tx frequency (`mainwindow.cpp`, `f0=1000`).
+ * The short `<CALL1 CALL2> RPT` form is not supported.
+ *
+ * # Safety
+ *
+ * `call1`/`call2`/`report` must be NUL-terminated UTF-8 strings.
+ * `out` must be `cap` writable `f32`; `*out_len` receives the
+ * sample count (or the count needed, if `cap` was too small).
+ */
+MFSK_API
+enum MfskStatus mfsk_encode_msk144(const char *call1,
+                                   const char *call2,
+                                   const char *report,
+                                   uint32_t period_s,
+                                   float *out,
+                                   uintptr_t cap,
+                                   uintptr_t *out_len);
+
+/**
  * Configure the thread pool every subsequent decode runs on.
  *
  * **Call once, before the first decode.** The pool is built on the
