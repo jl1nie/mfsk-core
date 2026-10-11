@@ -294,7 +294,7 @@ mod jt65_impl {
         /// `CALL3.TXT`, which beta1 replaced by a caller-supplied list. The
         /// station and DX station come from `DecodeParams`. Empty with
         /// `deep_search` on still tries the DX station's messages.
-        pub known_calls: Vec<(String, String)>,
+        pub known_calls: Vec<(alloc::string::String, alloc::string::String)>,
         /// `naggressive`, 0..=10: the deep search accepts a margin of
         /// `2.0 - 0.1 * this` (`extract.f90:186`). The Chase gate keeps its
         /// own setting in [`Self::chase`].
