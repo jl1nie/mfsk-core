@@ -88,8 +88,8 @@ mod decoder;
 pub use decoder::*;
 pub use mfsk_ffi_abi::{
     MfskDecode, MfskDecoder, MfskExtras, MfskIqDecode, MfskIqReceiver, MfskJttyParams,
-    MfskJttyReceiver, MfskJttyUpdate, MfskMode, MfskModeInfo, MfskParams, MfskQ65Caller,
-    MfskQ65Callers, MfskQ65Dx, MfskQ65History, MfskStatus,
+    MfskJttyReceiver, MfskJttyUpdate, MfskMode, MfskModeInfo, MfskMsk144Decode, MfskMsk144Receiver,
+    MfskParams, MfskQ65Caller, MfskQ65Callers, MfskQ65Dx, MfskQ65History, MfskStatus,
 };
 /// `mfsk_iq_open`'s `format`: `f32` I, `f32` Q, little-endian. A literal here
 /// for the cbindgen reason [`MFSK_AP_FIELD_LEN`] gives.
@@ -225,9 +225,10 @@ pub const MFSK_CAP_ON_RESULT: u64 = 1 << 13;
 /// The mode can synthesise as well as decode.
 pub const MFSK_CAP_ENCODE: u64 = 1 << 14;
 /// The mode is received by a stateful, continuously fed receiver handle
-/// with its own entry points rather than by a slot decode — JTTY, whose
-/// frames have no slot. Audio goes in with `mfsk_jtty_push_*` and message
-/// updates come out of `mfsk_jtty_poll`.
+/// with its own entry points rather than by a slot decode. JTTY, whose
+/// frames have no slot: audio goes in with `mfsk_jtty_push_*` and message
+/// updates come out of `mfsk_jtty_poll`. MSK144, whose pings are decoded as
+/// they arrive: `mfsk_msk144_push_*` and `mfsk_msk144_poll` (#497).
 pub const MFSK_CAP_STREAM_RECEIVER: u64 = 1 << 15;
 
 /// `MfskJttyUpdate::kind`: the message grew and is still open.
@@ -1102,7 +1103,7 @@ pub unsafe extern "C" fn mfsk_mode_info(mode: u32, out: *mut MfskModeInfo) -> Mf
             info.fec_k = Msk144Geometry::FEC_K;
             info.fec_n = Msk144Geometry::FEC_N;
             info.payload_bits = Msk144Geometry::PAYLOAD_BITS;
-            info.caps = MFSK_CAP_ENCODE;
+            info.caps = MFSK_CAP_STREAM_RECEIVER | MFSK_CAP_ENCODE;
         }
     }
 
@@ -1121,7 +1122,9 @@ pub extern "C" fn mfsk_mode_caps(mode: u32) -> u64 {
     };
     match mode_meta(mode) {
         Some(m) => u64::from(m.profile.caps),
-        None if mode == MfskMode::Msk144 && mode_is_present(mode) => MFSK_CAP_ENCODE,
+        None if mode == MfskMode::Msk144 && mode_is_present(mode) => {
+            MFSK_CAP_STREAM_RECEIVER | MFSK_CAP_ENCODE
+        }
         None if mode == MfskMode::Jtty && mode_is_present(mode) => {
             MFSK_CAP_STREAM_RECEIVER | MFSK_CAP_ENCODE
         }
@@ -3249,6 +3252,271 @@ pub unsafe extern "C" fn mfsk_jtty_tones_to_f32(
             }
         }
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// MSK144 receiver handle (#497)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Bytes in `MfskMsk144Decode::text`, including the NUL. A literal for the
+/// cbindgen reason [`MFSK_AP_FIELD_LEN`] gives; `mfsk-ffi-abi` asserts the same.
+pub const MFSK_MSK144_TEXT_BUF_LEN: usize = 64;
+const _: () = assert!(MFSK_MSK144_TEXT_BUF_LEN == mfsk_ffi_abi::MFSK_MSK144_TEXT_BUF_LEN);
+
+/// Most decodes the queue holds between polls; past it the oldest go.
+const MSK144_QUEUE_MAX: usize = 1024;
+
+struct Msk144Inner {
+    stream: mfsk_core::msk144::decode::Stream,
+    sample_rate: u32,
+    resampler: Option<mfsk_core::engine::dsp::resample::LinearResamplerI16To12k>,
+    queue: std::collections::VecDeque<mfsk_core::msk144::decode::StreamDecode>,
+}
+
+impl Msk144Inner {
+    fn push_12k(&mut self, samples: &[i16]) {
+        let Self { stream, queue, .. } = self;
+        stream.push(samples, &mut |d| {
+            if queue.len() >= MSK144_QUEUE_MAX {
+                queue.pop_front();
+            }
+            queue.push_back(d);
+        });
+    }
+}
+
+fn msk144_inner<'a>(rx: *mut MfskMsk144Receiver) -> Option<&'a mut Msk144Inner> {
+    unsafe { (rx as *mut Msk144Inner).as_mut() }
+}
+
+/// Open an MSK144 receiver: WSJT-X's real-time `mskrtd`, fed as audio arrives.
+///
+/// `sample_rate`: any rate; anything but 12 000 Hz is resampled, linearly.
+/// `rx_freq_hz` and `tol_hz`: the search centre and half-width (`nrxfreq`,
+/// `ntol`; WSJT-X's defaults are 1500 and 100). `depth`: `ndepth`, 1 (the
+/// short-ping decoder only), 2 or 3 (frame averaging over 2 or 4 patterns).
+///
+/// Returns NULL and writes the reason to `out_status` on failure
+/// (`MFSK_STATUS_INVALID_ARG` for a zero rate, a depth outside 1..=3, or a
+/// frequency that is not finite or a negative tolerance).
+///
+/// Hashed callsigns (`<...>`) are not resolved through this handle.
+///
+/// # Safety
+/// `out_status` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_msk144_open(
+    sample_rate: u32,
+    rx_freq_hz: f32,
+    tol_hz: f32,
+    depth: u32,
+    out_status: *mut MfskStatus,
+) -> *mut MfskMsk144Receiver {
+    use mfsk_core::msk144::decode::Depth;
+    let report = |st: MfskStatus| {
+        if !out_status.is_null() {
+            unsafe { *out_status = st };
+        }
+    };
+    let depth = match depth {
+        1 => Depth::Fast,
+        2 => Depth::Normal,
+        3 => Depth::Deep,
+        _ => {
+            set_error(format!("mfsk_msk144_open: depth {depth} is not 1, 2 or 3"));
+            report(MfskStatus::InvalidArg);
+            return ptr::null_mut();
+        }
+    };
+    if sample_rate == 0 {
+        set_error("mfsk_msk144_open: sample_rate is 0");
+        report(MfskStatus::InvalidArg);
+        return ptr::null_mut();
+    }
+    if !rx_freq_hz.is_finite() || !tol_hz.is_finite() || tol_hz < 0.0 {
+        set_error("mfsk_msk144_open: rx_freq_hz and tol_hz must be finite, tol_hz >= 0");
+        report(MfskStatus::InvalidArg);
+        return ptr::null_mut();
+    }
+    report(MfskStatus::Ok);
+    Box::into_raw(Box::new(Msk144Inner {
+        stream: mfsk_core::msk144::decode::Stream::new(rx_freq_hz, tol_hz, depth, None),
+        sample_rate,
+        resampler: (sample_rate != 12_000)
+            .then(|| mfsk_core::engine::dsp::resample::LinearResamplerI16To12k::new(sample_rate)),
+        queue: Default::default(),
+    })) as *mut MfskMsk144Receiver
+}
+
+/// Release a receiver. Null is a no-op.
+///
+/// # Safety
+/// `rx` must be a handle from [`mfsk_msk144_open`], released once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_msk144_close(rx: *mut MfskMsk144Receiver) {
+    if !rx.is_null() {
+        drop(unsafe { Box::from_raw(rx as *mut Msk144Inner) });
+    }
+}
+
+/// Feed 16-bit mono PCM at the rate the receiver was opened with, any number of
+/// samples per call (including none). Every 0.3 s of audio completes a 0.6 s
+/// window, which is decoded before the call returns; decodes wait in the queue
+/// for [`mfsk_msk144_poll`].
+///
+/// # Safety
+/// `samples` must be `n` readable `int16_t` (or null when `n` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_msk144_push_i16(
+    rx: *mut MfskMsk144Receiver,
+    samples: *const i16,
+    n: usize,
+) -> MfskStatus {
+    let Some(r) = msk144_inner(rx) else {
+        set_error("mfsk_msk144_push_i16: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    if n == 0 {
+        return MfskStatus::Ok;
+    }
+    if samples.is_null() {
+        set_error("mfsk_msk144_push_i16: null samples");
+        return MfskStatus::NullPointer;
+    }
+    let src = unsafe { slice::from_raw_parts(samples, n) };
+    if r.resampler.is_none() {
+        r.push_12k(src);
+        return MfskStatus::Ok;
+    }
+    // Resample in bounded chunks, as `mfsk_jtty_push_i16` does.
+    let mut scratch = [0i16; 4096];
+    let mut pos = 0;
+    while pos < src.len() {
+        let rs = r.resampler.as_mut().expect("checked");
+        let (consumed, produced) = rs.process(&src[pos..], &mut scratch);
+        if consumed == 0 && produced == 0 {
+            break;
+        }
+        r.push_12k(&scratch[..produced]);
+        pos += consumed;
+    }
+    MfskStatus::Ok
+}
+
+/// [`mfsk_msk144_push_i16`] for 32-bit float PCM, nominally `-1.0..=1.0`.
+///
+/// # Safety
+/// `samples` must be `n` readable `float` (or null when `n` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_msk144_push_f32(
+    rx: *mut MfskMsk144Receiver,
+    samples: *const f32,
+    n: usize,
+) -> MfskStatus {
+    if n == 0 {
+        return unsafe { mfsk_msk144_push_i16(rx, ptr::null(), 0) };
+    }
+    if samples.is_null() {
+        set_error("mfsk_msk144_push_f32: null samples");
+        return MfskStatus::NullPointer;
+    }
+    let src = unsafe { slice::from_raw_parts(samples, n) };
+    let as_i16: Vec<i16> = src
+        .iter()
+        .map(|&x| (x * 32767.0).clamp(-32_768.0, 32_767.0) as i16)
+        .collect();
+    unsafe { mfsk_msk144_push_i16(rx, as_i16.as_ptr(), as_i16.len()) }
+}
+
+/// A new T/R period begins: a repeat of the last message is reported again
+/// (`mskrtd.f90:88`). The noise floor and the audio are kept. Call it at each
+/// period boundary the host keeps (every 15 s, or 30 s).
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_msk144_new_period(rx: *mut MfskMsk144Receiver) -> MfskStatus {
+    let Some(r) = msk144_inner(rx) else {
+        set_error("mfsk_msk144_new_period: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    r.stream.new_period();
+    MfskStatus::Ok
+}
+
+/// Forget everything — audio, noise floor, dupe check, the queue, the
+/// resampler's state — and start again at sample 0 with the same settings.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_msk144_reset(rx: *mut MfskMsk144Receiver) -> MfskStatus {
+    let Some(r) = msk144_inner(rx) else {
+        set_error("mfsk_msk144_reset: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    r.stream.reset();
+    r.queue.clear();
+    if r.resampler.is_some() {
+        r.resampler =
+            Some(mfsk_core::engine::dsp::resample::LinearResamplerI16To12k::new(r.sample_rate));
+    }
+    MfskStatus::Ok
+}
+
+/// How many decodes are waiting.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_msk144_pending(rx: *mut MfskMsk144Receiver) -> usize {
+    msk144_inner(rx).map_or(0, |r| r.queue.len())
+}
+
+/// Take the oldest waiting decode into `out` (size-versioned: set
+/// `out->size = sizeof(MfskMsk144Decode)`, or 0 for the whole struct).
+///
+/// Returns 1 when a decode was written, 0 when none is waiting, and a negative
+/// `MfskStatus` for a null handle or `out`. Call it until it returns 0 after
+/// every push:
+///
+/// ```c
+/// MfskMsk144Decode d = {0};
+/// while (mfsk_msk144_poll(rx, &d) == 1) show(d.t_s, d.snr_db, d.text);
+/// ```
+///
+/// # Safety
+/// `out` must point to at least `out->size` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_msk144_poll(
+    rx: *mut MfskMsk144Receiver,
+    out: *mut MfskMsk144Decode,
+) -> i32 {
+    let Some(r) = msk144_inner(rx) else {
+        set_error("mfsk_msk144_poll: null receiver");
+        return MfskStatus::NullPointer as i32;
+    };
+    if out.is_null() {
+        set_error("mfsk_msk144_poll: out is NULL");
+        return MfskStatus::NullPointer as i32;
+    }
+    let Some(d) = r.queue.pop_front() else {
+        return 0;
+    };
+    let mut v = MfskMsk144Decode {
+        size: core::mem::size_of::<MfskMsk144Decode>() as u32,
+        snr_db: d.snr_db,
+        freq_hz: d.freq_hz,
+        reserved: 0,
+        t_s: d.t_s,
+        text: [0; MFSK_MSK144_TEXT_BUF_LEN],
+    };
+    let mut end = d.message.len().min(v.text.len() - 1);
+    while !d.message.is_char_boundary(end) {
+        end -= 1;
+    }
+    for (o, &b) in v.text.iter_mut().zip(&d.message.as_bytes()[..end]) {
+        *o = b as c_char;
+    }
+    unsafe { write_size_versioned(out, &v) };
+    1
 }
 
 // ──────────────────────────────────────────────────────────────────────────

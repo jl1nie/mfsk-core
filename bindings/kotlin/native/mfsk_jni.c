@@ -1942,6 +1942,86 @@ Java_io_github_mfskcore_MfskJttyReceiver_nativeReset(JNIEnv* env, jclass cls, jl
     }
 }
 
+// ── MSK144 receiver (#497) ──────────────────────────────────────────
+
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_MfskMsk144Receiver_nativeOpen(
+        JNIEnv* env, jclass cls, jint sampleRate, jfloat rxFreqHz, jfloat tolHz, jint depth) {
+    (void)cls;
+    MfskStatus st = MFSK_STATUS_INTERNAL;
+    MfskMsk144Receiver* rx =
+        mfsk_msk144_open((uint32_t)sampleRate, rxFreqHz, tolHz, (uint32_t)depth, &st);
+    if (rx == NULL) {
+        throw_ise(env, mfsk_last_error());
+        return 0;
+    }
+    return (jlong)(intptr_t)rx;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskMsk144Receiver_nativeClose(JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    mfsk_msk144_close((MfskMsk144Receiver*)(intptr_t)handle);
+}
+
+/// Everything waiting in the queue as an `MfskMsk144Decode[]`.
+static jobjectArray msk144_drain(JNIEnv* env, MfskMsk144Receiver* rx) {
+    jclass cls = (*env)->FindClass(env, CLS "MfskMsk144Decode");
+    if (cls == NULL) return NULL;
+    jmethodID ctor = (*env)->GetMethodID(env, cls, "<init>", "(Ljava/lang/String;IFD)V");
+    if (ctor == NULL) return NULL;
+
+    const size_t n = mfsk_msk144_pending(rx);
+    jobjectArray out = (*env)->NewObjectArray(env, (jsize)n, cls, NULL);
+    if (out == NULL) return NULL;
+    for (size_t i = 0; i < n; ++i) {
+        MfskMsk144Decode d;
+        memset(&d, 0, sizeof d);
+        d.size = sizeof d;
+        if (mfsk_msk144_poll(rx, &d) != 1) break;
+        jstring text = (*env)->NewStringUTF(env, d.text);
+        if (text == NULL) return NULL;
+        jobject obj = (*env)->NewObject(env, cls, ctor, text, (jint)d.snr_db,
+                                        (jfloat)d.freq_hz, (jdouble)d.t_s);
+        (*env)->DeleteLocalRef(env, text);
+        if (obj == NULL) return NULL;
+        (*env)->SetObjectArrayElement(env, out, (jsize)i, obj);
+        (*env)->DeleteLocalRef(env, obj);
+    }
+    return out;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_MfskMsk144Receiver_nativePush(
+        JNIEnv* env, jclass cls, jlong handle, jshortArray samples) {
+    (void)cls;
+    MfskMsk144Receiver* rx = (MfskMsk144Receiver*)(intptr_t)handle;
+    if (rx == NULL) { throw_ise(env, "receiver is closed"); return NULL; }
+    const jsize n = (*env)->GetArrayLength(env, samples);
+    jshort* pcm = (*env)->GetShortArrayElements(env, samples, NULL);
+    if (pcm == NULL) return NULL;
+    const MfskStatus st = mfsk_msk144_push_i16(rx, (const int16_t*)pcm, (size_t)n);
+    (*env)->ReleaseShortArrayElements(env, samples, pcm, JNI_ABORT);
+    if (st != MFSK_STATUS_OK) { throw_ise(env, mfsk_last_error()); return NULL; }
+    return msk144_drain(env, rx);
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskMsk144Receiver_nativeNewPeriod(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    if (mfsk_msk144_new_period((MfskMsk144Receiver*)(intptr_t)handle) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_mfskcore_MfskMsk144Receiver_nativeReset(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    if (mfsk_msk144_reset((MfskMsk144Receiver*)(intptr_t)handle) != MFSK_STATUS_OK) {
+        throw_ise(env, mfsk_last_error());
+    }
+}
+
 // ── JTTY transmit ───────────────────────────────────────────────────
 
 JNIEXPORT jbyteArray JNICALL

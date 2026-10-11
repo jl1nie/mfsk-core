@@ -32,6 +32,7 @@ replacement for it.
   - [2.8 Q65: the lists and the sub-mode numbering](#28-q65-the-lists-and-the-sub-mode-numbering)
     - [2.8.1 JTTY — a receiver handle instead of a slot call](#281-jtty--a-receiver-handle-instead-of-a-slot-call)
     - [2.8.2 Wideband IQ — a receiver handle for an SDR stream](#282-wideband-iq--a-receiver-handle-for-an-sdr-stream)
+    - [2.8.3 MSK144 — a receiver handle for meteor pings](#283-msk144--a-receiver-handle-for-meteor-pings)
   - [2.9 Messages](#29-messages)
   - [2.10 Threads and the runtime](#210-threads-and-the-runtime)
   - [2.11 Errors and memory rules](#211-errors-and-memory-rules)
@@ -622,7 +623,7 @@ periods (1.888 s, ±0.1 s) after the last, so:
 Push from a worker, not from the audio callback or the UI thread: hand samples over
 through a ring buffer, since one `push` can take tens of milliseconds. Results follow the
 end of a frame by about half a second (a window is decoded when its last sample arrives).
-MSK144 has the same problem in a sharper form and has no streaming receiver yet (#497).
+MSK144's receiver (§2.8.3) follows real time the same way.
 
 **Transmit** is the same three stages as elsewhere, with text in front instead of
 a 77-bit message:
@@ -771,6 +772,45 @@ filter bank among them: 2.7 % of a core for one channel at 768 kS/s, 10 % for
 32, 35 % for 128, against 30 % for 32 direct. Break-even is about four
 channels. The bank needs 40 kS/s or more (`INVALID_ARG` otherwise); rows and
 every other call are the same on both.
+
+### 2.8.3 MSK144 — a receiver handle for meteor pings
+
+MSK144 is received the way WSJT-X's real-time `mskrtd` receives it (#497): audio
+goes in as it arrives and each ping comes out as soon as the 0.6 s window holding
+it is complete, rather than after the T/R period. `MFSK_MODE_MSK144` publishes
+`MFSK_CAP_STREAM_RECEIVER` (and not `MFSK_CAP_DECODE_HANDLE`).
+
+```c
+MfskStatus st;
+MfskMsk144Receiver *rx = mfsk_msk144_open(48000, 1500.0f, 100.0f, 3, &st); /* rate, nrxfreq, ntol, ndepth */
+
+for (each audio callback) {                             /* chunks of any size */
+    mfsk_msk144_push_i16(rx, pcm, n);                   /* decodes each 0.6 s window it completes */
+    MfskMsk144Decode d = {0};                           /* d.size = sizeof d, or 0 */
+    while (mfsk_msk144_poll(rx, &d) == 1)               /* 1 = row, 0 = none, <0 = MfskStatus */
+        show(d.t_s, d.snr_db, d.freq_hz, d.text);
+    if (a T/R period boundary passed) mfsk_msk144_new_period(rx);
+}
+mfsk_msk144_close(rx);
+```
+
+- **Rate**: anything but 12 000 Hz is resampled, linearly. **Depth** is `ndepth`:
+  1 the short-ping decoder only, 2 and 3 add frame averaging over 2 and 4 patterns;
+  anything else is `MFSK_STATUS_INVALID_ARG`.
+- **State**: the noise floor carries over the session. `mfsk_msk144_new_period`
+  resets only the dupe check, as `mskrtd.f90:88` does at a new period: a repeat of the
+  last message at no better SNR is dropped until then. Call it at each period boundary
+  you keep (15 s or 30 s). `mfsk_msk144_reset` forgets everything.
+- **Rows** are not coalesced: every ping is its own. The queue holds 1024; a caller that
+  never polls loses the oldest. `t_s` (`double`) counts from the first sample since
+  `open` / `reset`, so the sample count must follow real time, as in §2.8.1.
+- **Hashed callsigns** (`<...>`) are not resolved through this handle.
+- **Transmit** is not in the ABI yet: `MFSK_CAP_ENCODE` is set for MSK144 but no
+  encode entry point exists (#497).
+- Kotlin: `MfskMsk144Receiver.open(sampleRate, rxFreqHz, tolHz, depth)`, `push(samples)`
+  returning `MfskMsk144Decode`s, `newPeriod()`, `reset()`, `close()`. Swift:
+  `Msk144Receiver(sampleRate:frequencyHz:toleranceHz:depth:)`, `push(_:)` returning
+  `Msk144Decode`s, `newPeriod()`, `reset()`.
 
 ### 2.9 Messages
 

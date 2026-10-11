@@ -80,6 +80,9 @@ protocols = [
     "mfsk-core/ft4",
     "mfsk-core/fst4",
     "mfsk-core/fst4w",
+    # The `mfsk_msk144_*` receiver handle (#497). MSK144's geometry was
+    # hardcoded here before; the decoder itself was not compiled in.
+    "mfsk-core/msk144",
     # Until the 0.13 ABI rewrite moves `V2Decoder` onto `mfsk_core::decoder`,
     # it still drives the engine's request type, which 0.13 reaches only
     # through `internal-testing`. Removed with that rewrite (branch
