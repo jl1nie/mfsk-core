@@ -22,23 +22,24 @@ fn line(at_s: f64, hz: f32, level: f32, text: &str) -> Line {
 /// Run the skimmer against `band` until `want` holds of the finished messages,
 /// or 40 s pass; returns every JTTY message reported.
 fn run_against(band: Band, want: impl Fn(&[JttyMessage]) -> bool) -> Vec<JttyMessage> {
-    run_with(band, false, want).0
+    run_with(band, false, |m, _| want(m)).0
 }
 
-/// [`run_against`], with the waterfall on or off, and how many waterfall rows
-/// the JTTY channel (channel 0) produced.
+/// [`run_against`], with the waterfall on or off, `want` also told how many
+/// waterfall rows the JTTY channel (channel 0) has produced, and those rows
+/// returned in order.
 fn run_with(
     band: Band,
     waterfall: bool,
-    want: impl Fn(&[JttyMessage]) -> bool,
-) -> (Vec<JttyMessage>, usize) {
+    want: impl Fn(&[JttyMessage], usize) -> bool,
+) -> (Vec<JttyMessage>, Vec<skimmer_core::waterfall::Row>) {
     let server = FakeServer::start("127.0.0.1:0", band).expect("listen");
     let mut cfg = Config::new(
         server.addr.to_string(),
         vec![ChannelSpec::new(ChannelMode::Jtty, 14_090_000.0)],
     );
     cfg.waterfall = waterfall;
-    let rows = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rows: Arc<Mutex<Vec<skimmer_core::waterfall::Row>>> = Arc::default();
     let counted = rows.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let got: Arc<Mutex<Vec<JttyMessage>>> = Arc::default();
@@ -46,16 +47,14 @@ fn run_with(
     let t = std::thread::spawn(move || {
         skimmer_core::run(&cfg, &flag, |ev| match ev {
             Event::Jtty(m) => sink.lock().unwrap().push(m),
-            Event::Waterfall(w) if w.channel == 0 => {
-                counted.fetch_add(1, Ordering::Relaxed);
-            }
+            Event::Waterfall(w) if w.channel == 0 => counted.lock().unwrap().push(w.row),
             _ => {}
         });
     });
     let until = Instant::now() + Duration::from_secs(40);
     while Instant::now() < until {
         std::thread::sleep(Duration::from_millis(200));
-        if want(&got.lock().unwrap()) {
+        if want(&got.lock().unwrap(), rows.lock().unwrap().len()) {
             break;
         }
     }
@@ -64,7 +63,8 @@ fn run_with(
     drop(server);
     // The thread has ended and dropped its sink: this is the only owner.
     let all = Arc::try_unwrap(got).unwrap().into_inner().unwrap();
-    (all, rows.load(Ordering::Relaxed))
+    let rows = Arc::try_unwrap(rows).unwrap().into_inner().unwrap();
+    (all, rows)
 }
 
 fn done<'a>(all: &'a [JttyMessage], text: &str) -> Option<&'a JttyMessage> {
@@ -127,21 +127,31 @@ fn a_qso_and_a_side_channel_come_out_of_the_stand_in_server() {
     );
 }
 
-/// A JTTY channel has a waterfall too (#650): the audio the receiver thread
-/// reads is drawn as well, and neither takes it from the other.
+/// A JTTY channel has a waterfall too (#650): rows of its audio reach the event
+/// stream, evenly spaced.
+///
+/// This is the one thing only the whole loop can show: that `run` draws a JTTY
+/// channel from the audio `jtty::feed` kept (the thread's own copy), not from
+/// `take_audio`, which a tapped channel has nothing to give. That the copy is the
+/// audio the thread read, and that rows drawn from it are lit where a message
+/// was, are `jtty::tests` (`the_waterfalls_copy_*`, `the_rows_are_lit_*`), in
+/// virtual time: this server is paced by the wall clock and its script by the UTC
+/// cycle, so a test that waits for a message takes 2 to 14 s depending on where
+/// in the cycle it started, and one that counted rows by then failed one start in
+/// eight. Here nothing is waited for but the first rows, a second or two in.
 #[test]
-fn a_jtty_channel_has_a_waterfall_and_still_decodes() {
-    let band = Band {
-        cycle_s: 12,
-        script: vec![line(1.0, 1500.0, 1.0, "CQ K1ABC CQ")],
-        jitter_s: 0.0,
-        qsb: 0.0,
-        // Well above the decoding limit: the tests ask for whole messages.
-        amplitude: 0.01,
-        ..Band::default()
-    };
-    let (all, rows) = run_with(band, true, |m| done(m, "CQ K1ABC CQ").is_some());
-    assert!(done(&all, "CQ K1ABC CQ").is_some(), "{all:?}");
-    // About six rows a second reach the window; a few seconds of them is plenty.
-    assert!(rows >= 10, "{rows} waterfall rows");
+fn a_jtty_channel_has_a_waterfall() {
+    let (_, rows) = run_with(Band::default(), true, |_, rows| rows >= 4);
+    assert!(rows.len() >= 4, "{} waterfall rows", rows.len());
+    // A thumbnail: every other row of a 2048-sample hop, 4096 samples apart.
+    const GAP_NS: f64 = 4096.0 / skimmer_core::waterfall::RATE_HZ as f64 * 1e9;
+    for w in rows.windows(2) {
+        let gap = (w[1].utc_ns - w[0].utc_ns) as f64;
+        assert!(
+            (gap - GAP_NS).abs() < 20e6,
+            "rows {:.0} ms apart, not {:.0}",
+            gap / 1e6,
+            GAP_NS / 1e6
+        );
+    }
 }
