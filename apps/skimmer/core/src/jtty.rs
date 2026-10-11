@@ -570,14 +570,15 @@ mod tests {
         out
     }
 
-    /// The skimmer's whole JTTY path short of the network: a transmission as IQ
-    /// into an `IqReceiver`, its audio channel's runs to the thread by `feed`,
-    /// the message and its callsigns out. Through both channelizers.
-    fn through_iq(channelizer: mfsk_core::iq::Channelizer) -> Vec<JttyMessage> {
-        use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+    const CENTER: f64 = 7_070_000.0;
+    const DIAL: f64 = 7_078_000.0;
+    const ANCHOR_NS: i64 = 1_791_002_535_000_000_000;
+
+    /// IQ at 48 kS/s of two seconds of silence, one JTTY message ("JA1ABC K1ABC",
+    /// one frame) at 1500 Hz, and four more seconds of silence, with a little
+    /// noise under it so the level is the band's, not the signal's.
+    fn jtty_iq() -> Vec<f32> {
         use mfsk_core::jtty::source::{Atom, CallAction};
-        const CENTER: f64 = 7_070_000.0;
-        const DIAL: f64 = 7_078_000.0;
         let tones = mfsk_core::jtty::tx::tones(&[
             Atom::call(CallAction::Call, "JA1ABC"),
             Atom::call(CallAction::Call, "K1ABC"),
@@ -591,17 +592,34 @@ mod tests {
         );
         audio.extend(std::iter::repeat_n(0, 4 * 12_000));
         let mut iq = iq_of(&audio, DIAL - CENTER);
-        // A little noise under it, so the level is the band's, not the signal's.
         let mut x: u32 = 0x1357_9bdf;
         for v in &mut iq {
             x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             *v += ((x >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.02;
         }
+        iq
+    }
 
+    /// The skimmer's whole JTTY path short of the network: a transmission as IQ
+    /// into an `IqReceiver`, its audio channel's runs to the thread by `feed`,
+    /// the message and its callsigns out. Through both channelizers.
+    fn through_iq(channelizer: mfsk_core::iq::Channelizer) -> Vec<JttyMessage> {
+        through_iq_keeping(channelizer, false).0
+    }
+
+    /// [`through_iq`] with `feed`'s `keep` as given, and the audio it kept for a
+    /// waterfall (what the skimmer draws), each chunk's with the UTC of its last
+    /// sample as the stream loop passes it on.
+    fn through_iq_keeping(
+        channelizer: mfsk_core::iq::Channelizer,
+        keep: bool,
+    ) -> (Vec<JttyMessage>, Vec<(Vec<f32>, i64)>) {
+        use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+        let iq = jtty_iq();
         let stream = IqStream::new(48_000, CENTER, IqSampleFormat::Cf32);
         let mut rx = IqReceiver::with_channelizer(stream, channelizer).unwrap();
         let id = rx.add_audio_channel(DIAL).unwrap();
-        rx.set_time(1_791_002_535_000_000_000, 0);
+        rx.set_time(ANCHOR_NS, 0);
         let (tx, results) = mpsc::channel();
         let mut workers: Vec<Option<Worker>> = (0..=id.0).map(|_| None).collect();
         workers[id.0] = Some(Worker::spawn(
@@ -612,14 +630,161 @@ mod tests {
             tx,
         ));
         let mut slots = Vec::new();
+        let mut kept: Vec<(Vec<f32>, i64)> = Vec::new();
         // The stream loop's rhythm: a message of IQ, then the audio it made.
         for c in iq.chunks(2 * 4_096) {
             rx.push_cf32(c, &mut slots);
-            feed(&mut rx, &workers, false);
+            for (i, a) in feed(&mut rx, &workers, keep) {
+                assert_eq!(i, id.0);
+                kept.push((a, rx.utc_of(rx.samples_in()).expect("a clock")));
+            }
         }
         assert!(slots.is_empty(), "an audio channel cuts no slots");
         drop(workers); // ends the reception and joins
-        results.try_iter().collect()
+        (results.try_iter().collect(), kept)
+    }
+
+    /// What the waterfall's copy draws, as the stream loop draws it: every chunk
+    /// kept by `feed` pushed in with the UTC of its last sample, at the coarse
+    /// resolution (4096-point FFT, a row every 2048 samples).
+    fn rows_of(kept: &[(Vec<f32>, i64)]) -> Vec<crate::waterfall::Row> {
+        let mut wf = crate::waterfall::Waterfall::new(4096, 2048, 100.0, 3_100.0);
+        let mut rows = Vec::new();
+        for (audio, end) in kept {
+            wf.push(audio, Some(*end), &mut rows);
+        }
+        rows
+    }
+
+    /// The strongest level among the message's tones (1500 Hz and three 31.25 Hz
+    /// steps up), on the row's 0..255 scale.
+    fn lit(r: &crate::waterfall::Row) -> u8 {
+        let i0 = ((1480.0 - r.f_lo_hz) / r.bin_hz) as usize;
+        let i1 = (((1620.0 - r.f_lo_hz) / r.bin_hz) as usize).min(r.levels.len() - 1);
+        r.levels[i0..=i1].iter().copied().max().unwrap_or(0)
+    }
+
+    fn summary(all: &[JttyMessage]) -> Vec<(UpdateKind, String, Option<i64>, Option<i64>)> {
+        all.iter()
+            .map(|m| (m.kind, m.text.clone(), m.start_utc_ns, m.end_utc_ns))
+            .collect()
+    }
+
+    /// Keeping the audio for a waterfall must not change what the thread
+    /// decodes: the message, its frames' UTC, the updates on the way.
+    #[test]
+    fn the_waterfalls_copy_does_not_change_the_decode() {
+        for ch in [
+            mfsk_core::iq::Channelizer::Direct,
+            mfsk_core::iq::Channelizer::Pfb,
+        ] {
+            let without = summary(&through_iq_keeping(ch, false).0);
+            let with = summary(&through_iq_keeping(ch, true).0);
+            assert!(!without.is_empty());
+            assert_eq!(with, without, "{ch:?}");
+        }
+    }
+
+    /// The copy is the audio the thread read: the same samples, in the same
+    /// order, with no run missing. The thread is a test double here, a channel
+    /// that records what `feed` sends it.
+    #[test]
+    fn the_waterfalls_copy_is_the_audio_the_thread_reads() {
+        use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
+        let iq = jtty_iq();
+        let mut rx = IqReceiver::new(IqStream::new(48_000, CENTER, IqSampleFormat::Cf32));
+        let id = rx.add_audio_channel(DIAL).unwrap();
+        rx.set_time(ANCHOR_NS, 0);
+        let (tx, jobs) = mpsc::channel();
+        let mut workers: Vec<Option<Worker>> = (0..=id.0).map(|_| None).collect();
+        workers[id.0] = Some(Worker {
+            tx: Some(tx),
+            handle: None,
+        });
+        let (mut slots, mut kept) = (Vec::new(), Vec::new());
+        for c in iq.chunks(2 * 4_096) {
+            rx.push_cf32(c, &mut slots);
+            for (_, a) in feed(&mut rx, &workers, true) {
+                kept.extend_from_slice(&a);
+            }
+        }
+        let mut read = Vec::new();
+        let mut next_k = None;
+        for job in jobs.try_iter() {
+            let Job::Audio { k, samples, .. } = job else {
+                continue;
+            };
+            if let Some(n) = next_k {
+                assert_eq!(k, n, "a break in the audio the thread was given");
+            }
+            next_k = Some(k + samples.len() as u64);
+            read.extend_from_slice(&samples);
+        }
+        // 6 s of audio at 12 kHz, less the channelizer's own delay.
+        assert!(read.len() > 5 * 12_000, "{} samples", read.len());
+        assert_eq!(
+            kept, read,
+            "the waterfall is not drawing what the thread read"
+        );
+        // Without `keep` nothing is kept.
+        for c in jtty_iq().chunks(2 * 4_096) {
+            rx.push_cf32(c, &mut slots);
+            assert!(feed(&mut rx, &workers, false).is_empty());
+        }
+    }
+
+    /// Drawn from that copy, rows come every 2048 samples with none missing,
+    /// and are lit where the decoded message was and dark where it was not.
+    #[test]
+    fn the_rows_are_lit_where_the_message_was() {
+        let (all, kept) = through_iq_keeping(mfsk_core::iq::Channelizer::Direct, true);
+        let msg = all
+            .iter()
+            .find(|m| m.kind == UpdateKind::Complete)
+            .unwrap_or_else(|| panic!("no complete message: {all:?}"));
+        let (start, end) = (msg.start_utc_ns.unwrap(), msg.end_utc_ns.unwrap());
+        let rows = rows_of(&kept);
+        const HOP_NS: f64 = 2048.0 / 12_000.0 * 1e9;
+        for w in rows.windows(2) {
+            let gap = (w[1].utc_ns - w[0].utc_ns) as f64;
+            assert!((gap - HOP_NS).abs() < 1e6, "rows {} ms apart", gap / 1e6);
+        }
+        // Measured on this signal (2026-10-11), on the rows' 0..255 scale:
+        // inside the message 255, outside it 21..63; 100 splits them by 1.6x
+        // above the noise's highest and 2.5x below the signal.
+        const LIT: u8 = 100;
+        let half = (4096.0 / 12_000.0 * 0.5 * 1e9) as i64;
+        let (mut inside, mut before, mut after) = (0, 0, 0);
+        for r in &rows {
+            // `utc_ns` is the middle of the row's 4096-sample window.
+            let (from, to) = (r.utc_ns - half, r.utc_ns + half);
+            if from >= start && to <= end {
+                inside += 1;
+                assert!(
+                    lit(r) >= LIT,
+                    "a row inside the message is dark: {}",
+                    lit(r)
+                );
+            } else if to < start {
+                before += 1;
+                assert!(lit(r) < LIT, "a row before the message is lit: {}", lit(r));
+            } else if from > end {
+                after += 1;
+                assert!(lit(r) < LIT, "a row after the message is lit: {}", lit(r));
+            }
+        }
+        // Windows of 0.341 s on a 0.171 s grid: a message of `n` seconds holds at
+        // least (n - 0.341) / 0.171 - 1 of them.
+        let least = ((end - start) as f64 / 1e9 - 4096.0 / 12_000.0) / (2048.0 / 12_000.0) - 1.0;
+        assert!(
+            inside as f64 >= least && inside > 0,
+            "{inside} rows inside a message of {} ms, expected {least:.0}",
+            (end - start) / 1_000_000
+        );
+        assert!(
+            before > 0 && after > 0,
+            "rows {before} before, {after} after"
+        );
     }
 
     fn check(all: &[JttyMessage]) {

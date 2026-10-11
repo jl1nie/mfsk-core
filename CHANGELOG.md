@@ -318,6 +318,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### CI, tests and docs
 
+- **The skimmer's JTTY waterfall test no longer depends on the cycle phase.** `a_jtty_channel_has_a_waterfall_and_still_decodes` asked for ten
+  rows by the time a message completed, but the stand-in server is paced by the wall clock and its script by the UTC cycle, so that took 2 to
+  14 s depending on where the stream began and the assertion failed one start in eight (7 rows seen; measured by starting at chosen phases).
+  The properties are now `jtty::tests` in virtual time, 0.5 s for all sixteen: the waterfall's copy is the audio the thread read, keeping it
+  changes no decode, and rows drawn from it are lit where the message was and dark elsewhere (checked by breaking `feed` three ways). The
+  end-to-end test keeps only the loop's wiring, 1.9 s.
 - **Q65's caller list is checked against WSJT-X v3.3.0-beta1 itself (#642).** `scripts/jttysim/q65_callers_oracle.f90` links upstream's
   `q65_callers` and `q65_set_list2`; `tests/q65_callers_oracle.rs` replays a 300-operation script (records, expiry, removal, lists) and
   requires the same caller list after every step and the same codewords in every list, including DX as the 51st beside 50 callers. It
