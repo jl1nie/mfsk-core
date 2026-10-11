@@ -1243,7 +1243,13 @@ the FEC mother code. Full account in [`UVPACKET.md`](UVPACKET.md).
 
 **MSK144** is outside `Decoder` too, by design: it is not FSK, and
 `msk144::decode::decode_slot` bypasses `engine::pipeline`. It scans the whole
-T/R period for pings.
+T/R period for pings. `msk144::decode::Stream` is the same scan as WSJT-X's
+real-time `mskrtd` runs it (#497): `push` audio in chunks of any size and each
+decode comes back as soon as its 0.6 s window is complete, with `t_s` (`f64`)
+counted from the first sample. The noise floor carries over the session;
+`new_period()` resets only the dupe check, as `mskrtd.f90:88` does at a new
+period; `reset()` forgets everything. Fed a slot in any chunk size it gives
+exactly what `decode_slot` gives (`tests/msk144_stream.rs`).
 
 **JTTY** (WSJT-X 3.2.0-rc1's mode for weak-signal keyboard chat; a port of
 `lib/jtty/`, tracked in #477 and `docs/notes/JTTY_UPSTREAM.md`) is the one

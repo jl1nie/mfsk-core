@@ -23,6 +23,10 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Public API
 
+- **MSK144 decodes as audio arrives (#497).** `msk144::decode::Stream` takes 12 kHz `i16` in chunks of any size and reports each
+  decode once its 0.6 s window is complete, as WSJT-X's `mskrtd` does; `new_period()` resets the dupe check (`mskrtd.f90:88`), the
+  noise floor carries over. `decode_slot` is now a `Stream` fed the whole slot, so its output is unchanged; any chunk size gives
+  the same decodes (`tests/msk144_stream.rs`). The C ABI and bindings follow separately.
 - **FST4W, and FST4-900 / FST4-1800 (#649).** WSJT-X's WSPR-style beacon on FST4's modulation: `Fst4w120` / `300` / `900` / `1800`
   (feature `fst4w`), LDPC(240,74) + CRC-24 over a 50-bit type-0.6 message, `Decoder<P>` with `wcalls()` / `set_wcalls()` for the Keff-50
   known-call list, `Decoded::hash22` for an unresolved `<...>` row, `Mode::Fst4W*`, `pack77_wspr`. `Fst4s900` / `Fst4s1800` join FST4
