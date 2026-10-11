@@ -53,15 +53,15 @@
         "groups": 8
       },
       "jt65": {
-        "date": "2026-10-10",
-        "commit": "787e0cbd",
+        "date": "2026-10-11",
+        "commit": "5b4a8f03",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
       },
       "jt65_chase": {
-        "date": "2026-10-10",
-        "commit": "787e0cbd",
+        "date": "2026-10-11",
+        "commit": "5b4a8f03",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 300,
         "groups": 1
@@ -81,8 +81,8 @@
         "groups": 2
       },
       "msk144": {
-        "date": "2026-10-10",
-        "commit": "6cb9ed95-dirty",
+        "date": "2026-10-11",
+        "commit": "5b4a8f03",
         "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 280,
         "groups": 2

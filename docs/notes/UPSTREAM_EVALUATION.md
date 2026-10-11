@@ -76,21 +76,21 @@ as `jt9` does, and the old hint on the new API reproduces the 0.12 crossings. WS
 is now 217 of 260 with one upstream-only and none crate-only (it was 5 and 4):
 after the `wsprd` port of this release (`WSPR_UPSTREAM.md`).
 
-## Time, 2026-10-09 (WSPR, JT65, JT9, Q65: 2026-10-04; JTTY: 2026-10-01)
+## Time, 2026-10-11 (FT8, FT4, FST4, JT65; WSPR, JT9, Q65: 2026-10-04; JTTY: 2026-10-01; FST4W: 2026-10-11)
 
 Crate's time as a fraction of upstream's on the same files.
 
 | task | files a kind | noise | crossing |
 |---|---|---|---|
-| `ft8/t1` | 20 | 0.20 (125 / 638 ms) | 0.21 (134 / 636 ms) |
-| `ft4/t1` | 20 | 0.15 (2.3 / 15.8 ms) | 0.30 (6.9 / 22.8 ms) |
-| `fst4/t1` | 20 | 0.19 (47 / 241 ms) | 0.22 (61 / 278 ms) |
+| `ft8/t1` | 20 | 0.20 (131 / 641 ms) | 0.21 (136 / 645 ms) |
+| `ft4/t1` | 20 | 0.15 (2.4 / 15.9 ms) | 0.30 (7.0 / 23.2 ms) |
+| `fst4/t1` | 20 | 0.20 (49 / 244 ms) | 0.23 (66 / 285 ms) |
 | `q65/t1` | 20 | 0.29 (60 / 211 ms) | 0.26 (46 / 174 ms) |
 | `jt9/t1` | 10 | 0.19 (15.1 / 77.9 ms) | 0.19 (17.9 / 96.2 ms) |
 | `jtty/t1` | 20 | 0.11 (14 / 127 ms) | 0.14 (19 / 132 ms) |
 | `wspr/t1` | 10 | 0.24 (19 / 79 ms) | 1.22 (208 / 170 ms) |
 | `fst4w/t1` | 8 | 0.28 (29 / 103 ms) | 0.30 (53 / 176 ms) |
-| `jt65/t1` | 10 | 0.25 (193 / 784 ms) | 0.06 (53 / 855 ms) |
+| `jt65/t1` | 10 | 0.24 (180 / 762 ms) | 0.05 (45 / 826 ms) |
 
 Fewer than ten files a kind is too few: `wspr/t1` read anywhere from 0.60 to
 1.60 on two. Every task now times at least ten. WSPR's crossing column is
