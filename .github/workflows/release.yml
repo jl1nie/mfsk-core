@@ -445,8 +445,10 @@ jobs:
             for curated release notes.
 
             **Prebuilt `mfsk-ffi` binaries** (the all-mode C ABI), attached below:
-            `linux-x86_64`; `windows-x86_64` (MinGW: DLL, import library, static
-            library; no MSVC import library yet); `android-arm64-v8a` (a jniLibs tree,
+            `linux-x86_64`; `windows-x86_64-msvc` (a DLL with the C runtime linked in, so
+            no VC++ Redistributable, and its import library) and `windows-x86_64-gnu`
+            (MinGW: DLL, import library, static library), both run on Windows with the
+            C++ driver before they are attached; `android-arm64-v8a` (a jniLibs tree,
             16 KB aligned, `mobile` features); `ios.xcframework.zip` with its
             `.sha256` (device + simulator, `mobile` features, for a SwiftPM
             `.binaryTarget`). See

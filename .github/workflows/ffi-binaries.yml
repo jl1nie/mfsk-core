@@ -3,7 +3,8 @@ name: FFI binaries
 # The prebuilt `mfsk-ffi` library for the platforms the C ABI, Kotlin and Swift
 # name (#368), beside the linux-x86_64 one `release.yml` builds itself:
 #
-#   windows-x86_64 (MinGW)   desktop features, DLL + import library + static library
+#   windows-x86_64-gnu       MinGW; desktop features, DLL + import library + static library
+#   windows-x86_64-msvc      MSVC; desktop features, DLL (C runtime linked in) + import library
 #   android-arm64-v8a        `mobile` features, a jniLibs tree, 16 KB aligned
 #   ios                      `mobile` features, an XCFramework (device + simulator)
 #
@@ -32,8 +33,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  windows-x86_64:
-    name: mfsk-ffi — windows-x86_64 (MinGW)
+  windows-x86_64-gnu:
+    name: mfsk-ffi — windows-x86_64-gnu (MinGW)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -83,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           NAME=${GITHUB_REF_NAME//\//-}   # a PR run is "677/merge"
-          PKG=mfsk-ffi-${NAME}-windows-x86_64
+          PKG=mfsk-ffi-${NAME}-windows-x86_64-gnu
           T=target/x86_64-pc-windows-gnu/release
           mkdir -p "$PKG"/{bin,lib,include}
           cp "$T/mfsk.dll"        "$PKG"/bin/
@@ -98,14 +99,123 @@ jobs:
           bin/mfsk.dll       the library
           lib/libmfsk.dll.a  its import library, for MinGW / MSYS2 (-lmfsk)
           lib/libmfsk.a      the static library (MinGW; define MFSK_STATIC)
-          An MSVC import library is not provided yet (#368): from MSVC, load the DLL
-          with LoadLibrary / GetProcAddress, or generate a .lib from its exports.
+          From MSVC use the windows-x86_64-msvc package instead (its own import library).
+          The DLL needs only system DLLs (no libgcc / libwinpthread).
           EOF
           zip -r "$PKG".zip "$PKG"
       - uses: actions/upload-artifact@v4
         with:
-          name: ffi-windows-x86_64
-          path: mfsk-ffi-*-windows-x86_64.zip
+          name: ffi-windows-x86_64-gnu
+          path: mfsk-ffi-*-windows-x86_64-gnu.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # The MSVC build, and the one place the Windows artifacts are *run*. The C++
+  # driver (mfsk-ffi/examples/cpp_smoke) is compiled with cl and run on Windows
+  # against this build's DLL and then against the MinGW package's, so a DLL that
+  # would not load there (a missing runtime, a wrong export) fails here rather
+  # than in a user's hands. Tried by hand first on Windows 11 / VS 2022 (#368).
+  windows-x86_64-msvc:
+    name: mfsk-ffi — windows-x86_64-msvc
+    needs: windows-x86_64-gnu
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      # The C runtime linked in: a DLL built the default way imports
+      # VCRUNTIME140.dll, which is not part of Windows (it comes with the VC++
+      # Redistributable), so on a PC without it the DLL does not load. The C ABI
+      # hands no CRT resource across (the library frees what it allocates), so a
+      # caller on a different CRT is safe. The static library is not packaged: it
+      # would carry this choice into the caller's link.
+      - name: Build
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo build -p mfsk-ffi --release
+
+      - name: The DLL imports system DLLs only, and exports the ABI
+        run: |
+          $deps = (dumpbin /dependents target\release\mfsk.dll) -join "`n"
+          Write-Host $deps
+          if ($deps -match 'VCRUNTIME|MSVCP|MSVCR|api-ms-win-crt|ucrtbase') {
+            throw "the DLL depends on the C runtime"
+          }
+          $exports = (dumpbin /exports target\release\mfsk.dll) -join "`n"
+          foreach ($sym in 'mfsk_abi_version','mfsk_decoder_open','mfsk_decoder_decode_i16',
+                           'mfsk_mode_count','mfsk_pack77','mfsk_stream_open','mfsk_jtty_open',
+                           'mfsk_msk144_open','mfsk_iq_open') {
+            if ($exports -notmatch "\b$sym\b") { throw "$sym is not exported" }
+          }
+
+      - name: Build the C++ driver with MSVC
+        shell: cmd
+        run: mfsk-ffi\examples\cpp_smoke\build_msvc.bat
+
+      - name: The driver runs against the MSVC DLL
+        run: |
+          $env:MFSK_JTTY_WAV = "$PWD\embedded-poc\assets\golden\jtty\260807_134110.wav"
+          $env:MFSK_MSK144_WAV = "$PWD\embedded-poc\assets\golden\msk144\181211_120800.wav"
+          Push-Location mfsk-ffi\examples\cpp_smoke
+          .\cpp_smoke.exe
+          if ($LASTEXITCODE -ne 0) { throw "cpp_smoke exited with $LASTEXITCODE" }
+          Pop-Location
+
+      # The package `windows-x86_64-gnu` made, loaded by the same executable (it
+      # imports by name, so any `mfsk.dll` exporting the ABI binds): the MinGW DLL
+      # starting on Windows without the MinGW runtime beside it is what is checked.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffi-windows-x86_64-gnu
+          path: gnu
+      - name: The driver runs against the MinGW package's DLL
+        run: |
+          Expand-Archive gnu\*.zip -DestinationPath gnu\x
+          $dll = (Get-ChildItem gnu\x -Recurse -Filter mfsk.dll | Select-Object -First 1).FullName
+          $deps = (dumpbin /dependents $dll) -join "`n"
+          Write-Host $deps
+          if ($deps -match 'libgcc|libwinpthread|libstdc') { throw "the MinGW DLL needs the MinGW runtime" }
+          $d = "$PWD\mingw-run"
+          New-Item -ItemType Directory $d | Out-Null
+          Copy-Item mfsk-ffi\examples\cpp_smoke\cpp_smoke.exe $d
+          Copy-Item $dll $d
+          $env:MFSK_JTTY_WAV = "$PWD\embedded-poc\assets\golden\jtty\260807_134110.wav"
+          $env:MFSK_MSK144_WAV = "$PWD\embedded-poc\assets\golden\msk144\181211_120800.wav"
+          Push-Location $d
+          .\cpp_smoke.exe
+          if ($LASTEXITCODE -ne 0) { throw "cpp_smoke (MinGW DLL) exited with $LASTEXITCODE" }
+          Pop-Location
+
+      - name: Package
+        run: |
+          $name = $env:GITHUB_REF_NAME -replace '/', '-'   # a PR run is "678/merge"
+          $pkg = "mfsk-ffi-$name-windows-x86_64-msvc"
+          New-Item -ItemType Directory "$pkg\bin","$pkg\lib","$pkg\include" | Out-Null
+          Copy-Item target\release\mfsk.dll "$pkg\bin\"
+          Copy-Item target\release\mfsk.dll.lib "$pkg\lib\"
+          Copy-Item mfsk-ffi\include\mfsk.h "$pkg\include\"
+          Copy-Item mfsk-ffi\README.md "$pkg\"
+          @'
+          Built with MSVC (x86_64-pc-windows-msvc), the desktop feature set, rustc's
+          C runtime linked in (-C target-feature=+crt-static): bin\mfsk.dll imports
+          system DLLs only, so no VC++ Redistributable is needed.
+          bin\mfsk.dll       the library
+          lib\mfsk.dll.lib   its import library: cl ... mfsk.dll.lib, with mfsk.dll beside the exe
+          include\mfsk.h     the header (define nothing: MFSK_API is __declspec(dllimport))
+          No static library is provided (it would carry the C runtime choice into your
+          link); build mfsk-ffi from source for one. MinGW users: the -gnu package.
+          '@ | Set-Content "$pkg\WINDOWS.txt"
+          # Not Compress-Archive: Windows PowerShell 5.1 writes backslashes into the
+          # entry names, which unzip elsewhere reads as part of a file name.
+          python -m zipfile -c "$pkg.zip" $pkg
+          if ($LASTEXITCODE -ne 0) { throw "zip failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffi-windows-x86_64-msvc
+          path: mfsk-ffi-*-windows-x86_64-msvc.zip
           if-no-files-found: error
           retention-days: 14
 

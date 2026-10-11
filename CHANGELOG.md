@@ -200,10 +200,14 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 - **Release binaries for Windows, Android and iOS (#368).** A tag attached one `mfsk-ffi` build, linux-x86_64, though `ci.yml` already built
   the MinGW DLL, the Android arm64 `.so` and the iOS libraries on every PR and threw them away after checking them. The new
-  `ffi-binaries.yml` (called by `release.yml`) keeps them: `windows-x86_64` (DLL, import library, static library), `android-arm64-v8a`
+  `ffi-binaries.yml` (called by `release.yml`) keeps them: `windows-x86_64-gnu` (DLL, import library, static library), `android-arm64-v8a`
   (jniLibs tree, `mobile` features, checked 16 KB aligned and rayon-free), and `ios.xcframework.zip` with its SHA-256 for a SwiftPM
-  `.binaryTarget`. It also runs by hand and on a PR that edits it, so the release path is tried before a tag. Still missing: an MSVC
-  import library, the other Android ABIs, macOS.
+  `.binaryTarget`. It adds `windows-x86_64-msvc`: a DLL with the C runtime linked in (`+crt-static`; the default build imports
+  `VCRUNTIME140.dll`, which a PC without the VC++ Redistributable lacks) and its import library. The C++ driver is compiled with `cl` and run
+  on Windows against that DLL and against the MinGW package's, so a DLL that does not load there fails in CI, not for a user. The driver
+  takes the golden recordings' paths from the environment as well as from `build.sh`'s macros, and `build_msvc.bat` builds it. The workflow
+  also runs by hand and on a PR that edits it, so the release path is tried before a tag. Still missing: the other Android ABIs, macOS.
+
 - **MSK144 receiver handle (#497).** `mfsk_msk144_open` / `push_i16` / `push_f32` / `poll` / `pending` / `new_period` / `reset` /
   `close` over `msk144::decode::Stream`, rows in `MfskMsk144Decode` (size-versioned, `t_s` a `double`); MSK144 now publishes
   `MFSK_CAP_STREAM_RECEIVER`, and `mfsk-ffi` compiles the MSK144 decoder in (`protocols`). Kotlin `MfskMsk144Receiver`, Swift
