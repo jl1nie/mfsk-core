@@ -7,6 +7,8 @@ export const loadSettings = () => invoke<Settings>('load_settings');
 export const saveSettings = (settings: Settings) => invoke<void>('save_settings', { settings });
 export const modes = () => invoke<ModeInfo[]>('modes');
 export const autoPfbChannels = () => invoke<number>('auto_pfb_channels');
+/** Where the PSK Reporter sender's datagrams go; `production` is false for the test listener. */
+export const pskDestination = () => invoke<{ address: string; production: boolean }>('psk_destination');
 export const start = (settings: Settings) => invoke<void>('start', { settings });
 export const stop = () => invoke<void>('stop');
 export const onEvent = (cb: (e: UiEvent) => void): Promise<UnlistenFn> =>

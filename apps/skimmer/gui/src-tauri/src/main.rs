@@ -811,6 +811,25 @@ fn auto_pfb_channels() -> usize {
     skimmer_core::AUTO_PFB_CHANNELS
 }
 
+/// Where the PSK Reporter sender's datagrams go, for the window to say so: the switch has no
+/// destination to choose (`APP_ENDPOINT` is one constant), so the only way a user learns that it is
+/// the test listener, which records nothing, is for the window to show it.
+#[derive(serde::Serialize)]
+struct PskDestination {
+    /// `host:port`.
+    address: String,
+    /// The real service. False while `APP_ENDPOINT` is the test listener.
+    production: bool,
+}
+
+#[tauri::command]
+fn psk_destination() -> PskDestination {
+    PskDestination {
+        address: APP_ENDPOINT.address(),
+        production: APP_ENDPOINT == skimmer_core::pskreporter::Endpoint::Production,
+    }
+}
+
 #[tauri::command]
 fn modes() -> Vec<ModeInfo> {
     let mut v: Vec<ModeInfo> = MODES
@@ -1553,6 +1572,7 @@ fn main() {
             save_settings,
             modes,
             auto_pfb_channels,
+            psk_destination,
             start,
             stop,
             set_channel_options,
