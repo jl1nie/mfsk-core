@@ -57,7 +57,7 @@ use std::path::{Path, PathBuf};
 mod common;
 use common::{load_wav_f32_opt, parse_snr_tag};
 use mfsk_core::jt65::search::{SearchParams, default_search_params};
-use mfsk_core::jt65::{ChaseParams, DecodeRequest};
+use mfsk_core::jt65::{ChaseParams, DecodeRequest, HintBank, HintSpec};
 
 const GOLDEN_CALL1: &str = "CQ";
 const GOLDEN_CALL2: &str = "JL1NIE";
@@ -90,6 +90,53 @@ fn decode_wav_jt65(audio: &[f32]) -> bool {
 fn decode_wav_jt65_chase(audio: &[f32]) -> bool {
     DecodeRequest::new(audio, 12_000)
         .chase(ChaseParams::default())
+        .decode()
+        .iter()
+        .any(is_golden)
+}
+
+/// A bank of `n` known calls, the golden station first (`with_golden`) and
+/// otherwise synthetic ones like `AA0AAA`; the sweep's golden message is
+/// `CQ JL1NIE PM95`, so a bank without it must never return that message.
+fn hint_bank(n: usize, with_golden: bool) -> HintBank {
+    let mut calls: Vec<(String, String)> = Vec::new();
+    if with_golden {
+        calls.push((GOLDEN_CALL2.into(), GOLDEN_GRID.into()));
+    }
+    let mut i = 0usize;
+    while calls.len() < n {
+        let (a, b, c) = (i / 676 % 10, i / 26 % 26, i % 26);
+        let call = format!(
+            "{}{}{}A{}{}",
+            (b'A' + (i / 17576 % 26) as u8) as char,
+            a,
+            (b'0' + (i / 7 % 10) as u8) as char,
+            (b'A' + b as u8) as char,
+            (b'A' + c as u8) as char
+        );
+        let grid = format!(
+            "{}{}{}{}",
+            (b'A' + (i % 18) as u8) as char,
+            (b'A' + (i / 18 % 18) as u8) as char,
+            i % 10,
+            i / 10 % 10
+        );
+        if call != GOLDEN_CALL2 {
+            calls.push((call, grid));
+        }
+        i += 1;
+    }
+    HintBank::new(&HintSpec {
+        mycall: "JA1ZZZ".into(),
+        calls,
+        ..Default::default()
+    })
+}
+
+fn decode_wav_jt65_hint(audio: &[f32], bank: &HintBank) -> bool {
+    DecodeRequest::new(audio, 12_000)
+        .chase(ChaseParams::default())
+        .hint(bank)
         .decode()
         .iter()
         .any(is_golden)
@@ -234,6 +281,112 @@ fn jt65_chase_awgn_snr_sweep() {
         decode_wav_jt65_chase,
         "MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV",
     );
+}
+
+/// The deep search (`ndepth & 32`, #648) on the same corpus, the golden
+/// station among 10 000 known calls. Compare with
+/// [`jt65_chase_awgn_snr_sweep`].
+#[test]
+#[ignore]
+fn jt65_hint_awgn_snr_sweep() {
+    let bank = hint_bank(10_000, true);
+    run_sweep(
+        "JT65A AWGN SNR sweep (Chase + deep search, 10 000 calls)",
+        |a| decode_wav_jt65_hint(a, &bank),
+        "MFSK_JT65_HINT_SWEEP_SUMMARY_CSV",
+    );
+}
+
+/// Precision: with a 10 000-call bank that does **not** contain the golden
+/// station, no trial at any SNR may return a message from the bank. Counts
+/// every row the deep search adds over plain Chase.
+#[test]
+#[ignore]
+fn jt65_hint_phantoms() {
+    let dir = sweep_dir();
+    let Some(jobs) = collect_jobs(&dir) else {
+        return;
+    };
+    let bank = hint_bank(10_000, false);
+    let (mut extra, mut n) = (0usize, 0usize);
+    for j in jobs {
+        let Some(audio) = load_wav_f32_opt(&j.path) else {
+            continue;
+        };
+        let base = DecodeRequest::new(&audio, 12_000)
+            .chase(ChaseParams::default())
+            .decode();
+        let with = DecodeRequest::new(&audio, 12_000)
+            .chase(ChaseParams::default())
+            .hint(&bank)
+            .decode();
+        n += 1;
+        for r in &with {
+            if !base.iter().any(|b| b.message == r.message) {
+                extra += 1;
+                println!(
+                    "phantom at {:+} dB trial {}: {} @ {:.1} Hz",
+                    j.snr, j.trial, r.message, r.freq_hz
+                );
+            }
+        }
+    }
+    println!("hint phantoms: {extra} over {n} files");
+}
+
+struct NoiseRng(u64);
+impl NoiseRng {
+    fn f(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 40) as f32 / (1u64 << 24) as f32
+    }
+    fn g(&mut self) -> f32 {
+        let (a, b) = (self.f().max(1e-9), self.f());
+        (-2.0 * a.ln()).sqrt() * (std::f32::consts::TAU * b).cos()
+    }
+}
+
+/// Rows the deep search returns from `periods` periods of pure noise.
+fn noise_rows(bank: &HintBank, periods: usize, aggressiveness_note: &str) -> usize {
+    let mut rng = NoiseRng(0x9E3779B97F4A7C15);
+    let mut rows = 0;
+    for _ in 0..periods {
+        let audio: Vec<f32> = (0..12_000 * 52).map(|_| 0.1 * rng.g()).collect();
+        let r = DecodeRequest::new(&audio, 12_000)
+            .chase(ChaseParams::default())
+            .hint(bank)
+            .decode();
+        for x in &r {
+            println!(
+                "noise row ({aggressiveness_note}): {} @ {:.1} Hz snr {:.1}",
+                x.message, x.freq_hz, x.snr_db
+            );
+        }
+        rows += r.len();
+    }
+    rows
+}
+
+/// Pure noise against a 1 000-call bank that contains the golden station:
+/// the deep search must not return a bank message from nothing. Needs no
+/// corpus. Measured 2026-10-11, see `jt65_hint_noise_phantom_rate` for the
+/// dependence on the bank's size.
+#[test]
+fn jt65_hint_noise_has_no_phantoms() {
+    assert_eq!(noise_rows(&hint_bank(1_000, true), 40, "1000"), 0);
+}
+
+/// Phantom rows per 200 noise periods against banks of 100, 1 000, 10 000
+/// calls. A measurement, not a check.
+#[test]
+#[ignore]
+fn jt65_hint_noise_phantom_rate() {
+    for n in [100, 1_000, 10_000] {
+        let rows = noise_rows(&hint_bank(n, true), 200, &n.to_string());
+        println!("bank {n}: {rows} phantom rows in 200 noise periods");
+    }
 }
 
 /// Reported SNR must track the injected SNR the corpus was generated

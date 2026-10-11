@@ -634,7 +634,7 @@ assert!(wspr.set_ap_hint(None).is_err());
 | `tx_freq_hz` | `nftx` | FT8: この周波数の 50 Hz 以内で両コールサインの仮説 |
 | `depth` | `ndepth & 7` | 全モード。下の表 |
 | `averaging` | `ndepth & 16` | Q65 と JT65（どちらも `SlotInput::period` が要る。JT65 のは `jt65::averaging`、`avg65`） |
-| `deep_search` | `ndepth & 32` | JT65 の本家フラグ。まだ読まない |
+| `deep_search` | `ndepth & 32` | JT65: 既知局との相関 `hint65`（`Jt65Extras::known_calls`。MYCALL と DX 局は `station` と `qso`） |
 | `station` | `mycall`、`mygrid` | FT8・FT4・FST4（AP）、Q65（AP リスト） |
 | `qso` | `hiscall`、`hisgrid`、`nQSOProgress` | 同上 |
 | `ap` | `lft8apon`、`lapcqonly` | 同上: `ApMode::{Off, CqOnly, Full}` |
@@ -1031,8 +1031,16 @@ DT が 0.2 秒以内、周波数が `tol_hz`（既定 50 Hz）以内のものを
 `clear()` で保存した周期を忘れる。σ = 2.0 の雑音では、単一周期はどれも復号できず、
 6 周期目の和が復号する
 （`tests/decoder_depth.rs::jt65_averaging_decodes_what_no_single_period_does`）。
-未移植: JT65B/C の平滑化ループ（`ismo`）と `nflip`。`deep_search`（`ndepth & 32`、
-呼出符号データベースとの相関 `hint65`）は保持するが読まない。
+未移植: JT65B/C の平滑化ループ（`ismo`）と `nflip`。`deep_search`
+（`ndepth & 32`）は `hint65`（v3.3.0-beta1）を動かす。Chase が落とした候補を、
+`Jt65Extras::known_calls`（最大 10 000 件）の各局について `MYCALL CALL GRID` と
+`CQ CALL GRID`、DX 局について `MYCALL HISCALL` と 63 種のレポートに照合する。
+最良メッセージが別メッセージの最良に `2.0 - 0.1 * aggressiveness` 以上の差を
+つけたとき採用する。標準メッセージのみ（自由文・複合コールは対象外）、単一周期のみで
+平均化経路には掛けない。`jt65sim` コーパスでは最下段（-25 dB）が 0/20 から 20/20 になる
+（Chase のみ: -22 dB まで 20/20）。局が入っていない辞書での 300 ファイルに
+ファントムなし、雑音 200 周期は既知局 1 000 件で 0 件（10 000 件で 1 件）。
+`docs/notes/BENCHMARKS.md`。
 
 **既知の位置でのデコード。** `wspr::SniperRequest`、`jt9::SniperRequest`、
 `jt65::SniperRequest`、`q65::SniperRequest` は公開のまま残る: 呼び出し側が既に持っている

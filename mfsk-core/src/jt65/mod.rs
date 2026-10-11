@@ -116,6 +116,8 @@ pub mod decode_request;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 #[cfg(not(any(feature = "internal-testing", test)))]
 pub(crate) mod decode_request;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod hint;
 pub mod interleave;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;
@@ -130,6 +132,8 @@ pub mod tx;
 pub use chase::ChaseParams;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode_request::SniperRequest;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub use hint::{HintBank, HintSpec};
 // The wide-band request is the engine's, reached through `internal-testing`
 // since 0.13: `crate::decoder::Decoder` is the decode API.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -339,6 +343,7 @@ fn decode_scan_inner(
     nominal_start_sample: usize,
     params: &search::SearchParams,
     chase: Option<&chase::ChaseParams>,
+    hint: Option<&hint::HintBank>,
     npass: u8,
     mut averager: Option<(&mut averaging::Averager, i64, f32)>,
     on_result: Option<&(dyn Fn(&Jt65Result) + Sync)>,
@@ -384,6 +389,18 @@ fn decode_scan_inner(
                 }
                 None => decode_at_with_snr(work, sample_rate, c.start_sample, c.freq_hz),
             };
+            // `extract.f90:182-196`: a candidate Reed-Solomon fails on is
+            // matched against the known-call bank (`hint65`). Upstream sets
+            // `nft = 2` for it and subtracts nothing, so it stays out of
+            // `found` below.
+            let mut from_hint = false;
+            let decoded = decoded.or_else(|| {
+                let bank = hint.filter(|b| !b.is_empty())?;
+                let demod = rx::demodulate_aligned(work, sample_rate, c.start_sample, c.freq_hz)?;
+                let (words, _qual) = bank.best(&demod, 1)?;
+                from_hint = true;
+                Some((crate::msg::jt72::unpack(&words), demod.snr_db, words))
+            });
             // `jt65_decode.f90:236-262`: a candidate the single period does
             // not decode is tried against the saved periods (`avg65`).
             let decoded = decoded.or_else(|| {
@@ -450,7 +467,9 @@ fn decode_scan_inner(
                     cb(&result);
                 }
                 seen.push(result);
-                found.push((c.freq_hz, c.start_sample, info));
+                if !from_hint {
+                    found.push((c.freq_hz, c.start_sample, info));
+                }
             }
         }
         if subtract_after && let Some(res) = residue.as_mut() {

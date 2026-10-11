@@ -289,6 +289,16 @@ mod jt65_impl {
         /// Replace the Chase decoder's settings; by default its trial count
         /// is the depth's `nvec` and the rest are `ftrsdap.c`'s.
         pub chase: Option<ChaseParams>,
+        /// The known calls the deep search (`DecodeParams::deep_search`,
+        /// `ndepth & 32`) matches against, as `(call, grid)`: WSJT-X's
+        /// `CALL3.TXT`, which beta1 replaced by a caller-supplied list. The
+        /// station and DX station come from `DecodeParams`. Empty with
+        /// `deep_search` on still tries the DX station's messages.
+        pub known_calls: Vec<(alloc::string::String, alloc::string::String)>,
+        /// `naggressive`, 0..=10: the deep search accepts a margin of
+        /// `2.0 - 0.1 * this` (`extract.f90:186`). The Chase gate keeps its
+        /// own setting in [`Self::chase`].
+        pub aggressiveness: u8,
     }
 
     /// `jt65_decode.f90:110-119` (non-VHF): `ndepth` 1 is 2 passes and
@@ -338,11 +348,23 @@ mod jt65_impl {
                     })
                 }
             });
+            let bank = params.deep_search.then(|| {
+                crate::jt65::HintBank::new(&crate::jt65::HintSpec {
+                    mycall: params.station.call.clone(),
+                    hiscall: params.qso.his_call.clone(),
+                    hisgrid: params.qso.his_grid.clone(),
+                    calls: extras.known_calls.clone(),
+                    aggressiveness: extras.aggressiveness,
+                })
+            });
             let mut req = DecodeRequest::new(audio, 12_000)
                 .nominal_start(nominal_start(crate::Mode::Jt65))
                 .params(search)
                 .chase(chase)
                 .passes(npass);
+            if let Some(b) = bank.as_ref() {
+                req = req.hint(b);
+            }
             // `ndepth & 16`: needs the period index to know which saved periods
             // share the parity and which are the same.
             if params.averaging

@@ -50,6 +50,7 @@ pub struct DecodeRequest<'a> {
     nominal_start_sample: usize,
     params: SearchParams,
     chase: Option<ChaseParams>,
+    hint: Option<&'a super::hint::HintBank>,
     npass: u8,
     averager: Option<(&'a mut super::averaging::Averager, i64, f32)>,
     on_result: Option<&'a (dyn Fn(&Jt65Result) + Sync)>,
@@ -66,6 +67,7 @@ impl<'a> DecodeRequest<'a> {
             nominal_start_sample: 0,
             params: default_search_params(),
             chase: None,
+            hint: None,
             npass: 1,
             averager: None,
             on_result: None,
@@ -101,6 +103,13 @@ impl<'a> DecodeRequest<'a> {
     /// ([`super::chase`]) instead of plain hard-decision RS.
     pub fn chase(mut self, params: ChaseParams) -> Self {
         self.chase = Some(params);
+        self
+    }
+
+    /// The deep-search correlation fallback (`ndepth & 32`, [`super::hint`]):
+    /// a candidate Reed-Solomon fails on is matched against `bank`.
+    pub fn hint(mut self, bank: &'a super::hint::HintBank) -> Self {
+        self.hint = Some(bank);
         self
     }
 
@@ -162,6 +171,7 @@ impl<'a> DecodeRequest<'a> {
             self.nominal_start_sample,
             &self.params,
             self.chase.as_ref(),
+            self.hint,
             self.npass,
             self.averager.as_mut().map(|(a, p, n)| (&mut **a, *p, *n)),
             self.on_result,

@@ -375,7 +375,7 @@ Three things follow from it, and they are the reason:
   ignores it (`tol_hz` on FT8). The "read by" column of `LIBRARY.md` §2.2 is
   the only guard.
 - **The public block follows upstream's.** `averaging` and `deep_search` are
-  `ndepth & 16` and `& 32`; `deep_search` is carried and not yet read. A
+  `ndepth & 16` and `& 32`; `deep_search` runs JT65's `hint65` (#648). A
   change to `jt9com` upstream is a reason to change this API.
 - **No table shared between decoders.** Two channels of one mode learn
   callsigns separately, as two WSJT-X instances do.

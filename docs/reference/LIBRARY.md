@@ -657,7 +657,7 @@ does**; a field does not make an option exist for a mode.
 | `tx_freq_hz` | `nftx` | FT8: both-callsign hypotheses within 50 Hz of it |
 | `depth` | `ndepth & 7` | every mode, table below |
 | `averaging` | `ndepth & 16` | Q65 and JT65 (both need `SlotInput::period`; JT65's is `jt65::averaging`, `avg65`) |
-| `deep_search` | `ndepth & 32` | JT65's upstream flag; not yet read |
+| `deep_search` | `ndepth & 32` | JT65: the known-call correlation `hint65` (`Jt65Extras::known_calls`; `station` and `qso` give MYCALL and the DX station) |
 | `station` | `mycall`, `mygrid` | FT8, FT4, FST4 (AP), Q65 (AP list) |
 | `qso` | `hiscall`, `hisgrid`, `nQSOProgress` | the same |
 | `ap` | `lft8apon`, `lapcqonly` | the same: `ApMode::{Off, CqOnly, Full}` |
@@ -1107,8 +1107,16 @@ probabilities are `s1/psum`, so the sum needs no rescaling). It needs
 decodes and the sixth summed one does
 (`tests/decoder_depth.rs::jt65_averaging_decodes_what_no_single_period_does`).
 Not ported: the JT65B/C smoothing loop (`ismo`) and `nflip`. `deep_search`
-(`ndepth & 32`, the call-sign database correlation `hint65`) is carried and not
-read.
+(`ndepth & 32`) runs `hint65` (v3.3.0-beta1): a candidate Chase fails on is
+matched against `MYCALL CALL GRID` and `CQ CALL GRID` for every entry of
+`Jt65Extras::known_calls` (at most 10 000), and against `MYCALL HISCALL` with
+the 63 reports for the DX station. The best message is taken when its margin
+over the best different one is at least `2.0 - 0.1 * aggressiveness`. Standard
+messages only (no free text, no compound calls); single periods only, not the
+averaged path. On the `jt65sim` corpus it takes the lowest cell (-25 dB) from 0/20 to
+20/20 (Chase alone: 20/20 down to -22), with no phantom on the 300 files
+against a bank that lacks the station and none on 200 noise periods at 1 000
+known calls (1 at 10 000). `docs/notes/BENCHMARKS.md`.
 
 **Decoding at a known alignment.** `wspr::SniperRequest`, `jt9::SniperRequest`,
 `jt65::SniperRequest` and `q65::SniperRequest` stay public: a decode at a
