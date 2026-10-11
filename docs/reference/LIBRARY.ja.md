@@ -1161,7 +1161,12 @@ FT8・FT4・FST4 は、
 [`UVPACKET.md`](UVPACKET.ja.md) にある。
 
 **MSK144** も設計上 `Decoder` の外にある: FSK ではなく、`msk144::decode::decode_slot` は
-`engine::pipeline` を迂回する。T/R 周期全体を走査してピングを探す。
+`engine::pipeline` を迂回する。T/R 周期全体を走査してピングを探す。`msk144::decode::Stream` は
+同じ走査を WSJT-X のリアルタイム `mskrtd` と同じ形で行う（#497）。音声を任意の長さに区切って `push` すると、
+0.6 秒の窓が揃い次第その窓のデコードが返り、`t_s`（`f64`）は最初のサンプルから数える。雑音レベルはセッションを
+通じて持ち越し、`new_period()` は `mskrtd.f90:88` が新しい周期でするように重複チェックだけをリセットし、
+`reset()` はすべてを忘れる。1 スロットをどんな区切り方で与えても `decode_slot` と同じ結果になる
+（`tests/msk144_stream.rs`）。
 
 **JTTY**（WSJT-X 3.2.0-rc1 の微弱信号キーボードチャット用モード。`lib/jtty/` の
 移植で、#477 と `docs/notes/JTTY_UPSTREAM.md` で管理）は、ここで唯一 **スロットを持たない**

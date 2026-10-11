@@ -19,13 +19,14 @@
 //!   dedup bookkeeping are out of scope (matches the original scoping
 //!   in this crate's issue #25).
 //!
-//! Noise-floor (`pnoise`) and dupe-check (`msglast`/`nsnrlast`) state
-//! is scoped to one [`decode_slot`] call rather than persisted across
-//! calls — WSJT-X's real-time decoder smooths `pnoise` across an
-//! entire session, but every other protocol in this crate treats "one
-//! slot" as the unit of a decode call, and this is a deliberate
-//! simplification in that direction rather than an attempt at full
-//! real-time fidelity.
+//! Two entry points share one scan. [`Stream`] is the real-time form, as
+//! `mskrtd.f90` is called: audio in chunks of any size, a decode reported
+//! as soon as the window holding it is complete, the noise floor (`pnoise`)
+//! smoothed over the whole session and the dupe check (`msglast` /
+//! `nsnrlast`) reset only when the host starts a new T/R period
+//! ([`Stream::new_period`], `mskrtd.f90:88`). [`decode_slot`] is one
+//! period at a time, a `Stream` fed the whole slot, so its state starts
+//! fresh on every call (issue #497).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -351,16 +352,7 @@ pub fn decode_slot_with_hash_table(
     depth: Depth,
     hash_table: Option<alloc::sync::Arc<crate::msg::hash_table::CallsignHashTable>>,
 ) -> Vec<SlotDecode> {
-    let ctx = DecodeContext {
-        callsign_hash_table: hash_table
-            .map(|ht| ht as alloc::sync::Arc<dyn core::any::Any + Send + Sync>),
-    };
-    let mut state = ScanState::default();
     let mut out = Vec::new();
-
-    if audio.len() < BLOCK_SIZE {
-        return out;
-    }
 
     #[cfg(feature = "std")]
     let trace_stage = stage_trace_enabled();
@@ -377,16 +369,15 @@ pub fn decode_slot_with_hash_table(
     #[cfg(feature = "std")]
     let __trace_t0 = trace_stage.then(std::time::Instant::now);
 
-    let mut position = 0usize;
-    while position + BLOCK_SIZE <= audio.len() {
-        let block = &audio[position..position + BLOCK_SIZE];
-        let tsec = position as f32 / 12_000.0;
-        if let Some(mut r) = decode_block(block, fc, ntol, depth, &ctx, &mut state) {
-            r.tsec += tsec;
-            out.push(r);
-        }
-        position += STEP_SIZE;
-    }
+    let mut stream = Stream::new(fc, ntol, depth, hash_table);
+    stream.push(audio, &mut |d| {
+        out.push(SlotDecode {
+            message: d.message,
+            snr_db: d.snr_db,
+            freq_hz: d.freq_hz,
+            tsec: d.t_s as f32,
+        })
+    });
 
     #[cfg(feature = "std")]
     if let Some(t0) = __trace_t0 {
@@ -407,6 +398,122 @@ pub fn decode_slot_with_hash_table(
     }
 
     out
+}
+
+/// One decode from a [`Stream`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamDecode {
+    pub message: String,
+    /// As [`SlotDecode::snr_db`].
+    pub snr_db: i32,
+    /// Refined frequency estimate (Hz).
+    pub freq_hz: f32,
+    /// Decode time, seconds from the first sample the stream was given
+    /// (or from the last [`Stream::reset`]). `f64`: a session runs for hours,
+    /// and an `f32` second count stops resolving a symbol after about 4.5 h
+    /// (the reason JTTY's times became `f64`, #645).
+    pub t_s: f64,
+}
+
+/// The real-time MSK144 receiver (`mskrtd.f90`): push 12 kHz `i16` audio in
+/// chunks of any size, get each decode as soon as the 7168-sample window
+/// that holds it is complete (0.3 s of stride, 0.6 s of window).
+///
+/// It keeps one window of audio, not the period. Decoding runs inside
+/// [`Self::push`] on the caller's thread; windows are sequential because
+/// each one updates the noise floor the next one's SNR uses.
+///
+/// Feeding a slot in chunks of any size gives exactly what [`decode_slot`]
+/// gives on the whole slot (`tests/msk144_stream.rs`).
+pub struct Stream {
+    fc: f32,
+    ntol: f32,
+    depth: Depth,
+    ctx: DecodeContext,
+    state: ScanState,
+    /// audio from absolute sample `base` on
+    buf: Vec<i16>,
+    base: u64,
+    /// absolute start of the next window
+    next: u64,
+}
+
+impl Stream {
+    /// `fc`, `ntol` and `depth` as for [`decode_slot`]; `hash_table` as for
+    /// [`decode_slot_with_hash_table`], shared across the session.
+    pub fn new(
+        fc: f32,
+        ntol: f32,
+        depth: Depth,
+        hash_table: Option<alloc::sync::Arc<crate::msg::hash_table::CallsignHashTable>>,
+    ) -> Self {
+        Self {
+            fc,
+            ntol,
+            depth,
+            ctx: DecodeContext {
+                callsign_hash_table: hash_table
+                    .map(|ht| ht as alloc::sync::Arc<dyn core::any::Any + Send + Sync>),
+            },
+            state: ScanState::default(),
+            buf: Vec::with_capacity(2 * BLOCK_SIZE),
+            base: 0,
+            next: 0,
+        }
+    }
+
+    /// Append audio and decode every window it completes.
+    pub fn push(&mut self, samples: &[i16], on_decode: &mut dyn FnMut(StreamDecode)) {
+        let mut rest = samples;
+        while !rest.is_empty() {
+            // Take only what the next window needs, so the buffer stays
+            // one window long however large the chunk.
+            let have = self.base + self.buf.len() as u64;
+            let want = (self.next + BLOCK_SIZE as u64).saturating_sub(have) as usize;
+            let take = want.clamp(1, rest.len());
+            self.buf.extend_from_slice(&rest[..take]);
+            rest = &rest[take..];
+            while self.base + self.buf.len() as u64 >= self.next + BLOCK_SIZE as u64 {
+                let off = (self.next - self.base) as usize;
+                let block = &self.buf[off..off + BLOCK_SIZE];
+                if let Some(r) = decode_block(
+                    block,
+                    self.fc,
+                    self.ntol,
+                    self.depth,
+                    &self.ctx,
+                    &mut self.state,
+                ) {
+                    on_decode(StreamDecode {
+                        message: r.message,
+                        snr_db: r.snr_db,
+                        freq_hz: r.freq_hz,
+                        t_s: self.next as f64 / 12_000.0 + f64::from(r.tsec),
+                    });
+                }
+                self.next += STEP_SIZE as u64;
+                let drop = (self.next - self.base) as usize;
+                self.buf.drain(..drop);
+                self.base = self.next;
+            }
+        }
+    }
+
+    /// A new T/R period begins: forget the last message, so a repeat of it
+    /// is reported again (`mskrtd.f90:88-93`). The noise floor is kept.
+    pub fn new_period(&mut self) {
+        self.state.msglast.clear();
+        self.state.nsnrlast = -99;
+    }
+
+    /// Forget everything: buffered audio, the noise floor, the dupe check.
+    /// Times count from the next sample pushed.
+    pub fn reset(&mut self) {
+        self.state = ScanState::default();
+        self.buf.clear();
+        self.base = 0;
+        self.next = 0;
+    }
 }
 
 #[cfg(test)]
