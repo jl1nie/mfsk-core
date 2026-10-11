@@ -72,7 +72,7 @@
     </select>
     <input class="search" bind:value={search} placeholder="Search call or text" spellcheck="false" />
     <span class="count">{shown.length} messages</span>
-    <button class="link" onclick={onclear} title="Clear the list (ALL.TXT keeps every finished message)">Clear</button>
+    <button class="link" onclick={onclear} title="Clear the list (the database keeps every finished message)">Clear</button>
     {#if !follow}
       <button class="link" onclick={() => (follow = true)}>Follow ↓</button>
     {/if}

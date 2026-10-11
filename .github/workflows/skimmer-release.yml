@@ -6,13 +6,15 @@ name: Skimmer release
 # for the library's biweekly cut or publish anything to crates.io. The
 # library release no longer carries the installers (decided 2026-10-11).
 #
-# The version is the skimmer's own (1.0.0 onward), in four places that
+# The version is the skimmer's own (0.9.x is the beta, 1.0.0 the first with
+# PSK Reporter in production), in four places that
 # must agree, and `verify-tag` checks all four against the tag:
 # `apps/skimmer/core/Cargo.toml`, `apps/skimmer/cli/Cargo.toml`,
 # `apps/skimmer/gui/src-tauri/Cargo.toml` and `tauri.conf.json`.
 # `skimmer-core`'s is what PSK Reporter receives as the software name.
 #
-# The release is not marked "latest": that stays the library's.
+# The release is not marked "latest": that stays the library's. A 0.x release
+# is marked a pre-release.
 
 on:
   push:
@@ -86,32 +88,56 @@ jobs:
         with:
           name: mfsk skimmer ${{ needs.verify-tag.outputs.version }}
           make_latest: false
+          prerelease: ${{ startsWith(needs.verify-tag.outputs.version, '0.') }}
           files: skimmer/*
           fail_on_unmatched_files: true
           body: |
-            ## mfsk skimmer ${{ needs.verify-tag.outputs.version }} (sample app)
+            ## mfsk skimmer ${{ needs.verify-tag.outputs.version }}
 
-            Decodes FT8, FT4, FST4, FST4W, WSPR, JT9, JT65, Q65 and JTTY from a
-            SpyServer (Airspy HF+, Airspy, RTL-SDR), and can report spots to
-            PSK Reporter. It receives only. What changed: the skimmer entries in
-            [`CHANGELOG.md`](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md).
+            Decodes **FT8, FT4, FST4, WSPR, JT9, JT65, Q65 and JTTY** from a
+            [SpyServer](https://airspy.com/download/) (Airspy HF+, Airspy, RTL-SDR), many channels
+            from one stream, with a waterfall per channel, a database of everything heard, and a map
+            with a time-lapse. It can share the radio with SDR#, and rotate through bands. It receives only.
+
+            > **A beta (0.9).** It is a sample app for [`mfsk-core`](https://github.com/jl1nie/mfsk-core),
+            > and there is no support promise, but reports are welcome as
+            > [issues](https://github.com/jl1nie/mfsk-core/issues).
+            > **PSK Reporter reporting is in it, off by default, and sends to PSK Reporter's test
+            > listener, which records nothing.** It goes to the real service in 1.0.0, once PSK
+            > Reporter's author has agreed.
 
             | platform | file |
             |---|---|
             | Windows 10/11 (x64) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-windows-x64-setup.exe` |
             | macOS (Apple silicon) | `mfsk-skimmer-v${{ needs.verify-tag.outputs.version }}-macos-arm64.dmg` |
 
-            Install: neither is signed with a publisher certificate, so each
-            system warns once.
-            - **Windows:** run the setup; on *Windows protected your PC* choose
-              *More info*, then *Run anyway*. No administrator rights needed.
-            - **macOS:** drag the app to Applications. macOS 14 and earlier:
-              right-click, *Open*. macOS 15 and later: open it once, then System
-              Settings → Privacy & Security → *Open Anyway*. Allow local network
-              access when asked, or the connection fails with `No route to host`.
+            No Intel Mac or Linux build; the command line version builds anywhere.
 
-            First run: *Settings* → the SpyServer's `host:5555` and your locator →
-            add channels from the presets → *Connect*. Updating: run the newer
-            installer over the old one. Full guide, troubleshooting and the
-            command line version:
+            **Install.** Neither is signed with a publisher certificate, so each system warns once.
+            - **Windows:** run the setup; on *Windows protected your PC* choose *More info*, then
+              *Run anyway*. No administrator rights needed.
+            - **macOS:** drag the app to Applications. macOS 14 and earlier: right-click, *Open*.
+              macOS 15 and later: open it once, then System Settings → Privacy & Security →
+              *Open Anyway*. **Allow local network access** when asked, or the connection fails
+              with `No route to host`.
+
+            **First run.** ⚙ → *Server*: the SpyServer's `host:5555`, your call and locator → add
+            channels from the presets → *Connect*. Updating: run the newer installer over the old one;
+            settings and database are kept.
+
+            **Manual:** [English](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.md)
+            · [日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_SKIMMER.ja.md).
+            What changed:
+            the skimmer entries in
+            [`CHANGELOG.md`](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md).
+            The command line version and the details:
             [`apps/skimmer/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/apps/skimmer/README.md).
+
+            ---
+
+            **日本語:** SpyServer（Airspy HF+、Airspy、RTL-SDR）から FT8・FT4・FST4・WSPR・JT9・JT65・Q65・JTTY
+            を同時に復号し、チャンネルごとのウォーターフォール、受信データベース、地図を備えます。SDR# とラジオを共有でき、
+            受信専用です。**ベータ版（0.9）**で、PSK Reporter への報告機能は入っていますが、既定はオフで、送信先は
+            PSK Reporter の**テスト用リスナー（何も記録されません）**です。本番への送信は、PSK Reporter の作者の了承が
+            得られた 1.0.0 からです。インストーラは署名されていないため、初回に警告が出ます（上の手順を参照）。
+            マニュアルは上のリンクから。
