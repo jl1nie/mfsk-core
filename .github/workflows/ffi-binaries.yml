@@ -96,7 +96,7 @@ jobs:
           cat > "$PKG"/WINDOWS.txt <<'EOF'
           Built with MinGW-w64 (x86_64-pc-windows-gnu), the desktop feature set.
           bin/mfsk.dll       the library
-          lib/*.dll.a        its import library, for MinGW / MSYS2 (-lmfsk)
+          lib/libmfsk.dll.a  its import library, for MinGW / MSYS2 (-lmfsk)
           lib/libmfsk.a      the static library (MinGW; define MFSK_STATIC)
           An MSVC import library is not provided yet (#368): from MSVC, load the DLL
           with LoadLibrary / GetProcAddress, or generate a .lib from its exports.
