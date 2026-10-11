@@ -1101,6 +1101,21 @@ mod spot_rule_tests {
         assert!(d.seen.is_empty());
     }
 
+    /// A tripwire, on purpose. The skimmer sends to PSK Reporter's test listener until the service's
+    /// author has said yes to it going to production (#655), and the window, the manual and the release
+    /// text all say "test". Switching `APP_ENDPOINT` to `Endpoint::Production` is the whole change in the
+    /// program, so this test is meant to fail then: update it together with the README, the manual
+    /// (section 10), the release text in `skimmer-release.yml` and the CHANGELOG, which is the checklist.
+    #[test]
+    fn the_app_sends_to_the_test_listener_until_the_author_approves() {
+        assert_eq!(
+            APP_ENDPOINT,
+            Endpoint::Test,
+            "APP_ENDPOINT is no longer the test listener: has PSK Reporter's author approved? \
+             Update this test, the README, MANUAL_SKIMMER (10), skimmer-release.yml and the CHANGELOG"
+        );
+    }
+
     #[test]
     fn configuration_rules() {
         let mut c = PskConfig::new("k1abc", "FN20");

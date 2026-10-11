@@ -154,6 +154,8 @@
   let slotOf: (number | null)[] = [];
   let serverOpen = $state(false);
   let autoPfb = $state(4);
+  /** Where PSK Reporter spots go. Assume the test listener until the backend says otherwise: that is the safe wording. */
+  let pskDest = $state({ address: 'pskreporter.info:14739', production: false });
   /** Host clock, ms; drives the slot bars. The skimmer's slot grid is anchored on the same clock. */
   let now = $state(Date.now());
 
@@ -199,6 +201,7 @@
       settings.servers.forEach((_, i) => syncRotation(i));
       modes = await api.modes();
       autoPfb = await api.autoPfbChannels();
+      pskDest = await api.pskDestination();
       unlisten = await api.onEvent(handle);
       if (await api.autostartRequested()) await startStop();
     })();
@@ -693,6 +696,10 @@
               <span>
                 Send what this server hears to PSK Reporter as spots (FT8, FT4, FST4, JT9, JT65, Q65 and JTTY; not WSPR). Off by default.
                 Needs My call and a Grid of at least four characters.
+                {#if !pskDest.production}
+                  <strong>Test only:</strong> the spots go to PSK Reporter's test listener ({pskDest.address}), which analyses them and
+                  records nothing, until PSK Reporter's author has approved the skimmer.
+                {/if}
               </span>
             </label>
             {#if sv.pskReporter}
@@ -836,7 +843,7 @@
         <span class="ph">{cur.phase}</span>
         {#if cur.psk}
           <span class="health psk" class:warn={!!cur.psk.error} title={pskDetail(cur.psk)}>
-            <span>PSK Reporter: {cur.psk.spotsSent} sent{cur.psk.error ? ` · ${cur.psk.error}` : ''}</span>
+            <span>PSK Reporter{pskDest.production ? '' : ' (test, not recorded)'}: {cur.psk.spotsSent} sent{cur.psk.error ? ` · ${cur.psk.error}` : ''}</span>
           </span>
         {/if}
         {#if health}
