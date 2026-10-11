@@ -879,6 +879,26 @@ merged, bump `DEFAULT_BASE` in the script and say so in the Issue. A changed
 upstream file the script lists as uncited is either not ported or a missing
 citation; add the citation if it is ported (`q65_callers.F90` was).
 
+## Scope — what is deliberately not ported, and where it is decided
+
+WSJT-X's own release line (`WSJTX/wsjtx`) is the only reference for a protocol's definition, and this crate ports what
+that line carries. Several things that sit beside it were looked at and left out. Each was settled once, with the record
+linked; **do not re-derive them in a session, read the record**, and reopen the issue only if the condition named
+there has changed.
+
+| left out | why, in one line | record |
+|---|---|---|
+| **SuperFox** | the file holding the QPC (127,50) code table states that its use is licensed for WSJT-X only; this crate is GPL-3.0-only and redistributed by everything that depends on it, and no frame can be coded without the table. The rest (a q-ary polar code on the Walsh-Hadamard primitives `fec/qra` already has) is portable. Reopen if the table is offered on terms that fit | #436 |
+| **FT2** | not part of WSJT-X (its `lib/ft2/` was removed on the 3.2 line), and the implementations in use describe themselves differently, so there is no specification of record. `ProtocolId::Ft2 = 2` stays reserved. Repeat the comparison if WSJT-X adds it | #437, `docs/notes/FT2_INVESTIGATION.md` |
+| **WS's (formerly WSJT-X Improved) 77-bit extension** | the bit layouts are WSJT-X's, unchanged; what differs is the text a QSO sends at each step. Signals are received like any other and must not crash or mislabel; no WS code is taken into the crate | #568, `docs/notes/WS_77BIT_EXTENSION.md` |
+| **JT9B-H, JT4, JT65B/C** | legacy next to FT8 and Q65, and nobody has asked | #647, #224 |
+| **A C# / .NET binding** | no demand on record. A host whose licence does not fit a GPL-3.0-only library inside its process is reached over the network instead, which is why the skimmer reads a SpyServer rather than being a host plugin | #533 |
+
+**How to write about it.** State what a file says and what a note found, and leave other projects' intent,
+compliance and fault out, in chat, commits, issues and docs alike. A decision here is a statement about this crate's
+scope, not about anyone else's. None of this is legal advice. When something outside WSJT-X looks tempting to port,
+check the table first, then ask.
+
 ## Branching — `main` is trunk, `devel` is for open-ended experiments
 
 Established 2026-07-25. Default workflow is unchanged: PRs land on
