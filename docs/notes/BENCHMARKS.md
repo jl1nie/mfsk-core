@@ -11,18 +11,19 @@ reproduce this sweep myself", see the protocol-specific
 Each mode is run against WSJT-X `v3.2.0-rc1` on the same job (band, what the
 operator knows, decode depth) and the same recordings, file by file.
 Ryzen 9 9900X, one thread each side, 2026-10-04 (FT8, FT4 and FST4: 2026-10-09; JTTY: 2026-10-01; FST4W: 2026-10-11, against `v3.3.0-beta1`).
+Speed of FT8, FT4, FST4 and JT65 was measured again on 2026-10-11, after the BP's `platanh` (#664) and the one OSD (#613): the ratios did not move beyond run-to-run noise.
 
 | mode | WSJT-X decoder | sensitivity against WSJT-X | speed |
 |---|---|---|---|
 | FT8 | `jt9 -8 -d 3` | the same (4 conditions) | 4.8–5.0× faster |
 | FT4 | `jt9 -5 -d 3` | the same (4 conditions) | 3.3–6.7× faster |
-| FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 4.5–5.3× faster |
+| FST4 | `jt9 -7 -d 3` | the same; better in 1 of 20 conditions | 4.3–5.0× faster |
 | Q65 | `jt9 -3 -d 1` | the same; better in 9 of 20 conditions | 3.5–3.8× faster |
 | JT9 | `jt9 -9 -d 3` | the same | 5.2–5.4× faster |
 | JTTY | `rjtty` | identical: every one of 360 trials agrees | 7–9× faster |
 | WSPR | `wsprd` | the same | 0.8–4.1× (near threshold, 0.8×: slightly slower) |
 | FST4W | `jt9 -W -d 3` (`v3.3.0-beta1`) | the same (8 conditions) | 3.3–3.6× faster |
-| JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–16× faster |
+| JT65 | `jt9 -6 -d 3` | **behind** (known; legacy, not chased) | 4–18× faster |
 
 "The same" means no condition (channel, sub-mode) differs by more than
 chance in a paired test; "better" and "behind" mean a condition that does.
@@ -245,8 +246,8 @@ is wall time on a many-core host, not a single-thread figure).
 | JT9 | 130418_1742.wav | 60 s | 0.16 s (was 0.37 s / 0.33 s — see the second 2026-08-08 note below) |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.42 s (was 0.56 s — see 2026-08-08 note below) |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.65 s (was 0.69 s) |
-| MSK144 | 181211_120800.wav | 30 s | 0.84 s |
-| MSK144 | 181211_120500.wav | 15 s | 0.88 s |
+| MSK144 | 181211_120800.wav | 30 s | 0.65 s (was 0.84 s; 2026-10-11, median of 15, rustc 1.98.1) |
+| MSK144 | 181211_120500.wav | 15 s | 0.68 s (was 0.88 s; same measurement) |
 
 **2026-07-29 re-measurement** (median of 3-5 runs, same box/build as
 the rest of this table; see the intro paragraph above for which
@@ -1793,3 +1794,9 @@ about ±0.5 dB given the sweep's SNR step granularity:
 WSJT-X's 2500 Hz reference-bandwidth convention.
 
 Reproduce: `docs/notes/MSK144_BENCHMARK.md`.
+
+**2026-10-11, after the real-time `Stream` (#497).** `decode_slot` is now a `msk144::decode::Stream` fed the whole slot. The
+sweep above is reproduced cell for cell (short: 8/20 at −6 dB and 18/20 at −5 dB; long: 12/20 at −5 dB; crossings −5.80 and −5.17 dB,
+a change of +0.00 dB). `decode_slot` on the two goldens, summed, took 1331–1367 ms before the change (`783100a3`) and 1325–1376 ms after
+it, three alternating rounds each, separate build directories: no change. The per-window cost is the decode; the buffer the
+stream keeps is a copy of 7168 samples a step.
