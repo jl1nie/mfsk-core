@@ -876,3 +876,34 @@ not shown feasible. The next step is profiling the trellis on the device (cycle 
 `insert`, the pool and the re-score) before changing anything: the last two guesses in this note (the FFT
 estimate and `f64`) were both wrong by measuring.
 
+
+## A frame on one sample alignment reads 4-7 Hz off and ~17 dB low: upstream's own behaviour (#653, 2026-10-10)
+
+A scripted band whose frames all start on whole seconds (the skimmer's stand-in
+SpyServer, #650) decoded every frame of a message with a frequency error of
+4-7 Hz and an SNR 15-20 dB too low. The text was right (rung 1, `nsync` 13).
+
+Same audio through `rjtty` built from v3.3.0-beta1 (`JTTY_TAG=v3.3.0-beta1
+scripts/build_jttysim.sh`), 118 start offsets of `JA1ABC K1ABC 599` at 1500 Hz,
+0.000-0.468 s in 4 ms steps (one window step is 0.472 s):
+
+- The bad alignment gives the **same frequency (1504.8 Hz, or 1495.9 / 1493.4 at
+  the 17.000 s case), time and `nsync` in both**, and an SNR 17 dB below the good
+  frames in both (the two scales differ by rjtty's constant 20 dB display offset).
+  5 of 118 alignments are affected upstream, 4 in this port.
+- The extra frames at about +-31 Hz (one tone spacing) are sidelobe decodes, also
+  in both.
+- rjtty re-decodes each frame in a later window at 1500.0 Hz, but
+  `is_recent_frame` (`NEAR_SIMULTANEOUS_FREQ_TOLERANCE` 12 Hz,
+  `FRAME_HISTORY_TIME_TOLERANCE` 0.05 s) treats it as a duplicate of the coarse
+  one, and `assemble.rs` does the same with the same constants. So upstream's
+  assembled message also carries the coarse frame's frequency and SNR.
+
+Nothing to port. A frame start that falls on that alignment on every message is
+a property of a fake band keyed on whole seconds; stations on the air key at
+random. Not a release blocker.
+
+A deliberate divergence would be possible (let a duplicate replace the earlier
+frame when its `nsync`/SNR is better), but it trades parity for precision and
+needs a tier-B carve-out for rjtty's output on the vendored vectors. Not done;
+reopen as its own issue if a real recording shows it.
