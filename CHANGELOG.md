@@ -249,6 +249,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Skimmer
 
+- **The skimmer's window says where PSK Reporter spots go.** The switch has no destination to choose (`APP_ENDPOINT`, the test listener until
+  PSK Reporter's author approves), but the window did not say what it was, so ticking it looked like reporting to the real service. A new
+  command, `psk_destination`, lets the label read *Test only* with the listener's address and the header `PSK Reporter (test, not recorded)`;
+  both drop the wording by themselves when `APP_ENDPOINT` becomes production. A unit test pins `APP_ENDPOINT` to the test listener, and its
+  failure message is the checklist for flipping it (README, `MANUAL_SKIMMER` section 10, the release text, this file). In 0.9.1; the 0.9.0 window does not say it.
 - **The skimmer's first public release is 0.9.0, a beta (#655).** The version goes from the 1.0.0 set in preparation to 0.9.0: 0.9.x is the beta,
   1.0.0 the first release with PSK Reporter in production (its author has not yet said yes, and the destination stays the test listener). A
   reader of the old installers (v0.13.x, which lacked JTTY, PSK Reporter, early FT8 rows and decode lanes) sees how much has changed; Windows'

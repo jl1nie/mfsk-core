@@ -321,7 +321,9 @@ The skimmer can send what it decodes to [PSK Reporter](https://pskreporter.info/
 sends (IPFIX over UDP). **In this version they go to PSK Reporter's test listener, which analyses them and records
 nothing**, until PSK Reporter's author has said yes to the skimmer going to production. There is no setting for the
 destination: it is fixed in the program, so turning the option on cannot send anything to the real service. It is
-**off by default**.
+**off by default**. The window says so: the switch's text reads *Test only: the spots go to PSK Reporter's test
+listener…*, and the header reads `PSK Reporter (test, not recorded): N sent`. (In 0.9.0 the window did not say it;
+0.9.1 does.)
 
 If you turn it on (Settings → Server → *PSK Reporter*) you are helping to test the sender; the header shows how many
 spots were sent and the last error, and hovering it gives the counts.
