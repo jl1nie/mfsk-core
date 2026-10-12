@@ -32,7 +32,7 @@ path = "src/bin/rx_wavsim.rs"
 harness = false
 
 # WSPR candidate-loop bench — issue #260 Phase 1/2, see
-# `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md`. Fed a host-baked
+# `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`. Fed a host-baked
 # 375 Hz baseband so no streaming DDC has to exist first. Build:
 #   cargo build --release --bin wspr-bench
 [[bin]]

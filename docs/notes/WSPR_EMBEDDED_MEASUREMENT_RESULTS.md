@@ -1,8 +1,7 @@
 # WSPR on ESP32-S3 — candidate-loop measurement, results
 
-Measured 2026-08-13 against
-[`WSPR_EMBEDDED_MEASUREMENT_PLAN.md`](WSPR_EMBEDDED_MEASUREMENT_PLAN.md),
-for issue [#260](https://github.com/jl1nie/mfsk-core/issues/260), whose
+Measured 2026-08-13 against a written plan (Phase 0 build feasibility, Phase 1 cost split, Phase 2
+bandwidth; the plan file was removed on 2026-10-12, it is in the git history), for issue [#260](https://github.com/jl1nie/mfsk-core/issues/260), whose
 own framing was that "a real S3 measurement of the WSPR candidate loop
 is now the decisive experiment". This is that measurement.
 

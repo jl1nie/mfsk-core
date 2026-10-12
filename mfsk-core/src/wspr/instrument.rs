@@ -1,6 +1,6 @@
 //! Free-running counters for the WSPR candidate loop.
 //!
-//! Written for `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md` Phase 1,
+//! Written for `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` Phase 1,
 //! whose highest-value single number is the `minsync1` pass rate: the
 //! refine cascade in
 //! the point decode ([`SniperRequest`](super::SniperRequest))

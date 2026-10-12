@@ -1,6 +1,6 @@
 //! WSPR candidate-loop bench for ESP32-S3 (LX7).
 //!
-//! Implements `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md` Phase 1
+//! Implements `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` Phase 1
 //! and Phase 2. It answers the one question three rounds of desk
 //! analysis on issue #260 could not: what the WSPR candidate loop
 //! actually costs on the device, and whether it is bandwidth-bound.

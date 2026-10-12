@@ -982,7 +982,7 @@ fn wspr_carried_table_across_slots_adds_no_phantoms() {
 /// Bake the WSJT-X golden's 375 Hz baseband to a flat `f32` binary for
 /// the ESP32-S3 candidate-loop bench.
 ///
-/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md` Phase 1, host side.
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` Phase 1, host side.
 /// The device bench is `wspr_diag_candidate_cost_split` minus
 /// `decimate_to_baseband` — the one stage the ESP-DSP FFT backend
 /// cannot serve, since `NFFT1 = 1_474_560` is far past any planner it
