@@ -343,12 +343,50 @@ impl RateMeter {
     }
 }
 
+/// Wait until the server has applied what was asked of it. `rtl_tcp` does not answer commands, and
+/// `rsp_tcp` does not even read them until its `Init` of the RSP is over (10-15 s on an RSP1, the commands
+/// waiting in the socket), while it streams already, at the rate and frequency it was started with: that
+/// stream, taken for the asked-for rate, runs ahead of the clock (a row of `re-anchor: -1.0 s` in the
+/// first minute, #685). The only sign is the byte rate: windows of 2 s on arrival times, until two in a
+/// row are within 20 % of the one the asked-for rate makes. Gives up after `timeout` (and goes on);
+/// returns how long it waited.
+pub fn await_rate(
+    c: &mut Conn,
+    stop: &AtomicBool,
+    nominal: u32,
+    timeout: Duration,
+) -> std::io::Result<Duration> {
+    let bps = c.hello.format.bytes_per_sample() as f64;
+    let want = f64::from(nominal) * bps;
+    let start = Instant::now();
+    let (mut t_first, mut bytes, mut good) = (None::<i64>, 0usize, 0);
+    while start.elapsed() < timeout {
+        let m = c.read(stop)?;
+        let t0 = *t_first.get_or_insert(m.arrival_ns);
+        bytes += m.body.len();
+        let elapsed = (m.arrival_ns - t0) as f64 * 1e-9;
+        if elapsed >= 2.0 {
+            let rate = bytes as f64 / elapsed;
+            if (rate / want - 1.0).abs() < 0.2 {
+                good += 1;
+                if good >= 2 {
+                    break;
+                }
+            } else {
+                good = 0;
+            }
+            (t_first, bytes) = (None, 0);
+        }
+    }
+    Ok(start.elapsed())
+}
+
 /// Measure the rate of a connection for `window` after dropping the first `skip` (a server's backlog
 /// arrives faster than real time), and return it when it is within 15 % of `nominal`, rounded to a
 /// whole kHz: the receiver takes only rates with a small rational ratio to 12 kHz (`1 035 949` and
-/// `998 444`, as measured over an RSP1 on a bare USB hub, were refused), and 1 kHz of a megahertz is
-/// 0.1 %. A server whose delivery wobbles by +-2 % over seconds (that RSP1) does not give a number
-/// worth the rounding: this is for a steady one.
+/// `998 444` were refused), and 1 kHz of a megahertz is 0.1 %. Call it after [`await_rate`]: the
+/// first measurements of an RSP1 (+1.2 % and -2.5 %) were of the stream before the server had read
+/// the rate command; after it, 994 kS/s for 1 024 000 asked, and the clock held for 6 minutes.
 pub fn measure_rate(
     c: &mut Conn,
     stop: &AtomicBool,

@@ -749,8 +749,10 @@ pub struct Config {
     pub rtl_format: rtltcp::RtlFormat,
     /// With [`Protocol::RtlTcp`]: how long to measure the rate the server really delivers before
     /// decoding (the protocol cannot say, and an RSP's was 1.7 % under the nominal one, which the
-    /// receiver took for a clock step every minute). Zero (the default) uses the nominal rate: the
-    /// measurement is only as good as the server's steadiness (#685, `rtltcp::measure_rate`).
+    /// receiver took for a clock step every minute). 30 s by default; zero uses the nominal rate.
+    /// Measured on an RSP1 through `rsp_tcp` it gave 994 kS/s for 1 024 000 asked (-2.9 %), after
+    /// which the clock was stepped once in 6 minutes instead of every minute (#685,
+    /// `rtltcp::measure_rate`).
     pub rtl_calibrate: Duration,
     pub channels: Vec<ChannelSpec>,
     /// A rotation: which of [`Self::channels`] to listen to, for how long, in
@@ -1060,7 +1062,7 @@ impl Config {
             server: server.into(),
             protocol: Protocol::SpyServer,
             rtl_format: rtltcp::RtlFormat::Auto,
-            rtl_calibrate: Duration::ZERO,
+            rtl_calibrate: Duration::from_secs(30),
             channels,
             steps: Vec::new(),
             rotation_origin: None,
@@ -1775,6 +1777,11 @@ fn session_rtl(
             if c.read(stop)?.arrival_ns >= settled {
                 break;
             }
+        }
+        // The first time, the server may not have read the commands yet (rsp_tcp starts its command
+        // reader after the RSP is up, ~10-15 s): wait for the stream to be at the rate asked for.
+        if !calibrated {
+            rtltcp::await_rate(&mut c, stop, rate, Duration::from_secs(60))?;
         }
         if !calibrated {
             calibrated = true;

@@ -233,13 +233,17 @@ Decision and measurements: #684, #685.
   cuts the channels. The stream cannot be paused: a rotation retunes it, waits 600 ms, writes the gain again and drops what
   arrived before (`session_rtl`). `--gain N` is a gain step, manual; without it the server's automatic gain.
 - `rsp_tcp` listens on `127.0.0.1`; `-a 0.0.0.0` for another PC (trusted network only).
-- **The rate the server really delivers.** The protocol has no field for it. An RSP1 on a bare (unpowered) USB hub delivered
-  5.03 M samples per 5 s for a nominal 1.024 MS/s (-1.7 %), wobbling +-2 % between windows (the debug `rsp_tcp`'s own statistics),
-  which the receiver, built on a constant rate, took for a 1 s clock step about once a minute (`re-anchor: +1.00 s`), losing the
-  slot in progress. The same RSP1 also failed (`RSP failure`, API: `Update(): Uninitialised device`) within 1-7 minutes there, with
-  or without the skimmer sending anything, and decoded FT8 (JA stations on 7041 kHz) while it ran. Give the RSP its own powered USB port.
-  `--rtl-calibrate SECS` measures the rate before decoding (a least-squares line through arrival times, rounded to a whole kHz); it
-  is off by default because over that RSP1 two measurements gave +1.2 % and -2.5 %.
+- **Two things an `rsp_tcp` does that the protocol cannot tell.** (1) It does not read commands until its `Init` of the RSP is over
+  (10-15 s on an RSP1), and streams meanwhile at the rate and frequency it was started with: taken for the rate asked for, that
+  stream ran ahead of the clock (`re-anchor: -1.0 s` six times in the first minute). The client waits for the byte rate to be the
+  one asked for (`rtltcp::await_rate`, up to 60 s). (2) The rate it then delivers is not the nominal one: an RSP1 gave
+  **994 kS/s for 1 024 000 asked (-2.9 %)**, 1 s of time in 35 s. The client measures it (`--rtl-calibrate SECS`, 30 by default, 0
+  off: a least-squares line through arrival times, rounded to a whole kHz because the receiver takes no other) and uses it: in
+  6 minutes on 7041 kHz the clock was stepped once, the delay and drift stayed within ~0.25 s, DT was +0.2..+0.4 s and 44
+  FT8 lines came out, 4-9 per slot.
+- An RSP1 on a bare (unpowered) USB hub also failed (`RSP failure`, API: `Update(): Uninitialised device`) within 1-7 minutes, with or
+  without the skimmer sending anything. Give the RSP its own powered USB port; the stock `rsp_tcp` exits on that event, a build that
+  Uninit/Init's the RSP again and goes on (kept the stream going through one) is what #685 used.
 - **Status:** tested end to end against `fake::FakeRtlServer` (`tests/fake_rtltcp.rs`: 16-bit, 8-bit, a format refused). On a real RSP1
   the greeting, the announcement and the stream worked; that `rsp_tcp` ended with `RSP failure` (the SDRplay API's device failure event)
   within minutes, with a bare reader on it as well, so FT8 off the air through it is not verified.

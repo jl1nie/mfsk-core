@@ -252,10 +252,11 @@ machine the RSP is plugged into), which speaks the `rtl_tcp` protocol; plain `rt
   on an RSP1). A rotation works as with SpyServer, but the first seconds after a retune are dropped. With no *Gain* set the
   server's automatic gain is on; a gain index makes it manual.
 - **Status.** Decoding is tested against a stand-in `rtl_tcp` server (8-bit and 16-bit). Against a real RSP1 on an
-  unpowered USB hub it decoded FT8 from JA stations on 7041 kHz, but that `rsp_tcp` stopped with `RSP failure` after 1 to 7
-  minutes (also with nothing but a reader on it), and the rate it delivered wobbled by +-2 %, so the clock was stepped by a
-  second about once a minute and the slot in progress was lost. **Give the RSP its own powered USB port**; a second USB
-  device on the same hub made it worse (#685).
+  unpowered USB hub it decoded FT8 from JA stations on 7041 kHz (4 to 9 per slot), but that `rsp_tcp` stopped with `RSP failure`
+  after 1 to 7 minutes (also with nothing but a reader on it). **Give the RSP its own powered USB port**; a second USB device on
+  the same hub made it worse. `rsp_tcp` reads no commands for 10 to 15 s after a connection and delivers a rate a few per cent
+  under the one asked for (994 kS/s for 1 024 000 on that RSP1): the skimmer waits for the stream to be at the rate asked, then
+  measures the rate for 30 s before decoding, so the first slots come about 45 s after Connect (#685).
 
 ### Rotation
 

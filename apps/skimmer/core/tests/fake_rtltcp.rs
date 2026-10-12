@@ -51,6 +51,8 @@ fn run(
     cfg.protocol = Protocol::RtlTcp;
     cfg.rate = Some(FAKE_RTL_RATE);
     cfg.retry = Duration::from_millis(300);
+    // The stand-in is exact; a test that wants the measurement asks for it.
+    cfg.rtl_calibrate = Duration::ZERO;
     tweak(&mut cfg);
     let stop = Arc::new(AtomicBool::new(false));
     let got: Arc<Mutex<Run>> = Arc::default();
