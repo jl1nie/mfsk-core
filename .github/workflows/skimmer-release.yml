@@ -113,6 +113,9 @@ jobs:
 
             No Intel Mac or Linux build; the command line version builds anywhere.
 
+            The decoders are `mfsk-core` at the same commit as the tag (the library's `main`, not
+            necessarily its latest crates.io release): the skimmer is versioned and released on its own.
+
             **Install.** Neither is signed with a publisher certificate, so each system warns once.
             - **Windows:** run the setup; on *Windows protected your PC* choose *More info*, then
               *Run anyway*. No administrator rights needed.
@@ -140,4 +143,5 @@ jobs:
             受信専用です。PSK Reporter への報告機能は入っていますが、既定はオフです。オンにすると
             **本物の PSK Reporter** へ送ります（作者の了承を得ています）。自分のコールとアンテナのロケータを
             設定してからオンにしてください。スポットはその名義で登録されます。インストーラは署名されていないため、初回に警告が出ます（上の手順を参照）。
+            デコーダは、タグと同じコミットの `mfsk-core`（crates.io の最新リリースとは限らない `main`）です。
             マニュアルは上のリンクから。
