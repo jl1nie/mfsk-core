@@ -30,8 +30,8 @@ fn usage() -> ExitCode {
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
          \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT]]\n\
-         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter's\n\
-         \x20      test listener (pskreporter.info:14739, which records nothing), or to --psk-to, a listener of your own.\n\
+         PSK Reporter: needs --mycall and the receiver's locator (--psk-grid, else --mygrid). Spots go to PSK Reporter\n\
+         \x20      (pskreporter.info), or to --psk-to, a listener of your own.\n\
          channelizer: filter bank from {} active channels, else direct, unless forced\n\
          modes: {}",
         skimmer_core::AUTO_PFB_CHANNELS,

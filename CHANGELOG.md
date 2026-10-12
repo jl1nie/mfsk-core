@@ -249,6 +249,11 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Skimmer
 
+- **The skimmer 1.0.0 sends to PSK Reporter itself (#655).** PSK Reporter's author, after the test-listener period, said to keep
+  sending in production. `pskreporter::APP_ENDPOINT` is now `Endpoint::Production`, for the CLI and the GUI; the tripwire test,
+  the README, `MANUAL_SKIMMER` (EN/JA), the CLI usage and the release text say so. The GUI's *Test only* wording and the header's
+  `(test, not recorded)` drop out by themselves. Checked live on the production-pointed 0.9.0 build: spots from JL1NIE appeared on pskreporter.info.
+  Tag `skimmer-v1.0.0` (the four version files and `package.json` agree).
 - **The skimmer's window says where PSK Reporter spots go.** The switch has no destination to choose (`APP_ENDPOINT`, the test listener until
   PSK Reporter's author approves), but the window did not say what it was, so ticking it looked like reporting to the real service. A new
   command, `psk_destination`, lets the label read *Test only* with the listener's address and the header `PSK Reporter (test, not recorded)`;

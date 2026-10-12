@@ -326,9 +326,9 @@ const DESCRIPTOR_SENDS: u32 = 3;
 const DESCRIPTOR_PERIOD: Duration = Duration::from_secs(3600);
 
 /// Where the CLI and the GUI send: the one switch between the test listener and PSK Reporter
-/// itself, set in code rather than offered to the user. [`Endpoint::Test`] until PSK Reporter's
-/// author has said yes to the skimmer going to production (#655); then [`Endpoint::Production`].
-pub const APP_ENDPOINT: Endpoint = Endpoint::Test;
+/// itself, set in code rather than offered to the user. [`Endpoint::Test`] during the 0.9.x
+/// beta, [`Endpoint::Production`] since 1.0.0, when PSK Reporter's author said yes (#655, 2026-10-12).
+pub const APP_ENDPOINT: Endpoint = Endpoint::Production;
 
 /// Where the datagrams go.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1101,18 +1101,15 @@ mod spot_rule_tests {
         assert!(d.seen.is_empty());
     }
 
-    /// A tripwire, on purpose. The skimmer sends to PSK Reporter's test listener until the service's
-    /// author has said yes to it going to production (#655), and the window, the manual and the release
-    /// text all say "test". Switching `APP_ENDPOINT` to `Endpoint::Production` is the whole change in the
-    /// program, so this test is meant to fail then: update it together with the README, the manual
-    /// (section 10), the release text in `skimmer-release.yml` and the CHANGELOG, which is the checklist.
+    /// A tripwire, on purpose. The skimmer sends to PSK Reporter itself since 1.0.0 (the service's author
+    /// said yes, #655). Switching `APP_ENDPOINT` is the whole change in the program, and the window, the
+    /// manual, the README and the release text say where spots go: change them together with it.
     #[test]
-    fn the_app_sends_to_the_test_listener_until_the_author_approves() {
+    fn the_app_sends_to_production_now_the_author_approved() {
         assert_eq!(
             APP_ENDPOINT,
-            Endpoint::Test,
-            "APP_ENDPOINT is no longer the test listener: has PSK Reporter's author approved? \
-             Update this test, the README, MANUAL_SKIMMER (10), skimmer-release.yml and the CHANGELOG"
+            Endpoint::Production,
+            "APP_ENDPOINT is no longer production: PSK Reporter's author approved it on 2026-10-12 (#655)"
         );
     }
 

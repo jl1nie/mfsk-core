@@ -2,13 +2,13 @@
 
 Decode FT8, FT4, WSPR and the other WSJT-X modes from a SpyServer, on a PC, with no radio on the desk.
 
-This is the manual for the Windows and macOS app (version 0.9, a beta). It describes what
+This is the manual for the Windows and macOS app (version 1.0). It describes what
 you see and what each setting does. Why it works the way it does is in
 [`apps/skimmer/README.md`](../../apps/skimmer/README.md); the command line version is there too.
 
-> **A beta, and a sample app.** It receives only, it has no support promise, and it was written to show how to drive
-> `mfsk-core` from a live source. **PSK Reporter reporting is in it but pointed at PSK Reporter's test listener, which
-> records nothing** (section 10). The installers are not signed with a publisher certificate, so each system warns once
+> **A sample app.** It receives only, it has no support promise, and it was written to show how to drive
+> `mfsk-core` from a live source. **PSK Reporter reporting is in it, off by default, and sends to the real
+> PSK Reporter** (section 10). The installers are not signed with a publisher certificate, so each system warns once
 > (section 3).
 
 ---
@@ -315,18 +315,15 @@ plain, DX, POTA, SOTA, TEST), the **bands** and **modes**, an **SNR** range, a *
 The file and the folder are chosen here, while disconnected. When Documents is synced to OneDrive the database syncs
 there; a database being written does not suit a synced folder well, so choose another folder if that is not wanted.
 
-## 10. PSK Reporter in this beta
+## 10. PSK Reporter
 
 The skimmer can send what it decodes to [PSK Reporter](https://pskreporter.info/) as spots, with the packets WSJT-X
-sends (IPFIX over UDP). **In this version they go to PSK Reporter's test listener, which analyses them and records
-nothing**, until PSK Reporter's author has said yes to the skimmer going to production. There is no setting for the
-destination: it is fixed in the program, so turning the option on cannot send anything to the real service. It is
-**off by default**. The window says so: the switch's text reads *Test only: the spots go to PSK Reporter's test
-listener…*, and the header reads `PSK Reporter (test, not recorded): N sent`. (In 0.9.0 the window did not say it;
-0.9.1 does.)
+sends (IPFIX over UDP). **Since 1.0.0 they go to PSK Reporter itself**: its author has said yes to the skimmer going to
+production. There is no setting for the destination; it is fixed in the program. It is **off by default**. (The 0.9.x
+beta sent to PSK Reporter's test listener, which records nothing, and the window said *Test only*; that wording is gone.)
 
-If you turn it on (Settings → Server → *PSK Reporter*) you are helping to test the sender; the header shows how many
-spots were sent and the last error, and hovering it gives the counts.
+If you turn it on (Settings → Server → *PSK Reporter*) your spots appear on PSK Reporter under the call and locator you
+set, so check them first; the header shows how many spots were sent and the last error, and hovering it gives the counts.
 
 - It needs **My call** and a **Grid** of at least four characters, and reports under them: **the locator is the
   antenna's**, so for a SpyServer somewhere else it is not where you sit. Each server is its own receiver on PSK
@@ -374,11 +371,11 @@ does not write an `ALL.TXT`; the command line version does (`--log`).
 | macOS blocks the app | section 3 |
 | Windows warns *protected your PC* | section 3 |
 
-## 14. The limits of this beta
+## 14. The limits
 
 - Windows 10/11 x64 and macOS on Apple silicon only; unsigned installers.
 - It is a sample app. Reports and questions are welcome as GitHub issues, but there is no support promise.
 - The macOS build is made by CI and has not been run on every Mac.
-- PSK Reporter goes to the test listener (section 10).
+- PSK Reporter reporting sends to the real service, under the call and locator you set (section 10).
 - The command line version (`skimmer`) has every decoder option and writes an `ALL.TXT`-style log; see
   [`apps/skimmer/README.md`](../../apps/skimmer/README.md).

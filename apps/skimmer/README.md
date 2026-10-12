@@ -29,7 +29,7 @@ decodes in time slots. The skimmer receives; it never transmits.
 
 **1. Download** the installer for your system from the newest
 [*mfsk skimmer* release](https://github.com/jl1nie/mfsk-core/releases?q=skimmer) (tag `skimmer-vX.Y.Z`,
-under *Assets*). The skimmer has its own version (0.9.x is the beta; 1.0.0 will be the first with PSK Reporter in production); the library's `vX.Y.Z` releases do not
+under *Assets*). The skimmer has its own version (1.0.0 is the first release with PSK Reporter in production; 0.9.x was the beta); the library's `vX.Y.Z` releases do not
 carry it.
 
 | platform | file |
@@ -126,11 +126,11 @@ skimmer --server HOST:5555 --ch FT8@14074000 --mycall CALL --mygrid GRID \
 
 Sends what it decodes as spots to [PSK Reporter](https://pskreporter.info/), by the protocol on
 [its developer page](https://pskreporter.info/pskdev.html) (IPFIX over UDP; the packets are
-byte-for-byte WSJT-X's, `skimmer_core::pskreporter`). **The datagrams go to PSK Reporter's test listener
-(`pskreporter.info:14739`), which analyses them and records nothing**, until PSK Reporter's author has said yes
-to production (#655). There is no option for it: `APP_ENDPOINT` in `skimmer_core::pskreporter` is the one
-switch, for the CLI and the GUI both. `--psk-to HOST:PORT` sends to a listener of your own, to look at the
-datagrams.
+byte-for-byte WSJT-X's, `skimmer_core::pskreporter`). **The datagrams go to PSK Reporter itself** (`pskreporter.info`), since 1.0.0: its author
+has said yes to production (#655). There is no option for the destination: `APP_ENDPOINT` in
+`skimmer_core::pskreporter` is the one switch, for the CLI and the GUI both. `--psk-to HOST:PORT` sends to a
+listener of your own, to look at the datagrams (the 0.9.x beta sent to PSK Reporter's test listener,
+`pskreporter.info:14739`, which records nothing).
 
 - The receiver is `--mycall` at `--psk-grid` (else `--mygrid`). **The locator is the antenna's**: for a
   SpyServer somewhere else it is not where you sit. `--psk-ant` and `--psk-rig` are free text.
