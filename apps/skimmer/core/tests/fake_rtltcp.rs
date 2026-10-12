@@ -34,9 +34,11 @@ struct Run {
     errors: Vec<String>,
     /// `(rate, centre Hz)` of each stream that began.
     streaming: Vec<(u32, f64)>,
+    /// How many times the receiver's clock was stepped.
+    reanchors: usize,
 }
 
-/// Run the skimmer on `server` until `want` holds of the messages, or 45 s pass.
+/// Run the skimmer on `server` until `want` holds of the messages, or 70 s pass.
 fn run(
     server: &FakeRtlServer,
     tweak: impl FnOnce(&mut Config),
@@ -60,10 +62,11 @@ fn run(
             Event::Streaming {
                 rate, center_hz, ..
             } => sink.lock().unwrap().streaming.push((rate, center_hz)),
+            Event::Reanchor { .. } => sink.lock().unwrap().reanchors += 1,
             _ => {}
         });
     });
-    let until = Instant::now() + Duration::from_secs(45);
+    let until = Instant::now() + Duration::from_secs(70);
     while Instant::now() < until {
         std::thread::sleep(Duration::from_millis(200));
         let g = got.lock().unwrap();
@@ -100,7 +103,13 @@ fn sixteen_bit_stream_is_decoded_and_the_commands_are_written() {
     assert_eq!(cmds.first(), Some(&(0x02, FAKE_RTL_RATE)), "{cmds:?}");
     assert_eq!(cmds.get(1), Some(&(0x01, 14_065_000)), "{cmds:?}");
     assert_eq!(cmds.get(2), Some(&(0x03, 0)), "{cmds:?}");
-    assert_eq!(r.streaming.first(), Some(&(FAKE_RTL_RATE, 14_065_000.0)));
+    // The rate used is the one measured, within a fraction of a per cent of what was asked.
+    let (rate, centre) = r.streaming[0];
+    assert_eq!(centre, 14_065_000.0);
+    assert!(
+        (f64::from(rate) / f64::from(FAKE_RTL_RATE) - 1.0).abs() < 0.001,
+        "{rate}"
+    );
 }
 
 /// Plain `rtl_tcp`: no struct, 8-bit IQ (the four bytes read to look for one are not lost), and
@@ -138,4 +147,30 @@ fn a_format_that_does_not_match_the_server_is_refused_with_the_reason() {
         r.errors
     );
     assert!(r.messages.is_empty());
+}
+
+/// An RSP delivered 1.7 % fewer samples than the rate it was asked for (#685), which the receiver took
+/// for a clock step every minute. The rate is measured at the start and used: the stream decodes, at the
+/// rate really delivered, and the clock is not stepped.
+#[test]
+fn a_server_that_delivers_short_is_measured_and_followed() {
+    let server =
+        FakeRtlServer::start_with_rate_error("127.0.0.1:0", band(0.01), true, 0.983).unwrap();
+    // Measured over a short window here: the stand-in is steady.
+    let r = run(
+        &server,
+        |c| c.rtl_calibrate = Duration::from_secs(6),
+        has_cq,
+    );
+    assert!(
+        done(&r.messages, "CQ K1ABC CQ FN42").is_some(),
+        "{:?} / {:?}",
+        r.messages,
+        r.errors
+    );
+    // Rounded to a whole kHz (the receiver takes no other): 188 736 S/s really, 189 000 used.
+    let rate = f64::from(r.streaming[0].0);
+    let real = f64::from(FAKE_RTL_RATE) * 0.983;
+    assert!((rate / real - 1.0).abs() < 0.002, "{rate} against {real}");
+    assert_eq!(r.reanchors, 0);
 }

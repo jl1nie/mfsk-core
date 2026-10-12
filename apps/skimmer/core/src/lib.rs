@@ -747,6 +747,11 @@ pub struct Config {
     pub protocol: Protocol,
     /// With [`Protocol::RtlTcp`]: the sample format expected (the server decides it).
     pub rtl_format: rtltcp::RtlFormat,
+    /// With [`Protocol::RtlTcp`]: how long to measure the rate the server really delivers before
+    /// decoding (the protocol cannot say, and an RSP's was 1.7 % under the nominal one, which the
+    /// receiver took for a clock step every minute). Zero (the default) uses the nominal rate: the
+    /// measurement is only as good as the server's steadiness (#685, `rtltcp::measure_rate`).
+    pub rtl_calibrate: Duration,
     pub channels: Vec<ChannelSpec>,
     /// A rotation: which of [`Self::channels`] to listen to, for how long, in
     /// turn. Empty: all of them, all the time.
@@ -1055,6 +1060,7 @@ impl Config {
             server: server.into(),
             protocol: Protocol::SpyServer,
             rtl_format: rtltcp::RtlFormat::Auto,
+            rtl_calibrate: Duration::ZERO,
             channels,
             steps: Vec::new(),
             rotation_origin: None,
@@ -1729,6 +1735,8 @@ fn session_rtl(
         can_control: true,
     }));
     c.set_sample_rate(rate)?;
+    // The rate the server really delivers, measured once per connection (see `Config::rtl_calibrate`).
+    let (mut measured, mut calibrated) = (None, false);
     let mut wf_bank = WfBank::new();
     let mut last_step: Option<Option<usize>> = None;
     let mut held_step: Option<Option<usize>> = None;
@@ -1746,7 +1754,7 @@ fn session_rtl(
             idle_rtl(&mut c, stop, cfg, until_ns)?;
             continue;
         }
-        let Some(p) = plan::plan_of(
+        let Some(mut p) = plan::plan_of(
             &cfg.channels,
             &mask,
             cfg.center_hz,
@@ -1767,6 +1775,21 @@ fn session_rtl(
             if c.read(stop)?.arrival_ns >= settled {
                 break;
             }
+        }
+        if !calibrated {
+            calibrated = true;
+            if !cfg.rtl_calibrate.is_zero() {
+                measured = rtltcp::measure_rate(
+                    &mut c,
+                    stop,
+                    rate,
+                    (cfg.rtl_calibrate / 4).min(Duration::from_secs(5)),
+                    cfg.rtl_calibrate,
+                )?;
+            }
+        }
+        if let Some(r) = measured {
+            p.rate = r;
         }
         let sync = Sync {
             can_control: true,

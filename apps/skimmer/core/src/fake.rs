@@ -191,6 +191,17 @@ pub struct FakeRtlServer {
 impl FakeRtlServer {
     /// Listen on `addr` (port 0: any); `bits16` is `rsp_tcp -E -b 16`, else plain `rtl_tcp`.
     pub fn start(addr: &str, band: Band, bits16: bool) -> std::io::Result<FakeRtlServer> {
+        Self::start_with_rate_error(addr, band, bits16, 1.0)
+    }
+
+    /// [`Self::start`], delivering `scale` times the rate the client asked for, as an RSP does
+    /// (1.7 % under: `scale` 0.983). The signal is laid on the samples at the rate really delivered.
+    pub fn start_with_rate_error(
+        addr: &str,
+        band: Band,
+        bits16: bool,
+        scale: f64,
+    ) -> std::io::Result<FakeRtlServer> {
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -201,7 +212,7 @@ impl FakeRtlServer {
             while !flag.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((s, _)) => {
-                        let _ = serve_rtl(s, &band, bits16, &flag, &log);
+                        let _ = serve_rtl(s, &band, bits16, scale, &flag, &log);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(50));
@@ -232,6 +243,7 @@ fn serve_rtl(
     mut sock: TcpStream,
     band: &Band,
     bits16: bool,
+    scale: f64,
     stop: &AtomicBool,
     log: &Mutex<Vec<(u8, u32)>>,
 ) -> std::io::Result<()> {
@@ -279,7 +291,7 @@ fn serve_rtl(
             match cmd {
                 0x01 => center = f64::from(param),
                 0x02 if param > 0 => {
-                    t_base += n as f64 / f64::from(rate);
+                    t_base += n as f64 / (f64::from(rate) * scale);
                     (rate, n) = (param, 0);
                 }
                 _ => {}
@@ -289,10 +301,10 @@ fn serve_rtl(
             continue;
         }
         const BLOCK: usize = 4096;
-        next_block += Duration::from_secs_f64(BLOCK as f64 / f64::from(rate));
+        next_block += Duration::from_secs_f64(BLOCK as f64 / (f64::from(rate) * scale));
         let mut body = Vec::with_capacity(BLOCK * if bits16 { 4 } else { 2 });
         for i in 0..BLOCK as u64 {
-            let t = t_base + (n + i) as f64 / f64::from(rate);
+            let t = t_base + (n + i) as f64 / (f64::from(rate) * scale);
             for v in synth.sample(t, center) {
                 if bits16 {
                     body.extend_from_slice(

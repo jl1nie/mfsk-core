@@ -302,6 +302,77 @@ impl Drop for Conn {
     }
 }
 
+/// The sample rate a server really delivers, measured: `rtl_tcp` has no field for it, and an RSP's
+/// was 1.7 % under the one asked for (1.006 MS/s for 1.024, `rsp_tcp` debug statistics, 2026-10-12):
+/// 1 s of time in a minute, which the receiver took for a clock step each time (#685). A least-squares
+/// line through (arrival time, samples so far) per message; the slope is the rate.
+#[derive(Clone, Debug, Default)]
+pub struct RateMeter {
+    t0: Option<i64>,
+    n: f64,
+    sx: f64,
+    sy: f64,
+    sxx: f64,
+    sxy: f64,
+}
+
+impl RateMeter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A message arrived at `arrival_ns` and brought the stream to `samples` in all.
+    pub fn push(&mut self, arrival_ns: i64, samples: u64) {
+        let t0 = *self.t0.get_or_insert(arrival_ns);
+        let (x, y) = ((arrival_ns - t0) as f64 * 1e-9, samples as f64);
+        self.n += 1.0;
+        self.sx += x;
+        self.sy += y;
+        self.sxx += x * x;
+        self.sxy += x * y;
+    }
+
+    /// Samples per second, once the points span something worth a line.
+    pub fn rate(&self) -> Option<f64> {
+        let d = self.n * self.sxx - self.sx * self.sx;
+        // Needs a spread of times, not only many points: 1 s of variance-sum per point squared.
+        if self.n < 10.0 || d <= 0.0 {
+            return None;
+        }
+        Some((self.n * self.sxy - self.sx * self.sy) / d)
+    }
+}
+
+/// Measure the rate of a connection for `window` after dropping the first `skip` (a server's backlog
+/// arrives faster than real time), and return it when it is within 15 % of `nominal`, rounded to a
+/// whole kHz: the receiver takes only rates with a small rational ratio to 12 kHz (`1 035 949` and
+/// `998 444`, as measured over an RSP1 on a bare USB hub, were refused), and 1 kHz of a megahertz is
+/// 0.1 %. A server whose delivery wobbles by +-2 % over seconds (that RSP1) does not give a number
+/// worth the rounding: this is for a steady one.
+pub fn measure_rate(
+    c: &mut Conn,
+    stop: &AtomicBool,
+    nominal: u32,
+    skip: Duration,
+    window: Duration,
+) -> std::io::Result<Option<u32>> {
+    let per_message = (chunk_bytes(c.hello.format) / c.hello.format.bytes_per_sample()) as u64;
+    let start = Instant::now();
+    let (mut meter, mut samples) = (RateMeter::new(), 0u64);
+    while start.elapsed() < skip + window {
+        let m = c.read(stop)?;
+        if start.elapsed() < skip {
+            continue;
+        }
+        samples += per_message;
+        meter.push(m.arrival_ns, samples);
+    }
+    Ok(meter
+        .rate()
+        .filter(|r| (r / f64::from(nominal) - 1.0).abs() < 0.15)
+        .map(|r| ((r / 1000.0).round() * 1000.0) as u32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +476,25 @@ mod tests {
         assert_eq!(&got[..5], &[0x01, 0, 0x6b, 0xf0, 0xd0]);
         assert_eq!(&got[5..10], &[0x03, 0, 0, 0, 1]);
         assert_eq!(&got[10..], &[0x0d, 0, 0, 0, 27]);
+    }
+
+    /// A line through noisy arrival times finds the rate to a fraction of a per cent, and a server
+    /// that delivers 1.7 % short is not taken for its nominal rate.
+    #[test]
+    fn the_meter_finds_the_real_rate_through_jitter() {
+        let real = 1_006_400.0_f64;
+        let per = 16_384u64;
+        let mut m = RateMeter::new();
+        let mut rng = 12345u32;
+        for k in 1..=900u64 {
+            // Arrival time of the k-th message, +- 15 ms of jitter.
+            rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let jitter = ((rng >> 8) as f64 / (1u64 << 24) as f64 - 0.5) * 0.030;
+            let t = (k * per) as f64 / real + jitter;
+            m.push((t * 1e9) as i64, k * per);
+        }
+        let r = m.rate().unwrap();
+        assert!((r / real - 1.0).abs() < 0.001, "{r}");
+        assert!(RateMeter::new().rate().is_none());
     }
 }
