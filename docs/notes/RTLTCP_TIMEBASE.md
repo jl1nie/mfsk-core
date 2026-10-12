@@ -70,3 +70,34 @@ virtual time.
   fastest packet seen.
 * `SpyServer` keeps `anchor::AnchorEstimate`: its rate is exact and it numbers its messages, so a pause is
   a hole in the sequence.
+
+## Open: what the first real-hardware replays showed (2026-10-12, RSP1 through `rsp_tcp`, 1.024 MS/s, FT8 7074 kHz)
+
+**This design is not finished.** The estimator tracks the clock (DT) well, but the rate offset it hands the receiver
+wanders, and that costs decodes. Recordings and the replay harness were made for this and are described below; the
+recordings themselves (0.5-1.2 GB) are not in the repository.
+
+* **Same recording, two clients** (replayed with the arrival times of the recording, the start aligned to its 15 s phase):
+  the commit before the time base (`4d3f1ac4`: a 30 s rate measurement, then the nearest plannable rate, here 987 456 S/s,
+  and the library tracker, which moves the offset only on a >=120 s window at >=3 sigma and >=100 ppm) decoded **52**
+  FT8 messages in 245 s with the same station's frequency within a median 5 Hz from slot to slot; this design decoded
+  **36** with a median 250 Hz (25 kHz from the IQ centre, a 1 % error in the offset is 250 Hz, and 126 ms of symbol timing over
+  one FT8 transmission). The first implementation, with no rate handling, decoded 3: its clock stepped about every 90 s.
+* **Why short windows cannot do it.** The server's own log (`rsp_clock.log`, rsp_tcp dbg3: samples against the server's
+  UTC every ~50 ms) has the API delivering 990 720 S/s on average for a nominal 1 024 000 (-3.25 %), **varying +-2 % between
+  10 s windows**, with dips at the five stream resets (and the same on the arrival side: 20 s least-squares windows gave
+  -24 000..-42 000 ppm). An offset estimated from a window shorter than a couple of minutes carries that +-1 %.
+* **Not settled:** whether the -3 % is a slow sample clock or samples lost before the TCP stage. Lines in the IQ (multiples of
+  1 kHz + ~45 Hz, 161-419 kHz from the centre) stay within +-1 Hz of sample-space frequency for 10 minutes, across the resets,
+  which looks like a constant clock; but they may be spurs locked to the ADC clock, which would say nothing about its rate.
+  Decoded frequencies and the FT8 band edge on the spectrum (about +25.1 kHz for 7074.0 kHz) point the same way, not
+  proof. Phase jumps of those lines are modulation, not holes (an attempt to read hole lengths from them gave 29 %
+  of the time and is withdrawn).
+* **Next, in this order:** (1) the offset moves only on strong evidence, as the old tracker did (window >=120 s, >=3 sigma and
+  >=300 ppm, or a large step held 30 s), and starts from the last session's value; (2) replay the same recording again
+  and compare decodes and the station-frequency spread; (3) only then the experiments with a fixed offset (0, -29000).
+* **Defaults that follow from the measurements:** `DEFAULT_RATE` is 1 024 000 (at 2 048 000 the server's send queue sat at its
+  ceiling, 93-95, and stayed 0 at 1 024 000, with the first client implementation too). DF and DT are separate: the offset
+  decides frequency and symbol timing, the clock decides the slot position.
+* **Tools** (kept outside the repository): a recorder and a replay server for rtl_tcp (python; the replay aligns its start to the
+  recording's phase modulo 15 s and connects the client just before the first sample), `rsp_tcp` dbg3 with the server-side clock log.
