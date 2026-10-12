@@ -44,10 +44,8 @@ pub enum RtlFormat {
 /// `DeviceInfo::kind` of a device reached over `rtl_tcp` (SpyServer's own are 1-3).
 pub const DEVICE_RTL_TCP: u32 = 100;
 
-/// The sample rate asked for when none is configured. 1.024 MS/s holds every HF band's FT8 / FT4 /
-/// WSPR sub-bands at once, and an `rsp_tcp` on an RSP1 kept up with it (its `queued` stayed 0); at
-/// 2.048 MS/s the same server's send queue sat at its ceiling (93-95) throughout, from the first
-/// client implementation on (#685, 2026-10-12).
+/// The sample rate asked for when none is configured: `rsp_tcp`'s own default, and the
+/// highest of the rates `rtl_tcp` servers take without trouble.
 pub const DEFAULT_RATE: u32 = 1_024_000;
 
 /// Time to let a retune settle before the gain is written (and before samples count):
@@ -334,10 +332,6 @@ impl RateMeter {
         self.sxy += x * y;
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.n == 0.0
-    }
-
     /// Samples per second, once the points span something worth a line.
     pub fn rate(&self) -> Option<f64> {
         let d = self.n * self.sxx - self.sx * self.sx;
@@ -385,6 +379,35 @@ pub fn await_rate(
         }
     }
     Ok(start.elapsed())
+}
+
+/// Measure the rate of a connection for `window` after dropping the first `skip` (a server's backlog
+/// arrives faster than real time), and return it in Hz when it is within 15 % of `nominal`. The caller
+/// gives it to `mfsk_core::iq::plannable_rate`, which finds the integer rate the receiver takes and
+/// what is left to `IqReceiver::set_rate_offset_ppm` (#686); the receiver then learns the rest from the
+/// clock. Call it after [`await_rate`]: the first measurements of an RSP1 (+1.2 % and -2.5 %) were of the
+/// stream before the server had read the rate command; after it, 994 kS/s for 1 024 000 asked.
+pub fn measure_rate(
+    c: &mut Conn,
+    stop: &AtomicBool,
+    nominal: u32,
+    skip: Duration,
+    window: Duration,
+) -> std::io::Result<Option<f64>> {
+    let per_message = (chunk_bytes(c.hello.format) / c.hello.format.bytes_per_sample()) as u64;
+    let start = Instant::now();
+    let (mut meter, mut samples) = (RateMeter::new(), 0u64);
+    while start.elapsed() < skip + window {
+        let m = c.read(stop)?;
+        if start.elapsed() < skip {
+            continue;
+        }
+        samples += per_message;
+        meter.push(m.arrival_ns, samples);
+    }
+    Ok(meter
+        .rate()
+        .filter(|r| (r / f64::from(nominal) - 1.0).abs() < 0.15))
 }
 
 #[cfg(test)]

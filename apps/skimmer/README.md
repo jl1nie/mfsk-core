@@ -237,13 +237,12 @@ Decision and measurements: #684, #685.
   (10-15 s on an RSP1), and streams meanwhile at the rate and frequency it was started with: taken for the rate asked for, that
   stream ran ahead of the clock (`re-anchor: -1.0 s` six times in the first minute). The client waits for the byte rate to be the
   one asked for (`rtltcp::await_rate`, up to 60 s). (2) The rate it then delivers is not the nominal one: an RSP1 gave
-  **994 kS/s for 1 024 000 asked (-2.9 %)**, 1 s of time in 35 s; and an RSP failure restarts the device (a pause of 0.9-1.5 s whose
-  samples never exist, the sample counter going on) and it can come back at another rate. Both are read from the arrival times by
-  one estimator, `timebase::TimeBase` (docs/notes/RTLTCP_TIMEBASE.md): a line under the lower envelope of (samples, arrival) gives
-  the real rate and the stream's start together, a step of the recent points above it is a pause (the receiver is told the samples
-  are lost, `IqReceiver::gap`, and the clock is set), a step below it a new rate. The receiver keeps the nominal rate asked of the
-  server and `IqReceiver::set_rate_offset_ppm` carries the rest (up to 5 %, #686); nothing is measured before decoding. The first
-  ~10 s have no line yet, so the first messages' times are rough.
+  **994 kS/s for 1 024 000 asked (-2.9 %)**, 1 s of time in 35 s. The client measures it (`--rtl-calibrate SECS`, 30 by default, 0
+  off: a least-squares line through arrival times); `iq::plannable_rate` turns that into the integer rate the receiver takes (within
+  500 ppm) and the offset left, `IqReceiver::set_rate_offset_ppm` applies it, and `IqReceiver::track_rate` learns the rest from the
+  clock for the rest of the session (#686: the audio is on a true 12 kHz grid, the NCO follows the real rate). The anchor estimate
+  reads the receiver's own elapsed time (`IqReceiver::elapsed_ns`), not `samples / rate`. With only the nominal rate, 6 minutes on
+  7041 kHz had the clock stepped once, the delay and drift within ~0.25 s, DT +0.2..+0.4 s and 44 FT8 lines, 4-9 per slot.
 - An RSP1 on a bare (unpowered) USB hub also failed (`RSP failure`, API: `Update(): Uninitialised device`) within 1-7 minutes, with or
   without the skimmer sending anything. Give the RSP its own powered USB port; the stock `rsp_tcp` exits on that event, a build that
   Uninit/Init's the RSP again and goes on (kept the stream going through one) is what #685 used.

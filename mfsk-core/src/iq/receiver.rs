@@ -51,12 +51,8 @@ use num_traits::Float;
 
 /// Interleaved I/Q converted per pass.
 const BLOCK: usize = 8_192;
-/// A rate correction from the clock readings this large (ppm) steps the clock to the reading: the error it
-/// corrects had been building for tens of seconds, which the slew (400 ppm) takes minutes to undo.
-const LARGE_STEP_PPM: f64 = 3_000.0;
 /// RMS the slot is scaled to, in `i16` units.
 const TARGET_RMS: f32 = 2_000.0;
-
 /// How an [`IqReceiver`] turns IQ into each channel's audio. Both meet the
 /// same 120 dB selectivity and give the decoders the same audio (the IQ
 /// decode tests run through each); they differ in how cost grows.
@@ -454,7 +450,7 @@ impl IqReceiver {
     /// Learn the rate offset from the readings given to [`Self::set_time`] (#686): the stream's anchor
     /// (`utc - samples / Fs`) falls by the offset that is missing, per second, and a least-squares line
     /// through a few minutes of readings finds it; the offset moves by that, a limited step at a time
-    /// (`RateTrackConfig::max_step_ppm`, 30 000 ppm), and the window starts again. `None` stops it. The readings are
+    /// (`RateTrackConfig::max_step_ppm`, 400 ppm), and the window starts again. `None` stops it. The readings are
     /// the caller's to clean of network delay and its jitter. A reading that steps the clock empties
     /// the window. Starts from the offset in force (0 if none was set) and stays within
     /// [`Self::MAX_RATE_OFFSET_PPM`].
@@ -700,22 +696,14 @@ impl IqReceiver {
     /// grid by milliseconds and lose nothing.
     pub fn set_time(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {
         let equiv = self.sample_equiv(at_sample);
-        let mut change = self.clock.observe(utc_ns, equiv);
-        let mut learned = None;
+        let change = self.clock.observe(utc_ns, equiv);
         if let Some(tracker) = self.tracker.as_mut() {
             if !matches!(change, ClockChange::Slewed { .. }) {
                 tracker.reset();
             }
             let x = equiv as f64 / self.stream.sample_rate as f64;
-            learned = tracker.observe(x, utc_ns as f64 * 1e-9 - x);
-        }
-        if let Some(step) = learned {
-            self.set_rate_offset_ppm(self.ppm + step);
-            // The clock followed readings made at the wrong rate, at 400 ppm at most: after a large
-            // correction it is off by what the error added up to, and would take minutes to
-            // catch up. The reading is right now: take it at once.
-            if step.abs() >= LARGE_STEP_PPM {
-                change = self.clock.step_to(utc_ns, self.sample_equiv(at_sample));
+            if let Some(step) = tracker.observe(x, utc_ns as f64 * 1e-9 - x) {
+                self.set_rate_offset_ppm(self.ppm + step);
             }
         }
         if matches!(change, ClockChange::First | ClockChange::Stepped { .. }) {

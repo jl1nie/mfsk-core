@@ -332,7 +332,7 @@ fn the_offset_survives_a_gap_and_a_retune() {
 
 /// Told only the clock, the receiver learns the offset (#686): a source 1500 ppm fast, readings of the
 /// stream's UTC every 0.1 s of real time with a few ms of jitter, and nothing else. In 6 minutes the offset
-/// is within 30 ppm and the clock was stepped at most once (when the correction was made).
+/// is within 30 ppm and the clock was never stepped.
 #[test]
 fn the_receiver_learns_the_offset_from_the_clock() {
     use mfsk_core::iq::RateTrackConfig;
@@ -360,8 +360,7 @@ fn the_receiver_learns_the_offset_from_the_clock() {
     let ppm = rx.rate_offset_ppm();
     println!("  learned {ppm:.1} ppm of 1500, {steps} clock steps");
     assert!((ppm - 1_500.0).abs() < 30.0, "{ppm}");
-    // The correction of 1500 ppm steps the clock once, to the reading (it had followed the wrong rate).
-    assert!(steps <= 1, "{steps} clock steps");
+    assert_eq!(steps, 0);
 }
 
 /// What the last stage costs (#686's last line): one channel at 768 kS/s, 30 s of stream, with and
@@ -431,38 +430,4 @@ fn the_receiver_follows_a_source_a_few_per_cent_off() {
         let got = decode_slots(&slots);
         same(&got, &want, &format!("{ppm:+.0} ppm"));
     }
-}
-
-/// A start that is far off: a source 2.2 % fast, a receiver told nothing. The tracker finds the offset
-/// from the readings alone, and the clock is brought to the reading when it does (the readings it had
-/// followed up to then were at the wrong rate, and at 400 ppm of slew it would have taken minutes): the
-/// stream's UTC is within 20 ms of the truth a minute after the correction.
-#[test]
-fn a_large_error_is_learned_and_the_clock_follows() {
-    use mfsk_core::iq::RateTrackConfig;
-    const N: u32 = 192_000;
-    let real = N as f64 * 1.022;
-    let mut rx = IqReceiver::new(IqStream::new(N, CENTER, IqSampleFormat::Cf32));
-    rx.track_rate(Some(RateTrackConfig::default()));
-    let (mut slots, mut s) = (Vec::new(), 0u64);
-    let chunk = vec![0.0f32; 2 * 19_200];
-    for _ in 0..3_000 {
-        rx.push_cf32(&chunk, &mut slots);
-        s += 19_200;
-        // The readings are exact: the true UTC of sample s.
-        rx.set_time(T0_NS + (s as f64 / real * 1e9) as i64, s);
-    }
-    let ppm = rx.rate_offset_ppm();
-    let utc = rx.utc_of(s).unwrap();
-    let truth = T0_NS + (s as f64 / real * 1e9) as i64;
-    println!(
-        "  learned {ppm:.0} ppm of 22000; clock error {} ms",
-        (utc - truth) / 1_000_000
-    );
-    assert!((ppm - 22_000.0).abs() < 300.0, "{ppm}");
-    assert!(
-        (utc - truth).abs() < 20_000_000,
-        "{} ms",
-        (utc - truth) / 1_000_000
-    );
 }

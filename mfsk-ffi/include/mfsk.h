@@ -2930,8 +2930,8 @@ double mfsk_iq_rate_offset_ppm(struct MfskIqReceiver *rx);
 
 /**
  * Have the receiver learn the rate offset from the readings given to [`mfsk_iq_set_time`] (#686): a
- * least-squares line through a few minutes of them, moving the offset by what is missing, 30000 ppm at
- * most per fit, a fit every 30 s at the earliest. `enable` non-zero starts it (from the offset in force),
+ * least-squares line through a few minutes of them, moving the offset by what is missing, 400 ppm at
+ * most per fit, a fit a minute at the earliest. `enable` non-zero starts it (from the offset in force),
  * zero stops it. The readings must be cleaned of network delay and its jitter by the caller.
  *
  * # Safety

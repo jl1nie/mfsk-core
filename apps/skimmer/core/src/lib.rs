@@ -37,7 +37,6 @@ pub mod spot;
 pub mod spyserver;
 pub mod store;
 pub mod sun;
-pub mod timebase;
 pub mod waterfall;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,7 +55,6 @@ use mfsk_core::slotgrid::ClockChange;
 use anchor::AnchorEstimate;
 use plan::Plan;
 use spyserver::*;
-use timebase::TimeBase;
 
 pub use clock::now_ns;
 
@@ -749,6 +747,13 @@ pub struct Config {
     pub protocol: Protocol,
     /// With [`Protocol::RtlTcp`]: the sample format expected (the server decides it).
     pub rtl_format: rtltcp::RtlFormat,
+    /// With [`Protocol::RtlTcp`]: how long to measure the rate the server really delivers before
+    /// decoding (the protocol cannot say, and an RSP's was 1.7 % under the nominal one, which the
+    /// receiver took for a clock step every minute). 30 s by default; zero uses the nominal rate.
+    /// Measured on an RSP1 through `rsp_tcp` it gave 994 kS/s for 1 024 000 asked (-2.9 %), after
+    /// which the clock was stepped once in 6 minutes instead of every minute (#685,
+    /// `rtltcp::measure_rate`).
+    pub rtl_calibrate: Duration,
     pub channels: Vec<ChannelSpec>,
     /// A rotation: which of [`Self::channels`] to listen to, for how long, in
     /// turn. Empty: all of them, all the time.
@@ -1057,6 +1062,7 @@ impl Config {
             server: server.into(),
             protocol: Protocol::SpyServer,
             rtl_format: rtltcp::RtlFormat::Auto,
+            rtl_calibrate: Duration::from_secs(30),
             channels,
             steps: Vec::new(),
             rotation_origin: None,
@@ -1331,9 +1337,6 @@ pub fn channelizer_for(cfg: &Config, active: usize) -> Channelizer {
         Channelizer::Direct
     })
 }
-
-/// The receiver's rate offset is moved, at a slot boundary, when the estimate differs by this much, ppm.
-const RATE_UPDATE_PPM: f64 = 20.0;
 
 /// How long the minimum-delay anchor estimate looks back. Long enough that a
 /// quiet moment on the network falls inside it, short enough to follow an
@@ -1735,9 +1738,9 @@ fn session_rtl(
         can_control: true,
     }));
     c.set_sample_rate(rate)?;
-    // The time base learns the rate the server really delivers (docs/notes/RTLTCP_TIMEBASE.md), and the
-    // offset is handed on from step to step.
-    let mut waited = false;
+    // The rate the server really delivers, measured once per connection (see `Config::rtl_calibrate`).
+    let (mut measured_rate, mut calibrated) = (None::<u32>, false);
+    // The receiver learns what the measurement leaves from the clock, and hands it on from step to step.
     let mut setup = RateSetup {
         ppm: 0.0,
         track: true,
@@ -1759,7 +1762,7 @@ fn session_rtl(
             idle_rtl(&mut c, stop, cfg, until_ns)?;
             continue;
         }
-        let Some(p) = plan::plan_of(
+        let Some(mut p) = plan::plan_of(
             &cfg.channels,
             &mask,
             cfg.center_hz,
@@ -1783,9 +1786,28 @@ fn session_rtl(
         }
         // The first time, the server may not have read the commands yet (rsp_tcp starts its command
         // reader after the RSP is up, ~10-15 s): wait for the stream to be at the rate asked for.
-        if !waited {
-            waited = true;
+        if !calibrated {
             rtltcp::await_rate(&mut c, stop, rate, Duration::from_secs(60))?;
+        }
+        if !calibrated {
+            calibrated = true;
+            if !cfg.rtl_calibrate.is_zero() {
+                let measured = rtltcp::measure_rate(
+                    &mut c,
+                    stop,
+                    rate,
+                    (cfg.rtl_calibrate / 4).min(Duration::from_secs(5)),
+                    cfg.rtl_calibrate,
+                )?;
+                // The chain takes only some integer rates: the nearest, and the offset that is left.
+                if let Some((nominal, ppm)) = measured.and_then(mfsk_core::iq::plannable_rate) {
+                    measured_rate = Some(nominal);
+                    setup.ppm = ppm;
+                }
+            }
+        }
+        if let Some(r) = measured_rate {
+            p.rate = r;
         }
         let sync = Sync {
             can_control: true,
@@ -2062,6 +2084,9 @@ fn receiver(
     if setup.ppm != 0.0 {
         rx.set_rate_offset_ppm(setup.ppm);
     }
+    if setup.track {
+        rx.track_rate(Some(mfsk_core::iq::RateTrackConfig::default()));
+    }
     let (rtx, results) = std::sync::mpsc::channel();
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2282,12 +2307,7 @@ fn stream_inner(
     // no retune; releasing it plans again.
     let mut until_ns = until_ns;
     let mut hold_seen = cfg.live.held();
-    // SpyServer numbers its messages and its rate is exact: the lowest delay in a window is its anchor.
-    // An rtl_tcp server does neither: `TimeBase` fits both rate and anchor (docs/notes/RTLTCP_TIMEBASE.md).
     let mut est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
-    let mut tb: Option<TimeBase> = None;
-    let mut received = 0u64;
-    let mut rate_cell = i64::MIN;
     let mut anchor: Option<i64> = None;
     let mut next_seq: Option<u32> = None;
     let mut last_report = 0u64;
@@ -2350,12 +2370,6 @@ fn stream_inner(
             *live = Some(receiver(cfg, p, format, wf_bank, setup)?);
             (anchor, next_seq) = (None, None);
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
-            received = 0;
-            tb = setup.track.then(|| {
-                let mut t = TimeBase::new(rate as f64, setup.ppm);
-                t.shift(-delay_ns);
-                t
-            });
         }
         let Live {
             rx,
@@ -2432,7 +2446,6 @@ fn stream_inner(
         let t = Instant::now();
         let mut slots = Vec::new();
         rx.push_bytes(&m.body, &mut slots);
-        received += n as u64;
         // JTTY channels: the audio since the last message, run by run (a break in
         // the audio ends a reception in the thread); the waterfall below gets a
         // copy of what the thread was given.
@@ -2533,78 +2546,44 @@ fn stream_inner(
         }
         worst_push = worst_push.max(t.elapsed());
 
-        // The arrival stamps the *end* of this message: `at_ns` is the UTC the estimate gives its last
-        // sample. The receiver follows it at a bounded rate, so a drifting host clock moves the slot
-        // boundaries by milliseconds and loses no slot.
-        let mut samples = rx.samples_in();
+        // The arrival stamps the *end* of this message; `best` is the UTC of
+        // sample 0 the lowest delay in the window implies. The receiver
+        // follows it at a bounded rate, so a drifting host clock moves the
+        // slot boundaries by milliseconds and loses no slot.
+        let samples = rx.samples_in();
+        // A changed delay restarts the minimum: candidates taken with the
+        // old one would hold the estimate until they left the window.
         let d = cfg.live.network_delay_ns();
-        let (at_ns, step) = if let Some(tb) = tb.as_mut() {
-            if d != delay_ns {
-                tb.shift(delay_ns - d);
-                delay_ns = d;
-            }
-            let u = tb.push(received, m.arrival_ns);
-            if u.lost_samples > 0 {
-                // The server paused (an rsp_tcp restarting its RSP): the samples of that time never
-                // came, and the sample counter went on.
-                gaps += 1;
-                on_event(Event::Gap {
-                    messages: (u.lost_samples / n.max(1) as u64) as u32,
-                    at_s: samples as f64 / rate as f64,
-                });
-                rx.gap(u.lost_samples);
-                samples = rx.samples_in();
-            }
-            // The offset moves every tone by its distance from the IQ centre (26 kHz: 4 Hz for 150 ppm):
-            // inside a slot that is a drift nothing decodes. It is changed on the 15 s grid (a whole
-            // number of FT8 and of FT4 slots), or at once when the clock is being set anyway (the open
-            // slots are dropped then).
-            let cell = u.utc_ns.div_euclid(15_000_000_000);
-            let on_grid = cell != rate_cell;
-            rate_cell = cell;
-            let off = (u.ppm - rx.rate_offset_ppm()).abs();
-            if (u.step && off >= 1.0) || (on_grid && off >= RATE_UPDATE_PPM) {
-                rx.set_rate_offset_ppm(u.ppm);
-            }
-            (u.utc_ns, u.step)
-        } else {
-            // A changed delay restarts the minimum: candidates taken with the old one would hold the
-            // estimate until they left the window.
-            if d != delay_ns {
-                delay_ns = d;
-                est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
-            }
-            let elapsed_ns = rx.elapsed_ns(samples);
-            let best = est.push_elapsed(samples, elapsed_ns, m.arrival_ns - delay_ns);
-            (best + elapsed_ns, false)
-        };
+        if d != delay_ns {
+            delay_ns = d;
+            est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
+        }
+        // The time the stream had run is the receiver's own: it follows a rate offset that was measured
+        // or is being learned (#686), where `samples / rate` would keep the nominal rate.
+        let elapsed_ns = rx.elapsed_ns(samples);
+        let best = est.push_elapsed(samples, elapsed_ns, m.arrival_ns - delay_ns);
         let warming_up = samples < 2 * rate as u64;
-        // The first two seconds settle the estimate; no slot is complete yet.
+        // The first two seconds settle the minimum; no slot is complete yet.
         if !warming_up || anchor.is_none() {
-            let change = if step {
-                rx.step_time(at_ns, samples)
-            } else {
-                rx.set_time(at_ns, samples)
-            };
-            // A step the estimate asked for (a pause, a new rate) is not news; one the clock took is.
-            if let ClockChange::Stepped { by_ns } = change
-                && !step
-                && anchor.is_some()
-            {
-                reanchors += 1;
-                on_event(Event::Reanchor {
-                    by_s: by_ns as f64 * 1e-9,
-                });
+            let at = best + elapsed_ns;
+            match rx.set_time(at, samples) {
+                ClockChange::Stepped { by_ns } if anchor.is_some() => {
+                    reanchors += 1;
+                    on_event(Event::Reanchor {
+                        by_s: by_ns as f64 * 1e-9,
+                    });
+                }
+                _ => {}
             }
             anchor = rx.utc_of(0);
         }
         if samples - last_report >= 60 * rate as u64 {
             last_report = samples;
-            let clock_ns = rx.utc_of(samples).unwrap_or(at_ns);
+            let a = anchor.unwrap_or(best);
             on_event(Event::Status(Status {
-                streamed_s: rx.elapsed_ns(samples) as f64 * 1e-9,
-                delay_ms: (m.arrival_ns - clock_ns) as f64 * 1e-6,
-                drift_ms: (at_ns - clock_ns) as f64 * 1e-6,
+                streamed_s: samples as f64 / rate as f64,
+                delay_ms: (m.arrival_ns - a) as f64 * 1e-6 - samples as f64 * 1e3 / rate as f64,
+                drift_ms: (best - a) as f64 * 1e-6,
                 longest_push_ms: worst_push.as_secs_f64() * 1e3,
                 queued_bytes: c.queued_bytes(),
                 queued_slots: busy.load(Ordering::Relaxed),

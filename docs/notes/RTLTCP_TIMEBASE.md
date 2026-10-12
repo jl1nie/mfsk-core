@@ -1,5 +1,11 @@
 # Time base of an `rtl_tcp` stream (#685, #686)
 
+> **Status (2026-10-12): this estimator is NOT used by the skimmer.** It is kept as the record of an approach that was tried
+> and measured worse. The skimmer's rtl_tcp path is the one of commit `4d3f1ac4`: a 30 s pause-free least-squares measurement
+> of the real rate at the start, the nearest rate the receiver takes as the nominal one, the library's slow rate tracker, and
+> the minimum-delay anchor for the clock. On the same RSP1 recording it decoded 42-52 FT8 messages against 27-36 for this
+> design (see "Open" below). The code is in the history: commits `a0d7d18c` .. `e4d12ed4`, `apps/skimmer/core/src/timebase.rs`.
+
 What the skimmer knows about an `rtl_tcp` / `rsp_tcp` stream, and the one estimator that turns it into the
 receiver's time axis. It replaces three pieces that were added one symptom at a time and interfered
 (a blocking 30 s rate measurement, a 30 s minimum-delay anchor with a pause check, and the library's
@@ -98,7 +104,8 @@ recordings themselves (0.5-1.2 GB) are not in the repository.
   **27** decodes, station-frequency spread median 169 Hz (this design before: 36 / 250 Hz; `4d3f1ac4`: 52 / 5 Hz). Not enough. The
   first acceptance comes at ~40 s from a 30 s window, which carries +-1 % (the server's own rate is +-2 % between 10 s
   windows), and that value then stays for minutes. `4d3f1ac4` measured once over a pause-free 30 s and kept it.
-* **Next, in this order:** (1) the offset moves only on strong evidence, as the old tracker did (window >=120 s, >=3 sigma and
+* **Outcome:** the old mechanics, restored (1.024 MS/s default kept), gave 42 decodes and a 39 Hz spread on the same recording: the measured-once rate is what works; a continuously re-estimated one does not.
+* **Was next, in this order:** (1) the offset moves only on strong evidence, as the old tracker did (window >=120 s, >=3 sigma and
   >=300 ppm, or a large step held 30 s), and starts from the last session's value; (2) replay the same recording again
   and compare decodes and the station-frequency spread; (3) only then the experiments with a fixed offset (0, -29000).
 * **Defaults that follow from the measurements:** `DEFAULT_RATE` is 1 024 000 (at 2 048 000 the server's send queue sat at its

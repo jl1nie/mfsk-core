@@ -1596,8 +1596,8 @@ sample counts at the real rate. It may change while running: the position moves 
 is lost; up to `IqReceiver::MAX_RATE_OFFSET_PPM` (50000, 5 %: the edges of the channel window move 160 Hz). With no offset set the arithmetic is the old one.
 `rx.track_rate(Some(RateTrackConfig::default()))` learns the offset from the readings of `set_time`
 instead: the anchors (`utc - samples / Fs`) fall by the missing offset per second, a least-squares line
-through a few minutes of them (more than three standard errors from zero) moves the offset by it, 30000 ppm
-at most per fit, a fit every 30 s at the earliest, and a step of the clock empties the window. The readings
+through a few minutes of them (more than three standard errors from zero) moves the offset by it, 400 ppm
+at most per fit, a fit a minute at the earliest, and a step of the clock empties the window. The readings
 must be cleaned of network delay and its jitter by the caller. The stage costs 0.016 % of a core per
 channel at 768 kS/s (0.59 % without it). The chain's filters stay those of the nominal rate, which is right
 to a few thousand ppm. A slot's `start_sample` is the sample at the nominal rate.
