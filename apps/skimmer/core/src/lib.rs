@@ -1338,6 +1338,9 @@ pub fn channelizer_for(cfg: &Config, active: usize) -> Channelizer {
     })
 }
 
+/// The most the clock of an rtl_tcp stream slews, ppm.
+const RTL_CLOCK_SLEW_PPM: u32 = 20_000;
+
 /// A silence in an rtl_tcp stream this long (ns) is a pause of the server, not delivery jitter.
 const RTL_PAUSE_NS: i64 = 500_000_000;
 
@@ -2084,6 +2087,16 @@ fn receiver(
     let stream = IqStream::new(p.rate, p.center_hz, format).iq_swap(cfg.iq_swap);
     let mut rx = IqReceiver::with_channelizer(stream, channelizer_for(cfg, p.active.len()))
         .map_err(|e| std::io::Error::other(format!("{} S/s: {e}", p.rate)))?;
+    if setup.track {
+        // The offset the receiver is given for an rtl_tcp stream is good to a per cent or so (the server's own
+        // rate wanders +-2 % between 10 s windows) and is learned at 400 ppm a minute. The time the samples
+        // are given from it then runs off the arrival times at up to a per cent, which the default slew
+        // (400 ppm) cannot follow: on an RSP1 the DT went from 0 to -0.9 s in two minutes (2026-10-12). The
+        // clock only places the slot boundaries (the audio is not touched), so it may follow quickly.
+        rx = rx.with_clock(
+            mfsk_core::slotgrid::SampleClock::new(p.rate).with_max_slew_ppm(RTL_CLOCK_SLEW_PPM),
+        );
+    }
     if setup.ppm != 0.0 {
         rx.set_rate_offset_ppm(setup.ppm);
     }
