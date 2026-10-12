@@ -249,6 +249,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Skimmer
 
+- **The skimmer GUI frames the band being heard in red (rotation).** In the waterfall's thumbnail row, the thumbnails of the channels in the band the server's rotation is on now get a red frame; the focus keeps its blue outline. Nothing is framed when the server does not rotate or is stopped. GUI only (`WaterfallPanel.svelte`); not in a tagged release yet.
 - **The skimmer 1.0.0 sends to PSK Reporter itself (#655).** PSK Reporter's author, after the test-listener period, said to keep
   sending in production. `pskreporter::APP_ENDPOINT` is now `Endpoint::Production`, for the CLI and the GUI; the tripwire test,
   the README, `MANUAL_SKIMMER` (EN/JA), the CLI usage and the release text say so. The GUI's *Test only* wording and the header's

@@ -931,6 +931,7 @@
           {geom}
           bind:bigPx={settings.wfHeight}
           bind:thumbPx={settings.wfThumbHeight}
+          heardBand={rotationInfo(sel)?.band ?? null}
           bind:open={wfOpen}
         />
       {/if}

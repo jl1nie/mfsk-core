@@ -290,6 +290,7 @@ together.
 - **On the screen**, beside the channels: `⟳ 20m 3:21`, the band and the time left. Click it to **hold** on that band
   (`⏸ 20m held`) and again to let it go on. `‹` and `›` move to the previous or next band now; the new band gets its
   whole turn from that moment.
+- **The waterfall thumbnails** of the band being heard now have a **red frame**, so with a rotation you see at a glance which band is live.
 
 ---
 

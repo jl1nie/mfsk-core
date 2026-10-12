@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ChannelSetting, DecodeRow, JttyRow, ModeInfo } from './types';
   import { paint, spanMs, type WaterfallStore } from './waterfall';
+  import { bandOfHz } from './analysis';
 
   let {
     store,
@@ -17,6 +18,7 @@
     geom,
     bigPx = $bindable(220),
     thumbPx = $bindable(54),
+    heardBand = null,
     open = $bindable(true),
   }: {
     store: WaterfallStore;
@@ -39,6 +41,8 @@
      * rows of time each shows, so a taller one shows the same time more finely. */
     bigPx?: number;
     thumbPx?: number;
+    /** The band the server's rotation is on now ("20m"), or null when it does not rotate: its thumbnails get a red frame. */
+    heardBand?: string | null;
     open: boolean;
   } = $props();
 
@@ -278,7 +282,7 @@
     <div class="thumbs">
       {#each channels as c, i (`${c.server ?? 0}:${c.mode}${c.dialHz}`)}
         {#if (c.server ?? 0) === server}
-          <button class="thumb" class:on={i === focus} onclick={() => onfocus(i)} title="Show this channel large">
+          <button class="thumb" class:on={i === focus} class:heard={heardBand !== null && bandOfHz(c.dialHz) === heardBand} onclick={() => onfocus(i)} title="Show this channel large">
             <canvas bind:this={thumbs[i]} width="256" height={thumbPx} style="height: {thumbPx}px"></canvas>
             <span>{c.mode} {(c.dialHz / 1000).toFixed(1)}</span>
           </button>
@@ -394,6 +398,10 @@
     flex-direction: column;
     gap: 2px;
     align-items: stretch;
+    border: 2px solid transparent;
+  }
+  .thumb.heard {
+    border-color: #e5484d;
   }
   .thumb.on {
     outline: 2px solid var(--accent, #4da3ff);
