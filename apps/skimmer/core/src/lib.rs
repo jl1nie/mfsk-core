@@ -1332,8 +1332,8 @@ pub fn channelizer_for(cfg: &Config, active: usize) -> Channelizer {
     })
 }
 
-/// The receiver's rate offset is moved when the estimate differs by this much, ppm.
-const RATE_UPDATE_PPM: f64 = 50.0;
+/// The receiver's rate offset is moved, at a slot boundary, when the estimate differs by this much, ppm.
+const RATE_UPDATE_PPM: f64 = 20.0;
 
 /// How long the minimum-delay anchor estimate looks back. Long enough that a
 /// quiet moment on the network falls inside it, short enough to follow an
@@ -2287,6 +2287,7 @@ fn stream_inner(
     let mut est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
     let mut tb: Option<TimeBase> = None;
     let mut received = 0u64;
+    let mut rate_cell = i64::MIN;
     let mut anchor: Option<i64> = None;
     let mut next_seq: Option<u32> = None;
     let mut last_report = 0u64;
@@ -2542,6 +2543,9 @@ fn stream_inner(
                 tb.shift(delay_ns - d);
                 delay_ns = d;
             }
+            if std::env::var_os("TBRAW").is_some() {
+                eprintln!("RAW {} {}", received, m.arrival_ns);
+            }
             let u = tb.push(received, m.arrival_ns);
             if u.lost_samples > 0 {
                 // The server paused (an rsp_tcp restarting its RSP): the samples of that time never
@@ -2554,7 +2558,24 @@ fn stream_inner(
                 rx.gap(u.lost_samples);
                 samples = rx.samples_in();
             }
-            if (u.ppm - rx.rate_offset_ppm()).abs() >= RATE_UPDATE_PPM {
+            // The offset moves every tone by its distance from the IQ centre (26 kHz: 4 Hz for 150 ppm):
+            // inside a slot that is a drift nothing decodes. It is changed on the 15 s grid (a whole
+            // number of FT8 and of FT4 slots), or at once when the clock is being set anyway (the open
+            // slots are dropped then).
+            let cell = u.utc_ns.div_euclid(15_000_000_000);
+            let on_grid = cell != rate_cell;
+            rate_cell = cell;
+            let off = (u.ppm - rx.rate_offset_ppm()).abs();
+            if on_grid && std::env::var_os("TBDBG").is_some() {
+                eprintln!(
+                    "TB t={:.0}s est={:.0} applied={:.0} step={}",
+                    received as f64 / rate as f64,
+                    u.ppm,
+                    rx.rate_offset_ppm(),
+                    u.step
+                );
+            }
+            if (u.step && off >= 1.0) || (on_grid && off >= RATE_UPDATE_PPM) {
                 rx.set_rate_offset_ppm(u.ppm);
             }
             (u.utc_ns, u.step)

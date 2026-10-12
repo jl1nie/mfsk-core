@@ -44,9 +44,11 @@ pub enum RtlFormat {
 /// `DeviceInfo::kind` of a device reached over `rtl_tcp` (SpyServer's own are 1-3).
 pub const DEVICE_RTL_TCP: u32 = 100;
 
-/// The sample rate asked for when none is configured: `rsp_tcp`'s own default, and the
-/// highest of the rates `rtl_tcp` servers take without trouble.
-pub const DEFAULT_RATE: u32 = 2_048_000;
+/// The sample rate asked for when none is configured. 1.024 MS/s holds every HF band's FT8 / FT4 /
+/// WSPR sub-bands at once, and an `rsp_tcp` on an RSP1 kept up with it (its `queued` stayed 0); at
+/// 2.048 MS/s the same server's send queue sat at its ceiling (93-95) throughout, from the first
+/// client implementation on (#685, 2026-10-12).
+pub const DEFAULT_RATE: u32 = 1_024_000;
 
 /// Time to let a retune settle before the gain is written (and before samples count):
 /// without it a gain written at once was not applied (#685).

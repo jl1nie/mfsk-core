@@ -23,6 +23,8 @@ const EDGE_FRACTION: f64 = 0.25;
 const HOLD_JUMP_S: f64 = 0.2;
 /// How long, s of stream time.
 const HOLD_S: f64 = 20.0;
+/// Points this close above the hull's line (s) are the ones a slope is averaged over.
+const INLIER_S: f64 = 0.04;
 /// The recent points a pause or a break is judged on, s.
 const DETECT_S: f64 = 6.0;
 /// All of the recent points this far above the line before them: a pause.
@@ -265,7 +267,33 @@ fn fit(pts: &[(f64, f64)], prev_b: f64) -> (f64, f64, bool) {
         }
     }
     match best {
-        Some((_, a, b)) => (a, b, true),
+        Some((_, a, b)) => {
+            // The hull's edge rests on two points, and which two changes with the jitter: its slope
+            // wandered by hundreds of ppm. The slope the points near it agree on is steadier.
+            let inl: Vec<&(f64, f64)> = pts
+                .iter()
+                .filter(|p| p.1 - (a + b * p.0) < INLIER_S)
+                .collect();
+            let (first, last) = (
+                inl.first().map_or(0.0, |p| p.0),
+                inl.last().map_or(0.0, |p| p.0),
+            );
+            if inl.len() >= 20 && last - first >= 0.5 * span {
+                let m = inl.len() as f64;
+                let (mx, my) = (
+                    inl.iter().map(|p| p.0).sum::<f64>() / m,
+                    inl.iter().map(|p| p.1).sum::<f64>() / m,
+                );
+                let (sxx, sxy) = inl.iter().fold((0.0, 0.0), |s, p| {
+                    (s.0 + (p.0 - mx).powi(2), s.1 + (p.0 - mx) * (p.1 - my))
+                });
+                if sxx > 0.0 {
+                    let b2 = sxy / sxx;
+                    return (at(b2), b2, true);
+                }
+            }
+            (a, b, true)
+        }
         None => (at(prev_b), prev_b, true),
     }
 }
@@ -483,5 +511,20 @@ mod tests {
             worst = worst.max(s.error_ms().abs());
         }
         assert!(worst < 80.0, "{worst}");
+    }
+
+    /// The offset moves the NCO, so a wandering offset is a wandering frequency (150 ppm is 4 Hz at 26 kHz
+    /// from the IQ centre). After the first two minutes of a steady stream it stays within 30 ppm.
+    #[test]
+    fn the_offset_does_not_wander() {
+        let mut s = Sim::new(NOMINAL * 0.971, 0.0);
+        s.run(120.0);
+        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+        for _ in 0..4800 {
+            s.step();
+            lo = lo.min(s.tb.ppm());
+            hi = hi.max(s.tb.ppm());
+        }
+        assert!(hi - lo < 30.0, "{lo:.0} .. {hi:.0}");
     }
 }

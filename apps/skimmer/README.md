@@ -229,7 +229,7 @@ Decision and measurements: #684, #685.
 - `--rtl-format auto|8|16`: the server decides the format (`rsp_tcp -E -b 16` is 16-bit and announces it with a
   `RSP0` struct after the `RTL0` greeting; otherwise 8-bit). `auto` reads the announcement; 8 or 16 refuses a server that
   sends the other, with the way out in the message.
-- A fixed rate (`--rate`, default 2 048 000): the protocol has no decimation, so the planner has one rate and `IqReceiver`
+- A fixed rate (`--rate`, default 1 024 000: an `rsp_tcp` kept up with it, its send queue stayed empty, where at 2 048 000 it sat full): the protocol has no decimation, so the planner has one rate and `IqReceiver`
   cuts the channels. The stream cannot be paused: a rotation retunes it, waits 600 ms, writes the gain again and drops what
   arrived before (`session_rtl`). `--gain N` is a gain step, manual; without it the server's automatic gain.
 - `rsp_tcp` listens on `127.0.0.1`; `-a 0.0.0.0` for another PC (trusted network only).
