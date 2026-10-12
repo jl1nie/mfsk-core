@@ -2543,9 +2543,6 @@ fn stream_inner(
                 tb.shift(delay_ns - d);
                 delay_ns = d;
             }
-            if std::env::var_os("TBRAW").is_some() {
-                eprintln!("RAW {} {}", received, m.arrival_ns);
-            }
             let u = tb.push(received, m.arrival_ns);
             if u.lost_samples > 0 {
                 // The server paused (an rsp_tcp restarting its RSP): the samples of that time never
@@ -2566,15 +2563,6 @@ fn stream_inner(
             let on_grid = cell != rate_cell;
             rate_cell = cell;
             let off = (u.ppm - rx.rate_offset_ppm()).abs();
-            if on_grid && std::env::var_os("TBDBG").is_some() {
-                eprintln!(
-                    "TB t={:.0}s est={:.0} applied={:.0} step={}",
-                    received as f64 / rate as f64,
-                    u.ppm,
-                    rx.rate_offset_ppm(),
-                    u.step
-                );
-            }
             if (u.step && off >= 1.0) || (on_grid && off >= RATE_UPDATE_PPM) {
                 rx.set_rate_offset_ppm(u.ppm);
             }
