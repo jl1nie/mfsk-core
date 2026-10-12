@@ -473,6 +473,15 @@ impl IqReceiver {
         v.round().max(0.0) as u64
     }
 
+    /// Nanoseconds the stream had run when input sample `at_sample` came, on the receiver's time axis:
+    /// `at_sample / Fs` without a rate offset, and with one the real elapsed time, rate changes included
+    /// (#686). The UTC of that sample is the stream's start plus this, so a caller that estimates the start
+    /// from arrival times (`arrival - elapsed_ns`) needs no rate of its own.
+    pub fn elapsed_ns(&self, at_sample: u64) -> i64 {
+        (self.sample_equiv(at_sample) as i128 * 1_000_000_000 / self.stream.sample_rate as i128)
+            as i64
+    }
+
     /// Audio index (12 kHz, true time) of input sample `t`.
     fn audio_of_sample(&self, t: u64) -> u64 {
         (self.sample_equiv(t) as u128 * 12_000 / self.stream.sample_rate as u128) as u64

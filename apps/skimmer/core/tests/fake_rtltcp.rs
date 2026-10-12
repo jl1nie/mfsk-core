@@ -170,7 +170,7 @@ fn a_server_that_delivers_short_is_measured_and_followed() {
         r.messages,
         r.errors
     );
-    // Rounded to a whole kHz (the receiver takes no other): 188 736 S/s really, 189 000 used.
+    // The nearest rate the receiver takes (within 500 ppm of the measurement), with the rest as an offset.
     let rate = f64::from(r.streaming[0].0);
     let real = f64::from(FAKE_RTL_RATE) * 0.983;
     assert!((rate / real - 1.0).abs() < 0.002, "{rate} against {real}");

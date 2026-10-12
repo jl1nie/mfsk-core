@@ -1679,6 +1679,7 @@ fn session(
             sync,
             until_ns,
             &mut wf_bank,
+            &mut RateSetup::default(),
             on_event,
         )? {
             StreamEnd::Stopped => return Ok(End::Stopped),
@@ -1738,7 +1739,12 @@ fn session_rtl(
     }));
     c.set_sample_rate(rate)?;
     // The rate the server really delivers, measured once per connection (see `Config::rtl_calibrate`).
-    let (mut measured, mut calibrated) = (None, false);
+    let (mut measured_rate, mut calibrated) = (None::<u32>, false);
+    // The receiver learns what the measurement leaves from the clock, and hands it on from step to step.
+    let mut setup = RateSetup {
+        ppm: 0.0,
+        track: true,
+    };
     let mut wf_bank = WfBank::new();
     let mut last_step: Option<Option<usize>> = None;
     let mut held_step: Option<Option<usize>> = None;
@@ -1786,16 +1792,21 @@ fn session_rtl(
         if !calibrated {
             calibrated = true;
             if !cfg.rtl_calibrate.is_zero() {
-                measured = rtltcp::measure_rate(
+                let measured = rtltcp::measure_rate(
                     &mut c,
                     stop,
                     rate,
                     (cfg.rtl_calibrate / 4).min(Duration::from_secs(5)),
                     cfg.rtl_calibrate,
                 )?;
+                // The chain takes only some integer rates: the nearest, and the offset that is left.
+                if let Some((nominal, ppm)) = measured.and_then(mfsk_core::iq::plannable_rate) {
+                    measured_rate = Some(nominal);
+                    setup.ppm = ppm;
+                }
             }
         }
-        if let Some(r) = measured {
+        if let Some(r) = measured_rate {
             p.rate = r;
         }
         let sync = Sync {
@@ -1823,6 +1834,7 @@ fn session_rtl(
             sync,
             until_ns,
             &mut wf_bank,
+            &mut setup,
             on_event,
         )? {
             StreamEnd::Stopped => return Ok(End::Stopped),
@@ -2047,16 +2059,34 @@ fn digital_gain(dev: &Device, decimation: u32, gain: Option<u32>) -> u32 {
         }
 }
 
+/// What a protocol knows about the rate of the stream it carries (#686): SpyServer's is exact, and an
+/// `rtl_tcp` server's is measured (the offset from the nominal integer rate in the plan) and then learned
+/// from the clock by the receiver, which hands back what it learned for the next stream of the session.
+#[derive(Clone, Copy, Debug, Default)]
+struct RateSetup {
+    /// Real rate against `Plan::rate`, ppm.
+    ppm: f64,
+    /// Whether the receiver learns the rest from the readings given to `set_time`.
+    track: bool,
+}
+
 /// A receiver for the plan's channels, built for the format the server sends.
 fn receiver(
     cfg: &Config,
     p: &Plan,
     format: IqSampleFormat,
     wf_bank: &mut WfBank,
+    setup: RateSetup,
 ) -> std::io::Result<Live> {
     let stream = IqStream::new(p.rate, p.center_hz, format).iq_swap(cfg.iq_swap);
     let mut rx = IqReceiver::with_channelizer(stream, channelizer_for(cfg, p.active.len()))
         .map_err(|e| std::io::Error::other(format!("{} S/s: {e}", p.rate)))?;
+    if setup.ppm != 0.0 {
+        rx.set_rate_offset_ppm(setup.ppm);
+    }
+    if setup.track {
+        rx.track_rate(Some(mfsk_core::iq::RateTrackConfig::default()));
+    }
     let (rtx, results) = std::sync::mpsc::channel();
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2210,13 +2240,18 @@ fn stream(
     sync: Sync,
     until_ns: Option<i64>,
     wf_bank: &mut WfBank,
+    setup: &mut RateSetup,
     on_event: &mut impl FnMut(Event),
 ) -> std::io::Result<StreamEnd> {
     // Built on the first IQ message, in the format the server actually sends.
     let mut live: Option<Live> = None;
     let r = stream_inner(
-        c, stop, cfg, dev, p, sync, until_ns, &mut live, wf_bank, on_event,
+        c, stop, cfg, dev, p, sync, until_ns, &mut live, wf_bank, *setup, on_event,
     );
+    // What the receiver learned of the rate is the next stream's start.
+    if let Some(l) = live.as_ref() {
+        setup.ppm = l.rx.rate_offset_ppm();
+    }
     // The waterfalls (and their history) wait for the band's next turn; the
     // workers hand their decoders back as they finish.
     if let Some(mut l) = live.take() {
@@ -2264,6 +2299,7 @@ fn stream_inner(
     until_ns: Option<i64>,
     live: &mut Option<Live>,
     wf_bank: &mut WfBank,
+    setup: RateSetup,
     on_event: &mut impl FnMut(Event),
 ) -> std::io::Result<StreamEnd> {
     let rate = p.rate;
@@ -2331,7 +2367,7 @@ fn stream_inner(
             continue;
         };
         if live.as_ref().is_none_or(|l| l.format != format) {
-            *live = Some(receiver(cfg, p, format, wf_bank)?);
+            *live = Some(receiver(cfg, p, format, wf_bank, setup)?);
             (anchor, next_seq) = (None, None);
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
         }
@@ -2522,11 +2558,14 @@ fn stream_inner(
             delay_ns = d;
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
         }
-        let best = est.push(samples, rate, m.arrival_ns - delay_ns);
+        // The time the stream had run is the receiver's own: it follows a rate offset that was measured
+        // or is being learned (#686), where `samples / rate` would keep the nominal rate.
+        let elapsed_ns = rx.elapsed_ns(samples);
+        let best = est.push_elapsed(samples, elapsed_ns, m.arrival_ns - delay_ns);
         let warming_up = samples < 2 * rate as u64;
         // The first two seconds settle the minimum; no slot is complete yet.
         if !warming_up || anchor.is_none() {
-            let at = best + (samples as i128 * 1_000_000_000 / rate as i128) as i64;
+            let at = best + elapsed_ns;
             match rx.set_time(at, samples) {
                 ClockChange::Stepped { by_ns } if anchor.is_some() => {
                     reanchors += 1;

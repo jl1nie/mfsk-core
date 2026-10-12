@@ -382,18 +382,18 @@ pub fn await_rate(
 }
 
 /// Measure the rate of a connection for `window` after dropping the first `skip` (a server's backlog
-/// arrives faster than real time), and return it when it is within 15 % of `nominal`, rounded to a
-/// whole kHz: the receiver takes only rates with a small rational ratio to 12 kHz (`1 035 949` and
-/// `998 444` were refused), and 1 kHz of a megahertz is 0.1 %. Call it after [`await_rate`]: the
-/// first measurements of an RSP1 (+1.2 % and -2.5 %) were of the stream before the server had read
-/// the rate command; after it, 994 kS/s for 1 024 000 asked, and the clock held for 6 minutes.
+/// arrives faster than real time), and return it in Hz when it is within 15 % of `nominal`. The caller
+/// gives it to `mfsk_core::iq::plannable_rate`, which finds the integer rate the receiver takes and
+/// what is left to `IqReceiver::set_rate_offset_ppm` (#686); the receiver then learns the rest from the
+/// clock. Call it after [`await_rate`]: the first measurements of an RSP1 (+1.2 % and -2.5 %) were of the
+/// stream before the server had read the rate command; after it, 994 kS/s for 1 024 000 asked.
 pub fn measure_rate(
     c: &mut Conn,
     stop: &AtomicBool,
     nominal: u32,
     skip: Duration,
     window: Duration,
-) -> std::io::Result<Option<u32>> {
+) -> std::io::Result<Option<f64>> {
     let per_message = (chunk_bytes(c.hello.format) / c.hello.format.bytes_per_sample()) as u64;
     let start = Instant::now();
     let (mut meter, mut samples) = (RateMeter::new(), 0u64);
@@ -407,8 +407,7 @@ pub fn measure_rate(
     }
     Ok(meter
         .rate()
-        .filter(|r| (r / f64::from(nominal) - 1.0).abs() < 0.15)
-        .map(|r| ((r / 1000.0).round() * 1000.0) as u32))
+        .filter(|r| (r / f64::from(nominal) - 1.0).abs() < 0.15))
 }
 
 #[cfg(test)]

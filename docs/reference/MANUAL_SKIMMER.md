@@ -255,8 +255,9 @@ machine the RSP is plugged into), which speaks the `rtl_tcp` protocol; plain `rt
   unpowered USB hub it decoded FT8 from JA stations on 7041 kHz (4 to 9 per slot), but that `rsp_tcp` stopped with `RSP failure`
   after 1 to 7 minutes (also with nothing but a reader on it). **Give the RSP its own powered USB port**; a second USB device on
   the same hub made it worse. `rsp_tcp` reads no commands for 10 to 15 s after a connection and delivers a rate a few per cent
-  under the one asked for (994 kS/s for 1 024 000 on that RSP1): the skimmer waits for the stream to be at the rate asked, then
-  measures the rate for 30 s before decoding, so the first slots come about 45 s after Connect (#685).
+  under the one asked for (994 kS/s for 1 024 000 on that RSP1): the skimmer waits for the stream to be at the rate asked, measures
+  the rate for 30 s, runs the receiver at the nearest rate it takes with the difference as a rate offset, and goes on learning that
+  offset from the clock, so the first slots come about 45 s after Connect (#685, #686).
 
 ### Rotation
 
