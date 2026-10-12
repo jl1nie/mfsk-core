@@ -341,7 +341,7 @@ fn the_receiver_learns_the_offset_from_the_clock() {
     let real = N as f64 * 1.0015;
     let mut rx = IqReceiver::new(IqStream::new(N, CENTER, IqSampleFormat::Cf32));
     rx.track_rate(Some(RateTrackConfig::default()));
-    let (mut slots, mut steps, mut rng) = (Vec::new(), 0, 99u32);
+    let (mut slots, mut steps, mut rng, mut moves) = (Vec::new(), 0, 99u32, 0);
     let chunk = vec![0.0f32; 2 * 19_200];
     let mut s = 0u64;
     for k in 1..=3_600u64 {
@@ -351,16 +351,25 @@ fn the_receiver_learns_the_offset_from_the_clock() {
         let jitter = ((rng >> 8) as f64 / (1u64 << 24) as f64 - 0.5) * 0.006;
         // The true UTC of sample s: the source's own clock is exact, the readings are a little late or early.
         let utc = T0_NS + ((s as f64 / real + jitter) * 1e9) as i64;
+        let before = rx.rate_offset_ppm();
         if let ClockChange::Stepped { .. } = rx.set_time(utc, s) {
             steps += 1;
         }
-        // The first reading anchors the clock; every one after is a reading of it.
-        let _ = k;
+        // The offset moves only on the 15 s grid: the reading that moved it is the first of its cell.
+        if rx.rate_offset_ppm() != before {
+            moves += 1;
+            let into = utc.rem_euclid(15_000_000_000);
+            assert!(
+                into < 100_000_000,
+                "offset moved {into} ns into a slot (reading {k})"
+            );
+        }
     }
     let ppm = rx.rate_offset_ppm();
     println!("  learned {ppm:.1} ppm of 1500, {steps} clock steps");
     assert!((ppm - 1_500.0).abs() < 30.0, "{ppm}");
     assert_eq!(steps, 0);
+    assert!(moves >= 1, "the offset was never moved");
 }
 
 /// What the last stage costs (#686's last line): one channel at 768 kS/s, 30 s of stream, with and

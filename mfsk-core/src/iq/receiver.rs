@@ -51,6 +51,8 @@ use num_traits::Float;
 
 /// Interleaved I/Q converted per pass.
 const BLOCK: usize = 8_192;
+/// The grid a learned rate offset is applied on, ns: 15 s, a whole number of FT8 and FT4 slots.
+const SLOT_GRID_NS: i64 = 15_000_000_000;
 /// RMS the slot is scaled to, in `i16` units.
 const TARGET_RMS: f32 = 2_000.0;
 /// How an [`IqReceiver`] turns IQ into each channel's audio. Both meet the
@@ -365,6 +367,10 @@ pub struct IqReceiver {
     offset_set: bool,
     /// Learns the rate offset from the readings of [`Self::set_time`], once asked ([`Self::track_rate`]).
     tracker: Option<RateTracker>,
+    /// What the tracker has found and not applied yet, ppm: it is applied on the next slot boundary.
+    pending_ppm: Option<f64>,
+    /// The 15 s cell of UTC the last reading was in.
+    grid_cell: i64,
     next_id: usize,
     pending: Vec<u8>,
     bi: Vec<f32>,
@@ -385,6 +391,8 @@ impl IqReceiver {
             ppm: 0.0,
             offset_set: false,
             tracker: None,
+            pending_ppm: None,
+            grid_cell: i64::MIN,
             next_id: 0,
             pending: Vec::new(),
             bi: Vec::new(),
@@ -703,7 +711,21 @@ impl IqReceiver {
             }
             let x = equiv as f64 / self.stream.sample_rate as f64;
             if let Some(step) = tracker.observe(x, utc_ns as f64 * 1e-9 - x) {
+                self.pending_ppm = Some(self.pending_ppm.unwrap_or(0.0) + step);
+            }
+        }
+        // A rate offset moves every tone by its distance from the IQ centre (4 Hz for 150 ppm at 26 kHz): inside
+        // a slot that is a drift nothing decodes (an RSP1 behind `rsp_tcp`, 2026-10-12). What the tracker found
+        // is applied when the clock crosses a boundary of the 15 s grid, a whole number of FT8 and FT4 slots.
+        let cell = utc_ns.div_euclid(SLOT_GRID_NS);
+        if cell != self.grid_cell {
+            self.grid_cell = cell;
+            if let Some(step) = self.pending_ppm.take() {
                 self.set_rate_offset_ppm(self.ppm + step);
+                // The readings in the window were made against the offset just replaced.
+                if let Some(tracker) = self.tracker.as_mut() {
+                    tracker.reset();
+                }
             }
         }
         if matches!(change, ClockChange::First | ClockChange::Stepped { .. }) {
