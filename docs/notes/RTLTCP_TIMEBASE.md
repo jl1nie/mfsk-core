@@ -93,6 +93,11 @@ recordings themselves (0.5-1.2 GB) are not in the repository.
   Decoded frequencies and the FT8 band edge on the spectrum (about +25.1 kHz for 7074.0 kHz) point the same way, not
   proof. Phase jumps of those lines are modulation, not holes (an attempt to read hole lengths from them gave 29 %
   of the time and is withdrawn).
+* **First attempt at (1) below, same recording (2026-10-12 late):** the slope handed on moves only on strong evidence
+  (>=120 s and >=300 ppm, or >=5000 ppm held 30 s) and the intercept follows the lowest points of the last 30 s against it:
+  **27** decodes, station-frequency spread median 169 Hz (this design before: 36 / 250 Hz; `4d3f1ac4`: 52 / 5 Hz). Not enough. The
+  first acceptance comes at ~40 s from a 30 s window, which carries +-1 % (the server's own rate is +-2 % between 10 s
+  windows), and that value then stays for minutes. `4d3f1ac4` measured once over a pause-free 30 s and kept it.
 * **Next, in this order:** (1) the offset moves only on strong evidence, as the old tracker did (window >=120 s, >=3 sigma and
   >=300 ppm, or a large step held 30 s), and starts from the last session's value; (2) replay the same recording again
   and compare decodes and the station-frequency spread; (3) only then the experiments with a fixed offset (0, -29000).

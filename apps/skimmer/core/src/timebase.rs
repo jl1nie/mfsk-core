@@ -19,6 +19,19 @@ const KEEP_S: f64 = 0.5;
 const MIN_SPAN_S: f64 = 10.0;
 /// An edge of the hull shorter than this fraction of the window is a slope from two neighbours: not used.
 const EDGE_FRACTION: f64 = 0.25;
+/// The rate offset handed on moves only on strong evidence (what the library tracker did, and what the
+/// first real recordings asked for: a fit that wanders +-1 % between slots costs 250 Hz of frequency and
+/// 126 ms of symbol timing over one FT8 transmission, and 52 against 36 decodes of the same recording).
+/// A line over at least this long (s) that differs by at least `STEADY_PPM` ...
+const STEADY_SPAN_S: f64 = 120.0;
+const STEADY_PPM: f64 = 300.0;
+/// ... or one over `FAST_SPAN_S` that has differed by `FAST_PPM` for `FAST_HOLD_S` (a start that is far off).
+const FAST_SPAN_S: f64 = 30.0;
+const FAST_PPM: f64 = 5_000.0;
+const FAST_HOLD_S: f64 = 30.0;
+/// The clock is the lowest of the last this many seconds against the held slope, s: short, so a slope that is
+/// a little off cannot carry the intercept far.
+const INTERCEPT_S: f64 = 30.0;
 /// A fit that lifts the line at the latest point by more than this at once is held for `HOLD_S`, s.
 const HOLD_JUMP_S: f64 = 0.2;
 /// How long, s of stream time.
@@ -66,6 +79,11 @@ pub struct TimeBase {
     a: f64,
     b: f64,
     fitted: bool,
+    /// The slope and intercept handed on: the slope moves on strong evidence only, the intercept follows the
+    /// lowest recent points against it.
+    b_out: f64,
+    a_out: f64,
+    diff_since: Option<f64>,
     /// Stream time since which the fit has been refused for lifting the line.
     held_since: Option<f64>,
 }
@@ -83,13 +101,16 @@ impl TimeBase {
             a: 0.0,
             b: 1.0 / (1.0 + start_ppm * 1e-6),
             fitted: false,
+            b_out: 1.0 / (1.0 + start_ppm * 1e-6),
+            a_out: 0.0,
+            diff_since: None,
             held_since: None,
         }
     }
 
     /// The rate offset of the line in use, ppm.
     pub fn ppm(&self) -> f64 {
-        (1.0 / self.b - 1.0) * 1e6
+        (1.0 / self.b_out - 1.0) * 1e6
     }
 
     /// Whether a line over `MIN_SPAN_S` has been fitted.
@@ -131,11 +152,12 @@ impl TimeBase {
         if self.pts.is_empty() {
             // Nothing committed yet: the line through this point at the slope in use.
             self.a = y - self.b * x;
+            self.a_out = y - self.b_out * x;
         }
         // A pause found just now moved `xoff`: this message is after it.
         let x = samples as f64 / self.nominal + self.xoff;
         Update {
-            utc_ns: t0 + ((self.a + self.b * x) * 1e9).round() as i64 + self.shift_ns,
+            utc_ns: t0 + ((self.a_out + self.b_out * x) * 1e9).round() as i64 + self.shift_ns,
             ppm: self.ppm(),
             step,
             lost_samples,
@@ -176,6 +198,8 @@ impl TimeBase {
                 let _ = split;
                 self.pts.drain(..keep);
                 self.fitted = false;
+                // The rate is known to have changed: the new fit need not differ for `FAST_HOLD_S` first.
+                self.diff_since = Some(x - FAST_HOLD_S);
                 *step = true;
             }
         }
@@ -196,6 +220,40 @@ impl TimeBase {
         if ok && !self.fitted {
             self.fitted = true;
             *step = true;
+        }
+        self.update_output(x, step);
+    }
+
+    /// Move the slope handed on when the fit has differed from it for long enough, and put the intercept on the
+    /// lowest recent point against that slope.
+    fn update_output(&mut self, x: f64, step: &mut bool) {
+        if self.fitted {
+            let span = x - self.pts.front().map_or(x, |p| p.0);
+            let diff = (1.0 / self.b - 1.0) * 1e6 - self.ppm();
+            let mut accept = span >= STEADY_SPAN_S && diff.abs() >= STEADY_PPM;
+            if diff.abs() >= FAST_PPM {
+                let since = *self.diff_since.get_or_insert(x);
+                if span >= FAST_SPAN_S && x - since >= FAST_HOLD_S {
+                    accept = true;
+                    *step = true;
+                }
+            } else {
+                self.diff_since = None;
+            }
+            if accept {
+                self.b_out = self.b;
+                self.diff_since = None;
+            }
+        }
+        let b = self.b_out;
+        let low = self
+            .pts
+            .iter()
+            .filter(|p| p.0 >= x - INTERCEPT_S)
+            .map(|p| p.1 - b * p.0)
+            .fold(f64::INFINITY, f64::min);
+        if low.is_finite() {
+            self.a_out = low;
         }
     }
 }
@@ -490,7 +548,7 @@ mod tests {
     }
 
     /// What the RSP does for ten minutes: a restart every ~80 s (a pause of 0.9-1.5 s), the rate coming
-    /// back different each time (-2.9 %, -2.7 %, +0.1 %...). None is found twice; 40 s after each
+    /// back different each time (-2.9 %, -2.7 %, +0.1 %...). None is found twice; 60 s after each
     /// the clock is within 80 ms.
     #[test]
     fn restarts_every_minute_or_so() {
@@ -499,15 +557,15 @@ mod tests {
         let mut worst: f64 = 0.0;
         for (i, r) in rates.iter().enumerate() {
             let before = s.pauses;
-            s.run(80.0);
+            s.run(60.0);
             s.pause(0.9 + 0.1 * (i % 7) as f64);
             s.rate = NOMINAL * r;
             s.run(10.0);
             // A pause with a rate change big enough to ramp the points is read as a break (the clock
             // is stepped just the same); what must not happen is the same pause found again.
             assert!(s.pauses <= before + 1, "restart {i}");
-            // 40 s after: the rate has been followed and the clock is right.
-            s.run(30.0);
+            // 60 s after: the new slope is in (it takes a break to be found, then 30 s of points) and the clock is right.
+            s.run(50.0);
             worst = worst.max(s.error_ms().abs());
         }
         assert!(worst < 80.0, "{worst}");
