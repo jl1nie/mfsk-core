@@ -102,8 +102,13 @@ adds three switches and one log record to `rsp_tcp`:
   (`clock_log.py` summarises it). No `F` records over a run that is 3 % short means the API's numbering does not
   count the lost samples, and `-Z` cannot help.
 
-Runs to make, 10 min each, `clock_log.py` on each log: `plain` (are there holes in the numbering?), `bulk`,
-`bulkhigh`, `fill`. Success: overall rate at the nominal one and no 80 ms+ record gaps. Then the client with
+Runs to make, in this order, 10 min each (`start_dbg4_<name>.bat` in the pack; each start deletes `rsp_clock.log`,
+so rename it after a run; `python3 -I scripts/rtltcp/clock_log.py rsp_clock.log 1024000` on each):
+
+1. `plain`: are there holes in `firstSampleNum`? No `F` records means `fill` cannot help, and only 2 and 3 decide.
+2. `bulk` (`-U`): does bulk transfer alone remove the losses?
+3. `bulkhigh` (`-U -H`): does priority and the 1 ms timer add anything?
+4. `fill` (`-Z`): only if 1 showed holes. `all` (`-U -H -Z`) is the confirmation of the final set. Success: overall rate at the nominal one and no 80 ms+ record gaps. Then the client with
 `-Z` or `-U`, no rate offset, against the recording method above.
 
 ## Tools
