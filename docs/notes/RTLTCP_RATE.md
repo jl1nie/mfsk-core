@@ -89,6 +89,23 @@ mechanism: the measurement is a draw from +-1 %.
   decoded frequencies of the stretched audio are off by 3.6 % of their distance from the centre (they should be,
   if the clock is right and samples are missing).
 
+## The server patch (dbg4)
+
+`scripts/rtltcp/rsp_tcp_dbg3_to_dbg4.patch` (on top of dbg3; built 2026-10-13 with `cl /O2`, runs not yet made)
+adds three switches and one log record to `rsp_tcp`:
+
+* `-U` sets `devParams->mode = sdrplay_api_BULK` before `Init` (step 1);
+* `-H` raises the process priority class and calls `timeBeginPeriod(1)` (step 1);
+* `-Z` writes the hole between `firstSampleNum` and the previous callback's end as silence (uint8 128 / int16 0)
+  ahead of the callback's samples, for holes up to 2.048 MS (step 2);
+* an `F` record in `rsp_clock.log` for every callback that follows a hole: `F <UTC> <firstSampleNum> <hole> <filled>`
+  (`clock_log.py` summarises it). No `F` records over a run that is 3 % short means the API's numbering does not
+  count the lost samples, and `-Z` cannot help.
+
+Runs to make, 10 min each, `clock_log.py` on each log: `plain` (are there holes in the numbering?), `bulk`,
+`bulkhigh`, `fill`. Success: overall rate at the nominal one and no 80 ms+ record gaps. Then the client with
+`-Z` or `-U`, no rate offset, against the recording method above.
+
 ## Tools
 
 `scripts/rtltcp/`: `record.py` (an rtl_tcp stream with the arrival time of every read), `replay.py` (a server

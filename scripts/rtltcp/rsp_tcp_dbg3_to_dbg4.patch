@@ -1,0 +1,163 @@
+--- a/rsp_tcp.c	2026-10-12 22:04:03.906161600 +0900
++++ b/rsp_tcp.c	2026-10-13 00:16:49.327258600 +0900
+@@ -40,7 +40,8 @@
+ #define CTRL_BREAK_EVENT    1
+ #define CTRL_CLOSE_EVENT    2
+ #else
+-#include <winsock2.h>
++#include <winsock2.h>
++#include <mmsystem.h>
+ #include "getopt/getopt.h"
+ #endif
+ 
+@@ -73,7 +74,16 @@
+    rsp_clock.log by the worker thread: wall time (UTC, 100 ns since 1601), cumulative samples (64-bit),
+    callbacks, the API's reset flag and fsChanged. The record of the samples against a real clock is what
+    tells a slow sample clock from samples lost on the way. */
+-typedef struct { ULONGLONG ft; long long samples; long cb; unsigned reset; unsigned fsc; } clk_rec_t;
++typedef struct { ULONGLONG ft; long long samples; long cb; unsigned reset; unsigned fsc; unsigned fsn; long long gap; long long filled; } clk_rec_t;
++/* dbg4: the API numbers its samples (params->firstSampleNum). A jump larger than the previous numSamples is a
++   hole of exactly that many samples; with -Z the hole is written as zeros before the callback's samples, so
++   the stream keeps the device's own time axis. -U asks the API for bulk (retried) USB transfers instead of
++   isochronous ones (the default, which drops what the host misses); -H raises the process priority and sets
++   the Windows timer to 1 ms. Every callback with a hole also writes an "F" record to rsp_clock.log. */
++static int opt_fill = 0, opt_bulk = 0, opt_high = 0;
++static int fsn_valid = 0;
++static unsigned int fsn_expect = 0;
++static volatile long long fsn_gap_total = 0, fsn_filled_total = 0;
+ static clk_rec_t clk_ring[16384];
+ static volatile long clk_w = 0, clk_r = 0;
+ static volatile long long clk_samples = 0;
+@@ -649,6 +659,7 @@
+ 
+ void rxa_callback(short* xi, short* xq, sdrplay_api_StreamCbParamsT *params, unsigned int numSamples, unsigned int reset, void* cbContext)
+ {
++	unsigned int fsn_gap = 0, fsn_fill = 0;
+ 	{
+ 		long now_ms = (long)GetTickCount();
+ 		if (dbg_last_ms && now_ms - dbg_last_ms > dbg_maxgap_ms) dbg_maxgap_ms = now_ms - dbg_last_ms;
+@@ -656,11 +667,21 @@
+ 		dbg_cb++;
+ 		dbg_samples += numSamples;
+ 		clk_samples += numSamples;
++		fsn_gap = 0;
++		if (reset) fsn_valid = 0;
++		if (fsn_valid) {
++			unsigned int d = params->firstSampleNum - fsn_expect; /* modulo 2^32 */
++			if (d != 0 && d < 0x80000000u) fsn_gap = d;
++		}
++		fsn_valid = 1;
++		fsn_expect = params->firstSampleNum + numSamples;
++		if (fsn_gap) fsn_gap_total += fsn_gap;
++		if (fsn_gap && opt_fill && fsn_gap <= 2048000) { fsn_fill = fsn_gap; fsn_filled_total += fsn_gap; }
+ 		{
+ 			FILETIME f; ULONGLONG ft;
+ 			GetSystemTimePreciseAsFileTime(&f);
+ 			ft = ((ULONGLONG)f.dwHighDateTime << 32) | f.dwLowDateTime;
+-			if (reset || ft - clk_last_ft >= 500000ULL) { /* 50 ms */
++			if (reset || fsn_gap || ft - clk_last_ft >= 500000ULL) { /* 50 ms, or at a hole */
+ 				long w = clk_w;
+ 				clk_last_ft = ft;
+ 				clk_ring[w & 16383].ft = ft;
+@@ -668,6 +689,9 @@
+ 				clk_ring[w & 16383].cb = dbg_cb;
+ 				clk_ring[w & 16383].reset = reset;
+ 				clk_ring[w & 16383].fsc = params->fsChanged;
++				clk_ring[w & 16383].fsn = params->firstSampleNum;
++				clk_ring[w & 16383].gap = fsn_gap;
++				clk_ring[w & 16383].filled = fsn_filled_total;
+ 				clk_w = w + 1;
+ 			}
+ 		}
+@@ -691,32 +715,34 @@
+ 
+ 		if (sample_format == RSP_TCP_SAMPLE_FORMAT_UINT8)
+ 		{
+-			rpt->data = (char*)malloc(2 * numSamples);
++			rpt->data = (char*)malloc(2 * ((size_t)fsn_fill + numSamples));
+ 
+ 			// assemble the data
+ 			char *data;
+ 			data = rpt->data;
++			for (i = 0; i < 2 * fsn_fill; i++) *(data++) = (char)128; /* a hole: silence */
+ 			for (i = 0; i < numSamples; i++, xi++, xq++)
+ 			{
+ 				*(data++) = (unsigned char)(((*xi << sample_shift) >> 8) + 128);
+ 				*(data++) = (unsigned char)(((*xq << sample_shift) >> 8) + 128);
+ 			}
+ 
+-			rpt->len = 2 * numSamples;
++			rpt->len = 2 * (fsn_fill + numSamples);
+ 		}
+ 		else if (sample_format == RSP_TCP_SAMPLE_FORMAT_INT16)
+ 		{
+-			rpt->data = (char*)malloc(4 * numSamples);
++			rpt->data = (char*)malloc(4 * ((size_t)fsn_fill + numSamples));
+ 
+ 			short *data;
+ 			data = (short*)rpt->data;
++			for (i = 0; i < 2 * fsn_fill; i++) *(data++) = 0;
+ 			for (i = 0; i < numSamples; i++, xi++, xq++)
+ 			{
+ 				*(data++) = *xi;
+ 				*(data++) = *xq;
+ 			}
+ 
+-			rpt->len = 4 * numSamples;
++			rpt->len = 4 * (fsn_fill + numSamples);
+ 		}
+ 
+ 		rpt->next = NULL;
+@@ -903,6 +929,7 @@
+ 			while (clk_file && r < w) {
+ 				clk_rec_t *c = &clk_ring[r & 16383];
+ 				fprintf(clk_file, "C %llu %lld %ld %u %u\n", (unsigned long long)c->ft, c->samples, c->cb, c->reset, c->fsc);
++				fprintf(clk_file, "F %llu %u %lld %lld\n", (unsigned long long)c->ft, c->fsn, c->gap, c->filled);
+ 				r++;
+ 			}
+ 			clk_r = r;
+@@ -2219,6 +2246,9 @@
+ 		"\t-B Broadcast notch enable (default: disabled)\n"
+ 		"\t-D DAB notch enable (default: disabled)\n"
+ 		"\t-F RF notch enable (default: disabled)\n"
++		"\t-U bulk USB transfers (retried) instead of isochronous (dbg4)\n"
++		"\t-H high process priority and 1 ms timer (dbg4)\n"
++		"\t-Z fill holes in the sample numbering with silence (dbg4)\n"
+ 		"\t-b Sample bit-depth (8/16 default: 8)\n"
+ 		"\t-h This help\n");
+ 	exit(1);
+@@ -2260,7 +2290,7 @@
+ 	struct sigaction sigact, sigign;
+ #endif
+ 
+-	while ((opt = getopt(argc, argv, "a:p:f:b:s:n:d:P:TvADBFREh")) != -1) {
++	while ((opt = getopt(argc, argv, "a:p:f:b:s:n:d:P:TvADBFREhUHZ")) != -1) {
+ 		switch (opt) {
+ 		case 'd':
+ 			device = atoi(optarg) - 1;
+@@ -2313,6 +2343,9 @@
+ 		case 'F':
+ 			notch |= RSP_TCP_NOTCH_RF;
+ 			break;
++		case 'U': opt_bulk = 1; break;
++		case 'H': opt_high = 1; break;
++		case 'Z': opt_fill = 1; break;
+ 		case 'h':
+ 		default:
+ 			usage();
+@@ -2412,6 +2445,15 @@
+ 		exit(1);
+ 	}
+ 
++	if (opt_bulk && deviceParams->devParams) {
++		deviceParams->devParams->mode = sdrplay_api_BULK;
++		printf("transfer mode: bulk\n");
++	}
++	if (opt_high) {
++		SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
++		timeBeginPeriod(1);
++		printf("high priority, 1 ms timer\n");
++	}
+ 	chParams = (chosenDev->tuner == sdrplay_api_Tuner_B) ? deviceParams->rxChannelB : deviceParams->rxChannelA;
+ 
+ 	// enable DC offset and IQ imbalance correction

@@ -1,4 +1,4 @@
-# usage: python3 -I scripts/rtltcp/clock_log.py rsp_clock.log [NOMINAL]  (rsp_tcp dbg3, see docs/notes/RTLTCP_RATE.md)
+# usage: python3 -I scripts/rtltcp/clock_log.py rsp_clock.log [NOMINAL]  (rsp_tcp dbg3/dbg4, see docs/notes/RTLTCP_RATE.md)
 # Server-side clock log: samples against the server's own UTC, per second.
 import sys, statistics as st
 ft0 = 116444736000000000   # 100 ns from 1601 to 1970
@@ -24,3 +24,11 @@ while k<len(t):
 # gaps between records longer than 80 ms
 gaps=[(round(t[i]-t[0],2),round((t[i]-t[i-1])*1e3)) for i in range(1,len(t)) if t[i]-t[i-1]>0.08]
 print("record gaps >80 ms:",len(gaps),gaps[:10])
+
+# dbg4 "F" records: F <UTC> <firstSampleNum> <hole> <filled so far>, one per callback that follows a hole
+holes=[l.split() for l in open(sys.argv[1]) if l.startswith("F ") and len(l.split())==5]
+if holes:
+    h=[int(x[3]) for x in holes]
+    print("holes in the API's sample numbering:",len(h),"total",sum(h),"samples; largest",max(h),"; filled by the server:",holes[-1][4])
+else:
+    print("no F records (dbg3 log, or no holes in firstSampleNum)")
