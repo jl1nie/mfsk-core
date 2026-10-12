@@ -36,6 +36,7 @@ struct Run {
     streaming: Vec<(u32, f64)>,
     /// How many times the receiver's clock was stepped.
     reanchors: usize,
+    gaps: usize,
 }
 
 /// Run the skimmer on `server` until `want` holds of the messages, or 70 s pass.
@@ -65,6 +66,7 @@ fn run(
                 rate, center_hz, ..
             } => sink.lock().unwrap().streaming.push((rate, center_hz)),
             Event::Reanchor { .. } => sink.lock().unwrap().reanchors += 1,
+            Event::Gap { .. } => sink.lock().unwrap().gaps += 1,
             _ => {}
         });
     });
@@ -175,4 +177,46 @@ fn a_server_that_delivers_short_is_measured_and_followed() {
     let real = f64::from(FAKE_RTL_RATE) * 0.983;
     assert!((rate / real - 1.0).abs() < 0.002, "{rate} against {real}");
     assert_eq!(r.reanchors, 0);
+}
+/// A server that pauses (an `rsp_tcp` restarting its RSP after a failure): the samples of the pause never
+/// arrive and the band's time goes on. The client sees a silence longer than any delivery jitter, tells the
+/// receiver the samples were lost (`IqReceiver::gap`), and the messages after it are at the time they were
+/// sent: without that, the minimum-delay window held the old anchor for 30 s and put the stream the
+/// pause too early (#686). A message is sent 1.0 s into every 16 s cycle on the wall clock.
+#[test]
+fn a_pause_of_the_server_does_not_displace_what_comes_after() {
+    const PAUSE_S: f64 = 1.5;
+    let server =
+        FakeRtlServer::start_with_pause("127.0.0.1:0", band(0.01), true, 14.0, PAUSE_S).unwrap();
+    let started = skimmer_core::now_ns();
+    // Wanted: two whole messages that began well after the pause was found (6 s) and the cycle after it.
+    let late = move |m: &[JttyMessage], _: &[String]| {
+        m.iter()
+            .filter(|x| {
+                x.kind == UpdateKind::Complete
+                    && x.start_utc_ns.is_some_and(|t| t > started + 28_000_000_000)
+            })
+            .count()
+            >= 2
+    };
+    let r = run(&server, |_| {}, late);
+    assert!(r.gaps >= 1, "the pause was not found ({} gaps)", r.gaps);
+    assert_eq!(r.reanchors, 0, "a clock step");
+    let after: Vec<_> = r
+        .messages
+        .iter()
+        .filter(|x| {
+            x.kind == UpdateKind::Complete
+                && x.start_utc_ns.is_some_and(|t| t > started + 28_000_000_000)
+        })
+        .collect();
+    assert!(after.len() >= 2, "{:?} / {:?}", r.messages, r.errors);
+    for m in after {
+        // Seconds into its 16 s cycle on the wall clock: 1.0, not 1.0 - the pause.
+        let into = (m.start_utc_ns.unwrap().rem_euclid(16_000_000_000)) as f64 * 1e-9;
+        assert!(
+            (into - 1.0).abs() < 0.45,
+            "a message at {into:.2} s into its cycle"
+        );
+    }
 }

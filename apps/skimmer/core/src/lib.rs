@@ -1338,6 +1338,9 @@ pub fn channelizer_for(cfg: &Config, active: usize) -> Channelizer {
     })
 }
 
+/// A silence in an rtl_tcp stream this long (ns) is a pause of the server, not delivery jitter.
+const RTL_PAUSE_NS: i64 = 500_000_000;
+
 /// How long the minimum-delay anchor estimate looks back. Long enough that a
 /// quiet moment on the network falls inside it, short enough to follow an
 /// NTP step within a slot or two.
@@ -2310,6 +2313,7 @@ fn stream_inner(
     let mut est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
     let mut anchor: Option<i64> = None;
     let mut next_seq: Option<u32> = None;
+    let mut last_arrival: Option<i64> = None;
     let mut last_report = 0u64;
     let (mut gaps, mut reanchors) = (0u64, 0u64);
     let mut worst_push = Duration::ZERO;
@@ -2369,6 +2373,7 @@ fn stream_inner(
         if live.as_ref().is_none_or(|l| l.format != format) {
             *live = Some(receiver(cfg, p, format, wf_bank, setup)?);
             (anchor, next_seq) = (None, None);
+            last_arrival = None;
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
         }
         let Live {
@@ -2442,6 +2447,27 @@ fn stream_inner(
             }
         }
         next_seq = Some(m.seq.wrapping_add(1));
+
+        // An rtl_tcp server numbers nothing and cannot say it paused. An rsp_tcp restarting its RSP after a
+        // failure stays silent for 0.9-1.5 s (a TCP delivery is bursty, but never silent for this long),
+        // and the samples of that time never existed: the sample counter goes on, the time does not. Told
+        // here, before the message's own samples, the elapsed time and the arrival times both move by the
+        // pause and the minimum-delay estimate stays where it was; left alone it held the old minimum for
+        // 30 s, every DT was negative by the pause meanwhile, and the clock stepped at the end (#686).
+        if setup.track
+            && let Some(prev) = last_arrival
+            && m.arrival_ns - prev > RTL_PAUSE_NS
+        {
+            let real_rate = rate as f64 * (1.0 + rx.rate_offset_ppm() * 1e-6);
+            let lost = ((m.arrival_ns - prev) as f64 * 1e-9 * real_rate - n as f64).max(0.0) as u64;
+            gaps += 1;
+            on_event(Event::Gap {
+                messages: (lost / n.max(1) as u64) as u32,
+                at_s: rx.samples_in() as f64 / rate as f64,
+            });
+            rx.gap(lost);
+        }
+        last_arrival = Some(m.arrival_ns);
 
         let t = Instant::now();
         let mut slots = Vec::new();
