@@ -32,6 +32,7 @@ pub mod jtty;
 pub mod modes;
 pub mod plan;
 pub mod pskreporter;
+pub mod rtltcp;
 pub mod spot;
 pub mod spyserver;
 pub mod store;
@@ -727,11 +728,25 @@ pub enum WireFormat {
     Int16,
 }
 
+/// The protocol a server is reached by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Protocol {
+    /// Airspy's SpyServer (Airspy One, HF+, RTL-SDR): [`spyserver`].
+    #[default]
+    SpyServer,
+    /// `rtl_tcp`, and SDRplay's `rsp_tcp` for an RSP: [`rtltcp`] (#685).
+    RtlTcp,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     /// A short name for this server in events and the database.
     pub name: String,
     pub server: String,
+    /// How `server` is spoken to.
+    pub protocol: Protocol,
+    /// With [`Protocol::RtlTcp`]: the sample format expected (the server decides it).
+    pub rtl_format: rtltcp::RtlFormat,
     pub channels: Vec<ChannelSpec>,
     /// A rotation: which of [`Self::channels`] to listen to, for how long, in
     /// turn. Empty: all of them, all the time.
@@ -1038,6 +1053,8 @@ impl Config {
         Config {
             name: String::new(),
             server: server.into(),
+            protocol: Protocol::SpyServer,
+            rtl_format: rtltcp::RtlFormat::Auto,
             channels,
             steps: Vec::new(),
             rotation_origin: None,
@@ -1408,7 +1425,11 @@ fn run_server(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) 
             on_event(Event::Connecting {
                 server: cfg.server.clone(),
             });
-            match session(cfg, &local, &mut on_event) {
+            let ended = match cfg.protocol {
+                Protocol::SpyServer => session(cfg, &local, &mut on_event),
+                Protocol::RtlTcp => session_rtl(cfg, &local, &mut on_event),
+            };
+            match ended {
                 // Stopped: the run's, or this server switched off; the top of the loop tells which.
                 Ok(End::Stopped) => continue,
                 Ok(End::Yielded) => on_event(Event::Yielded),
@@ -1427,6 +1448,105 @@ fn run_server(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) 
         }
         done.store(true, Ordering::Relaxed);
     });
+}
+
+/// What the stream loop needs of a connection, whichever protocol it speaks: the next IQ
+/// message, how much is waiting, and a gain written while running.
+trait Link {
+    fn read(&mut self, stop: &AtomicBool) -> std::io::Result<Message>;
+    fn queued_bytes(&self) -> usize;
+    /// Write the gain index `g` (`None` for the server's automatic gain, where it has one).
+    fn write_gain(&mut self, g: u32, dev: &Device, p: &Plan) -> std::io::Result<()>;
+}
+
+impl Link for Conn {
+    fn read(&mut self, stop: &AtomicBool) -> std::io::Result<Message> {
+        Conn::read(self, stop)
+    }
+    fn queued_bytes(&self) -> usize {
+        Conn::queued_bytes(self)
+    }
+    fn write_gain(&mut self, g: u32, dev: &Device, p: &Plan) -> std::io::Result<()> {
+        self.set(SET_GAIN, g)?;
+        self.set(
+            SET_IQ_DIGITAL_GAIN,
+            digital_gain(dev, p.decimation, Some(g)),
+        )
+    }
+}
+
+impl Link for rtltcp::Conn {
+    fn read(&mut self, stop: &AtomicBool) -> std::io::Result<Message> {
+        rtltcp::Conn::read(self, stop)
+    }
+    fn queued_bytes(&self) -> usize {
+        rtltcp::Conn::queued_bytes(self)
+    }
+    fn write_gain(&mut self, g: u32, _: &Device, _: &Plan) -> std::io::Result<()> {
+        rtltcp::Conn::set_gain(self, Some(g))
+    }
+}
+
+/// Which channels this moment of a rotation listens to, and when the step ends (UTC ns), after
+/// the moves and holds asked for: shared by every protocol's session. Reports a step change.
+#[allow(clippy::type_complexity)]
+fn pick_step(
+    cfg: &Config,
+    last_step: &mut Option<Option<usize>>,
+    held_step: &mut Option<Option<usize>>,
+    last_held: &mut bool,
+    on_event: &mut impl FnMut(Event),
+) -> (Vec<bool>, Option<(Option<usize>, i64)>, Option<i64>) {
+    let now_s = clock::now_ns().div_euclid(1_000_000_000);
+    // Moves asked for: the step that many places on, with its whole turn from now.
+    let moves = cfg.live.skip.swap(0, Ordering::AcqRel);
+    if moves != 0 && !cfg.steps.is_empty() {
+        let from = (*held_step).or(*last_step).flatten();
+        if let Some((to, base)) = cfg.force_step(now_s, from, moves) {
+            cfg.live.forced_base.store(base, Ordering::Release);
+            cfg.live.forced_at.store(now_s, Ordering::Release);
+            if held_step.is_some() {
+                *held_step = Some(Some(to));
+            }
+        }
+    }
+    // Held: stay on the step being heard, whatever the clock says.
+    let held = cfg.live.held() && !cfg.steps.is_empty();
+    if !held {
+        *held_step = None;
+    } else if held_step.is_none() {
+        *held_step = Some(last_step.flatten());
+    }
+    let (mask, step) = match *held_step {
+        Some(Some(i)) => {
+            let mut m = vec![false; cfg.channels.len()];
+            for &c in &cfg.steps[i].channels {
+                if let Some(x) = m.get_mut(c) {
+                    *x = true;
+                }
+            }
+            // No end: a held step has none.
+            (m, Some((Some(i), i64::MAX / 2_000_000_000)))
+        }
+        _ => cfg.mask_at(now_s),
+    };
+    if let Some((i, end)) = step
+        && (*last_step != Some(i) || held != *last_held)
+    {
+        *last_step = Some(i);
+        *last_held = held;
+        on_event(Event::Step {
+            index: i,
+            of: cfg.steps.len(),
+            ends_utc_s: end,
+            held,
+        });
+    }
+    let until_ns = match (held, step) {
+        (true, _) | (_, None) => None,
+        (false, Some((_, end))) => Some(end * 1_000_000_000),
+    };
+    (mask, step, until_ns)
 }
 
 fn session(
@@ -1488,55 +1608,13 @@ fn session(
         // it was when we connected: SDR# takes control when it connects, and a
         // client without it cannot tune the device or write the gain.
         let tune = sync.can_control && (cfg.tune || !cfg.yield_control);
-        let now_s = clock::now_ns().div_euclid(1_000_000_000);
-        // Moves asked for: the step that many places on, with its whole turn from now.
-        let moves = cfg.live.skip.swap(0, Ordering::AcqRel);
-        if moves != 0 && !cfg.steps.is_empty() {
-            let from = held_step.or(last_step).flatten();
-            if let Some((to, base)) = cfg.force_step(now_s, from, moves) {
-                cfg.live.forced_base.store(base, Ordering::Release);
-                cfg.live.forced_at.store(now_s, Ordering::Release);
-                if held_step.is_some() {
-                    held_step = Some(Some(to));
-                }
-            }
-        }
-        // Held: stay on the step being heard, whatever the clock says.
-        let held = cfg.live.held() && !cfg.steps.is_empty();
-        if !held {
-            held_step = None;
-        } else if held_step.is_none() {
-            held_step = Some(last_step.flatten());
-        }
-        let (mask, step) = match held_step {
-            Some(Some(i)) => {
-                let mut m = vec![false; cfg.channels.len()];
-                for &c in &cfg.steps[i].channels {
-                    if let Some(x) = m.get_mut(c) {
-                        *x = true;
-                    }
-                }
-                // No end: a held step has none.
-                (m, Some((Some(i), i64::MAX / 2_000_000_000)))
-            }
-            _ => cfg.mask_at(now_s),
-        };
-        if let Some((i, end)) = step
-            && (last_step != Some(i) || held != last_held)
-        {
-            last_step = Some(i);
-            last_held = held;
-            on_event(Event::Step {
-                index: i,
-                of: cfg.steps.len(),
-                ends_utc_s: end,
-                held,
-            });
-        }
-        let until_ns = match (held, step) {
-            (true, _) | (_, None) => None,
-            (false, Some((_, end))) => Some(end * 1_000_000_000),
-        };
+        let (mask, step, until_ns) = pick_step(
+            cfg,
+            &mut last_step,
+            &mut held_step,
+            &mut last_held,
+            on_event,
+        );
         if let Some((None, _)) = step {
             // No band is in at this hour: stream off, and wait for one.
             c.set(SET_STREAMING_ENABLED, 0)?;
@@ -1607,6 +1685,135 @@ fn session(
             StreamEnd::StepDone => {
                 c.set(SET_STREAMING_ENABLED, 0)?;
             }
+        }
+    }
+}
+
+/// A session with an `rtl_tcp` / `rsp_tcp` server (#685): the loop of [`session`] over a server
+/// that has no handshake, no decimation, no sync messages and no pause. It streams one fixed
+/// rate; each step of a rotation retunes it, waits for the retune to settle and writes the gain
+/// again (a gain written at once did not take on an RSP1), then drops what arrived before that:
+/// the old band's samples must not reach the new band's receiver.
+fn session_rtl(
+    cfg: &Config,
+    stop: &AtomicBool,
+    on_event: &mut impl FnMut(Event),
+) -> std::io::Result<End> {
+    let mut c = rtltcp::Conn::connect(&cfg.server, cfg.rtl_format)?;
+    let rate = cfg.rate.unwrap_or(rtltcp::DEFAULT_RATE);
+    let dev = Device {
+        kind: rtltcp::DEVICE_RTL_TCP,
+        max_rate: rate,
+        // `tune` is on, so the plan never reads the band; the whole rate is the honest figure.
+        bandwidth_hz: rate as f64,
+        max_gain: c.hello.gains.saturating_sub(1),
+        rates: vec![(0, rate)],
+    };
+    // A configured gain step is manual; none leaves the server's automatic gain on.
+    let start_gain = cfg.gain.map(|g| g.min(dev.max_gain));
+    on_event(Event::Connected {
+        device: DeviceInfo {
+            kind: dev.kind,
+            max_rate: rate,
+            bandwidth_hz: dev.bandwidth_hz,
+            max_gain: dev.max_gain,
+            can_control: true,
+            gain: start_gain.unwrap_or(0),
+        },
+        control: true,
+        device_hz: 0.0,
+    });
+    on_event(Event::Radio(RadioState {
+        gain: start_gain.unwrap_or(0),
+        max_gain: dev.max_gain,
+        can_control: true,
+    }));
+    c.set_sample_rate(rate)?;
+    let mut wf_bank = WfBank::new();
+    let mut last_step: Option<Option<usize>> = None;
+    let mut held_step: Option<Option<usize>> = None;
+    let mut last_held = false;
+    loop {
+        let (mask, step, until_ns) = pick_step(
+            cfg,
+            &mut last_step,
+            &mut held_step,
+            &mut last_held,
+            on_event,
+        );
+        if let Some((None, _)) = step {
+            // No band is in at this hour: nothing to tune, and the stream cannot be paused.
+            idle_rtl(&mut c, stop, cfg, until_ns)?;
+            continue;
+        }
+        let Some(p) = plan::plan_of(
+            &cfg.channels,
+            &mask,
+            cfg.center_hz,
+            Some(rate),
+            &dev,
+            0.0,
+            true,
+        ) else {
+            on_event(Event::NoChannelFits { device_hz: 0.0 });
+            idle_rtl(&mut c, stop, cfg, until_ns)?;
+            continue;
+        };
+        let gain = cfg.live.gain().map(|g| g.min(dev.max_gain)).or(start_gain);
+        c.tune(p.center_hz as u32, gain, stop)?;
+        // Everything that arrived before the retune settled is the old tuning's.
+        let settled = clock::now_ns();
+        loop {
+            if c.read(stop)?.arrival_ns >= settled {
+                break;
+            }
+        }
+        let sync = Sync {
+            can_control: true,
+            gain: gain.unwrap_or(0),
+            device_hz: p.center_hz,
+            iq_hz: p.center_hz,
+        };
+        on_event(Event::Streaming {
+            rate: p.rate,
+            decimation: p.decimation,
+            center_hz: p.center_hz,
+            device_hz: p.center_hz,
+            active: (0..cfg.channels.len())
+                .map(|i| p.active.contains(&i))
+                .collect(),
+            channelizer: channelizer_for(cfg, p.active.len()),
+        });
+        match stream(
+            &mut c,
+            stop,
+            cfg,
+            &dev,
+            &p,
+            sync,
+            until_ns,
+            &mut wf_bank,
+            on_event,
+        )? {
+            StreamEnd::Stopped => return Ok(End::Stopped),
+            // A rotation's step is over (or the device moved, which `rtl_tcp` never says): plan again.
+            StreamEnd::StepDone | StreamEnd::Moved(_) => {}
+        }
+    }
+}
+
+/// Read and drop the stream until the step ends or a move is asked for: an `rtl_tcp` server
+/// cannot be paused, and a connection nobody reads backs up.
+fn idle_rtl(
+    c: &mut rtltcp::Conn,
+    stop: &AtomicBool,
+    cfg: &Config,
+    until_ns: Option<i64>,
+) -> std::io::Result<()> {
+    loop {
+        c.read(stop)?;
+        if until_ns.is_some_and(|u| clock::now_ns() >= u) || cfg.live.skip_pending() {
+            return Ok(());
         }
     }
 }
@@ -1965,7 +2172,7 @@ const STEP_GRACE_NS: i64 = 1_500_000_000;
 /// Decode until stopped, the server moves the device, or `until_ns` (UTC) passes.
 #[allow(clippy::too_many_arguments)]
 fn stream(
-    c: &mut Conn,
+    c: &mut impl Link,
     stop: &AtomicBool,
     cfg: &Config,
     dev: &Device,
@@ -2018,7 +2225,7 @@ fn settle(live: &mut Option<Live>, on_event: &mut impl FnMut(Event)) {
 
 #[allow(clippy::too_many_arguments)]
 fn stream_inner(
-    c: &mut Conn,
+    c: &mut impl Link,
     stop: &AtomicBool,
     cfg: &Config,
     dev: &Device,
@@ -2118,11 +2325,7 @@ fn stream_inner(
         if radio.can_control
             && let Some(g) = cfg.live.gain().filter(|g| Some(*g) != applied_gain)
         {
-            c.set(SET_GAIN, g)?;
-            c.set(
-                SET_IQ_DIGITAL_GAIN,
-                digital_gain(dev, p.decimation, Some(g)),
-            )?;
+            c.write_gain(g, dev, p)?;
             applied_gain = Some(g);
         }
 

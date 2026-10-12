@@ -18,9 +18,10 @@ use skimmer_core::modes::{parse_contest, parse_depth, parse_progress};
 use skimmer_core::pskreporter::{
     APP_ENDPOINT, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
 };
+use skimmer_core::rtltcp::RtlFormat;
 use skimmer_core::store;
 use skimmer_core::{
-    ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
+    ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions, Protocol,
     QsoContext, QsoProgress, RadioState, Station, WireFormat,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -128,6 +129,12 @@ struct ServerSetting {
     /// Shown in the window and kept in the database; unique.
     name: String,
     address: String,
+    /// "spyserver" (the default; empty reads as it) or "rtl_tcp": how `address` is spoken to
+    /// (`rtl_tcp` and SDRplay's `rsp_tcp`, #685).
+    protocol: String,
+    /// With rtl_tcp: the sample format expected, "auto" (the default), "8" or "16". The server
+    /// decides it (`rsp_tcp -E -b 16` is 16); a choice other than auto is a check.
+    rtl_format: String,
     /// The operator's callsign at this server (`mycall`, for the QSO-context a-priori decoding).
     call: String,
     /// "float" or "int16": the IQ the server sends (int16 halves the bytes, for a server across a slow link).
@@ -242,6 +249,8 @@ impl Default for ServerSetting {
         ServerSetting {
             name: "SpyServer".into(),
             address: "127.0.0.1:5555".into(),
+            protocol: String::new(),
+            rtl_format: String::new(),
             // Empty until migrated: a settings file from before these were per server hands its own down.
             call: String::new(),
             format: String::new(),
@@ -331,6 +340,13 @@ impl Settings {
         for s in &mut self.servers {
             for r in &mut s.rotation {
                 r.migrate();
+            }
+            // From before a server could speak rtl_tcp (#685).
+            if s.protocol.is_empty() {
+                s.protocol = "spyserver".into();
+            }
+            if s.rtl_format.is_empty() {
+                s.rtl_format = "auto".into();
             }
             // From before the call, locator, IQ format and channelizer were each server's own.
             if s.call.trim().is_empty() {
@@ -893,6 +909,16 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             .collect::<Result<Vec<_>, _>>()?;
         let mut cfg = Config::new(srv.address.trim(), channels);
         cfg.name = srv.name.clone();
+        cfg.protocol = if srv.protocol == "rtl_tcp" {
+            Protocol::RtlTcp
+        } else {
+            Protocol::SpyServer
+        };
+        cfg.rtl_format = match srv.rtl_format.as_str() {
+            "8" => RtlFormat::U8,
+            "16" => RtlFormat::I16,
+            _ => RtlFormat::Auto,
+        };
         cfg.live.set_station(Station::new(
             &srv.call.trim().to_ascii_uppercase(),
             &srv.grid.trim().to_ascii_uppercase(),

@@ -18,8 +18,8 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mfsk_core::jtty::pack::{ExchangeProfile, pack};
@@ -170,6 +170,143 @@ impl Drop for FakeServer {
             let _ = h.join();
         }
     }
+}
+
+/// The rate a [`FakeRtlServer`] streams until the client sets one: the synthetic band is
+/// generated a sample at a time, so the real servers' 2.048 MS/s is out of reach of a test.
+pub const FAKE_RTL_RATE: u32 = 192_000;
+
+/// A stand-in `rtl_tcp` / `rsp_tcp` server (#685): the greeting (with `rsp_tcp`'s capabilities
+/// struct when `bits16`), 5-byte commands kept, and the same synthetic band as [`FakeServer`] as
+/// 8-bit or 16-bit IQ, paced by the wall clock. Like the real ones it streams for ever, cannot
+/// be paused, and serves one client at a time.
+pub struct FakeRtlServer {
+    pub addr: SocketAddr,
+    /// Every command received, `(command, parameter)`, in order, across clients.
+    pub commands: Arc<Mutex<Vec<(u8, u32)>>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FakeRtlServer {
+    /// Listen on `addr` (port 0: any); `bits16` is `rsp_tcp -E -b 16`, else plain `rtl_tcp`.
+    pub fn start(addr: &str, band: Band, bits16: bool) -> std::io::Result<FakeRtlServer> {
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        let addr = listener.local_addr()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let commands: Arc<Mutex<Vec<(u8, u32)>>> = Arc::default();
+        let (flag, log) = (stop.clone(), commands.clone());
+        let handle = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((s, _)) => {
+                        let _ = serve_rtl(s, &band, bits16, &flag, &log);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(FakeRtlServer {
+            addr,
+            commands,
+            stop,
+            handle: Some(handle),
+        })
+    }
+}
+
+impl Drop for FakeRtlServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+fn serve_rtl(
+    mut sock: TcpStream,
+    band: &Band,
+    bits16: bool,
+    stop: &AtomicBool,
+    log: &Mutex<Vec<(u8, u32)>>,
+) -> std::io::Result<()> {
+    sock.set_nodelay(true)?;
+    sock.set_read_timeout(Some(Duration::from_millis(2)))?;
+    let mut hello = b"RTL0".to_vec();
+    hello.extend_from_slice(&5u32.to_be_bytes()); // tuner
+    hello.extend_from_slice(&28u32.to_be_bytes()); // gain steps
+    if bits16 {
+        // rsp_extended_capabilities_t: magic, version, capabilities, reserved, hardware
+        // version, sample format (big-endian words), then the rest, 45 bytes in all.
+        hello.extend_from_slice(b"RSP0");
+        for w in [1u32, 0, 0, 1, 2] {
+            hello.extend_from_slice(&w.to_be_bytes());
+        }
+        hello.resize(12 + 45, 0);
+    }
+    sock.write_all(&hello)?;
+    let mut synth = Synth::new(band);
+    let (mut rate, mut center) = (FAKE_RTL_RATE, band.dial_hz - 25_000.0);
+    let mut inbox: Vec<u8> = Vec::new();
+    let (mut n, t0) = (0u64, wall_s());
+    let mut next_block = Instant::now();
+    // Samples at the current rate since `t0`; a rate change restarts the count at the same time.
+    let mut t_base = t0;
+    while !stop.load(Ordering::Relaxed) {
+        let mut buf = [0u8; 256];
+        match sock.read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(k) => inbox.extend_from_slice(&buf[..k]),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) => return Err(e),
+        }
+        while inbox.len() >= 5 {
+            let (cmd, param) = (
+                inbox[0],
+                u32::from_be_bytes(inbox[1..5].try_into().unwrap()),
+            );
+            inbox.drain(..5);
+            log.lock().unwrap().push((cmd, param));
+            match cmd {
+                0x01 => center = f64::from(param),
+                0x02 if param > 0 => {
+                    t_base += n as f64 / f64::from(rate);
+                    (rate, n) = (param, 0);
+                }
+                _ => {}
+            }
+        }
+        if Instant::now() < next_block {
+            continue;
+        }
+        const BLOCK: usize = 4096;
+        next_block += Duration::from_secs_f64(BLOCK as f64 / f64::from(rate));
+        let mut body = Vec::with_capacity(BLOCK * if bits16 { 4 } else { 2 });
+        for i in 0..BLOCK as u64 {
+            let t = t_base + (n + i) as f64 / f64::from(rate);
+            for v in synth.sample(t, center) {
+                if bits16 {
+                    body.extend_from_slice(
+                        &((v * 32_767.0).clamp(-32_768.0, 32_767.0) as i16).to_le_bytes(),
+                    );
+                } else {
+                    body.push((v * 127.5 + 127.5).round().clamp(0.0, 255.0) as u8);
+                }
+            }
+        }
+        n += BLOCK as u64;
+        sock.write_all(&body)?;
+    }
+    Ok(())
 }
 
 /// One message to the client.

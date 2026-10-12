@@ -528,7 +528,7 @@
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
+      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -653,7 +653,24 @@
           {#if settings.servers[sel]}
             {@const sv = settings.servers[sel]}
             <div class="field"><span>Name</span><input bind:value={sv.name} disabled={running} spellcheck="false" /></div>
-            <div class="field"><span>Address</span><input bind:value={sv.address} disabled={running} placeholder="host:5555" spellcheck="false" /></div>
+            <div class="field" title="SpyServer (Airspy HF+, Airspy, RTL-SDR), or rtl_tcp: the protocol of rtl_tcp and of SDRplay's rsp_tcp, for a device SpyServer does not serve (an SDRplay RSP). The device's own driver stays on the server.">
+              <span>Protocol</span>
+              <select bind:value={sv.protocol} disabled={running}>
+                <option value="spyserver">SpyServer</option>
+                <option value="rtl_tcp">rtl_tcp / rsp_tcp</option>
+              </select>
+            </div>
+            <div class="field"><span>Address</span><input bind:value={sv.address} disabled={running} placeholder={sv.protocol === 'rtl_tcp' ? 'host:1234' : 'host:5555'} spellcheck="false" /></div>
+            {#if sv.protocol === 'rtl_tcp'}
+              <div class="field" title="The IQ the server sends. The server decides: rsp_tcp started with -E -b 16 sends 16-bit, anything else 8-bit. Auto takes what it announces; 8 or 16 refuses a server that sends the other, with the reason.">
+                <span>rtl_tcp IQ</span>
+                <select bind:value={sv.rtlFormat} disabled={running}>
+                  <option value="auto">Auto</option>
+                  <option value="8">8-bit</option>
+                  <option value="16">16-bit (rsp_tcp -E -b 16)</option>
+                </select>
+              </div>
+            {/if}
             <div class="field" title="Your callsign at this server. Used for the QSO-context a-priori decoding. A channel can override it in its options.">
               <span>My call</span>
               <input class="call" bind:value={sv.call} placeholder="JL1NIE" spellcheck="false" onchange={() => stationChanged(sel)} />
@@ -673,7 +690,7 @@
             </div>
             <div class="field" title="float32 or int16 IQ. int16 halves the bytes: for a server across a slow link.">
               <span>IQ format</span>
-              <select bind:value={sv.format} disabled={running}>
+              <select bind:value={sv.format} disabled={running || sv.protocol === 'rtl_tcp'}>
                 <option value="float">float32</option>
                 <option value="int16">int16</option>
               </select>

@@ -20,13 +20,15 @@ use skimmer_core::modes::{MODES, mode_name, parse_channel};
 use skimmer_core::pskreporter::{
     Endpoint, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
 };
-use skimmer_core::{Channelizer, Config, Event, Step, WireFormat, all_txt_line};
+use skimmer_core::rtltcp::RtlFormat;
+use skimmer_core::{Channelizer, Config, Event, Protocol, Step, WireFormat, all_txt_line};
 
 fn usage() -> ExitCode {
     let modes: Vec<&str> = MODES.iter().map(|m| m.0).collect();
     eprintln!(
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
+         \x20      [--protocol spyserver|rtl_tcp [--rtl-format auto|8|16]]   (rtl_tcp: also SDRplay's rsp_tcp; 16 = rsp_tcp -E -b 16)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
          \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT]]\n\
@@ -97,6 +99,24 @@ fn parse_args() -> Option<Parsed> {
                 cfg.format = match it.next()?.as_str() {
                     "float" => WireFormat::Float,
                     "int16" => WireFormat::Int16,
+                    _ => return None,
+                }
+            }
+            // How the server is spoken to: SpyServer (the default), or rtl_tcp / rsp_tcp (#685).
+            "--protocol" => {
+                cfg.protocol = match it.next()?.as_str() {
+                    "spyserver" => Protocol::SpyServer,
+                    "rtl_tcp" | "rsp_tcp" => Protocol::RtlTcp,
+                    _ => return None,
+                }
+            }
+            // The sample format expected from an rtl_tcp server: the server decides it, so
+            // 8 or 16 is a check, and auto takes what it announces.
+            "--rtl-format" => {
+                cfg.rtl_format = match it.next()?.as_str() {
+                    "auto" => RtlFormat::Auto,
+                    "8" => RtlFormat::U8,
+                    "16" => RtlFormat::I16,
                     _ => return None,
                 }
             }

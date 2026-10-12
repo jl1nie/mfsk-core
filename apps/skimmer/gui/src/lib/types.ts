@@ -48,6 +48,10 @@ export interface ServerSetting {
   grid: string;
   /** Your callsign at this server (QSO-context AP); a channel can override it. */
   call: string;
+  /** How the address is spoken to: SpyServer (the default), or rtl_tcp (also SDRplay's rsp_tcp). */
+  protocol?: 'spyserver' | 'rtl_tcp';
+  /** With rtl_tcp: the IQ the server is expected to send. The server decides it; a choice other than auto is a check. */
+  rtlFormat?: 'auto' | '8' | '16';
   /** IQ sample format on the wire; int16 halves the bytes. */
   format: WireFormat;
   /** How the band is cut into channels. */

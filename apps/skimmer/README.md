@@ -215,6 +215,28 @@ identifier, Info.plist not bound), macOS refuses the LAN connection with
 `No route to host` and never asks. Verified on an Apple silicon Mac against the
 SpyServer below: it connects once local network access is allowed.
 
+## rtl_tcp servers (SDRplay RSP) — `--protocol rtl_tcp`
+
+```sh
+skimmer --server HOST:1234 --protocol rtl_tcp --ch FT8@7041000 --mycall CALL --mygrid GRID
+```
+
+For a device SpyServer does not serve. `skimmer_core::rtltcp` speaks the `rtl_tcp` protocol, so an SDRplay RSP is reached
+through SDRplay's [`rsp_tcp`](https://github.com/SDRplay/RSPTCPServer) (GPL-3.0, F4FHH Nicolas and SDRplay; the
+proprietary SDRplay API stays in that process) and an RTL-SDR through `rtl_tcp`. The GUI has the same choice per server (*Protocol*).
+Decision and measurements: #684, #685.
+
+- `--rtl-format auto|8|16`: the server decides the format (`rsp_tcp -E -b 16` is 16-bit and announces it with a
+  `RSP0` struct after the `RTL0` greeting; otherwise 8-bit). `auto` reads the announcement; 8 or 16 refuses a server that
+  sends the other, with the way out in the message.
+- A fixed rate (`--rate`, default 2 048 000): the protocol has no decimation, so the planner has one rate and `IqReceiver`
+  cuts the channels. The stream cannot be paused: a rotation retunes it, waits 600 ms, writes the gain again and drops what
+  arrived before (`session_rtl`). `--gain N` is a gain step, manual; without it the server's automatic gain.
+- `rsp_tcp` listens on `127.0.0.1`; `-a 0.0.0.0` for another PC (trusted network only).
+- **Status:** tested end to end against `fake::FakeRtlServer` (`tests/fake_rtltcp.rs`: 16-bit, 8-bit, a format refused). On a real RSP1
+  the greeting, the announcement and the stream worked; that `rsp_tcp` ended with `RSP failure` (the SDRplay API's device failure event)
+  within minutes, with a bare reader on it as well, so FT8 off the air through it is not verified.
+
 ## Sharing the radio with SDR#
 
 Observed with SDR# and an Airspy HF+ (2026-10-03):
