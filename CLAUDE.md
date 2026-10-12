@@ -1,959 +1,146 @@
 # mfsk-core — agent notes
 
-Repo-level notes for assistants working in this tree. Anything specific to
-a sub-crate lives in its own `CLAUDE.md` or `README.md`; this file is for
-the cross-crate map and workflow that's easy to forget between sessions.
+Repo-level notes for assistants. Sub-crates have their own `CLAUDE.md` / `README.md`. This file is the short
+map and the rules that are easy to forget; the long procedures live in `docs/notes/` (linked below, nothing
+was dropped when this file was cut down on 2026-10-12).
 
-Read order for a cold start: this file, then `CONTRIBUTING.md` (testing
-philosophy, WSJT-X porting rules), then whichever of
-`docs/reference/LIBRARY.md` (Rust host API, ~1100 lines),
-`docs/reference/BINDINGS.md` (C / Kotlin / Swift) or
-`docs/reference/EMBEDDED.md` (no_std / fixed-point) the task lands in. `embedded-poc/CLAUDE.md` plus the per-board crate `CLAUDE.md`
-before touching hardware.
+**Cold start:** this file → `CONTRIBUTING.md` (testing philosophy, WSJT-X porting rules) → whichever of
+`docs/reference/LIBRARY.md` (Rust host API), `BINDINGS.md` (C / Kotlin / Swift) or `EMBEDDED.md` (no_std,
+fixed-point) the task lands in. Before touching hardware: `embedded-poc/CLAUDE.md` and the board crate's `CLAUDE.md`.
 
 ## What this repo is
 
-A pure-Rust 1:1 port of the WSJT-X decoders and synthesisers — FT8, FT4,
-FST4, WSPR, JT9, JT65, Q65 (ten sub-modes, 15A‥300A), MSK144, JTTY, and the
-experimental `uvpacket` mode — seven of the families behind a zero-cost
-`Protocol` trait (MSK144 and JTTY sit outside it, see below), so the same source
-builds for a host (rustfft, rayon), for `wasm32`, and for `no_std`
-embedded targets with a fixed-point hot path. WSJT-X stays the reference
-implementation; this crate exists to put those decoders on platforms
-WSJT-X can't reach. Every algorithm file cites the `lib/*.f90` / `lib/*.c`
-it ports, and keeping those citations valid is part of the diff.
+A pure-Rust 1:1 port of the WSJT-X decoders and synthesisers: FT8, FT4, FST4, FST4W, WSPR, JT9, JT65, Q65 (ten
+sub-modes), MSK144, JTTY, and the experimental `uvpacket`. Seven families sit behind a zero-cost `Protocol`
+trait (MSK144 and JTTY sit outside it by design), so one source builds for host (rustfft, rayon), `wasm32` and
+`no_std` embedded with a fixed-point path. **WSJT-X stays the reference**; every algorithm file cites the
+`lib/*.f90` / `lib/*.c` it ports, and keeping those citations valid is part of the diff. License: GPL-3.0-only.
 
-Alongside the library, the repo carries a working embedded line: an
-M5Stack CoreS3 that takes USB-audio from an IC-705 and receives FT8, FT4
-and JTTY, with CAT over the same cable.
+Alongside the library: an embedded line (M5Stack CoreS3: USB audio from an IC-705, FT8 / FT4 / JTTY / WSPR, CAT
+over the same cable) and a SpyServer skimmer app.
 
 ## Repository map
 
-Host workspace members (`Cargo.toml` `[workspace] members`):
-
-| path | what it is | published? |
+| path | what | published |
 |---|---|---|
-| `mfsk-core/` | the library — everything below is a consumer of it | **yes**, crates.io |
-| `mfsk-ffi/` | C ABI over *all* protocols; `include/mfsk.h` is cbindgen-generated and committed; `examples/cpp_smoke/` is a real C++ driver run by CI | no |
-| `mfsk-ffi-abi/` | shared `#[repr(C)]` mode / status / params / row types `mfsk-ffi` re-emits (issue #205) | no |
-| `hosttest/mfsk-app-shared/` | runs the host-testable parts of `embedded-poc/mfsk-app-shared` under a normal `cargo test` | no |
-| `apps/skimmer/core/`, `apps/skimmer/cli/` | sample app: SpyServer skimmer over `IqReceiver` (`skimmer-core` + the `skimmer` CLI); see `apps/skimmer/README.md`. `mfsk-core` itself has no network code, by decision | no |
+| `mfsk-core/` | the library; everything else consumes it | crates.io |
+| `mfsk-ffi/`, `mfsk-ffi-abi/` | C ABI over all protocols (`include/mfsk.h` is cbindgen-generated and committed); shared `#[repr(C)]` types | no |
+| `hosttest/mfsk-app-shared/` | runs the host-testable half of `embedded-poc/mfsk-app-shared` under `cargo test` | no |
+| `apps/skimmer/{core,cli}/` | the SpyServer skimmer; **its own version** (1.0.0 on 2026-10-12, PSK Reporter in production) and its own tags `skimmer-vX.Y.Z` | GitHub release only |
+| `apps/skimmer/gui/` | Tauri + Svelte GUI over `skimmer-core`; outside the workspace | with the skimmer release |
+| `bindings/{kotlin,swift}/` | Kotlin/JNI and SwiftPM bindings over the same ABI; not Rust, own CI jobs | no |
+| `embedded-poc/`, `bench/wasm/`, `wasm-smoke/` | outside the workspace (`exclude`): other toolchains / targets | no |
+| `docs/reference/` | long-form manuals; **every file has a `.ja.md` twin: edit both, or say which you skipped** | |
+| `docs/notes/` | ROADMAP, BENCHMARKS, UPSTREAM_EVALUATION, the per-protocol notes, and the moved sections below | |
 
-Only `mfsk-core` reaches crates.io; the rest are `publish = false`.
-`workspace.package.version` in the root `Cargo.toml` is the single source
-of truth for all of them — a release bump is one edit, and
-`release.yml`'s tag check reads that field.
+`workspace.package.version` in the root `Cargo.toml` is the library's single version (the skimmer has its own, in
+four files + `package.json`). The skimmer takes `mfsk-core` **by path**, so a skimmer tag carries the library's
+`main` at that commit, not its latest crates.io release. Full map, CI path filters and what CI does *not*
+compile: `docs/notes/REPO_MAP.md`.
 
-Deliberately **outside** the workspace (`exclude`), because host `cargo
-build` would try to compile them with the stable toolchain and fail:
+## Rules that bite
 
-- `embedded-poc/` — stand-alone Cargo projects on their own toolchains
-  (`+esp` Xtensa, etc.), each with a path dep on `mfsk-core`. See
-  "Embedded targets" below.
-- `bench/wasm/` — a wasm-bindgen harness for `wasm32-unknown-unknown`
-  (issue #208); a manual/periodic tool, not CI-gated.
-- `wasm-smoke/` — one decode per mode on `wasm32-unknown-unknown`, run in Node by CI's `wasm` job (issue #585). Excluded from
-  the workspace like `bench/wasm`, but unlike it, gated: `std` does not imply a clock on that target (#583).
-- `apps/skimmer/gui/` — the skimmer's Tauri + Svelte GUI over
-  `skimmer-core`; needs a webview (WebView2 / webkit2gtk) and Node, which
-  host CI lacks. `skimmer-installers.yml` builds it on Windows and macOS
-  (PRs touching `apps/skimmer/**`, and `skimmer-vX.Y.Z` tags, whose
-  `skimmer-release.yml` makes a release of its own); locally, Windows or a
-  Mac. **The skimmer has its own version (0.9.x is the beta; 1.0.0 is the first with PSK Reporter in production)**, not the workspace's:
-  four files carry it and that workflow checks them. The library's
-  `vX.Y.Z` releases no longer attach the installers (2026-10-11).
+- **There is no `src/core/`; the shared module is `src/engine/`.** Don't "fix" a build error by inventing a
+  `core` module (Rust's own `core::sync::atomic` is a different thing).
+- **Public decode API is `Decoder<P>`** (`mfsk-core/src/decoder/`, since 0.13.0): one persistent decoder per mode,
+  `DecodeParams` (= `jt9com`) plus per-mode `Extras`, `decode(&SlotInput)`. The raw engine functions are
+  `pub(crate)` on purpose.
+- **Sniper is an FT8-only roofing-filter mode; AP is a general option.** Wide-band is the main path for every
+  mode; if it isn't WSJT-X-faithful without a sniper, that is a bug in the wide-band path.
+- **MSK144 and JTTY are outside the `Protocol` trait** (not FSK / no slot). Not a gap to close.
+- **Phantom-prone code is the non-default strategies** (SIC rounds, `sic_early`): a new strategy ships with its
+  precision guard in the same PR.
+- **Cite the upstream.** Changing a decoder internal means reading the Fortran first, making the matching
+  change, and keeping the `Ported from…` pointer valid. A deliberate divergence gets a comment saying so.
+- **Comments carry evidence, not intent:** a knob's doc says what was measured and on what corpus.
+- **Feature traps:** `fixed-point` implies `nstep-half` (must); `wspr-ddc` and `wspr-ddc-cascade` are mutually
+  exclusive; **`internal-testing` is required for whole-crate commands** (without it clippy shows `E0603`, not
+  your regression). Full list: `docs/notes/DEV_CHECKS.md`; the architecture: `docs/notes/CORE_INTERNALS.md`.
+- **Test fixture paths:** never hardcode `/home/...` or `/Users/...`. In-repo assets via `asset_path!` or
+  `concat!(env!("CARGO_MANIFEST_DIR"), "/../embedded-poc/assets/<f>")`; out-of-tree via
+  `option_env!("WSJTX_SAMPLES_DIR")`, skipping cleanly. (`/tmp/...` is fine for diagnostic output.)
 
-`ci.yml`'s `paths` trigger excludes these trees, so a change confined to
-them runs no host CI at all. That is intentional, and it is also why "CI
-is green" says nothing about an embedded change. Three things under
-`embedded-poc/` are re-included, because host CI reads them: the test
-recordings and fixtures (`assets/golden/**`, `assets/*.wav`,
-`assets/*.bin`, which start tier A+B alone) and
-`mfsk-app-shared/src/**` (which `hosttest/` compiles, and starts the
-`ffi` job). Before 2026-09-24 the trigger was `paths-ignore`, which
-cannot re-include anything, so replacing a golden recording ran no CI.
-
-`bindings/` is not Rust and so is in neither list — no `Cargo.toml`,
-so the workspace never sees either of them:
-
-- `bindings/kotlin/` — the maintained Kotlin/JNI binding (C shim +
-  `Mfsk.kt`), built and run on a desktop JVM by the `kotlin` CI job.
-  `bindings/kotlin/build.sh` is the local equivalent; it needs
-  `JAVA_HOME` and `kotlinc`.
-- `bindings/swift/` — a SwiftPM package over the same ABI
-  (`import MfskCore`). Its module map includes `mfsk-ffi/include/mfsk.h`
-  **in place**, so it follows the header rather than carrying a copy,
-  and `bindings/swift/scripts/test.sh` builds `libmfsk` and runs the
-  XCTest suite (107 tests as counted by `grep -rc 'func test' bindings/swift/Tests`; all passed on an Apple M5 with Xcode on 2026-10-08, ~10 s — XCTest needs Xcode, not just the
-  Command Line Tools, and the script points `DEVELOPER_DIR` at it when
-  it has to). The `swift` CI job runs that same script on
-  `macos-latest`, and is also where `aarch64-apple-ios` is built: both
-  halves need Xcode, one for XCTest and one for the iOS SDK.
-
-A change confined to `bindings/**` runs the two binding jobs and
-nothing else — `ci.yml`'s path filter has a `bindings` output beside
-`src` for exactly that. Before it existed, `src` did not list
-`bindings/**`, so a Kotlin-only PR skipped the Kotlin job.
-
-Everything else:
-
-- `docs/reference/` — the long-form manuals, split by audience since
-  2026-09-16: `LIBRARY.md` (Rust host API, trait hierarchy, decode
-  strategies), `BINDINGS.md` (the C ABI written from `mfsk.h`, plus
-  Kotlin and Swift), `EMBEDDED.md` (fixed-point architecture, FFT
-  extern contract, Q-format, per-protocol embedded status),
-  `STREAMING.md`, `UVPACKET.md`, and the two operator manuals
-  `MANUAL_M5STACK_CORES3.md` / `MANUAL_M5STICKS3.md` / `MANUAL_SKIMMER.md`. **Every file here
-  has a `.ja.md` twin** — if you edit one, edit both, or say plainly that
-  you didn't.
-- `docs/notes/` — `ROADMAP.md` (phase status; the "Quick file-path index"
-  at the end is the fastest way to find a subsystem), `BENCHMARKS.md`
-  (what a reader is shown: verdict and speed against WSJT-X up top),
-  `UPSTREAM_EVALUATION.md` (the evaluation sheet behind that headline:
-  paired counts, tests, timings), the per-protocol `*_BENCHMARK.md`, `SNR_FORMULAS.md`, `DECODED_ROW.md`,
-  and `sweep-baseline.json` (the machine-checked half of the sensitivity
-  story: 50%-crossing SNRs, and for ft8/ft4/fst4 the unexpected-decode
-  count per SNR cell).
-- `docs/historical/` — split-out older CHANGELOG sections. Grep here as
-  well as `CHANGELOG.md` when researching precedent.
-- `scripts/` — `build_*sim.sh` / `gen_*_sweep_wavs.sh` build WSJT-X's
-  Fortran simulators and generate the tier-C corpora;
-  `run-sensitivity-sweeps.sh` + `sweep-regression-check.py` run and diff
-  them; `release-status.sh` computes release state; `install-hooks.sh`
-  (a wrapper for `git config core.hooksPath .githooks`) and
-  `pre-push-check.sh` are the local gates.
-- `embedded-poc/assets/` — test audio. `golden/` holds the vendored tier-B
-  recordings (with a README mapping each to its WSJT-X upstream);
-  `*_sweep/` are the generated tier-C corpora, ~17 GB, gitignored per
-  directory.
-
-## `mfsk-core` internals — the map before you edit
-
-**FST4W** (#649; WSJT-X's WSPR-style beacon, 120/300/900/1800 s) is FST4's modulation
-and front end with LDPC(240,74), a 50-bit message and a Keff 66 → Keff 50 ladder
-(`fst4w::decode`); the Keff-50 word has no CRC and is accepted only through a
-known-call list that is state between candidates, so candidates run one at a
-time. Its oracles run upstream: `scripts/osd-upstream/run.sh 74` (FEC),
-`scripts/fst4w/build_oracle.sh` (`genfst4`), `scripts/fst4w/gen_decode_vectors.sh`
-and `gen_fst4_long_vectors.sh` (`jt9`). Build them from `git archive` of the tag,
-never the working tree.
-
-A protocol is a **zero-sized type** implementing `ModulationParams`
-(tones, symbol rate, Gray map, GFSK shaping), `FrameLayout` (symbol
-counts, slot length, sync blocks), and `Protocol` (which binds
-`type Fec` and `type Msg`). Everything generic is monomorphised per `P`,
-so the abstraction costs compile time and nothing else. Adding a protocol
-is a trait impl plus a registry line — FST4-60A landed without touching
-shared code. `CONTRIBUTING.md` "Adding a new protocol" and
-`LIBRARY.md` §5 are the step-by-steps.
-
-| module | contents |
-|---|---|
-| `engine/` | the shared core: `protocol.rs` (the traits), `pipeline.rs`, `sync.rs` / `sync2d.rs`, `spectrogram.rs`, `llr.rs`, `equalize.rs`, `scalar.rs` (Q-format types), `fft.rs` (the `FftPlanner` trait + extern factory), `tx.rs`, and `dsp/` (resample, downsample, GFSK, envelope, subtract, DDC, FIR/polyphase, dotprod, the fixed-point FFT kernels) |
-| `fec/` | `ldpc/` (174,91), `ldpc240_101/`, `ldpc240_74/` (FST4W: its own BP loop and `fastosd240_74`), `ldpc_128_90/` (MSK144), `conv/` (r=½ K=32 Fano), `rs/` (63,12 over GF(2⁶)), `qra/` + `qra15_65_64/` (Q65) |
-| `msg/` | message codecs — `wsjt77.rs`, `jt72.rs`, `wspr.rs`, `q65.rs`, `packet_bytes.rs`, `callsign28.rs`, `hash_table.rs` — plus `decode_request.rs` and `decoded.rs`, which are the public entry point and the public output row |
-| `ft8/ ft4/ fst4/ fst4w/ wspr/ jt9/ jt65/ q65/ msk144/ jtty/ uvpacket/` | per-protocol ZSTs (not for `msk144` / `jtty`, which have none), decoders, synthesisers; each feature-gated by its own name. `fst4w/` reuses `fst4/`'s modulation and front end (feature `fst4w` implies `fst4`) and adds `Ldpc240_74`, the 50-bit type-0.6 message and its own candidate ladder |
-| `registry.rs` | `PROTOCOLS: &[ProtocolMeta]` + `by_id` / `by_name` / `for_protocol_id` — how a UI or FFI layer asks "what does this build support?" without hardcoding a list. Since 0.12.0 each entry also carries `profile: DecodeProfile` (`caps`, `defaults: DecodeDefaults` — the 0.12 request defaults; `decoder::default_params` is the 0.13 source of the starting block, `sync_scale`), and `registry::caps` is the capability-bit table `mfsk-ffi` republishes (`tests/registry_caps.rs` ties it to the trait impls) |
-
-**There is no `src/core/`. The shared module is `src/engine/`.**
-The source has zero `crate::core::` paths. The stale `core::` spellings
-in `CONTRIBUTING.md` and in the `Cargo.toml` feature comments were
-corrected in PR #378; `CHANGELOG.md` and `docs/historical/` still carry
-it, where it is a historical record and correct as written. (Rust's own
-`core::sync::atomic` is everywhere in `src/` and is a different thing —
-don't "correct" it.) Don't "fix" a build error by inventing a `core`
-module.
-
-To check: `grep -rn 'core::pipeline\|core::fft\|core::scalar\|crate::core::'`
-— anything outside CHANGELOG/historical is a leftover.
-
-**`Decoder<P>` (`mfsk-core/src/decoder/`) is the public decode API since 0.13.0.** One persistent decoder per mode,
-as `jt9` runs one: it owns what upstream keeps between periods (callsign hash table, FT8 a7 rows, Q65 averages, WSPR's
-call table) and takes `DecodeParams` (= `jt9com`'s block: band, `nfqso`, `ntol`, `nftx`, `Depth` = `ndepth`, station,
-QSO context, AP mode, contest, EME delay) plus a typed per-mode `Extras` for what the library adds (`strategy`,
-`ApHint`, `eq`, `filter`, sniper, noise blanker, Q65 pileup/drift…). `decode(&SlotInput)` takes a whole period
-(`Audio::I16`/`F32`, `period`, `Budget`) and streams rows through `on_row`. `decode_prefix` takes the period so far
-instead (#572): FT8's checkpoint-A rows at ~11.8 s, and a final call equal to `decode`; the decoder infers the stage
-(where it departs from the design: `docs/notes/EARLY_DECODE_DESIGN.md` §12). `AnyDecoder` picks the mode at run time
-(`registry::Mode`); an option the mode lacks is `Unsupported`. `Depth` decides every search setting, mapped per mode from
-v3.2.0-rc1 and cited in the code; defaults follow the WSJT-X GUI. The 0.12 per-family `DecodeRequest`/`SniperRequest`/
-`MultiPeriodRequest` are crate-private (`internal-testing` reopens them for tests; `SniperRequest` stays public for the
-WSPR boards). The raw engine functions (`decode_frame`, `process_candidate_basic`, `GenericPipelineProtocol`) are
-`pub(crate)` on purpose. Time is `slotgrid` (`SlotGrid`, `SampleClock`, `SlotCutter`), shared by `IqReceiver` (pull
-model: owned `CompletedSlot`s, one decoder per channel kept by the caller) and the C stream. The design, its
-embedded checks (E1–E11) and the open questions are in the plan `moonlit-mapping-hopcroft.md` and the memory note
-`project_v0130_redesign.md`.
-
-Strategy extensions exist per protocol in its `Extras`:
-`Ft8Strategy::SicRounds(n)` / `SicEarly` (FT4 has no `SicEarly`), FT8/FT4 only, mirroring an upstream
-absence. **The phantom-prone code lives in these non-default strategies**
-(both false-decode bugs this suite has shipped were in subtraction paths:
-#243 in `__staged_sic`, #253 in `.sic_early()`), so a new strategy ships
-with its precision guard in the same PR.
-
-**Sniper mode is an FT8-only roofing-filter mode. The window is what
-makes it one — not the hint.** This has been misread more than once,
-each time costing a design decision, so: `SniperRequest`'s ±250 Hz window exists because the
-operator narrowed the transceiver's *analogue* roofing filter (FTDX101MP,
-FTDX10 — the few radios offering one at ~500 Hz) and pointed it at a DX
-station whose carrier is already known. The audio arriving is already
-band-limited; the decoder is matching the hardware, not being clever.
-`.eq_mode()` sits beside it to flatten the tilt that analogue filter's
-skirt puts on the passband — so **EQ is a property of the input audio,
-not of the search**, which is why `DecodeRequest` carries it too and why
-it costs decodes on flat `ft4sim` corpora.
-
-It is gated on its own trait, `SupportsSniper`, **implemented for FT8
-alone** (2026-09-13). The wide-band path is the main path for every mode
-here; if it is not WSJT-X-faithful without a sniper, that is a bug in the
-wide-band path. FT4 is a contest protocol whose premise is working a full
-band, and FST4 narrows through its own DDC channelizer instead.
-
-**`.ap_hint()` does work on `SniperRequest`** — it is set, carried, and
-passed to `decode_sniper_inner`. What follows is about where AP *came
-from*, not whether it is available there; an earlier phrasing here read
-as "AP is unavailable in sniper mode", which is false and contradicts
-`LIBRARY.md` §2.5 (the per-mode extras).
-
-**A-priori decoding is a general option that got coupled to sniper by
-accident.** The AP engine broke out of its candidate loop on
-`if has_ap`, so a hint — not a narrow search — was what made it
-single-target; and it ran a *parallel, shallower* per-candidate ladder
-(OSD depth-2 only, no Top-K rescue) that cost most of the decodes — 4
-against 11 on the FT4 golden, measured. Both are gone: AP is now the
-last rung of each per-candidate ladder, and `msg::pipeline_ap` is
-~100 lines (`wc -l`: 103) of hypothesis generation with no engine of its own. There are
-**two** such ladders, not one: `process_candidate_basic` serves FT4 and
-every FST4 sub-mode, while FT8 — which does not implement
-`GenericPipelineProtocol` — runs its own in
-`ft8::decode_block::process_one_candidate_inner`, with an inline copy of
-the hypothesis list (#415; unifying them is #423). Full writeup in
-`docs/notes/DESIGN_RATIONALE.md` §3.
-
-**JTTY is outside the `Protocol` trait too, for a different reason: it has
-no slot.** Frames start whenever the sender likes and a message is several
-of them, so the receiver (`jtty::rx::Stream`, incremental; a callback per
-`MessageUpdate`) carries state, and the C ABI gives it a handle of its own
-(`mfsk_jtty_*`, poll-based with a per-message-coalescing queue) rather than
-a slot call. Port of WSJT-X 3.2.0-rc1's `lib/jtty/`; the plan, the
-upstream read-through and every measurement are in
-`docs/notes/JTTY_UPSTREAM.md` (issue #477).
-
-**MSK144 is intentionally outside the `Protocol` trait** — it isn't FSK,
-and `msk144::decode::decode_slot` bypasses `engine::pipeline` by design.
-It therefore doesn't appear in `PROTOCOLS` or `protocol_invariants.rs`.
-That is an architectural decision, not a gap to close.
-
-`tests/protocol_invariants.rs` runs one generic
-`assert_protocol_invariants::<P>` over every wired ZST — **30 of them**:
-26 WSJT-family (FST4 now has seven periods and FST4W four), plus `uvpacket`'s four — and pins ~25 trait-level
-invariants. A new protocol gets one line there.
-
-(This used to say "11 with `full`; uvpacket adds four more". Those are
-the **`#[test]` function** counts, not ZSTs — the file has 15 test
-functions driving 24 `assert_protocol_invariants::<P>` calls (30 since FST4-900/-1800 and FST4W, #649). Stated as
-ZSTs it was wrong, and it was copied into `LIBRARY.md` §8.2 verbatim
-before a review caught it. Corrected in PR #378; count with
-`grep -c 'assert_protocol_invariants::<' mfsk-core/tests/protocol_invariants.rs`.)
-
-## Feature flags — the ones that bite
-
-`default = ["std", "ft8", "ft4", "parallel", "fft-rustfft"]`;
-`full` is every protocol + `uvpacket` + `packet-bytes` + `serde` +
-`parallel` + host FFT. The full table with rationale is in
-`mfsk-core/Cargo.toml`, which is worth reading as documentation — each
-flag carries the measurement that justified it. The traps:
-
-- **`fixed-point` implies `nstep-half`, and must.** Decoupled, host
-  fixed-point ran a different time grid (NSTEP=NSPS/4) from embedded
-  (NSPS/2) and produced a completely different candidate ranking on the
-  same WAV — 4 vs 7 decodes on `qso3_busy` single-pass. The point of host
-  fixed-point is to simulate embedded faithfully.
-- **`wspr-ddc` and `wspr-ddc-cascade` are mutually exclusive** —
-  `compile_error!` in `decode_scan_inner`. They swap WSPR's channelizer
-  from the reference whole-slot FFT to the streaming down-converter
-  (single-stage / two-stage cascade). Host default stays on the exact
-  reference.
-- **`internal-testing` is not optional for whole-crate commands.**
-  Without it, `cargo clippy --all-targets --features full` reports `E0603`
-  private-item errors in `fst4_sweep` / `ft4_sweep` /
-  `fst4_wsjtx_samples`. That's a missing flag, not a regression you
-  introduced — use the hook's own invocation before concluding otherwise.
-- **`jt9` / `jt65` / `q65` stopped being host-only in #390** — they no
-  longer force `fft-rustfft` (and with it `std`). Their FFTs go through
-  `engine::fft`, the modules carry `alloc::` imports and
-  `num_traits::Float` instead of `std`, and JT9's `downsam9` normalises
-  its inverse explicitly instead of assuming rustfft's unscaled
-  convention. Each has an `alloc,<mode>,fft-extern` row in the
-  pre-push/CI feature matrix, which is the only build that catches a
-  `std::` path creeping back. Compiling is all that changed: no
-  fixed-point path and no board app drives them. `fst4` got there first
-  by a shorter route (issue #306) — it never referenced `rustfft` at
-  all.
-- **`jtty` and `msk144` are features with no ZST.** Neither is in
-  `PROTOCOLS`. `jtty`'s wire level (source, CRC-12, tbcc, tx, pack) needs
-  no FFT, while `jtty::rx` / `dsp` / `assemble` compile only with
-  `fft-rustfft` or `fft-extern`; the matrix has `jtty`, `alloc jtty` and
-  `alloc jtty fft-extern` rows for exactly that split. `msk144`'s
-  burst-scan sync needs an FFT feature too.
-- **`uvpacket` declares `std` explicitly** (it reaches for
-  `std::f32::consts::PI` and std's prelude). Making it genuinely
-  no_std-capable is separate, deliberate work.
-- `fft-extern` / `dotprod-extern` are the embedded hooks: the final binary
-  supplies `mfsk_core_make_default_fft_planner` / `mfsk_core_dotprod_f32`.
-  See `engine::fft`'s docs and `EMBEDDED.md` "The FFT extern Rust
-  contract".
-- `wspr-pass2-topn` and `wspr-fano-cap-fast` are embedded speed/floor
-  trades, off on host so host stays `wsprd`-faithful. `wspr-fano-cap-fast`
-  is **not a free knob upward** — raising the cycle budget past the
-  reference starts manufacturing phantom decodes (swept table in
-  `wspr::decode`).
-
-## Local checks — two hooks, and they are different
-
-There are two, and **one line enables both** — they live side by side in
-`.githooks/`. Each catches things the other doesn't:
+## Local checks and tests
 
 ```sh
-git config core.hooksPath .githooks     # pre-commit AND pre-push
+bash scripts/install-hooks.sh            # = git config core.hooksPath .githooks (pre-commit AND pre-push)
 ```
 
-(`bash scripts/install-hooks.sh` does exactly this and lists what it
-enabled. It used to *copy* a pre-push shim into `.git/hooks/` instead,
-which git never ran: `core.hooksPath` makes git read hooks from that
-directory **instead of** `$GIT_DIR/hooks`, never both. Following the
-old two-line instruction therefore left the feature matrix silently
-disabled — for however long both were configured, pushes went through
-with no matrix and nothing said so. Fixed 2026-08-30 by moving the
-pre-push hook into `.githooks/` where the same config line picks it
-up.)
+- `pre-commit`: `cargo fmt --check`, clippy `-D warnings` (`--features full,internal-testing`), rustdoc `-D warnings`.
+- `pre-push` (`scripts/pre-push-check.sh`): adds `-D clippy::perf`, the **feature matrix** (read `FEATURE_MATRIX` in
+  the script), `mfsk-ffi` tests, the FT8 fixed-point floors.
+- **Merge gate (tiers A + B), ~90 s:**
 
-- `.githooks/pre-commit` — `cargo fmt --all --check`, `cargo clippy
-  --workspace --all-targets --features full,internal-testing --no-deps --
-  -D warnings`, and `RUSTDOCFLAGS="-D warnings" cargo doc -p mfsk-core
-  --features full --no-deps`. The rustdoc step is there because broken
-  intra-doc links block CI's `docs` job and pollute docs.rs.
-- `scripts/pre-push-check.sh` — adds `-D clippy::perf` and the
-  **feature matrix** (`FEATURE_MATRIX` in that script is the list — read
-  it rather than this file: `--no-default-features` alone, each protocol
-  feature, the `alloc …` / `fft-extern` / `fixed-point` embedded rows,
-  `full`. `ci.yml`'s `feature-matrix` job is the counterpart and is not
-  identical: it also builds `msk144` and `wspr wspr-pass2-topn`), then
-  `mfsk-ffi`'s tests under both its feature sets and the FT8 fixed-point
-  recall floors. This exists because PR #233 shipped code that compiled only under
-  `full` — `dead_code` reachability depends on which cfg'd items a given
-  feature set exposes, so passing one or two combos proves nothing about
-  the rest.
-
-CI (`ci.yml`) then runs: `changes` (a path filter that decides which sweep
-suites are relevant), `lint`, `test` (the tier matrix — see below),
-`feature-matrix`, `ffi` (`mfsk-ffi` Rust tests under both its feature
-sets, the C++ driver including its multi-thread stress, and
-`mfsk-app-shared-hosttest`), `cross` (windows-gnu + android arm64,
-asserting the DLL exports its symbols and the `.so` is 16 KB aligned),
-`docs`, and `publish-dry-run`. `RUSTFLAGS: -D warnings` is set globally.
-
-**The host toolchain is pinned** in the root `rust-toolchain.toml`
-(1.98.1 as of 2026-10-02), and every `dtolnay/rust-toolchain@` in
-`ci.yml` / `release.yml` names that version — the `lint` job fails if
-one doesn't. It was `@stable` until rustc 1.99.0's aarch64
-loop-vectorizer hang (rust-lang/rust#163626) held two jobs for six
-hours. The `msrv` job overrides it with `RUSTUP_TOOLCHAIN` (a toolchain
-file outranks rustup's default). Downstream crates never see the pin,
-so `toolchain-canary.yml` builds and tests on the latest stable (beta
-weekly) outside the merge gate; raise the pin once that is green on the
-newer version. The `esp` toolchains under `embedded-poc/` are separate
-and unaffected.
-
-`kotlin` (the JNI shim + a JVM test over `bindings/kotlin/`) runs
-per-PR too. **None of these three cost wall clock**: measured at 120 s,
-90-140 s and ~70 s against the `Test (tier A+B)` job's ~300 s, which
-gates every run anyway. The Kotlin one was briefly moved to release time
-on the belief that it was slow — the 72-minute first run turned out to
-be a hang in the shim, not a cost, and the measurement put it back.
-
-`swift` (the XCTest suite over `bindings/swift/`, plus the
-`aarch64-apple-ios` cross-compile) runs per-PR too, and is **the one
-macOS runner in this repo**. It earns the slot twice: XCTest ships with
-Xcode rather than with the Command Line Tools, and the iOS SDK is
-Xcode's as well — which is why the `cross` job stops at Windows and
-Android rather than iOS being missing.
-
-To run them yourself: `bindings/kotlin/build.sh` (needs `JAVA_HOME` and
-`kotlinc` on PATH) and `bindings/swift/scripts/test.sh` (needs Xcode;
-it will point `DEVELOPER_DIR` at it if `xcode-select` is on the CLT).
-
-## Running tests — pick the tier, never blanket `--ignored`
-
-`CONTRIBUTING.md` "Testing philosophy" defines the four tiers (A
-invariants / B golden fidelity / C sensitivity / D deleted). This
-section is the operational half: which command to actually type.
-
-**The merge gate — use this by default.** Every non-ignored test
-across every protocol, i.e. tiers A + B. ~90 s on a Ryzen 9 9900X.
-This is exactly what CI's `Test (tier A+B — invariants + golden)` job
-runs:
-
-```sh
-MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing --release
-```
-
-`MFSK_REQUIRE_CORPUS=1` turns a missing golden recording into a
-failure instead of a silent skip. Set it locally too — without it a
-mis-resolved asset path reports green (that is exactly how five
-protocols' golden tests skipped unnoticed before the recordings were
-vendored).
-
-Tier B goes through `tests/common/golden.rs::assert_golden`, which takes
-recall **and** precision together. There is deliberately no recall-only
-entry point: adding a golden test forces a decision about the protocol's
-phantom budget. Target `max_extra: 0`; anything else is documented debt.
-
-**Iterating on one protocol**: scope with `--test`, don't reach for
-`--ignored`.
-
-```sh
-cargo test -p mfsk-core --features full,internal-testing --release --test ft8_qso3_full_parity_recall -- --nocapture
-```
-
-**The trap: a blanket `-- --ignored` locally escalates into tier C.**
-
-```sh
-# DON'T — this is a sensitivity measurement campaign, not a check.
-cargo test -p mfsk-core --features full,internal-testing --release -- --ignored
-```
-
-`--ignored` with no `--test` scope runs *every* `#[ignore]`d function
-in the crate, which includes the tier-C sensitivity sweeps
-(`fst4_sweep`, `ft8_sweep`, `jt9_sweep`, `jt65_sweep`, `wspr_sweep`,
-`q65_*_sweep`, …). Those are the ones that consume the ~17 GB
-generated corpora under `embedded-poc/assets/*_sweep/`. **On CI they
-silently skip** — the corpora aren't there, and most of those
-binaries aren't in any CI glob anyway — so the command looks harmless
-in `ci.yml` and is not harmless here. `fst4_sweep` **alone** had not
-finished after 35 minutes when it was killed (2026-08-12), and it is
-one of a dozen such binaries.
-
-CI does run some `--ignored` suites, but always scoped per binary
-(`--test q65_ap_sweep --test q65_snr_sweep … -- --ignored`) and
-push-only (or on a PR carrying the `run-full-sweep` label). If you want a
-specific ignored test, name its binary the same way.
-
-**Tier C** belongs to two moments only: before a release tag, and
-after a change that plausibly moves sensitivity. It has its own
-runner, which checks the corpora are present up front instead of
-producing a wall of silent skips:
-
-```sh
-scripts/run-sensitivity-sweeps.sh              # everything present
-scripts/run-sensitivity-sweeps.sh ft4 fst4     # or just what moved
-```
-
-It also refuses a corpus without a `.corpus-stamp` or with a seed
-other than 1 (`scripts/lib/corpus-stamp.sh`, 2026-09-30). If it stops
-there, regenerate that corpus into an **empty** directory. Don't
-override the check to get numbers. The last time a stale corpus got
-through, it showed as a JT65 "+0.68 dB regression" in unchanged
-code. The generators also refuse an unseeded simulator binary. On this machine `target/ft8sim/ft8sim` and
-`target/ft4sim/ft4sim` are such builds, so pass `target/ft8sim-2b9/` /
-`ft4sim-2b9/`, or `ft8sim-3.2/` for the ITU and busy-band corpora.
-
-The runner also compares against upstream: every task in
-`scripts/upstream_tasks.json` for a swept protocol is paired per trial
-with WSJT-X's committed outcome, and both sides are timed
-(`scripts/upstream-baseline.py`). The record is
-`docs/notes/UPSTREAM_EVALUATION.md`, an evaluation sheet; its verdicts
-and speeds feed the headline table at the top of `BENCHMARKS.md`, so a
-re-measurement updates both. The sheet's p-values and crossings stay out
-of the headline.
-A `jt9` comparison is only meaningful on a task defined on both sides.
-Define it there, never as "both at their defaults". Q65's first `jt9`
-comparisons differed in band, Rx frequency and AP sequencing, and were
-not measuring anything.
-
-**"Plausibly moves sensitivity" means the code path, not the
-protocol name.** Before running a protocol's sweep, check it actually
-shares the code you touched. FT8's `decode_block::coarse_sync` /
-`SYNC_LAG_S` is FT8-only — FST4 reaches sync through
-`engine::sync::coarse_sync` + `engine::sync2d::fst4_sync_search`, so
-an FT8 coarse-sync change cannot move an FST4 curve and running that
-sweep buys nothing (issue #280, where this was learned the expensive
-way). `release-status.sh` prints this warning itself whenever a commit
-touches `src/engine` — heed it rather than sweeping everything.
-
-**Other feature sets.** `fixed-point` is the numeric path embedded
-ships and is worth a second run whenever you touch the decode
-pipeline — it reorders candidates through `SpecCell = u16`
-quantisation, so it can diverge from host f32 on the same fixture:
-
-```sh
-cargo test -p mfsk-core --features full,fixed-point --release --test ft8_qso3_apoff_recall
-```
-
-`wspr-ddc` and `wspr-ddc-cascade` are the WSPR embedded channelizer
-swaps (`wspr::ddc`'s single-stage and two-stage-cascade streaming
-down-converters, replacing the host-default whole-slot FFT
-`decimate_to_baseband`) — mutually exclusive (`compile_error!` in
-`decode_scan_inner` if both are on), each with its own real-signal
-golden test against the WSJT-X recording, worth a run whenever
-`wspr::ddc` changes:
-
-```sh
-MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing,wspr-ddc-cascade --release --test wspr_wsjtx_samples wspr_cascade_ddc_golden_recall_and_precision
-```
-
-**`internal-testing` is not optional for whole-crate commands** — see the
-feature-flag section above for why the `E0603`s are not your fault.
-
-## Test fixture paths
-
-Never hardcode absolute paths like `/home/ubuntu/...` or `/Users/...`
-for test inputs. AI assistants tend to "fix" path failures by
-translating to whichever local environment they happen to run in
-(commit `119657a` flipped `/home/minoru/` → `/home/ubuntu/`), which
-just relocates the bug.
-
-- **In-repo assets**: use the `asset_path!` macro from
-  `mfsk-core/tests/common/mod.rs` (integration tests) or
-  `concat!(env!("CARGO_MANIFEST_DIR"), "/../embedded-poc/assets/<f>")`
-  (unit tests under `src/`). Vendor the file under
-  `embedded-poc/assets/` if it's not already there — the FT8 / JT9
-  reference recordings already live there, and the tier-B goldens are
-  under `embedded-poc/assets/golden/` (see its README for the upstream
-  mapping), resolved through `tests/common/corpus.rs`.
-- **Out-of-tree user-machine assets** (e.g. the full WSJT-X tarball):
-  `option_env!("WSJTX_SAMPLES_DIR")` and skip cleanly when unset.
-- **Diagnostic output paths** (test writes a WAV for human inspection):
-  `/tmp/...` literals are fine — the human-in-the-loop step assumes a
-  known location. Don't replace these with `tempfile`.
-
-## Embedded targets
-
-The active production crates are `embedded-poc/m5stack-s3-app/` (S3
-LX7, repositioned as **demo / acoustic-fallback** in the 2026-05-17
-pivot — the StickS3 board can't source VBUS for USB host),
-`embedded-poc/m5stack-core2-app/` (Core2 LX6, wav_sim only — no USB
-peripheral on classic ESP32), and `embedded-poc/m5stack-cores3-app/`
-(S3 LX7, **main UAC controller target** — CoreS3 has AXP2101 +
-AW9523B for proper USB-OTG host mode). Phase 0-Core (board bring-up)
-and Phase 1-Core (UAC host code) both shipped 2026-05-23, and
-Phase 1-Verify — live IC-705 hardware confirmation, issue #163 —
-**cleared 2026-08-23**: ten unbroken minutes of UAC capture, 125 MB,
-zero errors, with WiFi associated throughout (the log is kept at
-`embedded-poc/m5stack-cores3-app/logs/uac_stream_2026-08-23.log`).
-Getting there took three layers off the enumeration path and then two
-stack overflows that presented as heap corruption — read
-`embedded-poc/CLAUDE.md`'s "USB host VBUS on CoreS3" and "Stacks,
-heaps, and the space between them" before touching that board.
-
-**It decodes off the air now (2026-08-23/24)**: FT8 at six to eight
-stations per slot against an IC-705 on 40 m, WSPR at
-`slot 1 src=uac decoded 1 station(s)`. The board carries all four
-receivers in one image, chosen from the touch panel. Operating notes
-are in `docs/reference/MANUAL_M5STACK_CORES3.md` (and `.ja.md`); the
-crate has its own `CLAUDE.md` for what breaks a session.
-See `docs/notes/ROADMAP.md` Phase B-Core for what #163 unblocks. `m5stack-s3-app` and
-`m5stack-core2-app` each have their own `CLAUDE.md` covering
-board-specific bring-up, and `m5stack-cores3-app` now does too —
-alongside the operator manual at
-`docs/reference/MANUAL_M5STACK_CORES3.md` / `.ja.md`. This
-section captures the shared workflow that's easy to forget between
-sessions.
-
-Shared code for these boards lives in `embedded-poc/embedded-shared/`
-(decode-side glue, esp-dsp FFT/dotprod backends) and
-`embedded-poc/mfsk-app-shared/` (UI/app logic, whose host-testable half
-runs in the workspace as `hosttest/mfsk-app-shared`).
-`embedded-poc/idf-component/` is the esp-idf bridge template. Note it
-requires a Rust staticlib shim regardless — pure C cannot define the
-`extern "Rust"` FFT-planner symbol — which is why `mfsk-ffi-ft8` was
-retired: once a consumer is writing Rust, calling `mfsk_core` directly
-is strictly simpler, and that is what all three boards here do.
-
-**WSPR embedded RX (Phase E, issue #260) is a separate track from the
-FT8-controller line above** — it never goes through `decode_block` or
-the UAC/controller stack, so it isn't blocked on #163 the way Phase
-B-Core is (both shared #163 only for live audio capture; everything
-else already works against WAV-fed/synthetic baseband, and #163 itself
-cleared 2026-08-23 on the FT8 controller). Lives in the
-same `m5stack-cores3-app` crate as two separate binaries:
-`src/bin/wspr_bench.rs` (timing measurement) and `src/bin/wspr_app.rs`
-(the standalone receiver — the shared FT8 panel, WiFi, HTTP config, NTP, and
-real UAC audio through `AudioSink`). Note that `wspr_app` *does* now
-share `uac.rs` with the FT8 line; that path is proven on the FT8
-controller but `wspr_app` itself has not been run against a radio yet
-— open items in #313. See `docs/reference/EMBEDDED.md`'s "WSPR on
-embedded" section and `docs/notes/ROADMAP.md` Phase E for status.
-
-- **Build & flash via `espflash`**, not host cargo. Each crate's
-  `.cargo/config.toml` sets `runner = "espflash flash --monitor"`, so the
-  basic user workflow is:
   ```sh
-  cd embedded-poc/m5stack-cores3-app   # or m5stack-s3-app, m5stack-core2-app
-  cargo run --release                  # builds + flashes + opens serial monitor
+  MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing --release
   ```
-  In practice, for capturing per-session logs to a file, use
-  `embedded-poc/scripts/flash-monitor.sh` (see next section) instead of
-  the bare runner.
-- The `+esp` Rust toolchain (Xtensa fork, espup-installed) is selected
-  by each crate's `rust-toolchain.toml`. Target triple per
-  `.cargo/config.toml`: `xtensa-esp32-espidf` for Core2 (LX6),
-  `xtensa-esp32s3-espidf` for S3 / CoreS3 (LX7).
-- `cargo check` from inside each crate validates code changes without
-  flashing (~30-50 s with prebuilt esp-idf).
-- Host CI never builds these crates (`ci.yml`'s trigger excludes
-  `embedded-poc/**` apart from the test assets and the
-  `mfsk-app-shared` sources `hosttest/` compiles). A green CI badge on an embedded-only change means
-  the change was not compiled by anything.
-- Logs from the device land in `embedded-poc/<crate>/logs/` — user has
-  been capturing per-session sweep output there.
-- The user actively flashes these boards during embedded work; do NOT
-  assume "host check is enough" when changing `src/main.rs` or anything
-  that affects the runtime path. Offer to flash and capture a new log.
-- The compute-bench crate `embedded-poc/m5stack-s3/` still exists for
-  S3-only decoder timing sweeps. The Core2 bench (`m5stack-core2/`) was
-  retired in `#61` Phase 3 — `m5stack-core2-app` covers the same
-  wav_sim decode path in a production-app shape.
 
-## Capturing logs from a flashed device (ESP32 / S3)
+  Set `MFSK_REQUIRE_CORPUS=1` locally too, or a mis-resolved asset path silently skips. FST4 tests must use `--release`.
+- **One protocol:** scope with `--test <binary> -- --nocapture`. **Never a blanket `-- --ignored`**: that
+  escalates into tier C (hours, ~17 GB corpora). Tier C runs only before a release tag or after a change that
+  moves sensitivity: `scripts/run-sensitivity-sweeps.sh [modes]`, and only if the code path you touched is shared
+  with that mode. Details, `fixed-point` and `wspr-ddc` runs: `docs/notes/TESTING_GUIDE.md`.
+- Host CI never builds `embedded-poc/**`: **a green badge on an embedded-only change means nothing compiled it.**
+- The host toolchain is pinned in `rust-toolchain.toml` (CI checks it); raise it only after `toolchain-canary.yml` is green.
 
-Use `embedded-poc/scripts/flash-monitor.sh` — **never** roll your own
-`espflash flash --monitor` + redirect, and never `cat /dev/ttyACM0`. Two
-foot-guns this script avoids:
+## Embedded
 
-1. A **separate** `espflash monitor` invocation resets on connect, and
-   on S3 USB-OTG boards that drops the chip into DOWNLOAD mode
-   (`rst:0x15 USB_UART_CHIP_RESET … waiting for download`) so the
-   just-flashed app never runs. The script avoids it by never starting
-   a second process: one `espflash flash --monitor` covers both.
+Boards: `m5stack-cores3-app` (main target: UAC host, FT8/FT4/JTTY/WSPR), `m5stack-s3-app`, `m5stack-core2-app`
+(wav_sim only). The user flashes them: **don't assume a host check is enough** for `src/main.rs` or runtime-path
+changes; offer to flash and capture a log. Build with `cargo run --release` (espflash) inside the crate, and
+capture logs only through `embedded-poc/scripts/flash-monitor.sh` (never a second `espflash monitor`, never
+`cat /dev/ttyACM0`; a re-flash of an unchanged ELF is not a flash). Read `embedded-poc/CLAUDE.md` first
+("USB host VBUS on CoreS3", "Stacks, heaps, and the space between them"). Measure on the shipped numeric path
+(`fixed-point`). Procedure and status: `docs/notes/EMBEDDED_WORKFLOW.md`, `docs/reference/MANUAL_M5STACK_CORES3.md`.
 
-   It does **not** pass `--before no-reset --after no-reset`, as this
-   note used to claim — those would break flashing outright.
-   `espflash flash`'s own defaults are already what is wanted:
-   `--before default-reset` is how it gets into the bootloader to write
-   at all, and `--after hard-reset` is what starts the new image.
+## Releases
 
-   Boards have still been found parked in DOWNLOAD mode twice
-   (2026-08-23), both times *after* the capture window expired and
-   `timeout` killed the pty rather than after the write itself. The
-   port closing is the suspect, not the flash. Unconfirmed. A short
-   press of the board's button boots the app; nothing is lost, since
-   the image is already in flash and NVS is a different partition.
+- **Never `cargo publish` locally.** A `vX.Y.Z` tag push triggers `release.yml`, which waits for CI (and for the
+  tier A+B job specifically) and publishes. Skimmer releases are a separate tag, `skimmer-vX.Y.Z`
+  (`skimmer-release.yml`; four version files must agree; 0.x is a pre-release).
+- **Step 0: `scripts/release-status.sh`.** It computes the release state (tagged? CHANGELOG current? cadence? which
+  protocols' sweeps are outstanding). Don't reconstruct it from memory or from this file.
+- Order: merge the release PR → `git checkout main && git pull` → tier-C sweeps the script names → tag → push the tag.
+- **Cadence: every 2 weeks** (13-14 days is the target) for the library; don't tag opportunistically. Escape hatch
+  (security, data loss, or the user asks) is the user's call. New protocol = patch bump by convention; structural / breaking API = minor; unsure → ask.
+- Release PRs carry metadata and docs only; behaviour fixes land first, separately.
+- Full procedure, sweep baseline, cadence history: `docs/notes/RELEASE_PROCEDURE.md`.
 
-2. Re-flashing the same ELF prints "Segment … has not changed, skipping
-   write" and finishes in ~5 s. **That is not a successful flash** — the
-   chip still runs the previous binary. Touch a source file or change a
-   `log::info!` line to force a real rewrite, and expect ~15-25 s for a
-   real factory-partition write.
+## Following WSJT-X
 
-```sh
-source ~/export-esp.sh
-cd embedded-poc/m5stack-s3-app   # or m5stack-s3, m5stack-core2-app, m5stack-cores3-app
-cargo build --release --bin <bin>
-../scripts/flash-monitor.sh \
-    target/<triple>/release/<bin> \
-    logs/<bin>_<tag>_$(date +%Y-%m-%d).log \
-    90    # capture seconds (optional, default 90; use ≥120 for fresh Core2 flashes — 1.3 MB binary takes ~55 s to write)
-```
+Live upstream is `WSJTX/wsjtx` (the `upstream` remote of `../WSJT-X`), development line `release/3.x` and its
+`v3.x.0-*` tags, not `master`. Reference is **v3.2.0-rc1**, with results-changing parts of **v3.3.0-beta1** ported
+(#642). Run `scripts/upstream-diff.sh` at the midpoint of the release cycle (about day 7) and when a new tag
+appears; classify each change A (alters results) / B (real bug fix) / C (refactor); port A and B; record in an
+Issue (#435, #642); bump `DEFAULT_BASE` after the ports merge. A tag is not necessarily an ancestor of a later
+tag: compare trees. Last run 2026-10-12: nothing new past beta1.
 
-## Releases — go through CD, never `cargo publish` locally
+## Scope: deliberately not ported (read the record, don't re-derive)
 
-`mfsk-core` ships to crates.io via `.github/workflows/release.yml`,
-triggered by a `vX.Y.Z` tag push. The workflow gates the publish on
-the CI for the same commit going green (`wait-for-ci` job), then
-runs `cargo publish -p mfsk-core --features full` + builds the
-`mfsk-ffi` artifact + creates the GitHub release with the attached
-tarball.
-
-`wait-for-ci` checks two things, not one. The workflow-run poll
-tolerates `skipped` (a docs-only push legitimately skips the build
-matrix), which is too wide for the job carrying the golden tier-B
-assertions — so a second step requires `Test (tier A+B …)` to have
-concluded `success` at *job* granularity. Together with
-`MFSK_REQUIRE_CORPUS=1` in `ci.yml`, a green `Test (tier A+B …)` is a
-positive statement that the golden tests ran against real recordings
-rather than skipping. Before the recordings were vendored they did
-skip, silently, for five protocols.
-
-**Do not `cargo publish` from a local clone.** crates.io publishes
-are irreversible — once a version is up, you cannot unpublish
-(yank exists but blocks new dependents while existing dependents
-keep using the broken version). A local publish bypasses the CI
-gate that this whole workflow exists to enforce; even if your
-local SHA happens to be CI-green, future releases get sloppier
-when "just publish locally" is in the playbook. Push the tag and
-let CD do it.
-
-**Step 0, before anything else: `scripts/release-status.sh`.**
-
-It prints the release state computed from the repository — whether the
-workspace version is tagged, whether the CHANGELOG's top section agrees
-with it, how the cadence stands, and which protocols' own source has
-changed since `sweep-baseline.json` was last refreshed, with the commit
-subjects so "clippy drift" and "decoder change" are distinguishable at a
-glance.
-
-This exists because release preparation kept failing the same way: the
-state was reconstructed by hand, from memory and inference, and every
-fact involved is mechanically derivable. Three errors in one session on
-2026-08-23 — claiming sweeps were outstanding when a note recorded them
-as done with an explicit re-run condition that was never evaluated;
-naming three protocols as needing re-sweeping on the strength of commits
-that predated the sweep; and not noticing that `0.10.0` had its
-CHANGELOG written and its version bumped but no tag, through an entire
-conversation about preparing a release. The procedure below was already
-written down. What was missing was anything that computed the state, so
-each attempt re-derived it, and re-derivation is where the errors came
-from.
-
-For the same reason, don't take a release-state claim from this file
-either: as of 2026-08-24 the script reports `0.10.0` bumped, its
-CHANGELOG section written and current, and **no tag** — but run it rather
-than quoting that sentence.
-
-Sequence:
-1. Merge release PR into `main`.
-2. `git checkout main && git pull`.
-3. **Run the tier-C sensitivity sweeps** (see below).
-4. `git tag vX.Y.Z <merge-sha>` then `git push origin vX.Y.Z`.
-5. Watch the Actions tab for the `Release` workflow.
-
-### Step 3: tier-C sensitivity sweeps, before every tag
-
-**Which ones, from `scripts/release-status.sh` — not from recall.** It
-compares each protocol's own source tree against the date
-`sweep-baseline.json` was last refreshed and prints the commit subjects,
-so a clippy sweep and a decoder change are told apart without going to
-look them up.
-
-```sh
-scripts/release-status.sh                      # says which, and why
-scripts/run-sensitivity-sweeps.sh fst4         # then just those
-```
-
-CI never runs these. They need the generated corpora under
-`embedded-poc/assets/*_sweep/` (~17 GB, gitignored, built by
-`scripts/gen_*_sweep_wavs.sh` on top of WSJT-X's Fortran simulators),
-so on CI every one of them silently skips. A release is the interval
-where that gap actually matters — shipping a sensitivity regression to
-crates.io is the outcome the sweeps exist to prevent, and it is
-irreversible once published.
-
-They **assert nothing** by design: sensitivity is a curve, and a
-threshold that moved 0.3 dB is a judgement call rather than a boolean.
-The script now diffs itself: every recall-vs-SNR sweep it runs dumps a
-per-trial CSV to `target/sweep-csv/`, and at the end it runs
-`scripts/sweep-regression-check.py` against those CSVs, which
-interpolates each channel's 50%-crossing SNR and prints the delta from
-`docs/notes/sweep-baseline.json`, flagging `!!` on any move
-`>= 0.5 dB`. It also prints a **precision** table for ft8/ft4/fst4: the
-unexpected decodes (any message other than the one injected) per group,
-compared over the SNR cells the run shares with the baseline and flagged
-`!!` when they rise by `>= 3` and `>= 1.5x`. This replaced manually eyeballing the printed tables (or
-spawning several agents to do it) against `docs/notes/*BENCHMARK.md` —
-see `~/.claude/projects/.../memory/project_sensitivity_sweep_pre_release_20260814.md`
-for what that used to cost. Still sanity-check the prose in
-`docs/notes/*BENCHMARK.md` too — the JSON baseline tracks 50%-crossing SNR
-and, for ft8/ft4/fst4, unexpected decodes (`_meta.precision`); WSPR's
-phantom-decode count is still only in its printed table. FT8, FT4 and
-FST4 sweep as their upstream task T1 (`scripts/upstream_tasks.json`),
-so one sweep serves both baselines. FT8's T1 runs `.sic_early()`, where
-the phantom-prone code lives, which replaced the separate
-`ft8_sic_early` pass. `ft8_itu` and `ft8_busy` keep the default
-`decode()` path under a baseline. The full procedure, setup included,
-is `docs/notes/TIER_C_MANUAL.md`. FT8 and FT4 are
-**not** narrowed to a window around the crossing any more: the sweeps take
-seconds, and the phantoms sit outside that window. Once you
-understand why a number moved, refresh the baseline with
-`python3 scripts/sweep-regression-check.py --update-baseline
-target/sweep-csv/*.csv`, and update `docs/notes/BENCHMARKS.md` too if
-the reason is one worth recording there (new hardware counts — the
-table records the machine).
-
-`--update-baseline` also stamps the JSON's `_meta.protocols` block —
-date, commit, machine, trial count — **for the protocols in that run
-only**, which is what `release-status.sh` reads to decide what is
-actually outstanding. So a partial refresh
-(`run-sensitivity-sweeps.sh ft4 fst4`) silences ft4 and fst4 and
-leaves the other seven still flagged, instead of the whole file
-looking current because one date moved. Don't hand-edit those dates:
-the point is that the number and its provenance are written by the
-same run.
-
-A nightly workflow was considered and rejected: on a solo, bursty repo
-most nights would re-measure unchanged code, and this project already
-deleted one scheduled tier for precisely that reason (see `ci.yml`'s
-note that it "only ever cost wall-clock for output nobody was
-routinely reading").
-
-### Release cadence — biweekly, decoupled from merging
-
-PRs land on `main` immediately as they're ready — CHANGELOG.md's
-top (unreleased/latest-numbered) section accumulates entries between
-tags, so `main`'s history and the CHANGELOG are always current for
-anyone reading the repo directly. **Tagging is separate and
-throttled**: established 2026-07-19 after v0.7.0-v0.7.3 shipped in a
-4-day burst (see `~/.claude/projects/.../memory/` for the session
-that measured this) — that burst wasn't itself a problem (each tag
-was a genuinely complete, coherently-scoped unit of work, not an
-arbitrary slice; per-tag diff size was comparable to or larger than
-historically slower-cadence releases), but four crates.io publishes /
-GitHub Releases in four days is more update-notification noise than
-downstream consumers want, even when every individual change was
-sound.
-
-**Default cadence: every 2 weeks** (13-14 days is the normal target,
-not an overrun to apologize for) from the last regularly-scheduled tag,
-bundling everything merged to `main` since then into one release PR +
-tag. Don't tag opportunistically just because a feature or fix
-finished — let it sit in the unreleased CHANGELOG section until the
-next scheduled cut, *unless* the escape hatch below applies.
-
-(This used to say "max wait 13 days, average 7", which mixed two
-escape-hatch same-week follow-up patches — v0.8.0→v0.8.1 and
-v0.9.0→v0.9.1, 1-2 days each — into the same average as the regular
-cuts, dragging it down and making a 13-day gap read as "past maximum"
-instead of as hitting the target. The regular cuts alone —
-v0.7.4→v0.8.0, v0.8.1→v0.9.0, v0.9.1→v0.10.0, v0.10.0→v0.10.1 — run
-12, 8, 13, 13 days: trending toward two weeks, which is what "every 2
-weeks" already said. Corrected 2026-09-06 after v0.10.1 landed at 13
-days and was read as overdue.)
-
-**Escape hatch**: an out-of-cadence tag is fine for a security fix, a
-data-loss/correctness bug serious enough to want off the broken
-version quickly, or whenever the user explicitly asks for an
-immediate release regardless of reason. Cutting early is the user's
-call, not something to infer on your own from "this seems important."
-
-**Versioning within this cadence**: a new protocol/mode addition is
-patch-level by this crate's own established convention (MSK144
-shipped as `0.7.4`, not `0.8.0` — grep `CHANGELOG.md` **and**
-`docs/historical/CHANGELOG-*.md` for prior protocol additions before
-assuming otherwise; older minor series move out of the top-level file
-by the rule under "House conventions", and `CHANGELOG.md`'s own footer
-lists the archives).
-Minor bumps
-(`0.6→0.7`) have historically marked a more structural change — a
-breaking or structural API move, e.g. `0.7.0`'s generic
-`decode_frame_for::<P>` API landing alongside FST4's remaining
-sub-modes, or `0.10.0` collecting three public search-parameter type
-changes — not simply "a release with new capability in it". When
-genuinely unsure which a given accumulated batch warrants, ask rather
-than default to whichever bump feels more exciting.
-
-## Following WSJT-X upstream — run `scripts/upstream-diff.sh` on a schedule
-
-WSJT-X is the reference, and it keeps moving, so we follow it on a
-cadence instead of when someone happens to remember. **Run
-`scripts/upstream-diff.sh` at the midpoint of the biweekly release cycle
-(about day 7 after the last tag), and whenever a new upstream tag
-appears.** Not at the cut: a change found then cannot be ported, measured
-(tier C) and merged before the tag, so it slips a whole cycle. At the
-midpoint the second week is the porting window and the cut ships what was
-found. At the cut itself, only check that the Issue from the midpoint run
-has no open A/B items left. It fetches, prints
-the tags and branches by date, and lists the changed upstream files that
-`mfsk-core` cites, with the Rust files that cite them. Read-only apart
-from the fetch.
-
-Facts that cost an hour each time they were re-derived (2026-10-10, #642):
-
-- **The live upstream is `WSJTX/wsjtx`, the `upstream` remote** of the
-  `../WSJT-X` clone. `origin` (saitohirga) stopped in 2024-03 and
-  `upstream/master` is the 3.0.x line; neither shows new algorithms. The
-  development line is `release/3.x` and its `v3.x.0-*` tags. We follow
-  that, not `master`.
-- **A tag is not necessarily an ancestor of a later tag.** v3.2.0-rc1 was
-  cut from the development line on 2026-09-18 and v3.3.0-beta1 descends from
-  the same line without containing it (merge-base `0b32aba69`). Commit
-  counts and `git log base..target` are meaningless across such a fork; the
-  **tree diff** is the comparison. The script says when this applies.
-- Most of a version's diff is refactor (3.3's PCM-engine move was the large
-  majority). Classify each change A (alters results), B (real bug fix) or C
-  (refactor/plumbing); only A and B are ported. The script finds the files,
-  it cannot classify them — read the diff it points at.
-
-Record the audit in an Issue (#435 for rc1, #642 for rc1→beta1) with the
-A/B/C table and what was **not** read. When the port PRs for a version have
-merged, bump `DEFAULT_BASE` in the script and say so in the Issue. A changed
-upstream file the script lists as uncited is either not ported or a missing
-citation; add the citation if it is ported (`q65_callers.F90` was).
-
-## Scope — what is deliberately not ported, and where it is decided
-
-WSJT-X's own release line (`WSJTX/wsjtx`) is the only reference for a protocol's definition, and this crate ports what
-that line carries. Three things that sit outside it were looked at and left out. Each was settled once, with the record
-linked; **do not re-derive them in a session, read the record**, and reopen the issue only if the condition named
-there has changed. (What is merely not done yet, because nobody has asked, is in the issue tracker, not here.)
-
-| left out | why, in one line | record |
+| left out | why | record |
 |---|---|---|
-| **SuperFox** | the file holding the QPC (127,50) code table states that its use is licensed for WSJT-X only; this crate is GPL-3.0-only and redistributed by everything that depends on it, and no frame can be coded without the table. The rest (a q-ary polar code on the Walsh-Hadamard primitives `fec/qra` already has) is portable. Reopen if the table is offered on terms that fit | #436 |
-| **FT2** | not part of WSJT-X (its `lib/ft2/` was removed on the 3.2 line), and the implementations in use describe themselves differently, so there is no specification of record. `ProtocolId::Ft2 = 2` stays reserved. Repeat the comparison if WSJT-X adds it | #437, `docs/notes/FT2_INVESTIGATION.md` |
-| **WS's (formerly WSJT-X Improved) 77-bit extension** | the bit layouts are WSJT-X's, unchanged; what differs is the text a QSO sends at each step. Signals are received like any other and must not crash or mislabel; no WS code is taken into the crate | #568, `docs/notes/WS_77BIT_EXTENSION.md` |
+| **SuperFox** | its QPC (127,50) code table is licensed for WSJT-X only; this crate is GPL-3.0-only | #436 |
+| **FT2** | not part of WSJT-X; no specification of record; `ProtocolId::Ft2 = 2` stays reserved | #437, `docs/notes/FT2_INVESTIGATION.md` |
+| **WS's 77-bit extension** | bit layouts are WSJT-X's; only the QSO text differs; received like any other, no WS code taken | #568, `docs/notes/WS_77BIT_EXTENSION.md` |
 
-**How to write about it.** State what a file says and what a note found, and leave other projects' intent,
-compliance and fault out, in chat, commits, issues and docs alike. A decision here is a statement about this crate's
-scope, not about anyone else's. None of this is legal advice. When something outside WSJT-X looks tempting to port,
-check the table first, then ask.
+Write about other projects by what a file says and what a note found; leave their intent, compliance and fault
+out, in chat, commits, issues and docs alike. Not legal advice. Something tempting outside WSJT-X: check this
+table, then ask.
 
-## Branching — `main` is trunk, `devel` is for open-ended experiments
+## Branching and conventions
 
-Established 2026-07-25. Default workflow is unchanged: PRs land on
-`main` immediately once they're a complete, coherently-scoped unit
-(see release cadence above) — this is what keeps `main` safe for
-downstream consumers who git-dependency-pin `branch = "main"` in
-their `Cargo.toml`.
-
-`devel` exists as a holding branch for work where the outcome isn't
-known yet — embedded bring-up experiments, algorithm changes chasing
-a numerical gap (e.g. JT65-style sensitivity work) — anything that
-might get reverted rather than merged. Land commits there directly;
-once an experiment resolves, PR the result into `main` as usual (or
-just let the branch die if it didn't pan out).
-
-If `devel` runs long, periodically merge/rebase `main` into it so it
-doesn't rot into an unmergeable state by the time the experiment
-concludes.
-
-## House conventions
-
-- **Cite the upstream.** Every algorithm file names the WSJT-X source it
-  ports. Changing a decoder internal means reading the Fortran first,
-  making the matching change, and keeping the `Ported from…` pointer
-  valid. A deliberate divergence from WSJT-X is welcome but must be
-  called out in a comment, so the next reader doesn't assume the Rust is
-  still faithful.
-- **Comments carry evidence, not intent.** The convention throughout this
-  tree — `Cargo.toml` feature docs, `wspr::decode`'s cycle-budget table,
-  `process_candidates.rs`'s LLR-format history — is that a knob's doc
-  says what was measured and on what corpus. Match it; a new constant
-  wants the number that chose it.
-- **Commit messages**: short imperative subject (`fix: FST4 sync pattern
-  off-by-one`), blank line, then a paragraph on the *why* with
-  cross-references — issue number, and the upstream SHA / `file:line` if
-  the change came from WSJT-X.
-- **CHANGELOG entries land with the PR**, in the top section, written for
-  someone who wasn't in the conversation. Aim for eight lines or fewer:
-  what changed, why, the measured effect, and where the detail lives
-  (an issue, a `docs/notes/` section). The measurement story belongs in
-  `docs/notes/`, not here. The 0.12.0 section reached 2 560 lines
-  before its release.
-- **CHANGELOG.md holds the unreleased section and the two latest minor
-  series.** Each new minor's release PR moves the oldest series,
-  verbatim, to `docs/historical/CHANGELOG-<range>.md` and updates the
-  footer. This is a docs-only change, so it fits the release PR's
-  metadata-and-docs rule. It was set on 2026-10-01, when the file had
-  reached 11 259 lines; 0.8.0 – 0.10.1 went out first.
-- **Bilingual docs**: `docs/reference/*.md` all have `.ja.md` twins. Keep
-  them in step or say which one you skipped.
-- **Don't hardcode machine paths** anywhere a test can reach — see "Test
-  fixture paths".
+- `main` is trunk; PRs (or direct pushes, solo repo) land when a unit is complete. `devel` is for open-ended
+  experiments that may be reverted.
+- **Commit messages:** short imperative subject (`fix: FST4 sync pattern off-by-one`), blank line, a paragraph on
+  the *why* with the issue number and the upstream SHA / `file:line` if it came from WSJT-X.
+- **CHANGELOG entries land with the PR**, top section, eight lines or fewer: what, why, the measured effect, where
+  the detail lives. Measurement stories go in `docs/notes/`. `CHANGELOG.md` holds the unreleased section and the
+  two latest minor series; older ones move to `docs/historical/` at each new minor's release PR.
+- **Bilingual docs:** keep `docs/reference/*.md` and their `.ja.md` twins in step.
+- **Don't hardcode machine paths** anywhere a test can reach.
 
 ## Memory
 
-- `~/.claude/projects/-home-minoru-src-mfsk-core/memory/` holds the
-  per-conversation auto-memory. `project_decode_block_embedded.md` is the
-  authoritative log of the embedded-port performance journey — read it
-  before touching `decode_block` or any of the production app crates
-  (`m5stack-s3-app`, `m5stack-core2-app`, `m5stack-cores3-app`).
+`~/.claude/projects/-home-minoru-src-mfsk-core/memory/` holds the per-conversation auto-memory.
+`project_decode_block_embedded.md` is the authoritative log of the embedded performance work; read it before
+touching `decode_block` or the production app crates.

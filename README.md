@@ -679,7 +679,7 @@ strictness controls, and the FT8 wide-band AP path. The local-fence
   non-ignored test: invariants and golden recordings; the slow
   sensitivity sweeps are `#[ignore]`d, run only scoped per test binary
   on pushes to `main` or PRs labelled `run-full-sweep`, and by hand
-  before a release — see `CLAUDE.md`), a feature matrix that builds
+  before a release — see `docs/notes/RELEASE_PROCEDURE.md`), a feature matrix that builds
   each protocol in isolation plus the `no_std + alloc`, `fft-extern` and
   embedded `fixed-point` presets, `cargo test` + the C++ driver for
   `mfsk-ffi`, the Kotlin and Swift binding jobs, rustdoc with
