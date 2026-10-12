@@ -14,7 +14,7 @@
 //! Both protocols previously used a shared two-pass *local* refine
 //! (`sync2d_refine`/`Sync2dConfig`, ±10-±20 downsampled-sample window
 //! around the coarse-sync candidate) — removed (2026-07-20, no call
-//! sites left) once both FST4 (#146) and FT4 (issue #72, FT4_BENCHMARK.md
+//! sites left) once both FST4 (#146) and FT4 (issue #72, FT4_BENCHMARK_LOG.md
 //! section 7) moved to their own full-slot coherent searches; a local
 //! window at the coarse-sync candidate's position couldn't recover from
 //! cases where that non-coherent Δt estimate was wrong by more than the
@@ -168,7 +168,7 @@ struct FlatRef {
     /// `nsym · ds_spb · 2` f32), so alignment was the whole gap —
     /// measured on a CoreS3 at **22 % of this scorer's 284 688 dots per
     /// slot reaching the fast path**, the other 78 % failing on
-    /// alignment alone (`docs/notes/FT4_BENCHMARK.md` §29).
+    /// alignment alone (`docs/historical/FT4_BENCHMARK_LOG.md` §29).
     plain: AlignedF32,
     /// The same reference with each `(re, im)` rewritten as `(−im, re)`.
     swapped: AlignedF32,
@@ -299,7 +299,7 @@ impl FlatRef {
 /// the allocator happened to hand back an aligned 40 KB block. Leaking
 /// one more 18 KB internal buffer elsewhere in the same binary shifted
 /// the heap, and the next run measured **0 %**, with the search back at
-/// 1 789 ms from 1 049 (`docs/notes/FT4_BENCHMARK.md` §32). A measured
+/// 1 789 ms from 1 049 (`docs/historical/FT4_BENCHMARK_LOG.md` §32). A measured
 /// 100 % that depends on an uncontrolled allocator is not a guarantee.
 ///
 /// The copy is per *call* — once per candidate, amortised over the
@@ -562,7 +562,7 @@ pub fn fst4_sync_search<P: SyncFrontEnd>(
 /// does non-coherent per-symbol power summing) — a ~3 dB-class
 /// discrimination gap at near-threshold SNR (same mechanism as the
 /// FST4 fix, issue #146), caught during the issue #72 AWGN-gap
-/// diagnostic (`docs/notes/FT4_BENCHMARK.md` section 9) by reading
+/// diagnostic (`docs/historical/FT4_BENCHMARK_LOG.md` section 9) by reading
 /// `sync4d.f90`'s inner `z1=sum(...)` line rather than stopping at the
 /// outer `sync=p(z1)+...` formula that (correctly) matched at a glance.
 ///
@@ -589,7 +589,7 @@ pub fn ft4_sync_search<P: SyncFrontEnd>(
     // doc above `ft4_sync_search`) rather than WSJT-X's literal 3-segment
     // loop with a per-segment decode attempt — [`ft4_sync_search_window`]
     // exposes the windowed search directly for diagnosing whether that
-    // collapse loses anything (issue #72, `FT4_BENCHMARK.md` section 11).
+    // collapse loses anything (issue #72, `FT4_BENCHMARK_LOG.md` section 11).
     ft4_sync_search_window::<P>(cd0, candidate, -344, 1012)
 }
 
@@ -601,7 +601,7 @@ pub fn ft4_sync_search<P: SyncFrontEnd>(
 /// [`ft4_sync_search_window`] spends 30 % of itself in `FlatRef::fill`
 /// — 18 calls per candidate, each over four Costas blocks with a
 /// `cos`/`sin` **per sample**. Measured on a CoreS3 (2026-09-02):
-/// 25.7 ms of the call's 86.7 (`docs/notes/FT4_BENCHMARK.md` §47).
+/// 25.7 ms of the call's 86.7 (`docs/historical/FT4_BENCHMARK_LOG.md` §47).
 ///
 /// The first attempt at removing it cached the *filled references* —
 /// nine `df` x four blocks of `FlatRef`, ~144 KB. That made the whole
@@ -722,7 +722,7 @@ const COARSE_DF_STEP: i32 = 3;
 ///
 /// `ft4_sync_search_window` costs `fixed + cells x per_cell`, and a
 /// degenerate window measures `fixed` without saying what is in it
-/// (`docs/notes/FT4_BENCHMARK.md` §47). These two entry points run
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §47). These two entry points run
 /// exactly the pieces that function runs, so a bench can time them
 /// without this module exposing `FlatRef` or `AlignedCd0` themselves.
 ///
@@ -871,7 +871,7 @@ pub fn ft4_sync_search_window_with<P: SyncFrontEnd>(
     // refilled per `df` — the same `FlatRef` machinery
     // `fst4_sync_search` uses, adopted here 2026-08-29 after the first
     // FT4 hardware measurement put this function at 76% of a slot
-    // budget it overran 8.8x (`docs/notes/FT4_BENCHMARK.md` §17).
+    // budget it overran 8.8x (`docs/historical/FT4_BENCHMARK_LOG.md` §17).
     //
     // What changed, and why it is the same arithmetic: this loop used
     // to apply the frequency shift to `cd0` *inside* the innermost
@@ -893,7 +893,7 @@ pub fn ft4_sync_search_window_with<P: SyncFrontEnd>(
     // evaluates the phasor per sample instead of accumulating a
     // recurrence, so it carries *less* rounding error, not more.
     // Verified against the WSJT-X golden and the full AWGN/CCIR sweep
-    // before landing — see `docs/notes/FT4_BENCHMARK.md` §19.
+    // before landing — see `docs/historical/FT4_BENCHMARK_LOG.md` §19.
     let mut twiddled: Vec<(i32, FlatRef)> = flat_blocks
         .iter()
         .map(|(off, flat)| (*off, FlatRef::with_len(flat.len())))
@@ -1577,7 +1577,7 @@ pub fn freq_shift_cd0(cd0: &[Complex<f32>], df_hz: f32, ds_rate: f32) -> Vec<Com
 ///
 /// That is worth a second entry point on its own, but it is also the
 /// shape the rest of the work needs: a 40 KB allocation per candidate
-/// is exactly the heap traffic §29/§32/§47 of `FT4_BENCHMARK.md` all
+/// is exactly the heap traffic §29/§32/§47 of `FT4_BENCHMARK_LOG.md` all
 /// turn on, where one extra internal-DRAM block moved elsewhere took
 /// the search from 100 % PIE to 0 % with no change to the code that
 /// ran.

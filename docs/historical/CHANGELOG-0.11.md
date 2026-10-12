@@ -54,7 +54,7 @@ CQ pass WSJT-X runs on every decode. FT4's AWGN threshold goes
 **−16.89 → −18.00 dB**, from 0.6 dB behind WSJT-X's published figure to
 0.5 dB ahead. FST4 is unchanged across all twenty sweep cells and FT8
 across all four — both measured rather than assumed, with the reasons
-recorded in `FST4_BENCHMARK.md` §16 and `FT4_BENCHMARK.md` §48-49.
+recorded in `FST4_BENCHMARK_LOG.md` §16 and `FT4_BENCHMARK_LOG.md` §48-49.
 
 **What is new rather than changed**, in one line each: a C ABI where
 FT8, FT4 and all five FST4 sub-modes are addressed, configured and
@@ -102,7 +102,7 @@ reported the grid healthy while the band said otherwise.
   carried AWGN ≈ −16.9 dB, written 2026-07-30, while this release's own
   headline is the a-priori fix taking FT4 from −16.89 to −18.00 dB —
   the summary table pointed at the number the release exists to have
-  moved. `FT8_BENCHMARK.md` §9's figures were stale by up to 1.1 dB in
+  moved. `FT8_BENCHMARK_LOG.md` §9's figures were stale by up to 1.1 dB in
   the more-sensitive direction (CCIR moderate −18.9 → −20.00 dB); §9 is
   correct as a record of 2026-07-26 and is left alone, with the new §12
   recording the pre-tag measurement and saying plainly that this pass
@@ -217,7 +217,7 @@ reported the grid healthy while the band said otherwise.
 
   `EMBEDDED.md` drops two engineering diaries and a retired crate
   (2009 → 674). The 782-line FST4 attempt log and the 285-line FT4 one
-  move to `FST4_BENCHMARK.md` §17 and `FT4_BENCHMARK.md` §50; 266 lines
+  move to `FST4_BENCHMARK_LOG.md` §17 and `FT4_BENCHMARK_LOG.md` §50; 266 lines
   documenting `mfsk-ffi-ft8` — named 52 times per language though the
   crate was removed in 0.11.0 — become a short account of the Rust shim
   an ESP-IDF consumer actually needs. `## Where to go next` moves from
@@ -1881,7 +1881,7 @@ reported the grid healthy while the band said otherwise.
 
   Eight cells: seven bit-identical, one (FT4 CCIR-moderate) 0.07 dB
   better, which at 180 trials per cell is interpolation granularity.
-  Both hypotheses negative. Written up in `FT4_BENCHMARK.md` §49,
+  Both hypotheses negative. Written up in `FT4_BENCHMARK_LOG.md` §49,
   including the correction that §48's "`apmag` measured neutral" was a
   spot check and this is the sweep that agrees with it — the change is
   still right, because it is what upstream does, but it buys nothing

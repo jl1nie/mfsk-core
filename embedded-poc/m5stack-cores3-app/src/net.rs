@@ -113,7 +113,7 @@ const CONNECT_ATTEMPTS: u32 = 4;
 /// rather than measurement (32 KB asks against 2.6-4.5 KB of actual
 /// use) had left the largest free internal block at 31 744 B, so the
 /// decoder's own allocations fell to PSRAM — 41 % slower on the
-/// 2 304-point workspace (`FT4_BENCHMARK.md` §26.3). With the stacks
+/// 2 304-point workspace (`FT4_BENCHMARK_LOG.md` §26.3). With the stacks
 /// sized from `board::log_task_stacks`, the same slot runs
 /// **1 295-1 474 ms with WiFi associated**, faster than it ever ran
 /// without the network, and the whole stop/resync mechanism had

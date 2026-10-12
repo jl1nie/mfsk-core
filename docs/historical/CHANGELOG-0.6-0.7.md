@@ -80,7 +80,7 @@ before 0.6.0 (0.1.0 – 0.5.12) are archived separately in
 ### Fixed
 
 - **FT4 AWGN sensitivity gap vs WSJT-X narrowed from ~1.8 dB to ~0.3 dB**
-  (`docs/notes/FT4_BENCHMARK.md` sections 8-12, PR #151), from two real,
+  (`docs/historical/FT4_BENCHMARK_LOG.md` sections 8-12, PR #151), from two real,
   WSJT-X-source-verified fixes plus one confirmed-null-effect bug fixed
   anyway:
   - **Coherent Costas-block scorer**: `ft4_sync_search`'s scorer was

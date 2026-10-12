@@ -1,5 +1,5 @@
 //! Which rungs of FT4's LLR/BP/OSD ladder earn their cost? — the
-//! embedded FT4 budget line (`docs/notes/FT4_BENCHMARK.md` §17-21).
+//! embedded FT4 budget line (`docs/historical/FT4_BENCHMARK_LOG.md` §17-21).
 //!
 //! After §21 cut the candidate count from 31 to 12, the projected slot
 //! is `(2 492 search + 1 943 LLR/BP) × 12/31 ≈ 1 717 ms` against a
@@ -470,7 +470,7 @@ fn ft4_llr_ladder_ablation_across_the_crossing() {
 ///
 /// Not an off-air recording: it is `ft4sim_mult` output from upstream's
 /// `lib/ft4/messages.txt`, a rendering of a real 7.080 MHz decode log.
-/// See `docs/notes/FT4_BENCHMARK.md` §23.5.
+/// See `docs/historical/FT4_BENCHMARK_LOG.md` §23.5.
 ///
 /// Reported as distinct messages rather than trial counts, since this
 /// is one slot with fourteen signals in it. Not `#[ignore]`: it needs

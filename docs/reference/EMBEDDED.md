@@ -872,10 +872,10 @@ which apparent regressions were measurement artefacts. Those logs are
 measurement journals rather than reference material, and they live with
 the other sweeps:
 
-- [`FST4_BENCHMARK.md` §17](../notes/FST4_BENCHMARK.md) — the eighteen
+- [`FST4_BENCHMARK_LOG.md` §17](../notes/FST4_BENCHMARK.md) — the eighteen
   on-device attempts, and how `decode_rung_major`'s `offsets` parameter
   came to be a caller decision rather than a decoder one.
-- [`FT4_BENCHMARK.md` §50](../notes/FT4_BENCHMARK.md) — what it took to
+- [`FT4_BENCHMARK_LOG.md` §50](../notes/FT4_BENCHMARK.md) — what it took to
   build at all, why the bottleneck is structural rather than
   statistical, and the candidate-budget correction.
 

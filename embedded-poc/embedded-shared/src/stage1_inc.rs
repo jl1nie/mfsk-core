@@ -910,7 +910,7 @@ fn pair_kernel_f32(
 /// Time one slot's worth of pairs through both scalars, on the same
 /// audio, in the same binary — issue #349 step 2.
 ///
-/// §36 (`docs/notes/FT4_BENCHMARK.md`) measured the **batch**
+/// §36 (`docs/historical/FT4_BENCHMARK_LOG.md`) measured the **batch**
 /// `compute_spectrogram` at 1.11-1.15x for `fixed-point` and said
 /// plainly that it said nothing about `stage1_inc`, whose whole
 /// design is an incremental `u16` spectrogram fed during capture and
@@ -955,7 +955,7 @@ pub fn scalar_ab(audio: &[i16], pairs: usize) -> (i64, i64, usize, usize) {
     assert_eq!(fft16.len(), NFFT_SPEC, "sc16 planner returned another length");
     assert_eq!(fft32.len(), NFFT_SPEC, "f32 planner returned another length");
 
-    // Three passes each, best kept. §32.1 of `docs/notes/FT4_BENCHMARK.md`
+    // Three passes each, best kept. §32.1 of `docs/historical/FT4_BENCHMARK_LOG.md`
     // is this repo's own example of a device number that was really a
     // heap-alignment accident, and the f32 arm here moved 700 -> 853 ms
     // between two builds that did not touch it.

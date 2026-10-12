@@ -111,7 +111,7 @@ pub fn set_dot_stub(on: bool) -> bool {
 /// pointers are 16-byte aligned and `len % 4 == 0`, and it does so
 /// silently — from the caller there is no difference but a 2.3x one in
 /// wall-clock (measured on a CoreS3: 7 900 vs 18 080 ps/tap,
-/// `docs/notes/FT4_BENCHMARK.md` §27). Every consumer of `dot_f32` has
+/// `docs/historical/FT4_BENCHMARK_LOG.md` §27). Every consumer of `dot_f32` has
 /// therefore been guessing about its own hot loop.
 ///
 /// `ft4::ddc`'s FIR turned out to fail the length test on every call

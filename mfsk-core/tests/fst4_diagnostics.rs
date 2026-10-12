@@ -923,7 +923,7 @@ fn host_clock_us() -> i64 {
 /// pre-filtered to ±[`FREQ_TOL_HZ`] of [`GOLDEN_FREQ_HZ`] — this is the
 /// known-target (sniper-shaped) question, deliberately not the wide-band
 /// unknown-frequency one, and it is why this path decodes ~1-2 dB
-/// shallower than `DecodeRequest` (see `FST4_BENCHMARK.md` §9 trap 3).
+/// shallower than `DecodeRequest` (see `FST4_BENCHMARK_LOG.md` §9 trap 3).
 ///
 /// Returns `(trial_index, candidates)` for every trial file present;
 /// missing indices are skipped, so it works against any corpus
@@ -2029,7 +2029,7 @@ fn fst4_60_diag_candidate_cost_split() {
 /// Same cost-split methodology as [`fst4_60_diag_candidate_cost_split`],
 /// applied to FST4-300 (5-min slot, longest sub-mode) — issue
 /// mfsk-core#perf-review Phase 0: `fst4_60_diag_candidate_cost_split`'s
-/// original investigation (FST4_BENCHMARK.md §8) only ever profiled
+/// original investigation (FST4_BENCHMARK_LOG.md §8) only ever profiled
 /// FST4-60A; no per-stage breakdown exists for the long sub-modes,
 /// which have no comparable prior perf-tuning pass either. Uses the
 /// first slot of the WSJT-X sample `201230_0300.wav`, same asset
@@ -4689,7 +4689,7 @@ fn fst4_60_diag_npre_baseline_scan() {
 /// ## Cell choice
 ///
 /// Cells come from [`fst4_60_diag_npre_baseline_scan`]: only a partial-
-/// recall cell can show a cliff, and `FST4_BENCHMARK.md` section 9's
+/// recall cell can show a cliff, and `FST4_BENCHMARK_LOG.md` section 9's
 /// trap 3 is the account of getting this wrong. The defaults below are
 /// the band measured on a 20-trial corpus on 2026-08-17; re-run the scan
 /// if the corpus generation changes, since the band moves with it.
@@ -4699,7 +4699,7 @@ fn fst4_60_diag_npre_baseline_scan() {
 /// `cells × widths × caps × trials` full candidate loops — with the
 /// defaults and a 20-trial corpus that is 4 × 4 × 6 × 20 = 1 920 decode
 /// attempts, on the order of an hour or more. **This is a big-machine
-/// job**; see `FST4_BENCHMARK.md` section 11 for the runbook. Narrow it
+/// job**; see `FST4_BENCHMARK_LOG.md` section 11 for the runbook. Narrow it
 /// with the env overrides rather than editing the source:
 ///
 /// - `MFSK_CAP_SWEEP_CELLS` — e.g. `ccir_moderate:m25,awgn:m27`
@@ -4711,7 +4711,7 @@ fn fst4_60_diag_npre_baseline_scan() {
 /// (AC/battery swings it ~3×), which is the other reason this belongs on
 /// the Ryzen 9 box.
 #[test]
-#[ignore = "manual sweep — near-threshold sniper cap cliff (issue #312); big-machine job, see FST4_BENCHMARK.md §11"]
+#[ignore = "manual sweep — near-threshold sniper cap cliff (issue #312); big-machine job, see FST4_BENCHMARK_LOG.md §11"]
 fn fst4_60_diag_sniper_cap_near_threshold() {
     use std::time::Instant;
 
@@ -5916,7 +5916,7 @@ fn fst4_60_diag_soft_costas_margin_separation() {
 /// A score that ranks positives above negatives here is directly usable
 /// as "who gets the remaining budget first" once the first rung has
 /// given every retained candidate its cheap attempt — which is the shape
-/// this issue's scheduling position (`FST4_BENCHMARK.md` §13) leaves
+/// this issue's scheduling position (`FST4_BENCHMARK_LOG.md` §13) leaves
 /// open.
 ///
 /// Cells are pooled as well as reported individually: the positive class
@@ -6895,7 +6895,7 @@ fn fst4_60_diag_escalation_budget_curve() {
 /// ## Stage ladder
 ///
 /// Offset-major, matching the decision recorded in
-/// `FST4_BENCHMARK.md` §13 (and `rung_major.rs`'s module doc):
+/// `FST4_BENCHMARK_LOG.md` §13 (and `rung_major.rs`'s module doc):
 ///
 /// ```text
 /// offset  0:        llrb, llre, llrc, OSD     (llra is the sunk first rung)

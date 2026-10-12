@@ -19,7 +19,7 @@
 # WHY A SCRIPT
 #
 # The upstream baseline is only reproducible if the binary is. The one used
-# for FT8_BENCHMARK.md §13 (2026-09-24) was built by hand in a temporary
+# for FT8_BENCHMARK_LOG.md §13 (2026-09-24) was built by hand in a temporary
 # directory, and the edits it needed were recorded in prose only. When it
 # was needed again it had to be rebuilt from that prose. These are those
 # edits. None of them touches a decoder: each only drops a component that

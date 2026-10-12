@@ -405,7 +405,7 @@ pub fn log_task_stacks() {
     // constraint — every KiB of task stack is a KiB the decoder's own
     // allocations do not get, and on this board that is the difference
     // between a 2 304-point workspace in internal DRAM and the same
-    // workspace in PSRAM (41 % slower, `FT4_BENCHMARK.md` §26.3).
+    // workspace in PSRAM (41 % slower, `FT4_BENCHMARK_LOG.md` §26.3).
     //
     // One task per line rather than a joined string: this is diagnostic
     // output on a 30 s cadence, and the names are what get read.

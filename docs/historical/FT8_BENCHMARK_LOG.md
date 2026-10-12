@@ -1,0 +1,847 @@
+# FT8 sensitivity benchmark — experiment log
+
+Split out of [`docs/notes/FT8_BENCHMARK.md`](../notes/FT8_BENCHMARK.md) on 2026-10-12. That note keeps what you need to reproduce the sweep (and a table of contents of this log); this file is the dated lab notebook behind it: what was tried, what was measured, what was ruled out and reverted. **Section numbers are unchanged**, so citations such as `FT8_BENCHMARK_LOG.md §N` in the code and in other notes resolve here. The current numbers are in [`BENCHMARKS.md`](../notes/BENCHMARKS.md), [`UPSTREAM_EVALUATION.md`](../notes/UPSTREAM_EVALUATION.md) and `sweep-baseline.json`; where this log disagrees with them, they win.
+
+## 6. The old CI "ft8 characterization" suite — removed 2026-07-18
+
+`.github/workflows/ci.yml` used to have a push-only matrix entry named
+`ft8 characterization` covering `ft8_coarse_sync_concurrent`,
+`ft8_decode_block_coarse_diag`, `ft8_decode_block_depth_sweep`,
+`ft8_decode_block_pass1_sweep`, `ft8_decode_block_snr_sweep`, and
+`ft8_qso3_coarse_sync_probe` (~10 min on every `ft8/**` push). All six
+were audited and removed along with the matrix entry:
+
+- All six were `println!`-only diagnostics with **zero assertions** —
+  the tier could never fail regardless of what the numbers showed, so
+  it bought no regression protection for its wall-clock cost.
+- `ft8_coarse_sync_concurrent` required the `fixed-point` feature,
+  which the CI `full` feature set doesn't enable — it was already
+  running zero tests before this cleanup, just silently.
+- `ft8_decode_block_snr_sweep` was the one actually synthesizing its
+  own AWGN with a homegrown LCG generator (no fading model at all) and
+  comparing two of our own decoders against each other with no
+  external ground truth — the most direct match for "verifying against
+  a non-golden simulator."
+- The other four used real on-air recordings (`REAL_QSO_WAVS`,
+  checked into `embedded-poc/assets/`), so they weren't synthetic, but
+  still had no assertions.
+
+Actual FT8 recall regression protection was already covered elsewhere
+and needed no replacement: `ft8_qso3_apoff_recall` /
+`ft8_qso3_apon_recall` are hard-assertion, always-on (`default` suite,
+not `#[ignore]`'d) — these are the tests that would actually catch a
+recall regression.
+
+The separate `ft8 recall` matrix tier (`ft8_decode_block_real_qso`,
+`ft8_reference_suite_recall`) turned out to have the same problem —
+audited and fixed the same day: `ft8_reference_suite_recall` (a
+PASS1_LIMIT/max_cand embedded-tuning config sweep, informational only)
+was deleted; `ft8_decode_block_real_qso` was converted to a
+hard-assertion floor test (embedded ship config vs host `decode_frame`
+truth on `qso1`/`qso2`/`qso3_busy` — `qso1`/`qso2` have no WSJT-X
+golden and were otherwise completely untested) and is no longer
+`#[ignore]`'d, so the matrix tier itself was removed — it now runs in
+`default`.
+
+## 7. CCIR moderate/poor fading gap — diagnosed and closed (issue #72 follow-up, 2026-07-18)
+
+Followed section 4's flagged open item using the same diagnose-before-
+fixing discipline `FT4_BENCHMARK_LOG.md` sections 8-12 used to close FT4's
+AWGN gap, including that investigation's two hard lessons: verify a
+hypothesis with a real narrow re-sweep before crediting it, and make
+sure any diagnostic applies the exact gates the real decode path does
+before trusting a "rescue."
+
+**Ruled out first (wrong angle, not a valid comparison):** hypothesised
+that `process_candidate`'s unused `EqMode::Local` (every production
+call site hardcodes `EqMode::Off`) might help under fading, and used
+`decode_sniper_eq` (`target_freq ± 250 Hz`) as a stand-in to vary it
+externally, since `decode_frame`/`process_candidate` have no public
+`eq_mode` hook. **Corrected after review**: sniper mode is a hardware-
+roofing-filter accommodation and `EqMode::Local` is specifically tuned
+for BPF edge distortion, not a general channel condition — neither is
+a valid stand-in for comparing against WSJT-X or for testing whether
+equalization-in-general helps fading. (For the record, the invalid
+experiment did show `EqMode::Local` making CCIR recall worse in every
+cell tested — consistent with a BPF-tuned equalizer misapplied to a
+different distortion pattern, but not treated as evidence either way.)
+
+**Real diagnosis**: built `ft8_diag_weak_trials` (`tests/ft8_sweep.rs`,
+mirrors `ft4_diag_weak_trials`) replicating `process_candidate`'s
+prefix (`coarse_sync` → `fine_refine_3stage` → `nsync` gate) directly
+against the public building blocks it itself calls — `process_candidate`
+and `process_one_candidate_inner` aren't `pub` outside `crate::ft8`.
+Across CCIR moderate/poor losing trials near the section-4 crossings:
+the correct near-golden candidate was found essentially every time,
+with `fine_refine_3stage` landing on the true position and `nsync`
+clearing its gate comfortably (10-21 of 21) — coarse-sync and fine-
+refine are healthy. The bottleneck is downstream, in LLR/BP/OSD.
+
+Went internal (`ft8::decode::tests::ft8_diag_internal_osd_trace`,
+`src/ft8/decode.rs` — `process_candidate` is a private `fn`, reachable
+from that module's own `#[cfg(test)] mod tests` via `use super::*`)
+with temporary `MFSK_FT8_OSD_TRACE`-gated tracing in
+`process_one_candidate_inner`/`osd_strategy::try_fallback` (since
+removed) to see per-stage `hard_errors`. Found: `OSD_HARDERRORS_MAX =
+22` (`decode_block/osd_strategy.rs`) — a deliberate mfsk-core deviation
+from WSJT-X's universal 36, tightened to filter 3 candidates on
+`qso3_busy.wav` judged CRC-luck phantoms — was discarding *golden*
+decodes under CCIR fading. Multiple independent LLR variants converged
+on the exact transmitted text (`"CQ JL1NIE PM95"`, known ground truth
+from `ft8sim`) at `hard_errors` in the high 20s/low 30s, all rejected
+by the 22 ceiling.
+
+**Controlled experiment**: widened `OSD_HARDERRORS_MAX` to WSJT-X's own
+36 and re-measured (`ft8_snr_sweep`, real `decode_frame`):
+
+| Channel | -21 | -20 | -19 | -18 | -17 |
+|---|---:|---:|---:|---:|---:|
+| CCIR moderate | 0%→0% | 10%→10% | 5%→25% | 55%→85% | 65%→85% |
+| CCIR poor | 0%→5% | 10%→10% | 15%→35% | 45%→65% | 65%→90% |
+
+No regressions anywhere in the swept range. Cross-checked against the
+hard-assertion real-recording tests (`ft8_qso3_apoff_recall`,
+`ft8_decode_block_real_qso`): **byte-identical** — same 7/8 golden +
+7 phantom = 14 total, same 4/4, 5/5, 12/14+2. The widening didn't touch
+those specific candidates at all.
+
+It touched a different set, and the result reframes the section's own
+history: `ft8_qso3_jtdx_recall.rs` (JTDX's 18-entry aggressive list)
+went from 13/18 to **17/18** — recovering exactly the 3 candidates
+(`N1API F2VX 73` e=30, `N1API HA6FQ -23` e=25, `CQ EA2BFM IN83` e=31)
+that `OSD_HARDERRORS_MAX = 22` was introduced in 0.6.3 specifically to
+exclude as assumed phantoms (recall had been 16/18 before that). Our
+decoder now arrives at those 3 candidates' *exact* JTDX-claimed text
+independently — two separate decoders converging on the same CRC-14-
+protected message is strong evidence against coincidence (~1/16384²
+if genuinely random), reclassifying them as real rather than phantom.
+This also materially informs issue #150 (JTDX-18 ground-truth
+question): 3 of the 4-5 previously-unverified entries now have
+independent corroboration. `ft8_qso3_apon_recall.rs`'s multipass extras
+floor similarly went from 4/6 back to its pre-0.6.3 5/6 (same
+`CQ EA2BFM` recovery, different test).
+
+**Adopted**: `OSD_HARDERRORS_MAX` set permanently to WSJT-X's 36 (was
+22), doc comments in `osd_strategy.rs` rewritten to record this history
+rather than the retracted phantom rationale, `ft8_qso3_jtdx_recall.rs`'s
+`MIN_JTDX_HITS` raised 13→17, `ft8_qso3_apon_recall.rs`'s
+`JTDX_EXTRAS_HARD_FLOOR_MULTIPASS` raised 4→5. Full non-ignored suite
+and `-D clippy::perf` green throughout.
+
+**Full re-sweep, all 4 channels** (`ft8_snr_sweep`, real `decode_frame`,
+full `-5` to `-26` dB grid, same corpus/seed as section 4) — 50%
+crossing, linear-interpolated:
+
+| Channel | Section 4 (before) | Now (after) | Δ |
+|---|---:|---:|---:|
+| AWGN | ≈ -20.4 dB | ≈ -20.8 dB | +0.4 dB |
+| CCIR good | ≈ -20.0 dB | ≈ -20.6 dB | +0.6 dB |
+| CCIR moderate | ≈ -18.3 dB | ≈ -18.6 dB | +0.3 dB |
+| CCIR poor | ≈ -18.2 dB | ≈ -18.5 dB | +0.3 dB |
+
+No regressions anywhere in the grid (0% stays 0% at the noise floor,
+100% stays 100% at strong SNR — monotonic, as expected from loosening
+a reject-only gate). The crossing-point shift is more modest than the
+fixed-SNR-cell recall jumps earlier in this section suggest (e.g. CCIR
+moderate -18 dB: 55%→85%) — the recall-vs-SNR curve is steep through
+this region, so a given percentage jump maps to a smaller dB shift at
+the 50% point specifically. AWGN's ≈-20.8 dB now sits inside WSJT-X's
+own published -20 to -21 dB range rather than at its edge; CCIR good
+gained the most of the four (+0.6 dB) despite showing the least
+fading-driven OSD-ceiling pressure in section 4 — consistent with the
+fix's mechanism (recovers borderline decodes generally, not fading
+specifically) rather than a fading-only effect. CCIR moderate/poor's
+gains (+0.3 dB each) are real but smaller than the qualitative "85%/
+90%" recall figures might suggest on their own — the fixed-SNR-cell
+numbers and the 50%-crossing numbers are both correct, they're just
+answering different questions (recall at a specific operating point
+vs. the threshold definition used for cross-mode comparison).
+
+## 8. SIC LPF window bug — JTDX 17/18 → 18/18 closed (issue #180, 2026-07-25)
+
+Follow-up to section 7's `OSD_HARDERRORS_MAX` widening, which took
+`ft8_qso3_jtdx_recall.rs`'s JTDX-18 recall from 13/18 to 17/18 and left
+exactly one miss: `WA2FZW DL5AXX RR73` @ 2545.88 Hz, at the time
+classified a likely JTDX false positive (`coarse_sync` found candidates
+near its frequency but nothing recovered a message).
+
+**That classification was wrong.** Issue #180's investigation (originally
+chasing a *different* miss, `CQ DX DL8YHR JO41` @ 2606.25 Hz, also on
+`qso3_busy.wav`) ground-truthed against a real WSJT-X `jt9 -d3` build and
+found jt9 itself decodes `WA2FZW DL5AXX RR73` on this exact WAV — real
+signal, not a JTDX artifact. jt9's own disk-decode is staged/checkpointed
+(not a flat single pass): it decodes progressively larger audio prefixes
+at three checkpoints, subtracting each stage's confirmed decodes before
+the next, harder stage runs — DL8YHR only decodes after 13 such
+early-subtracted signals are removed, WA2FZW among them.
+
+Chasing why mfsk-core's own SIC left more residual behind than
+`subtractft8.f90` on the same signals (not a sync/LLR/BP/OSD bug — a
+decisive test loaded jt9's own dumped post-SIC residual buffer directly
+into mfsk-core's unmodified decode chain and it decoded DL8YHR outright)
+led to `subtract_tones_lpf`'s LPF kernel: `normalized_kernel`'s cos²
+window divided its argument by `lpf_half` instead of `NFILT` (`=
+2*lpf_half`), doubling the taper's argument range from `[-pi/2, pi/2]`
+to `[-pi, pi]`. `cos²` is a single monotonic taper (1 at centre → 0 at
+the edges) only over the first range; over the doubled range it dips to
+0 at the quarter points and **rises back to 1 — full weight — at the
+true edges** (`lpf_half` samples / 166 ms away from the current sample,
+for FT8's `lpf_half=2000`). Verified numerically:
+
+| offset (samples) | shipped kernel | correct kernel |
+|---|---|---|
+| 0 (centre) | 1.000 | 1.000 |
+| 1000 | 0.000 | 0.500 |
+| 2000 (edge) | **1.000** | **0.000** |
+
+So every `subtract_tones_lpf` call since it became the canonical
+FT8/FT4 SIC path (v0.6.2) — including every number in sections 1-7 of
+this document that involves the SIC-dependent `decode_frame_subtract`
+family — had been running a badly-misshapen "lowpass" giving 166-ms-stale
+channel samples as much weight as the current one, actively corrupting
+the QSB/channel estimate instead of smoothing it. One-line-formula fix
+(divide by `2*lpf_half`, not `lpf_half`); same bug and same fix applies
+to FT4 (`subtractft4.f90` uses the identical window formula).
+
+**Result**: `ft8_qso3_jtdx_recall.rs` **17/18 → 18/18** — `WA2FZW DL5AXX
+RR73` now decodes, zero new phantoms, zero regressions on the WSJT-X
+8-entry golden (still 7/8, `K1BZM DK8NE` remains the one gap — see
+issue #182 below) or the AP-on multipass JTDX-extras floor (still
+5/6, same remaining miss at the time). Full non-ignored suite green
+throughout.
+
+**Update (issue #182, 2026-07-26)**: `K1BZM DK8NE`'s gap was **not**
+an AP-list breadth problem, despite the "wider AP-list" hypothesis
+this section originally pointed to. Root cause was `osd_decode_npre1`
+(WSJT-X's OSD `ndeep=2` dispatch for this candidate's `q=11`) being
+fed raw channel LLR instead of the BP-refined `bp_llr_zsum`, unlike
+WSJT-X's real `decode174_91.f90` driver, which always hands OSD the
+post-BP LLR. Threading the already-computed BP-refined LLR through to
+the OSD call site (instead of recomputing/reusing the pre-BP one)
+closed it: the AP-on multipass JTDX-extras floor is now **6/6**, and
+the ship-config `ft8_qso3_jtdx_recall.rs` 18-entry check (which also
+routes through the same OSD call site) now recovers `K1BZM DK8NE`
+directly, no AP hint needed. See `CHANGELOG.md` for the full
+investigation.
+
+**Scope check — only in-band-SIC scenarios should move; section 4/7's
+`ft8_snr_sweep` was deliberately *not* re-run to confirm this.** That
+sweep synthesizes a single target signal per trial with no co-channel
+interference, so `subtract_tones_lpf` is never invoked there — the fix
+has no code path to affect those numbers through, so re-running it was
+judged not worth the cost. This is inference from the fix's own call
+graph, not a re-measurement of section 7's table. Indirect corroboration
+exists: WebFT8's independent `ft8-bench` simulator suite (`docs/bench.md`
+in the WebFT8 repo, not this one) *was* fully re-run the same day, and
+every scenario without in-band interference (single target + AWGN/BPF
+only) reproduced byte-identical before/after, while every scenario with
+in-band SIC moved — the same scope boundary this argument predicts, just
+demonstrated on a different corpus/harness than `ft8sim`. If this
+distinction ever matters for a specific decision, re-run section 7's
+sweep directly rather than relying on this note.
+
+**mfsk-core issue/PR**: [#180](https://github.com/jl1nie/mfsk-core/issues/180) (investigation), [#178](https://github.com/jl1nie/mfsk-core/pull/178) (fix, merged).
+
+## 9. AWGN/CCIR sweep re-measured, `DecodeDepth` redesign confirmed to have zero sweep impact (issue #182 follow-up, 2026-07-26)
+
+Section 4's "Measured 2026-07-18" table had never been re-run since —
+section 8 explicitly reasoned about scope rather than re-measuring.
+Re-run directly this pass, prompted by the `DecodeDepth` enum→struct
+redesign and the unrelated `auto_ap_strategy` removal (both landed the
+same day, see `CHANGELOG.md`) — to confirm neither touched this
+sweep's numbers.
+
+**Confirmed unaffected, by construction**: `ft8_snr_sweep`'s
+`decode_wav_ft8` calls `decode_frame` → `decode_frame_inner`, a
+separate implementation from `decode_block::decode_block_multipass`
+(the only caller `auto_ap_strategy::run` ever had) — `decode_frame_inner`
+never invoked it, before or after the removal. Verified by `git diff`
+across the whole redesign PR: zero files outside `ft8/decode.rs`,
+`ft8/decode_block/*`, FT8-only tests, and the FT8 slice of FFI/embedded
+glue were touched — no other protocol's sweep code path exists to have
+moved either.
+
+**Re-measured** (`ft8_snr_sweep`, `--ignored --nocapture`, same
+`-5`..`-26` dB grid / 20 trials/cell corpus as section 4):
+
+| Channel | 2026-07-18 | 2026-07-26 | Δ |
+|---|---:|---:|---:|
+| AWGN | ≈ -20.4 dB | ≈ -21.4 dB | -1.0 dB (more sensitive) |
+| CCIR good | ≈ -20.0 dB | ≈ -20.8 dB | -0.8 dB |
+| CCIR moderate | ≈ -18.3 dB | ≈ -18.9 dB | -0.6 dB |
+| CCIR poor | ≈ -18.2 dB | ≈ -19.0 dB | -0.8 dB |
+
+All four channels moved the same direction (more negative = lower SNR
+needed = better) by a consistent 0.6-1.0 dB — not the `DecodeDepth`
+redesign (confirmed unaffected above), but the accumulated effect of
+every FT8 sensitivity fix landed between the two dates (OSD
+`bp_llr_zsum` seeding, the `OSD_HARDERRORS_MAX` widening in section 7,
+the SIC LPF window fix in section 8, and others tracked in
+`CHANGELOG.md`) that were never rolled up into this specific table.
+Single run, not averaged across repeats — treat deltas under ~0.5 dB
+as within 20-trials/cell sampling noise (see the sparse-SNR-sampling
+lesson linked from `BENCHMARKS.md`); the consistent same-direction
+movement across all four channels here is the signal, not any single
+cell.
+
+This table (not `BENCHMARKS.md`'s own copy, which already carried
+intermediate numbers close to today's — AWGN ≈-20.8, CCIR good ≈-20.6,
+CCIR moderate ≈-18.6, CCIR poor ≈-18.5) is the one to treat as stale
+after this pass; `BENCHMARKS.md`'s FT8 section has been updated to
+today's figures directly.
+
+**Also added this pass**: `tests/ft8_qso3_full_parity_recall.rs`, a
+new regression distinct from `ft8_qso3_apoff_recall.rs`'s ship-config
+7/8 floor — asserts the **host research config**
+(`DecodeDepth::FULL`, `sync_min=0.8`, `max_cand=60`, the same default
+`ft8_qso3_jtdx_recall.rs` already used) hits the full WSJT-X 8-entry
+golden (**8/8**, including `K1BZM DK8NE -10`, which ship-config's
+`DecodeDepth::EMBEDDED` structurally cannot reach with OSD compiled
+out). Measured: **~139-148 ms** (single- or multi-threaded — this
+candidate count doesn't parallelise much), ~7-8× faster than real
+`jt9 -8 -d3`'s own measured ~1.1 s total file decode time, at full
+recall parity. This is now the tracked answer to "how fast can host
+match WSJT-X exactly on this WAV" — a question this document didn't
+previously have a permanent regression test for.
+
+## 10. CCIR moderate/poor "no separate WSJT-X figure" replaced with real `jt9 -8 -d3` ground truth (2026-07-26)
+
+Section 4's sweep table (and `BENCHMARKS.md`'s copy) always carried
+"—" in the WSJT-X-published column for CCIR good/moderate/poor —
+WSJT-X publishes an official AWGN threshold but not per-fading-model
+numbers. But `ft8sim` (the same WSJT-X-native simulator generating
+this sweep's corpus) produces real CCIR-faded WAVs, and a real `jt9`
+binary was available locally (`~/wsjtx-build/jt9`, sanity-checked
+first against `qso3_busy.wav` — 22/22 decodes, byte-identical to the
+known-good reference from `FT8_BENCHMARK.md`'s own prior
+investigations) — so there was no reason "—" had to stay a permanent
+gap. Ran `jt9 -8 -d 3` directly against the full AWGN/CCIR corpus
+(all 3 channels × 13 SNR points × 20 trials = 780 files, ~62 s
+wall-clock at 8-way parallel; a hit = `JL1NIE` appears in jt9's
+stdout, mirroring the Rust sweep's own single-known-message
+methodology):
+
+| Channel | mfsk-core (section 9) | real `jt9 -8 -d3` | Δ (jt9 − mfsk-core) |
+|---|---:|---:|---:|
+| AWGN | ≈ -21.4 dB | ≈ -21.2 dB | mfsk-core +0.2 dB (ahead) |
+| CCIR good | ≈ -20.8 dB | ≈ -20.75 dB | ~parity |
+| CCIR moderate | ≈ -18.9 dB | ≈ -19.5 dB | **jt9 +0.6 dB (gap)** |
+| CCIR poor | ≈ -19.0 dB | ≈ -19.7 dB | **jt9 +0.7 dB (gap)** |
+
+AWGN and CCIR good confirm what section 9's own framing already
+assumed — at or slightly ahead of real WSJT-X. **CCIR moderate/poor
+are a different story**: a real, previously undocumented ~0.6-0.7 dB
+sensitivity gap under heavier Watterson fading, now backed by direct
+ground truth instead of "no published figure." This isn't the
+`OSD_HARDERRORS_MAX` fading-recall issue section 7 already closed
+(that was about a golden-decode ceiling on `qso3_busy.wav`, a
+different axis from this sweep's clean-signal-plus-fading-channel
+50%-crossing measurement) — this is a genuinely new, unclosed gap.
+
+**Not yet root-caused.** Candidate directions for a future pass,
+following this document's own diagnose-before-fixing discipline
+(section 6's lesson, and `FST4_BENCHMARK.md` section 6's shared
+playbook): the Watterson channel model's `fdop`/`del` parameters
+scale with fading severity (`ccir_moderate` = 0.5 Hz/1.0 ms, `ccir_poor`
+= 1.0 Hz/2.0 ms per the module doc in `ft8_sweep.rs`), so whatever's
+different between mfsk-core and real jt9 here likely interacts with
+channel decorrelation specifically — a plausible first place to look
+is `fine_refine_3stage`'s coherent Costas-block combining (issue #182,
+section covered in `BENCHMARKS.md`), which assumes phase stability
+across the reference window; heavier fading could partially undermine
+that assumption in a way this document hasn't checked, similar to the
+"fading channels gained less than AWGN" pattern already observed for
+FT4's analogous coherent-combining fix
+(`FT4_BENCHMARK_LOG.md` section 9). Not chased further in this pass —
+flagged here as the next concrete lead rather than left as an
+unexplained "—". Tracked as
+[#190](https://github.com/jl1nie/mfsk-core/issues/190) —
+**root-caused and closed in section 11**; the fine-sync lead above
+turned out to be a dead end, not the actual cause.
+
+Raw per-cell counts, jt9 -8 -d3, 20 trials/cell:
+
+| SNR | CCIR good | CCIR moderate | CCIR poor |
+|---:|---:|---:|---:|
+| -15 dB | 19/20 | 20/20 | 20/20 |
+| -17 dB | 19/20 | 17/20 | 18/20 |
+| -18 dB | 19/20 | 18/20 | 16/20 |
+| -19 dB | 19/20 | 11/20 | 15/20 |
+| -20 dB | 16/20 | 9/20 | 8/20 |
+| -21 dB | 8/20 | 3/20 | 2/20 |
+| -22 dB | 3/20 | 1/20 | 0/20 |
+
+## 11. Issue #190 root cause: `jt9` CLI's implicit CQ-AP, not a numerical gap (2026-07-26)
+
+Section 10's fine-sync lead (coherent Costas combining degrading under
+fading) was the natural next suspect, but tracing it directly refuted
+it. Instrumented a local `jt9` build
+(`/home/minoru/src/WSJT-X/lib/ft8/ft8b.f90`, `ISSUE190_PROBE` debug
+prints gated on `f1≈1500 Hz`, following the `DL8YHR_PROBE` precedent
+from issue #180) to print Stage A/B/C's `ibest`/`delfbest`/`xdt` and
+the resulting `nsync`, then ran it against the 3
+`ccir_moderate_m19_{01,05,14}.wav` trials where jt9 succeeds and
+mfsk-core's `decode_frame` fails (identified via the per-trial CSV
+diff methodology from section 10's own reproduce notes).
+
+**`nsync` matched almost exactly between jt9 and mfsk-core** (jt9:
+14/16/18 vs mfsk-core's own independently-traced 14/16/18 for the same
+3 trials) — the fine-sync/coherent-combining lead was a dead end, not
+the cause. The actual divergence showed up one stage later: jt9's own
+`ipass` loop (`ft8b.f90:311-471`) tries 4 blind LLR-variant BP/OSD
+passes first (`ipass=1..4`) — **all 4 failed** on all 3 trials, exactly
+matching mfsk-core's own all-4-variants failure — and only succeeds on
+`ipass=5`, `iaptype=1` ("CQ ??? ???", WSJT-X's a-priori hypothesis
+built from the fixed 29-bit `mcq` pattern, needing no operator-supplied
+mycall/hiscall) with `nharderrors` = 27, 29, 29 — well above the blind
+BP/OSD ceiling but inside `decode174_91`'s AP acceptance
+(`nharderrors ≤ 36`).
+
+Two facts explain why this pass fired for every trial without any
+`-c`/`-x` mycall configured: `lib/jt9.f90:302` hardcodes
+`shared_data%params%lft8apon=.true.` in the standalone CLI tool
+(independent of the GUI's own default-`false` `FT8AP` setting), and
+`ft8b.f90`'s `naptypes(0,1:4)=(1,2,0,0)` tries `iaptype=1` for *every*
+idle-state (`nQSOProgress=0`) candidate whenever AP is enabled — no
+external hint needed, since the "CQ" bit pattern is a compile-time
+constant, not a caller-supplied hypothesis. So every `jt9 -8 -d3`
+invocation used throughout this project's WSJT-X-parity work
+(including this sweep's own reference measurement) has implicitly
+included a free CQ-AP pass — and the sweep corpus's message is
+`CQ JL1NIE PM95` (`scripts/gen_ft8_sweep_wavs.sh`), i.e. exactly the
+message class this free pass targets.
+
+mfsk-core already had the equivalent mechanism —
+`decode_block::process_candidates::process_one_candidate_inner`'s
+Step 4 AP loop already included a "Pass 12: blind-CQ (WSJT-X
+iaptype 1)" — but it was gated behind
+`if accepted.is_none() && let Some(ap) = ap_hint`, so it only ran when
+the *caller* supplied an `ApHint`. `decode_frame` (the blind,
+no-AP-hint entry point this sweep's `decode_wav_ft8` calls, and the
+one most callers use) never supplied one, so pass 12 never fired for
+a plain blind decode — reproducing jt9's own `ipass=1..4` failure
+exactly, without ever reaching jt9's `ipass=5` equivalent.
+
+This is not the same finding as the `auto_ap_strategy` module removed
+in `c38092f` (0.8.0's `DecodeDepth` redesign, issue #182 follow-up).
+That module self-seeded AP *iaptype-2* (`mycall`) from other
+same-slot-decoded callsigns — its own doc comment already flagged it
+as "a genuine mfsk-core-original extension beyond WSJT-X's real
+capability, not a port of one," and its removal (measured on
+`qso3_busy.wav`, zero recall change) was correct and unaffected by
+this finding. The gap here is the *unconditional* CQ hypothesis
+(iaptype-1), a real WSJT-X behaviour with no mycall dependency at all
+— code that was already present and correct, just gated one layer too
+conservatively.
+
+**Fix** (`process_candidates.rs` Step 4): pass 12 (blind CQ) now runs
+whenever `accepted.is_none()` **and** `sync_quality (nsync) ≥
+BLIND_CQ_MIN_NSYNC (12)`, independent of `ap_hint`; only the
+hint-dependent passes (5-11) stay gated behind `ap_hint.is_some()`.
+Host-only (`fft-rustfft`), so embedded is unaffected. False-positive
+risk stays bounded by the existing per-pass `validate` closure
+(hard-error ceiling, CRC, plausibility, and — since `call1="CQ"` — the
+decoded text must literally contain "CQ").
+
+**The nsync≥12 floor is a cost gate, added after measuring the first
+(ungated) version of this fix.** Un-gated, `decode_frame_subtract_staged`
+(the multipass SIC driver `qso3_busy.wav`'s golden tests exercise) sent
+every failing candidate through pass 12 regardless of sync quality —
+188 candidates on that one file, 140 of them at nsync 7-9, none of
+which (at any nsync value actually observed on that file) produced a
+decode via this pass; all along, real recoveries needed nsync 14-18.
+Wall-clock on that file's staged-SIC path went 0.7 s → 1.5 s
+(**slower than real `jt9 -8 -d3`'s own ~1.15 s on the same file** —
+before this fix mfsk-core was ~40% faster than jt9 there), echoing the
+same shape of cost surprise that motivated removing `auto_ap_strategy`
+earlier in this release. Gating at nsync≥12 (comfortably below the
+14-18 floor real recoveries need, comfortably above the noise-dominated
+7-9 cluster) cuts that file's Step-4 candidate count 188→34 and
+restores wall-clock to ~0.85 s — faster than jt9 again — with **zero
+recall change on any golden test** at either gate setting.
+
+**Re-measured** (same 780-file corpus, same interpolation method as
+section 10; gated version):
+
+| Channel | before fix | after fix (gated) | real `jt9 -8 -d3` | Δ (after − jt9) |
+|---|---:|---:|---:|---:|
+| AWGN | ≈ -21.4 dB | ≈ -21.6 dB | ≈ -21.2 dB | mfsk-core +0.4 dB ahead |
+| CCIR good | ≈ -20.8 dB | ≈ -21.1 dB | ≈ -20.75 dB | mfsk-core +0.35 dB ahead |
+| CCIR moderate | ≈ -18.9 dB | ≈ -20.0 dB | ≈ -19.5 dB | mfsk-core +0.5 dB ahead |
+| CCIR poor | ≈ -19.0 dB | ≈ -19.7 dB | ≈ -19.7 dB | ~parity |
+
+The 0.6-0.7 dB CCIR moderate/poor gap is closed: moderate is now
+clearly ahead of jt9, poor is at parity rather than behind (the gate
+gives back some of the sensitivity an ungated version would have —
+CCIR poor's own heavier fading pushes more real candidates into the
+10-13 nsync band the gate trims — judged an acceptable trade for
+staying faster than jt9 on busy-band multipass decode; see the cost
+discussion above).
+
+Raw per-cell counts, mfsk-core post-fix (gated), 20 trials/cell
+(compare against section 10's jt9 table above):
+
+| SNR | CCIR good | CCIR moderate | CCIR poor |
+|---:|---:|---:|---:|
+| -15 dB | 19/20 | 20/20 | 20/20 |
+| -17 dB | 19/20 | 16/20 | 20/20 |
+| -18 dB | 19/20 | 17/20 | 16/20 |
+| -19 dB | 19/20 | 15/20 | 12/20 |
+| -20 dB | 16/20 | 10/20 | 9/20 |
+| -21 dB | 11/20 | 5/20 | 4/20 |
+| -22 dB | 2/20 | 0/20 | 0/20 |
+
+**Cost, single-pass** (`ft8_qso3_full_parity_recall.rs`,
+`qso3_busy.wav`, `DecodeDepth::FULL`, `max_cand=60`): section 9's
+~139-141 ms → ~165-175 ms (+~20%, few candidates in this smaller
+single-pass scan sit below the nsync gate). Still ~6-7× faster than
+real `jt9 -8 -d3`'s ~1.1-1.2 s total-file time.
+
+**Cost, multipass** (`ft8_qso3_staged_sic_check.rs`'s
+`decode_frame_subtract_staged`, `max_cand=200`, isolated wall-clock):
+~700 ms → ~850 ms (+~20%) — matches jt9's own ~1.15 s on the identical
+file with room to spare, unlike the ungated version measured above.
+
+No recall regression on any existing golden test (WSJT-X AP-off 7/8,
+JTDX 18/18, full-parity 8/8, staged-SIC 18/18, AP-on JTDX-extras 6/6)
+at either gate setting — the new pass's `validate` closure requires
+the decoded text to contain "CQ", so it can only ever help CQ-format
+candidates, not introduce false positives on directed-QSO golden
+entries.
+
+Issue [#190](https://github.com/jl1nie/mfsk-core/issues/190) closed.
+
+## 12. Pre-0.11.0 tier-C re-measurement — the section-9 figures are stale by up to 1.1 dB (2026-09-20)
+
+Sections 9 and 10 record what the sweep said on 2026-07-26 and are
+correct as of that date. They are no longer the current numbers. The
+tier-C run before the 0.11.0 tag, on the same corpus and seeds
+(`scripts/run-sensitivity-sweeps.sh ft8`, 180 trials per channel):
+
+| Channel | 2026-07-26 (§9) | 2026-09-20 | Δ |
+|---|---|---|---|
+| AWGN | ≈ −21.4 dB | **−21.60 dB** | −0.2 dB |
+| CCIR good | ≈ −20.8 dB | **−21.11 dB** | −0.3 dB |
+| CCIR moderate | ≈ −18.9 dB | **−20.00 dB** | **−1.1 dB** |
+| CCIR poor | ≈ −19.0 dB | **−19.67 dB** | −0.7 dB |
+
+Every delta is in the more-sensitive direction, and CCIR moderate is
+the one worth naming: 1.1 dB is far outside the ~0.5 dB single-run
+noise §9 itself warns about.
+
+**No single commit did this, and this pass did not measure which
+ones.** Between the two dates the coarse-sync lag window was widened
+to ±2.5 s and `PASS1_LIMIT` identified as the real constraint
+(issue #280), `fine_sync_12k` landed, and the FT4/FST4 a-priori fix
+went in — the last of which is documented as worth 1.1 dB on FT4's own
+AWGN curve, so a fading-channel gain of the same order on FT8 is not
+surprising. Attributing it properly needs a bisect over the sweep,
+which is a measurement campaign rather than a release check.
+
+`docs/notes/sweep-baseline.json` is the machine-checked copy of these
+four numbers and was refreshed in the same run; `BENCHMARKS.md`'s FT8
+summary row already carried ≈ −21.6 dB and gained the three fading
+channels.
+
+## 13. Real `jt9` from WSJT-X 3.2.0-rc1 is up to 0.84 dB more sensitive on FT8; FT4 did not move (2026-09-24)
+
+The "vs real `jt9`" figures above, in `BENCHMARKS.md`, and in the test
+comments were measured against a `jt9` built from the local WSJT-X tree,
+which was at `2b9d654` (2024-03-12). That tree was a fork of a mirror
+that had stopped updating; the actively developed repository is
+<https://github.com/WSJTX/wsjtx> (v3.0.0 2026-04-06, v3.2.0-rc1
+2026-09-24). Auditing the difference (#435, #442) turned up FT8 decoder
+changes upstream, so the same corpus was run through both binaries.
+
+**Setup.** Old `jt9` = the existing local build (`build-jt9/jt9`,
+2026-07-29, from the `2b9d654` tree). New `jt9` = `WSJTX/wsjtx`
+`967c85a`, Release,
+`ninja jt9`. On this host the new tree needed two CMake edits to
+configure: `Qt5::WebSockets` dropped from `find_package` and
+`wsjt_qt`'s link line (not installed, not used by `jt9`), and
+`-DWSJT_SKIP_MAP65=ON` (no PortAudio). The old binary reproduces
+`FT8_BENCHMARK_LOG.md` §10 and the depth-ladder table exactly (`qso3_busy.wav`:
+14 / 19 / 22 decodes at `-d1/-d2/-d3`; `ccir_poor -d3` −18.88 dB, as
+`BENCHMARKS.md` quotes). Corpus: `ft8_sweep/` and `ft4_sweep/`, 1040 files
+each, 3 depths, both binaries. Scored by `scripts/score-jt9-sweep.py`
+with the sweep's own criteria (message, ±5 Hz, |dt| ≤ 0.6 s) and the same
+`crossing_snr()` as `sweep-baseline.json`.
+
+### FT8: 50%-recall crossing of `jt9 -8`, dB (old → new, Δ; negative = more sensitive)
+
+| Channel | `-d1` | `-d2` | `-d3` |
+|---|---|---|---|
+| AWGN | −20.54 → −20.54 (0.00) | −21.00 → −21.10 (−0.10) | −21.14 → **−21.67** (−0.52) |
+| CCIR good | −20.50 → −20.55 (−0.05) | −21.22 → −21.36 (−0.14) | −21.22 → **−21.78** (−0.56) |
+| CCIR moderate | −18.75 → −18.60 (+0.15) | −19.67 → −19.75 (−0.08) | −20.00 → **−20.33** (−0.33) |
+| CCIR poor | −18.00 → −18.33 (−0.33) | −18.78 → −19.44 (−0.67) | −18.88 → **−19.71** (−0.84) |
+
+`-d3` improves on every channel and `-d2` on three of four. `-d1` is
+inside what 20 files per SNR level can resolve. At the corpus's −5, −10
+and −15 dB points every file gives the same answer on both builds.
+
+### What that does to the comparison
+
+`sweep-baseline.json` carries mfsk-core's own crossings on the same
+seed-1 corpus (AWGN −21.62, good −21.45, moderate −19.75, poor
+−18.90 dB). mfsk-core minus real `jt9 -8 -d3`:
+
+| | vs old `jt9` (`2b9d654`) | vs new `jt9` (3.2.0-rc1) |
+|---|---|---|
+| AWGN | −0.48 | **+0.05** |
+| CCIR good | −0.23 | **+0.33** |
+| CCIR moderate | +0.25 | **+0.58** |
+| CCIR poor | +0.02 | **+0.81** |
+
+Negative means mfsk-core is the more sensitive. The old column is the
+figure `BENCHMARKS.md` already quotes. Against the current WSJT-X the
+"at/above parity" reading no longer holds for FT8's fading channels: it is
+0.3–0.8 dB behind at `-d3`. mfsk-core's own numbers did not change; the
+reference moved.
+
+### What moved in `jt9`
+
+From the Fortran diff, not from profiling: `ft8b.f90` gained a fifth
+bit metric (per-bit largest magnitude of the nsym = 1, 2, 3 variants), doubled AP passes (nsym 1 and 2 per AP type, `apmag` 1.1),
+`nsync` gates of 6/7/8 by `imetric`/depth, a filter dropping `/R` and
+`TU; ` messages when no contest is set, and a −25 dB SNR floor.
+`ft8_decode.f90` changed the pass driver (`syncmin` 2.1 at `-d1/-d2`, the
+`nzhsym==41` override removed, `ndeep` removed so `-d3` pass 1 runs at
+depth 3, pass 2/3 no longer gated on "new decodes", `MAXCAND` 1000) and
+added an a8 decode. These are #438 and #439; the split of the gain
+between them has not been measured.
+
+Real recordings, message by message (5 files): differences are confined to
+marginal decodes. `qso3_busy.wav` goes 14 / 19 / 22 → 14 / 20 / 21: `-d2`
+gains `K1BZM DK8NE -10` (−20 dB, 244 Hz) and `-d3` loses
+`TU; 7N9RST EI8TRF 589 5732` (−24 dB) to the new filter. The
+`191111_110130` / `qso1` recordings gain one −16 to −18 dB decode each.
+
+### FT4
+
+`jt9 -5` output is **byte-identical** between the two builds over all 3120
+sweep outputs (AWGN and three CCIR channels, 3 depths), and over the real
+`000000_000002.wav` (16 / 19 / 19 decodes). Crossings therefore do not move
+(AWGN −17.11 / −17.57 / −18.17 dB at `-d1/-d2/-d3`). This does not
+exercise the changed `MAXCAND` (100 → 200): each file holds one signal, and
+no call-sign context is set so the AP window `napwid` is unused. A busy-band
+FT4 file with more than 100 candidates has not been run (#440).
+
+### Reproducing, and what was not kept
+
+The raw `jt9` outputs (about 12 500 small files) were not kept, in line with
+the CSVs in `sweep-baseline.json`'s note. They are regenerable from the
+seed-1 corpora and the two commits above; the per-file loop and layout are
+in the header of `scripts/score-jt9-sweep.py`. Three pitfalls hit while
+doing this: (1) `jt9` appends ` ?` and ` aN` markers to the message, and a
+scorer that compares the whole field counts correct AP decodes as misses
+and inflates "false decodes" (this happened once; corrected in #442);
+(2) FT4 lines use `+` where FT8 uses `~`; (3) the same corpus must be used
+for both binaries and for mfsk-core, because a single draw is worth up to
+1.1 dB on the fading channels and that error is common to all of them, not
+to any one decoder.
+
+Not measured: the call-sign-context path (`-Q`, a7/a8), FT4 with AP, timing
+(the two builds are not compiled alike), and the effect of individual
+upstream changes.
+
+## 14. After the WSJT-X 3.x port: what moved, and what did not close (#439, PR #451, 2026-09-25)
+
+PR #451 ported the `ft8_decode.f90` / `ft8b.f90` changes §13 listed: the
+pass rule, the squared metric of passes 2 and 3, the nsync floor, the fifth
+metric, the AP changes, the `/R` and `TU; ` filter, and `mlag` 13. Numbers
+below are `main` before the PR against the PR, on this machine, seed-1
+corpora (`ft8_sweep`, `ft8_itu_sweep`) and the busy-band corpus
+(`BENCHMARKS.md`, "The busy-band corpus"), `max_cand` 600, `sync_min` 1.3.
+
+### 50 %-recall crossing, dB (negative = more sensitive)
+
+| | `.sic_early()` before → after | `decode()` before → after | `jt9 -d3` 3.2 |
+|---|---|---|---|
+| AWGN | −21.70 → −21.78 | −21.62 → −21.67 | −21.67 |
+| CCIR good | −21.50 → −21.45 | −21.45 → −21.45 | −21.78 |
+| CCIR moderate | −19.80 → −19.80 | −19.75 → −19.75 | −20.33 |
+| CCIR poor | −19.43 → **−19.71** | −18.90 → −19.00 | −19.71 |
+
+`.sic_early()` is the comparable strategy (`jt9 -d3` is the staged
+subtract-and-repeat decode; `decode()` is one pass). mfsk-core minus
+`jt9 -d3`: AWGN −0.11, good +0.33, moderate +0.53, poor **0.00** (was +0.28).
+The poor-channel gap is closed; good and moderate did not move, so the
+0.3-0.5 dB left there is not in the changes ported here. On the nine ITU
+channels (`decode()`) two moved, `itu_hq` and `itu_mm` by 0.5 dB
+in the sensitive direction; the others are within 0.2 dB.
+
+### Busy band (2900 signals, 420 files)
+
+| | before | after | `jt9 -d3` 3.2 |
+|---|---|---|---|
+| `.sic_early()` recall busy10 / 20 / 40 | 83.0 / 80.8 / 81.2 % | 83.5 / 81.9 / 81.5 % | 81.5 / 79.9 / 81.0 % |
+| `.sic_early()` unexpected decodes | 6 | **9** | 4 |
+| `decode()` unexpected decodes | 38 | 33 | — |
+| noise-only files (200) | 0 | 0 | 1 |
+
+**Precision is the part that did not reach the reference.** The squared
+metric alone took the `.sic_early()` count from 6 to 18; the nsync floor,
+the `/R` filter and the rest brought it back down (15, 19, 11, 12), and
+`mlag` 13 to 9. The commit-by-commit figures are in the messages of #451.
+
+### What did not port, and why
+
+- **`ndeep=2` for every candidate** (upstream). It is better on these
+  sweeps (`ccir_poor` −0.35 dB, `decode()` extras 31 → 21) and loses
+  `CQ EA2BFM IN83` on `qso3_busy`, which both `jt9` builds decode: #453.
+- **The early checkpoint's `sync_min`** is still scaled by 2.0/1.3, though 3.0
+  removed the `syncmin=2.0` line. Without the scaling a zero-tailed buffer
+  yields phantoms from noise alone (10 in 200 files against `jt9`'s 1), and
+  what makes this port easier to fool there is not found: #452. Ruled out
+  so far: the `nsync <= 10` xsnr gate, candidate and nsync-pass counts
+  (compared against an instrumented `jt9`), the `zsave` definition.
+
+### Method notes
+
+An instrumented `jt9` (a `write` in `ft8b.f90` after the nsync gate and in
+`ft8_decode.f90` after `sync8`) counted, on five noise files at `-d3`,
+141-193 candidates and ≈ 27 nsync-passing candidates per pass, four passes
+(the third is skipped without decodes). mfsk-core's single pass sees 74-87
+candidates and 29-40 nsync-passing ones per file. `jt9` output was scored
+with the `score_busy.py` rules of #450 (message, ±5 Hz, ±0.5 s; ` ?` / ` aN`
+markers stripped).
+
+Not done: the change-by-change ablation of the ported list against `jt9`
+(Phase 3 of the plan in #447), so how the +0.33 dB §13 measured splits
+between the changes is still unknown; the effect of `wsjtx_depth` D1/D2's
+nsync floor of 8 on their own sweeps; FT4/FST4 (untouched by the port).
+
+### Addendum: the precision gap was the OSD (#452, #453)
+
+The two open items above were one defect. `osd174_91.f90` picks the
+closest of all its candidate codewords and checks the CRC once, on that
+winner; this crate checked the CRC on every candidate and kept the closest
+one that passed. Same LLRs (iid Gaussian, sd 2.83) through the ladder's
+`bp_llr_zsum` and OSD: upstream `decode174_91` built with gfortran, 15
+CRC-valid results in 260 000 draws (5.8e-5); this crate 452 in 200 000
+(2.3e-3); after the fix 180 in 2 000 000 (9.0e-5). The search was CRC-aided,
+which is both why it was sensitive and why it gave wrong codewords from
+noise about forty times as often.
+
+With the OSD on the reference's rule, and with the two things it had been
+covering for (the `q >= 18` `ndeep=3` split; the early checkpoint's
+`sync_min` scaling) dropped as upstream does:
+
+| | after §14 | with the OSD fix | `jt9 -d3` 3.2 |
+|---|---|---|---|
+| busy `.sic_early()` unexpected decodes (420 files) | 9 | **2** | 4 |
+| busy `decode()` unexpected decodes | 33 | **1** | — |
+| FT8 sweeps, nine ITU channels, 200 noise files: unexpected decodes | 0-5 per group | **0** | 1 (noise) |
+| busy `.sic_early()` recall busy10/20/40 | 83.5 / 81.9 / 81.5 % | 82.8 / 81.1 / 81.4 % | 81.5 / 79.9 / 81.0 % |
+| `.sic_early()` `ccir_poor` crossing | -19.71 dB | -19.55 dB | -19.71 dB |
+| `decode()` `ccir_poor` crossing | -19.00 dB | -19.17 dB | — |
+| ITU `itu_hm` / `itu_ld` crossing | -1.67 / -5.00 dB | -2.50 / 0.00 dB | — |
+
+Precision is now better than the reference's on this corpus and recall still
+at or above it. The cost is the weakest fading cases: `itu_ld`, whose recall
+is a 25-55 % plateau from -8 to +10 dB, drops from 10/20 to 6/20 at -5 dB,
+which moves its 50 % crossing to 0 dB. `CQ EA2BFM IN83` (`qso3_busy`), which
+the `ndeep=3` split had been needed for, decodes at `ndeep=2` now.
+
+## 15. The a-priori passes against `ft8b.f90`: which LLR variants, and what bounds the hard errors (#456, 2026-09-26)
+
+Two differences between this crate's AP rung and `ft8b.f90`, measured on the sweep corpus
+regenerated at 400 trials a cell (`gen_ft8_sweep_wavs.sh`, TRIALS=400, ft8sim from `2b9d654`,
+seed 1), SNR -17 to -24 dB, 12 800 files a condition, every alternative decoded on the same
+files as `main`. The hint comes from `MFSK_FT8_SWEEP_AP_HINT=<call1>,<call2>`: none (only the
+blind-CQ pass runs), `CQ,JL1NIE` (right: the corpus message is `CQ JL1NIE PM95`; a heavy lock)
+and `K1ABC,W9XYZ` (wrong).
+
+| | hits, `main` -> alternative | gained | lost | unexpected decodes, `main` -> alternative |
+|---|---|---:|---:|---:|
+| `ap_max_errors` 36, no hint | 6509 -> 6548 | 39 | 0 | 3 -> 3 |
+| `ap_max_errors` 36, right hint | 8771 -> **9315** | **544** | 0 | 4 -> 5 |
+| `ap_max_errors` 36, wrong hint | 6508 -> 6547 | 39 | 0 | 5 -> **9** |
+| AP on `llra`, `llrc` only, right hint | 8771 -> 8560 | 0 | **211** | 4 -> 4 |
+
+Every difference is a sign-test p < 1e-4 (gained or lost against none the other way).
+
+**LLR variants.** `ft8b.f90` runs each AP hypothesis on `llra` and then `llrc` (`mod(ipass-5,2)`);
+this crate runs it on `llra`, `llrb`, `llrc`, `llrd`. Restricted to upstream's two, the right
+hint loses 211 of 8771 (crossings 0.12-0.19 dB worse) and finds nothing the four did not,
+with no fewer phantoms. The deviation has a measured reason and stays.
+
+**`ap_max_errors`.** `ft8b.f90` accepts any decode with `nharderrors <= 36`; this crate's
+`DecodeStrictness::ap_max_errors` is 30, or 25 with 55 or more locked bits, calibrated
+against the old AP rung's false accepts (before #459). At 36: with the right hint 544 more hits
+(+6.2 %), crossings 0.26-0.39 dB more sensitive (AWGN -22.62 -> -22.89, ccir_good
+-22.47 -> -22.73, ccir_moderate -21.67 -> -22.03, ccir_poor -21.54 -> -21.93), most of them
+at -21 to -24 dB (151 at -23, 128 at -22, 101 at -21); with no hint 39 more and no extra
+phantom. The price is phantoms: +1 in 12 800 files with the right hint and +4 with the wrong
+one. They are the AP hallucination `ft8b.f90` has too: a hypothesis locked onto a marginal
+signal, within 36 bit errors (`K1ABC W9XYZ 73`, a full 77-bit lock, 34 hard errors, at the true
+signal's frequency; `K1ABC XO4TSH R HA17`, 33), and they carry an AP pass id (5-11), so a UI can
+mark them as `a` decodes do.
+
+Not measured. A crowded band: this corpus has one signal and a hint that is exactly right or
+wrong, so the chance that a wrong lock meets some other station's marginal signal is not
+sampled. Noise alone does not show it: 3 000 noise-only slots give 0 decodes for every
+configuration and hint (`ft8_ap_noise_slots_measure`, `tests/ft8_ap_osd_false_accept.rs`).
+The 100-trial corpus (3 200 files a condition) found 0 phantoms for `main` and 2 for 36 (wrong hint
+only); `main` has some at 400 trials too (3, 4 and 5), which is what more trials showed.
+
+**Decided (2026-09-26): `ap_max_errors` is 36, with `ft8b.f90`'s frequency window.** The same
+comparison on FT4's sweep (`MFSK_FT4_SWEEP_AP_HINT`, 400 trials, SNR -14 to -21) found the same
+recall gain (right hint 7422 -> 7780, no hint +31) and a much larger phantom cost with a wrong
+hint, 4 -> 64, 62 of them away from the true signal: FT4 runs the heavy AP hypotheses on every
+candidate, where `ft4_decode.f90` and `ft8b.f90` try them (`iaptype >= 3`) only within
+`napwid` of `nfqso`. That rule is now in (`QsoFreq`, from `DecodeRequest::freq_hint`), and
+without a `freq_hint` a heavy hypothesis is not tried at all, since upstream always has an
+`nfqso` (so the 64 phantoms of a wrong hint without one are gone too). With `freq_hint` at the signal a wrong hint gives 6 phantoms on FT4 (64
+without a `freq_hint`), a right hint 7821 hits; at 900 Hz, 600 Hz from the signal, the heavy
+hypothesis is off (6232 hits, as with no hint). FT8 with the hint at or away from the signal:
+right hint 9315 / 5 phantoms, then 6936 / 3; wrong hint 6547 / 9, then 6547 / 6 (its phantoms are
+on the true signal, inside the window). `MFSK_FT8_SWEEP_FREQ_HINT` and `MFSK_FT4_SWEEP_FREQ_HINT`
+pass the frequency.
+
+## 16. The a7 and a8 list decoders against `jt9` 3.2.0-rc1 (#464, 2026-09-26)
+
+`jt9` built from the `v3.2.0-rc1` tag (the #442 reference; a8 is new in 3.x, so the older
+build cannot stand in). One trap first: **the `jt9` CLI has default call signs**, MyCall
+`K1ABC`, HisCall `W9XYZ`, HisGrid `EN37` (`jt9.f90:127-128`), and runs a8 and the MyCall/
+DxCall AP passes with them at `nfqso` 1500 Hz. A corpus that uses those calls at 1500 Hz is
+decoded with a hint whether one was meant or not; `-c b -x b` clears them. (It may also be
+behind `jt9` phantoms at 1500 Hz on other corpora, such as the `a2` one noted on FST4.)
+
+**a7.** `ft8sim` 3.2, 1500 Hz, DT 0: the previous cycle holds `K1ABC W9XYZ -10` at -10 dB,
+the current one `K1ABC W9XYZ RR73` at the SNR in the table, 20 files a cell (seeds 118-126).
+`jt9 -8 -d 3 -c b -x b` on `000000_000000.wav 000000_000030.wav` in one process (same
+sequence, 30 s apart); this crate `.wsjtx_depth(D3)` with `.previous_cycle()`.
+
+| SNR | `jt9` alone | crate alone | `jt9` with previous (a7) | crate with previous (a7) |
+|---:|---:|---:|---:|---:|
+| -20 | 19 | 19 | 20 (1) | 20 (1) |
+| -21 | 15 | 14 | 20 (5) | 20 (6) |
+| -22 | 2 | 2 | 20 (18) | 20 (18) |
+| -23 | 0 | 1 | 17 (17) | 18 (17) |
+| -24 | 0 | 0 | 8 (8) | 8 (8) |
+| -26 | 0 | 0 | 0 | 0 |
+
+About 2-3 dB for the next message of a pair already heard, as upstream. On the two
+WSJT-X recordings 30 s apart (`191111_110130`, `191111_110200`) neither finds an a7 decode:
+every station of the first is decoded again in the second, and the one that is not
+(`TK4LS YC1MRF 73`) sends nothing more.
+
+**a8.** `K1ABC W9XYZ R-12` at 1500 Hz, 20 files a cell; `jt9` with its default calls and
+`nfqso` 1500, this crate with `ap_hint(K1ABC, W9XYZ, EN37)` and `freq_hint(1500)`.
+
+| SNR | `jt9` decoded (a8) | crate decoded (a8) |
+|---:|---:|---:|
+| -20 | 20 (1) | 20 (0) |
+| -22 | 19 (11) | 20 (13) |
+| -24 | 14 (14) | 13 (13) |
+| -25 | 7 (7) | 8 (8) |
+| -26 | 1 (1) | 1 (1) |
+| -27 | 0 | 0 |
+| -40 (noise) | 0, one other decode | 0 |
+
+The crate's a7 found nothing until `pack77` was fixed (#464's first commit): it packed RR73
+as `MAXGRID4 + 3`, not as the grid RR73 that WSJT-X transmits, so the list's RR73 candidate
+was a different codeword from the one on the air (its parity bits, half the codeword,
+disagreed at chance level).

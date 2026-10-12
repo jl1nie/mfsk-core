@@ -70,7 +70,7 @@ streaming coarse stage below.)
   internal-DRAM-resident under `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`)
   into PSRAM. The dots never left the PIE path. Before caching
   anything on this board, ask what it evicts.
-  `docs/notes/FT4_BENCHMARK.md` §47.
+  `docs/historical/FT4_BENCHMARK_LOG.md` §47.
 
 - **FT4 searches WSJT-X's own ±1.0 s Δt window again, and the mixer
   stopped pushing one sample at a time.** The window itself is not new
@@ -102,7 +102,7 @@ streaming coarse stage below.)
   per input sample — 45 000 capacity-and-length tests per candidate for
   5 000 outputs. Writing through pre-sized slices instead is
   bit-identical and measured **63.1 → 57.4 ms per candidate in situ**,
-  1 290-1 401 → 1 259-1 360 ms end to end. `docs/notes/FT4_BENCHMARK.md`
+  1 290-1 401 → 1 259-1 360 ms end to end. `docs/historical/FT4_BENCHMARK_LOG.md`
   §46, issue #352.
 
 - **FT4's decode budget is now derived from key-up, and the receiver
@@ -143,7 +143,7 @@ streaming coarse stage below.)
   32 KB**. At 8 KB each the slot runs **1 290-1 401 ms with WiFi up**,
   faster than it ever ran without it, and all 12 candidates fit inside
   the 1 750 ms budget: **12 of 12 tried, 11 decodes**, against 11 of 12
-  and 10 at the start of the day. `docs/notes/FT4_BENCHMARK.md`
+  and 10 at the start of the day. `docs/historical/FT4_BENCHMARK_LOG.md`
   §43-§45.
 
 - **One network bring-up for every receiver on the CoreS3
@@ -201,7 +201,7 @@ streaming coarse stage below.)
   candidate's band — at more than 50 dB down, which is why the corner
   is 2 800 Hz and the stage 165 taps. **Still owed**: the 560-file
   paired sweep, whose arm is written but whose corpus was not on the
-  machine this was built on. `docs/notes/FT4_BENCHMARK.md` §42.
+  machine this was built on. `docs/historical/FT4_BENCHMARK_LOG.md` §42.
 
 - **The streaming spectrogram measured too: `fixed-point` is
   0.63× f32 there (issue #349 step 2).** §36 timed the *batch*
@@ -223,7 +223,7 @@ streaming coarse stage below.)
   local to it (`coarse_sync`, `pass2` and the waterfall all take
   `&[u16]`) and the slot buffer would double. What changes is the
   reason to keep it — the 345 KB, not speed.
-  `docs/notes/FT4_BENCHMARK.md` §41.
+  `docs/historical/FT4_BENCHMARK_LOG.md` §41.
 
 - **`fixed-point` no longer implies the Q11i16 LLR/BP hot loop
   (issue #349).** The scalar is its own feature, `fixed-point-llr`,
@@ -249,7 +249,7 @@ streaming coarse stage below.)
   `m5stack-core2-app` pins `fixed-point-llr` on: it is an LX6, the
   measurement is an LX7, and its logs were all taken with the integer
   loop. Consumers on a target without an FPU should do the same.
-  `docs/notes/FT4_BENCHMARK.md` §40.
+  `docs/historical/FT4_BENCHMARK_LOG.md` §40.
 
 - **FT4's embedded decode fits its slot at realistic band occupancy.**
   A day of hardware measurement on a CoreS3 took the FT4 ship
@@ -262,7 +262,7 @@ streaming coarse stage below.)
   0.00 Hz and 0.00 %.
 
   What moved it, in order of size, each measured rather than projected
-  (`docs/notes/FT4_BENCHMARK.md` §25-32):
+  (`docs/historical/FT4_BENCHMARK_LOG.md` §25-32):
 
   - the 2304-point transform's scratch into internal DRAM — the coarse
     stage's 54 KB working set does not fit the S3's ~32 KB data cache,
@@ -746,7 +746,7 @@ streaming coarse stage below.)
   ~19 900-cell grid, not anything candidate-dependent. Memory was never
   the constraint: 7.47 MB PSRAM free throughout. Full account in
   `docs/reference/EMBEDDED.md` "FT4 on embedded" and
-  `docs/notes/FT4_BENCHMARK.md` §17.
+  `docs/historical/FT4_BENCHMARK_LOG.md` §17.
 
 - **What narrowing FT4's Δt search window costs: nothing, up to
   ±0.5 s.** `ft4_sync_search`'s cost is set by its Δt window alone, and
@@ -771,7 +771,7 @@ streaming coarse stage below.)
   `gen_ft4_sweep_wavs.sh` fixes `DT=0.0`, so every signal in it sits
   dead centre of every window under test and it would have reported no
   loss at any width — a property of the fixture, not the decoder. See
-  `docs/notes/FT4_BENCHMARK.md` §18.
+  `docs/historical/FT4_BENCHMARK_LOG.md` §18.
 
 - **`mfsk_core::ft4::ddc` — FT4's per-candidate baseband without the
   92 160-point FFT.** `downsample_cached` is the stage that keeps FT4
@@ -811,7 +811,7 @@ streaming coarse stage below.)
   `decode_frame`: a building block callers reach for, not a feature
   flag that swaps the host's front end. `ft4_coarse_sync`'s
   `NFFT1 = 2304` is still baked; a `fft_mixed_2304` (256 × 9) would
-  close that without any DDC. See `docs/notes/FT4_BENCHMARK.md` §20.
+  close that without any DDC. See `docs/historical/FT4_BENCHMARK_LOG.md` §20.
 
 - **`engine::dsp::fft_mixed_2304` — the last non-power-of-two length in
   FT4's path.** `ft4_coarse_sync` runs a Nuttall-windowed
@@ -849,7 +849,7 @@ streaming coarse stage below.)
   `bench_assets::SYNC_MIN` is now 1.2 and
   `embedded-poc/assets/ft4_golden_candidates.bin` was re-baked: 31
   candidates → 12, same 11 decodes at both `DecodeDepth::EMBEDDED` and
-  `FULL`. **Device numbers in `docs/notes/FT4_BENCHMARK.md` §17-19 were
+  `FULL`. **Device numbers in `docs/historical/FT4_BENCHMARK_LOG.md` §17-19 were
   all measured over 31 candidates**; per-candidate figures carry over,
   slot totals do not. New test: `tests/ft4_candidate_budget.rs`, one
   ratchet on the ranking and one tier-C measurement of both curves.
@@ -858,7 +858,7 @@ streaming coarse stage below.)
   "`EMBEDDED` and `FULL` decode identically" holds on the golden and
   **not** on weak data — 237 vs 179 of 560 at the crossing, so skipping
   OSD costs about a quarter of the recall an embedded receiver would
-  otherwise have. See `docs/notes/FT4_BENCHMARK.md` §21.
+  otherwise have. See `docs/historical/FT4_BENCHMARK_LOG.md` §21.
 
 ### Added
 
@@ -904,7 +904,7 @@ streaming coarse stage below.)
 
   What the corpus cannot see is written down with it: no fading, an SNR
   floor of −17 dB, DT confined to ±0.5 s, and the fact that it shares a
-  generator with the golden. See `docs/notes/FT4_BENCHMARK.md` §23.
+  generator with the golden. See `docs/historical/FT4_BENCHMARK_LOG.md` §23.
 
 - **`fixed-point` does not apply to FT4 — the board runs the same f32
   arithmetic the host does.** The CoreS3 build enables
@@ -926,7 +926,7 @@ streaming coarse stage below.)
   board's figure too, and what remains between them is the FFT kernel
   (esp-dsp vs rustfft, already shown to give identical decodes on the
   golden), `dotprod-extern`, and everything that is not arithmetic —
-  slot timing, capture, memory. `docs/notes/FT4_BENCHMARK.md` §24 also
+  slot timing, capture, memory. `docs/historical/FT4_BENCHMARK_LOG.md` §24 also
   tabulates the FT4 evidence base and names the two rows no simulator
   closes: real receiver artefacts, and true FT4 band occupancy.
 
@@ -977,7 +977,7 @@ streaming coarse stage below.)
   decodes and OSD 56, so neither is a candidate for the same treatment.
   FST4's `nsym=8` conclusion does not port — its rung enumerates
   4⁸ = 65 536 tone hypotheses per group against FT4's 4⁴ = 256. See
-  `docs/notes/FT4_BENCHMARK.md` §22.
+  `docs/historical/FT4_BENCHMARK_LOG.md` §22.
 
 - **`DecodeDepth::osd`'s doc comment was wrong about embedded.** It said
   OSD is "host-only", "compiled out of non-`fft-rustfft` builds
@@ -1023,7 +1023,7 @@ streaming coarse stage below.)
   inference that it was the bottleneck was not. The search is no longer
   dominant (downsample 34 % / search 37 % / LLR+BP 29 %), which points
   the next work at `ft4::ddc` rather than at more of this. See
-  `docs/notes/FT4_BENCHMARK.md` §19.
+  `docs/historical/FT4_BENCHMARK_LOG.md` §19.
 
 - **ハムフェア2026 booth material** (`docs/presentations/hamfair2026/`)
   — a ten-page A4-landscape flipchart and a two-page A4 leaflet for
@@ -1197,7 +1197,7 @@ streaming coarse stage below.)
 - **`TRIALS` never reached the sweep corpus generators.** All seven
   `scripts/gen_*_sweep_wavs.sh` assigned `TRIALS=20` (q65: 15)
   unconditionally, so the `TRIALS=100 scripts/gen_fst4_sweep_wavs.sh`
-  that `FST4_BENCHMARK.md` §11.3 prescribes for #311's n=100 re-run
+  that `FST4_BENCHMARK_LOG.md` §11.3 prescribes for #311's n=100 re-run
   silently generated a 20-trial corpus. Nothing announces it: the
   script prints the count it is using per cell, and the sweeps skip
   absent trial indices without complaint, so the only symptom is a
@@ -1501,7 +1501,7 @@ rather than distributing them across patches.
   declined on measurement: it would triple the first-rung sweep, offset
   setup (`symbol_spectra` + bit-metrics rebuild) is not free, and the
   payoff cannot be aimed, since ranking offsets by sync quality matched
-  exhaustive retry in only 1 of 8 runs. `docs/notes/FST4_BENCHMARK.md`
+  exhaustive retry in only 1 of 8 runs. `docs/historical/FST4_BENCHMARK_LOG.md`
   §13/§14 carries the reasoning and the numbers.
 
   A non-`#[ignore]`d test asserts the two schedules return byte-identical
@@ -4550,7 +4550,7 @@ effect on any decode path.
   ~575.8ms → ~280ms, single-threaded ~893.6ms → ~602ms. Not a full
   return to 48.8ms — the LPF subtract + freq-refine step is a
   deliberate, permanent recall-quality cost (10/10 vs 0/10 on a
-  Rayleigh-faded-interferer scenario, `docs/notes/FT4_BENCHMARK.md`
+  Rayleigh-faded-interferer scenario, `docs/historical/FT4_BENCHMARK_LOG.md`
   section 13) that will always cost more than the pre-#178
   constant-amplitude path; this fix removes the *redundant* part of
   that cost, not the cost itself. Candidate count unchanged (31/31, no
@@ -4598,7 +4598,7 @@ effect on any decode path.
   byte-identical (6/6 golden, 14/14 total decodes). The Rayleigh-fading
   busy-band regression guard the LPF-subtract migration (#177-179) was
   built to fix (`ft4_busy_band_fading_probe.rs::busy_band_fading_baseline`)
-  stayed 10/10. See `docs/notes/FT4_BENCHMARK.md` section 16.
+  stayed 10/10. See `docs/historical/FT4_BENCHMARK_LOG.md` section 16.
 
 - **`ft8::decode::DecodeDepth` redesigned from a flat, ad-hoc 4-variant
   enum into an orthogonal 2-field struct (breaking); the automatic
@@ -4871,7 +4871,7 @@ effect on any decode path.
   documented pre-fix baseline almost exactly, FST4-120/300 spot-checked).
   A first attempt (reusing FT4's exact `N_SYNC`-scaled formula) measured
   as a real ~0.5 dB AWGN sensitivity regression and was corrected before
-  shipping — see `docs/notes/FST4_BENCHMARK.md` section 8.
+  shipping — see `docs/historical/FST4_BENCHMARK_LOG.md` section 8.
 - **FT4 coarse-candidate stage replaced with a faithful
   `getcandidates4.f90` port** (`core::ft4_coarse::ft4_coarse_sync`) —
   the generic Costas-lag coarse_sync FT4 previously shared with
@@ -4882,7 +4882,7 @@ effect on any decode path.
   **1.20 s → 0.049 s (~25×)** with byte-identical 6/6 recall; AWGN 50%
   sensitivity crossing moved −17.2 dB → −16.9 dB (structural algorithm
   swap reshaped rather than uniformly improved the SNR curve — 3 of 4
-  channels held or improved). See `docs/notes/FT4_BENCHMARK.md` section
+  channels held or improved). See `docs/historical/FT4_BENCHMARK_LOG.md` section
   13.
 - **Q65-60B/30A `decode_multi_period_for` sped up further, ~2.3×/~1.3×**
   (`q65/search.rs::Spectrogram::build_for`) — follow-up to a separate
@@ -5725,7 +5725,7 @@ effect on any decode path.
   Traced nsync (14/16/18) matching jt9 almost exactly on the 3
   `ccir_moderate_m19_{01,05,14}.wav` trials jt9 wins and mfsk-core
   lost — ruling out the fine-sync/coherent-combining lead
-  `FT8_BENCHMARK.md` section 10 had flagged — and found jt9's own
+  `FT8_BENCHMARK_LOG.md` section 10 had flagged — and found jt9's own
   blind `ipass=1..4` also failed identically on all 3, succeeding
   only via `ipass=5` (`iaptype=1`). mfsk-core's
   `process_one_candidate_inner` already had the matching "Pass 12:
@@ -5751,7 +5751,7 @@ effect on any decode path.
   18/18, full-parity 8/8, staged-SIC 18/18, AP-on JTDX-extras 6/6);
   `qso3_busy.wav` single-pass `DecodeDepth::FULL` wall-clock ~139-141
   ms → ~165-175 ms (~6-7× faster than real `jt9 -8 -d3`'s ~1.1-1.2 s).
-  See `FT8_BENCHMARK.md` section 11 for the full trace and cost
+  See `FT8_BENCHMARK_LOG.md` section 11 for the full trace and cost
   investigation.
 - **`engine::dsp::downsample::downsample_cached` rebuilt its inverse-FFT
   plan (twiddle table) from scratch on every call instead of reusing one

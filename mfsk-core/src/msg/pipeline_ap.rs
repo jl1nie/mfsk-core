@@ -21,7 +21,7 @@
 //! known (CQ + DX scenario) and can exceed that when a specific response
 //! token (RRR / RR73 / 73) is also locked. The blind CQ hypothesis,
 //! which needs nothing, is worth about 1.1 dB on FT4's AWGN sweep
-//! (`docs/notes/FT4_BENCHMARK.md` §48).
+//! (`docs/historical/FT4_BENCHMARK_LOG.md` §48).
 
 use alloc::vec::Vec;
 

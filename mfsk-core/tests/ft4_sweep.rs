@@ -498,7 +498,7 @@ fn ft4_diag_weak_trials() {
 
     let dir = sweep_dir();
     // Straddles the post-section-9 AWGN 50% crossing (≈-16.7dB,
-    // FT4_BENCHMARK.md section 9) — deliberately narrow, this is a
+    // FT4_BENCHMARK_LOG.md section 9) — deliberately narrow, this is a
     // stage-attribution probe, not a re-sweep.
     for snr_tag in ["m18", "m17", "m16", "m15"] {
         for trial in 1..=20u32 {
@@ -567,7 +567,7 @@ fn ft4_diag_weak_trials() {
     }
 }
 
-/// Revisits `FT4_BENCHMARK.md` section 10's "OSD depth-2/4 ... never
+/// Revisits `FT4_BENCHMARK_LOG.md` section 10's "OSD depth-2/4 ... never
 /// fired at all" finding (issue #72, 2026-07-18) — found while
 /// investigating FST4 OSD costs (issue #306 follow-up): `fec::ldpc::
 /// osd::osd_decode_deep4`'s `k4_limit` restricts the order-4 extension
@@ -592,7 +592,7 @@ fn ft4_diag_weak_trials() {
 /// stated intent) directly via `osd_decode_generic`, and count which
 /// one(s) recover the golden message.
 #[test]
-#[ignore = "manual diagnostic — k4_limit reliability direction (issue #306 follow-up, revisits FT4_BENCHMARK.md section 10)"]
+#[ignore = "manual diagnostic — k4_limit reliability direction (issue #306 follow-up, revisits FT4_BENCHMARK_LOG.md section 10)"]
 fn ft4_diag_k4_tail_direction() {
     use mfsk_core::SyncFrontEnd;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
@@ -749,7 +749,7 @@ fn ft4_diag_k4_tail_direction() {
     eprintln!("either direction rescues: {n_either_rescues}");
 }
 
-/// Hypothesis 2 from `FT4_BENCHMARK.md` section 8's closing notes: does
+/// Hypothesis 2 from `FT4_BENCHMARK_LOG.md` section 8's closing notes: does
 /// `ft4_sync_search`'s collapsed single-pass Δt search (one global best
 /// over the full `[-344,1012]` union) ever lose recall relative to
 /// WSJT-X's literal 3-segment structure (`ft4_decode.f90`'s `iseg=1,2,3`
@@ -799,7 +799,7 @@ fn ft4_diag_segment_retry() {
     // `ft4_sync_search` — INCLUDING the `hard_errors >= osd_max_errors`
     // rejection gate real OSD results go through (first attempt at this
     // diagnostic omitted it and over-reported rescues — see
-    // `FT4_BENCHMARK.md` section 11 for the retraction). Returns
+    // `FT4_BENCHMARK_LOG.md` section 11 for the retraction). Returns
     // `Some((hard_errors, message77))` on a decode that would actually
     // survive production's gates.
     fn try_decode_at(
@@ -995,7 +995,7 @@ fn ft4_diag_segment_retry() {
 /// (symbol_spectra + LLR + BP + OSD).
 ///
 /// `ft4_sync_search` already does an *absolute* full-window Δt search
-/// that ignores each candidate's own `dt_sec` (FT4_BENCHMARK.md section
+/// that ignores each candidate's own `dt_sec` (FT4_BENCHMARK_LOG.md section
 /// 9) — so if a real signal's frequency does produce several lag-distinct
 /// coarse_sync candidates, each pays this diagnostic's full per-candidate
 /// cost independently for what should be a redundant, identical result.
@@ -1234,7 +1234,7 @@ fn ft4_diag_candidate_cost_split() {
 /// WSJT-X-style `if(smax < cutoff) cycle` early-exit before
 /// symbol_spectra/LLR/BP/OSD costs nothing in recall), following the
 /// same "measure before picking a number" discipline as
-/// `FT4_BENCHMARK.md` section 6 rather than guessing a translated
+/// `FT4_BENCHMARK_LOG.md` section 6 rather than guessing a translated
 /// constant from WSJT-X's own `1.2`.
 #[test]
 #[ignore = "manual diagnostic — Phase 4 smax early-reject calibration (dapper-soaring-nest plan)"]
@@ -1404,7 +1404,7 @@ fn ft4_diag_smax_calibration() {
 /// Only candidates within 20 Hz of the transmitted 1500 Hz are decoded.
 /// `ft4_coarse_sync` still runs over the full 100–2700 Hz band, because
 /// `fit_baseline` needs real off-signal content to fit against (see
-/// `docs/notes/FT4_BENCHMARK.md` §13) — the filter is applied after it,
+/// `docs/historical/FT4_BENCHMARK_LOG.md` §13) — the filter is applied after it,
 /// and only skips decoding noise peaks that cannot produce the golden
 /// message anyway.
 ///

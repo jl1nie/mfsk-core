@@ -72,7 +72,7 @@ pub(crate) struct AlignedQuad(
 ///
 /// Both are preconditions of `dsps_dotprod_f32_aes3`'s PIE path;
 /// missing either drops it to a scalar loop. Measured on a CoreS3
-/// (`docs/notes/FT4_BENCHMARK.md` §27): **7 900 ps/tap when both hold,
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §27): **7 900 ps/tap when both hold,
 /// 18 080 when either does not** — 2.3x, and `ft4::ddc`'s 199- and
 /// 263-tap stages satisfied *neither*, so every dot the DDC has ever
 /// done took the slow path.

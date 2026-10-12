@@ -5,7 +5,7 @@
 //! runs **during** capture rather than after the slot. That is the
 //! whole reason it can exist: FT4's slot is 7.5 s and its frame ends at
 //! 5.54 s, leaving 1 960 ms to decode in, and the periodogram alone was
-//! 758 ms of that (`docs/notes/FT4_BENCHMARK.md` §25-32). Accumulated a
+//! 758 ms of that (`docs/historical/FT4_BENCHMARK_LOG.md` §25-32). Accumulated a
 //! block at a time through [`Ft4SavgBuilder`] it costs 6 ms after the
 //! slot instead, and the worst single block is 25 % of its own
 //! real-time budget (§33) — so it is fed straight from the audio
@@ -299,7 +299,7 @@ fn now_us() -> i64 {
 /// 758 ms (coarse) and ~109 ms (decimation) this receiver exists to
 /// spend *during* the slot rather than after it, and on FT4 the
 /// post-slot budget is candidates and therefore decodes
-/// (`docs/notes/FT4_BENCHMARK.md` §32, §37, §42).
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §32, §37, §42).
 ///
 /// The audio is still kept whole: `snr_db` aside, a caller that wants
 /// to re-run anything at 12 kHz needs it, and the replay path reads it.
@@ -1378,12 +1378,12 @@ pub fn decode_slot_with(
     // used to filter all 90 000 samples per candidate at 12 kHz
     // (61.0 ms) and now sees 6.25 s of it at 6 kHz with half the taps
     // (30.8 ms), with the ÷2 that makes that possible off the
-    // post-window budget entirely (`docs/notes/FT4_BENCHMARK.md` §37,
+    // post-window budget entirely (`docs/historical/FT4_BENCHMARK_LOG.md` §37,
     // §42).
     // Built once for the slot: the coarse sweep's nine references do
     // not depend on `cd0` or on the candidate, and rebuilding them per
     // candidate was 30 % of the Δt search (25.7 ms of 86.7 measured on
-    // a CoreS3, `docs/notes/FT4_BENCHMARK.md` §47).
+    // a CoreS3, `docs/historical/FT4_BENCHMARK_LOG.md` §47).
     let coarse_refs = Ft4CoarsePhasors::new::<Ft4>();
     let res: Vec<UnsafeCell<Option<Ft4Decode>>> =
         (0..cands.len()).map(|_| UnsafeCell::new(None)).collect();

@@ -1,6 +1,6 @@
 //! Does the FT4 DDC front end decode the golden recording the way the
 //! FFT front end does? — `ft4::ddc`, the embedded FT4 feasibility line
-//! (`docs/notes/FT4_BENCHMARK.md` §17-19).
+//! (`docs/historical/FT4_BENCHMARK_LOG.md` §17-19).
 //!
 //! `ft4::ddc::candidate_baseband` exists to replace
 //! `downsample_cached`'s per-candidate `cd0` — the stage that needs a
@@ -115,7 +115,7 @@ fn ddc_arm(
 ) -> (Option<DecodeResult>, f32, i32) {
     // `half` selects the front end: `None` is the two-stage
     // per-candidate chain, `Some` the shared decimate-by-2 plus the
-    // half-rate chain behind it (`FT4_BENCHMARK.md` §37.2). Same
+    // half-rate chain behind it (`FT4_BENCHMARK_LOG.md` §37.2). Same
     // module, same band, same alignment — a different cascade, so a
     // different rounding, which is why it gets its own arm here
     // rather than being assumed equivalent.
@@ -425,7 +425,7 @@ fn ft4_ddc_recall_matches_the_fft_path_across_the_crossing() {
             }
             let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
             // The shared front end is a third filter cascade over the
-            // same band (`FT4_BENCHMARK.md` §37.2). Its unit tests pin
+            // same band (`FT4_BENCHMARK_LOG.md` §37.2). Its unit tests pin
             // the response and the golden test pins the decodes on one
             // recording; this is the arm that says what it costs in
             // dB, which is the re-run §37.1 said the split would owe.

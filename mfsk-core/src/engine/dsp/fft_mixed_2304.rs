@@ -123,7 +123,7 @@ pub fn fft_2304_with(
 /// **The body is deliberately the plain, non-blocked order.** Blocking
 /// the two transposing passes into stack-staged 32-column strips was
 /// tried on hardware 2026-08-30 and made the combine stage *worse*:
-/// 853 ms -> 1 033 ms, +21 % (`docs/notes/FT4_BENCHMARK.md` §25.6). The
+/// 853 ms -> 1 033 ms, +21 % (`docs/historical/FT4_BENCHMARK_LOG.md` §25.6). The
 /// reasoning it was built on — ~6 900 stride-2 048-byte accesses per
 /// transform, >200 KB of PSRAM traffic to move 18 KB, ~5 ms at
 /// 40 MB/s against a measured 5.6 ms — was arithmetic that happened to

@@ -1,5 +1,5 @@
 //! How many coarse candidates does FT4 actually need? — the embedded
-//! FT4 budget line (`docs/notes/FT4_BENCHMARK.md` §17-20).
+//! FT4 budget line (`docs/historical/FT4_BENCHMARK_LOG.md` §17-20).
 //!
 //! Every stage after `ft4_coarse_sync` is per-candidate:
 //! `ft4_sync_search`, the LLR ladder, BP, OSD. On a CoreS3 the measured

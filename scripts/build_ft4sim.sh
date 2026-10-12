@@ -122,7 +122,7 @@ gfortran "${FFLAGS[@]}" \
 # Why it is worth building: `ft4sim` puts exactly one signal in a slot
 # at DT=0.0, which makes it blind to every question about a *crowded*
 # band -- candidate counts, ranking depth, phantom decodes -- and to
-# timing spread (see `docs/notes/FT4_BENCHMARK.md` sections 18 and 21.2,
+# timing spread (see `docs/historical/FT4_BENCHMARK_LOG.md` sections 18 and 21.2,
 # where both gaps bit).
 echo "  [link] ft4sim_mult"
 gfortran "${FFLAGS[@]}" \

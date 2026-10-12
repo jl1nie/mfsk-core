@@ -9,7 +9,7 @@
 //! #163, and every stage number for it came from `m5stack-s3`
 //! (a StickS3) or from the app's own logs. FT4 got a proper bench on
 //! this board and a day of measurement found four things nobody had
-//! looked at (`docs/notes/FT4_BENCHMARK.md` §25-34); FT8's own
+//! looked at (`docs/historical/FT4_BENCHMARK_LOG.md` §25-34); FT8's own
 //! breakdown on the *same* silicon had never been taken, which is what
 //! the `fixed-point` question needs — `ft8_qso3_apoff_recall` now shows
 //! the quantisation costs no recall, so what remains is whether it buys

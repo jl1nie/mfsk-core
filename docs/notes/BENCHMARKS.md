@@ -586,7 +586,7 @@ Notes:
   multi-threaded ~575.8 ms → ~280 ms, single-threaded ~893.6 ms →
   ~602 ms. Not a full return to 48.8 ms — the LPF subtract + freq-refine
   step is a deliberate, permanent recall-quality cost (see
-  `FT4_BENCHMARK.md` section 13's update for the full account); this fix
+  `FT4_BENCHMARK_LOG.md` section 13's update for the full account); this fix
   removes the *redundant* part of that cost, not the cost itself.
   Candidate count unchanged (31, matching the 25× coarse-sync fix's own
   numbers) and recall unaffected (still 6/6).
@@ -612,7 +612,7 @@ Notes:
   48.8 ms pre-#178 floor now vs. 5.7x before this pass), recall
   byte-identical (6/6 golden, 14/14 total decodes) and the
   `ft4_busy_band_fading_probe.rs` Rayleigh-fading regression guard
-  unchanged at 10/10. See `FT4_BENCHMARK.md` section 16.
+  unchanged at 10/10. See `FT4_BENCHMARK_LOG.md` section 16.
 - FT8's `qso3_busy.wav` was the outlier at **4.73 s** (busy band, 16
   simultaneous signals) until a profiling pass (2026-07-20) found the
   cost wasn't BP/OSD at all but `subtract_tones_lpf`'s successive-
@@ -666,7 +666,7 @@ Notes:
   `engine::ft4_coarse::ft4_coarse_sync`, a faithful `getcandidates4.f90`
   port (WSJT-X's actual FT4 candidate finder has no lag dimension at
   all) — dropping this row to 0.049 s (~25×) with byte-identical 6/6
-  golden recall (see `FT4_BENCHMARK.md` section 13).
+  golden recall (see `FT4_BENCHMARK_LOG.md` section 13).
 - FST4-60A was the outlier at **2.60 s** (60 s slot) until a profiling
   pass (2026-07-20) found `coarse_sync` itself was cheap (unlike FT4) —
   the real cost was OSD escalating into its expensive depth-3/4 tier for
@@ -678,7 +678,7 @@ Notes:
   34, measured as a real ~0.5 dB AWGN sensitivity regression first) —
   dropping this row to 0.27 s (~8.4×) with recall matching the
   documented pre-fix baseline across all 4 channels + FST4-120/300 spot
-  checks (see `FST4_BENCHMARK.md` section 8).
+  checks (see `FST4_BENCHMARK_LOG.md` section 8).
 - Q65-60B and Q65-30A were outliers at **1.89 s**/**2.55 s** (both route
   through `decode_multi_period_for`) until a profiling pass (2026-07-20)
   found two stacked costs: a redundant FFT extraction repeated 6× per
@@ -793,7 +793,7 @@ Notes:
 ft4_sweep ft4_diag_candidate_cost_split -- --ignored --nocapture`,
 same harness/WAV as every prior FT4 row above). Prompted by a stale
 count: the "unchanged" note on this row was current as of 2026-08-08,
-and `FT4_BENCHMARK.md` §§16-29 all landed after that (`refine_freq`
+and `FT4_BENCHMARK_LOG.md` §§16-29 all landed after that (`refine_freq`
 radius fix, the DDC front-end replacement, the ±1.0 s Δt-window
 narrowing, the coarse-phasor cache, band-occupancy tuning) — none of
 those PRs re-ran this specific table.
@@ -823,7 +823,7 @@ above (`parallel` + `rustfft` both on, so this is wall time on a
 
 **Golden-WAV single decode** (`fst4_60_diag_candidate_cost_split`,
 `tests/fst4_sweep.rs`, same harness that produced the Ryzen9 0.27 s
-figure — see `FST4_BENCHMARK.md` section 8):
+figure — see `FST4_BENCHMARK_LOG.md` section 8):
 
 | Run | `decode_frame` wall-clock | `coarse_sync` | decodes |
 |---|---:|---:|---:|
@@ -1003,7 +1003,7 @@ Notes:
 confirmed by `git diff` scope + `decode_frame_inner`'s separate call
 graph that the redesign itself moved none of these numbers; the delta
 vs the last-tracked figures is accumulated prior sensitivity work
-never rolled into this table before, see `FT8_BENCHMARK.md` section 9):
+never rolled into this table before, see `FT8_BENCHMARK_LOG.md` section 9):
 
 | Channel | mfsk-core 50% crossing | WSJT-X published / real `jt9 -8 -d3` | Gap |
 |---|---:|---:|---:|
@@ -1015,7 +1015,7 @@ never rolled into this table before, see `FT8_BENCHMARK.md` section 9):
 WSJT-X doesn't publish per-fading-model thresholds, but `ft8sim`'s the
 same simulator generating this corpus, so a real `jt9 -8 -d 3` run
 against it is real ground truth. Figures above are post-fix
-(2026-07-26) — see `FT8_BENCHMARK.md` section 11 for the root cause
+(2026-07-26) — see `FT8_BENCHMARK_LOG.md` section 11 for the root cause
 (real `jt9 -8 -d3`'s CLI always runs an implicit CQ-AP hypothesis pass
 that mfsk-core's blind `decode_frame` wasn't attempting) and the fix
 (`process_one_candidate_inner`'s blind-CQ pass now always runs, not
@@ -1111,7 +1111,7 @@ signals at specific timings can still be quantisation-unlucky.
   need) cuts that to 34 candidates and ~0.85 s, faster than jt9 again,
   with zero recall change either way. Closes the CCIR moderate/poor
   sensitivity gap from the sweep table above (moderate now ahead of
-  jt9, poor at parity) — see `FT8_BENCHMARK.md` section 11 for the
+  jt9, poor at parity) — see `FT8_BENCHMARK_LOG.md` section 11 for the
   full trace, cost investigation, and re-measurement.
 
 ## FT4
@@ -1120,7 +1120,7 @@ signals at specific timings can still be quantisation-unlucky.
   **~0.10 s** as of 2026-07-29 (was ~0.28 s as of 2026-07-26; briefly
   0.049 s right after the `getcandidates4.f90`-port fix, up from
   1.20 s before it — see "Decode speed" notes above and
-  `FT4_BENCHMARK.md` section 13 — then a later LPF-subtract migration
+  `FT4_BENCHMARK_LOG.md` section 13 — then a later LPF-subtract migration
   re-inflated it to ~0.53-0.58 s via a redundant-resynthesis bug in
   `refine_freq`, fixed same-day, issue #182; see the "Decode speed"
   table's own FT4 note for the full account and its 2026-07-29
@@ -1134,7 +1134,7 @@ signals at specific timings can still be quantisation-unlucky.
   structural algorithm swap, not a threshold retune, so unlike the
   earlier fixes it reshaped rather than uniformly improved the
   SNR-response curve (3 of 4 channels held or improved; AWGN alone
-  softened by ~0.3 dB — see `FT4_BENCHMARK.md` section 13 for the
+  softened by ~0.3 dB — see `FT4_BENCHMARK_LOG.md` section 13 for the
   per-channel breakdown).
 - Successive-interference-cancellation primitives
   (`subtract_signal*`, `refine_signal_freq`) ported from
@@ -1285,7 +1285,7 @@ CCIR good/moderate/poor bit-identical to the pre-fix figures; FST4-120/
 ~0.08 s (~3.5×)**, on 2026-07-29 — see the "Decode speed" table's own
 re-measurement note above (issue #197's `SYNC_Q_MIN` tightening plus
 the shared-pipeline lazy-LLR-staircase and FFT-planner-cache fixes).
-See `FST4_BENCHMARK.md`
+See `FST4_BENCHMARK_LOG.md`
 section 8 for the full investigation, including a first-attempt fix
 that measured as a real ~0.5 dB regression and was corrected before
 shipping.

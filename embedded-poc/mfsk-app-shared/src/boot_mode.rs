@@ -80,7 +80,7 @@ pub enum BootMode {
     /// capture: `Ft4SavgBuilder` accumulates the periodogram from the
     /// audio callback so only the peak search is left after the slot,
     /// 754 ms of a 1 960 ms budget that stops being spent
-    /// (`docs/notes/FT4_BENCHMARK.md` §32). At ~197 ms a candidate that
+    /// (`docs/historical/FT4_BENCHMARK_LOG.md` §32). At ~197 ms a candidate that
     /// is about four more stations on a crowded band — the budget is
     /// what bounds the candidate list, not headroom (§37).
     Ft4,

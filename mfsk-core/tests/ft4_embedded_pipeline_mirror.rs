@@ -36,7 +36,7 @@
 //!   cores contend for;
 //! - PSRAM, the internal-DRAM threshold and the silent fallback between
 //!   them, and the PIE 16-byte alignment that
-//!   `docs/notes/FT4_BENCHMARK.md` §32.1 measured at 1 049 -> 1 789 ms;
+//!   `docs/historical/FT4_BENCHMARK_LOG.md` §32.1 measured at 1 049 -> 1 789 ms;
 //! - the slot grid, which on the board decides the phase this file
 //!   takes as given.
 //!
@@ -514,7 +514,7 @@ fn the_stepping_boxcar_matches_the_transcendental_one() {
 /// is the wrong machine and says so.
 ///
 /// The board's FIR runs its taps through `dsps_dotprod_f32_aes3` at a
-/// measured 2.18 cycles per multiply-add (`FT4_BENCHMARK.md` §47); the
+/// measured 2.18 cycles per multiply-add (`FT4_BENCHMARK_LOG.md` §47); the
 /// host runs the portable dot product. So this comparison **flatters
 /// the boxcar**, and the ratio here is an upper bound on the one that
 /// matters. It is worth having anyway: it is the cheap check that the

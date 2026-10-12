@@ -77,7 +77,7 @@
 //!
 //! **On the scheduling of `offsets` themselves** (issue #310): the
 //! offset-major outer loop below is a deliberate choice, not an
-//! unexamined default — see `docs/notes/FST4_BENCHMARK.md` §13 for the
+//! unexamined default — see `docs/historical/FST4_BENCHMARK_LOG.md` §13 for the
 //! decision and §9/§12 for the measurements behind it. Short version:
 //! folding offsets into a cost-ordered queue would triple the first-rung
 //! sweep, which is the ordering-independent time-to-first-decode bound
@@ -90,7 +90,7 @@
 //! measurements listed in §13.
 //!
 //! **The escalation phase after the first rung should be depth-first,
-//! not rung-major** — measured 2026-08-18, `FST4_BENCHMARK.md` §14's
+//! not rung-major** — measured 2026-08-18, `FST4_BENCHMARK_LOG.md` §14's
 //! breadth-vs-depth table. Rung-major's value is the latency bound, and
 //! that bound is bought entirely by the *first* rung. Past it,
 //! continuing breadth-first defers OSD — where most decodes come from —
@@ -176,7 +176,7 @@ pub enum Schedule {
     ///
     /// **Phase C** — the remaining offsets, depth-first, same order.
     ///
-    /// Measured 2026-08-18 (`FST4_BENCHMARK.md` §14): past the first
+    /// Measured 2026-08-18 (`FST4_BENCHMARK_LOG.md` §14): past the first
     /// rung, continuing breadth-first defers OSD — where most decodes
     /// come from — until every candidate has had every cheaper stage,
     /// costing 30 decodes in 386 at a realistic ~50 % budget and 131 in

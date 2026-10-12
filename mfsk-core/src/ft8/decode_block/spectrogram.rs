@@ -146,7 +146,7 @@ impl Spectrogram {
 ///
 /// `fixed-point` exists to halve this stage's PSRAM bandwidth, and on
 /// a CoreS3 the stage is 51 % of an FT8 slot
-/// (`docs/notes/FT4_BENCHMARK.md` §35.1). Whether the halving actually
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §35.1). Whether the halving actually
 /// buys anything had never been measured either way: the two builders
 /// are `#[cfg]` alternatives, so no binary ever contained both, and
 /// the feature cannot simply be turned off — `stage1_inc` needs the

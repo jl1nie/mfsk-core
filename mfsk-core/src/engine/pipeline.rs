@@ -421,7 +421,7 @@ pub(crate) fn qso_freq(cand_freq_hz: f32, freq_hint: Option<f32>) -> QsoFreq {
 /// either threshold.
 ///
 /// Unlike FT4, reusing the same `N_SYNC`-scaled formula for FST4 (→
-/// 23/34) is NOT safe: a controlled A/B (`FST4_BENCHMARK.md` section 8)
+/// 23/34) is NOT safe: a controlled A/B (`FST4_BENCHMARK_LOG.md` section 8)
 /// measured a real ~0.5 dB AWGN sensitivity regression — some real FST4
 /// signals' `nsync` genuinely falls in [18, 34), unlike FT4 where the
 /// scaled threshold only ever unlocked previously-dead code.
@@ -550,7 +550,7 @@ impl DecodeStrictness {
     /// loosest thresholds that gained real (golden-message) recall without
     /// also growing false-accepts (any CRC-passing decode beyond the golden
     /// one) — see the `ft4_strictness_probe` test and
-    /// `docs/notes/FT4_BENCHMARK.md` section 5 for the measurements.
+    /// `docs/historical/FT4_BENCHMARK_LOG.md` section 5 for the measurements.
     /// `Strict`/`Deep` remain the original FT8-copied placeholders.
     pub fn osd_max_errors(self, osd_depth: u8) -> u32 {
         match (self, osd_depth) {
@@ -574,7 +574,7 @@ impl DecodeStrictness {
     /// ("REPORT AP at -18 dB: 15 % FP rate with old thresholds 30/36") — a rung that
     /// passed the CRC for 22 % of noise candidates until #459, and the bound was
     /// what kept them out. Measured on the FT8 sweep at 400 trials a cell (12 800
-    /// files a condition, same files each way, `docs/notes/FT8_BENCHMARK.md` section
+    /// files a condition, same files each way, `docs/historical/FT8_BENCHMARK_LOG.md` section
     /// 15): 36 against 30/25 finds 544 more hits with the right hint (+6.2 %, none
     /// lost, crossings 0.26-0.39 dB), 39 more with no hint, and costs 1 to 4
     /// extra phantoms in 12 800 files, the AP hallucination `ft8b.f90` has too.
@@ -1233,7 +1233,7 @@ where
     // both use `max_iterations=30`, but `ft4_decode.f90:194` uses 40 — FT4 is
     // the outlier, not the other two. Scoped to `P::ID == Ft4` (issue #72,
     // discovered while checking whether BP/OSD strength explains the residual
-    // AWGN gap after `docs/notes/FT4_BENCHMARK.md` section 9) so FT8/FST4 stay
+    // AWGN gap after `docs/historical/FT4_BENCHMARK_LOG.md` section 9) so FT8/FST4 stay
     // byte-identical.
     let bp_max_iter: u32 = if P::ID == super::ProtocolId::Ft4 {
         40
@@ -1643,7 +1643,7 @@ where
     // different Δt positions, not just the single global best) was
     // implemented and measured here — empirically ruled out, not just
     // unimplemented: `ft4_diag_segment_retry` (`tests/ft4_sweep.rs`,
-    // issue #72, `docs/notes/FT4_BENCHMARK.md` section 11) found 0/17
+    // issue #72, `docs/historical/FT4_BENCHMARK_LOG.md` section 11) found 0/17
     // rescues once the diagnostic was corrected to apply the same
     // `hard_errors >= osd_max_errors` gate and golden-message check
     // production does — an earlier uncorrected pass had over-reported
@@ -1677,7 +1677,7 @@ where
     // `if(smax.lt.1.2) cycle`) was implemented and measured here — using
     // `ft4_sync_search`'s own coherent score, not `cand.score` — and
     // reverted for negligible benefit (dapper-soaring-nest plan Phase 4,
-    // `FT4_BENCHMARK.md` section 15): a safely-margined cutoff only
+    // `FT4_BENCHMARK_LOG.md` section 15): a safely-margined cutoff only
     // filtered 0.5% of non-golden candidates in the calibration sweep
     // (`ft4_diag_smax_calibration`, `tests/ft4_sweep.rs`) — junk scores
     // cluster tightly just below the golden-succeeding floor rather than

@@ -10,7 +10,7 @@
 //! **The coarse stage runs during capture.** `Ft4SavgBuilder`
 //! accumulates the periodogram from the audio callback, so what is
 //! left after the slot closes is the peak search — 6 ms instead of
-//! 761 (`docs/notes/FT4_BENCHMARK.md` §32). That is 754 ms of a
+//! 761 (`docs/historical/FT4_BENCHMARK_LOG.md` §32). That is 754 ms of a
 //! 1 960 ms budget that stops being spent, and the budget is what
 //! bounds the candidate list rather than being spare headroom: §34's
 //! cutoff currently takes 11 decodes down to 9 or 10, and §23 shows

@@ -56,7 +56,7 @@
 //! ## Measured, 2026-08-30 (CoreS3, 240 MHz, opt-level 3, 12 candidates)
 //!
 //! `logs/ft4-bench_wholeslot_2026-08-30.log`, full analysis in
-//! `docs/notes/FT4_BENCHMARK.md` §25.
+//! `docs/historical/FT4_BENCHMARK_LOG.md` §25.
 //!
 //! | arm | coarse | candidates | slot | vs 1 960 ms |
 //! |---|---:|---:|---:|---:|
@@ -91,7 +91,7 @@
 //!
 //! Measured 2026-08-29/30 by the bake test itself, on the WSJT-X golden
 //! `000000_000002.wav` (itself an `ft4sim_mult` scene, not an off-air
-//! capture — `docs/notes/FT4_BENCHMARK.md` §23.5), single pass, this
+//! capture — `docs/historical/FT4_BENCHMARK_LOG.md` §23.5), single pass, this
 //! exact search:
 //!
 //! - **12 candidates, 11 distinct decodes**, *identical* under
@@ -104,7 +104,7 @@
 //!   OSD decision is a cost question, and this is where the cost comes
 //!   from.
 //! - **Every device number recorded before 2026-08-30
-//!   (`docs/notes/FT4_BENCHMARK.md` §17-19) was measured over 31
+//!   (`docs/historical/FT4_BENCHMARK_LOG.md` §17-19) was measured over 31
 //!   candidates**, from a list generated with `sync_min = 0.05` —
 //!   *below* the noise floor, since `getcandidates4.f90`
 //!   baseline-normalises and puts noise at ~1.0. The generator now
@@ -1355,7 +1355,7 @@ fn dot_delta(label: &str, before: (usize, usize, usize)) -> (usize, usize, usize
 /// its row count a self-check on this reasoning rather than a
 /// measurement.
 ///
-/// **The question this exists to settle** (`FT4_BENCHMARK.md` §25,
+/// **The question this exists to settle** (`FT4_BENCHMARK_LOG.md` §25,
 /// follow-up 2): `ft4_coarse_sync` costs 1 288 ms, ~8.5 ms for each of
 /// 152 transforms, even though the nine inner 256-point passes are
 /// already esp-dsp's PIE assembly. One suspect is that none of them
@@ -1428,7 +1428,7 @@ fn pie_delta(
 /// `FirStage::dot` already routes through `dotprod::dot_f32`, which
 /// under `dotprod-extern` is `dsps_dotprod_f32_aes3` — so the FIR is
 /// *on* esp-dsp and "bind esp-dsp" is not the outstanding item it was
-/// assumed to be (`docs/notes/FT4_BENCHMARK.md` §25.5's lever list).
+/// assumed to be (`docs/historical/FT4_BENCHMARK_LOG.md` §25.5's lever list).
 /// But that kernel's PIE path wants both pointers 16-byte aligned and
 /// `n % 4 == 0`, and `ft4::ddc`'s tap counts are **199 and 263** —
 /// neither divisible by 4 — while the history window slides by one
@@ -1644,7 +1644,7 @@ fn rms_normalise(cd0: &mut [Complex32]) {
 const FULL_WINDOW: (i32, i32) = (-344, 1012);
 /// ±0.5 s — the largest width measured lossless on both the WSJT-X
 /// golden (itself an `ft4sim_mult` scene, not an off-air capture —
-/// §23.5) and an ft4sim DT sweep (`docs/notes/FT4_BENCHMARK.md` §18).
+/// §23.5) and an ft4sim DT sweep (`docs/historical/FT4_BENCHMARK_LOG.md` §18).
 /// WSJT-X searches wide because it cannot assume a clock; a
 /// UTC-anchored receiver can, so this is the shipping width.
 const NARROW_WINDOW: (i32, i32) = (0, 667);

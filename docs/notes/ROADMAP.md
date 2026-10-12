@@ -593,7 +593,7 @@ version if you're picking up work.
   ±25/50/100/250 Hz; leave `sync_min` alone first.
 
   Partly answered. At matched retention, narrowing the window does cut
-  false survivors ~20× (`FST4_BENCHMARK.md` §10), and a preliminary
+  false survivors ~20× (`FST4_BENCHMARK_LOG.md` §10), and a preliminary
   near-threshold run suggests the recall cliff tracks the **absolute
   cap** rather than the retained fraction — which, if it survives the
   full grid (§11.2, queued), means "absolute floor for recall, fraction
@@ -650,7 +650,7 @@ version if you're picking up work.
 
   Blocked on an n=100 re-run, which needs `fst4sim` — not installed on
   the machine that produced the n=20 numbers. Runbook:
-  `FST4_BENCHMARK.md` §11.3. Two traps recorded there and worth
+  `FST4_BENCHMARK_LOG.md` §11.3. Two traps recorded there and worth
   re-reading before regenerating anything: trial indices do not
   survive corpus regeneration (`gen_fst4_sweep_wavs.sh` regenerates
   rather than extends, so #306's `[2,15,33,45,67]` refer to a
@@ -823,7 +823,7 @@ are not competing priorities, they are one scheduling problem, and
 two of them share a corpus.
 
 1. **Tier-C sensitivity sweeps** — **done, 2026-08-19/20**, all seven
-   protocols (see *Releases* in `CLAUDE.md` and `FST4_BENCHMARK.md`
+   protocols (see *Releases* in `CLAUDE.md` and `FST4_BENCHMARK_LOG.md`
    §11.1 for the full account). No regressions anywhere. FST4's five
    sub-modes all landed byte-identical to the pre-#316/#317
    measurement — both changes were built to be recall-neutral and
@@ -851,7 +851,7 @@ two of them share a corpus.
 2. **#311's n=100 ablation** — needs `fst4sim` specifically, and a
    regenerated corpus (see the two traps in that entry).
 3. **#312's 96-configuration near-threshold cap grid** —
-   `FST4_BENCHMARK.md` §11.2, ~2 h measured on an M5 laptop, narrowable
+   `FST4_BENCHMARK_LOG.md` §11.2, ~2 h measured on an M5 laptop, narrowable
    via `MFSK_CAP_SWEEP_CELLS`/`_WIDTHS`/`_CAPS`.
 
 Two of these bear on each other's reading and the order matters: if a
@@ -960,7 +960,7 @@ log` for the fix commit, not re-derived here):
   copy for FT4/FST4. Turned out almost entirely resolved already
   (2026-07-18, before this closure): FT4's copy was retuned against
   a new `ft4sim`-based sweep (`core/pipeline.rs`'s `DecodeStrictness`,
-  see `docs/notes/FT4_BENCHMARK.md` section 6), and FST4 bypasses
+  see `docs/historical/FT4_BENCHMARK_LOG.md` section 6), and FST4 bypasses
   these gates entirely per #146's fix — so the two enums now hold
   independently-calibrated, not-actually-duplicate values. Closed
   the residual "should the type itself be unified" question as no

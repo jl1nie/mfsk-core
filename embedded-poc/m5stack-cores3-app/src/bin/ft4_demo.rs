@@ -5,7 +5,7 @@
 //! accumulated **during** capture, then DDC / Δt search / decode after
 //! the slot closes, held to the slot budget. The FT8 controller has had
 //! `wav_sim` for this since the beginning; FT4 had nothing, which is
-//! why every FT4 number in `docs/notes/FT4_BENCHMARK.md` up to §33 came
+//! why every FT4 number in `docs/historical/FT4_BENCHMARK_LOG.md` up to §33 came
 //! from a bench feeding whole buffers rather than a receiver.
 //!
 //! ## The screen is the FT8 controller's

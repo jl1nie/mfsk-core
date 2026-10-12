@@ -192,7 +192,7 @@ impl SupportsSicRounds for Ft4 {
             // sufficient — the previous ±5.0 Hz was carried over from
             // `coarse_sync`'s ~2.93 Hz FFT-bin uncertainty, a different
             // (and much coarser) mechanism `ft4_coarse_sync` replaced for
-            // FT4 back in `FT4_BENCHMARK.md` section 13, without this
+            // FT4 back in `FT4_BENCHMARK_LOG.md` section 13, without this
             // radius being re-derived for the new, tighter bound (issue
             // #182 follow-up). Cuts `refine_freq`'s 0.1 Hz grid search from
             // 101 to 21 evaluations per call — the dominant remaining cost

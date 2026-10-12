@@ -151,7 +151,7 @@ pub fn run(target_name: &str, qso_wavs: &'static [(&'static str, &'static [u8])]
 /// Belief propagation in each scalar, same LLRs, same binary.
 ///
 /// The other half of the `fixed-point` question. Stage 3 is 34 % of an
-/// FT8 slot on this board (`docs/notes/FT4_BENCHMARK.md` §35.1) and
+/// FT8 slot on this board (`docs/historical/FT4_BENCHMARK_LOG.md` §35.1) and
 /// `fixed-point` puts the LLR ladder and the NMS check node in Q11i16
 /// — but `LlrScalar` is a trait, `f32` implements it, and
 /// `bp_decode_nms_with_scratch` and `BpScratch` are generic over it, so

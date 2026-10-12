@@ -111,7 +111,7 @@ fn symbol_spectra_avg(audio: &[i16]) -> Vec<f32> {
 /// **Why**: this stage is the FT4 receiver's largest single
 /// non-per-candidate cost — 758 ms of a 3 119 ms slot on a CoreS3, 39 %
 /// of the 1 960 ms budget, measured after the internal-DRAM scratch fix
-/// (`docs/notes/FT4_BENCHMARK.md` §26, §31.2) — and every one of its
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §26, §31.2) — and every one of its
 /// ~152 transforms depends only on samples that have already arrived.
 /// A receiver can complete each row as its audio lands and have `savg`
 /// ready at slot end, so the whole stage leaves the post-slot budget
@@ -411,7 +411,7 @@ pub fn ft4_coarse_sync(
 /// [`Ft4SavgBuilder`] pays only this part after the slot. On a CoreS3
 /// the two halves are ~750 ms and ~10 ms, so which side of slot end
 /// the transforms fall on decides 39 % of the decode budget
-/// (`docs/notes/FT4_BENCHMARK.md` §32).
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §32).
 ///
 /// `savg` must be `NH1` long — the periodogram over the whole slot,
 /// already averaged.

@@ -127,7 +127,7 @@ Two bugs were found while wiring it, both shipped:
   changes the *baseline* rather than a hinted case. FT4's AWGN
   threshold moved **−16.89 → −18.00 dB**, from 0.6 dB behind WSJT-X's
   published −17.5 dB to 0.5 dB ahead. Caveat recorded in
-  `FT4_BENCHMARK.md` §48: the sweep corpus is CQ-only, so this is the
+  `FT4_BENCHMARK_LOG.md` §48: the sweep corpus is CQ-only, so this is the
   best case for that pass.
 
 AP's risk is manufactured decodes, so wide-band AP ships with precision
@@ -136,7 +136,7 @@ that is not transmitting must not produce it, and a confident hint over
 pure noise must decode nothing.
 
 **Where the WSJT-X 3.2 port moved the AP rung (#456, 2026-09-26).** Two
-things were taken from upstream, measured in `FT8_BENCHMARK.md` §15. The
+things were taken from upstream, measured in `FT8_BENCHMARK_LOG.md` §15. The
 accept bound is `ft8b.f90`'s: `DecodeStrictness::Normal`'s `ap_max_errors`
 is 36, not 30 (25 from 55 locked bits) — right-hint FT8 8771 → 9315 hits,
 at the price of a few more phantoms with a wrong hint, which carry an AP

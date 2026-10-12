@@ -1747,7 +1747,7 @@ where
 /// Nothing corresponded to iaptype 1 — the pass that needs no
 /// knowledge of the station — so a blind FT4/FST4 decode ran no AP at
 /// all, and that was worth 1.1 dB of AWGN sensitivity on FT4
-/// (`docs/notes/FT4_BENCHMARK.md` §48). Review all three when
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §48). Review all three when
 /// adjusting any (issue #285, split from #192).
 #[cfg(feature = "fft-rustfft")]
 const BLIND_CQ_MIN_NSYNC: u32 = 12;

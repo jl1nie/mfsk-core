@@ -183,7 +183,7 @@ pub struct FirStage {
     /// The measurement it was weighed against — copying the window
     /// instead, "roughly a third of the gain" — was confirmed the hard
     /// way on 2026-08-30, where the copy cost more than the dot saved
-    /// (`docs/notes/FT4_BENCHMARK.md` §27).
+    /// (`docs/historical/FT4_BENCHMARK_LOG.md` §27).
     ///
     /// Behind `dotprod-extern` because a host build has no backend to
     /// satisfy: it would carry four tables and different rounding for
@@ -344,7 +344,7 @@ impl FirStage {
     /// candidate of which the dot products were ~16: the other ~54 ms,
     /// **about 648 ms per FT4 slot and 20 % of its decode budget**, was
     /// two bounds-checked stores, a counter and a compaction test per
-    /// input sample (`docs/notes/FT4_BENCHMARK.md` §30.1).
+    /// input sample (`docs/historical/FT4_BENCHMARK_LOG.md` §30.1).
     pub fn push_block(
         &mut self,
         xi: &[f32],
@@ -406,7 +406,7 @@ impl FirStage {
     /// dot product against a history of zeros. Measured on a CoreS3:
     /// a 165-tap decimate-by-2 over a 90 000-sample slot is 202 ms
     /// complex and half that real, and the shared front end
-    /// `docs/notes/FT4_BENCHMARK.md` §37.1 proposes is exactly that
+    /// `docs/historical/FT4_BENCHMARK_LOG.md` §37.1 proposes is exactly that
     /// stage — 100 ms once per slot against ~30 ms saved on each of a
     /// dozen candidates.
     ///

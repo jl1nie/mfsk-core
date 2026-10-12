@@ -2955,7 +2955,7 @@ mod tests {
     }
 
     /// Internal per-candidate probe for the CCIR fading gap investigation
-    /// (issue #72 follow-up, `FT8_BENCHMARK.md` section 7). Calls the
+    /// (issue #72 follow-up, `FT8_BENCHMARK_LOG.md` section 7). Calls the
     /// private `process_candidate` directly on just the known near-golden
     /// candidate — avoids the noise-candidate spam a full-band
     /// `decode_frame` run produces, and is reachable here (unlike from an

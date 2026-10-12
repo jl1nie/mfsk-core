@@ -1,7 +1,7 @@
 //! FT4 in a crowded band — the questions the single-signal sweep corpus
 //! structurally cannot answer.
 //!
-//! `docs/notes/FT4_BENCHMARK.md` §21-22 measured the candidate budget
+//! `docs/historical/FT4_BENCHMARK_LOG.md` §21-22 measured the candidate budget
 //! and the LLR ladder on `ft4_sweep`, where every file holds exactly one
 //! signal at `DT = 0.0`. Two of those conclusions came with an explicit
 //! caveat attached: every decode there ranks 0 (a property of the
@@ -28,7 +28,7 @@
 //! What it does **not** add: fading (the simulator is AWGN-only, so
 //! `ft4_sweep`'s CCIR channels stay the instrument for that) and real
 //! off-air artefacts — the WSJT-X golden does not supply those either,
-//! being `ft4sim_mult` output itself (`docs/notes/FT4_BENCHMARK.md`
+//! being `ft4sim_mult` output itself (`docs/historical/FT4_BENCHMARK_LOG.md`
 //! §23.5). This crate has no off-air FT4 recording; closing that needs
 //! a radio, not another simulator.
 //!

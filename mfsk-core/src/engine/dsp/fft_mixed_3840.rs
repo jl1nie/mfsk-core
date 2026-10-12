@@ -75,7 +75,7 @@ pub fn fft_3840_with(
 /// Measured for the 2304 sibling, whose structure is identical: hoisting
 /// the allocation and putting it in internal DRAM took that transform's
 /// combine stage from 853 ms to 404 ms over a slot
-/// (`docs/notes/FT4_BENCHMARK.md` §26). This length is FT8's, and had
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §26). This length is FT8's, and had
 /// never been measured; §28 is that measurement.
 pub fn fft_3840_with_scratch(
     buf: &mut [Complex32; N],

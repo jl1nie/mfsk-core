@@ -831,10 +831,10 @@ FST4 と FT4 を組込予算に収めるには、それぞれ 18 回と 9 回の
 だったのか。これらはリファレンスではなく測定日誌なので、他のスイープと
 同じ場所に置いてある:
 
-- [`FST4_BENCHMARK.md` §17](../notes/FST4_BENCHMARK.md) — 実機での18回の
+- [`FST4_BENCHMARK_LOG.md` §17](../notes/FST4_BENCHMARK.md) — 実機での18回の
   試行と、`decode_rung_major` の `offsets` がデコーダ側ではなく呼び出し側の
   判断になった経緯。
-- [`FT4_BENCHMARK.md` §50](../notes/FT4_BENCHMARK.md) — そもそもビルドを
+- [`FT4_BENCHMARK_LOG.md` §50](../notes/FT4_BENCHMARK.md) — そもそもビルドを
   通すまでに要したこと、ボトルネックが統計的でなく構造的である理由、
   候補数の過剰の修正。
 

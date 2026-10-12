@@ -1440,7 +1440,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
   Measured against `jt9` 3.2.0-rc1 (built from the tag, the CLI's default calls cleared with
   `-c b -x b` for a7 since they are `K1ABC`/`W9XYZ`/`EN37`), `ft8sim` 3.2 corpora, 20 files a
-  cell, same files for both (`tests/ft8_list_decode.rs`, `FT8_BENCHMARK.md` section 16).
+  cell, same files for both (`tests/ft8_list_decode.rs`, `FT8_BENCHMARK_LOG.md` section 16).
   a7, `K1ABC W9XYZ RR73` after a strong `-10` one cycle earlier, decoded / of which by a7:
   jt9 -20 dB 20/1, -21 20/5, -22 20/18, -23 17/17, -24 8/8, -26 0; this crate 20/1, 20/6,
   20/18, 18/17, 8/8, 0. Without the previous cycle both decode 19, 15 (14), 2, 0 (1), 0.
@@ -1489,7 +1489,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   accepts (`nharderrors.gt.36` is its only bound; `ft4_decode.f90` has none), where it
   was 30, or 25 from 55 locked bits, calibrated against the old AP rung's false accepts
   (gone since #459 and #460). Measured on the sweep corpus at 400 trials a cell (12 800
-  files a condition, the same files each way; `docs/notes/FT8_BENCHMARK.md` section 15):
+  files a condition, the same files each way; `docs/historical/FT8_BENCHMARK_LOG.md` section 15):
   FT8 with the right hint 8771 -> 9315 hits (+544, +6.2 %, none lost, crossings 0.26-0.39
   dB), with no hint +39; FT4 right hint 7422 -> 7780 (+358, +4.8 %), no hint +31. The
   price is AP hallucinations, a hypothesis locked onto a marginal signal (`K1ABC W9XYZ
@@ -1810,7 +1810,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   nsym 1 and 2, the `/R` and `TU; ` filter. Those need per-pass state
   and are where the sweep can move: real `jt9 -8 -d3` became 0.33 to
   0.84 dB more sensitive between 2.7 and 3.2.0-rc1 and now leads these
-  crossings by 0.05 to 0.81 dB (`FT8_BENCHMARK.md` §13, in #444).
+  crossings by 0.05 to 0.81 dB (`FT8_BENCHMARK_LOG.md` §13, in #444).
   `MAXCAND` 1000 and `MAX_EARLY` 200 have no counterpart: `max_cand` is
   the caller's, and the staged decode has no early-decode cap. `maxosd`
   for `-d2` does not apply: only the `maxosd > 0` OSD is ported.
@@ -3062,7 +3062,7 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 - **FT4 per-candidate cost, found by instrumenting the board rather
   than the bench.** `ft4-bench`'s LLR/BP probe had attributed its whole
-  "rest" to BP (`FT4_BENCHMARK.md` §38: "87 % is BP"). Timed in place on
+  "rest" to BP (`FT4_BENCHMARK_LOG.md` §38: "87 % is BP"). Timed in place on
   a CoreS3, more than half of it was `freq_shift_cd0` — 13.6 ms of a
   23.5 ms tail, evaluating `cos`/`sin` per sample and allocating its
   output every call. It now writes into a caller's buffer

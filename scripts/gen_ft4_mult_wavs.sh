@@ -23,7 +23,7 @@
 # FT4 is actually used in — it cannot see candidate counts under real
 # occupancy, how deep a weak signal ranks among stronger neighbours,
 # phantom decodes, or anything timing-related. Both gaps have already
-# cost this project a wrong answer: `docs/notes/FT4_BENCHMARK.md` §18
+# cost this project a wrong answer: `docs/historical/FT4_BENCHMARK_LOG.md` §18
 # (the fixed DT made a window-narrowing test report no loss at any
 # width) and §21.2 (every decode in the sweep corpus ranks 0, which is
 # a property of the fixture, not a finding).

@@ -142,7 +142,7 @@ fn pie_aligned(buf: &[Complex32]) -> bool {
 /// this report was blind to `fft_mixed_2304` / `_3840` / `_5120` —
 /// i.e. to every transform FT4 and FT8 actually run on this board, and
 /// to the one whose 1 288 ms coarse stage prompted the question
-/// (`docs/notes/FT4_BENCHMARK.md` §25). Their inner lengths collide in
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §25). Their inner lengths collide in
 /// the mask (256 for 2304 and 3840, 1024 for 5120, both also legal
 /// standalone plans), so attribution comes from *when* the counters
 /// move rather than from the mask: read the report either side of a
@@ -173,7 +173,7 @@ fn record_pie_path(len: usize, aligned: bool) {
 /// Microseconds attributed to the three parts of a mixed-radix
 /// transform, so a slow one can be blamed on the right layer.
 ///
-/// `docs/notes/FT4_BENCHMARK.md` §25.4 established that
+/// `docs/historical/FT4_BENCHMARK_LOG.md` §25.4 established that
 /// `ft4_coarse_sync`'s 1 288 ms is not the PIE staging copy — all
 /// 1 368 of its inner rows already run in place — which leaves "the
 /// wrapper" as the answer by elimination. Elimination is not a
@@ -280,7 +280,7 @@ pub fn pie_alignment_report() -> (usize, usize, usize, usize) {
 /// `fft_2304_with_scratch` and `fft_3840_with_scratch` each need an
 /// N-element workspace, and having it in internal DRAM rather than
 /// PSRAM is worth 41 % of `ft4_coarse_sync` and 2.44x of the 3840
-/// transform (`docs/notes/FT4_BENCHMARK.md` §26, §28): the working set
+/// transform (`docs/historical/FT4_BENCHMARK_LOG.md` §26, §28): the working set
 /// otherwise exceeds this chip's ~32 KB data cache.
 ///
 /// **Why global rather than per plan.** The first version allocated in
@@ -967,7 +967,7 @@ struct MixedRadix2304Fft {
     /// allocating entry point costs 152 mallocs of 18 KB *and* 152
     /// zero-fills of the same, none of which the algorithm needs — the
     /// buffer is fully overwritten by step 1. Measured: 1 290 -> 1 165 ms
-    /// on the coarse stage (`docs/notes/FT4_BENCHMARK.md` §25.7).
+    /// on the coarse stage (`docs/historical/FT4_BENCHMARK_LOG.md` §25.7).
     ///
     /// [`AlignedStaging`] rather than a plain `Vec` because the rows the
     /// inner kernel sees are slices *of this buffer*: a plain

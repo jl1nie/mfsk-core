@@ -12,7 +12,7 @@
 //! embedded: it is not a power of two and it is an order of magnitude
 //! past `CONFIG_DSP_MAX_FFT_SIZE_8192`, so ESP-DSP cannot serve it at
 //! any size setting. The first FT4 hardware measurement
-//! (`docs/notes/FT4_BENCHMARK.md` §17, 2026-08-29) had to bake that
+//! (`docs/historical/FT4_BENCHMARK_LOG.md` §17, 2026-08-29) had to bake that
 //! transform on a host and ship it to the board as an asset —
 //! `embedded-poc/assets/ft4_golden_fft_cache.bin`, 737 280 bytes — which
 //! measures the per-candidate work but is not a receiver.
@@ -193,7 +193,7 @@ const MIX_CHUNK: usize = 1_024;
 /// threshold went to 2 048 to keep FT8's `coarse_sync` arrays out of
 /// internal DRAM — and these three silently moved the other way. Stage
 /// A' went 30 828 us to 34 971 us per candidate across that change
-/// (`FT4_BENCHMARK.md` §37.2 against `logs/ft4bench_2026-09-21.log`),
+/// (`FT4_BENCHMARK_LOG.md` §37.2 against `logs/ft4bench_2026-09-21.log`),
 /// +13 %, which is the cost of reading 101 taps and a 104-sample
 /// window out of PSRAM for every one of ~4 500 outputs.
 ///
@@ -240,7 +240,7 @@ const SHARED_DECIM: usize = 2;
 /// it apart. Pass 2 800 / stop 3 200 is a 400 Hz transition at 12 kHz,
 /// which `5.5·Fs/ntaps` buys at 165 taps — not the 111 first assumed
 /// from a 2 700 → 3 300 transition that does not protect the top of
-/// the band (`docs/notes/FT4_BENCHMARK.md` §37.1, and the tap sweep
+/// the band (`docs/historical/FT4_BENCHMARK_LOG.md` §37.1, and the tap sweep
 /// in `ft4-bench`'s `shared_decim_probe`).
 const SHARED_NTAPS: usize = 165;
 const SHARED_FC_HZ: f32 = 2_800.0;
@@ -389,7 +389,7 @@ impl CandidateDdc {
     /// That bookkeeping was measured at ~54 ms of stage A's 70 ms per
     /// candidate on a CoreS3 — about 648 ms per FT4 slot, 20 % of the
     /// decode budget, with the dot products themselves only ~16 ms
-    /// (`docs/notes/FT4_BENCHMARK.md` §30.1). The block entry point had
+    /// (`docs/historical/FT4_BENCHMARK_LOG.md` §30.1). The block entry point had
     /// existed since `wspr::ddc` needed it and nothing here called it.
     pub fn push_i16(&mut self, audio: &[i16], out: &mut Vec<Complex<f32>>) {
         self.push_samples(audio, out);
@@ -578,7 +578,7 @@ pub fn candidate_baseband_boxcar(half: &[f32], f0_hz: f32) -> Vec<Complex<f32>> 
 ///
 /// Splitting the ÷18 as `2 · 9` moves the first factor in front of the
 /// per-candidate loop. Measured on the same board
-/// (`docs/notes/FT4_BENCHMARK.md` §37.2, `ft4-bench`'s
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §37.2, `ft4-bench`'s
 /// `shared_decim_probe`):
 ///
 /// ```text
@@ -996,7 +996,7 @@ mod tests {
         // The shared front end is a *third* stage in the same chain,
         // so the +0.021 dB below is a claim about a filter cascade
         // this path no longer has. Re-established here rather than
-        // assumed: `docs/notes/FT4_BENCHMARK.md` §37.1 flagged exactly
+        // assumed: `docs/historical/FT4_BENCHMARK_LOG.md` §37.1 flagged exactly
         // this as the re-verification the split would owe.
         let half_enbw = {
             let pn = mean_power(&shared_baseband(&noise, f0)[1000..4000]);

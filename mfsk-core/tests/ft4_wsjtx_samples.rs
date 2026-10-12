@@ -20,7 +20,7 @@
 //! these tests search, so "14/14 parity with jt9" is parity over a
 //! shared band rather than 100 % of the file. Ground truth per signal
 //! — SNR, DT, frequency — is in that `messages.txt`; see
-//! `docs/notes/FT4_BENCHMARK.md` §23.5.
+//! `docs/historical/FT4_BENCHMARK_LOG.md` §23.5.
 //!
 //! This is the FT4 counterpart to `q65_wsjtx_samples.rs`. It exists
 //! to catch regressions in the *generic* DSP path that FT4 shares
@@ -405,7 +405,7 @@ mod bench_assets {
 /// the device total by something negligible. **That was wrong**: the
 /// bench now runs the stage on-device through
 /// `engine::dsp::fft_mixed_2304` and measures 1 288 ms for it, 66 % of
-/// the whole decode budget (`docs/notes/FT4_BENCHMARK.md` §25). The
+/// the whole decode budget (`docs/historical/FT4_BENCHMARK_LOG.md` §25). The
 /// list is still baked here, but as the *control* the device output is
 /// compared against — not as a stand-in for the stage.
 ///
@@ -584,7 +584,7 @@ fn ft4_bake_golden_precomputed() {
 /// WSJT-X golden.
 ///
 /// **Why this question exists.** The first FT4 hardware measurement
-/// (`docs/notes/FT4_BENCHMARK.md` §17) put `ft4_sync_search` at 76 % of
+/// (`docs/historical/FT4_BENCHMARK_LOG.md` §17) put `ft4_sync_search` at 76 % of
 /// a per-slot budget it overran 8.8×, at a 0.2 % spread across
 /// candidates — a fixed grid, so its cost is set by the window width
 /// alone. WSJT-X searches wide because it cannot assume a clock; a
