@@ -1,6 +1,8 @@
 # Time base of an `rtl_tcp` stream (#685, #686)
 
-> **Status (2026-10-12): this estimator is NOT used by the skimmer.** It is kept as the record of an approach that was tried
+> **Status (2026-10-12): this estimator is NOT used by the skimmer.** The conclusion of the whole investigation,
+> with the cause (samples lost at the SDRplay API's callback stalls) and the fix (in the server), is
+> `RTLTCP_RATE.md`. It is kept as the record of an approach that was tried
 > and measured worse. The skimmer's rtl_tcp path is the one of commit `4d3f1ac4`: a 30 s pause-free least-squares measurement
 > of the real rate at the start, the nearest rate the receiver takes as the nominal one, the library's slow rate tracker, and
 > the minimum-delay anchor for the clock. On the same RSP1 recording it decoded 42-52 FT8 messages against 27-36 for this
