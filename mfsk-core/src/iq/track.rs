@@ -57,6 +57,8 @@ impl Default for RateTrackConfig {
     }
 }
 
+// Only `receiver` (which needs an FFT feature and a protocol) builds one: dead code in the other feature sets.
+#[allow(dead_code)]
 pub(crate) struct RateTracker {
     cfg: RateTrackConfig,
     /// `(stream time s, anchor s)`, the anchor relative to the window's first reading.
@@ -65,6 +67,7 @@ pub(crate) struct RateTracker {
     last_kept: f64,
 }
 
+#[allow(dead_code)]
 impl RateTracker {
     pub(crate) fn new(cfg: RateTrackConfig) -> Self {
         Self {
