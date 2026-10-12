@@ -4301,6 +4301,88 @@ pub unsafe extern "C" fn mfsk_iq_gap(rx: *mut MfskIqReceiver, lost: u64) -> Mfsk
     MfskStatus::Ok
 }
 
+/// The integer rate to open a receiver with for a source whose real rate is `real_hz`, and the offset to
+/// give [`mfsk_iq_set_rate_offset_ppm`] for what is left (#686). The chain takes only a rate with a small
+/// rational ratio to 12 kHz, and a rate measured to the Hz hardly ever is; this finds one within 500 ppm
+/// of `real_hz`. `*out_rate` receives the rate, `*out_ppm` the offset (`real / rate - 1`, in ppm).
+/// `InvalidArg` when `real_hz` is below 12 kHz or not finite, or nothing in range plans.
+///
+/// # Safety
+/// `out_rate` and `out_ppm` must be writable (or null to ignore one).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_plannable_rate(
+    real_hz: f64,
+    out_rate: *mut u32,
+    out_ppm: *mut f64,
+) -> MfskStatus {
+    match mfsk_core::iq::plannable_rate(real_hz) {
+        Some((rate, ppm)) => {
+            if !out_rate.is_null() {
+                unsafe { *out_rate = rate };
+            }
+            if !out_ppm.is_null() {
+                unsafe { *out_ppm = ppm };
+            }
+            MfskStatus::Ok
+        }
+        None => {
+            set_error("mfsk_iq_plannable_rate: no rate the chain takes near this one");
+            MfskStatus::InvalidArg
+        }
+    }
+}
+
+/// The stream's real rate against the `sample_rate` it was opened with, in ppm: positive when the source
+/// delivers more samples per second than that (#686). The audio is put on a true 12 kHz grid, and
+/// [`mfsk_iq_set_time`] and the slot times read their sample counts at the real rate. May change while
+/// running (the grid moves continuously). Clamped to +-5000 ppm. Open with the rate
+/// [`mfsk_iq_plannable_rate`] gives and pass the ppm it returns.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_set_rate_offset_ppm(
+    rx: *mut MfskIqReceiver,
+    ppm: f64,
+) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_set_rate_offset_ppm: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    if !ppm.is_finite() {
+        set_error("mfsk_iq_set_rate_offset_ppm: ppm is not finite");
+        return MfskStatus::InvalidArg;
+    }
+    r.rx.set_rate_offset_ppm(ppm);
+    MfskStatus::Ok
+}
+
+/// The rate offset in force, in ppm (0 for a null handle).
+///
+/// # Safety
+/// `rx` must be a live handle or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_rate_offset_ppm(rx: *mut MfskIqReceiver) -> f64 {
+    iq_inner(rx).map_or(0.0, |r| r.rx.rate_offset_ppm())
+}
+
+/// Have the receiver learn the rate offset from the readings given to [`mfsk_iq_set_time`] (#686): a
+/// least-squares line through a few minutes of them, moving the offset by what is missing, 400 ppm at
+/// most per fit, a fit a minute at the earliest. `enable` non-zero starts it (from the offset in force),
+/// zero stops it. The readings must be cleaned of network delay and its jitter by the caller.
+///
+/// # Safety
+/// `rx` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_iq_track_rate(rx: *mut MfskIqReceiver, enable: u32) -> MfskStatus {
+    let Some(r) = iq_inner(rx) else {
+        set_error("mfsk_iq_track_rate: null receiver");
+        return MfskStatus::NullPointer;
+    };
+    r.rx.track_rate((enable != 0).then(mfsk_core::iq::RateTrackConfig::default));
+    MfskStatus::Ok
+}
+
 /// Push `n_bytes` of IQ in the format the receiver was opened with,
 /// little-endian, I then Q; a sample split across calls is carried over. Every
 /// slot this completes is decoded before the call returns, and so is every

@@ -741,6 +741,16 @@ reports how many channels paused and resumed. A recording needs a moment of
 padding after its end, as a live stream has: a slot's last audio sample comes
 out a few filter lengths after the last IQ sample that carries it.
 
+**A source whose clock is not its nominal one (#686).** A rate measured to the Hz is hardly ever one the chain
+takes, and a source that really runs a few per cent off the rate it names warps time and mixing.
+`mfsk_iq_plannable_rate(real_hz, &rate, &ppm)` finds a rate within 500 ppm that the chain takes and the offset
+that is left (`InvalidArg` below 12 kHz or when nothing plans); open the receiver with `rate` and call
+`mfsk_iq_set_rate_offset_ppm(rx, ppm)` (read back with `mfsk_iq_rate_offset_ppm`, clamped to +-5000, may change
+while running). The audio is then on a true 12 kHz grid and `mfsk_iq_set_time` reads its sample counts at the real
+rate. `mfsk_iq_track_rate(rx, 1)` learns the offset from the readings of `mfsk_iq_set_time` instead (a fit a minute
+at the earliest, 400 ppm at most each; the readings must be cleaned of network delay by the caller), `0` stops it.
+These four are the C surface; the Kotlin and Swift wrappers do not carry them yet.
+
 **Early decode is on by default (#601).** A channel whose decoder has
 checkpoints (FT8 at Normal or Deep depth) is also decoded at ~11.8 s inside
 `mfsk_iq_push`: those rows reach the channel decoder's
@@ -907,7 +917,7 @@ mode is here but does not offer what was asked).
 | Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (15) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_encode_tones_ex` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (15) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_set_early` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| IQ (19) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_set_early` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` `mfsk_iq_plannable_rate` `mfsk_iq_set_rate_offset_ppm` `mfsk_iq_rate_offset_ppm` `mfsk_iq_track_rate` |
 | runtime (3) | `mfsk_last_error` `mfsk_runtime_configure` `mfsk_runtime_thread_count` |
 
 ---
