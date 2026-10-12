@@ -332,6 +332,10 @@ impl RateMeter {
         self.sxy += x * y;
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.n == 0.0
+    }
+
     /// Samples per second, once the points span something worth a line.
     pub fn rate(&self) -> Option<f64> {
         let d = self.n * self.sxx - self.sx * self.sx;
@@ -379,35 +383,6 @@ pub fn await_rate(
         }
     }
     Ok(start.elapsed())
-}
-
-/// Measure the rate of a connection for `window` after dropping the first `skip` (a server's backlog
-/// arrives faster than real time), and return it in Hz when it is within 15 % of `nominal`. The caller
-/// gives it to `mfsk_core::iq::plannable_rate`, which finds the integer rate the receiver takes and
-/// what is left to `IqReceiver::set_rate_offset_ppm` (#686); the receiver then learns the rest from the
-/// clock. Call it after [`await_rate`]: the first measurements of an RSP1 (+1.2 % and -2.5 %) were of the
-/// stream before the server had read the rate command; after it, 994 kS/s for 1 024 000 asked.
-pub fn measure_rate(
-    c: &mut Conn,
-    stop: &AtomicBool,
-    nominal: u32,
-    skip: Duration,
-    window: Duration,
-) -> std::io::Result<Option<f64>> {
-    let per_message = (chunk_bytes(c.hello.format) / c.hello.format.bytes_per_sample()) as u64;
-    let start = Instant::now();
-    let (mut meter, mut samples) = (RateMeter::new(), 0u64);
-    while start.elapsed() < skip + window {
-        let m = c.read(stop)?;
-        if start.elapsed() < skip {
-            continue;
-        }
-        samples += per_message;
-        meter.push(m.arrival_ns, samples);
-    }
-    Ok(meter
-        .rate()
-        .filter(|r| (r / f64::from(nominal) - 1.0).abs() < 0.15))
 }
 
 #[cfg(test)]

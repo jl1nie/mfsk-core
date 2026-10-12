@@ -332,7 +332,7 @@ fn the_offset_survives_a_gap_and_a_retune() {
 
 /// Told only the clock, the receiver learns the offset (#686): a source 1500 ppm fast, readings of the
 /// stream's UTC every 0.1 s of real time with a few ms of jitter, and nothing else. In 6 minutes the offset
-/// is within 30 ppm and the clock was never stepped.
+/// is within 30 ppm and the clock was stepped at most once (when the correction was made).
 #[test]
 fn the_receiver_learns_the_offset_from_the_clock() {
     use mfsk_core::iq::RateTrackConfig;
@@ -360,7 +360,8 @@ fn the_receiver_learns_the_offset_from_the_clock() {
     let ppm = rx.rate_offset_ppm();
     println!("  learned {ppm:.1} ppm of 1500, {steps} clock steps");
     assert!((ppm - 1_500.0).abs() < 30.0, "{ppm}");
-    assert_eq!(steps, 0);
+    // The correction of 1500 ppm steps the clock once, to the reading (it had followed the wrong rate).
+    assert!(steps <= 1, "{steps} clock steps");
 }
 
 /// What the last stage costs (#686's last line): one channel at 768 kS/s, 30 s of stream, with and
@@ -398,5 +399,70 @@ fn cost_of_the_offset() {
         b / secs as f64 * 100.0,
         b - base,
         (b - base) / secs as f64 * 100.0
+    );
+}
+
+/// A restarted device can come back a few per cent faster (an RSP behind `rsp_tcp`, #686): the receiver
+/// takes the offset as far as 5 %. The chain's filters stay those of the nominal rate, so the edges of the
+/// channel window move 160 Hz; FT8 sits well inside it. At +-4.5 % the messages still come out.
+#[test]
+fn the_receiver_follows_a_source_a_few_per_cent_off() {
+    let Some(wav) = common::load_wav_i16_opt(FT8_WAV) else {
+        common::skip_or_fail("qso3_busy.wav");
+        return;
+    };
+    let want = reference(&wav);
+    let iq = iq_of(&wav);
+    for eps in [2.5e-2, -2.5e-2, 4.5e-2, -4.5e-2] {
+        // The nominal rate a client would still have: a few per cent off the real one, so a plan it takes.
+        let (n, _) = plannable_rate(REAL as f64 / (1.0 + eps)).unwrap();
+        let ppm = (REAL as f64 / n as f64 - 1.0) * 1e6;
+        assert!(ppm.abs() > 20_000.0 && ppm.abs() < 50_000.0, "{ppm}");
+        let stream = IqStream::new(n, CENTER, IqSampleFormat::Cf32);
+        let mut rx = IqReceiver::with_channelizer(stream, Channelizer::Direct).unwrap();
+        rx.set_rate_offset_ppm(ppm);
+        assert!((rx.rate_offset_ppm() - ppm).abs() < 1e-9);
+        rx.add_channel(DIAL, Mode::Ft8).unwrap();
+        rx.set_time(T0_NS, 0);
+        let mut slots = Vec::new();
+        for chunk in interleave(&iq).chunks(2 * 77_777) {
+            rx.push_cf32(chunk, &mut slots);
+        }
+        let got = decode_slots(&slots);
+        same(&got, &want, &format!("{ppm:+.0} ppm"));
+    }
+}
+
+/// A start that is far off: a source 2.2 % fast, a receiver told nothing. The tracker finds the offset
+/// from the readings alone, and the clock is brought to the reading when it does (the readings it had
+/// followed up to then were at the wrong rate, and at 400 ppm of slew it would have taken minutes): the
+/// stream's UTC is within 20 ms of the truth a minute after the correction.
+#[test]
+fn a_large_error_is_learned_and_the_clock_follows() {
+    use mfsk_core::iq::RateTrackConfig;
+    const N: u32 = 192_000;
+    let real = N as f64 * 1.022;
+    let mut rx = IqReceiver::new(IqStream::new(N, CENTER, IqSampleFormat::Cf32));
+    rx.track_rate(Some(RateTrackConfig::default()));
+    let (mut slots, mut s) = (Vec::new(), 0u64);
+    let chunk = vec![0.0f32; 2 * 19_200];
+    for _ in 0..3_000 {
+        rx.push_cf32(&chunk, &mut slots);
+        s += 19_200;
+        // The readings are exact: the true UTC of sample s.
+        rx.set_time(T0_NS + (s as f64 / real * 1e9) as i64, s);
+    }
+    let ppm = rx.rate_offset_ppm();
+    let utc = rx.utc_of(s).unwrap();
+    let truth = T0_NS + (s as f64 / real * 1e9) as i64;
+    println!(
+        "  learned {ppm:.0} ppm of 22000; clock error {} ms",
+        (utc - truth) / 1_000_000
+    );
+    assert!((ppm - 22_000.0).abs() < 300.0, "{ppm}");
+    assert!(
+        (utc - truth).abs() < 20_000_000,
+        "{} ms",
+        (utc - truth) / 1_000_000
     );
 }

@@ -24,9 +24,18 @@ use num_traits::Float;
 pub struct RateTrackConfig {
     /// Readings older than this (s of stream time) are forgotten.
     pub window_s: f64,
-    /// The least a line is fitted over, s: a short line is a noisy slope.
+    /// The least a line is fitted over, s: a short line is a noisy slope. Readings that come from
+    /// minimum-delay filtering over a jittery link wander by 100 ms and more, in steps, so their
+    /// errors are correlated and the fit's own standard error is optimistic: a 30 s line was seen
+    /// to swing +-1000 ppm and step the clock eleven times in eight minutes (#686).
     pub min_span_s: f64,
-    /// The offset moves at most this much (ppm) per fit.
+    /// The shortest line that may act on a **large** slope (`fast_min_ppm`, at four standard
+    /// errors): a start that is far off (a measurement 2 % low) is found in half a minute.
+    pub fast_span_s: f64,
+    /// How large a slope must be, ppm, for the line over `fast_span_s` to act.
+    pub fast_min_ppm: f64,
+    /// The offset moves at most this much (ppm) per fit. A device that is restarted (an RSP behind
+    /// `rsp_tcp`) can come back 2.5 % faster than it went down (#686): a fit must be able to follow.
     pub max_step_ppm: f64,
     /// A reading is kept at most this often, s: a thousand readings a second are no better than ten.
     pub keep_every_s: f64,
@@ -38,10 +47,12 @@ impl Default for RateTrackConfig {
     fn default() -> Self {
         Self {
             window_s: 300.0,
-            min_span_s: 60.0,
-            max_step_ppm: 400.0,
+            min_span_s: 120.0,
+            fast_span_s: 30.0,
+            fast_min_ppm: 5_000.0,
+            max_step_ppm: 30_000.0,
             keep_every_s: 1.0,
-            dead_band_ppm: 3.0,
+            dead_band_ppm: 100.0,
         }
     }
 }
@@ -88,7 +99,8 @@ impl RateTracker {
             self.pts.pop_front();
         }
         let first = self.pts.front()?.0;
-        if self.pts.len() < 8 || x_s - first < self.cfg.min_span_s {
+        let span = x_s - first;
+        if self.pts.len() < 8 || span < self.cfg.fast_span_s.min(self.cfg.min_span_s) {
             return None;
         }
         // Least squares of anchor on time, about the window's mean (for precision).
@@ -117,7 +129,10 @@ impl RateTracker {
             })
             .sum();
         let sigma_ppm = (res / (n - 2.0) / sxx).sqrt() * 1e6;
-        if delta_ppm.abs() < self.cfg.dead_band_ppm.max(3.0 * sigma_ppm) {
+        let steady = span >= self.cfg.min_span_s
+            && delta_ppm.abs() >= self.cfg.dead_band_ppm.max(3.0 * sigma_ppm);
+        let fast = delta_ppm.abs() >= self.cfg.fast_min_ppm.max(4.0 * sigma_ppm);
+        if !(steady || fast) {
             return None;
         }
         let step = delta_ppm.clamp(-self.cfg.max_step_ppm, self.cfg.max_step_ppm);
@@ -149,13 +164,13 @@ mod tests {
             if let Some(step) = t.observe(x, anchor) {
                 fits += 1;
                 moved += step;
-                // A step is at most the cap, 400 ppm.
-                assert!(step.abs() <= 400.0 + 1e-9, "{step}");
+                // A step is at most the cap.
+                assert!(step.abs() <= 2_000.0 + 1e-9, "{step}");
             }
         }
-        // 2000 ppm in steps of 400, a fit a minute: five fits, and nothing left to move after them.
-        assert!(fits >= 5, "{fits}");
-        assert!((moved - 2000.0).abs() < 60.0, "{moved}");
+        // 2000 ppm is found by the line over two minutes, once; then nothing is left to move.
+        assert!(fits >= 1, "{fits}");
+        assert!((moved - 2000.0).abs() < 100.0, "{moved}");
     }
 
     /// Readings that agree with the offset in force move nothing.
@@ -177,13 +192,13 @@ mod tests {
         let mut steps = Vec::new();
         for k in 0..200 {
             let x = k as f64;
-            if let Some(s) = t.observe(x, 1.7e9 - 0.01 * x) {
+            if let Some(s) = t.observe(x, 1.7e9 - 0.04 * x) {
                 steps.push(s);
             }
         }
-        // 10 000 ppm of slope: 400 ppm a fit.
+        // 40 000 ppm of slope: found in half a minute, and taken at the cap, 30 000 ppm.
         assert!(
-            !steps.is_empty() && steps.iter().all(|s| (*s - 400.0).abs() < 1e-6),
+            !steps.is_empty() && (steps[0] - 30_000.0).abs() < 1e-6,
             "{steps:?}"
         );
     }

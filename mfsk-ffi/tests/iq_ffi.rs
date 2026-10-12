@@ -485,12 +485,12 @@ fn rate_offset_and_plannable_rate() {
         MfskStatus::Ok
     );
     assert_eq!(unsafe { mfsk_iq_rate_offset_ppm(rx) }, 273.5);
-    // Clamped to +-5000 ppm.
+    // Clamped to +-50000 ppm.
     assert_eq!(
         unsafe { mfsk_iq_set_rate_offset_ppm(rx, 1e9) },
         MfskStatus::Ok
     );
-    assert_eq!(unsafe { mfsk_iq_rate_offset_ppm(rx) }, 5_000.0);
+    assert_eq!(unsafe { mfsk_iq_rate_offset_ppm(rx) }, 50_000.0);
     assert_eq!(
         unsafe { mfsk_iq_set_rate_offset_ppm(rx, f64::INFINITY) },
         MfskStatus::InvalidArg

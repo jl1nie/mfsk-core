@@ -168,6 +168,20 @@ impl SampleClock {
             .map(|a| a + (k as i128 * NS / self.rate_hz as i128) as i64)
     }
 
+    /// Set the clock to this reading at once, as a step: for a caller who knows the clock was
+    /// wrong, not drifting (the stream's rate was corrected by a lot, #686), and does not want to wait
+    /// for the slew to catch up. Returns `First` on a clock not set yet, else `Stepped` by the error.
+    pub fn step_to(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {
+        let implied = utc_ns - (at_sample as i128 * NS / self.rate_hz as i128) as i64;
+        self.last_sample = at_sample;
+        match self.anchor_ns.replace(implied) {
+            None => ClockChange::First,
+            Some(current) => ClockChange::Stepped {
+                by_ns: implied - current,
+            },
+        }
+    }
+
     /// The stream's sample `at_sample` was at UTC `utc_ns` (nanoseconds
     /// since the Unix epoch).
     pub fn observe(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {

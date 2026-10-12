@@ -703,9 +703,9 @@ IQ の行はテキストではなく `key` と `freq_hz` で比べてくださ�
 名乗るレートから数%ずれて動く音源は、時間軸と混合周波数が歪みます。`mfsk_iq_plannable_rate(real_hz, &rate, &ppm)` は、
 チェーンが受け付ける 500 ppm 以内のレートと、残るオフセットを返します（12 kHz 未満や、計画できるものが
 なければ `InvalidArg`）。その `rate` で受信機を開き、`mfsk_iq_set_rate_offset_ppm(rx, ppm)` を呼びます
-（`mfsk_iq_rate_offset_ppm` で読み戻せます。±5000 に丸められ、実行中に変えられます）。すると音声は真の 12 kHz の
+（`mfsk_iq_rate_offset_ppm` で読み戻せます。±50000 に丸められ、実行中に変えられます）。すると音声は真の 12 kHz の
 格子に乗り、`mfsk_iq_set_time` はサンプル数を実レートで読みます。`mfsk_iq_track_rate(rx, 1)` は、代わりに
-`mfsk_iq_set_time` の読みからオフセットを学習します（早くても 1 分に 1 回の補正で、1 回 400 ppm まで。読みから
+`mfsk_iq_set_time` の読みからオフセットを学習します（早くても 30 秒に 1 回の補正で、1 回 30000 ppm まで。読みから
 ネットワーク遅延を取り除くのは呼び出し側）。`0` で止めます。この 4 つは C の面で、Kotlin と Swift の
 ラッパにはまだありません。
 

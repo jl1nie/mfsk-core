@@ -2909,7 +2909,7 @@ enum MfskStatus mfsk_iq_plannable_rate(double real_hz,
  * The stream's real rate against the `sample_rate` it was opened with, in ppm: positive when the source
  * delivers more samples per second than that (#686). The audio is put on a true 12 kHz grid, and
  * [`mfsk_iq_set_time`] and the slot times read their sample counts at the real rate. May change while
- * running (the grid moves continuously). Clamped to +-5000 ppm. Open with the rate
+ * running (the grid moves continuously). Clamped to +-50000 ppm. Open with the rate
  * [`mfsk_iq_plannable_rate`] gives and pass the ppm it returns.
  *
  * # Safety
@@ -2930,8 +2930,8 @@ double mfsk_iq_rate_offset_ppm(struct MfskIqReceiver *rx);
 
 /**
  * Have the receiver learn the rate offset from the readings given to [`mfsk_iq_set_time`] (#686): a
- * least-squares line through a few minutes of them, moving the offset by what is missing, 400 ppm at
- * most per fit, a fit a minute at the earliest. `enable` non-zero starts it (from the offset in force),
+ * least-squares line through a few minutes of them, moving the offset by what is missing, 30000 ppm at
+ * most per fit, a fit every 30 s at the earliest. `enable` non-zero starts it (from the offset in force),
  * zero stops it. The readings must be cleaned of network delay and its jitter by the caller.
  *
  * # Safety

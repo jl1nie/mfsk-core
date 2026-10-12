@@ -552,7 +552,7 @@ impl IqToAudio {
     /// output by `1 + ppm / 1e6`, so the audio is on a true 12 kHz grid whatever the source's clock.
     /// Meant for the small offset of a source whose rate is known to a nominal integer
     /// ([`plannable_rate`] picks one); the chain's filters stay those of the nominal rate, which is
-    /// right to a few thousand ppm. May change while running (the position moves continuously); the
+    /// right to a few per cent (the edges of the window move 160 Hz at 5 %). May change while running (the position moves continuously); the
     /// first call mid-stream starts the stage from zeros, a 2 ms glitch once.
     pub fn set_rate_offset_ppm(&mut self, ppm: f64) {
         self.retarget(self.stream.center_hz, ppm);

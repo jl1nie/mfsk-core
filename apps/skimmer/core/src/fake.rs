@@ -202,6 +202,29 @@ impl FakeRtlServer {
         bits16: bool,
         scale: f64,
     ) -> std::io::Result<FakeRtlServer> {
+        Self::start_with(addr, band, bits16, scale, None)
+    }
+
+    /// [`Self::start`] for a server that pauses once: after `at_s` seconds of stream it sends nothing for
+    /// `for_s` seconds and goes on, as an `rsp_tcp` does restarting its RSP after a failure. The band keeps
+    /// its own time, so the samples after the pause are `for_s` later than a count of samples says.
+    pub fn start_with_pause(
+        addr: &str,
+        band: Band,
+        bits16: bool,
+        at_s: f64,
+        for_s: f64,
+    ) -> std::io::Result<FakeRtlServer> {
+        Self::start_with(addr, band, bits16, 1.0, Some((at_s, for_s)))
+    }
+
+    fn start_with(
+        addr: &str,
+        band: Band,
+        bits16: bool,
+        scale: f64,
+        pause: Option<(f64, f64)>,
+    ) -> std::io::Result<FakeRtlServer> {
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -212,7 +235,7 @@ impl FakeRtlServer {
             while !flag.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((s, _)) => {
-                        let _ = serve_rtl(s, &band, bits16, scale, &flag, &log);
+                        let _ = serve_rtl(s, &band, bits16, scale, pause, &flag, &log);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(50));
@@ -244,6 +267,7 @@ fn serve_rtl(
     band: &Band,
     bits16: bool,
     scale: f64,
+    mut pause: Option<(f64, f64)>,
     stop: &AtomicBool,
     log: &Mutex<Vec<(u8, u32)>>,
 ) -> std::io::Result<()> {
@@ -299,6 +323,15 @@ fn serve_rtl(
         }
         if Instant::now() < next_block {
             continue;
+        }
+        // The pause: nothing sent for a while, the band's time goes on.
+        if let Some((at_s, for_s)) = pause
+            && n as f64 / (f64::from(rate) * scale) >= at_s
+        {
+            pause = None;
+            std::thread::sleep(Duration::from_secs_f64(for_s));
+            t_base += for_s;
+            next_block = Instant::now();
         }
         const BLOCK: usize = 4096;
         next_block += Duration::from_secs_f64(BLOCK as f64 / (f64::from(rate) * scale));

@@ -745,10 +745,10 @@ out a few filter lengths after the last IQ sample that carries it.
 takes, and a source that really runs a few per cent off the rate it names warps time and mixing.
 `mfsk_iq_plannable_rate(real_hz, &rate, &ppm)` finds a rate within 500 ppm that the chain takes and the offset
 that is left (`InvalidArg` below 12 kHz or when nothing plans); open the receiver with `rate` and call
-`mfsk_iq_set_rate_offset_ppm(rx, ppm)` (read back with `mfsk_iq_rate_offset_ppm`, clamped to +-5000, may change
+`mfsk_iq_set_rate_offset_ppm(rx, ppm)` (read back with `mfsk_iq_rate_offset_ppm`, clamped to +-50000, may change
 while running). The audio is then on a true 12 kHz grid and `mfsk_iq_set_time` reads its sample counts at the real
-rate. `mfsk_iq_track_rate(rx, 1)` learns the offset from the readings of `mfsk_iq_set_time` instead (a fit a minute
-at the earliest, 400 ppm at most each; the readings must be cleaned of network delay by the caller), `0` stops it.
+rate. `mfsk_iq_track_rate(rx, 1)` learns the offset from the readings of `mfsk_iq_set_time` instead (a fit every 30 s
+at the earliest, 30000 ppm at most each; the readings must be cleaned of network delay by the caller), `0` stops it.
 These four are the C surface; the Kotlin and Swift wrappers do not carry them yet.
 
 **Early decode is on by default (#601).** A channel whose decoder has

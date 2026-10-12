@@ -51,6 +51,9 @@ use num_traits::Float;
 
 /// Interleaved I/Q converted per pass.
 const BLOCK: usize = 8_192;
+/// A rate correction from the clock readings this large (ppm) steps the clock to the reading: the error it
+/// corrects had been building for tens of seconds, which the slew (400 ppm) takes minutes to undo.
+const LARGE_STEP_PPM: f64 = 3_000.0;
 /// RMS the slot is scaled to, in `i16` units.
 const TARGET_RMS: f32 = 2_000.0;
 
@@ -420,8 +423,9 @@ impl IqReceiver {
     }
 
     /// The largest rate offset taken, ppm: the chain's filters are those of the nominal rate, which is
-    /// right to a few thousand ppm ([`IqToAudio::set_rate_offset_ppm`]).
-    pub const MAX_RATE_OFFSET_PPM: f64 = 5_000.0;
+    /// right to a few per cent: at 5 % the edges of the channel window move 160 Hz
+    /// ([`IqToAudio::set_rate_offset_ppm`]).
+    pub const MAX_RATE_OFFSET_PPM: f64 = 50_000.0;
 
     /// The stream's real rate against its nominal one, in ppm: positive when the source delivers more
     /// samples per second than [`IqStream::sample_rate`] says. Every channel's audio is put on a true
@@ -450,7 +454,7 @@ impl IqReceiver {
     /// Learn the rate offset from the readings given to [`Self::set_time`] (#686): the stream's anchor
     /// (`utc - samples / Fs`) falls by the offset that is missing, per second, and a least-squares line
     /// through a few minutes of readings finds it; the offset moves by that, a limited step at a time
-    /// (`RateTrackConfig::max_step_ppm`), and the window starts again. `None` stops it. The readings are
+    /// (`RateTrackConfig::max_step_ppm`, 30 000 ppm), and the window starts again. `None` stops it. The readings are
     /// the caller's to clean of network delay and its jitter. A reading that steps the clock empties
     /// the window. Starts from the offset in force (0 if none was set) and stays within
     /// [`Self::MAX_RATE_OFFSET_PPM`].
@@ -696,14 +700,22 @@ impl IqReceiver {
     /// grid by milliseconds and lose nothing.
     pub fn set_time(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {
         let equiv = self.sample_equiv(at_sample);
-        let change = self.clock.observe(utc_ns, equiv);
+        let mut change = self.clock.observe(utc_ns, equiv);
+        let mut learned = None;
         if let Some(tracker) = self.tracker.as_mut() {
             if !matches!(change, ClockChange::Slewed { .. }) {
                 tracker.reset();
             }
             let x = equiv as f64 / self.stream.sample_rate as f64;
-            if let Some(step) = tracker.observe(x, utc_ns as f64 * 1e-9 - x) {
-                self.set_rate_offset_ppm(self.ppm + step);
+            learned = tracker.observe(x, utc_ns as f64 * 1e-9 - x);
+        }
+        if let Some(step) = learned {
+            self.set_rate_offset_ppm(self.ppm + step);
+            // The clock followed readings made at the wrong rate, at 400 ppm at most: after a large
+            // correction it is off by what the error added up to, and would take minutes to
+            // catch up. The reading is right now: take it at once.
+            if step.abs() >= LARGE_STEP_PPM {
+                change = self.clock.step_to(utc_ns, self.sample_equiv(at_sample));
             }
         }
         if matches!(change, ClockChange::First | ClockChange::Stepped { .. }) {
@@ -711,6 +723,20 @@ impl IqReceiver {
             for c in &mut self.channels {
                 c.forget_slots();
             }
+        }
+        change
+    }
+
+    /// Like [`Self::set_time`], but the clock is set to the reading at once instead of slewing to it:
+    /// for a caller who knows the clock was wrong, not drifting (the first fix of a stream, a server
+    /// that paused, a rate that changed). Open slots are dropped, as for any step.
+    pub fn step_time(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {
+        let change = self.clock.step_to(utc_ns, self.sample_equiv(at_sample));
+        if let Some(tracker) = self.tracker.as_mut() {
+            tracker.reset();
+        }
+        for c in &mut self.channels {
+            c.forget_slots();
         }
         change
     }

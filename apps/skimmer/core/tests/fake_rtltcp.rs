@@ -36,6 +36,8 @@ struct Run {
     streaming: Vec<(u32, f64)>,
     /// How many times the receiver's clock was stepped.
     reanchors: usize,
+    /// How many gaps it was told of.
+    gaps: usize,
 }
 
 /// Run the skimmer on `server` until `want` holds of the messages, or 70 s pass.
@@ -51,8 +53,6 @@ fn run(
     cfg.protocol = Protocol::RtlTcp;
     cfg.rate = Some(FAKE_RTL_RATE);
     cfg.retry = Duration::from_millis(300);
-    // The stand-in is exact; a test that wants the measurement asks for it.
-    cfg.rtl_calibrate = Duration::ZERO;
     tweak(&mut cfg);
     let stop = Arc::new(AtomicBool::new(false));
     let got: Arc<Mutex<Run>> = Arc::default();
@@ -65,10 +65,11 @@ fn run(
                 rate, center_hz, ..
             } => sink.lock().unwrap().streaming.push((rate, center_hz)),
             Event::Reanchor { .. } => sink.lock().unwrap().reanchors += 1,
+            Event::Gap { .. } => sink.lock().unwrap().gaps += 1,
             _ => {}
         });
     });
-    let until = Instant::now() + Duration::from_secs(70);
+    let until = Instant::now() + Duration::from_secs(90);
     while Instant::now() < until {
         std::thread::sleep(Duration::from_millis(200));
         let g = got.lock().unwrap();
@@ -98,7 +99,9 @@ fn sixteen_bit_stream_is_decoded_and_the_commands_are_written() {
     let r = run(&server, |_| {}, has_cq);
     let cq = done(&r.messages, "CQ K1ABC CQ FN42")
         .unwrap_or_else(|| panic!("{:?} / {:?}", r.messages, r.errors));
-    assert!((cq.freq_hz - 14_091_500.0).abs() < 4.0, "{}", cq.freq_hz);
+    // The rate offset the time base fits in the first half minute is good to a few hundred ppm, which
+    // is a few Hz at 26.5 kHz from the IQ centre; it settles to well under 1 Hz after a few minutes.
+    assert!((cq.freq_hz - 14_091_500.0).abs() < 12.0, "{}", cq.freq_hz);
     let cmds = server.commands.lock().unwrap().clone();
     // Sample rate first; the IQ centre is 25 kHz under the dial (the plan's default); then
     // automatic gain (no `--gain`), written after the frequency.
@@ -152,27 +155,62 @@ fn a_format_that_does_not_match_the_server_is_refused_with_the_reason() {
 }
 
 /// An RSP delivered 1.7 % fewer samples than the rate it was asked for (#685), which the receiver took
-/// for a clock step every minute. The rate is measured at the start and used: the stream decodes, at the
-/// rate really delivered, and the clock is not stepped.
+/// for a clock step every minute. The time base fits the rate it really has: the stream decodes at the
+/// nominal rate asked for, the clock is not stepped by the receiver, and the message is at the time it
+/// was sent.
 #[test]
-fn a_server_that_delivers_short_is_measured_and_followed() {
+fn a_server_that_delivers_short_is_followed() {
     let server =
         FakeRtlServer::start_with_rate_error("127.0.0.1:0", band(0.01), true, 0.983).unwrap();
-    // Measured over a short window here: the stand-in is steady.
-    let r = run(
-        &server,
-        |c| c.rtl_calibrate = Duration::from_secs(6),
-        has_cq,
-    );
+    let r = run(&server, |_| {}, has_cq);
     assert!(
         done(&r.messages, "CQ K1ABC CQ FN42").is_some(),
         "{:?} / {:?}",
         r.messages,
         r.errors
     );
-    // The nearest rate the receiver takes (within 500 ppm of the measurement), with the rest as an offset.
-    let rate = f64::from(r.streaming[0].0);
-    let real = f64::from(FAKE_RTL_RATE) * 0.983;
-    assert!((rate / real - 1.0).abs() < 0.002, "{rate} against {real}");
     assert_eq!(r.reanchors, 0);
+}
+
+/// A server that pauses (an `rsp_tcp` restarting its RSP after a failure): the samples of the pause never
+/// arrive and the band's time goes on. The receiver is told they were lost once six seconds of
+/// candidates show it, the elapsed time moves on, and the messages after it are at the time they were
+/// sent: without that, the minimum-delay window held the old anchor for 30 s and put the stream the
+/// pause too early (#686). A message is sent 1.0 s into every 16 s cycle on the wall clock.
+#[test]
+fn a_pause_of_the_server_does_not_displace_what_comes_after() {
+    const PAUSE_S: f64 = 1.5;
+    let server =
+        FakeRtlServer::start_with_pause("127.0.0.1:0", band(0.01), true, 14.0, PAUSE_S).unwrap();
+    let started = skimmer_core::now_ns();
+    // Wanted: two whole messages that began well after the pause was found (6 s) and the cycle after it.
+    let late = move |m: &[JttyMessage], _: &[String]| {
+        m.iter()
+            .filter(|x| {
+                x.kind == UpdateKind::Complete
+                    && x.start_utc_ns.is_some_and(|t| t > started + 28_000_000_000)
+            })
+            .count()
+            >= 2
+    };
+    let r = run(&server, |_| {}, late);
+    assert!(r.gaps >= 1, "the pause was not found ({} gaps)", r.gaps);
+    assert_eq!(r.reanchors, 0, "a clock step");
+    let after: Vec<_> = r
+        .messages
+        .iter()
+        .filter(|x| {
+            x.kind == UpdateKind::Complete
+                && x.start_utc_ns.is_some_and(|t| t > started + 28_000_000_000)
+        })
+        .collect();
+    assert!(after.len() >= 2, "{:?} / {:?}", r.messages, r.errors);
+    for m in after {
+        // Seconds into its 16 s cycle on the wall clock: 1.0, not 1.0 - the pause.
+        let into = (m.start_utc_ns.unwrap().rem_euclid(16_000_000_000)) as f64 * 1e-9;
+        assert!(
+            (into - 1.0).abs() < 0.45,
+            "a message at {into:.2} s into its cycle"
+        );
+    }
 }
