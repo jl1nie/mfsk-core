@@ -107,13 +107,11 @@ fn sixteen_bit_stream_is_decoded_and_the_commands_are_written() {
     assert_eq!(cmds.first(), Some(&(0x02, FAKE_RTL_RATE)), "{cmds:?}");
     assert_eq!(cmds.get(1), Some(&(0x01, 14_065_000)), "{cmds:?}");
     assert_eq!(cmds.get(2), Some(&(0x03, 0)), "{cmds:?}");
-    // The rate used is the one measured, within a fraction of a per cent of what was asked.
+    // Calibration zero keeps exactly the requested nominal rate and a stable clock.
     let (rate, centre) = r.streaming[0];
     assert_eq!(centre, 14_065_000.0);
-    assert!(
-        (f64::from(rate) / f64::from(FAKE_RTL_RATE) - 1.0).abs() < 0.001,
-        "{rate}"
-    );
+    assert_eq!(rate, FAKE_RTL_RATE);
+    assert_eq!(r.reanchors, 0);
 }
 
 /// Plain `rtl_tcp`: no struct, 8-bit IQ (the four bytes read to look for one are not lost), and
@@ -199,7 +197,9 @@ fn a_pause_of_the_server_does_not_displace_what_comes_after() {
             .count()
             >= 2
     };
-    let r = run(&server, |_| {}, late);
+    // Actual losses are inferred only by the unmodified-server fallback. The 6 s
+    // measurement finishes before the pause at 14 s.
+    let r = run(&server, |c| c.rtl_calibrate = Duration::from_secs(6), late);
     assert!(r.gaps >= 1, "the pause was not found ({} gaps)", r.gaps);
     assert_eq!(r.reanchors, 0, "a clock step");
     let after: Vec<_> = r

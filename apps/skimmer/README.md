@@ -234,15 +234,22 @@ Decision and measurements: #684, #685.
   arrived before (`session_rtl`). `--gain N` is a gain step, manual; without it the server's automatic gain.
 - `rsp_tcp` listens on `127.0.0.1`; `-a 0.0.0.0` for another PC (trusted network only).
 - **Two things an `rsp_tcp` does that the protocol cannot tell.** (1) It does not read commands until its `Init` of the RSP is over
-  (10-15 s on an RSP1), and streams meanwhile at the rate and frequency it was started with: taken for the rate asked for, that
-  stream ran ahead of the clock (`re-anchor: -1.0 s` six times in the first minute). The client waits for the byte rate to be the
-  one asked for (`rtltcp::await_rate`, up to 60 s). (2) The rate it then delivers is not the nominal one: an RSP1 gave
-  **994 kS/s for 1 024 000 asked (-2.9 %)**, 1 s of time in 35 s. The client measures it (`--rtl-calibrate SECS`, 30 by default, 0
-  off: a least-squares line through arrival times); `iq::plannable_rate` turns that into the integer rate the receiver takes (within
-  500 ppm) and the offset left, `IqReceiver::set_rate_offset_ppm` applies it, and `IqReceiver::track_rate` learns the rest from the
-  clock for the rest of the session (#686: the audio is on a true 12 kHz grid, the NCO follows the real rate). The anchor estimate
-  reads the receiver's own elapsed time (`IqReceiver::elapsed_ns`), not `samples / rate`. With only the nominal rate, 6 minutes on
-  7041 kHz had the clock stepped once, the delay and drift within ~0.25 s, DT +0.2..+0.4 s and 44 FT8 lines, 4-9 per slot.
+  (10-15 s on an RSP1), and streams meanwhile at the rate and frequency it was started with. The client still waits
+  for the requested byte rate (`rtltcp::await_rate`, up to 60 s), even when calibration is disabled.
+  (2) The observed RSP1 shortfall was sample loss at the API callback, rather than a wrong device clock.
+  See [the investigation and server remedies](../../docs/notes/RTLTCP_RATE.md).
+- **After the server stops or zero-fills sample losses:** use `--rtl-calibrate 0` (GUI: **Rate calibration →
+  Off (nominal rate)**). This skips the 30 s measurement, keeps the requested nominal rate and offset zero,
+  and disables automatic rate tracking. UTC follows arrivals minus `--net-delay MS` (GUI: the server's fixed
+  network delay), without the minimum-delay window. Use NTP (`--ntp HOST`, enabled by default in the GUI),
+  then adjust the fixed delay from repeated FT8 decodes: aim for the same band's SpyServer median DT
+  (the measured reference was +0.09 s). Increasing the delay increases the reported DT. Arrival pauses do not synthesize missing
+  samples in this mode: delayed or server-filled data must keep its original sample count. This path assumes the server preserves the sample time axis; it cannot restore
+  unidentified holes in an unmodified server's stream.
+- **Unmodified servers:** the default `--rtl-calibrate 30` retains the startup measurement, nearest plannable
+  rate, residual offset, slow rate tracker, minimum-delay clock and restart/pause heuristic. This is a fallback; a uniform stretch
+  approximates missing samples and the measured rate varies between runs. Existing GUI settings retain this
+  default when the new setting is absent.
 - An RSP1 on a bare (unpowered) USB hub also failed (`RSP failure`, API: `Update(): Uninitialised device`) within 1-7 minutes, with or
   without the skimmer sending anything. Give the RSP its own powered USB port; the stock `rsp_tcp` exits on that event, a build that
   Uninit/Init's the RSP again and goes on (kept the stream going through one) is what #685 used.

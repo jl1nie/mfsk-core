@@ -27,7 +27,8 @@ reader sees the same shortfall.
 3. **The client, with a fixed server:** the nominal rate, no rate offset; the clock from NTP-corrected arrival
    times minus a constant pipeline delay, calibrated from the median DT of decoded FT8 messages (target the
    median that SpyServer gives the same band, +0.09 s), not from a minimum-delay window. The pause detector
-   (below) stays for servers that restart the device.
+   (below) is restricted to the unmodified-server fallback: silence on the connection alone cannot distinguish
+   loss from buffering or server-filled holes.
 
 **For servers that cannot be changed** (stock `rtl_tcp`, stock `rsp_tcp`), the client keeps what measured best
 (branch `iq-rate-offset-686` at `7bd0d0ec`): a 30 s pause-free least-squares measurement of the rate
@@ -36,6 +37,18 @@ fit, applied on the 15 s grid), the minimum-delay clock slewing up to 2 %, and a
 to the receiver as lost samples. Its known limit: the 30 s measurement lands anywhere within +-1 % of the
 recording's mean, and a measurement 1 % off loses most decodes until the tracker has walked it back (25 min at
 400 ppm a minute). That limit is the reason the server fix is the answer, not more client-side estimation.
+
+## Selecting the repaired-server client path
+
+Once a dbg4 run confirms that losses are gone or zero-filled, pass `--rtl-calibrate 0`, or choose
+**Rate calibration → Off (nominal rate)** in the GUI. Zero now disables both startup measurement and
+rate tracking: the nominal rate and offset zero persist across rotations. This path feeds arrivals
+minus the configured constant delay to the sample clock, without the minimum-delay window. NTP and
+median FT8 DT provide the delay calibration described above. The initial command-application wait
+stays active. Arrival pauses never advance the sample count in this mode, preventing a late delivery or
+a zero-filled server hole from being counted a second time. An unreported real loss cannot be reconstructed
+from this protocol; the clock may re-anchor when the discrepancy exceeds its step threshold. The default
+30 s calibration retains the unmodified-server fallback and its restart/pause heuristic; no dbg4 hardware result is assumed by this change.
 
 ## Evidence
 

@@ -121,7 +121,7 @@ fn parse_args() -> Option<Parsed> {
                 }
             }
             // Measure the rate an rtl_tcp server really delivers for this many seconds before decoding
-            // (30 by default; 0 uses the rate asked for).
+            // (30 by default; 0 uses the requested rate, disables tracking, and uses fixed-delay arrival time).
             "--rtl-calibrate" => {
                 cfg.rtl_calibrate = Duration::from_secs(it.next()?.parse().ok()?);
             }

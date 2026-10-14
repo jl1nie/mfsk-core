@@ -528,7 +528,7 @@
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
+      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', rtlCalibrate: 30, grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -668,6 +668,13 @@
                   <option value="auto">Auto</option>
                   <option value="8">8-bit</option>
                   <option value="16">16-bit (rsp_tcp -E -b 16)</option>
+                </select>
+              </div>
+              <div class="field" title="Use 0 after the server fixes or zero-fills sample losses: nominal rate, no rate correction. Unmodified servers can use a startup measurement (30 seconds by default).">
+                <span>Rate calibration</span>
+                <select bind:value={sv.rtlCalibrate} disabled={running}>
+                  <option value={0}>Off (nominal rate)</option>
+                  <option value={30}>Measure 30 s + track</option>
                 </select>
               </div>
             {/if}
