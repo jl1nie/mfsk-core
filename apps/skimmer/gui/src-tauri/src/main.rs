@@ -135,6 +135,8 @@ struct ServerSetting {
     /// With rtl_tcp: the sample format expected, "auto" (the default), "8" or "16". The server
     /// decides it (`rsp_tcp -E -b 16` is 16); a choice other than auto is a check.
     rtl_format: String,
+    /// Startup rate calibration seconds; zero keeps the nominal rate and offset zero.
+    rtl_calibrate: u64,
     /// The operator's callsign at this server (`mycall`, for the QSO-context a-priori decoding).
     call: String,
     /// "float" or "int16": the IQ the server sends (int16 halves the bytes, for a server across a slow link).
@@ -251,6 +253,7 @@ impl Default for ServerSetting {
             address: "127.0.0.1:5555".into(),
             protocol: String::new(),
             rtl_format: String::new(),
+            rtl_calibrate: 30,
             // Empty until migrated: a settings file from before these were per server hands its own down.
             call: String::new(),
             format: String::new(),
@@ -919,6 +922,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             "16" => RtlFormat::I16,
             _ => RtlFormat::Auto,
         };
+        cfg.rtl_calibrate = std::time::Duration::from_secs(srv.rtl_calibrate);
         cfg.live.set_station(Station::new(
             &srv.call.trim().to_ascii_uppercase(),
             &srv.grid.trim().to_ascii_uppercase(),
@@ -1639,6 +1643,17 @@ fn main() {
 #[cfg(test)]
 mod health_log_tests {
     use super::*;
+
+    #[test]
+    fn rtl_calibration_setting_preserves_defaults_and_nominal_choice() {
+        let old: ServerSetting = serde_json::from_str(r#"{"protocol":"rtl_tcp"}"#).unwrap();
+        assert_eq!(old.rtl_calibrate, 30);
+        let nominal: ServerSetting =
+            serde_json::from_str(r#"{"protocol":"rtl_tcp","rtlCalibrate":0}"#).unwrap();
+        let back: ServerSetting =
+            serde_json::from_str(&serde_json::to_string(&nominal).unwrap()).unwrap();
+        assert_eq!(back.rtl_calibrate, 0);
+    }
 
     /// A settings file from before the waterfall's height was a setting still loads,
     /// with the sizes the panel always had.
