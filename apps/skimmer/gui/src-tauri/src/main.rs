@@ -21,8 +21,8 @@ use skimmer_core::pskreporter::{
 use skimmer_core::rtltcp::RtlFormat;
 use skimmer_core::store;
 use skimmer_core::{
-    ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions, Protocol,
-    QsoContext, QsoProgress, RadioState, Station, WireFormat,
+    ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
+    Protocol, QsoContext, QsoProgress, RadioState, Station, WireFormat,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -137,6 +137,8 @@ struct ServerSetting {
     rtl_format: String,
     /// Startup rate calibration seconds; zero keeps the nominal rate and offset zero.
     rtl_calibrate: u64,
+    rtl_minimum_arrival: bool,
+    rtl_infer_gaps: bool,
     /// The operator's callsign at this server (`mycall`, for the QSO-context a-priori decoding).
     call: String,
     /// "float" or "int16": the IQ the server sends (int16 halves the bytes, for a server across a slow link).
@@ -254,6 +256,8 @@ impl Default for ServerSetting {
             protocol: String::new(),
             rtl_format: String::new(),
             rtl_calibrate: 30,
+            rtl_minimum_arrival: true,
+            rtl_infer_gaps: false,
             // Empty until migrated: a settings file from before these were per server hands its own down.
             call: String::new(),
             format: String::new(),
@@ -762,6 +766,10 @@ struct AppState {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    // A separate profile for local IQ replay, without changing the user's servers.
+    if let Some(path) = std::env::var_os("MFSK_SKIMMER_SETTINGS") {
+        return Ok(PathBuf::from(path));
+    }
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("settings.json"))
 }
@@ -923,6 +931,8 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             _ => RtlFormat::Auto,
         };
         cfg.rtl_calibrate = std::time::Duration::from_secs(srv.rtl_calibrate);
+        cfg.rtl_minimum_arrival = srv.rtl_minimum_arrival;
+        cfg.rtl_infer_gaps = srv.rtl_infer_gaps;
         cfg.live.set_station(Station::new(
             &srv.call.trim().to_ascii_uppercase(),
             &srv.grid.trim().to_ascii_uppercase(),
@@ -1648,11 +1658,43 @@ mod health_log_tests {
     fn rtl_calibration_setting_preserves_defaults_and_nominal_choice() {
         let old: ServerSetting = serde_json::from_str(r#"{"protocol":"rtl_tcp"}"#).unwrap();
         assert_eq!(old.rtl_calibrate, 30);
+        assert!(old.rtl_minimum_arrival);
+        assert!(!old.rtl_infer_gaps);
         let nominal: ServerSetting =
             serde_json::from_str(r#"{"protocol":"rtl_tcp","rtlCalibrate":0}"#).unwrap();
         let back: ServerSetting =
             serde_json::from_str(&serde_json::to_string(&nominal).unwrap()).unwrap();
         assert_eq!(back.rtl_calibrate, 0);
+        let explicit: ServerSetting = serde_json::from_str(
+            r#"{"protocol":"rtl_tcp","rtlMinimumArrival":false,"rtlInferGaps":true}"#,
+        )
+        .unwrap();
+        let back: ServerSetting =
+            serde_json::from_str(&serde_json::to_string(&explicit).unwrap()).unwrap();
+        assert!(!back.rtl_minimum_arrival);
+        assert!(back.rtl_infer_gaps);
+    }
+
+    #[test]
+    fn rtl_timing_choices_reach_the_receiver_independently() {
+        for calibrate in [0, 30] {
+            for minimum in [false, true] {
+                for infer in [false, true] {
+                    let s: Settings = serde_json::from_value(serde_json::json!({
+                        "servers": [{"protocol":"rtl_tcp", "rtlCalibrate":calibrate,
+                            "rtlMinimumArrival":minimum, "rtlInferGaps":infer}],
+                        "channels": [{"server":0, "mode":"FT8", "dialHz":14074000}]
+                    }))
+                    .unwrap();
+                    let planned = configs(&s).unwrap();
+                    assert_eq!(planned.len(), 1);
+                    let cfg = &planned[0].cfg;
+                    assert_eq!(cfg.rtl_calibrate.as_secs(), calibrate);
+                    assert_eq!(cfg.rtl_minimum_arrival, minimum);
+                    assert_eq!(cfg.rtl_infer_gaps, infer);
+                }
+            }
+        }
     }
 
     /// A settings file from before the waterfall's height was a setting still loads,

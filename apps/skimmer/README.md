@@ -217,6 +217,112 @@ SpyServer below: it connects once local network access is allowed.
 
 ## rtl_tcp servers (SDRplay RSP) — `--protocol rtl_tcp`
 
+### Test the GUI with a local FT8 IQ server
+
+`core/examples/ft8_rtltcp.rs` sends **CQ K1ABC FN42**, at dial 14.074 MHz
++ 1500 Hz, every UTC FT8 slot over `rtl_tcp` (rsp_tcp extended, signed 16-bit,
+1.024 MS/s). No radio or recording is needed. It accepts the GUI's tuning
+commands. `--impairment clean|filled|dropped|stall` selects normal IQ, periodic
+60 ms holes filled with zeros, the same samples deleted, or a 750 ms delivery
+stall every 30 seconds followed by all buffered samples. `--ppm N` changes the
+actual source rate (up to ±50000 ppm); it defaults to zero. Use zero startup
+calibration for a nominal-clock/zero-filled server, and enable calibration when
+testing a genuinely different source rate.
+
+The source adds deterministic Gaussian noise to I and Q. `--snr DB` sets the
+signal/noise power ratio in the WSJT 2500 Hz reference bandwidth (default −10 dB,
+range −30 to 0). The level accounts for the real audio's two sidebands and the
+IQ rate; the receiver's reported SNR is retained in the test results so it can be
+checked against the requested level. Zero-filled holes erase noise as well as
+signal. A noiseless strong signal only checks transport and timing, not weak-signal
+performance; use several slots and noise levels when evaluating decoding.
+
+On macOS, build and exercise the **actual GUI** (its frontend invokes Start,
+enables the waterfall and records decodes), with an isolated profile per case:
+
+```sh
+cargo build --release -p skimmer-core --example ft8_rtltcp
+cd apps/skimmer/gui
+npm run check && npm run build && npm run tauri -- build --bundles app
+cd ../../..
+python3 scripts/rtltcp/gui_smoke.py
+python3 scripts/rtltcp/gui_smoke.py --snr -18
+```
+
+The runner opens the app for 70 seconds per case. Clean, zero-filled and delayed
+delivery must each decode at least two messages, within 3 Hz of the expected
+frequency, with no gaps or reanchors. Deleted samples must fail to decode the
+known message; clock reanchors in that negative control are reported and allowed.
+Every case must connect without a disconnection; the median reported SNR must
+be within 3 dB of the requested level for the cases that decode. Results, settings,
+SQLite databases and health/server logs remain
+in the printed temporary directory. PSK Reporter is disabled. `--cases filled
+stall` runs just those cases; `--app PATH` selects a different executable, including
+an older build for comparison. Older builds without the profile override must
+be run with their settings prepared separately.
+
+Leave the tested GUI and its IQ server open for interactive inspection (close
+the window or press Ctrl-C in the runner to stop both):
+
+```sh
+python3 scripts/rtltcp/gui_smoke.py --cases filled --snr -18 --port 1234 --keep-open
+```
+
+For interactive use, leave this server running and configure a GUI server at
+`127.0.0.1:1234`, protocol **rtl_tcp / rsp_tcp**, IQ **16-bit**, calibration
+**off**, channel **FT8 at 14074000 Hz**:
+
+```sh
+cargo run --release -p skimmer-core --example ft8_rtltcp -- --impairment filled
+```
+
+`MFSK_SKIMMER_SETTINGS=/absolute/path/settings.json` selects a separate GUI
+settings file; `MFSK_SKIMMER_AUTOSTART=1` connects after the frontend subscribes
+to events. The runner uses both, without changing the normal GUI profile.
+
+### Separate acquisition rate, pipeline delay and API losses
+
+The source now runs acquisition independently of the callback/transport FIFO;
+each block is released only after its last sample has been acquired. It can
+combine `--ppm` (true acquisition rate), `--fixed-delay-ms`, `--loss-ms`,
+`--loss-period-ms`, and `--api-delay-ms`. `--vary-loss` cycles the loss length
+through 0.3 / 1 / 1.7 times its configured value every ten seconds.
+`--vary-messages` changes the CQ callsign each UTC slot so a shifted slot label
+cannot look successful just because the same message repeats. `--truth PATH`
+records acquisition sample counters, acquisition UTC, actual delivery UTC,
+payload and lost sample counts separately; that truth is never sent to the GUI.
+
+```sh
+python3 scripts/rtltcp/gui_impairment_study.py --snr -18
+python3 scripts/rtltcp/gui_impairment_study.py --snr -18 \
+  --cases vary_drop_calibrated vary_fill_nominal
+```
+
+These runs use the real GUI, waterfall, early decode and an isolated database.
+For a larger deterministic matrix through the actual skimmer stream/decoder
+loop on virtual time:
+
+```sh
+MFSK_IQ_SIM_OUTPUT=/tmp/iq-study.json \
+  cargo test --release -p skimmer-core --lib acquisition_delivery_and_loss_study \
+  -- --ignored --nocapture
+```
+
+The [2026-10-15 study](../../docs/notes/IQ_TRANSPORT_SIMULATION_2026-10-15.md)
+compares 55 conditions at −10 / −18 dB, including fixed delay compensation,
+true acquisition-rate correction, sample losses, zero filling, changing loss
+rates and late delivery without loss. It reports decode recovery separately
+from source-slot UTC, frequency and DT accuracy. In particular, using a lower
+delivery rate as if it were the ADC rate sometimes recovers messages while
+moving their frequency by about 930 Hz, and changing losses can defeat that
+approximation entirely.
+
+The [stochastic-loss follow-up](../../docs/notes/IQ_STOCHASTIC_LOSS_2026-10-15.md)
+compares 20 random loss schedules per distribution at −18 dB. It separates
+sample-position repair from arrival-time anchoring. The integrated GUI recovered
+7/7 slots versus 3/7 with direct arrival timing in a 1-second-loss comparison.
+Costas acquisition is deferred until after real-radio evaluation.
+
 ```sh
 skimmer --server HOST:1234 --protocol rtl_tcp --ch FT8@7041000 --mycall CALL --mygrid GRID
 ```
@@ -239,17 +345,24 @@ Decision and measurements: #684, #685.
   (2) The observed RSP1 shortfall was sample loss at the API callback, rather than a wrong device clock.
   See [the investigation and server remedies](../../docs/notes/RTLTCP_RATE.md).
 - **After the server stops or zero-fills sample losses:** use `--rtl-calibrate 0` (GUI: **Rate calibration →
-  Off (nominal rate)**). This skips the 30 s measurement, keeps the requested nominal rate and offset zero,
-  and disables automatic rate tracking. UTC follows arrivals minus `--net-delay MS` (GUI: the server's fixed
-  network delay), without the minimum-delay window. Use NTP (`--ntp HOST`, enabled by default in the GUI),
-  then adjust the fixed delay from repeated FT8 decodes: aim for the same band's SpyServer median DT
-  (the measured reference was +0.09 s). Increasing the delay increases the reported DT. Arrival pauses do not synthesize missing
-  samples in this mode: delayed or server-filled data must keep its original sample count. This path assumes the server preserves the sample time axis; it cannot restore
-  unidentified holes in an unmodified server's stream.
-- **Unmodified servers:** the default `--rtl-calibrate 30` retains the startup measurement, nearest plannable
-  rate, residual offset, slow rate tracker, minimum-delay clock and restart/pause heuristic. This is a fallback; a uniform stretch
-  approximates missing samples and the measured rate varies between runs. Existing GUI settings retain this
-  default when the new setting is absent.
+  Off (nominal rate)**). This skips the 30 s measurement and disables automatic rate correction.
+  Leave **Arrival timing → Reject delivery jitter** selected and **Infer loss from pauses** unchecked.
+  The least-delayed arrival in a sliding window anchors UTC independently of rate calibration.
+  This preserves the sample time axis; unidentified holes cannot be repaired by the GUI.
+- **True acquisition-rate differences:** startup calibration remains available, but its input is payload
+  delivery, so first preserve missing sample positions at the source. A lower payload rate by itself is
+  not evidence of a slower ADC. Calibration defaults to 30 s for compatibility with existing settings.
+- **Delivery pauses:** the GUI no longer infers missing IQ from pauses by default, including with rate
+  calibration enabled. **Infer loss from pauses** explicitly restores the >500 ms heuristic for a source
+  known to discard samples during pauses. It is independent of calibration; buffered delivery can fool it.
+- **Fixed delay:** set **Network delay (ms)** separately, including SDR/API and server buffering even on
+  a LAN. Compare DT across several stations and repeated slots, preferably against another receiver.
+  Neither arrival timing nor Fs calibration can determine an unknown fixed pipeline delay uniquely.
+  **Direct arrival** is available for comparison with the previous nominal-rate path.
+- **Real-radio evaluation:** record source sample-counter holes/resets alongside `STATUS.log` and
+  `skimmer.db`. Compare nominal Fs with/without jitter rejection before trying calibration. Check source
+  holes, decoder queue drops, reanchors, DT and RF frequency, not just decode count. The source must
+  zero-fill known holes; the GUI cannot locate them from TCP arrival pauses. Costas acquisition is deferred.
 - An RSP1 on a bare (unpowered) USB hub also failed (`RSP failure`, API: `Update(): Uninitialised device`) within 1-7 minutes, with or
   without the skimmer sending anything. Give the RSP its own powered USB port; the stock `rsp_tcp` exits on that event, a build that
   Uninit/Init's the RSP again and goes on (kept the stream going through one) is what #685 used.

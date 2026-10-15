@@ -52,6 +52,10 @@ export interface ServerSetting {
   protocol?: 'spyserver' | 'rtl_tcp';
   /** Startup calibration seconds; 0 uses the nominal rate without rate tracking. */
   rtlCalibrate?: number;
+  /** Reject delivery jitter independently of rate correction; defaults to true. */
+  rtlMinimumArrival?: boolean;
+  /** Infer missing IQ from delivery pauses; defaults to false. */
+  rtlInferGaps?: boolean;
   /** With rtl_tcp: the IQ the server is expected to send. The server decides it; a choice other than auto is a check. */
   rtlFormat?: 'auto' | '8' | '16';
   /** IQ sample format on the wire; int16 halves the bytes. */

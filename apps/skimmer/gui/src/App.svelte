@@ -528,7 +528,7 @@
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', rtlCalibrate: 30, grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
+      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', rtlCalibrate: 30, rtlMinimumArrival: true, rtlInferGaps: false, grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -677,6 +677,17 @@
                   <option value={30}>Measure 30 s + track</option>
                 </select>
               </div>
+              <div class="field" title="Use the least-delayed arrival to keep buffered delivery from shifting sample UTC. Independent of rate calibration. Direct arrival is available for comparison.">
+                <span>Arrival timing</span>
+                <select bind:value={sv.rtlMinimumArrival} disabled={running}>
+                  <option value={true}>Reject delivery jitter</option>
+                  <option value={false}>Direct arrival</option>
+                </select>
+              </div>
+              <div class="field" title="Only enable for a server known to lose samples during delivery pauses over 500 ms. Buffered delivery can otherwise be mistaken for missing IQ. Sample counters at the source are more reliable.">
+                <span>Infer loss from pauses</span>
+                <input type="checkbox" bind:checked={sv.rtlInferGaps} disabled={running} />
+              </div>
             {/if}
             <div class="field" title="Your callsign at this server. Used for the QSO-context a-priori decoding. A channel can override it in its options.">
               <span>My call</span>
@@ -690,7 +701,7 @@
               <span>Sun today</span>
               <span class="sun">{sunLine(sv.grid)}</span>
             </div>
-            <div class="field" title="Fixed delay from the SDR to this PC (server buffer, path), taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here.">
+            <div class="field" title="Fixed delay from acquisition to this PC, including SDR/API and server buffering, taken off arrival times. A LAN may still have pipeline delay. Compare multiple stations before adjusting it.">
               <span>Network delay (ms)</span>
               <input type="number" step="10" min="0" bind:value={sv.networkDelayMs}
                 onchange={() => running && api.setNetworkDelay(sel, Number(sv.networkDelayMs) || 0)} />

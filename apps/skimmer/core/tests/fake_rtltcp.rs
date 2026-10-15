@@ -177,8 +177,8 @@ fn a_server_that_delivers_short_is_measured_and_followed() {
     assert_eq!(r.reanchors, 0);
 }
 /// A server that pauses (an `rsp_tcp` restarting its RSP after a failure): the samples of the pause never
-/// arrive and the band's time goes on. The client sees a silence longer than any delivery jitter, tells the
-/// receiver the samples were lost (`IqReceiver::gap`), and the messages after it are at the time they were
+/// arrive and the band's time goes on. Explicitly enable the pause-loss heuristic for this known
+/// source. It tells the receiver samples were lost (`IqReceiver::gap`), and later messages are at the time they were
 /// sent: without that, the minimum-delay window held the old anchor for 30 s and put the stream the
 /// pause too early (#686). A message is sent 1.0 s into every 16 s cycle on the wall clock.
 #[test]
@@ -197,9 +197,16 @@ fn a_pause_of_the_server_does_not_displace_what_comes_after() {
             .count()
             >= 2
     };
-    // Actual losses are inferred only by the unmodified-server fallback. The 6 s
-    // measurement finishes before the pause at 14 s.
-    let r = run(&server, |c| c.rtl_calibrate = Duration::from_secs(6), late);
+    // This source drops samples during a pause; arrivals alone cannot establish
+    // that for an arbitrary server. The measurement ends before the pause at 14 s.
+    let r = run(
+        &server,
+        |c| {
+            c.rtl_calibrate = Duration::from_secs(6);
+            c.rtl_infer_gaps = true;
+        },
+        late,
+    );
     assert!(r.gaps >= 1, "the pause was not found ({} gaps)", r.gaps);
     assert_eq!(r.reanchors, 0, "a clock step");
     let after: Vec<_> = r

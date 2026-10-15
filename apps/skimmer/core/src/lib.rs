@@ -28,6 +28,8 @@ pub mod anchor;
 pub mod clock;
 pub mod fake;
 pub mod geo;
+#[cfg(test)]
+mod iq_impairment_simulation;
 pub mod jtty;
 pub mod modes;
 pub mod plan;
@@ -749,9 +751,16 @@ pub struct Config {
     pub rtl_format: rtltcp::RtlFormat,
     /// With [`Protocol::RtlTcp`]: startup rate measurement duration. Defaults to 30 s for
     /// unmodified servers with sample losses. Zero uses the requested nominal rate, disables
-    /// rate tracking, and timestamps samples from arrivals minus the configured fixed delay.
+    /// rate tracking. Arrival timing and pause-based gap guesses are separate settings.
     /// Use zero after fixing or zero-filling losses on the server (#686).
     pub rtl_calibrate: Duration,
+    /// With rtl_tcp: use the least-delayed arrival in a sliding window for UTC.
+    /// Independent of rate calibration; defaults to true to reject delivery jitter.
+    pub rtl_minimum_arrival: bool,
+    /// With rtl_tcp: guess missing samples after a delivery pause over 500 ms.
+    /// Defaults to false: a pause can be buffered delivery rather than lost IQ.
+    /// Enable only for a source known to discard samples during such pauses.
+    pub rtl_infer_gaps: bool,
     pub channels: Vec<ChannelSpec>,
     /// A rotation: which of [`Self::channels`] to listen to, for how long, in
     /// turn. Empty: all of them, all the time.
@@ -1061,6 +1070,8 @@ impl Config {
             protocol: Protocol::SpyServer,
             rtl_format: rtltcp::RtlFormat::Auto,
             rtl_calibrate: Duration::from_secs(30),
+            rtl_minimum_arrival: true,
+            rtl_infer_gaps: false,
             channels,
             steps: Vec::new(),
             rotation_origin: None,
@@ -1339,7 +1350,7 @@ pub fn channelizer_for(cfg: &Config, active: usize) -> Channelizer {
 /// The most the clock of an rtl_tcp stream slews, ppm.
 const RTL_CLOCK_SLEW_PPM: u32 = 20_000;
 
-/// A silence in an rtl_tcp stream this long (ns) is a pause of the server, not delivery jitter.
+/// Threshold for the optional rtl_tcp pause-based loss heuristic (ns).
 const RTL_PAUSE_NS: i64 = 500_000_000;
 
 /// How long the minimum-delay anchor estimate looks back. Long enough that a
@@ -2465,11 +2476,12 @@ fn stream_inner(
         }
         next_seq = Some(m.seq.wrapping_add(1));
 
-        // Only the unmodified-server fallback guesses missing samples from a long pause.
+        // Only explicitly selected sources guess missing samples from a long pause.
         // A nominal-rate server preserves the sample time axis (including zero-filled holes):
         // a late delivery must not insert a second hole or discard the open slots. rtl_tcp has
         // no source sequence numbers, so arrivals alone cannot prove samples were lost (#686).
-        if setup.track
+        if matches!(cfg.protocol, Protocol::RtlTcp)
+            && cfg.rtl_infer_gaps
             && let Some(prev) = last_arrival
             && m.arrival_ns - prev > RTL_PAUSE_NS
         {
@@ -2587,9 +2599,9 @@ fn stream_inner(
         }
         worst_push = worst_push.max(t.elapsed());
 
-        // Arrival stamps the *end* of this message. The repaired rtl_tcp path uses
-        // that reading minus a fixed delay; the fallback and SpyServer use a window
-        // minimum. The receiver follows the resulting sample-0 UTC at a bounded rate.
+        // Arrival stamps the end of this message. Reject delivery jitter with a
+        // window minimum independently of Fs calibration. The receiver follows
+        // the resulting sample-0 UTC at a bounded rate.
         let samples = rx.samples_in();
         // A changed delay restarts the minimum: candidates taken with the
         // old one would hold the estimate until they left the window.
@@ -2601,9 +2613,8 @@ fn stream_inner(
         // The time the stream had run is the receiver's own: it follows a rate offset that was measured
         // or is being learned (#686), where `samples / rate` would keep the nominal rate.
         let elapsed_ns = rx.elapsed_ns(samples);
-        let best = if matches!(cfg.protocol, Protocol::RtlTcp) && cfg.rtl_calibrate.is_zero() {
-            // A repaired server preserves the device time axis. Use its arrivals with a
-            // calibrated pipeline delay; do not retain a minimum from an earlier burst.
+        let best = if matches!(cfg.protocol, Protocol::RtlTcp) && !cfg.rtl_minimum_arrival {
+            // Optional direct-arrival comparison for evaluating the server pipeline.
             m.arrival_ns - delay_ns - elapsed_ns
         } else {
             est.push_elapsed(samples, elapsed_ns, m.arrival_ns - delay_ns)
@@ -3161,7 +3172,11 @@ mod tests {
 
     /// Feed the actual stream loop recorded arrivals: at 3 s delivery stalls for 750 ms.
     /// A buffered source then catches up; a restarting source really lost that interval.
-    fn rtl_stall_trace(calibrate: Duration, catch_up: bool) -> (u64, i64, u64, u64) {
+    fn rtl_stall_trace(
+        calibrate: Duration,
+        catch_up: bool,
+        infer_gaps: bool,
+    ) -> (u64, i64, u64, u64) {
         struct RecordedLink(std::collections::VecDeque<Message>);
         impl Link for RecordedLink {
             fn read(&mut self, _: &AtomicBool) -> std::io::Result<Message> {
@@ -3179,6 +3194,7 @@ mod tests {
         let mut cfg = Config::new("recorded", Vec::new());
         cfg.protocol = Protocol::RtlTcp;
         cfg.rtl_calibrate = calibrate;
+        cfg.rtl_infer_gaps = infer_gaps;
         let p = Plan {
             rate: 48_000,
             decimation: 0,
@@ -3252,17 +3268,26 @@ mod tests {
     fn nominal_rtl_delivery_stall_does_not_insert_missing_samples() {
         // Includes every input sample (also the contract of a server that zero-fills holes).
         assert_eq!(
-            rtl_stall_trace(Duration::ZERO, true),
+            rtl_stall_trace(Duration::ZERO, true, false),
             (288_000, 6_000_000_000, 0, 0)
         );
     }
 
     #[test]
     fn unmodified_rtl_restart_still_advances_over_lost_samples() {
-        assert_eq!(
-            rtl_stall_trace(Duration::from_secs(30), false),
-            (324_000, 6_750_000_000, 1, 0)
-        );
+        // An explicit pause heuristic also works without rate calibration.
+        for calibrate in [Duration::ZERO, Duration::from_secs(30)] {
+            assert_eq!(
+                rtl_stall_trace(calibrate, false, true),
+                (324_000, 6_750_000_000, 1, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn calibrated_rtl_buffered_delivery_does_not_invent_a_gap() {
+        let (samples, _, gaps, reanchors) = rtl_stall_trace(Duration::from_secs(30), true, false);
+        assert_eq!((samples, gaps, reanchors), (288_000, 0, 0));
     }
 
     /// Arrival-clock drift must not become an IQ frequency/time-scale correction when
