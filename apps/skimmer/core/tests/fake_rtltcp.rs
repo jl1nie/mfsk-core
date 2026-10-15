@@ -161,7 +161,11 @@ fn a_server_that_delivers_short_is_measured_and_followed() {
     // Measured over a short window here: the stand-in is steady.
     let r = run(
         &server,
-        |c| c.rtl_calibrate = Duration::from_secs(6),
+        |c| {
+            c.rtl_calibrate = Duration::from_secs(6);
+            // This fixture changes the acquisition clock, rather than deleting IQ.
+            c.rtl_nominal_acquisition = false;
+        },
         has_cq,
     );
     assert!(

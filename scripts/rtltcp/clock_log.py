@@ -8,6 +8,8 @@ for l in open(sys.argv[1]):
     if len(p)==6 and p[0]=="C":
         rows.append((int(p[1]),int(p[2]),int(p[3]),int(p[4]),int(p[5])))
 print("records",len(rows))
+if len(rows) < 2:
+    sys.exit("need at least two C records to measure the callback rate")
 t=[(r[0]-ft0)/1e7 for r in rows]; n=[r[1] for r in rows]
 print("span %.1f s, samples %d, mean rate %.0f S/s (nominal %s)"%(t[-1]-t[0],n[-1]-n[0],(n[-1]-n[0])/(t[-1]-t[0]),sys.argv[2] if len(sys.argv)>2 else "?"))
 resets=[(round(t[i]-t[0],2),rows[i][3]) for i in range(len(rows)) if rows[i][3]]
@@ -25,10 +27,13 @@ while k<len(t):
 gaps=[(round(t[i]-t[0],2),round((t[i]-t[i-1])*1e3)) for i in range(1,len(t)) if t[i]-t[i-1]>0.08]
 print("record gaps >80 ms:",len(gaps),gaps[:10])
 
-# dbg4 "F" records: F <UTC> <firstSampleNum> <hole> <filled so far>, one per callback that follows a hole
-holes=[l.split() for l in open(sys.argv[1]) if l.startswith("F ") and len(l.split())==5]
-if holes:
+# dbg4 writes an F record alongside every C record, including zero-gap callbacks.
+# F <UTC> <firstSampleNum> <hole> <filled so far>
+fsn_records=[l.split() for l in open(sys.argv[1]) if l.startswith("F ") and len(l.split())==5]
+holes=[p for p in fsn_records if int(p[3]) > 0]
+if fsn_records:
     h=[int(x[3]) for x in holes]
-    print("holes in the API's sample numbering:",len(h),"total",sum(h),"samples; largest",max(h),"; filled by the server:",holes[-1][4])
+    print("sample-number records:",len(fsn_records))
+    print("holes in the API's sample numbering:",len(h),"total",sum(h),"samples; largest",max(h, default=0),"; filled by the server:",fsn_records[-1][4])
 else:
-    print("no F records (dbg3 log, or no holes in firstSampleNum)")
+    print("no F records: sample-number continuity cannot be checked from this log")

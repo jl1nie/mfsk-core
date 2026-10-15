@@ -247,10 +247,15 @@ machine the RSP is plugged into), which speaks the `rtl_tcp` protocol; plain `rt
   setting. The other choices are a check.
 - **Listening address.** `rsp_tcp` listens on `127.0.0.1` only. For another PC, start it with `-a 0.0.0.0`, on a network
   you trust: whoever reaches the port controls the RSP.
-- **One stream, one band.** The server streams for ever at one rate (2.048 MS/s; `--rate` in the command line version) and
+- **One stream, one band.** The server streams for ever at one rate (1.024 MS/s; `--rate` in the command line version) and
   cannot be paused; the skimmer retunes it, waits a moment, and writes the gain again (a gain written at once did not take
   on an RSP1). A rotation works as with SpyServer, but the first seconds after a retune are dropped. With no *Gain* set the
   server's automatic gain is on; a gain index makes it manual.
+- **Rate model.** For a normal server that loses samples in delivery, use **Measure 30 s + track**
+  with **Sample loss (nominal ADC clock)**. RF conversion keeps the requested sampling rate while
+  measured throughput approximates the audio time scale. No server patch is required. If the ADC
+  itself runs at a different rate, select **ADC clock offset** instead. Delivery timing alone cannot
+  distinguish these cases, and unknown holes can still cause DT drift or lost messages.
 - **Status.** Decoding is tested against a stand-in `rtl_tcp` server (8-bit and 16-bit). Against a real RSP1 on an
   unpowered USB hub it decoded FT8 from JA stations on 7041 kHz (4 to 9 per slot), but that `rsp_tcp` stopped with `RSP failure`
   after 1 to 7 minutes (also with nothing but a reader on it). **Give the RSP its own powered USB port**; a second USB device on

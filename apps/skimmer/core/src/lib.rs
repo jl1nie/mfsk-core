@@ -34,6 +34,8 @@ pub mod jtty;
 pub mod modes;
 pub mod plan;
 pub mod pskreporter;
+#[cfg(test)]
+mod recorded_iq;
 pub mod rtltcp;
 pub mod spot;
 pub mod spyserver;
@@ -754,6 +756,10 @@ pub struct Config {
     /// rate tracking. Arrival timing and pause-based gap guesses are separate settings.
     /// Use zero after fixing or zero-filling losses on the server (#686).
     pub rtl_calibrate: Duration,
+    /// With rtl_tcp calibration: keep frequency translation on the requested ADC
+    /// rate, using measured payload throughput only for time stretching. Defaults
+    /// to true for sample-deleting transports. False models a genuine ADC rate offset.
+    pub rtl_nominal_acquisition: bool,
     /// With rtl_tcp: use the least-delayed arrival in a sliding window for UTC.
     /// Independent of rate calibration; defaults to true to reject delivery jitter.
     pub rtl_minimum_arrival: bool,
@@ -1070,6 +1076,7 @@ impl Config {
             protocol: Protocol::SpyServer,
             rtl_format: rtltcp::RtlFormat::Auto,
             rtl_calibrate: Duration::from_secs(30),
+            rtl_nominal_acquisition: true,
             rtl_minimum_arrival: true,
             rtl_infer_gaps: false,
             channels,
@@ -1757,6 +1764,12 @@ fn session_rtl(
     let (mut measured_rate, mut calibrated) = (None::<u32>, false);
     // Only the unmodified-server fallback learns a residual offset across rotation steps.
     let mut setup = RateSetup::for_rtl(cfg);
+    // A stock server's average payload rate may be low because samples were
+    // deleted. Keep frequency translation on the requested acquisition clock;
+    // use the measured payload rate only for the audio/UTC approximation.
+    if !cfg.rtl_calibrate.is_zero() && cfg.rtl_nominal_acquisition {
+        setup.acquisition_hz = Some(f64::from(rate));
+    }
     let mut wf_bank = WfBank::new();
     let mut last_step: Option<Option<usize>> = None;
     let mut held_step: Option<Option<usize>> = None;
@@ -2080,6 +2093,7 @@ struct RateSetup {
     ppm: f64,
     /// Whether the receiver learns the rest from the readings given to `set_time`.
     track: bool,
+    acquisition_hz: Option<f64>,
 }
 
 impl RateSetup {
@@ -2087,6 +2101,7 @@ impl RateSetup {
         Self {
             ppm: 0.0,
             track: !cfg.rtl_calibrate.is_zero(),
+            acquisition_hz: None,
         }
     }
 }
@@ -2114,6 +2129,9 @@ fn receiver(
     }
     if setup.ppm != 0.0 {
         rx.set_rate_offset_ppm(setup.ppm);
+    }
+    if let Some(hz) = setup.acquisition_hz {
+        rx.set_acquisition_rate_ppm(Some((hz / f64::from(p.rate) - 1.0) * 1e6));
     }
     if setup.track {
         rx.track_rate(Some(mfsk_core::iq::RateTrackConfig::default()));
@@ -2294,7 +2312,9 @@ fn stream(
         // The JTTY threads end their receptions as they stop: the messages still
         // open are reported cut off, before the queue goes.
         l.jtty.clear();
-        while let Ok(m) = l.jtty_results.try_recv() {
+        while let Ok(mut m) = l.jtty_results.try_recv() {
+            m.freq_hz =
+                m.dial_hz + 3000.0 + (m.freq_hz - m.dial_hz - 3000.0) * l.rx.audio_rf_scale();
             on_event(Event::Jtty(m));
         }
     }
@@ -2314,7 +2334,8 @@ fn settle(live: &mut Option<Live>, on_event: &mut impl FnMut(Event)) {
     while let Ok(d) = l.results.try_recv() {
         on_event(Event::Decode(d));
     }
-    while let Ok(m) = l.jtty_results.try_recv() {
+    while let Ok(mut m) = l.jtty_results.try_recv() {
+        m.freq_hz = m.dial_hz + 3000.0 + (m.freq_hz - m.dial_hz - 3000.0) * l.rx.audio_rf_scale();
         on_event(Event::Jtty(m));
     }
 }
@@ -2545,6 +2566,11 @@ fn stream_inner(
                 // then has a history to show.
                 wf.coarse.push(&audio, end, &mut coarse_rows);
                 wf.fine.push(&audio, end, &mut fine_rows);
+                let scale = rx.audio_rf_scale() as f32;
+                for row in coarse_rows.iter_mut().chain(&mut fine_rows) {
+                    row.f_lo_hz = 3000.0 + (row.f_lo_hz - 3000.0) * scale;
+                    row.bin_hz *= scale;
+                }
                 for r in &coarse_rows {
                     remember(&mut wf.hist_coarse, r);
                 }
@@ -2576,7 +2602,8 @@ fn stream_inner(
                 }
             }
         }
-        while let Ok(m) = jtty_results.try_recv() {
+        while let Ok(mut m) = jtty_results.try_recv() {
+            m.freq_hz = m.dial_hz + 3000.0 + (m.freq_hz - m.dial_hz - 3000.0) * rx.audio_rf_scale();
             on_event(Event::Jtty(m));
         }
         for slot in slots {

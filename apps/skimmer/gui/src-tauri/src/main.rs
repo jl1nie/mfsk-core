@@ -137,6 +137,7 @@ struct ServerSetting {
     rtl_format: String,
     /// Startup rate calibration seconds; zero keeps the nominal rate and offset zero.
     rtl_calibrate: u64,
+    rtl_nominal_acquisition: bool,
     rtl_minimum_arrival: bool,
     rtl_infer_gaps: bool,
     /// The operator's callsign at this server (`mycall`, for the QSO-context a-priori decoding).
@@ -256,6 +257,7 @@ impl Default for ServerSetting {
             protocol: String::new(),
             rtl_format: String::new(),
             rtl_calibrate: 30,
+            rtl_nominal_acquisition: true,
             rtl_minimum_arrival: true,
             rtl_infer_gaps: false,
             // Empty until migrated: a settings file from before these were per server hands its own down.
@@ -931,6 +933,7 @@ fn configs(s: &Settings) -> Result<Vec<Planned>, String> {
             _ => RtlFormat::Auto,
         };
         cfg.rtl_calibrate = std::time::Duration::from_secs(srv.rtl_calibrate);
+        cfg.rtl_nominal_acquisition = srv.rtl_nominal_acquisition;
         cfg.rtl_minimum_arrival = srv.rtl_minimum_arrival;
         cfg.rtl_infer_gaps = srv.rtl_infer_gaps;
         cfg.live.set_station(Station::new(
@@ -1659,6 +1662,7 @@ mod health_log_tests {
         let old: ServerSetting = serde_json::from_str(r#"{"protocol":"rtl_tcp"}"#).unwrap();
         assert_eq!(old.rtl_calibrate, 30);
         assert!(old.rtl_minimum_arrival);
+        assert!(old.rtl_nominal_acquisition);
         assert!(!old.rtl_infer_gaps);
         let nominal: ServerSetting =
             serde_json::from_str(r#"{"protocol":"rtl_tcp","rtlCalibrate":0}"#).unwrap();
@@ -1694,6 +1698,18 @@ mod health_log_tests {
                     assert_eq!(cfg.rtl_infer_gaps, infer);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn acquisition_clock_model_reaches_receiver_and_round_trips() {
+        for nominal in [false, true] {
+            let s: Settings = serde_json::from_value(serde_json::json!({
+                "servers": [{"protocol":"rtl_tcp", "rtlNominalAcquisition":nominal}],
+                "channels": [{"server":0, "mode":"FT8", "dialHz":7074000}]
+            })).unwrap();
+            let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!(configs(&back).unwrap()[0].cfg.rtl_nominal_acquisition, nominal);
         }
     }
 

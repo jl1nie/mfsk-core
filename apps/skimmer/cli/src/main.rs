@@ -28,7 +28,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: skimmer --server HOST:PORT --ch MODE@DIAL_HZ[:band=LO-HI][:dx=CALL][:depth=fast|normal|deep] [--ch ...] [--mycall CALL --mygrid GRID] [--log FILE]\n\
          \x20      (several servers: repeat --server [NAME=]HOST:PORT with its own options and --ch; a rotation: --step MINUTES before the --ch heard in that step)\n\
-         \x20      [--protocol spyserver|rtl_tcp [--rtl-format auto|8|16] [--rtl-calibrate SECS]]   (rtl_tcp: also SDRplay's rsp_tcp; 16 = rsp_tcp -E -b 16)\n\
+         \x20      [--protocol spyserver|rtl_tcp [--rtl-format auto|8|16] [--rtl-calibrate SECS] [--rtl-adc-clock-offset]]   (rtl_tcp: also SDRplay's rsp_tcp; 16 = rsp_tcp -E -b 16)\n\
          \x20      [--tune] [--yield] [--ntp HOST] [--net-delay MS] [--center HZ] [--rate S/s] [--gain N] [--format float|int16]\n\
          \x20      [--pfb | --direct] [--iq-swap] [--reanchor-ms MS] [--slot-budget SHARE|off] [--lanes N] [--no-early] [--detail]\n\
          \x20      [--psk-reporter [--psk-grid GRID] [--psk-ant TEXT] [--psk-rig TEXT] [--psk-interval SECS] [--psk-to HOST:PORT]]\n\
@@ -125,6 +125,7 @@ fn parse_args() -> Option<Parsed> {
             "--rtl-calibrate" => {
                 cfg.rtl_calibrate = Duration::from_secs(it.next()?.parse().ok()?);
             }
+            "--rtl-adc-clock-offset" => cfg.rtl_nominal_acquisition = false,
             "--pfb" => cfg.channelizer = Some(Channelizer::Pfb),
             "--direct" => cfg.channelizer = Some(Channelizer::Direct),
             "--iq-swap" => cfg.iq_swap = true,

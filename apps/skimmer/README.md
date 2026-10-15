@@ -344,14 +344,16 @@ Decision and measurements: #684, #685.
   for the requested byte rate (`rtltcp::await_rate`, up to 60 s), even when calibration is disabled.
   (2) The observed RSP1 shortfall was sample loss at the API callback, rather than a wrong device clock.
   See [the investigation and server remedies](../../docs/notes/RTLTCP_RATE.md).
-- **After the server stops or zero-fills sample losses:** use `--rtl-calibrate 0` (GUI: **Rate calibration →
-  Off (nominal rate)**). This skips the 30 s measurement and disables automatic rate correction.
-  Leave **Arrival timing → Reject delivery jitter** selected and **Infer loss from pauses** unchecked.
-  The least-delayed arrival in a sliding window anchors UTC independently of rate calibration.
-  This preserves the sample time axis; unidentified holes cannot be repaired by the GUI.
-- **True acquisition-rate differences:** startup calibration remains available, but its input is payload
-  delivery, so first preserve missing sample positions at the source. A lower payload rate by itself is
-  not evidence of a slower ADC. Calibration defaults to 30 s for compatibility with existing settings.
+- **Normal servers with sample loss:** leave **Rate calibration → Measure 30 s + track** and
+  **Rate model → Sample loss (nominal ADC clock)** selected. The requested rate still determines RF
+  frequency conversion; the measured delivery rate approximates the compressed audio time axis.
+  This needs no server modification. It cannot reconstruct unidentified holes or guarantee stable DT.
+- **True acquisition-rate differences:** choose **Rate model → ADC clock offset** (CLI:
+  `--rtl-adc-clock-offset`) only when the ADC itself runs at a different rate. This retains the
+  original coupled frequency/time correction. Throughput alone cannot distinguish the two causes.
+- **A server that preserves sample positions:** `--rtl-calibrate 0` (GUI: **Off (nominal rate)**)
+  skips startup measurement and disables tracking. Keep arrival jitter rejection enabled and pause
+  inference disabled when all samples, including any source-filled holes, arrive intact.
 - **Delivery pauses:** the GUI no longer infers missing IQ from pauses by default, including with rate
   calibration enabled. **Infer loss from pauses** explicitly restores the >500 ms heuristic for a source
   known to discard samples during pauses. It is independent of calibration; buffered delivery can fool it.
@@ -359,10 +361,10 @@ Decision and measurements: #684, #685.
   a LAN. Compare DT across several stations and repeated slots, preferably against another receiver.
   Neither arrival timing nor Fs calibration can determine an unknown fixed pipeline delay uniquely.
   **Direct arrival** is available for comparison with the previous nominal-rate path.
-- **Real-radio evaluation:** record source sample-counter holes/resets alongside `STATUS.log` and
-  `skimmer.db`. Compare nominal Fs with/without jitter rejection before trying calibration. Check source
-  holes, decoder queue drops, reanchors, DT and RF frequency, not just decode count. The source must
-  zero-fill known holes; the GUI cannot locate them from TCP arrival pauses. Costas acquisition is deferred.
+- **Recorded-IQ evaluation:** compare clients on identical bytes and arrival times, with the replay
+  sender and GUI on the same NTP UTC basis. Check DT, RF frequency, queue drops and reanchors as well as
+  decode count. Source counters can establish diagnostic ground truth but are not required by the client.
+  See [the recorded-IQ client correction](../../docs/notes/IQ_RSP1_PR688_2026-10-15.md).
 - An RSP1 on a bare (unpowered) USB hub also failed (`RSP failure`, API: `Update(): Uninitialised device`) within 1-7 minutes, with or
   without the skimmer sending anything. Give the RSP its own powered USB port; the stock `rsp_tcp` exits on that event, a build that
   Uninit/Init's the RSP again and goes on (kept the stream going through one) is what #685 used.

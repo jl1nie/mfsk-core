@@ -52,6 +52,8 @@ export interface ServerSetting {
   protocol?: 'spyserver' | 'rtl_tcp';
   /** Startup calibration seconds; 0 uses the nominal rate without rate tracking. */
   rtlCalibrate?: number;
+  /** Keep RF mixing at the nominal ADC clock when payload loss lowers throughput. */
+  rtlNominalAcquisition?: boolean;
   /** Reject delivery jitter independently of rate correction; defaults to true. */
   rtlMinimumArrival?: boolean;
   /** Infer missing IQ from delivery pauses; defaults to false. */

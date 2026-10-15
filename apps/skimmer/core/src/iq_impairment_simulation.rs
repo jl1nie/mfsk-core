@@ -22,6 +22,7 @@ enum Correction {
     Envelope,
     ClockOnly,
     Measured,
+    Payload,
     TrueRate,
 }
 
@@ -56,7 +57,14 @@ fn suite() -> Vec<Case> {
         stochastic_loss: None,
         correction: Correction::Nominal,
     };
-    let mut cases = vec![base.clone()];
+    let mut cases = vec![
+        base.clone(),
+        Case {
+            name: "clean_Payload".into(),
+            correction: Correction::Payload,
+            ..base.clone()
+        },
+    ];
     for correction in [
         Correction::Nominal,
         Correction::ClockOnly,
@@ -154,7 +162,11 @@ fn suite() -> Vec<Case> {
         compensate: true,
         ..base.clone()
     });
-    for correction in [Correction::Nominal, Correction::Measured] {
+    for correction in [
+        Correction::Nominal,
+        Correction::Measured,
+        Correction::Payload,
+    ] {
         cases.push(Case {
             name: format!("buffered750_{correction:?}"),
             api_delay: 0.750,
@@ -460,13 +472,17 @@ fn run(case: &Case, iq: Arc<Vec<[i16; 2]>>, snr: f64, seed: u32) -> Value {
     let mut setup = RateSetup {
         ppm: 0.0,
         track: false,
+        acquisition_hz: None,
     };
     match case.correction {
         Correction::Envelope => cfg.rtl_minimum_arrival = true,
-        Correction::Measured => {
+        Correction::Measured | Correction::Payload => {
             cfg.rtl_calibrate = Duration::from_secs(30);
             cfg.rtl_minimum_arrival = true;
-            cfg.rtl_infer_gaps = true;
+            cfg.rtl_infer_gaps = matches!(case.correction, Correction::Measured);
+            if matches!(case.correction, Correction::Payload) {
+                setup.acquisition_hz = Some(f64::from(RATE));
+            }
             setup.track = true;
             // Same acceptance gate as rtltcp::measure_rate, including rare
             // long outages that make a 30-second fit implausibly low.
@@ -629,6 +645,17 @@ fn acquisition_delivery_and_loss_study() {
         results.iter().all(|r| r["worker_dropped_slots"] == 0),
         "host decoding overload invalidates this experiment"
     );
+    for r in results.iter().filter(|r| {
+        matches!(
+            r["case"].as_str(),
+            Some("clean_Payload" | "buffered750_Payload")
+        )
+    }) {
+        assert_eq!(r["decoded"], 6, "complete payload must remain decodable");
+        assert_eq!(r["correct_slot_utc"], 6);
+        assert_eq!(r["gaps"], 0, "buffering must not invent sample loss");
+        assert!(r["reanchors_s"].as_array().unwrap().is_empty());
+    }
     for r in results.iter().filter(|r| r["case"] == "clean") {
         assert_eq!(
             r["decoded"], 6,
@@ -699,7 +726,14 @@ fn stochastic_acquisition_study() {
         .unwrap_or(20);
     assert!(seeds > 0);
     let base = suite().remove(0);
-    let mut cases = vec![base.clone()];
+    let mut cases = vec![
+        base.clone(),
+        Case {
+            name: "clean_Payload".into(),
+            correction: Correction::Payload,
+            ..base.clone()
+        },
+    ];
     for (kind, name) in [(0, "bounded"), (1, "tail650ms"), (2, "tail4s")] {
         for (fill, correction) in [
             (false, Correction::Nominal),

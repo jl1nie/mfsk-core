@@ -430,6 +430,8 @@ pub struct IqToAudio {
     mix_hz: f64,
     /// Real rate over nominal, `1 + eps` ([`Self::set_rate_offset_ppm`], #686).
     ratio: f64,
+    /// Optional acquisition-clock ratio, independent of payload time stretching.
+    acquisition_ratio: Option<f64>,
     /// The last stage, once a rate offset is set.
     rate: Option<RateStage>,
     /// Audio samples produced so far.
@@ -511,6 +513,7 @@ impl IqToAudio {
             nco: Nco::new(off + AUDIO_CENTRE_HZ, fs as f64),
             mix_hz: off + AUDIO_CENTRE_HZ,
             ratio: 1.0,
+            acquisition_ratio: None,
             rate: None,
             out_count: 0,
             ti: Vec::new(),
@@ -563,14 +566,28 @@ impl IqToAudio {
         (self.ratio - 1.0) * 1e6
     }
 
+    /// Pin the acquisition clock used for frequency translation, independently of
+    /// the payload rate used to stretch audio. This is useful for streams with
+    /// deleted samples: a lower payload rate does not imply a slower ADC clock.
+    /// `None` restores the acquisition clock implied by the rate offset.
+    pub fn set_acquisition_rate_ppm(&mut self, ppm: Option<f64>) {
+        self.acquisition_ratio = ppm.map(|p| 1.0 + p * 1e-6);
+        self.nco.retune(
+            self.mix_hz,
+            self.stream.sample_rate as f64 * self.acquisition_ratio.unwrap_or(self.ratio),
+        );
+    }
+
     /// [`Self::set_rate_offset_ppm`] for a stream whose true centre is `center_hz`: the PFB's
     /// sub-band, whose centre is where the bank put it, not the nominal one.
     pub(crate) fn retarget(&mut self, center_hz: f64, ppm: f64) {
         self.stream.center_hz = center_hz;
         self.mix_hz = self.dial_hz - center_hz + AUDIO_CENTRE_HZ;
         self.ratio = 1.0 + ppm * 1e-6;
-        self.nco
-            .retune(self.mix_hz, self.stream.sample_rate as f64 * self.ratio);
+        self.nco.retune(
+            self.mix_hz,
+            self.stream.sample_rate as f64 * self.acquisition_ratio.unwrap_or(self.ratio),
+        );
         match self.rate.as_mut() {
             Some(r) => r.set_ratio(self.ratio),
             None if self.ratio != 1.0 => {

@@ -107,6 +107,9 @@ pub struct CompletedSlot {
     pub channel: ChannelId,
     pub mode: Mode,
     pub dial_hz: f64,
+    /// RF Hz per audio Hz about the 3000 Hz channel centre. Normally one;
+    /// differs when an acquisition clock is pinned separately from payload rate.
+    pub audio_rf_scale: f64,
     /// The slot's index on the grid: UTC `period · T` when a clock is set,
     /// counted from sample 0 otherwise. Consecutive slots of a channel have
     /// consecutive indices.
@@ -131,6 +134,7 @@ impl CompletedSlot {
             channel,
             mode,
             dial_hz: 0.0,
+            audio_rf_scale: 1.0,
             period,
             start_sample: 0,
             utc_ns: None,
@@ -152,7 +156,7 @@ impl CompletedSlot {
 
     /// RF frequency of an audio frequency of this channel.
     pub fn abs_freq_hz(&self, audio_hz: f32) -> f64 {
-        self.dial_hz + audio_hz as f64
+        self.dial_hz + 3000.0 + (audio_hz as f64 - 3000.0) * self.audio_rf_scale
     }
 }
 
@@ -251,6 +255,7 @@ impl Slots {
             channel: id,
             mode,
             dial_hz,
+            audio_rf_scale: 1.0,
             period: j,
             start_sample: (start_k as u128 * fs as u128 / 12_000) as u64,
             utc_ns: anchor.map(|_| (j as i128 * period_ns) as i64),
@@ -365,6 +370,7 @@ pub struct IqReceiver {
     /// that never sets one does its arithmetic as it always did).
     ppm: f64,
     offset_set: bool,
+    acquisition_ppm: Option<f64>,
     /// Learns the rate offset from the readings of [`Self::set_time`], once asked ([`Self::track_rate`]).
     tracker: Option<RateTracker>,
     /// What the tracker has found and not applied yet, ppm: it is applied on the next slot boundary.
@@ -390,6 +396,7 @@ impl IqReceiver {
             virt: 0.0,
             ppm: 0.0,
             offset_set: false,
+            acquisition_ppm: None,
             tracker: None,
             pending_ppm: None,
             grid_cell: i64::MIN,
@@ -455,6 +462,37 @@ impl IqReceiver {
         self.ppm
     }
 
+    /// Pin the acquisition-clock offset used for frequency translation while
+    /// retaining the separate payload rate used for audio and UTC. Deleted
+    /// samples can lower the latter without changing the ADC clock. `None`
+    /// restores the usual single-clock model. A change drops open slots and
+    /// restarts the channel framing, as a retune does.
+    pub fn set_acquisition_rate_ppm(&mut self, ppm: Option<f64>) {
+        if self.acquisition_ppm == ppm {
+            return;
+        }
+        self.acquisition_ppm = ppm;
+        if let Some(bank) = self.bank.as_mut() {
+            bank.set_acquisition_rate_ppm(ppm);
+        }
+        for c in &mut self.channels {
+            if let Some(fe) = c.fe.as_mut() {
+                fe.set_acquisition_rate_ppm(ppm);
+            }
+        }
+        let sample = self
+            .bank
+            .as_ref()
+            .map_or(self.samples_in, |b| b.next_start_sample());
+        let k = self.audio_of_sample(sample);
+        self.reset_channels(k);
+    }
+
+    /// RF Hz per audio Hz, about the channel's 3000 Hz centre.
+    pub fn audio_rf_scale(&self) -> f64 {
+        (1.0 + self.acquisition_ppm.unwrap_or(self.ppm) * 1e-6) / self.ratio()
+    }
+
     /// Learn the rate offset from the readings given to [`Self::set_time`] (#686): the stream's anchor
     /// (`utc - samples / Fs`) falls by the offset that is missing, per second, and a least-squares line
     /// through a few minutes of readings finds it; the offset moves by that, a limited step at a time
@@ -506,6 +544,7 @@ impl IqReceiver {
         if self.ppm != 0.0 {
             fe.set_rate_offset_ppm(self.ppm);
         }
+        fe.set_acquisition_rate_ppm(self.acquisition_ppm);
         Ok(fe)
     }
 
@@ -836,6 +875,7 @@ impl IqReceiver {
                     if ppm != 0.0 {
                         fe.set_rate_offset_ppm(ppm);
                     }
+                    fe.set_acquisition_rate_ppm(self.acquisition_ppm);
                     c.fe = Some(fe);
                     if matches!(c.state, ChannelState::Paused(_)) {
                         report.resumed.push(c.id);
@@ -875,6 +915,7 @@ impl IqReceiver {
                 if ppm != 0.0 {
                     fe.set_rate_offset_ppm(ppm);
                 }
+                fe.set_acquisition_rate_ppm(self.acquisition_ppm);
                 c.fe = Some(fe);
             }
         }
@@ -900,7 +941,13 @@ impl IqReceiver {
                 Some(fe) => fe.push_planar(&self.bi, &self.bq, &mut c.scratch),
                 None => core::mem::swap(&mut c.scratch, &mut self.bank_out[c.bank_idx]),
             }
+            let first = out.len();
             c.feed(&self.clock, fs, out);
+            let scale =
+                (1.0 + self.acquisition_ppm.unwrap_or(self.ppm) * 1e-6) / (1.0 + self.ppm * 1e-6);
+            for slot in &mut out[first..] {
+                slot.audio_rf_scale = scale;
+            }
         }
     }
 

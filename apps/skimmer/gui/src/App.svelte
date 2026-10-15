@@ -528,7 +528,7 @@
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', rtlCalibrate: 30, rtlMinimumArrival: true, rtlInferGaps: false, grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
+      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', rtlCalibrate: 30, rtlNominalAcquisition: true, rtlMinimumArrival: true, rtlInferGaps: false, grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -675,6 +675,13 @@
                 <select bind:value={sv.rtlCalibrate} disabled={running}>
                   <option value={0}>Off (nominal rate)</option>
                   <option value={30}>Measure 30 s + track</option>
+                </select>
+              </div>
+              <div class="field" title="When samples are lost in delivery, keep RF frequency conversion at the requested sampling rate. Choose ADC clock offset only when the device itself samples at a different rate.">
+                <span>Rate model</span>
+                <select bind:value={sv.rtlNominalAcquisition} disabled={running || !sv.rtlCalibrate}>
+                  <option value={true}>Sample loss (nominal ADC clock)</option>
+                  <option value={false}>ADC clock offset</option>
                 </select>
               </div>
               <div class="field" title="Use the least-delayed arrival to keep buffered delivery from shifting sample UTC. Independent of rate calibration. Direct arrival is available for comparison.">
