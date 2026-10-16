@@ -250,6 +250,10 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Skimmer
 
+- rtl_tcp (#686, `docs/notes/RTLTCP_EVAL_PLAN.md` section 6): `RateMeter` takes a pause out of its time axis (a 1.4 s reset
+  in the 30 s window read 1.7-2.0 % short), `await_rate` waits 20 s of stream when the stream was never at another rate
+  (rsp_tcp's Init), and `IqReceiver` applies a learned rate offset on a boundary of every active channel's period
+  (60 s / 120 s modes no longer get it mid-slot). Not yet run on an RSP1.
 - rtl_tcp rate calibration now separates the requested ADC clock used for RF mixing from payload throughput
   used for audio timing. Normal servers need no patch; the previous ADC-clock model remains selectable.
   Two fixed-IQ comparisons improved FT8 rows from 0 to 10 and 1 to 28; long-pause reanchors remain.

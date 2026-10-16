@@ -51,7 +51,8 @@ use num_traits::Float;
 
 /// Interleaved I/Q converted per pass.
 const BLOCK: usize = 8_192;
-/// The grid a learned rate offset is applied on, ns: 15 s, a whole number of FT8 and FT4 slots.
+/// The finest grid a learned rate offset is applied on, ns: 15 s, a whole number of FT8 and FT4 slots.
+/// With longer-slotted channels active it is their common boundary ([`IqReceiver::rate_grid_ns`]).
 const SLOT_GRID_NS: i64 = 15_000_000_000;
 /// RMS the slot is scaled to, in `i16` units.
 const TARGET_RMS: f32 = 2_000.0;
@@ -377,6 +378,8 @@ pub struct IqReceiver {
     pending_ppm: Option<f64>,
     /// The 15 s cell of UTC the last reading was in.
     grid_cell: i64,
+    /// The grid `grid_cell` counts, ns.
+    grid_ns: i64,
     next_id: usize,
     pending: Vec<u8>,
     bi: Vec<f32>,
@@ -400,6 +403,7 @@ impl IqReceiver {
             tracker: None,
             pending_ppm: None,
             grid_cell: i64::MIN,
+            grid_ns: 0,
             next_id: 0,
             pending: Vec::new(),
             bi: Vec::new(),
@@ -756,10 +760,17 @@ impl IqReceiver {
         // A rate offset moves every tone by its distance from the IQ centre (4 Hz for 150 ppm at 26 kHz): inside
         // a slot that is a drift nothing decodes (an RSP1 behind `rsp_tcp`, 2026-10-12). What the tracker found
         // is applied when the clock crosses a boundary of the 15 s grid, a whole number of FT8 and FT4 slots.
-        let cell = utc_ns.div_euclid(SLOT_GRID_NS);
+        let grid = self.rate_grid_ns();
+        let cell = utc_ns.div_euclid(grid);
+        // A channel added or removed changes the grid; the cell number then means something else and is
+        // not a boundary crossed.
+        let regridded = grid != self.grid_ns;
+        self.grid_ns = grid;
         if cell != self.grid_cell {
             self.grid_cell = cell;
-            if let Some(step) = self.pending_ppm.take() {
+            if regridded {
+                // wait for the next boundary of the new grid
+            } else if let Some(step) = self.pending_ppm.take() {
                 self.set_rate_offset_ppm(self.ppm + step);
                 // The readings in the window were made against the offset just replaced.
                 if let Some(tracker) = self.tracker.as_mut() {
@@ -774,6 +785,31 @@ impl IqReceiver {
             }
         }
         change
+    }
+
+    /// The grid a learned rate offset is applied on, ns: a boundary of every active slotted channel's
+    /// period, so a change never falls inside a slot of any of them. 15 s with FT8 and FT4 only; a 60 s
+    /// or 120 s mode (JT65, WSPR) raises it to its own period (the least common multiple, in tenths of a
+    /// second), where the 15 s grid fell inside its transmissions (#686). JTTY has no slot and does not
+    /// count: its tones shift by the offset change wherever it is applied.
+    fn rate_grid_ns(&self) -> i64 {
+        let tenths = |ns: i64| ns / 100_000_000;
+        let gcd = |mut a: i64, mut b: i64| {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        };
+        let mut grid = tenths(SLOT_GRID_NS);
+        for c in &self.channels {
+            if let (ChannelState::Active, Some(s)) = (c.state, c.slots.as_ref()) {
+                let p = tenths(s.grid_period_ns() as i64);
+                if p > 0 {
+                    grid = grid / gcd(grid, p) * p;
+                }
+            }
+        }
+        grid * 100_000_000
     }
 
     /// Like [`Self::set_time`], but the clock is set to the reading at once instead of slewing to it:
@@ -1024,5 +1060,25 @@ mod tests {
             );
             assert_eq!((meta.t_slot_s * 10.0).fract(), 0.0, "{m:?}: whole tenths");
         }
+    }
+
+    /// The grid a rate offset is applied on follows the active channels: 15 s with FT8 alone, 120 s
+    /// once a WSPR channel is in, and back when it is removed.
+    #[cfg(all(feature = "ft8", feature = "wspr"))]
+    #[test]
+    fn the_rate_grid_is_a_boundary_of_every_active_channel() {
+        let mut rx = IqReceiver::new(IqStream::new(
+            96_000,
+            14_085_000.0,
+            crate::iq::IqSampleFormat::Cf32,
+        ));
+        assert_eq!(rx.rate_grid_ns(), 15_000_000_000);
+        let ft8 = rx.add_channel(14_070_000.0, Mode::Ft8).unwrap();
+        assert_eq!(rx.rate_grid_ns(), 15_000_000_000);
+        let wspr = rx.add_channel(14_090_000.0, Mode::Wspr).unwrap();
+        assert_eq!(rx.rate_grid_ns(), 120_000_000_000);
+        assert!(rx.remove_channel(wspr));
+        assert_eq!(rx.rate_grid_ns(), 15_000_000_000);
+        assert!(rx.remove_channel(ft8));
     }
 }
