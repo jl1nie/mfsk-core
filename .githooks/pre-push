@@ -26,11 +26,26 @@ cd "$(git rev-parse --show-toplevel)"
 # shouldn't pay for a 15-combo feature matrix.
 have_update=0
 have_ref=0
-while read -r _local_ref local_sha _remote_ref _remote_sha; do
+changed=""
+unknown_base=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
   have_ref=1
   case "$local_sha" in
     *[!0]*) have_update=1 ;;
+    *) continue ;;
   esac
+  # What this push adds: against the remote tip, or for a new branch
+  # against where it forked from origin/main.
+  case "$remote_sha" in
+    *[!0]*) base="$remote_sha" ;;
+    *) base="$(git merge-base "$local_sha" origin/main 2>/dev/null || true)" ;;
+  esac
+  if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+    changed="$changed
+$(git diff --name-only "$base" "$local_sha")"
+  else
+    unknown_base=1
+  fi
 done
 if [ "$have_update" -eq 0 ]; then
   # Distinguish the two ways this happens, because "deletions only" on
@@ -42,6 +57,32 @@ if [ "$have_update" -eq 0 ]; then
     echo "==> pre-push: deletions only, skipping checks"
   fi
   exit 0
+fi
+
+# Path filter. Anything this gate does not compile or test cannot be made
+# worse by running it: docs, the embedded crates (own toolchain, never in
+# this workspace), bindings, the Tauri GUI, wasm benches. An unknown base
+# (e.g. the remote tip is not fetched) means the full gate.
+#
+#   nothing the gate covers        -> skip
+#   only ffi / hosttest / skimmer  -> fmt + clippy + doc (+ ffi tests if ffi)
+#   mfsk-core, Cargo.*, toolchain, the gate itself -> everything
+if [ "$unknown_base" -eq 0 ]; then
+  lib=0 ffi=0 rust=0
+  while IFS= read -r f; do
+    case "$f" in
+      "") ;;
+      mfsk-core/*|Cargo.toml|Cargo.lock|rust-toolchain.toml|.cargo/*|scripts/pre-push-check.sh|.githooks/*)
+        lib=1; ffi=1; rust=1 ;;
+      mfsk-ffi/*|mfsk-ffi-abi/*) ffi=1; rust=1 ;;
+      hosttest/*|apps/skimmer/core/*|apps/skimmer/cli/*) rust=1 ;;
+    esac
+  done <<< "$changed"
+  if [ "$rust" -eq 0 ]; then
+    echo "==> pre-push: no Rust workspace paths in this push, skipping checks"
+    exit 0
+  fi
+  export PREPUSH_MATRIX="$lib" PREPUSH_FFI="$ffi"
 fi
 
 exec scripts/pre-push-check.sh "$@"

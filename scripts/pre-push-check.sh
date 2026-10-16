@@ -17,6 +17,13 @@
 # combos says nothing about the rest of this crate's feature matrix.
 set -euo pipefail
 
+# Scope switches, set by `.githooks/pre-push` from the paths being pushed
+# (both default to 1, so a by-hand run is always the full gate):
+#   PREPUSH_MATRIX=0  skip the feature matrix and the fixed-point floors
+#   PREPUSH_FFI=0     skip the mfsk-ffi test suites
+PREPUSH_MATRIX="${PREPUSH_MATRIX:-1}"
+PREPUSH_FFI="${PREPUSH_FFI:-1}"
+
 echo "► cargo fmt --check"
 cargo fmt --check
 
@@ -27,6 +34,7 @@ cargo clippy --workspace --all-targets --features full,internal-testing --no-dep
 echo "► cargo doc (full features)"
 RUSTDOCFLAGS="-D warnings" cargo doc -p mfsk-core --no-deps --features full
 
+if [ "$PREPUSH_MATRIX" = 1 ]; then
 echo "► feature matrix (mirrors ci.yml's feature-matrix job)"
 FEATURE_MATRIX=(
   ""
@@ -82,6 +90,9 @@ for features in "${FEATURE_MATRIX[@]}"; do
   fi
 done
 
+fi
+
+if [ "$PREPUSH_FFI" = 1 ]; then
 echo "► mfsk-ffi feature combinations"
 # `desktop` is the default; `mobile` drops rayon and serde.
 #
@@ -98,6 +109,9 @@ for ffi_features in "desktop" "mobile"; do
     --no-default-features --features "$ffi_features"
 done
 
+fi
+
+if [ "$PREPUSH_MATRIX" = 1 ]; then
 echo "► FT8 recall floors under fixed-point (issue #359)"
 # `fixed-point` implies `nstep-half` and is the numeric path every
 # embedded build ships, but nothing routine ran it: the merge gate is
@@ -126,5 +140,6 @@ RUSTFLAGS="-D warnings" MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --release 
 RUSTFLAGS="-D warnings" MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --release --no-default-features \
   --features alloc,ft8,fft-extern,fixed-point,internal-testing \
   --test ft8_embedded_driver_recall
+fi
 
 echo "✓ pre-push checks passed"
