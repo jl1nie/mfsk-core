@@ -163,3 +163,45 @@ default, and it matches the real captures' low counts. This is one seed and one 
 5. Replace the assumed hole shape with the trace from the real log; repeat 3-4 on it.
 6. Build the real recording's oracle; check the ranking holds on real signals.
 7. Only then: implement the winner, delete the rest, confirm once on the RSP1.
+
+## 9. Handoff to the host (2026-10-16)
+
+The corpus was made in a cloud session and not kept (11 GB). Regenerate it on the host, in a directory
+outside the repository:
+
+```sh
+cargo build --release -p skimmer-core --example synth_rtltcp
+for s in 1 2 3; do
+  target/release/examples/synth_rtltcp --out $CORPUS/seed$s --seconds 600 --seed $s
+  (cd $CORPUS/seed$s && sha256sum *.bin truth.json > SHA256SUMS)
+done
+```
+
+Reference checksums of the cloud run (x86_64 Linux, commit `233c8202`). `truth.json` contains no
+floating-point arithmetic that depends on the CPU and must match exactly; if it does not, the generator or
+its inputs changed. The `.bin` files go through rustfft and `libm`, whose results may differ in the last bit
+on another CPU or OS; a mismatch there alone is not an error, but then record the host's own sums and use
+only those from then on (rule: fixed inputs).
+
+| seed | `truth.json` | `delivered.bin` |
+|---|---|---|
+| 1 | `df6e7ebff66ae2e080a6761ab2f9b727ffd3a58999e0a9ab03b76a717a60f43b` | `6ea1ab4eed76c73c3c59f45c15717f71ba329197052544521e1b2619ea53e888` |
+| 2 | `3659574f4f02c0203e690bad690b6c27f489fb39433ed7b5a6d079ba6d8381b6` | `073d5b15a0ff452baec34a281e84890c2fb1ccac120f19e1e109ec6a2a9ff000` |
+| 3 | `648fc08b01cc770c7cce53ae91ecb0f8000e7e73cc473211d250cf9e5432e33a` | `b1b01323fc552e7324d871deb85bbeb84170b109b8d651d7a9f1244eb8b77278` |
+
+Per seed: 1 920 transmissions, 4.09 / 4.38 / 4.30 % of samples lost, 1 947 / 2 112 / 2 026 holes, 3 resets.
+
+Next tasks, in order (section 8, steps 2-4):
+
+1. **Harness, three channels.** `recorded_iq::decode_recorded_iq` takes one FT8 dial (`MFSK_RTL_DIAL`). Give it
+   the corpus's three channels (FT8 7 074 / 7 041 kHz, FT4 7 047.5 kHz) and write `"mode"` and `"dial"` into
+   each row; `score_synth.py` already filters by `--dial` and `--mode`.
+2. **Bounds.** clean, oracle and delivered with A on the three seeds. Check rule 1 (clean's reported SNR
+   within ±2 dB of the truth) for FT4 too, which the first check did not cover.
+3. **Candidates.** B and C exist as `recorded_iq` settings (`MFSK_RTL_EFFECTIVE_RATE`,
+   `MFSK_RTL_PIN_ACQUISITION`, `MFSK_RTL_TRACK`). Give B its rate two ways: the truth's mean payload rate
+   (its ceiling) and the client's own 30 s `measure_rate` (what it gets in use). D and E need code in the
+   harness first (zero insertion; lookahead pause fill). F is B or D with a pause-robust `measure_rate`.
+4. **Trace.** Run `holes_from_clock_log.py` on the 2026-10-15 dbg4 `rsp_clock.log` (`--skip 30` drops the
+   start-up) and regenerate with `--loss trace:FILE.csv`; repeat 2-3.
+5. Record every table here with the commit, the flags and the `delivered.bin` checksum it ran on.
