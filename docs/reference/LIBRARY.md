@@ -1584,6 +1584,24 @@ the middle of is not. A slot's last audio sample comes out a few filter
 lengths after the last IQ sample that carries it, so a recording needs a
 moment of padding after its end, as a live stream has.
 
+*A source whose clock is not its nominal one (#686).* The chain is built for one integer rate, and a source
+that really delivers a few per cent more or fewer samples per second (an `rtl_tcp` server, a cheap USB
+device, a sound card at an odd clock) is time-warped by that much: FT8's 79 symbols are 180-370 ms out at
+1.4-2.9 %, and the mixing is off by `eps` of the channel's distance from the centre. Give the stream the
+nearest rate the chain takes and say what is left: `let (nominal, ppm) = iq::plannable_rate(real_hz)?;`
+(within 500 ppm of the real rate; `IqStream::new(nominal, ..)`), then `rx.set_rate_offset_ppm(ppm)`.
+Every channel's audio is then on a true 12 kHz grid (a fractional-delay stage on the 12 kHz baseband,
+no group delay; the NCO and the PFB sub-bands follow the real rate), and `set_time` / `utc_of` read their
+sample counts at the real rate. It may change while running: the position moves continuously and no slot
+is lost; up to `IqReceiver::MAX_RATE_OFFSET_PPM` (50000, 5 %: the edges of the channel window move 160 Hz). With no offset set the arithmetic is the old one.
+`rx.track_rate(Some(RateTrackConfig::default()))` learns the offset from the readings of `set_time`
+instead: the anchors (`utc - samples / Fs`) fall by the missing offset per second, a least-squares line
+through a few minutes of them (more than three standard errors from zero) moves the offset by it, 400 ppm
+at most per fit, a fit a minute at the earliest, and a step of the clock empties the window. The readings
+must be cleaned of network delay and its jitter by the caller. The stage costs 0.016 % of a core per
+channel at 768 kS/s (0.59 % without it). The chain's filters stay those of the nominal rate, which is right
+to a few thousand ppm. A slot's `start_sample` is the sample at the nominal rate.
+
 *Early decode over IQ.* A channel can also be delivered as prefixes, for
 `decode_prefix` (§2.3): `rx.set_prefix_points(id, decoder.prefix_points())`,
 and from the next slot that opens, `push_*` hands over the slot cut at

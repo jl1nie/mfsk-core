@@ -102,7 +102,7 @@ const SLEEP_JUMP: Duration = Duration::from_secs(3);
 pub const SLEPT: &str = "the machine slept";
 
 /// Whether `wall` advanced `SLEEP_JUMP` more than `mono` since the last pass.
-fn slept(mono: Duration, wall: Option<Duration>) -> bool {
+pub(crate) fn slept(mono: Duration, wall: Option<Duration>) -> bool {
     wall.is_some_and(|w| w.saturating_sub(mono) >= SLEEP_JUMP)
 }
 

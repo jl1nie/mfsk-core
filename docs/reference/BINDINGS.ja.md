@@ -699,6 +699,16 @@ IQ の行はテキストではなく `key` と `freq_hz` で比べてくださ�
 チャンネル数を報告します。録音には、ライブのストリームと同じように、終端の後に少し余白が要ります。
 スロットの最後の音声サンプルは、それを運ぶ最後の IQ サンプルの数フィルタ長後に出てくるからです。
 
+**クロックが公称値と違う音源（#686）。** Hz 単位まで測ったレートは、チェーンが受け付けるものにまずなりませんし、
+名乗るレートから数%ずれて動く音源は、時間軸と混合周波数が歪みます。`mfsk_iq_plannable_rate(real_hz, &rate, &ppm)` は、
+チェーンが受け付ける 500 ppm 以内のレートと、残るオフセットを返します（12 kHz 未満や、計画できるものが
+なければ `InvalidArg`）。その `rate` で受信機を開き、`mfsk_iq_set_rate_offset_ppm(rx, ppm)` を呼びます
+（`mfsk_iq_rate_offset_ppm` で読み戻せます。±50000 に丸められ、実行中に変えられます）。すると音声は真の 12 kHz の
+格子に乗り、`mfsk_iq_set_time` はサンプル数を実レートで読みます。`mfsk_iq_track_rate(rx, 1)` は、代わりに
+`mfsk_iq_set_time` の読みからオフセットを学習します（早くても 1 分に 1 回の補正で、1 回 400 ppm まで。読みから
+ネットワーク遅延を取り除くのは呼び出し側）。`0` で止めます。この 4 つは C の面で、Kotlin と Swift の
+ラッパにはまだありません。
+
 **早期デコードは既定で有効（#601）**: デコーダにチェックポイントがあるチャンネル（FT8 の Normal
 または Deep）は、`mfsk_iq_push` の中で約 11.8 s の時点でもデコードされます。その行はスロットが
 揃う前に、チャンネルのデコーダの `mfsk_decoder_set_on_decode` コールバックと `mfsk_iq_poll` に
@@ -853,7 +863,7 @@ uint32_t   mfsk_runtime_thread_count(void);
 | Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (15) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_encode_tones_ex` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
-| IQ (15) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_set_early` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` |
+| IQ (19) | `mfsk_iq_open` `mfsk_iq_open_with` `mfsk_iq_close` `mfsk_iq_add_channel` `mfsk_iq_channel_decoder` `mfsk_iq_channel_state` `mfsk_iq_set_early` `mfsk_iq_remove_channel` `mfsk_iq_set_time` `mfsk_iq_retune` `mfsk_iq_gap` `mfsk_iq_push` `mfsk_iq_samples_in` `mfsk_iq_pending` `mfsk_iq_poll` `mfsk_iq_plannable_rate` `mfsk_iq_set_rate_offset_ppm` `mfsk_iq_rate_offset_ppm` `mfsk_iq_track_rate` |
 | ランタイム (3) | `mfsk_last_error` `mfsk_runtime_configure` `mfsk_runtime_thread_count` |
 
 ---

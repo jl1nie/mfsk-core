@@ -39,7 +39,8 @@
 
 use alloc::vec::Vec;
 
-use super::{IqError, IqStream, IqToAudio, PfbChannelizer, check_placement};
+use super::track::RateTracker;
+use super::{IqError, IqStream, IqToAudio, PfbChannelizer, RateTrackConfig, check_placement};
 use crate::decoder::SlotInput;
 use crate::registry::{Mode, ProtocolMeta};
 use crate::slotgrid::{ClockChange, SampleClock, SlotCutter, SlotGrid};
@@ -50,9 +51,10 @@ use num_traits::Float;
 
 /// Interleaved I/Q converted per pass.
 const BLOCK: usize = 8_192;
+/// The grid a learned rate offset is applied on, ns: 15 s, a whole number of FT8 and FT4 slots.
+const SLOT_GRID_NS: i64 = 15_000_000_000;
 /// RMS the slot is scaled to, in `i16` units.
 const TARGET_RMS: f32 = 2_000.0;
-
 /// How an [`IqReceiver`] turns IQ into each channel's audio. Both meet the
 /// same 120 dB selectivity and give the decoders the same audio (the IQ
 /// decode tests run through each); they differ in how cost grows.
@@ -105,6 +107,9 @@ pub struct CompletedSlot {
     pub channel: ChannelId,
     pub mode: Mode,
     pub dial_hz: f64,
+    /// RF Hz per audio Hz about the 3000 Hz channel centre. Normally one;
+    /// differs when an acquisition clock is pinned separately from payload rate.
+    pub audio_rf_scale: f64,
     /// The slot's index on the grid: UTC `period · T` when a clock is set,
     /// counted from sample 0 otherwise. Consecutive slots of a channel have
     /// consecutive indices.
@@ -129,6 +134,7 @@ impl CompletedSlot {
             channel,
             mode,
             dial_hz: 0.0,
+            audio_rf_scale: 1.0,
             period,
             start_sample: 0,
             utc_ns: None,
@@ -150,7 +156,7 @@ impl CompletedSlot {
 
     /// RF frequency of an audio frequency of this channel.
     pub fn abs_freq_hz(&self, audio_hz: f32) -> f64 {
-        self.dial_hz + audio_hz as f64
+        self.dial_hz + 3000.0 + (audio_hz as f64 - 3000.0) * self.audio_rf_scale
     }
 }
 
@@ -249,6 +255,7 @@ impl Slots {
             channel: id,
             mode,
             dial_hz,
+            audio_rf_scale: 1.0,
             period: j,
             start_sample: (start_k as u128 * fs as u128 / 12_000) as u64,
             utc_ns: anchor.map(|_| (j as i128 * period_ns) as i64),
@@ -356,6 +363,20 @@ pub struct IqReceiver {
     bank_out: Vec<Vec<f32>>,
     clock: SampleClock,
     samples_in: u64,
+    /// Input samples as the nominal rate would count the time they took: `samples_in` when there is no
+    /// rate offset, else each push adds `n / (1 + eps)` (#686).
+    virt: f64,
+    /// The stream's real rate against its nominal one, ppm, and whether one was ever set (a receiver
+    /// that never sets one does its arithmetic as it always did).
+    ppm: f64,
+    offset_set: bool,
+    acquisition_ppm: Option<f64>,
+    /// Learns the rate offset from the readings of [`Self::set_time`], once asked ([`Self::track_rate`]).
+    tracker: Option<RateTracker>,
+    /// What the tracker has found and not applied yet, ppm: it is applied on the next slot boundary.
+    pending_ppm: Option<f64>,
+    /// The 15 s cell of UTC the last reading was in.
+    grid_cell: i64,
     next_id: usize,
     pending: Vec<u8>,
     bi: Vec<f32>,
@@ -372,6 +393,13 @@ impl IqReceiver {
             bank_out: Vec::new(),
             clock: SampleClock::new(stream.sample_rate),
             samples_in: 0,
+            virt: 0.0,
+            ppm: 0.0,
+            offset_set: false,
+            acquisition_ppm: None,
+            tracker: None,
+            pending_ppm: None,
+            grid_cell: i64::MIN,
             next_id: 0,
             pending: Vec::new(),
             bi: Vec::new(),
@@ -405,9 +433,119 @@ impl IqReceiver {
         self
     }
 
+    /// The largest rate offset taken, ppm: the chain's filters are those of the nominal rate, which is
+    /// right to a few per cent: at 5 % the edges of the channel window move 160 Hz
+    /// ([`IqToAudio::set_rate_offset_ppm`]).
+    pub const MAX_RATE_OFFSET_PPM: f64 = 50_000.0;
+
+    /// The stream's real rate against its nominal one, in ppm: positive when the source delivers more
+    /// samples per second than [`IqStream::sample_rate`] says. Every channel's audio is put on a true
+    /// 12 kHz grid, [`Self::set_time`] and [`Self::utc_of`] read their sample counts at the real rate,
+    /// and a change while running moves the grid continuously (#686). Taken as far as
+    /// [`Self::MAX_RATE_OFFSET_PPM`]; choose the nominal rate with [`plannable_rate`](super::plannable_rate).
+    pub fn set_rate_offset_ppm(&mut self, ppm: f64) {
+        let ppm = ppm.clamp(-Self::MAX_RATE_OFFSET_PPM, Self::MAX_RATE_OFFSET_PPM);
+        self.ppm = ppm;
+        self.offset_set = true;
+        if let Some(bank) = self.bank.as_mut() {
+            bank.set_rate_offset_ppm(ppm);
+        }
+        for c in &mut self.channels {
+            if let Some(fe) = c.fe.as_mut() {
+                fe.set_rate_offset_ppm(ppm);
+            }
+        }
+    }
+
+    /// The rate offset in force, ppm.
+    pub fn rate_offset_ppm(&self) -> f64 {
+        self.ppm
+    }
+
+    /// Pin the acquisition-clock offset used for frequency translation while
+    /// retaining the separate payload rate used for audio and UTC. Deleted
+    /// samples can lower the latter without changing the ADC clock. `None`
+    /// restores the usual single-clock model. A change drops open slots and
+    /// restarts the channel framing, as a retune does.
+    pub fn set_acquisition_rate_ppm(&mut self, ppm: Option<f64>) {
+        if self.acquisition_ppm == ppm {
+            return;
+        }
+        self.acquisition_ppm = ppm;
+        if let Some(bank) = self.bank.as_mut() {
+            bank.set_acquisition_rate_ppm(ppm);
+        }
+        for c in &mut self.channels {
+            if let Some(fe) = c.fe.as_mut() {
+                fe.set_acquisition_rate_ppm(ppm);
+            }
+        }
+        let sample = self
+            .bank
+            .as_ref()
+            .map_or(self.samples_in, |b| b.next_start_sample());
+        let k = self.audio_of_sample(sample);
+        self.reset_channels(k);
+    }
+
+    /// RF Hz per audio Hz, about the channel's 3000 Hz centre.
+    pub fn audio_rf_scale(&self) -> f64 {
+        (1.0 + self.acquisition_ppm.unwrap_or(self.ppm) * 1e-6) / self.ratio()
+    }
+
+    /// Learn the rate offset from the readings given to [`Self::set_time`] (#686): the stream's anchor
+    /// (`utc - samples / Fs`) falls by the offset that is missing, per second, and a least-squares line
+    /// through a few minutes of readings finds it; the offset moves by that, a limited step at a time
+    /// (`RateTrackConfig::max_step_ppm`, 400 ppm), and the window starts again. `None` stops it. The readings are
+    /// the caller's to clean of network delay and its jitter. A reading that steps the clock empties
+    /// the window. Starts from the offset in force (0 if none was set) and stays within
+    /// [`Self::MAX_RATE_OFFSET_PPM`].
+    pub fn track_rate(&mut self, config: Option<RateTrackConfig>) {
+        self.tracker = config.map(RateTracker::new);
+    }
+
+    /// `1 + eps`.
+    fn ratio(&self) -> f64 {
+        1.0 + self.ppm * 1e-6
+    }
+
+    /// The nominal-rate sample count that stands for input sample `t` on the true time axis: `t` itself
+    /// when no offset was set.
+    fn sample_equiv(&self, t: u64) -> u64 {
+        if !self.offset_set {
+            return t;
+        }
+        let v = self.virt + (t as f64 - self.samples_in as f64) / self.ratio();
+        v.round().max(0.0) as u64
+    }
+
+    /// Nanoseconds the stream had run when input sample `at_sample` came, on the receiver's time axis:
+    /// `at_sample / Fs` without a rate offset, and with one the real elapsed time, rate changes included
+    /// (#686). The UTC of that sample is the stream's start plus this, so a caller that estimates the start
+    /// from arrival times (`arrival - elapsed_ns`) needs no rate of its own.
+    pub fn elapsed_ns(&self, at_sample: u64) -> i64 {
+        (self.sample_equiv(at_sample) as i128 * 1_000_000_000 / self.stream.sample_rate as i128)
+            as i64
+    }
+
+    /// Audio index (12 kHz, true time) of input sample `t`.
+    fn audio_of_sample(&self, t: u64) -> u64 {
+        (self.sample_equiv(t) as u128 * 12_000 / self.stream.sample_rate as u128) as u64
+    }
+
     /// Audio index of the stream's current position.
     fn audio_index_now(&self) -> u64 {
-        (self.samples_in as u128 * 12_000 / self.stream.sample_rate as u128) as u64
+        self.audio_of_sample(self.samples_in)
+    }
+
+    /// A front end for `dial_hz` in the stream, with the rate offset in force.
+    fn front_end(&self, dial_hz: f64) -> Result<IqToAudio, IqError> {
+        let mut fe = IqToAudio::new(self.stream, dial_hz)?;
+        if self.ppm != 0.0 {
+            fe.set_rate_offset_ppm(self.ppm);
+        }
+        fe.set_acquisition_rate_ppm(self.acquisition_ppm);
+        Ok(fe)
     }
 
     /// Add a channel whose dial (audio 0 Hz) is `dial_hz`. Errors as
@@ -502,18 +640,15 @@ impl IqReceiver {
     fn place(&mut self, dial_hz: f64) -> Result<(Option<IqToAudio>, usize, u64), IqError> {
         Ok(match self.bank.as_mut() {
             Some(bank) => {
-                let k = bank.next_audio_index();
+                let t = bank.next_start_sample();
                 let idx = bank.add_channel(dial_hz)?;
+                let k = self.audio_of_sample(t);
                 if self.bank_out.len() <= idx {
                     self.bank_out.resize_with(idx + 1, Vec::new);
                 }
                 (None, idx, k)
             }
-            None => (
-                Some(IqToAudio::new(self.stream, dial_hz)?),
-                0,
-                self.audio_index_now(),
-            ),
+            None => (Some(self.front_end(dial_hz)?), 0, self.audio_index_now()),
         })
     }
 
@@ -607,7 +742,31 @@ impl IqReceiver {
     /// follows the readings at a bounded rate, so noisy readings move the
     /// grid by milliseconds and lose nothing.
     pub fn set_time(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {
-        let change = self.clock.observe(utc_ns, at_sample);
+        let equiv = self.sample_equiv(at_sample);
+        let change = self.clock.observe(utc_ns, equiv);
+        if let Some(tracker) = self.tracker.as_mut() {
+            if !matches!(change, ClockChange::Slewed { .. }) {
+                tracker.reset();
+            }
+            let x = equiv as f64 / self.stream.sample_rate as f64;
+            if let Some(step) = tracker.observe(x, utc_ns as f64 * 1e-9 - x) {
+                self.pending_ppm = Some(self.pending_ppm.unwrap_or(0.0) + step);
+            }
+        }
+        // A rate offset moves every tone by its distance from the IQ centre (4 Hz for 150 ppm at 26 kHz): inside
+        // a slot that is a drift nothing decodes (an RSP1 behind `rsp_tcp`, 2026-10-12). What the tracker found
+        // is applied when the clock crosses a boundary of the 15 s grid, a whole number of FT8 and FT4 slots.
+        let cell = utc_ns.div_euclid(SLOT_GRID_NS);
+        if cell != self.grid_cell {
+            self.grid_cell = cell;
+            if let Some(step) = self.pending_ppm.take() {
+                self.set_rate_offset_ppm(self.ppm + step);
+                // The readings in the window were made against the offset just replaced.
+                if let Some(tracker) = self.tracker.as_mut() {
+                    tracker.reset();
+                }
+            }
+        }
         if matches!(change, ClockChange::First | ClockChange::Stepped { .. }) {
             // The grid jumped: audio spanning the jump is not a slot.
             for c in &mut self.channels {
@@ -617,9 +776,23 @@ impl IqReceiver {
         change
     }
 
+    /// Like [`Self::set_time`], but the clock is set to the reading at once instead of slewing to it:
+    /// for a caller who knows the clock was wrong, not drifting (the first fix of a stream, a server
+    /// that paused, a rate that changed). Open slots are dropped, as for any step.
+    pub fn step_time(&mut self, utc_ns: i64, at_sample: u64) -> ClockChange {
+        let change = self.clock.step_to(utc_ns, self.sample_equiv(at_sample));
+        if let Some(tracker) = self.tracker.as_mut() {
+            tracker.reset();
+        }
+        for c in &mut self.channels {
+            c.forget_slots();
+        }
+        change
+    }
+
     /// UTC the clock puts the stream's sample `at_sample` at, once set.
     pub fn utc_of(&self, at_sample: u64) -> Option<i64> {
-        self.clock.utc_of(at_sample)
+        self.clock.utc_of(self.sample_equiv(at_sample))
     }
 
     /// Complex samples consumed, gaps included: the stream's clock.
@@ -688,15 +861,22 @@ impl IqReceiver {
             if self.bank_out.len() < need {
                 self.bank_out.resize_with(need, Vec::new);
             }
-            let k = self.bank.as_ref().expect("bank").next_audio_index();
+            let t = self.bank.as_ref().expect("bank").next_start_sample();
+            let k = self.audio_of_sample(t);
             self.reset_channels(k);
             return report;
         }
         self.stream = stream;
+        let ppm = self.ppm;
         for (c, f) in self.channels.iter_mut().zip(&fits) {
             match *f {
                 Ok(()) => {
-                    c.fe = Some(IqToAudio::new(stream, c.dial_hz).expect("checked to fit"));
+                    let mut fe = IqToAudio::new(stream, c.dial_hz).expect("checked to fit");
+                    if ppm != 0.0 {
+                        fe.set_rate_offset_ppm(ppm);
+                    }
+                    fe.set_acquisition_rate_ppm(self.acquisition_ppm);
+                    c.fe = Some(fe);
                     if matches!(c.state, ChannelState::Paused(_)) {
                         report.resumed.push(c.id);
                     }
@@ -720,16 +900,23 @@ impl IqReceiver {
     /// open slots are dropped, since audio that spans the hole is not a slot.
     pub fn gap(&mut self, lost: u64) {
         self.samples_in += lost;
+        self.virt += lost as f64 / self.ratio();
         if let Some(bank) = self.bank.as_mut() {
             bank.gap(lost);
-            let k = bank.next_audio_index();
+            let t = bank.next_start_sample();
+            let k = self.audio_of_sample(t);
             self.reset_channels(k);
             return;
         }
-        let stream = self.stream;
+        let (stream, ppm) = (self.stream, self.ppm);
         for c in &mut self.channels {
             if c.state == ChannelState::Active {
-                c.fe = Some(IqToAudio::new(stream, c.dial_hz).expect("placed before"));
+                let mut fe = IqToAudio::new(stream, c.dial_hz).expect("placed before");
+                if ppm != 0.0 {
+                    fe.set_rate_offset_ppm(ppm);
+                }
+                fe.set_acquisition_rate_ppm(self.acquisition_ppm);
+                c.fe = Some(fe);
             }
         }
         let k = self.audio_index_now();
@@ -738,6 +925,7 @@ impl IqReceiver {
 
     fn run_block(&mut self, n: usize, out: &mut Vec<CompletedSlot>) {
         self.samples_in += n as u64;
+        self.virt += n as f64 / self.ratio();
         if self.stream.iq_swap {
             core::mem::swap(&mut self.bi, &mut self.bq);
         }
@@ -753,7 +941,13 @@ impl IqReceiver {
                 Some(fe) => fe.push_planar(&self.bi, &self.bq, &mut c.scratch),
                 None => core::mem::swap(&mut c.scratch, &mut self.bank_out[c.bank_idx]),
             }
+            let first = out.len();
             c.feed(&self.clock, fs, out);
+            let scale =
+                (1.0 + self.acquisition_ppm.unwrap_or(self.ppm) * 1e-6) / (1.0 + self.ppm * 1e-6);
+            for slot in &mut out[first..] {
+                slot.audio_rf_scale = scale;
+            }
         }
     }
 

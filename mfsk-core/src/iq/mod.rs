@@ -59,8 +59,11 @@ use core::f64::consts::TAU;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod pfb;
+mod rate;
+mod track;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use pfb::PfbChannelizer;
+pub use track::RateTrackConfig;
 
 #[cfg(all(
     any(feature = "fft-rustfft", feature = "fft-extern"),
@@ -91,6 +94,7 @@ pub use receiver::{ChannelId, ChannelState, Channelizer, CompletedSlot, IqReceiv
 
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser, kaiser_order};
 use crate::engine::dsp::polyphase::PolyphaseResampler;
+use rate::RateStage;
 
 #[cfg(not(feature = "std"))]
 #[allow(unused_imports)]
@@ -280,6 +284,38 @@ fn plan(fs: u32) -> Result<(u32, u32, u32), IqError> {
     Err(IqError::UnsupportedRate)
 }
 
+/// The integer rate to give an [`IqStream`] for a source whose real rate is `real_hz`, and the offset to
+/// give [`IqToAudio::set_rate_offset_ppm`] / `IqReceiver::set_rate_offset_ppm` for what is left (#686).
+///
+/// The chain is built for an integer rate with a small rational ratio to 12 kHz (`1 035 949` and
+/// `998 444` are refused with [`IqError::UnsupportedRate`]); a real rate measured to the Hz is hardly
+/// ever one. This looks within +-500 ppm of `real_hz` for the rate with the smallest `|offset|` among
+/// those whose resampler has `L <= 256` (and, where the filter bank is built, that the bank accepts),
+/// and falls back to the smallest `L`. `None` below 12 kHz or when nothing in range plans.
+pub fn plannable_rate(real_hz: f64) -> Option<(u32, f64)> {
+    if !(real_hz >= AUDIO_RATE_HZ as f64 && real_hz < u32::MAX as f64 / 2.0) {
+        return None;
+    }
+    let span = (real_hz * 5e-4).ceil().max(1.0) as i64;
+    let centre = real_hz.round() as i64;
+    // (L, |ppm|, rate): best with L <= 256 by |ppm|; else best by L.
+    let mut best: Option<(u32, f64, u32)> = None;
+    for r in (centre - span).max(1)..=centre + span {
+        let rate = r as u32;
+        let Ok((_, l, _)) = plan(rate) else { continue };
+        #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+        if rate >= 40_000 && pfb::pfb_plan(rate).is_err() {
+            continue;
+        }
+        let ppm = (real_hz / rate as f64 - 1.0) * 1e6;
+        let key = |l: u32, p: f64| (l > 256, if l > 256 { l as f64 } else { p.abs() });
+        if best.is_none_or(|(bl, bp, _)| key(l, ppm) < key(bl, bp)) {
+            best = Some((l, ppm, rate));
+        }
+    }
+    best.map(|(_, ppm, rate)| (rate, ppm))
+}
+
 /// `d` as stage factors, none over 10 where the factorisation allows.
 fn stage_factors(mut d: u32) -> Vec<u32> {
     let mut primes = Vec::new();
@@ -343,6 +379,13 @@ impl Nco {
         }
     }
 
+    /// A new frequency or sample rate, the phase kept (a rate offset that changes while running).
+    fn retune(&mut self, f_hz: f64, fs: f64) {
+        let w = TAU * f_hz / fs;
+        self.step_re = w.cos();
+        self.step_im = -w.sin();
+    }
+
     #[inline]
     fn mix(&mut self, i: &mut [f32], q: &mut [f32]) {
         for (xi, xq) in i.iter_mut().zip(q.iter_mut()) {
@@ -383,6 +426,18 @@ pub struct IqToAudio {
     /// `n mod 4` of the next output, for the `e^{+jπn/2}` shift up.
     out_phase: u8,
     samples_in: u64,
+    /// Where the NCO puts DC, Hz from the stream's centre (the dial's offset plus [`AUDIO_CENTRE_HZ`]).
+    mix_hz: f64,
+    /// Real rate over nominal, `1 + eps` ([`Self::set_rate_offset_ppm`], #686).
+    ratio: f64,
+    /// Optional acquisition-clock ratio, independent of payload time stretching.
+    acquisition_ratio: Option<f64>,
+    /// The last stage, once a rate offset is set.
+    rate: Option<RateStage>,
+    /// Audio samples produced so far.
+    out_count: u64,
+    ti: Vec<f32>,
+    tq: Vec<f32>,
     pending: Vec<u8>,
     bi: Vec<f32>,
     bq: Vec<f32>,
@@ -456,6 +511,13 @@ impl IqToAudio {
             stream,
             dial_hz,
             nco: Nco::new(off + AUDIO_CENTRE_HZ, fs as f64),
+            mix_hz: off + AUDIO_CENTRE_HZ,
+            ratio: 1.0,
+            acquisition_ratio: None,
+            rate: None,
+            out_count: 0,
+            ti: Vec::new(),
+            tq: Vec::new(),
             stages,
             sharp,
             resampler,
@@ -485,6 +547,54 @@ impl IqToAudio {
     /// Complex samples consumed so far: the stream's clock.
     pub fn samples_in(&self) -> u64 {
         self.samples_in
+    }
+
+    /// The stream's real rate against its nominal one, in parts per million: `+1000` when the source
+    /// delivers 0.1 % more samples per second than [`IqStream::sample_rate`] says (#686). The chain is
+    /// built for the nominal rate; this retunes the NCO for the real one and resamples the 12 kHz
+    /// output by `1 + ppm / 1e6`, so the audio is on a true 12 kHz grid whatever the source's clock.
+    /// Meant for the small offset of a source whose rate is known to a nominal integer
+    /// ([`plannable_rate`] picks one); the chain's filters stay those of the nominal rate, which is
+    /// right to a few per cent (the edges of the window move 160 Hz at 5 %). May change while running (the position moves continuously); the
+    /// first call mid-stream starts the stage from zeros, a 2 ms glitch once.
+    pub fn set_rate_offset_ppm(&mut self, ppm: f64) {
+        self.retarget(self.stream.center_hz, ppm);
+    }
+
+    /// The offset in force, ppm.
+    pub fn rate_offset_ppm(&self) -> f64 {
+        (self.ratio - 1.0) * 1e6
+    }
+
+    /// Pin the acquisition clock used for frequency translation, independently of
+    /// the payload rate used to stretch audio. This is useful for streams with
+    /// deleted samples: a lower payload rate does not imply a slower ADC clock.
+    /// `None` restores the acquisition clock implied by the rate offset.
+    pub fn set_acquisition_rate_ppm(&mut self, ppm: Option<f64>) {
+        self.acquisition_ratio = ppm.map(|p| 1.0 + p * 1e-6);
+        self.nco.retune(
+            self.mix_hz,
+            self.stream.sample_rate as f64 * self.acquisition_ratio.unwrap_or(self.ratio),
+        );
+    }
+
+    /// [`Self::set_rate_offset_ppm`] for a stream whose true centre is `center_hz`: the PFB's
+    /// sub-band, whose centre is where the bank put it, not the nominal one.
+    pub(crate) fn retarget(&mut self, center_hz: f64, ppm: f64) {
+        self.stream.center_hz = center_hz;
+        self.mix_hz = self.dial_hz - center_hz + AUDIO_CENTRE_HZ;
+        self.ratio = 1.0 + ppm * 1e-6;
+        self.nco.retune(
+            self.mix_hz,
+            self.stream.sample_rate as f64 * self.acquisition_ratio.unwrap_or(self.ratio),
+        );
+        match self.rate.as_mut() {
+            Some(r) => r.set_ratio(self.ratio),
+            None if self.ratio != 1.0 => {
+                self.rate = Some(RateStage::new(self.ratio, self.out_count));
+            }
+            None => {}
+        }
     }
 
     /// Push `f32` I/Q, interleaved (`i0 q0 i1 q1 …`); a trailing odd value
@@ -585,6 +695,16 @@ impl IqToAudio {
             }
             None => self.sharp.push_block(&xi, &xq, &mut self.ri, &mut self.rq),
         }
+
+        // A source whose clock is not its nominal one: back onto a true 12 kHz grid.
+        if let Some(stage) = self.rate.as_mut() {
+            self.ti.clear();
+            self.tq.clear();
+            stage.push(&self.ri, &self.rq, &mut self.ti, &mut self.tq);
+            core::mem::swap(&mut self.ri, &mut self.ti);
+            core::mem::swap(&mut self.rq, &mut self.tq);
+        }
+        self.out_count += self.ri.len() as u64;
 
         // Shift audio 3000 Hz back up from DC: multiply by e^{+jπn/2}
         // (1, j, -1, -j), n counted from audio index 0, and keep the real part.

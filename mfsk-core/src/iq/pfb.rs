@@ -211,6 +211,8 @@ struct PfbChannel {
     dial_hz: f64,
     /// The sub-band it reads, `0..M`.
     band: usize,
+    /// The sub-band's number as the planner counted it (signed: below the centre it is negative).
+    b: i64,
     fe: IqToAudio,
     /// First sub-band sample it takes: one on a whole 12 kHz audio sample.
     start_s: u64,
@@ -236,6 +238,9 @@ pub struct PfbChannelizer {
     /// its audio lands on whole 12 kHz samples.
     s_step: u64,
     ybuf: Vec<Complex32>,
+    /// The stream's real rate against its nominal one, ppm ([`Self::set_rate_offset_ppm`], #686).
+    ppm: f64,
+    acquisition_ppm: Option<f64>,
 }
 
 impl PfbChannelizer {
@@ -257,7 +262,34 @@ impl PfbChannelizer {
             to_drop: 0,
             next_s: 0,
             s_step,
+            ppm: 0.0,
+            acquisition_ppm: None,
         })
+    }
+
+    /// The stream's real rate against its nominal one (see [`IqToAudio::set_rate_offset_ppm`]): the bank
+    /// itself works on the nominal rate, so a sub-band's true centre is `b S (1 + eps)` from the
+    /// stream's, and each back end is retargeted to it and told the offset.
+    pub fn set_rate_offset_ppm(&mut self, ppm: f64) {
+        self.ppm = ppm;
+        let ratio = 1.0 + self.acquisition_ppm.unwrap_or(ppm) * 1e-6;
+        let s = self.plan.spacing_hz;
+        let centre = self.stream.center_hz;
+        for c in self.channels.iter_mut().flatten() {
+            c.fe.retarget(centre + c.b as f64 * s * ratio, ppm);
+            c.fe.set_acquisition_rate_ppm(self.acquisition_ppm);
+        }
+    }
+
+    /// Acquisition-clock offset for frequency translation, independently of
+    /// the payload rate. Rebuilds sub-band placement and discards filter history.
+    /// See [`IqToAudio::set_acquisition_rate_ppm`].
+    pub fn set_acquisition_rate_ppm(&mut self, ppm: Option<f64>) {
+        if self.acquisition_ppm == ppm {
+            return;
+        }
+        self.acquisition_ppm = ppm;
+        self.restart().expect("the same dials still fit the stream");
     }
 
     /// The number of sub-bands, `M`.
@@ -295,11 +327,17 @@ impl PfbChannelizer {
         s.div_ceil(self.s_step) * self.s_step
     }
 
-    /// Audio index (12 kHz, from IQ sample 0) a channel added now starts at.
+    /// Audio index (12 kHz, from IQ sample 0, at the nominal rate) a channel added now starts at.
     pub fn next_audio_index(&self) -> u64 {
+        (self.next_start_sample() as u128 * AUDIO_RATE_HZ as u128 / self.stream.sample_rate as u128)
+            as u64
+    }
+
+    /// The input sample a channel added now starts at (sub-band sample `start_at(next_s)` is centred on
+    /// it): for a caller that maps samples to audio indices itself, as a receiver with a rate offset does.
+    pub fn next_start_sample(&self) -> u64 {
         let s0 = self.start_at(self.next_s);
-        let t = self.base as u128 + s0 as u128 * self.bank.hop as u128;
-        (t * AUDIO_RATE_HZ as u128 / self.stream.sample_rate as u128) as u64
+        (self.base as u128 + s0 as u128 * self.bank.hop as u128) as u64
     }
 
     /// The back end for a dial against the current centre.
@@ -309,18 +347,26 @@ impl PfbChannelizer {
         // The SDR's own band edges and DC still apply.
         check_placement(fs, off)?;
         let s = self.plan.spacing_hz;
-        let b = ((off + AUDIO_CENTRE_HZ) / s).round() as i64;
+        let acquisition_ratio = self.acquisition_ppm.map_or(1.0, |p| 1.0 + p * 1e-6);
+        let b = ((off + AUDIO_CENTRE_HZ) / (s * acquisition_ratio)).round() as i64;
         let band = b.rem_euclid(self.plan.m as i64) as usize;
+        let ratio = 1.0 + self.acquisition_ppm.unwrap_or(self.ppm) * 1e-6;
         let sub = IqStream {
             sample_rate: self.plan.sub_rate,
-            center_hz: self.stream.center_hz + b as f64 * s,
+            center_hz: self.stream.center_hz + b as f64 * s * ratio,
             format: IqSampleFormat::Cf32,
             iq_swap: false,
         };
+        let mut fe = IqToAudio::build(sub, dial_hz)?;
+        if self.ppm != 0.0 {
+            fe.set_rate_offset_ppm(self.ppm);
+        }
+        fe.set_acquisition_rate_ppm(self.acquisition_ppm);
         Ok(PfbChannel {
             dial_hz,
             band,
-            fe: IqToAudio::build(sub, dial_hz)?,
+            b,
+            fe,
             start_s,
             bi: Vec::new(),
             bq: Vec::new(),

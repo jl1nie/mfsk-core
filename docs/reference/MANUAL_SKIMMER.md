@@ -222,16 +222,47 @@ Open with ⚙. The first tabs are **the chosen server's own** (they carry its na
 | Field | What it does |
 |---|---|
 | Name | the name on the chip; for you and for the database |
-| Address | `host:5555` |
+| Protocol | SpyServer (the default), or rtl_tcp / rsp_tcp (see below) |
+| Address | `host:5555` (rtl_tcp: `host:1234`) |
+| rtl_tcp IQ | with rtl_tcp only: Auto, 8-bit or 16-bit. The server decides which it sends; 8 or 16 only checks, and refuses a server that sends the other, saying how to start it |
 | My call | your callsign at this server; used for the a-priori decoding and for PSK Reporter |
 | Grid | the locator **of this server's antenna**: bearings and distances, the sunrise and sunset, and the maps are measured from it. For a SpyServer somewhere else it is not where you sit |
 | Sun today | sunrise and sunset at that locator |
 | Network delay (ms) | the fixed delay from the SDR to this PC, taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here |
-| IQ format | float32, or int16 (half the bytes, for a slow link) |
+| IQ format | float32, or int16 (half the bytes, for a slow link); SpyServer only |
 | Channelizer | Auto, Direct, or Filter bank. Auto uses the filter bank from a handful of channels on |
 | PSK Reporter | section 10 |
 | Give control back… | section 7 |
 | Gain | the radio's gain index; the slider writes it when you have control (section 7) |
+
+#### rtl_tcp and SDRplay's rsp_tcp
+
+SpyServer serves Airspy and RTL-SDR. A device it does not serve, an **SDRplay RSP**, is reached through
+SDRplay's own [`rsp_tcp`](https://github.com/SDRplay/RSPTCPServer) (GPL-3.0; it needs SDRplay's API on the
+machine the RSP is plugged into), which speaks the `rtl_tcp` protocol; plain `rtl_tcp` works the same way. Choose
+**Protocol: rtl_tcp / rsp_tcp** and give its `host:1234`.
+
+- **8-bit or 16-bit.** `rsp_tcp` started as it comes sends 8-bit IQ (the RSP's 14 bits cut to 8: little dynamic
+  range). `rsp_tcp -E -b 16` sends 16-bit and announces it; the skimmer reads the announcement, so *Auto* needs no
+  setting. The other choices are a check.
+- **Listening address.** `rsp_tcp` listens on `127.0.0.1` only. For another PC, start it with `-a 0.0.0.0`, on a network
+  you trust: whoever reaches the port controls the RSP.
+- **One stream, one band.** The server streams for ever at one rate (1.024 MS/s; `--rate` in the command line version) and
+  cannot be paused; the skimmer retunes it, waits a moment, and writes the gain again (a gain written at once did not take
+  on an RSP1). A rotation works as with SpyServer, but the first seconds after a retune are dropped. With no *Gain* set the
+  server's automatic gain is on; a gain index makes it manual.
+- **Rate model.** For a normal server that loses samples in delivery, use **Measure 30 s + track**
+  with **Sample loss (nominal ADC clock)**. RF conversion keeps the requested sampling rate while
+  measured throughput approximates the audio time scale. No server patch is required. If the ADC
+  itself runs at a different rate, select **ADC clock offset** instead. Delivery timing alone cannot
+  distinguish these cases, and unknown holes can still cause DT drift or lost messages.
+- **Status.** Decoding is tested against a stand-in `rtl_tcp` server (8-bit and 16-bit). Against a real RSP1 on an
+  unpowered USB hub it decoded FT8 from JA stations on 7041 kHz (4 to 9 per slot), but that `rsp_tcp` stopped with `RSP failure`
+  after 1 to 7 minutes (also with nothing but a reader on it). **Give the RSP its own powered USB port**; a second USB device on
+  the same hub made it worse. `rsp_tcp` reads no commands for 10 to 15 s after a connection and delivers a rate a few per cent
+  under the one asked for (994 kS/s for 1 024 000 on that RSP1): the skimmer waits for the stream to be at the rate asked, measures
+  the rate for 30 s, runs the receiver at the nearest rate it takes with the difference as a rate offset, and goes on learning that
+  offset from the clock, so the first slots come about 45 s after Connect (#685, #686).
 
 ### Rotation
 

@@ -449,3 +449,64 @@ fn set_early_needs_a_channel() {
     );
     unsafe { mfsk_iq_close(rx) };
 }
+
+/// #686: the rate offset through the C ABI. A rate the chain takes is found near a real one, the offset
+/// is set and read back, and null handles and bad numbers are statuses.
+#[test]
+fn rate_offset_and_plannable_rate() {
+    let (mut rate, mut ppm) = (0u32, 0f64);
+    assert_eq!(
+        unsafe { mfsk_iq_plannable_rate(994_271.3, &mut rate, &mut ppm) },
+        MfskStatus::Ok
+    );
+    assert!((rate as f64 - 994_271.3).abs() <= 500.0, "{rate}");
+    assert!(
+        (((994_271.3 / rate as f64) - 1.0) * 1e6 - ppm).abs() < 1e-6,
+        "{ppm}"
+    );
+    assert_eq!(
+        unsafe { mfsk_iq_plannable_rate(5_000.0, &mut rate, &mut ppm) },
+        MfskStatus::InvalidArg
+    );
+    assert_eq!(
+        unsafe { mfsk_iq_plannable_rate(f64::NAN, &mut rate, &mut ppm) },
+        MfskStatus::InvalidArg
+    );
+    // Null out pointers are allowed.
+    assert_eq!(
+        unsafe { mfsk_iq_plannable_rate(48_000.0, ptr::null_mut(), ptr::null_mut()) },
+        MfskStatus::Ok
+    );
+
+    let rx = open(MFSK_IQ_FORMAT_CF32);
+    assert_eq!(unsafe { mfsk_iq_rate_offset_ppm(rx) }, 0.0);
+    assert_eq!(
+        unsafe { mfsk_iq_set_rate_offset_ppm(rx, 273.5) },
+        MfskStatus::Ok
+    );
+    assert_eq!(unsafe { mfsk_iq_rate_offset_ppm(rx) }, 273.5);
+    // Clamped to +-50000 ppm.
+    assert_eq!(
+        unsafe { mfsk_iq_set_rate_offset_ppm(rx, 1e9) },
+        MfskStatus::Ok
+    );
+    assert_eq!(unsafe { mfsk_iq_rate_offset_ppm(rx) }, 50_000.0);
+    assert_eq!(
+        unsafe { mfsk_iq_set_rate_offset_ppm(rx, f64::INFINITY) },
+        MfskStatus::InvalidArg
+    );
+    assert_eq!(unsafe { mfsk_iq_track_rate(rx, 1) }, MfskStatus::Ok);
+    assert_eq!(unsafe { mfsk_iq_track_rate(rx, 0) }, MfskStatus::Ok);
+    unsafe { mfsk_iq_close(rx) };
+
+    let null = ptr::null_mut();
+    assert_eq!(
+        unsafe { mfsk_iq_set_rate_offset_ppm(null, 1.0) },
+        MfskStatus::NullPointer
+    );
+    assert_eq!(
+        unsafe { mfsk_iq_track_rate(null, 1) },
+        MfskStatus::NullPointer
+    );
+    assert_eq!(unsafe { mfsk_iq_rate_offset_ppm(null) }, 0.0);
+}

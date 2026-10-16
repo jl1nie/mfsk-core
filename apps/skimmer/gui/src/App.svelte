@@ -528,7 +528,7 @@
     if (!settings || settings.servers.length >= MAX_SERVERS) return;
     const n = settings.servers.length + 1;
     settings.servers.push({
-      name: `Server ${n}`, address: '', grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
+      name: `Server ${n}`, address: '', protocol: 'spyserver', rtlFormat: 'auto', rtlCalibrate: 30, rtlNominalAcquisition: true, rtlMinimumArrival: true, rtlInferGaps: false, grid: '', call: settings.servers[sel]?.call ?? '', format: 'float', channelizer: 'auto', networkDelayMs: 0, enabled: true, tune: false, yieldControl: false, rotate: false, rotation: [], pskReporter: false, pskAntenna: '',
     });
     syncSrv();
     sel = settings.servers.length - 1;
@@ -653,7 +653,49 @@
           {#if settings.servers[sel]}
             {@const sv = settings.servers[sel]}
             <div class="field"><span>Name</span><input bind:value={sv.name} disabled={running} spellcheck="false" /></div>
-            <div class="field"><span>Address</span><input bind:value={sv.address} disabled={running} placeholder="host:5555" spellcheck="false" /></div>
+            <div class="field" title="SpyServer (Airspy HF+, Airspy, RTL-SDR), or rtl_tcp: the protocol of rtl_tcp and of SDRplay's rsp_tcp, for a device SpyServer does not serve (an SDRplay RSP). The device's own driver stays on the server.">
+              <span>Protocol</span>
+              <select bind:value={sv.protocol} disabled={running}>
+                <option value="spyserver">SpyServer</option>
+                <option value="rtl_tcp">rtl_tcp / rsp_tcp</option>
+              </select>
+            </div>
+            <div class="field"><span>Address</span><input bind:value={sv.address} disabled={running} placeholder={sv.protocol === 'rtl_tcp' ? 'host:1234' : 'host:5555'} spellcheck="false" /></div>
+            {#if sv.protocol === 'rtl_tcp'}
+              <div class="field" title="The IQ the server sends. The server decides: rsp_tcp started with -E -b 16 sends 16-bit, anything else 8-bit. Auto takes what it announces; 8 or 16 refuses a server that sends the other, with the reason.">
+                <span>rtl_tcp IQ</span>
+                <select bind:value={sv.rtlFormat} disabled={running}>
+                  <option value="auto">Auto</option>
+                  <option value="8">8-bit</option>
+                  <option value="16">16-bit (rsp_tcp -E -b 16)</option>
+                </select>
+              </div>
+              <div class="field" title="Use 0 after the server fixes or zero-fills sample losses: nominal rate, no rate correction. Unmodified servers can use a startup measurement (30 seconds by default).">
+                <span>Rate calibration</span>
+                <select bind:value={sv.rtlCalibrate} disabled={running}>
+                  <option value={0}>Off (nominal rate)</option>
+                  <option value={30}>Measure 30 s + track</option>
+                </select>
+              </div>
+              <div class="field" title="When samples are lost in delivery, keep RF frequency conversion at the requested sampling rate. Choose ADC clock offset only when the device itself samples at a different rate.">
+                <span>Rate model</span>
+                <select bind:value={sv.rtlNominalAcquisition} disabled={running || !sv.rtlCalibrate}>
+                  <option value={true}>Sample loss (nominal ADC clock)</option>
+                  <option value={false}>ADC clock offset</option>
+                </select>
+              </div>
+              <div class="field" title="Use the least-delayed arrival to keep buffered delivery from shifting sample UTC. Independent of rate calibration. Direct arrival is available for comparison.">
+                <span>Arrival timing</span>
+                <select bind:value={sv.rtlMinimumArrival} disabled={running}>
+                  <option value={true}>Reject delivery jitter</option>
+                  <option value={false}>Direct arrival</option>
+                </select>
+              </div>
+              <div class="field" title="Only enable for a server known to lose samples during delivery pauses over 500 ms. Buffered delivery can otherwise be mistaken for missing IQ. Sample counters at the source are more reliable.">
+                <span>Infer loss from pauses</span>
+                <input type="checkbox" bind:checked={sv.rtlInferGaps} disabled={running} />
+              </div>
+            {/if}
             <div class="field" title="Your callsign at this server. Used for the QSO-context a-priori decoding. A channel can override it in its options.">
               <span>My call</span>
               <input class="call" bind:value={sv.call} placeholder="JL1NIE" spellcheck="false" onchange={() => stationChanged(sel)} />
@@ -666,14 +708,14 @@
               <span>Sun today</span>
               <span class="sun">{sunLine(sv.grid)}</span>
             </div>
-            <div class="field" title="Fixed delay from the SDR to this PC (server buffer, path), taken off every arrival time. Zero on a LAN. If every station shows the same DT offset, enter it here.">
+            <div class="field" title="Fixed delay from acquisition to this PC, including SDR/API and server buffering, taken off arrival times. A LAN may still have pipeline delay. Compare multiple stations before adjusting it.">
               <span>Network delay (ms)</span>
               <input type="number" step="10" min="0" bind:value={sv.networkDelayMs}
                 onchange={() => running && api.setNetworkDelay(sel, Number(sv.networkDelayMs) || 0)} />
             </div>
             <div class="field" title="float32 or int16 IQ. int16 halves the bytes: for a server across a slow link.">
               <span>IQ format</span>
-              <select bind:value={sv.format} disabled={running}>
+              <select bind:value={sv.format} disabled={running || sv.protocol === 'rtl_tcp'}>
                 <option value="float">float32</option>
                 <option value="int16">int16</option>
               </select>

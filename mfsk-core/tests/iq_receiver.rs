@@ -733,3 +733,56 @@ fn a_slot_built_outside_the_receiver_decodes_like_one_it_cut() {
     let out = AnyDecoder::with_defaults(slot.mode).decode(&slot.input());
     assert!(out.rows.is_empty());
 }
+
+/// A payload deficit must not move an RF channel out of its audio passband.
+/// Exercise both channelizers and the front-end rebuilds used by retune/gap.
+#[test]
+fn acquisition_clock_is_independent_of_payload_rate() {
+    use std::f64::consts::TAU;
+    for nominal_rate in [FS, 1_024_000] {
+        let physical_rate = f64::from(nominal_rate) / 0.96;
+        let dial = CENTER + f64::from(nominal_rate) * 0.3;
+        let physical_ppm = (physical_rate / f64::from(nominal_rate) - 1.0) * 1e6;
+        for path in [Channelizer::Direct, Channelizer::Pfb] {
+            let stream = IqStream::new(nominal_rate, CENTER, IqSampleFormat::Cf32);
+            let mut rx = IqReceiver::with_channelizer(stream, path).unwrap();
+            if nominal_rate == FS {
+                rx.set_acquisition_rate_ppm(Some(physical_ppm));
+            }
+            let id = rx.add_channel(dial, Mode::Ft4).unwrap();
+            rx.set_acquisition_rate_ppm(Some(physical_ppm));
+            rx.set_rate_offset_ppm(100.0);
+            rx.set_rate_offset_ppm(0.0);
+            rx.retune(CENTER + 1000.0);
+            rx.gap(192);
+            let mut slots = Vec::new();
+            let tone_hz = dial + 2000.0 - (CENTER + 1000.0);
+            for base in (0..nominal_rate as usize * 16).step_by(4096) {
+                let count = 4096.min(nominal_rate as usize * 16 - base);
+                let iq: Vec<f32> = (base..base + count)
+                    .flat_map(|n| {
+                        let p = TAU * tone_hz * n as f64 / physical_rate;
+                        [p.cos() as f32, p.sin() as f32]
+                    })
+                    .collect();
+                rx.push_cf32(&iq, &mut slots);
+            }
+            let slot = slots
+                .iter()
+                .find(|s| s.channel == id)
+                .expect("complete slot");
+            let audio = &slot.audio[12_000..24_000];
+            let crossings = audio
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count();
+            let audio_hz = crossings as f32;
+            assert!((audio_hz - 2040.0).abs() <= 1.0, "{path:?}: {audio_hz}");
+            assert!(
+                (slot.abs_freq_hz(audio_hz) - (dial + 2000.0)).abs() < 1.2,
+                "{path:?}: incorrect RF frequency"
+            );
+            assert!((rx.audio_rf_scale() - physical_rate / f64::from(nominal_rate)).abs() < 1e-9);
+        }
+    }
+}

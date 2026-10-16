@@ -28,10 +28,15 @@ pub mod anchor;
 pub mod clock;
 pub mod fake;
 pub mod geo;
+#[cfg(test)]
+mod iq_impairment_simulation;
 pub mod jtty;
 pub mod modes;
 pub mod plan;
 pub mod pskreporter;
+#[cfg(test)]
+mod recorded_iq;
+pub mod rtltcp;
 pub mod spot;
 pub mod spyserver;
 pub mod store;
@@ -727,11 +732,41 @@ pub enum WireFormat {
     Int16,
 }
 
+/// The protocol a server is reached by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Protocol {
+    /// Airspy's SpyServer (Airspy One, HF+, RTL-SDR): [`spyserver`].
+    #[default]
+    SpyServer,
+    /// `rtl_tcp`, and SDRplay's `rsp_tcp` for an RSP: [`rtltcp`] (#685).
+    RtlTcp,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     /// A short name for this server in events and the database.
     pub name: String,
     pub server: String,
+    /// How `server` is spoken to.
+    pub protocol: Protocol,
+    /// With [`Protocol::RtlTcp`]: the sample format expected (the server decides it).
+    pub rtl_format: rtltcp::RtlFormat,
+    /// With [`Protocol::RtlTcp`]: startup rate measurement duration. Defaults to 30 s for
+    /// unmodified servers with sample losses. Zero uses the requested nominal rate, disables
+    /// rate tracking. Arrival timing and pause-based gap guesses are separate settings.
+    /// Use zero after fixing or zero-filling losses on the server (#686).
+    pub rtl_calibrate: Duration,
+    /// With rtl_tcp calibration: keep frequency translation on the requested ADC
+    /// rate, using measured payload throughput only for time stretching. Defaults
+    /// to true for sample-deleting transports. False models a genuine ADC rate offset.
+    pub rtl_nominal_acquisition: bool,
+    /// With rtl_tcp: use the least-delayed arrival in a sliding window for UTC.
+    /// Independent of rate calibration; defaults to true to reject delivery jitter.
+    pub rtl_minimum_arrival: bool,
+    /// With rtl_tcp: guess missing samples after a delivery pause over 500 ms.
+    /// Defaults to false: a pause can be buffered delivery rather than lost IQ.
+    /// Enable only for a source known to discard samples during such pauses.
+    pub rtl_infer_gaps: bool,
     pub channels: Vec<ChannelSpec>,
     /// A rotation: which of [`Self::channels`] to listen to, for how long, in
     /// turn. Empty: all of them, all the time.
@@ -1038,6 +1073,12 @@ impl Config {
         Config {
             name: String::new(),
             server: server.into(),
+            protocol: Protocol::SpyServer,
+            rtl_format: rtltcp::RtlFormat::Auto,
+            rtl_calibrate: Duration::from_secs(30),
+            rtl_nominal_acquisition: true,
+            rtl_minimum_arrival: true,
+            rtl_infer_gaps: false,
             channels,
             steps: Vec::new(),
             rotation_origin: None,
@@ -1313,6 +1354,12 @@ pub fn channelizer_for(cfg: &Config, active: usize) -> Channelizer {
     })
 }
 
+/// The most the clock of an rtl_tcp stream slews, ppm.
+const RTL_CLOCK_SLEW_PPM: u32 = 20_000;
+
+/// Threshold for the optional rtl_tcp pause-based loss heuristic (ns).
+const RTL_PAUSE_NS: i64 = 500_000_000;
+
 /// How long the minimum-delay anchor estimate looks back. Long enough that a
 /// quiet moment on the network falls inside it, short enough to follow an
 /// NTP step within a slot or two.
@@ -1408,7 +1455,11 @@ fn run_server(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) 
             on_event(Event::Connecting {
                 server: cfg.server.clone(),
             });
-            match session(cfg, &local, &mut on_event) {
+            let ended = match cfg.protocol {
+                Protocol::SpyServer => session(cfg, &local, &mut on_event),
+                Protocol::RtlTcp => session_rtl(cfg, &local, &mut on_event),
+            };
+            match ended {
                 // Stopped: the run's, or this server switched off; the top of the loop tells which.
                 Ok(End::Stopped) => continue,
                 Ok(End::Yielded) => on_event(Event::Yielded),
@@ -1427,6 +1478,105 @@ fn run_server(cfg: &Config, stop: &AtomicBool, mut on_event: impl FnMut(Event)) 
         }
         done.store(true, Ordering::Relaxed);
     });
+}
+
+/// What the stream loop needs of a connection, whichever protocol it speaks: the next IQ
+/// message, how much is waiting, and a gain written while running.
+trait Link {
+    fn read(&mut self, stop: &AtomicBool) -> std::io::Result<Message>;
+    fn queued_bytes(&self) -> usize;
+    /// Write the gain index `g` (`None` for the server's automatic gain, where it has one).
+    fn write_gain(&mut self, g: u32, dev: &Device, p: &Plan) -> std::io::Result<()>;
+}
+
+impl Link for Conn {
+    fn read(&mut self, stop: &AtomicBool) -> std::io::Result<Message> {
+        Conn::read(self, stop)
+    }
+    fn queued_bytes(&self) -> usize {
+        Conn::queued_bytes(self)
+    }
+    fn write_gain(&mut self, g: u32, dev: &Device, p: &Plan) -> std::io::Result<()> {
+        self.set(SET_GAIN, g)?;
+        self.set(
+            SET_IQ_DIGITAL_GAIN,
+            digital_gain(dev, p.decimation, Some(g)),
+        )
+    }
+}
+
+impl Link for rtltcp::Conn {
+    fn read(&mut self, stop: &AtomicBool) -> std::io::Result<Message> {
+        rtltcp::Conn::read(self, stop)
+    }
+    fn queued_bytes(&self) -> usize {
+        rtltcp::Conn::queued_bytes(self)
+    }
+    fn write_gain(&mut self, g: u32, _: &Device, _: &Plan) -> std::io::Result<()> {
+        rtltcp::Conn::set_gain(self, Some(g))
+    }
+}
+
+/// Which channels this moment of a rotation listens to, and when the step ends (UTC ns), after
+/// the moves and holds asked for: shared by every protocol's session. Reports a step change.
+#[allow(clippy::type_complexity)]
+fn pick_step(
+    cfg: &Config,
+    last_step: &mut Option<Option<usize>>,
+    held_step: &mut Option<Option<usize>>,
+    last_held: &mut bool,
+    on_event: &mut impl FnMut(Event),
+) -> (Vec<bool>, Option<(Option<usize>, i64)>, Option<i64>) {
+    let now_s = clock::now_ns().div_euclid(1_000_000_000);
+    // Moves asked for: the step that many places on, with its whole turn from now.
+    let moves = cfg.live.skip.swap(0, Ordering::AcqRel);
+    if moves != 0 && !cfg.steps.is_empty() {
+        let from = (*held_step).or(*last_step).flatten();
+        if let Some((to, base)) = cfg.force_step(now_s, from, moves) {
+            cfg.live.forced_base.store(base, Ordering::Release);
+            cfg.live.forced_at.store(now_s, Ordering::Release);
+            if held_step.is_some() {
+                *held_step = Some(Some(to));
+            }
+        }
+    }
+    // Held: stay on the step being heard, whatever the clock says.
+    let held = cfg.live.held() && !cfg.steps.is_empty();
+    if !held {
+        *held_step = None;
+    } else if held_step.is_none() {
+        *held_step = Some(last_step.flatten());
+    }
+    let (mask, step) = match *held_step {
+        Some(Some(i)) => {
+            let mut m = vec![false; cfg.channels.len()];
+            for &c in &cfg.steps[i].channels {
+                if let Some(x) = m.get_mut(c) {
+                    *x = true;
+                }
+            }
+            // No end: a held step has none.
+            (m, Some((Some(i), i64::MAX / 2_000_000_000)))
+        }
+        _ => cfg.mask_at(now_s),
+    };
+    if let Some((i, end)) = step
+        && (*last_step != Some(i) || held != *last_held)
+    {
+        *last_step = Some(i);
+        *last_held = held;
+        on_event(Event::Step {
+            index: i,
+            of: cfg.steps.len(),
+            ends_utc_s: end,
+            held,
+        });
+    }
+    let until_ns = match (held, step) {
+        (true, _) | (_, None) => None,
+        (false, Some((_, end))) => Some(end * 1_000_000_000),
+    };
+    (mask, step, until_ns)
 }
 
 fn session(
@@ -1488,55 +1638,13 @@ fn session(
         // it was when we connected: SDR# takes control when it connects, and a
         // client without it cannot tune the device or write the gain.
         let tune = sync.can_control && (cfg.tune || !cfg.yield_control);
-        let now_s = clock::now_ns().div_euclid(1_000_000_000);
-        // Moves asked for: the step that many places on, with its whole turn from now.
-        let moves = cfg.live.skip.swap(0, Ordering::AcqRel);
-        if moves != 0 && !cfg.steps.is_empty() {
-            let from = held_step.or(last_step).flatten();
-            if let Some((to, base)) = cfg.force_step(now_s, from, moves) {
-                cfg.live.forced_base.store(base, Ordering::Release);
-                cfg.live.forced_at.store(now_s, Ordering::Release);
-                if held_step.is_some() {
-                    held_step = Some(Some(to));
-                }
-            }
-        }
-        // Held: stay on the step being heard, whatever the clock says.
-        let held = cfg.live.held() && !cfg.steps.is_empty();
-        if !held {
-            held_step = None;
-        } else if held_step.is_none() {
-            held_step = Some(last_step.flatten());
-        }
-        let (mask, step) = match held_step {
-            Some(Some(i)) => {
-                let mut m = vec![false; cfg.channels.len()];
-                for &c in &cfg.steps[i].channels {
-                    if let Some(x) = m.get_mut(c) {
-                        *x = true;
-                    }
-                }
-                // No end: a held step has none.
-                (m, Some((Some(i), i64::MAX / 2_000_000_000)))
-            }
-            _ => cfg.mask_at(now_s),
-        };
-        if let Some((i, end)) = step
-            && (last_step != Some(i) || held != last_held)
-        {
-            last_step = Some(i);
-            last_held = held;
-            on_event(Event::Step {
-                index: i,
-                of: cfg.steps.len(),
-                ends_utc_s: end,
-                held,
-            });
-        }
-        let until_ns = match (held, step) {
-            (true, _) | (_, None) => None,
-            (false, Some((_, end))) => Some(end * 1_000_000_000),
-        };
+        let (mask, step, until_ns) = pick_step(
+            cfg,
+            &mut last_step,
+            &mut held_step,
+            &mut last_held,
+            on_event,
+        );
         if let Some((None, _)) = step {
             // No band is in at this hour: stream off, and wait for one.
             c.set(SET_STREAMING_ENABLED, 0)?;
@@ -1593,6 +1701,7 @@ fn session(
             sync,
             until_ns,
             &mut wf_bank,
+            &mut RateSetup::default(),
             on_event,
         )? {
             StreamEnd::Stopped => return Ok(End::Stopped),
@@ -1607,6 +1716,171 @@ fn session(
             StreamEnd::StepDone => {
                 c.set(SET_STREAMING_ENABLED, 0)?;
             }
+        }
+    }
+}
+
+/// A session with an `rtl_tcp` / `rsp_tcp` server (#685): the loop of [`session`] over a server
+/// that has no handshake, no decimation, no sync messages and no pause. It streams one fixed
+/// rate; each step of a rotation retunes it, waits for the retune to settle and writes the gain
+/// again (a gain written at once did not take on an RSP1), then drops what arrived before that:
+/// the old band's samples must not reach the new band's receiver.
+fn session_rtl(
+    cfg: &Config,
+    stop: &AtomicBool,
+    on_event: &mut impl FnMut(Event),
+) -> std::io::Result<End> {
+    let mut c = rtltcp::Conn::connect(&cfg.server, cfg.rtl_format)?;
+    let rate = cfg.rate.unwrap_or(rtltcp::DEFAULT_RATE);
+    let dev = Device {
+        kind: rtltcp::DEVICE_RTL_TCP,
+        max_rate: rate,
+        // `tune` is on, so the plan never reads the band; the whole rate is the honest figure.
+        bandwidth_hz: rate as f64,
+        max_gain: c.hello.gains.saturating_sub(1),
+        rates: vec![(0, rate)],
+    };
+    // A configured gain step is manual; none leaves the server's automatic gain on.
+    let start_gain = cfg.gain.map(|g| g.min(dev.max_gain));
+    on_event(Event::Connected {
+        device: DeviceInfo {
+            kind: dev.kind,
+            max_rate: rate,
+            bandwidth_hz: dev.bandwidth_hz,
+            max_gain: dev.max_gain,
+            can_control: true,
+            gain: start_gain.unwrap_or(0),
+        },
+        control: true,
+        device_hz: 0.0,
+    });
+    on_event(Event::Radio(RadioState {
+        gain: start_gain.unwrap_or(0),
+        max_gain: dev.max_gain,
+        can_control: true,
+    }));
+    c.set_sample_rate(rate)?;
+    // The rate the server really delivers, measured once per connection (see `Config::rtl_calibrate`).
+    let (mut measured_rate, mut calibrated) = (None::<u32>, false);
+    // Only the unmodified-server fallback learns a residual offset across rotation steps.
+    let mut setup = RateSetup::for_rtl(cfg);
+    // A stock server's average payload rate may be low because samples were
+    // deleted. Keep frequency translation on the requested acquisition clock;
+    // use the measured payload rate only for the audio/UTC approximation.
+    if !cfg.rtl_calibrate.is_zero() && cfg.rtl_nominal_acquisition {
+        setup.acquisition_hz = Some(f64::from(rate));
+    }
+    let mut wf_bank = WfBank::new();
+    let mut last_step: Option<Option<usize>> = None;
+    let mut held_step: Option<Option<usize>> = None;
+    let mut last_held = false;
+    loop {
+        let (mask, step, until_ns) = pick_step(
+            cfg,
+            &mut last_step,
+            &mut held_step,
+            &mut last_held,
+            on_event,
+        );
+        if let Some((None, _)) = step {
+            // No band is in at this hour: nothing to tune, and the stream cannot be paused.
+            idle_rtl(&mut c, stop, cfg, until_ns)?;
+            continue;
+        }
+        let Some(mut p) = plan::plan_of(
+            &cfg.channels,
+            &mask,
+            cfg.center_hz,
+            Some(rate),
+            &dev,
+            0.0,
+            true,
+        ) else {
+            on_event(Event::NoChannelFits { device_hz: 0.0 });
+            idle_rtl(&mut c, stop, cfg, until_ns)?;
+            continue;
+        };
+        let gain = cfg.live.gain().map(|g| g.min(dev.max_gain)).or(start_gain);
+        c.tune(p.center_hz as u32, gain, stop)?;
+        // Everything that arrived before the retune settled is the old tuning's.
+        let settled = clock::now_ns();
+        loop {
+            if c.read(stop)?.arrival_ns >= settled {
+                break;
+            }
+        }
+        // The first time, the server may not have read the commands yet (rsp_tcp starts its command
+        // reader after the RSP is up, ~10-15 s): wait for the stream to be at the rate asked for.
+        if !calibrated {
+            rtltcp::await_rate(&mut c, stop, rate, Duration::from_secs(60))?;
+        }
+        if !calibrated {
+            calibrated = true;
+            if !cfg.rtl_calibrate.is_zero() {
+                let measured = rtltcp::measure_rate(
+                    &mut c,
+                    stop,
+                    rate,
+                    (cfg.rtl_calibrate / 4).min(Duration::from_secs(5)),
+                    cfg.rtl_calibrate,
+                )?;
+                // The chain takes only some integer rates: the nearest, and the offset that is left.
+                if let Some((nominal, ppm)) = measured.and_then(mfsk_core::iq::plannable_rate) {
+                    measured_rate = Some(nominal);
+                    setup.ppm = ppm;
+                }
+            }
+        }
+        if let Some(r) = measured_rate {
+            p.rate = r;
+        }
+        let sync = Sync {
+            can_control: true,
+            gain: gain.unwrap_or(0),
+            device_hz: p.center_hz,
+            iq_hz: p.center_hz,
+        };
+        on_event(Event::Streaming {
+            rate: p.rate,
+            decimation: p.decimation,
+            center_hz: p.center_hz,
+            device_hz: p.center_hz,
+            active: (0..cfg.channels.len())
+                .map(|i| p.active.contains(&i))
+                .collect(),
+            channelizer: channelizer_for(cfg, p.active.len()),
+        });
+        match stream(
+            &mut c,
+            stop,
+            cfg,
+            &dev,
+            &p,
+            sync,
+            until_ns,
+            &mut wf_bank,
+            &mut setup,
+            on_event,
+        )? {
+            StreamEnd::Stopped => return Ok(End::Stopped),
+            // A rotation's step is over (or the device moved, which `rtl_tcp` never says): plan again.
+            StreamEnd::StepDone | StreamEnd::Moved(_) => {}
+        }
+    }
+}
+
+/// Read and drop the stream until the step ends or a move is asked for: an `rtl_tcp` server
+/// cannot be paused, and a connection nobody reads backs up.
+fn idle_rtl(
+    c: &mut rtltcp::Conn,
+    stop: &AtomicBool,
+    cfg: &Config,
+    until_ns: Option<i64>,
+) -> std::io::Result<()> {
+    loop {
+        c.read(stop)?;
+        if until_ns.is_some_and(|u| clock::now_ns() >= u) || cfg.live.skip_pending() {
+            return Ok(());
         }
     }
 }
@@ -1810,16 +2084,58 @@ fn digital_gain(dev: &Device, decimation: u32, gain: Option<u32>) -> u32 {
         }
 }
 
+/// What a protocol knows about the rate of the stream it carries (#686): SpyServer's is exact, and an
+/// `rtl_tcp` server's is measured (the offset from the nominal integer rate in the plan) and then learned
+/// from the clock by the receiver, which hands back what it learned for the next stream of the session.
+#[derive(Clone, Copy, Debug, Default)]
+struct RateSetup {
+    /// Real rate against `Plan::rate`, ppm.
+    ppm: f64,
+    /// Whether the receiver learns the rest from the readings given to `set_time`.
+    track: bool,
+    acquisition_hz: Option<f64>,
+}
+
+impl RateSetup {
+    fn for_rtl(cfg: &Config) -> Self {
+        Self {
+            ppm: 0.0,
+            track: !cfg.rtl_calibrate.is_zero(),
+            acquisition_hz: None,
+        }
+    }
+}
+
 /// A receiver for the plan's channels, built for the format the server sends.
 fn receiver(
     cfg: &Config,
     p: &Plan,
     format: IqSampleFormat,
     wf_bank: &mut WfBank,
+    setup: RateSetup,
 ) -> std::io::Result<Live> {
     let stream = IqStream::new(p.rate, p.center_hz, format).iq_swap(cfg.iq_swap);
     let mut rx = IqReceiver::with_channelizer(stream, channelizer_for(cfg, p.active.len()))
         .map_err(|e| std::io::Error::other(format!("{} S/s: {e}", p.rate)))?;
+    if setup.track {
+        // The offset the receiver is given for an rtl_tcp stream is good to a per cent or so (the server's own
+        // rate wanders +-2 % between 10 s windows) and is learned at 400 ppm a minute. The time the samples
+        // are given from it then runs off the arrival times at up to a per cent, which the default slew
+        // (400 ppm) cannot follow: on an RSP1 the DT went from 0 to -0.9 s in two minutes (2026-10-12). The
+        // clock only places the slot boundaries (the audio is not touched), so it may follow quickly.
+        rx = rx.with_clock(
+            mfsk_core::slotgrid::SampleClock::new(p.rate).with_max_slew_ppm(RTL_CLOCK_SLEW_PPM),
+        );
+    }
+    if setup.ppm != 0.0 {
+        rx.set_rate_offset_ppm(setup.ppm);
+    }
+    if let Some(hz) = setup.acquisition_hz {
+        rx.set_acquisition_rate_ppm(Some((hz / f64::from(p.rate) - 1.0) * 1e6));
+    }
+    if setup.track {
+        rx.track_rate(Some(mfsk_core::iq::RateTrackConfig::default()));
+    }
     let (rtx, results) = std::sync::mpsc::channel();
     let busy = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let longest_us = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1965,7 +2281,7 @@ const STEP_GRACE_NS: i64 = 1_500_000_000;
 /// Decode until stopped, the server moves the device, or `until_ns` (UTC) passes.
 #[allow(clippy::too_many_arguments)]
 fn stream(
-    c: &mut Conn,
+    c: &mut impl Link,
     stop: &AtomicBool,
     cfg: &Config,
     dev: &Device,
@@ -1973,13 +2289,18 @@ fn stream(
     sync: Sync,
     until_ns: Option<i64>,
     wf_bank: &mut WfBank,
+    setup: &mut RateSetup,
     on_event: &mut impl FnMut(Event),
 ) -> std::io::Result<StreamEnd> {
     // Built on the first IQ message, in the format the server actually sends.
     let mut live: Option<Live> = None;
     let r = stream_inner(
-        c, stop, cfg, dev, p, sync, until_ns, &mut live, wf_bank, on_event,
+        c, stop, cfg, dev, p, sync, until_ns, &mut live, wf_bank, *setup, on_event,
     );
+    // What the receiver learned of the rate is the next stream's start.
+    if let Some(l) = live.as_ref() {
+        setup.ppm = l.rx.rate_offset_ppm();
+    }
     // The waterfalls (and their history) wait for the band's next turn; the
     // workers hand their decoders back as they finish.
     if let Some(mut l) = live.take() {
@@ -1991,7 +2312,9 @@ fn stream(
         // The JTTY threads end their receptions as they stop: the messages still
         // open are reported cut off, before the queue goes.
         l.jtty.clear();
-        while let Ok(m) = l.jtty_results.try_recv() {
+        while let Ok(mut m) = l.jtty_results.try_recv() {
+            m.freq_hz =
+                m.dial_hz + 3000.0 + (m.freq_hz - m.dial_hz - 3000.0) * l.rx.audio_rf_scale();
             on_event(Event::Jtty(m));
         }
     }
@@ -2011,14 +2334,15 @@ fn settle(live: &mut Option<Live>, on_event: &mut impl FnMut(Event)) {
     while let Ok(d) = l.results.try_recv() {
         on_event(Event::Decode(d));
     }
-    while let Ok(m) = l.jtty_results.try_recv() {
+    while let Ok(mut m) = l.jtty_results.try_recv() {
+        m.freq_hz = m.dial_hz + 3000.0 + (m.freq_hz - m.dial_hz - 3000.0) * l.rx.audio_rf_scale();
         on_event(Event::Jtty(m));
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn stream_inner(
-    c: &mut Conn,
+    c: &mut impl Link,
     stop: &AtomicBool,
     cfg: &Config,
     dev: &Device,
@@ -2027,6 +2351,7 @@ fn stream_inner(
     until_ns: Option<i64>,
     live: &mut Option<Live>,
     wf_bank: &mut WfBank,
+    setup: RateSetup,
     on_event: &mut impl FnMut(Event),
 ) -> std::io::Result<StreamEnd> {
     let rate = p.rate;
@@ -2037,6 +2362,7 @@ fn stream_inner(
     let mut est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
     let mut anchor: Option<i64> = None;
     let mut next_seq: Option<u32> = None;
+    let mut last_arrival: Option<i64> = None;
     let mut last_report = 0u64;
     let (mut gaps, mut reanchors) = (0u64, 0u64);
     let mut worst_push = Duration::ZERO;
@@ -2094,8 +2420,9 @@ fn stream_inner(
             continue;
         };
         if live.as_ref().is_none_or(|l| l.format != format) {
-            *live = Some(receiver(cfg, p, format, wf_bank)?);
+            *live = Some(receiver(cfg, p, format, wf_bank, setup)?);
             (anchor, next_seq) = (None, None);
+            last_arrival = None;
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
         }
         let Live {
@@ -2118,11 +2445,7 @@ fn stream_inner(
         if radio.can_control
             && let Some(g) = cfg.live.gain().filter(|g| Some(*g) != applied_gain)
         {
-            c.set(SET_GAIN, g)?;
-            c.set(
-                SET_IQ_DIGITAL_GAIN,
-                digital_gain(dev, p.decimation, Some(g)),
-            )?;
+            c.write_gain(g, dev, p)?;
             applied_gain = Some(g);
         }
 
@@ -2174,6 +2497,26 @@ fn stream_inner(
         }
         next_seq = Some(m.seq.wrapping_add(1));
 
+        // Only explicitly selected sources guess missing samples from a long pause.
+        // A nominal-rate server preserves the sample time axis (including zero-filled holes):
+        // a late delivery must not insert a second hole or discard the open slots. rtl_tcp has
+        // no source sequence numbers, so arrivals alone cannot prove samples were lost (#686).
+        if matches!(cfg.protocol, Protocol::RtlTcp)
+            && cfg.rtl_infer_gaps
+            && let Some(prev) = last_arrival
+            && m.arrival_ns - prev > RTL_PAUSE_NS
+        {
+            let real_rate = rate as f64 * (1.0 + rx.rate_offset_ppm() * 1e-6);
+            let lost = ((m.arrival_ns - prev) as f64 * 1e-9 * real_rate - n as f64).max(0.0) as u64;
+            gaps += 1;
+            on_event(Event::Gap {
+                messages: (lost / n.max(1) as u64) as u32,
+                at_s: rx.samples_in() as f64 / rate as f64,
+            });
+            rx.gap(lost);
+        }
+        last_arrival = Some(m.arrival_ns);
+
         let t = Instant::now();
         let mut slots = Vec::new();
         rx.push_bytes(&m.body, &mut slots);
@@ -2223,6 +2566,11 @@ fn stream_inner(
                 // then has a history to show.
                 wf.coarse.push(&audio, end, &mut coarse_rows);
                 wf.fine.push(&audio, end, &mut fine_rows);
+                let scale = rx.audio_rf_scale() as f32;
+                for row in coarse_rows.iter_mut().chain(&mut fine_rows) {
+                    row.f_lo_hz = 3000.0 + (row.f_lo_hz - 3000.0) * scale;
+                    row.bin_hz *= scale;
+                }
                 for r in &coarse_rows {
                     remember(&mut wf.hist_coarse, r);
                 }
@@ -2254,7 +2602,8 @@ fn stream_inner(
                 }
             }
         }
-        while let Ok(m) = jtty_results.try_recv() {
+        while let Ok(mut m) = jtty_results.try_recv() {
+            m.freq_hz = m.dial_hz + 3000.0 + (m.freq_hz - m.dial_hz - 3000.0) * rx.audio_rf_scale();
             on_event(Event::Jtty(m));
         }
         for slot in slots {
@@ -2277,10 +2626,9 @@ fn stream_inner(
         }
         worst_push = worst_push.max(t.elapsed());
 
-        // The arrival stamps the *end* of this message; `best` is the UTC of
-        // sample 0 the lowest delay in the window implies. The receiver
-        // follows it at a bounded rate, so a drifting host clock moves the
-        // slot boundaries by milliseconds and loses no slot.
+        // Arrival stamps the end of this message. Reject delivery jitter with a
+        // window minimum independently of Fs calibration. The receiver follows
+        // the resulting sample-0 UTC at a bounded rate.
         let samples = rx.samples_in();
         // A changed delay restarts the minimum: candidates taken with the
         // old one would hold the estimate until they left the window.
@@ -2289,11 +2637,19 @@ fn stream_inner(
             delay_ns = d;
             est = AnchorEstimate::new(rate, ANCHOR_WINDOW_S);
         }
-        let best = est.push(samples, rate, m.arrival_ns - delay_ns);
+        // The time the stream had run is the receiver's own: it follows a rate offset that was measured
+        // or is being learned (#686), where `samples / rate` would keep the nominal rate.
+        let elapsed_ns = rx.elapsed_ns(samples);
+        let best = if matches!(cfg.protocol, Protocol::RtlTcp) && !cfg.rtl_minimum_arrival {
+            // Optional direct-arrival comparison for evaluating the server pipeline.
+            m.arrival_ns - delay_ns - elapsed_ns
+        } else {
+            est.push_elapsed(samples, elapsed_ns, m.arrival_ns - delay_ns)
+        };
         let warming_up = samples < 2 * rate as u64;
-        // The first two seconds settle the minimum; no slot is complete yet.
+        // Allow startup delivery to settle for two seconds; no slot is complete yet.
         if !warming_up || anchor.is_none() {
-            let at = best + (samples as i128 * 1_000_000_000 / rate as i128) as i64;
+            let at = best + elapsed_ns;
             match rx.set_time(at, samples) {
                 ClockChange::Stepped { by_ns } if anchor.is_some() => {
                     reanchors += 1;
@@ -2839,6 +3195,166 @@ mod tests {
         assert_eq!(channelizer_for(&cfg, AUTO_PFB_CHANNELS), Channelizer::Pfb);
         cfg.channelizer = Some(Channelizer::Direct);
         assert_eq!(channelizer_for(&cfg, 32), Channelizer::Direct);
+    }
+
+    /// Feed the actual stream loop recorded arrivals: at 3 s delivery stalls for 750 ms.
+    /// A buffered source then catches up; a restarting source really lost that interval.
+    fn rtl_stall_trace(
+        calibrate: Duration,
+        catch_up: bool,
+        infer_gaps: bool,
+    ) -> (u64, i64, u64, u64) {
+        struct RecordedLink(std::collections::VecDeque<Message>);
+        impl Link for RecordedLink {
+            fn read(&mut self, _: &AtomicBool) -> std::io::Result<Message> {
+                self.0
+                    .pop_front()
+                    .ok_or_else(|| std::io::ErrorKind::Interrupted.into())
+            }
+            fn queued_bytes(&self) -> usize {
+                0
+            }
+            fn write_gain(&mut self, _: u32, _: &Device, _: &Plan) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut cfg = Config::new("recorded", Vec::new());
+        cfg.protocol = Protocol::RtlTcp;
+        cfg.rtl_calibrate = calibrate;
+        cfg.rtl_infer_gaps = infer_gaps;
+        let p = Plan {
+            rate: 48_000,
+            decimation: 0,
+            center_hz: 0.0,
+            active: Vec::new(),
+        };
+        let dev = Device {
+            kind: rtltcp::DEVICE_RTL_TCP,
+            max_rate: p.rate,
+            bandwidth_hz: p.rate as f64,
+            max_gain: 0,
+            rates: vec![(0, p.rate)],
+        };
+        let sync = Sync {
+            can_control: false,
+            gain: 0,
+            device_hz: 0.0,
+            iq_hz: 0.0,
+        };
+        let mut previous = 0;
+        let mut link = RecordedLink(
+            (0..60)
+                .map(|k| {
+                    let nominal = 1_700_000_010_000_000_000 + (k + 1) * 100_000_000;
+                    let arrival = if k == 30 || (k > 30 && !catch_up) {
+                        nominal + 750_000_000
+                    } else {
+                        nominal.max(previous + 1)
+                    };
+                    previous = arrival;
+                    Message {
+                        kind: MSG_UINT8_IQ,
+                        seq: k as u32,
+                        body: vec![128; 2 * 4_800],
+                        arrival_ns: arrival,
+                    }
+                })
+                .collect(),
+        );
+        let (mut live, mut bank) = (None, WfBank::new());
+        let (mut gaps, mut reanchors) = (0, 0);
+        let result = stream_inner(
+            &mut link,
+            &AtomicBool::new(false),
+            &cfg,
+            &dev,
+            &p,
+            sync,
+            None,
+            &mut live,
+            &mut bank,
+            RateSetup::for_rtl(&cfg),
+            &mut |event| match event {
+                Event::Gap { .. } => gaps += 1,
+                Event::Reanchor { .. } => reanchors += 1,
+                _ => {}
+            },
+        )
+        .unwrap();
+        assert!(matches!(result, StreamEnd::Stopped));
+        let rx = live.unwrap().rx;
+        (
+            rx.samples_in(),
+            rx.elapsed_ns(rx.samples_in()),
+            gaps,
+            reanchors,
+        )
+    }
+
+    #[test]
+    fn nominal_rtl_delivery_stall_does_not_insert_missing_samples() {
+        // Includes every input sample (also the contract of a server that zero-fills holes).
+        assert_eq!(
+            rtl_stall_trace(Duration::ZERO, true, false),
+            (288_000, 6_000_000_000, 0, 0)
+        );
+    }
+
+    #[test]
+    fn unmodified_rtl_restart_still_advances_over_lost_samples() {
+        // An explicit pause heuristic also works without rate calibration.
+        for calibrate in [Duration::ZERO, Duration::from_secs(30)] {
+            assert_eq!(
+                rtl_stall_trace(calibrate, false, true),
+                (324_000, 6_750_000_000, 1, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn calibrated_rtl_buffered_delivery_does_not_invent_a_gap() {
+        let (samples, _, gaps, reanchors) = rtl_stall_trace(Duration::from_secs(30), true, false);
+        assert_eq!((samples, gaps, reanchors), (288_000, 0, 0));
+    }
+
+    /// Arrival-clock drift must not become an IQ frequency/time-scale correction when
+    /// calibration is disabled. Exercise the actual receiver setup, including the tracker.
+    #[test]
+    fn nominal_rtl_rate_stays_uncorrected_despite_clock_drift() {
+        let mut cfg = Config::new("x", Vec::new());
+        cfg.protocol = Protocol::RtlTcp;
+        let p = Plan {
+            rate: 48_000,
+            decimation: 0,
+            center_hz: 0.0,
+            active: Vec::new(),
+        };
+        for calibrate in [Duration::ZERO, Duration::from_secs(30)] {
+            cfg.rtl_calibrate = calibrate;
+            let mut bank = WfBank::new();
+            let mut live = receiver(
+                &cfg,
+                &p,
+                IqSampleFormat::Cf32,
+                &mut bank,
+                RateSetup::for_rtl(&cfg),
+            )
+            .unwrap();
+            for second in 0..240u64 {
+                let sample = second * p.rate as u64;
+                // Arrival clock is 100 ppm slower than the nominal sample clock.
+                live.rx.set_time(
+                    1_700_000_000_000_000_000 + second as i64 * 1_000_100_000,
+                    sample,
+                );
+            }
+            if calibrate.is_zero() {
+                assert_eq!(live.rx.rate_offset_ppm(), 0.0);
+                assert_eq!(live.rx.elapsed_ns(240 * p.rate as u64), 240_000_000_000);
+            } else {
+                assert!(live.rx.rate_offset_ppm().abs() > 50.0);
+            }
+        }
     }
 
     #[test]
