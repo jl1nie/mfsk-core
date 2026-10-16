@@ -362,39 +362,85 @@ impl RateMeter {
     }
 }
 
+/// How long the stream must have run before "the rate is the one asked for" counts as proof that the
+/// server reads commands, when it never showed any other rate. `rsp_tcp` streams at its start-up rate
+/// (1 024 000, the default here) until its `Init` of the RSP is over (10-15 s on an RSP1); asked for that
+/// same rate, the byte rate is right from the first window and says nothing about the commands waiting in
+/// the socket. 20 s is that Init plus a margin, not a measured bound.
+pub const COMMANDS_READ_FLOOR: Duration = Duration::from_secs(20);
+
+/// The decision of [`await_rate`], apart from the socket: byte-rate windows of 2 s in, "applied" out.
+#[derive(Clone, Debug)]
+pub struct RateGate {
+    want: f64,
+    floor_s: f64,
+    t_first: Option<i64>,
+    t_window: Option<i64>,
+    bytes: usize,
+    good: u32,
+    mismatch_seen: bool,
+}
+
+impl RateGate {
+    /// `want` is the byte rate the asked-for sample rate makes.
+    pub fn new(want: f64, floor: Duration) -> Self {
+        Self {
+            want,
+            floor_s: floor.as_secs_f64(),
+            t_first: None,
+            t_window: None,
+            bytes: 0,
+            good: 0,
+            mismatch_seen: false,
+        }
+    }
+
+    /// A message of `len` bytes arrived at `arrival_ns`; true once the server has applied the rate.
+    pub fn push(&mut self, arrival_ns: i64, len: usize) -> bool {
+        let t_first = *self.t_first.get_or_insert(arrival_ns);
+        let t0 = *self.t_window.get_or_insert(arrival_ns);
+        self.bytes += len;
+        let elapsed = (arrival_ns - t0) as f64 * 1e-9;
+        if elapsed < 2.0 {
+            return false;
+        }
+        let rate = self.bytes as f64 / elapsed;
+        if (rate / self.want - 1.0).abs() < 0.2 {
+            self.good += 1;
+        } else {
+            self.good = 0;
+            self.mismatch_seen = true;
+        }
+        (self.t_window, self.bytes) = (None, 0);
+        // A rate that was never anything else proves nothing until the Init is over.
+        let since_start = (arrival_ns - t_first) as f64 * 1e-9;
+        self.good >= 2 && (self.mismatch_seen || since_start >= self.floor_s)
+    }
+}
+
 /// Wait until the server has applied what was asked of it. `rtl_tcp` does not answer commands, and
 /// `rsp_tcp` does not even read them until its `Init` of the RSP is over (10-15 s on an RSP1, the commands
 /// waiting in the socket), while it streams already, at the rate and frequency it was started with: that
 /// stream, taken for the asked-for rate, runs ahead of the clock (a row of `re-anchor: -1.0 s` in the
 /// first minute, #685). The only sign is the byte rate: windows of 2 s on arrival times, until two in a
-/// row are within 20 % of the one the asked-for rate makes. Gives up after `timeout` (and goes on);
-/// returns how long it waited.
+/// row are within 20 % of the one the asked-for rate makes. When the stream was at that rate from the
+/// start (asked for the start-up rate) the byte rate proves nothing, and the wait lasts
+/// `floor` ([`COMMANDS_READ_FLOOR`]) of stream time (#686). Gives up after `timeout` (and goes on); returns how
+/// long it waited.
 pub fn await_rate(
     c: &mut Conn,
     stop: &AtomicBool,
     nominal: u32,
+    floor: Duration,
     timeout: Duration,
 ) -> std::io::Result<Duration> {
     let bps = c.hello.format.bytes_per_sample() as f64;
-    let want = f64::from(nominal) * bps;
+    let mut gate = RateGate::new(f64::from(nominal) * bps, floor);
     let start = Instant::now();
-    let (mut t_first, mut bytes, mut good) = (None::<i64>, 0usize, 0);
     while start.elapsed() < timeout {
         let m = c.read(stop)?;
-        let t0 = *t_first.get_or_insert(m.arrival_ns);
-        bytes += m.body.len();
-        let elapsed = (m.arrival_ns - t0) as f64 * 1e-9;
-        if elapsed >= 2.0 {
-            let rate = bytes as f64 / elapsed;
-            if (rate / want - 1.0).abs() < 0.2 {
-                good += 1;
-                if good >= 2 {
-                    break;
-                }
-            } else {
-                good = 0;
-            }
-            (t_first, bytes) = (None, 0);
+        if gate.push(m.arrival_ns, m.body.len()) {
+            break;
         }
     }
     Ok(start.elapsed())
@@ -568,5 +614,38 @@ mod tests {
         let r = m.rate().unwrap();
         // The 50 ms kept of the pause is ~0.2 % of the 30 s; the pause left in reads ~1.7-2 % short.
         assert!((r / real - 1.0).abs() < 0.003, "{r}");
+    }
+
+    /// Feed `secs` of a stream at `bps` bytes/s in 50 ms messages, from `from_s`.
+    fn feed(g: &mut RateGate, from_s: f64, secs: f64, bps: f64) -> Option<f64> {
+        let n = (secs / 0.05) as usize;
+        for k in 1..=n {
+            let t = from_s + k as f64 * 0.05;
+            if g.push((t * 1e9) as i64, (bps * 0.05) as usize) {
+                return Some(t - from_s);
+            }
+        }
+        None
+    }
+
+    /// Asked for the start-up rate, the stream is right from the first window: the commands are not
+    /// known to be read until the floor has passed.
+    #[test]
+    fn a_stream_at_the_asked_rate_from_the_start_waits_for_the_floor() {
+        let bps = 2.0 * 1_024_000.0;
+        let mut g = RateGate::new(bps, COMMANDS_READ_FLOOR);
+        let at = feed(&mut g, 0.0, 60.0, bps).expect("settles");
+        assert!((20.0..24.1).contains(&at), "{at}");
+    }
+
+    /// A stream that was at another rate and came to the asked one has shown the commands are read:
+    /// no floor, two good windows are enough.
+    #[test]
+    fn a_stream_that_changes_to_the_asked_rate_does_not_wait() {
+        let bps = 2.0 * 1_024_000.0;
+        let mut g = RateGate::new(bps, COMMANDS_READ_FLOOR);
+        assert!(feed(&mut g, 0.0, 6.0, bps * 0.5).is_none());
+        let at = feed(&mut g, 6.0, 30.0, bps).expect("settles");
+        assert!(at < 6.1, "{at}");
     }
 }

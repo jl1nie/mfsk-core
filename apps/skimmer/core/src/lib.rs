@@ -756,6 +756,9 @@ pub struct Config {
     /// rate tracking. Arrival timing and pause-based gap guesses are separate settings.
     /// Use zero after fixing or zero-filling losses on the server (#686).
     pub rtl_calibrate: Duration,
+    /// How long a stream that was at the asked-for rate from the start must run before the server is
+    /// taken to read commands ([`rtltcp::COMMANDS_READ_FLOOR`]); a stand-in that has no start-up phase sets zero.
+    pub rtl_commands_floor: Duration,
     /// With rtl_tcp calibration: keep frequency translation on the requested ADC
     /// rate, using measured payload throughput only for time stretching. Defaults
     /// to true for sample-deleting transports. False models a genuine ADC rate offset.
@@ -1076,6 +1079,7 @@ impl Config {
             protocol: Protocol::SpyServer,
             rtl_format: rtltcp::RtlFormat::Auto,
             rtl_calibrate: Duration::from_secs(30),
+            rtl_commands_floor: rtltcp::COMMANDS_READ_FLOOR,
             rtl_nominal_acquisition: true,
             rtl_minimum_arrival: true,
             rtl_infer_gaps: false,
@@ -1812,7 +1816,13 @@ fn session_rtl(
         // The first time, the server may not have read the commands yet (rsp_tcp starts its command
         // reader after the RSP is up, ~10-15 s): wait for the stream to be at the rate asked for.
         if !calibrated {
-            rtltcp::await_rate(&mut c, stop, rate, Duration::from_secs(60))?;
+            rtltcp::await_rate(
+                &mut c,
+                stop,
+                rate,
+                cfg.rtl_commands_floor,
+                Duration::from_secs(60),
+            )?;
         }
         if !calibrated {
             calibrated = true;
