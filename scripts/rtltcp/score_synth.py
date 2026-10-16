@@ -37,7 +37,9 @@ for path in rows_paths:
     txs = [t for t in txs if t["slot_utc_s"] - t0 >= lo and t["slot_utc_s"] - t0 + frame[t["mode"]] <= hi]
     by_key = {(t["text"], round(t["slot_utc_s"])): t for t in txs}
     hit, wrong_slot, false = {}, 0, []
-    for r in out["rows"]:
+    # Rows of a multi-channel run carry "mode" and "dial": only this channel's rows are scored here.
+    mine = [r for r in out["rows"] if int(r.get("dial", d)) == d and (not opts["--mode"] or r.get("mode", opts["--mode"]) == opts["--mode"])]
+    for r in mine:
         utc = r["utc"] / 1e9 if r.get("utc") is not None else None
         t = by_key.get((r["text"], round(utc))) if utc is not None else None
         if t:

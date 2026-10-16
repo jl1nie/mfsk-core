@@ -74,20 +74,70 @@ impl Link for Recording {
 fn decode_recorded_iq() {
     let number =
         |key: &str, default: f64| std::env::var(key).map_or(default, |v| v.parse::<f64>().unwrap());
-    let mut file = std::io::BufReader::new(
-        std::fs::File::open(std::env::var("MFSK_RTL_RECORDING").expect("set MFSK_RTL_RECORDING"))
-            .unwrap(),
-    );
-    let mut header = [0u8; 12];
-    file.read_exact(&mut header).unwrap();
-    let start_ns = i64::from_le_bytes(header[..8].try_into().unwrap());
-    let remaining = u32::from_le_bytes(header[8..].try_into().unwrap());
-    let effective = number("MFSK_RTL_EFFECTIVE_RATE", 1_024_000.0);
+    let path = std::env::var("MFSK_RTL_RECORDING").expect("set MFSK_RTL_RECORDING");
+    let open = |busy: Arc<std::sync::atomic::AtomicUsize>, skip_s: f64, end_s: f64| {
+        let mut file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
+        let mut header = [0u8; 12];
+        file.read_exact(&mut header).unwrap();
+        Recording {
+            file,
+            remaining: u32::from_le_bytes(header[8..].try_into().unwrap()),
+            start_ns: i64::from_le_bytes(header[..8].try_into().unwrap()),
+            pending: Default::default(),
+            seq: 0,
+            last_arrival: 0,
+            skipped_bytes: 0,
+            started: false,
+            busy,
+            skip_s,
+            end_s,
+        }
+    };
+    // MFSK_RTL_MEASURE=1: the rate the client's own start-up calibration (rtltcp::measure_rate: skip,
+    // then a 30 s window, a line through arrival time against samples) would take from this recording,
+    // in place of MFSK_RTL_EFFECTIVE_RATE.
+    let measured = (number("MFSK_RTL_MEASURE", 0.0) != 0.0).then(|| {
+        let (skip, window) = (5.0, 30.0);
+        let mut pre = open(Default::default(), 0.0, skip + window);
+        let origin = pre.start_ns;
+        let (mut meter, mut samples) = (rtltcp::RateMeter::new(), 0u64);
+        while let Ok(m) = pre.read(&AtomicBool::new(false)) {
+            if ((m.arrival_ns - origin) as f64) < skip * 1e9 {
+                continue;
+            }
+            samples += (m.body.len() / 2) as u64;
+            meter.push(m.arrival_ns, samples);
+        }
+        meter
+            .rate()
+            .expect("measure_rate: no rate from the recording")
+    });
+    let effective = measured.unwrap_or_else(|| number("MFSK_RTL_EFFECTIVE_RATE", 1_024_000.0));
     let dial = number("MFSK_RTL_DIAL", 7_074_000.0);
     let center = number("MFSK_RTL_CENTER", 7_016_000.0);
     let (rate, ppm) = mfsk_core::iq::plannable_rate(effective).unwrap();
     let receive_dial = dial;
-    let mut cfg = Config::new("recorded", vec![ChannelSpec::new(Mode::Ft8, receive_dial)]);
+    // MFSK_RTL_CHANNELS="ft8:7074000,ft8:7041000,ft4:7047500" decodes several channels of one stream (the
+    // synth_rtltcp corpus); unset, one FT8 channel at MFSK_RTL_DIAL.
+    let channels: Vec<ChannelSpec> = match std::env::var("MFSK_RTL_CHANNELS") {
+        Ok(list) => list
+            .split(',')
+            .map(|item| {
+                let (mode, hz) = item
+                    .split_once(':')
+                    .expect("MFSK_RTL_CHANNELS: mode:dial_hz,...");
+                let mode = match mode {
+                    "ft8" => Mode::Ft8,
+                    "ft4" => Mode::Ft4,
+                    other => panic!("MFSK_RTL_CHANNELS: unsupported mode {other}"),
+                };
+                ChannelSpec::new(mode, hz.parse::<f64>().unwrap())
+            })
+            .collect(),
+        Err(_) => vec![ChannelSpec::new(Mode::Ft8, receive_dial)],
+    };
+    let n_channels = channels.len();
+    let mut cfg = Config::new("recorded", channels);
     cfg.protocol = Protocol::RtlTcp;
     cfg.rtl_calibrate = Duration::ZERO;
     cfg.rtl_minimum_arrival = number("MFSK_RTL_MIN_ARRIVAL", 1.0) != 0.0;
@@ -98,7 +148,7 @@ fn decode_recorded_iq() {
         rate,
         decimation: 0,
         center_hz: center,
-        active: vec![0],
+        active: (0..n_channels).collect(),
     };
     let setup = RateSetup {
         ppm,
@@ -120,26 +170,21 @@ fn decode_recorded_iq() {
     };
     let mut bank = WfBank::new();
     let mut live = Some(receiver(&cfg, &p, IqSampleFormat::Cu8, &mut bank, setup).unwrap());
-    let mut link = Recording {
-        file,
-        remaining,
-        start_ns,
-        pending: Default::default(),
-        seq: 0,
-        last_arrival: 0,
-        skipped_bytes: 0,
-        started: false,
-        busy: live.as_ref().unwrap().busy.clone(),
-        skip_s: number("MFSK_RTL_SKIP", 40.0),
-        end_s: number("MFSK_RTL_END", 240.0),
-    };
+    let mut link = open(
+        live.as_ref().unwrap().busy.clone(),
+        number("MFSK_RTL_SKIP", 40.0),
+        number("MFSK_RTL_END", 240.0),
+    );
     let mut rows = Vec::new();
     let mut reanchors = Vec::new();
     let mut gaps = 0;
     let mut dropped = 0;
     let mut sink = |e| match e {
-        Event::Decode(d) => rows.push(serde_json::json!({"text":d.text,"utc":d.slot_utc_ns,
-            "frequency":d.freq_hz,"dt":d.dt_s,"snr":d.snr_db})),
+        Event::Decode(d) => rows.push(
+            serde_json::json!({"mode":format!("{:?}", d.mode).to_uppercase(),
+            "dial":d.dial_hz,"text":d.text,"utc":d.slot_utc_ns,
+            "frequency":d.freq_hz,"dt":d.dt_s,"snr":d.snr_db}),
+        ),
         Event::Reanchor { by_s } => reanchors.push(by_s),
         Event::Gap { .. } => gaps += 1,
         Event::Status(s) => dropped += s.dropped_slots,
@@ -161,7 +206,7 @@ fn decode_recorded_iq() {
     .unwrap();
     settle(&mut live, &mut sink);
     assert_eq!(dropped, 0, "offline decoder queue lost slots");
-    let result = serde_json::json!({"rate":effective,"receive_dial":receive_dial,
+    let result = serde_json::json!({"rate":effective,"measured":measured,"receive_dial":receive_dial,
         "acquisition_hz":setup.acquisition_hz,
         "skip_s":link.skip_s,"end_s":link.end_s,"track":setup.track,"gaps":gaps,"reanchors":reanchors,"rows":rows});
     let output = std::env::var("MFSK_RTL_OUTPUT").expect("set MFSK_RTL_OUTPUT");
