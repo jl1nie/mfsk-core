@@ -317,7 +317,7 @@ Reading, within what the numbers show (no cause is named; none was measured):
   the floor (A = 0), no false decodes added (Bm_t1: 0; oracle has 4).
 - **C displaces the 7074 kHz channel** (58 kHz from the centre): 0 decodes in 5 of 6 seed-runs, the 7041 kHz
   channel (25 kHz) works partly; the seed spread is 10+ dB. C fails rule 2.
-- **D and E do not beat B in FT8.** E with the 30 s measure (Em_t1) is 2-4 dB worse than B at 7074 kHz in
+- **D and E do not beat B in FT8.** E with the 30 s measure (Em_t1) is 3-4 dB worse than B at 7074 kHz in
   seeds 1 and 2 and equal in seed 3, with a seed spread of 4 dB (-13.3 / -12.4 / -16.5), larger than any
   difference to B. Eall (a rate no client can have) is at best equal to B (7041: -16.8 / -15.9 / -16.8 vs
   Bm_t1 -17.2 / -16.8 / -16.9), still worse at 7074. Rule 3 (the one with less code wins unless the other is
@@ -347,8 +347,7 @@ A pause in the window moves the measured rate by 1.7-2.0 % (20 000 S/s) and take
 of the pause-free run (seed 3 less than the others, 206 vs 296-308). The pause-robust rate returns the counts
 and SNR50 to the pause-free values (Bm100r vs Bm_t0: 320 / 289 / 298 vs 308 / 292 / 296). This confirms the
 section 6 defect (`measure_rate` sees a 1.43 s pause as a lower rate), with the rate error here ~2 % on a 30 s
-window rather than the 7 % worst case quoted there (that case is a pause near the window's end on a shorter fit;
-not reproduced). Only the window position was varied; a window with no pause in it (the default here) is
+window rather than the 7 % worst case quoted there (that figure was not reproduced). Only the window position was varied; a window with no pause in it (the default here) is
 unaffected by F.
 
 ### 10.6 Ranking (rule 2, rule 3)
@@ -359,7 +358,7 @@ unaffected by F.
    the calibration that B (and D) depend on, and is worth doing whichever is chosen.
 2. The gap that remains is the oracle's: B is 3.7-4.4 dB (FT8) behind it and decodes 44 % of FT4 at strong SNR.
    Closing that is not a matter of the candidates listed here.
-3. These are results on a *simulated* hole shape (log-normal) and zero-delay-variation callbacks; the trace run
+3. These are results on a *simulated* hole shape (log-normal) with the generator's fixed 20 ms latency, 5 ms jitter and 50 ms callbacks; the trace run
    (section 9 step 4) is the check on the assumption and was **not possible**, see below.
 
 ### 10.7 Not done
