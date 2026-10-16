@@ -374,3 +374,114 @@ unaffected by F.
 - Section 8 steps 5-7 (real-recording oracle, implementing the winner, the RSP1) are untouched.
 - D/E/F exist only in `recorded_iq.rs`; `rtltcp.rs` is unchanged.
 - Run durations, CPU class and wall time were not recorded and do not enter any result.
+
+## 11. Why FT4 decodes so little under B (2026-10-17)
+
+Question: Bm_t1 (the shipped setting) decodes ~44 % of FT4 at 0 dB (35/79) where the oracle decodes 79/79 from -14 dB
+and FT8 under B reaches 70 %. Nothing in the client or the generator was changed; harness `e9045a25` unchanged,
+new files are `scripts/rtltcp/tx_features.py` (per-transmission join of truth, loss and outcome) and
+`scripts/rtltcp/hole_patterns.py` (the control traces).
+
+### 11.1 Candidates and the measurement that decides each (written before any run)
+
+| id | candidate | confirmed if / excluded if |
+|---|---|---|
+| a | the failing set has structure (slot parity, start offset, DT, time since a reset, seed) | hit rate at strong SNR depends on it / does not |
+| b | slot alignment / time base (DT of decoded vs missed, parity, clock offset) | failures follow the client's clock offset / do not |
+| c | hole shape: B deletes the hole samples and stretches by one global rate, so the audio time of a frame is off by (loss in the frame - assumed loss); a 5 s FT4 frame (105 x 48 ms symbols) is shorter and tighter than a 12.6 s FT8 frame (79 x 160 ms) | hit rate falls with that mismatch, and a corpus with the same count/total/resets but no mismatch recovers / not |
+| d | harness artefact of the FT4 channel | B on a lossless corpus reproduces clean for FT4 / not |
+| e | the -1.75 dB FT4 SNR offset is related | it is absent without loss, or differs between decoded and missed / is present on clean and independent |
+| f | resets (3 x 1.43 s) | misses cluster after resets / do not |
+
+### 11.2 Inputs
+
+Seeds 1-3, 600 s, `delivered.bin` of the section 9 corpus (SHA-256 `6ea1ab4e...` / `073d5b15...` / `b1b01323...`, truth
+sums as in section 9), setting Bm_t1 = `MFSK_RTL_MEASURE=1 MFSK_RTL_TRACK=1 MFSK_RTL_PIN_ACQUISITION=1`, run through
+`eval_synth.py` at `e9045a25`. It reproduces section 10: FT4 210 / 196 / 204 of 869, FT8 7074 301 / 298 / 290.
+Controls are new corpora from the same generator, same seeds, `--seconds 600`; the `transmissions` array and
+`clean.bin` are identical to the section 9 corpus (checked: `truth.json["transmissions"]` equal, `clean.bin` SHA-256
+`1341719980e2578f...` for seed 1), only the loss differs. Per-seed truth / delivered prefixes:
+
+| corpus | loss | delivered.bin seed 1 / 2 / 3 (first 16 hex) |
+|---|---|---|
+| shipped | log-normal lengths, Poisson spacing, 3 resets | 6ea1ab4eed76c73c / 073d5b15a0ff452b / b1b01323fc552e73 |
+| none | `--loss none` | 1341719980e2578f / b64217633c6ad4c5 / e46bc9f890053558 |
+| periodic | `hole_patterns.py periodic`: equal spacing, all 10.46 ms, same resets | 61a061f56e270f91 / e7958d767c1b336a / ba580a53bb1b1f96 |
+| perlen | equal spacing, lengths drawn from the seed-1 holes | d324843058f06453 / df7d18ae6edf23d7 / ab638a190e5134ab |
+| poisconst | Poisson spacing, all 10.46 ms | 1a05dc528dca5e4d / 56aec65f578b20cc / 1e96248caf58fa84 |
+
+Lost fraction 4.39 % in periodic, 4.40 % in perlen; 4.1-4.4 % in the shipped corpus.
+
+### 11.3 Measurements
+
+**(a) The failing set.** At strong SNR (FT4 >= -6 dB, 960 transmissions over 3 seeds; the oracle decodes all of them)
+B decodes 39-40 %. By slot parity 35 % / 44 %, by seed 41 / 38 / 40 %, by DT bin 35-42 %: no structure there. By slot
+it is bimodal: of 240 FT4 slots with 4 strong transmissions each, 110 have 0 of 4 decoded and 59 have 4 of 4
+(independent hits at p = 0.4 would give ~31 and ~6). By time since a reset: 0/24 (0-5 s), 1/72 (5-20 s), 11/84
+(20-40 s), 47/108 (40-60 s), 244/468 (>60 s). FT8 at strong SNR (>= -12 dB) is 98 % outside the reset windows.
+
+**(b) Time base.** The median DT error of FT8 hits wanders by +-100 ms in steady state and is -1.3..-1.5 s for ~30 s
+after each reset (until the re-anchor). Binning FT4 slots by the FT8 clock offset of the same 15 s slot: offsets of
+-500..+150 ms give 1.6-2.4 of 4 hits per slot with no trend (22 slots with offset < -500 ms give 0.05). So a clock
+offset of +-0.1 s does not explain the misses; the ~1.4 s offset after a reset kills FT4 (see f).
+
+**(c) Hole shape, correlational.** Per transmission (steady state: > 40 s from start and reset, no reset in the
+frame, FT4 >= -6 dB, n = 672) the "mismatch" is the samples lost inside its 5.04 s frame minus what the client's
+stretch assumes (`1 - rate/1 024 000` of the frame, per seed 3.85 / 4.08 / 3.08 %). Hit rate by mismatch octile:
+0.18 (-125..-65 ms), 0.60, 0.60, 0.59, 0.68, 0.71 (+3..+27), 0.36 (+27..+58), 0.14 (+58..+144). Std of the mismatch
+is 51 ms (1.1 FT4 symbols). The same table for FT8 (12.64 s frame, n = 588) is 0.99-1.00 everywhere except 0.97 /
+0.89 in the two positive octiles (+43..+277 ms, i.e. < 2 FT8 symbols).
+
+**(c) Hole shape, causal controls.** B (Bm_t1) on the same signals, only the loss arrangement changed:
+
+| loss | mismatch std, FT4 (ms) | steady-state strong-SNR FT4 hit | FT4 decoded (seeds 1/2/3 of 869) | FT4 SNR50 dB | FT8 7074 decoded (of 507) |
+|---|---:|---:|---|---|---|
+| none (B = clean) | - | - | 762 / 762 / 756 (clean 761 / 763 / 757) | -18.5 / -18.4 / -18.2 | 431 / 431 / 428 |
+| periodic | 3.8 | 0.98 | 565 / 570 / 573 | -16.1 / -16.3 / -16.4 | 325 / 322 / 327 |
+| perlen (random lengths) | 23.7 | 0.87 | 404 / 409 / 407 | -12.8 / -11.9 / -12.3 | 306 / 297 / 311 |
+| poisconst (random spacing) | 41.1 | 0.55 | 236 / 231 / 236 | -1.7 / -2.2 / -0.7 | 303 / 295 / 302 |
+| shipped (both random) | 51.4 | 0.49 | 210 / 196 / 204 | n/r | 301 / 298 / 290 |
+| oracle (shipped loss) | - | - | 748 / 754 / 743 | -17.9 / -18.2 / -17.7 | 423 / 427 / 420 |
+
+With the same hole rate, mean length, total loss and resets, making the holes regular gives FT4 565-573 decodes
+(2.7x the shipped corpus) and 98 % at strong SNR in steady state; FT4 hit rate and SNR50 fall in step with the
+mismatch as spacing and then length are randomised. FT8 moves only 290-301 -> 325 (7074 kHz).
+
+**(d) Harness.** B on `--loss none` reproduces clean for FT4 (762 / 762 / 756 vs 761 / 763 / 757, SNR50 within
+0.1 dB), so the FT4 channel, its filter and its position (7047.5 kHz, 31.5 kHz from the centre) are not the cause.
+
+**(e) -1.75 dB.** B on `--loss none` has the same FT4 SNR error as clean (-1.74 / -1.75 / -1.77 dB) and periodic /
+oracle -1.95..-2.07; with the shipped holes -2.03. It is present without any loss and does not depend on the
+loss, so it is independent of this question. Its cause is still not determined.
+
+**(f) Resets.** In the periodic corpus (no mismatch) FT4 steady state is 0.98, but the 0-5 s / 5-20 s / 20-40 s windows
+after a reset give 1/24, 2/72, 36/84 and the first 40 s of the file 60/72; overall strong-SNR hit rate is 0.82. FT8 in
+the same corpus: 63/63 in 5-20 s, then 0/63 in 20-40 s (not understood; same in the shipped corpus: 56/63 and 0/63),
+overall 0.82. So the resets cost both modes about the same share (~16-18 pp) and are not what separates FT4 from FT8.
+
+### 11.4 Conclusion
+
+- Determined by control: the FT4 deficit is caused by the irregularity of the holes under B's uniform stretch. Same
+  signals, same loss totals, regular holes: FT4 565-573 decodes instead of 196-210, and in steady state 98 % instead
+  of 49 % at strong SNR. Randomising spacing alone costs 0.98 -> 0.55, lengths alone 0.98 -> 0.87.
+- Correlational support: FT4 hit rate drops from ~0.6-0.7 to 0.14-0.18 once the in-frame mismatch exceeds roughly
+  +-40 ms (about one 48 ms symbol over 5 s); a hole-free time axis error of +-0.1 s (clock offset) does not matter.
+- FT4 is hit harder than FT8 because the same irregularity is a bigger fraction of a symbol and FT4's tolerance
+  window is narrower; the mismatch std of 51 ms is ~1 FT4 symbol, ~0.5 FT8 symbol (FT8's frame is 2.5x longer, so its
+  absolute mismatch is larger, but FT8 still decodes 98 %). Why FT4 tolerates only ~40 ms was not measured (not tied to
+  a decoder stage); that is the part stated by comparison of the two modes, not isolated.
+- Independent and smaller: 3 resets cost ~16-18 pp of strong-SNR transmissions in both modes. Not the cause of the gap.
+- Excluded: slot parity / offset / DT bins, a clock offset of +-0.1 s, the FT4 channel and its position, the -1.75 dB
+  offset (present without loss).
+
+### 11.5 Not verified
+
+- The "mismatch" is a proxy: at |mismatch| < 25 ms the shipped corpus still decodes only 0.66 (periodic: 0.98), so
+  the within-frame shape of the time error (not only its integral) matters. Not separated.
+- Whether the harm is the time-scale error itself or something B does at each hole (the stretch resampler across a
+  discontinuity) was not separated: periodic and Poisson corpora have the same number of discontinuities, which makes a
+  pure discontinuity effect unlikely, but a fix was not tried (out of scope).
+- Hole shape is the assumed log-normal (no trace); the real arrangement may be more or less irregular. The periodic
+  corpus is a control, not a model of the RSP1.
+- Real-signal check, other FT4 parameters (depth, AP), and the unexplained FT8 0/63 window 20-40 s after a reset
+  were not examined. No candidate fix (e.g. a local rate estimate, D/E on this corpus) was evaluated here.
