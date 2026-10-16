@@ -363,7 +363,7 @@ unaffected by F.
 
 ### 10.7 Not done
 
-- **Step 4 (trace): skipped.** The 2026-10-15 dbg4 `rsp_clock.log` is not on this host (searched `/`, `/mnt/c/Users/minor`,
+- **Step 4 (trace): skipped at the time of section 10, done in section 12.** The 2026-10-15 dbg4 `rsp_clock.log` is not on this host (searched `/`, `/mnt/c/Users/minor`,
   `/home`, including the dbg4 folders on the Desktop and `build`; `IQ_RSP1_PR688_2026-10-15.md` records that
   the log is on the NAS and each batch deleted the previous). Nothing was fabricated; `holes_from_clock_log.py` was
   not run and sections 10.3-10.6 were not repeated with `--loss trace:`. Next: copy `rsp_clock.log` here, run
@@ -481,7 +481,263 @@ overall 0.82. So the resets cost both modes about the same share (~16-18 pp) and
 - Whether the harm is the time-scale error itself or something B does at each hole (the stretch resampler across a
   discontinuity) was not separated: periodic and Poisson corpora have the same number of discontinuities, which makes a
   pure discontinuity effect unlikely, but a fix was not tried (out of scope).
-- Hole shape is the assumed log-normal (no trace); the real arrangement may be more or less irregular. The periodic
+- Hole shape is the assumed log-normal (no trace; the real trace is checked in section 12); the real arrangement may be more or less irregular. The periodic
   corpus is a control, not a model of the RSP1.
 - Real-signal check, other FT4 parameters (depth, AP), and the unexplained FT8 0/63 window 20-40 s after a reset
   were not examined. No candidate fix (e.g. a local rate estimate, D/E on this corpus) was evaluated here.
+
+## 12. Repeat on the real hole sequence (2026-10-17, section 9 task 4)
+
+Question: do the section 10 rankings and the section 11 FT4 diagnosis (irregular hole arrangement under one global
+stretch rate) hold when the loss is the real dbg4 hole sequence instead of the assumed log-normal one? Only the loss
+differs from sections 10/11; the client, the harness (`recorded_iq.rs`, last changed `f95116c1`) and the signals are
+unchanged. Harness-only edits for this section: `score_synth.py --end` and `tx_features.py` `TXF_END` (both default to
+the old behaviour; the section 10 tables re-score to the same numbers), and the new `scripts/rtltcp/trace_controls.py`.
+
+### 12.1 Inputs
+
+- **Trace.** `rsp_clock.log` (dbg4), copied from `\\TOMO-NAS\home\pc-desktop\rsp_clock.log`, mtime 2026-10-16 00:05,
+  SHA-256 `c2dc520c4e8892c403c0240deae6e826c49bebd94630c9905baa7d589d263288`. Converted with
+  `python3 -I scripts/rtltcp/holes_from_clock_log.py rsp_clock.log trace.csv --skip 30`: SHA-256 of `trace.csv`
+  `73886797349c16c9475271441daa3afd365f408ddfff74e0facd5b944d53df3d`; 11 131 C/F pairs, 2 020 holes (21 627 122 samples)
+  and 3 resets (estimated from the wall clock: 1.430 / 1.396 / 1.425 s, at 75.35 / 302.86 / 408.46 s of the stream),
+  span 570.2 s.
+- **Provenance** of that log is by matching numbers, not by a recorded run id: `IQ_RSP1_PR688_2026-10-15.md` says the NAS
+  copy was dated Oct 12; this file is dated Oct 16 and agrees with the 10-15/16 dbg4 run (about 2 100 holes in 600 s,
+  3 resets of ~1.4 s). Section 1's 2 107 holes in 600 s (3.51 / s) and this log's 2 020 in 570.2 s (3.54 / s) are about the same rate.
+- **How `synth_rtltcp --loss trace:` handles the 570 s vs 600 s difference** (read from `plan_loss`, `synth_rtltcp.rs`): it
+  reads `kind,start_sample,len` rows as they are (no scaling, no looping), sorts them, merges overlaps (a hole inside a
+  reset becomes part of it; none did here), drops every event that starts at or after `seconds x 1 024 000` and clips
+  one that crosses the end. Nothing wraps and nothing is added after the last row, so **the last 30 s of every 600 s
+  corpus are loss-free** (last event ends at 570.005 s), and sample 0 is the first record after the log's 30 s skip, so
+  the resets are at 75 / 303 / 408 s instead of 107 / 335 / 440 s. Consequence: any score over the whole file is
+  flattered by a loss-free tail (A decodes 11-13 FT4 there, where it decodes none in the first 570 s). **All tables in
+  this section therefore count only transmissions that end before 570 s** (`score_synth.py --end 570`; 481 FT8 and 825
+  FT4 per channel and seed). The log-normal columns are re-scored the same way (first 570 s) so the two are comparable;
+  the section 10 numbers (507 / 869) are unchanged.
+- **Corpus.** `synth_rtltcp --seconds 600 --seed S --loss trace:trace.csv` for S = 1, 2, 3, release binary built at
+  `219cd8d4` (SHA-256 `a5a24a78a9ca80dfad4c94a088d39581362bcf037a248d5eb7121e15e2cad409`), outside the repository.
+  Checked against the section 9 log-normal corpus: `truth.json["transmissions"]` and `["stream"]` equal for all three
+  seeds, and `clean.bin` SHA-256 identical for all three (so signals are the same); only `loss`, `stats`, `params.loss`,
+  `delivered.bin` and `oracle.bin` differ. The trace is the same for all three seeds (total loss 25 979 990 samples =
+  4.23 %, payload rate 980 700 S/s in each), so **the seed spread below is the spread of signals and noise only, not of
+  the loss**; the log-normal corpus had a different loss realisation per seed.
+
+  | seed | `truth.json` | `delivered.bin` | `oracle.bin` |
+  |---|---|---|---|
+  | 1 | `251ca8c14da3999158fcb986584794bed572d57241410adfd6c05b0be62615e7` | `b13ee40aa5e0c5ef1763586cdfacff5984159ed1d9004c38d8933294b33175c3` | `a388162d0566f33355345efa672f53b78fbd7d405e1c7a3dc783013489897825` |
+  | 2 | `c6a14c77120509fe465cfbdab0e32f5d9596d7b0fbfc3498caa4a24b5f443b93` | `72865d6bf9aad0f75d114517e26f5ed1517cb6a19c2af9a75a7257f8430a191d` | `5f26892b53d9bf5701cae7ebc783bd8e7f29dea190483a0489f7b0bf43118aa0` |
+  | 3 | `b93cc1e28a76a8201a760d4d046cf4e1fbd74105bdc45f8f72e0c5184f669d75` | `a81b59ba52b0bea0c1f3bdd391dc4042cb193d92e55d26ea051048784a692e03` | `7349770733ddc68be882e998cd4165254f334b95582088826cd211dfdd1d4cb9` |
+
+  (`clean.bin`: `1341719980e2578f...` / `b64217633c6ad4c5...` / `e46bc9f890053558...`, the same as section 9/11.)
+- **Flags.** As section 10.1 (`MFSK_RTL_SKIP=0.001 MFSK_RTL_END=1000 MFSK_RTL_CENTER=7016000`, three channels, release,
+  `rtl_minimum_arrival` on, `rtl_infer_gaps` off), through `eval_synth.py`, 8 jobs in parallel. Job names and settings as
+  in 10.1 (`p` = payload rate, `m` = 30 s measure, `all` = whole-file robust rate, `t0/t1` = `MFSK_RTL_TRACK`). The `all`
+  rate here is `MFSK_RTL_MEASURE_WINDOW=600` with `MEASURE_ROBUST=1`; the section 10 `Dall/Eall` window setting was not
+  recorded, and re-running the nearest settings on the section 9 corpus gave a rate 0.003 % different (988 812 vs
+  988 786 S/s, seed 1) and a handful of decodes different (the other probed windows: 540 s 988 631, 570 s 988 719), so the
+  `all` rows of the two corpora are the same setting only to that tolerance. The other jobs I re-ran this way
+  (`Bm100_t0`, `Dm100r_t0`) reproduced section 10's rates and decoded sets exactly.
+- **Measured rates** (what the client's 30 s `measure_rate` window, 5-35 s, returns): 986 864 / 986 903 / 986 875 S/s
+  against the payload rate 980 700 (+0.63 %); on the log-normal corpus 984 582 / 982 178 / 992 425 against 982 068 /
+  979 114 / 979 973.
+
+### 12.2 Acceptance rule 1 and bounds
+
+Clean's reported SNR error is the same as section 10.2 (FT8 -0.07..-0.12 dB, FT4 -1.74..-1.77 dB), so rule 1 holds.
+
+| job | channel | decoded (seeds 1/2/3) | SNR50 dB (1/2/3) | wrong slot | false |
+|---|---|---|---|---|---|
+| clean | FT8 7074 | 408 / 411 / 405 of 481 | -21.0 / -21.1 / -20.9 | 0 | 0 |
+| clean | FT8 7041 | 409 / 404 / 410 of 481 | -21.1 / -20.9 / -21.1 | 0 | 0 |
+| clean | FT4 7047.5 | 723 / 725 / 719 of 825 | -18.4 / -18.5 / -18.3 | 0 | 0 |
+| oracle | FT8 7074 | 399 / 402 / 400 of 481 | -20.7 / -20.9 / -20.7 | 0 | 1 |
+| oracle | FT8 7041 | 398 / 400 / 406 of 481 | -20.7 / -20.7 / -21.0 | 0 | 1 |
+| oracle | FT4 7047.5 | 714 / 707 / 705 of 825 | -18.2 / -17.8 / -17.9 | 0 | 0 |
+| A (delivered, nominal) | FT8 7074 | 6 / 7 / 8 of 481 | not reached | 0 | 2 |
+| A | FT8 7041 | 7 / 7 / 8 of 481 | not reached | 0 | 0 |
+| A | FT4 7047.5 | 0 / 0 / 0 of 825 | not reached | 0 | 0 |
+
+The oracle loses 0.2-0.5 dB to clean (FT8 0.3-0.4, FT4 0.2-0.6 dB), as in section 10.3, and is clearly above A
+(A: 1-2 % of FT8, 0 FT4; log-normal A: 0). A's 6-8 FT8 decodes are in two slots (135 s and 195 s, seed 1; 13 rows),
+which do not have unusually few holes (36-37 against a median of 46 per 13 s); why those two decode was not examined.
+The stop condition of section 8 step 3 does not apply.
+
+### 12.3 Candidates (same layout as 10.4; trace, first 570 s)
+
+Gap closed = decoded count / the oracle's mean on the same corpus and span (FT8 400.8, FT4 708.7; log-normal first
+570 s: 401.5 and 711.0). Counts are means over the channels (FT8: 2 channels x 3 seeds) and seeds; false over all 9
+channel-seeds.
+
+| job | setting | FT8 decoded (of 481) | FT8 / oracle (trace) | same, log-normal first 570 s | FT4 decoded (of 825) | FT4 / oracle (trace) | same, log-normal | false (trace) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| A | nominal | 7 | 2 % | 0 % | 0 | 0 % | 0 % | 2 |
+| Bp_t0 | B, payload rate, pin, T0 | 246 | 61 % | 71 % | 121 | 17 % | 22 % | 3 |
+| Bp_t1 | B, payload rate, pin, T1 | 233 | 58 % | 68 % | 117 | 16 % | 23 % | 0 |
+| Bm_t0 | B, 30 s measure, pin, T0 | 250 | 62 % | 71 % | 161 | 23 % | 26 % | 2 |
+| Bm_t1 | **B, 30 s measure, pin, T1 (shipped)** | 250 | 62 % | 70 % | 159 | 22 % | 28 % | 5 |
+| Cp_t0 | C, payload rate, no pin, T0 | 65 | 16 % | 19 % | 46 | 6 % | 8 % | 2 |
+| Cp_t1 | C, payload rate, no pin, T1 | 66 | 16 % | 19 % | 44 | 6 % | 9 % | 0 |
+| Cm_t0 | C, 30 s measure, no pin, T0 | 89 | 22 % | 25 % | 71 | 10 % | 12 % | 0 |
+| Cm_t1 | C, 30 s measure, no pin, T1 | 87 | 22 % | 25 % | 70 | 10 % | 13 % | 1 |
+| Dm_t0 | D, 30 s measure, T0 | 220 | 55 % | 60 % | 122 | 17 % | 20 % | 5 |
+| Dm_t1 | D, 30 s measure, T1 | 218 | 54 % | 60 % | 120 | 17 % | 21 % | 2 |
+| Dall_t0 | D, whole-file robust rate, T0 | 206 | 51 % | 63 % | 108 | 15 % | 22 % | 1 |
+| Dall_t1 | D, whole-file robust rate, T1 | 206 | 51 % | 64 % | 112 | 16 % | 22 % | 2 |
+| Em_t0 | E, 30 s measure, T0 | 256 | 64 % | 66 % | 144 | 20 % | 21 % | 2 |
+| Em_t1 | E, 30 s measure, T1 | 250 | 62 % | 70 % | 151 | 21 % | 25 % | 4 |
+| Eall_t0 | E, whole-file robust rate, T0 | 242 | 60 % | 74 % | 135 | 19 % | 26 % | 4 |
+| Eall_t1 | E, whole-file robust rate, T1 | 238 | 59 % | 74 % | 144 | 20 % | 26 % | 11 |
+
+Per seed (1 / 2 / 3), as 10.4. "n/r" = 50 % never reached. FT4 never reaches 50 % in any candidate.
+
+| job | FT8 7074 SNR50 | FT8 7074 decoded | FT8 7041 SNR50 | FT8 7041 decoded | FT4 decoded |
+|---|---|---|---|---|---|
+| oracle | -20.7 / -20.9 / -20.7 | 399 / 402 / 400 | -20.7 / -20.7 / -21.0 | 398 / 400 / 406 | 714 / 707 / 705 |
+| Bp_t0 | -15.6 / -15.8 / -16.1 | 243 / 242 / 246 | -16.1 / -16.1 / -15.7 | 244 / 246 / 255 | 122 / 120 / 120 |
+| Bp_t1 | -15.1 / -16.2 / -15.9 | 225 / 234 / 231 | -15.8 / -16.2 / -15.8 | 234 / 237 / 236 | 118 / 116 / 116 |
+| Bm_t0 | -15.6 / -15.9 / -16.3 | 246 / 246 / 246 | -16.1 / -16.1 / -16.8 | 247 / 252 / 261 | 162 / 157 / 164 |
+| Bm_t1 | -15.4 / -15.9 / -16.3 | 243 / 245 / 251 | -16.4 / -16.2 / -16.8 | 254 / 249 / 260 | 151 / 167 / 158 |
+| Cp_t0 | n/r / n/r / n/r | 0 / 0 / 0 | n/r / n/r / -4.1 | 127 / 132 / 131 | 48 / 42 / 47 |
+| Cp_t1 | n/r / n/r / n/r | 0 / 0 / 0 | n/r / n/r / -4.2 | 130 / 125 / 138 | 44 / 40 / 47 |
+| Cm_t0 | n/r / n/r / n/r | 19 / 18 / 30 | -11.0 / -14.3 / -10.2 | 151 / 157 / 161 | 84 / 64 / 65 |
+| Cm_t1 | n/r / n/r / n/r | 19 / 13 / 27 | -11.0 / -14.2 / -9.5 | 151 / 155 / 159 | 74 / 69 / 66 |
+| Dm_t0 | -12.9 / -12.8 / -11.7 | 199 / 196 / 195 | -15.8 / -15.8 / -16.4 | 240 / 245 / 247 | 119 / 128 / 118 |
+| Dm_t1 | -12.9 / -12.9 / -11.5 | 197 / 193 / 191 | -15.8 / -15.6 / -16.3 | 240 / 241 / 244 | 125 / 120 / 116 |
+| Dall_t0 | -12.4 / -9.8 / -10.1 | 183 / 173 / 170 | -16.2 / -15.1 / -16.2 | 240 / 234 / 238 | 112 / 107 / 106 |
+| Dall_t1 | -12.3 / -9.2 / -10.2 | 182 / 175 / 170 | -15.5 / -14.9 / -16.3 | 238 / 231 / 237 | 114 / 114 / 107 |
+| Em_t0 | -13.0 / -13.8 / -13.4 | 230 / 233 / 228 | -16.3 / -16.1 / -16.5 | 281 / 278 / 288 | 148 / 152 / 133 |
+| Em_t1 | -13.2 / -13.7 / -13.0 | 225 / 227 / 222 | -16.3 / -16.2 / -16.6 | 276 / 270 / 280 | 156 / 154 / 143 |
+| Eall_t0 | -12.7 / -11.2 / -11.4 | 214 / 205 / 209 | -16.3 / -15.4 / -16.5 | 278 / 270 / 273 | 142 / 135 / 128 |
+| Eall_t1 | -12.6 / -11.8 / -12.1 | 212 / 206 / 203 | -16.2 / -15.5 / -16.5 | 273 / 264 / 268 | 155 / 141 / 137 |
+
+### 12.4 Comparison with the log-normal results
+
+Rule 2 (candidate closes at least half of the floor-to-oracle gap for FT8, does not make FT4 worse than the floor, adds
+no false decodes):
+
+- **B.** Bm_t1, the shipped setting: FT8 62 % of the oracle's count on the trace, 70 % on log-normal; FT4 22 % against
+  28 %. SNR50 7074 / 7041 kHz: -15.4 / -15.9 / -16.3 and -16.4 / -16.2 / -16.8 dB; on log-normal -16.6 / -16.6 / -17.1 and
+  -17.2 / -16.8 / -16.9. So B is 0.1-1.2 dB (mean 0.7) worse on the trace (4.1-5.3 dB behind the oracle, against 3.7-4.4),
+  with a seed spread of 0.9 dB (7074) and 0.6 dB (7041). The shift is about the size of the spread, in the same direction in
+  both channels and all three seeds; it cannot be attributed more precisely, because the loss is one realisation here
+  (see 12.1). Rule 2 holds for B (FT8 > half). Bm_t1 has 5 false texts over the 9 channel-seeds
+  (log-normal: 0), not looked at; the other B variants have 0-3.
+- **C fails** as before: FT8 16-22 % (7074 kHz: 0 decodes for `Cp`, 13-30 for `Cm`), 7041 kHz partly (127-161), FT4 6-10 %.
+- **D and E do not beat B.** At 7074 kHz B (-15.4..-16.3 dB) is 2-3 dB ahead of E (-13.0..-13.8) and D (-11.7..-12.9) in
+  all three seeds (log-normal: seed 3 equal, seeds 1 and 2 3-4 dB). At 7041 kHz E and B have the same SNR50
+  (E_t1 -16.3 / -16.2 / -16.6, Bm_t1 -16.4 / -16.2 / -16.8) while E decodes ~10 % more (276 / 270 / 280 vs 254 / 249 / 260,
+  as on log-normal: 325 / 298 / 315 vs 309 / 300 / 286 of 507). E is nowhere 1 dB better than B, so rule 3 still favours B. E
+  over D (the lost pauses filled) is +30 FT8 and +30 FT4 decodes (means, t1), as on log-normal (+24 / +40 FT8). The
+  whole-file rate rows (`Dall`, `Eall`) are worse than the 30 s-window rows here (D 51 % vs 54-55 %), the opposite of the
+  log-normal corpus (63 % vs 60 %); these are not client-reachable rates and were not looked into further.
+- **Ranking** B > E >= D >> C for FT8 on the real trace; the same order as section 10.6. T0 vs T1 and the payload rate vs the
+  30 s measure change B by less than the seed spread, as before (B payload 58-61 %, measured 62 %).
+
+**F, the calibration window with a pause in it.** In section 10.5 the 107 s reset sat 2 s after the start of the window,
+which is a weak position for a straight-line fit; here the reset is at 75.35 s, so `MEASURE_AT=70` puts it 0.35 s after
+the start, and `MEASURE_AT=55` (window 60-90 s) puts it in the middle. A mid-window row for the log-normal corpus was
+added (`MEASURE_AT=87`, window 92-122 s, reset at 107 s, 15 s in). Rates in S/s (seeds 1 / 2 / 3), FT8 7074 kHz decodes:
+
+| corpus | window | job | measured rate | FT8 7074 decoded | FT4 decoded |
+|---|---|---|---|---|---|
+| trace | 5-35 s (no pause) | Bm_t0 | 986 864 / 986 903 / 986 875 | 246 / 246 / 246 | 162 / 157 / 164 |
+| trace | 75-105 s, pause at start | Bm70_t0 | 980 704 / 980 705 / 980 772 | 242 / 242 / 241 | 120 / 121 / 117 |
+| trace | same, robust (F) | Bm70r_t0 | 985 027 / 985 018 / 985 091 | 238 / 251 / 252 | 146 / 139 / 145 |
+| trace | 60-90 s, pause mid-window | Bm55_t0 | 929 247 / 929 260 / 929 235 | 0 / 0 / 0 | 0 / 0 / 0 |
+| trace | same, robust (F) | Bm55r_t0 | 998 939 / 998 804 / 998 820 | 158 / 157 / 158 | 104 / 101 / 99 |
+| trace | 75-105 s, D | Dm70_t0 / Dm70r_t0 | as above | 179 / 180 / 180 and 182 / 168 / 177 | 72 / 78 / 78 and 110 / 103 / 96 |
+| trace | 60-90 s, D | Dm55_t0 / Dm55r_t0 | as above | 0 / 0 / 0 and 103 / 100 / 101 | 0 and 85 / 82 / 88 |
+| log-normal | 92-122 s, pause mid-window | Bm87_t0 | 913 754 / 912 383 / 916 626 | 0 / 0 / 0 | 0 / 0 / 0 |
+| log-normal | same, robust (F) | Bm87r_t0 | 982 405 / 981 190 / 984 832 | 301 / 309 / 305 | 178 / 185 / 178 |
+
+A pause in the middle of the 30 s window takes the plain `measure_rate` 5.8 % (trace) / 7.0 % (log-normal) low, which the
++-15 % gate accepts, and every decode is lost: this reproduces the section 6 "up to ~7 %" figure, which section 10.5 did
+not reach because its pause was near the window edge. F recovers the log-normal case (301-309 against 296-308 pause-free);
+on the trace it returns 158 against 246 because its rate is 1.2 % above the pause-free one. Read off the truth, that is the
+window, not F: the hole loss in source seconds 60-90 is 2.38 % (rate 999.6 kS/s with the hole loss alone), while the
+5-35 s window has 3.82 %, and over the 90 reset-free 30 s windows at 5 s steps the hole-loss fraction has mean 3.81 %,
+sd 0.51 %, range 2.70-5.36 % (log-normal seed 1: mean 3.37 %, sd 0.32 %, range 2.79-4.23 %). So the real trace is
+burstier, and a single 30 s window estimates the stream's rate to about +-0.5 % (one sd), against +-0.3 % for the assumed
+log-normal. The cost of that was not separated from other things; one data point is B at +0.6 % (Bm vs Bp) which changes
+nothing.
+
+### 12.5 The section 11 FT4 diagnosis on the real trace
+
+What the real trace looks like (seed-independent): 2 020 holes, mean 10.46 ms, longest 37.1 ms, like the assumed
+statistics, but the **length distribution is not log-normal**: 999 holes are about 4.3 ms and 967 about 16 ms, 25 are 21 ms, 23
+are 32 ms, 3 are 37 ms and 3 others (0.7 and 11 ms); lag-1 autocorrelation of the length is -0.56. The **spacing is burstier than Poisson**: mean 282 ms,
+median 129 ms, coefficient of variation 1.42 (assumed: 1.0), longest 3.73 s, shortest 16.6 ms.
+
+Section 11's per-transmission measure on Bm_t1 (steady state, FT4 >= -6 dB / FT8 >= -12 dB, no reset in the frame, 40 s from
+the start or a reset, transmissions ending before 570 s, `tx_features.py` with `TXF_END=570`):
+
+| | FT4 hit | FT4 mismatch std | FT8 7074 hit | FT8 mismatch std |
+|---|---|---|---|---|
+| log-normal (section 11) | 0.487 (n 672) | 51 ms | 0.980 (n 588) | 91 ms |
+| real trace | 0.405 (n 624) | 57 ms | 0.868 (n 546) | 109 ms |
+
+FT4 hit rate by mismatch octile, trace: 0.28 (-142..-53 ms), 0.44, 0.57, 0.56, 0.58 (-0.2..+20), 0.40, 0.32, 0.12 (+61..+212);
+log-normal: 0.18, 0.60, 0.60, 0.59, 0.68, 0.71, 0.36, 0.14. Same shape: flat at 0.5-0.7 for |mismatch| below ~40 ms, falling
+beyond. FT8 on the trace: 0.99-1.00 for mismatch -113..+65 ms, 0.71 below -113, 0.88 at +65..+118, 0.39 above +118 ms (log-normal:
+0.89 in the last octile, nothing below 0.97 otherwise); the FT8 failures also sit at the largest mismatches, and FT8 now has
+mismatches of that size because the trace is burstier.
+
+Causal controls on the real trace (`trace_controls.py`: the same 2 020 holes, the same 3 resets and the same signals;
+`delivered.bin` first 16 hex seeds 1 / 2 / 3: periodic `23bd071b9d8c74ec` / `04abc0d2cc65f772` / `b1e728e00a2d4db5`, reallen
+`a03c5a547dfc40d4` / `c59c4c31c3fc8ca9` / `9c9a59e252b0ff6e`, realspace `f7ec0ba043f7000a` / `dba64562dd60d4fd` /
+`1f9a1ad04508ef67`), Bm_t1, first 570 s:
+
+| loss | holes at | lengths | FT4 mismatch std | steady strong-SNR FT4 hit | FT4 decoded (1/2/3 of 825) | FT4 SNR50 dB | FT8 7074 decoded (of 481) |
+|---|---|---|---:|---:|---|---|---|
+| oracle (reference, trace loss) | - | - | - | - | 714 / 707 / 705 | -18.2 / -17.8 / -17.9 | 399 / 402 / 400 |
+| periodic | equally spaced | all the mean 10.46 ms | 3.4 ms | 1.00 | 516 / 525 / 535 | -15.5 / -16.0 / -16.3 | 322 / 327 / 330 |
+| reallen | equally spaced | the real lengths, in order | 12.3 ms | 0.99 | 487 / 485 / 491 | -14.8 / -14.6 / -14.8 | 313 / 318 / 316 |
+| realspace | the real positions | all the mean | 55.1 ms | 0.41 | 169 / 168 / 158 | n/r | 250 / 247 / 255 |
+| **real trace** | real | real | 57.3 ms | 0.405 | 151 / 167 / 158 | n/r | 243 / 245 / 251 |
+
+With the same hole count, total loss and resets, equal spacing alone takes FT4 from 151-167 to 487-535 decodes (steady strong-
+SNR hit 0.41 to 0.99-1.00); the real lengths on equal spacing cost little (about 7 % fewer than constant length); the real
+positions with constant lengths are indistinguishable from the real trace. This is section 11's result (there:
+spacing 0.98 to 0.55, lengths 0.98 to 0.87), with spacing the dominant factor and lengths weaker here. FT4 with the
+real trace is not better or worse than with the assumed one in the way that matters: 22 % of the oracle against 28 %,
+mismatch std 57 against 51 ms. FT8 7074 kHz recovers from 245 to 313-330 decodes on the equal-spacing controls.
+
+E on the controls (Em_t1): FT4 517 / 513 / 519 (periodic) and 481 / 473 / 474 (reallen), i.e. as good as B; on realspace
+142 / 133 / 135, somewhat below B (169 / 168 / 158). It loses to B in FT8 7074 kHz on the regular controls (periodic 299 / 296 / 296 against 322 /
+327 / 330, SNR50 -15.4..-16.5 against -18.5..-19.1) and its reported FT4 SNR is about 1.5 dB lower than B's. Not looked into.
+
+Resets: the FT8 hit rate at >= -12 dB is 63/63 (7074 kHz; 62/63 at 7041) in 5-20 s after a reset, **0/63 in 20-40 s**, and
+447/504 (89 %) after 40 s; on the equal-spacing control it is 63/63, 0/63, 504/504. This is the unexplained FT8 0/63 window
+of section 11.3 (f), present on the real trace too; not chased. FT4 on the trace: 0/14, 1/70, 25/96, 247/576 for 0-5, 5-20,
+20-40, > 40 s; on the control 1/14, 1/70, 41/96, 576/576.
+
+### 12.6 Reading
+
+- The ranking of section 10 holds on the real trace: B is the best FT8 setting of B-E (clearly at 7074 kHz; at 7041 kHz equal in SNR50
+  to E, which decodes ~10 % more), C fails, D and E are not 1 dB better than B anywhere. Its numbers are somewhat
+  worse than on the assumed corpus (FT8 62 % against 70 % of the oracle, 4.1-5.3 against 3.7-4.4 dB behind it).
+- The section 11 FT4 diagnosis holds: with a global stretch rate and the real hole positions FT4 decodes 22 % of the oracle's
+  count; with the same holes equally spaced it decodes 69-75 %. What breaks FT4 is the irregular arrangement of the hole
+  positions, not the number or total of the holes or the resets. "Lengths matter little, spacing matters most" is what these
+  controls say here; section 11 had both.
+- The real trace is not the assumed one: bimodal lengths (about 4.3 / 16 ms), burstier spacing (cv 1.42), a 30 s window that
+  estimates the long-run rate to about +-0.5 %. A candidate that must work on the RSP1 should be judged on the trace, not
+  on the log-normal corpus; neither changes the order of B-E.
+
+### 12.7 Not verified / not done
+
+- One loss realisation. The three seeds share the loss, so "spread between seeds" understates the loss-to-loss variation;
+  the 0.7-1.3 dB difference to the log-normal results cannot be separated from that. A second real log would settle it; this
+  is the only dbg4 log that was at hand.
+- The log's identity is argued from numbers (12.1). Reset lengths are estimated from the wall clock (the converter says so).
+  Whether the corpus's fixed 20 ms latency, 5 ms jitter and 50 ms callbacks match the RSP1 was not tested.
+- The "global stretch rate" half of the diagnosis is shown only indirectly: D/E (zero insertion at an even rate, also a
+  global rate) are no better for FT4 than B; no local-rate or per-hole correction was tried (a candidate, out of scope).
+  The within-frame shape of the time error (not only its integral) still matters: at |mismatch| < 25 ms the real trace's
+  FT4 hit is 0.54 against 1.00 on the periodic control (section 11.5 saw the same).
+- Dall/Eall are not the same setting as section 10's to within 0.003 % in rate (12.1). Only three of the F positions were
+  tried. The A decodes (12.2), E's SNR offset on the controls and the oracle's 4 false decodes are not examined.
+- The FT8 0/63 window after a reset, the FT4 -1.75 dB offset on clean input and the 5 Bm_t1 false decodes were not chased.
+- Not done: step 6 (real-recording oracle), step 7 (implementation), the RSP1. The corpora, rows and score tables are
+  in `/home/minoru/tmp` (not kept in the repository); the commands above regenerate them.

@@ -2,10 +2,12 @@
 # Score decodes of a synth_rtltcp capture against its truth (docs/notes/RTLTCP_EVAL_PLAN.md, section 4).
 # ROWS.json: the MFSK_RTL_OUTPUT of recorded_iq::decode_recorded_iq. Prints, per file: decoded per SNR, SNR50
 # (interpolated 50 % point), slot-UTC correctness, false decodes, and the median errors of SNR, DT and frequency.
+# --end S: count only transmissions (and rows) that lie wholly before S seconds into the stream, whatever the run
+# decoded (section 12: a trace shorter than the corpus leaves a loss-free tail that would flatter every candidate).
 import json, statistics as st, sys
 
 args = sys.argv[1:]
-opts = {"--dial": None, "--mode": None}
+opts = {"--dial": None, "--mode": None, "--end": None}
 files = []
 while args:
     a = args.pop(0)
@@ -31,6 +33,8 @@ for path in rows_paths:
     d = dial or int(out.get("receive_dial", 0))
     txs = [t for t in truth["transmissions"] if t["dial_hz"] == d and (not opts["--mode"] or t["mode"] == opts["--mode"])]
     lo, hi = out.get("skip_s", 0), out.get("end_s", 1e9)
+    if opts["--end"]:
+        hi = min(hi, float(opts["--end"]))
     t0 = truth["stream"]["start_utc_ns"] / 1e9
     # Only transmissions that lie wholly inside the decoded span count as opportunities.
     frame = {"FT8": 13.2, "FT4": 5.6}
@@ -41,6 +45,8 @@ for path in rows_paths:
     mine = [r for r in out["rows"] if int(r.get("dial", d)) == d and (not opts["--mode"] or r.get("mode", opts["--mode"]) == opts["--mode"])]
     for r in mine:
         utc = r["utc"] / 1e9 if r.get("utc") is not None else None
+        if opts["--end"] and utc is not None and utc - t0 + frame.get(r.get("mode", "FT8"), 13.2) > hi:
+            continue
         t = by_key.get((r["text"], round(utc))) if utc is not None else None
         if t:
             hit[(t["text"], round(t["slot_utc_s"]))] = r

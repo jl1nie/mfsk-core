@@ -4,7 +4,8 @@
 # the last reset, decoded or not. Prints, for steady-state transmissions (>40 s from start/reset, no reset inside)
 # at SNR >= SNR_MIN, the hit rate by the "mismatch" = samples lost in the frame minus what the client's uniform
 # stretch assumes (1 - rate/1 024 000 of the frame), in ms. RTLTCP_EVAL_PLAN.md section 11.
-import json, sys
+# TXF_END=S (environment): ignore transmissions that end after S seconds (section 12: the trace's loss-free tail).
+import json, os, sys
 import numpy as np
 def load(corpus,rd,name,seed,mode,dial):
     T=json.load(open(f"{corpus}/seed{seed}/truth.json")); R=json.load(open(f"{rd}/{name}.seed{seed}.json"))
@@ -20,7 +21,7 @@ def load(corpus,rd,name,seed,mode,dial):
         return tot
     resets=[l['start_sample']/RATE for l in L if l['kind']=='reset']
     dur={'FT8':12.64,'FT4':5.04}[mode]
-    skip=R['skip_s']; end=R['end_s']
+    skip=R['skip_s']; end=min(R['end_s'], float(os.environ.get('TXF_END', 1e9)))
     rows={}
     for r in R['rows']:
         if int(r['dial'])==dial and r['mode']==mode: rows[(r['text'],round(r['utc']/1e9))]=r
