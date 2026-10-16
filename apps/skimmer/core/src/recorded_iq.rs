@@ -16,6 +16,68 @@ struct Recording {
     busy: Arc<std::sync::atomic::AtomicUsize>,
     skip_s: f64,
     end_s: f64,
+    /// Harness-only candidates D / E (RTLTCP_EVAL_PLAN.md section 5): zero samples put into the stream.
+    /// `insert`: zeros per delivered sample, spread evenly (D). `fill[i]`: zeros before record `i` (E).
+    insert: f64,
+    insert_acc: f64,
+    fill: Vec<usize>,
+    index: usize,
+}
+
+const ZERO_SAMPLE: [u8; 2] = [128, 128];
+
+/// (elapsed, payload bytes) of every record of a recording, without reading the payloads.
+fn scan(path: &str) -> Vec<(f64, usize)> {
+    let mut file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header).unwrap();
+    let n = u32::from_le_bytes(header[8..].try_into().unwrap());
+    let mut out = Vec::new();
+    for _ in 0..n {
+        if file.read_exact(&mut header).is_err() {
+            break;
+        }
+        let size = u32::from_le_bytes(header[8..].try_into().unwrap());
+        out.push((
+            f64::from_le_bytes(header[..8].try_into().unwrap()),
+            size as usize,
+        ));
+        std::io::Seek::seek_relative(&mut file, i64::from(size)).unwrap();
+    }
+    out
+}
+
+/// Candidate E: where a pause in the arrivals was samples lost rather than delayed, decided with
+/// `lookahead` seconds of what arrived after it. A pause is a gap between records longer than
+/// `threshold` s; it was delayed (nothing to fill) when the records in the next `lookahead` s carry
+/// more than 1.1 times what `rate` would deliver in that time (the catch-up burst); else lost, and
+/// `(gap - usual interval) * nominal` zero samples go in before the record that ended it.
+fn pause_fill(
+    records: &[(f64, usize)],
+    threshold: f64,
+    lookahead: f64,
+    rate: f64,
+    nominal: f64,
+) -> Vec<usize> {
+    let mut gaps: Vec<f64> = records.windows(2).map(|w| w[1].0 - w[0].0).collect();
+    gaps.sort_by(f64::total_cmp);
+    let usual = gaps.get(gaps.len() / 2).copied().unwrap_or(0.05);
+    let mut fill = vec![0; records.len()];
+    for i in 1..records.len() {
+        let gap = records[i].0 - records[i - 1].0;
+        if gap <= threshold {
+            continue;
+        }
+        let carried: usize = records[i..]
+            .iter()
+            .take_while(|r| r.0 <= records[i].0 + lookahead)
+            .map(|r| r.1 / 2)
+            .sum();
+        if (carried as f64) <= 1.1 * rate * lookahead {
+            fill[i] = ((gap - usual) * nominal).round() as usize;
+        }
+    }
+    fill
 }
 
 impl Link for Recording {
@@ -57,7 +119,23 @@ impl Link for Recording {
                 self.started = true;
             }
             self.last_arrival = self.start_ns + (elapsed * 1e9).round() as i64;
-            self.pending.extend(body);
+            let record = self.index;
+            self.index += 1;
+            for _ in 0..self.fill.get(record).copied().unwrap_or(0) {
+                self.pending.extend(ZERO_SAMPLE);
+            }
+            if self.insert > 0.0 {
+                for block in body.chunks(2048) {
+                    self.pending.extend(block);
+                    self.insert_acc += self.insert * (block.len() / 2) as f64;
+                    while self.insert_acc >= 1.0 {
+                        self.pending.extend(ZERO_SAMPLE);
+                        self.insert_acc -= 1.0;
+                    }
+                }
+            } else {
+                self.pending.extend(body);
+            }
         }
         Err(std::io::ErrorKind::Interrupted.into())
     }
@@ -91,28 +169,49 @@ fn decode_recorded_iq() {
             busy,
             skip_s,
             end_s,
+            insert: 0.0,
+            insert_acc: 0.0,
+            fill: Vec::new(),
+            index: 0,
         }
     };
     // MFSK_RTL_MEASURE=1: the rate the client's own start-up calibration (rtltcp::measure_rate: skip,
     // then a 30 s window, a line through arrival time against samples) would take from this recording,
-    // in place of MFSK_RTL_EFFECTIVE_RATE.
+    // in place of MFSK_RTL_EFFECTIVE_RATE. MFSK_RTL_MEASURE_AT starts the window that many seconds into
+    // the recording (default 0), MFSK_RTL_MEASURE_WINDOW sets its length (30), and MFSK_RTL_MEASURE_ROBUST=1
+    // takes pauses (arrival gaps over 0.5 s) out of the time axis first (candidate F).
+    let zero_insert = number("MFSK_RTL_ZERO_INSERT", 0.0) != 0.0;
     let measured = (number("MFSK_RTL_MEASURE", 0.0) != 0.0).then(|| {
-        let (skip, window) = (5.0, 30.0);
-        let mut pre = open(Default::default(), 0.0, skip + window);
+        let (at, skip, window) = (
+            number("MFSK_RTL_MEASURE_AT", 0.0),
+            5.0,
+            number("MFSK_RTL_MEASURE_WINDOW", 30.0),
+        );
+        let robust = number("MFSK_RTL_MEASURE_ROBUST", 0.0) != 0.0;
+        let mut pre = open(Default::default(), 0.0, at + skip + window);
         let origin = pre.start_ns;
         let (mut meter, mut samples) = (rtltcp::RateMeter::new(), 0u64);
+        let (mut last, mut removed) = (None::<i64>, 0i64);
         while let Ok(m) = pre.read(&AtomicBool::new(false)) {
-            if ((m.arrival_ns - origin) as f64) < skip * 1e9 {
+            let gap = last.map_or(0, |l| m.arrival_ns - l);
+            last = Some(m.arrival_ns);
+            if robust && gap > 500_000_000 {
+                removed += gap - 50_000_000;
+            }
+            if ((m.arrival_ns - origin) as f64) < (at + skip) * 1e9 {
                 continue;
             }
             samples += (m.body.len() / 2) as u64;
-            meter.push(m.arrival_ns, samples);
+            meter.push(m.arrival_ns - removed, samples);
         }
         meter
             .rate()
             .expect("measure_rate: no rate from the recording")
     });
-    let effective = measured.unwrap_or_else(|| number("MFSK_RTL_EFFECTIVE_RATE", 1_024_000.0));
+    let effective = match measured {
+        Some(r) if !zero_insert => r,
+        _ => number("MFSK_RTL_EFFECTIVE_RATE", 1_024_000.0),
+    };
     let dial = number("MFSK_RTL_DIAL", 7_074_000.0);
     let center = number("MFSK_RTL_CENTER", 7_016_000.0);
     let (rate, ppm) = mfsk_core::iq::plannable_rate(effective).unwrap();
@@ -175,6 +274,21 @@ fn decode_recorded_iq() {
         number("MFSK_RTL_SKIP", 40.0),
         number("MFSK_RTL_END", 240.0),
     );
+    // D: the measured (or MFSK_RTL_INSERT_RATE) deficit made up by zeros spread evenly; the receiver
+    // keeps the nominal rate. E (MFSK_RTL_PAUSE_FILL=1): and the pauses judged lost are zero-filled.
+    if zero_insert {
+        let r = measured.unwrap_or_else(|| number("MFSK_RTL_INSERT_RATE", 1_024_000.0));
+        link.insert = (1_024_000.0 / r - 1.0).max(0.0);
+        if number("MFSK_RTL_PAUSE_FILL", 0.0) != 0.0 {
+            link.fill = pause_fill(
+                &scan(&path),
+                0.5,
+                number("MFSK_RTL_LOOKAHEAD", 1.5),
+                r,
+                1_024_000.0,
+            );
+        }
+    }
     let mut rows = Vec::new();
     let mut reanchors = Vec::new();
     let mut gaps = 0;
@@ -206,7 +320,7 @@ fn decode_recorded_iq() {
     .unwrap();
     settle(&mut live, &mut sink);
     assert_eq!(dropped, 0, "offline decoder queue lost slots");
-    let result = serde_json::json!({"rate":effective,"measured":measured,"receive_dial":receive_dial,
+    let result = serde_json::json!({"rate":effective,"measured":measured,"insert":link.insert,"filled":link.fill.iter().sum::<usize>(),"receive_dial":receive_dial,
         "acquisition_hz":setup.acquisition_hz,
         "skip_s":link.skip_s,"end_s":link.end_s,"track":setup.track,"gaps":gaps,"reanchors":reanchors,"rows":rows});
     let output = std::env::var("MFSK_RTL_OUTPUT").expect("set MFSK_RTL_OUTPUT");
