@@ -739,5 +739,6 @@ of section 11.3 (f), present on the real trace too; not chased. FT4 on the trace
 - Dall/Eall are not the same setting as section 10's to within 0.003 % in rate (12.1). Only three of the F positions were
   tried. The A decodes (12.2), E's SNR offset on the controls and the oracle's 4 false decodes are not examined.
 - The FT8 0/63 window after a reset, the FT4 -1.75 dB offset on clean input and the 5 Bm_t1 false decodes were not chased.
-- Not done: step 6 (real-recording oracle), step 7 (implementation), the RSP1. The corpora, rows and score tables are
+- Step 6 (real-recording oracle) is deferred, decided 2026-10-17: the 600 s recording is gone (it lived in a cloud session's `/tmp`; the NAS `pc-desktop` holds only `rsp_clock.log` and the rsp_tcp builds, no IQ file). A re-record needs the RSP1 with the dbg4 build, recording and `rsp_clock.log` from the same run. The ranking therefore rests on synthetic signals (log-normal and real hole trace).
+- Not done: step 7 (implementation), the RSP1. The corpora, rows and score tables are
   in `/home/minoru/tmp` (not kept in the repository); the commands above regenerate them.
