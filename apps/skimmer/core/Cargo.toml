@@ -25,3 +25,5 @@ mfsk-core = { path = "../../../mfsk-core", default-features = false, features = 
 
 [dev-dependencies]
 serde_json = "1"
+# The synthetic capture of `examples/synth_rtltcp.rs` (the version mfsk-core already pins).
+rustfft = "6.4"
