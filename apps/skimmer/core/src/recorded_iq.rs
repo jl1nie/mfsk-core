@@ -178,8 +178,8 @@ fn decode_recorded_iq() {
     // MFSK_RTL_MEASURE=1: the rate the client's own start-up calibration (rtltcp::measure_rate: skip,
     // then a 30 s window, a line through arrival time against samples) would take from this recording,
     // in place of MFSK_RTL_EFFECTIVE_RATE. MFSK_RTL_MEASURE_AT starts the window that many seconds into
-    // the recording (default 0), MFSK_RTL_MEASURE_WINDOW sets its length (30), and MFSK_RTL_MEASURE_ROBUST=1
-    // takes pauses (arrival gaps over 0.5 s) out of the time axis first (candidate F).
+    // the recording (default 0), MFSK_RTL_MEASURE_WINDOW sets its length (30).
+    // (pauses are taken out of the time axis by RateMeter itself, candidate F).
     let zero_insert = number("MFSK_RTL_ZERO_INSERT", 0.0) != 0.0;
     let measured = (number("MFSK_RTL_MEASURE", 0.0) != 0.0).then(|| {
         let (at, skip, window) = (
@@ -187,22 +187,15 @@ fn decode_recorded_iq() {
             5.0,
             number("MFSK_RTL_MEASURE_WINDOW", 30.0),
         );
-        let robust = number("MFSK_RTL_MEASURE_ROBUST", 0.0) != 0.0;
         let mut pre = open(Default::default(), 0.0, at + skip + window);
         let origin = pre.start_ns;
         let (mut meter, mut samples) = (rtltcp::RateMeter::new(), 0u64);
-        let (mut last, mut removed) = (None::<i64>, 0i64);
         while let Ok(m) = pre.read(&AtomicBool::new(false)) {
-            let gap = last.map_or(0, |l| m.arrival_ns - l);
-            last = Some(m.arrival_ns);
-            if robust && gap > 500_000_000 {
-                removed += gap - 50_000_000;
-            }
             if ((m.arrival_ns - origin) as f64) < (at + skip) * 1e9 {
                 continue;
             }
             samples += (m.body.len() / 2) as u64;
-            meter.push(m.arrival_ns - removed, samples);
+            meter.push(m.arrival_ns, samples);
         }
         meter
             .rate()

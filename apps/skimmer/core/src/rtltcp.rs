@@ -306,15 +306,26 @@ impl Drop for Conn {
 /// was 1.7 % under the one asked for (1.006 MS/s for 1.024, `rsp_tcp` debug statistics, 2026-10-12):
 /// 1 s of time in a minute, which the receiver took for a clock step each time (#685). A least-squares
 /// line through (arrival time, samples so far) per message; the slope is the rate.
+///
+/// A pause (no message for over [`PAUSE_NS`], the 1.4 s `rsp_tcp` resets) is taken out of the time axis
+/// but for one message interval: left in, it reads as a lower rate (a pause inside the 30 s window moved
+/// the rate 1.7-2.0 % and cut FT8 decodes to 10-70 %, RTLTCP_EVAL_PLAN.md 10.5).
 #[derive(Clone, Debug, Default)]
 pub struct RateMeter {
     t0: Option<i64>,
+    last: Option<i64>,
+    removed: i64,
     n: f64,
     sx: f64,
     sy: f64,
     sxx: f64,
     sxy: f64,
 }
+
+/// Arrival gap above which a message is judged to follow a pause, not ordinary jitter.
+const PAUSE_NS: i64 = 500_000_000;
+/// What is left of a pause on the time axis (about one callback).
+const PAUSE_KEEP_NS: i64 = 50_000_000;
 
 impl RateMeter {
     pub fn new() -> Self {
@@ -323,8 +334,16 @@ impl RateMeter {
 
     /// A message arrived at `arrival_ns` and brought the stream to `samples` in all.
     pub fn push(&mut self, arrival_ns: i64, samples: u64) {
+        let gap = self.last.map_or(0, |l| arrival_ns - l);
+        self.last = Some(arrival_ns);
+        if gap > PAUSE_NS {
+            self.removed += gap - PAUSE_KEEP_NS;
+        }
         let t0 = *self.t0.get_or_insert(arrival_ns);
-        let (x, y) = ((arrival_ns - t0) as f64 * 1e-9, samples as f64);
+        let (x, y) = (
+            ((arrival_ns - t0) - self.removed) as f64 * 1e-9,
+            samples as f64,
+        );
         self.n += 1.0;
         self.sx += x;
         self.sy += y;
@@ -533,5 +552,21 @@ mod tests {
         let r = m.rate().unwrap();
         assert!((r / real - 1.0).abs() < 0.001, "{r}");
         assert!(RateMeter::new().rate().is_none());
+    }
+
+    /// A 1.4 s pause in the window is not a lower rate.
+    #[test]
+    fn a_pause_does_not_lower_the_rate() {
+        let real = 980_000.0_f64;
+        let per = 16_384u64;
+        let mut m = RateMeter::new();
+        for k in 1..=1800u64 {
+            let pause = if k > 900 { 1.4 } else { 0.0 };
+            let t = (k * per) as f64 / real + pause;
+            m.push((t * 1e9) as i64, k * per);
+        }
+        let r = m.rate().unwrap();
+        // The 50 ms kept of the pause is ~0.2 % of the 30 s; the pause left in reads ~1.7-2 % short.
+        assert!((r / real - 1.0).abs() < 0.003, "{r}");
     }
 }
