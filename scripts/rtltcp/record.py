@@ -9,15 +9,17 @@ s = socket.create_connection((host, port), timeout=10)
 s.settimeout(None)
 def cmd(c, p): s.sendall(bytes([c]) + struct.pack(">I", p))
 cmd(2, rate); cmd(1, freq)
-t0w = time.time_ns(); t0 = time.monotonic()
+# Wall clock, not time.monotonic(): the WSL2 monotonic clock ran 6.4 % fast against NTP on 2026-10-17 (60.06 s against
+# 56.46 s), and a recording timed with it disagreed with the server's own log by the same factor.
+t0w = time.time_ns(); now = lambda: (time.time_ns() - t0w) * 1e-9
 sent_gain = False
 chunks = []
 buf = bytearray(1 << 20)
-while time.monotonic() - t0 < seconds:
+while now() < seconds:
     k = s.recv_into(buf)
     if k == 0: break
-    chunks.append((time.monotonic() - t0, bytes(buf[:k])))
-    if not sent_gain and time.monotonic() - t0 > 0.6:
+    chunks.append((now(), bytes(buf[:k])))
+    if not sent_gain and now() > 0.6:
         cmd(3, 0); sent_gain = True
 with open(out, "wb") as f:
     f.write(struct.pack("<qI", t0w, len(chunks)))
