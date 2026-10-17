@@ -144,7 +144,7 @@ fn arm(
     for r in &results {
         log::info!(
             "    {} | {:.1} Hz | dt {:.2} s | {} dB",
-            r.message,
+            r.message.render(r.hashed_call.as_deref()),
             r.freq_hz,
             r.dt_sec,
             r.snr_db as i32,

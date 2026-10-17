@@ -289,7 +289,7 @@ fn feed_loop() {
 /// them. Every held row is max-held per column (a station's tones hop), and every
 /// column at level 10 of 15 or more that is a local maximum is reported at its centre
 /// frequency. A station's tones sit from its `f0_hz` up.
-fn log_waterfall_peaks(stations: &[mfsk_core::jtty::testsig::Station<'static>]) {
+fn log_waterfall_peaks(stations: &[mfsk_core::jtty::testsig::Transmission<'static>]) {
     use mfsk_app_shared::ui::state::WF_COLS;
     let Ok(ui) = UI.lock() else { return };
     let mut held = [0u8; WF_COLS];

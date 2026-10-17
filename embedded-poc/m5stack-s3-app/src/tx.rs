@@ -30,7 +30,7 @@ use esp_idf_hal::{
     delay::TickType,
     i2s::{I2sDriver, I2sTx},
 };
-use mfsk_core::ft8::message::pack77;
+use mfsk_core::msg::wsjt77::pack77;
 use mfsk_core::ft8::params::{NN, NSPS};
 
 /// FT8 12 kHz mono sample rate (canonical).

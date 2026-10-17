@@ -34,7 +34,7 @@ use esp_idf_hal::i2s::{I2sDriver, I2sTx};
 use esp_idf_svc::hal::delay::FreeRtos;
 use mfsk_app_shared::qso::QsoManager;
 use mfsk_app_shared::ui::state::UI;
-use mfsk_core::ft8::message::pack77;
+use mfsk_core::msg::wsjt77::pack77;
 
 /// Spawn the scheduler thread. Consumes the I2S TX driver — the
 /// scheduler is the sole writer of the speaker DAC for its lifetime.

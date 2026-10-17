@@ -26,9 +26,11 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use mfsk_core::fec::conv::fano::instrument as fano_hist;
+use mfsk_core::msg::WsprMessage;
 use mfsk_core::wspr::coarse_baseband::{coarse_baseband, BasebandCandidate};
 use mfsk_core::wspr::decode::{rank_pass2_candidates, WsprCallsignTable, WsprResult};
 use mfsk_core::wspr::demod::TONE_SPACING_HZ;
@@ -449,6 +451,19 @@ pub fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<Wspr
         counts: instrument::snapshot().since(c0),
         fano: fano_hist::snapshot().since(f0),
     });
+
+    // Render Type 3 (hashed) calls as wsprd does, as `wspr::decode`'s `sic_pass`
+    // does: `unpk_` looks the hash up in the table as it stands, and stores a
+    // Type 1 / 2 call (`wsprd_utils.c:353-356,364-369,390`), so a Type 3 decoded
+    // before its sender's own message prints `<...>`. `seen` is in decode order
+    // (pass 0, 1, 2), which is the order a sequential wsprd run would store in.
+    let mut heard = WsprCallsignTable::new();
+    for d in seen.iter_mut() {
+        if let WsprMessage::Type3 { callsign_hash, .. } = &d.message {
+            d.hashed_call = heard.resolve(*callsign_hash).map(String::from);
+        }
+        heard.record(&d.message);
+    }
 
     (stats, seen)
 }

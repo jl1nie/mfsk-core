@@ -1144,7 +1144,7 @@ fn do_tx_cycle(
     tx_out: &mut [u8],
 ) {
     use esp_idf_svc::hal::delay::FreeRtos;
-    use mfsk_core::ft8::message::pack77;
+    use mfsk_core::msg::wsjt77::pack77;
 
     let df_hz = mfsk_app_shared::ui::state::UI
         .lock()
