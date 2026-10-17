@@ -369,6 +369,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) mod clock;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decoder;
+pub mod encoder;
 pub mod engine;
 pub mod fec;
 pub mod iq;
