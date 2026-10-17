@@ -12,6 +12,9 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   `N_SYMBOLS` and `LdpcParams::M` are defaulted; `TONE_SPACING_HZ` is written `tone_spacing_hz(GFSK_HMOD, NSPS)` (#419).
 - **Removed**: `osd_decode`, `osd_decode_deep(4)`, `osd_decode_npre1` (`_masked`, `_npre2`) and `osd_decode_npre_generic`, for
   `osd174_91` / `osd_npre` (#417); `jt9::baseband` (#425). `is_plausible_callsign` stays and now behaves as `is_valid_callsign` (#612).
+- **`registry::Mode` discriminants moved**: the FST4 and FST4W modes were inserted before WSPR, so `Mode::Wspr as u8` is 13, not 7, and
+  `Q65A300` 25, not 19 (found by `scripts/semver-check.sh`). Nothing in this repository casts a `Mode` to an integer; the C ABI has its own
+  `MfskMode` numbers (`MFSK_MODE_WSPR = 7` is unchanged). Name a mode with its variant, `Mode::ALL` or `meta().name`, not a cast.
 - **Types**: 40 public types are `#[non_exhaustive]` (#573); `RowDetail::{sync_score, sync_cv, hard_errors}` are `Option`s (#594).
 - **C ABI**: appended fields only, ABI stays 3, but behaviour moves: rows are `out[0].size` apart and keep that `size` (#607, #635), a
   retry after a short buffer is answered without decoding again (#633), `float` at other rates keeps its level (#634), and
