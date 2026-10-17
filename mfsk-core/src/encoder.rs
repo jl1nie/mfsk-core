@@ -25,10 +25,7 @@
 //! | FT8, FT4, FST4, Q65 | any message `pack77` takes (standard, non-standard, free text, ...) |
 //! | FST4W | a WSPR-family message: `CALL GRID4 DBM`, `PFX/CALL DBM`, `<CALL> GRID6 DBM` |
 //! | WSPR | `CALL GRID4 DBM` (type 1), `PFX/CALL DBM` or `CALL/SFX DBM` (type 2), `<CALL> GRID6 DBM` (type 3) |
-//! | JT9, JT65 | `CALL1 CALL2 GRID` or `CALL1 CALL2 REPORT` (standard form) |
-//!
-//! JT9 / JT65 free text and compound calls are forms those modes have that
-//! this crate does not encode: [`EncodeError::Unsupported`].
+//! | JT9, JT65 | any message `packmsg` takes: standard, `CQ nnn`, add-on prefix/suffix, free text (13 characters) |
 //!
 //! # WSPR compound calls
 //!
@@ -163,6 +160,12 @@ pub enum EncodeError {
         mode: Mode,
         reason: crate::msg::wspr::WsprPackError,
     },
+    /// JT9 / JT65: `pack_message` refused the text (`packmsg` itself falls back to
+    /// free text, so this is only a character it cannot take).
+    Jt72 {
+        mode: Mode,
+        reason: crate::msg::Jt72PackError,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -177,6 +180,9 @@ impl core::fmt::Display for EncodeError {
             Self::Wspr { mode, reason } => {
                 write!(f, "{}: cannot send this message: {}", mode.name(), reason)
             }
+            Self::Jt72 { mode, reason } => {
+                write!(f, "{}: cannot send this message: {}", mode.name(), reason)
+            }
         }
     }
 }
@@ -187,6 +193,7 @@ impl core::error::Error for EncodeError {
             Self::Message { reason, .. } => Some(reason),
             Self::Wspr { reason, .. } => Some(reason),
             Self::Unsupported { .. } => None,
+            Self::Jt72 { reason, .. } => Some(reason),
         }
     }
 }
@@ -205,10 +212,10 @@ pub fn encode(mode: Mode, text: &str) -> Result<Encoded, EncodeError> {
 /// and `<CALL> GRID6 DBM` (type 3), packed by `msg::wspr::pack_message` (the
 /// port of `wqencode`); a text it refuses is [`EncodeError::Wspr`].
 ///
-/// JT9 and JT65: `CALL1 CALL2 GRID/REPORT` is the standard form. Anything
-/// else is [`EncodeError::Unsupported`] (free text and compound calls need
-/// a port of `packmsg`), including a three-word text whose fields do not
-/// pack, as that cannot be told from free text.
+/// JT9 and JT65: `packmsg` takes any text, as WSJT-X does: a callsign form
+/// (standard, add-on prefix or suffix) when it parses as one, else free
+/// text, cut to 13 characters of its alphabet. Only a non-ASCII character is
+/// [`EncodeError::Jt72`].
 pub fn encode_with(
     mode: Mode,
     text: &str,
@@ -372,26 +379,12 @@ fn route_wspr(mode: Mode, text: &str) -> Result<Routed, EncodeError> {
 /// `CALL1 CALL2 GRID/REPORT` packed as the 12 six-bit words of JT9 / JT65.
 #[cfg(any(feature = "jt9", feature = "jt65"))]
 fn jt_words(mode: Mode, text: &str) -> Result<([u8; 12], String), EncodeError> {
-    let upper = text.to_ascii_uppercase();
-    let w: Vec<&str> = upper.split_whitespace().collect();
-    let words = match w.as_slice() {
-        [] => {
-            return Err(EncodeError::Message {
-                mode,
-                reason: Pack77Error::NotEncoded,
-            });
-        }
-        [c1, c2, g] => crate::msg::jt72::pack_standard(c1, c2, g),
-        _ => None,
-    };
-    let Some(words) = words else {
-        return Err(EncodeError::Unsupported {
-            mode,
-            what: "JT9/JT65 free text and compound calls",
-        });
-    };
-    let text = crate::msg::jt72::unpack(&words).to_string();
-    Ok((words, text))
+    // `packmsg` (packjt.f90:401-535) takes any text: a callsign form when the text
+    // parses as one, free text otherwise.
+    let packed = crate::msg::jt72::pack_message(text)
+        .map_err(|reason| EncodeError::Jt72 { mode, reason })?;
+    let text = crate::msg::jt72::unpack(&packed.words).to_string();
+    Ok((packed.words, text))
 }
 
 #[cfg(feature = "jt9")]

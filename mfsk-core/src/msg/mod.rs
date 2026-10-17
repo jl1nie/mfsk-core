@@ -64,7 +64,7 @@ pub mod wspr;
 pub use ap::{ApHint, ApPassMask};
 pub use decoded::Decoded;
 pub use hash_table::CallsignHashTable;
-pub use jt72::{Jt72Codec, Jt72Message};
+pub use jt72::{Jt72Codec, Jt72Message, Jt72PackError, Jt72Packed};
 #[cfg(feature = "packet-bytes")]
 pub use packet_bytes::PacketBytesMessage;
 #[cfg(feature = "q65")]

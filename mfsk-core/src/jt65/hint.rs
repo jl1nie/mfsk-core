@@ -17,10 +17,11 @@
 //! message is large enough (`qual >= 2.0 - 0.1*aggressiveness`).
 //!
 //! Where this differs from upstream, on purpose:
-//! - **Standard messages only.** `jt72` does not pack free text, so the
-//!   `0123456789ABC` entry (`i == -1`) is not in the bank, and a call that
-//!   does not pack (compound prefix/suffix) is skipped, where upstream
-//!   would pack it as free text.
+//! - **Standard messages only.** The bank was built when `jt72` packed only the
+//!   standard form, so the `0123456789ABC` entry (`i == -1`) is not in it, and a
+//!   call that does not pack as standard (compound prefix/suffix) is skipped, where
+//!   upstream would pack it as free text. `msg::jt72::pack_message` now packs those
+//!   (0.14); bringing the bank level with upstream is open, not done here.
 //! - **`nflip` is 1.** HF JT65 has one sync pattern (see
 //!   [`super::averaging`]), so the CQ-skip for `nflip < 0` never applies.
 //! - **`mrs`/`mrs2` are recomputed** as the best and second-best tone of each

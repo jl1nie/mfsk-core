@@ -420,8 +420,10 @@ fn decode_scan_inner(
             let Some((msg, snr_db, info)) = decoded else {
                 continue;
             };
-            // `decode65b.f90:27`: the all-zero codeword is "no decode".
-            if msg.is_all_zero_codeword() {
+            // `decode65b.f90:27-28`: the all-zero codeword and the `0L6MWK` birdie
+            // are "no decode". Free text and compound calls are decodes
+            // (`nflip < 0 && ltext` of `:29` never applies: HF JT65 has one sync pattern).
+            if msg.is_jt65_suppressed() {
                 continue;
             }
             let dup = scan_dedup_match_cross(

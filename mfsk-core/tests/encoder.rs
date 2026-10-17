@@ -273,24 +273,24 @@ fn errors() {
             assert!(e.to_string().contains("WSPR"), "{e}");
         }
     }
+    // JT9 / JT65 carry free text and compound calls (packmsg); only a character
+    // the packer cannot take is refused.
     #[cfg(feature = "jt65")]
     {
-        let want = EncodeError::Unsupported {
-            mode: Mode::Jt65,
-            what: "JT9/JT65 free text and compound calls",
-        };
-        assert_eq!(encode(Mode::Jt65, "HELLO WORLD").unwrap_err(), want);
-        assert_eq!(encode(Mode::Jt65, "CQ PJ4/K1ABC FK52").unwrap_err(), want);
-        assert!(encode(Mode::Jt65, "CQ JA1ABC PM95").is_ok());
+        assert!(encode(Mode::Jt65, "HELLO WORLD").is_ok());
+        assert!(encode(Mode::Jt65, "CQ PJ4/K1ABC FK52").is_ok());
+        let e = encode(Mode::Jt65, "CQ K1ABC \u{c5}").unwrap_err();
+        assert!(matches!(
+            e,
+            EncodeError::Jt72 {
+                mode: Mode::Jt65,
+                ..
+            }
+        ));
+        assert!(std::error::Error::source(&e).is_some());
     }
     #[cfg(feature = "jt9")]
-    assert!(matches!(
-        encode(Mode::Jt9, "TNX 73 GL EVERYONE"),
-        Err(EncodeError::Unsupported {
-            mode: Mode::Jt9,
-            ..
-        })
-    ));
+    assert!(encode(Mode::Jt9, "TNX 73 GL EVERYONE").is_ok());
     #[cfg(feature = "fst4w")]
     assert!(matches!(
         encode(Mode::Fst4W120, "HELLO WORLD"),
@@ -403,6 +403,43 @@ fn wspr_types_2_and_3_round_trip() {
                 got.iter()
                     .any(|g| g.starts_with("<#") && g.split_once("> ").map(|x| x.1) == Some(tail)),
                 "{text:?}: {got:?}"
+            );
+        }
+    }
+}
+
+/// JT9 / JT65 free text and compound calls: encode, synthesize, decode; the decoder
+/// prints what `Encoded::text` says (upstream's blank collapsing and case folding included).
+#[test]
+fn jt9_and_jt65_free_text_and_compound_calls_round_trip() {
+    let cases: &[(&str, &str)] = &[
+        ("TNX 73 GL", "TNX 73 GL"),
+        ("hello  world", "HELLO WORLD"),
+        ("CQ PJ4/K1ABC FK52", "CQ PJ4/K1ABC FK52"),
+        ("DE W9XYZ/QRP", "DE W9XYZ/QRP"),
+        ("K1ABC/P W9XYZ", "K1ABC/P W9XYZ"),
+        ("CQ DX K1ABC FN42", "CQ DX K1ABC FN42"),
+    ];
+    #[allow(unused_mut)]
+    let mut modes: Vec<Mode> = Vec::new();
+    #[cfg(feature = "jt9")]
+    modes.push(Mode::Jt9);
+    #[cfg(feature = "jt65")]
+    modes.push(Mode::Jt65);
+    for mode in modes {
+        for &(text, want) in cases {
+            let tx = encode(mode, text).unwrap();
+            assert_eq!(tx.text, want, "{} {text:?}", mode.name());
+            let audio = tx.synthesize(&TxAudio::new(FS, 1_500.0));
+            let period = period_of(mode, &audio, 7);
+            let mut dec = AnyDecoder::with_defaults(mode);
+            let res = dec.decode_i16(&period, Some(0));
+            let got: Vec<&str> = res.rows.iter().map(|r| r.decoded.text.as_str()).collect();
+            assert!(
+                got.contains(&tx.text.as_str()),
+                "{} sent {:?}, decoded {got:?}",
+                mode.name(),
+                tx.text
             );
         }
     }

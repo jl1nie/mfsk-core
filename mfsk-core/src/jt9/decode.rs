@@ -8,7 +8,7 @@
 
 use crate::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
 use crate::fec::ConvFano232;
-use crate::msg::{Jt72Codec, Jt72Message};
+use crate::msg::Jt72Codec;
 
 use super::Jt9Result;
 use super::softsym::{AudioFft, FSAMPLE_DOWN, afc9, llrs_from_c5, peakdt9, twkfreq_poly};
@@ -84,7 +84,7 @@ impl Jt9Depth {
 
 /// Try to decode a JT9 signal centred at `freq_hz` using a pre-built
 /// audio FFT. Returns `None` when the sync gate is missed, Fano fails
-/// to converge, or the message is not `Jt72Message::Standard`.
+/// to converge, or the message is the all-zero codeword.
 ///
 /// The scan's production candidate loop (`super::decode_scan_inner`) calls
 /// [`decode_at_baseband_with_fft_depth`] directly (it always has an
@@ -173,12 +173,9 @@ pub fn decode_at_baseband_gated(
     payload.copy_from_slice(&res.info);
     let msg = Jt72Codec::default().unpack(&payload, &DecodeContext::default())?;
 
-    // JT9 has no CRC — Fano can converge on plausible-looking junk.
-    // Accepting only Standard form drops most hashed-callsign garbage.
-    match &msg {
-        Jt72Message::Standard { .. } => {}
-        _ => return None,
-    }
+    // JT9 has no CRC, so Fano can converge on junk. `jt9fano.f90:87-88` filters
+    // only the all-zero codeword and prints every other message, free text and
+    // compound calls included; so does this. (0.13 kept `Standard` only.)
     if msg.is_all_zero_codeword() {
         return None;
     }
