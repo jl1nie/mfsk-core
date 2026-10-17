@@ -1466,102 +1466,42 @@ pub fn is_plausible_callsign(call: &str) -> bool {
 
 // ── Packing (encode) ────────────────────────────────────────────────────────
 
-/// Write `len` bits of `val` (MSB first) into `msg` starting at `start`.
-fn write_bits(msg: &mut [u8; 77], start: usize, len: usize, val: u32) {
-    for i in 0..len {
-        msg[start + i] = ((val >> (len - 1 - i)) & 1) as u8;
-    }
-}
-
 /// Pack a callsign into a 28-bit token (inverse of `unpack28`).
 ///
-/// Supports `"DE"`, `"QRZ"`, `"CQ"`, and standard 1–6 character callsigns
-/// whose 3rd character (1-indexed) is a digit (e.g. `"JQ1QSO"`, `"3Y0Z"`).
+/// Supports `"DE"`, `"QRZ"`, `"CQ"`, a directed CQ (`"CQ DX"`, `"CQ POTA"`: one to four
+/// letters, or `"CQ 123"`: three digits) and standard 3-6 character callsigns (e.g.
+/// `"JQ1QSO"`, `"3Y0Z"`). Input is upper-cased, as `pack77` does to the whole message.
 ///
-/// Returns `None` if the callsign contains characters outside the FT8 alphabet
-/// or cannot be encoded in the standard 28-bit field.
+/// The bits are `pack28_core`'s (`packjt77.f90:882-1001`): a directed-CQ word is
+/// right-justified in four characters (`c4=adjustr(c4)`), so `CQ DX` packs `"  DX"`, not
+/// `"DX  "`. A standard callsign is judged by
+/// `pack77_c28_standard_shape` (`packjt77_grammar.f90:743`); one that is not standard
+/// (a hash, a `/R`, `/P` or other non-standard call) gives `None`: its 28 bits are a hash
+/// that [`pack77_message`] works out in the context of the message.
 pub fn pack28(call: &str) -> Option<u32> {
-    let call = call.trim();
-    match call {
-        "DE" => return Some(0),
-        "QRZ" => return Some(1),
-        "CQ" => return Some(2),
-        _ => {}
-    }
-
-    // CQ with suffix: "CQ NNN" or "CQ XXXX"
-    if let Some(suffix) = call.strip_prefix("CQ ") {
-        let suffix = suffix.trim();
-        if !suffix.is_empty() {
-            // Numeric suffix: "CQ 001" - "CQ 999"
-            if let Ok(n) = suffix.parse::<u32>()
-                && n <= 999
-            {
-                return Some(3 + n);
-            }
-            // Directional suffix: "CQ POTA", "CQ DX", etc. (1-4 uppercase letters)
-            let sb = suffix.as_bytes();
-            if sb.len() <= 4 && sb.iter().all(|c| c.is_ascii_uppercase()) {
-                let mut buf = [b' '; 4];
-                for (i, &b) in sb.iter().enumerate() {
-                    buf[i] = b;
+    let call = call.trim().to_ascii_uppercase();
+    let c13 = match call.as_str() {
+        "DE" | "QRZ" | "CQ" => call.clone(),
+        _ => match call.strip_prefix("CQ ") {
+            // `CQ_xxxx`, the token `pack77_parse_type12_source` hands `pack28_core`.
+            Some(m) => {
+                let m = m.trim();
+                if !message::valid_cq_modifier(m) {
+                    return None;
                 }
-                let i1 = C4.iter().position(|&c| c == buf[0])?;
-                let i2 = C4.iter().position(|&c| c == buf[1])?;
-                let i3 = C4.iter().position(|&c| c == buf[2])?;
-                let i4 = C4.iter().position(|&c| c == buf[3])?;
-                return Some(1003 + ((i1 * 27 + i2) * 27 + i3) as u32 * 27 + i4 as u32);
+                format!("CQ_{m}")
             }
-            return None; // Invalid CQ suffix
-        }
-    }
-
-    let bytes = call.as_bytes();
-    if bytes.is_empty() || bytes.len() > 6 {
-        return None;
-    }
-
-    // Pad to 6 characters: if position 3 (1-indexed) is not a digit, prepend space.
-    let mut buf = [b' '; 6];
-    if bytes.len() >= 3 && bytes[2].is_ascii_digit() {
-        // Digit already at position 3 — left-align
-        for (i, &b) in bytes.iter().enumerate().take(6) {
-            buf[i] = b.to_ascii_uppercase();
-        }
-    } else if bytes.len() >= 2 && bytes[1].is_ascii_digit() {
-        // Digit at position 2 — shift right by 1 so digit lands at position 3. A sixth
-        // character would fall off the end (`W1ABCD` became `W1ABC`, and `K1ABCD` `K1ABC`):
-        // a one-letter prefix leaves room for a three-letter suffix at most, so it is not a
-        // standard callsign.
-        if bytes.len() > 5 {
-            return None;
-        }
-        buf[0] = b' ';
-        for (i, &b) in bytes.iter().enumerate() {
-            if i + 1 < 6 {
-                buf[i + 1] = b.to_ascii_uppercase();
+            None => {
+                if !c28_standard_shape(&call) {
+                    return None;
+                }
+                call.clone()
             }
-        }
-    } else {
-        return None; // Cannot form a valid 6-char callsign
-    }
-
-    // Position 3 (index 2) must be a digit
-    if !buf[2].is_ascii_digit() {
-        return None;
-    }
-
-    let i1 = C1.iter().position(|&c| c == buf[0])?;
-    let i2 = C2.iter().position(|&c| c == buf[1])?;
-    let i3 = C3.iter().position(|&c| c == buf[2])?;
-    let i4 = C4.iter().position(|&c| c == buf[3])?;
-    let i5 = C4.iter().position(|&c| c == buf[4])?;
-    let i6 = C4.iter().position(|&c| c == buf[5])?;
-
-    let n = ((((i1 as u32 * 36 + i2 as u32) * 10 + i3 as u32) * 27 + i4 as u32) * 27 + i5 as u32)
-        * 27
-        + i6 as u32;
-    Some(NTOKENS + MAX22 + n)
+        },
+    };
+    let n28 = message::pack28_token(&c13);
+    // A standard call or a special token, never a hash.
+    (!(NTOKENS..NTOKENS + MAX22).contains(&n28)).then_some(n28)
 }
 
 /// Pack a 4-character Maidenhead grid locator into a 15-bit index.
@@ -1582,49 +1522,48 @@ pub fn pack_grid4(grid: &str) -> Option<u32> {
 
 /// Pack a Type 1 standard message: `"CALL1 CALL2 GRID"`.
 ///
-/// Both callsigns must be packable via [`pack28`], and `grid` must be a valid
-/// 4-character Maidenhead locator.  Returns the 77-bit message array.
+/// `grid` must be a valid 4-character Maidenhead locator (`RR73` is one); the rest is
+/// [`pack77`]. Returns the 77-bit message array.
 pub fn pack77_type1(call1: &str, call2: &str, grid: &str) -> Option<[u8; 77]> {
     pack_grid4(grid)?;
     pack77(call1, call2, grid)
 }
 
-/// `JA1ABC/P` → `("JA1ABC", true, true)`, `W9XYZ/R` → `("W9XYZ", true,
-/// false)`, anything else unchanged with `(false, false)`.
-///
-/// `packjt77.f90:1176-1193`: the suffix counts only when it starts at
-/// column 4 or later (`index(w//' ','/P ') >= 4`), i.e. behind a base
-/// of at least three characters — `CQ` tokens and the like never have
-/// one.
-fn split_rp_suffix(call: &str) -> (&str, bool, bool) {
-    let c = call.trim();
-    if c.len() >= 5 {
-        if let Some(base) = c.strip_suffix("/P") {
-            return (base, true, true);
-        }
-        if let Some(base) = c.strip_suffix("/R") {
-            return (base, true, false);
-        }
-    }
-    (c, false, false)
+/// The 77 bits [`pack77_message`] gives for `text` when its type is one of `types` (`i3`);
+/// `None` when it is another type or rc1 refuses the text.
+fn pack_text_of_type(text: &str, types: &[u8]) -> Option<[u8; 77]> {
+    let p = pack77_message(text, &Pack77Options::new()).ok()?;
+    types.contains(&p.i3).then_some(p.bits)
 }
 
-/// Pack a Type 1 standard message with any report/grid field.
+/// `true` for one word (no blank inside once trimmed).
+fn one_word(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty() && !s.contains(char::is_whitespace)
+}
+
+/// Pack a Type 1 / Type 2 standard message with any report/grid field: the text
+/// `"{call1} {call2} {report}"` packed as WSJT-X v3.2.0-rc1 packs it.
 ///
 /// `report` can be:
 /// - A 4-char grid locator: `"PM95"`
-/// - A dB signal report: `"-12"`, `"+05"`
-/// - An R-prefixed report: `"R-12"`, `"R+05"`
+/// - A dB signal report: `"-12"`, `"+05"` (-50 to +49 and more, as `pack77_report_index`)
+/// - An R-prefixed report: `"R-12"`, `"R+05"`, or `"R EN37"`
 /// - A standard response: `"RRR"`, `"RR73"`, `"73"`
 /// - Empty string (no report)
 ///
-/// Either callsign may carry a `/R` or `/P` suffix, set as the `ipa` /
-/// `ipb` flag beside its 28-bit field. A `/P` on either makes the
-/// message Type 2 (i3=2), where both flags read as `/P`; otherwise it is
-/// Type 1, where they read as `/R` — `pack77_1` in `packjt77.f90`
-/// (1176-1193), mirrored by [`unpack77`]'s `1 | 2` arm. Before this, a
-/// suffixed call made `pack28` fail and the whole message with it, so a
-/// portable station could not send a standard message at all.
+/// `call1` may be `CQ`, `DE`, `QRZ` or a directed CQ (`"CQ DX"`, `"CQ POTA"`, `"CQ 123"`);
+/// either call may carry a `/R` or `/P` suffix, or be a `<CALL>` hash of up to 11
+/// characters. A `/P` on either makes the message Type 2 (`i3=2`).
+///
+/// This is `pack77_1_candidate` (`packjt77.f90:2305-2340`, with `pack77_parse_type12_source`,
+/// `packjt77_grammar.f90:817-896`) through [`pack77_message`], the one implementation of the
+/// form: same bits, and the same refusals (`None` for what rc1 packs as another type, or
+/// reads back differently; for example a report after `CQ`, which rc1 sends as free
+/// text, `CQ 12` with two digits, or a text that is DXpedition, Field Day or WSPR shaped).
+/// Before, a directed CQ was left-justified (`CQ DX` read the same but sent other bits
+/// than rc1), a hashed or `/R` call with a `+50` report was refused, and `CQ` + report was
+/// accepted.
 ///
 /// # Examples
 /// ```
@@ -1637,86 +1576,27 @@ fn split_rp_suffix(call: &str) -> (&str, bool, bool) {
 /// assert_eq!(unpack77(&msg).unwrap(), "CQ SOTA JA1ABC/P PM95");
 /// ```
 pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
-    let (base1, ipa, p1) = split_rp_suffix(call1);
-    let (base2, ipb, p2) = split_rp_suffix(call2);
-    let n28a = pack28(base1)?;
-    let n28b = pack28(base2).filter(|&n| n >= NTOKENS)?; // DE / QRZ / CQ … are call-1 only
-    let i3 = if p1 || p2 { 2 } else { 1 };
-
-    let report = report.trim();
-
-    // Determine igrid and ir flag
-    // `pack77_1` (`packjt77.f90`): the last word is tried as a grid *first*
-    // (`is_grid4(w(nwords)(1:4))`), so `RR73`, which has a grid's shape, goes
-    // out as the grid RR73 (15-bit value 32373), not as `MAXGRID4 + 3`. Only
-    // `RRR` and `73` take the `MAXGRID4 + irpt` values. Both forms unpack as
-    // "RR73", which is how this crate packed the second one without noticing;
-    // on the air, and in upstream's AP pattern for RR73 (`mrr73` in `ft8b.f90`),
-    // it is the grid (#464).
-    let (igrid, ir): (u32, u8) = if report.is_empty() {
-        (MAX_GRID4 + 1, 0)
-    } else if report.len() == 4 && pack_grid4(report).is_some() {
-        // Grid locator (e.g. "PM95"), and "RR73".
-        (pack_grid4(report).unwrap(), 0)
-    } else if let Some(g) = report.strip_prefix("R ")
-        && g.len() == 4
-        && let Some(igrid) = pack_grid4(g)
+    let (call1, call2, report) = (call1.trim(), call2.trim(), report.trim());
+    // A piece is a word, or `CQ word` for call 1, so no text can be cut another way.
+    let c1_words = call1.split_whitespace().count();
+    if !(one_word(call1) || (c1_words == 2 && call1.to_ascii_uppercase().starts_with("CQ ")))
+        || !one_word(call2)
+        || report.split_whitespace().count() > 2
     {
-        // "R EN37": the grid with `ir = 1`, as `pack77_1` packs a
-        // two-word `R <grid>` ending (`packjt77.f90`) and as unpack prints
-        // it. It fell through to the report parser and failed.
-        (igrid, 1)
-    } else if report == "RRR" {
-        (MAX_GRID4 + 2, 0)
-    } else if report == "73" {
-        (MAX_GRID4 + 4, 0)
-    } else {
-        // dB report: "-12", "+05", "R-12", "R+05"
-        let (r_prefix, num_str) = if let Some(s) = report.strip_prefix('R') {
-            (1u8, s)
-        } else {
-            (0u8, report)
-        };
-        let snr: i32 = num_str.parse().ok()?;
-        if !(-50..=49).contains(&snr) {
-            return None;
-        }
-        // `if(irpt.ge.-50 .and. irpt.le.-31) irpt=irpt+101; irpt=irpt+35`: -50..-31
-        // go to 86..105. This used to add 101 only when `snr + 35` was negative,
-        // so -35..-31 packed as 0..4, and -34..-31 collided with the bare / RRR /
-        // RR73 / 73 values (a -34 dB report read back as no report at all).
-        let irpt = if (-50..=-31).contains(&snr) {
-            snr + 101
-        } else {
-            snr
-        } + 35;
-        (MAX_GRID4 + irpt as u32, r_prefix)
-    };
-
-    let mut msg = [0u8; 77];
-    write_bits(&mut msg, 0, 28, n28a);
-    msg[28] = ipa as u8;
-    write_bits(&mut msg, 29, 28, n28b);
-    msg[57] = ipb as u8;
-    msg[58] = ir; // ir (bit 58)
-    write_bits(&mut msg, 59, 15, igrid);
-    write_bits(&mut msg, 74, 3, i3);
-    Some(msg)
-}
-
-/// Write `len` bits of a u64 `val` (MSB first) into `msg` starting at `start`.
-fn write_bits_u64(msg: &mut [u8; 77], start: usize, len: usize, val: u64) {
-    for i in 0..len {
-        msg[start + i] = ((val >> (len - 1 - i)) & 1) as u8;
+        return None;
     }
+    let text = format!("{call1} {call2} {report}");
+    pack_text_of_type(text.trim_end(), &[1, 2])
 }
 
 /// Pack a Type 4 message: one non-standard callsign + one hashed standard
-/// callsign, or `CQ nonstd`.
+/// callsign, or `CQ nonstd`. The text `"<std_call> nonstd report"` (or `"CQ nonstd"`)
+/// packed as WSJT-X v3.2.0-rc1 packs it (`pack77_4_candidate`, `packjt77.f90:2377-2404`,
+/// with `pack77_parse_type4_source`, `packjt77_grammar.f90:1056-1109`).
 ///
 /// # Arguments
-/// * `nonstd` — non-standard callsign (1-11 chars from C38 alphabet)
-/// * `std_call` — standard callsign to 12-bit hash (ignored when `is_cq`)
+/// * `nonstd` — non-standard callsign (5-11 chars from C38 alphabet, not a standard call)
+/// * `std_call` — the call sent as a 12-bit hash (brackets optional; ignored when `is_cq`)
 /// * `report` — `""`, `"RRR"`, `"RR73"`, or `"73"`
 /// * `is_cq` — if true, packs `"CQ nonstd"` (CQ flag set)
 ///
@@ -1724,71 +1604,43 @@ fn write_bits_u64(msg: &mut [u8; 77], start: usize, len: usize, val: u64) {
 /// ```text
 /// [12-bit hash][58-bit base-38 nonstd][1-bit iflip][2-bit nrpt][1-bit icq][3-bit i3=4]
 /// ```
+/// The 12-bit field of a CQ is the hash of `nonstd` itself (`hash_token=c11`,
+/// `pack77_4_candidate`, `packjt77.f90:2377-2404`); it used to be zero. The signature carries no
+/// order, so the hash comes first (`iflip = 0`); for `nonstd <std_call>` (`iflip = 1`) use
+/// [`pack77_message`]. A `nonstd` that is a standard call is refused (rc1 sends such a
+/// pair as type 1).
 pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> Option<[u8; 77]> {
-    let nonstd = nonstd.trim().to_ascii_uppercase();
-    let nb = nonstd.as_bytes();
-    if nb.is_empty() || nb.len() > 11 {
+    let nonstd = nonstd.trim();
+    if !one_word(nonstd) {
         return None;
     }
-    if !nb.iter().all(|c| C38.contains(c)) {
-        return None;
-    }
-
-    // Encode non-standard callsign as 58-bit base-38 number
-    let mut n58: u64 = 0;
-    // Pad to 11 characters with leading spaces
-    let mut padded = [b' '; 11];
-    let offset = 11 - nb.len();
-    for (i, &b) in nb.iter().enumerate() {
-        padded[offset + i] = b;
-    }
-    for &ch in &padded {
-        let idx = C38.iter().position(|&c| c == ch)?;
-        n58 = n58 * 38 + idx as u64;
-    }
-
-    // 12-bit hash of standard callsign
-    let n12 = if is_cq {
-        0u32 // unused when CQ flag is set
+    let text = if is_cq {
+        format!("CQ {nonstd}")
     } else {
-        use super::hash_table::ihashcall;
-        ihashcall(std_call, 12)
+        let std_call = std_call
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>');
+        if !one_word(std_call) {
+            return None;
+        }
+        let report = report.trim();
+        if !report.is_empty() && !one_word(report) {
+            return None;
+        }
+        format!("<{std_call}> {nonstd} {report}")
     };
-
-    // Report encoding
-    let nrpt: u32 = match report.trim() {
-        "" => 0,
-        "RRR" => 1,
-        "RR73" => 2,
-        "73" => 3,
-        _ => return None,
-    };
-
-    // iflip: 0 = <hash> nonstd, 1 = nonstd <hash>
-    // When std_call packs via pack28, place hash first (iflip=0).
-    // Otherwise nonstd first (iflip=1).
-    let iflip: u8 = if is_cq || pack28(std_call).is_some() {
-        0
-    } else {
-        1
-    };
-
-    let icq: u8 = if is_cq { 1 } else { 0 };
-
-    let mut msg = [0u8; 77];
-    write_bits(&mut msg, 0, 12, n12); // 12-bit hash (bits 0-11)
-    write_bits_u64(&mut msg, 12, 58, n58); // 58-bit base-38 (bits 12-69)
-    msg[70] = iflip; // iflip (bit 70)
-    write_bits(&mut msg, 71, 2, nrpt); // nrpt (bits 71-72)
-    msg[73] = icq; // icq (bit 73)
-    write_bits(&mut msg, 74, 3, 4); // i3=4 (bits 74-76)
-    Some(msg)
+    pack_text_of_type(text.trim_end(), &[4])
 }
 
-/// Pack a free-text message (Type 0, n3=0).
+/// Pack a free-text message (Type 0, n3=0), `pack77_free_text_exact`
+/// (`packjt77.f90:719-729`): at most 13 characters from the FREE_TEXT alphabet
+/// (`0-9 A-Z + - . / ?` and space), after the upper-casing and blank collapsing of
+/// `pack77_normalized_message` (`:785-803`). The empty text is the blank message (71 zero
+/// bits), as upstream packs it.
 ///
-/// `text` — up to 13 characters from the FREE_TEXT alphabet
-/// (`0-9 A-Z + - . / ?` and space).  Shorter text is right-padded with spaces.
+/// This is the free-text form only, whatever the text is: `"CQ K1ABC FN42"` stays free
+/// text here, where [`pack77_message`] makes it a type 1.
 ///
 /// # Examples
 /// ```
@@ -1797,14 +1649,18 @@ pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> 
 /// assert_eq!(unpack77(&msg).unwrap(), "JA/TK-001");
 /// ```
 pub fn pack77_free_text(text: &str) -> Option<[u8; 77]> {
-    let text = text.to_ascii_uppercase();
-    // `adjustr` moves trailing blanks to the front, so they are padding, not text.
-    let bytes = text.trim_end_matches(' ').as_bytes();
-    if bytes.is_empty() || bytes.len() > 13 {
+    packtext77(&message::normalized_message(text))
+}
+
+/// `packtext77` (`packjt77.f90`) of an already normalized text: up to 13 characters of the
+/// free-text alphabet, right-justified, as a base-42 number in the first 71 bits.
+fn packtext77(norm: &str) -> Option<[u8; 77]> {
+    let bytes = norm.as_bytes();
+    if bytes.len() > 13 {
         return None;
     }
 
-    // Right-justified in 13 characters, leading spaces: `packtext77` (`packjt77.f90`) does
+    // Right-justified in 13 characters, leading spaces: `packtext77` does
     // `w=adjustr(c13)`. Trailing spaces gave a different 71-bit number than WSJT-X's for the same
     // text. A receiver trims both (`unpack_free_text`; upstream `adjustl`), so the text read
     // back was the same, which is how this went unnoticed; a *list* of exact codewords, as
@@ -2591,17 +2447,16 @@ mod tests {
             );
             assert_eq!(unpack77(&m).unwrap(), format!("{c1} {c2} {rpt}"));
         }
-        // Nothing to split in a bare short call or a CQ token.
-        assert_eq!(split_rp_suffix("CQ"), ("CQ", false, false));
-        assert_eq!(split_rp_suffix("K1/P"), ("K1/P", false, false));
+        // A suffix on a call too short to be a standard one is not a /P.
+        assert_eq!(pack77("K1/P", "W9XYZ", "FN42"), None);
     }
 
     #[test]
     fn pack77_type4_roundtrip() {
         // CQ with non-standard callsign
-        let msg = pack77_type4("JL1NIE/P", "", "", true).expect("pack failed");
+        let msg = pack77_type4("PJ4/K1ABC", "", "", true).expect("pack failed");
         let text = unpack77(&msg).expect("unpack failed");
-        assert_eq!(text, "CQ JL1NIE/P");
+        assert_eq!(text, "CQ PJ4/K1ABC");
 
         // Non-standard + hashed, no report
         let msg = pack77_type4("JL1NIE/1", "JA1ABC", "", false).expect("pack failed");

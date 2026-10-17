@@ -57,6 +57,10 @@ const NMSGS: usize = 206;
 // ────────────────────────────────────────────────────────────────────
 // Message lists
 
+/// The call that stands in for `CQ` in the messages of a CQ pair other than `CQ call_2 grid`
+/// (`ft8_a7.f90`'s `QU1RK`).
+const CQ_STAND_IN: &str = "QU1RK";
+
 /// One party of a list message: the call sign as it is written, and whether the
 /// message carries it hashed (`<CALL>`).
 #[derive(Clone, Copy)]
@@ -70,6 +74,17 @@ struct Party<'s> {
 fn pack_list(c1: Party<'_>, c2: Party<'_>, tail: &str) -> Option<[u8; 77]> {
     match (c1.hashed, c2.hashed) {
         (false, false) => {
+            if c1.call == CQ_STAND_IN {
+                // Not a call (`pack77`, which is rc1's text packer, refuses a leading Q), but
+                // the list needs its bits so the second-best distance means something: pack
+                // the pair with a real call and put the stand-in's 28 bits in its place.
+                let mut m = pack77("K1ABC", c2.call, tail)?;
+                let n28 = crate::msg::wsjt77::pack28(CQ_STAND_IN)?;
+                for (i, b) in m[..28].iter_mut().enumerate() {
+                    *b = ((n28 >> (27 - i)) & 1) as u8;
+                }
+                return Some(m);
+            }
             if let Some(m) = pack77(c1.call, c2.call, tail) {
                 return Some(m);
             }
@@ -121,7 +136,7 @@ fn a7_message(i: usize, call_1: &str, call_2: &str, grid4: &str) -> Option<[u8; 
     // tried so that the second-best distance means something, and a best fit on
     // one of them is rejected below.
     let c1 = if call_1 == "CQ" && i != 5 {
-        "QU1RK"
+        CQ_STAND_IN
     } else {
         call_1
     };

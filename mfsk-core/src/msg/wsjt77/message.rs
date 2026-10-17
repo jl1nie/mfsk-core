@@ -14,9 +14,12 @@
 //! Every candidate is accepted only if its bits unpack to the text it was given
 //! (`take_candidate`, `packjt77.f90:200`, with `pack77_gate_message_checks`,
 //! `packjt77_grammar.f90:641`), so a message this accepts is one the receiver
-//! reads back as sent. The 0.6 candidate (the WSPR forms) is the existing
-//! [`pack77_wspr`](super::pack77_wspr); the free-text fallback is the existing
-//! [`pack77_free_text`](super::pack77_free_text).
+//! reads back as sent. The 0.6 candidate (the WSPR forms) is
+//! [`pack77_wspr`](super::pack77_wspr). The per-form packers
+//! [`pack77`](super::pack77), [`pack77_type1`](super::pack77_type1),
+//! [`pack77_type4`](super::pack77_type4), [`pack28`](super::pack28) and
+//! [`pack77_free_text`](super::pack77_free_text) are thin wrappers over this code
+//! (`tests/pack77_forms.rs` holds them to the same fixture).
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -24,7 +27,7 @@ use alloc::vec::Vec;
 
 use super::{
     ARRL_SECTIONS, C1, C2, C3, C4, C38, MAX_GRID4, MAX22, NTOKENS, RTTY_STATES, c28_standard_shape,
-    is_grid4, pack77_free_text, pack77_wspr, put_bits, read_bits, type12_standard_call, unpack77,
+    is_grid4, pack77_wspr, packtext77, put_bits, read_bits, type12_standard_call, unpack77,
     valid_hash_call_token,
 };
 
@@ -321,7 +324,7 @@ fn word(w: &[String], k: usize) -> &str {
 }
 
 /// `pack77_normalized_message` (`packjt77.f90:785-803`), without the padding.
-fn normalized_message(msg: &str) -> String {
+pub(super) fn normalized_message(msg: &str) -> String {
     let mut out = String::new();
     let mut c0 = b' ';
     for c in msg.trim_end_matches(' ').bytes() {
@@ -361,13 +364,8 @@ fn free_text_exact(msg: &str) -> Result<Packed77, Pack77Error> {
             Pack77Error::FreeTextTooLong
         });
     }
-    // An empty message is blank free text: 71 zero bits (`packtext77` of 13
-    // blanks); `pack77_free_text` refuses the empty string.
-    let bits = if norm.is_empty() {
-        [0u8; 77]
-    } else {
-        pack77_free_text(&norm).ok_or(Pack77Error::FreeTextInvalid)?
-    };
+    // An empty message is blank free text: 71 zero bits (`packtext77` of 13 blanks).
+    let bits = packtext77(&norm).ok_or(Pack77Error::FreeTextInvalid)?;
     Ok(plain(bits, 0, 0))
 }
 
@@ -485,7 +483,7 @@ fn hash_index(facts: &mut Vec<String>, tok: &str, nbits: u32) -> Option<u32> {
 
 /// `pack77_valid_cq_modifier` (`packjt77_grammar.f90:324`): three digits, or one
 /// to four letters.
-fn valid_cq_modifier(tok: &str) -> bool {
+pub(super) fn valid_cq_modifier(tok: &str) -> bool {
     let b = tok.as_bytes();
     if b.is_empty() || b.len() > 4 {
         return false;
@@ -582,6 +580,12 @@ fn pack28_core(c13: &str, facts: &mut Vec<String>) -> u32 {
             + i64::from(MAX22)
     };
     (n28 & 0x0FFF_FFFF) as u32
+}
+
+/// The 28 bits `pack28_core` gives a token the grammar has already classified (a special
+/// token, `CQ_xxxx`, a standard call); used by [`pack28`](super::pack28).
+pub(super) fn pack28_token(c13: &str) -> u32 {
+    pack28_core(c13, &mut Vec::new())
 }
 
 /// `lower_c28_slot` (`packjt77.f90:2093-2128`): the 28-bit field for a call slot.
@@ -1127,7 +1131,9 @@ fn candidate_4(msg: &str) -> Option<Candidate> {
         icq = 1;
         iflip = 0;
         itail = 0;
-        hash_token = c; // `if(icq.eq.1 .and. len_trim(hash_token).eq.0) hash_token=c11`
+        // `if(icq.eq.1 .and. len_trim(hash_token).eq.0) hash_token=c11`: the 12 bits of a CQ
+        // are the hash of the non-standard call itself.
+        hash_token = c;
     } else {
         itail = if nwords == 3 {
             match w[2].as_str() {

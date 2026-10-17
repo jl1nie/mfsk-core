@@ -144,6 +144,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Decoding
 
+- **`pack77`, `pack77_type1`, `pack77_type4`, `pack28`, `pack77_free_text` give rc1's bits.** They were written before `pack77_message` and
+  differed from it: a directed CQ (`CQ DX`, `CQ POTA`, `CQ 123`) was left-justified, not `adjustr`ed (4 of the fixture's rows, `pack28_core`
+  `packjt77.f90:882-1001`); the 12 bits of a type-4 `CQ` were 0, not the hash of the call (`:2377-2404`); `CQ` + report, `CQ 12`, a `Q` call and a standard call as type 4 were
+  accepted, `+50`, `<hash>` calls and lower case refused; the empty text was refused. Now thin wrappers over `pack77_message`'s code (`tests/pack77_forms.rs`,
+  the 2 163-row fixture; before, 177 divergences in 18 classes). The C ABI (`mfsk_encode_ft8` etc.) and apps change on air for those inputs only; plain
+  CQ / report / RR73 messages are bit for bit as before. The A7 CQ stand-in `QU1RK` keeps its bits. `LIBRARY.md` §1.3.
 - **JT9 and JT65 print free text and compound calls as `jt9` does; WSPR text matches `wsprd`.** `Jt72Message::Unsupported` rows are gone:
   JT9 no longer drops non-standard messages (`jt9fano.f90:87-88` filters only `000AAA`), JT65 blanks `000AAA` and the `0L6MWK` birdie
   (`decode65b.f90:27-28`) and no longer emits `<unsupported …>`. WSPR follows `wsprd_utils.c` `unpk_`: a Type 3 call unresolved is `<...>`

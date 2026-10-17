@@ -108,29 +108,47 @@ fn encode_info(mode: u32, text: &str, flags: u32) -> Result<Info, MfskStatus> {
 
 #[test]
 fn ft8_agrees_with_the_per_mode_call() {
-    let (st, generic, n) = encode_pcm(MfskMode::Ft8 as u32, "CQ JA1ABC PM95", 0);
-    assert_eq!(st, MfskStatus::Ok);
-    assert_eq!(generic.len(), n);
+    // The pieces `mfsk_encode_ft8` takes, and the whole text `mfsk_encode` takes. A directed
+    // CQ is the case the two once disagreed on: `pack77` left-justified `CQ DX`, the whole-text
+    // packer right-justifies it as rc1 does (`tests/pack77_forms.rs`).
+    for (c1, c2, rpt) in [
+        ("CQ", "JA1ABC", "PM95"),
+        ("CQ DX", "K1ABC", "FN42"),
+        ("CQ POTA", "K1ABC", "FN42"),
+        ("CQ NA", "JA1ABC/P", "PM95"),
+        ("CQ 123", "K1ABC", "FN42"),
+        ("K1ABC", "JA1ABC", "R-12"),
+        ("K1ABC", "JA1ABC", "RR73"),
+    ] {
+        let text = format!("{c1} {c2} {rpt}");
+        let (st, generic, n) = encode_pcm(MfskMode::Ft8 as u32, &text, 0);
+        assert_eq!(st, MfskStatus::Ok, "{text}");
+        assert_eq!(generic.len(), n);
 
-    let (a, b, d) = (c("CQ"), c("JA1ABC"), c("PM95"));
-    let mut legacy = vec![0.0f32; n];
-    let mut m = 0usize;
-    assert_eq!(
-        unsafe {
-            mfsk_encode_ft8(
-                a.as_ptr(),
-                b.as_ptr(),
-                d.as_ptr(),
-                1_500.0,
-                legacy.as_mut_ptr(),
-                legacy.len(),
-                &mut m,
-            )
-        },
-        MfskStatus::Ok
-    );
-    assert_eq!(m, n);
-    assert_eq!(generic, legacy, "same message, same carrier, same samples");
+        let (a, b, d) = (c(c1), c(c2), c(rpt));
+        let mut legacy = vec![0.0f32; n];
+        let mut m = 0usize;
+        assert_eq!(
+            unsafe {
+                mfsk_encode_ft8(
+                    a.as_ptr(),
+                    b.as_ptr(),
+                    d.as_ptr(),
+                    1_500.0,
+                    legacy.as_mut_ptr(),
+                    legacy.len(),
+                    &mut m,
+                )
+            },
+            MfskStatus::Ok,
+            "{text}"
+        );
+        assert_eq!(m, n);
+        assert_eq!(
+            generic, legacy,
+            "{text}: same message, same carrier, same samples"
+        );
+    }
 }
 
 #[test]
