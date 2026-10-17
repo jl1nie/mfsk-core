@@ -815,3 +815,20 @@ Counting a decode by (mode, dial, message) only, whatever its slot, the recalls 
 - No `await_rate` floor, no pause-aware `RateMeter` or rate grid test on the RSP1: this run used the harness, not the shipped client against
   the server. That check (section 8 step 7, last line) is still open.
 - Why D/E fail here, and the 14 re-anchors of A, were not chased. Files are in `/home/minoru/tmp/rec_win` (not in the repository).
+
+## 14. Step 7: the winner stays, the losers are deleted (2026-10-17)
+
+- **B is the implementation** (stretch by the measured rate, acquisition clock pinned to the requested one; `rtl_nominal_acquisition` on,
+  `rtl_calibrate` 30 s are the defaults). Nothing new was needed for B itself; the work was the defects of section 6, which every candidate
+  depended on: `RateMeter` and pauses (`764e6389`), `await_rate` and rsp_tcp's Init (`1a18aff8`), the rate offset grid (`2aaac3fa`).
+- **Deleted from the harness** (`recorded_iq.rs`): C (the unpinned acquisition clock: `MFSK_RTL_PIN_ACQUISITION` is gone, the pin is always
+  on), D (`MFSK_RTL_ZERO_INSERT`, `INSERT_RATE`) and E (`PAUSE_FILL`, `LOOKAHEAD`, `pause_fill`, `scan`), and the `insert`/`filled` fields of
+  the rows. The tables of sections 10-13 stay as the record; to re-run D or E use the last commit that has `fn pause_fill`. A, the oracle and
+  B on the real recording (13.2) give the same rows before and after the deletion (241 / 13 / 132 / 135; same texts, slots and re-anchors).
+- **Not deleted, on purpose.** The shipped options `rtl_nominal_acquisition = false` (CLI `--rtl-adc-clock-offset`, README: for an ADC that really
+  runs at another rate) and `rtl_infer_gaps` (pause-loss inference) are product settings with their own tests and GUI entries; whether they go is
+  a decision about the product, not a result of this evaluation. `fake_rtltcp`'s `a_pause_of_the_server_does_not_displace_what_comes_after` uses
+  the second and fails at the base commit too (section 13 notes the tests' wall-clock dependence).
+- **Still open:** the defect list item 3 has a grid but no drift test; the shipped client was not run against the RSP1 after these changes (the
+  check of step 7's last line): the `await_rate` wait of up to 20 s, the calibration rate near 986 000 S/s, and no `re-anchor` in the first minutes
+  are what to look for.
