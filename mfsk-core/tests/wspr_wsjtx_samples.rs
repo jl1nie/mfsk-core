@@ -239,7 +239,7 @@ fn wspr_golden_recall_and_precision() {
             snr_db: 1.0,
         },
         |d| DecodeView {
-            msg: d.message.to_string(),
+            msg: d.to_decoded().text,
             freq_hz: d.freq_hz,
             dt_sec: d.dt_sec,
             snr_db: Some(d.snr_db),
@@ -336,7 +336,7 @@ fn wspr_cascade_ddc_golden_recall_and_precision() {
             ..Tolerances::default()
         },
         |d| DecodeView {
-            msg: d.message.to_string(),
+            msg: d.to_decoded().text,
             freq_hz: d.freq_hz,
             dt_sec: d.dt_sec,
             snr_db: None,

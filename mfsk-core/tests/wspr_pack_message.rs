@@ -141,41 +141,69 @@ fn pack_message_matches_wqencode() {
     );
 }
 
-/// Every accepted row reads back as `wqdecode` prints it (blank runs aside: `wsprd`'s `%2d` power
-/// against `wqdecode`'s left-trimmed one; a type 3 call is `<...>` there, a hash here). Rows whose
-/// bits `msg::wspr::unpack` does not take at all are those `wsprd` cannot decode either: a call of
-/// `CQ`/`QRZ`/`DE` and a grid slot holding a report.
+/// The `wsprd` oracle's answer (`tests/fixtures/wsprd_unpack_rc1.tsv`, see `tests/wsprd_unpack.rs`)
+/// for a payload with an empty hash table: `Some(text)`, or `None` when `wsprd` prints nothing.
+fn wsprd_prints(bits: &str) -> Option<String> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/wsprd_unpack_rc1.tsv"
+    );
+    let text =
+        std::fs::read_to_string(path).expect("tests/fixtures/wsprd_unpack_rc1.tsv is vendored");
+    let line = text
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .find(|l| l.starts_with(bits) && l[50..].starts_with("\t-\t"))
+        .unwrap_or_else(|| panic!("{bits} is not in the wsprd fixture"));
+    let f: Vec<&str> = line.splitn(4, '\t').collect();
+    (f[2] == "0").then(|| f[3].to_string())
+}
+
+/// Every accepted row reads back as `wqdecode` prints it, except where `wsprd` differs from
+/// `wqdecode`. WSJT-X's WSPR receiver runs `wsprd` (`lib/wsprd/wsprd_utils.c`), whose `unpk_` is
+/// what `msg::wspr::unpack` ports and `tests/wsprd_unpack.rs` compares row by row; `wqdecode`
+/// (`lib/wqdecode.f90`) is only the other half of the encoder's roundtrip. Blank runs aside
+/// (`wsprd`'s `%2d` power against `wqdecode`'s left-trimmed one) the differences are, each
+/// asserted below against the `wsprd` oracle's own answer for the same bits:
+///
+/// * Swaziland `3DA0..`: `packcall` packs it as `3D0..`; `wqdecode`'s `unpackcall` turns that back
+///   into `3DA0..`, `wsprd`'s (`wsprd_utils.c:154-199`) does not, and prints `3D0..`;
+/// * a prefix with a character outside `0-9A-Z`, or none: `packpfx` packs a blank for it,
+///   `wqdecode` prints a blank for the whole call, `wsprd` prints the part after the last blank
+///   (`:259`), `/CALL` when nothing is left;
+/// * a call of `CQ` / `QRZ` / `DE`, or a report / `RO` / `RRR` / `73` in the grid slot: `unpackcall`
+///   / `unpackgrid` refuse the field (`:330-331`), `wsprd` prints nothing, `unpack` is `None`.
+///
+/// A type 3 call is `<...>` in both for an empty table (`:394`).
 #[test]
 fn accepted_rows_unpack_to_what_wqdecode_prints() {
     let mut failures = Vec::new();
-    let mut unreadable = Vec::new();
-    let mut known = 0;
+    let (mut swaziland, mut blank_prefix, mut unreadable) = (0, 0, 0);
     for r in rows().into_iter().filter(|r| r.status == "ok") {
         let p = pack_message(&r.msg).unwrap();
-        match unpack(&p.bits) {
-            Some(m) => {
-                let mut t = squash(&m.to_string());
-                if let WsprMessage::Type3 { .. } = m {
-                    let end = t.find('>').unwrap();
-                    t = format!("<...>{}", &t[end + 1..]);
-                    assert!(p.hashed_call.is_some());
-                }
-                if t != squash(&r.decoded) {
-                    // Known differences of the receive side, which follows `wsprd_utils.c`: it
-                    // prints Swaziland `3DA0..` as `3D0..` and a prefix outside 0-9A-Z as a blank.
-                    let head = r.msg.split('/').next().unwrap_or("");
-                    if r.msg.starts_with("3D")
-                        || (r.msg.contains('/')
-                            && head.len() <= 3
-                            && head.bytes().any(|b| !b.is_ascii_alphanumeric()))
-                    {
-                        known += 1;
-                        continue;
-                    }
-                    failures.push(format!("{:?}: want {:?}, got {t:?}", r.msg, r.decoded));
-                }
+        let oracle = wsprd_prints(&bit_string(&p.bits));
+        let got = unpack(&p.bits).map(|m| {
+            if let WsprMessage::Type3 { .. } = m {
+                assert!(p.hashed_call.is_some());
             }
-            None => unreadable.push(r.msg.clone()),
+            m.to_string()
+        });
+        // Whatever the difference from `wqdecode`, the text is `wsprd`'s.
+        if got != oracle {
+            failures.push(format!("{:?}: wsprd {oracle:?}, unpack {got:?}", r.msg));
+            continue;
+        }
+        match got {
+            None => unreadable += 1,
+            Some(t) if squash(&t) == squash(&r.decoded) => {}
+            Some(t) if r.decoded.starts_with("3DA0") && t.starts_with("3D0") => swaziland += 1,
+            Some(t) if r.msg.contains('/') && !r.decoded.contains('/') && t.contains('/') => {
+                blank_prefix += 1
+            }
+            Some(t) => failures.push(format!(
+                "{:?}: wqdecode {:?}, wsprd {t:?}",
+                r.msg, r.decoded
+            )),
         }
     }
     assert!(
@@ -183,8 +211,10 @@ fn accepted_rows_unpack_to_what_wqdecode_prints() {
         "{}",
         failures[..failures.len().min(30)].join("\n")
     );
-    assert!(known < 20, "{known}");
-    assert!(unreadable.len() < 150, "{}", unreadable.len());
+    // The rows of the fixture that are these two documented differences (counted, so a new kind
+    // of difference cannot hide in an allowance).
+    assert_eq!((swaziland, blank_prefix), (4, 12));
+    assert!(unreadable > 0);
 }
 
 #[test]

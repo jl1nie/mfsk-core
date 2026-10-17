@@ -55,6 +55,12 @@ pub struct WsprResult {
     /// search; [`super::SniperRequest`] has no coarse candidate to
     /// derive it from and leaves this `0.0`.
     pub snr_db: f32,
+    /// A Type 3 message's call, when the decoder's [`WsprCallsignTable`]
+    /// held one for its hash at the time of the decode, as `wsprd`'s
+    /// `hashtab` does (`wsprd_utils.c:389-392`). `None` for Types 1 and 2
+    /// and for a hash not heard, which prints `<...>`. Text:
+    /// [`WsprMessage::render`].
+    pub hashed_call: Option<String>,
 }
 
 /// Scan-dedup tolerances: the same real signal decoded twice by nearby
@@ -136,6 +142,18 @@ impl WsprCallsignTable {
         if !self.entries.contains(&entry) {
             self.entries.push(entry);
         }
+    }
+
+    /// The call this table holds for a Type 3 message's 15-bit hash: the
+    /// latest recorded one whose `nhash(call, len, 146) & 0x7fff` is
+    /// `hash` (`wsprd_utils.c:390`: `hashtab[ihash]`, a bucket the last
+    /// store wins). `None` when no such call has been decoded.
+    pub fn resolve(&self, hash: u32) -> Option<&str> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(c, _)| !c.is_empty() && crate::msg::wspr::hash15(c.as_bytes()) == hash)
+            .map(|(c, _)| c.as_str())
     }
 
     /// Whether an OSD-derived message may be accepted.
@@ -742,6 +760,7 @@ fn decode_from_refined(
                 drift_hz: best_drift,
                 info_bits,
                 snr_db: 0.0,
+                hashed_call: None,
             };
             let he = hard_errors;
             match message {
@@ -1238,6 +1257,12 @@ fn sic_pass(
             - <super::Wspr as crate::engine::FrameLayout>::TX_START_OFFSET_S;
         d.start_sample = d.start_sample.saturating_sub(pad);
         d.snr_db = r.snr_db;
+        // `unpk_` looks a Type 3 hash up in the table as it stands, and
+        // stores a Type 1 / 2 call (`wsprd_utils.c:353-356,364-369,390`): a Type 3
+        // decoded before its sender's own message prints `<...>`.
+        if let WsprMessage::Type3 { callsign_hash, .. } = &d.message {
+            d.hashed_call = confirmed.resolve(*callsign_hash).map(String::from);
+        }
         confirmed.record(&d.message);
         push_unique(seen, d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES, on_result);
     }

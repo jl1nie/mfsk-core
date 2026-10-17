@@ -172,11 +172,13 @@ impl crate::engine::pipeline::DecodeResult {
 // ── WSPR ─────────────────────────────────────────────────────────────────────
 #[cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
 impl crate::wspr::WsprResult {
-    /// Resolve into a [`Decoded`] UI row. Infallible: text via the message's
-    /// `Display`, `dt_sec` copied through from the result.
+    /// Resolve into a [`Decoded`] UI row. Infallible: text as `wsprd` prints
+    /// it ([`WsprMessage::render`](crate::msg::WsprMessage::render), a Type 3
+    /// call resolved when the decoder had heard it), `dt_sec` copied through
+    /// from the result.
     pub fn to_decoded(&self) -> Decoded {
         Decoded {
-            text: self.message.to_string(),
+            text: self.message.render(self.hashed_call.as_deref()),
             // `wsprd` reports the centre of the four tones (`wsprd.c:1496`,
             // `1500 + f1`; its tone 0 is `f1 - 1.5 df`), 2.197 Hz above the
             // tone 0 `freq_hz` carries. Measured on the WSJT-X golden:
@@ -321,6 +323,7 @@ mod tests {
             drift_hz: 0.0,
             info_bits: [0u8; 50],
             snr_db: -20.0,
+            hashed_call: None,
         };
 
         let d = r.to_decoded();

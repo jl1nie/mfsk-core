@@ -397,11 +397,12 @@ fn wspr_types_2_and_3_round_trip() {
         if hashed.is_none() {
             assert!(got.contains(&tx.text.as_str()), "{text:?}: {got:?}");
         } else {
-            // A receiver that has not heard the call reads the hash; the rest is the same.
+            // A receiver that has not heard the call prints `<...>` (`wsprd_utils.c:394`); the rest is the same.
             let tail = tx.text.split_once("> ").unwrap().1;
             assert!(
                 got.iter()
-                    .any(|g| g.starts_with("<#") && g.split_once("> ").map(|x| x.1) == Some(tail)),
+                    .any(|g| g.starts_with("<...> ")
+                        && g.split_once("> ").map(|x| x.1) == Some(tail)),
                 "{text:?}: {got:?}"
             );
         }
@@ -457,4 +458,34 @@ fn wspr_power_is_rounded_as_upstream() {
         encode(Mode::Wspr, "K1ABC FN42 99").unwrap().text,
         "K1ABC FN42 60"
     );
+}
+
+/// A decoder that has heard `K1ABC` (a type 1 decode) prints a later type 3 hash of it as the call, a
+/// fresh one as `<...>`: `wsprd`'s `hashtab` (`wsprd_utils.c:353-356,389-396`), the table
+/// `WsprCallsignTable` stands for. The state is the decoder's, kept between slots.
+#[cfg(feature = "wspr")]
+#[test]
+fn wspr_type_3_call_resolves_once_the_decoder_has_heard_it() {
+    let mode = Mode::Wspr;
+    let slot = |text: &str, seed: u32| {
+        let tx = encode(mode, text).unwrap();
+        let audio = tx.synthesize(&TxAudio::new(FS, 1_500.0));
+        period_of(mode, &audio, seed)
+    };
+    let texts = |dec: &mut AnyDecoder, period: &[i16]| -> Vec<String> {
+        dec.decode_i16(period, Some(0))
+            .rows
+            .iter()
+            .map(|r| r.decoded.text.clone())
+            .collect()
+    };
+    let t1 = slot("K1ABC FN42 37", 11);
+    let t3 = slot("<K1ABC> FN42LX 27", 12);
+
+    let mut fresh = AnyDecoder::with_defaults(mode);
+    assert_eq!(texts(&mut fresh, &t3), ["<...> FN42LX 27"]);
+
+    let mut heard = AnyDecoder::with_defaults(mode);
+    assert_eq!(texts(&mut heard, &t1), ["K1ABC FN42 37"]);
+    assert_eq!(texts(&mut heard, &t3), ["<K1ABC> FN42LX 27"]);
 }

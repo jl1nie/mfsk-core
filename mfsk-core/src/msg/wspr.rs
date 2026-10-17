@@ -14,9 +14,8 @@
 //! Valid "power-in-dBm" values (0, 3, 7, 10, …, 60) mark Type 1; other
 //! positive ntype is Type 2; negative ntype is Type 3.
 //!
-//! Currently Type 1 and Type 3 are implemented end-to-end. Type 2 is
-//! detected but reported as a placeholder — the prefix/suffix unpack
-//! logic can be ported verbatim when a test corpus materialises.
+//! All three types pack (`pack_message`, a port of `wqencode`) and unpack
+//! (`unpack`, a port of `wsprd`'s `unpk_`, the text WSJT-X prints).
 //!
 //! The decoded representation is a `WsprMessage` enum so callers can
 //! distinguish the types; the convenience `to_string()` impl yields the
@@ -58,26 +57,45 @@ pub enum WsprMessage {
     },
 }
 
-/// The power is two characters wide, as `wsprd` prints it (`wsprd_utils.c:353,
-/// 364,398`: `%2d`), so 0, 3 and 7 dBm carry a leading space: `K1ABC FN42  3`.
-impl fmt::Display for WsprMessage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl WsprMessage {
+    /// The text `wsprd` prints for this message (the `call_loc_pow` of
+    /// `wsprd_utils.c:353,364,398`, written to `decoded.txt` / `ALL_WSPR.TXT` by
+    /// `wsprd.c:1535,1553`).
+    ///
+    /// The power is two characters wide (`%2d`), so 0, 3 and 7 dBm carry a
+    /// leading space: `K1ABC FN42  3`. A Type 3 call is a 15-bit hash on the
+    /// air. `resolved` is the call the receiver's table holds for that hash
+    /// (`wsprd`'s `hashtab`, filled by every Type 1 / Type 2 decode,
+    /// [`WsprCallsignTable`](crate::wspr::WsprCallsignTable)): `Some` prints
+    /// `<K1ABC> FN42LX 37` (`wsprd_utils.c:390-392`), `None` prints `<...>`
+    /// (`:394`, `%5s` of `"<...>"`), as does [`fmt::Display`]. The
+    /// argument is ignored for Types 1 and 2.
+    pub fn render(&self, resolved: Option<&str>) -> String {
         match self {
             WsprMessage::Type1 {
                 callsign,
                 grid,
                 power_dbm,
-            } => write!(f, "{} {} {:>2}", callsign, grid, power_dbm),
+            } => format!("{} {} {:>2}", callsign, grid, power_dbm),
             WsprMessage::Type2 {
                 callsign,
                 power_dbm,
-            } => write!(f, "{} {:>2}", callsign, power_dbm),
+            } => format!("{} {:>2}", callsign, power_dbm),
             WsprMessage::Type3 {
-                callsign_hash,
-                grid6,
-                power_dbm,
-            } => write!(f, "<#{:05x}> {} {:>2}", callsign_hash, grid6, power_dbm),
+                grid6, power_dbm, ..
+            } => match resolved {
+                Some(call) => format!("<{}> {} {:>2}", call, grid6, power_dbm),
+                None => format!("<...> {} {:>2}", grid6, power_dbm),
+            },
         }
+    }
+}
+
+/// [`WsprMessage::render`] with the hash unresolved: `wsprd` for a Type 3
+/// whose call it has not heard.
+impl fmt::Display for WsprMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.render(None))
     }
 }
 
@@ -202,11 +220,11 @@ pub fn unpack_grid(ngrid_full: u32) -> Option<(String, i32)> {
     if dlong > 180 {
         dlong += 360;
     }
-    let nlong = (60.0 * (180.0 - dlong as f32) / 5.0) as i32;
+    let nlong = (60.0 * (180.0 - dlong as f64) / 5.0) as i32;
     let ln1 = nlong / 240;
     let ln2 = (nlong - 240 * ln1) / 24;
 
-    let nlat = (60.0 * (dlat + 90) as f32 / 2.5) as i32;
+    let nlat = (60.0 * (dlat + 90) as f64 / 2.5) as i32;
     let la1 = nlat / 240;
     let la2 = (nlat - 240 * la1) / 24;
 
@@ -240,55 +258,101 @@ pub fn pack_type1(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; 50]
     Some(bits)
 }
 
-/// Add a prefix or suffix to a callsign according to the 16-bit
-/// `nprefix` field carried in Type-2 messages. Ports
-/// `wsprd_utils.c::unpackpfx`.
+/// `wsprd_utils.c:unpackcall` (`:154-199`): the six-character call slot of `n1`, as the bytes
+/// `wsprd` leaves in its 13-byte `callsign` buffer. Leading blanks are dropped, the rest padded to
+/// six with blanks, and then **every** blank becomes a NUL (`:190-195`), so a blank inside the slot
+/// leaves a NUL with characters after it. `None` for `n1 >= 262177560` (`:196-198`).
 ///
-/// * `nprefix < 60000` → prefix of 1-3 chars, packed base-37
-/// * `60000 ≤ nprefix ≤ 60035` → single-char digit/letter suffix
-/// * `60036 ≤ nprefix ≤ 60125` → two-digit suffix
-fn apply_prefix(nprefix: u32, base_call: &str) -> Option<String> {
-    const A37: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
-    if nprefix < 60_000 {
-        // Prefix, 1-3 chars.
-        let mut n = nprefix;
-        let mut pfx = [b' '; 3];
-        for i in (0..3).rev() {
-            let nc = (n % 37) as usize;
-            pfx[i] = A37[nc];
-            n /= 37;
-        }
-        // Strip leading spaces.
-        let start = pfx.iter().position(|&b| b != b' ')?;
-        let pfx_str = core::str::from_utf8(&pfx[start..]).ok()?;
-        Some(format!("{}/{}", pfx_str, base_call))
-    } else {
-        let nc = nprefix - 60_000;
-        if nc <= 9 {
-            Some(format!("{}/{}", base_call, (b'0' + nc as u8) as char))
-        } else if nc <= 35 {
-            Some(format!(
-                "{}/{}",
-                base_call,
-                (b'A' + (nc - 10) as u8) as char
-            ))
-        } else if nc <= 125 {
-            let d1 = (nc - 26) / 10;
-            let d2 = (nc - 26) % 10;
-            Some(format!(
-                "{}/{}{}",
-                base_call,
-                (b'0' + d1 as u8) as char,
-                (b'0' + d2 as u8) as char
-            ))
-        } else {
-            None
-        }
+/// Unlike [`unpack_call`] it takes every slot `wsprd` takes: a digit in the second position
+/// (`K11ABC`) or a blank before a letter (`K1 ABC`), which only noise produces.
+fn unpackcall_wsprd(n1: u32) -> Option<[u8; 6]> {
+    if n1 >= 262_177_560 {
+        return None;
     }
+    let c = |i: u32| CHAR37[i as usize];
+    let mut n = n1;
+    let mut tmp = [b' '; 6];
+    tmp[5] = c(n % 27 + 10);
+    n /= 27;
+    tmp[4] = c(n % 27 + 10);
+    n /= 27;
+    tmp[3] = c(n % 27 + 10);
+    n /= 27;
+    tmp[2] = c(n % 10);
+    n /= 10;
+    tmp[1] = c(n % 36);
+    n /= 36;
+    tmp[0] = c(n);
+    let start = tmp[..5].iter().position(|&b| b != b' ').unwrap_or(5);
+    let mut buf = [0u8; 6];
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = match tmp.get(start + i) {
+            Some(&ch) if ch != b' ' => ch,
+            _ => 0,
+        };
+    }
+    Some(buf)
 }
 
-/// Unpack 50 info bits into a [`WsprMessage`]. Returns `None` for
-/// pathological ntype/ngrid combinations.
+/// The C string at the start of `b`: up to the first NUL.
+fn c_str(b: &[u8]) -> &str {
+    let end = b.iter().position(|&x| x == 0).unwrap_or(b.len());
+    core::str::from_utf8(&b[..end]).unwrap_or("")
+}
+
+/// Add a prefix or suffix to a callsign according to the 16-bit
+/// `nprefix` field carried in Type-2 messages. Ports
+/// `wsprd_utils.c::unpackpfx` (`:235-289`).
+///
+/// * `nprefix < 60000` → prefix of 1-3 chars, packed base-37, the part after the last blank
+///   (`:259` `strrchr(pfx, ' ')`; a blank prefix leaves `/CALL`)
+/// * `60000 ≤ nprefix ≤ 60035` → single-char digit/letter suffix
+/// * `60036 ≤ nprefix ≤ 60125` → two-digit suffix
+///
+/// `nc = nprefix - 60000` is stored in a `char` (`:265`), so a field past 60255 wraps
+/// modulo 256 as it does there; what lands outside `0..=125` is refused (`:283`).
+fn apply_prefix(nprefix: u32, base_call: &str) -> Option<String> {
+    let call = if nprefix < 60_000 {
+        let mut n = nprefix;
+        let mut pfx = [b' '; 3];
+        for p in pfx.iter_mut().rev() {
+            *p = CHAR37[(n % 37) as usize];
+            n /= 37;
+        }
+        let start = pfx.iter().rposition(|&b| b == b' ').map_or(0, |i| i + 1);
+        format!(
+            "{}/{}",
+            core::str::from_utf8(&pfx[start..]).ok()?,
+            base_call
+        )
+    } else {
+        let nc = (nprefix - 60_000) as u8 as i8;
+        match nc {
+            0..=9 => format!("{}/{}", base_call, (b'0' + nc as u8) as char),
+            10..=35 => format!("{}/{}", base_call, (b'A' + (nc - 10) as u8) as char),
+            36..=125 => format!(
+                "{}/{}{}",
+                base_call,
+                (b'0' + ((nc - 26) / 10) as u8) as char,
+                (b'0' + ((nc - 26) % 10) as u8) as char
+            ),
+            _ => return None,
+        }
+    };
+    // `format_checked` into the 13-byte `callsign` (`:260-261`): twelve characters at most.
+    (call.len() < 13).then_some(call)
+}
+
+/// Unpack 50 info bits into a [`WsprMessage`], as `wsprd`'s `unpk_` does
+/// (`wsprd_utils.c:324-405`). `None` is what `unpk_` answers with a non-zero return
+/// (`noprint`): the decode is neither printed nor written to `ALL_WSPR.TXT`.
+///
+/// Deliberate divergence: `unpk_` returns 0 with an **empty** message for `ntype == 63` (a
+/// 22-bit field whose low seven bits are 127, matching none of its `if`s), so `wsprd` prints a
+/// decode with no text. That is an upstream gap, not a message; this returns `None`.
+///
+/// Measured against `unpk_` itself on `tests/fixtures/wsprd_unpack_rc1.tsv` by
+/// `tests/wsprd_unpack.rs`.
 pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
     // Pack bit vector back into the 7-byte word format unpack50 expects.
     let mut data = [0u8; 7];
@@ -299,64 +363,54 @@ pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
     }
     let (n1, n2) = unpack50(&data);
 
-    let (maybe_grid, ntype) = unpack_grid(n2).unzip();
+    // `unpk_` needs the call slot and the grid slot to unpack for every type (`:330-331`).
+    let call_buf = unpackcall_wsprd(n1)?;
+    let (grid, ntype) = unpack_grid(n2)?;
+    let callsign = c_str(&call_buf);
 
-    // Type 3: negative ntype → hashed callsign + grid6.
-    // The 6-char grid is stored via pack_call with a rotated layout:
-    // grid6[..5] holds the last 5 chars of the grid, grid6[5] holds the
-    // first. We recover the packed string via unpack_call then rotate
-    // the tail char back to the front.
-    if let Some(t) = ntype
-        && t < 0
-    {
-        let power_dbm = -(t + 1);
-        // Reconstruct grid6 from the "callsign-slot" encoding.
-        let pseudo_call = unpack_call(n1).unwrap_or_default();
+    // Type 3: negative ntype → hashed callsign + grid6 (`:372-403`). The six-character grid
+    // travels in the call slot rotated by one (`wqencode.f90:46`); `unpk_` rebuilds it as
+    // `buf[5]` followed by the first five bytes of the buffer (`:376-378`, `"%.1s%.*s"` of
+    // `callsign+5` and `callsign`), which, past a NUL, reads the bytes after it.
+    if ntype < 0 {
+        let power_dbm = -(ntype + 1);
         let mut grid6 = String::new();
-        if pseudo_call.len() == 6 {
-            let bytes = pseudo_call.as_bytes();
-            grid6.push(bytes[5] as char); // rotated-back first char
-            grid6.push_str(core::str::from_utf8(&bytes[..5]).ok()?);
+        if call_buf[5] != 0 {
+            grid6.push(call_buf[5] as char);
         }
-        // Hash extraction: ihash = (n2 - ntype - 64) / 128. Since
-        // ntype is negative, this is (n2 + (-ntype) - 64) / 128; with
-        // n2 raw, it equals n2 >> 7 exactly.
-        let hash = n2 >> 7;
-        // `unpk_` (`wsprd_utils.c:372-404`) prints a Type 3 only if its power
-        // is one WSPR sends (0, 3, 7 mod 10), its locator starts with two
-        // letters and two digits, and it is not `ntype == -64` — which "show
-        // up as A000AA grids" and are what Fano's all-zero path decodes to.
+        grid6.push_str(c_str(&call_buf[..5]));
+        // `unpk_` prints a Type 3 only if its power is one WSPR sends (0, 3, 7 mod 10), its
+        // locator starts with two letters and two digits (`:380-386`; the fourth and fifth
+        // characters go unchecked: `<PA0SKT/2> JO33 40`), and it is not `ntype == -64`, which
+        // "show up as A000AA grids" (`:403`) and are what Fano's all-zero path decodes to.
         let nu = power_dbm % 10;
         let b = grid6.as_bytes();
+        let at = |i: usize| b.get(i).copied().unwrap_or(0);
         let sane = matches!(nu, 0 | 3 | 7)
-            && b.len() >= 4
-            && b[0].is_ascii_alphabetic()
-            && b[1].is_ascii_alphabetic()
-            && b[2].is_ascii_digit()
-            && b[3].is_ascii_digit()
-            && t != -64;
+            && at(0).is_ascii_alphabetic()
+            && at(1).is_ascii_alphabetic()
+            && at(2).is_ascii_digit()
+            && at(3).is_ascii_digit()
+            && ntype != -64;
         if !sane {
             return None;
         }
+        // ihash = (n2 - ntype - 64) / 128 = n2 >> 7 (`:389`).
         return Some(WsprMessage::Type3 {
-            callsign_hash: hash,
+            callsign_hash: n2 >> 7,
             grid6,
             power_dbm,
         });
     }
 
-    let ntype_val = ntype?;
-    let grid = maybe_grid?;
-
-    // Type 1 test: nu = ntype % 10 ∈ {0,3,7} AND ntype ≤ 62.
-    if (0..=62).contains(&ntype_val) {
-        let nu = ntype_val % 10;
+    // Type 1 test: nu = ntype % 10 ∈ {0,3,7} AND ntype ≤ 62 (`:349-351`).
+    if ntype <= 62 {
+        let nu = ntype % 10;
         if nu == 0 || nu == 3 || nu == 7 {
-            let callsign = unpack_call(n1)?;
             return Some(WsprMessage::Type1 {
-                callsign,
+                callsign: callsign.into(),
                 grid,
-                power_dbm: ntype_val,
+                power_dbm: ntype,
             });
         }
         // Type 2: positive ntype but power-digit not in {0,3,7}.
@@ -371,10 +425,9 @@ pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
             nu
         };
         let n3 = (n2 >> 7) + 32_768 * (nadd as u32 - 1);
-        let base_call = unpack_call(n1)?;
-        let full_call = apply_prefix(n3, &base_call)?;
-        let power_dbm = ntype_val - nadd;
-        // Plausibility: the recovered power digit must land on {0,3,7,10}.
+        let full_call = apply_prefix(n3, callsign)?;
+        let power_dbm = ntype - nadd;
+        // Plausibility: the recovered power digit must land on {0,3,7,10} (`:367`).
         let pu = power_dbm.rem_euclid(10);
         if pu != 0 && pu != 3 && pu != 7 {
             return None;
@@ -453,7 +506,7 @@ impl core::error::Error for WsprPackError {}
 
 /// `nhash(key, len, 146) & 0x7fff` as `lib/hash.f90` calls it
 /// (`lib/wsprd/nhash.c`, `lib/lookup3.c:160` `wsjt_hashlittle`, Jenkins lookup3).
-fn hash15(key: &[u8]) -> u32 {
+pub(crate) fn hash15(key: &[u8]) -> u32 {
     fn rot(x: u32, k: u32) -> u32 {
         x.rotate_left(k)
     }
