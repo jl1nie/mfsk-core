@@ -739,6 +739,79 @@ of section 11.3 (f), present on the real trace too; not chased. FT4 on the trace
 - Dall/Eall are not the same setting as section 10's to within 0.003 % in rate (12.1). Only three of the F positions were
   tried. The A decodes (12.2), E's SNR offset on the controls and the oracle's 4 false decodes are not examined.
 - The FT8 0/63 window after a reset, the FT4 -1.75 dB offset on clean input and the 5 Bm_t1 false decodes were not chased.
-- Step 6 (real-recording oracle) is deferred, decided 2026-10-17: the 600 s recording is gone (it lived in a cloud session's `/tmp`; the NAS `pc-desktop` holds only `rsp_clock.log` and the rsp_tcp builds, no IQ file). A re-record needs the RSP1 with the dbg4 build, recording and `rsp_clock.log` from the same run. The ranking therefore rests on synthetic signals (log-normal and real hole trace).
+- Step 6 (real-recording oracle): the 2026-10-15 recording was gone (a cloud session's `/tmp`); it was re-recorded on 2026-10-17 and is section 13.
 - Not done: step 7 (implementation), the RSP1. The corpora, rows and score tables are
   in `/home/minoru/tmp` (not kept in the repository); the commands above regenerate them.
+
+## 13. Real recording and its oracle (2026-10-17, section 8 step 6)
+
+Question: does the ranking of sections 10-12 (B best, C fails, D and E not better than B) hold on a real RSP1 capture,
+where the signals are real and unknown? No truth exists, so the oracle's own decodes are the reference: **recall** is the
+fraction of the oracle's decodes a candidate also makes (same mode, dial, message, 15 s slot); **extra** is what a
+candidate decodes that the oracle does not (a phantom or a decode the oracle missed; they cannot be told apart here).
+
+### 13.1 Inputs
+
+- **Server.** `rsp_tcp-dbg4` `start_dbg4_plain.bat` (unmodified behaviour, 8-bit) on the RSP1 PC, 192.168.1.26:1234, restarted before
+  the run. Requested 1 024 000 S/s, centre 7 016 000 Hz, automatic gain.
+- **Recording.** `record.py` run on Windows (Python 3.13), 600.0 s from 2026-10-17 01:45:53.744 UTC; 478 823 chunks, 603 060 192
+  samples. SHA-256 `4ac783f3e5c20234...`. Its `rsp_clock.log` (10 773 records, 599.8 s, SHA-256 `b27caf4f376e83c8...`) was copied from the
+  server after the run. **The first try was not usable**: `record.py` on WSL stamped chunks with `time.monotonic()`, which ran
+  6.4 % fast against NTP on this host (60.06 s against 56.46 s; wall clock correct), so the recording's time axis was 6-8 %
+  longer than the log's. Its sample counts matched the server's exactly (212.37 M and 389.20 M samples at the two stops), so the data
+  was intact; only the timestamps were wrong. `record.py` now stamps with the wall clock; this run is the Windows one.
+- **Alignment check.** Log first record 0.731 s before the recording's start, last 0.954 s before its end; the one reset at
+  157.94 s of the recording (a 1.25 s gap in the arrivals at 159.19 s); samples before the reset 163 668 960 (log, from the
+  recording's connection) against 163 668 288 (recording).
+- **What the log says.** 1 613 holes, 17 245 540 samples, one reset (1 468 679 samples, estimated from the wall clock) and one
+  silent renumbering at 9 s (below): 18.7 M of 622 M source samples, 3.0 %. Delivered 1.0059 MS/s. The reset is an RSP failure the
+  server printed: `API error ... sdrplay_api_device::Update(): Uninitialised device`, then `recovery: Uninit -> Init`, `recovered (2 so far)`,
+  `longest gap 1390 ms`. The 2026-10-15 run had three resets; this one has one.
+- **A numbering restart the tool did not know.** About 9 s in, the API's `firstSampleNum` fell by 7.9 M with no reset flag (the
+  frequency and rate commands the client sent at connect, applied once `rsp_tcp`'s Init is over). `holes_from_clock_log.py` took
+  that for nothing and put every later hole 7.9 M samples early; it now treats a fall that is not a 32-bit wrap as a renumbering
+  (`d246fdd4`). The 2026-10-16 trace used `--skip 30` and is unaffected. The first 30 s of this recording are the pre-command
+  stream (wrong tuning): every job below starts at 30 s (`MFSK_RTL_SKIP=30`, `MEASURE_AT=30`).
+- **Oracle.** `scripts/rtltcp/oracle_from_recording.py` (`d246fdd4`): the recording with silence at every logged hole and reset,
+  50 ms callbacks, each stamped from the log's own source position against wall time. 621 774 411 samples, 18 714 219 put back, SHA-256
+  `ff3ffec47f981c61...`. Its sample positions rest on the log's numbering being right; the reset length is an estimate.
+- **Harness.** `recorded_iq`, `rtl_minimum_arrival` on, `rtl_infer_gaps` off, centre 7 016 000, channels FT8 7 074 / 7 041 kHz and FT4
+  7 047.5 kHz, `RateMeter` with the pause correction of `764e6389` (so B here is the shipped client's calibration), 6 jobs in parallel.
+
+### 13.2 Results (first 30 s dropped, 570 s scored)
+
+Only FT8 at 7 041 kHz has signals (JA's FT8 frequency); nothing at 7 074 kHz and no FT4 in this recording, so section 11's FT4
+question cannot be asked of it.
+
+| job | setting | rate used | re-anchors | FT8 decodes | recall of the oracle (slot-exact) | extra |
+|---|---|---:|---:|---:|---:|---:|
+| oracle | silence at the holes, 30 s measure, pin | 1 024 398 | 0 | 241 | 100 % | 0 |
+| A | nominal | 1 024 000 | 14 | 13 | 5 % | 0 |
+| **Bm_t0** | B: 30 s measure, pin, T0 | 995 242 | 1 | 132 | **55 %** | 0 |
+| Bm_t1 | B, T1 (shipped) | 995 242 | 1 | 135 | 56 % | 0 |
+| Dm_t0 | D: zeros inserted for the measured deficit | 1 024 000 | 1 | 17 | 7 % | 0 |
+| Em_t0 | E: D plus pauses zero-filled | 1 024 000 | 0 | 18 | 7 % | 0 |
+
+Counting a decode by (mode, dial, message) only, whatever its slot, the recalls are A 10 %, B 51-54 %, D and E 5 % (134 distinct messages in the oracle).
+
+### 13.3 Reading
+
+- B holds: about half of what a loss-free server would decode (55 %), against 5 % for the nominal rate, with no decode the oracle lacks.
+  The synthetic runs gave 62-70 % of the oracle (section 12.4, 10.6); the real recording is a little lower, as the real trace was.
+- **D and E do not hold.** On the synthetic corpus and on the trace corpus D and E decoded 60-73 % of the oracle's FT8 (about B's level);
+  here they decode 7 %. Not explained. Their rate (1 024 000, zeros inserted at an even 2.89 %) is the same construction as there; what differs is
+  the signals and the real hole timing within a single 570 s realisation. Section 10.6 chose B on code size (rule 3), D and E "not 1 dB better"; this
+  is a further reason, not a measured cause for D and E failing.
+- C was not run (it failed on the synthetic corpus for channel displacement).
+
+### 13.4 Not verified / not done
+
+- One recording, one realisation, one channel with signals: the 3-seed rule is not met, and no spread can be given. The slot-exact and loose
+  recalls differ by 4-5 points for B.
+- The oracle is the reference by construction, not truth: 241 decodes are the oracle's, not "all signals present". The oracle's silence
+  at the reset is an estimated length; DT is relative to the PC's clock (0.73 s from the host's).
+- The ADC rate: the oracle measures 1 024 398 S/s (+0.04 % on nominal) in its 35-65 s window; the log's mean over the whole run (1.037 MS/s)
+  is distorted by the first 9 s and was not used.
+- No `await_rate` floor, no pause-aware `RateMeter` or rate grid test on the RSP1: this run used the harness, not the shipped client against
+  the server. That check (section 8 step 7, last line) is still open.
+- Why D/E fail here, and the 14 re-anchors of A, were not chased. Files are in `/home/minoru/tmp/rec_win` (not in the repository).
