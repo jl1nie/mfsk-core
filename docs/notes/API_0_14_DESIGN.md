@@ -1,0 +1,256 @@
+# The 0.14 public API: final proposal (2026-10-17)
+
+Status: **approved 2026-10-17** (with section 7.1 out of scope, the C ABI of section 7.2 a follow-up, and the release later than the 2-week target for A2). Planned by Opus, implemented by Sonnet agents. Source: the pre-release API audit of 2026-10-17
+(rustdoc JSON of `--features full` at `6c16ff36`: 1 015 public items, 1 296 paths), and the user's decisions in that review.
+
+## 0. Who the API is for, and what is not changing
+
+The crate serves two kinds of user, and its public surface is wide **on purpose**:
+
+- **application builders**: receive (audio or IQ), decode, transmit, show messages;
+- **protocol builders**: a new mode on the existing traits, codecs and DSP (CLAUDE.md §2.6, `CONTRIBUTING.md` "Adding a new protocol").
+
+So nothing below hides or moves building blocks, and items reachable by more than one path stay where the implementation
+put them (a protocol module re-exports the shared parts it is built from; a parent module flattens its children). There is no
+semver gate (dropped, `15686981`): it would flag every change to a building block.
+
+Decided by the user, all for 0.14:
+
+| # | change | kind |
+|---|---|---|
+| L1 | tier map: which modules are the application layer, the protocol-building layer, the building blocks | docs |
+| L2 | `mfsk_core::prelude` | additive |
+| L3 | the three names that collide with application-layer names | breaking |
+| L4 | the global instrumentation counters behind a feature | breaking |
+| C1 | delete the four `ft8` migration façades | breaking |
+| C2 | docs that name crates that no longer exist | docs |
+| C3 | `ft8::llr::GenericLlrSet` no longer public | breaking |
+| R1 | `Debug` on every public type; `Display` + `Error` on every error type | additive (in progress) |
+| A1 | a transmit API at the level of `AnyDecoder` | additive |
+| A2 | a whole-message 77-bit packer (WSJT-X `pack77(msg)`) | additive |
+| A3 | `Decoder<P>` and `AnyDecoder` made symmetric | mostly breaking |
+
+## 1. Tiers (L1)
+
+| tier | for | modules |
+|---|---|---|
+| **application** | receive, decode, transmit | `prelude`, `decoder`, `encoder` (A1), `iq`, `slotgrid`, `registry`, `msg` (codecs, `Decoded`, `ApHint`, `CallsignHashTable`), the protocol ZSTs at the root; MSK144 and JTTY through their own modules (`msk144::decode::Stream`, `jtty::rx`, `jtty::pack`, `jtty::tx`) |
+| **protocol building** | a new mode | the root traits (`ModulationParams`, `FrameLayout`, `Protocol`, `FecCodec`, `MessageCodec`, `SyncFrontEnd`), `decoder::Decodable`, `engine::tx` (`FskWaveform`, `message_to_tones`, `synthesize*`), `fec::*` |
+| **building blocks** | replace a stage, embedded | `engine::{dsp, sync, sync2d, llr, equalize, spectrogram, search, …}`, protocol internals (`ft8::decode_block`, `*::search`, `*::ddc`, `*::rx`) |
+
+Where: a "Tier" column in `LIBRARY.md` §4 (and `.ja.md`), the same table near the top of the crate doc (`lib.rs`), and one line
+in CLAUDE.md §3, which today says "raw engine functions are `pub(crate)`"; only `engine::pipeline` is.
+
+## 2. `prelude` (L2)
+
+`use mfsk_core::prelude::*;` brings what an application needs and nothing that a glob import is likely to clash with:
+
+```rust
+pub use crate::decoder::{AnyDecoder, AnySlotResult, Decoder, DecodeParams, Depth, QsoContext, QsoProgress,
+                         Row, RowDetail, SlotInput, SlotResult, Station, Unsupported};   // fft feature
+pub use crate::encoder::{encode, EncodeError, EncodeOptions, Encoded, TxAudio};         // A1
+pub use crate::iq::{ChannelId, Channelizer, CompletedSlot, IqError, IqReceiver, IqSampleFormat, IqStream};
+pub use crate::msg::{ApHint, Decoded};
+pub use crate::registry::{Mode, ProtocolMeta};
+```
+
+Each line carries the `cfg` of its module. Protocol ZSTs stay at the root (`mfsk_core::Ft8`), not in the prelude.
+
+## 3. Name collisions (L3)
+
+| today | 0.14 | why |
+|---|---|---|
+| `uvpacket::Mode` (`uvpacket::puncture::Mode`) | `uvpacket::UvMode` | collides with `registry::Mode`, the application's mode type |
+| `msk144::decode::Depth` | removed; `msk144` takes `decoder::Depth` | the same three levels with the same meaning (`ndepth` 1/2/3, default Deep, `mskrtd.f90:142-144`); `msk144::decode` and `decoder` have the same feature gate (an FFT backend), so the dependency is free. The pattern count becomes a private `fn npat(Depth)` |
+| `jtty::testsig::Station` | `jtty::testsig::Transmission` | collides with `decoder::Station`; its own doc says "One transmission" |
+
+Consumers: `UvMode` 8 files (tests, `uvpacket`); `Depth` 6 files incl. `mfsk-ffi/src/lib.rs:3315` (`mfsk_msk144_open`); `Transmission`
+1 file, `embedded-poc/m5stack-cores3-app/src/bin/jtty_demo.rs` (host CI does not build it: compile it with the board's toolchain).
+
+## 4. Instrumentation behind a feature (L4)
+
+`fec::conv::fano::instrument` and `wspr::instrument` (22 process-global `AtomicU32`s and their `reset`/`snapshot`) move behind a new
+feature `instrument`. Without it the modules do not exist and the counting sites compile to nothing. Consumers that turn it on:
+`embedded-poc/embedded-shared` (`apps/wspr_scan.rs`, `apps/wspr_bench.rs`), `mfsk-core/tests/wspr_wsjtx_samples.rs` and
+`tests/wspr_sweep.rs` (`required-features`). `full` does not include it.
+
+## 5. Clean-ups (C1-C3)
+
+- **C1.** Delete `ft8::ldpc`, `ft8::message`, `ft8::resample`, `ft8::hash_table`. Each says it is a migration façade ("so existing
+  `ft8-core::…` callers keep working… new code should import from…"); no file in the workspace uses them (searched `mfsk-core` src,
+  tests, benches, examples, `mfsk-ffi`, `apps`, `embedded-poc`, `hosttest`, `bench`, `wasm-smoke`, docs). Migration line in
+  `LIBRARY.md` §1.3: `ft8::message::X` → `msg::wsjt77::X`, `ft8::ldpc::X` → `fec::ldpc::X`, `ft8::resample::X` → `engine::dsp::resample::X`,
+  `ft8::hash_table::X` → `msg::hash_table::X`.
+- **C2.** 13 doc lines in 9 files name `ft8-core`, `mfsk-fec`, `mfsk-msg`, `mfsk-engine`; point them at the modules.
+- **C3.** `ft8::llr::GenericLlrSet` (an alias of `engine::llr::LlrSet` beside the different `ft8::llr::LlrSet`) becomes a private `use`.
+
+## 6. `Debug`, `Display`, `Error` (R1, in progress)
+
+`Debug` on the 78 public types without it (derived where cheap; a hand-written impl that prints sizes instead of buffers where a
+type holds sample or spectrum buffers, ending `finish_non_exhaustive()`); `Display` + `core::error::Error` on `fec::qra::Q65DecodeError`
+and `uvpacket::{framing::PackError, framing::UnpackError, rx::DecodeError}`. A compile-time test asserts both for the application types.
+
+## 7. Transmit (A1): `mfsk_core::encoder`
+
+Today a Rust application transmits by a different route per family: `engine::tx::message_to_tones::<P>` + `engine::tx::synthesize::<P>`
+for FT8/FT4/FST4, `wspr::synthesize_type1`, `jt9::synthesize_standard`, `jt65::synthesize_standard`, `q65::synthesize_standard_for`,
+`fst4w::encode::message_to_tones`. The C ABI already has one `mfsk_encode_*` per mode; Rust has nothing at the level of `AnyDecoder`.
+
+```rust
+/// What `encode` produced: the channel symbols, and what a receiver will print.
+#[non_exhaustive] #[derive(Clone, Debug)]
+pub struct Encoded {
+    pub mode: Mode,
+    pub tones: Vec<u8>,
+    /// The message as `unpack` renders the transmitted bits (WSJT-X shows this in its Tx box).
+    pub text: String,
+    /// Calls the message sends as hashes; give them to the decoder (`learn_callsign`) so their
+    /// `<...>` resolves when the other station answers (WSJT-X's `record_tx_hashes`).
+    pub hashed_calls: Vec<String>,
+}
+
+#[non_exhaustive] #[derive(Clone, Copy, Debug, Default)]
+pub struct EncodeOptions { pub q65_copied_last_tx: bool }     // builder: .q65_copied_last_tx(bool)
+
+#[non_exhaustive] #[derive(Clone, Copy, Debug)]
+pub struct TxAudio { pub sample_rate: u32, pub f0_hz: f32, pub amplitude: f32 }
+impl TxAudio { pub fn new(sample_rate: u32, f0_hz: f32) -> Self /* amplitude 1.0 */; pub fn amplitude(self, a: f32) -> Self }
+
+#[non_exhaustive] #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeError {
+    /// The text is not a message this mode can send (77-bit modes: why, from `pack77_message`).
+    Message { mode: Mode, reason: Pack77Error },
+    /// A message form this mode has but this crate does not encode (section 7.1).
+    Unsupported { mode: Mode, what: &'static str },
+}
+
+pub fn encode(mode: Mode, text: &str) -> Result<Encoded, EncodeError>;
+pub fn encode_with(mode: Mode, text: &str, options: &EncodeOptions) -> Result<Encoded, EncodeError>;
+impl Encoded {
+    pub fn synthesize(&self, audio: &TxAudio) -> Vec<f32>;
+    pub fn synthesize_i16(&self, audio: &TxAudio, amplitude_i16: i16) -> Vec<i16>;
+    pub fn synth_len(&self, sample_rate: u32) -> usize;
+}
+```
+
+Per mode, all through code that exists today except the packer of A2. Every `Mode` ZST implements
+`engine::tx::FskWaveform`, so tones → audio is one generic call, `engine::tx::synthesize::<P>`, dispatched over `Mode` the way
+`AnyDecoder` is (a macro over the same list):
+
+| modes | text → bits | bits → tones |
+|---|---|---|
+| FT8, FT4, FST4-15‥1800 | `pack77_message` (A2) | `engine::tx::message_to_tones::<P>` |
+| Q65 (10 sub-modes) | `pack77_message` | `q65::encode_channel_symbols_flagged(bits, options.q65_copied_last_tx)` |
+| FST4W-120‥1800 | `pack77_message` with `prefer_wspr_50bit` (as `genfst4` asks; today `Fst4wMessage::pack_text` → `pack77_wspr(text, true)`) | `fst4w::encode::payload_to_tones::<P>` on the first 50 bits |
+| WSPR | `msg::wspr::pack_type1` on `CALL GRID4 DBM` | `wspr::encode_channel_symbols` |
+| JT9, JT65 | `msg::jt72::pack_standard` on `CALL1 CALL2 GRID/RPT` | `jt9`/`jt65::encode_channel_symbols` |
+
+`encode` is stateless; nothing global records the hashes (the decoder owns its table, so the caller hands `hashed_calls` to it).
+MSK144 and JTTY are outside `Mode` on the receive side and stay so here (`msk144::tx`, `jtty::pack` + `jtty::tx`).
+`engine::tx` stays the protocol builder's generic route.
+
+### 7.1 Not in 0.14 (says `EncodeError::Unsupported`)
+
+- **WSPR types 2 and 3** (compound calls, 6-character grids: two transmissions, `wqencode`): not ported.
+- **JT9 / JT65 free text and compound calls**: `msg::jt72` packs and unpacks only the standard form today (`Jt72Message::Unsupported`
+  on receive). A port of `packmsg` / `unpackmsg` (`lib/packjt.f90:401-661`, 260 lines) is its own job; asking is cheaper than guessing
+  how much these legacy modes are still used.
+
+### 7.2 C ABI
+
+Not part of this change. `mfsk_encode_*` keep their per-mode signatures. A `mfsk_encode(mode, text, …)` over `encoder::encode` would
+bring the bindings level with Rust; it is a follow-up for the FFI (Kotlin/Swift wrappers too), not for this release.
+
+## 8. Whole-message packer (A2): `msg::wsjt77::pack77_message`
+
+A port of WSJT-X v3.2.0-rc1 `pack77_encode_core` (`lib/77bit/packjt77.f90:527-608`) with its result codes (`:66-71`):
+
+```rust
+#[non_exhaustive] #[derive(Clone, Copy, Debug, Default)]
+pub struct Pack77Options { pub prefer_wspr_50bit: bool }
+
+#[non_exhaustive] #[derive(Clone, Debug)]
+pub struct Packed77 { pub bits: [u8; 77], pub i3: u8, pub n3: u8, pub hashed_calls: Vec<String> }
+
+#[non_exhaustive] #[derive(Clone, Copy, Debug, PartialEq, Eq)]   // + Display, Error
+pub enum Pack77Error {
+    NotEncoded,               // PACK77_STATUS_NOT_ENCODED
+    FreeTextTooLong,          // PACK77_STATUS_FREE_TEXT_TOO_LONG
+    FreeTextInvalid,          // PACK77_STATUS_FREE_TEXT_INVALID
+    PreferredFamilyRejected,  // PACK77_STATUS_PREFERRED_FAMILY_REJECTED
+    RoundtripRejected,        // PACK77_STATUS_INTERNAL_ROUNDTRIP_REJECTED
+}
+
+pub fn pack77_message(text: &str, options: &Pack77Options) -> Result<Packed77, Pack77Error>;
+```
+
+Order as upstream: upper-case and split; over 19 words → telemetry (0.5) else free text; unless the message starts `CQ `/`DE `/`QRZ `:
+0.1 DXpedition, 0.3/0.4 ARRL Field Day, 0.5 telemetry (one word); then 0.6 (WSPR form), 1/2 standard (+ `/P`), 3 ARRL RTTY Roundup,
+4 one non-standard call, 5 EU VHF; else exact free text. Every candidate is accepted only if its bits unpack to the same text
+(`take_candidate`). Today's `pack77`, `pack77_type1`, `pack77_type4`, `pack77_free_text`, `pack77_wspr` stay (they are the
+candidates 1, 4, 0.0, 0.6 and their callers keep working); new: candidates 0.1, 0.3/0.4, 0.5, 3, 5. Unpacking of all of them exists.
+Not ported: the DX macro expansion (`expand_dx_macro`, a GUI convenience).
+
+Tests (tier A): every candidate round-trips through `unpack77`; a table of messages packed by upstream gives the same 77 bits and
+`i3.n3`; malformed messages give the upstream status. The oracle is rc1's own `lib/77bit/encode77.f90` built against rc1's
+`packjt77.f90`, `packjt77_grammar.f90` and `packjt77_schema.f90` (the way `target/fst4w-oracle` builds `genfst4`), run over rc1's
+`lib/77bit/messages.txt` (100 lines) plus cases of our own. The checked-in `encode77.out` (41 lines, last changed `2da8f51fc`) predates
+the 3.x packer and is not the reference.
+
+Size: the candidates call into `packjt77_grammar.f90` (1 530 lines) and `packjt77_schema.f90` (871); `msg/wsjt77.rs` already ports the
+parts the 0.6 candidate and the round-trip gate need (`:1785-2115`). What is new is the 0.1, 0.3/0.4, 0.5, 3 and 5 encoders and the
+dispatch, several hundred lines of Rust; the largest item of this release.
+
+## 9. `Decoder<P>` and `AnyDecoder` symmetric (A3)
+
+| today | 0.14 | kind |
+|---|---|---|
+| `AnyDecoder::decode_i16(&[i16], Option<i64>)` only | also `Decoder<P>::decode_i16` | additive |
+| `AnyDecoder::extras_mut()` only | also `AnyDecoder::extras(&self) -> AnyExtrasRef<'_>` (read-only twin of `AnyExtras`) | additive |
+| `AnyDecoder::set_ap_hint` only | also `Decoder<P>::set_ap_hint` for the modes whose extras carry `ap_hint` (FT8, FT4, FST4, Q65), through a small trait on those extras | additive |
+| `AnySlotResult { rows: Vec<Decoded>, details: Vec<RowDetail> }` (two parallel vectors) | `pub type AnySlotResult = SlotResult<()>`: `rows: Vec<Row<()>>`, the same row type as `Decoder<P>` with the native result erased | breaking: `mfsk-ffi/src/decoder.rs` (1 site), `apps/skimmer/core/src/lib.rs` (1), tests (≈11) |
+| `AnyDecoder::decode_with(on_row: &dyn Fn(&Decoded, &RowDetail))` | `on_row: OnRow<'_, ()>`, as `Decoder<P>` | breaking: `mfsk-ffi/src/decoder.rs:1197-1199`, `apps/skimmer/core/src/lib.rs:439-441` |
+| `AnyDecoder::wcalls() -> Result<Vec<String>, Unsupported>` (a copy) | `-> Result<&[String], Unsupported>` | breaking, 1 site (`mfsk-ffi`) |
+| `AnyDecoder::set_wcalls` maps `TooManyCalls` to `Unsupported` (a list that is too long is reported as "the mode has no list") | `-> Result<(), WcallsError>`, `enum WcallsError { Unsupported(Unsupported), TooManyCalls(TooManyCalls) }` | breaking, 1 site; also a wrong message today |
+
+## 10. Re-audit against the crates that use the API (2026-10-17)
+
+Every change above, against what `mfsk-ffi`, `bindings/{kotlin,swift}`, `apps/skimmer`, `embedded-poc`, `hosttest`, `bench/wasm` and
+`wasm-smoke` call today (grep over their sources):
+
+| change | where it lands | finding |
+|---|---|---|
+| A3 `AnySlotResult` → `SlotResult<()>` | `mfsk-ffi/src/decoder.rs:1203` zips `rows` with `details`; `apps/skimmer` reads `details` once; `wasm-smoke` reads only `.rows.len()` | three edits; `wasm-smoke` unchanged |
+| A3 `decode_with` callback | `mfsk-ffi/src/decoder.rs:1197-1199`, `apps/skimmer/core/src/lib.rs:439-441` | the closures take `&Row<()>` instead of `(&Decoded, &RowDetail)`; one clone of `Decoded` per delivered row inside `AnyDecoder` (rows per slot are tens) |
+| A3 `wcalls` / `set_wcalls` | `mfsk-ffi/src/decoder.rs` (1 each) | the C ABI's status for a too-long list becomes the right one (today it says "unsupported") |
+| L3 `msk144` `Depth` | `mfsk-ffi/src/lib.rs:3315` (`mfsk_msk144_open` maps 1/2/3 to it) | the C value is unchanged; only the Rust import moves |
+| L3 `testsig::Transmission` | `embedded-poc/m5stack-cores3-app/src/bin/jtty_demo.rs` | not built by host CI: build it with the board's toolchain |
+| L4 `instrument` | `embedded-shared` `apps/wspr_scan.rs` returns `instrument::Counts` and `fano::instrument::Snapshot` in its result; the module is gated by its `wspr-bench` feature | add `"mfsk-core/instrument"` to `wspr-bench` (`embedded-shared/Cargo.toml:46`); the CoreS3 WSPR receiver keeps its counters |
+| C1 façades | none | no consumer anywhere |
+| A1 `encoder`, A2 `pack77_message`, R1, L2 | additive | Kotlin / Swift / C unchanged (the C ABI is not touched, §7.2) |
+
+Nothing found that needs the plan changed. Two things the plan relies on and that were checked rather than assumed: all `Mode` ZSTs
+implement `FskWaveform` (`ft8/mod.rs:115`, `ft4/mod.rs:112`, `fst4/mod.rs:193`, `fst4w/mod.rs:182`, `wspr/mod.rs:140`, `jt9/mod.rs:256`,
+`jt65/mod.rs:514`, `q65/protocol.rs:80`), and `msk144::decode` has the same feature gate as `decoder` (`msk144/mod.rs:18`, `lib.rs:370`).
+
+## 11. Considered and not changed
+
+- `Decoded::dt_sec` beside `*_s` elsewhere: 378 uses in 93 files (and the C/Kotlin/Swift field names); renaming costs more than it gives.
+- `DecodeParams::for_band((lo, hi))` (a tuple) beside `.band(lo, hi)`: 33 uses; both read clearly.
+- Builder names (`with_*` on `ApHint`, `IqReceiver::with_clock`; bare on `DecodeParams`, `SlotInput`, `IqStream`): the rule in use is
+  "bare name on a plain parameter struct, `with_` on a type with behaviour"; written down in `LIBRARY.md` instead of renamed.
+- `IqReceiver::{remove_channel, tap_audio, take_audio, set_prefix_points}` returning `bool` for an unknown id: 27 uses in 7 files;
+  an unknown id is a caller bug, and `false` is documented.
+- `Option` from the existing packers (`pack77`, `pack28`, `msg::wspr::pack_*`, `msg::jt72::pack_*`): the new `pack77_message` returns why;
+  the old ones stay as they are.
+- Same-name items in different building-block modules (`Spectrogram` ×7, `score_candidate` ×5, …): the module says which.
+
+## 12. Order of work
+
+1. R1 lands (in progress).
+2. C1-C3, L3, L4 (mechanical; one commit each).
+3. A3 (decoder module; FFI and skimmer call sites in the same commit).
+4. A2 (the port; tests against upstream vectors).
+5. A1 (on A2), then L2 (`prelude` names `encoder`), then L1 and the migration section of `LIBRARY.md` §1.3 (+ `.ja.md`), CHANGELOG.
+6. Merge gate (tiers A+B), `scripts/pre-push-check.sh`, `cargo build -p mfsk-ffi`, `cargo test -p skimmer-core`, the CoreS3 build of
+   `jtty_demo` (L3) and of `embedded-shared` with `instrument` (L4).
