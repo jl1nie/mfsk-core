@@ -55,10 +55,10 @@
 
 use alloc::string::String;
 // `ToString` is only used by the modes whose message text comes via `Display`
-// (WSPR / JT65 / JT9); gate the import so an FT8/FT4/FST4-only build (whose
-// text path is `unpack77`, returning `String` directly) doesn't warn on it.
+// (JT65 / JT9; WSPR renders through `WsprMessage::render`); gate the import so
+// other builds don't warn on it.
 #[cfg(all(
-    any(feature = "wspr", feature = "jt65", feature = "jt9"),
+    any(feature = "jt65", feature = "jt9"),
     any(feature = "fft-rustfft", feature = "fft-extern")
 ))]
 use alloc::string::ToString;
