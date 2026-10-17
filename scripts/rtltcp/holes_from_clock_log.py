@@ -41,7 +41,11 @@ for ft, delivered, reset, fsn_raw, gap in pairs:
         off, last_raw = -fsn_raw, fsn_raw
         prev = (ft, delivered, fsn_raw)
         continue
-    if reset:
+    # The API also restarts its numbering without the reset flag: a command the server applied late (the frequency
+    # and rate it was sent at connect, read once its Init is over, about 9 s in on 2026-10-17) made the number
+    # fall by 7.9 M. A fall that is not a 32-bit wrap is a renumbering and is handled as a reset.
+    renumbered = not reset and last_raw - fsn_raw > 2**20 and last_raw - fsn_raw < 2**31
+    if reset or renumbered:
         p_ft, p_delivered, p_fsn = prev
         # Where the stream had got to before the reset: the previous record's sample, plus what was delivered since.
         end_before = p_fsn + wraps * 2**32 + off + (delivered - p_delivered)
