@@ -259,6 +259,13 @@
         s.phase = e.control ? 'Connected with control of the radio' : 'Connected as a guest';
         s.detail = `device centre ${mhz(e.deviceHz)} MHz, band ${(e.bandwidthHz / 1e3).toFixed(0)} kHz`;
         break;
+      case 'preparing':
+        s.phase =
+          e.stage === 'awaitingServer'
+            ? `Waiting for the server to apply the settings (up to ${e.upToS} s)…`
+            : `Measuring the server's sample rate (${e.upToS} s)…`;
+        s.state = 'connecting';
+        break;
       case 'radio':
         takeRadio(e.server, e);
         break;

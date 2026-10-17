@@ -1233,6 +1233,16 @@ pub struct Status {
     pub clock: String,
 }
 
+/// What an rtl_tcp session does between `Connected` and `Streaming` (see [`Event::Preparing`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PrepStage {
+    /// Waiting for the server to apply the commands (`rtltcp::await_rate`).
+    AwaitingServer,
+    /// Measuring the sample rate the server really delivers (`rtltcp::measure_rate`).
+    MeasuringRate,
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     Connecting {
@@ -1242,6 +1252,14 @@ pub enum Event {
         device: DeviceInfo,
         control: bool,
         device_hz: f64,
+    },
+    /// An rtl_tcp session began a start-up stage that shows nothing else for a while (no decoding yet):
+    /// `up_to_s` is how long it can last, in seconds of stream time. Sent when the stage starts, between
+    /// `Connected` and `Streaming`; the measured rate arrives in `Streaming::rate`. SpyServer sessions
+    /// never send it, and a stage that is switched off (`Config::rtl_calibrate` zero) is not sent.
+    Preparing {
+        stage: PrepStage,
+        up_to_s: u32,
     },
     /// The radio's gain or this client's control changed (see [`RadioState`]).
     Radio(RadioState),
@@ -1820,6 +1838,7 @@ fn session_rtl(
         // The first time, the server may not have read the commands yet (rsp_tcp starts its command
         // reader after the RSP is up, ~10-15 s): wait for the stream to be at the rate asked for.
         if !calibrated {
+            on_event(prep_event(cfg, PrepStage::AwaitingServer));
             rtltcp::await_rate(
                 &mut c,
                 stop,
@@ -1831,6 +1850,7 @@ fn session_rtl(
         if !calibrated {
             calibrated = true;
             if !cfg.rtl_calibrate.is_zero() {
+                on_event(prep_event(cfg, PrepStage::MeasuringRate));
                 let measured = rtltcp::measure_rate(
                     &mut c,
                     stop,
@@ -1958,6 +1978,22 @@ fn apply(
         }
     }
     last.ok_or_else(|| std::io::Error::other("no CLIENT_SYNC in reply to the settings"))
+}
+
+/// The [`Event::Preparing`] of a stage: the longest it takes with this config. Waiting for the server
+/// lasts `rtl_commands_floor` when the stream was at the asked-for rate from the start (a server that
+/// applies the rate late ends it sooner; the client gives up at 60 s), measuring lasts its skip plus its window.
+fn prep_event(cfg: &Config, stage: PrepStage) -> Event {
+    let d = match stage {
+        PrepStage::AwaitingServer => cfg.rtl_commands_floor,
+        PrepStage::MeasuringRate => {
+            cfg.rtl_calibrate + (cfg.rtl_calibrate / 4).min(Duration::from_secs(5))
+        }
+    };
+    Event::Preparing {
+        stage,
+        up_to_s: d.as_secs_f64().ceil() as u32,
+    }
 }
 
 /// Streaming off; block until a CLIENT_SYNC shows a different device centre.
@@ -3196,6 +3232,30 @@ mod tests {
         assert_eq!(
             all_txt_line(&d),
             "261003_044215      7.041 Rx FT8      -7  0.1  1811 CQ JO1ZQG/P PM95"
+        );
+    }
+
+    #[test]
+    fn rtl_prep_events_name_the_stage_and_its_longest_time() {
+        let cfg = Config::new("x", Vec::new());
+        let up_to = |stage| match prep_event(&cfg, stage) {
+            Event::Preparing { stage: s, up_to_s } => {
+                assert_eq!(s, stage);
+                up_to_s
+            }
+            e => panic!("{e:?}"),
+        };
+        // Defaults: 20 s floor; 30 s window after a 5 s skip.
+        assert_eq!(up_to(PrepStage::AwaitingServer), 20);
+        assert_eq!(up_to(PrepStage::MeasuringRate), 35);
+        let mut short = Config::new("x", Vec::new());
+        short.rtl_calibrate = Duration::from_secs(6);
+        assert_eq!(
+            match prep_event(&short, PrepStage::MeasuringRate) {
+                Event::Preparing { up_to_s, .. } => up_to_s,
+                _ => unreachable!(),
+            },
+            8
         );
     }
 

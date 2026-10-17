@@ -256,6 +256,10 @@ machine the RSP is plugged into), which speaks the `rtl_tcp` protocol; plain `rt
   measured throughput approximates the audio time scale. No server patch is required. If the ADC
   itself runs at a different rate, select **ADC clock offset** instead. Delivery timing alone cannot
   distinguish these cases, and unknown holes can still cause DT drift or lost messages.
+- **The first minute.** Nothing is decoded while the skimmer prepares the connection, and the server's line says which step
+  it is in: "Waiting for the server to apply the settings (up to 20 s)…" (an `rsp_tcp` reads no commands until its RSP is up;
+  the stream is judged only after that), then "Measuring the server's sample rate (35 s)…" (a 5 s skip and the 30 s window; none
+  with a window of 0). The command line prints the same as one line per step. Then "Decoding".
 - **Status.** Decoding is tested against a stand-in `rtl_tcp` server (8-bit and 16-bit). Against a real RSP1 on an
   unpowered USB hub it decoded FT8 from JA stations on 7041 kHz (4 to 9 per slot), but that `rsp_tcp` stopped with `RSP failure`
   after 1 to 7 minutes (also with nothing but a reader on it). **Give the RSP its own powered USB port**; a second USB device on

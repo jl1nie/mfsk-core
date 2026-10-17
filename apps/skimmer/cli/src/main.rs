@@ -15,13 +15,13 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use skimmer_core::Station;
 use skimmer_core::modes::{MODES, mode_name, parse_channel};
 use skimmer_core::pskreporter::{
     Endpoint, PskConfig, PskReporter, spot_from_decode, spot_from_jtty,
 };
 use skimmer_core::rtltcp::RtlFormat;
 use skimmer_core::{Channelizer, Config, Event, Protocol, Step, WireFormat, all_txt_line};
+use skimmer_core::{PrepStage, Station};
 
 fn usage() -> ExitCode {
     let modes: Vec<&str> = MODES.iter().map(|m| m.0).collect();
@@ -391,6 +391,15 @@ fn main() -> ExitCode {
              device centre {device_hz:.0} Hz",
                 device.kind, device.max_rate, device.bandwidth_hz
             ),
+            Event::Preparing { stage, up_to_s } => match stage {
+                PrepStage::AwaitingServer => {
+                    eprintln!("waiting up to {up_to_s} s for the server to apply the settings")
+                }
+                PrepStage::MeasuringRate => {
+                    eprintln!("measuring the server's sample rate for {up_to_s} s")
+                }
+                _ => {}
+            },
             Event::Radio(_) | Event::Waterfall(_) => {}
             Event::Yielded => eprintln!(
                 "got control of the device; leaving it for the operator's client \

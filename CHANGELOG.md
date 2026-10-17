@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Skimmer
+
+- An rtl_tcp connection says what it waits for: `Event::Preparing { stage, up_to_s }` at the start of "waiting for the server to
+  apply the settings" (up to 20 s) and "measuring the sample rate" (35 s), shown in the GUI's server line and printed by the CLI;
+  the ~56 s between Connected and Decoding were silent.
+
 ## 0.14.0 — the API audited and rounded out: one transmit call over every mode (`encoder`, and `mfsk_encode` in the C ABI), WSJT-X's whole-message 77-bit packer, WSPR types 2/3 and JT9/JT65 free text and compound calls sent and received; every packer and unpacker bit-exact with WSJT-X 3.2.0-rc1 (`wsprd` for WSPR text); `Decoder<P>` and `AnyDecoder` symmetric, a `prelude` and a tier map, `Debug`/`Error` on every type (breaking); the skimmer's rtl_tcp client calibrates through pauses
 
 Entries are grouped by what a reader has to do about them:

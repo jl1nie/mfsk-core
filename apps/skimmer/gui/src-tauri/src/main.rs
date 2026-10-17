@@ -22,7 +22,7 @@ use skimmer_core::rtltcp::RtlFormat;
 use skimmer_core::store;
 use skimmer_core::{
     ApMode, ChannelOptions, ChannelSpec, Channelizer, Config, Contest, Event, LiveOptions,
-    Protocol, QsoContext, QsoProgress, RadioState, Station, WireFormat,
+    PrepStage, Protocol, QsoContext, QsoProgress, RadioState, Station, WireFormat,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -487,6 +487,11 @@ enum UiEvent {
         bin_hz: f32,
         levels: Vec<u8>,
     },
+    /// An rtl_tcp start-up stage: `"awaitingServer"` or `"measuringRate"`, and its longest time.
+    Preparing {
+        stage: &'static str,
+        up_to_s: u32,
+    },
     Yielded,
     NoChannelFits {
         device_hz: f64,
@@ -629,6 +634,13 @@ impl UiEvent {
                 f_lo_hz: w.row.f_lo_hz,
                 bin_hz: w.row.bin_hz,
                 levels: w.row.levels,
+            },
+            Event::Preparing { stage, up_to_s } => UiEvent::Preparing {
+                stage: match stage {
+                    PrepStage::AwaitingServer => "awaitingServer",
+                    _ => "measuringRate",
+                },
+                up_to_s,
             },
             Event::Yielded => UiEvent::Yielded,
             Event::NoChannelFits { device_hz } => UiEvent::NoChannelFits { device_hz },

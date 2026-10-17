@@ -229,6 +229,7 @@ export type UiEventBody =
       control: boolean;
       deviceHz: number;
     }
+  | { type: 'preparing'; stage: 'awaitingServer' | 'measuringRate'; upToS: number }
   | { type: 'radio'; gain: number; maxGain: number; canControl: boolean }
   | {
       type: 'waterfall';
