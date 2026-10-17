@@ -277,6 +277,15 @@ pub struct CandidateDdc {
     taps_a: usize,
 }
 
+impl core::fmt::Debug for CandidateDdc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CandidateDdc")
+            .field("decim_a", &self.decim_a)
+            .field("taps_a", &self.taps_a)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CandidateDdc {
     /// `f0_hz` is the candidate frequency, in the same absolute audio
     /// space as `SyncCandidate::freq_hz` — the frequency this baseband
@@ -622,6 +631,14 @@ pub struct SlotDecimator {
     /// took FT4's dual-core scaling from 1.48x to 1.37x.
     /// `CandidateDdc::push_samples` already owns its equivalents.
     buf: Vec<f32>,
+}
+
+impl core::fmt::Debug for SlotDecimator {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SlotDecimator")
+            .field("buf_len", &self.buf.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for SlotDecimator {

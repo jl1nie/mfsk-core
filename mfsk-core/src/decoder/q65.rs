@@ -54,6 +54,14 @@ pub struct Q65State {
     last_period: Option<i64>,
 }
 
+impl core::fmt::Debug for Q65State {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Q65State")
+            .field("last_period", &self.last_period)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for Q65State {
     fn default() -> Self {
         Self {

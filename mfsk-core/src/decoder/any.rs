@@ -29,8 +29,7 @@ impl core::fmt::Display for Unsupported {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for Unsupported {}
+impl core::error::Error for Unsupported {}
 
 /// What one period of an [`AnyDecoder`] produced.
 #[derive(Clone, Debug)]
@@ -81,12 +80,44 @@ pub enum AnyExtras<'a> {
     _Lifetime(core::marker::PhantomData<&'a ()>),
 }
 
+impl core::fmt::Debug for AnyExtras<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            #[cfg(feature = "ft8")]
+            AnyExtras::Ft8(e) => f.debug_tuple("Ft8").field(e).finish(),
+            #[cfg(feature = "ft4")]
+            AnyExtras::Ft4(e) => f.debug_tuple("Ft4").field(e).finish(),
+            #[cfg(feature = "fst4")]
+            AnyExtras::Fst4(e) => f.debug_tuple("Fst4").field(e).finish(),
+            #[cfg(feature = "fst4w")]
+            AnyExtras::Fst4w(e) => f.debug_tuple("Fst4w").field(e).finish(),
+            #[cfg(feature = "wspr")]
+            AnyExtras::Wspr(e) => f.debug_tuple("Wspr").field(e).finish(),
+            #[cfg(feature = "jt9")]
+            AnyExtras::Jt9(e) => f.debug_tuple("Jt9").field(e).finish(),
+            #[cfg(feature = "jt65")]
+            AnyExtras::Jt65(e) => f.debug_tuple("Jt65").field(e).finish(),
+            #[cfg(feature = "q65")]
+            AnyExtras::Q65(e) => f.debug_tuple("Q65").field(e).finish(),
+            AnyExtras::_Lifetime(_) => f.write_str("_Lifetime"),
+        }
+    }
+}
+
 macro_rules! any_decoder {
     ($( $feat:literal $var:ident $ty:ty => $extras:ident ),* $(,)?) => {
         /// A decoder of any [`Mode`].
         #[non_exhaustive]
         pub enum AnyDecoder {
             $( #[cfg(feature = $feat)] $var(Decoder<$ty>), )*
+        }
+
+        impl core::fmt::Debug for AnyDecoder {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => core::fmt::Debug::fmt(d, f), )*
+                }
+            }
         }
 
         impl AnyDecoder {

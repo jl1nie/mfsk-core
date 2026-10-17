@@ -101,6 +101,34 @@ pub enum DecodeError {
     Crc(UnpackError),
 }
 
+impl core::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DecodeError::Truncated => {
+                f.write_str("audio ends before a full preamble and header block")
+            }
+            DecodeError::PayloadTruncated { needed_samples } => {
+                write!(
+                    f,
+                    "audio ends before all payload blocks ({needed_samples} samples needed)"
+                )
+            }
+            DecodeError::HeaderFecFailed => f.write_str("header LDPC block failed to decode"),
+            DecodeError::PayloadFecFailed => f.write_str("a payload LDPC block failed to decode"),
+            DecodeError::Crc(_) => f.write_str("frame CRC check failed"),
+        }
+    }
+}
+
+impl core::error::Error for DecodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            DecodeError::Crc(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 /// Result of a successful frame decode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecodedFrame {

@@ -176,6 +176,7 @@ struct Node {
 }
 
 /// Outcome of a Fano decode.
+#[derive(Debug)]
 pub struct FanoDecodeResult {
     /// Recovered message bits, MSB-first. Length = `nbits.div_ceil(8)` bytes
     /// covering `nbits` bits.
@@ -222,6 +223,14 @@ pub fn fano_decode(
 #[derive(Default)]
 pub struct FanoScratch {
     nodes: Vec<Node>,
+}
+
+impl core::fmt::Debug for FanoScratch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FanoScratch")
+            .field("n_nodes", &self.nodes.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl FanoScratch {

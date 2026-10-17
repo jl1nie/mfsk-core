@@ -226,6 +226,16 @@ pub struct Assembler {
     pub(super) decoded: Vec<(f32, f64)>,
 }
 
+impl core::fmt::Debug for Assembler {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Assembler")
+            .field("n_active", &self.active.len())
+            .field("n_recent", &self.recent.len())
+            .field("next_id", &self.next_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Assembler {
     /// An empty assembler.
     pub fn new() -> Self {

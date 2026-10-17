@@ -577,6 +577,14 @@ pub struct OsdResult {
     pub hard_errors: u32,
 }
 
+impl core::fmt::Debug for OsdResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OsdResult")
+            .field("hard_errors", &self.hard_errors)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Packed-elimination setup for [`osd_decode_generic`], generic over
 /// [`LdpcParams`] (MSK144's LDPC(128,90), and the order-1..4 searches
 /// diagnostics run on the other codes).
@@ -711,6 +719,14 @@ pub struct PartialCrc {
     /// The 101-bit info word for a 77-bit message: the message and its CRC-24
     /// (`ldpc240_101::append_crc24`).
     pub with_crc: fn(&[u8; 77]) -> [u8; 101],
+}
+
+impl core::fmt::Debug for PartialCrc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PartialCrc")
+            .field("keff", &self.keff)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Counts how many patterns WSJT-X's actual `npre1` pre-screening

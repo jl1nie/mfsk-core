@@ -82,6 +82,16 @@ pub struct FreqSearchResult {
     pub fest: f32,
 }
 
+impl core::fmt::Debug for FreqSearchResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FreqSearchResult")
+            .field("frame_len", &self.frame.len())
+            .field("xmax", &self.xmax)
+            .field("fest", &self.fest)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Joint (CFO, symbol-timing) matched-filter search.
 ///
 /// `cdat` is a `nframes * NSPM`-sample analytic-signal buffer (still
@@ -214,6 +224,18 @@ pub struct SyncResult {
     pub peaks: Vec<SyncPeak>,
     /// `xmax >= 1.3` (`msk144sync.f90:98`).
     pub success: bool,
+}
+
+impl core::fmt::Debug for SyncResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SyncResult")
+            .field("frame_len", &self.frame.len())
+            .field("xmax", &self.xmax)
+            .field("fest", &self.fest)
+            .field("n_peaks", &self.peaks.len())
+            .field("success", &self.success)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Full sync search: [`msk144_freq_search`] over `ferr` in

@@ -31,6 +31,12 @@ pub struct LlrSet<T: LlrScalar = f32> {
     pub llrd: [T; LDPC_N],
 }
 
+impl<T: LlrScalar> core::fmt::Debug for LlrSet<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LlrSet").finish_non_exhaustive()
+    }
+}
+
 /// Zero-cost layout cast: `cs` is already contiguous with the flat
 /// `[Cmplx<f32>; 632]` layout `compute_llr_generic`/etc. consume — no
 /// allocation or copy needed, just a reinterpreted view. Replaces a

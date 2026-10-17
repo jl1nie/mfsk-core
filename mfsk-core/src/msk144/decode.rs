@@ -438,6 +438,19 @@ pub struct Stream {
     next: u64,
 }
 
+impl core::fmt::Debug for Stream {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Stream")
+            .field("fc", &self.fc)
+            .field("ntol", &self.ntol)
+            .field("depth", &self.depth)
+            .field("buf_len", &self.buf.len())
+            .field("base", &self.base)
+            .field("next", &self.next)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Stream {
     /// `fc`, `ntol` and `depth` as for [`decode_slot`]; `hash_table` as for
     /// [`decode_slot_with_hash_table`], shared across the session.

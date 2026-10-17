@@ -259,8 +259,7 @@ impl core::fmt::Display for IqError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for IqError {}
+impl core::error::Error for IqError {}
 
 fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
@@ -445,6 +444,19 @@ pub struct IqToAudio {
     aq: Vec<f32>,
     ri: Vec<f32>,
     rq: Vec<f32>,
+}
+
+impl core::fmt::Debug for IqToAudio {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IqToAudio")
+            .field("stream", &self.stream)
+            .field("dial_hz", &self.dial_hz)
+            .field("mix_hz", &self.mix_hz)
+            .field("ratio", &self.ratio)
+            .field("samples_in", &self.samples_in)
+            .field("out_count", &self.out_count)
+            .finish_non_exhaustive()
+    }
 }
 
 impl IqToAudio {

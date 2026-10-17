@@ -99,6 +99,14 @@ pub struct AlignedComplexBuf {
     len: usize,
 }
 
+impl core::fmt::Debug for AlignedComplexBuf {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AlignedComplexBuf")
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
 impl AlignedComplexBuf {
     /// Allocate `len` zeroed `Complex32`, 16-byte aligned.
     ///
@@ -242,6 +250,12 @@ mod rustfft_backend {
         real: realfft::RealFftPlanner<f32>,
     }
 
+    impl core::fmt::Debug for RustFftPlanner {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("RustFftPlanner").finish_non_exhaustive()
+        }
+    }
+
     impl RustFftPlanner {
         /// Construct a planner. Cheap; reuse the same instance across
         /// all decodes in a session so rustfft's twiddle cache hits.
@@ -323,6 +337,12 @@ mod rustfft_backend_i16 {
 
     pub struct RustFftPlanner16 {
         inner: rustfft::FftPlanner<f32>,
+    }
+
+    impl core::fmt::Debug for RustFftPlanner16 {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("RustFftPlanner16").finish_non_exhaustive()
+        }
     }
 
     impl RustFftPlanner16 {

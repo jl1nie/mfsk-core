@@ -197,6 +197,14 @@ pub struct FrameState {
     prefix: Option<Ft8Prefix>,
 }
 
+impl core::fmt::Debug for FrameState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FrameState")
+            .field("recent_len", &self.recent.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// What an FT8 prefix sequence pins at the period's first call and keeps
 /// until its last: the period, the search and strictness, the `f32` gain
 /// (trap 1 of `EARLY_DECODE_DESIGN.md`: the RMS moves from one prefix to

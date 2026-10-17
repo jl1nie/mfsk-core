@@ -150,6 +150,15 @@ pub struct BpResult {
     pub iterations: u32,
 }
 
+impl core::fmt::Debug for BpResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BpResult")
+            .field("hard_errors", &self.hard_errors)
+            .field("iterations", &self.iterations)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Generic log-domain Belief-Propagation decode.
 ///
 /// `llr.len()` and (if present) `ap_mask.len()` must equal `P::N`.
@@ -731,6 +740,12 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
     /// the zsum-seeded OSD retry pay zero extra bytes.
     zsum: Vec<T::Wide>,
     _p: core::marker::PhantomData<P>,
+}
+
+impl<P: LdpcParams, T: LlrScalar> core::fmt::Debug for BpScratch<P, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BpScratch").finish_non_exhaustive()
+    }
 }
 
 impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {

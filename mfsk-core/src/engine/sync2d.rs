@@ -629,6 +629,14 @@ pub struct Ft4CoarsePhasors {
     tables: Vec<(f32, Vec<Complex<f32>>)>,
 }
 
+impl core::fmt::Debug for Ft4CoarsePhasors {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Ft4CoarsePhasors")
+            .field("n_tables", &self.tables.len())
+            .finish_non_exhaustive()
+    }
+}
+
 use super::protocol::SyncPhasors;
 
 impl SyncPhasors for Ft4CoarsePhasors {
@@ -1013,6 +1021,15 @@ pub struct Ft4SweepScratch {
     ds_rate: f32,
 }
 
+impl core::fmt::Debug for Ft4SweepScratch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Ft4SweepScratch")
+            .field("n_blocks", &self.flat_blocks.len())
+            .field("ds_rate", &self.ds_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Ft4SweepScratch {
     pub fn new<P: SyncFrontEnd>() -> Self {
         Self::new_with_min_alloc::<P>(0)
@@ -1097,6 +1114,17 @@ pub struct Ft4CoarseSweep {
     cd0: crate::engine::dsp::dotprod::AlignedF32,
     /// Complex samples copied into `cd0`.
     have: usize,
+}
+
+impl core::fmt::Debug for Ft4CoarseSweep {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Ft4CoarseSweep")
+            .field("ib_min", &self.ib_min)
+            .field("n_i0", &self.n_i0)
+            .field("done", &self.done)
+            .field("have", &self.have)
+            .finish_non_exhaustive()
+    }
 }
 
 const N_COARSE_DF: usize = ((COARSE_DF_MAX - COARSE_DF_MIN) / COARSE_DF_STEP + 1) as usize;

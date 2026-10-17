@@ -232,6 +232,16 @@ pub struct SlotCutter<T> {
     points: alloc::vec::Vec<usize>,
 }
 
+impl<T> core::fmt::Debug for SlotCutter<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SlotCutter")
+            .field("slot_len", &self.slot_len)
+            .field("k_next", &self.k_next)
+            .field("hist_len", &self.hist.len())
+            .finish_non_exhaustive()
+    }
+}
+
 struct Open<T> {
     buf: alloc::vec::Vec<T>,
     start_k: u64,

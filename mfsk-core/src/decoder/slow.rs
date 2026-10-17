@@ -80,6 +80,12 @@ mod wspr_impl {
         table: WsprCallsignTable,
     }
 
+    impl core::fmt::Debug for WsprState {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("WsprState").finish_non_exhaustive()
+        }
+    }
+
     impl WsprState {
         pub fn table(&self) -> &WsprCallsignTable {
             &self.table

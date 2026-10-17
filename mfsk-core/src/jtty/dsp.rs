@@ -76,6 +76,14 @@ pub struct AnalyticFir {
     rev_im: Vec<f32>,
 }
 
+impl core::fmt::Debug for AnalyticFir {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AnalyticFir")
+            .field("n_taps", &self.taps.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl AnalyticFir {
     /// `2M + 1` taps, Kaiser `beta`.
     pub fn new(half: usize, beta: f64) -> Self {

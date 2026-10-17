@@ -125,6 +125,14 @@ pub struct TrellisScratch {
     b: Vec<[Surv<f32>; PATHS_PER_STATE]>,
 }
 
+impl core::fmt::Debug for TrellisScratch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TrellisScratch")
+            .field("n_states", &self.a.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl TrellisScratch {
     /// Allocate both (the caller chooses where by when it calls this).
     pub fn new() -> Self {
@@ -188,6 +196,16 @@ pub struct Plan {
     coherent: usize,
     blocks: Vec<Block>,
     energy_count: usize,
+}
+
+impl core::fmt::Debug for Plan {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Plan")
+            .field("coherent", &self.coherent)
+            .field("n_blocks", &self.blocks.len())
+            .field("energy_count", &self.energy_count)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Plan {

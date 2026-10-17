@@ -156,6 +156,16 @@ pub struct Ft4SavgBuilder {
     count: usize,
 }
 
+impl core::fmt::Debug for Ft4SavgBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Ft4SavgBuilder")
+            .field("nhsym", &self.nhsym)
+            .field("stream_len", &self.stream_len)
+            .field("count", &self.count)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Ft4SavgBuilder {
     /// `total_samples` is the slot length the finished `savg` must
     /// match — see the type's doc comment for why it is not optional.

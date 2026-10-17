@@ -119,7 +119,7 @@ pub fn symbol_spectra_direct<S: AudioSample>(
 ///
 /// **Pub for benchmarking only.**
 #[doc(hidden)]
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SymMask {
     /// Costas symbols only — all three blocks (positions 0-6, 36-42,
     /// 72-78). 21 symbols. Used for full-precision sync_quality

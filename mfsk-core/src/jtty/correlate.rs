@@ -29,6 +29,14 @@ pub struct ToneRefs {
     conj: [Vec<Complex32>; 4],
 }
 
+impl core::fmt::Debug for ToneRefs {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ToneRefs")
+            .field("nss", &self.nss)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ToneRefs {
     /// References for `nss` samples per symbol (192 at 6 kHz). `nss` must be even.
     pub fn new(nss: usize) -> Self {
@@ -105,6 +113,15 @@ pub struct RotatedRefs {
     phi: f64,
     /// `[tone][sample]`.
     rot: [Vec<Complex32>; 4],
+}
+
+impl core::fmt::Debug for RotatedRefs {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RotatedRefs")
+            .field("nss", &self.nss)
+            .field("phi", &self.phi)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RotatedRefs {

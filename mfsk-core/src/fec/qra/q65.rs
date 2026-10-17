@@ -51,6 +51,17 @@ pub enum Q65DecodeError {
     CrcMismatch,
 }
 
+impl core::fmt::Display for Q65DecodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Q65DecodeError::NotConverged => "QRA belief propagation did not converge",
+            Q65DecodeError::CrcMismatch => "decoded message failed its CRC check",
+        })
+    }
+}
+
+impl core::error::Error for Q65DecodeError {}
+
 /// Stateful Q65 codec. Construct once with [`Q65Codec::new`] and reuse
 /// across messages; the internal scratch buffers (BP messages,
 /// intrinsic / extrinsic rows, working symbol arrays) are sized for
@@ -66,6 +77,14 @@ pub struct Q65Codec {
     ix: Vec<f32>,
     /// Extrinsic distributions, length M * N.
     ex: Vec<f32>,
+}
+
+impl core::fmt::Debug for Q65Codec {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Q65Codec")
+            .field("code", &self.code.name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Q65Codec {

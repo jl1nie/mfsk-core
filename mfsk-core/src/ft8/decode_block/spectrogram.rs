@@ -84,6 +84,15 @@ pub struct Spectrogram {
     pub data: Vec<SpecCell>,
 }
 
+impl core::fmt::Debug for Spectrogram {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Spectrogram")
+            .field("n_freq", &self.n_freq)
+            .field("n_time", &self.n_time)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Spectrogram {
     /// Build a `Spectrogram` from caller-provided parts. Used by the
     /// embedded Phase-E PoC to plumb an incrementally-computed

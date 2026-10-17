@@ -41,6 +41,12 @@ pub struct Plan3840Sc16 {
     twiddles_outer: Box<[Complex32; N]>,
 }
 
+impl core::fmt::Debug for Plan3840Sc16 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Plan3840Sc16").finish_non_exhaustive()
+    }
+}
+
 impl Plan3840Sc16 {
     pub fn new() -> Self {
         Self {

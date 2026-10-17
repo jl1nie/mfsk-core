@@ -112,6 +112,14 @@ pub struct Fst4wState {
     work: Osd74Work,
 }
 
+impl core::fmt::Debug for Fst4wState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Fst4wState")
+            .field("n_wcalls", &self.wcalls.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Fst4wState {
     /// The known-call list, oldest first: `get_known_calls`.
     pub fn wcalls(&self) -> &[String] {

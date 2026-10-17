@@ -29,6 +29,14 @@ pub struct SymbolFft {
     buf: Vec<Complex32>,
 }
 
+impl core::fmt::Debug for SymbolFft {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SymbolFft")
+            .field("len", &self.buf.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl SymbolFft {
     /// Plan an `nsps`-point forward FFT.
     pub fn new(nsps: usize) -> Self {

@@ -103,11 +103,21 @@ use crate::registry::Mode;
 /// FT8 / FT4 / FST4 engines, which take 16-bit audio as WSJT-X does, get it
 /// scaled to a fixed RMS ([`F32_TO_I16_RMS`]) first, so a caller never picks
 /// a level.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 #[non_exhaustive]
 pub enum Audio<'a> {
     I16(&'a [i16]),
     F32(&'a [f32]),
+}
+
+impl core::fmt::Debug for Audio<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (name, len) = match self {
+            Audio::I16(a) => ("I16", a.len()),
+            Audio::F32(a) => ("F32", a.len()),
+        };
+        f.debug_struct(name).field("len", &len).finish()
+    }
 }
 
 impl Audio<'_> {
@@ -144,6 +154,16 @@ pub struct SlotInput<'a> {
     /// Every mode polls it (WSPR, JT9, JT65 and Q65 since #593), except Q65's
     /// averaged decode, whose unit is a whole period.
     pub budget: Option<BudgetCheck<'a>>,
+}
+
+impl<'a> core::fmt::Debug for SlotInput<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SlotInput")
+            .field("audio_len", &self.audio.len())
+            .field("period", &self.period)
+            .field("budget", &self.budget.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> SlotInput<'a> {
@@ -425,6 +445,15 @@ pub struct Decoder<P: Decodable> {
     extras: P::Extras,
     state: P::State,
     prefix: PrefixBook<P::Row>,
+}
+
+impl<P: Decodable> core::fmt::Debug for Decoder<P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Decoder")
+            .field("mode", &P::MODE)
+            .field("params", &self.params)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<P: Decodable> Decoder<P> {

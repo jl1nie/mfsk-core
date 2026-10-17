@@ -36,6 +36,7 @@ pub struct Station<'a> {
 }
 
 /// A small deterministic generator (the same numbers on every target).
+#[derive(Debug)]
 pub struct Rng(u64);
 
 impl Rng {

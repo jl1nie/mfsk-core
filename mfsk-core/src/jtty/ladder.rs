@@ -114,6 +114,14 @@ pub struct Ladder {
     rungs: [super::stats::Acc; 4],
 }
 
+impl core::fmt::Debug for Ladder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Ladder")
+            .field("f32_metrics", &self.f32_metrics)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for Ladder {
     fn default() -> Self {
         Self::new()

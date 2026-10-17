@@ -46,6 +46,15 @@ pub struct Averager {
     last: Option<(i64, f32)>,
 }
 
+impl core::fmt::Debug for Averager {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Averager")
+            .field("n_entries", &self.entries.len())
+            .field("last", &self.last)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Averager {
     /// Forget everything (`clearave`, the GUI's "Clear Avg").
     pub fn clear(&mut self) {

@@ -53,6 +53,19 @@ pub struct Spectrogram {
     pub noise_per_bin: f32,
 }
 
+impl core::fmt::Debug for Spectrogram {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Spectrogram")
+            .field("n_time", &self.n_time)
+            .field("n_freq", &self.n_freq)
+            .field("t_step", &self.t_step)
+            .field("nsps", &self.nsps)
+            .field("df", &self.df)
+            .field("noise_per_bin", &self.noise_per_bin)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Spectrogram {
     /// Build a spectrogram for protocol `P` at `nsps / nstep_per_symbol`
     /// time steps. Returns an empty shell if `audio` is shorter than

@@ -271,6 +271,16 @@ pub struct LinearResamplerI16To12k {
     hist_pos: usize,
 }
 
+impl core::fmt::Debug for LinearResamplerI16To12k {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LinearResamplerI16To12k")
+            .field("src_rate", &self.src_rate)
+            .field("primed", &self.primed)
+            .field("n_taps", &self.taps_q15.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl LinearResamplerI16To12k {
     /// Construct a resampler for `src_rate_hz` → 12 000 Hz.
     /// Panics if `src_rate_hz == 0`.

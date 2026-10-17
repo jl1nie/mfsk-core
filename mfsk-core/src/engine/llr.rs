@@ -46,6 +46,14 @@ pub struct LlrSet<T: LlrScalar = f32> {
     pub llre: Vec<T>,
 }
 
+impl<T: LlrScalar> core::fmt::Debug for LlrSet<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LlrSet")
+            .field("llra_len", &self.llra.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Default LLR scale factor from WSJT-X ft8b.f90. Individual protocols may
 /// override via `ModulationParams::LLR_SCALE`.
 pub const LLR_SCALE: f32 = 2.83;

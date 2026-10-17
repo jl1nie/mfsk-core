@@ -192,6 +192,17 @@ pub struct FirStage {
     taps_phase: [AlignedF32; 4],
 }
 
+impl core::fmt::Debug for FirStage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FirStage")
+            .field("n_taps", &self.taps_rev.len())
+            .field("decim", &self.decim)
+            .field("hist_len", &self.hist_len)
+            .field("hist_cap", &self.hist_cap)
+            .finish_non_exhaustive()
+    }
+}
+
 impl FirStage {
     /// `ntaps` must be odd (linear phase, integer group delay).
     /// `fc_norm` is the lowpass cutoff normalised to this stage's

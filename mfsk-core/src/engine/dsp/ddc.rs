@@ -177,7 +177,7 @@ pub type IntStageSpec = (usize, usize, f32);
 /// (loose filters, cheap — may be empty, e.g. `fst4::ddc`'s wideband
 /// config), and a final rational [`PolyphaseResampler`] stage
 /// (`(l, m, ntaps)`) carrying the real passband/stopband requirement.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DdcCascadeConfig {
     pub center_hz: f32,
     pub input_rate_hz: f32,
@@ -196,6 +196,16 @@ pub struct StreamingComplexDdc {
     /// Conservative total group delay, in *original* (mixer-input-rate)
     /// samples — see [`Self::flush`].
     flush_zeros: usize,
+}
+
+impl core::fmt::Debug for StreamingComplexDdc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamingComplexDdc")
+            .field("n_int_stages", &self.int_stages.len())
+            .field("resampler", &self.resampler)
+            .field("flush_zeros", &self.flush_zeros)
+            .finish_non_exhaustive()
+    }
 }
 
 impl StreamingComplexDdc {
@@ -304,6 +314,15 @@ pub struct StreamingComplexRecenter {
     mixer: Mixer,
     resampler: PolyphaseResampler,
     flush_zeros: usize,
+}
+
+impl core::fmt::Debug for StreamingComplexRecenter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamingComplexRecenter")
+            .field("resampler", &self.resampler)
+            .field("flush_zeros", &self.flush_zeros)
+            .finish_non_exhaustive()
+    }
 }
 
 impl StreamingComplexRecenter {

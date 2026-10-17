@@ -165,6 +165,17 @@ pub struct SniperRequest<'a> {
     base_freq_hz: f32,
 }
 
+impl<'a> core::fmt::Debug for SniperRequest<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SniperRequest")
+            .field("audio_len", &self.audio.len())
+            .field("sample_rate", &self.sample_rate)
+            .field("start_sample", &self.start_sample)
+            .field("base_freq_hz", &self.base_freq_hz)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> SniperRequest<'a> {
     pub fn new(audio: &'a [f32], sample_rate: u32, start_sample: usize, base_freq_hz: f32) -> Self {
         Self {

@@ -91,8 +91,7 @@ impl core::fmt::Display for PackError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for PackError {}
+impl core::error::Error for PackError {}
 
 /// Fold operator text into the source alphabet (`normalize_jtty_message`).
 pub fn normalize(text: &str) -> String {

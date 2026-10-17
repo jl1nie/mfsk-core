@@ -64,6 +64,17 @@ pub struct PolyphaseResampler {
     n_in_abs: Option<usize>,
 }
 
+impl core::fmt::Debug for PolyphaseResampler {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PolyphaseResampler")
+            .field("l", &self.l)
+            .field("m", &self.m)
+            .field("ntaps", &self.ntaps)
+            .field("phase", &self.phase)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PolyphaseResampler {
     /// `ntaps` must be odd, matching [`design_lowpass`]'s symmetric
     /// design. `hist_margin` behaves like

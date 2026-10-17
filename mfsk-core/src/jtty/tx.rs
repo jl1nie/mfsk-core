@@ -362,6 +362,16 @@ pub struct Synth<F: Float = f64> {
     nsps: usize,
 }
 
+impl<F: Float> core::fmt::Debug for Synth<F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Synth")
+            .field("total", &self.total)
+            .field("n", &self.n)
+            .field("nsps", &self.nsps)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<F: Float> Synth<F> {
     /// A transmission of `tones` (any number of whole frames) at `f0_hz`, the
     /// frequency of tone 0, with peak `amplitude`. Empty tones give an empty

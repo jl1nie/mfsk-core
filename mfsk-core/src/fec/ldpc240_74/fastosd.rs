@@ -49,6 +49,12 @@ pub struct Osd74Work {
     generator: Vec<Option<Vec<u8>>>,
 }
 
+impl core::fmt::Debug for Osd74Work {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Osd74Work").finish_non_exhaustive()
+    }
+}
+
 impl Osd74Work {
     pub fn new() -> Self {
         Self {
@@ -181,6 +187,15 @@ pub struct FastOsd74 {
     /// (`fastosd240_74.f90:265`).
     pub nhardmin: i32,
     pub dmin: f32,
+}
+
+impl core::fmt::Debug for FastOsd74 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FastOsd74")
+            .field("nhardmin", &self.nhardmin)
+            .field("dmin", &self.dmin)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `fastosd240_74_owned(work, llr, k, apmask, ndeep, message74, cw, nhardmin, dmin)`.

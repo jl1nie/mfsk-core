@@ -47,6 +47,15 @@ pub struct ToneMagnitudes {
     pub noise_power_est: f32,
 }
 
+impl core::fmt::Debug for ToneMagnitudes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ToneMagnitudes")
+            .field("n_symbols", &self.mags.len())
+            .field("noise_power_est", &self.noise_power_est)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Run 162 symbol-length FFTs at the hypothesised (start_sample, freq)
 /// and collect the four tone magnitudes per symbol. No LLR conversion,
 /// no sync information — this is the primitive that both coarse search

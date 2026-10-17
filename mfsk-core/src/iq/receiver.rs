@@ -386,6 +386,17 @@ pub struct IqReceiver {
     bq: Vec<f32>,
 }
 
+impl core::fmt::Debug for IqReceiver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IqReceiver")
+            .field("stream", &self.stream)
+            .field("n_channels", &self.channels.len())
+            .field("samples_in", &self.samples_in)
+            .field("ppm", &self.ppm)
+            .finish_non_exhaustive()
+    }
+}
+
 impl IqReceiver {
     /// A receiver on the [`Channelizer::Direct`] path.
     pub fn new(stream: IqStream) -> Self {
@@ -1045,6 +1056,48 @@ mod tests {
         assert_send::<CompletedSlot>();
         assert_send::<crate::iq::PfbChannelizer>();
         assert_send::<IqToAudio>();
+    }
+
+    /// The app-facing types print without dumping audio (`dbg!` on a decoder
+    /// or a receiver must stay readable), and the errors are errors.
+    #[cfg(feature = "ft8")]
+    #[test]
+    fn app_facing_types_are_debug() {
+        fn assert_debug<T: core::fmt::Debug>() {}
+        assert_debug::<crate::decoder::Decoder<crate::Ft8>>();
+        assert_debug::<crate::decoder::AnyDecoder>();
+        assert_debug::<crate::decoder::SlotInput<'static>>();
+        assert_debug::<crate::decoder::AnyExtras<'static>>();
+        assert_debug::<crate::decoder::DecodeParams>();
+        assert_debug::<IqReceiver>();
+        assert_debug::<CompletedSlot>();
+
+        let audio = alloc::vec![0i16; 180_000];
+        let slot = SlotInput::new(crate::decoder::Audio::I16(&audio));
+        assert!(alloc::format!("{slot:?}").len() < 400);
+    }
+
+    #[test]
+    fn errors_are_errors() {
+        fn assert_error<T: core::error::Error>() {}
+        assert_error::<IqError>();
+        assert_error::<crate::decoder::Unsupported>();
+    }
+
+    #[cfg(feature = "q65")]
+    #[test]
+    fn q65_error_is_error() {
+        fn assert_error<T: core::error::Error>() {}
+        assert_error::<crate::fec::qra::Q65DecodeError>();
+    }
+
+    #[cfg(feature = "uvpacket")]
+    #[test]
+    fn uvpacket_errors_are_errors() {
+        fn assert_error<T: core::error::Error>() {}
+        assert_error::<crate::uvpacket::framing::PackError>();
+        assert_error::<crate::uvpacket::framing::UnpackError>();
+        assert_error::<crate::uvpacket::rx::DecodeError>();
     }
 
     /// Every mode this build has is a registry entry, with the slot the

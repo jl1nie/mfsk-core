@@ -71,6 +71,15 @@ pub struct HintBank {
     qmin: f32,
 }
 
+impl core::fmt::Debug for HintBank {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HintBank")
+            .field("n_entries", &self.text.len())
+            .field("qmin", &self.qmin)
+            .finish_non_exhaustive()
+    }
+}
+
 fn push(bank: &mut HintBank, c1: &str, c2: &str, g: &str) {
     let Some(words) = jt72::pack_standard(c1, c2, g) else {
         return;

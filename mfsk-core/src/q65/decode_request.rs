@@ -630,6 +630,18 @@ pub struct SniperRequest<'a, P: Q65SubMode> {
     _marker: PhantomData<P>,
 }
 
+impl<'a, P: Q65SubMode> core::fmt::Debug for SniperRequest<'a, P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SniperRequest")
+            .field("audio_len", &self.audio.len())
+            .field("sample_rate", &self.sample_rate)
+            .field("start_sample", &self.start_sample)
+            .field("base_freq_hz", &self.base_freq_hz)
+            .field("pileup", &self.pileup)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
     pub fn new(audio: &'a [f32], sample_rate: u32, start_sample: usize, base_freq_hz: f32) -> Self {
         Self {

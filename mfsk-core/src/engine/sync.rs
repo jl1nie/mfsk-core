@@ -607,6 +607,15 @@ pub enum AudioSource<'a> {
     Complex(&'a [f32], &'a [f32]),
 }
 
+impl core::fmt::Debug for AudioSource<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AudioSource::Real(a) => f.debug_struct("Real").field("len", &a.len()).finish(),
+            AudioSource::Complex(i, _) => f.debug_struct("Complex").field("len", &i.len()).finish(),
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Coarse sync
 // ──────────────────────────────────────────────────────────────────────────
@@ -625,6 +634,16 @@ pub struct Spectrogram {
     /// Absolute bin index the cropped `data` starts at (0 = no crop).
     freq_offset: usize,
     data: Vec<f32>,
+}
+
+impl core::fmt::Debug for Spectrogram {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Spectrogram")
+            .field("n_freq", &self.n_freq)
+            .field("n_time", &self.n_time)
+            .field("freq_offset", &self.freq_offset)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Spectrogram {
@@ -847,6 +866,16 @@ pub struct SpectrogramBuilder {
     j: usize,
     data: Vec<f32>,
     buf: Vec<Complex<f32>>,
+}
+
+impl core::fmt::Debug for SpectrogramBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SpectrogramBuilder")
+            .field("n_freq", &self.n_freq)
+            .field("abs_base", &self.abs_base)
+            .field("j", &self.j)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SpectrogramBuilder {

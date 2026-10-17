@@ -104,6 +104,40 @@ pub enum UnpackError {
     ReservedNotZero(u8),
 }
 
+impl core::fmt::Display for PackError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PackError::InvalidBlockCount(n) => write!(f, "block count {n} is outside 1..=32"),
+            PackError::InvalidAppType(n) => write!(f, "app type {n} is outside 0..=15"),
+            PackError::InvalidSequence(n) => write!(f, "sequence {n} is outside 0..=31"),
+            PackError::PayloadTooLarge(n) => {
+                write!(f, "payload of {n} bytes exceeds {MAX_PAYLOAD_BYTES}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for PackError {}
+
+impl core::fmt::Display for UnpackError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            UnpackError::Truncated => {
+                write!(f, "input is shorter than the {HEADER_BYTES}-byte header")
+            }
+            UnpackError::CrcMismatch { expected, computed } => write!(
+                f,
+                "header CRC mismatch (expected {expected:#06x}, computed {computed:#06x})"
+            ),
+            UnpackError::ReservedNotZero(n) => {
+                write!(f, "reserved header bits are non-zero ({n:#x})")
+            }
+        }
+    }
+}
+
+impl core::error::Error for UnpackError {}
+
 /// Pack the header word + CRC into the first [`HEADER_BYTES`] of a
 /// fresh `Vec<u8>`. The CRC is computed over `header_word ++ payload`,
 /// where `payload` is the byte stream that the receiver will recover

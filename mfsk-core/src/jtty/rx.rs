@@ -377,6 +377,14 @@ pub struct Receiver {
     stats: super::stats::Stats,
 }
 
+impl core::fmt::Debug for Receiver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Receiver")
+            .field("csync_len", &self.csync.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for Receiver {
     fn default() -> Self {
         Self::new()
@@ -1513,6 +1521,16 @@ pub struct Stream {
     ana_k0: usize,
 }
 
+impl core::fmt::Debug for Stream {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Stream")
+            .field("buf_len", &self.buf.len())
+            .field("base", &self.base)
+            .field("next", &self.next)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Stream {
     /// A stream that starts at sample 0 of a recording.
     pub fn new(rx: Arc<Receiver>, params: Params) -> Self {
@@ -1631,6 +1649,14 @@ pub struct Prepared {
     pre: Pre,
 }
 
+impl core::fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Prepared")
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Prepared {
     /// The window's index (window `k` starts at sample `k · STEP`).
     pub fn window(&self) -> usize {
@@ -1655,6 +1681,17 @@ pub struct Front {
     ana: Vec<Complex32>,
     ana_k0: usize,
     dropped: usize,
+}
+
+impl core::fmt::Debug for Front {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Front")
+            .field("buf_len", &self.buf.len())
+            .field("base", &self.base)
+            .field("next", &self.next)
+            .field("dropped", &self.dropped)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Front {
@@ -1755,6 +1792,15 @@ pub struct Back {
     next: usize,
     asm: Assembler,
     skipped: usize,
+}
+
+impl core::fmt::Debug for Back {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Back")
+            .field("next", &self.next)
+            .field("skipped", &self.skipped)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Back {

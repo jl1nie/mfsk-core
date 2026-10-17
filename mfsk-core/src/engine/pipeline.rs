@@ -76,6 +76,14 @@ fn stage_trace_enabled<P: Protocol>() -> bool {
 #[derive(Clone)]
 pub struct FftCache(pub(crate) Vec<Complex<f32>>);
 
+impl core::fmt::Debug for FftCache {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FftCache")
+            .field("len", &self.0.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl FftCache {
     pub(crate) fn as_slice(&self) -> &[Complex<f32>] {
         &self.0

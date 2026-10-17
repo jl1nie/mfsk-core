@@ -216,6 +216,18 @@ pub struct SniperRequest<'a> {
     refine_drift: bool,
 }
 
+impl<'a> core::fmt::Debug for SniperRequest<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SniperRequest")
+            .field("sample_rate", &self.sample_rate)
+            .field("start_sample", &self.start_sample)
+            .field("freq_hz", &self.freq_hz)
+            .field("drift_hz", &self.drift_hz)
+            .field("refine_drift", &self.refine_drift)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> SniperRequest<'a> {
     /// From 12 kHz audio. The audio is decimated with the reference
     /// whole-slot FFT channelizer on every [`Self::decode`], regardless

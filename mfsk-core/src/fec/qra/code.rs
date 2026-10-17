@@ -119,6 +119,20 @@ pub struct QraCode {
     pub gfpmat: &'static [i32],
 }
 
+impl core::fmt::Debug for QraCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("QraCode")
+            .field("name", &self.name)
+            .field("K", &self.K)
+            .field("N", &self.N)
+            .field("m", &self.m)
+            .field("M", &self.M)
+            .field("code_type", &self.code_type)
+            .field("R", &self.R)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Outcome of [`QraCode::extrinsic`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ExtrinsicResult {
@@ -143,6 +157,12 @@ pub struct DecoderScratch {
     v2cmsg: Vec<f32>,
     c2vmsg: Vec<f32>,
     msgout: Vec<f32>,
+}
+
+impl core::fmt::Debug for DecoderScratch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DecoderScratch").finish_non_exhaustive()
+    }
 }
 
 impl DecoderScratch {

@@ -243,6 +243,17 @@ pub struct PfbChannelizer {
     acquisition_ppm: Option<f64>,
 }
 
+impl core::fmt::Debug for PfbChannelizer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PfbChannelizer")
+            .field("stream", &self.stream)
+            .field("n_channels", &self.channels.len())
+            .field("samples_in", &self.samples_in)
+            .field("ppm", &self.ppm)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PfbChannelizer {
     /// A bank for `stream`, with no channels. `UnsupportedRate` when no `M`
     /// fits, which is every rate under 40 kS/s: keep the `Direct` path there.

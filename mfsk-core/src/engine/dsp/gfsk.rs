@@ -116,6 +116,18 @@ pub struct GfskStream {
     since_renorm: u32,
 }
 
+impl core::fmt::Debug for GfskStream {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GfskStream")
+            .field("nsps", &self.nsps)
+            .field("nsym", &self.nsym)
+            .field("nwave", &self.nwave)
+            .field("ramp", &self.ramp)
+            .field("k", &self.k)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GfskStream {
     /// Prepare to synthesise `tones` at carrier `f0_hz`.
     ///

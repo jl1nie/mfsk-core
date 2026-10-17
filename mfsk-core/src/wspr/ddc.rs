@@ -159,6 +159,15 @@ pub struct StreamingDdc<'a> {
     to_next_out: usize,
 }
 
+impl<'a> core::fmt::Debug for StreamingDdc<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamingDdc")
+            .field("hist_len", &self.hist_len)
+            .field("n_in", &self.n_in)
+            .finish_non_exhaustive()
+    }
+}
+
 /// History capacity, and the length [`StreamingDdc::new_in`] requires.
 ///
 /// Compaction copies the live `NTAPS` window back to the front once the
@@ -178,6 +187,14 @@ pub struct DdcBufs {
     taps: alloc::vec::Vec<f32>,
     hist_i: alloc::vec::Vec<f32>,
     hist_q: alloc::vec::Vec<f32>,
+}
+
+impl core::fmt::Debug for DdcBufs {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DdcBufs")
+            .field("taps_len", &self.taps.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for DdcBufs {
@@ -417,6 +434,14 @@ pub struct StreamingDdcCascade {
     n_in: usize,
     stage1: FirStage,
     stage2: FirStage,
+}
+
+impl core::fmt::Debug for StreamingDdcCascade {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamingDdcCascade")
+            .field("n_in", &self.n_in)
+            .finish_non_exhaustive()
+    }
 }
 
 impl StreamingDdcCascade {
