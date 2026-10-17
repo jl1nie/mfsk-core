@@ -25,6 +25,12 @@ use crate::q65::{DecodeRequest, Q65Result, Q65SubMode};
 /// this has a weight of `0.75^8` (10 %) or less in it.
 pub const MAX_AVERAGED_PERIODS: usize = 8;
 
+impl super::HasApHint for Q65Extras {
+    fn ap_hint_mut(&mut self) -> &mut Option<ApHint> {
+        &mut self.ap_hint
+    }
+}
+
 /// Q65's library options.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]

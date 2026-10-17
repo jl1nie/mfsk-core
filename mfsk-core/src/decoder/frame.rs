@@ -1016,6 +1016,17 @@ fst4_decodable!(crate::fst4::Fst4s900, Fst4S900, 1.20);
 #[cfg(feature = "fst4")]
 fst4_decodable!(crate::fst4::Fst4s1800, Fst4S1800, 1.20);
 
+macro_rules! has_ap_hint {
+    ($($t:ty),*) => {$(
+        impl super::HasApHint for $t {
+            fn ap_hint_mut(&mut self) -> &mut Option<ApHint> {
+                &mut self.ap_hint
+            }
+        }
+    )*};
+}
+has_ap_hint!(Ft8Extras, Ft4Extras, Fst4Extras);
+
 #[cfg(test)]
 mod ap_tests {
     use super::*;

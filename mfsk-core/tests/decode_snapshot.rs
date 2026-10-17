@@ -595,7 +595,7 @@ fn iq_receiver_rows() {
             let mut d = legacy(mode);
             let mut rows = Vec::new();
             for slot in slots.iter().filter(|s| s.channel == ch) {
-                rows.extend(d.decode(&slot.input()).rows);
+                rows.extend(d.decode(&slot.input()).rows.into_iter().map(|r| r.decoded));
             }
             check_text(&format!("iq_{name}_{label}"), decoded_rows(rows));
         }

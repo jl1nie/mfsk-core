@@ -42,7 +42,7 @@ fn reference(audio: &[i16]) -> Set {
         .decode_i16(audio, None)
         .rows
         .into_iter()
-        .map(|d| (d.text, (d.freq_hz, d.dt_sec)))
+        .map(|r| (r.decoded.text, (r.decoded.freq_hz, r.decoded.dt_sec)))
         .collect()
 }
 
@@ -58,7 +58,7 @@ fn decode_slots(slots: &[CompletedSlot]) -> Set {
     slots
         .iter()
         .flat_map(|s| d.decode(&s.input()).rows)
-        .map(|r| (r.text, (r.freq_hz, r.dt_sec)))
+        .map(|r| (r.decoded.text, (r.decoded.freq_hz, r.decoded.dt_sec)))
         .collect()
 }
 
@@ -175,7 +175,7 @@ fn front_end_with_an_offset_decodes_like_the_wav() {
             .decode_i16(&audio, None)
             .rows
             .into_iter()
-            .map(|d| (d.text, (d.freq_hz, d.dt_sec)))
+            .map(|r| (r.decoded.text, (r.decoded.freq_hz, r.decoded.dt_sec)))
             .collect();
         same(&got, &want, &format!("front end {ppm:+.0} ppm"));
     }

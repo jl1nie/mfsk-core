@@ -235,7 +235,12 @@ fn early_rows_through_iq(kind: Channelizer) {
 
     let whole = run(false);
     assert_eq!(whole.len(), 1);
-    let want: BTreeSet<String> = whole[0].1.rows.iter().map(|r| r.text.clone()).collect();
+    let want: BTreeSet<String> = whole[0]
+        .1
+        .rows
+        .iter()
+        .map(|r| r.decoded.text.clone())
+        .collect();
     assert!(want.len() >= 10, "decode found {}", want.len());
 
     let calls = run(true);
@@ -243,10 +248,15 @@ fn early_rows_through_iq(kind: Channelizer) {
     assert_eq!(lens, [A, B, WHOLE]);
     let early = &calls[0].1;
     assert!(!early.rows.is_empty(), "checkpoint A returned nothing");
-    assert!(early.details.iter().all(|d| d.stage == Some(Stage::Early)));
+    assert!(
+        early
+            .rows
+            .iter()
+            .all(|r| r.detail.stage == Some(Stage::Early))
+    );
     assert!(calls[1].1.rows.is_empty(), "B returns nothing");
     let fin = &calls[2].1;
-    let got: BTreeSet<String> = fin.rows.iter().map(|r| r.text.clone()).collect();
+    let got: BTreeSet<String> = fin.rows.iter().map(|r| r.decoded.text.clone()).collect();
     println!(
         "  {kind:?}: whole {} final {} early {}",
         want.len(),
@@ -255,9 +265,9 @@ fn early_rows_through_iq(kind: Channelizer) {
     );
     for r in &early.rows {
         assert!(
-            got.contains(&r.text),
+            got.contains(&r.decoded.text),
             "early row {} not in the final set",
-            r.text
+            r.decoded.text
         );
     }
     // The prefix sequence pins the level at 11.8 s, the whole slot at 15 s:

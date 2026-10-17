@@ -40,7 +40,7 @@ fn reference(mode: Mode, audio: &[i16]) -> Set {
         .decode_i16(audio, None)
         .rows
         .into_iter()
-        .map(|d| (d.text, (d.freq_hz, d.dt_sec)))
+        .map(|r| (r.decoded.text, (r.decoded.freq_hz, r.decoded.dt_sec)))
         .collect()
 }
 
@@ -137,7 +137,7 @@ impl Rx {
                 rows.push(IqDecode {
                     channel: slot.channel,
                     mode: slot.mode,
-                    decoded,
+                    decoded: decoded.decoded,
                     slot_start_sample: slot.start_sample,
                     slot_start_utc_ns: slot.utc_ns,
                 });

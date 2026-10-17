@@ -109,8 +109,8 @@ fn receive(
         .decode(&slot.input())
         .rows
         .into_iter()
-        .find(|r| r.text == TEXT)
-        .map(|r| (r.freq_hz, r.dt_sec))
+        .find(|r| r.decoded.text == TEXT)
+        .map(|r| (r.decoded.freq_hz, r.decoded.dt_sec))
 }
 
 fn check(kind: Channelizer, format: IqSampleFormat) {

@@ -3,16 +3,12 @@
 //!
 //! An enum, not a trait object: one variant per [`Mode`] this build has,
 //! dispatched by `match`, with no allocation on the decode path. Its rows
-//! are the common [`Decoded`] (a caller that wants a mode's native result
+//! are `Row<()>`: the common [`Decoded`](crate::msg::Decoded) and
+//! [`RowDetail`](super::RowDetail) (a caller that wants a mode's native result
 //! holds the typed `Decoder<P>`).
 
-use alloc::vec::Vec;
-
-use super::{
-    Audio, BudgetReport, DecodeParams, Decoder, OnRow, Row, RowDetail, SlotInput, SlotResult,
-    default_params,
-};
-use crate::msg::{ApHint, Decoded};
+use super::{Audio, DecodeParams, Decoder, OnRow, Row, SlotInput, SlotResult, default_params};
+use crate::msg::ApHint;
 use crate::registry::Mode;
 
 /// An option the mode does not have.
@@ -31,27 +27,29 @@ impl core::fmt::Display for Unsupported {
 
 impl core::error::Error for Unsupported {}
 
-/// What one period of an [`AnyDecoder`] produced.
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub struct AnySlotResult {
-    /// In the order they were found.
-    pub rows: Vec<Decoded>,
-    /// What each row carries beyond the common one; same order and length
-    /// as [`Self::rows`].
-    pub details: Vec<RowDetail>,
-    pub budget: BudgetReport,
+/// What one period of an [`AnyDecoder`] produced: the rows of
+/// [`Decoder::decode`] with the mode's native result erased (`Row<()>`).
+pub type AnySlotResult = SlotResult<()>;
+
+fn erase_row<R>(row: &Row<R>) -> Row<()> {
+    Row {
+        decoded: row.decoded.clone(),
+        detail: row.detail.clone(),
+        native: (),
+    }
 }
 
 fn erase<R>(r: SlotResult<R>) -> AnySlotResult {
-    let (rows, details) = r
-        .rows
-        .into_iter()
-        .map(|row| (row.decoded, row.detail))
-        .unzip();
-    AnySlotResult {
-        rows,
-        details,
+    SlotResult {
+        rows: r
+            .rows
+            .into_iter()
+            .map(|row| Row {
+                decoded: row.decoded,
+                detail: row.detail,
+                native: (),
+            })
+            .collect(),
         budget: r.budget,
     }
 }
@@ -100,6 +98,61 @@ impl core::fmt::Debug for AnyExtras<'_> {
             #[cfg(feature = "q65")]
             AnyExtras::Q65(e) => f.debug_tuple("Q65").field(e).finish(),
             AnyExtras::_Lifetime(_) => f.write_str("_Lifetime"),
+        }
+    }
+}
+
+/// [`AnyExtras`], read-only: what [`AnyDecoder::extras`] returns.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum AnyExtrasRef<'a> {
+    #[cfg(feature = "ft8")]
+    Ft8(&'a super::Ft8Extras),
+    #[cfg(feature = "ft4")]
+    Ft4(&'a super::Ft4Extras),
+    #[cfg(feature = "fst4")]
+    Fst4(&'a super::Fst4Extras),
+    #[cfg(feature = "fst4w")]
+    Fst4w(&'a super::Fst4wExtras),
+    #[cfg(feature = "wspr")]
+    Wspr(&'a super::WsprExtras),
+    #[cfg(feature = "jt9")]
+    Jt9(&'a super::Jt9Extras),
+    #[cfg(feature = "jt65")]
+    Jt65(&'a super::Jt65Extras),
+    #[cfg(feature = "q65")]
+    Q65(&'a super::Q65Extras),
+    #[doc(hidden)]
+    _Lifetime(core::marker::PhantomData<&'a ()>),
+}
+
+/// Why [`AnyDecoder::set_wcalls`] did not take the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WcallsError {
+    /// The mode has no known-call list (it is FST4W's).
+    Unsupported(Unsupported),
+    /// The list is longer than the decoder keeps.
+    #[cfg(feature = "fst4w")]
+    TooManyCalls(crate::fst4w::decode::TooManyCalls),
+}
+
+impl core::fmt::Display for WcallsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            WcallsError::Unsupported(e) => core::fmt::Display::fmt(e, f),
+            #[cfg(feature = "fst4w")]
+            WcallsError::TooManyCalls(e) => core::fmt::Display::fmt(e, f),
+        }
+    }
+}
+
+impl core::error::Error for WcallsError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            WcallsError::Unsupported(e) => Some(e),
+            #[cfg(feature = "fst4w")]
+            WcallsError::TooManyCalls(e) => Some(e),
         }
     }
 }
@@ -154,6 +207,13 @@ macro_rules! any_decoder {
                 }
             }
 
+            /// The mode's library options, read-only: [`AnyDecoder::extras_mut`]'s twin.
+            pub fn extras(&self) -> AnyExtrasRef<'_> {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => AnyExtrasRef::$extras(d.extras()), )*
+                }
+            }
+
             /// Decode one period.
             pub fn decode(&mut self, slot: &SlotInput<'_>) -> AnySlotResult {
                 match self {
@@ -186,11 +246,11 @@ macro_rules! any_decoder {
             pub fn decode_with(
                 &mut self,
                 slot: &SlotInput<'_>,
-                on_row: &(dyn Fn(&Decoded, &RowDetail) + Sync),
+                on_row: OnRow<'_, ()>,
             ) -> AnySlotResult {
                 match self {
                     $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => {
-                        let cb = |row: &Row<_>| on_row(&row.decoded, &row.detail);
+                        let cb = |row: &Row<_>| on_row(&erase_row(row));
                         let cb: OnRow<'_, _> = &cb;
                         erase(d.decode_with(slot, cb))
                     } )*
@@ -212,11 +272,11 @@ macro_rules! any_decoder {
             pub fn decode_prefix_with(
                 &mut self,
                 slot: &SlotInput<'_>,
-                on_row: &(dyn Fn(&Decoded, &RowDetail) + Sync),
+                on_row: OnRow<'_, ()>,
             ) -> AnySlotResult {
                 match self {
                     $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => {
-                        let cb = |row: &Row<_>| on_row(&row.decoded, &row.detail);
+                        let cb = |row: &Row<_>| on_row(&erase_row(row));
                         let cb: OnRow<'_, _> = &cb;
                         erase(d.decode_prefix_with(slot, cb))
                     } )*
@@ -313,16 +373,16 @@ impl AnyDecoder {
 
     /// FST4W's Keff-50 known-call list (`get_known_calls`), oldest first.
     /// `Unsupported` for every other mode.
-    pub fn wcalls(&self) -> Result<alloc::vec::Vec<alloc::string::String>, Unsupported> {
+    pub fn wcalls(&self) -> Result<&[alloc::string::String], Unsupported> {
         match self {
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W120(d) => Ok(d.wcalls().to_vec()),
+            AnyDecoder::Fst4W120(d) => Ok(d.wcalls()),
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W300(d) => Ok(d.wcalls().to_vec()),
+            AnyDecoder::Fst4W300(d) => Ok(d.wcalls()),
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W900(d) => Ok(d.wcalls().to_vec()),
+            AnyDecoder::Fst4W900(d) => Ok(d.wcalls()),
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W1800(d) => Ok(d.wcalls().to_vec()),
+            AnyDecoder::Fst4W1800(d) => Ok(d.wcalls()),
             _ => Err(Unsupported {
                 mode: self.mode(),
                 option: "known-call list",
@@ -331,25 +391,23 @@ impl AnyDecoder {
     }
 
     /// Replace FST4W's known-call list (`set_known_calls`): at most 100
-    /// entries of 20 characters. `Unsupported` for every other mode, and for
-    /// a longer list.
+    /// entries of 20 characters. [`WcallsError::Unsupported`] for every other
+    /// mode, [`WcallsError::TooManyCalls`] for a longer list.
     #[cfg_attr(not(feature = "fst4w"), allow(unused_variables))]
-    pub fn set_wcalls(&mut self, calls: &[alloc::string::String]) -> Result<(), Unsupported> {
-        let mode = self.mode();
-        let refused = Unsupported {
-            mode,
-            option: "known-call list",
-        };
+    pub fn set_wcalls(&mut self, calls: &[alloc::string::String]) -> Result<(), WcallsError> {
         match self {
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W120(d) => d.set_wcalls(calls).map_err(|_| refused),
+            AnyDecoder::Fst4W120(d) => d.set_wcalls(calls).map_err(WcallsError::TooManyCalls),
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W300(d) => d.set_wcalls(calls).map_err(|_| refused),
+            AnyDecoder::Fst4W300(d) => d.set_wcalls(calls).map_err(WcallsError::TooManyCalls),
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W900(d) => d.set_wcalls(calls).map_err(|_| refused),
+            AnyDecoder::Fst4W900(d) => d.set_wcalls(calls).map_err(WcallsError::TooManyCalls),
             #[cfg(feature = "fst4w")]
-            AnyDecoder::Fst4W1800(d) => d.set_wcalls(calls).map_err(|_| refused),
-            _ => Err(refused),
+            AnyDecoder::Fst4W1800(d) => d.set_wcalls(calls).map_err(WcallsError::TooManyCalls),
+            _ => Err(WcallsError::Unsupported(Unsupported {
+                mode: self.mode(),
+                option: "known-call list",
+            })),
         }
     }
 

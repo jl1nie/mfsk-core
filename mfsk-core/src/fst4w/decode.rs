@@ -183,6 +183,14 @@ fn fit_wcall(s: &str) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TooManyCalls;
 
+impl core::fmt::Display for TooManyCalls {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "more than {MAX_WCALLS} known calls")
+    }
+}
+
+impl core::error::Error for TooManyCalls {}
+
 /// One FST4W decode.
 #[derive(Clone, Debug)]
 #[non_exhaustive]

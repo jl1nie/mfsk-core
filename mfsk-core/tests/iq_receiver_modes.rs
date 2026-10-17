@@ -72,7 +72,9 @@ fn check(kind: Channelizer, mode: Mode, path: &str, slot_s: usize) {
     let wav: Vec<f32> = wav.iter().map(|&s| s as f32 / 32_768.0).collect();
     let want = set(AnyDecoder::with_defaults(mode)
         .decode(&SlotInput::f32(&wav))
-        .rows);
+        .rows
+        .into_iter()
+        .map(|r| r.decoded));
     assert!(!want.is_empty(), "{mode:?}: the WAV path decoded nothing");
 
     let slots = through_iq(kind, mode, &wav, slot_s);
@@ -80,7 +82,7 @@ fn check(kind: Channelizer, mode: Mode, path: &str, slot_s: usize) {
     let mut rows = Vec::new();
     for slot in &slots {
         for d in decoder.decode(&slot.input()).rows {
-            rows.push((slot.clone(), d));
+            rows.push((slot.clone(), d.decoded));
         }
     }
     let got = set(rows.iter().map(|(_, d)| d.clone()));

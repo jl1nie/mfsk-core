@@ -40,31 +40,29 @@ fn check(mode: Mode, path: &str, key_len: usize) {
     };
     let mut d = AnyDecoder::with_defaults(mode);
     let streamed = Mutex::new(Vec::<Id>::new());
-    let out = d.decode_with(&SlotInput::f32(&a).period(100), &|row, det| {
+    let out = d.decode_with(&SlotInput::f32(&a).period(100), &|r| {
         streamed
             .lock()
             .unwrap()
-            .push((det.info.clone(), row.freq_hz.round() as i64));
+            .push((r.detail.info.clone(), r.decoded.freq_hz.round() as i64));
     });
     let name = mode.name();
     assert!(
         !out.rows.is_empty(),
         "{name}: the recording decoded nothing"
     );
-    assert_eq!(out.rows.len(), out.details.len());
 
     let returned: Vec<Id> = out
         .rows
         .iter()
-        .zip(&out.details)
-        .map(|(r, det)| (det.info.clone(), r.freq_hz.round() as i64))
+        .map(|r| (r.detail.info.clone(), r.decoded.freq_hz.round() as i64))
         .collect();
     for ((key, _), row) in returned.iter().zip(&out.rows) {
         assert_eq!(
             key.len(),
             key_len,
             "{name}: {:?} has a {}-bit key, expected {key_len}",
-            row.text,
+            row.decoded.text,
             key.len()
         );
         assert!(
@@ -134,11 +132,10 @@ fn jt65_rows_carry_their_72_bits_and_the_repeated_message_is_three_rows() {
     let k1abc: Vec<_> = out
         .rows
         .iter()
-        .zip(&out.details)
-        .filter(|(r, _)| r.text == "K1ABC W9XYZ EN37")
+        .filter(|r| r.decoded.text == "K1ABC W9XYZ EN37")
         .collect();
     assert_eq!(k1abc.len(), 3, "{:?}", out.rows);
-    assert!(k1abc.iter().all(|(_, d)| d.info == k1abc[0].1.info));
+    assert!(k1abc.iter().all(|r| r.detail.info == k1abc[0].detail.info));
 }
 
 /// Q65 needs the search window and nominal start of `decoder_depth.rs`; at the
@@ -267,17 +264,16 @@ fn when_delivery_is_exact_the_stream_is_the_returned_rows_in_order() {
         d.params_mut().depth = depth;
         assert!(d.delivery_is_exact(), "{} {depth:?}", mode.name());
         let streamed = Mutex::new(Vec::<Id>::new());
-        let out = d.decode_with(&SlotInput::f32(&a).period(100), &|row, det| {
+        let out = d.decode_with(&SlotInput::f32(&a).period(100), &|r| {
             streamed
                 .lock()
                 .unwrap()
-                .push((det.info.clone(), row.freq_hz.round() as i64));
+                .push((r.detail.info.clone(), r.decoded.freq_hz.round() as i64));
         });
         let returned: Vec<Id> = out
             .rows
             .iter()
-            .zip(&out.details)
-            .map(|(r, det)| (det.info.clone(), r.freq_hz.round() as i64))
+            .map(|r| (r.detail.info.clone(), r.decoded.freq_hz.round() as i64))
             .collect();
         assert!(
             !returned.is_empty(),
@@ -299,10 +295,11 @@ fn when_delivery_is_exact_the_stream_is_the_returned_rows_in_order() {
 fn provided(mode: Mode, path: &str) -> Option<Vec<(bool, bool, bool)>> {
     let a = common::load_wav_f32_opt(path)?;
     let out = AnyDecoder::with_defaults(mode).decode(&SlotInput::f32(&a).period(100));
-    assert!(!out.details.is_empty(), "{}: nothing decoded", mode.name());
+    assert!(!out.rows.is_empty(), "{}: nothing decoded", mode.name());
     Some(
-        out.details
+        out.rows
             .iter()
+            .map(|r| &r.detail)
             .map(|d| {
                 (
                     d.sync_score.is_some(),
@@ -404,12 +401,12 @@ fn check_delivery(mode: Mode, depth: Depth, path: &str, exact_expected: bool) {
     assert_eq!(d.delivery_is_exact(), exact_expected, "{name} {depth:?}");
 
     let streamed = Mutex::new(Vec::<(Option<u32>, String, Vec<u8>, u32)>::new());
-    let out = d.decode_with(&SlotInput::f32(&a).period(100), &|row, det| {
+    let out = d.decode_with(&SlotInput::f32(&a).period(100), &|r| {
         streamed.lock().unwrap().push((
-            det.delivery,
-            row.text.clone(),
-            det.info.clone(),
-            row.freq_hz.to_bits(),
+            r.detail.delivery,
+            r.decoded.text.clone(),
+            r.detail.info.clone(),
+            r.decoded.freq_hz.to_bits(),
         ));
     });
     let streamed = streamed.into_inner().unwrap();
@@ -428,7 +425,8 @@ fn check_delivery(mode: Mode, depth: Depth, path: &str, exact_expected: bool) {
     );
 
     // Every returned row names a delivery with the same content.
-    for (row, det) in out.rows.iter().zip(&out.details) {
+    for r in &out.rows {
+        let (row, det) = (&r.decoded, &r.detail);
         let i = det
             .delivery
             .unwrap_or_else(|| panic!("{name}: {:?} was streamed but names no delivery", row.text));
@@ -444,7 +442,7 @@ fn check_delivery(mode: Mode, depth: Depth, path: &str, exact_expected: bool) {
         );
     }
     // Two returned rows never share a delivery.
-    let mut named: Vec<u32> = out.details.iter().filter_map(|d| d.delivery).collect();
+    let mut named: Vec<u32> = out.rows.iter().filter_map(|r| r.detail.delivery).collect();
     named.sort_unstable();
     named.dedup();
     assert_eq!(named.len(), out.rows.len(), "{name}: rows share a delivery");
@@ -460,7 +458,10 @@ fn check_delivery(mode: Mode, depth: Depth, path: &str, exact_expected: bool) {
 
     // A plain decode has no deliveries to name.
     let plain = AnyDecoder::with_defaults(mode).decode(&SlotInput::f32(&a).period(100));
-    assert!(plain.details.iter().all(|d| d.delivery.is_none()), "{name}");
+    assert!(
+        plain.rows.iter().all(|r| r.detail.delivery.is_none()),
+        "{name}"
+    );
 }
 
 #[test]

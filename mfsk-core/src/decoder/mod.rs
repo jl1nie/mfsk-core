@@ -84,7 +84,7 @@ pub use fst4w::Fst4wExtras;
     feature = "jt65",
     feature = "q65"
 ))]
-pub use any::{AnyDecoder, AnyExtras, AnySlotResult, Unsupported};
+pub use any::{AnyDecoder, AnyExtras, AnyExtrasRef, AnySlotResult, Unsupported, WcallsError};
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
 pub use params::SearchTuning;
 pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, Station};
@@ -92,6 +92,7 @@ pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, 
 use alloc::vec::Vec;
 
 pub use crate::engine::pipeline::{BudgetCheck, BudgetReport};
+use crate::msg::ApHint;
 use crate::msg::decoded::Decoded;
 use crate::registry::Mode;
 
@@ -456,6 +457,23 @@ impl<P: Decodable> core::fmt::Debug for Decoder<P> {
     }
 }
 
+/// Library options that carry a free-form AP hint (FT8, FT4, FST4, Q65).
+pub trait HasApHint {
+    /// The hint slot, `None` when no hint is set.
+    fn ap_hint_mut(&mut self) -> &mut Option<ApHint>;
+}
+
+impl<P: Decodable> Decoder<P>
+where
+    P::Extras: HasApHint,
+{
+    /// Set or clear the free-form AP hint ("hunt this DX"); the modes whose
+    /// extras carry one are FT8, FT4, FST4 and Q65.
+    pub fn set_ap_hint(&mut self, hint: Option<ApHint>) {
+        *self.extras.ap_hint_mut() = hint;
+    }
+}
+
 impl<P: Decodable> Decoder<P> {
     /// A decoder with `params`. Allocates nothing until the first decode.
     pub fn new(params: DecodeParams) -> Self {
@@ -498,6 +516,14 @@ impl<P: Decodable> Decoder<P> {
     /// Decode one period.
     pub fn decode(&mut self, slot: &SlotInput<'_>) -> SlotResult<P::Row> {
         P::__decode(&self.params, &self.extras, &mut self.state, slot, None)
+    }
+
+    /// Decode one period of `i16` audio: [`Decoder::decode`] of
+    /// `SlotInput::i16(audio)` with `period` set.
+    pub fn decode_i16(&mut self, audio: &[i16], period: Option<i64>) -> SlotResult<P::Row> {
+        let mut slot = SlotInput::i16(audio);
+        slot.period = period;
+        self.decode(&slot)
     }
 
     /// Whether [`Decoder::decode_with`] with the current settings delivers

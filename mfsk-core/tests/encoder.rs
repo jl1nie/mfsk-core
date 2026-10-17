@@ -56,7 +56,7 @@ fn every_mode_encodes_to_what_the_decoder_reads() {
         let period = period_of(mode, &audio, 5);
         let mut dec = AnyDecoder::with_defaults(mode);
         let res = dec.decode_i16(&period, Some(0));
-        let got: Vec<&str> = res.rows.iter().map(|r| r.text.as_str()).collect();
+        let got: Vec<&str> = res.rows.iter().map(|r| r.decoded.text.as_str()).collect();
         let ok = got.contains(&tx.text.as_str());
         eprintln!(
             "{:10} sent {:?} decoded {:?} ({:.1} s)",

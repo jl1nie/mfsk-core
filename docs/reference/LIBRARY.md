@@ -1545,8 +1545,8 @@ let mut slots = Vec::new();
 rx.push_cf32(&vec![0.0f32; 2 * 4096], &mut slots); // interleaved I/Q; also push_cs16 / push_bytes
 for slot in slots {
     let out = decoders.get_mut(&slot.channel).unwrap().decode(&slot.input());
-    for d in &out.rows {
-        println!("{:.1} Hz  {}", slot.abs_freq_hz(d.freq_hz), d.text);
+    for row in &out.rows {
+        println!("{:.1} Hz  {}", slot.abs_freq_hz(row.decoded.freq_hz), row.decoded.text);
     }
 }
 let report = rx.retune(14_201_000.0); // RetuneReport { paused, resumed }

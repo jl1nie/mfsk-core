@@ -322,10 +322,10 @@ fn any_decoder_runs_the_same_sequence() {
     let mut any = AnyDecoder::with_defaults(Mode::Ft8);
     for (len, w) in [A, B, FULL].iter().zip(&want) {
         let got = any.decode_prefix(&SlotInput::i16(&audio[..*len]).period(9));
-        let texts: Vec<_> = got.rows.iter().map(|r| r.text.clone()).collect();
+        let texts: Vec<_> = got.rows.iter().map(|r| r.decoded.text.clone()).collect();
         let want: Vec<_> = w.rows.iter().map(|r| r.decoded.text.clone()).collect();
         assert_eq!(texts, want, "at {len}");
-        assert!(got.details.iter().all(|d| d.stage.is_some()));
+        assert!(got.rows.iter().all(|r| r.detail.stage.is_some()));
     }
 }
 

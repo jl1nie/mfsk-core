@@ -17,7 +17,9 @@
 use super::*;
 
 use mfsk_core::decoder::{AnyDecoder, AnyExtras, ApMode, Contest, QsoProgress};
-use mfsk_core::decoder::{Audio, DecodeParams, Depth, RowDetail, SlotInput, default_params};
+use mfsk_core::decoder::{
+    Audio, DecodeParams, Depth, RowDetail, SlotInput, WcallsError, default_params,
+};
 use mfsk_core::msg::{ApHint, Decoded};
 
 pub use mfsk_ffi_abi::{MfskDecoder, MfskExtras, MfskParams};
@@ -1187,8 +1189,8 @@ fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64, prefix: bool) -> Resul
     }
     let mode = d.mode;
     let (cb, cb_user) = (d.on_decode, d.on_decode_user);
-    let deliver = move |dec: &Decoded, det: &RowDetail| {
-        let row = row_of(mode, dec, det);
+    let deliver = move |r: &mfsk_core::decoder::Row<()>| {
+        let row = row_of(mode, &r.decoded, &r.detail);
         if let Some(cb) = cb {
             unsafe { cb(&row, cb_user.ptr()) };
         }
@@ -1200,7 +1202,11 @@ fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64, prefix: bool) -> Resul
         (false, true) => d.any.decode_prefix(&slot),
     };
     d.last_budget = budget_report(&result.budget);
-    d.last = result.rows.into_iter().zip(result.details).collect();
+    d.last = result
+        .rows
+        .into_iter()
+        .map(|r| (r.decoded, r.detail))
+        .collect();
     Ok(())
 }
 
@@ -1616,6 +1622,7 @@ pub unsafe extern "C" fn mfsk_decoder_set_wcalls(
     }
     match d.any.set_wcalls(&list) {
         Ok(()) => MfskStatus::Ok,
+        Err(e @ WcallsError::TooManyCalls(_)) => d.fail(MfskStatus::InvalidArg, e.to_string()),
         Err(e) => d.fail(MfskStatus::Unsupported, e.to_string()),
     }
 }

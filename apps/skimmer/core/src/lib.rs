@@ -424,7 +424,8 @@ fn decode_streaming(
     // Only a parallel strategy can repeat a row.
     let guard = (!decoder.delivery_is_exact()).then(Delivered::default);
     let streamed = std::sync::Mutex::new(std::mem::take(sent));
-    let on_row = |row: &Decoded, detail: &RowDetail| {
+    let on_row = |r: &mfsk_core::decoder::Row<()>| {
+        let (row, detail) = (&r.decoded, &r.detail);
         if let Some(g) = &guard
             && !g.first_time(&row.text, row.freq_hz, &detail.info)
         {
@@ -441,7 +442,8 @@ fn decode_streaming(
         decoder.decode_with(slot, &on_row)
     };
     *sent = streamed.into_inner().unwrap();
-    for (row, detail) in out.rows.iter().zip(&out.details) {
+    for r in &out.rows {
+        let (row, detail) = (&r.decoded, &r.detail);
         match detail.delivery {
             Some(i) => match sent.get(&i) {
                 Some(t) if *t == row.text => {}
@@ -2971,7 +2973,7 @@ mod tests {
             .decode(&slot)
             .rows
             .into_iter()
-            .map(|d| d.text)
+            .map(|d| d.decoded.text)
             .collect();
         assert!(want.len() >= 2, "the slot must decode: {want:?}");
 
@@ -3007,7 +3009,7 @@ mod tests {
             .decode(&SlotInput::i16(&audio))
             .rows
             .into_iter()
-            .map(|d| d.text)
+            .map(|d| d.decoded.text)
             .collect();
         want.sort();
         assert!(want.len() >= 2, "{want:?}");

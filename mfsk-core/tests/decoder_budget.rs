@@ -49,7 +49,17 @@ fn check(mode: Mode, path: &str, at_least: usize) {
     // A budget that never stops is the same decode.
     let always = || true;
     let same = run(Some(&always));
-    assert_eq!(same.rows, full.rows, "{name}: a budget that never stops");
+    let pairs = |r: &mfsk_core::decoder::AnySlotResult| {
+        r.rows
+            .iter()
+            .map(|x| (x.decoded.clone(), x.detail.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        pairs(&same),
+        pairs(&full),
+        "{name}: a budget that never stops"
+    );
     assert!(!same.budget.exhausted, "{name}");
 
     // Spent from the start: nothing decoded, and it says why.
