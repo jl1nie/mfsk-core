@@ -1265,21 +1265,6 @@ fn gate(msg: &str, c: &Candidate) -> bool {
     let Some(decoded) = unpack77(&c.bits) else {
         return false;
     };
-    // Where this crate's `unpack77` differs from upstream's `unpack77_core` with an
-    // empty context, in ways that decide the gate (neither changes `unpack77`):
-    //
-    // 1. `unpack28_core` (`packjt77.f90:1013-1096`) fails a standard call that
-    //    `callok` (`:2438`) refuses, `AB1` or `FN4` for example; `unpack28` does not
-    //    check.
-    if !standard_calls_ok(&c.bits, c.i3, c.n3) {
-        return false;
-    }
-    // 2. A 28-bit field in 532444..`NTOKENS` is no token at all: upstream falls
-    //    through to the 22-bit hash branch with a negative hash and renders it
-    //    `<...>` (`hash22`, `:283`); `unpack28` renders `<?>`. That field is what
-    //    hashing a call with a character outside the base-38 alphabet gives
-    //    (`<...>` itself: `ihashcall('...')` is negative), and upstream accepts it.
-    let decoded = decoded.replace("<?>", "<...>");
     let di3 = read_bits(&c.bits, 74, 3);
     let dn3 = if di3 == 0 {
         read_bits(&c.bits, 71, 3)
@@ -1335,54 +1320,4 @@ fn gate(msg: &str, c: &Candidate) -> bool {
         }
     }
     messages_match && resolved_render_fits
-}
-
-/// The standard-call 28-bit fields of the bits, as `(first bit)`: where `unpack28`
-/// is applied for the type (`unpack77_decode_*`, `packjt77.f90:1534-1925`).
-fn standard_calls_ok(bits: &[u8; 77], i3: u8, n3: u8) -> bool {
-    let starts: &[usize] = match (i3, n3) {
-        (1 | 2, _) => &[0, 29],
-        (3, _) => &[1, 29],
-        (0, 1 | 3 | 4) => &[0, 28],
-        (0, 6) => &[0], // types 1 and 2 of WSPR; type 3 carries 22 bits, no standard call
-        _ => &[],
-    };
-    starts.iter().all(|&s| {
-        if i3 == 0 && n3 == 6 && bits[49] == 0 && bits[48] == 1 {
-            return true; // WSPR type 3: n22, not n28
-        }
-        let n28 = read_bits(bits, s, 28);
-        n28 < NTOKENS + MAX22 || callok(&super::unpack28(n28))
-    })
-}
-
-/// `callok` (`packjt77.f90:2438-2485`), and `unpack28_core`'s refusal of a call with a
-/// blank inside it (`:1088`).
-fn callok(w: &str) -> bool {
-    let b = w.as_bytes();
-    let n = b.len();
-    if n < 3 || b[0] == b'Q' {
-        return false;
-    }
-    if b.contains(&b' ') {
-        return false;
-    }
-    let i0 = (1..=n)
-        .rev()
-        .find(|&i| b[i - 1].is_ascii_digit())
-        .unwrap_or(0);
-    if i0 != 2 && i0 != 3 {
-        return false;
-    }
-    let pfx = &b[..i0 - 1];
-    let nlp = pfx.iter().filter(|c| c.is_ascii_alphabetic()).count();
-    let ndp = pfx.iter().filter(|c| c.is_ascii_digit()).count();
-    if nlp + ndp != pfx.len() || nlp == 0 {
-        return false;
-    }
-    let ns = n - i0;
-    if !(1..=3).contains(&ns) {
-        return false;
-    }
-    b[i0..].iter().filter(|c| c.is_ascii_alphabetic()).count() >= ns
 }

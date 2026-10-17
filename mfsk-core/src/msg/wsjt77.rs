@@ -128,12 +128,70 @@ fn fmt_report(isnr: i32, ir: u8) -> String {
     format!("{prefix}{sign}{:02}", isnr.abs())
 }
 
-/// Decode a 28-bit packed callsign token.
+/// Decode a 28-bit packed callsign token, as upstream's `unpack28_core`
+/// (`packjt77.f90:1013-1096`, WSJT-X v3.2.0-rc1; the function is the same in
+/// v3.3.0-beta1/beta2).
 ///
 /// Returns the human-readable callsign, "DE", "QRZ", "CQ", "CQ NNN",
 /// "CQ XXXX", or "<...>" when the token is a 22-bit hash that cannot be
-/// resolved without a call-sign database.
-pub(crate) fn unpack28(n28: u32) -> String {
+/// resolved without a call-sign database (`hash22`, `:283-297`). A field in
+/// 532444..`NTOKENS` is no token: upstream falls through to the 22-bit branch
+/// with a negative hash, finds nothing and renders it `<...>` too.
+///
+/// `None` is upstream's `success=.false.`: a standard call that `callok`
+/// (`:2438-2485`) refuses (`AB1`, `FN4`), or a call or CQ word with a blank
+/// inside it (`:1088-1094`). rc1's `unpack77` then treats the bits as not a
+/// valid message.
+pub(crate) fn unpack28(n28: u32) -> Option<String> {
+    let s = unpack28_unchecked(n28);
+    let ok = if n28 >= NTOKENS + MAX22 {
+        callok(&s)
+    } else {
+        // Specials and hashes: only the blank-inside test of `:1088` applies,
+        // and `CQ_aaaa` is one word there (`_` is a blank only on output).
+        match s.strip_prefix("CQ ") {
+            Some(rest) => !rest.contains(' '),
+            None => !s.contains(' '),
+        }
+    };
+    ok.then_some(s)
+}
+
+/// `callok` (`packjt77.f90:2438-2485`), and `unpack28_core`'s refusal of a call with a
+/// blank inside it (`:1088`).
+pub(crate) fn callok(w: &str) -> bool {
+    let b = w.as_bytes();
+    let n = b.len();
+    if n < 3 || b[0] == b'Q' {
+        return false;
+    }
+    if b.contains(&b' ') {
+        return false;
+    }
+    let i0 = (1..=n)
+        .rev()
+        .find(|&i| b[i - 1].is_ascii_digit())
+        .unwrap_or(0);
+    if i0 != 2 && i0 != 3 {
+        return false;
+    }
+    let pfx = &b[..i0 - 1];
+    let nlp = pfx.iter().filter(|c| c.is_ascii_alphabetic()).count();
+    let ndp = pfx.iter().filter(|c| c.is_ascii_digit()).count();
+    if nlp + ndp != pfx.len() || nlp == 0 {
+        return false;
+    }
+    let ns = n - i0;
+    if !(1..=3).contains(&ns) {
+        return false;
+    }
+    b[i0..].iter().filter(|c| c.is_ascii_alphabetic()).count() >= ns
+}
+
+/// [`unpack28`] without the `callok` / blank checks: the text of the field and
+/// nothing else. Used by JTTY, whose call words are its own format and are
+/// judged by `chkcall` there.
+pub(crate) fn unpack28_unchecked(n28: u32) -> String {
     if n28 < NTOKENS {
         return match n28 {
             0 => "DE".to_string(),
@@ -153,7 +211,7 @@ pub(crate) fn unpack28(n28: u32) -> String {
                 let i3 = (n / 27) as usize;
                 let i4 = (n % 27) as usize;
                 if i1 >= C4.len() || i2 >= C4.len() || i3 >= C4.len() || i4 >= C4.len() {
-                    return "<?>".to_string();
+                    return "<...>".to_string();
                 }
                 let suffix: String = [C4[i1], C4[i2], C4[i3], C4[i4]]
                     .iter()
@@ -201,15 +259,15 @@ pub(crate) fn unpack28(n28: u32) -> String {
 }
 
 /// Decode a 28-bit packed callsign token, with hash table lookup.
-fn unpack28_h(n28: u32, ht: &CallsignHashTable) -> String {
+fn unpack28_h(n28: u32, ht: &CallsignHashTable) -> Option<String> {
     if n28 >= NTOKENS {
         let n = n28 - NTOKENS;
         if n < MAX22 {
             // 22-bit hash — try table lookup
             if let Some(resolved) = ht.lookup22(n) {
-                return alloc::format!("<{}>", resolved);
+                return Some(alloc::format!("<{}>", resolved));
             }
-            return "<...>".to_string();
+            return Some("<...>".to_string());
         }
     }
     unpack28(n28)
@@ -447,7 +505,7 @@ fn unpack_free_text(msg: &[u8]) -> String {
 /// - `0/0`  Free text
 /// - `0/1`  DXpedition RR73
 /// - `0/3`, `0/4`  ARRL Field Day: `CALL1 CALL2 [R] <ntx><class> SEC`
-/// - `0/5`  Telemetry, 71 bits as up to 18 hex digits
+/// - `0/5`  Telemetry, 71 bits as 18 hex digits
 /// - `0/6`  WSPR types 1/2/3
 /// - `1`    Standard: `CALL1 CALL2 GRID` or `CALL1 CALL2 REPORT`
 /// - `2`    Standard with `/P`
@@ -533,7 +591,7 @@ pub fn register_callsigns(msg: &[u8], ht: &mut CallsignHashTable) {
     let i3 = read_bits(msg, 74, 3);
 
     let learn_std = |n28: u32, ht: &mut CallsignHashTable| {
-        let call = unpack28(n28);
+        let Some(call) = unpack28(n28) else { return };
         if is_standard_callsign(&call) {
             ht.insert(&call);
         }
@@ -554,7 +612,7 @@ pub fn register_callsigns(msg: &[u8], ht: &mut CallsignHashTable) {
             // with that suffix (rc1 `packjt77.f90:1755-1765`), and a later `<CALL/P>` hash names it.
             let suffix = if i3 == 1 { "/R" } else { "/P" };
             let learn_with_flag = |n28: u32, flag_at: usize, ht: &mut CallsignHashTable| {
-                let call = unpack28(n28);
+                let Some(call) = unpack28(n28) else { return };
                 if is_standard_callsign(&call) {
                     if read_bits(msg, flag_at, 1) == 1 {
                         ht.insert(&format!("{call}{suffix}"));
@@ -662,7 +720,7 @@ pub enum Wsjt77Fields {
         class: char,
         section: &'static str,
     },
-    /// `i3=0, n3=5` — 71 bits as up to 18 hex digits. Valid by
+    /// `i3=0, n3=5` — 71 bits as 18 hex digits. Valid by
     /// construction, like [`Self::FreeText`].
     Telemetry(String),
     /// `i3=0, n3=6` — the WSPR types. `call` is a plain or hashed
@@ -918,8 +976,8 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
                 if n28a <= 2 || n28b <= 2 {
                     return None;
                 }
-                let c1 = unpack28_h(n28a, ht);
-                let c2 = unpack28_h(n28b, ht);
+                let c1 = unpack28_h(n28a, ht)?;
+                let c2 = unpack28_h(n28b, ht)?;
                 let c3 = if let Some(call) = ht.lookup10(n10) {
                     format!("<{}>", call)
                 } else {
@@ -933,22 +991,16 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
                 })
             }
             5 => {
-                // `packjt77.f90:360` — telemetry, 71 bits shown as 18 hex
-                // digits with leading zeros blanked. Not implemented here
-                // until now, so a telemetry message was a dropped decode
-                // rather than a rejected one.
+                // `packjt77.f90:1632-1640` (rc1): three fields written with
+                // `format(3z6.6)`, so always 18 hex digits, leading zeros
+                // kept (an older version blanked them; rc1 does not).
                 let hex = format!(
                     "{:06X}{:06X}{:06X}",
                     read_bits(msg, 0, 23),
                     read_bits(msg, 23, 24),
                     read_bits(msg, 47, 24)
                 );
-                // Upstream blanks leading '0's and left-justifies, which
-                // for an all-zero payload leaves an empty message — it
-                // reports success either way, and so do we.
-                Some(Wsjt77Fields::Telemetry(
-                    hex.trim_start_matches('0').to_string(),
-                ))
+                Some(Wsjt77Fields::Telemetry(hex))
             }
             6 => {
                 // `packjt77.f90:372` — WSPR-type. `itype` comes from bits
@@ -970,7 +1022,7 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
                         let idbm = wspr_dbm(read_bits(msg, 43, 5))?;
                         let grid = to_grid4(igrid4)?;
                         Some(Wsjt77Fields::Wspr {
-                            call: unpack28_h(n28, ht),
+                            call: unpack28_h(n28, ht)?,
                             tail: format!("{} {}", grid, idbm),
                         })
                     }
@@ -978,7 +1030,7 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
                         let n28 = read_bits(msg, 0, 28);
                         let npfx = read_bits(msg, 28, 16);
                         let idbm = wspr_dbm(read_bits(msg, 44, 5))?;
-                        let call = unpack28_h(n28, ht);
+                        let call = unpack28_h(n28, ht)?;
                         let composed = wspr_prefix_suffix(npfx, &call)?;
                         Some(Wsjt77Fields::Wspr {
                             call: composed,
@@ -990,7 +1042,7 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
                         let igrid6 = read_bits(msg, 22, 25);
                         let grid = to_grid(igrid6)?;
                         Some(Wsjt77Fields::Wspr {
-                            call: unpack28_h(n22 + NTOKENS, ht),
+                            call: unpack28_h(n22 + NTOKENS, ht)?,
                             tail: grid,
                         })
                     }
@@ -1025,8 +1077,8 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
                 // n3=4 is simply the +16 continuation of n3=3's range.
                 let ntx = intx + 1 + if n3 == 4 { 16 } else { 0 };
                 let class = (b'A' + nclass as u8) as char;
-                let c1 = unpack28_h(n28a, ht);
-                let c2 = unpack28_h(n28b, ht);
+                let c1 = unpack28_h(n28a, ht)?;
+                let c2 = unpack28_h(n28b, ht)?;
                 // `packjt77.f90:350-357` writes this as four separate
                 // cases because its `cntx` is a fixed-width `character*3`
                 // whose leading blank doubles as the separator for
@@ -1052,8 +1104,8 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
             let ir = msg[58] & 1;
             let igrid = read_bits(msg, 59, 15);
 
-            let mut c1 = unpack28_h(n28a, ht);
-            let mut c2 = unpack28_h(n28b, ht);
+            let mut c1 = unpack28_h(n28a, ht)?;
+            let mut c2 = unpack28_h(n28b, ht)?;
 
             if ipa == 1 && !c1.starts_with('<') && !c1.starts_with("CQ") {
                 c1.push_str(if i3 == 1 { "/R" } else { "/P" });
@@ -1114,8 +1166,8 @@ fn unpack77_dispatch(msg: &[u8], ht: &CallsignHashTable, i3: u32, n3: u32) -> Op
             let ir = msg[57] & 1;
             let irpt = read_bits(msg, 58, 3) as u8;
             let nexch = read_bits(msg, 61, 13);
-            let c1 = unpack28_h(n28a, ht);
-            let c2 = unpack28_h(n28b, ht);
+            let c1 = unpack28_h(n28a, ht)?;
+            let c2 = unpack28_h(n28b, ht)?;
             let rst = format!("5{}9", irpt + 2);
             let exch = if nexch > 8000 && (nexch as usize - 8000) <= RTTY_STATES.len() {
                 RTTY_STATES[(nexch as usize - 8000) - 1].to_string()
@@ -2374,7 +2426,7 @@ mod tests {
         // Standard callsigns
         for call in &["JQ1QSO", "3Y0Z", "R7IW", "JA1ABC", "W1AW", "VK2RG"] {
             let n = pack28(call).unwrap_or_else(|| panic!("pack28 failed for {call}"));
-            let decoded = unpack28(n);
+            let decoded = unpack28(n).expect("unpacks");
             assert_eq!(
                 decoded,
                 call.trim(),
@@ -2389,15 +2441,15 @@ mod tests {
         // CQ with directional suffix — roundtrip
         for cq in &["CQ POTA", "CQ SOTA", "CQ DX", "CQ NA", "CQ EU"] {
             let n = pack28(cq).unwrap_or_else(|| panic!("pack28 failed for {cq}"));
-            let decoded = unpack28(n);
+            let decoded = unpack28(n).expect("unpacks");
             assert_eq!(decoded, *cq, "CQ suffix roundtrip mismatch for {cq}");
         }
 
         // CQ with numeric suffix
         let n = pack28("CQ 001").unwrap();
-        assert_eq!(unpack28(n), "CQ 001");
+        assert_eq!(unpack28(n).as_deref(), Some("CQ 001"));
         let n = pack28("CQ 999").unwrap();
-        assert_eq!(unpack28(n), "CQ 999");
+        assert_eq!(unpack28(n).as_deref(), Some("CQ 999"));
     }
 
     #[test]
@@ -3408,8 +3460,8 @@ mod tests {
         }
     }
 
-    /// `packjt77.f90:360` — telemetry, 71 bits as 18 hex digits.
-    /// Returned `None` before this was ported: a dropped decode.
+    /// rc1 `packjt77.f90:1632-1640` — telemetry, 71 bits as 18 hex digits (`format(3z6.6)`):
+    /// the leading zeros stay. Expected texts from rc1's own `unpack77`.
     #[test]
     fn telemetry_decodes_as_eighteen_hex_digits() {
         let m = bits77(&[
@@ -3419,11 +3471,8 @@ mod tests {
             (71, 3, 5),
         ]);
         assert_eq!(unpack77(&m).as_deref(), Some("123456789ABCDEF012"));
-        // Leading zeros are blanked, as upstream's loop does — *all* of
-        // them, across the group boundary: the three fields render as
-        // `000000` `0000AB` `CD0000` and ten zeros come off the front.
         let z = bits77(&[(23, 24, 0x00_00AB), (47, 24, 0xCD_0000), (71, 3, 5)]);
-        assert_eq!(unpack77(&z).as_deref(), Some("ABCD0000"));
+        assert_eq!(unpack77(&z).as_deref(), Some("0000000000ABCD0000"));
     }
 
     /// `packjt77.f90:387` — WSPR type 1, `CALL GRID4 DBM`.

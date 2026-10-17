@@ -415,9 +415,7 @@ fn a7_decode(
     if text.starts_with("CQ ") && is_standard_callsign(call_2) && grid4.is_empty() {
         return None;
     }
-    if text.starts_with("QU1RK ") {
-        return None;
-    }
+    // (A best fit on a `QU1RK` stand-in never gets here: `unpack77` refuses it above.)
 
     let tones: [u8; 79] = crate::engine::tx::message_to_tones::<Ft8>(&m77)
         .try_into()
@@ -837,9 +835,11 @@ mod tests {
         assert_eq!(text(7), "K1ABC W9XYZ -50");
         assert_eq!(text(8), "K1ABC W9XYZ R-50");
         assert_eq!(text(206), "K1ABC W9XYZ R+49");
-        let cq = |i| unpack77(&a7_message(i, "CQ", "W9XYZ", "EN37").unwrap()).unwrap();
-        assert_eq!(cq(5), "CQ W9XYZ EN37");
-        assert!(cq(1).starts_with("QU1RK W9XYZ"));
+        let cq = |i| unpack77(&a7_message(i, "CQ", "W9XYZ", "EN37").unwrap());
+        assert_eq!(cq(5).as_deref(), Some("CQ W9XYZ EN37"));
+        // The stand-in `QU1RK` is no call: `callok` refuses a leading Q (`packjt77.f90:2438`), so
+        // rc1's `unpack77` fails on it and `ft8_a7d` has no message to print.
+        assert_eq!(cq(1), None);
     }
 
     #[test]

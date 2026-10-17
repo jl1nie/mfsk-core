@@ -162,17 +162,7 @@ fn accepted_messages_unpack_to_what_rc1_prints() {
         let p = pack77_message(&r.msg, &options(r.prefer)).expect("accepted by the other test");
         accepted += 1;
         let got = unpack77(&p.bits).unwrap_or_else(|| "*unpack failed*".into());
-        // Telemetry is the one text that differs, and by `unpack77`, not by the packer: rc1 prints
-        // all 18 hex digits (`format(3z6.6)`, `packjt77.f90:1640`), this crate's `unpack77` drops
-        // the leading zeros. The payload is the same 71 bits either way.
-        let want = if r.i3n3 == "0.5" {
-            r.decoded.trim_start_matches('0')
-        } else {
-            r.decoded.as_str()
-        };
-        // And the 28-bit fields 532444..2063591 (no token): upstream renders them `<...>`, this
-        // crate's `unpack28` `<?>`; `<...>` as a call hashes into that range.
-        let got = got.replace("<?>", "<...>");
+        let want = r.decoded.as_str();
         if got.trim_end() != want {
             bad.push(format!("{:?}: want {:?}, got {got:?}", r.msg, r.decoded));
         }

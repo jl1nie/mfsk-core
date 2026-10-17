@@ -482,7 +482,7 @@ pub fn decode_word(word: u32) -> Option<Atom> {
             if i2 == 1 && n2 > 1 {
                 return None;
             }
-            let call = wsjt77::unpack28(word >> 4);
+            let call = wsjt77::unpack28_unchecked(word >> 4);
             if !is_standard_call(&call) {
                 return None;
             }
@@ -608,7 +608,7 @@ fn call28(call: &str) -> Option<u32> {
     if n28 < wsjt77::NTOKENS + wsjt77::MAX22 {
         return None;
     }
-    (wsjt77::unpack28(n28) == call).then_some(n28)
+    (wsjt77::unpack28_unchecked(n28) == call).then_some(n28)
 }
 
 /// `chkcall.f90` for a call without `/`: 3–6 characters …
