@@ -294,3 +294,53 @@ behind `Decoder::set_ap_hint`.
 `ChannelId`, `Channelizer`, `CompletedSlot`, `IqReceiver` with the receiver's gate). `WcallsError`, `HasApHint`, `AnyExtras` and
 `AnyExtrasRef` are left out: the first is named only by code that matches on `set_wcalls`'s error, the others are a bound and types that are
 used without being named. No name clashes inside the prelude (it compiles as a glob import beside `mfsk_core::Ft8` in its doctest).
+
+## 15. Added to 0.14: the C ABI encoder, WSPR types 2/3, JT9/JT65 full messages (user, 2026-10-17)
+
+§7.1 and §7.2 were out of scope; the user moved them into 0.14. Planned by Opus, implemented by Sonnet agents, as before.
+
+### 15.1 C ABI: one encoder call over the mode (was §7.2)
+
+Additive; the per-mode `mfsk_encode_*` stay (ABI 3 keeps every symbol).
+
+```c
+/* flags: MFSK_ENCODE_Q65_COPIED_LAST_TX (bit 0); others reserved, must be 0. */
+MfskStatus mfsk_encode(uint32_t mode, const char *text, uint32_t flags,
+                       uint32_t sample_rate, float freq_hz,
+                       float *out, size_t cap, size_t *out_len);           /* f32 PCM, same buffer contract as mfsk_encode_ft8 */
+MfskStatus mfsk_encode_info(uint32_t mode, const char *text, uint32_t flags,
+                            uint8_t *tones, size_t tones_cap, size_t *tones_len,
+                            char *text_out, size_t text_cap,               /* what a receiver prints, NUL-terminated */
+                            char *hashed_out, size_t hashed_cap);          /* hashed calls, space-separated, NUL-terminated */
+```
+
+`mode` is the C ABI's `MfskMode` number (as `mfsk_decoder_open` takes it). `EncodeError::Message` → `MFSK_STATUS_INVALID_ARG` with
+the `Pack77Error` (or the message family's error) in `mfsk_last_error`; `EncodeError::Unsupported` → `MFSK_STATUS_UNSUPPORTED`. The
+header is regenerated with cbindgen and committed. Kotlin (`Mfsk.kt` + `native/mfsk_jni.c`) and Swift (`Sources/MfskCore`) get one
+`encode(mode, text, …)` each, in the style of their existing `encode` functions. **Not verifiable on this host** (no `jni.h`/`kotlinc`, no
+Xcode): their CI jobs are the check. If the C ABI has no way to feed `hashed_calls` back to a decoder (`learn_callsign`), add
+`mfsk_decoder_learn_callsign(dec, call)` beside `mfsk_decoder_unpack77`.
+
+### 15.2 WSPR types 2 and 3 (was §7.1)
+
+Port `wqencode` (`lib/wqencode.f90`, rc1) as `msg::wspr::pack_message(text) -> Result<WsprPacked, WsprPackError>` covering type 1
+(`CALL GRID4 DBM`), type 2 (`PFX/CALL DBM`, `CALL/SFX DBM`) and type 3 (`<CALL> GRID6 DBM`), with upstream's power handling (clamp to
+0..60 and round to the WSPR set with the `nu` table: **upstream rounds, it does not refuse** — the A1 route refuses a power outside the set
+and must follow upstream). The encoder's WSPR arm uses it; `EncodeError::Unsupported` for WSPR goes away. Unpacking of all three types
+exists (`msg::wspr::unpack`). A station with a compound call alternates type 2 and type 3 transmissions; that schedule is the
+application's (WSJT-X's GUI does it), and `encoder` documents it. Test against rc1's own `wqencode` built with gfortran (as
+`scripts/pack77`), vendored fixture.
+
+### 15.3 JT9 / JT65 full messages (was §7.1)
+
+Port `packmsg` / `unpackmsg` / `packtext` / `unpacktext` and the prefix/suffix handling (`lib/packjt.f90:401-709`, rc1) into `msg::jt72`:
+`pack_message(text) -> Result<([u8; 12], itype), Jt72PackError>` and an unpack that renders every type as upstream does (standard,
+compound calls, free text, …), replacing `Jt72Message::Unsupported` for the forms upstream renders. The JT9 and JT65 decoders then print
+what `jt9` prints: compare against the vendored reference outputs (tier B golden tests); a recall or text change is reported with evidence,
+not hidden. The encoder's JT arm uses `pack_message`; its `Unsupported` goes away. Test against rc1's own `packmsg`/`unpackmsg` built with
+gfortran, vendored fixture.
+
+### 15.4 Order
+
+15.1 (main tree, `mfsk-ffi` + bindings), 15.2 and 15.3 (each in its own worktree; both touch `encoder.rs` in different arms, merged by the
+planner) run in parallel. CHANGELOG, LIBRARY.md §1.3 / §2 and BINDINGS.md (+ `.ja.md`) follow the merge.
