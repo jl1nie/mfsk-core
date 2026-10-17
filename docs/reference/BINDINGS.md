@@ -445,6 +445,55 @@ power_dbm), `_jt9`, `_jt65`, `_q65` (leading `submode`). For a type-1,
 type-4 or free-text message, go through `mfsk_pack77_*` and the tone
 pipeline instead.
 
+**One call over the mode (0.14).** `mfsk_encode` and `mfsk_encode_info` are to
+transmit what `mfsk_decoder_open` is to receive: the mode is a number, the text
+is the message as WSJT-X's Tx box shows it, and the library packs it.
+
+```c
+MfskStatus mfsk_encode(uint32_t mode, const char *text, uint32_t flags,
+                       uint32_t sample_rate, float freq_hz,
+                       float *out, size_t cap, size_t *out_len);
+MfskStatus mfsk_encode_info(uint32_t mode, const char *text, uint32_t flags,
+                            uint8_t *tones, size_t tones_cap, size_t *tones_len,
+                            char *text_out, size_t text_cap, size_t *text_len,
+                            char *hashed_out, size_t hashed_cap, size_t *hashed_len);
+```
+
+* `mode` is an `MfskMode` number; `text` is any message the mode can send: the
+  77-bit messages (free text, non-standard calls, `<CALL>` hashes), WSPR types 1,
+  2 and 3 (`CALL GRID4 DBM`, `PFX/CALL DBM` or `CALL/SFX DBM`, `<CALL> GRID6 DBM`;
+  a station with a compound call alternates types 2 and 3, the application's
+  schedule; the power is rounded to a value WSPR sends, 38 → 37), FST4W's
+  WSPR-type messages, and JT9 / JT65 standard, compound-call and free-text
+  messages.
+* `flags`: `MFSK_ENCODE_Q65_COPIED_LAST_TX` (bit 0) is Q65's Pileup bit and is
+  ignored by the other modes; bits 1..31 are reserved and must be 0.
+* `mfsk_encode` writes f32 PCM at unit amplitude, from sample 0 of the frame
+  (place it in the period yourself), at `sample_rate` Hz, tone 0 at `freq_hz`.
+  The buffer contract is `mfsk_encode_ft8`'s: `*out_len` is the sample count, or
+  the count needed (with `MFSK_STATUS_INVALID_ARG`) when `cap` is too small.
+  `sample_rate == 0` or a non-finite `freq_hz` is `MFSK_STATUS_INVALID_ARG`.
+* `mfsk_encode_info` gives the part a transmitter shows and records: one tone
+  index per symbol in `tones`; in `text_out` the message as a receiver prints it
+  (case and spacing normalised, a hashed call as `<CALL>`); in `hashed_out` the
+  calls the message sends as hashes, space-separated (empty for WSPR types 1 and
+  2, JT9 and JT65). Give each to `mfsk_decoder_add_callsign`, so that the `<...>`
+  of the answer resolves.
+* The strings follow `mfsk_decoder_unpack77`: NUL-terminated, `*text_len` and
+  `*hashed_len` are the bytes needed **including the NUL**, set even when the
+  buffer is too small. All three lengths are set whenever the message encodes;
+  a result you do not want may be NULL with capacity 0; nothing is written unless
+  all three buffers are large enough (then `MFSK_STATUS_INVALID_ARG`, the buffer
+  named in `mfsk_last_error()`).
+* Statuses: `MFSK_STATUS_INVALID_ARG` for a number that is no `MfskMode`, a null
+  or non-UTF-8 `text`, reserved `flags` bits, or a text the mode cannot send (the
+  reason is in `mfsk_last_error()`); `MFSK_STATUS_UNKNOWN_PROTOCOL` for MSK144,
+  JTTY and uvpacket (no text encoder here) or a mode absent from the build;
+  `MFSK_STATUS_UNSUPPORTED` for a form the mode has and the library does not
+  encode (no mode returns it today).
+
+`mfsk_encode_*` per mode stay. Design: `docs/notes/API_0_14_DESIGN.md` §15.1.
+
 ### 2.7 Introspection
 
 ```c
@@ -906,14 +955,14 @@ mode is here but does not offer what was asked).
 
 ### 2.12 Symbol index
 
-98 exported functions, grouped:
+100 exported functions, grouped:
 
 | group | symbols |
 |---|---|
 | decoder (22) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_prefix_points` `mfsk_decoder_unpack77` |
 | streaming (12) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_slot_is_whole` `mfsk_stream_set_prefix_points` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
-| transmit (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
+| transmit (15) | `mfsk_encode` `mfsk_encode_info` `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
 | Q65 lists (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
 | messages (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (15) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_encode_tones_ex` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
@@ -945,21 +994,24 @@ caller has to look at is behaviour.
 New, all appended: `mfsk_decoder_decode_prefix_i16` / `_f32`,
 `mfsk_decoder_prefix_points`, `mfsk_decoder_delivery_is_exact`,
 `mfsk_stream_set_prefix_points`, `mfsk_stream_slot_is_whole`,
-`mfsk_iq_set_early`; `MfskDecode` gains `key_bits`, `key`, `delivery`,
+`mfsk_iq_set_early`, and `mfsk_encode` / `mfsk_encode_info` (§2.6: the one transmit call over the mode, with
+`MFSK_ENCODE_Q65_COPIED_LAST_TX`; additive, ABI 3); `MfskDecode` gains `key_bits`, `key`, `delivery`,
 `stage`; `MfskIqDecode` gains `MfskDecode`'s detail (`sync_score`,
 `sync_cv`, `hard_errors`, `pass`, `flags`, `key_bits`, `key`, `delivery`,
 `stage`); `MfskBudgetReport` gains `rows_subtracted`. The decode results
 move as `LIBRARY.md` §1.3 lists (callsign prefixes no longer checked, the OSD
 ported line for line, JT9's sub-bin correction, and the `unpack77` fixes: a message with a call WSJT-X's `callok` refuses is not
-decoded, telemetry prints 18 hex digits, an out-of-range `CQ` token prints `<...>`).
+decoded, telemetry prints 18 hex digits, an out-of-range `CQ` token prints `<...>`; JT9 and JT65 print free text and compound calls
+as `jt9` does, and WSPR text is `wsprd`'s, an unresolved Type 3 call being `<...>`, not `<#hhhhh>`).
 
 **Kotlin and Swift** follow the same ABI, and their row types are source
 breaks: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable
 (`null` / `nil` where the mode does not measure them), and rows gain `key`,
 `keyBits`, `delivery` and `stage`. New: `decodePrefix`, `prefixPoints`,
 `deliveryIsExact`, a stream's `setPrefixPoints` and `slotIsWhole` /
-`isSlotWhole`, the IQ receiver's `setEarly`, and the budget report's
-`rowsSubtracted`. Kotlin's lent channel decoder takes `onDecode` and
+`isSlotWhole`, the IQ receiver's `setEarly`, the budget report's
+`rowsSubtracted`, and the transmit calls Kotlin `Mfsk.encode` / `encodeInfo` and Swift
+`Mode.encode` / `encodeInfo` (§4, §5). Kotlin's lent channel decoder takes `onDecode` and
 `setBudget`. As in C, an FT8 channel of the IQ receiver is early by default.
 
 **FST4W and the long FST4 periods (0.14, #649).** `MfskMode` gains
@@ -1151,6 +1203,17 @@ freqHz)`) decodes through the same `MfskDecoder`. `dec.wcalls` is its Keff-50
 known-call list, a `List<String>` you can read and assign (§2.2,
 `mfsk_decoder_get_wcalls`): save it between runs.
 
+**`Mfsk.encode(mode, text, freqHz, sampleRate = 12_000, copiedLastTx = false)`**
+(0.14) is `mfsk_encode`: f32 PCM at unit amplitude for any mode number that has a
+text encoder (§2.6). `Mfsk.encodeInfo(mode, text, copiedLastTx)` is
+`mfsk_encode_info` and returns `MfskEncoded(tones: ByteArray, text: String,
+hashedCalls: List<String>)`: give each hashed call to `MfskDecoder.addCallsign`.
+They throw `MfskInvalidArgException` for a message the mode cannot send,
+`MfskUnsupportedException` for a form it has and the library does not encode, and
+`MfskUnknownModeException` for a mode with no text encoder (MSK144, JTTY,
+uvpacket) or one absent from the build. Written without `jni.h` or `kotlinc` to
+hand; the `kotlin` CI job is the first to build them.
+
 **`dec.onDecode { row -> … }`** delivers rows as they are found, on top of the
 list `decode` returns — for a UI that wants something on screen before a long
 slot finishes (`decode(…, onRow = …)` does it for one call). The listener is
@@ -1262,6 +1325,15 @@ for row in try decoder.decode(slot) {
   unresolved callsign hash of a `<...>` row, and `decoder.wcalls()` /
   `decoder.setWcalls(_:)` are the Keff-50 known-call list (§2.2): keep it between
   runs.
+* `mode.encode(_:frequencyHz:sampleRate:copiedLastTx:)` (0.14) is `mfsk_encode`:
+  `[Float]` PCM at unit amplitude for any mode with a text encoder (§2.6), 12 kHz
+  by default. `mode.encodeInfo(_:copiedLastTx:)` is `mfsk_encode_info` and returns
+  `EncodedMessage(tones:text:hashedCalls:)`: give each hashed call to
+  `decoder.addCallsign(_:)`. They throw `MfskError` with code `.invalidArgument`
+  for a message the mode cannot send, `.unsupported` for a form it has and the
+  library does not encode, and `.unknownProtocol` for a mode with no text encoder
+  (MSK144, JTTY, uvpacket) or one absent from the build. Written without a Mac to
+  hand; the `swift` CI job is the first to build them.
 * `decoder.onDecode { row in … }` streams rows as they are found,
   alongside the array the call returns. On a `desktop` build the
   closure runs on rayon workers, possibly concurrently; on `mobile` it

@@ -424,6 +424,52 @@ MfskStatus mfsk_encode_ft8(const char *call1, const char *call2, const char *rep
 `_jt9`、`_jt65`、`_q65`（先頭に `submode`）。type-1 / type-4 / フリーテキストの
 メッセージは `mfsk_pack77_*` とトーンパイプラインを通すこと。
 
+**モードを通した 1 回の呼び出し（0.14）。** `mfsk_encode` と `mfsk_encode_info` は、
+受信の `mfsk_decoder_open` に対する送信側である。モードは番号、テキストは
+WSJT-X の Tx ボックスに出るままのメッセージで、パックはライブラリが行う。
+
+```c
+MfskStatus mfsk_encode(uint32_t mode, const char *text, uint32_t flags,
+                       uint32_t sample_rate, float freq_hz,
+                       float *out, size_t cap, size_t *out_len);
+MfskStatus mfsk_encode_info(uint32_t mode, const char *text, uint32_t flags,
+                            uint8_t *tones, size_t tones_cap, size_t *tones_len,
+                            char *text_out, size_t text_cap, size_t *text_len,
+                            char *hashed_out, size_t hashed_cap, size_t *hashed_len);
+```
+
+* `mode` は `MfskMode` の番号。`text` はそのモードが送れる任意のメッセージ: 77 ビットの
+  メッセージ（自由文、非標準コール、`<CALL>` のハッシュ）、WSPR の type 1、2、3
+  （`CALL GRID4 DBM`、`PFX/CALL DBM` または `CALL/SFX DBM`、`<CALL> GRID6 DBM`。
+  複合コールの局は type 2 と 3 を交互に送るが、その順序はアプリケーション側の仕事。
+  電力は WSPR が送る値に丸められる、38 → 37）、FST4W の WSPR 型メッセージ、
+  JT9 / JT65 の標準・複合コール・自由文。
+* `flags`: `MFSK_ENCODE_Q65_COPIED_LAST_TX`（ビット 0）は Q65 の Pileup ビットで、
+  他のモードでは無視される。ビット 1..31 は予約で 0 でなければならない。
+* `mfsk_encode` は単位振幅の f32 PCM を、フレームのサンプル 0 から（周期への配置は
+  呼び出し側）、`sample_rate` Hz で書く。トーン 0 が `freq_hz`。バッファの契約は
+  `mfsk_encode_ft8` と同じ: `*out_len` はサンプル数、`cap` が足りなければ必要な数
+  （と `MFSK_STATUS_INVALID_ARG`）。`sample_rate == 0` や有限でない `freq_hz` は
+  `MFSK_STATUS_INVALID_ARG`。
+* `mfsk_encode_info` は送信側が表示・記録する部分を返す: `tones` にシンボルごとのトーン
+  番号、`text_out` に受信側が表示するとおりのメッセージ（大文字小文字と空白は正規化、
+  ハッシュになるコールは `<CALL>`）、`hashed_out` にハッシュとして送られるコールを
+  空白区切りで（WSPR の type 1・2、JT9、JT65 では空）。それぞれを
+  `mfsk_decoder_add_callsign` に渡せば、相手の応答の `<...>` が解決される。
+* 文字列は `mfsk_decoder_unpack77` と同じ契約: NUL 終端で、`*text_len` と `*hashed_len` は
+  **NUL を含む**必要バイト数。バッファが足りなくても設定される。メッセージがエンコード
+  できれば 3 つの長さはすべて設定される。要らない結果は NULL と容量 0 で渡せる。
+  3 つのバッファがすべて足りるときだけ書き込む（足りなければ `MFSK_STATUS_INVALID_ARG`
+  で、`mfsk_last_error()` が該当のバッファを示す）。
+* ステータス: `MFSK_STATUS_INVALID_ARG` は `MfskMode` でない番号、NULL や UTF-8 でない
+  `text`、予約された `flags` のビット、そのモードが送れないテキスト（理由は
+  `mfsk_last_error()`）。`MFSK_STATUS_UNKNOWN_PROTOCOL` は MSK144・JTTY・uvpacket
+  （ここにはテキストのエンコーダが無い）またはビルドに無いモード。
+  `MFSK_STATUS_UNSUPPORTED` はモードにあるがライブラリがエンコードしない形式
+  （現在これを返すモードは無い）。
+
+モードごとの `mfsk_encode_*` は残る。設計: `docs/notes/API_0_14_DESIGN.md` §15.1。
+
 ### 2.7 イントロスペクション
 
 ```c
@@ -852,14 +898,14 @@ uint32_t   mfsk_runtime_thread_count(void);
 
 ### 2.12 シンボル索引
 
-エクスポートされる関数は 98 個:
+エクスポートされる関数は 100 個:
 
 | 群 | シンボル |
 |---|---|
 | decoder (22) | `mfsk_params_init` `mfsk_extras_init` `mfsk_decoder_open` `mfsk_decoder_close` `mfsk_decoder_last_error` `mfsk_decoder_set_params` `mfsk_decoder_set_extras` `mfsk_decoder_set_q65_callers` `mfsk_decoder_clear` `mfsk_decoder_add_callsign` `mfsk_decoder_set_on_decode` `mfsk_decoder_set_budget` `mfsk_decoder_last_budget` `mfsk_decoder_delivery_is_exact` `mfsk_decoder_decode_i16` `mfsk_decoder_decode_f32` `mfsk_decoder_decode_prefix_i16` `mfsk_decoder_decode_prefix_f32` `mfsk_decoder_copy_info` `mfsk_decoder_decode_stream` `mfsk_decoder_prefix_points` `mfsk_decoder_unpack77` |
 | streaming (12) | `mfsk_stream_open` `mfsk_stream_close` `mfsk_stream_push_i16` `mfsk_stream_push_f32` `mfsk_stream_position` `mfsk_stream_set_time` `mfsk_stream_slot_ready` `mfsk_stream_slot_is_whole` `mfsk_stream_set_prefix_points` `mfsk_stream_dropped` `mfsk_stream_take_slot_i16` `mfsk_stream_clear` |
 | introspection (8) | `mfsk_mode_count` `mfsk_mode_at` `mfsk_mode_name` `mfsk_mode_from_name` `mfsk_mode_info` `mfsk_mode_caps` `mfsk_abi_version` `mfsk_version` |
-| 送信 (13) | `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
+| 送信 (15) | `mfsk_encode` `mfsk_encode_info` `mfsk_encode_ft8` `mfsk_encode_ft4` `mfsk_encode_fst4s60` `mfsk_encode_wspr` `mfsk_encode_jt9` `mfsk_encode_jt65` `mfsk_encode_q65` `mfsk_encode_q65_flagged` `mfsk_symbol_count` `mfsk_synth_output_len` `mfsk_message_to_tones` `mfsk_tones_to_i16` `mfsk_tones_to_f32` |
 | Q65 リスト (13) | `mfsk_q65_history_new` `mfsk_q65_history_free` `mfsk_q65_history_push` `mfsk_q65_history_record` `mfsk_q65_history_len` `mfsk_q65_history_lookup` `mfsk_q65_callers_new` `mfsk_q65_callers_free` `mfsk_q65_callers_record` `mfsk_q65_callers_expire` `mfsk_q65_callers_remove` `mfsk_q65_callers_len` `mfsk_q65_callers_get` |
 | メッセージ (5) | `mfsk_pack77` `mfsk_pack77_type1` `mfsk_pack77_free_text` `mfsk_pack77_type4` `mfsk_unpack77` |
 | JTTY (15) | `mfsk_jtty_params_init` `mfsk_jtty_open` `mfsk_jtty_close` `mfsk_jtty_set_params` `mfsk_jtty_push_i16` `mfsk_jtty_push_f32` `mfsk_jtty_finish` `mfsk_jtty_reset` `mfsk_jtty_pending` `mfsk_jtty_poll` `mfsk_jtty_encode_tones` `mfsk_jtty_encode_tones_ex` `mfsk_jtty_synth_len` `mfsk_jtty_tones_to_i16` `mfsk_jtty_tones_to_f32` |
@@ -891,20 +937,22 @@ C の呼び出し側が確認すべきなのは挙動である。
 新規（すべて追加のみ）: `mfsk_decoder_decode_prefix_i16` / `_f32`、
 `mfsk_decoder_prefix_points`、`mfsk_decoder_delivery_is_exact`、
 `mfsk_stream_set_prefix_points`、`mfsk_stream_slot_is_whole`、
-`mfsk_iq_set_early`。`MfskDecode` に `key_bits`、`key`、`delivery`、
+`mfsk_iq_set_early`、`mfsk_encode` / `mfsk_encode_info`（§2.6: モードを通した 1 回の送信呼び出し、
+`MFSK_ENCODE_Q65_COPIED_LAST_TX` つき。追加のみで ABI は 3 のまま）。`MfskDecode` に `key_bits`、`key`、`delivery`、
 `stage`。`MfskIqDecode` に `MfskDecode` の詳細（`sync_score`、
 `sync_cv`、`hard_errors`、`pass`、`flags`、`key_bits`、`key`、`delivery`、
 `stage`）。`MfskBudgetReport` に `rows_subtracted`。デコード結果は
 `LIBRARY.md` §1.3 の一覧どおりに動く（コールサインのプレフィックスを検査しなくなった、
 OSD の行ごとの移植、JT9 のビン以下の補正、および `unpack77` の修正: WSJT-X の `callok` が
-拒否するコールを含むメッセージはデコードされない、テレメトリは 16 進 18 桁で出る、範囲外の `CQ` トークンは `<...>` と出る）。
+拒否するコールを含むメッセージはデコードされない、テレメトリは 16 進 18 桁で出る、範囲外の `CQ` トークンは `<...>` と出る、
+JT9 / JT65 は自由文と複合コールを `jt9` と同じ形で出す、WSPR の文面は `wsprd` と同じで Type 3 の未解決のコールは `<#hhhhh>` でなく `<...>`）。
 
 **Kotlin と Swift** は同じ ABI に従い、行の型はソース互換でなくなる:
 `syncScore`、`syncCv` / `syncCV`、`hardErrors` は nullable になり（モードが測らない
 ところでは `null` / `nil`）、行に `key`、`keyBits`、`delivery`、`stage` が加わる。
 新規: `decodePrefix`、`prefixPoints`、`deliveryIsExact`、ストリームの
 `setPrefixPoints` と `slotIsWhole` / `isSlotWhole`、IQ 受信器の `setEarly`、
-予算レポートの `rowsSubtracted`。Kotlin の貸し出しチャンネルデコーダは `onDecode` と
+予算レポートの `rowsSubtracted`、送信の `encode` / `encodeInfo`（§4、§5）。Kotlin の貸し出しチャンネルデコーダは `onDecode` と
 `setBudget` を受け付ける。C と同じく、IQ 受信器の FT8 チャンネルは既定で早期デコードする。
 
 **FST4W と長い FST4 周期（0.14、#649）。** `MfskMode` に `FST4S900` = 26、`FST4S1800` = 27、
@@ -1086,6 +1134,16 @@ MfskStream.open(ft8).use { s ->
 同じ `MfskDecoder` でデコードする。`dec.wcalls` はその Keff 50 の既知コール一覧で、
 読み書きできる `List<String>`（§2.2、`mfsk_decoder_get_wcalls`）。実行をまたいで保存すること。
 
+**`Mfsk.encode(mode, text, freqHz, sampleRate = 12_000, copiedLastTx = false)`**（0.14）は
+`mfsk_encode`: テキストのエンコーダを持つ任意のモード番号に対する、単位振幅の f32 PCM（§2.6）。
+`Mfsk.encodeInfo(mode, text, copiedLastTx)` は `mfsk_encode_info` で、
+`MfskEncoded(tones: ByteArray, text: String, hashedCalls: List<String>)` を返す。
+ハッシュになるコールは `MfskDecoder.addCallsign` に渡す。モードが送れないメッセージは
+`MfskInvalidArgException`、モードにあるがライブラリがエンコードしない形式は
+`MfskUnsupportedException`、テキストのエンコーダが無い（MSK144、JTTY、uvpacket）
+またはビルドに無いモードは `MfskUnknownModeException` を投げる。`jni.h` も `kotlinc` も
+無い環境で書いたので、最初にビルドするのは CI の `kotlin` ジョブである。
+
 **`dec.onDecode { row -> … }`** は `decode` が返すリストに加えて、見つかった順に
 行を配信する — 長いスロットが終わる前に画面に何か出したい UI 向け
 （`decode(…, onRow = …)` なら1回の呼び出しだけ）。リスナは rayon ワーカーから
@@ -1189,6 +1247,14 @@ for row in try decoder.decode(slot) {
   `mode.synthesiseSlot(_:frequencyHz:)`。`Decode.hash22`（`UInt32?`）は `<...>` の行の
   未解決のコールサインハッシュ、`decoder.wcalls()` / `decoder.setWcalls(_:)` は
   Keff 50 の既知コール一覧（§2.2）で、実行をまたいで保存すること。
+* `mode.encode(_:frequencyHz:sampleRate:copiedLastTx:)`（0.14）は `mfsk_encode`:
+  テキストのエンコーダを持つモードに対する、単位振幅の `[Float]` PCM（§2.6。既定 12 kHz）。
+  `mode.encodeInfo(_:copiedLastTx:)` は `mfsk_encode_info` で、
+  `EncodedMessage(tones:text:hashedCalls:)` を返す。ハッシュになるコールは
+  `decoder.addCallsign(_:)` に渡す。モードが送れないメッセージは `MfskError` の
+  `.invalidArgument`、モードにあるがライブラリがエンコードしない形式は `.unsupported`、
+  テキストのエンコーダが無い（MSK144、JTTY、uvpacket）またはビルドに無いモードは
+  `.unknownProtocol`。Mac の無い環境で書いたので、最初にビルドするのは CI の `swift` ジョブである。
 * `decoder.onDecode { row in … }` は呼び出しが返す配列と並行して、
   見つかった順に行を流す。`desktop` ビルドではクロージャは rayon ワーカー上で
   （場合により並行に）走り、`mobile` では候補順に単一スレッドで走る。

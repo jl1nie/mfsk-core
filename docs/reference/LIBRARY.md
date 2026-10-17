@@ -105,6 +105,11 @@ value (`registry::Mode`), the text is the message as WSJT-X's Tx box shows it, a
 carries the channel symbols and what a receiver will print. Hashed calls (`<W9XYZ>`) come back in
 `hashed_calls`, to hand to `Decoder::learn_callsign`; a text the mode cannot send is an
 `EncodeError`. `Encoded::synthesize` gives `f32` audio at the sample rate you name, `synthesize_i16` 16-bit.
+Every message form a mode has is sent, and no mode returns `EncodeError::Unsupported`: WSPR types 1, 2 and 3
+(`CALL GRID4 DBM`, `PFX/CALL DBM` or `CALL/SFX DBM`, `<CALL> GRID6 DBM`; a station with a compound call alternates
+type 2 and type 3, and that schedule is the application's, as in WSJT-X's GUI; the power is rounded to a value WSPR
+sends, 38 dBm goes out as 37, as `wqencode` does) and JT9 / JT65 standard messages, compound calls and free text
+(13 characters). The C ABI has the same call, `mfsk_encode` / `mfsk_encode_info` (`BINDINGS.md` §2.6).
 
 ```rust
 use mfsk_core::prelude::*;
@@ -421,6 +426,8 @@ the design is `docs/notes/API_0_14_DESIGN.md`.
 | `unpack77`: a call WSJT-X's `callok` refuses | decoded (`AB1`, `FN4`, a leading `Q`, a blank inside a call or `CQ` word) | not decoded: `unpack77` returns `None`, as rc1's `ok = .false.` (`packjt77.f90:1013-1096`, `:2438-2485`) | `pack77_wspr` and so FST4W transmit refuse such a call too; JTTY keeps the unchecked text. No golden expectation moved |
 | `unpack77`: telemetry (type 0.5) | printed without leading zeros | all 18 hex digits (`3z6.6`, `packjt77.f90:1640`) | — |
 | `unpack77`: a 28-bit field from 532444 up (an out-of-range `CQ` token) | `<?>` | `<...>` (hash22, `packjt77.f90:283`) | — |
+| JT9 / JT65: free text and compound calls | `Jt72Message::Unsupported`: the row was dropped (JT9) or printed as `<unsupported …>` (JT65) | printed as `jt9` prints it (`Jt72Message::Compound`, `FreeText`, `packjt.f90:537-741`); the filters are upstream's: `000AAA` for JT9 (`jt9fano.f90:87-88`), `000AAA` and the `0L6MWK` birdie for JT65 (`decode65b.f90:27-28`) | rc1's own `packmsg` / `unpackmsg`, 7 651 rows; the JT65 (4/5) and JT9 (7/7) goldens are identical with extra 0: their references contain no such message |
+| WSPR text | a Type 3 call printed as its hash, `<#hhhhh>`; `unpackcall` / `unpackpfx` approximated, so some calls were dropped | as `wsprd` prints it (`wsprd_utils.c:324-405`, `unpk_`): `<...>` for a Type 3 call not heard, `<CALL>` once the decoder has heard it (`WsprResult::hashed_call`); `PFX/CALL` as `wsprd` writes it; `unpackcall` exact, so some calls that were dropped now decode | rc1's own `unpk_`, 26 046 rows; the WSPR golden is 9/9, extra 0, texts and freq / dt / snr identical. One divergence: `ntype == 63` is `None` (`unpk_` prints an empty message) |
 | FT8 symbol scaling and `nsync` gate | `* (1/1000)`; `nsync` recounted on the coarse spectrogram | `/ 1e3` and the refined spectra, as `ft8b.f90` | no group moved; the gate flips for one candidate in the tier-A/B suite ([#423](https://github.com/jl1nie/mfsk-core/issues/423)) |
 
 **Code.**
@@ -434,6 +441,10 @@ the design is `docs/notes/API_0_14_DESIGN.md`.
 | implementing `ModulationParams` | `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL`, `NDOWN`, `SYMBOL_DT`, `N_SYMBOLS` and `TONE_SPACING_HZ` all written out | the first three move to `SyncFrontEnd: Protocol`, which only a protocol decoding through `engine::sync` or the generic pipeline implements (a compile error otherwise); `SYMBOL_DT` and `N_SYMBOLS` default; `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)` for a mode whose tones sit at the modulation index ([§5](#5-the-protocol-trait-hierarchy)) |
 | a row's callsign hash | not carried | `Decoded::hash22: Option<u32>`, set on an FST4W `<...>` row; key de-duplication of FST4W rows on `(text, hash22)` ([§3.3](#33-per-protocol-notes)) |
 | `msg::wsjt77::is_plausible_callsign` | checked the ITU prefix table | kept, and now the same as `is_valid_callsign` (no code change; see the results table) |
+| `msg::jt72::Jt72Message` | `Standard { call1, call2, grid_or_report }` and `Unsupported { nc1, nc2, ng }` | `Standard { .. }`, `Compound(String)` (add-on prefix or suffix, a grid read as a prefix location) and `FreeText(String)`; `Unsupported` is gone, since upstream renders every bit pattern. `Display` is upstream's text. A `match` needs arms for the two new variants |
+| `encoder::EncodeError` | `Message { mode, reason }`, `Unsupported { mode, what }` | adds `Wspr { mode, reason: WsprPackError }` and `Jt72 { mode, reason: Jt72PackError }` (the only refusal of `msg::jt72::pack_message` is a non-ASCII character). `#[non_exhaustive]`, so a `_` arm covers them; `Unsupported` stays in the type and no mode produces it |
+| WSPR power in `encoder::encode` | a power outside the WSPR set was refused | clamped to 0..60 and rounded to the nearest power WSPR sends (38 → 37), as `wqencode`; a power that is no number is `WsprPackError::BadPower` |
+| the text of a `WsprMessage` | `Display` printed a Type 3 call as `<#hhhhh>` | `WsprMessage::render(resolved)` is `wsprd`'s text (`<CALL>` for `Some`, `<...>` for `None`); `Display` is `render(None)`; `WsprResult::to_decoded()` passes `WsprResult::hashed_call`. `WsprCallsignTable::resolve(hash)` looks a Type 3 hash up |
 
 **Removed, and what to do instead.**
 
@@ -465,7 +476,8 @@ the design is `docs/notes/API_0_14_DESIGN.md`.
 | `registry::Mode` discriminants | FST4 and FST4W modes inserted before WSPR: `Mode::Wspr as u8` is 13, not 7 (name a mode with its variant, `Mode::ALL` or `meta().name`; see the `CHANGELOG`) |
 
 New, additive: `encoder::{encode, encode_with, Encoded, EncodeOptions, TxAudio, EncodeError}` ([§1](#1-quick-start)),
-`msg::wsjt77::pack77_message` (WSJT-X's whole-message `pack77`), `prelude`, `Decoder::decode_i16`,
+`msg::wsjt77::pack77_message` (WSJT-X's whole-message `pack77`), `msg::wspr::pack_message` (`wqencode`: WSPR types 1, 2, 3) and
+`msg::jt72::pack_message` (`packmsg`: JT9 / JT65 standard, compound, free text), `prelude`, `Decoder::decode_i16`,
 `Decoder::set_ap_hint`, `AnyDecoder::extras()`, and `Debug` on every public type with `Display` + `Error` on every error type.
 
 **`#[non_exhaustive]`.** 0.14 marks the public types that are expected to grow
@@ -1090,16 +1102,18 @@ let result = decoder.decode(&SlotInput::f32(&samples_f32));
 assert!(!result.rows.is_empty(), "roundtrip must decode");
 for row in result.rows {
     let d = row.native; // WsprResult
-    match d.message {
+    match &d.message {
         WsprMessage::Type1 { callsign, grid, power_dbm } => {
             println!("{:7.2} Hz  {:+.0} dB  {} {} {}dBm", d.freq_hz, d.snr_db, callsign, grid, power_dbm);
         }
         WsprMessage::Type2 { callsign, power_dbm } => {
             println!("{:7.2} Hz  {:+.0} dB  {} {}dBm", d.freq_hz, d.snr_db, callsign, power_dbm);
         }
-        WsprMessage::Type3 { callsign_hash, grid6, power_dbm } => {
-            println!("{:7.2} Hz  {:+.0} dB  <#{:05x}> {} {}dBm",
-                     d.freq_hz, d.snr_db, callsign_hash, grid6, power_dbm);
+        WsprMessage::Type3 { .. } => {
+            // `<K1ABC> FN42LX 37` when this decoder has heard the call (`hashed_call`),
+            // `<...> FN42LX 37` when not: the text `wsprd` prints.
+            println!("{:7.2} Hz  {:+.0} dB  {}",
+                     d.freq_hz, d.snr_db, d.message.render(d.hashed_call.as_deref()));
         }
     }
 }
@@ -1109,9 +1123,10 @@ for row in result.rows {
 **JT9** and **JT65** are the same shape: `Decoder::<Jt9>` and
 `Decoder::<Jt65>`, `SlotInput::f32` (or `i16`) of the 60 s period. JT9 at
 `rx_freq_hz` also runs upstream's Rx-frequency pass within `tol_hz`
-(default 50 Hz). Both return the 72-bit message as text. Since 0.13 neither reports the
-all-zero codeword (`000AAA 000AAA RA90`), which a Reed-Solomon or Fano decode
-of silence produces.
+(default 50 Hz). Both return the 72-bit message as text, in the form `jt9` prints it: standard,
+compound-call (`CQ PJ4/K1ABC FK52`) and free-text messages alike (`Jt72Message::{Standard, Compound,
+FreeText}`). Neither reports the all-zero codeword (`000AAA 000AAA RA90`), which a Reed-Solomon or
+Fano decode of silence produces; JT65 also blanks the `0L6MWK` birdie, as `decode65b.f90` does.
 
 ```rust
 # #[cfg(all(feature = "jt9", feature = "jt65"))] {

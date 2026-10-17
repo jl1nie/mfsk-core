@@ -79,6 +79,7 @@ referencing it means there is nothing here to keep in step.
 | Decode budget | `Decoder.setBudget { … }`, `.lastBudget` | `mfsk_decoder_set_budget`, `mfsk_decoder_last_budget` |
 | Transmit | `Message` (`standard` / `type1` / `freeText` / `type4`, `text(resolvedBy:)`), `Mode.synthesiseFrame`, `Mode.synthesiseSlot` | `mfsk_pack77*`, `mfsk_unpack77`, `mfsk_decoder_unpack77`, `mfsk_message_to_tones`, `mfsk_tones_to_i16` / `_f32` |
 | Encoders with no tone stage | `WSPR`, `JT9`, `JT65`, `Q65` (`encode`, and `encode(…, copiedLastTx:)` for Pileup) | `mfsk_encode_wspr` / `_jt9` / `_jt65` / `_q65` / `_q65_flagged` |
+| Encode by text, any mode | `Mode.encode(_:frequencyHz:sampleRate:copiedLastTx:)`, `Mode.encodeInfo(_:copiedLastTx:)` → `EncodedMessage` (`tones`, `text`, `hashedCalls`) | `mfsk_encode`, `mfsk_encode_info` |
 | Q65 lists | `Q65History`, `Q65Callers`, `Q65SubMode`, `Q65FadingModel` | `mfsk_q65_history_*`, `mfsk_q65_callers_*` |
 | JTTY | `JttyReceiver` (`push` / `poll` / `finish` / `reset` / `setParams`, `JttyParams`, `JttyUpdate`), `Jtty.tones(for:profile:)` / `.synthesise` / `.audio(for:)`, `JttyProfile` | `mfsk_jtty_*` |
 | Thread pool, versions | `Runtime` | `mfsk_runtime_configure`, `mfsk_runtime_thread_count`, `mfsk_version`, `mfsk_abi_version` |

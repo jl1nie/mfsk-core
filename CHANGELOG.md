@@ -28,6 +28,8 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   `decode_with` takes `OnRow<'_, ()>`; `wcalls()` borrows; `set_wcalls` returns `WcallsError`.
 - **Fewer messages decode (unpack77)**: a call WSJT-X's `callok` refuses (`AB1`, `FN4`, a leading `Q`, a blank inside) is no longer a decode;
   telemetry prints 18 hex digits; an out-of-range `CQ` token prints `<...>`, not `<?>`.
+- **JT9 / JT65 and encoder types**: `Jt72Message::Unsupported` is removed, `Jt72Message::{Compound, FreeText}` are new (a `match` on it changes);
+  `EncodeError` gained `Wspr` and `Jt72` (it is `#[non_exhaustive]`, so a `_` arm already covers them); a WSPR power outside the set is rounded, not refused.
 - **Migration**: `LIBRARY.md` §1.3 (Rust: what changes in results, in code, what was removed, the old → new paths) and `BINDINGS.md` §3.1 (C, Kotlin,
   Swift), each with its `.ja.md`.
 
@@ -38,9 +40,22 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   `fst4w::encode`); the C ABI had `mfsk_encode_*` per mode and Rust had nothing at that level. `encode(mode, text)` /
   `encode_with` give `Encoded { tones, text, hashed_calls }` (`text` as a receiver prints it, `hashed_calls` for `learn_callsign`), then
   `synthesize` / `synthesize_i16` / `synth_len`; `TxAudio`, `EncodeOptions` (Q65 copied-last-Tx), `EncodeError`. Every `Mode`; no FFT
-  backend needed. Not sent (`EncodeError::Unsupported`): WSPR types 2/3, JT9/JT65 free text and compound calls.
+  backend needed. WSPR types 2/3 and JT9/JT65 free text and compound calls are sent too (below); no mode produces `EncodeError::Unsupported` now.
   Tier A: every mode round-trips through `AnyDecoder`; tones and waveforms equal the per-mode routes; FST4W gives `Fst4wMessage::pack_text`'s
   tones and refusals on 15 texts. `engine::tx` stays the protocol builder's route. Design: `docs/notes/API_0_14_DESIGN.md` §7, §14.
+- **C ABI `mfsk_encode` / `mfsk_encode_info`: one encoder call over the mode, with Kotlin `Mfsk.encode` / `encodeInfo` and Swift
+  `Mode.encode` / `encodeInfo`.** The C ABI had an `mfsk_encode_*` per mode; now `mfsk_encode(mode, text, flags, sample_rate, freq_hz, out, cap,
+  &n)` gives f32 PCM (`mfsk_encode_ft8`'s buffer contract) and `mfsk_encode_info` the tones, the text a receiver prints and the hashed calls
+  (to `mfsk_decoder_add_callsign`), strings as `mfsk_decoder_unpack77`'s. Flag `MFSK_ENCODE_Q65_COPIED_LAST_TX`. Additive: two functions and a
+  constant in `mfsk.h`, ABI stays 3. `mfsk-ffi` tests 6 (FT8 PCM equals `mfsk_encode_ft8`; info equals `encoder::encode` for FT8, FT4, FST4,
+  Q65, WSPR) and the C++ smoke driver pass; Kotlin and Swift are not built on the author's host (no JNI headers, `kotlinc` or Xcode), checked by
+  their CI jobs. `BINDINGS.md` §2.6, §3.1, §4, §5; design §15.1.
+- **`msg::wspr::pack_message` (types 1, 2, 3) and `msg::jt72::pack_message`: the encoder sends WSPR types 2/3 and JT9/JT65 free text and compound
+  calls.** Ports of `wqencode` (with `packcall`, `packgrid`, `packpfx`, `pack50`, `hash`) and `packmsg` / `packtext`; `Jt72Message` gains `Compound`
+  and `FreeText` (below). WSPR power is clamped to 0..60 and rounded to the WSPR set as upstream does (38 dBm goes out as 37), not refused; the
+  alternation of type 2 and type 3 is the application's schedule. Against rc1's own routines built with gfortran: WSPR 2 226 rows plus all 32 400
+  four-character grids offline, JT 7 651 rows (`tests/fixtures/{wspr_pack,jt72}_rc1.tsv`). New `EncodeError::Wspr`, `EncodeError::Jt72`.
+  `LIBRARY.md` §1.3; design §15.2, §15.3.
 - **`msg::wsjt77::pack77_message`: WSJT-X's whole-message 77-bit packer (A2).** A port of `pack77_encode_core` (rc1 `packjt77.f90:527-627`)
   with its status codes (`Pack77Error`, `Pack77Options`, `Packed77`): the candidates in upstream's order (0.1 DXpedition, 0.3/0.4 Field Day,
   0.5 telemetry, 0.6, 1/2, 3 RTTY Roundup, 4, 5 EU VHF), each accepted only if it unpacks to the same text, then free text. Not ported: the
@@ -129,6 +144,13 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Decoding
 
+- **JT9 and JT65 print free text and compound calls as `jt9` does; WSPR text matches `wsprd`.** `Jt72Message::Unsupported` rows are gone:
+  JT9 no longer drops non-standard messages (`jt9fano.f90:87-88` filters only `000AAA`), JT65 blanks `000AAA` and the `0L6MWK` birdie
+  (`decode65b.f90:27-28`) and no longer emits `<unsupported …>`. WSPR follows `wsprd_utils.c` `unpk_`: a Type 3 call unresolved is `<...>`
+  (was `<#hhhhh>`), `<CALL>` once heard; `PFX/CALL` as `wsprd` prints it; `unpackcall` exact, so some calls that were dropped now decode. Checked
+  row by row against rc1's own routines (7 651 JT rows, 26 046 WSPR rows); the JT65 / JT9 goldens (4/5, 7/7, extra 0) and the WSPR golden
+  (9/9, extra 0, texts and freq/dt/snr identical) are unchanged: the references contain no such messages. One divergence: `ntype == 63` is
+  `None`, not an empty message. `LIBRARY.md` §1.3; design §15.3.
 - **`unpack77` matches rc1 on `callok`, hash placeholders and telemetry.** `unpack28` follows `unpack28_core` (`packjt77.f90:1013-1096`): a
   standard call `callok` refuses (`AB1`, `FN4`, a leading `Q`) or a call / `CQ` word with a blank inside fails to unpack, so `unpack77`
   returns `None` where rc1 has `ok = .false.` (FST4W transmit, through `pack77_wspr`, refuses such a call too); the 28-bit fields

@@ -106,6 +106,11 @@ for row in &result.rows {
 `hashed_calls` で返るので `Decoder::learn_callsign` に渡す。そのモードが送れないテキストは
 `EncodeError` になる。`Encoded::synthesize` は指定したサンプルレートの `f32` 音声、
 `synthesize_i16` は 16 ビットを返す。
+モードが持つメッセージ形式はすべて送れ、`EncodeError::Unsupported` を返すモードは無い: WSPR の type 1、2、3
+（`CALL GRID4 DBM`、`PFX/CALL DBM` または `CALL/SFX DBM`、`<CALL> GRID6 DBM`。複合コールの局は type 2 と
+type 3 を交互に送るが、その順序は WSJT-X の GUI と同じくアプリケーション側の仕事である。電力は WSPR が送る値に
+丸められ、`wqencode` と同じく 38 dBm は 37 として送られる）と、JT9 / JT65 の標準メッセージ・複合コール・
+自由文（13 文字）。C ABI にも同じ呼び出し `mfsk_encode` / `mfsk_encode_info` がある（`BINDINGS.md` §2.6）。
 
 ```rust
 use mfsk_core::prelude::*;
@@ -409,6 +414,8 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `unpack77`: WSJT-X の `callok` が拒否するコール | デコードされた（`AB1`、`FN4`、先頭が `Q`、コールや `CQ` の語の中の空白） | デコードされない: `unpack77` は `None` を返す（rc1 の `ok = .false.`、`packjt77.f90:1013-1096`、`:2438-2485`） | `pack77_wspr` も、したがって FST4W の送信も、そのコールを拒否する。JTTY は検査しない文面を保つ。ゴールデンの期待値は動いていない |
 | `unpack77`: テレメトリ（type 0.5） | 先頭のゼロを落として表示 | 16 進 18 桁すべて（`3z6.6`、`packjt77.f90:1640`） | — |
 | `unpack77`: 28 ビットのフィールドが 532444 以上（範囲外の `CQ` トークン） | `<?>` | `<...>`（hash22、`packjt77.f90:283`） | — |
+| JT9 / JT65: 自由文と複合コール | `Jt72Message::Unsupported`: 行は捨てられた（JT9）か `<unsupported …>` と表示された（JT65） | `jt9` と同じ形で表示（`Jt72Message::Compound`、`FreeText`、`packjt.f90:537-741`）。フィルタは本家と同じ: JT9 は `000AAA`（`jt9fano.f90:87-88`）、JT65 は `000AAA` と `0L6MWK` のバースト（`decode65b.f90:27-28`） | rc1 自身の `packmsg` / `unpackmsg`、7 651 行。JT65（4/5）と JT9（7/7）のゴールデンは同一で extra 0: 参照結果にそのようなメッセージは無い |
+| WSPR の文面 | Type 3 のコールはハッシュのまま `<#hhhhh>` と表示。`unpackcall` / `unpackpfx` は近似で、一部のコールが捨てられた | `wsprd` が表示するとおり（`wsprd_utils.c:324-405`、`unpk_`）: 聞いていない Type 3 のコールは `<...>`、デコーダが聞いていれば `<CALL>`（`WsprResult::hashed_call`）。`PFX/CALL` は `wsprd` の書き方。`unpackcall` は厳密で、捨てられていた一部のコールがデコードされる | rc1 自身の `unpk_`、26 046 行。WSPR のゴールデンは 9/9、extra 0、文面と freq / dt / snr は同一。差異は 1 つ: `ntype == 63` は `None`（`unpk_` は空のメッセージを表示する） |
 | FT8 のシンボルのスケーリングと `nsync` 判定 | `* (1/1000)`。`nsync` は粗いスペクトログラムで数え直していた | `/ 1e3` と精製後のスペクトル（`ft8b.f90` と同じ） | 動いた群は無い。判定が変わったのは tier-A/B 全体で 1 候補（[#423](https://github.com/jl1nie/mfsk-core/issues/423)） |
 
 **コード。**
@@ -422,6 +429,10 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `ModulationParams` の実装 | `NFFT_PER_SYMBOL_FACTOR`、`NSTEP_PER_SYMBOL`、`NDOWN`、`SYMBOL_DT`、`N_SYMBOLS`、`TONE_SPACING_HZ` をすべて書く | 最初の 3 つは `SyncFrontEnd: Protocol` に移った。これを実装するのは `engine::sync` か汎用パイプラインでデコードするプロトコルだけ（そうでなければコンパイルエラー）。`SYMBOL_DT` と `N_SYMBOLS` は既定値がある。トーンが変調指数の間隔で並ぶモードでは `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)`（[§5](#5-protocol-トレイト階層)） |
 | 行のコールサインハッシュ | 持たない | `Decoded::hash22: Option<u32>`。FST4W の `<...>` の行に設定される。FST4W の行は `(text, hash22)` で重複排除（[§3.3](#33-プロトコルごとの注記)） |
 | `msg::wsjt77::is_plausible_callsign` | ITU のプレフィックス表を見ていた | 残っており、`is_valid_callsign` と同じになった（コードの変更は不要。結果の表を参照） |
+| `msg::jt72::Jt72Message` | `Standard { call1, call2, grid_or_report }` と `Unsupported { nc1, nc2, ng }` | `Standard { .. }`、`Compound(String)`（付加プレフィックス・サフィックス、プレフィックスの位置として読まれるグリッド）、`FreeText(String)`。本家はあらゆるビットパターンを表示できるので `Unsupported` は無い。`Display` は本家の文面。`match` には新しい 2 つの variant の腕が要る |
+| `encoder::EncodeError` | `Message { mode, reason }`、`Unsupported { mode, what }` | `Wspr { mode, reason: WsprPackError }` と `Jt72 { mode, reason: Jt72PackError }` が加わる（`msg::jt72::pack_message` が拒否するのは ASCII 以外の文字だけ）。`#[non_exhaustive]` なので `_` の腕で足りる。`Unsupported` は型に残るが、どのモードも返さない |
+| `encoder::encode` での WSPR の電力 | WSPR の集合に無い電力は拒否された | 0..60 に切り詰め、WSPR が送る最も近い値に丸める（38 → 37）。`wqencode` と同じ。数値でない電力は `WsprPackError::BadPower` |
+| `WsprMessage` の文面 | `Display` は Type 3 のコールを `<#hhhhh>` と表示した | `WsprMessage::render(resolved)` が `wsprd` の文面（`Some` なら `<CALL>`、`None` なら `<...>`）。`Display` は `render(None)`。`WsprResult::to_decoded()` は `WsprResult::hashed_call` を渡す。`WsprCallsignTable::resolve(hash)` で Type 3 のハッシュを引ける |
 
 **無くなったもの、と代わりの方法。**
 
@@ -453,7 +464,8 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `registry::Mode` の判別値 | FST4 と FST4W のモードが WSPR の前に入った: `Mode::Wspr as u8` は 7 でなく 13（モードはキャストでなく variant、`Mode::ALL`、`meta().name` で指す。`CHANGELOG` 参照） |
 
 追加（互換）: `encoder::{encode, encode_with, Encoded, EncodeOptions, TxAudio, EncodeError}`（[§1](#1-クイックスタート)）、
-`msg::wsjt77::pack77_message`（WSJT-X のメッセージ全体の `pack77`）、`prelude`、`Decoder::decode_i16`、
+`msg::wsjt77::pack77_message`（WSJT-X のメッセージ全体の `pack77`）、`msg::wspr::pack_message`（`wqencode`: WSPR の type 1、2、3）、
+`msg::jt72::pack_message`（`packmsg`: JT9 / JT65 の標準・複合コール・自由文）、`prelude`、`Decoder::decode_i16`、
 `Decoder::set_ap_hint`、`AnyDecoder::extras()`、全公開型の `Debug` と全エラー型の `Display` + `Error`。
 
 **`#[non_exhaustive]`。** 0.14 は、今後増えることが分かっている公開型に `#[non_exhaustive]` を付けた
@@ -1024,16 +1036,18 @@ let result = decoder.decode(&SlotInput::f32(&samples_f32));
 assert!(!result.rows.is_empty(), "roundtrip must decode");
 for row in result.rows {
     let d = row.native; // WsprResult
-    match d.message {
+    match &d.message {
         WsprMessage::Type1 { callsign, grid, power_dbm } => {
             println!("{:7.2} Hz  {:+.0} dB  {} {} {}dBm", d.freq_hz, d.snr_db, callsign, grid, power_dbm);
         }
         WsprMessage::Type2 { callsign, power_dbm } => {
             println!("{:7.2} Hz  {:+.0} dB  {} {}dBm", d.freq_hz, d.snr_db, callsign, power_dbm);
         }
-        WsprMessage::Type3 { callsign_hash, grid6, power_dbm } => {
-            println!("{:7.2} Hz  {:+.0} dB  <#{:05x}> {} {}dBm",
-                     d.freq_hz, d.snr_db, callsign_hash, grid6, power_dbm);
+        WsprMessage::Type3 { .. } => {
+            // `<K1ABC> FN42LX 37` when this decoder has heard the call (`hashed_call`),
+            // `<...> FN42LX 37` when not: the text `wsprd` prints.
+            println!("{:7.2} Hz  {:+.0} dB  {}",
+                     d.freq_hz, d.snr_db, d.message.render(d.hashed_call.as_deref()));
         }
     }
 }
@@ -1042,9 +1056,10 @@ for row in result.rows {
 
 **JT9** と **JT65** は同じ形である: `Decoder::<Jt9>` と `Decoder::<Jt65>` に、60 秒周期の
 `SlotInput::f32`（または `i16`）を渡す。JT9 は `rx_freq_hz` があれば、本家の Rx 周波数パスも
-`tol_hz`（既定 50 Hz）の範囲で走らせる。どちらも 72 ビットメッセージをテキストで返す。
-0.13 以降、どちらも全ゼロの符号語（`000AAA 000AAA RA90`）を報告しない。これは無音を
-Reed-Solomon または Fano で復号すると出てくるものである。
+`tol_hz`（既定 50 Hz）の範囲で走らせる。どちらも 72 ビットメッセージを `jt9` が表示する形のテキストで返す:
+標準・複合コール（`CQ PJ4/K1ABC FK52`）・自由文のいずれも同じ扱いである（`Jt72Message::{Standard, Compound,
+FreeText}`）。どちらも全ゼロの符号語（`000AAA 000AAA RA90`）を報告しない。これは無音を
+Reed-Solomon または Fano で復号すると出てくるものである。JT65 は `decode65b.f90` と同じく `0L6MWK` のバーストも空白にする。
 
 ```rust
 # #[cfg(all(feature = "jt9", feature = "jt65"))] {

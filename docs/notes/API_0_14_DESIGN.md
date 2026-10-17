@@ -152,6 +152,8 @@ MSK144 and JTTY are outside `Mode` on the receive side and stay so here (`msk144
 
 ### 7.1 Not in 0.14 (says `EncodeError::Unsupported`)
 
+*Moved into 0.14 on 2026-10-17: §15.2, §15.3 (as built: §14). The text below is the original plan.*
+
 - **WSPR types 2 and 3** (compound calls, 6-character grids: two transmissions, `wqencode`): not ported.
 - **JT9 / JT65 free text and compound calls**: `msg::jt72` packs and unpacks only the standard form today (`Jt72Message::Unsupported`
   on receive). A port of `packmsg` / `unpackmsg` (`lib/packjt.f90:401-661`, 260 lines) is its own job; asking is cheaper than guessing
@@ -159,7 +161,7 @@ MSK144 and JTTY are outside `Mode` on the receive side and stay so here (`msk144
 
 ### 7.2 C ABI
 
-Not part of this change. `mfsk_encode_*` keep their per-mode signatures. A `mfsk_encode(mode, text, …)` over `encoder::encode` would
+*Moved into 0.14 on 2026-10-17: §15.1 (as built: §14).* Not part of this change. `mfsk_encode_*` keep their per-mode signatures. A `mfsk_encode(mode, text, …)` over `encoder::encode` would
 bring the bindings level with Rust; it is a follow-up for the FFI (Kotlin/Swift wrappers too), not for this release.
 
 ## 8. Whole-message packer (A2): `msg::wsjt77::pack77_message`
@@ -275,6 +277,10 @@ Until then they do not build against `main`. Known places: `m5stack-s3-app/src/{
 | A3 symmetric decoders | `ac350478` | §9 |
 | L1 tier map, L2 `prelude`, migration docs, CHANGELOG | this change | `LIBRARY.md` §1.3, §4 (+ `.ja.md`), crate doc, `src/prelude.rs` |
 | upstream baseline | `9e345837` | v3.3.0-beta2, nothing to port (#690) |
+| 15.1 C ABI `mfsk_encode`, `mfsk_encode_info` (+ Kotlin, Swift) | `9970c8b9` | §15.1; `mfsk-ffi` tests 6 + C++ smoke driver; Kotlin and Swift written but not built on the author's host (no `jni.h`, `kotlinc`, Xcode): their CI jobs are the first check |
+| 15.2 WSPR types 2/3 | `2fc95c22` | §15.2; `msg::wspr::pack_message`, oracle: rc1's own `wqencode` + `wqdecode` (gfortran, `scripts/wspr/`), fixture `tests/fixtures/wspr_pack_rc1.tsv` (2 226 rows), and all 32 400 four-character grids offline |
+| 15.3 JT9 / JT65 full messages | `5a4b9ee8` | §15.3; `msg::jt72::pack_message` / `unpack`, oracle: rc1's own `packmsg` / `unpackmsg` (`scripts/jt72/`), fixture `tests/fixtures/jt72_rc1.tsv` (7 651 rows); JT65 / JT9 goldens unchanged (4/5, 7/7, extra 0) |
+| WSPR unpack = `wsprd` | `98fe9331` | not in the design; found while checking 15.2's round trip, see below |
 
 **A1 deviations from §7.**
 
@@ -294,6 +300,45 @@ behind `Decoder::set_ap_hint`.
 `ChannelId`, `Channelizer`, `CompletedSlot`, `IqReceiver` with the receiver's gate). `WcallsError`, `HasApHint`, `AnyExtras` and
 `AnyExtrasRef` are left out: the first is named only by code that matches on `set_wcalls`'s error, the others are a bound and types that are
 used without being named. No name clashes inside the prelude (it compiles as a glob import beside `mfsk_core::Ft8` in its doctest).
+
+**15.1 deviations from §15.1.**
+
+- (a) `mfsk_decoder_add_callsign` already exists, so no `mfsk_decoder_learn_callsign` was added: `hashed_calls` goes to it.
+- (b) `sample_rate == 0` or a non-finite `freq_hz` is `MFSK_STATUS_INVALID_ARG` (`TxAudio` cannot synthesise at them), and the
+  synthesis runs under `catch_unwind`, a panic at an unsupported rate being `InvalidArg` rather than an unwind across the C boundary.
+- (c) The `*_len` parameters of the two strings were added after review (the first signature had none), as §15.1 records; the
+  header documents "needed bytes including the NUL, set even when too small, nothing written unless all three buffers fit".
+- (d) The mode statuses are `mfsk_decoder_open`'s: `InvalidArg` for a number that is no `MfskMode`, `UnknownProtocol` for MSK144,
+  JTTY, uvpacket and a mode absent from the build. Header additive: two functions and `MFSK_ENCODE_Q65_COPIED_LAST_TX`; ABI stays 3.
+
+**15.2 deviations from §15.2.**
+
+- (a) A failure is `EncodeError::Wspr { mode, reason: WsprPackError }`; `EncodeError::Message` is left for WSPR only when the packed
+  bits do not unpack (`RoundtripRejected`: a `CQ` call or a report in the grid slot, which `wqencode` packs and no receiver reads).
+- (b) The encoder normalises the text (upper case, blank runs collapsed) before `pack_message`; `pack_message` itself takes it as typed.
+- (c) `WsprPacked` carries `hashed_call` (type 3: the call between `<` and `>`, as typed), since the encoder needs it for
+  `Encoded::hashed_calls` and it is not one of `wqencode`'s outputs.
+- (d) Rows where upstream is undefined or aborts are refused, not reproduced: `packpfx` / `packcall` flags ignored in the type 2 and 3
+  branches (`BadCall`, `BadGrid`), a non-integer power (list-directed read aborts, `BadPower`), a call that overruns the 12-character
+  buffers (`CallTooLong`), an unclosed `<` (`UnclosedHashedCall`). The power is clamped to 0..60 and rounded with the `nu` table, as upstream.
+
+**15.3 deviations from §15.3.**
+
+- (a) `Jt72Message` is `Standard`, `Compound(String)` and `FreeText(String)`; `Unsupported` is removed (upstream renders every bit
+  pattern), `Display` is upstream's text. `pack_message` returns `Jt72Packed { words, itype }`; its only refusal is `Jt72PackError::NonAscii`,
+  reported by the encoder as `EncodeError::Jt72` (`Unsupported` is produced by no mode now).
+- (b) An empty text packs as blank free text, as `packmsg` does, not as an error. A text past 22 characters is cut to 22 (the `character*22`
+  its callers pass).
+- (c) Decode side: JT9 no longer drops non-`Standard` messages (`jt9fano.f90:87-88` filters only `000AAA`); JT65 blanks `000AAA` and `0L6MWK`
+  (`decode65b.f90:27-28`). **Open:** the JT65 `hint65` bank still matches standard messages only, as the ported `hint65.f90` does.
+
+**WSPR unpack follows `wsprd`, not `wqdecode` (`98fe9331`).** WSJT-X's WSPR receiver is `wsprd`, so the reference for the text is
+`lib/wsprd/wsprd_utils.c` `unpk_` (324-405; identical in rc1 and v3.3.0-beta2), checked row by row against rc1's own `unpk_` built from
+`git archive` (`scripts/wsprd/`, fixture `tests/fixtures/wsprd_unpack_rc1.tsv`, 26 046 rows). `unpackcall` is exact, `unpackpfx` keeps the part
+after the last blank, `unpackgrid` uses double arithmetic; a Type 3 call is `<...>` unresolved and `<CALL>` when the decoder's
+`WsprCallsignTable` holds it (`WsprResult::hashed_call`, `WsprMessage::render`). Kept because `wsprd` does the same: `3DA0` as `3D0`, CQ/QRZ/DE
+calls and report grids not decoded. **Deliberate divergence:** `ntype == 63` makes `unpk_` print an empty message; `unpack` returns `None`.
+WSPR golden (`150426_0918.wav`): 9/9, 0 extra, texts and freq/dt/snr identical before and after.
 
 ## 15. Added to 0.14: the C ABI encoder, WSPR types 2/3, JT9/JT65 full messages (user, 2026-10-17)
 
