@@ -22,7 +22,7 @@ Decided by the user, all for 0.14:
 | L2 | `mfsk_core::prelude` | additive |
 | L3 | the three names that collide with application-layer names | breaking |
 | L4 | the global instrumentation counters behind a feature | breaking |
-| C1 | delete the four `ft8` migration façades | breaking |
+| C1 | delete the four `ft8` migration façades (their four users move to the real paths, §5) | breaking |
 | C2 | docs that name crates that no longer exist | docs |
 | C3 | `ft8::llr::GenericLlrSet` no longer public | breaking |
 | R1 | `Debug` on every public type; `Display` + `Error` on every error type | additive (in progress) |
@@ -76,11 +76,12 @@ feature `instrument`. Without it the modules do not exist and the counting sites
 
 ## 5. Clean-ups (C1-C3)
 
-- **C1.** Delete `ft8::ldpc`, `ft8::message`, `ft8::resample`, `ft8::hash_table`. Each says it is a migration façade ("so existing
-  `ft8-core::…` callers keep working… new code should import from…"); no file in the workspace uses them (searched `mfsk-core` src,
-  tests, benches, examples, `mfsk-ffi`, `apps`, `embedded-poc`, `hosttest`, `bench`, `wasm-smoke`, docs). Migration line in
-  `LIBRARY.md` §1.3: `ft8::message::X` → `msg::wsjt77::X`, `ft8::ldpc::X` → `fec::ldpc::X`, `ft8::resample::X` → `engine::dsp::resample::X`,
-  `ft8::hash_table::X` → `msg::hash_table::X`.
+- **C1.** Delete `ft8::ldpc`, `ft8::message`, `ft8::resample`, `ft8::hash_table` (each says it is a migration façade). The audit said no
+  file uses them; the implementing agent found four the audit's grep had dropped, `mfsk-core/tests/ft8_resample.rs:10` and
+  `embedded-poc/m5stack-s3-app/src/{audio.rs:1147, tx.rs:33, tx_scheduler.rs:37}` (not built by host CI). They move to the real
+  paths in the same change: the point of 0.14 is a cleaner API, and keeping a path because it is used would defeat it (user,
+  2026-10-17). Migration line in `LIBRARY.md` §1.3: `ft8::message::X` → `msg::wsjt77::X`, `ft8::ldpc::X` → `fec::ldpc::X`,
+  `ft8::resample::X` → `engine::dsp::resample::X`, `ft8::hash_table::X` → `msg::hash_table::X`.
 - **C2.** 13 doc lines in 9 files name `ft8-core`, `mfsk-fec`, `mfsk-msg`, `mfsk-engine`; point them at the modules.
 - **C3.** `ft8::llr::GenericLlrSet` (an alias of `engine::llr::LlrSet` beside the different `ft8::llr::LlrSet`) becomes a private `use`.
 
@@ -226,10 +227,10 @@ Every change above, against what `mfsk-ffi`, `bindings/{kotlin,swift}`, `apps/sk
 | L3 `msk144` `Depth` | `mfsk-ffi/src/lib.rs:3315` (`mfsk_msk144_open` maps 1/2/3 to it) | the C value is unchanged; only the Rust import moves |
 | L3 `testsig::Transmission` | `embedded-poc/m5stack-cores3-app/src/bin/jtty_demo.rs` | not built by host CI: build it with the board's toolchain |
 | L4 `instrument` | `embedded-shared` `apps/wspr_scan.rs` returns `instrument::Counts` and `fano::instrument::Snapshot` in its result; the module is gated by its `wspr-bench` feature | add `"mfsk-core/instrument"` to `wspr-bench` (`embedded-shared/Cargo.toml:46`); the CoreS3 WSPR receiver keeps its counters |
-| C1 façades | none | no consumer anywhere |
+| C1 façades | `mfsk-core/tests/ft8_resample.rs`, `embedded-poc/m5stack-s3-app` (3 imports of `ft8::message::pack77`) | the first version of this table said "no consumer"; wrong (see §5). The imports move to `engine::dsp::resample` / `msg::wsjt77` |
 | A1 `encoder`, A2 `pack77_message`, R1, L2 | additive | Kotlin / Swift / C unchanged (the C ABI is not touched, §7.2) |
 
-Nothing found that needs the plan changed. Two things the plan relies on and that were checked rather than assumed: all `Mode` ZSTs
+Nothing found that needs the plan changed, apart from the C1 consumers above. Two things the plan relies on and that were checked rather than assumed: all `Mode` ZSTs
 implement `FskWaveform` (`ft8/mod.rs:115`, `ft4/mod.rs:112`, `fst4/mod.rs:193`, `fst4w/mod.rs:182`, `wspr/mod.rs:140`, `jt9/mod.rs:256`,
 `jt65/mod.rs:514`, `q65/protocol.rs:80`), and `msk144::decode` has the same feature gate as `decoder` (`msk144/mod.rs:18`, `lib.rs:370`).
 
@@ -245,10 +246,17 @@ implement `FskWaveform` (`ft8/mod.rs:115`, `ft4/mod.rs:112`, `fst4/mod.rs:193`, 
   the old ones stay as they are.
 - Same-name items in different building-block modules (`Spectrogram` ×7, `score_candidate` ×5, …): the module says which.
 
-## 12. Order of work
+## 12. Sample apps: a follow-up (user, 2026-10-17)
+
+The sample apps under `embedded-poc/` are updated after the library change, not with it (they are outside the workspace and host CI).
+Until then they do not build against `main`. Known places: `m5stack-s3-app/src/{audio.rs:1147, tx.rs:33, tx_scheduler.rs:37}`
+(`ft8::message::pack77` → `msg::wsjt77::pack77`, C1), `m5stack-cores3-app/src/bin/jtty_demo.rs` (`testsig::Station` → `Transmission`, L3),
+`embedded-shared/Cargo.toml:46` (`wspr-bench` needs `mfsk-core/instrument`, L4); the implementing agent's report completes the list.
+
+## 13. Order of work
 
 1. R1 lands (in progress).
-2. C1-C3, L3, L4 (mechanical; one commit each).
+2. C1-C3, L3, L4 (mechanical).
 3. A3 (decoder module; FFI and skimmer call sites in the same commit).
 4. A2 (the port; tests against upstream vectors).
 5. A1 (on A2), then L2 (`prelude` names `encoder`), then L1 and the migration section of `LIBRARY.md` §1.3 (+ `.ja.md`), CHANGELOG.
