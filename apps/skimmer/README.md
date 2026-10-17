@@ -215,7 +215,7 @@ identifier, Info.plist not bound), macOS refuses the LAN connection with
 `No route to host` and never asks. Verified on an Apple silicon Mac against the
 SpyServer below: it connects once local network access is allowed.
 
-## rtl_tcp servers (SDRplay RSP) — `--protocol rtl_tcp`
+## rtl_tcp servers (SDRplay RSP) — `--protocol rtl_tcp` (experimental)
 
 ### Test the GUI with a local FT8 IQ server
 
@@ -326,6 +326,10 @@ Costas acquisition is deferred until after real-radio evaluation.
 ```sh
 skimmer --server HOST:1234 --protocol rtl_tcp --ch FT8@7041000 --mycall CALL --mygrid GRID
 ```
+
+**Experimental**: an RSP behind `rsp_tcp` loses samples before the network (about 3 %, and a 1.4 s stop every few minutes)
+and the protocol cannot say where, so beside an Airspy HF+ on SpyServer it decoded 36-58 % as many FT8/FT4 messages (40 m,
+16 minutes, 2026-10-17); plain `rtl_tcp` with an RTL-SDR has not been tried (`docs/notes/RTLTCP_EVAL_PLAN.md` §13-§15).
 
 For a device SpyServer does not serve. `skimmer_core::rtltcp` speaks the `rtl_tcp` protocol, so an SDRplay RSP is reached
 through SDRplay's [`rsp_tcp`](https://github.com/SDRplay/RSPTCPServer) (GPL-3.0, F4FHH Nicolas and SDRplay; the

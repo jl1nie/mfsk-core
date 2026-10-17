@@ -222,7 +222,7 @@ Open with ⚙. The first tabs are **the chosen server's own** (they carry its na
 | Field | What it does |
 |---|---|
 | Name | the name on the chip; for you and for the database |
-| Protocol | SpyServer (the default), or rtl_tcp / rsp_tcp (see below) |
+| Protocol | SpyServer (the default), or rtl_tcp / rsp_tcp (experimental, see below) |
 | Address | `host:5555` (rtl_tcp: `host:1234`) |
 | rtl_tcp IQ | with rtl_tcp only: Auto, 8-bit or 16-bit. The server decides which it sends; 8 or 16 only checks, and refuses a server that sends the other, saying how to start it |
 | My call | your callsign at this server; used for the a-priori decoding and for PSK Reporter |
@@ -235,7 +235,12 @@ Open with ⚙. The first tabs are **the chosen server's own** (they carry its na
 | Give control back… | section 7 |
 | Gain | the radio's gain index; the slider writes it when you have control (section 7) |
 
-#### rtl_tcp and SDRplay's rsp_tcp
+#### rtl_tcp and SDRplay's rsp_tcp (experimental)
+
+**Experimental.** It decodes, but an RSP behind `rsp_tcp` loses samples before they reach the network (about 3 % on
+the RSP1 measured, and a 1.4 s stop every few minutes), and the `rtl_tcp` protocol cannot tell the client where: beside an
+Airspy HF+ on SpyServer it decoded 36-58 % as many FT8 and FT4 messages (40 m, 16 minutes, 2026-10-17). Plain `rtl_tcp`
+with an RTL-SDR has not been tried. Where the device allows, prefer SpyServer.
 
 SpyServer serves Airspy and RTL-SDR. A device it does not serve, an **SDRplay RSP**, is reached through
 SDRplay's own [`rsp_tcp`](https://github.com/SDRplay/RSPTCPServer) (GPL-3.0; it needs SDRplay's API on the

@@ -223,7 +223,7 @@ JTTY のチャンネルにはスロットがありません。メッセージは
 | 項目 | 内容 |
 |---|---|
 | Name | チップに出る名前。自分用、およびデータベース用 |
-| Protocol | SpyServer（既定）、または rtl_tcp / rsp_tcp（下記） |
+| Protocol | SpyServer（既定）、または rtl_tcp / rsp_tcp（実験的、下記） |
 | Address | `host:5555`（rtl_tcp は `host:1234`） |
 | rtl_tcp IQ | rtl_tcp のときだけ: Auto、8-bit、16-bit。どちらが来るかはサーバが決める。8 か 16 は確認のためで、もう一方を送るサーバは、起動のしかたを添えて断る |
 | My call | このサーバでの自分のコールサイン。アプリオリデコードと PSK Reporter に使う |
@@ -236,7 +236,12 @@ JTTY のチャンネルにはスロットがありません。メッセージは
 | Give control back… | 7 章 |
 | Gain | ラジオのゲイン指数。制御権があるときはスライダで書き込める（7 章） |
 
-#### rtl_tcp と SDRplay の rsp_tcp
+#### rtl_tcp と SDRplay の rsp_tcp（実験的）
+
+**実験的な機能です。** デコードはできますが、`rsp_tcp` の向こうの RSP は、ネットワークに出る前にサンプルを失います（測った RSP1 では
+約 3 %、数分おきに 1.4 秒の停止）。`rtl_tcp` プロトコルには、それがどこで起きたかをクライアントに伝える手段がありません。SpyServer の
+Airspy HF+ と並べると、FT8 と FT4 のデコード数はその 36〜58 % でした（40 m、16 分、2026-10-17）。RTL-SDR を素の `rtl_tcp` で
+使う形は試していません。機器が許すなら SpyServer を使ってください。
 
 SpyServer が扱うのは Airspy と RTL-SDR です。扱わない機器、**SDRplay の RSP** には、SDRplay 自身の
 [`rsp_tcp`](https://github.com/SDRplay/RSPTCPServer)（GPL-3.0。RSP をつないだ PC に SDRplay の API が要る）を使います。
