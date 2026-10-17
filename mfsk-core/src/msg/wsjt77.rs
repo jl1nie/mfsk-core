@@ -2199,6 +2199,11 @@ pub fn pack77_wspr(text: &str, prefer_50bit: bool) -> Option<[u8; 77]> {
     wspr_round_trips(text, &bits, staged.as_deref()).then_some(bits)
 }
 
+// ── Whole-message packing ────────────────────────────────────────────────────
+
+mod message;
+pub use message::{Pack77Error, Pack77Options, Packed77, pack77_message};
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
