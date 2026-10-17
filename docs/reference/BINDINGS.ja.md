@@ -896,7 +896,8 @@ C の呼び出し側が確認すべきなのは挙動である。
 `sync_cv`、`hard_errors`、`pass`、`flags`、`key_bits`、`key`、`delivery`、
 `stage`）。`MfskBudgetReport` に `rows_subtracted`。デコード結果は
 `LIBRARY.md` §1.3 の一覧どおりに動く（コールサインのプレフィックスを検査しなくなった、
-OSD の行ごとの移植、JT9 のビン以下の補正）。
+OSD の行ごとの移植、JT9 のビン以下の補正、および `unpack77` の修正: WSJT-X の `callok` が
+拒否するコールを含むメッセージはデコードされない、テレメトリは 16 進 18 桁で出る、範囲外の `CQ` トークンは `<...>` と出る）。
 
 **Kotlin と Swift** は同じ ABI に従い、行の型はソース互換でなくなる:
 `syncScore`、`syncCv` / `syncCV`、`hardErrors` は nullable になり（モードが測らない
@@ -909,7 +910,9 @@ OSD の行ごとの移植、JT9 のビン以下の補正）。
 **FST4W と長い FST4 周期（0.14、#649）。** `MfskMode` に `FST4S900` = 26、`FST4S1800` = 27、
 `FST4W120` = 28、`FST4W300` = 29、`FST4W900` = 30、`FST4W1800` = 31 が加わる。
 `MfskDecode` と `MfskIqDecode` に `hash22`（`MFSK_DECODE_FLAG_HAS_HASH22` のとき有効）が加わる。
-新しい関数: `mfsk_fst4w_pack`、`mfsk_decoder_get_wcalls`、`mfsk_decoder_set_wcalls`。
+新しい関数: `mfsk_fst4w_pack`、`mfsk_decoder_get_wcalls`、`mfsk_decoder_set_wcalls`
+（`set` は長すぎるリストに `MFSK_STATUS_INVALID_ARG` を返し、`MFSK_STATUS_UNSUPPORTED` は
+リストを持たないモードにだけ返す）。
 名前の接頭辞で「FST4 の5サブモード」と数えていたプログラムは7つ見つけるようになり、
 `decode_fft1_size` は 21 591 360（FST4W-1800）に達する。Kotlin: `Mfsk.packFst4w`、
 `MfskDecoder.wcalls`、両方の行型に `hash22: Long?`。Swift: `Message.fst4w`、

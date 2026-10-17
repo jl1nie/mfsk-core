@@ -5,6 +5,18 @@
 //! sub-modes, Q65-15A‥300A), MSK144 and JTTY, plus the experimental
 //! `uvpacket` mode. Decode, encode, and synthesis in a single crate.
 //!
+//! ## Where to start
+//!
+//! The public surface is wide on purpose: an application and a new protocol
+//! use the same crate. Three tiers say where to look (`docs/reference/LIBRARY.md`
+//! §4 has the module tree marked the same way):
+//!
+//! | tier | for | start at |
+//! |---|---|---|
+//! | **application** | receive, decode, transmit | [`prelude`] (`use mfsk_core::prelude::*;`), [`decoder`] (`Decoder<P>`, `AnyDecoder`), [`encoder`] (`encode`), [`iq`] (wideband IQ in), [`slotgrid`], [`registry`], [`msg`] codecs; the protocol ZSTs at the root; [`msk144`] and [`jtty`] through their own modules |
+//! | **protocol building** | a new mode | the root traits ([`ModulationParams`], [`FrameLayout`], [`Protocol`], [`FecCodec`], [`MessageCodec`], [`SyncFrontEnd`]), `decoder::Decodable`, [`engine::tx`], [`fec`] |
+//! | **building blocks** | replace a stage, embedded | `engine::{dsp, sync, sync2d, llr, equalize, spectrogram, search, …}` and each protocol's internals (`ft8::decode_block`, `*::search`, `*::ddc`, `*::rx`) |
+//!
 //! ## Why this exists
 //!
 //! [WSJT-X](https://sourceforge.net/projects/wsjt/) is the reference
@@ -142,6 +154,9 @@
 //!   decoder via Walsh-Hadamard messages).
 //! - [`msg`] — 77-bit WSJT, 72-bit JT, 50-bit WSPR and Q65 message
 //!   codecs + callsign hash table.
+//! - [`decoder`] / [`encoder`] / [`prelude`] — the application layer: one
+//!   [`decoder::Decoder`] per mode (or [`decoder::AnyDecoder`] over [`Mode`]),
+//!   [`encoder::encode`] for transmit, and the glob import of both.
 //! - [`ft8`] / [`ft4`] / [`fst4`] / [`wspr`] / [`jt9`] / [`jt65`] /
 //!   [`q65`] / [`uvpacket`] — per-protocol ZSTs, decoders and
 //!   synthesisers. Each is gated behind a feature of the same name.
@@ -173,6 +188,7 @@
 //! | `fft-extern`  |          | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl |
 //! | `fixed-point` |          | Embedded integer pipeline: u16 spec + i16 DFT + Q11i16 LLR + integer NMS BP |
 //! | `profile-coarse` |       | Always-on coarse_sync sub-stage profiling               |
+//! | `instrument`  |          | Process-global counters in `wspr::instrument` / `fec::conv::fano::instrument` (not in `full`) |
 //!
 //! ## Runtime registry
 //!
@@ -264,18 +280,15 @@
 //! Round-trip a synthesised FT8 frame through the decoder:
 //!
 //! ```
-//! # #[cfg(feature = "ft8")] {
-//! use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
-//! use mfsk_core::ft8::Ft8;
-//! use mfsk_core::msg::decode_request::DecodeRequest;
-//! use mfsk_core::msg::wsjt77::{pack77, unpack77};
+//! # #[cfg(all(feature = "ft8", any(feature = "fft-rustfft", feature = "fft-extern")))] {
+//! use mfsk_core::Ft8;
+//! use mfsk_core::prelude::*;
 //!
-//! // 1. Pack a standard FT8 message and synthesise 12 kHz i16 PCM.
-//! //    The synth produces just the transmitted frame (~12.64 s);
-//! //    pad to the full 15 s slot with the signal starting at 0.5 s.
-//! let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack");
-//! let tones = message_to_tones::<Ft8>(&msg77);
-//! let frame = synthesize_i16::<Ft8>(&tones, 12_000, /* freq */ 1500.0, /* amp */ 20_000);
+//! // 1. Encode a message and synthesise 12 kHz PCM. The synth produces
+//! //    just the transmitted frame (~12.64 s); pad to the full 15 s slot
+//! //    with the signal starting at 0.5 s.
+//! let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").expect("encode");
+//! let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 //!
 //! let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
 //! let start = (0.5 * 12_000.0) as usize;
@@ -284,20 +297,16 @@
 //! }
 //!
 //! // 2. Decode it back across the full FT8 band.
-//! let results = DecodeRequest::<Ft8>::new(
-//!     &audio,
-//!     /* freq_min */ 100.0,
-//!     /* freq_max */ 3_000.0,
-//!     /* sync_min */ 1.0,
-//!     /* max_cand */ 50,
-//! )
-//! .decode()
-//! .results;
-//! assert!(!results.is_empty(), "roundtrip must decode");
-//! let text = unpack77(results[0].message77()).expect("unpack");
-//! assert_eq!(text, "CQ JA1ABC PM95");
+//! let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! let result = decoder.decode(&SlotInput::i16(&audio));
+//! assert!(!result.rows.is_empty(), "roundtrip must decode");
+//! assert_eq!(result.rows[0].decoded.text, "CQ JA1ABC PM95");
 //! # }
 //! ```
+//!
+//! [`encoder::encode`] is the application's route. A protocol builder uses
+//! [`engine::tx`] (`message_to_tones::<P>` + `synthesize::<P>`) directly, which
+//! is what `encode` calls.
 //!
 //! ## `no_std` usage
 //!
@@ -374,6 +383,7 @@ pub mod engine;
 pub mod fec;
 pub mod iq;
 pub mod msg;
+pub mod prelude;
 
 #[cfg(feature = "ft8")]
 pub mod ft8;

@@ -78,7 +78,7 @@ let result = decoder.decode_with(&slot, &on_row);
 | WSPR                 | `Decoder<Wspr>::decode_with`                      | `&(dyn Fn(&Row<WsprResult>) + Sync)`    |
 | JT65                 | `Decoder<Jt65>::decode_with`                      | `&(dyn Fn(&Row<Jt65Result>) + Sync)`    |
 | JT9                  | `Decoder<Jt9>::decode_with`                       | `&(dyn Fn(&Row<Jt9Result>) + Sync)`     |
-| 実行時に選ぶ任意のモード | `AnyDecoder::decode_with`                      | `&(dyn Fn(&Decoded, &RowDetail) + Sync)` |
+| 実行時に選ぶ任意のモード | `AnyDecoder::decode_with`                      | `&(dyn Fn(&Row<()>) + Sync)`            |
 | FT8（`ft8::decode_block`） | `ft8::decode_block::decode_block_streaming`  | `&mut dyn FnMut(&DecodeResult)`         |
 | JTTY                 | `jtty::rx::Stream::push(samples, &mut cb)`        | `&mut dyn FnMut(MessageUpdate)`         |
 
@@ -429,8 +429,8 @@ pub fn spawn_ft8_worker(
 > デコード行 —— `text` / `freq_hz` / `dt_sec` / `snr_db` / `protocol`、
 > `Clone` + `Send`、`--features serde` で `Serialize`/`Deserialize`。
 > 全ての `Row` がモードを問わず `.decoded` にこれを持つので、同じ橋渡し形が
-> どの `Decoder<P>` でも使える。`AnyDecoder` 上のワーカは、コールバックに
-> `Decoded` が直接渡される `AnyDecoder::decode_with` を使う。
+> どの `Decoder<P>` でも使える。`AnyDecoder` 上のワーカは、コールバックが
+> `Row<()>`（`.decoded` と `.detail`。モード固有の結果は消してある）を取る `AnyDecoder::decode_with` を使う。
 > [LIBRARY.ja.md](LIBRARY.ja.md) と `docs/notes/DECODED_ROW.md` を参照。
 
 ### 5.2 ストリームを消費する

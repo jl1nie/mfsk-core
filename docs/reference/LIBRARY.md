@@ -64,18 +64,16 @@ mfsk-core = { version = "0.13", features = ["ft8", "ft4", "wspr"] }
 Pull in only the protocol features you need; the examples below enable
 several for illustration.
 
-**Decode an FT8 slot.** Synthesise a frame, then decode it back:
+**Decode an FT8 slot.** Encode a message, then decode it back (`use mfsk_core::prelude::*;` is the application's
+import, [§4](#4-module-and-crate-map)):
 
 ```rust
-use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
-use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::wsjt77::pack77;
+use mfsk_core::prelude::*;
 
-// 1. Synthesise an FT8 frame and pad it into a 15-second slot.
-let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
-let tones = message_to_tones::<Ft8>(&msg77);
-let frame = synthesize_i16::<Ft8>(&tones, 12_000, /* freq */ 1500.0, /* amp */ 20_000);
+// 1. Encode a message, synthesise it and pad it into a 15-second slot.
+let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
+let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
 let start = (0.5 * 12_000.0) as usize;
@@ -101,6 +99,24 @@ Real audio arrives as one period at 12 kHz from the nominal start.
 callsign hash table lives ([§2.1](#21-decoderp)). `Decoder::<Ft8>::with_defaults()`
 starts from the block the WSJT-X GUI starts from instead of a band you name
 ([§2.2](#22-decodeparams-and-depth)).
+
+**Transmit.** `encoder::encode` is to sending what `AnyDecoder` is to receiving: the mode is a
+value (`registry::Mode`), the text is the message as WSJT-X's Tx box shows it, and the result
+carries the channel symbols and what a receiver will print. Hashed calls (`<W9XYZ>`) come back in
+`hashed_calls`, to hand to `Decoder::learn_callsign`; a text the mode cannot send is an
+`EncodeError`. `Encoded::synthesize` gives `f32` audio at the sample rate you name, `synthesize_i16` 16-bit.
+
+```rust
+use mfsk_core::prelude::*;
+
+let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
+assert_eq!(tx.tones.len(), 79);
+let audio = tx.synthesize(&TxAudio::new(12_000, 1500.0));
+assert_eq!(audio.len(), tx.synth_len(12_000));
+```
+
+`engine::tx` (`message_to_tones::<P>`, `synthesize::<P>`) is the protocol builder's route, the one `encode` calls for
+each mode: use it when you implement a protocol or need a stage `encode` hides.
 
 ### 1.1 Use cases: a decoder is something you keep
 
@@ -386,8 +402,9 @@ The synthesis API (`engine::tx`), `dt_sec` from the nominal start and
 with `Default` and assigns fields mostly recompiles. What breaks is narrower:
 types marked `#[non_exhaustive]` (most callers meet this), three `RowDetail`
 fields that became `Option`s, the traits a protocol implementer writes, and
-a few low-level `fec` and `jt9` functions. The full list is `CHANGELOG.md`,
-`## 0.14.0`.
+a few low-level `fec` and `jt9` functions, and the API clean-up (four `ft8` paths, three names, `AnySlotResult`, the
+instrumentation counters) listed under "Renamed, moved" below. The full list is `CHANGELOG.md`, `## 0.14.0`;
+the design is `docs/notes/API_0_14_DESIGN.md`.
 
 **What changes in your results.** None of these needs a code change:
 
@@ -401,6 +418,9 @@ a few low-level `fec` and `jt9` functions. The full list is `CHANGELOG.md`,
 | `RowDetail::info` | FT8, FT4, FST4 only | every mode (WSPR 50 bits, JT9 / JT65 72, Q65 77) | two JT65 rows with the same text are no longer one ([#592](https://github.com/jl1nie/mfsk-core/issues/592)) |
 | `Decoder<Wspr>` and MSK144 on `wasm32-unknown-unknown` | panicked on any input (`Instant::now`) | decode | CI now decodes every mode on that target ([#583](https://github.com/jl1nie/mfsk-core/issues/583)) |
 | BP check-node inverse (FT8, FT4, FST4, MSK144) | `atanh` clamped at ±4.6 | WSJT-X's piecewise-linear `platanh` (`lib/platanh.f90`, called by every WSJT-X BP) | FT8 at 100 trials a cell: 2561 vs 2559 decodes, crossings within 0.04 dB, no unexpected decode either way; the other suites ±noise; `hard_errors` and `pass` move in some rows (22 of 53 decode snapshots), messages and order do not ([#658](https://github.com/jl1nie/mfsk-core/issues/658)) |
+| `unpack77`: a call WSJT-X's `callok` refuses | decoded (`AB1`, `FN4`, a leading `Q`, a blank inside a call or `CQ` word) | not decoded: `unpack77` returns `None`, as rc1's `ok = .false.` (`packjt77.f90:1013-1096`, `:2438-2485`) | `pack77_wspr` and so FST4W transmit refuse such a call too; JTTY keeps the unchecked text. No golden expectation moved |
+| `unpack77`: telemetry (type 0.5) | printed without leading zeros | all 18 hex digits (`3z6.6`, `packjt77.f90:1640`) | — |
+| `unpack77`: a 28-bit field from 532444 up (an out-of-range `CQ` token) | `<?>` | `<...>` (hash22, `packjt77.f90:283`) | — |
 | FT8 symbol scaling and `nsync` gate | `* (1/1000)`; `nsync` recounted on the coarse spectrogram | `/ 1e3` and the refined spectra, as `ft8b.f90` | no group moved; the gate flips for one candidate in the tier-A/B suite ([#423](https://github.com/jl1nie/mfsk-core/issues/423)) |
 
 **Code.**
@@ -424,6 +444,29 @@ a few low-level `fec` and `jt9` functions. The full list is `CHANGELOG.md`,
 | `osd_decode_deep(llr, ndeep, verify)`, `osd_decode_npre_generic::<P>(…)` | `fec::ldpc::osd_npre::osd_npre::<P>(llr, depth, partial_crc, ap_mask, verify)`. The results differ from the removed ports by design: those were the ones that did not match upstream |
 | `osd_decode_deep4` | no counterpart: upstream's deeper settings (`nord = 2`) are not ported |
 | `jt9::baseband` (`mix_to_baseband`, `NSPS_BB`) | none: nothing called it, and it did not do what `downsam9.f90` does. `jt9::softsym` is the port |
+
+**Renamed, moved, and changed in the API clean-up** (`docs/notes/API_0_14_DESIGN.md`):
+
+| 0.13 | 0.14 |
+|---|---|
+| `ft8::message::X` | `msg::wsjt77::X` (the `ft8` migration façade is gone) |
+| `ft8::ldpc::X` | `fec::ldpc::X` |
+| `ft8::resample::X` | `engine::dsp::resample::X` |
+| `ft8::hash_table::X` | `msg::hash_table::X` |
+| `ft8::llr::GenericLlrSet` | removed; it was an alias of `engine::llr::LlrSet`, beside the different `ft8::llr::LlrSet` |
+| `uvpacket::Mode` (`uvpacket::puncture::Mode`) | `uvpacket::UvMode` (it collided with `registry::Mode`) |
+| `msk144::decode::Depth` | `decoder::Depth`: the same three levels, the same default, `ndepth` 1/2/3 (the C values are unchanged) |
+| `jtty::testsig::Station` | `jtty::testsig::Transmission` (it collided with `decoder::Station`) |
+| `wspr::instrument`, `fec::conv::fano::instrument` (22 process-global counters) | exist only with the new `instrument` feature, which `full` does not include; a program that reads them (the WSPR benchmarks) enables `mfsk-core/instrument`, any other program needs nothing |
+| `AnySlotResult { rows: Vec<Decoded>, details: Vec<RowDetail>, budget }` | `AnySlotResult = SlotResult<()>`: `rows: Vec<Row<()>>`, so `result.rows[i].decoded` and `.detail`; there is no `details` |
+| `AnyDecoder::decode_with(slot, &dyn Fn(&Decoded, &RowDetail))` (and `decode_prefix_with`) | `on_row: OnRow<'_, ()>`, the callback of `Decoder<P>`: `\|row: &Row<()>\| …`, `row.decoded`, `row.detail` |
+| `AnyDecoder::wcalls() -> Result<Vec<String>, Unsupported>` | `Result<&[String], Unsupported>`: a borrow, `.to_vec()` for a copy |
+| `AnyDecoder::set_wcalls(..) -> Result<(), Unsupported>` (a too-long list read as "unsupported") | `Result<(), WcallsError>`: `Unsupported(Unsupported)` or `TooManyCalls(TooManyCalls)`; both are `Display` + `Error` (the latter needs `fst4w`); the C ABI answers `MFSK_STATUS_INVALID_ARG` for a too-long list |
+| `registry::Mode` discriminants | FST4 and FST4W modes inserted before WSPR: `Mode::Wspr as u8` is 13, not 7 (name a mode with its variant, `Mode::ALL` or `meta().name`; see the `CHANGELOG`) |
+
+New, additive: `encoder::{encode, encode_with, Encoded, EncodeOptions, TxAudio, EncodeError}` ([§1](#1-quick-start)),
+`msg::wsjt77::pack77_message` (WSJT-X's whole-message `pack77`), `prelude`, `Decoder::decode_i16`,
+`Decoder::set_ap_hint`, `AnyDecoder::extras()`, and `Debug` on every public type with `Display` + `Error` on every error type.
 
 **`#[non_exhaustive]`.** 0.14 marks the public types that are expected to grow
 `#[non_exhaustive]` ([#573](https://github.com/jl1nie/mfsk-core/issues/573)).
@@ -614,13 +657,15 @@ DecodeParams)` is an enum with one variant per `registry::Mode` this build
 has (`Mode::ALL`, name lookup `Mode::from_name`), dispatched by `match`:
 no `Box<dyn>` and no allocation on the decode path. It exists for code that
 holds the mode as data: the IQ receiver's callers ([§2.7](#27-wideband-iq-input)),
-the C ABI, a GUI. Its methods mirror `Decoder`'s, with the mode-erased result
-`AnySlotResult { rows: Vec<Decoded>, details: Vec<RowDetail>, budget }`
-(code that wants a mode's native result holds the typed `Decoder<P>`).
-`extras_mut()` returns an `AnyExtras` to match on; `set_ap_hint` sets the
-free-form AP hint on the modes that take one and returns
-`Err(Unsupported { mode, option })` on the others; `decode_i16(audio,
-period)` is the short form. `AnyDecoder` exists only when at least one
+the C ABI, a GUI. Its methods mirror `Decoder`'s, and so does its result:
+`AnySlotResult` is `SlotResult<()>`, rows of `Row<()>` (`decoded` and `detail`, the native result
+erased) and `budget`; `decode_with` takes the same `OnRow` callback, over `Row<()>` (code that
+wants a mode's native result holds the typed `Decoder<P>`). `extras_mut()` returns an `AnyExtras`
+to match on and `extras()` its read-only twin `AnyExtrasRef`; `set_ap_hint` sets the free-form AP hint
+on the modes that take one and returns `Err(Unsupported { mode, option })` on the others (`Decoder<P>` has
+it too, for the four modes that carry an `ap_hint`); `wcalls()` / `set_wcalls()` are FST4W's known-call
+list, and `set_wcalls` says `WcallsError::Unsupported` for another mode, `WcallsError::TooManyCalls` for a
+list that is too long; `decode_i16(audio, period)` is the short form (on `Decoder<P>` as well). `AnyDecoder` exists only when at least one
 protocol feature does.
 
 ```rust
@@ -1998,10 +2043,26 @@ and callers helpers — are in [§2.5](#25-extras-and-the-protocols-outside-deco
 
 ## 4. Module and crate map
 
+The public surface is wide on purpose: the crate serves applications (receive, decode, transmit) and protocol
+builders (a new mode on the existing traits, codecs and DSP), so nothing is hidden or moved to separate the two. Three
+tiers say where to look; the tree below marks each module with its tier.
+
+| tier | for | modules |
+|---|---|---|
+| **A: application** | receive, decode, transmit | `prelude`, `decoder`, `encoder`, `iq`, `slotgrid`, `registry`, `msg` (codecs, `Decoded`, `ApHint`, `CallsignHashTable`), the protocol ZSTs at the crate root; MSK144 and JTTY through their own modules (`msk144::decode::Stream`, `jtty::rx`, `jtty::pack`, `jtty::tx`) |
+| **P: protocol building** | a new mode | the root traits (`ModulationParams`, `FrameLayout`, `Protocol`, `FecCodec`, `MessageCodec`, `SyncFrontEnd`), `decoder::Decodable`, `engine::tx` (`FskWaveform`, `message_to_tones`, `synthesize*`), `fec::*` |
+| **B: building blocks** | replace a stage, embedded | `engine::{dsp, sync, sync2d, llr, equalize, spectrogram, search, …}`, protocol internals (`ft8::decode_block`, `*::search`, `*::ddc`, `*::rx`) |
+
+Only `engine::pipeline` is `pub(crate)`. An item reachable by more than one path stays where the implementation put
+it: a protocol module re-exports the shared parts it is built from, and a parent module flattens its children.
+
 ```text
 mfsk_core
-├── engine/           Protocol traits, DSP, sync, LLR, equaliser, pipeline
-│   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
+├── prelude.rs        [A] `use mfsk_core::prelude::*;` — Decoder · AnyDecoder · DecodeParams · SlotInput · Row · encode · Encoded ·
+│                     TxAudio · IqReceiver · Mode · Decoded · ApHint … (the protocol ZSTs stay at the root)
+├── encoder.rs        [A] encode / encode_with → Encoded { tones, text, hashed_calls }, synthesize; one call over Mode, no FFT needed
+├── engine/           [P, B] Protocol traits, DSP, sync, LLR, equaliser, pipeline
+│   ├── protocol.rs     [P] ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
 │   ├── dsp/            resample · downsample · gfsk · cpfsk · envelope · subtract ·
 │   │                   msk · analytic · ddc · fir_decimate · polyphase · dotprod ·
 │   │                   symbol_fft · blanker · fixed-point FFT kernels
@@ -2022,20 +2083,20 @@ mfsk_core
 │   ├── interleave.rs   bit-reversal interleave_bitrev/deinterleave_bitrev
 │   │                   — WSPR, JT9 (JT65's is a 7×9 matrix transpose,
 │   │                   a different algorithm, and stays in jt65/)
-│   ├── tx.rs           message_to_tones / info_to_tones, FskWaveform, and
+│   ├── tx.rs           [P] message_to_tones / info_to_tones, FskWaveform, and
 │   │                   synthesize / synthesize_into / synthesize_i16 / synth_len
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) internals — call via
 │                       decoder::Decoder)
-├── decoder/          the public decode API — §2
+├── decoder/          [A] the public decode API — §2
 │   ├── mod.rs          Decoder<P> / Decodable / SlotInput / Audio / Row / RowDetail / SlotResult
 │   ├── params.rs       DecodeParams / Depth / Station / QsoContext / ApMode / Contest / SearchTuning
 │   ├── frame.rs        FT8 / FT4 / FST4: Ft8Extras · Ft4Extras · Fst4Extras, Tuning, strategies, QSO-context AP
 │   ├── slow.rs         WSPR / JT9 / JT65: their extras and state
 │   ├── q65.rs          Q65Extras / Q65State (averaging)
 │   └── any.rs          AnyDecoder / AnyExtras / Unsupported
-├── slotgrid.rs       SlotGrid · SampleClock · ClockChange · SlotCutter — UTC slot arithmetic, integers only, no_std
-├── fec/              FecCodec implementations
+├── slotgrid.rs       [A] SlotGrid · SampleClock · ClockChange · SlotCutter — UTC slot arithmetic, integers only, no_std
+├── fec/              [P] FecCodec implementations
 │   ├── ldpc/           LDPC(174, 91)  — FT8, FT4 (bp.rs / osd.rs / params.rs / tables.rs)
 │   ├── ldpc240_101/    LDPC(240, 101) — FST4, uvpacket (punctured)
 │   ├── ldpc_128_90/    LDPC(128, 90)  — MSK144
@@ -2049,10 +2110,10 @@ mfsk_core
 │   │   ├── npfwht.rs      Non-binary Walsh-Hadamard transform helpers
 │   │   └── pdmath.rs      Probability-domain BP math helpers
 │   └── qra15_65_64/    the QRA15_65_64_IRR_E23 code instance
-├── msg/              Message codecs and the public output row
+├── msg/              [A] Message codecs and the public output row
 │   ├── decode_request.rs the frame family's request builders — crate-private (`internal-testing` reopens them); `decoder` drives them
 │   ├── decoded.rs      Decoded — the cross-mode output row
-│   ├── wsjt77.rs       77-bit WSJT message — FT8, FT4, FST4, Q65, MSK144
+│   ├── wsjt77.rs       77-bit WSJT message — FT8, FT4, FST4, Q65, MSK144; `pack77_message` (WSJT-X's whole-message packer)
 │   ├── wspr.rs         50-bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72-bit JT message — JT9, JT65
 │   ├── callsign28.rs   shared base-37/36/10/27³ callsign pack/unpack core
@@ -2061,10 +2122,10 @@ mfsk_core
 │   ├── pipeline_ap.rs  AP hypothesis generation (77-bit-family protocols)
 │   ├── packet_bytes.rs PacketBytesMessage — byte-payload example codec
 │   └── hash_table.rs   Callsign hash table
-├── registry.rs       PROTOCOLS static + ProtocolMeta + by_id / by_name
-├── iq/               wideband IQ in — §2.7: IqToAudio (one channel → 12 kHz USB audio, 120 dB), IqReceiver (N channels
+├── registry.rs       [A] PROTOCOLS static + ProtocolMeta + by_id / by_name
+├── iq/               [A] wideband IQ in — §2.7: IqToAudio (one channel → 12 kHz USB audio, 120 dB), IqReceiver (N channels
 │                     cut into CompletedSlots on UTC, no decode; `Channelizer::Direct` or `Pfb`), PfbChannelizer (polyphase filter bank)
-├── ft8/              FT8 ZST + decode + decode_block + wave_gen
+├── ft8/              [A: the ZST; B: the rest] FT8 ZST + decode + decode_block + wave_gen
 │   ├── list_decode.rs  WSJT-X's a7 / a8 list decoders (pass ids 30 / 31)
 │   └── acquire.rs      cold slot-phase acquisition from off-air audio (#356)
 ├── ft4/              FT4 ZST + decode
@@ -2089,7 +2150,20 @@ mfsk_core
 ```
 
 Each protocol module is gated behind a feature flag of the same name.
-`engine`, `fec`, `msg` and `registry` are always available.
+`engine`, `fec`, `msg`, `encoder`, `prelude` and `registry` are always available (`decoder` needs an FFT backend, and
+`prelude` offers what the build has). The protocol modules are marked once, on `ft8/`: each one's ZST is tier A, the rest of it tier B. `msk144/` and `jtty/`
+are tier A through the modules the table names.
+
+### Conventions
+
+- **Builder names.** A bare name on a plain parameter struct (`DecodeParams::band`, `SlotInput::budget`,
+  `TxAudio::amplitude`, `EncodeOptions::q65_copied_last_tx`); `with_` on a type with behaviour
+  (`ApHint::with_call2`, `Decoder::with_extras`, `IqReceiver::with_clock`).
+- **`#[non_exhaustive]`** on the types expected to grow: `Default` or a constructor, then assign fields ([§1.3](#13-coming-from-013)).
+- **Errors** are `Display` + `core::error::Error` (without `std` too); **every public type is `Debug`**, and one that holds
+  sample or spectrum buffers prints their lengths.
+- **Names that exist in two tiers are distinct:** `registry::Mode` (application) against `uvpacket::UvMode`,
+  `decoder::Station` against `jtty::testsig::Transmission`, one `decoder::Depth` for every mode that has one.
 
 ### Workspace crates
 
@@ -2618,6 +2692,7 @@ justified it. The summary here covers what a Rust host consumer needs;
 | `dotprod-extern` | off | likewise for `mfsk_core_dotprod_f32` |
 | `fixed-point` | off | the numeric path embedded ships. **Implies `nstep-half`, and must** |
 | `serde` | off | `Serialize`/`Deserialize` on the public result types |
+| `instrument` | off | the 22 process-global counters of `wspr::instrument` and `fec::conv::fano::instrument`; the embedded WSPR benchmarks and two tests read them. Not in `full` |
 | `internal-testing` | off | reopens `pub(crate)` engine internals for the crate's own integration tests. Deliberately **not** in `full` |
 
 Flags that bite:

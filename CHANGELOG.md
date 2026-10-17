@@ -21,11 +21,48 @@ justify a change; the rest is on the issue or in `docs/notes/`.
   `mfsk_iq_push` decodes FT8 early by default (#601). `MFSK_CAP_BUDGET` is published for four more modes (#593).
 - **JTTY times are `f64`**: `FrameDecode::tsync_s`, `MessageUpdate::start_s`, `assemble::FRAME_PERIOD_S`, `Assembler::{prune, continuations}` (#645).
 - **Kotlin / Swift**: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable (#594).
-- **Migration**: `LIBRARY.md` §1.3 (Rust: what changes in results, in code, what was removed) and `BINDINGS.md` §3.1 (C, Kotlin,
+- **API clean-up (0.14)**: `ft8::{message, ldpc, resample, hash_table}` are gone (`msg::wsjt77`, `fec::ldpc`, `engine::dsp::resample`,
+  `msg::hash_table`); `ft8::llr::GenericLlrSet` is removed; `uvpacket::Mode` is `UvMode`; `msk144::decode::Depth` is `decoder::Depth`;
+  `jtty::testsig::Station` is `Transmission`; `wspr::instrument` and `fec::conv::fano::instrument` need the new `instrument` feature.
+- **`AnyDecoder` follows `Decoder<P>`**: `AnySlotResult` is `SlotResult<()>` (`rows[i].decoded` / `.detail`, no `details`);
+  `decode_with` takes `OnRow<'_, ()>`; `wcalls()` borrows; `set_wcalls` returns `WcallsError`.
+- **Fewer messages decode (unpack77)**: a call WSJT-X's `callok` refuses (`AB1`, `FN4`, a leading `Q`, a blank inside) is no longer a decode;
+  telemetry prints 18 hex digits; an out-of-range `CQ` token prints `<...>`, not `<?>`.
+- **Migration**: `LIBRARY.md` §1.3 (Rust: what changes in results, in code, what was removed, the old → new paths) and `BINDINGS.md` §3.1 (C, Kotlin,
   Swift), each with its `.ja.md`.
 
 ### Public API
 
+- **`mfsk_core::encoder`: one transmit call over `Mode`, as `AnyDecoder` is for receive (A1).** A Rust application sent by a different route
+  per family (`message_to_tones` + `synthesize`, `wspr::synthesize_type1`, `jt9`/`jt65::synthesize_standard`, `q65::synthesize_standard_for`,
+  `fst4w::encode`); the C ABI had `mfsk_encode_*` per mode and Rust had nothing at that level. `encode(mode, text)` /
+  `encode_with` give `Encoded { tones, text, hashed_calls }` (`text` as a receiver prints it, `hashed_calls` for `learn_callsign`), then
+  `synthesize` / `synthesize_i16` / `synth_len`; `TxAudio`, `EncodeOptions` (Q65 copied-last-Tx), `EncodeError`. Every `Mode`; no FFT
+  backend needed. Not sent (`EncodeError::Unsupported`): WSPR types 2/3, JT9/JT65 free text and compound calls.
+  Tier A: every mode round-trips through `AnyDecoder`; tones and waveforms equal the per-mode routes; FST4W gives `Fst4wMessage::pack_text`'s
+  tones and refusals on 15 texts. `engine::tx` stays the protocol builder's route. Design: `docs/notes/API_0_14_DESIGN.md` §7, §14.
+- **`msg::wsjt77::pack77_message`: WSJT-X's whole-message 77-bit packer (A2).** A port of `pack77_encode_core` (rc1 `packjt77.f90:527-627`)
+  with its status codes (`Pack77Error`, `Pack77Options`, `Packed77`): the candidates in upstream's order (0.1 DXpedition, 0.3/0.4 Field Day,
+  0.5 telemetry, 0.6, 1/2, 3 RTTY Roundup, 4, 5 EU VHF), each accepted only if it unpacks to the same text, then free text. Not ported: the
+  `$DX` macro. Checked against rc1's own packer, run over its `messages.txt` and 1 203 cases of ours: `tests/fixtures/pack77_rc1.tsv`
+  (2 163 rows, every candidate: status, `i3.n3`, bits, text, hashed calls) all equal, and 35 000 random rows once, outside the repo.
+  `docs/notes/API_0_14_DESIGN.md` §8.
+- **`Decoder<P>` and `AnyDecoder` are symmetric (A3).** `AnySlotResult` is `SlotResult<()>` and `decode_with` takes the same `OnRow`
+  (breaking: the two parallel vectors and the `(&Decoded, &RowDetail)` callback are gone); `Decoder::decode_i16`, `Decoder::set_ap_hint`
+  (FT8, FT4, FST4, Q65, through `HasApHint`) and `AnyDecoder::extras()` (`AnyExtrasRef`) are new; `wcalls()` borrows and `set_wcalls`
+  returns `WcallsError`, so a too-long list is no longer reported as "unsupported" (the C ABI now answers `InvalidArg`, as its doc said;
+  header unchanged). `TooManyCalls` gained `Display` / `Error`. Migration: `LIBRARY.md` §1.3; design §9.
+- **API clean-up for 0.14 (C1-C3, L3, L4).** The four `ft8` migration façades (`message`, `ldpc`, `resample`, `hash_table`) are deleted, with
+  their users moved to the real paths; `ft8::llr::GenericLlrSet` is gone; three names that collided with application-layer names are
+  renamed (`uvpacket::UvMode`, `jtty::testsig::Transmission`, and `msk144` takes `decoder::Depth`, same levels and C values); the 22
+  process-global counters of `wspr::instrument` / `fec::conv::fano::instrument` exist only with the new `instrument` feature (not in `full`;
+  the CI row for embedded WSPR turns it on); doc lines naming `ft8-core`, `mfsk-fec`, `mfsk-msg`, `mfsk-engine` point at the modules. The
+  `embedded-poc` sample apps follow separately. Old → new table: `LIBRARY.md` §1.3; design §3-§5.
+- **`mfsk_core::prelude` and the tier map (L1, L2).** `use mfsk_core::prelude::*;` brings `Decoder`, `AnyDecoder`, `DecodeParams`,
+  `SlotInput`, `Row`, `encode`, `Encoded`, `TxAudio`, `IqReceiver`, `Mode`, `Decoded`, `ApHint` and the rest an application names, each line under its
+  module's feature gate; the protocol ZSTs stay at the root. The crate doc and `LIBRARY.md` §4 (+ `.ja.md`) sort the modules into
+  application / protocol building / building blocks (the surface stays wide on purpose), and §4 writes down the builder naming rule
+  (bare on a parameter struct, `with_` on a type with behaviour). Design §1, §2.
 - **Every public type is `Debug`, every error type is `Display` + `core::error::Error`.** 78 types had no `Debug` (`Decoder<P>`,
   `AnyDecoder`, `SlotInput`, `IqReceiver` among them); a type that holds sample or spectrum buffers prints their lengths, not the
   samples (`Audio` too, which printed every sample). `Q65DecodeError` and the three `uvpacket` errors gain `Display`/`Error`; `IqError`,
@@ -92,6 +129,12 @@ justify a change; the rest is on the issue or in `docs/notes/`.
 
 ### Decoding
 
+- **`unpack77` matches rc1 on `callok`, hash placeholders and telemetry.** `unpack28` follows `unpack28_core` (`packjt77.f90:1013-1096`): a
+  standard call `callok` refuses (`AB1`, `FN4`, a leading `Q`) or a call / `CQ` word with a blank inside fails to unpack, so `unpack77`
+  returns `None` where rc1 has `ok = .false.` (FST4W transmit, through `pack77_wspr`, refuses such a call too); the 28-bit fields
+  532444 and up print `<...>`, not `<?>`; telemetry prints all 18 hex digits (`3z6.6`, `:1640`), not without leading zeros. JTTY keeps the
+  unchecked text. Vectors are rc1's own `unpack77`; the 2 163-row `pack77_message` fixture matches with its two local patches removed, and no
+  golden expectation moved. `LIBRARY.md` §1.3.
 - **JT65 deep search (`hint65`) is ported (#648).** `DecodeParams::deep_search` (`ndepth & 32`) was carried and ignored; it now matches
   a candidate Chase fails on against a bank of known calls (`Jt65Extras::known_calls`, WSJT-X's `CALL3.TXT` that beta1 made a
   caller-supplied list) plus the DX station's reports, from v3.3.0-beta1's `hint65.f90`. On the `jt65sim` corpus -25 dB goes from 0/20 to

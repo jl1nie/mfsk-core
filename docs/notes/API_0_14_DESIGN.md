@@ -262,3 +262,35 @@ Until then they do not build against `main`. Known places: `m5stack-s3-app/src/{
 5. A1 (on A2), then L2 (`prelude` names `encoder`), then L1 and the migration section of `LIBRARY.md` §1.3 (+ `.ja.md`), CHANGELOG.
 6. Merge gate (tiers A+B), `scripts/pre-push-check.sh`, `cargo build -p mfsk-ffi`, `cargo test -p skimmer-core`, the CoreS3 build of
    `jtty_demo` (L3) and of `embedded-shared` with `instrument` (L4).
+
+## 14. As implemented (2026-10-17)
+
+| item | commit | note |
+|---|---|---|
+| R1 `Debug`, `Display`, `Error` | `d8333a60` | §6 |
+| C1-C3, L3, L4 | `6cde54ed` | §3-§5; the CI matrix row for embedded WSPR turns `instrument` on; the `embedded-poc` sample apps follow (§12) |
+| A2 `pack77_message` | `93f26561` | §8; oracle: rc1's own packer over `messages.txt` and 1 203 cases of ours, fixture `tests/fixtures/pack77_rc1.tsv` (2 163 rows), plus 35 000 random rows once outside the repo |
+| `unpack77` fidelity | `51215cf5` | not in the design: `unpack28` follows `unpack28_core` (`callok`, `<...>` for 532444 and up, 18 telemetry hex digits); found while porting A2, whose round-trip gate needed local patches for the first two |
+| A1 `encoder` | `56ccfa41` | §7 |
+| A3 symmetric decoders | `ac350478` | §9 |
+| L1 tier map, L2 `prelude`, migration docs, CHANGELOG | this change | `LIBRARY.md` §1.3, §4 (+ `.ja.md`), crate doc, `src/prelude.rs` |
+| upstream baseline | `9e345837` | v3.3.0-beta2, nothing to port (#690) |
+
+**A1 deviations from §7.**
+
+- (a) FST4W refuses a text that does not pack as `i3.n3 = 0.6` (`Pack77Error::PreferredFamilyRejected`), as `Fst4wMessage::pack_text`
+  does, instead of sending the first 50 bits of whatever packed. `prefer_wspr_50bit` alone falls back to other types (free text
+  `K1ABC FN42 38`) whose first 50 bits are not a message. `tests/encoder.rs` compares 15 texts with `pack_text`: same tones, same refusals.
+- (b) `Encoded::text` renders hashed calls from a table seeded with `hashed_calls`, as WSJT-X's Tx box does, not as `<...>`.
+- (c) `hashed_calls` holds what rc1 records (`commit_hash_facts`): `<W9XYZ> PJ4/K1ABC RR73` gives `W9XYZ` only. The A2 oracle checks this.
+
+**A3 additions to §9.** `TooManyCalls` gained `Display` and `Error`; `WcallsError::TooManyCalls` is gated on `fst4w` (without it the
+variant does not exist); the C ABI maps it to `MFSK_STATUS_INVALID_ARG` (the header is unchanged). `HasApHint` is the small trait
+behind `Decoder::set_ap_hint`.
+
+**L2 as built.** `prelude` is §2's list with these differences: the decoder line is split by gate (`Decoder`, `DecodeParams`, `Depth`,
+`QsoContext`, `QsoProgress`, `Row`, `RowDetail`, `SlotInput`, `SlotResult`, `Station` need an FFT backend; `AnyDecoder`, `AnySlotResult`,
+`Unsupported` also need one protocol feature); the IQ line is split the same way (`IqError`, `IqSampleFormat`, `IqStream` always;
+`ChannelId`, `Channelizer`, `CompletedSlot`, `IqReceiver` with the receiver's gate). `WcallsError`, `HasApHint`, `AnyExtras` and
+`AnyExtrasRef` are left out: the first is named only by code that matches on `set_wcalls`'s error, the others are a bound and types that are
+used without being named. No name clashes inside the prelude (it compiles as a glob import beside `mfsk_core::Ft8` in its doctest).

@@ -950,7 +950,8 @@ New, all appended: `mfsk_decoder_decode_prefix_i16` / `_f32`,
 `sync_cv`, `hard_errors`, `pass`, `flags`, `key_bits`, `key`, `delivery`,
 `stage`); `MfskBudgetReport` gains `rows_subtracted`. The decode results
 move as `LIBRARY.md` §1.3 lists (callsign prefixes no longer checked, the OSD
-ported line for line, JT9's sub-bin correction).
+ported line for line, JT9's sub-bin correction, and the `unpack77` fixes: a message with a call WSJT-X's `callok` refuses is not
+decoded, telemetry prints 18 hex digits, an out-of-range `CQ` token prints `<...>`).
 
 **Kotlin and Swift** follow the same ABI, and their row types are source
 breaks: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable
@@ -965,7 +966,9 @@ breaks: `syncScore`, `syncCv` / `syncCV` and `hardErrors` are nullable
 `FST4S900` = 26, `FST4S1800` = 27, `FST4W120` = 28, `FST4W300` = 29,
 `FST4W900` = 30 and `FST4W1800` = 31; `MfskDecode` and `MfskIqDecode` gain
 `hash22` (valid with `MFSK_DECODE_FLAG_HAS_HASH22`); new calls:
-`mfsk_fst4w_pack`, `mfsk_decoder_get_wcalls`, `mfsk_decoder_set_wcalls`. A
+`mfsk_fst4w_pack`, `mfsk_decoder_get_wcalls`, `mfsk_decoder_set_wcalls`
+(`set` answers `MFSK_STATUS_INVALID_ARG` for a list that is too long, and
+`MFSK_STATUS_UNSUPPORTED` only for a mode without one). A
 program that counted "the five FST4 sub-modes" by name prefix now finds seven,
 and `decode_fft1_size` now reaches 21 591 360 (FST4W-1800). Kotlin: `Mfsk.packFst4w`,
 `MfskDecoder.wcalls`, `hash22: Long?` on both row types. Swift: `Message.fst4w`,

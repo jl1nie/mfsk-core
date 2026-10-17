@@ -81,7 +81,7 @@ generic shape, `&(dyn Fn(&Row<R>) + Sync)` (`decoder::OnRow`), with the mode's
 | WSPR                 | `Decoder<Wspr>::decode_with`                      | `&(dyn Fn(&Row<WsprResult>) + Sync)`   |
 | JT65                 | `Decoder<Jt65>::decode_with`                      | `&(dyn Fn(&Row<Jt65Result>) + Sync)`   |
 | JT9                  | `Decoder<Jt9>::decode_with`                       | `&(dyn Fn(&Row<Jt9Result>) + Sync)`    |
-| any, chosen at run time | `AnyDecoder::decode_with`                      | `&(dyn Fn(&Decoded, &RowDetail) + Sync)` |
+| any, chosen at run time | `AnyDecoder::decode_with`                      | `&(dyn Fn(&Row<()>) + Sync)`           |
 | FT8 (`ft8::decode_block`) | `ft8::decode_block::decode_block_streaming`  | `&mut dyn FnMut(&DecodeResult)`        |
 | JTTY                 | `jtty::rx::Stream::push(samples, &mut cb)`        | `&mut dyn FnMut(MessageUpdate)`        |
 
@@ -456,8 +456,8 @@ pub fn spawn_ft8_worker(
 > `protocol`, `Clone` + `Send`, and `Serialize`/`Deserialize` under
 > `--features serde`. Every `Row` carries one in `.decoded`, whatever the
 > mode, so the same bridge shape works for any `Decoder<P>`; a worker over an
-> `AnyDecoder` uses `AnyDecoder::decode_with`, whose callback is handed the
-> `Decoded` directly. See [LIBRARY.md](LIBRARY.md) and
+> `AnyDecoder` uses `AnyDecoder::decode_with`, whose callback takes a
+> `Row<()>` (`.decoded` and `.detail`, the native result erased). See [LIBRARY.md](LIBRARY.md) and
 > `docs/notes/DECODED_ROW.md`.
 
 ### 5.2 Consuming the stream

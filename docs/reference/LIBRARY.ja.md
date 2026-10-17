@@ -64,18 +64,16 @@ mfsk-core = { version = "0.13", features = ["ft8", "ft4", "wspr"] }
 必要なプロトコル feature だけを入れる。以下の例は説明のために複数を
 有効にしている。
 
-**FT8 スロットをデコードする。** フレームを合成してから復号する:
+**FT8 スロットをデコードする。** メッセージをエンコードしてから復号する
+（`use mfsk_core::prelude::*;` がアプリケーション向けの import、[§4](#4-モジュールとクレートの地図)）:
 
 ```rust
-use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
-use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::wsjt77::pack77;
+use mfsk_core::prelude::*;
 
-// 1. FT8 フレームを合成し、15 秒スロットに詰める。
-let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
-let tones = message_to_tones::<Ft8>(&msg77);
-let frame = synthesize_i16::<Ft8>(&tones, 12_000, /* freq */ 1500.0, /* amp */ 20_000);
+// 1. メッセージをエンコードして合成し、15 秒スロットに詰める。
+let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
+let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
 let start = (0.5 * 12_000.0) as usize;
@@ -101,6 +99,25 @@ for row in &result.rows {
 （[§2.1](#21-decoderp)）。`Decoder::<Ft8>::with_defaults()` は、帯域を自分で指定する
 代わりに WSJT-X の GUI が起動時に持つブロックから始める
 （[§2.2](#22-decodeparams-と-depth)）。
+
+**送信。** `encoder::encode` は、受信側の `AnyDecoder` に対する送信側である。モードは値
+（`registry::Mode`）、テキストは WSJT-X の Tx ボックスに出るままのメッセージで、結果はチャンネル
+シンボルと受信側が表示するはずの文面を持つ。ハッシュになるコール（`<W9XYZ>`）は
+`hashed_calls` で返るので `Decoder::learn_callsign` に渡す。そのモードが送れないテキストは
+`EncodeError` になる。`Encoded::synthesize` は指定したサンプルレートの `f32` 音声、
+`synthesize_i16` は 16 ビットを返す。
+
+```rust
+use mfsk_core::prelude::*;
+
+let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
+assert_eq!(tx.tones.len(), 79);
+let audio = tx.synthesize(&TxAudio::new(12_000, 1500.0));
+assert_eq!(audio.len(), tx.synth_len(12_000));
+```
+
+`engine::tx`（`message_to_tones::<P>`、`synthesize::<P>`）はプロトコル実装者の経路で、`encode` が各モードで
+呼ぶのもこれである。プロトコルを実装するとき、または `encode` が隠す段が必要なときに使う。
 
 ### 1.1 使い方の場面ごとに: デコーダは持ち続けるもの
 
@@ -373,7 +390,9 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 呼び出し側は、たいていそのまま再コンパイルできる。壊れるのはもっと狭い範囲で、
 `#[non_exhaustive]` が付いた型（ほとんどの呼び出し側が出会うのはこれ）、`Option` になった
 `RowDetail` の 3 フィールド、プロトコル実装者が書くトレイト、いくつかの低レベルな `fec` と
-`jt9` の関数である。全一覧は `CHANGELOG.md` の `## 0.14.0`。
+`jt9` の関数、および API の整理（`ft8` の 4 つのパス、3 つの名前、`AnySlotResult`、計測カウンタ）で、
+後述の「改名・移動・変更」に挙げる。全一覧は `CHANGELOG.md` の `## 0.14.0`、設計は
+`docs/notes/API_0_14_DESIGN.md`。
 
 **結果が変わるもの。** どれもコードの変更は要らない:
 
@@ -387,6 +406,9 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `RowDetail::info` | FT8、FT4、FST4 のみ | 全モード（WSPR 50 ビット、JT9 / JT65 72、Q65 77） | 同じ文面の JT65 の 2 行が 1 行扱いされなくなった（[#592](https://github.com/jl1nie/mfsk-core/issues/592)） |
 | `wasm32-unknown-unknown` での `Decoder<Wspr>` と MSK144 | どんな入力でも panic した（`Instant::now`） | デコードする | CI がこのターゲットで全モードをデコードするようになった（[#583](https://github.com/jl1nie/mfsk-core/issues/583)） |
 | BP のチェックノード逆関数（FT8、FT4、FST4、MSK144） | `atanh` を ±4.6 で打ち切り | WSJT-X の区分線形 `platanh`（`lib/platanh.f90`。WSJT-X の BP はすべてこれを呼ぶ） | FT8 を 1 セル 100 試行で: 2561 対 2559 復号、交点は 0.04 dB 以内、どちらも余分な復号なし。他のスイートは雑音の範囲。一部の行で `hard_errors` と `pass` が動く（53 のデコードスナップショットのうち 22）が、メッセージとその順序は動かない（[#658](https://github.com/jl1nie/mfsk-core/issues/658)） |
+| `unpack77`: WSJT-X の `callok` が拒否するコール | デコードされた（`AB1`、`FN4`、先頭が `Q`、コールや `CQ` の語の中の空白） | デコードされない: `unpack77` は `None` を返す（rc1 の `ok = .false.`、`packjt77.f90:1013-1096`、`:2438-2485`） | `pack77_wspr` も、したがって FST4W の送信も、そのコールを拒否する。JTTY は検査しない文面を保つ。ゴールデンの期待値は動いていない |
+| `unpack77`: テレメトリ（type 0.5） | 先頭のゼロを落として表示 | 16 進 18 桁すべて（`3z6.6`、`packjt77.f90:1640`） | — |
+| `unpack77`: 28 ビットのフィールドが 532444 以上（範囲外の `CQ` トークン） | `<?>` | `<...>`（hash22、`packjt77.f90:283`） | — |
 | FT8 のシンボルのスケーリングと `nsync` 判定 | `* (1/1000)`。`nsync` は粗いスペクトログラムで数え直していた | `/ 1e3` と精製後のスペクトル（`ft8b.f90` と同じ） | 動いた群は無い。判定が変わったのは tier-A/B 全体で 1 候補（[#423](https://github.com/jl1nie/mfsk-core/issues/423)） |
 
 **コード。**
@@ -410,6 +432,29 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 | `osd_decode_deep(llr, ndeep, verify)`、`osd_decode_npre_generic::<P>(…)` | `fec::ldpc::osd_npre::osd_npre::<P>(llr, depth, partial_crc, ap_mask, verify)`。結果は削除した移植と意図的に異なる。本家と一致しなかったのがそれらの方である |
 | `osd_decode_deep4` | 対応するものは無い。本家のより深い設定（`nord = 2`）は移植していない |
 | `jt9::baseband`（`mix_to_baseband`、`NSPS_BB`） | 無い。呼び出し元が無く、`downsam9.f90` がすることもしていなかった。移植は `jt9::softsym` |
+
+**改名・移動・変更（API の整理）**（`docs/notes/API_0_14_DESIGN.md`）:
+
+| 0.13 | 0.14 |
+|---|---|
+| `ft8::message::X` | `msg::wsjt77::X`（`ft8` の移行用ファサードは無くなった） |
+| `ft8::ldpc::X` | `fec::ldpc::X` |
+| `ft8::resample::X` | `engine::dsp::resample::X` |
+| `ft8::hash_table::X` | `msg::hash_table::X` |
+| `ft8::llr::GenericLlrSet` | 削除。`engine::llr::LlrSet` の別名で、別物の `ft8::llr::LlrSet` と並んでいた |
+| `uvpacket::Mode`（`uvpacket::puncture::Mode`） | `uvpacket::UvMode`（`registry::Mode` と衝突していた） |
+| `msk144::decode::Depth` | `decoder::Depth`: 3 段階も既定値も同じ、`ndepth` 1/2/3（C の値は変わらない） |
+| `jtty::testsig::Station` | `jtty::testsig::Transmission`（`decoder::Station` と衝突していた） |
+| `wspr::instrument`、`fec::conv::fano::instrument`（プロセスグローバルな 22 個のカウンタ） | 新しい `instrument` feature があるときだけ存在する。`full` には含まれない。読むプログラム（WSPR のベンチマーク）は `mfsk-core/instrument` を有効にし、それ以外は何も要らない |
+| `AnySlotResult { rows: Vec<Decoded>, details: Vec<RowDetail>, budget }` | `AnySlotResult = SlotResult<()>`: `rows: Vec<Row<()>>` なので `result.rows[i].decoded` と `.detail`。`details` は無い |
+| `AnyDecoder::decode_with(slot, &dyn Fn(&Decoded, &RowDetail))`（と `decode_prefix_with`） | `on_row: OnRow<'_, ()>`、`Decoder<P>` と同じコールバック: `\|row: &Row<()>\| …`、`row.decoded`、`row.detail` |
+| `AnyDecoder::wcalls() -> Result<Vec<String>, Unsupported>` | `Result<&[String], Unsupported>`: 借用。コピーは `.to_vec()` |
+| `AnyDecoder::set_wcalls(..) -> Result<(), Unsupported>`（長すぎるリストが「非対応」と読めた） | `Result<(), WcallsError>`: `Unsupported(Unsupported)` か `TooManyCalls(TooManyCalls)`。どちらも `Display` + `Error`（後者は `fst4w` が要る）。C ABI は長すぎるリストに `MFSK_STATUS_INVALID_ARG` を返す |
+| `registry::Mode` の判別値 | FST4 と FST4W のモードが WSPR の前に入った: `Mode::Wspr as u8` は 7 でなく 13（モードはキャストでなく variant、`Mode::ALL`、`meta().name` で指す。`CHANGELOG` 参照） |
+
+追加（互換）: `encoder::{encode, encode_with, Encoded, EncodeOptions, TxAudio, EncodeError}`（[§1](#1-クイックスタート)）、
+`msg::wsjt77::pack77_message`（WSJT-X のメッセージ全体の `pack77`）、`prelude`、`Decoder::decode_i16`、
+`Decoder::set_ap_hint`、`AnyDecoder::extras()`、全公開型の `Debug` と全エラー型の `Display` + `Error`。
 
 **`#[non_exhaustive]`。** 0.14 は、今後増えることが分かっている公開型に `#[non_exhaustive]` を付けた
 （[#573](https://github.com/jl1nie/mfsk-core/issues/573)）。
@@ -593,11 +638,15 @@ assert!(other.unpack77(&msg77).unwrap().contains("<...>"));
 1 つのバリアントを持つ enum で、`match` で振り分けられる: `Box<dyn>` も、デコード経路での
 確保も無い。モードをデータとして持つコード向けにある: IQ レシーバの呼び出し側
 （[§2.7](#27-広帯域-iq-入力)）、C ABI、GUI。メソッドは `Decoder` のものと対応し、結果は
-モード非依存の `AnySlotResult { rows: Vec<Decoded>, details: Vec<RowDetail>, budget }`
-（モード固有の結果が欲しいコードは型付きの `Decoder<P>` を持つ）。`extras_mut()` は
-`match` するための `AnyExtras` を返し、`set_ap_hint` は自由形式の AP ヒントを、それを取る
-モードに設定して、取らないモードでは `Err(Unsupported { mode, option })` を返す。
-`decode_i16(audio, period)` は短縮形である。`AnyDecoder` は、プロトコル feature が少なくとも
+結果も `Decoder` と同じ形である:
+`AnySlotResult` は `SlotResult<()>`、つまり `Row<()>`（`decoded` と `detail`。モード固有の結果は消してある）の
+行と `budget` を持つ。`decode_with` も同じ `OnRow` コールバックを `Row<()>` で取る（モード固有の結果が欲しい
+コードは型付きの `Decoder<P>` を持つ）。`extras_mut()` は `match` するための `AnyExtras` を返し、
+`extras()` はその読み取り専用版 `AnyExtrasRef` を返す。`set_ap_hint` は自由形式の AP ヒントを、それを取る
+モードに設定して、取らないモードでは `Err(Unsupported { mode, option })` を返す（`Decoder<P>` にもあり、
+`ap_hint` を持つ 4 モードで使える）。`wcalls()` / `set_wcalls()` は FST4W の既知コールのリストで、
+`set_wcalls` は他のモードには `WcallsError::Unsupported`、長すぎるリストには `WcallsError::TooManyCalls` を返す。
+`decode_i16(audio, period)` は短縮形である（`Decoder<P>` にもある）。`AnyDecoder` は、プロトコル feature が少なくとも
 1 つあるときだけ存在する。
 
 ```rust
@@ -1850,10 +1899,26 @@ EME 遅延、履歴とコーラーのヘルパ — は
 
 ## 4. モジュールとクレートの地図
 
+公開面は意図して広い: このクレートはアプリケーション（受信・デコード・送信）と、プロトコル実装者（既存のトレイト・
+コーデック・DSP の上に新しいモードを作る人）の両方に使われるので、両者を分けるために何かを隠したり動かしたりは
+しない。3 つの層が見る場所を示す。下のツリーは各モジュールに層を付けてある。
+
+| 層 | 用途 | モジュール |
+|---|---|---|
+| **A: アプリケーション** | 受信・デコード・送信 | `prelude`、`decoder`、`encoder`、`iq`、`slotgrid`、`registry`、`msg`（コーデック、`Decoded`、`ApHint`、`CallsignHashTable`）、クレートルートのプロトコル ZST。MSK144 と JTTY は各自のモジュール（`msk144::decode::Stream`、`jtty::rx`、`jtty::pack`、`jtty::tx`） |
+| **P: プロトコル実装** | 新しいモード | ルートのトレイト（`ModulationParams`、`FrameLayout`、`Protocol`、`FecCodec`、`MessageCodec`、`SyncFrontEnd`）、`decoder::Decodable`、`engine::tx`（`FskWaveform`、`message_to_tones`、`synthesize*`）、`fec::*` |
+| **B: 部品** | 段の差し替え、組込み | `engine::{dsp, sync, sync2d, llr, equalize, spectrogram, search, …}`、プロトコル内部（`ft8::decode_block`、`*::search`、`*::ddc`、`*::rx`） |
+
+`pub(crate)` なのは `engine::pipeline` だけである。複数のパスから届く項目は、実装がある場所に残す:
+プロトコルモジュールは自分が組み上がる共有部分を再エクスポートし、親モジュールは子を平らに見せる。
+
 ```text
 mfsk_core
-├── engine/           Protocol trait 群、DSP、sync、LLR、equaliser、pipeline
-│   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
+├── prelude.rs        [A] `use mfsk_core::prelude::*;` — Decoder · AnyDecoder · DecodeParams · SlotInput · Row · encode · Encoded ·
+│                     TxAudio · IqReceiver · Mode · Decoded · ApHint …（プロトコル ZST はルートのまま）
+├── encoder.rs        [A] encode / encode_with → Encoded { tones, text, hashed_calls }、synthesize。Mode 上の 1 つの呼び出し、FFT 不要
+├── engine/           [P, B] Protocol trait 群、DSP、sync、LLR、equaliser、pipeline
+│   ├── protocol.rs     [P] ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
 │   ├── dsp/            resample · downsample · gfsk · cpfsk · envelope · subtract ·
 │   │                   msk · analytic · ddc · fir_decimate · polyphase · dotprod ·
 │   │                   symbol_fft · blanker · 固定小数点 FFT カーネル
@@ -1874,20 +1939,20 @@ mfsk_core
 │   ├── interleave.rs   bit-reversal interleave_bitrev/deinterleave_bitrev
 │   │                   — WSPR, JT9 (JT65 は別アルゴリズム — 7×9 行列転置
 │   │                   — のため jt65/ に独自実装を維持)
-│   ├── tx.rs           message_to_tones / info_to_tones、FskWaveform、および
+│   ├── tx.rs           [P] message_to_tones / info_to_tones、FskWaveform、および
 │   │                   synthesize / synthesize_into / synthesize_i16 / synth_len
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) 内部実装 — 呼び出しは
 │                       decoder::Decoder 経由)
-├── decoder/          公開デコード API — §2
+├── decoder/          [A] 公開デコード API — §2
 │   ├── mod.rs          Decoder<P> / Decodable / SlotInput / Audio / Row / RowDetail / SlotResult
 │   ├── params.rs       DecodeParams / Depth / Station / QsoContext / ApMode / Contest / SearchTuning
 │   ├── frame.rs        FT8 / FT4 / FST4: Ft8Extras · Ft4Extras · Fst4Extras、Tuning、戦略、QSO 文脈 AP
 │   ├── slow.rs         WSPR / JT9 / JT65: それぞれの extras と状態
 │   ├── q65.rs          Q65Extras / Q65State（平均）
 │   └── any.rs          AnyDecoder / AnyExtras / Unsupported
-├── slotgrid.rs       SlotGrid · SampleClock · ClockChange · SlotCutter — UTC スロット算術、整数のみ、no_std
-├── fec/              FecCodec 実装群
+├── slotgrid.rs       [A] SlotGrid · SampleClock · ClockChange · SlotCutter — UTC スロット算術、整数のみ、no_std
+├── fec/              [P] FecCodec 実装群
 │   ├── ldpc/           LDPC(174, 91)  — FT8, FT4 (bp.rs / osd.rs / params.rs / tables.rs)
 │   ├── ldpc240_101/    LDPC(240, 101) — FST4、uvpacket (punctured)
 │   ├── ldpc_128_90/    LDPC(128, 90)  — MSK144
@@ -1901,10 +1966,10 @@ mfsk_core
 │   │   ├── npfwht.rs      非二進 Walsh-Hadamard 変換ヘルパ
 │   │   └── pdmath.rs      確率領域 BP 数値計算ヘルパ
 │   └── qra15_65_64/    QRA15_65_64_IRR_E23 の符号インスタンス
-├── msg/              メッセージコーデックと公開の出力行
+├── msg/              [A] メッセージコーデックと公開の出力行
 │   ├── decode_request.rs フレーム系のリクエストビルダー — crate 非公開（`internal-testing` で開く）。`decoder` が駆動する
 │   ├── decoded.rs      Decoded — モード共通の出力行
-│   ├── wsjt77.rs       77 bit WSJT メッセージ — FT8, FT4, FST4, Q65, MSK144
+│   ├── wsjt77.rs       77 bit WSJT メッセージ — FT8, FT4, FST4, Q65, MSK144。`pack77_message`（WSJT-X のメッセージ全体のパッカー）
 │   ├── wspr.rs         50 bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72 bit JT メッセージ — JT9, JT65
 │   ├── callsign28.rs   共有 base-37/36/10/27³ コールサイン pack/unpack
@@ -1913,10 +1978,10 @@ mfsk_core
 │   ├── pipeline_ap.rs  AP 仮説生成 (77-bit 系プロトコル)
 │   ├── packet_bytes.rs PacketBytesMessage — バイトペイロード例示コーデック
 │   └── hash_table.rs   コールサインハッシュテーブル
-├── registry.rs       PROTOCOLS 静的配列 + ProtocolMeta + by_id / by_name
-├── iq/               広帯域 IQ 入力 — §2.7: IqToAudio（1 チャンネル → 12 kHz USB 音声、120 dB）、IqReceiver（N チャンネルを
+├── registry.rs       [A] PROTOCOLS 静的配列 + ProtocolMeta + by_id / by_name
+├── iq/               [A] 広帯域 IQ 入力 — §2.7: IqToAudio（1 チャンネル → 12 kHz USB 音声、120 dB）、IqReceiver（N チャンネルを
 │                     UTC の CompletedSlot に切る。デコードはしない。`Channelizer::Direct` か `Pfb`）、PfbChannelizer（ポリフェーズフィルタバンク）
-├── ft8/              FT8 ZST + decode + decode_block + wave_gen
+├── ft8/              [A: ZST、B: 残り] FT8 ZST + decode + decode_block + wave_gen
 │   ├── list_decode.rs  WSJT-X の a7 / a8 リストデコーダ (pass id 30 / 31)
 │   └── acquire.rs      実電波の音声からの cold スロット位相取得 (#356)
 ├── ft4/              FT4 ZST + decode
@@ -1940,7 +2005,21 @@ mfsk_core
 └── uvpacket/         非 WSJT 応用例 — 4 sub-mode ZST、独自 tx/rx
 ```
 
-各プロトコルモジュールは同名のフィーチャーフラグで gate されている。`engine`、`fec`、`msg`、`registry` は常時利用可能。
+各プロトコルモジュールは同名のフィーチャーフラグで gate されている。`engine`、`fec`、`msg`、`encoder`、`prelude`、`registry` は
+常時利用可能（`decoder` は FFT バックエンドが要り、`prelude` はそのビルドにあるものを出す）。プロトコルモジュールの層は
+`ft8/` に一度だけ付けた: 各 ZST は層 A、残りは層 B。`msk144/` と `jtty/` は表に挙げたモジュールを通して層 A である。
+
+### 規約
+
+- **ビルダーの名前。** 単純なパラメータ struct には素の名前（`DecodeParams::band`、`SlotInput::budget`、
+  `TxAudio::amplitude`、`EncodeOptions::q65_copied_last_tx`）、振る舞いを持つ型には `with_`
+  （`ApHint::with_call2`、`Decoder::with_extras`、`IqReceiver::with_clock`）。
+- **`#[non_exhaustive]`** は増えると分かっている型に付く: `Default` かコンストラクタで作り、フィールドを代入する
+  （[§1.3](#13-013-からの移行)）。
+- **エラー**は `Display` + `core::error::Error`（`std` なしでも）。**公開型はすべて `Debug`** で、サンプルやスペクトルの
+  バッファを持つ型は中身でなくその長さを出す。
+- **2 つの層に同じ名前が出ない:** `registry::Mode`（アプリケーション）に対し `uvpacket::UvMode`、`decoder::Station` に対し
+  `jtty::testsig::Transmission`、`Depth` は持つ全モードで `decoder::Depth` ひとつ。
 
 ### ワークスペースのクレート
 
@@ -2460,6 +2539,7 @@ Rust ホスト消費者に関係する分だけをまとめる。`no_std` と固
 | `dotprod-extern` | off | 同様に `mfsk_core_dotprod_f32` |
 | `fixed-point` | off | 組込が出荷する数値パス。**`nstep-half` を含意し、そうでなければならない** |
 | `serde` | off | 公開結果型への `Serialize`/`Deserialize` |
+| `instrument` | off | `wspr::instrument` と `fec::conv::fano::instrument` のプロセスグローバルな 22 個のカウンタ。組込の WSPR ベンチマークと 2 つのテストが読む。`full` には含まれない |
 | `internal-testing` | off | クレート自身の統合テスト向けに `pub(crate)` の engine 内部を開ける。意図的に `full` に**含まれない** |
 
 嵌まりやすいフラグ:
