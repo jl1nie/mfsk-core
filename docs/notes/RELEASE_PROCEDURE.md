@@ -134,15 +134,6 @@ note that it "only ever cost wall-clock for output nobody was
 routinely reading").
 
 
-### Public API check before a minor tag
-
-`scripts/semver-check.sh` (cargo-semver-checks against the latest tag, `--features full`) lists every public item that was removed, renamed
-or made `#[non_exhaustive]`, and every enum discriminant that moved. Each line must be in the CHANGELOG's "Breaking changes at a glance"; a line
-that is not is either a missed entry or an accident. CI runs the same check on a PR whose title starts with `release:` (`semver` job in
-`ci.yml`); it reads the release type off the version bump, so a patch bump with a breaking change fails, and the 0.14.0 bump passes (tried locally by
-bumping `Cargo.toml`: "major change ... no semver update required"). The job's YAML was not run on GitHub; the first release PR is its first test. First run, 0.13.1 against `main` (2026-10-17): 7 lints; the removed `ModulationParams` consts,
-the OSD functions, `jt9::baseband` and the `#[non_exhaustive]` types were already listed, the `Mode` discriminants were not (added).
-
 ### Release cadence — biweekly, decoupled from merging
 
 PRs land on `main` immediately as they're ready — CHANGELOG.md's
