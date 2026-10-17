@@ -10,7 +10,7 @@
 //!   identified ]
 //! ```
 //!
-//! Mode (Robust / Standard / Fast / Express) is now carried in the
+//! UvMode (Robust / Standard / Fast / Express) is now carried in the
 //! **preamble pattern selection** rather than in a header field, so
 //! the receiver knows the mode after sync detection — well before
 //! it tries to decode any LDPC block. This eliminates the
@@ -44,7 +44,7 @@
 
 use crc::{CRC_16_IBM_3740, Crc};
 
-use super::puncture::Mode;
+use super::puncture::UvMode;
 
 /// Total header-word + CRC byte count.
 pub const HEADER_BYTES: usize = 4;
@@ -71,7 +71,7 @@ const CRC16_ALGO: Crc<u16> = Crc::<u16>::new(&CRC_16_IBM_3740);
 /// bits in the header word.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct FrameHeader {
-    pub mode: Mode,
+    pub mode: UvMode,
     /// Payload LDPC block count, 1..=32.
     pub block_count: u8,
     /// Application-layer dispatch tag, 0..=15.
@@ -185,7 +185,7 @@ pub fn pack_header(header: &FrameHeader, payload: &[u8]) -> Result<[u8; HEADER_B
 /// `HEADER_BYTES` exactly as produced by [`pack_header`] — the
 /// caller is responsible for trimming any zero-padding before
 /// presenting the result to the application layer.
-pub fn unpack_header(bytes: &[u8], mode: Mode) -> Result<(FrameHeader, &[u8]), UnpackError> {
+pub fn unpack_header(bytes: &[u8], mode: UvMode) -> Result<(FrameHeader, &[u8]), UnpackError> {
     if bytes.len() < HEADER_BYTES {
         return Err(UnpackError::Truncated);
     }
@@ -237,7 +237,7 @@ mod tests {
 
     fn sample_header() -> FrameHeader {
         FrameHeader {
-            mode: Mode::Robust,
+            mode: UvMode::Robust,
             block_count: 5,
             app_type: 1,
             sequence: 7,
@@ -250,7 +250,7 @@ mod tests {
         let bytes = pack_header(&h, &[]).unwrap();
         let mut all = Vec::new();
         all.extend_from_slice(&bytes);
-        let (h2, p2) = unpack_header(&all, Mode::Robust).unwrap();
+        let (h2, p2) = unpack_header(&all, UvMode::Robust).unwrap();
         assert_eq!(h, h2);
         assert!(p2.is_empty());
     }
@@ -263,7 +263,7 @@ mod tests {
         let mut all = Vec::new();
         all.extend_from_slice(&bytes);
         all.extend_from_slice(&payload);
-        let (h2, p2) = unpack_header(&all, Mode::Robust).unwrap();
+        let (h2, p2) = unpack_header(&all, UvMode::Robust).unwrap();
         assert_eq!(h, h2);
         assert_eq!(p2, &payload[..]);
     }
@@ -271,10 +271,10 @@ mod tests {
     #[test]
     fn pack_unpack_roundtrip_all_modes() {
         for mode in [
-            Mode::Robust,
-            Mode::Standard,
-            Mode::UltraRobust,
-            Mode::Express,
+            UvMode::Robust,
+            UvMode::Standard,
+            UvMode::UltraRobust,
+            UvMode::Express,
         ] {
             let h = FrameHeader {
                 mode,
@@ -296,7 +296,7 @@ mod tests {
     fn pack_rejects_invalid_block_count() {
         for bad in [0u8, 33, 200] {
             let h = FrameHeader {
-                mode: Mode::Robust,
+                mode: UvMode::Robust,
                 block_count: bad,
                 app_type: 0,
                 sequence: 0,
@@ -315,7 +315,7 @@ mod tests {
         bytes.extend_from_slice(&pack_header(&h, b"hello").unwrap());
         bytes.extend_from_slice(b"hello");
         bytes[0] ^= 0x40;
-        match unpack_header(&bytes, Mode::Robust) {
+        match unpack_header(&bytes, UvMode::Robust) {
             Err(UnpackError::CrcMismatch { .. }) => {}
             other => panic!("expected CrcMismatch, got {other:?}"),
         }
@@ -329,7 +329,7 @@ mod tests {
         bytes.extend_from_slice(b"hello");
         let pos = HEADER_BYTES + 2;
         bytes[pos] ^= 0x01;
-        match unpack_header(&bytes, Mode::Robust) {
+        match unpack_header(&bytes, UvMode::Robust) {
             Err(UnpackError::CrcMismatch { .. }) => {}
             other => panic!("expected CrcMismatch, got {other:?}"),
         }
@@ -340,7 +340,7 @@ mod tests {
         for n in 0..HEADER_BYTES {
             let bytes = vec![0u8; n];
             assert_eq!(
-                unpack_header(&bytes, Mode::Robust).unwrap_err(),
+                unpack_header(&bytes, UvMode::Robust).unwrap_err(),
                 UnpackError::Truncated,
             );
         }

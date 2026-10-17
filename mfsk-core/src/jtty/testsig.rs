@@ -20,7 +20,7 @@ use super::tx::Synth;
 
 /// One transmission.
 #[derive(Clone, Debug)]
-pub struct Station<'a> {
+pub struct Transmission<'a> {
     /// The message, packed with `ExchangeProfile::Unknown`.
     pub text: &'a str,
     /// Frequency of tone 0, Hz.
@@ -66,7 +66,7 @@ const FS: f32 = 12_000.0;
 
 /// `secs` seconds of 12 kHz audio: the stations over Gaussian noise, all from `seed`. `None` if
 /// a message cannot be packed.
-pub fn render(stations: &[Station<'_>], secs: f32, seed: u64) -> Option<Vec<i16>> {
+pub fn render(stations: &[Transmission<'_>], secs: f32, seed: u64) -> Option<Vec<i16>> {
     let n = (secs * FS) as usize;
     let mut rng = Rng::new(seed);
     let mut audio: Vec<f32> = (0..n).map(|_| NOISE_SIGMA * rng.gauss()).collect();
@@ -137,7 +137,7 @@ pub struct Case {
     /// Length of the recording, seconds.
     pub secs: f32,
     /// The transmissions.
-    pub stations: Vec<Station<'static>>,
+    pub stations: Vec<Transmission<'static>>,
 }
 
 impl Case {
@@ -158,8 +158,8 @@ const CQ: &str = "CQ K1ABC CQ";
 const CQ2: &str = "CQ W9XYZ CQ";
 const LONG: &str = "RAN ALL NIGHT ON BAND NOISE";
 
-fn st(text: &'static str, f0: f32, start: f32, snr: f32) -> Station<'static> {
-    Station {
+fn st(text: &'static str, f0: f32, start: f32, snr: f32) -> Transmission<'static> {
+    Transmission {
         text,
         f0_hz: f0,
         start_s: start,
@@ -175,25 +175,26 @@ fn st(text: &'static str, f0: f32, start: f32, snr: f32) -> Station<'static> {
 pub fn catalogue(trials: u32) -> Vec<Case> {
     use alloc::format;
     let mut cases = Vec::new();
-    let mut add = |pattern: alloc::string::String, secs: f32, stations: Vec<Station<'static>>| {
-        for trial in 0..trials {
-            // the start moves with the trial so the frame lands at different window phases
-            let jitter = 0.47 * trial as f32 / trials as f32;
-            let stations = stations
-                .iter()
-                .map(|s| Station {
-                    start_s: s.start_s + jitter,
-                    ..s.clone()
-                })
-                .collect();
-            cases.push(Case {
-                pattern: pattern.clone(),
-                trial,
-                secs,
-                stations,
-            });
-        }
-    };
+    let mut add =
+        |pattern: alloc::string::String, secs: f32, stations: Vec<Transmission<'static>>| {
+            for trial in 0..trials {
+                // the start moves with the trial so the frame lands at different window phases
+                let jitter = 0.47 * trial as f32 / trials as f32;
+                let stations = stations
+                    .iter()
+                    .map(|s| Transmission {
+                        start_s: s.start_s + jitter,
+                        ..s.clone()
+                    })
+                    .collect();
+                cases.push(Case {
+                    pattern: pattern.clone(),
+                    trial,
+                    secs,
+                    stations,
+                });
+            }
+        };
     for snr in [-18, -17, -16, -15, -14, -12, -10] {
         add(
             format!("awgn {snr} dB"),
@@ -212,7 +213,7 @@ pub fn catalogue(trials: u32) -> Vec<Case> {
         add(
             format!("drift {drift} Hz/s, -12 dB"),
             6.0,
-            alloc::vec![Station {
+            alloc::vec![Transmission {
                 drift_hz_s: drift,
                 ..st(CQ, 1500.0, 1.0, -12.0)
             }],
@@ -222,7 +223,7 @@ pub fn catalogue(trials: u32) -> Vec<Case> {
         add(
             format!("fading {fd} Hz, -8 dB"),
             6.0,
-            alloc::vec![Station {
+            alloc::vec![Transmission {
                 fading_hz: fd,
                 ..st(CQ, 1500.0, 1.0, -8.0)
             }],
@@ -268,7 +269,7 @@ pub fn pileups(trials: u32) -> Vec<Case> {
     let mut cases = Vec::new();
     let mut add = |pattern: alloc::string::String,
                    secs: f32,
-                   draw: &dyn Fn(&mut Rng) -> Vec<Station<'static>>| {
+                   draw: &dyn Fn(&mut Rng) -> Vec<Transmission<'static>>| {
         for trial in 0..trials {
             let mut case = Case {
                 pattern: pattern.clone(),
@@ -281,7 +282,7 @@ pub fn pileups(trials: u32) -> Vec<Case> {
             cases.push(case);
         }
     };
-    let caller = |text: &'static str, rng: &mut Rng| Station {
+    let caller = |text: &'static str, rng: &mut Rng| Transmission {
         text,
         f0_hz: 1500.0 + 60.0 * (rng.uniform() - 0.5),
         start_s: 0.5 + 1.2 * rng.uniform(),
@@ -306,7 +307,7 @@ pub fn pileups(trials: u32) -> Vec<Case> {
             &|rng: &mut Rng| {
                 LONGS[..n]
                     .iter()
-                    .map(|&text| Station {
+                    .map(|&text| Transmission {
                         text,
                         f0_hz: 1500.0 + 60.0 * (rng.uniform() - 0.5),
                         start_s: 0.5 + 1.9 * rng.uniform(),
@@ -320,7 +321,7 @@ pub fn pileups(trials: u32) -> Vec<Case> {
     }
     add("band, 6 long messages".into(), 20.0, &|rng: &mut Rng| {
         (0..6)
-            .map(|i| Station {
+            .map(|i| Transmission {
                 text: LONGS[i % 3],
                 f0_hz: 300.0 + 400.0 * i as f32 + 100.0 * rng.uniform(),
                 start_s: 0.5 + 1.9 * rng.uniform(),

@@ -122,7 +122,7 @@ impl DownsampleCfg {
 
 /// Compute only the large forward-FFT cache. Subsequent calls to
 /// [`downsample_cached`] reuse it across all candidate frequencies, which is
-/// the expensive operation amortised by `ft8-core::decode::process_candidate`.
+/// the expensive operation amortised by `crate::ft8::decode::process_candidate`.
 #[inline]
 pub fn build_fft_cache(audio: &[i16], cfg: &DownsampleCfg) -> Vec<Complex<f32>> {
     let mut x: Vec<Complex<f32>> = audio

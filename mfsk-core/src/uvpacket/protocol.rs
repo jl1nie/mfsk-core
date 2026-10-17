@@ -62,7 +62,7 @@ use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMod
 use crate::fec::Ldpc240_101;
 
 use super::message::UvPacketRawMessage;
-use super::puncture::Mode;
+use super::puncture::UvMode;
 use super::sync_pattern::UVPACKET_SYNC_BLOCKS;
 
 /// Identity Gray map for 4-FSK (FT4 uses the same).
@@ -93,7 +93,7 @@ macro_rules! uvpacket_submode {
             /// Puncturing posture for this sub-mode. Used by the
             /// bespoke TX / RX paths to pick the right puncture
             /// table.
-            pub const MODE: Mode = $mode;
+            pub const MODE: UvMode = $mode;
         }
 
         impl ModulationParams for $name {
@@ -140,14 +140,14 @@ uvpacket_submode! {
     /// 1008 net bps. For mountain / weak-signal / deep-fading
     /// channels where AFSK 1200 cannot deliver. AFSK has no
     /// equivalent mode — this is the design's headline value-prop.
-    UvRobust, mode = Mode::Robust,
+    UvRobust, mode = UvMode::Robust,
 }
 
 uvpacket_submode! {
     /// **Standard** — punctured to rate 1/2. 1200 net bps.
     /// Throughput parity with AFSK 1200 plus FEC for typical NFM
     /// channels.
-    UvStandard, mode = Mode::Standard,
+    UvStandard, mode = UvMode::Standard,
 }
 
 uvpacket_submode! {
@@ -159,7 +159,7 @@ uvpacket_submode! {
     /// baud chip duration also halves per-symbol phase walk and
     /// the relative size of any multipath delay, giving real-
     /// channel margin on top of the 3 dB symbol-energy gain.
-    UvUltraRobust, mode = Mode::UltraRobust,
+    UvUltraRobust, mode = UvMode::UltraRobust,
 }
 
 uvpacket_submode! {
@@ -169,5 +169,5 @@ uvpacket_submode! {
     /// threshold (~+3 dB Eb/N0 with OSD-2; BP-only needs ~+5 dB).
     /// Viable only thanks to kSR-greedy puncture selection
     /// (uniform-spread fails at this rate).
-    UvExpress, mode = Mode::Express,
+    UvExpress, mode = UvMode::Express,
 }

@@ -20,7 +20,7 @@
 #![cfg(feature = "uvpacket")]
 
 use mfsk_core::uvpacket::framing::FrameHeader;
-use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
+use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, UvMode, rx, tx};
 
 // `common` is shared scaffolding included by 43 test binaries, each
 // using a different subset — dead-code analysis of it is per-binary
@@ -37,7 +37,7 @@ use common::uvpacket_channel::awgn_sigma_for_eb_n0_info;
 const N_BLOCKS: u8 = 4;
 
 fn eq_per_awgn(
-    mode: Mode,
+    mode: UvMode,
     payload_size: usize,
     eb_n0_db: f32,
     n_trials: usize,
@@ -74,7 +74,7 @@ fn eq_per_awgn(
 }
 
 fn eq_per_ssb(
-    mode: Mode,
+    mode: UvMode,
     payload_size: usize,
     chan_template: SsbChannel,
     n_trials: usize,
@@ -109,7 +109,12 @@ fn eq_per_ssb(
     decoded
 }
 
-fn eq_per_fm(mode: Mode, payload_size: usize, chan_template: FmChannel, n_trials: usize) -> usize {
+fn eq_per_fm(
+    mode: UvMode,
+    payload_size: usize,
+    chan_template: FmChannel,
+    n_trials: usize,
+) -> usize {
     let header = FrameHeader {
         mode,
         block_count: N_BLOCKS,
@@ -143,7 +148,7 @@ fn eq_per_fm(mode: Mode, payload_size: usize, chan_template: FmChannel, n_trials
 #[test]
 fn eq_pi4_dqpsk_awgn_smoke_gate() {
     let n = 10;
-    let decoded = eq_per_awgn(Mode::Robust, 16, 8.0, n, 0xCAFE_BABE);
+    let decoded = eq_per_awgn(UvMode::Robust, 16, 8.0, n, 0xCAFE_BABE);
     eprintln!("Eq π/4-DQPSK AWGN +8 dB Robust decoded {decoded}/{n}");
     assert!(
         decoded >= n * 8 / 10,
@@ -154,7 +159,7 @@ fn eq_pi4_dqpsk_awgn_smoke_gate() {
 #[test]
 fn eq_pi4_dqpsk_clean_channel_decodes_all() {
     let n = 10;
-    let decoded = eq_per_awgn(Mode::Robust, 16, 20.0, n, 0xC0DE);
+    let decoded = eq_per_awgn(UvMode::Robust, 16, 20.0, n, 0xC0DE);
     eprintln!("Eq π/4-DQPSK AWGN +20 dB Robust decoded {decoded}/{n}");
     assert_eq!(
         decoded, n,
@@ -176,7 +181,7 @@ fn eq_pi4_dqpsk_recovers_on_ssb_multipath() {
     let payload_size = 16;
     let mut audio_for_power = tx::encode(
         &FrameHeader {
-            mode: Mode::Robust,
+            mode: UvMode::Robust,
             block_count: N_BLOCKS,
             app_type: 0,
             sequence: 0,
@@ -185,7 +190,7 @@ fn eq_pi4_dqpsk_recovers_on_ssb_multipath() {
         AUDIO_CENTRE_HZ,
     )
     .unwrap();
-    let sigma = awgn_sigma_for_eb_n0_info(Mode::Robust, 10.0, signal_power(&audio_for_power));
+    let sigma = awgn_sigma_for_eb_n0_info(UvMode::Robust, 10.0, signal_power(&audio_for_power));
     audio_for_power.clear();
     let chan = SsbChannel {
         bpf_hz: (300.0, 2700.0),
@@ -202,7 +207,7 @@ fn eq_pi4_dqpsk_recovers_on_ssb_multipath() {
         },
         seed: 0xBABE_F00D,
     };
-    let decoded = eq_per_ssb(Mode::Robust, payload_size, chan, n);
+    let decoded = eq_per_ssb(UvMode::Robust, payload_size, chan, n);
     eprintln!("Eq π/4-DQPSK SSB multipath (+10 dB) decoded {decoded}/{n}");
     assert!(
         decoded > 0,
@@ -219,7 +224,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_multipath() {
     let payload_size = 16;
     let mut audio_for_power = tx::encode(
         &FrameHeader {
-            mode: Mode::Robust,
+            mode: UvMode::Robust,
             block_count: N_BLOCKS,
             app_type: 0,
             sequence: 0,
@@ -228,7 +233,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_multipath() {
         AUDIO_CENTRE_HZ,
     )
     .unwrap();
-    let sigma = awgn_sigma_for_eb_n0_info(Mode::Robust, 10.0, signal_power(&audio_for_power));
+    let sigma = awgn_sigma_for_eb_n0_info(UvMode::Robust, 10.0, signal_power(&audio_for_power));
     audio_for_power.clear();
     let chan = FmChannel {
         deemphasis_us: 75.0,
@@ -244,7 +249,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_multipath() {
         },
         seed: 0xDEAD_C0DE,
     };
-    let decoded = eq_per_fm(Mode::Robust, payload_size, chan, n);
+    let decoded = eq_per_fm(UvMode::Robust, payload_size, chan, n);
     eprintln!("Eq π/4-DQPSK FM multipath (+10 dB) decoded {decoded}/{n}");
     assert!(
         decoded > 0,
@@ -256,7 +261,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_multipath() {
 /// a caller-supplied AfcOpts (default ±200 Hz isn't enough when the
 /// clarifier offset is ~250 Hz).
 fn eq_per_ssb_with_afc(
-    mode: Mode,
+    mode: UvMode,
     payload_size: usize,
     chan_template: SsbChannel,
     n_trials: usize,
@@ -293,7 +298,7 @@ fn eq_per_ssb_with_afc(
 }
 
 fn eq_per_fm_with_afc(
-    mode: Mode,
+    mode: UvMode,
     payload_size: usize,
     chan_template: FmChannel,
     n_trials: usize,
@@ -342,7 +347,7 @@ fn eq_pi4_dqpsk_recovers_on_ssb_true_harsh() {
     let payload_size = 16;
     let mut audio_for_power = tx::encode(
         &FrameHeader {
-            mode: Mode::Robust,
+            mode: UvMode::Robust,
             block_count: N_BLOCKS,
             app_type: 0,
             sequence: 0,
@@ -351,7 +356,7 @@ fn eq_pi4_dqpsk_recovers_on_ssb_true_harsh() {
         AUDIO_CENTRE_HZ,
     )
     .unwrap();
-    let sigma = awgn_sigma_for_eb_n0_info(Mode::Robust, 10.0, signal_power(&audio_for_power));
+    let sigma = awgn_sigma_for_eb_n0_info(UvMode::Robust, 10.0, signal_power(&audio_for_power));
     audio_for_power.clear();
     let chan = SsbChannel {
         bpf_hz: (300.0, 2700.0),
@@ -369,7 +374,7 @@ fn eq_pi4_dqpsk_recovers_on_ssb_true_harsh() {
         seed: 0xBABE_F00D,
     };
     let wide_afc = rx::AfcOpts { search_hz: 400.0 };
-    let decoded = eq_per_ssb_with_afc(Mode::Robust, payload_size, chan, n, wide_afc);
+    let decoded = eq_per_ssb_with_afc(UvMode::Robust, payload_size, chan, n, wide_afc);
     eprintln!("Eq π/4-DQPSK SSB true-harsh (+10 dB, AFC ±400) decoded {decoded}/{n}");
     assert!(
         decoded > 0,
@@ -385,7 +390,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_true_harsh() {
     let payload_size = 16;
     let mut audio_for_power = tx::encode(
         &FrameHeader {
-            mode: Mode::Robust,
+            mode: UvMode::Robust,
             block_count: N_BLOCKS,
             app_type: 0,
             sequence: 0,
@@ -398,7 +403,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_true_harsh() {
     // characterisation sweep (de-emphasis + Rician fading + multi-
     // tap MP combine to make this a much harder channel than SSB
     // true-harsh). Use +15 dB to give the gate margin.
-    let sigma = awgn_sigma_for_eb_n0_info(Mode::Robust, 15.0, signal_power(&audio_for_power));
+    let sigma = awgn_sigma_for_eb_n0_info(UvMode::Robust, 15.0, signal_power(&audio_for_power));
     audio_for_power.clear();
     let chan = FmChannel {
         deemphasis_us: 75.0,
@@ -415,7 +420,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_true_harsh() {
         seed: 0xDEAD_C0DE,
     };
     let wide_afc = rx::AfcOpts { search_hz: 400.0 };
-    let decoded = eq_per_fm_with_afc(Mode::Robust, payload_size, chan, n, wide_afc);
+    let decoded = eq_per_fm_with_afc(UvMode::Robust, payload_size, chan, n, wide_afc);
     eprintln!("Eq π/4-DQPSK FM true-harsh (+15 dB, AFC ±400) decoded {decoded}/{n}");
     assert!(
         decoded > 0,
@@ -431,7 +436,7 @@ fn eq_pi4_dqpsk_recovers_on_fm_true_harsh() {
 fn eq_pi4_dqpsk_true_harsh_snr_sweep() {
     let n = 30;
     let payload_size = 16;
-    let mode = Mode::Robust;
+    let mode = UvMode::Robust;
     let probe = tx::encode(
         &FrameHeader {
             mode,
@@ -493,10 +498,10 @@ fn eq_pi4_dqpsk_awgn_per_sweep() {
     let n = 30;
     eprintln!("mode,eb_n0_db,decoded,total");
     for mode in [
-        Mode::Robust,
-        Mode::Standard,
-        Mode::UltraRobust,
-        Mode::Express,
+        UvMode::Robust,
+        UvMode::Standard,
+        UvMode::UltraRobust,
+        UvMode::Express,
     ] {
         for eb_n0 in [-2.0_f32, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0] {
             let decoded = eq_per_awgn(mode, 16, eb_n0, n, 0x1234_5678);

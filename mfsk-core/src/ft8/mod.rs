@@ -9,7 +9,7 @@
 //!
 //! The internal decode pipeline assumes **12 000 Hz** PCM input.
 //! For other sample rates (e.g. 44 100, 48 000 Hz), use
-//! [`resample::resample_to_12k`] to convert before decoding with
+//! [`crate::engine::dsp::resample::resample_to_12k`] to convert before decoding with
 //! [`crate::decoder::Decoder`].
 //!
 //! The WASM wrapper (`ft8-web`) accepts a `sample_rate` parameter
@@ -52,8 +52,8 @@
 // Decode-side modules go through `engine::fft` (FFT trait) and the
 // shared `engine::pipeline`; gated on the FFT meta-feature so embedded
 // builds with `fft-microfft` or `fft-extern` get them. `wave_gen`,
-// `message`, `ldpc`, `params`, `hash_table` stay available for TX-only
-// / FEC-only use cases without any FFT backend.
+// `params` stay available for TX-only / FEC-only use cases without any
+// FFT backend.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod acquire;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -66,18 +66,13 @@ pub mod decode_block;
 pub mod downsample;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod equalizer;
-pub mod hash_table;
-pub mod ldpc;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod list_decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod llr;
-pub mod message;
 pub mod params;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod refine_fine;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub mod resample;
 // `subtract` consumes `super::decode::DecodeResult`, which is itself
 // FFT-gated — match the gate so `--features ft8` (TX-only) builds.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

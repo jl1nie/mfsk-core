@@ -37,7 +37,8 @@
 
 use std::path::PathBuf;
 
-use mfsk_core::msk144::decode::{Depth, decode_slot};
+use mfsk_core::decoder::Depth;
+use mfsk_core::msk144::decode::decode_slot;
 
 #[allow(dead_code)]
 mod common;

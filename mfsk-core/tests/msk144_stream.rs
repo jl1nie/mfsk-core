@@ -8,7 +8,8 @@
     any(feature = "fft-rustfft", feature = "fft-extern")
 ))]
 
-use mfsk_core::msk144::decode::{Depth, SlotDecode, Stream, StreamDecode, decode_slot};
+use mfsk_core::decoder::Depth;
+use mfsk_core::msk144::decode::{SlotDecode, Stream, StreamDecode, decode_slot};
 
 #[allow(dead_code)]
 mod common;

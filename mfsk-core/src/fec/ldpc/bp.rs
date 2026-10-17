@@ -652,8 +652,8 @@ pub fn bp_llr_zsum_ap_with_scratch<'s, P: LdpcParams>(
 
 /// Backward-compatible LDPC(174,91) BP decode — pins
 /// [`bp_decode_generic`] to [`Ldpc174_91Params`]. Used by FT8's
-/// bespoke decode loop (which still consumes the shared LDPC
-/// implementation through `super::ft8::ldpc`'s re-export façade).
+/// bespoke decode loop (which consumes the shared LDPC
+/// implementation through [`crate::fec::ldpc`]).
 ///
 /// `llr[i]` follows the convention: positive = bit likely 1, negative
 /// = bit likely 0. `ap_mask[i] = true` means the bit's LLR is

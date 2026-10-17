@@ -15,7 +15,7 @@
 #![cfg(feature = "uvpacket")]
 
 use mfsk_core::uvpacket::framing::FrameHeader;
-use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
+use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, UvMode, rx, tx};
 
 // `common` is shared scaffolding included by 43 test binaries, each
 // using a different subset — dead-code analysis of it is per-binary
@@ -31,30 +31,30 @@ use common::uvpacket_channel::awgn_sigma_for_eb_n0_info;
 const N_BLOCKS: u8 = 4;
 const N_TRIALS: usize = 20;
 const PAYLOAD: usize = 16;
-const ALL_MODES: [Mode; 4] = [
-    Mode::UltraRobust,
-    Mode::Robust,
-    Mode::Standard,
-    Mode::Express,
+const ALL_MODES: [UvMode; 4] = [
+    UvMode::UltraRobust,
+    UvMode::Robust,
+    UvMode::Standard,
+    UvMode::Express,
 ];
 
-fn r_info_bps(mode: Mode) -> f32 {
+fn r_info_bps(mode: UvMode) -> f32 {
     // 2 bit/sym × baud × FEC rate. Robust/Std/Express @ 1200 baud,
     // UltraRobust @ 600 baud. All four use the puncture rates from
     // the FEC table (UR/Robust 0.42, Std 0.50, Express 0.75).
     let baud = match mode {
-        Mode::UltraRobust => 600.0,
+        UvMode::UltraRobust => 600.0,
         _ => 1200.0,
     };
     let rate = match mode {
-        Mode::UltraRobust | Mode::Robust => 0.42,
-        Mode::Standard => 0.50,
-        Mode::Express => 0.75,
+        UvMode::UltraRobust | UvMode::Robust => 0.42,
+        UvMode::Standard => 0.50,
+        UvMode::Express => 0.75,
     };
     2.0 * baud * rate
 }
 
-fn truth_snr_2500(mode: Mode, eb_n0_db: f32) -> f32 {
+fn truth_snr_2500(mode: UvMode, eb_n0_db: f32) -> f32 {
     eb_n0_db + 10.0 * (r_info_bps(mode) / 2500.0).log10()
 }
 
@@ -66,10 +66,10 @@ fn snr_calibration_residuals() {
         // Sweep above-threshold range where the high-SNR approximation
         // holds and the LDPC decoder reliably succeeds.
         let eb_n0_grid: &[f32] = match mode {
-            Mode::UltraRobust => &[6.0, 8.0, 10.0, 14.0, 18.0],
-            Mode::Robust => &[8.0, 10.0, 14.0, 18.0],
-            Mode::Standard => &[8.0, 10.0, 14.0, 18.0],
-            Mode::Express => &[10.0, 14.0, 18.0, 22.0],
+            UvMode::UltraRobust => &[6.0, 8.0, 10.0, 14.0, 18.0],
+            UvMode::Robust => &[8.0, 10.0, 14.0, 18.0],
+            UvMode::Standard => &[8.0, 10.0, 14.0, 18.0],
+            UvMode::Express => &[10.0, 14.0, 18.0, 22.0],
         };
         for &eb_n0 in eb_n0_grid {
             let truth = truth_snr_2500(mode, eb_n0);

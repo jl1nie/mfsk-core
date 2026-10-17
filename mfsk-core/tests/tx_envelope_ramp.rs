@@ -171,10 +171,10 @@ fn wspr_no_alloc_path_ramps_identically() {
 #[test]
 fn uvpacket_rrc_tapers_its_own_burst_edges() {
     use mfsk_core::uvpacket::framing::FrameHeader;
-    use mfsk_core::uvpacket::puncture::Mode;
+    use mfsk_core::uvpacket::puncture::UvMode;
 
     let header = FrameHeader {
-        mode: Mode::Standard,
+        mode: UvMode::Standard,
         block_count: 4,
         app_type: 1,
         sequence: 0,

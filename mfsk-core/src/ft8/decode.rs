@@ -2878,7 +2878,7 @@ mod tests {
     /// should decode with DT close to 0.
     #[test]
     fn dt_accuracy_at_nominal_start() {
-        use super::super::message::pack77_type1;
+        use crate::msg::wsjt77::pack77_type1;
 
         let msg = pack77_type1("CQ", "JA1ABC", "PM95").unwrap();
         let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(&msg);
@@ -2913,7 +2913,7 @@ mod tests {
     /// unaffected: both requests must find the same candidate.
     #[test]
     fn eme_delay_shifts_dt_by_two_seconds() {
-        use super::super::message::pack77_type1;
+        use crate::msg::wsjt77::pack77_type1;
 
         let msg = pack77_type1("CQ", "JA1ABC", "PM95").unwrap();
         let itone = crate::engine::tx::message_to_tones::<crate::ft8::Ft8>(&msg);

@@ -9,8 +9,8 @@
 //! [ Payload LDPC blocks × n_blocks — at the frame mode ]
 //! ```
 //!
-//! - **Mode** is conveyed by the preamble pattern selection (4
-//!   distinct 127-chip m-sequences, one per [`Mode`]). The receiver
+//! - **UvMode** is conveyed by the preamble pattern selection (4
+//!   distinct 127-chip m-sequences, one per [`UvMode`]). The receiver
 //!   identifies mode at sync time so it can decode header and
 //!   payload at the right rate without trial-and-error.
 //! - **Header block** is always Robust (unpunctured `Ldpc240_101`)
@@ -44,7 +44,7 @@ use crate::fec::Ldpc240_101;
 
 use super::framing::{FrameHeader, HEADER_BYTES, INFO_BYTES_PER_BLOCK, PackError, pack_header};
 use super::interleaver::interleave;
-use super::puncture::{Mode, puncture};
+use super::puncture::{UvMode, puncture};
 use super::sync_pattern::{PREAMBLE_LEN, preamble_for};
 
 /// LDPC mother-codeword length.
@@ -58,7 +58,7 @@ const PAYLOAD_BITS_PER_BLOCK: usize = INFO_BYTES_PER_BLOCK * 8;
 pub(super) use crate::engine::protocol::SAMPLE_RATE_HZ;
 /// RRC pulse span (symbols on each side of centre tap). Same for
 /// every mode — only the per-symbol sample count varies via
-/// [`Mode::nsps`].
+/// [`UvMode::nsps`].
 pub(super) const RRC_SPAN_SYMS: usize = 6;
 /// RRC roll-off factor.
 pub(super) const RRC_ALPHA: f32 = 0.5;
@@ -71,7 +71,7 @@ const PI4_DQPSK_DELTA: [f32; 4] = [PI / 4.0, 3.0 * PI / 4.0, -PI / 4.0, -3.0 * P
 /// Total transmitted symbol count for a given mode + payload block
 /// count: 127-sym preamble + 120-sym header block + n_payload_blocks
 /// × (mode.ch_bits_per_block / 2) data symbols.
-pub fn expected_total_symbols(mode: Mode, n_payload_blocks: u8) -> usize {
+pub fn expected_total_symbols(mode: UvMode, n_payload_blocks: u8) -> usize {
     let header_sym = N_LDPC / 2;
     let payload_sym = (n_payload_blocks as usize) * mode.ch_bits_per_block() / 2;
     PREAMBLE_LEN + header_sym + payload_sym
@@ -82,7 +82,7 @@ pub fn expected_total_symbols(mode: Mode, n_payload_blocks: u8) -> usize {
 /// from a pool) `encode_output_len(mode, n_payload_blocks)` samples
 /// and pass them as `out`.
 #[inline]
-pub fn encode_output_len(mode: Mode, n_payload_blocks: u8) -> usize {
+pub fn encode_output_len(mode: UvMode, n_payload_blocks: u8) -> usize {
     let nsps = mode.nsps();
     let rrc_len = RRC_SPAN_SYMS * nsps + 1;
     expected_total_symbols(mode, n_payload_blocks) * nsps + rrc_len
@@ -290,7 +290,7 @@ mod tests {
     use super::*;
     use crate::uvpacket::AUDIO_CENTRE_HZ;
 
-    fn header_for(mode: Mode, n_blocks: u8) -> FrameHeader {
+    fn header_for(mode: UvMode, n_blocks: u8) -> FrameHeader {
         FrameHeader {
             mode,
             block_count: n_blocks,
@@ -302,10 +302,10 @@ mod tests {
     #[test]
     fn encode_succeeds_all_modes() {
         for mode in [
-            Mode::Robust,
-            Mode::Standard,
-            Mode::UltraRobust,
-            Mode::Express,
+            UvMode::Robust,
+            UvMode::Standard,
+            UvMode::UltraRobust,
+            UvMode::Express,
         ] {
             for n_blocks in [1u8, 4, 18, 32] {
                 let header = header_for(mode, n_blocks);
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn encode_peak_amplitude_bounded() {
-        let header = header_for(Mode::Robust, 4);
+        let header = header_for(UvMode::Robust, 4);
         let audio = encode(&header, b"hello", AUDIO_CENTRE_HZ).unwrap();
         let peak = audio.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
         assert!(peak <= 1.0001, "peak {peak} > 1");
@@ -328,10 +328,10 @@ mod tests {
     #[test]
     fn encode_sample_count_matches_formula() {
         for mode in [
-            Mode::Robust,
-            Mode::Standard,
-            Mode::UltraRobust,
-            Mode::Express,
+            UvMode::Robust,
+            UvMode::Standard,
+            UvMode::UltraRobust,
+            UvMode::Express,
         ] {
             let n_blocks = 4u8;
             let header = header_for(mode, n_blocks);
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn distinct_payloads_diverge() {
-        let header = header_for(Mode::Robust, 4);
+        let header = header_for(UvMode::Robust, 4);
         let a = encode(&header, b"alpha", AUDIO_CENTRE_HZ).unwrap();
         let b = encode(&header, b"bravo", AUDIO_CENTRE_HZ).unwrap();
         assert_eq!(a.len(), b.len());
@@ -376,14 +376,14 @@ mod tests {
         // in the preamble region (first PREAMBLE_LEN × NSPS samples
         // ≈ 1270 samples).
         let payload = vec![0u8; 12];
-        let h_r = header_for(Mode::Robust, 1);
-        let h_s = header_for(Mode::Standard, 1);
+        let h_r = header_for(UvMode::Robust, 1);
+        let h_s = header_for(UvMode::Standard, 1);
         let a_r = encode(&h_r, &payload, AUDIO_CENTRE_HZ).unwrap();
         let a_s = encode(&h_s, &payload, AUDIO_CENTRE_HZ).unwrap();
         // Both modes use NSPS=10; UltraRobust would need a different
         // window since its NSPS=20 audio is twice as long. Use the
         // matching mode's NSPS here.
-        let nsps = Mode::Robust.nsps();
+        let nsps = UvMode::Robust.nsps();
         let diffs = a_r[..PREAMBLE_LEN * nsps]
             .iter()
             .zip(a_s[..PREAMBLE_LEN * nsps].iter())
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn oversize_payload_rejected() {
-        let header = header_for(Mode::Robust, 1);
+        let header = header_for(UvMode::Robust, 1);
         let too_big = vec![0u8; INFO_BYTES_PER_BLOCK + 1];
         assert!(matches!(
             encode(&header, &too_big, AUDIO_CENTRE_HZ).unwrap_err(),

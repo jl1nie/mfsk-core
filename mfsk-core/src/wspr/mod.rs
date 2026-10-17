@@ -74,7 +74,10 @@ pub mod decode_request;
 pub(crate) mod decode_request;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod demod;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+#[cfg(all(
+    feature = "instrument",
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
 pub mod instrument;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod osd;

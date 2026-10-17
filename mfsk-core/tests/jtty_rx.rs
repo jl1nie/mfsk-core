@@ -1219,10 +1219,10 @@ fn largest_first_build_decodes_bit_identically() {
 #[test]
 fn reported_snr_follows_the_true_level_and_is_floored() {
     use mfsk_core::jtty::rx::SNR_FLOOR_DB;
-    use mfsk_core::jtty::testsig::{Station, render};
+    use mfsk_core::jtty::testsig::{Transmission, render};
     let mut rows = Vec::new();
     for true_db in [-10.0f32, 0.0, 10.0, 20.0, 30.0] {
-        let st = Station {
+        let st = Transmission {
             text: "CQ K1ABC CQ",
             f0_hz: 1500.0,
             start_s: 1.0,

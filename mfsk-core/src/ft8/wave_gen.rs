@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(pcm.len(), super::super::params::NN * NSPS);
     }
 
-    /// Encode → decode round-trip via the full ft8-core pipeline (raw bits).
+    /// Encode → decode round-trip via the full FT8 pipeline (raw bits).
     /// Uses a valid FT8 standard message so the unpack77 + plausibility
     /// gate inside `process_one_candidate_inner` accepts the decoded
     /// codeword. (The old host pipeline emitted any CRC-converged
@@ -107,8 +107,8 @@ mod tests {
     fn encode_decode_roundtrip() {
         use super::super::Ft8;
 
-        use super::super::message::pack77;
         use crate::msg::decode_request::DecodeRequest;
+        use crate::msg::wsjt77::pack77;
 
         // Build a valid FT8 standard message ("CQ JA1ABC PM95").
         let msg = pack77("CQ", "JA1ABC", "PM95").expect("pack77");
@@ -154,8 +154,8 @@ mod tests {
     fn callsign_roundtrip() {
         use super::super::Ft8;
 
-        use super::super::message::{pack77, unpack77};
         use crate::msg::decode_request::DecodeRequest;
+        use crate::msg::wsjt77::{pack77, unpack77};
 
         let cases: &[(&str, &str, &str, &str)] = &[
             ("CQ", "JA1ABC", "PM95", "CQ JA1ABC PM95"),

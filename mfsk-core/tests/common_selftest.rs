@@ -33,7 +33,7 @@
 //
 // Ungated, an unsupported feature set fails to *compile* instead,
 // which is loud. That is not a regression: `common/channel.rs`
-// imports `mfsk_core::uvpacket::Mode` at file scope, so every one of
+// imports `mfsk_core::uvpacket::UvMode` at file scope, so every one of
 // the 43 binaries that write `mod common;` already requires the
 // `uvpacket` feature — verified on an untouched one
 // (`ft8_streaming_decode` fails the same way without it). This binary
@@ -784,7 +784,7 @@ mod uvpacket_channel_selftest {
     #[allow(unused_imports)]
     use crate::common::channel::*;
     use crate::common::uvpacket_channel::*;
-    use mfsk_core::uvpacket::Mode;
+    use mfsk_core::uvpacket::UvMode;
 
     #[test]
     fn sigma_decreases_with_eb_n0() {
@@ -792,10 +792,10 @@ mod uvpacket_channel_selftest {
         // the test bounds are absolute rather than measurement-tied.
         let p = 0.5;
         for mode in [
-            Mode::Robust,
-            Mode::Standard,
-            Mode::UltraRobust,
-            Mode::Express,
+            UvMode::Robust,
+            UvMode::Standard,
+            UvMode::UltraRobust,
+            UvMode::Express,
         ] {
             let sigma_clean = awgn_sigma_for_eb_n0_info(mode, 100.0, p);
             let sigma_zero = awgn_sigma_for_eb_n0_info(mode, 0.0, p);
@@ -816,7 +816,7 @@ mod uvpacket_channel_selftest {
         // test and check only the FEC-rate-distinct modes.
         let eb_n0 = 0.0;
         let p = 0.5;
-        let sigmas: Vec<f32> = [Mode::Robust, Mode::Standard, Mode::Express]
+        let sigmas: Vec<f32> = [UvMode::Robust, UvMode::Standard, UvMode::Express]
             .iter()
             .map(|&m| awgn_sigma_for_eb_n0_info(m, eb_n0, p))
             .collect();
@@ -830,8 +830,8 @@ mod uvpacket_channel_selftest {
 
     #[test]
     fn sigma_scales_with_signal_power() {
-        let s1 = awgn_sigma_for_eb_n0_info(Mode::Robust, 0.0, 1.0);
-        let s4 = awgn_sigma_for_eb_n0_info(Mode::Robust, 0.0, 4.0);
+        let s1 = awgn_sigma_for_eb_n0_info(UvMode::Robust, 0.0, 1.0);
+        let s4 = awgn_sigma_for_eb_n0_info(UvMode::Robust, 0.0, 4.0);
         // 4× power → 2× σ (within float epsilon).
         assert!((s4 / s1 - 2.0).abs() < 1e-3, "s1={s1}, s4={s4}");
     }

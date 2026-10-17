@@ -125,6 +125,7 @@ pub fn tone_amplitudes_into(
     drift_hz: f32,
     out: &mut IsQs,
 ) {
+    #[cfg(feature = "instrument")]
     super::instrument::bump(&super::instrument::TONE_AMPLITUDES);
     debug_assert_eq!(idat.len(), qdat.len());
     let np = idat.len() as i32;

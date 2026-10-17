@@ -241,7 +241,7 @@ RX は 1 シンボル共役積 → −π/4 derot → Gray demap で復元。
 ### 2.2 プリアンブル — モード符号化 m-sequence + イコライザ fit
 
 フレーム頭は **127 chip BPSK m-sequence**（Fibonacci LFSR、長さ 7、
-[`Mode`] が 4 つの原始多項式から 1 つを選択）。127 chip × 1 sym/chip
+[`UvMode`] が 4 つの原始多項式から 1 つを選択）。127 chip × 1 sym/chip
 = 1200 baud で 106 ms（UltraRobust 600 baud では 212 ms）。多項式の
 選択がプリアンブル自身に**モードを符号化**しており、0.3 時代の
 LDPC レイアウト総当たり試行を置き換える — RX は 4 本の相互相関を
@@ -525,11 +525,11 @@ use mfsk_core::uvpacket::framing::FrameHeader;
 use mfsk_core::uvpacket::rx::{
     MultiChannelOpts, decode_multichannel, default_fec_opts, measure_slot_energies,
 };
-use mfsk_core::uvpacket::{Mode, tx};
+use mfsk_core::uvpacket::{UvMode, tx};
 
 // RX: passband 全体で全フレーム復号、検出された audio centre と
 // 一緒に返す
-let header = FrameHeader { mode: Mode::Robust, block_count: 4, app_type: 0, sequence: 1 };
+let header = FrameHeader { mode: UvMode::Robust, block_count: 4, app_type: 0, sequence: 1 };
 let payload: Vec<u8> = (0..20).map(|i| (i ^ 0x5A) as u8).collect();
 let audio = tx::encode(&header, &payload, /* audio_centre_hz */ 800.0).unwrap();
 

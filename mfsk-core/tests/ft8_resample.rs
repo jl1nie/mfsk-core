@@ -5,9 +5,9 @@
 //! `arbitrary-rate PCM → resample → FT8 decoder` which can only be expressed
 //! in a crate that depends on `ft8-core::decode`.
 
+use mfsk_core::engine::dsp::resample::{resample_f32_to_12k, resample_to_12k};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::params::{MSG_BITS, NMAX};
-use mfsk_core::ft8::resample::{resample_f32_to_12k, resample_to_12k};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::pack77;
 

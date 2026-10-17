@@ -18,7 +18,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use mfsk_core::uvpacket::framing::FrameHeader;
-use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
+use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, UvMode, rx, tx};
 
 const SAMPLE_RATE: u32 = 12_000;
 const SILENCE_S: f32 = 0.2;
@@ -114,7 +114,7 @@ impl Rayleigh {
 }
 
 /// Compute σ for target Eb/N0_info given measured signal power.
-fn awgn_sigma(mode: Mode, eb_n0_db: f32, signal_power: f32) -> f32 {
+fn awgn_sigma(mode: UvMode, eb_n0_db: f32, signal_power: f32) -> f32 {
     const K_INFO: f32 = 101.0;
     let info_rate = K_INFO / mode.ch_bits_per_block() as f32;
     let e_b_ch = signal_power / (1200.0 * 2.0);
@@ -179,7 +179,7 @@ fn write_wav(path: &Path, samples: &[f32]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn typical_header(mode: Mode, n_blocks: u8) -> FrameHeader {
+fn typical_header(mode: UvMode, n_blocks: u8) -> FrameHeader {
     FrameHeader {
         mode,
         block_count: n_blocks,
@@ -206,7 +206,7 @@ fn main() -> std::io::Result<()> {
 
     // 1. Robust clean.
     {
-        let header = typical_header(Mode::Robust, n_blocks);
+        let header = typical_header(UvMode::Robust, n_blocks);
         let burst = tx::encode(&header, &typical_payload(payload_size), AUDIO_CENTRE_HZ).unwrap();
         let audio = pad_with_silence(&burst);
         let path = out_dir.join("uv_robust_clean.wav");
@@ -221,10 +221,10 @@ fn main() -> std::io::Result<()> {
 
     // 2. Robust @ +8 dB AWGN (= clean-decode threshold per Phase 2'a).
     for eb_n0 in [8.0_f32, 4.0, 2.0] {
-        let header = typical_header(Mode::Robust, n_blocks);
+        let header = typical_header(UvMode::Robust, n_blocks);
         let mut burst =
             tx::encode(&header, &typical_payload(payload_size), AUDIO_CENTRE_HZ).unwrap();
-        let sigma = awgn_sigma(Mode::Robust, eb_n0, signal_power(&burst));
+        let sigma = awgn_sigma(UvMode::Robust, eb_n0, signal_power(&burst));
         let mut chan = Awgn::new(sigma, 0xCAFE_BABE);
         chan.apply(&mut burst);
         let audio = pad_with_silence(&burst);
@@ -235,7 +235,7 @@ fn main() -> std::io::Result<()> {
             &audio[((SILENCE_S * SAMPLE_RATE as f32) as usize)..],
             0,
             AUDIO_CENTRE_HZ,
-            Mode::Robust,
+            UvMode::Robust,
             &Default::default(),
         );
         write_wav(&path, &audio)?;
@@ -251,10 +251,10 @@ fn main() -> std::io::Result<()> {
 
     // 3. Robust + 5 Hz Rayleigh + +15 dB AWGN.
     {
-        let header = typical_header(Mode::Robust, n_blocks);
+        let header = typical_header(UvMode::Robust, n_blocks);
         let mut burst =
             tx::encode(&header, &typical_payload(payload_size), AUDIO_CENTRE_HZ).unwrap();
-        let sigma = awgn_sigma(Mode::Robust, 15.0, signal_power(&burst));
+        let sigma = awgn_sigma(UvMode::Robust, 15.0, signal_power(&burst));
         let mut chan = Rayleigh::new(5.0, sigma, 0xDEAD_BEEF);
         chan.apply(&mut burst);
         let audio = pad_with_silence(&burst);
@@ -263,7 +263,7 @@ fn main() -> std::io::Result<()> {
             &audio[((SILENCE_S * SAMPLE_RATE as f32) as usize)..],
             0,
             AUDIO_CENTRE_HZ,
-            Mode::Robust,
+            UvMode::Robust,
             &Default::default(),
         );
         write_wav(&path, &audio)?;
@@ -279,7 +279,7 @@ fn main() -> std::io::Result<()> {
 
     // 4. Express clean — for envelope / spectral comparison.
     {
-        let header = typical_header(Mode::Express, n_blocks);
+        let header = typical_header(UvMode::Express, n_blocks);
         let burst = tx::encode(&header, &typical_payload(payload_size), AUDIO_CENTRE_HZ).unwrap();
         let audio = pad_with_silence(&burst);
         let path = out_dir.join("uv_express_clean.wav");

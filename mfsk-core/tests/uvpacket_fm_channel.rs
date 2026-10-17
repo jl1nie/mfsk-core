@@ -15,7 +15,7 @@
 #![cfg(feature = "uvpacket")]
 
 use mfsk_core::uvpacket::framing::FrameHeader;
-use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
+use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, UvMode, rx, tx};
 
 // `common` is shared scaffolding included by 43 test binaries, each
 // using a different subset — dead-code analysis of it is per-binary
@@ -31,7 +31,7 @@ use common::uvpacket_channel::awgn_sigma_for_eb_n0_info;
 
 const N_BLOCKS: u8 = 4;
 
-fn fm_per(mode: Mode, payload_size: usize, chan: FmChannel, n_trials: usize) -> usize {
+fn fm_per(mode: UvMode, payload_size: usize, chan: FmChannel, n_trials: usize) -> usize {
     let header = FrameHeader {
         mode,
         block_count: N_BLOCKS,
@@ -71,7 +71,7 @@ fn fm_smoke_quiet_channel_decodes_robust() {
     let payload_size = 16;
     let mut audio_for_power = tx::encode(
         &FrameHeader {
-            mode: Mode::Robust,
+            mode: UvMode::Robust,
             block_count: N_BLOCKS,
             app_type: 0,
             sequence: 0,
@@ -80,7 +80,7 @@ fn fm_smoke_quiet_channel_decodes_robust() {
         AUDIO_CENTRE_HZ,
     )
     .unwrap();
-    let sigma = awgn_sigma_for_eb_n0_info(Mode::Robust, 20.0, signal_power(&audio_for_power));
+    let sigma = awgn_sigma_for_eb_n0_info(UvMode::Robust, 20.0, signal_power(&audio_for_power));
     audio_for_power.clear();
     let chan = FmChannel {
         deemphasis_us: 0.0,
@@ -89,7 +89,7 @@ fn fm_smoke_quiet_channel_decodes_robust() {
         phase_fading: PhaseFadingModel::off(),
         seed: 0xC0DE_F00D,
     };
-    let decoded = fm_per(Mode::Robust, payload_size, chan, n);
+    let decoded = fm_per(UvMode::Robust, payload_size, chan, n);
     eprintln!("fm_smoke_quiet decoded {decoded}/{n}");
     assert!(
         decoded >= n * 8 / 10,
@@ -109,7 +109,7 @@ fn fm_field_failure_reproduction_robust() {
     let payload_size = 16;
     let mut audio_for_power = tx::encode(
         &FrameHeader {
-            mode: Mode::Robust,
+            mode: UvMode::Robust,
             block_count: N_BLOCKS,
             app_type: 0,
             sequence: 0,
@@ -118,7 +118,7 @@ fn fm_field_failure_reproduction_robust() {
         AUDIO_CENTRE_HZ,
     )
     .unwrap();
-    let sigma = awgn_sigma_for_eb_n0_info(Mode::Robust, 3.0, signal_power(&audio_for_power));
+    let sigma = awgn_sigma_for_eb_n0_info(UvMode::Robust, 3.0, signal_power(&audio_for_power));
     audio_for_power.clear();
     let chan = FmChannel {
         deemphasis_us: 75.0,
@@ -134,7 +134,7 @@ fn fm_field_failure_reproduction_robust() {
         },
         seed: 0xDEAD_C0DE,
     };
-    let decoded = fm_per(Mode::Robust, payload_size, chan, n);
+    let decoded = fm_per(UvMode::Robust, payload_size, chan, n);
     eprintln!("fm_field_failure decoded {decoded}/{n}");
     assert!(
         decoded <= n / 2,
@@ -148,7 +148,7 @@ fn fm_field_failure_reproduction_robust() {
 fn fm_sweep_deemphasis_x_drift() {
     let n_trials = 20;
     let payload_size = 16;
-    let mode = Mode::Robust;
+    let mode = UvMode::Robust;
     let mut audio_for_power = tx::encode(
         &FrameHeader {
             mode,

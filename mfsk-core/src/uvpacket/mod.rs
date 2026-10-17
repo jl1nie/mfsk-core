@@ -27,7 +27,7 @@
 //! |---|---|---|
 //! | Modulation | coherent QPSK + pilots | **π/4-DQPSK**, no pilots |
 //! | Sync | 31-chip BPSK m-sequence (mode-agnostic) | **127-chip m-sequence × 4 variants**, one per mode |
-//! | Mode discovery | brute force LDPC decode | preamble-pattern → mode in one MF pass |
+//! | UvMode discovery | brute force LDPC decode | preamble-pattern → mode in one MF pass |
 //! | Frame structure | spread header across LDPC blocks | **dedicated Robust header block** + payload |
 //! | Equaliser | none | 9-tap T-spaced LS-trained on long preamble |
 //! | LDPC decodes / frame | up to 128 (brute force) | **`1 + n_blocks`** (1 header + n payload) |
@@ -61,9 +61,9 @@
 //! ## Frame structure (on the wire)
 //!
 //! ```text
-//! [ 127-chip BPSK preamble — variant identifies the Mode ]
+//! [ 127-chip BPSK preamble — variant identifies the UvMode ]
 //! [ Header LDPC block — Robust, Ldpc240_101 unpunctured ]
-//! [ Payload LDPC blocks × n_blocks — at the frame Mode ]
+//! [ Payload LDPC blocks × n_blocks — at the frame UvMode ]
 //! ```
 //!
 //! - 4-byte header: `block_count (5b) + app_type (4b) + sequence (5b)
@@ -82,11 +82,11 @@
 //! doesn't know or care what's inside.
 //!
 //! ```ignore
-//! use mfsk_core::uvpacket::{tx, rx, AUDIO_CENTRE_HZ, Mode};
+//! use mfsk_core::uvpacket::{tx, rx, AUDIO_CENTRE_HZ, UvMode};
 //! use mfsk_core::uvpacket::framing::FrameHeader;
 //!
 //! let header = FrameHeader {
-//!     mode: Mode::Robust,
+//!     mode: UvMode::Robust,
 //!     block_count: 4,
 //!     app_type: 1,
 //!     sequence: 0,
@@ -125,4 +125,4 @@ pub mod tx;
 
 pub use message::UvPacketRawMessage;
 pub use protocol::{AUDIO_CENTRE_HZ, UvExpress, UvRobust, UvStandard, UvUltraRobust};
-pub use puncture::Mode;
+pub use puncture::UvMode;

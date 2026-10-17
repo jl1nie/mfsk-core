@@ -27,12 +27,13 @@
 //! is; watch the printed table by eye for a session that shows a
 //! multi-dB regression from the 2026-07-19 baseline above.
 
+use mfsk_core::decoder::Depth;
 use mfsk_core::engine::FecCodec;
 use mfsk_core::engine::dsp::msk::build_bitseq;
 use mfsk_core::fec::Ldpc128_90;
 use mfsk_core::fec::ldpc_128_90::crc13;
 use mfsk_core::msg::wsjt77::pack77;
-use mfsk_core::msk144::decode::{Depth, decode_slot};
+use mfsk_core::msk144::decode::decode_slot;
 
 const FS: f32 = 12_000.0;
 const REF_BW: f32 = 2_500.0;

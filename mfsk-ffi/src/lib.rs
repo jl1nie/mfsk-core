@@ -3312,7 +3312,7 @@ pub unsafe extern "C" fn mfsk_msk144_open(
     depth: u32,
     out_status: *mut MfskStatus,
 ) -> *mut MfskMsk144Receiver {
-    use mfsk_core::msk144::decode::Depth;
+    use mfsk_core::decoder::Depth;
     let report = |st: MfskStatus| {
         if !out_status.is_null() {
             unsafe { *out_status = st };

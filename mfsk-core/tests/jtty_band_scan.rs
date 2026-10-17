@@ -14,7 +14,7 @@
 
 use mfsk_core::jtty::rx::{Params, Receiver, SideChannels};
 use mfsk_core::jtty::stats::Counter as C;
-use mfsk_core::jtty::testsig::{Station, render};
+use mfsk_core::jtty::testsig::{Transmission, render};
 
 #[test]
 #[ignore = "prints"]
@@ -92,7 +92,7 @@ fn band_scan_recall_and_cost() {
         let mut total = [[0u32; 4]; 3];
         let mut unexpected = 0;
         for &(f, snr, seed) in &cases {
-            let st = Station {
+            let st = Transmission {
                 text: "CQ K1ABC CQ",
                 f0_hz: f,
                 start_s: 1.0,

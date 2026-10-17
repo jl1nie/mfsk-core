@@ -193,8 +193,8 @@ mod tests {
     #[test]
     fn subtract_reveals_hidden_signal() {
         use super::super::Ft8;
-        use super::super::message::pack77;
         use crate::msg::decode_request::DecodeRequest;
+        use crate::msg::wsjt77::pack77;
 
         // Two valid FT8 standard messages (the inner's unpack77 +
         // plausibility gate inside `process_one_candidate_inner`

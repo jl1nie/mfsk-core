@@ -33,6 +33,7 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
+use crate::decoder::Depth;
 use crate::engine::DecodeContext;
 use crate::engine::dsp::analytic_signal;
 use crate::engine::dsp::msk::NSPM;
@@ -50,7 +51,7 @@ const STEP_SIZE: usize = BLOCK_SIZE / 2; // 3584
 // no "coarse candidate list" concept the other protocols share — it's
 // a fixed-stride sliding-window scan (`BLOCK_SIZE`/`STEP_SIZE`) calling
 // `decode_block` once per position, each of which tries Stage A (cheap
-// short-ping decode) then Stage B (frame-averaging: `depth.npat()`
+// short-ping decode) then Stage B (frame-averaging: `npat(depth)`
 // `iavg` patterns × up to 3 sync peaks × 3 dither offsets, each a full
 // BP attempt) on failure. Counters below track blocks scanned / Stage A
 // hits / Stage B sync successes / Stage B BP attempts+successes; see
@@ -99,26 +100,14 @@ const IAVPATTERNS: [[bool; 8]; 4] = [
 /// the way Stage A's squared-signal scan does.
 const XMC: [f32; 4] = [2.0, 4.5, 2.5, 3.5];
 
-/// Search depth, controlling how hard Stage B tries after Stage A
-/// fails. Matches `mskrtd.f90:142-144`'s `ndepth`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub enum Depth {
-    /// Stage A (short-ping decoder) only.
-    Fast,
-    /// Stage A, then the first 2 of 4 `IAVPATTERNS`.
-    Normal,
-    /// Stage A, then all 4 `IAVPATTERNS`.
-    #[default]
-    Deep,
-}
-
-impl Depth {
-    fn npat(self) -> usize {
-        match self {
-            Depth::Fast => 0,
-            Depth::Normal => 2,
-            Depth::Deep => 4,
-        }
+/// Number of Stage-B `IAVPATTERNS` tried after Stage A fails, per
+/// [`Depth`]: `mskrtd.f90:142-144`'s `ndepth` (Fast = Stage A only,
+/// Normal = the first 2 of 4 patterns, Deep = all 4).
+fn npat(depth: Depth) -> usize {
+    match depth {
+        Depth::Fast => 0,
+        Depth::Normal => 2,
+        Depth::Deep => 4,
     }
 }
 
@@ -214,7 +203,7 @@ fn decode_block(
     #[cfg(feature = "std")]
     let __trace_tb = crate::clock::Tick::now();
     let tframe = NSPM as f32 / 12_000.0;
-    for iavg in 0..depth.npat() {
+    for iavg in 0..npat(depth) {
         let navmask = IAVPATTERNS[iavg];
         let navg = navmask.iter().filter(|&&b| b).count().max(1);
         let deltaf = 10.0 / navg as f32;

@@ -585,7 +585,6 @@ mod tests {
         assert!(prod >= 10);
     }
 
-    // Integration tests that depend on ft8-core's decode pipeline live in
-    // `ft8-core/tests/resample_ft8.rs` (moved there alongside this module's
-    // migration to mfsk-core).
+    // Integration tests that depend on the FT8 decode pipeline live in
+    // `mfsk-core/tests/ft8_resample.rs`.
 }

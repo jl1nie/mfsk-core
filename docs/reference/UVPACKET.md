@@ -257,7 +257,7 @@ pipeline that failed over-the-air despite passing AWGN bench.
 
 Frame head is a **127-chip BPSK m-sequence** (Fibonacci LFSR,
 length-7, one of four primitive polynomials selected by
-[`Mode`]). 127 chips × 1 sym/chip = 106 ms at 1200 baud (212 ms at
+[`UvMode`]). 127 chips × 1 sym/chip = 106 ms at 1200 baud (212 ms at
 600 baud for UltraRobust). The polynomial choice **encodes the
 mode** in the preamble itself, replacing the 0.3-era brute-force
 LDPC layout sweep — the RX runs four cross-correlations and picks
@@ -551,11 +551,11 @@ use mfsk_core::uvpacket::framing::FrameHeader;
 use mfsk_core::uvpacket::rx::{
     MultiChannelOpts, decode_multichannel, default_fec_opts, measure_slot_energies,
 };
-use mfsk_core::uvpacket::{Mode, tx};
+use mfsk_core::uvpacket::{UvMode, tx};
 
 // RX: decode every frame in the passband, return each frame's
 // detected audio centre.
-let header = FrameHeader { mode: Mode::Robust, block_count: 4, app_type: 0, sequence: 1 };
+let header = FrameHeader { mode: UvMode::Robust, block_count: 4, app_type: 0, sequence: 1 };
 let payload: Vec<u8> = (0..20).map(|i| (i ^ 0x5A) as u8).collect();
 let audio = tx::encode(&header, &payload, /* audio_centre_hz */ 800.0).unwrap();
 

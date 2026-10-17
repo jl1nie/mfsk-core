@@ -46,8 +46,10 @@ use std::path::PathBuf;
 #[allow(dead_code)]
 mod common;
 use common::{load_wav_f32_opt, parse_snr_tag};
+#[cfg(all(feature = "internal-testing", feature = "instrument"))]
+use mfsk_core::wspr::SniperRequest;
 #[cfg(feature = "internal-testing")]
-use mfsk_core::wspr::{DecodeRequest, SniperRequest, WsprCallsignTable};
+use mfsk_core::wspr::{DecodeRequest, WsprCallsignTable};
 
 const GOLDEN_MSG: &str = "JL1NIE PM95 37";
 const GOLDEN_FREQ_HZ: f32 = 1500.0;
@@ -411,7 +413,8 @@ fn wspr_osd_packed_matches_unpacked() {
 /// or holds across the sweep.
 #[test]
 #[ignore]
-#[cfg(feature = "internal-testing")]
+// Reads `wspr::instrument`'s Fano/OSD counters, which exist only with `instrument`.
+#[cfg(all(feature = "internal-testing", feature = "instrument"))]
 fn wspr_rank_sweep() {
     use mfsk_core::msg::WsprMessage;
     use mfsk_core::wspr::baseband::decimate_to_baseband;

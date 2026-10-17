@@ -35,5 +35,5 @@ pub fn msk144() -> usize {
     let a: Vec<i16> = (0..12_000)
         .map(|i| ((i as f32 * 0.37).sin() * 300.0) as i16)
         .collect();
-    mfsk_core::msk144::decode::decode_slot(&a, 1500.0, 100.0, mfsk_core::msk144::decode::Depth::default()).len()
+    mfsk_core::msk144::decode::decode_slot(&a, 1500.0, 100.0, mfsk_core::decoder::Depth::default()).len()
 }

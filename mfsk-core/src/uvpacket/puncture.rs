@@ -11,7 +11,7 @@
 //! Per-mode keep counts (info kept always; parity kept after
 //! puncture):
 //!
-//! | Mode        | parity kept | total ch bits | FEC rate          |
+//! | UvMode      | parity kept | total ch bits | FEC rate          |
 //! |-------------|------------:|--------------:|-------------------|
 //! | UltraRobust | 139         | 240           | 101/240 = 0.421 † |
 //! | Robust      | 139         | 240           | 101/240 = 0.421   |
@@ -91,7 +91,7 @@ const N_PARITY: usize = N - K_INFO;
 /// `UltraRobust` is the only mode that uses a half-baud (600 baud)
 /// symbol rate — the others run at the canonical 1200 baud.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Mode {
+pub enum UvMode {
     /// **Marathon** mode — unpunctured `Ldpc240_101` (native rate
     /// ≈ 0.42) at **600 baud** (half the canonical symbol rate).
     /// 504 net bps, ~−1.75 dB SNR_3kHz threshold; the lowest-
@@ -112,14 +112,14 @@ pub enum Mode {
     Express,
 }
 
-impl Mode {
+impl UvMode {
     /// 2-bit encoding for the frame-header `mode` field.
     pub const fn header_code(self) -> u8 {
         match self {
-            Mode::UltraRobust => 0,
-            Mode::Robust => 1,
-            Mode::Standard => 2,
-            Mode::Express => 3,
+            UvMode::UltraRobust => 0,
+            UvMode::Robust => 1,
+            UvMode::Standard => 2,
+            UvMode::Express => 3,
         }
     }
 
@@ -127,10 +127,10 @@ impl Mode {
     /// value `> 3`.
     pub const fn from_header_code(code: u8) -> Option<Self> {
         match code {
-            0 => Some(Mode::UltraRobust),
-            1 => Some(Mode::Robust),
-            2 => Some(Mode::Standard),
-            3 => Some(Mode::Express),
+            0 => Some(UvMode::UltraRobust),
+            1 => Some(UvMode::Robust),
+            2 => Some(UvMode::Standard),
+            3 => Some(UvMode::Express),
             _ => None,
         }
     }
@@ -141,10 +141,10 @@ impl Mode {
             // UltraRobust shares Robust's puncture pattern (none) —
             // the rate difference vs Robust is purely from the
             // halved symbol rate, not from the FEC layer.
-            Mode::UltraRobust => 240,
-            Mode::Robust => 240,
-            Mode::Standard => 202,
-            Mode::Express => 134,
+            UvMode::UltraRobust => 240,
+            UvMode::Robust => 240,
+            UvMode::Standard => 202,
+            UvMode::Express => 134,
         }
     }
 
@@ -155,7 +155,7 @@ impl Mode {
     /// 3 dB more symbol energy per info bit.
     pub const fn nsps(self) -> usize {
         match self {
-            Mode::UltraRobust => 20,
+            UvMode::UltraRobust => 20,
             _ => 10,
         }
     }
@@ -174,7 +174,7 @@ impl Mode {
 /// Result is cached per mode in a `OnceLock`; first call per mode
 /// pays the greedy-search cost (~1 s for Fast mode in release
 /// mode), subsequent calls are O(1).
-pub fn keep_indices(mode: Mode) -> Vec<usize> {
+pub fn keep_indices(mode: UvMode) -> Vec<usize> {
     use std::sync::OnceLock;
     static ROBUST: OnceLock<Vec<usize>> = OnceLock::new();
     static STANDARD: OnceLock<Vec<usize>> = OnceLock::new();
@@ -182,9 +182,9 @@ pub fn keep_indices(mode: Mode) -> Vec<usize> {
 
     let cell = match mode {
         // UltraRobust shares Robust's no-puncture pattern.
-        Mode::UltraRobust | Mode::Robust => &ROBUST,
-        Mode::Standard => &STANDARD,
-        Mode::Express => &EXPRESS,
+        UvMode::UltraRobust | UvMode::Robust => &ROBUST,
+        UvMode::Standard => &STANDARD,
+        UvMode::Express => &EXPRESS,
     };
     cell.get_or_init(|| keep_indices_kSR_greedy(mode)).clone()
 }
@@ -195,7 +195,7 @@ pub fn keep_indices(mode: Mode) -> Vec<usize> {
 /// `((p + 1) · keep) / 139 > (p · keep) / 139` (integer division),
 /// where `keep = mode.parity_kept()`. This is a Bresenham-style
 /// maximally-uniform selection that ignores the H-matrix structure.
-pub fn keep_indices_uniform(mode: Mode) -> Vec<usize> {
+pub fn keep_indices_uniform(mode: UvMode) -> Vec<usize> {
     let mut keep = Vec::with_capacity(mode.ch_bits_per_block());
     keep.extend(0..K_INFO);
     let n_keep = mode.parity_kept();
@@ -216,7 +216,7 @@ pub fn keep_indices_uniform(mode: Mode) -> Vec<usize> {
 
 /// kSR-greedy keep-index list for the standard rate-mode count.
 #[allow(non_snake_case)]
-pub fn keep_indices_kSR_greedy(mode: Mode) -> Vec<usize> {
+pub fn keep_indices_kSR_greedy(mode: UvMode) -> Vec<usize> {
     keep_indices_kSR_greedy_with_count(N_PARITY - mode.parity_kept())
 }
 
@@ -230,7 +230,7 @@ pub fn keep_indices_kSR_greedy(mode: Mode) -> Vec<usize> {
 /// over 2-SR, etc.).
 ///
 /// Used directly for experimental sweeps at puncture counts that
-/// aren't part of the production [`Mode`] set (e.g. rate-3/4 study).
+/// aren't part of the production [`UvMode`] set (e.g. rate-3/4 study).
 #[allow(non_snake_case)]
 pub fn keep_indices_kSR_greedy_with_count(target_punctures: usize) -> Vec<usize> {
     use crate::fec::ldpc::Ldpc240_101Params as P;
@@ -338,7 +338,7 @@ fn score_levels(levels: &[u32]) -> (i64, i64) {
 /// step does not reorder bits, only drops them).
 ///
 /// Panics if `codeword.len() != 240`.
-pub fn puncture(codeword: &[u8], mode: Mode) -> Vec<u8> {
+pub fn puncture(codeword: &[u8], mode: UvMode) -> Vec<u8> {
     assert_eq!(codeword.len(), N, "codeword must be 240 bits");
     let keep = keep_indices(mode);
     keep.iter().map(|&i| codeword[i]).collect()
@@ -351,7 +351,7 @@ pub fn puncture(codeword: &[u8], mode: Mode) -> Vec<u8> {
 /// `Ldpc240_101::decode_soft`.
 ///
 /// Panics if `channel_llrs.len() != mode.ch_bits_per_block()`.
-pub fn de_puncture_llr(channel_llrs: &[f32], mode: Mode) -> Vec<f32> {
+pub fn de_puncture_llr(channel_llrs: &[f32], mode: UvMode) -> Vec<f32> {
     assert_eq!(
         channel_llrs.len(),
         mode.ch_bits_per_block(),
@@ -373,11 +373,11 @@ pub fn de_puncture_llr(channel_llrs: &[f32], mode: Mode) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    const ALL_MODES: [Mode; 4] = [
-        Mode::Robust,
-        Mode::Standard,
-        Mode::UltraRobust,
-        Mode::Express,
+    const ALL_MODES: [UvMode; 4] = [
+        UvMode::Robust,
+        UvMode::Standard,
+        UvMode::UltraRobust,
+        UvMode::Express,
     ];
 
     #[test]
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn robust_keeps_everything() {
-        let keep = keep_indices(Mode::Robust);
+        let keep = keep_indices(UvMode::Robust);
         assert_eq!(keep, (0..N).collect::<Vec<_>>());
     }
 
@@ -464,10 +464,10 @@ mod tests {
         let cases = [
             // UltraRobust shares Robust's no-puncture pattern; the
             // rate difference is in the symbol rate, not the FEC.
-            (Mode::UltraRobust, 240, 0.421),
-            (Mode::Robust, 240, 0.421),
-            (Mode::Standard, 202, 0.500),
-            (Mode::Express, 134, 0.754),
+            (UvMode::UltraRobust, 240, 0.421),
+            (UvMode::Robust, 240, 0.421),
+            (UvMode::Standard, 202, 0.500),
+            (UvMode::Express, 134, 0.754),
         ];
         for (mode, expected_ch, expected_rate) in cases {
             assert_eq!(mode.ch_bits_per_block(), expected_ch);
@@ -674,12 +674,12 @@ mod tests {
         for mode in ALL_MODES {
             let code = mode.header_code();
             assert!(code < 4);
-            assert_eq!(Mode::from_header_code(code), Some(mode));
+            assert_eq!(UvMode::from_header_code(code), Some(mode));
         }
         // Codes 4..=255 are invalid (the field is only 2 bits).
         for code in 4u8..=255 {
             assert_eq!(
-                Mode::from_header_code(code),
+                UvMode::from_header_code(code),
                 None,
                 "invalid code {code} decoded successfully",
             );

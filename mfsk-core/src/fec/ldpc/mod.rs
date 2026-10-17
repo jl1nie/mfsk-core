@@ -18,7 +18,7 @@
 //!
 //! - [`Ldpc174_91`] — zero-sized type implementing [`crate::engine::FecCodec`].
 //! - [`bp::bp_decode`] / [`osd_npre::osd174_91`] / [`osd::ldpc_encode`] — raw
-//!   functions kept stable for the existing ft8-core callers that integrate
+//!   functions kept stable for the FT8 decoder that integrate
 //!   CRC checks and AP hints directly.
 
 pub mod bp;

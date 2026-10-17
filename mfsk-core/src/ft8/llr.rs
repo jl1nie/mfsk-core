@@ -12,8 +12,6 @@ use super::Ft8;
 use super::params::{LDPC_N, LLR_SCALE};
 use crate::engine::scalar::{Cmplx, LlrScalar};
 
-pub use crate::engine::llr::LlrSet as GenericLlrSet;
-
 /// FT8 LLR bundle: four fixed-length (174-bit) variants. Generic over
 /// the [`LlrScalar`] storage; defaults to `f32` for backward
 /// compatibility (`LlrSet` ≡ `LlrSet<f32>`). The

@@ -759,7 +759,7 @@ pub struct MessageFields {
 ///
 /// `callsign_hash_table` is an opaque pointer the protocol crate
 /// downcasts to its own table type — generic code does not need to know the
-/// shape. This keeps `mfsk-msg` optional at the `mfsk-core` level.
+/// shape. This keeps `crate::msg` optional at the `mfsk-core` level.
 #[derive(Clone, Debug, Default)]
 pub struct DecodeContext {
     /// Optional hashed-callsign lookup owned by the caller. Concrete layout is

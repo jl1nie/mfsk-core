@@ -7,7 +7,7 @@
 use mfsk_core::engine::FecOpts;
 use mfsk_core::uvpacket::framing::FrameHeader;
 use mfsk_core::uvpacket::rx::{MultiChannelOpts, decode_multichannel, measure_slot_energies};
-use mfsk_core::uvpacket::{Mode, tx};
+use mfsk_core::uvpacket::{UvMode, tx};
 
 // `common` is shared scaffolding included by 43 test binaries, each
 // using a different subset — dead-code analysis of it is per-binary
@@ -32,7 +32,7 @@ fn default_fec_opts() -> FecOpts<'static> {
 
 fn header_for(seq: u8) -> FrameHeader {
     FrameHeader {
-        mode: Mode::Robust,
+        mode: UvMode::Robust,
         block_count: 4,
         app_type: 0,
         sequence: seq,
@@ -128,7 +128,7 @@ fn decode_multichannel_awgn_smoke() {
     // need ≥ +9 dB combined to clear threshold. +12 dB gives
     // comfortable margin for both decodes.
     let sp = signal_power(&audio);
-    let sigma = awgn_sigma_for_eb_n0_info(Mode::Robust, 12.0, sp);
+    let sigma = awgn_sigma_for_eb_n0_info(UvMode::Robust, 12.0, sp);
     AwgnChannel::new(sigma, 0xCAFE_BABE).apply(&mut audio);
 
     let frames = decode_multichannel(&audio, &MultiChannelOpts::default(), &default_fec_opts());

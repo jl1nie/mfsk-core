@@ -13,7 +13,7 @@
 
 use mfsk_core::engine::{FecCodec, FecOpts};
 use mfsk_core::fec::Ldpc240_101;
-use mfsk_core::uvpacket::Mode;
+use mfsk_core::uvpacket::UvMode;
 use mfsk_core::uvpacket::puncture::{de_puncture_llr, puncture};
 
 const N: usize = 240;
@@ -47,7 +47,7 @@ impl Awgn {
 /// Encode K random info bits, puncture per mode, add per-channel-bit
 /// Gaussian noise scaled for `Eb/N0_info`, decode, return whether the
 /// info round-tripped.
-fn one_trial(mode: Mode, eb_n0_db: f32, seed: u64) -> bool {
+fn one_trial(mode: UvMode, eb_n0_db: f32, seed: u64) -> bool {
     // 1. Random K=101 info bits.
     let mut rng = Awgn::new(seed);
     let info: Vec<u8> = (0..K)
@@ -99,7 +99,7 @@ fn one_trial(mode: Mode, eb_n0_db: f32, seed: u64) -> bool {
 }
 
 /// Measure success-count at a given (mode, Eb/N0) over `n_trials`.
-fn per(mode: Mode, eb_n0_db: f32, n_trials: usize, base_seed: u64) -> usize {
+fn per(mode: UvMode, eb_n0_db: f32, n_trials: usize, base_seed: u64) -> usize {
     (0..n_trials)
         .filter(|t| one_trial(mode, eb_n0_db, base_seed.wrapping_add(*t as u64)))
         .count()
@@ -112,10 +112,10 @@ fn per(mode: Mode, eb_n0_db: f32, n_trials: usize, base_seed: u64) -> usize {
 fn direct_ldpc_clean_channel_decodes_every_mode() {
     let n = 10;
     for mode in [
-        Mode::Robust,
-        Mode::Standard,
-        Mode::UltraRobust,
-        Mode::Express,
+        UvMode::Robust,
+        UvMode::Standard,
+        UvMode::UltraRobust,
+        UvMode::Express,
     ] {
         let decoded = per(mode, 30.0, n, 0xCAFE_BABE);
         assert_eq!(
@@ -137,10 +137,10 @@ fn direct_ldpc_threshold_finder_per_mode() {
 
     eprintln!("mode,eb_n0_db,decoded,total");
     for mode in [
-        Mode::Robust,
-        Mode::Standard,
-        Mode::UltraRobust,
-        Mode::Express,
+        UvMode::Robust,
+        UvMode::Standard,
+        UvMode::UltraRobust,
+        UvMode::Express,
     ] {
         for &eb_n0 in &eb_n0_grid {
             let decoded = per(mode, eb_n0, n_trials, 0xC0FFEE);

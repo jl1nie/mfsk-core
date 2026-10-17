@@ -255,6 +255,7 @@ fn refine_cascade(
     // initialise it to anything meaningful.
     out: &mut super::demod::IsQs,
 ) -> (f32, i32, f32, f32) {
+    #[cfg(feature = "instrument")]
     super::instrument::bump(&super::instrument::CANDIDATES);
 
     let mut best_freq = f0_baseband_init;
@@ -321,6 +322,7 @@ fn refine_cascade(
     // below it the candidate is noise and the extra evals are wasted.
     const MINSYNC1: f32 = 0.10;
     if best_sync > MINSYNC1 {
+        #[cfg(feature = "instrument")]
         super::instrument::bump(&super::instrument::MINSYNC1_PASS);
         // 4. Fine lag — ±32, step 16.
         let centre_lag = best_lag;
@@ -432,6 +434,7 @@ pub(super) fn decode_at_baseband_inner(
         MINSYNC2_FINAL
     };
     if best_sync <= minsync2 {
+        #[cfg(feature = "instrument")]
         super::instrument::bump(&super::instrument::MINSYNC2_REJECTED);
         return None;
     }
@@ -550,6 +553,7 @@ fn decode_from_refined(
             if let Some(check) = budget
                 && !check()
             {
+                #[cfg(feature = "instrument")]
                 super::instrument::bump(&super::instrument::LADDER_BUDGET_ABORTED);
                 break 'rungs;
             }
@@ -574,14 +578,14 @@ fn decode_from_refined(
                 );
                 &jitter_isqs
             };
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", feature = "instrument"))]
             let t_bm = crate::clock::Tick::now();
             let bm = if nblock == 0 {
                 super::demod::nblock1_bit_metrics_opt(isqs, true)
             } else {
                 super::demod::nblock_bit_metrics(isqs, nblock)
             };
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", feature = "instrument"))]
             super::instrument::add_us(
                 &super::instrument::BIT_METRICS_US,
                 t_bm.elapsed_micros() as u32,
@@ -601,6 +605,7 @@ fn decode_from_refined(
             // (Ordered-Statistics Decoding, port of `osdwspr.f90`). OSD
             // can recover signals at -27 dB SNR (e.g. W3BI on the WSJT-X
             // golden) where Fano alone hits the convergence threshold.
+            #[cfg(feature = "instrument")]
             super::instrument::bump(&super::instrument::FANO_ATTEMPTS);
             // Cycle-budget cap (issue #260): every real decode in the
             // WSJT-X golden converges inside 20 % of the uncapped
@@ -668,17 +673,19 @@ fn decode_from_refined(
                 max_cycles_per_bit: Some(ladder.max_cycles_per_bit),
                 ..FecOpts::default()
             };
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", feature = "instrument"))]
             let t_fano = crate::clock::Tick::now();
             let fano_res = codec.decode_soft_pooled(&llrs, &fec_opts, &mut fano_scratch);
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", feature = "instrument"))]
             super::instrument::add_us(&super::instrument::FANO_US, t_fano.elapsed_micros() as u32);
             let (info_bits, hard_errors) = if let Some(fec_res) = fano_res {
+                #[cfg(feature = "instrument")]
                 super::instrument::bump(&super::instrument::FANO_OK);
                 let mut info = [0u8; 50];
                 info.copy_from_slice(&fec_res.info);
                 (info, fec_res.hard_errors)
             } else if let Some((info, nhardmin)) = confirmed.and_then(|table| {
+                #[cfg(feature = "instrument")]
                 super::instrument::bump(&super::instrument::OSD_ATTEMPTS);
                 // Single lazy `and_then`, deliberately not `Option::zip`:
                 // `zip` evaluates its argument eagerly, which would run the
@@ -695,10 +702,10 @@ fn decode_from_refined(
                 // unpacked `[[u8;162];50]` matrix) drops to ~5 KB. See
                 // `osd_decode_packed`'s own doc comment for why each
                 // stage does or doesn't benefit from packing.
-                #[cfg(feature = "std")]
+                #[cfg(all(feature = "std", feature = "instrument"))]
                 let t_osd = crate::clock::Tick::now();
                 let osd_res = super::osd::osd_decode_packed(&llrs);
-                #[cfg(feature = "std")]
+                #[cfg(all(feature = "std", feature = "instrument"))]
                 super::instrument::add_us(
                     &super::instrument::OSD_US,
                     t_osd.elapsed_micros() as u32,
@@ -713,6 +720,7 @@ fn decode_from_refined(
                     .unpack(&info, &crate::engine::DecodeContext::default())?;
                 table.accepts(&msg).then_some((info, nhardmin))
             }) {
+                #[cfg(feature = "instrument")]
                 super::instrument::bump(&super::instrument::OSD_OK);
                 (info, nhardmin)
             } else {
@@ -924,6 +932,7 @@ pub fn rank_pass2_candidates<'c>(
             &mut isqs,
         );
         if sync <= MINSYNC2_FINAL {
+            #[cfg(feature = "instrument")]
             super::instrument::bump(&super::instrument::MINSYNC2_REJECTED);
             return None;
         }

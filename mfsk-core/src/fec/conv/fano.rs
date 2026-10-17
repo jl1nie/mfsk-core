@@ -395,6 +395,7 @@ pub fn fano_decode_with_scratch(
     }
 
     let final_metric = nodes[np.min(nbits)].gamma;
+    #[cfg(feature = "instrument")]
     instrument::record(cycles, max_cycles, converged);
     FanoDecodeResult {
         data,
@@ -542,6 +543,7 @@ mod tests {
 /// `converged`, so nothing new has to be computed — these counters
 /// only aggregate what the decoder already returns, at one relaxed
 /// atomic add per call.
+#[cfg(feature = "instrument")]
 pub mod instrument {
     use core::sync::atomic::{AtomicU32, Ordering};
 

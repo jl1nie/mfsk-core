@@ -2,11 +2,11 @@
 //! Frame-head preamble catalogue for the new uvpacket modem
 //! (post-redesign, 0.4.0).
 //!
-//! ## Mode-encoded sync
+//! ## UvMode-encoded sync
 //!
 //! Sync and modulation mode are jointly identified by **which of
 //! four 127-chip BPSK m-sequences** the receiver finds at a given
-//! audio offset/centre. Each [`Mode`] is paired with one preamble
+//! audio offset/centre. Each [`UvMode`] is paired with one preamble
 //! variant; the receiver correlates against all four and the
 //! winner identifies both the timing offset and the payload mode
 //! in a single matched-filter pass. This eliminates the 4-modes ×
@@ -43,14 +43,14 @@
 
 use crate::engine::SyncBlock;
 
-use super::puncture::Mode;
+use super::puncture::UvMode;
 
 /// Length of every preamble variant in BPSK chips. 127 chips at
 /// 1200 baud = ~106 ms of preamble.
 pub const PREAMBLE_LEN: usize = 127;
 
 /// Number of distinct preamble variants in the catalogue (= number
-/// of [`Mode`] variants).
+/// of [`UvMode`] variants).
 pub const NUM_PREAMBLES: usize = 4;
 
 /// Run a 7-bit Fibonacci LFSR with the given tap mask
@@ -82,20 +82,20 @@ const TAPS_X7_X1: u8 = 0b000_0011;
 /// `x⁷ + x⁴ + x³ + x² + 1` → bits 0, 2, 3, 4.
 const TAPS_X7_X4_X3_X2: u8 = 0b001_1101;
 
-/// Preamble for the [`Mode::UltraRobust`] mode (`x⁷ + x⁶ + 1`).
+/// Preamble for the [`UvMode::UltraRobust`] mode (`x⁷ + x⁶ + 1`).
 pub const PREAMBLE_ULTRA_ROBUST: [bool; PREAMBLE_LEN] = lfsr_seven(TAPS_X7_X6, 0b000_0001);
 
-/// Preamble for the [`Mode::Robust`] mode (`x⁷ + x³ + 1`).
+/// Preamble for the [`UvMode::Robust`] mode (`x⁷ + x³ + 1`).
 pub const PREAMBLE_ROBUST: [bool; PREAMBLE_LEN] = lfsr_seven(TAPS_X7_X3, 0b000_0001);
 
-/// Preamble for the [`Mode::Standard`] mode (`x⁷ + x + 1`).
+/// Preamble for the [`UvMode::Standard`] mode (`x⁷ + x + 1`).
 pub const PREAMBLE_STANDARD: [bool; PREAMBLE_LEN] = lfsr_seven(TAPS_X7_X1, 0b000_0001);
 
-/// Preamble for the [`Mode::Express`] mode (`x⁷ + x⁴ + x³ + x² + 1`).
+/// Preamble for the [`UvMode::Express`] mode (`x⁷ + x⁴ + x³ + x² + 1`).
 pub const PREAMBLE_EXPRESS: [bool; PREAMBLE_LEN] = lfsr_seven(TAPS_X7_X4_X3_X2, 0b000_0001);
 
 /// All four preamble variants, indexed by the mode's
-/// [`Mode::header_code`].
+/// [`UvMode::header_code`].
 pub const PREAMBLES: [&[bool; PREAMBLE_LEN]; NUM_PREAMBLES] = [
     &PREAMBLE_ULTRA_ROBUST,
     &PREAMBLE_ROBUST,
@@ -104,23 +104,23 @@ pub const PREAMBLES: [&[bool; PREAMBLE_LEN]; NUM_PREAMBLES] = [
 ];
 
 /// Look up the preamble bits for a given mode.
-pub const fn preamble_for(mode: Mode) -> &'static [bool; PREAMBLE_LEN] {
+pub const fn preamble_for(mode: UvMode) -> &'static [bool; PREAMBLE_LEN] {
     match mode {
-        Mode::UltraRobust => &PREAMBLE_ULTRA_ROBUST,
-        Mode::Robust => &PREAMBLE_ROBUST,
-        Mode::Standard => &PREAMBLE_STANDARD,
-        Mode::Express => &PREAMBLE_EXPRESS,
+        UvMode::UltraRobust => &PREAMBLE_ULTRA_ROBUST,
+        UvMode::Robust => &PREAMBLE_ROBUST,
+        UvMode::Standard => &PREAMBLE_STANDARD,
+        UvMode::Express => &PREAMBLE_EXPRESS,
     }
 }
 
 /// Inverse of [`preamble_for`]: identify which mode owns a
 /// particular index in the catalogue.
-pub const fn mode_for_index(idx: usize) -> Option<Mode> {
+pub const fn mode_for_index(idx: usize) -> Option<UvMode> {
     match idx {
-        0 => Some(Mode::UltraRobust),
-        1 => Some(Mode::Robust),
-        2 => Some(Mode::Standard),
-        3 => Some(Mode::Express),
+        0 => Some(UvMode::UltraRobust),
+        1 => Some(UvMode::Robust),
+        2 => Some(UvMode::Standard),
+        3 => Some(UvMode::Express),
         _ => None,
     }
 }

@@ -7,7 +7,7 @@
 //! 1. **Sync + mode identification** — correlate against all four
 //!    127-chip preambles in one matched-filter pass per frequency
 //!    candidate. The strongest peak's preamble identifies both the
-//!    timing offset and the payload [`Mode`]. (No more brute-force
+//!    timing offset and the payload [`UvMode`]. (No more brute-force
 //!    LDPC sweep across `4 modes × 32 n_blocks` to discover layout.)
 //! 2. **AFC** — frequency-grid coarse search around `audio_centre_hz`,
 //!    parabolic refinement.
@@ -44,7 +44,7 @@ use crate::fec::Ldpc240_101;
 
 use super::framing::{HEADER_BYTES, INFO_BYTES_PER_BLOCK, UnpackError, unpack_header};
 use super::interleaver::deinterleave_llr;
-use super::puncture::{Mode, de_puncture_llr};
+use super::puncture::{UvMode, de_puncture_llr};
 use super::sync_pattern::{NUM_PREAMBLES, PREAMBLE_LEN, mode_for_index, preamble_for};
 use super::tx::{RRC_ALPHA, RRC_SPAN_SYMS, SAMPLE_RATE_HZ, rrc_pulse};
 
@@ -56,7 +56,7 @@ const K_LDPC: usize = 101;
 const HEADER_BLOCK_SYMS: usize = N_LDPC / 2;
 
 /// Canonical 1200-baud per-symbol sample count. Used by every mode
-/// except [`Mode::UltraRobust`] which runs at half baud (NSPS=20).
+/// except [`UvMode::UltraRobust`] which runs at half baud (NSPS=20).
 /// All auto-detect entry points compute one matched-filter output
 /// per distinct nsps value (currently 10 and 20).
 const NSPS_BASE: usize = 10;
@@ -134,7 +134,7 @@ impl core::error::Error for DecodeError {
 pub struct DecodedFrame {
     pub app_type: u8,
     pub sequence: u8,
-    pub mode: Mode,
+    pub mode: UvMode,
     pub block_count: u8,
     pub payload: Vec<u8>,
     /// WSJT-X-compatible SNR estimate (dB, 2.5 kHz reference
@@ -170,14 +170,14 @@ pub fn default_fec_opts() -> FecOpts<'static> {
 // ────────────────────────────────────────────────────────────────────
 
 /// Decode a uvpacket frame whose start sample (`sample_offset`),
-/// audio centre frequency, and payload [`Mode`] are known. Reads
+/// audio centre frequency, and payload [`UvMode`] are known. Reads
 /// `n_blocks` (and other header fields) from the dedicated header
 /// block — no caller hint needed.
 pub fn decode_known_layout(
     audio: &[f32],
     sample_offset: usize,
     audio_centre_hz: f32,
-    mode: Mode,
+    mode: UvMode,
     fec_opts: &FecOpts,
 ) -> Result<DecodedFrame, DecodeError> {
     decode_at_inner(audio, sample_offset, audio_centre_hz, mode, fec_opts)
@@ -190,7 +190,7 @@ pub fn decode_known_layout_with_afc(
     audio: &[f32],
     sample_offset: usize,
     audio_centre_hz: f32,
-    mode: Mode,
+    mode: UvMode,
     fec_opts: &FecOpts,
     afc_opts: &AfcOpts,
 ) -> Result<DecodedFrame, DecodeError> {
@@ -223,7 +223,7 @@ pub fn decode_known_layout_with_afc(
 
 /// Auto-detect: scan the audio at `audio_centre_hz`, find every
 /// candidate sync peak (any of the four preamble variants), and
-/// decode each with the [`Mode`] the winning preamble identified.
+/// decode each with the [`UvMode`] the winning preamble identified.
 pub fn decode(audio: &[f32], audio_centre_hz: f32) -> Vec<DecodedFrame> {
     decode_inner(audio, audio_centre_hz, &default_fec_opts())
 }
@@ -326,7 +326,7 @@ pub struct SyncStats {
 /// `pub(crate)` since it has no in-crate caller and exists purely for
 /// external sync-quality debugging.
 #[doc(hidden)]
-pub fn diag_sync_at(audio: &[f32], audio_centre_hz: f32) -> Option<(Mode, SyncStats)> {
+pub fn diag_sync_at(audio: &[f32], audio_centre_hz: f32) -> Option<(UvMode, SyncStats)> {
     // Need enough audio for the longest preamble (UltraRobust at
     // NSPS=20 = 127·20 + 121 = 2 661 samples, ≈ 222 ms at 12 kHz).
     let min_needed = PREAMBLE_LEN * NSPS_ULTRA + rrc_len_for(NSPS_ULTRA);
@@ -403,7 +403,7 @@ pub fn diag_estimate_freq_offset(
     audio: &[f32],
     sample_offset: usize,
     audio_centre_hz: f32,
-    mode: Mode,
+    mode: UvMode,
     afc_opts: &AfcOpts,
 ) -> Option<f32> {
     let nsps = mode.nsps();
@@ -429,7 +429,7 @@ fn decode_at_inner(
     audio: &[f32],
     sample_offset: usize,
     audio_centre_hz: f32,
-    mode: Mode,
+    mode: UvMode,
     fec_opts: &FecOpts,
 ) -> Result<DecodedFrame, DecodeError> {
     let nsps = mode.nsps();
@@ -576,7 +576,7 @@ fn peek_header_block_count(header_info: &[u8]) -> Result<(u8, u8, u8), DecodeErr
 
 const MAX_PICKED_PEAKS: usize = 3;
 
-/// Collect every `(Mode, preamble bits)` pair whose nsps matches the
+/// Collect every `(UvMode, preamble bits)` pair whose nsps matches the
 /// argument. Returns `(modes, preambles, count)`. Up to 4 entries —
 /// matches `NUM_PREAMBLES`. Lets the auto-detect call sites batch
 /// per-offset preamble correlations through
@@ -584,11 +584,11 @@ const MAX_PICKED_PEAKS: usize = 3;
 fn preambles_for_nsps(
     nsps: usize,
 ) -> (
-    [Option<Mode>; NUM_PREAMBLES],
+    [Option<UvMode>; NUM_PREAMBLES],
     [&'static [bool]; NUM_PREAMBLES],
     usize,
 ) {
-    let mut modes: [Option<Mode>; NUM_PREAMBLES] = [None; NUM_PREAMBLES];
+    let mut modes: [Option<UvMode>; NUM_PREAMBLES] = [None; NUM_PREAMBLES];
     let mut bits: [&'static [bool]; NUM_PREAMBLES] = [&[]; NUM_PREAMBLES];
     let mut count = 0;
     for i in 0..NUM_PREAMBLES {
@@ -625,7 +625,7 @@ fn decode_inner(audio: &[f32], audio_centre_hz: f32, fec_opts: &FecOpts) -> Vec<
     // matching MF per nsps. Keep peaks in the audio-domain offset
     // (mf_offset − sym_peak_offset_for(nsps)) so the cross-mode NMS
     // compares like with like.
-    let mut peaks: Vec<(usize, Mode, f32)> = Vec::new();
+    let mut peaks: Vec<(usize, UvMode, f32)> = Vec::new();
     let mut all_scores: Vec<f32> = Vec::new();
     for &nsps in ALL_NSPS.iter() {
         let mf_out = downconvert_and_matched_filter(audio, audio_centre_hz, nsps);
@@ -664,7 +664,7 @@ fn decode_inner(audio: &[f32], audio_centre_hz: f32, fec_opts: &FecOpts) -> Vec<
     // canonical symbol period; UltraRobust's longer chip span is
     // automatically covered since its peaks land at integer-multiples
     // of 20 samples).
-    let mut picked: Vec<(usize, Mode)> = Vec::new();
+    let mut picked: Vec<(usize, UvMode)> = Vec::new();
     for (audio_off, mode, _score) in peaks {
         if picked
             .iter()
@@ -720,12 +720,12 @@ fn decode_multichannel_inner(
     // For each centre, find the strongest peak across both nsps
     // values (NSPS_BASE for Robust/Standard/Express, NSPS_ULTRA for
     // UltraRobust). Peak audio_offset = mf_offset − sym_peak_offset.
-    let mut peaks: Vec<(f32, usize, Mode, f32)> = Vec::new();
+    let mut peaks: Vec<(f32, usize, UvMode, f32)> = Vec::new();
     let mut all_scores: Vec<f32> = Vec::new();
     let mut centre = mc_opts.band_lo_hz;
     while centre <= mc_opts.band_hi_hz {
         let mut best_audio_off = 0usize;
-        let mut best_mode = Mode::Robust;
+        let mut best_mode = UvMode::Robust;
         let mut best_score = 0.0_f32;
         for &nsps in ALL_NSPS.iter() {
             let mf_out = downconvert_and_matched_filter(audio, centre, nsps);
@@ -776,7 +776,7 @@ fn decode_multichannel_inner(
 
     // NMS in frequency.
     peaks.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap());
-    let mut kept: Vec<(f32, usize, Mode)> = Vec::new();
+    let mut kept: Vec<(f32, usize, UvMode)> = Vec::new();
     for (f, off, mode, _score) in peaks {
         if kept
             .iter()
@@ -1136,7 +1136,7 @@ fn estimate_diff_stats(r_diff_preamble: &[Complex32], preamble_bits: &[bool]) ->
 /// against AWGN truth via `tests/uvpacket_snr_calibration.rs`: 20
 /// trials per `(mode, Eb/N0)` cell over `Eb/N0 ∈ {6 .. 22} dB`,
 /// residual `(reported − truth_2500)` averaged within ±0.2 dB across
-/// the sweep range. Indexed by `Mode::header_code()`
+/// the sweep range. Indexed by `UvMode::header_code()`
 /// — `[UltraRobust, Robust, Standard, Express]`.
 const SNR_CALIBRATION_DB: [f32; 4] = [-6.2, -3.0, -3.0, -3.4];
 
@@ -1157,7 +1157,7 @@ const SNR_CALIBRATION_DB: [f32; 4] = [-6.2, -3.0, -3.0, -3.4];
 ///    reported SNR matches the WSJT-X convention at known Eb/N0.
 ///
 /// Floor at −30 dB (matches WSJT-X's clamping convention).
-fn compute_snr_2500hz(stats: &DiffStats, mode: Mode) -> f32 {
+fn compute_snr_2500hz(stats: &DiffStats, mode: UvMode) -> f32 {
     let a = stats.a_sq_est.max(1e-9);
     let sigma_sq = stats.sigma_sq_n_diff.max(1e-9);
     let symbol_snr = 2.0 * a * a / sigma_sq;
@@ -1228,7 +1228,7 @@ fn estimate_freq_offset_for_mode(
     sample_offset: usize,
     needed_samples: usize,
     audio_centre_hz: f32,
-    mode: Mode,
+    mode: UvMode,
     afc_opts: &AfcOpts,
 ) -> f32 {
     let coarse_step_hz: f32 = 25.0;

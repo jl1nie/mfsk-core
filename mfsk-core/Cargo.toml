@@ -332,6 +332,11 @@ parallel     = ["std", "dep:rayon"]
 # stay on the `pub(crate)` shape.
 internal-testing = []
 
+# Process-global counters and stage timers in `wspr::instrument` and
+# `fec::conv::fano::instrument`, read by the WSPR bench and two tests.
+# Off by default: without it the modules and every counting site do not exist.
+instrument = []
+
 [dependencies]
 # `num-complex` carries the `Float` trait via num-traits; under no_std
 # we need `libm` to provide sin/cos/sqrt/etc. The std build pulls

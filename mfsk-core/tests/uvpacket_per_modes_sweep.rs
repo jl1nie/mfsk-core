@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Comprehensive PER characterisation across all four [`Mode`]s
+//! Comprehensive PER characterisation across all four [`UvMode`]s
 //! and the channel models that ship in the in-tree air-channel
 //! sim. Each sweep is `#[ignore]` (slow); run individually with
 //! `cargo test --release --test uvpacket_per_modes_sweep <name>
@@ -17,7 +17,7 @@
 #![cfg(feature = "uvpacket")]
 
 use mfsk_core::uvpacket::framing::FrameHeader;
-use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
+use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, UvMode, rx, tx};
 
 // `common` is shared scaffolding included by 43 test binaries, each
 // using a different subset — dead-code analysis of it is per-binary
@@ -34,14 +34,14 @@ use common::uvpacket_channel::awgn_sigma_for_eb_n0_info;
 const N_BLOCKS: u8 = 4;
 const N_TRIALS: usize = 30;
 const PAYLOAD: usize = 16;
-const ALL_MODES: [Mode; 4] = [
-    Mode::UltraRobust,
-    Mode::Robust,
-    Mode::Standard,
-    Mode::Express,
+const ALL_MODES: [UvMode; 4] = [
+    UvMode::UltraRobust,
+    UvMode::Robust,
+    UvMode::Standard,
+    UvMode::Express,
 ];
 
-fn header_for(mode: Mode) -> FrameHeader {
+fn header_for(mode: UvMode) -> FrameHeader {
     FrameHeader {
         mode,
         block_count: N_BLOCKS,
@@ -54,7 +54,7 @@ fn payload(trial: usize) -> Vec<u8> {
     (0..PAYLOAD).map(|i| ((i + trial) ^ 0xA5) as u8).collect()
 }
 
-fn try_decode(audio: &[f32], expected: &[u8], mode: Mode, afc: &rx::AfcOpts) -> bool {
+fn try_decode(audio: &[f32], expected: &[u8], mode: UvMode, afc: &rx::AfcOpts) -> bool {
     matches!(
         rx::decode_known_layout_with_afc(audio, 0, AUDIO_CENTRE_HZ, mode, &Default::default(), afc),
         Ok(f) if f.payload[..expected.len()] == expected[..]
@@ -62,7 +62,7 @@ fn try_decode(audio: &[f32], expected: &[u8], mode: Mode, afc: &rx::AfcOpts) -> 
 }
 
 /// Run `n_trials` decodes and return the count that passed.
-fn run_per<F>(mode: Mode, mut per_trial_audio: F) -> usize
+fn run_per<F>(mode: UvMode, mut per_trial_audio: F) -> usize
 where
     F: FnMut(&FrameHeader, &[u8], usize) -> Vec<f32>,
 {

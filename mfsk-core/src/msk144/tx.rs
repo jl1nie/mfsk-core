@@ -307,12 +307,8 @@ mod tests {
         let audio = synthesize_standard("K1ABC", "W9XYZ", "R-07", 15, 0.3).unwrap();
         assert_eq!(audio.len(), 15 * 12_000 - 6_000);
         let pcm: Vec<i16> = audio.iter().map(|&x| (x * 32767.0) as i16).collect();
-        let got = crate::msk144::decode::decode_slot(
-            &pcm,
-            1500.0,
-            100.0,
-            crate::msk144::decode::Depth::Deep,
-        );
+        let got =
+            crate::msk144::decode::decode_slot(&pcm, 1500.0, 100.0, crate::decoder::Depth::Deep);
         assert!(
             got.iter()
                 .any(|d| d.message == "K1ABC W9XYZ R-07" && (d.freq_hz - CENTER_HZ).abs() < 5.0),

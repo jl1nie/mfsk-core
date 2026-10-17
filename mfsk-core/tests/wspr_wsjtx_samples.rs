@@ -1497,6 +1497,7 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
         WsprCallsignTable, deep_decode_pass2_candidate, rank_pass2_candidates,
     };
     use mfsk_core::wspr::encode_channel_symbols;
+    #[cfg(feature = "instrument")]
     use mfsk_core::wspr::instrument;
     use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
@@ -1599,6 +1600,7 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
 
     // 1. An exhausted-from-the-start budget aborts immediately, even
     // for the candidate that would otherwise have converged.
+    #[cfg(feature = "instrument")]
     instrument::reset();
     let exhausted: &(dyn Fn() -> bool + Sync) = &|| false;
     let r = deep_decode_pass2_candidate(
@@ -1614,6 +1616,7 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
         r.is_none(),
         "an already-exhausted budget must not decode anything"
     );
+    #[cfg(feature = "instrument")]
     assert!(
         instrument::snapshot().ladder_budget_aborted >= 1,
         "budget cutoff should be counted"
@@ -1669,6 +1672,7 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
         let tight_calls = AtomicU32::new(0);
         let tight: &(dyn Fn() -> bool + Sync) =
             &|| tight_calls.fetch_add(1, Ordering::Relaxed) < needed - 1;
+        #[cfg(feature = "instrument")]
         instrument::reset();
         let r = deep_decode_pass2_candidate(
             &idat,
@@ -1683,6 +1687,7 @@ fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one
             r.is_none(),
             "a budget tighter than the real position count must give up before converging"
         );
+        #[cfg(feature = "instrument")]
         assert!(instrument::snapshot().ladder_budget_aborted >= 1);
     }
 }
