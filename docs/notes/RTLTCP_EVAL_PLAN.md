@@ -832,3 +832,18 @@ Counting a decode by (mode, dial, message) only, whatever its slot, the recalls 
 - **Still open:** the defect list item 3 has a grid but no drift test; the shipped client was not run against the RSP1 after these changes (the
   check of step 7's last line): the `await_rate` wait of up to 20 s, the calibration rate near 986 000 S/s, and no `re-anchor` in the first minutes
   are what to look for.
+
+## 15. Where this stops (2026-10-17)
+
+- **The client side is done at B.** On an unmodified `rsp_tcp` the best setting recovers 55 % of the FT8 a loss-free server would give on a real
+  RSP1 recording (section 13), 62-70 % on the synthetic corpora. What is left is information the server has and the rtl_tcp protocol cannot
+  carry: where the holes are (the API numbers its samples; the protocol has no sample number or time stamp).
+- **The server-side routes are not taken.** A modified `rsp_tcp` (`-Z`, filling the numbered holes; or a protocol that carries the sample
+  numbers) cannot be handed to SDRuno users: `rsp_tcp` needs SDRplay's proprietary API, and the target is the stock server. The dbg4 `fill`
+  run (`start_dbg4_fill.bat`) was never made and will not be. Other receivers (an Airspy HF+ over SpyServer did not show the problem) and a
+  direct SDRplay API in the client are outside this evaluation's scope; neither was tried.
+- **Measured, not fixed:** the loss is in the SDRplay API's callback path on the PC (3.5 holes a second, 3 % of the samples, and about one
+  `Uninitialised device` recovery of 1.4 s in 10 minutes), before the data reaches the socket.
+- **Open:** a live run's `drift` grew to -288 ms in 6 minutes while the rate offset was being learned (calibration 1 014 320 S/s against
+  1 017 600 S/s delivered, from the server's own `stats:` lines at 5 s); not reproduced offline, not run longer, not run in the GUI.
+
