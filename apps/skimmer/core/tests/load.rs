@@ -7,7 +7,7 @@ use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
 use mfsk_core::Mode;
-use mfsk_core::decoder::{AnyDecoder, SlotInput};
+use mfsk_core::decoder::AnyDecoder;
 
 fn recording() -> Vec<i16> {
     let path = concat!(
@@ -33,7 +33,7 @@ fn round(n: usize, audio: &Arc<Vec<i16>>) -> (f64, f64, usize) {
                 let mut d = AnyDecoder::with_defaults(Mode::Ft8);
                 go.wait();
                 let t = Instant::now();
-                let rows = d.decode(&SlotInput::i16(&audio)).rows.len();
+                let rows = d.decode_i16(&audio, None).rows.len();
                 (t.elapsed().as_secs_f64(), rows)
             })
         })
@@ -77,7 +77,7 @@ fn gated(jobs: usize, k: usize, audio: &Arc<Vec<i16>>) -> f64 {
             std::thread::spawn(move || {
                 let mut d = AnyDecoder::with_defaults(Mode::Ft8);
                 while next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < jobs {
-                    let _ = d.decode(&SlotInput::i16(&audio));
+                    let _ = d.decode_i16(&audio, None);
                 }
             })
         })

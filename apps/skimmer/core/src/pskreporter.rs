@@ -497,9 +497,19 @@ pub fn is_decoded_grid(g: &str) -> bool {
 
 /// `stdMsg` (`stdmsg`, `lib/stdmsg.f90`): the message packs as a structured type, `i3 > 0` or
 /// `n3 > 0`; free text (`0.0`) does not. Read off the decoded bits, 77 of them in the key. The
-/// 72-bit JT modes have no such bits to read here; their text has to name a sender.
+/// 72-bit JT9 / JT65 key is unpacked as `jt9` does, and free text (`ng >= 32768`,
+/// `Jt72Message::FreeText`) is not a message about a station; a standard or compound-call
+/// message is (WSJT-X posts both).
 fn is_standard(d: &Decode) -> bool {
+    use mfsk_core::msg::jt72::{Jt72Message, unpack};
     let k = &d.detail.key;
+    if k.len() == 72 {
+        let mut w = [0u8; 12];
+        for (i, v) in w.iter_mut().enumerate() {
+            *v = k[i * 6..i * 6 + 6].iter().fold(0, |a, &b| a << 1 | (b & 1));
+        }
+        return !matches!(unpack(&w), Jt72Message::FreeText(_));
+    }
     if k.len() >= 77 {
         let bit = |i: usize| u32::from(k[i] & 1);
         let n3 = bit(71) << 2 | bit(72) << 1 | bit(73);
@@ -984,6 +994,50 @@ mod spot_rule_tests {
         assert!(
             spot_from_decode(&decode(Mode::Ft8, "K1ABC W9XYZ RR73"), "N0CALL", "AA00").is_none()
         );
+    }
+
+    /// JT9 / JT65 rows carry the 72 message bits; free text (`ng >= 32768`) makes no spot, a
+    /// standard message and a compound call (`PJ4/K1ABC`, which 0.13 dropped as unsupported) do.
+    #[test]
+    fn jt_free_text_is_no_spot_a_compound_call_is() {
+        use mfsk_core::msg::jt72::{Jt72Message, pack_message, unpack};
+        let row = |mode, text: &str| {
+            let words = pack_message(text).unwrap().words;
+            let mut d = decode(mode, &unpack(&words).to_string());
+            d.detail.key = words
+                .iter()
+                .flat_map(|w| (0..6).rev().map(move |b| (w >> b) & 1))
+                .collect();
+            d
+        };
+        for mode in [Mode::Jt9, Mode::Jt65] {
+            let std = row(mode, "RA0ANO UA0LQE PN53");
+            let s = spot_from_decode(&std, "K1ABC", "FN20").unwrap();
+            assert_eq!(
+                (s.callsign.as_str(), s.locator.as_str()),
+                ("UA0LQE", "PN53")
+            );
+            let comp = row(mode, "CQ PJ4/K1ABC FK52");
+            assert!(matches!(
+                unpack(&pack_message(&comp.text).unwrap().words),
+                Jt72Message::Compound(_)
+            ));
+            let s = spot_from_decode(&comp, "K1ABC", "FN20");
+            assert!(s.is_none(), "own base call"); // K1ABC is ours here
+            let comp = row(mode, "CQ PJ4/W9XYZ FK52");
+            let s = spot_from_decode(&comp, "K1ABC", "FN20").unwrap();
+            assert_eq!(
+                (s.callsign.as_str(), s.locator.as_str()),
+                ("PJ4/W9XYZ", "FK52")
+            );
+            // free text that reads like a message is still free text
+            let free = row(mode, "CQ TNX FER QSO");
+            assert!(matches!(
+                unpack(&pack_message(&free.text).unwrap().words),
+                Jt72Message::FreeText(_)
+            ));
+            assert!(spot_from_decode(&free, "K1ABC", "FN20").is_none());
+        }
     }
 
     #[test]

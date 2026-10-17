@@ -46,14 +46,14 @@ pub mod waterfall;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub use mfsk_core::Mode;
-use mfsk_core::decoder::{AnyDecoder, RowDetail, SlotInput, Stage, default_params};
-pub use mfsk_core::decoder::{ApMode, Contest, Depth, QsoContext, QsoProgress, Station};
+pub use mfsk_core::decoder::{ApMode, Contest};
+use mfsk_core::decoder::{Stage, default_params};
 pub use mfsk_core::iq::Channelizer;
-use mfsk_core::iq::CompletedSlot;
-use mfsk_core::iq::{ChannelId, IqReceiver, IqSampleFormat, IqStream};
-use mfsk_core::msg::Decoded;
-use mfsk_core::msg::ap::ApHint;
+use mfsk_core::prelude::{
+    AnyDecoder, ApHint, ChannelId, CompletedSlot, Decoded, IqReceiver, IqSampleFormat, IqStream,
+    RowDetail, SlotInput,
+};
+pub use mfsk_core::prelude::{Depth, Mode, QsoContext, QsoProgress, Station};
 use mfsk_core::slotgrid::ClockChange;
 
 use anchor::AnchorEstimate;
@@ -3006,7 +3006,7 @@ mod tests {
     fn early_rows_go_out_at_the_first_prefix_and_none_twice() {
         let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
         let mut want: Vec<String> = AnyDecoder::with_defaults(Mode::Ft8)
-            .decode(&SlotInput::i16(&audio))
+            .decode_i16(&audio, None)
             .rows
             .into_iter()
             .map(|d| d.decoded.text)

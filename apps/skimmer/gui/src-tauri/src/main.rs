@@ -1707,9 +1707,13 @@ mod health_log_tests {
             let s: Settings = serde_json::from_value(serde_json::json!({
                 "servers": [{"protocol":"rtl_tcp", "rtlNominalAcquisition":nominal}],
                 "channels": [{"server":0, "mode":"FT8", "dialHz":7074000}]
-            })).unwrap();
+            }))
+            .unwrap();
             let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-            assert_eq!(configs(&back).unwrap()[0].cfg.rtl_nominal_acquisition, nominal);
+            assert_eq!(
+                configs(&back).unwrap()[0].cfg.rtl_nominal_acquisition,
+                nominal
+            );
         }
     }
 
