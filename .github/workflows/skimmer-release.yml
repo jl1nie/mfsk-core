@@ -95,7 +95,8 @@ jobs:
             ## mfsk skimmer ${{ needs.verify-tag.outputs.version }}
 
             Decodes **FT8, FT4, FST4, WSPR, JT9, JT65, Q65 and JTTY** from a
-            [SpyServer](https://airspy.com/download/) (Airspy HF+, Airspy, RTL-SDR), many channels
+            [SpyServer](https://airspy.com/download/) (Airspy HF+, Airspy, RTL-SDR) or an
+            `rtl_tcp` server (RTL-SDR, or an SDRplay RSP through `rsp_tcp`), many channels
             from one stream, with a waterfall per channel, a database of everything heard, and a map
             with a time-lapse. It can share the radio with SDR#, and rotate through bands. It receives only.
 
