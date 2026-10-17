@@ -3,7 +3,7 @@
 0.11.0, split out from the top-level `CHANGELOG.md` when 0.13.0 was prepared. `CHANGELOG.md`
 keeps the unreleased section and the two latest minor series; the release PR of each new
 minor moves the oldest series here (`CLAUDE.md`, "Releases"). Full detail preserved verbatim,
-just relocated. See [`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.12.0 onward,
+just relocated. See [`CHANGELOG-0.12.md`](CHANGELOG-0.12.md) for 0.12.0, [`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.13.0 onward,
 [`CHANGELOG-0.8-0.10.md`](CHANGELOG-0.8-0.10.md) for what came before.
 
 ## 0.11.0 — a new C ABI for every mode (breaking), FT4/FST4 a-priori decoding fixed (−1.1 dB AWGN), the sniper becomes FT8-only (breaking), a caller-supplied decode budget, `mfsk-ffi-ft8` retired, the CoreS3 FT8 receiver holds its slot grid and stops starving its own internal DRAM

@@ -58,7 +58,7 @@ type である。配線済みの全プロトコルが同じ受信フロー
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.13", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.14", features = ["ft8", "ft4", "wspr"] }
 ```
 
 必要なプロトコル feature だけを入れる。以下の例は説明のために複数を
