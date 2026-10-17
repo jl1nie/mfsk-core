@@ -812,6 +812,38 @@ object Mfsk {
         return nativeSynthesizeWspr(call, grid, powerDbm, freqHz)
     }
 
+    /// Encode `text` for `mode` (any mode number with a text encoder) and synthesise
+    /// it: f32 PCM at unit amplitude, `sampleRate` Hz, from sample 0 of the frame.
+    /// `freqHz` is the frequency of tone 0. [copiedLastTx] is Q65 only (Pileup's
+    /// "copied last Tx" bit) and ignored by the other modes.
+    ///
+    /// Throws [MfskInvalidArgException] for a message the mode cannot send,
+    /// [MfskUnsupportedException] for a form it has but the library does not
+    /// encode, [MfskUnknownModeException] for a mode with no text encoder (MSK144,
+    /// JTTY, uvpacket) or one absent from this build.
+    fun encode(
+        mode: Int, text: String, freqHz: Float, sampleRate: Int = 12_000,
+        copiedLastTx: Boolean = false,
+    ): FloatArray {
+        modes()
+        return nativeEncode(mode, text, if (copiedLastTx) ENCODE_Q65_COPIED_LAST_TX else 0, sampleRate, freqHz)
+    }
+
+    /// The tones, the receiver's text and the hashed calls of `text`, without
+    /// synthesising it. Throws as [encode].
+    fun encodeInfo(mode: Int, text: String, copiedLastTx: Boolean = false): MfskEncoded {
+        modes()
+        val r = nativeEncodeInfo(mode, text, if (copiedLastTx) ENCODE_Q65_COPIED_LAST_TX else 0)
+        return MfskEncoded(
+            tones = r[0] as ByteArray,
+            text = r[1] as String,
+            hashedCalls = (r[2] as String).split(' ').filter { it.isNotEmpty() },
+        )
+    }
+
+    /// `MFSK_ENCODE_Q65_COPIED_LAST_TX`: `flags` bit 0 of `mfsk_encode`.
+    private const val ENCODE_Q65_COPIED_LAST_TX = 1
+
     @JvmStatic private external fun nativeAbiVersion(): Int
     @JvmStatic private external fun nativeModeCount(): Int
     @JvmStatic private external fun nativeModeAt(index: Int): Int
@@ -841,6 +873,11 @@ object Mfsk {
     @JvmStatic private external fun nativeSynthesizeJt(
         mode: Int, a: String, b: String, c: String, freqHz: Float,
     ): FloatArray
+    @JvmStatic private external fun nativeEncode(
+        mode: Int, text: String, flags: Int, sampleRate: Int, freqHz: Float,
+    ): FloatArray
+    /// `[ByteArray tones, String text, String hashedCalls (space-separated)]`.
+    @JvmStatic private external fun nativeEncodeInfo(mode: Int, text: String, flags: Int): Array<Any>
     @JvmStatic private external fun nativeSynthesizeMsk144(
         a: String, b: String, c: String, periodS: Int,
     ): FloatArray
@@ -848,6 +885,15 @@ object Mfsk {
         call: String, grid: String, powerDbm: Int, freqHz: Float,
     ): FloatArray
 }
+
+/// What [Mfsk.encodeInfo] returns.
+///
+/// [tones] is one tone index per channel symbol; [text] is the message as a
+/// receiver unpacks it (WSJT-X's Tx box: case and spacing normalised, a call sent
+/// as a hash written `<CALL>`); [hashedCalls] are the calls the message sends as
+/// hashes, to hand to the decoder (`MfskDecoder.addCallsign`) so the `<...>` of
+/// the answer resolves. Empty for WSPR, JT9 and JT65.
+class MfskEncoded(val tones: ByteArray, val text: String, val hashedCalls: List<String>)
 
 // ── The decoder ─────────────────────────────────────────────────────
 

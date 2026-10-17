@@ -975,6 +975,81 @@ void test_hash_resolution() {
     mfsk_decoder_close(c);
 }
 
+// ── mfsk_encode / mfsk_encode_info ──────────────────────────────────
+//
+// The one transmit call over the mode: PCM and tones agree with the staged
+// pipeline, the buffer contract reports the size needed, the reserved flag
+// bits and a bad mode number are refused, and a Q65 flag changes the tones.
+
+void test_encode() {
+    std::printf("[encode]\n");
+    const char* what = "encode";
+    const char* msg = "CQ JA1ABC PM95";
+
+    size_t n = 0;
+    if (mfsk_encode(MFSK_MODE_FT8, msg, 0, 12000, 1500.0f, nullptr, 0, &n) !=
+            MFSK_STATUS_INVALID_ARG || n == 0) {
+        fail(what, "a NULL buffer should report the size needed");
+        return;
+    }
+    std::vector<float> pcm(n);
+    size_t m = 0;
+    if (mfsk_encode(MFSK_MODE_FT8, msg, 0, 12000, 1500.0f, pcm.data(), pcm.size(), &m) !=
+            MFSK_STATUS_OK || m != n) {
+        fail(what, "mfsk_encode FT8");
+        return;
+    }
+    // The three-string call is the same message at the same carrier.
+    std::vector<float> legacy(n);
+    if (mfsk_encode_ft8("CQ", "JA1ABC", "PM95", 1500.0f, legacy.data(), legacy.size(), &m) !=
+            MFSK_STATUS_OK || legacy != pcm) {
+        fail(what, "mfsk_encode should equal mfsk_encode_ft8");
+    }
+
+    std::vector<uint8_t> tones(mfsk_symbol_count(MFSK_MODE_FT8));
+    size_t nt = 0, xl = 0, hl = 0;
+    char text[64], hashed[64];
+    if (mfsk_encode_info(MFSK_MODE_FT8, msg, 0, tones.data(), tones.size(), &nt,
+                         text, sizeof text, &xl, hashed, sizeof hashed, &hl) != MFSK_STATUS_OK ||
+        nt != tones.size() || std::strcmp(text, msg) != 0 || std::strcmp(hashed, "JA1ABC") != 0 ||
+        xl != std::strlen(msg) + 1 || hl != std::strlen("JA1ABC") + 1) {
+        fail(what, "mfsk_encode_info FT8");
+    }
+    char tiny[4];
+    xl = 0;
+    if (mfsk_encode_info(MFSK_MODE_FT8, msg, 0, tones.data(), tones.size(), &nt,
+                         tiny, sizeof tiny, &xl, hashed, sizeof hashed, &hl) !=
+            MFSK_STATUS_INVALID_ARG || xl != std::strlen(msg) + 1) {
+        fail(what, "a text buffer too small should be INVALID_ARG and report the size needed");
+    }
+
+    if (mfsk_encode(MFSK_MODE_FT8, msg, 2u, 12000, 1500.0f, nullptr, 0, &n) !=
+        MFSK_STATUS_INVALID_ARG) {
+        fail(what, "a reserved flag bit should be INVALID_ARG");
+    }
+    if (mfsk_encode(9999u, msg, 0, 12000, 1500.0f, nullptr, 0, &n) != MFSK_STATUS_INVALID_ARG) {
+        fail(what, "an unknown mode should be INVALID_ARG");
+    }
+    if (mfsk_encode(MFSK_MODE_FT8, nullptr, 0, 12000, 1500.0f, nullptr, 0, &n) !=
+        MFSK_STATUS_INVALID_ARG) {
+        fail(what, "a NULL text should be INVALID_ARG");
+    }
+
+    // Q65 has no tone stage in the staged pipeline (mfsk_symbol_count is 0), so
+    // size the buffer generously and use the count the call reports.
+    std::vector<uint8_t> t0(512), t1(512);
+    size_t n0 = 0, n1 = 0;
+    if (mfsk_encode_info(MFSK_MODE_Q65A60, msg, 0, t0.data(), t0.size(), &n0, nullptr, 0,
+                         nullptr, nullptr, 0, nullptr) != MFSK_STATUS_OK ||
+        mfsk_encode_info(MFSK_MODE_Q65A60, msg, MFSK_ENCODE_Q65_COPIED_LAST_TX, t1.data(),
+                         t1.size(), &n1, nullptr, 0, nullptr, nullptr, 0, nullptr) !=
+            MFSK_STATUS_OK ||
+        n0 == 0 || n0 != n1 || std::equal(t0.begin(), t0.begin() + n0, t1.begin())) {
+        fail(what, "the Q65 copied-last-Tx flag should change the tones");
+    }
+    std::printf("  OK\n");
+}
+
 // ── Streaming rows via callback ─────────────────────────────────────
 //
 // A real C callback invoked from C++-compiled code through the generated
@@ -1741,6 +1816,7 @@ int main() {
     test_prefix();
     test_budget();
     test_hash_resolution();
+    test_encode();
     test_threads_one_decoder_per_thread();
     test_threads_mixed_modes();
     test_jtty();

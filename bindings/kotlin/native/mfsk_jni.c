@@ -1537,6 +1537,99 @@ Java_io_github_mfskcore_Mfsk_nativeSynthesizeWspr(
     return out;
 }
 
+/// `mfsk_encode` into a fresh `float[]`.
+JNIEXPORT jfloatArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativeEncode(
+        JNIEnv* env, jclass cls, jint mode, jstring text, jint flags, jint sampleRate,
+        jfloat freqHz) {
+    (void)cls;
+    const char* st = (*env)->GetStringUTFChars(env, text, NULL);
+    if (st == NULL) {
+        throw_ise(env, "could not read the message string");
+        return NULL;
+    }
+    jfloatArray out = NULL;
+    size_t need = 0;
+    /* A zero-capacity call reports the size it needs; a refusal reports 0. */
+    const MfskStatus probe = mfsk_encode((uint32_t)mode, st, (uint32_t)flags,
+                                         (uint32_t)sampleRate, freqHz, NULL, 0, &need);
+    if (need == 0) {
+        throw_last(env, probe, "encode failed");
+    } else {
+        float* buf = (float*)malloc(need * sizeof(float));
+        if (buf == NULL) {
+            throw_ise(env, "out of memory");
+        } else {
+            size_t got = 0;
+            const MfskStatus rc = mfsk_encode((uint32_t)mode, st, (uint32_t)flags,
+                                              (uint32_t)sampleRate, freqHz, buf, need, &got);
+            if (rc != MFSK_STATUS_OK) {
+                throw_last(env, rc, "encode failed");
+            } else {
+                out = (*env)->NewFloatArray(env, (jsize)got);
+                if (out != NULL) (*env)->SetFloatArrayRegion(env, out, 0, (jsize)got, buf);
+            }
+            free(buf);
+        }
+    }
+    (*env)->ReleaseStringUTFChars(env, text, st);
+    return out;
+}
+
+/// `mfsk_encode_info` into `Object[] { byte[] tones, String text, String hashedCalls }`.
+JNIEXPORT jobjectArray JNICALL
+Java_io_github_mfskcore_Mfsk_nativeEncodeInfo(
+        JNIEnv* env, jclass cls, jint mode, jstring text, jint flags) {
+    (void)cls;
+    const char* st = (*env)->GetStringUTFChars(env, text, NULL);
+    if (st == NULL) {
+        throw_ise(env, "could not read the message string");
+        return NULL;
+    }
+    jobjectArray out = NULL;
+    size_t n = 0, xl = 0, hl = 0;
+    /* Null buffers report all three sizes (including the NULs); a refusal reports 0. */
+    const MfskStatus probe = mfsk_encode_info((uint32_t)mode, st, (uint32_t)flags,
+                                              NULL, 0, &n, NULL, 0, &xl, NULL, 0, &hl);
+    if (n == 0 || xl == 0 || hl == 0) {
+        throw_last(env, probe, "encode failed");
+    } else {
+        uint8_t* tones = (uint8_t*)malloc(n);
+        char* txt = (char*)malloc(xl);
+        char* hashed = (char*)malloc(hl);
+        if (tones == NULL || txt == NULL || hashed == NULL) {
+            throw_ise(env, "out of memory");
+        } else {
+            size_t got = 0, xg = 0, hg = 0;
+            const MfskStatus rc = mfsk_encode_info((uint32_t)mode, st, (uint32_t)flags,
+                                                   tones, n, &got, txt, xl, &xg,
+                                                   hashed, hl, &hg);
+            if (rc != MFSK_STATUS_OK) {
+                throw_last(env, rc, "encode failed");
+            } else {
+                jclass obj = (*env)->FindClass(env, "java/lang/Object");
+                jbyteArray t = (*env)->NewByteArray(env, (jsize)got);
+                jstring x = (*env)->NewStringUTF(env, txt);
+                jstring h = (*env)->NewStringUTF(env, hashed);
+                out = (obj != NULL) ? (*env)->NewObjectArray(env, 3, obj, NULL) : NULL;
+                if (out != NULL && t != NULL && x != NULL && h != NULL) {
+                    (*env)->SetByteArrayRegion(env, t, 0, (jsize)got, (const jbyte*)tones);
+                    (*env)->SetObjectArrayElement(env, out, 0, t);
+                    (*env)->SetObjectArrayElement(env, out, 1, x);
+                    (*env)->SetObjectArrayElement(env, out, 2, h);
+                } else {
+                    out = NULL; /* an OutOfMemoryError is pending */
+                }
+            }
+        }
+        free(tones);
+        free(txt);
+        free(hashed);
+    }
+    (*env)->ReleaseStringUTFChars(env, text, st);
+    return out;
+}
+
 // ── Streams ─────────────────────────────────────────────────────────
 
 JNIEXPORT jlong JNICALL

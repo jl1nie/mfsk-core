@@ -279,6 +279,14 @@
 #define MFSK_CAP_TX_FREQ (1 << 17)
 
 /**
+ * `mfsk_encode` / `mfsk_encode_info` `flags` bit 0: Q65 only, set WSJT-X 3.2's
+ * Q65 Pileup "copied last Tx" bit in the transmitted symbols. Ignored by every
+ * other mode. Bits 1..31 are reserved and must be 0. A literal here for the
+ * same cbindgen reason as the constants above.
+ */
+#define MFSK_ENCODE_Q65_COPIED_LAST_TX (1 << 0)
+
+/**
  * What [`mfsk_stream_set_time`] did, written to `*out_change`.
  */
 #define MFSK_CLOCK_FIRST 0
@@ -2128,6 +2136,81 @@ enum MfskStatus mfsk_unpack77(const uint8_t *message77,
                               char *out,
                               uintptr_t cap,
                               uintptr_t *out_len);
+
+/**
+ * Encode `text` for `mode` and synthesise it: the one transmit call over the
+ * mode, as `mfsk_decoder_open` is the one receive call. `text` is any message
+ * the mode can send (FT8 free text, a compound call, `<CALL>` hashes, ...);
+ * `mfsk_encode_info` says what a receiver will print and which calls went out
+ * as hashes.
+ *
+ * `mode` is an `MfskMode` number (`MFSK_STATUS_INVALID_ARG` if it is none,
+ * `MFSK_STATUS_UNKNOWN_PROTOCOL` for MSK144, JTTY and uvpacket, which have no
+ * text encoder here). `flags`: `MFSK_ENCODE_Q65_COPIED_LAST_TX` (bit 0); the
+ * other bits are reserved and must be 0 (`MFSK_STATUS_INVALID_ARG`).
+ * `sample_rate` is the output rate in Hz and `freq_hz` the frequency of tone 0.
+ * Writes f32 PCM at unit amplitude, from sample 0 of the frame (the caller
+ * places it in the period). The buffer contract is that of `mfsk_encode_ft8`:
+ * `*out_len` receives the sample count, or the count needed when `cap` is too
+ * small (then `MFSK_STATUS_INVALID_ARG`). A message the mode cannot send is
+ * `MFSK_STATUS_INVALID_ARG` and a form it has but this library does not
+ * encode is `MFSK_STATUS_UNSUPPORTED`, each with the reason in
+ * `mfsk_last_error()`.
+ *
+ * # Safety
+ * `text` must be a NUL-terminated UTF-8 string. `out` must be `cap` writable
+ * `float` (or null when `cap` is 0); `out_len` may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_encode(uint32_t mode,
+                            const char *text,
+                            uint32_t flags,
+                            uint32_t sample_rate,
+                            float freq_hz,
+                            float *out,
+                            uintptr_t cap,
+                            uintptr_t *out_len);
+
+/**
+ * The part of [`mfsk_encode`] a transmitter shows and records: the channel
+ * symbols, what a receiver will print, and the calls sent as hashes.
+ *
+ * `mode`, `text` and `flags` are as for `mfsk_encode`, with the same
+ * statuses. `tones` receives one tone index per symbol and `*tones_len` the
+ * count (the count needed, with `MFSK_STATUS_INVALID_ARG`, when `tones_cap`
+ * is too small; `mfsk_symbol_count(mode)` gives it beforehand for the modes
+ * with a tone stage). `text_out` receives, NUL-terminated, the message as a
+ * receiver unpacks it (WSJT-X's Tx box: case and spacing normalised, a hashed
+ * call as `<CALL>`); `hashed_out` the calls the message sends as hashes,
+ * space-separated and NUL-terminated (empty for WSPR, JT9 and JT65). Give each
+ * to `mfsk_decoder_add_callsign` so that the `<...>` of the answer resolves.
+ *
+ * The strings follow `mfsk_decoder_unpack77`: `*text_len` and `*hashed_len`
+ * receive the bytes needed **including the NUL**, set even when a buffer is
+ * too small (then `MFSK_STATUS_INVALID_ARG`, the buffer named in
+ * `mfsk_last_error()`). All three lengths are set whenever the message
+ * encodes. A result you do not want may be passed as NULL with capacity 0 (its
+ * length is still reported). Nothing is written unless all three buffers are
+ * large enough. Each `*_len` pointer may be null.
+ *
+ * # Safety
+ * `text` must be a NUL-terminated UTF-8 string. `tones` must be `tones_cap`
+ * writable bytes, `text_out` `text_cap` and `hashed_out` `hashed_cap`
+ * (each may be null when its capacity is 0); the `*_len` pointers may be null.
+ */
+MFSK_API
+enum MfskStatus mfsk_encode_info(uint32_t mode,
+                                 const char *text,
+                                 uint32_t flags,
+                                 uint8_t *tones,
+                                 uintptr_t tones_cap,
+                                 uintptr_t *tones_len,
+                                 char *text_out,
+                                 uintptr_t text_cap,
+                                 uintptr_t *text_len,
+                                 char *hashed_out,
+                                 uintptr_t hashed_cap,
+                                 uintptr_t *hashed_len);
 
 /**
  * Stage 2: a packed message becomes this mode's channel symbols.

@@ -1088,6 +1088,34 @@ fun main() {
         }
     }
 
+    // ── mfsk_encode / mfsk_encode_info: the one transmit call over the mode ──
+    run {
+        val text = "CQ JA1ABC PM95"
+        val pcm = Mfsk.encode(ft8, text, 1500.0f)
+        val info = Mfsk.encodeInfo(ft8, text)
+        val nSym = Mfsk.modeInfo(ft8).nSymbols
+        check("encode: a whole number of samples per symbol (${pcm.size} / $nSym)",
+              pcm.isNotEmpty() && pcm.size % nSym == 0)
+        checkEq("encodeInfo: a receiver prints the message", info.text, text)
+        checkEq("encodeInfo: JA1ABC is sent as a hash", info.hashedCalls, listOf("JA1ABC"))
+        checkEq("encodeInfo: one tone per symbol", info.tones.size, nSym)
+        // The hashed call is what a decoder is taught for the answer.
+        MfskDecoder.open(ft8).use { dec -> info.hashedCalls.forEach { dec.addCallsign(it) } }
+        val hashed = Mfsk.encodeInfo(ft8, "<VK3NV> JA1ABC/QRP RR73")
+        check("encodeInfo: a <CALL> hash is reported (${hashed.hashedCalls})", "VK3NV" in hashed.hashedCalls)
+        refused<MfskInvalidArgException>("an unpackable text", "") {
+            Mfsk.encode(ft8, "THIS TEXT IS FAR TOO LONG TO SEND", 1500.0f)
+        }
+        refused<MfskInvalidArgException>("an unpackable text, info", "") {
+            Mfsk.encodeInfo(ft8, "THIS TEXT IS FAR TOO LONG TO SEND")
+        }
+        val q65 = modes.firstOrNull { Mfsk.modeName(it) == "Q65-60A" }
+        if (q65 != null) {
+            check("the Q65 flag changes the tones",
+                  !Mfsk.encodeInfo(q65, text).tones.contentEquals(Mfsk.encodeInfo(q65, text, copiedLastTx = true).tones))
+        }
+    }
+
     if (failures == 0) {
         println("\nALL OK")
     } else {

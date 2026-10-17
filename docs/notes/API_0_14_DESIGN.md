@@ -310,11 +310,12 @@ MfskStatus mfsk_encode(uint32_t mode, const char *text, uint32_t flags,
                        float *out, size_t cap, size_t *out_len);           /* f32 PCM, same buffer contract as mfsk_encode_ft8 */
 MfskStatus mfsk_encode_info(uint32_t mode, const char *text, uint32_t flags,
                             uint8_t *tones, size_t tones_cap, size_t *tones_len,
-                            char *text_out, size_t text_cap,               /* what a receiver prints, NUL-terminated */
-                            char *hashed_out, size_t hashed_cap);          /* hashed calls, space-separated, NUL-terminated */
+                            char *text_out, size_t text_cap, size_t *text_len,       /* what a receiver prints */
+                            char *hashed_out, size_t hashed_cap, size_t *hashed_len); /* hashed calls, space-separated */
 ```
 
-`mode` is the C ABI's `MfskMode` number (as `mfsk_decoder_open` takes it). `EncodeError::Message` → `MFSK_STATUS_INVALID_ARG` with
+Both strings follow `put_text`'s contract (`mfsk_decoder_unpack77`): NUL-terminated, `*_len` = bytes needed including the NUL,
+set even when the buffer is too small (corrected 2026-10-17: the first version of this signature had no `*_len`). `mode` is the C ABI's `MfskMode` number (as `mfsk_decoder_open` takes it). `EncodeError::Message` → `MFSK_STATUS_INVALID_ARG` with
 the `Pack77Error` (or the message family's error) in `mfsk_last_error`; `EncodeError::Unsupported` → `MFSK_STATUS_UNSUPPORTED`. The
 header is regenerated with cbindgen and committed. Kotlin (`Mfsk.kt` + `native/mfsk_jni.c`) and Swift (`Sources/MfskCore`) get one
 `encode(mode, text, …)` each, in the style of their existing `encode` functions. **Not verifiable on this host** (no `jni.h`/`kotlinc`, no

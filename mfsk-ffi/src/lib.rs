@@ -1912,6 +1912,197 @@ pub(crate) unsafe fn put_text(
     MfskStatus::Ok
 }
 
+/// `mfsk_encode` / `mfsk_encode_info` `flags` bit 0: Q65 only, set WSJT-X 3.2's
+/// Q65 Pileup "copied last Tx" bit in the transmitted symbols. Ignored by every
+/// other mode. Bits 1..31 are reserved and must be 0. A literal here for the
+/// same cbindgen reason as the constants above.
+pub const MFSK_ENCODE_Q65_COPIED_LAST_TX: u32 = 1 << 0;
+
+/// The one place `mfsk_encode` and `mfsk_encode_info` turn their C arguments
+/// into a [`mfsk_core::encoder::Encoded`]: the `mode` number, the text, the
+/// flags. The statuses are those of `mfsk_decoder_open` for the mode
+/// (`InvalidArg` for a number that is no `MfskMode`, `UnknownProtocol` for a
+/// mode with no encoder here: MSK144, JTTY, uvpacket, or a protocol compiled
+/// out), `InvalidArg` for a null or non-UTF-8 `text` (as `mfsk_encode_ft8`),
+/// reserved flag bits, or a message the mode cannot send, and `Unsupported`
+/// for a message form the mode has but this library does not encode.
+///
+/// # Safety
+/// `text` must be null or a NUL-terminated string.
+unsafe fn encode_args(
+    who: &str,
+    mode: u32,
+    text: *const c_char,
+    flags: u32,
+) -> Result<mfsk_core::encoder::Encoded, MfskStatus> {
+    use mfsk_core::encoder::{EncodeError, EncodeOptions, encode_with};
+    let Some(m) = mode_of(mode) else {
+        set_error(format!("{who}: not a mode this library knows"));
+        return Err(MfskStatus::InvalidArg);
+    };
+    let Some(cm) = iq_mode_of(m) else {
+        set_error(format!("{who}: this mode has no encoder in this build"));
+        return Err(MfskStatus::UnknownProtocol);
+    };
+    let text = cstr_to_str(text)?;
+    if flags & !MFSK_ENCODE_Q65_COPIED_LAST_TX != 0 {
+        set_error(format!(
+            "{who}: reserved flag bits set ({flags:#x}); only MFSK_ENCODE_Q65_COPIED_LAST_TX exists"
+        ));
+        return Err(MfskStatus::InvalidArg);
+    }
+    let options =
+        EncodeOptions::new().q65_copied_last_tx(flags & MFSK_ENCODE_Q65_COPIED_LAST_TX != 0);
+    encode_with(cm, text, &options).map_err(|e| {
+        set_error(e.to_string());
+        match e {
+            EncodeError::Unsupported { .. } => MfskStatus::Unsupported,
+            _ => MfskStatus::InvalidArg,
+        }
+    })
+}
+
+/// Encode `text` for `mode` and synthesise it: the one transmit call over the
+/// mode, as `mfsk_decoder_open` is the one receive call. `text` is any message
+/// the mode can send (FT8 free text, a compound call, `<CALL>` hashes, ...);
+/// `mfsk_encode_info` says what a receiver will print and which calls went out
+/// as hashes.
+///
+/// `mode` is an `MfskMode` number (`MFSK_STATUS_INVALID_ARG` if it is none,
+/// `MFSK_STATUS_UNKNOWN_PROTOCOL` for MSK144, JTTY and uvpacket, which have no
+/// text encoder here). `flags`: `MFSK_ENCODE_Q65_COPIED_LAST_TX` (bit 0); the
+/// other bits are reserved and must be 0 (`MFSK_STATUS_INVALID_ARG`).
+/// `sample_rate` is the output rate in Hz and `freq_hz` the frequency of tone 0.
+/// Writes f32 PCM at unit amplitude, from sample 0 of the frame (the caller
+/// places it in the period). The buffer contract is that of `mfsk_encode_ft8`:
+/// `*out_len` receives the sample count, or the count needed when `cap` is too
+/// small (then `MFSK_STATUS_INVALID_ARG`). A message the mode cannot send is
+/// `MFSK_STATUS_INVALID_ARG` and a form it has but this library does not
+/// encode is `MFSK_STATUS_UNSUPPORTED`, each with the reason in
+/// `mfsk_last_error()`.
+///
+/// # Safety
+/// `text` must be a NUL-terminated UTF-8 string. `out` must be `cap` writable
+/// `float` (or null when `cap` is 0); `out_len` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_encode(
+    mode: u32,
+    text: *const c_char,
+    flags: u32,
+    sample_rate: u32,
+    freq_hz: f32,
+    out: *mut f32,
+    cap: usize,
+    out_len: *mut usize,
+) -> MfskStatus {
+    let tx = match unsafe { encode_args("mfsk_encode", mode, text, flags) } {
+        Ok(tx) => tx,
+        Err(st) => return st,
+    };
+    if sample_rate == 0 || !freq_hz.is_finite() {
+        set_error("mfsk_encode: sample_rate must be non-zero and freq_hz finite");
+        return MfskStatus::InvalidArg;
+    }
+    let audio = mfsk_core::encoder::TxAudio::new(sample_rate, freq_hz);
+    // The synthesis panics on a rate it cannot render; a panic must not cross
+    // the C boundary.
+    let Ok(pcm) = std::panic::catch_unwind(|| tx.synthesize(&audio)) else {
+        set_error(format!(
+            "mfsk_encode: cannot synthesise at sample_rate {sample_rate}"
+        ));
+        return MfskStatus::InvalidArg;
+    };
+    unsafe { emit_pcm(&pcm, out, cap, out_len, "mfsk_encode") }
+}
+
+/// The part of [`mfsk_encode`] a transmitter shows and records: the channel
+/// symbols, what a receiver will print, and the calls sent as hashes.
+///
+/// `mode`, `text` and `flags` are as for `mfsk_encode`, with the same
+/// statuses. `tones` receives one tone index per symbol and `*tones_len` the
+/// count (the count needed, with `MFSK_STATUS_INVALID_ARG`, when `tones_cap`
+/// is too small; `mfsk_symbol_count(mode)` gives it beforehand for the modes
+/// with a tone stage). `text_out` receives, NUL-terminated, the message as a
+/// receiver unpacks it (WSJT-X's Tx box: case and spacing normalised, a hashed
+/// call as `<CALL>`); `hashed_out` the calls the message sends as hashes,
+/// space-separated and NUL-terminated (empty for WSPR, JT9 and JT65). Give each
+/// to `mfsk_decoder_add_callsign` so that the `<...>` of the answer resolves.
+///
+/// The strings follow `mfsk_decoder_unpack77`: `*text_len` and `*hashed_len`
+/// receive the bytes needed **including the NUL**, set even when a buffer is
+/// too small (then `MFSK_STATUS_INVALID_ARG`, the buffer named in
+/// `mfsk_last_error()`). All three lengths are set whenever the message
+/// encodes. A result you do not want may be passed as NULL with capacity 0 (its
+/// length is still reported). Nothing is written unless all three buffers are
+/// large enough. Each `*_len` pointer may be null.
+///
+/// # Safety
+/// `text` must be a NUL-terminated UTF-8 string. `tones` must be `tones_cap`
+/// writable bytes, `text_out` `text_cap` and `hashed_out` `hashed_cap`
+/// (each may be null when its capacity is 0); the `*_len` pointers may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_encode_info(
+    mode: u32,
+    text: *const c_char,
+    flags: u32,
+    tones: *mut u8,
+    tones_cap: usize,
+    tones_len: *mut usize,
+    text_out: *mut c_char,
+    text_cap: usize,
+    text_len: *mut usize,
+    hashed_out: *mut c_char,
+    hashed_cap: usize,
+    hashed_len: *mut usize,
+) -> MfskStatus {
+    let tx = match unsafe { encode_args("mfsk_encode_info", mode, text, flags) } {
+        Ok(tx) => tx,
+        Err(st) => return st,
+    };
+    let hashed = tx.hashed_calls.join(" ");
+    for (len, v) in [
+        (tones_len, tx.tones.len()),
+        (text_len, tx.text.len() + 1),
+        (hashed_len, hashed.len() + 1),
+    ] {
+        if !len.is_null() {
+            unsafe { *len = v };
+        }
+    }
+    // A string buffer passed as NULL with capacity 0 means "not wanted".
+    let too_small = |what: &str, buf_null: bool, cap: usize, needed: usize| {
+        if buf_null && cap == 0 && what != "tones" {
+            return false;
+        }
+        if buf_null || cap < needed {
+            set_error(format!(
+                "mfsk_encode_info: {what} buffer too small; {needed} bytes needed"
+            ));
+            return true;
+        }
+        false
+    };
+    if too_small("tones", tones.is_null(), tones_cap, tx.tones.len())
+        || too_small("text", text_out.is_null(), text_cap, tx.text.len() + 1)
+        || too_small("hashed", hashed_out.is_null(), hashed_cap, hashed.len() + 1)
+    {
+        return MfskStatus::InvalidArg;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(tx.tones.as_ptr(), tones, tx.tones.len());
+        for (s, out, cap) in [
+            (&tx.text, text_out, text_cap),
+            (&hashed, hashed_out, hashed_cap),
+        ] {
+            if cap != 0 {
+                ptr::copy_nonoverlapping(s.as_ptr() as *const c_char, out, s.len());
+                *out.add(s.len()) = 0;
+            }
+        }
+    }
+    MfskStatus::Ok
+}
+
 /// Stage 2: a packed message becomes this mode's channel symbols.
 ///
 /// `mfsk_symbol_count(mode)` is the required capacity; 0 means the mode
