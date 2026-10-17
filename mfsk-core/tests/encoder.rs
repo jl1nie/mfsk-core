@@ -251,44 +251,27 @@ fn errors() {
     }
     #[cfg(feature = "wspr")]
     {
-        for t in [
-            "PJ4/K1ABC 37",
-            "K1ABC FN42AB 37",
-            "<K1ABC> FN42AB 37",
-            "PJ4/K1ABC FN42 37",
+        use mfsk_core::msg::wspr::WsprPackError;
+        // What `wqencode` does not take is `EncodeError::Wspr`, with its reason.
+        for (t, want) in [
+            ("K1ABC ZZ99 37", WsprPackError::BadGrid),
+            ("K1ABC FN42 xx", WsprPackError::BadPower),
+            ("", WsprPackError::NotWsprMessage),
+            ("ONE", WsprPackError::BadCall),
+            ("<K1ABC FN42LX 37", WsprPackError::UnclosedHashedCall),
         ] {
             let e = encode(Mode::Wspr, t).unwrap_err();
             assert_eq!(
                 e,
-                EncodeError::Unsupported {
+                EncodeError::Wspr {
                     mode: Mode::Wspr,
-                    what: "WSPR type 2/3 messages"
+                    reason: want
                 },
                 "{t:?}"
             );
-            assert!(std::error::Error::source(&e).is_none());
+            assert!(std::error::Error::source(&e).is_some());
+            assert!(e.to_string().contains("WSPR"), "{e}");
         }
-        // A type-1 shaped text WSPR cannot carry: a message error, not Unsupported.
-        for t in ["K1ABC FN42 38", "K1ABC ZZ99 37", "K1ABC FN42 xx", "", "ONE"] {
-            let e = encode(Mode::Wspr, t).unwrap_err();
-            assert!(
-                matches!(
-                    e,
-                    EncodeError::Message {
-                        mode: Mode::Wspr,
-                        ..
-                    } | EncodeError::Unsupported { .. }
-                ),
-                "{t:?}"
-            );
-        }
-        assert!(matches!(
-            encode(Mode::Wspr, "K1ABC FN42 38"),
-            Err(EncodeError::Message {
-                reason: Pack77Error::NotEncoded,
-                ..
-            })
-        ));
     }
     #[cfg(feature = "jt65")]
     {
@@ -379,5 +362,62 @@ fn q65_copied_last_tx_changes_the_tones_as_the_flagged_encoder_does() {
         .unwrap()
         .tones,
         encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap().tones
+    );
+}
+
+/// WSPR types 2 and 3 (`wqencode`): encode -> synthesize -> decode reads back what `Encoded::text` says.
+#[cfg(feature = "wspr")]
+#[test]
+fn wspr_types_2_and_3_round_trip() {
+    let mode = Mode::Wspr;
+    for (text, shown, hashed) in [
+        ("PJ4/K1ABC 37", "PJ4/K1ABC 37", None),
+        ("K1ABC/7 20", "K1ABC/7 20", None),
+        ("k1abc/p  7", "K1ABC/P  7", None),
+        (
+            "<PJ4/K1ABC> FN42LX 37",
+            "<PJ4/K1ABC> FN42LX 37",
+            Some("PJ4/K1ABC"),
+        ),
+        ("<k1abc> pm95tl 3", "<K1ABC> PM95TL  3", Some("K1ABC")),
+    ] {
+        let tx = encode(mode, text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+        assert_eq!(tx.text, shown, "{text:?}");
+        assert_eq!(
+            tx.hashed_calls.first().map(String::as_str),
+            hashed,
+            "{text:?}"
+        );
+        assert_eq!(tx.tones.len(), 162);
+        let audio = tx.synthesize(&TxAudio::new(FS, 1_500.0));
+        let period = period_of(mode, &audio, 7);
+        let mut dec = AnyDecoder::with_defaults(mode);
+        let res = dec.decode_i16(&period, Some(0));
+        let got: Vec<&str> = res.rows.iter().map(|r| r.decoded.text.as_str()).collect();
+        if hashed.is_none() {
+            assert!(got.contains(&tx.text.as_str()), "{text:?}: {got:?}");
+        } else {
+            // A receiver that has not heard the call reads the hash; the rest is the same.
+            let tail = tx.text.split_once("> ").unwrap().1;
+            assert!(
+                got.iter()
+                    .any(|g| g.starts_with("<#") && g.split_once("> ").map(|x| x.1) == Some(tail)),
+                "{text:?}: {got:?}"
+            );
+        }
+    }
+}
+
+/// A power outside the set is rounded as `wqencode` does (38 -> 37), not refused.
+#[cfg(feature = "wspr")]
+#[test]
+fn wspr_power_is_rounded_as_upstream() {
+    let a = encode(Mode::Wspr, "K1ABC FN42 38").unwrap();
+    let b = encode(Mode::Wspr, "K1ABC FN42 37").unwrap();
+    assert_eq!(a.tones, b.tones);
+    assert_eq!(a.text, "K1ABC FN42 37");
+    assert_eq!(
+        encode(Mode::Wspr, "K1ABC FN42 99").unwrap().text,
+        "K1ABC FN42 60"
     );
 }

@@ -24,12 +24,24 @@
 //! |---|---|
 //! | FT8, FT4, FST4, Q65 | any message `pack77` takes (standard, non-standard, free text, ...) |
 //! | FST4W | a WSPR-family message: `CALL GRID4 DBM`, `PFX/CALL DBM`, `<CALL> GRID6 DBM` |
-//! | WSPR | `CALL GRID4 DBM` (type 1) |
+//! | WSPR | `CALL GRID4 DBM` (type 1), `PFX/CALL DBM` or `CALL/SFX DBM` (type 2), `<CALL> GRID6 DBM` (type 3) |
 //! | JT9, JT65 | `CALL1 CALL2 GRID` or `CALL1 CALL2 REPORT` (standard form) |
 //!
-//! WSPR types 2 and 3, and JT9 / JT65 free text and compound calls, are
-//! forms those modes have that this crate does not encode:
-//! [`EncodeError::Unsupported`].
+//! JT9 / JT65 free text and compound calls are forms those modes have that
+//! this crate does not encode: [`EncodeError::Unsupported`].
+//!
+//! # WSPR compound calls
+//!
+//! A WSPR message carries a plain call and a 4-character grid (type 1). A
+//! station with a compound call (`PJ4/K1ABC`, `K1ABC/7`) or a 6-character
+//! grid cannot send both in one message: it alternates a type 2 message
+//! (`PJ4/K1ABC 37`, the compound call and the power) and a type 3 message
+//! (`<PJ4/K1ABC> FN42LX 37`, the call as a 15-bit hash, the 6-character grid
+//! and the power). Which of the two goes in which transmission is the
+//! application's schedule, as in WSJT-X's GUI; [`encode`] sends the one it is
+//! given. The text is upper-cased and its blank runs are collapsed before it
+//! is packed; the power is rounded to a value WSPR sends (38 dBm goes out as
+//! 37), as `wqencode` does.
 //!
 //! # Example
 //!
@@ -77,7 +89,8 @@ pub struct Encoded {
     pub text: String,
     /// Calls the message sends as hashes; give them to the decoder
     /// (`learn_callsign`) so their `<...>` resolves when the other station
-    /// answers (WSJT-X's `record_tx_hashes`). Empty for WSPR, JT9 and JT65.
+    /// answers (WSJT-X's `record_tx_hashes`). For WSPR the call of a type 3
+    /// message; empty for the other WSPR types, JT9 and JT65.
     pub hashed_calls: Vec<String>,
 }
 
@@ -138,13 +151,18 @@ impl TxAudio {
 #[non_exhaustive]
 pub enum EncodeError {
     /// The text is not a message this mode can send. For the 77-bit modes
-    /// `reason` is why `pack77_message` refused it. The WSPR packer reports
-    /// only success or failure; a text of the supported form that it refuses
-    /// (a bad call or grid, a power WSPR does not send) is reported as
-    /// [`Pack77Error::NotEncoded`], "no family took the text".
+    /// `reason` is why `pack77_message` refused it. (WSPR texts have their
+    /// own variant, [`EncodeError::Wspr`]; this one is used for WSPR only when
+    /// the packed bits do not unpack, `RoundtripRejected`: a `CQ` call or a
+    /// report in the grid slot, which `wqencode` packs and no receiver reads.)
     Message { mode: Mode, reason: Pack77Error },
     /// A message form this mode has but this crate does not encode.
     Unsupported { mode: Mode, what: &'static str },
+    /// WSPR: `wqencode` does not take the text (`reason` says how).
+    Wspr {
+        mode: Mode,
+        reason: crate::msg::wspr::WsprPackError,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -156,6 +174,9 @@ impl core::fmt::Display for EncodeError {
             Self::Unsupported { mode, what } => {
                 write!(f, "{}: {} are not encoded", mode.name(), what)
             }
+            Self::Wspr { mode, reason } => {
+                write!(f, "{}: cannot send this message: {}", mode.name(), reason)
+            }
         }
     }
 }
@@ -164,6 +185,7 @@ impl core::error::Error for EncodeError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Message { reason, .. } => Some(reason),
+            Self::Wspr { reason, .. } => Some(reason),
             Self::Unsupported { .. } => None,
         }
     }
@@ -179,12 +201,9 @@ pub fn encode(mode: Mode, text: &str) -> Result<Encoded, EncodeError> {
 /// Stateless: nothing records the hashes the message sends. Hand
 /// [`Encoded::hashed_calls`] to the decoder.
 ///
-/// WSPR: `CALL GRID4 DBM` is type 1. A text of WSPR's other forms (a
-/// compound call, a `<CALL>`, a 6-character grid, or a two-word `PFX/CALL
-/// DBM`) is [`EncodeError::Unsupported`], since WSPR carries them (types 2
-/// and 3: two transmissions, `wqencode`) and this crate does not encode them.
-/// A type-1 text with a call, grid or power WSPR cannot carry is
-/// [`EncodeError::Message`]: no WSPR message looks like it.
+/// WSPR: `CALL GRID4 DBM` (type 1), `PFX/CALL DBM` / `CALL/SFX DBM` (type 2)
+/// and `<CALL> GRID6 DBM` (type 3), packed by `msg::wspr::pack_message` (the
+/// port of `wqencode`); a text it refuses is [`EncodeError::Wspr`].
 ///
 /// JT9 and JT65: `CALL1 CALL2 GRID/REPORT` is the standard form. Anything
 /// else is [`EncodeError::Unsupported`] (free text and compound calls need
@@ -316,37 +335,38 @@ fn route_fst4w<P: crate::engine::Protocol>(mode: Mode, text: &str) -> Result<Rou
 
 #[cfg(feature = "wspr")]
 fn route_wspr(mode: Mode, text: &str) -> Result<Routed, EncodeError> {
-    let type23 = EncodeError::Unsupported {
+    use crate::msg::wspr::{WsprMessage, pack_message, unpack};
+    // WSJT-X's GUI hands `wqencode` an upper-case, single-blank message.
+    let norm = text
+        .split_whitespace()
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let p = pack_message(&norm).map_err(|reason| EncodeError::Wspr { mode, reason })?;
+    let tones = crate::wspr::encode_channel_symbols(&p.bits).to_vec();
+    let unreadable = EncodeError::Message {
         mode,
-        what: "WSPR type 2/3 messages",
+        reason: Pack77Error::RoundtripRejected,
     };
-    let not_wspr = EncodeError::Message {
-        mode,
-        reason: Pack77Error::NotEncoded,
+    let m = unpack(&p.bits).ok_or(unreadable)?;
+    let hashed_calls: Vec<String> = p
+        .hashed_call
+        .into_iter()
+        .filter(|c| !c.is_empty())
+        .collect();
+    // A type 3 call is a hash on the air; the sender knows it (a receiver
+    // that has not heard it prints `<...>`), so show it as typed, as for the
+    // hashed calls of the 77-bit modes.
+    let text = match (&m, hashed_calls.first()) {
+        (
+            WsprMessage::Type3 {
+                grid6, power_dbm, ..
+            },
+            Some(call),
+        ) => alloc::format!("<{call}> {grid6} {power_dbm:>2}"),
+        _ => m.to_string(),
     };
-    let upper = text.to_ascii_uppercase();
-    let w: Vec<&str> = upper.split_whitespace().collect();
-    match w.as_slice() {
-        [] => Err(not_wspr),
-        // PFX/CALL DBM (type 2).
-        [_, _] => Err(type23),
-        [call, grid, dbm] => {
-            if call.contains('/') || call.starts_with('<') || grid.len() == 6 {
-                return Err(type23);
-            }
-            let bits = dbm
-                .parse::<i32>()
-                .ok()
-                .and_then(|p| crate::msg::wspr::pack_type1(call, grid, p))
-                .ok_or(not_wspr.clone())?;
-            let tones = crate::wspr::encode_channel_symbols(&bits).to_vec();
-            let text = crate::msg::wspr::unpack(&bits)
-                .map(|m| m.to_string())
-                .ok_or(not_wspr)?;
-            Ok((tones, text, Vec::new()))
-        }
-        _ => Err(not_wspr),
-    }
+    Ok((tones, text, hashed_calls))
 }
 
 /// `CALL1 CALL2 GRID/REPORT` packed as the 12 six-bit words of JT9 / JT65.

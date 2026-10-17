@@ -389,6 +389,515 @@ pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// pack_message: wqencode (types 1, 2 and 3)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// What [`pack_message`] returns: `wqencode`'s `data0` and `ntype`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WsprPacked {
+    /// The 50 information bits, one per element, MSB first (the layout of
+    /// [`pack_type1`]).
+    pub bits: [u8; 50],
+    /// `wqencode`'s `ntype`: the rounded power (0..=60) for type 1,
+    /// `power + 1 + nadd` for type 2, `-(power + 1)` for type 3.
+    pub ntype: i32,
+    /// Type 3 only: the call between `<` and `>`, as typed (what `wqencode`
+    /// hashes; not one of its outputs, the encoder needs it).
+    pub hashed_call: Option<String>,
+}
+
+/// Why [`pack_message`] refused a text. Each variant is a way `wqencode`
+/// (`lib/wqencode.f90`, rc1) fails: it returns without writing `data0`,
+/// aborts with a Fortran runtime error, or reads memory it never wrote (see
+/// the divergence note on [`pack_message`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WsprPackError {
+    /// No form of `wqencode` takes the text (not `CALL GRID4 DBM`,
+    /// `PFX/CALL DBM`, `CALL/SFX DBM` nor `<CALL> GRID6 DBM`); upstream
+    /// returns with nothing written.
+    NotWsprMessage,
+    /// The call does not pack (`packcall`).
+    BadCall,
+    /// The 4-character grid (type 1) or the 6-character grid (type 3) does
+    /// not pack.
+    BadGrid,
+    /// The power is missing or is not a list-directed integer; upstream's
+    /// `read(...,*) ndbm` aborts.
+    BadPower,
+    /// A `<` at the start but no closing `>`.
+    UnclosedHashedCall,
+    /// A call longer than `wqencode`'s 12-character buffers (a `<CALL>` of
+    /// more than 12 characters, a `/` at position 11 or later of the first
+    /// word): upstream reads past the buffer.
+    CallTooLong,
+}
+
+impl core::fmt::Display for WsprPackError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::NotWsprMessage => {
+                "not a WSPR message (CALL GRID4 DBM, PFX/CALL DBM, CALL/SFX DBM or <CALL> GRID6 DBM)"
+            }
+            Self::BadCall => "the callsign cannot be packed",
+            Self::BadGrid => "the grid locator cannot be packed",
+            Self::BadPower => "the power is missing or not an integer",
+            Self::UnclosedHashedCall => "a '<' without a closing '>'",
+            Self::CallTooLong => "a callsign longer than WSPR's 12-character buffer",
+        })
+    }
+}
+
+impl core::error::Error for WsprPackError {}
+
+/// `nhash(key, len, 146) & 0x7fff` as `lib/hash.f90` calls it
+/// (`lib/wsprd/nhash.c`, `lib/lookup3.c:160` `wsjt_hashlittle`, Jenkins lookup3).
+fn hash15(key: &[u8]) -> u32 {
+    fn rot(x: u32, k: u32) -> u32 {
+        x.rotate_left(k)
+    }
+    let mut a = 0xdead_beefu32
+        .wrapping_add(key.len() as u32)
+        .wrapping_add(146);
+    let mut b = a;
+    let mut c = a;
+    let mut k = key;
+    while k.len() > 12 {
+        let w = |i: usize| u32::from_le_bytes([k[i], k[i + 1], k[i + 2], k[i + 3]]);
+        a = a.wrapping_add(w(0));
+        b = b.wrapping_add(w(4));
+        c = c.wrapping_add(w(8));
+        a = a.wrapping_sub(c);
+        a ^= rot(c, 4);
+        c = c.wrapping_add(b);
+        b = b.wrapping_sub(a);
+        b ^= rot(a, 6);
+        a = a.wrapping_add(c);
+        c = c.wrapping_sub(b);
+        c ^= rot(b, 8);
+        b = b.wrapping_add(a);
+        a = a.wrapping_sub(c);
+        a ^= rot(c, 16);
+        c = c.wrapping_add(b);
+        b = b.wrapping_sub(a);
+        b ^= rot(a, 19);
+        a = a.wrapping_add(c);
+        c = c.wrapping_sub(b);
+        c ^= rot(b, 4);
+        b = b.wrapping_add(a);
+        k = &k[12..];
+    }
+    if k.is_empty() {
+        return c & 0x7fff;
+    }
+    for (i, &byte) in k.iter().enumerate() {
+        let v = u32::from(byte) << (8 * (i % 4));
+        match i / 4 {
+            0 => a = a.wrapping_add(v),
+            1 => b = b.wrapping_add(v),
+            _ => c = c.wrapping_add(v),
+        }
+    }
+    c ^= b;
+    c = c.wrapping_sub(rot(b, 14));
+    a ^= c;
+    a = a.wrapping_sub(rot(c, 11));
+    b ^= a;
+    b = b.wrapping_sub(rot(a, 25));
+    c ^= b;
+    c = c.wrapping_sub(rot(b, 16));
+    a ^= c;
+    a = a.wrapping_sub(rot(c, 4));
+    b ^= a;
+    b = b.wrapping_sub(rot(a, 14));
+    c ^= b;
+    c = c.wrapping_sub(rot(b, 24));
+    c & 0x7fff
+}
+
+/// Result of a Fortran list-directed `read(str,*) integer`.
+enum ListInt {
+    Value(i32),
+    /// A null value (`,` or `/` first): the variable keeps its value.
+    Null,
+    /// End of file or a bad item: the read fails.
+    Error,
+}
+
+/// The subset of gfortran's list-directed integer input the WSPR parsers
+/// reach: blanks and tabs skipped, one item ended by a separator, `r*c`
+/// repeat counts and null values (checked against the rc1 oracle in
+/// `tests/wspr_pack_message.rs`).
+fn list_read_int(s: &[u8]) -> ListInt {
+    let sep = |c: u8| matches!(c, b' ' | b'\t' | b',' | b'/' | b'\r' | b'\n');
+    let mut i = 0;
+    while i < s.len() && matches!(s[i], b' ' | b'\t') {
+        i += 1;
+    }
+    if i == s.len() {
+        return ListInt::Error;
+    }
+    if s[i] == b',' || s[i] == b'/' {
+        return ListInt::Null;
+    }
+    let mut j = i;
+    let neg = s[j] == b'-';
+    let signed = neg || s[j] == b'+';
+    if signed {
+        j += 1;
+    }
+    let mut v: i64 = 0;
+    let d0 = j;
+    while j < s.len() && s[j].is_ascii_digit() {
+        v = (v * 10 + i64::from(s[j] - b'0')).min(1 << 40);
+        j += 1;
+    }
+    if j == d0 {
+        return ListInt::Error;
+    }
+    if j < s.len() && s[j] == b'*' && !signed {
+        // r*c: `v` copies of the value after the star; r must be positive.
+        if v == 0 || v > i64::from(i32::MAX) {
+            return ListInt::Error;
+        }
+        j += 1;
+        if j == s.len() || sep(s[j]) {
+            return ListInt::Null;
+        }
+        let neg2 = s[j] == b'-';
+        if neg2 || s[j] == b'+' {
+            j += 1;
+        }
+        let d1 = j;
+        let mut w: i64 = 0;
+        while j < s.len() && s[j].is_ascii_digit() {
+            w = (w * 10 + i64::from(s[j] - b'0')).min(1 << 40);
+            j += 1;
+        }
+        if j == d1 || (j < s.len() && !sep(s[j])) {
+            return ListInt::Error;
+        }
+        v = if neg2 { -w } else { w };
+    } else {
+        if j < s.len() && !sep(s[j]) {
+            return ListInt::Error;
+        }
+        if neg {
+            v = -v;
+        }
+    }
+    match i32::try_from(v) {
+        Ok(x) => ListInt::Value(x),
+        Err(_) => ListInt::Error,
+    }
+}
+
+const NGBASE: u32 = 180 * 180;
+
+/// `packcall` (`lib/packjt.f90:54-136`), for a 6-character field. `None` is
+/// upstream's `text = .true.`.
+///
+/// Ported from lib/packjt.f90:54-136 (rc1). The `CQ nnn` frequency form
+/// (`:73-77`) cannot arise here: the field has no blank inside.
+fn packcall(field: &[u8; 6]) -> Option<u32> {
+    let mut c = *field;
+    // Swaziland, Guinea work-arounds (:61-65).
+    if &c[..4] == b"3DA0" {
+        c = [b'3', b'D', b'0', c[4], c[5], b' '];
+    }
+    if &c[..2] == b"3X" && c[2].is_ascii_uppercase() {
+        c = [b'Q', c[2], c[3], c[4], c[5], b' '];
+    }
+    if &c[..3] == b"CQ " {
+        return Some(crate::msg::callsign28::NBASE + 1);
+    }
+    if &c[..4] == b"QRZ " {
+        return Some(crate::msg::callsign28::NBASE + 2);
+    }
+    if &c[..3] == b"DE " {
+        return Some(267_796_945);
+    }
+    let mut t = c;
+    t.make_ascii_uppercase(); // :90-93 (after the digit-position tests, which are case blind)
+    let end = t.iter().rposition(|&b| b != b' ').map_or(0, |p| p + 1);
+    if !t.is_ascii() {
+        return None;
+    }
+    let s = core::str::from_utf8(&t[..end]).ok()?;
+    pack_call(s)
+}
+
+/// `packgrid` (`lib/packjt.f90:279-354`) for a 4-character grid; `None` is
+/// `text = .true.`.
+///
+/// Ported from lib/packjt.f90:279-354 (rc1).
+fn packgrid(grid: &[u8; 4]) -> Option<u32> {
+    if grid == b"    " {
+        return Some(NGBASE + 1);
+    }
+    let in_range = |n: i32| (1..=30).contains(&n);
+    if grid[0] == b'-' {
+        match list_read_int(&grid[1..3]) {
+            ListInt::Error => return None,
+            ListInt::Value(n) if in_range(n) => return Some(NGBASE + 1 + n as u32),
+            ListInt::Null | ListInt::Value(_) => {}
+        }
+    } else if &grid[..2] == b"R-" {
+        match list_read_int(&grid[2..4]) {
+            ListInt::Error => return None,
+            ListInt::Value(n) if in_range(n) => return Some(NGBASE + 31 + n as u32),
+            ListInt::Null | ListInt::Value(_) => {}
+        }
+    } else if grid == b"RO  " {
+        return Some(NGBASE + 62);
+    } else if grid == b"RRR " {
+        return Some(NGBASE + 63);
+    } else if grid == b"73  " {
+        return Some(NGBASE + 64);
+    }
+    // Extended-range reports (:75-95): -50..-31 and 0..+49 become KAnn / LAnn.
+    let mut n = 99;
+    match list_read_int(grid) {
+        ListInt::Value(v) => n = v,
+        ListInt::Null => {}
+        ListInt::Error => {
+            if let ListInt::Value(v) = list_read_int(&grid[1..4]) {
+                n = v;
+            }
+        }
+    }
+    let mut g = *grid;
+    if (-50..=49).contains(&n) {
+        let k = (n + 50) as u8;
+        g = [
+            if grid[0] == b'R' { b'L' } else { b'K' },
+            b'A',
+            b'0' + k / 10,
+            b'0' + k % 10,
+        ];
+    }
+    let ok = (b'A'..=b'R').contains(&g[0])
+        && (b'A'..=b'R').contains(&g[1])
+        && g[2].is_ascii_digit()
+        && g[3].is_ascii_digit();
+    if !ok {
+        return None;
+    }
+    // `grid2deg(grid//'mm55')`, `ng = ((long+180)/2)*180 + lat` is the `m` of pack_grid4_power.
+    let n2 = pack_grid4_power(core::str::from_utf8(&g).ok()?, 0)?;
+    Some((n2 - 64) / 128)
+}
+
+/// 1-based `index(s, c)`; 0 when absent.
+fn findex(s: &[u8], c: u8) -> usize {
+    s.iter().position(|&b| b == c).map_or(0, |p| p + 1)
+}
+
+/// Fortran assignment to `character*12`: truncate, blank pad.
+fn field12(s: &[u8]) -> [u8; 12] {
+    let mut f = [b' '; 12];
+    for (d, &b) in f.iter_mut().zip(s) {
+        *d = b;
+    }
+    f
+}
+
+fn first6(s: &[u8; 12]) -> [u8; 6] {
+    let mut f = [b' '; 6];
+    f.copy_from_slice(&s[..6]);
+    f
+}
+
+/// `msg(a:b)` with 1-based bounds; empty when `a > b`, `Err` when outside the buffer
+/// (upstream reads past it).
+fn sub(m: &[u8], a: isize, b: isize) -> Result<&[u8], WsprPackError> {
+    if a > b {
+        return Ok(&[]);
+    }
+    if a < 1 || b as usize > m.len() {
+        return Err(WsprPackError::CallTooLong);
+    }
+    Ok(&m[a as usize - 1..b as usize])
+}
+
+/// `ndbm` of `read(str,*) ndbm`, clamped to 0..=60 and rounded with `nu`
+/// (`lib/wqencode.f90:25-29`).
+fn read_power(s: &[u8]) -> Result<i32, WsprPackError> {
+    const NU: [i32; 10] = [0, -1, 1, 0, -1, 2, 1, 0, -1, 1];
+    let n = match list_read_int(s) {
+        ListInt::Value(v) => v,
+        ListInt::Null => 0,
+        ListInt::Error => return Err(WsprPackError::BadPower),
+    };
+    let n = n.clamp(0, 60);
+    Ok(n + NU[(n % 10) as usize])
+}
+
+/// `packpfx` (`lib/packjt.f90:979-1037`): `(n1, ng, nadd)`; `n1` is `None`
+/// where upstream leaves it unset.
+fn packpfx(call1: &[u8; 12]) -> Result<(Option<u32>, i32, i32), WsprPackError> {
+    let i1 = findex(call1, b'/');
+    let at = |k: usize| -> Result<u8, WsprPackError> {
+        call1.get(k - 1).copied().ok_or(WsprPackError::CallTooLong)
+    };
+    let head = &call1[..i1.saturating_sub(1)];
+    if at(i1 + 2)? == b' ' {
+        // Single-character add-on suffix (:988-1004).
+        let n1 = packcall(&first6(&field12(head)));
+        let nc = i32::from(at(i1 + 1)?);
+        let n = if (48..=57).contains(&nc) {
+            nc - 48
+        } else if (65..=90).contains(&nc) {
+            nc - 65 + 10
+        } else {
+            38
+        };
+        Ok((n1, 60000 - 32768 + n, 1))
+    } else if at(i1 + 3)? == b' ' {
+        // Two-character numerical suffix, /10 to /99 (:1005-1012).
+        let n1 = packcall(&first6(&field12(head)));
+        let n = 10 * (i32::from(at(i1 + 1)?) - 48) + i32::from(at(i1 + 2)?) - 48;
+        Ok((n1, 60000 + 26 + n, 1))
+    } else {
+        // Prefix of 1 to 3 characters (:1013-1035).
+        let mut pfx = [b' '; 3];
+        for (d, &b) in pfx.iter_mut().zip(head) {
+            *d = b;
+        }
+        for _ in 0..2 {
+            if pfx[2] == b' ' {
+                pfx = [b' ', pfx[0], pfx[1]];
+            }
+        }
+        let call0 = field12(&call1[i1..]);
+        let n1 = packcall(&first6(&call0));
+        let mut ng = 0i32;
+        for &c in &pfx {
+            let nc = i32::from(c);
+            let n = if (48..=57).contains(&nc) {
+                nc - 48
+            } else if (65..=90).contains(&nc) {
+                nc - 65 + 10
+            } else {
+                36
+            };
+            ng = 37 * ng + n;
+        }
+        let mut nadd = 0;
+        if ng >= 32768 {
+            ng -= 32768;
+            nadd = 1;
+        }
+        Ok((n1, ng, nadd))
+    }
+}
+
+fn bits_of(n1: u32, n2: u32) -> [u8; 50] {
+    let bytes = pack50(n1, n2);
+    let mut bits = [0u8; 50];
+    for (i, b) in bits.iter_mut().enumerate() {
+        *b = (bytes[i / 8] >> (7 - (i % 8))) & 1;
+    }
+    bits
+}
+
+/// Pack a WSPR message text, as WSJT-X's `wqencode` does.
+///
+/// Forms (all on the first 22 bytes of `text`, blank padded, no case
+/// folding: the caller upper-cases, as WSJT-X's GUI does):
+///
+/// - type 1, `CALL GRID4 DBM`: `ntype` is the power;
+/// - type 2, `PFX/CALL DBM` or `CALL/SFX DBM`: `ntype = power + 1 + nadd`;
+/// - type 3, `<CALL> GRID6 DBM`: the call is sent as a 15-bit hash,
+///   `ntype = -(power + 1)`.
+///
+/// The power is read as Fortran list-directed input, clamped to 0..=60 and
+/// rounded to the nearest power WSPR sends (`nu` table): a power such as 38
+/// is sent as 37, not refused.
+///
+/// Ported from lib/wqencode.f90:15-61 (rc1; unchanged in v3.3.0-beta2),
+/// with `packcall` (lib/packjt.f90:54-136), `packgrid` (:279-354), `packpfx`
+/// (:979-1037), `pack50` (:953-977), `hash` (lib/hash.f90) over
+/// `wsjt_hashlittle` (lib/lookup3.c:160).
+///
+/// **Divergence (deliberate).** Upstream ignores the `lbad`/`text` flag of
+/// `packpfx` and `packcall` in the type 2 and 3 branches and packs an unset
+/// `n1`, and hashes `len` bytes of a 12-byte buffer. These return
+/// [`WsprPackError::BadCall`], [`WsprPackError::BadGrid`] and
+/// [`WsprPackError::CallTooLong`] here instead of undefined bits.
+pub fn pack_message(text: &str) -> Result<WsprPacked, WsprPackError> {
+    let mut msg = [b' '; 22];
+    for (d, &s) in msg.iter_mut().zip(text.as_bytes()) {
+        *d = s;
+    }
+    let i1 = findex(&msg, b' ');
+    let i2 = findex(&msg, b'/');
+    let i3 = findex(&msg, b'<');
+    let ii1 = i1 as isize;
+    let call1 = field12(sub(&msg, 1, ii1 - 1)?);
+
+    // Standard WSPR message (wqencode.f90:16-33).
+    if (3..=7).contains(&i1) && i2 == 0 && i3 == 0 {
+        let mut grid4 = [b' '; 4];
+        grid4.copy_from_slice(sub(&msg, ii1 + 1, ii1 + 4)?);
+        let n1 = packcall(&first6(&call1)).ok_or(WsprPackError::BadCall)?;
+        let ng = packgrid(&grid4).ok_or(WsprPackError::BadGrid)?;
+        let ndbm = read_power(sub(&msg, ii1 + 5, 22)?)?;
+        let n2 = 128 * ng + (ndbm + 64) as u32;
+        return Ok(WsprPacked {
+            bits: bits_of(n1, n2),
+            ntype: ndbm,
+            hashed_call: None,
+        });
+    }
+
+    if i2 >= 2 && i3 < 1 {
+        // Type 2 (:35-44).
+        let (n1, ng, nadd) = packpfx(&call1)?;
+        let ndbm = read_power(sub(&msg, ii1 + 1, 22)?)?;
+        let n1 = n1.ok_or(WsprPackError::BadCall)?;
+        let ntype = ndbm + 1 + nadd;
+        let n2 = (128 * ng + ntype + 64) as u32;
+        Ok(WsprPacked {
+            bits: bits_of(n1, n2),
+            ntype,
+            hashed_call: None,
+        })
+    } else if i3 == 1 {
+        // Type 3 (:45-60).
+        let i4 = findex(&msg, b'>');
+        if i4 == 0 {
+            return Err(WsprPackError::UnclosedHashedCall);
+        }
+        let hl = i4 - 2;
+        if hl > 12 {
+            return Err(WsprPackError::CallTooLong);
+        }
+        let call = field12(sub(&msg, 2, i4 as isize - 1)?);
+        let ih = hash15(&call[..hl]);
+        let tail = sub(&msg, ii1 + 1, 22)?;
+        let tail = &tail[..tail.iter().rposition(|&b| b != b' ').map_or(0, |p| p + 1)];
+        let i5 = findex(tail, b' ') as isize;
+        let mut c2 = Vec::new();
+        c2.extend_from_slice(sub(&msg, ii1 + 2, ii1 + i5 - 1)?);
+        c2.extend_from_slice(sub(&msg, ii1 + 1, ii1 + 1)?);
+        let n1 = packcall(&first6(&field12(&c2)));
+        let ndbm = read_power(sub(&msg, ii1 + i5 + 1, 22)?)?;
+        let n1 = n1.ok_or(WsprPackError::BadGrid)?;
+        let ntype = -(ndbm + 1);
+        let n2 = (128 * ih as i32 + ntype + 64) as u32;
+        Ok(WsprPacked {
+            bits: bits_of(n1, n2),
+            ntype,
+            hashed_call: Some(String::from_utf8_lossy(&call[..hl]).into_owned()),
+        })
+    } else {
+        Err(WsprPackError::NotWsprMessage)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // MessageCodec trait impl
 // ─────────────────────────────────────────────────────────────────────────
 
