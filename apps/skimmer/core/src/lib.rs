@@ -41,6 +41,8 @@ pub mod spot;
 pub mod spyserver;
 pub mod store;
 pub mod sun;
+#[cfg(test)]
+mod virtual_rtl;
 pub mod waterfall;
 
 use std::sync::atomic::{AtomicBool, Ordering};

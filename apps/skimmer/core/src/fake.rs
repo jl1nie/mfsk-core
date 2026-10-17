@@ -286,13 +286,10 @@ fn serve_rtl(
         hello.resize(12 + 45, 0);
     }
     sock.write_all(&hello)?;
-    let mut synth = Synth::new(band);
-    let (mut rate, mut center) = (FAKE_RTL_RATE, band.dial_hz - 25_000.0);
+    let mut signal = RtlSignal::new(band, bits16, scale, wall_s());
+    signal.set_center(band.dial_hz - 25_000.0);
     let mut inbox: Vec<u8> = Vec::new();
-    let (mut n, t0) = (0u64, wall_s());
     let mut next_block = Instant::now();
-    // Samples at the current rate since `t0`; a rate change restarts the count at the same time.
-    let mut t_base = t0;
     while !stop.load(Ordering::Relaxed) {
         let mut buf = [0u8; 256];
         match sock.read(&mut buf) {
@@ -313,11 +310,8 @@ fn serve_rtl(
             inbox.drain(..5);
             log.lock().unwrap().push((cmd, param));
             match cmd {
-                0x01 => center = f64::from(param),
-                0x02 if param > 0 => {
-                    t_base += n as f64 / (f64::from(rate) * scale);
-                    (rate, n) = (param, 0);
-                }
+                0x01 => signal.set_center(f64::from(param)),
+                0x02 if param > 0 => signal.set_rate(param),
                 _ => {}
             }
         }
@@ -326,20 +320,82 @@ fn serve_rtl(
         }
         // The pause: nothing sent for a while, the band's time goes on.
         if let Some((at_s, for_s)) = pause
-            && n as f64 / (f64::from(rate) * scale) >= at_s
+            && signal.streamed_s() >= at_s
         {
             pause = None;
             std::thread::sleep(Duration::from_secs_f64(for_s));
-            t_base += for_s;
+            signal.pause(for_s);
             next_block = Instant::now();
         }
         const BLOCK: usize = 4096;
-        next_block += Duration::from_secs_f64(BLOCK as f64 / (f64::from(rate) * scale));
-        let mut body = Vec::with_capacity(BLOCK * if bits16 { 4 } else { 2 });
-        for i in 0..BLOCK as u64 {
-            let t = t_base + (n + i) as f64 / (f64::from(rate) * scale);
-            for v in synth.sample(t, center) {
-                if bits16 {
+        next_block += Duration::from_secs_f64(BLOCK as f64 / signal.delivered_rate());
+        sock.write_all(&signal.block(BLOCK))?;
+    }
+    Ok(())
+}
+
+/// The IQ a [`FakeRtlServer`] sends, apart from sockets and clocks (the server paces it by the wall clock,
+/// the tests by a virtual one): the band's samples at the rate really delivered (`scale` times the one
+/// asked for), laid on the band's own time, which starts at `t0_s` (UTC seconds) and goes on through a
+/// pause. Deterministic: the same calls give the same bytes.
+pub(crate) struct RtlSignal {
+    synth: Synth,
+    bits16: bool,
+    scale: f64,
+    rate: u32,
+    center: f64,
+    /// Samples since the last rate change.
+    n: u64,
+    /// The band's time at sample `n == 0`, seconds.
+    t_base: f64,
+}
+
+impl RtlSignal {
+    pub(crate) fn new(band: &Band, bits16: bool, scale: f64, t0_s: f64) -> Self {
+        RtlSignal {
+            synth: Synth::new(band),
+            bits16,
+            scale,
+            rate: FAKE_RTL_RATE,
+            center: band.dial_hz - 25_000.0,
+            n: 0,
+            t_base: t0_s,
+        }
+    }
+
+    /// Samples per second really delivered.
+    pub(crate) fn delivered_rate(&self) -> f64 {
+        f64::from(self.rate) * self.scale
+    }
+
+    /// Seconds of stream since the last rate change.
+    pub(crate) fn streamed_s(&self) -> f64 {
+        self.n as f64 / self.delivered_rate()
+    }
+
+    /// The `rtl_tcp` frequency command: the IQ centre.
+    pub(crate) fn set_center(&mut self, hz: f64) {
+        self.center = hz;
+    }
+
+    /// The `rtl_tcp` sample-rate command: the count restarts at the same band time.
+    pub(crate) fn set_rate(&mut self, rate: u32) {
+        self.t_base += self.streamed_s();
+        (self.rate, self.n) = (rate, 0);
+    }
+
+    /// The server sends nothing for `for_s` seconds; the band's time goes on.
+    pub(crate) fn pause(&mut self, for_s: f64) {
+        self.t_base += for_s;
+    }
+
+    /// The next `len` samples, as the wire carries them: 16-bit or 8-bit I/Q pairs.
+    pub(crate) fn block(&mut self, len: usize) -> Vec<u8> {
+        let mut body = Vec::with_capacity(len * if self.bits16 { 4 } else { 2 });
+        for i in 0..len as u64 {
+            let t = self.t_base + (self.n + i) as f64 / self.delivered_rate();
+            for v in self.synth.sample(t, self.center) {
+                if self.bits16 {
                     body.extend_from_slice(
                         &((v * 32_767.0).clamp(-32_768.0, 32_767.0) as i16).to_le_bytes(),
                     );
@@ -348,10 +404,9 @@ fn serve_rtl(
                 }
             }
         }
-        n += BLOCK as u64;
-        sock.write_all(&body)?;
+        self.n += len as u64;
+        body
     }
-    Ok(())
 }
 
 /// One message to the client.

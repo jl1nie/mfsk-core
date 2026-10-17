@@ -1,49 +1,40 @@
-//! #685: the skimmer over the `rtl_tcp` protocol, end to end over a real socket against the
-//! stand-in `rtl_tcp` / `rsp_tcp` server (`skimmer_core::fake::FakeRtlServer`): the greeting,
-//! 8-bit and 16-bit IQ, the commands written, a format that does not match refused with its
-//! reason, and a JTTY message out of the stream.
+//! #685: the skimmer over the `rtl_tcp` protocol, against the stand-in `rtl_tcp` / `rsp_tcp` server
+//! (`skimmer_core::fake::FakeRtlServer`) over a real socket: the greeting, 8-bit and 16-bit
+//! detection, the commands the client writes and their order, and a format that does not match
+//! refused with its reason.
+//!
+//! These assert protocol facts only. The stand-in paces its IQ by the wall clock, and a test that
+//! asserted what the receiver made of it (a message's time, a measured rate, a clock step) would
+//! depend on the speed and the clock of the machine. Those tests (16-bit and 8-bit streams decoded,
+//! a server that delivers short, a server that pauses) run the same IQ on a virtual clock, in
+//! `src/virtual_rtl.rs`. Every wait here ends as soon as its fact is in, and is bounded.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use skimmer_core::fake::{Band, FAKE_RTL_RATE, FakeRtlServer, Line};
-use skimmer_core::jtty::{JttyMessage, UpdateKind};
-use skimmer_core::rtltcp::RtlFormat;
+use mfsk_core::iq::IqSampleFormat;
+use skimmer_core::fake::{Band, FAKE_RTL_RATE, FakeRtlServer};
+use skimmer_core::rtltcp::{Conn, RtlFormat};
+use skimmer_core::spyserver::{MSG_INT16_IQ, MSG_UINT8_IQ};
 use skimmer_core::{ChannelMode, ChannelSpec, Config, Event, Protocol};
 
-fn band(amplitude: f32) -> Band {
-    Band {
-        cycle_s: 16,
-        script: vec![Line {
-            at_s: 1.0,
-            hz: 1500.0,
-            level: 1.0,
-            text: "CQ K1ABC CQ FN42".into(),
-        }],
-        jitter_s: 0.0,
-        qsb: 0.0,
-        amplitude,
-        ..Band::default()
-    }
-}
+/// How long a fact may take to arrive before the test says it did not: a bound, not a wait.
+const BOUND: Duration = Duration::from_secs(20);
 
 #[derive(Default)]
 struct Run {
-    messages: Vec<JttyMessage>,
     errors: Vec<String>,
-    /// `(rate, centre Hz)` of each stream that began.
-    streaming: Vec<(u32, f64)>,
-    /// How many times the receiver's clock was stepped.
-    reanchors: usize,
-    gaps: usize,
+    /// How many streams began.
+    streaming: usize,
+    messages: usize,
 }
 
-/// Run the skimmer on `server` until `want` holds of the messages, or 70 s pass.
+/// Run the skimmer on `server` until `want` holds of what it has said, or `BOUND` passes.
 fn run(
     server: &FakeRtlServer,
     tweak: impl FnOnce(&mut Config),
-    want: impl Fn(&[JttyMessage], &[String]) -> bool,
+    want: impl Fn(&Run) -> bool,
 ) -> Run {
     let mut cfg = Config::new(
         server.addr.to_string(),
@@ -52,9 +43,7 @@ fn run(
     cfg.protocol = Protocol::RtlTcp;
     cfg.rate = Some(FAKE_RTL_RATE);
     cfg.retry = Duration::from_millis(300);
-    // The stand-in is exact; a test that wants the measurement asks for it.
     cfg.rtl_calibrate = Duration::ZERO;
-    // ... and has no start-up phase in which commands go unread.
     cfg.rtl_commands_floor = Duration::ZERO;
     tweak(&mut cfg);
     let stop = Arc::new(AtomicBool::new(false));
@@ -62,174 +51,122 @@ fn run(
     let (flag, sink) = (stop.clone(), got.clone());
     let t = std::thread::spawn(move || {
         skimmer_core::run(&cfg, &flag, |ev| match ev {
-            Event::Jtty(m) => sink.lock().unwrap().messages.push(m),
+            Event::Jtty(_) => sink.lock().unwrap().messages += 1,
             Event::Disconnected { error } => sink.lock().unwrap().errors.push(error),
-            Event::Streaming {
-                rate, center_hz, ..
-            } => sink.lock().unwrap().streaming.push((rate, center_hz)),
-            Event::Reanchor { .. } => sink.lock().unwrap().reanchors += 1,
-            Event::Gap { .. } => sink.lock().unwrap().gaps += 1,
+            Event::Streaming { .. } => sink.lock().unwrap().streaming += 1,
             _ => {}
         });
     });
-    let until = Instant::now() + Duration::from_secs(70);
-    while Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(200));
-        let g = got.lock().unwrap();
-        if want(&g.messages, &g.errors) {
-            break;
-        }
+    let until = Instant::now() + BOUND;
+    while Instant::now() < until && !want(&got.lock().unwrap()) {
+        std::thread::sleep(Duration::from_millis(10));
     }
     stop.store(true, Ordering::Relaxed);
     t.join().unwrap();
     Arc::try_unwrap(got).ok().unwrap().into_inner().unwrap()
 }
 
-fn done<'a>(all: &'a [JttyMessage], text: &str) -> Option<&'a JttyMessage> {
-    all.iter()
-        .find(|m| m.kind == UpdateKind::Complete && m.text == text)
+/// Wait (bounded) until the server has logged `n` commands, and return them.
+fn commands(server: &FakeRtlServer, n: usize) -> Vec<(u8, u32)> {
+    let until = Instant::now() + BOUND;
+    while Instant::now() < until && server.commands.lock().unwrap().len() < n {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    server.commands.lock().unwrap().clone()
 }
 
-fn has_cq(m: &[JttyMessage], _: &[String]) -> bool {
-    done(m, "CQ K1ABC CQ FN42").is_some()
-}
-
-/// `rsp_tcp -E -b 16`: the capabilities struct says 16-bit, the skimmer decodes the stream, and
-/// what it wrote to the server is the sample rate, then the frequency, then the gain mode.
+/// Verifies: `rsp_tcp -E -b 16` says so in its greeting (`RTL0` then the `RSP0` capabilities
+/// struct), the client reads it as 16-bit IQ with the hardware version, and the IQ follows the
+/// struct, in messages of the 16-bit kind and size.
 #[test]
-fn sixteen_bit_stream_is_decoded_and_the_commands_are_written() {
-    let server = FakeRtlServer::start("127.0.0.1:0", band(0.01), true).unwrap();
-    let r = run(&server, |_| {}, has_cq);
-    let cq = done(&r.messages, "CQ K1ABC CQ FN42")
-        .unwrap_or_else(|| panic!("{:?} / {:?}", r.messages, r.errors));
-    assert!((cq.freq_hz - 14_091_500.0).abs() < 4.0, "{}", cq.freq_hz);
-    let cmds = server.commands.lock().unwrap().clone();
-    // Sample rate first; the IQ centre is 25 kHz under the dial (the plan's default); then
-    // automatic gain (no `--gain`), written after the frequency.
-    assert_eq!(cmds.first(), Some(&(0x02, FAKE_RTL_RATE)), "{cmds:?}");
-    assert_eq!(cmds.get(1), Some(&(0x01, 14_065_000)), "{cmds:?}");
-    assert_eq!(cmds.get(2), Some(&(0x03, 0)), "{cmds:?}");
-    // Calibration zero keeps exactly the requested nominal rate and a stable clock.
-    let (rate, centre) = r.streaming[0];
-    assert_eq!(centre, 14_065_000.0);
-    assert_eq!(rate, FAKE_RTL_RATE);
-    assert_eq!(r.reanchors, 0);
+fn rsp_tcp_extended_mode_is_detected_as_16_bit() {
+    let server = FakeRtlServer::start("127.0.0.1:0", Band::default(), true).unwrap();
+    let mut c = Conn::connect(&server.addr.to_string(), RtlFormat::Auto).unwrap();
+    assert_eq!(
+        (
+            c.hello.tuner,
+            c.hello.gains,
+            c.hello.format,
+            c.hello.rsp_hardware
+        ),
+        (5, 28, IqSampleFormat::Cs16, Some(1))
+    );
+    let m = c.read(&AtomicBool::new(false)).unwrap();
+    assert_eq!((m.kind, m.body.len()), (MSG_INT16_IQ, 65_536));
 }
 
-/// Plain `rtl_tcp`: no struct, 8-bit IQ (the four bytes read to look for one are not lost), and
-/// a configured gain is written as manual mode plus the step.
+/// Verifies: plain `rtl_tcp` sends no struct, so the client reads 8-bit IQ with no hardware
+/// version, and its first message is of the 8-bit kind and size (the four bytes read to look for a
+/// struct are not lost, or the first message would be short).
 #[test]
-fn eight_bit_stream_is_decoded_and_a_gain_step_is_manual() {
-    // 8-bit IQ is 1/127 steps: a signal well above them, as the noise is ~1 step.
-    let server = FakeRtlServer::start("127.0.0.1:0", band(0.05), false).unwrap();
-    let r = run(&server, |c| c.gain = Some(7), has_cq);
-    assert!(
-        done(&r.messages, "CQ K1ABC CQ FN42").is_some(),
-        "{:?} / {:?}",
-        r.messages,
-        r.errors
+fn plain_rtl_tcp_is_detected_as_8_bit() {
+    let server = FakeRtlServer::start("127.0.0.1:0", Band::default(), false).unwrap();
+    let mut c = Conn::connect(&server.addr.to_string(), RtlFormat::Auto).unwrap();
+    assert_eq!(
+        (
+            c.hello.tuner,
+            c.hello.gains,
+            c.hello.format,
+            c.hello.rsp_hardware
+        ),
+        (5, 28, IqSampleFormat::Cu8, None)
     );
+    let m = c.read(&AtomicBool::new(false)).unwrap();
+    assert_eq!((m.kind, m.body.len()), (MSG_UINT8_IQ, 32_768));
+}
+
+/// Verifies: what the skimmer writes to a 16-bit server is the sample rate, then the frequency
+/// (the IQ centre is 25 kHz under the dial, the plan's default), then automatic gain (no `--gain`),
+/// in that order, and it reports no error. (What it decodes from the stream is `virtual_rtl`'s.)
+#[test]
+fn the_commands_written_to_a_16_bit_server_are_rate_frequency_gain_mode() {
+    let server = FakeRtlServer::start("127.0.0.1:0", Band::default(), true).unwrap();
+    let r = run(&server, |_| {}, |_| logged(&server, 3));
     let cmds = server.commands.lock().unwrap().clone();
-    assert!(
-        cmds.contains(&(0x03, 1)) && cmds.contains(&(0x0d, 7)),
-        "{cmds:?}"
+    assert_eq!(
+        &cmds[..3],
+        &[(0x02, FAKE_RTL_RATE), (0x01, 14_065_000), (0x03, 0)]
+    );
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+}
+
+/// True once the server has logged `n` commands: the `run` condition that ends it at once.
+fn logged(server: &FakeRtlServer, n: usize) -> bool {
+    server.commands.lock().unwrap().len() >= n
+}
+
+/// Verifies: a configured gain on an 8-bit server is written as manual mode plus the step, after
+/// the rate and the frequency.
+#[test]
+fn a_gain_step_is_written_as_manual_mode_and_the_step() {
+    let server = FakeRtlServer::start("127.0.0.1:0", Band::default(), false).unwrap();
+    run(&server, |c| c.gain = Some(7), |_| logged(&server, 4));
+    let cmds = commands(&server, 4);
+    assert_eq!(
+        &cmds[..4],
+        &[
+            (0x02, FAKE_RTL_RATE),
+            (0x01, 14_065_000),
+            (0x03, 1),
+            (0x0d, 7)
+        ]
     );
 }
 
-/// A format chosen by the user that the server does not send is refused, and says why.
+/// Verifies: a format chosen by the user that the server does not send is refused, says why (how
+/// to start the server), and nothing is decoded from the mismatched stream.
 #[test]
 fn a_format_that_does_not_match_the_server_is_refused_with_the_reason() {
-    let server = FakeRtlServer::start("127.0.0.1:0", band(0.05), false).unwrap();
+    let server = FakeRtlServer::start("127.0.0.1:0", Band::default(), false).unwrap();
     let r = run(
         &server,
         |c| c.rtl_format = RtlFormat::I16,
-        |_, errors| !errors.is_empty(),
+        |r| !r.errors.is_empty(),
     );
     assert!(
         r.errors[0].contains("-E -b 16"),
         "the error should say how to start the server: {:?}",
         r.errors
     );
-    assert!(r.messages.is_empty());
-}
-
-/// An RSP delivered 1.7 % fewer samples than the rate it was asked for (#685), which the receiver took
-/// for a clock step every minute. The rate is measured at the start and used: the stream decodes, at the
-/// rate really delivered, and the clock is not stepped.
-#[test]
-fn a_server_that_delivers_short_is_measured_and_followed() {
-    let server =
-        FakeRtlServer::start_with_rate_error("127.0.0.1:0", band(0.01), true, 0.983).unwrap();
-    // Measured over a short window here: the stand-in is steady.
-    let r = run(
-        &server,
-        |c| {
-            c.rtl_calibrate = Duration::from_secs(6);
-            // This fixture changes the acquisition clock, rather than deleting IQ.
-            c.rtl_nominal_acquisition = false;
-        },
-        has_cq,
-    );
-    assert!(
-        done(&r.messages, "CQ K1ABC CQ FN42").is_some(),
-        "{:?} / {:?}",
-        r.messages,
-        r.errors
-    );
-    // The nearest rate the receiver takes (within 500 ppm of the measurement), with the rest as an offset.
-    let rate = f64::from(r.streaming[0].0);
-    let real = f64::from(FAKE_RTL_RATE) * 0.983;
-    assert!((rate / real - 1.0).abs() < 0.002, "{rate} against {real}");
-    assert_eq!(r.reanchors, 0);
-}
-/// A server that pauses (an `rsp_tcp` restarting its RSP after a failure): the samples of the pause never
-/// arrive and the band's time goes on. Explicitly enable the pause-loss heuristic for this known
-/// source. It tells the receiver samples were lost (`IqReceiver::gap`), and later messages are at the time they were
-/// sent: without that, the minimum-delay window held the old anchor for 30 s and put the stream the
-/// pause too early (#686). A message is sent 1.0 s into every 16 s cycle on the wall clock.
-#[test]
-fn a_pause_of_the_server_does_not_displace_what_comes_after() {
-    const PAUSE_S: f64 = 1.5;
-    let server =
-        FakeRtlServer::start_with_pause("127.0.0.1:0", band(0.01), true, 14.0, PAUSE_S).unwrap();
-    let started = skimmer_core::now_ns();
-    // Wanted: two whole messages that began well after the pause was found (6 s) and the cycle after it.
-    let late = move |m: &[JttyMessage], _: &[String]| {
-        m.iter()
-            .filter(|x| {
-                x.kind == UpdateKind::Complete
-                    && x.start_utc_ns.is_some_and(|t| t > started + 28_000_000_000)
-            })
-            .count()
-            >= 2
-    };
-    // This source drops samples during a pause; arrivals alone cannot establish
-    // that for an arbitrary server. The measurement ends before the pause at 14 s.
-    let r = run(
-        &server,
-        |c| {
-            c.rtl_calibrate = Duration::from_secs(6);
-            c.rtl_infer_gaps = true;
-        },
-        late,
-    );
-    assert!(r.gaps >= 1, "the pause was not found ({} gaps)", r.gaps);
-    assert_eq!(r.reanchors, 0, "a clock step");
-    let after: Vec<_> = r
-        .messages
-        .iter()
-        .filter(|x| {
-            x.kind == UpdateKind::Complete
-                && x.start_utc_ns.is_some_and(|t| t > started + 28_000_000_000)
-        })
-        .collect();
-    assert!(after.len() >= 2, "{:?} / {:?}", r.messages, r.errors);
-    for m in after {
-        // Seconds into its 16 s cycle on the wall clock: 1.0, not 1.0 - the pause.
-        let into = (m.start_utc_ns.unwrap().rem_euclid(16_000_000_000)) as f64 * 1e-9;
-        assert!(
-            (into - 1.0).abs() < 0.45,
-            "a message at {into:.2} s into its cycle"
-        );
-    }
+    assert_eq!((r.streaming, r.messages), (0, 0));
 }
