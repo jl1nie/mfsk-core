@@ -201,13 +201,17 @@ impl ApHint {
             }
         }
         if let Some(ref rpt) = self.report {
-            // `ft8b.f90`'s `mrrr` / `mrr73` / `m73`: RRR and 73 are `MAXGRID4 + 2`
-            // and `+ 4`, and RR73 is the *grid* RR73 (32373), as `pack77_1` sends
-            // it. This locked `MAXGRID4 + 3` for RR73 until #464, a pattern no
-            // transmitted RR73 carries.
+            // RRR / RR73 / 73 are `MAXGRID4 + 2` / `+ 3` / `+ 4`. Since WSJT-X
+            // v3.3.0-beta3 (2c1b22b6c) that is what `pack77` sends for a non-CQ
+            // message, and what `ft8b.f90` `mrr73` and `q65_ap.f90` `mrr73`
+            // (`PACK77_TYPE1_RR73_TAIL`) lock, and what the iaptype-6 `apbits` of
+            // `fst4_decode.f90` and `ft4_decode.f90` (a packed `MyCall HisCall
+            // RR73`) lock. FT4's own `mrr73` data table is unused upstream.
+            // Up to 3.2 RR73 went out as the grid RR73 (32373); #464 locked that,
+            // and before it this locked `MAXGRID4 + 3` for a pattern nobody sent.
             let igrid_val: Option<u32> = match rpt.as_str() {
                 "RRR" => Some(32_400 + 2),
-                "RR73" => pack_grid4("RR73"),
+                "RR73" => Some(32_400 + 3),
                 "73" => Some(32_400 + 4),
                 _ => None,
             };

@@ -9,6 +9,9 @@
 //! returns: the status, `i3.n3`, the 77 bits, what `unpack77` prints for them, and the calls the packer
 //! committed to the hash table. These tests hold this crate to every column.
 
+#[allow(dead_code)]
+mod common;
+
 use mfsk_core::msg::wsjt77::{Pack77Error, Pack77Options, pack77_message, unpack77};
 
 struct Row {
@@ -36,7 +39,7 @@ fn rows() -> Vec<Row> {
                 msg: f[5].to_string(),
                 status: f[4].to_string(),
                 i3n3: f[3].to_string(),
-                bits: f[2].to_string(),
+                bits: common::pack77_fixture::beta4_rr73(f[5], f[3], f[2]),
                 decoded: f[1].to_string(),
                 hashed: f[0]
                     .split(',')

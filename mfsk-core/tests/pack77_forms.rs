@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The per-form packers of `msg::wsjt77` (`pack77`, `pack77_type1`, `pack77_type4`,
 //! `pack77_free_text`, `pack77_wspr`, `pack28`, `pack_grid4`) against WSJT-X v3.2.0-rc1's own
-//! packer (tier A: bit-exact parity on the vendored fixture `tests/fixtures/pack77_rc1.tsv`,
+//! packer, except `... RR73`, which is v3.3.0-beta3's acknowledgment (see `common::pack77_fixture::beta4_rr73`) (tier A: bit-exact parity on the vendored fixture `tests/fixtures/pack77_rc1.tsv`,
 //! the one `pack77_message.rs` holds `pack77_message` to; a missing fixture is a failure).
 //!
 //! Each `ok` row is split into the pieces the form takes and the form must give the fixture's
@@ -14,6 +14,9 @@
 //! asserted): `pack77_wspr` refuses everything that is not `0.6`, `pack77_type4` refuses a
 //! standard call as its non-standard one, and `pack77` never gives a different type-1/2 word
 //! than `pack77_message` for the same text.
+
+#[allow(dead_code)]
+mod common;
 
 use mfsk_core::msg::wsjt77::{
     Pack77Options, pack_grid4, pack28, pack77, pack77_free_text, pack77_message, pack77_type1,
@@ -43,7 +46,7 @@ fn rows() -> Vec<Row> {
                 msg: f[5].to_string(),
                 ok: f[4] == "ok",
                 i3n3: f[3].to_string(),
-                bits: f[2].to_string(),
+                bits: common::pack77_fixture::beta4_rr73(f[5], f[3], f[2]),
             }
         })
         .collect()

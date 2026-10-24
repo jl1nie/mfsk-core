@@ -1523,7 +1523,9 @@ pub fn pack_grid4(grid: &str) -> Option<u32> {
 /// Pack a Type 1 standard message: `"CALL1 CALL2 GRID"`.
 ///
 /// `grid` must be a valid 4-character Maidenhead locator (`RR73` is one); the rest is
-/// [`pack77`]. Returns the 77-bit message array.
+/// [`pack77`]. As there, a non-CQ `RR73` packs as the acknowledgment `MAXGRID4 + 3`
+/// (32403), not as the grid 32373 (WSJT-X v3.3.0-beta4 `pack77_parse_type12_source`);
+/// after `CQ` it stays the grid. Returns the 77-bit message array.
 pub fn pack77_type1(call1: &str, call2: &str, grid: &str) -> Option<[u8; 77]> {
     pack_grid4(grid)?;
     pack77(call1, call2, grid)
@@ -2918,12 +2920,6 @@ mod tests {
         // re-checking ranges `unpack77` had already enforced.
     }
 
-    /// `packjt77.f90:494,509` — a CQ cannot acknowledge and cannot
-    /// The 15-bit grid/report field `pack77` writes, against what WSJT-X puts on
-    /// the air: each value is the field of `ft8sim` (3.2.0-rc1) transmitting that
-    /// message, decoded (#464). `RR73` is the grid RR73, and -50..-31 dB reports
-    /// wrap by 101; this crate had `MAXGRID4 + 3` and a -35..-31 collision with
-    /// the bare / RRR / RR73 / 73 values.
     #[test]
     fn r_grid_packs_with_ir_set() {
         let bits = pack77("K1ABC", "W9XYZ", "R EN37").unwrap();
@@ -2933,11 +2929,54 @@ mod tests {
         assert_eq!(bits[59..74], plain[59..74]);
     }
 
+    /// `test_packjt77_protocol_vectors.f90` (v3.3.0-beta4, 58c7a522f / 2c1b22b6c):
+    /// `W1AW K1ABC RR73` packs with ir=0, igrid4=32403, i3=1; unpack renders both
+    /// 32403 and the grid 32373 as `RR73`.
+    #[test]
+    fn rr73_packs_as_acknowledgment_and_both_values_unpack() {
+        let want = "00001011111111101010110100010000010011011110111100011010100111111010010011001";
+        let got: String = pack77("W1AW", "K1ABC", "RR73")
+            .unwrap()
+            .iter()
+            .map(|&b| if b == 1 { '1' } else { '0' })
+            .collect();
+        assert_eq!(got, want);
+        // PACK77_TYPE1_RR73_TAIL: bits 59:77 = ir 0, 32403, i3 1.
+        assert_eq!(&got[58..], "0111111010010011001");
+        // Type 2 (/P) follows the same function.
+        let p = pack77("W1AW/P", "K1ABC", "RR73").unwrap();
+        assert_eq!(p[58], 0);
+        assert_eq!(p[59..74].iter().fold(0u32, |a, &b| a * 2 + b as u32), 32403);
+        assert_eq!(unpack77(&p).as_deref(), Some("W1AW/P K1ABC RR73"));
+        // A CQ keeps the grid test first: `CQ K1ABC RR73` is the grid RR73.
+        let cq = pack77("CQ", "K1ABC", "RR73").unwrap();
+        assert_eq!(
+            cq[59..74].iter().fold(0u32, |a, &b| a * 2 + b as u32),
+            32373
+        );
+        // Unpack accepts both.
+        let mut grid_form = pack77("W1AW", "K1ABC", "RR73").unwrap();
+        for (i, bit) in grid_form[59..74].iter_mut().enumerate() {
+            *bit = ((32373u32 >> (14 - i)) & 1) as u8;
+        }
+        assert_eq!(unpack77(&grid_form).as_deref(), Some("W1AW K1ABC RR73"));
+        assert_eq!(
+            unpack77(&pack77("W1AW", "K1ABC", "RR73").unwrap()).as_deref(),
+            Some("W1AW K1ABC RR73")
+        );
+    }
+
+    /// The 15-bit grid/report field `pack77` writes, against what WSJT-X puts on
+    /// the air: each value is the field of `ft8sim` (3.2.0-rc1) transmitting that
+    /// message, decoded (#464), except `RR73`, which follows v3.3.0-beta3
+    /// (58c7a522f): the acknowledgment `MAXGRID4 + 3`, no longer the grid RR73.
+    /// -50..-31 dB reports wrap by 101; this crate had a -35..-31 collision with
+    /// the bare / RRR / RR73 / 73 values.
     #[test]
     fn report_field_matches_wsjtx() {
         let g15 = |m: &[u8; 77]| m[59..74].iter().fold(0u32, |a, &b| a * 2 + b as u32);
         for (report, field, ir) in [
-            ("RR73", 32373, 0),
+            ("RR73", 32403, 0),
             ("RRR", 32402, 0),
             ("73", 32404, 0),
             ("", 32401, 0),
@@ -2962,7 +3001,7 @@ mod tests {
         }
     }
 
-    /// carry a report.
+    /// `packjt77.f90:494,509` — a CQ cannot acknowledge and cannot carry a report.
     #[test]
     fn cq_rejects_r_and_any_report() {
         const CQ: u32 = 2;

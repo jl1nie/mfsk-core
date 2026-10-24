@@ -22,6 +22,8 @@ pub mod ft8_qso3;
 // its Eb/N0 helpers are gated so the shared scaffolding stays usable
 // without it.
 pub mod golden;
+#[allow(dead_code)]
+pub mod pack77_fixture;
 #[cfg(feature = "uvpacket")]
 pub mod uvpacket_channel;
 

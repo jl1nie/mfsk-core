@@ -104,3 +104,61 @@ pub(crate) fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
     passes.retain(|(_, pid)| base.allow.allows(*pid));
     passes
 }
+
+/// The RR73 AP lock is what `pack77` transmits, in every protocol that uses a 77-bit
+/// `ApHint` (WSJT-X v3.3.0-beta4: `PACK77_TYPE1_RR73_TAIL` in ft8b.f90 / q65_ap.f90, and the
+/// iaptype-6 `apbits` of fst4_decode.f90 / ft4_decode.f90, a packed `MyCall HisCall RR73`).
+/// A lock on the grid 32373 would fail this.
+#[cfg(test)]
+mod rr73_lock_tests {
+    use super::*;
+    use crate::msg::wsjt77::pack77;
+
+    fn assert_locks_what_pack77_sends<P: Protocol>()
+    where
+        P::Msg: WsjtApCompatible,
+    {
+        let hint = ApHint::new()
+            .with_call1("K1ABC")
+            .with_call2("W9XYZ")
+            .with_report("RR73");
+        let sent = pack77("K1ABC", "W9XYZ", "RR73").unwrap();
+        let (mask, mut values) = ap_bits_for::<P>(&hint);
+        // Back to message space: ap_bits_for XORs the protocol's RVEC into the values.
+        if let Some(rvec) = <P as crate::engine::ModulationParams>::INFO_SCRAMBLE_RVEC {
+            for (b, &r) in values.iter_mut().zip(rvec.iter()).take(77) {
+                *b ^= r & 1;
+            }
+        }
+        for i in 58..77 {
+            assert_eq!(mask[i], 1, "bit {i} locked");
+            assert_eq!(values[i], sent[i], "bit {i} of the RR73 lock vs pack77");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "ft8")]
+    fn ft8_locks_what_pack77_sends() {
+        assert_locks_what_pack77_sends::<crate::ft8::Ft8>();
+        // FT8's own AP rung calls `build_bits` directly.
+        let hint = ApHint::new()
+            .with_call1("K1ABC")
+            .with_call2("W9XYZ")
+            .with_report("RR73");
+        let (mask, v) = hint.build_bits(174);
+        let sent = pack77("K1ABC", "W9XYZ", "RR73").unwrap();
+        assert!((58..77).all(|i| mask[i] == 1 && v[i] == sent[i]));
+    }
+
+    #[test]
+    #[cfg(feature = "ft4")]
+    fn ft4_locks_what_pack77_sends() {
+        assert_locks_what_pack77_sends::<crate::ft4::Ft4>();
+    }
+
+    #[test]
+    #[cfg(feature = "fst4")]
+    fn fst4_locks_what_pack77_sends() {
+        assert_locks_what_pack77_sends::<crate::fst4::Fst4s60>();
+    }
+}

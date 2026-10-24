@@ -964,7 +964,24 @@ fn candidate_1(msg: &str) -> Option<Candidate> {
         igrid4 = grid4_index(g);
     } else {
         let tail = word(&w, tail_start);
-        if tail.len() == 4 && is_grid4(tail) {
+        // v3.3.0-beta4 58c7a522f (packjt77_grammar.f90 pack77_parse_type12_source): for a
+        // non-CQ message the QSO tail (RRR/RR73/73) is tested BEFORE the grid, so `RR73`
+        // packs as the acknowledgment MAXGRID4+3 (32403), not the grid RR73 (32373).
+        // pack77_qso_tail_index, pack77_type12_irpt_from_tail
+        let qso_tail = if call_1.is_cq {
+            None
+        } else {
+            match tail {
+                "RRR" => Some(1),
+                "RR73" => Some(2),
+                "73" => Some(3),
+                _ => None,
+            }
+        };
+        if let Some(itail) = qso_tail {
+            ir = 0;
+            igrid4 = MAX_GRID4 + itail + 1;
+        } else if tail.len() == 4 && is_grid4(tail) {
             ir = 0;
             igrid4 = grid4_index(tail);
         } else if call_1.is_cq {
@@ -976,15 +993,7 @@ fn candidate_1(msg: &str) -> Option<Candidate> {
             ir = 1;
             igrid4 = MAX_GRID4 + report_index_from_snr(parse_signed_report(&tail[1..])?)?;
         } else {
-            // pack77_qso_tail_index, pack77_type12_irpt_from_tail
-            let itail = match tail {
-                "RRR" => 1,
-                "RR73" => 2,
-                "73" => 3,
-                _ => return None,
-            };
-            ir = 0;
-            igrid4 = MAX_GRID4 + itail + 1;
+            return None;
         }
     }
 

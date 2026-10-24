@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Results
+
+- `RR73` is packed as the acknowledgment `MAXGRID4+3` (32403), not the grid 32373, for every non-CQ type 1/2 message in all 77-bit
+  modes (WSJT-X v3.3.0-beta3 `58c7a522f`, #694 A1). The AP lock on `RR73` follows (`2c1b22b6c`, A2): in FT8, FT4 and FST4 it now
+  matches beta3+ senders, not <= 3.2 senders. Q65 (fix): `genq65` has always sent 32403 while rc1's `q65_ap.f90` locked the
+  grid form, which no Q65 sender transmits; the lock now matches every Q65 sender. Unpack is unchanged (both values read `RR73`);
+  `q65_rr73_fixup` stays (`genq65.f90:43`). Tier A+B: no decode or golden change.
+
 ### Skimmer
 
 - An rtl_tcp connection says what it waits for: `Event::Preparing { stage, up_to_s }` at the start of "waiting for the server to

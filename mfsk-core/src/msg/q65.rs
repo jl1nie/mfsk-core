@@ -31,7 +31,8 @@ use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
 /// The 15-bit field `genq65.f90` rewrites: `c77(60:74)`, 0-based `59..74`.
 const RPT15: core::ops::Range<usize> = 59..74;
-/// `RR73` as a grid square — what [`wsjt77::pack77`] produces, as `pack77.f90` does.
+/// `RR73` as a grid square (32373) — what `pack77` produced up to WSJT-X 3.2 and what
+/// `genq65.f90` still rewrites.
 const GRID_RR73: u32 = 32373;
 /// `RR73` as the explicit acknowledgement, `MAXGRID4 + 3`.
 const EXPLICIT_RR73: u32 = 32403;
@@ -44,8 +45,10 @@ const EXPLICIT_RR73: u32 = 32403;
 /// if(ng15.eq.32373) c77(60:74)='111111010010011'    !Message is RR73
 /// ```
 ///
-/// FT8, FT4 and FST4 transmit `RR73` as the grid square, as `pack77.f90`
-/// packs it; Q65 alone rewrites it, so a Q65 `RR73` is a different codeword.
+/// [`wsjt77::pack77`] has packed `RR73` as the acknowledgment since v3.3.0-beta3
+/// (58c7a522f), so for our own packs this is a no-op; upstream keeps the rewrite in
+/// beta4 (`genq65.f90:43`) and so do we. Up to 3.2 `pack77` sent the grid and only
+/// Q65 rewrote it.
 /// Like upstream, the field is read whatever the message type.
 pub fn q65_rr73_fixup(bits77: &mut [u8; 77]) {
     let ng15 = bits77[RPT15]
@@ -249,8 +252,8 @@ impl MessageCodec for Q65Message {
     const CRC_BITS: u32 = 12;
 
     fn pack(&self, fields: &MessageFields) -> Option<Vec<u8>> {
-        // The 77-bit format FT8/FT4/FST4 use, except that `genq65.f90`
-        // sends `RR73` as the explicit acknowledgement, not the grid square.
+        // The 77-bit format FT8/FT4/FST4 use; `genq65.f90` additionally rewrites a
+        // grid `RR73` to the acknowledgement (a no-op since `pack77` packs it so).
         let mut bits = Wsjt77Message.pack(fields)?;
         let mut arr: [u8; 77] = bits.as_slice().try_into().ok()?;
         q65_rr73_fixup(&mut arr);
@@ -285,7 +288,18 @@ mod tests {
     #[test]
     fn rr73_is_the_explicit_acknowledgement_as_genq65_sends_it() {
         let ft8 = wsjt77::pack77("K1ABC", "JA1ABC", "RR73").unwrap();
-        assert_eq!(rpt15(&ft8), GRID_RR73, "pack77.f90 packs RR73 as a grid");
+        assert_eq!(
+            rpt15(&ft8),
+            EXPLICIT_RR73,
+            "pack77 packs RR73 as the acknowledgment since v3.3.0-beta3"
+        );
+        // The fixup still rewrites a grid RR73 (as <= 3.2 senders transmitted it).
+        let mut grid = ft8;
+        for (i, bit) in grid[RPT15].iter_mut().enumerate() {
+            *bit = ((GRID_RR73 >> (14 - i)) & 1) as u8;
+        }
+        q65_rr73_fixup(&mut grid);
+        assert_eq!(rpt15(&grid), EXPLICIT_RR73);
         let q65 = pack77_q65("K1ABC", "JA1ABC", "RR73").unwrap();
         assert_eq!(rpt15(&q65), EXPLICIT_RR73);
         assert_eq!(wsjt77::unpack77(&q65).as_deref(), Some("K1ABC JA1ABC RR73"));
@@ -459,6 +473,23 @@ mod tests {
                 actual & m,
                 "sym {k}: AP value {v:06b} mismatches encoded {actual:06b} under mask {m:06b}"
             );
+        }
+    }
+
+    /// Q65's RR73 AP lock is what `genq65` sends (`pack77_q65`), not the grid 32373
+    /// (`q65_ap.f90` `mrr73` = `PACK77_TYPE1_RR73_TAIL` in v3.3.0-beta4).
+    #[test]
+    fn rr73_ap_lock_matches_what_genq65_sends() {
+        let hint = ApHint::new()
+            .with_call1("K1ABC")
+            .with_call2("JA1ABC")
+            .with_report("RR73");
+        let sent = pack77_q65("K1ABC", "JA1ABC", "RR73").unwrap();
+        let (mask, values) = ap_hint_to_q65_mask(&hint);
+        let bit = |syms: &[i32; 13], i: usize| ((syms[i / 6] >> (5 - i % 6)) & 1) as u8;
+        for i in 58..77 {
+            assert_eq!(bit(&mask, i), 1, "bit {i} locked");
+            assert_eq!(bit(&values, i), sent[i], "bit {i} vs pack77_q65");
         }
     }
 }

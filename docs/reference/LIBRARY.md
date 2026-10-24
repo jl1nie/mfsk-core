@@ -1928,8 +1928,9 @@ neither the registry nor `tests/protocol_invariants.rs`.
   `/R` and `TU; ` messages outside a contest (#438, #439; §2.6). FT4's
   published defaults are `sync_min` 1.18, `max_cand` 200 (#440;
   `ft4_decode.f90` moved from 1.2 / 100). The message packer follows
-  `pack77_1`: `RR73` goes out as the grid `RR73` (field 32373, not
-  `MAXGRID4 + 3`), reports −35..−31 dB wrap by 101 as upstream does, and
+  `pack77`: `RR73` after a non-CQ call goes out as the acknowledgment
+  `MAXGRID4 + 3` (field 32403, v3.3.0-beta3 onward; `CQ ... RR73` stays the
+  grid 32373, and `R RR73` is `ir = 1` with the grid), reports −35..−31 dB wrap by 101 as upstream does, and
   `/P` / `/R` calls pack (Type 2 when either carries `/P`) (#464).
   **OSD runs the way `decode174_91` runs it (#456).** For FT4 (and FT8's
   AP rung) that is BP, then OSD on the BP sum after 1 and after 2
