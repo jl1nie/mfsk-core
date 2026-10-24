@@ -9,7 +9,8 @@
 //!   the same sequence one cycle earlier (30 s ago), build the messages the same
 //!   pair could send next and pick the one closest to the received LLRs at that
 //!   message's frequency and DT. Reported as `iaptype = 7`.
-//! - **a8** (`ft8_a8d.f90`, `ft8_decode.f90:287-305`). With MyCall, HisCall and
+//! - **a8** (`ft8_a8d.f90`, `ft8_decode.f90:287-305`; `getmsg` of `ft8_a7.f90`;
+//!   candidates 207-411 and `stdcall_suffix` from v3.3.0-beta4, `015b48945`). With MyCall, HisCall and
 //!   HisGrid given, correlate the waveforms of the messages of that QSO against
 //!   the received signal near the QSO frequency (`nfqso`), and keep the best fit
 //!   if it passes three quality tests. Reported as `iaptype = 8`.
@@ -17,7 +18,9 @@
 //! Where this differs from the Fortran, on purpose:
 //! - Messages with a *hashed* call sign in a Type 1 field (`<CALL> CALL -10`) are
 //!   not generated: `wsjt77::pack28` does not pack a hash. Messages that need them
-//!   (a report or grid with one non-standard call) are skipped; the Type 4 forms
+//!   (a report or grid with one non-standard call) are skipped, except the a8 candidates
+//!   207-411 of a `/R` or `/P` DX call, which go through `pack77_message` (it packs the hash);
+//!   the Type 4 forms
 //!   (`<CALL> NONSTD`, with or without RRR / RR73 / 73) are generated.
 //! - a7's SNR is [`crate::ft8::llr::compute_snr_db`], this crate's FT8 SNR, not
 //!   `ft8_a7d`'s `pbest/xbase` form (the decode, and whether it is accepted, do not
@@ -41,7 +44,10 @@ use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::{append_crc14, ldpc_encode};
 use crate::ft8::Ft8;
 use crate::ft8::decode_block::{SymMask, fill_symbol_spectra};
-use crate::msg::wsjt77::{is_standard_callsign, pack77, pack77_type4, unpack77};
+use crate::msg::wsjt77::{
+    Pack77Options, has_rp_suffix, is_standard_callsign, is_standard_callsign_suffix, pack77,
+    pack77_message, pack77_type4, unpack77,
+};
 
 /// Pass id of an a7 decode (`iaptype = 7` upstream). The ladder's ids run to 23
 /// (OSD `zsave(:,2)` on `llre` is `19 + 4`), so the list decoders start at 30.
@@ -53,6 +59,9 @@ pub const PASS_ID_A8: u8 = 31;
 const MAXDEC: usize = 200;
 /// Messages tried per call-sign pair (`MAXMSG` in `ft8_a7d`, `NMSGS` in `ft8_a8d`).
 const NMSGS: usize = 206;
+/// `ft8_a8d`'s run length for a `/R` or `/P` DX call when MyCall is standard too (v3.3.0-beta4;
+/// 207 when it is not).
+const NMSGS_SUFFIX: usize = 411;
 
 // ────────────────────────────────────────────────────────────────────
 // Message lists
@@ -191,11 +200,59 @@ fn a7_message(i: usize, call_1: &str, call_2: &str, grid4: &str) -> Option<[u8; 
     }
 }
 
-/// `getmsg` (`ft8_a7.f90:380-422`): a8's message `i` for MyCall and HisCall.
-/// `None` for a report beyond +-30 dB (`getmsg` returns an empty message there).
+/// How many candidates `ft8_a8d` runs for MyCall and DxCall (`nrun`, `ft8_a8d.f90`, v3.3.0-beta4):
+/// [`NMSGS`]; 207 when DxCall is a standard call with a `/R` or `/P` suffix; 411 when MyCall is
+/// standard (suffix allowed) as well.
+fn a8_run_count(mycall: &str, dxcall: &str) -> usize {
+    let mut nrun = NMSGS;
+    if is_standard_callsign_suffix(dxcall) && has_rp_suffix(dxcall) {
+        nrun = 207;
+        if is_standard_callsign_suffix(mycall) {
+            nrun = NMSGS_SUFFIX;
+        }
+    }
+    nrun
+}
+
+/// `getmsg` (`ft8_a7.f90:380-460`, v3.3.0-beta4): a8's message `i` for MyCall and HisCall.
+/// `None` for a report beyond +-30 dB (`getmsg` returns an empty message there), and for the
+/// candidates 207-411 that `getmsg` leaves blank.
 fn a8_message(i: usize, mycall: &str, hiscall: &str, hisgrid: &str) -> Option<[u8; 77]> {
-    let my_std = is_standard_callsign(mycall);
-    let his_std = is_standard_callsign(hiscall);
+    // `stdcall_suffix`: a trailing `/R` or `/P` does not make a call non-standard.
+    let my_std = is_standard_callsign_suffix(mycall);
+    let his_std = is_standard_callsign_suffix(hiscall);
+    // Candidates 207-411 keep what the former nonstandard-call path produced for a /R or /P
+    // station: a CQ without a grid (207); when MyCall is standard, <MyCall> HisCall with
+    // nothing, RRR, RR73 or 73 (208-211) and MyCall <HisCall> with a report or R-report
+    // (212-411, the same sequence as 7-206). Blank for every other call.
+    if i >= 207 {
+        if !(his_std && has_rp_suffix(hiscall)) {
+            return None;
+        }
+        let (mycall, hiscall) = (mycall.trim(), hiscall.trim());
+        let text = match i {
+            207 => alloc::format!("CQ {hiscall}"),
+            208..=211 if my_std => {
+                let tail = ["", "RRR", "RR73", "73"][i - 208];
+                alloc::format!("<{mycall}> {hiscall} {tail}")
+            }
+            212.. if my_std => {
+                // `j = i-205`, so the ladder is that of candidates 7..=206.
+                let (isnr, report) = report_of(i - 205);
+                if isnr.abs() > 30 {
+                    return None;
+                }
+                alloc::format!("{mycall} <{hiscall}> {report}")
+            }
+            _ => return None,
+        };
+        // Packed as `genft8` packs the text: `<MyCall> HisCall RR73` is a Type 4 message (a
+        // suffixed call cannot sit next to a hash in Type 1), `MyCall <HisCall> -10` a Type 1
+        // message with the 22-bit hash.
+        return pack77_message(text.trim_end(), &Pack77Options::new())
+            .ok()
+            .map(|p| p.bits);
+    }
     let (mut p1, mut p2) = (
         Party {
             call: mycall,
@@ -510,7 +567,7 @@ fn a8_decode(
     let mut msgbest: Option<([u8; 77], Vec<u8>)> = None;
     let mut s1 = vec![0.0f32; NZZ + 1];
 
-    for i in 1..=NMSGS {
+    for i in 1..=a8_run_count(mycall, hiscall) {
         let Some(m77) = a8_message(i, mycall, hiscall, hisgrid) else {
             continue;
         };
@@ -855,6 +912,106 @@ mod tests {
         // The stand-in `QU1RK` is no call: `callok` refuses a leading Q (`packjt77.f90:2438`), so
         // rc1's `unpack77` fails on it and `ft8_a7d` has no message to print.
         assert_eq!(cq(1), None);
+    }
+
+    fn a8_text(i: usize, my: &str, his: &str) -> Option<String> {
+        a8_message(i, my, his, "FN42").and_then(|m| unpack77(&m))
+    }
+
+    /// Candidates 207-411 of a `/R` or `/P` DX call (`getmsg`, v3.3.0-beta4).
+    #[test]
+    fn a8_suffix_candidates() {
+        assert_eq!(a8_run_count("JA1ABC", "K1ABC/R"), 411);
+        assert_eq!(a8_run_count("JA1ABC/P", "K1ABC/P"), 411);
+        assert_eq!(a8_run_count("JA1ABC", "K1ABC"), 206);
+        assert_eq!(a8_run_count("PJ4/K1ABC", "K1ABC/P"), 207);
+        assert_eq!(a8_run_count("JA1ABC", "PJ4/K1ABC"), 206);
+        // `/R` alone is not longer than 3 characters.
+        assert_eq!(a8_run_count("JA1ABC", "A/R"), 206);
+
+        let mut n = 0;
+        for i in 1..=411 {
+            if a8_message(i, "JA1ABC", "K1ABC/R", "FN42").is_some() {
+                n += 1;
+            }
+        }
+        // 1..=206 less the reports beyond +-30 dB (-50..-31 and +31..+49: 2 * 20 + 2 * 19), and
+        // the same ladder again at 212..=411, plus 207..=211.
+        let ladder = 2 * 61;
+        assert_eq!(n, 6 + ladder + 5 + ladder);
+
+        // A hashed call unpacks as `<...>` without a hash table, so each candidate is compared by
+        // the bits of the text it stands for, and by what a receiver reads back.
+        let is = |i: usize, my: &str, his: &str, text: &str, back: &str| {
+            let want = pack77_message(text, &Pack77Options::new()).unwrap().bits;
+            let got = a8_message(i, my, his, "FN42").unwrap();
+            assert_eq!(got, want, "bits of candidate {i} ({text})");
+            assert_eq!(unpack77(&got).as_deref(), Some(back), "candidate {i}");
+        };
+        is(207, "JA1ABC", "K1ABC/R", "CQ K1ABC/R", "CQ K1ABC/R");
+        is(
+            208,
+            "JA1ABC",
+            "K1ABC/R",
+            "<JA1ABC> K1ABC/R",
+            "<...> K1ABC/R",
+        );
+        is(
+            209,
+            "JA1ABC",
+            "K1ABC/R",
+            "<JA1ABC> K1ABC/R RRR",
+            "<...> K1ABC/R RRR",
+        );
+        is(
+            210,
+            "JA1ABC",
+            "K1ABC/R",
+            "<JA1ABC> K1ABC/R RR73",
+            "<...> K1ABC/R RR73",
+        );
+        is(
+            211,
+            "JA1ABC",
+            "K1ABC/R",
+            "<JA1ABC> K1ABC/R 73",
+            "<...> K1ABC/R 73",
+        );
+        // j = 7 is -50 dB: blank, as are all down to the first report inside +-30 dB.
+        assert_eq!(a8_text(212, "JA1ABC", "K1ABC/R"), None);
+        assert_eq!(a8_text(213, "JA1ABC", "K1ABC/R"), None);
+        // isnr = -30 at j = 7 + 40 = 47 (i = 252), the R-form at 253.
+        assert_eq!(a8_text(251, "JA1ABC", "K1ABC/R"), None);
+        is(
+            252,
+            "JA1ABC",
+            "K1ABC/R",
+            "JA1ABC <K1ABC/R> -30",
+            "JA1ABC <...> -30",
+        );
+        is(
+            253,
+            "JA1ABC",
+            "K1ABC/R",
+            "JA1ABC <K1ABC/R> R-30",
+            "JA1ABC <...> R-30",
+        );
+        is(
+            7 + 205 + 2 * 50,
+            "JA1ABC",
+            "K1ABC/P",
+            "JA1ABC <K1ABC/P> +00",
+            "JA1ABC <...> +00",
+        );
+        assert!(a8_message(7 + 205 + 2 * 81, "JA1ABC", "K1ABC/R", "").is_none()); // +31 dB
+        assert_eq!(a8_text(207, "JA1ABC", "K1ABC"), None);
+        // MyCall not standard: only the CQ (and not for a plain DX call).
+        assert_eq!(
+            a8_text(207, "PJ4/K1ABC", "K1ABC/P").as_deref(),
+            Some("CQ K1ABC/P")
+        );
+        assert_eq!(a8_text(208, "PJ4/K1ABC", "K1ABC/P"), None);
+        assert_eq!(a8_text(300, "PJ4/K1ABC", "K1ABC/P"), None);
     }
 
     #[test]

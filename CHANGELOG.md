@@ -9,6 +9,11 @@
   matches beta3+ senders, not <= 3.2 senders. Q65 (fix): `genq65` has always sent 32403 while rc1's `q65_ap.f90` locked the
   grid form, which no Q65 sender transmits; the lock now matches every Q65 sender. Unpack is unchanged (both values read `RR73`);
   `q65_rr73_fixup` stays (`genq65.f90:43`). Tier A+B: no decode or golden change.
+- **FT8 a8 and Q65's full-AP list give a standard call with a `/R` or `/P` suffix the full candidate set** (#694, WSJT-X v3.3.0-beta4
+  `015b48945`, `6b6124f9d`, `b2204822b`): `stdcall_suffix` keeps such a call standard, and 207 `CQ call`, 208-211 `<MyCall> call` +
+  nothing/RRR/RR73/73 and 212-411 `MyCall <call>` + the report ladder (FT8 cuts it at +-30 dB, Q65 does not) are added, 411 in all
+  with a standard MyCall. a7 is unchanged, as upstream. Other calls still get 206. **`q65::MAX_AP_CODEWORDS` 206 -> 411**; the list
+  grows only for such DX calls. New `msg::wsjt77::{is_standard_callsign_suffix, has_rp_suffix}`.
 
 ### Skimmer
 
