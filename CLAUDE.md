@@ -118,9 +118,9 @@ MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing -
 - **Model split: one loop, model chosen by task** (`docs/notes/AGENT_WORKFLOW.md`). Default `/model opusplan`:
   Opus plans in plan mode, the same loop implements on Sonnet. Opus main loop for design, unexplained regressions,
   upstream triage; Sonnet for implementing, docs, CI, mechanical ports. Spawn a subagent only for context bloat
-  (sweeps, full test logs → `runner`), independent parallel work, or unanchored review. `reviewer` (Opus) is
-  required for decoder internals, `engine/**`, FEC/LLR, SNR, TX, new strategies, fixed-point — not for docs, CI,
-  tests-only. To change model, use `/model`, never a `fork`.
+  (sweeps, full test logs → `runner`), independent parallel work, or unanchored review. `reviewer` (Opus) only
+  when the tests cannot judge the change: gate moved (floor, `max_extra`, fixture), divergence from WSJT-X, new
+  strategy, fixed-point, structural `engine/**`, API. A line-for-line upstream port with tier A+B green needs none. To change model, use `/model`, never a `fork`.
 - After delegating to parallel agents: `git status`, grep for probe leftovers, commit by explicit path, spot-check claims.
 
 ## 6. Releases

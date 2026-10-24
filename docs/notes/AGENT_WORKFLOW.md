@@ -48,7 +48,7 @@ Spawn only when one of the article's three conditions holds. Each maps to a conc
 |---|---|---|
 | **context bloat** that would degrade the main loop | tier C sweeps, the full merge-gate log, benchmark runs, `scripts/pre-push-check.sh`, embedded flash logs: thousands of lines where only the numbers matter | `runner` (Sonnet), returns numbers and failures only |
 | **independent parallel work** with a context that can be thrown away | the same mechanical change across several protocols; measurements on several modes; sweeps per mode | several `runner`s in one message |
-| **a read that must not be anchored on the author's** | review of a decoder-internal / FEC / LLR / SNR / `engine/**` change before it lands | `reviewer` (Opus), given the diff and spec, not the author's conclusion |
+| **a read that must not be anchored on the author's** | a change the tests cannot judge (§4) | `reviewer` (Opus), given the diff and spec, not the author's conclusion |
 
 Do **not** spawn when:
 
@@ -60,15 +60,31 @@ Do **not** spawn when:
 
 ## 4. Review: when `reviewer` is required
 
-`reviewer` (Opus) is required before landing a change to:
+The criterion is **whether the gate can judge the change**, not which directory it touches. Tier A (bit-exact
+parity, roundtrip) and tier B (`assert_golden`: recall floor + phantom ceiling + SNR) already catch a wrong
+upstream port; a second Opus read of a change the tests fully cover buys little.
 
-- decoder internals of any protocol, `engine/**`, FEC / LLR / OSD, SNR formulas, sync, TX waveform / envelope;
-- a new decode strategy (SIC rounds, `sic_early`, …) — its precision guard is the first thing checked;
-- `fixed-point` numerics on the shipped embedded path.
+**Not required** — the hooks and tier A+B are the review:
 
-Not required (the hooks and tier A+B are the gate): docs, CHANGELOG, tests-only changes that do not lower a
-floor or raise a phantom budget, CI / scripts, bindings glue, skimmer UI, release metadata. Anything that lowers a
-recall floor or raises `max_extra` is a decoder change for this purpose.
+- an upstream port that mirrors the Fortran / C change line for line (parameter, threshold, table, loop bound),
+  with the `Ported from…` pointer updated to the new upstream `file:line`, and tier A+B green with no floor or
+  budget touched. The author's check: diff the Rust against the upstream diff once, by hand;
+- a bug fix with a test that failed before and passes after;
+- docs, CHANGELOG, CI / scripts, bindings glue, skimmer UI, release metadata, tests-only changes.
+
+**Required** — the change is one the tests cannot judge:
+
+- the gate itself moves: a recall floor lowered, `max_extra` raised, a golden fixture regenerated, an assertion
+  loosened or deleted;
+- a deliberate divergence from WSJT-X, or code with no upstream counterpart;
+- a new decode strategy or a new path into an existing one (SIC rounds, `sic_early`, …): its precision guard is
+  what gets reviewed;
+- `fixed-point` / embedded runtime path (host CI does not compile `embedded-poc/**`);
+- a structural change in `engine/**` shared by several protocols (not a constant inside it);
+- a public API change (`Decoder<P>`, `DecodeParams`, the C ABI).
+
+When unsure, ask the one question: "if this were wrong, which test would fail?" If you can name it and it ran,
+skip the review.
 
 ## 5. Token hygiene (any model)
 

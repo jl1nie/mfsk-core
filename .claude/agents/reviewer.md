@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Reviews a diff against its spec and CLAUDE.md without being anchored on the author's summary. Required before landing changes to decoder internals, engine/**, FEC/LLR/OSD, SNR formulas, sync, TX waveform, a new decode strategy, or fixed-point numerics; not for docs, CI, scripts or tests-only changes. See docs/notes/AGENT_WORKFLOW.md §4.
+description: Reviews a diff against its spec and CLAUDE.md without being anchored on the author's summary. Required only for changes the tests cannot judge — a moved gate (recall floor, max_extra, golden fixture), a divergence from WSJT-X, a new decode strategy, fixed-point / embedded runtime, structural engine/** changes, public API. Not for line-for-line upstream ports with tier A+B green. See docs/notes/AGENT_WORKFLOW.md §4.
 model: opus
 ---
 
