@@ -80,7 +80,23 @@ recall floor or raises `max_extra` is a decoder change for this purpose.
 - Batch independent tool calls in one turn.
 - Check `/cost` at the end of a task when trying a new way of working; compare like with like (§6).
 
-## 6. Changing this standard
+## 6. What the harness enforces, and what is advice
+
+`CLAUDE.md` is context the model reads, not a gate: under a long context or a pressing task it can be skipped. A
+rule that matters is moved to a layer the harness executes:
+
+| rule | layer | enforced? |
+|---|---|---|
+| default main model `opusplan` | `.claude/settings.json` `model` | yes at session start; a model picked explicitly (`/model`, `--model`, the session's model picker in the app) overrides it |
+| `runner` on Sonnet, `reviewer` on Opus | `model:` in `.claude/agents/*.md` | yes |
+| no `fork`, no `model` override on `runner` | PreToolUse hook on `Agent`: `.claude/hooks/agent-guard.sh` (denies the call) | yes |
+| fmt / clippy / rustdoc / feature matrix | `.githooks` pre-commit / pre-push | yes, once `scripts/install-hooks.sh` ran |
+| when to spawn (§3), when to switch model (§2), review required (§4) | this note | advice — judgement calls a hook cannot make |
+
+Before adding a rule to `CLAUDE.md`, ask whether it is mechanical (a path, a flag, a tool argument). If it is,
+it belongs in a hook or a script, and `CLAUDE.md` only points at it.
+
+## 7. Changing this standard
 
 Measure, as for code (`CLAUDE.md` §2.3): pick a handful of representative tasks (a doc fix, a CI fix, a one-routine
 upstream port, a decoder change with review), record `/cost` and the outcome (did the merge gate pass first time,
