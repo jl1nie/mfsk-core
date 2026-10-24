@@ -1,11 +1,11 @@
 ---
 name: reviewer
-description: Reviews a runner's diff against its spec and against CLAUDE.md, without being anchored on the runner's own summary. Use after every runner task that changed code.
+description: Reviews a diff against its spec and CLAUDE.md without being anchored on the author's summary. Required only for changes the tests cannot judge — a moved gate (recall floor, max_extra, golden fixture), a divergence from WSJT-X, a new decode strategy, fixed-point / embedded runtime, structural engine/** changes, public API. Not for line-for-line upstream ports with tier A+B green. See docs/notes/AGENT_WORKFLOW.md §4.
 model: opus
 ---
 
 You review a change in mfsk-core. You are given the spec and the diff (or a branch / commit range); read the
-code yourself, not only the runner's report.
+code yourself, not only the author's report.
 
 Check, in order:
 1. Does the diff do what the spec says — no more, no less? Unrequested changes are findings.

@@ -115,11 +115,12 @@ MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing -
   change A (alters results) / B (real bug fix) / C (refactor); port A and B; record in the tracking Issue
   (#435, #642); bump `DEFAULT_BASE` after the ports merge. Tags may not be ancestors of later tags: compare trees.
 - Before starting: check unpushed commits, worktrees, open PRs and the Issue tracker — earlier work may already exist.
-- **Model split: Opus designs and reviews, Sonnet implements.** The Opus session writes the spec (what, which files,
-  upstream source, which checks); every code change and every run (tests, measurements, sweeps) goes to the
-  `runner` agent (`.claude/agents/runner.md`, Sonnet); its diff goes to `reviewer` (Opus) before it lands. The Opus
-  session edits only specs, plans, docs it is designing, and memory. Never implement through a `fork` (it inherits
-  Opus) or by passing a `model` override on `runner`.
+- **Model split: one loop, model chosen by task** (`docs/notes/AGENT_WORKFLOW.md`). Default `/model opusplan`:
+  Opus plans in plan mode, the same loop implements on Sonnet. Opus main loop for design, unexplained regressions,
+  upstream triage; Sonnet for implementing, docs, CI, mechanical ports. Spawn a subagent only for context bloat
+  (sweeps, full test logs → `runner`), independent parallel work, or unanchored review. `reviewer` (Opus) only
+  when the tests cannot judge the change: gate moved (floor, `max_extra`, fixture), divergence from WSJT-X, new
+  strategy, fixed-point, structural `engine/**`, API. A line-for-line upstream port with tier A+B green needs none. To change model, use `/model`, never a `fork`.
 - After delegating to parallel agents: `git status`, grep for probe leftovers, commit by explicit path, spot-check claims.
 
 ## 6. Releases
@@ -154,4 +155,5 @@ Procedure: `docs/notes/EMBEDDED_WORKFLOW.md`, `docs/reference/MANUAL_M5STACK_COR
 | which tests to run, tier C | `docs/notes/TESTING_GUIDE.md`, `TIER_C_MANUAL.md` |
 | releasing | `docs/notes/RELEASE_PROCEDURE.md` |
 | hardware | `embedded-poc/CLAUDE.md`, board `CLAUDE.md`, `docs/notes/EMBEDDED_WORKFLOW.md` |
+| model choice, when to spawn agents, review requirement | `docs/notes/AGENT_WORKFLOW.md` |
 | plans, status | `docs/notes/ROADMAP.md`; embedded perf log: auto-memory `project_decode_block_embedded.md` |
