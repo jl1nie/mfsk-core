@@ -58,7 +58,7 @@ use mfsk_core::fst4::ddc::{
     grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade, wideband_refine_recenter,
     REFINE_DS_RATE_HZ,
 };
-use mfsk_core::fst4::rung_major::{decode_phase_split_timed, RungMajorCandidate};
+use mfsk_core::__internal::fst4::rung_major::{decode_phase_split_timed, RungMajorCandidate};
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::wsjt77::unpack77;
 

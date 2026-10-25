@@ -30,7 +30,7 @@ use super::search::{SearchParams, default_search_params};
 /// ±1 symbol.
 ///
 /// ```no_run
-/// use mfsk_core::jt9::DecodeRequest;
+/// use mfsk_core::__internal::jt9::DecodeRequest;
 ///
 /// # let audio: Vec<f32> = vec![];
 /// // `audio` is 720_000 f32 samples at 12 kHz (60 s slot).

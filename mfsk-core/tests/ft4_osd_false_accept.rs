@@ -116,8 +116,8 @@ fn ft4_measure() {
 #[test]
 #[ignore = "measurement, prints; run with --release --ignored --nocapture"]
 fn ft4_noise_slots_measure() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::ft4::Ft4;
-    use mfsk_core::msg::decode_request::DecodeRequest;
     const SLOTS: usize = 3_000;
     const SAMPLES: usize = 90_000; // 7.5 s at 12 kHz
     for (label, sync_min, max_cand, hint) in [

@@ -69,6 +69,8 @@ use common::load_wav_i16_opt;
 
 use num_complex::Complex;
 
+use mfsk_core::__internal::fst4::rung_major::{RungMajorCandidate, decode_phase_split_timed};
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::__internal::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
@@ -79,8 +81,6 @@ use mfsk_core::fst4::ddc::{
     REFINE_DS_RATE_HZ, grid_for, wideband_cascade, wideband_refine_recenter,
 };
 use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
-use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_phase_split_timed};
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 const GOLDEN_MSG: &str = "CQ JL1NIE PM95";
@@ -443,7 +443,7 @@ fn trial_arms(audio: &[i16]) -> (bool, bool, bool, bool) {
 #[test]
 #[ignore = "tier C — needs the fst4_60_ccir_moderate_* corpus; process-global OSD toggle, run alone"]
 fn fst4_60_ccir_moderate_timing_x_pruning() {
-    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    use mfsk_core::__internal::fec::ldpc240_101::fst4_osd_diag_force_old;
     use rayon::prelude::*;
 
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();

@@ -37,7 +37,7 @@
 
 #![cfg(all(feature = "jt65", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use mfsk_core::jt65::DecodeRequest;
+use mfsk_core::__internal::jt65::DecodeRequest;
 use mfsk_core::jt65::search::{SearchParams, default_search_params};
 
 #[allow(dead_code)]

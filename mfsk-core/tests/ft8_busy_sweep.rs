@@ -141,8 +141,8 @@ fn no_message_filter() -> bool {
 }
 
 fn decode(audio: &[i16], strategy: Strategy, cap: usize, sync_min: f32) -> Vec<(String, f32, f32)> {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::ft8::Ft8;
-    use mfsk_core::msg::decode_request::DecodeRequest;
     let req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, sync_min, cap);
     let results = if no_message_filter() {
         // Every message that unpacks is kept: the codec's plausibility verdict, which

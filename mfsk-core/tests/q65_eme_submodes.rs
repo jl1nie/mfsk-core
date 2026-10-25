@@ -9,9 +9,10 @@
 
 #![cfg(feature = "q65")]
 
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::tx::synthesize_standard_for;
-use mfsk_core::q65::{DecodeRequest, Q65SubMode, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
+use mfsk_core::q65::{Q65SubMode, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
 
 const FS: u32 = 12_000;
 

@@ -20,11 +20,11 @@
 
 use std::path::PathBuf;
 
+use mfsk_core::__internal::msg::decode_request::{DecodeRequest, NoiseBlanker};
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::frame::{DecodeResult, DecodeStrictness};
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::ApHint;
-use mfsk_core::msg::decode_request::{DecodeRequest, NoiseBlanker};
 use mfsk_core::msg::wsjt77::unpack77;
 use mfsk_core::{Ft4, Ft8};
 
@@ -323,9 +323,10 @@ fn fst4_request_shapes() {
 
 #[test]
 fn wspr_request_shapes() {
+    use mfsk_core::__internal::wspr::DecodeRequest;
     use mfsk_core::msg::WsprMessage;
+    use mfsk_core::wspr::WsprCallsignTable;
     use mfsk_core::wspr::search::{SearchParams, default_search_params};
-    use mfsk_core::wspr::{DecodeRequest, WsprCallsignTable};
 
     let Some(path) = common::corpus::golden_path("wspr/150426_0918.wav") else {
         common::skip_or_fail("WSPR golden");
@@ -371,8 +372,9 @@ fn wspr_request_shapes() {
 
 #[test]
 fn jt9_request_shapes() {
+    use mfsk_core::__internal::jt9::DecodeRequest;
+    use mfsk_core::jt9::Jt9Depth;
     use mfsk_core::jt9::search::SearchParams;
-    use mfsk_core::jt9::{DecodeRequest, Jt9Depth};
 
     let Some(a) = common::load_wav_f32_opt(asset_path!("130418_1742.wav")) else {
         common::skip_or_fail("JT9 recording");
@@ -404,8 +406,9 @@ fn jt9_request_shapes() {
 
 #[test]
 fn jt65_request_shapes() {
+    use mfsk_core::__internal::jt65::DecodeRequest;
+    use mfsk_core::jt65::ChaseParams;
     use mfsk_core::jt65::search::{SearchParams, default_search_params};
-    use mfsk_core::jt65::{ChaseParams, DecodeRequest};
 
     let Some(path) = common::corpus::golden_path("jt65/jt65a_5sig_m18.wav") else {
         common::skip_or_fail("JT65 golden");
@@ -452,12 +455,10 @@ fn wavs_in(rel: &str) -> Vec<Vec<f32>> {
 
 #[test]
 fn q65_request_shapes() {
+    use mfsk_core::__internal::q65::{DecodeRequest, MultiPeriodRequest};
     use mfsk_core::fec::qra::FadingModel;
     use mfsk_core::q65::search::SearchParams;
-    use mfsk_core::q65::{
-        DecodeRequest, MultiPeriodRequest, Q65Result, Q65a30, Q65a60, Q65d60,
-        standard_qso_codewords,
-    };
+    use mfsk_core::q65::{Q65Result, Q65a30, Q65a60, Q65d60, standard_qso_codewords};
     let text = |r: Vec<Q65Result>| decoded_rows(r.iter().map(|d| d.to_decoded()));
 
     // Single period, fast-fading metric (60D 10 GHz EME).

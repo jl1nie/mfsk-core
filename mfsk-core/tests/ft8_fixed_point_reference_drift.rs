@@ -41,10 +41,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::decode_block;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]

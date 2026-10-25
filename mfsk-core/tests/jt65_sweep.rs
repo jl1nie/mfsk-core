@@ -56,8 +56,9 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 mod common;
 use common::{load_wav_f32_opt, parse_snr_tag};
+use mfsk_core::__internal::jt65::DecodeRequest;
 use mfsk_core::jt65::search::{SearchParams, default_search_params};
-use mfsk_core::jt65::{ChaseParams, DecodeRequest, HintBank, HintSpec};
+use mfsk_core::jt65::{ChaseParams, HintBank, HintSpec};
 
 const GOLDEN_CALL1: &str = "CQ";
 const GOLDEN_CALL2: &str = "JL1NIE";

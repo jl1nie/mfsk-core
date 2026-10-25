@@ -16,12 +16,11 @@
 
 use std::path::PathBuf;
 
+use mfsk_core::__internal::q65::{DecodeRequest, MultiPeriodRequest};
 use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
-use mfsk_core::q65::{
-    DecodeRequest, MultiPeriodRequest, Q65a30, Q65a60, Q65a300, Q65b60, Q65d60, Q65d120, Q65e120,
-};
+use mfsk_core::q65::{Q65a30, Q65a60, Q65a300, Q65b60, Q65d60, Q65d120, Q65e120};
 
 #[allow(dead_code)]
 mod common;
@@ -114,7 +113,7 @@ fn ionoscatter_6m_q3_on_averaged_spectra() {
 }
 
 /// Strict gate: stack the four ionoscatter recordings into one
-/// running EMA via [`mfsk_core::q65::MultiPeriodRequest`] and require at least
+/// running EMA via [`mfsk_core::__internal::q65::MultiPeriodRequest`] and require at least
 /// one decode total.
 ///
 /// Mirrors WSJT-X's `iavg=1`/`iavg=2` averaged-decode flow from

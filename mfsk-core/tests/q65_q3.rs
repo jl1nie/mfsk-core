@@ -12,8 +12,9 @@
 mod common;
 
 use common::channel::AwgnChannel;
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::q65::search::default_search_params;
-use mfsk_core::q65::{DecodeRequest, Q65a30, standard_qso_codewords, synthesize_standard};
+use mfsk_core::q65::{Q65a30, standard_qso_codewords, synthesize_standard};
 
 const FS: u32 = 12_000;
 const RX: f32 = 1500.0;

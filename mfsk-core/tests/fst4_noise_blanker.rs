@@ -10,8 +10,8 @@
 mod common;
 
 use common::channel::AwgnChannel;
+use mfsk_core::__internal::msg::decode_request::{DecodeRequest, NoiseBlanker};
 use mfsk_core::fst4::Fst4s15;
-use mfsk_core::msg::decode_request::{DecodeRequest, NoiseBlanker};
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
 
 const FREQ: f32 = 1500.0;

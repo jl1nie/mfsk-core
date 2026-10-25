@@ -50,9 +50,9 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -90,7 +90,7 @@ fn decode_with_budget(
     budget: Option<&CandidateBudget>,
 ) -> (
     Vec<DecodeResult>,
-    mfsk_core::msg::decode_request::BudgetReport,
+    mfsk_core::__internal::msg::decode_request::BudgetReport,
 ) {
     let req =
         DecodeRequest::<Ft8>::new(audio, FREQ_MIN, FREQ_MAX, SYNC_MIN, MAX_CAND).single_pass();

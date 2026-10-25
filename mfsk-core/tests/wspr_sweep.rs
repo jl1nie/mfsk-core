@@ -46,10 +46,11 @@ use std::path::PathBuf;
 #[allow(dead_code)]
 mod common;
 use common::{load_wav_f32_opt, parse_snr_tag};
+#[cfg(feature = "internal-testing")]
+use mfsk_core::__internal::wspr::DecodeRequest;
 #[cfg(all(feature = "internal-testing", feature = "instrument"))]
 use mfsk_core::wspr::SniperRequest;
-#[cfg(feature = "internal-testing")]
-use mfsk_core::wspr::{DecodeRequest, WsprCallsignTable};
+use mfsk_core::wspr::WsprCallsignTable;
 
 const GOLDEN_MSG: &str = "JL1NIE PM95 37";
 const GOLDEN_FREQ_HZ: f32 = 1500.0;
@@ -274,7 +275,7 @@ fn harvest_osd_inputs() -> Option<std::collections::BTreeMap<i32, (u32, u32, u32
         return None;
     }
 
-    mfsk_core::wspr::osd::capture::reset();
+    mfsk_core::__internal::wspr::osd::capture::reset();
 
     // Callsign/grid parsed straight out of GOLDEN_MSG ("JL1NIE PM95
     // 37") rather than hand-copied, so this can't drift out of sync
@@ -305,12 +306,12 @@ fn harvest_osd_inputs() -> Option<std::collections::BTreeMap<i32, (u32, u32, u32
             grid: grid.clone(),
             power_dbm: 37,
         });
-        let before = mfsk_core::wspr::osd::capture::snapshot().len();
+        let before = mfsk_core::__internal::wspr::osd::capture::snapshot().len();
         let results = DecodeRequest::new(&audio, 12_000)
             .params(params)
             .table(&mut table)
             .decode();
-        let after = mfsk_core::wspr::osd::capture::snapshot().len();
+        let after = mfsk_core::__internal::wspr::osd::capture::snapshot().len();
         let fano_hit = results.iter().any(|d| d.message.to_string() == GOLDEN_MSG);
 
         let cell = per_snr_osd.entry(job.snr).or_insert((0, 0, 0));
@@ -350,7 +351,7 @@ fn wspr_osd_input_harvest() {
         );
     }
 
-    let total = mfsk_core::wspr::osd::capture::snapshot().len();
+    let total = mfsk_core::__internal::wspr::osd::capture::snapshot().len();
     println!("\ntotal osd_decode() inputs harvested: {total}");
 }
 
@@ -372,7 +373,7 @@ fn wspr_osd_packed_matches_unpacked() {
         common::skip_or_fail("wspr_osd_packed_matches_unpacked");
         return;
     };
-    let inputs = mfsk_core::wspr::osd::capture::snapshot();
+    let inputs = mfsk_core::__internal::wspr::osd::capture::snapshot();
     assert!(!inputs.is_empty(), "harvested zero osd_decode inputs");
 
     let mut mismatches = 0usize;
@@ -416,10 +417,10 @@ fn wspr_osd_packed_matches_unpacked() {
 // Reads `wspr::instrument`'s Fano/OSD counters, which exist only with `instrument`.
 #[cfg(all(feature = "internal-testing", feature = "instrument"))]
 fn wspr_rank_sweep() {
+    use mfsk_core::__internal::wspr::decode::debug_refined_sync;
     use mfsk_core::msg::WsprMessage;
     use mfsk_core::wspr::baseband::decimate_to_baseband;
     use mfsk_core::wspr::coarse_baseband::coarse_baseband;
-    use mfsk_core::wspr::decode::debug_refined_sync;
     use mfsk_core::wspr::instrument;
 
     let dir = sweep_dir();

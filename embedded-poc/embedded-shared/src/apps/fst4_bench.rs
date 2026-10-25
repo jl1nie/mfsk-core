@@ -895,7 +895,7 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
 /// step 3 of the two-step host-then-device plan
 /// (`tests/fst4_sweep.rs::fst4_60_diag_rung_major_scheduling` did steps
 /// 1-2 host-side). Calls the real, host-verified
-/// `mfsk_core::fst4::rung_major::decode_rung_major` (correctness +
+/// `mfsk_core::__internal::fst4::rung_major::decode_rung_major` (correctness +
 /// AWGN/CCIR-moderate recall checked against production in
 /// `tests/fst4_sweep.rs::fst4_60_diag_decode_rung_major_correctness`)
 /// instead of reimplementing the stage sequence in this bench a second
@@ -914,7 +914,7 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
 /// runs both `false` and `true` so the two totals are directly
 /// comparable to `full` (43.134 s) and `no8_osd` (17.147 s) above.
 ///
-/// Also runs [`mfsk_core::fst4::rung_major::decode_phase_split_timed`]
+/// Also runs [`mfsk_core::__internal::fst4::rung_major::decode_phase_split_timed`]
 /// (`Schedule::PhaseSplit`, `budget_ok = None`) over the same candidate
 /// set immediately after -- issue #310's own implementation note
 /// flagged this real-hardware comparison as not yet done, and #327
@@ -924,7 +924,7 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
 /// above exactly; only per-stage order (and therefore the wall-clock
 /// total under a hypothetical mid-run budget cutoff) differs.
 fn run_rung_major(refined_bin: &[u8]) {
-    use mfsk_core::fst4::rung_major::RungMajorCandidate;
+    use mfsk_core::__internal::fst4::rung_major::RungMajorCandidate;
     use mfsk_core::fst4::Fst4s60;
 
     log_heap("boot");
@@ -959,7 +959,7 @@ fn run_rung_major(refined_bin: &[u8]) {
         (true, true, "no8_osd_bponly"),
     ] {
         let t0 = now_us();
-        let results = mfsk_core::fst4::rung_major::decode_rung_major_timed::<Fst4s60>(
+        let results = mfsk_core::__internal::fst4::rung_major::decode_rung_major_timed::<Fst4s60>(
             &inputs,
             skip_llrc,
             skip_osd,
@@ -1005,7 +1005,7 @@ fn run_rung_major(refined_bin: &[u8]) {
         (true, true, "no8_osd_bponly"),
     ] {
         let t0 = now_us();
-        let results = mfsk_core::fst4::rung_major::decode_phase_split_timed::<Fst4s60>(
+        let results = mfsk_core::__internal::fst4::rung_major::decode_phase_split_timed::<Fst4s60>(
             &inputs,
             skip_llrc,
             skip_osd,

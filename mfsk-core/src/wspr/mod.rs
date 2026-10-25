@@ -24,7 +24,7 @@
 //! ## Quick example
 //!
 //! ```no_run
-//! use mfsk_core::wspr::DecodeRequest;
+//! use mfsk_core::__internal::wspr::DecodeRequest;
 //!
 //! # let audio: Vec<f32> = vec![];
 //! // `audio` is ~1.44M f32 samples at 12 kHz (120 s slot).
@@ -67,10 +67,6 @@ pub mod ddc;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(any(feature = "internal-testing", test))]
-pub mod decode_request;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(not(any(feature = "internal-testing", test)))]
 pub(crate) mod decode_request;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod demod;
@@ -96,13 +92,9 @@ pub mod tx;
 pub use decode::{WsprCallsignTable, WsprResult};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode_request::SniperRequest;
-// The wide-band request is the engine's, reached through `internal-testing`
+// The wide-band request is the engine's, reached through `__internal`
 // since 0.13: `crate::decoder::Decoder` is the decode API.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(any(feature = "internal-testing", test))]
-pub use decode_request::DecodeRequest;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(not(any(feature = "internal-testing", test)))]
 pub(crate) use decode_request::DecodeRequest;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use rx::demodulate_aligned;

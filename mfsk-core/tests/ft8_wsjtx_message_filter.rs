@@ -7,9 +7,9 @@
 //! ordinary one.
 #![cfg(all(feature = "fft-rustfft", feature = "ft8"))]
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::params::NMAX;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77_type1, unpack77};
 
 /// One clean transmission, DT 0.5 s, in silence plus faint noise.

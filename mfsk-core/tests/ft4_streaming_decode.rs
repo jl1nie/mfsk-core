@@ -36,8 +36,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft4::Ft4;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]

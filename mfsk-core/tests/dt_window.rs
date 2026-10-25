@@ -96,8 +96,9 @@ fn place(signal: &[f32], start_sec: f32, slot_sec: f32) -> Vec<f32> {
 
 #[test]
 fn jt65_window_reaches_reference_late_edge() {
+    use mfsk_core::__internal::jt65::DecodeRequest;
     use mfsk_core::jt65::search::{SearchParams, default_search_params};
-    use mfsk_core::jt65::{DecodeRequest, tx::synthesize_standard};
+    use mfsk_core::jt65::tx::synthesize_standard;
 
     let signal = synthesize_standard("K1ABC", "W9XYZ", "EN37", FS, 1500.0, 0.3)
         .expect("JT65 synth must succeed");
@@ -135,8 +136,9 @@ fn jt65_window_reaches_reference_late_edge() {
 
 #[test]
 fn jt9_window_reaches_reference_late_edge() {
+    use mfsk_core::__internal::jt9::DecodeRequest;
     use mfsk_core::jt9::search::{SearchParams, default_search_params};
-    use mfsk_core::jt9::{DecodeRequest, tx::synthesize_standard};
+    use mfsk_core::jt9::tx::synthesize_standard;
 
     let signal = synthesize_standard("K1ABC", "W9XYZ", "EN37", FS, 1500.0, 0.3)
         .expect("JT9 synth must succeed");
@@ -188,8 +190,9 @@ const REFERENCE_Q65_EARLY_SEC: f32 = -1.0;
 /// exactly these frames and so cannot express the case under test.
 #[test]
 fn jt65_decodes_frame_starting_before_the_buffer() {
+    use mfsk_core::__internal::jt65::DecodeRequest;
     use mfsk_core::jt65::search::{SearchParams, default_search_params};
-    use mfsk_core::jt65::{DecodeRequest, tx::synthesize_standard};
+    use mfsk_core::jt65::tx::synthesize_standard;
 
     let signal = synthesize_standard("K1ABC", "W9XYZ", "EN37", FS, 1500.0, 0.3)
         .expect("JT65 synth must succeed");
@@ -229,7 +232,7 @@ fn jt65_decodes_frame_starting_before_the_buffer() {
 
 #[test]
 fn q65_decodes_frame_starting_before_the_buffer() {
-    use mfsk_core::q65::decode_request::DecodeRequest;
+    use mfsk_core::__internal::q65::decode_request::DecodeRequest;
     use mfsk_core::q65::search::default_search_params as q65_default_search_params;
     use mfsk_core::q65::{Q65a15, tx::synthesize_standard_for};
 
@@ -272,7 +275,7 @@ fn q65_decodes_frame_starting_before_the_buffer() {
 const REFERENCE_Q65_60_EME_LATE_SEC: f32 = 5.0;
 
 fn q65_60a_decodes_at(dt: f32, eme: bool) -> bool {
-    use mfsk_core::q65::decode_request::DecodeRequest;
+    use mfsk_core::__internal::q65::decode_request::DecodeRequest;
     use mfsk_core::q65::search::default_search_params as q65_default_search_params;
     use mfsk_core::q65::{Q65a60, tx::synthesize_standard_for};
 
@@ -343,7 +346,7 @@ const REFERENCE_Q65_120_LATE_SEC: f32 = 2.0;
 #[test]
 #[cfg(feature = "q65")]
 fn q65_120d_default_window_reaches_reference_late_edge() {
-    use mfsk_core::q65::decode_request::DecodeRequest;
+    use mfsk_core::__internal::q65::decode_request::DecodeRequest;
     use mfsk_core::q65::search::default_search_params as q65_default_search_params;
     use mfsk_core::q65::{Q65d120, tx::synthesize_standard_for};
 

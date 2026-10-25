@@ -46,7 +46,8 @@ fn place(signal: &[f32], start_sec: f32, slot_sec: f32) -> Vec<f32> {
 /// second early and dt must come back at about −0.5 s.
 #[test]
 fn q65_early_signal_reports_negative_dt() {
-    use mfsk_core::q65::{Q65a30, decode_request::DecodeRequest, tx::synthesize_standard_for};
+    use mfsk_core::__internal::q65::DecodeRequest;
+    use mfsk_core::q65::{Q65a30, tx::synthesize_standard_for};
 
     let signal = synthesize_standard_for::<Q65a30>("CQ", "JL1NIE", "PM95", FS, 1500.0, 0.5)
         .expect("Q65-30A synth must succeed");
@@ -93,7 +94,8 @@ fn q65_early_signal_reports_negative_dt() {
 /// is what brings it back.
 #[test]
 fn jt65_early_signal_reports_negative_dt() {
-    use mfsk_core::jt65::{DecodeRequest, tx::synthesize_standard};
+    use mfsk_core::__internal::jt65::DecodeRequest;
+    use mfsk_core::jt65::tx::synthesize_standard;
 
     let signal = synthesize_standard("CQ", "JL1NIE", "PM95", FS, 1270.0, 0.5).expect("JT65 synth");
 

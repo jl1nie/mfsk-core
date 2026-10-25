@@ -8,15 +8,16 @@
 
 use std::path::PathBuf;
 
+use mfsk_core::__internal::wspr::DecodeRequest;
 use mfsk_core::wspr::SearchParams;
+use mfsk_core::wspr::SniperRequest;
 use mfsk_core::wspr::WsprResult;
 use mfsk_core::wspr::search::default_search_params;
-use mfsk_core::wspr::{DecodeRequest, SniperRequest};
 // The deprecated double-SIC wrappers are still exercised here on
 // purpose: two diagnostics measure them, and one test guards their
 // streaming parity. See `decode_scan_subtract`'s doc comment.
 #[allow(deprecated)]
-use mfsk_core::wspr::decode::decode_scan_subtract;
+use mfsk_core::__internal::wspr::decode::decode_scan_subtract;
 
 #[allow(dead_code)]
 mod common;
@@ -1128,10 +1129,11 @@ fn wspr_diag_list_all_decodes() {
 #[test]
 #[ignore = "manual diagnostic — G8VDQ's rank among pass-2 survivors by refined sync"]
 fn wspr_diag_g8vdq_rank_after_minsync2() {
+    use mfsk_core::__internal::wspr::decode::debug_refined_sync;
     use mfsk_core::wspr::WsprResult;
     use mfsk_core::wspr::baseband::decimate_to_baseband;
     use mfsk_core::wspr::coarse_baseband::coarse_baseband;
-    use mfsk_core::wspr::decode::{WsprCallsignTable, debug_refined_sync};
+    use mfsk_core::wspr::decode::WsprCallsignTable;
     use mfsk_core::wspr::encode_channel_symbols;
     use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
@@ -1341,10 +1343,11 @@ fn wspr_diag_osd_decode_host_timing() {
 #[test]
 #[ignore = "manual diagnostic — per-pass rank of the real decode among minsync2 survivors"]
 fn wspr_diag_rank_by_pass() {
+    use mfsk_core::__internal::wspr::decode::debug_refined_sync;
     use mfsk_core::wspr::WsprResult;
     use mfsk_core::wspr::baseband::decimate_to_baseband;
     use mfsk_core::wspr::coarse_baseband::coarse_baseband;
-    use mfsk_core::wspr::decode::{WsprCallsignTable, debug_refined_sync};
+    use mfsk_core::wspr::decode::WsprCallsignTable;
     use mfsk_core::wspr::encode_channel_symbols;
     use mfsk_core::wspr::subtract::subtract_signal_baseband;
 

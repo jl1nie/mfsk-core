@@ -243,7 +243,7 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
     // scans the slot to pick its shift. It is what each path costs.
     let t_f32 = now_us();
     let (nf, nt, data) =
-        mfsk_core::ft8::decode_block::compute_spectrogram_f32_timed(slot, 3_000.0);
+        mfsk_core::__internal::ft8::decode_block::compute_spectrogram_f32_timed(slot, 3_000.0);
     let t_f32_end = now_us();
     log::info!(
         "  stage 1 f32 (A/B):    {:>8} us  ({nt}× FFT, {nf} freq bins, {} KB vs {} KB)          → fixed-point is {}.{:02}x",

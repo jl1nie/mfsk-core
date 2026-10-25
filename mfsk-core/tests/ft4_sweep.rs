@@ -124,12 +124,12 @@ fn decode_wav_ft4(audio: &[i16]) -> (bool, u32) {
     let ap = ap_hint_requested();
     let cq = mfsk_core::msg::ApHint::new().with_call1("CQ");
     let mut req = if task_t1_requested() {
-        mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+        mfsk_core::__internal::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
             audio, 200.0, 3000.0, 1.18, 200,
         )
         .ap_hint(&cq)
     } else {
-        mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+        mfsk_core::__internal::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
             audio, 100.0, 3000.0, 0.8, 50,
         )
     };
@@ -1172,13 +1172,12 @@ fn ft4_diag_candidate_cost_split() {
             // passes) — the number directly comparable to
             // `BENCHMARKS.md`'s "Decode speed" table.
             let t0 = Instant::now();
-            let decodes =
-                mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
-                    &audio, 100.0, 2700.0, 0.05, 2000,
-                )
-                .sic_rounds(3)
-                .decode()
-                .results;
+            let decodes = mfsk_core::__internal::msg::decode_request::DecodeRequest::<
+                mfsk_core::ft4::Ft4,
+            >::new(&audio, 100.0, 2700.0, 0.05, 2000)
+            .sic_rounds(3)
+            .decode()
+            .results;
             let dt = t0.elapsed();
             eprintln!(
                 "golden 000000_000002.wav: flat SIC wall-clock = {:.1} ms, {} decode(s)",

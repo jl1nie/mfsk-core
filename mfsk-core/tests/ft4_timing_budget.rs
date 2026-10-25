@@ -8,10 +8,10 @@
 
 use std::time::Instant;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::engine::{MessageCodec, MessageFields};
 use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::decode::ApHint;
-use mfsk_core::msg::decode_request::DecodeRequest;
 
 const FS: f32 = 12_000.0;
 const REF_BW: f32 = 2_500.0;

@@ -114,11 +114,11 @@ use mfsk_core::engine::FrameLayout;
 #[allow(dead_code)]
 mod common;
 use common::{load_wav_f32_opt, parse_snr_tag};
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::default_search_params;
 use mfsk_core::q65::{
-    DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
-    Q65e120,
+    Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
 };
 
 const GOLDEN_MSG: &str = "CQ JL1NIE PM95";

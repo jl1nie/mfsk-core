@@ -45,7 +45,7 @@ pub(crate) const K: usize = 50;
 /// assumption: whatever a rewrite is diffed against is exactly what
 /// production would have handed the old implementation.
 #[cfg(any(test, feature = "internal-testing"))]
-pub mod capture {
+pub(crate) mod capture {
     use alloc::vec::Vec;
     use std::sync::Mutex;
 

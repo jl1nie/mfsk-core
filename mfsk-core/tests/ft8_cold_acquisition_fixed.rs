@@ -20,9 +20,9 @@
 //! ```
 #![cfg(feature = "fixed-point")]
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::acquire::{REQUIRED_SAMPLES, acquire_slot_phase};
-use mfsk_core::msg::decode_request::DecodeRequest;
 
 #[allow(dead_code)]
 mod common;
@@ -476,10 +476,10 @@ fn refine_selected_acquisition() {
 #[test]
 #[ignore = "diagnostic, prints a table"]
 fn are_the_top_candidates_frames_or_sidelobes() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::engine::sync::SyncCandidate;
     use mfsk_core::ft8::Ft8;
     use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
 

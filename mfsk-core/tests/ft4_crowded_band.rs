@@ -200,7 +200,7 @@ fn ft4_crowded_band_candidate_budget_and_precision() {
             // interference cancellation, which is what WSJT-X itself
             // runs (`ft4_decode.f90` `nsp=3`, `dosubtract=.true.`) and
             // what `dual_core` has no path for.
-            let sic = mfsk_core::msg::decode_request::DecodeRequest::<Ft4>::new(
+            let sic = mfsk_core::__internal::msg::decode_request::DecodeRequest::<Ft4>::new(
                 &audio,
                 FREQ_MIN_HZ,
                 FREQ_MAX_HZ,

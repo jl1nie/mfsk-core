@@ -10,9 +10,9 @@
 //! rung decodes it back, so a future refactor that silently drops
 //! `osd` on the floor would break the assertion.
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields};
 use mfsk_core::ft4::Ft4;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::{Wsjt77Message, wsjt77};
 
 const NN: usize = <Ft4 as FrameLayout>::N_SYMBOLS as usize;

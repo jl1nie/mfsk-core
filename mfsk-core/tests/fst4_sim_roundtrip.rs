@@ -85,8 +85,8 @@ fn sim_corpus_hint() -> String {
 #[test]
 #[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_60_sim_roundtrip() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::fst4::Fst4s60;
-    use mfsk_core::msg::decode_request::DecodeRequest;
     use mfsk_core::msg::wsjt77::unpack77;
 
     let Some(audio) = sim_wav(60) else {
@@ -130,8 +130,8 @@ fn fst4_60_sim_roundtrip() {
 #[test]
 #[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_15_sim_roundtrip() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::fst4::Fst4s15;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(15) else {
         common::corpus::missing("fst4_15_sim_roundtrip", &sim_corpus_hint());
@@ -150,8 +150,8 @@ fn fst4_15_sim_roundtrip() {
 #[test]
 #[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_30_sim_roundtrip() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::fst4::Fst4s30;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(30) else {
         common::corpus::missing("fst4_30_sim_roundtrip", &sim_corpus_hint());
@@ -170,8 +170,8 @@ fn fst4_30_sim_roundtrip() {
 #[test]
 #[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_120_sim_roundtrip() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::fst4::Fst4s120;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(120) else {
         common::corpus::missing("fst4_120_sim_roundtrip", &sim_corpus_hint());
@@ -190,8 +190,8 @@ fn fst4_120_sim_roundtrip() {
 #[test]
 #[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_300_sim_roundtrip() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::fst4::Fst4s300;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(300) else {
         common::corpus::missing("fst4_300_sim_roundtrip", &sim_corpus_hint());

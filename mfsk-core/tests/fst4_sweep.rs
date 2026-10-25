@@ -66,11 +66,11 @@ const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 /// (see `common::distinct_extras`).
 fn decode_wav_fst4<P>(audio: &[i16]) -> (bool, u32)
 where
-    P: mfsk_core::msg::decode_request::FrameDecodable<
+    P: mfsk_core::__internal::msg::decode_request::FrameDecodable<
             DecodeResult = mfsk_core::fst4::decode::DecodeResult,
-        > + mfsk_core::msg::decode_request::SupportsWideBandAp,
+        > + mfsk_core::__internal::msg::decode_request::SupportsWideBandAp,
 {
-    use mfsk_core::msg::decode_request::DecodeRequest;
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     // `MFSK_FST4_SWEEP_TASK=t1`: the upstream-baseline task (T1 in
     // `scripts/upstream_tasks.json`), mirroring `jt9 -7 -p <n> -d 3 -L 200
     // -H 3000`: the band set to 200-3000 Hz and, because that `jt9` runs AP at
@@ -454,7 +454,7 @@ fn fst4_reported_snr_tracks_injected_all_submodes() {
                 let Some(audio) = load_wav_i16_opt(&w.path) else {
                     continue;
                 };
-                let out = mfsk_core::msg::decode_request::DecodeRequest::<$proto>::new(
+                let out = mfsk_core::__internal::msg::decode_request::DecodeRequest::<$proto>::new(
                     &audio, 100.0, 3000.0, 1.2, 50,
                 )
                 .decode();
@@ -570,14 +570,14 @@ fn fst4_coarse_sync_output_has_no_deduped_candidates() {
 /// substage == 0` is Phase A) is exactly where an off-by-one would hide.
 #[test]
 fn fst4_phase_split_matches_rung_major_without_a_budget() {
+    use mfsk_core::__internal::fst4::rung_major::{
+        RungMajorCandidate, decode_phase_split_timed, decode_rung_major_timed,
+    };
     use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
-    use mfsk_core::fst4::rung_major::{
-        RungMajorCandidate, decode_phase_split_timed, decode_rung_major_timed,
-    };
 
     let Some(path) = common::corpus::golden_path_or_upstream(
         "fst4/210115_0058.wav",

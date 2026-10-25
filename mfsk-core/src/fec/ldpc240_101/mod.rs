@@ -142,35 +142,6 @@ const FST4_PARTIAL_CRC: PartialCrc = PartialCrc {
 /// branch). Ignored for ndeep=2 (no `npre2` pass).
 const FST4_NPRE_NTAU: usize = 14;
 
-/// Diagnostic-only override (issue #306/#198 bug hunt): when set, force
-/// [`fst4_osd_decode`] to run the old unpruned combinatorial search
-/// instead of the production npre1/npre2 dispatch, for the remainder of
-/// the process. `internal-testing`-gated via [`fst4_osd_diag_force_old`]
-/// below — reads as `false` (production npre1/npre2 path) in every
-/// non-`internal-testing` build, so this can't affect a real release
-/// artifact. `core::sync::atomic` rather than `std::thread_local!` since
-/// this crate is `no_std` + `alloc`.
-#[cfg(feature = "internal-testing")]
-static OSD_DIAG_FORCE_OLD: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
-/// Force [`fst4_osd_decode`] (and hence the whole production decode
-/// path, `decode_soft`/`decode_soft_pooled`/`DecodeRequest`) to use the
-/// pre-port unpruned combinatorial OSD search instead of npre1/npre2,
-/// for the rest of this process. Lets a test run the *exact* production
-/// entry point (e.g. `decode_wav_fst4_60` in `tests/fst4_sweep.rs`)
-/// twice — once per algorithm — for direct end-to-end A/B comparison,
-/// without reimplementing `decode_soft`'s BP/zsum control flow
-/// separately in the test and risking that reimplementation drifting
-/// out of sync with the real thing. Diagnostic only, not thread-safe
-/// against concurrently-running tests that also decode FST4 — callers
-/// should serialise (e.g. `--test-threads=1`, or reset to `false`
-/// immediately after the comparison).
-#[cfg(feature = "internal-testing")]
-pub fn fst4_osd_diag_force_old(force_old: bool) {
-    OSD_DIAG_FORCE_OLD.store(force_old, core::sync::atomic::Ordering::Relaxed);
-}
-
 /// FST4's OSD dispatch: WSJT-X-faithful `npre1`/`npre1+npre2` for
 /// `ndeep` 2/3 (see module-level doc comment above), falling back to
 /// [`osd_decode_generic`] for any other depth.
@@ -188,7 +159,7 @@ fn fst4_osd_decode(
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
     #[cfg(feature = "internal-testing")]
-    let use_npre = !OSD_DIAG_FORCE_OLD.load(core::sync::atomic::Ordering::Relaxed);
+    let use_npre = !testing::OSD_DIAG_FORCE_OLD.load(core::sync::atomic::Ordering::Relaxed);
     #[cfg(not(feature = "internal-testing"))]
     let use_npre = true;
     fst4_osd_decode_dispatch(llr, ndeep, ap_mask, verify, use_npre)
@@ -198,7 +169,7 @@ fn fst4_osd_decode(
 /// which search to run — `use_npre=true` is production (WSJT-X-faithful
 /// `npre1`/`npre1+npre2`), `use_npre=false` is the previous unpruned
 /// `osd_decode_generic` combinatorial search. The `use_npre=false` arm
-/// (driven by [`fst4_osd_diag_force_old`]) exists so a test can run the
+/// (driven by `fst4_osd_diag_force_old`) exists so a test can run the
 /// *exact* production entry point through both searches for a direct
 /// end-to-end A/B comparison, instead of reimplementing `decode_soft`'s
 /// dispatch logic separately and risking it drifting out of sync with
@@ -427,5 +398,38 @@ mod tests {
         let r = bp_decode_generic::<Ldpc240_101Params>(&llr, None, 30, Some(check_crc24))
             .expect("BP converges on perfect LLR");
         assert_eq!(&r.info[..77], &info[..77]);
+    }
+}
+
+#[cfg(feature = "internal-testing")]
+// Reached only through `__internal::fec::ldpc240_101`, which exists with `fst4`.
+#[cfg_attr(not(feature = "fst4"), allow(dead_code))]
+pub(crate) mod testing {
+
+    /// Diagnostic-only override (issue #306/#198 bug hunt): when set, force
+    /// [`fst4_osd_decode`] to run the old unpruned combinatorial search
+    /// instead of the production npre1/npre2 dispatch, for the remainder of
+    /// the process. Reopened only through `__internal` (via [`fst4_osd_diag_force_old`]
+    /// below) — reads as `false` (production npre1/npre2 path) in every
+    /// non-`internal-testing` build, so this can't affect a real release
+    /// artifact. `core::sync::atomic` rather than `std::thread_local!` since
+    /// this crate is `no_std` + `alloc`.
+    pub(super) static OSD_DIAG_FORCE_OLD: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+
+    /// Force `fst4_osd_decode` (and hence the whole production decode
+    /// path, `decode_soft`/`decode_soft_pooled`/`DecodeRequest`) to use the
+    /// pre-port unpruned combinatorial OSD search instead of npre1/npre2,
+    /// for the rest of this process. Lets a test run the *exact* production
+    /// entry point (e.g. `decode_wav_fst4_60` in `tests/fst4_sweep.rs`)
+    /// twice — once per algorithm — for direct end-to-end A/B comparison,
+    /// without reimplementing `decode_soft`'s BP/zsum control flow
+    /// separately in the test and risking that reimplementation drifting
+    /// out of sync with the real thing. Diagnostic only, not thread-safe
+    /// against concurrently-running tests that also decode FST4 — callers
+    /// should serialise (e.g. `--test-threads=1`, or reset to `false`
+    /// immediately after the comparison).
+    pub fn fst4_osd_diag_force_old(force_old: bool) {
+        OSD_DIAG_FORCE_OLD.store(force_old, core::sync::atomic::Ordering::Relaxed);
     }
 }

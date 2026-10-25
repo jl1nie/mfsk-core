@@ -57,6 +57,7 @@ use num_complex::Complex;
 mod common;
 use common::load_wav_i16_opt;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::__internal::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
@@ -68,7 +69,6 @@ use mfsk_core::fst4::ddc::{
     REFINE_DS_RATE_HZ, grid_for, wideband_cascade, wideband_refine_recenter,
 };
 use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 const CENTER_HZ: f32 = 1550.0;

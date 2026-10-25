@@ -31,9 +31,9 @@
 //!    "are".
 #![cfg(all(feature = "ft4", feature = "fft-rustfft"))]
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::ap::ApHint;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
 
 const FS: f32 = 12_000.0;

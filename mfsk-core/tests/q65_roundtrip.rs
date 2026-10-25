@@ -6,7 +6,7 @@
 //! tests:
 //! - the signal lives at a non-trivial dial frequency (1500 Hz),
 //! - it can start at any sample within the slot — the receiver
-//!   should still find it via [`mfsk_core::q65::DecodeRequest`],
+//!   should still find it via [`mfsk_core::__internal::q65::DecodeRequest`],
 //! - non-standard messages (free text, varying callsigns / grids)
 //!   round-trip through the message codec.
 //!
@@ -15,8 +15,9 @@
 
 #![cfg(feature = "q65")]
 
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::q65::search::default_search_params;
-use mfsk_core::q65::{DecodeRequest, Q65a30, synthesize_standard};
+use mfsk_core::q65::{Q65a30, synthesize_standard};
 
 const FS: u32 = 12_000;
 /// 30-second Q65-30A slot at 12 kHz.

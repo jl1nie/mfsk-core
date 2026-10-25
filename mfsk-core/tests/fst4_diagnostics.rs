@@ -75,11 +75,11 @@ type Fst4PreparedCand = (Vec<num_complex::Complex<f32>>, i32);
 
 fn decode_wav_fst4<P>(audio: &[i16]) -> bool
 where
-    P: mfsk_core::msg::decode_request::FrameDecodable<
+    P: mfsk_core::__internal::msg::decode_request::FrameDecodable<
             DecodeResult = mfsk_core::fst4::decode::DecodeResult,
         >,
 {
-    use mfsk_core::msg::decode_request::DecodeRequest;
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     DecodeRequest::<P>::new(audio, 100.0, 3000.0, 0.8, 50)
         .decode()
         .results
@@ -980,9 +980,9 @@ fn prepare_fst4_60_cell(
     prepared
 }
 fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
+    use mfsk_core::__internal::fec::ldpc240_101::fst4_osd_diag_force_old;
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
-    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
     use mfsk_core::fst4::Fst4s60;
 
     /// Upper bound on trial index to probe; missing files are skipped, so
@@ -1259,12 +1259,12 @@ fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
 /// production's own recall differs (it carries #308's timing retry, a
 /// wider candidate set, and no ±`FREQ_TOL_HZ` pre-filter).
 fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
+    use mfsk_core::__internal::fec::ldpc240_101::fst4_osd_diag_force_old;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
-    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -2018,9 +2018,9 @@ fn fst4_60_diag_candidate_cost_split() {
     // `BENCHMARKS.md`'s "Decode speed" table (2.60 s as of this
     // investigation's start).
     let t0 = Instant::now();
-    let decodes = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s60>::new(
-        &audio, 100.0, 3000.0, 1.2, 200,
-    )
+    let decodes = mfsk_core::__internal::msg::decode_request::DecodeRequest::<
+        mfsk_core::fst4::Fst4s60,
+    >::new(&audio, 100.0, 3000.0, 1.2, 200)
     .decode()
     .results;
     let dt = t0.elapsed();
@@ -2151,9 +2151,9 @@ fn fst4_300_diag_candidate_cost_split() {
     );
 
     let t0 = Instant::now();
-    let decodes = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s300>::new(
-        &audio, 100.0, 3000.0, 1.2, 200,
-    )
+    let decodes = mfsk_core::__internal::msg::decode_request::DecodeRequest::<
+        mfsk_core::fst4::Fst4s300,
+    >::new(&audio, 100.0, 3000.0, 1.2, 200)
     .decode()
     .results;
     let dt = t0.elapsed();
@@ -2341,7 +2341,7 @@ fn fst4_60_diag_osd_escalation() {
 /// search construct/test, on real FST4-60 data, against the
 /// unpruned `C(101,3) ≈ 166,650` the current `osd_decode_generic`
 /// combinatorial search walks? Runs
-/// [`mfsk_core::fec::ldpc::osd::npre1_pattern_counts`] (a
+/// [`mfsk_core::__internal::fec::ldpc::npre1_pattern_counts`] (a
 /// counting-only port of `osd240_101.f90`'s `nord=1` pass — see its
 /// own doc comment) against the real LLR of every candidate on the
 /// golden WAV that reaches OSD in production (BP already failed,
@@ -2350,12 +2350,12 @@ fn fst4_60_diag_osd_escalation() {
 #[test]
 #[ignore = "manual diagnostic — npre1 pattern-count ceiling estimate (issue #306 follow-up, VK3NV)"]
 fn fst4_60_diag_npre1_pattern_counts() {
+    use mfsk_core::__internal::fec::ldpc::npre1_pattern_counts;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
-    use mfsk_core::fec::ldpc::osd::npre1_pattern_counts;
     use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -2751,7 +2751,7 @@ fn fst4_60_diag_recall_tradeoff_ccir_moderate() {
 #[test]
 #[ignore = "manual diagnostic — FST4-60 recall trade-off, CCIR-moderate, forced old OSD for old-vs-new comparison (issue #306/#198 follow-up)"]
 fn fst4_60_diag_recall_tradeoff_ccir_moderate_old_osd() {
-    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    use mfsk_core::__internal::fec::ldpc240_101::fst4_osd_diag_force_old;
     const SNR_TAGS: &[(&str, u32)] = &[
         ("m20", 100),
         ("m22", 100),
@@ -2942,7 +2942,7 @@ fn fst4_60_diag_npre_osd_recall_verify() {
 #[test]
 #[ignore = "manual bug hunt — FST4-60 npre1/npre2 OSD port m27 recall gap (issue #306/#198)"]
 fn fst4_60_diag_npre_osd_bug_hunt() {
-    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    use mfsk_core::__internal::fec::ldpc240_101::fst4_osd_diag_force_old;
 
     let dir = sweep_dir();
     const SNR_TAGS: &[(&str, u32)] = &[("m26", 100), ("m27", 100)];
@@ -3094,7 +3094,7 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
 #[test]
 #[ignore = "manual bug hunt — FST4-60 npre1/npre2 OSD port CCIR-moderate recall gap (issue #306/#198)"]
 fn fst4_60_diag_npre_osd_bug_hunt_ccir_moderate() {
-    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    use mfsk_core::__internal::fec::ldpc240_101::fst4_osd_diag_force_old;
 
     let dir = sweep_dir();
     let mut old_only: Vec<u32> = Vec::new();
@@ -3591,12 +3591,12 @@ fn fst4_60_diag_stage_ablation_ccir_moderate() {
 #[test]
 #[ignore = "manual verification — decode_rung_major correctness (issue #306 item 3, VK3NV)"]
 fn fst4_60_diag_decode_rung_major_correctness() {
+    use mfsk_core::__internal::fst4::rung_major::{RungMajorCandidate, decode_rung_major};
     use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
-    use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major};
     use mfsk_core::msg::wsjt77::unpack77;
 
     // ---- 1. Real golden WAV ----
@@ -4079,12 +4079,12 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
 #[test]
 #[ignore = "manual root-cause probe — decode_rung_major per-stage timing (issue #306 item 3)"]
 fn fst4_60_diag_rung_major_stage_timing_probe() {
+    use mfsk_core::__internal::fst4::rung_major::{RungMajorCandidate, decode_rung_major_timed};
     use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
-    use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major_timed};
 
     let Some(path) = common::corpus::golden_path_or_upstream(
         "fst4/210115_0058.wav",
@@ -5133,9 +5133,9 @@ fn fst4_60_diag_sniper_cap_per_trial() {
 #[test]
 #[ignore = "manual diagnostic — cheap i0 ranking vs exhaustive retry (issue #308/#310, VK3NV)"]
 fn fst4_60_diag_i0_cheap_rank_vs_exhaustive() {
+    use mfsk_core::__internal::fec::ldpc240_101::fst4_osd_diag_force_old;
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
-    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
     use mfsk_core::fst4::Fst4s60;
 
     const NSYNC_GATE: u32 = 16;

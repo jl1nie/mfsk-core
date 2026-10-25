@@ -439,6 +439,84 @@ pub mod __internal {
     pub mod protocol {
         pub use crate::engine::protocol::bp_pooled::BpPooledFec;
     }
+    /// FT4 timing probes of `engine::sync2d`.
+    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+    pub mod sync2d {
+        pub use crate::engine::sync2d::testing::{
+            buffer_addrs, ft4_aligned_cd0_bench, ft4_sync_ref_prep_bench,
+        };
+    }
+    /// Diagnostics inside the FEC kernels.
+    pub mod fec {
+        #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+        pub mod ldpc {
+            pub use crate::fec::ldpc::osd::testing::npre1_pattern_counts;
+        }
+        #[cfg(feature = "fst4")]
+        pub mod ldpc240_101 {
+            pub use crate::fec::ldpc240_101::testing::fst4_osd_diag_force_old;
+        }
+    }
+    /// The frame family's engine request (`ft8` / `ft4` / `fst4`).
+    #[cfg(all(
+        any(feature = "fft-rustfft", feature = "fft-extern"),
+        any(feature = "ft8", feature = "ft4", feature = "fst4")
+    ))]
+    pub mod msg {
+        pub mod decode_request {
+            pub use crate::msg::decode_request::*;
+        }
+    }
+    #[cfg(feature = "ft8")]
+    pub mod ft8 {
+        pub mod decode_block {
+            #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+            pub use crate::ft8::decode_block::spectrogram::compute_spectrogram_f32_timed;
+        }
+    }
+    #[cfg(feature = "fst4")]
+    pub mod fst4 {
+        #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+        pub mod rung_major {
+            pub use crate::fst4::rung_major::*;
+        }
+    }
+    #[cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
+    pub mod wspr {
+        pub use crate::wspr::decode_request::DecodeRequest;
+        pub mod decode_request {
+            pub use crate::wspr::decode_request::*;
+        }
+        pub mod decode {
+            pub use crate::wspr::decode::testing::{debug_refined_sync, decode_scan_subtract};
+        }
+        pub mod osd {
+            pub mod capture {
+                pub use crate::wspr::osd::capture::*;
+            }
+        }
+    }
+    #[cfg(all(feature = "jt9", any(feature = "fft-rustfft", feature = "fft-extern")))]
+    pub mod jt9 {
+        pub use crate::jt9::decode_request::DecodeRequest;
+        pub mod decode_request {
+            pub use crate::jt9::decode_request::*;
+        }
+    }
+    #[cfg(all(feature = "jt65", any(feature = "fft-rustfft", feature = "fft-extern")))]
+    pub mod jt65 {
+        pub use crate::jt65::decode_request::DecodeRequest;
+        pub mod decode_request {
+            pub use crate::jt65::decode_request::*;
+        }
+    }
+    #[cfg(all(feature = "q65", any(feature = "fft-rustfft", feature = "fft-extern")))]
+    pub mod q65 {
+        pub use crate::q65::decode_request::{DecodeRequest, MultiPeriodRequest};
+        pub mod decode_request {
+            pub use crate::q65::decode_request::*;
+        }
+    }
 }
 
 // Flatten commonly-used types to the crate root.

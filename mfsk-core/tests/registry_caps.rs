@@ -36,7 +36,7 @@
 
 use std::collections::BTreeSet;
 
-use mfsk_core::msg::decode_request::{
+use mfsk_core::__internal::msg::decode_request::{
     FrameDecodable, SupportsNoiseBlanker, SupportsSicEarly, SupportsSicRounds, SupportsSniper,
     SupportsWideBandAp,
 };

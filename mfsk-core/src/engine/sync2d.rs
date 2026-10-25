@@ -700,17 +700,6 @@ impl Ft4CoarsePhasors {
         }
         Self { tables }
     }
-
-    /// Where the tables live (`internal-testing`) — the question the
-    /// 144 KB version got wrong. S3 internal DRAM is
-    /// `0x3FC8_0000..0x3FD0_0000`, PSRAM `0x3C00_0000..0x3E00_0000`.
-    #[cfg(feature = "internal-testing")]
-    pub fn buffer_addrs(&self) -> (usize, usize) {
-        (
-            self.tables[0].1.as_ptr() as usize,
-            self.tables[self.tables.len() - 1].1.as_ptr() as usize,
-        )
-    }
 }
 
 /// The coarse `df` sweep, as `ft4_decode.f90` runs it: -12..=12 Hz in
@@ -724,53 +713,6 @@ const COARSE_DT_STEP: i32 = 4;
 const COARSE_DF_MIN: i32 = -12;
 const COARSE_DF_MAX: i32 = 12;
 const COARSE_DF_STEP: i32 = 3;
-
-/// Time the Δt search's window-independent half, in two pieces
-/// (`internal-testing`).
-///
-/// `ft4_sync_search_window` costs `fixed + cells x per_cell`, and a
-/// degenerate window measures `fixed` without saying what is in it
-/// (`docs/historical/FT4_BENCHMARK_LOG.md` §47). These two entry points run
-/// exactly the pieces that function runs, so a bench can time them
-/// without this module exposing `FlatRef` or `AlignedCd0` themselves.
-///
-/// Returns a value derived from the result so the work cannot be
-/// optimised away.
-#[cfg(feature = "internal-testing")]
-pub fn ft4_sync_ref_prep_bench<P: SyncFrontEnd>(fills: usize) -> f32 {
-    let d = SyncDims::of::<P>(12_000.0);
-    let flat_blocks: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
-        .blocks()
-        .iter()
-        .map(|b| {
-            let off = b.start_symbol as i32 * d.ds_spb as i32;
-            (off, cached_costas_ref_continuous(b.pattern, d.ds_spb))
-        })
-        .collect();
-    let mut twiddled: Vec<(i32, FlatRef)> = flat_blocks
-        .iter()
-        .map(|(off, flat)| (*off, FlatRef::with_len(flat.len())))
-        .collect();
-    let mut sink = 0.0f32;
-    for k in 0..fills {
-        // The same df values the coarse pass sweeps: -12..=12 step 3.
-        let df = (-12 + 3 * (k % 9) as i32) as f32;
-        for ((_, dst), (_, src)) in twiddled.iter_mut().zip(flat_blocks.iter()) {
-            dst.fill(src, df, d.ds_rate);
-        }
-        sink += twiddled[0].1.len() as f32;
-    }
-    sink
-}
-
-/// The other piece: `cd0`'s alignment copy, once per candidate
-/// (`internal-testing`). See [`ft4_sync_ref_prep_bench`].
-#[cfg(feature = "internal-testing")]
-pub fn ft4_aligned_cd0_bench(cd0: &[Complex<f32>]) -> f32 {
-    let aligned = AlignedCd0::new(cd0);
-    let s = aligned.get(cd0);
-    s[0].re + s[s.len() - 1].im
-}
 
 /// Same coherent full-slot Δt search as [`ft4_sync_search`], but over an
 /// explicit `[ib_min, ib_max]` downsampled-sample window instead of the
@@ -1832,5 +1774,68 @@ mod fst4_last_start_tests {
         let r = fst4_sync_search::<Fst4s60>(&long, &cand);
         assert!(r.score.is_finite());
         assert!(r.i0 <= 40, "i0 {} past the last start 40", r.i0);
+    }
+}
+
+#[cfg(feature = "internal-testing")]
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
+pub(crate) mod testing {
+    use super::*;
+
+    /// Where `phasors`' tables live — the question the 144 KB version got
+    /// wrong. S3 internal DRAM is `0x3FC8_0000..0x3FD0_0000`, PSRAM
+    /// `0x3C00_0000..0x3E00_0000`. A free function here, not a method on
+    /// [`Ft4CoarsePhasors`], so the type's public API does not depend on
+    /// `internal-testing` (#693).
+    pub fn buffer_addrs(phasors: &Ft4CoarsePhasors) -> (usize, usize) {
+        (
+            phasors.tables[0].1.as_ptr() as usize,
+            phasors.tables[phasors.tables.len() - 1].1.as_ptr() as usize,
+        )
+    }
+
+    /// Time the Δt search's window-independent half, in two pieces
+    /// (`internal-testing`).
+    ///
+    /// `ft4_sync_search_window` costs `fixed + cells x per_cell`, and a
+    /// degenerate window measures `fixed` without saying what is in it
+    /// (`docs/historical/FT4_BENCHMARK_LOG.md` §47). These two entry points run
+    /// exactly the pieces that function runs, so a bench can time them
+    /// without this module exposing `FlatRef` or `AlignedCd0` themselves.
+    ///
+    /// Returns a value derived from the result so the work cannot be
+    /// optimised away.
+    pub fn ft4_sync_ref_prep_bench<P: SyncFrontEnd>(fills: usize) -> f32 {
+        let d = SyncDims::of::<P>(12_000.0);
+        let flat_blocks: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
+            .blocks()
+            .iter()
+            .map(|b| {
+                let off = b.start_symbol as i32 * d.ds_spb as i32;
+                (off, cached_costas_ref_continuous(b.pattern, d.ds_spb))
+            })
+            .collect();
+        let mut twiddled: Vec<(i32, FlatRef)> = flat_blocks
+            .iter()
+            .map(|(off, flat)| (*off, FlatRef::with_len(flat.len())))
+            .collect();
+        let mut sink = 0.0f32;
+        for k in 0..fills {
+            // The same df values the coarse pass sweeps: -12..=12 step 3.
+            let df = (-12 + 3 * (k % 9) as i32) as f32;
+            for ((_, dst), (_, src)) in twiddled.iter_mut().zip(flat_blocks.iter()) {
+                dst.fill(src, df, d.ds_rate);
+            }
+            sink += twiddled[0].1.len() as f32;
+        }
+        sink
+    }
+
+    /// The other piece: `cd0`'s alignment copy, once per candidate
+    /// (`internal-testing`). See [`ft4_sync_ref_prep_bench`].
+    pub fn ft4_aligned_cd0_bench(cd0: &[Complex<f32>]) -> f32 {
+        let aligned = AlignedCd0::new(cd0);
+        let s = aligned.get(cd0);
+        s[0].re + s[s.len() - 1].im
     }
 }

@@ -32,7 +32,7 @@
 //!
 //! ```no_run
 //! use mfsk_core::fst4::Fst4s60;
-//! use mfsk_core::msg::decode_request::DecodeRequest;
+//! use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 //! use mfsk_core::msg::wsjt77::unpack77;
 //!
 //! # let audio: Vec<i16> = vec![];
@@ -73,7 +73,7 @@ pub mod encode;
     feature = "internal-testing",
     any(feature = "fft-rustfft", feature = "fft-extern")
 ))]
-pub mod rung_major;
+pub(crate) mod rung_major;
 
 /// FST4's 77-bit pre-LDPC scrambler — identical to [`crate::ft4::FT4_RVEC`]
 /// (WSJT-X `genfst4.f90:29-31` uses the same literal array as

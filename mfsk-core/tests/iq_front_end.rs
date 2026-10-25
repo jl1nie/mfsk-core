@@ -14,9 +14,9 @@
 
 use std::collections::BTreeMap;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::iq::{IqSampleFormat, IqStream, IqToAudio};
-use mfsk_core::msg::decode_request::DecodeRequest;
 
 #[allow(dead_code)]
 mod common;

@@ -15,7 +15,7 @@
 //! # #[cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))] {
 //! use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 //! use mfsk_core::ft4::Ft4;
-//! use mfsk_core::msg::decode_request::DecodeRequest;
+//! use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 //! use mfsk_core::msg::wsjt77::{pack77, unpack77};
 //!
 //! // 1. Pack a standard message and synthesise 12 kHz i16 PCM.

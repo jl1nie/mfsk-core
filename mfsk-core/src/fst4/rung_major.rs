@@ -156,7 +156,7 @@ pub struct RungMajorCandidate {
     pub i0: i32,
 }
 
-/// Which schedule [`decode_scheduled`] walks the ladder with.
+/// Which schedule `decode_scheduled` walks the ladder with.
 ///
 /// Both visit exactly the same (candidate, offset, sub-stage) units and
 /// do the same total work — they differ only in order, and therefore

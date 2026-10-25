@@ -21,8 +21,8 @@
 //! crate has published moves silently.
 #![cfg(all(feature = "ft8", feature = "fft-rustfft"))]
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
 
 const FS: f32 = 12_000.0;

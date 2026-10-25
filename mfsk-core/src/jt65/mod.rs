@@ -27,7 +27,7 @@
 //! ## Quick example
 //!
 //! ```no_run
-//! use mfsk_core::jt65::DecodeRequest;
+//! use mfsk_core::__internal::jt65::DecodeRequest;
 //!
 //! # let audio: Vec<f32> = vec![];
 //! // `audio` is 720_000 f32 samples at 12 kHz (60 s slot).
@@ -45,7 +45,7 @@
 //! (`2·errors + erasures ≤ 51`). Use [`SniperRequest::erasures`]:
 //!
 //! ```no_run
-//! use mfsk_core::jt65::DecodeRequest;
+//! use mfsk_core::__internal::jt65::DecodeRequest;
 //!
 //! # let audio: Vec<f32> = vec![];
 //! # let (start_sample, freq_hz) = (0, 1270.0);
@@ -79,7 +79,8 @@
 //! WSJT-X comparison.
 //!
 //! ```no_run
-//! use mfsk_core::jt65::{ChaseParams, DecodeRequest};
+//! use mfsk_core::__internal::jt65::DecodeRequest;
+//! use mfsk_core::jt65::ChaseParams;
 //!
 //! # let audio: Vec<f32> = vec![];
 //! for r in DecodeRequest::new(&audio, 12_000).chase(ChaseParams::default()).decode() {
@@ -111,10 +112,6 @@ pub mod averaging;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod chase;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(any(feature = "internal-testing", test))]
-pub mod decode_request;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(not(any(feature = "internal-testing", test)))]
 pub(crate) mod decode_request;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod hint;
@@ -134,13 +131,9 @@ pub use chase::ChaseParams;
 pub use decode_request::SniperRequest;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use hint::{HintBank, HintSpec};
-// The wide-band request is the engine's, reached through `internal-testing`
+// The wide-band request is the engine's, reached through `__internal`
 // since 0.13: `crate::decoder::Decoder` is the decode API.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(any(feature = "internal-testing", test))]
-pub use decode_request::DecodeRequest;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(not(any(feature = "internal-testing", test)))]
 pub(crate) use decode_request::DecodeRequest;
 pub use interleave::{deinterleave, interleave};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

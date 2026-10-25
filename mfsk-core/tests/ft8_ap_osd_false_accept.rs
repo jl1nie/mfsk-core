@@ -174,9 +174,9 @@ fn ap_measure() {
 #[test]
 #[ignore = "measurement, prints; run with --release --ignored --nocapture"]
 fn ft8_ap_noise_slots_measure() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::ft8::Ft8;
     use mfsk_core::msg::ap::ApHint;
-    use mfsk_core::msg::decode_request::DecodeRequest;
     use mfsk_core::msg::wsjt77::unpack77;
     const SLOTS: usize = 3_000;
     const SAMPLES: usize = 180_000; // 15 s at 12 kHz

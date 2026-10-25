@@ -74,10 +74,6 @@
 pub mod ap_list;
 pub mod contest;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(any(feature = "internal-testing", test))]
-pub mod decode_request;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(not(any(feature = "internal-testing", test)))]
 pub(crate) mod decode_request;
 pub mod hist;
 pub mod protocol;
@@ -96,14 +92,10 @@ pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
 pub use contest::{Caller, Q65Callers, contest_codewords};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use decode_request::{Q65SubMode, SniperRequest};
-// The wide-band requests are the engine's, reached through `internal-testing`
+// The wide-band requests are the engine's, reached through `__internal`
 // since 0.13: `crate::decoder::Decoder` is the decode API.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(not(any(feature = "internal-testing", test)))]
 pub(crate) use decode_request::DecodeRequest;
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[cfg(any(feature = "internal-testing", test))]
-pub use decode_request::{DecodeRequest, MultiPeriodRequest};
 pub use hist::{DxFromHistory, Q65History};
 pub use protocol::{
     Q65Fec, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,

@@ -827,12 +827,12 @@ fn llr_bp_probe(audio: &[i16], candidates: &[SyncCandidate]) {
         {
             const N: usize = 18;
             let t0 = now_us();
-            let sink = mfsk_core::engine::sync2d::ft4_sync_ref_prep_bench::<Ft4>(N);
+            let sink = mfsk_core::__internal::sync2d::ft4_sync_ref_prep_bench::<Ft4>(N);
             let fills_us = now_us() - t0;
             let t0 = now_us();
             let mut sink2 = 0.0f32;
             for _ in 0..5 {
-                sink2 += mfsk_core::engine::sync2d::ft4_aligned_cd0_bench(&cd0);
+                sink2 += mfsk_core::__internal::sync2d::ft4_aligned_cd0_bench(&cd0);
             }
             let align_us = (now_us() - t0) / 5;
             log::info!(
@@ -848,7 +848,7 @@ fn llr_bp_probe(audio: &[i16], candidates: &[SyncCandidate]) {
         {
             use mfsk_core::engine::sync2d::{ft4_sync_search_window_with, Ft4CoarsePhasors};
             let refs = Ft4CoarsePhasors::new::<Ft4>();
-            let (a0, a1) = refs.buffer_addrs();
+            let (a0, a1) = mfsk_core::__internal::sync2d::buffer_addrs(&refs);
             let where_ = |a: usize| {
                 if (0x3FC8_0000..0x3FD0_0000).contains(&a) {
                     "INTERNAL"

@@ -111,8 +111,8 @@ fn timing_qso3_busy_full_parity() {
 #[test]
 #[ignore = "tier C: wall-clock measurement, no assertions — run before a release"]
 fn timing_fst4_300() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::fst4::Fst4s300;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(path) = common::corpus::upstream_sample_path("FST4+FST4W/201230_0300.wav") else {
         common::corpus::missing_upstream("bench_qso3_busy_timing", "FST4+FST4W/201230_0300.wav");
@@ -185,8 +185,8 @@ fn timing_fst4_300() {
 #[test]
 #[ignore = "tier C: wall-clock measurement, no assertions — run before a release"]
 fn timing_fst4_300_sanity_strong_signal() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::fst4::Fst4s300;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let dir = Path::new(&manifest).join("../embedded-poc/assets/fst4_sweep");

@@ -28,8 +28,8 @@
 //! ```
 #![cfg(all(feature = "fft-rustfft", feature = "ft8"))]
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -48,7 +48,7 @@ fn req(audio: &[i16]) -> DecodeRequest<'_, Ft8> {
 
 /// Every field a caller can see, so "unchanged" means unchanged rather
 /// than "same number of rows".
-fn rows(out: &mfsk_core::msg::decode_request::DecodeOutcome<Ft8>) -> Vec<String> {
+fn rows(out: &mfsk_core::__internal::msg::decode_request::DecodeOutcome<Ft8>) -> Vec<String> {
     let mut v: Vec<String> = out
         .results
         .iter()

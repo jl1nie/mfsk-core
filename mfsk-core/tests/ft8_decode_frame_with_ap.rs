@@ -7,10 +7,10 @@
 //! the post-FEC CRC must catch any AP-locked spurious convergence, which
 //! is the safety claim made in the original PR description.
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::engine::{MessageCodec, MessageFields};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::ApHint;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::{Wsjt77Message, wsjt77};
 
 fn pack_msg(call1: &str, call2: &str, grid: &str) -> [u8; 77] {

@@ -360,41 +360,6 @@ fn refine_cascade(
     (best_freq, best_lag, best_drift, best_sync)
 }
 
-/// Refined `best_sync` for one candidate — the exact value `minsync2`
-/// gates on — without running Fano/OSD. Diagnostic-only: written to
-/// answer "where does a known weak decode rank among the candidates
-/// `minsync2` keeps", which needs the per-candidate refined sync, not
-/// just the aggregate pass/fail counters `wspr::instrument` tracks.
-///
-/// `freq_hz`/`start_sample` follow [`decode_at_baseband_inner`]'s
-/// own conventions (tone-0 audio Hz; audio-rate sample index).
-#[cfg(any(test, feature = "internal-testing"))]
-pub fn debug_refined_sync(
-    idat: &[f32],
-    qdat: &[f32],
-    start_sample: usize,
-    freq_hz: f32,
-    drift_hz: f32,
-    refine_drift: bool,
-) -> f32 {
-    let f0_center_init = freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
-    let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
-    let lag_baseband_init = start_sample as i32 / 32;
-    // This caller wants `best_sync` alone, but the cascade needs a
-    // champion buffer to work in, so it supplies one and drops it.
-    let mut isqs = super::demod::IsQs::zeroed();
-    refine_cascade(
-        idat,
-        qdat,
-        f0_baseband_init,
-        lag_baseband_init,
-        drift_hz,
-        refine_drift,
-        &mut isqs,
-    )
-    .3
-}
-
 /// Point decode at a known alignment on a pre-decimated 375 Hz
 /// baseband: wsprd's refine cascade, the `minsync2` gate, then Fano and
 /// the OSD ladder. Public through [`super::SniperRequest`], which
@@ -1593,181 +1558,6 @@ pub(super) fn decode_scan_inner(
     (seen, spent())
 }
 
-#[cfg(feature = "internal-testing")]
-/// WSPR subtract configuration (continuous-phase 4-FSK). Mirrors WSJT-X
-/// `subtract_signal2` in `wsprd.c`: tone spacing 1.4648 Hz, 8192
-/// samples/symbol at 12 kHz, no GFSK shaping (WSPR is plain CPFSK).
-const WSPR_SUBTRACT: crate::engine::dsp::subtract::SubtractCfg =
-    crate::engine::dsp::subtract::SubtractCfg {
-        sample_rate: 12_000.0,
-        tone_spacing_hz: 1.4648,
-        samples_per_symbol: 8192,
-        // WSPR's nominal symbol-0 start is 1.0 s into the slot; our
-        // `start_sample` is already absolute, so the subtract layer
-        // sees `dt_sec` as `(start - 1.0*FS) / FS`. `base_offset_s = 1.0`
-        // matches the convention used by `WsprResult::dt_sec`.
-        base_offset_s: 1.0,
-        gfsk: None,
-    };
-
-#[cfg(feature = "internal-testing")]
-/// LPF kernel half-width for the channel-aware subtract, in audio
-/// samples. Chosen by measuring residual suppression on the WSJT-X
-/// golden — see the call site in `decode_scan_subtract`.
-const WSPR_SUBTRACT_LPF_HALF: usize = 600;
-
-/// A second SIC layer wrapped around the scan, at 12 kHz.
-/// **`internal-testing` only since #403** — not part of the public
-/// decode API, and not part of the reference decoder.
-///
-/// The doc comment here used to claim this function "mirrors WSJT-X
-/// `wsprd.c`'s `npasses=3` SIC loop (`wsprd.c:998-1438`)". That was
-/// true when it was written, and stopped being true in
-/// [#275](https://github.com/jl1nie/mfsk-core/issues/275): porting
-/// wsprd's three-pass structure faithfully put that same loop
-/// *inside* `decode_scan_inner`, citing the same `wsprd.c:805` /
-/// `wsprd.c:999` lines, down to the "skip pass 1 when pass 0 decoded
-/// nothing" rule. The wrapper was left in place and its comment was
-/// not revisited, so two nested layers ended up claiming the same
-/// construct. wsprd has one such loop; this ran three inner passes
-/// twice.
-///
-/// What it costs, measured on the WSJT-X golden
-/// (`wspr_diag_pass_ablation`, Ryzen 9 9900X): the plain scan 0.71 s
-/// for 9/9 goldens, this 2.38 s for the same 9/9 — **3.3× for zero
-/// marginal recall**. `WSPR_BENCHMARK.md`'s "Option C" reached the
-/// same conclusion by ablation before #275 landed.
-///
-/// It was `#[deprecated]` and public, kept only because removing it
-/// was a breaking change. #403 made that break; the function stays
-/// behind `internal-testing` because `wspr_diag_pass_ablation` and the
-/// timing probes in `tests/wspr_wsjtx_samples.rs` are the evidence for
-/// the 3.3× figure above, and evidence that no longer runs cannot be
-/// re-checked.
-///
-/// **Delivery order/dedup contract** for `on_result`: `cb` fires once
-/// per accepted decode, at this function's own SIC-pass dedup-then-push
-/// point (`all.push(d)` below) — not inside the per-pass scan each SIC
-/// round makes internally. The outer SIC accept point is the
-/// final-acceptance point, so `cb` fires exactly once per result that
-/// ends up in the returned `Vec`, in the same order.
-///
-/// Returns deduplicated decodes from all passes.
-#[cfg(feature = "internal-testing")]
-pub fn decode_scan_subtract(
-    audio: &[f32],
-    sample_rate: u32,
-    nominal_start_sample: usize,
-    params: &SearchParams,
-    on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
-) -> Vec<WsprResult> {
-    use crate::engine::dsp::subtract::subtract_tones_lpf;
-    use crate::engine::pipeline::is_scan_dup;
-
-    // The subtract helper takes `&mut [i16]`; convert once, mutate
-    // across passes, work on `f32` for `decode_scan` per pass.
-    let mut residual_i16: Vec<i16> = audio
-        .iter()
-        .map(|&x| (x * 32767.0).clamp(-32768.0, 32767.0) as i16)
-        .collect();
-
-    let mut all: Vec<WsprResult> = Vec::new();
-    // wsprd uses 3 passes. Our `decode_scan` is expensive (~30 s on
-    // a 120-s WSPR slot due to the 2-D refine grid), so we cap at 2
-    // — empirically the bulk of the SIC benefit lands on pass 2 once
-    // the strong KB0VHA-class signals have been removed.
-    const NPASSES: usize = 2;
-
-    for _pass in 0..NPASSES {
-        // Re-convert residual back to f32 for decode_scan (it expects
-        // unit-scale samples).
-        let residual_f32: Vec<f32> = residual_i16.iter().map(|&s| s as f32 / 32_768.0).collect();
-        let new_decodes = decode_scan_inner(
-            &residual_f32,
-            sample_rate,
-            nominal_start_sample,
-            params,
-            None,
-            None,
-            ScanDepth::DEFAULT,
-            None,
-        )
-        .0;
-        if new_decodes.is_empty() {
-            break;
-        }
-        let mut added = 0usize;
-        for d in new_decodes {
-            // Dedup only here: the subtraction below runs before the
-            // row is reported and kept, so `push_unique` does not fit.
-            if is_scan_dup(&all, &d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES) {
-                continue;
-            }
-            // Reconstruct the on-air channel symbols (162 4-FSK tones)
-            // from the recovered 50-bit info, and subtract from the
-            // residual at the decoded (freq, dt). Mirrors wsprd.c:1432-
-            // 1437 `subtract_signal2(idat, qdat, …, channel_symbols)`.
-            let symbols = super::encode_channel_symbols(&d.info_bits);
-            // Channel-aware LPF subtract, matching wsprd's
-            // `subtract_signal2` (`wsprd.c:549-602`): it estimates a
-            // *time-varying* amplitude by low-pass filtering the
-            // product of residual and reference, so it tracks QSB and
-            // drift across the 110.6 s transmission.
-            //
-            // This replaces a constant-amplitude least-squares
-            // subtract that was measurably not doing its job. On the
-            // WSJT-X golden, subtracting W5BIT and measuring the
-            // residual at its own four tone frequencies:
-            //
-            //   const-amplitude   +9.0  -7.7  -5.8  -4.2  dB
-            //   LPF (this)       -25.4 -28.6 -30.0 -19.7  dB
-            //
-            // — the old path *amplified* the first tone by 9 dB and
-            // removed only a few dB from the rest, leaving most of
-            // the interferer in the residual it was supposed to
-            // clean.
-            //
-            // The comment this replaces said the LPF path was avoided
-            // because it "would cost a multi-second convolution on a
-            // 1.4 M-sample WSPR slot". That stopped being true when
-            // `subtract_tones_lpf` gained its FFT fast path for
-            // FT8/FT4 (one forward + inverse FFT per call, O(N log N));
-            // WSPR was simply never migrated. Measured cost of the
-            // whole `decode_scan_subtract` on that slot is unchanged
-            // at ~0.3-0.4 s.
-            //
-            // `lpf_half = 600` was chosen by measurement, not
-            // inherited: 5760 (wsprd's `nfilt=360` scaled from its
-            // 375 Hz baseband to 12 kHz) removes 10-15 dB less,
-            // because our reference is built at audio rate where a
-            // proportionally longer kernel over-smooths the amplitude
-            // estimate.
-            //
-            // `endcorrection = false`: measured identical either way
-            // here, and WSPR's transmission is long enough that edge
-            // handling is negligible.
-            subtract_tones_lpf(
-                &mut residual_i16,
-                &symbols,
-                d.freq_hz,
-                d.dt_sec,
-                &WSPR_SUBTRACT,
-                WSPR_SUBTRACT_LPF_HALF,
-                false,
-            );
-            if let Some(cb) = on_result {
-                cb(&d);
-            }
-            all.push(d);
-            added += 1;
-        }
-        if added == 0 {
-            break;
-        }
-    }
-    all
-}
-
 /// Deinterleave 162 LLRs in place (same permutation as [`deinterleave`]
 /// but for `f32` values). Thin wrapper over
 /// [`crate::engine::interleave::deinterleave_bitrev`] — was its own
@@ -1857,5 +1647,218 @@ mod tests {
                 power_dbm: 33,
             }
         );
+    }
+}
+
+#[cfg(any(test, feature = "internal-testing"))]
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
+pub(crate) mod testing {
+    use super::*;
+
+    /// Refined `best_sync` for one candidate — the exact value `minsync2`
+    /// gates on — without running Fano/OSD. Diagnostic-only: written to
+    /// answer "where does a known weak decode rank among the candidates
+    /// `minsync2` keeps", which needs the per-candidate refined sync, not
+    /// just the aggregate pass/fail counters `wspr::instrument` tracks.
+    ///
+    /// `freq_hz`/`start_sample` follow `decode_at_baseband_inner`'s
+    /// own conventions (tone-0 audio Hz; audio-rate sample index).
+    pub fn debug_refined_sync(
+        idat: &[f32],
+        qdat: &[f32],
+        start_sample: usize,
+        freq_hz: f32,
+        drift_hz: f32,
+        refine_drift: bool,
+    ) -> f32 {
+        let f0_center_init = freq_hz + 1.5 * super::super::demod::TONE_SPACING_HZ;
+        let f0_baseband_init = f0_center_init - super::super::baseband::CENTER_HZ;
+        let lag_baseband_init = start_sample as i32 / 32;
+        // This caller wants `best_sync` alone, but the cascade needs a
+        // champion buffer to work in, so it supplies one and drops it.
+        let mut isqs = super::super::demod::IsQs::zeroed();
+        refine_cascade(
+            idat,
+            qdat,
+            f0_baseband_init,
+            lag_baseband_init,
+            drift_hz,
+            refine_drift,
+            &mut isqs,
+        )
+        .3
+    }
+
+    /// WSPR subtract configuration (continuous-phase 4-FSK). Mirrors WSJT-X
+    /// `subtract_signal2` in `wsprd.c`: tone spacing 1.4648 Hz, 8192
+    /// samples/symbol at 12 kHz, no GFSK shaping (WSPR is plain CPFSK).
+    const WSPR_SUBTRACT: crate::engine::dsp::subtract::SubtractCfg =
+        crate::engine::dsp::subtract::SubtractCfg {
+            sample_rate: 12_000.0,
+            tone_spacing_hz: 1.4648,
+            samples_per_symbol: 8192,
+            // WSPR's nominal symbol-0 start is 1.0 s into the slot; our
+            // `start_sample` is already absolute, so the subtract layer
+            // sees `dt_sec` as `(start - 1.0*FS) / FS`. `base_offset_s = 1.0`
+            // matches the convention used by `WsprResult::dt_sec`.
+            base_offset_s: 1.0,
+            gfsk: None,
+        };
+
+    /// LPF kernel half-width for the channel-aware subtract, in audio
+    /// samples. Chosen by measuring residual suppression on the WSJT-X
+    /// golden — see the call site in `decode_scan_subtract`.
+    const WSPR_SUBTRACT_LPF_HALF: usize = 600;
+
+    /// A second SIC layer wrapped around the scan, at 12 kHz.
+    /// **`internal-testing` only since #403** — not part of the public
+    /// decode API, and not part of the reference decoder.
+    ///
+    /// The doc comment here used to claim this function "mirrors WSJT-X
+    /// `wsprd.c`'s `npasses=3` SIC loop (`wsprd.c:998-1438`)". That was
+    /// true when it was written, and stopped being true in
+    /// [#275](https://github.com/jl1nie/mfsk-core/issues/275): porting
+    /// wsprd's three-pass structure faithfully put that same loop
+    /// *inside* `decode_scan_inner`, citing the same `wsprd.c:805` /
+    /// `wsprd.c:999` lines, down to the "skip pass 1 when pass 0 decoded
+    /// nothing" rule. The wrapper was left in place and its comment was
+    /// not revisited, so two nested layers ended up claiming the same
+    /// construct. wsprd has one such loop; this ran three inner passes
+    /// twice.
+    ///
+    /// What it costs, measured on the WSJT-X golden
+    /// (`wspr_diag_pass_ablation`, Ryzen 9 9900X): the plain scan 0.71 s
+    /// for 9/9 goldens, this 2.38 s for the same 9/9 — **3.3× for zero
+    /// marginal recall**. `WSPR_BENCHMARK.md`'s "Option C" reached the
+    /// same conclusion by ablation before #275 landed.
+    ///
+    /// It was `#[deprecated]` and public, kept only because removing it
+    /// was a breaking change. #403 made that break; the function stays
+    /// behind `internal-testing` because `wspr_diag_pass_ablation` and the
+    /// timing probes in `tests/wspr_wsjtx_samples.rs` are the evidence for
+    /// the 3.3× figure above, and evidence that no longer runs cannot be
+    /// re-checked.
+    ///
+    /// **Delivery order/dedup contract** for `on_result`: `cb` fires once
+    /// per accepted decode, at this function's own SIC-pass dedup-then-push
+    /// point (`all.push(d)` below) — not inside the per-pass scan each SIC
+    /// round makes internally. The outer SIC accept point is the
+    /// final-acceptance point, so `cb` fires exactly once per result that
+    /// ends up in the returned `Vec`, in the same order.
+    ///
+    /// Returns deduplicated decodes from all passes.
+    pub fn decode_scan_subtract(
+        audio: &[f32],
+        sample_rate: u32,
+        nominal_start_sample: usize,
+        params: &SearchParams,
+        on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
+    ) -> Vec<WsprResult> {
+        use crate::engine::dsp::subtract::subtract_tones_lpf;
+        use crate::engine::pipeline::is_scan_dup;
+
+        // The subtract helper takes `&mut [i16]`; convert once, mutate
+        // across passes, work on `f32` for `decode_scan` per pass.
+        let mut residual_i16: Vec<i16> = audio
+            .iter()
+            .map(|&x| (x * 32767.0).clamp(-32768.0, 32767.0) as i16)
+            .collect();
+
+        let mut all: Vec<WsprResult> = Vec::new();
+        // wsprd uses 3 passes. Our `decode_scan` is expensive (~30 s on
+        // a 120-s WSPR slot due to the 2-D refine grid), so we cap at 2
+        // — empirically the bulk of the SIC benefit lands on pass 2 once
+        // the strong KB0VHA-class signals have been removed.
+        const NPASSES: usize = 2;
+
+        for _pass in 0..NPASSES {
+            // Re-convert residual back to f32 for decode_scan (it expects
+            // unit-scale samples).
+            let residual_f32: Vec<f32> =
+                residual_i16.iter().map(|&s| s as f32 / 32_768.0).collect();
+            let new_decodes = decode_scan_inner(
+                &residual_f32,
+                sample_rate,
+                nominal_start_sample,
+                params,
+                None,
+                None,
+                ScanDepth::DEFAULT,
+                None,
+            )
+            .0;
+            if new_decodes.is_empty() {
+                break;
+            }
+            let mut added = 0usize;
+            for d in new_decodes {
+                // Dedup only here: the subtraction below runs before the
+                // row is reported and kept, so `push_unique` does not fit.
+                if is_scan_dup(&all, &d, FREQ_DEDUP_HZ, TIME_DEDUP_SAMPLES) {
+                    continue;
+                }
+                // Reconstruct the on-air channel symbols (162 4-FSK tones)
+                // from the recovered 50-bit info, and subtract from the
+                // residual at the decoded (freq, dt). Mirrors wsprd.c:1432-
+                // 1437 `subtract_signal2(idat, qdat, …, channel_symbols)`.
+                let symbols = super::super::encode_channel_symbols(&d.info_bits);
+                // Channel-aware LPF subtract, matching wsprd's
+                // `subtract_signal2` (`wsprd.c:549-602`): it estimates a
+                // *time-varying* amplitude by low-pass filtering the
+                // product of residual and reference, so it tracks QSB and
+                // drift across the 110.6 s transmission.
+                //
+                // This replaces a constant-amplitude least-squares
+                // subtract that was measurably not doing its job. On the
+                // WSJT-X golden, subtracting W5BIT and measuring the
+                // residual at its own four tone frequencies:
+                //
+                //   const-amplitude   +9.0  -7.7  -5.8  -4.2  dB
+                //   LPF (this)       -25.4 -28.6 -30.0 -19.7  dB
+                //
+                // — the old path *amplified* the first tone by 9 dB and
+                // removed only a few dB from the rest, leaving most of
+                // the interferer in the residual it was supposed to
+                // clean.
+                //
+                // The comment this replaces said the LPF path was avoided
+                // because it "would cost a multi-second convolution on a
+                // 1.4 M-sample WSPR slot". That stopped being true when
+                // `subtract_tones_lpf` gained its FFT fast path for
+                // FT8/FT4 (one forward + inverse FFT per call, O(N log N));
+                // WSPR was simply never migrated. Measured cost of the
+                // whole `decode_scan_subtract` on that slot is unchanged
+                // at ~0.3-0.4 s.
+                //
+                // `lpf_half = 600` was chosen by measurement, not
+                // inherited: 5760 (wsprd's `nfilt=360` scaled from its
+                // 375 Hz baseband to 12 kHz) removes 10-15 dB less,
+                // because our reference is built at audio rate where a
+                // proportionally longer kernel over-smooths the amplitude
+                // estimate.
+                //
+                // `endcorrection = false`: measured identical either way
+                // here, and WSPR's transmission is long enough that edge
+                // handling is negligible.
+                subtract_tones_lpf(
+                    &mut residual_i16,
+                    &symbols,
+                    d.freq_hz,
+                    d.dt_sec,
+                    &WSPR_SUBTRACT,
+                    WSPR_SUBTRACT_LPF_HALF,
+                    false,
+                );
+                if let Some(cb) = on_result {
+                    cb(&d);
+                }
+                all.push(d);
+                added += 1;
+            }
+            if added == 0 {
+                break;
+            }
+        }
+        all
     }
 }

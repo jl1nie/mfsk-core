@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use mfsk_core::jt9::DecodeRequest;
+use mfsk_core::__internal::jt9::DecodeRequest;
 use mfsk_core::jt9::search::SearchParams;
 
 #[allow(dead_code)]

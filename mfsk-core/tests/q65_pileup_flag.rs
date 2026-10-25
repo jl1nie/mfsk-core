@@ -8,11 +8,11 @@
 mod common;
 
 use common::channel::AwgnChannel;
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::msg::ApHint;
 use mfsk_core::msg::q65::pack77_q65;
 use mfsk_core::q65::{
-    DecodeRequest, Q65a30, encode_channel_symbols, encode_channel_symbols_flagged,
-    synthesize_standard_flagged_for,
+    Q65a30, encode_channel_symbols, encode_channel_symbols_flagged, synthesize_standard_flagged_for,
 };
 
 const FS: u32 = 12_000;

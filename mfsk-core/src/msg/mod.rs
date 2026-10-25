@@ -23,16 +23,9 @@ pub mod decoded;
 // build: `fft-rustfft` is on via `jt65`'s own feature dependency, but
 // no protocol implements `FrameDecodable`).
 // The frame family's engine request. Since 0.13 the public decode API is
-// `crate::decoder`; this stays reachable only for `internal-testing`, like
-// the raw engine functions beneath it.
+// `crate::decoder`; this stays crate-private, and `__internal::msg` reopens it
+// for `internal-testing`, like the raw engine functions beneath it.
 #[cfg(all(
-    feature = "internal-testing",
-    any(feature = "fft-rustfft", feature = "fft-extern"),
-    any(feature = "ft8", feature = "ft4", feature = "fst4")
-))]
-pub mod decode_request;
-#[cfg(all(
-    not(feature = "internal-testing"),
     any(feature = "fft-rustfft", feature = "fft-extern"),
     any(feature = "ft8", feature = "ft4", feature = "fst4")
 ))]

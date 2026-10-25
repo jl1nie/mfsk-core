@@ -2,7 +2,7 @@
 //!
 //! Validates the Doppler-spread-aware path
 //! ([`mfsk_core::q65::SniperRequest::fading`] +
-//! [`mfsk_core::q65::DecodeRequest::fading`]) end-to-end:
+//! [`mfsk_core::__internal::q65::DecodeRequest::fading`]) end-to-end:
 //! - clean synthetic input round-trips at every wired sub-mode;
 //! - the metric tolerates injected frequency spread that defeats the
 //!   plain AWGN Bessel front end at the same SNR;
@@ -17,12 +17,12 @@ mod common;
 use common::load_wav_f32_opt as read_wsjtx_wav;
 use std::path::PathBuf;
 
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::{SearchParams, default_search_params};
 use mfsk_core::q65::{
-    DecodeRequest, Q65a30, Q65a60, Q65d60, SniperRequest, synthesize_standard,
-    synthesize_standard_for,
+    Q65a30, Q65a60, Q65d60, SniperRequest, synthesize_standard, synthesize_standard_for,
 };
 
 const FS: f32 = 12_000.0;

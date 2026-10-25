@@ -11,8 +11,9 @@
 #[allow(dead_code)]
 mod common;
 
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::q65::search::SearchParams;
-use mfsk_core::q65::{DecodeRequest, Q65a30, encode_channel_symbols};
+use mfsk_core::q65::{Q65a30, encode_channel_symbols};
 
 const FS: u32 = 12_000;
 const FREQ: f32 = 1500.0;

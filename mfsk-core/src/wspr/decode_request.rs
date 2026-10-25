@@ -38,7 +38,7 @@ use crate::engine::frame::BudgetCheck;
 /// ladder on the `minsync2` survivors).
 ///
 /// ```no_run
-/// use mfsk_core::wspr::DecodeRequest;
+/// use mfsk_core::__internal::wspr::DecodeRequest;
 ///
 /// # let audio: Vec<f32> = vec![];
 /// // `audio` is ~1.44M f32 samples at 12 kHz (120 s slot).

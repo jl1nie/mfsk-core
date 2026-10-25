@@ -33,7 +33,8 @@ use super::search::{SearchParams, default_search_params};
 /// (−23.5 against −22.5 dB, `docs/notes/sweep-baseline.json`).
 ///
 /// ```no_run
-/// use mfsk_core::jt65::{ChaseParams, DecodeRequest};
+/// use mfsk_core::__internal::jt65::DecodeRequest;
+/// use mfsk_core::jt65::ChaseParams;
 ///
 /// # let audio: Vec<f32> = vec![];
 /// // `audio` is 720_000 f32 samples at 12 kHz (60 s slot).

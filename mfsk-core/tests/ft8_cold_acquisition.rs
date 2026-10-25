@@ -38,11 +38,11 @@
 
 use std::time::Instant;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::engine::sync::{SyncCandidate, circular_dt_estimate};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::acquire::{REQUIRED_SAMPLES, acquire_slot_phase};
 use mfsk_core::ft8::decode_block::{coarse_sync_with_lag, compute_spectrogram};
-use mfsk_core::msg::decode_request::DecodeRequest;
 
 #[allow(dead_code)]
 mod common;
@@ -300,8 +300,8 @@ fn tile_breakdown() {
 #[test]
 #[ignore = "diagnostic, prints ground truth"]
 fn fixture_true_phase() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::ft8::Ft8;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
     let res = DecodeRequest::<Ft8>::new(&audio, FREQ_MIN, FREQ_MAX, SYNC_MIN, 200).decode();
@@ -343,8 +343,8 @@ fn fixture_true_phase() {
 #[test]
 #[ignore = "diagnostic, prints a table"]
 fn frame_level_confirmation_rank() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::ft8::Ft8;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
 
@@ -433,8 +433,8 @@ fn frame_level_confirmation_rank() {
 #[test]
 #[ignore = "diagnostic, decodes at every phase — slow"]
 fn phase_quality_by_decodes() {
+    use mfsk_core::__internal::msg::decode_request::DecodeRequest;
     use mfsk_core::ft8::Ft8;
-    use mfsk_core::msg::decode_request::DecodeRequest;
 
     let audio = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
     let decodes_at = |slot: &[i16], p: f32| -> usize {

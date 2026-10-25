@@ -2,7 +2,7 @@
 //!
 //! Validates the BP-free template-matching decoder
 //! ([`mfsk_core::q65::SniperRequest::ap_list`] +
-//! [`mfsk_core::q65::DecodeRequest::ap_list`]) on synthetic
+//! [`mfsk_core::__internal::q65::DecodeRequest::ap_list`]) on synthetic
 //! audio plus the WSJT-X 6 m EME reference recording.
 
 #![cfg(feature = "q65")]
@@ -13,11 +13,12 @@ mod common;
 use common::load_wav_f32_opt as read_wsjtx_wav;
 use std::path::PathBuf;
 
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::fec::qra::Q65Codec;
 use mfsk_core::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use mfsk_core::q65::search::{SearchParams, default_search_params};
 use mfsk_core::q65::{
-    DecodeRequest, Q65a30, Q65a60, SniperRequest, standard_qso_codewords, synthesize_standard,
+    Q65a30, Q65a60, SniperRequest, standard_qso_codewords, synthesize_standard,
     synthesize_standard_for,
 };
 

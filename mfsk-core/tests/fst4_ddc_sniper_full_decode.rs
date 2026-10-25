@@ -50,6 +50,7 @@ use common::{load_wav_i16_opt, parse_snr_tag};
 
 use num_complex::Complex;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::__internal::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::dsp::ddc::ddc_block;
 use mfsk_core::engine::dsp::downsample::build_fft_cache;
@@ -60,7 +61,6 @@ use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::fst4::ddc::{grid_for, sniper_cascade, sniper_refine_recenter};
 use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
-use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 // Matches `tests/fst4_sweep.rs`'s own `GOLDEN_MSG` — the message the

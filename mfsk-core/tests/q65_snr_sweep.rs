@@ -18,8 +18,9 @@
 
 use std::f32::consts::PI;
 
+use mfsk_core::__internal::q65::DecodeRequest;
 use mfsk_core::q65::search::default_search_params;
-use mfsk_core::q65::{DecodeRequest, Q65a30, synthesize_standard};
+use mfsk_core::q65::{Q65a30, synthesize_standard};
 
 const FS: f32 = 12_000.0;
 const FS_U: u32 = 12_000;

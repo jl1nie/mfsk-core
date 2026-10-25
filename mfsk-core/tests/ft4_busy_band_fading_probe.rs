@@ -53,11 +53,11 @@
 //! ```
 use std::collections::BTreeSet;
 
+use mfsk_core::__internal::msg::decode_request::DecodeRequest;
 use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
 use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::decode::DecodeResult;
 use mfsk_core::msg::Wsjt77Message;
-use mfsk_core::msg::decode_request::DecodeRequest;
 
 /// Local shim matching the pre-#191 `ft4::decode::decode_frame_subtract`
 /// signature — this file has many call sites, easier to keep them
