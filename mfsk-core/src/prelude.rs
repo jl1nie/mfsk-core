@@ -45,7 +45,7 @@
         feature = "q65"
     )
 ))]
-pub use crate::decoder::{AnyDecoder, AnySlotResult, Unsupported};
+pub use crate::decoder::{AnyDecoder, AnySlotResult, ModeMismatch, Unsupported};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use crate::decoder::{
     DecodeParams, Decoder, Depth, QsoContext, QsoProgress, Row, RowDetail, SlotInput, SlotResult,

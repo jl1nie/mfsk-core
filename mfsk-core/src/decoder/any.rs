@@ -283,6 +283,50 @@ macro_rules! any_decoder {
                 }
             }
 
+            /// Decode a slot an `IqReceiver` delivered, whichever delivery of its
+            /// period it is: [`Decoder::decode_slot`].
+            #[cfg(any(
+                feature = "ft8",
+                feature = "ft4",
+                feature = "fst4",
+                feature = "wspr",
+                feature = "jt9",
+                feature = "jt65",
+                feature = "q65"
+            ))]
+            pub fn decode_slot(
+                &mut self,
+                slot: &crate::iq::CompletedSlot,
+            ) -> Result<AnySlotResult, super::ModeMismatch> {
+                self.decode_slot_with(slot, None, None)
+            }
+
+            /// [`AnyDecoder::decode_slot`] with a budget and a streaming callback:
+            /// [`Decoder::decode_slot_with`].
+            #[cfg(any(
+                feature = "ft8",
+                feature = "ft4",
+                feature = "fst4",
+                feature = "wspr",
+                feature = "jt9",
+                feature = "jt65",
+                feature = "q65"
+            ))]
+            pub fn decode_slot_with(
+                &mut self,
+                slot: &crate::iq::CompletedSlot,
+                budget: Option<super::BudgetCheck<'_>>,
+                on_row: Option<OnRow<'_, ()>>,
+            ) -> Result<AnySlotResult, super::ModeMismatch> {
+                match self {
+                    $( #[cfg(feature = $feat)] AnyDecoder::$var(d) => {
+                        let cb = on_row.map(|f| move |row: &Row<_>| f(&erase_row(row)));
+                        let cb_ref = cb.as_ref().map(|c| c as OnRow<'_, _>);
+                        d.decode_slot_with(slot, budget, cb_ref).map(erase)
+                    } )*
+                }
+            }
+
             /// A packed 77-bit message as text, `<...>` resolved against this
             /// decoder's callsign table.
             pub fn unpack77(&self, msg77: &[u8]) -> Option<alloc::string::String> {

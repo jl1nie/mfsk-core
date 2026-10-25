@@ -390,6 +390,111 @@ fn early_rows_through_iq(kind: Channelizer) {
     assert!(missing.len() <= want.len() / 10, "lost {missing:?}");
 }
 
+/// A row's text, `freq_hz` and `dt_sec` bits, stage and delivery.
+type Print = (String, u32, u32, Option<Stage>, Option<u32>);
+
+/// A row's identity and detail, bit for bit: what two ways of calling must agree on.
+fn fingerprint(r: &mfsk_core::decoder::AnySlotResult) -> Vec<Print> {
+    r.rows
+        .iter()
+        .map(|row| {
+            (
+                row.decoded.text.clone(),
+                row.decoded.freq_hz.to_bits(),
+                row.decoded.dt_sec.to_bits(),
+                row.detail.stage,
+                row.detail.delivery,
+            )
+        })
+        .collect()
+}
+
+/// #692: `decode_slot` on every delivery of a channel gives, call for call, what the hand-wired
+/// `decode_prefix` (points) or `decode` (whole only) gave; a slot of another mode is an error and
+/// decodes nothing; the streamed rows of `decode_slot_with` are the ones `decode_prefix_with` streams.
+#[test]
+fn decode_slot_is_what_the_caller_wired_by_hand() {
+    use std::sync::Mutex;
+    let Some(audio) = common::load_wav_i16_opt(asset_path!("qso3_busy.wav")) else {
+        common::skip_or_fail("qso3_busy.wav");
+        return;
+    };
+    let mut iq = synth_iq(&audio[..WHOLE], FS, CENTER, DIAL);
+    iq.resize(iq.len() + FS as usize / 2, (0.0, 0.0));
+    let iq = interleave(&iq);
+    let cut = |spec: ChannelSpec| {
+        let mut rx = IqReceiver::new(IqStream::new(FS, CENTER, IqSampleFormat::Cf32));
+        rx.add_channel(DIAL, spec).unwrap();
+        rx.set_time(T0_NS, 0);
+        let mut slots = Vec::new();
+        for c in iq.chunks(2 * 77_777) {
+            rx.push_cf32(c, &mut slots);
+        }
+        slots
+    };
+
+    // with points: A, B, whole
+    let d = AnyDecoder::with_defaults(Mode::Ft8);
+    let slots = cut(ChannelSpec::from(&d));
+    assert_eq!(
+        slots.iter().map(|s| s.audio.len()).collect::<Vec<_>>(),
+        [A, B, WHOLE]
+    );
+    let mut by_hand = AnyDecoder::with_defaults(Mode::Ft8);
+    let mut by_slot = AnyDecoder::with_defaults(Mode::Ft8);
+    let streamed = Mutex::new(Vec::new());
+    let mut streamed_by_hand = Vec::new();
+    for s in &slots {
+        let want = {
+            let log = Mutex::new(Vec::new());
+            let r = by_hand.decode_prefix_with(&s.input(), &|row| {
+                log.lock().unwrap().push(row.decoded.text.clone());
+            });
+            streamed_by_hand.push(log.into_inner().unwrap());
+            r
+        };
+        streamed.lock().unwrap().clear();
+        let got = by_slot
+            .decode_slot_with(
+                s,
+                None,
+                Some(&|row| {
+                    streamed.lock().unwrap().push(row.decoded.text.clone());
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            fingerprint(&got),
+            fingerprint(&want),
+            "{} samples",
+            s.audio.len()
+        );
+        assert_eq!(
+            *streamed.lock().unwrap(),
+            *streamed_by_hand.last().unwrap(),
+            "streamed rows, {} samples",
+            s.audio.len()
+        );
+    }
+
+    // whole slots only: plain decode, no stage
+    let whole = cut(ChannelSpec::from(Mode::Ft8));
+    assert_eq!(whole.len(), 1);
+    let want = AnyDecoder::with_defaults(Mode::Ft8).decode(&whole[0].input());
+    let got = AnyDecoder::with_defaults(Mode::Ft8)
+        .decode_slot(&whole[0])
+        .unwrap();
+    assert_eq!(fingerprint(&got), fingerprint(&want));
+    assert!(got.rows.iter().all(|r| r.detail.stage.is_none()));
+
+    // another mode's slot: refused, nothing decoded
+    let mut ft4 = AnyDecoder::with_defaults(Mode::Ft4);
+    let err = ft4.decode_slot(&whole[0]).unwrap_err();
+    assert_eq!((err.slot, err.decoder), (Mode::Ft8, Mode::Ft4), "{err}");
+    let mut typed = Decoder::<mfsk_core::Ft4>::with_defaults();
+    assert!(typed.decode_slot(&whole[0]).is_err());
+}
+
 #[test]
 fn early_rows_through_iq_direct() {
     early_rows_through_iq(Channelizer::Direct);

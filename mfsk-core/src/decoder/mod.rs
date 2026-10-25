@@ -721,6 +721,83 @@ impl<P: Decodable> Decoder<P> {
     }
 }
 
+/// A slot cut for one mode handed to a decoder of another ([`Decoder::decode_slot`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ModeMismatch {
+    /// The mode the slot was cut for.
+    pub slot: Mode,
+    /// The mode of the decoder it was given to.
+    pub decoder: Mode,
+}
+
+impl core::fmt::Display for ModeMismatch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "a {} slot was given to a {} decoder",
+            self.slot.name(),
+            self.decoder.name()
+        )
+    }
+}
+
+impl core::error::Error for ModeMismatch {}
+
+#[cfg(any(
+    feature = "ft8",
+    feature = "ft4",
+    feature = "fst4",
+    feature = "wspr",
+    feature = "jt9",
+    feature = "jt65",
+    feature = "q65"
+))]
+impl<P: Decodable> Decoder<P> {
+    /// Decode a slot an [`IqReceiver`](crate::iq::IqReceiver) delivered, whichever of the
+    /// deliveries of its period it is. A prefix goes through [`Decoder::decode_prefix`]; the whole
+    /// slot goes through it too when a sequence for that period is open here (a prefix was
+    /// decoded), and through plain [`Decoder::decode`] when none is (a channel with no
+    /// prefix points, or a prefix that never came). So the caller tracks no period and chooses
+    /// no method. `Err` if the slot was cut for another mode; nothing is decoded then. Use
+    /// [`ChannelSpec::from`](crate::iq::ChannelSpec)`(&decoder)` to make the channel, so the two
+    /// cannot disagree.
+    ///
+    /// Synchronous and CPU-bound, like `decode`; for a deadline use [`Decoder::decode_slot_with`].
+    pub fn decode_slot(
+        &mut self,
+        slot: &crate::iq::CompletedSlot,
+    ) -> Result<SlotResult<P::Row>, ModeMismatch> {
+        self.decode_slot_with(slot, None, None)
+    }
+
+    /// [`Decoder::decode_slot`] with a `budget` (checked once per candidate, as
+    /// `SlotInput::budget`) and an `on_row` that gets each row as it is found (as
+    /// `decode_with` / `decode_prefix_with`; a row's `delivery` counts across the period's calls).
+    pub fn decode_slot_with(
+        &mut self,
+        slot: &crate::iq::CompletedSlot,
+        budget: Option<BudgetCheck<'_>>,
+        on_row: Option<OnRow<'_, P::Row>>,
+    ) -> Result<SlotResult<P::Row>, ModeMismatch> {
+        if slot.mode != P::MODE {
+            return Err(ModeMismatch {
+                slot: slot.mode,
+                decoder: P::MODE,
+            });
+        }
+        let mut input = slot.input();
+        input.budget = budget;
+        let prefix = !slot.is_whole() || self.prefix.period == Some(slot.period);
+        Ok(match (prefix, on_row) {
+            (true, Some(cb)) => self.decode_prefix_with(&input, cb),
+            (true, None) => self.decode_prefix(&input),
+            (false, Some(cb)) => self.decode_with(&input, cb),
+            (false, None) => self.decode(&input),
+        })
+    }
+}
+
 /// The parameter block a mode starts with, after the GUI: [`Depth::Deep`],
 /// and AP off for FT8 and JT65, whose "Enable AP" boxes start unchecked
 /// (`mainwindow_settings.cpp:604-605`).
