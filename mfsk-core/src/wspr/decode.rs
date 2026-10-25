@@ -4,8 +4,14 @@
 //! sample, runs demod → deinterleave → Fano → message unpack. No coarse
 //! search here; a later module will wrap this with a (freq × time) scan.
 
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
 use alloc::vec::Vec;
 
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// `f32::round` and friends live in `std`; `num_traits::Float` brings them without it
+use num_traits::Float;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -1618,7 +1624,7 @@ mod tests {
 
     #[test]
     fn survives_moderate_awgn() {
-        use std::f32::consts::PI;
+        use core::f32::consts::PI;
 
         let freq = 1500.0;
         let mut audio =

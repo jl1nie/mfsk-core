@@ -490,6 +490,7 @@ pub mod __internal {
         pub mod decode {
             pub use crate::wspr::decode::testing::{debug_refined_sync, decode_scan_subtract};
         }
+        #[cfg(feature = "std")]
         pub mod osd {
             pub mod capture {
                 pub use crate::wspr::osd::capture::*;

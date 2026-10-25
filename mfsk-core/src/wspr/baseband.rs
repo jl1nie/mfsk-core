@@ -17,6 +17,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use num_complex::Complex;
+#[cfg(not(feature = "std"))]
+#[allow(unused_imports)]
+// `f32::round` and friends live in `std`; `num_traits::Float` brings them without it
+use num_traits::Float;
 
 use crate::engine::dsp::downsample::with_default_planner;
 

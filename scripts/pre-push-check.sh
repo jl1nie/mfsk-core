@@ -78,6 +78,10 @@ FEATURE_MATRIX=(
   # enable (E8 of the 0.13 plan; `internal-testing` is what they call the
   # stage functions through).
   "alloc ft8 ft4 fst4 jt9 jt65 q65 fft-extern"
+  # WSPR's decoder under no_std: its `osd` needed `std::sync::OnceLock`, and `decode` a bare
+  # `String` and `f32::round`, so `alloc wspr fft-extern` did not build until these two rows.
+  "alloc wspr fft-extern"
+  "alloc ft8 ft4 fst4 jt9 jt65 q65 wspr fft-extern"
   "std fixed-point internal-testing profile-coarse hash-table-small ft8 ft4 fft-extern"
   "full"
 )

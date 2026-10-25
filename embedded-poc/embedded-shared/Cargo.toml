@@ -36,8 +36,10 @@ aes3 = []
 
 # `apps::wspr_bench` — the issue #260 Phase 1/2 candidate-loop
 # measurement. Off by default: only `m5stack-s3` (LX7) enables it, and
-# it is the only consumer that also brings `mfsk-core/std`, which
-# `wspr::osd`'s `OnceLock` needs. See
+# it is the only consumer that also brings `mfsk-core/std`. (It needed it for
+# `wspr::osd`'s `OnceLock`; without `std` the matrix is now built per call and
+# `alloc wspr fft-extern` builds, so the measured build keeps `std` only so as
+# to stay the build that was measured.) See
 # `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` "Phase 0 — build feasibility".
 # `mfsk-core/wspr-pass2-topn`: the pass-2 candidate-ladder truncation
 # is embedded-only (host stays wsprd-faithful, see that feature's own

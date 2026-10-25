@@ -44,7 +44,7 @@ pub(crate) const K: usize = 50;
 /// running the existing production call path, carry no such
 /// assumption: whatever a rewrite is diffed against is exactly what
 /// production would have handed the old implementation.
-#[cfg(any(test, feature = "internal-testing"))]
+#[cfg(all(any(test, feature = "internal-testing"), feature = "std"))]
 pub(crate) mod capture {
     use alloc::vec::Vec;
     use std::sync::Mutex;
@@ -67,22 +67,33 @@ pub(crate) mod capture {
 ///
 /// Built lazily on first `osd_decode` call from `ConvFano::encode`,
 /// then frozen in a `OnceLock`. Saves recomputing on every call.
+#[cfg(feature = "std")]
 fn gen_matrix() -> &'static [[u8; N]; K] {
     use std::sync::OnceLock;
     static GEN: OnceLock<[[u8; N]; K]> = OnceLock::new();
-    GEN.get_or_init(|| {
-        let codec = ConvFano;
-        let mut g = [[0u8; N]; K];
-        let mut info = [0u8; K];
-        let mut codeword = vec![0u8; N];
-        for i in 0..K {
-            info.fill(0);
-            info[i] = 1;
-            codec.encode(&info, &mut codeword);
-            g[i].copy_from_slice(&codeword);
-        }
-        g
-    })
+    GEN.get_or_init(build_gen_matrix)
+}
+
+/// Without `std` there is no `OnceLock` (neither `core` nor `alloc` has a lazily set
+/// static), so the matrix is built on each call. 50 short encodes, next to a Gaussian
+/// elimination over 50 × 162; a `no_std` caller that decodes WSPR a lot can hold its own.
+#[cfg(not(feature = "std"))]
+fn gen_matrix() -> alloc::boxed::Box<[[u8; N]; K]> {
+    alloc::boxed::Box::new(build_gen_matrix())
+}
+
+fn build_gen_matrix() -> [[u8; N]; K] {
+    let codec = ConvFano;
+    let mut g = [[0u8; N]; K];
+    let mut info = [0u8; K];
+    let mut codeword = vec![0u8; N];
+    for i in 0..K {
+        info.fill(0);
+        info[i] = 1;
+        codec.encode(&info, &mut codeword);
+        g[i].copy_from_slice(&codeword);
+    }
+    g
 }
 
 /// OSD decode: returns the 50-bit info **and** the number of hard
@@ -97,7 +108,7 @@ fn gen_matrix() -> &'static [[u8; N]; K] {
 /// Gaussian elimination fails (rare, signals a degenerate reliability
 /// ordering) or the info-extraction Fano round-trip fails.
 pub fn osd_decode(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
-    #[cfg(any(test, feature = "internal-testing"))]
+    #[cfg(all(any(test, feature = "internal-testing"), feature = "std"))]
     capture::INPUTS
         .lock()
         .expect("capture mutex poisoned")
@@ -295,7 +306,7 @@ pub fn osd_decode(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
 /// touch one column across all `K` rows rather than one row across
 /// all `N` columns, and `K` = 50 is already small.
 pub fn osd_decode_packed(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
-    #[cfg(any(test, feature = "internal-testing"))]
+    #[cfg(all(any(test, feature = "internal-testing"), feature = "std"))]
     capture::INPUTS
         .lock()
         .expect("capture mutex poisoned")
@@ -490,6 +501,25 @@ pub fn osd_decode_packed(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The matrix is the same whether it is cached (`std`) or built per call (no `std`):
+    /// both come from `build_gen_matrix`, and every row is the codeword of a unit vector.
+    #[test]
+    fn the_generator_matrix_is_the_encode_of_each_unit_vector() {
+        let g = build_gen_matrix();
+        assert!(
+            *gen_matrix() == g,
+            "the accessor returns what the builder builds"
+        );
+        let mut info = [0u8; K];
+        let mut codeword = vec![0u8; N];
+        for i in [0, 1, K / 2, K - 1] {
+            info.fill(0);
+            info[i] = 1;
+            ConvFano.encode(&info, &mut codeword);
+            assert_eq!(g[i][..], codeword[..], "row {i}");
+        }
+    }
 
     #[test]
     fn osd_runs_without_panic() {
