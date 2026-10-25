@@ -49,11 +49,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub use mfsk_core::decoder::{ApMode, Contest};
-use mfsk_core::decoder::{Stage, default_params};
+use mfsk_core::decoder::{BudgetCheck, Stage, default_params};
 pub use mfsk_core::iq::Channelizer;
+// The receiver's own: a channel's mode and prefix points, from its decoder. Not this crate's
+// `ChannelSpec` (a channel as the operator configures it).
+use mfsk_core::iq::ChannelSpec as SlotSpec;
 use mfsk_core::prelude::{
     AnyDecoder, ApHint, ChannelId, CompletedSlot, Decoded, IqReceiver, IqSampleFormat, IqStream,
-    RowDetail, SlotInput,
+    RowDetail,
 };
 pub use mfsk_core::prelude::{Depth, Mode, QsoContext, QsoProgress, Station};
 use mfsk_core::slotgrid::ClockChange;
@@ -405,9 +408,9 @@ impl Delivered {
 /// consumer can replace the row it shows; one that was never delivered is
 /// delivered as new, so none is lost.
 ///
-/// **Early decode** (#600): with `prefix`, the call is one of a period's
-/// `decode_prefix` sequence (the receiver delivers the slot at FT8's
-/// checkpoints, then whole). Checkpoint A's rows go out at ~11.8 s; the final
+/// **Early decode** (#600): the call may be one of a period's `decode_prefix`
+/// sequence (the receiver delivers the slot at FT8's checkpoints, then whole);
+/// `decode` makes it. Checkpoint A's rows go out at ~11.8 s; the final
 /// call's rows pair with them by `RowDetail::delivery`, which counts across the
 /// period's calls, through `sent`, which the caller keeps from one call of the
 /// period to the next: an A row reads the same at the end and is not said
@@ -415,16 +418,19 @@ impl Delivered {
 ///
 /// Returns what the budget cut, when `slot` carried one.
 fn decode_streaming(
-    decoder: &mut AnyDecoder,
-    slot: &SlotInput<'_>,
-    prefix: bool,
+    // `AnyDecoder::delivery_is_exact`: only a parallel strategy can repeat a row.
+    delivery_is_exact: bool,
     // The text each delivery of the period went out with, by its position.
     sent: &mut std::collections::HashMap<u32, String>,
     // Spelled out: `spyserver::*` brings a `Sync` of its own into scope.
     emit: &(dyn Fn(&Decoded, &RowDetail, bool) + std::marker::Sync),
+    // The decoder's call, given the row callback: `AnyDecoder::decode_slot_with` for a slot the
+    // receiver delivered. It picks `decode_prefix_with` or `decode_with` itself (#692).
+    decode: impl FnOnce(
+        &(dyn Fn(&mfsk_core::decoder::Row<()>) + std::marker::Sync),
+    ) -> Option<mfsk_core::decoder::AnySlotResult>,
 ) -> mfsk_core::decoder::BudgetReport {
-    // Only a parallel strategy can repeat a row.
-    let guard = (!decoder.delivery_is_exact()).then(Delivered::default);
+    let guard = (!delivery_is_exact).then(Delivered::default);
     let streamed = std::sync::Mutex::new(std::mem::take(sent));
     let on_row = |r: &mfsk_core::decoder::Row<()>| {
         let (row, detail) = (&r.decoded, &r.detail);
@@ -438,10 +444,9 @@ fn decode_streaming(
         }
         emit(row, detail, false);
     };
-    let out = if prefix {
-        decoder.decode_prefix_with(slot, &on_row)
-    } else {
-        decoder.decode_with(slot, &on_row)
+    let Some(out) = decode(&on_row) else {
+        *sent = streamed.into_inner().unwrap();
+        return Default::default();
     };
     *sent = streamed.into_inner().unwrap();
     for r in &out.rows {
@@ -530,6 +535,10 @@ impl Worker {
         longest_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
         cut_slots: std::sync::Arc<std::sync::atomic::AtomicU64>,
         slot_budget: Option<f32>,
+        // The first lane of a channel with early decode: where to say the spec its decoder has
+        // once it has applied new options, so the receiver cuts prefixes for what the decoder
+        // wants now, not for what the options were a moment ago (#692).
+        spec_out: Option<(ChannelId, std::sync::mpsc::Sender<(ChannelId, SlotSpec)>)>,
     ) -> Self {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(WORKER_QUEUE);
         let handle = std::thread::Builder::new()
@@ -542,20 +551,21 @@ impl Worker {
                         Job::Slot(slot) => slot,
                         Job::Options(o, station) => {
                             apply_options(&mut decoder, &o, &station);
+                            if let Some((id, out)) = &spec_out {
+                                let _ = out.send((*id, SlotSpec::from(&decoder)));
+                            }
                             continue;
                         }
                     };
                     let t = Instant::now();
                     // A prefix, or the whole of a period whose prefixes this
-                    // lane decoded: the same sequence. A whole slot with none
-                    // before it (no points, or its prefixes were dropped) is a
-                    // plain decode.
+                    // lane decoded: the same sequence, and one allowance. The
+                    // decoder tells them apart itself (`decode_slot_with`).
                     let whole = slot.is_whole();
-                    let (mut cur, continues) = match open.take() {
-                        Some(o) if o.period == slot.period => (o, true),
-                        _ => (OpenPeriod::new(slot.period), false),
+                    let mut cur = match open.take() {
+                        Some(o) if o.period == slot.period => o,
+                        _ => OpenPeriod::new(slot.period),
                     };
-                    let prefix = !whole || continues;
                     // A share of the period, less what its earlier calls used.
                     let deadline = cur.deadline(
                         t,
@@ -563,14 +573,10 @@ impl Worker {
                             .map(|f| Duration::from_secs_f32(modes::slot_seconds(slot.mode) * f)),
                     );
                     let within = move || deadline.is_none_or(|d| Instant::now() < d);
-                    let input = match deadline {
-                        Some(_) => slot.input().budget(&within),
-                        None => slot.input(),
-                    };
+                    let budget = deadline.is_some().then_some(&within as BudgetCheck<'_>);
+                    let exact = decoder.delivery_is_exact();
                     let report = decode_streaming(
-                        &mut decoder,
-                        &input,
-                        prefix,
+                        exact,
                         &mut cur.sent,
                         &|d, detail, update| {
                             let _ = results.send(Decode {
@@ -586,6 +592,7 @@ impl Worker {
                                 update,
                             });
                         },
+                        |on_row| decoder.decode_slot_with(&slot, budget, Some(on_row)).ok(),
                     );
                     if cur.finish(t.elapsed(), report.exhausted) {
                         cut_slots.fetch_add(1, Ordering::Relaxed);
@@ -649,10 +656,6 @@ struct Channel {
     /// the period goes there too, since its decoder holds the period's
     /// `decode_prefix` state.
     lane_of: Option<(i64, usize)>,
-    mode: Mode,
-    /// Early decode is on ([`Config::early_decode`]): the receiver is told
-    /// this channel's decoder's prefix points, again when the options change.
-    early: bool,
 }
 
 /// Which lane takes a delivery of `period`: the one its earlier deliveries went
@@ -662,14 +665,6 @@ fn lane_for(lane_of: Option<(i64, usize)>, period: i64, pending: &[usize], seria
         Some((p, l)) if p == period => l,
         _ => pick_lane(pending, serial),
     }
-}
-
-/// The prefix points a channel's decoder will have under these options:
-/// `AnyDecoder::prefix_points`, which follows the depth and the strategy.
-fn prefix_points(mode: Mode, o: &ChannelOptions, station: &Station) -> &'static [usize] {
-    let mut d = AnyDecoder::with_defaults(mode);
-    apply_options(&mut d, o, station);
-    d.prefix_points()
 }
 
 /// Which lane takes the next slot: the one with the fewest pending, the first
@@ -2061,6 +2056,9 @@ struct Live {
     jtty: Vec<Option<jtty::Worker>>,
     /// Messages the JTTY threads reported, waiting to be passed on.
     jtty_results: std::sync::mpsc::Receiver<jtty::JttyMessage>,
+    /// The spec a channel's first lane says its decoder has, after it applied new options:
+    /// the receiver's prefix points follow it (#692).
+    specs: std::sync::mpsc::Receiver<(ChannelId, SlotSpec)>,
     format: IqSampleFormat,
 }
 
@@ -2196,12 +2194,34 @@ fn receiver(
     let mut keys: Vec<BankKey> = Vec::new();
     let mut jttys: Vec<Option<jtty::Worker>> = Vec::new();
     let (jtx, jtty_results) = std::sync::mpsc::channel();
+    let (spec_tx, specs) = std::sync::mpsc::channel();
     let jtty_rx = std::sync::Arc::new(mfsk_core::jtty::rx::Receiver::new());
     for &i in &p.active {
         let ch = &cfg.channels[i];
-        let id = match ch.mode {
-            ChannelMode::Slot(m) => rx.add_channel(ch.dial_hz, m),
-            ChannelMode::Jtty => rx.add_audio_channel(ch.dial_hz),
+        let key = bank_key(ch.mode, ch.dial_hz);
+        // A slotted channel's decoder first (this channel's from its last turn, if it had one,
+        // with the options and station as they are now): the channel takes its mode and prefix
+        // points from it, so the mode is written once (#692).
+        let (opts, station) = cfg
+            .live
+            .get(i)
+            .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
+        let decoder = ch.mode.slot().map(|mode| {
+            let kept = cfg.live.bank.lock().unwrap().decoders.remove(&key);
+            let mut d = kept.unwrap_or_else(|| AnyDecoder::with_defaults(mode));
+            apply_options(&mut d, &opts, &station);
+            d
+        });
+        let id = match &decoder {
+            Some(d) => {
+                let spec = if cfg.early_decode {
+                    SlotSpec::from(d)
+                } else {
+                    SlotSpec::from(d.mode())
+                };
+                rx.add_channel(ch.dial_hz, spec)
+            }
+            None => rx.add_audio_channel(ch.dial_hz),
         }
         .map_err(|e| std::io::Error::other(format!("{}: {e}", ch.dial_hz)))?;
         if workers.len() <= id.0 {
@@ -2211,7 +2231,6 @@ fn receiver(
             cfg_index.resize(id.0 + 1, usize::MAX);
         }
         cfg_index[id.0] = i;
-        let key = bank_key(ch.mode, ch.dial_hz);
         if keys.len() <= id.0 {
             keys.resize(id.0 + 1, ("", 0));
         }
@@ -2232,11 +2251,7 @@ fn receiver(
         }
         // A JTTY channel has no slot and no decoder: a receiver thread over
         // its continuous audio.
-        let Some(mode) = ch.mode.slot() else {
-            let (opts, _) = cfg
-                .live
-                .get(i)
-                .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
+        let Some(decoder) = decoder else {
             if jttys.len() <= id.0 {
                 jttys.resize_with(id.0 + 1, || None);
             }
@@ -2249,21 +2264,7 @@ fn receiver(
             ));
             continue;
         };
-        // This channel's decoder from its last turn, if it had one, with the
-        // options and station as they are now.
-        let (opts, station) = cfg
-            .live
-            .get(i)
-            .unwrap_or_else(|| (ch.options.clone(), cfg.live.station()));
-        let decoder = {
-            let kept = cfg.live.bank.lock().unwrap().decoders.remove(&key);
-            let mut d = kept.unwrap_or_else(|| AnyDecoder::with_defaults(mode));
-            apply_options(&mut d, &opts, &station);
-            d
-        };
-        if cfg.early_decode {
-            rx.set_prefix_points(id, decoder.prefix_points());
-        }
+        let mode = decoder.mode();
         // The first lane carries the channel's decoder across rotation turns;
         // the others start from the mode's defaults, with the same options.
         let mut first = Some(decoder);
@@ -2286,6 +2287,7 @@ fn receiver(
                 longest_us.clone(),
                 cut_slots.clone(),
                 cfg.slot_budget,
+                (lane == 0 && cfg.early_decode).then(|| (id, spec_tx.clone())),
             );
             lanes.push(Lane { worker, pending });
         }
@@ -2293,8 +2295,6 @@ fn receiver(
             lanes,
             serial: opts.averaging,
             lane_of: None,
-            mode,
-            early: cfg.early_decode,
         });
     }
     Ok(Live {
@@ -2309,6 +2309,7 @@ fn receiver(
         keys,
         jtty: jttys,
         jtty_results,
+        specs,
         format,
     })
 }
@@ -2486,8 +2487,17 @@ fn stream_inner(
             wfs,
             jtty,
             jtty_results,
+            specs,
             ..
         } = live.as_mut().unwrap();
+
+        // The depth or strategy decides whether a channel has checkpoints. Its first lane says
+        // what its decoder has once it has applied the options, and the receiver cuts prefixes
+        // for that from the next slot that opens: the points are never set before the decoder
+        // has the options they follow (#692).
+        while let Ok((id, spec)) = specs.try_recv() {
+            let _ = rx.update_channel(id, spec);
+        }
 
         // A gain changed while running (only the controlling client's request
         // is honoured by the server). The Airspy One's digital gain makes up
@@ -2511,11 +2521,6 @@ fn stream_inner(
                 };
                 if !w.set_options(&o, &station) {
                     all_sent = false;
-                }
-                // The depth or strategy decides whether the channel has
-                // checkpoints; from the next slot that opens.
-                if w.early {
-                    rx.set_prefix_points(ChannelId(id), prefix_points(w.mode, &o, &station));
                 }
             }
             // A JTTY channel's Rx frequency and tolerance apply to its next window.
@@ -2736,6 +2741,7 @@ fn stream_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mfsk_core::prelude::SlotInput;
 
     fn rotating() -> Config {
         let mut c = Config::new(
@@ -3016,16 +3022,16 @@ mod tests {
         assert!(want.len() >= 2, "the slot must decode: {want:?}");
 
         let got = std::sync::Mutex::new(Vec::new());
+        let mut dec = AnyDecoder::with_defaults(Mode::Ft8);
         let report = decode_streaming(
-            &mut AnyDecoder::with_defaults(Mode::Ft8),
-            &slot,
-            false,
+            dec.delivery_is_exact(),
             &mut Default::default(),
             &|d, detail, update| {
                 got.lock()
                     .unwrap()
                     .push((d.text.clone(), detail.info.len(), update));
             },
+            |on_row| Some(dec.decode_with(&slot, on_row)),
         );
         // FT8 at the default depth is a sequential strategy: the callback
         // delivers exactly the returned rows, in the same order, each as a
@@ -3059,10 +3065,9 @@ mod tests {
         let mut calls = Vec::new();
         for len in [points[0], points[1], audio.len()] {
             let got = std::sync::Mutex::new(Vec::new());
+            let exact = d.delivery_is_exact();
             decode_streaming(
-                &mut d,
-                &SlotInput::i16(&audio[..len]).period(7),
-                true,
+                exact,
                 &mut sent,
                 &|d, detail, update| {
                     got.lock().unwrap().push((
@@ -3070,6 +3075,9 @@ mod tests {
                         DecodeDetail::from(detail).early,
                         update,
                     ));
+                },
+                |on_row| {
+                    Some(d.decode_prefix_with(&SlotInput::i16(&audio[..len]).period(7), on_row))
                 },
             );
             calls.push(got.into_inner().unwrap());
@@ -3132,14 +3140,14 @@ mod tests {
         let spent = || false;
         let slot = SlotInput::i16(&audio).budget(&spent);
         let rows = std::sync::atomic::AtomicUsize::new(0);
+        let mut dec = AnyDecoder::with_defaults(Mode::Ft8);
         let report = decode_streaming(
-            &mut AnyDecoder::with_defaults(Mode::Ft8),
-            &slot,
-            false,
+            dec.delivery_is_exact(),
             &mut Default::default(),
             &|_, _, _| {
                 rows.fetch_add(1, Ordering::Relaxed);
             },
+            |on_row| Some(dec.decode_with(&slot, on_row)),
         );
         assert!(report.exhausted, "{report:?}");
         assert_eq!(rows.load(Ordering::Relaxed), 0);
