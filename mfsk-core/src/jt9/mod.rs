@@ -171,6 +171,7 @@ fn decode_scan_inner(
             .unwrap_or(core::cmp::Ordering::Equal)
     });
     cands.truncate(params.max_candidates.max(32));
+    gate.note_candidates(cands.len());
 
     // Build the big FFT once for the whole slot — `downsam9` extracts
     // one baseband per candidate frequency from this cached spectrum.

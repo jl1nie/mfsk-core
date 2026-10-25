@@ -257,7 +257,7 @@ mod jt9_impl {
             if let Some(b) = slot.budget {
                 req = req.budget(b);
             }
-            let (found, exhausted) = req.decode_reported();
+            let (found, exhausted, candidates) = req.decode_reported();
             let rows = found
                 .into_iter()
                 .map(|r| Row {
@@ -272,7 +272,7 @@ mod jt9_impl {
                     exhausted,
                     ..Default::default()
                 },
-                candidates: None,
+                candidates,
             }
         }
     }
@@ -386,7 +386,7 @@ mod jt65_impl {
             if let Some(b) = slot.budget {
                 req = req.budget(b);
             }
-            let (found, exhausted) = req.decode_reported();
+            let (found, exhausted, candidates) = req.decode_reported();
             let rows = found
                 .into_iter()
                 .map(|r| Row {
@@ -401,7 +401,7 @@ mod jt65_impl {
                     exhausted,
                     ..Default::default()
                 },
-                candidates: None,
+                candidates,
             }
         }
     }

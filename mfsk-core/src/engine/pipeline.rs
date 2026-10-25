@@ -74,6 +74,9 @@ fn stage_trace_enabled<P: Protocol>() -> bool {
 pub(crate) struct BudgetGate<'a> {
     check: Option<BudgetCheck<'a>>,
     hit: core::cell::Cell<bool>,
+    /// The first coarse search's candidates, carried here because the gate already travels
+    /// through the whole call (`SlotResult::candidates`, #697).
+    candidates: core::cell::Cell<Option<u32>>,
 }
 
 #[cfg(any(feature = "jt9", feature = "jt65", feature = "q65"))]
@@ -82,7 +85,22 @@ impl<'a> BudgetGate<'a> {
         Self {
             check,
             hit: core::cell::Cell::new(false),
+            candidates: core::cell::Cell::new(None),
         }
+    }
+
+    /// Note the number of candidates a coarse search kept. The first search of the call
+    /// counts: a later pass searches again on audio with decodes already subtracted.
+    pub(crate) fn note_candidates(&self, n: usize) {
+        if self.candidates.get().is_none() {
+            self.candidates
+                .set(Some(u32::try_from(n).unwrap_or(u32::MAX)));
+        }
+    }
+
+    /// What [`Self::note_candidates`] noted first; `None` if no search ran.
+    pub(crate) fn candidates(&self) -> Option<u32> {
+        self.candidates.get()
     }
 
     /// `true` to go on with the next unit of work (a candidate); `false`

@@ -373,6 +373,8 @@ fn decode_scan_inner(
             pass_params.max_candidates = params.max_candidates.min(50 / usize::from(ipass));
         }
         let cands = search::coarse_search(work, sample_rate, nominal_start_sample, &pass_params);
+        // Pass 1's list: the first search of the call (`ncand`, `jt65_decode.f90:323`).
+        gate.note_candidates(cands.len());
         let subtract_after = npass > 1 && ipass < 4;
         let mut found: Vec<(f32, usize, [u8; 12])> = Vec::new();
         for c in cands {

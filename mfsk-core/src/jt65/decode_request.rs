@@ -164,9 +164,10 @@ impl<'a> DecodeRequest<'a> {
         self.decode_reported().0
     }
 
-    /// [`Self::decode`], and whether the budget ([`Self::budget`]) said stop
-    /// at least once. `false` without a budget.
-    pub fn decode_reported(&mut self) -> (Vec<Jt65Result>, bool) {
+    /// [`Self::decode`], whether the budget ([`Self::budget`]) said stop at least
+    /// once (`false` without a budget), and how many candidates the first coarse search
+    /// kept (`SlotResult::candidates`, #697).
+    pub fn decode_reported(&mut self) -> (Vec<Jt65Result>, bool, Option<u32>) {
         let gate = crate::engine::pipeline::BudgetGate::new(self.budget);
         let rows = super::decode_scan_inner(
             self.audio,
@@ -180,7 +181,7 @@ impl<'a> DecodeRequest<'a> {
             self.on_result,
             &gate,
         );
-        (rows, gate.exhausted())
+        (rows, gate.exhausted(), gate.candidates())
     }
 }
 
