@@ -426,7 +426,7 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 |---|---|---|
 | 公開 struct の構築、公開 enum の `match` | struct リテラル、`..Default::default()`、網羅的な `match` | `#[non_exhaustive]`: `Default` と代入、新しいコンストラクタ、`_` の腕（下記） |
 | `RowDetail::{sync_score, sync_cv, hard_errors}` | `f32`、`f32`、`u32` | `Option<…>`。`detail.sync_score.unwrap_or(0.0)` で従来どおり読めるが、`None` は「そのモードにはその値が無い」という意味になった |
-| 早期の行 | 無い。`decode` は周期の終わりに返る | その時点までの周期を渡す `Decoder::decode_prefix` / `decode_prefix_with`（[§2.3](#23-早期デコードと計算予算)）。いつ呼ぶかは `Decoder::prefix_points()`、そこで切るのは `IqReceiver::set_prefix_points` |
+| 早期の行 | 無い。`decode` は周期の終わりに返る | その時点までの周期を渡す `Decoder::decode_prefix` / `decode_prefix_with`（[§2.3](#23-早期デコードと計算予算)）。いつ呼ぶかは `Decoder::prefix_points()`、そこで切るのは `ChannelSpec::from(&decoder)`（`add_channel`、`update_channel`） |
 | 返された行とストリームされた行の対応付け | 文面と周波数で | `RowDetail::delivery`。デコーダがどちらの契約で動くかは `AnyDecoder::delivery_is_exact()`（[§2.4](#24-ストリーミング配信)） |
 | `ModulationParams` の実装 | `NFFT_PER_SYMBOL_FACTOR`、`NSTEP_PER_SYMBOL`、`NDOWN`、`SYMBOL_DT`、`N_SYMBOLS`、`TONE_SPACING_HZ` をすべて書く | 最初の 3 つは `SyncFrontEnd: Protocol` に移った。これを実装するのは `engine::sync` か汎用パイプラインでデコードするプロトコルだけ（そうでなければコンパイルエラー）。`SYMBOL_DT` と `N_SYMBOLS` は既定値がある。トーンが変調指数の間隔で並ぶモードでは `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)`（[§5](#5-protocol-トレイト階層)） |
 | 行のコールサインハッシュ | 持たない | `Decoded::hash22: Option<u32>`。FST4W の `<...>` の行に設定される。FST4W の行は `(text, hash22)` で重複排除（[§3.3](#33-プロトコルごとの注記)） |
@@ -1526,20 +1526,23 @@ use mfsk_core::decoder::AnyDecoder;
 use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
 
 let mut rx = IqReceiver::new(IqStream::new(768_000, 14_200_000.0, IqSampleFormat::Cf32));
-let ft8 = rx.add_channel(14_074_000.0, Mode::Ft8).unwrap(); // 窓に DC が入る、または帯域外なら Err
-let ft4 = rx.add_channel(14_080_000.0, Mode::Ft4).unwrap();
+let ft8_decoder = AnyDecoder::with_defaults(Mode::Ft8); // チャンネルごと: 独自のオプションとハッシュ表
+let ft4_decoder = AnyDecoder::with_defaults(Mode::Ft4);
+// チャンネルはモード（と先頭部分のポイント）をデコーダから受け取るので、モードは 1 回しか書かない。
+// 窓に DC が入る、または帯域外なら Err。`Mode::Ft8` だけを渡してもよい: スロット全体のみ。
+let ft8 = rx.add_channel(14_074_000.0, &ft8_decoder).unwrap();
+let ft4 = rx.add_channel(14_080_000.0, &ft4_decoder).unwrap();
 // チャンネルが多いときは 1 つのポリフェーズフィルタバンクを共有する（下の「2 つのチャネライザ」）:
 //   IqReceiver::with_channelizer(stream, Channelizer::Pfb)?
-let mut decoders = HashMap::from([
-    (ft8, AnyDecoder::with_defaults(Mode::Ft8)), // チャンネルごと: 独自のオプションとハッシュ表
-    (ft4, AnyDecoder::with_defaults(Mode::Ft4)),
-]);
+let mut decoders = HashMap::from([(ft8, ft8_decoder), (ft4, ft4_decoder)]);
 
 // rx.set_time(utc_ns, at_sample);   // 時刻の読みが得られるたびに
 let mut slots = Vec::new();
 rx.push_cf32(&vec![0.0f32; 2 * 4096], &mut slots); // I/Q インターリーブ。push_cs16 / push_bytes もある
 for slot in slots {
-    let out = decoders.get_mut(&slot.channel).unwrap().decode(&slot.input());
+    // `decode_slot` がこの配信に `decode` か `decode_prefix` かを選ぶ。デコーダのモードと
+    // 違うモードで切ったスロットなら `Err(ModeMismatch)`。
+    let out = decoders.get_mut(&slot.channel).unwrap().decode_slot(&slot).unwrap();
     for row in &out.rows {
         println!("{:.1} Hz  {}", slot.abs_freq_hz(row.decoded.freq_hz), row.decoded.text);
     }
@@ -1594,13 +1597,19 @@ FT8、FT4、FST4 の 5 周期、WSPR、JT9、JT65、Q65 の 10 サブモード�
 （なしで 0.59%）。チェーンのフィルタは公称レートのままで、数千 ppm までは問題ない。スロットの
 `start_sample` は、公称レートでのサンプル位置。
 
-*IQ での早期デコード*: チャンネルは `decode_prefix`（§2.3）のために先頭部分でも渡せる。
-`rx.set_prefix_points(id, decoder.prefix_points())` とすると、次に開くスロットから、`push_*` は
-各ポイントでちょうど切った先頭部分、続いてスロット全体を、この順で同じ `Vec<CompletedSlot>` に
-渡す（区別は `slot.is_whole()`）。そのチャンネルの配信は、全体も含めすべて `decode_prefix` で
-デコードする。`prefix_points()` をデコーダから取るのは、モードではなく設定に従うからで、FT8 の
-`SicEarly` なら `[141_696, 162_432]`、それ以外はすべて空。オプションを変えたら取り直す: 受信器には変更が伝わらず、取り直さずに
-`SicEarly` へ切り替えたデコーダはスロット全体しか受け取らない。
+*IQ での早期デコード*: デコーダから作ったチャンネル（`rx.add_channel(dial, &decoder)`。
+`Decoder<P>` でも `AnyDecoder` でも `ChannelSpec::from(&decoder)`）は、`decode_prefix`（§2.3）のために
+先頭部分でも渡される。`push_*` は、デコーダの `prefix_points()` の各ポイントでちょうど切った先頭部分、続いて
+スロット全体を、この順で同じ `Vec<CompletedSlot>` に渡す（区別は `slot.is_whole()`）。
+**`decoder.decode_slot(&slot)` が各配信をデコードする**: 先頭部分、またはこのデコーダが先頭部分を
+デコードした周期の全体は `decode_prefix`、それ以外の全体は `decode` を通り、デコーダと違うモードで切った
+スロットは `Err(ModeMismatch)` でデコードされない。`decode_slot_with(&slot, budget, on_row)` は期限とストリーム行を足す。
+`prefix_points()` はモードではなくデコーダの設定に従う: FT8 の `SicEarly` なら `[141_696, 162_432]`、
+それ以外はすべて空。オプションを変えたら、デコーダがそれを持ったあとで `rx.update_channel(id, &decoder)` を呼ぶ:
+ポイントは次に開くスロットから効き、チャンネルのモードと違うモードの spec は `Err(IqError::ModeChange)`。
+`Mode` だけならスロット全体のみのチャンネルで、手で切る呼び出し側のために `set_prefix_points(id, points)` は残る。
+古い spec（チャンネルにはポイントがあり、デコーダは求めない）でも、`qso3_busy.wav` では行は 14 と 14 で同じ、
+SNR の差は 0.1 dB 以内だった（`IQ_PREFIX_DESIGN.md` §10）。
 スロットのレベルは最初の先頭部分で測り、そのスロットの残りにも使うので、デコーダは 1 周期を
 1 つのレベルで見る。チャンネルが一部を渡し済みの周期は再び渡さない（時計が後ろへ跳んだ場合）
 ので、2 つの録音を継ぎ合わせたデコードは起きない。ポイントは既定で無効で、設定しない

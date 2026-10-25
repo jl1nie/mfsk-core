@@ -438,7 +438,7 @@ the design is `docs/notes/API_0_14_DESIGN.md`.
 |---|---|---|
 | building a public struct or matching a public enum | struct literals, `..Default::default()`, exhaustive `match` | `#[non_exhaustive]`: `Default` and assignment, the new constructors, a `_` arm (below) |
 | `RowDetail::{sync_score, sync_cv, hard_errors}` | `f32`, `f32`, `u32` | `Option<…>`; `detail.sync_score.unwrap_or(0.0)` keeps the old reading, but a `None` now means "the mode has no such number" |
-| early rows | none; `decode` returns at the end of the period | `Decoder::decode_prefix` / `decode_prefix_with` with the period so far ([§2.3](#23-early-decode-and-the-compute-budget)); `Decoder::prefix_points()` says when, `IqReceiver::set_prefix_points` cuts there |
+| early rows | none; `decode` returns at the end of the period | `Decoder::decode_prefix` / `decode_prefix_with` with the period so far ([§2.3](#23-early-decode-and-the-compute-budget)); `Decoder::prefix_points()` says when, `ChannelSpec::from(&decoder)` (`add_channel`, `update_channel`) cuts there |
 | pairing a returned row with a streamed one | by text and frequency | `RowDetail::delivery`; `AnyDecoder::delivery_is_exact()` says which contract a decoder runs ([§2.4](#24-streaming-delivery)) |
 | implementing `ModulationParams` | `NFFT_PER_SYMBOL_FACTOR`, `NSTEP_PER_SYMBOL`, `NDOWN`, `SYMBOL_DT`, `N_SYMBOLS` and `TONE_SPACING_HZ` all written out | the first three move to `SyncFrontEnd: Protocol`, which only a protocol decoding through `engine::sync` or the generic pipeline implements (a compile error otherwise); `SYMBOL_DT` and `N_SYMBOLS` default; `TONE_SPACING_HZ = tone_spacing_hz(GFSK_HMOD, NSPS)` for a mode whose tones sit at the modulation index ([§5](#5-the-protocol-trait-hierarchy)) |
 | a row's callsign hash | not carried | `Decoded::hash22: Option<u32>`, set on an FST4W `<...>` row; key de-duplication of FST4W rows on `(text, hash22)` ([§3.3](#33-per-protocol-notes)) |
@@ -1634,20 +1634,23 @@ use mfsk_core::decoder::AnyDecoder;
 use mfsk_core::iq::{IqReceiver, IqSampleFormat, IqStream};
 
 let mut rx = IqReceiver::new(IqStream::new(768_000, 14_200_000.0, IqSampleFormat::Cf32));
-let ft8 = rx.add_channel(14_074_000.0, Mode::Ft8).unwrap(); // Err if DC is in its window or it is out of band
-let ft4 = rx.add_channel(14_080_000.0, Mode::Ft4).unwrap();
+let ft8_decoder = AnyDecoder::with_defaults(Mode::Ft8); // per channel: its own options and hash table
+let ft4_decoder = AnyDecoder::with_defaults(Mode::Ft4);
+// The channel takes its mode (and prefix points) from its decoder, so the mode is written once.
+// Err if DC is in its window or it is out of band. A bare `Mode::Ft8` also works: whole slots only.
+let ft8 = rx.add_channel(14_074_000.0, &ft8_decoder).unwrap();
+let ft4 = rx.add_channel(14_080_000.0, &ft4_decoder).unwrap();
 // Many channels: share one polyphase filter bank instead (see "Two channelizers" below):
 //   IqReceiver::with_channelizer(stream, Channelizer::Pfb)?
-let mut decoders = HashMap::from([
-    (ft8, AnyDecoder::with_defaults(Mode::Ft8)), // per channel: its own options and hash table
-    (ft4, AnyDecoder::with_defaults(Mode::Ft4)),
-]);
+let mut decoders = HashMap::from([(ft8, ft8_decoder), (ft4, ft4_decoder)]);
 
 // rx.set_time(utc_ns, at_sample);   // as often as there is a reading
 let mut slots = Vec::new();
 rx.push_cf32(&vec![0.0f32; 2 * 4096], &mut slots); // interleaved I/Q; also push_cs16 / push_bytes
 for slot in slots {
-    let out = decoders.get_mut(&slot.channel).unwrap().decode(&slot.input());
+    // `decode_slot` picks `decode` or `decode_prefix` for this delivery; `Err(ModeMismatch)` if
+    // the slot was cut for another mode than the decoder's.
+    let out = decoders.get_mut(&slot.channel).unwrap().decode_slot(&slot).unwrap();
     for row in &out.rows {
         println!("{:.1} Hz  {}", slot.abs_freq_hz(row.decoded.freq_hz), row.decoded.text);
     }
@@ -1708,16 +1711,21 @@ must be cleaned of network delay and its jitter by the caller. The stage costs 0
 channel at 768 kS/s (0.59 % without it). The chain's filters stay those of the nominal rate, which is right
 to a few thousand ppm. A slot's `start_sample` is the sample at the nominal rate.
 
-*Early decode over IQ.* A channel can also be delivered as prefixes, for
-`decode_prefix` (§2.3): `rx.set_prefix_points(id, decoder.prefix_points())`,
-and from the next slot that opens, `push_*` hands over the slot cut at
-exactly each point, then whole, in that order, through the same
-`Vec<CompletedSlot>` (`slot.is_whole()` tells them apart). Decode every
-delivery of such a channel with `decode_prefix`, the whole included.
-`prefix_points()` comes from the decoder because it follows its settings,
-not the mode: FT8 under `SicEarly` gives `[141_696, 162_432]`, everything
-else none, so ask again after changing the options: the receiver is not told
-of the change, and a decoder switched to `SicEarly` without it gets whole slots only. The slot's level is
+*Early decode over IQ.* A channel made from a decoder (`rx.add_channel(dial, &decoder)`;
+`ChannelSpec::from(&decoder)` for a `Decoder<P>` or an `AnyDecoder`) is also delivered as prefixes,
+for `decode_prefix` (§2.3): `push_*` hands over the slot cut at
+exactly each of the decoder's `prefix_points()`, then whole, in that order, through the same
+`Vec<CompletedSlot>` (`slot.is_whole()` tells them apart). **`decoder.decode_slot(&slot)` decodes each
+delivery**: a prefix, or the whole of a period whose prefixes this decoder decoded, goes through
+`decode_prefix`; any other whole slot through `decode`; a slot cut for another mode is
+`Err(ModeMismatch)` and decodes nothing. `decode_slot_with(&slot, budget, on_row)` adds a deadline and
+streamed rows. `prefix_points()` follows the decoder's settings, not the mode: FT8 under `SicEarly` gives
+`[141_696, 162_432]`, everything else none. After changing the options, once the decoder has them, call
+`rx.update_channel(id, &decoder)`: the points apply from the next slot that opens, and a spec for another
+mode than the channel's is `Err(IqError::ModeChange)`. A `Mode` alone is a channel of whole slots;
+`set_prefix_points(id, points)` stays for a caller that cuts by hand. A spec that is stale (points on the
+channel for a decoder that wants none) returned the same rows on `qso3_busy.wav`, 14 and 14, SNR within
+0.1 dB (`IQ_PREFIX_DESIGN.md` §10). The slot's level is
 measured on its first prefix and kept for the rest of it, so the decoder sees
 the period at one level; a period the channel already delivered part of is
 not delivered again (a clock stepped back), so no decode splices two

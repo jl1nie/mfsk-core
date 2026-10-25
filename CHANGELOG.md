@@ -17,6 +17,15 @@
   option from `Default` and assign; add a wildcard arm to a `match`. `WsprMessage` and `Jt72Message` stay exhaustive (the variants are
   the message formats). Tier A+B unchanged. Migration: `LIBRARY.md` §1.4 (and `.ja.md`).
 
+### Added
+
+- **A channel takes its mode and prefix points from its decoder** (#692): `iq::ChannelSpec` (`From<Mode>`, `From<&AnyDecoder>`, `From<&Decoder<P>>`),
+  `IqReceiver::add_channel(dial, impl Into<ChannelSpec>)` (a bare `Mode` still works) and `update_channel` (applies from the next slot; another mode is
+  `IqError::ModeChange`). `Decoder::decode_slot` / `decode_slot_with` and the `AnyDecoder` twins take the `CompletedSlot` and pick `decode_prefix` or `decode`
+  themselves; a slot of another mode is `Err(ModeMismatch)`. Measured: points on the channel for a decoder that wants none return the same rows
+  (`qso3_busy`, 14 / 14, SNR within 0.1 dB; `docs/notes/IQ_PREFIX_DESIGN.md` §10). Skimmer: no second `mode`, no throwaway decoder to ask for points, and the points
+  follow the options only once the decoder has them. Additive.
+
 ### Results
 
 - `RR73` is packed as the acknowledgment `MAXGRID4+3` (32403), not the grid 32373, for every non-CQ type 1/2 message in all 77-bit
