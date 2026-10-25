@@ -64,11 +64,10 @@ impl PeriodBudget {
     }
 
     /// A budget of `fraction` of `mode`'s slot (`0.02` is 300 ms of FT8's 15 s); `None`, or a
-    /// fraction that is not a finite number of at least zero, is no budget.
+    /// fraction that is negative, not a number or too large for a `Duration`, is no budget.
     pub fn share(period: i64, mode: Mode, fraction: Option<f32>) -> Self {
-        let allowance = fraction
-            .filter(|f| f.is_finite() && *f >= 0.0)
-            .map(|f| Duration::from_secs_f32(mode.meta().t_slot_s * f));
+        let allowance =
+            fraction.and_then(|f| Duration::try_from_secs_f32(mode.meta().t_slot_s * f).ok());
         Self::new(period, allowance)
     }
 
@@ -179,7 +178,13 @@ mod tests {
             "{left:?}"
         );
         assert_eq!(p.period(), 3);
-        for bad in [None, Some(-1.0), Some(f32::NAN), Some(f32::INFINITY)] {
+        for bad in [
+            None,
+            Some(-1.0),
+            Some(f32::NAN),
+            Some(f32::INFINITY),
+            Some(1e30),
+        ] {
             assert_eq!(
                 PeriodBudget::share(3, Mode::Ft8, bad).left(),
                 None,

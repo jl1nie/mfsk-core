@@ -86,8 +86,8 @@ pub use fst4w::Fst4wExtras;
     feature = "q65"
 ))]
 pub use any::{AnyDecoder, AnyExtras, AnyExtrasRef, AnySlotResult, Unsupported, WcallsError};
-#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
 pub use budget::PeriodBudget;
+#[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
 pub use params::SearchTuning;
 pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, Station};
 
