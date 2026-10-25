@@ -59,11 +59,11 @@
     any(feature = "fft-rustfft", feature = "fft-extern")
 ))]
 
+use mfsk_core::__internal::pipeline::process_candidate_basic;
 use mfsk_core::engine::dsp::downsample::build_fft_cache;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::frame::{DecodeDepth, DecodeResult, DecodeStrictness};
 use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-use mfsk_core::engine::pipeline::process_candidate_basic;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::msg::wsjt77::unpack77;

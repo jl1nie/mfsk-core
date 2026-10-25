@@ -1,4 +1,4 @@
-//! FST4 decode — thin wrapper over [`crate::engine::pipeline`].
+//! FST4 decode — thin wrapper over `crate::engine::pipeline`.
 //!
 //! Every FST4 sub-mode uses LDPC(240, 101) + CRC-24 over the 77-bit
 //! WSJT message payload, with 5 × 8-symbol Costas sync blocks. The

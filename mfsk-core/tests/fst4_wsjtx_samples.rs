@@ -148,11 +148,11 @@ fn fst4_60_wsjtx_sample_on_result_fires_once_per_decode() {
 #[test]
 #[ignore = "diagnostic probe, not a recall gate — run manually"]
 fn fst4_60_diagnose_golden() {
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::{FrameLayout, SyncFrontEnd};
     use mfsk_core::fst4::Fst4s60;
@@ -286,10 +286,10 @@ fn fst4_60_diagnose_golden() {
 #[test]
 #[ignore = "asset generator — writes embedded-poc/assets/fst4_60_golden_{audio,fft_cache}.bin"]
 fn fst4_bake_golden_precomputed() {
+    use mfsk_core::__internal::pipeline::decode_frame;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-    use mfsk_core::engine::pipeline::decode_frame;
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -458,10 +458,12 @@ fn fst4_bake_golden_precomputed() {
 #[test]
 #[ignore = "asset generator — writes embedded-poc/assets/fst4_60_golden_refined_candidates.bin"]
 fn fst4_bake_golden_refined_candidates() {
+    use mfsk_core::__internal::pipeline::{
+        process_candidate_precomputed, refine_candidate_position,
+    };
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-    use mfsk_core::engine::pipeline::{process_candidate_precomputed, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;

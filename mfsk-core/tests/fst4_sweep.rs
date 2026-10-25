@@ -570,8 +570,8 @@ fn fst4_coarse_sync_output_has_no_deduped_candidates() {
 /// substage == 0` is Phase A) is exactly where an off-by-one would hide.
 #[test]
 fn fst4_phase_split_matches_rung_major_without_a_budget() {
+    use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
-    use mfsk_core::engine::pipeline::refine_candidate_position;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;

@@ -18,10 +18,10 @@
 
 use num_complex::Complex;
 
+use mfsk_core::__internal::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::frame::{DecodeDepth, DecodeResult, DecodeStrictness};
 use mfsk_core::engine::ft4_coarse::{Ft4SavgBuilder, ft4_coarse_sync_from_savg};
-use mfsk_core::engine::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::{Ft4CoarsePhasors, ft4_sync_search_window_with};
 use mfsk_core::ft4::Ft4;

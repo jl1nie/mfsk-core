@@ -1,4 +1,4 @@
-//! FT4 decode — thin wrapper over [`crate::engine::pipeline`].
+//! FT4 decode — thin wrapper over `crate::engine::pipeline`.
 //!
 //! Drives the full generic pipeline (coarse sync → refine → LLR → BP/OSD →
 //! optional SIC multi-pass) specialised to the [`Ft4`] protocol, exposed
@@ -125,10 +125,9 @@ impl FrameDecodable for Ft4 {
 impl crate::msg::decode_request::SupportsWideBandAp for Ft4 {}
 
 /// FT4 reaches the message-text stage through the generic pipeline's
-/// [`InfoAccept`] seam rather than an engine of its own, so both of its
+/// `InfoAccept` seam rather than an engine of its own, so both of its
 /// strategies carry the policy and either can be rebuilt for a new one.
 ///
-/// [`InfoAccept`]: crate::engine::pipeline::InfoAccept
 impl SupportsMessageFilter for Ft4 {
     fn __strategy_for<Pol: MessagePolicy>(
         tag: StrategyTag,

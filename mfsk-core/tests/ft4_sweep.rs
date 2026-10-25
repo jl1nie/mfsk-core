@@ -343,9 +343,9 @@ fn ft4_snr_sweep() {
 #[test]
 #[ignore = "manual diagnostic — DecodeStrictness calibration probe (issue #72)"]
 fn ft4_strictness_probe() {
+    use mfsk_core::__internal::pipeline::decode_frame;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-    use mfsk_core::engine::pipeline::decode_frame;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
@@ -460,12 +460,12 @@ fn ft4_strictness_probe() {
 #[test]
 #[ignore = "manual diagnostic — AWGN sensitivity gap stage attribution (issue #72)"]
 fn ft4_diag_weak_trials() {
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::SyncFrontEnd;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
@@ -612,7 +612,7 @@ fn ft4_diag_k4_tail_direction() {
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Ft4>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Ft4>();
 
     let mut n_reach_depth4_gate = 0u32;
     let mut n_head_rescues = 0u32;
@@ -778,11 +778,11 @@ fn ft4_diag_k4_tail_direction() {
 #[test]
 #[ignore = "manual diagnostic — 3-segment Δt-search retry hypothesis (issue #72)"]
 fn ft4_diag_segment_retry() {
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, ft4_sync_search_window};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
@@ -1012,11 +1012,11 @@ fn ft4_diag_segment_retry() {
 fn ft4_diag_candidate_cost_split() {
     use std::time::{Duration, Instant};
 
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
@@ -1243,11 +1243,11 @@ fn ft4_diag_candidate_cost_split() {
 #[test]
 #[ignore = "manual diagnostic — Phase 4 smax early-reject calibration (dapper-soaring-nest plan)"]
 fn ft4_diag_smax_calibration() {
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
@@ -1420,11 +1420,11 @@ fn ft4_diag_smax_calibration() {
 #[ignore = "diagnostic — needs a DT-swept ft4sim corpus in MFSK_FT4_DT_DIR"]
 #[cfg(feature = "internal-testing")]
 fn ft4_diag_dt_window_reach() {
+    use mfsk_core::__internal::pipeline::process_candidate_precomputed;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::process_candidate_precomputed;
     use mfsk_core::engine::sync2d::ft4_sync_search_window;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;

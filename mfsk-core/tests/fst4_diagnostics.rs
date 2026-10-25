@@ -125,7 +125,7 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     let mut work: Vec<(&str, u32)> = Vec::new();
     for &(snr_tag, trials) in snr_tags {
@@ -323,7 +323,7 @@ fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str,
     // power, it doesn't change what was already measured.
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     #[derive(Default, Clone, Copy)]
     struct Tally {
@@ -612,7 +612,7 @@ fn stage_ablation_i0_offsets_for_channel(channel: &str) {
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     let mut work: Vec<(&str, u32)> = Vec::new();
     for &(snr_tag, trials) in SNR_TAGS {
@@ -774,7 +774,7 @@ fn stage_ablation_for_channel(channel: &str) {
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     let mut work: Vec<(&str, u32)> = Vec::new();
     for &(snr_tag, trials) in SNR_TAGS {
@@ -1006,7 +1006,7 @@ fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
     }
 
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -1272,7 +1272,7 @@ fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -1392,19 +1392,19 @@ fn sweep_dir() -> PathBuf {
 #[test]
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_diag_weak_trials() {
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
     use mfsk_core::fst4::{Fst4s30, Fst4s300};
 
-    fn probe<P: mfsk_core::engine::pipeline::GenericPipelineProtocol>(
+    fn probe<P: mfsk_core::__internal::pipeline::GenericPipelineProtocol>(
         dir: &std::path::Path,
         file_prefix: &str,
         cfg: &mfsk_core::engine::dsp::downsample::DownsampleCfg,
     ) where
-        P::Fec: mfsk_core::engine::protocol::BpPooledFec,
+        P::Fec: mfsk_core::__internal::protocol::BpPooledFec,
     {
         for trial in 1..=5 {
             let path = dir.join(format!("{file_prefix}_{trial:02}.wav"));
@@ -1484,11 +1484,11 @@ fn fst4_diag_weak_trials() {
 #[test]
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_diag_nsym4_ladder() {
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{compute_llr_generic, symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec};
@@ -1516,8 +1516,8 @@ fn fst4_diag_nsym4_ladder() {
         trials: std::ops::RangeInclusive<u32>,
         tally: &mut Tally,
     ) where
-        P: mfsk_core::engine::pipeline::GenericPipelineProtocol,
-        P::Fec: FecCodec + mfsk_core::engine::protocol::BpPooledFec,
+        P: mfsk_core::__internal::pipeline::GenericPipelineProtocol,
+        P::Fec: FecCodec + mfsk_core::__internal::protocol::BpPooledFec,
         P::Msg: MessageCodec,
     {
         for trial in trials {
@@ -1811,9 +1811,9 @@ fn fst4_diag_zsum_osd() {
 #[test]
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_120_diag_sync_vs_decode_failure() {
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s120;
     use mfsk_core::fst4::decode::FST4_120_DOWNSAMPLE;
@@ -1907,10 +1907,10 @@ fn fst4_120_diag_sync_vs_decode_failure() {
 fn fst4_60_diag_candidate_cost_split() {
     use std::time::{Duration, Instant};
 
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::fst4_sync_search;
     use mfsk_core::fst4::Fst4s60;
@@ -2044,10 +2044,10 @@ fn fst4_60_diag_candidate_cost_split() {
 fn fst4_300_diag_candidate_cost_split() {
     use std::time::{Duration, Instant};
 
+    use mfsk_core::__internal::pipeline::process_candidate_basic;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::fst4_sync_search;
     use mfsk_core::fst4::Fst4s300;
@@ -2236,7 +2236,7 @@ fn fst4_60_diag_osd_escalation() {
     // Real production gate — see `osd_escalation_gates`'s doc comment in
     // `core/pipeline.rs` (FST4 uses (12, 20), not FT8's (12, 18)).
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     for c in &cands {
         let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
@@ -2396,7 +2396,7 @@ fn fst4_60_diag_npre1_pattern_counts() {
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
     let (osd_attempt_min, _osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     let mut n_reach_osd = 0usize;
     let mut totals: Vec<u32> = Vec::new();
@@ -3269,7 +3269,7 @@ fn fst4_60_diag_rung_major_scheduling() {
     let refined: Vec<_> = raw_candidates
         .iter()
         .map(|c| {
-            mfsk_core::engine::pipeline::refine_candidate_position::<Fst4s60>(
+            mfsk_core::__internal::pipeline::refine_candidate_position::<Fst4s60>(
                 c,
                 &fft_cache,
                 &FST4_60A_DOWNSAMPLE,
@@ -3312,7 +3312,7 @@ fn fst4_60_diag_rung_major_scheduling() {
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     struct CandTiming {
         idx: usize,
@@ -3591,8 +3591,8 @@ fn fst4_60_diag_stage_ablation_ccir_moderate() {
 #[test]
 #[ignore = "manual verification — decode_rung_major correctness (issue #306 item 3, VK3NV)"]
 fn fst4_60_diag_decode_rung_major_correctness() {
+    use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
-    use mfsk_core::engine::pipeline::refine_candidate_position;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -3744,9 +3744,9 @@ fn fst4_60_diag_decode_rung_major_correctness() {
 #[test]
 #[ignore = "manual sanity check — decode_rung_major nsync-gate candidate count (issue #306 item 3)"]
 fn fst4_60_diag_rung_major_nsync_gate_count() {
+    use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::refine_candidate_position;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -3899,11 +3899,11 @@ fn fst4_60_diag_baked_asset_nsync_gate_count() {
 fn fst4_60_diag_sniper_gate_width_sweep() {
     use std::time::Instant;
 
+    use mfsk_core::__internal::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -4079,8 +4079,8 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
 #[test]
 #[ignore = "manual root-cause probe — decode_rung_major per-stage timing (issue #306 item 3)"]
 fn fst4_60_diag_rung_major_stage_timing_probe() {
+    use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
-    use mfsk_core::engine::pipeline::refine_candidate_position;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -4203,7 +4203,7 @@ fn fst4_60_diag_i0_retry_ccir_old_only() {
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -4350,9 +4350,9 @@ fn fst4_60_diag_i0_offset_ablation() {
 #[test]
 #[ignore = "manual diagnostic — host-timing read for the {0,-1} i0-jitter middle ground (issue #306 follow-up)"]
 fn fst4_60_diag_i0_offset_host_timing() {
+    use mfsk_core::__internal::pipeline::refine_candidate_position;
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::refine_candidate_position;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::freq_shift_cd0;
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
@@ -4410,7 +4410,7 @@ fn fst4_60_diag_i0_offset_host_timing() {
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     // Time each offset independently for every candidate whose offset=0
     // clears the nsync gate (i.e. the "hard" set this whole cost story
@@ -4719,11 +4719,11 @@ fn fst4_60_diag_npre_baseline_scan() {
 fn fst4_60_diag_sniper_cap_near_threshold() {
     use std::time::Instant;
 
+    use mfsk_core::__internal::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -4919,11 +4919,11 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
 #[test]
 #[ignore = "manual diagnostic — per-trial detail for issue #312's n=100 vs n=20 discrepancy"]
 fn fst4_60_diag_sniper_cap_per_trial() {
+    use mfsk_core::__internal::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -5149,7 +5149,7 @@ fn fst4_60_diag_i0_cheap_rank_vs_exhaustive() {
     ];
 
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -5529,11 +5529,11 @@ fn fst4_60_diag_dedup_zero_score_readmission() {
 #[test]
 #[ignore = "manual audit — do dedup-suppressed candidates ever decode? (issue #312)"]
 fn fst4_60_diag_dedup_zero_score_recall_effect() {
+    use mfsk_core::__internal::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -5706,13 +5706,13 @@ fn fst4_60_diag_dedup_zero_score_recall_effect() {
 #[test]
 #[ignore = "manual diagnostic — soft Costas margin vs raw nsync separation (issue #310, VK3NV)"]
 fn fst4_60_diag_soft_costas_margin_separation() {
+    use mfsk_core::__internal::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{
         symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
     };
-    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -5976,7 +5976,7 @@ fn fst4_60_diag_soft_margin_escalation_priority() {
     let dir = sweep_dir();
     let n_sync = sync_symbol_count::<Fst4s60>();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -6334,7 +6334,7 @@ fn fst4_60_diag_soft_margin_conditional_value() {
     let dir = sweep_dir();
     let n_sync = sync_symbol_count::<Fst4s60>();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -6667,7 +6667,7 @@ fn fst4_60_diag_escalation_budget_curve() {
     let dir = sweep_dir();
     let n_sync = sync_symbol_count::<Fst4s60>();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
@@ -6975,7 +6975,7 @@ fn fst4_60_diag_budget_curve_breadth_vs_depth() {
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);

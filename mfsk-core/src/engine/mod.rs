@@ -51,7 +51,7 @@ pub mod interleave;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod llr;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub mod pipeline;
+pub(crate) mod pipeline;
 pub mod protocol;
 pub mod scalar;
 // Routes through `engine::fft` (#390), so it builds under either FFT

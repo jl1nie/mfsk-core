@@ -249,7 +249,7 @@ fn decode_candidate(
         refs,
     );
     let t = charge(1, t);
-    let r = mfsk_core::engine::pipeline::process_candidate_precomputed::<Ft4>(
+    let r = mfsk_core::__internal::pipeline::process_candidate_precomputed::<Ft4>(
         cand,
         // FT4's `snr_db` reads the coarse candidate score, not a
         // wide-band cache, so the board passes an empty slice here and

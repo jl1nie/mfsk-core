@@ -421,6 +421,26 @@ pub mod jtty;
 pub mod registry;
 pub mod slotgrid;
 
+/// The crate's own tests and embedded builds reach what the public API keeps
+/// private through this module (`internal-testing`, #693). It has no semver
+/// promise: anything here may move or go in any release.
+#[cfg(feature = "internal-testing")]
+#[doc(hidden)]
+pub mod __internal {
+    /// `engine::pipeline`, the generic decode pipeline (FT4 / FST4).
+    #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+    pub mod pipeline {
+        pub use crate::engine::pipeline::{
+            GenericPipelineProtocol, SnrCtx, decode_frame, osd_escalation_gates,
+            process_candidate_basic, process_candidate_precomputed, refine_candidate_position,
+        };
+    }
+    /// `engine::protocol` items reopened for the same tests.
+    pub mod protocol {
+        pub use crate::engine::protocol::bp_pooled::BpPooledFec;
+    }
+}
+
 // Flatten commonly-used types to the crate root.
 pub use crate::engine::{
     DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,

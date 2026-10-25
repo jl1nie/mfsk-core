@@ -115,7 +115,7 @@ fn ddc_refine(c: &SyncCandidate, ci: &[f32], cq: &[f32], delay: usize) -> Vec<Co
 fn fst4_60_llrd_ablation_on_the_ddc_path() {
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::__internal::pipeline::osd_escalation_gates::<Fst4s60>();
 
     let mut work: Vec<(usize, &str, u32)> = Vec::new();
     for (i, &(tag, trials)) in SNR_TAGS.iter().enumerate() {

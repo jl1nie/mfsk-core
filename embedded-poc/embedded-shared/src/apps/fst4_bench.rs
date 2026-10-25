@@ -443,7 +443,7 @@ use num_complex::Complex32;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra};
 use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-use mfsk_core::engine::pipeline::process_candidate_precomputed;
+use mfsk_core::__internal::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::ModulationParams;
 use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;

@@ -48,7 +48,7 @@ use num_complex::Complex32;
 use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-use mfsk_core::engine::pipeline::process_candidate_precomputed;
+use mfsk_core::__internal::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::sync::{
     coarse_sync_from_sync2d, fill_sync2d_row, spectra_crop_for, sync2d_shape, RxGrid, Spectrogram,
     SpectrogramBuilder, Sync2dShape, SyncCandidate,

@@ -589,52 +589,39 @@ pub trait FecCodec: sealed::Sealed + Default + 'static {
 /// new dependency on `engine::pipeline`, only their existing one on
 /// this module.
 ///
-/// `pub` only under the `internal-testing` feature (issue #203) —
-/// mirrors `engine::pipeline::GenericPipelineProtocol`'s own gating,
-/// since that trait's `where Self::Fec: BpPooledFec` bound needs
-/// `BpPooledFec` to be at least as visible as whatever visibility
-/// `GenericPipelineProtocol`-bounded functions have on a given feature
-/// set (Rust's `private_bounds` lint) — not because any external
-/// caller ever names `BpPooledFec` itself; the bound is satisfied
-/// automatically by `P: GenericPipelineProtocol` alone.
+/// Crate-private (#693): the `where Self::Fec: BpPooledFec` bound of
+/// `GenericPipelineProtocol` needs it, and no caller names it. Reopened only
+/// through `mfsk_core::__internal::protocol` for the crate's own tests.
 ///
-/// `#[allow(dead_code)]`: unlike `GenericPipelineProtocol` (an empty
-/// marker trait, nothing for the lint to flag), this trait has a real
-/// method (`decode_soft_pooled`). Under a feature set with no protocol
-/// that reaches `GenericPipelineProtocol`'s generic pipeline (e.g.
-/// `--no-default-features`, `--features wspr`) nothing ever calls it,
-/// even though `impl BpPooledFec for Ldpc174_91`/`Ldpc240_101` are
-/// unconditionally compiled — caught by CI's `-D warnings` build
-/// matrix, not by the `full`/`full,internal-testing` combo this was
-/// developed against.
-#[cfg(feature = "internal-testing")]
-pub trait BpPooledFec: FecCodec {
-    /// Reusable working memory for [`Self::decode_soft_pooled`] —
-    /// concretely `fec::ldpc::bp::BpScratch` for both current
-    /// implementors.
-    type Scratch: Default;
+/// It has a real method (`decode_soft_pooled`), so under a feature set with no
+/// protocol that reaches the generic pipeline (`--no-default-features`,
+/// `--features wspr`) nothing calls it, hence the `dead_code` allowance.
+pub(crate) use bp_pooled::BpPooledFec;
 
-    /// [`FecCodec::decode_soft`] with caller-provided scratch, reused
-    /// across every call for one candidate instead of reallocated per
-    /// call.
-    fn decode_soft_pooled(
-        &self,
-        llr: &[f32],
-        opts: &FecOpts,
-        scratch: &mut Self::Scratch,
-    ) -> Option<FecResult>;
-}
-#[cfg(not(feature = "internal-testing"))]
-#[allow(dead_code)] // see the `internal-testing` branch's doc comment above
-pub(crate) trait BpPooledFec: FecCodec {
-    type Scratch: Default;
+// Declared `pub` inside a crate-private module, so `__internal` can re-export it
+// under `internal-testing` while it stays unnameable outside the crate otherwise
+// (#693; the lint behind `GenericPipelineProtocol`'s bound compares nominal
+// visibility, so no `private_bounds` warning either).
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
+pub(crate) mod bp_pooled {
+    use super::{FecCodec, FecOpts, FecResult};
 
-    fn decode_soft_pooled(
-        &self,
-        llr: &[f32],
-        opts: &FecOpts,
-        scratch: &mut Self::Scratch,
-    ) -> Option<FecResult>;
+    pub trait BpPooledFec: FecCodec {
+        /// Reusable working memory for [`Self::decode_soft_pooled`] —
+        /// concretely `fec::ldpc::bp::BpScratch` for both current
+        /// implementors.
+        type Scratch: Default;
+
+        /// [`FecCodec::decode_soft`] with caller-provided scratch, reused
+        /// across every call for one candidate instead of reallocated per
+        /// call.
+        fn decode_soft_pooled(
+            &self,
+            llr: &[f32],
+            opts: &FecOpts,
+            scratch: &mut Self::Scratch,
+        ) -> Option<FecResult>;
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

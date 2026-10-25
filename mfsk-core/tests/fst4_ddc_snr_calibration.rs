@@ -57,10 +57,10 @@ use num_complex::Complex;
 mod common;
 use common::load_wav_i16_opt;
 
+use mfsk_core::__internal::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
-use mfsk_core::engine::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
 use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::Fst4s60;

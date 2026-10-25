@@ -48,11 +48,11 @@
 
 use std::time::Instant;
 
+use mfsk_core::__internal::pipeline::osd_escalation_gates;
 use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
 use mfsk_core::engine::frame::DecodeStrictness;
 use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
 use mfsk_core::engine::llr::{compute_llr_partial, descramble_info, symbol_spectra, sync_quality};
-use mfsk_core::engine::pipeline::osd_escalation_gates;
 use mfsk_core::engine::sync2d::{freq_shift_cd0, ft4_sync_search};
 use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
 use mfsk_core::ft4::Ft4;

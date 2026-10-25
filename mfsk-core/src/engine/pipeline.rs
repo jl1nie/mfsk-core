@@ -294,19 +294,12 @@ impl InfoAccept for AcceptAll {
 /// `ndeep=2` for every candidate, so the fallback branch now serves only
 /// the generic path.
 ///
-/// `pub` only under the `internal-testing` feature (issue #203) — no
-/// in-crate production caller (FT4/FST4 reach this gate through
+/// No in-crate production caller (FT4/FST4 reach this gate through
 /// [`process_candidate_basic`], not directly); exists only for
-/// `tests/fst4_sweep.rs`-style diagnostics to read the real gate. See
-/// [`decode_frame`]'s doc comment for the feature-gating rationale.
-#[cfg(feature = "internal-testing")]
+/// `tests/fst4_sweep.rs`-style diagnostics to read the real gate.
+/// Crate-private; `mfsk_core::__internal::pipeline` re-exports it under `internal-testing` (#693).
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
 pub fn osd_escalation_gates<P: Protocol>() -> (u32, u32) {
-    osd_escalation_gates_impl::<P>()
-}
-
-#[cfg(not(feature = "internal-testing"))]
-#[allow(dead_code)] // only reachable from tests/ (internal-testing feature)
-pub(crate) fn osd_escalation_gates<P: Protocol>() -> (u32, u32) {
     osd_escalation_gates_impl::<P>()
 }
 
@@ -339,10 +332,8 @@ fn osd_escalation_gates_impl<P: Protocol>() -> (u32, u32) {
 /// the call site (issue #255). Unused fields cost nothing — all
 /// borrowed, not owned.
 ///
-/// Visibility mirrors [`GenericPipelineProtocol`] itself (issue #203):
-/// `pub` only under `internal-testing`, `pub(crate)` otherwise — it
-/// only ever appears in that trait's `snr_db` method signature.
-#[cfg(feature = "internal-testing")]
+/// Only ever appears in [`GenericPipelineProtocol::snr_db`]'s signature.
+/// Crate-private; `mfsk_core::__internal::pipeline` re-exports it under `internal-testing` (#693).
 pub struct SnrCtx<'a> {
     /// [`symbol_spectra`]`::<P>` output, `/1000`-scaled.
     pub cs: &'a [Complex<f32>],
@@ -403,71 +394,9 @@ pub struct SnrCtx<'a> {
     #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub i_start: i32,
 }
-#[cfg(not(feature = "internal-testing"))]
-pub(crate) struct SnrCtx<'a> {
-    /// [`symbol_spectra`]`::<P>` output, `/1000`-scaled.
-    pub cs: &'a [Complex<f32>],
-    /// [`crate::engine::tx::info_to_tones`]`::<P>` output.
-    pub itone: &'a [u8],
-    /// The refined baseband the symbol spectra were built from, and
-    /// its sample rate.
-    ///
-    /// FST4's DDC path is this pair's only reader: with no whole-slot
-    /// FFT to take a noise baseline from, it measures the noise in the
-    /// part of *this* buffer the signal does not occupy. Dead in any
-    /// build without `fst4`, like the two fields below.
-    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
-    pub cd0: &'a [Complex<f32>],
-    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
-    pub ds_rate_hz: f32,
-    /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
-    /// `candidate(2,icand)` equivalent.
-    // FT4's `snr_db` override is this field's only reader, so a build
-    // with `fst4` but not `ft4` — a real CI feature-matrix cell — sees
-    // it as dead.
-    #[cfg_attr(not(feature = "ft4"), allow(dead_code))]
-    pub cand_score: f32,
-    /// Coarse-sync candidate frequency (Hz) — `candidates(icand,1)`
-    /// equivalent. FST4's baseline lookup (`candidates(icand,5)`) is
-    /// keyed by this, not the fine-refined frequency.
-    // FST4's `snr_db` override is this field's only reader (mirrors
-    // `cand_score` above, just for the other protocol) — dead in any
-    // build without `fst4`.
-    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
-    pub cand_freq_hz: f32,
-    /// Big forward-FFT of the whole slot's raw audio
-    /// ([`build_fft_cache`]'s output) — WSJT-X `c_bigfft` equivalent.
-    /// Already computed by the caller for downsampling; FST4's
-    /// baseline extraction reuses it rather than requiring its own.
-    // Same as `cand_freq_hz` above — FST4-only reader.
-    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
-    pub fft_cache: &'a [Complex<f32>],
-    /// The [`DownsampleCfg`] `fft_cache` was built from — supplies
-    /// `fft1_size` (⇒ WSJT-X's `df1`) to FST4's baseline extraction.
-    // Same as `cand_freq_hz` above — FST4-only reader.
-    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
-    pub ds_cfg: &'a DownsampleCfg,
-    /// Fine-refined candidate frequency (Hz) — the frequency `cs` was
-    /// actually computed at (`WSJT-X`'s `fc_synced`), as opposed to
-    /// `cand_freq_hz`'s coarse pre-refine value. FST4's own `xsig`
-    /// re-derivation needs this: WSJT-X's `fst4_decode.f90` downsamples
-    /// its bitmetrics input at `fc_synced`, not the coarse candidate
-    /// frequency `get_candidates_fst4.f90`'s baseline is keyed by.
-    // Same as `cand_freq_hz` above — FST4-only reader.
-    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
-    pub refined_freq_hz: f32,
-    /// Sample index (in the *downsampled* baseband) of the first
-    /// symbol — the `i_start`/`i0` [`symbol_spectra`] was actually
-    /// called with. Needed alongside `refined_freq_hz` to recompute a
-    /// fresh, deterministic `cs` at the exact same alignment.
-    // Same as `cand_freq_hz` above — FST4-only reader.
-    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
-    pub i_start: i32,
-}
 
-/// `pub` only under the `internal-testing` feature (issue #203) — see
-/// [`decode_frame`]'s doc comment for the feature-gating rationale.
-#[cfg(feature = "internal-testing")]
+/// What a protocol needs to run through this module's generic pipeline.
+/// Crate-private; `mfsk_core::__internal::pipeline` re-exports it under `internal-testing` (#693).
 pub trait GenericPipelineProtocol: SyncFrontEnd
 where
     Self::Fec: BpPooledFec,
@@ -478,23 +407,7 @@ where
     /// formula (issue #255's finding), kept only as a fallback for
     /// protocols not yet individually ported. **Overrides MUST cite
     /// the WSJT-X source file:line** their formula matches (see
-    /// [`ft4_snr_db`]'s doc comment for the expected style).
-    fn snr_db(ctx: SnrCtx<'_>) -> f32 {
-        compute_snr_db::<Self>(ctx.cs, ctx.itone)
-    }
-}
-#[cfg(not(feature = "internal-testing"))]
-pub(crate) trait GenericPipelineProtocol: SyncFrontEnd
-where
-    Self::Fec: BpPooledFec,
-{
-    /// Reported SNR (dB) for a decoded candidate. Default is the
-    /// generic adjacent-tone-ratio heuristic ([`compute_snr_db`]) —
-    /// known *not* to match any current protocol's real WSJT-X
-    /// formula (issue #255's finding), kept only as a fallback for
-    /// protocols not yet individually ported. **Overrides MUST cite
-    /// the WSJT-X source file:line** their formula matches (see
-    /// [`ft4_snr_db`]'s doc comment for the expected style).
+    /// `ft4_snr_db`'s doc comment for the expected style).
     fn snr_db(ctx: SnrCtx<'_>) -> f32 {
         compute_snr_db::<Self>(ctx.cs, ctx.itone)
     }
@@ -509,46 +422,13 @@ where
 /// `fft_cache` must match the protocol's [`DownsampleCfg`]. `known` is used
 /// to prevent redundant OSD work on frequencies with an existing decode.
 ///
-/// `pub` only under the `internal-testing` feature (issue #203) — see
-/// [`decode_frame`]'s doc comment for the feature-gating rationale.
-#[cfg(feature = "internal-testing")]
-pub fn process_candidate_basic<P: GenericPipelineProtocol>(
-    cand: &SyncCandidate,
-    fft_cache: &[Complex<f32>],
-    cfg: &DownsampleCfg,
-    depth: DecodeDepth,
-    strictness: DecodeStrictness,
-    known: &[DecodeResult],
-    eq_mode: EqMode,
-    sync_q_min: u32,
-) -> Option<DecodeResult>
-where
-    P::Fec: BpPooledFec,
-{
-    process_candidate_basic_impl::<P, AcceptAll>(
-        cand,
-        fft_cache,
-        cfg,
-        depth,
-        strictness,
-        known,
-        eq_mode,
-        sync_q_min,
-        &[],
-        None,
-        false,
-        false,
-        &AcceptAll,
-        QsoFreq::Unknown,
-    )
-}
-
-#[cfg(not(feature = "internal-testing"))]
+///
+/// Crate-private; `mfsk_core::__internal::pipeline` re-exports it under `internal-testing` (#693).
 // Only reachable via `decode_frame`/`decode_frame_subtract`, themselves
 // only called by `ft4`/`fst4`'s `decode` modules — dead code under any
 // feature combination excluding both (e.g. `jt9`/`jt65`/`q65`-only).
-#[allow(dead_code)]
-pub(crate) fn process_candidate_basic<P: GenericPipelineProtocol>(
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
+pub fn process_candidate_basic<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
@@ -585,8 +465,8 @@ where
 /// skips that function's own `downsample_cached` call entirely rather
 /// than just reusing its output.
 ///
-/// `internal-testing`-only, same rationale as `process_candidate_basic`
-/// itself. Added for issue #306/#307's FST4 embedded bench: with both
+/// Crate-private like `process_candidate_basic`, and reached from outside only
+/// through `__internal` (#693). Added for issue #306/#307's FST4 embedded bench: with both
 /// `coarse_sync` (issue #306) and `downsample_cached` needing FFT
 /// lengths the embedded `fft-extern` backend can't serve yet (issue
 /// #307), baking each real candidate's already-refined `(cd0, freq_hz,
@@ -622,7 +502,8 @@ where
 /// that doesn't need BP to converge at all, so it can rescue
 /// candidates the `nsym=8` attempt would also have missed. `false` for
 /// every existing caller (behaves exactly as before).
-#[cfg(feature = "internal-testing")]
+/// Reached from outside through `__internal` only (#693).
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub fn process_candidate_precomputed<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
@@ -713,8 +594,7 @@ pub(crate) fn ft4_snr_db(cand_score: f32) -> f32 {
 /// the ladder's last rung.
 ///
 /// Separate rather than a parameter on that function because it is
-/// `pub` under `internal-testing` and a dozen sweep binaries call it;
-/// moving its signature to serve one new caller is not worth it.
+/// a dozen sweep binaries call it through `__internal`; moving its signature to serve one new caller is not worth it.
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 pub(crate) fn process_candidate_basic_ap<P: GenericPipelineProtocol, A: InfoAccept>(
@@ -762,7 +642,7 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol, A: InfoAccept>(
     //
     // Applied as the ladder's final rung, so it can only add decodes.
     ap: &[(&[u8], &[u8], u8)],
-    // When `Some`, reuses a refine result [`dedup_refined_candidates`]
+    // When `Some`, reuses a refine result `dedup_refined_candidates`
     // already computed for this candidate — downsample + RMS-normalise
     // + `fst4_sync_search`/`ft4_sync_search` — instead of recomputing
     // it here (issue #244 follow-up: without this, every surviving
@@ -1573,12 +1453,10 @@ pub(crate) fn scan_dedup_match_cross<S, C, M: PartialEq>(
 
 /// Decode one slot of audio: coarse sync → candidates → BP/OSD per candidate.
 ///
-/// `pub` only under the `internal-testing` feature (issue #203): the
-/// crate's own `tests/` sweep/probe binaries are compiled as separate
-/// crates and need real `pub` visibility to call this directly; on the
-/// default feature set it's `pub(crate)`, since #191's `DecodeRequest`
-/// is the supported public entry point.
-#[cfg(feature = "internal-testing")]
+/// The crate's own `tests/` sweep/probe binaries are separate crates and reach
+/// this through `mfsk_core::__internal::pipeline` (`internal-testing`); the
+/// supported public entry point is `Decoder<P>` (#693).
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub fn decode_frame<P: GenericPipelineProtocol>(
     audio: &[i16],
@@ -1625,8 +1503,7 @@ where
 /// other caller goes through `decode_frame` and gets today's behaviour.
 ///
 /// Separate rather than a 14th parameter on `decode_frame` because that
-/// one is `pub` under `internal-testing` and a dozen sweep/probe
-/// binaries call it — none of which has an opinion about a budget.
+/// one is reached by a dozen sweep/probe binaries through `__internal` — none of which has an opinion about a budget.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_frame_budgeted<P: GenericPipelineProtocol, A: InfoAccept>(
@@ -1672,54 +1549,9 @@ where
     )
 }
 
-#[cfg(not(feature = "internal-testing"))]
-// Only called by `ft4`/`fst4`'s `decode` modules — dead code under any
-// feature combination excluding both (e.g. `jt9`/`jt65`/`q65`-only).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_frame<P: GenericPipelineProtocol>(
-    audio: &[i16],
-    cfg: &DownsampleCfg,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-    eq_mode: EqMode,
-    sync_q_min: u32,
-    precomputed_fft: Option<&[Complex<f32>]>,
-    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
-) -> (Vec<DecodeResult>, FftCache)
-where
-    P::Fec: BpPooledFec,
-{
-    let (results, fft_cache, _) = decode_frame_impl::<P, AcceptAll>(
-        audio,
-        cfg,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        strictness,
-        eq_mode,
-        sync_q_min,
-        precomputed_fft,
-        on_result,
-        None,
-        &[],
-        &AcceptAll,
-        None,
-    );
-    (results, fft_cache)
-}
-
-/// Cheap refine-only step for [`dedup_refined_candidates`]: downsample +
+/// Cheap refine-only step for `dedup_refined_candidates`: downsample +
 /// RMS-normalise + sync-search only, mirroring the same steps at the top
-/// of [`process_candidate_basic_impl`] but stopping *before*
+/// of `process_candidate_basic_impl` but stopping *before*
 /// `symbol_spectra`/LLR/BP/OSD. Returns the already-normalised `cd0`
 /// alongside the refined `(freq_hz, i0, score)` triple — the caller
 /// threads both back into `process_candidate_basic_impl`'s
@@ -1733,28 +1565,15 @@ where
 /// A/B measured as a net *regression*, exceeding the BP/OSD savings on
 /// a file with few true near-duplicates).
 ///
-/// `pub` only under `internal-testing` (issue #203's escape hatch,
-/// same shape as [`decode_frame`]/[`process_candidate_basic`]) — used
-/// directly by issue #306/#307's FST4 embedded bench to bake a
+/// Reached from outside through `__internal`, like [`decode_frame`] and
+/// [`process_candidate_basic`] — used directly by issue #306/#307's FST4 embedded bench to bake a
 /// per-candidate refined `(cd0, freq_hz, i0, score)` on a host, so the
 /// device can call [`process_candidate_precomputed`] without ever
 /// running `downsample_cached`'s (non-power-of-2, on embedded's
 /// `fft-extern` backend, currently unrunnable — see #307) inverse FFT
 /// itself.
-#[cfg(feature = "internal-testing")]
+#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
 pub fn refine_candidate_position<P: GenericPipelineProtocol>(
-    cand: &SyncCandidate,
-    fft_cache: &[Complex<f32>],
-    cfg: &DownsampleCfg,
-) -> (Vec<Complex<f32>>, f32, i32, f32)
-where
-    P::Fec: BpPooledFec,
-{
-    refine_candidate_position_impl::<P>(cand, fft_cache, cfg)
-}
-
-#[cfg(not(feature = "internal-testing"))]
-pub(crate) fn refine_candidate_position<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,

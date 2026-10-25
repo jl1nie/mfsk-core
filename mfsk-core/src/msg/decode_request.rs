@@ -192,7 +192,7 @@ impl<F: Fn(&Wsjt77Fields) -> bool + Sync> MessagePolicy for Only<F> {
 }
 
 /// Bridges a request's [`MessagePolicy`] to the generic pipeline's
-/// [`InfoAccept`] seam: unpack the information bits to text, then ask
+/// `InfoAccept` seam: unpack the information bits to text, then ask
 /// the policy.
 ///
 /// **An un-unpackable codeword is presented as the empty message**,
@@ -479,7 +479,7 @@ where
 /// and the FST4 sub-modes share `engine::pipeline`, which returns
 /// information bits and never forms a string — `engine` does not depend
 /// on `msg`, so it cannot call `unpack77` at all — and reach the policy
-/// through the [`InfoAccept`] seam instead, with `PolicyAccept`
+/// through the `InfoAccept` seam instead, with `PolicyAccept`
 /// unpacking on the `msg` side of it.
 ///
 /// **This doc used to say "FT8 only, for now", and that giving FT4 and
@@ -489,7 +489,6 @@ where
 /// What is still FT8-only is applying the codec's verdict with no
 /// caller involved — see [`FrameDecodable::MESSAGE_FILTER_DEFAULT`].
 ///
-/// [`InfoAccept`]: crate::engine::pipeline::InfoAccept
 ///
 /// Gating it means a caller who tries gets a compile error naming the
 /// missing capability, rather than a builder method that silently does

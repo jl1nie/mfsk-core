@@ -218,7 +218,7 @@ pub fn bp_decode_generic_kind<P: LdpcParams>(
 /// which only pools the `NormalizedMinSum`/`OffsetMinSum` kernels —
 /// `FecOpts::default()`'s `bp_kind` is `SumProduct`, and neither FT4 nor
 /// any FST4 sub-mode overrides it, so this is the kernel the generic
-/// pipeline's `decode_soft_pooled` ([`crate::engine::pipeline`]) and
+/// pipeline's `decode_soft_pooled` (`crate::engine::pipeline`) and
 /// FT8's own host-default `bp_step_select` path actually need pooled).
 ///
 /// This is the only copy of the loop: [`bp_decode_generic_kind`] is a
