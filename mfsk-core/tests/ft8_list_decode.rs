@@ -66,13 +66,19 @@ impl Rng {
 /// A 15 s slot holding `text` at 1500 Hz, DT 0, at `snr_db` in 2500 Hz, over white
 /// Gaussian noise from `seed`; `text` `None` for noise alone.
 fn slot(text: Option<&str>, snr_db: f64, seed: u64) -> Vec<i16> {
+    let m77 = text.map(|t| {
+        let w: Vec<&str> = t.split(' ').collect();
+        mfsk_core::msg::wsjt77::pack77(w[0], w[1], w.get(2).copied().unwrap_or("")).expect("packs")
+    });
+    slot_bits(m77.as_ref(), snr_db, seed)
+}
+
+/// [`slot`] for a message already packed (a hashed shape `pack77` does not take).
+fn slot_bits(m77: Option<&[u8; 77]>, snr_db: f64, seed: u64) -> Vec<i16> {
     const AMP: f64 = 100.0;
     let mut audio = vec![0f64; 180_000];
-    if let Some(t) = text {
-        let w: Vec<&str> = t.split(' ').collect();
-        let m77 = mfsk_core::msg::wsjt77::pack77(w[0], w[1], w.get(2).copied().unwrap_or(""))
-            .expect("packs");
-        let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(&m77);
+    if let Some(m77) = m77 {
+        let tones = mfsk_core::engine::tx::message_to_tones::<Ft8>(m77);
         let pcm = mfsk_core::engine::tx::synthesize_i16::<Ft8>(&tones, 12_000, 1500.0, AMP as i16);
         for (a, &p) in audio[6_000..].iter_mut().zip(pcm.iter()) {
             *a = p as f64;
@@ -224,6 +230,44 @@ fn a8_finds_a_suffix_dx_call_message() {
         texts(&with)
     );
 }
+
+/// a8 with a `/R` DX call, a frame that only the candidates 207-411 hold: `<JA1ABC> K1ABC/R RR73`
+/// (candidate 210, Type 4). The ladder cannot send it to a8's own list, so a decode of this text
+/// by pass 31 can only be one of 208-211.
+#[test]
+fn a8_finds_a_hashed_suffix_candidate() {
+    let hint = ApHint::new()
+        .with_call1("JA1ABC")
+        .with_call2("K1ABC/R")
+        .with_grid("FN42");
+    let m77 = mfsk_core::msg::wsjt77::pack77_message(
+        "<JA1ABC> K1ABC/R RR73",
+        &mfsk_core::msg::wsjt77::Pack77Options::new(),
+    )
+    .expect("packs")
+    .bits;
+    let cur = slot_bits(Some(&m77), SNR_HASHED, 5);
+    let with = DecodeRequest::<Ft8>::new(&cur, 100.0, 3000.0, 1.3, 50)
+        .ap_hint(&hint)
+        .freq_hint(1500.0)
+        .decode()
+        .results;
+    println!(
+        "a8 <JA1ABC> K1ABC/R RR73 at {SNR_HASHED} dB: {:?}",
+        texts(&with)
+    );
+    let hit = with
+        .iter()
+        .find(|r| r.pass == PASS_ID_A8)
+        .unwrap_or_else(|| panic!("a8 did not find it: {:?}", texts(&with)));
+    assert_eq!(hit.message77(), &m77);
+    assert_eq!(
+        unpack77(hit.message77()).as_deref(),
+        Some("<...> K1ABC/R RR73")
+    );
+}
+
+const SNR_HASHED: f64 = -22.0;
 
 /// a7 on a corpus laid out as `<dir>/prev.wav` (`K1ABC W9XYZ -10`, strong) and
 /// `<dir>/m<snr>/cur_<nn>.wav` (`K1ABC W9XYZ RR73` at that SNR, same frequency and

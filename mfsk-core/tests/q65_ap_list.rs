@@ -148,6 +148,53 @@ fn ap_list_with_suffix_dx_call_finds_its_message() {
 }
 
 #[test]
+fn ap_list_with_suffix_dx_call_finds_a_hashed_candidate() {
+    // `<JA1ABC> K1ABC/R RR73` (entry 210, Type 4) is in the 411 list only. Seeded noise, as
+    // in the threshold test above.
+    let freq = 1500.0;
+    let snr_db = -20.0_f32;
+    let amp = (4.0 * 10_f32.powf(snr_db / 10.0) * REF_BW / FS).sqrt();
+    let mut bits = mfsk_core::msg::wsjt77::pack77_message(
+        "<JA1ABC> K1ABC/R RR73",
+        &mfsk_core::msg::wsjt77::Pack77Options::new(),
+    )
+    .expect("packs")
+    .bits;
+    mfsk_core::msg::q65::q65_rr73_fixup(&mut bits);
+    let tones = mfsk_core::q65::encode_channel_symbols(&bits);
+    let pcm = mfsk_core::engine::tx::synthesize::<Q65a30>(&tones, FS_U, freq, amp);
+    let mut slot = vec![0.0_f32; SLOT_SAMPLES];
+    let start = FS_U as usize;
+    let n = pcm.len().min(slot.len() - start);
+    slot[start..start + n].copy_from_slice(&pcm[..n]);
+    let mut rng = Lcg::new(7);
+    for s in slot.iter_mut() {
+        *s += rng.gauss();
+    }
+    let candidates = standard_qso_codewords("JA1ABC", "K1ABC/R", "FN42");
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_early_sec: 2.4,
+        time_tolerance_late_sec: 2.4,
+        score_threshold: 0.05,
+        max_candidates: 16,
+    };
+    let r = DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, params)
+        .ap_list(&candidates)
+        .decode();
+    println!(
+        "q65 <JA1ABC> K1ABC/R RR73 at {snr_db} dB: {:?}",
+        r.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+    assert!(
+        r.iter().any(|d| d.message == "<...> K1ABC/R RR73"),
+        "not decoded: {:?}",
+        r.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn ap_list_with_suffix_dx_call_returns_none_on_silence() {
     let mut audio = vec![0.0_f32; SLOT_SAMPLES];
     let mut total = 0;
