@@ -94,7 +94,9 @@ pub fn plan_of(
 fn fits(c: &ChannelSpec, rate: u32, center_hz: f64) -> bool {
     let mut rx = IqReceiver::new(IqStream::new(rate, center_hz, IqSampleFormat::Cf32));
     match c.mode.slot() {
-        Some(m) => rx.add_channel(c.dial_hz, m).is_ok(),
+        Some(m) => rx
+            .add_channel(c.dial_hz, mfsk_core::iq::ChannelSpec::from(m))
+            .is_ok(),
         None => rx.add_audio_channel(c.dial_hz).is_ok(),
     }
 }

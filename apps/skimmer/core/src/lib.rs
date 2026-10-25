@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub use mfsk_core::decoder::{ApMode, Contest};
-use mfsk_core::decoder::{BudgetCheck, Stage, default_params};
+use mfsk_core::decoder::{BudgetCheck, PeriodBudget, Stage, default_params};
 pub use mfsk_core::iq::Channelizer;
 // The receiver's own: a channel's mode and prefix points, from its decoder. Not this crate's
 // `ChannelSpec` (a channel as the operator configures it).
@@ -479,42 +479,24 @@ struct Worker {
 }
 
 /// A period a lane's `decode_prefix` sequence is open for: what it has said
-/// so far (`decode_streaming`), and what its calls have cost. The period's
-/// deliveries (FT8's A, B and the end) share one [`Config::slot_budget`]
-/// allowance between them (#626), and a cut period is counted once in
-/// `Status::budget_cut_slots` however many of its calls ran out (#627).
-#[derive(Debug, Default)]
+/// so far (`decode_streaming`), and its budget. The period's deliveries (FT8's
+/// A, B and the end) share one [`Config::slot_budget`] allowance between them
+/// (#626), and a cut period is counted once in `Status::budget_cut_slots`
+/// however many of its calls ran out (#627): both are
+/// `mfsk_core::decoder::PeriodBudget`'s.
+#[derive(Debug)]
 struct OpenPeriod {
-    period: i64,
+    /// The text each delivery of the period went out with, by its position.
     sent: std::collections::HashMap<u32, String>,
-    /// Decoding time the period's calls have used. The time between calls,
-    /// waiting for audio, is not decoding and is not counted.
-    spent: Duration,
-    /// Already counted as cut.
-    counted: bool,
+    budget: PeriodBudget,
 }
 
 impl OpenPeriod {
-    fn new(period: i64) -> Self {
+    fn new(period: i64, mode: Mode, slot_budget: Option<f32>) -> Self {
         Self {
-            period,
-            ..Default::default()
+            sent: Default::default(),
+            budget: PeriodBudget::share(period, mode, slot_budget),
         }
-    }
-
-    /// The deadline for a call starting at `start`: what is left of
-    /// `allowance` after the period's earlier calls.
-    fn deadline(&self, start: Instant, allowance: Option<Duration>) -> Option<Instant> {
-        allowance.map(|a| start + a.saturating_sub(self.spent))
-    }
-
-    /// Book a call that took `took`; `true` when it is the period's first
-    /// to run out of budget, the one to count.
-    fn finish(&mut self, took: Duration, exhausted: bool) -> bool {
-        self.spent += took;
-        let first = exhausted && !self.counted;
-        self.counted |= exhausted;
-        first
     }
 }
 
@@ -563,17 +545,12 @@ impl Worker {
                     // decoder tells them apart itself (`decode_slot_with`).
                     let whole = slot.is_whole();
                     let mut cur = match open.take() {
-                        Some(o) if o.period == slot.period => o,
-                        _ => OpenPeriod::new(slot.period),
+                        Some(o) if o.budget.period() == slot.period => o,
+                        _ => OpenPeriod::new(slot.period, slot.mode, slot_budget),
                     };
-                    // A share of the period, less what its earlier calls used.
-                    let deadline = cur.deadline(
-                        t,
-                        slot_budget
-                            .map(|f| Duration::from_secs_f32(modes::slot_seconds(slot.mode) * f)),
-                    );
-                    let within = move || deadline.is_none_or(|d| Instant::now() < d);
-                    let budget = deadline.is_some().then_some(&within as BudgetCheck<'_>);
+                    // What is left of the period's share after its earlier calls.
+                    let within = cur.budget.within(t);
+                    let budget = within.as_ref().map(|w| w as BudgetCheck<'_>);
                     let exact = decoder.delivery_is_exact();
                     let report = decode_streaming(
                         exact,
@@ -594,7 +571,7 @@ impl Worker {
                         },
                         |on_row| decoder.decode_slot_with(&slot, budget, Some(on_row)).ok(),
                     );
-                    if cur.finish(t.elapsed(), report.exhausted) {
+                    if cur.budget.finish(t.elapsed(), &report) {
                         cut_slots.fetch_add(1, Ordering::Relaxed);
                     }
                     if !whole {
@@ -2752,7 +2729,6 @@ fn stream_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mfsk_core::prelude::SlotInput;
 
     fn rotating() -> Config {
         let mut c = Config::new(
@@ -3002,6 +2978,13 @@ mod tests {
         }
     }
 
+    /// The first `len` samples of `audio` as the receiver delivers them: a
+    /// `CompletedSlot` of f32 audio, period 7 of channel 0.
+    fn delivered(audio: &[i16], len: usize) -> CompletedSlot {
+        let f32_audio = audio[..len].iter().map(|&v| f32::from(v) / 32_768.0);
+        CompletedSlot::new(ChannelId(0), Mode::Ft8, 7, f32_audio.collect())
+    }
+
     /// An FT8 slot with the given messages at 1000 Hz, 1500 Hz, ... from 0.5 s.
     fn ft8_slot(messages: &[(&str, &str, &str)]) -> Vec<i16> {
         use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
@@ -3022,10 +3005,11 @@ mod tests {
     #[test]
     fn streamed_rows_are_the_rows_the_slot_returns_each_once() {
         let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
-        let slot = SlotInput::i16(&audio);
+        let slot = delivered(&audio, audio.len());
 
         let want: Vec<String> = AnyDecoder::with_defaults(Mode::Ft8)
-            .decode(&slot)
+            .decode_slot(&slot)
+            .unwrap()
             .rows
             .into_iter()
             .map(|d| d.decoded.text)
@@ -3042,7 +3026,7 @@ mod tests {
                     .unwrap()
                     .push((d.text.clone(), detail.info.len(), update));
             },
-            |on_row| Some(dec.decode_with(&slot, on_row)),
+            |on_row| dec.decode_slot_with(&slot, None, Some(on_row)).ok(),
         );
         // FT8 at the default depth is a sequential strategy: the callback
         // delivers exactly the returned rows, in the same order, each as a
@@ -3061,7 +3045,8 @@ mod tests {
     fn early_rows_go_out_at_the_first_prefix_and_none_twice() {
         let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
         let mut want: Vec<String> = AnyDecoder::with_defaults(Mode::Ft8)
-            .decode_i16(&audio, None)
+            .decode_slot(&delivered(&audio, audio.len()))
+            .unwrap()
             .rows
             .into_iter()
             .map(|d| d.decoded.text)
@@ -3088,7 +3073,8 @@ mod tests {
                     ));
                 },
                 |on_row| {
-                    Some(d.decode_prefix_with(&SlotInput::i16(&audio[..len]).period(7), on_row))
+                    d.decode_slot_with(&delivered(&audio, len), None, Some(on_row))
+                        .ok()
                 },
             );
             calls.push(got.into_inner().unwrap());
@@ -3149,7 +3135,7 @@ mod tests {
     fn a_spent_budget_cuts_the_slot_and_is_reported() {
         let audio = ft8_slot(&[("CQ", "JA1ABC", "PM95"), ("CQ", "K1JT", "FN20")]);
         let spent = || false;
-        let slot = SlotInput::i16(&audio).budget(&spent);
+        let slot = delivered(&audio, audio.len());
         let rows = std::sync::atomic::AtomicUsize::new(0);
         let mut dec = AnyDecoder::with_defaults(Mode::Ft8);
         let report = decode_streaming(
@@ -3158,57 +3144,10 @@ mod tests {
             &|_, _, _| {
                 rows.fetch_add(1, Ordering::Relaxed);
             },
-            |on_row| Some(dec.decode_with(&slot, on_row)),
+            |on_row| dec.decode_slot_with(&slot, Some(&spent), Some(on_row)).ok(),
         );
         assert!(report.exhausted, "{report:?}");
         assert_eq!(rows.load(Ordering::Relaxed), 0);
-    }
-
-    /// #626: a period's calls share one allowance. Each call gets what the
-    /// earlier ones left, the time between calls costs nothing, and a period
-    /// that has used it all starts its next call already out of time.
-    #[test]
-    fn a_periods_calls_share_one_budget() {
-        let ms = Duration::from_millis;
-        let allowance = Some(ms(300));
-        let t0 = Instant::now();
-        let mut p = OpenPeriod::new(7);
-        assert_eq!(
-            p.deadline(t0, allowance),
-            Some(t0 + ms(300)),
-            "A: the whole share"
-        );
-        p.finish(ms(120), false);
-        // B starts 1.7 s later (waiting for audio): 180 ms left, from then.
-        let tb = t0 + ms(1_700);
-        assert_eq!(p.deadline(tb, allowance), Some(tb + ms(180)));
-        p.finish(ms(200), true);
-        let tf = tb + ms(1_500);
-        assert_eq!(p.deadline(tf, allowance), Some(tf), "the end: nothing left");
-        assert_eq!(p.deadline(tf, None), None, "no budget, no deadline");
-    }
-
-    /// #627: a period whose A, B and final calls all run out of budget is one
-    /// cut slot; a second period is a second; a period cut at a prefix and
-    /// never finished was counted when it was cut.
-    #[test]
-    fn a_cut_period_is_counted_once() {
-        let ms = Duration::from_millis;
-        let mut count = 0;
-        let mut p = OpenPeriod::new(7);
-        for _ in 0..3 {
-            count += usize::from(p.finish(ms(100), true));
-        }
-        assert_eq!(count, 1);
-        let mut q = OpenPeriod::new(8);
-        count += usize::from(q.finish(ms(100), false));
-        count += usize::from(q.finish(ms(100), true));
-        assert_eq!(count, 2);
-        // Abandoned after a cut A: already counted, nothing more to do.
-        let mut r = OpenPeriod::new(9);
-        count += usize::from(r.finish(ms(100), true));
-        drop(r);
-        assert_eq!(count, 3);
     }
 
     #[test]

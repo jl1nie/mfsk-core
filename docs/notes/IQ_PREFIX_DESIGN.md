@@ -133,8 +133,9 @@ The receiver and the decoder each used to be told the mode, and the caller copie
 `update_channel`), and `decode_slot` / `decode_slot_with` take the `CompletedSlot` and make the choice: a prefix, or a
 whole slot whose period has a sequence open in this decoder, goes through `decode_prefix`; any other whole slot through
 `decode`. A slot cut for another mode is `Err(ModeMismatch)`. `update_channel` applies from the next slot that opens, as
-`set_prefix_points` (§2), and refuses another mode. The budget policy across a period's calls (`OpenPeriod` in the
-skimmer) stays with the caller: the library takes a budget per call.
+`set_prefix_points` (§2, deprecated since 0.15), and refuses another mode. The compute allowance a period's calls share (#626, #627) is `decoder::PeriodBudget`,
+held by the caller per open period: the accounting only, since the library has no clock, so the
+call still takes a budget (`PeriodBudget::within`, or a predicate built from `left()`).
 
 **Measured: a stale spec** (points on the channel, a decoder that wants none), `qso3_busy.wav` through the receiver, FT8
 `Depth::Fast` (`SicRounds`), `tests/iq_prefix.rs::a_stale_spec_costs_at_most_the_weakest_rows`:
