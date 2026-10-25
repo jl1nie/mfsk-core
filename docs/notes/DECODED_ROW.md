@@ -12,7 +12,7 @@ different field names, and **four** different message-text paths:
 
 | Result type (native)                    | Modes         | Text path            |
 |-----------------------------------------|---------------|----------------------|
-| `engine::pipeline::DecodeResult`        | FT8/FT4/FST4  | `unpack77` (fallible)|
+| `engine::frame::DecodeResult`           | FT8/FT4/FST4  | `unpack77` (fallible)|
 | `wspr::WsprResult`                      | WSPR          | `WsprMessage: Display` |
 | `q65::Q65Result`                        | Q65           | already a `String`   |
 | `jt65::Jt65Result` / `jt9::Jt9Result`   | JT65 / JT9    | `Jt72Message: Display` |
@@ -58,7 +58,7 @@ Locked choices (from the 0.9 planning thread):
    and remain `Clone`+`Send` for callers who need that detail across a
    channel (they stream the native result instead). Fields added since
    stay off `Decoded` for the same reason: `copied_last_tx` (Q65's
-   Pileup flag, `q65::rx`), `sync_cv` (`engine::pipeline`) and the pass id
+   Pileup flag, `q65::rx`), `sync_cv` (`engine::frame`) and the pass id
    live on the native results and on `MfskDecode`, not on `Decoded`.
 3. **unpack failure → `None`.** The FT8-family conversion is
    `Option<Decoded>`; a payload that passed CRC but won't unpack (rare)

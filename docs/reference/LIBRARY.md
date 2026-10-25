@@ -368,7 +368,7 @@ QSO, set `station`, or the `ap_hint` extra.
 
 | area | 0.12 | 0.13 |
 |---|---|---|
-| decode entry, FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` and their builders | `Decoder::<P>::new(DecodeParams)` + `decode(&SlotInput)`; options in `P::Extras`. The request types are `pub(crate)` (`internal-testing` reopens them) |
+| decode entry, FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` and their builders | `Decoder::<P>::new(DecodeParams)` + `decode(&SlotInput)`; options in `P::Extras`. The request types are `pub(crate)` (`internal-testing` re-exports them from `mfsk_core::__internal`) |
 | decode entry, WSPR / JT9 / JT65 / Q65 | `wspr::`, `jt9::`, `jt65::`, `q65::DecodeRequest`; Q65 `SniperRequest`, `MultiPeriodRequest` | the same `Decoder<P>`; the wide-band requests are `pub(crate)`. `SniperRequest` (decode at a known alignment) stays public. Q65 averaging is `averaging` + `SlotInput::period` |
 | options | builder methods per request (`.osd()`, `.strictness()`, `.eq_mode()`, `.ap_hint()`, `.sic_*()`, `.contest()`, `.tx_freq()`, …) | `DecodeParams` (WSJT-X's block: band, `rx_freq_hz`, `tx_freq_hz`, `depth`, `station`, `qso`, `ap`, `contest`, `eme_delay`, …) and per-mode `Extras` (`Tuning`, `ap_hint`, `eq`, `filter`, `a7`, `sniper`, `noise_blanker`, Q65's) |
 | cross-period state | `.previous_cycle()`, `.hash_table(Arc)`, WSPR `.table(&mut)` / `.confirmed()`, `MultiPeriodRequest` | decoder state: `Decoder::clear()`, `learn_callsign`, `unpack77`; hash tables per decoder, never shared |
@@ -549,8 +549,9 @@ recording is `Decoder::<P>::new(params)` and one `decode`. The engine
 functions underneath (`decode_frame`, `process_candidate_basic`, the
 `GenericPipelineProtocol` trait, the per-family `DecodeRequest` types) are
 `pub(crate)`, so downstream cannot bypass the decoder; the non-default
-`internal-testing` feature reopens them for the crate's own integration
-tests. `Decoder<P>` exists for the seven slot-decoded families (FT8, FT4,
+`internal-testing` feature adds `mfsk_core::__internal`, which re-exports them
+for the crate's own tests and the embedded builds (hidden from the docs, no
+semver promise). `Decoder<P>` exists for the seven slot-decoded families (FT8, FT4,
 FST4, WSPR, JT9, JT65, Q65). uvpacket, MSK144 and JTTY keep their own entry
 points ([§2.5](#25-extras-and-the-protocols-outside-decoder)).
 
@@ -2074,7 +2075,7 @@ tiers say where to look; the tree below marks each module with its tier.
 | **P: protocol building** | a new mode | the root traits (`ModulationParams`, `FrameLayout`, `Protocol`, `FecCodec`, `MessageCodec`, `SyncFrontEnd`), `decoder::Decodable`, `engine::tx` (`FskWaveform`, `message_to_tones`, `synthesize*`), `fec::*` |
 | **B: building blocks** | replace a stage, embedded | `engine::{dsp, sync, sync2d, llr, equalize, spectrogram, search, …}`, protocol internals (`ft8::decode_block`, `*::search`, `*::ddc`, `*::rx`) |
 
-Only `engine::pipeline` is `pub(crate)`. An item reachable by more than one path stays where the implementation put
+`engine::pipeline` is `pub(crate)`, and no path outside `mfsk_core::__internal` depends on a feature. The result, depth and budget types it produces (`DecodeResult`, `DecodeStrictness`, `DecodeDepth`, `LlrEffort`, `FftCache`, `BudgetCheck`, `BudgetReport`) live in `engine::frame` (#693). An item reachable by more than one path stays where the implementation put
 it: a protocol module re-exports the shared parts it is built from, and a parent module flattens its children.
 
 ```text
@@ -2106,6 +2107,7 @@ mfsk_core
 │   │                   a different algorithm, and stays in jt65/)
 │   ├── tx.rs           [P] message_to_tones / info_to_tones, FskWaveform, and
 │   │                   synthesize / synthesize_into / synthesize_i16 / synth_len
+│   ├── frame.rs        [A] DecodeResult / DecodeStrictness / DecodeDepth / LlrEffort / FftCache / BudgetCheck / BudgetReport
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) internals — call via
 │                       decoder::Decoder)
@@ -2132,7 +2134,7 @@ mfsk_core
 │   │   └── pdmath.rs      Probability-domain BP math helpers
 │   └── qra15_65_64/    the QRA15_65_64_IRR_E23 code instance
 ├── msg/              [A] Message codecs and the public output row
-│   ├── decode_request.rs the frame family's request builders — crate-private (`internal-testing` reopens them); `decoder` drives them
+│   ├── decode_request.rs the frame family's request builders — crate-private (`internal-testing` re-exports them from `__internal`); `decoder` drives them
 │   ├── decoded.rs      Decoded — the cross-mode output row
 │   ├── wsjt77.rs       77-bit WSJT message — FT8, FT4, FST4, Q65, MSK144; `pack77_message` (WSJT-X's whole-message packer)
 │   ├── wspr.rs         50-bit WSPR Types 1 / 2 / 3
@@ -2639,13 +2641,17 @@ improvement for busy wideband scans.
   `P::SYNC_MODE.blocks()` pilot observations; linearly extrapolates any
   tones Costas doesn't visit.
 
-### Pipeline (`mfsk_core::engine::pipeline`)
+### Pipeline (`mfsk_core::engine::pipeline`) and `engine::frame`
 
 `decode_frame::<P>` (coarse sync → parallel `process_candidate` →
 dedupe), `decode_frame_subtract::<P>` (SIC driver) and
 `process_candidate_basic::<P>` (single-candidate BP+OSD) are the raw
-engine functions. They are **`pub(crate)`**, or `pub` only under
-`internal-testing`. Use `Decoder<P>`.
+engine functions. They are **`pub(crate)`**; `internal-testing` re-exports
+them from `mfsk_core::__internal::pipeline`. Use `Decoder<P>`. The types they
+return and take (`DecodeResult`, `DecodeStrictness`, `DecodeDepth`,
+`LlrEffort`, `FftCache`, `BudgetCheck`, `BudgetReport`) are public in
+`mfsk_core::engine::frame`, and re-exported by `ft8::decode`, `ft4::decode`,
+`fst4::decode` and `decoder`.
 
 **`DecodeStrictness` (`Strict`/`Normal`/`Deep`) does not reach every
 protocol equally** — check which knob applies before assuming
@@ -2714,7 +2720,7 @@ justified it. The summary here covers what a Rust host consumer needs;
 | `fixed-point` | off | the numeric path embedded ships. **Implies `nstep-half`, and must** |
 | `serde` | off | `Serialize`/`Deserialize` on the public result types |
 | `instrument` | off | the 22 process-global counters of `wspr::instrument` and `fec::conv::fano::instrument`; the embedded WSPR benchmarks and two tests read them. Not in `full` |
-| `internal-testing` | off | reopens `pub(crate)` engine internals for the crate's own integration tests. Deliberately **not** in `full` |
+| `internal-testing` | off | adds `mfsk_core::__internal`, which re-exports crate-private engine internals for the crate's own tests and the embedded builds (no semver promise). Nothing else changes: every other path is the same with or without it. Deliberately **not** in `full` |
 
 Flags that bite:
 

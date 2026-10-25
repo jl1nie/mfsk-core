@@ -100,8 +100,8 @@ a new LDPC-based mode:
 4. `impl Protocol for MyMode` — bind `type Fec = …;` and
    `type Msg = …;` to existing codecs (or add a new FEC under `fec/`).
 5. Optionally add `decode.rs` / `encode.rs` thin wrappers that call
-   into `crate::engine::pipeline::decode_frame::<MyMode>` and the
-   synth helpers. The pipeline does not need to change.
+   into `crate::engine::pipeline::decode_frame::<MyMode>` (crate-private; a test
+   reaches it through `mfsk_core::__internal::pipeline`) and the synth helpers. The pipeline does not need to change.
 6. Feature-gate: `#[cfg(feature = "<mode>")]` in `src/lib.rs` and
    `Cargo.toml`.
 7. Add a trait-surface test (modulation / frame constants round-trip

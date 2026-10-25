@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **`engine::pipeline` is crate-private and no public path depends on `internal-testing` any more** (#693, closes #420). The types it
+  produced moved to `engine::frame`: `DecodeResult`, `DecodeStrictness`, `DecodeDepth`, `LlrEffort`, `FftCache`, `BudgetCheck`,
+  `BudgetReport` (the `ft8::decode` / `ft4::decode` / `fst4::decode` / `decoder` re-exports are unchanged). What the crate's tests and
+  the embedded builds reached through `internal-testing` is now `mfsk_core::__internal::{pipeline, protocol, msg, fst4, wspr, jt9,
+  jt65, q65, fec, sync2d, ft8}` (hidden from the docs, no semver promise): `engine::pipeline::process_candidate_basic` is
+  `__internal::pipeline::process_candidate_basic`, `msg::decode_request` is `__internal::msg::decode_request`, and so on.
+  `Ft4CoarsePhasors::buffer_addrs()` is `__internal::sync2d::buffer_addrs(&phasors)`. `mfsk-ffi` no longer enables the feature.
+- **`#[non_exhaustive]`** on the option, result and error types that will grow: `jtty::rx::Params`, `jt65::{ChaseParams, HintSpec}`,
+  `uvpacket` `AfcOpts` / `MultiChannelOpts` / `DecodedFrame` / `SlotEnergy` / `SyncStats` and its three error enums, `decoder::{Depth, ApMode,
+  QsoProgress}`, `Jt9Depth`, `GridDepth`, the msk144 and jtty result structs, `iq::RateTrackConfig`, `q65::{Caller, DxFromHistory}`. Build an
+  option from `Default` and assign; add a wildcard arm to a `match`. `WsprMessage` and `Jt72Message` stay exhaustive (the variants are
+  the message formats). Tier A+B unchanged.
+
 ### Results
 
 - `RR73` is packed as the acknowledgment `MAXGRID4+3` (32403), not the grid 32373, for every non-CQ type 1/2 message in all 77-bit

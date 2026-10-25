@@ -357,7 +357,7 @@ API は無い。一発の呼び出しにしかできないことが無いから�
 
 | 領域 | 0.12 | 0.13 |
 |---|---|---|
-| デコード入口、FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` とそのビルダー | `Decoder::<P>::new(DecodeParams)` ＋ `decode(&SlotInput)`。オプションは `P::Extras`。リクエスト型は `pub(crate)`（`internal-testing` で開く） |
+| デコード入口、FT8 / FT4 / FST4 | `msg::decode_request::DecodeRequest<P>` / `SniperRequest<P>` とそのビルダー | `Decoder::<P>::new(DecodeParams)` ＋ `decode(&SlotInput)`。オプションは `P::Extras`。リクエスト型は `pub(crate)`（`internal-testing` で `mfsk_core::__internal` から再エクスポートする） |
 | デコード入口、WSPR / JT9 / JT65 / Q65 | `wspr::`、`jt9::`、`jt65::`、`q65::DecodeRequest`。Q65 の `SniperRequest`、`MultiPeriodRequest` | 同じ `Decoder<P>`。広帯域リクエストは `pub(crate)`。`SniperRequest`（既知の位置でのデコード）は公開のまま。Q65 の平均は `averaging` ＋ `SlotInput::period` |
 | オプション | リクエストごとのビルダーメソッド（`.osd()`、`.strictness()`、`.eq_mode()`、`.ap_hint()`、`.sic_*()`、`.contest()`、`.tx_freq()`…） | `DecodeParams`（WSJT-X のブロック: 帯域、`rx_freq_hz`、`tx_freq_hz`、`depth`、`station`、`qso`、`ap`、`contest`、`eme_delay`…）とモード別の `Extras`（`Tuning`、`ap_hint`、`eq`、`filter`、`a7`、`sniper`、`noise_blanker`、Q65 のもの） |
 | 周期をまたぐ状態 | `.previous_cycle()`、`.hash_table(Arc)`、WSPR の `.table(&mut)` / `.confirmed()`、`MultiPeriodRequest` | デコーダの状態: `Decoder::clear()`、`learn_callsign`、`unpack77`。ハッシュ表はデコーダごとで、共有されない |
@@ -536,8 +536,9 @@ mfsk-core は WSJT-X と同じやり方でデコードする。WSJT-X はモー�
 `Decoder::<P>::new(params)` と `decode` 1 回である。その下の engine 関数
 （`decode_frame`、`process_candidate_basic`、`GenericPipelineProtocol` トレイト、
 ファミリ別の `DecodeRequest` 型）は `pub(crate)` で、下流がデコーダを迂回できない
-ようにしてある。既定外の `internal-testing` feature がクレート自身の統合テスト向けに
-それを開ける。`Decoder<P>` があるのは、スロットでデコードする 7 ファミリ（FT8・FT4・FST4・
+ようにしてある。既定外の `internal-testing` feature は `mfsk_core::__internal` を足し、
+クレート自身のテストと組込みビルド向けにそれらを再エクスポートする（ドキュメントには出さず、
+semver の約束も無い）。`Decoder<P>` があるのは、スロットでデコードする 7 ファミリ（FT8・FT4・FST4・
 WSPR・JT9・JT65・Q65）である。uvpacket・MSK144・JTTY は独自のエントリポイントを持つ
 （[§2.5](#25-extras-と-decoder-の外にあるプロトコル)）。
 
@@ -1930,7 +1931,7 @@ EME 遅延、履歴とコーラーのヘルパ — は
 | **P: プロトコル実装** | 新しいモード | ルートのトレイト（`ModulationParams`、`FrameLayout`、`Protocol`、`FecCodec`、`MessageCodec`、`SyncFrontEnd`）、`decoder::Decodable`、`engine::tx`（`FskWaveform`、`message_to_tones`、`synthesize*`）、`fec::*` |
 | **B: 部品** | 段の差し替え、組込み | `engine::{dsp, sync, sync2d, llr, equalize, spectrogram, search, …}`、プロトコル内部（`ft8::decode_block`、`*::search`、`*::ddc`、`*::rx`） |
 
-`pub(crate)` なのは `engine::pipeline` だけである。複数のパスから届く項目は、実装がある場所に残す:
+`engine::pipeline` は `pub(crate)` で、`mfsk_core::__internal` の外のどのパスも feature に依存しない。それが作る結果・深さ・予算の型（`DecodeResult`、`DecodeStrictness`、`DecodeDepth`、`LlrEffort`、`FftCache`、`BudgetCheck`、`BudgetReport`）は `engine::frame` にある（#693）。複数のパスから届く項目は、実装がある場所に残す:
 プロトコルモジュールは自分が組み上がる共有部分を再エクスポートし、親モジュールは子を平らに見せる。
 
 ```text
@@ -1962,6 +1963,7 @@ mfsk_core
 │   │                   — のため jt65/ に独自実装を維持)
 │   ├── tx.rs           [P] message_to_tones / info_to_tones、FskWaveform、および
 │   │                   synthesize / synthesize_into / synthesize_i16 / synth_len
+│   ├── frame.rs        [A] DecodeResult / DecodeStrictness / DecodeDepth / LlrEffort / FftCache / BudgetCheck / BudgetReport
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) 内部実装 — 呼び出しは
 │                       decoder::Decoder 経由)
@@ -1988,7 +1990,7 @@ mfsk_core
 │   │   └── pdmath.rs      確率領域 BP 数値計算ヘルパ
 │   └── qra15_65_64/    QRA15_65_64_IRR_E23 の符号インスタンス
 ├── msg/              [A] メッセージコーデックと公開の出力行
-│   ├── decode_request.rs フレーム系のリクエストビルダー — crate 非公開（`internal-testing` で開く）。`decoder` が駆動する
+│   ├── decode_request.rs フレーム系のリクエストビルダー — crate 非公開（`internal-testing` で `__internal` から再エクスポートする）。`decoder` が駆動する
 │   ├── decoded.rs      Decoded — モード共通の出力行
 │   ├── wsjt77.rs       77 bit WSJT メッセージ — FT8, FT4, FST4, Q65, MSK144。`pack77_message`（WSJT-X のメッセージ全体のパッカー）
 │   ├── wspr.rs         50 bit WSPR Types 1 / 2 / 3
@@ -2486,13 +2488,17 @@ short-time Costas グリッドしきい値を通るか、WSJT-X の
   トーン毎 Wiener equalizer を推定、Costas が訪問しないトーンは
   線形外挿でカバー
 
-### Pipeline (`mfsk_core::engine::pipeline`)
+### Pipeline (`mfsk_core::engine::pipeline`) と `engine::frame`
 
 `decode_frame::<P>` (coarse sync → 並列 `process_candidate` →
 dedupe)、`decode_frame_subtract::<P>` (SIC ドライバ)、
 `process_candidate_basic::<P>` (候補単体の BP+OSD) は engine の生関数
-である。これらは **`pub(crate)`** で、`pub` になるのは `internal-testing`
-の下だけ。`Decoder<P>` を使うこと。
+である。これらは **`pub(crate)`** で、`internal-testing` では
+`mfsk_core::__internal::pipeline` から再エクスポートされる。`Decoder<P>` を使うこと。
+それらが返す・受け取る型（`DecodeResult`、`DecodeStrictness`、`DecodeDepth`、
+`LlrEffort`、`FftCache`、`BudgetCheck`、`BudgetReport`）は
+`mfsk_core::engine::frame` で公開され、`ft8::decode`、`ft4::decode`、`fst4::decode`、
+`decoder` からも再エクスポートされる。
 
 **`DecodeStrictness` (`Strict`/`Normal`/`Deep`) は全プロトコルに等しく
 届くわけではない** — `.strictness(...)` が呼び出しに何かをするかどうかを
@@ -2561,7 +2567,7 @@ Rust ホスト消費者に関係する分だけをまとめる。`no_std` と固
 | `fixed-point` | off | 組込が出荷する数値パス。**`nstep-half` を含意し、そうでなければならない** |
 | `serde` | off | 公開結果型への `Serialize`/`Deserialize` |
 | `instrument` | off | `wspr::instrument` と `fec::conv::fano::instrument` のプロセスグローバルな 22 個のカウンタ。組込の WSPR ベンチマークと 2 つのテストが読む。`full` には含まれない |
-| `internal-testing` | off | クレート自身の統合テスト向けに `pub(crate)` の engine 内部を開ける。意図的に `full` に**含まれない** |
+| `internal-testing` | off | `mfsk_core::__internal` を足し、クレート自身のテストと組込みビルド向けに crate 非公開の engine 内部を再エクスポートする（semver の約束は無い）。それ以外は何も変わらず、他のパスは有無にかかわらず同じ。意図的に `full` に**含まれない** |
 
 嵌まりやすいフラグ:
 

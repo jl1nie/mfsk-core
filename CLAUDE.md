@@ -48,8 +48,9 @@ The library's single version is `workspace.package.version` in the root `Cargo.t
 
 - The shared module is `src/engine/` — **there is no `src/core/`**; do not invent one to fix a build error.
 - **Public decode API is `Decoder<P>`** (`mfsk-core/src/decoder/`): one persistent decoder per mode,
-  `DecodeParams` (= `jt9com`) + per-mode `Extras`, `decode(&SlotInput)`; transmit is `encoder::encode(mode, text)`. Only the
-  decode pipeline (`engine::pipeline`) is `pub(crate)`; the rest is public on purpose, in three tiers (application /
+  `DecodeParams` (= `jt9com`) + per-mode `Extras`, `decode(&SlotInput)`; transmit is `encoder::encode(mode, text)`. The
+  decode pipeline (`engine::pipeline`) is `pub(crate)`, and `internal-testing` only adds `mfsk_core::__internal` (the tests' and
+  embedded's way in, no semver); no other path depends on a feature. The rest is public on purpose, in three tiers (application /
   protocol building / building blocks, `LIBRARY.md` §4) for application builders and for people building their own protocols.
 - Adding a protocol: implement the traits (ModulationParams → FrameLayout → Protocol), feature-gate it, fill every
   test cell in §4. Steps: `CONTRIBUTING.md` "Adding a new protocol".
