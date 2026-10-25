@@ -44,57 +44,78 @@ fn ft8_rows_name_their_method_by_the_ladder_they_came_from() {
     assert!(bp > 0, "a busy period decodes some rows by plain BP");
 }
 
-/// The collision: on FT4 (and FST4) pass 5 is the OSD depth-3 rung **and** the a-priori `iaptype`
-/// 2 pass. The method is set where the row is made, so the two come out as what they are. The
-/// CCIR sweep near threshold, decoded at `Depth::Deep` with a hint, has both.
+/// The collision: on FT4 (and FST4) pass 5 is the OSD depth-3 rung **and** an a-priori pass. The
+/// method is set where the row is made, so the two come out as what they are: with a free-form
+/// hint, rows of pass 5 are `Osd` and `Ap { iaptype: None }` (the hint locked `CQ`, whatever
+/// number the pass id would suggest); with none, the QSO context's blind CQ is `Ap { iaptype:
+/// Some(1) }`, WSJT-X's number for `CQ ...`. The CCIR sweep near threshold, at `Depth::Deep`.
 #[test]
 fn ft4_pass_5_is_osd_or_a_priori_by_how_the_row_was_made() {
-    let mut seen: Vec<(u8, DecodeMethod)> = Vec::new();
     let mut files = 0;
-    for snr in ["m13", "m14", "m16", "m18", "m10", "m05"] {
-        for n in 1..=20 {
-            let path = format!(
-                "{}/../embedded-poc/assets/ft4_sweep/ft4_ccir_good_{snr}_{n:02}.wav",
-                env!("CARGO_MANIFEST_DIR")
-            );
-            let Some(audio) = common::load_wav_i16_opt(&path) else {
-                continue;
-            };
-            files += 1;
-            let mut d =
-                Decoder::<Ft4>::new(DecodeParams::for_band((200.0, 4_000.0)).depth(Depth::Deep));
-            // The corpus message is `CQ JL1NIE PM95`.
-            d.set_ap_hint(Some(ApHint::new().with_call1("CQ").with_call2("JL1NIE")));
-            for row in d.decode(&SlotInput::i16(&audio)).rows {
-                let method = row.detail.method.expect("FT4 records a method");
-                if !seen.contains(&(row.detail.pass, method)) {
-                    seen.push((row.detail.pass, method));
+    let mut run = |hint: bool| {
+        let mut seen: Vec<(u8, DecodeMethod)> = Vec::new();
+        for snr in ["m13", "m14", "m16", "m18", "m10", "m05"] {
+            for n in 1..=20 {
+                let path = format!(
+                    "{}/../embedded-poc/assets/ft4_sweep/ft4_ccir_good_{snr}_{n:02}.wav",
+                    env!("CARGO_MANIFEST_DIR")
+                );
+                let Some(audio) = common::load_wav_i16_opt(&path) else {
+                    continue;
+                };
+                files += 1;
+                let mut d = Decoder::<Ft4>::new(
+                    DecodeParams::for_band((200.0, 4_000.0)).depth(Depth::Deep),
+                );
+                if hint {
+                    // The corpus message is `CQ JL1NIE PM95`.
+                    d.set_ap_hint(Some(ApHint::new().with_call1("CQ").with_call2("JL1NIE")));
+                }
+                for row in d.decode(&SlotInput::i16(&audio)).rows {
+                    let method = row.detail.method.expect("FT4 records a method");
+                    if !seen.contains(&(row.detail.pass, method)) {
+                        seen.push((row.detail.pass, method));
+                    }
                 }
             }
         }
-    }
+        seen
+    };
+    let free_form = run(true);
+    let qso_context = run(false);
     if files == 0 {
         common::skip_or_fail("ft4_sweep");
         return;
     }
-    println!("{seen:?}");
+    println!("free-form hint: {free_form:?}\nQSO context: {qso_context:?}");
+    // The collision, as two different rows with the same pass id.
+    assert!(free_form.contains(&(5, DecodeMethod::Osd)), "{free_form:?}");
     assert!(
-        seen.contains(&(5, DecodeMethod::Osd)),
-        "OSD depth 3: {seen:?}"
+        free_form.contains(&(5, DecodeMethod::Ap { iaptype: None })),
+        "{free_form:?}"
     );
+    // A free-form hint's rows carry no iaptype, whichever pass they came from.
+    for (pass, m) in &free_form {
+        assert!(
+            !matches!(m, DecodeMethod::Ap { iaptype: Some(_) }),
+            "pass {pass}: {m:?}"
+        );
+    }
+    // The QSO context's blind CQ is WSJT-X's iaptype 1.
     assert!(
-        seen.contains(&(5, DecodeMethod::Ap { iaptype: Some(2) })),
-        "a-priori, iaptype 2: {seen:?}"
+        qso_context.contains(&(12, DecodeMethod::Ap { iaptype: Some(1) })),
+        "{qso_context:?}"
     );
-    assert!(seen.contains(&(0, DecodeMethod::Bp)), "{seen:?}");
-    assert!(
-        seen.contains(&(4, DecodeMethod::Osd)),
-        "OSD depth 2: {seen:?}"
-    );
-    // Nothing is labelled by its number alone: no pass has two methods but 5's pair.
+    for seen in [&free_form, &qso_context] {
+        assert!(seen.contains(&(0, DecodeMethod::Bp)), "{seen:?}");
+        assert!(seen.contains(&(4, DecodeMethod::Osd)), "{seen:?}");
+    }
+    // No other pass id has two methods.
     for pass in (0..=12u8).filter(|&p| p != 5) {
-        let methods: Vec<_> = seen.iter().filter(|(p, _)| *p == pass).collect();
-        assert!(methods.len() <= 1, "pass {pass} has {methods:?}");
+        for seen in [&free_form, &qso_context] {
+            let methods: Vec<_> = seen.iter().filter(|(p, _)| *p == pass).collect();
+            assert!(methods.len() <= 1, "pass {pass} has {methods:?}");
+        }
     }
 }
 
@@ -128,10 +149,11 @@ fn modes_that_record_no_method_give_none() {
     assert!(rows.iter().all(|r| r.detail.method.is_none()));
 }
 
-/// #696: `SlotResult::candidates` is what the coarse search kept for the call: a number on a call
-/// that searched, `None` on one that did not (FT8's checkpoint B only subtracts), and the same
-/// number whether the audio came whole or as the prefixes' last call. Not a recall figure: it
-/// counts noise candidates, so it is at least the number of rows a call decodes from the search.
+/// #696: `SlotResult::candidates` is what the first coarse search of the call kept: a number on a
+/// call that searched, `None` on one that did not (FT8's checkpoint B only subtracts). It is a
+/// *per call* figure, and for FT8's `SicEarly` the final call of a prefix sequence searches what is
+/// left after A's decodes, so it need not equal the whole-period call's. Not a recall figure: it
+/// counts noise candidates too.
 #[test]
 fn candidates_is_what_the_coarse_search_kept_for_that_call() {
     let Some(audio) = common::load_wav_i16_opt(asset_path!("qso3_busy.wav")) else {
@@ -161,6 +183,17 @@ fn candidates_is_what_the_coarse_search_kept_for_that_call() {
         d.decode_prefix(&SlotInput::i16(&audio).period(9))
             .candidates,
         calls[2].candidates
+    );
+
+    // The sniper searches a narrow window around the Rx frequency, and says how many it kept.
+    let mut sniper = Decoder::<Ft8>::with_defaults();
+    sniper.extras_mut().sniper = Some(mfsk_core::decoder::Sniper::default());
+    sniper.params_mut().rx_freq_hz = Some(1_500.0);
+    assert!(
+        sniper
+            .decode(&SlotInput::i16(&audio))
+            .candidates
+            .is_some_and(|n| n > 0)
     );
 
     // FT4, from the CCIR sweep: a number on any file.

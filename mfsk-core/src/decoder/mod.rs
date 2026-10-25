@@ -318,10 +318,15 @@ pub struct SlotResult<R> {
     pub rows: Vec<Row<R>>,
     pub budget: BudgetReport,
     /// How many candidates the coarse search kept for this call to work through (after its
-    /// `sync_min` and `max_cand`, on the audio as it came: the first search of a SIC call), or
-    /// `None` where this call made none (an FT8 prefix between its checkpoints) or the mode
-    /// does not report one (WSPR, JT9, JT65, Q65, FST4W). What was searched, not what was
-    /// missed: it is not a recall figure, and it counts noise candidates too (#696).
+    /// `sync_min` and `max_cand`): the **first search the call ran**. For FT8's default
+    /// `SicEarly` that is checkpoint A's, on the first 11.8 s, in a call that includes it (a
+    /// whole period, or the prefix at A), and checkpoint C's, on what is left after A's decodes
+    /// are subtracted, in the final call of a prefix sequence: so one period reports two
+    /// numbers (`qso3_busy`: 480 whole, 480 at A, none at B, 338 at the end). `None` for a call
+    /// that made no search (the prefix at FT8's checkpoint B only subtracts) and for the modes
+    /// that report none (WSPR, JT9, JT65, Q65, FST4W). FT8's sniper reports its narrow window's.
+    /// What was searched, not what was missed: it is not a recall figure, and it counts noise
+    /// candidates too (#696).
     pub candidates: Option<u32>,
 }
 

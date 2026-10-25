@@ -388,8 +388,9 @@ pub enum DecodeMethod {
     Osd,
     /// A-priori: some bits of the message were assumed. BP or OSD ran inside, and which is not
     /// told apart. `iaptype` is WSJT-X's number for what was assumed (1 `CQ ...`, 2 `MyCall ...`,
-    /// 3 `MyCall DxCall ...`, 4 `... RRR`, 5 `... 73`, 6 `... RR73`); `None` for a free-form
-    /// `ap_hint`, which upstream has no number for.
+    /// 3 `MyCall DxCall ...`, 4 `... RRR`, 5 `... 73`, 6 `... RR73`) when the hypotheses came from
+    /// the QSO context (`DecodeParams::qso` and `ap`); `None` for a free-form `ap_hint`, which locks
+    /// whatever bits it names, and upstream has no number for that.
     Ap { iaptype: Option<u8> },
     /// FT8's a7 list decode (`ft8_a7.f90`): the message is one of the calls heard before.
     ListA7,
@@ -399,9 +400,12 @@ pub enum DecodeMethod {
 
 impl DecodeMethod {
     /// The method of an a-priori decode from its pass id: the id each `iaptype` carries in
-    /// `decoder::frame::pass_of` (1 → 12, 2 → 5, 3 → 8, 4 → 9, 5 → 11, 6 → 10), and 6 and 7
-    /// (`msg::pipeline_ap::ap_passes`: the DX call alone, `CQ` + the DX call) for a hint that
-    /// has no upstream number.
+    /// `decoder::frame::pass_of` (1 → 12, 2 → 5, 3 → 8, 4 → 9, 5 → 11, 6 → 10). That holds for
+    /// the QSO context's hypotheses (`decoder::frame::qso_hint`) only: a free-form
+    /// `extras.ap_hint` uses the same ids for whatever bits it locked (its `call1` need not be
+    /// MyCall), so the decoder layer clears `iaptype` for those rows (`frame_decode`'s
+    /// `free_hint`). Ids 6 and 7 (`msg::pipeline_ap::ap_passes`: the hint as supplied, `CQ` + its
+    /// second call) have no `iaptype`.
     pub(crate) fn ap_from_pass(pass: u8) -> Self {
         let iaptype = match pass {
             12 => Some(1),

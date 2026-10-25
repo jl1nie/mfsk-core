@@ -21,7 +21,7 @@
 
 - **`RowDetail::method` and `SlotResult::candidates`: what an application can read about a decode** (#696). `method: Option<DecodeMethod>` says how a row was decoded (`Bp`, `Osd`, `Ap { iaptype }`,
   `ListA7`, `ListA8`; `None` for WSPR, JT9, JT65, Q65, FST4W) where `pass` is a number that means something else per mode and that FT4 / FST4 give twice (5 is both OSD depth 3 and an a-priori decode);
-  `pass` stays, its table is in `docs/notes/PASS_IDS.md`. `candidates` is what the first coarse search kept for the call (FT8, FT4, FST4; `None` for a call that made none, as FT8's checkpoint B).
+  `pass` stays, its table is in `docs/notes/PASS_IDS.md`. `candidates` is what the first coarse search of the call kept (FT8, FT4, FST4; per call, so FT8's `SicEarly` reports checkpoint A's in a whole-period call and C's in a prefix sequence's last; `None` for a call that made none, as FT8's checkpoint B); the engine's `DecodeOutcome` gains the same field. `method`'s `iaptype` is WSJT-X's number only for the QSO context's hypotheses: rows of a free-form `ap_hint` are `Ap { iaptype: None }`.
   C ABI (appended, ABI 3): `MfskDecode::{method, iaptype}` (`MFSK_METHOD_*`), `MfskBudgetReport::candidates`; Kotlin `MfskMethod`, `iaptype`, `candidates`; Swift `DecodeMethod`. Additive. Not yet: JT9, JT65, Q65, WSPR candidate counts.
 - **`decoder::PeriodBudget`: one compute allowance for the calls of a period** (#626, #627): `share(period, mode, fraction)`, `left()`, `finish(took, &budget_report)` (true once per
   period, on the first call that ran out) and, with `std`, `within(start)`. Moved from the skimmer's `OpenPeriod`; the accounting holds no clock.

@@ -448,6 +448,19 @@ where
     req
 }
 
+/// An a-priori method without its `iaptype` when the hypotheses were a free-form hint's: the
+/// engine numbers a hypothesis by its pass id, which means `iaptype` only for the QSO context's.
+fn unnumbered(
+    method: Option<crate::engine::frame::DecodeMethod>,
+    free_hint: bool,
+) -> Option<crate::engine::frame::DecodeMethod> {
+    use crate::engine::frame::DecodeMethod::Ap;
+    match method {
+        Some(Ap { .. }) if free_hint => Some(Ap { iaptype: None }),
+        m => m,
+    }
+}
+
 /// The row detail of a frame-family result; `resolved` is whether its text
 /// needed the hash table.
 fn detail_of(r: &DecodeResult, resolved: bool) -> RowDetail {
@@ -513,12 +526,17 @@ fn rows<P: Protocol>(
 /// `learn: false` resolves the rows against a copy of the table, so a prefix
 /// call before the end leaves the table as the period found it: the final
 /// call then resolves the whole set in decode order, as `decode` does.
+///
+/// `free_hint` is whether the AP hypotheses came from `extras.ap_hint` and not from the QSO
+/// context (`ap_for` picks one of the two): only the QSO context's carry WSJT-X's `iaptype`, so a
+/// free-form hint's rows are `Ap { iaptype: None }` whatever bits it locked.
 fn frame_decode<P, F>(
     state: &mut FrameState,
     slot: &SlotInput<'_>,
     on_row: Option<OnRow<'_, DecodeResult>>,
     gain: Option<f32>,
     learn: bool,
+    free_hint: bool,
     go: F,
 ) -> (SlotResult<DecodeResult>, Vec<DecodeResult>)
 where
@@ -556,6 +574,8 @@ where
             if let Some(text) = unpack77_with_hash(r.message77(), table) {
                 let resolved =
                     crate::msg::wsjt77::unpack77(r.message77()).as_deref() != Some(text.as_str());
+                let mut detail = detail_of(r, resolved);
+                detail.method = unnumbered(detail.method, free_hint);
                 cb(&Row {
                     decoded: Decoded {
                         text,
@@ -565,19 +585,22 @@ where
                         protocol: P::ID,
                         hash22: None,
                     },
-                    detail: detail_of(r, resolved),
+                    detail,
                     native: r.clone(),
                 });
             }
         }
     });
-    let out = go(
+    let mut out = go(
         audio,
         wrapped
             .as_ref()
             .map(|f| f as &(dyn Fn(&DecodeResult) + Sync)),
         previous,
     );
+    for r in &mut out.results {
+        r.method = unnumbered(r.method, free_hint);
+    }
     let results = out.results.clone();
     let rows = if learn {
         rows::<P>(out.results, &mut state.table)
@@ -794,8 +817,14 @@ fn ft8_decode(
         .is_none_or(|(_, step)| *step == StagedStep::Final);
     let staged = core::cell::RefCell::new(staged);
     let ap = ap_for(params, &extras.ap_hint, ApTable::Ft8, true);
-    let (out, results) =
-        frame_decode::<crate::Ft8, _>(state, slot, on_row, gain, last, |pcm, cb, previous| {
+    let (out, results) = frame_decode::<crate::Ft8, _>(
+        state,
+        slot,
+        on_row,
+        gain,
+        last,
+        extras.ap_hint.is_some(),
+        |pcm, cb, previous| {
             if let Some((sn, target)) = sniper {
                 let mut req = DecodeRequest::<crate::Ft8>::sniper(pcm, target, s.max_cand)
                     .search_hz(sn.search_hz)
@@ -848,7 +877,8 @@ fn ft8_decode(
                 Some((st, step)) => run_staged(req, extras.filter, st, *step),
                 None => run(req, extras.filter),
             }
-        });
+        },
+    );
     // A period that never reaches its last call remembers nothing.
     if extras.a7 && last {
         remember(state, slot.period, results);
@@ -927,17 +957,25 @@ impl Decodable for crate::Ft4 {
             ApTable::Ft4Fst4,
             params.depth != Depth::Fast && params.contest.ncontest() < 6,
         );
-        frame_decode::<crate::Ft4, _>(state, slot, on_row, None, true, |pcm, cb, _| {
-            let mut req = base_request::<crate::Ft4>(
-                pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
-            );
-            req = match s.strategy {
-                Ft4Strategy::SinglePass => req.single_pass(),
-                Ft4Strategy::SicRounds(n) => req.sic_rounds(n),
-            };
-            req = req.ap_hint(&ap);
-            run(req, extras.filter)
-        })
+        frame_decode::<crate::Ft4, _>(
+            state,
+            slot,
+            on_row,
+            None,
+            true,
+            extras.ap_hint.is_some(),
+            |pcm, cb, _| {
+                let mut req = base_request::<crate::Ft4>(
+                    pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
+                );
+                req = match s.strategy {
+                    Ft4Strategy::SinglePass => req.single_pass(),
+                    Ft4Strategy::SicRounds(n) => req.sic_rounds(n),
+                };
+                req = req.ap_hint(&ap);
+                run(req, extras.filter)
+            },
+        )
         .0
     }
 }
@@ -988,17 +1026,26 @@ macro_rules! fst4_decodable {
                     ApTable::Ft4Fst4,
                     params.depth != Depth::Fast,
                 );
-                frame_decode::<$ty, _>(state, slot, on_row, None, true, |pcm, cb, _| {
-                    let mut req = base_request::<$ty>(
-                        pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq, slot, cb,
-                    );
-                    req = req.jitter(params.depth != Depth::Fast && s.osd);
-                    if let Some(nb) = extras.noise_blanker {
-                        req = req.noise_blanker(nb);
-                    }
-                    req = req.ap_hint(&ap);
-                    run(req, extras.filter)
-                })
+                frame_decode::<$ty, _>(
+                    state,
+                    slot,
+                    on_row,
+                    None,
+                    true,
+                    extras.ap_hint.is_some(),
+                    |pcm, cb, _| {
+                        let mut req = base_request::<$ty>(
+                            pcm, params, s.sync_min, s.max_cand, s.osd, strictness, extras.eq,
+                            slot, cb,
+                        );
+                        req = req.jitter(params.depth != Depth::Fast && s.osd);
+                        if let Some(nb) = extras.noise_blanker {
+                            req = req.noise_blanker(nb);
+                        }
+                        req = req.ap_hint(&ap);
+                        run(req, extras.filter)
+                    },
+                )
                 .0
             }
         }

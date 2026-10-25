@@ -1660,6 +1660,7 @@ fn decode_sniper_inner<Pol: MessagePolicy>(
     let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
     let candidates =
         crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+    budget.report.note_candidates(candidates.len());
     let fft_cache = FftCache(build_fft_cache(audio));
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);

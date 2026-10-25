@@ -85,7 +85,7 @@ use crate::fec::ldpc::params::Ldpc174_91Params;
 // guess, for callers who explicitly want it back.
 
 /// Pass-ID range for the `zsave(:,1)`-equivalent (BP-refined, 1
-/// iteration) OSD attempts, `14..=17` for llr-variants a/b/c/d.
+/// iteration) OSD attempts, `14..=18` for llr-variants a/b/c/d/e.
 /// Exposed so `process_one_candidate_inner` can size its
 /// pass-tracking buffers without re-declaring magic numbers.
 ///
@@ -95,10 +95,10 @@ use crate::fec::ldpc::params::Ldpc174_91Params;
 pub(super) const PASS_ID_OSD_ZSAVE1_A: u8 = 14;
 
 /// Pass-ID range for the `zsave(:,2)`-equivalent (BP-refined, 2
-/// iterations) OSD attempts — issue #182. `19..=22` for llr-variants
-/// a/b/c/d. (18 was the old auto-AP pass ID, removed in the 0.8.0
-/// `DecodeDepth` redesign — currently unused, left as a gap rather
-/// than renumbered to avoid an unnecessary diff.)
+/// iterations) OSD attempts — issue #182. `19..=23` for llr-variants
+/// a/b/c/d/e. (`17 + 1` was once the old auto-AP pass ID, removed in the
+/// 0.8.0 `DecodeDepth` redesign: the variant `e` ids now use 18 and 23,
+/// and 13 is the gap.)
 pub(super) const PASS_ID_OSD_ZSAVE2_A: u8 = 19;
 
 /// Try the OSD staircase for a candidate whose BP staircase didn't
