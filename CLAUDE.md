@@ -90,12 +90,19 @@ Commands:
 bash scripts/install-hooks.sh     # core.hooksPath → .githooks (pre-commit AND pre-push)
 # merge gate (tiers A+B, ~90 s):
 MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing --release
+# "is it green?" — pre-push, the gate, the gate again on a clean checkout of HEAD, skimmer, embedded.
+# Run it directly (in the background if long); its LAST line is `VERIFY PASS` / `VERIFY FAIL: <stage>`:
+scripts/verify.sh
+scripts/ci-wait.sh --need 'Kotlin|Swift'   # after a push: CI for HEAD, one last line `CI PASS` / `CI FAIL: …`
 ```
 
 - `pre-commit`: fmt, clippy `-D warnings` (`--features full,internal-testing`), rustdoc `-D warnings`.
   `pre-push` (`scripts/pre-push-check.sh`): adds `-D clippy::perf`, the feature matrix, `mfsk-ffi` tests, FT8
   fixed-point floors.
 - Set `MFSK_REQUIRE_CORPUS=1` locally too, or a mis-resolved asset path silently skips. FST4 tests need `--release`.
+- **A test passes only if it passes on a clean checkout.** Generated corpora are `.gitignore`d (`embedded-poc/assets/*_sweep`):
+  tier B reads vendored files or a signal synthesised in the test, never those. `scripts/verify.sh` runs the gate on a clean
+  worktree of HEAD for this. Read the verdict line, not a notification's exit code (`AGENT_WORKFLOW.md` §8).
 - One protocol: `--test <binary> -- --nocapture`. **Never a blanket `-- --ignored`** (that is tier C: hours).
   Tier C: `scripts/run-sensitivity-sweeps.sh [modes]`, only for code paths shared with that mode.
 - Host CI never builds `embedded-poc/**`: a green badge on an embedded-only change means nothing compiled it.

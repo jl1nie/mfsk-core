@@ -78,6 +78,10 @@ FEATURE_MATRIX=(
   # enable (E8 of the 0.13 plan; `internal-testing` is what they call the
   # stage functions through).
   "alloc ft8 ft4 fst4 jt9 jt65 q65 fft-extern"
+  # `internal-testing` adds `__internal` only and must build on its own (a no-FFT build once
+  # failed on a diagnostic module whose only re-export needed an FFT backend, #693 review).
+  "internal-testing"
+  "alloc ft8 internal-testing fft-extern"
   # WSPR's decoder under no_std: its `osd` needed `std::sync::OnceLock`, and `decode` a bare
   # `String` and `f32::round`, so `alloc wspr fft-extern` did not build until these two rows.
   "alloc wspr fft-extern"

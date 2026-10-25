@@ -16,6 +16,24 @@ cargo fmt --all -- --check
 echo "==> cargo clippy --workspace --all-targets --features full,internal-testing -- -D warnings"
 cargo clippy --workspace --all-targets --features full,internal-testing --no-deps -- -D warnings
 
+# The few feature sets that have each broken a commit that passed `full` and
+# clippy above (2026-10-25, #693 / #692 / #696 sessions): an export inserted between a `#[cfg]`
+# and the item it gated (`alloc ft8 fft-extern`), `internal-testing` with no FFT backend
+# (`internal-testing`), and WSPR's decoder under no_std (`alloc wspr fft-extern`). Only when
+# the library's source or manifest is staged, a second each once warm. The whole matrix stays
+# in `scripts/pre-push-check.sh`; set PRECOMMIT_MINCHECK=0 to skip this.
+if [ "${PRECOMMIT_MINCHECK:-1}" = 1 ] \
+  && git diff --cached --name-only | grep -qE '^mfsk-core/(src/|Cargo\.toml)'; then
+  for features in "" "alloc,ft8,fft-extern" "internal-testing" "alloc,wspr,fft-extern"; do
+    echo "==> -D warnings cargo check -p mfsk-core --no-default-features [${features:-<none>}]"
+    if [ -z "$features" ]; then
+      RUSTFLAGS="-D warnings" cargo check -p mfsk-core --no-default-features -q
+    else
+      RUSTFLAGS="-D warnings" cargo check -p mfsk-core --no-default-features --features "$features" -q
+    fi
+  done
+fi
+
 # Mirrors `.github/workflows/ci.yml::docs`. Catches broken intra-doc
 # links (e.g. `[`fine_sync_power`]` pointing at a private item) before
 # CI does — they don't break the release publish, but they block

@@ -107,6 +107,9 @@ rule that matters is moved to a layer the harness executes:
 | `runner` on Sonnet, `reviewer` on Opus | `model:` in `.claude/agents/*.md` | yes |
 | no `fork`, no `model` override on `runner` | PreToolUse hook on `Agent`: `.claude/hooks/agent-guard.sh` (denies the call) | yes |
 | fmt / clippy / rustdoc / feature matrix | `.githooks` pre-commit / pre-push | yes, once `scripts/install-hooks.sh` ran |
+| four minimal feature sets build under `-D warnings` when `mfsk-core/src` or its manifest is staged | `.githooks/pre-commit` (skip with `PRECOMMIT_MINCHECK=0`) | yes |
+| "is it green": one verdict line, honest exit status, a clean-checkout run of the gate | `scripts/verify.sh` | only when run: the author must read its last line (§8.1) |
+| "did CI pass", with the jobs that matter for the change named | `scripts/ci-wait.sh [sha] [--need REGEX]` | only when run (§8.1) |
 | when to spawn (§3), when to switch model (§2), review required (§4) | this note | advice — judgement calls a hook cannot make |
 
 Before adding a rule to `CLAUDE.md`, ask whether it is mechanical (a path, a flag, a tool argument). If it is,
@@ -118,3 +121,47 @@ Measure, as for code (`CLAUDE.md` §2.3): pick a handful of representative tasks
 upstream port, a decoder change with review), record `/cost` and the outcome (did the merge gate pass first time,
 did review find a real defect), change one thing, compare. Run a task more than once before concluding: the
 article's example regression showed up in one run of two.
+
+## 8. Verification discipline
+
+What went wrong in the 2026-10-25 sessions (#693, #692, `PeriodBudget`, #696) was rarely the design: it was a
+check that was run and misread, run on the wrong thing, or not run. Each rule below names the mechanism.
+
+**8.1 The verdict is one line.** Run `scripts/verify.sh` directly (`run_in_background` with nothing around it, no
+`cmd > log; echo $?`): its **last line** is `VERIFY PASS` or `VERIFY FAIL: <stage>`, and its exit status is the
+verdict's, so a completion notification's exit code means what it says. A wrapper's exit code is the wrapper's: a
+background `bash pre-push-check.sh > log; echo "exit $?" >> log` once reported "completed (exit code 0)" for a script
+that had exited 101. After a push, `scripts/ci-wait.sh [sha] --need 'Kotlin|Swift'` does the same for CI; `--need`
+pins the jobs the change depends on (an absent job is a failure), because the Kotlin and Swift sources are compiled
+nowhere else.
+
+**8.2 Passing on this disk is not passing.** Tier B tests use vendored data only (`CLAUDE.md` §4). A test that reads
+a git-ignored or generated path (`embedded-poc/assets/*_sweep/*.wav`) passes here and fails in CI, where
+`MFSK_REQUIRE_CORPUS` refuses to skip. That turned `main` red from `dfde0a05`, with the author's gate, the
+reviewer's run and pre-push all green. `scripts/verify.sh`'s `clean` stage runs the merge gate on a throwaway
+`git worktree` of HEAD: **commit first**, it tests HEAD. A test that needs a generated corpus is tier C and says so
+(`#[ignore]`); to cover the same property in tier A, synthesise the signal in the test with deterministic noise.
+
+**8.3 A subagent's report is a lead, not a fact.** Before a number or a behaviour from a survey goes into a doc, an
+issue comment or the CHANGELOG, re-run the one command that shows it. The #696 survey said an unbudgeted call
+leaves `BudgetReport` at its default; FT8's default strategy fills `stages_run` and `rows_subtracted` with no budget
+(`stages_run: 2184`), and the wrong sentence was published on the issue.
+
+**8.4 A claim in a doc has a test or a measurement behind it; a new public field has three lines in its plan.** The
+three: its definition (per call, or per period?), who sets it, and the one test that fails if the definition is
+wrong. `SlotResult::candidates` was documented as "the same whether the audio came whole or as the prefixes' last
+call"; it is not (FT8's `SicEarly`: 480 whole, 338 at the end), and nothing asserted it until review.
+
+**8.5 A scripted bulk edit is followed by a build, and an insertion beside an attribute is read.** A Python
+substitution that inserted `pub use budget::PeriodBudget;` between a `#[cfg(...)]` and the `pub use` it gated
+broke every build without wspr / jt9 / jt65 / q65. Put an insertion next to an attribute in with `Edit`, after
+reading the line above; the pre-commit minimal feature checks (§6) catch the rest in seconds.
+
+**8.6 Waiting is not a stopping point.** Start `verify.sh` or `ci-wait.sh` in the background and do the work that
+does not depend on it; list that work before the push, not after. Stop only for a decision that is the user's.
+
+**8.7 The reviewer brief.** State the intent in two sentences; list what to check (the labels set at each site,
+the cfg matrix, the docs' claims against the code); **give the verification log path and say not to rerun the gate**
+(rerun only a command whose result is doubted); and say what was not verified (Kotlin, Swift, embedded flash), so
+the reviewer reads those as a compiler would. `.claude/agents/reviewer.md` carries the standing parts.
+
