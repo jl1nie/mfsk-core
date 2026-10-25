@@ -1669,9 +1669,10 @@ and `audio: Vec<f32>` — 12 kHz from the slot's nominal start, so `dt` reads as
 it does on a WAV. `slot.input()` is the `SlotInput` (audio plus `period`, so
 averaging and a7 see consecutive slots), and `slot.abs_freq_hz(audio_hz)` is
 dial plus audio frequency. The public IQ types are `#[non_exhaustive]`.
-The receiver never sees the decoder, so nothing checks that they agree: give a
-channel's decoder the mode the channel was added with (`slot.mode`), or its
-slots are decoded as another mode's audio, with no error.
+Make the channel from its decoder (`add_channel(dial, &decoder)`, below) and decode with
+`decoder.decode_slot(&slot)`: a slot cut for another mode is `Err(ModeMismatch)`. Only the
+older `decoder.decode(&slot.input())` checks nothing: give it a decoder of the mode the
+channel was added with (`slot.mode`), or the slot is decoded as another mode's audio, with no error.
 
 *Time.* The sample count is the clock; no time source is read unless you give
 one. A channel's audio index `k` is `k/12000` s after sample 0, and slot `j` of

@@ -20,7 +20,7 @@
 ### Added
 
 - **A channel takes its mode and prefix points from its decoder** (#692): `iq::ChannelSpec` (`From<Mode>`, `From<&AnyDecoder>`, `From<&Decoder<P>>`),
-  `IqReceiver::add_channel(dial, impl Into<ChannelSpec>)` (a bare `Mode` still works) and `update_channel` (applies from the next slot; another mode is
+  `IqReceiver::add_channel(dial, impl Into<ChannelSpec>)` (a bare `Mode` value still compiles; an inferred `m.into()` argument now needs its type) and `update_channel` (applies from the next slot; another mode is
   `IqError::ModeChange`). `Decoder::decode_slot` / `decode_slot_with` and the `AnyDecoder` twins take the `CompletedSlot` and pick `decode_prefix` or `decode`
   themselves; a slot of another mode is `Err(ModeMismatch)`. Measured: points on the channel for a decoder that wants none return the same rows
   (`qso3_busy`, 14 / 14, SNR within 0.1 dB; `docs/notes/IQ_PREFIX_DESIGN.md` §10). Skimmer: no second `mode`, no throwaway decoder to ask for points, and the points

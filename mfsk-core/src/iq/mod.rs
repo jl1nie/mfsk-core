@@ -235,7 +235,8 @@ impl IqStream {
     }
 }
 
-/// Why an [`IqToAudio`] could not be built.
+/// Why an [`IqToAudio`] could not be built, or a channel could not be updated
+/// ([`IqReceiver::update_channel`]).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IqError {

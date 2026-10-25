@@ -2222,8 +2222,18 @@ fn receiver(
                 rx.add_channel(ch.dial_hz, spec)
             }
             None => rx.add_audio_channel(ch.dial_hz),
-        }
-        .map_err(|e| std::io::Error::other(format!("{}: {e}", ch.dial_hz)))?;
+        };
+        let id = match id {
+            Ok(id) => id,
+            Err(e) => {
+                // The channel was not added: its decoder, with the callsign table, goes back
+                // to the bank it was taken from.
+                if let Some(d) = decoder {
+                    cfg.live.bank.lock().unwrap().decoders.insert(key, d);
+                }
+                return Err(std::io::Error::other(format!("{}: {e}", ch.dial_hz)));
+            }
+        };
         if workers.len() <= id.0 {
             workers.resize_with(id.0 + 1, || None);
         }
@@ -2493,8 +2503,9 @@ fn stream_inner(
 
         // The depth or strategy decides whether a channel has checkpoints. Its first lane says
         // what its decoder has once it has applied the options, and the receiver cuts prefixes
-        // for that from the next slot that opens: the points are never set before the decoder
-        // has the options they follow (#692).
+        // for that from the next slot that opens: the points follow a decoder that has the
+        // options, never run ahead of it. The other lanes apply the same options from their own
+        // queues, maybe later; their decoders pin the settings at a period's first call (#692).
         while let Ok((id, spec)) = specs.try_recv() {
             let _ = rx.update_channel(id, spec);
         }

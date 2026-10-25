@@ -103,8 +103,8 @@ pub struct RetuneReport {
 /// ([`IqReceiver::set_prefix_points`]) of the decoder that will decode them.
 ///
 /// Take it from the decoder (`ChannelSpec::from(&decoder)`, for a [`Decoder`] or an
-/// [`AnyDecoder`]) and the mode is written once and the points cannot be stale at the
-/// moment of the call. `ChannelSpec::from(Mode::Ft8)` is a channel of whole slots only: for
+/// [`AnyDecoder`]) and the mode is written once and the points are the decoder's at the
+/// moment of the call. The fields are public, so a caller can still set them by hand. `ChannelSpec::from(Mode::Ft8)` is a channel of whole slots only: for
 /// a recording, a display, or a decoder with no early rows. Pass it to
 /// [`IqReceiver::add_channel`], and again to [`IqReceiver::update_channel`] when the
 /// decoder's options change.
