@@ -680,6 +680,62 @@ fn jt9_reports_the_signal_and_no_all_zero_codewords() {
     unsafe { mfsk_decoder_close(dec) };
 }
 
+/// #696: a row names how it was decoded (`method`, with `iaptype` for an a-priori one) and the
+/// last call's report says how many candidates the search kept (`candidates`, -1 where none).
+/// A strong synthetic FT8 station decodes on the first BP rung; JT9 records no method.
+#[test]
+fn rows_carry_their_method_and_the_report_the_candidate_count() {
+    let slot = synth_slot_i16(MfskMode::Ft8, "CQ", "JA1ABC", "PM95", 1_500.0);
+    let d = open(MfskMode::Ft8, None, None);
+    let rows = decode_i16_at(d, &slot, 7);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].method, MFSK_METHOD_BP);
+    assert_eq!(rows[0].iaptype, 0);
+    let mut report = MfskBudgetReport {
+        size: std::mem::size_of::<MfskBudgetReport>() as u32,
+        ..Default::default()
+    };
+    assert_eq!(
+        unsafe { mfsk_decoder_last_budget(d, &mut report) },
+        MfskStatus::Ok
+    );
+    assert!(report.candidates >= 1, "{}", report.candidates);
+    unsafe { mfsk_decoder_close(d) };
+
+    // A prefix between the checkpoints makes no search.
+    let d = open(MfskMode::Ft8, None, None);
+    let mut n = 0usize;
+    let mut out = vec![blank_row(); 4];
+    for len in [141_696usize, 162_432] {
+        let st = unsafe {
+            mfsk_decoder_decode_prefix_i16(
+                d,
+                slot.as_ptr(),
+                len,
+                12_000,
+                7,
+                out.as_mut_ptr(),
+                out.len(),
+                &mut n,
+            )
+        };
+        assert_eq!(st, MfskStatus::Ok);
+        unsafe { mfsk_decoder_last_budget(d, &mut report) };
+        if len == 141_696 {
+            assert!(report.candidates >= 1, "checkpoint A searches");
+        } else {
+            assert_eq!(report.candidates, -1, "checkpoint B only subtracts");
+        }
+    }
+    unsafe { mfsk_decoder_close(d) };
+
+    let frame = pcm(mfsk_encode_jt9 as _, "CQ", "K1ABC", "FN42");
+    let d = open(MfskMode::Jt9, None, None);
+    let rows = decode_f32(d, &put_wav(&frame, 0.0, 60));
+    assert_eq!(rows[0].method, MFSK_METHOD_NONE);
+    unsafe { mfsk_decoder_close(d) };
+}
+
 /// `mfsk_decoder_decode_prefix_i16` (#572): FT8's checkpoint A returns its
 /// rows early, B returns none, the whole period returns the same rows a
 /// whole-period decode does, and the callback sees each row once.

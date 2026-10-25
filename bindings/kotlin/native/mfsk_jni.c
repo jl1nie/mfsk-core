@@ -206,7 +206,24 @@ static jmethodID row_ctor(JNIEnv* env, jclass rowCls) {
     return (*env)->GetMethodID(
         env, rowCls, "<init>",
         "(ILjava/lang/String;FFFLjava/lang/Float;Ljava/lang/Float;Ljava/lang/Integer;"
-        "IIZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;Ljava/lang/Long;)V");
+        "IIZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;Ljava/lang/Long;"
+        "L" CLS "MfskMethod;Ljava/lang/Integer;)V");
+}
+
+/// `MfskMethod?` from `MfskDecode::method`: null for `MFSK_METHOD_NONE`.
+static jobject method_of(JNIEnv* env, uint8_t method) {
+    const char* name = method == MFSK_METHOD_BP ? "BP"
+                     : method == MFSK_METHOD_OSD ? "OSD"
+                     : method == MFSK_METHOD_AP ? "AP"
+                     : method == MFSK_METHOD_LIST_A7 ? "LIST_A7"
+                     : method == MFSK_METHOD_LIST_A8 ? "LIST_A8" : NULL;
+    if (name == NULL) return NULL;
+    jclass c = (*env)->FindClass(env, CLS "MfskMethod");
+    if (c == NULL) return NULL;
+    jfieldID f = (*env)->GetStaticFieldID(env, c, name, "L" CLS "MfskMethod;");
+    jobject o = f == NULL ? NULL : (*env)->GetStaticObjectField(env, c, f);
+    (*env)->DeleteLocalRef(env, c);
+    return o;
 }
 
 /// `MfskStage?` from `MfskDecode::stage`: null for `MFSK_STAGE_NONE`.
@@ -286,6 +303,8 @@ static jobject make_row(JNIEnv* env, jclass rowCls, jmethodID ctor, const MfskDe
     jobject delivery = box_int(env, r->delivery >= 0, r->delivery);
     jobject stage = stage_of(env, r->stage);
     jobject hash22 = box_long(env, (r->flags & MFSK_DECODE_FLAG_HAS_HASH22) != 0, r->hash22);
+    jobject method = method_of(env, r->method);
+    jobject iaptype = box_int(env, r->method == MFSK_METHOD_AP && r->iaptype != 0, r->iaptype);
     if ((*env)->ExceptionCheck(env)) return NULL;
     jobject obj = (*env)->NewObject(
         env, rowCls, ctor,
@@ -295,8 +314,10 @@ static jobject make_row(JNIEnv* env, jclass rowCls, jmethodID ctor, const MfskDe
         (jint)r->info_bits, (jint)r->pass,
         (jboolean)((r->flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
         (jboolean)((r->flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0),
-        key, (jint)r->key_bits, delivery, stage, hash22);
+        key, (jint)r->key_bits, delivery, stage, hash22, method, iaptype);
     (*env)->DeleteLocalRef(env, text);
+    if (method) (*env)->DeleteLocalRef(env, method);
+    if (iaptype) (*env)->DeleteLocalRef(env, iaptype);
     if (stage) (*env)->DeleteLocalRef(env, stage);
     if (hash22) (*env)->DeleteLocalRef(env, hash22);
     (*env)->DeleteLocalRef(env, key);
@@ -816,7 +837,7 @@ Java_io_github_mfskcore_MfskDecoder_nativeSetBudget(
 /// `MfskBudgetReport`'s Kotlin constructor takes: exhausted (0/1),
 /// skipped, ran, cut_at_sync (-1 for absent), cut_at_score in
 /// millionths (INT_MIN for absent, since an int array cannot carry a
-/// NaN).
+/// NaN), rows_subtracted, and candidates (-1 for absent).
 /// `mfsk_decoder_delivery_is_exact`.
 JNIEXPORT jboolean JNICALL
 Java_io_github_mfskcore_MfskDecoder_nativeDeliveryIsExact(
@@ -858,7 +879,7 @@ Java_io_github_mfskcore_MfskDecoder_nativeLastBudget(
         throw_from_decoder(env, d, st, "last_budget failed");
         return NULL;
     }
-    jint vals[6] = {
+    jint vals[7] = {
         (jint)(rep.exhausted ? 1 : 0),
         (jint)rep.candidates_skipped,
         (jint)rep.stages_run,
@@ -867,10 +888,11 @@ Java_io_github_mfskcore_MfskDecoder_nativeLastBudget(
             ? (jint)(rep.cut_at_score * 1000000.0f)
             : (jint)0x80000000,
         (jint)rep.rows_subtracted,
+        (jint)rep.candidates,
     };
-    jintArray out = (*env)->NewIntArray(env, 6);
+    jintArray out = (*env)->NewIntArray(env, 7);
     if (out == NULL) return NULL;
-    (*env)->SetIntArrayRegion(env, out, 0, 6, vals);
+    (*env)->SetIntArrayRegion(env, out, 0, 7, vals);
     return out;
 }
 
@@ -1907,7 +1929,8 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
     jmethodID ctor = (*env)->GetMethodID(
         env, rowCls, "<init>",
         "(IILjava/lang/String;DFFFJJZJLjava/lang/Float;Ljava/lang/Float;Ljava/lang/Integer;"
-        "IZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;Ljava/lang/Long;)V");
+        "IZZLjava/lang/String;ILjava/lang/Integer;L" CLS "MfskStage;Ljava/lang/Long;"
+        "L" CLS "MfskMethod;Ljava/lang/Integer;)V");
     if (ctor == NULL) return NULL;
     const size_t n = mfsk_iq_pending(rx);
     jobjectArray out = (*env)->NewObjectArray(env, (jsize)n, rowCls, NULL);
@@ -1928,6 +1951,8 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
         jobject delivery = box_int(env, r.delivery >= 0, r.delivery);
         jobject stage = stage_of(env, r.stage);
         jobject hash22 = box_long(env, (r.flags & MFSK_DECODE_FLAG_HAS_HASH22) != 0, r.hash22);
+        jobject method = method_of(env, r.method);
+        jobject iaptype = box_int(env, r.method == MFSK_METHOD_AP && r.iaptype != 0, r.iaptype);
         if ((*env)->ExceptionCheck(env)) return NULL;
         jobject obj = (*env)->NewObject(
             env, rowCls, ctor, (jint)r.channel, (jint)r.mode, text, (jdouble)r.abs_freq_hz,
@@ -1936,9 +1961,11 @@ Java_io_github_mfskcore_MfskIqReceiver_nativePoll(JNIEnv* env, jclass cls, jlong
             (jlong)r.slot_start_utc_ns, sync, cv, hard, (jint)r.pass,
             (jboolean)((r.flags & MFSK_DECODE_FLAG_HASH_RESOLVED) != 0),
             (jboolean)((r.flags & MFSK_DECODE_FLAG_COPIED_LAST_TX) != 0),
-            key, (jint)r.key_bits, delivery, stage, hash22);
+            key, (jint)r.key_bits, delivery, stage, hash22, method, iaptype);
         (*env)->DeleteLocalRef(env, text);
         (*env)->DeleteLocalRef(env, key);
+        if (method) (*env)->DeleteLocalRef(env, method);
+        if (iaptype) (*env)->DeleteLocalRef(env, iaptype);
         if (hash22) (*env)->DeleteLocalRef(env, hash22);
         if (sync) (*env)->DeleteLocalRef(env, sync);
         if (cv) (*env)->DeleteLocalRef(env, cv);

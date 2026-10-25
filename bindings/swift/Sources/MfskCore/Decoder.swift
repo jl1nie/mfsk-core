@@ -465,6 +465,11 @@ public struct BudgetReport: Sendable, Equatable {
     /// the rows returned, with ``exhausted`` set, means the cut came while
     /// cleaning up rather than while searching. 0 everywhere else.
     public let rowsSubtracted: UInt32
+    /// The candidates the (first) coarse search kept for the last call: FT8,
+    /// FT4 and FST4. nil where the call made no search (FT8's checkpoint B) or
+    /// the mode reports none. Not a budget quantity; it rides on this per-call
+    /// report (#696).
+    public let candidates: UInt32?
 
     init(_ raw: MfskBudgetReport) {
         self.exhausted = raw.exhausted
@@ -473,6 +478,7 @@ public struct BudgetReport: Sendable, Equatable {
         self.cutAtSync = raw.cut_at_sync >= 0 ? UInt32(raw.cut_at_sync) : nil
         self.cutAtScore = raw.cut_at_score.isNaN ? nil : raw.cut_at_score
         self.rowsSubtracted = raw.rows_subtracted
+        self.candidates = raw.candidates >= 0 ? UInt32(raw.candidates) : nil
     }
 }
 

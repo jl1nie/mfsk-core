@@ -482,6 +482,14 @@ pub struct MfskDecode {
     /// same text and different hashes are two stations (`result%hash22`).
     /// Appended.
     pub hash22: u32,
+    /// How the row was decoded (`RowDetail::method`, #696): one of the
+    /// `MFSK_METHOD_*` constants, `MFSK_METHOD_NONE` where the mode records none (WSPR,
+    /// JT9, JT65, Q65, FST4W). Read this, not `pass`. Appended.
+    pub method: u8,
+    /// With `MFSK_METHOD_AP`: WSJT-X's `iaptype` (1 `CQ ...`, 2 `MyCall ...`, 3 `MyCall
+    /// DxCall ...`, 4 `... RRR`, 5 `... 73`, 6 `... RR73`), `0` for a free-form hint
+    /// that has no such number. `0` for every other method. Appended.
+    pub iaptype: u8,
 }
 
 /// [`MfskDecode::stage`]: not from a prefix sequence.
@@ -671,6 +679,10 @@ pub struct MfskIqDecode {
     /// As `MfskDecode::hash22`: valid when `flags` has
     /// `MFSK_DECODE_FLAG_HAS_HASH22`. Appended.
     pub hash22: u32,
+    /// As `MfskDecode::method`: one of the `MFSK_METHOD_*`. Appended (#696).
+    pub method: u8,
+    /// As `MfskDecode::iaptype`. Appended (#696).
+    pub iaptype: u8,
 }
 
 /// The wideband IQ receiver handle.

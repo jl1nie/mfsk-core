@@ -31,6 +31,8 @@ pub fn blank_row() -> MfskDecode {
         delivery: -1,
         stage: MFSK_STAGE_NONE,
         hash22: 0,
+        method: MFSK_METHOD_NONE,
+        iaptype: 0,
     }
 }
 

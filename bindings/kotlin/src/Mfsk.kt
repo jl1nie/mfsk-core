@@ -64,7 +64,7 @@ data class MfskDecode(
     val infoBits: Int,
     /// Which decode pass produced this row. **Protocol-private**: the
     /// numbers mean different things per mode, and are diagnostics, not
-    /// something to branch on.
+    /// something to branch on. Read [method].
     val pass: Int,
     /// The text needed the callsign hash table to resolve a `<...>`
     /// reference.
@@ -91,8 +91,30 @@ data class MfskDecode(
     /// stations that both read `<...> PM95AA` can be told apart (WSJT-X's
     /// `result%hash22`). Null on every other row, and on a resolved one.
     val hash22: Long? = null,
+    /// How the row was decoded: plain BP, the OSD fallback, an a-priori decode
+    /// ([iaptype] says what was assumed) or one of FT8's list decodes. Null
+    /// where the mode records none: WSPR, JT9, JT65, Q65, FST4W (`MFSK_METHOD_*`, #696).
+    val method: MfskMethod? = null,
+    /// With [MfskMethod.AP]: WSJT-X's `iaptype` (1 `CQ ...`, 2 `MyCall ...`,
+    /// 3 `MyCall DxCall ...`, 4 `... RRR`, 5 `... 73`, 6 `... RR73`); null for a
+    /// free-form hint, which upstream has no number for, and for every other method.
+    val iaptype: Int? = null,
 ) {
     val modeName: String get() = Mfsk.modeName(mode)
+}
+
+/// How a row was decoded (`MFSK_METHOD_*`, #696).
+enum class MfskMethod {
+    /// Belief propagation on blind soft bits.
+    BP,
+    /// The OSD fallback, after BP failed.
+    OSD,
+    /// A-priori: some bits of the message were assumed; see `iaptype`.
+    AP,
+    /// FT8's a7 list decode: a call heard before.
+    LIST_A7,
+    /// FT8's a8 list decode: a call in the QSO.
+    LIST_A8,
 }
 
 /// When in a period a [MfskDecoder.decodePrefix] sequence found a row
@@ -152,6 +174,10 @@ data class MfskBudgetReport(
     /// rows returned, with [exhausted] set, means the cut came while
     /// cleaning up rather than while searching. 0 everywhere else.
     val rowsSubtracted: Int = 0,
+    /// The candidates the (first) coarse search kept for the last call: FT8, FT4 and
+    /// FST4. Null where the call made no search (FT8's checkpoint B) or the mode reports
+    /// none. Not a budget quantity; it rides on this per-call report (#696).
+    val candidates: Int? = null,
 )
 
 // ── The parameter block ─────────────────────────────────────────────
@@ -1249,6 +1275,7 @@ class MfskDecoder private constructor(
                 // cannot carry the NaN the C struct uses.
                 cutAtScore = if (v[4] != Int.MIN_VALUE) v[4] / 1_000_000.0f else null,
                 rowsSubtracted = v[5],
+                candidates = if (v[6] >= 0) v[6] else null,
             )
         }
 
@@ -1468,6 +1495,10 @@ class MfskIqDecode internal constructor(
     val stage: MfskStage? = null,
     /// As [MfskDecode.hash22].
     val hash22: Long? = null,
+    /// As [MfskDecode.method].
+    val method: MfskMethod? = null,
+    /// As [MfskDecode.iaptype].
+    val iaptype: Int? = null,
 ) {
     /// UTC of the slot start, ns since the Unix epoch, or null on a
     /// free-running grid.

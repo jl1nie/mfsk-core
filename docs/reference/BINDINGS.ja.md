@@ -185,7 +185,7 @@ JT65 と Q65 の平均 — は番号が与えられたときだけ使われ、Q6
 | `mfsk_decoder_set_q65_callers(d, callers)` | Q65 専用: コンテストの呼び出し局リスト（§2.8）をコピーして渡す。`MFSK_CONTEST_GRID_EXCHANGE` なら full-AP リストに加わる。NULL で外す。`set_extras` をまたいで残る |
 | `mfsk_decoder_set_on_decode(d, cb, user)` | 呼び出しが返す配列に加えて、各行を**見つかった時点で**渡す。NULL で停止 |
 | `mfsk_decoder_set_budget(d, check, user)` | 呼び出し側の述語を候補ごとに1回呼び、`false` が返ったら停止する。デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開して受け付ける。ビットの無いモードなら `MFSK_STATUS_UNSUPPORTED` |
-| `mfsk_decoder_last_budget(d, &report)` | 打ち切りで残ったもの — 飛ばした候補数、実行した段数、飛ばした最良候補がどれほど良かったか、`rows_subtracted`（FT8 `SIC_EARLY` のチェックポイント B・C での引き算。サイズ版管理の構造体の末尾に追加）。予算未設定ならゼロ。WSPR・JT9・JT65・Q65 が立てるのは `exhausted` だけで、件数は 0 のまま |
+| `mfsk_decoder_last_budget(d, &report)` | 打ち切りで残ったもの — 飛ばした候補数、実行した段数、飛ばした最良候補がどれほど良かったか、`rows_subtracted`（FT8 `SIC_EARLY` のチェックポイント B・C での引き算。サイズ版管理の構造体の末尾に追加）と `candidates`（直前の呼び出しで粗探索が残した候補の数。#696。探索をしなかった呼び出しや、数を報告しないモードでは -1。予算の量ではなく、呼び出しごとのこの報告に載せてある）。予算未設定ならゼロ。WSPR・JT9・JT65・Q65 が立てるのは `exhausted` だけで、件数は 0 のまま |
 | `mfsk_decoder_decode_prefix_i16` / `_f32(d, pcm, n, rate, period, out, cap, &len)` | 早期デコード（#572）: 音声が届くたびに、**その周期でここまでの全サンプル**と `period` で呼ぶ。FT8 は 141 696 サンプル（約 11.8 s）でチェックポイント A の行を返し（`stage == MFSK_STAGE_EARLY`）、162 432 では何も返さず、周期全体（180 000）で完全な集合（同じ音声に `decode_i16` が返す行）を返す。それ以外の呼び出しと、早期デコードの無いモードの周期全体までの呼び出しは何も返さない。コールバックは周期を通じて各行を 1 回見て、`delivery` はその周期の呼び出し全体で数える。出力バッファ不足で断られた後の再試行には、保持した行が返る。`MFSK_PERIOD_NONE` なら通常のデコード |
 | `mfsk_decoder_delivery_is_exact(d)` | 今のモード・depth・extras で、コールバックが呼び出しの返す行をちょうどそのまま、1 回ずつ同じ順で見るか（`STREAMING.md` §3a）。FT8 の single pass と sniper、`MFSK_DEPTH_FAST` の FT4、FST4、WSPR は `false` で、そこでは `MfskDecode::delivery` で対にする。`set_params` / `set_extras` の後は問い直す |
 | `mfsk_decoder_add_callsign(d, "JL1NIE")` | ハッシュテーブルに種を入れ、後の `<...>` を解決できるようにする。ハッシュ化コールを持たないメッセージのモードは `MFSK_STATUS_UNSUPPORTED` |
@@ -321,6 +321,7 @@ size 版管理である: 古いヘッダでビルドした呼び出し側は短�
 | `key_bits`, `key` | メッセージの識別キー。`key_bits` ビット（FT8・FT4・FST4・Q65 は 77、JT9・JT65 は 72、WSPR と FST4W は 50、キー無しは 0）を、最上位ビットから `key` の 10 バイトに詰め、残りは 0。同じメッセージは、テキストが違っても（片方だけ `<...>` が解決した場合）2 つのデコーダで同じキーになる。1 つのメッセージが 2 つの周波数にあってもキーは 1 つ。77 ビット系のモードでは `mfsk_decoder_copy_info` のブロックの先頭 77 ビット |
 | `delivery` | この行がその周期の何番目の配信か、または何番目の配信だったか。コールバックに渡す行は自分の位置（0, 1, 2…）を持ち、返却される行は自分だった配信の位置を持つので、両者を厳密に対応づけられる。コールバックが見なかった返却行と、コールバックなしの呼び出しの全行は `-1` |
 | `hash22` | **FST4W のみ**（#649）。`MFSK_DECODE_FLAG_HAS_HASH22` が立っているとき有効: `<...>` の行の、未解決の 22 ビット・コールサインハッシュ（上流の `result%hash22`）。コールが未解決の2局はどちらも `<...> PM95AA` と読めるので、ハッシュで区別する。FST4W の行はテキストとハッシュで重複排除すること。末尾に追加。`MfskIqDecode` にも加わる |
+| `method`, `iaptype` | 行をどう復号したか（#696）: `MFSK_METHOD_BP`、`_OSD`、`_AP`、`_LIST_A7`、`_LIST_A8`、モードが記録しない場合（WSPR・JT9・JT65・Q65・FST4W）は `MFSK_METHOD_NONE`。`MFSK_METHOD_AP` のとき `iaptype` は WSJT-X の番号（1 `CQ ...` 〜 6 `... RR73`）で、自由形式のヒントは `0`。`pass` ではなくこちらを読む。末尾に追加。`MfskIqDecode` にも両方が加わる |
 | `stage` | `mfsk_decoder_decode_prefix_*` の呼び出し列がいつその行を見つけたか: `MFSK_STAGE_EARLY`（周期の終わる前の呼び出し — FT8 のチェックポイント A、約 11.8 s、次の周期で応答するのに間に合う）、`MFSK_STAGE_FINAL`（音声が周期全体だった呼び出し）、通常のデコードでは `MFSK_STAGE_NONE`。末尾に追加 |
 
 ### 2.5 ストリーミング取り込み

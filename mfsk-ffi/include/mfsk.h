@@ -152,6 +152,37 @@
 #define MFSK_STAGE_FINAL 2
 
 /**
+ * `MfskDecode::method`: the mode records no decode method (WSPR, JT9, JT65, Q65, FST4W).
+ * A literal here for the same cbindgen reason as the constants above.
+ */
+#define MFSK_METHOD_NONE 0
+
+/**
+ * `MfskDecode::method`: belief propagation on blind soft bits.
+ */
+#define MFSK_METHOD_BP 1
+
+/**
+ * `MfskDecode::method`: the OSD fallback after BP failed.
+ */
+#define MFSK_METHOD_OSD 2
+
+/**
+ * `MfskDecode::method`: a-priori; `MfskDecode::iaptype` says what was assumed.
+ */
+#define MFSK_METHOD_AP 3
+
+/**
+ * `MfskDecode::method`: FT8's a7 list decode.
+ */
+#define MFSK_METHOD_LIST_A7 4
+
+/**
+ * `MfskDecode::method`: FT8's a8 list decode.
+ */
+#define MFSK_METHOD_LIST_A8 5
+
+/**
  * The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
  * QSO-context AP of the parameter block, a7 and the sniper window apply.
  * Modes without this bit (WSPR, JT9, JT65, Q65) decode through the same
@@ -1033,6 +1064,18 @@ typedef struct MfskDecode {
      * Appended.
      */
     uint32_t hash22;
+    /**
+     * How the row was decoded (`RowDetail::method`, #696): one of the
+     * `MFSK_METHOD_*` constants, `MFSK_METHOD_NONE` where the mode records none (WSPR,
+     * JT9, JT65, Q65, FST4W). Read this, not `pass`. Appended.
+     */
+    uint8_t method;
+    /**
+     * With `MFSK_METHOD_AP`: WSJT-X's `iaptype` (1 `CQ ...`, 2 `MyCall ...`, 3 `MyCall
+     * DxCall ...`, 4 `... RRR`, 5 `... 73`, 6 `... RR73`), `0` for a free-form hint
+     * that has no such number. `0` for every other method. Appended.
+     */
+    uint8_t iaptype;
 } MfskDecode;
 
 /**
@@ -1595,6 +1638,14 @@ typedef struct MfskIqDecode {
      * `MFSK_DECODE_FLAG_HAS_HASH22`. Appended.
      */
     uint32_t hash22;
+    /**
+     * As `MfskDecode::method`: one of the `MFSK_METHOD_*`. Appended (#696).
+     */
+    uint8_t method;
+    /**
+     * As `MfskDecode::iaptype`. Appended (#696).
+     */
+    uint8_t iaptype;
 } MfskIqDecode;
 
 /**
@@ -1654,6 +1705,13 @@ typedef struct MfskBudgetReport {
      * caller built against the shorter struct does not see it.
      */
     uint32_t rows_subtracted;
+    /**
+     * The candidates the (first) coarse search kept for the last call
+     * (`SlotResult::candidates`, #696): FT8, FT4 and FST4; -1 where the call made
+     * no search (FT8's checkpoint B) or the mode reports none. Not a budget
+     * quantity: it rides here because this is the per-call report. Appended.
+     */
+    int32_t candidates;
 } MfskBudgetReport;
 
 #ifdef __cplusplus

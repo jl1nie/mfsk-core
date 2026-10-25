@@ -125,6 +125,11 @@ pub struct MfskBudgetReport {
     /// while searching. 0 on every other strategy and mode. Appended; a
     /// caller built against the shorter struct does not see it.
     pub rows_subtracted: u32,
+    /// The candidates the (first) coarse search kept for the last call
+    /// (`SlotResult::candidates`, #696): FT8, FT4 and FST4; -1 where the call made
+    /// no search (FT8's checkpoint B) or the mode reports none. Not a budget
+    /// quantity: it rides here because this is the per-call report. Appended.
+    pub candidates: i32,
 }
 
 /// Called once per decode, as it is found. The row pointer is valid only
@@ -132,7 +137,10 @@ pub struct MfskBudgetReport {
 pub type MfskDecodeCallback =
     Option<unsafe extern "C" fn(row: *const MfskDecode, user_data: *mut c_void)>;
 
-fn budget_report(r: &mfsk_core::decoder::BudgetReport) -> MfskBudgetReport {
+fn budget_report(
+    r: &mfsk_core::decoder::BudgetReport,
+    candidates: Option<u32>,
+) -> MfskBudgetReport {
     MfskBudgetReport {
         size: core::mem::size_of::<MfskBudgetReport>() as u32,
         exhausted: r.exhausted,
@@ -141,6 +149,7 @@ fn budget_report(r: &mfsk_core::decoder::BudgetReport) -> MfskBudgetReport {
         cut_at_sync: r.cut_at_sync.map(|v| v as i32).unwrap_or(-1),
         cut_at_score: r.cut_at_score.unwrap_or(f32::NAN),
         rows_subtracted: r.rows_subtracted,
+        candidates: candidates.map_or(-1, |n| i32::try_from(n).unwrap_or(i32::MAX)),
     }
 }
 
@@ -796,7 +805,10 @@ pub(crate) unsafe fn open_decoder(
         on_decode_user: SyncUserData(ptr::null_mut()),
         budget: None,
         budget_user: SyncUserData(ptr::null_mut()),
-        last_budget: MfskBudgetReport::default(),
+        last_budget: MfskBudgetReport {
+            candidates: -1,
+            ..MfskBudgetReport::default()
+        },
         q65_callers: None,
         error: None,
     })
@@ -1149,7 +1161,22 @@ pub(crate) fn row_of(mode: MfskMode, decoded: &Decoded, detail: &RowDetail) -> M
             None => MFSK_STAGE_NONE,
         },
         hash22: decoded.hash22.unwrap_or(0),
+        method: MFSK_METHOD_NONE,
+        iaptype: 0,
     };
+    use mfsk_core::decoder::DecodeMethod;
+    match detail.method {
+        Some(DecodeMethod::Bp) => r.method = MFSK_METHOD_BP,
+        Some(DecodeMethod::Osd) => r.method = MFSK_METHOD_OSD,
+        Some(DecodeMethod::Ap { iaptype }) => {
+            r.method = MFSK_METHOD_AP;
+            r.iaptype = iaptype.unwrap_or(0);
+        }
+        Some(DecodeMethod::ListA7) => r.method = MFSK_METHOD_LIST_A7,
+        Some(DecodeMethod::ListA8) => r.method = MFSK_METHOD_LIST_A8,
+        // `DecodeMethod` is `#[non_exhaustive]`: a method this ABI does not know is none.
+        Some(_) | None => {}
+    }
     if decoded.hash22.is_some() {
         r.flags |= MFSK_DECODE_FLAG_HAS_HASH22;
     }
@@ -1210,7 +1237,7 @@ fn run(d: &mut FfiDecoder, audio: Audio<'_>, period: i64, prefix: bool) -> Resul
         (true, true) => d.any.decode_prefix_with(&slot, &deliver),
         (false, true) => d.any.decode_prefix(&slot),
     };
-    d.last_budget = budget_report(&result.budget);
+    d.last_budget = budget_report(&result.budget, result.candidates);
     d.last = result
         .rows
         .into_iter()

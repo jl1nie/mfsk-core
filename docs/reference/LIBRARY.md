@@ -659,13 +659,16 @@ For `decode`, a `SlotInput` is the whole period. `decode_prefix` takes the
 period so far instead, for FT8's early decode (WSJT-X's nzhsym 41/47/50,
 [§2.3](#23-early-decode-and-the-compute-budget)).
 
-A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found, and
-`budget: BudgetReport`. A `Row<R>` carries three views of one decode:
+A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found,
+`budget: BudgetReport`, and `candidates: Option<u32>`: how many candidates the coarse search
+kept for this call (the first search of a SIC call; FT8, FT4 and FST4), `None` for a call that
+made none (FT8's checkpoint B) and for the modes that report none. It is what was searched, not
+what was missed, and it counts noise candidates (#696). A `Row<R>` carries three views of one decode:
 
 | field | what |
 |---|---|
 | `decoded: Decoded` | the cross-mode row: `text` (resolved against the decoder's hash table), `freq_hz`, `dt_sec`, `snr_db`, `protocol` |
-| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `pass`, `info` (the message bits, every mode), `hash_resolved` (the text needed the table for a `<...>`), `delivery` (which `decode_with` delivery the row is, or was: [§2.4](#24-streaming-delivery)), `stage` (`Early` / `Final` from a `decode_prefix` sequence, else `None`), `copied_last_tx` (Q65 Pileup). The three numbers are `Option`s, `None` where the mode measures none: WSPR, JT9, JT65 and Q65, and for the sync pair FT8's a7 / a8 list decodes. `sync_score` is on the mode's own search scale, not comparable between modes |
+| `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `method` (how it was decoded: `Bp`, `Osd`, `Ap { iaptype }`, `ListA7`, `ListA8`; `None` for WSPR, JT9, JT65, Q65 and FST4W; #696), `pass` (the mode's own id, which means something else in every mode: read `method`; the ids are in `docs/notes/PASS_IDS.md`), `info` (the message bits, every mode), `hash_resolved` (the text needed the table for a `<...>`), `delivery` (which `decode_with` delivery the row is, or was: [§2.4](#24-streaming-delivery)), `stage` (`Early` / `Final` from a `decode_prefix` sequence, else `None`), `copied_last_tx` (Q65 Pileup). The three numbers are `Option`s, `None` where the mode measures none: WSPR, JT9, JT65 and Q65, and for the sync pair FT8's a7 / a8 list decodes. `sync_score` is on the mode's own search scale, not comparable between modes |
 | `native: R` | the mode's own result: `DecodeResult` (FT8, FT4, FST4), `WsprResult`, `Jt9Result`, `Jt65Result`, `Q65Result` |
 
 **What a decoder keeps across periods** is what its upstream decoder keeps,

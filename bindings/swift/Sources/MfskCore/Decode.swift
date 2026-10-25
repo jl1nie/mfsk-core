@@ -38,7 +38,7 @@ public struct Decode: Sendable, Equatable {
     public let informationBitCount: UInt16
     /// Which decode pass produced this row. **Protocol-private**: the
     /// numbers mean different things per mode, and are for diagnostics,
-    /// not for logic.
+    /// not for logic. Read ``method``.
     public let pass: UInt8
     /// The text needed the callsign hash table to resolve a `<...>`
     /// reference — `MFSK_DECODE_FLAG_HASH_RESOLVED`, which is a named
@@ -69,6 +69,9 @@ public struct Decode: Sendable, Equatable {
     /// stations that both read `<...> PM95AA` can be told apart (WSJT-X's
     /// `result%hash22`). nil on every other row.
     public let hash22: UInt32?
+    /// How the row was decoded (`MFSK_METHOD_*`, #696): nil where the mode
+    /// records none (WSPR, JT9, JT65, Q65, FST4W).
+    public let method: DecodeMethod?
 
     /// When in a period a prefix sequence found a row (`MFSK_STAGE_*`, #572).
     public enum Stage: Sendable, Equatable {
@@ -99,10 +102,40 @@ public struct Decode: Sendable, Equatable {
         self.keyBits = raw.key_bits
         self.delivery = detail.delivery
         self.hash22 = detail.hash22
+        self.method = DecodeMethod(method: raw.method, iaptype: raw.iaptype)
         switch Int32(raw.stage) {
         case MFSK_STAGE_EARLY: self.stage = .early
         case MFSK_STAGE_FINAL: self.stage = .final
         default: self.stage = nil
+        }
+    }
+}
+
+/// How a row was decoded (`MFSK_METHOD_*`, #696). ``Decode/pass`` says the same
+/// as a number that means something else in every mode.
+public enum DecodeMethod: Sendable, Equatable {
+    /// Belief propagation on blind soft bits.
+    case bp
+    /// The OSD fallback, after BP failed.
+    case osd
+    /// A-priori: some bits of the message were assumed. `iaptype` is WSJT-X's
+    /// number for what (1 `CQ ...`, 2 `MyCall ...`, 3 `MyCall DxCall ...`,
+    /// 4 `... RRR`, 5 `... 73`, 6 `... RR73`); nil for a free-form hint.
+    case ap(iaptype: UInt8?)
+    /// FT8's a7 list decode: a call heard before.
+    case listA7
+    /// FT8's a8 list decode: a call in the QSO.
+    case listA8
+
+    /// nil for `MFSK_METHOD_NONE`, and for a code a newer library adds.
+    init?(method: UInt8, iaptype: UInt8) {
+        switch Int32(method) {
+        case MFSK_METHOD_BP: self = .bp
+        case MFSK_METHOD_OSD: self = .osd
+        case MFSK_METHOD_AP: self = .ap(iaptype: iaptype == 0 ? nil : iaptype)
+        case MFSK_METHOD_LIST_A7: self = .listA7
+        case MFSK_METHOD_LIST_A8: self = .listA8
+        default: return nil
         }
     }
 }

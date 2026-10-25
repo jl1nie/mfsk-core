@@ -165,6 +165,20 @@ pub const MFSK_STAGE_EARLY: u8 = 1;
 /// period.
 pub const MFSK_STAGE_FINAL: u8 = 2;
 
+/// `MfskDecode::method`: the mode records no decode method (WSPR, JT9, JT65, Q65, FST4W).
+/// A literal here for the same cbindgen reason as the constants above.
+pub const MFSK_METHOD_NONE: u8 = 0;
+/// `MfskDecode::method`: belief propagation on blind soft bits.
+pub const MFSK_METHOD_BP: u8 = 1;
+/// `MfskDecode::method`: the OSD fallback after BP failed.
+pub const MFSK_METHOD_OSD: u8 = 2;
+/// `MfskDecode::method`: a-priori; `MfskDecode::iaptype` says what was assumed.
+pub const MFSK_METHOD_AP: u8 = 3;
+/// `MfskDecode::method`: FT8's a7 list decode.
+pub const MFSK_METHOD_LIST_A7: u8 = 4;
+/// `MfskDecode::method`: FT8's a8 list decode.
+pub const MFSK_METHOD_LIST_A8: u8 = 5;
+
 // ──────────────────────────────────────────────────────────────────────────
 // Capability bits
 //
@@ -4729,6 +4743,8 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
         key: [0; mfsk_ffi_abi::MFSK_DECODE_KEY_LEN],
         stage: 0,
         hash22: 0,
+        method: 0,
+        iaptype: 0,
     };
     // The detail exactly as the channel decoder's own row gives it.
     let row = decoder::row_of(v.mode, &d.decoded, &d.detail);
@@ -4742,6 +4758,8 @@ pub unsafe extern "C" fn mfsk_iq_poll(rx: *mut MfskIqReceiver, out: *mut MfskIqD
     v.key = row.key;
     v.stage = row.stage;
     v.hash22 = row.hash22;
+    v.method = row.method;
+    v.iaptype = row.iaptype;
     let mut end = d.decoded.text.len().min(v.text.len() - 1);
     while !d.decoded.text.is_char_boundary(end) {
         end -= 1;

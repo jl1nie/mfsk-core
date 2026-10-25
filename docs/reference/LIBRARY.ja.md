@@ -643,13 +643,16 @@ pub struct Decoder<P: Decodable> { params, extras, state }
 ここまでに届いた分を取り、FT8 の早期デコード（WSJT-X の nzhsym 41/47/50）に使う
 （[§2.3](#23-早期デコードと計算予算)）。
 
-`SlotResult<R>` は `rows: Vec<Row<R>>`（見つかった順）と `budget: BudgetReport` である。
+`SlotResult<R>` は `rows: Vec<Row<R>>`（見つかった順）、`budget: BudgetReport`、
+`candidates: Option<u32>` である。`candidates` は、この呼び出しで粗探索が残した候補の数（SIC の呼び出しでは最初の探索。
+FT8・FT4・FST4）で、探索をしなかった呼び出し（FT8 のチェックポイント B）と、数を報告しないモードでは `None`。
+探したものの数であって取りこぼしの数ではなく、雑音の候補も数える（#696）。
 `Row<R>` は 1 つのデコードの 3 つの見え方を持つ:
 
 | フィールド | 内容 |
 |---|---|
 | `decoded: Decoded` | モード共通の行: `text`（デコーダのハッシュ表で解決済み）、`freq_hz`、`dt_sec`、`snr_db`、`protocol` |
-| `detail: RowDetail` | それ以外でモード間に共通するもの: `sync_score`、`sync_cv`、`hard_errors`、`pass`、`info`（メッセージのビット、全モード）、`hash_resolved`（`<...>` の解決に表が要った）、`delivery`（`decode_with` の何番目の配信か、だったか: [§2.4](#24-ストリーミング配信)）、`stage`（`decode_prefix` の呼び出し列からなら `Early` / `Final`、それ以外は `None`）、`copied_last_tx`（Q65 Pileup）。3 つの数値は `Option` で、モードが測らないものは `None`: WSPR・JT9・JT65・Q65、および sync の 2 つについては FT8 の a7 / a8 リストデコード。`sync_score` はモード自身の探索の尺度で、モード間では比べられない |
+| `detail: RowDetail` | それ以外でモード間に共通するもの: `sync_score`、`sync_cv`、`hard_errors`、`method`（どう復号したか: `Bp`、`Osd`、`Ap { iaptype }`、`ListA7`、`ListA8`。WSPR・JT9・JT65・Q65・FST4W では `None`。#696）、`pass`（そのモード固有の id で、意味はモードごとに違う: `method` を読む。id の一覧は `docs/notes/PASS_IDS.md`）、`info`（メッセージのビット、全モード）、`hash_resolved`（`<...>` の解決に表が要った）、`delivery`（`decode_with` の何番目の配信か、だったか: [§2.4](#24-ストリーミング配信)）、`stage`（`decode_prefix` の呼び出し列からなら `Early` / `Final`、それ以外は `None`）、`copied_last_tx`（Q65 Pileup）。3 つの数値は `Option` で、モードが測らないものは `None`: WSPR・JT9・JT65・Q65、および sync の 2 つについては FT8 の a7 / a8 リストデコード。`sync_score` はモード自身の探索の尺度で、モード間では比べられない |
 | `native: R` | そのモード固有の結果: `DecodeResult`（FT8・FT4・FST4）、`WsprResult`、`Jt9Result`、`Jt65Result`、`Q65Result` |
 
 **デコーダが周期をまたいで持つもの**は、本家のデコーダが持つものだけである。デコーダごと

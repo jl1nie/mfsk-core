@@ -88,6 +88,8 @@ public struct IQDecode: Sendable, Equatable {
     public let stage: Decode.Stage?
     /// As ``Decode/hash22``.
     public let hash22: UInt32?
+    /// As ``Decode/method``.
+    public let method: DecodeMethod?
 
     init(_ raw: MfskIqDecode) {
         self.channel = raw.channel
@@ -113,6 +115,7 @@ public struct IQDecode: Sendable, Equatable {
         self.keyBits = raw.key_bits
         self.delivery = detail.delivery
         self.hash22 = detail.hash22
+        self.method = DecodeMethod(method: raw.method, iaptype: raw.iaptype)
         switch Int32(raw.stage) {
         case MFSK_STAGE_EARLY: self.stage = .early
         case MFSK_STAGE_FINAL: self.stage = .final
