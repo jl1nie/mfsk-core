@@ -50,6 +50,8 @@ fn row_of(r: &Fst4wResult) -> Row<Fst4wResult> {
             sync_cv: Some(r.sync_cv),
             hard_errors: Some(r.hard_errors),
             pass: r.variant,
+            // The variant is an LLR set, not a decode method.
+            method: None,
             info: r.info.to_vec(),
             hash_resolved: plain.as_deref() != Some(r.text.as_str()),
             copied_last_tx: false,
@@ -115,6 +117,7 @@ fn decode_period<P: Fst4wPeriod>(
         return SlotResult {
             rows: Vec::new(),
             budget: Default::default(),
+            candidates: None,
         };
     };
     let wrapped = on_row.map(|cb| move |r: &Fst4wResult| cb(&row_of(r)));
@@ -130,6 +133,7 @@ fn decode_period<P: Fst4wPeriod>(
     SlotResult {
         rows: results.iter().map(row_of).collect(),
         budget,
+        candidates: None,
     }
 }
 

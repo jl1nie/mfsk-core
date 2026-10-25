@@ -213,11 +213,7 @@ impl SupportsSicRounds for Ft4 {
             req.audio,
             &FT4_DOWNSAMPLE,
         ));
-        DecodeOutcome {
-            results: pipeline::dedup_known(raw, req.known),
-            fft_cache,
-            budget,
-        }
+        DecodeOutcome::new(pipeline::dedup_known(raw, req.known), fft_cache, budget)
     }
 }
 

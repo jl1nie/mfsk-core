@@ -46,7 +46,7 @@ use num_complex::{Complex, Complex32};
 use num_traits::Float;
 
 use crate::engine::dsp::gfsk::{GfskCfg, synth_complex_f32_into};
-use crate::engine::frame::DecodeResult;
+use crate::engine::frame::{DecodeMethod, DecodeResult};
 use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::{append_crc14, ldpc_encode};
 use crate::ft8::Ft8;
@@ -775,6 +775,11 @@ fn result_of(
         hard_errors: hard,
         sync_score: 0.0,
         pass,
+        method: match pass {
+            PASS_ID_A7 => Some(DecodeMethod::ListA7),
+            PASS_ID_A8 => Some(DecodeMethod::ListA8),
+            _ => None,
+        },
         sync_cv: 0.0,
         snr_db: snr,
     }

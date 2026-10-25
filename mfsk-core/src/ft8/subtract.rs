@@ -142,6 +142,7 @@ mod tests {
             hard_errors: 0,
             sync_score: 10.0,
             pass: 0,
+            method: None,
             sync_cv: 0.0,
             snr_db: 0.0,
         };
@@ -178,6 +179,7 @@ mod tests {
             hard_errors: 0,
             sync_score: 10.0,
             pass: 0,
+            method: None,
             sync_cv: 0.0,
             snr_db: 0.0,
         };

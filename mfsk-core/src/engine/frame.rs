@@ -158,6 +158,20 @@ pub struct BudgetReport {
     /// recordings, so this is also the coarsest granularity the budget has
     /// anywhere: between two increments the check cannot fire.
     pub rows_subtracted: u32,
+    /// The first coarse search's candidates, carried here because every strategy already
+    /// returns this report; the decoder moves it to `SlotResult::candidates` (and clears it
+    /// here) before a caller sees either. `None` until a search noted one.
+    pub(crate) candidates: Option<u32>,
+}
+
+impl BudgetReport {
+    /// Note the number of candidates a coarse search handed on. Only the first search of a call
+    /// counts: a SIC round's later search runs on audio with decodes already subtracted.
+    pub(crate) fn note_candidates(&mut self, n: usize) {
+        if self.candidates.is_none() {
+            self.candidates = Some(u32::try_from(n).unwrap_or(u32::MAX));
+        }
+    }
 }
 
 /// Decode cost/recall configuration: [`LlrEffort`] plus whether to escalate
@@ -358,6 +372,50 @@ impl DecodeStrictness {
     }
 }
 
+/// How a row was decoded, in terms an application can read without knowing the decoder's
+/// stages ([`RowDetail::method`](crate::decoder::RowDetail::method), #696). `pass` says the
+/// same thing as a number that means something else in every mode (FT4 and FST4 even give 5 to
+/// both an OSD depth-3 decode and an AP one), so a caller reads this.
+///
+/// `None` where a mode records no method: WSPR, JT9, JT65, Q65 and FST4W (their `pass` is 0, or
+/// FST4W's LLR variant, not a decode method).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DecodeMethod {
+    /// Belief propagation on blind soft bits: no assumption about the message.
+    Bp,
+    /// The OSD fallback, after belief propagation failed.
+    Osd,
+    /// A-priori: some bits of the message were assumed. BP or OSD ran inside, and which is not
+    /// told apart. `iaptype` is WSJT-X's number for what was assumed (1 `CQ ...`, 2 `MyCall ...`,
+    /// 3 `MyCall DxCall ...`, 4 `... RRR`, 5 `... 73`, 6 `... RR73`); `None` for a free-form
+    /// `ap_hint`, which upstream has no number for.
+    Ap { iaptype: Option<u8> },
+    /// FT8's a7 list decode (`ft8_a7.f90`): the message is one of the calls heard before.
+    ListA7,
+    /// FT8's a8 list decode: the message is one of the calls in the QSO.
+    ListA8,
+}
+
+impl DecodeMethod {
+    /// The method of an a-priori decode from its pass id: the id each `iaptype` carries in
+    /// `decoder::frame::pass_of` (1 → 12, 2 → 5, 3 → 8, 4 → 9, 5 → 11, 6 → 10), and 6 and 7
+    /// (`msg::pipeline_ap::ap_passes`: the DX call alone, `CQ` + the DX call) for a hint that
+    /// has no upstream number.
+    pub(crate) fn ap_from_pass(pass: u8) -> Self {
+        let iaptype = match pass {
+            12 => Some(1),
+            5 => Some(2),
+            8 => Some(3),
+            9 => Some(4),
+            11 => Some(5),
+            10 => Some(6),
+            _ => None,
+        };
+        DecodeMethod::Ap { iaptype }
+    }
+}
+
 /// One successfully decoded message. Protocol-agnostic.
 ///
 /// `info` carries the FEC's K information bits — for LDPC(174,91) that's 91
@@ -376,6 +434,9 @@ pub struct DecodeResult {
     pub hard_errors: u32,
     pub sync_score: f32,
     pub pass: u8,
+    /// How it was decoded; `None` where the producing path records none (the subtraction's
+    /// synthetic results, a test fixture).
+    pub method: Option<DecodeMethod>,
     /// Coefficient of variation of the per-block Costas powers — near 0 for
     /// stable channels, elevated under QSB or fading.
     pub sync_cv: f32,

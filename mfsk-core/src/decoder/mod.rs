@@ -93,7 +93,7 @@ pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, 
 
 use alloc::vec::Vec;
 
-pub use crate::engine::frame::{BudgetCheck, BudgetReport};
+pub use crate::engine::frame::{BudgetCheck, BudgetReport, DecodeMethod};
 use crate::msg::ApHint;
 use crate::msg::decoded::Decoded;
 use crate::registry::Mode;
@@ -215,8 +215,15 @@ pub struct RowDetail {
     /// Hard-decision errors the FEC corrected. `None` for WSPR, JT9, JT65 and
     /// Q65, whose decoders report no such count; `Some(0)` is a clean decode.
     pub hard_errors: Option<u32>,
-    /// Which decode pass produced the row; private to the mode.
+    /// The mode's own identifier of the decode pass that produced the row: a number
+    /// that means something else in every mode, and that FT4 and FST4 give twice (5 is
+    /// both OSD depth 3 and an a-priori decode). **Read [`RowDetail::method`] instead**;
+    /// this stays for diagnostics and for code that already matches on it.
     pub pass: u8,
+    /// How the row was decoded: BP, OSD, a-priori (with WSJT-X's `iaptype` where it has
+    /// one) or an FT8 list decode (#696). `None` where the mode records none: WSPR, JT9,
+    /// JT65, Q65 (their `pass` is 0) and FST4W (its `pass` is the LLR variant, not a method).
+    pub method: Option<DecodeMethod>,
     /// The message's identity key, one bit per byte: what two rows are
     /// compared by, and what the crate's own de-duplication uses. FT8 and
     /// FT4 give their 91 FEC information bits and FST4 its 101 (the first 77
@@ -310,6 +317,12 @@ pub struct SlotResult<R> {
     /// In the order they were found.
     pub rows: Vec<Row<R>>,
     pub budget: BudgetReport,
+    /// How many candidates the coarse search kept for this call to work through (after its
+    /// `sync_min` and `max_cand`, on the audio as it came: the first search of a SIC call), or
+    /// `None` where this call made none (an FT8 prefix between its checkpoints) or the mode
+    /// does not report one (WSPR, JT9, JT65, Q65, FST4W). What was searched, not what was
+    /// missed: it is not a recall figure, and it counts noise candidates too (#696).
+    pub candidates: Option<u32>,
 }
 
 /// The callback [`Decoder::decode_with`] hands each row to as it is found.
@@ -437,6 +450,7 @@ pub trait Decodable: Sized {
             SlotResult {
                 rows: Vec::new(),
                 budget: BudgetReport::default(),
+                candidates: None,
             }
         }
     }

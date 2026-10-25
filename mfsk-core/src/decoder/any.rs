@@ -51,6 +51,7 @@ fn erase<R>(r: SlotResult<R>) -> AnySlotResult {
             })
             .collect(),
         budget: r.budget,
+        candidates: r.candidates,
     }
 }
 

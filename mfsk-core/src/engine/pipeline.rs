@@ -21,7 +21,7 @@ use super::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
 use super::dsp::subtract::SubtractCfg;
 use super::equalize::{EqMode, equalize_local};
 use super::frame::{
-    BudgetCheck, BudgetReport, DecodeDepth, DecodeResult, DecodeStrictness, FftCache,
+    BudgetCheck, BudgetReport, DecodeDepth, DecodeMethod, DecodeResult, DecodeStrictness, FftCache,
 };
 use super::llr::{
     compute_llr_fast, compute_llr_partial, compute_snr_db, descramble_info, symbol_spectra,
@@ -812,48 +812,52 @@ where
             // `with_snr` is `false` only on the BP rung under `skip_snr`:
             // that flag has always applied to BP successes alone (see its
             // doc comment), and the OSD and AP rungs keep measuring.
-            let finish =
-                |mut r: super::FecResult, pass: u8, with_snr: bool| -> Option<DecodeResult> {
-                    let snr_db = if with_snr {
-                        let itone = crate::engine::tx::info_to_tones::<P>(&r.info);
-                        P::snr_db(SnrCtx {
-                            cs,
-                            itone: &itone,
-                            cd0,
-                            ds_rate_hz: ds_rate,
-                            cand_score: cand.score,
-                            cand_freq_hz: cand.freq_hz,
-                            fft_cache,
-                            ds_cfg: cfg,
-                            refined_freq_hz: refined.freq_hz,
-                            i_start: i0,
-                        })
-                    } else {
-                        f32::NAN
-                    };
-                    // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:67`): undo
-                    // the rvec XOR before presenting the 77-bit payload.
-                    descramble_info::<P>(&mut r.info);
-                    // The message-text gate — rejecting here lets the ladder
-                    // try its next rung, exactly as the hard-error gates do.
-                    // `AcceptAll` folds it away; see `InfoAccept`.
-                    if !accept.accept(&r.info) {
-                        return None;
-                    }
-                    Some(DecodeResult {
-                        info: r.info.into_boxed_slice(),
-                        freq_hz: refined.freq_hz,
-                        dt_sec: refined.dt_sec,
-                        hard_errors: r.hard_errors,
-                        sync_score: refined.score,
-                        pass,
-                        sync_cv,
-                        snr_db,
+            let finish = |mut r: super::FecResult,
+                          pass: u8,
+                          method: DecodeMethod,
+                          with_snr: bool|
+             -> Option<DecodeResult> {
+                let snr_db = if with_snr {
+                    let itone = crate::engine::tx::info_to_tones::<P>(&r.info);
+                    P::snr_db(SnrCtx {
+                        cs,
+                        itone: &itone,
+                        cd0,
+                        ds_rate_hz: ds_rate,
+                        cand_score: cand.score,
+                        cand_freq_hz: cand.freq_hz,
+                        fft_cache,
+                        ds_cfg: cfg,
+                        refined_freq_hz: refined.freq_hz,
+                        i_start: i0,
                     })
+                } else {
+                    f32::NAN
                 };
+                // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:67`): undo
+                // the rvec XOR before presenting the 77-bit payload.
+                descramble_info::<P>(&mut r.info);
+                // The message-text gate — rejecting here lets the ladder
+                // try its next rung, exactly as the hard-error gates do.
+                // `AcceptAll` folds it away; see `InfoAccept`.
+                if !accept.accept(&r.info) {
+                    return None;
+                }
+                Some(DecodeResult {
+                    info: r.info.into_boxed_slice(),
+                    freq_hz: refined.freq_hz,
+                    dt_sec: refined.dt_sec,
+                    hard_errors: r.hard_errors,
+                    sync_score: refined.score,
+                    pass,
+                    method: Some(method),
+                    sync_cv,
+                    snr_db,
+                })
+            };
             let mut try_bp = |llr: &Vec<f32>, pass_id: u8| -> Option<DecodeResult> {
                 let r = fec.decode_soft_pooled(llr, &bp_opts, &mut bp_scratch)?;
-                finish(r, pass_id, !skip_snr)
+                finish(r, pass_id, DecodeMethod::Bp, !skip_snr)
             };
 
             // Lazy nsym staircase: compute each LLR variant only as this
@@ -994,7 +998,7 @@ where
                     for (llr, _) in &variants {
                         if let Some(r) = fec.decode_soft_pooled(llr, &osd_opts, &mut bp_scratch) {
                             let pass = if osd_depth == 3 { 5 } else { 4 };
-                            if let Some(d) = finish(r, pass, true) {
+                            if let Some(d) = finish(r, pass, DecodeMethod::Osd, true) {
                                 return Some(d);
                             }
                         }
@@ -1117,7 +1121,12 @@ where
                         // `msg::pipeline_ap::ap_passes`, so an AP-assisted
                         // decode is distinguishable from an earned one and
                         // says which hypothesis carried it.
-                        && let Some(d) = finish(r, *ap_pass_id, true)
+                        && let Some(d) = finish(
+                            r,
+                            *ap_pass_id,
+                            DecodeMethod::ap_from_pass(*ap_pass_id),
+                            true,
+                        )
                     {
                         return Some(d);
                     }
@@ -1823,6 +1832,7 @@ where
     if let Some((lo, hi)) = cand_band {
         candidates.retain(|c| (lo..=hi).contains(&c.freq_hz));
     }
+    budget_report.note_candidates(candidates.len());
     let fft_cache = FftCache(match (early_cache, precomputed_fft) {
         (Some(c), _) => c,
         (None, Some(c)) => c.to_vec(),
@@ -2275,6 +2285,7 @@ where
                 candidates.len()
             );
         }
+        budget_report.note_candidates(candidates.len());
         if candidates.is_empty() {
             break;
         }

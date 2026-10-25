@@ -288,6 +288,7 @@ mod tests {
             hard_errors: 0,
             sync_score: 3.0,
             pass: 1,
+            method: None,
             sync_cv: 0.1,
             snr_db: -5.0,
         };

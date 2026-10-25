@@ -35,6 +35,7 @@ use super::types::{
     AudioSample, DEFAULT_Q_THRESH, LlrT, NFFT_SPEC, NMS_ALPHA, NSTEP, PassCtx, SAMPLE_RATE_HZ,
     TONE_SPACING_HZ, TX_START_OFFSET_S,
 };
+use crate::engine::frame::DecodeMethod;
 use crate::engine::scalar::{Cmplx, ComplexSpec};
 use crate::engine::sync::SyncCandidate;
 use crate::fec::ldpc::bp::check_crc14;
@@ -2299,7 +2300,23 @@ pub(in crate::ft8) fn process_one_candidate_inner<Pol: MessagePolicy>(
         hard_errors: bp.hard_errors,
         sync_score: cand.score,
         pass: pass_id,
+        method: method_of_pass(pass_id),
         sync_cv,
         snr_db,
     })
+}
+
+/// How an FT8 ladder row with this pass id was decoded: the ids the ladder above assigns, which
+/// do not collide inside FT8 (FT4 and FST4 reuse some for other things and set their own method).
+/// 0..=4 are BP on `llra`, `llrd`, `llrb`, `llrc` and `llre`; 5..=12 the a-priori passes (5 is
+/// the call alone, 6..=11 `msg::pipeline_ap::ap_passes`, 12 the blind CQ); 14..=23 the OSD
+/// staircase (`osd_strategy::PASS_ID_OSD_ZSAVE1_A` + variant, `..ZSAVE2_A` + variant). The list
+/// decoders (30, 31) build their rows in `list_decode`. Anything else is `None`.
+fn method_of_pass(pass: u8) -> Option<DecodeMethod> {
+    match pass {
+        0..=4 => Some(DecodeMethod::Bp),
+        5..=12 => Some(DecodeMethod::ap_from_pass(pass)),
+        14..=23 => Some(DecodeMethod::Osd),
+        _ => None,
+    }
 }

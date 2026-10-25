@@ -465,6 +465,7 @@ fn detail_of(r: &DecodeResult, resolved: bool) -> RowDetail {
         sync_cv: searched.then_some(r.sync_cv),
         hard_errors: Some(r.hard_errors),
         pass: r.pass,
+        method: r.method,
         info: r.info.to_vec(),
         hash_resolved: resolved,
         copied_last_tx: false,
@@ -535,6 +536,7 @@ where
             SlotResult {
                 rows: Vec::new(),
                 budget: Default::default(),
+                candidates: None,
             },
             Vec::new(),
         );
@@ -586,6 +588,7 @@ where
         SlotResult {
             rows,
             budget: out.budget,
+            candidates: out.candidates,
         },
         results,
     )
@@ -708,6 +711,7 @@ impl Decodable for crate::Ft8 {
         let nothing = || SlotResult {
             rows: Vec::new(),
             budget: Default::default(),
+            candidates: None,
         };
         let len = match slot.audio {
             Audio::I16(a) => a.len(),
@@ -1116,6 +1120,7 @@ mod detail_tests {
             hard_errors: 4,
             sync_score: 0.0,
             pass,
+            method: None,
             sync_cv: 0.0,
             snr_db: -10.0,
         }

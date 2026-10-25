@@ -183,6 +183,7 @@ mod wspr_impl {
                     exhausted,
                     ..Default::default()
                 },
+                candidates: None,
             }
         }
     }
@@ -271,6 +272,7 @@ mod jt9_impl {
                     exhausted,
                     ..Default::default()
                 },
+                candidates: None,
             }
         }
     }
@@ -399,6 +401,7 @@ mod jt65_impl {
                     exhausted,
                     ..Default::default()
                 },
+                candidates: None,
             }
         }
     }

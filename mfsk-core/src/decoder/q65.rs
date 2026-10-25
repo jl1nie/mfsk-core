@@ -234,6 +234,7 @@ fn decode<P: Q65SubMode>(
             exhausted,
             ..Default::default()
         },
+        candidates: None,
     }
 }
 

@@ -400,6 +400,12 @@ where
             hard_errors: r.hard_errors,
             sync_score: input.cand.score,
             pass,
+            // This path's ids: 0, 1, 6, 2 are BP rungs, 4 and 5 the OSD depths.
+            method: Some(if matches!(pass, 4 | 5) {
+                crate::engine::frame::DecodeMethod::Osd
+            } else {
+                crate::engine::frame::DecodeMethod::Bp
+            }),
             sync_cv: 0.0,
             // Measurable here after all, and cheap: the refined
             // baseband this candidate already holds is 111 Hz wide

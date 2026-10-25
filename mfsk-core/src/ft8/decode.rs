@@ -675,6 +675,7 @@ fn decode_frame_inner<Pol: MessagePolicy>(
     let mut candidates =
         crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
     promote_near_rx(&mut candidates, qso_freqs.rx);
+    budget_report.note_candidates(candidates.len());
     #[cfg(feature = "std")]
     if let Some(t0) = __trace_t0 {
         eprintln!(
@@ -976,6 +977,7 @@ fn sic_inner_passes_with_cache<Pol: MessagePolicy>(
         let mut candidates =
             crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
         promote_near_rx(&mut candidates, qso_freqs.rx);
+        budget.report.note_candidates(candidates.len());
         if candidates.is_empty() {
             continue;
         }
@@ -1855,11 +1857,7 @@ impl FrameDecodable for Ft8 {
         if list_decode_wanted(req) {
             list_decode_tail(req, req.audio, &fft_cache, &mut results);
         }
-        DecodeOutcome {
-            results,
-            fft_cache: FftCache(fft_cache),
-            budget,
-        }
+        DecodeOutcome::new(results, FftCache(fft_cache), budget)
     }
 }
 
@@ -1904,11 +1902,7 @@ impl SupportsSicRounds for Ft8 {
                 let cache = build_fft_cache(req.audio);
                 list_decode_tail(req, req.audio, &cache, &mut results);
             }
-            DecodeOutcome {
-                results,
-                fft_cache,
-                budget: budget.report,
-            }
+            DecodeOutcome::new(results, fft_cache, budget.report)
         } else {
             let mut audio_clean = req.audio.to_vec();
             for r in req.known {
@@ -1942,11 +1936,7 @@ impl SupportsSicRounds for Ft8 {
                 let cache = build_fft_cache(req.audio);
                 list_decode_tail(req, req.audio, &cache, &mut results);
             }
-            DecodeOutcome {
-                results,
-                fft_cache,
-                budget: budget.report,
-            }
+            DecodeOutcome::new(results, fft_cache, budget.report)
         }
     }
 }
@@ -2040,11 +2030,7 @@ impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
             } else {
                 st.early().to_vec()
             };
-            return DecodeOutcome {
-                results,
-                fft_cache: FftCache(Vec::new()),
-                budget: budget.report,
-            };
+            return DecodeOutcome::new(results, FftCache(Vec::new()), budget.report);
         };
         let fft_cache = FftCache(build_fft_cache(&residual));
         // On the residual, as `ft8_decode.f90` runs a7/a8 on `dd` after the
@@ -2053,11 +2039,7 @@ impl<'a, Pol: MessagePolicy> DecodeRequest<'a, Ft8, Pol> {
         if list_decode_wanted(req) {
             list_decode_tail(req, &residual, fft_cache.as_slice(), &mut results);
         }
-        DecodeOutcome {
-            results,
-            fft_cache,
-            budget: budget.report,
-        }
+        DecodeOutcome::new(results, fft_cache, budget.report)
     }
 }
 
@@ -2157,11 +2139,7 @@ impl crate::msg::decode_request::SupportsSniper for Ft8 {
             &mut budget,
             &req.policy,
         );
-        DecodeOutcome {
-            results,
-            fft_cache,
-            budget: budget.report,
-        }
+        DecodeOutcome::new(results, fft_cache, budget.report)
     }
 }
 
@@ -3417,6 +3395,7 @@ mod tests {
                     hard_errors: 0,
                     sync_score: 0.0,
                     pass: 0,
+                    method: None,
                     sync_cv: 0.0,
                     snr_db: 0.0,
                 };

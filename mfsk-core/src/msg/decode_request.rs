@@ -397,11 +397,7 @@ where
 
     let Some((nb, nz)) = req.noise_blanker else {
         let (raw, fft_cache, budget) = pass(req.audio, precomputed, on_result, None);
-        return DecodeOutcome {
-            results: pipeline::dedup_known(raw, req.known),
-            fft_cache,
-            budget,
-        };
+        return DecodeOutcome::new(pipeline::dedup_known(raw, req.known), fft_cache, budget);
     };
 
     // `fst4_decode.f90:299-301`: the whole decode, once per blanking
@@ -449,6 +445,10 @@ where
         if npct == 0 || fft_cache.is_none() {
             fft_cache = Some(cache);
         }
+        // The first level's count: the later levels search blanked copies of the same audio.
+        if budget.candidates.is_none() {
+            budget.candidates = b.candidates;
+        }
         budget.exhausted |= b.exhausted;
         budget.candidates_skipped += b.candidates_skipped;
         budget.stages_run += b.stages_run;
@@ -457,11 +457,11 @@ where
             (a, c) => a.or(c),
         };
     }
-    DecodeOutcome {
+    DecodeOutcome::new(
         results,
-        fft_cache: fft_cache.expect("the first level always runs"),
+        fft_cache.expect("the first level always runs"),
         budget,
-    }
+    )
 }
 
 /// Protocols whose decode path has a message-*text* stage a
@@ -808,6 +808,27 @@ pub struct DecodeOutcome<P: FrameDecodable> {
     /// What a [`DecodeRequest::budget`] cut short, if one was set.
     /// [`BudgetReport::default()`] when it wasn't.
     pub budget: BudgetReport,
+    /// Candidates the (first) coarse search kept: `SlotResult::candidates`.
+    pub candidates: Option<u32>,
+}
+
+impl<P: FrameDecodable> DecodeOutcome<P> {
+    /// An outcome from what the engine returned. The strategies note the candidate count in
+    /// the report they already return; it is moved to its own field here, so `budget` stays
+    /// [`BudgetReport::default()`] when no budget was set.
+    pub(crate) fn new(
+        results: Vec<P::DecodeResult>,
+        fft_cache: FftCache,
+        mut budget: BudgetReport,
+    ) -> Self {
+        let candidates = budget.candidates.take();
+        Self {
+            results,
+            fft_cache,
+            budget,
+            candidates,
+        }
+    }
 }
 
 /// Wide-band decode request: search `freq_min..freq_max` for every
