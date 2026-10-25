@@ -545,6 +545,7 @@ one of the enums below without a wildcard arm. The break is in `CHANGELOG.md`, `
 | `wspr::decode::{debug_refined_sync, decode_scan_subtract}`, `fec::ldpc240_101::fst4_osd_diag_force_old`, `fec::ldpc::osd::npre1_pattern_counts`, `ft8::decode_block::compute_spectrogram_f32_timed`, `engine::sync2d::{ft4_sync_ref_prep_bench, ft4_aligned_cd0_bench}` (public only with `internal-testing`) | `__internal::wspr::decode::X`, `__internal::fec::ldpc240_101::fst4_osd_diag_force_old`, `__internal::fec::ldpc::npre1_pattern_counts`, `__internal::ft8::decode_block::compute_spectrogram_f32_timed`, `__internal::sync2d::X` |
 | `Ft4CoarsePhasors::buffer_addrs()` (with `internal-testing`) | `__internal::sync2d::buffer_addrs(&phasors)`: a method on a public type no longer depends on a feature |
 | `internal-testing` | adds `__internal` and nothing else; every other path is the same with or without it. `mfsk-ffi` no longer enables it |
+| `IqReceiver::set_prefix_points(id, points) -> bool` | deprecated (it works as before): `update_channel(id, ChannelSpec::from(&decoder))`, which also refuses another mode and returns an `IqError` for an unknown or audio channel; points that are not a decoder's go in `ChannelSpec { prefix_points, .. }` (`&'static [usize]`) |
 
 The decode entry for an application is `Decoder<P>`. If you were calling `DecodeRequest` or `decode_frame` from your own code, move to `Decoder::<P>::new(DecodeParams)` and `decode(&SlotInput)`; options are in `P::Extras`
 ([§2](#2-the-decode-api)). The quick examples in the `ft8`, `ft4`, `fst4`, `wspr`, `jt9` and `jt65` module docs now show that form.
@@ -1724,7 +1725,7 @@ streamed rows. `prefix_points()` follows the decoder's settings, not the mode: F
 `[141_696, 162_432]`, everything else none. After changing the options, once the decoder has them, call
 `rx.update_channel(id, &decoder)`: the points apply from the next slot that opens, and a spec for another
 mode than the channel's is `Err(IqError::ModeChange)`. A `Mode` alone is a channel of whole slots;
-`set_prefix_points(id, points)` stays for a caller that cuts by hand. A spec that is stale (points on the
+`set_prefix_points(id, points)` is deprecated since 0.15 (it works as before; `update_channel` names the mode and says why it failed). A spec that is stale (points on the
 channel for a decoder that wants none) returned the same rows on `qso3_busy.wav`, 14 and 14, SNR within
 0.1 dB (`IQ_PREFIX_DESIGN.md` §10). The slot's level is
 measured on its first prefix and kept for the rest of it, so the decoder sees

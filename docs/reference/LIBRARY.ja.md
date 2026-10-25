@@ -534,6 +534,7 @@ variant を足せる自由より、そちらの方が価値が高い。`engine` 
 | `wspr::decode::{debug_refined_sync, decode_scan_subtract}`、`fec::ldpc240_101::fst4_osd_diag_force_old`、`fec::ldpc::osd::npre1_pattern_counts`、`ft8::decode_block::compute_spectrogram_f32_timed`、`engine::sync2d::{ft4_sync_ref_prep_bench, ft4_aligned_cd0_bench}`（`internal-testing` のときだけ公開） | `__internal::wspr::decode::X`、`__internal::fec::ldpc240_101::fst4_osd_diag_force_old`、`__internal::fec::ldpc::npre1_pattern_counts`、`__internal::ft8::decode_block::compute_spectrogram_f32_timed`、`__internal::sync2d::X` |
 | `Ft4CoarsePhasors::buffer_addrs()`（`internal-testing` のとき） | `__internal::sync2d::buffer_addrs(&phasors)`。公開型のメソッドが feature に依存しなくなった |
 | `internal-testing` | `__internal` を足すだけで、ほかのパスは有無にかかわらず同じ。`mfsk-ffi` はもう有効にしない |
+| `IqReceiver::set_prefix_points(id, points) -> bool` | deprecated（従来どおり動く）: `update_channel(id, ChannelSpec::from(&decoder))`。別のモードも断り、不明・音声チャンネルには `IqError` を返す。デコーダのものではないポイントは `ChannelSpec { prefix_points, .. }`（`&'static [usize]`）に入れる |
 
 アプリのデコードの入口は `Decoder<P>` である。自分のコードから `DecodeRequest` や `decode_frame` を呼んでいたなら、`Decoder::<P>::new(DecodeParams)` と `decode(&SlotInput)` に移す。オプションは `P::Extras` にある（[§2](#2-デコード-api)）。
 `ft8`・`ft4`・`fst4`・`wspr`・`jt9`・`jt65` のモジュールドキュメントのクイック例は、その形に直してある。
@@ -1608,7 +1609,7 @@ FT8、FT4、FST4 の 5 周期、WSPR、JT9、JT65、Q65 の 10 サブモード�
 `prefix_points()` はモードではなくデコーダの設定に従う: FT8 の `SicEarly` なら `[141_696, 162_432]`、
 それ以外はすべて空。オプションを変えたら、デコーダがそれを持ったあとで `rx.update_channel(id, &decoder)` を呼ぶ:
 ポイントは次に開くスロットから効き、チャンネルのモードと違うモードの spec は `Err(IqError::ModeChange)`。
-`Mode` だけならスロット全体のみのチャンネルで、手で切る呼び出し側のために `set_prefix_points(id, points)` は残る。
+`Mode` だけならスロット全体のみのチャンネルで、`set_prefix_points(id, points)` は 0.15 から deprecated（従来どおり動く。`update_channel` はモードを名指しし、失敗の理由を返す）。
 古い spec（チャンネルにはポイントがあり、デコーダは求めない）でも、`qso3_busy.wav` では行は 14 と 14 で同じ、
 SNR の差は 0.1 dB 以内だった（`IQ_PREFIX_DESIGN.md` §10）。
 スロットのレベルは最初の先頭部分で測り、そのスロットの残りにも使うので、デコーダは 1 周期を

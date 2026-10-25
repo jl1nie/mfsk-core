@@ -215,6 +215,11 @@ impl FfiDecoder {
         self.any.prefix_points()
     }
 
+    /// The decoder's mode and prefix points, as an `IqReceiver` channel takes them.
+    pub(crate) fn channel_spec(&self) -> mfsk_core::iq::ChannelSpec {
+        mfsk_core::iq::ChannelSpec::from(&self.any)
+    }
+
     pub(crate) fn rows(&self) -> impl Iterator<Item = (&Decoded, &RowDetail)> {
         self.last.iter().map(|(a, b)| (a, b))
     }

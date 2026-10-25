@@ -100,7 +100,7 @@ pub struct RetuneReport {
 }
 
 /// What a channel cuts: the [`Mode`] whose slots it delivers, and the prefix points
-/// ([`IqReceiver::set_prefix_points`]) of the decoder that will decode them.
+/// of the decoder that will decode them ([`IqReceiver::update_channel`]).
 ///
 /// Take it from the decoder (`ChannelSpec::from(&decoder)`, for a [`Decoder`] or an
 /// [`AnyDecoder`]) and the mode is written once and the points are the decoder's at the
@@ -650,7 +650,7 @@ impl IqReceiver {
             tap: None,
         });
         if !prefix_points.is_empty() {
-            self.set_prefix_points(id, prefix_points);
+            self.set_points(id, prefix_points);
         }
         Ok(id)
     }
@@ -676,7 +676,7 @@ impl IqReceiver {
         if slots.mode != spec.mode {
             return Err(IqError::ModeChange);
         }
-        self.set_prefix_points(id, spec.prefix_points);
+        self.set_points(id, spec.prefix_points);
         Ok(())
     }
 
@@ -704,9 +704,12 @@ impl IqReceiver {
         Ok(id)
     }
 
+    /// **Deprecated since 0.15: use [`Self::update_channel`]** with a [`ChannelSpec`] from the
+    /// decoder (`ChannelSpec::from(&decoder)`), which names the mode, cannot copy the points
+    /// wrong, and returns why it failed instead of `false`. It works as before.
+    ///
     /// Deliver this channel's slots also as prefixes of these lengths, in
-    /// 12 kHz samples (prefer [`Self::update_channel`] with a [`ChannelSpec`] from the
-    /// decoder, which cannot name another mode or copy the points wrong): each slot that opens from now on goes out through
+    /// 12 kHz samples: each slot that opens from now on goes out through
     /// `push_*` first cut at each point, then whole. Pass the channel's
     /// decoder's [`AnyDecoder::prefix_points`]
     /// and decode **every** delivery of the channel with `decode_prefix`, the
@@ -719,7 +722,15 @@ impl IqReceiver {
     /// delivered part of is not delivered again (a clock stepped back). A slot
     /// dropped by a retune, a gap or a clock step keeps the prefixes it already
     /// delivered and has no whole. Design: `docs/notes/IQ_PREFIX_DESIGN.md`.
+    #[deprecated(
+        since = "0.15.0",
+        note = "use `update_channel` with a `ChannelSpec` taken from the decoder (`ChannelSpec::from(&decoder)`): it names the mode, cannot copy the points wrong, and says why it failed"
+    )]
     pub fn set_prefix_points(&mut self, id: ChannelId, points: &[usize]) -> bool {
+        self.set_points(id, points)
+    }
+
+    fn set_points(&mut self, id: ChannelId, points: &[usize]) -> bool {
         match self
             .channels
             .iter_mut()

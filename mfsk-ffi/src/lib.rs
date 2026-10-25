@@ -4607,13 +4607,13 @@ pub unsafe extern "C" fn mfsk_iq_push(
     // the depth or strategy on the borrowed decoder, which has no hook back
     // here, so this is where a change is seen (from the next slot that opens).
     for (&id, d) in &r.decoders {
-        let want: &'static [usize] = if r.early_off.contains(&id) {
-            &[]
-        } else {
-            d.prefix_points()
-        };
+        let mut spec = d.channel_spec();
+        if r.early_off.contains(&id) {
+            spec.prefix_points = &[];
+        }
+        let want = spec.prefix_points;
         if r.points.get(&id) != Some(&want) {
-            r.rx.set_prefix_points(mfsk_core::iq::ChannelId(id), want);
+            let _ = r.rx.update_channel(mfsk_core::iq::ChannelId(id), spec);
             r.points.insert(id, want);
         }
     }

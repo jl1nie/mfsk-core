@@ -26,6 +26,10 @@
   (`qso3_busy`, 14 / 14, SNR within 0.1 dB; `docs/notes/IQ_PREFIX_DESIGN.md` §10). Skimmer: no second `mode`, no throwaway decoder to ask for points, and the points
   follow the options only once the decoder has them. Additive.
 
+### Deprecated
+
+- **`IqReceiver::set_prefix_points`** (since 0.15, still works): `update_channel` with a `ChannelSpec` from the decoder replaces it (#692). No removal date is set.
+
 ### Results
 
 - `RR73` is packed as the acknowledgment `MAXGRID4+3` (32403), not the grid 32373, for every non-CQ type 1/2 message in all 77-bit

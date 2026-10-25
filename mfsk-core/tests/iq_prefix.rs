@@ -40,10 +40,13 @@ const NDIAL: f64 = NCENTER + 10_000.0;
 
 /// An FT8 channel over 31 s of noise, pushed `chunk` complex samples at a
 /// time, with `points`.
-fn noise_slots(chunk: usize, points: &[usize]) -> Vec<CompletedSlot> {
+fn noise_slots(chunk: usize, points: &'static [usize]) -> Vec<CompletedSlot> {
     let mut rx = IqReceiver::new(IqStream::new(NFS, NCENTER, IqSampleFormat::Cf32));
     let ch = rx.add_channel(NDIAL, Mode::Ft8).unwrap();
-    assert!(rx.set_prefix_points(ch, points));
+    // Raw points, not a decoder's: what the cutter does with unsorted and out-of-range ones.
+    let mut spec = ChannelSpec::from(Mode::Ft8);
+    spec.prefix_points = points;
+    rx.update_channel(ch, spec).unwrap();
     rx.set_time(T0_NS, 0);
     let iq = noise_iq(31 * NFS as usize);
     let mut out = Vec::new();
@@ -108,7 +111,9 @@ fn prefixes_are_cut_at_the_points_and_share_the_wholes_level() {
 /// whole slot or more) leave it so.
 #[test]
 fn without_points_only_whole_slots_go_out() {
-    for points in [&[][..], &[0, WHOLE, WHOLE + 1][..]] {
+    const NONE: &[usize] = &[];
+    const NOT_PREFIXES: &[usize] = &[0, WHOLE, WHOLE + 1];
+    for points in [NONE, NOT_PREFIXES] {
         let got = noise_slots(8_192, points);
         let l = lengths(&got);
         assert_eq!(l.len(), 2);
@@ -134,7 +139,8 @@ fn a_period_is_not_reopened_after_the_clock_steps_back() {
         let mut rx = IqReceiver::new(IqStream::new(NFS, NCENTER, IqSampleFormat::Cf32));
         let ch = rx.add_channel(NDIAL, Mode::Ft8).unwrap();
         if with_points {
-            rx.set_prefix_points(ch, &[A, B]);
+            let d = AnyDecoder::with_defaults(Mode::Ft8);
+            rx.update_channel(ch, ChannelSpec::from(&d)).unwrap();
         }
         rx.set_time(T0_NS, 0);
         let iq = noise_iq(45 * NFS as usize);
@@ -317,7 +323,7 @@ fn early_rows_through_iq(kind: Channelizer) {
         let ch = rx.add_channel(DIAL, Mode::Ft8).unwrap();
         let mut d = AnyDecoder::with_defaults(Mode::Ft8);
         if points {
-            assert!(rx.set_prefix_points(ch, d.prefix_points()));
+            rx.update_channel(ch, ChannelSpec::from(&d)).unwrap();
         }
         rx.set_time(T0_NS, 0);
         let mut slots = Vec::new();

@@ -103,8 +103,9 @@ fn take_audio_joins_the_runs_and_the_audio_is_the_slotted_channels() {
         runs(&mut r, audio).is_empty(),
         "take_audio drained every run"
     );
-    assert!(
-        !r.set_prefix_points(audio, &[1_000]),
+    assert_eq!(
+        r.update_channel(audio, mfsk_core::Mode::Ft8),
+        Err(mfsk_core::iq::IqError::UnknownChannel),
         "an audio channel has no slots"
     );
 }
