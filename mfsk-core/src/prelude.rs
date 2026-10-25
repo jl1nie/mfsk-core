@@ -64,7 +64,7 @@ pub use crate::encoder::{EncodeError, EncodeOptions, Encoded, TxAudio, encode};
         feature = "q65"
     )
 ))]
-pub use crate::iq::{ChannelId, Channelizer, CompletedSlot, IqReceiver};
+pub use crate::iq::{ChannelId, ChannelSpec, Channelizer, CompletedSlot, IqReceiver};
 pub use crate::iq::{IqError, IqSampleFormat, IqStream};
 pub use crate::msg::{ApHint, Decoded};
 pub use crate::registry::{Mode, ProtocolMeta};

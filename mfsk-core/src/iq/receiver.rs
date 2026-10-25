@@ -7,7 +7,7 @@
 //! what UTC the stream is at ([`IqReceiver::set_time`]), and gets back each
 //! completed slot as a [`CompletedSlot`]: 12 kHz audio and the slot's index
 //! on the UTC grid. Decoding is the caller's, with one
-//! [`AnyDecoder`](crate::decoder::AnyDecoder) per channel, so each channel
+//! [`AnyDecoder`] per channel, so each channel
 //! has its own options and its own callsign table, and the decode can run on
 //! any thread (a slot is owned and `Send`).
 //!
@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 
 use super::track::RateTracker;
 use super::{IqError, IqStream, IqToAudio, PfbChannelizer, RateTrackConfig, check_placement};
-use crate::decoder::SlotInput;
+use crate::decoder::{AnyDecoder, Decodable, Decoder, SlotInput};
 use crate::registry::{Mode, ProtocolMeta};
 use crate::slotgrid::{ClockChange, SampleClock, SlotCutter, SlotGrid};
 
@@ -97,6 +97,52 @@ pub struct RetuneReport {
     pub paused: Vec<ChannelId>,
     /// Paused before, and fit again.
     pub resumed: Vec<ChannelId>,
+}
+
+/// What a channel cuts: the [`Mode`] whose slots it delivers, and the prefix points
+/// ([`IqReceiver::set_prefix_points`]) of the decoder that will decode them.
+///
+/// Take it from the decoder (`ChannelSpec::from(&decoder)`, for a [`Decoder`] or an
+/// [`AnyDecoder`]) and the mode is written once and the points cannot be stale at the
+/// moment of the call. `ChannelSpec::from(Mode::Ft8)` is a channel of whole slots only: for
+/// a recording, a display, or a decoder with no early rows. Pass it to
+/// [`IqReceiver::add_channel`], and again to [`IqReceiver::update_channel`] when the
+/// decoder's options change.
+///
+/// Not the skimmer's own `ChannelSpec` (a channel as the operator configures it, in that crate).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelSpec {
+    pub mode: Mode,
+    /// Prefix lengths in 12 kHz samples; empty delivers whole slots only.
+    pub prefix_points: &'static [usize],
+}
+
+impl From<Mode> for ChannelSpec {
+    fn from(mode: Mode) -> Self {
+        ChannelSpec {
+            mode,
+            prefix_points: &[],
+        }
+    }
+}
+
+impl From<&AnyDecoder> for ChannelSpec {
+    fn from(d: &AnyDecoder) -> Self {
+        ChannelSpec {
+            mode: d.mode(),
+            prefix_points: d.prefix_points(),
+        }
+    }
+}
+
+impl<P: Decodable> From<&Decoder<P>> for ChannelSpec {
+    fn from(d: &Decoder<P>) -> Self {
+        ChannelSpec {
+            mode: P::MODE,
+            prefix_points: d.prefix_points(),
+        }
+    }
 }
 
 /// One slot of one channel: complete, or, on a channel with prefix points
@@ -563,11 +609,21 @@ impl IqReceiver {
         Ok(fe)
     }
 
-    /// Add a channel whose dial (audio 0 Hz) is `dial_hz`. Errors as
+    /// Add a channel whose dial (audio 0 Hz) is `dial_hz`, for the slots of
+    /// `spec`: a [`Mode`] (whole slots only), or a [`ChannelSpec`] taken from the
+    /// channel's decoder, which also sets its prefix points. Errors as
     /// [`IqToAudio::new`]: too close to DC, or a window outside `±Fs/2`.
     /// Added mid-stream, it starts with the next sample (on the `Pfb` path,
     /// the next sub-band sample that falls on a whole audio sample).
-    pub fn add_channel(&mut self, dial_hz: f64, mode: Mode) -> Result<ChannelId, IqError> {
+    pub fn add_channel(
+        &mut self,
+        dial_hz: f64,
+        spec: impl Into<ChannelSpec>,
+    ) -> Result<ChannelId, IqError> {
+        let ChannelSpec {
+            mode,
+            prefix_points,
+        } = spec.into();
         let (fe, bank_idx, k_next) = self.place(dial_hz)?;
         let id = ChannelId(self.next_id);
         self.next_id += 1;
@@ -593,7 +649,35 @@ impl IqReceiver {
             k_next,
             tap: None,
         });
+        if !prefix_points.is_empty() {
+            self.set_prefix_points(id, prefix_points);
+        }
         Ok(id)
+    }
+
+    /// Replace a channel's prefix points with those of `spec`, taken from its decoder after
+    /// the decoder's options changed. The slot that is open keeps the points it opened
+    /// with; the new ones apply from the next slot that opens, as
+    /// [`Self::set_prefix_points`], so call it when the decoder's options change, not
+    /// before. `Err(`[`IqError::UnknownChannel`]`)` for an unknown or audio channel, and
+    /// `Err(`[`IqError::ModeChange`]`)` if `spec.mode` is not the channel's mode.
+    pub fn update_channel(
+        &mut self,
+        id: ChannelId,
+        spec: impl Into<ChannelSpec>,
+    ) -> Result<(), IqError> {
+        let spec = spec.into();
+        let slots = self
+            .channels
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.slots.as_ref())
+            .ok_or(IqError::UnknownChannel)?;
+        if slots.mode != spec.mode {
+            return Err(IqError::ModeChange);
+        }
+        self.set_prefix_points(id, spec.prefix_points);
+        Ok(())
     }
 
     /// Add a channel that cuts no slots and keeps its continuous 12 kHz audio
@@ -621,9 +705,10 @@ impl IqReceiver {
     }
 
     /// Deliver this channel's slots also as prefixes of these lengths, in
-    /// 12 kHz samples: each slot that opens from now on goes out through
+    /// 12 kHz samples (prefer [`Self::update_channel`] with a [`ChannelSpec`] from the
+    /// decoder, which cannot name another mode or copy the points wrong): each slot that opens from now on goes out through
     /// `push_*` first cut at each point, then whole. Pass the channel's
-    /// decoder's [`AnyDecoder::prefix_points`](crate::decoder::AnyDecoder::prefix_points)
+    /// decoder's [`AnyDecoder::prefix_points`]
     /// and decode **every** delivery of the channel with `decode_prefix`, the
     /// whole slot included. Empty (the default) delivers whole slots only.
     /// `false` if the channel is unknown.

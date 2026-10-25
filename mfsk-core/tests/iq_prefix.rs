@@ -8,7 +8,10 @@ use std::collections::BTreeSet;
 
 use mfsk_core::Mode;
 use mfsk_core::decoder::{AnyDecoder, Decoder, Depth, Ft8Strategy, Stage};
-use mfsk_core::iq::{Channelizer, CompletedSlot, IqReceiver, IqSampleFormat, IqStream};
+use mfsk_core::iq::{
+    ChannelId, ChannelSpec, Channelizer, CompletedSlot, IqError, IqReceiver, IqSampleFormat,
+    IqStream,
+};
 
 #[allow(dead_code)]
 mod common;
@@ -187,6 +190,107 @@ fn prefix_points_follow_the_decoders_settings() {
             );
         }
     }
+}
+
+/// A channel over `seconds` of noise, made from `spec`; `update` is applied once, after the
+/// first `at_s` seconds, to the channel.
+fn slots_from(
+    spec: impl Into<ChannelSpec>,
+    seconds: usize,
+    update: Option<(usize, ChannelSpec)>,
+) -> Vec<CompletedSlot> {
+    let mut rx = IqReceiver::new(IqStream::new(NFS, NCENTER, IqSampleFormat::Cf32));
+    let ch = rx.add_channel(NDIAL, spec).unwrap();
+    rx.set_time(T0_NS, 0);
+    let iq = noise_iq(seconds * NFS as usize);
+    let mut out = Vec::new();
+    let mut done = 0;
+    for (i, c) in iq.chunks(2 * NFS as usize).enumerate() {
+        if let Some((at_s, s)) = update
+            && i == at_s
+        {
+            rx.update_channel(ch, s).unwrap();
+        }
+        rx.push_cf32(c, &mut out);
+        done += 1;
+    }
+    assert_eq!(done, seconds);
+    out
+}
+
+/// #692: a spec taken from the decoder gives the channel the decoder's mode and points; a
+/// `Mode` gives whole slots; the two ways of writing the same channel agree.
+#[test]
+fn a_spec_from_the_decoder_carries_its_mode_and_points() {
+    let d = AnyDecoder::with_defaults(Mode::Ft8);
+    let spec = ChannelSpec::from(&d);
+    assert_eq!((spec.mode, spec.prefix_points), (Mode::Ft8, &[A, B][..]));
+    let typed = Decoder::<mfsk_core::Ft8>::with_defaults();
+    assert_eq!(
+        ChannelSpec::from(&typed),
+        spec,
+        "typed and any decoders agree"
+    );
+    let ft4 = ChannelSpec::from(&AnyDecoder::with_defaults(Mode::Ft4));
+    assert_eq!((ft4.mode, ft4.prefix_points), (Mode::Ft4, &[][..]));
+
+    let from_decoder = slots_from(&d, 31, None);
+    let by_hand = noise_slots(NFS as usize, &[A, B]);
+    assert_eq!(lengths(&from_decoder), lengths(&by_hand));
+    for (a, b) in from_decoder.iter().zip(&by_hand) {
+        assert_eq!(a.audio, b.audio, "period {}", a.period);
+    }
+    let whole_only = slots_from(Mode::Ft8, 31, None);
+    assert!(lengths(&whole_only).iter().all(|(_, l)| l == &[WHOLE]));
+}
+
+/// #692: `update_channel` applies from the next slot that opens. The slot that was open keeps
+/// the points it opened with, as `set_prefix_points` does.
+#[test]
+fn update_channel_applies_from_the_next_slot() {
+    let d = AnyDecoder::with_defaults(Mode::Ft8);
+    let got = lengths(&slots_from(
+        Mode::Ft8,
+        46,
+        Some((16, ChannelSpec::from(&d))),
+    ));
+    let periods: Vec<_> = got.iter().map(|(_, l)| l.clone()).collect();
+    assert_eq!(
+        periods,
+        vec![vec![WHOLE], vec![WHOLE], vec![A, B, WHOLE]],
+        "{got:?}"
+    );
+    // and back: points withdrawn, the next slot is whole only
+    let got = lengths(&slots_from(
+        &d,
+        46,
+        Some((16, ChannelSpec::from(Mode::Ft8))),
+    ));
+    let periods: Vec<_> = got.iter().map(|(_, l)| l.clone()).collect();
+    assert_eq!(
+        periods,
+        vec![vec![A, B, WHOLE], vec![A, B, WHOLE], vec![WHOLE]],
+        "{got:?}"
+    );
+}
+
+/// #692: a spec for another mode, an unknown channel, and an audio channel are errors, not a
+/// silent change.
+#[test]
+fn update_channel_refuses_what_it_cannot_do() {
+    let mut rx = IqReceiver::new(IqStream::new(NFS, NCENTER, IqSampleFormat::Cf32));
+    let ch = rx.add_channel(NDIAL, Mode::Ft8).unwrap();
+    assert_eq!(rx.update_channel(ch, Mode::Ft4), Err(IqError::ModeChange));
+    assert_eq!(
+        rx.update_channel(ChannelId(99), Mode::Ft8),
+        Err(IqError::UnknownChannel)
+    );
+    let audio = rx.add_audio_channel(NDIAL + 6_000.0).unwrap();
+    assert_eq!(
+        rx.update_channel(audio, Mode::Ft8),
+        Err(IqError::UnknownChannel)
+    );
+    assert_eq!(rx.update_channel(ch, Mode::Ft8), Ok(()));
 }
 
 const FS: u32 = 192_000;

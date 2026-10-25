@@ -90,7 +90,9 @@ pub mod receiver;
         feature = "q65"
     )
 ))]
-pub use receiver::{ChannelId, ChannelState, Channelizer, CompletedSlot, IqReceiver, RetuneReport};
+pub use receiver::{
+    ChannelId, ChannelSpec, ChannelState, Channelizer, CompletedSlot, IqReceiver, RetuneReport,
+};
 
 use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass_kaiser, kaiser_order};
 use crate::engine::dsp::polyphase::PolyphaseResampler;
@@ -246,6 +248,13 @@ pub enum IqError {
     OutsideBand,
     /// DC (the SDR's own spike) falls inside the channel's audio band.
     TooCloseToDc,
+    /// [`IqReceiver::update_channel`]: no such channel, or one that cuts no slots
+    /// (an audio channel).
+    UnknownChannel,
+    /// [`IqReceiver::update_channel`]: the spec names another mode than the channel
+    /// cuts slots for. A channel's slot grid and level belong to its mode; remove it
+    /// and add another.
+    ModeChange,
 }
 
 impl core::fmt::Display for IqError {
@@ -255,6 +264,8 @@ impl core::fmt::Display for IqError {
             IqError::UnsupportedRate => "no small rational ratio from this IQ rate to 12 kHz",
             IqError::OutsideBand => "channel's audio window is outside the IQ band",
             IqError::TooCloseToDc => "channel's audio band contains the IQ stream's DC",
+            IqError::UnknownChannel => "no such slotted channel",
+            IqError::ModeChange => "a channel's mode cannot change; remove it and add another",
         })
     }
 }
