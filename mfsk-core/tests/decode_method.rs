@@ -10,6 +10,45 @@ use mfsk_core::{Ft4, Ft8};
 #[allow(dead_code)]
 mod common;
 
+/// Deterministic standard-normal noise (xorshift + Box-Muller): the same samples on every run and
+/// every machine, which a generated corpus under `.gitignore` is not (it is absent in CI).
+fn gauss(seed: u64, n: usize) -> Vec<f32> {
+    let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut u = move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f32 + 0.5) / (1u64 << 53) as f32
+    };
+    (0..n)
+        .map(|_| (-2.0 * u().ln()).sqrt() * (std::f32::consts::TAU * u()).cos())
+        .collect()
+}
+
+/// A 7.5 s FT4 slot: `CQ JL1NIE PM95` at 1500 Hz from 0.5 s, in white noise at `snr_db` in a 2500 Hz
+/// bandwidth. Synthesised and noised here, so the test needs no corpus file.
+fn ft4_slot(snr_db: f32, seed: u64) -> Vec<i16> {
+    use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
+    let msg77 = mfsk_core::msg::wsjt77::pack77("CQ", "JL1NIE", "PM95").expect("pack");
+    let tones = message_to_tones::<Ft4>(&msg77);
+    let amp = 6_000i16;
+    let frame = synthesize_i16::<Ft4>(&tones, 12_000, 1_500.0, amp);
+    let mut audio = vec![0f32; 90_000];
+    let start = 6_000;
+    audio[start..start + frame.len()]
+        .iter_mut()
+        .zip(&frame)
+        .for_each(|(o, &v)| *o = f32::from(v));
+    // Signal power A^2 / 2; white noise of std sigma has sigma^2 * 2500 / 6000 in 2500 Hz.
+    let ps = f32::from(amp).powi(2) / 2.0;
+    let sigma = (ps / 10f32.powf(snr_db / 10.0) * 6_000.0 / 2_500.0).sqrt();
+    audio
+        .iter()
+        .zip(gauss(seed, 90_000))
+        .map(|(a, n)| (a + sigma * n).round().clamp(-32_768.0, 32_767.0) as i16)
+        .collect()
+}
+
 macro_rules! asset_path {
     ($f:expr) => {
         concat!(env!("CARGO_MANIFEST_DIR"), "/../embedded-poc/assets/", $f)
@@ -47,35 +86,25 @@ fn ft8_rows_name_their_method_by_the_ladder_they_came_from() {
 /// The collision: on FT4 (and FST4) pass 5 is the OSD depth-3 rung **and** an a-priori pass. The
 /// method is set where the row is made, so the two come out as what they are: with a free-form
 /// hint, rows of pass 5 are `Osd` and `Ap { iaptype: None }` (the hint locked `CQ`, whatever
-/// number the pass id would suggest); with none, the QSO context's blind CQ is `Ap { iaptype:
-/// Some(1) }`, WSJT-X's number for `CQ ...`. The CCIR sweep near threshold, at `Depth::Deep`.
+/// number the pass id would suggest); with none, the QSO context's blind CQ, pass 12, is
+/// `Ap { iaptype: Some(1) }`, WSJT-X's number for `CQ ...`. Forty slots of a synthetic FT4 signal
+/// at -16 dB (fixed seeds, no corpus file), decoded at `Depth::Deep`: both legs give BP, OSD and
+/// a-priori rows.
 #[test]
 fn ft4_pass_5_is_osd_or_a_priori_by_how_the_row_was_made() {
-    let mut files = 0;
-    let mut run = |hint: bool| {
+    let run = |hint: bool| {
         let mut seen: Vec<(u8, DecodeMethod)> = Vec::new();
-        for snr in ["m13", "m14", "m16", "m18", "m10", "m05"] {
-            for n in 1..=20 {
-                let path = format!(
-                    "{}/../embedded-poc/assets/ft4_sweep/ft4_ccir_good_{snr}_{n:02}.wav",
-                    env!("CARGO_MANIFEST_DIR")
-                );
-                let Some(audio) = common::load_wav_i16_opt(&path) else {
-                    continue;
-                };
-                files += 1;
-                let mut d = Decoder::<Ft4>::new(
-                    DecodeParams::for_band((200.0, 4_000.0)).depth(Depth::Deep),
-                );
-                if hint {
-                    // The corpus message is `CQ JL1NIE PM95`.
-                    d.set_ap_hint(Some(ApHint::new().with_call1("CQ").with_call2("JL1NIE")));
-                }
-                for row in d.decode(&SlotInput::i16(&audio)).rows {
-                    let method = row.detail.method.expect("FT4 records a method");
-                    if !seen.contains(&(row.detail.pass, method)) {
-                        seen.push((row.detail.pass, method));
-                    }
+        for seed in 1..=40 {
+            let audio = ft4_slot(-16.0, seed);
+            let mut d =
+                Decoder::<Ft4>::new(DecodeParams::for_band((200.0, 4_000.0)).depth(Depth::Deep));
+            if hint {
+                d.set_ap_hint(Some(ApHint::new().with_call1("CQ").with_call2("JL1NIE")));
+            }
+            for row in d.decode(&SlotInput::i16(&audio)).rows {
+                let method = row.detail.method.expect("FT4 records a method");
+                if !seen.contains(&(row.detail.pass, method)) {
+                    seen.push((row.detail.pass, method));
                 }
             }
         }
@@ -83,10 +112,6 @@ fn ft4_pass_5_is_osd_or_a_priori_by_how_the_row_was_made() {
     };
     let free_form = run(true);
     let qso_context = run(false);
-    if files == 0 {
-        common::skip_or_fail("ft4_sweep");
-        return;
-    }
     println!("free-form hint: {free_form:?}\nQSO context: {qso_context:?}");
     // The collision, as two different rows with the same pass id.
     assert!(free_form.contains(&(5, DecodeMethod::Osd)), "{free_form:?}");
@@ -107,7 +132,7 @@ fn ft4_pass_5_is_osd_or_a_priori_by_how_the_row_was_made() {
         "{qso_context:?}"
     );
     for seen in [&free_form, &qso_context] {
-        assert!(seen.contains(&(0, DecodeMethod::Bp)), "{seen:?}");
+        assert!(seen.contains(&(2, DecodeMethod::Bp)), "{seen:?}");
         assert!(seen.contains(&(4, DecodeMethod::Osd)), "{seen:?}");
     }
     // No other pass id has two methods.
@@ -196,15 +221,8 @@ fn candidates_is_what_the_coarse_search_kept_for_that_call() {
             .is_some_and(|n| n > 0)
     );
 
-    // FT4, from the CCIR sweep: a number on any file.
-    let path = format!(
-        "{}/../embedded-poc/assets/ft4_sweep/ft4_ccir_good_m13_01.wav",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let Some(ft4) = common::load_wav_i16_opt(&path) else {
-        common::skip_or_fail("ft4_sweep");
-        return;
-    };
+    // FT4: a number on a synthetic slot.
+    let ft4 = ft4_slot(-10.0, 1);
     let r =
         Decoder::<Ft4>::new(DecodeParams::for_band((200.0, 4_000.0))).decode(&SlotInput::i16(&ft4));
     assert!(r.candidates.is_some_and(|n| n > 0), "{:?}", r.candidates);
