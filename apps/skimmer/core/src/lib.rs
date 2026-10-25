@@ -789,7 +789,8 @@ pub struct Config {
     /// a spot; the next slot has its own lane.
     /// With [`Config::early_decode`] the share is the period's, split over its
     /// calls: each gets what the earlier ones left, and the wait for audio
-    /// between them is not counted (#626).
+    /// between them is not counted (#626). A share that is negative, not a
+    /// number or too large for a duration means no budget.
     pub slot_budget: Option<f32>,
     /// Decoder threads per channel. A slot goes to the lane with the least
     /// waiting, so the next slot is decoded on another thread while the last is

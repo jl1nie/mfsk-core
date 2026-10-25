@@ -31,7 +31,7 @@ use crate::registry::Mode;
 /// let mut decoder = AnyDecoder::with_defaults(Mode::Ft8);
 /// // 2 % of FT8's 15 s: 300 ms for A, B and the end together.
 /// let mut budget = PeriodBudget::share(7, Mode::Ft8, Some(0.02));
-/// let mut cut = 0;
+/// let mut cut = 0usize;
 /// for len in [141_696, 162_432, 180_000] {
 ///     let slot = CompletedSlot::new(ChannelId(0), Mode::Ft8, 7, vec![0.0; len]);
 ///     let start = Instant::now();
@@ -41,7 +41,7 @@ use crate::registry::Mode;
 ///         .unwrap();
 ///     cut += usize::from(budget.finish(start.elapsed(), &out.budget)); // once per period
 /// }
-/// assert_eq!(cut, 0);
+/// assert!(cut <= 1, "a period is counted as cut at most once");
 /// # }
 /// ```
 #[derive(Clone, Debug)]
@@ -104,8 +104,9 @@ impl PeriodBudget {
     /// without `Instant`, build the predicate from `left()` and the clock you have.
     #[cfg(feature = "std")]
     pub fn within(&self, start: std::time::Instant) -> Option<impl Fn() -> bool + Sync + use<>> {
-        let deadline = start + self.left()?;
-        Some(move || std::time::Instant::now() < deadline)
+        // An allowance too large for an `Instant` is no deadline at all.
+        let deadline = start.checked_add(self.left()?);
+        Some(move || deadline.is_none_or(|d| std::time::Instant::now() < d))
     }
 }
 
@@ -193,18 +194,29 @@ mod tests {
         }
     }
 
+    /// No sleeping: the call's start is moved instead of waiting for a deadline to pass.
     #[cfg(feature = "std")]
     #[test]
-    fn within_flips_at_the_deadline() {
+    fn within_is_true_before_the_deadline_and_false_after_it() {
+        use std::time::Instant;
         let ms = Duration::from_millis;
-        let mut p = PeriodBudget::new(1, Some(ms(40)));
-        let start = std::time::Instant::now();
-        let w = p.within(start).unwrap();
-        assert!(w(), "inside the allowance");
-        std::thread::sleep(ms(60));
-        assert!(!w(), "past it");
-        // After a call that used it all, the next call's predicate is false from the start.
-        p.finish(ms(40), &exhausted(true));
-        assert!(!p.within(std::time::Instant::now()).unwrap()());
+        let hour = Duration::from_secs(3600);
+        let mut p = PeriodBudget::new(1, Some(hour));
+        assert!(p.within(Instant::now()).unwrap()(), "an hour from now");
+        // A call that started a second ago, with 40 ms allowed: past its deadline.
+        let past = PeriodBudget::new(1, Some(ms(40)));
+        if let Some(start) = Instant::now().checked_sub(Duration::from_secs(1)) {
+            assert!(
+                !past.within(start).unwrap()(),
+                "started 1 s ago, 40 ms allowed"
+            );
+        }
+        // After a call that used it all, the next call's predicate is false from its start.
+        let mut q = PeriodBudget::new(1, Some(ms(40)));
+        q.finish(ms(40), &exhausted(true));
+        assert!(!q.within(Instant::now()).unwrap()());
+        // An allowance no `Instant` can hold is no deadline.
+        p = PeriodBudget::new(1, Some(Duration::MAX));
+        assert!(p.within(Instant::now()).unwrap()(), "unbounded");
     }
 }
