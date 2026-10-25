@@ -661,11 +661,12 @@ period so far instead, for FT8's early decode (WSJT-X's nzhsym 41/47/50,
 
 A `SlotResult<R>` is `rows: Vec<Row<R>>`, in the order they were found,
 `budget: BudgetReport`, and `candidates: Option<u32>`: how many candidates the coarse search
-kept for this call: the **first search the call ran** (FT8, FT4 and FST4). For FT8's default
+kept for this call: the **first search the call ran** (every mode but FST4W; per mode in
+`docs/notes/CANDIDATES.md`). For FT8's default
 `SicEarly` that is checkpoint A's in a call that includes it and checkpoint C's, on what is left
 after A's decodes, in the final call of a prefix sequence (`qso3_busy`: 480 whole, 480 at A, none
-at B, 338 at the end). `None` for a call that made no search (the prefix at B) and for the modes
-that report none. It is what was searched, not what was missed, and it counts noise candidates (#696). A `Row<R>` carries three views of one decode:
+at B, 338 at the end). `None` for a call that made no search (the prefix at B) and for FST4W. It is
+what was searched, not what was missed, and it counts noise candidates (#696, #697). A `Row<R>` carries three views of one decode:
 
 | field | what |
 |---|---|

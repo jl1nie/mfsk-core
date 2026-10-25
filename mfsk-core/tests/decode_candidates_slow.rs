@@ -10,7 +10,7 @@ mod common;
 
 use mfsk_core::decoder::{DecodeParams, Decoder, Depth, Q65Extras, SlotInput};
 use mfsk_core::q65::Q65a15;
-use mfsk_core::{Jt9, Jt65};
+use mfsk_core::{Jt9, Jt65, Wspr};
 
 macro_rules! asset_path {
     ($f:expr) => {
@@ -207,4 +207,57 @@ fn q65_silence_is_an_empty_list_and_averaging_searches_each_period() {
             r.candidates
         );
     }
+}
+
+/// WSPR counts pass 0's list after `find_peaks` and `max_candidates` (200 by default): `npk` in
+/// `wsprd.c`, though not narrowed to fmin..fmax as wsprd's is. The later passes search the residual
+/// again and are not counted, so `Fast` (2 passes) and `Normal` (3) give the same number on the same
+/// audio; `Deep` adds peaks (`-d`, `more_candidates`) and so gives more. Read at the cap's edge on
+/// `150426_0918.wav`: a cap of 5 gives 5, caps above the list give the list, and the rows (8) are
+/// fewer than the list, so the count is not the decodes.
+#[test]
+fn wspr_counts_pass_zeros_list_and_later_passes_do_not_change_it() {
+    let Some(a) = common::load_wav_f32_opt(asset_path!("golden/wspr/150426_0918.wav")) else {
+        common::skip_or_fail("150426_0918.wav");
+        return;
+    };
+    let run = |depth: Depth, cap: Option<usize>| {
+        let mut d = Decoder::<Wspr>::new(DecodeParams::for_band((1_400.0, 1_600.0)).depth(depth));
+        d.extras_mut().search.max_candidates = cap;
+        d.decode(&SlotInput::f32(&a))
+    };
+    let normal = run(Depth::Normal, Some(5_000));
+    let list = normal.candidates.expect("a search ran");
+    assert!(list > 5, "the pass-0 list is {list}");
+    assert!(
+        (normal.rows.len() as u32) < list,
+        "{} rows, {list} candidates: the count is not the decodes",
+        normal.rows.len()
+    );
+    assert_eq!(
+        run(Depth::Normal, None).candidates,
+        Some(list),
+        "the default cap of 200 is above it"
+    );
+    assert_eq!(
+        run(Depth::Normal, Some(5)).candidates,
+        Some(5),
+        "below the list, the cap"
+    );
+    // Two passes against three: the same first search.
+    assert_eq!(run(Depth::Fast, None).candidates, Some(list));
+    // `Deep` searches with `more_candidates`: a longer list, capped the same way.
+    let deep = run(Depth::Deep, Some(5_000))
+        .candidates
+        .expect("a search ran");
+    assert!(deep > list, "Deep's list {deep} against Normal's {list}");
+    assert_eq!(
+        run(Depth::Deep, Some(deep as usize - 1)).candidates,
+        Some(deep - 1)
+    );
+    // Silence: the search ran and found nothing.
+    let silence = vec![0f32; a.len()];
+    let r = Decoder::<Wspr>::new(DecodeParams::for_band((1_400.0, 1_600.0)))
+        .decode(&SlotInput::f32(&silence));
+    assert_eq!(r.candidates, Some(0));
 }

@@ -174,8 +174,8 @@ data class MfskBudgetReport(
     /// rows returned, with [exhausted] set, means the cut came while
     /// cleaning up rather than while searching. 0 everywhere else.
     val rowsSubtracted: Int = 0,
-    /// The candidates the (first) coarse search kept for the last call: FT8, FT4 and
-    /// FST4. Null where the call made no search (FT8's checkpoint B) or the mode reports
+    /// The candidates the (first) coarse search kept for the last call: every mode but
+    /// FST4W. Null where the call made no search (FT8's checkpoint B) or the mode reports
     /// none. Not a budget quantity; it rides on this per-call report (#696).
     val candidates: Int? = null,
 )

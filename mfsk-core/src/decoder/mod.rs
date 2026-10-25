@@ -323,8 +323,10 @@ pub struct SlotResult<R> {
     /// whole period, or the prefix at A), and checkpoint C's, on what is left after A's decodes
     /// are subtracted, in the final call of a prefix sequence: so one period reports two
     /// numbers (`qso3_busy`: 480 whole, 480 at A, none at B, 338 at the end). `None` for a call
-    /// that made no search (the prefix at FT8's checkpoint B only subtracts) and for the modes
-    /// that report none (WSPR, JT9, JT65, Q65, FST4W). FT8's sniper reports its narrow window's.
+    /// that made no search (the prefix at FT8's checkpoint B only subtracts) and for FST4W, which
+    /// reports none. FT8's sniper reports its narrow window's. The other modes: WSPR's is pass 0's
+    /// list (not narrowed to the band as `wsprd`'s `npk` is), JT9's the truncated coarse list, JT65's
+    /// pass 1's, Q65's the first scan's (`docs/notes/CANDIDATES.md`).
     /// What was searched, not what was missed: it is not a recall figure, and it counts noise
     /// candidates too (#696).
     pub candidates: Option<u32>,

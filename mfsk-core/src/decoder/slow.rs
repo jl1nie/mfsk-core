@@ -168,7 +168,7 @@ mod wspr_impl {
             if let Some(b) = slot.budget {
                 req = req.budget(b);
             }
-            let (found, exhausted) = req.decode_reported();
+            let (found, exhausted, candidates) = req.decode_reported();
             let rows = found
                 .into_iter()
                 .map(|r| Row {
@@ -183,7 +183,7 @@ mod wspr_impl {
                     exhausted,
                     ..Default::default()
                 },
-                candidates: None,
+                candidates,
             }
         }
     }

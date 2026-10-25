@@ -465,8 +465,8 @@ public struct BudgetReport: Sendable, Equatable {
     /// the rows returned, with ``exhausted`` set, means the cut came while
     /// cleaning up rather than while searching. 0 everywhere else.
     public let rowsSubtracted: UInt32
-    /// The candidates the (first) coarse search kept for the last call: FT8,
-    /// FT4 and FST4. nil where the call made no search (FT8's checkpoint B) or
+    /// The candidates the (first) coarse search kept for the last call: every
+    /// mode but FST4W. nil where the call made no search (FT8's checkpoint B) or
     /// the mode reports none. Not a budget quantity; it rides on this per-call
     /// report (#696).
     public let candidates: UInt32?

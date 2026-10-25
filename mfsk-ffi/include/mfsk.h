@@ -1707,8 +1707,8 @@ typedef struct MfskBudgetReport {
     uint32_t rows_subtracted;
     /**
      * The candidates the (first) coarse search kept for the last call
-     * (`SlotResult::candidates`, #696): FT8, FT4 and FST4; -1 where the call made
-     * no search (FT8's checkpoint B) or the mode reports none. Not a budget
+     * (`SlotResult::candidates`, #696, #697): every mode but FST4W; -1 where the call
+     * made no search (FT8's checkpoint B) or the mode reports none. Not a budget
      * quantity: it rides here because this is the per-call report. Appended.
      */
     int32_t candidates;

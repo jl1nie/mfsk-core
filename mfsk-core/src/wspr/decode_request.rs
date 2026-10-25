@@ -169,9 +169,10 @@ impl<'a> DecodeRequest<'a> {
         self
     }
 
-    /// [`Self::decode`], and whether the budget ([`Self::budget`]) said stop at
-    /// least once. `false` without a budget.
-    pub fn decode_reported(&mut self) -> (Vec<WsprResult>, bool) {
+    /// [`Self::decode`], whether the budget ([`Self::budget`]) said stop at least
+    /// once (`false` without a budget), and how many candidates the first coarse
+    /// search kept (`SlotResult::candidates`, #697).
+    pub fn decode_reported(&mut self) -> (Vec<WsprResult>, bool, Option<u32>) {
         super::decode::decode_scan_inner(
             self.audio,
             self.sample_rate,

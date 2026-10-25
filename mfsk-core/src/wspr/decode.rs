@@ -1256,7 +1256,7 @@ pub(super) fn decode_scan_inner(
     carried: Option<&mut WsprCallsignTable>,
     depth: ScanDepth,
     budget: Option<&(dyn Fn() -> bool + Sync)>,
-) -> (Vec<WsprResult>, bool) {
+) -> (Vec<WsprResult>, bool, Option<u32>) {
     let ladder = depth.ladder;
     // The caller's budget, remembering whether it ever said stop: what a
     // `BudgetReport::exhausted` is made of. Polled per survivor in every pass
@@ -1335,6 +1335,10 @@ pub(super) fn decode_scan_inner(
     // candidate's `snr_db` through to the decode below.
     let mut cands = bb_cands;
     cands.truncate(params.max_candidates);
+    // The first coarse search of the call: pass 0's list after `find_peaks` and the cap
+    // (`npk`, `wsprd.c:1149-1189`), which unlike wsprd's is not narrowed to fmin..fmax. Passes
+    // 1 and 2 search again on what is left and are not counted (`SlotResult::candidates`, #697).
+    let first_search = Some(u32::try_from(cands.len()).unwrap_or(u32::MAX));
     let _audio = &padded[..]; // shadow so all downstream reads use padded buffer
     let mut seen: Vec<WsprResult> = Vec::new();
     // 2-D refinement: WSPR's Fano (K=32 convolutional, no CRC) is
@@ -1561,7 +1565,7 @@ pub(super) fn decode_scan_inner(
         }
     }
 
-    (seen, spent())
+    (seen, spent(), first_search)
 }
 
 /// Deinterleave 162 LLRs in place (same permutation as [`deinterleave`]
