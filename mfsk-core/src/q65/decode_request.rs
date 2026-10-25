@@ -350,9 +350,10 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         self
     }
 
-    /// [`Self::decode`], and whether the budget ([`Self::budget`]) said stop at
-    /// least once. `false` without a budget.
-    pub fn decode_reported(&self) -> (Vec<Q65Result>, bool) {
+    /// [`Self::decode`], whether the budget ([`Self::budget`]) said stop at least
+    /// once (`false` without a budget), and how many candidates the first coarse
+    /// search kept (`SlotResult::candidates`, #697).
+    pub fn decode_reported(&self) -> (Vec<Q65Result>, bool, Option<u32>) {
         let gate = crate::engine::pipeline::BudgetGate::new(self.budget);
         let ctx = ctx_from_hash_table(self.hash_table.as_ref());
 
@@ -432,7 +433,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         for r in &mut out {
             untranslate(r);
         }
-        (out, gate.exhausted())
+        (out, gate.exhausted(), gate.candidates())
     }
 
     fn decode_dispatch(

@@ -959,6 +959,9 @@ fn scan_with<P: ModulationParams>(
         params,
         max_drift,
     );
+    // The first coarse search of the call (`ncand`, `q65_decode.f90`): the list after its sync
+    // threshold and `max_candidates`, before the budget, the dedup or any decode (#697).
+    gate.note_candidates(cands.len());
     let mut seen: Vec<Q65Result> = Vec::new();
     // A candidate inside a signal already decoded is not tried:
     // `q65_decode.f90:375-377` skips `f0` with
@@ -1682,6 +1685,9 @@ pub(crate) struct MultiPeriod {
     ema_spec: Option<super::search::Spectrogram>,
     q3_avg: Option<super::q3::AveragedSpectra>,
     history: Vec<Vec<f32>>,
+    /// The candidates the last [`Self::step`]'s search kept; `None` if it ran none (the q3
+    /// decode on the averaged spectra had already decoded). `SlotResult::candidates`, #697.
+    pub(crate) last_candidates: Option<u32>,
 }
 
 impl MultiPeriod {
@@ -1708,6 +1714,7 @@ impl MultiPeriod {
     ) -> Option<Q65Result> {
         use super::search::{build_spectrogram, coarse_search_on_spec_for};
 
+        self.last_candidates = None;
         let i = self.history.len();
         if self.ema_spec.is_none() {
             // Initialise the average from the first period.
@@ -1759,7 +1766,10 @@ impl MultiPeriod {
         let candidates = if slot_decode.is_some() {
             Vec::new()
         } else {
-            coarse_search_on_spec_for::<P>(ema_spec, sample_rate, nominal_start_sample, params)
+            let found =
+                coarse_search_on_spec_for::<P>(ema_spec, sample_rate, nominal_start_sample, params);
+            self.last_candidates = Some(u32::try_from(found.len()).unwrap_or(u32::MAX));
+            found
         };
 
         self.history.push(audio.to_vec());

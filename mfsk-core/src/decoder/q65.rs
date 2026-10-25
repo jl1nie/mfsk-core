@@ -155,74 +155,75 @@ fn decode<P: Q65SubMode>(
         None
     };
 
-    let (results, exhausted): (Vec<Q65Result>, bool) = match (params.averaging, slot.period) {
-        (true, Some(n)) => {
-            // Consecutive periods only: anything else restarts the average.
-            if state.last_period.is_none_or(|p| p + 1 != n) {
-                state.avg = MultiPeriod::default();
-            }
-            state.last_period = Some(n);
-            let mut search = search;
-            if params.eme_delay {
-                search.time_tolerance_late_sec = search
-                    .time_tolerance_late_sec
-                    .max(crate::q65::search::eme_delay_late_sec::<P>());
-            }
-            let q3 = ap_list
-                .and(params.rx_freq_hz)
-                .map(|rx| crate::q65::q3::Q3Params {
-                    rx_freq_hz: rx,
-                    ftol_hz: ftol,
-                    slot_start: nominal as i64
-                        - (<P as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as i64,
-                    late_sec: search.time_tolerance_late_sec,
-                    drift_hz: 0.0,
-                });
-            let ctx = crate::q65::decode_request::ctx_from_hash_table(Some(&state.table));
-            let mut d = state
-                .avg
-                .step::<P>(audio, 12_000, nominal, &search, ap_list, q3, &ctx);
-            state.avg.forget_beyond(MAX_AVERAGED_PERIODS);
-            if let Some(d) = d.as_mut() {
-                d.dt_sec = (d.start_sample as f32 - nominal as f32) / 12_000.0;
-                if let Some(cb) = cb.as_ref() {
-                    cb(d);
+    let (results, exhausted, candidates): (Vec<Q65Result>, bool, Option<u32>) =
+        match (params.averaging, slot.period) {
+            (true, Some(n)) => {
+                // Consecutive periods only: anything else restarts the average.
+                if state.last_period.is_none_or(|p| p + 1 != n) {
+                    state.avg = MultiPeriod::default();
                 }
+                state.last_period = Some(n);
+                let mut search = search;
+                if params.eme_delay {
+                    search.time_tolerance_late_sec = search
+                        .time_tolerance_late_sec
+                        .max(crate::q65::search::eme_delay_late_sec::<P>());
+                }
+                let q3 = ap_list
+                    .and(params.rx_freq_hz)
+                    .map(|rx| crate::q65::q3::Q3Params {
+                        rx_freq_hz: rx,
+                        ftol_hz: ftol,
+                        slot_start: nominal as i64
+                            - (<P as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as i64,
+                        late_sec: search.time_tolerance_late_sec,
+                        drift_hz: 0.0,
+                    });
+                let ctx = crate::q65::decode_request::ctx_from_hash_table(Some(&state.table));
+                let mut d = state
+                    .avg
+                    .step::<P>(audio, 12_000, nominal, &search, ap_list, q3, &ctx);
+                state.avg.forget_beyond(MAX_AVERAGED_PERIODS);
+                if let Some(d) = d.as_mut() {
+                    d.dt_sec = (d.start_sample as f32 - nominal as f32) / 12_000.0;
+                    if let Some(cb) = cb.as_ref() {
+                        cb(d);
+                    }
+                }
+                // One decode per period, whose unit is a whole period: not cut by a budget.
+                (d.into_iter().collect(), false, state.avg.last_candidates)
             }
-            // One decode per period, whose unit is a whole period: not cut by a budget.
-            (d.into_iter().collect(), false)
-        }
-        _ => {
-            state.avg = MultiPeriod::default();
-            state.last_period = None;
-            let mut req = DecodeRequest::<P>::new(audio, 12_000, nominal, search)
-                .eme_delay(params.eme_delay)
-                .ftol(ftol)
-                .depth(grid_depth(params.depth))
-                .pileup(extras.pileup)
-                .max_drift(extras.max_drift)
-                .hash_table(Arc::clone(&state.table));
-            if let Some(f) = params.rx_freq_hz {
-                req = req.rx_freq(f);
+            _ => {
+                state.avg = MultiPeriod::default();
+                state.last_period = None;
+                let mut req = DecodeRequest::<P>::new(audio, 12_000, nominal, search)
+                    .eme_delay(params.eme_delay)
+                    .ftol(ftol)
+                    .depth(grid_depth(params.depth))
+                    .pileup(extras.pileup)
+                    .max_drift(extras.max_drift)
+                    .hash_table(Arc::clone(&state.table));
+                if let Some(f) = params.rx_freq_hz {
+                    req = req.rx_freq(f);
+                }
+                if let Some(h) = extras.ap_hint.as_ref() {
+                    req = req.ap_hint(h);
+                }
+                if let Some(l) = ap_list {
+                    req = req.ap_list(l);
+                }
+                if let Some((m, b90)) = extras.fading {
+                    req = req.fading(m, b90);
+                }
+                if let Some(cb) = cb.as_ref() {
+                    req = req.on_result(cb);
+                }
+                if let Some(b) = slot.budget {
+                    req = req.budget(b);
+                }
+                req.decode_reported()
             }
-            if let Some(h) = extras.ap_hint.as_ref() {
-                req = req.ap_hint(h);
-            }
-            if let Some(l) = ap_list {
-                req = req.ap_list(l);
-            }
-            if let Some((m, b90)) = extras.fading {
-                req = req.fading(m, b90);
-            }
-            if let Some(cb) = cb.as_ref() {
-                req = req.on_result(cb);
-            }
-            if let Some(b) = slot.budget {
-                req = req.budget(b);
-            }
-            req.decode_reported()
-        }
-    };
+        };
     let rows: Vec<Row<Q65Result>> = results.into_iter().map(row).collect();
     // Learn after the period, in decode order, as `unpack77_learn` does.
     for r in &rows {
@@ -234,7 +235,7 @@ fn decode<P: Q65SubMode>(
             exhausted,
             ..Default::default()
         },
-        candidates: None,
+        candidates,
     }
 }
 
