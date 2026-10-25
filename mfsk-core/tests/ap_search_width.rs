@@ -46,7 +46,7 @@ fn ft8_two_signal_slot(a: &[u8; 77], fa: f32, b: &[u8; 77], fb: f32) -> Vec<i16>
     slot
 }
 
-fn texts(results: &[mfsk_core::engine::pipeline::DecodeResult]) -> Vec<String> {
+fn texts(results: &[mfsk_core::engine::frame::DecodeResult]) -> Vec<String> {
     let mut v: Vec<String> = results
         .iter()
         .map(|r| unpack77(r.message77()).unwrap_or_default())

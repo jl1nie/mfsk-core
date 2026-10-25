@@ -26,7 +26,7 @@ fn d3<'a>(audio: &'a [i16], ap: Option<&'a ApHint>) -> DecodeRequest<'a, Ft8> {
 
 /// `(found, found by the list decoder)` for `want` in one decode.
 fn found(
-    results: &[mfsk_core::engine::pipeline::DecodeResult],
+    results: &[mfsk_core::engine::frame::DecodeResult],
     want: &str,
     list_pass: u8,
 ) -> (bool, bool) {
@@ -93,7 +93,7 @@ fn slot_bits(m77: Option<&[u8; 77]>, snr_db: f64, seed: u64) -> Vec<i16> {
         .collect()
 }
 
-fn texts(r: &[mfsk_core::engine::pipeline::DecodeResult]) -> Vec<(u8, String)> {
+fn texts(r: &[mfsk_core::engine::frame::DecodeResult]) -> Vec<(u8, String)> {
     r.iter()
         .map(|r| (r.pass, unpack77(r.message77()).unwrap_or_default()))
         .collect()

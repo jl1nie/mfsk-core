@@ -256,8 +256,8 @@ fn decode_candidate(
         // so does this.
         &[],
         &mfsk_core::ft4::decode::FT4_DOWNSAMPLE,
-        mfsk_core::engine::pipeline::DecodeDepth::EMBEDDED,
-        mfsk_core::engine::pipeline::DecodeStrictness::Normal,
+        mfsk_core::engine::frame::DecodeDepth::EMBEDDED,
+        mfsk_core::engine::frame::DecodeStrictness::Normal,
         &[],
         mfsk_core::engine::equalize::EqMode::Off,
         rx::SYNC_Q_MIN,

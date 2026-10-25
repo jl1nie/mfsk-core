@@ -36,10 +36,9 @@ use alloc::vec::Vec;
 
 use crate::engine::Protocol;
 use crate::engine::dsp::downsample::DownsampleCfg;
+use crate::engine::frame::{BudgetCheck, BudgetReport};
 use crate::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
-use crate::engine::pipeline::{
-    BudgetCheck, BudgetReport, GenericPipelineProtocol, SnrCtx, fst4_refined_candidates,
-};
+use crate::engine::pipeline::{GenericPipelineProtocol, SnrCtx, fst4_refined_candidates};
 use crate::engine::sync::{fine_sync_power_per_block, sync_power_cv};
 use crate::engine::sync2d::freq_shift_cd0_into;
 use crate::engine::tx::info_to_tones;

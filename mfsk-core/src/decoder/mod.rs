@@ -91,7 +91,7 @@ pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, 
 
 use alloc::vec::Vec;
 
-pub use crate::engine::pipeline::{BudgetCheck, BudgetReport};
+pub use crate::engine::frame::{BudgetCheck, BudgetReport};
 use crate::msg::ApHint;
 use crate::msg::decoded::Decoded;
 use crate::registry::Mode;

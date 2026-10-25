@@ -54,7 +54,7 @@ pub struct DecodeRequest<'a> {
     npass: u8,
     averager: Option<(&'a mut super::averaging::Averager, i64, f32)>,
     on_result: Option<&'a (dyn Fn(&Jt65Result) + Sync)>,
-    budget: Option<crate::engine::pipeline::BudgetCheck<'a>>,
+    budget: Option<crate::engine::frame::BudgetCheck<'a>>,
 }
 
 impl<'a> DecodeRequest<'a> {
@@ -152,7 +152,7 @@ impl<'a> DecodeRequest<'a> {
     /// before it is tried, in every pass; the passes after a spent budget are
     /// skipped. A candidate already running finishes, and the coarse search is
     /// not cut.
-    pub fn budget(mut self, check: crate::engine::pipeline::BudgetCheck<'a>) -> Self {
+    pub fn budget(mut self, check: crate::engine::frame::BudgetCheck<'a>) -> Self {
         self.budget = Some(check);
         self
     }

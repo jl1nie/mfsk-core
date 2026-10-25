@@ -135,7 +135,7 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     /// entry point's pre-existing behavior.
     hash_table: Option<Arc<CallsignHashTable>>,
     /// Set via [`DecodeRequest::budget`].
-    budget: Option<crate::engine::pipeline::BudgetCheck<'a>>,
+    budget: Option<crate::engine::frame::BudgetCheck<'a>>,
     _marker: PhantomData<P>,
 }
 
@@ -345,7 +345,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     /// Stop the scan when `check` returns `false`: polled once per candidate
     /// before it is tried, in either sync's candidate list. A candidate already
     /// running finishes, and the coarse search is not cut (#593).
-    pub fn budget(mut self, check: crate::engine::pipeline::BudgetCheck<'a>) -> Self {
+    pub fn budget(mut self, check: crate::engine::frame::BudgetCheck<'a>) -> Self {
         self.budget = Some(check);
         self
     }

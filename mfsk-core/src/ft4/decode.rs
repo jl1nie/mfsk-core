@@ -10,7 +10,7 @@ use crate::engine::dsp::subtract::SubtractCfg;
 use crate::engine::pipeline;
 use alloc::vec::Vec;
 
-pub use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
+pub use crate::engine::frame::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
 use crate::msg::decode_request::{
     DecodeOutcome, DecodeRequest, FrameDecodable, MessagePolicy, StrategyTag,

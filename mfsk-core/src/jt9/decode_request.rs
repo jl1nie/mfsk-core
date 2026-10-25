@@ -46,7 +46,7 @@ pub struct DecodeRequest<'a> {
     depth: Jt9Depth,
     narrow: Option<(f32, f32)>,
     on_result: Option<&'a (dyn Fn(&Jt9Result) + Sync)>,
-    budget: Option<crate::engine::pipeline::BudgetCheck<'a>>,
+    budget: Option<crate::engine::frame::BudgetCheck<'a>>,
 }
 
 impl<'a> DecodeRequest<'a> {
@@ -124,7 +124,7 @@ impl<'a> DecodeRequest<'a> {
     /// Stop the scan when `check` returns `false`: polled once per candidate
     /// before it is tried. A candidate already running finishes, and the
     /// coarse search is not cut.
-    pub fn budget(mut self, check: crate::engine::pipeline::BudgetCheck<'a>) -> Self {
+    pub fn budget(mut self, check: crate::engine::frame::BudgetCheck<'a>) -> Self {
         self.budget = Some(check);
         self
     }

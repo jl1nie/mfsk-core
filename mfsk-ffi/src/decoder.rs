@@ -449,8 +449,8 @@ fn invalid(msg: String) -> (MfskStatus, String) {
     (MfskStatus::InvalidArg, msg)
 }
 
-fn strictness_of(v: i32) -> Result<Option<mfsk_core::engine::pipeline::DecodeStrictness>, String> {
-    use mfsk_core::engine::pipeline::DecodeStrictness as S;
+fn strictness_of(v: i32) -> Result<Option<mfsk_core::engine::frame::DecodeStrictness>, String> {
+    use mfsk_core::engine::frame::DecodeStrictness as S;
     Ok(match v {
         -1 => None,
         0 => Some(S::Strict),

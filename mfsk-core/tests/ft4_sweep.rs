@@ -344,7 +344,8 @@ fn ft4_snr_sweep() {
 #[ignore = "manual diagnostic — DecodeStrictness calibration probe (issue #72)"]
 fn ft4_strictness_probe() {
     use mfsk_core::engine::equalize::EqMode;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, decode_frame};
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+    use mfsk_core::engine::pipeline::decode_frame;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
@@ -462,8 +463,9 @@ fn ft4_diag_weak_trials() {
     use mfsk_core::SyncFrontEnd;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
@@ -778,8 +780,9 @@ fn ft4_diag_k4_tail_direction() {
 fn ft4_diag_segment_retry() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, ft4_sync_search_window};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
@@ -1011,8 +1014,9 @@ fn ft4_diag_candidate_cost_split() {
 
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
@@ -1241,8 +1245,9 @@ fn ft4_diag_candidate_cost_split() {
 fn ft4_diag_smax_calibration() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
@@ -1417,10 +1422,9 @@ fn ft4_diag_smax_calibration() {
 fn ft4_diag_dt_window_reach() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_precomputed,
-    };
+    use mfsk_core::engine::pipeline::process_candidate_precomputed;
     use mfsk_core::engine::sync2d::ft4_sync_search_window;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;

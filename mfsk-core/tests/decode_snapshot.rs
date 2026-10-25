@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::pipeline::{DecodeResult, DecodeStrictness};
+use mfsk_core::engine::frame::{DecodeResult, DecodeStrictness};
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::ApHint;
 use mfsk_core::msg::decode_request::{DecodeRequest, NoiseBlanker};

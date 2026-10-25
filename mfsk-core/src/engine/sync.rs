@@ -1865,7 +1865,7 @@ pub fn fine_sync_power<P: SyncFrontEnd>(cd0: &[Complex<f32>], i0: i32) -> f32 {
 /// three-block value came out √3 larger than FT4's and FST4's for the
 /// same channel.
 ///
-/// [`DecodeResult::sync_cv`]: crate::engine::pipeline::DecodeResult::sync_cv
+/// [`DecodeResult::sync_cv`]: crate::engine::frame::DecodeResult::sync_cv
 pub fn sync_power_cv(per_block: &[f32]) -> f32 {
     if per_block.is_empty() {
         return 0.0;

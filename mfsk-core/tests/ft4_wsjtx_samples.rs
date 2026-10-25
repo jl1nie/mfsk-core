@@ -426,8 +426,9 @@ mod bench_assets {
 fn ft4_bake_golden_precomputed() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::SyncCandidate;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
@@ -622,10 +623,9 @@ fn ft4_bake_golden_precomputed() {
 fn ft4_diag_sync_window_recall() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_basic, process_candidate_precomputed,
-    };
+    use mfsk_core::engine::pipeline::{process_candidate_basic, process_candidate_precomputed};
     use mfsk_core::engine::sync2d::ft4_sync_search_window;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 

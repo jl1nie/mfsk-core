@@ -37,8 +37,8 @@
 use alloc::vec::Vec;
 
 use crate::engine::equalize::EqMode;
-pub use crate::engine::pipeline::{BudgetCheck, BudgetReport};
-use crate::engine::pipeline::{DecodeDepth, DecodeStrictness, FftCache, LlrEffort};
+pub use crate::engine::frame::{BudgetCheck, BudgetReport};
+use crate::engine::frame::{DecodeDepth, DecodeStrictness, FftCache, LlrEffort};
 use crate::engine::protocol::SyncFrontEnd;
 
 use super::ap::ApHint;
@@ -330,14 +330,15 @@ pub(crate) fn generic_single_pass<P, Pol>(
     sync_q_min: u32,
 ) -> DecodeOutcome<P>
 where
-    P: FrameDecodable<DecodeResult = crate::engine::pipeline::DecodeResult>
+    P: FrameDecodable<DecodeResult = crate::engine::frame::DecodeResult>
         + crate::engine::pipeline::GenericPipelineProtocol,
     P::Fec: crate::engine::protocol::BpPooledFec,
     P::Msg: crate::engine::protocol::MessageCodec<Unpacked = Wsjt77Fields>
         + super::ap::WsjtApCompatible,
     Pol: MessagePolicy,
 {
-    use crate::engine::pipeline::{self, DecodeResult};
+    use crate::engine::frame::DecodeResult;
+    use crate::engine::pipeline;
 
     // See `pipeline::known_filtered_on_result`'s doc comment: without
     // this, `on_result` could fire for a candidate `pipeline::dedup_known`
@@ -415,7 +416,7 @@ where
     };
     let mut results: Vec<DecodeResult> = Vec::new();
     let mut fft_cache: Option<FftCache> = None;
-    let mut budget = pipeline::BudgetReport::default();
+    let mut budget = BudgetReport::default();
     for npct in nb.levels() {
         let cand_band = match sweep_band {
             // `if(nb.lt.0 .and. npct.ne.0 .and. abs(fc0-..).gt.ntol) cycle`
@@ -539,7 +540,7 @@ pub trait FrameDecodable: SyncFrontEnd {
     /// Result type this protocol's decode engine produces.
     ///
     /// **The same concrete type for all three**, since 0.8.0:
-    /// `engine::pipeline::DecodeResult`, which `ft8::decode` re-exports.
+    /// `engine::frame::DecodeResult`, which `ft8::decode` re-exports.
     /// It carries the full `Fec::K` info bits with the CRC retained —
     /// 91 for FT8 and FT4 (CRC-14), 101 for FST4 (CRC-24) — and
     /// `message77()` slices the leading 77 identically for each. That is

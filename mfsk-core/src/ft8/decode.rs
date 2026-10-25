@@ -34,25 +34,25 @@ use crate::msg::decode_request::{
 
 /// Opaque FFT cache, reusable across pipelined decode passes.
 ///
-/// Canonical definition lives in [`crate::engine::pipeline::FftCache`] — same
+/// Canonical definition lives in [`crate::engine::frame::FftCache`] — same
 /// underlying `Vec<Complex<f32>>`, re-exported here for backward-compatible
 /// `mfsk_core::ft8::decode::FftCache` import paths (issue #191).
-pub use crate::engine::pipeline::FftCache;
+pub use crate::engine::frame::FftCache;
 
 /// Decode cost/recall configuration, plus the [`LlrEffort`] staircase width.
 ///
-/// Canonical definition lives in [`crate::engine::pipeline::DecodeDepth`] —
+/// Canonical definition lives in [`crate::engine::frame::DecodeDepth`] —
 /// re-exported here (with [`LlrEffort`]) for backward-compatible
 /// `mfsk_core::ft8::decode::DecodeDepth` import paths (issue #191 type
 /// consolidation migrated `engine::pipeline`'s old 2-variant `BpAll`/
 /// `BpAllOsd` enum, used by FT4/FST4, onto this struct). `llr_effort` is
 /// FT8-only in practice — the generic `engine::pipeline` engine FT4/FST4 use
 /// always computes all LLR variants and only reads `depth.osd`.
-pub use crate::engine::pipeline::{DecodeDepth, LlrEffort};
+pub use crate::engine::frame::{DecodeDepth, LlrEffort};
 
 /// Decode strictness: controls false-positive vs sensitivity trade-off.
 ///
-/// Canonical definition lives in [`crate::engine::pipeline::DecodeStrictness`].
+/// Canonical definition lives in [`crate::engine::frame::DecodeStrictness`].
 /// FT8 consumes two of its three methods:
 ///
 /// - [`DecodeStrictness::ft8_nharderrors_max`] — the BP-staircase/OSD
@@ -76,11 +76,11 @@ pub use crate::engine::pipeline::{DecodeDepth, LlrEffort};
 /// `osd_depth`-tiered pair) remain FT4-only — FT8's real OSD dispatch
 /// has no `osd_depth` tiering to port, so `ft8_nharderrors_max` is a
 /// separate, flat method rather than reusing that one.
-pub use crate::engine::pipeline::DecodeStrictness;
+pub use crate::engine::frame::DecodeStrictness;
 
 /// One successfully decoded FT8 message.
 ///
-/// Canonical definition lives in [`crate::engine::pipeline::DecodeResult`]
+/// Canonical definition lives in [`crate::engine::frame::DecodeResult`]
 /// (issue #194) — this used to be a separate, byte-for-byte-identical
 /// struct except for `message77: [u8; 77]` (CRC bits stripped) vs. the
 /// generic type's `info: Box<[u8]>` (all `K` FEC info bits, CRC
@@ -92,7 +92,7 @@ pub use crate::engine::pipeline::DecodeStrictness;
 /// protocol-generic caller over `DecodeRequest<P>` read every
 /// protocol's results the same way. Re-exported so existing
 /// `mfsk_core::ft8::decode::DecodeResult` import paths keep working.
-pub use crate::engine::pipeline::DecodeResult;
+pub use crate::engine::frame::DecodeResult;
 
 // ────────────────────────────────────────────────────────────────────────────
 // A Priori (AP) hint for sniper-mode decode

@@ -17,7 +17,7 @@
 use crate::engine::dsp::downsample::DownsampleCfg;
 use crate::engine::pipeline;
 
-pub use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
+pub use crate::engine::frame::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
 use crate::msg::decode_request::{DecodeOutcome, DecodeRequest, FrameDecodable, MessagePolicy};
 

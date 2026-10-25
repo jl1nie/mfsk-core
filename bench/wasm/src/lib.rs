@@ -6,7 +6,7 @@ use mfsk_core::decoder::{
     ApMode, BudgetReport, DecodeParams, Decoder, Depth, Ft8Extras, Ft8Strategy, Row, SlotInput,
     SlotResult,
 };
-use mfsk_core::engine::pipeline::DecodeResult;
+use mfsk_core::engine::frame::DecodeResult;
 use mfsk_core::ft8::Ft8;
 use wasm_bindgen::prelude::*;
 

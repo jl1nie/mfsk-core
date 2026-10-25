@@ -89,8 +89,8 @@ fn strategy_from_env() -> Strategy {
 
 /// `MFSK_FT8_SWEEP_STRICTNESS=strict|normal|deep`; unset leaves the
 /// request's default.
-fn strictness_from_env() -> Option<mfsk_core::engine::pipeline::DecodeStrictness> {
-    use mfsk_core::engine::pipeline::DecodeStrictness;
+fn strictness_from_env() -> Option<mfsk_core::engine::frame::DecodeStrictness> {
+    use mfsk_core::engine::frame::DecodeStrictness;
     match std::env::var("MFSK_FT8_SWEEP_STRICTNESS").as_deref() {
         Ok("strict") => Some(DecodeStrictness::Strict),
         Ok("normal") => Some(DecodeStrictness::Normal),

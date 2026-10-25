@@ -37,7 +37,7 @@ use super::{
     SlotResult,
 };
 use crate::engine::equalize::EqMode;
-use crate::engine::pipeline::{DecodeResult, DecodeStrictness};
+use crate::engine::frame::{DecodeResult, DecodeStrictness};
 use crate::engine::protocol::Protocol;
 use crate::msg::decode_request::{
     DecodeOutcome, DecodeRequest, FrameDecodable, SupportsMessageFilter,

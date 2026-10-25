@@ -32,7 +32,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use mfsk_core::engine::pipeline::DecodeResult;
+use mfsk_core::engine::frame::DecodeResult;
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::decode_request::{BudgetReport, DecodeRequest};

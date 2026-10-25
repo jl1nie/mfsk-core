@@ -47,11 +47,9 @@ use num_complex::Complex;
 
 use mfsk_core::engine::dsp::downsample::build_fft_cache;
 use mfsk_core::engine::equalize::EqMode;
+use mfsk_core::engine::frame::{DecodeDepth, DecodeResult, DecodeStrictness};
 use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
-use mfsk_core::engine::pipeline::{
-    DecodeDepth, DecodeResult, DecodeStrictness, process_candidate_basic,
-    process_candidate_precomputed,
-};
+use mfsk_core::engine::pipeline::{process_candidate_basic, process_candidate_precomputed};
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::ft4_sync_search;
 use mfsk_core::ft4::Ft4;

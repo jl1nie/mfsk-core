@@ -91,7 +91,7 @@ const MAX_CAND: usize = 15;
 
 /// `phi` in seconds, positive meaning the grid opens later into the
 /// slot than the recording's own boundary.
-fn decode_at_phase(slot: &[i16], phi_s: f32) -> Vec<mfsk_core::engine::pipeline::DecodeResult> {
+fn decode_at_phase(slot: &[i16], phi_s: f32) -> Vec<mfsk_core::engine::frame::DecodeResult> {
     let k = ((phi_s * 12_000.0).round() as i64).rem_euclid(SLOT as i64) as usize;
     let mut rotated = slot.to_vec();
     rotated.rotate_left(k);

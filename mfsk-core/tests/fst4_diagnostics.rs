@@ -1393,7 +1393,8 @@ fn sweep_dir() -> PathBuf {
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_diag_weak_trials() {
     use mfsk_core::engine::equalize::EqMode;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
     use mfsk_core::fst4::{Fst4s30, Fst4s300};
@@ -1485,8 +1486,9 @@ fn fst4_diag_weak_trials() {
 fn fst4_diag_nsym4_ladder() {
     use mfsk_core::engine::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{compute_llr_generic, symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec};
@@ -1810,7 +1812,8 @@ fn fst4_diag_zsum_osd() {
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_120_diag_sync_vs_decode_failure() {
     use mfsk_core::engine::equalize::EqMode;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s120;
     use mfsk_core::fst4::decode::FST4_120_DOWNSAMPLE;
@@ -1906,7 +1909,8 @@ fn fst4_60_diag_candidate_cost_split() {
 
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::fst4_sync_search;
     use mfsk_core::fst4::Fst4s60;
@@ -2042,7 +2046,8 @@ fn fst4_300_diag_candidate_cost_split() {
 
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::fst4_sync_search;
     use mfsk_core::fst4::Fst4s300;
@@ -3896,10 +3901,9 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
 
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
-    };
+    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -4717,10 +4721,9 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
 
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
-    };
+    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -4918,10 +4921,9 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
 fn fst4_60_diag_sniper_cap_per_trial() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
-    };
+    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -5529,10 +5531,9 @@ fn fst4_60_diag_dedup_zero_score_readmission() {
 fn fst4_60_diag_dedup_zero_score_recall_effect() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
-    };
+    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -5707,12 +5708,11 @@ fn fst4_60_diag_dedup_zero_score_recall_effect() {
 fn fst4_60_diag_soft_costas_margin_separation() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{
         symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
     };
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
-    };
+    use mfsk_core::engine::pipeline::{process_candidate_basic, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;

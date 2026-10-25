@@ -154,9 +154,8 @@ use num_traits::Float;
 use mfsk_core::engine::dsp::downsample::downsample_cached;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::ft4_coarse::{ft4_coarse_sync, ft4_coarse_sync_from_savg, Ft4SavgBuilder};
-use mfsk_core::engine::pipeline::{
-    process_candidate_basic, process_candidate_precomputed, DecodeDepth, DecodeStrictness,
-};
+use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+use mfsk_core::engine::pipeline::{process_candidate_basic, process_candidate_precomputed};
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
 use mfsk_core::ft4::ddc::{candidate_baseband, candidate_baseband_half, decimate_slot};

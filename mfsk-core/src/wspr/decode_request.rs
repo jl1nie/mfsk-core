@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 
 use super::decode::{WsprCallsignTable, WsprResult};
 use super::search::{SearchParams, default_search_params};
-use crate::engine::pipeline::BudgetCheck;
+use crate::engine::frame::BudgetCheck;
 
 /// Wide-band WSPR decode request: wsprd's coarse search on the 375 Hz
 /// baseband, then its three decode passes (Fano, then the Fano + OSD

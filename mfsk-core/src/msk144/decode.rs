@@ -321,7 +321,7 @@ pub fn decode_slot(audio: &[i16], fc: f32, ntol: f32, depth: Depth) -> Vec<SlotD
 /// use (`frame_decode::decode_frame`'s own doc comment already
 /// documented this parity — `decode_slot` just never had a parameter
 /// to actually supply the table through). Unlike FT8/FT4/FST4's
-/// `engine::pipeline::DecodeResult`, which keeps the raw 77-bit
+/// `engine::frame::DecodeResult`, which keeps the raw 77-bit
 /// payload and defers unpacking to `to_decoded(..., hash)` so a table
 /// can be supplied *after* the decode, MSK144's message text is
 /// resolved to a `String` inside the decode call itself (`SlotDecode`

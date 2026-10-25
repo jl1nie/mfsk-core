@@ -26,7 +26,7 @@
 //! and after, `(0.05, 100)` 9 before and 2 after.
 #![cfg(feature = "fft-rustfft")]
 
-use mfsk_core::engine::pipeline::DecodeStrictness;
+use mfsk_core::engine::frame::DecodeStrictness;
 use mfsk_core::engine::protocol::{FecCodec, FecOpts};
 use mfsk_core::fec::Ldpc174_91;
 use mfsk_core::fec::ldpc::check_crc14;

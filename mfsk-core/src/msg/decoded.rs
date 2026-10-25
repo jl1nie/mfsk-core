@@ -1,6 +1,6 @@
 //! `Decoded` — a unified, owned, human-readable decode row for host UIs.
 //!
-//! Every protocol's native decode result (`engine::pipeline::DecodeResult`
+//! Every protocol's native decode result (`engine::frame::DecodeResult`
 //! for FT8/FT4/FST4, [`WsprResult`](crate::wspr::WsprResult),
 //! [`Q65Result`](crate::q65::Q65Result), [`Jt65Result`](crate::jt65::Jt65Result),
 //! [`Jt9Result`](crate::jt9::Jt9Result)) is structurally distinct — different
@@ -129,7 +129,7 @@ impl Decoded {
 
 // ── FT8 / FT4 / FST4 ─────────────────────────────────────────────────────────
 //
-// These three share `engine::pipeline::DecodeResult`. The impl lives in `msg`
+// These three share `engine::frame::DecodeResult`. The impl lives in `msg`
 // (not `engine`) because it calls `unpack77` — `engine` never depends on `msg`
 // (the crate-wide dependency direction), so authoring the conversion here keeps
 // that arrow pointing the right way while still giving `result.to_decoded(..)`
@@ -138,7 +138,7 @@ impl Decoded {
     any(feature = "ft8", feature = "ft4", feature = "fst4"),
     any(feature = "fft-rustfft", feature = "fft-extern")
 ))]
-impl crate::engine::pipeline::DecodeResult {
+impl crate::engine::frame::DecodeResult {
     /// Resolve into a [`Decoded`] UI row, unpacking the 77-bit payload.
     ///
     /// `protocol` tags the row (the result type is shared across FT8/FT4/FST4,
@@ -272,7 +272,7 @@ mod tests {
     ))]
     #[test]
     fn ft8_family_to_decoded_carries_unpacked_text_and_fields() {
-        use crate::engine::pipeline::DecodeResult;
+        use crate::engine::frame::DecodeResult;
         use crate::msg::wsjt77::{pack77_type1, unpack77};
 
         let bits = pack77_type1("K1ABC", "W9XYZ", "FN42").expect("packs");

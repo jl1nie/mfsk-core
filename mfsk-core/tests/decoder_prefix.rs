@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use mfsk_core::decoder::{
     AnyDecoder, Decoder, Ft8Extras, Ft8Strategy, Row, SlotInput, SlotResult, Stage,
 };
-use mfsk_core::engine::pipeline::DecodeResult;
+use mfsk_core::engine::frame::DecodeResult;
 use mfsk_core::{Ft4, Ft8, Mode};
 
 #[allow(dead_code)]

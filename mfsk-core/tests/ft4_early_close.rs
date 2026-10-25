@@ -58,8 +58,9 @@
 use num_complex::Complex;
 
 use mfsk_core::engine::equalize::EqMode;
+use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::ft4_coarse::{Ft4SavgBuilder, ft4_coarse_sync, ft4_coarse_sync_from_savg};
-use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
+use mfsk_core::engine::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::ddc::{candidate_baseband_half, decimate_slot};

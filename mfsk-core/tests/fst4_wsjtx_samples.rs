@@ -150,8 +150,9 @@ fn fst4_60_wsjtx_sample_on_result_fires_once_per_decode() {
 fn fst4_60_diagnose_golden() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::pipeline::process_candidate_basic;
     use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::{FrameLayout, SyncFrontEnd};
     use mfsk_core::fst4::Fst4s60;
@@ -287,7 +288,8 @@ fn fst4_60_diagnose_golden() {
 fn fst4_bake_golden_precomputed() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
-    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, decode_frame};
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+    use mfsk_core::engine::pipeline::decode_frame;
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -458,9 +460,8 @@ fn fst4_bake_golden_precomputed() {
 fn fst4_bake_golden_refined_candidates() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::equalize::EqMode;
-    use mfsk_core::engine::pipeline::{
-        DecodeDepth, DecodeStrictness, process_candidate_precomputed, refine_candidate_position,
-    };
+    use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+    use mfsk_core::engine::pipeline::{process_candidate_precomputed, refine_candidate_position};
     use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;

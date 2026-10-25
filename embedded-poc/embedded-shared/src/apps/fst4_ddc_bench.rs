@@ -43,7 +43,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
+use mfsk_core::engine::frame::{DecodeDepth, DecodeStrictness};
+use mfsk_core::engine::pipeline::process_candidate_precomputed;
 use mfsk_core::engine::sync::{coarse_sync, compute_spectra, AudioSource, SyncCandidate, SyncDims};
 use mfsk_core::fst4::ddc::grid_for;
 use mfsk_core::fst4::Fst4s60;

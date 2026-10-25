@@ -46,7 +46,7 @@ use num_complex::{Complex, Complex32};
 use num_traits::Float;
 
 use crate::engine::dsp::gfsk::{GfskCfg, synth_complex_f32_into};
-use crate::engine::pipeline::DecodeResult;
+use crate::engine::frame::DecodeResult;
 use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::{append_crc14, ldpc_encode};
 use crate::ft8::Ft8;

@@ -116,10 +116,11 @@ use alloc::vec::Vec;
 
 use num_complex::Complex32;
 
+use super::super::engine::frame::DecodeResult;
 use super::super::engine::llr::{
     compute_llr_fast, compute_llr_partial, descramble_info, symbol_spectra, sync_quality,
 };
-use super::super::engine::pipeline::{DecodeResult, osd_escalation_gates};
+use super::super::engine::pipeline::osd_escalation_gates;
 use super::super::engine::protocol::{BpPooledFec, FecOpts, MessageCodec, SyncFrontEnd};
 use super::super::engine::sync::SyncCandidate;
 
