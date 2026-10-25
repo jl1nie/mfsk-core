@@ -20,6 +20,7 @@ use crate::msg::wsjt77;
 
 /// Result of a successful frame decode.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct FrameDecodeResult {
     /// Human-readable decoded message (from `unpack77`/`unpack77_with_hash`).
     pub message: String,

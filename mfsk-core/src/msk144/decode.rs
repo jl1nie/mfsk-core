@@ -113,6 +113,7 @@ fn npat(depth: Depth) -> usize {
 
 /// One decoded MSK144 message from a slot scan.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SlotDecode {
     pub message: String,
     /// SNR estimate (dB), clamped to `[-8, 24]` — WSJT-X's
@@ -391,6 +392,7 @@ pub fn decode_slot_with_hash_table(
 
 /// One decode from a [`Stream`].
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct StreamDecode {
     pub message: String,
     /// As [`SlotDecode::snr_db`].

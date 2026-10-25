@@ -40,6 +40,7 @@ pub const CALLER_TTL_SEC: u64 = 24 * 3600;
 
 /// One remembered station — `q3list`'s `call`, `grid`, `nsec`, `nfreq`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Caller {
     /// Up to six characters (`character*6 c6`).
     pub call: String,

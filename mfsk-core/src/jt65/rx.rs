@@ -28,6 +28,7 @@ use crate::engine::gray::inv_gray;
 /// four public functions ran the same pass and each handed back a
 /// different subset (symbols; + `conf`; + `snr_db`; everything).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Jt65Demod {
     /// The 63 hard-decision symbols in **RS codeword order**
     /// (Gray-decoded and de-interleaved), ready for

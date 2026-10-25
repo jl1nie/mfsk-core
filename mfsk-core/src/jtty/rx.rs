@@ -130,6 +130,7 @@ const SAME_FRAME_S: f32 = 0.05;
 
 /// What to look for.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct Params {
     /// Operator's receive frequency, Hz (channel 0's centre).
     pub f0_hz: f32,
@@ -234,6 +235,7 @@ pub struct Params {
 
 /// What the side channels cover ([`Params::side_channels`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum SideChannels {
     /// `rjtty`'s two, 1350 and 1650 Hz ± 150 Hz — a narrowing, "temporarily, at least", of a
     /// scan of the whole band in 200 Hz channels (upstream b00c9bd04).
@@ -323,6 +325,7 @@ impl Default for Params {
 
 /// One validated frame.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct FrameDecode {
     /// 0 for the operator's frequency, 1 and 2 for the fixed side channels.
     pub channel: u8,
@@ -1852,6 +1855,7 @@ impl Back {
 /// A frame that was subtracted from a window: enough to subtract it again from
 /// the windows before it.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Subtracted {
     /// Frequency of the frame's lowest tone, Hz.
     pub f1_hz: f32,

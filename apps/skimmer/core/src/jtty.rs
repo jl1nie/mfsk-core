@@ -94,11 +94,10 @@ fn is_grid(s: &str) -> bool {
 /// The receive settings for a channel's options: upstream's, with the Rx
 /// frequency and tolerance the channel sets.
 pub fn params_for(o: &ChannelOptions) -> Params {
-    Params {
-        f0_hz: o.rx_freq_hz.unwrap_or(DEFAULT_RX_HZ),
-        ftol_hz: o.tol_hz.unwrap_or(DEFAULT_FTOL_HZ),
-        ..Params::default()
-    }
+    let mut p = Params::default();
+    p.f0_hz = o.rx_freq_hz.unwrap_or(DEFAULT_RX_HZ);
+    p.ftol_hz = o.tol_hz.unwrap_or(DEFAULT_FTOL_HZ);
+    p
 }
 
 /// The level JTTY's receiver is fed at: the slot channels' (`TARGET_RMS` in the

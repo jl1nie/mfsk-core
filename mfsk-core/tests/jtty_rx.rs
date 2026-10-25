@@ -21,6 +21,13 @@ use std::path::{Path, PathBuf};
 use mfsk_core::jtty::rx::{FrameDecode, Params, Receiver, Stream};
 use mfsk_core::jtty::source::{Atom, render_message};
 
+/// `Params` is `#[non_exhaustive]`, so a test cannot build one with `..base`;
+/// this is the same thing with the fields set in a closure.
+fn with(mut p: Params, set: impl FnOnce(&mut Params)) -> Params {
+    set(&mut p);
+    p
+}
+
 fn load(rel: &str) -> Option<Vec<i16>> {
     common::corpus::golden_path(rel).map(common::load_wav_i16)
 }
@@ -616,11 +623,10 @@ fn diag_messages() {
         let audio = common::load_wav_i16(&f);
         let done: Vec<String> = rx
             .scan_messages(&audio, &{
-                let p = Params {
-                    carry: std::env::var_os("JTTY_DIAG_CARRY").is_some(),
-                    sequential: std::env::var_os("JTTY_DIAG_SEQUENTIAL").is_some(),
-                    ..Params::default()
-                };
+                let p = with(Params::default(), |p| {
+                    p.carry = std::env::var_os("JTTY_DIAG_CARRY").is_some();
+                    p.sequential = std::env::var_os("JTTY_DIAG_SEQUENTIAL").is_some();
+                });
                 if std::env::var_os("JTTY_DIAG_EMBEDDED").is_some() {
                     embedded_from_env(p)
                 } else {
@@ -673,10 +679,7 @@ fn a_weak_station_under_a_strong_one_needs_the_subtraction() {
     }
     let rx = Receiver::new();
     let texts = |subtract: bool| -> Vec<String> {
-        let p = Params {
-            subtract,
-            ..Params::default()
-        };
+        let p = with(Params::default(), |p| p.subtract = subtract);
         let mut t: Vec<String> = rx
             .scan(&audio, &p)
             .iter()
@@ -717,10 +720,7 @@ fn streaming_is_scanning_whatever_the_chunk_size() {
         (
             "four_stations, embedded, +-300 Hz",
             &four,
-            Params {
-                ftol_hz: 300.0,
-                ..Params::default().embedded()
-            },
+            with(Params::default().embedded(), |p| p.ftol_hz = 300.0),
         ),
     ] {
         let want = rx.scan_messages(audio, &params);
@@ -910,14 +910,8 @@ fn carrying_decoded_frames_forward_finds_the_weak_station_and_loses_nothing() {
                 .collect()
         };
         let base = found(Params::default());
-        let carried = found(Params {
-            carry: true,
-            ..Params::default()
-        });
-        let seq = found(Params {
-            sequential: true,
-            ..Params::default()
-        });
+        let carried = found(with(Params::default(), |p| p.carry = true));
+        let seq = found(with(Params::default(), |p| p.sequential = true));
         assert!(
             base.is_subset(&carried),
             "scene {scene}: carry lost {:?}",
@@ -988,17 +982,11 @@ fn embedded_search_options_decide_like_the_full_surface_and_do_not_lose_the_weak
             v.dedup();
             v
         };
-        let plain = Params {
-            ch0_only: true,
-            ..Params::default()
-        };
+        let plain = with(Params::default(), |p| p.ch0_only = true);
         let (d, c, c_dec, e) = (
             found(Params::default()),
             found(plain),
-            found(Params {
-                decimate_sync: true,
-                ..plain
-            }),
+            found(with(plain, |p| p.decimate_sync = true)),
             found(Params::default().embedded()),
         );
         differing += usize::from(c != c_dec);
@@ -1074,11 +1062,10 @@ fn front_and_back_are_a_stream() {
         (
             "four_stations, +-300 Hz, budget 2",
             &four,
-            Params {
-                ftol_hz: 300.0,
-                ladder_budget: Some(2),
-                ..embedded
-            },
+            with(embedded, |p| {
+                p.ftol_hz = 300.0;
+                p.ladder_budget = Some(2);
+            }),
         ),
     ] {
         let mut want = Vec::new();
@@ -1117,11 +1104,10 @@ fn front_drops_windows_and_back_takes_the_gap() {
         return;
     };
     let rx = std::sync::Arc::new(Receiver::new().with_f32_metrics());
-    let params = Params {
-        ftol_hz: 300.0,
-        ladder_budget: Some(2),
-        ..Params::default().embedded()
-    };
+    let params = with(Params::default().embedded(), |p| {
+        p.ftol_hz = 300.0;
+        p.ladder_budget = Some(2);
+    });
     // every seventh window, from the fourth
     let drop = |k: usize| k % 7 == 3;
 

@@ -127,11 +127,10 @@ fn hint_bank(n: usize, with_golden: bool) -> HintBank {
         }
         i += 1;
     }
-    HintBank::new(&HintSpec {
-        mycall: "JA1ZZZ".into(),
-        calls,
-        ..Default::default()
-    })
+    let mut spec = HintSpec::default();
+    spec.mycall = "JA1ZZZ".into();
+    spec.calls = calls;
+    HintBank::new(&spec)
 }
 
 fn decode_wav_jt65_hint(audio: &[f32], bank: &HintBank) -> bool {

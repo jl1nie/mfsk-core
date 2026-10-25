@@ -2851,28 +2851,30 @@ unsafe fn read_jtty_params(src: *const MfskJttyParams) -> Result<MfskJttyParams,
 
 #[cfg(feature = "jtty")]
 fn jtty_core_params(p: &MfskJttyParams) -> mfsk_core::jtty::rx::Params {
-    mfsk_core::jtty::rx::Params {
-        f0_hz: p.f0_hz,
-        ftol_hz: p.ftol_hz,
-        smin_db: p.smin_db,
-        nfa_hz: p.nfa_hz,
-        nfb_hz: p.nfb_hz,
-        subtract: p.subtract != 0,
-        sequential: false,
-        carry: false,
-        ch0_only: false,
-        decimate_sync: false,
-        raw_first: false,
-        fir_analytic: false,
-        ladder_budget: None,
-        coarse_sync_grid: false,
-        ladder_rungs: mfsk_core::jtty::ladder::Rungs::ALL,
-        skip_decoded_hz: 0.0,
-        side_channels: mfsk_core::jtty::rx::SideChannels::Upstream,
-        retro_sweep: true,
-        subtract_side_channels: true,
-        side_ladder_budget: None,
-    }
+    // `Params` is `#[non_exhaustive]`: every field this ABI pins is assigned,
+    // and a field added later keeps its default.
+    let mut c = mfsk_core::jtty::rx::Params::default();
+    c.f0_hz = p.f0_hz;
+    c.ftol_hz = p.ftol_hz;
+    c.smin_db = p.smin_db;
+    c.nfa_hz = p.nfa_hz;
+    c.nfb_hz = p.nfb_hz;
+    c.subtract = p.subtract != 0;
+    c.sequential = false;
+    c.carry = false;
+    c.ch0_only = false;
+    c.decimate_sync = false;
+    c.raw_first = false;
+    c.fir_analytic = false;
+    c.ladder_budget = None;
+    c.coarse_sync_grid = false;
+    c.ladder_rungs = mfsk_core::jtty::ladder::Rungs::ALL;
+    c.skip_decoded_hz = 0.0;
+    c.side_channels = mfsk_core::jtty::rx::SideChannels::Upstream;
+    c.retro_sweep = true;
+    c.subtract_side_channels = true;
+    c.side_ladder_budget = None;
+    c
 }
 
 /// Open a JTTY receiver taking audio at `sample_rate` (any rate; anything but

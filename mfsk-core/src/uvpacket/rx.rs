@@ -85,6 +85,7 @@ const EQ_LS_DIAG_LOAD: f32 = 1e-2;
 
 /// Errors returned by the decode functions.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// Audio buffer ended before a full preamble + header block
     /// could fit at `sample_offset`.
@@ -131,6 +132,7 @@ impl core::error::Error for DecodeError {
 
 /// Result of a successful frame decode.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct DecodedFrame {
     pub app_type: u8,
     pub sequence: u8,
@@ -145,6 +147,7 @@ pub struct DecodedFrame {
 
 /// AFC configuration.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct AfcOpts {
     /// One-sided search range in Hz (total window = ±search_hz).
     pub search_hz: f32,
@@ -231,6 +234,7 @@ pub fn decode(audio: &[f32], audio_centre_hz: f32) -> Vec<DecodedFrame> {
 /// Configuration for the multi-channel RX primitive and the
 /// slot-occupancy survey helper.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct MultiChannelOpts {
     pub band_lo_hz: f32,
     pub band_hi_hz: f32,
@@ -251,6 +255,7 @@ impl Default for MultiChannelOpts {
 
 /// Per-slot received-signal-energy report.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct SlotEnergy {
     pub audio_centre_hz: f32,
     pub mean_mf_magnitude: f32,
@@ -307,6 +312,7 @@ pub fn measure_slot_energies(
 /// score distribution at a given audio centre, evaluated against
 /// every preamble variant and reported as `(mode, stats)`.
 #[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
 pub struct SyncStats {
     pub global_max: f32,
     pub median: f32,

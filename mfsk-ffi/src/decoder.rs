@@ -258,6 +258,9 @@ fn params_from_core(p: &DecodeParams) -> MfskParams {
             ApMode::Off => MFSK_AP_OFF,
             ApMode::CqOnly => MFSK_AP_CQ_ONLY,
             ApMode::Full => MFSK_AP_FULL,
+            // `ApMode` is `#[non_exhaustive]`; a mode this ABI does not know
+            // reads back as off rather than as one it might not honour.
+            _ => MFSK_AP_OFF,
         },
         contest: p.contest.ncontest(),
         qso_progress: p.qso.progress.n(),
@@ -703,9 +706,10 @@ fn apply_extras(
             )?;
             *x = Default::default();
             x.search = search_tuning(e);
-            x.chase = (e.chase_trials > 0).then(|| mfsk_core::jt65::ChaseParams {
-                max_trials: e.chase_trials as usize,
-                ..mfsk_core::jt65::ChaseParams::default()
+            x.chase = (e.chase_trials > 0).then(|| {
+                let mut chase = mfsk_core::jt65::ChaseParams::default();
+                chase.max_trials = e.chase_trials as usize;
+                chase
             });
         }
         #[cfg(feature = "legacy")]

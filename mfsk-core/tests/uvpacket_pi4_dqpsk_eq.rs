@@ -373,7 +373,11 @@ fn eq_pi4_dqpsk_recovers_on_ssb_true_harsh() {
         },
         seed: 0xBABE_F00D,
     };
-    let wide_afc = rx::AfcOpts { search_hz: 400.0 };
+    let wide_afc = {
+        let mut a = rx::AfcOpts::default();
+        a.search_hz = 400.0;
+        a
+    };
     let decoded = eq_per_ssb_with_afc(UvMode::Robust, payload_size, chan, n, wide_afc);
     eprintln!("Eq π/4-DQPSK SSB true-harsh (+10 dB, AFC ±400) decoded {decoded}/{n}");
     assert!(
@@ -419,7 +423,11 @@ fn eq_pi4_dqpsk_recovers_on_fm_true_harsh() {
         },
         seed: 0xDEAD_C0DE,
     };
-    let wide_afc = rx::AfcOpts { search_hz: 400.0 };
+    let wide_afc = {
+        let mut a = rx::AfcOpts::default();
+        a.search_hz = 400.0;
+        a
+    };
     let decoded = eq_per_fm_with_afc(UvMode::Robust, payload_size, chan, n, wide_afc);
     eprintln!("Eq π/4-DQPSK FM true-harsh (+15 dB, AFC ±400) decoded {decoded}/{n}");
     assert!(
@@ -448,7 +456,11 @@ fn eq_pi4_dqpsk_true_harsh_snr_sweep() {
         AUDIO_CENTRE_HZ,
     )
     .unwrap();
-    let wide_afc = rx::AfcOpts { search_hz: 400.0 };
+    let wide_afc = {
+        let mut a = rx::AfcOpts::default();
+        a.search_hz = 400.0;
+        a
+    };
 
     eprintln!("channel,eb_n0_db,decoded,total");
     for eb_n0 in [6.0_f32, 8.0, 10.0, 12.0, 15.0, 20.0] {

@@ -32,6 +32,7 @@ pub const HIST_FREQ_TOL_HZ: i32 = 10;
 
 /// What [`Q65History::lookup`] found: `q65_hist`'s `dxcall` and `dxgrid`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DxFromHistory {
     /// The message's second word (`msg(i1+1:i2-1)`), up to 12 characters.
     pub call: String,

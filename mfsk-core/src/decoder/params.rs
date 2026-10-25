@@ -15,6 +15,7 @@ use alloc::string::String;
 /// subtraction passes, OSD and BP effort, and whether AP runs, exactly as
 /// the mode's upstream decoder does for `ndepth` 1 / 2 / 3.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Depth {
     /// `ndepth = 1`.
     Fast,
@@ -87,6 +88,7 @@ impl Contest {
 /// boxes start unchecked (`mainwindow_settings.cpp:604-605`); the other
 /// modes have no box and run AP whenever the QSO context allows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ApMode {
     /// No AP (`lft8apon = .false.`).
     Off,
@@ -151,6 +153,7 @@ impl QsoContext {
 
 /// `nQSOProgress` (`MainWindow::QSOProgress`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum QsoProgress {
     #[default]
     Calling,

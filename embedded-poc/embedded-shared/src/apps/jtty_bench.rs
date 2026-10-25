@@ -37,6 +37,16 @@ const MALLOC_CAP_INTERNAL: u32 = esp_idf_svc::sys::MALLOC_CAP_INTERNAL;
 const MALLOC_CAP_SPIRAM: u32 = esp_idf_svc::sys::MALLOC_CAP_SPIRAM;
 const MALLOC_CAP_8BIT: u32 = esp_idf_svc::sys::MALLOC_CAP_8BIT;
 
+/// `jtty::rx::Params` is `#[non_exhaustive]`, so a bench cannot write `Params { .., ..base }`.
+#[allow(dead_code)]
+fn with_params(
+    mut p: mfsk_core::jtty::rx::Params,
+    set: impl FnOnce(&mut mfsk_core::jtty::rx::Params),
+) -> mfsk_core::jtty::rx::Params {
+    set(&mut p);
+    p
+}
+
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
@@ -609,7 +619,7 @@ fn bench_search() {
 
     let default = Params::default();
     let embedded = Params::default().embedded();
-    let embedded_nosub = Params { subtract: false, ..embedded };
+    let embedded_nosub = with_params(embedded, |p| p.subtract = false);
     let variants: [(&str, &Params); 3] = [
         ("default          ", &default),
         ("embedded         ", &embedded),
@@ -722,7 +732,7 @@ fn bench_stream() {
     for (name, params, audio) in [
         ("+-50 Hz, budget 1, recording", emb, &audio),
         ("+-50 Hz, budget 1, noise", emb, &noise),
-        ("+-150 Hz, budget 1, noise", Params { ftol_hz: 150.0, ..emb }, &noise),
+        ("+-150 Hz, budget 1, noise", with_params(emb, |p| p.ftol_hz = 150.0), &noise),
     ] {
         rx.reset_stats();
         log::info!("stream [{name}]: {} samples, {} per window step", audio.len(), STEP);
@@ -791,8 +801,8 @@ fn bench_pipeline() {
     for (name, params, audio) in [
         ("+-50 Hz, recording", emb, audio_rec.clone()),
         ("+-50 Hz, noise", emb, audio_noise.clone()),
-        ("+-150 Hz, noise", Params { ftol_hz: 150.0, ..emb }, audio_noise.clone()),
-        ("+-150 Hz, recording", Params { ftol_hz: 150.0, ..emb }, audio_rec.clone()),
+        ("+-150 Hz, noise", with_params(emb, |p| p.ftol_hz = 150.0), audio_noise.clone()),
+        ("+-150 Hz, recording", with_params(emb, |p| p.ftol_hz = 150.0), audio_rec.clone()),
     ] {
         rx.reset_stats();
         let (tx, rq) = sync_channel::<(Prepared, i64)>(3);
@@ -1469,15 +1479,14 @@ fn run_bench() {
         fill_noise(&mut c0, &mut rng);
         use mfsk_core::jtty::rx::SideChannels;
         for (lo, hi) in [(200.0f32, 2800.0f32), (500.0, 2500.0), (800.0, 2200.0)] {
-        let p = Params {
-            side_channels: SideChannels::Band {
+        let p = with_params(Params::default().embedded(), |p| {
+            p.side_channels = SideChannels::Band {
                 lo_hz: lo,
                 hi_hz: hi,
                 width_hz: 200.0,
                 picks: 2,
-            },
-            ..Params::default().embedded()
-        };
+            };
+        });
         log::info!("side band {lo}-{hi} Hz:");
         for _ in 0..1 {
             rx.reset_stats();
@@ -1495,7 +1504,7 @@ fn run_bench() {
                 );
             }
             let t = now_us();
-            let m = rx.bench_surface(&c0, &Params { ch0_only: true, ..p });
+            let m = rx.bench_surface(&c0, &with_params(p, |p| p.ch0_only = true));
             log::info!(
                 "surfaces alone: side (200-2800 Hz, 8 ms) {:.1} ms, channel 0 {:.1} ms [{}]",
                 side as f64 / 1000.0,

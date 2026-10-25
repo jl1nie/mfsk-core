@@ -90,6 +90,7 @@ use crate::engine::gray::gray;
 /// literal constants (see module doc) — this is a faithful port, not
 /// an approximation left to be tuned.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ChaseParams {
     /// Max randomized erasure-pattern trials to run if the fast
     /// zero-erasure path fails. Default `1000` matches WSJT-X's own

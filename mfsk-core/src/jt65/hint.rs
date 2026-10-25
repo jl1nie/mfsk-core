@@ -53,6 +53,7 @@ pub const MAX_CALLS: usize = 10_000;
 /// What the correlation search is told: the station, the DX station and the
 /// list of known calls (`CALL3.TXT` before beta1).
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct HintSpec {
     pub mycall: String,
     pub hiscall: String,

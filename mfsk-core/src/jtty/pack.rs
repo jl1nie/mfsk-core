@@ -59,6 +59,7 @@ use super::tx;
 /// The others are the same to the packer; they exist because a host tells the
 /// three apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExchangeProfile {
     /// No particular exchange (the default).
     #[default]
@@ -71,6 +72,7 @@ pub enum ExchangeProfile {
 
 /// Why a message could not be packed (upstream's `nframes = -1`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PackError {
     /// More than [`MAX_MESSAGE_CHARS`] characters as typed.
     TooLong,

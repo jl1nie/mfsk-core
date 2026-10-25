@@ -1191,6 +1191,7 @@ pub(crate) struct MaxDrift {
 /// explicitly commented "Use 'Deep' for manual Q65 decodes", i.e.
 /// never WSJT-X's own automatic per-slot default).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GridDepth {
     Fast,
     Normal,

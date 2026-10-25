@@ -82,6 +82,7 @@ pub struct FrameHeader {
 
 /// Errors returned by header packing.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum PackError {
     /// `block_count` was outside `1..=32`.
     InvalidBlockCount(u8),
@@ -95,6 +96,7 @@ pub enum PackError {
 
 /// Errors returned by header unpacking.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum UnpackError {
     /// Input was shorter than [`HEADER_BYTES`].
     Truncated,

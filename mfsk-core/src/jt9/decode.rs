@@ -37,6 +37,7 @@ const SYNC_GATE: f32 = 1.5;
 /// `jt9::tests::candidate_loop_stage_diag`), so raising depth mainly
 /// costs time on a busy/noisy band, not on a quiet one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Jt9Depth {
     /// `limit=5000` — WSJT-X's own automatic per-slot scan default
     /// (`jt9 -d1`, `jt9_decode.f90:84`). **The crate default** as of

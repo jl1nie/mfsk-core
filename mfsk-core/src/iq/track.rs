@@ -21,6 +21,7 @@ use num_traits::Float;
 
 /// How the tracker works. The defaults suit a server's readings once a second or so.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct RateTrackConfig {
     /// Readings older than this (s of stream time) are forgotten.
     pub window_s: f64,

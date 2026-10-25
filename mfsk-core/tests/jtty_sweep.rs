@@ -89,11 +89,9 @@ fn jtty_snr_sweep() {
         Receiver::new()
     };
     // `MFSK_JTTY_SWEEP_CARRY=1`, `MFSK_JTTY_SWEEP_SEQUENTIAL=1`: the schedule options (#499).
-    let params = Params {
-        carry: std::env::var_os("MFSK_JTTY_SWEEP_CARRY").is_some(),
-        sequential: std::env::var_os("MFSK_JTTY_SWEEP_SEQUENTIAL").is_some(),
-        ..Params::default()
-    };
+    let mut params = Params::default();
+    params.carry = std::env::var_os("MFSK_JTTY_SWEEP_CARRY").is_some();
+    params.sequential = std::env::var_os("MFSK_JTTY_SWEEP_SEQUENTIAL").is_some();
     // `MFSK_JTTY_SWEEP_EMBEDDED=1`: `Params::embedded()`, channel 0 only with the decimated
     // surface and raw-then-refined candidates (#499): 164 of 360 weak passes, the default 160.
     let params = if std::env::var_os("MFSK_JTTY_SWEEP_EMBEDDED").is_some() {
