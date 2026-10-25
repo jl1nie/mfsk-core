@@ -129,6 +129,8 @@ scripts/ci-wait.sh --need 'Kotlin|Swift'   # after a push: CI for HEAD, one last
   (sweeps, full test logs → `runner`), independent parallel work, or unanchored review. `reviewer` (Opus) only
   when the tests cannot judge the change: gate moved (floor, `max_extra`, fixture), divergence from WSJT-X, new
   strategy, fixed-point, structural `engine/**`, API. A line-for-line upstream port with tier A+B green needs none. To change model, use `/model`, never a `fork`.
+- **Declare the mode** (`Mode: port` / `design`) at the top of every plan, with that mode's evidence (`AGENT_WORKFLOW.md` §2a;
+  enforced by `.claude/hooks/plan-mode-guard.sh`). Log a finished task: `scripts/agent-log.sh` → `docs/notes/AGENT_LOG.md`.
 - After delegating to parallel agents: `git status`, grep for probe leftovers, commit by explicit path, spot-check claims.
 
 ## 6. Releases

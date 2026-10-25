@@ -106,6 +106,7 @@ if [ -n "$NEED" ]; then
 fi
 
 if [ "${#problems[@]}" -eq 0 ]; then
+  echo "record: scripts/agent-log.sh <task> <port|design> --base <rev before the task>"
   echo "CI PASS $short"
   exit 0
 fi

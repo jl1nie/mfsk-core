@@ -11,6 +11,16 @@
             "onFailure": "block"
           }
         ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/plan-mode-guard.sh",
+            "onFailure": "block"
+          }
+        ]
       }
     ]
   }

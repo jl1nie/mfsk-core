@@ -40,6 +40,24 @@ context, implements on Sonnet. No spec handoff, no re-reading.
 Switch inside a session with `/model` when the task changes kind; the context stays. Use a lower effort level
 for mechanical work.
 
+## 2a. Declare the mode
+
+Two kinds of work run in parallel here, and they need different things. A plan opens with one line, `Mode: port`,
+`Mode: design` or `Mode: port + design` (then split into separate commits), and carries that mode's evidence. No
+standing agent per mode: the loop that plans says which one it is in.
+
+| | port | design |
+|---|---|---|
+| oracle | upstream `file:line` at rc1 (or the results-changing part of v3.3), class A/B/C | the consumers named as acceptance: skimmer migration, `embedded-poc` build / flash, FFI / Kotlin / Swift |
+| the plan names | the tier A/B tests that judge it | per new public item: definition, who sets it, the test that **fails if** the definition is wrong (§8.4), and that it was seen to fail once |
+| survey | the main loop reads the Fortran diff and the Rust routine itself | a Sonnet / `Explore` sweep returns `file:line` pointers; the deciding loop reads the lines it decides on (§8.3) |
+| main loop | Sonnet (Opus plan only for `engine/**`) | Opus in plan mode, Sonnet implements |
+| reviewer | not required when tier A+B is green (§4) | required: spec + diff, not the author's conclusion |
+
+Broad surveys of this large tree go to Sonnet whatever the mode; the decision stays with the loop that reads the code it
+decides on. `.claude/hooks/plan-mode-guard.sh` refuses `ExitPlanMode` for a plan with no `Mode:` line, a port with no
+upstream pointer, or a design with no "fails if". The record of how tasks went is `docs/notes/AGENT_LOG.md` (§7).
+
 ## 3. When to spawn a subagent
 
 Spawn only when one of the article's three conditions holds. Each maps to a concrete case here:
@@ -110,6 +128,7 @@ rule that matters is moved to a layer the harness executes:
 | four minimal feature sets build under `-D warnings` when `mfsk-core/src` or its manifest is staged | `.githooks/pre-commit` (skip with `PRECOMMIT_MINCHECK=0`) | yes |
 | "is it green": one verdict line, honest exit status, a clean-checkout run of the gate | `scripts/verify.sh` | only when run: the author must read its last line (§8.1) |
 | "did CI pass", with the jobs that matter for the change named | `scripts/ci-wait.sh [sha] [--need REGEX]` | only when run (§8.1) |
+| plan declares `Mode:` and that mode's evidence | PreToolUse hook on `ExitPlanMode`: `.claude/hooks/plan-mode-guard.sh` (denies the call; reads `tool_input.plan`, else the newest `~/.claude/plans/*.md`) | yes |
 | when to spawn (§3), when to switch model (§2), review required (§4) | this note | advice — judgement calls a hook cannot make |
 
 Before adding a rule to `CLAUDE.md`, ask whether it is mechanical (a path, a flag, a tool argument). If it is,
@@ -121,6 +140,13 @@ Measure, as for code (`CLAUDE.md` §2.3): pick a handful of representative tasks
 upstream port, a decoder change with review), record `/cost` and the outcome (did the merge gate pass first time,
 did review find a real defect), change one thing, compare. Run a task more than once before concluding: the
 article's example regression showed up in one run of two.
+
+The record is `docs/notes/AGENT_LOG.md`: `scripts/agent-log.sh <task> <mode> --base <rev> ...` appends a row when a task is
+done (tokens per model are measured from the transcript and its subagents; gate-first-time, review result, fixes after
+push and user corrections are flags, `?` when not given). `scripts/release-status.sh` prints the summary since the
+last tag; at each release PR (every 2 weeks) propose **at most one** process change from it, then compare at the next.
+A session that did several tasks charges each row with the whole transcript: log one task per session, or read
+differences.
 
 ## 8. Verification discipline
 

@@ -322,3 +322,10 @@ dirty=$(git status --porcelain | wc -l)
 (( dirty == 0 )) && ok "clean" || warn "$dirty uncommitted paths"
 branch=$(git rev-parse --abbrev-ref HEAD)
 echo "  branch: $branch"
+
+# ── Agent log ────────────────────────────────────────────────────────
+# One process change per release at most (docs/notes/AGENT_WORKFLOW.md §7).
+if [[ -f docs/notes/AGENT_LOG.md && -x scripts/agent-log.sh ]]; then
+    bold "== agent log since ${last_tag:-the start} =="
+    sed 's/^/  /' < <(scripts/agent-log.sh --summary "${last_tag:-}")
+fi
