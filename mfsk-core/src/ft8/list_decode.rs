@@ -22,6 +22,13 @@
 //!   207-411 of a `/R` or `/P` DX call, which go through `pack77_message` (it packs the hash);
 //!   the Type 4 forms
 //!   (`<CALL> NONSTD`, with or without RRR / RR73 / 73) are generated.
+//! - A candidate 212-411 that does not pack (both calls carry a `/R` or `/P`: a hashed call
+//!   cannot sit next to a suffixed one in Type 1) is skipped. Upstream correlates the
+//!   waveform of the constant-tone (`itone = 0`) `*** bad message ***`; it cannot win, as a
+//!   real message fits a signal better than a constant tone does.
+//! - Upstream's `pack77_for_state` records the hashed calls while it builds the candidates, so
+//!   its a8 hit prints the full call (`JA1ABC K1ABC/R -10`). Here the hit is `JA1ABC <...> -10`
+//!   unless the application has learned the call.
 //! - a7's SNR is [`crate::ft8::llr::compute_snr_db`], this crate's FT8 SNR, not
 //!   `ft8_a7d`'s `pbest/xbase` form (the decode, and whether it is accepted, do not
 //!   depend on it).
@@ -45,8 +52,8 @@ use crate::fec::ldpc::{append_crc14, ldpc_encode};
 use crate::ft8::Ft8;
 use crate::ft8::decode_block::{SymMask, fill_symbol_spectra};
 use crate::msg::wsjt77::{
-    Pack77Options, has_rp_suffix, is_standard_callsign, is_standard_callsign_suffix, pack77,
-    pack77_message, pack77_type4, unpack77,
+    Pack77Options, has_rp_suffix, is_standard_callsign, pack77, pack77_message, pack77_type4,
+    unpack77,
 };
 
 /// Pass id of an a7 decode (`iaptype = 7` upstream). The ladder's ids run to 23
@@ -205,9 +212,9 @@ fn a7_message(i: usize, call_1: &str, call_2: &str, grid4: &str) -> Option<[u8; 
 /// standard (suffix allowed) as well.
 fn a8_run_count(mycall: &str, dxcall: &str) -> usize {
     let mut nrun = NMSGS;
-    if is_standard_callsign_suffix(dxcall) && has_rp_suffix(dxcall) {
+    if is_standard_callsign(dxcall) && has_rp_suffix(dxcall) {
         nrun = 207;
-        if is_standard_callsign_suffix(mycall) {
+        if is_standard_callsign(mycall) {
             nrun = NMSGS_SUFFIX;
         }
     }
@@ -218,9 +225,10 @@ fn a8_run_count(mycall: &str, dxcall: &str) -> usize {
 /// `None` for a report beyond +-30 dB (`getmsg` returns an empty message there), and for the
 /// candidates 207-411 that `getmsg` leaves blank.
 fn a8_message(i: usize, mycall: &str, hiscall: &str, hisgrid: &str) -> Option<[u8; 77]> {
-    // `stdcall_suffix`: a trailing `/R` or `/P` does not make a call non-standard.
-    let my_std = is_standard_callsign_suffix(mycall);
-    let his_std = is_standard_callsign_suffix(hiscall);
+    // `stdcall_suffix`: a trailing `/R` or `/P` does not make a call non-standard;
+    // `is_standard_callsign` already strips one.
+    let my_std = is_standard_callsign(mycall);
+    let his_std = is_standard_callsign(hiscall);
     // Candidates 207-411 keep what the former nonstandard-call path produced for a /R or /P
     // station: a CQ without a grid (207); when MyCall is standard, <MyCall> HisCall with
     // nothing, RRR, RR73 or 73 (208-211) and MyCall <HisCall> with a report or R-report

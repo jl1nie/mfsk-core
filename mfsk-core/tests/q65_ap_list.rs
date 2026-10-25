@@ -119,6 +119,62 @@ fn ap_list_returns_none_when_message_not_in_list() {
 }
 
 #[test]
+fn ap_list_with_suffix_dx_call_returns_none_when_message_not_in_list() {
+    // The 411-entry list of a /R DX call: a message outside it is still rejected.
+    let freq = 1500.0;
+    let audio = synthesize_standard("JA1ABC", "K9XYZ/R", "RR73", FS_U, freq, 0.3).expect("synth");
+    let candidates = standard_qso_codewords("JA1ABC", "K1ABC/R", "FN42");
+    assert_eq!(candidates.len(), 411);
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .ap_list(&candidates)
+        .decode();
+    assert!(
+        result.is_none(),
+        "list decoder must reject messages outside its candidate set, got {:?}",
+        result.map(|d| d.message)
+    );
+}
+
+#[test]
+fn ap_list_with_suffix_dx_call_finds_its_message() {
+    let freq = 1500.0;
+    let audio = synthesize_standard("JA1ABC", "K1ABC/R", "-10", FS_U, freq, 0.3).expect("synth");
+    let candidates = standard_qso_codewords("JA1ABC", "K1ABC/R", "FN42");
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .ap_list(&candidates)
+        .decode()
+        .expect("decode");
+    assert_eq!(result.message, "JA1ABC K1ABC/R -10");
+}
+
+#[test]
+fn ap_list_with_suffix_dx_call_returns_none_on_silence() {
+    let mut audio = vec![0.0_f32; SLOT_SAMPLES];
+    let mut total = 0;
+    for seed in [123u64, 124, 125] {
+        let mut rng = Lcg::new(seed);
+        for s in audio.iter_mut() {
+            *s = 0.001 * rng.gauss();
+        }
+        for list in [
+            standard_qso_codewords("K1ABC", "JA1ABC", "PM95"),
+            standard_qso_codewords("JA1ABC", "K1ABC/R", "FN42"),
+        ] {
+            let r = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, 1500.0)
+                .ap_list(&list)
+                .decode();
+            assert!(
+                r.is_none(),
+                "seed {seed}: false decode from noise, list {}",
+                list.len()
+            );
+            total += r.is_some() as usize;
+        }
+    }
+    println!("noise, 206 and 411 lists: {total} decodes in 3 slots each");
+}
+
+#[test]
 fn ap_list_returns_none_on_silence() {
     // Sanity guard: no false positives on noise.
     let mut audio = vec![0.0_f32; SLOT_SAMPLES];

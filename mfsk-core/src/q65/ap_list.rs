@@ -39,9 +39,7 @@ use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::q65::pack77_q65;
 use crate::msg::q65::pack77_to_symbols;
 use crate::msg::q65::q65_rr73_fixup;
-use crate::msg::wsjt77::{
-    Pack77Options, has_rp_suffix, is_standard_callsign_suffix, pack77_message,
-};
+use crate::msg::wsjt77::{Pack77Options, has_rp_suffix, is_standard_callsign, pack77_message};
 
 /// Hard cap matching `MAX_NCW` in the Fortran reference (206 up to v3.3.0-beta3, 411 since
 /// beta4). Used both to size the returned `Vec` and to bound the generated list when
@@ -104,11 +102,13 @@ pub fn standard_qso_codewords(my_call: &str, his_call: &str, his_grid: &str) -> 
     // the former nonstandard-call path produced: a CQ without a grid (207) and, when MyCall is
     // standard, <MyCall> HisCall with nothing, RRR, RR73 or 73 (208-211) and
     // MyCall <HisCall> with a report or R-report (212-411, as 7-206).
-    if is_standard_callsign_suffix(his_call) && has_rp_suffix(his_call) {
+    if is_standard_callsign(his_call) && has_rp_suffix(his_call) {
         let (my, his) = (my_call.trim(), his_call.trim());
         let mut push_text = |codec: &mut Q65Codec, text: &str| {
             // `genq65`: pack the text, rewrite a grid-square RR73 (a hashed call is packed as
             // by `pack77`; nothing is committed to a hash table here).
+            // A message that does not pack is `genq65`'s `*** bad message ***`; `q65_set_list`
+            // still stores the slot, as codewords of -1 (as `contest_codewords` does).
             if let Ok(p) = pack77_message(text.trim_end(), &Pack77Options::new()) {
                 let mut bits = p.bits;
                 q65_rr73_fixup(&mut bits);
@@ -116,10 +116,12 @@ pub fn standard_qso_codewords(my_call: &str, his_call: &str, his_grid: &str) -> 
                 let mut cw = [0_i32; 63];
                 codec.encode(&info, &mut cw);
                 out.push(cw);
+            } else {
+                out.push([-1_i32; 63]);
             }
         };
         push_text(&mut codec, &format!("CQ {his}"));
-        if is_standard_callsign_suffix(my) {
+        if is_standard_callsign(my) {
             for tail in ["", "RRR", "RR73", "73"] {
                 push_text(&mut codec, &format!("<{my}> {his} {tail}"));
             }
@@ -221,10 +223,11 @@ mod tests {
 
         // MyCall with a suffix too: `JA1ABC/P <K1ABC/P> -10` is no Type 1 message (a hashed
         // call cannot sit next to a suffixed one) and not free text either, so `genq65` has no
-        // codeword for the 200 ladder entries 212-411 and they are skipped: 4 + 200 (no grid)
-        // + CQ + 4 acknowledgements.
+        // codeword for the 200 ladder entries 212-411: they keep their slots as -1, and ncw
+        // stays 411 as upstream (4 + 200 without a grid, then the 207-411 block).
         let p = standard_qso_codewords("JA1ABC/P", "K1ABC/P", "");
-        assert_eq!(p.len(), 4 + 200 + 1 + 4);
+        assert_eq!(p.len(), 4 + 200 + 205);
+        assert!(p[204 + 5..].iter().all(|cw| cw == &[-1_i32; 63]));
         // MyCall not standard: only the CQ is added (the entries 1-206 that need a hashed
         // MyCall are out of scope here).
         let q = standard_qso_codewords("PJ4/K1ABC", "K1ABC/P", "FN42");

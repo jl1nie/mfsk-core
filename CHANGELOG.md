@@ -13,7 +13,7 @@
   `015b48945`, `6b6124f9d`, `b2204822b`): `stdcall_suffix` keeps such a call standard, and 207 `CQ call`, 208-211 `<MyCall> call` +
   nothing/RRR/RR73/73 and 212-411 `MyCall <call>` + the report ladder (FT8 cuts it at +-30 dB, Q65 does not) are added, 411 in all
   with a standard MyCall. a7 is unchanged, as upstream. Other calls still get 206. **`q65::MAX_AP_CODEWORDS` 206 -> 411**; the list
-  grows only for such DX calls. New `msg::wsjt77::{is_standard_callsign_suffix, has_rp_suffix}`.
+  grows only for such DX calls.
 
 ### Skimmer
 

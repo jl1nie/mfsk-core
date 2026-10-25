@@ -157,13 +157,35 @@ fn a8_finds_the_qso_message_at_the_qso_frequency() {
     );
 }
 
-/// Noise alone, with a previous cycle and a full a8 hint: nothing comes back.
+/// Noise alone, with a previous cycle and a full a8 hint: nothing comes back. Run for a plain
+/// DX call (the 206-candidate list) and for a `/R` one (411 candidates, v3.3.0-beta4): the
+/// larger list must not produce phantom decodes.
 #[test]
 fn list_decoders_find_nothing_in_noise() {
     let prev_audio = slot(Some("K1ABC W9XYZ -10"), -10.0, 1);
     let prev = DecodeRequest::<Ft8>::new(&prev_audio, 100.0, 3000.0, 1.3, 50)
         .decode()
         .results;
+    for (dx, grid) in [("W9XYZ", "EN37"), ("K1ABC/R", "FN42")] {
+        let hint = ApHint::new()
+            .with_call1("JA1ABC")
+            .with_call2(dx)
+            .with_grid(grid);
+        let mut total = 0;
+        for seed in 10..14 {
+            let noise = slot(None, 0.0, seed);
+            let r = DecodeRequest::<Ft8>::new(&noise, 100.0, 3000.0, 1.3, 50)
+                .previous_cycle(&prev)
+                .ap_hint(&hint)
+                .freq_hint(1500.0)
+                .decode()
+                .results;
+            assert!(r.is_empty(), "{dx} seed {seed}: {:?}", texts(&r));
+            total += r.len();
+        }
+        println!("noise, JA1ABC {dx}: {total} decodes in 4 slots");
+    }
+    // The original pair, as before.
     let hint = ApHint::new()
         .with_call1("K1ABC")
         .with_call2("W9XYZ")
@@ -178,6 +200,29 @@ fn list_decoders_find_nothing_in_noise() {
             .results;
         assert!(r.is_empty(), "seed {seed}: {:?}", texts(&r));
     }
+}
+
+/// a8 with a `/R` DX call (the 411-candidate run): `JA1ABC K1ABC/R -10` (candidate 87 of the run, found by the
+/// correlation among all 411) is found at -22 dB, as the
+/// message itself, at the QSO frequency in seeded noise.
+#[test]
+fn a8_finds_a_suffix_dx_call_message() {
+    let hint = ApHint::new()
+        .with_call1("JA1ABC")
+        .with_call2("K1ABC/R")
+        .with_grid("FN42");
+    let cur = slot(Some("JA1ABC K1ABC/R -10"), -22.0, 5);
+    let with = DecodeRequest::<Ft8>::new(&cur, 100.0, 3000.0, 1.3, 50)
+        .ap_hint(&hint)
+        .freq_hint(1500.0)
+        .decode()
+        .results;
+    println!("a8 /R: {:?}", texts(&with));
+    assert!(
+        texts(&with).contains(&(PASS_ID_A8, "JA1ABC K1ABC/R -10".into())),
+        "a8 did not find it: {:?}",
+        texts(&with)
+    );
 }
 
 /// a7 on a corpus laid out as `<dir>/prev.wav` (`K1ABC W9XYZ -10`, strong) and

@@ -1357,30 +1357,19 @@ pub fn is_standard_callsign(call: &str) -> bool {
 
 /// `call` (after trimming) is longer than 3 characters and ends in `/R` or `/P`: the test
 /// `stdcall_suffix`, `ft8_a8d`, `getmsg` and `q65_set_list` all make before they look at a
-/// suffix (`n.gt.3`, `c12(n-1:n).eq.'/R' .or. ...'/P'`).
-pub fn has_rp_suffix(call: &str) -> bool {
+/// suffix (`n.gt.3`, `c12(n-1:n).eq.'/R' .or. ...'/P'`). [`is_standard_callsign`] already
+/// behaves as `stdcall_suffix` (v3.3.0-beta4) for real calls: it strips one suffix, and
+/// `K1ABC/R/P` is refused.
+#[cfg_attr(
+    not(any(
+        feature = "q65",
+        all(feature = "ft8", any(feature = "fft-rustfft", feature = "fft-extern"))
+    )),
+    allow(dead_code)
+)]
+pub(crate) fn has_rp_suffix(call: &str) -> bool {
     let c = call.trim();
     c.len() > 3 && (c.ends_with("/R") || c.ends_with("/P"))
-}
-
-/// `stdcall_suffix` (`lib/stdcall_suffix.f90`, WSJT-X v3.3.0-beta4; `q65_stdcall` in
-/// `q65_set_list.f90` is the same): [`is_standard_callsign`] after a trailing `/R` or `/P`
-/// (when the call is longer than 3 characters) has been removed, so such a call is still
-/// standard: it is sent as a Type 1 message with the `ipa`/`ipb` flag set.
-///
-/// Unlike [`is_standard_callsign`], which drops a suffix itself, this removes at most one:
-/// `K1ABC/R/P` is not standard (`stdcall("K1ABC/R")` is false upstream).
-pub fn is_standard_callsign_suffix(call: &str) -> bool {
-    let c = call.trim();
-    if has_rp_suffix(c) {
-        let base = &c[..c.len() - 2];
-        // `is_standard_callsign` would strip a second suffix; upstream's `stdcall` does not.
-        if base.ends_with("/R") || base.ends_with("/P") {
-            return false;
-        }
-        return is_standard_callsign(base);
-    }
-    is_standard_callsign(c)
 }
 
 /// Check if a string has the structure of an amateur radio callsign base
