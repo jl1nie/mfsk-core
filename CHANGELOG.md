@@ -13,7 +13,7 @@
   `Ft4CoarsePhasors::buffer_addrs()` is `__internal::sync2d::buffer_addrs(&phasors)`. `mfsk-ffi` no longer enables the feature.
 - **`#[non_exhaustive]`** on the option, result and error types that will grow: `jtty::rx::Params`, `jt65::{ChaseParams, HintSpec}`,
   `uvpacket` `AfcOpts` / `MultiChannelOpts` / `DecodedFrame` / `SlotEnergy` / `SyncStats` and its three error enums, `decoder::{Depth, ApMode,
-  QsoProgress}`, `Jt9Depth`, `GridDepth`, the msk144 and jtty result structs, `iq::RateTrackConfig`, `q65::{Caller, DxFromHistory}`. Build an
+  QsoProgress}`, `Jt9Depth`, `GridDepth`, `jtty::rx::{SideChannels, Subtracted}`, `jtty::pack::{ExchangeProfile, PackError}`, the msk144 and jtty result structs, `iq::RateTrackConfig`, `q65::{Caller, DxFromHistory}`. Build an
   option from `Default` and assign; add a wildcard arm to a `match`. `WsprMessage` and `Jt72Message` stay exhaustive (the variants are
   the message formats). Tier A+B unchanged.
 

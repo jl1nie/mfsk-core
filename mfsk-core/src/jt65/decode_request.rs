@@ -33,6 +33,7 @@ use super::search::{SearchParams, default_search_params};
 /// (−23.5 against −22.5 dB, `docs/notes/sweep-baseline.json`).
 ///
 /// ```no_run
+/// # #[cfg(feature = "internal-testing")] {
 /// use mfsk_core::__internal::jt65::DecodeRequest;
 /// use mfsk_core::jt65::ChaseParams;
 ///
@@ -44,6 +45,7 @@ use super::search::{SearchParams, default_search_params};
 /// {
 ///     println!("{:+7.1} Hz  dt={:+.1}  {}", r.freq_hz, r.dt_sec, r.message);
 /// }
+/// # }
 /// ```
 pub struct DecodeRequest<'a> {
     audio: &'a [f32],

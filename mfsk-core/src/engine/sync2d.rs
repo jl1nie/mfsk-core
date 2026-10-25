@@ -1778,7 +1778,6 @@ mod fst4_last_start_tests {
 }
 
 #[cfg(feature = "internal-testing")]
-#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
 pub(crate) mod testing {
     use super::*;
 

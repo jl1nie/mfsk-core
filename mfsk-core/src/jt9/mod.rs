@@ -21,13 +21,15 @@
 //! ## Quick example
 //!
 //! ```no_run
-//! use mfsk_core::__internal::jt9::DecodeRequest;
+//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
+//! use mfsk_core::jt9::Jt9;
 //!
 //! # let audio: Vec<f32> = vec![];
 //! // `audio` is 720_000 f32 samples at 12 kHz (60 s slot).
-//! for r in DecodeRequest::new(&audio, 12_000).decode() {
-//!     println!("{:+7.1} Hz  start={:>8} sample  {}",
-//!              r.freq_hz, r.start_sample, r.message);
+//! let mut decoder = Decoder::<Jt9>::new(DecodeParams::for_band((200.0, 4_000.0)));
+//! for row in decoder.decode(&SlotInput::f32(&audio)).rows {
+//!     let d = &row.decoded;
+//!     println!("{:+7.1} Hz  dt={:+.2} s  {}", d.freq_hz, d.dt_sec, d.text);
 //! }
 //! ```
 

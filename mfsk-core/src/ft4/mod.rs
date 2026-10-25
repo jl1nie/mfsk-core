@@ -13,10 +13,10 @@
 //!
 //! ```
 //! # #[cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))] {
+//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
 //! use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 //! use mfsk_core::ft4::Ft4;
-//! use mfsk_core::__internal::msg::decode_request::DecodeRequest;
-//! use mfsk_core::msg::wsjt77::{pack77, unpack77};
+//! use mfsk_core::msg::wsjt77::pack77;
 //!
 //! // 1. Pack a standard message and synthesise 12 kHz i16 PCM.
 //! //    The synth produces just the transmitted frame; pad to the full
@@ -32,13 +32,10 @@
 //! }
 //!
 //! // 2. Decode it back across the full FT4 band.
-//! let results = DecodeRequest::<Ft4>::new(&audio, 100.0, 3_000.0, 1.0, /* max_cand */ 100)
-//!     .decode()
-//!     .results;
-//! assert!(!results.is_empty(), "roundtrip must decode");
-//! let msg77 = results[0].message77();
-//! let text = unpack77(msg77).expect("unpack");
-//! assert_eq!(text, "CQ JA1ABC PM95");
+//! let mut decoder = Decoder::<Ft4>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! let result = decoder.decode(&SlotInput::i16(&audio));
+//! assert!(!result.rows.is_empty(), "roundtrip must decode");
+//! assert_eq!(result.rows[0].decoded.text, "CQ JA1ABC PM95");
 //! # }
 //! ```
 

@@ -27,13 +27,15 @@
 //! ## Quick example
 //!
 //! ```no_run
-//! use mfsk_core::__internal::jt65::DecodeRequest;
+//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
+//! use mfsk_core::jt65::Jt65;
 //!
 //! # let audio: Vec<f32> = vec![];
 //! // `audio` is 720_000 f32 samples at 12 kHz (60 s slot).
-//! for r in DecodeRequest::new(&audio, 12_000).decode() {
-//!     println!("{:+7.1} Hz  start={:>8} sample  {}",
-//!              r.freq_hz, r.start_sample, r.message);
+//! let mut decoder = Decoder::<Jt65>::new(DecodeParams::for_band((200.0, 4_000.0)));
+//! for row in decoder.decode(&SlotInput::f32(&audio)).rows {
+//!     let d = &row.decoded;
+//!     println!("{:+7.1} Hz  dt={:+.2} s  {}", d.freq_hz, d.dt_sec, d.text);
 //! }
 //! ```
 //!
@@ -45,13 +47,13 @@
 //! (`2·errors + erasures ≤ 51`). Use [`SniperRequest::erasures`]:
 //!
 //! ```no_run
-//! use mfsk_core::__internal::jt65::DecodeRequest;
+//! use mfsk_core::jt65::SniperRequest;
 //!
 //! # let audio: Vec<f32> = vec![];
 //! # let (start_sample, freq_hz) = (0, 1270.0);
 //! // Try 0 → 8 → 16 → 24 → 32 erasures in order; return the first
 //! // budget that unpacks into a valid message.
-//! let msg = DecodeRequest::sniper(&audio, 12_000, start_sample, freq_hz)
+//! let msg = SniperRequest::new(&audio, 12_000, start_sample, freq_hz)
 //!     .erasures(&[0, 8, 16, 24, 32])
 //!     .decode();
 //! ```
@@ -79,13 +81,15 @@
 //! WSJT-X comparison.
 //!
 //! ```no_run
-//! use mfsk_core::__internal::jt65::DecodeRequest;
-//! use mfsk_core::jt65::ChaseParams;
+//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
+//! use mfsk_core::jt65::{ChaseParams, Jt65};
 //!
 //! # let audio: Vec<f32> = vec![];
-//! for r in DecodeRequest::new(&audio, 12_000).chase(ChaseParams::default()).decode() {
-//!     println!("{:+7.1} Hz  start={:>8} sample  {}",
-//!              r.freq_hz, r.start_sample, r.message);
+//! let mut decoder = Decoder::<Jt65>::new(DecodeParams::for_band((200.0, 4_000.0)));
+//! decoder.extras_mut().chase = Some(ChaseParams::default());
+//! for row in decoder.decode(&SlotInput::f32(&audio)).rows {
+//!     let d = &row.decoded;
+//!     println!("{:+7.1} Hz  dt={:+.2} s  {}", d.freq_hz, d.dt_sec, d.text);
 //! }
 //! ```
 

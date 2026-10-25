@@ -317,19 +317,16 @@ q65          = []
 uvpacket     = ["fst4", "std"]
 parallel     = ["std", "dep:rayon"]
 
-# Test-only visibility escape hatch (issue #203). `engine::pipeline`'s
-# pre-#191 raw engine functions (`decode_frame`, `process_candidate_basic`,
-# `osd_escalation_gates`, the `GenericPipelineProtocol` trait) are
-# `pub(crate)` by default so downstream consumers can't bypass
-# `DecodeRequest`/`SniperRequest` (#191) — but `mfsk-core/tests/*.rs`
-# integration tests (`fst4_sweep.rs`, `ft4_sweep.rs`,
-# `fst4_wsjtx_samples.rs`) are compiled as separate crates and need real
-# `pub` visibility to call these diagnostics directly. Deliberately NOT
-# part of `full` — enabling `full` is a normal downstream choice and must
-# not silently reopen this surface. CI passes this alongside `full` only
-# for `cargo test`/`cargo clippy --all-targets`; the `cargo doc`/
-# `cargo publish` steps omit it so the public docs and crates.io tarball
-# stay on the `pub(crate)` shape.
+# Adds `mfsk_core::__internal` (#203, #693): re-exports of crate-private
+# engine internals (`engine::pipeline`'s `decode_frame`,
+# `process_candidate_basic`, `GenericPipelineProtocol`, the per-family
+# `DecodeRequest` types, diagnostics) for `mfsk-core/tests/*.rs`, which are
+# compiled as separate crates, and for the embedded builds. It changes
+# nothing else: every other path is the same with or without it, and
+# `__internal` is hidden from the docs and carries no semver promise.
+# Deliberately NOT part of `full` — enabling `full` is a normal downstream
+# choice. CI passes this alongside `full` for `cargo test`/`cargo clippy
+# --all-targets` and builds the docs both ways.
 internal-testing = []
 
 # Process-global counters and stage timers in `wspr::instrument` and

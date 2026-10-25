@@ -2650,8 +2650,10 @@ engine functions. They are **`pub(crate)`**; `internal-testing` re-exports
 them from `mfsk_core::__internal::pipeline`. Use `Decoder<P>`. The types they
 return and take (`DecodeResult`, `DecodeStrictness`, `DecodeDepth`,
 `LlrEffort`, `FftCache`, `BudgetCheck`, `BudgetReport`) are public in
-`mfsk_core::engine::frame`, and re-exported by `ft8::decode`, `ft4::decode`,
-`fst4::decode` and `decoder`.
+`mfsk_core::engine::frame`. `ft8::decode`, `ft4::decode` and `fst4::decode`
+re-export `DecodeDepth`, `DecodeStrictness`, `DecodeResult` and `FftCache`
+(and `ft8::decode` also `LlrEffort`); `decoder` re-exports `BudgetCheck` and
+`BudgetReport`.
 
 **`DecodeStrictness` (`Strict`/`Normal`/`Deep`) does not reach every
 protocol equally** — check which knob applies before assuming

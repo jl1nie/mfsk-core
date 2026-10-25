@@ -2497,8 +2497,9 @@ dedupe)、`decode_frame_subtract::<P>` (SIC ドライバ)、
 `mfsk_core::__internal::pipeline` から再エクスポートされる。`Decoder<P>` を使うこと。
 それらが返す・受け取る型（`DecodeResult`、`DecodeStrictness`、`DecodeDepth`、
 `LlrEffort`、`FftCache`、`BudgetCheck`、`BudgetReport`）は
-`mfsk_core::engine::frame` で公開され、`ft8::decode`、`ft4::decode`、`fst4::decode`、
-`decoder` からも再エクスポートされる。
+`mfsk_core::engine::frame` で公開される。`ft8::decode`、`ft4::decode`、`fst4::decode` は
+`DecodeDepth`、`DecodeStrictness`、`DecodeResult`、`FftCache` を再エクスポートし
+（`LlrEffort` は `ft8::decode` のみ）、`decoder` は `BudgetCheck` と `BudgetReport` を再エクスポートする。
 
 **`DecodeStrictness` (`Strict`/`Normal`/`Deep`) は全プロトコルに等しく
 届くわけではない** — `.strictness(...)` が呼び出しに何かをするかどうかを

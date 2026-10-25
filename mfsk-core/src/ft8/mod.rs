@@ -26,26 +26,16 @@
 //! Decode the top-scoring message in a 15-second slot:
 //!
 //! ```no_run
+//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
 //! use mfsk_core::ft8::Ft8;
-//! use mfsk_core::__internal::msg::decode_request::DecodeRequest;
-//! use mfsk_core::msg::wsjt77::unpack77;
 //!
 //! # let audio: Vec<i16> = vec![];
 //! // `audio` is 180_000 i16 samples at 12 kHz (15 s, slot-aligned).
-//! let results = DecodeRequest::<Ft8>::new(
-//!     &audio,
-//!     /* freq_min */ 100.0,
-//!     /* freq_max */ 3_000.0,
-//!     /* sync_min */ 1.0,
-//!     /* max_cand */ 200,
-//! )
-//! .decode()
-//! .results;
-//! for r in &results {
-//!     if let Some(text) = unpack77(r.message77()) {
-//!         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
-//!                  r.freq_hz, r.dt_sec, r.snr_db, text);
-//!     }
+//! let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! let result = decoder.decode(&SlotInput::i16(&audio));
+//! for row in &result.rows {
+//!     let d = &row.decoded;
+//!     println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}", d.freq_hz, d.dt_sec, d.snr_db, d.text);
 //! }
 //! ```
 

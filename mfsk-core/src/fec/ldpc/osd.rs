@@ -1488,8 +1488,11 @@ mod packed_setup_timing {
     }
 }
 
-#[cfg(feature = "internal-testing")]
-#[cfg_attr(not(feature = "internal-testing"), allow(dead_code))]
+// Reached only through `__internal::fec::ldpc`, which needs an FFT backend.
+#[cfg(all(
+    feature = "internal-testing",
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
 pub(crate) mod testing {
     use super::*;
 

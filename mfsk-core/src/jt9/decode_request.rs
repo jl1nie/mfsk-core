@@ -30,6 +30,7 @@ use super::search::{SearchParams, default_search_params};
 /// ±1 symbol.
 ///
 /// ```no_run
+/// # #[cfg(feature = "internal-testing")] {
 /// use mfsk_core::__internal::jt9::DecodeRequest;
 ///
 /// # let audio: Vec<f32> = vec![];
@@ -37,6 +38,7 @@ use super::search::{SearchParams, default_search_params};
 /// for r in DecodeRequest::new(&audio, 12_000).decode() {
 ///     println!("{:+7.1} Hz  dt={:+.1}  {}", r.freq_hz, r.dt_sec, r.message);
 /// }
+/// # }
 /// ```
 pub struct DecodeRequest<'a> {
     audio: &'a [f32],

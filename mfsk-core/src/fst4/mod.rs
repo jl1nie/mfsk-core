@@ -31,21 +31,16 @@
 //! ## Quick example
 //!
 //! ```no_run
+//! use mfsk_core::decoder::{DecodeParams, Decoder, SlotInput};
 //! use mfsk_core::fst4::Fst4s60;
-//! use mfsk_core::__internal::msg::decode_request::DecodeRequest;
-//! use mfsk_core::msg::wsjt77::unpack77;
 //!
 //! # let audio: Vec<i16> = vec![];
 //! // `audio` is 720_000 i16 samples at 12 kHz (60 s FST4-60A slot).
-//! // sync_min is `get_candidates_fst4`'s minsync: 1.2 (1.15 for FST4-15).
-//! let results = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3_000.0, 1.2, /* max_cand */ 200)
-//!     .decode()
-//!     .results;
-//! for r in &results {
-//!     let msg77 = r.message77();
-//!     if let Some(text) = unpack77(msg77) {
-//!         println!("{:7.1} Hz  dt={:+.2} s  {}", r.freq_hz, r.dt_sec, text);
-//!     }
+//! let mut decoder = Decoder::<Fst4s60>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! let result = decoder.decode(&SlotInput::i16(&audio));
+//! for row in &result.rows {
+//!     let d = &row.decoded;
+//!     println!("{:7.1} Hz  dt={:+.2} s  {}", d.freq_hz, d.dt_sec, d.text);
 //! }
 //! ```
 
