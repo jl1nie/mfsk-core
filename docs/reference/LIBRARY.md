@@ -31,6 +31,7 @@ This document is the Rust host API. Other audiences:
   - [1.1 Use cases: a decoder is something you keep](#11-use-cases-a-decoder-is-something-you-keep)
   - [1.2 Coming from 0.12](#12-coming-from-012)
   - [1.3 Coming from 0.13](#13-coming-from-013)
+  - [1.4 Coming from 0.14](#14-coming-from-014)
 - [2. The decode API](#2-the-decode-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` and `Depth`](#22-decodeparams-and-depth)
@@ -526,6 +527,46 @@ which is a compile-time guarantee that every variant has a C value —
 worth more than the freedom to add one. The `engine` and `fec`
 primitives (`SubtractCfg`, `GfskParams`, …) are building blocks that
 callers are meant to build by literal, not part of the decode API.
+
+### 1.4 Coming from 0.14
+
+0.15 changes what a caller can name, not what the decoder does. `Decoder<P>`, `DecodeParams`, the `Extras`, `SlotInput`, `Row` and `SlotResult` are
+where they were, and **no result changes** (tier A+B, same goldens). Most applications recompile unchanged. You are affected if your code
+(1) names `engine::pipeline` by path, (2) enables `internal-testing`, (3) builds one of the option structs below by literal, or (4) matches
+one of the enums below without a wildcard arm. The break is in `CHANGELOG.md`, `## Unreleased` (#693).
+
+**Where each thing went.**
+
+| 0.14 | 0.15 |
+|---|---|
+| `engine::pipeline::{DecodeResult, DecodeStrictness, DecodeDepth, LlrEffort, FftCache, BudgetCheck, BudgetReport}` | `engine::frame::X`: only the module name changes. The re-exports are as before: `ft8::decode`, `ft4::decode`, `fst4::decode` (`DecodeDepth`, `DecodeStrictness`, `DecodeResult`, `FftCache`; `LlrEffort` from `ft8::decode`) and `decoder` (`BudgetCheck`, `BudgetReport`) |
+| `engine::pipeline::{decode_frame, process_candidate_basic, process_candidate_precomputed, refine_candidate_position, osd_escalation_gates, GenericPipelineProtocol, SnrCtx}` (public only with `internal-testing`) | `Decoder<P>` for a decode. A test or bench that needs the function itself: `mfsk_core::__internal::pipeline::X` (`internal-testing`; hidden, no semver promise) |
+| `msg::decode_request`, `{wspr, jt9, jt65, q65}::DecodeRequest`, `q65::MultiPeriodRequest`, `q65::decode_request`, `fst4::rung_major`, `wspr::osd::capture` (public only with `internal-testing`) | `mfsk_core::__internal::` followed by the same path, with `msg::decode_request` as `__internal::msg::decode_request` and `DecodeRequest` also at `__internal::{wspr, jt9, jt65, q65}::DecodeRequest` |
+| `wspr::decode::{debug_refined_sync, decode_scan_subtract}`, `fec::ldpc240_101::fst4_osd_diag_force_old`, `fec::ldpc::osd::npre1_pattern_counts`, `ft8::decode_block::compute_spectrogram_f32_timed`, `engine::sync2d::{ft4_sync_ref_prep_bench, ft4_aligned_cd0_bench}` (public only with `internal-testing`) | `__internal::wspr::decode::X`, `__internal::fec::ldpc240_101::fst4_osd_diag_force_old`, `__internal::fec::ldpc::npre1_pattern_counts`, `__internal::ft8::decode_block::compute_spectrogram_f32_timed`, `__internal::sync2d::X` |
+| `Ft4CoarsePhasors::buffer_addrs()` (with `internal-testing`) | `__internal::sync2d::buffer_addrs(&phasors)`: a method on a public type no longer depends on a feature |
+| `internal-testing` | adds `__internal` and nothing else; every other path is the same with or without it. `mfsk-ffi` no longer enables it |
+
+The decode entry for an application is `Decoder<P>`. If you were calling `DecodeRequest` or `decode_frame` from your own code, move to `Decoder::<P>::new(DecodeParams)` and `decode(&SlotInput)`; options are in `P::Extras`
+([§2](#2-the-decode-api)). The quick examples in the `ft8`, `ft4`, `fst4`, `wspr`, `jt9` and `jt65` module docs now show that form.
+
+**`#[non_exhaustive]`, again.** 0.15 adds it to types that were left open in 0.14. The three costs are those of [§1.3](#13-coming-from-013):
+
+| type | what to change |
+|---|---|
+| option structs: `jtty::rx::Params`, `jt65::{ChaseParams, HintSpec}`, `uvpacket::rx::AfcOpts`, `uvpacket::rx::MultiChannelOpts`, `iq::RateTrackConfig` | `let mut p = T::default(); p.field = …;` instead of `T { field, ..Default::default() }` or `T { field, ..base }`. Copy a base with `let mut p = base; p.field = …;` |
+| result structs: `jtty::rx::{FrameDecode, Subtracted}`, `msk144::decode::{SlotDecode, StreamDecode}`, `msk144::frame_decode::FrameDecodeResult`, `uvpacket::rx::{DecodedFrame, SlotEnergy, SyncStats}`, `jt65::rx::Jt65Demod`, `q65::{Caller, DxFromHistory}` | read fields; destructure with a trailing `..` |
+| enums: `decoder::{Depth, ApMode, QsoProgress}`, `jt9::Jt9Depth`, `q65::rx::GridDepth`, `jtty::rx::SideChannels`, `jtty::pack::{ExchangeProfile, PackError}`, `uvpacket::{PackError, UnpackError, DecodeError}` | add a `_` arm to a `match` |
+
+Left exhaustive on purpose: `msg::wspr::WsprMessage` and `msg::jt72::Jt72Message` (their variants are the message formats, so a
+`match` over them stays complete), and the types whose fields *are* a format (`uvpacket::framing::FrameHeader`, `iq::ChannelId`,
+`wspr::WsprPass2Candidate`).
+
+**Finding it from the compiler.** `unresolved import …engine::pipeline…` or `module … is private`: the first four rows above.
+`cannot create non-exhaustive struct using struct expression` (E0639): the option-struct row. `non-exhaustive patterns: `_` not covered`
+(E0004): the enum row. Every one of them is a compile error; nothing changes silently.
+
+**C ABI, Kotlin, Swift.** Unchanged: ABI 3, `include/mfsk.h` regenerates byte for byte, and the bindings take no new field. The one
+visible effect is `MFSK_AP_OFF` for an `ApMode` this ABI does not know, which cannot occur until a new mode is added.
 
 ---
 

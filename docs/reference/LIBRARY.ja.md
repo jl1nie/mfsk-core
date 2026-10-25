@@ -31,6 +31,7 @@ type である。配線済みの全プロトコルが同じ受信フロー
   - [1.1 使い方の場面ごとに: デコーダは持ち続けるもの](#11-使い方の場面ごとに-デコーダは持ち続けるもの)
   - [1.2 0.12 からの移行](#12-012-からの移行)
   - [1.3 0.13 からの移行](#13-013-からの移行)
+  - [1.4 0.14 からの移行](#14-014-からの移行)
 - [2. デコード API](#2-デコード-api)
   - [2.1 `Decoder<P>`](#21-decoderp)
   - [2.2 `DecodeParams` と `Depth`](#22-decodeparams-と-depth)
@@ -514,6 +515,47 @@ variant を足すので、厳密にはこれまで毎回が破壊的変更だっ
 variant を足せる自由より、そちらの方が価値が高い。`engine` と `fec` の
 プリミティブ（`SubtractCfg`、`GfskParams` ほか）は、呼び出し側がリテラルで
 組み立てる前提の部品であり、デコード API の一部ではない。
+
+### 1.4 0.14 からの移行
+
+0.15 が変えるのは、呼び出し側が名指しできるものであって、デコーダの動作ではない。`Decoder<P>`、`DecodeParams`、`Extras`、`SlotInput`、
+`Row`、`SlotResult` は元の場所にあり、**結果は変わらない**（tier A+B、ゴールデンも同じ）。ほとんどのアプリはそのまま再コンパイルできる。
+影響を受けるのは、コードが (1) `engine::pipeline` をパスで名指ししている、(2) `internal-testing` を有効にしている、
+(3) 下のオプション構造体をリテラルで組み立てている、(4) 下の enum をワイルドカード腕なしで `match` している、のいずれかのときである。
+変更点は `CHANGELOG.md` の `## Unreleased`（#693）にある。
+
+**何がどこへ移ったか。**
+
+| 0.14 | 0.15 |
+|---|---|
+| `engine::pipeline::{DecodeResult, DecodeStrictness, DecodeDepth, LlrEffort, FftCache, BudgetCheck, BudgetReport}` | `engine::frame::X`。変わるのはモジュール名だけ。再エクスポートは従来どおり: `ft8::decode`・`ft4::decode`・`fst4::decode`（`DecodeDepth`、`DecodeStrictness`、`DecodeResult`、`FftCache`。`LlrEffort` は `ft8::decode`）と `decoder`（`BudgetCheck`、`BudgetReport`） |
+| `engine::pipeline::{decode_frame, process_candidate_basic, process_candidate_precomputed, refine_candidate_position, osd_escalation_gates, GenericPipelineProtocol, SnrCtx}`（`internal-testing` のときだけ公開） | デコードは `Decoder<P>`。関数そのものが要るテストやベンチは `mfsk_core::__internal::pipeline::X`（`internal-testing`。ドキュメントには出ず、semver の約束は無い） |
+| `msg::decode_request`、`{wspr, jt9, jt65, q65}::DecodeRequest`、`q65::MultiPeriodRequest`、`q65::decode_request`、`fst4::rung_major`、`wspr::osd::capture`（`internal-testing` のときだけ公開） | `mfsk_core::__internal::` に同じパスを続ける。`msg::decode_request` は `__internal::msg::decode_request`、`DecodeRequest` は `__internal::{wspr, jt9, jt65, q65}::DecodeRequest` にもある |
+| `wspr::decode::{debug_refined_sync, decode_scan_subtract}`、`fec::ldpc240_101::fst4_osd_diag_force_old`、`fec::ldpc::osd::npre1_pattern_counts`、`ft8::decode_block::compute_spectrogram_f32_timed`、`engine::sync2d::{ft4_sync_ref_prep_bench, ft4_aligned_cd0_bench}`（`internal-testing` のときだけ公開） | `__internal::wspr::decode::X`、`__internal::fec::ldpc240_101::fst4_osd_diag_force_old`、`__internal::fec::ldpc::npre1_pattern_counts`、`__internal::ft8::decode_block::compute_spectrogram_f32_timed`、`__internal::sync2d::X` |
+| `Ft4CoarsePhasors::buffer_addrs()`（`internal-testing` のとき） | `__internal::sync2d::buffer_addrs(&phasors)`。公開型のメソッドが feature に依存しなくなった |
+| `internal-testing` | `__internal` を足すだけで、ほかのパスは有無にかかわらず同じ。`mfsk-ffi` はもう有効にしない |
+
+アプリのデコードの入口は `Decoder<P>` である。自分のコードから `DecodeRequest` や `decode_frame` を呼んでいたなら、`Decoder::<P>::new(DecodeParams)` と `decode(&SlotInput)` に移す。オプションは `P::Extras` にある（[§2](#2-デコード-api)）。
+`ft8`・`ft4`・`fst4`・`wspr`・`jt9`・`jt65` のモジュールドキュメントのクイック例は、その形に直してある。
+
+**`#[non_exhaustive]` を、もう一度。** 0.15 は、0.14 で開いたままだった型にも付ける。かかる負担は [§1.3](#13-013-からの移行) の3つと同じ:
+
+| 型 | 直すこと |
+|---|---|
+| オプション構造体: `jtty::rx::Params`、`jt65::{ChaseParams, HintSpec}`、`uvpacket::rx::AfcOpts`、`uvpacket::rx::MultiChannelOpts`、`iq::RateTrackConfig` | `T { field, ..Default::default() }` や `T { field, ..base }` の代わりに `let mut p = T::default(); p.field = …;`。ベースの複製は `let mut p = base; p.field = …;` |
+| 結果構造体: `jtty::rx::{FrameDecode, Subtracted}`、`msk144::decode::{SlotDecode, StreamDecode}`、`msk144::frame_decode::FrameDecodeResult`、`uvpacket::rx::{DecodedFrame, SlotEnergy, SyncStats}`、`jt65::rx::Jt65Demod`、`q65::{Caller, DxFromHistory}` | フィールドを読む。分解パターンには末尾の `..` を付ける |
+| enum: `decoder::{Depth, ApMode, QsoProgress}`、`jt9::Jt9Depth`、`q65::rx::GridDepth`、`jtty::rx::SideChannels`、`jtty::pack::{ExchangeProfile, PackError}`、`uvpacket::{PackError, UnpackError, DecodeError}` | `match` に `_` 腕を足す |
+
+意図して網羅的なままにしたもの: `msg::wspr::WsprMessage` と `msg::jt72::Jt72Message`（variant がそのままメッセージ形式なので、
+`match` が網羅的であり続ける）と、フィールドそのものがフォーマットである型（`uvpacket::framing::FrameHeader`、`iq::ChannelId`、
+`wspr::WsprPass2Candidate`）。
+
+**コンパイラから見つける。** `unresolved import …engine::pipeline…` や `module … is private` は、上の最初の4行。
+`cannot create non-exhaustive struct using struct expression`（E0639）はオプション構造体の行。`non-exhaustive patterns: `_` not covered`
+（E0004）は enum の行。どれもコンパイルエラーになり、黙って変わるものは無い。
+
+**C ABI、Kotlin、Swift。** 変更なし。ABI は 3 のままで、`include/mfsk.h` は再生成しても1バイトも変わらず、バインディングに新しいフィールドも無い。
+見える影響は、この ABI が知らない `ApMode` に `MFSK_AP_OFF` を返すことだけで、新しいモードが足されるまで起こらない。
 
 ---
 
