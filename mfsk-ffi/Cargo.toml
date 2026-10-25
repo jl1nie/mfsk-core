@@ -83,11 +83,6 @@ protocols = [
     # The `mfsk_msk144_*` receiver handle (#497). MSK144's geometry was
     # hardcoded here before; the decoder itself was not compiled in.
     "mfsk-core/msk144",
-    # Until the 0.13 ABI rewrite moves `V2Decoder` onto `mfsk_core::decoder`,
-    # it still drives the engine's request type, which 0.13 reaches only
-    # through `internal-testing`. Removed with that rewrite (branch
-    # v0.13-decoder, phase 6); 0.13.0 does not ship with it.
-    "mfsk-core/internal-testing",
 ]
 
 # Q65 / WSPR / JT9 / JT65 — the modes that are not `FrameDecodable` and so

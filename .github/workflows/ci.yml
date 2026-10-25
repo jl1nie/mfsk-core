@@ -1003,6 +1003,11 @@ jobs:
       - name: Build docs (features = full)
         run: cargo doc -p mfsk-core --features full --no-deps
 
+      # `__internal` only exists with this feature; its re-exports and the
+      # crate-private items they point at must document cleanly too (#693).
+      - name: Build docs (features = full,internal-testing)
+        run: cargo doc -p mfsk-core --features full,internal-testing --no-deps
+
       # The FFI crates were outside this job until 2026-09-13 and a
       # broken intra-doc link reached main through the gap. Their doc
       # comments are also what cbindgen copies into the committed C
