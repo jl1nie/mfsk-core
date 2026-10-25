@@ -495,6 +495,81 @@ fn decode_slot_is_what_the_caller_wired_by_hand() {
     assert!(typed.decode_slot(&whole[0]).is_err());
 }
 
+/// #692, the issue's open question: a channel cut with prefix points for a decoder that wants
+/// none (here `Depth::Fast`: `SicRounds`, no early stages). The prefixes decode to nothing and the
+/// whole decodes in full, but its level was measured on the first prefix (11.8 s) instead of on
+/// itself. Compare the rows with a channel that has no points. Run with `--nocapture` for the numbers.
+#[test]
+fn a_stale_spec_costs_at_most_the_weakest_rows() {
+    let Some(audio) = common::load_wav_i16_opt(asset_path!("qso3_busy.wav")) else {
+        common::skip_or_fail("qso3_busy.wav");
+        return;
+    };
+    let mut iq = synth_iq(&audio[..WHOLE], FS, CENTER, DIAL);
+    iq.resize(iq.len() + FS as usize / 2, (0.0, 0.0));
+    let iq = interleave(&iq);
+    let rows = |points: &'static [usize]| {
+        let mut rx = IqReceiver::new(IqStream::new(FS, CENTER, IqSampleFormat::Cf32));
+        let mut spec = ChannelSpec::from(Mode::Ft8);
+        spec.prefix_points = points;
+        rx.add_channel(DIAL, spec).unwrap();
+        rx.set_time(T0_NS, 0);
+        let mut slots = Vec::new();
+        for c in iq.chunks(2 * 77_777) {
+            rx.push_cf32(c, &mut slots);
+        }
+        let mut d = AnyDecoder::with_defaults(Mode::Ft8);
+        d.params_mut().depth = Depth::Fast;
+        assert!(d.prefix_points().is_empty(), "Fast wants no points");
+        let mut last = None;
+        for s in &slots {
+            last = Some(d.decode_slot(s).unwrap());
+        }
+        let r = last.unwrap();
+        assert!(
+            r.rows
+                .iter()
+                .all(|row| row.detail.stage != Some(Stage::Early))
+        );
+        r.rows
+            .iter()
+            .map(|row| {
+                (
+                    row.decoded.text.clone(),
+                    row.decoded.snr_db,
+                    row.decoded.dt_sec,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let plain = rows(&[]);
+    let stale = rows(&[A, B]);
+    let p: BTreeSet<&str> = plain.iter().map(|r| r.0.as_str()).collect();
+    let s: BTreeSet<&str> = stale.iter().map(|r| r.0.as_str()).collect();
+    let only_plain: Vec<_> = p.difference(&s).collect();
+    let only_stale: Vec<_> = s.difference(&p).collect();
+    let max_snr = plain
+        .iter()
+        .filter_map(|a| stale.iter().find(|b| b.0 == a.0).map(|b| (a.1 - b.1).abs()))
+        .fold(0.0f32, f32::max);
+    println!(
+        "  no points {} rows, stale points {} rows; only without: {only_plain:?}; only with: {only_stale:?}; max |snr diff| {max_snr:.1} dB",
+        plain.len(),
+        stale.len()
+    );
+    assert!(plain.len() >= 10);
+    let known: Vec<&str> = common::ft8_qso3::QSO3_KNOWN_REAL_SIGNALS
+        .iter()
+        .map(|e| e.msg)
+        .collect();
+    let phantom: Vec<_> = only_stale
+        .iter()
+        .filter(|t| !known.contains(&***t))
+        .collect();
+    assert!(phantom.is_empty(), "phantom {phantom:?}");
+    assert!(only_plain.len() <= plain.len() / 10, "lost {only_plain:?}");
+}
+
 #[test]
 fn early_rows_through_iq_direct() {
     early_rows_through_iq(Channelizer::Direct);

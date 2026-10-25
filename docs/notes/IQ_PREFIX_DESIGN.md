@@ -125,3 +125,27 @@ per-slot time budget applies per call. A separate PR.
 5. **Points follow the setting.** `prefix_points()` is `[A, B]` for FT8 `SicEarly` (its strategy at `Depth::Normal` and `Deep`), `[]`
    at `Depth::Fast`, under `SinglePass` and the sniper, and `[]` for every other mode.
 6. **A period is not reopened** on a channel with points after a backwards clock step (§5).
+
+## 10. `ChannelSpec` and `decode_slot` (#692)
+
+The receiver and the decoder each used to be told the mode, and the caller copied the points and chose `decode` or
+`decode_prefix`. `ChannelSpec::from(&decoder)` gives a channel the decoder's mode and points (`add_channel`,
+`update_channel`), and `decode_slot` / `decode_slot_with` take the `CompletedSlot` and make the choice: a prefix, or a
+whole slot whose period has a sequence open in this decoder, goes through `decode_prefix`; any other whole slot through
+`decode`. A slot cut for another mode is `Err(ModeMismatch)`. `update_channel` applies from the next slot that opens, as
+`set_prefix_points` (§2), and refuses another mode. The budget policy across a period's calls (`OpenPeriod` in the
+skimmer) stays with the caller: the library takes a budget per call.
+
+**Measured: a stale spec** (points on the channel, a decoder that wants none), `qso3_busy.wav` through the receiver, FT8
+`Depth::Fast` (`SicRounds`), `tests/iq_prefix.rs::a_stale_spec_costs_at_most_the_weakest_rows`:
+
+| channel | rows | rows only here | max \|SNR\| difference |
+|---|---|---|---|
+| no points | 14 | none | — |
+| points `[A, B]` (the decoder wants none) | 14 | none | 0.1 dB |
+
+The prefixes decode to nothing; the whole is decoded in full, at the level its first prefix measured (§3) instead of its
+own. On this recording that moved no row and no SNR by more than 0.1 dB. One recording and one mode: what holds is "a
+stale spec does not corrupt a result", and the test allows the weakest tenth to tip as the existing early-row test does;
+it is not a promise that nothing is lost on every band. The other direction (the decoder wants points, the channel has
+none) is a plain `decode` of the whole slot, row for row (`decode_slot_is_what_the_caller_wired_by_hand`).
