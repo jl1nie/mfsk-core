@@ -35,6 +35,7 @@
     feature = "q65"
 ))]
 mod any;
+mod budget;
 #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
 mod frame;
 #[cfg(all(
@@ -86,6 +87,7 @@ pub use fst4w::Fst4wExtras;
 ))]
 pub use any::{AnyDecoder, AnyExtras, AnyExtrasRef, AnySlotResult, Unsupported, WcallsError};
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
+pub use budget::PeriodBudget;
 pub use params::SearchTuning;
 pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, Station};
 

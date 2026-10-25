@@ -1002,6 +1002,17 @@ candidate's ladder rungs (its scan runs under rayon, so the stop is an
 `AtomicBool`); JT9 per candidate; JT65 per candidate in every pass; Q65 in
 both syncs' candidate lists. A spent budget skips the passes after it.
 
+**One allowance for the whole period.** With early decode a period reaches the decoder in
+several calls (FT8's A, B and the end), and `SlotInput::budget` is per call: a deadline built
+afresh for each gives the period an allowance per delivery, and a period cut in all three counts
+as three cut slots. `PeriodBudget` (`decoder`, #626 / #627) is the accounting for that, kept by
+the caller per open period: `PeriodBudget::share(period, mode, Some(0.02))` is 2 % of the mode's
+slot, `left()` is what the next call may use (the time between calls, waiting for audio, costs
+nothing, and it never goes below zero), `finish(took, &result.budget)` books the call and is
+`true` once per period, on its first call that ran out, and `within(start)` (with `std`) is
+the `BudgetCheck` for a call starting then. It holds no clock, since the library has none;
+without `Instant`, build the predicate from `left()`. An example is on the type.
+
 **A budget and a strategy are different knobs.** A shorter period is not a
 cheaper one: FT8's spectrogram spans a fixed 15 s and its slot FFT is a
 fixed 192 000 points, whatever the audio length. To fit a deadline every time, choose
