@@ -132,6 +132,10 @@ scripts/ci-wait.sh --need 'Kotlin|Swift'   # after a push: CI for HEAD, one last
 - **Declare the mode** (`Mode: port` / `design`) at the top of every plan, with that mode's evidence (`AGENT_WORKFLOW.md` §2a;
   enforced by `.claude/hooks/plan-mode-guard.sh`). Log a finished task: `scripts/agent-log.sh` → `docs/notes/AGENT_LOG.md`.
 - After delegating to parallel agents: `git status`, grep for probe leftovers, commit by explicit path, spot-check claims.
+- The mechanical rules here are also hooks (`AGENT_WORKFLOW.md` §6): `.claude/hooks/guard_bash.py` denies `cargo
+  publish`, `git add -A`/`.`/`-u`, `git commit -a`, a blanket `-- --ignored`, `espflash monitor` and direct serial
+  reads, and asks before a force or release-tag push; `guard_paths.py` flags `"/home/…"` / `"/Users/…"` in `.rs`.
+  Skills `release-cut`, `upstream-audit`, `flash-capture` order those procedures and point at their notes.
 
 ## 6. Releases
 
@@ -166,4 +170,4 @@ Procedure: `docs/notes/EMBEDDED_WORKFLOW.md`, `docs/reference/MANUAL_M5STACK_COR
 | releasing | `docs/notes/RELEASE_PROCEDURE.md` |
 | hardware | `embedded-poc/CLAUDE.md`, board `CLAUDE.md`, `docs/notes/EMBEDDED_WORKFLOW.md` |
 | model choice, when to spawn agents, review requirement | `docs/notes/AGENT_WORKFLOW.md` |
-| plans, status | `docs/notes/ROADMAP.md`; embedded perf log: auto-memory `project_decode_block_embedded.md` |
+| plans, status | `docs/notes/ROADMAP.md`; embedded perf log: auto-memory `project_decode_block_embedded.md` (per machine, not synced: it is in the Linux box's `-home-minoru-src-mfsk-core/memory/`, not the Mac's; if missing, ask the user rather than reconstruct it) |

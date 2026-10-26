@@ -129,6 +129,10 @@ rule that matters is moved to a layer the harness executes:
 | "is it green": one verdict line, honest exit status, a clean-checkout run of the gate | `scripts/verify.sh` | only when run: the author must read its last line (§8.1) |
 | "did CI pass", with the jobs that matter for the change named | `scripts/ci-wait.sh [sha] [--need REGEX]` | only when run (§8.1) |
 | plan declares `Mode:` and that mode's evidence | PreToolUse hook on `ExitPlanMode`: `.claude/hooks/plan-mode-guard.sh` (denies the call; reads `tool_input.plan`, else the newest `~/.claude/plans/*.md`) | yes |
+| no local `cargo publish`; stage by path (no `git add -A` / `.` / `-u`, no `commit -a`); no blanket `-- --ignored`; no second `espflash monitor` or direct serial read | PreToolUse hook on `Bash`: `.claude/hooks/guard_bash.py` (denies; `cargo publish` is also a `permissions.deny`). Splits `&&` / `;` / `\|` chains, so a guarded command inside one is caught; a command built at run time (`sh -c "$x"`, `eval`) is not | yes, for commands typed literally |
+| ask before a force push or a `v*` / `skimmer-v*` tag push | same hook, `permissionDecision: ask` | yes |
+| no `"/home/…"` / `"/Users/…"` literal in a `.rs` file | PostToolUse hook on `Edit` / `Write`: `.claude/hooks/guard_paths.py` (the edit has landed; the message makes the agent fix it) | after the fact |
+| release, upstream audit and flash procedures in their order | skills `.claude/skills/{release-cut,upstream-audit,flash-capture}` (the first and last user-invoked only) | advice, loaded on demand; the procedure of record stays in `docs/notes/` |
 | when to spawn (§3), when to switch model (§2), review required (§4) | this note | advice — judgement calls a hook cannot make |
 
 Before adding a rule to `CLAUDE.md`, ask whether it is mechanical (a path, a flag, a tool argument). If it is,
