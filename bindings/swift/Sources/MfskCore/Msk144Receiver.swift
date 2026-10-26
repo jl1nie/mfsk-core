@@ -6,7 +6,7 @@
 // each ping comes out as soon as the 0.6 s window holding it is complete,
 // instead of after the T/R period. That is why this is a class of its own
 // rather than a ``Decoder`` mode: the mode's capabilities say
-// ``Capabilities/streamReceiver``, not ``Capabilities/decodeHandle``.
+// ``Capabilities/streamReceiver``, not ``Capabilities/decoder``.
 
 import CMfsk
 

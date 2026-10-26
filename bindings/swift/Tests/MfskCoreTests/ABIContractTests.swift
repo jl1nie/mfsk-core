@@ -41,15 +41,15 @@ final class ABIContractTests: XCTestCase {
 
     func testCapabilityBitsMatchTheHeader() {
         let pairs: [(Capabilities, Int32)] = [
-            (.decodeHandle, MFSK_CAP_DECODE_HANDLE), (.sniper, MFSK_CAP_SNIPER),
+            (.wsjt77Family, MFSK_CAP_WSJT77_FAMILY), (.sniper, MFSK_CAP_SNIPER),
             (.apNarrow, MFSK_CAP_AP_NARROW), (.apWideband, MFSK_CAP_AP_WIDEBAND),
             (.sicRounds, MFSK_CAP_SIC_ROUNDS), (.sicEarly, MFSK_CAP_SIC_EARLY),
             (.osd, MFSK_CAP_OSD), (.equalisation, MFSK_CAP_EQ_MODE),
             (.strictness, MFSK_CAP_STRICTNESS), (.budget, MFSK_CAP_BUDGET),
-            (.knownFilter, MFSK_CAP_KNOWN_FILTER), (.knownSubtract, MFSK_CAP_KNOWN_SUBTRACT),
-            (.fftCache, MFSK_CAP_FFT_CACHE), (.onResult, MFSK_CAP_ON_RESULT),
+            (.onResult, MFSK_CAP_ON_RESULT),
             (.encode, MFSK_CAP_ENCODE), (.streamReceiver, MFSK_CAP_STREAM_RECEIVER),
             (.noiseBlanker, MFSK_CAP_NOISE_BLANKER), (.transmitFrequency, MFSK_CAP_TX_FREQ),
+            (.decoder, MFSK_CAP_DECODER),
         ]
         for (swift, c) in pairs {
             XCTAssertEqual(swift.rawValue, UInt64(c))

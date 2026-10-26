@@ -64,7 +64,8 @@ fun main() {
 
     // The capability bits must cross intact. Pinning known answers
     // rather than "some bit is set" — the latter passes on garbage.
-    check("FT8 drives the decode handle", Mfsk.supports(ft8, Mfsk.CAP_DECODE_HANDLE))
+    check("FT8 is FT-family", Mfsk.supports(ft8, Mfsk.CAP_WSJT77_FAMILY))
+    check("FT8 opens a decoder", Mfsk.supports(ft8, Mfsk.CAP_DECODER))
     check("FT8 has the sniper", Mfsk.supports(ft8, Mfsk.CAP_SNIPER))
     val ft4 = modes.first { Mfsk.modeName(it) == "FT4" }
     check("FT4 has no sniper", !Mfsk.supports(ft4, Mfsk.CAP_SNIPER))
@@ -887,7 +888,7 @@ fun main() {
     check("JTTY is addressable", jtty != null)
     if (jtty != null) {
         check("JTTY is a stream receiver", Mfsk.supports(jtty, Mfsk.CAP_STREAM_RECEIVER))
-        check("JTTY has no slot decode handle", !Mfsk.supports(jtty, Mfsk.CAP_DECODE_HANDLE))
+        check("JTTY has no slot decoder", !Mfsk.supports(jtty, Mfsk.CAP_DECODER))
         checkEq("JTTY frame is 22656 samples", Mfsk.modeInfo(jtty).slotSamples12k, 22_656)
 
         val wavPath = System.getProperty("mfsk.jtty.wav")
@@ -998,7 +999,7 @@ fun main() {
         check("MSK144 is addressable", msk != null)
         if (msk == null) return@run
         check("MSK144 is a stream receiver", Mfsk.supports(msk, Mfsk.CAP_STREAM_RECEIVER))
-        check("MSK144 has no slot decode handle", !Mfsk.supports(msk, Mfsk.CAP_DECODE_HANDLE))
+        check("MSK144 has no slot decoder", !Mfsk.supports(msk, Mfsk.CAP_DECODER))
         val wavPath = System.getProperty("mfsk.msk144.wav")
         check("the golden MSK144 recording path is set (-Dmfsk.msk144.wav)", wavPath != null)
         if (wavPath == null) return@run

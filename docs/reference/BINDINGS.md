@@ -518,18 +518,19 @@ it. `mfsk_mode_count` / `mfsk_mode_at` say which of them this
 particular build has.
 
 **Capabilities are published, not inferred.** The word is
-`mfsk_mode_caps(mode)`, or `MfskModeInfo::caps`. Since the decoder handle
-serves all 26 slot modes, `MFSK_CAP_DECODE_HANDLE` no longer says whether a
-decoder opens; it says the mode belongs to the **77-bit-message slot family**
-(FT8, FT4, FST4), the one the QSO-context AP of `MfskParams`, a7 and the
-sniper window apply to. WSPR, JT9, JT65 and Q65 decode through the same
-handle with their own `MfskExtras` fields, and an option they lack is
-`MFSK_STATUS_UNSUPPORTED`. The other bits say which options a mode honours,
-so a caller can read them rather than know them:
+`mfsk_mode_caps(mode)`, or `MfskModeInfo::caps`. Whether a decoder opens is
+`MFSK_CAP_DECODER` (every slot mode). `MFSK_CAP_WSJT77_FAMILY` says the mode
+belongs to the **77-bit-message slot family** (FT8, FT4, FST4), the one the
+QSO-context AP of `MfskParams`, a7 and the sniper window apply to; it was
+called `MFSK_CAP_DECODE_HANDLE` until 0.15.0, and that name stays as an alias.
+WSPR, JT9, JT65, Q65 and FST4W decode through the same handle with their own
+`MfskExtras` fields, and an option they lack is `MFSK_STATUS_UNSUPPORTED`. The
+other bits say which options a mode honours, so a caller can read them rather
+than know them:
 
 | bit | constant | meaning |
 |---|---|---|
-| 0 | `MFSK_CAP_DECODE_HANDLE` | the 77-bit slot family: QSO-context AP, a7 and sniper apply |
+| 0 | `MFSK_CAP_WSJT77_FAMILY` (alias `MFSK_CAP_DECODE_HANDLE`) | the 77-bit slot family: QSO-context AP, a7 and sniper apply |
 | 1 | `MFSK_CAP_SNIPER` | narrow-band single-target search (`sniper_hz`). **FT8 only, by design** |
 | 2 | `MFSK_CAP_AP_NARROW` | AP hint on a targeted search |
 | 3 | `MFSK_CAP_AP_WIDEBAND` | AP hint on the wide-band search |
@@ -539,9 +540,13 @@ so a caller can read them rather than know them:
 | 7 | `MFSK_CAP_EQ_MODE` | equalisation reaches the decoder |
 | 8 | `MFSK_CAP_STRICTNESS` | the strictness profile is honoured rather than accepted and dropped |
 | 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` is accepted: every mode with a decoder |
-| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | see `mfsk.h`. `_KNOWN_FILTER`, `_KNOWN_SUBTRACT` and `_FFT_CACHE` describe the Rust API; the C ABI has no call for them since the 0.12 `keep_known` / `keep_fft_cache` went |
+| 10–12 | `MFSK_CAP_KNOWN_FILTER`, `_KNOWN_SUBTRACT`, `_FFT_CACHE` | **retired in 0.15.0, never set** (#698). The names stay so code compiles; the numbers are not reused |
+| 13 | `MFSK_CAP_ON_RESULT` | results can be delivered through a callback as they are found |
+| 14 | `MFSK_CAP_ENCODE` | the mode can synthesise as well as decode |
+| 15 | `MFSK_CAP_STREAM_RECEIVER` | a stream receiver (JTTY, MSK144), not a slot decoder |
 | 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X's impulse-noise blanker (`nb_percent`, `nb_sweep_step`). **Every FST4 sub-mode and no other** |
 | 17 | `MFSK_CAP_TX_FREQ` | the transmit frequency (`tx_freq_hz`) steers the a-priori search. **FT8 only** |
+| 18 | `MFSK_CAP_DECODER` | `mfsk_decoder_open` accepts the mode: every slot mode, not JTTY or MSK144 |
 
 The bits mirror `mfsk_core::registry::caps`, which
 `mfsk-core/tests/registry_caps.rs` ties to the trait impls in both
@@ -611,7 +616,7 @@ JTTY (WSJT-X 3.2's keyboard mode) has no slot: frames start whenever the
 sender likes and a message is several of them, so the receiver keeps state
 and the output is message *updates*. The mode is `MFSK_MODE_JTTY`, it
 publishes `MFSK_CAP_STREAM_RECEIVER` and `MFSK_CAP_ENCODE` (and not
-`MFSK_CAP_DECODE_HANDLE`), and
+`MFSK_CAP_DECODER`), and
 `mfsk_mode_info` describes one frame — `t_slot_s` is the frame period
 (1.888 s), `slot_samples_12k` 22 656.
 
@@ -839,7 +844,7 @@ every other call are the same on both.
 MSK144 is received the way WSJT-X's real-time `mskrtd` receives it (#497): audio
 goes in as it arrives and each ping comes out as soon as the 0.6 s window holding
 it is complete, rather than after the T/R period. `MFSK_MODE_MSK144` publishes
-`MFSK_CAP_STREAM_RECEIVER` (and not `MFSK_CAP_DECODE_HANDLE`).
+`MFSK_CAP_STREAM_RECEIVER` (and not `MFSK_CAP_DECODER`).
 
 ```c
 MfskStatus st;
@@ -1056,7 +1061,7 @@ the Q65 lists, the runtime).
 | `mfsk_iq_add_channel(rx, dial, mode, &ch)` | `mfsk_iq_add_channel(rx, dial, mode, params, extras, &ch)` (NULL, NULL for the old behaviour); `mfsk_iq_channel_decoder`, `mfsk_iq_channel_state` are new |
 | `mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0)` | `mfsk_iq_set_time(rx, utc_ns, at_sample, &change)`, repeatable |
 | `mfsk_iq_retune(rx, hz)` failing with `INVALID_ARG` | `mfsk_iq_retune(rx, hz, &paused, &resumed)` pauses a channel that no longer fits |
-| `MFSK_CAP_DECODE_HANDLE` as "a session opens" | "the 77-bit slot family"; every slot mode opens a decoder |
+| `MFSK_CAP_DECODE_HANDLE` as "a session opens" | `MFSK_CAP_DECODER`; bit 0 is `MFSK_CAP_WSJT77_FAMILY`, "the 77-bit slot family" (0.15.0) |
 | FT8's `previous_cycle` "not exposed" (#496) | `MfskExtras::a7` with the `period` argument |
 
 The checks that still matter: set `size` on every struct (or `_init` it), call
@@ -1372,7 +1377,7 @@ for row in try decoder.decode(slot) {
 then `try receiver.push(samples)` returns the `[JttyUpdate]` it produced (one per
 message, latest text; `id` is stable, `isComplete`, `frequencyHz`,
 `startSeconds`), `finish()` the last incomplete ones. `Mode.jtty` reports
-`Capabilities.streamReceiver` and not `.decodeHandle`; `JttyParams` carries the
+`Capabilities.streamReceiver` and not `.decoder`; `JttyParams` carries the
 receive frequency, tolerance, sync floor, band and whether it subtracts. One
 thread at a time, and off the main actor — `push` decodes before it returns.
 `JttyReceiverTests` feeds it the vendored upstream recording (located through

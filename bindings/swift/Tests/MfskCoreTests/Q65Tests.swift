@@ -175,12 +175,12 @@ final class Q65Tests: XCTestCase {
         }
     }
 
-    func testQ65AdvertisesNoDecodeHandleBitYetDecodesThroughTheDecoder() throws {
+    func testQ65IsNotFTFamilyYetDecodesThroughTheDecoder() throws {
         try requireQ65()
-        // The capability bit says which modes drive the FT8/FT4/FST4
-        // `DecodeRequest` builder; it is not the test for whether a Decoder
-        // opens.
-        XCTAssertFalse(sub.mode.capabilities.contains(.decodeHandle))
+        // `wsjt77Family` is the FT8/FT4/FST4 family; `decoder` is what says
+        // a Decoder opens.
+        XCTAssertFalse(sub.mode.capabilities.contains(.wsjt77Family))
+        XCTAssertTrue(sub.mode.capabilities.contains(.decoder))
         XCTAssertNoThrow(try Decoder(mode: sub.mode))
     }
 }

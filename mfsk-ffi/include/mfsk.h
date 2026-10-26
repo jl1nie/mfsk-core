@@ -185,11 +185,18 @@
 /**
  * The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
  * QSO-context AP of the parameter block, a7 and the sniper window apply.
- * Modes without this bit (WSPR, JT9, JT65, Q65) decode through the same
- * `mfsk_decoder_*` handle, shaped differently — their `MfskExtras` fields
- * differ and an option they lack is `MFSK_UNSUPPORTED`.
+ * Modes without this bit (WSPR, JT9, JT65, Q65, FST4W) decode through the
+ * same `mfsk_decoder_*` handle ([`MFSK_CAP_DECODER`]), shaped differently —
+ * their `MfskExtras` fields differ and an option they lack is
+ * `MFSK_UNSUPPORTED`.
  */
-#define MFSK_CAP_DECODE_HANDLE (1 << 0)
+#define MFSK_CAP_WSJT77_FAMILY (1 << 0)
+
+/**
+ * Deprecated since 0.15.0: the old name of [`MFSK_CAP_WSJT77_FAMILY`], the
+ * same bit. It never meant "a decoder opens"; that is [`MFSK_CAP_DECODER`].
+ */
+#define MFSK_CAP_DECODE_HANDLE MFSK_CAP_WSJT77_FAMILY
 
 /**
  * Narrow-band single-target search. **FT8 only, by design**: it is
@@ -242,19 +249,20 @@
 #define MFSK_CAP_BUDGET (1 << 9)
 
 /**
- * Known signals can be excluded from the reported results.
+ * Retired in 0.15.0 and never set: described the Rust request builders'
+ * `.known()`, which no public API has had since 0.13 (#698). The number
+ * is not reused.
  */
 #define MFSK_CAP_KNOWN_FILTER (1 << 10)
 
 /**
- * Known signals are subtracted from the audio, not merely filtered
- * out of the output. Strictly stronger than [`MFSK_CAP_KNOWN_FILTER`].
+ * Retired in 0.15.0 and never set (#698), as [`MFSK_CAP_KNOWN_FILTER`].
  */
 #define MFSK_CAP_KNOWN_SUBTRACT (1 << 11)
 
 /**
- * A slot FFT can be handed back for a second pass over the same
- * audio.
+ * Retired in 0.15.0 and never set: described `.fft_cache()` of the Rust
+ * request builders (#698). The number is not reused.
  */
 #define MFSK_CAP_FFT_CACHE (1 << 12)
 
@@ -308,6 +316,12 @@
  * steers the a-priori search. FT8 only.
  */
 #define MFSK_CAP_TX_FREQ (1 << 17)
+
+/**
+ * `mfsk_decoder_open` accepts the mode: every slot mode. Not MSK144 or
+ * JTTY, which are [`MFSK_CAP_STREAM_RECEIVER`].
+ */
+#define MFSK_CAP_DECODER (1 << 18)
 
 /**
  * `mfsk_encode` / `mfsk_encode_info` `flags` bit 0: Q65 only, set WSJT-X 3.2's

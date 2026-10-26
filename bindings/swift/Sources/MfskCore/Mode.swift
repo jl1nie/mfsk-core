@@ -119,12 +119,14 @@ public struct Capabilities: OptionSet, Sendable {
     public let rawValue: UInt64
     public init(rawValue: UInt64) { self.rawValue = rawValue }
 
-    /// Drives the `DecodeRequest` builder: the FT8, FT4 and FST4 family.
-    /// **Not the test for whether a ``Decoder`` opens** — WSPR, JT9, JT65 and
-    /// Q65 lack it and decode through the same ``Decoder``; ask
-    /// ``DecodeParams/init(mode:)`` (it throws for a mode with no slot
-    /// decoder) or compare the individual bits below.
-    public static let decodeHandle = Capabilities(rawValue: 1 << 0)
+    /// The 77-bit-message slot family (FT8, FT4, FST4): the QSO-context AP
+    /// of ``DecodeParams``, a7 and the sniper window apply. **Not the test
+    /// for whether a ``Decoder`` opens** — WSPR, JT9, JT65, Q65 and FST4W
+    /// lack it and decode through the same ``Decoder``; that is ``decoder``.
+    public static let wsjt77Family = Capabilities(rawValue: 1 << 0)
+    /// The old name of ``wsjt77Family``, the same bit.
+    @available(*, deprecated, renamed: "wsjt77Family")
+    public static let decodeHandle = wsjt77Family
     /// Narrow-band single-target search. FT8 only, by design: it is the
     /// receive half of narrowing a transceiver's analogue roofing filter.
     public static let sniper = Capabilities(rawValue: 1 << 1)
@@ -146,12 +148,15 @@ public struct Capabilities: OptionSet, Sendable {
     /// A caller-supplied budget predicate is polled: every mode with a
     /// decoder.
     public static let budget = Capabilities(rawValue: 1 << 9)
-    /// Known signals can be excluded from the reported results.
+    /// Retired in 0.15.0 and never set (#698): it described a Rust API that
+    /// is not public. The bit number is not reused.
+    @available(*, deprecated, message: "retired in 0.15.0; no mode sets it")
     public static let knownFilter = Capabilities(rawValue: 1 << 10)
-    /// Known signals are subtracted from the audio. Strictly stronger
-    /// than ``knownFilter``.
+    /// Retired in 0.15.0 and never set (#698).
+    @available(*, deprecated, message: "retired in 0.15.0; no mode sets it")
     public static let knownSubtract = Capabilities(rawValue: 1 << 11)
-    /// A slot FFT can be handed back for a second pass.
+    /// Retired in 0.15.0 and never set (#698).
+    @available(*, deprecated, message: "retired in 0.15.0; no mode sets it")
     public static let fftCache = Capabilities(rawValue: 1 << 12)
     /// Results can be delivered through a callback as they are found.
     public static let onResult = Capabilities(rawValue: 1 << 13)
@@ -167,6 +172,9 @@ public struct Capabilities: OptionSet, Sendable {
     /// The operator's transmit frequency steers the a-priori search — see
     /// ``DecodeParams/txFrequencyHz``. FT8 only.
     public static let transmitFrequency = Capabilities(rawValue: 1 << 17)
+    /// A ``Decoder`` opens for the mode: every slot mode. Not MSK144 or JTTY
+    /// (``streamReceiver``).
+    public static let decoder = Capabilities(rawValue: 1 << 18)
 }
 
 /// Geometry and capability for one mode.

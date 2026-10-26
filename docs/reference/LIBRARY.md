@@ -2853,15 +2853,19 @@ Beyond that geometry it publishes what a host cannot otherwise ask for:
   every mode" wrong as a memory story.
 * `profile: DecodeProfile { caps, defaults, sync_scale, sniper_max_cand_cap }`.
 
-`caps` is a `u32` of bits in `registry::caps` — 17 of them, cross-checked
-in both directions against the real trait impls by `tests/registry_caps.rs`
-(a bit claimed without the trait fails, and so does a trait without the
-bit): `DECODE_HANDLE` 0, `SNIPER` 1, `AP_NARROW` 2, `AP_WIDEBAND` 3,
-`SIC_ROUNDS` 4, `SIC_EARLY` 5, `OSD` 6, `EQ_MODE` 7, `STRICTNESS` 8,
-`BUDGET` 9, `KNOWN_FILTER` 10, `KNOWN_SUBTRACT` 11, `FFT_CACHE` 12,
-`ON_RESULT` 13, `ENCODE` 14, then `NOISE_BLANKER` = 1 << 16 (every FST4
-sub-mode) and `TX_FREQ` = 1 << 17 (FT8; no marker trait, so the claim list
-pins it). **Bit 15 is skipped on purpose**: it is `MFSK_CAP_STREAM_RECEIVER`,
+`caps` is a `u32` of bits in `registry::caps`, each naming an operation of
+the public API, checked by `tests/registry_caps.rs` against `AnyDecoder` and,
+in both directions, against the engine traits the decoders pass into (a bit
+claimed without the trait fails, and so does a trait without the bit):
+`WSJT77_FAMILY` 0 (the FT8 / FT4 / FST4 decoders, where `DecodeParams`'
+station and QSO context drive the AP; `DECODE_HANDLE` is its deprecated
+alias), `SNIPER` 1, `AP_NARROW` 2, `AP_WIDEBAND` 3, `SIC_ROUNDS` 4,
+`SIC_EARLY` 5, `OSD` 6, `EQ_MODE` 7, `STRICTNESS` 8, `BUDGET` 9,
+`ON_RESULT` 13, `ENCODE` 14, `NOISE_BLANKER` 16 (every FST4 sub-mode),
+`TX_FREQ` 17 (FT8; no marker trait, so the claim list pins it) and
+`DECODER` 18 (`AnyDecoder` opens the mode: every `Mode`). Bits 10-12 are
+retired since 0.15.0 and not reused (#698): they described the 0.12 builders'
+`.known()` and `.fft_cache()`. **Bit 15 is skipped on purpose**: it is `MFSK_CAP_STREAM_RECEIVER`,
 which only `mfsk-ffi` defines (JTTY has no registry entry to claim it).
 `sync_scale` says how to read `sync_min`, because the scales are not the
 same number: `CostasAbsolute` (FT8; noise has no fixed value),

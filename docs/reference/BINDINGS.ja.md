@@ -493,17 +493,17 @@ uint32_t    mfsk_version(void);
 このビルドにどれがあるかは `mfsk_mode_count` / `mfsk_mode_at` が答える。
 
 **ケイパビリティは推測せず公開される。** 語は `mfsk_mode_caps(mode)` か
-`MfskModeInfo::caps`。デコーダハンドルが26のスロット系モードすべてを受け持つので、
-`MFSK_CAP_DECODE_HANDLE` はもうデコーダが開くかどうかを意味しない。そのモードが
-**77ビットメッセージのスロットファミリ**（FT8、FT4、FST4）に属することを意味し、
-`MfskParams` の QSO 文脈 AP、a7、スナイパー窓が当てはまるのはそれである。WSPR、
-JT9、JT65、Q65 も同じハンドルでデコードされ、固有の `MfskExtras` フィールドを持ち、
-持たないオプションは `MFSK_STATUS_UNSUPPORTED` になる。他のビットは、モードが
-どのオプションを尊重するかを示すので、呼び出し側は知っているべきことを読める:
+`MfskModeInfo::caps`。デコーダが開くかどうかは `MFSK_CAP_DECODER`（スロット系の全モード）が示す。
+`MFSK_CAP_WSJT77_FAMILY` は、そのモードが **77ビットメッセージのスロットファミリ**（FT8、FT4、FST4）に
+属することを示し、`MfskParams` の QSO 文脈 AP、a7、スナイパー窓が当てはまるのはそれである。0.15.0 までは
+`MFSK_CAP_DECODE_HANDLE` という名前で、その名前は別名として残る。WSPR、JT9、JT65、Q65、FST4W も同じ
+ハンドルでデコードされ、固有の `MfskExtras` フィールドを持ち、持たないオプションは
+`MFSK_STATUS_UNSUPPORTED` になる。他のビットは、モードがどのオプションを尊重するかを示すので、
+呼び出し側は知っているべきことを読める:
 
 | ビット | 定数 | 意味 |
 |---|---|---|
-| 0 | `MFSK_CAP_DECODE_HANDLE` | 77ビットのスロットファミリ: QSO 文脈 AP、a7、スナイパーが当てはまる |
+| 0 | `MFSK_CAP_WSJT77_FAMILY`（別名 `MFSK_CAP_DECODE_HANDLE`） | 77ビットのスロットファミリ: QSO 文脈 AP、a7、スナイパーが当てはまる |
 | 1 | `MFSK_CAP_SNIPER` | 狭帯域の単一目標探索（`sniper_hz`）。**設計上 FT8 のみ** |
 | 2 | `MFSK_CAP_AP_NARROW` | 目標指定探索での AP ヒント |
 | 3 | `MFSK_CAP_AP_WIDEBAND` | 広帯域探索での AP ヒント |
@@ -513,9 +513,13 @@ JT9、JT65、Q65 も同じハンドルでデコードされ、固有の `MfskExt
 | 7 | `MFSK_CAP_EQ_MODE` | 等化がデコーダに届く |
 | 8 | `MFSK_CAP_STRICTNESS` | strictness プロファイルが受け付けて捨てられるのではなく尊重される |
 | 9 | `MFSK_CAP_BUDGET` | `mfsk_decoder_set_budget` が受け付けられる: デコーダを持つ全モード |
-| 10–15 | `MFSK_CAP_KNOWN_FILTER` … `MFSK_CAP_STREAM_RECEIVER` | `mfsk.h` を参照。`_KNOWN_FILTER`、`_KNOWN_SUBTRACT`、`_FFT_CACHE` は Rust API の記述で、0.12 の `keep_known` / `keep_fft_cache` が無くなって以来 C ABI にそれらの呼び出しは無い |
+| 10–12 | `MFSK_CAP_KNOWN_FILTER`、`_KNOWN_SUBTRACT`、`_FFT_CACHE` | **0.15.0 で退役し、立つことはない**（#698）。コードがコンパイルできるよう名前は残し、番号は再利用しない |
+| 13 | `MFSK_CAP_ON_RESULT` | 結果を見つかった順にコールバックで受け取れる |
+| 14 | `MFSK_CAP_ENCODE` | デコードだけでなく合成もできる |
+| 15 | `MFSK_CAP_STREAM_RECEIVER` | スロットデコーダではなくストリーム受信器（JTTY、MSK144） |
 | 16 | `MFSK_CAP_NOISE_BLANKER` | WSJT-X のインパルスノイズブランカ（`nb_percent`、`nb_sweep_step`）。**FST4 の全サブモードのみ** |
 | 17 | `MFSK_CAP_TX_FREQ` | 送信周波数（`tx_freq_hz`）がアプリオリ探索を左右する。**FT8 のみ** |
+| 18 | `MFSK_CAP_DECODER` | `mfsk_decoder_open` がそのモードを受け付ける: スロット系の全モード。JTTY と MSK144 は除く |
 
 ビットは `mfsk_core::registry::caps` を写したもので、
 `mfsk-core/tests/registry_caps.rs` が両方向でトレイト実装と結びつけている —
@@ -578,7 +582,7 @@ DT 列と同じくモードの名目開始から測る。ハンドルの外に�
 JTTY（WSJT-X 3.2 のキーボードモード）にはスロットが無い。フレームは送信側が
 好きなときに始まり、メッセージは複数フレームからなるので、受信器が状態を持ち、
 出力はメッセージの*更新*になる。モードは `MFSK_MODE_JTTY`、
-`MFSK_CAP_STREAM_RECEIVER` と `MFSK_CAP_ENCODE` を公開し（`MFSK_CAP_DECODE_HANDLE` は
+`MFSK_CAP_STREAM_RECEIVER` と `MFSK_CAP_ENCODE` を公開し（`MFSK_CAP_DECODER` は
 持たない）、
 `mfsk_mode_info` は 1 フレームを記述する — `t_slot_s` はフレーム周期
 （1.888 秒）、`slot_samples_12k` は 22 656。
@@ -786,7 +790,7 @@ JTTY と同じ理由です。境界をまたぐユーザーデータの契約が
 
 MSK144 は WSJT-X のリアルタイム受信 `mskrtd` と同じ形で受信する（#497）。音声は届いた順に入り、
 各ピングは T/R 周期の終わりを待たず、それを含む 0.6 秒の窓が揃い次第出てくる。
-`MFSK_MODE_MSK144` は `MFSK_CAP_STREAM_RECEIVER` を公開する（`MFSK_CAP_DECODE_HANDLE` は公開しない）。
+`MFSK_MODE_MSK144` は `MFSK_CAP_STREAM_RECEIVER` を公開する（`MFSK_CAP_DECODER` は公開しない）。
 
 ```c
 MfskStatus st;
@@ -995,7 +999,7 @@ JTTY、Q65 リスト、ランタイム）はそのまま使える。
 | `mfsk_iq_add_channel(rx, dial, mode, &ch)` | `mfsk_iq_add_channel(rx, dial, mode, params, extras, &ch)`（従来の挙動なら NULL, NULL）。`mfsk_iq_channel_decoder`、`mfsk_iq_channel_state` は新規 |
 | `mfsk_iq_set_time_anchor(rx, utc_ns_at_sample_0)` | `mfsk_iq_set_time(rx, utc_ns, at_sample, &change)`、繰り返し呼べる |
 | `INVALID_ARG` で失敗する `mfsk_iq_retune(rx, hz)` | `mfsk_iq_retune(rx, hz, &paused, &resumed)` は収まらなくなったチャンネルを一時停止する |
-| 「セッションが開く」意味の `MFSK_CAP_DECODE_HANDLE` | 「77ビットのスロットファミリ」。スロット系のモードはすべてデコーダが開く |
+| 「セッションが開く」意味の `MFSK_CAP_DECODE_HANDLE` | `MFSK_CAP_DECODER`。ビット 0 は「77ビットのスロットファミリ」の `MFSK_CAP_WSJT77_FAMILY`（0.15.0） |
 | FT8 の `previous_cycle` は「未公開」（#496） | `period` 引数つきの `MfskExtras::a7` |
 
 今も大事な点: すべての構造体に `size` を設定する（または `_init` する）こと、
@@ -1289,7 +1293,7 @@ for row in try decoder.decode(slot) {
 **JTTY** は `JttyReceiver`（§2.8.1）: `try JttyReceiver(sampleRate:params:)` のあと
 `try receiver.push(samples)` が生じた `[JttyUpdate]`（メッセージごとに 1 件、最新の
 テキスト。`id` は不変、`isComplete`・`frequencyHz`・`startSeconds`）を返し、
-`finish()` は未完の最終行を返す。`Mode.jtty` は `.decodeHandle` ではなく
+`finish()` は未完の最終行を返す。`Mode.jtty` は `.decoder` ではなく
 `Capabilities.streamReceiver` を報告する。`JttyParams` は受信周波数・許容幅・
 同期下限・帯域・減算の有無を持つ。一度に 1 スレッドで、メインアクターの外から
 呼ぶこと — `push` は戻る前にデコードする。`JttyReceiverTests` は同梱の upstream

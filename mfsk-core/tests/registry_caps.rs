@@ -91,10 +91,13 @@ fn check_noise_blanker<P: SupportsNoiseBlanker>(name: &str) {
     );
 }
 
-fn check_decode_handle<P: FrameDecodable>(name: &str) {
+/// `FrameDecodable` is the engine trait the FT-family `Decodable` impls
+/// (`decoder::frame`) pass into; `wsjt77_family_is_the_ft_decoders` checks
+/// the same bit against the public `AnyDecoder`.
+fn check_wsjt77_family<P: FrameDecodable>(name: &str) {
     assert!(
-        profile(name).caps & caps::DECODE_HANDLE != 0,
-        "{name} implements FrameDecodable but its entry does not claim caps::DECODE_HANDLE"
+        profile(name).caps & caps::WSJT77_FAMILY != 0,
+        "{name} implements FrameDecodable but its entry does not claim caps::WSJT77_FAMILY"
     );
 }
 
@@ -113,13 +116,13 @@ fn implemented_capabilities_are_claimed() {
     use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
     use mfsk_core::{Ft4, Ft8};
 
-    check_decode_handle::<Ft8>("FT8");
-    check_decode_handle::<Ft4>("FT4");
-    check_decode_handle::<Fst4s15>("FST4-15");
-    check_decode_handle::<Fst4s30>("FST4-30");
-    check_decode_handle::<Fst4s60>("FST4-60A");
-    check_decode_handle::<Fst4s120>("FST4-120");
-    check_decode_handle::<Fst4s300>("FST4-300");
+    check_wsjt77_family::<Ft8>("FT8");
+    check_wsjt77_family::<Ft4>("FT4");
+    check_wsjt77_family::<Fst4s15>("FST4-15");
+    check_wsjt77_family::<Fst4s30>("FST4-30");
+    check_wsjt77_family::<Fst4s60>("FST4-60A");
+    check_wsjt77_family::<Fst4s120>("FST4-120");
+    check_wsjt77_family::<Fst4s300>("FST4-300");
 
     check_sic_rounds::<Ft8>("FT8");
     check_sic_rounds::<Ft4>("FT4");
@@ -210,12 +213,12 @@ fn claimed_capabilities_are_implemented() {
          frequency"
     );
 
-    let mut handles = BTreeSet::from(["FT8", "FT4"]);
-    handles.extend(FST4_MODES);
+    let mut family = BTreeSet::from(["FT8", "FT4"]);
+    family.extend(FST4_MODES);
     assert_eq!(
-        claims(caps::DECODE_HANDLE),
-        handles,
-        "FrameDecodable is FT8 + FT4 + every FST4 sub-mode"
+        claims(caps::WSJT77_FAMILY),
+        family,
+        "the FT-family decoders are FT8 + FT4 + every FST4 sub-mode"
     );
 
     // No marker trait here either: every `Decodable` mode takes
@@ -228,6 +231,66 @@ fn claimed_capabilities_are_implemented() {
         decoders,
         "every mode with a Decoder polls the budget once per candidate"
     );
+    assert_eq!(
+        claims(caps::DECODER),
+        decoders,
+        "DECODER is exactly the registry entries AnyDecoder can open"
+    );
+}
+
+/// `WSJT77_FAMILY` against the public API: the bit is set exactly where
+/// `AnyDecoder` carries an FT-family `Extras`, whose decoders read
+/// `DecodeParams::{station, qso, ap, contest}` for the QSO-context AP.
+/// Fails if the bit is claimed on a mode that ignores them (WSPR, FST4W, ...)
+/// or dropped from an FST4 sub-mode.
+#[test]
+fn wsjt77_family_is_the_ft_decoders() {
+    use mfsk_core::Mode;
+    use mfsk_core::decoder::{AnyDecoder, AnyExtrasRef};
+    for &mode in Mode::ALL {
+        let d = AnyDecoder::with_defaults(mode);
+        let ft = matches!(
+            d.extras(),
+            AnyExtrasRef::Ft8(_) | AnyExtrasRef::Ft4(_) | AnyExtrasRef::Fst4(_)
+        );
+        let claimed = mode.meta().profile.caps & caps::WSJT77_FAMILY != 0;
+        assert_eq!(
+            claimed,
+            ft,
+            "{}: WSJT77_FAMILY {claimed}, FT-family Extras {ft}",
+            mode.name()
+        );
+    }
+}
+
+/// `DECODER` against the public API: every entry that claims it opens an
+/// `AnyDecoder`, and no entry without a `Mode` (uvpacket) claims it.
+#[test]
+fn decoder_bit_is_every_mode() {
+    use mfsk_core::Mode;
+    use mfsk_core::decoder::AnyDecoder;
+    for p in PROTOCOLS {
+        let mode = Mode::from_name(p.name);
+        assert_eq!(
+            p.profile.caps & caps::DECODER != 0,
+            mode.is_some(),
+            "{}: DECODER claimed without a Mode, or a Mode without the bit",
+            p.name
+        );
+        if let Some(m) = mode {
+            assert_eq!(AnyDecoder::with_defaults(m).mode(), m, "{}", p.name);
+        }
+    }
+}
+
+/// Bits 10-12 described the 0.12 builders' `.known()` / `.fft_cache()` and
+/// are retired (#698). Fails if one of those numbers is reused.
+#[test]
+fn retired_bits_are_never_set() {
+    const RETIRED: u32 = (1 << 10) | (1 << 11) | (1 << 12);
+    for p in PROTOCOLS {
+        assert_eq!(p.profile.caps & RETIRED, 0, "{} sets a retired bit", p.name);
+    }
 }
 
 /// Every bit must be claimed by at least one entry, so a constant that
@@ -236,7 +299,7 @@ fn claimed_capabilities_are_implemented() {
 #[test]
 fn every_capability_is_claimed_by_something() {
     let all = [
-        ("DECODE_HANDLE", caps::DECODE_HANDLE),
+        ("WSJT77_FAMILY", caps::WSJT77_FAMILY),
         ("SNIPER", caps::SNIPER),
         ("AP_NARROW", caps::AP_NARROW),
         ("AP_WIDEBAND", caps::AP_WIDEBAND),
@@ -246,35 +309,17 @@ fn every_capability_is_claimed_by_something() {
         ("EQ_MODE", caps::EQ_MODE),
         ("STRICTNESS", caps::STRICTNESS),
         ("BUDGET", caps::BUDGET),
-        ("KNOWN_FILTER", caps::KNOWN_FILTER),
-        ("KNOWN_SUBTRACT", caps::KNOWN_SUBTRACT),
-        ("FFT_CACHE", caps::FFT_CACHE),
         ("ON_RESULT", caps::ON_RESULT),
         ("ENCODE", caps::ENCODE),
         ("NOISE_BLANKER", caps::NOISE_BLANKER),
         ("TX_FREQ", caps::TX_FREQ),
+        ("DECODER", caps::DECODER),
     ];
     for (name, bit) in all {
         assert!(
             PROTOCOLS.iter().any(|p| p.profile.caps & bit != 0),
             "caps::{name} is defined but no registry entry claims it"
         );
-    }
-}
-
-/// `KNOWN_SUBTRACT` is strictly stronger than `KNOWN_FILTER`: a
-/// protocol that subtracts a known signal from the audio also does not
-/// re-report it.
-#[test]
-fn known_subtract_implies_known_filter() {
-    for p in PROTOCOLS {
-        if p.profile.caps & caps::KNOWN_SUBTRACT != 0 {
-            assert!(
-                p.profile.caps & caps::KNOWN_FILTER != 0,
-                "{} claims KNOWN_SUBTRACT without KNOWN_FILTER",
-                p.name
-            );
-        }
     }
 }
 
@@ -321,7 +366,7 @@ fn sync_scale_is_recorded_and_defaults_respect_it() {
 fn defaults_are_usable_wherever_a_search_exists() {
     for p in PROTOCOLS {
         let d = p.profile.defaults;
-        if p.profile.caps & caps::DECODE_HANDLE != 0 {
+        if p.profile.caps & caps::WSJT77_FAMILY != 0 {
             assert!(
                 d.freq_max_hz > d.freq_min_hz && d.max_cand > 0 && d.sync_min > 0.0,
                 "{} drives the decode handle but publishes an unusable default search: {d:?}",

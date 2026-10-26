@@ -39,7 +39,7 @@ final class JttyReceiverTests: XCTestCase {
         XCTAssertEqual(info.name, "JTTY")
         XCTAssertEqual(info.slotSamples12k, 22_656, "one 1.888 s frame at 12 kHz")
         XCTAssertTrue(info.capabilities.contains(.streamReceiver))
-        XCTAssertFalse(info.capabilities.contains(.decodeHandle))
+        XCTAssertFalse(info.capabilities.contains(.decoder))
         XCTAssertEqual(try Mode(name: "JTTY"), .jtty)
     }
 

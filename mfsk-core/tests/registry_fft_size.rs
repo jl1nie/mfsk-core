@@ -111,8 +111,8 @@ fn the_literal_matches_the_downsample_config() {
     }
 }
 
-/// Every mode the decode handle drives must publish a real size, and
-/// every mode that does not use the shared downsampler must publish 0
+/// Every FT-family mode (`caps::WSJT77_FAMILY`) must publish a real size,
+/// and every mode that does not use the shared downsampler must publish 0
 /// rather than a plausible-looking guess.
 #[test]
 fn the_registry_publishes_it_exactly_where_it_applies() {
@@ -121,12 +121,12 @@ fn the_registry_publishes_it_exactly_where_it_applies() {
     for p in PROTOCOLS {
         // FST4W has its own ladder but FST4's whole-slot transform, so it
         // publishes the size too.
-        let drives_handle =
-            p.profile.caps & caps::DECODE_HANDLE != 0 || p.name.starts_with("FST4W-");
-        if drives_handle {
+        let shared_front_end =
+            p.profile.caps & caps::WSJT77_FAMILY != 0 || p.name.starts_with("FST4W-");
+        if shared_front_end {
             assert!(
                 p.decode_fft1_size > 0,
-                "{} drives the decode handle but publishes no FFT size",
+                "{} takes the whole-slot transform but publishes no FFT size",
                 p.name
             );
         } else {
