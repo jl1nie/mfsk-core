@@ -1,5 +1,50 @@
 {
   "model": "opusplan",
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo doc *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo tree *)",
+      "Bash(cargo metadata *)",
+      "Bash(MFSK_REQUIRE_CORPUS=1 cargo test *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch *)",
+      "Bash(git switch *)",
+      "Bash(git fetch *)",
+      "Bash(git blame *)",
+      "Bash(git grep *)",
+      "Bash(git rev-parse *)",
+      "Bash(git merge-base *)",
+      "Bash(git ls-files *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh issue view *)",
+      "Bash(gh issue list *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh run watch *)",
+      "Bash(scripts/release-status.sh *)",
+      "Bash(bash scripts/release-status.sh *)",
+      "Bash(scripts/upstream-diff.sh *)",
+      "Bash(bash scripts/upstream-diff.sh *)",
+      "Bash(scripts/pre-push-check.sh *)",
+      "Bash(bash scripts/pre-push-check.sh *)",
+      "Bash(scripts/verify.sh *)",
+      "Bash(scripts/ci-wait.sh *)"
+    ],
+    "deny": [
+      "Bash(cargo publish *)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -19,6 +64,26 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/plan-mode-guard.sh",
             "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard_bash.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard_paths.py"
           }
         ]
       }
