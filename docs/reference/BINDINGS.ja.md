@@ -495,7 +495,9 @@ uint32_t    mfsk_version(void);
 **ケイパビリティは推測せず公開される。** 語は `mfsk_mode_caps(mode)` か
 `MfskModeInfo::caps`。デコーダが開くかどうかは `MFSK_CAP_DECODER`（スロット系の全モード）が示す。
 `MFSK_CAP_WSJT77_FAMILY` は、そのモードが **77ビットメッセージのスロットファミリ**（FT8、FT4、FST4）に
-属することを示し、`MfskParams` の QSO 文脈 AP、a7、スナイパー窓が当てはまるのはそれである。0.15.0 までは
+属することを示す。`MfskExtras` の AP ヒント・等化・メッセージフィルタが当てはまり、`MfskParams` の局情報と
+QSO 文脈が QSO 文脈 AP の段を組み立てる。「局情報と QSO フィールドを読むモード」ではない（Q65 と JT65 も
+読む）。a7 とスナイパー窓は FT8 だけのもの（`MFSK_CAP_SNIPER`）。0.15.0 までは
 `MFSK_CAP_DECODE_HANDLE` という名前で、その名前は別名として残る。WSPR、JT9、JT65、Q65、FST4W も同じ
 ハンドルでデコードされ、固有の `MfskExtras` フィールドを持ち、持たないオプションは
 `MFSK_STATUS_UNSUPPORTED` になる。他のビットは、モードがどのオプションを尊重するかを示すので、
@@ -503,7 +505,7 @@ uint32_t    mfsk_version(void);
 
 | ビット | 定数 | 意味 |
 |---|---|---|
-| 0 | `MFSK_CAP_WSJT77_FAMILY`（別名 `MFSK_CAP_DECODE_HANDLE`） | 77ビットのスロットファミリ: QSO 文脈 AP、a7、スナイパーが当てはまる |
+| 0 | `MFSK_CAP_WSJT77_FAMILY`（別名 `MFSK_CAP_DECODE_HANDLE`） | 77ビットのスロットファミリ（FT8、FT4、FST4）: AP ヒント、等化、メッセージフィルタ、QSO 文脈 AP の段 |
 | 1 | `MFSK_CAP_SNIPER` | 狭帯域の単一目標探索（`sniper_hz`）。**設計上 FT8 のみ** |
 | 2 | `MFSK_CAP_AP_NARROW` | 目標指定探索での AP ヒント |
 | 3 | `MFSK_CAP_AP_WIDEBAND` | 広帯域探索での AP ヒント |

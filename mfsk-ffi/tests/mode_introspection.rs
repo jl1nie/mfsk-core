@@ -18,6 +18,7 @@ use mfsk_core::registry::caps as r;
 /// mirrors. Stated one pair at a time on purpose: a loop over a list
 /// built from the same source would prove nothing.
 #[test]
+#[allow(deprecated)] // checks the deprecated alias on purpose
 fn abi_caps_match_the_registry() {
     let pairs: [(&str, u64, u32); 15] = [
         ("WSJT77_FAMILY", MFSK_CAP_WSJT77_FAMILY, r::WSJT77_FAMILY),

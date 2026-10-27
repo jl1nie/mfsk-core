@@ -197,15 +197,17 @@ pub const MFSK_METHOD_LIST_A8: u8 = 5;
 // those to the trait impls in both directions.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
-/// QSO-context AP of the parameter block, a7 and the sniper window apply.
-/// Modes without this bit (WSPR, JT9, JT65, Q65, FST4W) decode through the
-/// same `mfsk_decoder_*` handle ([`MFSK_CAP_DECODER`]), shaped differently —
-/// their `MfskExtras` fields differ and an option they lack is
-/// `MFSK_UNSUPPORTED`.
+/// The mode is the 77-bit-message slot family (FT8, FT4, FST4): the AP
+/// hint, equalisation and message filter of `MfskExtras` apply, and the
+/// parameter block's station and QSO context build the QSO-context AP
+/// ladder. Q65 and JT65 read the station and QSO fields too, without this
+/// bit; a7 and the sniper window are FT8's alone ([`MFSK_CAP_SNIPER`]).
+/// Every slot mode decodes through the same `mfsk_decoder_*` handle
+/// ([`MFSK_CAP_DECODER`]); an option a mode lacks is `MFSK_UNSUPPORTED`.
 pub const MFSK_CAP_WSJT77_FAMILY: u64 = 1 << 0;
 /// Deprecated since 0.15.0: the old name of [`MFSK_CAP_WSJT77_FAMILY`], the
 /// same bit. It never meant "a decoder opens"; that is [`MFSK_CAP_DECODER`].
+#[deprecated(since = "0.15.0", note = "renamed MFSK_CAP_WSJT77_FAMILY")]
 pub const MFSK_CAP_DECODE_HANDLE: u64 = MFSK_CAP_WSJT77_FAMILY;
 /// Narrow-band single-target search. **FT8 only, by design**: it is
 /// the receive-side half of narrowing a transceiver's *analogue*

@@ -78,11 +78,17 @@ use crate::ProtocolId;
 pub mod caps {
     /// The mode decodes through the FT-family decoders
     /// (`decoder::frame`: FT8, FT4, every FST4 sub-mode), the 77-bit-message
-    /// slot family. For these, `DecodeParams::{station, qso, ap, contest}`
-    /// drive the QSO-context a-priori search, and the `ap_hint`, `eq` and
-    /// `filter` fields of their `Extras` apply. WSPR, JT9, JT65, Q65 and
+    /// slot family: their `Extras` carry `ap_hint`, `eq` and `filter`, and
+    /// `DecodeParams::{station, qso, ap, contest}` build the QSO-context AP
+    /// ladder (upstream's `iaptype` hypotheses). WSPR, JT9, JT65, Q65 and
     /// FST4W decode too ([`DECODER`]), with `Extras` shaped for their own
     /// upstream decoders.
+    ///
+    /// **Not** "the modes that read `station` / `qso`": Q65 builds its own
+    /// AP codewords from them (`q65_decode.f90`) and JT65's deep search
+    /// takes `station.call` and the QSO context, without this bit. Nor does
+    /// it mean a7 or the sniper apply: both are FT8's alone ([`SNIPER`],
+    /// `Ft8Extras::a7`).
     pub const WSJT77_FAMILY: u32 = 1 << 0;
     /// Bit 0's name until 0.15.0, when it still described the generic
     /// request builders of 0.12 (#698).
@@ -152,7 +158,7 @@ pub mod caps {
     ///
     /// A property of the *input audio*, not of the search: local
     /// equalisation flattens a passband that an analogue filter has
-    /// tilted. It therefore matters on both builders — the narrow-band
+    /// tilted. It therefore matters on both searches — the narrow-band
     /// one because a roofing filter is the reason that path exists, and
     /// the wide-band one because filtered audio can be handed to it
     /// too. FT8's `eq_mode_recovers_bpf_edge_signal` pins exactly that

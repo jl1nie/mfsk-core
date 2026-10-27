@@ -2857,9 +2857,10 @@ Beyond that geometry it publishes what a host cannot otherwise ask for:
 the public API, checked by `tests/registry_caps.rs` against `AnyDecoder` and,
 in both directions, against the engine traits the decoders pass into (a bit
 claimed without the trait fails, and so does a trait without the bit):
-`WSJT77_FAMILY` 0 (the FT8 / FT4 / FST4 decoders, where `DecodeParams`'
-station and QSO context drive the AP; `DECODE_HANDLE` is its deprecated
-alias), `SNIPER` 1, `AP_NARROW` 2, `AP_WIDEBAND` 3, `SIC_ROUNDS` 4,
+`WSJT77_FAMILY` 0 (the FT8 / FT4 / FST4 decoders: `ap_hint`, `eq` and
+`filter` in their `Extras`, and the QSO-context AP ladder built from
+`DecodeParams`' station and QSO context — Q65 and JT65 read those fields too,
+without the bit; `DECODE_HANDLE` is its deprecated alias), `SNIPER` 1, `AP_NARROW` 2, `AP_WIDEBAND` 3, `SIC_ROUNDS` 4,
 `SIC_EARLY` 5, `OSD` 6, `EQ_MODE` 7, `STRICTNESS` 8, `BUDGET` 9,
 `ON_RESULT` 13, `ENCODE` 14, `NOISE_BLANKER` 16 (every FST4 sub-mode),
 `TX_FREQ` 17 (FT8; no marker trait, so the claim list pins it) and

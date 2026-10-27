@@ -113,7 +113,7 @@ const FST4_MODES: [&str; 7] = [
 
 #[test]
 fn implemented_capabilities_are_claimed() {
-    use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
+    use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300, Fst4s900, Fst4s1800};
     use mfsk_core::{Ft4, Ft8};
 
     check_wsjt77_family::<Ft8>("FT8");
@@ -123,6 +123,8 @@ fn implemented_capabilities_are_claimed() {
     check_wsjt77_family::<Fst4s60>("FST4-60A");
     check_wsjt77_family::<Fst4s120>("FST4-120");
     check_wsjt77_family::<Fst4s300>("FST4-300");
+    check_wsjt77_family::<Fst4s900>("FST4-900");
+    check_wsjt77_family::<Fst4s1800>("FST4-1800");
 
     check_sic_rounds::<Ft8>("FT8");
     check_sic_rounds::<Ft4>("FT4");
@@ -140,6 +142,8 @@ fn implemented_capabilities_are_claimed() {
     check_noise_blanker::<Fst4s60>("FST4-60A");
     check_noise_blanker::<Fst4s120>("FST4-120");
     check_noise_blanker::<Fst4s300>("FST4-300");
+    check_noise_blanker::<Fst4s900>("FST4-900");
+    check_noise_blanker::<Fst4s1800>("FST4-1800");
 }
 
 /// The other direction: a bit claimed by an entry that the list above
@@ -239,10 +243,11 @@ fn claimed_capabilities_are_implemented() {
 }
 
 /// `WSJT77_FAMILY` against the public API: the bit is set exactly where
-/// `AnyDecoder` carries an FT-family `Extras`, whose decoders read
-/// `DecodeParams::{station, qso, ap, contest}` for the QSO-context AP.
-/// Fails if the bit is claimed on a mode that ignores them (WSPR, FST4W, ...)
-/// or dropped from an FST4 sub-mode.
+/// `AnyDecoder` carries an FT-family `Extras` (`ap_hint`, `eq`, `filter`).
+/// Fails if the bit is claimed on a mode with other `Extras` (WSPR, FST4W,
+/// Q65, ...) or dropped from an FST4 sub-mode. It does not check which
+/// `DecodeParams` fields a mode reads; Q65 and JT65 read `station` / `qso`
+/// without the bit (see the constant's doc).
 #[test]
 fn wsjt77_family_is_the_ft_decoders() {
     use mfsk_core::Mode;
@@ -369,7 +374,7 @@ fn defaults_are_usable_wherever_a_search_exists() {
         if p.profile.caps & caps::WSJT77_FAMILY != 0 {
             assert!(
                 d.freq_max_hz > d.freq_min_hz && d.max_cand > 0 && d.sync_min > 0.0,
-                "{} drives the decode handle but publishes an unusable default search: {d:?}",
+                "{} is FT-family but publishes an unusable default search: {d:?}",
                 p.name
             );
         }

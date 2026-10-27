@@ -520,9 +520,12 @@ particular build has.
 **Capabilities are published, not inferred.** The word is
 `mfsk_mode_caps(mode)`, or `MfskModeInfo::caps`. Whether a decoder opens is
 `MFSK_CAP_DECODER` (every slot mode). `MFSK_CAP_WSJT77_FAMILY` says the mode
-belongs to the **77-bit-message slot family** (FT8, FT4, FST4), the one the
-QSO-context AP of `MfskParams`, a7 and the sniper window apply to; it was
-called `MFSK_CAP_DECODE_HANDLE` until 0.15.0, and that name stays as an alias.
+belongs to the **77-bit-message slot family** (FT8, FT4, FST4): the AP hint,
+equalisation and message filter of `MfskExtras` apply, and the station and QSO
+context of `MfskParams` build the QSO-context AP ladder. It is not "the modes
+that read the station and QSO fields" (Q65 and JT65 read them too), and a7 and
+the sniper window are FT8's alone (`MFSK_CAP_SNIPER`). It was called
+`MFSK_CAP_DECODE_HANDLE` until 0.15.0, and that name stays as an alias.
 WSPR, JT9, JT65, Q65 and FST4W decode through the same handle with their own
 `MfskExtras` fields, and an option they lack is `MFSK_STATUS_UNSUPPORTED`. The
 other bits say which options a mode honours, so a caller can read them rather
@@ -530,7 +533,7 @@ than know them:
 
 | bit | constant | meaning |
 |---|---|---|
-| 0 | `MFSK_CAP_WSJT77_FAMILY` (alias `MFSK_CAP_DECODE_HANDLE`) | the 77-bit slot family: QSO-context AP, a7 and sniper apply |
+| 0 | `MFSK_CAP_WSJT77_FAMILY` (alias `MFSK_CAP_DECODE_HANDLE`) | the 77-bit slot family (FT8, FT4, FST4): AP hint, equalisation, message filter, the QSO-context AP ladder |
 | 1 | `MFSK_CAP_SNIPER` | narrow-band single-target search (`sniper_hz`). **FT8 only, by design** |
 | 2 | `MFSK_CAP_AP_NARROW` | AP hint on a targeted search |
 | 3 | `MFSK_CAP_AP_WIDEBAND` | AP hint on the wide-band search |

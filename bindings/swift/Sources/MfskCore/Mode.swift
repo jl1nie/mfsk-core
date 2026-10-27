@@ -119,10 +119,13 @@ public struct Capabilities: OptionSet, Sendable {
     public let rawValue: UInt64
     public init(rawValue: UInt64) { self.rawValue = rawValue }
 
-    /// The 77-bit-message slot family (FT8, FT4, FST4): the QSO-context AP
-    /// of ``DecodeParams``, a7 and the sniper window apply. **Not the test
-    /// for whether a ``Decoder`` opens** — WSPR, JT9, JT65, Q65 and FST4W
-    /// lack it and decode through the same ``Decoder``; that is ``decoder``.
+    /// The 77-bit-message slot family (FT8, FT4, FST4): the AP hint,
+    /// equalisation and message filter apply, and the station / QSO context
+    /// of ``DecodeParams`` builds the QSO-context AP ladder. Q65 and JT65
+    /// read the station and QSO fields too, without this bit; a7 and the
+    /// sniper are FT8's alone (``sniper``). **Not the test for whether a
+    /// ``Decoder`` opens** — WSPR, JT9, JT65, Q65 and FST4W lack it and
+    /// decode through the same ``Decoder``; that is ``decoder``.
     public static let wsjt77Family = Capabilities(rawValue: 1 << 0)
     /// The old name of ``wsjt77Family``, the same bit.
     @available(*, deprecated, renamed: "wsjt77Family")

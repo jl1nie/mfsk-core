@@ -2701,8 +2701,10 @@ for p in PROTOCOLS {
 操作を名指す。`tests/registry_caps.rs` が `AnyDecoder` と突き合わせ、さらに
 デコーダが渡すエンジン trait と双方向に突き合わせている（trait が無いのに
 ビットを主張すれば失敗し、ビットが無いのに trait があっても失敗する）:
-`WSJT77_FAMILY` 0（FT8 / FT4 / FST4 のデコーダで、`DecodeParams` の局情報と
-QSO 文脈が AP を駆動する。`DECODE_HANDLE` は非推奨の別名）、`SNIPER` 1、
+`WSJT77_FAMILY` 0（FT8 / FT4 / FST4 のデコーダ。`Extras` の `ap_hint`・`eq`・
+`filter` と、`DecodeParams` の局情報と QSO 文脈から組み立てる QSO 文脈 AP の段。
+Q65 と JT65 もそれらのフィールドを読むが、このビットは持たない。`DECODE_HANDLE`
+は非推奨の別名）、`SNIPER` 1、
 `AP_NARROW` 2、`AP_WIDEBAND` 3、`SIC_ROUNDS` 4、`SIC_EARLY` 5、`OSD` 6、
 `EQ_MODE` 7、`STRICTNESS` 8、`BUDGET` 9、`ON_RESULT` 13、`ENCODE` 14、
 `NOISE_BLANKER` 16（FST4 の全サブモード）、`TX_FREQ` 17（FT8。マーカ trait が

@@ -666,9 +666,11 @@ object Mfsk {
     }
 
     // Capability bits, mirroring `MFSK_CAP_*` in mfsk.h.
-    /// The 77-bit-message slot family (FT8, FT4, FST4): QSO-context AP, a7
-    /// and the sniper window apply. Whether an [MfskDecoder] opens is
-    /// [CAP_DECODER].
+    /// The 77-bit-message slot family (FT8, FT4, FST4): the AP hint,
+    /// equalisation and message filter apply, and the station / QSO context
+    /// builds the QSO-context AP ladder. Q65 and JT65 read the station and
+    /// QSO fields too, without this bit; a7 and the sniper are FT8's alone
+    /// ([CAP_SNIPER]). Whether an [MfskDecoder] opens is [CAP_DECODER].
     const val CAP_WSJT77_FAMILY = 1L shl 0
     @Deprecated("renamed CAP_WSJT77_FAMILY", ReplaceWith("Mfsk.CAP_WSJT77_FAMILY"))
     const val CAP_DECODE_HANDLE = CAP_WSJT77_FAMILY
