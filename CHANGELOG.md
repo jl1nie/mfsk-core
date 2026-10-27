@@ -22,6 +22,12 @@
   `KNOWN_SUBTRACT`, `FFT_CACHE`) described the 0.12 builders, which no public API has had since 0.13: removed from Rust, kept in C /
   Kotlin / Swift as deprecated names that no mode sets, numbers not reused. `tests/registry_caps.rs` checks bits 0 and 18 against
   `AnyDecoder`, `mfsk-ffi/tests/mode_introspection.rs` bit 18 against `mfsk_decoder_open`. C migration: `DECODE_HANDLE` → `WSJT77_FAMILY` or `DECODER`, drop tests of 10-12.
+- **The registry carries no default search parameters** (#698). `registry::DecodeDefaults`, `DecodeProfile::defaults` and
+  `DecodeProfile::sniper_max_cand_cap` are gone: nothing read them but `default_params`' fallback band, and FT8 / FT4 / FST4's values
+  (100-3000 Hz, `sync_min` 0.8, FT4's sniper cap 15) described no decoder. `decoder::default_params(mode)` is the one source and
+  states each mode's band (WSPR / JT9 / JT65 / Q65 from their `search::default_search_params()`, FST4W `jt9 -W`'s 1400-1600).
+  `DecodeProfile` keeps `caps` and `sync_scale`. No mode's defaults moved: `tests/default_params.rs` pins all 26 at their 0.14 values.
+  C ABI unchanged. Detail: `LIBRARY.md` §registry.
 
 ### Added
 

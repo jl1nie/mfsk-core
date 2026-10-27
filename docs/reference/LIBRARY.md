@@ -516,7 +516,7 @@ Reading a field and assigning to a field work as before.
 The types carrying it are the output rows (`Decoded`, `Row`, `RowDetail`,
 `SlotResult`, `AnySlotResult`, `Unsupported`, `BudgetReport`, and each
 mode's native result), the registry's metadata (`ProtocolMeta`,
-`DecodeProfile`, `DecodeDefaults`), the search knobs (`Tuning`,
+`DecodeProfile`), the search knobs (`Tuning`,
 `SearchTuning`, `Sniper`, every `*Extras`), the parameter block's
 `Station` / `QsoContext` / `Contest`, and the option enums listed above.
 
@@ -2851,7 +2851,7 @@ Beyond that geometry it publishes what a host cannot otherwise ask for:
   92 160, FT8 192 000, **FST4-300 4 194 304**, **FST4W-1800 21 591 360** (the largest), 0 for the modes with their
   own front end). The second is the number that makes "one call shape for
   every mode" wrong as a memory story.
-* `profile: DecodeProfile { caps, defaults, sync_scale, sniper_max_cand_cap }`.
+* `profile: DecodeProfile { caps, sync_scale }`.
 
 `caps` is a `u32` of bits in `registry::caps`, each naming an operation of
 the public API, checked by `tests/registry_caps.rs` against `AnyDecoder` and,
@@ -2868,39 +2868,36 @@ without the bit; `DECODE_HANDLE` is its deprecated alias), `SNIPER` 1, `AP_NARRO
 retired since 0.15.0 and not reused (#698): they described the 0.12 builders'
 `.known()` and `.fft_cache()`. **Bit 15 is skipped on purpose**: it is `MFSK_CAP_STREAM_RECEIVER`,
 which only `mfsk-ffi` defines (JTTY has no registry entry to claim it).
-`sync_scale` says how to read `sync_min`, because the scales are not the
-same number: `CostasAbsolute` (FT8; noise has no fixed value),
+`sync_scale` says how to read a sync threshold a caller sets
+(`Tuning::sync_min`, `SearchTuning::score_threshold`), because the scales are
+not the same number: `CostasAbsolute` (FT8; noise has no fixed value),
 `BaselineNormalised` (FT4, and FST4 since #554: the spectrum is divided by a
 fitted baseline, so noise sits at ~1.0 and any threshold below that admits
 every peak), and
 `SyncFraction` (WSPR, JT9, JT65, Q65: sync power over sync plus noise, in
-0‥1, default `DEFAULT_SCORE_THRESHOLD` = 0.1). `sniper_max_cand_cap` is the
-bound the sniper path silently applies to `max_cand` (FT4: 15).
+0‥1, default `DEFAULT_SCORE_THRESHOLD` = 0.1).
 
-`profile.defaults` is the host search the registry publishes, and what the
-C ABI's `mfsk_mode_defaults` returns. **`Decoder<P>` does not read it:**
-`Depth` decides `sync_min` and the candidate count ([§2.2](#22-decodeparams-and-depth)),
-and the band is `decoder::default_params(mode)`'s. The table is the registry's
-own data (a UI asking "what does this build search by default?"); the scan
-modes' time window, score threshold and candidate cap still start from their
-`default_search_params()`:
+The registry carries **no default search parameters** (#698: `DecodeDefaults`
+and `sniper_max_cand_cap` went in 0.15.0; nothing but `default_params`' band
+read them). A mode's defaults are `decoder::default_params(mode)`, the
+`DecodeParams` every decoder, `AnyDecoder::with_defaults` and C's
+`mfsk_params_init` start from, together with its `Depth`, which decides the
+sync threshold and candidate count ([§2.2](#22-decodeparams-and-depth)). The
+band it sets:
 
-| entry | band (Hz) | `sync_min` | `max_cand` | source |
-|---|---|---|---|---|
-| FT8 | 100-3000 | 0.8 | 60 | `FT8_PROFILE` |
-| FT4 | 300-2700 | 1.18 | 200 | WSJT-X 3.x `ft4_decode.f90` `syncmin` / `MAXCAND` (#440; was 1.2 / 100) |
-| FST4 (all five) | 100-3000 | 1.20 (FST4-15: 1.15) | 200 | WSJT-X `fst4_decode.f90` `minsync` and candidate array (#554; was 0.8 / 50 on the Costas scale) |
-| WSPR | 1400-1600 | 0.1 | 200 | `wspr::search::default_search_params()`; ±5.46 s (8 symbols) |
-| JT9 | 200-4000 | 0.1 | 8 | `jt9::search::default_search_params()`; ±1.728 s |
-| JT65 | 1000-2000 | 0.1 | 8 | `jt65::search::default_search_params()`; ±7.62 s |
-| Q65 (all ten) | 200-3000 | 0.1 | 8 | `q65::search::default_search_params()`; ±1.0 s (#399, #413) |
-| uvpacket | — | 0 | 0 | none of the search machinery applies |
+| mode | band (Hz) | source |
+|---|---|---|
+| FT8, FT4 | 200-4000 | `jt9`'s command line (`jt9.f90:40-41`) |
+| FST4 (all seven) | 600-1400 | the GUI's F Low / F High (`mainwindow_settings.cpp:481-482`) |
+| FST4W (all four) | 1400-1600 | `jt9 -W`'s `-f 1500 -F 100` |
+| WSPR | 1400-1600 | `wspr::search::default_search_params()` |
+| JT9 | 200-4000 | `jt9::search::default_search_params()` |
+| JT65 | 1000-2000 | `jt65::search::default_search_params()` |
+| Q65 (all ten) | 200-3000 | `q65::search::default_search_params()` |
 
-Since #413 WSPR, JT9, JT65 and Q65 read their row from the library's own
-`default_search_params()` rather than a hand-kept copy, which had drifted
-from all four (WSPR / JT9 / JT65 published no band, and Q65 published
-`mfsk-ffi`'s wide EME scan of 32 candidates at 0.05). Without an FFT backend
-those four have no `search` module and publish an empty band.
+The scan modes' time window, score threshold and candidate cap start from
+their own `default_search_params()` too. Without an FFT backend those four
+have no `search` module and no decoder, and the band is empty.
 
 Lookup:
 
