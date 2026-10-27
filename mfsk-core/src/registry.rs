@@ -55,31 +55,50 @@ use crate::{FecCodec, FrameLayout, MessageCodec, ModulationParams, Protocol};
 
 use crate::ProtocolId;
 
-/// What a protocol's decode API can actually be asked to do.
+/// What an application can ask a mode's decoder and encoder to do.
 ///
 /// The registry has always described *geometry* — tones, symbol rate,
 /// FEC widths. It has never described **capability**, and a consumer
 /// that cannot see the difference between "this build has FST4-120" and
 /// "FST4 has no SIC at all" ends up hardcoding the matrix. The C ABI
 /// needs to publish it, and hardcoding it there would guarantee it
-/// drifts, so it is declared here beside the geometry and cross-checked
-/// against the real trait impls by `tests/registry_caps.rs` — in both
-/// directions: a bit claimed without the trait fails, and a trait
-/// implemented without the bit fails too.
+/// drifts, so it is declared here beside the geometry.
+///
+/// Every bit names an operation of the public API — a `DecodeParams`
+/// field, an `Extras` field, a strategy, a call — and nothing else
+/// (#698: until 0.15.0 bit 0 and bits 10-12 described the pre-0.13
+/// request builders, which are `pub(crate)`). `tests/registry_caps.rs`
+/// checks the bits against the public `AnyDecoder` and, in both
+/// directions, against the engine traits the decoders pass into: a bit
+/// claimed without the trait fails, and a trait implemented without the
+/// bit fails too.
 ///
 /// A plain `u32` of bits rather than a `bitflags` dependency: this has
 /// to cross a C boundary unchanged, and `no_std` builds carry it too.
 pub mod caps {
-    /// Drives the generic `msg::decode_request::DecodeRequest` /
-    /// `SniperRequest` builder pair (the `FrameDecodable` trait).
-    /// Protocols without this bit decode through their own builders, in
-    /// their own modules since 0.12.0 (`wspr`, `jt9`, `jt65`, `q65`):
-    /// Q65 takes search parameters and a nominal start and reports
-    /// `dt_sec` from it, and WSPR/JT9/JT65 take their own parameter
-    /// blocks. They are not lesser, they are shaped differently.
-    pub const DECODE_HANDLE: u32 = 1 << 0;
-    /// Narrow-band single-target search (`SniperRequest`, gated on the
-    /// `SupportsSniper` trait): a ±250 Hz window around a known carrier.
+    /// The mode decodes through the FT-family decoders
+    /// (`decoder::frame`: FT8, FT4, every FST4 sub-mode), the 77-bit-message
+    /// slot family: their `Extras` carry `ap_hint`, `eq` and `filter`, and
+    /// `DecodeParams::{station, qso, ap, contest}` build the QSO-context AP
+    /// ladder (upstream's `iaptype` hypotheses). WSPR, JT9, JT65, Q65 and
+    /// FST4W decode too ([`DECODER`]), with `Extras` shaped for their own
+    /// upstream decoders.
+    ///
+    /// **Not** "the modes that read `station` / `qso`": Q65 builds its own
+    /// AP codewords from them (`q65_decode.f90`) and JT65's deep search
+    /// takes `station.call` and the QSO context, without this bit. Nor does
+    /// it mean a7 or the sniper apply: both are FT8's alone ([`SNIPER`],
+    /// `Ft8Extras::a7`).
+    pub const WSJT77_FAMILY: u32 = 1 << 0;
+    /// Bit 0's name until 0.15.0, when it still described the generic
+    /// request builders of 0.12 (#698).
+    #[deprecated(
+        since = "0.15.0",
+        note = "renamed `WSJT77_FAMILY`; for \"does a decoder open\" use `DECODER`"
+    )]
+    pub const DECODE_HANDLE: u32 = WSJT77_FAMILY;
+    /// Narrow-band single-target search (`Ft8Extras::sniper`, the
+    /// `SupportsSniper` engine trait): a ±250 Hz window around a known carrier.
     ///
     /// Not a software convenience for chasing a spotted station. It is
     /// the receive-side half of narrowing the radio's *analogue*
@@ -99,13 +118,14 @@ pub mod caps {
     /// A-priori hint on a *targeted* search — one where the carrier is
     /// already known, so there is a single hypothesis to lock bits for.
     ///
-    /// Two different builders carry this: `SniperRequest::ap_hint` on
-    /// FT8, and `q65::Q65DecodeRequest::ap_hint` on Q65, whose decode is
-    /// inherently targeted (a nominal frequency plus a tolerance) and so
-    /// has no wide-band counterpart to offer. Contrast [`AP_WIDEBAND`],
-    /// which is the same hint applied to a whole-band search.
+    /// Two decoders carry this: FT8's, where `Ft8Extras::ap_hint` reaches
+    /// the sniper search, and Q65's (`Q65Extras::ap_hint`), whose decode is
+    /// inherently targeted (`rx_freq_hz` plus `tol_hz`) and so has no
+    /// wide-band counterpart to offer. Contrast [`AP_WIDEBAND`], which is
+    /// the same hint applied to a whole-band search.
     pub const AP_NARROW: u32 = 1 << 2;
-    /// A-priori hint on the *wide-band* search (`SupportsWideBandAp`).
+    /// A-priori hint on the *wide-band* search (`ap_hint` of the FT-family
+    /// `Extras`; the `SupportsWideBandAp` engine trait).
     ///
     /// This used to be FT8-only, and the reason was an artefact twice
     /// over. AP lived in a parallel engine (`msg::pipeline_ap`) whose
@@ -122,21 +142,23 @@ pub mod caps {
     /// `process_candidate_basic` takes an AP option — and reaches FT8,
     /// FT4 and every FST4 sub-mode. The parallel engine is gone.
     pub const AP_WIDEBAND: u32 = 1 << 3;
-    /// Flat successive-interference cancellation (`SupportsSicRounds`).
+    /// Flat successive-interference cancellation (`Ft8Strategy::SicRounds`,
+    /// `Ft4Strategy::SicRounds`; the `SupportsSicRounds` engine trait).
     pub const SIC_ROUNDS: u32 = 1 << 4;
-    /// Checkpoint-emulation early decode (`SupportsSicEarly`). FT8 only;
-    /// WSJT-X has no equivalent checkpoint architecture elsewhere.
+    /// Checkpoint-emulation early decode (`Ft8Strategy::SicEarly`; the
+    /// `SupportsSicEarly` engine trait). FT8 only; WSJT-X has no
+    /// equivalent checkpoint architecture elsewhere.
     pub const SIC_EARLY: u32 = 1 << 5;
-    /// `.osd(bool)` is honoured. Note this is about the *switch*: FT4
+    /// `Tuning::osd` is honoured. Note this is about the *switch*: FT4
     /// and FST4 run OSD by default through the shared pipeline, so the
     /// capability being absent would mean "cannot turn it off", not
     /// "does not have it".
     pub const OSD: u32 = 1 << 6;
-    /// `.eq_mode()` reaches the decoder.
+    /// The `eq` field of the FT-family `Extras` reaches the decoder.
     ///
     /// A property of the *input audio*, not of the search: local
     /// equalisation flattens a passband that an analogue filter has
-    /// tilted. It therefore matters on both builders — the narrow-band
+    /// tilted. It therefore matters on both searches — the narrow-band
     /// one because a roofing filter is the reason that path exists, and
     /// the wide-band one because filtered audio can be handed to it
     /// too. FT8's `eq_mode_recovers_bpf_edge_signal` pins exactly that
@@ -147,7 +169,7 @@ pub mod caps {
     /// generated FT4 golden, which has no receiver filter at all,
     /// `Local` loses two decodes of fourteen.
     pub const EQ_MODE: u32 = 1 << 7;
-    /// `.strictness()` changes an acceptance threshold that the
+    /// `Tuning::strictness` changes an acceptance threshold that the
     /// protocol's non-AP path actually reads. FST4 does not have this:
     /// `fst4_decode.f90` has no hard-error ceiling, so FST4 accepts on
     /// the CRC-24 and a successful unpack alone (`REQUIRES_UNPACK`).
@@ -156,36 +178,36 @@ pub mod caps {
     /// is polled, once per candidate. Every mode with a `Decoder` (WSPR,
     /// JT9, JT65 and Q65 since #593); not uvpacket, which has none.
     pub const BUDGET: u32 = 1 << 9;
-    /// `.known()` is honoured as a post-filter: already-decoded
-    /// messages are not re-reported, but the work of re-decoding them
-    /// is still done.
-    pub const KNOWN_FILTER: u32 = 1 << 10;
-    /// `.known()` reaches the engine: known signals are subtracted from
-    /// the audio, so they stop masking weaker ones. Strictly stronger
-    /// than [`KNOWN_FILTER`], and implies it.
-    pub const KNOWN_SUBTRACT: u32 = 1 << 11;
-    /// `.fft_cache()` round-trips, so a second decode of the *same*
-    /// slot skips rebuilding the forward transform.
-    pub const FFT_CACHE: u32 = 1 << 12;
-    /// `.on_result()` streaming delivery.
+    // Bits 10-12 (`KNOWN_FILTER`, `KNOWN_SUBTRACT`, `FFT_CACHE`) are retired
+    // since 0.15.0 and never reassigned: they described `.known()` and
+    // `.fft_cache()` of the 0.12 request builders, which no public API has
+    // had since 0.13 (#698). `mfsk-ffi` keeps the C names, never set.
+    /// Results can be delivered as they are found (`Decoder::decode_with`,
+    /// `AnyDecoder::decode_with`).
     pub const ON_RESULT: u32 = 1 << 13;
-    /// A synthesiser exists: message bits in, audio out.
+    /// A synthesiser exists: `encoder::encode` takes the mode, message text
+    /// in, tones and audio out.
     pub const ENCODE: u32 = 1 << 14;
     // Bit 15 is `MFSK_CAP_STREAM_RECEIVER`, which `mfsk-ffi` defines on its
     // own (JTTY has no registry entry to claim it). Skipped here so the two
     // vocabularies never assign it twice.
-    /// `.noise_blanker()` reaches the decoder (`SupportsNoiseBlanker`):
-    /// WSJT-X's impulse-noise blanker, **every FST4 sub-mode** and no
-    /// other — `fst4_decode.f90` is the only upstream decoder that blanks.
+    /// `Fst4Extras::noise_blanker` reaches the decoder (the
+    /// `SupportsNoiseBlanker` engine trait): WSJT-X's impulse-noise
+    /// blanker, **every FST4 sub-mode** and no other — `fst4_decode.f90`
+    /// is the only upstream decoder that blanks.
     pub const NOISE_BLANKER: u32 = 1 << 16;
-    /// `.tx_freq()` (WSJT-X's `nftx`) changes the search: FT8 tries an AP
-    /// hypothesis that locks both callsigns within 50 Hz of the transmit
-    /// frequency as well as of the QSO frequency (`ft8b.f90`). **FT8 only.**
-    /// Unlike the bits above this one has no marker trait — the Rust
-    /// builder accepts the call for every protocol and the others simply
-    /// never read it — so it is pinned by the claim list in
-    /// `tests/registry_caps.rs` rather than by a bound.
+    /// `DecodeParams::tx_freq_hz` (WSJT-X's `nftx`) changes the search: FT8
+    /// tries an AP hypothesis that locks both callsigns within 50 Hz of the
+    /// transmit frequency as well as of the QSO frequency (`ft8b.f90`).
+    /// **FT8 only.** Unlike the bits above this one has no marker trait —
+    /// every mode accepts the field and the others simply never read it —
+    /// so it is pinned by the claim list in `tests/registry_caps.rs`
+    /// rather than by a bound.
     pub const TX_FREQ: u32 = 1 << 17;
+    /// A slot decoder opens for the mode: `AnyDecoder::new(mode, …)` (and
+    /// `mfsk_decoder_open` at the C boundary). Every [`Mode`](super::Mode),
+    /// which is every registry entry but the uvpacket ones.
+    pub const DECODER: u32 = 1 << 18;
 }
 
 /// How to read a protocol's `sync_min`, because the three scales are
@@ -369,7 +391,8 @@ macro_rules! protocol_meta {
 /// there is for FT4. `crate::decoder::Decoder<Ft8>` takes it from `Depth`.
 #[allow(dead_code)] // unused when the matching protocol feature is off
 const FT8_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::DECODE_HANDLE
+    caps: caps::DECODER
+        | caps::WSJT77_FAMILY
         | caps::SNIPER
         | caps::AP_NARROW
         | caps::AP_WIDEBAND
@@ -379,9 +402,6 @@ const FT8_PROFILE: DecodeProfile = DecodeProfile {
         | caps::EQ_MODE
         | caps::STRICTNESS
         | caps::BUDGET
-        | caps::KNOWN_FILTER
-        | caps::KNOWN_SUBTRACT
-        | caps::FFT_CACHE
         | caps::ON_RESULT
         | caps::TX_FREQ
         | caps::ENCODE,
@@ -407,15 +427,14 @@ const FT8_PROFILE: DecodeProfile = DecodeProfile {
 /// `ft4_decode.f90`'s `MAXCAND` (100 through WSJT-X 2.7).
 #[allow(dead_code)]
 const FT4_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::DECODE_HANDLE
+    caps: caps::DECODER
+        | caps::WSJT77_FAMILY
         | caps::AP_WIDEBAND
         | caps::SIC_ROUNDS
         | caps::OSD
         | caps::EQ_MODE
         | caps::STRICTNESS
         | caps::BUDGET
-        | caps::KNOWN_FILTER
-        | caps::FFT_CACHE
         | caps::ON_RESULT
         | caps::ENCODE,
     defaults: DecodeDefaults {
@@ -445,13 +464,12 @@ const FT4_PROFILE: DecodeProfile = DecodeProfile {
 /// (`embedded-shared::fst4_monitor`) and this registry does not describe.
 #[allow(dead_code)]
 const FST4_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::DECODE_HANDLE
+    caps: caps::DECODER
+        | caps::WSJT77_FAMILY
         | caps::AP_WIDEBAND
         | caps::OSD
         | caps::EQ_MODE
         | caps::BUDGET
-        | caps::KNOWN_FILTER
-        | caps::FFT_CACHE
         | caps::ON_RESULT
         | caps::NOISE_BLANKER
         | caps::ENCODE,
@@ -469,13 +487,12 @@ const FST4_PROFILE: DecodeProfile = DecodeProfile {
 /// (`fst4_decode.f90:309`).
 #[allow(dead_code)]
 const FST4_15_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::DECODE_HANDLE
+    caps: caps::DECODER
+        | caps::WSJT77_FAMILY
         | caps::AP_WIDEBAND
         | caps::OSD
         | caps::EQ_MODE
         | caps::BUDGET
-        | caps::KNOWN_FILTER
-        | caps::FFT_CACHE
         | caps::ON_RESULT
         | caps::NOISE_BLANKER
         | caps::ENCODE,
@@ -497,7 +514,7 @@ const FST4_15_PROFILE: DecodeProfile = DecodeProfile {
 /// the size of upstream's candidate array (`:270`).
 #[allow(dead_code)]
 const FST4W_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
+    caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: DecodeDefaults {
         freq_min_hz: 1400.0,
         freq_max_hz: 1600.0,
@@ -565,7 +582,7 @@ macro_rules! scan_defaults {
 /// says so where it builds its own parameters.
 #[cfg(feature = "q65")]
 const Q65_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::AP_NARROW | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
+    caps: caps::DECODER | caps::AP_NARROW | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(q65),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
@@ -576,7 +593,7 @@ const Q65_PROFILE: DecodeProfile = DecodeProfile {
 /// `mfsk_wspr_decode` scans with.
 #[cfg(feature = "wspr")]
 const WSPR_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
+    caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(wspr),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
@@ -588,7 +605,7 @@ const WSPR_PROFILE: DecodeProfile = DecodeProfile {
 /// exposes (`mfsk_jt9_decode_at`).
 #[cfg(feature = "jt9")]
 const JT9_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
+    caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(jt9),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,
@@ -597,7 +614,7 @@ const JT9_PROFILE: DecodeProfile = DecodeProfile {
 /// JT65. As JT9, with `jt65::search::default_search_params()`.
 #[cfg(feature = "jt65")]
 const JT65_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
+    caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
     defaults: scan_defaults!(jt65),
     sync_scale: SyncScale::SyncFraction,
     sniper_max_cand_cap: None,

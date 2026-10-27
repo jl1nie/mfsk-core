@@ -197,12 +197,18 @@ pub const MFSK_METHOD_LIST_A8: u8 = 5;
 // those to the trait impls in both directions.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// The mode is the 77-bit-message slot family (FT8, FT4, FST4): the
-/// QSO-context AP of the parameter block, a7 and the sniper window apply.
-/// Modes without this bit (WSPR, JT9, JT65, Q65) decode through the same
-/// `mfsk_decoder_*` handle, shaped differently — their `MfskExtras` fields
-/// differ and an option they lack is `MFSK_UNSUPPORTED`.
-pub const MFSK_CAP_DECODE_HANDLE: u64 = 1 << 0;
+/// The mode is the 77-bit-message slot family (FT8, FT4, FST4): the AP
+/// hint, equalisation and message filter of `MfskExtras` apply, and the
+/// parameter block's station and QSO context build the QSO-context AP
+/// ladder. Q65 and JT65 read the station and QSO fields too, without this
+/// bit; a7 and the sniper window are FT8's alone ([`MFSK_CAP_SNIPER`]).
+/// Every slot mode decodes through the same `mfsk_decoder_*` handle
+/// ([`MFSK_CAP_DECODER`]); an option a mode lacks is `MFSK_UNSUPPORTED`.
+pub const MFSK_CAP_WSJT77_FAMILY: u64 = 1 << 0;
+/// Deprecated since 0.15.0: the old name of [`MFSK_CAP_WSJT77_FAMILY`], the
+/// same bit. It never meant "a decoder opens"; that is [`MFSK_CAP_DECODER`].
+#[deprecated(since = "0.15.0", note = "renamed MFSK_CAP_WSJT77_FAMILY")]
+pub const MFSK_CAP_DECODE_HANDLE: u64 = MFSK_CAP_WSJT77_FAMILY;
 /// Narrow-band single-target search. **FT8 only, by design**: it is
 /// the receive-side half of narrowing a transceiver's *analogue*
 /// roofing filter, not a general "hunt one known station" feature.
@@ -226,13 +232,14 @@ pub const MFSK_CAP_EQ_MODE: u64 = 1 << 7;
 pub const MFSK_CAP_STRICTNESS: u64 = 1 << 8;
 /// A caller-supplied budget predicate is polled.
 pub const MFSK_CAP_BUDGET: u64 = 1 << 9;
-/// Known signals can be excluded from the reported results.
+/// Retired in 0.15.0 and never set: described the Rust request builders'
+/// `.known()`, which no public API has had since 0.13 (#698). The number
+/// is not reused.
 pub const MFSK_CAP_KNOWN_FILTER: u64 = 1 << 10;
-/// Known signals are subtracted from the audio, not merely filtered
-/// out of the output. Strictly stronger than [`MFSK_CAP_KNOWN_FILTER`].
+/// Retired in 0.15.0 and never set (#698), as [`MFSK_CAP_KNOWN_FILTER`].
 pub const MFSK_CAP_KNOWN_SUBTRACT: u64 = 1 << 11;
-/// A slot FFT can be handed back for a second pass over the same
-/// audio.
+/// Retired in 0.15.0 and never set: described `.fft_cache()` of the Rust
+/// request builders (#698). The number is not reused.
 pub const MFSK_CAP_FFT_CACHE: u64 = 1 << 12;
 /// Results can be delivered through a callback as they are found.
 pub const MFSK_CAP_ON_RESULT: u64 = 1 << 13;
@@ -260,6 +267,9 @@ pub const MFSK_CAP_NOISE_BLANKER: u64 = 1 << 16;
 /// The operator's transmit frequency (`tx_freq_hz`, WSJT-X's `nftx`)
 /// steers the a-priori search. FT8 only.
 pub const MFSK_CAP_TX_FREQ: u64 = 1 << 17;
+/// `mfsk_decoder_open` accepts the mode: every slot mode. Not MSK144 or
+/// JTTY, which are [`MFSK_CAP_STREAM_RECEIVER`].
+pub const MFSK_CAP_DECODER: u64 = 1 << 18;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public C types

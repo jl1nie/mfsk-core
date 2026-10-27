@@ -18,9 +18,10 @@ use mfsk_core::registry::caps as r;
 /// mirrors. Stated one pair at a time on purpose: a loop over a list
 /// built from the same source would prove nothing.
 #[test]
+#[allow(deprecated)] // checks the deprecated alias on purpose
 fn abi_caps_match_the_registry() {
-    let pairs: [(&str, u64, u32); 17] = [
-        ("DECODE_HANDLE", MFSK_CAP_DECODE_HANDLE, r::DECODE_HANDLE),
+    let pairs: [(&str, u64, u32); 15] = [
+        ("WSJT77_FAMILY", MFSK_CAP_WSJT77_FAMILY, r::WSJT77_FAMILY),
         ("SNIPER", MFSK_CAP_SNIPER, r::SNIPER),
         ("AP_NARROW", MFSK_CAP_AP_NARROW, r::AP_NARROW),
         ("AP_WIDEBAND", MFSK_CAP_AP_WIDEBAND, r::AP_WIDEBAND),
@@ -30,13 +31,11 @@ fn abi_caps_match_the_registry() {
         ("EQ_MODE", MFSK_CAP_EQ_MODE, r::EQ_MODE),
         ("STRICTNESS", MFSK_CAP_STRICTNESS, r::STRICTNESS),
         ("BUDGET", MFSK_CAP_BUDGET, r::BUDGET),
-        ("KNOWN_FILTER", MFSK_CAP_KNOWN_FILTER, r::KNOWN_FILTER),
-        ("KNOWN_SUBTRACT", MFSK_CAP_KNOWN_SUBTRACT, r::KNOWN_SUBTRACT),
-        ("FFT_CACHE", MFSK_CAP_FFT_CACHE, r::FFT_CACHE),
         ("ON_RESULT", MFSK_CAP_ON_RESULT, r::ON_RESULT),
         ("ENCODE", MFSK_CAP_ENCODE, r::ENCODE),
         ("NOISE_BLANKER", MFSK_CAP_NOISE_BLANKER, r::NOISE_BLANKER),
         ("TX_FREQ", MFSK_CAP_TX_FREQ, r::TX_FREQ),
+        ("DECODER", MFSK_CAP_DECODER, r::DECODER),
     ];
     for (name, abi, reg) in pairs {
         assert_eq!(
@@ -44,6 +43,55 @@ fn abi_caps_match_the_registry() {
             u64::from(reg),
             "caps::{name} is {abi} at the C boundary and {reg} in the registry"
         );
+    }
+    // The deprecated alias is the same bit, and the retired ones keep their
+    // numbers so a C caller still compiles (#698).
+    assert_eq!(MFSK_CAP_DECODE_HANDLE, MFSK_CAP_WSJT77_FAMILY);
+    assert_eq!(
+        (
+            MFSK_CAP_KNOWN_FILTER,
+            MFSK_CAP_KNOWN_SUBTRACT,
+            MFSK_CAP_FFT_CACHE
+        ),
+        (1 << 10, 1 << 11, 1 << 12)
+    );
+}
+
+fn present_modes() -> Vec<MfskMode> {
+    (0..mfsk_mode_count())
+        .map(|i| {
+            let mut m = std::mem::MaybeUninit::<MfskMode>::uninit();
+            assert_eq!(unsafe { mfsk_mode_at(i, m.as_mut_ptr()) }, MfskStatus::Ok);
+            unsafe { m.assume_init() }
+        })
+        .collect()
+}
+
+/// `MFSK_CAP_DECODER` is a claim about `mfsk_decoder_open`, so check it
+/// against the call: it opens with defaults for exactly the modes with the
+/// bit. Fails if the bit and the call disagree on any mode (MSK144 and JTTY
+/// must neither open nor claim it).
+#[test]
+fn decoder_bit_is_what_mfsk_decoder_open_accepts() {
+    for m in present_modes() {
+        let mut st = MfskStatus::Ok;
+        let d = unsafe { mfsk_decoder_open(m as u32, std::ptr::null(), std::ptr::null(), &mut st) };
+        let opened = !d.is_null();
+        unsafe { mfsk_decoder_close(d) };
+        assert_eq!(
+            mfsk_mode_caps(m as u32) & MFSK_CAP_DECODER != 0,
+            opened,
+            "{m:?}: MFSK_CAP_DECODER and mfsk_decoder_open disagree (status {st:?})"
+        );
+    }
+}
+
+/// Bits 10-12 are retired: no mode publishes them (#698).
+#[test]
+fn retired_bits_are_never_published() {
+    let retired = MFSK_CAP_KNOWN_FILTER | MFSK_CAP_KNOWN_SUBTRACT | MFSK_CAP_FFT_CACHE;
+    for m in present_modes() {
+        assert_eq!(mfsk_mode_caps(m as u32) & retired, 0, "{m:?}");
     }
 }
 
@@ -253,9 +301,9 @@ fn msk144_is_addressable_and_says_what_it_is_not() {
         "MSK144's frame is 144 symbols x 6 samples = 864 at 12 kHz"
     );
     assert_eq!(
-        i.caps & MFSK_CAP_DECODE_HANDLE,
+        i.caps & (MFSK_CAP_WSJT77_FAMILY | MFSK_CAP_DECODER),
         0,
-        "MSK144 bypasses engine::pipeline by design, so the decode handle must not claim it"
+        "MSK144 is a stream receiver, not a slot decoder"
     );
 }
 
@@ -282,9 +330,10 @@ fn published_capabilities_match_the_traits() {
         );
     }
     assert_eq!(
-        mfsk_mode_caps(MfskMode::Wspr as u32) & MFSK_CAP_DECODE_HANDLE,
+        mfsk_mode_caps(MfskMode::Wspr as u32) & MFSK_CAP_WSJT77_FAMILY,
         0
     );
+    assert_ne!(mfsk_mode_caps(MfskMode::Wspr as u32) & MFSK_CAP_DECODER, 0);
 }
 
 /// The size field is the growth contract: an older caller declaring a

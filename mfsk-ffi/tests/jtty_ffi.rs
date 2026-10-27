@@ -95,11 +95,7 @@ fn jtty_is_addressable_and_describes_its_frame() {
     assert_eq!((i.ntones, i.n_symbols, i.n_sync, i.n_data), (4, 59, 13, 46));
     assert_eq!(i.slot_samples_12k, 22_656, "one 1.888 s frame at 12 kHz");
     assert_ne!(i.caps & MFSK_CAP_STREAM_RECEIVER, 0);
-    assert_eq!(
-        i.caps & MFSK_CAP_DECODE_HANDLE,
-        0,
-        "there is no slot decode handle"
-    );
+    assert_eq!(i.caps & MFSK_CAP_DECODER, 0, "there is no slot decoder");
     assert_eq!(
         mfsk_mode_caps(MfskMode::Jtty as u32),
         MFSK_CAP_STREAM_RECEIVER | MFSK_CAP_ENCODE

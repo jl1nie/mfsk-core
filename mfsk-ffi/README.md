@@ -327,9 +327,11 @@ build without `q65` would shift every index after it.
 Every slot mode opens a decoder through the same `mfsk_decoder_*` handle —
 FT8, FT4, the seven FST4 sub-modes, the four FST4W periods, WSPR, JT9, JT65 and the ten Q65 sub-modes —
 and an option a mode lacks is refused at open with `MFSK_STATUS_UNSUPPORTED`
-rather than dropped. `MFSK_CAP_DECODE_HANDLE` no longer says whether a decoder
-opens; it marks the 77-bit-message family (FT8, FT4, FST4), the one the
-QSO-context AP, a7 and the sniper window apply to. MSK144, JTTY and uvpacket have
+rather than dropped. `MFSK_CAP_DECODER` says a decoder opens.
+`MFSK_CAP_WSJT77_FAMILY` (until 0.15.0 `MFSK_CAP_DECODE_HANDLE`, kept as an
+alias) marks the 77-bit-message family (FT8, FT4, FST4), where the AP hint,
+equalisation and message filter apply and the station / QSO context builds
+the QSO-context AP ladder. MSK144, JTTY and uvpacket have
 no decoder (`MFSK_STATUS_UNKNOWN_PROTOCOL`); JTTY has `mfsk_jtty_*`.
 
 Non-12 kHz input is resampled internally (linear interpolation). Sample

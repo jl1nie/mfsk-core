@@ -80,7 +80,7 @@ fn run(rx: *mut MfskMsk144Receiver, pcm: &[i16], chunk: usize) -> Vec<(String, i
 fn msk144_is_a_stream_receiver() {
     let caps = mfsk_mode_caps(MfskMode::Msk144 as u32);
     assert_ne!(caps & MFSK_CAP_STREAM_RECEIVER, 0);
-    assert_eq!(caps & MFSK_CAP_DECODE_HANDLE, 0, "no slot decode handle");
+    assert_eq!(caps & MFSK_CAP_DECODER, 0, "no slot decoder");
     let mut i = std::mem::MaybeUninit::<MfskModeInfo>::zeroed();
     assert_eq!(
         unsafe { mfsk_mode_info(MfskMode::Msk144 as u32, i.as_mut_ptr()) },

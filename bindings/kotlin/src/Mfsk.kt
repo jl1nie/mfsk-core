@@ -666,9 +666,14 @@ object Mfsk {
     }
 
     // Capability bits, mirroring `MFSK_CAP_*` in mfsk.h.
-    /// Kept for ABI parity. Every slot mode is driven through [MfskDecoder]
-    /// now, whether or not it sets this bit.
-    const val CAP_DECODE_HANDLE = 1L shl 0
+    /// The 77-bit-message slot family (FT8, FT4, FST4): the AP hint,
+    /// equalisation and message filter apply, and the station / QSO context
+    /// builds the QSO-context AP ladder. Q65 and JT65 read the station and
+    /// QSO fields too, without this bit; a7 and the sniper are FT8's alone
+    /// ([CAP_SNIPER]). Whether an [MfskDecoder] opens is [CAP_DECODER].
+    const val CAP_WSJT77_FAMILY = 1L shl 0
+    @Deprecated("renamed CAP_WSJT77_FAMILY", ReplaceWith("Mfsk.CAP_WSJT77_FAMILY"))
+    const val CAP_DECODE_HANDLE = CAP_WSJT77_FAMILY
     const val CAP_SNIPER = 1L shl 1
     const val CAP_AP_NARROW = 1L shl 2
     const val CAP_AP_WIDEBAND = 1L shl 3
@@ -679,8 +684,12 @@ object Mfsk {
     const val CAP_STRICTNESS = 1L shl 8
     /// [MfskDecoder.setBudget] is honoured: every mode with a decoder.
     const val CAP_BUDGET = 1L shl 9
+    /// Bits 10-12: retired in 0.15.0, never set, numbers not reused (#698).
+    @Deprecated("retired in 0.15.0; no mode sets it")
     const val CAP_KNOWN_FILTER = 1L shl 10
+    @Deprecated("retired in 0.15.0; no mode sets it")
     const val CAP_KNOWN_SUBTRACT = 1L shl 11
+    @Deprecated("retired in 0.15.0; no mode sets it")
     const val CAP_FFT_CACHE = 1L shl 12
     const val CAP_ON_RESULT = 1L shl 13
     const val CAP_ENCODE = 1L shl 14
@@ -693,6 +702,9 @@ object Mfsk {
     /// The transmit frequency steers the a-priori search: FT8 only. See
     /// [MfskParams.txFreqHz].
     const val CAP_TX_FREQ = 1L shl 17
+    /// An [MfskDecoder] opens for the mode: every slot mode, not JTTY or
+    /// MSK144 ([CAP_STREAM_RECEIVER]).
+    const val CAP_DECODER = 1L shl 18
 
     /// The boundary's own revision, separate from the crate version.
     val abiVersion: Int get() = nativeAbiVersion()

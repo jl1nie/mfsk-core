@@ -33,7 +33,7 @@ final class Msk144ReceiverTests: XCTestCase {
     func testTheModeIsAStreamReceiverWithNoSlotDecode() throws {
         try requireMsk144()
         XCTAssertTrue(Mode.msk144.capabilities.contains(.streamReceiver))
-        XCTAssertFalse(Mode.msk144.capabilities.contains(.decodeHandle))
+        XCTAssertFalse(Mode.msk144.capabilities.contains(.decoder))
     }
 
     func testTheRecordingsPingsComeOutWhenFedInChunks() throws {

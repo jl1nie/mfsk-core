@@ -47,9 +47,10 @@ final class ModeIntrospectionTests: XCTestCase {
             guard let params = try? DecodeParams(mode: mode) else { continue }
             XCTAssertGreaterThan(params.bandHz.upperBound, params.bandHz.lowerBound, "\(mode.name)")
             XCTAssertNoThrow(try Decoder(mode: mode, params: params), "\(mode.name)")
-            if mode.capabilities.contains(.decodeHandle) {
+            XCTAssertTrue(mode.capabilities.contains(.decoder), "\(mode.name) opens a Decoder")
+            if mode.capabilities.contains(.wsjt77Family) {
                 XCTAssertGreaterThan(try mode.info.decodeFFT1Size, 0,
-                                     "\(mode.name) drives the decode handle but reports no slot transform")
+                                     "\(mode.name) is FT-family but reports no slot transform")
             }
         }
     }

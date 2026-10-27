@@ -16,6 +16,12 @@
   QsoProgress}`, `Jt9Depth`, `GridDepth`, `jtty::rx::{SideChannels, Subtracted}`, `jtty::pack::{ExchangeProfile, PackError}`, the msk144 and jtty result structs, `iq::RateTrackConfig`, `q65::{Caller, DxFromHistory}`. Build an
   option from `Default` and assign; add a wildcard arm to a `match`. `WsprMessage` and `Jt72Message` stay exhaustive (the variants are
   the message formats). Tier A+B unchanged. Migration: `LIBRARY.md` §1.4 (and `.ja.md`).
+- **Registry capability bits describe the public API** (#698). Bit 0 is `caps::WSJT77_FAMILY` (the FT8 / FT4 / FST4 decoders: `ap_hint`,
+  `eq`, `filter`, the QSO-context AP ladder); `DECODE_HANDLE` is a deprecated alias and never meant "a decoder opens", which is the new
+  `caps::DECODER` (bit 18: every `Mode`; C `MFSK_CAP_DECODER`, what `mfsk_decoder_open` accepts). Bits 10-12 (`KNOWN_FILTER`,
+  `KNOWN_SUBTRACT`, `FFT_CACHE`) described the 0.12 builders, which no public API has had since 0.13: removed from Rust, kept in C /
+  Kotlin / Swift as deprecated names that no mode sets, numbers not reused. `tests/registry_caps.rs` checks bits 0 and 18 against
+  `AnyDecoder`, `mfsk-ffi/tests/mode_introspection.rs` bit 18 against `mfsk_decoder_open`. C migration: `DECODE_HANDLE` → `WSJT77_FAMILY` or `DECODER`, drop tests of 10-12.
 
 ### Added
 

@@ -8,7 +8,7 @@
 // windows still needs) and reports *updates*. That is why this is a
 // class of its own rather than a ``Decoder`` mode: the mode's
 // capabilities say ``Capabilities/streamReceiver``, not
-// ``Capabilities/decodeHandle``.
+// ``Capabilities/decoder``.
 
 import CMfsk
 
