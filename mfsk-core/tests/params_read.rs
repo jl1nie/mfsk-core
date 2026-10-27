@@ -11,6 +11,14 @@
 //! but dropping `RxFreqHz` from JT9 does not, because JT9's Rx window is an
 //! extra pass near the Rx frequency that a strong signal elsewhere does not
 //! need (both tried when this test was written).
+//!
+//! Cells the poison cannot reach at all, because the read sits behind
+//! settings `default_params` leaves off (a station call, both QSO calls, an Rx
+//! frequency, AP on) and a strong signal decodes without AP anyway, so this
+//! test does not check them: FT4 / FST4 `tx_freq_hz` (the both-callsign AP
+//! rule), Q65 `qso.progress` (its AP list), FST4 `tol_hz` (the noise-blanker
+//! sweep is off), and every "only with `rx_freq_hz`" read. Their empty cells
+//! rest on the code and the review of #698.
 //! A field inside the set is only checked where a deterministic probe exists
 //! (`read_fields_are_reachable`: the band and the Rx window); the AP context,
 //! contest, EME delay, depth, averaging and deep-search cells need a signal
