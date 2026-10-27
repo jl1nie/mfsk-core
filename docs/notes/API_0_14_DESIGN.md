@@ -97,6 +97,8 @@ Today a Rust application transmits by a different route per family: `engine::tx:
 for FT8/FT4/FST4, `wspr::synthesize_type1`, `jt9::synthesize_standard`, `jt65::synthesize_standard`, `q65::synthesize_standard_for`,
 `fst4w::encode::message_to_tones`. The C ABI already has one `mfsk_encode_*` per mode; Rust has nothing at the level of `AnyDecoder`.
 
+(0.15: the fields are private behind accessors, #700; `LIBRARY.md` §1.4.)
+
 ```rust
 /// What `encode` produced: the channel symbols, and what a receiver will print.
 #[non_exhaustive] #[derive(Clone, Debug)]

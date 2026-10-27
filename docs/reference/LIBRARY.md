@@ -106,6 +106,9 @@ value (`registry::Mode`), the text is the message as WSJT-X's Tx box shows it, a
 carries the channel symbols and what a receiver will print. Hashed calls (`<W9XYZ>`) come back in
 `hashed_calls`, to hand to `Decoder::learn_callsign`; a text the mode cannot send is an
 `EncodeError`. `Encoded::synthesize` gives `f32` audio at the sample rate you name, `synthesize_i16` 16-bit.
+`Encoded` is read through `mode()`, `tones()`, `text()` and `hashed_calls()`: its tones are always the ones `encode` made for
+its mode, so synthesis cannot be handed a wrong tone, and the sample rate is not an error (a rate too low for the mode gives degenerate
+audio, 0 Hz none; memory grows with rate × frame, FST4-1800 at 192 kHz is about 1.4 GB; #700).
 Every message form a mode has is sent, and no mode returns `EncodeError::Unsupported`: WSPR types 1, 2 and 3
 (`CALL GRID4 DBM`, `PFX/CALL DBM` or `CALL/SFX DBM`, `<CALL> GRID6 DBM`; a station with a compound call alternates
 type 2 and type 3, and that schedule is the application's, as in WSJT-X's GUI; the power is rounded to a value WSPR
@@ -116,7 +119,7 @@ sends, 38 dBm goes out as 37, as `wqencode` does) and JT9 / JT65 standard messag
 use mfsk_core::prelude::*;
 
 let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
-assert_eq!(tx.tones.len(), 79);
+assert_eq!(tx.tones().len(), 79);
 let audio = tx.synthesize(&TxAudio::new(12_000, 1500.0));
 assert_eq!(audio.len(), tx.synth_len(12_000));
 ```
@@ -532,8 +535,8 @@ callers are meant to build by literal, not part of the decode API.
 
 0.15 changes what a caller can name, not what the decoder does. `Decoder<P>`, `DecodeParams`, the `Extras`, `SlotInput`, `Row` and `SlotResult` are
 where they were, and **no result changes** (tier A+B, same goldens). Most applications recompile unchanged. You are affected if your code
-(1) names `engine::pipeline` by path, (2) enables `internal-testing`, (3) builds one of the option structs below by literal, or (4) matches
-one of the enums below without a wildcard arm. The break is in `CHANGELOG.md`, `## Unreleased` (#693).
+(1) names `engine::pipeline` by path, (2) enables `internal-testing`, (3) builds one of the option structs below by literal, (4) matches
+one of the enums below without a wildcard arm, or (5) reads an `Encoded` field. The break is in `CHANGELOG.md`, `## Unreleased` (#693).
 
 **Where each thing went.**
 
@@ -545,6 +548,7 @@ one of the enums below without a wildcard arm. The break is in `CHANGELOG.md`, `
 | `wspr::decode::{debug_refined_sync, decode_scan_subtract}`, `fec::ldpc240_101::fst4_osd_diag_force_old`, `fec::ldpc::osd::npre1_pattern_counts`, `ft8::decode_block::compute_spectrogram_f32_timed`, `engine::sync2d::{ft4_sync_ref_prep_bench, ft4_aligned_cd0_bench}` (public only with `internal-testing`) | `__internal::wspr::decode::X`, `__internal::fec::ldpc240_101::fst4_osd_diag_force_old`, `__internal::fec::ldpc::npre1_pattern_counts`, `__internal::ft8::decode_block::compute_spectrogram_f32_timed`, `__internal::sync2d::X` |
 | `Ft4CoarsePhasors::buffer_addrs()` (with `internal-testing`) | `__internal::sync2d::buffer_addrs(&phasors)`: a method on a public type no longer depends on a feature |
 | `internal-testing` | adds `__internal` and nothing else; every other path is the same with or without it. `mfsk-ffi` no longer enables it |
+| `Encoded`'s fields `tx.mode`, `tx.tones`, `tx.text`, `tx.hashed_calls` | `tx.mode()`, `tx.tones()` (`&[u8]`), `tx.text()` (`&str`), `tx.hashed_calls()` (`&[String]`). The fields are private so the tones cannot stop matching the mode; tones from elsewhere go to `engine::tx::synthesize::<P>` (#700) |
 | `IqReceiver::set_prefix_points(id, points) -> bool` | deprecated (it works as before): `update_channel(id, ChannelSpec::from(&decoder))`, which also refuses another mode and returns an `IqError` for an unknown or audio channel; points that are not a decoder's go in `ChannelSpec { prefix_points, .. }` (`&'static [usize]`) |
 
 The decode entry for an application is `Decoder<P>`. If you were calling `DecodeRequest` or `decode_frame` from your own code, move to `Decoder::<P>::new(DecodeParams)` and `decode(&SlotInput)`; options are in `P::Extras`
@@ -564,7 +568,7 @@ Left exhaustive on purpose: `msg::wspr::WsprMessage` and `msg::jt72::Jt72Message
 
 **Finding it from the compiler.** `unresolved import …engine::pipeline…` or `module … is private`: the first four rows above.
 `cannot create non-exhaustive struct using struct expression` (E0639): the option-struct row. `non-exhaustive patterns: `_` not covered`
-(E0004): the enum row. Every one of them is a compile error; nothing changes silently.
+(E0004): the enum row. `field … of struct Encoded is private` (E0616): the `Encoded` row. Every one of them is a compile error; nothing changes silently.
 
 **C ABI, Kotlin, Swift.** Unchanged: ABI 3, `include/mfsk.h` regenerates byte for byte, and the bindings take no new field. The one
 visible effect is `MFSK_AP_OFF` for an `ApMode` this ABI does not know, which cannot occur until a new mode is added.
@@ -670,7 +674,7 @@ what was searched, not what was missed, and it counts noise candidates (#696, #6
 
 | field | what |
 |---|---|
-| `decoded: Decoded` | the cross-mode row: `text` (resolved against the decoder's hash table), `freq_hz`, `dt_sec`, `snr_db`, `protocol` |
+| `decoded: Decoded` | the cross-mode row: `text` (resolved against the decoder's hash table), `freq_hz`, `dt_sec`, `snr_db`, `protocol` (the family, a `ProtocolId`: the FST4, FST4W and Q65 sub-modes share one tag. The exact `Mode` is the decoder's, `AnyDecoder::mode()` or `P`; an application that sends rows on, to a channel or a spot, sends the mode with them, as the skimmer does; #700) |
 | `detail: RowDetail` | what the modes share beyond it: `sync_score`, `sync_cv`, `hard_errors`, `method` (how it was decoded: `Bp`, `Osd`, `Ap { iaptype }`, `ListA7`, `ListA8`; `None` for WSPR, JT9, JT65, Q65 and FST4W; #696), `pass` (the mode's own id, which means something else in every mode: read `method`; the ids are in `docs/notes/PASS_IDS.md`), `info` (the message bits, every mode), `hash_resolved` (the text needed the table for a `<...>`), `delivery` (which `decode_with` delivery the row is, or was: [§2.4](#24-streaming-delivery)), `stage` (`Early` / `Final` from a `decode_prefix` sequence, else `None`), `copied_last_tx` (Q65 Pileup). The three numbers are `Option`s, `None` where the mode measures none: WSPR, JT9, JT65 and Q65, and for the sync pair FT8's a7 / a8 list decodes. `sync_score` is on the mode's own search scale, not comparable between modes |
 | `native: R` | the mode's own result: `DecodeResult` (FT8, FT4, FST4), `WsprResult`, `Jt9Result`, `Jt65Result`, `Q65Result` |
 
@@ -2195,7 +2199,7 @@ it: a protocol module re-exports the shared parts it is built from, and a parent
 mfsk_core
 ├── prelude.rs        [A] `use mfsk_core::prelude::*;` — Decoder · AnyDecoder · DecodeParams · SlotInput · Row · encode · Encoded ·
 │                     TxAudio · IqReceiver · Mode · Decoded · ApHint … (the protocol ZSTs stay at the root)
-├── encoder.rs        [A] encode / encode_with → Encoded { tones, text, hashed_calls }, synthesize; one call over Mode, no FFT needed
+├── encoder.rs        [A] encode / encode_with → Encoded (mode(), tones(), text(), hashed_calls()), synthesize; one call over Mode, no FFT needed
 ├── engine/           [P, B] Protocol traits, DSP, sync, LLR, equaliser, pipeline
 │   ├── protocol.rs     [P] ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
 │   ├── dsp/            resample · downsample · gfsk · cpfsk · envelope · subtract ·

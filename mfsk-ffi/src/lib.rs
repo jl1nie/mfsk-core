@@ -2122,10 +2122,10 @@ pub unsafe extern "C" fn mfsk_encode_info(
         Ok(tx) => tx,
         Err(st) => return st,
     };
-    let hashed = tx.hashed_calls.join(" ");
+    let hashed = tx.hashed_calls().join(" ");
     for (len, v) in [
-        (tones_len, tx.tones.len()),
-        (text_len, tx.text.len() + 1),
+        (tones_len, tx.tones().len()),
+        (text_len, tx.text().len() + 1),
         (hashed_len, hashed.len() + 1),
     ] {
         if !len.is_null() {
@@ -2145,17 +2145,17 @@ pub unsafe extern "C" fn mfsk_encode_info(
         }
         false
     };
-    if too_small("tones", tones.is_null(), tones_cap, tx.tones.len())
-        || too_small("text", text_out.is_null(), text_cap, tx.text.len() + 1)
+    if too_small("tones", tones.is_null(), tones_cap, tx.tones().len())
+        || too_small("text", text_out.is_null(), text_cap, tx.text().len() + 1)
         || too_small("hashed", hashed_out.is_null(), hashed_cap, hashed.len() + 1)
     {
         return MfskStatus::InvalidArg;
     }
     unsafe {
-        ptr::copy_nonoverlapping(tx.tones.as_ptr(), tones, tx.tones.len());
+        ptr::copy_nonoverlapping(tx.tones().as_ptr(), tones, tx.tones().len());
         for (s, out, cap) in [
-            (&tx.text, text_out, text_cap),
-            (&hashed, hashed_out, hashed_cap),
+            (tx.text(), text_out, text_cap),
+            (hashed.as_str(), hashed_out, hashed_cap),
         ] {
             if cap != 0 {
                 ptr::copy_nonoverlapping(s.as_ptr() as *const c_char, out, s.len());
