@@ -202,8 +202,9 @@ Facts that cost an hour each time they were re-derived (2026-10-10, #642):
 - **The live upstream is `WSJTX/wsjtx`, the `upstream` remote** of the
   `../WSJT-X` clone. `origin` (saitohirga) stopped in 2024-03 and
   `upstream/master` is the 3.0.x line; neither shows new algorithms. The
-  development line is `release/3.x` and its `v3.x.0-*` tags. We follow
-  that, not `master`.
+  development line is a `release/3.N` branch (`release/3.3` as of 2026-10;
+  `scripts/upstream-diff.sh` lists the branches) and its `v3.x.0-*` tags.
+  We follow that, not `master`.
 - **A tag is not necessarily an ancestor of a later tag.** v3.2.0-rc1 was
   cut from the development line on 2026-09-18 and v3.3.0-beta1 descends from
   the same line without containing it (merge-base `0b32aba69`). Commit

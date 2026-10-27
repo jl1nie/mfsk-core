@@ -1,6 +1,6 @@
 ---
 name: upstream-audit
-description: Audit what changed in WSJT-X (WSJTX/wsjtx release/3.x) since the ported version and classify each change A/B/C. Use at the release-cycle midpoint (~day 7 after a tag), when a new upstream v3.x tag appears, or when the user asks what upstream changed.
+description: Audit what changed in WSJT-X (WSJTX/wsjtx, the development branch release/3.N, now release/3.3) since the ported version and classify each change A/B/C. Use at the release-cycle midpoint (~day 7 after a tag), when a new upstream v3.x tag appears, or when the user asks what upstream changed.
 ---
 
 # Upstream audit

@@ -27,8 +27,8 @@ The library's single version is `workspace.package.version` in the root `Cargo.t
 ## 2. Principles (the non-negotiables)
 
 1. **WSJT-X is the reference.** Fidelity first; a deliberate divergence is allowed but must be marked in a comment.
-   Reference is **v3.2.0-rc1** (plus the results-changing parts of v3.3.0-beta1), tracked on the `release/3.x` line,
-   never `master`.
+   Reference is **v3.2.0-rc1** plus the results-changing parts (classes A and B) of v3.3.0-beta1 to beta4 (#642, #690,
+   #694), tracked on the development line, `release/3.3` now, never `master`.
 2. **Cite the upstream.** Every algorithm file names the `lib/*.f90` / `lib/*.c` it ports. Changing a decoder
    internal = read the Fortran, make the matching change, keep the `Ported from…` pointer valid. That is part of
    the diff.
