@@ -103,6 +103,12 @@ Java_io_github_mfskcore_Mfsk_nativeModeCaps(JNIEnv* env, jclass cls, jint mode) 
     return (jlong)mfsk_mode_caps((uint32_t)mode);
 }
 
+JNIEXPORT jlong JNICALL
+Java_io_github_mfskcore_Mfsk_nativeModeFieldsRead(JNIEnv* env, jclass cls, jint mode) {
+    (void)env; (void)cls;
+    return (jlong)mfsk_mode_fields_read((uint32_t)mode);
+}
+
 /// Mode geometry as a flat `int[]`, so the binding needs no per-field
 /// JNI field lookups. Order matches `Mfsk.ModeInfo`'s constructor.
 JNIEXPORT jintArray JNICALL

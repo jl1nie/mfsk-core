@@ -272,6 +272,45 @@ pub const MFSK_CAP_TX_FREQ: u64 = 1 << 17;
 pub const MFSK_CAP_DECODER: u64 = 1 << 18;
 
 // ──────────────────────────────────────────────────────────────────────────
+// Parameter-block fields a mode reads (`mfsk_mode_fields_read`)
+//
+// Literals for the same cbindgen reason as the capability bits; they mirror
+// `mfsk_core::decoder::ParamField`, and `tests/mode_introspection.rs` pins
+// each pair. Not `MFSK_PARAM_*`, which names `MfskParams::flags` bits.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// `band_lo_hz` / `band_hi_hz`.
+pub const MFSK_FIELD_BAND: u64 = 1 << 0;
+/// `rx_freq_hz`.
+pub const MFSK_FIELD_RX_FREQ: u64 = 1 << 1;
+/// `tol_hz`.
+pub const MFSK_FIELD_TOL: u64 = 1 << 2;
+/// `tx_freq_hz`.
+pub const MFSK_FIELD_TX_FREQ: u64 = 1 << 3;
+/// `depth`.
+pub const MFSK_FIELD_DEPTH: u64 = 1 << 4;
+/// `flags & MFSK_PARAM_AVERAGING`.
+pub const MFSK_FIELD_AVERAGING: u64 = 1 << 5;
+/// `flags & MFSK_PARAM_DEEP_SEARCH`.
+pub const MFSK_FIELD_DEEP_SEARCH: u64 = 1 << 6;
+/// `mycall`.
+pub const MFSK_FIELD_MYCALL: u64 = 1 << 7;
+/// `mygrid`. No mode reads it (nor does any upstream decoder).
+pub const MFSK_FIELD_MYGRID: u64 = 1 << 8;
+/// `hiscall`.
+pub const MFSK_FIELD_HISCALL: u64 = 1 << 9;
+/// `hisgrid`.
+pub const MFSK_FIELD_HISGRID: u64 = 1 << 10;
+/// `qso_progress`.
+pub const MFSK_FIELD_QSO_PROGRESS: u64 = 1 << 11;
+/// `ap_mode`.
+pub const MFSK_FIELD_AP_MODE: u64 = 1 << 12;
+/// `contest`.
+pub const MFSK_FIELD_CONTEST: u64 = 1 << 13;
+/// `flags & MFSK_PARAM_EME_DELAY`.
+pub const MFSK_FIELD_EME_DELAY: u64 = 1 << 14;
+
+// ──────────────────────────────────────────────────────────────────────────
 // Public C types
 // ──────────────────────────────────────────────────────────────────────────
 

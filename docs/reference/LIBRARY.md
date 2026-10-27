@@ -784,6 +784,41 @@ JT9, JT65 and Q65 the band of their own `search::default_search_params()`
 QSO. With no station call that leaves only the blind `CQ` hypothesis, so it
 is not the same as `default_params(Mode::Ft8)`, which is `ApMode::Off`.
 
+**Which fields a mode reads: `decoder::params_read(mode)`** (#698). It returns
+the `ParamFields` (a set of `ParamField`) the mode's decoder *can* read under
+some setting; a field outside it changes nothing for that mode, so an
+application can show which settings are effective (hide only what is outside
+the set). FST4, FST4W and Q65 mean every sub-mode.
+
+| field | FT8 | FT4 | FST4 | FST4W | WSPR | JT9 | JT65 | Q65 |
+|---|---|---|---|---|---|---|---|---|
+| `band_hz` | ✓ | ✓ | ✓ | ✓¹ | ⁷ | ✓ | ✓ | ✓ |
+| `rx_freq_hz` | ✓ | ✓ | ✓ | ✓ | | ✓² | | ✓⁸ |
+| `tol_hz` | | | | ✓ | | ✓² | ✓³ | ✓⁸ |
+| `tx_freq_hz` | ✓ | | | | | | | |
+| `depth` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `averaging` | | | | | | | ✓ | ✓ |
+| `deep_search` | | | | | | | ✓ | |
+| `station.call` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓ |
+| `station.grid` | | | | | | | | |
+| `qso.his_call`, `qso.his_grid` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓ |
+| `qso.progress` | ✓⁴ | ✓⁴ | ✓⁴ | | | | | |
+| `ap` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ⁶ | ✓ |
+| `contest` | ✓⁴ | ✓⁴ | ✓⁴ | | | | | ✓ |
+| `eme_delay` | ✓ | | | | | | | ✓ |
+
+1. FST4W: only as the fallback of an unset Rx window. 2. JT9: an extra pass
+near `rx_freq_hz` over the wide scan (`jt9_decode.f90`'s `nqd = 1`); `tol_hz`
+only with `rx_freq_hz`. 3. JT65: only with `averaging`. 4. The FT family's
+QSO-context AP; not read when `Extras::ap_hint` is set. 5. JT65: only with
+`deep_search`. 6. JT65 reads no AP setting: WSJT-X's AP passes are not ported
+(#703). 7. WSPR searches wsprd's whole baseband; `wsprd` takes no band either
+(its `fmin` / `fmax` are fixed, `wsprd.c:781`). 8. Q65: where the AP-list and
+averaged q3 decodes look; the plain decode searches `band_hz`. No decoder reads
+`station.grid`, as no upstream one reads `mygrid`. `tests/params_read.rs`
+checks the empty cells on synthetic signals (setting such a field changes no
+decode). C, Kotlin and Swift: `mfsk_mode_fields_read`, `BINDINGS.md` §2.3.
+
 **`Depth` decides every search setting, as `ndepth` does**, unless the
 mode's `Tuning` extra sets one ([§2.5](#25-extras-and-the-protocols-outside-decoder)). `Fast`,
 `Normal` and `Deep` are `ndepth` 1 / 2 / 3, and per mode they set what the

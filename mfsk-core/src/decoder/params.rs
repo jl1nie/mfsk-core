@@ -5,8 +5,9 @@
 //!
 //! Each mode reads the fields its upstream decoder reads and ignores the
 //! rest, as `jt9` does; [`Depth`] decides every search setting the way
-//! `ndepth` does. What a mode makes of each field is documented on the
-//! mode's `Decodable` impl, with the upstream lines it follows.
+//! `ndepth` does. Which fields a mode can read is
+//! [`params_read`](super::params_read) (#698), with the decoder lines each
+//! cell comes from.
 
 use alloc::string::String;
 
@@ -171,12 +172,120 @@ impl QsoProgress {
     }
 }
 
+/// One field of [`DecodeParams`], as [`params_read`](super::params_read)
+/// names it. The values are the bits of [`ParamFields`] and of the C ABI's
+/// `MFSK_FIELD_*`, so they are fixed: a new field takes the next bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[repr(u32)]
+pub enum ParamField {
+    /// [`DecodeParams::band_hz`].
+    BandHz = 1 << 0,
+    /// [`DecodeParams::rx_freq_hz`].
+    RxFreqHz = 1 << 1,
+    /// [`DecodeParams::tol_hz`].
+    TolHz = 1 << 2,
+    /// [`DecodeParams::tx_freq_hz`].
+    TxFreqHz = 1 << 3,
+    /// [`DecodeParams::depth`].
+    Depth = 1 << 4,
+    /// [`DecodeParams::averaging`].
+    Averaging = 1 << 5,
+    /// [`DecodeParams::deep_search`].
+    DeepSearch = 1 << 6,
+    /// [`Station::call`] of [`DecodeParams::station`].
+    StationCall = 1 << 7,
+    /// [`Station::grid`] of [`DecodeParams::station`].
+    StationGrid = 1 << 8,
+    /// [`QsoContext::his_call`] of [`DecodeParams::qso`].
+    QsoHisCall = 1 << 9,
+    /// [`QsoContext::his_grid`] of [`DecodeParams::qso`].
+    QsoHisGrid = 1 << 10,
+    /// [`QsoContext::progress`] of [`DecodeParams::qso`].
+    QsoProgress = 1 << 11,
+    /// [`DecodeParams::ap`].
+    Ap = 1 << 12,
+    /// [`DecodeParams::contest`].
+    Contest = 1 << 13,
+    /// [`DecodeParams::eme_delay`].
+    EmeDelay = 1 << 14,
+}
+
+impl ParamField {
+    /// Every field, in bit order.
+    pub const ALL: &'static [ParamField] = &[
+        ParamField::BandHz,
+        ParamField::RxFreqHz,
+        ParamField::TolHz,
+        ParamField::TxFreqHz,
+        ParamField::Depth,
+        ParamField::Averaging,
+        ParamField::DeepSearch,
+        ParamField::StationCall,
+        ParamField::StationGrid,
+        ParamField::QsoHisCall,
+        ParamField::QsoHisGrid,
+        ParamField::QsoProgress,
+        ParamField::Ap,
+        ParamField::Contest,
+        ParamField::EmeDelay,
+    ];
+
+    /// The field's bit.
+    pub const fn bit(self) -> u32 {
+        self as u32
+    }
+}
+
+/// A set of [`ParamField`]s: what [`params_read`](super::params_read) returns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ParamFields(u32);
+
+impl ParamFields {
+    /// No field.
+    pub const EMPTY: ParamFields = ParamFields(0);
+
+    /// The set of `fields`.
+    pub const fn of(fields: &[ParamField]) -> Self {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < fields.len() {
+            bits |= fields[i].bit();
+            i += 1;
+        }
+        ParamFields(bits)
+    }
+
+    /// The set with `fields` added.
+    pub const fn with(self, fields: &[ParamField]) -> Self {
+        ParamFields(self.0 | ParamFields::of(fields).0)
+    }
+
+    /// Whether `field` is in the set.
+    pub const fn contains(self, field: ParamField) -> bool {
+        self.0 & field.bit() != 0
+    }
+
+    /// The bits, as the C ABI's `mfsk_mode_fields_read` returns them.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// The fields in the set, in bit order.
+    pub fn iter(self) -> impl Iterator<Item = ParamField> {
+        ParamField::ALL
+            .iter()
+            .copied()
+            .filter(move |&f| self.contains(f))
+    }
+}
+
 /// The per-period parameter block (`params`, `lib/jt9com.f90:9-49`).
 ///
 /// One per decoder, changed between periods through
 /// `Decoder::params_mut`, as the GUI rewrites the block before each
 /// period. Fields a mode's upstream decoder does not read are ignored by
-/// that mode.
+/// that mode; [`params_read`](super::params_read) says which those are.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecodeParams {

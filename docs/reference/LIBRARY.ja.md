@@ -763,6 +763,39 @@ FT8 と FT4 は `jt9` のコマンドラインの 200〜4000 Hz、FST4 は GUI �
 盲目の `CQ` 仮説だけなので、`ApMode::Off` である `default_params(Mode::Ft8)` とは同じ
 ではない。
 
+**モードが読むフィールド: `decoder::params_read(mode)`**（#698）。モードのデコーダが、
+何らかの設定のもとで*読み得る*フィールドの集合 `ParamFields`（`ParamField` の集合）を
+返す。集合の外のフィールドはそのモードでは何も変えないので、アプリはどの設定が効くかを
+示せる（隠してよいのは集合の外だけ）。FST4・FST4W・Q65 は全サブモードを指す。
+
+| フィールド | FT8 | FT4 | FST4 | FST4W | WSPR | JT9 | JT65 | Q65 |
+|---|---|---|---|---|---|---|---|---|
+| `band_hz` | ✓ | ✓ | ✓ | ✓¹ | ⁷ | ✓ | ✓ | ✓ |
+| `rx_freq_hz` | ✓ | ✓ | ✓ | ✓ | | ✓² | | ✓⁸ |
+| `tol_hz` | | | | ✓ | | ✓² | ✓³ | ✓⁸ |
+| `tx_freq_hz` | ✓ | | | | | | | |
+| `depth` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `averaging` | | | | | | | ✓ | ✓ |
+| `deep_search` | | | | | | | ✓ | |
+| `station.call` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓ |
+| `station.grid` | | | | | | | | |
+| `qso.his_call`, `qso.his_grid` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓ |
+| `qso.progress` | ✓⁴ | ✓⁴ | ✓⁴ | | | | | |
+| `ap` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ⁶ | ✓ |
+| `contest` | ✓⁴ | ✓⁴ | ✓⁴ | | | | | ✓ |
+| `eme_delay` | ✓ | | | | | | | ✓ |
+
+1. FST4W: Rx 窓が未設定のときの代わりとしてだけ。2. JT9: 広帯域スキャンに加えて
+`rx_freq_hz` 付近を再度試すパス（`jt9_decode.f90` の `nqd = 1`）。`tol_hz` は
+`rx_freq_hz` があるときだけ。3. JT65: `averaging` のときだけ。4. FT 系の QSO 文脈 AP。
+`Extras::ap_hint` を与えると読まれない。5. JT65: `deep_search` のときだけ。6. JT65 は AP
+の設定を読まない: WSJT-X の AP パスは未移植（#703）。7. WSPR は wsprd のベースバンド全体を
+探す。`wsprd` も帯域を受け取らない（`fmin` / `fmax` は固定、`wsprd.c:781`）。8. Q65:
+AP リストと平均化 q3 デコードが見る場所。通常のデコードは `band_hz` を探す。本家の
+デコーダが `mygrid` を読まないのと同じく、`station.grid` を読むデコーダは無い。
+`tests/params_read.rs` が空欄を合成信号で確かめる（そのフィールドを変えてもデコードは
+変わらない）。C・Kotlin・Swift: `mfsk_mode_fields_read`、`BINDINGS.md` §2.3。
+
 **`Depth` は、`ndepth` と同様に、探索設定の全てを決める。** ただしモードの `Tuning`
 extra で設定したものは除く（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)）。 `Fast`・`Normal`・`Deep` は
 `ndepth` の 1・2・3 で、モードごとに、そのモードの本家デコーダがそれらに対して設定する

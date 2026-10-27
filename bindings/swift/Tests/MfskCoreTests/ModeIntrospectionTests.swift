@@ -82,6 +82,18 @@ final class ModeIntrospectionTests: XCTestCase {
         }
     }
 
+    func testParamsReadCrossesIntact() throws {
+        guard Mode.ft8.isSupported else { throw XCTSkip("no FT8 in this build") }
+        XCTAssertTrue(Mode.ft8.paramsRead.contains(.txFrequency))
+        XCTAssertFalse(Mode.ft8.paramsRead.contains(.myGrid))
+        if Mode.wspr.isSupported {
+            XCTAssertEqual(Mode.wspr.paramsRead, .depth, "WSPR reads only the depth")
+        }
+        if Mode.msk144.isSupported {
+            XCTAssertEqual(Mode.msk144.paramsRead, [], "no slot decoder")
+        }
+    }
+
     func testTheSniperIsFT8Only() throws {
         for mode in Mode.supported where mode.capabilities.contains(.sniper) {
             XCTAssertEqual(mode, .ft8, "\(mode.name) advertises a sniper, which is FT8-only by design")

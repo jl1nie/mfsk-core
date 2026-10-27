@@ -252,6 +252,17 @@ the wrong place is a wrong hint: its AP pass cannot decode. Every mode tries
 a candidate without AP first (Q65 since #555), so what a wrong context
 costs is the AP gain, on exactly the weak signals it was for.
 
+**Which fields a mode reads: `mfsk_mode_fields_read(mode)`** returns the
+`MFSK_FIELD_*` bits of the `MfskParams` fields the mode's decoder can read
+(`BAND`, `RX_FREQ`, `TOL`, `TX_FREQ`, `DEPTH`, `AVERAGING`, `DEEP_SEARCH`,
+`MYCALL`, `MYGRID`, `HISCALL`, `HISGRID`, `QSO_PROGRESS`, `AP_MODE`, `CONTEST`,
+`EME_DELAY`); 0 for MSK144, JTTY and a mode the build lacks. A field outside
+the word changes nothing for the mode, so a host can show which settings are
+effective. The table and its conditions are `params_read`'s (`LIBRARY.md`
+§2.2): for example only FT8 reads `tx_freq_hz`, WSPR reads only `depth`, and
+no mode reads `mygrid`. Kotlin: `Mfsk.fieldsRead(mode)`, `Mfsk.reads(mode,
+Mfsk.FIELD_*)`; Swift: `Mode.paramsRead` (a `ParamFields` option set).
+
 ### 2.3.1 `MfskExtras` — the library's options
 
 What the library adds beyond upstream, per mode. Initialise with

@@ -261,6 +261,18 @@ fn core_mode_of(m: MfskMode) -> Option<mfsk_core::Mode> {
 
 // ── Parameters ────────────────────────────────────────────────────────────
 
+/// Which `MfskParams` fields `mode`'s decoder **can** read, as
+/// `MFSK_FIELD_*` bits: a field outside the word changes nothing for that
+/// mode, one inside it may be read only under a condition. The table and its
+/// conditions are `mfsk_core::decoder::params_read`'s (`BINDINGS.md`). 0 for
+/// MSK144, JTTY, uvpacket and a mode this build lacks.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_mode_fields_read(mode: u32) -> u64 {
+    mode_of(mode)
+        .and_then(core_mode_of)
+        .map_or(0, |m| u64::from(mfsk_core::decoder::params_read(m).bits()))
+}
+
 fn params_from_core(p: &DecodeParams) -> MfskParams {
     let mut out = MfskParams {
         size: core::mem::size_of::<MfskParams>() as u32,

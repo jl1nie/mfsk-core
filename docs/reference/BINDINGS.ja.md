@@ -243,6 +243,16 @@ AP モード、contest、QSO 進行度、および NaN の帯域や `band_hi_hz 
 候補を先に試す（Q65 は #555 以降）ので、文脈を誤ったときの代償は、そのための
 弱い信号での AP 利得ということになる。
 
+**モードが読むフィールド: `mfsk_mode_fields_read(mode)`** は、モードのデコーダが読み得る
+`MfskParams` のフィールドを `MFSK_FIELD_*` ビットで返す（`BAND`、`RX_FREQ`、`TOL`、
+`TX_FREQ`、`DEPTH`、`AVERAGING`、`DEEP_SEARCH`、`MYCALL`、`MYGRID`、`HISCALL`、`HISGRID`、
+`QSO_PROGRESS`、`AP_MODE`、`CONTEST`、`EME_DELAY`）。MSK144・JTTY・ビルドに無いモードは 0。
+語の外のフィールドはそのモードでは何も変えないので、ホストはどの設定が効くかを示せる。
+表と条件は `params_read` のもの（`LIBRARY.md` §2.2）: たとえば `tx_freq_hz` を読むのは
+FT8 だけ、WSPR が読むのは `depth` だけ、`mygrid` を読むモードは無い。Kotlin:
+`Mfsk.fieldsRead(mode)`、`Mfsk.reads(mode, Mfsk.FIELD_*)`。Swift: `Mode.paramsRead`
+（`ParamFields` オプション集合）。
+
 ### 2.3.1 `MfskExtras` — ライブラリ独自のオプション
 
 上流に無い、ライブラリが足したもの（モード別）。`mfsk_extras_init` で初期化する。

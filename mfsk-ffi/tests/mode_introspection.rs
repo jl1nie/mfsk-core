@@ -373,3 +373,59 @@ fn abi_version_is_not_the_crate_version() {
     assert_eq!(mfsk_abi_version(), 3);
     assert_ne!(mfsk_abi_version(), mfsk_version());
 }
+
+/// Each `MFSK_FIELD_*` is the `ParamField` bit it mirrors, one pair at a time
+/// for the reason `abi_caps_match_the_registry` gives.
+#[test]
+fn field_bits_match_param_field() {
+    use mfsk_core::decoder::ParamField as F;
+    let pairs: [(u64, F); 15] = [
+        (MFSK_FIELD_BAND, F::BandHz),
+        (MFSK_FIELD_RX_FREQ, F::RxFreqHz),
+        (MFSK_FIELD_TOL, F::TolHz),
+        (MFSK_FIELD_TX_FREQ, F::TxFreqHz),
+        (MFSK_FIELD_DEPTH, F::Depth),
+        (MFSK_FIELD_AVERAGING, F::Averaging),
+        (MFSK_FIELD_DEEP_SEARCH, F::DeepSearch),
+        (MFSK_FIELD_MYCALL, F::StationCall),
+        (MFSK_FIELD_MYGRID, F::StationGrid),
+        (MFSK_FIELD_HISCALL, F::QsoHisCall),
+        (MFSK_FIELD_HISGRID, F::QsoHisGrid),
+        (MFSK_FIELD_QSO_PROGRESS, F::QsoProgress),
+        (MFSK_FIELD_AP_MODE, F::Ap),
+        (MFSK_FIELD_CONTEST, F::Contest),
+        (MFSK_FIELD_EME_DELAY, F::EmeDelay),
+    ];
+    assert_eq!(pairs.len(), F::ALL.len(), "every ParamField has a C bit");
+    for (c, f) in pairs {
+        assert_eq!(c, u64::from(f.bit()), "{f:?}");
+    }
+}
+
+/// `mfsk_mode_fields_read` is `params_read` for every slot mode, and 0 for
+/// the stream receivers.
+#[test]
+fn fields_read_is_params_read() {
+    for m in present_modes() {
+        let got = mfsk_mode_fields_read(m as u32);
+        let opens = mfsk_mode_caps(m as u32) & MFSK_CAP_DECODER != 0;
+        if !opens {
+            assert_eq!(got, 0, "{m:?} has no decoder");
+            continue;
+        }
+        let mut i = std::mem::MaybeUninit::<MfskModeInfo>::zeroed();
+        assert_eq!(
+            unsafe { mfsk_mode_info(m as u32, i.as_mut_ptr()) },
+            MfskStatus::Ok
+        );
+        let i = unsafe { i.assume_init() };
+        let name = unsafe { CStr::from_ptr(i.name.as_ptr()) }.to_str().unwrap();
+        let core = mfsk_core::Mode::from_name(name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(
+            got,
+            u64::from(mfsk_core::decoder::params_read(core).bits()),
+            "{name}"
+        );
+        assert_ne!(got & MFSK_FIELD_DEPTH, 0, "{name}");
+    }
+}

@@ -706,6 +706,25 @@ object Mfsk {
     /// MSK144 ([CAP_STREAM_RECEIVER]).
     const val CAP_DECODER = 1L shl 18
 
+    // Parameter-block fields a mode can read, mirroring `MFSK_FIELD_*`
+    // ([fieldsRead]). A field outside a mode's word changes nothing for it.
+    const val FIELD_BAND = 1L shl 0
+    const val FIELD_RX_FREQ = 1L shl 1
+    const val FIELD_TOL = 1L shl 2
+    const val FIELD_TX_FREQ = 1L shl 3
+    const val FIELD_DEPTH = 1L shl 4
+    const val FIELD_AVERAGING = 1L shl 5
+    const val FIELD_DEEP_SEARCH = 1L shl 6
+    const val FIELD_MYCALL = 1L shl 7
+    /// No mode reads it.
+    const val FIELD_MYGRID = 1L shl 8
+    const val FIELD_HISCALL = 1L shl 9
+    const val FIELD_HISGRID = 1L shl 10
+    const val FIELD_QSO_PROGRESS = 1L shl 11
+    const val FIELD_AP_MODE = 1L shl 12
+    const val FIELD_CONTEST = 1L shl 13
+    const val FIELD_EME_DELAY = 1L shl 14
+
     /// The boundary's own revision, separate from the crate version.
     val abiVersion: Int get() = nativeAbiVersion()
 
@@ -719,6 +738,12 @@ object Mfsk {
     fun caps(mode: Int): Long = nativeModeCaps(mode)
 
     fun supports(mode: Int, cap: Long): Boolean = (caps(mode) and cap) != 0L
+
+    /// Which [MfskParams] fields `mode`'s decoder can read, as `FIELD_*`
+    /// bits (`mfsk_mode_fields_read`); 0 for a mode with no slot decoder.
+    fun fieldsRead(mode: Int): Long = nativeModeFieldsRead(mode)
+
+    fun reads(mode: Int, field: Long): Boolean = (fieldsRead(mode) and field) != 0L
 
     /// `mode`'s published defaults — the starting point every [MfskParams]
     /// should come from, then `copy` what differs:
@@ -887,6 +912,7 @@ object Mfsk {
     @JvmStatic private external fun nativeModeAt(index: Int): Int
     @JvmStatic private external fun nativeModeName(mode: Int): String?
     @JvmStatic private external fun nativeModeCaps(mode: Int): Long
+    @JvmStatic private external fun nativeModeFieldsRead(mode: Int): Long
     @JvmStatic private external fun nativeParamsInit(
         mode: Int, floats: FloatArray, ints: IntArray, strings: Array<String?>,
     )
