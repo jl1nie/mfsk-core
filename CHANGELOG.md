@@ -30,7 +30,8 @@
   C ABI unchanged. Detail: `LIBRARY.md` §8.1.
 - **`encoder::Encoded`'s fields are private** (#700): read `mode()`, `tones()`, `text()`, `hashed_calls()`. The tones are always the ones
   `encode` made for the mode, so `synthesize` cannot be handed a wrong count or tone; its doc claimed a panic on an unsupported sample
-  rate, which none has (every family at 0 Hz to 192 kHz renders: too low a rate gives degenerate audio, 0 Hz none). Tones from elsewhere
+  rate, and none was found (one sub-mode per family, 0 Hz to 192 kHz: too low a rate gives degenerate audio, 0 Hz none). The GFSK ramp
+  at a rate other than 12 kHz is computed in `u64` (FST4-1800 at 24 kHz overflowed a 32-bit `usize`). Tones from elsewhere
   go to `engine::tx::synthesize::<P>`, which checks them. `Decoded::protocol` stays the family on purpose: the exact sub-mode is the
   decoder's (`AnyDecoder::mode()`), documented. Nothing in the workspace wrote the fields; C / Kotlin / Swift unchanged. `LIBRARY.md` §1.4.
 

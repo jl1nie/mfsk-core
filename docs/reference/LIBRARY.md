@@ -107,7 +107,8 @@ carries the channel symbols and what a receiver will print. Hashed calls (`<W9XY
 `hashed_calls`, to hand to `Decoder::learn_callsign`; a text the mode cannot send is an
 `EncodeError`. `Encoded::synthesize` gives `f32` audio at the sample rate you name, `synthesize_i16` 16-bit.
 `Encoded` is read through `mode()`, `tones()`, `text()` and `hashed_calls()`: its tones are always the ones `encode` made for
-its mode, so synthesis does not fail, at any sample rate (a rate too low for the mode gives degenerate audio, 0 Hz none; #700).
+its mode, so synthesis cannot be handed a wrong tone, and the sample rate is not an error (a rate too low for the mode gives degenerate
+audio, 0 Hz none; memory grows with rate × frame, FST4-1800 at 192 kHz is about 1.4 GB; #700).
 Every message form a mode has is sent, and no mode returns `EncodeError::Unsupported`: WSPR types 1, 2 and 3
 (`CALL GRID4 DBM`, `PFX/CALL DBM` or `CALL/SFX DBM`, `<CALL> GRID6 DBM`; a station with a compound call alternates
 type 2 and type 3, and that schedule is the application's, as in WSJT-X's GUI; the power is rounded to a value WSPR

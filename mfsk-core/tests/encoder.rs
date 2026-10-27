@@ -98,10 +98,19 @@ fn i16_and_length_follow_the_generic_route() {
     }
 }
 
-/// The new route must not move any waveform the old routes made.
-/// `Encoded::synthesize` does not fail at any sample rate, as its doc says
-/// (#700): one mode per waveform route, from 0 Hz to 192 kHz, each the
-/// length `synth_len` gives. Fails if a rate makes the synthesis panic.
+/// `Encoded::synthesize` takes any sample rate, as its doc says (#700): one
+/// sub-mode per family, from 0 Hz to 192 kHz, each the length `synth_len`
+/// gives. Fails if a rate makes the synthesis panic.
+#[cfg(all(
+    feature = "ft8",
+    feature = "ft4",
+    feature = "fst4",
+    feature = "fst4w",
+    feature = "wspr",
+    feature = "jt9",
+    feature = "jt65",
+    feature = "q65"
+))]
 #[test]
 fn synthesis_takes_every_sample_rate() {
     let reps = [
@@ -136,6 +145,7 @@ fn synthesis_takes_every_sample_rate() {
     assert!(tx.synthesize(&TxAudio::new(0, 1_500.0)).is_empty());
 }
 
+/// The new route must not move any waveform the old routes made.
 #[test]
 fn tones_match_the_existing_routes() {
     use mfsk_core::engine::tx::{message_to_tones, synthesize};

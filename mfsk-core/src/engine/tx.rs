@@ -209,7 +209,10 @@ fn gfsk_at<P: FskWaveform>(cfg: &GfskCfg, sample_rate: u32) -> GfskCfg {
     GfskCfg {
         sample_rate: sample_rate as f32,
         samples_per_symbol: sps,
-        ramp_samples: cfg.ramp_samples * sps / cfg.samples_per_symbol,
+        // In u64: FST4-1800's 16 800 x 268 800 at 24 kHz overflows a 32-bit
+        // usize (wasm32, the ESP32), #700.
+        ramp_samples: (cfg.ramp_samples as u64 * sps as u64 / cfg.samples_per_symbol as u64)
+            as usize,
         ..*cfg
     }
 }

@@ -75,14 +75,14 @@ use crate::registry::Mode;
 ///
 /// The fields are read through accessors: the tones are the ones [`encode`]
 /// made for [`mode`](Self::mode), so [`synthesize`](Self::synthesize) always
-/// has one in-range tone per symbol of that mode and does not fail (#700).
+/// has one in-range tone per symbol of that mode (#700).
 /// Tones from elsewhere go to `engine::tx::synthesize`, which panics on a
 /// count or a tone the mode does not have.
 ///
 /// ```compile_fail,E0616
-/// # use mfsk_core::{Mode, encoder::encode};
-/// let mut tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
-/// tx.tones.clear(); // E0616: the tones stay the mode's
+/// fn edit(tx: &mut mfsk_core::encoder::Encoded) {
+///     tx.tones.clear(); // E0616: the tones stay the mode's
+/// }
 /// ```
 #[derive(Clone, Debug)]
 pub struct Encoded {
@@ -91,6 +91,7 @@ pub struct Encoded {
     text: String,
     hashed_calls: Vec<String>,
 }
+
 /// Per-call options of [`encode_with`].
 #[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
@@ -262,11 +263,16 @@ impl Encoded {
     /// `audio.sample_rate`, from sample 0 (the caller places it in the period
     /// at the mode's start offset).
     ///
-    /// Does not panic. Every sample rate renders: the samples per symbol are
+    /// The sample rate is not an error: the samples per symbol are
     /// `sample_rate · symbol time`, rounded, so a rate too low for the mode
-    /// gives degenerate or empty audio (0 Hz gives none) rather than an error;
-    /// choosing a rate the mode's tones fit under Nyquist is the caller's part
-    /// (measured over every mode family at 0 Hz to 192 kHz, #700).
+    /// gives degenerate or empty audio (0 Hz gives none). No panic was found
+    /// from 0 Hz to 192 kHz, one sub-mode of each family
+    /// (`tests/encoder.rs`, #700). The output is
+    /// [`synth_len`](Self::synth_len) samples, so memory grows with the rate
+    /// times the frame: FST4-1800 at 192 kHz is about 1.4 GB, and a rate
+    /// whose buffer cannot be allocated aborts. A non-finite `f0_hz` gives
+    /// NaN samples. Choosing a rate and a carrier the mode's tones fit under
+    /// Nyquist is the caller's part.
     pub fn synthesize(&self, audio: &TxAudio) -> Vec<f32> {
         synth(
             self.mode,
@@ -279,8 +285,9 @@ impl Encoded {
 
     /// 16-bit form of [`synthesize`](Self::synthesize): the waveform at unit
     /// amplitude scaled so its peak is `amplitude_i16`
-    /// (`engine::tx::synthesize_i16`); `audio.amplitude` is not used. Does not
-    /// panic, as [`synthesize`](Self::synthesize).
+    /// (`engine::tx::synthesize_i16`); `audio.amplitude` is not used. The
+    /// sample rate as for [`synthesize`](Self::synthesize); a non-finite
+    /// `f0_hz` gives zeros.
     pub fn synthesize_i16(&self, audio: &TxAudio, amplitude_i16: i16) -> Vec<i16> {
         synth_i16(
             self.mode,

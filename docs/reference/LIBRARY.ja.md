@@ -108,7 +108,8 @@ for row in &result.rows {
 `EncodeError` になる。`Encoded::synthesize` は指定したサンプルレートの `f32` 音声、
 `synthesize_i16` は 16 ビットを返す。
 `Encoded` は `mode()`、`tones()`、`text()`、`hashed_calls()` で読む。トーンは常に `encode` がそのモード用に作ったものなので、
-どのサンプルレートでも合成は失敗しない（モードに対して低すぎるレートでは崩れた音声、0 Hz では空になる。#700）。
+合成に誤ったトーンが渡ることはなく、サンプルレートもエラーにならない（モードに対して低すぎるレートでは崩れた音声、0 Hz では空になる。
+メモリはレート × フレーム長に比例し、FST4-1800 を 192 kHz で合成すると約 1.4 GB になる。#700）。
 モードが持つメッセージ形式はすべて送れ、`EncodeError::Unsupported` を返すモードは無い: WSPR の type 1、2、3
 （`CALL GRID4 DBM`、`PFX/CALL DBM` または `CALL/SFX DBM`、`<CALL> GRID6 DBM`。複合コールの局は type 2 と
 type 3 を交互に送るが、その順序は WSJT-X の GUI と同じくアプリケーション側の仕事である。電力は WSPR が送る値に
