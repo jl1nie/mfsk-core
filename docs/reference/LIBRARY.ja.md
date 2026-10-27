@@ -107,6 +107,8 @@ for row in &result.rows {
 `hashed_calls` で返るので `Decoder::learn_callsign` に渡す。そのモードが送れないテキストは
 `EncodeError` になる。`Encoded::synthesize` は指定したサンプルレートの `f32` 音声、
 `synthesize_i16` は 16 ビットを返す。
+`Encoded` は `mode()`、`tones()`、`text()`、`hashed_calls()` で読む。トーンは常に `encode` がそのモード用に作ったものなので、
+どのサンプルレートでも合成は失敗しない（モードに対して低すぎるレートでは崩れた音声、0 Hz では空になる。#700）。
 モードが持つメッセージ形式はすべて送れ、`EncodeError::Unsupported` を返すモードは無い: WSPR の type 1、2、3
 （`CALL GRID4 DBM`、`PFX/CALL DBM` または `CALL/SFX DBM`、`<CALL> GRID6 DBM`。複合コールの局は type 2 と
 type 3 を交互に送るが、その順序は WSJT-X の GUI と同じくアプリケーション側の仕事である。電力は WSPR が送る値に
@@ -117,7 +119,7 @@ type 3 を交互に送るが、その順序は WSJT-X の GUI と同じくアプ
 use mfsk_core::prelude::*;
 
 let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
-assert_eq!(tx.tones.len(), 79);
+assert_eq!(tx.tones().len(), 79);
 let audio = tx.synthesize(&TxAudio::new(12_000, 1500.0));
 assert_eq!(audio.len(), tx.synth_len(12_000));
 ```
@@ -521,7 +523,7 @@ variant を足せる自由より、そちらの方が価値が高い。`engine` 
 0.15 が変えるのは、呼び出し側が名指しできるものであって、デコーダの動作ではない。`Decoder<P>`、`DecodeParams`、`Extras`、`SlotInput`、
 `Row`、`SlotResult` は元の場所にあり、**結果は変わらない**（tier A+B、ゴールデンも同じ）。ほとんどのアプリはそのまま再コンパイルできる。
 影響を受けるのは、コードが (1) `engine::pipeline` をパスで名指ししている、(2) `internal-testing` を有効にしている、
-(3) 下のオプション構造体をリテラルで組み立てている、(4) 下の enum をワイルドカード腕なしで `match` している、のいずれかのときである。
+(3) 下のオプション構造体をリテラルで組み立てている、(4) 下の enum をワイルドカード腕なしで `match` している、(5) `Encoded` のフィールドを読んでいる、のいずれかのときである。
 変更点は `CHANGELOG.md` の `## Unreleased`（#693）にある。
 
 **何がどこへ移ったか。**
@@ -534,6 +536,7 @@ variant を足せる自由より、そちらの方が価値が高い。`engine` 
 | `wspr::decode::{debug_refined_sync, decode_scan_subtract}`、`fec::ldpc240_101::fst4_osd_diag_force_old`、`fec::ldpc::osd::npre1_pattern_counts`、`ft8::decode_block::compute_spectrogram_f32_timed`、`engine::sync2d::{ft4_sync_ref_prep_bench, ft4_aligned_cd0_bench}`（`internal-testing` のときだけ公開） | `__internal::wspr::decode::X`、`__internal::fec::ldpc240_101::fst4_osd_diag_force_old`、`__internal::fec::ldpc::npre1_pattern_counts`、`__internal::ft8::decode_block::compute_spectrogram_f32_timed`、`__internal::sync2d::X` |
 | `Ft4CoarsePhasors::buffer_addrs()`（`internal-testing` のとき） | `__internal::sync2d::buffer_addrs(&phasors)`。公開型のメソッドが feature に依存しなくなった |
 | `internal-testing` | `__internal` を足すだけで、ほかのパスは有無にかかわらず同じ。`mfsk-ffi` はもう有効にしない |
+| `Encoded` のフィールド `tx.mode`、`tx.tones`、`tx.text`、`tx.hashed_calls` | `tx.mode()`、`tx.tones()`（`&[u8]`）、`tx.text()`（`&str`）、`tx.hashed_calls()`（`&[String]`）。トーンがモードと食い違わないようにフィールドは非公開にした。ほかから来たトーンは `engine::tx::synthesize::<P>` に渡す（#700） |
 | `IqReceiver::set_prefix_points(id, points) -> bool` | deprecated（従来どおり動く）: `update_channel(id, ChannelSpec::from(&decoder))`。別のモードも断り、不明・音声チャンネルには `IqError` を返す。デコーダのものではないポイントは `ChannelSpec { prefix_points, .. }`（`&'static [usize]`）に入れる |
 
 アプリのデコードの入口は `Decoder<P>` である。自分のコードから `DecodeRequest` や `decode_frame` を呼んでいたなら、`Decoder::<P>::new(DecodeParams)` と `decode(&SlotInput)` に移す。オプションは `P::Extras` にある（[§2](#2-デコード-api)）。
@@ -553,7 +556,7 @@ variant を足せる自由より、そちらの方が価値が高い。`engine` 
 
 **コンパイラから見つける。** `unresolved import …engine::pipeline…` や `module … is private` は、上の最初の4行。
 `cannot create non-exhaustive struct using struct expression`（E0639）はオプション構造体の行。`non-exhaustive patterns: `_` not covered`
-（E0004）は enum の行。どれもコンパイルエラーになり、黙って変わるものは無い。
+（E0004）は enum の行。`field … of struct Encoded is private`（E0616）は `Encoded` の行。どれもコンパイルエラーになり、黙って変わるものは無い。
 
 **C ABI、Kotlin、Swift。** 変更なし。ABI は 3 のままで、`include/mfsk.h` は再生成しても1バイトも変わらず、バインディングに新しいフィールドも無い。
 見える影響は、この ABI が知らない `ApMode` に `MFSK_AP_OFF` を返すことだけで、新しいモードが足されるまで起こらない。
@@ -653,7 +656,7 @@ pub struct Decoder<P: Decodable> { params, extras, state }
 
 | フィールド | 内容 |
 |---|---|
-| `decoded: Decoded` | モード共通の行: `text`（デコーダのハッシュ表で解決済み）、`freq_hz`、`dt_sec`、`snr_db`、`protocol` |
+| `decoded: Decoded` | モード共通の行: `text`（デコーダのハッシュ表で解決済み）、`freq_hz`、`dt_sec`、`snr_db`、`protocol`（ファミリー、`ProtocolId`: FST4・FST4W・Q65 のサブモードは 1 つのタグを共有する。正確な `Mode` はデコーダのもの（`AnyDecoder::mode()` または `P`）で、行をチャンネルやスポットへ送るアプリケーションは、skimmer がするようにモードを添えて送る。#700） |
 | `detail: RowDetail` | それ以外でモード間に共通するもの: `sync_score`、`sync_cv`、`hard_errors`、`method`（どう復号したか: `Bp`、`Osd`、`Ap { iaptype }`、`ListA7`、`ListA8`。WSPR・JT9・JT65・Q65・FST4W では `None`。#696）、`pass`（そのモード固有の id で、意味はモードごとに違う: `method` を読む。id の一覧は `docs/notes/PASS_IDS.md`）、`info`（メッセージのビット、全モード）、`hash_resolved`（`<...>` の解決に表が要った）、`delivery`（`decode_with` の何番目の配信か、だったか: [§2.4](#24-ストリーミング配信)）、`stage`（`decode_prefix` の呼び出し列からなら `Early` / `Final`、それ以外は `None`）、`copied_last_tx`（Q65 Pileup）。3 つの数値は `Option` で、モードが測らないものは `None`: WSPR・JT9・JT65・Q65、および sync の 2 つについては FT8 の a7 / a8 リストデコード。`sync_score` はモード自身の探索の尺度で、モード間では比べられない |
 | `native: R` | そのモード固有の結果: `DecodeResult`（FT8・FT4・FST4）、`WsprResult`、`Jt9Result`、`Jt65Result`、`Q65Result` |
 
@@ -2048,7 +2051,7 @@ EME 遅延、履歴とコーラーのヘルパ — は
 mfsk_core
 ├── prelude.rs        [A] `use mfsk_core::prelude::*;` — Decoder · AnyDecoder · DecodeParams · SlotInput · Row · encode · Encoded ·
 │                     TxAudio · IqReceiver · Mode · Decoded · ApHint …（プロトコル ZST はルートのまま）
-├── encoder.rs        [A] encode / encode_with → Encoded { tones, text, hashed_calls }、synthesize。Mode 上の 1 つの呼び出し、FFT 不要
+├── encoder.rs        [A] encode / encode_with → Encoded（mode()、tones()、text()、hashed_calls()）、synthesize。Mode 上の 1 つの呼び出し、FFT 不要
 ├── engine/           [P, B] Protocol trait 群、DSP、sync、LLR、equaliser、pipeline
 │   ├── protocol.rs     [P] ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
 │   ├── dsp/            resample · downsample · gfsk · cpfsk · envelope · subtract ·

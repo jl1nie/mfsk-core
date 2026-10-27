@@ -48,8 +48,8 @@
 //! use mfsk_core::encoder::{TxAudio, encode};
 //!
 //! let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
-//! assert_eq!(tx.text, "CQ JA1ABC PM95");
-//! assert_eq!(tx.tones.len(), 79);
+//! assert_eq!(tx.text(), "CQ JA1ABC PM95");
+//! assert_eq!(tx.tones().len(), 79);
 //! let audio = tx.synthesize(&TxAudio::new(12_000, 1_500.0));
 //! assert_eq!(audio.len(), tx.synth_len(12_000));
 //! # }
@@ -72,25 +72,25 @@ use crate::msg::wsjt77::{Pack77Options, pack77_message};
 use crate::registry::Mode;
 
 /// What [`encode`] produced: the channel symbols, and what a receiver will print.
+///
+/// The fields are read through accessors: the tones are the ones [`encode`]
+/// made for [`mode`](Self::mode), so [`synthesize`](Self::synthesize) always
+/// has one in-range tone per symbol of that mode and does not fail (#700).
+/// Tones from elsewhere go to `engine::tx::synthesize`, which panics on a
+/// count or a tone the mode does not have.
+///
+/// ```compile_fail,E0616
+/// # use mfsk_core::{Mode, encoder::encode};
+/// let mut tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
+/// tx.tones.clear(); // E0616: the tones stay the mode's
+/// ```
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct Encoded {
-    pub mode: Mode,
-    /// The channel symbols, one tone index per symbol.
-    pub tones: Vec<u8>,
-    /// The message as `unpack` renders the transmitted bits (WSJT-X shows
-    /// this in its Tx box): it can differ from the input in case, spacing, or
-    /// where the mode cannot carry the input as typed. A call sent as a hash
-    /// reads as `<CALL>` (the sender knows it; a receiver that has not heard
-    /// it prints `<...>`).
-    pub text: String,
-    /// Calls the message sends as hashes; give them to the decoder
-    /// (`learn_callsign`) so their `<...>` resolves when the other station
-    /// answers (WSJT-X's `record_tx_hashes`). For WSPR the call of a type 3
-    /// message; empty for the other WSPR types, JT9 and JT65.
-    pub hashed_calls: Vec<String>,
+    mode: Mode,
+    tones: Vec<u8>,
+    text: String,
+    hashed_calls: Vec<String>,
 }
-
 /// Per-call options of [`encode_with`].
 #[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
@@ -231,13 +231,42 @@ pub fn encode_with(
 }
 
 impl Encoded {
+    /// The mode the tones are for.
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// The channel symbols, one tone index per symbol.
+    pub fn tones(&self) -> &[u8] {
+        &self.tones
+    }
+
+    /// The message as `unpack` renders the transmitted bits (WSJT-X shows
+    /// this in its Tx box): it can differ from the input in case, spacing, or
+    /// where the mode cannot carry the input as typed. A call sent as a hash
+    /// reads as `<CALL>` (the sender knows it; a receiver that has not heard
+    /// it prints `<...>`).
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Calls the message sends as hashes; give them to the decoder
+    /// (`learn_callsign`) so their `<...>` resolves when the other station
+    /// answers (WSJT-X's `record_tx_hashes`). For WSPR the call of a type 3
+    /// message; empty for the other WSPR types, JT9 and JT65.
+    pub fn hashed_calls(&self) -> &[String] {
+        &self.hashed_calls
+    }
+
     /// The audio of one frame: [`synth_len`](Self::synth_len) samples at
     /// `audio.sample_rate`, from sample 0 (the caller places it in the period
     /// at the mode's start offset).
     ///
-    /// # Panics
-    /// If `audio.sample_rate` is not one the mode's waveform supports (as
-    /// `engine::tx::synthesize`).
+    /// Does not panic. Every sample rate renders: the samples per symbol are
+    /// `sample_rate · symbol time`, rounded, so a rate too low for the mode
+    /// gives degenerate or empty audio (0 Hz gives none) rather than an error;
+    /// choosing a rate the mode's tones fit under Nyquist is the caller's part
+    /// (measured over every mode family at 0 Hz to 192 kHz, #700).
     pub fn synthesize(&self, audio: &TxAudio) -> Vec<f32> {
         synth(
             self.mode,
@@ -250,7 +279,8 @@ impl Encoded {
 
     /// 16-bit form of [`synthesize`](Self::synthesize): the waveform at unit
     /// amplitude scaled so its peak is `amplitude_i16`
-    /// (`engine::tx::synthesize_i16`); `audio.amplitude` is not used.
+    /// (`engine::tx::synthesize_i16`); `audio.amplitude` is not used. Does not
+    /// panic, as [`synthesize`](Self::synthesize).
     pub fn synthesize_i16(&self, audio: &TxAudio, amplitude_i16: i16) -> Vec<i16> {
         synth_i16(
             self.mode,

@@ -88,8 +88,12 @@ pub struct Decoded {
     /// whose estimate is comparable across JT9 decodes but not in absolute
     /// terms to other modes).
     pub snr_db: f32,
-    /// Which protocol produced this decode (UI mode column). Q65 sub-modes and
-    /// uvpacket sub-modes collapse onto their family tag here.
+    /// Which protocol produced this decode (UI mode column): the family. The
+    /// FST4, FST4W, Q65 and uvpacket sub-modes collapse onto their family tag
+    /// here, on purpose (#700). The exact sub-mode is the decoder's
+    /// (`AnyDecoder::mode()`, or `P` of a `Decoder<P>`), which every row comes
+    /// from; an application that sends rows on, to a channel or a spot upload,
+    /// sends that mode with them.
     pub protocol: ProtocolId,
     /// FST4W only: the unresolved 22-bit callsign hash of a `<...>` row
     /// (`result%hash22`, `has_hash22` upstream). Two rows with the same text

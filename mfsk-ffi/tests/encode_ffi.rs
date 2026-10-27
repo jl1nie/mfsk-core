@@ -164,11 +164,11 @@ fn info_equals_the_rust_encoder() {
     ] {
         let want = encode(mode, text).unwrap();
         let got = encode_info(mfsk_mode as u32, text, 0).unwrap();
-        assert_eq!(got.tones, want.tones, "{mfsk_mode:?} {text}");
-        assert_eq!(got.text, want.text, "{mfsk_mode:?} {text}");
+        assert_eq!(got.tones, want.tones(), "{mfsk_mode:?} {text}");
+        assert_eq!(got.text, want.text(), "{mfsk_mode:?} {text}");
         assert_eq!(
             got.hashed,
-            want.hashed_calls.join(" "),
+            want.hashed_calls().join(" "),
             "{mfsk_mode:?} {text}"
         );
     }
