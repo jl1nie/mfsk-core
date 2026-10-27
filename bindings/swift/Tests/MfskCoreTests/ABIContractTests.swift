@@ -39,6 +39,22 @@ final class ABIContractTests: XCTestCase {
         }
     }
 
+    func testParamFieldBitsMatchTheHeader() {
+        let pairs: [(ParamFields, Int32)] = [
+            (.band, MFSK_FIELD_BAND), (.rxFrequency, MFSK_FIELD_RX_FREQ),
+            (.tolerance, MFSK_FIELD_TOL), (.txFrequency, MFSK_FIELD_TX_FREQ),
+            (.depth, MFSK_FIELD_DEPTH), (.averaging, MFSK_FIELD_AVERAGING),
+            (.deepSearch, MFSK_FIELD_DEEP_SEARCH), (.myCall, MFSK_FIELD_MYCALL),
+            (.myGrid, MFSK_FIELD_MYGRID), (.hisCall, MFSK_FIELD_HISCALL),
+            (.hisGrid, MFSK_FIELD_HISGRID), (.qsoProgress, MFSK_FIELD_QSO_PROGRESS),
+            (.apMode, MFSK_FIELD_AP_MODE), (.contest, MFSK_FIELD_CONTEST),
+            (.emeDelay, MFSK_FIELD_EME_DELAY),
+        ]
+        for (swift, c) in pairs {
+            XCTAssertEqual(swift.rawValue, UInt64(c))
+        }
+    }
+
     func testCapabilityBitsMatchTheHeader() {
         let pairs: [(Capabilities, Int32)] = [
             (.wsjt77Family, MFSK_CAP_WSJT77_FAMILY), (.sniper, MFSK_CAP_SNIPER),

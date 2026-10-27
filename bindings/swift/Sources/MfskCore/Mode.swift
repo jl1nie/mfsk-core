@@ -112,6 +112,37 @@ public enum Mode: UInt32, CaseIterable, Sendable {
     public var capabilities: Capabilities {
         Capabilities(rawValue: mfsk_mode_caps(rawValue))
     }
+
+    /// Which ``DecodeParams`` fields the mode's decoder can read
+    /// (`mfsk_mode_fields_read`): a field outside the set changes nothing
+    /// for this mode. Empty for a mode with no slot decoder.
+    public var paramsRead: ParamFields {
+        ParamFields(rawValue: mfsk_mode_fields_read(rawValue))
+    }
+}
+
+/// Fields of the parameter block, as ``Mode/paramsRead`` reports them
+/// (`MFSK_FIELD_*`).
+public struct ParamFields: OptionSet, Sendable {
+    public let rawValue: UInt64
+    public init(rawValue: UInt64) { self.rawValue = rawValue }
+
+    public static let band = ParamFields(rawValue: 1 << 0)
+    public static let rxFrequency = ParamFields(rawValue: 1 << 1)
+    public static let tolerance = ParamFields(rawValue: 1 << 2)
+    public static let txFrequency = ParamFields(rawValue: 1 << 3)
+    public static let depth = ParamFields(rawValue: 1 << 4)
+    public static let averaging = ParamFields(rawValue: 1 << 5)
+    public static let deepSearch = ParamFields(rawValue: 1 << 6)
+    public static let myCall = ParamFields(rawValue: 1 << 7)
+    /// No mode reads it.
+    public static let myGrid = ParamFields(rawValue: 1 << 8)
+    public static let hisCall = ParamFields(rawValue: 1 << 9)
+    public static let hisGrid = ParamFields(rawValue: 1 << 10)
+    public static let qsoProgress = ParamFields(rawValue: 1 << 11)
+    public static let apMode = ParamFields(rawValue: 1 << 12)
+    public static let contest = ParamFields(rawValue: 1 << 13)
+    public static let emeDelay = ParamFields(rawValue: 1 << 14)
 }
 
 /// What a mode supports, as reported by `mfsk_mode_caps`.

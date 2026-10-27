@@ -31,6 +31,12 @@
 
 ### Added
 
+- **`decoder::params_read(mode)`: which `DecodeParams` fields a mode's decoder can read** (#698), as `ParamFields` / `ParamField`; C
+  `mfsk_mode_fields_read` + `MFSK_FIELD_*`, Kotlin `Mfsk.fieldsRead` / `FIELD_*`, Swift `Mode.paramsRead`. A field outside the set changes
+  nothing for that mode, so a host can say which settings are effective; conditions per field are in the doc (`LIBRARY.md` §2.2). Found
+  while building it: WSPR reads no band (wsprd takes none), JT65 no AP setting (#703), no mode `station.grid`.
+  `tests/params_read.rs` sets every unread field to a value that would matter on a synthetic signal of each decoder and requires the
+  same decode. Additive; no decode changed.
 - **`RowDetail::method` and `SlotResult::candidates`: what an application can read about a decode** (#696). `method: Option<DecodeMethod>` says how a row was decoded (`Bp`, `Osd`, `Ap { iaptype }`,
   `ListA7`, `ListA8`; `None` for WSPR, JT9, JT65, Q65, FST4W) where `pass` is a number that means something else per mode and that FT4 / FST4 give twice (5 is both OSD depth 3 and an a-priori decode);
   `pass` stays, its table is in `docs/notes/PASS_IDS.md`. `candidates` is what the first coarse search of the call kept (FT8, FT4, FST4; per call, so FT8's `SicEarly` reports checkpoint A's in a whole-period call and C's in a prefix sequence's last; `None` for a call that made none, as FT8's checkpoint B); the engine's `DecodeOutcome` gains the same field. **#697: WSPR, JT9, JT65 and Q65 report it too** (every mode but FST4W; per-mode definitions in `docs/notes/CANDIDATES.md`: WSPR's is pass 0's list and is not narrowed to the band as `wsprd`'s `npk` is, JT9's the truncated list, JT65's pass 1's, Q65's the first scan's). `method`'s `iaptype` is WSJT-X's number only for the QSO context's hypotheses: rows of a free-form `ap_hint` are `Ap { iaptype: None }`.

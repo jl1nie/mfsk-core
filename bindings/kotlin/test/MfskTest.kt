@@ -67,6 +67,13 @@ fun main() {
     check("FT8 is FT-family", Mfsk.supports(ft8, Mfsk.CAP_WSJT77_FAMILY))
     check("FT8 opens a decoder", Mfsk.supports(ft8, Mfsk.CAP_DECODER))
     check("FT8 has the sniper", Mfsk.supports(ft8, Mfsk.CAP_SNIPER))
+    // The field word crosses intact: FT8 reads the Tx frequency, nothing
+    // reads mygrid, and WSPR reads only the depth.
+    check("FT8 reads the Tx frequency", Mfsk.reads(ft8, Mfsk.FIELD_TX_FREQ))
+    check("FT8 does not read mygrid", !Mfsk.reads(ft8, Mfsk.FIELD_MYGRID))
+    modes.firstOrNull { Mfsk.modeName(it) == "WSPR" }?.let { wspr ->
+        checkEq("WSPR reads only the depth", Mfsk.fieldsRead(wspr), Mfsk.FIELD_DEPTH)
+    }
     val ft4 = modes.first { Mfsk.modeName(it) == "FT4" }
     check("FT4 has no sniper", !Mfsk.supports(ft4, Mfsk.CAP_SNIPER))
     check("FT4 does wide-band AP", Mfsk.supports(ft4, Mfsk.CAP_AP_WIDEBAND))

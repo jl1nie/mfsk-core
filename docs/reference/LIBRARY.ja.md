@@ -739,18 +739,20 @@ assert!(wspr.set_ap_hint(None).is_err());
 
 | フィールド | 本家 | 読むモード |
 |---|---|---|
-| `band_hz` | `nfa`、`nfb` | 全モード |
-| `rx_freq_hz` | `nfqso` | FT8（10 Hz 以内の候補を先にデコード、相手を名指す仮説はこの周波数の 50 Hz 以内だけ、a8、sniper の中心）、FT4 と FST4（同じ AP 規則）、JT9（Rx 周波数パス）、Q65（q3 リスト復号） |
-| `tol_hz` | `ntol` | JT9（既定 50 Hz）、Q65（F Tol、既定 10 Hz） |
+| `band_hz` | `nfa`、`nfb` | WSPR 以外の全モード（wsprd は帯域を受け取らない） |
+| `rx_freq_hz` | `nfqso` | FT8（10 Hz 以内の候補を先にデコード、相手を名指す仮説はこの周波数の 50 Hz 以内だけ、a8、sniper の中心）、FT4 と FST4（同じ AP 規則）、FST4W（探索の中心）、JT9（Rx 周波数パス）、Q65（q3 リスト復号） |
+| `tol_hz` | `ntol` | FST4W（探索の幅）、JT9（既定 50 Hz）、JT65（平均化の窓）、Q65（F Tol、既定 10 Hz） |
 | `tx_freq_hz` | `nftx` | FT8: この周波数の 50 Hz 以内で両コールサインの仮説 |
 | `depth` | `ndepth & 7` | 全モード。下の表 |
 | `averaging` | `ndepth & 16` | Q65 と JT65（どちらも `SlotInput::period` が要る。JT65 のは `jt65::averaging`、`avg65`） |
 | `deep_search` | `ndepth & 32` | JT65: 既知局との相関 `hint65`（`Jt65Extras::known_calls`。MYCALL と DX 局は `station` と `qso`） |
-| `station` | `mycall`、`mygrid` | FT8・FT4・FST4（AP）、Q65（AP リスト） |
-| `qso` | `hiscall`、`hisgrid`、`nQSOProgress` | 同上 |
-| `ap` | `lft8apon`、`lapcqonly` | 同上: `ApMode::{Off, CqOnly, Full}` |
+| `station` | `mycall`、`mygrid` | `call`: FT8・FT4・FST4（AP）、JT65（deep search）、Q65（AP リスト）。`grid`: 読むモードは無い |
+| `qso` | `hiscall`、`hisgrid`、`nQSOProgress` | コールサインは `station.call` と同じ。`progress` は FT8・FT4・FST4 だけ（Q65 のものは未移植、#704） |
+| `ap` | `lft8apon`、`lapcqonly` | FT8・FT4・FST4・Q65: `ApMode::{Off, CqOnly, Full}`（Q65 の `CqOnly` は `Full` と同じに働く、#704。JT65 の AP は未移植、#703） |
 | `contest` | `ncontest` | FT8（`/R` と `TU; ` のメッセージを残す、[§2.6](#26-メッセージの受理)。コンテストの `CQ` トークン。Fox）、FT4 と FST4（`CQ` トークン）、Q65（コーラーのリスト） |
-| `eme_delay` | `emedelay` | FT8（報告する `dt` が 2 秒遅くなる）、Q65（探索窓の遅い側の端が +5.5 s、Q65-15 では +4.0 s に動く） |
+| `eme_delay` | `emedelay` | FT8（報告する `dt` が 2 秒遅くなる）、Q65（探索窓の遅い側の端が +5.5 s、Q65-15 では +4.0 s に動く）。FST4 / FST4W は読まない（本家は読む、#704） |
+
+モードごとの完全な表と条件は、下の `params_read` にある。
 
 **既定値は GUI に従う。** `Decoder::with_defaults()` と `decoder::default_params(mode)` は
 `Depth::Deep`（GUI の `NDepth` 既定）、**FT8 と JT65 は AP オフ**（"Enable AP" の
@@ -762,6 +764,45 @@ FT8 と FT4 は `jt9` のコマンドラインの 200〜4000 Hz、FST4 は GUI �
 ブロックである: `Deep`、AP は `Full`、自局も QSO も無し。自局のコールサインが無いと残るのは
 盲目の `CQ` 仮説だけなので、`ApMode::Off` である `default_params(Mode::Ft8)` とは同じ
 ではない。
+
+**モードが読むフィールド: `decoder::params_read(mode)`**（#698）。モードのデコーダが、
+何らかの設定のもとで*読み得る*フィールドの集合 `ParamFields`（`ParamField` の集合）を
+返す。集合の外のフィールドはそのモードでは何も変えないので、アプリはどの設定が効くかを
+示せる（隠してよいのは集合の外だけ）。FST4・FST4W・Q65 は全サブモードを指す。
+
+| フィールド | FT8 | FT4 | FST4 | FST4W | WSPR | JT9 | JT65 | Q65 |
+|---|---|---|---|---|---|---|---|---|
+| `band_hz` | ✓ | ✓ | ✓ | ✓¹ | ⁷ | ✓ | ✓ | ✓ |
+| `rx_freq_hz` | ✓ | ✓ | ✓ | ✓ | | ✓² | ¹¹ | ✓⁸ |
+| `tol_hz` | | | ¹⁰ | ✓ | | ✓² | ✓³ | ✓⁸ |
+| `tx_freq_hz` | ✓ | | | | | | | |
+| `depth` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `averaging` | | | | | | | ✓ | ✓ |
+| `deep_search` | | | | | | | ✓ | |
+| `station.call` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓⁸ |
+| `station.grid` | | | | | | | | |
+| `qso.his_call`, `qso.his_grid` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓⁸ |
+| `qso.progress` | ✓⁴ | ✓⁴ | ✓⁴ | | | | | ¹⁰ |
+| `ap` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ⁶ | ✓⁸ ¹⁰ |
+| `contest` | ✓⁹ | ✓⁴ | ✓⁴ ¹⁰ | | | | | ✓⁸ |
+| `eme_delay` | ✓ | | ¹⁰ | ¹⁰ | | | | ✓ |
+
+1. FST4W: `rx_freq_hz` / `tol_hz` が未設定のときの代わりとしてだけ（`fst4w.rs`）。
+2. JT9: 広帯域スキャンに加えて `rx_freq_hz` 付近（±`tol_hz`）を再度試すパス（`jt9_decode.f90` の `nqd = 1`）。`tol_hz` は `rx_freq_hz` があるときだけ。
+3. JT65: `averaging` のときだけ。
+4. FT 系の QSO 文脈 AP（`frame.rs`、`qso_hint`）: モードの `Extras::ap_hint` を与えると読まれない（そちらで置き換わる）。FT4 と FST4 は `Depth::Fast` では AP を走らせず、FT4 は Fox / Hound の contest 設定でも走らせない。
+5. JT65: `deep_search` のときだけ（ヒントバンク）。
+6. JT65 は AP の設定を読まない: WSJT-X の AP パス（`extract.f90`）は未移植（`jt65/chase.rs`、#703）。
+7. WSPR は wsprd のベースバンド全体（1500 ± 187.5 Hz）を探す。`wsprd` も帯域を受け取らない: `fmin` / `fmax` は ±110 Hz の固定値で（`wsprd.c:781`）、この移植はその絞り込みをしない（`wspr/decode.rs`、#697）。`default_params` は WSPR にも帯域を設定するが、WSPR はそれを無視する。
+8. Q65: `rx_freq_hz` / `tol_hz` は AP リストと平均化 q3 デコードの位置を決め（`q65_decode.f90:263-272`）、通常のデコードは `band_hz` を探す。`station.call`・QSO のコールサイン・`ap`・`contest` が AP リストを組み立てるのは、`ap` が Off でなく、自局のコールサインがあり、`rx_freq_hz` が設定されているか `Contest::GridExchange` のとき（何かを変える contest はそれだけ）。
+9. FT8 は `ap_hint` の有無にかかわらず、メッセージフィルタ（`/R`、`TU; `、§2.6）のためにも `contest` を読む。
+10. **WSJT-X と異なる**（#704）: 本家は FST4 / FST4W の `emedelay`（`fst4_decode.f90:889-892`）、Q65 の `nQSOprogress` と `lapcqonly`（`q65_decode.f90:212,235,242`。ここでは `CqOnly` は `Full` と同じに働く）を読み、FST4 のノイズブランカのスイープ幅を `ntol` で決める（`fst4_decode.f90:318-319`。ここでは `Fst4Extras::noise_blanker` の `Sweep { ftol_hz }`）。この移植はどれも読まない。FST4 の `contest` は逆で、移植は contest の CQ トークンと Fox の規則を当てるが、本家の FST4 は `ncontest` を受け取らない。
+11. JT65: 本家が `nfqso` を読むのは VHF / 単一デコードの経路だけ（`jt65_decode.f90`）で、それらは未移植。
+
+本家の
+デコーダが `mygrid` を読まないのと同じく、`station.grid` を読むデコーダは無い。
+`tests/params_read.rs` が空欄を合成信号で確かめる（そのフィールドを変えてもデコードは
+変わらない）。ただし既定の設定の強い信号では届かない欄（AP 文脈の後ろにある欄。テストに列挙）は除く。C・Kotlin・Swift: `mfsk_mode_fields_read`、`BINDINGS.md` §2.3。
 
 **`Depth` は、`ndepth` と同様に、探索設定の全てを決める。** ただしモードの `Tuning`
 extra で設定したものは除く（[§2.5](#25-extras-と-decoder-の外にあるプロトコル)）。 `Fast`・`Normal`・`Deep` は

@@ -325,6 +325,81 @@
 #define MFSK_CAP_DECODER (1 << 18)
 
 /**
+ * `band_lo_hz` / `band_hi_hz`.
+ */
+#define MFSK_FIELD_BAND (1 << 0)
+
+/**
+ * `rx_freq_hz`.
+ */
+#define MFSK_FIELD_RX_FREQ (1 << 1)
+
+/**
+ * `tol_hz`.
+ */
+#define MFSK_FIELD_TOL (1 << 2)
+
+/**
+ * `tx_freq_hz`.
+ */
+#define MFSK_FIELD_TX_FREQ (1 << 3)
+
+/**
+ * `depth`.
+ */
+#define MFSK_FIELD_DEPTH (1 << 4)
+
+/**
+ * `flags & MFSK_PARAM_AVERAGING`.
+ */
+#define MFSK_FIELD_AVERAGING (1 << 5)
+
+/**
+ * `flags & MFSK_PARAM_DEEP_SEARCH`.
+ */
+#define MFSK_FIELD_DEEP_SEARCH (1 << 6)
+
+/**
+ * `mycall`.
+ */
+#define MFSK_FIELD_MYCALL (1 << 7)
+
+/**
+ * `mygrid`. No mode reads it (nor does any upstream decoder).
+ */
+#define MFSK_FIELD_MYGRID (1 << 8)
+
+/**
+ * `hiscall`.
+ */
+#define MFSK_FIELD_HISCALL (1 << 9)
+
+/**
+ * `hisgrid`.
+ */
+#define MFSK_FIELD_HISGRID (1 << 10)
+
+/**
+ * `qso_progress`.
+ */
+#define MFSK_FIELD_QSO_PROGRESS (1 << 11)
+
+/**
+ * `ap_mode`.
+ */
+#define MFSK_FIELD_AP_MODE (1 << 12)
+
+/**
+ * `contest`.
+ */
+#define MFSK_FIELD_CONTEST (1 << 13)
+
+/**
+ * `flags & MFSK_PARAM_EME_DELAY`.
+ */
+#define MFSK_FIELD_EME_DELAY (1 << 14)
+
+/**
  * `mfsk_encode` / `mfsk_encode_info` `flags` bit 0: Q65 only, set WSJT-X 3.2's
  * Q65 Pileup "copied last Tx" bit in the transmitted symbols. Ignored by every
  * other mode. Bits 1..31 are reserved and must be 0. A literal here for the
@@ -3158,6 +3233,16 @@ int32_t mfsk_iq_poll(struct MfskIqReceiver *rx,
  */
 MFSK_API
 uint32_t mfsk_version(void);
+
+/**
+ * Which `MfskParams` fields `mode`'s decoder **can** read, as
+ * `MFSK_FIELD_*` bits: a field outside the word changes nothing for that
+ * mode, one inside it may be read only under a condition. The table and its
+ * conditions are `mfsk_core::decoder::params_read`'s (`BINDINGS.md`). 0 for
+ * MSK144, JTTY, uvpacket and a mode this build lacks.
+ */
+MFSK_API
+uint64_t mfsk_mode_fields_read(uint32_t mode);
 
 /**
  * Fill `out` with `mode`'s defaults: the GUI's (Deep; AP off for FT8 and

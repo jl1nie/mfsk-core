@@ -89,7 +89,9 @@ pub use any::{AnyDecoder, AnyExtras, AnyExtrasRef, AnySlotResult, Unsupported, W
 pub use budget::PeriodBudget;
 #[cfg(any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
 pub use params::SearchTuning;
-pub use params::{ApMode, Contest, DecodeParams, Depth, QsoContext, QsoProgress, Station};
+pub use params::{
+    ApMode, Contest, DecodeParams, Depth, ParamField, ParamFields, QsoContext, QsoProgress, Station,
+};
 
 use alloc::vec::Vec;
 
@@ -889,5 +891,139 @@ pub fn default_params(mode: Mode) -> DecodeParams {
         #[cfg(feature = "jt65")]
         Mode::Jt65 => p.ap(ApMode::Off),
         _ => p,
+    }
+}
+
+/// The [`DecodeParams`] fields `mode`'s decoder **can** read, under some
+/// setting (#698). A field outside the set changes nothing for that mode, as
+/// `jt9` ignores what a mode's upstream decoder does not read; a field inside
+/// it may still be read only under a condition, given below. An application
+/// can use it to say which settings are effective, and should not hide a
+/// field that is in the set.
+///
+/// | field | FT8 | FT4 | FST4 | FST4W | WSPR | JT9 | JT65 | Q65 |
+/// |---|---|---|---|---|---|---|---|---|
+/// | `band_hz` | ✓ | ✓ | ✓ | ✓¹ | ⁷ | ✓ | ✓ | ✓ |
+/// | `rx_freq_hz` | ✓ | ✓ | ✓ | ✓ | | ✓² | ¹¹ | ✓⁸ |
+/// | `tol_hz` | | | ¹⁰ | ✓ | | ✓² | ✓³ | ✓⁸ |
+/// | `tx_freq_hz` | ✓ | | | | | | | |
+/// | `depth` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+/// | `averaging` | | | | | | | ✓ | ✓ |
+/// | `deep_search` | | | | | | | ✓ | |
+/// | `station.call` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓⁸ |
+/// | `station.grid` | | | | | | | | |
+/// | `qso.his_call`, `qso.his_grid` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓⁸ |
+/// | `qso.progress` | ✓⁴ | ✓⁴ | ✓⁴ | | | | | ¹⁰ |
+/// | `ap` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ⁶ | ✓⁸ ¹⁰ |
+/// | `contest` | ✓⁹ | ✓⁴ | ✓⁴ ¹⁰ | | | | | ✓⁸ |
+/// | `eme_delay` | ✓ | | ¹⁰ | ¹⁰ | | | | ✓ |
+///
+/// FST4, FST4W and Q65 are every sub-mode (one implementation each).
+///
+/// 1. FST4W: only as the fallback for `rx_freq_hz` / `tol_hz` (`fst4w.rs`).
+/// 2. JT9: an extra pass near `rx_freq_hz` (±`tol_hz`) over the wide scan (`jt9_decode.f90`'s `nqd
+///    = 1`); `tol_hz` only with `rx_freq_hz` set.
+/// 3. JT65: only with `averaging`.
+/// 4. The FT family's QSO-context AP (`frame.rs`, `qso_hint`): not read when the mode's
+///    `Extras::ap_hint` is set, which replaces it; FT4 and FST4 run no AP at `Depth::Fast`, and FT4
+///    none for a Fox / Hound contest setting.
+/// 5. JT65: only with `deep_search` (the hint bank).
+/// 6. JT65 reads no AP setting: WSJT-X's AP passes (`extract.f90`) are not ported (`jt65/chase.rs`,
+///    #703).
+/// 7. WSPR searches the whole of wsprd's baseband (1500 ± 187.5 Hz). `wsprd` takes no band either:
+///    its `fmin` / `fmax` are fixed at ±110 Hz (`wsprd.c:781`), a narrowing this port does not apply
+///    (`wspr/decode.rs`, #697). `default_params` still sets a band for WSPR, which it ignores.
+/// 8. Q65: `rx_freq_hz` / `tol_hz` place the AP-list and averaged q3 decodes
+///    (`q65_decode.f90:263-272`), the plain decode searching `band_hz`; `station.call`, the QSO calls,
+///    `ap` and `contest` build the AP list only with `ap` not Off, a station call, and `rx_freq_hz`
+///    set or `Contest::GridExchange` (the only contest that changes anything).
+/// 9. FT8 also reads `contest` for its message filter (`/R`, `TU; `, §2.6), with or without
+///    `ap_hint`.
+/// 10. **Differs from WSJT-X** (#704): upstream reads FST4 / FST4W `emedelay`
+///     (`fst4_decode.f90:889-892`), Q65 `nQSOprogress` and `lapcqonly` (`q65_decode.f90:212,235,242`;
+///     here `CqOnly` acts as `Full`), and bounds FST4's noise-blanker sweep with `ntol`
+///     (`fst4_decode.f90:318-319`; here `Fst4Extras::noise_blanker`'s `Sweep { ftol_hz }`); the port
+///     reads none of them. FST4's `contest` is the other way round: the port applies the contest's CQ
+///     token and the Fox rule, upstream's FST4 takes no `ncontest`.
+/// 11. JT65: upstream reads `nfqso` on its VHF / single-decode paths only (`jt65_decode.f90`),
+///     which are not ported.
+///
+/// `station.grid` is in no set: no upstream decoder reads `mygrid` either
+/// (WSJT-X uses it for the Fox azimuth, `decoder.f90:523`). FT4 and FST4 take
+/// `tx_freq_hz` into their request, but only FT8's search reads it (`ft8b.f90`'s
+/// `nftx`). `tests/params_read.rs` checks the empty cells: setting such a field
+/// changes no decode, except in the cells behind the AP context that a strong
+/// signal at default settings cannot reach (listed there).
+pub fn params_read(mode: Mode) -> ParamFields {
+    #[allow(unused_imports)] // a build with none of the modes below
+    use ParamField::*;
+    #[allow(dead_code)] // a build without FT8, FT4 and FST4
+    const FT_FAMILY: &[ParamField] = &[
+        BandHz,
+        RxFreqHz,
+        Depth,
+        StationCall,
+        QsoHisCall,
+        QsoHisGrid,
+        QsoProgress,
+        Ap,
+        Contest,
+    ];
+    #[allow(unreachable_patterns)]
+    match mode {
+        #[cfg(feature = "ft8")]
+        Mode::Ft8 => ParamFields::of(FT_FAMILY).with(&[TxFreqHz, EmeDelay]),
+        #[cfg(feature = "ft4")]
+        Mode::Ft4 => ParamFields::of(FT_FAMILY),
+        #[cfg(feature = "fst4")]
+        Mode::Fst4S15
+        | Mode::Fst4S30
+        | Mode::Fst4S60
+        | Mode::Fst4S120
+        | Mode::Fst4S300
+        | Mode::Fst4S900
+        | Mode::Fst4S1800 => ParamFields::of(FT_FAMILY),
+        #[cfg(feature = "fst4w")]
+        Mode::Fst4W120 | Mode::Fst4W300 | Mode::Fst4W900 | Mode::Fst4W1800 => {
+            ParamFields::of(&[BandHz, RxFreqHz, TolHz, Depth])
+        }
+        #[cfg(feature = "wspr")]
+        Mode::Wspr => ParamFields::of(&[Depth]),
+        #[cfg(feature = "jt9")]
+        Mode::Jt9 => ParamFields::of(&[BandHz, RxFreqHz, TolHz, Depth]),
+        #[cfg(feature = "jt65")]
+        Mode::Jt65 => ParamFields::of(&[
+            BandHz,
+            TolHz,
+            Depth,
+            Averaging,
+            DeepSearch,
+            StationCall,
+            QsoHisCall,
+            QsoHisGrid,
+        ]),
+        #[cfg(feature = "q65")]
+        Mode::Q65A15
+        | Mode::Q65A30
+        | Mode::Q65A60
+        | Mode::Q65B60
+        | Mode::Q65C60
+        | Mode::Q65D60
+        | Mode::Q65E60
+        | Mode::Q65D120
+        | Mode::Q65E120
+        | Mode::Q65A300 => ParamFields::of(&[
+            BandHz,
+            RxFreqHz,
+            TolHz,
+            Depth,
+            Averaging,
+            StationCall,
+            QsoHisCall,
+            QsoHisGrid,
+            Ap,
+            Contest,
+            EmeDelay,
+        ]),
     }
 }

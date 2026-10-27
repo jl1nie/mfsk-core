@@ -758,18 +758,20 @@ does**; a field does not make an option exist for a mode.
 
 | field | upstream | read by |
 |---|---|---|
-| `band_hz` | `nfa`, `nfb` | every mode |
-| `rx_freq_hz` | `nfqso` | FT8 (candidates within 10 Hz of it are decoded first; hypotheses naming a partner only within 50 Hz of it; a8; the sniper's centre), FT4 and FST4 (the same AP rule), JT9 (the Rx-frequency pass), Q65 (the q3 list decode) |
-| `tol_hz` | `ntol` | JT9 (default 50 Hz), Q65 (F Tol, default 10 Hz) |
+| `band_hz` | `nfa`, `nfb` | every mode but WSPR (wsprd takes no band) |
+| `rx_freq_hz` | `nfqso` | FT8 (candidates within 10 Hz of it are decoded first; hypotheses naming a partner only within 50 Hz of it; a8; the sniper's centre), FT4 and FST4 (the same AP rule), FST4W (the centre of its search), JT9 (the Rx-frequency pass), Q65 (the q3 list decode) |
+| `tol_hz` | `ntol` | FST4W (the width of its search), JT9 (default 50 Hz), JT65 (the averaging window), Q65 (F Tol, default 10 Hz) |
 | `tx_freq_hz` | `nftx` | FT8: both-callsign hypotheses within 50 Hz of it |
 | `depth` | `ndepth & 7` | every mode, table below |
 | `averaging` | `ndepth & 16` | Q65 and JT65 (both need `SlotInput::period`; JT65's is `jt65::averaging`, `avg65`) |
 | `deep_search` | `ndepth & 32` | JT65: the known-call correlation `hint65` (`Jt65Extras::known_calls`; `station` and `qso` give MYCALL and the DX station) |
-| `station` | `mycall`, `mygrid` | FT8, FT4, FST4 (AP), Q65 (AP list) |
-| `qso` | `hiscall`, `hisgrid`, `nQSOProgress` | the same |
-| `ap` | `lft8apon`, `lapcqonly` | the same: `ApMode::{Off, CqOnly, Full}` |
+| `station` | `mycall`, `mygrid` | `call`: FT8, FT4, FST4 (AP), JT65 (deep search), Q65 (AP list); `grid`: none |
+| `qso` | `hiscall`, `hisgrid`, `nQSOProgress` | the calls: as `station.call`; `progress`: FT8, FT4, FST4 only (Q65's is not ported, #704) |
+| `ap` | `lft8apon`, `lapcqonly` | FT8, FT4, FST4, Q65: `ApMode::{Off, CqOnly, Full}` (Q65's `CqOnly` acts as `Full`, #704; JT65's AP is not ported, #703) |
 | `contest` | `ncontest` | FT8 (keeps `/R` and `TU; ` messages, [§2.6](#26-message-acceptance); the contest's `CQ` token; Fox), FT4 and FST4 (the `CQ` token), Q65 (the callers list) |
-| `eme_delay` | `emedelay` | FT8 (reports `dt` 2 s later), Q65 (the late search edge moves to +5.5 s, +4.0 s on Q65-15) |
+| `eme_delay` | `emedelay` | FT8 (reports `dt` 2 s later), Q65 (the late search edge moves to +5.5 s, +4.0 s on Q65-15); not FST4 / FST4W, where upstream reads it (#704) |
+
+The complete per-mode table, with its conditions, is `params_read` below.
 
 **Defaults follow the GUI.** `Decoder::with_defaults()` and
 `decoder::default_params(mode)` give `Depth::Deep` (the GUI's `NDepth`
@@ -783,6 +785,47 @@ JT9, JT65 and Q65 the band of their own `search::default_search_params()`
 `DecodeParams::for_band` is the bare block: `Deep`, AP `Full`, no station or
 QSO. With no station call that leaves only the blind `CQ` hypothesis, so it
 is not the same as `default_params(Mode::Ft8)`, which is `ApMode::Off`.
+
+**Which fields a mode reads: `decoder::params_read(mode)`** (#698). It returns
+the `ParamFields` (a set of `ParamField`) the mode's decoder *can* read under
+some setting; a field outside it changes nothing for that mode, so an
+application can show which settings are effective (hide only what is outside
+the set). FST4, FST4W and Q65 mean every sub-mode.
+
+| field | FT8 | FT4 | FST4 | FST4W | WSPR | JT9 | JT65 | Q65 |
+|---|---|---|---|---|---|---|---|---|
+| `band_hz` | ✓ | ✓ | ✓ | ✓¹ | ⁷ | ✓ | ✓ | ✓ |
+| `rx_freq_hz` | ✓ | ✓ | ✓ | ✓ | | ✓² | ¹¹ | ✓⁸ |
+| `tol_hz` | | | ¹⁰ | ✓ | | ✓² | ✓³ | ✓⁸ |
+| `tx_freq_hz` | ✓ | | | | | | | |
+| `depth` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `averaging` | | | | | | | ✓ | ✓ |
+| `deep_search` | | | | | | | ✓ | |
+| `station.call` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓⁸ |
+| `station.grid` | | | | | | | | |
+| `qso.his_call`, `qso.his_grid` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ✓⁵ | ✓⁸ |
+| `qso.progress` | ✓⁴ | ✓⁴ | ✓⁴ | | | | | ¹⁰ |
+| `ap` | ✓⁴ | ✓⁴ | ✓⁴ | | | | ⁶ | ✓⁸ ¹⁰ |
+| `contest` | ✓⁹ | ✓⁴ | ✓⁴ ¹⁰ | | | | | ✓⁸ |
+| `eme_delay` | ✓ | | ¹⁰ | ¹⁰ | | | | ✓ |
+
+1. FST4W: only as the fallback for `rx_freq_hz` / `tol_hz` (`fst4w.rs`).
+2. JT9: an extra pass near `rx_freq_hz` (±`tol_hz`) over the wide scan (`jt9_decode.f90`'s `nqd = 1`); `tol_hz` only with `rx_freq_hz` set.
+3. JT65: only with `averaging`.
+4. The FT family's QSO-context AP (`frame.rs`, `qso_hint`): not read when the mode's `Extras::ap_hint` is set, which replaces it; FT4 and FST4 run no AP at `Depth::Fast`, and FT4 none for a Fox / Hound contest setting.
+5. JT65: only with `deep_search` (the hint bank).
+6. JT65 reads no AP setting: WSJT-X's AP passes (`extract.f90`) are not ported (`jt65/chase.rs`, #703).
+7. WSPR searches the whole of wsprd's baseband (1500 ± 187.5 Hz). `wsprd` takes no band either: its `fmin` / `fmax` are fixed at ±110 Hz (`wsprd.c:781`), a narrowing this port does not apply (`wspr/decode.rs`, #697). `default_params` still sets a band for WSPR, which it ignores.
+8. Q65: `rx_freq_hz` / `tol_hz` place the AP-list and averaged q3 decodes (`q65_decode.f90:263-272`), the plain decode searching `band_hz`; `station.call`, the QSO calls, `ap` and `contest` build the AP list only with `ap` not Off, a station call, and `rx_freq_hz` set or `Contest::GridExchange` (the only contest that changes anything).
+9. FT8 also reads `contest` for its message filter (`/R`, `TU; `, §2.6), with or without `ap_hint`.
+10. **Differs from WSJT-X** (#704): upstream reads FST4 / FST4W `emedelay` (`fst4_decode.f90:889-892`), Q65 `nQSOprogress` and `lapcqonly` (`q65_decode.f90:212,235,242`; here `CqOnly` acts as `Full`), and bounds FST4's noise-blanker sweep with `ntol` (`fst4_decode.f90:318-319`; here `Fst4Extras::noise_blanker`'s `Sweep { ftol_hz }`); the port reads none of them. FST4's `contest` is the other way round: the port applies the contest's CQ token and the Fox rule, upstream's FST4 takes no `ncontest`.
+11. JT65: upstream reads `nfqso` on its VHF / single-decode paths only (`jt65_decode.f90`), which are not ported.
+
+No decoder reads
+`station.grid`, as no upstream one reads `mygrid`. `tests/params_read.rs`
+checks the empty cells on synthetic signals (setting such a field changes no
+decode), except those a strong signal at default settings cannot reach (the
+cells behind the AP context, listed in the test). C, Kotlin and Swift: `mfsk_mode_fields_read`, `BINDINGS.md` §2.3.
 
 **`Depth` decides every search setting, as `ndepth` does**, unless the
 mode's `Tuning` extra sets one ([§2.5](#25-extras-and-the-protocols-outside-decoder)). `Fast`,
