@@ -328,56 +328,24 @@ fn every_capability_is_claimed_by_something() {
     }
 }
 
-/// The trap this table exists to defuse: FT4's `sync_min` is not on the
-/// same scale as FT8's or FST4's, so a caller that copies one number
-/// across protocols is wrong and cannot currently tell.
+/// The trap this table exists to defuse: FT4's sync threshold is not on the
+/// same scale as FT8's, so a caller that copies one number across protocols
+/// (an override of `Tuning::sync_min` or `SearchTuning::score_threshold`) is
+/// wrong and could not tell.
 #[test]
-fn sync_scale_is_recorded_and_defaults_respect_it() {
+fn sync_scale_is_recorded() {
     assert_eq!(profile("FT4").sync_scale, SyncScale::BaselineNormalised);
     assert_eq!(profile("FT8").sync_scale, SyncScale::CostasAbsolute);
     // FST4 since #554: `get_candidates_fst4`'s minsync, on the same
-    // baseline-normalised scale as FT4, with upstream's values
-    // (`fst4_decode.f90:308-309`).
+    // baseline-normalised scale as FT4 (`fst4_decode.f90:308-309`).
     for m in FST4_MODES {
         assert_eq!(profile(m).sync_scale, SyncScale::BaselineNormalised, "{m}");
-        let want = if m == "FST4-15" { 1.15 } else { 1.20 };
-        assert_eq!(profile(m).defaults.sync_min, want, "{m}");
-        assert_eq!(profile(m).defaults.max_cand, 200, "{m}");
     }
     // The scan modes score sync as a 0..1 fraction of sync plus noise
     // (#413): a third scale, not FT8's.
     #[cfg(all(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"))]
     for m in ["WSPR", "JT9", "JT65", "Q65-60A"] {
         assert_eq!(profile(m).sync_scale, SyncScale::SyncFraction, "{m}");
-        let d = profile(m).defaults;
-        assert!(d.sync_min > 0.0 && d.sync_min < 1.0, "{m}: {}", d.sync_min);
-    }
-
-    // On the baseline-normalised scale noise sits at ~1.0 by
-    // construction, so a default at or below it would admit every peak
-    // in the band. WSJT-X's own value is 1.18.
-    let ft4 = profile("FT4");
-    assert!(
-        ft4.defaults.sync_min > 1.0,
-        "FT4's default sync_min {} is at or below the noise floor its own scale puts at 1.0",
-        ft4.defaults.sync_min
-    );
-    assert_eq!(ft4.defaults.sync_min, 1.18, "WSJT-X's ft4_decode.f90:195");
-}
-
-/// Every mode that can be decoded must publish a searchable band and a
-/// candidate budget; every mode that cannot must not pretend to.
-#[test]
-fn defaults_are_usable_wherever_a_search_exists() {
-    for p in PROTOCOLS {
-        let d = p.profile.defaults;
-        if p.profile.caps & caps::WSJT77_FAMILY != 0 {
-            assert!(
-                d.freq_max_hz > d.freq_min_hz && d.max_cand > 0 && d.sync_min > 0.0,
-                "{} is FT-family but publishes an unusable default search: {d:?}",
-                p.name
-            );
-        }
     }
 }
 

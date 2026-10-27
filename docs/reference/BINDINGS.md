@@ -234,7 +234,7 @@ p.rx_freq_hz = 1500.0f;
 | `ap_mode` | `MFSK_AP_OFF` 0 (`lft8apon` off), `_CQ_ONLY` 1 (`lapcqonly`), `_FULL` 2 (every hypothesis the QSO context allows). `_init` writes the mode's own default: off for FT8 and JT65 (the GUI's "Enable AP" boxes), full for FT4 |
 | `contest` | `ncontest`: `MFSK_CONTEST_NONE` 0, `_GRID_EXCHANGE` 1 (NA VHF, WW Digi, ARRL Digi, Q65 pileup), `_EU_VHF` 2, `_FIELD_DAY` 3, `_RTTY_ROUNDUP` 4, `_FOX` 6, `_HOUND` 7 |
 | `qso_progress` | `nQSOProgress`: `MFSK_QSO_CALLING` 0, `_REPLYING` 1, `_REPORT` 2, `_ROGER_REPORT` 3, `_ROGERS` 4, `_SIGNOFF` 5 |
-| `band_lo_hz`, `band_hi_hz` | the audio band searched (`nfa`, `nfb`). `_init` writes 200–4000 Hz for FT8 and FT4 (`jt9`'s command line) and 600–1400 Hz for FST4 (the GUI's F Low / F High); the other modes keep their registry band |
+| `band_lo_hz`, `band_hi_hz` | the audio band searched (`nfa`, `nfb`). `_init` writes 200–4000 Hz for FT8 and FT4 (`jt9`'s command line) 600–1400 Hz for FST4 (the GUI's F Low / F High), 1400–1600 Hz for FST4W (`jt9 -W`), and for WSPR, JT9, JT65 and Q65 the band of their own search default (`LIBRARY.md` §8.1) |
 | `rx_freq_hz`, `tol_hz` | the Rx frequency and its tolerance (`nfqso`, `ntol`). NaN is unset — 0 Hz is a frequency |
 | `tx_freq_hz` | the Tx frequency (`nftx`). NaN is unset. It steers FT8's a-priori search (`MFSK_CAP_TX_FREQ`) |
 | `mycall`, `mygrid`, `hiscall`, `hisgrid` | the station and the QSO partner, NUL-terminated inline text (15 and 7 characters), empty when unknown. They build the AP hypotheses |

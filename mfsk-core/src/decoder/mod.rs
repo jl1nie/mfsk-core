@@ -508,7 +508,7 @@ impl<P: Decodable> Decoder<P> {
         }
     }
 
-    /// A decoder with the mode's default block (its registry band).
+    /// A decoder with the mode's default block, [`default_params`].
     pub fn with_defaults() -> Self {
         Self::new(default_params(P::MODE))
     }
@@ -821,19 +821,19 @@ impl<P: Decodable> Decoder<P> {
     }
 }
 
-/// The parameter block a mode starts with, after the GUI: [`Depth::Deep`],
-/// and AP off for FT8 and JT65, whose "Enable AP" boxes start unchecked
-/// (`mainwindow_settings.cpp:604-605`).
-///
-/// The band: the GUI has none of its own (`nfa` is the waterfall's start,
-/// 0; `nfb` its right edge), so FT8 and FT4 take `jt9`'s command-line
-/// 200-4000 Hz (`jt9.f90:40-41`), and FST4 the GUI's own F Low / F High,
-/// 600-1400 Hz (`mainwindow_settings.cpp:481-482`). The other modes keep
-/// their registry band until their decoders move here.
-pub fn default_params(mode: Mode) -> DecodeParams {
-    let d = mode.meta().profile.defaults;
-    #[allow(unreachable_patterns)]
-    let band = match mode {
+/// `[freq_min_hz, freq_max_hz]` of a scan mode's own search default. The
+/// `search` modules need an FFT backend, as does this module (`lib.rs`).
+#[allow(unused_macros)] // none of the four scan modes built
+macro_rules! scan_band {
+    ($m:ident) => {{
+        let p = crate::$m::search::default_search_params();
+        (p.freq_min_hz, p.freq_max_hz)
+    }};
+}
+
+/// [`default_params`]' band for `mode`, with its source per mode.
+fn default_band(mode: Mode) -> (f32, f32) {
+    match mode {
         #[cfg(feature = "ft8")]
         Mode::Ft8 => (200.0, 4000.0),
         #[cfg(feature = "ft4")]
@@ -846,8 +846,41 @@ pub fn default_params(mode: Mode) -> DecodeParams {
         | Mode::Fst4S300
         | Mode::Fst4S900
         | Mode::Fst4S1800 => (600.0, 1400.0),
-        _ => (d.freq_min_hz, d.freq_max_hz),
-    };
+        #[cfg(feature = "fst4w")]
+        Mode::Fst4W120 | Mode::Fst4W300 | Mode::Fst4W900 | Mode::Fst4W1800 => (1400.0, 1600.0),
+        #[cfg(feature = "wspr")]
+        Mode::Wspr => scan_band!(wspr),
+        #[cfg(feature = "jt9")]
+        Mode::Jt9 => scan_band!(jt9),
+        #[cfg(feature = "jt65")]
+        Mode::Jt65 => scan_band!(jt65),
+        #[cfg(feature = "q65")]
+        Mode::Q65A15
+        | Mode::Q65A30
+        | Mode::Q65A60
+        | Mode::Q65B60
+        | Mode::Q65C60
+        | Mode::Q65D60
+        | Mode::Q65E60
+        | Mode::Q65D120
+        | Mode::Q65E120
+        | Mode::Q65A300 => scan_band!(q65),
+    }
+}
+
+/// The parameter block a mode starts with, after the GUI: [`Depth::Deep`],
+/// and AP off for FT8 and JT65, whose "Enable AP" boxes start unchecked
+/// (`mainwindow_settings.cpp:604-605`).
+///
+/// The band: the GUI has none of its own (`nfa` is the waterfall's start,
+/// 0; `nfb` its right edge), so FT8 and FT4 take `jt9`'s command-line
+/// 200-4000 Hz (`jt9.f90:40-41`), FST4 the GUI's own F Low / F High,
+/// 600-1400 Hz (`mainwindow_settings.cpp:481-482`), and FST4W `jt9 -W`'s
+/// `-f 1500 -F 100`. WSPR, JT9, JT65 and Q65 take the band of their own
+/// `search::default_search_params()`. This function is the only source
+/// of these defaults; the registry carries none since #698.
+pub fn default_params(mode: Mode) -> DecodeParams {
+    let band = default_band(mode);
     let p = DecodeParams::for_band(band);
     #[allow(unreachable_patterns)]
     match mode {

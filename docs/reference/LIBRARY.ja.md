@@ -503,7 +503,7 @@ variant を足すので、厳密にはこれまで毎回が破壊的変更だっ
 
 付いた型は、出力行（`Decoded`、`Row`、`RowDetail`、`SlotResult`、
 `AnySlotResult`、`Unsupported`、`BudgetReport`、各モードのネイティブ結果）、
-レジストリのメタデータ（`ProtocolMeta`、`DecodeProfile`、`DecodeDefaults`）、
+レジストリのメタデータ（`ProtocolMeta`、`DecodeProfile`）、
 探索のつまみ（`Tuning`、`SearchTuning`、`Sniper`、各 `*Extras`）、
 パラメータブロックの `Station` / `QsoContext` / `Contest`、
 および上に挙げたオプション enum である。
@@ -757,7 +757,8 @@ assert!(wspr.set_ap_hint(None).is_err());
 チェックボックスが未チェックで始まる。他のモードにはボックスが無い）、GUI が暗に持つ帯域
 を返す: GUI 自身は帯域を持たない（`nfa` はウォーターフォールの左端、`nfb` は右端）ので、
 FT8 と FT4 は `jt9` のコマンドラインの 200〜4000 Hz、FST4 は GUI 自身の F Low / F High
-である 600〜1400 Hz、他のモードはレジストリの帯域になる。`DecodeParams::for_band` は素の
+である 600〜1400 Hz、FST4W は `jt9 -W` の 1400〜1600 Hz、WSPR・JT9・JT65・Q65 は各自の
+`search::default_search_params()` の帯域になる（[§8.1](#81-protocols-レジストリ) の表）。`DecodeParams::for_band` は素の
 ブロックである: `Deep`、AP は `Full`、自局も QSO も無し。自局のコールサインが無いと残るのは
 盲目の `CQ` 仮説だけなので、`ApMode::Off` である `default_params(Mode::Ft8)` とは同じ
 ではない。
@@ -2695,7 +2696,7 @@ for p in PROTOCOLS {
   かける前方 FFT（`Protocol::DECODE_FFT1_SIZE`。FT4 92 160、FT8 192 000、
   **FST4-300 4 194 304**、**FST4W-1800 21 591 360**（最大）、独自のフロントエンドを持つモードは 0）。後者は、
   「どのモードでも呼び出しの形は 1 つ」がメモリの話としては間違いになる数字である。
-* `profile: DecodeProfile { caps, defaults, sync_scale, sniper_max_cand_cap }`。
+* `profile: DecodeProfile { caps, sync_scale }`。
 
 `caps` は `registry::caps` のビットからなる `u32` で、どのビットも公開 API の
 操作を名指す。`tests/registry_caps.rs` が `AnyDecoder` と突き合わせ、さらに
@@ -2713,37 +2714,32 @@ Q65 と JT65 もそれらのフィールドを読むが、このビットは持�
 ビルダーの `.known()` と `.fft_cache()` を表していた。**ビット 15 は意図的に飛ばしてある**: これは
 `MFSK_CAP_STREAM_RECEIVER` で、`mfsk-ffi` だけが定義する（JTTY にはそれを
 主張するレジストリ entry が無い）。
-`sync_scale` は `sync_min` の読み方を示す。スケールは同じ数値ではないからだ:
+`sync_scale` は、呼び出し側が設定する同期閾値（`Tuning::sync_min`、
+`SearchTuning::score_threshold`）の読み方を示す。スケールは同じ数値ではないからだ:
 `CostasAbsolute`（FT8。雑音に固定値は無い）、`BaselineNormalised`
 （FT4、および #554 以降の FST4: スペクトルをフィットしたベースラインで割るので、
 雑音は ~1.0 にあり、それ未満の閾値はあらゆるピークを通す）、`SyncFraction`（WSPR、JT9、JT65、
 Q65: sync の電力を sync と雑音の和で割った 0‥1 の値で、既定は
-`DEFAULT_SCORE_THRESHOLD` = 0.1）。`sniper_max_cand_cap` は sniper 経路が
-`max_cand` に黙って適用する上限である（FT4: 15）。
+`DEFAULT_SCORE_THRESHOLD` = 0.1）。
 
-`profile.defaults` はレジストリが公開するホスト探索値で、C ABI の `mfsk_mode_defaults` が返すもの
-でもある。**`Decoder<P>` はこれを読まない**: `sync_min` と候補数は `Depth` が決め
-（[§2.2](#22-decodeparams-と-depth)）、帯域は `decoder::default_params(mode)` のものである。
-この表はレジストリ自身のデータ（UI が「このビルドの既定の探索は？」と尋ねるためのもの）で、
-スキャン系モードの時間窓・スコア閾値・候補数の上限は今も各自の `default_search_params()`
-から始まる:
+レジストリは**既定の探索パラメータを持たない**（#698: `DecodeDefaults` と
+`sniper_max_cand_cap` は 0.15.0 で無くなった。読んでいたのは `default_params` の帯域だけ）。
+モードの既定値は `decoder::default_params(mode)` で、すべてのデコーダ、
+`AnyDecoder::with_defaults`、C の `mfsk_params_init` がここから始まる。FT 系では同期閾値と
+候補数をその `Depth` が決める（[§2.2](#22-decodeparams-と-depth)）。設定される帯域:
 
-| エントリ | 帯域 (Hz) | `sync_min` | `max_cand` | 出所 |
-|---|---|---|---|---|
-| FT8 | 100-3000 | 0.8 | 60 | `FT8_PROFILE` |
-| FT4 | 300-2700 | 1.18 | 200 | WSJT-X 3.x `ft4_decode.f90` の `syncmin` / `MAXCAND`（#440。以前は 1.2 / 100） |
-| FST4（5 つすべて） | 100-3000 | 1.20（FST4-15: 1.15） | 200 | WSJT-X `fst4_decode.f90` の `minsync` と候補配列（#554。以前は Costas スケールで 0.8 / 50） |
-| WSPR | 1400-1600 | 0.1 | 200 | `wspr::search::default_search_params()`、±5.46 s（8 シンボル） |
-| JT9 | 200-4000 | 0.1 | 8 | `jt9::search::default_search_params()`、±1.728 s |
-| JT65 | 1000-2000 | 0.1 | 8 | `jt65::search::default_search_params()`、±7.62 s |
-| Q65（10 個すべて） | 200-3000 | 0.1 | 8 | `q65::search::default_search_params()`、±1.0 s（#399、#413） |
-| uvpacket | — | 0 | 0 | 探索の仕組みはどれも当てはまらない |
+| モード | 帯域 (Hz) | 出所 |
+|---|---|---|
+| FT8、FT4 | 200-4000 | `jt9` のコマンドライン（`jt9.f90:40-41`） |
+| FST4（7 つすべて） | 600-1400 | GUI の F Low / F High（`mainwindow_settings.cpp:481-482`） |
+| FST4W（4 つすべて） | 1400-1600 | `jt9 -W` の `-f 1500 -F 100` |
+| WSPR | 1400-1600 | `wspr::search::default_search_params()` |
+| JT9 | 200-4000 | `jt9::search::default_search_params()` |
+| JT65 | 1000-2000 | `jt65::search::default_search_params()` |
+| Q65（10 個すべて） | 200-3000 | `q65::search::default_search_params()` |
 
-#413 以降、WSPR・JT9・JT65・Q65 は、手で持っていたコピー（4 つすべてで
-ずれていた: WSPR / JT9 / JT65 は帯域を公開せず、Q65 は `mfsk-ffi` の広い EME
-スキャン、32 候補で 0.05 を公開していた）ではなく、ライブラリ自身の
-`default_search_params()` から自分の行を読む。FFT バックエンドが無いと
-その 4 つは `search` モジュールを持たず、空の帯域を公開する。
+スキャン系モードの時間窓・スコア閾値・候補数の上限も、各自の `default_search_params()`
+から始まる。
 
 ルックアップ:
 

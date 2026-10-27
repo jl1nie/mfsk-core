@@ -242,34 +242,20 @@ pub enum SyncScale {
     SyncFraction = 2,
 }
 
-/// The search parameters a caller gets if it does not supply its own.
+/// Capability description for one registry entry: what its decoder can be
+/// asked to do, and how to read a sync threshold given to it.
 ///
-/// There is no default anywhere in the library today — `sync_min`,
-/// `max_cand` and the band are positional arguments of
-/// `DecodeRequest::new`, so every caller invents them and the C ABI
-/// invented three different sets. These are this crate's own
-/// host-configuration values, with the provenance recorded per entry.
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub struct DecodeDefaults {
-    pub freq_min_hz: f32,
-    pub freq_max_hz: f32,
-    pub sync_min: f32,
-    pub max_cand: u32,
-}
-
-/// Capability and default-search description for one registry entry.
+/// It carries no default search parameters (#698): those are
+/// [`decoder::default_params(mode)`](crate::decoder::default_params) and the
+/// mode's `Depth`, which is what every decoder starts from.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct DecodeProfile {
     /// Bitwise OR of [`caps`] constants.
     pub caps: u32,
-    pub defaults: DecodeDefaults,
+    /// The scale of `Tuning::sync_min` / `SearchTuning::score_threshold`
+    /// for this mode, should a caller set one.
     pub sync_scale: SyncScale,
-    /// Upper bound the sniper path silently applies to `max_cand`, or
-    /// `None` where there is none. FT4 clamps to 15 and says so
-    /// nowhere a caller can see (`ft4::decode`).
-    pub sniper_max_cand_cap: Option<u32>,
 }
 
 /// Compile-time metadata describing one wired protocol.
@@ -376,19 +362,11 @@ macro_rules! protocol_meta {
     };
 }
 
-/// FT8. Everything the builder offers.
+/// FT8. Everything the FT-family decoder offers.
 ///
-/// Defaults are this crate's own host research configuration — the one
-/// `tests/ft8_qso3_full_parity_recall.rs` and `tests/ft8_sweep.rs` drive,
-/// which reaches the full 20-entry golden set. Deliberately *not* the
-/// C ABI's historical `sync_min = 2.0`, a pre-0.8.0 value no test in the
-/// tree uses, nor the embedded ship config (1.0 / 15), which is tuned
-/// for an ESP32's power budget rather than a desktop's recall.
-///
-/// Real `jt9` varies its own threshold by depth: 2.1 for `-d1`/`-d2` and 1.3
-/// for `-d3` in v3.0 and later (`ft8_decode.f90:180-181`; through 2.7 it was
-/// 1.6 and 1.3), so there is no single upstream number to copy here the way
-/// there is for FT4. `crate::decoder::Decoder<Ft8>` takes it from `Depth`.
+/// Its sync threshold is on the Costas scale and `Decoder<Ft8>` takes it from
+/// `Depth`: real `jt9` uses 2.1 for `-d1`/`-d2` and 1.3 for `-d3` in v3.0 and
+/// later (`ft8_decode.f90:180-181`; through 2.7 it was 1.6 and 1.3).
 #[allow(dead_code)] // unused when the matching protocol feature is off
 const FT8_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER
@@ -405,26 +383,16 @@ const FT8_PROFILE: DecodeProfile = DecodeProfile {
         | caps::ON_RESULT
         | caps::TX_FREQ
         | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 100.0,
-        freq_max_hz: 3000.0,
-        sync_min: 0.8,
-        max_cand: 60,
-    },
     sync_scale: SyncScale::CostasAbsolute,
-    sniper_max_cand_cap: None,
 };
 
-/// FT4. No checkpoint SIC (no upstream equivalent to port), no
-/// wide-band AP (the shared AP engine early-exits after the first hit).
+/// FT4. No checkpoint SIC (no upstream equivalent to port), no sniper.
 ///
-/// `sync_min = 1.18` is **WSJT-X's own** (`ft4_decode.f90:195`; it was
-/// 1.2 through WSJT-X 2.7), and on FT4's baseline-normalised scale it is a
-/// floor rather than a preference: noise sits at 1.0 by construction,
-/// so anything lower admits every peak in the band. Measured on 560
-/// sweep files, 0.05 vs 1.2 costs 2.6×-42× the candidates for identical
-/// recall (`tests/ft4_candidate_budget.rs`). `max_cand = 200` mirrors
-/// `ft4_decode.f90`'s `MAXCAND` (100 through WSJT-X 2.7).
+/// On FT4's baseline-normalised scale WSJT-X's own `syncmin = 1.18`
+/// (`ft4_decode.f90:195`; 1.2 through WSJT-X 2.7) is a floor rather than a
+/// preference: noise sits at 1.0 by construction, so anything lower admits
+/// every peak in the band. Measured on 560 sweep files, 0.05 vs 1.2 costs
+/// 2.6×-42× the candidates for identical recall (`tests/ft4_candidate_budget.rs`).
 #[allow(dead_code)]
 const FT4_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER
@@ -437,14 +405,7 @@ const FT4_PROFILE: DecodeProfile = DecodeProfile {
         | caps::BUDGET
         | caps::ON_RESULT
         | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 300.0,
-        freq_max_hz: 2700.0,
-        sync_min: 1.18,
-        max_cand: 200,
-    },
     sync_scale: SyncScale::BaselineNormalised,
-    sniper_max_cand_cap: Some(15),
 };
 
 /// Every FST4 sub-mode. No SIC of either kind — WSJT-X's own
@@ -454,14 +415,10 @@ const FT4_PROFILE: DecodeProfile = DecodeProfile {
 /// FST4's acceptance is the CRC-24 plus a successful unpack
 /// (`engine::pipeline`, `REQUIRES_UNPACK`).
 ///
-/// `sync_min` is `get_candidates_fst4`'s `minsync` since #554: the
-/// four-tone CCF divided by a fitted noise baseline, so noise sits near
-/// 1.0 (`engine::fst4_coarse`). `1.20` is upstream's
-/// (`fst4_decode.f90:308`), and FST4-15 has its own profile for upstream's
-/// `1.15`. `max_cand = 200` is the size of upstream's candidate array.
-/// Until #554 this was `0.8 / 50` on the Costas scale of the generic
-/// search, which the embedded wideband monitor still uses
-/// (`embedded-shared::fst4_monitor`) and this registry does not describe.
+/// The sync threshold is `get_candidates_fst4`'s `minsync` since #554: the
+/// four-tone CCF divided by a fitted noise baseline, so noise sits near 1.0
+/// (`engine::fst4_coarse`; upstream's 1.20, and 1.15 for FST4-15,
+/// `fst4_decode.f90:308-309`).
 #[allow(dead_code)]
 const FST4_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER
@@ -473,151 +430,47 @@ const FST4_PROFILE: DecodeProfile = DecodeProfile {
         | caps::ON_RESULT
         | caps::NOISE_BLANKER
         | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 100.0,
-        freq_max_hz: 3000.0,
-        sync_min: 1.20,
-        max_cand: 200,
-    },
     sync_scale: SyncScale::BaselineNormalised,
-    sniper_max_cand_cap: None,
-};
-
-/// FST4-15: [`FST4_PROFILE`] with upstream's 15 s `minsync`, `1.15`
-/// (`fst4_decode.f90:309`).
-#[allow(dead_code)]
-const FST4_15_PROFILE: DecodeProfile = DecodeProfile {
-    caps: caps::DECODER
-        | caps::WSJT77_FAMILY
-        | caps::AP_WIDEBAND
-        | caps::OSD
-        | caps::EQ_MODE
-        | caps::BUDGET
-        | caps::ON_RESULT
-        | caps::NOISE_BLANKER
-        | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 100.0,
-        freq_max_hz: 3000.0,
-        sync_min: 1.15,
-        max_cand: 200,
-    },
-    sync_scale: SyncScale::BaselineNormalised,
-    sniper_max_cand_cap: None,
 };
 
 /// Every FST4W period. The decode is the FST4 front end and a ladder of its
 /// own (`fst4w::decode`): no AP, no OSD choice, no noise blanker, no equaliser,
-/// and the search window is `nfqso ± ntol`, not a band. The published band is
-/// `jt9 -W`'s defaults (`-f 1500 -F 100`); `sync_min` is
-/// `get_candidates_fst4`'s `minsync` (`fst4_decode.f90:308`) and `max_cand`
-/// the size of upstream's candidate array (`:270`).
+/// and the search window is `nfqso ± ntol`, not a band. Its sync threshold is
+/// `get_candidates_fst4`'s `minsync` (`fst4_decode.f90:308`).
 #[allow(dead_code)]
 const FST4W_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 1400.0,
-        freq_max_hz: 1600.0,
-        sync_min: 1.20,
-        max_cand: 100,
-    },
     sync_scale: SyncScale::BaselineNormalised,
-    sniper_max_cand_cap: None,
 };
 
-/// A mode's own [`SearchParams`](crate::engine::search::SearchParams)
-/// default, as the registry publishes it.
-///
-/// WSPR, JT9, JT65 and Q65 each carry a `default_search_params()` that
-/// their `DecodeRequest` starts from, so for them the library is the
-/// source and the registry only reads it (#413). The hand-written copies
-/// this replaced had drifted from all four: WSPR and JT9/JT65 published
-/// no band at all, and Q65 published `mfsk-ffi`'s wide EME scan (32
-/// candidates, threshold 0.05) instead of the library's own 8 / 0.1.
-#[cfg(all(
-    any(feature = "wspr", feature = "jt9", feature = "jt65", feature = "q65"),
-    any(feature = "fft-rustfft", feature = "fft-extern")
-))]
-const fn defaults_from(p: crate::engine::search::SearchParams) -> DecodeDefaults {
-    DecodeDefaults {
-        freq_min_hz: p.freq_min_hz,
-        freq_max_hz: p.freq_max_hz,
-        sync_min: p.score_threshold,
-        max_cand: p.max_candidates as u32,
-    }
-}
-
-/// `$m`'s published defaults. Without an FFT backend these modes build
-/// their types and encoders but no `search` module and no decoder, so
-/// there is nothing to default and the band is empty.
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-#[allow(unused_macros)] // none of the four modes built
-macro_rules! scan_defaults {
-    ($m:ident) => {
-        defaults_from(crate::$m::search::default_search_params())
-    };
-}
-#[cfg(not(any(feature = "fft-rustfft", feature = "fft-extern")))]
-#[allow(unused_macros)] // none of the four modes built
-macro_rules! scan_defaults {
-    ($m:ident) => {
-        DecodeDefaults {
-            freq_min_hz: 0.0,
-            freq_max_hz: 0.0,
-            sync_min: 0.0,
-            max_cand: 0,
-        }
-    };
-}
-
-/// Q65. Not `FrameDecodable`: its own builder family takes search
-/// parameters with a time tolerance and a nominal start-sample anchor,
-/// and reports `start_sample` rather than a `dt`. It has streaming, a
-/// callsign hash table and a budget (polled in both syncs' candidate lists,
-/// #593; the averaged decode is not cut), and no `known`.
-///
-/// Defaults are `q65::search::default_search_params()`. `mfsk-ffi`'s
-/// `mfsk_q65_*` family deliberately scans wider than this (it takes no
-/// alignment hint and is documented for unaligned EME recordings), and
-/// says so where it builds its own parameters.
+/// Q65. Its decode is targeted by construction (`rx_freq_hz` plus `tol_hz`),
+/// with streaming, a callsign hash table and a budget (polled in both syncs'
+/// candidate lists, #593; the averaged decode is not cut).
 #[cfg(feature = "q65")]
 const Q65_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER | caps::AP_NARROW | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
-    defaults: scan_defaults!(q65),
     sync_scale: SyncScale::SyncFraction,
-    sniper_max_cand_cap: None,
 };
 
-/// WSPR. A whole-slot scan with its own subtract pass. Defaults are
-/// `wspr::search::default_search_params()`, which is also what
-/// `mfsk_wspr_decode` scans with.
+/// WSPR. A whole-slot scan with its own subtract pass.
 #[cfg(feature = "wspr")]
 const WSPR_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
-    defaults: scan_defaults!(wspr),
     sync_scale: SyncScale::SyncFraction,
-    sniper_max_cand_cap: None,
 };
 
-/// JT9. `DecodeRequest::new` scans with
-/// `jt9::search::default_search_params()`; `DecodeRequest::sniper` is
-/// the fixed-carrier point decode, which is the only one `mfsk-ffi`
-/// exposes (`mfsk_jt9_decode_at`).
+/// JT9.
 #[cfg(feature = "jt9")]
 const JT9_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
-    defaults: scan_defaults!(jt9),
     sync_scale: SyncScale::SyncFraction,
-    sniper_max_cand_cap: None,
 };
 
-/// JT65. As JT9, with `jt65::search::default_search_params()`.
+/// JT65.
 #[cfg(feature = "jt65")]
 const JT65_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::DECODER | caps::BUDGET | caps::ON_RESULT | caps::ENCODE,
-    defaults: scan_defaults!(jt65),
     sync_scale: SyncScale::SyncFraction,
-    sniper_max_cand_cap: None,
 };
 
 /// uvpacket sub-modes — TX/RX exist, but none of the WSJT-family
@@ -625,14 +478,7 @@ const JT65_PROFILE: DecodeProfile = DecodeProfile {
 #[allow(dead_code)]
 const UV_PROFILE: DecodeProfile = DecodeProfile {
     caps: caps::ENCODE,
-    defaults: DecodeDefaults {
-        freq_min_hz: 0.0,
-        freq_max_hz: 0.0,
-        sync_min: 0.0,
-        max_cand: 0,
-    },
     sync_scale: SyncScale::CostasAbsolute,
-    sniper_max_cand_cap: None,
 };
 
 /// Compile-time list of every `Protocol` impl wired into the
@@ -658,7 +504,7 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-60A", crate::Fst4s60, FST4_PROFILE),
     #[cfg(feature = "fst4")]
-    protocol_meta!("FST4-15", crate::fst4::Fst4s15, FST4_15_PROFILE),
+    protocol_meta!("FST4-15", crate::fst4::Fst4s15, FST4_PROFILE),
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-30", crate::fst4::Fst4s30, FST4_PROFILE),
     #[cfg(feature = "fst4")]
@@ -940,37 +786,5 @@ mod tests {
         // on `for_protocol_id(Fst4)` resolving to it.
         let meta = for_protocol_id(ProtocolId::Fst4).expect("fst4 feature is on");
         assert_eq!(meta.name, "FST4-60A");
-    }
-
-    /// Where the library carries its own search default, the registry
-    /// publishes that and nothing else (#413). The hand-written copies
-    /// had drifted on all four modes before this was pinned.
-    #[cfg(all(
-        feature = "wspr",
-        feature = "jt9",
-        feature = "jt65",
-        feature = "q65",
-        any(feature = "fft-rustfft", feature = "fft-extern")
-    ))]
-    #[test]
-    fn scan_defaults_are_the_library_defaults() {
-        use crate::engine::search::SearchParams;
-        let cases: [(&str, SearchParams); 4] = [
-            ("WSPR", crate::wspr::search::default_search_params()),
-            ("JT9", crate::jt9::search::default_search_params()),
-            ("JT65", crate::jt65::search::default_search_params()),
-            ("Q65-60A", crate::q65::search::default_search_params()),
-        ];
-        for (name, p) in cases {
-            let d = by_name(name).expect(name).profile.defaults;
-            assert_eq!(d.freq_min_hz, p.freq_min_hz, "{name}");
-            assert_eq!(d.freq_max_hz, p.freq_max_hz, "{name}");
-            assert_eq!(d.sync_min, p.score_threshold, "{name}");
-            assert_eq!(d.max_cand as usize, p.max_candidates, "{name}");
-            assert!(
-                d.freq_max_hz > d.freq_min_hz && d.max_cand > 0,
-                "{name}: no band"
-            );
-        }
     }
 }
