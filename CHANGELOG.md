@@ -24,10 +24,10 @@
   `AnyDecoder`, `mfsk-ffi/tests/mode_introspection.rs` bit 18 against `mfsk_decoder_open`. C migration: `DECODE_HANDLE` → `WSJT77_FAMILY` or `DECODER`, drop tests of 10-12.
 - **The registry carries no default search parameters** (#698). `registry::DecodeDefaults`, `DecodeProfile::defaults` and
   `DecodeProfile::sniper_max_cand_cap` are gone: nothing read them but `default_params`' fallback band, and FT8 / FT4 / FST4's values
-  (100-3000 Hz, `sync_min` 0.8, FT4's sniper cap 15) described no decoder. `decoder::default_params(mode)` is the one source and
+  described no decoder (e.g. FT8's 100-3000 Hz and `sync_min` 0.8, FT4's sniper cap 15). `decoder::default_params(mode)` is the one source and
   states each mode's band (WSPR / JT9 / JT65 / Q65 from their `search::default_search_params()`, FST4W `jt9 -W`'s 1400-1600).
   `DecodeProfile` keeps `caps` and `sync_scale`. No mode's defaults moved: `tests/default_params.rs` pins all 26 at their 0.14 values.
-  C ABI unchanged. Detail: `LIBRARY.md` §registry.
+  C ABI unchanged. Detail: `LIBRARY.md` §8.1.
 
 ### Added
 

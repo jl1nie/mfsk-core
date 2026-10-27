@@ -508,7 +508,7 @@ impl<P: Decodable> Decoder<P> {
         }
     }
 
-    /// A decoder with the mode's default block (its registry band).
+    /// A decoder with the mode's default block, [`default_params`].
     pub fn with_defaults() -> Self {
         Self::new(default_params(P::MODE))
     }
@@ -821,21 +821,14 @@ impl<P: Decodable> Decoder<P> {
     }
 }
 
-/// `[freq_min_hz, freq_max_hz]` of a scan mode's own search default.
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+/// `[freq_min_hz, freq_max_hz]` of a scan mode's own search default. The
+/// `search` modules need an FFT backend, as does this module (`lib.rs`).
 #[allow(unused_macros)] // none of the four scan modes built
 macro_rules! scan_band {
     ($m:ident) => {{
         let p = crate::$m::search::default_search_params();
         (p.freq_min_hz, p.freq_max_hz)
     }};
-}
-#[cfg(not(any(feature = "fft-rustfft", feature = "fft-extern")))]
-#[allow(unused_macros)]
-macro_rules! scan_band {
-    ($m:ident) => {
-        (0.0, 0.0)
-    };
 }
 
 /// [`default_params`]' band for `mode`, with its source per mode.
@@ -884,8 +877,7 @@ fn default_band(mode: Mode) -> (f32, f32) {
 /// 200-4000 Hz (`jt9.f90:40-41`), FST4 the GUI's own F Low / F High,
 /// 600-1400 Hz (`mainwindow_settings.cpp:481-482`), and FST4W `jt9 -W`'s
 /// `-f 1500 -F 100`. WSPR, JT9, JT65 and Q65 take the band of their own
-/// `search::default_search_params()` (empty in a build without an FFT
-/// backend, which has no decoder for them). This function is the only source
+/// `search::default_search_params()`. This function is the only source
 /// of these defaults; the registry carries none since #698.
 pub fn default_params(mode: Mode) -> DecodeParams {
     let band = default_band(mode);

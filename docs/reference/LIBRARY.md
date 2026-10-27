@@ -777,7 +777,9 @@ default), AP **off for FT8 and JT65** (their "Enable AP" boxes start
 unchecked; the other modes have no box), and the band the GUI implies: the
 GUI has none of its own (`nfa` is the waterfall's start, `nfb` its right
 edge), so FT8 and FT4 take `jt9`'s command-line 200–4000 Hz, FST4 the GUI's
-own F Low / F High 600–1400 Hz, and the other modes their registry band.
+own F Low / F High 600–1400 Hz, FST4W `jt9 -W`'s 1400–1600 Hz, and WSPR,
+JT9, JT65 and Q65 the band of their own `search::default_search_params()`
+(the table in [§8.1](#81-the-protocols-registry)).
 `DecodeParams::for_band` is the bare block: `Deep`, AP `Full`, no station or
 QSO. With no station call that leaves only the blind `CQ` hypothesis, so it
 is not the same as `default_params(Mode::Ft8)`, which is `ApMode::Off`.
@@ -2881,9 +2883,9 @@ The registry carries **no default search parameters** (#698: `DecodeDefaults`
 and `sniper_max_cand_cap` went in 0.15.0; nothing but `default_params`' band
 read them). A mode's defaults are `decoder::default_params(mode)`, the
 `DecodeParams` every decoder, `AnyDecoder::with_defaults` and C's
-`mfsk_params_init` start from, together with its `Depth`, which decides the
-sync threshold and candidate count ([§2.2](#22-decodeparams-and-depth)). The
-band it sets:
+`mfsk_params_init` start from. For the FT family its `Depth` decides the sync
+threshold and candidate count ([§2.2](#22-decodeparams-and-depth)). The band
+it sets:
 
 | mode | band (Hz) | source |
 |---|---|---|
@@ -2896,8 +2898,7 @@ band it sets:
 | Q65 (all ten) | 200-3000 | `q65::search::default_search_params()` |
 
 The scan modes' time window, score threshold and candidate cap start from
-their own `default_search_params()` too. Without an FFT backend those four
-have no `search` module and no decoder, and the band is empty.
+their own `default_search_params()` too.
 
 Lookup:
 

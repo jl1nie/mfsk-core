@@ -757,7 +757,8 @@ assert!(wspr.set_ap_hint(None).is_err());
 チェックボックスが未チェックで始まる。他のモードにはボックスが無い）、GUI が暗に持つ帯域
 を返す: GUI 自身は帯域を持たない（`nfa` はウォーターフォールの左端、`nfb` は右端）ので、
 FT8 と FT4 は `jt9` のコマンドラインの 200〜4000 Hz、FST4 は GUI 自身の F Low / F High
-である 600〜1400 Hz、他のモードはレジストリの帯域になる。`DecodeParams::for_band` は素の
+である 600〜1400 Hz、FST4W は `jt9 -W` の 1400〜1600 Hz、WSPR・JT9・JT65・Q65 は各自の
+`search::default_search_params()` の帯域になる（[§8.1](#81-protocols-レジストリ) の表）。`DecodeParams::for_band` は素の
 ブロックである: `Deep`、AP は `Full`、自局も QSO も無し。自局のコールサインが無いと残るのは
 盲目の `CQ` 仮説だけなので、`ApMode::Off` である `default_params(Mode::Ft8)` とは同じ
 ではない。
@@ -2724,8 +2725,8 @@ Q65: sync の電力を sync と雑音の和で割った 0‥1 の値で、既定
 レジストリは**既定の探索パラメータを持たない**（#698: `DecodeDefaults` と
 `sniper_max_cand_cap` は 0.15.0 で無くなった。読んでいたのは `default_params` の帯域だけ）。
 モードの既定値は `decoder::default_params(mode)` で、すべてのデコーダ、
-`AnyDecoder::with_defaults`、C の `mfsk_params_init` がここから始まる。同期閾値と候補数は
-その `Depth` が決める（[§2.2](#22-decodeparams-と-depth)）。設定される帯域:
+`AnyDecoder::with_defaults`、C の `mfsk_params_init` がここから始まる。FT 系では同期閾値と
+候補数をその `Depth` が決める（[§2.2](#22-decodeparams-と-depth)）。設定される帯域:
 
 | モード | 帯域 (Hz) | 出所 |
 |---|---|---|
@@ -2738,8 +2739,7 @@ Q65: sync の電力を sync と雑音の和で割った 0‥1 の値で、既定
 | Q65（10 個すべて） | 200-3000 | `q65::search::default_search_params()` |
 
 スキャン系モードの時間窓・スコア閾値・候補数の上限も、各自の `default_search_params()`
-から始まる。FFT バックエンドが無いとその 4 つは `search` モジュールもデコーダも持たず、
-帯域は空になる。
+から始まる。
 
 ルックアップ:
 

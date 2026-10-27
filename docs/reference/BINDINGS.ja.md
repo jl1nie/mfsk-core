@@ -226,7 +226,7 @@ p.rx_freq_hz = 1500.0f;
 | `ap_mode` | `MFSK_AP_OFF` 0（`lft8apon` オフ）、`_CQ_ONLY` 1（`lapcqonly`）、`_FULL` 2（QSO 文脈が許すすべての仮説）。`_init` はモード自身の既定値を書く: FT8 と JT65 はオフ（GUI の "Enable AP" ボックス）、FT4 は full |
 | `contest` | `ncontest`: `MFSK_CONTEST_NONE` 0、`_GRID_EXCHANGE` 1（NA VHF、WW Digi、ARRL Digi、Q65 pileup）、`_EU_VHF` 2、`_FIELD_DAY` 3、`_RTTY_ROUNDUP` 4、`_FOX` 6、`_HOUND` 7 |
 | `qso_progress` | `nQSOProgress`: `MFSK_QSO_CALLING` 0、`_REPLYING` 1、`_REPORT` 2、`_ROGER_REPORT` 3、`_ROGERS` 4、`_SIGNOFF` 5 |
-| `band_lo_hz`, `band_hi_hz` | 探索する音声帯域（`nfa`、`nfb`）。`_init` は FT8 と FT4 に 200–4000 Hz（`jt9` のコマンドライン）、FST4 に 600–1400 Hz（GUI の F Low / F High）を書き、他のモードはレジストリの帯域を保つ |
+| `band_lo_hz`, `band_hi_hz` | 探索する音声帯域（`nfa`、`nfb`）。`_init` は FT8 と FT4 に 200–4000 Hz（`jt9` のコマンドライン）、FST4 に 600–1400 Hz（GUI の F Low / F High）、FST4W に 1400–1600 Hz（`jt9 -W`）、WSPR・JT9・JT65・Q65 には各自の探索既定値の帯域（`LIBRARY.md` §8.1）を書く |
 | `rx_freq_hz`, `tol_hz` | Rx 周波数とその許容幅（`nfqso`、`ntol`）。NaN は未設定 — 0 Hz は周波数である |
 | `tx_freq_hz` | Tx 周波数（`nftx`）。NaN は未設定。FT8 のアプリオリ探索を左右する（`MFSK_CAP_TX_FREQ`） |
 | `mycall`, `mygrid`, `hiscall`, `hisgrid` | 自局と QSO 相手。NUL 終端のインラインテキスト（15文字と7文字）、不明なら空。AP 仮説の材料になる |
