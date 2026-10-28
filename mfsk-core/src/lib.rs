@@ -274,7 +274,7 @@
 //! ```toml
 //! # Cargo.toml
 //! [dependencies]
-//! mfsk-core = { version = "0.12", features = ["ft8", "ft4"] }
+//! mfsk-core = { version = "0.14", features = ["ft8", "ft4"] }
 //! ```
 //!
 //! Round-trip a synthesised FT8 frame through the decoder:
@@ -296,8 +296,8 @@
 //!     if start + i < audio.len() { audio[start + i] = s; }
 //! }
 //!
-//! // 2. Decode it back across the full FT8 band.
-//! let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+//! // 2. Decode it back with the mode's defaults (WSJT-X's GUI parameter block).
+//! let mut decoder = Decoder::<Ft8>::with_defaults();
 //! let result = decoder.decode(&SlotInput::i16(&audio));
 //! assert!(!result.rows.is_empty(), "roundtrip must decode");
 //! assert_eq!(result.rows[0].decoded.text, "CQ JA1ABC PM95");
@@ -313,7 +313,7 @@
 //! ```toml
 //! # Cargo.toml — TX-only, no_std + alloc, no FFT backend needed
 //! [dependencies]
-//! mfsk-core = { version = "0.12", default-features = false, features = ["alloc", "ft8"] }
+//! mfsk-core = { version = "0.14", default-features = false, features = ["alloc", "ft8"] }
 //! ```
 //!
 //! Encoding (`message_to_tones` / `synthesize_i16`) never touches `std` — no

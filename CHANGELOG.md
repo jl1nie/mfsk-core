@@ -60,6 +60,13 @@
   (`qso3_busy`, 14 / 14, SNR within 0.1 dB; `docs/notes/IQ_PREFIX_DESIGN.md` §10). Skimmer: no second `mode`, no throwaway decoder to ask for points, and the points
   follow the options only once the decoder has them. Additive.
 
+### Documentation
+
+- **The quick starts take one path** (#708): rustdoc, README and `LIBRARY.md` §1 (and `.ja.md`) encode with `encode` + `TxAudio` and decode
+  from the mode's defaults (`with_defaults()`); README's hand-written pack77 → tones → waveform moved to a pointer to the protocol builder's
+  route. The rustdoc `Cargo.toml` snippets said `0.12`; `tests/doc_dependency_versions.rs` now reads every documented snippet against the
+  crate's `major.minor`. §2.4's `AnyDecoder::decode_with` callback is `Row<()>`; §1.4 says it describes unreleased `main`.
+
 ### Deprecated
 
 - **`IqReceiver::set_prefix_points`** (since 0.15, still works): `update_channel` with a `ChannelSpec` from the decoder replaces it (#692). No removal date is set.
