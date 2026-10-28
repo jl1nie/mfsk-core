@@ -89,6 +89,12 @@
   with a standard MyCall. a7 is unchanged, as upstream. Other calls still get 206. **`q65::MAX_AP_CODEWORDS` 206 -> 411**; the list
   grows only for such DX calls.
 
+- **A block WSJT-X's GUI cannot send no longer crashes or hangs a decoder** (#717). `Decoder` hands its mode the block normalised: band
+  edges clamped into 0-6000 Hz (a NaN edge to that end), a non-finite Rx / Tx frequency or a non-finite or negative tolerance unset;
+  `params()` still shows what was set. Before, on one synthetic signal per mode, an infinite band top panicked FT8 / FST4 (debug) and Q65
+  (release) and did not return from JT9 / JT65; a NaN Rx frequency or tolerance lost the FST4W decode. Every value the GUI can send passes
+  through bit-identically: tier A+B unchanged. `tests/decoder_params_normalised.rs`.
+
 ### Skimmer
 
 - An rtl_tcp connection says what it waits for: `Event::Preparing { stage, up_to_s }` at the start of "waiting for the server to

@@ -765,7 +765,9 @@ assert!(wspr.set_ap_hint(None).is_err());
 built from the mode's defaults, `default_params(mode)`, or the bare `DecodeParams::for_band((lo, hi))`,
 and chained setters; to change only the band, start from the defaults: `default_params(mode).band(lo, hi)`, #711). **Each
 mode reads what its upstream decoder reads and ignores the rest, as `jt9`
-does**; a field does not make an option exist for a mode.
+does**; a field does not make an option exist for a mode. A value the GUI cannot send is made harmless before a
+mode sees it (#717): band edges are clamped into 0–6000 Hz, a non-finite Rx / Tx frequency or a non-finite or negative
+tolerance counts as unset; `params()` shows what you set.
 
 | field | upstream | read by |
 |---|---|---|
