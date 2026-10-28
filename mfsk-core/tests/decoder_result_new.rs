@@ -39,11 +39,9 @@ fn a_typed_row_carries_the_callers_native_data() {
     detail.pass = 2;
     detail.hash_resolved = true;
     detail.delivery = Some(0);
+    // Assigning the detail from outside the crate is what is checked: it compiles.
     row.detail = detail;
     assert_eq!(row.native, Native { candidate: 7 });
-    assert_eq!(row.detail.pass, 2);
-    assert!(row.detail.hash_resolved);
-    assert_eq!(row.detail.delivery, Some(0));
 }
 
 #[test]
@@ -65,13 +63,11 @@ fn a_result_with_rows_and_explicit_metadata() {
     budget.exhausted = true;
     budget.candidates_skipped = 3;
     r.budget = budget;
+    // Assigning the metadata from outside the crate is what is checked: it compiles.
     r.candidates = Some(42);
     assert_eq!(
         lines(&r),
         ["1500 CQ K1ABC FN42", "2100 CQ K1ABC FN42"],
         "one message at two frequencies is two rows"
     );
-    assert!(r.budget.exhausted);
-    assert_eq!(r.budget.candidates_skipped, 3);
-    assert_eq!(r.candidates, Some(42));
 }

@@ -181,7 +181,7 @@ That's the whole round trip: encode a message → synthesise 12 kHz PCM →
 decode it back. `AnyDecoder` picks the mode at run time; `Decoder::<Ft8>` is the
 same decoder typed at compile time, with the mode's native result and `Extras`.
 The explicit pack → tones → waveform steps `encode` runs are for protocol
-builders: `engine::tx` (`message_to_tones::<P>`, `synthesize::<P>`), [`LIBRARY.md`](docs/reference/LIBRARY.md) §4 (tier P). Every slot mode decodes through the same `Decoder<P>`: build it
+builders: `engine::tx` (`message_to_tones::<P>`, `synthesize::<P>`), [`LIBRARY.md`](docs/reference/LIBRARY.md) §5, "Transmitting: `FskWaveform`". Every slot mode decodes through the same `Decoder<P>`: build it
 from a `DecodeParams` (WSJT-X's per-period parameter block: depth, AP mode,
 band, Rx/Tx frequency, station and QSO), change `params_mut()` between periods,
 and give it each period as a `SlotInput` (`i16` or `f32` audio, the period's

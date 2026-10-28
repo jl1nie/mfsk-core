@@ -99,7 +99,7 @@ Real audio arrives as one period at 12 kHz from the nominal start.
 `engine::dsp::resample` converts other sample rates; a `SlotInput` takes
 `&[i16]` or `&[f32]`. Keep the `Decoder` between periods: it is where the
 callsign hash table lives ([§2.1](#21-decoderp)). To name a band and keep the
-mode's other defaults, start from them: `Decoder::<Ft8>::new(decoder::default_params(Mode::Ft8).band(100.0, 3_000.0))`.
+mode's other defaults, start from them: `Decoder::<Ft8>::new(mfsk_core::decoder::default_params(Mode::Ft8).band(100.0, 3_000.0))`.
 `DecodeParams::for_band` is the band alone on the struct's own defaults, not the mode's (its AP mode is `Full`,
 FT8's default `Off`; [§2.2](#22-decodeparams-and-depth)).
 
@@ -535,7 +535,7 @@ callers are meant to build by literal, not part of the decode API.
 
 ### 1.4 Coming from 0.14
 
-**Unreleased.** This section describes `main`; 0.14 on crates.io is what §1 to §1.3 and the snippets naming `0.14` describe.
+**Unreleased.** This section, like the rest of this reference, describes `main`: a snippet here may use an API added since 0.14 on crates.io (`Encoded::tones()` in §1, `ChannelSpec` in §1.3). What `main` adds is `CHANGELOG.md`'s `## Unreleased`.
 
 0.15 changes what a caller can name, not what the decoder does. `Decoder<P>`, `DecodeParams`, the `Extras`, `SlotInput`, `Row` and `SlotResult` are
 where they were, and **no result changes** (tier A+B, same goldens). Most applications recompile unchanged. You are affected if your code

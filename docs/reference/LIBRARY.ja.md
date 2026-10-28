@@ -99,7 +99,7 @@ for row in &result.rows {
 `engine::dsp::resample` で変換する。`SlotInput` は `&[i16]` と `&[f32]` を取る。
 `Decoder` は周期をまたいで持ち続けること。コールサインのハッシュ表はそこにある
 （[§2.1](#21-decoderp)）。帯域を指定してモードの他の既定値を保つには、既定値から始める:
-`Decoder::<Ft8>::new(decoder::default_params(Mode::Ft8).band(100.0, 3_000.0))`。
+`Decoder::<Ft8>::new(mfsk_core::decoder::default_params(Mode::Ft8).band(100.0, 3_000.0))`。
 `DecodeParams::for_band` は構造体自身の既定値に帯域だけを載せたもので、モードの既定値ではない（AP モードは `Full`、
 FT8 の既定は `Off`。[§2.2](#22-decodeparams-と-depth)）。
 
@@ -523,7 +523,7 @@ variant を足せる自由より、そちらの方が価値が高い。`engine` 
 
 ### 1.4 0.14 からの移行
 
-**未リリース。** この節は `main` の説明である。crates.io の 0.14 は §1〜§1.3 と `0.14` を指すスニペットが説明するものである。
+**未リリース。** この節は、このリファレンスの他の部分と同じく `main` の説明である: ここのスニペットは crates.io の 0.14 以降に加わった API を使うことがある（§1 の `Encoded::tones()`、§1.3 の `ChannelSpec`）。`main` が加えたものは `CHANGELOG.md` の `## Unreleased` にある。
 
 0.15 が変えるのは、呼び出し側が名指しできるものであって、デコーダの動作ではない。`Decoder<P>`、`DecodeParams`、`Extras`、`SlotInput`、
 `Row`、`SlotResult` は元の場所にあり、**結果は変わらない**（tier A+B、ゴールデンも同じ）。ほとんどのアプリはそのまま再コンパイルできる。
