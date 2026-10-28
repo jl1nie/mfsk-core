@@ -11,3 +11,4 @@ then compare.
 |---|---|---|---|---|---|---|---|---|---|---|
 | 2026-10-25 | #692 #693 PeriodBudget #696 #697-item1 (one session, 2026-10-25) | port+design | 16 | claude-opus-5-5: 1835k (+36.5M cached); claude-sonnet-5-5: 2251k (+261.4M cached) | 53889a44 | ? | doc contradictions + weak test legs (#697) | ? | ? | seed row: whole session, several tasks, not separable |
 | 2026-10-27 | #700 Encoded private fields | design | 3 | claude-opus-5-5: 1500k (+110.4M cached) | c87781aa | no | found: doc claim wider than measured + 32-bit ramp overflow; 5 minor | 0 | 0 |  |
+| 2026-10-28 | #712 Row/SlotResult::new + #708 quick starts (part) | design | 5 | claude-opus-5-5: 477k (+16.1M cached) | 62f30928 | yes | found: false §1.4 banner (0.14 lacks Encoded::tones), CHANGELOG overstated scope, tautological asserts; 2 minor | 0 | 0 | #708 left open: recording example (#709), external-app check |
