@@ -154,34 +154,34 @@ mfsk-core = { git = "https://github.com/jl1nie/mfsk-core", branch = "main", feat
 Synthesise an FT8 frame and decode it back:
 
 ```rust
-use mfsk_core::ft8::Ft8;
-use mfsk_core::decoder::{Decoder, SlotInput};
-use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
-use mfsk_core::msg::wsjt77::pack77;
+use mfsk_core::prelude::*;
 
-// 1. Synthesise an FT8 frame and pad it into a 15-second slot.
-let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
-let tones = message_to_tones::<Ft8>(&msg77);
-let frame = synthesize_i16::<Ft8>(&tones, 12_000, /* freq */ 1500.0, /* amp */ 20_000);
+// 1. Encode a message and synthesise 12 kHz PCM; pad it into a 15-second slot.
+let tx = encode(Mode::Ft8, "CQ JA1ABC PM95").unwrap();
+let frame = tx.synthesize_i16(&TxAudio::new(12_000, /* freq */ 1500.0), /* amp */ 20_000);
 
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
 let start = (0.5 * 12_000.0) as usize;
 let end = (start + frame.len()).min(audio.len());
 audio[start..end].copy_from_slice(&frame[..end - start]);
 
-// 2. Decode it back. One Decoder per mode, as WSJT-X runs one `jt9 -s`
+// 2. Decode it back. One decoder per mode, as WSJT-X runs one `jt9 -s`
 //    per mode: it keeps the callsign table, a7 and the averages between
 //    periods; `with_defaults()` is the GUI's parameter block.
-let mut decoder = Decoder::<Ft8>::with_defaults();
+let mut decoder = AnyDecoder::with_defaults(Mode::Ft8);
 let slot = decoder.decode(&SlotInput::i16(&audio));
+assert_eq!(slot.rows[0].decoded.text, "CQ JA1ABC PM95");
 for row in &slot.rows {
     let d = &row.decoded;
     println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}", d.freq_hz, d.dt_sec, d.snr_db, d.text);
 }
 ```
 
-That's the whole round trip: pack a message → synthesise 12 kHz PCM →
-decode it back. Every slot mode decodes through the same `Decoder<P>`: build it
+That's the whole round trip: encode a message → synthesise 12 kHz PCM →
+decode it back. `AnyDecoder` picks the mode at run time; `Decoder::<Ft8>` is the
+same decoder typed at compile time, with the mode's native result and `Extras`.
+The explicit pack → tones → waveform steps `encode` runs are for protocol
+builders: `engine::tx` (`message_to_tones::<P>`, `synthesize::<P>`), [`LIBRARY.md`](docs/reference/LIBRARY.md) §5, "Transmitting: `FskWaveform`". Every slot mode decodes through the same `Decoder<P>`: build it
 from a `DecodeParams` (WSJT-X's per-period parameter block: depth, AP mode,
 band, Rx/Tx frequency, station and QSO), change `params_mut()` between periods,
 and give it each period as a `SlotInput` (`i16` or `f32` audio, the period's

@@ -83,8 +83,9 @@ for (i, &s) in frame.iter().enumerate() {
 }
 
 // 2. Decode it back. One decoder per mode; the parameter block is
-// WSJT-X's own (band, depth, station, ...). `Depth::Deep` is its default.
-let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+// WSJT-X's own (band, depth, station, ...), and `with_defaults()` starts
+// from the block the WSJT-X GUI starts from.
+let mut decoder = Decoder::<Ft8>::with_defaults();
 let result = decoder.decode(&SlotInput::i16(&audio));
 assert!(!result.rows.is_empty(), "roundtrip must decode");
 for row in &result.rows {
@@ -97,9 +98,14 @@ for row in &result.rows {
 Real audio arrives as one period at 12 kHz from the nominal start.
 `engine::dsp::resample` converts other sample rates; a `SlotInput` takes
 `&[i16]` or `&[f32]`. Keep the `Decoder` between periods: it is where the
-callsign hash table lives ([§2.1](#21-decoderp)). `Decoder::<Ft8>::with_defaults()`
-starts from the block the WSJT-X GUI starts from instead of a band you name
-([§2.2](#22-decodeparams-and-depth)).
+callsign hash table lives ([§2.1](#21-decoderp)). To name a band and keep the
+mode's other defaults, start from them: `Decoder::<Ft8>::new(mfsk_core::decoder::default_params(Mode::Ft8).band(100.0, 3_000.0))`.
+`DecodeParams::for_band` is the band alone on the struct's own defaults, not the mode's (its AP mode is `Full`,
+FT8's default `Off`; [§2.2](#22-decodeparams-and-depth)).
+
+`Decoder::<Ft8>` is the decoder typed at compile time: the mode's native result on each row and its `Extras`. An
+application that picks the mode at run time (a mode menu) holds an `AnyDecoder` instead, `AnyDecoder::with_defaults(Mode::Ft8)`:
+the same decoder behind one type, rows as `Row<()>` (README's quick start; [§2.1](#21-decoderp)).
 
 **Transmit.** `encoder::encode` is to sending what `AnyDecoder` is to receiving: the mode is a
 value (`registry::Mode`), the text is the message as WSJT-X's Tx box shows it, and the result
@@ -148,15 +154,13 @@ decoder, so a call heard in one period resolves a hashed `<...>` in the
 next:
 
 ```rust
-use mfsk_core::decoder::{Decoder, SlotInput};
-use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::wsjt77::{pack77, pack77_type4};
+use mfsk_core::prelude::*;
 
 /// One 15 s period holding one FT8 frame, as a receiver hands it over.
-fn period(msg77: &[u8; 77]) -> Vec<i16> {
-    let tones = message_to_tones::<Ft8>(msg77);
-    let frame = synthesize_i16::<Ft8>(&tones, 12_000, 1_500.0, 20_000);
+fn period(text: &str) -> Vec<i16> {
+    let tx = encode(Mode::Ft8, text).unwrap();
+    let frame = tx.synthesize_i16(&TxAudio::new(12_000, 1_500.0), 20_000);
     let mut audio = vec![0i16; 180_000];
     audio[6_000..6_000 + frame.len()].copy_from_slice(&frame);
     audio
@@ -166,11 +170,11 @@ fn period(msg77: &[u8; 77]) -> Vec<i16> {
 let mut rx = Decoder::<Ft8>::with_defaults();
 
 // Period 0: JA1ABC calls CQ. The decoder learns the call.
-let p0 = period(&pack77("CQ", "JA1ABC", "PM95").unwrap());
+let p0 = period("CQ JA1ABC PM95");
 rx.decode(&SlotInput::i16(&p0).period(0));
 
 // Period 1: a reply that names JA1ABC only by a 12-bit hash.
-let p1 = period(&pack77_type4("JL1NIE/1", "JA1ABC", "RR73", false).unwrap());
+let p1 = period("<JA1ABC> JL1NIE/1 RR73");
 let heard = rx.decode(&SlotInput::i16(&p1).period(1)).rows;
 assert!(heard.iter().any(|r| r.decoded.text.contains("<JA1ABC>")));
 
@@ -532,6 +536,8 @@ primitives (`SubtractCfg`, `GfskParams`, …) are building blocks that
 callers are meant to build by literal, not part of the decode API.
 
 ### 1.4 Coming from 0.14
+
+**Unreleased.** This section, like the rest of this reference, describes `main`: a snippet here may use an API added since 0.14 on crates.io (`Encoded::tones()` in §1, `ChannelSpec` in §1.3). What `main` adds is `CHANGELOG.md`'s `## Unreleased`.
 
 0.15 changes what a caller can name, not what the decoder does. `Decoder<P>`, `DecodeParams`, the `Extras`, `SlotInput`, `Row` and `SlotResult` are
 where they were, and **no result changes** (tier A+B, same goldens). Most applications recompile unchanged. You are affected if your code
@@ -1083,7 +1089,7 @@ In C, every mode with a decoder publishes `MFSK_CAP_BUDGET` and takes
 `Decoder::decode_with(&slot, &|row: &Row<_>| …)` delivers each row as it is
 found, on top of the `SlotResult` the call returns — for a UI that wants
 something on screen before a long slot finishes. `AnyDecoder::decode_with`
-takes `&(dyn Fn(&Decoded, &RowDetail) + Sync)`.
+takes the same callback over `Row<()>` (`&|row: &Row<()>| …`, `row.decoded`, `row.detail`).
 
 The delivery-order and de-duplication contract is **not repeated
 here**: [`STREAMING.md`](STREAMING.md) is the authoritative account.

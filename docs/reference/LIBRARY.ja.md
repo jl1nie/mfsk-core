@@ -83,8 +83,9 @@ for (i, &s) in frame.iter().enumerate() {
 }
 
 // 2. デコードする。モードごとにデコーダを 1 つ持つ。パラメータブロックは
-// WSJT-X のもの（帯域・depth・自局…）。`Depth::Deep` が既定。
-let mut decoder = Decoder::<Ft8>::new(DecodeParams::for_band((100.0, 3_000.0)));
+// WSJT-X のもの（帯域・depth・自局…）で、`with_defaults()` は
+// WSJT-X の GUI が起動時に持つブロックから始める。
+let mut decoder = Decoder::<Ft8>::with_defaults();
 let result = decoder.decode(&SlotInput::i16(&audio));
 assert!(!result.rows.is_empty(), "roundtrip must decode");
 for row in &result.rows {
@@ -97,9 +98,14 @@ for row in &result.rows {
 実音声は、名目開始位置から始まる 12 kHz の 1 周期として届く。他のサンプルレートは
 `engine::dsp::resample` で変換する。`SlotInput` は `&[i16]` と `&[f32]` を取る。
 `Decoder` は周期をまたいで持ち続けること。コールサインのハッシュ表はそこにある
-（[§2.1](#21-decoderp)）。`Decoder::<Ft8>::with_defaults()` は、帯域を自分で指定する
-代わりに WSJT-X の GUI が起動時に持つブロックから始める
-（[§2.2](#22-decodeparams-と-depth)）。
+（[§2.1](#21-decoderp)）。帯域を指定してモードの他の既定値を保つには、既定値から始める:
+`Decoder::<Ft8>::new(mfsk_core::decoder::default_params(Mode::Ft8).band(100.0, 3_000.0))`。
+`DecodeParams::for_band` は構造体自身の既定値に帯域だけを載せたもので、モードの既定値ではない（AP モードは `Full`、
+FT8 の既定は `Off`。[§2.2](#22-decodeparams-と-depth)）。
+
+`Decoder::<Ft8>` はコンパイル時に型の決まるデコーダで、各行にモード固有の結果を持ち、`Extras` を持つ。モードを
+実行時に選ぶアプリ（モードのメニュー）は代わりに `AnyDecoder` を持つ。`AnyDecoder::with_defaults(Mode::Ft8)` は
+同じデコーダを 1 つの型の後ろに置いたもので、行は `Row<()>` になる（README のクイックスタート。[§2.1](#21-decoderp)）。
 
 **送信。** `encoder::encode` は、受信側の `AnyDecoder` に対する送信側である。モードは値
 （`registry::Mode`）、テキストは WSJT-X の Tx ボックスに出るままのメッセージで、結果はチャンネル
@@ -145,15 +151,13 @@ Q65 の平均はこれを必要とする。コールサイン表はデコーダ�
 コールが、次の周期のハッシュ化された `<...>` を解決する:
 
 ```rust
-use mfsk_core::decoder::{Decoder, SlotInput};
-use mfsk_core::engine::tx::{message_to_tones, synthesize_i16};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::msg::wsjt77::{pack77, pack77_type4};
+use mfsk_core::prelude::*;
 
 /// FT8 フレームを 1 つ含む 15 秒の周期。受信機が渡すものと同じ形。
-fn period(msg77: &[u8; 77]) -> Vec<i16> {
-    let tones = message_to_tones::<Ft8>(msg77);
-    let frame = synthesize_i16::<Ft8>(&tones, 12_000, 1_500.0, 20_000);
+fn period(text: &str) -> Vec<i16> {
+    let tx = encode(Mode::Ft8, text).unwrap();
+    let frame = tx.synthesize_i16(&TxAudio::new(12_000, 1_500.0), 20_000);
     let mut audio = vec![0i16; 180_000];
     audio[6_000..6_000 + frame.len()].copy_from_slice(&frame);
     audio
@@ -163,11 +167,11 @@ fn period(msg77: &[u8; 77]) -> Vec<i16> {
 let mut rx = Decoder::<Ft8>::with_defaults();
 
 // 周期 0: JA1ABC が CQ を出す。デコーダがそのコールを覚える。
-let p0 = period(&pack77("CQ", "JA1ABC", "PM95").unwrap());
+let p0 = period("CQ JA1ABC PM95");
 rx.decode(&SlotInput::i16(&p0).period(0));
 
 // 周期 1: JA1ABC を 12 ビットのハッシュでしか名乗らない応答。
-let p1 = period(&pack77_type4("JL1NIE/1", "JA1ABC", "RR73", false).unwrap());
+let p1 = period("<JA1ABC> JL1NIE/1 RR73");
 let heard = rx.decode(&SlotInput::i16(&p1).period(1)).rows;
 assert!(heard.iter().any(|r| r.decoded.text.contains("<JA1ABC>")));
 
@@ -520,6 +524,8 @@ variant を足せる自由より、そちらの方が価値が高い。`engine` 
 組み立てる前提の部品であり、デコード API の一部ではない。
 
 ### 1.4 0.14 からの移行
+
+**未リリース。** この節は、このリファレンスの他の部分と同じく `main` の説明である: ここのスニペットは crates.io の 0.14 以降に加わった API を使うことがある（§1 の `Encoded::tones()`、§1.3 の `ChannelSpec`）。`main` が加えたものは `CHANGELOG.md` の `## Unreleased` にある。
 
 0.15 が変えるのは、呼び出し側が名指しできるものであって、デコーダの動作ではない。`Decoder<P>`、`DecodeParams`、`Extras`、`SlotInput`、
 `Row`、`SlotResult` は元の場所にあり、**結果は変わらない**（tier A+B、ゴールデンも同じ）。ほとんどのアプリはそのまま再コンパイルできる。
@@ -1024,7 +1030,7 @@ C では、デコーダを持つ全モードが `MFSK_CAP_BUDGET` を公開し�
 
 `Decoder::decode_with(&slot, &|row: &Row<_>| …)` は、見つかるたびに各行を、呼び出しが
 返す `SlotResult` とは別に配信する — 長いスロットが終わる前に何かを画面に出したい UI 向けである。
-`AnyDecoder::decode_with` は `&(dyn Fn(&Decoded, &RowDetail) + Sync)` を取る。
+`AnyDecoder::decode_with` は同じコールバックを `Row<()>` で取る（`&|row: &Row<()>| …`、`row.decoded`、`row.detail`）。
 
 配信順と重複排除の契約は**ここでは繰り返さない**: [`STREAMING.md`](STREAMING.ja.md) が
 正式な説明である。一行でいえば: 逐次戦略は呼び出しが返す行をそのまま同じ順序で

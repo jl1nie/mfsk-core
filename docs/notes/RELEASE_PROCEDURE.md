@@ -181,6 +181,10 @@ changes — not simply "a release with new capability in it". When
 genuinely unsure which a given accumulated batch warrants, ask rather
 than default to whichever bump feels more exciting.
 
+A minor bump also moves every documented `mfsk-core = { version = "X.Y" … }`
+snippet (rustdoc, `README.md`, `docs/reference/*.md`) in the same release PR:
+`tests/doc_dependency_versions.rs` fails until they name the new `X.Y` (#708).
+
 
 ## Following WSJT-X upstream — run `scripts/upstream-diff.sh` on a schedule
 

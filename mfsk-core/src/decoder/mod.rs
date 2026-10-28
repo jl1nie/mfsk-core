@@ -334,6 +334,34 @@ pub struct SlotResult<R> {
     pub candidates: Option<u32>,
 }
 
+impl<R> Row<R> {
+    /// A row from its common part and the mode's native result, with a default
+    /// [`RowDetail`]; assign `detail` when it matters. The decoders make their own;
+    /// this is for a consumer that builds one: a test of a display, a logger or a
+    /// replay that takes rows (`Row` is `#[non_exhaustive]`, so a struct expression
+    /// is closed to it, #712).
+    pub fn new(decoded: Decoded, native: R) -> Self {
+        Row {
+            decoded,
+            detail: RowDetail::default(),
+            native,
+        }
+    }
+}
+
+impl<R> SlotResult<R> {
+    /// A period's result from its rows, with a default [`BudgetReport`] (no
+    /// budget set) and `candidates` `None`; assign those fields when they matter.
+    /// For a consumer that builds one, as [`Row::new`] (#712).
+    pub fn new(rows: Vec<Row<R>>) -> Self {
+        SlotResult {
+            rows,
+            budget: BudgetReport::default(),
+            candidates: None,
+        }
+    }
+}
+
 /// The callback [`Decoder::decode_with`] hands each row to as it is found.
 pub type OnRow<'a, R> = &'a (dyn Fn(&Row<R>) + Sync);
 

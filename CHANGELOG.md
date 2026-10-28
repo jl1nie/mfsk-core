@@ -37,6 +37,10 @@
 
 ### Added
 
+- **`Row::new(decoded, native)` and `SlotResult::new(rows)`** (#712): an application builds the rows and results it consumes, for a test of a
+  display, a logger or a replay, without decoding audio (both are `#[non_exhaustive]`, so a struct expression is closed outside the crate).
+  Default `RowDetail` / `BudgetReport`, `candidates` `None`; assign a field when it matters, as `CompletedSlot::new` (#592). `tests/decoder_result_new.rs`
+  builds them from outside the crate. Additive.
 - **`decoder::params_read(mode)`: which `DecodeParams` fields a mode's decoder can read** (#698), as `ParamFields` / `ParamField`; C
   `mfsk_mode_fields_read` + `MFSK_FIELD_*`, Kotlin `Mfsk.fieldsRead` / `FIELD_*`, Swift `Mode.paramsRead`. A field outside the set changes
   nothing for that mode, so a host can say which settings are effective; conditions per field are in the doc (`LIBRARY.md` §2.2). Found
@@ -55,6 +59,14 @@
   themselves; a slot of another mode is `Err(ModeMismatch)`. Measured: points on the channel for a decoder that wants none return the same rows
   (`qso3_busy`, 14 / 14, SNR within 0.1 dB; `docs/notes/IQ_PREFIX_DESIGN.md` §10). Skimmer: no second `mode`, no throwaway decoder to ask for points, and the points
   follow the options only once the decoder has them. Additive.
+
+### Documentation
+
+- **The quick starts take one path** (#708): README and `LIBRARY.md` §1.1 encode with `encode` + `TxAudio` as rustdoc and §1 already did (README's
+  hand-written pack77 → tones → waveform became a pointer to §5), all decode from the mode's defaults (`with_defaults()`, not `for_band`'s AP `Full`),
+  and rustdoc / §1 say when to hold an `AnyDecoder` (mode picked at run time, README's path) instead of `Decoder::<Ft8>`.
+  The rustdoc `Cargo.toml` snippets said `0.12`; `tests/doc_dependency_versions.rs` reads the `mfsk-core = "X"` / `{ version = "X" … }` lines of
+  rustdoc, README and `docs/reference/*.md` against the crate's `major.minor`. §2.4's `AnyDecoder::decode_with` callback is `Row<()>`; §1.4 says the reference describes `main`.
 
 ### Deprecated
 
